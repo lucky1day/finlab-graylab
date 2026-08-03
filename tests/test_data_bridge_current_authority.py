@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -493,6 +494,56 @@ class StableDataBridgeCurrentAuthorityTests(unittest.TestCase):
         store.recover.assert_called_once_with(
             schema_path=self.config.schema_path,
         )
+
+    def test_authority_treats_verified_no_current_failure_audit_as_missing(
+        self,
+    ) -> None:
+        """首次 publish 失败留下的 audit-only state 允许下一轮无连续性基线。"""
+        from shared.data_bridge.authority import (
+            resolve_databridge_continuity_authority_from_engine,
+        )
+        from shared.data_bridge.refresh import DataBridgeStore
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = DataBridgeRefreshConfig(
+                data_root=root / "data",
+                runtime_root=root / "runtime",
+                schema_path=root / "schema.json",
+            )
+            DataBridgeStore(
+                data_root=config.data_root,
+                runtime_root=config.runtime_root,
+            ).record_failed_attempt(
+                refresh_date="2026-07-29",
+                error="source_io_failed",
+                duration_sec=1.0,
+            )
+            connection = Mock()
+            connection_context = Mock()
+            connection_context.__enter__ = Mock(return_value=connection)
+            connection_context.__exit__ = Mock(return_value=False)
+            engine = Mock()
+            engine.connect.return_value = connection_context
+
+            actual = resolve_databridge_continuity_authority_from_engine(
+                config,
+                feature_date="2026-07-28",
+                engine=engine,
+            )
+
+        self.assertIsNone(actual)
+        self.assertEqual(
+            connection.exec_driver_sql.call_args_list,
+            [
+                call("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"),
+                call(
+                    "START TRANSACTION WITH CONSISTENT SNAPSHOT, "
+                    "READ ONLY"
+                ),
+            ],
+        )
+        connection.rollback.assert_called_once_with()
 
     def test_cutoff_sql_helpers_receive_the_caller_connection(self) -> None:
         from shared.input_artifacts import (

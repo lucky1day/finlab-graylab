@@ -63,6 +63,19 @@ class ActualsLaunchdTests(unittest.TestCase):
             },
         )
 
+    def test_actuals_one_writer_template_has_not_been_retimed_or_disabled(self) -> None:
+        with PLIST_PATH.open("rb") as handle:
+            config = plistlib.load(handle)
+
+        self.assertNotIn("Disabled", config)
+        self.assertEqual(
+            {
+                (item["Hour"], item["Minute"])
+                for item in config["StartCalendarInterval"]
+            },
+            {(8, 30), (19, 0), (23, 45)},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

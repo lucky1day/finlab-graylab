@@ -27,7 +27,11 @@ from shared.blackbox_v2.snapshot import (
     CutoffKeys,
     SNAPSHOT_FILENAMES,
 )
-from shared.data_bridge.refresh import CurrentDataset
+from shared.data_bridge.refresh import (
+    LOCAL_MYSQL_SOURCE_MODE,
+    CurrentDataset,
+    require_local_mysql_source_provenance,
+)
 from shared.data_bridge.validation import validate_dataset
 from shared.native_input_generation import (
     NativeGenerationContext,
@@ -226,11 +230,26 @@ def create_databridge_generation(
         )
     if not refresh_started <= refreshed <= published:
         raise ValueError("DataBridge refresh timeline is not monotonic")
-    source_mode = _required_exact(
+    source_mode = _required_one_of(
         state.get("source_mode"),
-        "full_export",
+        {"full_export", LOCAL_MYSQL_SOURCE_MODE},
         "DataBridge source_mode",
     )
+    source_commit_token = upstream_generation_id
+    if source_mode == LOCAL_MYSQL_SOURCE_MODE:
+        source_provenance = require_local_mysql_source_provenance(
+            state,
+            expected_daily_date=normalized_feature_date,
+        )
+        if source_provenance.get("feature_date") != normalized_feature_date:
+            raise ValueError(
+                "DataBridge local source provenance feature_date does not "
+                "match generation feature_date"
+            )
+        source_commit_token = _required_sha256(
+            source_provenance.get("source_commit_token"),
+            "DataBridge local source provenance source_commit_token",
+        )
     stability_rounds = state.get("stability_rounds")
     if (
         isinstance(stability_rounds, bool)
@@ -321,7 +340,7 @@ def create_databridge_generation(
         "business_date": normalized_business_date,
         "feature_date": normalized_feature_date,
         "readiness_basis": "UPSTREAM_SEAL",
-        "source_commit_token": upstream_generation_id,
+        "source_commit_token": source_commit_token,
         "schema_version": validated.schema_version,
         "exporter_version": DATABRIDGE_GENERATION_EXPORTER_VERSION,
         "upstream_generation_id": upstream_generation_id,
@@ -933,6 +952,29 @@ def open_databridge_generation(
         )
     cutoffs = _parse_cutoffs(manifest.get("cutoffs"))
     _validate_cutoffs_exist(frames, cutoffs, feature_date=feature_date)
+    source_mode = _required_one_of(
+        manifest.get("source_mode"),
+        {"full_export", LOCAL_MYSQL_SOURCE_MODE},
+        "source_mode",
+    )
+    source_commit_token = _required_text(
+        manifest.get("source_commit_token"),
+        "source_commit_token",
+    )
+    upstream_generation_id = _required_text(
+        manifest.get("upstream_generation_id"),
+        "upstream_generation_id",
+    )
+    if source_mode == "full_export":
+        if source_commit_token != upstream_generation_id:
+            raise ValueError(
+                "DataBridge generation source commit token mismatch"
+            )
+    else:
+        source_commit_token = _required_sha256(
+            source_commit_token,
+            "source_commit_token",
+        )
     stable_provenance = {
         "generation_type": DATABRIDGE_GENERATION_TYPE,
         "dataset_content_id": dataset_content_id,
@@ -943,20 +985,14 @@ def open_databridge_generation(
             "UPSTREAM_SEAL",
             "readiness_basis",
         ),
-        "source_commit_token": _required_text(
-            manifest.get("source_commit_token"),
-            "source_commit_token",
-        ),
+        "source_commit_token": source_commit_token,
         "schema_version": validated.schema_version,
         "exporter_version": _required_exact(
             manifest.get("exporter_version"),
             DATABRIDGE_GENERATION_EXPORTER_VERSION,
             "exporter_version",
         ),
-        "upstream_generation_id": _required_text(
-            manifest.get("upstream_generation_id"),
-            "upstream_generation_id",
-        ),
+        "upstream_generation_id": upstream_generation_id,
         "upstream_business_digest": upstream_digest,
         "native_generation_id": _required_text(
             manifest.get("native_generation_id"),
@@ -978,23 +1014,12 @@ def open_databridge_generation(
             manifest.get("published_at"),
             "published_at",
         ),
-        "source_mode": _required_exact(
-            manifest.get("source_mode"),
-            "full_export",
-            "source_mode",
-        ),
+        "source_mode": source_mode,
         "stability_rounds": _required_stability_rounds(
             manifest.get("stability_rounds")
         ),
         "cutoffs": _cutoffs_mapping(cutoffs),
     }
-    if (
-        stable_provenance["source_commit_token"]
-        != stable_provenance["upstream_generation_id"]
-    ):
-        raise ValueError(
-            "DataBridge generation source commit token mismatch"
-        )
     expected_id = "databridge-" + hashlib.sha256(
         _canonical_json_bytes(stable_provenance)
     ).hexdigest()[:24]
@@ -1506,6 +1531,19 @@ def _required_exact(value: object, expected: str, field: str) -> str:
     actual = _required_text(value, field)
     if actual != expected:
         raise ValueError(f"{field} must equal {expected}")
+    return actual
+
+
+def _required_one_of(
+    value: object,
+    allowed: set[str],
+    field: str,
+) -> str:
+    actual = _required_text(value, field)
+    if actual not in allowed:
+        raise ValueError(
+            f"{field} must be one of {sorted(allowed)}"
+        )
     return actual
 
 

@@ -59,6 +59,7 @@ from scheduler.daily_ledger import (
     validate_snapshot_cardinality,
 )
 from scheduler.discovery import SchemeConfig, load_scheme_config
+from scheduler.blackbox_scheduler_admission import LAUNCHD_ONE_SHOT
 from shared.blackbox_v2.lifecycle import assert_lifecycle_clear, lifecycle_operation_lock
 from shared.daily_coordinator_mode import (
     assert_daily_coordinator_epoch_payload_matches_current,
@@ -9049,12 +9050,26 @@ def create_scheme_run(
     process_id: int | None = None,
     process_group_id: int | None = None,
     schedule_frequency: str | None = None,
+    scheduled_control_plane: str | None = None,
     enforce_scheduled_live_ledger: bool = False,
     _clock: _LedgerClock | None = None,
 ) -> int:
     """创建一次不可变预测运行记录，返回 run_id。"""
     if prediction_phase is not None and prediction_phase not in VALID_PREDICTION_PHASES:
         raise ValueError(f"prediction_phase must be one of {sorted(VALID_PREDICTION_PHASES)}, got {prediction_phase}")
+    if scheduled_control_plane not in {None, LAUNCHD_ONE_SHOT}:
+        raise ValueError(
+            "scheduled_control_plane must be launchd_one_shot when set"
+        )
+    if scheduled_control_plane is not None:
+        if prediction_phase != "scheduled_live":
+            raise ValueError(
+                "scheduled_control_plane requires scheduled_live"
+            )
+        if schedule_item_id is not None:
+            raise ValueError(
+                "launchd_one_shot scheduled_live must not have schedule_item_id"
+            )
     normalized_frequency = None
     if schedule_frequency is not None:
         normalized_frequency = _require_bounded_identifier(
@@ -9066,23 +9081,15 @@ def create_scheme_run(
             raise ValueError(
                 "schedule_frequency must be daily, weekly, or monthly"
             )
-    if prediction_phase == "scheduled_live" and schedule_item_id is None:
-        daily_or_unknown = normalized_frequency not in {
-            "weekly",
-            "monthly",
-        }
-        coordinator_mode = (
-            require_daily_coordinator_mode()
-            if daily_or_unknown
-            else None
+    if (
+        prediction_phase == "scheduled_live"
+        and schedule_item_id is None
+        and scheduled_control_plane != LAUNCHD_ONE_SHOT
+    ):
+        raise RuntimeError(
+            "scheduled_live without schedule_item_id requires "
+            "launchd_one_shot"
         )
-        if enforce_scheduled_live_ledger or (
-            coordinator_mode == "ledger" and daily_or_unknown
-        ):
-            raise RuntimeError(
-                "scheduled_live daily creation requires a daily ledger "
-                "item in ledger mode"
-            )
     effective_queued_at = queued_at
     if queued_at is not None:
         effective_queued_at, _trusted_now = _ledger_event_time(

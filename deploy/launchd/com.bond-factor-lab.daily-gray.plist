@@ -35,16 +35,8 @@
     <string>legacy</string>
   </dict>
 
-  <key>StartCalendarInterval</key>
-  <dict>
-    <key>Hour</key>
-    <integer>7</integer>
-    <key>Minute</key>
-    <integer>0</integer>
-  </dict>
-
-  <key>RunAtLoad</key>
-  <false/>
+  <key>Disabled</key>
+  <true/>
 
   <key>StandardOutPath</key>
   <string>/Users/macstudio0/bond-factor-lab/logs/com.bond-factor-lab.daily-gray.log</string>

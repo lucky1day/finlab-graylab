@@ -258,6 +258,7 @@ def _read_long_from_db(
     table_name: str,
     columns: Sequence[str],
     engine=None,
+    end_date: Optional[str] = None,
 ) -> pd.DataFrame:
     own_engine = engine is None
     engine = engine or create_sqlalchemy_engine()
@@ -271,15 +272,30 @@ def _read_long_from_db(
         f"FROM {table_name} WHERE indicators_code IN ({placeholders}) "
         "AND indicators_value IS NOT NULL"
     )
+    params: tuple[object, ...] = tuple(codes)
+    if end_date is not None:
+        sql += " AND rdate <= %s"
+        params = (*params, str(end_date))
     try:
-        return pd.read_sql(sql, engine, params=tuple(codes))
+        return pd.read_sql(sql, engine, params=params)
     finally:
         if own_engine:
             engine.dispose()
 
 
-def read_daily_long_from_db(indicator_codes: Iterable[str], table_name: str, engine=None) -> pd.DataFrame:
-    return _read_long_from_db(indicator_codes, table_name, ["rdate", "indicators_code", "indicators_value"], engine)
+def read_daily_long_from_db(
+    indicator_codes: Iterable[str],
+    table_name: str,
+    engine=None,
+    end_date: Optional[str] = None,
+) -> pd.DataFrame:
+    return _read_long_from_db(
+        indicator_codes,
+        table_name,
+        ["rdate", "indicators_code", "indicators_value"],
+        engine,
+        end_date=end_date,
+    )
 
 
 def build_daily_output_from_db(
@@ -294,8 +310,18 @@ def build_daily_output_from_db(
         metadata = read_factor_metadata_from_db(engine)
         selected = select_factor_metadata(metadata, "daily", tenor_filter=tenor_filter)
         codes = selected["indicators_code"].astype(str).str.strip().tolist()
-        raw = read_daily_long_from_db(codes, "api_wind_daily", engine)
-        derivative = read_daily_long_from_db(codes, "api_wind_derivative_daily", engine)
+        raw = read_daily_long_from_db(
+            codes,
+            "api_wind_daily",
+            engine,
+            end_date=end_date,
+        )
+        derivative = read_daily_long_from_db(
+            codes,
+            "api_wind_derivative_daily",
+            engine,
+            end_date=end_date,
+        )
         return build_daily_output_from_frames(selected, raw, derivative, start_date=start_date, end_date=end_date)
     finally:
         if own_engine:
@@ -440,12 +466,18 @@ def build_weekly_output_from_metadata(
     )
 
 
-def read_weekly_long_from_db(indicator_codes: Iterable[str], table_name: str, engine=None) -> pd.DataFrame:
+def read_weekly_long_from_db(
+    indicator_codes: Iterable[str],
+    table_name: str,
+    engine=None,
+    end_date: Optional[str] = None,
+) -> pd.DataFrame:
     return _read_long_from_db(
         indicator_codes,
         table_name,
         ["rdate", "week_id", "indicators_code", "indicators_value"],
         engine,
+        end_date=end_date,
     )
 
 
@@ -463,8 +495,18 @@ def build_weekly_output_from_db(
             metadata = read_factor_metadata_from_db(engine)
             selected = select_factor_metadata(metadata, "weekly")
             codes = selected["indicators_code"].astype(str).str.strip().tolist()
-            raw = read_weekly_long_from_db(codes, "api_wind_weekly", engine)
-            derivative = read_weekly_long_from_db(codes, "api_wind_derivative_weekly", engine)
+            raw = read_weekly_long_from_db(
+                codes,
+                "api_wind_weekly",
+                engine,
+                end_date=as_of_date,
+            )
+            derivative = read_weekly_long_from_db(
+                codes,
+                "api_wind_derivative_weekly",
+                engine,
+                end_date=as_of_date,
+            )
             return build_weekly_output_from_metadata(
                 selected,
                 raw,
@@ -476,8 +518,18 @@ def build_weekly_output_from_db(
 
         schema = list(schema_columns)
         codes = schema[1:]
-        raw = read_weekly_long_from_db(codes, "api_wind_weekly", engine)
-        derivative = read_weekly_long_from_db(codes, "api_wind_derivative_weekly", engine)
+        raw = read_weekly_long_from_db(
+            codes,
+            "api_wind_weekly",
+            engine,
+            end_date=as_of_date,
+        )
+        derivative = read_weekly_long_from_db(
+            codes,
+            "api_wind_derivative_weekly",
+            engine,
+            end_date=as_of_date,
+        )
         return build_weekly_output_from_frames(
             schema,
             raw,
@@ -604,11 +656,18 @@ def read_monthly_long_from_db(
     table_name: str,
     engine=None,
     include_month_id: bool = False,
+    end_date: Optional[str] = None,
 ) -> pd.DataFrame:
     columns = ["rdate", "indicators_code", "indicators_value"]
     if include_month_id:
         columns = ["rdate", "month_id", "indicators_code", "indicators_value"]
-    return _read_long_from_db(indicator_codes, table_name, columns, engine)
+    return _read_long_from_db(
+        indicator_codes,
+        table_name,
+        columns,
+        engine,
+        end_date=end_date,
+    )
 
 
 def build_monthly_output_from_db(
@@ -622,12 +681,18 @@ def build_monthly_output_from_db(
         metadata = read_factor_metadata_from_db(engine)
         selected = select_factor_metadata(metadata, "monthly")
         codes = selected["indicators_code"].astype(str).str.strip().tolist()
-        raw = read_monthly_long_from_db(codes, "api_wind_monthly", engine)
+        raw = read_monthly_long_from_db(
+            codes,
+            "api_wind_monthly",
+            engine,
+            end_date=end_date,
+        )
         derivative = read_monthly_long_from_db(
             codes,
             "api_wind_derivative_monthly",
             engine,
             include_month_id=True,
+            end_date=end_date,
         )
         return build_monthly_output_from_frames(selected, raw, derivative, start_date=start_date, end_date=end_date)
     finally:

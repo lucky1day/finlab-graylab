@@ -13,7 +13,8 @@
       "capabilities": [
         "legacy_automatic",
         "daily_ledger",
-        "direct_scheduled"
+        "direct_scheduled",
+        "launchd_one_shot"
       ]
     },
     {
@@ -28,7 +29,8 @@
       "capabilities": [
         "legacy_automatic",
         "daily_ledger",
-        "direct_scheduled"
+        "direct_scheduled",
+        "launchd_one_shot"
       ]
     },
     {
@@ -43,7 +45,8 @@
       "capabilities": [
         "legacy_automatic",
         "daily_ledger",
-        "direct_scheduled"
+        "direct_scheduled",
+        "launchd_one_shot"
       ]
     },
     {
@@ -58,7 +61,8 @@
       "capabilities": [
         "legacy_automatic",
         "daily_ledger",
-        "direct_scheduled"
+        "direct_scheduled",
+        "launchd_one_shot"
       ]
     },
     {
@@ -73,7 +77,8 @@
       "capabilities": [
         "legacy_automatic",
         "recurring",
-        "direct_scheduled"
+        "direct_scheduled",
+        "launchd_one_shot"
       ]
     },
     {

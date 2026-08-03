@@ -1525,7 +1525,7 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
 
         self.assertEqual(result.status, "failed")
         self.assertIn(
-            "direct daily scheduled_live execution is disabled",
+            "requires launchd_one_shot",
             result.error_msg or "",
         )
         create_engine.assert_not_called()
@@ -1585,7 +1585,7 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
 
         self.assertEqual(result.status, "failed")
         self.assertIn(
-            "daily coordinator mode is unavailable",
+            "requires launchd_one_shot",
             result.error_msg or "",
         )
         create_engine.assert_not_called()
@@ -2325,6 +2325,99 @@ class ScheduledLiveExecutionFenceTests(_ExplicitLegacyModeTestCase):
             result.error_msg or "",
         )
 
+    def test_launchd_one_shot_rejects_gray_before_engine(self) -> None:
+        """one-shot 不能把 gray 精确身份升级为 scheduled writer。"""
+        config = self._blackbox_config(
+            "cgb_causal_wk_1y",
+            "cba824c27f0e",
+        )
+        from scheduler import executor
+
+        with (
+            patch.object(
+                executor,
+                "create_engine_from_env",
+            ) as create_engine,
+            patch.object(
+                executor,
+                "discover_schemes",
+                return_value=[config],
+            ),
+        ):
+            result = executor.execute_scheme(
+                config,
+                "2026-07-27",
+                prediction_phase="scheduled_live",
+                scheduled_control_plane="launchd_one_shot",
+            )
+
+        self.assertEqual(result.status, "failed")
+        self.assertTrue(
+            (result.error_msg or "").startswith(
+                "platform configuration error:"
+            )
+        )
+        create_engine.assert_not_called()
+
+    def test_launchd_one_shot_admitted_daily_reaches_engine_in_ledger_mode(
+        self,
+    ) -> None:
+        """one-shot 的精确正式日频身份不受遗留 ledger 拦截。"""
+        config = self._blackbox_config(
+            "one_y_t5_liq_excess_a_v1",
+            "8d583560c9f1",
+        )
+        from scheduler import executor
+
+        class EngineReached(RuntimeError):
+            pass
+
+        with (
+            patch.object(
+                executor,
+                "discover_schemes",
+                return_value=[config],
+            ),
+            patch.object(
+                executor,
+                "bootstrap_deployment_daily_coordinator_mode",
+                side_effect=AssertionError(
+                    "launchd one-shot must not read legacy daily mode"
+                ),
+            ) as coordinator_mode,
+            patch.object(
+                executor,
+                "create_engine_from_env",
+                side_effect=EngineReached("engine reached"),
+            ) as create_engine,
+            self.assertRaisesRegex(EngineReached, "engine reached"),
+        ):
+            executor.execute_scheme(
+                config,
+                "2026-07-27",
+                prediction_phase="scheduled_live",
+                scheduled_control_plane="launchd_one_shot",
+            )
+
+        create_engine.assert_called_once_with()
+        coordinator_mode.assert_not_called()
+
+    def test_direct_scheduled_formal_weekly_rejected_before_engine(
+        self,
+    ) -> None:
+        """无 item 的 direct scheduled 不能绕过 one-shot 锁和 gate。"""
+        config = self._blackbox_config(
+            "weekly_10y_lgbm_point_v1",
+            "0666a6989d6b",
+        )
+
+        result = self._assert_rejected_before_side_effect(config)
+
+        self.assertIn(
+            "requires launchd_one_shot",
+            result.error_msg or "",
+        )
+
     def test_ledger_daily_scheduled_live_rejects_native_and_formal_pre_engine(
         self,
     ) -> None:
@@ -2424,14 +2517,11 @@ class ScheduledLiveExecutionFenceTests(_ExplicitLegacyModeTestCase):
         ):
             self._assert_rejected_before_side_effect(masquerade)
 
-    def test_canonical_weekly_native_reaches_existing_engine_path(
+    def test_canonical_weekly_native_is_rejected_before_engine(
         self,
     ) -> None:
         from scheduler.discovery import discover_schemes
         from scheduler.executor import execute_scheme
-
-        class EngineReached(RuntimeError):
-            pass
 
         canonical = next(
             config
@@ -2448,19 +2538,20 @@ class ScheduledLiveExecutionFenceTests(_ExplicitLegacyModeTestCase):
             ),
             patch(
                 "scheduler.executor.create_engine_from_env",
-                side_effect=EngineReached("engine reached"),
             ) as create_engine,
-            self.assertRaisesRegex(
-                EngineReached,
-                "engine reached",
-            ),
         ):
-            execute_scheme(
+            result = execute_scheme(
                 canonical,
                 "2026-07-27",
                 prediction_phase="scheduled_live",
             )
-        create_engine.assert_called_once_with()
+
+        self.assertEqual(result.status, "failed")
+        self.assertIn(
+            "requires launchd_one_shot",
+            result.error_msg or "",
+        )
+        create_engine.assert_not_called()
 
 
 class ExecutorTargetCompletenessTests(_ExplicitLegacyModeTestCase):

@@ -663,6 +663,40 @@ class DataBridgeRefreshTests(unittest.TestCase):
         with self.assertRaisesRegex(DataBridgeRefreshError, "consecutive rounds"):
             select_stable_round(iter(rounds), max_rounds=3)
 
+    def test_local_mysql_source_token_must_stabilize_with_content(self) -> None:
+        from shared.data_bridge.refresh import (
+            DataBridgeRefreshError,
+            DownloadRound,
+            select_stable_round,
+        )
+
+        rounds = [
+            DownloadRound(
+                round_id="a",
+                directory=Path("/tmp/a"),
+                dataset=None,
+                digest="same",
+                source_mode="local_mysql",
+                source_provenance=_local_source_provenance(
+                    "2026-07-18",
+                    row_count=1,
+                ),
+            ),
+            DownloadRound(
+                round_id="b",
+                directory=Path("/tmp/b"),
+                dataset=None,
+                digest="same",
+                source_mode="local_mysql",
+                source_provenance=_local_source_provenance(
+                    "2026-07-18",
+                    row_count=2,
+                ),
+            ),
+        ]
+        with self.assertRaisesRegex(DataBridgeRefreshError, "consecutive rounds"):
+            select_stable_round(iter(rounds), max_rounds=2)
+
     def test_publish_replaces_all_files_and_failure_preserves_old_current(self) -> None:
         from shared.data_bridge.refresh import DataBridgeStore
 
@@ -916,8 +950,134 @@ class DataBridgeRefreshTests(unittest.TestCase):
             state = store.load_state()
             self.assertEqual(state["generation_id"], "old")
             self.assertEqual(state["last_attempt"]["status"], "failed")
-            self.assertEqual(state["last_attempt"]["error"], "source not ready")
+            self.assertEqual(state["last_attempt"]["error"], "refresh_failed")
             self.assertIn("old", (store.current_dir / "daily_output.csv").read_text())
+
+    def test_failed_refresh_persists_safe_category_instead_of_driver_secret(
+        self,
+    ) -> None:
+        from shared.data_bridge.refresh import (
+            DataBridgeRefreshConfig,
+            DataBridgeStore,
+            run_full_refresh,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = DataBridgeRefreshConfig(
+                data_root=root / "data",
+                runtime_root=root / "runtime",
+                schema_path=_write_schema(root),
+            )
+
+            class SensitiveFailureClient(_FakeClient):
+                def get_tables(self):
+                    raise OSError("mysql://user:password=do-not-leak")
+
+            with self.assertRaises(OSError):
+                run_full_refresh(
+                    client=SensitiveFailureClient(),
+                    config=config,
+                    expected_daily_date="2026-07-18",
+                    refresh_date="2026-07-19",
+                    publish=True,
+                )
+
+            state = DataBridgeStore(
+                data_root=config.data_root,
+                runtime_root=config.runtime_root,
+            ).load_state()
+            self.assertEqual(
+                state["last_attempt"]["error"],
+                "source_io_failed",
+            )
+            self.assertNotIn("do-not-leak", str(state))
+
+    def test_first_failed_refresh_keeps_no_current_baseline_retryable(
+        self,
+    ) -> None:
+        """首次失败的审计 state 不能被误判为损坏的已发布 current。"""
+        from shared.data_bridge.refresh import (
+            DataBridgeRefreshConfig,
+            DataBridgeStore,
+            run_full_refresh,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = DataBridgeRefreshConfig(
+                data_root=root / "data",
+                runtime_root=root / "runtime",
+                schema_path=_write_schema(root),
+            )
+
+            class FailingFirstClient(_FakeClient):
+                def get_tables(self):
+                    raise OSError("source unavailable")
+
+            with self.assertRaises(OSError):
+                run_full_refresh(
+                    client=FailingFirstClient(),
+                    config=config,
+                    expected_daily_date="2026-07-18",
+                    refresh_date="2026-07-19",
+                    publish=True,
+                )
+
+            store = DataBridgeStore(
+                data_root=config.data_root,
+                runtime_root=config.runtime_root,
+            )
+            failed_state = store.load_state()
+            self.assertEqual(set(failed_state), {"last_attempt"})
+            self.assertFalse(store.current_dir.exists())
+
+            retry = run_full_refresh(
+                client=_FakeClient(),
+                config=config,
+                expected_daily_date="2026-07-18",
+                refresh_date="2026-07-19",
+                publish=True,
+            )
+
+            self.assertTrue(retry.published)
+            self.assertTrue(store.current_dir.is_dir())
+            self.assertEqual(store.load_state()["last_attempt"]["status"], "success")
+
+    def test_missing_current_with_incomplete_audit_state_stays_fail_closed(
+        self,
+    ) -> None:
+        from shared.data_bridge.refresh import (
+            DataBridgeRefreshConfig,
+            DataBridgeRefreshError,
+            run_full_refresh,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime_root = root / "runtime"
+            runtime_root.mkdir(mode=0o700)
+            (runtime_root / "state.json").write_text(
+                json.dumps({"last_attempt": {"status": "failed"}}),
+                encoding="utf-8",
+            )
+            config = DataBridgeRefreshConfig(
+                data_root=root / "data",
+                runtime_root=runtime_root,
+                schema_path=_write_schema(root),
+            )
+
+            with self.assertRaisesRegex(
+                DataBridgeRefreshError,
+                "current is missing while state still exists",
+            ):
+                run_full_refresh(
+                    client=_FakeClient(),
+                    config=config,
+                    expected_daily_date="2026-07-18",
+                    refresh_date="2026-07-19",
+                    publish=True,
+                )
 
     def test_recovery_restores_state_matching_previous_and_cleans_staging(self) -> None:
         from shared.data_bridge.refresh import DataBridgeStore
@@ -1187,6 +1347,428 @@ class DataBridgeRefreshTests(unittest.TestCase):
             self.assertIn("refresh_started_at", result.state)
             self.assertIn("refreshed_at", result.state)
             self.assertIsNone(result.state["published_at"])
+
+    def test_local_mysql_round_source_publishes_sealed_provenance(self) -> None:
+        from shared.data_bridge.mysql_exporter import (
+            MySqlDataBridgeRoundBuilder,
+        )
+        from shared.data_bridge.refresh import (
+            CURRENT_PUBLICATION_MANIFEST_VERSION,
+            DataBridgeRefreshConfig,
+            check_current_dataset,
+            run_full_refresh,
+        )
+        from shared.data_contract import (
+            SourceCommitEvidence,
+            SourceTableEvidence,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = DataBridgeRefreshConfig(
+                data_root=root / "data",
+                runtime_root=root / "runtime",
+                schema_path=_write_schema(root),
+                max_rounds=3,
+            )
+            dataset = _validated_dataset(root, config.schema_path)
+            raw_provenance = _local_source_provenance("2026-07-18")
+            evidence = SourceCommitEvidence(
+                feature_date="2026-07-18",
+                source_commit_token=str(
+                    raw_provenance["source_commit_token"]
+                ),
+                tables=tuple(
+                    SourceTableEvidence(**table)
+                    for table in raw_provenance["source_evidence"]["tables"]
+                ),
+            )
+
+            class FakeConnection:
+                def __init__(self) -> None:
+                    self.commands: list[str] = []
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc_value, traceback) -> None:
+                    return None
+
+                def exec_driver_sql(self, statement: str) -> None:
+                    self.commands.append(statement)
+
+                def rollback(self) -> None:
+                    return None
+
+            class FakeEngine:
+                def __init__(self) -> None:
+                    self.connection = FakeConnection()
+
+                def connect(self) -> FakeConnection:
+                    return self.connection
+
+            engine = FakeEngine()
+            builder = MySqlDataBridgeRoundBuilder(
+                engine=engine,
+                config=config,
+            )
+            with (
+                patch(
+                    "shared.data_bridge.mysql_exporter."
+                    "_assert_required_source_tables",
+                ),
+                patch(
+                    "shared.data_bridge.mysql_exporter."
+                    "build_daily_output_from_db",
+                    return_value=dataset.frames["daily_output.csv"],
+                ),
+                patch(
+                    "shared.data_bridge.mysql_exporter."
+                    "build_weekly_output_from_db",
+                    return_value=dataset.frames["weekly_output.csv"],
+                ),
+                patch(
+                    "shared.data_bridge.mysql_exporter."
+                    "build_monthly_output_from_db",
+                    return_value=dataset.frames["monthly_output.csv"],
+                ),
+                patch(
+                    "shared.data_bridge.mysql_exporter."
+                    "capture_source_commit_evidence_from_connection",
+                    return_value=evidence,
+                ),
+            ):
+                result = run_full_refresh(
+                    config=config,
+                    expected_daily_date="2026-07-18",
+                    refresh_date="2026-07-19",
+                    publish=True,
+                    round_builder=builder,
+                    enforce_legacy_publication_fence=False,
+                )
+
+            self.assertIs(type(builder), MySqlDataBridgeRoundBuilder)
+            self.assertEqual(result.state["source_mode"], "local_mysql")
+            current = check_current_dataset(
+                config,
+                required_refresh_date="2026-07-19",
+                expected_daily_date="2026-07-18",
+                require_source_provenance=True,
+            )
+            marker = json.loads(
+                (config.data_root / "current" / ".publication-manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                marker["manifest_version"],
+                CURRENT_PUBLICATION_MANIFEST_VERSION,
+            )
+            self.assertEqual(
+                current.state["source_provenance"]["feature_date"],
+                "2026-07-18",
+            )
+
+    def test_launchd_only_refresh_rejects_builder_subclass_override(
+        self,
+    ) -> None:
+        from shared.data_bridge.mysql_exporter import (
+            MySqlDataBridgeRoundBuilder,
+        )
+        from shared.data_bridge.refresh import (
+            DataBridgeRefreshConfig,
+            DataBridgeRefreshError,
+            run_full_refresh,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = DataBridgeRefreshConfig(
+                data_root=root / "data",
+                runtime_root=root / "runtime",
+                schema_path=_write_schema(root),
+                max_rounds=3,
+            )
+            class OverridingRoundBuilder(MySqlDataBridgeRoundBuilder):
+                def __init__(self) -> None:
+                    pass
+
+                def build(
+                    self,
+                    round_id: str,
+                    *,
+                    end_date: str,
+                    expected_daily_date: str,
+                    previous_keys,
+                    continuity_cutoffs=None,
+                ):
+                    raise AssertionError("must not call overridden build")
+
+            with self.assertRaisesRegex(
+                DataBridgeRefreshError,
+                "requires MySqlDataBridgeRoundBuilder",
+            ):
+                run_full_refresh(
+                    config=config,
+                    expected_daily_date="2026-07-18",
+                    refresh_date="2026-07-19",
+                    publish=True,
+                    round_builder=OverridingRoundBuilder(),
+                    enforce_legacy_publication_fence=False,
+                )
+
+            self.assertFalse((config.data_root / "current").exists())
+
+    def test_launchd_only_refresh_rejects_protocol_only_round_builder(
+        self,
+    ) -> None:
+        from shared.data_bridge.refresh import (
+            DataBridgeRefreshConfig,
+            DataBridgeRefreshError,
+            DownloadRound,
+            run_full_refresh,
+        )
+        from shared.data_bridge.validation import write_validated_dataset
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = DataBridgeRefreshConfig(
+                data_root=root / "data",
+                runtime_root=root / "runtime",
+                schema_path=_write_schema(root),
+                max_rounds=3,
+            )
+            dataset = _validated_dataset(root, config.schema_path)
+
+            class ProtocolOnlyRoundBuilder:
+                def build(
+                    self,
+                    round_id: str,
+                    *,
+                    end_date: str,
+                    expected_daily_date: str,
+                    previous_keys,
+                    continuity_cutoffs=None,
+                ):
+                    del end_date, previous_keys, continuity_cutoffs
+                    destination = config.runtime_root / "staging" / round_id
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    write_validated_dataset(dataset, destination)
+                    return DownloadRound(
+                        round_id=round_id,
+                        directory=destination,
+                        dataset=dataset,
+                        digest=dataset.business_digest,
+                        source_mode="local_mysql",
+                        source_provenance=_local_source_provenance(
+                            expected_daily_date
+                        ),
+                    )
+
+            with self.assertRaisesRegex(
+                DataBridgeRefreshError,
+                "requires MySqlDataBridgeRoundBuilder",
+            ):
+                run_full_refresh(
+                    config=config,
+                    expected_daily_date="2026-07-18",
+                    refresh_date="2026-07-19",
+                    publish=True,
+                    round_builder=ProtocolOnlyRoundBuilder(),
+                    enforce_legacy_publication_fence=False,
+                )
+
+            self.assertFalse((config.data_root / "current").exists())
+
+    def test_local_mysql_provenance_is_required_and_marker_bound(self) -> None:
+        from shared.data_bridge.refresh import (
+            DataBridgeRefreshConfig,
+            DataBridgeRefreshError,
+            DataBridgeStore,
+            check_current_dataset,
+        )
+        from shared.data_bridge.validation import write_validated_dataset
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            schema = _write_schema(root)
+            config = DataBridgeRefreshConfig(
+                data_root=root / "data",
+                runtime_root=root / "runtime",
+                schema_path=schema,
+            )
+            dataset = _validated_dataset(root, schema)
+            candidate = write_validated_dataset(dataset, root / "candidate")
+            state = _dataset_state(dataset, refresh_date="2026-07-19")
+            state.update(
+                {
+                    "source_mode": "local_mysql",
+                    "source_provenance": _local_source_provenance(
+                        "2026-07-18"
+                    ),
+                }
+            )
+            store = DataBridgeStore(
+                data_root=config.data_root,
+                runtime_root=config.runtime_root,
+            )
+            store.publish(
+                candidate,
+                state,
+                enforce_legacy_publication_fence=False,
+            )
+            with self.assertRaisesRegex(
+                DataBridgeRefreshError,
+                "requires expected_daily_date",
+            ):
+                check_current_dataset(
+                    config,
+                    require_source_provenance=True,
+                )
+            check_current_dataset(
+                config,
+                expected_daily_date="2026-07-18",
+                require_source_provenance=True,
+            )
+
+            altered = store.load_state()
+            altered["source_provenance"]["snapshot_started_at"] = (
+                "2026-07-19T06:31:00+08:00"
+            )
+            store.state_path.write_text(
+                json.dumps(altered),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                DataBridgeRefreshError,
+                "identity does not match",
+            ):
+                check_current_dataset(
+                    config,
+                    expected_daily_date="2026-07-18",
+                    require_source_provenance=True,
+                )
+
+    def test_local_mysql_current_rejects_provenance_cutoff_mismatch(self) -> None:
+        from shared.data_bridge.refresh import (
+            DataBridgeRefreshConfig,
+            DataBridgeRefreshError,
+            DataBridgeStore,
+            check_current_dataset,
+        )
+        from shared.data_bridge.validation import write_validated_dataset
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            schema = _write_schema(root)
+            config = DataBridgeRefreshConfig(
+                data_root=root / "data",
+                runtime_root=root / "runtime",
+                schema_path=schema,
+            )
+            dataset = _validated_dataset(root, schema)
+            candidate = write_validated_dataset(dataset, root / "candidate")
+            state = _dataset_state(dataset, refresh_date="2026-07-19")
+            state.update(
+                {
+                    "source_mode": "local_mysql",
+                    "source_provenance": _local_source_provenance("2026-07-17"),
+                }
+            )
+            DataBridgeStore(
+                data_root=config.data_root,
+                runtime_root=config.runtime_root,
+            ).publish(
+                candidate,
+                state,
+                enforce_legacy_publication_fence=False,
+            )
+
+            with self.assertRaisesRegex(
+                DataBridgeRefreshError,
+                "feature_date must equal expected_daily_date",
+            ):
+                check_current_dataset(
+                    config,
+                    expected_daily_date="2026-07-18",
+                    require_source_provenance=True,
+                )
+
+    def test_local_mysql_current_rejects_incomplete_source_evidence(self) -> None:
+        from shared.data_bridge.refresh import (
+            DataBridgeRefreshConfig,
+            DataBridgeRefreshError,
+            DataBridgeStore,
+            check_current_dataset,
+        )
+        from shared.data_bridge.validation import write_validated_dataset
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            schema = _write_schema(root)
+            config = DataBridgeRefreshConfig(
+                data_root=root / "data",
+                runtime_root=root / "runtime",
+                schema_path=schema,
+            )
+            dataset = _validated_dataset(root, schema)
+            candidate = write_validated_dataset(dataset, root / "candidate")
+            state = _dataset_state(dataset, refresh_date="2026-07-19")
+            state.update(
+                {
+                    "source_mode": "local_mysql",
+                    "source_provenance": _local_source_provenance(
+                        "2026-07-18",
+                        missing_table="api_wind_daily",
+                    ),
+                }
+            )
+            with self.assertRaisesRegex(
+                DataBridgeRefreshError,
+                "evidence tables are incomplete",
+            ):
+                DataBridgeStore(
+                    data_root=config.data_root,
+                    runtime_root=config.runtime_root,
+                ).publish(
+                    candidate,
+                    state,
+                    enforce_legacy_publication_fence=False,
+                )
+
+    def test_legacy_current_cannot_satisfy_local_mysql_freshness_read(self) -> None:
+        from shared.data_bridge.refresh import (
+            DataBridgeRefreshConfig,
+            DataBridgeRefreshError,
+            DataBridgeStore,
+            check_current_dataset,
+        )
+        from shared.data_bridge.validation import write_validated_dataset
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            schema = _write_schema(root)
+            config = DataBridgeRefreshConfig(
+                data_root=root / "data",
+                runtime_root=root / "runtime",
+                schema_path=schema,
+            )
+            dataset = _validated_dataset(root, schema)
+            candidate = write_validated_dataset(dataset, root / "candidate")
+            DataBridgeStore(
+                data_root=config.data_root,
+                runtime_root=config.runtime_root,
+            ).publish(candidate, _dataset_state(dataset, refresh_date="2026-07-19"))
+
+            with self.assertRaisesRegex(
+                DataBridgeRefreshError,
+                "lacks sealed local MySQL",
+            ):
+                check_current_dataset(
+                    config,
+                    expected_daily_date="2026-07-18",
+                    require_source_provenance=True,
+                )
 
     def test_refresh_scopes_previous_keys_to_effective_continuity_cutoffs(
         self,
@@ -2093,6 +2675,60 @@ def _dataset_state(dataset, *, refresh_date: str) -> dict[str, object]:
             }
             for filename, profile in dataset.files.items()
         },
+    }
+
+
+def _local_source_provenance(
+    feature_date: str,
+    *,
+    row_count: int = 1,
+    missing_table: str | None = None,
+) -> dict[str, object]:
+    from shared.data_bridge.refresh import LOCAL_MYSQL_PROVENANCE_VERSION
+    from shared.data_contract import (
+        SourceCommitEvidence,
+        SourceTableEvidence,
+        CALENDAR_SOURCE_TABLES,
+        FACTOR_SOURCE_TABLES,
+        METADATA_SOURCE_TABLE,
+        source_commit_evidence_payload,
+        source_commit_evidence_sha256,
+    )
+
+    table_names = sorted(
+        set(FACTOR_SOURCE_TABLES)
+        | {METADATA_SOURCE_TABLE}
+        | set(CALENDAR_SOURCE_TABLES)
+    )
+    if missing_table is not None:
+        table_names.remove(missing_table)
+
+    unsigned = SourceCommitEvidence(
+        feature_date=feature_date,
+        source_commit_token="",
+        tables=tuple(
+            SourceTableEvidence(
+                table_name=table_name,
+                row_count=row_count,
+                latest_create_time=None,
+            )
+            for table_name in table_names
+        ),
+    )
+    token = source_commit_evidence_sha256(unsigned)
+    evidence = SourceCommitEvidence(
+        feature_date=feature_date,
+        source_commit_token=token,
+        tables=unsigned.tables,
+    )
+    return {
+        "provenance_version": LOCAL_MYSQL_PROVENANCE_VERSION,
+        "feature_date": feature_date,
+        "source_rdate_cutoff": feature_date,
+        "snapshot_started_at": "2026-07-19T06:30:00+08:00",
+        "source_commit_token": token,
+        "source_evidence_sha256": token,
+        "source_evidence": source_commit_evidence_payload(evidence),
     }
 
 

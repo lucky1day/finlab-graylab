@@ -17,7 +17,6 @@ from apscheduler.executors.pool import (
     ThreadPoolExecutor as APSchedulerThreadPoolExecutor,
 )
 from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import text
 
@@ -46,14 +45,9 @@ from scheduler.discovery import SchemeConfig, discover_schemes
 from scheduler.executor import DEFAULT_ALGO_ENV, SchemeRunResult, execute_scheme
 from scheduler.repository import create_engine_from_env, sync_scheme_registry
 from scheduler.v2_daily_gate import V2DailyGateBlocked, require_v2_daily_ready
-from shared.data_bridge.client import DataBridgeClient, DataBridgeClientConfig
-from shared.data_bridge.authority import (
-    resolve_databridge_continuity_authority_from_engine,
-)
 from shared.data_bridge.refresh import (
     DataBridgeRefreshConfig,
     check_current_dataset,
-    run_full_refresh,
 )
 from shared.daily_coordinator_mode import (
     DAILY_COORDINATOR_MODE_ENV,
@@ -74,10 +68,8 @@ from shared.source_runtime_database import (
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
 STAGGER_MINUTES_ENV = "BOND_SCHEDULER_STAGGER_MINUTES"
 PREDICTION_MAX_CONCURRENCY_ENV = "BOND_SCHEDULER_PREDICTION_MAX_CONCURRENCY"
-STARTUP_CATCHUP_ENV = "BOND_SCHEDULER_STARTUP_CATCHUP"
 DEFAULT_STAGGER_MINUTES = 2
 DEFAULT_PREDICTION_MAX_CONCURRENCY = 1
-DEFAULT_DATA_BRIDGE_REFRESH_START = "06:30"
 DAILY_RECOVERY_NOT_BEFORE = time(6, 30)
 DAILY_RECOVERY_CUTOFF = time(8, 30)
 PLATFORM_CONFIGURATION_ERROR_PREFIX = "platform configuration error:"
@@ -99,6 +91,10 @@ class StaggeredPredictionJob:
 
 class DirectScheduledPredictionDenied(RuntimeError):
     """直接 ``scheduled_live`` 入口未通过精确控制面准入。"""
+
+
+class LegacySchedulerWriterRetired(RuntimeError):
+    """旧常驻 scheduler 的 DataBridge writer 已退役。"""
 
 
 def _today() -> str:
@@ -150,18 +146,6 @@ def _env_int(name: str, default: int, *, min_value: int) -> int:
     if value < min_value:
         raise ValueError(f"{name} must be an integer >= {min_value}, got {value}")
     return value
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    raw = os.getenv(name)
-    if raw is None or raw == "":
-        return default
-    normalized = raw.strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise ValueError(f"{name} must be a boolean, got {raw!r}")
 
 
 def _daily_coordinator_mode() -> str:
@@ -708,39 +692,12 @@ def run_data_bridge_refresh_job(
     *,
     enforce_deadline: bool = True,
 ):
-    """全量重建并发布当天 DataBridge 三频文件。"""
-    refresh_date = _normalize_run_date(run_date)
-    expected_daily_date = _previous_trading_day(refresh_date)
-    client = DataBridgeClient(DataBridgeClientConfig.from_env())
-    config = DataBridgeRefreshConfig.from_env()
-    engine = create_engine_from_env()
-    try:
-        continuity_authority = (
-            resolve_databridge_continuity_authority_from_engine(
-                config,
-                feature_date=expected_daily_date,
-                engine=engine,
-            )
-        )
-    finally:
-        engine.dispose()
-    result = run_full_refresh(
-        client=client,
-        config=config,
-        expected_daily_date=expected_daily_date,
-        refresh_date=refresh_date,
-        publish=True,
-        deadline_at=config.deadline_at(refresh_date) if enforce_deadline else None,
-        continuity_authority=continuity_authority,
+    """拒绝旧 scheduler DataBridge writer，避免产生第二个发布者。"""
+    _ = (run_date, enforce_deadline)
+    raise LegacySchedulerWriterRetired(
+        "legacy scheduler DataBridge writer is retired; use the launchd "
+        "one-shot publisher: scripts/refresh_data_bridge_current.py --publish"
     )
-    logger.info(
-        "DataBridge refresh finished: date=%s generation=%s rounds=%s duration_sec=%.1f",
-        refresh_date,
-        result.state.get("generation_id"),
-        result.rounds_completed,
-        result.duration_sec,
-    )
-    return result
 
 
 def data_bridge_refresh_is_current(run_date: str | date | None = None) -> bool:
@@ -759,28 +716,12 @@ def run_startup_tasks(
     now: datetime | None = None,
     algo_env: str = DEFAULT_ALGO_ENV,
 ) -> None:
-    """启动时先补齐三频 current，再补跑已到期预测。"""
-    run_now = now or datetime.now(ASIA_SHANGHAI)
-    if run_now.tzinfo is None:
-        run_now = run_now.replace(tzinfo=ASIA_SHANGHAI)
-    start_text = os.getenv("DATABRIDGE_REFRESH_START", DEFAULT_DATA_BRIDGE_REFRESH_START)
-    try:
-        start_at = time.fromisoformat(start_text)
-    except ValueError as exc:
-        raise ValueError(f"DATABRIDGE_REFRESH_START must use HH:MM, got {start_text!r}") from exc
-    refresh_date = run_now.date().isoformat()
-    if run_now.timetz().replace(tzinfo=None) >= start_at:
-        try:
-            needs_refresh = not data_bridge_refresh_is_current(refresh_date)
-        except Exception as exc:
-            logger.warning("Startup DataBridge current check requires refresh: %s", exc)
-            needs_refresh = True
-        try:
-            if needs_refresh:
-                run_data_bridge_refresh_job(refresh_date)
-        except Exception:
-            logger.exception("Startup DataBridge refresh failed; data_bridge_current schemes remain blocked")
-    run_startup_prediction_catchup(now=run_now, algo_env=algo_env)
+    """兼容入口：启动补刷与预测补跑均已退役。"""
+    _ = (now, algo_env)
+    logger.warning(
+        "Startup DataBridge refresh and prediction catchup are retired; "
+        "launchd one-shot runners own publication and scheduled execution"
+    )
 
 
 def _skips_non_trading_day(cfg: SchemeConfig) -> bool:
@@ -1414,39 +1355,6 @@ def build_scheduler(algo_env: str = DEFAULT_ALGO_ENV) -> BlockingScheduler:
             "06:55/07:00/07:45/08:00/08:30 control jobs"
         )
 
-    if _env_bool(STARTUP_CATCHUP_ENV, True):
-        startup_function = (
-            run_ledger_startup_catchup
-            if coordinator_mode == "ledger"
-            else run_startup_tasks
-        )
-        startup_kwargs = {"algo_env": algo_env}
-        startup_id = (
-            "startup:daily-occurrence-catchup"
-            if coordinator_mode == "ledger"
-            else "startup:data-refresh-and-prediction-catchup"
-        )
-        scheduler.add_job(
-            startup_function,
-            trigger=DateTrigger(run_date=datetime.now(ASIA_SHANGHAI), timezone=ASIA_SHANGHAI),
-            kwargs=startup_kwargs,
-            id=startup_id,
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=3600,
-            executor=(
-                "daily_control"
-                if coordinator_mode == "ledger"
-                else "default"
-            ),
-        )
-        logger.info(
-            "Scheduled startup %s catchup",
-            "daily occurrence"
-            if coordinator_mode == "ledger"
-            else "DataBridge refresh and prediction",
-        )
     return scheduler
 
 
@@ -1463,6 +1371,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         return int(exc.code or 0)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    if args.run_once == "data-refresh":
+        print(
+            json.dumps(
+                {
+                    "event": "data_bridge_refresh",
+                    "reason": "legacy-scheduler-writer-retired",
+                    "status": "retired",
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+            )
+        )
+        return 2
     try:
         coordinator_mode = _daily_coordinator_mode()
         if args.run_once in {"predictions", "data-refresh"}:
@@ -1510,16 +1431,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.run_once == "actuals":
             run_actuals_job(run_date=args.date, force=args.force)
             return 0
-        if args.run_once == "data-refresh":
-            if coordinator_mode == "ledger":
-                data_bridge_refresh_is_current(args.date)
-            else:
-                run_data_bridge_refresh_job(
-                    run_date=args.date,
-                    enforce_deadline=False,
-                )
-            return 0
-
         preflight_daily_storage()
         scheduler = build_scheduler(algo_env=args.algo_env)
     except (

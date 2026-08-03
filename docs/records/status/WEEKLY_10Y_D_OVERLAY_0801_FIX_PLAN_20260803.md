@@ -85,8 +85,8 @@
 |---|---|---|
 | P-1 | 两套 7Y T+1 方案进入灰度实验室并前端可见 | **授权范围闭环完成**：本地 v2 已全 Gate、入库、历史回补、Dashboard 读回和 formal served-API Gate；未授予 scheduler admission，`scheduled_live=0` |
 | G0 | 统一文档和治理口径 | **完成（开发分支）**：CURRENT 文档、SOP、部署说明和文档测试已收敛到 launchd-only 单 writer 口径；未修改 installed plist 或 loaded state |
-| G1 | 恢复本机 MySQL → DataBridge 的可靠刷新 | **根因已确认，尚未修复** |
-| G2 | 收敛为 launchd-only 单 writer 调度 | **目标已确定，尚未切换** |
+| G1 | 恢复本机 MySQL → DataBridge 的可靠刷新 | **开发闭环完成，待 G2 生产挂载与真实时钟观察** |
+| G2 | 收敛为 launchd-only 单 writer 调度 | **开发闭环完成：仓库 one-shot 模板、writer 边界与回归已就绪；未安装、未切换、未观察真实时钟** |
 | G3 | 补齐 8 月 3 日日频缺口 | **缺口已定位，等待 G1/G2 与生产授权** |
 | G4 | 闭环 D-overlay 8 月 1 日缺口 | **排序已修，benchmark 决策未确认，未补数** |
 | G5 | 挂载并验证周度、月度自然调度 | **方案存在，独立 plist 尚未形成生产证据** |
@@ -288,7 +288,7 @@ installed plist、`launchctl` state、数据库或生产信号。
 
 现有生产刷新路径依赖 HTTP DataBridge；8 月 3 日该服务无法连接其上游 MySQL，导致当日 artifact 未发布。用户已明确 DataBridge 的本质就是从本机 MySQL 导出，本机必要源表已确认可读。
 
-**状态：根因已确认，尚未形成新的生产刷新闭环。** 现有旧 artifact 的数据截止到 7 月 31 日并不异常，异常的是 8 月 3 日没有新的 refresh publication。
+**状态：开发闭环完成，尚未形成新的生产刷新闭环。** 现有旧 artifact 的数据截止到 7 月 31 日并不异常，异常的是 8 月 3 日没有新的 refresh publication。新的本机路径尚未 real publish、未替换 installed plist，因而不能把单测通过写成生产已恢复。
 
 ### 造成的影响
 
@@ -307,6 +307,18 @@ installed plist、`launchctl` state、数据库或生产信号。
 - 工作日、周六和自然月 15 日都能获得符合当日 refresh 语义的 artifact；数据最大日期仍严格截止到应有的上一交易日。
 - 数据缺失、源表异常或两轮结果不稳定时明确失败，不发布半成品，也不回退旧 artifact。
 - 至少一次真实 launchd 触发的日志和 current state 证明本机 MySQL 路径已生效；HTTP 路径不再是生产依赖。
+
+### G1 开发执行记录（2026-08-03，未触碰生产控制面）
+
+- 新增本机 MySQL round exporter：每一个稳定性 round 都在单一 `REPEATABLE READ`、
+  `WITH CONSISTENT SNAPSHOT, READ ONLY` 事务内完成三频构造、来源检查与水位证据采集；实际检查六张因子表、metadata 和两张日历依赖。
+- 日频 artifact 的最大日期现在必须**等于** feature cutoff；日/周/月原始读取和输出构造均以
+  `rdate <= feature_date` 截断。两个连续 round 除 output digest 外还必须匹配本机 source token。
+- current publication 新增可兼容读取的 v2 marker：`source_mode=local_mysql`、feature cutoff 和规范化 source evidence 与 marker 一起原子封存；旧 v1 current 只可作为连续性基线，不能满足新的 strict freshness read。
+- direct refresh CLI 改为共享交易日历 + 本机 MySQL source，不再导入 `scheduler.main` 或 HTTP client；`--publish` 先写 blocked、发布后 strict read 再写 ready，异常会覆盖为 blocked，且不 restart/kickstart scheduler。V2 consumer gate 也改为 strict read + sealed local provenance。
+- 开发验证覆盖 DataBridge、CLI、V2 gate、generation、data-contract 与相关 scheduler；最新合并回归为
+  `154 passed, 151 warnings, 36 subtests passed`。没有执行真实 `--publish`、installed plist 变更、`launchctl`、服务重启、数据库写入或预测补数。
+- `SourceCommitEvidence` 证明的是同一一致性快照和可用 create-time/metadata 水位；当前通用因子表证据不声称检测 `create_time` 不变的原地更新，后续如需该性质必须先完成字段能力审计。
 
 ---
 
@@ -351,6 +363,28 @@ installed plist、`launchctl` state、数据库或生产信号。
 - installed plist、loaded state、日志、run 和 prediction 五类证据相互一致。
 
 P0 可以暂时保留底层 `legacy` 环境开关，以兼容现有 executor/repository，但绝不切换为 `ledger`；只有旧调度器仍在生产触发，才叫“legacy 控制面未清除”。该兼容开关在 G8 处理。
+
+### G2 开发执行记录（2026-08-03，未触碰生产控制面）
+
+- `scheduler.main` 的 DataBridge writer、startup refresh/catch-up 与 `v2_daily_preflight` 的正常 writer
+  入口已退役为稳定的非写入结果；repository desired templates 中旧 resident scheduler、daily-gray 和
+  v2-preflight 均为 `Disabled=true` 且没有自然日历触发。
+- 新的 DataBridge publisher 只走本机 MySQL direct CLI，并以全局 publisher lock 覆盖 pre-block →
+  refresh → strict reread → ready/blocked；新的 daily/weekly/monthly runner 以全局 nonblocking lock 覆盖
+  strict discovery、精确 Blackbox admission、V2 Gate 和逐方案执行。daily 使用共享交易日历在非交易日
+  零执行；weekly 是 launchd `Weekday=6`（周六）11:30，monthly 是自然月 15 日 18:00。
+- `launchd_one_shot` 只授予冻结的 formal daily/weekly Blackbox 精确身份；7Y 与 gray Blackbox 在
+  Gate、engine 和执行之前被拒绝。natural run 只能由 runner 内部传入 one-shot control plane；executor
+  CLI 不接受该参数，任何无 `schedule_item_id` 的 `scheduled_live` repository 创建也只允许该 plane。
+- 新增的 repo desired plist 分别定义 DataBridge 06:30、daily 工作日 07:03、weekly 周六 11:30、monthly
+  自然月 15 日 18:00；actuals 保留 08:30/19:00/23:45 的既有 one-shot template。部署文档只说明 desired
+  state 与授权前只读核对，不提供安装/重载命令。
+- `BFL_DATABRIDGE_PRODUCER=launchd-one-shot` 是操作准入标记而非 launchd 身份认证；同 UID 的任意受信任
+  Python 代码可调用内部 API 或伪造环境标记，因而仓库测试不把它称作“真实 launchd origin proof”。这一
+  same-UID trust boundary 已被明确保留；生产 writer 身份只能在专项授权下由 installed plist、loaded state、
+  日志、run 和 prediction 的一致性观察证明。
+- 本记录只说明开发分支代码/模板与测试。没有执行 real publish、installed plist 修改、`launchctl`、服务
+  restart、`scheduled_live`、Registry 变更或 G3 历史补数。
 
 ---
 
@@ -560,7 +594,7 @@ Native hash 当前覆盖完整 config 和文件文本，展示、状态、schedu
 ## 16. 下一步
 
 P-1 的已授权算法、数据、Dashboard 和 served-API 闭环工作以及 G0 文档统一已完成；下一步进入
-**G1** 的本机 MySQL → DataBridge 开发与验证。在考虑任一 7Y scheduler admission、当前日期 `live_write` 或 installed 控制面
+**G2** 的 launchd-only 单 writer 开发与只读现场核对。在考虑任一 7Y scheduler admission、当前日期 `live_write` 或 installed 控制面
 操作前，必须先取得专项授权并只读核对 installed plist 与 loaded state；不得把历史
 `gray_live` 或 formal API 通过外推为自然调度或生产稳定证据。
 

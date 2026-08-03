@@ -21,12 +21,23 @@ CONTROL_PLANES = (
     "daily_ledger",
     "recurring",
     "direct_scheduled",
+    "launchd_one_shot",
 )
 FORMAL_DAILY_CAPABILITIES = frozenset(
-    ("legacy_automatic", "daily_ledger", "direct_scheduled")
+    (
+        "legacy_automatic",
+        "daily_ledger",
+        "direct_scheduled",
+        "launchd_one_shot",
+    )
 )
 FORMAL_WEEKLY_CAPABILITIES = frozenset(
-    ("legacy_automatic", "recurring", "direct_scheduled")
+    (
+        "legacy_automatic",
+        "recurring",
+        "direct_scheduled",
+        "launchd_one_shot",
+    )
 )
 DAILY_GRAY_CAPABILITIES = frozenset(("daily_ledger",))
 NO_CAPABILITIES = frozenset()
@@ -625,6 +636,20 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
                         ),
                         plane="legacy_automatic",
                     )
+                )
+
+    def test_launchd_one_shot_is_exactly_formal_daily_and_weekly(self) -> None:
+        """one-shot 不从 active 身份推断，gray 和 7Y 均保持拒绝。"""
+        policy = load_blackbox_scheduler_admission()
+        for identity, expected in EXPECTED_ADMISSIONS.items():
+            with self.subTest(identity=identity):
+                self.assertEqual(
+                    policy.allows(
+                        _config(*identity),
+                        plane="launchd_one_shot",
+                    ),
+                    expected["mode"] == "formal"
+                    and expected["frequency"] in {"daily", "weekly"},
                 )
 
     def test_empty_policy_is_rejected(self) -> None:

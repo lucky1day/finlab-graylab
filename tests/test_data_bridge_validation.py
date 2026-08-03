@@ -23,6 +23,32 @@ class DataBridgeValidationTests(unittest.TestCase):
         self.assertEqual(daily.columns, 2)
         self.assertEqual(len(dataset.business_digest), 64)
 
+    def test_rejects_daily_rows_after_feature_cutoff(self) -> None:
+        from shared.data_bridge.validation import (
+            DataBridgeValidationError,
+            validate_dataset,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema = _write_schema(Path(tmpdir))
+            frames = _frames()
+            frames["daily_output.csv"] = pd.concat(
+                (
+                    frames["daily_output.csv"],
+                    pd.DataFrame({"date": ["2026-07-19"], "factor": ["3"]}),
+                ),
+                ignore_index=True,
+            )
+            with self.assertRaisesRegex(
+                DataBridgeValidationError,
+                "later than feature cutoff",
+            ):
+                validate_dataset(
+                    frames,
+                    schema_path=schema,
+                    expected_daily_date="2026-07-18",
+                )
+
     def test_rejects_invalid_factor_and_removed_historical_key(self) -> None:
         from shared.data_bridge.validation import DataBridgeValidationError, validate_dataset
 

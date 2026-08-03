@@ -141,7 +141,7 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertIn("不再要求维护", native_sop)
         self.assertNotIn("作为**同一受控发布单元**", native_sop)
         deploy = DEPLOY_README.read_text(encoding="utf-8")
-        self.assertIn("bootstrap/bootout/kickstart", deploy)
+        self.assertIn("不提供 bootstrap、bootout 或 kickstart 的可执行指令", deploy)
         self.assertIn("独立生产操作", deploy)
 
     def test_point_in_time_records_use_standard_historical_status(self) -> None:
@@ -333,7 +333,7 @@ class OnboardingDocumentationTests(unittest.TestCase):
         platform = PLATFORM_SOP.read_text(encoding="utf-8")
         governance = PRODUCTION_SCHEDULING_GOVERNANCE.read_text(encoding="utf-8")
 
-        self.assertIn("HISTORICAL / 不可执行", deploy)
+        self.assertIn("`Disabled=true`", deploy)
         self.assertIn("文档状态**：`HISTORICAL`", sla)
         for text in (governance, platform):
             self.assertIn("launchd + installed plist", text)
@@ -544,140 +544,67 @@ class OnboardingDocumentationTests(unittest.TestCase):
         ):
             self.assertIn(marker, harness)
 
-    def test_launchd_defaults_keep_one_coherent_legacy_control_plane(self) -> None:
-        rollout = json.loads(
+    def test_launchd_templates_define_the_one_shot_desired_state(self) -> None:
+        launchd_root = PROJECT_ROOT / "deploy" / "launchd"
+        expected_one_shots = (
             (
-                PROJECT_ROOT
-                / "deploy"
-                / "daily_coordinator_rollout_v1.json"
-            ).read_text(encoding="utf-8")
+                "com.bond-factor-lab.data-bridge-refresh.plist",
+                "com.bond-factor-lab.data-bridge-refresh",
+                {"Hour": 6, "Minute": 30},
+            ),
+            (
+                "com.bond-factor-lab.daily-predictions.plist",
+                "com.bond-factor-lab.daily-predictions",
+                [
+                    {"Weekday": weekday, "Hour": 7, "Minute": 3}
+                    for weekday in range(1, 6)
+                ],
+            ),
+            (
+                "com.bond-factor-lab.weekly-predictions.plist",
+                "com.bond-factor-lab.weekly-predictions",
+                {"Weekday": 6, "Hour": 11, "Minute": 30},
+            ),
+            (
+                "com.bond-factor-lab.monthly-predictions.plist",
+                "com.bond-factor-lab.monthly-predictions",
+                {"Day": 15, "Hour": 18, "Minute": 0},
+            ),
         )
-        self.assertEqual(
-            rollout,
-            {
-                "schema_version": "daily-coordinator-rollout-v1",
-                "mode": "legacy",
-            },
-        )
+        for filename, label, calendar in expected_one_shots:
+            with self.subTest(label=label):
+                with (launchd_root / filename).open("rb") as handle:
+                    config = plistlib.load(handle)
+                self.assertEqual(config["Label"], label)
+                self.assertEqual(config["StartCalendarInterval"], calendar)
+                self.assertFalse(config["RunAtLoad"])
+                self.assertNotIn("KeepAlive", config)
 
-        preflight_path = (
-            PROJECT_ROOT
-            / "deploy"
-            / "launchd"
-            / "com.bond-factor-lab.v2-preflight.plist"
-        )
-        with preflight_path.open("rb") as handle:
-            preflight = plistlib.load(handle)
-
-        self.assertEqual(preflight["Label"], "com.bond-factor-lab.v2-preflight")
-        self.assertNotIn("KeepAlive", preflight)
-        self.assertNotIn("RunAtLoad", preflight)
-        self.assertNotIn("Disabled", preflight)
-        self.assertEqual(
-            {
-                (item["Hour"], item["Minute"])
-                for item in preflight["StartCalendarInterval"]
-            },
-            {(6, 0), (6, 30), (6, 35), (7, 0)},
-        )
-        self.assertIn(
-            "scheduler.v2_daily_preflight",
-            preflight["ProgramArguments"],
-        )
-        self.assertEqual(
-            preflight["EnvironmentVariables"][
-                "BOND_DAILY_COORDINATOR_MODE"
-            ],
-            "legacy",
-        )
-        self.assertEqual(
-            preflight["EnvironmentVariables"]["DATABRIDGE_REFRESH_START"],
-            "06:00",
-        )
-        self.assertEqual(
-            preflight["EnvironmentVariables"]["DATABRIDGE_REFRESH_DEADLINE"],
-            "07:00",
-        )
-
-        scheduler_path = (
-            PROJECT_ROOT
-            / "deploy"
-            / "launchd"
-            / "com.bond-factor-lab.scheduler.plist"
-        )
-        with scheduler_path.open("rb") as handle:
-            scheduler = plistlib.load(handle)
-        scheduler_env = scheduler["EnvironmentVariables"]
-        self.assertEqual(
-            scheduler_env["BOND_DAILY_COORDINATOR_MODE"],
-            "legacy",
-        )
-        self.assertIn("BFL_SOURCE_DB_CONFIG_PATH", scheduler_env)
-        self.assertIn("BFL_SOURCE_DB_CONFIG_ROOT", scheduler_env)
-        source_database_root = Path(
-            scheduler_env["BFL_SOURCE_DB_CONFIG_ROOT"]
-        )
-        source_database_config = scheduler_env["BFL_SOURCE_DB_CONFIG_PATH"]
-        self.assertTrue(source_database_root.is_absolute())
-        self.assertTrue(Path(source_database_config).is_absolute())
-        self.assertEqual(
-            Path(source_database_config).parent,
-            source_database_root,
-        )
-        self.assertEqual(
-            source_database_root,
-            Path("/Users/macstudio0/.config/bond-factor-lab"),
-        )
-        self.assertEqual(
-            Path(source_database_config).name,
-            "source-runtime-db.json",
-        )
-        self.assertTrue(
-            {
-                "BOND_DB_USER",
-                "BOND_DB_PASSWORD",
-                "BOND_DB_DSN",
-                "SOURCE_DB_USER",
-                "SOURCE_DB_PASSWORD",
-                "SOURCE_DB_DSN",
-            }.isdisjoint(scheduler_env),
-        )
-        self.assertEqual(scheduler_env["DATABRIDGE_REFRESH_START"], "06:30")
-        self.assertEqual(scheduler_env["DATABRIDGE_REFRESH_DEADLINE"], "06:55")
-
-        backend_path = (
-            PROJECT_ROOT
-            / "deploy"
-            / "launchd"
-            / "com.bond-factor-lab.backend.plist"
-        )
-        with backend_path.open("rb") as handle:
-            backend = plistlib.load(handle)
-        self.assertEqual(
-            backend["EnvironmentVariables"]["BOND_DAILY_COORDINATOR_MODE"],
-            "legacy",
-        )
+        for filename, label in (
+            ("com.bond-factor-lab.scheduler.plist", "com.bond-factor-lab.scheduler"),
+            ("com.bond-factor-lab.daily-gray.plist", "com.bond-factor-lab.daily-gray"),
+            ("com.bond-factor-lab.v2-preflight.plist", "com.bond-factor-lab.v2-preflight"),
+        ):
+            with self.subTest(label=label):
+                with (launchd_root / filename).open("rb") as handle:
+                    config = plistlib.load(handle)
+                self.assertEqual(config["Label"], label)
+                self.assertTrue(config["Disabled"])
+                self.assertNotIn("StartCalendarInterval", config)
+                self.assertNotIn("RunAtLoad", config)
+                self.assertNotIn("KeepAlive", config)
 
     def test_scheduler_source_binding_runbook_keeps_secrets_out_of_plist(
         self,
     ) -> None:
         deploy = DEPLOY_README.read_text(encoding="utf-8")
         for marker in (
-            "BFL_SOURCE_DB_CONFIG_ROOT",
-            "BFL_SOURCE_DB_CONFIG_PATH",
-            "/Users/macstudio0/.config/bond-factor-lab/source-runtime-db.json",
-            "chmod 700 /Users/macstudio0/.config/bond-factor-lab",
-            "chmod 600 /Users/macstudio0/.config/bond-factor-lab/source-runtime-db.json",
-            "不得把用户名、密码或 DSN 写入 plist",
-            "SHOW GRANTS FOR CURRENT_USER()",
-            "必需源表",
-            "不得执行生产 DDL/DML",
-            "安全存储与 cache",
-            "backtest_artifacts/runtime_cache/liwei_0616",
-            "runtime 不静默 `chmod`",
-            "manifest/payload SHA-256",
-            "owner、mode、inode、symlink",
-            "不得修改或重启 BondProjectPro",
+            "期望配置",
+            "只读核对",
+            "DSN",
+            "凭证",
+            "admin token",
+            "实例 nonce",
         ):
             self.assertIn(marker, deploy)
 
@@ -809,7 +736,7 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertIn("PRODUCTION_SCHEDULING_GOVERNANCE.md", current)
         self.assertIn("PRODUCTION_SCHEDULING_GOVERNANCE.md", todo)
         self.assertIn("独立生产操作", deploy)
-        self.assertIn("必须 fail-closed", deploy)
+        self.assertIn("fail-closed", deploy)
         self.assertNotIn("capacity admission", sla)
         self.assertIn("文档状态**：`HISTORICAL`", sla)
 
@@ -832,11 +759,11 @@ class OnboardingDocumentationTests(unittest.TestCase):
             self.assertIn(marker, current)
 
         for marker in (
-            "## 当前状态权威与 operator guard",
-            "[当前状态](../docs/CURRENT_STATUS.md)",
-            "本\nrunbook 不复制任何动态值",
-            "operator 每次执行前必须读取两页",
-            "必须 fail-closed",
+            "## 生产操作边界",
+            "仓库模板",
+            "installed plist",
+            "loaded state",
+            "fail-closed",
         ):
             self.assertIn(marker, deploy)
         for duplicated_dynamic_fact in (
@@ -866,7 +793,7 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertIn("insert-only", governance)
         self.assertIn("不授予 scheduler admission", current)
         self.assertIn("合格自然时钟触发", platform)
-        self.assertIn("HISTORICAL / 不可执行", deploy)
+        self.assertIn("期望配置", deploy)
         self.assertNotIn("真实 ledger provenance", platform)
         self.assertNotIn("ledger provenance", governance)
 
@@ -931,20 +858,8 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertIn("caller-supplied `Engine`", architecture)
         self.assertIn("`scripts/apply_migrations.py`", architecture)
 
-        self.assertIn("HISTORICAL / 不可执行", deploy)
-        for marker in (
-            "--expected-database-name <database-name>",
-            "--expected-server-uuid <server-uuid>",
-            "--inspect-applying-017",
-            "--inspect-applying-018",
-            "--recover-applying-017 --apply",
-            "--recover-applying-018 --apply",
-        ):
-            self.assertIn(marker, deploy)
-        self.assertRegex(
-            deploy,
-            r"恢复 017 后必须另行执行普通\s+`--apply`",
-        )
+        self.assertIn("期望配置", deploy)
+        self.assertIn("不提供 bootstrap、bootout 或 kickstart 的可执行指令", deploy)
 
     def test_10y_gray_onboarding_record_binds_the_exact_batch(self) -> None:
         self.assertTrue(TEN_Y_T5_RECORD.exists())

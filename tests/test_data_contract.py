@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -358,7 +359,7 @@ class DataContractAuditTests(unittest.TestCase):
         )
         self._insert_factor(
             "api_wind_daily",
-            rdate="2026/6/3",
+            rdate="2026-06-03",
             create_time="2026-07-24 06:20:00",
             code="HISTORICAL",
         )
@@ -377,6 +378,51 @@ class DataContractAuditTests(unittest.TestCase):
             if item.table_name == "api_wind_daily"
         )
         self.assertEqual(daily.row_count, 1)
+
+    def test_commit_evidence_pushes_factor_cutoff_into_sql(self) -> None:
+        from scheduler.data_contract import (
+            FACTOR_SOURCE_TABLES,
+            capture_source_commit_evidence_from_connection,
+        )
+
+        factor_results = []
+        for _ in FACTOR_SOURCE_TABLES:
+            result = mock.MagicMock()
+            result.mappings.return_value.all.return_value = []
+            factor_results.append(result)
+        metadata_result = mock.MagicMock()
+        metadata_result.mappings.return_value.one.return_value = {
+            "row_count": 0,
+            "latest_create_time": None,
+            "latest_update_time": None,
+        }
+        calendar_results = []
+        for _ in range(2):
+            result = mock.MagicMock()
+            result.mappings.return_value.one.return_value = {
+                "row_count": 0,
+                "latest_business_key": None,
+            }
+            calendar_results.append(result)
+        connection = mock.MagicMock()
+        connection.execute.side_effect = [
+            *factor_results,
+            metadata_result,
+            *calendar_results,
+        ]
+
+        capture_source_commit_evidence_from_connection(
+            connection,
+            feature_date="2026-07-23",
+        )
+
+        factor_calls = connection.execute.call_args_list[
+            :len(FACTOR_SOURCE_TABLES)
+        ]
+        self.assertEqual(len(factor_calls), len(FACTOR_SOURCE_TABLES))
+        for call in factor_calls:
+            self.assertIn("WHERE rdate <= :feature_date", str(call.args[0]))
+            self.assertEqual(call.args[1], {"feature_date": "2026-07-23"})
 
     def test_commit_evidence_rejects_rows_after_contract_cutoff(
         self,

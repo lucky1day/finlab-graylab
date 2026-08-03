@@ -18,10 +18,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Callable, Iterator, Mapping
+from typing import Callable, Iterator, Mapping, Protocol
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+from sqlalchemy.exc import SQLAlchemyError
 
 from shared.data_bridge.validation import (
     DataBridgeValidationError,
@@ -31,6 +32,15 @@ from shared.data_bridge.validation import (
     validate_dataset,
     validate_unique_csv_header,
     write_validated_dataset,
+)
+from shared.data_contract import (
+    CALENDAR_SOURCE_TABLES,
+    FACTOR_SOURCE_TABLES,
+    METADATA_SOURCE_TABLE,
+    SourceCommitEvidence,
+    SourceTableEvidence,
+    source_commit_evidence_payload,
+    source_commit_evidence_sha256,
 )
 from shared.daily_coordinator_mode import (
     assert_daily_coordinator_epoch_payload_matches_current,
@@ -59,8 +69,9 @@ class DataBridgePublicationFenceError(DataBridgeRefreshError):
 
 
 CURRENT_PUBLICATION_MANIFEST = ".publication-manifest.json"
-CURRENT_PUBLICATION_MANIFEST_VERSION = "data-bridge-current-v1"
-CURRENT_PUBLICATION_MANIFEST_FIELDS = frozenset(
+LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION = "data-bridge-current-v1"
+CURRENT_PUBLICATION_MANIFEST_VERSION = "data-bridge-current-v2"
+LEGACY_CURRENT_PUBLICATION_MANIFEST_FIELDS = frozenset(
     {
         "manifest_version",
         "generation_id",
@@ -69,6 +80,30 @@ CURRENT_PUBLICATION_MANIFEST_FIELDS = frozenset(
         "business_digest",
         "files",
         "publication_capability",
+    }
+)
+CURRENT_PUBLICATION_MANIFEST_FIELDS = frozenset(
+    {
+        *LEGACY_CURRENT_PUBLICATION_MANIFEST_FIELDS,
+        "source_mode",
+        "source_provenance",
+    }
+)
+CURRENT_PUBLICATION_MANIFEST_FIELDS_BY_VERSION = {
+    LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION: (
+        LEGACY_CURRENT_PUBLICATION_MANIFEST_FIELDS
+    ),
+    CURRENT_PUBLICATION_MANIFEST_VERSION: (
+        CURRENT_PUBLICATION_MANIFEST_FIELDS
+    ),
+}
+LOCAL_MYSQL_SOURCE_MODE = "local_mysql"
+LOCAL_MYSQL_PROVENANCE_VERSION = "data-bridge-local-mysql-v1"
+FAILED_ATTEMPT_ERROR_CATEGORIES = frozenset(
+    {
+        "refresh_failed",
+        "source_io_failed",
+        "validation_failed",
     }
 )
 
@@ -233,6 +268,23 @@ class DownloadRound:
     directory: Path
     dataset: ValidatedDataBridgeDataset | None
     digest: str
+    source_mode: str = "full_export"
+    source_provenance: Mapping[str, object] | None = None
+
+
+class DataBridgeRoundSource(Protocol):
+    """为一次刷新构造标准三频候选目录的可替换数据源。"""
+
+    def build(
+        self,
+        round_id: str,
+        *,
+        end_date: str,
+        expected_daily_date: str,
+        previous_keys: Mapping[str, set[str] | frozenset[str]] | None,
+        continuity_cutoffs: Mapping[str, object] | None = None,
+    ) -> DownloadRound:
+        """在一次稳定性 round 中构造并验证候选数据集。"""
 
 
 @dataclass(frozen=True)
@@ -437,23 +489,43 @@ def quarter_ranges(start_date: str, end_date: str, *, months: int = 3) -> list[t
 def select_stable_round(rounds: Iterator[DownloadRound], *, max_rounds: int = 3) -> DownloadRound:
     if max_rounds < 2:
         raise ValueError("max_rounds must be at least 2")
-    previous_digest: str | None = None
+    previous_identity: tuple[str, str, str | None] | None = None
     for _ in range(max_rounds):
         try:
             current = next(rounds)
         except StopIteration as exc:
             raise DataBridgeRefreshError("not enough download rounds to establish stability") from exc
-        if previous_digest is not None and previous_digest == current.digest:
+        current_identity = _round_stability_identity(current)
+        if (
+            previous_identity is not None
+            and previous_identity == current_identity
+        ):
             return current
-        previous_digest = current.digest
+        previous_identity = current_identity
     raise DataBridgeRefreshError(
         f"DataBridge did not produce matching consecutive rounds within {max_rounds} rounds"
     )
 
 
+def _round_stability_identity(
+    round_result: DownloadRound,
+) -> tuple[str, str, str | None]:
+    """本机 MySQL round 还必须绑定同一源水位，避免静默漂移。"""
+    if round_result.source_mode != LOCAL_MYSQL_SOURCE_MODE:
+        return (round_result.digest, round_result.source_mode, None)
+    provenance = _normalize_source_provenance(
+        round_result.source_provenance
+    )
+    return (
+        round_result.digest,
+        round_result.source_mode,
+        str(provenance["source_commit_token"]),
+    )
+
+
 def run_full_refresh(
     *,
-    client,
+    client=None,
     config: DataBridgeRefreshConfig,
     expected_daily_date: str,
     refresh_date: str,
@@ -463,10 +535,26 @@ def run_full_refresh(
         DailyCoordinatorPublicationCapability | None
     ) = None,
     continuity_authority: object | None = None,
+    round_builder: DataBridgeRoundSource | None = None,
+    enforce_legacy_publication_fence: bool = True,
 ) -> RefreshResult:
-    authority = _require_publish_authority(
-        publish=publish,
-        publication_capability=publication_capability,
+    if (
+        not enforce_legacy_publication_fence
+        and publication_capability is not None
+    ):
+        raise DataBridgePublicationFenceError(
+            "legacy publication capability cannot be mixed with the "
+            "launchd-only refresh path"
+        )
+    if not enforce_legacy_publication_fence:
+        _require_launchd_round_builder(round_builder)
+    authority = (
+        _require_publish_authority(
+            publish=publish,
+            publication_capability=publication_capability,
+        )
+        if enforce_legacy_publication_fence
+        else None
     )
     if (
         authority is not None
@@ -494,8 +582,19 @@ def run_full_refresh(
                 continuity_authority=continuity_authority,
             )
             _ensure_before_deadline(deadline_at)
-            _validate_source_tables(client.get_tables())
-            _ensure_source_ready(client, expected_daily_date)
+            if round_builder is None:
+                if client is None:
+                    raise DataBridgeRefreshError(
+                        "DataBridge refresh requires a round source"
+                    )
+                _validate_source_tables(client.get_tables())
+                _ensure_source_ready(client, expected_daily_date)
+                builder: DataBridgeRoundSource = DataBridgeRoundBuilder(
+                    client,
+                    config,
+                )
+            else:
+                builder = round_builder
             previous_keys = (
                 {
                     filename: profile.keys
@@ -505,14 +604,13 @@ def run_full_refresh(
                 if previous_current is not None
                 else None
             )
-            builder = DataBridgeRoundBuilder(client, config)
 
             def rounds() -> Iterator[DownloadRound]:
                 for index in range(config.max_rounds):
                     _ensure_before_deadline(deadline_at)
                     item = builder.build(
                         f"round-{index + 1}",
-                        end_date=refresh_date,
+                        end_date=expected_daily_date,
                         expected_daily_date=expected_daily_date,
                         previous_keys=previous_keys,
                         continuity_cutoffs=continuity_cutoffs,
@@ -541,12 +639,18 @@ def run_full_refresh(
                 len(built_directories),
                 refresh_started_at=refresh_started_at,
                 duration_sec=time.monotonic() - started,
+                source_mode=selected.source_mode,
+                source_provenance=selected.source_provenance,
+                expected_daily_date=expected_daily_date,
             )
             if publish:
                 state = store.publish(
                     selected.directory,
                     state,
                     publication_capability=authority,
+                    enforce_legacy_publication_fence=(
+                        enforce_legacy_publication_fence
+                    ),
                 )
             return RefreshResult(
                 state=state,
@@ -565,7 +669,7 @@ def run_full_refresh(
                 try:
                     store.record_failed_attempt(
                         refresh_date=refresh_date,
-                        error=str(exc)[:1000],
+                        error=_failed_attempt_error_category(exc),
                         duration_sec=time.monotonic() - started,
                     )
                 except Exception:
@@ -612,8 +716,19 @@ def check_current_dataset(
         DailyCoordinatorPublicationCapability | None
     ) = None,
     strict_read_only: bool = False,
+    require_source_provenance: bool = False,
 ) -> CurrentDataset:
     """在共享锁内验证 current 文件、状态及调用方拥有的发布身份。"""
+    if require_source_provenance:
+        if expected_daily_date is None:
+            raise DataBridgeRefreshError(
+                "DataBridge local source provenance requires "
+                "expected_daily_date"
+            )
+        expected_daily_date = _canonical_date_value(
+            expected_daily_date,
+            label="DataBridge expected_daily_date",
+        )
     store = DataBridgeStore(data_root=config.data_root, runtime_root=config.runtime_root)
     with store.current_read(
         strict_read_only=strict_read_only,
@@ -625,6 +740,11 @@ def check_current_dataset(
             expected_daily_date=expected_daily_date,
         )
         dataset = current.dataset
+        if require_source_provenance:
+            require_local_mysql_source_provenance(
+                current.state,
+                expected_daily_date=expected_daily_date,
+            )
         if expected_publication_capability is not None:
             authority = _validate_publication_capability(
                 expected_publication_capability
@@ -690,6 +810,16 @@ def _load_previous_current_locked(
 ) -> CurrentDataset | None:
     if not store.current_dir.is_dir():
         if store.state_path.exists():
+            try:
+                state = json.loads(
+                    store.state_path.read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError) as exc:
+                raise DataBridgeRefreshError(
+                    "DataBridge current is missing while state is invalid"
+                ) from exc
+            if _is_no_current_failure_audit_state(state):
+                return None
             raise DataBridgeRefreshError(
                 "DataBridge current is missing while state still exists"
             )
@@ -864,6 +994,9 @@ def _build_state(
     *,
     refresh_started_at: datetime,
     duration_sec: float,
+    source_mode: str = "full_export",
+    source_provenance: Mapping[str, object] | None = None,
+    expected_daily_date: str | None = None,
 ) -> dict[str, object]:
     now = _shanghai_now()
     if (
@@ -876,6 +1009,21 @@ def _build_state(
     )
     if now < refresh_started_at:
         raise ValueError("DataBridge refresh completion precedes start")
+    if not isinstance(source_mode, str) or not source_mode:
+        raise ValueError("DataBridge source_mode must be a non-empty string")
+    normalized_source_provenance: dict[str, object] | None = None
+    if source_mode == LOCAL_MYSQL_SOURCE_MODE:
+        normalized_source_provenance = _normalize_source_provenance(
+            source_provenance
+        )
+        _require_provenance_feature_date(
+            normalized_source_provenance,
+            expected_daily_date=expected_daily_date,
+        )
+    elif source_provenance is not None:
+        raise ValueError(
+            "DataBridge non-local source must not carry local provenance"
+        )
     generation_id = f"full-{refresh_date.replace('-', '')}-{now.strftime('%H%M%S')}-{dataset.business_digest[:12]}"
     return {
         "schema_version": dataset.schema_version,
@@ -886,7 +1034,10 @@ def _build_state(
         ),
         "refreshed_at": now.isoformat(timespec="seconds"),
         "published_at": None,
-        "source_mode": "full_export",
+        "source_mode": source_mode,
+        "source_provenance": copy.deepcopy(
+            normalized_source_provenance
+        ),
         "stability_rounds": stability_rounds,
         "business_digest": dataset.business_digest,
         "last_attempt": {
@@ -931,8 +1082,8 @@ def _publication_identity_from_state(
         raise DataBridgeRefreshError(
             "DataBridge publication state must be an object"
         )
-    return {
-        "manifest_version": CURRENT_PUBLICATION_MANIFEST_VERSION,
+    identity: dict[str, object] = {
+        "manifest_version": LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION,
         "generation_id": copy.deepcopy(state.get("generation_id")),
         "refresh_date": copy.deepcopy(state.get("refresh_date")),
         "schema_version": copy.deepcopy(state.get("schema_version")),
@@ -946,6 +1097,327 @@ def _publication_identity_from_state(
             )
         ),
     }
+    source_provenance = state.get("source_provenance")
+    if source_provenance is None:
+        return identity
+    source_mode = state.get("source_mode")
+    if source_mode != LOCAL_MYSQL_SOURCE_MODE:
+        raise DataBridgeRefreshError(
+            "DataBridge local source provenance requires local_mysql mode"
+        )
+    identity["manifest_version"] = CURRENT_PUBLICATION_MANIFEST_VERSION
+    identity["source_mode"] = source_mode
+    identity["source_provenance"] = _normalize_source_provenance(
+        source_provenance
+    )
+    return identity
+
+
+def require_local_mysql_source_provenance(
+    state: Mapping[str, object],
+    *,
+    expected_daily_date: str | None = None,
+) -> dict[str, object]:
+    """返回已封存的本机 MySQL 来源证据；旧 current 一律拒绝。"""
+    if not isinstance(state, Mapping):
+        raise DataBridgeRefreshError(
+            "DataBridge local source provenance state is invalid"
+        )
+    identity = _publication_identity_from_state(state)
+    if identity.get("manifest_version") != CURRENT_PUBLICATION_MANIFEST_VERSION:
+        raise DataBridgeRefreshError(
+            "DataBridge current lacks sealed local MySQL source provenance"
+        )
+    provenance = identity.get("source_provenance")
+    if not isinstance(provenance, dict):
+        raise DataBridgeRefreshError(
+            "DataBridge local source provenance is invalid"
+        )
+    _require_provenance_feature_date(
+        provenance,
+        expected_daily_date=expected_daily_date,
+    )
+    return provenance
+
+
+def _require_provenance_feature_date(
+    provenance: Mapping[str, object],
+    *,
+    expected_daily_date: str | None,
+) -> None:
+    """本机 MySQL 水位必须与调用方 feature cutoff 完全一致。"""
+    if expected_daily_date is None:
+        return
+    normalized_expected_date = _canonical_date_value(
+        expected_daily_date,
+        label="DataBridge expected_daily_date",
+    )
+    if provenance.get("feature_date") != normalized_expected_date:
+        raise DataBridgeRefreshError(
+            "DataBridge local source provenance feature_date must equal "
+            "expected_daily_date"
+        )
+
+
+def _require_launchd_round_builder(
+    round_builder: DataBridgeRoundSource | None,
+) -> None:
+    """无 legacy fence 的本机路径只接受受控 MySQL exporter。"""
+    from shared.data_bridge.mysql_exporter import (
+        MySqlDataBridgeRoundBuilder,
+    )
+
+    if type(round_builder) is not MySqlDataBridgeRoundBuilder:
+        raise DataBridgeRefreshError(
+            "launchd-only DataBridge refresh requires "
+            "MySqlDataBridgeRoundBuilder"
+        )
+
+
+def _failed_attempt_error_category(exc: BaseException) -> str:
+    """将运行异常压缩为可审计而不含敏感细节的固定类别。"""
+    if isinstance(exc, (OSError, SQLAlchemyError)):
+        return "source_io_failed"
+    if isinstance(exc, DataBridgeValidationError):
+        return "validation_failed"
+    return "refresh_failed"
+
+
+def _safe_failed_attempt_error(error: object) -> str:
+    if (
+        isinstance(error, str)
+        and error in FAILED_ATTEMPT_ERROR_CATEGORIES
+    ):
+        return error
+    return "refresh_failed"
+
+
+def _is_no_current_failure_audit_state(state: object) -> bool:
+    """仅把 record_failed_attempt 写出的空基线审计 state 识别为无 current。"""
+    if not isinstance(state, Mapping) or set(state) != {"last_attempt"}:
+        return False
+    attempt = state.get("last_attempt")
+    if not isinstance(attempt, Mapping):
+        return False
+    if set(attempt) != {
+        "status",
+        "refresh_date",
+        "finished_at",
+        "duration_sec",
+        "error",
+    }:
+        return False
+    duration = attempt.get("duration_sec")
+    return (
+        attempt.get("status") == "failed"
+        and isinstance(attempt.get("refresh_date"), str)
+        and bool(attempt["refresh_date"])
+        and isinstance(attempt.get("finished_at"), str)
+        and bool(attempt["finished_at"])
+        and not isinstance(duration, bool)
+        and isinstance(duration, (int, float))
+        and duration >= 0
+        and isinstance(attempt.get("error"), str)
+        and attempt["error"] in FAILED_ATTEMPT_ERROR_CATEGORIES
+    )
+
+
+def _normalize_source_provenance(payload: object) -> dict[str, object]:
+    """校验并规范化写入 v2 current identity 的 MySQL 水位证据。"""
+    if not isinstance(payload, Mapping):
+        raise DataBridgeRefreshError(
+            "DataBridge source_provenance must be an object"
+        )
+    required_fields = {
+        "provenance_version",
+        "feature_date",
+        "source_rdate_cutoff",
+        "snapshot_started_at",
+        "source_commit_token",
+        "source_evidence_sha256",
+        "source_evidence",
+    }
+    if set(payload) != required_fields:
+        raise DataBridgeRefreshError(
+            "DataBridge source_provenance fields are invalid"
+        )
+    if payload.get("provenance_version") != LOCAL_MYSQL_PROVENANCE_VERSION:
+        raise DataBridgeRefreshError(
+            "DataBridge source_provenance version is invalid"
+        )
+    feature_date = _canonical_date_value(
+        payload.get("feature_date"),
+        label="DataBridge source_provenance.feature_date",
+    )
+    source_rdate_cutoff = _canonical_date_value(
+        payload.get("source_rdate_cutoff"),
+        label="DataBridge source_provenance.source_rdate_cutoff",
+    )
+    if source_rdate_cutoff != feature_date:
+        raise DataBridgeRefreshError(
+            "DataBridge source_provenance cutoff must equal feature_date"
+        )
+    snapshot_started_at = _canonical_aware_timestamp_value(
+        payload.get("snapshot_started_at"),
+        label="DataBridge source_provenance.snapshot_started_at",
+    )
+    source_commit_token = _canonical_sha256_value(
+        payload.get("source_commit_token"),
+        label="DataBridge source_provenance.source_commit_token",
+    )
+    source_evidence_sha256 = _canonical_sha256_value(
+        payload.get("source_evidence_sha256"),
+        label="DataBridge source_provenance.source_evidence_sha256",
+    )
+    if source_evidence_sha256 != source_commit_token:
+        raise DataBridgeRefreshError(
+            "DataBridge source provenance evidence hash mismatch"
+        )
+    raw_evidence = payload.get("source_evidence")
+    if not isinstance(raw_evidence, Mapping) or set(raw_evidence) != {
+        "evidence_version",
+        "feature_date",
+        "tables",
+    }:
+        raise DataBridgeRefreshError(
+            "DataBridge source provenance evidence is invalid"
+        )
+    if raw_evidence.get("evidence_version") != "native-source-watermark-v1":
+        raise DataBridgeRefreshError(
+            "DataBridge source provenance evidence version is invalid"
+        )
+    evidence_feature_date = _canonical_date_value(
+        raw_evidence.get("feature_date"),
+        label="DataBridge source provenance evidence feature_date",
+    )
+    if evidence_feature_date != feature_date:
+        raise DataBridgeRefreshError(
+            "DataBridge source provenance evidence feature_date mismatch"
+        )
+    raw_tables = raw_evidence.get("tables")
+    if not isinstance(raw_tables, list) or not raw_tables:
+        raise DataBridgeRefreshError(
+            "DataBridge source provenance evidence tables are invalid"
+        )
+    tables: list[SourceTableEvidence] = []
+    expected_table_fields = {
+        "table_name",
+        "row_count",
+        "latest_create_time",
+        "latest_update_time",
+        "latest_business_key",
+    }
+    for raw_table in raw_tables:
+        if not isinstance(raw_table, Mapping) or set(raw_table) != expected_table_fields:
+            raise DataBridgeRefreshError(
+                "DataBridge source provenance evidence table is invalid"
+            )
+        table_name = raw_table.get("table_name")
+        row_count = raw_table.get("row_count")
+        if (
+            not isinstance(table_name, str)
+            or not table_name
+            or not isinstance(row_count, int)
+            or isinstance(row_count, bool)
+            or row_count < 0
+        ):
+            raise DataBridgeRefreshError(
+                "DataBridge source provenance evidence table values are invalid"
+            )
+        values: dict[str, str | None] = {}
+        for field_name in (
+            "latest_create_time",
+            "latest_update_time",
+            "latest_business_key",
+        ):
+            value = raw_table.get(field_name)
+            if value is not None and not isinstance(value, str):
+                raise DataBridgeRefreshError(
+                    "DataBridge source provenance evidence table values are invalid"
+                )
+            values[field_name] = value
+        tables.append(
+            SourceTableEvidence(
+                table_name=table_name,
+                row_count=row_count,
+                latest_create_time=values["latest_create_time"],
+                latest_update_time=values["latest_update_time"],
+                latest_business_key=values["latest_business_key"],
+            )
+        )
+    if [item.table_name for item in tables] != sorted(
+        item.table_name for item in tables
+    ):
+        raise DataBridgeRefreshError(
+            "DataBridge source provenance evidence tables are not canonical"
+        )
+    required_table_names = set(FACTOR_SOURCE_TABLES) | {
+        METADATA_SOURCE_TABLE
+    } | set(CALENDAR_SOURCE_TABLES)
+    if tuple(item.table_name for item in tables) != tuple(
+        sorted(required_table_names)
+    ):
+        raise DataBridgeRefreshError(
+            "DataBridge source provenance evidence tables are incomplete"
+        )
+    evidence = SourceCommitEvidence(
+        feature_date=feature_date,
+        source_commit_token=source_commit_token,
+        tables=tuple(tables),
+    )
+    canonical_evidence = source_commit_evidence_payload(evidence)
+    if dict(raw_evidence) != canonical_evidence:
+        raise DataBridgeRefreshError(
+            "DataBridge source provenance evidence is not canonical"
+        )
+    if source_commit_evidence_sha256(evidence) != source_commit_token:
+        raise DataBridgeRefreshError(
+            "DataBridge source provenance token does not match evidence"
+        )
+    return {
+        "provenance_version": LOCAL_MYSQL_PROVENANCE_VERSION,
+        "feature_date": feature_date,
+        "source_rdate_cutoff": source_rdate_cutoff,
+        "snapshot_started_at": snapshot_started_at,
+        "source_commit_token": source_commit_token,
+        "source_evidence_sha256": source_evidence_sha256,
+        "source_evidence": canonical_evidence,
+    }
+
+
+def _canonical_date_value(value: object, *, label: str) -> str:
+    if not isinstance(value, str):
+        raise DataBridgeRefreshError(f"{label} is invalid")
+    try:
+        normalized = date.fromisoformat(value).isoformat()
+    except ValueError as exc:
+        raise DataBridgeRefreshError(f"{label} is invalid") from exc
+    if value != normalized:
+        raise DataBridgeRefreshError(f"{label} is non-canonical")
+    return normalized
+
+
+def _canonical_aware_timestamp_value(value: object, *, label: str) -> str:
+    if not isinstance(value, str):
+        raise DataBridgeRefreshError(f"{label} is invalid")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise DataBridgeRefreshError(f"{label} is invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise DataBridgeRefreshError(f"{label} is timezone-naive")
+    normalized = parsed.astimezone(ZoneInfo("Asia/Shanghai")).isoformat(
+        timespec="seconds"
+    )
+    if value != normalized:
+        raise DataBridgeRefreshError(f"{label} is non-canonical")
+    return normalized
+
+
+def _canonical_sha256_value(value: object, *, label: str) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise DataBridgeRefreshError(f"{label} is invalid")
+    return value
 
 
 def data_bridge_publication_identity_sha256(
@@ -1117,7 +1589,15 @@ def _read_publication_manifest(
         raise DataBridgeRefreshError(
             "DataBridge current publication manifest must be an object"
         )
-    if set(marker) != CURRENT_PUBLICATION_MANIFEST_FIELDS:
+    manifest_version = marker.get("manifest_version")
+    expected_fields = (
+        CURRENT_PUBLICATION_MANIFEST_FIELDS_BY_VERSION.get(
+            manifest_version
+        )
+        if isinstance(manifest_version, str)
+        else None
+    )
+    if expected_fields is None or set(marker) != expected_fields:
         raise DataBridgeRefreshError(
             "DataBridge current publication manifest fields are invalid"
         )
@@ -1137,6 +1617,12 @@ def _validate_identity_against_dataset(
     *,
     dataset: ValidatedDataBridgeDataset,
 ) -> None:
+    if identity.get("manifest_version") == CURRENT_PUBLICATION_MANIFEST_VERSION:
+        if identity.get("source_mode") != LOCAL_MYSQL_SOURCE_MODE:
+            raise DataBridgeRefreshError(
+                "DataBridge publication manifest local source mode is invalid"
+            )
+        _normalize_source_provenance(identity.get("source_provenance"))
     generation_id = identity.get("generation_id")
     refresh_date = identity.get("refresh_date")
     business_digest = identity.get("business_digest")
@@ -1293,6 +1779,14 @@ class DataBridgeStore:
                         raise DataBridgeRefreshError(
                             "DataBridge refresh state is invalid"
                         ) from exc
+                if (
+                    strict_read_only
+                    and not self.current_dir.is_dir()
+                    and _is_no_current_failure_audit_state(state)
+                ):
+                    raise DataBridgeCurrentMissingError(
+                        "DataBridge current has no published generation"
+                    )
                 yield state
             except (
                 DataBridgeCurrentMissingError,
@@ -1391,10 +1885,23 @@ class DataBridgeStore:
         publication_capability: (
             DailyCoordinatorPublicationCapability | None
         ) = None,
+        enforce_legacy_publication_fence: bool = True,
     ) -> dict[str, object]:
-        authority = _require_publish_authority(
-            publish=True,
-            publication_capability=publication_capability,
+        if (
+            not enforce_legacy_publication_fence
+            and publication_capability is not None
+        ):
+            raise DataBridgePublicationFenceError(
+                "legacy publication capability cannot be mixed with the "
+                "launchd-only refresh path"
+            )
+        authority = (
+            _require_publish_authority(
+                publish=True,
+                publication_capability=publication_capability,
+            )
+            if enforce_legacy_publication_fence
+            else None
         )
         candidate = Path(candidate_dir)
         _validate_publish_candidate(candidate)
@@ -1621,7 +2128,7 @@ class DataBridgeStore:
                 "refresh_date": refresh_date,
                 "finished_at": now.isoformat(timespec="seconds"),
                 "duration_sec": round(duration_sec, 3),
-                "error": error,
+                "error": _safe_failed_attempt_error(error),
             }
             self._write_state_locked(state)
 

@@ -45,10 +45,7 @@
     <string>06:55</string>
   </dict>
 
-  <key>RunAtLoad</key>
-  <true/>
-
-  <key>KeepAlive</key>
+  <key>Disabled</key>
   <true/>
 
   <key>StandardOutPath</key>

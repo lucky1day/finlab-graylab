@@ -1215,7 +1215,10 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
 
         with (
             patch.dict(os.environ, {}, clear=True),
-            self.assertRaisesRegex(ValueError, "must be explicitly set"),
+            self.assertRaisesRegex(
+                RuntimeError,
+                "requires launchd_one_shot",
+            ),
         ):
             create_scheme_run(
                 _RunEngine(),
@@ -1262,6 +1265,7 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             scheme_version="abc123",
             run_type="active",
             prediction_phase="scheduled_live",
+            scheduled_control_plane="launchd_one_shot",
             input_artifact_id="artifact-1",
             data_snapshot_id="snapshot-1",
         )

@@ -109,6 +109,8 @@ def require_v2_daily_ready(
             config,
             required_refresh_date=run_date,
             expected_daily_date=expected_daily_date,
+            strict_read_only=True,
+            require_source_provenance=True,
         )
     except Exception as exc:
         raise V2DailyGateBlocked(f"V2 daily current dataset validation failed: {exc}") from exc

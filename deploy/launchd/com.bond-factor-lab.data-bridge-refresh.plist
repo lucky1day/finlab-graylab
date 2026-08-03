@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.bond-factor-lab.data-bridge-refresh</string>
+  <key>WorkingDirectory</key>
+  <string>/Users/macstudio0/bond-factor-lab</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/macstudio0/miniconda3/bin/conda</string>
+    <string>run</string>
+    <string>--no-capture-output</string>
+    <string>-n</string>
+    <string>bond_factor_lab_service</string>
+    <string>python</string>
+    <string>scripts/refresh_data_bridge_current.py</string>
+    <string>--publish</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONNOUSERSITE</key><string>1</string>
+    <key>BOND_ALGO_CONDA_ENV</key><string>forecast_env</string>
+    <key>BFL_SOURCE_DB_CONFIG_ROOT</key><string>/Users/macstudio0/.config/bond-factor-lab</string>
+    <key>BFL_SOURCE_DB_CONFIG_PATH</key><string>/Users/macstudio0/.config/bond-factor-lab/source-runtime-db.json</string>
+    <key>BOND_DAILY_COORDINATOR_MODE</key><string>legacy</string>
+    <key>BFL_DATABRIDGE_PRODUCER</key><string>launchd-one-shot</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>30</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key>
+  <string>/Users/macstudio0/bond-factor-lab/logs/com.bond-factor-lab.data-bridge-refresh.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/macstudio0/bond-factor-lab/logs/com.bond-factor-lab.data-bridge-refresh.err</string>
+</dict>
+</plist>

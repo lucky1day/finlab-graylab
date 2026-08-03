@@ -188,6 +188,11 @@ def validate_dataset(
                 raise DataBridgeValidationError(
                     f"daily_output.csv latest date {normalized_keys[-1]} is earlier than expected {expected}"
                 )
+            if normalized_keys[-1] > expected:
+                raise DataBridgeValidationError(
+                    "daily_output.csv latest date "
+                    f"{normalized_keys[-1]} is later than feature cutoff {expected}"
+                )
 
         business_hash = hashlib.sha256("\n".join(canonical_rows).encode("utf-8")).hexdigest()
         rendered = frame.to_csv(index=False, lineterminator="\n").encode("utf-8")

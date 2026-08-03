@@ -134,6 +134,8 @@ class V2DailyGateTests(unittest.TestCase):
             self.config,
             required_refresh_date="2026-07-22",
             expected_daily_date="2026-07-21",
+            strict_read_only=True,
+            require_source_provenance=True,
         )
 
     def test_invalid_json_gate_is_blocked(self) -> None:

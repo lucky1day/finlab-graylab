@@ -104,73 +104,58 @@ def _cfg(
 
 
 class SchedulerMainTests(unittest.TestCase):
-    def test_data_bridge_refresh_uses_database_authoritative_cutoffs(
+    def test_legacy_data_bridge_writer_is_retired_before_any_writer_dependency(
         self,
     ) -> None:
         from scheduler import main as scheduler_main
 
         engine = SimpleNamespace(dispose=Mock())
-        config = SimpleNamespace(deadline_at=Mock(return_value=None))
-        authority = object()
-        result = SimpleNamespace(
-            state={"generation_id": "generation-new"},
-            rounds_completed=2,
-            duration_sec=1.0,
-        )
         with (
             patch.object(
                 scheduler_main,
                 "_previous_trading_day",
                 return_value="2026-07-28",
-            ),
+            ) as previous_trading_day,
             patch.object(
                 scheduler_main,
                 "create_engine_from_env",
                 return_value=engine,
-            ),
+            ) as create_engine,
             patch.object(
                 scheduler_main,
                 "resolve_databridge_continuity_authority_from_engine",
-                return_value=authority,
                 create=True,
             ) as resolve,
-            patch.object(
-                scheduler_main.DataBridgeRefreshConfig,
-                "from_env",
-                return_value=config,
-            ),
-            patch.object(
-                scheduler_main.DataBridgeClientConfig,
-                "from_env",
-                return_value=SimpleNamespace(),
-            ),
-            patch.object(
-                scheduler_main,
-                "DataBridgeClient",
-                return_value=SimpleNamespace(),
-            ),
-            patch.object(
-                scheduler_main,
-                "run_full_refresh",
-                return_value=result,
+            patch(
+                "scheduler.main.DataBridgeClient",
+                create=True,
+            ) as client,
+            patch(
+                "scheduler.main.run_full_refresh",
+                create=True,
             ) as refresh,
         ):
-            actual = scheduler_main.run_data_bridge_refresh_job(
-                "2026-07-29",
-                enforce_deadline=False,
-            )
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "retired.*launchd one-shot",
+            ):
+                scheduler_main.run_data_bridge_refresh_job(
+                    "2026-07-29",
+                    enforce_deadline=False,
+                )
 
-        self.assertIs(actual, result)
-        resolve.assert_called_once_with(
-            config,
-            feature_date="2026-07-28",
-            engine=engine,
+        self.assertTrue(
+            issubclass(
+                scheduler_main.LegacySchedulerWriterRetired,
+                RuntimeError,
+            )
         )
-        self.assertIs(
-            refresh.call_args.kwargs["continuity_authority"],
-            authority,
-        )
-        engine.dispose.assert_called_once_with()
+        previous_trading_day.assert_not_called()
+        create_engine.assert_not_called()
+        resolve.assert_not_called()
+        client.assert_not_called()
+        refresh.assert_not_called()
+        engine.dispose.assert_not_called()
 
     def setUp(self) -> None:
         self._mode_patcher = patch.dict(
@@ -396,43 +381,32 @@ class SchedulerMainTests(unittest.TestCase):
         self.assertEqual(code, 2)
         build_scheduler.assert_not_called()
 
-    def test_legacy_run_once_writers_preflight_storage_before_work(
+    def test_legacy_run_once_predictions_preflight_storage_before_work(
         self,
     ) -> None:
         from scheduler import main as scheduler_main
 
-        for run_once in ("predictions", "data-refresh"):
-            events: list[str] = []
-            with (
-                self.subTest(run_once=run_once),
-                patch.object(
-                    scheduler_main,
-                    "preflight_daily_storage",
-                    side_effect=lambda: events.append("preflight"),
+        events: list[str] = []
+        with (
+            patch.object(
+                scheduler_main,
+                "preflight_daily_storage",
+                side_effect=lambda: events.append("preflight"),
+            ),
+            patch.object(
+                scheduler_main,
+                "run_all_prediction_jobs",
+                side_effect=lambda **_kwargs: (
+                    events.append("predictions") or []
                 ),
-                patch.object(
-                    scheduler_main,
-                    "run_all_prediction_jobs",
-                    side_effect=lambda **_kwargs: (
-                        events.append("predictions") or []
-                    ),
-                ),
-                patch.object(
-                    scheduler_main,
-                    "run_data_bridge_refresh_job",
-                    side_effect=lambda **_kwargs: events.append(
-                        "data-refresh"
-                    ),
-                ),
-            ):
-                code = scheduler_main.main(
-                    ["--run-once", run_once]
-                )
+            ),
+        ):
+            code = scheduler_main.main(["--run-once", "predictions"])
 
-            self.assertEqual(code, 0)
-            self.assertEqual(events, ["preflight", run_once])
+        self.assertEqual(code, 0)
+        self.assertEqual(events, ["preflight", "predictions"])
 
-    def test_run_once_storage_failure_blocks_legacy_writers(
+    def test_run_once_storage_failure_blocks_legacy_predictions(
         self,
     ) -> None:
         from scheduler import main as scheduler_main
@@ -440,33 +414,24 @@ class SchedulerMainTests(unittest.TestCase):
             DailyStoragePreflightError,
         )
 
-        for run_once in ("predictions", "data-refresh"):
-            with (
-                self.subTest(run_once=run_once),
-                patch.object(
-                    scheduler_main,
-                    "preflight_daily_storage",
-                    side_effect=DailyStoragePreflightError(
-                        "DAILY_STORAGE_PATH_UNSAFE",
-                        label="daily_runtime",
-                    ),
+        with (
+            patch.object(
+                scheduler_main,
+                "preflight_daily_storage",
+                side_effect=DailyStoragePreflightError(
+                    "DAILY_STORAGE_PATH_UNSAFE",
+                    label="daily_runtime",
                 ),
-                patch.object(
-                    scheduler_main,
-                    "run_all_prediction_jobs",
-                ) as predictions,
-                patch.object(
-                    scheduler_main,
-                    "run_data_bridge_refresh_job",
-                ) as data_refresh,
-            ):
-                code = scheduler_main.main(
-                    ["--run-once", run_once]
-                )
+            ),
+            patch.object(
+                scheduler_main,
+                "run_all_prediction_jobs",
+            ) as predictions,
+        ):
+            code = scheduler_main.main(["--run-once", "predictions"])
 
-            self.assertEqual(code, 2)
-            predictions.assert_not_called()
-            data_refresh.assert_not_called()
+        self.assertEqual(code, 2)
+        predictions.assert_not_called()
 
     def test_ledger_mode_registers_one_daily_coordinator_and_isolates_pools(
         self,
@@ -683,55 +648,50 @@ class SchedulerMainTests(unittest.TestCase):
             if scheduler.running:
                 scheduler.shutdown(wait=False)
 
-    def test_ledger_mode_startup_catchup_routes_daily_and_non_daily_paths(
+    def test_scheduler_never_registers_startup_catchup(
         self,
     ) -> None:
         from scheduler import main as scheduler_main
 
-        with (
-            patch.dict(
-                os.environ,
-                {
-                    "BOND_DAILY_COORDINATOR_MODE": "ledger",
-                    "BOND_SCHEDULER_STARTUP_CATCHUP": "true",
-                },
-            ),
-            patch.object(
-                scheduler_main,
-                "_daily_coordinator_mode",
-                return_value="ledger",
-            ),
-            patch.object(
-                scheduler_main,
-                "discover_schemes",
-                return_value=[_cfg("daily_native")],
-            ),
-            patch.object(
-                scheduler_main,
-                "_sync_registry",
-                return_value=None,
-            ),
-        ):
-            scheduler = scheduler_main.build_scheduler()
+        for coordinator_mode in ("legacy", "ledger"):
+            with self.subTest(coordinator_mode=coordinator_mode):
+                with (
+                    patch.dict(
+                        os.environ,
+                        {
+                            "BOND_DAILY_COORDINATOR_MODE": coordinator_mode,
+                            "BOND_SCHEDULER_STARTUP_CATCHUP": "true",
+                        },
+                    ),
+                    patch.object(
+                        scheduler_main,
+                        "_daily_coordinator_mode",
+                        return_value=coordinator_mode,
+                    ),
+                    patch.object(
+                        scheduler_main,
+                        "discover_schemes",
+                        return_value=[_cfg("daily_native")],
+                    ),
+                    patch.object(
+                        scheduler_main,
+                        "_sync_registry",
+                        return_value=None,
+                    ),
+                ):
+                    scheduler = scheduler_main.build_scheduler()
 
-        try:
-            startup = scheduler.get_job(
-                "startup:daily-occurrence-catchup"
-            )
-            legacy = scheduler.get_job(
-                "startup:data-refresh-and-prediction-catchup"
-            )
-        finally:
-            if scheduler.running:
-                scheduler.shutdown(wait=False)
+                try:
+                    startup_jobs = [
+                        job.id
+                        for job in scheduler.get_jobs()
+                        if job.id.startswith("startup:")
+                    ]
+                finally:
+                    if scheduler.running:
+                        scheduler.shutdown(wait=False)
 
-        self.assertIsNotNone(startup)
-        self.assertEqual(
-            startup.func.__name__,
-            "run_ledger_startup_catchup",
-        )
-        self.assertEqual(startup.kwargs, {"algo_env": "forecast_env"})
-        self.assertIsNone(legacy)
+                self.assertEqual(startup_jobs, [])
 
     def test_ledger_startup_catchup_runs_non_daily_even_when_daily_fails(
         self,
@@ -930,89 +890,70 @@ class SchedulerMainTests(unittest.TestCase):
 
         self.assertIsNone(job)
 
-    def test_ledger_run_once_data_refresh_is_check_only(self) -> None:
+    def test_run_once_data_refresh_is_retired_without_reads_or_writes(self) -> None:
         from scheduler import main as scheduler_main
 
+        stdout = io.StringIO()
         with (
-            patch.dict(
-                os.environ,
-                {"BOND_DAILY_COORDINATOR_MODE": "ledger"},
-            ),
             patch.object(
                 scheduler_main,
                 "_daily_coordinator_mode",
-                return_value="ledger",
-            ),
+                side_effect=AssertionError("retired command must not resolve mode"),
+            ) as coordinator_mode,
+            patch.object(
+                scheduler_main,
+                "preflight_daily_storage",
+            ) as storage_preflight,
             patch.object(
                 scheduler_main,
                 "data_bridge_refresh_is_current",
-                return_value=True,
             ) as check_current,
             patch.object(
                 scheduler_main,
                 "run_data_bridge_refresh_job",
             ) as publish_refresh,
+            redirect_stdout(stdout),
         ):
             exit_code = scheduler_main.main(
                 ["--run-once", "data-refresh", "--date", "2026-07-24"]
             )
 
-        self.assertEqual(exit_code, 0)
-        check_current.assert_called_once_with("2026-07-24")
+        self.assertEqual(exit_code, 2)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["event"], "data_bridge_refresh")
+        self.assertEqual(
+            payload["reason"],
+            "legacy-scheduler-writer-retired",
+        )
+        self.assertEqual(payload["status"], "retired")
+        coordinator_mode.assert_not_called()
+        storage_preflight.assert_not_called()
+        check_current.assert_not_called()
         publish_refresh.assert_not_called()
 
-    def test_startup_tasks_refresh_before_prediction_catchup(self) -> None:
+    def test_startup_tasks_never_refresh_or_prediction_catchup(self) -> None:
         from scheduler import main as scheduler_main
 
-        calls: list[str] = []
         now = datetime(2026, 7, 19, 7, 30, tzinfo=scheduler_main.ASIA_SHANGHAI)
         with (
             patch.object(
                 scheduler_main,
                 "data_bridge_refresh_is_current",
-                side_effect=lambda *_args, **_kwargs: calls.append("check") or False,
-            ),
+            ) as check_current,
             patch.object(
                 scheduler_main,
                 "run_data_bridge_refresh_job",
-                side_effect=lambda *_args, **_kwargs: calls.append("refresh"),
-            ),
+            ) as refresh,
             patch.object(
                 scheduler_main,
                 "run_startup_prediction_catchup",
-                side_effect=lambda *_args, **_kwargs: calls.append("predictions"),
-            ),
+            ) as catchup,
         ):
             scheduler_main.run_startup_tasks(now=now, algo_env="forecast_env")
 
-        self.assertEqual(calls, ["check", "refresh", "predictions"])
-
-    def test_startup_tasks_refresh_when_current_check_raises(self) -> None:
-        from scheduler import main as scheduler_main
-        from shared.data_bridge.refresh import DataBridgeRefreshError
-
-        calls: list[str] = []
-        now = datetime(2026, 7, 19, 7, 30, tzinfo=scheduler_main.ASIA_SHANGHAI)
-        with (
-            patch.object(
-                scheduler_main,
-                "data_bridge_refresh_is_current",
-                side_effect=DataBridgeRefreshError("stale"),
-            ),
-            patch.object(
-                scheduler_main,
-                "run_data_bridge_refresh_job",
-                side_effect=lambda *_args, **_kwargs: calls.append("refresh"),
-            ),
-            patch.object(
-                scheduler_main,
-                "run_startup_prediction_catchup",
-                side_effect=lambda *_args, **_kwargs: calls.append("predictions"),
-            ),
-        ):
-            scheduler_main.run_startup_tasks(now=now, algo_env="forecast_env")
-
-        self.assertEqual(calls, ["refresh", "predictions"])
+        check_current.assert_not_called()
+        refresh.assert_not_called()
+        catchup.assert_not_called()
 
     def test_scheduler_jobs_are_registered_once_per_base_scheme_not_per_tenor(self) -> None:
         from scheduler import main as scheduler_main

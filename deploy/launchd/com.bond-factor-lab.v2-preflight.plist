@@ -33,33 +33,8 @@
     <string>07:00</string>
   </dict>
 
-  <key>StartCalendarInterval</key>
-  <array>
-    <dict>
-      <key>Hour</key>
-      <integer>6</integer>
-      <key>Minute</key>
-      <integer>0</integer>
-    </dict>
-    <dict>
-      <key>Hour</key>
-      <integer>6</integer>
-      <key>Minute</key>
-      <integer>30</integer>
-    </dict>
-    <dict>
-      <key>Hour</key>
-      <integer>6</integer>
-      <key>Minute</key>
-      <integer>35</integer>
-    </dict>
-    <dict>
-      <key>Hour</key>
-      <integer>7</integer>
-      <key>Minute</key>
-      <integer>0</integer>
-    </dict>
-  </array>
+  <key>Disabled</key>
+  <true/>
 
   <key>ProcessType</key>
   <string>Background</string>

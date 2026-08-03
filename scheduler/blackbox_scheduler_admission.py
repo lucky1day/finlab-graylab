@@ -15,12 +15,14 @@ LEGACY_AUTOMATIC = "legacy_automatic"
 DAILY_LEDGER = "daily_ledger"
 RECURRING = "recurring"
 DIRECT_SCHEDULED = "direct_scheduled"
+LAUNCHD_ONE_SHOT = "launchd_one_shot"
 VALID_CONTROL_PLANES = frozenset(
     {
         LEGACY_AUTOMATIC,
         DAILY_LEDGER,
         RECURRING,
         DIRECT_SCHEDULED,
+        LAUNCHD_ONE_SHOT,
     }
 )
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -77,10 +79,20 @@ def _entry(
 
 
 _FORMAL_DAILY_CAPABILITIES = frozenset(
-    {LEGACY_AUTOMATIC, DAILY_LEDGER, DIRECT_SCHEDULED}
+    {
+        LEGACY_AUTOMATIC,
+        DAILY_LEDGER,
+        DIRECT_SCHEDULED,
+        LAUNCHD_ONE_SHOT,
+    }
 )
 _FORMAL_WEEKLY_CAPABILITIES = frozenset(
-    {LEGACY_AUTOMATIC, RECURRING, DIRECT_SCHEDULED}
+    {
+        LEGACY_AUTOMATIC,
+        RECURRING,
+        DIRECT_SCHEDULED,
+        LAUNCHD_ONE_SHOT,
+    }
 )
 _DAILY_GRAY_CAPABILITIES = frozenset({DAILY_LEDGER})
 _NO_CAPABILITIES: frozenset[str] = frozenset()

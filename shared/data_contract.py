@@ -251,9 +251,11 @@ def capture_source_commit_evidence_from_connection(
                        COUNT(*) AS row_count,
                        MAX(create_time) AS latest_create_time
                 FROM {table_name}
+                WHERE rdate <= :feature_date
                 GROUP BY rdate
                 """
-            )
+            ),
+            {"feature_date": normalized_feature_date},
         ).mappings().all()
         row_count, latest_create_time = _aggregate_factor_rows(
             rows,
@@ -315,24 +317,49 @@ def capture_source_commit_evidence_from_connection(
             )
         )
     ordered = tuple(sorted(evidence, key=lambda item: item.table_name))
-    payload = {
+    evidence_record = SourceCommitEvidence(
+        feature_date=normalized_feature_date,
+        source_commit_token="",
+        tables=ordered,
+    )
+    return SourceCommitEvidence(
+        feature_date=evidence_record.feature_date,
+        source_commit_token=source_commit_evidence_sha256(
+            evidence_record
+        ),
+        tables=evidence_record.tables,
+    )
+
+
+def source_commit_evidence_payload(
+    evidence: SourceCommitEvidence,
+) -> dict[str, object]:
+    """返回可重算源水位 token 的规范、非敏感审计载荷。"""
+    if not isinstance(evidence, SourceCommitEvidence):
+        raise TypeError("evidence must be SourceCommitEvidence")
+    normalized_feature_date = _canonical_date(evidence.feature_date)
+    ordered = tuple(
+        sorted(evidence.tables, key=lambda item: item.table_name)
+    )
+    return {
         "evidence_version": "native-source-watermark-v1",
         "feature_date": normalized_feature_date,
         "tables": [asdict(item) for item in ordered],
     }
-    token = hashlib.sha256(
+
+
+def source_commit_evidence_sha256(
+    evidence: SourceCommitEvidence,
+) -> str:
+    """重算 ``SourceCommitEvidence`` 的稳定水位摘要。"""
+    return hashlib.sha256(
         json.dumps(
-            payload,
+            source_commit_evidence_payload(evidence),
             ensure_ascii=True,
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
-    return SourceCommitEvidence(
-        feature_date=normalized_feature_date,
-        source_commit_token=token,
-        tables=ordered,
-    )
 
 
 def assert_source_commit_evidence_at_cutoff(

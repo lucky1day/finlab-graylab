@@ -53,6 +53,64 @@ class ExecutorAggregateFenceTests(unittest.TestCase):
         sync_registry.assert_not_called()
         execute_one.assert_not_called()
 
+    def test_launchd_bulk_daily_does_not_read_legacy_coordinator(
+        self,
+    ) -> None:
+        """bulk one-shot 必须绕过已退役的 daily coordinator。"""
+        from scheduler import executor
+
+        config = SimpleNamespace(
+            scheme_id="native_daily",
+            scheme_version="native-v1",
+            status="active",
+            version_status="active",
+            runtime_type="native_adapter",
+            frequency="daily",
+            task_type="T+1",
+            horizon=1,
+            tenors=["10Y"],
+        )
+        expected = executor.SchemeRunResult(
+            config.scheme_id,
+            "success",
+            1,
+            0.1,
+        )
+        with (
+            patch.object(
+                executor,
+                "discover_schemes",
+                side_effect=([config], [config]),
+            ),
+            patch.object(
+                executor,
+                "bootstrap_deployment_daily_coordinator_mode",
+                side_effect=AssertionError(
+                    "launchd bulk must not read legacy coordinator"
+                ),
+            ) as coordinator_mode,
+            patch.object(
+                executor,
+                "execute_scheme",
+                return_value=expected,
+            ) as execute_one,
+        ):
+            results = executor.execute_all(
+                "2026-07-28",
+                prediction_phase="scheduled_live",
+                scheduled_control_plane="launchd_one_shot",
+            )
+
+        self.assertEqual(results, [expected])
+        coordinator_mode.assert_not_called()
+        execute_one.assert_called_once_with(
+            config,
+            "2026-07-28",
+            algo_env=executor.DEFAULT_ALGO_ENV,
+            prediction_phase="scheduled_live",
+            scheduled_control_plane="launchd_one_shot",
+        )
+
     def test_scheduled_aggregate_rejects_exact_gray_without_registry_sync(
         self,
     ) -> None:
@@ -146,7 +204,10 @@ class ExecutorAggregateFenceTests(unittest.TestCase):
                 for config in schemes
                 if (
                     config.status == "active"
-                    and config.scheme_id not in gray_ids
+                    and (
+                        config.runtime_type != "blackbox_v2"
+                        or config.scheme_id in formal_ids
+                    )
                 )
             ],
         )
@@ -164,7 +225,15 @@ class ExecutorAggregateFenceTests(unittest.TestCase):
                 for result in results
                 if result.status == "failed"
             },
-            gray_ids,
+            {
+                config.scheme_id
+                for config in schemes
+                if (
+                    config.status == "active"
+                    and config.runtime_type == "blackbox_v2"
+                    and config.scheme_id not in formal_ids
+                )
+            },
         )
         for result in results:
             if result.scheme_id in gray_ids:
@@ -718,6 +787,66 @@ class ExecutorCliExitCodeTests(unittest.TestCase):
         self.assertEqual(code, 2)
         execute_one.assert_called_once()
         execute_all.assert_not_called()
+
+    def test_cli_rejects_launchd_one_shot_control_plane(self) -> None:
+        """one-shot plane 只能由受锁和 gate 保护的 runner 内部传入。"""
+        from scheduler import executor
+
+        with (
+            patch.object(executor, "execute_scheme") as execute_one,
+            patch.object(executor, "execute_all") as execute_all,
+            self.assertRaises(SystemExit) as raised,
+        ):
+            executor.main(
+                [
+                    "2026-07-28",
+                    "--scheduled-control-plane",
+                    "launchd_one_shot",
+                ]
+            )
+
+        self.assertNotEqual(raised.exception.code, 0)
+        execute_one.assert_not_called()
+        execute_all.assert_not_called()
+
+    def test_cli_direct_formal_weekly_is_rejected_before_engine(
+        self,
+    ) -> None:
+        """普通 executor CLI 无法为 formal weekly 创建无 item run。"""
+        from scheduler import executor
+
+        config = SimpleNamespace(
+            scheme_id="weekly_10y_lgbm_point_v1",
+            scheme_version="0666a6989d6b",
+            status="active",
+            version_status="active",
+            runtime_type="blackbox_v2",
+            frequency="weekly",
+            task_type="weekly_point",
+            horizon=1,
+            tenors=["10Y"],
+        )
+        with (
+            patch.object(
+                executor,
+                "discover_schemes",
+                return_value=[config],
+            ),
+            patch.object(
+                executor,
+                "create_engine_from_env",
+            ) as create_engine,
+        ):
+            code = executor.main(
+                [
+                    "2026-07-28",
+                    "--scheme-id",
+                    config.scheme_id,
+                ]
+            )
+
+        self.assertEqual(code, 2)
+        create_engine.assert_not_called()
 
     def test_unknown_single_scheme_exits_two_without_execution(
         self,

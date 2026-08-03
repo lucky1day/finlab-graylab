@@ -54,7 +54,7 @@ def _current_dataset(
     frames = {
         "daily_output.csv": _frame(
             "daily_output.csv",
-            ["2026-07-22", "2026-07-23", "2026-07-24"],
+            ["2026-07-22", "2026-07-23"],
         ),
         "weekly_output.csv": _frame(
             "weekly_output.csv",
@@ -101,6 +101,51 @@ def _current_dataset(
         state=MappingProxyType(state),
         dataset=dataset,
     )
+
+
+def _local_mysql_source_provenance(feature_date: str) -> dict[str, object]:
+    from shared.data_bridge.refresh import LOCAL_MYSQL_PROVENANCE_VERSION
+    from shared.data_contract import (
+        CALENDAR_SOURCE_TABLES,
+        FACTOR_SOURCE_TABLES,
+        METADATA_SOURCE_TABLE,
+        SourceCommitEvidence,
+        SourceTableEvidence,
+        source_commit_evidence_payload,
+        source_commit_evidence_sha256,
+    )
+
+    unsigned = SourceCommitEvidence(
+        feature_date=feature_date,
+        source_commit_token="",
+        tables=tuple(
+            SourceTableEvidence(
+                table_name=table_name,
+                row_count=1,
+                latest_create_time=None,
+            )
+            for table_name in sorted(
+                set(FACTOR_SOURCE_TABLES)
+                | {METADATA_SOURCE_TABLE}
+                | set(CALENDAR_SOURCE_TABLES)
+            )
+        ),
+    )
+    token = source_commit_evidence_sha256(unsigned)
+    evidence = SourceCommitEvidence(
+        feature_date=feature_date,
+        source_commit_token=token,
+        tables=unsigned.tables,
+    )
+    return {
+        "provenance_version": LOCAL_MYSQL_PROVENANCE_VERSION,
+        "feature_date": feature_date,
+        "source_rdate_cutoff": feature_date,
+        "snapshot_started_at": "2026-07-24T06:30:00+08:00",
+        "source_commit_token": token,
+        "source_evidence_sha256": token,
+        "source_evidence": source_commit_evidence_payload(evidence),
+    }
 
 
 _NATIVE_TEST_DIRECTORIES: list[tempfile.TemporaryDirectory[str]] = []
@@ -260,6 +305,68 @@ def _native_cutoff_context(*, engine: object | None = None):
 
 
 class DataBridgeInputGenerationTests(unittest.TestCase):
+    def test_local_mysql_generation_preserves_real_source_commit_token(
+        self,
+    ) -> None:
+        from shared.data_bridge.refresh import CurrentDataset
+        from shared.databridge_input_generation import (
+            create_databridge_generation,
+            open_databridge_generation,
+        )
+
+        current = _current_dataset()
+        state = dict(current.state)
+        provenance = _local_mysql_source_provenance("2026-07-23")
+        state.update(
+            {
+                "source_mode": "local_mysql",
+                "source_provenance": provenance,
+            }
+        )
+        local_current = CurrentDataset(
+            state=MappingProxyType(state),
+            dataset=current.dataset,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "shared.databridge_input_generation."
+            "require_local_mysql_source_provenance",
+            wraps=__import__(
+                "shared.databridge_input_generation",
+                fromlist=["require_local_mysql_source_provenance"],
+            ).require_local_mysql_source_provenance,
+        ) as require_provenance:
+            created = create_databridge_generation(
+                local_current,
+                native_generation=_native_cutoff_context(),
+                business_date="2026-07-24",
+                feature_date="2026-07-23",
+                output_root=Path(tmpdir),
+                schema_path=SCHEMA_PATH,
+            )
+            reopened = open_databridge_generation(
+                created.manifest_path,
+                schema_path=SCHEMA_PATH,
+            )
+
+        require_provenance.assert_called_once_with(
+            local_current.state,
+            expected_daily_date="2026-07-23",
+        )
+
+        self.assertEqual(created.source_mode, "local_mysql")
+        self.assertEqual(
+            created.source_commit_token,
+            provenance["source_commit_token"],
+        )
+        self.assertNotEqual(
+            created.source_commit_token,
+            created.upstream_generation_id,
+        )
+        self.assertEqual(
+            reopened.source_commit_token,
+            provenance["source_commit_token"],
+        )
+
     def test_generation_freezes_three_files_and_authoritative_cutoffs(
         self,
     ) -> None:
@@ -512,7 +619,7 @@ class DataBridgeInputGenerationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.assertRaisesRegex(
                 ValueError,
-                "daily cutoff must equal feature_date",
+                "daily_output.csv latest date|daily cutoff must equal feature_date",
             ):
                 create_databridge_generation(
                     stale,

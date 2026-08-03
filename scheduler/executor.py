@@ -1261,6 +1261,7 @@ def execute_scheme(
     algo_env: str = DEFAULT_ALGO_ENV,
     timeout_sec: int = 600,
     prediction_phase: str = "scheduled_live",
+    scheduled_control_plane: str = "direct_scheduled",
     blackbox_precommit_validator: Callable[[object], None] | None = None,
     blackbox_snapshot_mode: str = BLACKBOX_SNAPSHOT_MODE_FRESH,
     blackbox_expected_generation_id: str | None = None,
@@ -1278,7 +1279,10 @@ def execute_scheme(
         raise ValueError(f"prediction_phase must be one of {sorted(VALID_PREDICTION_PHASES)}, got {prediction_phase}")
     if prediction_phase == "scheduled_live":
         configuration_error = (
-            _scheduled_live_execution_configuration_error(cfg)
+            _scheduled_live_execution_configuration_error(
+                cfg,
+                scheduled_control_plane=scheduled_control_plane,
+            )
         )
         if configuration_error is not None:
             return SchemeRunResult(
@@ -1344,7 +1348,11 @@ def execute_scheme(
         creation_fence: dict[str, object] = {}
         if prediction_phase == "scheduled_live":
             frequency = getattr(cfg, "frequency", None)
-            if frequency not in {"weekly", "monthly"}:
+            if scheduled_control_plane == "launchd_one_shot":
+                creation_fence[
+                    "scheduled_control_plane"
+                ] = scheduled_control_plane
+            elif frequency not in {"weekly", "monthly"}:
                 coordinator_mode = require_daily_coordinator_mode()
                 if coordinator_mode == "ledger":
                     creation_fence["schedule_frequency"] = frequency
@@ -1490,10 +1498,13 @@ def execute_scheme(
 
 def _scheduled_live_execution_configuration_error(
     cfg: SchemeConfig,
+    *,
+    scheduled_control_plane: str,
 ) -> str | None:
     """在任何数据库或子进程副作用前校验低层 scheduled_live 入口。"""
     from scheduler.blackbox_scheduler_admission import (
         DIRECT_SCHEDULED,
+        LAUNCHD_ONE_SHOT,
         ScheduledPredictionConfigurationError,
         ScheduledPredictionControlPlaneDenied,
         require_scheduled_prediction_control_plane,
@@ -1508,7 +1519,7 @@ def _scheduled_live_execution_configuration_error(
     try:
         require_scheduled_prediction_control_plane(
             cfg,
-            plane=DIRECT_SCHEDULED,
+            plane=scheduled_control_plane,
         )
     except ScheduledPredictionControlPlaneDenied:
         return (
@@ -1523,29 +1534,19 @@ def _scheduled_live_execution_configuration_error(
             f"scheme_id={cfg.scheme_id}"
         )
 
-    if getattr(cfg, "frequency", None) in {"weekly", "monthly"}:
+    if scheduled_control_plane == LAUNCHD_ONE_SHOT:
         return None
-    try:
-        coordinator_mode = (
-            bootstrap_deployment_daily_coordinator_mode()
-        )
-    except (
-        DailyCoordinatorModeMissingError,
-        RuntimeError,
-        ValueError,
-    ):
+    if scheduled_control_plane != DIRECT_SCHEDULED:
         return (
             f"{PLATFORM_CONFIGURATION_ERROR_PREFIX} "
-            "daily coordinator mode is unavailable: "
+            "scheduled_live control plane is invalid: "
             f"scheme_id={cfg.scheme_id}"
         )
-    if coordinator_mode == "ledger":
-        return (
-            f"{PLATFORM_CONFIGURATION_ERROR_PREFIX} "
-            "direct daily scheduled_live execution is disabled in "
-            f"ledger mode: scheme_id={cfg.scheme_id}"
-        )
-    return None
+    return (
+        f"{PLATFORM_CONFIGURATION_ERROR_PREFIX} "
+        "scheduled_live without schedule_item_id requires "
+        f"launchd_one_shot: scheme_id={cfg.scheme_id}"
+    )
 
 
 def _scheduled_live_canonical_configuration_error(
@@ -1636,6 +1637,7 @@ def execute_all(
     algo_env: str = DEFAULT_ALGO_ENV,
     include_paused: bool = False,
     prediction_phase: str = "scheduled_live",
+    scheduled_control_plane: str = "direct_scheduled",
 ) -> list[SchemeRunResult]:
     """执行全部方案；正式调度先完成零写入 admission 快照。"""
     if prediction_phase not in VALID_PREDICTION_PHASES:
@@ -1655,6 +1657,7 @@ def execute_all(
             runnable,
             predict_date=predict_date,
             algo_env=algo_env,
+            scheduled_control_plane=scheduled_control_plane,
         )
 
     engine = create_engine_from_env()
@@ -1664,7 +1667,12 @@ def execute_all(
         engine.dispose()
 
     return [
-        execute_scheme(cfg, predict_date, algo_env=algo_env, prediction_phase=prediction_phase)
+        execute_scheme(
+            cfg,
+            predict_date,
+            algo_env=algo_env,
+            prediction_phase=prediction_phase,
+        )
         for cfg in runnable
     ]
 
@@ -1674,8 +1682,9 @@ def _execute_all_scheduled(
     *,
     predict_date: str,
     algo_env: str,
+    scheduled_control_plane: str,
 ) -> list[SchemeRunResult]:
-    """冻结 direct-scheduled policy 后按发现顺序执行或拒绝。"""
+    """冻结指定 scheduled 控制面 policy 后按发现顺序执行或拒绝。"""
     from scheduler.blackbox_scheduler_admission import (
         DIRECT_SCHEDULED,
         BlackboxSchedulerAdmissionError,
@@ -1719,7 +1728,10 @@ def _execute_all_scheduled(
     )
     coordinator_mode: str | None = None
     coordinator_mode_invalid = False
-    if daily_like_present:
+    if (
+        daily_like_present
+        and scheduled_control_plane == DIRECT_SCHEDULED
+    ):
         try:
             coordinator_mode = (
                 bootstrap_deployment_daily_coordinator_mode()
@@ -1771,14 +1783,14 @@ def _execute_all_scheduled(
                 try:
                     require_scheduled_prediction_control_plane_with_policy_snapshot(
                         config,
-                        plane=DIRECT_SCHEDULED,
+                        plane=scheduled_control_plane,
                         policy=policy,
                     )
                 except ScheduledPredictionControlPlaneDenied:
                     failure = (
                         _scheduled_aggregate_configuration_failure(
                             config,
-                            detail="direct control plane denied",
+                            detail="scheduled control plane denied",
                         )
                     )
                 except ScheduledPredictionConfigurationError:
@@ -1793,6 +1805,7 @@ def _execute_all_scheduled(
                     )
         if (
             failure is None
+            and scheduled_control_plane == DIRECT_SCHEDULED
             and getattr(config, "frequency", None)
             not in {"weekly", "monthly"}
         ):
@@ -1828,6 +1841,7 @@ def _execute_all_scheduled(
                     predict_date,
                     algo_env=algo_env,
                     prediction_phase="scheduled_live",
+                    scheduled_control_plane=scheduled_control_plane,
                 )
             )
     return results

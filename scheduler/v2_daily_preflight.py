@@ -12,7 +12,6 @@ import os
 from pathlib import Path
 import re
 import subprocess
-import sys
 import time
 from typing import Callable, Iterator, Mapping, Sequence
 from zoneinfo import ZoneInfo
@@ -24,10 +23,7 @@ from shared.data_bridge.refresh import (
     DataBridgeRefreshConfig,
     check_current_dataset,
 )
-from shared.daily_coordinator_mode import (
-    DAILY_COORDINATOR_MODE_ENV,
-    bootstrap_deployment_daily_coordinator_mode,
-)
+from shared.daily_coordinator_mode import bootstrap_deployment_daily_coordinator_mode
 
 
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -39,6 +35,7 @@ PHASE_CLOCKS = {
     (7, 0): "finalize",
 }
 PHASES = frozenset(PHASE_CLOCKS.values())
+RETIRED_REASON = "launchd-one-shot-data-bridge-publisher"
 
 
 class PreflightError(RuntimeError):
@@ -73,68 +70,23 @@ def run_phase(
     now: datetime | None = None,
     dependencies: PreflightDependencies | None = None,
 ) -> dict[str, object]:
-    """执行一个 preflight 阶段并持久化结构化决策。"""
+    """返回旧 preflight 的退役决策，绝不触碰刷新、gate 或重启。"""
     if phase not in PHASES:
         raise PreflightError(f"unsupported V2 preflight phase: {phase}")
     run_now = _localized(now or datetime.now(ASIA_SHANGHAI))
-    if phase == "finalize" and (run_now.hour, run_now.minute) != (7, 0):
-        raise PreflightError(
-            f"finalize is outside the 07:00 safe window: {run_now.isoformat(timespec='seconds')}"
-        )
-    deps = dependencies or default_dependencies()
-    config = deps.config_factory()
-    run_date = run_now.date().isoformat()
-    expected_daily_date = deps.expected_daily_date(run_date)
+    _ = dependencies
+    return _retired_payload(phase, run_now)
 
-    if phase == "refresh-primary":
-        return _run_refresh_phase(
-            phase=phase,
-            run_now=run_now,
-            run_date=run_date,
-            expected_daily_date=expected_daily_date,
-            config=config,
-            refresh=deps.refresh,
-            prior_checks=[],
-        )
-    if phase == "check-primary":
-        return _run_check_phase(
-            run_now=run_now,
-            run_date=run_date,
-            expected_daily_date=expected_daily_date,
-            config=config,
-            check=deps.check,
-        )
-    if phase == "refresh-retry":
-        try:
-            state = dict(deps.check(run_date, expected_daily_date))
-        except Exception as exc:
-            return _run_refresh_phase(
-                phase=phase,
-                run_now=run_now,
-                run_date=run_date,
-                expected_daily_date=expected_daily_date,
-                config=config,
-                refresh=deps.refresh,
-                prior_checks=[_failed_check("pre_retry_current_dataset", exc)],
-            )
-        record = _write_decision(
-            config,
-            run_now=run_now,
-            run_date=run_date,
-            expected_daily_date=expected_daily_date,
-            status="checking",
-            state=state,
-            checks=[_passed_check("pre_retry_current_dataset")],
-        )
-        return _summary(phase, "skipped-current", record)
-    return _run_finalize_phase(
-        run_now=run_now,
-        run_date=run_date,
-        expected_daily_date=expected_daily_date,
-        config=config,
-        check=deps.check,
-        restart=deps.restart_scheduler,
-    )
+
+def _retired_payload(phase: str, run_now: datetime) -> dict[str, object]:
+    """统一返回 legacy preflight 已退役的无副作用结果。"""
+    return {
+        "event": "v2_daily_preflight",
+        "phase": phase,
+        "reason": RETIRED_REASON,
+        "run_date": run_now.date().isoformat(),
+        "status": "retired",
+    }
 
 
 def _run_refresh_phase(
@@ -461,44 +413,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--phase", choices=["auto", *sorted(PHASES)], default="auto")
     args = parser.parse_args(argv)
     now = datetime.now(ASIA_SHANGHAI)
-    try:
-        coordinator_mode = _daily_coordinator_mode()
-        if coordinator_mode == "ledger":
-            payload = {
-                "coordinator_mode": coordinator_mode,
-                "event": "v2_daily_preflight",
-                "phase": "disabled",
-                "reason": "daily-coordinator-ledger-mode",
-                "run_date": now.date().isoformat(),
-                "status": "disabled",
-            }
-            print(json.dumps(payload, ensure_ascii=True, sort_keys=True))
-            return 0
-        phase = resolve_phase(now) if args.phase == "auto" else args.phase
-        dependencies = default_dependencies()
-        with _single_instance(dependencies.config_factory()) as acquired:
-            if not acquired:
-                payload = {
-                    "event": "v2_daily_preflight",
-                    "phase": phase,
-                    "status": "skipped-busy",
-                    "run_date": now.date().isoformat(),
-                }
-                print(json.dumps(payload, ensure_ascii=True, sort_keys=True))
-                return 0
-            payload = run_phase(phase, now=now, dependencies=dependencies)
-    except Exception as exc:
-        payload = {
-            "event": "v2_daily_preflight",
-            "status": "error",
-            "run_date": now.date().isoformat(),
-            "error": str(exc),
-        }
-        print(json.dumps(payload, ensure_ascii=True, sort_keys=True), file=sys.stderr)
-        return 2
+    payload = _retired_payload(args.phase, now)
     print(json.dumps(payload, ensure_ascii=True, sort_keys=True))
-    if payload.get("status") in {"blocked", "refresh-failed"}:
-        return 1
     return 0
 
 
