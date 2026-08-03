@@ -3,12 +3,17 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`blackbox_v2`
 **目标读者**：文档维护、平台入库和审计人员
-**最后核验日期**：2026-07-20
+**最后核验日期**：2026-08-03
 **事实源**：本仓库 `docs/` 目录
 
 本目录负责组织 Blackbox V2 的文档关系、试验记录和数据样例。对外发送的桌面文件或压缩包只是仓库文档的导出副本，不得在仓库外独立修改后再反向作为规范。
 
 Blackbox V2 是所有后续新算法、新方案 ID、新目标、新任务和替代版本的唯一入库运行时。场景判断统一从[方案入库导航](../onboarding/README.md)进入；Native V1 只维护政策清单中的存量方案。
+
+本目录不定义生产调度权。生产 writer、installed plist 证据、输入新鲜度及
+`gray_live` / `scheduled_live` 边界以
+[生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)为准；历史
+台账名称中的 “ledger” 不表示可用于生产调度。
 
 ## 1. 文档分层
 

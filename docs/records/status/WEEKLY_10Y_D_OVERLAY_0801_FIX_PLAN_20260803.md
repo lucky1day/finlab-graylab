@@ -83,8 +83,8 @@
 
 | 阶段 | 目标 | 当前状态 |
 |---|---|---|
-| P-1 | 两套 7Y T+1 方案进入灰度实验室并前端可见 | **授权范围已完成**：本地 v2 已全 Gate、入库、历史回补并由 Dashboard 读回；未授予 scheduler admission。正式 served-API Gate 的两项环境性失败已如实记录，未被 waiver |
-| G0 | 统一文档和治理口径 | **待处理**：现行文档仍混有 ledger/daily-gray 口径 |
+| P-1 | 两套 7Y T+1 方案进入灰度实验室并前端可见 | **授权范围闭环完成**：本地 v2 已全 Gate、入库、历史回补、Dashboard 读回和 formal served-API Gate；未授予 scheduler admission，`scheduled_live=0` |
+| G0 | 统一文档和治理口径 | **完成（开发分支）**：CURRENT 文档、SOP、部署说明和文档测试已收敛到 launchd-only 单 writer 口径；未修改 installed plist 或 loaded state |
 | G1 | 恢复本机 MySQL → DataBridge 的可靠刷新 | **根因已确认，尚未修复** |
 | G2 | 收敛为 launchd-only 单 writer 调度 | **目标已确定，尚未切换** |
 | G3 | 补齐 8 月 3 日日频缺口 | **缺口已定位，等待 G1/G2 与生产授权** |
@@ -225,12 +225,13 @@ prediction；随后重试成功，最终 44 个 target 完整。`002_v2` 的 44 
 `/api/metrics/{composite_scheme_id}` 以及 `/api/factor-lab/dashboard` 均返回 HTTP 200；Dashboard
 snapshot 为 fresh，显示正确的 `7Y`、`T+1`、horizon 1、active 状态和各 44 条 gray 记录。
 
-正式 Blackbox API Gate 对该已运行服务仍有两项**未 waiver 的环境性失败**，因此不得把它写成
-formal served-API Gate 通过：服务实例指纹仍绑定于旧进程启动时的 Git HEAD；且全量
-`/api/backtests/factor-lab?data_source=blackbox_v2_current_snapshot_as_of` 响应为 1,225,294
-bytes，超过 API probe 的 1 MiB 上限。这两项不阻断实际 Dashboard 前端读回；前者需专项生产
-授权后受控重启 backend，后者需单独改造 Gate 以按已验证 `benchmark_id` 精确查询。两项均未在
-本轮修改、重启、降级或绕过。
+此前 formal served-API Gate 的两个环境性阻断已在 2026-08-03 受控闭合：Harness 改为仅按
+已验证 `benchmark_id` 查询 backtest，避免全量响应超过 1 MiB；经用户专项授权，installed
+backend plist 仅新增固定实例 nonce，并完成 `bootout → bootstrap → kickstart` 的受控重载。
+重载后服务实例指纹与 installed nonce 匹配，两套 v2 的 fresh formal Gate 均通过：health、
+schemes、metrics 和精确 backtest API 均为 HTTP 200，Registry/live/backtest 均可见。
+此证据只证明 served API 与灰度链路闭合，不授予 scheduler admission，也不产生
+`scheduled_live`。
 
 本轮没有执行当前日期的 `live_write`，也没有修改 installed plist、调用 `launchctl`、重启服务
 或赋予 scheduler admission；因此两个方案目前只有经授权历史 `gray_live`，没有
@@ -246,7 +247,9 @@ installed 控制面的加载状态或既有自然批次的生产观察结果。
 
 根规范已经说明 launchd + plist 是真实生产控制面，但部分“当前”架构、SLA、SOP、部署说明和文档测试仍把 ledger、daily-gray 冻结 policy 或常驻 scheduler 当作目标方案。本文属于状态记录，不能单独覆盖这些现行规范。
 
-**状态：待处理。** 在完成文档统一前，新会话仍可能依据另一份“当前文档”重新建设 ledger 或继续维护双控制面。
+**状态：已完成（开发分支）。** CURRENT 架构、SLA、SOP、部署说明与文档测试已统一；
+旧 ledger/daily-gray 内容只保留为明确的历史或待退役兼容语境。该文档收敛没有修改
+installed plist、`launchctl` state、数据库或生产信号。
 
 ### 造成的影响
 
@@ -266,6 +269,16 @@ installed 控制面的加载状态或既有自然批次的生产观察结果。
 - Native 激活 SOP 不再要求维护即将退役的 daily-gray 冻结清单。
 - 本文进入状态记录索引，新会话可以从项目文档入口找到它。
 - 根目录 `AGENTS.md` 与 `CLAUDE.md` 继续保持一致。
+
+### G0 执行记录（2026-08-03，开发分支）
+
+- 新增当前[生产信号与调度治理](../../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)，明确
+  `launchd + installed plist`、每个 cadence 单 writer、`gray_live`/`scheduled_live`
+  分离、本机 MySQL DataBridge freshness fail-closed 与独立生产授权边界。
+- `CURRENT_STATUS`、`TODO`、架构索引、Blackbox/Native SOP、部署说明和旧日频 SLA 已指向
+  该治理合同；后者以及旧 ledger rollout 明确标为历史/不可执行，而非过渡方案。
+- 文档契约测试已以新治理替换旧 ledger/epoch 目标断言，并保留历史证据索引校验；
+  `tests/test_onboarding_docs.py` 为 `47 passed, 18 subtests passed`。
 
 ---
 
@@ -546,9 +559,9 @@ Native hash 当前覆盖完整 config 和文件文本，展示、状态、schedu
 
 ## 16. 下一步
 
-P-1 的已授权算法、数据和 Dashboard 可见性工作已完成；下一步回到 **G0** 及后续生产治理。
-在考虑任一 7Y scheduler admission、当前日期 `live_write` 或 installed 控制面操作前，必须先取得专项授权，
-只读核对 installed plist 与 loaded state，并处理本记录所列的 served-API Gate 环境性失败；不得把
-历史 `gray_live` 外推为自然调度或生产稳定证据。
+P-1 的已授权算法、数据、Dashboard 和 served-API 闭环工作以及 G0 文档统一已完成；下一步进入
+**G1** 的本机 MySQL → DataBridge 开发与验证。在考虑任一 7Y scheduler admission、当前日期 `live_write` 或 installed 控制面
+操作前，必须先取得专项授权并只读核对 installed plist 与 loaded state；不得把历史
+`gray_live` 或 formal API 通过外推为自然调度或生产稳定证据。
 
 当前唯一需要用户预先决定的治理选择是 **G4 的 D-overlay benchmark 处置**：推荐采用证据绑定、显式标记为 `waived` 的 scoped waiver；若用户要求完全同源复现，则将 G4 转为独立的上游数据/环境重建项目。

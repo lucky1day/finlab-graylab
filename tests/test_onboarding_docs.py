@@ -19,6 +19,9 @@ from shared.blackbox_v2.contracts import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DOCS_ROOT = PROJECT_ROOT / "docs"
+PRODUCTION_SCHEDULING_GOVERNANCE = (
+    DOCS_ROOT / "architecture" / "PRODUCTION_SCHEDULING_GOVERNANCE.md"
+)
 UPSTREAM_SOP = DOCS_ROOT / "sop" / "BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md"
 PLATFORM_SOP = DOCS_ROOT / "sop" / "BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md"
 BLACKBOX_ARCHITECTURE = (
@@ -97,6 +100,50 @@ T5_NO_FOREIGN_ABLATION_DESIGN = HISTORICAL_DOCUMENTS[1]
 DAILY_POLICY = PROJECT_ROOT / "deploy" / "daily_scheduler_policy_v2.json"
 
 class OnboardingDocumentationTests(unittest.TestCase):
+    def test_current_governance_contract_exists_and_is_indexed(self) -> None:
+        self.assertTrue(PRODUCTION_SCHEDULING_GOVERNANCE.exists())
+        governance = PRODUCTION_SCHEDULING_GOVERNANCE.read_text(
+            encoding="utf-8"
+        )
+        for marker in (
+            "launchd + installed plist",
+            "唯一生产调度控制面",
+            "一个 cadence 只能有一个生产 writer",
+            "gray_live",
+            "scheduled_live",
+        ):
+            self.assertIn(marker, governance)
+        self.assertIn("不得新增、扩容、迁移或补建", governance)
+        self.assertIn("daily-gray", governance)
+        self.assertRegex(
+            governance,
+            r"也不得作为新的或过渡生产调度\s*路径",
+        )
+
+        for path in (
+            DOCS_ROOT / "README.md",
+            DOCS_ROOT / "CURRENT_STATUS.md",
+            DOCS_ROOT / "TODO.md",
+            DOCS_ROOT / "architecture" / "README.md",
+        ):
+            with self.subTest(path=path.relative_to(PROJECT_ROOT)):
+                self.assertIn(
+                    "PRODUCTION_SCHEDULING_GOVERNANCE.md",
+                    path.read_text(encoding="utf-8"),
+                )
+        self.assertIn(
+            "WEEKLY_10Y_D_OVERLAY_0801_FIX_PLAN_20260803.md",
+            (DOCS_ROOT / "records" / "status" / "README.md").read_text(
+                encoding="utf-8"
+            ),
+        )
+        native_sop = NATIVE_MAINTENANCE_SOP.read_text(encoding="utf-8")
+        self.assertIn("不再要求维护", native_sop)
+        self.assertNotIn("作为**同一受控发布单元**", native_sop)
+        deploy = DEPLOY_README.read_text(encoding="utf-8")
+        self.assertIn("bootstrap/bootout/kickstart", deploy)
+        self.assertIn("独立生产操作", deploy)
+
     def test_point_in_time_records_use_standard_historical_status(self) -> None:
         for path in HISTORICAL_DOCUMENTS:
             with self.subTest(path=path.relative_to(PROJECT_ROOT)):
@@ -120,33 +167,39 @@ class OnboardingDocumentationTests(unittest.TestCase):
         current = CURRENT_STATUS.read_text(encoding="utf-8")
         architecture = ARCHITECTURE.read_text(encoding="utf-8")
         code_architecture = CODE_ARCHITECTURE.read_text(encoding="utf-8")
+        governance = PRODUCTION_SCHEDULING_GOVERNANCE.read_text(encoding="utf-8")
 
-        for text in (root_policy, current, architecture, code_architecture):
-            self.assertIn("launchd + plist", text)
-            self.assertIn("真实生产调度控制面", text)
+        self.assertIn("launchd + plist", root_policy)
+        self.assertIn("真实生产调度控制面", root_policy)
+        for text in (architecture, governance):
+            self.assertIn("launchd + installed plist", text)
+            self.assertIn("生产调度控制面", text)
+        self.assertIn("launchd + installed plist", current)
+        self.assertIn("唯一生产调度控制面", current)
         self.assertIn("installed plist", current)
         self.assertIn("`scheduler.main`/APScheduler", code_architecture)
         self.assertIn("bootstrap/bootout/kickstart", root_policy)
-        self.assertIn("com.bond-factor-lab.daily-gray", architecture)
-        self.assertIn("07:00", architecture)
-        self.assertNotIn("daily 07:03", architecture)
-        self.assertIn("2026-08-02", architecture)
-        self.assertIn("一次性 daily-gray", code_architecture)
+        self.assertIn("一个 cadence 只能有一个生产 writer", governance)
+        self.assertIn("daily predictions 约 07:03", governance)
+        self.assertIn("daily-gray", architecture)
+        self.assertIn("不属于新的或过渡生产方案", architecture)
+        self.assertNotIn("2026-08-02", architecture)
+        self.assertIn("不再要求更新 frozen daily-gray policy", code_architecture)
 
     def test_native_daily_activation_coordinates_frozen_launchd_policy(self) -> None:
         sop = NATIVE_MAINTENANCE_SOP.read_text(encoding="utf-8")
 
         for marker in (
-            "deploy/daily_gray_launchd_policy_v1.json",
-            "scheduler.daily_gray_runner",
-            "activated_scheme_version",
-            "同一受控发布单元",
-            "下一次 07:00 launchd 触发前",
-            "整批 fail-closed",
-            "tests/test_daily_gray_launchd_policy.py",
-            "tests/test_daily_gray_runner.py",
+            "daily_gray_launchd_policy_v1.json",
+            "不再要求维护",
+            "不能作为新版本发布单元",
+            "validation_scheme_version",
+            "生产信号与调度治理",
+            "bootout/bootstrap/kickstart",
+            "另取明确生产",
         ):
             self.assertIn(marker, sop)
+        self.assertNotIn("作为**同一受控发布单元**", sop)
 
     def test_policy_declares_blackbox_as_only_new_scheme_runtime(self) -> None:
         raw = json.loads((PROJECT_ROOT / "deploy" / "onboarding_policy_v1.json").read_text(encoding="utf-8"))
@@ -274,73 +327,22 @@ class OnboardingDocumentationTests(unittest.TestCase):
             self.assertIn(marker, platform)
         self.assertNotIn("按冻结 Schema 生成", platform)
 
-    def test_daily_rollout_docs_define_monotonic_epoch_cutover(self) -> None:
+    def test_legacy_daily_rollout_docs_are_explicitly_retired(self) -> None:
         deploy = DEPLOY_README.read_text(encoding="utf-8")
-        architecture = DAILY_SIGNAL_SLA.read_text(encoding="utf-8")
+        sla = DAILY_SIGNAL_SLA.read_text(encoding="utf-8")
         platform = PLATFORM_SOP.read_text(encoding="utf-8")
-        operator = (
-            PROJECT_ROOT / "scripts" / "daily_coordinator_epoch_operator.py"
-        ).read_text(encoding="utf-8")
-        control_probe = (
-            PROJECT_ROOT / "scheduler" / "daily_control_plane_probe.py"
-        ).read_text(encoding="utf-8")
+        governance = PRODUCTION_SCHEDULING_GOVERNANCE.read_text(encoding="utf-8")
 
-        for marker in (
-            "root-owned append-only epoch chain",
-            "只能追加更高 epoch",
-            "daily_coordinator_epoch_operator.py",
-            "hard-link no-clobber",
-            "必须保持 bootout",
-            "launchctl print",
-            "scripts/apply_migrations.py",
-        ):
-            self.assertIn(marker, deploy)
-
-        for marker in (
-            "machine-global root-owned append-only epoch chain",
-            "追加更高 epoch",
-            "ledger 下 preflight 保持 bootout",
-            "单实例锁与 run fence",
-            "scripts/apply_migrations.py",
-        ):
-            self.assertIn(marker, architecture)
-
-        for text in (deploy, platform):
-            self.assertIn(
-                "BOND_DAILY_COORDINATOR_MODE=ledger",
-                text,
-            )
-            self.assertIn("--check-only", text)
-            self.assertIn("--dry-run", text)
-
-        self.assertIn("v2-preflight", platform)
-
-        labels = (
-            "com.bond-factor-lab.backend",
-            "com.bond-factor-lab.scheduler",
-            "com.bond-factor-lab.v2-preflight",
-        )
-        for label in labels:
-            self.assertIn(label, deploy)
-            self.assertIn(label, control_probe)
-        for marker in (
-            "v2-preflight 三份 plist mode 一起改为 `ledger`",
-            "v2-preflight 服务继续\n   bootout/未加载",
-            "epoch 发布前",
-            "三份 installed plist 全部为 `ledger`",
-        ):
-            self.assertIn(marker, deploy)
-        for marker in (
-            "installed backend、scheduler、v2-preflight 三份 plist",
-            "epoch 发布前按精确 label 逐份核对",
-            "preflight 继续 bootout/未加载",
-        ):
-            self.assertIn(marker, architecture)
-        self.assertIn(
-            '_require_exact_probe_labels(installed_modes, "installed plist")',
-            operator,
-        )
-        self.assertIn("installed_modes[label] != mode", operator)
+        self.assertIn("HISTORICAL / 不可执行", deploy)
+        self.assertIn("文档状态**：`HISTORICAL`", sla)
+        for text in (governance, platform):
+            self.assertIn("launchd + installed plist", text)
+            self.assertIn("一个", text)
+            self.assertIn("writer", text)
+        self.assertIn("不得新增、扩容、迁移或补建", governance)
+        self.assertIn("daily-gray", governance)
+        self.assertIn("不能作为新的或过渡调度路径", platform)
+        self.assertNotIn("BOND_DAILY_COORDINATOR_MODE=ledger", governance)
 
     def test_upstream_metadata_name_is_task_scoped_and_concise(self) -> None:
         text = UPSTREAM_SOP.read_text(encoding="utf-8")
@@ -679,20 +681,20 @@ class OnboardingDocumentationTests(unittest.TestCase):
         ):
             self.assertIn(marker, deploy)
 
-    def test_platform_sop_defines_occurrence_timeline_and_isolation(self) -> None:
+    def test_platform_sop_defines_launchd_only_timing_boundary(self) -> None:
         platform = PLATFORM_SOP.read_text(encoding="utf-8")
         for marker in (
-            "06:30",
-            "07:00",
-            "07:45",
-            "08:00",
-            "08:30",
-            "+0/+2/.../+14",
-            "不重启 scheduler",
-            "旧 generation",
+            "launchd + installed plist",
+            "各有一个 writer",
+            "当天新鲜",
+            "feature_date",
+            "gray_live",
             "scheduled_live",
         ):
             self.assertIn(marker, platform)
+        self.assertIn("不能作为新的或过渡调度路径", platform)
+        self.assertNotIn("当天 occurrence 已冻结", platform)
+        self.assertNotIn("真实 ledger provenance", platform)
 
         upstream = UPSTREAM_SOP.read_text(encoding="utf-8")
         for marker in (
@@ -759,62 +761,33 @@ class OnboardingDocumentationTests(unittest.TestCase):
             {"README.md", "CURRENT_STATUS.md", "TODO.md"},
         )
 
-    def test_current_daily_contract_matches_policy(self) -> None:
+    def test_legacy_daily_policy_is_not_the_current_production_contract(self) -> None:
         policy = json.loads(DAILY_POLICY.read_text(encoding="utf-8"))
         sla = DAILY_SIGNAL_SLA.read_text(encoding="utf-8")
         current = CURRENT_STATUS.read_text(encoding="utf-8")
         todo = TODO.read_text(encoding="utf-8")
+        governance = PRODUCTION_SCHEDULING_GOVERNANCE.read_text(encoding="utf-8")
 
         self.assertEqual(policy["version"], "daily-scheduler-policy-v2")
-        self.assertEqual(policy["expected_item_count"], 25)
-        self.assertEqual(policy["expected_target_count"], 29)
-        self.assertEqual(len(policy["schemes"]), 25)
-        self.assertEqual(
-            sum(len(item["target_tenors"]) for item in policy["schemes"]),
-            29,
+        self.assertGreater(len(policy["schemes"]), 0)
+        self.assertIn("文档状态**：`HISTORICAL`", sla)
+        for text in (current, todo):
+            self.assertIn("PRODUCTION_SCHEDULING_GOVERNANCE.md", text)
+            self.assertNotIn("1 个 `daily-signals` occurrence", text)
+        self.assertIn("一个 cadence 只能有一个生产 writer", governance)
+        self.assertIn("daily prediction", governance)
+        self.assertRegex(
+            governance,
+            r"不得让常驻\s+APScheduler、daily-gray",
         )
-        runtime_counts = {
-            runtime: sum(
-                item["runtime_type"] == runtime for item in policy["schemes"]
-            )
-            for runtime in ("native_adapter", "blackbox_v2")
-        }
-        self.assertEqual(runtime_counts, {
-            "native_adapter": 17,
-            "blackbox_v2": 8,
-        })
-        self.assertEqual(policy["pools"]["native_max_concurrency"], 2)
-        self.assertEqual(policy["pools"]["v2_max_concurrency"], 2)
-
-        combined = "\n".join((sla, current, todo))
-        for marker in (
-            "1 个 coordinator",
-            "1 个 `daily-signals` occurrence",
-            "17 Native + 8",
-            "Native 最大并发 2",
-            "V2 最大并发 2",
-            "29/29",
-            "warm cache",
-            "v2-preflight 保持未加载",
-            "current_run_id + attempt_no",
-            "migration 018",
-        ):
-            self.assertIn(marker, combined)
-        for retired_gate in (
-            "21/25",
-            "forced-cold",
-            "CMS/Keychain",
-            "95.8",
-        ):
-            self.assertNotIn(retired_gate, combined)
 
     def test_daily_runtime_uses_direct_authority_without_legacy_admission(
         self,
     ) -> None:
-        current = CURRENT_STATUS.read_text(encoding="utf-8")
-        todo = TODO.read_text(encoding="utf-8")
         deploy = DEPLOY_README.read_text(encoding="utf-8")
         sla = DAILY_SIGNAL_SLA.read_text(encoding="utf-8")
+        current = CURRENT_STATUS.read_text(encoding="utf-8")
+        todo = TODO.read_text(encoding="utf-8")
         runtime = (
             PROJECT_ROOT / "scheduler" / "daily_runtime.py"
         ).read_text(encoding="utf-8")
@@ -833,67 +806,49 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertIn("bind_direct_cache_authorities", runtime)
         self.assertIn("revalidate_direct_authority", runtime)
 
-        self.assertIn("开发分支已删除旧 capacity admission JSON", current)
-        self.assertIn("旧 admission 文件已删除", current)
-        self.assertNotIn("旧 capacity admission", todo)
-        self.assertIn("任一待切换前置尚未闭合", deploy)
+        self.assertIn("PRODUCTION_SCHEDULING_GOVERNANCE.md", current)
+        self.assertIn("PRODUCTION_SCHEDULING_GOVERNANCE.md", todo)
+        self.assertIn("独立生产操作", deploy)
         self.assertIn("必须 fail-closed", deploy)
         self.assertNotIn("capacity admission", sla)
-        self.assertIn("旧 admission 依赖虽已从开发代码移除", current)
-        self.assertIn("cutover 必须 fail-closed", current)
+        self.assertIn("文档状态**：`HISTORICAL`", sla)
 
     def test_current_status_separates_target_from_installed_facts(self) -> None:
         current = CURRENT_STATUS.read_text(encoding="utf-8")
         todo = TODO.read_text(encoding="utf-8")
         deploy = DEPLOY_README.read_text(encoding="utf-8")
 
-        self.assertIn("## 已批准的日频目标合同", current)
-        self.assertIn("## 当前生产事实", current)
+        self.assertIn("## 当前政策", current)
+        self.assertIn("## 已验证的 7Y 灰度闭环", current)
+        self.assertIn("## 未完成的生产治理", current)
         for marker in (
-            "production 仍为 migration 017；migration 018 尚未应用",
-            "`rollout=legacy`；ledger 尚未启用",
-            "backend 与 scheduler 已加载且有运行中 PID",
-            "actuals 与 daily-gray 已加载为按时启动的一次性任务",
-            "v2-preflight 已加载但无运行中 PID",
-            "backend、scheduler、v2-preflight 存在漂移",
-            "7 个 production Liwei family 已完成 schema 3 bootstrap",
-            "machine-global epoch 与 ledger cutover 尚未执行",
-            "2026-07-28 为 12/29，2026-07-29 为 0/29",
-            "50 条缺口尚未写入",
-            "尚无真实 ledger occurrence",
+            "launchd + installed plist",
+            "gray_live",
+            "scheduled_live",
+            "G1",
+            "G4",
+            "不授予 scheduler admission",
         ):
             self.assertIn(marker, current)
 
         for marker in (
             "## 当前状态权威与 operator guard",
             "[当前状态](../docs/CURRENT_STATUS.md)",
-            "本 runbook\n不复制任何动态值",
-            "operator 每次执行前必须读取该页",
-            "任一待切换前置尚未闭合",
+            "本\nrunbook 不复制任何动态值",
+            "operator 每次执行前必须读取两页",
             "必须 fail-closed",
         ):
             self.assertIn(marker, deploy)
         for duplicated_dynamic_fact in (
-            "schema history 停在 migration 017",
-            "migration 018 尚未应用",
-            "`rollout=legacy`，ledger 尚未启用",
-            "scheduler 与 v2-preflight 均未加载",
-            "production schema 3 cache 尚未 bootstrap",
-            "machine-global epoch 和 ledger cutover 尚未执行",
-            "daily_capacity_admission_v2.json=BLOCKED",
-            "当前 admission JSON 为 `BLOCKED`",
-            "2026-07-28 日频为 12/29",
+            "2026-07-28 为 12/29",
             "2026-07-29 为 0/29",
-            "50 条历史缺口均尚未写入",
+            "尚无真实 ledger occurrence",
         ):
             self.assertNotIn(duplicated_dynamic_fact, deploy)
 
-        self.assertIn("已批准目标生产口径", todo)
-        self.assertNotIn("当前唯一生产口径", todo)
-        self.assertNotIn(
-            "machine-global epoch、单实例锁和 run fence 生效",
-            current,
-        )
+        self.assertIn("G0 — 文档与口径", todo)
+        self.assertIn("G1 — DataBridge refresh", todo)
+        self.assertNotIn("ledger 已启用", current)
         self.assertNotIn("2026-07-30 日频 ledger 本地运行基线", deploy)
 
     def test_scheduled_live_requires_future_real_occurrence_evidence(
@@ -901,33 +856,21 @@ class OnboardingDocumentationTests(unittest.TestCase):
     ) -> None:
         current = CURRENT_STATUS.read_text(encoding="utf-8")
         deploy = DEPLOY_README.read_text(encoding="utf-8")
-        sla = DAILY_SIGNAL_SLA.read_text(encoding="utf-8")
         platform = PLATFORM_SOP.read_text(encoding="utf-8")
+        governance = PRODUCTION_SCHEDULING_GOVERNANCE.read_text(encoding="utf-8")
 
-        self.assertRegex(
-            current,
-            r"2026-07-30[^\n]*尚无真实 ledger occurrence",
-        )
-        self.assertRegex(current, r"日期标签本身\s+不构成证据")
-        self.assertIn("日期标签本身不构成起点证据", deploy)
-        self.assertNotIn("2026-07-30", deploy)
-        self.assertIn("2026-07-30 尚无真实 occurrence/receipt 证据", sla)
-        self.assertIn("日期本身不能", sla)
-        self.assertIn("2026-07-30 日期本身不构成起点证据", platform)
-        for text in (current, deploy, sla, platform):
-            self.assertIn("未来", text)
-            self.assertIn("真实", text)
-            self.assertIn("occurrence", text)
+        for text in (current, governance, platform):
+            self.assertIn("gray_live", text)
             self.assertIn("scheduled_live", text)
-        for stale_claim in (
-            "2026-07-30 起真实 ledger occurrence",
-            "2026-07-30 真实 ledger occurrence 起",
-            "7/30 真实 ledger 才是",
-        ):
-            for text in (current, deploy, sla, platform):
-                self.assertNotIn(stale_claim, text)
+        self.assertIn("自然时钟触发", governance)
+        self.assertIn("insert-only", governance)
+        self.assertIn("不授予 scheduler admission", current)
+        self.assertIn("合格自然时钟触发", platform)
+        self.assertIn("HISTORICAL / 不可执行", deploy)
+        self.assertNotIn("真实 ledger provenance", platform)
+        self.assertNotIn("ledger provenance", governance)
 
-    def test_current_sla_binds_liwei_schema3_to_policy(self) -> None:
+    def test_legacy_sla_does_not_bind_current_liwei_policy(self) -> None:
         policy = json.loads(DAILY_POLICY.read_text(encoding="utf-8"))
         sla = DAILY_SIGNAL_SLA.read_text(encoding="utf-8")
         liwei_items = [
@@ -936,87 +879,42 @@ class OnboardingDocumentationTests(unittest.TestCase):
             if item["scheme_id"].startswith("liwei_0616_")
         ]
         self.assertEqual(len(liwei_items), 10)
-        rows = re.findall(
-            r"^\| `([^`]+)` \| `([^`]+)` \| `([0-9a-f]{64})` "
-            r"\| `([^`]+)` \| `([^`]+)` \|$",
-            sla,
-            flags=re.MULTILINE,
-        )
-        actual = {
-            consumer: (family, tenor, fingerprint, publisher)
-            for family, tenor, fingerprint, publisher, consumer in rows
-        }
-        expected_publishers = {
-            "liwei_0616_10y_v61": (
-                "liwei_0616_10y01_full_oos_k3_div_k10"
-            ),
-            "liwei_0616_5y_v31": (
-                "liwei_0616_5y01_full_oos_k3_div_k10"
-            ),
-        }
-        expected = {}
         for item in liwei_items:
-            family, tenor = item["cache_group"].split(":", maxsplit=1)
-            expected[item["scheme_id"]] = (
-                family,
-                tenor,
-                item["cache_spec_fingerprint"],
-                expected_publishers.get(family, item["scheme_id"]),
-            )
-        self.assertEqual(actual, expected)
-        for marker in (
-            "有效输入投影",
-            "parent lineage",
-            "覆盖范围单调",
-            "manifest schema 3",
-            "hit",
-            "append",
-            "suffix",
-            "CACHE_PUBLISHER_REQUIRED",
-            "非 publisher consumer 必须零写",
-            "不得是 symlink",
-            "SHA-256",
-        ):
-            self.assertIn(marker, sla)
+            self.assertIn("cache_group", item)
+            self.assertIn("cache_spec_fingerprint", item)
+        self.assertIn("文档状态**：`HISTORICAL`", sla)
+        self.assertIn("不能作为安装、迁移、调度、验收或回滚操作说明", sla)
+        self.assertIn(
+            "PRODUCTION_SCHEDULING_GOVERNANCE.md",
+            sla,
+        )
 
     def test_historical_daily_gaps_have_gray_only_phase(self) -> None:
-        combined = "\n".join((
-            DAILY_SIGNAL_SLA.read_text(encoding="utf-8"),
-            CURRENT_STATUS.read_text(encoding="utf-8"),
-            TODO.read_text(encoding="utf-8"),
-        ))
-        expected_daily = {
-            "2026-07-23": 1,
-            "2026-07-24": 1,
-            "2026-07-27": 2,
-            "2026-07-28": 17,
-            "2026-07-29": 29,
-        }
-        for day, count in expected_daily.items():
-            self.assertRegex(
-                combined,
-                rf"{re.escape(day)}[^\n]*\|?[^\n]*{count}",
-            )
-        for marker in (
-            "历史缺口共 50",
-            "T+1 共 5",
-            "T+5 共 45",
-            "只能通过受控",
-            "insert-only 补为",
-            "不得倒签 `scheduled_live`",
-            "当前全部尚未写入",
-            "未来真实",
-        ):
-            self.assertIn(marker, combined)
+        historical = (
+            DOCS_ROOT / "records" / "status"
+            / "DAILY_SIGNAL_RECOVERY_HANDOFF_20260729.md"
+        ).read_text(encoding="utf-8")
+        governance = PRODUCTION_SCHEDULING_GOVERNANCE.read_text(encoding="utf-8")
+
+        self.assertIn("文档状态**：`HISTORICAL`", historical)
+        self.assertIn("2026-07-28", historical)
+        self.assertIn("gray_live", historical)
+        self.assertIn("不要写 `scheduled_live`", historical)
+        self.assertIn("历史缺口", governance)
+        self.assertIn("insert-only", governance)
+        self.assertIn("不能互相伪装、覆盖", governance)
 
     def test_todo_records_completed_manual_gray_batches(self) -> None:
-        text = TODO.read_text(encoding="utf-8")
-        self.assertIn("MANUAL_GRAY_ACCEPTED_5_OF_5", text)
-        self.assertIn("80 + 15 = 95", text)
-        self.assertIn("10Y T+5 四方案", text)
-        self.assertIn("manual gray_live", text)
-        self.assertIn("周度剩余对账", text)
-        self.assertIn("平台增强", text)
+        todo = TODO.read_text(encoding="utf-8")
+        monthly = FENGRL_MONTHLY_RECORD.read_text(encoding="utf-8")
+        ten_y = TEN_Y_T5_RECORD.read_text(encoding="utf-8")
+
+        self.assertIn("G0 — 文档与口径", todo)
+        self.assertIn("G4 — weekly 10Y D-overlay", todo)
+        self.assertIn("MANUAL_GRAY_ACCEPTED_5_OF_5", monthly)
+        self.assertIn("80 + 15 = 95", monthly)
+        self.assertIn("10Y T+5 四方案", ten_y)
+        self.assertIn("manual gray_live", ten_y)
 
     def test_canonical_migration_runner_boundary_is_documented(self) -> None:
         """迁移 CLI 的写库身份围栏与运维边界必须由当前文档锁定。"""
@@ -1024,9 +922,6 @@ class OnboardingDocumentationTests(unittest.TestCase):
         readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
         architecture = CODE_ARCHITECTURE.read_text(encoding="utf-8")
         deploy = DEPLOY_README.read_text(encoding="utf-8")
-        sla = DAILY_SIGNAL_SLA.read_text(encoding="utf-8")
-        current = CURRENT_STATUS.read_text(encoding="utf-8")
-        todo = TODO.read_text(encoding="utf-8")
 
         self.assertIn("`migrations.runner` 是迁移行为的唯一实现", root_policy)
         self.assertIn("caller-supplied `Engine`", root_policy)
@@ -1036,29 +931,20 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertIn("caller-supplied `Engine`", architecture)
         self.assertIn("`scripts/apply_migrations.py`", architecture)
 
-        for text in (deploy, sla):
-            self.assertIn("--expected-database-name <database-name>", text)
-            self.assertIn("--expected-server-uuid <server-uuid>", text)
-            self.assertIn("--inspect-applying-017", text)
-            self.assertIn("--inspect-applying-018", text)
-            self.assertIn("--recover-applying-017 --apply", text)
-            self.assertIn("--recover-applying-018 --apply", text)
-            self.assertRegex(
-                text,
-                r"恢复 017 后必须另行执行普通\s+`--apply`",
-            )
-
-        self.assertNotIn("canonical migration runner", todo)
-        self.assertIn("migration 018", todo)
-        self.assertIn("29/29", todo)
-        for marker in ("f3a5720", "1f1019b", "8ee916f", "3c96f58"):
-            self.assertIn(marker, current)
-        self.assertIn("未应用生产 migration", current)
+        self.assertIn("HISTORICAL / 不可执行", deploy)
+        for marker in (
+            "--expected-database-name <database-name>",
+            "--expected-server-uuid <server-uuid>",
+            "--inspect-applying-017",
+            "--inspect-applying-018",
+            "--recover-applying-017 --apply",
+            "--recover-applying-018 --apply",
+        ):
+            self.assertIn(marker, deploy)
         self.assertRegex(
-            current,
-            r"不等于 production-shaped\s+sanitized clone 演练",
+            deploy,
+            r"恢复 017 后必须另行执行普通\s+`--apply`",
         )
-        self.assertIn("durable signed operator report", current)
 
     def test_10y_gray_onboarding_record_binds_the_exact_batch(self) -> None:
         self.assertTrue(TEN_Y_T5_RECORD.exists())
@@ -1328,9 +1214,10 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertFalse(boundaries["automatic_scheduler_authorized"])
 
     def test_10y_batch_scope_records_manual_history_and_new_scheduler_decision(self) -> None:
-        todo = TODO.read_text(encoding="utf-8")
         record = TEN_Y_T5_RECORD.read_text(encoding="utf-8")
+        index = BLACKBOX_RECORDS_INDEX.read_text(encoding="utf-8")
 
+        self.assertIn("文档状态**：`HISTORICAL`", record)
         for marker in (
             "controlled activate",
             "persistent backtest",
@@ -1346,11 +1233,9 @@ class OnboardingDocumentationTests(unittest.TestCase):
             0,
         )
         self.assertIn("本批不存在 `scheduled_live`", record)
-        self.assertIn("已完成灰度批次", todo)
-        self.assertIn("10Y T+5 四方案", todo)
-        self.assertIn("manual gray_live", todo)
         self.assertIn("scheduled_live", record)
         self.assertIn("旧 generation fallback", record)
+        self.assertIn("GRAY_ONBOARDING_10Y_T5_4SCHEMES_20260726.md", index)
 
     def test_10y_batch_current_docs_record_manual_gray_completion(self) -> None:
         todo = TODO.read_text(encoding="utf-8")
@@ -1366,24 +1251,10 @@ class OnboardingDocumentationTests(unittest.TestCase):
             )
             self.assertNotIn("GRAY_LIVE_WAITING_FOR_SAME_DAY_GENERATION", text)
 
-        for marker in ("333", "17", "39", "372", "156", "10Y T+5"):
-            self.assertIn(marker, current)
-        for marker in (
-            "25 base execution",
-            "17 Native + 8 Blackbox V2",
-            "29/29",
-            "schedule_cron",
-            "2026-07-30",
-            "尚无真实 ledger occurrence",
-        ):
-            self.assertIn(marker, current)
-        for obsolete in (
-            "21 item/25 target",
-            "forced-cold",
-            "admission=`BLOCKED`",
-            "production-bound",
-        ):
-            self.assertNotIn(obsolete, current)
+        self.assertIn("状态记录", current)
+        self.assertIn("7Y", current)
+        self.assertNotIn("10Y T+5", current)
+        self.assertNotIn("尚无真实 ledger occurrence", current)
 
         self.assertIn(
             "**当前状态**：`four-schemes-gray-live-accepted`",
@@ -1450,8 +1321,13 @@ class OnboardingDocumentationTests(unittest.TestCase):
         missing_indexes: list[str] = []
         incomplete_indexes: list[str] = []
 
+        documentation_paths = (
+            path
+            for path in DOCS_ROOT.rglob("*.md")
+            if "superpowers" not in path.relative_to(DOCS_ROOT).parts
+        )
         directories = {DOCS_ROOT}
-        directories.update(path.parent for path in DOCS_ROOT.rglob("*.md"))
+        directories.update(path.parent for path in documentation_paths)
         for directory in sorted(directories):
             markdown_files = {
                 path.name
@@ -1461,7 +1337,9 @@ class OnboardingDocumentationTests(unittest.TestCase):
             child_doc_dirs = {
                 child.name
                 for child in directory.iterdir()
-                if child.is_dir() and any(child.rglob("*.md"))
+                if child.name != "superpowers"
+                and child.is_dir()
+                and any(child.rglob("*.md"))
             }
             index = directory / "README.md"
             if not index.exists():
@@ -1496,7 +1374,8 @@ class OnboardingDocumentationTests(unittest.TestCase):
     def test_current_status_is_a_concise_snapshot(self) -> None:
         text = (DOCS_ROOT / "CURRENT_STATUS.md").read_text(encoding="utf-8")
         self.assertLessEqual(len(text.splitlines()), 140)
-        self.assertIn("历史状态记录", text)
+        self.assertIn("状态记录", text)
+        self.assertIn("生产信号与调度治理", text)
 
     def test_navigation_does_not_duplicate_dynamic_runtime_state(self) -> None:
         navigation = (

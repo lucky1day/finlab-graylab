@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：平台开发和架构审计人员
-**最后核验日期**：2026-08-02
+**最后核验日期**：2026-08-03
 **版本**：v1.3
 
 > 本文是**系统架构**（部署、DB schema、API 契约、数据流）。代码层面的分层、包依赖方向规则、运行时调用图与扩展模型见 [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md)（代码架构主蓝图）。
@@ -14,21 +14,23 @@
 
 ## 1. 系统架构图
 
-下图是本分支代码与仓库 plist 在取得生产授权、同步 installed plist 并重启核验后的
-目标拓扑，不是尚未重载的当前进程快照。
+下图是 G1/G2 完成后应形成的目标拓扑，不是 installed/loaded 现场快照。每个生产任务
+都必须由独立授权的 installed plist、`launchctl`、日志、run 与 prediction 共同证明。
 
 ```
 Mac Studio
 └─ launchd + installed plist                         ← 真实生产调度控制面
    ├─ com.bond-factor-lab.backend
    │  └─ FastAPI :8100 + frontend 静态文件
-   ├─ com.bond-factor-lab.daily-gray
-   │  └─ 07:00 一次性 scheduler.daily_gray_runner
-   │     └─ daily_gray_launchd_policy_v1 精确集合/版本门禁
+   ├─ DataBridge refresh one-shot
+   │  └─ 本机 MySQL → 原子发布日/周/月 artifact
+   ├─ daily predictions one-shot
+   │  └─ active discovery → scheduled_live
+   ├─ weekly/monthly predictions one-shot
+   │  └─ 各自自然时钟 → scheduled_live
    ├─ com.bond-factor-lab.actuals
    │  └─ 08:30/19:00/23:45 一次性 scheduler.main --run-once actuals
-   └─ com.bond-factor-lab.scheduler
-      └─ scheduler.main/APScheduler（常驻兼容与非日频路径）
+   └─ 每个 cadence 只有一个 writer
 
 上述任务进程
 ├─ discovery / executor / repository
@@ -40,25 +42,23 @@ panda_quantflow AIFin Lab Shell
 └─ iframe → http://mac-studio:8100/
 ```
 
-launchd + plist 是真实生产调度控制面：launchd 决定任务是否挂载、何时触发、
+`launchd + installed plist` 是唯一生产调度控制面：launchd 决定任务是否挂载、何时触发、
 使用什么环境、是否重启以及日志落点。`scheduler.main`/APScheduler、
-`scheduler.daily_gray_runner` 等模块只是具体 plist 启动的子进程实现，不形成第二套
-生产控制面；仓库 plist 也只有与 installed plist 和 `launchctl` loaded state 核对后，
-才能证明现场配置。
+`scheduler.daily_gray_runner` 等模块只可能是具体 plist 启动的子进程实现或待退役兼容代码，
+不形成第二套生产控制面；仓库 plist 也只有与 installed plist 和 `launchctl` loaded state
+核对后，才能证明现场配置。
 
 目标拓扑中 Actuals 不挂载在常驻 APScheduler 中。独立
 `com.bond-factor-lab.actuals` LaunchAgent 在 `08:30/19:00/23:45` 启动一次性
 `scheduler.main --run-once actuals` 进程；三个时点和进程退出状态均由 launchd 管理。
 
-日频预测也不得同时挂载到两条自动路径：本分支收敛后的 legacy 目标由
-`com.bond-factor-lab.daily-gray` 和冻结 policy 独占 active daily；常驻
-`com.bond-factor-lab.scheduler` 只注册周频/月频 recurring job，启动追跑也只处理
-这些非日频 job。待 ledger cutover 后，日频改由唯一 occurrence coordinator 接管；
-任何阶段都不得让 per-scheme daily cron 与 daily-gray/coordinator 并存。
+任何 frequency 的预测都不得同时挂载两条自动路径。daily-gray、常驻 scheduler、
+per-scheme cron、ledger/occurrence/epoch 和重复预检不属于新的或过渡生产方案；G2 将在
+明确授权后把它们从生产写入面移除，而不是以另一套控制面替换它们。
 
 当前 loaded 进程是否已经达到上述目标，统一以[当前状态](../CURRENT_STATUS.md)为准。
-本批不重载服务；必须在独立生产授权窗口同步 installed 配置、重启对应进程，再以
-`launchctl`、实际注册日志和任务日志确认收敛，之后才能把目标拓扑称为现场事实。
+installed plist 替换、`bootstrap/bootout/kickstart` 和服务重启都属于独立生产操作；必须先
+只读核对现场、取得明确授权，再以 `launchctl`、任务日志、run 与 prediction 确认收敛。
 
 方案执行层有两个显式驱动：Native V1 仅运行政策清单中的存量 adapter；Blackbox V2 接收所有后续新增方案，通过 DataBridge 三频同代快照和隔离 CLI 执行。两者都转换为 `PredictionRecord`，之后共用 Registry、actual join、落库、API 和前端链路。
 
@@ -83,16 +83,10 @@ Source-backed 方案必须先声明 source 执行口径：`source_original_repro
 ### 2.1 预测流程
 
 ```
-launchd 按 installed plist 启动对应任务进程
-  ├─ daily-gray 07:00 一次性路径
-  │   → strict discovery
-  │   → daily_gray_launchd_policy_v1 精确核对 active-daily 集合、版本和 target
-  │   → 交易日检查与 policy 定义的 heavy/light、publisher 依赖编排
-  └─ scheduler.main/APScheduler 常驻兼容与非日频路径
-      → discovery.py 按显式 runtime_type 构建 SchemeConfig
-      → startup catch-up 只处理该常驻路径已错过且无终态的 job
-
-两条路径最终都进入 scheduler.executor：
+launchd 按 installed plist 在一个明确 cadence 启动一次性任务
+  → discovery.py 按显式 runtime_type 构建 active SchemeConfig
+  → DataBridge artifact 先验证 refresh 与 feature cutoff
+  → 一个 writer 调用 scheduler.executor：
   → 读取 schedule.timeout_sec（如有）作为子进程等待预算
   → native_adapter: 隔离调用 schemes.{id}.predict.run(predict_date)
   → blackbox_v2: 构造只读快照和 Request，隔离调用交付脚本 CLI
@@ -102,9 +96,10 @@ launchd 按 installed plist 启动对应任务进程
 
 具体 active 方案、cron 和运行状态属于时点信息，只在 [CURRENT_STATUS.md](../CURRENT_STATUS.md) 维护。Blackbox 方案只有完成生产准备核验并取得专项授权后，才会进入正式 Registry 或 scheduler。
 
-常驻 APScheduler 路径可通过 `BOND_SCHEDULER_PREDICTION_MAX_CONCURRENCY` 限制并发；daily-gray 一次性路径的顺序、heavy/light 上限和 publisher 依赖由其冻结 policy 与 runner 定义。慢速 source-backed 方案可以在 `config.yaml` 的 `schedule.timeout_sec` 配置方案级执行 timeout 覆盖 executor 默认预算；这只影响子进程等待时间，不改变日期、业务 cron、并发规则或 source 算法逻辑。生产上修改调度配置后必须先核对仓库与 installed plist 差异；取得独立生产授权后再按对应 LaunchAgent 的生效方式操作，并复核 `launchctl` 状态、plist 触发定义和任务日志。仅看到 `Scheduled scheme ...` 注册记录不能单独证明任务已由真实生产控制面接管。
-
-本分支目标代码中，launchd scheduler 使用 `RunAtLoad=true` 与 `KeepAlive=true`，用户登录后自动拉起并在进程退出时重启。`BOND_SCHEDULER_STARTUP_CATCHUP=1` 时，scheduler 启动后会执行一次启动追跑：只补跑当天业务 cron 已过且 `t_scheme_runs` 尚无 `success/partial/failed/skipped` 终态记录的 active 非日频方案；日频由 daily-gray 或 ledger coordinator 独占，不能通过 scheduler 重启触发第二次执行。已有终态 run 的非日频方案不会因重启反复补跑。该行为只有在授权重启后的进程中才生效。
+并发、timeout 与方案依赖属于执行器实现细节，不能改变一 cadence 一 writer、日期语义、
+feature cutoff 或 source 算法逻辑。生产上修改调度配置前必须核对仓库与 installed plist
+差异；取得独立生产授权后再按对应 LaunchAgent 生效方式操作。仅看到
+`Scheduled scheme ...` 注册记录不能单独证明任务已由真实生产控制面接管。
 
 ### 2.2 实际方向更新（每日08:30、19:00与23:45）
 
@@ -579,16 +574,15 @@ frontend/
 
 ### 7.1 进程管理（launchd）
 
-当前核心 launchd plist：
-
-- `com.bond-factor-lab.scheduler.plist` — 常驻非日频预测调度器，不注册日频或 Actuals job；
-- `com.bond-factor-lab.daily-gray.plist` — 每日 `07:00` 启动 gray-live 一次性任务；
-- `com.bond-factor-lab.actuals.plist` — `08:30/19:00/23:45` 一次性 Actuals 任务；
-- `com.bond-factor-lab.backend.plist` — FastAPI 后端；
-- `com.bond-factor-lab.v2-preflight.plist` — 过渡期预检任务，是否加载及其退出状态必须按现场核验。
+生产目标的 launchd plist 必须分别承担 DataBridge refresh、daily prediction、weekly
+prediction、monthly prediction、actuals 和 backend 的单一职责。仓库中仍存在
+`com.bond-factor-lab.scheduler`、`com.bond-factor-lab.daily-gray` 和
+`com.bond-factor-lab.v2-preflight` 等 legacy/过渡模板；它们不是新的调度入口，也不能与
+目标 writer 并行写入。
 
 这些仓库文件描述期望配置，不自动代表 `~/Library/LaunchAgents` 中的 installed plist。
-任何安装、替换、`bootstrap/bootout/kickstart` 或重启都属于独立生产操作。
+任何安装、替换、`bootstrap/bootout/kickstart` 或重启都属于独立生产操作。当前规则与
+阶段顺序见[生产信号与调度治理](PRODUCTION_SCHEDULING_GOVERNANCE.md)。
 
 ### 7.2 端口分配
 

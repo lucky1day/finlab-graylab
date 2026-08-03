@@ -25,11 +25,11 @@ https://bond.finailab.cn/bond-factor-lab/
 
 ## 当前状态权威与 operator guard
 
-production 的 migration、rollout、服务加载、epoch、cache、direct authority、逐日完成数、
-历史缺口和 occurrence 证据只在[当前状态](../docs/CURRENT_STATUS.md)维护；本 runbook
-不复制任何动态值。operator 每次执行前必须读取该页，并以受控只读探针核对现场；
-若当前状态列出的任一待切换前置尚未闭合，必须 fail-closed，不得继续本手册的
-migration、bootstrap、epoch 或服务启动步骤。
+production 的服务加载、DataBridge 输入、writer、逐日完成数和历史缺口证据只在
+[当前状态](../docs/CURRENT_STATUS.md)维护；生产调度规则以
+[生产信号与调度治理](../docs/architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)为准。本
+runbook 不复制任何动态值。operator 每次执行前必须读取两页，并以受控只读探针核对现场；
+若任一前置未闭合，必须 fail-closed，不得继续任何服务加载或调度操作。
 
 下文只定义稳定的目标合同、步骤顺序和安全不变量，不能单独证明生产已上线。
 
@@ -242,16 +242,13 @@ curl -s http://127.0.0.1:18100/api/health
 - 本地 Mac 使用 `deploy/launchd/com.bondprojectpro.ssh-tunnel.plist` 常驻 SSH 反向隧道，把公网机 `127.0.0.1:18080` 转发到本地 `127.0.0.1:80`。
 - 该 plist 只记录 key 路径，不包含私钥内容；实际部署前仍需确认 key 文件权限、远端账号与端口占用。
 
-### 3) 本地 Mac：后端 admin token（第二道闸，R7）
+### 3) 本地 Mac：backend 私有配置与重载
 
-```bash
-# 编辑 deploy/launchd/com.bond-factor-lab.backend.plist，
-# 把 BOND_ADMIN_TOKEN 的 __SET_REAL_TOKEN__ 换成随机串（建议不入库）：
-openssl rand -hex 24
-# 重新安装并重载
-cp deploy/launchd/com.bond-factor-lab.backend.plist ~/Library/LaunchAgents/
-launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.backend
-```
+仓库 backend plist 不能直接复制覆盖 installed plist。涉及 admin token、实例 nonce、日志或
+任何环境变量的变更，先比较仓库模板、installed plist 与 loaded state；仅在取得明确生产
+授权后，才按变更单编辑 installed 配置并执行相应的
+`bootstrap/bootout/kickstart`。这些都是独立生产操作，必须记录重载后的 `/api/health`、
+`launchctl` 和服务日志；不得把 token、nonce 或其它密钥写入本 runbook 或命令历史。
 
 ### 3a) 本地 Mac：Actuals 一次性 LaunchAgent
 
@@ -267,21 +264,20 @@ python -m scheduler.main --run-once actuals
 `actuals:2345`。现场是否已经收敛统一查看[当前状态](../docs/CURRENT_STATUS.md)。本批
 不重载 installed plist 或 scheduler，必须在独立生产授权窗口完成同步与核验。
 
-### 3b) 本地 Mac：日频 gray 目标控制面
+### 3b) 本地 Mac：daily-gray 历史兼容说明
 
-本分支收敛后的 legacy 目标由
-`deploy/launchd/com.bond-factor-lab.daily-gray.plist` 在 `07:00` 启动一次性
-`scheduler.daily_gray_runner`，并由 `deploy/daily_gray_launchd_policy_v1.json`
-冻结精确身份、版本、target 和依赖。常驻 `com.bond-factor-lab.scheduler` 只负责
-周频/月频 recurring job，其 cron 注册与 startup catch-up 都不得包含 daily；否则
-同一业务键会被两条自动路径重复执行并覆盖 phase/run 归属。仓库代码或 plist 的
-修改不代表 installed 服务已生效，实际切换仍须取得生产授权后核对 installed plist、
-`launchctl` loaded state 和对应日志。
+`deploy/launchd/com.bond-factor-lab.daily-gray.plist` 和其 frozen policy 是待退役的历史
+兼容控制面，不是新的或过渡生产入口。不得以它扩容方案、赋予 scheduler admission 或替代
+G1/G2 的 launchd-only writer；具体退役顺序见
+[生产信号与调度治理](../docs/architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。
 
-现场是否仍有重复调度风险统一查看[当前状态](../docs/CURRENT_STATUS.md)。不得仅凭
-本分支代码宣称已修复生产现场，也不得在未获授权时擅自重载。
+### 4) 历史 Ledger coordinator rollout（不可执行）
 
-### 4) 本地 Mac：日频 coordinator 待切换 rollout
+> **HISTORICAL / 不可执行。** 以下内容保留以便定位已废止的 ledger/epoch 方案，
+> 不能作为 migration、安装、切换、回滚或服务启动操作说明。当前生产目标是
+> launchd + installed plist 的单 writer 模型；不得新增、扩容、迁移或补建 ledger、
+> occurrence 或 epoch。实际部署请回到
+> [生产信号与调度治理](../docs/architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。
 
 已经批准的日频目标机器 policy 是 `deploy/daily_scheduler_policy_v2.json`：1 个
 coordinator、每交易日 1 个 occurrence、25 个 base execution（17 Native + 8

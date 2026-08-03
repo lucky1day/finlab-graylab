@@ -3,11 +3,17 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`blackbox_v2`
 **目标读者**：平台入库、运行和审计人员
-**最后核验日期**：2026-08-02
+**最后核验日期**：2026-08-03
 
 本文是平台操作人员接收、技术验收和登记 Blackbox V2 方案的唯一操作 SOP。上游交付契约见 [BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)；具体方案的版本、快照、运行结果和当前状态只追加到 [Blackbox V2 入库试验台账](../blackbox_v2/records/ONBOARDING_TRIAL_LEDGER.md)。文档分类和维护规则见 [Blackbox V2 文档管理](../blackbox_v2/README.md)。
 
 本文的通用入库流程止于 `shadow + paused`，不自动授予生产运行权限。`activate`、回测落库和 `live` 已有独立签名门禁，但只能在完成[生产准备清单](../blackbox_v2/PRODUCTION_READINESS.md)核验并取得具体方案专项授权后执行；不得把某个试验方案的授权外推为所有新方案的默认权限。具体生产灰度记录只写入平台试验台账。
+
+任何 scheduler admission 或自然 `scheduled_live` 还受
+[生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)约束：只有
+launchd + installed plist 可以成为生产控制面，`ledger`、`occurrence`、`epoch`、daily-gray
+和常驻 APScheduler 不能作为新的或过渡调度路径。本文中保留的旧生产时序仅用于解释历史
+证据，不能据此安装、迁移或启动服务。
 
 ## 1. Intake 与身份
 
@@ -147,16 +153,15 @@ conda run --no-capture-output -n bond_factor_lab_service \
 ### 2.2 验证 DataBridge current
 
 ```bash
-BOND_DAILY_COORDINATOR_MODE=legacy \
-  conda run --no-capture-output -n bond_factor_lab_service \
+conda run --no-capture-output -n bond_factor_lab_service \
   python scripts/refresh_data_bridge_current.py --check-only \
     --date <selected-generation-refresh-date>
 ```
 
-mode 必须按当前实际部署显式给出；示例使用尚未切换生产时的 `legacy`。ledger
-部署只能以 `BOND_DAILY_COORDINATOR_MODE=ledger` 调用同一个 `--check-only`
-入口；独立 `--publish`、`--dry-run` 和 scheduler `--run-once data-refresh`
-都不得成为 ledger 刷新旁路。
+这只是技术 Onboarding 的只读检查，不发布 artifact，也不授予自然调度权。G1 完成前，
+不得把这个兼容检查入口、常驻 scheduler 或任何环境开关当作 DataBridge 的生产 refresh
+writer；生产 refresh 的唯一控制面与授权边界以
+[生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)为准。
 
 结果必须为 `status=ok`，并保存：
 
@@ -214,45 +219,22 @@ generation。正式 `scheduled_live` 仍使用当天最新、完整校验且
 `generation_id + combined_snapshot_id`。不同 generation 的结果只能
 用于稳定性观察，不能宣称逐行复现。
 
-### 2.4 每日 generation、occurrence 与 V2 释放时序
+### 2.4 当前生产时序边界
 
-DataBridge 只服务 `runtime_type=blackbox_v2` 日频执行，Native 使用独立的
-`native_source` generation。两者共享同一 occurrence 和冻结日历证据，但互不以
-前一个算法任务的成功作为释放条件。
+DataBridge 为 Blackbox 日/周/月任务提供标准三频 artifact；每次自然运行都必须使用
+当天新鲜、已验证且严格截止到 `feature_date` 的输入。generation、manifest、
+business/feature date 或关联摘要任一漂移时 fail-closed；结构完整的旧 current 也不能
+作为 `scheduled_live` fallback。
 
-以下是已批准但尚未完成 production cutover 的 ledger 目标路径，不是当前安装态。
-切换后只允许一个 coordinator 和一个 occurrence；
-`com.bond-factor-lab.v2-preflight` 必须保持未加载，DataBridge refresh 由
-coordinator 唯一拥有；旧 preflight、scheduler restart 和 per-scheme cron 都不能
-成为第二入口。ledger 时序统一使用 `Asia/Shanghai`：
+生产时钟只可由 launchd + installed plist 触发。refresh、daily、weekly、monthly 与
+actuals 各有一个 writer；旧 preflight、scheduler restart、per-scheme cron、ledger/
+occurrence/epoch 都不能成为第二入口。具体时点、installed state 与观察证据以
+[生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)和带日期状态记录
+为准，不在本 SOP 中冻结方案数量或 release 队列。
 
-| 时间 | 平台动作 | 通过条件与后续动作 |
-|---|---|---|
-| `06:30` | 创建 occurrence，冻结 active daily Registry；并行构建 Native generation、发起当天全新 DataBridge 全量刷新 | 两条输入链分别封存，不读取昨日或旧 `current` |
-| DataBridge `sealed_at` | 计算 8 个 V2 release | 按 policy 在 `+0/+2/.../+14` 分钟释放；前一个失败不阻断后一个 |
-| `07:00` | 进度 watchdog | 只检查 ETA、无进展和恢复资格，不重启 scheduler |
-| `07:45` | V2 start guardrail | 未启动 item 永久记 `sla_status=LATE` 并告警，仍可使用当天 generation 继续执行 |
-| `08:00` | target SLA | 冻结 target 少一个即 write-once `BREACHED`；后来补齐不改回 `MET` |
-| `08:30` | recovery cutoff | 不再启动新 attempt 或自动重试；不跨日自动补跑 |
-
-每个 V2 item 必须绑定 occurrence 中同一个当天 DataBridge generation，以及该
-generation 关联的同日 Native calendar generation。generation ID、manifest
-SHA、business/feature date 或关联摘要任一漂移时 fail-closed。旧 generation
-即使结构完整也不能作为 scheduled-live fallback。
-
-这里的生产滚动不影响历史 Onboarding 证据：报告比较若跨 generation，
-必须明确标记数据版本变化，不能用当前 production 结果反向覆盖旧验收。
-
-8 个 V2 使用独立执行池，最大并发 2，单 attempt 硬超时 120 秒。与 17 个
-Native 合计冻结 25 个 base execution、29 个 target；最终完成口径为 29/29。
-执行结果只能
-通过 occurrence item 的 fenced 原子提交入口发布；manual/background/gray
-运行不得伪造 `scheduled_live`。
-
-历史缺口只能受控 insert-only 写 `gray_live`；只有未来交易日真实 ledger
-occurrence 具备完整 occurrence/item/run/receipt 证据时才允许
-`scheduled_live`。2026-07-30 日期本身不构成起点证据。完整不变量见
-[日频信号 08:00 SLA 架构](../architecture/DAILY_SIGNAL_SLA.md)。
+历史 Onboarding 证据跨 generation 时必须明确标记数据版本变化，不能用当前生产结果
+反向覆盖旧验收。经授权的历史缺口只可 insert-only 写 `gray_live`；只有合格自然时钟
+触发才写 `scheduled_live`。
 
 ## 3. 快照与 Request
 
@@ -693,7 +675,7 @@ final 公网配置会拒绝这些旧接口，不能用它们代替 dashboard 验
 
 ### 7.4 生产完成状态
 
-- **Onboarding Complete**：Activation、完整历史回测、从 `gray_target_start` 起的 gray live 补齐、API 和前端验收，以及对应 installed plist、`launchctl` loaded state 和日志证明的生产调度挂载均通过；不要求已经观察到自然调度。
+- **Onboarding Complete**：Activation、完整历史回测、从 `gray_target_start` 起的 gray live 补齐，以及 API 和前端验收均通过；它本身不授予生产控制面挂载或 `scheduled_live`。
 - **Production Observed**：在 Onboarding Complete 基础上，对应 LaunchAgent 经真实时钟自然产生至少一条成功 `prediction_phase=scheduled_live`，并能从 installed plist、`launchctl`、任务日志、run、prediction、API 和前端追溯。
 
 仅 active 但未补齐灰度实盘、前端仍混入灰度 target 的回测、缺 `deployed_at`，或没有 launchd 控制面挂载证据，都不得标记为 Onboarding Complete。
@@ -703,7 +685,7 @@ final 公网配置会拒绝这些旧接口，不能用它们代替 dashboard 验
 | 场景 | 立即动作 | 允许继续的条件 |
 |---|---|---|
 | 环境自检失败 | 停止 Intake/Onboarding | 冻结环境恢复并重新自检 |
-| scheduled-live DataBridge 失败 | 保留旧 generation 供审计，但本 occurrence 禁止 fallback，阻断 V2 并告警 | 当天全新 generation 在 08:30 前 SEALED 且仍有执行预算 |
+| scheduled-live DataBridge 失败 | 保留旧 generation 供审计，但本次自然运行禁止 fallback，阻断 V2 并告警 | 当天全新 generation 已 SEALED，仍满足 feature cutoff 且有执行预算 |
 | 上游自测与平台输入摘要不同 | 标记 `data_vintage_mismatch`，停止算法结果归因 | 上游在平台选定的同一 generation 与规范化日历上重跑，完整输入身份一致 |
 | Intake 失败 | 不手工拼方案目录，不改交付文件 | 清理未完成 trial 后重新 Intake |
 | 自动 Gate 失败 | 不签发 token，保留报告 | 问题修复后从 static 重跑全套 |
@@ -738,13 +720,10 @@ Shadow 生命周期操作通过 journal、补偿和 reconciliation 收口；数�
 - [ ] `daily_cutoff_key -> weekly_cutoff_key` 与本次日历精确一致；`week_id` 未按 ISO 周或连续数值解释
 - [ ] `self_test_alignment=matched` 后才执行逐行算法对比；不一致已标记 `data_vintage_mismatch` 并同代重跑
 - [ ] 已明确 Onboarding 验收同代不等于生产永久冻结；scheduled live 仍使用当天最新 SEALED generation
-- [ ] 当天 occurrence 已冻结 Registry、代码/config 摘要、25 个 base execution 和 29 个 target
-- [ ] Native 和 DataBridge generation 均在 06:30 后建立并 SEALED；V2 绑定同一 DataBridge generation
-- [ ] 8 个 V2 按 DataBridge `sealed_at +0/+2/.../+14` 独立释放，最大并发 2；Native 最大并发 2
-- [ ] ledger 下 v2-preflight 保持未加载，只有一个 coordinator 和一个 occurrence
-- [ ] 历史补缺只写 `gray_live`；`scheduled_live` 只绑定未来经证据验收的真实 ledger provenance，不能由 2026-07-30 日期倒签
-- [ ] 最终 29/29 target receipt 完整，consumer cache 路径零写
-- [ ] 08:00 target SLA 已从冻结 ledger 评估；late completion 没有回写 `BREACHED`
+- [ ] 已确认本次只是 Onboarding/灰度验收，未把 active、Gate 通过或前端可见性外推为 scheduler admission
+- [ ] 若申请自然调度，G1/G2 的 launchd-only 单 writer、当日 DataBridge freshness、installed plist、loaded state 和专项授权均已单独完成
+- [ ] 历史补缺只写 `gray_live`；只有合格自然时钟触发才写 `scheduled_live`，二者不得由日期标签互相倒签
+- [ ] 任一 cadence 的完整性以当时 active Registry、run、prediction 和日志核验；不得冻结旧方案数量、release 队列或 coordinator/ledger 口径
 - [ ] Input 报告三 SHA 与选定 generation 完全一致
 - [ ] 七个 Gate 通过，并理解各 Gate 没有证明什么
 - [ ] 技术零写入批次使用 `--check-only`，报告四个零写字段正确，Backtest 为 `100/100 + persist=false`，API readiness 仅为结构验证

@@ -3,13 +3,18 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`blackbox_v2`（与共享平台衔接）
 **目标读者**：平台开发和架构审计人员
-**最后核验日期**：2026-07-26
+**最后核验日期**：2026-08-03
 **文档类型**：架构说明，不是入库操作 SOP，也不记录具体方案状态。
 **操作入口**：[Blackbox V2 平台接入 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)
 **上游契约**：[Blackbox V2 上游交付 SOP](../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)
 **文档管理**：[Blackbox V2 文档域](../blackbox_v2/README.md)
 
 `Blackbox V2` 是运行时代际；`schema_version=1.0`、`data-bridge-v1` 和 `blackbox-v2-v1` 分别表示接口合同、数据 Schema 和 Runtime Profile，不是三个新的方案版本。
+
+Blackbox 的生产调度不由本文件授予。当前唯一控制面和 `gray_live` / `scheduled_live`
+边界见[生产信号与调度治理](PRODUCTION_SCHEDULING_GOVERNANCE.md)；任何 ledger、
+occurrence、epoch、daily-gray 或 resident APScheduler 说明只能作为既存代码/历史证据，
+不能成为新增或过渡 writer。
 
 ## 1. 统一管理模型
 

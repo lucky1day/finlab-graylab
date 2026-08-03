@@ -1,93 +1,46 @@
-# 当前优先级与待办
+# 当前治理待办
 
 **文档状态**：`CURRENT`
 
-**目标读者**：项目负责人、平台开发、运维和审计人员
+**最后核验日期**：2026-08-03
 
-**最后核验日期**：2026-08-02
+本文只定义未完成工作的顺序与前置条件。生产控制面规则见
+[生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)，动态事实见
+[当前状态](CURRENT_STATUS.md)，带日期的完整调研见
+[2026-08-03 治理计划](records/status/WEEKLY_10Y_D_OVERLAY_0801_FIX_PLAN_20260803.md)。
 
-本文是当前未完成工作的唯一权威排序。已验证结论见
-[当前状态](CURRENT_STATUS.md)，日频不变量见
-[日频信号 SLA](architecture/DAILY_SIGNAL_SLA.md)。
+## P0：生产信号治理
 
-## P0：日频真实 ledger 收口
+按以下顺序推进；每一阶段开始前都重新只读核对 active Registry、输入截止、installed
+plist、`launchctl` loaded state、日志与实际缺口。任何生产副作用须单独授权。
 
-已批准目标生产口径是 1 coordinator、每交易日 1 occurrence、25 base execution
-（17 Native + 8 V2）、Native 最大并发 2、V2 最大并发 2，最终验收 29/29
-signal。日常生产必须使用 warm cache；不新增冷启动压力门禁、额外性能准入层或
-双重签名信任链。该口径尚未切换到 production；当前仍为 migration 017、
-`rollout=legacy`，ledger 未启用。
+1. **G0 — 文档与口径（已完成，开发分支）**：CURRENT 架构、SLA、SOP、部署说明和
+   文档测试已统一为 launchd-only 单 writer 模型；ledger/daily-gray 只保留历史或待退役语境。
+2. **G1 — DataBridge refresh（下一阶段）**：用 launchd one-shot 从本机 MySQL 原子发布标准
+   artifact；保留源表、schema、连续性、稳定轮次和 cutoff 校验，失败不得回退 stale
+   artifact。
+3. **G2 — 调度单 writer**：将 refresh、daily、weekly、monthly 和 actuals 收敛为各自
+   明确的 launchd writer；旧 scheduler、daily-gray 和重复预检不再拥有生产写权。
+4. **G3 — 日频历史缺口**：仅在 G1/G2 完成并取得专项授权后重新枚举 2026-08-03 缺口，
+   对仍缺的 business key 写 `gray_live`，不覆盖既有记录。
+5. **G4 — weekly 10Y D-overlay**：在用户选择治理路径前停止。推荐方案是绑定本方案、
+   source batch 和已证实 mismatch 集合的 scoped waiver，结果必须显示 `waived`；另一条
+   路径是同源输入/环境重建。二者之外不得改 Native core、调参或覆盖 source benchmark。
+6. **G5 — 周/月自然调度**：形成独立 installed/loaded plist，并观察真实周六和自然月
+   15 日触发。历史修复只可经授权写 `gray_live`。
+7. **G6 — P0 观察闭环**：至少观察一个完整日/周/月周期，证明每个 cadence 只有一个
+   writer、输入 fail-closed、API/页面与数据库一致且可控回退。
 
-按顺序完成：
+## 后续阶段
 
-1. 保留 2026-07-30 真实事实：06:30 没有 occurrence，08:00 为 0/29；不得按日期
-   补造 25 item、29 target、receipt 或 `scheduled_live` provenance。完成切换后的
-   未来首个交易日，才核对真实 occurrence 的 winning run fence、prediction
-   linkage、target receipt、visibility 和 write-once SLA。
-2. 使用已由 PR #16 合并的 Native current-snapshot artifact prepare/register
-   路径，为 feature=2026-07-27、2026-07-28 生成并登记两份 production
-   authority。入口强制真实 capture date、历史 feature cutoff、专项 HMAC、磁盘
-   重验、每个 feature 唯一 SEALED authority，并与正式 ledger generation 隔离；
-   当前代码已就绪，但 production artifact 尚未生成或登记。
-3. 对 50 条历史日频缺口生成受控 insert-only 计划并分批复核：7/23 为 1、7/24
-   为 1、7/27 为 2、7/28 为 17、7/29 为 29；T+1 共 5、T+5 共 45。全部只能
-   写 `gray_live`，不得倒签 `scheduled_live`。当前 DataBridge 已使 20 个 V2
-   target 具备 freshness，30 个 Native target 仍因 production authority 未登记而
-   阻断；
-   旧阻断态 plan 不得执行。
-4. production 当前停在 017；先经 canonical CLI 应用 migration 018，再在授权
-   维护窗口执行 machine-global epoch 与 ledger cutover。不得把旧记录中的“未加载”
-   当作当前现场；[当前状态](CURRENT_STATUS.md)记录的重复自动路径风险必须先在授权
-   维护窗口通过 installed plist、`launchctl` loaded state 和日志重新确认并显式
-   收敛。切换成功后只保留一个目标 scheduler，并核验
-   `current_run_id + attempt_no` fence、ProcessStartGuard、当天 Native/DataBridge
-   generation 和 08:30 cutoff。
+- **G7（P1）**：在 P0 稳定后收敛 Native 版本模型；保留审计历史，不按创建时间猜测或
+  删除 sibling。
+- **G8（P2）**：仅在 P0 真实观察完成后，按“先替代并观察、再删代码、最后删表”退役
+  legacy、ledger、daily-gray、旧 scheduler 和相关债务。删表另需零读写证据、备份/恢复
+  方案与专项授权。
 
-已完成但仍须保持的生产输入基线：
+## 已完成但不外推的 7Y 灰度工作
 
-- Liwei 7 个 production schema 3 family 已完成一次性 bootstrap；同 authority
-  二次运行为 7/7 `hit`、零训练，cache-local direct-ready。
-- DataBridge `refresh_date=2026-07-30` 已晚到发布并通过 `--check-only`；它不改变
-  7 月 30 日 0/29 和无 occurrence 的事实。
-
-## P1：周度剩余对账与后端启用
-
-已完成 Actual Registry 化、统一 `predict_date >= 2025-01-01` 展示起点、三个错误
-point-backed 周平均身份删除、月度 updater 幂等复核，以及
-`weekly_10y_lgbm_point_v1` 的 7 个 gray 缺口补齐。
-
-剩余步骤：
-
-1. 取得独立部署/重启授权后，在维护窗口重启 BFL Python 后端，使 Registry
-   Actual 范围、统一展示起点和 coverage 诊断由服务端生效；不得修改或重启
-   BondProjectPro。
-2. 专项研究 `weekly_10y_d_overlay_0529` 当前 DB 输入 vintage 与旧 benchmark
-   的差异：45 个 benchmark 周中 14 周有内部字段差异，`202538/202548/202602`
-   方向翻转。CompareGate 继续 fail-closed；禁止调算法、改 benchmark 或使用旧
-   generation fallback 贴合。
-3. 输入 vintage 问题闭合后，重新执行该 Native 的完整 `--no-persist`，
-   要求 72 行、17 个月且 original benchmark `45/45`。
-
-`weekly_10y_d_overlay_0529` 的生产 `202625` 冲突、四个灰度缺口和历史
-`200951` 日历边界均已闭合；`weekly_10y_lgbm_point_v1` 的 7 月 31 日信号也已
-存在。当前 6 个 active `weekly_point` 均为 `81/80`，周度 point 数量对齐已经
-完成；10Y D-overlay 的历史 CompareGate 漂移是独立研究项。
-
-## P2：平台增强
-
-以下项目不改变已批准的日频目标合同，按独立需求、设计和授权推进：
-
-1. 周/月自然频率自动调度及其 occurrence 治理；
-2. 三个 0629 公共 generation adapter 和逐方案 CompareGate；
-3. migrations 019/020、generation 归档、内容去重、磁盘保留和灾难恢复；
-4. 长期生产可用性、恢复时间和统计分布观测；这些数据用于持续改进，不成为另一个
-   与 29/29 ledger 并行的生产准入系统；
-5. 周频/月频逐步迁入统一多频率 occurrence 账本。
-
-## 已完成灰度批次
-
-- 10Y T+5 四方案的 `controlled activate`、`persistent backtest`、
-  `manual gray_live` 和前端验收已完成，不再列为待办。
-- FengRL 五个月度方案已达到 `MANUAL_GRAY_ACCEPTED_5_OF_5`；每方案 16 条历史和
-  3 条手工 `gray_live`，本批 `80 + 15 = 95`。完成手工灰度仍不授予其它
-  Blackbox identity 的生产权限。
+两套 `seven_y_current55_lgbm_*_v2` 已完成受控入库、回测、历史 `gray_live`、前端读回和
+formal served-API Gate。它们没有 scheduler admission，也没有 `scheduled_live`；该事实
+不改变以上 G1/G2 的前置顺序。

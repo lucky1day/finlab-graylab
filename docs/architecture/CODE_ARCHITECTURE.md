@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：平台开发和代码审计人员
-**最后核验日期**：2026-08-02
+**最后核验日期**：2026-08-03
 **定位**：本仓库的代码架构主蓝图，定义分层模型、包依赖方向、运行时调用图和扩展边界。
 **与既有文档的关系**:
 - [ARCHITECTURE.md](ARCHITECTURE.md) = **系统架构**（部署、DB schema、API 契约、数据流）。
@@ -150,72 +150,36 @@ launchd + plist 是真实生产调度控制面。任务是否挂载、触发时�
 runner 只是 plist 的子进程实现。仓库 `deploy/launchd/*.plist` 是期望配置，不等于已
 安装或已生效，后续不得仅向 APScheduler 添加 job 就宣称进入生产调度。
 
-当前与目标入口必须显式区分：
+当前目标入口由 launchd 的一次性 plist 触发：refresh、daily、weekly、monthly 和 actuals
+各自只有一个 writer。`scheduler.main`/APScheduler、daily-gray、v2-preflight、ledger/
+occurrence/epoch 仅作为现存代码或历史定位对象，不能被加入新的或过渡生产路径。完整治理
+规则见[生产信号与调度治理](PRODUCTION_SCHEDULING_GOVERNANCE.md)。
 
 ```text
-launchd
-  ├─ com.bond-factor-lab.daily-gray.plist
-  │    └─ 07:00 → scheduler.daily_gray_runner（当前 gray_live 一次性批次）
-  ├─ com.bond-factor-lab.actuals.plist
-  │    └─ 08:30/19:00/23:45 → scheduler.main --run-once actuals
-  └─ com.bond-factor-lab.scheduler.plist
-       └─ scheduler.main/APScheduler（launchd 管理的非日频常驻子进程实现）
+launchd installed plist（单一 cadence writer）
+  → discovery.py 按 runtime_type 发现 active SchemeConfig
+  → shared.input_artifacts 校验 artifact freshness 与 feature cutoff
+  → scheduler.executor.execute_scheme(cfg, predict_date, prediction_phase)
+       ├─ native_adapter: run_scheme_subprocess → schemes.{id}.predict.run
+       ├─ blackbox_v2: build_blackbox_input_snapshot → sandbox CLI
+       ├─ strict PredictionRecord/日期语义校验
+       └─ scheduler.repository 的专用原子完成边界
+            → t_scheme_runs + t_scheme_predictions + run log
 ```
 
-待批准的 ledger cutover 仍以同一个 launchd 控制面启动 coordinator；切换后的日频
-目标不是 per-scheme APScheduler job 各自形成一批，而是：
-
-```text
-launchd plist trigger
-  └─ daily occurrence coordinator（每交易日唯一）
-       ├─ 冻结 deploy/daily_scheduler_policy_v2.json
-       ├─ 17 Native / 8 Blackbox V2，Native max=2、V2 max=2
-       ├─ execution envelope → configured runtime
-       ├─ current_run_id + attempt_no 完成权 fence
-       └─ 25 item 原子提交 → 29 target receipt → 29/29 完成
-```
-
-coordinator、occurrence、generation、cache 与 phase 的完整约束见
-[DAILY_SIGNAL_SLA.md](DAILY_SIGNAL_SLA.md)。旧 per-scheme 自动路径只用于非日频；
-显式单方案入口仍仅用于受控手工运行或 ledger 回滚诊断。常驻 APScheduler 的 cron
-注册和 startup catch-up 都必须排除 daily，不得与 daily-gray/coordinator 产生第二个
-日频 occurrence：
-
-```
-APScheduler(scheduler.main，launchd 管理的非日频常驻子进程)  ──cron──▶  run_prediction_job(scheme_id)
-  ├─ startup catch-up(DateTrigger) → 当天 cron 已过且无终态 run 时补跑
-  └─ scheduler.executor.execute_scheme(cfg, predict_date, prediction_phase="scheduled_live")
-       ├─ timeout_sec = cfg.schedule.timeout_sec or executor default
-       ├─ run_configured_scheme(cfg, predict_date) 按显式 runtime_type 分派
-       ├─ native_adapter: run_scheme_subprocess(..., algo_env="forecast_env")
-       │     └─[conda 子进程]─ python -m scheduler.scheme_runner --scheme-id --predict-date
-       │           └─ importlib → schemes.{id}.predict.run(predict_date)        ← 运行时插件边
-       │                 ├─ shared.input_artifacts.build_*_input_artifact(...)   ← L1 唯一输入
-       │                 │     └─ shared.data_service.build_*_output_from_db()   ← 读源表
-       │                 ├─ shared.calendar_service.get_calendar()               ← 日历查询
-       │                 └─ schemes.{id}.core.*  (纯算法)                        ← 算法
-       │           └─ print(JSON list[PredictionRecord])  → stdout
-       ├─ blackbox_v2: build_blackbox_input_snapshot + 七字段 Request
-       │     └─ scheduler.blackbox_v2_runner → sandbox CLI → strict Result → PredictionRecord
-       ├─ records = parse(stdout)
-       ├─ daily live 日期语义校验（predict/feature/target 与交易日历一致，否则 fail-closed）
-       ├─ scheduler.repository.create_scheme_run(...)                → t_scheme_runs(running)
-       └─ runtime-specific atomic completion
-            ├─ native_adapter → complete_active_native_run(...)
-            └─ blackbox_v2  → complete_approved_blackbox_run(...)
-                 └─ 同一事务：t_scheme_predictions + run 终态 + success run_log
-
-daily coordinator → scheduler.scheduled_executor → complete_scheduled_attempt(...)
-gray gap harness   → complete_gray_gap_run(...)
-上述专用原子完成 API → _insert_run_predictions_conn(...)  ← repository 内部 private helper
-execute_scheme 早期失败/跳过 → write_run_log(...)（不代替成功原子完成）
-```
+历史 gap harness 只能经专项授权以 `gray_live` insert-only 修复；自然 launchd 触发才可以
+写 `scheduled_live`。早期失败/跳过只写审计日志，不能伪装为成功完成。
 
 入口（后端手动触发）：`backend.main POST /api/trigger/{scheme_id}` → 同一 `execute_scheme`。
 
 日期语义由 `shared.prediction_context` 和各频率 adapter 统一落地：日频实盘为 `predict_date=T+1, feature_date=T`；周频实盘先由 `predict_date` 反推上一交易日 `feature_date`，再映射 `feature_week_id`；月频 source-backed 方案若声明自然 15 号触发，则 `predict_date` 保留自然月 15 号，`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。`scheduler.executor` 在日频 live 写库前再次校验 `predict_date/feature_date/target_date`，防止源表水位不足时算法复用旧 feature/target 覆盖旧 target 明细。`scheduler.main` 的 startup catch-up 只在服务启动时补跑当天已错过且没有终态 run 的 active 非日频任务，不改变方案 cron、预测日期语义或 source core 逻辑。`shared.calendar_service` 和 `scheduler.weekly_actuals_updater` 共享 `shared.week_calendar_normalizer`，只对源周历孤立 forward jump 做只读归一化，确保预测 target 与 weekly actuals 使用同一周历事实。所有前端月份归属、actual join 和 gray/backtest 分流仍以 `target_date` 为事实键。
 
-`schedule.timeout_sec` 是 L3 调度执行层的运行预算配置，不是算法输入。它只控制 `scheduler.executor` 等待算法子进程的最长时间，用于慢速 source-backed 方案；不得让 adapter/core 根据该字段改变窗口、特征、fallback 或输出。一次性 daily-gray 每次由 launchd 启动后都会重新 strict discovery，但日频 Native 的版本变化还必须按 Native SOP 与冻结 policy 作为同一发布单元验收；常驻 `scheduler.main`/APScheduler 路径才需要在取得生产授权后重载对应 scheduler LaunchAgent。两类路径都必须复核 installed plist、`launchctl` 状态和对应日志，不能笼统以“重启 scheduler”代替控制面验收。
+`schedule.timeout_sec` 是 L3 调度执行层的运行预算配置，不是算法输入。它只控制
+`scheduler.executor` 等待算法子进程的最长时间，用于慢速 source-backed 方案；不得让
+adapter/core 根据该字段改变窗口、特征、fallback 或输出。Native 版本变化的激活遵循
+Native SOP 的 Gate 与授权边界，不再要求更新 frozen daily-gray policy。任何后续
+LaunchAgent 切换都必须先复核 installed plist、`launchctl` 状态和对应日志，不能笼统以
+“重启 scheduler”代替控制面验收。
 
 日频、周频、月频 actuals 由独立
 `com.bond-factor-lab.actuals` LaunchAgent 启动

@@ -3,7 +3,7 @@
 **文档状态**：`LEGACY_MAINTENANCE`
 **适用运行时**：`native_adapter`
 **目标读者**：平台维护人员
-**最后核验日期**：2026-08-01
+**最后核验日期**：2026-08-03
 
 本 SOP 只维护已登记的 Native V1 方案，不接受新增方案。新算法和替代版本使用 [Blackbox V2 平台 SOP](BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)。
 
@@ -114,33 +114,15 @@ python -m harness activate \
 根级 `status`，`activated_scheme_version` 会变化；已 active 的 legacy 精确版本
 重批准时版本保持不变。
 
-若目标是 `frequency=daily` 的 Native 方案，激活还必须与
-`deploy/daily_gray_launchd_policy_v1.json` 作为**同一受控发布单元**处理。
-该 policy 是 `scheduler.daily_gray_runner` 在任何 Engine、日历查询和算法执行前
-校验的精确 active-daily 集合/版本合同；ActivationGate 返回的
-`activated_scheme_version` 必须立即写入对应 policy 行。不得在普通 sync 中绕过该
-步骤，也不得放宽 exact-policy 校验来迁就漂移。
+日频 Native 激活不再要求维护 `daily_gray_launchd_policy_v1.json` 或任何 frozen
+daily-gray 清单；这些都是待退役兼容控制面，不能作为新版本发布单元。激活只绑定刚通过
+完整自动段的精确 `validation_scheme_version`、Registry 状态和专项授权。
 
-应选择不会与任务并发的受控维护窗口，在下一次 07:00 launchd 触发前完成：
-
-1. 激活成功后更新 policy 中该方案的 `scheme_version`，其它身份、target、分类和
-   publisher 依赖保持不变；若激活失败并回滚 config，则 policy 保持旧版本。
-2. 审查 config、policy 和激活证据属于同一变更，不单独发布其中任一部分。
-3. 离线执行：
-
-   ```bash
-   python -m pytest -q \
-     tests/test_daily_gray_launchd_policy.py \
-     tests/test_daily_gray_runner.py
-   ```
-
-4. 只读加载冻结 policy，确认 active-daily 集合、版本和 target 全量匹配；随后再按
-   本节清单核对 Registry/API。任何版本或集合漂移都应让 daily-gray 整批 fail-closed，
-   不得退化为跳过单方案后继续写库。
-
-如果维护窗口需要 `bootout/bootstrap/kickstart` 来避免与 07:00 触发重叠，必须另取
-明确的生产操作授权并保存 installed plist、`launchctl` 与日志证据；本 SOP 的算法
-维护授权不自动包含这些控制面操作。
+激活本身也不授予自然调度权。若某个方案随后需要 scheduler admission，必须在
+[生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)规定的 G1/G2
+前置完成后，重新评估 writer、输入新鲜度和 installed plist，并另取授权。任何
+`bootout/bootstrap/kickstart`、installed plist 修改或服务重启同样必须另取明确生产
+操作授权并保存现场证据；本 SOP 的算法维护授权不自动包含这些控制面操作。
 
 - Registry 和版本状态；
 - `t_scheme_runs`、预测表和 run log；
