@@ -32,8 +32,8 @@ plist、`launchctl` loaded state、日志与实际缺口。任何生产副作用
    `legacy_operator_attestation_v1`；它不激活、不补数。初次 maintenance run
    `hr_20260804T092226Z_5d84b9d45fd9` 因预激活 API 状态混同失败；修正后的
    `hr_20260804T102103Z_91fa9e7db871` 已使 exact version `e50ad79a6c2f` 通过六段
-   `native-maintenance`。candidate 仍为 `native_adapter/draft`、Registry 统一 `paused`、目标预测数为 0；
-   下一步只能是独立授权的 activation，gap write 仍未授权。activation 后才可仅补
+   `native-maintenance`。随后独立 activation 已通过：exact version 与 Registry 均为 `active`，served
+   API 已读回该业务身份。目标预测数仍为 0；下一步仅可在另取专项授权后补写
    `weekly_10y_d_overlay_0529 / 10Y / h6 / predict_date=2026-08-01 / feature_date=2026-07-31 /
    target_date=2026-08-07 / gray_live`。不得改 Native core、调参、覆盖 source benchmark，
    或扩展补数范围。

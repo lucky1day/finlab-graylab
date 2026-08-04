@@ -49,9 +49,10 @@
   `63ffb52105ee / hr_20260611T055610Z_8742d5bc99c9` 与 frozen 10Y/h6/weekly-point identity，
   只写两张 Harness 控制面表，verifier 已读回 `legacy_operator_attestation_v1`。初次
   `native-maintenance` run `hr_20260804T092226Z_5d84b9d45fd9` 因预激活 API 状态混同失败；修正后
-  exact version `e50ad79a6c2f` 的 `hr_20260804T102103Z_91fa9e7db871` 已通过全部六个 Gate。
-  candidate 仍为 `native_adapter/draft`、Registry 仍统一 `paused`、目标业务键 prediction count 为 0；
-  activation 和唯一 2026-08-01 `gray_live` gap write 均未获专项授权、未执行。
+  exact version `e50ad79a6c2f` 的 `hr_20260804T102103Z_91fa9e7db871` 已通过全部六个 Gate。随后独立
+  activation 已通过，exact version 与 composite Registry 均为 `active`，served `/api/schemes` 与
+  composite metrics API 均读回 200。目标业务键 prediction count 仍为 0；唯一 2026-08-01
+  `gray_live` gap write 仍须另取专项授权，activation 不授予调度或其他业务写入权限。
 - **G5/G6**：周/月自然调度与完整日/周/月真实时钟观察尚未完成。
 
 完整阶段定义、旧快照和停止条件见
