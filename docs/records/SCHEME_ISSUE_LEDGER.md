@@ -4,7 +4,7 @@
 
 **目标读者**：项目负责人、算法工程师、平台入库、运维和审计人员
 
-**最后核验日期**：2026-07-31
+**最后核验日期**：2026-08-04
 
 **记录时区**：除明确标注外，均为 `Asia/Shanghai`
 
@@ -37,7 +37,7 @@
 | `ISSUE-20260731-001` | `one_y_t1_quote_state_hv_v1` | 效果偏弱 | `ACCEPTED_RISK` | 平台日期、标签和 week_id 对齐；主要是算法样本外方向能力弱，波动率反转进一步拖累 |
 | `ISSUE-20260730-002` | `cgb_causal_wk_1y` | 上游/生产复现差异 | `EXPLAINED` | 上游 0725 sample 与生产 0730 generation 不同；72 条中 2 条预测翻号 |
 | `ISSUE-20260730-003` | `cgb_causal_wk_3y` | 上游/生产复现差异 | `EXPLAINED` | snapshot、随包日历和统计边界不同；历史 72 条中 3 条、严格灰度 7 条中 1 条预测翻号 |
-| `ISSUE-20260731-007` | `weekly_10y_d_overlay_0529` | 当前输入 vintage/benchmark 漂移 | `OPEN` | 当前输入可构造 72 行，但 45 个 benchmark 周中 14 周有内部值差异、3 周方向翻转 |
+| `ISSUE-20260731-007` | `weekly_10y_d_overlay_0529` | 当前输入 vintage/benchmark 漂移 | `ACCEPTED_RISK` | 45 个 benchmark 周中 14 周有内部值差异、3 周方向翻转；仅作归档诊断，不是 G4 的 benchmark blocker |
 
 ---
 
@@ -243,26 +243,32 @@ coverage floor 等只能作为新的 Blackbox 版本做 no-persist 消融，不�
 
 ## ISSUE-20260731-007：weekly_10y_d_overlay_0529 当前输入 vintage 漂移
 
-### 发现的问题
+### 身份与状态
 
-在内存模拟、随后生产补齐 `200951` 日历后，当前 DB 输入能够完成算法计算并构造
-72 行历史结果，但不再与旧 original benchmark 逐值一致。
+| 项目 | 记录 |
+|---|---|
+| Base scheme | `weekly_10y_d_overlay_0529` |
+| 当前状态 | `ACCEPTED_RISK` |
+| G4 关系 | 该历史 benchmark 漂移不是当前 G4 的单独 blocker；G4 仍须处理 legacy prior `static.business_identity` 缺失的 fail-closed 前提 |
 
-### 做过的验证与结论
+### 已验证事实与结论
 
-- 历史构造为 72 行、17 个月，日期和 target/label 口径保持一致；
-- 45 个 benchmark feature week 中，14 个周存在 20 个内部字段差异；
-- `202538`、`202548`、`202602` 三周预测方向翻转；
-- 首个差异为 `202533` confidence：
-  当前 `0.8618307845278366`，benchmark `0.90256711825722`；
-- 本次只读重算输入为 840 行、范围 `200951..202620`，内存 round-trip SHA256
-  为 `3db4bb568dba38af6ae7b149238c3309c66fe54abd4caf3e639de5632eff5ba7`；
-- 旧 latest run `108` 和旧 artifact 可 `45/45`，证明 benchmark 自身不是本次
-  日历修复产生的；差异来自当前受治理输入 vintage。
+- 当前受治理输入可构造 72 行、17 个月的历史结果，日期和 target/label 口径保持一致；
+- 45 个 benchmark feature week 中有 14 个周、20 个内部字段差异；
+- `202538`、`202548`、`202602` 三周发生预测方向翻转；
+- 已确认这是历史输入 vintage 漂移，而不是 2026-08-01 周度排序缺口的成因。
 
-状态为 `OPEN`。CompareGate 继续 fail-closed；禁止调算法、改 benchmark、删除
-预热周或使用旧 generation fallback 贴合。后续必须按输入 artifact/source 口径
-专项研究，闭合后才能重新声明当前 DB 输入下 `45/45`。
+用户已接受该历史漂移只作归档诊断：首次技术入库的 source benchmark/CompareGate 证据仍保留，
+但满足 post-admission 身份证据前提的同一业务身份修订不因这项历史漂移单独阻断。该结论不允许
+改变 Native core、算法参数、source benchmark、输入 cutoff、统一周历、日期语义或 live-safe
+oracle。硬红线为：**不得调算法贴旧 benchmark、不得重写 source benchmark、不得使用旧输入或
+generation fallback。**
+
+本项不授予 G4 activation、gap repair 或业务写库授权；当前 legacy prior admission 缺可比较的
+`static.business_identity` 快照，不能走 maintenance。当前唯一已实现恢复路径是 current exact
+version 完整通过 `all`（含当前 Compare），再使用 `full_initial_onboarding_v1`；该 profile 不要求
+prior snapshot。`legacy admission identity attestation` 尚未设计或实现，未来即使建设也须独立设计、
+实现和明确专项授权，当前不是可执行 G4 路径。
 
 ## 后续追加模板
 

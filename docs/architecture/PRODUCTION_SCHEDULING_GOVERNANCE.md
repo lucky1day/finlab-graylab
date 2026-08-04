@@ -4,7 +4,7 @@
 
 **目标读者**：平台开发、运维、审计和方案维护人员
 
-**最后核验日期**：2026-08-03
+**最后核验日期**：2026-08-04
 
 本文定义生产信号的唯一控制面。具体现场事实查看[当前状态](../CURRENT_STATUS.md)，
 分阶段治理和带日期的证据查看
@@ -64,8 +64,18 @@ predictions 周六 11:30、monthly predictions 自然月 15 日 18:00；actuals 
 ## 4. 阶段顺序与停止条件
 
 当前按 G0 → G1/G2 → G3/G4/G5 → G6 推进。G1/G2 未形成真实 launchd 观察闭环前，不授予
-新的 scheduler admission。G4 还必须由用户在证据绑定的 scoped waiver 与同源输入/环境重建
-之间作出选择；此前不得修改 Native core、source benchmark 或补写该信号。
+新的 scheduler admission。G4 已确认不需要 scoped waiver 或同源输入/环境重建选择：首次
+Native 技术入库仍必须通过 source benchmark/CompareGate；ActivationGate 的 full-`all` 与
+`native-maintenance` profile 互斥：current exact version 完整 `all` 通过时使用
+`full_initial_onboarding_v1`，不要求 prior snapshot；只有 maintenance profile 才需要 prior
+`all` 的匹配 `static.business_identity` 快照，历史 benchmark input-vintage 漂移才只归档。
+该快照只含业务字段（scheme/runtime/horizon/task/frequency/tenors/composite IDs），不含代码、
+config 或 version hash。legacy admission 缺快照时必须 fail-closed：当前唯一已实现路径是 current
+exact version 的完整 `all`（含当前 Compare）。`legacy admission identity attestation` 尚未设计或
+实现，未来即使建设也须独立设计、实现和明确专项授权，当前不得作为 G4 或任何方案的路径。
+因此 G4 目前不得 activation 或写入。任何后续修订仍必须满足输入 cutoff、统一周历、日期语义、
+Registry、live-safe oracle 与专项授权，随后也只能补其精确授权的 `gray_live` key；不得修改
+Native core 或 source benchmark。
 
 若 active 集、精确版本、输入截止、installed/loaded state、日志或缺口与已记录证据不符，
 或发现两个 writer 可能写同一 business key，立即停止副作用、更新调查结论并重新取得授权。

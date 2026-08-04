@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：上游算法、Native 维护、Harness 和审计人员
-**最后核验日期**：2026-07-19
+**最后核验日期**：2026-08-04
 
 本文定义 source-backed 算法的保真责任。Native V1 与 Blackbox V2 的可观察边界不同，不能使用同一套内部核验声明。
 
@@ -15,6 +15,12 @@
 | Blackbox V2 | 上游算法工程师负责 | 脚本/Metadata 摘要、CLI、确定性、predict/backtest 一致、分批/顺序一致、截止隔离和标准 Result | 已检查模型参数、特征、内部 score 或训练路径 |
 
 Native V1 的 L0/L1/L2 分级仅用于政策清单中的存量维护；发现 L2 或形成新算法时，停止 Native 修改并创建独立 Blackbox V2 trial。Blackbox 上游应在交付前完成自身 source 对账，平台不反编译、不拆分也不改写交付脚本。
+
+### 0.1 首次技术入库与已入库修订
+
+Native 的 source benchmark 与 CompareGate 是首次技术入库的硬证据：新 Native 身份、新算法、新 target、新 task 或 runtime 迁移不得绕过该路径。ActivationGate 的 current-full-`all` 与 maintenance 路径互斥：当前 exact version 完整 `all` 通过时使用 `full_initial_onboarding_v1`，仅要求当前七个 Gate（含 Compare），不要求 prior snapshot；只有未走该 full-`all` profile 的已有 Native 修订，在 prior `all` 的 `static.business_identity` 已持久化、且与当前 `scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors 和全部 active composite Registry IDs 精确匹配时，才可使用 `native-maintenance`（`static -> native-maintenance-admission -> input -> unit -> dry-run -> api-readiness`）激活；该快照不含代码、config 或 version hash。
+
+该 maintenance 路径不执行当前 historical `compare/backtest`，但必须留存旧 version 的 passed `all + compare`、匹配的 prior `static.business_identity`、当前六个 Gate、精确 version、Registry identity、授权与 live-safe oracle。legacy admission 没有该快照时必须 fail-closed：当前唯一已实现 fallback 是 current exact version 重跑完整 `all`。`legacy admission identity attestation` 尚未设计或实现；未来即使建设也必须先独立设计、实现并取得明确专项授权，当前不得由 Gate 自动生成、推断或执行。满足任一已实现 profile 的同一身份修订，其历史 source-benchmark 输入 vintage 漂移仅作归档诊断，不能单独阻断 activation、gap repair、`gray_live`、`scheduled_live` 或 API/前端读回；这不允许修改 Native core、算法参数、source benchmark、输入截止、统一周历、日期语义或 L0/L1/L2 边界，也不改变 Blackbox CompareGate。
 
 ## 1. 总原则
 
@@ -66,7 +72,7 @@ Native source-backed 存量方案修复或复核时，所有改动必须先分�
 - **特征、VT 或内部 score 映射被替换**：5Y01/V31 中改变 `build_bond_features` 列顺序、`vt_mode=seasonal`、weekly last-trading-day ffill、`vs_full` score 映射或 baseline dir 映射，都会造成内部数值不一致。修复方式是按 source 构造顺序和 source pkl score 口径恢复。
 - **raw source batch 与 live-safe 混用**：把固定 `source_end=2026-06-10` 的 source batch 边界样本当成 live 逐日内部数值真值，会把正常口径差异误判为算法错误。修复方式是 historical/source-original 与 live-safe 分开验收。
 
-若出现方向一致但内部 `vote_score`、baseline `*_score/*_vs`、`*_dir/*_sign` 或 probability/confidence 不一致，不能先写“通过”。必须先定位属于 L0 数据/导出差异、L1 上下文误传，还是 L2 算法内部误改；未完成分级和归因前，不得进入 backtest persist、live repair 或 activation。
+若出现方向一致但内部 `vote_score`、baseline `*_score/*_vs`、`*_dir/*_sign` 或 probability/confidence 不一致，不能先写“通过”。首次技术入库、或差异仍可能是 L0/L1/L2 当前算法问题时，必须先定位属于 L0 数据/导出差异、L1 上下文误传，还是 L2 算法内部误改；未完成分级和归因前，不得进入 backtest persist、live repair 或 activation。已有首次技术入库后已归因的历史输入 vintage 漂移除外：它只能在匹配 prior `static.business_identity` 的后续维护路径中归档，不能被重写为 current benchmark pass，也不是满足该身份前提的同一业务身份修订的独立阻断项。
 
 ## 3. Source 口径分类
 
@@ -86,7 +92,7 @@ Native source-backed 存量方案修复或复核时，所有改动必须先分�
 
 ## 4. 验收标准
 
-Source-backed 方案的最低验收标准：
+Source-backed 方案首次技术入库的最低验收标准：
 
 1. `predicted_direction` 逐样本零差异。
 2. `label/actual/is_correct` 逐样本零差异。
@@ -122,3 +128,4 @@ Source-backed 方案的最低验收标准：
 - original vs current 的逐样本主键、方向、actual、correctness 对比。
 - 内部模型分数对比：字段名、最大绝对差、方向差异数、最大差异日期。
 - 若内部数值不完全一致，写明残差归因和下一步，且不得把它包装成“完全一致”。
+- 对已入库同一身份的 Native 修订，若当前 exact version 走 full `all`，保留 `full_initial_onboarding_v1` 的七个 Gate；若走 maintenance，保留 prior passed `all + compare`、匹配的 `static.business_identity` 业务快照、当前 `native-maintenance` 六个 Gate、精确 Registry identity、输入 cutoff/统一周历/日期语义和 live-safe oracle。legacy snapshot 缺失时记录 fail-closed 的 full-`all` 路径；未实现的 attestation 不得作为当前路径。历史 benchmark vintage 漂移必须明确标为归档诊断。

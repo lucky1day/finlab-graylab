@@ -12,6 +12,48 @@ from unittest.mock import patch
 
 
 class HarnessStaticGateTests(unittest.TestCase):
+    def test_native_static_gate_records_canonical_business_identity_snapshot(self) -> None:
+        from harness.context import GateContext
+        from harness.gates.static_gate import StaticGate
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            scheme_dir = _write_minimal_scheme(project_root, scheme_id="demo_daily")
+            config_path = scheme_dir / "config.yaml"
+            config_path.write_text(
+                config_path.read_text(encoding="utf-8").replace(
+                    'tenors: ["10Y"]',
+                    'tenors: ["5Y", "10Y"]',
+                ),
+                encoding="utf-8",
+            )
+
+            result = StaticGate().run(
+                GateContext(
+                    scheme_id="demo_daily",
+                    predict_date="2026-06-08",
+                    project_root=project_root,
+                    report_dir=project_root / "reports",
+                )
+            )
+
+        self.assertTrue(result.passed, result.errors)
+        self.assertEqual(
+            _evidence_dict(result)["native_business_identity"],
+            {
+                "scheme_id": "demo_daily",
+                "runtime_type": "native_adapter",
+                "horizon": 1,
+                "task_type": "T+1",
+                "frequency": "daily",
+                "tenors": ["10Y", "5Y"],
+                "registry_scheme_ids": [
+                    "demo_daily__h1__10Y",
+                    "demo_daily__h1__5Y",
+                ],
+            },
+        )
+
     def test_existing_schemes_pass_static_gate(self) -> None:
         from harness.context import GateContext
         from harness.gates.static_gate import StaticGate

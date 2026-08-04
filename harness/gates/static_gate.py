@@ -29,6 +29,10 @@ from harness.contracts.import_rules import (
 )
 from harness.contracts.predict_contract import validate_predict_module
 from harness.gates.base import Gate, guarded_result, utc_now
+from harness.gates.native_maintenance_admission_gate import (
+    NATIVE_BUSINESS_IDENTITY_EVIDENCE_KEY,
+    native_business_identity_snapshot,
+)
 from harness.result import Evidence, GateResult, GateStatus
 
 
@@ -73,6 +77,32 @@ class StaticGate(Gate):
             config_errors.append("config.yaml is missing")
         evidence.append(Evidence("config_schema_errors", config_errors))
         errors.extend(f"{_display_path(config_path, project_root)}: {message}" for message in config_errors)
+
+        if (
+            not config_errors
+            and config_raw.get("runtime_type", "native_adapter") == "native_adapter"
+        ):
+            try:
+                evidence.append(
+                    Evidence(
+                        NATIVE_BUSINESS_IDENTITY_EVIDENCE_KEY,
+                        native_business_identity_snapshot(
+                            scheme_id=config_raw["scheme_id"],
+                            runtime_type=config_raw.get(
+                                "runtime_type", "native_adapter"
+                            ),
+                            horizon=config_raw["horizon"],
+                            task_type=config_raw["task_type"],
+                            frequency=config_raw["frequency"],
+                            tenors=config_raw["tenors"],
+                        ),
+                    )
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                errors.append(
+                    f"{_display_path(config_path, project_root)}: "
+                    f"native business identity snapshot invalid: {exc}"
+                )
 
         policy_errors = (
             validate_onboarding_policy(

@@ -7,5 +7,3 @@
 **最后核验日期**：2026-08-02
 
 - [2026-07-21-t5-no-foreign-lgbm-ablation-design.md](2026-07-21-t5-no-foreign-lgbm-ablation-design.md)
-- [2026-08-02-t1-daily-shap-retirement-design.md](2026-08-02-t1-daily-shap-retirement-design.md)
-- [2026-08-02-t1-daily-shap-retirement-implementation-plan.md](2026-08-02-t1-daily-shap-retirement-implementation-plan.md)

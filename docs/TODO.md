@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验日期**：2026-08-03
+**最后核验日期**：2026-08-04
 
 本文只定义未完成工作的顺序与前置条件。生产控制面规则见
 [生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)，动态事实见
@@ -23,9 +23,14 @@ plist、`launchctl` loaded state、日志与实际缺口。任何生产副作用
    明确的 launchd writer；旧 scheduler、daily-gray 和重复预检不再拥有生产写权。
 4. **G3 — 日频历史缺口**：仅在 G1/G2 完成并取得专项授权后重新枚举 2026-08-03 缺口，
    对仍缺的 business key 写 `gray_live`，不覆盖既有记录。
-5. **G4 — weekly 10Y D-overlay**：在用户选择治理路径前停止。推荐方案是绑定本方案、
-   source batch 和已证实 mismatch 集合的 scoped waiver，结果必须显示 `waived`；另一条
-   路径是同源输入/环境重建。二者之外不得改 Native core、调参或覆盖 source benchmark。
+5. **G4 — weekly 10Y D-overlay**：历史 source-benchmark 输入 vintage 漂移已确认只作归档
+   诊断；但 legacy prior admission 缺可匹配的持久化 `static.business_identity`，当前不能走
+   `native-maintenance`。唯一已实现恢复路径是当前 exact version 完整通过 `all`（含当前 Compare），
+   再按 `full_initial_onboarding_v1` 激活；该路径不要求 prior snapshot 或 maintenance。
+   `legacy admission identity attestation` 尚未设计或实现，不能作为当前操作。G4 在完整 `all`
+   通过和受控 activation 前不得补数；之后才可仅补 `weekly_10y_d_overlay_0529 / 10Y / h6 / predict_date=2026-08-01 / feature_date=2026-07-31 /
+   target_date=2026-08-07 / gray_live`。不得改 Native core、调参、覆盖 source benchmark，
+   或扩展补数范围。
 6. **G5 — 周/月自然调度**：形成独立 installed/loaded plist，并观察真实周六和自然月
    15 日触发。历史修复只可经授权写 `gray_live`。
 7. **G6 — P0 观察闭环**：至少观察一个完整日/周/月周期，证明每个 cadence 只有一个

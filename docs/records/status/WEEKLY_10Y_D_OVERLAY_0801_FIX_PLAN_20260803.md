@@ -50,6 +50,7 @@
 6. **P0 先恢复稳定出信号。** 不启用、不扩容、不迁移或补建 ledger，不删除历史版本，不重写 Native 算法，不顺带清空历史表。
 7. **兼容开关不等于调度权。** P0 期间现有底层代码仍可能需要 `BOND_DAILY_COORDINATOR_MODE=legacy` 才能运行；它只是临时兼容条件，不代表 legacy 是生产控制面。待 P2 再移除。
 8. **7Y 灰度可见性优先于效果完善。** 新方案允许带着已知效果问题或非致命算法 bug 进入隔离灰度观察；但不能绕过 Contract、确定性、输入截止、写库边界和授权。灰度可见不等于已获得定时调度权。
+9. **Native benchmark 只承担首次技术入库证据。** ActivationGate 的 Native profile 互斥：current exact version 完整通过 `all` 时使用 `full_initial_onboarding_v1`，只核验当前七个 Gate（含 Compare），不要求 prior snapshot 或 `native-maintenance`；只有未走该 full-`all` profile、且 prior `all` 的 `static.business_identity` 已持久化并与当前业务身份精确匹配时，才能使用 `native-maintenance` 当前日期验证。快照只含 scheme/runtime/horizon/task/frequency/tenors/composite IDs，不含代码、config 或 version hash。legacy admission 缺快照一律 fail-closed，当前唯一已实现路径是完整 `all`（含当前 Compare）。`legacy admission identity attestation` 尚未设计或实现，未来即使建设也须独立设计、实现和明确专项授权，当前不得自动生成、推断或执行。满足任一已实现 profile 后，历史 source-benchmark 输入 vintage 漂移只归档，不单独阻断激活、补数、`gray_live`、`scheduled_live` 或 API。该政策不放宽 L0/L1/L2、输入截止、统一周历、日期语义、Registry、live-safe oracle 或授权，也不改变 Blackbox CompareGate。
 
 ---
 
@@ -67,7 +68,7 @@
 | preflight | `v2-preflight` 一天重复运行四次，但没有解决 8 月 3 日刷新失败 |
 | `t1_daily` | 当前精确 hash 在 DB 中未激活，因此 5Y/10Y 两个 target 被正确门禁拦截 |
 | D-overlay | 缺 2026-08-01 一条 gray live；稳定排序修复已存在，但当前精确版本未激活 |
-| D-overlay benchmark | 45 个 source benchmark 样本中有 14 个平台 DB 复现不一致；与 8 月 1 日排序缺口是两个问题 |
+| D-overlay benchmark | 45 个 source benchmark 样本中有 14 个平台 DB 复现不一致；与 8 月 1 日排序缺口是两个问题。2026-08-04 已确认该漂移只作归档诊断，不是 G4 单独 blocker；G4 仍因 legacy prior `static.business_identity` 快照缺失而 fail-closed |
 | Native 版本 | 约 111 条 active 版本覆盖约 26 个 base scheme，存在大量 active sibling |
 | ledger 表 | `t_schedule_occurrences/items/targets` 当时均为空；后续明确不使用、不扩容，只在 P2 按授权退役 |
 | 新 7Y 交付 | 原始 `001/002 v1` 两文件交付已冻结保留；经专项授权新增本地因果修订版 `001/002 v2`，不宣称 source-algorithm full parity |
@@ -88,7 +89,7 @@
 | G1 | 恢复本机 MySQL → DataBridge 的可靠刷新 | **开发闭环完成，待 G2 生产挂载与真实时钟观察** |
 | G2 | 收敛为 launchd-only 单 writer 调度 | **开发闭环完成：仓库 one-shot 模板、writer 边界与回归已就绪；未安装、未切换、未观察真实时钟** |
 | G3 | 补齐 8 月 3 日日频缺口 | **缺口已定位，等待 G1/G2 与生产授权** |
-| G4 | 闭环 D-overlay 8 月 1 日缺口 | **排序已修，benchmark 决策未确认，未补数** |
+| G4 | 闭环 D-overlay 8 月 1 日缺口 | **benchmark 政策已确认；legacy prior identity 快照缺失，maintenance 不可用。当前唯一已实现路径是 current exact version 的完整 `all`（含 Compare）；尚未通过，当前不得 activation 或 gray_live 补数** |
 | G5 | 挂载并验证周度、月度自然调度 | **方案存在，独立 plist 尚未形成生产证据** |
 | G6 | 完成 P0 生产观察闭环 | **未开始** |
 | G7 | 收敛 Native 版本模型 | **P1，未开始** |
@@ -445,39 +446,33 @@ P0 可以暂时保留底层 `legacy` 环境开关，以兼容现有 executor/rep
 - `predict_date=2026-08-01`
 - `feature_date=2026-07-31`
 - `target_date=2026-08-07`
+- `target_tenor=10Y`、`horizon=6`
 - 应写 `gray_live`
 
 跨年 week_id 的稳定排序修复已经存在，no-write 结果可以生成方向 `-1`、置信度 `0.32`；但当时的当前精确版本尚未激活。
 
-另有一个独立问题：平台 DB 对原始 benchmark 的 45 个样本中有 14 个不一致，其中 3 周方向翻转。该漂移起点早于 8 月 1 日排序问题，不能把两者混为一个 bug。
+另有一个独立历史诊断：平台 DB 对原始 benchmark 的 45 个样本中有 14 个不一致，其中 3 周方向翻转。该漂移起点早于 8 月 1 日排序问题，不能把两者混为一个 bug。用户已确认：source benchmark/CompareGate 继续作为首次技术入库的证据；满足 post-admission 身份证据前提的当前 Native 修订，其 historical input-vintage 漂移只归档，不要求 scoped waiver 或同源输入/环境重建，也不单独阻断 G4。可是本方案的 legacy prior admission 没有可匹配的持久化 `static.business_identity`，不能仅凭当前 Registry 反推历史身份。
 
-**状态：算法排序问题已修；版本未激活、信号未回补；benchmark 治理方式等待用户确认。**
+**状态：算法排序问题已修；benchmark 政策已确认；但 legacy prior identity snapshot 缺失，当前不能走 `native-maintenance`。唯一已实现恢复路径是当前精确 version 完整通过 `all`（含当前 Compare），随后 ActivationGate 使用 `full_initial_onboarding_v1`，不要求 prior snapshot 或 maintenance；该 full-`all` 尚未通过。`legacy admission identity attestation` 尚未设计或实现，不是当前替代路径。尚未发生激活或补写。**
 
 ### 造成的影响
 
 - 周度实盘序列缺一条，页面和后续准确率观察不完整。
-- 直接关闭 benchmark 校验会让系统错误宣称“源算法完全一致”。
-- 为消除 benchmark 漂移而改 Native core 或调参，会违反源算法保真原则并扩大 P0。
+- 直接关闭 benchmark 校验会让系统错误宣称“源算法完全一致”；本政策不关闭首次技术入库 CompareGate。
+- 为消除 benchmark 漂移而改 Native core、调参、改 benchmark 或退回旧 generation，会违反源算法保真原则并扩大 P0。
 
 ### 为什么必须解决
 
-第一性原理要求同时满足两件事：应发信号不能缺失；验证结论必须诚实。平台可以明确承认一个受控的历史输入漂移，但不能把 waiver 伪装成 pass，也不能为了通过校验改变原算法。
+第一性原理要求同时满足两件事：应发信号不能缺失；验证结论必须诚实。首次技术入库已经保留 source benchmark/CompareGate，后续修订还必须用 prior `static.business_identity` 快照证明与当前 Registry 是同一业务身份，并证明输入截止、统一周历、日期语义、授权和 live-safe oracle。平台不把归档诊断伪装成 current benchmark pass，也不为了贴合旧 benchmark 改变原算法。
 
 ### 什么叫解决完毕
 
-用户需要先在以下两条路径中明确选择一条：
+不再有 waiver/rebuild 的预先选择。G4 完成必须依次满足：
 
-1. **推荐的最小路径：证据绑定的 scoped waiver。** 仅针对本方案、已知 source batch 和已确认的 mismatch 集合；报告必须显示 `waived`、原因和不匹配数量，不能显示 `passed`。其余输入截止、live-safe、版本和写库门禁不变。
-2. **完整保真路径：重建与原始 source 同源的历史输入和环境。** 在一致性恢复前不做 waiver，但这不属于最小 P0。
-
-选择后，还必须满足：
-
-- Native core 和 source-original benchmark 文件未被修改，排序修复仍通过 no-write 验证。
-- 当前精确版本完成完整 Gate 并受控激活。
-- 2026-08-01 缺口经授权写为 `gray_live`，日期、方向、置信度、版本和 run 读回一致。
-- benchmark 最终状态被准确表达为“严格通过”或“明确豁免”，不存在假 pass。
-
-在用户未确认上述选择前，G4 必须保持停止状态，不能自行替用户决定。
+1. Native core 和 source-original benchmark 文件未被修改，排序修复仍通过 no-write 验证；当前精确 version 完整通过七段 `all`（含当前 Compare）。该 G4 当前没有可用 prior snapshot，故不得要求或运行 maintenance。
+2. ActivationGate 以互斥的 `full_initial_onboarding_v1` 复核当前 `all`、精确版本与一次性授权后激活；不得附加 prior `all + compare`、prior snapshot 或六段 Gate 要求。
+3. 仅在前两项完成后，通过受控 signal-gap 路径写入唯一业务键 `weekly_10y_d_overlay_0529 / 10Y / h6 / predict_date=2026-08-01 / feature_date=2026-07-31 / target_date=2026-08-07 / prediction_phase=gray_live`，不得扩展为任何其它日期、target 或 `scheduled_live`。
+4. repository 原子提交后从 DB 与 served API/前端读回日期、方向、置信度、版本、run 与 `gray_live` provenance；历史 benchmark 漂移仍标为归档诊断，不能写成 current Compare pass。`legacy admission identity attestation` 尚未设计或实现，不构成上述条件的替代。
 
 ---
 
@@ -603,7 +598,7 @@ Native hash 当前覆盖完整 config 和文件文本，展示、状态、schedu
 - DataBridge 的 refresh date、feature cutoff、generation 或连续性校验不通过；
 - 发现两个仍可能写同一 business key 的生产进程；
 - 需要改 Native core、source-original benchmark 或算法参数才能让测试通过；
-- D-overlay benchmark 处置尚未得到用户明确选择；
+- D-overlay 当前 exact version 未通过完整 `all`，或尝试在无 matching prior `static.business_identity` 时走 `native-maintenance`；两种 profile 不得混用。未实现的 attestation 不能解除停止条件；
 - 操作需要数据库写入、激活、历史补数、launchctl 或 installed plist 变更，但没有专项授权；
 - 工作区存在来源不明或与当前阶段重叠的用户修改；
 - 只能通过降低门禁、隐藏失败或使用旧数据才能获得“成功”。
@@ -613,9 +608,4 @@ Native hash 当前覆盖完整 config 和文件文本，展示、状态、schedu
 
 ## 16. 下一步
 
-P-1 的已授权算法、数据、Dashboard 和 served-API 闭环工作以及 G0 文档统一已完成；下一步进入
-**G2** 的 launchd-only 单 writer 开发与只读现场核对。在考虑任一 7Y scheduler admission、当前日期 `live_write` 或 installed 控制面
-操作前，必须先取得专项授权并只读核对 installed plist 与 loaded state；不得把历史
-`gray_live` 或 formal API 通过外推为自然调度或生产稳定证据。
-
-当前唯一需要用户预先决定的治理选择是 **G4 的 D-overlay benchmark 处置**：推荐采用证据绑定、显式标记为 `waived` 的 scoped waiver；若用户要求完全同源复现，则将 G4 转为独立的上游数据/环境重建项目。
+P-1 的已授权算法、数据、Dashboard 和 served-API 闭环工作以及 G0 文档统一已完成；G1/G2 的 launchd-only 单 writer 开发与只读现场核对仍按其独立前置推进。G4 不再等待 benchmark 处置选择，但当前还不能执行：legacy prior snapshot 缺失使 maintenance 不可用，唯一已实现路径是让 `weekly_10y_d_overlay_0529` 当前 exact version 完整通过 `all`（含 Compare）并以 `full_initial_onboarding_v1` 激活。该 full-`all` 尚未通过，因此不得 activation 或补唯一 2026-08-01 `gray_live` key。`legacy admission identity attestation` 只是未来需另行设计、实现并明确专项授权的控制面能力，当前不可执行。该历史修复不授予 scheduler admission，也不授权 installed 控制面操作；不得把 `gray_live` 或 formal API 通过外推为自然调度或生产稳定证据。

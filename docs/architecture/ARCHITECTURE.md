@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：平台开发和架构审计人员
-**最后核验日期**：2026-08-03
+**最后核验日期**：2026-08-04
 **版本**：v1.3
 
 > 本文是**系统架构**（部署、DB schema、API 契约、数据流）。代码层面的分层、包依赖方向规则、运行时调用图与扩展模型见 [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md)（代码架构主蓝图）。
@@ -637,13 +637,14 @@ Bond Factor Lab 后续按“强约束 harness”管理方案入库。Harness 的
 
 ### 9.2 Harness Gate 顺序
 
-两种运行时共用 `static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness` 编排，但 Gate 实现和证据不同：
+首次技术入库的 Native 与 Blackbox 都固定使用七段 `all`：`static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness`。Native 的 source benchmark/CompareGate 是这条首次路径的硬证据；Blackbox Compare 仍验证确定性、分批/顺序与截止隔离，二者都没有全局关闭 CompareGate 的例外。
 
-1. Native maintenance：验证白名单、adapter/core 依赖、输入 artifact、source benchmark 和 `PredictionRecord`。
-2. Blackbox onboarding：验证两文件、Metadata、三频快照、CLI、确定性、分批/顺序一致性、截止隔离和 Result 转换。
-3. 自动段只生成 Harness 报告和控制面审计，不得写预测、回测等业务表。
-4. Native 的既有受控副作用继续沿用授权边界；Blackbox 通用入库只登记 `shadow + paused`，生产副作用必须逐方案通过专用 Gate 和专项授权。
-5. `api-readiness` 只声明其实际探测范围，不得把结构兼容证据写成真实 Registry/API/scheduler 探针。
+ActivationGate 的两条 Native 路径互斥：当前 exact version 通过完整七段 `all` 时，按 `full_initial_onboarding_v1` 激活，只核验该 current `all` 的七个 Gate（含当前 Compare），不要求 prior snapshot 或 `native-maintenance`。只有未使用 full-`all` 的已入库 Native 修订才可能使用六段 `native-maintenance`：`static -> native-maintenance-admission -> input -> unit -> dry-run -> api-readiness`。后者必须只读复核不同 prior Native version 的 passed `all + compare`，以及该 prior `all` 的持久化 `static.business_identity` 与当前身份精确匹配。该快照只含 `scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors 和 composite Registry IDs，不含代码、config 或 version hash。legacy admission 缺该快照时，当前唯一已实现路径是 current exact version 的完整 `all`；`legacy admission identity attestation` 尚未设计或实现，不能作为当前路径，Harness 不得自动生成或推断它。
+
+1. Blackbox onboarding 继续验证两文件、Metadata、三频快照、CLI、确定性、分批/顺序一致性、截止隔离和 Result 转换。
+2. 自动段只生成 Harness 报告和控制面审计，不得写预测、回测等业务表。
+3. Native 的既有受控副作用继续沿用授权边界；Blackbox 通用入库只登记 `shadow + paused`，生产副作用必须逐方案通过专用 Gate 和专项授权。
+4. `api-readiness` 只声明其实际探测范围，不得把结构兼容证据写成真实 Registry/API/scheduler 探针。
 
 ### 9.3 CLI 入口
 
@@ -653,6 +654,10 @@ Bond Factor Lab 后续按“强约束 harness”管理方案入库。Harness 的
 python -m harness onboard t1_daily \
   --predict-date 2026-06-06 \
   --stage all
+
+python -m harness onboard {existing_native_scheme_id} \
+  --predict-date YYYY-MM-DD \
+  --stage native-maintenance
 
 python -m harness gate input \
   --scheme-id t1_daily \
@@ -665,4 +670,4 @@ python -m harness gate live \
   --authorize "$TOKEN"
 ```
 
-`--stage all` 固定执行 static -> input -> unit -> dry-run -> compare -> backtest-no-persist -> api-readiness；任一步失败即停止。写库动作和 active-only `api` gate 不属于默认 `all`，必须由受控 backtest/live/activate 命令或激活后验收单独执行。
+`--stage all` 固定执行七段 `static -> input -> unit -> dry-run -> compare -> backtest-no-persist -> api-readiness`；任一步失败即停止，并且是首次 Native 技术入库唯一保留 source benchmark/CompareGate 的路径。当前 exact version 的 `all` 通过时，ActivationGate 采用 `full_initial_onboarding_v1`，不再附加 maintenance 或 prior-snapshot 条件。`--stage native-maintenance` 仅对有匹配 prior `static.business_identity` 快照的既有 Native 身份执行六段 `static -> native-maintenance-admission -> input -> unit -> dry-run -> api-readiness`，不运行当前 historical `compare/backtest`，并采用独立的 `native_post_admission_revision_v1` profile。legacy prior admission 没有该快照时不得调用这一路径；当前只能让 current exact version 走完整 `all`。`legacy admission identity attestation` 尚未设计或实现，不是可执行例外。写库动作和 active-only `api` gate 不属于任何默认自动段，必须由受控 backtest/live/activate 命令或激活后验收单独执行。

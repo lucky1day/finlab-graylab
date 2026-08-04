@@ -63,6 +63,18 @@ class NativeActivationPreflight:
         return _native_activation_business_identity(cfg)
 
 
+@dataclass(frozen=True)
+class NativeActivationValidation:
+    """激活前冻结的当前精确版本验证路径证据。"""
+
+    validation_profile: str
+    validation_harness_run_id: str
+    validation_stage: str
+    prior_admitted_scheme_version: str | None
+    registry_scheme_ids: tuple[str, ...]
+    benchmark_validation: str
+
+
 class ActivationGate(Gate):
     """Native 激活 gate：授权后执行 paused→active 或 active 精确版本重批准。"""
 
@@ -167,7 +179,7 @@ class ActivationGate(Gate):
                 finished_at=finished_at,
             )
 
-        # 校验 gate 历史：当前精确版本必须有一次 stage=all 全通过的 harness 运行。
+        # 当前精确版本须有完整首次入库，或满足已准入 Native 修订的维护路径。
         validation_scheme_version = _compute_scheme_version(ctx)
         binding_errors = _native_activation_authorization_errors(
             auth,
@@ -208,7 +220,11 @@ class ActivationGate(Gate):
                 started_at=started_at,
                 finished_at=finished_at,
             )
-        gate_history_errors = _verify_gate_history(ctx, validation_scheme_version)
+        validation_ctx = replace(ctx, config=preflight.validation_config)
+        validation, gate_history_errors = _resolve_native_activation_validation(
+            validation_ctx,
+            validation_scheme_version,
+        )
         if gate_history_errors:
             finished_at = utc_now()
             return GateResult(
@@ -219,8 +235,24 @@ class ActivationGate(Gate):
                     Evidence("scheme_id", ctx.scheme_id),
                     Evidence("validation_scheme_version", validation_scheme_version),
                     Evidence("gate_history_errors", gate_history_errors),
+                    *_validation_evidence(validation),
                 ],
                 errors=gate_history_errors,
+                started_at=started_at,
+                finished_at=finished_at,
+            )
+        if validation is None:
+            finished_at = utc_now()
+            return GateResult(
+                gate_name=self.name,
+                status=GateStatus.BLOCKED,
+                passed=False,
+                evidence=[
+                    Evidence("scheme_id", ctx.scheme_id),
+                    Evidence("validation_scheme_version", validation_scheme_version),
+                    *_validation_evidence(None),
+                ],
+                errors=["activation validation did not return evidence"],
                 started_at=started_at,
                 finished_at=finished_at,
             )
@@ -271,6 +303,7 @@ class ActivationGate(Gate):
                     Evidence("status_flipped", flipped),
                     Evidence("status_rolled_back", status_rolled_back),
                     Evidence("registry_synced", False),
+                    *_validation_evidence(validation),
                 ],
                 errors=errors,
                 started_at=started_at,
@@ -293,6 +326,7 @@ class ActivationGate(Gate):
                 Evidence("cron", _cron_of(raw)),
                 Evidence("gate_history_verified", True),
                 Evidence("registry_synced", True),
+                *_validation_evidence(validation),
                 Evidence("authorization_audit_path", str(audit_path)),
             ],
             errors=errors,
@@ -630,22 +664,82 @@ def _validate_native_activated_config(
 
 
 def _verify_gate_history(ctx: GateContext, scheme_version: str) -> list[str]:
-    """查询 t_harness_gate_results 确认当前版本已通过全部必要 gate。
+    """兼容旧调用：只认可当前精确版本的完整首次入库记录。"""
+    full_validation, full_errors, _ = _passed_full_all_validation(
+        ctx,
+        scheme_version,
+    )
+    return [] if full_validation is not None else full_errors
 
-    返回错误列表，空列表 = 校验通过。
-    """
+
+def _resolve_native_activation_validation(
+    ctx: GateContext,
+    scheme_version: str,
+) -> tuple[NativeActivationValidation | None, list[str]]:
+    """解析当前 Native 精确版本可用于激活的完整或维护验证路径。"""
+    full_validation, full_errors, full_database_available = (
+        _passed_full_all_validation(ctx, scheme_version)
+    )
+    if full_validation is not None:
+        return full_validation, []
+    if not full_database_available:
+        return None, full_errors
+
+    maintenance_run_id, maintenance_errors, maintenance_database_available = (
+        _passed_native_maintenance_validation(ctx, scheme_version)
+    )
+    if not maintenance_database_available:
+        return None, _combine_validation_errors(full_errors, maintenance_errors)
+    if maintenance_run_id is None:
+        return None, _combine_validation_errors(full_errors, maintenance_errors)
+
+    try:
+        from harness.gates.native_maintenance_admission_gate import (
+            verify_native_maintenance_admission,
+        )
+
+        admission, admission_errors = verify_native_maintenance_admission(ctx)
+    except Exception as exc:  # noqa: BLE001 - activation must fail closed.
+        return None, _combine_validation_errors(
+            full_errors,
+            [f"native maintenance admission verification failed: {exc}"],
+        )
+    if admission is None:
+        return None, _combine_validation_errors(full_errors, admission_errors)
+
+    return (
+        NativeActivationValidation(
+            validation_profile="native_post_admission_revision_v1",
+            validation_harness_run_id=maintenance_run_id,
+            validation_stage="native-maintenance",
+            prior_admitted_scheme_version=admission.prior_admitted_scheme_version,
+            registry_scheme_ids=admission.registry_scheme_ids,
+            benchmark_validation="not_run_post_admission",
+        ),
+        [],
+    )
+
+
+def _passed_full_all_validation(
+    ctx: GateContext,
+    scheme_version: str,
+) -> tuple[NativeActivationValidation | None, list[str], bool]:
+    """保留首次入库 ``all`` 路径的精确历史查询和 gate 语义。"""
     from sqlalchemy import text
 
     config_path = ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml"
     raw_config = load_config_raw(config_path) if config_path.exists() else {}
-    backtest_config = raw_config.get("backtest") if isinstance(raw_config.get("backtest"), dict) else {}
+    backtest_config = (
+        raw_config.get("backtest")
+        if isinstance(raw_config.get("backtest"), dict)
+        else {}
+    )
     benchmark_required = bool(backtest_config.get("benchmark_required"))
-    engine = _db_engine()
+    engine, owns_engine = _validation_history_engine(ctx)
     if engine is None:
-        return ["cannot connect to database to verify gate history"]
+        return None, ["cannot connect to database to verify gate history"], False
     try:
         with engine.begin() as conn:
-            # 查找最近一次 stage=all 且 status=passed 的 harness 运行
             run = conn.execute(
                 text(
                     """
@@ -662,13 +756,16 @@ def _verify_gate_history(ctx: GateContext, scheme_version: str) -> list[str]:
                 {"scheme_id": ctx.scheme_id, "scheme_version": scheme_version},
             ).one_or_none()
             if run is None:
-                return [
-                    f"no passed 'all' stage harness run found for {ctx.scheme_id} "
-                    f"version {scheme_version}; run 'python -m harness onboard "
-                    f"--scheme-id {ctx.scheme_id} --stage all' first"
-                ]
+                return (
+                    None,
+                    [
+                        f"no passed 'all' stage harness run found for {ctx.scheme_id} "
+                        f"version {scheme_version}; run 'python -m harness onboard "
+                        f"--scheme-id {ctx.scheme_id} --stage all' first"
+                    ],
+                    True,
+                )
 
-            # 查找该运行中各 gate 的状态
             rows = conn.execute(
                 text(
                     """
@@ -679,28 +776,205 @@ def _verify_gate_history(ctx: GateContext, scheme_version: str) -> list[str]:
                 ),
                 {"harness_run_id": run[0]},
             ).fetchall()
-
-            gate_statuses = {str(row[0]): str(row[1]) for row in rows}
-            if benchmark_required and gate_statuses.get("compare") == "skipped":
-                return [
-                    f"CompareGate status is skipped for benchmark_required scheme {ctx.scheme_id}; "
-                    "run compare with original/current benchmarks until status=passed"
-                ]
-            passed_gates = {
-                gate_name
-                for gate_name, status in gate_statuses.items()
-                if status == "passed" or (status == "skipped" and not benchmark_required)
-            }
-            missing = REQUIRED_ACTIVATE_GATES - passed_gates
-            if missing:
-                return [
-                    f"required gates not all passed for harness run {run[0]}: "
-                    f"missing/not passed: {sorted(missing)}"
-                ]
-            return []
+    except Exception as exc:  # noqa: BLE001 - database errors block activation.
+        return (
+            None,
+            [f"cannot read database to verify gate history: {exc}"],
+            False,
+        )
     finally:
-        if engine is not None and hasattr(engine, "dispose"):
+        if owns_engine and hasattr(engine, "dispose"):
             engine.dispose()
+
+    gate_statuses = {str(row[0]): str(row[1]) for row in rows}
+    if benchmark_required and gate_statuses.get("compare") == "skipped":
+        return (
+            None,
+            [
+                f"CompareGate status is skipped for benchmark_required scheme {ctx.scheme_id}; "
+                "run compare with original/current benchmarks until status=passed"
+            ],
+            True,
+        )
+    passed_gates = {
+        gate_name
+        for gate_name, status in gate_statuses.items()
+        if status == "passed" or (status == "skipped" and not benchmark_required)
+    }
+    missing = REQUIRED_ACTIVATE_GATES - passed_gates
+    if missing:
+        return (
+            None,
+            [
+                f"required gates not all passed for harness run {run[0]}: "
+                f"missing/not passed: {sorted(missing)}"
+            ],
+            True,
+        )
+    return (
+        NativeActivationValidation(
+            validation_profile="full_initial_onboarding_v1",
+            validation_harness_run_id=str(run[0]),
+            validation_stage="all",
+            prior_admitted_scheme_version=None,
+            registry_scheme_ids=(),
+            benchmark_validation="passed_initial_admission",
+        ),
+        [],
+        True,
+    )
+
+
+def _passed_native_maintenance_validation(
+    ctx: GateContext,
+    scheme_version: str,
+) -> tuple[str | None, list[str], bool]:
+    """读取维护阶段的当前版本六 Gate，不读取当前 compare/backtest 结果。"""
+    from sqlalchemy import text
+
+    from harness.gates.native_maintenance_admission_gate import (
+        NATIVE_MAINTENANCE_SEQUENCE,
+    )
+
+    engine, owns_engine = _validation_history_engine(ctx)
+    if engine is None:
+        return (
+            None,
+            ["cannot connect to database to verify native-maintenance gate history"],
+            False,
+        )
+    gate_params = {
+        "harness_run_id": None,
+        **{
+            f"gate_name_{index}": gate_name
+            for index, gate_name in enumerate(NATIVE_MAINTENANCE_SEQUENCE)
+        },
+    }
+    gate_placeholders = ", ".join(
+        f":gate_name_{index}"
+        for index, _ in enumerate(NATIVE_MAINTENANCE_SEQUENCE)
+    )
+    try:
+        with engine.begin() as conn:
+            run = conn.execute(
+                text(
+                    """
+                    SELECT harness_run_id, finished_at
+                    FROM t_harness_runs
+                    WHERE scheme_id = :scheme_id
+                      AND scheme_version = :scheme_version
+                      AND stage = 'native-maintenance'
+                      AND status = 'passed'
+                    ORDER BY finished_at DESC, harness_run_id DESC
+                    LIMIT 1
+                    """
+                ),
+                {"scheme_id": ctx.scheme_id, "scheme_version": scheme_version},
+            ).one_or_none()
+            if run is None:
+                return (
+                    None,
+                    [
+                        "no passed native-maintenance harness run found for "
+                        f"{ctx.scheme_id} version {scheme_version}"
+                    ],
+                    True,
+                )
+            gate_params["harness_run_id"] = run[0]
+            rows = conn.execute(
+                text(
+                    "SELECT gate_name, status "
+                    "FROM t_harness_gate_results "
+                    "WHERE harness_run_id = :harness_run_id "
+                    f"AND gate_name IN ({gate_placeholders})"
+                ),
+                gate_params,
+            ).fetchall()
+    except Exception as exc:  # noqa: BLE001 - database errors block activation.
+        return (
+            None,
+            [f"cannot read database to verify native-maintenance gate history: {exc}"],
+            False,
+        )
+    finally:
+        if owns_engine and hasattr(engine, "dispose"):
+            engine.dispose()
+
+    statuses_by_gate: dict[str, list[str]] = {
+        gate_name: [] for gate_name in NATIVE_MAINTENANCE_SEQUENCE
+    }
+    for row in rows:
+        gate_name = str(row[0])
+        if gate_name in statuses_by_gate:
+            statuses_by_gate[gate_name].append(str(row[1]))
+    missing_or_not_passed = [
+        gate_name
+        for gate_name, statuses in statuses_by_gate.items()
+        if not statuses or any(status != "passed" for status in statuses)
+    ]
+    if missing_or_not_passed:
+        return (
+            None,
+            [
+                "required native-maintenance gates not all passed for harness "
+                f"run {run[0]}: missing/not passed: {missing_or_not_passed}"
+            ],
+            True,
+        )
+    return str(run[0]), [], True
+
+
+def _validation_history_engine(ctx: GateContext) -> tuple[object | None, bool]:
+    """优先复用 GateContext 的数据库连接，且仅释放本地创建的连接。"""
+    if ctx.engine_factory is not None:
+        return ctx.engine_factory(), False
+    return _db_engine(), True
+
+
+def _combine_validation_errors(*error_sets: list[str]) -> list[str]:
+    """保留首次入库失败原因，同时补充维护路径的拒绝证据。"""
+    combined: list[str] = []
+    for errors in error_sets:
+        for error in errors:
+            if error not in combined:
+                combined.append(error)
+    return combined
+
+
+def _validation_evidence(
+    validation: NativeActivationValidation | None,
+) -> list[Evidence]:
+    """将验证路径统一编码为成功与历史拒绝均可审计的 Evidence。"""
+    return [
+        Evidence(
+            "validation_profile",
+            validation.validation_profile if validation is not None else None,
+        ),
+        Evidence(
+            "validation_harness_run_id",
+            validation.validation_harness_run_id if validation is not None else None,
+        ),
+        Evidence(
+            "validation_stage",
+            validation.validation_stage if validation is not None else None,
+        ),
+        Evidence(
+            "prior_admitted_scheme_version",
+            (
+                validation.prior_admitted_scheme_version
+                if validation is not None
+                else None
+            ),
+        ),
+        Evidence(
+            "admission_registry_scheme_ids",
+            list(validation.registry_scheme_ids) if validation is not None else [],
+        ),
+        Evidence(
+            "benchmark_validation",
+            validation.benchmark_validation if validation is not None else None,
+        ),
+    ]
 
 
 def _db_engine():

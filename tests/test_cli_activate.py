@@ -21,6 +21,19 @@ from unittest.mock import patch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _full_initial_validation():
+    from harness.gates.activate_gate import NativeActivationValidation
+
+    return NativeActivationValidation(
+        validation_profile="full_initial_onboarding_v1",
+        validation_harness_run_id="hr-full-initial",
+        validation_stage="all",
+        prior_admitted_scheme_version=None,
+        registry_scheme_ids=(),
+        benchmark_validation="passed_initial_admission",
+    )
+
+
 def _scaffold_scheme(root: Path, status: str = "paused") -> Path:
     scheme_dir = root / "schemes" / "t5_daily"
     scheme_dir.mkdir(parents=True)
@@ -82,7 +95,10 @@ class CliActivateTest(unittest.TestCase):
             issued_by="native-release-owner",
         )
         before_activation = datetime.now(timezone.utc)
-        with patch("harness.gates.activate_gate._verify_gate_history", return_value=[]):
+        with patch(
+            "harness.gates.activate_gate._resolve_native_activation_validation",
+            return_value=(_full_initial_validation(), []),
+        ):
             with patch(
                 "harness.gates.activate_gate._sync_registry_after_activation",
                 return_value="activated-version",
@@ -135,7 +151,10 @@ class CliActivateTest(unittest.TestCase):
 
         with (
             patch("harness.gates.activate_gate.verify_authorization", return_value=(auth, [])),
-            patch("harness.gates.activate_gate._verify_gate_history", return_value=[]),
+            patch(
+                "harness.gates.activate_gate._resolve_native_activation_validation",
+                return_value=(_full_initial_validation(), []),
+            ),
             patch(
                 "harness.gates.activate_gate._sync_registry_after_activation",
                 return_value="activated-version",
@@ -167,7 +186,9 @@ class CliActivateTest(unittest.TestCase):
         )
 
         with (
-            patch("harness.gates.activate_gate._verify_gate_history") as verify_history,
+            patch(
+                "harness.gates.activate_gate._resolve_native_activation_validation"
+            ) as resolve_validation,
             patch("harness.gates.activate_gate._sync_registry_after_activation") as sync,
         ):
             code = self._run_cli(
@@ -183,7 +204,7 @@ class CliActivateTest(unittest.TestCase):
             )
 
         self.assertEqual(code, 2)
-        verify_history.assert_not_called()
+        resolve_validation.assert_not_called()
         sync.assert_not_called()
         self.assertEqual(load_config_raw(config_path)["status"], "paused")
 
@@ -230,7 +251,10 @@ class CliActivateTest(unittest.TestCase):
             return activated_version
 
         with (
-            patch("harness.gates.activate_gate._verify_gate_history", return_value=[]),
+            patch(
+                "harness.gates.activate_gate._resolve_native_activation_validation",
+                return_value=(_full_initial_validation(), []),
+            ),
             patch(
                 "harness.gates.activate_gate._sync_registry_after_activation",
                 side_effect=sync_after_flip,
@@ -265,7 +289,10 @@ class CliActivateTest(unittest.TestCase):
         )
 
         with (
-            patch("harness.gates.activate_gate._verify_gate_history", return_value=[]),
+            patch(
+                "harness.gates.activate_gate._resolve_native_activation_validation",
+                return_value=(_full_initial_validation(), []),
+            ),
             patch(
                 "harness.gates.activate_gate._sync_registry_after_activation",
                 return_value=validation_version,
@@ -342,7 +369,10 @@ class CliActivateTest(unittest.TestCase):
         )
 
         with (
-            patch("harness.gates.activate_gate._verify_gate_history", return_value=[]),
+            patch(
+                "harness.gates.activate_gate._resolve_native_activation_validation",
+                return_value=(_full_initial_validation(), []),
+            ),
             patch(
                 "harness.gates.activate_gate._sync_registry_after_activation",
                 side_effect=RuntimeError("injected DB failure"),
@@ -528,11 +558,11 @@ class CliActivateTest(unittest.TestCase):
 
         def mutate_after_history(*_args, **_kwargs):
             mutator(config_path)
-            return []
+            return _full_initial_validation(), []
 
         with (
             patch(
-                "harness.gates.activate_gate._verify_gate_history",
+                "harness.gates.activate_gate._resolve_native_activation_validation",
                 side_effect=mutate_after_history,
             ),
             patch("harness.gates.activate_gate._db_engine") as create_engine,
@@ -599,7 +629,9 @@ class CliActivateTest(unittest.TestCase):
                 "scheduler.discovery.discover_schemes",
                 side_effect=ValueError("strict discovery failed"),
             ),
-            patch("harness.gates.activate_gate._verify_gate_history") as verify_history,
+            patch(
+                "harness.gates.activate_gate._resolve_native_activation_validation"
+            ) as resolve_validation,
             patch("harness.gates.activate_gate.mark_token_used") as mark_used,
             patch("harness.gates.activate_gate._sync_registry_after_activation") as activate,
         ):
@@ -616,7 +648,7 @@ class CliActivateTest(unittest.TestCase):
             )
 
         self.assertEqual(code, 1)
-        verify_history.assert_not_called()
+        resolve_validation.assert_not_called()
         mark_used.assert_not_called()
         activate.assert_not_called()
         self.assertEqual(load_config_raw(config_path)["status"], "paused")
@@ -639,7 +671,9 @@ class CliActivateTest(unittest.TestCase):
 
         with (
             patch("scheduler.discovery.discover_schemes", return_value=[drifted]),
-            patch("harness.gates.activate_gate._verify_gate_history") as verify_history,
+            patch(
+                "harness.gates.activate_gate._resolve_native_activation_validation"
+            ) as resolve_validation,
             patch("harness.gates.activate_gate.mark_token_used") as mark_used,
             patch("harness.gates.activate_gate._sync_registry_after_activation") as activate,
         ):
@@ -656,7 +690,7 @@ class CliActivateTest(unittest.TestCase):
             )
 
         self.assertEqual(code, 1)
-        verify_history.assert_not_called()
+        resolve_validation.assert_not_called()
         mark_used.assert_not_called()
         activate.assert_not_called()
         self.assertEqual(load_config_raw(config_path)["status"], "paused")

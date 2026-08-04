@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验日期**：2026-08-03
+**最后核验日期**：2026-08-04
 
 本文只保留当前已验证结论；带日期的调查、历史快照和执行证据位于
 [状态记录](records/status/README.md)，未完成工作的排序位于[TODO](TODO.md)。生产调度
@@ -42,9 +42,13 @@
 - **G2**：daily、weekly、monthly、actuals 的单 writer launchd-only 收敛尚未完成；进入
   任何 installed/loaded 控制面变更前必须重新只读核对现场。
 - **G3**：在 G1/G2 和专项授权后，重新枚举并仅补仍缺失的 2026-08-03 日频 business key。
-- **G4**：weekly 10Y D-overlay 的 2026-08-01 `gray_live` 缺口仍待处理。用户须先选择
-  scoped waiver（推荐，必须显示 `waived`）或同源输入/环境重建；此前禁止修改 Native core、
-  source benchmark 或补写信号。
+- **G4**：weekly 10Y D-overlay 的 2026-08-01 `gray_live` 缺口仍待处理。source
+  benchmark/CompareGate 仍只服务首次 Native 技术入库；14/45、3 个翻向的历史输入 vintage
+  漂移仅归档，不是单独 blocker。但现有 legacy prior admission 没有可匹配的持久化
+  `static.business_identity` 快照，故当前不能走 `native-maintenance`。唯一已实现恢复路径是当前
+  exact version 通过完整 `all`（含当前 Compare）后，以 `full_initial_onboarding_v1` 激活；该路径
+  不要求 prior snapshot 或 maintenance。`legacy admission identity attestation` 尚未设计或实现，
+  不是当前可选操作。G4 目前没有 activation 或补写。
 - **G5/G6**：周/月自然调度与完整日/周/月真实时钟观察尚未完成。
 
 完整阶段定义、旧快照和停止条件见

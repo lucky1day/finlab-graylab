@@ -3,7 +3,7 @@
 **文档状态**：`LEGACY_MAINTENANCE`
 **适用运行时**：`native_adapter`
 **目标读者**：平台维护人员
-**最后核验日期**：2026-08-03
+**最后核验日期**：2026-08-04
 
 本 SOP 只维护已登记的 Native V1 方案，不接受新增方案。新算法和替代版本使用 [Blackbox V2 平台 SOP](BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)。
 
@@ -15,6 +15,7 @@
 - 问题现象、影响日期、目标期限和任务类型；
 - 修改分级 L0/L1 及证据来源；
 - 当前代码、配置、benchmark 和关键数据库只读快照；
+- prior `all` 的 `static.business_identity` 证据是否存在，以及它是否可与当前业务身份逐字段比对；
 - 明确禁止变化的算法锚点。
 
 先确认方案位于 `deploy/onboarding_policy_v1.json`。不在白名单时立即停止，不能补写白名单后继续。
@@ -43,7 +44,7 @@
 
 ## 4. 自动 Gate
 
-先执行单项 Gate 定位问题，再执行完整自动段：
+首次技术入库先执行单项 Gate 定位问题，再执行完整自动段：
 
 ```bash
 python -m harness onboard {scheme_id} \
@@ -66,7 +67,21 @@ static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness
 - BacktestGate 默认 `no-persist`；
 - ApiReadiness 只表示激活前结构准备，不是 active API 验收。
 
-任一 Gate 失败时从 static 重跑完整自动段，不跳过失败项。
+`all` 中的 Native source benchmark/CompareGate 是首次技术入库的必留证据。当前 exact version 完整通过 `all` 时，ActivationGate 走 `full_initial_onboarding_v1`，只核验当前七个 Gate（含 Compare），不要求 prior snapshot 或 maintenance。只有未走这条 full-`all` profile 的当前修订，且不同 prior Native active version 已通过 `all + compare`、该 prior `all` 的 `static.business_identity` 已持久化并与当前身份精确匹配时，才可以改走唯一的后续维护阶段。快照只允许包含 `scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors 和 composite Registry IDs，绝不含代码、config 或 version hash：
+
+```bash
+python -m harness onboard {scheme_id} \
+  --predict-date YYYY-MM-DD \
+  --stage native-maintenance
+```
+
+固定顺序为：
+
+```text
+static -> native-maintenance-admission -> input -> unit -> dry-run -> api-readiness
+```
+
+`native-maintenance-admission` 只读复核 prior `all + compare`、匹配的 prior `static.business_identity` 与当前 Registry identity；整个阶段持久化 Harness 审计证据但不写业务表，故不得用 `--check-only`。legacy admission 缺该快照时一律 fail-closed：当前唯一已实现 fallback 是 current exact version 重跑完整 `all`（含当前 Compare）。`legacy admission identity attestation` 尚未设计或实现，未来若建设也须独立设计、实现和明确专项授权，当前不得作为命令、例外或 Gate 推断。它不执行当前 historical `compare/backtest`，不是全局关闭 CompareGate：新身份、业务身份漂移或任何前提不满足时都必须回到 `all`。任一所选阶段 Gate 失败时，从该阶段的 static 重跑，不跳过失败项。
 
 ## 5. 数据与结果核验
 
@@ -75,7 +90,7 @@ static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness
 - `predict_date / feature_date / target_date` 符合对应频率语义；
 - 输入严格截止到 `feature_date`；
 - 方向值仅为 `-1/0/1`；
-- 方向和内部 score 与正确角色的 benchmark 或 live-safe oracle 一致；
+- 首次技术入库的方向和内部 score 与正确角色的 benchmark 一致；已入库同一身份修订的当前日期输出与 live-safe oracle 一致；
 - 相同输入和日期重复执行结果一致；
 - 回测不包含 gray/live target 区间；
 - `predicted_direction=0` 不进入准确率分母。
@@ -84,11 +99,15 @@ static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness
 
 自动段通过后，任何 persist、live 写库或状态切换仍使用既有一次性授权流程。操作前后独立查询：
 
-Native 激活授权必须绑定刚通过完整自动段的
-`validation_scheme_version`，并记录非空 operator 身份。完整自动段通过后，
-用同一标准 discovery 入口只读计算当前精确版本；该值必须与最近一次 passed
-`t_harness_runs.scheme_version` 一致，ActivationGate 会再次严格核验。随后显式
-签发和消费：
+Native 激活授权必须绑定刚通过 `all` 或 `native-maintenance` 的
+`validation_scheme_version`，并记录非空 operator 身份。两条 profile 互斥：当前 exact version
+有 passed `all` 及 CompareGate 时，ActivationGate 使用 `full_initial_onboarding_v1`，不检查
+prior snapshot 或 maintenance；后续维护 profile 才须有 prior passed `all + compare`、匹配的 prior
+`static.business_identity`、当前六个 Gate 和精确 Registry identity。缺 legacy snapshot 时
+ActivationGate 必须 fail-closed，当前只能完整 `all`。`legacy admission identity attestation`
+尚未设计或实现，不能作为激活 token、写库授权或当前恢复路径。用同一标准 discovery 入口只读
+计算当前精确版本；该值必须与最近一次 passed `t_harness_runs.scheme_version` 一致，ActivationGate
+会再次严格核验。随后显式签发和消费：
 
 ```bash
 NATIVE_SCHEME_ID="{scheme_id}"
@@ -116,7 +135,11 @@ python -m harness activate \
 
 日频 Native 激活不再要求维护 `daily_gray_launchd_policy_v1.json` 或任何 frozen
 daily-gray 清单；这些都是待退役兼容控制面，不能作为新版本发布单元。激活只绑定刚通过
-完整自动段的精确 `validation_scheme_version`、Registry 状态和专项授权。
+的精确 `validation_scheme_version`、Registry 状态和专项授权。只有匹配 prior
+`static.business_identity` 的已入库同一身份修订，其历史 source-benchmark 输入 vintage
+漂移才只作归档诊断，不能单独阻断 activation、gap repair、`gray_live`、`scheduled_live` 或
+API；缺 legacy snapshot 时当前只能按本 SOP 的 full-`all` 路径 fail-closed。attestation 尚未设计或实现；未来即使建设也须独立设计、实现和明确专项授权，当前不是可执行路径。
+输入截止、统一周历、日期语义、L0/L1/L2、live-safe oracle 与授权边界不变。
 
 激活本身也不授予自然调度权。若某个方案随后需要 scheduler admission，必须在
 [生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)规定的 G1/G2
@@ -136,7 +159,7 @@ daily-gray 清单；这些都是待退役兼容控制面，不能作为新版本
 
 - [ ] 身份仍在 Native 白名单且未改变。
 - [ ] 改动保持 L0/L1，没有 L2 算法升级。
-- [ ] 七个自动 Gate 全部通过。
+- [ ] 当前 exact version 的七个 `all` Gate 全部通过并使用 `full_initial_onboarding_v1`，或 maintenance profile 的六个 Gate、prior `all + compare`、匹配的 `static.business_identity` 与 Registry identity 全部通过；两者不得叠加要求。legacy snapshot 缺失时当前只能重跑完整 `all`，未实现 attestation 不构成完成条件。
 - [ ] no-persist、重复和日期截止验证通过。
 - [ ] 授权写入只影响允许的当前方案记录。
 - [ ] API、scheduler 和 Registry 与预期一致。

@@ -8,6 +8,11 @@ from harness.gates.compare_gate import CompareGate
 from harness.gates.dry_run_gate import DryRunGate
 from harness.gates.input_gate import InputGate
 from harness.gates.live_gate import LiveGate
+from harness.gates.native_maintenance_admission_gate import (
+    NATIVE_MAINTENANCE_SEQUENCE,
+    NATIVE_MAINTENANCE_STAGE,
+    NativeMaintenanceAdmissionGate,
+)
 from harness.gates.static_gate import StaticGate
 from harness.gates.unit_gate import UnitGate
 from harness.context import GateContext
@@ -21,6 +26,8 @@ def sequence_for_stage(stage: str) -> list[str]:
     normalized = stage.strip().lower()
     if normalized == "all":
         return list(AUTO_SEQUENCE)
+    if normalized == NATIVE_MAINTENANCE_STAGE:
+        return list(NATIVE_MAINTENANCE_SEQUENCE)
     if normalized not in AUTO_SEQUENCE:
         raise ValueError(f"unsupported onboard stage: {stage}")
     return AUTO_SEQUENCE[: AUTO_SEQUENCE.index(normalized) + 1]
@@ -58,6 +65,7 @@ def gate_for_name(name: str, *, ctx: GateContext | None = None) -> Gate:
         raise ValueError(f"unsupported runtime_type: {runtime_type}")
     gates = {
         "static": StaticGate,
+        "native-maintenance-admission": NativeMaintenanceAdmissionGate,
         "input": InputGate,
         "unit": UnitGate,
         "dry-run": DryRunGate,

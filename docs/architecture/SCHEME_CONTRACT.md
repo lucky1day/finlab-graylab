@@ -131,7 +131,9 @@ draft -> validated -> shadow -> active -> paused -> retired
 python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
 ```
 
-自动阶段保持 `static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness`。Gate 证据的含义和副作用边界以[Harness 架构](HARNESS_ARCHITECTURE.md)为准。
+`all` 保持首次技术入库的固定七段：`static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness`。Gate 证据的含义和副作用边界以[Harness 架构](HARNESS_ARCHITECTURE.md)为准。
+
+Native ActivationGate 的两条 profile 互斥：当前 exact version 已通过完整 `all` 时，采用 `full_initial_onboarding_v1`，只复核当前七个 Gate（含 Compare）和一次性授权，不要求 prior snapshot 或 `native-maintenance`。只有未走该 full-`all` profile 的已有 Native V1 修订，在 prior `all` 的 `static.business_identity` 已持久化且与当前业务身份精确匹配时，才可改走 `native-maintenance`：`static -> native-maintenance-admission -> input -> unit -> dry-run -> api-readiness`。快照只含 `scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors 和 composite Registry IDs，不含代码/config/version hash。maintenance profile 还要求 prior Native version 的 passed `all + compare`、当前精确 version 的六段持久证据和一次性授权；legacy admission 缺快照则 fail-closed，当前唯一已实现路径是当前 exact version 重跑完整 `all`。`legacy admission identity attestation` 尚未设计或实现，不能作为当前例外，不得自动生成或推断。maintenance 不运行当前 historical `compare/backtest`，也不写业务表，故不能使用 `--check-only`。满足任一已实现 profile 的同一身份修订，其历史 source-benchmark 输入 vintage 漂移只归档，不单独阻断 activation、gap repair、`gray_live`、`scheduled_live` 或 API；新 Native 身份和 Blackbox V2 仍只能走 `all`。
 
 - Native：校验 adapter/core、输入 artifact 和 source fidelity。
 - Blackbox：校验两文件、CLI、三频快照、确定性、截止隔离和标准结果。
@@ -142,7 +144,7 @@ python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
 
 | 事项 | Native V1 | Blackbox V2 |
 |---|---|---|
-| 算法内部保真 | 平台可检查 core 和内部 benchmark | 上游负责；平台不反编译或改写脚本 |
+| 算法内部保真 | full-`all` profile 检查 core 和内部 benchmark；maintenance profile 保留 prior admission 的 `static.business_identity` 快照与 live-safe 证据。缺 legacy snapshot 时只能走 full `all`，未实现 attestation 不构成例外 | 上游负责；平台不反编译或改写脚本 |
 | 输入 | `shared.input_artifacts` 注入 | 三频父快照 + 显式声明的平台制品 + 平台 Request |
 | 结果验收 | `PredictionRecord` 与 source evidence | Result 合同、确定性和截止隔离 |
 | 新身份 | 禁止 | 唯一允许路径 |

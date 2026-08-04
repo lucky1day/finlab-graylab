@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：Harness 开发、平台入库和安全审计人员
-**最后核验日期**：2026-08-03
+**最后核验日期**：2026-08-04
 
 本文是双运行时 Harness 的强约束总纲。所有后续新方案只允许 Blackbox V2；Native V1 仅维护政策清单中的存量身份。Harness 统一编排 Gate，但按显式 `runtime_type` 选择检查和执行驱动。
 
@@ -19,7 +19,8 @@ Harness 不是新的预测算法，也不是新的数据口径。Harness 的职�
 - `shared.calendar_service` 与 `scheduler.weekly_actuals_updater` 必须共享同一周历事实；源周历孤立 forward jump 只允许通过公共只读 normalizer 处理，不能在方案 adapter、core 或临时脚本里各自修正。
 - Native V1 的 `core/` 和 `predict.py` 继续遵守纯算法与 adapter 边界；清单外 Native 身份必须在 StaticGate 和 ActivationGate fail-closed。
 - Blackbox V2 的 delivery 两文件保持上游原始字节，平台不重写算法；脚本只读“三频父快照 + 显式声明的平台制品”的精确临时视图，通过 CLI 输出标准 Result。
-- Native source-backed 保真由平台 core/benchmark 证据验证；Blackbox 内部保真由上游负责，平台验证确定性、截止隔离和标准结果。
+- Native source-backed 的 source benchmark/CompareGate 是首次技术入库的保真证据；Blackbox 内部保真由上游负责，平台验证确定性、截止隔离和标准结果。
+- ActivationGate 的 Native profile 互斥：current exact version 的完整 `all` 通过时使用 `full_initial_onboarding_v1`，只要求当前七个 Gate（含 Compare），不要求 maintenance/prior snapshot；只有 prior `all` 的 `static.business_identity` 已持久化且与当前身份精确匹配的修订才使用 `native-maintenance` 和其六个 Gate。该快照只含业务字段，不含代码/config/version hash。legacy admission 缺快照时 fail-closed，当前只能让 current exact version 走完整 `all`；`legacy admission identity attestation` 尚未设计或实现，未来若建设也须独立设计、实现和明确专项授权，当前不得自动生成、推断或执行。满足已实现路径后，历史 source-benchmark 输入 vintage 漂移才只作归档诊断，不是 activation、历史补数、`gray_live`、`scheduled_live` 或 API 的独立 blocker。
 - `scheduler.scheme_runner` 是只读 dry-run 边界，只输出 JSON，不写库。
 - `scheduler.executor` / `scheduler.repository` 是正式预测写库边界。算法层不得直接写 `t_scheme_predictions` 或 `t_scheme_run_log`。
 - `backtests/` 只写历史回测结果表 `t_backtest_*`，不得把历史回测混入实盘预测表。
@@ -65,6 +66,7 @@ bond-factor-lab/
 | `harness.input_gate` | Native 构建并核验 artifact；Blackbox 记录三频父快照、平台注册制品、组合输入身份和 Request 截止键 | 不直接调用源表写入，不把摘要证据夸大为 generation freshness |
 | `harness.dry_run_gate` | 调用 `scheduler.scheme_runner`，核验 dry-run 不写正式表，并校验 `predict_date/feature_date/target_date` 语义 | 不调用 `scheduler.executor` |
 | `harness.compare_gate` | Native 执行 source benchmark；Blackbox 验证 predict/backtest、重复、分批、顺序和未来行隔离 | 不用调参、改脚本或伪造结果 |
+| `harness.native_maintenance_admission_gate` | 只读核验 Native 先前 `all + compare` 准入证据、匹配的 prior `static.business_identity` 快照与当前 active Registry identity | 不执行 compare/backtest、不写业务表、不放宽版本或身份规则；缺 legacy snapshot fail-closed |
 | `harness.backtest_gate` | 先跑 `--no-persist`，生成回测摘要和报告；历史排行样本统一要求 `predict_date >= 2025-01-01`，并对受保护表做前后快照 | 未授权不落 `t_backtest_*`；授权落库时也只能改 `t_backtest_*` |
 | `harness.live_gate` | 受控单方案写库前的 readiness、dry-run、行数保护；必须显式传入 `prediction_phase=gray_live/scheduled_live` | 不批量执行所有 active 方案 |
 | `harness.report` | 输出 JSON/Markdown 证据到 `reports/harness/{scheme_id}/` | 不改业务状态 |
@@ -92,7 +94,9 @@ python -m harness gate live \
   --authorize "$TOKEN"
 ```
 
-`--stage all` 的顺序固定为: static -> input -> unit -> dry-run -> compare -> backtest-no-persist -> api-readiness。任何一步失败都停止。Native Compare 是否允许跳过只由其存量维护契约判定；Blackbox Compare 必须完成确定性和隔离检查。`api-readiness` 只按其实现证据声明结构兼容性，不等同于真实 Registry、HTTP API 或 scheduler 探针。`live`、持久化 backtest、`activate` 不属于默认 `all`。
+`--stage all` 是首次技术入库的固定顺序: static -> input -> unit -> dry-run -> compare -> backtest-no-persist -> api-readiness。任何一步失败都停止。首次 Native 技术入库必须保留当前 source benchmark/CompareGate 证据；Blackbox Compare 继续完成确定性和隔离检查。`api-readiness` 只按其实现证据声明结构兼容性，不等同于真实 Registry、HTTP API 或 scheduler 探针。`live`、持久化 backtest、`activate` 不属于默认 `all`。
+
+`native-maintenance` 仅给已完成首次技术入库、且有可比较 prior snapshot 的同一 Native 业务身份使用，固定顺序为 `static -> native-maintenance-admission -> input -> unit -> dry-run -> api-readiness`。`native-maintenance-admission` 必须只读证明不同的旧 Native active version 已有 passed `all` 和 passed `compare`，并从该 prior `all` 的 `static.business_identity` 读取与当前精确匹配的业务快照：`scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors 与 composite Registry IDs；不得比较或持久化代码/config/version hash 作为身份字段。legacy admission 缺该快照时一律 fail-closed，当前只能让 current exact version 重跑完整 `all`（含当前 Compare）。`legacy admission identity attestation` 尚未设计或实现，不是当前可执行例外，且 Gate 不得自动生成或推断它。ActivationGate 在这一路径才复核 prior 前提、当前精确 version 的六个 Gate 与一次性授权，并返回 `native_post_admission_revision_v1`；若当前 exact version 已有 passed `all`，则改走互斥的 `full_initial_onboarding_v1`，不要求 prior snapshot 或六段 Gate。这个 stage 不执行当前 historical `compare/backtest`，只持久化 Harness 审计证据且不写业务表，所以 `--check-only` 不可使用。Blackbox V2 不接受该 stage，仍走既有 `all`。
 
 `--check-only` 只允许 canonical `--stage all`，仍执行七个自动 Gate，
 仍可通过只读 Engine 捕获日历和构造 Request，但控制面零持久化、
@@ -128,8 +132,9 @@ no-persist，并拒绝授权 token、持久化、shadow/activate/live 或其它
 
 1. 先确认 `scheme_id` 在版本化政策清单中，且改动不是新算法、新 target、新 task type 或新身份。
 2. 按改动分级保留 source、输入口径和回归证据。
-3. 使用相同七段自动 Gate 验证已有 adapter/core 行为。
-4. 任何业务持久化、状态变化或 live 修复继续使用既有受控授权。
+3. 首次技术入库使用固定七段 `all`，其中 source benchmark/CompareGate 是必留证据。
+4. 只有已有通过 `all + compare` 的不同 Native active version，且其 `static.business_identity` 已持久化并与当前 active Registry business identity 精确匹配时，修订 version 才可使用六段 `native-maintenance`；legacy admission 缺快照时 fail-closed，当前只能完整 `all`。`legacy admission identity attestation` 尚未设计或实现，不能当作当前豁免。当前 exact version 的 full-`all` profile 与 maintenance profile 互斥。历史 benchmark vintage 漂移只归档，不得被写成 current Compare pass 或人工豁免。
+5. 任何业务持久化、状态变化或 live 修复继续使用既有受控授权、当前输入截止、统一周历、日期语义和 live-safe oracle。
 
 具体操作以[Native V1 存量维护 SOP](../sop/NATIVE_V1_MAINTENANCE_SOP.md)为准。清单外 Native ID 无论从 StaticGate 还是 ActivationGate 进入都必须失败。
 
@@ -191,7 +196,7 @@ generation 冻结副本。算法子进程、方案 adapter 和其它 Gate 不得
 - dry-run 结论: JSON 输出、预测条数、关键字段、正式表行数不变。
 - 执行预算结论: 若方案配置 `schedule.timeout_sec`，记录实际运行耗时、timeout 配置和是否仍在预算内；确认该字段只影响 executor 等待，不改变算法输出。
 - 回测结论: `--no-persist` summary、样本总数、`metric_samples`、准确率、月度分布；预测为“平”的样本计入样本总数但不进入任何指标分母。
-- 算法保真结论: Native 记录 source 口径、L0/L1/L2 分级、原始 hash 和内部 benchmark；Blackbox 记录上游脚本/Metadata hash、确定性、分批/顺序一致性和未来行隔离，不宣称平台已检查黑盒内部模型。
+- 算法保真结论: Native 首次技术入库记录 source 口径、L0/L1/L2 分级、原始 hash 和内部 benchmark；当前 exact version 若通过 full `all`，记录 `full_initial_onboarding_v1` 的七个 Gate。仅走 maintenance 时，另记录 prior `all + compare`、其匹配的 `static.business_identity` 业务快照、精确 Registry identity、`native-maintenance` 六个 Gate 与 live-safe oracle。缺 legacy snapshot 时记录 fail-closed 的 full-`all` 路径；未实现的 attestation 不得作为证据或当前操作。历史 benchmark vintage 漂移只能标为归档诊断。Blackbox 记录上游脚本/Metadata hash、确定性、分批/顺序一致性和未来行隔离，不宣称平台已检查黑盒内部模型。
 - 日期语义结论: 回测样本满足 `predict_date == feature_date` 且最早 `predict_date >= 2025-01-01`；实盘样本满足对应频率的发出规则；周频实盘必须由 `feature_date=previous_trading_day(predict_date)` 再映射 `feature_week_id`，输入使用 `end_week=feature_week_id/as_of_date=feature_date`；月度 source-backed 方案若声明自然 15 号触发，必须证明 `predict_date` 保留自然 15 号，`feature_date/target_date` 分别取对应月 15 号及以前最近交易日；前端/业务表达数据截止时只用 `feature_date`，不依赖 `anchor_date`。
 - 实盘阶段结论: 灰度实盘和正式实盘必须能区分为 `gray_live` / `scheduled_live`；当前 V28/0629 灰度观察区按 `target_date >= 2026-06-01` 判定，后续方案使用方案级生命周期配置；月度回补必须按目标月枚举，不能按 `predict_date >= gray_start` 漏掉首个 target 月。
 - 若落库: 写库前后受保护表行数对比，证明只影响授权表和授权 scheme。

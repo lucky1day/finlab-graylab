@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：平台开发和代码审计人员
-**最后核验日期**：2026-08-03
+**最后核验日期**：2026-08-04
 **定位**：本仓库的代码架构主蓝图，定义分层模型、包依赖方向、运行时调用图和扩展边界。
 **与既有文档的关系**:
 - [ARCHITECTURE.md](ARCHITECTURE.md) = **系统架构**（部署、DB schema、API 契约、数据流）。
@@ -188,7 +188,7 @@ LaunchAgent 切换都必须先复核 installed plist、`launchctl` 状态和对�
 daily/weekly actuals 刷新到上一交易日，monthly actuals 仍刷新到自然 run date，以同时
 覆盖周末补刷和自然 15 号月度规则。常驻 APScheduler 不得再注册 `actuals:*` job。
 
-### 5.2 入库 harness 路径（已实现，自动化方案入库）
+### 5.2 入库 harness 路径（首次入库与 Native 后续维护）
 
 ```
 python -m harness onboard {scheme_id} --stage all
@@ -201,9 +201,28 @@ python -m harness onboard {scheme_id} --stage all
        ├─ BacktestGate → backtests/{id}_reproduction(--no-persist)
        └─ ApiReadinessGate → paused registry row + latest backtest + public API 不泄漏
   Blackbox 首轮授权卡点：ShadowRegisterGate → version=shadow + registry=paused，不写业务表
-  原生授权卡点：BacktestGate(--persist) / LiveGate(execute_scheme) / activate  ← 需 token，否则 BLOCKED
+  Native 首次授权卡点：BacktestGate(--persist) / LiveGate(execute_scheme) / activate  ← 需 token，否则 BLOCKED
   激活后验收：ApiGate(active-only public API 可见性)
 ```
+
+上图的七段 `all` 是所有首次技术入库的固定路径；Native 的 source benchmark/CompareGate
+只在这里作为保真硬证据，Blackbox Compare 也保持原有确定性与截止隔离检查。已入库 Native
+修订仅在不同 prior Native version 的 passed `all + compare` 所属 StaticGate 已持久化
+`static.business_identity`，且该快照与当前身份精确匹配时，才可走：
+
+```text
+static -> native-maintenance-admission -> input -> unit -> dry-run -> api-readiness
+```
+
+快照只保存 `scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors
+与 composite Registry IDs，不保存代码、config 或 version hash。缺少该 prior snapshot 的
+legacy admission 必须 fail-closed；当前唯一已实现 fallback 是 current exact version 重跑完整
+`all`（含当前 Compare）。`legacy admission identity attestation` 尚未设计或实现，未来即使建设也
+必须另行设计、实现并取得明确专项授权，当前不得作为命令或例外；不得自动生成或推断。
+该六段路径不运行当前 historical `compare/backtest`、不写业务表，且不适用于 Blackbox；其后
+activation 仍要核验当前精确 version、六个 Gate 与一次性 token。反之，current exact version 的
+完整 `all` 通过时，ActivationGate 走互斥的 `full_initial_onboarding_v1`，不要求此 prior snapshot
+或六段路径。
 
 详见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)。
 
