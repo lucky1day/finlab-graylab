@@ -70,7 +70,10 @@ Native 技术入库仍必须通过 source benchmark/CompareGate；ActivationGate
 `full_initial_onboarding_v1`，不要求 prior snapshot；只有 maintenance profile 才需要 prior
 `all` 的匹配 `static.business_identity` 快照，历史 benchmark input-vintage 漂移才只归档。
 该快照只含业务字段（scheme/runtime/horizon/task/frequency/tenors/composite IDs），不含代码、
-config 或 version hash。legacy admission 缺快照时必须 fail-closed：当前唯一已实现路径是 current
+config 或 version hash。maintenance 的 current exact `t_scheme_versions` 行必须为
+`runtime_type='native_adapter'` 且 status 为 `draft|active`；expected Registry identity 可在预激活时
+统一为 `paused`，或在激活后统一为 `active`，但 draft version 配 active Registry 必须 fail-closed。
+只有 ActivationGate 可在严格 discovery、精确版本与一次性授权核验后原子建立 active 状态。legacy admission 缺快照时必须 fail-closed：当前唯一已实现路径是 current
 exact version 的完整 `all`（含当前 Compare）。`legacy admission identity attestation` 尚未设计或
 实现，未来即使建设也须独立设计、实现和明确专项授权，当前不得作为 G4 或任何方案的路径。
 因此 G4 目前不得 activation 或写入。任何后续修订仍必须满足输入 cutoff、统一周历、日期语义、

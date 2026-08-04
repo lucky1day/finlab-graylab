@@ -42,20 +42,30 @@ static -> native-maintenance-admission -> input -> unit -> dry-run -> api-readin
 不包含 live 或任何业务表写入；harness run/gate evidence 仍持久化，以供后续
 ActivationGate 审计。因此它不是 `--check-only`，但也不产生业务表副作用。
 
+当前 exact candidate 的 `t_scheme_versions` 行必须存在，`runtime_type='native_adapter'` 且
+`status in {'draft','active'}`。期望 composite Registry identity 在预激活时可统一为 `paused`，
+激活后可统一为 `active`；若 current version 仍是 `draft` 却配有 `active` Registry，必须
+fail-closed。只有 ActivationGate 能在严格 discovery、精确版本与一次性授权核验后原子建立
+active 状态；maintenance 只读验证不得自行翻转 version 或 Registry。
+
 ActivationGate 只在下列条件同时成立时承认这一替代阶段：
 
 1. 当前 config 是 Native V1、`status='active'`，且仍在
    `deploy/onboarding_policy_v1.json` 的存量清单中；
-2. DB 中存在该 `scheme_id` 一个不同于当前 version 的 active Native version，以及一次已通过的
+2. DB 中存在 current exact `scheme_version` 的 `t_scheme_versions` 行，且其
+   `runtime_type='native_adapter'`、`status in {'draft','active'}`；预激活 expected composite
+   Registry 可统一为 `paused`，激活后可统一为 `active`，但 `draft` version 与 `active` Registry
+   的组合一律 fail-closed；
+3. DB 中存在该 `scheme_id` 一个不同于当前 version 的 active Native version，以及一次已通过的
    首次 `stage='all'` Native run。所选 prior run 必须恰有一条 `gate_name='compare'` 的结果，且其
    status 为 `passed`；零条、重复、`skipped` 或非通过结果一律 fail-closed。该 run 的 StaticGate 必须
    持久化唯一、规范化的 `static.business_identity`，并与当前业务字段精确匹配；
-3. 所述快照与当前 config/active Registry 一起精确包含 `runtime_type`、`task_type`、
+4. 所述快照与当前 config/expected Registry 一起精确包含 `runtime_type`、`task_type`、
    `frequency`、`horizon`、target tenors 与全部 composite Registry IDs，故它不是新算法、
    新 target、新 task 或 runtime 迁移；不比较代码、config 或 version hash；
-4. 当前 exact `scheme_version` 有一次已通过的 `stage='native-maintenance'` run，并通过
+5. 当前 exact `scheme_version` 有一次已通过的 `stage='native-maintenance'` run，并通过
    该阶段全部六个 Gate；
-5. 既有 activation token 仍精确绑定当前 `scheme_version`，并继续完成 strict discovery、
+6. 既有 activation token 仍精确绑定当前 `scheme_version`，并继续完成 strict discovery、
    文件 hash、config 生命周期翻转与 Registry/version 原子读回。
 
 若任一条件不成立，maintenance profile 保持 fail-closed。尤其是 legacy prior admission 没有该
@@ -72,7 +82,8 @@ benchmark pass；full-`all` profile 则记录 `benchmark_validation=passed_initi
 
 G4 不豁免 benchmark。当前 legacy prior admission 缺少可比较的持久化
 `static.business_identity`，所以它不能使用 `native-maintenance`、activation 或任何 signal-gap
-写入。当前唯一已实现恢复路径是 current exact version 重跑完整 `all`（包含当前 Compare），并在
+写入。其 current exact `t_scheme_versions` 是 `native_adapter/draft`，expected Registry 统一为
+`paused`；这是正常预激活态，不是额外 blocker。当前唯一已实现恢复路径是 current exact version 重跑完整 `all`（包含当前 Compare），并在
 通过后使用 `full_initial_onboarding_v1` 激活；该 full-`all` 尚未通过。`legacy admission identity
 attestation` 尚未设计或实现，不是当前替代路径。只有已实现的 full-`all` 前提和修订版本激活均
 完成后，才可使用现有 signal-gap 路径对唯一业务键补数：

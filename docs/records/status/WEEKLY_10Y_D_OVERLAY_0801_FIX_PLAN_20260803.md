@@ -453,7 +453,7 @@ P0 可以暂时保留底层 `legacy` 环境开关，以兼容现有 executor/rep
 
 另有一个独立历史诊断：平台 DB 对原始 benchmark 的 45 个样本中有 14 个不一致，其中 3 周方向翻转。该漂移起点早于 8 月 1 日排序问题，不能把两者混为一个 bug。用户已确认：source benchmark/CompareGate 继续作为首次技术入库的证据；满足 post-admission 身份证据前提的当前 Native 修订，其 historical input-vintage 漂移只归档，不要求 scoped waiver 或同源输入/环境重建，也不单独阻断 G4。可是本方案的 legacy prior admission 没有可匹配的持久化 `static.business_identity`，不能仅凭当前 Registry 反推历史身份。
 
-**状态：算法排序问题已修；benchmark 政策已确认；但 legacy prior identity snapshot 缺失，当前不能走 `native-maintenance`。唯一已实现恢复路径是当前精确 version 完整通过 `all`（含当前 Compare），随后 ActivationGate 使用 `full_initial_onboarding_v1`，不要求 prior snapshot 或 maintenance；该 full-`all` 尚未通过。`legacy admission identity attestation` 尚未设计或实现，不是当前替代路径。尚未发生激活或补写。**
+**状态：算法排序问题已修；benchmark 政策已确认；但 legacy prior identity snapshot 缺失，当前不能走 `native-maintenance`。当前 exact candidate 的 `t_scheme_versions` 为 `native_adapter/draft`、期望 Registry 统一 `paused`，这是正常预激活态而非额外 blocker。唯一已实现恢复路径是当前精确 version 完整通过 `all`（含当前 Compare），随后 ActivationGate 使用 `full_initial_onboarding_v1`，不要求 prior snapshot 或 maintenance；该 full-`all` 尚未通过。`legacy admission identity attestation` 尚未设计或实现，不是当前替代路径。尚未发生激活或补写。**
 
 ### 造成的影响
 

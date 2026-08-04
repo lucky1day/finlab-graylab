@@ -215,8 +215,11 @@ static -> native-maintenance-admission -> input -> unit -> dry-run -> api-readin
 ```
 
 快照只保存 `scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors
-与 composite Registry IDs，不保存代码、config 或 version hash。缺少该 prior snapshot 的
-legacy admission 必须 fail-closed；当前唯一已实现 fallback 是 current exact version 重跑完整
+与 composite Registry IDs，不保存代码、config 或 version hash。maintenance 的 current exact
+`t_scheme_versions` 行必须为 `runtime_type='native_adapter'` 且 status 为 `draft|active`；expected
+Registry identity 可在预激活时统一为 `paused`，或在激活后统一为 `active`，但 draft version 配 active
+Registry 必须 fail-closed。只有 ActivationGate 可在严格 discovery、精确版本与一次性授权核验后原子
+建立 active 状态。缺少该 prior snapshot 的 legacy admission 必须 fail-closed；当前唯一已实现 fallback 是 current exact version 重跑完整
 `all`（含当前 Compare）。`legacy admission identity attestation` 尚未设计或实现，未来即使建设也
 必须另行设计、实现并取得明确专项授权，当前不得作为命令或例外；不得自动生成或推断。
 该六段路径不运行当前 historical `compare/backtest`、不写业务表，且不适用于 Blackbox；其后

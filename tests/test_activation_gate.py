@@ -253,6 +253,9 @@ class NativeActivationValidationTests(unittest.TestCase):
                     prior_admitted_scheme_version="prior-native-version",
                     prior_harness_run_id="hr-prior",
                     registry_scheme_ids=("t5_daily__h5__10Y",),
+                    current_candidate_runtime_type="native_adapter",
+                    current_candidate_status="draft",
+                    registry_lifecycle="paused",
                 ),
                 [],
             )
@@ -331,6 +334,34 @@ class NativeActivationValidationTests(unittest.TestCase):
             legacy_history_errors,
         )
 
+    def test_resolver_accepts_draft_candidate_with_paused_registry(self) -> None:
+        """预激活 draft 候选可在 paused Registry 上完成维护验证。"""
+        from harness.gates.activate_gate import _resolve_native_activation_validation
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            engine, cfg, ctx, _ = _maintenance_fixture(
+                root,
+                registry_status="paused",
+                current_version_status="draft",
+            )
+            try:
+                _seed_maintenance_run(engine, cfg.scheme_version)
+                validation, errors = _resolve_native_activation_validation(
+                    ctx,
+                    cfg.scheme_version,
+                )
+            finally:
+                engine.dispose()
+
+        self.assertEqual(errors, [])
+        self.assertIsNotNone(validation)
+        assert validation is not None
+        self.assertEqual(
+            validation.validation_profile,
+            "native_post_admission_revision_v1",
+        )
+
     def test_maintenance_resolver_uses_context_engine_without_disposing_it(self) -> None:
         from harness.gates.activate_gate import _resolve_native_activation_validation
 
@@ -406,7 +437,7 @@ class NativeActivationValidationTests(unittest.TestCase):
 
         cases = (
             ("missing_prior", False, "active", "prior active Native"),
-            ("registry_not_active", True, "paused", "registry"),
+            ("registry_archived", True, "archived", "registry"),
         )
         for case, include_prior, registry_status, expected_error in cases:
             with self.subTest(case=case), tempfile.TemporaryDirectory() as tmpdir:
@@ -555,12 +586,18 @@ def _maintenance_fixture(
     *,
     include_prior: bool = True,
     registry_status: str = "active",
+    current_version_status: str = "active",
 ):
     _write_native_policy(root)
     cfg = _write_active_native_scheme(root)
     engine = _activation_sqlite_engine(root)
     _, registry_ids = _expected_registry_identity(cfg)
     _insert_active_registry_rows(engine, cfg, registry_status=registry_status)
+    _seed_current_candidate(
+        engine,
+        cfg,
+        status=current_version_status,
+    )
     if include_prior:
         _seed_prior_admission(engine, cfg)
     ctx = GateContext(
@@ -732,6 +769,21 @@ def _seed_prior_admission(engine, cfg) -> None:
                 "('hr-prior', 'static', 'passed', :summary_json)"
             ),
             {"summary_json": summary_json},
+        )
+
+
+def _seed_current_candidate(engine, cfg, *, status: str) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO t_scheme_versions VALUES "
+                "(:scheme_id, :scheme_version, 'native_adapter', :status)"
+            ),
+            {
+                "scheme_id": cfg.scheme_id,
+                "scheme_version": cfg.scheme_version,
+                "status": status,
+            },
         )
 
 

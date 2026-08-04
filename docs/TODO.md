@@ -25,7 +25,8 @@ plist、`launchctl` loaded state、日志与实际缺口。任何生产副作用
    对仍缺的 business key 写 `gray_live`，不覆盖既有记录。
 5. **G4 — weekly 10Y D-overlay**：历史 source-benchmark 输入 vintage 漂移已确认只作归档
    诊断；但 legacy prior admission 缺可匹配的持久化 `static.business_identity`，当前不能走
-   `native-maintenance`。唯一已实现恢复路径是当前 exact version 完整通过 `all`（含当前 Compare），
+   `native-maintenance`。当前 exact candidate 的 `t_scheme_versions` 为 `native_adapter/draft`，预期
+   Registry 统一 `paused`，这是正常预激活态而非额外 blocker。唯一已实现恢复路径是当前 exact version 完整通过 `all`（含当前 Compare），
    再按 `full_initial_onboarding_v1` 激活；该路径不要求 prior snapshot 或 maintenance。
    `legacy admission identity attestation` 尚未设计或实现，不能作为当前操作。G4 在完整 `all`
    通过和受控 activation 前不得补数；之后才可仅补 `weekly_10y_d_overlay_0529 / 10Y / h6 / predict_date=2026-08-01 / feature_date=2026-07-31 /

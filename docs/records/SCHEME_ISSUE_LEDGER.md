@@ -265,7 +265,8 @@ oracle。硬红线为：**不得调算法贴旧 benchmark、不得重写 source 
 generation fallback。**
 
 本项不授予 G4 activation、gap repair 或业务写库授权；当前 legacy prior admission 缺可比较的
-`static.business_identity` 快照，不能走 maintenance。当前唯一已实现恢复路径是 current exact
+`static.business_identity` 快照，不能走 maintenance。当前 exact candidate 的 `t_scheme_versions` 为
+`native_adapter/draft` 且预期 Registry 统一 `paused`，这是正常预激活态，不是额外 blocker。当前唯一已实现恢复路径是 current exact
 version 完整通过 `all`（含当前 Compare），再使用 `full_initial_onboarding_v1`；该 profile 不要求
 prior snapshot。`legacy admission identity attestation` 尚未设计或实现，未来即使建设也须独立设计、
 实现和明确专项授权，当前不是可执行 G4 路径。

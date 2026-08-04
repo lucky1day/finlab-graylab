@@ -81,7 +81,7 @@ python -m harness onboard {scheme_id} \
 static -> native-maintenance-admission -> input -> unit -> dry-run -> api-readiness
 ```
 
-`native-maintenance-admission` 只读复核 prior `all + compare`、匹配的 prior `static.business_identity` 与当前 Registry identity；整个阶段持久化 Harness 审计证据但不写业务表，故不得用 `--check-only`。legacy admission 缺该快照时一律 fail-closed：当前唯一已实现 fallback 是 current exact version 重跑完整 `all`（含当前 Compare）。`legacy admission identity attestation` 尚未设计或实现，未来若建设也须独立设计、实现和明确专项授权，当前不得作为命令、例外或 Gate 推断。它不执行当前 historical `compare/backtest`，不是全局关闭 CompareGate：新身份、业务身份漂移或任何前提不满足时都必须回到 `all`。任一所选阶段 Gate 失败时，从该阶段的 static 重跑，不跳过失败项。
+`native-maintenance-admission` 只读复核 prior `all + compare`、匹配的 prior `static.business_identity` 与当前 Registry identity；current exact `t_scheme_versions` 必须为 `native_adapter` 的 `draft|active` 行，expected Registry 必须全 paused（预激活）或全 active（激活后），且 draft+active fail-closed。整个阶段持久化 Harness 审计证据但不写业务表，故不得用 `--check-only`；只有 ActivationGate 才能原子建立 active。legacy admission 缺该快照时一律 fail-closed：当前唯一已实现 fallback 是 current exact version 重跑完整 `all`（含当前 Compare）。`legacy admission identity attestation` 尚未设计或实现，未来若建设也须独立设计、实现和明确专项授权，当前不得作为命令、例外或 Gate 推断。它不执行当前 historical `compare/backtest`，不是全局关闭 CompareGate：新身份、业务身份漂移或任何前提不满足时都必须回到 `all`。任一所选阶段 Gate 失败时，从该阶段的 static 重跑，不跳过失败项。
 
 ## 5. 数据与结果核验
 
@@ -103,7 +103,7 @@ Native 激活授权必须绑定刚通过 `all` 或 `native-maintenance` 的
 `validation_scheme_version`，并记录非空 operator 身份。两条 profile 互斥：当前 exact version
 有 passed `all` 及 CompareGate 时，ActivationGate 使用 `full_initial_onboarding_v1`，不检查
 prior snapshot 或 maintenance；后续维护 profile 才须有 prior passed `all + compare`、匹配的 prior
-`static.business_identity`、当前六个 Gate 和精确 Registry identity。缺 legacy snapshot 时
+`static.business_identity`、当前六个 Gate、native `draft|active` exact version 与统一 paused/active 的精确 Registry identity。draft+active 必须失败，且只有 ActivationGate 能原子建立 active。缺 legacy snapshot 时
 ActivationGate 必须 fail-closed，当前只能完整 `all`。`legacy admission identity attestation`
 尚未设计或实现，不能作为激活 token、写库授权或当前恢复路径。用同一标准 discovery 入口只读
 计算当前精确版本；该值必须与最近一次 passed `t_harness_runs.scheme_version` 一致，ActivationGate

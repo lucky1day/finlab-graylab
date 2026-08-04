@@ -51,6 +51,7 @@ class NativeMaintenanceAdmissionTests(unittest.TestCase):
                     harness_run_id="hr-z",
                     finished_at="2026-08-01 10:00:00",
                 )
+                _seed_current_candidate(engine, status="active")
                 ctx = _context(root, engine)
 
                 admission, errors = verify_native_maintenance_admission(ctx)
@@ -86,7 +87,7 @@ class NativeMaintenanceAdmissionTests(unittest.TestCase):
                         conn.execute(
                             text("SELECT COUNT(*) FROM t_scheme_versions")
                         ).scalar_one(),
-                        2,
+                        3,
                     )
                     self.assertEqual(
                         conn.execute(
@@ -114,6 +115,109 @@ class NativeMaintenanceAdmissionTests(unittest.TestCase):
             self.assertEqual(result.status, GateStatus.BLOCKED)
             self.assertFalse(result.passed)
             self.assertTrue(result.errors)
+        finally:
+            engine.dispose()
+
+    def test_admits_pre_activation_paused_registry_with_matching_identity(self) -> None:
+        """候选 Native version 激活前允许 Registry 保持统一 paused。"""
+        from harness.gates.native_maintenance_admission_gate import (
+            NativeMaintenanceAdmissionGate,
+        )
+
+        engine = _sqlite_engine()
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                _write_policy(root, (_SCHEME_ID,))
+                _insert_registry_row(engine, status="paused", deployed_at=None)
+                _seed_prior_admission(engine)
+                _seed_current_candidate(engine, status="draft")
+
+                result = NativeMaintenanceAdmissionGate().run(
+                    _context(root, engine)
+                )
+
+            self.assertEqual(result.status, GateStatus.PASSED)
+            self.assertTrue(result.passed)
+            evidence = {item.key: item.value for item in result.evidence}
+            self.assertEqual(
+                evidence["current_candidate_runtime_type"],
+                "native_adapter",
+            )
+            self.assertEqual(evidence["current_candidate_status"], "draft")
+            self.assertEqual(evidence["registry_lifecycle"], "paused")
+        finally:
+            engine.dispose()
+
+    def test_blocks_missing_or_invalid_current_exact_native_version(self) -> None:
+        """维护准入必须绑定当前精确候选的 Native lifecycle。"""
+        from harness.gates.native_maintenance_admission_gate import (
+            NativeMaintenanceAdmissionGate,
+        )
+
+        cases = (
+            ("missing", None, None),
+            ("wrong_runtime", "blackbox_v2", "draft"),
+            ("paused", "native_adapter", "paused"),
+            ("archived", "native_adapter", "archived"),
+        )
+        for case, runtime_type, status in cases:
+            with self.subTest(case=case):
+                engine = _sqlite_engine()
+                try:
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        root = Path(tmpdir)
+                        _write_policy(root, (_SCHEME_ID,))
+                        _insert_registry_row(engine, status="paused", deployed_at=None)
+                        _seed_prior_admission(engine)
+                        if runtime_type is not None and status is not None:
+                            _seed_current_candidate(
+                                engine,
+                                runtime_type=runtime_type,
+                                status=status,
+                            )
+
+                        result = NativeMaintenanceAdmissionGate().run(
+                            _context(root, engine)
+                        )
+
+                    self.assertEqual(result.status, GateStatus.BLOCKED)
+                    self.assertFalse(result.passed)
+                    self.assertTrue(
+                        any("current exact Native version" in error for error in result.errors),
+                        result.errors,
+                    )
+                finally:
+                    engine.dispose()
+
+    def test_blocks_draft_current_version_with_active_registry(self) -> None:
+        """draft 候选不得绑定已经 active 的业务 Registry。"""
+        from harness.gates.native_maintenance_admission_gate import (
+            NativeMaintenanceAdmissionGate,
+        )
+
+        engine = _sqlite_engine()
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                _write_policy(root, (_SCHEME_ID,))
+                _insert_registry_row(engine)
+                _seed_prior_admission(engine)
+                _seed_current_candidate(engine, status="draft")
+
+                result = NativeMaintenanceAdmissionGate().run(
+                    _context(root, engine)
+                )
+
+            self.assertEqual(result.status, GateStatus.BLOCKED)
+            self.assertFalse(result.passed)
+            self.assertTrue(
+                any(
+                    "draft" in error and "registry" in error.lower()
+                    for error in result.errors
+                ),
+                result.errors,
+            )
         finally:
             engine.dispose()
 
@@ -438,7 +542,7 @@ class NativeMaintenanceAdmissionTests(unittest.TestCase):
             ("horizon", "UPDATE t_scheme_registry SET horizon = 5", None),
             ("target_tenor", "UPDATE t_scheme_registry SET target_tenor = '5Y'", None),
             ("runtime_type", "UPDATE t_scheme_registry SET runtime_type = 'blackbox_v2'", None),
-            ("status", "UPDATE t_scheme_registry SET status = 'paused'", None),
+            ("status", "UPDATE t_scheme_registry SET status = 'archived'", None),
             ("missing", "DELETE FROM t_scheme_registry", None),
             ("extra_active", None, _extra_active_registry_row()),
         )
@@ -726,6 +830,32 @@ def _seed_prior_admission(
                     else static_summary_json
                 ),
             )
+
+
+def _seed_current_candidate(
+    engine,
+    *,
+    scheme_version: str = _CURRENT_VERSION,
+    runtime_type: str = "native_adapter",
+    status: str = "draft",
+) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO t_scheme_versions
+                    (scheme_id, scheme_version, runtime_type, status)
+                VALUES
+                    (:scheme_id, :scheme_version, :runtime_type, :status)
+                """
+            ),
+            {
+                "scheme_id": _SCHEME_ID,
+                "scheme_version": scheme_version,
+                "runtime_type": runtime_type,
+                "status": status,
+            },
+        )
 
 
 def _insert_static_gate_result(

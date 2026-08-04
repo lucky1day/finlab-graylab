@@ -46,6 +46,9 @@ class NativeMaintenanceAdmission:
     prior_admitted_scheme_version: str
     prior_harness_run_id: str
     registry_scheme_ids: tuple[str, ...]
+    current_candidate_runtime_type: str
+    current_candidate_status: str
+    registry_lifecycle: str
 
 
 class NativeMaintenanceAdmissionGate(Gate):
@@ -86,6 +89,15 @@ class NativeMaintenanceAdmissionGate(Gate):
                 ),
                 Evidence("prior_harness_run_id", admission.prior_harness_run_id),
                 Evidence("registry_scheme_ids", list(admission.registry_scheme_ids)),
+                Evidence(
+                    "current_candidate_runtime_type",
+                    admission.current_candidate_runtime_type,
+                ),
+                Evidence(
+                    "current_candidate_status",
+                    admission.current_candidate_status,
+                ),
+                Evidence("registry_lifecycle", admission.registry_lifecycle),
             ],
             errors=[],
             started_at=started_at,
@@ -131,6 +143,11 @@ def verify_native_maintenance_admission(
             return None, ["cannot connect to database for native maintenance admission"]
 
         with engine.begin() as conn:
+            current_version_row = _read_current_native_candidate_conn(
+                conn,
+                scheme_id=str(cfg.scheme_id),
+                scheme_version=str(cfg.scheme_version),
+            )
             prior_row = _read_prior_native_admission_conn(
                 conn,
                 scheme_id=str(cfg.scheme_id),
@@ -164,6 +181,13 @@ def verify_native_maintenance_admission(
             engine.dispose()
 
     errors: list[str] = []
+    current_version_status, current_version_error = _current_native_candidate_error(
+        current_version_row,
+        scheme_id=str(cfg.scheme_id),
+        scheme_version=str(cfg.scheme_version),
+    )
+    if current_version_error is not None:
+        errors.append(current_version_error)
     if prior_row is None:
         errors.append(
             "no prior active Native version has a passed all-stage harness run "
@@ -178,6 +202,7 @@ def verify_native_maintenance_admission(
             "prior admitted Native static gate identity snapshot does not match "
             "current Native business identity"
         )
+    registry_lifecycle = _uniform_registry_lifecycle(registry_rows)
     registry_error = _registry_identity_error(
         cfg,
         expected_tenors,
@@ -197,15 +222,29 @@ def verify_native_maintenance_admission(
                 "native maintenance registry identity failed: "
                 f"{frequency_error}"
             )
+        elif (
+            registry_lifecycle == "active"
+            and current_version_status == "draft"
+        ):
+            errors.append(
+                "current exact Native version draft requires a uniformly paused "
+                "Registry before activation"
+            )
     if errors:
         return None, errors
 
     assert prior_row is not None
+    assert current_version_row is not None
+    assert current_version_status is not None
+    assert registry_lifecycle in {"paused", "active"}
     return (
         NativeMaintenanceAdmission(
             prior_admitted_scheme_version=str(prior_row["scheme_version"]),
             prior_harness_run_id=str(prior_row["harness_run_id"]),
             registry_scheme_ids=tuple(expected_registry_ids),
+            current_candidate_runtime_type=str(current_version_row["runtime_type"]),
+            current_candidate_status=current_version_status,
+            registry_lifecycle=registry_lifecycle,
         ),
         [],
     )
@@ -295,6 +334,63 @@ def _read_prior_native_admission_conn(
         .mappings()
         .one_or_none()
     )
+
+
+def _read_current_native_candidate_conn(
+    conn,
+    *,
+    scheme_id: str,
+    scheme_version: str,
+) -> Mapping[str, object] | None:
+    """读取当前精确候选版本的 lifecycle，避免维护证据脱离 DB 身份。"""
+    return (
+        conn.execute(
+            text(
+                """
+                SELECT runtime_type, status
+                FROM t_scheme_versions
+                WHERE scheme_id = :scheme_id
+                  AND scheme_version = :scheme_version
+                LIMIT 1
+                """
+            ),
+            {
+                "scheme_id": scheme_id,
+                "scheme_version": scheme_version,
+            },
+        )
+        .mappings()
+        .one_or_none()
+    )
+
+
+def _current_native_candidate_error(
+    row: Mapping[str, object] | None,
+    *,
+    scheme_id: str,
+    scheme_version: str,
+) -> tuple[str | None, str | None]:
+    """只接受当前精确 Native draft/active lifecycle。"""
+    if row is None:
+        return (
+            None,
+            "current exact Native version is missing from t_scheme_versions: "
+            f"{scheme_id}/{scheme_version}",
+        )
+    if row.get("runtime_type") != "native_adapter":
+        return (
+            None,
+            "current exact Native version runtime_type is "
+            f"{row.get('runtime_type')}, expected native_adapter",
+        )
+    status = row.get("status")
+    if status not in {"draft", "active"}:
+        return (
+            None,
+            "current exact Native version status is "
+            f"{status}, expected draft or active",
+        )
+    return str(status), None
 
 
 def _read_prior_native_business_identity_snapshot_conn(
@@ -473,17 +569,30 @@ def _registry_identity_error(
     expected_registry_ids: tuple[str, ...],
     registry_rows: list[Mapping[str, object]],
 ) -> str | None:
-    """复用 registry 业务身份核验并固定 Native active 预期。"""
+    """复用 Registry 身份核验，允许候选版本激活前保持统一 paused。"""
     from scheduler.repository import _registry_identity_error as repository_error
 
+    registry_statuses = {str(row.get("status")) for row in registry_rows}
+    expected_status = "paused" if registry_statuses == {"paused"} else "active"
     return repository_error(
         cfg,
         expected_tenors,
         expected_registry_ids,
         registry_rows,
-        expected_status="active",
+        expected_status=expected_status,
         expected_runtime_type="native_adapter",
     )
+
+
+def _uniform_registry_lifecycle(
+    registry_rows: list[Mapping[str, object]],
+) -> str | None:
+    """返回统一且可用于 Native 激活前验证的 Registry lifecycle。"""
+    statuses = {str(row.get("status")) for row in registry_rows}
+    if len(statuses) != 1:
+        return None
+    status = next(iter(statuses))
+    return status if status in {"paused", "active"} else None
 
 
 def _registry_frequency_error(
