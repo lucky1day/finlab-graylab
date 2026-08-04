@@ -146,6 +146,19 @@ class _AtomicConnection(_CaptureConnection):
             self._store.setdefault("calls", []).append((sql_text, rows))
             run_row = self._store.get("run_row")
             return _MappingResult([run_row] if run_row is not None else [])
+        if (
+            sql_text.lstrip().startswith("SELECT")
+            and "FROM t_scheme_predictions" in sql_text
+            and "WHERE run_id = :run_id" in sql_text
+        ):
+            self._store.setdefault("calls", []).append((sql_text, rows))
+            run_id = int(rows["run_id"])
+            prediction_rows = [
+                row
+                for row in self._store.get("prediction_rows", [])
+                if int(row.get("run_id") or 0) == run_id
+            ]
+            return _MappingResult(prediction_rows)
         if "INSERT INTO t_scheme_predictions" in sql_text and fail_stage == "prediction":
             raise RuntimeError("injected prediction failure")
         if (
@@ -174,6 +187,29 @@ class _AtomicConnection(_CaptureConnection):
                 raise RuntimeError("duplicate prediction target key")
         result = super().execute(sql, rows)
         if "UPDATE t_scheme_runs" in sql_text:
+            if "SET data_snapshot_id" in sql_text:
+                if fail_stage == "snapshot":
+                    raise RuntimeError("injected snapshot failure")
+                if self._store["run_row"].get("data_snapshot_id") is not None:
+                    return _MappingResult(rowcount=0)
+                self._store["run_row"]["data_snapshot_id"] = rows[
+                    "data_snapshot_id"
+                ]
+                return result
+            if "SET status = 'success'" in sql_text:
+                if fail_stage == "run":
+                    raise RuntimeError("injected run failure")
+                if fail_stage == "run_missing":
+                    return _MappingResult(rowcount=0)
+                self._store["run_row"].update(
+                    {
+                        "status": "success",
+                        "records_returned": rows["records_returned"],
+                        "records_written": rows["records_written"],
+                        "error_message": None,
+                    }
+                )
+                return result
             if fail_stage == "run":
                 raise RuntimeError("injected run failure")
             if fail_stage == "run_missing":
@@ -225,6 +261,7 @@ class _AtomicEngine:
                     "base_scheme_id": "demo_blackbox",
                     "runtime_type": "blackbox_v2",
                     "status": "active",
+                    "frequency": "daily",
                     "task_type": "T+1",
                     "target_tenor": "10Y",
                     "horizon": 1,
@@ -245,6 +282,7 @@ class _AtomicEngine:
                 "records_returned": None,
                 "records_written": None,
                 "error_message": None,
+                "data_snapshot_id": None,
                 "schedule_item_id": None,
             },
             "fail_stage": fail_stage,
@@ -1436,6 +1474,158 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertEqual(engine.store["prediction_rows"], [])
         self.assertEqual(engine.store["run_row"]["status"], "running")
         self.assertEqual(engine.store["run_log_rows"], [])
+
+    def test_blackbox_gray_gap_completion_binds_record_snapshot_to_run(self) -> None:
+        from scheduler.repository import complete_gray_gap_run
+        from shared.models import PredictionRecord
+
+        engine = _AtomicEngine()
+        engine.store["run_row"].update(
+            {
+                "prediction_phase": "gray_live",
+                "predict_date": "2026-07-20",
+                "records_expected": 1,
+            }
+        )
+        record = PredictionRecord(
+            scheme_id="demo_blackbox",
+            target_tenor="10Y",
+            horizon=1,
+            predict_date="2026-07-20",
+            target_date="2026-07-21",
+            feature_date="2026-07-17",
+            prediction_phase="gray_live",
+            predicted_direction=1,
+            extra={
+                "request_id": "demo_blackbox:2026-07-20:2026-07-17:2026-07-21",
+                "data_snapshot_id": "snapshot-live",
+            },
+        )
+        target = {
+            "registry_scheme_id": "demo_blackbox__h1__10Y",
+            "base_scheme_id": "demo_blackbox",
+            "target_tenor": "10Y",
+            "horizon": 1,
+            "task_type": "T+1",
+            "predict_date": "2026-07-20",
+            "feature_date": "2026-07-17",
+            "target_date": "2026-07-21",
+            "prediction_phase": "gray_live",
+        }
+        authority = {
+            "authority_type": "databridge_current_generation",
+            "generation_id": "generation-live",
+            "manifest_sha256": "a" * 64,
+            "refresh_date": "2026-08-04",
+            "cutoff_date": "2026-07-17",
+            "replay_mode": "historical_as_of_replay",
+            "vintage_disclaimer": "current_snapshot_as_of_not_historical_vintage",
+        }
+
+        written = complete_gray_gap_run(
+            engine,
+            _blackbox_config(),
+            run_id=101,
+            records=[record],
+            expected_target_keys=[target],
+            plan_sha256="b" * 64,
+            source_authority=authority,
+            records_returned=1,
+            run_date="2026-07-20",
+            duration_sec=1.0,
+        )
+
+        self.assertEqual(written, 1)
+        self.assertEqual(
+            engine.store["run_row"]["data_snapshot_id"],
+            "snapshot-live",
+        )
+
+    def test_blackbox_gray_gap_snapshot_repair_only_updates_verified_run_audit(self) -> None:
+        from scheduler.repository import (
+            repair_blackbox_gray_gap_run_snapshot_provenance,
+        )
+
+        engine = _AtomicEngine()
+        engine.store["run_row"].update(
+            {
+                "prediction_phase": "gray_live",
+                "predict_date": "2026-07-20",
+                "status": "success",
+                "records_expected": 1,
+                "records_returned": 1,
+                "records_written": 1,
+                "data_snapshot_id": None,
+            }
+        )
+        engine.store["prediction_rows"] = [
+            {
+                "run_id": 101,
+                "scheme_id": "demo_blackbox",
+                "scheme_version": "abc123def456",
+                "predict_date": "2026-07-20",
+                "feature_date": "2026-07-17",
+                "target_date": "2026-07-21",
+                "prediction_phase": "gray_live",
+                "extra": '{"request_id":"demo_blackbox:2026-07-20:2026-07-17:2026-07-21","data_snapshot_id":"snapshot-live","backfill_mode":"signal_gap_fill","signal_gap_plan_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}',
+            }
+        ]
+        original_prediction_rows = deepcopy(engine.store["prediction_rows"])
+
+        snapshot_id = repair_blackbox_gray_gap_run_snapshot_provenance(
+            engine,
+            _blackbox_config(),
+            run_id=101,
+        )
+
+        self.assertEqual(snapshot_id, "snapshot-live")
+        self.assertEqual(
+            engine.store["run_row"]["data_snapshot_id"],
+            "snapshot-live",
+        )
+        self.assertEqual(engine.store["prediction_rows"], original_prediction_rows)
+
+    def test_blackbox_gray_gap_snapshot_repair_rejects_prediction_date_mismatch(self) -> None:
+        from scheduler.repository import (
+            repair_blackbox_gray_gap_run_snapshot_provenance,
+        )
+
+        engine = _AtomicEngine()
+        engine.store["run_row"].update(
+            {
+                "prediction_phase": "gray_live",
+                "predict_date": "2026-07-20",
+                "status": "success",
+                "records_expected": 1,
+                "records_returned": 1,
+                "records_written": 1,
+                "data_snapshot_id": None,
+            }
+        )
+        engine.store["prediction_rows"] = [
+            {
+                "run_id": 101,
+                "scheme_id": "demo_blackbox",
+                "scheme_version": "abc123def456",
+                "predict_date": "2026-07-21",
+                "feature_date": "2026-07-17",
+                "target_date": "2026-07-22",
+                "prediction_phase": "gray_live",
+                "extra": '{"request_id":"demo_blackbox:2026-07-21:2026-07-17:2026-07-22","data_snapshot_id":"snapshot-live","backfill_mode":"signal_gap_fill","signal_gap_plan_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}',
+            }
+        ]
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "prediction predict_date does not match run",
+        ):
+            repair_blackbox_gray_gap_run_snapshot_provenance(
+                engine,
+                _blackbox_config(),
+                run_id=101,
+            )
+
+        self.assertIsNone(engine.store["run_row"]["data_snapshot_id"])
 
     def test_blackbox_completion_locks_revalidates_and_commits_atomically(self) -> None:
         from scheduler.repository import complete_approved_blackbox_run

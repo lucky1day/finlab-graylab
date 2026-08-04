@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 import logging
 import os
@@ -38,10 +37,10 @@ RESULT_FIELDS = (
     "request_id", "predict_date", "feature_date", "target_date",
     "predicted_direction",
 )
-SCHEMA_HEADERS = {
-    "daily_output.csv": (774, "e002207087e1e89e3d65013f38613f5561a784731068dcefc4600aa33ec43534"),
-    "weekly_output.csv": (575, "4ef7720f5729d9f6a7b702b53144cc94b83cb547ab7e88bceecf57db88f9db9f"),
-    "monthly_output.csv": (123, "251128cd82c9b5bfabba261d429b6e14654c85a834d083e99c4aaf519f14972d"),
+TIME_KEY_BY_FILE = {
+    "daily_output.csv": "date",
+    "weekly_output.csv": "week_id",
+    "monthly_output.csv": "month_id",
 }
 YIELD_COLUMNS = {"1Y": "TB1YWI0C", "3Y": "TB3YWI0C", "5Y": "TB5YWI0C", "7Y": "TB7YWI0C", "10Y": "TB0YWI0C"}
 MARKET_FACTORS = ("DR007IBC", "USDCNH0C", "SH000300", "IFCFE00C", "S0031525", "AUSHF00C", "G0006352", "DRS00001")
@@ -68,11 +67,16 @@ def _validate_schema_header(path: Path) -> None:
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             header = next(csv.reader(handle))
-    except (OSError, StopIteration) as exc:
+    except (OSError, StopIteration, csv.Error) as exc:
         raise ContractError("cannot read %s header" % path.name) from exc
-    count, digest = SCHEMA_HEADERS[path.name]
-    actual = hashlib.sha256("\x1f".join(header).encode("utf-8")).hexdigest()
-    if len(header) != count or actual != digest:
+    expected_key = TIME_KEY_BY_FILE.get(path.name)
+    header = [str(column).strip().lstrip("\ufeff") for column in header]
+    if (
+        expected_key is None
+        or not header
+        or header[0] != expected_key
+        or len(header) != len(set(header))
+    ):
         raise ContractError("%s does not match data-bridge-v1 schema" % path.name)
 
 

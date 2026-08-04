@@ -217,6 +217,45 @@ class AuthorizationTest(unittest.TestCase):
             errors,
         )
 
+    def test_blackbox_revision_activate_requires_short_signed_exact_token(self) -> None:
+        for field in ("scheme_version", "harness_run_id"):
+            kwargs = {
+                "scheme_version": "candidate-version",
+                "harness_run_id": "hr_candidate",
+                "issued_by": "release-operator",
+            }
+            kwargs[field] = None
+            with self.subTest(field=field), self.assertRaisesRegex(
+                ValueError,
+                field,
+            ):
+                issue_token(
+                    "trial",
+                    "blackbox_revision_activate",
+                    predict_date="2026-08-04",
+                    **kwargs,
+                )
+
+        token = issue_token(
+            "trial",
+            "blackbox_revision_activate",
+            predict_date="2026-08-04",
+            scheme_version="candidate-version",
+            harness_run_id="hr_candidate",
+            issued_by="release-operator",
+        )
+        auth, errors = verify_authorization(
+            token,
+            scheme_id="trial",
+            action="blackbox_revision_activate",
+            predict_date="2026-08-05",
+            used_store_path=self._used_path(),
+        )
+
+        self.assertIsNotNone(auth)
+        self.assertIn("predict_date mismatch", "\n".join(errors))
+        self.assertIsNotNone(auth.expires_at)
+
     def test_non_backtest_token_schema_is_unchanged(self) -> None:
         envelope = self._decode_token(issue_token("trial", "blackbox_activate"))
 

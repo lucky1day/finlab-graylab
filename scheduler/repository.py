@@ -222,6 +222,14 @@ class BlackboxLifecycleState:
 
 
 @dataclass(frozen=True)
+class BlackboxRevisionActivationPreflight:
+    """同一 Blackbox 业务身份修订切换前的锁定前置证据。"""
+
+    prior_scheme_version: str
+    registry_scheme_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class BlackboxBootstrapState:
     """空隔离 Schema 初始化后的只读证据。"""
 
@@ -1172,8 +1180,18 @@ def sync_scheme_registry(engine: Engine, schemes: Iterable[SchemeConfig]) -> Non
         return
     with engine.begin() as conn:
         effective_statuses: dict[str, str] = {}
+        syncable_schemes: list[SchemeConfig] = []
         for cfg in scheme_list:
             runtime_type = getattr(cfg, "runtime_type", "native_adapter")
+            if (
+                runtime_type == "blackbox_v2"
+                and _blackbox_identity_requires_controlled_revision_conn(conn, cfg)
+            ):
+                # Registry 不存 exact version。若当前 active config 的 exact candidate
+                # 尚未登记、但同一业务身份已经存在，通用 discovery 若继续 upsert 会把
+                # 现有 active Registry 降为 paused。此处保留已上线身份，要求走
+                # revision-activate 的受控单事务切换。
+                continue
             version_row = None
             if getattr(cfg, "scheme_version", None):
                 version_row = _upsert_discovered_scheme_version_conn(conn, cfg)
@@ -1203,7 +1221,56 @@ def sync_scheme_registry(engine: Engine, schemes: Iterable[SchemeConfig]) -> Non
                 effective_statuses[
                     registry_scheme_id(cfg.scheme_id, cfg.horizon, target_tenor)
                 ] = effective_status
-        _sync_scheme_registry_conn(conn, scheme_list, effective_statuses=effective_statuses)
+            syncable_schemes.append(cfg)
+        if syncable_schemes:
+            _sync_scheme_registry_conn(
+                conn,
+                syncable_schemes,
+                effective_statuses=effective_statuses,
+            )
+
+
+def _blackbox_identity_requires_controlled_revision_conn(
+    conn: Connection,
+    cfg: SchemeConfig,
+) -> bool:
+    """识别不能由 discovery 自动登记的 Blackbox 同身份修订。"""
+    if getattr(cfg, "runtime_type", None) != "blackbox_v2":
+        return False
+    scheme_version = getattr(cfg, "scheme_version", None)
+    if not isinstance(scheme_version, str) or not scheme_version.strip():
+        return False
+    if _read_scheme_version_conn(conn, cfg, for_update=True) is not None:
+        return False
+
+    version_rows = _read_scheme_version_rows_for_base_conn(
+        conn,
+        cfg.scheme_id,
+        for_update=True,
+    )
+    expected_tenors, expected_registry_ids = _expected_registry_identity(cfg)
+    del expected_tenors
+    placeholders = ", ".join(
+        f":registry_scheme_id_{index}"
+        for index, _ in enumerate(expected_registry_ids)
+    )
+    registry_params: dict[str, object] = {"base_scheme_id": cfg.scheme_id}
+    for index, registry_scheme_id_value in enumerate(expected_registry_ids):
+        registry_params[f"registry_scheme_id_{index}"] = registry_scheme_id_value
+    lock_clause = " FOR UPDATE" if _dialect_name(conn) != "sqlite" else ""
+    registry_rows = (
+        conn.execute(
+            text(
+                "SELECT scheme_id FROM t_scheme_registry "
+                "WHERE base_scheme_id = :base_scheme_id "
+                f"OR scheme_id IN ({placeholders}){lock_clause}"
+            ),
+            registry_params,
+        )
+        .mappings()
+        .all()
+    )
+    return bool(version_rows or registry_rows)
 
 
 def _native_sync_can_grandfather_active(
@@ -1536,10 +1603,433 @@ def _read_scheme_version_conn(
     )
 
 
+def _read_scheme_version_rows_for_base_conn(
+    conn: Connection,
+    scheme_id: str,
+    *,
+    for_update: bool,
+) -> list[Mapping[str, object]]:
+    """读取一个 base scheme 的全部 exact version，供受控版本切换锁定。"""
+    lock_clause = (
+        " FOR UPDATE"
+        if for_update and _dialect_name(conn) != "sqlite"
+        else ""
+    )
+    return (
+        conn.execute(
+            text(
+                "SELECT scheme_id, scheme_version, runtime_type, algorithm_version, "
+                "contract_version, runtime_profile, environment_fingerprint, "
+                "data_snapshot_id, code_hash, config_hash, manifest_hash, git_commit, "
+                "status, created_by, approved_by, approved_at "
+                "FROM t_scheme_versions WHERE scheme_id = :scheme_id "
+                f"ORDER BY scheme_version{lock_clause}"
+            ),
+            {"scheme_id": scheme_id},
+        )
+        .mappings()
+        .all()
+    )
+
+
 def read_blackbox_execution_approval(engine: Engine, cfg: SchemeConfig) -> BlackboxExecutionApproval:
     """读取并验证 Blackbox 精确版本及 composite Registry 的生产批准。"""
     with engine.begin() as conn:
         return _read_blackbox_execution_approval_conn(conn, cfg, for_update=False)
+
+
+def read_blackbox_revision_activation_preflight(
+    engine: Engine,
+    cfg: SchemeConfig,
+) -> BlackboxRevisionActivationPreflight:
+    """只读确认 active Blackbox 同身份修订可进行原子切换。"""
+    _validate_blackbox_revision_candidate(cfg, require_evidence=False)
+    with engine.begin() as conn:
+        return _read_blackbox_revision_activation_preflight_conn(
+            conn,
+            cfg,
+            for_update=False,
+        )
+
+
+def activate_blackbox_revision(
+    engine: Engine,
+    cfg: SchemeConfig,
+    *,
+    prior_scheme_version: str,
+    expected_harness_run_id: str,
+    approved_by: str,
+    approved_at: datetime,
+    lock_timeout_sec: float = 5.0,
+) -> BlackboxLifecycleState:
+    """原子替换同一业务身份的唯一 active Blackbox exact version。"""
+    _validate_blackbox_revision_candidate(cfg, require_evidence=True)
+    if not isinstance(prior_scheme_version, str) or not prior_scheme_version.strip():
+        raise ValueError("Blackbox revision activation requires prior_scheme_version")
+    if prior_scheme_version == cfg.scheme_version:
+        raise ValueError("Blackbox revision activation prior version must differ from candidate")
+    if (
+        not isinstance(expected_harness_run_id, str)
+        or not expected_harness_run_id.strip()
+    ):
+        raise ValueError(
+            "Blackbox revision activation requires expected_harness_run_id"
+        )
+    if not isinstance(approved_by, str) or not approved_by.strip():
+        raise ValueError("Blackbox revision activation requires non-empty approved_by")
+    if not isinstance(approved_at, datetime):
+        raise ValueError("Blackbox revision activation requires approved_at datetime")
+
+    normalized_approver = approved_by.strip()
+    mysql_approved_at = _mysql_utc_datetime(approved_at)
+    expected_tenors, expected_registry_ids = _expected_registry_identity(cfg)
+    with _blackbox_draft_register_advisory_lock(
+        engine,
+        scheme_id=cfg.scheme_id,
+        timeout_sec=lock_timeout_sec,
+    ):
+        with engine.begin() as conn:
+            lock_clause = " FOR UPDATE" if _dialect_name(conn) != "sqlite" else ""
+            latest_run = (
+                conn.execute(
+                    text(
+                        "SELECT harness_run_id FROM t_harness_runs "
+                        "WHERE scheme_id = :scheme_id "
+                        "AND scheme_version = :scheme_version "
+                        "AND stage = 'all' AND status = 'passed' "
+                        "ORDER BY finished_at DESC, harness_run_id DESC "
+                        f"LIMIT 1{lock_clause}"
+                    ),
+                    {
+                        "scheme_id": cfg.scheme_id,
+                        "scheme_version": cfg.scheme_version,
+                    },
+                )
+                .mappings()
+                .one_or_none()
+            )
+            actual_harness_run_id = (
+                str(latest_run["harness_run_id"])
+                if latest_run is not None
+                else None
+            )
+            if actual_harness_run_id != expected_harness_run_id:
+                raise RuntimeError(
+                    "latest passed all-stage harness run changed before Blackbox "
+                    "revision activation: "
+                    f"expected={expected_harness_run_id}, "
+                    f"actual={actual_harness_run_id}"
+                )
+
+            preflight = _read_blackbox_revision_activation_preflight_conn(
+                conn,
+                cfg,
+                for_update=True,
+            )
+            if preflight.prior_scheme_version != prior_scheme_version:
+                raise RuntimeError(
+                    "Blackbox revision activation prior version changed before commit: "
+                    f"expected={prior_scheme_version}, "
+                    f"actual={preflight.prior_scheme_version}"
+                )
+
+            _upsert_scheme_version_conn(
+                conn,
+                cfg,
+                trusted_status="active",
+                approved_by=normalized_approver,
+                approved_at=mysql_approved_at,
+            )
+            retired = conn.execute(
+                text(
+                    "UPDATE t_scheme_versions SET status = 'retired' "
+                    "WHERE scheme_id = :scheme_id "
+                    "AND scheme_version = :prior_scheme_version "
+                    "AND runtime_type = 'blackbox_v2' AND status = 'active'"
+                ),
+                {
+                    "scheme_id": cfg.scheme_id,
+                    "prior_scheme_version": prior_scheme_version,
+                },
+            )
+            if retired.rowcount != 1:
+                raise RuntimeError(
+                    "Blackbox revision activation could not retire exactly one "
+                    f"prior active version: rowcount={retired.rowcount}"
+                )
+
+            version_rows = _read_scheme_version_rows_for_base_conn(
+                conn,
+                cfg.scheme_id,
+                for_update=True,
+            )
+            candidate_rows = [
+                row
+                for row in version_rows
+                if row.get("scheme_version") == cfg.scheme_version
+            ]
+            if len(candidate_rows) != 1:
+                raise RuntimeError(
+                    "Blackbox revision activation candidate readback is not unique"
+                )
+            version_row = candidate_rows[0]
+            actual_version_values = dict(version_row)
+            if isinstance(actual_version_values.get("approved_at"), datetime):
+                actual_version_values["approved_at"] = _mysql_utc_datetime(
+                    actual_version_values["approved_at"]
+                )
+            expected_version_values = {
+                "scheme_id": cfg.scheme_id,
+                "scheme_version": cfg.scheme_version,
+                "runtime_type": "blackbox_v2",
+                "algorithm_version": getattr(cfg, "algorithm_version", None),
+                "contract_version": getattr(cfg, "contract_version", None),
+                "runtime_profile": getattr(cfg, "runtime_profile", None),
+                "environment_fingerprint": getattr(cfg, "environment_fingerprint", None),
+                "data_snapshot_id": getattr(cfg, "data_snapshot_id", None),
+                "code_hash": cfg.code_hash,
+                "config_hash": cfg.config_hash,
+                "manifest_hash": cfg.manifest_hash,
+                "status": "active",
+                "approved_by": normalized_approver,
+                "approved_at": mysql_approved_at,
+            }
+            mismatches = [
+                f"{field}: expected={expected!r}, got={actual_version_values.get(field)!r}"
+                for field, expected in expected_version_values.items()
+                if actual_version_values.get(field) != expected
+            ]
+            if mismatches:
+                raise RuntimeError(
+                    "Blackbox revision activation candidate readback mismatch: "
+                    + "; ".join(mismatches)
+                )
+
+            active_versions = sorted(
+                str(row.get("scheme_version"))
+                for row in version_rows
+                if row.get("runtime_type") == "blackbox_v2"
+                and row.get("status") == "active"
+            )
+            if active_versions != [cfg.scheme_version]:
+                raise RuntimeError(
+                    "Blackbox revision activation must leave exactly one active "
+                    f"version: got={active_versions}"
+                )
+            prior_rows = [
+                row
+                for row in version_rows
+                if row.get("scheme_version") == prior_scheme_version
+            ]
+            if len(prior_rows) != 1 or prior_rows[0].get("status") != "retired":
+                raise RuntimeError(
+                    "Blackbox revision activation prior version readback is not retired"
+                )
+            registry_rows = _read_scheme_registry_rows_conn(
+                conn,
+                cfg,
+                expected_registry_ids,
+                for_update=True,
+            )
+            registry_error = _blackbox_revision_registry_identity_error(
+                cfg,
+                expected_tenors,
+                expected_registry_ids,
+                registry_rows,
+                expected_status="active",
+            )
+            if registry_error is not None:
+                raise RuntimeError(
+                    "Blackbox revision activation Registry changed unexpectedly: "
+                    f"{registry_error}"
+                )
+
+    return BlackboxLifecycleState(
+        scheme_id=str(version_row["scheme_id"]),
+        scheme_version=str(version_row["scheme_version"]),
+        runtime_type=str(version_row["runtime_type"]),
+        version_status=str(version_row["status"]),
+        registry_status="active",
+        environment_fingerprint=(
+            str(version_row["environment_fingerprint"])
+            if version_row.get("environment_fingerprint") is not None
+            else None
+        ),
+        data_snapshot_id=(
+            str(version_row["data_snapshot_id"])
+            if version_row.get("data_snapshot_id") is not None
+            else None
+        ),
+        code_hash=str(version_row["code_hash"]),
+        config_hash=(
+            str(version_row["config_hash"])
+            if version_row.get("config_hash") is not None
+            else None
+        ),
+        manifest_hash=(
+            str(version_row["manifest_hash"])
+            if version_row.get("manifest_hash") is not None
+            else None
+        ),
+        approved_by=(
+            str(version_row["approved_by"])
+            if version_row.get("approved_by") is not None
+            else None
+        ),
+        approved_at=(
+            actual_version_values["approved_at"]
+            if isinstance(actual_version_values.get("approved_at"), datetime)
+            else None
+        ),
+        registry_scheme_ids=expected_registry_ids,
+    )
+
+
+def _validate_blackbox_revision_candidate(
+    cfg: SchemeConfig,
+    *,
+    require_evidence: bool,
+) -> None:
+    """校验同身份 Blackbox revision 的不可变候选边界。"""
+    if getattr(cfg, "runtime_type", None) != "blackbox_v2":
+        raise ValueError(
+            "Blackbox revision activation requires runtime_type=blackbox_v2"
+        )
+    if getattr(cfg, "status", None) != "active" or getattr(
+        cfg, "version_status", None
+    ) != "active":
+        raise ValueError(
+            "Blackbox revision activation requires config active+active: "
+            f"got={getattr(cfg, 'status', None)}+{getattr(cfg, 'version_status', None)}"
+        )
+    scheme_version = getattr(cfg, "scheme_version", None)
+    if not isinstance(scheme_version, str) or not scheme_version.strip():
+        raise ValueError("Blackbox revision activation requires non-empty scheme_version")
+    if require_evidence:
+        for field in ("environment_fingerprint", "data_snapshot_id"):
+            value = getattr(cfg, field, None)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    "Blackbox revision activation requires passed all-stage "
+                    f"{field}"
+                )
+
+
+def _read_blackbox_revision_activation_preflight_conn(
+    conn: Connection,
+    cfg: SchemeConfig,
+    *,
+    for_update: bool,
+) -> BlackboxRevisionActivationPreflight:
+    """在当前事务内锁定并验证同身份 revision 的替换前状态。"""
+    _validate_blackbox_revision_candidate(cfg, require_evidence=False)
+    expected_tenors, expected_registry_ids = _expected_registry_identity(cfg)
+    version_rows = _read_scheme_version_rows_for_base_conn(
+        conn,
+        cfg.scheme_id,
+        for_update=for_update,
+    )
+    candidate_rows = [
+        row for row in version_rows if row.get("scheme_version") == cfg.scheme_version
+    ]
+    if candidate_rows:
+        raise ValueError("exact candidate version already exists")
+    non_blackbox_versions = [
+        str(row.get("scheme_version"))
+        for row in version_rows
+        if row.get("runtime_type") != "blackbox_v2"
+    ]
+    if non_blackbox_versions:
+        raise ValueError(
+            "Blackbox revision identity has non-Blackbox versions: "
+            f"{sorted(non_blackbox_versions)}"
+        )
+    pending_versions = sorted(
+        str(row.get("scheme_version"))
+        for row in version_rows
+        if row.get("status") in {"draft", "validated", "shadow", "paused"}
+    )
+    if pending_versions:
+        raise ValueError(
+            "Blackbox revision identity has pending exact versions: "
+            f"{pending_versions}"
+        )
+    active_rows = [
+        row
+        for row in version_rows
+        if row.get("runtime_type") == "blackbox_v2" and row.get("status") == "active"
+    ]
+    if len(active_rows) != 1:
+        active_versions = sorted(
+            str(row.get("scheme_version")) for row in active_rows
+        )
+        raise ValueError(
+            "Blackbox revision activation requires exactly one prior active "
+            f"version: got={active_versions}"
+        )
+    prior = active_rows[0]
+    prior_version = str(prior.get("scheme_version"))
+    if not isinstance(prior.get("approved_by"), str) or not str(
+        prior.get("approved_by")
+    ).strip() or not isinstance(prior.get("approved_at"), datetime):
+        raise ValueError("prior active Blackbox version has incomplete approval evidence")
+    registry_rows = _read_scheme_registry_rows_conn(
+        conn,
+        cfg,
+        expected_registry_ids,
+        for_update=for_update,
+    )
+    registry_error = _blackbox_revision_registry_identity_error(
+        cfg,
+        expected_tenors,
+        expected_registry_ids,
+        registry_rows,
+        expected_status="active",
+    )
+    if registry_error is not None:
+        raise ValueError(
+            "Blackbox revision activation Registry identity is not active/exact: "
+            f"{registry_error}"
+        )
+    return BlackboxRevisionActivationPreflight(
+        prior_scheme_version=prior_version,
+        registry_scheme_ids=expected_registry_ids,
+    )
+
+
+def _blackbox_revision_registry_identity_error(
+    cfg: SchemeConfig,
+    expected_tenors: tuple[str, ...],
+    expected_registry_ids: tuple[str, ...],
+    registry_rows: list[Mapping[str, object]],
+    *,
+    expected_status: str,
+) -> str | None:
+    """补充 revision 需要锁定的 cadence 与单 target Registry 身份。"""
+    error = _registry_identity_error(
+        cfg,
+        expected_tenors,
+        expected_registry_ids,
+        registry_rows,
+        expected_status=expected_status,
+    )
+    if error is not None:
+        return error
+    rows_by_id = {str(row.get("scheme_id")): row for row in registry_rows}
+    for target_tenor, registry_id in zip(expected_tenors, expected_registry_ids):
+        row = rows_by_id[registry_id]
+        if row.get("frequency") != cfg.frequency:
+            return (
+                f"registry {registry_id} frequency is {row.get('frequency')!r}, "
+                f"expected {cfg.frequency!r}"
+            )
+        if _normalize_registry_tenors(row.get("tenors")) != [target_tenor]:
+            return (
+                f"registry {registry_id} tenors are "
+                f"{_normalize_registry_tenors(row.get('tenors'))!r}, "
+                f"expected {[target_tenor]!r}"
+            )
+    return None
 
 
 def read_blackbox_lifecycle_state(engine: Engine, cfg: SchemeConfig) -> BlackboxLifecycleState:
@@ -6827,8 +7317,8 @@ def _read_schedule_run_conn(
                prediction_phase, predict_date, status, records_expected,
                records_returned, records_written, schedule_item_id,
                attempt_no, trigger_origin, queued_at, failure_code,
-               execution_token, process_id, process_group_id, started_at,
-               finished_at
+               execution_token, process_id, process_group_id, data_snapshot_id,
+               started_at, finished_at
         FROM t_scheme_runs
         WHERE run_id = :run_id
         """,
@@ -9690,6 +10180,10 @@ def complete_gray_gap_run(
         plan_sha256=normalized_plan_sha256,
         source_authority=normalized_authority,
     )
+    blackbox_snapshot_id = _blackbox_gray_gap_snapshot_id(
+        cfg,
+        records=enriched_records,
+    )
 
     with engine.begin() as conn:
         _validate_gray_gap_archived_generation_conn(
@@ -9715,6 +10209,13 @@ def complete_gray_gap_run(
             expected_count=len(normalized_targets),
             predict_date=execution_dates["predict_date"],
         )
+        if blackbox_snapshot_id is not None:
+            _bind_blackbox_gray_gap_snapshot_conn(
+                conn,
+                run_id=int(run_id),
+                run=run,
+                data_snapshot_id=blackbox_snapshot_id,
+            )
         _validate_gray_gap_active_registry(
             conn,
             cfg,
@@ -9775,6 +10276,333 @@ def complete_gray_gap_run(
             int(run_id),
         )
         return records_written
+
+
+def _blackbox_gray_gap_snapshot_id(
+    cfg: SchemeConfig,
+    *,
+    records: Iterable[PredictionRecord],
+) -> str | None:
+    """提取并核验 Blackbox gray-gap records 的唯一运行输入快照。"""
+    if str(cfg.runtime_type) != "blackbox_v2":
+        return None
+    snapshot_ids: set[str] = set()
+    for record in records:
+        snapshot_ids.add(
+            _blackbox_gray_gap_record_snapshot_id(
+                cfg,
+                scheme_id=record.scheme_id,
+                predict_date=record.predict_date,
+                feature_date=record.feature_date,
+                target_date=record.target_date,
+                extra=record.extra,
+            )
+        )
+    if len(snapshot_ids) != 1:
+        raise RuntimeError(
+            "Blackbox gray gap records must carry exactly one non-empty "
+            "data_snapshot_id"
+        )
+    return next(iter(snapshot_ids))
+
+
+def _bind_blackbox_gray_gap_snapshot_conn(
+    conn: Connection,
+    *,
+    run_id: int,
+    run: Mapping[str, object] | None,
+    data_snapshot_id: str,
+) -> None:
+    """在同一 completion 事务中将已核验 snapshot 固定到 running run。"""
+    if run is None:
+        raise RuntimeError("Blackbox gray gap run is missing before snapshot bind")
+    if run.get("data_snapshot_id") is not None:
+        raise RuntimeError(
+            "Blackbox gray gap run already has data_snapshot_id; refusing overwrite"
+        )
+    result = conn.execute(
+        text(
+            """
+            UPDATE t_scheme_runs
+            SET data_snapshot_id = :data_snapshot_id
+            WHERE run_id = :run_id
+              AND data_snapshot_id IS NULL
+              AND scheme_id = :scheme_id
+              AND scheme_version = :scheme_version
+              AND runtime_type = 'blackbox_v2'
+              AND status = 'running'
+              AND run_type = 'active'
+              AND prediction_phase = 'gray_live'
+              AND schedule_item_id IS NULL
+              AND attempt_no IS NULL
+              AND trigger_origin IS NULL
+              AND execution_token IS NULL
+              AND process_id IS NULL
+              AND process_group_id IS NULL
+            """
+        ),
+        {
+            "run_id": int(run_id),
+            "data_snapshot_id": data_snapshot_id,
+            "scheme_id": str(run["scheme_id"]),
+            "scheme_version": str(run["scheme_version"]),
+        },
+    )
+    _require_rowcount(result, 1, "Blackbox gray gap run data snapshot bind")
+
+
+def _blackbox_gray_gap_record_snapshot_id(
+    cfg: SchemeConfig,
+    *,
+    scheme_id: object,
+    predict_date: object,
+    feature_date: object,
+    target_date: object,
+    extra: object,
+) -> str:
+    """验证单条 Blackbox gray-gap record 的 request/snapshot provenance。"""
+    if str(scheme_id) != str(cfg.scheme_id):
+        raise RuntimeError(
+            "Blackbox gray gap record scheme_id provenance does not match config"
+        )
+    if not isinstance(extra, Mapping):
+        raise RuntimeError(
+            "Blackbox gray gap record provenance requires extra object"
+        )
+    try:
+        snapshot_id = _require_nonempty(
+            extra.get("data_snapshot_id"),
+            "Blackbox gray gap record data_snapshot_id",
+        )
+        normalized_feature_date = _require_iso_date(
+            feature_date or extra.get("feature_date"),
+            "Blackbox gray gap record feature_date",
+        )
+        normalized_predict_date = _require_iso_date(
+            predict_date,
+            "Blackbox gray gap record predict_date",
+        )
+        normalized_target_date = _require_iso_date(
+            target_date,
+            "Blackbox gray gap record target_date",
+        )
+        request_id = _require_nonempty(
+            extra.get("request_id"),
+            "Blackbox gray gap record request_id",
+        )
+    except ValueError as exc:
+        raise RuntimeError(
+            "Blackbox gray gap record provenance is invalid"
+        ) from exc
+    canonical_request_id = (
+        f"{cfg.scheme_id}:{normalized_predict_date}:{normalized_feature_date}:"
+        f"{normalized_target_date}"
+    )
+    if request_id != canonical_request_id:
+        raise RuntimeError(
+            "Blackbox gray gap record request_id provenance is not canonical"
+        )
+    return snapshot_id
+
+
+def repair_blackbox_gray_gap_run_snapshot_provenance(
+    engine: Engine,
+    cfg: SchemeConfig,
+    *,
+    run_id: int,
+) -> str:
+    """受控补回已成功 Blackbox gray-gap run 缺失的运行级 snapshot。
+
+    仅接受 current active 的精确 Blackbox config、未绑定任何 snapshot 的
+    普通成功 gray_live run，并从其已落库预测的 canonical provenance 推导唯一
+    snapshot；不修改 prediction、日期或业务键。
+    """
+    if str(getattr(cfg, "runtime_type", "")) != "blackbox_v2":
+        raise ValueError(
+            "Blackbox gray gap snapshot repair requires runtime_type=blackbox_v2"
+        )
+    if (
+        getattr(cfg, "status", None) != "active"
+        or getattr(cfg, "version_status", None) != "active"
+    ):
+        raise ValueError(
+            "Blackbox gray gap snapshot repair requires config active+active"
+        )
+    exact_scheme_version = str(cfg.scheme_version)
+    with engine.begin() as conn:
+        run = _read_schedule_run_conn(
+            conn,
+            run_id=int(run_id),
+            for_update=True,
+        )
+        _validate_blackbox_gray_gap_snapshot_repair_run(
+            cfg,
+            run_id=int(run_id),
+            run=run,
+        )
+        lock = "" if _dialect_name(conn) == "sqlite" else " FOR UPDATE"
+        prediction_rows = list(
+            conn.execute(
+                text(
+                    """
+                    SELECT scheme_id, scheme_version, predict_date, feature_date,
+                           target_date, prediction_phase, extra
+                    FROM t_scheme_predictions
+                    WHERE run_id = :run_id
+                    ORDER BY id
+                    """
+                    + lock
+                ),
+                {"run_id": int(run_id)},
+            )
+            .mappings()
+            .all()
+        )
+        expected_count = int(run["records_written"])
+        if len(prediction_rows) != expected_count:
+            raise RuntimeError(
+                "Blackbox gray gap snapshot repair prediction count mismatch: "
+                f"expected={expected_count}, actual={len(prediction_rows)}"
+            )
+        expected_run_date = _stored_iso_date(run, "predict_date")
+        snapshot_ids: set[str] = set()
+        for row in prediction_rows:
+            if row.get("scheme_version") != exact_scheme_version:
+                raise RuntimeError(
+                    "Blackbox gray gap snapshot repair prediction version mismatch"
+                )
+            if row.get("prediction_phase") != "gray_live":
+                raise RuntimeError(
+                    "Blackbox gray gap snapshot repair prediction phase mismatch"
+                )
+            prediction_date = _stored_iso_date(row, "predict_date")
+            if prediction_date != expected_run_date:
+                raise RuntimeError(
+                    "Blackbox gray gap snapshot repair prediction predict_date "
+                    "does not match run"
+                )
+            extra = _stored_json_mapping(row, "extra")
+            if extra.get("backfill_mode") != "signal_gap_fill":
+                raise RuntimeError(
+                    "Blackbox gray gap snapshot repair requires signal_gap_fill "
+                    "prediction provenance"
+                )
+            _require_lower_sha256(
+                extra.get("signal_gap_plan_sha256"),
+                "Blackbox gray gap snapshot repair signal_gap_plan_sha256",
+            )
+            snapshot_ids.add(
+                _blackbox_gray_gap_record_snapshot_id(
+                    cfg,
+                    scheme_id=row.get("scheme_id"),
+                    predict_date=prediction_date,
+                    feature_date=_stored_iso_date(row, "feature_date"),
+                    target_date=_stored_iso_date(row, "target_date"),
+                    extra=extra,
+                )
+            )
+        if len(snapshot_ids) != 1:
+            raise RuntimeError(
+                "Blackbox gray gap snapshot repair requires exactly one "
+                "prediction data_snapshot_id"
+            )
+        snapshot_id = next(iter(snapshot_ids))
+        repaired = conn.execute(
+            text(
+                """
+                UPDATE t_scheme_runs
+                SET data_snapshot_id = :data_snapshot_id
+                WHERE run_id = :run_id
+                  AND data_snapshot_id IS NULL
+                  AND scheme_id = :scheme_id
+                  AND scheme_version = :scheme_version
+                  AND runtime_type = 'blackbox_v2'
+                  AND status = 'success'
+                  AND run_type = 'active'
+                  AND prediction_phase = 'gray_live'
+                  AND schedule_item_id IS NULL
+                  AND attempt_no IS NULL
+                  AND trigger_origin IS NULL
+                  AND execution_token IS NULL
+                  AND process_id IS NULL
+                  AND process_group_id IS NULL
+                """
+            ),
+            {
+                "run_id": int(run_id),
+                "data_snapshot_id": snapshot_id,
+                "scheme_id": str(cfg.scheme_id),
+                "scheme_version": exact_scheme_version,
+            },
+        )
+        _require_rowcount(
+            repaired,
+            1,
+            "Blackbox gray gap run data snapshot provenance repair",
+        )
+        return snapshot_id
+
+
+def _validate_blackbox_gray_gap_snapshot_repair_run(
+    cfg: SchemeConfig,
+    *,
+    run_id: int,
+    run: Mapping[str, object] | None,
+) -> None:
+    """为 provenance-only repair 严格限定历史 run 的不可变业务身份。"""
+    if run is None:
+        raise RuntimeError(f"Blackbox gray gap snapshot repair run missing: {run_id}")
+    expected = {
+        "scheme_id": str(cfg.scheme_id),
+        "scheme_version": str(cfg.scheme_version),
+        "runtime_type": "blackbox_v2",
+        "run_type": "active",
+        "prediction_phase": "gray_live",
+        "status": "success",
+    }
+    mismatches = [
+        f"{field}: expected={value!r}, got={run.get(field)!r}"
+        for field, value in expected.items()
+        if run.get(field) != value
+    ]
+    ordinary_fields = (
+        "schedule_item_id",
+        "attempt_no",
+        "trigger_origin",
+        "execution_token",
+        "process_id",
+        "process_group_id",
+    )
+    unexpected = [
+        field for field in ordinary_fields if run.get(field) is not None
+    ]
+    if run.get("data_snapshot_id") is not None:
+        mismatches.append("data_snapshot_id must be NULL before repair")
+    records_expected = run.get("records_expected")
+    records_returned = run.get("records_returned")
+    records_written = run.get("records_written")
+    if (
+        isinstance(records_expected, bool)
+        or isinstance(records_returned, bool)
+        or isinstance(records_written, bool)
+        or not isinstance(records_expected, int)
+        or not isinstance(records_returned, int)
+        or not isinstance(records_written, int)
+        or records_expected <= 0
+        or records_returned <= 0
+        or records_expected != records_returned
+        or records_returned != records_written
+    ):
+        mismatches.append(
+            "records_expected/records_returned/records_written must be equal "
+            "positive integers"
+        )
+    if mismatches or unexpected:
+        details = mismatches + [f"non-ordinary fields={unexpected}" for _ in unexpected]
+        raise RuntimeError(
+            "Blackbox gray gap snapshot repair run identity mismatch: "
+            + "; ".join(details)
+        )
 
 
 _GRAY_GAP_TARGET_FIELDS = frozenset(

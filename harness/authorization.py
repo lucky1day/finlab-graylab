@@ -26,6 +26,7 @@ EXACT_PREDICT_DATE_ACTIONS = frozenset(
     {
         "backtest_persist",
         "draft_register",
+        "blackbox_revision_activate",
         "gray_backfill_write",
         "signal_gap_fill_write",
         "signal_gap_native_artifact_register",
@@ -168,6 +169,7 @@ def issue_token(
     if action in {
         "signal_gap_fill_write",
         "signal_gap_native_artifact_register",
+        "blackbox_revision_activate",
     }:
         if _auth_secret() is None:
             raise ValueError(
@@ -239,12 +241,22 @@ def issue_token(
         normalized_authority = None
     if action in EXACT_PREDICT_DATE_ACTIONS:
         predict_date = _normalize_action_predict_date(action, predict_date)
-    if action == "draft_register" and (
+    if action in {"draft_register", "blackbox_revision_activate"} and (
         not isinstance(issued_by, str) or not issued_by.strip()
     ):
         raise ValueError(
-            "draft_register issued_by must be a non-empty string"
+            f"{action} issued_by must be a non-empty string"
         )
+    if action == "blackbox_revision_activate":
+        for field, value in (
+            ("scheme_version", scheme_version),
+            ("harness_run_id", harness_run_id),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    "blackbox_revision_activate "
+                    f"{field} must be a non-empty string"
+                )
     issued_at_dt = datetime.now(timezone.utc).replace(microsecond=0)
     expires_at = None
     if ttl_seconds is not None:
@@ -422,12 +434,12 @@ def verify_authorization(
 
     errors: list[str] = []
     raw_payload = envelope["payload"]
-    if action == "draft_register" and (
+    if action in {"draft_register", "blackbox_revision_activate"} and (
         not isinstance(raw_payload.get("issued_by"), str)
         or not raw_payload["issued_by"].strip()
     ):
         errors.append(
-            "draft_register issued_by must be a non-empty string"
+            f"{action} issued_by must be a non-empty string"
         )
     if action == NATIVE_LEGACY_ADMISSION_ATTEST_ACTION:
         errors.extend(_native_legacy_admission_attest_token_errors(auth))

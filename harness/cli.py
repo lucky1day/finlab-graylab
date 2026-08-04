@@ -78,6 +78,18 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error(
                     "auth issue --action activate requires non-empty --issued-by"
                 )
+        if args.action == "blackbox_revision_activate":
+            required = {
+                "--scheme-version": args.scheme_version,
+                "--harness-run-id": args.harness_run_id,
+                "--issued-by": args.issued_by,
+            }
+            missing = [flag for flag, value in required.items() if value is None]
+            if missing:
+                parser.error(
+                    "auth issue --action blackbox_revision_activate requires "
+                    f"{', '.join(missing)}"
+                )
         if args.action == NATIVE_LEGACY_ADMISSION_ATTEST_ACTION:
             if args.scheme_id != NATIVE_LEGACY_ADMISSION_ATTEST_SCHEME_ID:
                 parser.error(
@@ -416,7 +428,7 @@ def _build_parser() -> argparse.ArgumentParser:
     for gate_name in (
         "static", "input", "unit", "dry-run", "compare", "backtest",
         "api-readiness", "draft-register", "shadow-register", "api", "live",
-        "gray-backfill", "lifecycle-reconcile", "bootstrap",
+        "gray-backfill", "lifecycle-reconcile", "revision-activate", "bootstrap",
     ):
         item = gate_subparsers.add_parser(gate_name)
         item.add_argument("--scheme-id", required=True)
@@ -624,6 +636,7 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
         "dry-run",
         "draft-register",
         "shadow-register",
+        "revision-activate",
         "live",
         "gray-backfill",
     } and not args.predict_date:

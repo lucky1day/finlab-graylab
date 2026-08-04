@@ -18,6 +18,115 @@ SCHEME_VERSION = "scheme-version"
 
 
 class BlackboxApiGateTest(unittest.TestCase):
+    def test_live_evidence_requires_matching_run_snapshot_provenance(self) -> None:
+        from sqlalchemy import create_engine, text
+
+        from harness.blackbox_v2.api_gate import _read_expected_live_evidence
+
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE t_scheme_runs (
+                    run_id INTEGER PRIMARY KEY,
+                    scheme_id TEXT,
+                    scheme_version TEXT,
+                    runtime_type TEXT,
+                    prediction_phase TEXT,
+                    status TEXT,
+                    finished_at TEXT,
+                    data_snapshot_id TEXT
+                )
+                """
+            )
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE t_scheme_predictions (
+                    id INTEGER PRIMARY KEY,
+                    run_id INTEGER,
+                    scheme_id TEXT,
+                    target_tenor TEXT,
+                    horizon INTEGER,
+                    scheme_version TEXT,
+                    prediction_phase TEXT,
+                    predict_date TEXT,
+                    feature_date TEXT,
+                    target_date TEXT,
+                    extra TEXT
+                )
+                """
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_runs
+                        (run_id, scheme_id, scheme_version, runtime_type,
+                         prediction_phase, status, finished_at, data_snapshot_id)
+                    VALUES
+                        (123, :scheme_id, :scheme_version, 'blackbox_v2',
+                         'gray_live', 'success', '2026-07-17T08:00:00',
+                         'live-snapshot')
+                    """
+                ),
+                {"scheme_id": BASE_SCHEME_ID, "scheme_version": SCHEME_VERSION},
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_predictions
+                        (id, run_id, scheme_id, target_tenor, horizon,
+                         scheme_version, prediction_phase, predict_date,
+                         feature_date, target_date, extra)
+                    VALUES
+                        (1, 123, :scheme_id, '10Y', 1, :scheme_version,
+                         'gray_live', '2026-07-17', '2026-07-16',
+                         '2026-07-18', :extra)
+                    """
+                ),
+                {
+                    "scheme_id": BASE_SCHEME_ID,
+                    "scheme_version": SCHEME_VERSION,
+                    "extra": json.dumps(
+                        {
+                            "request_id": (
+                                "blackbox_trial:2026-07-17:2026-07-16:2026-07-18"
+                            ),
+                            "data_snapshot_id": "live-snapshot",
+                        }
+                    ),
+                },
+            )
+
+        cfg = SimpleNamespace(
+            scheme_id=BASE_SCHEME_ID,
+            scheme_version=SCHEME_VERSION,
+        )
+        evidence = _read_expected_live_evidence(
+            engine,
+            cfg,
+            target_tenor="10Y",
+            horizon=1,
+            prediction_phase="gray_live",
+        )
+        self.assertEqual(evidence["run_id"], 123)
+        self.assertEqual(evidence["data_snapshot_id"], "live-snapshot")
+
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE t_scheme_runs SET data_snapshot_id = NULL WHERE run_id = 123"
+                )
+            )
+        with self.assertRaisesRegex(ValueError, "data_snapshot_id provenance mismatch"):
+            _read_expected_live_evidence(
+                engine,
+                cfg,
+                target_tenor="10Y",
+                horizon=1,
+                prediction_phase="gray_live",
+            )
+        engine.dispose()
+
     def test_reads_backtest_card_using_verified_benchmark_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             ctx = _context(Path(tmpdir))
