@@ -73,10 +73,7 @@ Native 技术入库仍必须通过 source benchmark/CompareGate；ActivationGate
 config 或 version hash。maintenance 的 current exact `t_scheme_versions` 行必须为
 `runtime_type='native_adapter'` 且 status 为 `draft|active`；expected Registry identity 可在预激活时
 统一为 `paused`，或在激活后统一为 `active`，但 draft version 配 active Registry 必须 fail-closed。
-只有 ActivationGate 可在严格 discovery、精确版本与一次性授权核验后原子建立 active 状态。legacy admission 缺快照时必须 fail-closed：当前唯一已实现路径是 current
-exact version 的完整 `all`（含当前 Compare）。`legacy admission identity attestation` 尚未设计或
-实现，未来即使建设也须独立设计、实现和明确专项授权，当前不得作为 G4 或任何方案的路径。
-因此 G4 目前不得 activation 或写入。任何后续修订仍必须满足输入 cutoff、统一周历、日期语义、
+只有 ActivationGate 可在严格 discovery、精确版本与一次性授权核验后原子建立 active 状态。legacy admission 缺快照时仍 fail-closed；唯一实现的固定 scope 是 `weekly_10y_d_overlay_0529` 的 `native-legacy-admission-attest`，它仅为 maintenance 选定的 prior `all + compare=passed`、且 StaticGate 已通过但缺 identity 字段写入两张 Harness 表 receipt。它要求 issuer/exact prior version/run 绑定的 ≤900 秒一次性 token，不改历史、不启动调度、不激活或写业务表；2026-08-04 receipt 已成功写入，但仍必须六段 maintenance 和正常 activation，故当前仍不得 activation 或业务写入。任何后续修订仍必须满足输入 cutoff、统一周历、日期语义、
 Registry、live-safe oracle 与专项授权，随后也只能补其精确授权的 `gray_live` key；不得修改
 Native core 或 source benchmark。
 

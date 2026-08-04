@@ -50,7 +50,7 @@
 6. **P0 先恢复稳定出信号。** 不启用、不扩容、不迁移或补建 ledger，不删除历史版本，不重写 Native 算法，不顺带清空历史表。
 7. **兼容开关不等于调度权。** P0 期间现有底层代码仍可能需要 `BOND_DAILY_COORDINATOR_MODE=legacy` 才能运行；它只是临时兼容条件，不代表 legacy 是生产控制面。待 P2 再移除。
 8. **7Y 灰度可见性优先于效果完善。** 新方案允许带着已知效果问题或非致命算法 bug 进入隔离灰度观察；但不能绕过 Contract、确定性、输入截止、写库边界和授权。灰度可见不等于已获得定时调度权。
-9. **Native benchmark 只承担首次技术入库证据。** ActivationGate 的 Native profile 互斥：current exact version 完整通过 `all` 时使用 `full_initial_onboarding_v1`，只核验当前七个 Gate（含 Compare），不要求 prior snapshot 或 `native-maintenance`；只有未走该 full-`all` profile、且 prior `all` 的 `static.business_identity` 已持久化并与当前业务身份精确匹配时，才能使用 `native-maintenance` 当前日期验证。快照只含 scheme/runtime/horizon/task/frequency/tenors/composite IDs，不含代码、config 或 version hash。legacy admission 缺快照一律 fail-closed，当前唯一已实现路径是完整 `all`（含当前 Compare）。`legacy admission identity attestation` 尚未设计或实现，未来即使建设也须独立设计、实现和明确专项授权，当前不得自动生成、推断或执行。满足任一已实现 profile 后，历史 source-benchmark 输入 vintage 漂移只归档，不单独阻断激活、补数、`gray_live`、`scheduled_live` 或 API。该政策不放宽 L0/L1/L2、输入截止、统一周历、日期语义、Registry、live-safe oracle 或授权，也不改变 Blackbox CompareGate。
+9. **Native benchmark 只承担首次技术入库证据。** ActivationGate 的 Native profile 互斥：current exact version 完整通过 `all` 时使用 `full_initial_onboarding_v1`，只核验当前七个 Gate（含 Compare），不要求 prior snapshot 或 `native-maintenance`；只有未走该 full-`all` profile、且 prior `all` 的 `static.business_identity` 已持久化并与当前业务身份精确匹配时，才能使用 `native-maintenance` 当前日期验证。快照只含 scheme/runtime/horizon/task/frequency/tenors/composite IDs，不含代码、config 或 version hash。legacy admission 缺快照仍 fail-closed；唯一已实现的固定 scope 是 `weekly_10y_d_overlay_0529` 的 `native-legacy-admission-attest`，它要求 maintenance 选定的 prior 唯一 `all + compare=passed`、StaticGate 已通过且 identity 字段明确缺失、以及 issuer/exact prior version/run 绑定的 ≤900 秒一次性 token。receipt 只写两张 Harness 表、不能重放或改历史、只作为 `legacy_operator_attestation_v1` 身份来源，之后仍须六段 Gate 和常规 activation。满足任一已实现 profile 后，历史 source-benchmark 输入 vintage 漂移只归档，不单独阻断激活、补数、`gray_live`、`scheduled_live` 或 API。该政策不放宽 L0/L1/L2、输入截止、统一周历、日期语义、Registry、live-safe oracle 或授权，也不改变 Blackbox CompareGate。
 
 ---
 
@@ -453,7 +453,7 @@ P0 可以暂时保留底层 `legacy` 环境开关，以兼容现有 executor/rep
 
 另有一个独立历史诊断：平台 DB 对原始 benchmark 的 45 个样本中有 14 个不一致，其中 3 周方向翻转。该漂移起点早于 8 月 1 日排序问题，不能把两者混为一个 bug。用户已确认：source benchmark/CompareGate 继续作为首次技术入库的证据；满足 post-admission 身份证据前提的当前 Native 修订，其 historical input-vintage 漂移只归档，不要求 scoped waiver 或同源输入/环境重建，也不单独阻断 G4。可是本方案的 legacy prior admission 没有可匹配的持久化 `static.business_identity`，不能仅凭当前 Registry 反推历史身份。
 
-**状态：算法排序问题已修；benchmark 政策已确认；但 legacy prior identity snapshot 缺失，当前不能走 `native-maintenance`。当前 exact candidate 的 `t_scheme_versions` 为 `native_adapter/draft`、期望 Registry 统一 `paused`，这是正常预激活态而非额外 blocker。唯一已实现恢复路径是当前精确 version 完整通过 `all`（含当前 Compare），随后 ActivationGate 使用 `full_initial_onboarding_v1`，不要求 prior snapshot 或 maintenance；该 full-`all` 尚未通过。`legacy admission identity attestation` 尚未设计或实现，不是当前替代路径。尚未发生激活或补写。**
+**状态：算法排序问题已修；benchmark 政策已确认；2026-08-04 已成功写入固定 10Y 的唯一 canonical receipt `lna_hr_20260611T055610Z_8742d5bc99c9`，它绑定 prior `63ffb52105ee / hr_20260611T055610Z_8742d5bc99c9` 与 frozen `weekly_10y_d_overlay_0529 / weekly_point / weekly / h6 / 10Y / weekly_10y_d_overlay_0529__h6__10Y`。读回确认该次操作只写 Harness run/gate 表，maintenance verifier 将其识别为 `legacy_operator_attestation_v1`。receipt 不能替代六段 `native-maintenance`、activation 或单键 gap write。当前 exact candidate 的 `t_scheme_versions` 仍为 `native_adapter/draft`、期望 Registry 仍统一 `paused`；尚未发生 activation 或补写。**
 
 ### 造成的影响
 
@@ -469,10 +469,10 @@ P0 可以暂时保留底层 `legacy` 环境开关，以兼容现有 executor/rep
 
 不再有 waiver/rebuild 的预先选择。G4 完成必须依次满足：
 
-1. Native core 和 source-original benchmark 文件未被修改，排序修复仍通过 no-write 验证；当前精确 version 完整通过七段 `all`（含当前 Compare）。该 G4 当前没有可用 prior snapshot，故不得要求或运行 maintenance。
-2. ActivationGate 以互斥的 `full_initial_onboarding_v1` 复核当前 `all`、精确版本与一次性授权后激活；不得附加 prior `all + compare`、prior snapshot 或六段 Gate 要求。
+1. Native core 和 source-original benchmark 文件未被修改，排序修复仍通过 no-write 验证；唯一 canonical receipt 已以专用命令写入，仅影响 Harness run/gate 表，并已被 maintenance verifier 识别为 `legacy_operator_attestation_v1`。
+2. 下一步完整通过六段 `native-maintenance`，再由 ActivationGate 以 `native_post_admission_revision_v1`、精确 current version 和独立一次性 activation token 激活；receipt 绝不替代六段 Gate。
 3. 仅在前两项完成后，通过受控 signal-gap 路径写入唯一业务键 `weekly_10y_d_overlay_0529 / 10Y / h6 / predict_date=2026-08-01 / feature_date=2026-07-31 / target_date=2026-08-07 / prediction_phase=gray_live`，不得扩展为任何其它日期、target 或 `scheduled_live`。
-4. repository 原子提交后从 DB 与 served API/前端读回日期、方向、置信度、版本、run 与 `gray_live` provenance；历史 benchmark 漂移仍标为归档诊断，不能写成 current Compare pass。`legacy admission identity attestation` 尚未设计或实现，不构成上述条件的替代。
+4. repository 原子提交后从 DB 与 served API/前端读回日期、方向、置信度、版本、run 与 `gray_live` provenance；历史 benchmark 漂移仍标为归档诊断，不能写成 current Compare pass。
 
 ---
 
@@ -598,7 +598,7 @@ Native hash 当前覆盖完整 config 和文件文本，展示、状态、schedu
 - DataBridge 的 refresh date、feature cutoff、generation 或连续性校验不通过；
 - 发现两个仍可能写同一 business key 的生产进程；
 - 需要改 Native core、source-original benchmark 或算法参数才能让测试通过；
-- D-overlay 当前 exact version 未通过完整 `all`，或尝试在无 matching prior `static.business_identity` 时走 `native-maintenance`；两种 profile 不得混用。未实现的 attestation 不能解除停止条件；
+- D-overlay 在已写入 receipt 后未通过完整六段 Gate/activation 就补数，或把 receipt 当作 `native-maintenance`、activation 或业务写入授权；两种 activation profile 不得混用，receipt 不能解除其余停止条件；
 - 操作需要数据库写入、激活、历史补数、launchctl 或 installed plist 变更，但没有专项授权；
 - 工作区存在来源不明或与当前阶段重叠的用户修改；
 - 只能通过降低门禁、隐藏失败或使用旧数据才能获得“成功”。
@@ -608,4 +608,4 @@ Native hash 当前覆盖完整 config 和文件文本，展示、状态、schedu
 
 ## 16. 下一步
 
-P-1 的已授权算法、数据、Dashboard 和 served-API 闭环工作以及 G0 文档统一已完成；G1/G2 的 launchd-only 单 writer 开发与只读现场核对仍按其独立前置推进。G4 不再等待 benchmark 处置选择，但当前还不能执行：legacy prior snapshot 缺失使 maintenance 不可用，唯一已实现路径是让 `weekly_10y_d_overlay_0529` 当前 exact version 完整通过 `all`（含 Compare）并以 `full_initial_onboarding_v1` 激活。该 full-`all` 尚未通过，因此不得 activation 或补唯一 2026-08-01 `gray_live` key。`legacy admission identity attestation` 只是未来需另行设计、实现并明确专项授权的控制面能力，当前不可执行。该历史修复不授予 scheduler admission，也不授权 installed 控制面操作；不得把 `gray_live` 或 formal API 通过外推为自然调度或生产稳定证据。
+P-1 的已授权算法、数据、Dashboard 和 served-API 闭环工作以及 G0 文档统一已完成；G1/G2 的 launchd-only 单 writer 开发与只读现场核对仍按其独立前置推进。G4 已完成固定 10Y canonical receipt，下一步是跑六段 maintenance、独立 activation，最后才可补唯一 2026-08-01 `gray_live` key。receipt 不是 scheduler admission，也不授权 installed 控制面操作；不得把后续 `gray_live` 或 formal API 通过外推为自然调度或生产稳定证据。

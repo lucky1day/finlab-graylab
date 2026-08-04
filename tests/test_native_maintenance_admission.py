@@ -27,6 +27,178 @@ _NATIVE_BUSINESS_IDENTITY = {
 
 
 class NativeMaintenanceAdmissionTests(unittest.TestCase):
+    def test_admits_explicitly_missing_static_identity_only_with_canonical_legacy_receipt(self) -> None:
+        """legacy Static 只缺身份字段时，可由单一受控 receipt 补足来源。"""
+        from harness.gates.native_maintenance_admission_gate import (
+            NativeMaintenanceAdmissionGate,
+        )
+
+        fixed_scheme_id = "weekly_10y_d_overlay_0529"
+        fixed_prior_version = "prior-v1"
+        fixed_prior_run_id = "hr-prior"
+        fixed_registry_scheme_id = f"{fixed_scheme_id}__h6__10Y"
+        fixed_identity = {
+            "scheme_id": fixed_scheme_id,
+            "runtime_type": "native_adapter",
+            "horizon": 6,
+            "task_type": "weekly_point",
+            "frequency": "weekly",
+            "tenors": ["10Y"],
+            "registry_scheme_ids": [fixed_registry_scheme_id],
+        }
+        engine = _sqlite_engine()
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                _write_policy(root, (fixed_scheme_id,))
+                with engine.begin() as conn:
+                    _insert_registry_row_conn(
+                        conn,
+                        _registry_row(
+                            scheme_id=fixed_registry_scheme_id,
+                            base_scheme_id=fixed_scheme_id,
+                            horizon=6,
+                            task_type="weekly_point",
+                            frequency="weekly",
+                            target_tenor="10Y",
+                        ),
+                    )
+                    conn.execute(
+                        text(
+                            """
+                            INSERT INTO t_scheme_versions
+                                (scheme_id, scheme_version, runtime_type, status)
+                            VALUES
+                                (:scheme_id, :prior_version, 'native_adapter', 'active'),
+                                (:scheme_id, 'candidate-v2', 'native_adapter', 'active')
+                            """
+                        ),
+                        {
+                            "scheme_id": fixed_scheme_id,
+                            "prior_version": fixed_prior_version,
+                        },
+                    )
+                    conn.execute(
+                        text(
+                            """
+                            INSERT INTO t_harness_runs
+                                (harness_run_id, scheme_id, scheme_version, stage,
+                                 status, finished_at)
+                            VALUES
+                                (:prior_run_id, :scheme_id, :prior_version, 'all',
+                                 'passed', '2026-08-01 10:00:00')
+                            """
+                        ),
+                        {
+                            "prior_run_id": fixed_prior_run_id,
+                            "scheme_id": fixed_scheme_id,
+                            "prior_version": fixed_prior_version,
+                        },
+                    )
+                    conn.execute(
+                        text(
+                            """
+                            INSERT INTO t_harness_gate_results
+                                (harness_run_id, gate_name, status, summary_json)
+                            VALUES
+                                (:prior_run_id, 'compare', 'passed', NULL),
+                                (:prior_run_id, 'static', 'passed', :static_summary)
+                            """
+                        ),
+                        {
+                            "prior_run_id": fixed_prior_run_id,
+                            "static_summary": json.dumps(
+                                {"passed": True, "evidence": [], "errors": []}
+                            ),
+                        },
+                    )
+                    conn.execute(
+                        text(
+                            """
+                            INSERT INTO t_harness_runs
+                                (harness_run_id, scheme_id, scheme_version, stage,
+                                 status, finished_at, triggered_by)
+                            VALUES
+                                ('lna_hr-prior', :scheme_id, NULL,
+                                 'legacy-native-admission-attestation', 'passed',
+                                 '2026-08-04 12:00:00',
+                                 'native-legacy-admission-attestation-operator')
+                            """
+                        ),
+                        {"scheme_id": fixed_scheme_id},
+                    )
+                    conn.execute(
+                        text(
+                            """
+                            INSERT INTO t_harness_gate_results
+                                (harness_run_id, gate_name, status, summary_json)
+                            VALUES
+                                ('lna_hr-prior',
+                                 'legacy-native-admission-attestation', 'passed',
+                                 :summary_json)
+                            """
+                        ),
+                        {
+                            "summary_json": json.dumps(
+                                {
+                                    "passed": True,
+                                    "evidence": [
+                                        {
+                                            "key": "legacy_native_admission_attestation",
+                                            "value": {
+                                                "schema_version": "legacy_native_admission_attestation_v1",
+                                                "scope_scheme_id": fixed_scheme_id,
+                                                "assertion": "operator_attests_legacy_native_admission_identity",
+                                                "prior_admitted_scheme_version": fixed_prior_version,
+                                                "prior_harness_run_id": fixed_prior_run_id,
+                                                "business_identity": fixed_identity,
+                                                "issued_by": "native-release-owner",
+                                                "issued_at": "2026-08-04T12:00:00+00:00",
+                                                "authorization_token_sha256": "a" * 64,
+                                            },
+                                            "detail": None,
+                                        }
+                                    ],
+                                    "errors": [],
+                                }
+                            )
+                        },
+                    )
+
+                result = NativeMaintenanceAdmissionGate().run(
+                    GateContext(
+                        scheme_id=fixed_scheme_id,
+                        predict_date="2026-08-04",
+                        project_root=root,
+                        report_dir=root / "reports",
+                        config=SimpleNamespace(
+                            scheme_id=fixed_scheme_id,
+                            scheme_version="candidate-v2",
+                            runtime_type="native_adapter",
+                            status="active",
+                            tenors=["10Y"],
+                            horizon=6,
+                            task_type="weekly_point",
+                            frequency="weekly",
+                        ),
+                        engine_factory=lambda: engine,
+                    )
+                )
+
+            self.assertEqual(result.status, GateStatus.PASSED)
+            self.assertTrue(result.passed)
+            evidence = {item.key: item.value for item in result.evidence}
+            self.assertEqual(
+                evidence["admission_identity_source"],
+                "legacy_operator_attestation_v1",
+            )
+            self.assertEqual(
+                evidence["legacy_admission_attestation_harness_run_id"],
+                "lna_hr-prior",
+            )
+        finally:
+            engine.dispose()
+
     def test_admits_latest_prior_native_revision_with_matching_active_registry(self) -> None:
         from harness.gates.native_maintenance_admission_gate import (
             NativeMaintenanceAdmissionGate,
@@ -725,7 +897,14 @@ def _sqlite_engine():
                     scheme_version TEXT,
                     stage TEXT,
                     status TEXT,
-                    finished_at TEXT
+                    started_at TEXT,
+                    finished_at TEXT,
+                    triggered_by TEXT,
+                    project_root TEXT,
+                    git_commit TEXT,
+                    code_hash TEXT,
+                    config_hash TEXT,
+                    report_uri TEXT
                 )
                 """
             )

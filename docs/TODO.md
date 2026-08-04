@@ -24,12 +24,15 @@ plist、`launchctl` loaded state、日志与实际缺口。任何生产副作用
 4. **G3 — 日频历史缺口**：仅在 G1/G2 完成并取得专项授权后重新枚举 2026-08-03 缺口，
    对仍缺的 business key 写 `gray_live`，不覆盖既有记录。
 5. **G4 — weekly 10Y D-overlay**：历史 source-benchmark 输入 vintage 漂移已确认只作归档
-   诊断；但 legacy prior admission 缺可匹配的持久化 `static.business_identity`，当前不能走
-   `native-maintenance`。当前 exact candidate 的 `t_scheme_versions` 为 `native_adapter/draft`，预期
-   Registry 统一 `paused`，这是正常预激活态而非额外 blocker。唯一已实现恢复路径是当前 exact version 完整通过 `all`（含当前 Compare），
-   再按 `full_initial_onboarding_v1` 激活；该路径不要求 prior snapshot 或 maintenance。
-   `legacy admission identity attestation` 尚未设计或实现，不能作为当前操作。G4 在完整 `all`
-   通过和受控 activation 前不得补数；之后才可仅补 `weekly_10y_d_overlay_0529 / 10Y / h6 / predict_date=2026-08-01 / feature_date=2026-07-31 /
+   诊断。已实现的专项 `native-legacy-admission-attest` 只适用于
+   `weekly_10y_d_overlay_0529`，只在 maintenance 当前选择的 prior `all + compare=passed` 且
+   StaticGate 已通过、仅缺 identity 字段时，以 issuer 和 exact prior version/run 绑定的 ≤900 秒
+   一次性 token 写入两张 Harness 控制面表 receipt。2026-08-04 已写入
+   `lna_hr_20260611T055610Z_8742d5bc99c9`，并由 verifier 识别为
+   `legacy_operator_attestation_v1`；它不激活、不补数，下一步是正常六段
+   `native-maintenance`。当前 exact candidate 的 `t_scheme_versions` 为 `native_adapter/draft`、
+   预期 Registry 统一 `paused`，是正常预激活态。G4 在六段 Gate 和受控 activation 前不得补数；
+   之后才可仅补 `weekly_10y_d_overlay_0529 / 10Y / h6 / predict_date=2026-08-01 / feature_date=2026-07-31 /
    target_date=2026-08-07 / gray_live`。不得改 Native core、调参、覆盖 source benchmark，
    或扩展补数范围。
 6. **G5 — 周/月自然调度**：形成独立 installed/loaded plist，并观察真实周六和自然月

@@ -44,13 +44,12 @@
 - **G3**：在 G1/G2 和专项授权后，重新枚举并仅补仍缺失的 2026-08-03 日频 business key。
 - **G4**：weekly 10Y D-overlay 的 2026-08-01 `gray_live` 缺口仍待处理。source
   benchmark/CompareGate 仍只服务首次 Native 技术入库；14/45、3 个翻向的历史输入 vintage
-  漂移仅归档，不是单独 blocker。但现有 legacy prior admission 没有可匹配的持久化
-  `static.business_identity` 快照，故当前不能走 `native-maintenance`。当前 exact candidate 的
-  `t_scheme_versions` 已是 `native_adapter/draft`，期望 Registry 统一为 `paused`；这是正常预激活态，
-  不是额外 blocker。唯一已实现恢复路径是当前
-  exact version 通过完整 `all`（含当前 Compare）后，以 `full_initial_onboarding_v1` 激活；该路径
-  不要求 prior snapshot 或 maintenance。`legacy admission identity attestation` 尚未设计或实现，
-  不是当前可选操作。G4 目前没有 activation 或补写。
+  漂移仅归档，不是单独 blocker。2026-08-04 已执行唯一的 `native-legacy-admission-attest`：receipt
+  `lna_hr_20260611T055610Z_8742d5bc99c9` 绑定 maintenance 当前选择的 prior
+  `63ffb52105ee / hr_20260611T055610Z_8742d5bc99c9` 与 frozen 10Y/h6/weekly-point identity，
+  只写两张 Harness 控制面表，verifier 已读回 `legacy_operator_attestation_v1`。当前 exact candidate
+  仍为 `native_adapter/draft`、期望 Registry 统一 `paused`；尚未运行六段 `native-maintenance`、
+  activation 或补写。
 - **G5/G6**：周/月自然调度与完整日/周/月真实时钟观察尚未完成。
 
 完整阶段定义、旧快照和停止条件见

@@ -49,6 +49,17 @@ class NativeMaintenanceAdmission:
     current_candidate_runtime_type: str
     current_candidate_status: str
     registry_lifecycle: str
+    admission_identity_source: str = "prior_static_gate_snapshot_v1"
+    legacy_admission_attestation_harness_run_id: str | None = None
+
+
+@dataclass(frozen=True)
+class PriorNativeStaticIdentityState:
+    """既往 StaticGate 身份字段的严格读取状态。"""
+
+    identity: dict[str, object] | None
+    error: str | None
+    genuinely_missing_identity_evidence: bool
 
 
 class NativeMaintenanceAdmissionGate(Gate):
@@ -76,29 +87,41 @@ class NativeMaintenanceAdmissionGate(Gate):
                 started_at=started_at,
                 finished_at=finished_at,
             )
+        evidence = [
+            Evidence("scheme_id", ctx.scheme_id),
+            Evidence("validation_profile", _VALIDATION_PROFILE),
+            Evidence(
+                "prior_admitted_scheme_version",
+                admission.prior_admitted_scheme_version,
+            ),
+            Evidence("prior_harness_run_id", admission.prior_harness_run_id),
+            Evidence("registry_scheme_ids", list(admission.registry_scheme_ids)),
+            Evidence(
+                "current_candidate_runtime_type",
+                admission.current_candidate_runtime_type,
+            ),
+            Evidence(
+                "current_candidate_status",
+                admission.current_candidate_status,
+            ),
+            Evidence("registry_lifecycle", admission.registry_lifecycle),
+            Evidence(
+                "admission_identity_source",
+                admission.admission_identity_source,
+            ),
+        ]
+        if admission.legacy_admission_attestation_harness_run_id is not None:
+            evidence.append(
+                Evidence(
+                    "legacy_admission_attestation_harness_run_id",
+                    admission.legacy_admission_attestation_harness_run_id,
+                )
+            )
         return GateResult(
             gate_name=self.name,
             status=GateStatus.PASSED,
             passed=True,
-            evidence=[
-                Evidence("scheme_id", ctx.scheme_id),
-                Evidence("validation_profile", _VALIDATION_PROFILE),
-                Evidence(
-                    "prior_admitted_scheme_version",
-                    admission.prior_admitted_scheme_version,
-                ),
-                Evidence("prior_harness_run_id", admission.prior_harness_run_id),
-                Evidence("registry_scheme_ids", list(admission.registry_scheme_ids)),
-                Evidence(
-                    "current_candidate_runtime_type",
-                    admission.current_candidate_runtime_type,
-                ),
-                Evidence(
-                    "current_candidate_status",
-                    admission.current_candidate_status,
-                ),
-                Evidence("registry_lifecycle", admission.registry_lifecycle),
-            ],
+            evidence=evidence,
             errors=[],
             started_at=started_at,
             finished_at=finished_at,
@@ -161,14 +184,43 @@ def verify_native_maintenance_admission(
                 if prior_row is not None
                 else None
             )
-            prior_business_identity, prior_identity_error = (
-                _read_prior_native_business_identity_snapshot_conn(
+            prior_static_identity = (
+                _read_prior_native_static_identity_state_conn(
                     conn,
                     harness_run_id=str(prior_row["harness_run_id"]),
                 )
                 if prior_row is not None
-                else (None, None)
+                else PriorNativeStaticIdentityState(None, None, False)
             )
+            prior_business_identity = prior_static_identity.identity
+            prior_identity_error = prior_static_identity.error
+            identity_source = "prior_static_gate_snapshot_v1"
+            legacy_receipt_run_id: str | None = None
+            if (
+                prior_row is not None
+                and prior_static_identity.genuinely_missing_identity_evidence
+            ):
+                from harness.legacy_native_admission_attestation import (
+                    read_legacy_native_admission_attestation_receipt_conn,
+                )
+
+                receipt, receipt_error = (
+                    read_legacy_native_admission_attestation_receipt_conn(
+                        conn,
+                        prior_admitted_scheme_version=str(
+                            prior_row["scheme_version"]
+                        ),
+                        prior_harness_run_id=str(prior_row["harness_run_id"]),
+                        business_identity=current_business_identity,
+                    )
+                )
+                if receipt_error is not None:
+                    prior_identity_error = receipt_error
+                elif receipt is not None:
+                    prior_business_identity = receipt.business_identity
+                    prior_identity_error = None
+                    identity_source = "legacy_operator_attestation_v1"
+                    legacy_receipt_run_id = receipt.harness_run_id
             registry_rows = _read_active_registry_rows_conn(
                 conn,
                 cfg,
@@ -245,6 +297,8 @@ def verify_native_maintenance_admission(
             current_candidate_runtime_type=str(current_version_row["runtime_type"]),
             current_candidate_status=current_version_status,
             registry_lifecycle=registry_lifecycle,
+            admission_identity_source=identity_source,
+            legacy_admission_attestation_harness_run_id=legacy_receipt_run_id,
         ),
         [],
     )
@@ -399,6 +453,19 @@ def _read_prior_native_business_identity_snapshot_conn(
     harness_run_id: str,
 ) -> tuple[dict[str, object] | None, str | None]:
     """读取并严格解析已选既往 all run 的 StaticGate 身份快照。"""
+    state = _read_prior_native_static_identity_state_conn(
+        conn,
+        harness_run_id=harness_run_id,
+    )
+    return state.identity, state.error
+
+
+def _read_prior_native_static_identity_state_conn(
+    conn,
+    *,
+    harness_run_id: str,
+) -> PriorNativeStaticIdentityState:
+    """区分可证明的 legacy 缺字段与 malformed/duplicate StaticGate。"""
     rows = (
         conn.execute(
             text(
@@ -415,29 +482,79 @@ def _read_prior_native_business_identity_snapshot_conn(
         .all()
     )
     if len(rows) != 1:
-        return None, "prior admitted Native static gate identity snapshot is missing"
+        return PriorNativeStaticIdentityState(
+            None,
+            "prior admitted Native static gate identity snapshot is missing",
+            False,
+        )
     row = rows[0]
     if row.get("status") != "passed":
-        return None, "prior admitted Native static gate identity snapshot is missing"
+        return PriorNativeStaticIdentityState(
+            None,
+            "prior admitted Native static gate identity snapshot is missing",
+            False,
+        )
 
     summary = _decode_summary_json(row.get("summary_json"))
     if summary is None:
-        return None, "prior admitted Native static gate identity snapshot is malformed"
+        return PriorNativeStaticIdentityState(
+            None,
+            "prior admitted Native static gate identity snapshot is malformed",
+            False,
+        )
     evidence = summary.get("evidence")
     if not isinstance(evidence, list):
-        return None, "prior admitted Native static gate identity snapshot is malformed"
+        return PriorNativeStaticIdentityState(
+            None,
+            "prior admitted Native static gate identity snapshot is malformed",
+            False,
+        )
     snapshots = [
         item.get("value")
         for item in evidence
         if isinstance(item, Mapping)
         and item.get("key") == NATIVE_BUSINESS_IDENTITY_EVIDENCE_KEY
     ]
+    if not snapshots:
+        return PriorNativeStaticIdentityState(
+            None,
+            "prior admitted Native static gate identity snapshot is missing",
+            _is_well_formed_legacy_static_summary(summary),
+        )
     if len(snapshots) != 1:
-        return None, "prior admitted Native static gate identity snapshot is missing"
+        return PriorNativeStaticIdentityState(
+            None,
+            "prior admitted Native static gate identity snapshot is missing",
+            False,
+        )
     snapshot = _canonical_prior_business_identity_snapshot(snapshots[0])
     if snapshot is None:
-        return None, "prior admitted Native static gate identity snapshot is malformed"
-    return snapshot, None
+        return PriorNativeStaticIdentityState(
+            None,
+            "prior admitted Native static gate identity snapshot is malformed",
+            False,
+        )
+    return PriorNativeStaticIdentityState(snapshot, None, False)
+
+
+def _is_well_formed_legacy_static_summary(summary: Mapping[str, object]) -> bool:
+    """legacy receipt 只接受标准结果结构中明确缺失的一项字段。"""
+    evidence = summary.get("evidence")
+    if (
+        set(summary) != {"passed", "evidence", "errors"}
+        or summary.get("passed") is not True
+        or summary.get("errors") != []
+        or not isinstance(evidence, list)
+    ):
+        return False
+    return all(
+        isinstance(item, Mapping)
+        and set(item) == {"key", "value", "detail"}
+        and isinstance(item.get("key"), str)
+        and bool(item["key"])
+        and (item.get("detail") is None or isinstance(item.get("detail"), str))
+        for item in evidence
+    )
 
 
 def _prior_compare_evidence_error_conn(

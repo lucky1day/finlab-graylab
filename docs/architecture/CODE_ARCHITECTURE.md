@@ -219,9 +219,11 @@ static -> native-maintenance-admission -> input -> unit -> dry-run -> api-readin
 `t_scheme_versions` 行必须为 `runtime_type='native_adapter'` 且 status 为 `draft|active`；expected
 Registry identity 可在预激活时统一为 `paused`，或在激活后统一为 `active`，但 draft version 配 active
 Registry 必须 fail-closed。只有 ActivationGate 可在严格 discovery、精确版本与一次性授权核验后原子
-建立 active 状态。缺少该 prior snapshot 的 legacy admission 必须 fail-closed；当前唯一已实现 fallback 是 current exact version 重跑完整
-`all`（含当前 Compare）。`legacy admission identity attestation` 尚未设计或实现，未来即使建设也
-必须另行设计、实现并取得明确专项授权，当前不得作为命令或例外；不得自动生成或推断。
+建立 active 状态。缺少 prior snapshot 的 legacy admission 仍必须 fail-closed；唯一已实现例外是
+`weekly_10y_d_overlay_0529` 的专用 `native-legacy-admission-attest`，只接受 maintenance 选定、唯一
+passed `all + compare` 的 prior，且 StaticGate 已通过但 identity 字段明确缺失。短期一次性 token 必须
+绑定 issuer 与 exact prior version/run；receipt 仅写两张 Harness 控制面表、无当前 hash、不改历史，且只作
+`legacy_operator_attestation_v1` 身份来源。它不是通用命令或 waiver，不能自动生成、推断、激活或写业务表。
 该六段路径不运行当前 historical `compare/backtest`、不写业务表，且不适用于 Blackbox；其后
 activation 仍要核验当前精确 version、六个 Gate 与一次性 token。反之，current exact version 的
 完整 `all` 通过时，ActivationGate 走互斥的 `full_initial_onboarding_v1`，不要求此 prior snapshot

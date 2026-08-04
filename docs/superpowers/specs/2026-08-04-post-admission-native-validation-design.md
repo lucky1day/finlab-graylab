@@ -15,7 +15,7 @@ config 或 version hash。
 StaticGate。仅 `weekly_10y_d_overlay_0529` 可由专用、一次性、短期 authorization
 显式声明其**被 maintenance 当前选择的** legacy prior `all` run 与当前 canonical
 业务身份相同。该 receipt 只写 `t_harness_runs` 与 `t_harness_gate_results`，并且固定
-绑定 prior version/run、canonical business identity、签发者、签发时间和 token hash；
+绑定 prior version/run、canonical business identity（含全部 composite Registry IDs）、签发者、签发时间和 token hash；
 不含也不锁定当前代码、config 或 version hash。它不能由 Gate 自动生成、不能从当前
 Registry/config 反推，也不直接激活、回补或写业务表。
 
@@ -83,7 +83,9 @@ ActivationGate 只在下列条件同时成立时承认这一替代阶段：
 快照时，不得由当前 Registry/config 反推或自动补写。唯一已授权例外是上述固定 10Y scope 的
 operator attestation：它要求最新被选择的 prior active Native `all+compare=passed` 证据、已通过
 但仅缺 identity field 的 StaticGate、token 中精确 prior version/run、非空 issuer、短 TTL 和一次性
-消费；receipt 若缺失、重复、非 canonical 或与当前业务身份不等仍失败。其他方案和其他 legacy
+消费；receipt 已存在、缺失、重复、非 canonical 或与当前业务身份不等仍失败。写入命令先拒绝
+过期或已消费 token；在无既有 receipt 时于唯一 DB receipt 事务前消费 token，若该事务失败则
+返回 token 已消费但 receipt 未写入的失败结果，必须新签发 token 后重试。其他方案和其他 legacy
 情形仍只能让 current exact version 重跑完整 `all`，然后使用互斥的
 `full_initial_onboarding_v1`。attestation 本身不授予 activation、gap repair 或业务写入。maintenance
 Activation result 才记录 validation profile、validation harness run、prior
@@ -95,7 +97,9 @@ benchmark pass；full-`all` profile 则记录 `benchmark_validation=passed_initi
 
 G4 不豁免 benchmark。当前 legacy prior admission 缺少可比较的持久化
 `static.business_identity`，但满足上述专项 attestation 的唯一 scope：旧版 `63ffb52105ee` 的
-最新 passed `all` run `hr_20260611T055610Z_8742d5bc99c9`。receipt 写入后仍必须运行完整六段
+最新 passed `all` run `hr_20260611T055610Z_8742d5bc99c9`。2026-08-04 已写入唯一 receipt
+`lna_hr_20260611T055610Z_8742d5bc99c9` 并由 maintenance verifier 读回为
+`legacy_operator_attestation_v1`；之后仍必须运行完整六段
 `native-maintenance`、使用独立的 current-version activation token，并通过 ActivationGate；其
 current exact `t_scheme_versions` 是 `native_adapter/draft`，expected Registry 统一为 `paused`，
 这是正常预激活态，不是额外 blocker。full-`all` 仍是可用的互斥初始入库路径，但不会因

@@ -266,10 +266,13 @@ generation fallback。**
 
 本项不授予 G4 activation、gap repair 或业务写库授权；当前 legacy prior admission 缺可比较的
 `static.business_identity` 快照，不能走 maintenance。当前 exact candidate 的 `t_scheme_versions` 为
-`native_adapter/draft` 且预期 Registry 统一 `paused`，这是正常预激活态，不是额外 blocker。当前唯一已实现恢复路径是 current exact
-version 完整通过 `all`（含当前 Compare），再使用 `full_initial_onboarding_v1`；该 profile 不要求
-prior snapshot。`legacy admission identity attestation` 尚未设计或实现，未来即使建设也须独立设计、
-实现和明确专项授权，当前不是可执行 G4 路径。
+`native_adapter/draft` 且预期 Registry 统一 `paused`，这是正常预激活态，不是额外 blocker。除 current exact
+version 完整通过 `all`（含当前 Compare）再使用 `full_initial_onboarding_v1` 外，唯一已实现恢复路径是固定
+`weekly_10y_d_overlay_0529` 的专项 `native-legacy-admission-attest`：它只证明 maintenance 当前选择的
+prior `all + compare=passed` 与 frozen 10Y/h6/weekly-point 业务身份相同，要求已通过但明确缺 identity 字段的
+StaticGate、issuer/exact prior version/run 绑定的 ≤900 秒 token，并只写两张 Harness 控制面表。2026-08-04
+receipt `lna_hr_20260611T055610Z_8742d5bc99c9` 已写入并被 verifier 读回；下一步仍须六段 maintenance 与
+常规 activation，之后才能补写。
 
 ## 后续追加模板
 
