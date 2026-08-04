@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Implement mutually exclusive Native activation profiles: current exact version full `all` activates as `full_initial_onboarding_v1` without maintenance/prior-snapshot requirements; only a revision with a matching persisted prior StaticGate business-identity snapshot may activate as `native_post_admission_revision_v1` without re-running changed historical source benchmarks. The 2026-08-01 weekly 10Y gray-live repair remains blocked because its legacy prior snapshot is absent and its current full `all` has not passed.
+**Goal:** Implement mutually exclusive Native activation profiles: current exact version full `all` activates as `full_initial_onboarding_v1` without maintenance/prior-snapshot requirements; a revision with a matching persisted prior StaticGate business-identity snapshot may activate as `native_post_admission_revision_v1` without re-running changed historical source benchmarks. Under the 2026-08-04 explicit authorization, the one legacy 10Y prior run whose StaticGate lacks only the new snapshot field may instead receive one evidence-bound control-plane attestation; it still must pass the six maintenance Gates, activation, and the existing exact G4 repair chain.
 
-**Architecture:** Keep the existing seven-Gate `all` sequence immutable for first technical admission. If the current exact version passes it, ActivationGate returns `full_initial_onboarding_v1` immediately and does not require `native-maintenance`, a prior version, or a prior snapshot. Add a Native-only `native-maintenance` sequence for the alternative profile only; it revalidates an older fully admitted Native version, the prior StaticGate's persisted `static.business_identity`, and an exact expected Registry identity. The business snapshot contains only scheme/runtime/horizon/task/frequency/tenors/composite IDs, never code/config/version hashes. The current exact `t_scheme_versions` candidate must be `runtime_type='native_adapter'` and `status in {'draft','active'}`; its expected Registry is uniformly `paused` before activation or uniformly `active` after it, and `draft` plus `active` Registry fails closed. ActivationGate alone atomically establishes active state. A legacy prior admission without the snapshot is fail-closed; the only implemented fallback is current exact version full `all` (including current Compare). `legacy admission identity attestation` is a future control-plane capability that would require separate design, implementation, and explicit authorization; it does not exist and is not an executable branch of this plan. The maintenance route does not invoke `compare` or `backtest`, but it persists the six current Gate results for activation audit. At activation, the resolver order is full admission → current six-Gate maintenance evidence → prior-admission verification; the prior verification happens immediately before the token-consumption path.
+**Architecture:** Keep the existing seven-Gate `all` sequence immutable for first technical admission. If the current exact version passes it, ActivationGate returns `full_initial_onboarding_v1` immediately and does not require `native-maintenance`, a prior version, or a prior snapshot. The Native-only `native-maintenance` alternative revalidates an older fully admitted Native version, a prior StaticGate identity source, and an exact expected Registry identity. The business identity contains only scheme/runtime/horizon/task/frequency/tenors/composite IDs, never current code/config/version hashes. For the single authorized G4 scope only, a dedicated `legacy-native-admission-attestation` stage/gate records an operator declaration in existing Harness tables, bound to prior version/run and canonical business identity. It is not in `all`, `native-maintenance`, or ordinary Gate dispatch; it is not a generic waiver, never modifies historical evidence, and never writes business tables. The current exact `t_scheme_versions` candidate must be `runtime_type='native_adapter'` and `status in {'draft','active'}`; its expected Registry is uniformly `paused` before activation or uniformly `active` after it, and `draft` plus `active` Registry fails closed. ActivationGate alone atomically establishes active state. The maintenance route does not invoke `compare` or `backtest`, but it persists the six current Gate results for activation audit. At activation, the resolver order is full admission → current six-Gate maintenance evidence → prior-admission verification; the prior verification happens immediately before the token-consumption path.
 
 **Tech Stack:** Python 3.12, FastAPI harness modules, SQLAlchemy/MySQL control-plane tables, unittest/pytest, existing Native V1 and signal-gap contracts.
 
@@ -382,3 +382,76 @@ git commit -m "docs(g4): record weekly 10y gap closure"
 ```
 
 Do not merge to `master` or push either branch until all later plan phases and specialized acceptance are complete and the user explicitly confirms production release.
+
+### Task 5: Implement the authorized, single-scope legacy identity attestation
+
+**Files:**
+- Create: `harness/legacy_native_admission_attestation.py`
+- Modify: `harness/persistence.py`
+- Modify: `harness/cli.py`
+- Modify: `harness/gates/native_maintenance_admission_gate.py`
+- Create: `tests/test_native_legacy_admission_attestation.py`
+- Modify: `tests/test_native_maintenance_admission.py`
+- Modify: `tests/test_harness_persistence.py`
+- Modify: `tests/test_cli_activate.py` or a focused CLI test
+
+- [x] **Step 1: Freeze the scope and historical evidence without a write.**
+
+Only this scope is allowed:
+
+```text
+scheme_id=weekly_10y_d_overlay_0529
+prior_scheme_version=63ffb52105ee
+prior_harness_run_id=hr_20260611T055610Z_8742d5bc99c9
+business identity=(native_adapter, weekly_point, weekly, h6, 10Y)
+```
+
+The command must re-read rather than hard-code those values: it accepts only the current
+maintenance-selected active prior `all` run, exactly one passed CompareGate and exactly one
+passed StaticGate whose `native_business_identity` evidence is absent. A malformed, duplicate
+or mismatched old snapshot is not eligible for attestation.
+
+- [ ] **Step 2: Write RED tests for the receipt and its maintenance fallback.**
+
+Cover a successful canonical receipt; wrong scheme, missing/non-expiring or replayed token,
+wrong prior version/run, non-passed or ambiguous Compare, non-missing StaticGate snapshot,
+duplicate/non-canonical receipt, and receipt/current business-identity drift. Prove that only
+`t_harness_runs` and `t_harness_gate_results` are written, and that a receipt alone does not
+activate or satisfy the six maintenance Gate history. Add the one positive maintenance case in
+which an otherwise missing old snapshot is supplied by the single receipt, and retain all
+existing malformed/mismatch fail-closed cases.
+
+- [ ] **Step 3: Implement the smallest dedicated command and persistence path.**
+
+Add an explicit `native-legacy-admission-attest` command, not a generic Gate or waiver. It must
+require a one-time `native_legacy_admission_identity_attest` token with non-empty issuer,
+non-empty prior version and prior run ID, and an expiry no more than 900 seconds away. Reuse
+the platform's existing Native authorization signing mode (do not change environment/plist
+configuration). Its deterministic run ID is based only on the prior run identifier; the
+dedicated persistence function writes a passed `legacy-native-admission-attestation` run plus
+one same-named gate result in one transaction. The canonical evidence stores scope, prior
+version/run, current canonical business identity, issuer, issued-at and token SHA-256. It stores
+no current code/config/version hash and does not overwrite historical results. Existing valid
+receipt returns a read-only skipped result; any conflicting receipt fails closed.
+
+Only when the old StaticGate field is explicitly missing may
+`NativeMaintenanceAdmissionGate` read this receipt. It must require exactly one passed,
+canonical receipt for the maintenance-selected prior run and must record
+`admission_identity_source=legacy_operator_attestation_v1`; otherwise existing static snapshot
+logic stays unchanged. The receipt must not change `AUTO_SEQUENCE`, `native-maintenance`,
+ActivationGate authority, Registry lifecycle, benchmark behavior, or any business table.
+
+- [ ] **Step 4: Verify and execute the authorized control-plane receipt.**
+
+After focused tests and code review pass, issue the short-lived scoped token, execute the
+dedicated command once, and read it back through the maintenance verifier. Confirm that only
+the two Harness control-plane tables changed and that the verifier identifies the receipt source.
+Do not activate, run launchd, restart backend, write a prediction, or run signal-gap fill in
+this task.
+
+- [ ] **Step 5: Update current policy documents and remove closed implementation documents.**
+
+Replace every "attestation is future-only" statement in current architecture/SOP/status documents
+with the precise fixed 10Y scope and its remaining gates. Keep only documents still needed for
+unresolved G4 activation/backfill; remove this plan/spec only after G4 itself is closed. Commit
+the attestation governance with a strict whitelist and leave `master` and remotes untouched.

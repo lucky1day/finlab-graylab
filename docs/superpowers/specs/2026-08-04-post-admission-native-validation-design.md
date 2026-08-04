@@ -10,6 +10,15 @@ source benchmark 与 Native CompareGate 只承担首次技术入库的接收与�
 `horizon`、`task_type`、`frequency`、target tenors 和 composite Registry IDs，不包含代码、
 config 或 version hash。
 
+2026-08-04 经专项授权后，允许一个更窄的历史补证路径：
+`legacy-native-admission-identity-attestation`。它不是通用 waiver，也不改写历史
+StaticGate。仅 `weekly_10y_d_overlay_0529` 可由专用、一次性、短期 authorization
+显式声明其**被 maintenance 当前选择的** legacy prior `all` run 与当前 canonical
+业务身份相同。该 receipt 只写 `t_harness_runs` 与 `t_harness_gate_results`，并且固定
+绑定 prior version/run、canonical business identity、签发者、签发时间和 token hash；
+不含也不锁定当前代码、config 或 version hash。它不能由 Gate 自动生成、不能从当前
+Registry/config 反推，也不直接激活、回补或写业务表。
+
 ActivationGate 的 Native profile 必须互斥：current exact version 已通过完整七段 `all` 时，采用
 `full_initial_onboarding_v1`，只核验该 current `all` 的七个 Gate（含 Compare）和一次性授权，
 不要求 prior snapshot 或 `native-maintenance`。只有未走 full-`all` profile 的既有修订，才可能
@@ -59,7 +68,9 @@ ActivationGate 只在下列条件同时成立时承认这一替代阶段：
 3. DB 中存在该 `scheme_id` 一个不同于当前 version 的 active Native version，以及一次已通过的
    首次 `stage='all'` Native run。所选 prior run 必须恰有一条 `gate_name='compare'` 的结果，且其
    status 为 `passed`；零条、重复、`skipped` 或非通过结果一律 fail-closed。该 run 的 StaticGate 必须
-   持久化唯一、规范化的 `static.business_identity`，并与当前业务字段精确匹配；
+   持久化唯一、规范化的 `static.business_identity`，并与当前业务字段精确匹配；仅当该 StaticGate
+   已通过且其新字段明确缺失（不是 malformed、重复或不匹配）时，才可读取一次唯一、规范化、
+   专项授权的 legacy attestation receipt；
 4. 所述快照与当前 config/expected Registry 一起精确包含 `runtime_type`、`task_type`、
    `frequency`、`horizon`、target tenors 与全部 composite Registry IDs，故它不是新算法、
    新 target、新 task 或 runtime 迁移；不比较代码、config 或 version hash；
@@ -69,11 +80,13 @@ ActivationGate 只在下列条件同时成立时承认这一替代阶段：
    文件 hash、config 生命周期翻转与 Registry/version 原子读回。
 
 若任一条件不成立，maintenance profile 保持 fail-closed。尤其是 legacy prior admission 没有该
-快照时，不得由当前 Registry/config 反推或自动补写；当前唯一已实现 fallback 是 current exact
-version 重跑完整 `all`，然后使用互斥的 `full_initial_onboarding_v1`。`legacy admission identity
-attestation` 尚未设计或实现；未来即使建设也必须独立设计、实现并取得明确专项授权，当前不是可
-执行路径。本设计不创建、不执行 attestation，且 attestation 本身也不授予 activation、gap repair
-或业务写入。maintenance Activation result 才记录 validation profile、validation harness run、prior
+快照时，不得由当前 Registry/config 反推或自动补写。唯一已授权例外是上述固定 10Y scope 的
+operator attestation：它要求最新被选择的 prior active Native `all+compare=passed` 证据、已通过
+但仅缺 identity field 的 StaticGate、token 中精确 prior version/run、非空 issuer、短 TTL 和一次性
+消费；receipt 若缺失、重复、非 canonical 或与当前业务身份不等仍失败。其他方案和其他 legacy
+情形仍只能让 current exact version 重跑完整 `all`，然后使用互斥的
+`full_initial_onboarding_v1`。attestation 本身不授予 activation、gap repair 或业务写入。maintenance
+Activation result 才记录 validation profile、validation harness run、prior
 admitted version、Registry target 集与 `benchmark_validation=not_run_post_admission`，避免把它误称为
 benchmark pass；full-`all` profile 则记录 `benchmark_validation=passed_initial_admission`。Blackbox
 不接受 maintenance stage，继续走既有 `all` lifecycle。
@@ -81,12 +94,13 @@ benchmark pass；full-`all` profile 则记录 `benchmark_validation=passed_initi
 ## G4 的正确性与写入边界
 
 G4 不豁免 benchmark。当前 legacy prior admission 缺少可比较的持久化
-`static.business_identity`，所以它不能使用 `native-maintenance`、activation 或任何 signal-gap
-写入。其 current exact `t_scheme_versions` 是 `native_adapter/draft`，expected Registry 统一为
-`paused`；这是正常预激活态，不是额外 blocker。当前唯一已实现恢复路径是 current exact version 重跑完整 `all`（包含当前 Compare），并在
-通过后使用 `full_initial_onboarding_v1` 激活；该 full-`all` 尚未通过。`legacy admission identity
-attestation` 尚未设计或实现，不是当前替代路径。只有已实现的 full-`all` 前提和修订版本激活均
-完成后，才可使用现有 signal-gap 路径对唯一业务键补数：
+`static.business_identity`，但满足上述专项 attestation 的唯一 scope：旧版 `63ffb52105ee` 的
+最新 passed `all` run `hr_20260611T055610Z_8742d5bc99c9`。receipt 写入后仍必须运行完整六段
+`native-maintenance`、使用独立的 current-version activation token，并通过 ActivationGate；其
+current exact `t_scheme_versions` 是 `native_adapter/draft`，expected Registry 统一为 `paused`，
+这是正常预激活态，不是额外 blocker。full-`all` 仍是可用的互斥初始入库路径，但不会因
+attestation 被伪称为已通过。只有 attestation、maintenance 和修订版本 activation 均完成后，才可
+使用现有 signal-gap 路径对唯一业务键补数：
 
 ```text
 weekly_10y_d_overlay_0529 / 10Y / h6
@@ -106,6 +120,7 @@ authority、单方案 HMAC 授权以及输出日期/target contract。写入后�
 - 不删除 benchmark 文件、既有 benchmark 记录或首次入库 CompareGate。
 - 不修改 Native core、算法参数、数据源或历史 benchmark 数据以贴合结果。
 - 不放宽 Blackbox CompareGate、输入截止、统一日历、版本身份、写库授权或 scheduler。
+- 不把该固定 10Y receipt 扩展为任意 Native 的人工 Compare waiver，不修改历史 Gate JSON。
 - 不新增 ledger、occurrence、epoch 或第二调度控制面。
 
 ## 验收
@@ -115,8 +130,9 @@ authority、单方案 HMAC 授权以及输出日期/target contract。写入后�
    prior snapshot/maintenance；只有已有匹配 prior `static.business_identity` 的 Native revision 才可
    用 maintenance profile 激活。缺初次 full-onboard CompareGate、被选 prior CompareGate 非唯一或
    非 `passed`、legacy snapshot、Registry drift、runtime/task/frequency/horizon drift 或任一六个 Gate
-   时 maintenance 拒绝；legacy snapshot 缺失时当前只能完整 `all`，未实现 attestation 不构成例外。
+   时 maintenance 拒绝；legacy snapshot 缺失时，只有固定 10Y 的唯一、专项授权、canonical
+   attestation receipt 可作为 identity evidence，其余情形仍只能完整 `all`。
 3. Blackbox `all` 与 CompareGate 行为不变。
-4. 2026-08-01 G4 no-write 输出仍遵守统一周历和 exact date contract；在 current exact version
-   完整 `all` 通过和 full-profile activation 前不得实际写入。之后实际写入只在用户已授权的单一
+4. 2026-08-01 G4 no-write 输出仍遵守统一周历和 exact date contract；在专项 receipt、六段
+   maintenance 和 activation 均通过前不得实际写入。之后实际写入只在用户已授权的单一
    `gray_live` business key 上发生，并可读回。
