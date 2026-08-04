@@ -461,6 +461,28 @@ class DataBridgeCliTests(unittest.TestCase):
         blocked.assert_not_called()
         ready.assert_not_called()
 
+    def test_check_only_preserves_success_attempt_without_error(self) -> None:
+        from scripts import refresh_data_bridge_current as command
+
+        current = SimpleNamespace(
+            state={
+                "generation_id": "current",
+                "last_attempt": {
+                    "status": "success",
+                    "refresh_date": "2026-07-29",
+                    "error": None,
+                },
+            }
+        )
+        with patch.object(command, "check_current", return_value=current):
+            exit_code, payload = command.run_command(
+                "check-only",
+                refresh_date="2026-07-29",
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIsNone(payload["state"]["last_attempt"]["error"])
+
     def test_check_only_redacts_legacy_raw_failed_attempt_error(self) -> None:
         from scripts import refresh_data_bridge_current as command
 

@@ -210,7 +210,9 @@ def _check_only_state(state: Mapping[str, object]) -> dict[str, object]:
         if field in last_attempt and _is_check_only_scalar(last_attempt[field])
     }
     error = last_attempt.get("error")
-    if not (
+    if "error" in last_attempt and error is None:
+        safe_attempt["error"] = None
+    elif not (
         isinstance(error, str)
         and error in FAILED_ATTEMPT_ERROR_CATEGORIES
     ):
