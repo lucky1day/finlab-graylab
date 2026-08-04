@@ -47,9 +47,11 @@
   漂移仅归档，不是单独 blocker。2026-08-04 已执行唯一的 `native-legacy-admission-attest`：receipt
   `lna_hr_20260611T055610Z_8742d5bc99c9` 绑定 maintenance 当前选择的 prior
   `63ffb52105ee / hr_20260611T055610Z_8742d5bc99c9` 与 frozen 10Y/h6/weekly-point identity，
-  只写两张 Harness 控制面表，verifier 已读回 `legacy_operator_attestation_v1`。当前 exact candidate
-  仍为 `native_adapter/draft`、期望 Registry 统一 `paused`；尚未运行六段 `native-maintenance`、
-  activation 或补写。
+  只写两张 Harness 控制面表，verifier 已读回 `legacy_operator_attestation_v1`。初次
+  `native-maintenance` run `hr_20260804T092226Z_5d84b9d45fd9` 因预激活 API 状态混同失败；修正后
+  exact version `e50ad79a6c2f` 的 `hr_20260804T102103Z_91fa9e7db871` 已通过全部六个 Gate。
+  candidate 仍为 `native_adapter/draft`、Registry 仍统一 `paused`、目标业务键 prediction count 为 0；
+  activation 和唯一 2026-08-01 `gray_live` gap write 均未获专项授权、未执行。
 - **G5/G6**：周/月自然调度与完整日/周/月真实时钟观察尚未完成。
 
 完整阶段定义、旧快照和停止条件见

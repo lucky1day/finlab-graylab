@@ -29,10 +29,12 @@ plist、`launchctl` loaded state、日志与实际缺口。任何生产副作用
    StaticGate 已通过、仅缺 identity 字段时，以 issuer 和 exact prior version/run 绑定的 ≤900 秒
    一次性 token 写入两张 Harness 控制面表 receipt。2026-08-04 已写入
    `lna_hr_20260611T055610Z_8742d5bc99c9`，并由 verifier 识别为
-   `legacy_operator_attestation_v1`；它不激活、不补数，下一步是正常六段
-   `native-maintenance`。当前 exact candidate 的 `t_scheme_versions` 为 `native_adapter/draft`、
-   预期 Registry 统一 `paused`，是正常预激活态。G4 在六段 Gate 和受控 activation 前不得补数；
-   之后才可仅补 `weekly_10y_d_overlay_0529 / 10Y / h6 / predict_date=2026-08-01 / feature_date=2026-07-31 /
+   `legacy_operator_attestation_v1`；它不激活、不补数。初次 maintenance run
+   `hr_20260804T092226Z_5d84b9d45fd9` 因预激活 API 状态混同失败；修正后的
+   `hr_20260804T102103Z_91fa9e7db871` 已使 exact version `e50ad79a6c2f` 通过六段
+   `native-maintenance`。candidate 仍为 `native_adapter/draft`、Registry 统一 `paused`、目标预测数为 0；
+   下一步只能是独立授权的 activation，gap write 仍未授权。activation 后才可仅补
+   `weekly_10y_d_overlay_0529 / 10Y / h6 / predict_date=2026-08-01 / feature_date=2026-07-31 /
    target_date=2026-08-07 / gray_live`。不得改 Native core、调参、覆盖 source benchmark，
    或扩展补数范围。
 6. **G5 — 周/月自然调度**：形成独立 installed/loaded plist，并观察真实周六和自然月

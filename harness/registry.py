@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from harness.gates.api_gate import ApiGate
-from harness.gates.api_readiness_gate import ApiReadinessGate
+from harness.gates.api_readiness_gate import ApiReadinessGate, ApiReadinessProfile
 from harness.gates.backtest_gate import BacktestGate
 from harness.gates.base import Gate
 from harness.gates.compare_gate import CompareGate
@@ -82,7 +82,22 @@ def gate_for_name(name: str, *, ctx: GateContext | None = None) -> Gate:
 
 
 def gates_for_stage(stage: str, *, ctx: GateContext | None = None) -> list[Gate]:
-    return [gate_for_name(name, ctx=ctx) for name in sequence_for_stage(stage)]
+    normalized = stage.strip().lower()
+    gates: list[Gate] = []
+    for name in sequence_for_stage(stage):
+        if (
+            normalized == NATIVE_MAINTENANCE_STAGE
+            and name == "api-readiness"
+            and _runtime_type(ctx) == "native_adapter"
+        ):
+            gates.append(
+                ApiReadinessGate(
+                    profile=ApiReadinessProfile.NATIVE_MAINTENANCE_PRE_ACTIVATION
+                )
+            )
+        else:
+            gates.append(gate_for_name(name, ctx=ctx))
+    return gates
 
 
 def _runtime_type(ctx: GateContext | None) -> str:

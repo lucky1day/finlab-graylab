@@ -249,7 +249,7 @@ coverage floor 等只能作为新的 Blackbox 版本做 no-persist 消融，不�
 |---|---|
 | Base scheme | `weekly_10y_d_overlay_0529` |
 | 当前状态 | `ACCEPTED_RISK` |
-| G4 关系 | 该历史 benchmark 漂移不是当前 G4 的单独 blocker；G4 仍须处理 legacy prior `static.business_identity` 缺失的 fail-closed 前提 |
+| G4 关系 | 该历史 benchmark 漂移不是当前 G4 的单独 blocker；legacy prior identity 已由固定 scope receipt 补证，当前六段 maintenance 已通过，仍待独立 activation 与单键 gap write |
 
 ### 已验证事实与结论
 
@@ -264,15 +264,14 @@ coverage floor 等只能作为新的 Blackbox 版本做 no-persist 消融，不�
 oracle。硬红线为：**不得调算法贴旧 benchmark、不得重写 source benchmark、不得使用旧输入或
 generation fallback。**
 
-本项不授予 G4 activation、gap repair 或业务写库授权；当前 legacy prior admission 缺可比较的
-`static.business_identity` 快照，不能走 maintenance。当前 exact candidate 的 `t_scheme_versions` 为
-`native_adapter/draft` 且预期 Registry 统一 `paused`，这是正常预激活态，不是额外 blocker。除 current exact
-version 完整通过 `all`（含当前 Compare）再使用 `full_initial_onboarding_v1` 外，唯一已实现恢复路径是固定
-`weekly_10y_d_overlay_0529` 的专项 `native-legacy-admission-attest`：它只证明 maintenance 当前选择的
-prior `all + compare=passed` 与 frozen 10Y/h6/weekly-point 业务身份相同，要求已通过但明确缺 identity 字段的
-StaticGate、issuer/exact prior version/run 绑定的 ≤900 秒 token，并只写两张 Harness 控制面表。2026-08-04
-receipt `lna_hr_20260611T055610Z_8742d5bc99c9` 已写入并被 verifier 读回；下一步仍须六段 maintenance 与
-常规 activation，之后才能补写。
+本项不授予 G4 activation、gap repair 或业务写库授权。固定
+`weekly_10y_d_overlay_0529` 的专项 `native-legacy-admission-attest` 已证明 maintenance 当前选择的 prior
+`all + compare=passed` 与 frozen 10Y/h6/weekly-point 业务身份相同；其 receipt
+`lna_hr_20260611T055610Z_8742d5bc99c9` 已写入并被 verifier 读回。初次 maintenance run
+`hr_20260804T092226Z_5d84b9d45fd9` 因预激活 API 状态混同失败；修正后的
+`hr_20260804T102103Z_91fa9e7db871` 已使 exact version `e50ad79a6c2f` 的六个 Gate 全部通过。当前
+candidate 仍为 `native_adapter/draft`、Registry 统一 `paused`、目标业务键 prediction count 为 0；仅独立授权的
+activation 之后，才可按既有边界补写唯一 key。
 
 ## 后续追加模板
 

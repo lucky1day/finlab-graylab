@@ -41,6 +41,28 @@ class _CaptureEngine:
         self.disposed = True
 
 
+class _RecordingPassingGate:
+    def __init__(self, name: str, calls: list[str]) -> None:
+        self.name = name
+        self._calls = calls
+
+    def run(self, _ctx: GateContext) -> GateResult:
+        self._calls.append(self.name)
+        return GateResult(
+            gate_name=self.name,
+            status=GateStatus.PASSED,
+            passed=True,
+            evidence=[Evidence("gate_executed", self.name)],
+            errors=[],
+            started_at="2026-08-04T00:00:00+00:00",
+            finished_at="2026-08-04T00:00:01+00:00",
+        )
+
+
+def _result_evidence(result: GateResult) -> dict[str, object]:
+    return {item.key: item.value for item in result.evidence}
+
+
 class HarnessPersistenceTests(unittest.TestCase):
     def test_persistence_writes_only_harness_tables(self) -> None:
         from harness.persistence import (
@@ -301,6 +323,247 @@ class HarnessPersistenceTests(unittest.TestCase):
         finish.assert_called_once()
         self.assertFalse(report.check_only)
         self.assertTrue(report.control_plane_persisted)
+
+    def test_native_maintenance_start_persistence_failure_blocks_before_gates(self) -> None:
+        from harness.orchestrator import onboard
+
+        calls: list[str] = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ctx = GateContext(
+                scheme_id="native_daily",
+                predict_date="2026-08-04",
+                project_root=root,
+                report_dir=root / "reports",
+            )
+            with (
+                patch(
+                    "harness.orchestrator.persist_harness_run_start",
+                    return_value=False,
+                ) as start,
+                patch("harness.orchestrator.persist_harness_gate_result") as gate,
+                patch("harness.orchestrator.persist_harness_run_finish") as finish,
+            ):
+                report = onboard(
+                    ctx,
+                    stage=" Native-Maintenance ",
+                    gates=[_RecordingPassingGate("static", calls)],
+                )
+            disk_report = json.loads(
+                (ctx.report_dir / "onboard_report.json").read_text(encoding="utf-8")
+            )
+
+        start.assert_called_once()
+        gate.assert_not_called()
+        finish.assert_not_called()
+        self.assertEqual(calls, [])
+        self.assertFalse(report.overall_passed)
+        self.assertFalse(report.control_plane_persisted)
+        self.assertEqual([result.gate_name for result in report.results], ["control-plane-persistence"])
+        evidence = _result_evidence(report.results[0])
+        self.assertEqual(evidence["persistence_operation"], "run_start")
+        self.assertFalse(evidence["control_plane_persisted"])
+        self.assertFalse(disk_report["overall_passed"])
+        self.assertFalse(disk_report["control_plane_persisted"])
+
+    def test_native_maintenance_gate_persistence_failure_stops_and_closes_failed(self) -> None:
+        from harness.orchestrator import onboard
+
+        calls: list[str] = []
+        gate_names = ["static", "native-maintenance-admission", "input"]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ctx = GateContext(
+                scheme_id="native_daily",
+                predict_date="2026-08-04",
+                project_root=root,
+                report_dir=root / "reports",
+            )
+            with (
+                patch(
+                    "harness.orchestrator.persist_harness_run_start",
+                    return_value=True,
+                ),
+                patch(
+                    "harness.orchestrator.persist_harness_gate_result",
+                    side_effect=[True, False],
+                ) as persist_gate,
+                patch(
+                    "harness.orchestrator.persist_harness_run_finish",
+                    return_value=True,
+                ) as finish,
+            ):
+                report = onboard(
+                    ctx,
+                    stage="native-maintenance",
+                    gates=[_RecordingPassingGate(name, calls) for name in gate_names],
+                )
+            disk_report = json.loads(
+                (ctx.report_dir / "onboard_report.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(calls, gate_names[:2])
+        self.assertEqual(persist_gate.call_count, 2)
+        finish.assert_called_once()
+        self.assertEqual(finish.call_args.kwargs["status"], "failed")
+        self.assertFalse(report.overall_passed)
+        self.assertFalse(report.control_plane_persisted)
+        self.assertEqual(
+            [result.gate_name for result in report.results],
+            [*gate_names[:2], "control-plane-persistence"],
+        )
+        evidence = _result_evidence(report.results[-1])
+        self.assertEqual(evidence["persistence_operation"], "gate_result")
+        self.assertEqual(evidence["persistence_gate_name"], gate_names[1])
+        self.assertFalse(disk_report["overall_passed"])
+        self.assertFalse(disk_report["control_plane_persisted"])
+
+    def test_native_maintenance_finish_persistence_failure_overwrites_local_report(self) -> None:
+        from harness.orchestrator import onboard
+
+        calls: list[str] = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ctx = GateContext(
+                scheme_id="native_daily",
+                predict_date="2026-08-04",
+                project_root=root,
+                report_dir=root / "reports",
+            )
+            with (
+                patch(
+                    "harness.orchestrator.persist_harness_run_start",
+                    return_value=True,
+                ),
+                patch(
+                    "harness.orchestrator.persist_harness_gate_result",
+                    return_value=True,
+                ),
+                patch(
+                    "harness.orchestrator.persist_harness_run_finish",
+                    side_effect=[False, True],
+                ) as finish,
+            ):
+                report = onboard(
+                    ctx,
+                    stage="native-maintenance",
+                    gates=[_RecordingPassingGate("static", calls)],
+                )
+            disk_report = json.loads(
+                (ctx.report_dir / "onboard_report.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(calls, ["static"])
+        self.assertEqual(finish.call_count, 2)
+        self.assertEqual(finish.call_args_list[0].kwargs["status"], "passed")
+        self.assertEqual(finish.call_args_list[1].kwargs["status"], "failed")
+        self.assertFalse(report.overall_passed)
+        self.assertFalse(report.control_plane_persisted)
+        evidence = _result_evidence(report.results[-1])
+        self.assertEqual(evidence["persistence_operation"], "run_finish")
+        self.assertFalse(disk_report["overall_passed"])
+        self.assertFalse(disk_report["control_plane_persisted"])
+
+    def test_native_maintenance_happy_path_persists_all_six_gate_records(self) -> None:
+        from harness.gates.native_maintenance_admission_gate import (
+            NATIVE_MAINTENANCE_STAGE,
+            NATIVE_MAINTENANCE_SEQUENCE,
+        )
+        from harness.orchestrator import onboard
+
+        calls: list[str] = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ctx = GateContext(
+                scheme_id="native_daily",
+                predict_date="2026-08-04",
+                project_root=root,
+                report_dir=root / "reports",
+            )
+            with (
+                patch(
+                    "harness.orchestrator.persist_harness_run_start",
+                    return_value=True,
+                ) as start,
+                patch(
+                    "harness.orchestrator.persist_harness_gate_result",
+                    return_value=True,
+                ) as persist_gate,
+                patch(
+                    "harness.orchestrator.persist_harness_run_finish",
+                    return_value=True,
+                ) as finish,
+            ):
+                report = onboard(
+                    ctx,
+                    stage=" Native-Maintenance ",
+                    gates=[
+                        _RecordingPassingGate(name, calls)
+                        for name in NATIVE_MAINTENANCE_SEQUENCE
+                    ],
+                )
+            disk_report = json.loads(
+                (ctx.report_dir / "onboard_report.json").read_text(encoding="utf-8")
+            )
+
+        start.assert_called_once()
+        self.assertEqual(
+            start.call_args.kwargs["stage"],
+            NATIVE_MAINTENANCE_STAGE,
+        )
+        self.assertEqual(calls, list(NATIVE_MAINTENANCE_SEQUENCE))
+        self.assertEqual(
+            [result.gate_name for result in report.results],
+            list(NATIVE_MAINTENANCE_SEQUENCE),
+        )
+        self.assertEqual(persist_gate.call_count, len(NATIVE_MAINTENANCE_SEQUENCE))
+        finish.assert_called_once()
+        self.assertEqual(finish.call_args.kwargs["status"], "passed")
+        self.assertTrue(report.overall_passed)
+        self.assertTrue(report.control_plane_persisted)
+        self.assertTrue(disk_report["overall_passed"])
+        self.assertTrue(disk_report["control_plane_persisted"])
+
+    def test_ordinary_stage_retains_json_only_persistence_degradation(self) -> None:
+        from harness.orchestrator import onboard
+
+        calls: list[str] = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ctx = GateContext(
+                scheme_id="demo_daily",
+                predict_date="2026-08-04",
+                project_root=root,
+                report_dir=root / "reports",
+            )
+            with (
+                patch(
+                    "harness.orchestrator.persist_harness_run_start",
+                    return_value=False,
+                ),
+                patch(
+                    "harness.orchestrator.persist_harness_gate_result",
+                    return_value=False,
+                ),
+                patch(
+                    "harness.orchestrator.persist_harness_run_finish",
+                    return_value=False,
+                ),
+            ):
+                report = onboard(
+                    ctx,
+                    stage="all",
+                    gates=[_RecordingPassingGate("static", calls)],
+                )
+            disk_report = json.loads(
+                (ctx.report_dir / "onboard_report.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(calls, ["static"])
+        self.assertTrue(report.overall_passed)
+        self.assertTrue(report.control_plane_persisted)
+        self.assertTrue(disk_report["overall_passed"])
+        self.assertTrue(disk_report["control_plane_persisted"])
 
     def test_check_only_programmatic_entrypoint_rejects_side_effect_context(self) -> None:
         from harness.orchestrator import onboard

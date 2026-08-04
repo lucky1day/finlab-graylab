@@ -357,7 +357,7 @@ Do not merge or push. Do not stage `outputs/`, `docs/records/status/KNOWN_ISSUES
 
 - [x] **Step 3: Historical stop condition, superseded by the separately authorized Task 5 receipt.**
 
-This was the pre-attestation fallback. It remains valid for all other legacy snapshots, but is no longer the only G4 path: the fixed `weekly_10y_d_overlay_0529` receipt was successfully executed on 2026-08-04, and the normal six-Gate maintenance route is now the next G4 control-plane step.
+This was the pre-attestation fallback. It remains valid for all other legacy snapshots, but is no longer the only G4 path: the fixed `weekly_10y_d_overlay_0529` receipt was successfully executed on 2026-08-04. The first maintenance attempt `hr_20260804T092226Z_5d84b9d45fd9` exposed preactivation API lifecycle conflation; after the narrow API/persistence correction, exact version `e50ad79a6c2f` passed all six Gates in `hr_20260804T102103Z_91fa9e7db871`. The next G4 control-plane step is activation, which remains unapproved and requires separate authorization.
 
 ```bash
 python -m harness onboard weekly_10y_d_overlay_0529 --predict-date 2026-08-01 --stage all --project-root .
@@ -365,9 +365,9 @@ python -m harness onboard weekly_10y_d_overlay_0529 --predict-date 2026-08-01 --
 
 Before granting activation, either use a current full `all` as `full_initial_onboarding_v1`, or (for this G4 scope, after the completed Task 5 receipt) the six required maintenance Gates as `native_post_admission_revision_v1`. In either case, preserve the exact 2026-08-01/2026-07-31/2026-08-07 date contract. Neither route authorizes an activation or business write by itself.
 
-- [ ] **Step 4: After the passed full-`all` path, activate the exact validated version under the existing authorization protocol.**
+- [ ] **Step 4: After the passed maintenance path, activate the exact validated version under the existing authorization protocol.**
 
-Issue an `activate` token bound to the exact `scheme_version` returned by the stage, run `python -m harness activate` with that token, and inspect its result. It must report `validation_profile=full_initial_onboarding_v1`, the current full-`all` run ID, `benchmark_validation=passed_initial_admission`, and a successful exact Registry/version readback. Do not run launchd, alter installed plists, restart backend, or write predictions during this step.
+Issue an `activate` token bound to exact version `e50ad79a6c2f`, run `python -m harness activate` with that token, and inspect its result. It must report `validation_profile=native_post_admission_revision_v1`, maintenance run `hr_20260804T102103Z_91fa9e7db871`, `benchmark_validation=not_run_post_admission`, and a successful exact Registry/version readback. Do not run launchd, alter installed plists, restart backend, or write predictions during this step.
 
 - [ ] **Step 5: Only after activation, freeze, authorize, and fill the G4 key.**
 

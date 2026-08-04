@@ -99,10 +99,11 @@ G4 不豁免 benchmark。当前 legacy prior admission 缺少可比较的持久�
 `static.business_identity`，但满足上述专项 attestation 的唯一 scope：旧版 `63ffb52105ee` 的
 最新 passed `all` run `hr_20260611T055610Z_8742d5bc99c9`。2026-08-04 已写入唯一 receipt
 `lna_hr_20260611T055610Z_8742d5bc99c9` 并由 maintenance verifier 读回为
-`legacy_operator_attestation_v1`；之后仍必须运行完整六段
-`native-maintenance`、使用独立的 current-version activation token，并通过 ActivationGate；其
-current exact `t_scheme_versions` 是 `native_adapter/draft`，expected Registry 统一为 `paused`，
-这是正常预激活态，不是额外 blocker。full-`all` 仍是可用的互斥初始入库路径，但不会因
+`legacy_operator_attestation_v1`；初次 maintenance run `hr_20260804T092226Z_5d84b9d45fd9` 因
+预激活 API 状态混同失败，修正后 current exact version `e50ad79a6c2f` 的
+`hr_20260804T102103Z_91fa9e7db871` 已通过完整六段 `native-maintenance`。仍须使用独立的
+current-version activation token 并通过 ActivationGate；candidate 是 `native_adapter/draft`，expected
+Registry 统一为 `paused`，这是正常预激活态，不是额外 blocker。full-`all` 仍是可用的互斥初始入库路径，但不会因
 attestation 被伪称为已通过。只有 attestation、maintenance 和修订版本 activation 均完成后，才可
 使用现有 signal-gap 路径对唯一业务键补数：
 
@@ -138,5 +139,5 @@ authority、单方案 HMAC 授权以及输出日期/target contract。写入后�
    attestation receipt 可作为 identity evidence，其余情形仍只能完整 `all`。
 3. Blackbox `all` 与 CompareGate 行为不变。
 4. 2026-08-01 G4 no-write 输出仍遵守统一周历和 exact date contract；在专项 receipt、六段
-   maintenance 和 activation 均通过前不得实际写入。之后实际写入只在用户已授权的单一
+   maintenance 和 activation 均通过前不得实际写入。该六段 run 已通过，但实际写入仍只在用户已授权的单一
    `gray_live` business key 上发生，并可读回。
