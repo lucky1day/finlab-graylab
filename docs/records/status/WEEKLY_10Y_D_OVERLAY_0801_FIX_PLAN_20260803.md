@@ -1,12 +1,12 @@
 # 生产信号与调度治理调研及分阶段计划（2026-08-03）
 
-**文档状态**：`RESEARCHED / GOVERNANCE PLAN / NEW-SESSION HANDOFF`
+**文档状态**：`ACTIVE GOVERNANCE PLAN / NEW-SESSION HANDOFF`
 
 **适用分支**：`codex/audit-bugfixes-20260613`
 
 **总体目标**：第一优先把新交付的两套 7Y T+1 方案放入灰度实验室并做到前端可见；随后回到最基本的生产要求——在正确的数据截止条件下，每个应运行的方案按时且只产生一次信号，失败时明确告警，不用旧数据伪装成功。
 
-**本轮边界**：本文只固化调研结论、治理顺序和验收口径。本轮没有修改数据库、installed plist、`launchctl` 状态或生产信号，也没有授权发布到 `master`。
+**初始调研边界（2026-08-03）**：本文最初只固化调研结论、治理顺序和验收口径；后续受控生产动作、授权和现场证据均以各阶段执行记录为准。当前仍不得把未经过自然时钟的挂载状态混同为生产闭环。
 
 > **给新会话的首要说明**：本文不是代码实现说明。开始每个阶段前，模型必须重新检查现场，再基于当时的代码选择最小实现；不得把 2026-08-03 的数量、hash 或 loaded state 当作永久事实。
 
@@ -88,10 +88,10 @@
 | G0 | 统一文档和治理口径 | **完成（开发分支）**：CURRENT 文档、SOP、部署说明和文档测试已收敛到 launchd-only 单 writer 口径；未修改 installed plist 或 loaded state |
 | G1 | 恢复本机 MySQL → DataBridge 的可靠刷新 | **受控 publish/retry 已闭环**：sealed local MySQL current 与 V2 ready Gate 已读回；待自然时钟观察 |
 | G2 | 收敛为 launchd-only 单 writer 调度 | **已受控切换**：旧 scheduler/daily-gray/v2-preflight 已退出，四个 one-shot label 已 loaded；待自然时钟观察 |
-| G3 | 补齐 8 月 3 日日频缺口 | **进行中**：`t1_daily` 已 full onboarding + activation；实时计划为 15 个 `gray_live` 缺口 / 14 个原子组，待按冻结计划补写 |
+| G3 | 补齐 8 月 3 日日频缺口 | **完成**：15 个 `gray_live` 缺口已按 14 个冻结原子组回补；最终 T+1 `10/10`、T+5 `24/24`，DB、served API 与 Dashboard 均已读回 |
 | G4 | 闭环 D-overlay 8 月 1 日缺口 | **完成：fixed receipt、六段 `native-maintenance`、独立 activation 与受控 signal-gap fill 均已闭环；run `2106` 写入唯一 `gray_live` key，DB、served API 与 dashboard 均已读回** |
-| G5 | 挂载并验证周度、月度自然调度 | **方案存在，独立 plist 尚未形成生产证据** |
-| G6 | 完成 P0 生产观察闭环 | **未开始** |
+| G5 | 挂载并验证周度、月度自然调度 | **已挂载，等待首次自然 weekly/monthly 触发证据** |
+| G6 | 完成 P0 生产观察闭环 | **观察中**：仍缺完整 natural daily/weekly/monthly 三频周期证据 |
 | G7 | 收敛 Native 版本模型 | **P1，未开始** |
 | G8 | 删除 legacy/ledger/旧调度债务 | **P2，须在 P0 稳定后开始** |
 
@@ -410,7 +410,7 @@ P0 可以暂时保留底层 `legacy` 环境开关，以兼容现有 executor/rep
 
 8 月 3 日初次审计时，T+1 为 3/8、T+5 为 16/24，共缺 13 个业务 target。11 个由 DataBridge 失败造成；另外 2 个是 `t1_daily` 的 5Y/10Y，因当时当前精确版本未激活而被门禁拦截。
 
-**状态：当前缺口已可执行，但尚未补齐。** 13 只是历史快照。2026-08-04 在 DataBridge strict current 发布、G2 单 writer 切换及 `t1_daily` 激活后，重新计划得到日频 T+1=10、T+5=24，共 34 个应发 target；19 个已存在，15 个 `gray_live` 缺口构成 14 个原子算法组。执行只能使用该次冻结计划，不能沿用旧名单或缩小组范围。
+**状态：已闭环。** 13 只是历史快照。2026-08-04 在 DataBridge strict current 发布、G2 单 writer 切换及 `t1_daily` 激活后，重新计划得到日频 T+1=10、T+5=24，共 34 个应发 target；19 个已存在，15 个 `gray_live` 缺口构成 14 个原子算法组。所有 14 组均按冻结计划完成，最终为 34/34 present、0 个 `GRAY_LIVE_GAP`；这不替代后续自然 `scheduled_live` 验收。
 
 ### 造成的影响
 
@@ -454,6 +454,24 @@ P0 可以暂时保留底层 `legacy` 环境开关，以兼容现有 executor/rep
 - 本记录不等于历史补数或自然调度恢复。下一步仍须在临近执行时重新冻结同一窗口计划，并为 14 个
   `(base_scheme_id, predict_date)` 原子组签发各自绑定 plan SHA、exact version、完整 target multiset 与
   source authority 的一次性 `signal_gap_fill_write` token；fill 只写 `gray_live`，不触发 launchd。
+
+### G3 受控补写与读回记录（2026-08-04 至 2026-08-05）
+
+- 经逐组授权，14 个冻结原子组写为 runs `2121` 至 `2134`：13 个 Blackbox 单 target run 与
+  `t1_daily` 的一个双 target Native run `2128`，合计新增 15 条 `gray_live` prediction。初始失败的
+  runs `2107` 至 `2120` 保留为历史审计证据，未被改写或删除。
+- 写后重新生成同一业务窗口的只读计划，日频 T+1 为 `10/10`、T+5 为 `24/24`，共 `34/34` present；
+  无 `GRAY_LIVE_GAP` 或 live blocker。所有补写仍为 `gray_live`，没有产生 `scheduled_live` 或调用
+  launchd runner。
+- 对 13 个已成功 Blackbox run 发现的历史 `t_scheme_runs.data_snapshot_id` 缺失，仅以其既存
+  canonical request、exact active version、完整 record count 和唯一 snapshot 进行受控 provenance
+  回填；不修改 prediction、Registry、version 或业务键。新写路径已在同一事务中绑定 run snapshot，
+  并以预测日期与 run 日期一致性 fail-closed。
+- 2026-08-05 经独立授权受控重启 backend 后，`one_y_t1_quote_state_hv_v1` 的 formal served-API Gate
+  通过：实例 fingerprint 精确匹配当前服务，health/schemes/metrics/backtest 均为 HTTP 200，Registry、
+  45 条 live rows、backtest 与 current snapshot 均可读。`/api/factor-lab/dashboard` 同时读到该 1Y
+  identity 与 `weekly_10y_d_overlay_0529__h6__10Y`，响应为 fresh 51,171 bytes。这证明 G3 的
+  DB/API/页面读回闭环，不外推为自然调度证据。
 
 ---
 
@@ -502,7 +520,10 @@ P0 可以暂时保留底层 `legacy` 环境开关，以兼容现有 executor/rep
 
 周度 14 个、月度 8 个 active execution 已能被代码发现，但当时只由旧常驻 APScheduler 负责触发；用户需要的独立 launchd plist 尚未形成 installed/loaded/observed 证据。用户观察到 7 月 31 日可能缺失，也说明不能只看“配置里有 cron”。
 
-**状态：方案集合存在，生产挂载和缺口完整性尚未闭环。**
+**状态：已挂载、自然时钟观察待完成。** 2026-08-05 只读现场核对确认 weekly/monthly 的 installed
+plist 与仓库模板一致并已 loaded；两者仍为 `runs=0`、`last exit=(never exited)`，所以不能称为
+生产闭环。8 月 1 日周度只读完整性计划为 14/14 `SKIP_PRESENT`、0 open gap、0 blocker，没有可在
+当前时点扩大为历史补写的事项。
 
 ### 造成的影响
 
@@ -530,7 +551,10 @@ P0 可以暂时保留底层 `legacy` 环境开关，以兼容现有 executor/rep
 
 单项代码通过不能证明整条生产链稳定。DataBridge、daily、weekly、monthly、actuals、API/页面和日志必须共同经过真实时钟验证。
 
-**状态：未开始。** G1–G5 尚未全部达到生产闭环。
+**状态：观察中。** 2026-08-05 只读现场确认 DataBridge、daily、weekly、monthly 均为新的 loaded
+one-shot，旧 scheduler/daily-gray/v2-preflight 均未 loaded 且 installed template 为 `Disabled=true`；
+DataBridge 的两次成功运行均为受控 kickstart，daily/weekly/monthly 尚无自然执行，不能计入本 Gate。
+actuals 已在切换后自然成功一次，但 G1–G5 尚未全部达到生产闭环。
 
 ### 造成的影响
 
@@ -549,7 +573,7 @@ P0 可以暂时保留底层 `legacy` 环境开关，以兼容现有 executor/rep
 - DataBridge 失败演练能够 fail-closed，且不会自动使用 stale artifact。
 - 回退只涉及 control-plane，不删除 predictions、runs、versions 或 artifact；回退步骤已经过只读审查。
 
-达到以上条件后，P0 才能标记为完成。此时只允许在当前开发分支提交；合并或推送 `master` 仍需用户另行明确确认。
+达到以上条件后，P0 才能标记为完成。用户已于 2026-08-05 明确授权：届时在当前开发分支完成验证与阶段提交后，可将精确候选以非强制 fast-forward 同步到 `master`，并推送开发分支与 `master`；在自然时钟证据齐备前不得提前执行该发布动作。
 
 ---
 
@@ -628,4 +652,4 @@ Native hash 当前覆盖完整 config 和文件文本，展示、状态、schedu
 
 ## 16. 下一步
 
-P-1 的已授权算法、数据、Dashboard 和 served-API 闭环工作以及 G0 文档统一已完成；G4 的固定 10Y canonical receipt、六段 `native-maintenance`、独立 activation 与唯一 `gray_live` key 的 run `2106` 亦已闭环。G1 已在新的单次授权中成功发布并通过 strict read/V2 ready Gate，G2 的 installed 控制面也已按授权切换，`t1_daily` 也已完成 full onboarding 与 activation。下一步先按最新冻结计划完成 G3 的受控 `gray_live` 补写与 DB/API/页面读回；其后只观察各频率的自然时钟证据，进入 G5/G6。任何 gray fill 或 formal API 通过都不外推为自然调度、生产稳定证据或 installed 控制面授权。
+P-1 的已授权算法、数据、Dashboard 和 served-API 闭环工作以及 G0 文档统一已完成；G3 的受控 `gray_live` 回补与 DB/API/页面读回亦已闭环，G4 的固定 10Y canonical receipt、六段 `native-maintenance`、独立 activation 与唯一 `gray_live` key 的 run `2106` 已完成。G1 已在新的单次授权中成功发布并通过 strict read/V2 ready Gate，G2 的 installed 控制面也已按授权切换。下一步只观察各频率的自然时钟证据，完成 G5/G6；在此之前不得启动 G7/G8、扩大 7Y scheduler admission，或把 gray/API 证据混同为生产稳定。G5/G6 完成后，按已授予权限进行最终验证、阶段提交、`master` fast-forward 与双分支远程推送。
