@@ -86,6 +86,11 @@ def refresh_current(
     config: DataBridgeRefreshConfig,
 ):
     """仅通过本机 MySQL source 完成完整 DataBridge refresh。"""
+    allow_legacy_v1_period_fallback = (
+        publish
+        and os.getenv(LAUNCHD_PUBLISHER_ENV)
+        == LAUNCHD_PUBLISHER_VALUE
+    )
     engine = create_sqlalchemy_engine()
     try:
         continuity_authority = (
@@ -93,6 +98,9 @@ def refresh_current(
                 config,
                 feature_date=expected_feature_date,
                 engine=engine,
+                allow_legacy_v1_period_fallback=(
+                    allow_legacy_v1_period_fallback
+                ),
             )
         )
         return run_full_refresh(

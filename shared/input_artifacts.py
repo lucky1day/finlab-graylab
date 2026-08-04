@@ -952,8 +952,48 @@ def _resolve_blackbox_input_cutoffs_bulk_from_keys(
     feature_dates: Iterable[str],
     connection: Any,
     schema_path: str | Path = BLACKBOX_SCHEMA_PATH,
+    allow_legacy_v1_period_fallback: bool = False,
 ) -> dict[str, CutoffKeys]:
-    """使用已冻结 key 集合和 caller Connection 批量解析截止键。"""
+    """使用已冻结 key 集合和 caller Connection 批量解析有效截止键。"""
+    resolved = _resolve_blackbox_input_cutoffs_with_source_keys_bulk_from_keys(
+        snapshot_keys,
+        feature_dates=feature_dates,
+        connection=connection,
+        schema_path=schema_path,
+        allow_legacy_v1_period_fallback=allow_legacy_v1_period_fallback,
+    )
+    return {
+        feature_date: item.cutoff_keys
+        for feature_date, item in resolved.items()
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedPeriodCutoff:
+    """同一 source snapshot 内的 exact key 与实际连续性 key。"""
+
+    source_key: str
+    effective_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedBlackboxInputCutoffs:
+    """保留 authority 所需 source period key，外部仍只接收 CutoffKeys。"""
+
+    cutoff_keys: CutoffKeys
+    source_weekly_cutoff_key: str
+    source_monthly_cutoff_key: str
+
+
+def _resolve_blackbox_input_cutoffs_with_source_keys_bulk_from_keys(
+    snapshot_keys: Mapping[str, Any],
+    *,
+    feature_dates: Iterable[str],
+    connection: Any,
+    schema_path: str | Path = BLACKBOX_SCHEMA_PATH,
+    allow_legacy_v1_period_fallback: bool = False,
+) -> dict[str, _ResolvedBlackboxInputCutoffs]:
+    """解析有效 cutoff，并保留 fallback 前的 source weekly/monthly key。"""
     normalized_dates = list(dict.fromkeys(
         _normalize_feature_date(value) for value in feature_dates
     ))
@@ -1014,6 +1054,9 @@ def _resolve_blackbox_input_cutoffs_bulk_from_keys(
         key_column="week_id",
         available_keys=snapshot_keys["week_id"],
         filename="weekly_output.csv",
+        allow_legacy_v1_period_fallback=(
+            allow_legacy_v1_period_fallback
+        ),
     )
     monthly_by_date = _resolve_period_cutoffs_bulk(
         normalized_dates,
@@ -1021,16 +1064,25 @@ def _resolve_blackbox_input_cutoffs_bulk_from_keys(
         key_column="month_id",
         available_keys=snapshot_keys["month_id"],
         filename="monthly_output.csv",
+        allow_legacy_v1_period_fallback=(
+            allow_legacy_v1_period_fallback
+        ),
     )
-    resolved: dict[str, CutoffKeys] = {}
+    resolved: dict[str, _ResolvedBlackboxInputCutoffs] = {}
     for feature_date in normalized_dates:
         daily_position = bisect_right(daily_dates, feature_date)
         if daily_position == 0:
             raise ValueError(f"daily snapshot has no row on or before {feature_date}")
-        resolved[feature_date] = CutoffKeys(
-            daily_cutoff_key=daily_dates[daily_position - 1],
-            weekly_cutoff_key=weekly_by_date[feature_date],
-            monthly_cutoff_key=monthly_by_date[feature_date],
+        weekly = weekly_by_date[feature_date]
+        monthly = monthly_by_date[feature_date]
+        resolved[feature_date] = _ResolvedBlackboxInputCutoffs(
+            cutoff_keys=CutoffKeys(
+                daily_cutoff_key=daily_dates[daily_position - 1],
+                weekly_cutoff_key=weekly.effective_key,
+                monthly_cutoff_key=monthly.effective_key,
+            ),
+            source_weekly_cutoff_key=weekly.source_key,
+            source_monthly_cutoff_key=monthly.source_key,
         )
     return resolved
 
@@ -1070,7 +1122,8 @@ def _resolve_period_cutoffs_bulk(
     key_column: str,
     available_keys: set[str],
     filename: str,
-) -> dict[str, str]:
+    allow_legacy_v1_period_fallback: bool = False,
+) -> dict[str, _ResolvedPeriodCutoff]:
     required = {key_column, "available_date"}
     if index.empty or not required.issubset(index.columns):
         raise ValueError(f"platform as-of data has no {key_column}")
@@ -1081,7 +1134,7 @@ def _resolve_period_cutoffs_bulk(
         )
         for value, key in zip(index["available_date"], index[key_column])
     )
-    result: dict[str, str] = {}
+    result: dict[str, _ResolvedPeriodCutoff] = {}
     latest: str | None = None
     position = 0
     for feature_date in sorted(feature_dates):
@@ -1091,11 +1144,22 @@ def _resolve_period_cutoffs_bulk(
             position += 1
         if latest is None:
             raise ValueError(f"platform as-of data has no {key_column} for {feature_date}")
-        if latest not in available_keys:
-            raise ValueError(
-                f"platform {key_column} cutoff {latest} does not exist in {filename}"
-            )
-        result[feature_date] = latest
+        selected = latest
+        if selected not in available_keys:
+            if allow_legacy_v1_period_fallback:
+                prior_keys = [
+                    key for key in available_keys if key <= selected
+                ]
+                if prior_keys:
+                    selected = max(prior_keys)
+            if selected not in available_keys:
+                raise ValueError(
+                    f"platform {key_column} cutoff {latest} does not exist in {filename}"
+                )
+        result[feature_date] = _ResolvedPeriodCutoff(
+            source_key=latest,
+            effective_key=selected,
+        )
     return result
 
 

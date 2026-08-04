@@ -86,8 +86,8 @@
 |---|---|---|
 | P-1 | 两套 7Y T+1 方案进入灰度实验室并前端可见 | **授权范围闭环完成**：本地 v2 已全 Gate、入库、历史回补、Dashboard 读回和 formal served-API Gate；未授予 scheduler admission，`scheduled_live=0` |
 | G0 | 统一文档和治理口径 | **完成（开发分支）**：CURRENT 文档、SOP、部署说明和文档测试已收敛到 launchd-only 单 writer 口径；未修改 installed plist 或 loaded state |
-| G1 | 恢复本机 MySQL → DataBridge 的可靠刷新 | **开发闭环完成，待 G2 生产挂载与真实时钟观察** |
-| G2 | 收敛为 launchd-only 单 writer 调度 | **开发闭环完成：仓库 one-shot 模板、writer 边界与回归已就绪；未安装、未切换、未观察真实时钟** |
+| G1 | 恢复本机 MySQL → DataBridge 的可靠刷新 | **已受控挂载；首次 launchd publish 在旧 v1 周度边界安全失败，最小修复已完成开发验证；待新的单次 publish 授权与真实时钟观察** |
+| G2 | 收敛为 launchd-only 单 writer 调度 | **已受控切换：旧 scheduler/daily-gray/v2-preflight 已退出，新的四个 one-shot label 已 loaded；待 G1 成功 refresh 与自然时钟观察** |
 | G3 | 补齐 8 月 3 日日频缺口 | **缺口已定位，等待 G1/G2 与生产授权** |
 | G4 | 闭环 D-overlay 8 月 1 日缺口 | **完成：fixed receipt、六段 `native-maintenance`、独立 activation 与受控 signal-gap fill 均已闭环；run `2106` 写入唯一 `gray_live` key，DB、served API 与 dashboard 均已读回** |
 | G5 | 挂载并验证周度、月度自然调度 | **方案存在，独立 plist 尚未形成生产证据** |
@@ -289,7 +289,7 @@ installed plist、`launchctl` state、数据库或生产信号。
 
 现有生产刷新路径依赖 HTTP DataBridge；8 月 3 日该服务无法连接其上游 MySQL，导致当日 artifact 未发布。用户已明确 DataBridge 的本质就是从本机 MySQL 导出，本机必要源表已确认可读。
 
-**状态：开发闭环完成，尚未形成新的生产刷新闭环。** 现有旧 artifact 的数据截止到 7 月 31 日并不异常，异常的是 8 月 3 日没有新的 refresh publication。新的本机路径尚未 real publish、未替换 installed plist，因而不能把单测通过写成生产已恢复。
+**状态：已受控挂载，尚未形成新的生产刷新闭环。** 2026-08-04 已按专项授权安装并加载本机 MySQL DataBridge one-shot；首次且仅一次受控 `kickstart` 以 `feature_date=2026-08-03` 运行。它在旧 v1 current 的周度 key `202629` 与本机 source exact key `202630` 不一致处安全失败，未发布新 current、未写预测，旧 current 保持不变。失败证明新鲜度门禁仍有效，不构成生产恢复。第二次 publish/retry 必须取得新的专项授权。
 
 ### 造成的影响
 
@@ -321,6 +321,13 @@ installed plist、`launchctl` state、数据库或生产信号。
   `154 passed, 151 warnings, 36 subtests passed`。没有执行真实 `--publish`、installed plist 变更、`launchctl`、服务重启、数据库写入或预测补数。
 - `SourceCommitEvidence` 证明的是同一一致性快照和可用 create-time/metadata 水位；当前通用因子表证据不声称检测 `create_time` 不变的原地更新，后续如需该性质必须先完成字段能力审计。
 
+### G1 受控挂载与边界修复记录（2026-08-04）
+
+- installed `com.bond-factor-lab.data-bridge-refresh` 已 loaded；首次运行的日志仅记录脱敏失败类别，且 `v2_scheduler_gate/2026-08-04.json` 保持 `blocked`。现场只读核对确认 source 同一 RR snapshot 可解析 weekly `202630`、monthly `202608`，但旧 v1 current 的 weekly max 为 `202629`；这正是首次发布被拒绝的原因。
+- 为修复这一**旧 v1 迁移边界**，连续性 authority 仅在 verified v1 manifest、`publish=True` 且 `BFL_DATABRIDGE_PRODUCER=launchd-one-shot` 时允许周/月向后选择不前跳的 predecessor。普通 dry-run、harness 与 sealed v2 current 仍严格要求 exact key。
+- authority 会同时冻结 fallback 前 source exact weekly/monthly key 并绑定其摘要；稳定候选选定后、state 构造及 publish 之前必须实际包含该 key。这样既不强留旧 current 的 future-labelled monthly key，也不会把仍缺 `202630` 的候选发布成新的 v2 current。
+- 开发验证使用 `bond_factor_lab_service` Python 3.12：372 个 DataBridge、input-artifact、launchd 和 scheduler 相关测试通过；默认 Python 3.13 因缺少 `apscheduler` 无法导入 `scheduler.main`，不作为代码回归依据。未执行第二次 `kickstart`、publish、预测写入或任何其它生产副作用。
+
 ---
 
 ## 8. G2 — 收敛 launchd-only 单 writer 调度
@@ -329,7 +336,7 @@ installed plist、`launchctl` state、数据库或生产信号。
 
 8 月 3 日现场同时存在 daily-gray 和一个未随源码更新而重启的常驻 scheduler；两者均可能写日频。actuals 也由常驻 scheduler 与独立 plist 重复触发。周/月仍依赖常驻 APScheduler，尚未由独立 plist 承担。
 
-**状态：目标拓扑已确定，生产现场尚未切换。** 仓库 plist 的存在不代表已经安装或 loaded，最终事实只能看 installed plist、`launchctl` 和实际日志。
+**状态：受控切换已完成，尚未形成真实时钟闭环。** 2026-08-04 已以 installed plist 和 `launchctl` 现场状态为准：旧 `com.bond-factor-lab.scheduler`、`com.bond-factor-lab.daily-gray`、`com.bond-factor-lab.v2-preflight` 均已 bootout，installed template 已置 `Disabled=true`；新的 `data-bridge-refresh`、`daily-predictions`、`weekly-predictions`、`monthly-predictions` 均已 loaded 且尚无自然执行。既有 `actuals` 保持 loaded、最后退出为 0。这只证明控制面已切换，不证明 DataBridge、预测或周/月任务已在真实时钟成功运行。
 
 ### 造成的影响
 
@@ -386,6 +393,12 @@ P0 可以暂时保留底层 `legacy` 环境开关，以兼容现有 executor/rep
   日志、run 和 prediction 的一致性观察证明。
 - 本记录只说明开发分支代码/模板与测试。没有执行 real publish、installed plist 修改、`launchctl`、服务
   restart、`scheduled_live`、Registry 变更或 G3 历史补数。
+
+### G2 受控切换记录（2026-08-04）
+
+- 切换前已保存 installed plist 备份；旧 writer label 已从 loaded state 移除，不能再与新的 cadence one-shot 并发写同一业务键。该切换不修改算法、Registry、历史预测或 actuals 数据。
+- 因 G1 首次 DataBridge publish 按门禁失败，daily/weekly/monthly 尚未经过自然时钟。它们的 `runs=0` 不是缺陷结论，只表示尚无可作为生产闭环证据的自然执行。
+- 下一生产动作只能是新的、明确授权的一次 DataBridge publish/retry；成功后再分别观察 DataBridge、daily、weekly、monthly 和 actuals 的日志、run、prediction 与 API/页面读回，不能用手工补跑代替自然时钟证据。
 
 ---
 
@@ -608,4 +621,4 @@ Native hash 当前覆盖完整 config 和文件文本，展示、状态、schedu
 
 ## 16. 下一步
 
-P-1 的已授权算法、数据、Dashboard 和 served-API 闭环工作以及 G0 文档统一已完成；G4 的固定 10Y canonical receipt、六段 `native-maintenance`、独立 activation 与唯一 `gray_live` key 的 run `2106` 亦已闭环。下一步仍是 G1/G2 的 launchd-only 单 writer 开发与只读现场核对，随后才是 G3/G5/G6。G4 的 `gray_live` 或 formal API 通过不外推为自然调度、生产稳定证据或 installed 控制面授权。
+P-1 的已授权算法、数据、Dashboard 和 served-API 闭环工作以及 G0 文档统一已完成；G4 的固定 10Y canonical receipt、六段 `native-maintenance`、独立 activation 与唯一 `gray_live` key 的 run `2106` 亦已闭环。G1/G2 的 installed 控制面已按授权切换，但 G1 首次 publish 已安全失败且尚未重试。下一步是取得新的**单次 DataBridge publish/retry**授权，成功后才观察自然时钟并进入 G3/G5/G6；G4 的 `gray_live` 或 formal API 通过不外推为自然调度、生产稳定证据或 installed 控制面授权。

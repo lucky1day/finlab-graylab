@@ -344,6 +344,7 @@ class RefreshResult:
 class CurrentDataset:
     state: Mapping[str, object]
     dataset: ValidatedDataBridgeDataset
+    publication_manifest: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,6 +358,8 @@ class DataBridgeContinuityAuthority:
     daily_cutoff_key: str
     weekly_cutoff_key: str
     monthly_cutoff_key: str
+    required_weekly_key: str | None = None
+    required_monthly_key: str | None = None
 
     @property
     def continuity_cutoffs(self) -> Mapping[str, str]:
@@ -375,8 +378,18 @@ def data_bridge_continuity_authority_sha256(
     daily_cutoff_key: str,
     weekly_cutoff_key: str,
     monthly_cutoff_key: str,
+    required_weekly_key: str | None = None,
+    required_monthly_key: str | None = None,
 ) -> str:
     """绑定 exact current identity 与全部三频 cutoff 的规范摘要。"""
+    _validate_optional_period_key(
+        required_weekly_key,
+        label="DataBridge required_weekly_key",
+    )
+    _validate_optional_period_key(
+        required_monthly_key,
+        label="DataBridge required_monthly_key",
+    )
     payload = {
         "authority_schema_version": (
             "data-bridge-continuity-authority-v1"
@@ -391,6 +404,10 @@ def data_bridge_continuity_authority_sha256(
             "weekly_output.csv": weekly_cutoff_key,
             "monthly_output.csv": monthly_cutoff_key,
         },
+        "frozen_exact_period_keys": {
+            "weekly_output.csv": required_weekly_key,
+            "monthly_output.csv": required_monthly_key,
+        },
     }
     return hashlib.sha256(
         json.dumps(
@@ -401,6 +418,17 @@ def data_bridge_continuity_authority_sha256(
             allow_nan=False,
         ).encode("utf-8")
     ).hexdigest()
+
+
+def _validate_optional_period_key(
+    value: object,
+    *,
+    label: str,
+) -> None:
+    if value is None:
+        return
+    if not isinstance(value, str) or re.fullmatch(r"[0-9]{6}", value) is None:
+        raise ValueError(f"{label} must be a six-digit platform key or None")
 
 
 class DataBridgeRoundBuilder:
@@ -627,6 +655,10 @@ def run_full_refresh(
             if authority is not None:
                 _validate_publication_capability(authority)
             assert selected.dataset is not None
+            _assert_frozen_exact_period_keys(
+                selected.dataset,
+                continuity_authority=continuity_authority,
+            )
             for directory in built_directories:
                 if (
                     directory != selected.directory
@@ -882,7 +914,11 @@ def _validate_current_dataset_locked(
             raise DataBridgeRefreshError(
                 f"DataBridge state hash mismatch for {filename}"
             )
-    return CurrentDataset(state=state, dataset=dataset)
+    return CurrentDataset(
+        state=state,
+        dataset=dataset,
+        publication_manifest=marker,
+    )
 
 
 def _validate_continuity_authority(
@@ -933,6 +969,16 @@ def _validate_continuity_authority(
         "continuity_cutoffs",
         None,
     )
+    required_weekly_key = getattr(
+        continuity_authority,
+        "required_weekly_key",
+        None,
+    )
+    required_monthly_key = getattr(
+        continuity_authority,
+        "required_monthly_key",
+        None,
+    )
     if (
         not isinstance(expected_generation_id, str)
         or not expected_generation_id
@@ -949,6 +995,19 @@ def _validate_continuity_authority(
         raise DataBridgeRefreshError(
             "DataBridge continuity authority is invalid"
         )
+    try:
+        _validate_optional_period_key(
+            required_weekly_key,
+            label="DataBridge continuity authority required_weekly_key",
+        )
+        _validate_optional_period_key(
+            required_monthly_key,
+            label="DataBridge continuity authority required_monthly_key",
+        )
+    except ValueError as exc:
+        raise DataBridgeRefreshError(
+            "DataBridge continuity authority is invalid"
+        ) from exc
     recalculated_stable_identity = (
         data_bridge_continuity_authority_sha256(
             generation_id=expected_generation_id,
@@ -965,6 +1024,8 @@ def _validate_continuity_authority(
             monthly_cutoff_key=(
                 continuity_authority.monthly_cutoff_key
             ),
+            required_weekly_key=required_weekly_key,
+            required_monthly_key=required_monthly_key,
         )
     )
     if stable_identity != recalculated_stable_identity:
@@ -985,6 +1046,34 @@ def _validate_continuity_authority(
             "DataBridge continuity authority current identity drift"
         )
     return cutoffs
+
+
+def _assert_frozen_exact_period_keys(
+    dataset: ValidatedDataBridgeDataset,
+    *,
+    continuity_authority: DataBridgeContinuityAuthority | None,
+) -> None:
+    """拒绝在有效 fallback cutoff 下丢失同一 authority 冻结的 exact period key。"""
+    if continuity_authority is None:
+        return
+    for filename, required_key in (
+        (
+            "weekly_output.csv",
+            continuity_authority.required_weekly_key,
+        ),
+        (
+            "monthly_output.csv",
+            continuity_authority.required_monthly_key,
+        ),
+    ):
+        if (
+            required_key is not None
+            and required_key not in dataset.files[filename].keys
+        ):
+            raise DataBridgeRefreshError(
+                "DataBridge selected candidate is missing frozen exact "
+                f"{filename} key {required_key}"
+            )
 
 
 def _build_state(

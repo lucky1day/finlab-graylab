@@ -1895,6 +1895,256 @@ class DataBridgeRefreshTests(unittest.TestCase):
             "202629",
         )
 
+    def test_refresh_requires_frozen_period_source_key_after_fallback(
+        self,
+    ) -> None:
+        """fallback 只放宽连续性 cutoff，不能丢失同一只读快照的 exact key。"""
+        from shared.data_bridge.authority import (
+            DataBridgeContinuityAuthority,
+        )
+        from shared.data_bridge.refresh import (
+            DataBridgeRefreshConfig,
+            DataBridgeRefreshError,
+            DataBridgeStore,
+            data_bridge_continuity_authority_sha256,
+            data_bridge_publication_identity_sha256,
+            run_full_refresh,
+        )
+        from shared.data_bridge.validation import (
+            validate_dataset,
+            write_validated_dataset,
+        )
+
+        scenarios = (
+            (
+                "weekly_output.csv",
+                "week_id",
+                "required_weekly_key",
+                "202630",
+                {"weekly_keys": ("202628", "202629", "202630")},
+            ),
+            (
+                "monthly_output.csv",
+                "month_id",
+                "required_monthly_key",
+                "202608",
+                {"monthly_keys": ("202606", "202607", "202608")},
+            ),
+        )
+        for (
+            filename,
+            key_column,
+            guard_field,
+            frozen_key,
+            complete_candidate,
+        ) in scenarios:
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                schema = _write_schema(root)
+                config = DataBridgeRefreshConfig(
+                    data_root=root / "data",
+                    runtime_root=root / "runtime",
+                    schema_path=schema,
+                    daily_start_date="2026-01-01",
+                    daily_chunk_months=3,
+                    download_concurrency=2,
+                    max_rounds=3,
+                )
+                previous_frames = {
+                    "daily_output.csv": pd.DataFrame(
+                        {
+                            "date": [
+                                "2026/01/02 00:00",
+                                "2026/04/01 00:00",
+                                "2026/07/18 00:00",
+                            ],
+                            "factor": ["1", "2", "3"],
+                        }
+                    ),
+                    "weekly_output.csv": pd.DataFrame(
+                        {
+                            "week_id": ["202628", "202629", "202630"],
+                            "factor": ["3", "4", "5"],
+                        }
+                    ),
+                    # 202609 是早先 current 中的 future-labeled month；
+                    # fallback 只冻结 source exact 202608，不能要求它继续存在。
+                    "monthly_output.csv": pd.DataFrame(
+                        {
+                            "month_id": [
+                                "202606",
+                                "202607",
+                                "202608",
+                                "202609",
+                            ],
+                            "factor": ["5", "6", "7", "8"],
+                        }
+                    ),
+                }
+                previous = validate_dataset(
+                    previous_frames,
+                    schema_path=schema,
+                )
+                store = DataBridgeStore(
+                    data_root=config.data_root,
+                    runtime_root=config.runtime_root,
+                )
+                store.publish(
+                    write_validated_dataset(
+                        previous,
+                        root / "previous-candidate",
+                    ),
+                    _dataset_state(
+                        previous,
+                        refresh_date="2026-07-18",
+                    ),
+                )
+                previous_state = store.load_state()
+                guard_kwargs = {guard_field: frozen_key}
+                continuity_authority = DataBridgeContinuityAuthority(
+                    generation_id=str(previous_state["generation_id"]),
+                    business_digest=str(previous_state["business_digest"]),
+                    publication_identity_sha256=(
+                        data_bridge_publication_identity_sha256(
+                            previous_state
+                        )
+                    ),
+                    stable_identity_sha256=(
+                        data_bridge_continuity_authority_sha256(
+                            generation_id=str(
+                                previous_state["generation_id"]
+                            ),
+                            business_digest=str(
+                                previous_state["business_digest"]
+                            ),
+                            publication_identity_sha256=(
+                                data_bridge_publication_identity_sha256(
+                                    previous_state
+                                )
+                            ),
+                            daily_cutoff_key="2026-07-18",
+                            weekly_cutoff_key="202629",
+                            monthly_cutoff_key="202607",
+                            **guard_kwargs,
+                        )
+                    ),
+                    daily_cutoff_key="2026-07-18",
+                    weekly_cutoff_key="202629",
+                    monthly_cutoff_key="202607",
+                    **guard_kwargs,
+                )
+
+                with self.assertRaisesRegex(
+                    DataBridgeRefreshError,
+                    rf"frozen exact.*{frozen_key}",
+                ):
+                    run_full_refresh(
+                        client=_FakeClient(),
+                        config=config,
+                        expected_daily_date="2026-07-18",
+                        refresh_date="2026-07-19",
+                        publish=True,
+                        continuity_authority=continuity_authority,
+                    )
+
+                self.assertEqual(
+                    store.load_state()["generation_id"],
+                    previous_state["generation_id"],
+                )
+                self.assertIn(
+                    frozen_key,
+                    pd.read_csv(
+                        store.current_dir / filename,
+                        dtype={key_column: "string"},
+                    )[key_column].tolist(),
+                )
+
+                result = run_full_refresh(
+                    client=_FakeClient(**complete_candidate),
+                    config=config,
+                    expected_daily_date="2026-07-18",
+                    refresh_date="2026-07-19",
+                    publish=True,
+                    continuity_authority=continuity_authority,
+                )
+
+                self.assertTrue(result.published)
+                self.assertIn(
+                    frozen_key,
+                    pd.read_csv(
+                        store.current_dir / filename,
+                        dtype={key_column: "string"},
+                    )[key_column].tolist(),
+                )
+
+    def test_continuity_authority_frozen_period_keys_are_hashed_and_validated(
+        self,
+    ) -> None:
+        """frozen exact key 必须绑定 authority 摘要，且只接受规范 six-digit 键。"""
+        from shared.data_bridge.authority import (
+            DataBridgeContinuityAuthority,
+        )
+        from shared.data_bridge.refresh import (
+            CurrentDataset,
+            DataBridgeRefreshError,
+            _validate_continuity_authority,
+            data_bridge_continuity_authority_sha256,
+            data_bridge_publication_identity_sha256,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            schema = _write_schema(root)
+            dataset = _validated_dataset(root, schema)
+            state = _dataset_state(dataset, refresh_date="2026-07-18")
+            current = CurrentDataset(state=state, dataset=dataset)
+            common = {
+                "generation_id": str(state["generation_id"]),
+                "business_digest": str(state["business_digest"]),
+                "publication_identity_sha256": (
+                    data_bridge_publication_identity_sha256(state)
+                ),
+                "daily_cutoff_key": "2026-07-18",
+                "weekly_cutoff_key": "202629",
+                "monthly_cutoff_key": "202607",
+            }
+            unguarded_digest = data_bridge_continuity_authority_sha256(
+                **common,
+            )
+            guarded_digest = data_bridge_continuity_authority_sha256(
+                **common,
+                required_weekly_key="202630",
+            )
+            self.assertNotEqual(unguarded_digest, guarded_digest)
+
+            forged = DataBridgeContinuityAuthority(
+                **common,
+                stable_identity_sha256=unguarded_digest,
+                required_weekly_key="202630",
+            )
+            with self.assertRaisesRegex(
+                DataBridgeRefreshError,
+                "stable digest mismatch",
+            ):
+                _validate_continuity_authority(
+                    current,
+                    continuity_authority=forged,
+                )
+
+            malformed = DataBridgeContinuityAuthority(
+                **common,
+                stable_identity_sha256="a" * 64,
+                required_monthly_key="20260x",
+            )
+            with self.assertRaisesRegex(
+                DataBridgeRefreshError,
+                "authority is invalid",
+            ):
+                _validate_continuity_authority(
+                    current,
+                    continuity_authority=malformed,
+                )
+
     def test_refresh_rejects_current_replaced_after_authority_resolution(
         self,
     ) -> None:
@@ -2258,12 +2508,17 @@ class DataBridgeRefreshTests(unittest.TestCase):
                 engine.connect.return_value = connection_context
                 with patch(
                     "shared.data_bridge.authority."
-                    "_resolve_blackbox_input_cutoffs_bulk_from_keys",
+                    "_resolve_blackbox_input_cutoffs_with_source_keys_"
+                    "bulk_from_keys",
                     return_value={
-                        "2026-07-18": CutoffKeys(
-                            daily_cutoff_key="2026-07-18",
-                            weekly_cutoff_key="202629",
-                            monthly_cutoff_key="202607",
+                        "2026-07-18": SimpleNamespace(
+                            cutoff_keys=CutoffKeys(
+                                daily_cutoff_key="2026-07-18",
+                                weekly_cutoff_key="202629",
+                                monthly_cutoff_key="202607",
+                            ),
+                            source_weekly_cutoff_key="202629",
+                            source_monthly_cutoff_key="202607",
                         )
                     },
                 ):
@@ -2738,9 +2993,13 @@ class _FakeClient:
         *,
         conflicting_duplicate: bool = False,
         table_names: set[str] | None = None,
+        weekly_keys: tuple[str, ...] = ("202628", "202629"),
+        monthly_keys: tuple[str, ...] = ("202606", "202607"),
     ) -> None:
         self.calls: list[tuple[str, str | None, str | None]] = []
         self.conflicting_duplicate = conflicting_duplicate
+        self.weekly_keys = weekly_keys
+        self.monthly_keys = monthly_keys
         self.table_names = table_names or {
             "api_wind_daily",
             "api_wind_derivative_daily",
@@ -2766,9 +3025,17 @@ class _FakeClient:
     ) -> bytes:
         self.calls.append((frequency, start_date, end_date))
         if frequency == "周":
-            return b"week_id,factor\n202628,3\n202629,4\n"
+            rows = "".join(
+                f"{key},{index + 3}\n"
+                for index, key in enumerate(self.weekly_keys)
+            )
+            return ("week_id,factor\n" + rows).encode("utf-8")
         if frequency == "月":
-            return b"month_id,factor\n202606,5\n202607,6\n"
+            rows = "".join(
+                f"{key},{index + 5}\n"
+                for index, key in enumerate(self.monthly_keys)
+            )
+            return ("month_id,factor\n" + rows).encode("utf-8")
         if start_date == end_date == "2026-07-18":
             return b"date,factor\n2026/07/18 00:00,3\n"
         if start_date == "2026-01-01":

@@ -126,6 +126,19 @@ def _cutoffs(
     }
 
 
+def _source_cutoffs(
+    cutoffs: dict[str, CutoffKeys],
+) -> dict[str, SimpleNamespace]:
+    return {
+        feature_date: SimpleNamespace(
+            cutoff_keys=cutoff_keys,
+            source_weekly_cutoff_key=cutoff_keys.weekly_cutoff_key,
+            source_monthly_cutoff_key=cutoff_keys.monthly_cutoff_key,
+        )
+        for feature_date, cutoff_keys in cutoffs.items()
+    }
+
+
 class StableDataBridgeCurrentAuthorityTests(unittest.TestCase):
     def setUp(self) -> None:
         self.config = DataBridgeRefreshConfig(
@@ -153,8 +166,9 @@ class StableDataBridgeCurrentAuthorityTests(unittest.TestCase):
             ) as check,
             patch(
                 "shared.data_bridge.authority."
-                "_resolve_blackbox_input_cutoffs_bulk_from_keys",
-                return_value=cutoffs or _cutoffs(),
+                "_resolve_blackbox_input_cutoffs_with_source_keys_"
+                "bulk_from_keys",
+                return_value=_source_cutoffs(cutoffs or _cutoffs()),
             ) as resolve_cutoffs,
             patch(
                 "shared.input_artifacts.create_snapshot_from_frames",
@@ -317,6 +331,8 @@ class StableDataBridgeCurrentAuthorityTests(unittest.TestCase):
                     daily_cutoff_key="2026-07-27",
                     weekly_cutoff_key="202629",
                     monthly_cutoff_key="202607",
+                    source_weekly_cutoff_key="202630",
+                    source_monthly_cutoff_key="202607",
                 ),
             )
         )
@@ -346,8 +362,11 @@ class StableDataBridgeCurrentAuthorityTests(unittest.TestCase):
                 daily_cutoff_key="2026-07-27",
                 weekly_cutoff_key="202629",
                 monthly_cutoff_key="202607",
+                required_weekly_key="202630",
             ),
         )
+        self.assertEqual(actual.required_weekly_key, "202630")
+        self.assertIsNone(actual.required_monthly_key)
         self.assertEqual(
             actual.continuity_cutoffs,
             {
@@ -646,3 +665,225 @@ class StableDataBridgeCurrentAuthorityTests(unittest.TestCase):
                 ),
             ],
         )
+
+    def test_legacy_v1_period_fallback_is_opt_in_and_never_advances(
+        self,
+    ) -> None:
+        """仅受控 legacy 路径可向后选旧快照周/月 cutoff。"""
+        from shared.input_artifacts import (
+            BLACKBOX_SCHEMA_PATH,
+            _resolve_blackbox_input_cutoffs_bulk_from_keys,
+        )
+
+        connection = object()
+        metadata = pd.DataFrame(
+            {
+                "indicators_code": ["monthly_factor"],
+                "frequency": ["monthly"],
+            }
+        )
+        weekly_index = pd.DataFrame(
+            {
+                "week_id": ["202629", "202630"],
+                "available_date": ["2026-07-27", "2026-08-03"],
+            }
+        )
+        monthly_index = pd.DataFrame(
+            {
+                "month_id": ["202607", "202608"],
+                "available_date": ["2026-06-22", "2026-07-20"],
+            }
+        )
+        current_keys = {
+            "date": ["2026-07-31"],
+            "week_id": {"202629"},
+            "month_id": {"202608"},
+        }
+        with (
+            patch(
+                "shared.input_artifacts."
+                "_data_service.read_factor_metadata_from_db",
+                return_value=metadata,
+            ),
+            patch(
+                "shared.input_artifacts."
+                "_data_service.read_weekly_long_from_db",
+                return_value=pd.DataFrame(),
+            ),
+            patch(
+                "shared.input_artifacts."
+                "_data_service.read_monthly_long_from_db",
+                return_value=pd.DataFrame(),
+            ),
+            patch(
+                "shared.input_artifacts."
+                "_data_service.select_factor_metadata",
+                return_value=metadata,
+            ),
+            patch(
+                "shared.input_artifacts."
+                "_data_service.build_weekly_cutoff_index_from_frames",
+                return_value=weekly_index,
+            ),
+            patch(
+                "shared.input_artifacts."
+                "_data_service.build_monthly_cutoff_index_from_frames",
+                return_value=monthly_index,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "platform week_id cutoff 202630 does not exist",
+            ):
+                _resolve_blackbox_input_cutoffs_bulk_from_keys(
+                    current_keys,
+                    feature_dates=("2026-08-03",),
+                    connection=connection,
+                    schema_path=BLACKBOX_SCHEMA_PATH,
+                )
+
+            resolved = _resolve_blackbox_input_cutoffs_bulk_from_keys(
+                current_keys,
+                feature_dates=("2026-08-03",),
+                connection=connection,
+                schema_path=BLACKBOX_SCHEMA_PATH,
+                allow_legacy_v1_period_fallback=True,
+            )
+            self.assertEqual(
+                resolved["2026-08-03"],
+                CutoffKeys(
+                    daily_cutoff_key="2026-07-31",
+                    weekly_cutoff_key="202629",
+                    monthly_cutoff_key="202608",
+                ),
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "platform week_id cutoff 202630 does not exist",
+            ):
+                _resolve_blackbox_input_cutoffs_bulk_from_keys(
+                    {
+                        **current_keys,
+                        "week_id": {"202631"},
+                    },
+                    feature_dates=("2026-08-03",),
+                    connection=connection,
+                    schema_path=BLACKBOX_SCHEMA_PATH,
+                    allow_legacy_v1_period_fallback=True,
+                )
+
+    def test_stable_authority_fallback_uses_verified_manifest_version(
+        self,
+    ) -> None:
+        """v1/v2 分类由已验证 manifest 决定，而不是可变 source_mode。"""
+        from shared.data_bridge.authority import (
+            resolve_stable_databridge_current_authority,
+        )
+        from shared.data_bridge.refresh import (
+            CURRENT_PUBLICATION_MANIFEST_VERSION,
+            LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION,
+        )
+
+        legacy_current = _current()
+        # 无 source_provenance 的严格 current 规范化后就是 v1；
+        # 可变 state.source_mode 不应否决这个 read-only marker 语义。
+        legacy_current.state["source_mode"] = "local_mysql"
+        legacy_current = dataclasses.replace(
+            legacy_current,
+            publication_manifest={
+                "manifest_version": (
+                    LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION
+                ),
+            },
+        )
+        sealed_v2_current = _current()
+        sealed_v2_current.state["source_mode"] = "local_mysql"
+        sealed_v2_current = dataclasses.replace(
+            sealed_v2_current,
+            publication_manifest={
+                "manifest_version": CURRENT_PUBLICATION_MANIFEST_VERSION,
+            },
+        )
+
+        def resolve_from_source_keys(*_args, **kwargs):
+            if not kwargs["allow_legacy_v1_period_fallback"]:
+                raise ValueError(
+                    "platform week_id cutoff 202630 does not exist "
+                    "in weekly_output.csv"
+                )
+            return {
+                "2026-07-15": SimpleNamespace(
+                    cutoff_keys=CutoffKeys(
+                        daily_cutoff_key="2026-07-15",
+                        weekly_cutoff_key="202629",
+                        monthly_cutoff_key="202607",
+                    ),
+                    source_weekly_cutoff_key="202630",
+                    source_monthly_cutoff_key="202607",
+                ),
+            }
+
+        for current, expected_fallback in (
+            (legacy_current, True),
+            (sealed_v2_current, False),
+        ):
+            with self.subTest(
+                manifest_version=current.publication_manifest[
+                    "manifest_version"
+                ],
+            ):
+                with (
+                    patch(
+                        "shared.data_bridge.authority.check_current_dataset",
+                        return_value=current,
+                    ),
+                    patch(
+                        "shared.data_bridge.authority."
+                        "_resolve_blackbox_input_cutoffs_bulk_from_keys",
+                        return_value={
+                            "2026-07-15": _cutoffs()["2026-07-15"],
+                        },
+                        create=True,
+                    ) as old_resolve_cutoffs,
+                    patch(
+                        "shared.data_bridge.authority."
+                        "_resolve_blackbox_input_cutoffs_with_source_keys_"
+                        "bulk_from_keys",
+                        side_effect=resolve_from_source_keys,
+                        create=True,
+                    ) as resolve_cutoffs,
+                ):
+                    if expected_fallback:
+                        authority = (
+                            resolve_stable_databridge_current_authority(
+                                self.config,
+                                feature_dates=("2026-07-15",),
+                                connection=self.connection,
+                                allow_legacy_v1_period_fallback=True,
+                            )
+                        )
+                    else:
+                        with self.assertRaisesRegex(
+                            DataBridgeCurrentInvalidError,
+                            "cutoff authority is invalid",
+                        ):
+                            resolve_stable_databridge_current_authority(
+                                self.config,
+                                feature_dates=("2026-07-15",),
+                                connection=self.connection,
+                                allow_legacy_v1_period_fallback=True,
+                            )
+
+                self.assertEqual(
+                    resolve_cutoffs.call_args.kwargs[
+                        "allow_legacy_v1_period_fallback"
+                    ],
+                    expected_fallback,
+                )
+                old_resolve_cutoffs.assert_not_called()
+                if expected_fallback:
+                    self.assertEqual(
+                        authority.cutoffs[0].weekly_cutoff_key,
+                        "202629",
+                    )

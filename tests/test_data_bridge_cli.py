@@ -46,55 +46,80 @@ class DataBridgeCliTests(unittest.TestCase):
         calendar.previous_trading_day.assert_called_once_with("2026-07-29")
         engine.dispose.assert_called_once_with()
 
-    def test_refresh_uses_mysql_round_source_and_continuity_authority(self) -> None:
+    def test_refresh_limits_legacy_fallback_to_admitted_publish(self) -> None:
         from scripts import refresh_data_bridge_current as command
 
-        engine = SimpleNamespace(dispose=Mock())
-        config = SimpleNamespace()
-        authority = object()
-        builder = object()
-        result = SimpleNamespace()
-        with (
-            patch.object(command, "create_sqlalchemy_engine", return_value=engine),
-            patch.object(
-                command,
-                "resolve_databridge_continuity_authority_from_engine",
-                return_value=authority,
-            ) as resolve,
-            patch.object(
-                command,
-                "MySqlDataBridgeRoundBuilder",
-                return_value=builder,
-            ) as builder_factory,
-            patch.object(command, "run_full_refresh", return_value=result) as refresh,
-        ):
-            actual = command.refresh_current(
-                refresh_date="2026-07-29",
-                expected_feature_date="2026-07-28",
-                publish=False,
-                config=config,
-            )
+        scenarios = (
+            ("dry-run", False, "launchd-one-shot", False),
+            ("publish admitted", True, "launchd-one-shot", True),
+            ("publish direct", True, None, False),
+        )
+        for label, publish, marker, expected_fallback in scenarios:
+            with self.subTest(label=label):
+                engine = SimpleNamespace(dispose=Mock())
+                config = SimpleNamespace()
+                authority = object()
+                builder = object()
+                result = SimpleNamespace()
+                environment = (
+                    {command.LAUNCHD_PUBLISHER_ENV: marker}
+                    if marker is not None
+                    else {}
+                )
+                with (
+                    patch.dict(os.environ, environment, clear=True),
+                    patch.object(
+                        command,
+                        "create_sqlalchemy_engine",
+                        return_value=engine,
+                    ),
+                    patch.object(
+                        command,
+                        "resolve_databridge_continuity_authority_from_engine",
+                        return_value=authority,
+                    ) as resolve,
+                    patch.object(
+                        command,
+                        "MySqlDataBridgeRoundBuilder",
+                        return_value=builder,
+                    ) as builder_factory,
+                    patch.object(
+                        command,
+                        "run_full_refresh",
+                        return_value=result,
+                    ) as refresh,
+                ):
+                    actual = command.refresh_current(
+                        refresh_date="2026-07-29",
+                        expected_feature_date="2026-07-28",
+                        publish=publish,
+                        config=config,
+                    )
 
-        self.assertIs(actual, result)
-        resolve.assert_called_once_with(
-            config,
-            feature_date="2026-07-28",
-            engine=engine,
-        )
-        builder_factory.assert_called_once_with(engine=engine, config=config)
-        self.assertEqual(
-            refresh.call_args.kwargs,
-            {
-                "config": config,
-                "expected_daily_date": "2026-07-28",
-                "refresh_date": "2026-07-29",
-                "publish": False,
-                "continuity_authority": authority,
-                "round_builder": builder,
-                "enforce_legacy_publication_fence": False,
-            },
-        )
-        engine.dispose.assert_called_once_with()
+                self.assertIs(actual, result)
+                resolve.assert_called_once_with(
+                    config,
+                    feature_date="2026-07-28",
+                    engine=engine,
+                    allow_legacy_v1_period_fallback=expected_fallback,
+                )
+                builder_factory.assert_called_once_with(
+                    engine=engine,
+                    config=config,
+                )
+                self.assertEqual(
+                    refresh.call_args.kwargs,
+                    {
+                        "config": config,
+                        "expected_daily_date": "2026-07-28",
+                        "refresh_date": "2026-07-29",
+                        "publish": publish,
+                        "continuity_authority": authority,
+                        "round_builder": builder,
+                        "enforce_legacy_publication_fence": False,
+                    },
+                )
+                engine.dispose.assert_called_once_with()
 
     def test_publish_writes_ready_only_after_strict_current_read(self) -> None:
         from scripts import refresh_data_bridge_current as command
