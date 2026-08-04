@@ -63,7 +63,7 @@ predictions 周六 11:30、monthly predictions 自然月 15 日 18:00；actuals 
 
 ## 4. 阶段顺序与停止条件
 
-当前按 G0 → G1/G2 → G3/G4/G5 → G6 推进。G1/G2 未形成真实 launchd 观察闭环前，不授予
+当前按 G0 → G1/G2 → G3/G5 → G6 推进；G4 已独立闭环。G1/G2 未形成真实 launchd 观察闭环前，不授予
 新的 scheduler admission。G4 已确认不需要 scoped waiver 或同源输入/环境重建选择：首次
 Native 技术入库仍必须通过 source benchmark/CompareGate；ActivationGate 的 full-`all` 与
 `native-maintenance` profile 互斥：current exact version 完整 `all` 通过时使用
@@ -73,7 +73,7 @@ Native 技术入库仍必须通过 source benchmark/CompareGate；ActivationGate
 config 或 version hash。maintenance 的 current exact `t_scheme_versions` 行必须为
 `runtime_type='native_adapter'` 且 status 为 `draft|active`；expected Registry identity 可在预激活时
 统一为 `paused`，或在激活后统一为 `active`，但 draft version 配 active Registry 必须 fail-closed。
-只有 ActivationGate 可在严格 discovery、精确版本与一次性授权核验后原子建立 active 状态。legacy admission 缺快照时仍 fail-closed；唯一实现的固定 scope 是 `weekly_10y_d_overlay_0529` 的 `native-legacy-admission-attest`，它仅为 maintenance 选定的 prior `all + compare=passed`、且 StaticGate 已通过但缺 identity 字段写入两张 Harness 表 receipt。它要求 issuer/exact prior version/run 绑定的 ≤900 秒一次性 token，不改历史、不启动调度、不激活或写业务表；2026-08-04 receipt 后，exact version `e50ad79a6c2f` 的六段 maintenance 与独立 activation 均已通过，DB version 与 Registry 均为 active；activation 本身仍不授予业务写入，唯一 gap key 仍须专项授权。任何后续修订仍必须满足输入 cutoff、统一周历、日期语义、
+只有 ActivationGate 可在严格 discovery、精确版本与一次性授权核验后原子建立 active 状态。legacy admission 缺快照时仍 fail-closed；唯一实现的固定 scope 是 `weekly_10y_d_overlay_0529` 的 `native-legacy-admission-attest`，它仅为 maintenance 选定的 prior `all + compare=passed`、且 StaticGate 已通过但缺 identity 字段写入两张 Harness 表 receipt。它要求 issuer/exact prior version/run 绑定的 ≤900 秒一次性 token，不改历史、不启动调度、不激活或写业务表；2026-08-04 receipt 后，exact version `e50ad79a6c2f` 的六段 maintenance 与独立 activation 均已通过，DB version 与 Registry 均为 active。随后在独立精确授权下，DB-`SEALED` current-snapshot 制品 `native-cc249e2aec88fad7bcfc7c1c` 完成唯一 `gray_live` key 的 run `2106`；该写入不授予新的业务写入、scheduler 或 installed 控制面权限。任何后续修订仍必须满足输入 cutoff、统一周历、日期语义、
 Registry、live-safe oracle 与专项授权，随后也只能补其精确授权的 `gray_live` key；不得修改
 Native core 或 source benchmark。
 

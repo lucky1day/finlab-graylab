@@ -116,7 +116,7 @@ Blackbox V2 新方案只交付 `{scheme_id}.py + {scheme_id}.json`，并实现 C
 
 - 新算法、新方案 ID、新目标、新任务和替代版本：只走 Blackbox V2 两文件 Intake。
 - 现有 Native V1 故障、数据口径或保真修复：只操作 `deploy/onboarding_policy_v1.json` 中的存量 ID。
-- 已入库 Native 修订可在 prior `all` 留有匹配 `static.business_identity` 快照时走 `native-maintenance`；缺快照时仍默认只能 current exact version 的完整 `all`（含 Compare）。唯一已实现例外是 `weekly_10y_d_overlay_0529` 的专项 `native-legacy-admission-attest`：只接受 maintenance 当前选择、唯一 `all + compare=passed` 的 prior，且 StaticGate 已通过但 identity 字段明确缺失；短期一次性 token 必须绑定 issuer 与 exact prior version/run。它只在两张 Harness 控制面表留下 canonical receipt，不能激活、补数、写业务表或被任何其它 Native 身份使用；receipt 不替代已通过且完整持久化的六段 maintenance 或常规 activation。该固定 scope 的 maintenance 与 activation 均已通过；gap write 仍须独立专项授权。
+- 已入库 Native 修订可在 prior `all` 留有匹配 `static.business_identity` 快照时走 `native-maintenance`；缺快照时仍默认只能 current exact version 的完整 `all`（含 Compare）。唯一已实现例外是 `weekly_10y_d_overlay_0529` 的专项 `native-legacy-admission-attest`：只接受 maintenance 当前选择、唯一 `all + compare=passed` 的 prior，且 StaticGate 已通过但 identity 字段明确缺失；短期一次性 token 必须绑定 issuer 与 exact prior version/run。它只在两张 Harness 控制面表留下 canonical receipt，不能激活、补数、写业务表或被任何其它 Native 身份使用；receipt 不替代已通过且完整持久化的六段 maintenance 或常规 activation。该固定 scope 的 maintenance、activation 与唯一业务键的 `gray_live` gap write 均已在相互独立的专项授权下完成；后者仅覆盖 `2026-08-01 / 2026-07-31 / 2026-08-07 / 10Y / h6`，不授予 scheduler、其他业务写入或 launchd 权限。
 - Native StaticGate 与 ActivationGate 都必须拒绝清单外的新 Native 身份。
 
 ```bash

@@ -23,23 +23,9 @@ plist、`launchctl` loaded state、日志与实际缺口。任何生产副作用
    明确的 launchd writer；旧 scheduler、daily-gray 和重复预检不再拥有生产写权。
 4. **G3 — 日频历史缺口**：仅在 G1/G2 完成并取得专项授权后重新枚举 2026-08-03 缺口，
    对仍缺的 business key 写 `gray_live`，不覆盖既有记录。
-5. **G4 — weekly 10Y D-overlay**：历史 source-benchmark 输入 vintage 漂移已确认只作归档
-   诊断。已实现的专项 `native-legacy-admission-attest` 只适用于
-   `weekly_10y_d_overlay_0529`，只在 maintenance 当前选择的 prior `all + compare=passed` 且
-   StaticGate 已通过、仅缺 identity 字段时，以 issuer 和 exact prior version/run 绑定的 ≤900 秒
-   一次性 token 写入两张 Harness 控制面表 receipt。2026-08-04 已写入
-   `lna_hr_20260611T055610Z_8742d5bc99c9`，并由 verifier 识别为
-   `legacy_operator_attestation_v1`；它不激活、不补数。初次 maintenance run
-   `hr_20260804T092226Z_5d84b9d45fd9` 因预激活 API 状态混同失败；修正后的
-   `hr_20260804T102103Z_91fa9e7db871` 已使 exact version `e50ad79a6c2f` 通过六段
-   `native-maintenance`。随后独立 activation 已通过：exact version 与 Registry 均为 `active`，served
-   API 已读回该业务身份。目标预测数仍为 0；下一步仅可在另取专项授权后补写
-   `weekly_10y_d_overlay_0529 / 10Y / h6 / predict_date=2026-08-01 / feature_date=2026-07-31 /
-   target_date=2026-08-07 / gray_live`。不得改 Native core、调参、覆盖 source benchmark，
-   或扩展补数范围。
-6. **G5 — 周/月自然调度**：形成独立 installed/loaded plist，并观察真实周六和自然月
+5. **G5 — 周/月自然调度**：形成独立 installed/loaded plist，并观察真实周六和自然月
    15 日触发。历史修复只可经授权写 `gray_live`。
-7. **G6 — P0 观察闭环**：至少观察一个完整日/周/月周期，证明每个 cadence 只有一个
+6. **G6 — P0 观察闭环**：至少观察一个完整日/周/月周期，证明每个 cadence 只有一个
    writer、输入 fail-closed、API/页面与数据库一致且可控回退。
 
 ## 后续阶段
@@ -50,7 +36,12 @@ plist、`launchctl` loaded state、日志与实际缺口。任何生产副作用
   legacy、ledger、daily-gray、旧 scheduler 和相关债务。删表另需零读写证据、备份/恢复
   方案与专项授权。
 
-## 已完成但不外推的 7Y 灰度工作
+## 已完成但不外推的灰度闭环
+
+**G4 — weekly 10Y D-overlay（已完成）**：固定 receipt、六段 maintenance、独立 activation 与
+唯一 `2026-08-01 / 2026-07-31 / 2026-08-07 / 10Y / h6` 的 `gray_live` 补写均已闭环。run
+`2106` 成功写入 1 条方向 `-1`、置信度 `0.32` 的预测，DB、served API 与 dashboard 均已读回；
+这不授予 scheduler admission、其他业务写入或 installed 控制面权限。
 
 两套 `seven_y_current55_lgbm_*_v2` 已完成受控入库、回测、历史 `gray_live`、前端读回和
 formal served-API Gate。它们没有 scheduler admission，也没有 `scheduled_live`；该事实

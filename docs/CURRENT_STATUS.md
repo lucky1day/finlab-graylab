@@ -42,17 +42,14 @@
 - **G2**：daily、weekly、monthly、actuals 的单 writer launchd-only 收敛尚未完成；进入
   任何 installed/loaded 控制面变更前必须重新只读核对现场。
 - **G3**：在 G1/G2 和专项授权后，重新枚举并仅补仍缺失的 2026-08-03 日频 business key。
-- **G4**：weekly 10Y D-overlay 的 2026-08-01 `gray_live` 缺口仍待处理。source
-  benchmark/CompareGate 仍只服务首次 Native 技术入库；14/45、3 个翻向的历史输入 vintage
-  漂移仅归档，不是单独 blocker。2026-08-04 已执行唯一的 `native-legacy-admission-attest`：receipt
-  `lna_hr_20260611T055610Z_8742d5bc99c9` 绑定 maintenance 当前选择的 prior
-  `63ffb52105ee / hr_20260611T055610Z_8742d5bc99c9` 与 frozen 10Y/h6/weekly-point identity，
-  只写两张 Harness 控制面表，verifier 已读回 `legacy_operator_attestation_v1`。初次
-  `native-maintenance` run `hr_20260804T092226Z_5d84b9d45fd9` 因预激活 API 状态混同失败；修正后
-  exact version `e50ad79a6c2f` 的 `hr_20260804T102103Z_91fa9e7db871` 已通过全部六个 Gate。随后独立
-  activation 已通过，exact version 与 composite Registry 均为 `active`，served `/api/schemes` 与
-  composite metrics API 均读回 200。目标业务键 prediction count 仍为 0；唯一 2026-08-01
-  `gray_live` gap write 仍须另取专项授权，activation 不授予调度或其他业务写入权限。
+- **G4（已完成）**：`weekly_10y_d_overlay_0529` 的历史 benchmark 输入 vintage 漂移继续只作
+  归档诊断，不是 blocker。固定 receipt、六段 `native-maintenance` 和独立 activation 均已完成；随后在
+  独立的 `signal-gap-fill` 授权下，用 DB-`SEALED` 的 current-snapshot 制品
+  `native-cc249e2aec88fad7bcfc7c1c` 补写唯一 `2026-08-01 / 2026-07-31 / 2026-08-07 / 10Y / h6`
+  `gray_live` key。run `2106` 为 `success`，预期/返回/写入均为 1，方向 `-1`、置信度 `0.32`、
+  exact version `e50ad79a6c2f`；无任何 scheduler 关联字段。DB、`/api/schemes`、精确 predictions、
+  metrics 与 dashboard 均已读回，postfill planner 为 14 条 `SKIP_PRESENT`、0 条 live gap。该闭环不授予
+  scheduler admission、其他业务写入或 installed 控制面操作。
 - **G5/G6**：周/月自然调度与完整日/周/月真实时钟观察尚未完成。
 
 完整阶段定义、旧快照和停止条件见

@@ -249,7 +249,7 @@ coverage floor 等只能作为新的 Blackbox 版本做 no-persist 消融，不�
 |---|---|
 | Base scheme | `weekly_10y_d_overlay_0529` |
 | 当前状态 | `ACCEPTED_RISK` |
-| G4 关系 | 该历史 benchmark 漂移不是当前 G4 的单独 blocker；legacy prior identity 已由固定 scope receipt 补证，当前六段 maintenance 与独立 activation 均已通过，只有单键 gap write 仍待专项授权 |
+| G4 关系 | 该历史 benchmark 漂移不是当前 G4 的单独 blocker；固定 scope receipt、六段 maintenance、独立 activation 和唯一单键 `gray_live` gap write 均已闭环 |
 
 ### 已验证事实与结论
 
@@ -264,14 +264,14 @@ coverage floor 等只能作为新的 Blackbox 版本做 no-persist 消融，不�
 oracle。硬红线为：**不得调算法贴旧 benchmark、不得重写 source benchmark、不得使用旧输入或
 generation fallback。**
 
-本项不授予 G4 activation、gap repair 或业务写库授权。固定
+本项本身不授予 G4 activation、gap repair 或业务写库授权。固定
 `weekly_10y_d_overlay_0529` 的专项 `native-legacy-admission-attest` 已证明 maintenance 当前选择的 prior
 `all + compare=passed` 与 frozen 10Y/h6/weekly-point 业务身份相同；其 receipt
-`lna_hr_20260611T055610Z_8742d5bc99c9` 已写入并被 verifier 读回。初次 maintenance run
-`hr_20260804T092226Z_5d84b9d45fd9` 因预激活 API 状态混同失败；修正后的
-`hr_20260804T102103Z_91fa9e7db871` 已使 exact version `e50ad79a6c2f` 的六个 Gate 全部通过。独立
-activation 随后通过，DB exact version 与 Registry 均为 `active`，served API 已读回该业务身份；目标业务键
-prediction count 仍为 0。仅在另取专项授权后，才可按既有边界补写唯一 key。
+`lna_hr_20260611T055610Z_8742d5bc99c9` 已写入并被 verifier 读回。修正后的
+`hr_20260804T102103Z_91fa9e7db871` 已使 exact version `e50ad79a6c2f` 的六个 Gate 全部通过，独立
+activation 随后使 DB version 与 Registry 均为 `active`。在另一份精确短期授权下，current-snapshot 制品
+`native-cc249e2aec88fad7bcfc7c1c` 已用于 run `2106` 的唯一 `gray_live` 写入；exact key 现有 1 条
+预测，DB 与 served API 均已读回。该完成记录不外推为 scheduler admission 或其他业务写入授权。
 
 ## 后续追加模板
 

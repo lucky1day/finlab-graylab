@@ -89,13 +89,13 @@
 | G1 | 恢复本机 MySQL → DataBridge 的可靠刷新 | **开发闭环完成，待 G2 生产挂载与真实时钟观察** |
 | G2 | 收敛为 launchd-only 单 writer 调度 | **开发闭环完成：仓库 one-shot 模板、writer 边界与回归已就绪；未安装、未切换、未观察真实时钟** |
 | G3 | 补齐 8 月 3 日日频缺口 | **缺口已定位，等待 G1/G2 与生产授权** |
-| G4 | 闭环 D-overlay 8 月 1 日缺口 | **fixed receipt 后，exact version `e50ad79a6c2f` 的六段 `native-maintenance` 与独立 activation 均已通过；DB version 与 Registry 为 active，served API 返回 HTTP 200。唯一 gray_live key 仍为 0，补写仍须专项授权** |
+| G4 | 闭环 D-overlay 8 月 1 日缺口 | **完成：fixed receipt、六段 `native-maintenance`、独立 activation 与受控 signal-gap fill 均已闭环；run `2106` 写入唯一 `gray_live` key，DB、served API 与 dashboard 均已读回** |
 | G5 | 挂载并验证周度、月度自然调度 | **方案存在，独立 plist 尚未形成生产证据** |
 | G6 | 完成 P0 生产观察闭环 | **未开始** |
 | G7 | 收敛 Native 版本模型 | **P1，未开始** |
 | G8 | 删除 legacy/ledger/旧调度债务 | **P2，须在 P0 稳定后开始** |
 
-当前执行顺序是 **P-1 → G0 → G1/G2 → G3/G4/G5 → G6**。P-1 如果被 DataBridge 新鲜度阻塞，只允许把 G1 中满足这两套方案运行所需的最小前置修复提前，不得借机展开其它治理。G7、G8 不得抢跑进入 P0。
+当前执行顺序是 **P-1 → G0 → G1/G2 → G3/G5 → G6**；G4 已独立闭环。P-1 如果被 DataBridge 新鲜度阻塞，只允许把 G1 中满足这两套方案运行所需的最小前置修复提前，不得借机展开其它治理。G7、G8 不得抢跑进入 P0。
 
 ---
 
@@ -449,11 +449,11 @@ P0 可以暂时保留底层 `legacy` 环境开关，以兼容现有 executor/rep
 - `target_tenor=10Y`、`horizon=6`
 - 应写 `gray_live`
 
-跨年 week_id 的稳定排序修复已经存在，no-write 结果可以生成方向 `-1`、置信度 `0.32`；当前精确版本已在 2026-08-04 通过独立 activation，但该信号尚未写入业务表。
+跨年 week_id 的稳定排序修复已经存在，no-write 结果可以生成方向 `-1`、置信度 `0.32`；当前精确版本已在 2026-08-04 通过独立 activation，随后该信号已按受控边界写入业务表。
 
 另有一个独立历史诊断：平台 DB 对原始 benchmark 的 45 个样本中有 14 个不一致，其中 3 周方向翻转。该漂移起点早于 8 月 1 日排序问题，不能把两者混为一个 bug。用户已确认：source benchmark/CompareGate 继续作为首次技术入库的证据；满足 post-admission 身份证据前提的当前 Native 修订，其 historical input-vintage 漂移只归档，不要求 scoped waiver 或同源输入/环境重建，也不单独阻断 G4。可是本方案的 legacy prior admission 没有可匹配的持久化 `static.business_identity`，不能仅凭当前 Registry 反推历史身份。
 
-**状态：算法排序问题已修；benchmark 政策已确认；2026-08-04 已成功写入固定 10Y 的唯一 canonical receipt `lna_hr_20260611T055610Z_8742d5bc99c9`，它绑定 prior `63ffb52105ee / hr_20260611T055610Z_8742d5bc99c9` 与 frozen `weekly_10y_d_overlay_0529 / weekly_point / weekly / h6 / 10Y / weekly_10y_d_overlay_0529__h6__10Y`。初次 maintenance run `hr_20260804T092226Z_5d84b9d45fd9` 因预激活 API 状态混同失败；修正后 exact version `e50ad79a6c2f` 的 `hr_20260804T102103Z_91fa9e7db871` 已通过全部六个 Gate。独立 ActivationGate 已以 `native_post_admission_revision_v1` 通过；DB version 与 Registry 均读回 `active`，served API 返回 HTTP 200，目标业务键 prediction count 仍为 0。receipt、maintenance 与 activation 均不替代单键 gap write 专项授权。**
+**状态：已闭环。** 算法排序问题已修；benchmark 政策已确认；固定 10Y canonical receipt、`hr_20260804T102103Z_91fa9e7db871` 的六段 `native-maintenance` 和 `native_post_admission_revision_v1` activation 均已通过。随后以 DB-`SEALED` current-snapshot 制品 `native-cc249e2aec88fad7bcfc7c1c` 冻结唯一计划并执行 `signal-gap-fill`；run `2106` 成功写入 `weekly_10y_d_overlay_0529 / 10Y / h6 / predict_date=2026-08-01 / feature_date=2026-07-31 / target_date=2026-08-07 / gray_live`，方向 `-1`、置信度 `0.32`、version `e50ad79a6c2f`。DB、served API 和 dashboard 已读回，postfill planner 为 14 条 `SKIP_PRESENT`、0 条 live gap。该记录不授予 scheduler admission 或任何其它业务写入权限。
 
 ### 造成的影响
 
@@ -471,8 +471,8 @@ P0 可以暂时保留底层 `legacy` 环境开关，以兼容现有 executor/rep
 
 1. Native core 和 source-original benchmark 文件未被修改，排序修复仍通过 no-write 验证；唯一 canonical receipt 已以专用命令写入，仅影响 Harness run/gate 表，并已被 maintenance verifier 识别为 `legacy_operator_attestation_v1`。
 2. exact version `e50ad79a6c2f` 已以 `hr_20260804T102103Z_91fa9e7db871` 完整通过六段 `native-maintenance`，并已由 ActivationGate 以 `native_post_admission_revision_v1`、精确 current version 和独立一次性 activation token 激活；DB version 与 Registry 均已读回 active，served API 返回 HTTP 200。receipt 绝不替代六段 Gate，maintenance 也不替代 activation。
-3. 仅在前两项完成且另取专项授权后，通过受控 signal-gap 路径写入唯一业务键 `weekly_10y_d_overlay_0529 / 10Y / h6 / predict_date=2026-08-01 / feature_date=2026-07-31 / target_date=2026-08-07 / prediction_phase=gray_live`，不得扩展为任何其它日期、target 或 `scheduled_live`。
-4. repository 原子提交后从 DB 与 served API/前端读回日期、方向、置信度、版本、run 与 `gray_live` provenance；历史 benchmark 漂移仍标为归档诊断，不能写成 current Compare pass。
+3. 已在前两项完成后的独立专项授权下，通过受控 signal-gap 路径写入唯一业务键 `weekly_10y_d_overlay_0529 / 10Y / h6 / predict_date=2026-08-01 / feature_date=2026-07-31 / target_date=2026-08-07 / prediction_phase=gray_live`；没有扩展为任何其它日期、target 或 `scheduled_live`。
+4. repository 原子提交后已从 DB 与 served API/前端读回日期、方向、置信度、版本、run 与 `gray_live` provenance；历史 benchmark 漂移仍标为归档诊断，没有写成 current Compare pass。
 
 ---
 
@@ -608,4 +608,4 @@ Native hash 当前覆盖完整 config 和文件文本，展示、状态、schedu
 
 ## 16. 下一步
 
-P-1 的已授权算法、数据、Dashboard 和 served-API 闭环工作以及 G0 文档统一已完成；G1/G2 的 launchd-only 单 writer 开发与只读现场核对仍按其独立前置推进。G4 已完成固定 10Y canonical receipt、六段 `native-maintenance` 与独立 activation；唯一待办是另取专项授权后补唯一 2026-08-01 `gray_live` key。receipt、maintenance 或 activation 都不是 scheduler admission，也不授权 installed 控制面操作；不得把后续 `gray_live` 或 formal API 通过外推为自然调度或生产稳定证据。
+P-1 的已授权算法、数据、Dashboard 和 served-API 闭环工作以及 G0 文档统一已完成；G4 的固定 10Y canonical receipt、六段 `native-maintenance`、独立 activation 与唯一 `gray_live` key 的 run `2106` 亦已闭环。下一步仍是 G1/G2 的 launchd-only 单 writer 开发与只读现场核对，随后才是 G3/G5/G6。G4 的 `gray_live` 或 formal API 通过不外推为自然调度、生产稳定证据或 installed 控制面授权。
