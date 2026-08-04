@@ -93,18 +93,23 @@ class T1DailyShapRetirementTests(unittest.TestCase):
 
         self.assertEqual(actual, REMAINING_RUNTIME_SHA256)
 
-    def test_discovery_hashes_exact_shap_retired_version(self) -> None:
+    def test_discovery_keeps_retired_runtime_and_business_identity(self) -> None:
         config = load_scheme_config(SCHEME_ROOT / "config.yaml")
 
-        self.assertEqual(
-            config.config_hash,
-            "e56ff6c4379ae4d65cfad24d327d250442358093606924f86f0efae0a7c02f29",
-        )
+        # status/config hash/scheme version are Native lifecycle fields: activation
+        # legitimately flips paused -> active without changing the retired runtime.
+        self.assertIn(config.status, {"paused", "active"})
+        self.assertEqual(config.scheme_id, "t1_daily")
+        self.assertEqual(config.runtime_type, "native_adapter")
+        self.assertEqual(config.horizon, 1)
+        self.assertEqual(config.task_type, "T+1")
+        self.assertEqual(config.tenors, ["5Y", "10Y"])
+        self.assertEqual(config.frequency, "daily")
+        self.assertEqual(config.entry_point, "predict.run")
         self.assertEqual(
             config.code_hash,
             "f86ef896620f3793df6bfaefe8063776f2203762f3e20ff61c1d32336be340e5",
         )
-        self.assertEqual(config.scheme_version, "7898b9e47a9a")
 
 
 if __name__ == "__main__":
