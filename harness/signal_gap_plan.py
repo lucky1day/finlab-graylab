@@ -45,13 +45,6 @@ from shared.prediction_context import (
 PLAN_SCHEMA_VERSION = "active-signal-gap-plan-v2"
 PLATFORM_LIVE_BOUNDARY_VERSION = "platform_live_boundary_v1"
 PLATFORM_LIVE_TARGET_START_DATE = "2026-06-01"
-EXPECTED_ACTIVE_TARGET_COUNT = 44
-EXPECTED_ACTIVE_EXECUTION_COUNT = 40
-EXPECTED_ACTIVE_FREQUENCY_COUNTS = {
-    "daily": 29,
-    "weekly": 7,
-    "monthly": 8,
-}
 NATIVE_TASK_COMBINATIONS = {
     "T+1": (1, "daily"),
     "T+5": (5, "daily"),
@@ -3396,24 +3389,10 @@ def _input_mode_for_identity(
 def _validate_active_scope(
     targets: Sequence[RegistryTarget],
 ) -> None:
-    actual_frequency_counts = {
-        frequency: sum(
-            target.frequency == frequency for target in targets
-        )
-        for frequency in ("daily", "weekly", "monthly")
-    }
-    actual_execution_count = len(
-        {target.base_scheme_id for target in targets}
-    )
-    if (
-        len(targets) != EXPECTED_ACTIVE_TARGET_COUNT
-        or actual_execution_count != EXPECTED_ACTIVE_EXECUTION_COUNT
-        or actual_frequency_counts != EXPECTED_ACTIVE_FREQUENCY_COUNTS
-    ):
+    if not targets:
         raise SignalGapPlanError(
-            "ACTIVE_REGISTRY_SCOPE_DRIFT",
-            "active Registry must be exactly 44 targets/40 executions "
-            "with daily=29, weekly=7, monthly=8",
+            "NO_ACTIVE_REGISTRY_TARGETS",
+            "active Registry has no targets",
         )
 
 

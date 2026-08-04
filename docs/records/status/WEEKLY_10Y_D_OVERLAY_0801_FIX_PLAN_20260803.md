@@ -414,6 +414,26 @@ P0 可以暂时保留底层 `legacy` 环境开关，以兼容现有 executor/rep
 - 8 月 3 日最终读回为 T+1 8/8、T+5 24/24，且 feature date、target date、scheme version、run 和 artifact provenance 正确。
 - 已存在的记录没有被覆盖；补数失败会停在明确方案，不继续伪造全量成功。
 
+### G3 开发执行记录（2026-08-04，仅本地 planner 修正与只读复核）
+
+- `harness.signal_gap_plan` 已移除 44 target / 40 execution / daily=29、weekly=7、
+  monthly=8 的过期静态数量断言。它仍只读取 `status='active'` 的 Registry，仍保留
+  每个 target 的版本、hash、runtime、task/horizon/frequency、输入 authority 和观测契约
+  校验；若 active Registry 为空则以 `NO_ACTIVE_REGISTRY_TARGETS` fail-closed。
+- 新的隔离回归以 53 target / 50 execution（daily=32、weekly=13、monthly=8）验证动态
+  范围可通过，同时验证空范围与 T+1 task/horizon 漂移仍被拒绝。两轮独立代码审查均未发现
+  越出最小边界的修改。
+- 对 `2026-08-03` 的只读 `signal-gap-plan` 现场复核已不再出现
+  `ACTIVE_REGISTRY_SCOPE_DRIFT`：scope 为 53 / 50 / 32-13-8；32 个当日应有 case 中
+  19 个已存在、13 个仍为 open gap，且全部以
+  `DATABRIDGE_CURRENT_REFRESH_REQUIRED` 阻断（`actionable=0`）。控制面仍报告既有的
+  `DISCOVERY_IDENTITY_NOT_REGISTERED` 与
+  `NATIVE_CANONICAL_VERSION_IDENTITY_INVALID`，后者在该快照中由
+  `CANONICAL_VERSION_DIGEST_DRIFT` 触发。
+- 本记录不等于 DataBridge publish、版本激活、历史补数或生产恢复；未发生 Registry/预测/
+  run 写入、installed plist 变更、`launchctl`、服务重启或其他生产副作用。13 是该日期窗口的
+  当次只读事实，后续任何补数仍须重新计划并取得专项授权。
+
 ---
 
 ## 10. G4 — 闭环 WEEKLY 10Y D-overlay 8 月 1 日缺口
