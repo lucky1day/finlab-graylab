@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import os
 import unittest
-from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -78,553 +77,43 @@ class GetSchemesReadOnlyTests(unittest.TestCase):
         self.assertEqual(result, [{"scheme_id": "demo_daily"}])
 
 
-class DailyScheduleHealthTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.epoch_identity = {
-            "epoch": 7,
-            "mode": "ledger",
-            "record_sha256": "e" * 64,
-        }
-        self._identity_patcher = patch.object(
-            main,
-            "require_current_daily_coordinator_identity",
-            return_value=SimpleNamespace(
-                mode="ledger",
-                policy_payload=lambda: dict(self.epoch_identity),
-            ),
-            create=True,
-        )
-        self._identity_patcher.start()
-        self.addCleanup(self._identity_patcher.stop)
-        self.now = datetime(
-            2026,
-            7,
-            23,
-            23,
-            0,
-            tzinfo=timezone.utc,
-        )
-
-    def _heartbeat(
-        self,
-        *,
-        occurrence_id: int | None = None,
-        state: str = "IDLE",
-        age_seconds: int = 15,
-        coordinator_mode: str | None = "ledger",
-    ) -> SimpleNamespace:
-        details = {"business_date": "2026-07-24"}
-        if coordinator_mode is not None:
-            details["coordinator_mode"] = coordinator_mode
-        details["daily_coordinator_epoch"] = dict(
-            self.epoch_identity
-        )
-        return SimpleNamespace(
-            service_name="daily-coordinator",
-            state=state,
-            occurrence_id=occurrence_id,
-            heartbeat_at=self.now - timedelta(seconds=age_seconds),
-            details=details,
-        )
-
-    def _patch_now(self):
-        mocked_datetime = MagicMock(wraps=datetime)
-        mocked_datetime.now.return_value = self.now
-        return patch.object(main, "datetime", mocked_datetime)
-
-    def test_idle_without_occurrence_rejects_stale_heartbeat(self) -> None:
-        with (
-            patch.object(
-                main,
-                "_daily_coordinator_mode",
-                return_value="ledger",
-            ),
-            patch.object(
-                main,
-                "read_scheduler_heartbeat",
-                return_value=self._heartbeat(age_seconds=121),
-            ),
-            patch(
-                "shared.calendar_service.CalendarService.is_trading_day",
-                return_value=False,
-            ),
-            self._patch_now(),
-        ):
-            result = main._daily_schedule_health(object())
-
-        self.assertEqual(result["overall"], "error")
-        self.assertIn("HEARTBEAT_STALE", result["reasons"])
-        self.assertEqual(
-            result["scheduler_heartbeat"]["status"],
-            "stale",
-        )
-
-    def test_trading_day_after_0630_requires_current_occurrence(self) -> None:
-        with (
-            patch.object(
-                main,
-                "_daily_coordinator_mode",
-                return_value="ledger",
-            ),
-            patch.object(
-                main,
-                "read_scheduler_heartbeat",
-                return_value=self._heartbeat(),
-            ),
-            patch(
-                "shared.calendar_service.CalendarService.is_trading_day",
-                return_value=True,
-            ),
-            self._patch_now(),
-        ):
-            result = main._daily_schedule_health(object())
-
-        self.assertEqual(result["overall"], "error")
-        self.assertIn("OCCURRENCE_MISSING", result["reasons"])
-
-    def test_ledger_health_rejects_cross_process_mode_mismatch(
+class DailyScheduleCompatibilityTests(unittest.TestCase):
+    def test_health_keeps_retired_daily_schedule_without_ledger_query(
         self,
     ) -> None:
-        for coordinator_mode in (None, "legacy"):
-            with (
-                self.subTest(coordinator_mode=coordinator_mode),
-                patch.object(
-                    main,
-                    "_daily_coordinator_mode",
-                    return_value="ledger",
-                ),
-                patch.object(
-                    main,
-                    "read_scheduler_heartbeat",
-                    return_value=self._heartbeat(
-                        coordinator_mode=coordinator_mode,
-                    ),
-                ),
-                self._patch_now(),
-            ):
-                result = main._daily_schedule_health(object())
-
-            self.assertEqual(result["overall"], "error")
-            self.assertIn("MODE_MISMATCH", result["reasons"])
-
-    def test_health_epoch_resolution_failure_is_safe_and_fail_closed(
-        self,
-    ) -> None:
-        with patch.object(
-            main,
-            "require_current_daily_coordinator_identity",
-            side_effect=RuntimeError(
-                "password=must-not-reach-health"
-            ),
-        ):
-            result = main._daily_schedule_health(object())
-
-        self.assertEqual(result["overall"], "error")
-        self.assertEqual(
-            result["reasons"],
-            ["COORDINATOR_EPOCH_UNAVAILABLE"],
-        )
-        self.assertNotIn(
-            "must-not-reach-health",
-            repr(result),
-        )
-
-    def test_occurrence_predict_date_must_equal_local_today(self) -> None:
-        heartbeat = self._heartbeat(
-            occurrence_id=91,
-            state="COMPLETE",
-        )
-        snapshot = SimpleNamespace(
-            occurrence=SimpleNamespace(
-                occurrence_id=91,
-                predict_date="2026-07-23",
-                policy_json={
-                    "daily_coordinator_epoch": dict(
-                        self.epoch_identity
-                    )
-                },
-            ),
-            items=(),
-        )
-        with (
-            patch.object(
-                main,
-                "_daily_coordinator_mode",
-                return_value="ledger",
-            ),
-            patch.object(
-                main,
-                "read_scheduler_heartbeat",
-                return_value=heartbeat,
-            ),
-            patch.object(
-                main,
-                "read_schedule_occurrence_snapshot",
-                return_value=snapshot,
-            ),
-            patch.object(
-                main,
-                "read_schedule_health_envelope",
-                return_value=object(),
-                create=True,
-            ) as read_health,
-            patch.object(
-                main,
-                "read_schedule_execution_envelope",
-            ) as read_execution,
-            patch.object(
-                main,
-                "project_daily_health",
-                return_value={"overall": "ok", "reasons": []},
-            ),
-            self._patch_now(),
-        ):
-            result = main._daily_schedule_health(object())
-
-        self.assertEqual(result["overall"], "error")
-        self.assertIn("OCCURRENCE_DATE_MISMATCH", result["reasons"])
-        read_health.assert_not_called()
-        read_execution.assert_not_called()
-
-    def test_occurrence_health_uses_observability_envelope_not_execution_gate(
-        self,
-    ) -> None:
-        engine = object()
-        heartbeat = self._heartbeat(
-            occurrence_id=91,
-            state="RUNNING",
-        )
-        item = SimpleNamespace(item_id=7)
-        snapshot = SimpleNamespace(
-            occurrence=SimpleNamespace(
-                occurrence_id=91,
-                predict_date="2026-07-24",
-                policy_json={
-                    "daily_coordinator_epoch": dict(
-                        self.epoch_identity
-                    )
-                },
-            ),
-            items=(SimpleNamespace(item=item),),
-        )
-        health_envelope = object()
-        with (
-            patch.object(
-                main,
-                "_daily_coordinator_mode",
-                return_value="ledger",
-            ),
-            patch.object(
-                main,
-                "read_scheduler_heartbeat",
-                return_value=heartbeat,
-            ),
-            patch.object(
-                main,
-                "read_schedule_occurrence_snapshot",
-                return_value=snapshot,
-            ),
-            patch.object(
-                main,
-                "read_schedule_health_envelope",
-                return_value=health_envelope,
-                create=True,
-            ) as read_health,
-            patch.object(
-                main,
-                "read_schedule_execution_envelope",
-                side_effect=AssertionError(
-                    "health must not invoke the strict execution gate"
-                ),
-            ) as read_execution,
-            patch.object(
-                main,
-                "project_daily_health",
-                return_value={"overall": "error", "reasons": []},
-            ) as project,
-            self._patch_now(),
-        ):
-            result = main._daily_schedule_health(engine)
-
-        self.assertEqual(result["overall"], "error")
-        read_health.assert_called_once_with(engine, item_id=7)
-        read_execution.assert_not_called()
-        self.assertEqual(
-            project.call_args.kwargs["execution_envelopes"],
-            (health_envelope,),
-        )
-
-    def test_top_level_health_keeps_disabled_ledger_neutral_in_legacy(
-        self,
-    ) -> None:
+        """兼容字段不得再从 heartbeat/occurrence 表投影状态。"""
         engine = MagicMock()
-        connection = (
-            engine.connect.return_value.__enter__.return_value
-        )
-        connection.execute.return_value.scalar_one.return_value = 1
+        connection = engine.connect.return_value.__enter__.return_value
+        select_one = MagicMock()
+        select_one.scalar_one.return_value = 1
+        connection.execute.side_effect = [
+            select_one,
+            AssertionError("health must not query retired daily ledger"),
+        ]
+
         with (
             patch.object(main, "get_engine", return_value=engine),
-            patch.object(
-                main,
-                "_daily_schedule_health",
-                return_value={
-                    "mode": "legacy",
-                    "overall": "not_enabled",
-                    "reasons": ["LEDGER_ROLLOUT_DISABLED"],
-                },
-            ),
-            patch.object(
-                main,
-                "service_fingerprint_secret",
-                return_value=None,
-            ),
+            patch.object(main, "service_fingerprint_secret", return_value=None),
         ):
             result = main.health()
 
-        self.assertEqual(result["status"], "ok")
-
-
-class DailyScheduleVisibilityProbeTests(unittest.TestCase):
-    observed_at = datetime(
-        2026,
-        7,
-        24,
-        0,
-        0,
-        tzinfo=timezone.utc,
-    )
-    epoch_identity = {
-        "epoch": 7,
-        "mode": "ledger",
-        "record_sha256": "e" * 64,
-    }
-
-    def _identity(self) -> SimpleNamespace:
-        return SimpleNamespace(
-            mode="ledger",
-            policy_payload=lambda: dict(self.epoch_identity),
-        )
-
-    def _heartbeat(
-        self,
-        *,
-        heartbeat_at: datetime | None = None,
-        coordinator_mode: str = "ledger",
-        business_date: str = "2026-07-24",
-    ) -> SimpleNamespace:
-        return SimpleNamespace(
-            service_name="daily-coordinator",
-            state="COMPLETE",
-            occurrence_id=91,
-            heartbeat_at=(
-                heartbeat_at
-                if heartbeat_at is not None
-                else self.observed_at - timedelta(seconds=15)
-            ),
-            details={
-                "coordinator_mode": coordinator_mode,
-                "business_date": business_date,
-                "daily_coordinator_epoch": dict(self.epoch_identity),
+        self.assertEqual("ok", result["status"])
+        self.assertEqual(
+            {
+                "mode": "launchd_one_shot",
+                "overall": "not_enabled",
+                "reasons": ["LEDGER_RETIRED"],
             },
+            result["daily_schedule"],
         )
+        self.assertEqual(1, connection.execute.call_count)
 
-    def _snapshot(
-        self,
-        *,
-        predict_date: str = "2026-07-24",
-    ) -> SimpleNamespace:
-        return SimpleNamespace(
-            occurrence=SimpleNamespace(
-                occurrence_id=91,
-                predict_date=predict_date,
-                policy_json={
-                    "daily_coordinator_epoch": dict(
-                        self.epoch_identity
-                    )
-                },
-            ),
-            items=(),
-        )
-
-    def _probe(self) -> SimpleNamespace:
-        return SimpleNamespace(
-            occurrence_id=91,
-            observed_at=self.observed_at,
-            expected_target_count=2,
-            committed_registry_ids=("a__h1__5Y",),
-            linked_registry_ids=("a__h1__5Y",),
-            db_visible_registry_ids=("a__h1__5Y",),
-            missing_registry_ids=("b__h1__10Y",),
-            receipt_missing_registry_ids=(),
-            source_generation="f" * 64,
-        )
-
-    def _call(
-        self,
-        *,
-        heartbeat: SimpleNamespace | None = None,
-        snapshot: SimpleNamespace | None = None,
-    ) -> dict[str, object]:
-        engine = object()
-        with (
-            patch.object(
-                main,
-                "_daily_coordinator_mode",
-                return_value="ledger",
-            ),
-            patch.object(
-                main,
-                "require_current_daily_coordinator_identity",
-                return_value=self._identity(),
-                create=True,
-            ),
-            patch.object(main, "get_engine", return_value=engine),
-            patch.object(
-                main,
-                "read_scheduler_heartbeat",
-                return_value=heartbeat or self._heartbeat(),
-            ),
-            patch.object(
-                main,
-                "read_schedule_occurrence_snapshot",
-                return_value=snapshot or self._snapshot(),
-            ),
-            patch.object(
-                main,
-                "read_schedule_api_visibility_probe",
-                return_value=self._probe(),
-                create=True,
-            ),
-        ):
-            return main.api_daily_schedule_visibility(response=Response())
-
-    def test_probe_is_uncached_and_does_not_relabel_db_receipt_as_api_timestamp(
+    def test_ledger_visibility_route_and_health_projection_are_removed(
         self,
     ) -> None:
-        response = Response()
-        heartbeat = self._heartbeat()
-        probe = self._probe()
-        engine = object()
-        with (
-            patch.object(
-                main,
-                "_daily_coordinator_mode",
-                return_value="ledger",
-            ),
-            patch.object(
-                main,
-                "require_current_daily_coordinator_identity",
-                return_value=self._identity(),
-                create=True,
-            ),
-            patch.object(main, "get_engine", return_value=engine),
-            patch.object(
-                main,
-                "read_scheduler_heartbeat",
-                return_value=heartbeat,
-            ),
-            patch.object(
-                main,
-                "read_schedule_occurrence_snapshot",
-                return_value=self._snapshot(),
-            ),
-            patch.object(
-                main,
-                "read_schedule_api_visibility_probe",
-                return_value=probe,
-                create=True,
-            ) as read_probe,
-        ):
-            result = main.api_daily_schedule_visibility(
-                response=response,
-            )
-
-        read_probe.assert_called_once_with(engine, occurrence_id=91)
-        self.assertEqual(response.headers["Cache-Control"], "no-store")
-        self.assertEqual(
-            response.headers["X-Prediction-Visibility"],
-            "uncached-db-probe",
-        )
-        self.assertEqual(result["probe_completed"], True)
-        self.assertEqual(result["predict_date"], "2026-07-24")
-        self.assertEqual(result["db_visible"], 1)
-        self.assertEqual(result["missing"], 1)
-        self.assertEqual(
-            result["api_receipt_semantics"],
-            "caller_must_receive_this_uncached_response",
-        )
-        self.assertNotIn("api_visible_at", result)
-
-    def test_epoch_mismatch_returns_503_before_visibility_db_probe(
-        self,
-    ) -> None:
-        heartbeat = self._heartbeat()
-        heartbeat.details["daily_coordinator_epoch"] = {
-            **self.epoch_identity,
-            "record_sha256": "f" * 64,
-        }
-        with (
-            patch.object(
-                main,
-                "_daily_coordinator_mode",
-                return_value="ledger",
-            ),
-            patch.object(
-                main,
-                "require_current_daily_coordinator_identity",
-                return_value=self._identity(),
-                create=True,
-            ),
-            patch.object(main, "get_engine", return_value=object()),
-            patch.object(
-                main,
-                "read_scheduler_heartbeat",
-                return_value=heartbeat,
-            ),
-            patch.object(
-                main,
-                "read_schedule_occurrence_snapshot",
-            ) as read_snapshot,
-            patch.object(
-                main,
-                "read_schedule_api_visibility_probe",
-            ) as read_probe,
-            self.assertRaises(HTTPException) as caught,
-        ):
-            main.api_daily_schedule_visibility(response=Response())
-
-        self.assertEqual(caught.exception.status_code, 503)
-        read_snapshot.assert_not_called()
-        read_probe.assert_not_called()
-
-    def test_probe_rejects_stale_scheduler_heartbeat(self) -> None:
-        stale = self._heartbeat(
-            heartbeat_at=self.observed_at - timedelta(seconds=121),
-        )
-
-        with self.assertRaises(HTTPException) as caught:
-            self._call(heartbeat=stale)
-
-        self.assertEqual(caught.exception.status_code, 503)
-
-    def test_probe_rejects_previous_day_occurrence(self) -> None:
-        with self.assertRaises(HTTPException) as caught:
-            self._call(snapshot=self._snapshot(predict_date="2026-07-23"))
-
-        self.assertEqual(caught.exception.status_code, 503)
-
-    def test_probe_rejects_heartbeat_mode_or_business_date_mismatch(
-        self,
-    ) -> None:
-        mismatches = (
-            self._heartbeat(coordinator_mode="legacy"),
-            self._heartbeat(business_date="2026-07-23"),
-        )
-        for heartbeat in mismatches:
-            with self.subTest(details=heartbeat.details):
-                with self.assertRaises(HTTPException) as caught:
-                    self._call(heartbeat=heartbeat)
-                self.assertEqual(caught.exception.status_code, 503)
+        paths = {getattr(route, "path", None) for route in main.app.routes}
+        self.assertNotIn("/api/daily-schedule/visibility", paths)
+        self.assertFalse(hasattr(main, "_daily_schedule_health"))
 
 
 class MetricsCompareRemovedTests(unittest.TestCase):
@@ -750,43 +239,6 @@ class TriggerEndpointTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _coordinator_identity(
-        mode: str,
-    ) -> SimpleNamespace:
-        payload = {
-            "epoch": 2,
-            "mode": mode,
-            "record_sha256": "2" * 64,
-        }
-        return SimpleNamespace(
-            mode=mode,
-            policy_payload=lambda: dict(payload),
-        )
-
-    @staticmethod
-    def _occurrence_snapshot(
-        config: SimpleNamespace,
-        identity: SimpleNamespace,
-    ) -> SimpleNamespace:
-        return SimpleNamespace(
-            occurrence=SimpleNamespace(
-                policy_json={
-                    "daily_coordinator_epoch":
-                        identity.policy_payload(),
-                }
-            ),
-            items=(
-                SimpleNamespace(
-                    item=SimpleNamespace(
-                        base_scheme_id=config.scheme_id,
-                        runtime_type=config.runtime_type,
-                        scheme_version=config.scheme_version,
-                    )
-                ),
-            ),
-        )
-
-    @staticmethod
     def _registry_row(
         config: SimpleNamespace,
         *,
@@ -816,22 +268,16 @@ class TriggerEndpointTests(unittest.TestCase):
         self,
     ) -> None:
         scenarios = (
-            (
-                self._canonical(
-                    "cgb_a4_fundseason_1y",
-                    "04e7af163fb0",
-                ),
-                "legacy",
+            self._canonical(
+                "cgb_a4_fundseason_1y",
+                "04e7af163fb0",
             ),
-            (
-                self._canonical(
-                    "ten_y_t5_maj3_k3_ic_static_v1",
-                    "c54b90bcafa7",
-                ),
-                "legacy",
+            self._canonical(
+                "ten_y_t5_maj3_k3_ic_static_v1",
+                "c54b90bcafa7",
             ),
         )
-        for config, mode in scenarios:
+        for config in scenarios:
             background = BackgroundTasks()
             registry = self._registry_row(config)
             with (
@@ -841,11 +287,6 @@ class TriggerEndpointTests(unittest.TestCase):
                     main,
                     "list_schemes",
                     return_value=[registry],
-                ),
-                patch.object(
-                    main,
-                    "_daily_coordinator_mode",
-                    return_value=mode,
                 ),
                 patch(
                     "scheduler.direct_prediction.discover_schemes",
@@ -927,10 +368,6 @@ class TriggerEndpointTests(unittest.TestCase):
                 "scheduler.direct_prediction.discover_schemes",
                 return_value=[config],
             ),
-            patch.object(
-                main,
-                "find_schedule_occurrence_id",
-            ) as occurrence,
         ):
             with self.assertRaises(HTTPException) as raised:
                 main.api_trigger_scheme(
@@ -943,7 +380,6 @@ class TriggerEndpointTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.status_code, 503)
         self.assertEqual(background.tasks, [])
-        occurrence.assert_not_called()
 
     def test_trigger_preflight_rejects_composite_and_runtime_drift(
         self,
@@ -991,91 +427,10 @@ class TriggerEndpointTests(unittest.TestCase):
             self.assertEqual(raised.exception.status_code, 503)
             self.assertEqual(background.tasks, [])
 
-    def test_ledger_daily_force_and_missing_occurrence_identity_are_conflicts(
-        self,
-    ) -> None:
-        config = self._canonical(
-            "ten_y_t5_maj3_k3_ic_static_v1",
-            "c54b90bcafa7",
-        )
-        registry = self._registry_row(config)
-        identity = self._coordinator_identity("ledger")
-        missing_snapshot = SimpleNamespace(
-            occurrence=SimpleNamespace(
-                policy_json={
-                    "daily_coordinator_epoch":
-                        identity.policy_payload(),
-                }
-            ),
-            items=(),
-        )
-        scenarios = (
-            (
-                True,
-                self._occurrence_snapshot(config, identity),
-                409,
-            ),
-            (False, missing_snapshot, 503),
-        )
-        for force, snapshot, status_code in scenarios:
-            background = BackgroundTasks()
-            with (
-                self.subTest(force=force),
-                patch.object(main, "get_engine", return_value=object()),
-                patch.object(
-                    main,
-                    "list_schemes",
-                    return_value=[registry],
-                ),
-                patch(
-                    "scheduler.direct_prediction.discover_schemes",
-                    return_value=[config],
-                ),
-                patch.object(
-                    main,
-                    "_daily_coordinator_mode",
-                    return_value="ledger",
-                ),
-                patch.object(
-                    main,
-                    "require_current_daily_coordinator_identity",
-                    return_value=identity,
-                ),
-                patch.object(
-                    main,
-                    "find_schedule_occurrence_id",
-                    return_value=42,
-                ),
-                patch.object(
-                    main,
-                    "read_schedule_occurrence_snapshot",
-                    return_value=snapshot,
-                ),
-                patch.object(
-                    main,
-                    "assert_daily_coordinator_epoch_matches_policy",
-                    return_value=identity,
-                ),
-            ):
-                with self.assertRaises(HTTPException) as raised:
-                    main.api_trigger_scheme(
-                        registry["scheme_id"],
-                        main.TriggerRequest(
-                            predict_date="2026-07-27",
-                            force=force,
-                        ),
-                        background,
-                    )
-
-            self.assertEqual(
-                raised.exception.status_code,
-                status_code,
-            )
-            self.assertEqual(background.tasks, [])
-
     def test_trigger_preflight_maps_infrastructure_failures_to_503(
         self,
     ) -> None:
+        """手动 trigger 的数据库连接失败仍须 fail-closed。"""
         background = BackgroundTasks()
         with patch.object(
             main,
@@ -1088,70 +443,9 @@ class TriggerEndpointTests(unittest.TestCase):
                     main.TriggerRequest(),
                     background,
                 )
+
         self.assertEqual(raised.exception.status_code, 503)
         self.assertEqual(background.tasks, [])
-
-        config = self._canonical(
-            "one_y_t5_liq_excess_a_v1",
-            "8d583560c9f1",
-        )
-        registry = self._registry_row(config)
-        for failing_call in ("mode", "occurrence"):
-            background = BackgroundTasks()
-            identity = self._coordinator_identity("ledger")
-            with (
-                self.subTest(failing_call=failing_call),
-                patch.object(
-                    main,
-                    "get_engine",
-                    return_value=object(),
-                ),
-                patch.object(
-                    main,
-                    "list_schemes",
-                    return_value=[registry],
-                ),
-                patch(
-                    "scheduler.direct_prediction.discover_schemes",
-                    return_value=[config],
-                ),
-                patch.object(
-                    main,
-                    "_daily_coordinator_mode",
-                    return_value="ledger",
-                    side_effect=(
-                        RuntimeError("mode unavailable")
-                        if failing_call == "mode"
-                        else None
-                    ),
-                ),
-                patch.object(
-                    main,
-                    "require_current_daily_coordinator_identity",
-                    return_value=identity,
-                ),
-                patch.object(
-                    main,
-                    "find_schedule_occurrence_id",
-                    return_value=42,
-                    side_effect=(
-                        RuntimeError("occurrence unavailable")
-                        if failing_call == "occurrence"
-                        else None
-                    ),
-                ),
-            ):
-                with self.assertRaises(HTTPException) as raised:
-                    main.api_trigger_scheme(
-                        registry["scheme_id"],
-                        main.TriggerRequest(
-                            predict_date="2026-07-27"
-                        ),
-                        background,
-                    )
-
-            self.assertEqual(raised.exception.status_code, 503)
-            self.assertEqual(background.tasks, [])
 
     def test_trigger_preflight_maps_identity_drift_to_503(
         self,
@@ -1219,10 +513,6 @@ class TriggerEndpointTests(unittest.TestCase):
                 side_effect=[[config], [drifted]],
             ),
             patch.object(main, "run_prediction_job") as prediction,
-            patch.object(
-                main,
-                "run_daily_operator_recovery_job",
-            ) as recovery,
             self.assertLogs(main.logger, level="ERROR") as logs,
         ):
             main.api_trigger_scheme(
@@ -1236,7 +526,6 @@ class TriggerEndpointTests(unittest.TestCase):
             task.func(*task.args, **task.kwargs)
 
         prediction.assert_not_called()
-        recovery.assert_not_called()
         self.assertTrue(
             any(
                 "admission revalidation failed" in message
@@ -1254,235 +543,6 @@ class TriggerEndpointTests(unittest.TestCase):
                     "missing", main.TriggerRequest(), BackgroundTasks()
                 )
             self.assertEqual(ctx.exception.status_code, 404)
-
-    def test_daily_trigger_rejects_epoch_drift_before_background_enqueue(
-        self,
-    ) -> None:
-        background = BackgroundTasks()
-        with (
-            patch.object(main, "get_engine", return_value=object()),
-            patch.object(
-                main,
-                "list_schemes",
-                return_value=[
-                    {
-                        "scheme_id": "demo_daily__h1__10Y",
-                        "base_scheme_id": "demo_daily",
-                        "frequency": "daily",
-                        "status": "active",
-                    }
-                ],
-            ),
-            patch.object(
-                main,
-                "_daily_coordinator_mode",
-                return_value="ledger",
-            ),
-            patch.object(
-                main,
-                "require_current_daily_coordinator_identity",
-                side_effect=RuntimeError("epoch changed"),
-            ),
-        ):
-            with self.assertRaises(HTTPException) as raised:
-                main.api_trigger_scheme(
-                    "demo_daily__h1__10Y",
-                    main.TriggerRequest(predict_date="2026-07-24"),
-                    background,
-                )
-
-        self.assertEqual(raised.exception.status_code, 503)
-        self.assertEqual(background.tasks, [])
-
-    def test_daily_trigger_rejects_old_occurrence_under_new_epoch(
-        self,
-    ) -> None:
-        background = BackgroundTasks()
-        current = SimpleNamespace(
-            mode="ledger",
-            policy_payload=lambda: {
-                "epoch": 2,
-                "mode": "ledger",
-                "record_sha256": "2" * 64,
-            },
-        )
-        frozen = SimpleNamespace(
-            mode="ledger",
-            policy_payload=lambda: {
-                "epoch": 1,
-                "mode": "ledger",
-                "record_sha256": "1" * 64,
-            },
-        )
-        snapshot = SimpleNamespace(
-            occurrence=SimpleNamespace(
-                policy_json={
-                    "daily_coordinator_epoch":
-                        frozen.policy_payload(),
-                }
-            )
-        )
-        with (
-            patch.object(main, "get_engine", return_value=object()),
-            patch.object(
-                main,
-                "list_schemes",
-                return_value=[
-                    {
-                        "scheme_id": "demo_daily__h1__10Y",
-                        "base_scheme_id": "demo_daily",
-                        "frequency": "daily",
-                        "status": "active",
-                    }
-                ],
-            ),
-            patch.object(
-                main,
-                "_daily_coordinator_mode",
-                return_value="ledger",
-            ),
-            patch.object(
-                main,
-                "require_current_daily_coordinator_identity",
-                return_value=current,
-            ),
-            patch.object(
-                main,
-                "find_schedule_occurrence_id",
-                return_value=42,
-            ),
-            patch.object(
-                main,
-                "read_schedule_occurrence_snapshot",
-                return_value=snapshot,
-            ),
-            patch.object(
-                main,
-                "assert_daily_coordinator_epoch_matches_policy",
-                return_value=frozen,
-            ),
-        ):
-            with self.assertRaises(HTTPException) as raised:
-                main.api_trigger_scheme(
-                    "demo_daily__h1__10Y",
-                    main.TriggerRequest(predict_date="2026-07-24"),
-                    background,
-                )
-
-        self.assertEqual(raised.exception.status_code, 503)
-        self.assertEqual(background.tasks, [])
-
-    def test_daily_trigger_rejects_missing_occurrence_after_not_before(
-        self,
-    ) -> None:
-        background = BackgroundTasks()
-        current = SimpleNamespace(
-            mode="ledger",
-            policy_payload=lambda: {
-                "epoch": 2,
-                "mode": "ledger",
-                "record_sha256": "2" * 64,
-            },
-        )
-        with (
-            patch.object(main, "get_engine", return_value=object()),
-            patch.object(
-                main,
-                "list_schemes",
-                return_value=[
-                    {
-                        "scheme_id": "demo_daily__h1__10Y",
-                        "base_scheme_id": "demo_daily",
-                        "frequency": "daily",
-                        "status": "active",
-                    }
-                ],
-            ),
-            patch.object(
-                main,
-                "_daily_coordinator_mode",
-                return_value="ledger",
-            ),
-            patch.object(
-                main,
-                "require_current_daily_coordinator_identity",
-                return_value=current,
-            ),
-            patch.object(
-                main,
-                "find_schedule_occurrence_id",
-                return_value=None,
-            ),
-        ):
-            with self.assertRaises(HTTPException) as raised:
-                main.api_trigger_scheme(
-                    "demo_daily__h1__10Y",
-                    main.TriggerRequest(predict_date="2020-01-01"),
-                    background,
-                )
-
-        self.assertEqual(raised.exception.status_code, 503)
-        self.assertEqual(background.tasks, [])
-
-    def test_daily_trigger_rejects_missing_occurrence_before_not_before(
-        self,
-    ) -> None:
-        background = BackgroundTasks()
-        current = SimpleNamespace(
-            mode="ledger",
-            policy_payload=lambda: {
-                "epoch": 2,
-                "mode": "ledger",
-                "record_sha256": "2" * 64,
-            },
-        )
-
-        class BeforeNotBefore(datetime):
-            @classmethod
-            def now(cls, tz=None):
-                value = cls(2026, 7, 24, 6, 0)
-                return value.replace(tzinfo=tz) if tz is not None else value
-
-        with (
-            patch.object(main, "get_engine", return_value=object()),
-            patch.object(
-                main,
-                "list_schemes",
-                return_value=[
-                    {
-                        "scheme_id": "demo_daily__h1__10Y",
-                        "base_scheme_id": "demo_daily",
-                        "frequency": "daily",
-                        "status": "active",
-                    }
-                ],
-            ),
-            patch.object(
-                main,
-                "_daily_coordinator_mode",
-                return_value="ledger",
-            ),
-            patch.object(
-                main,
-                "require_current_daily_coordinator_identity",
-                return_value=current,
-            ),
-            patch.object(
-                main,
-                "find_schedule_occurrence_id",
-                return_value=None,
-            ),
-            patch.object(main, "datetime", BeforeNotBefore),
-        ):
-            with self.assertRaises(HTTPException) as raised:
-                main.api_trigger_scheme(
-                    "demo_daily__h1__10Y",
-                    main.TriggerRequest(predict_date="2026-07-24"),
-                    background,
-                )
-
-        self.assertEqual(raised.exception.status_code, 503)
-        self.assertEqual(background.tasks, [])
 
     def test_trigger_known_scheme_is_accepted(self) -> None:
         config = self._canonical(
@@ -1579,84 +639,9 @@ class TriggerEndpointTests(unittest.TestCase):
         job_mock.assert_called_once()
         self.assertEqual(job_mock.call_args.kwargs.get("force"), True)
 
-    def test_run_trigger_routes_daily_recovery_through_ledger_coordinator(
-        self,
-    ) -> None:
-        config = self._canonical(
-            "ten_y_t5_maj3_k3_ic_static_v1",
-            "c54b90bcafa7",
-        )
-        registry = self._registry_row(config)
-        identity = self._coordinator_identity("ledger")
-        snapshot = self._occurrence_snapshot(
-            config,
-            identity,
-        )
-        with (
-            patch.object(main, "get_engine", return_value=object()),
-            patch.object(
-                main,
-                "list_schemes",
-                return_value=[registry],
-            ),
-            patch(
-                "scheduler.direct_prediction.discover_schemes",
-                return_value=[config],
-            ),
-            patch.object(
-                main,
-                "_daily_coordinator_mode",
-                return_value="ledger",
-            ),
-            patch.object(
-                main,
-                "require_current_daily_coordinator_identity",
-                return_value=identity,
-            ),
-            patch.object(
-                main,
-                "find_schedule_occurrence_id",
-                return_value=42,
-            ),
-            patch.object(
-                main,
-                "read_schedule_occurrence_snapshot",
-                return_value=snapshot,
-            ),
-            patch.object(
-                main,
-                "assert_daily_coordinator_epoch_matches_policy",
-                return_value=identity,
-            ),
-            patch.object(
-                main,
-                "run_daily_operator_recovery_job",
-            ) as recovery,
-            patch.object(main, "run_prediction_job") as legacy,
-        ):
-            main._run_trigger(
-                registry["scheme_id"],
-                "2026-07-24",
-                False,
-                None,
-            )
-
-        recovery.assert_called_once_with(
-            config.scheme_id,
-            run_date="2026-07-24",
-            algo_env=main.DEFAULT_ALGO_ENV,
-        )
-        legacy.assert_not_called()
-
-
 class AdminRegistrySyncEndpointTests(unittest.TestCase):
     def test_admin_sync_runs_sync_with_force(self) -> None:
         with (
-            patch.object(
-                main,
-                "_daily_coordinator_mode",
-                return_value="legacy",
-            ),
             patch.object(main, "get_engine", return_value=object()),
             patch.object(
                 main,
@@ -1669,35 +654,9 @@ class AdminRegistrySyncEndpointTests(unittest.TestCase):
         self.assertTrue(sync_mock.call_args.kwargs.get("force"))
         self.assertTrue(result["synced"])
 
-    def test_admin_sync_is_disabled_while_ledger_mode_is_active(
-        self,
-    ) -> None:
-        with (
-            patch.object(
-                main,
-                "_daily_coordinator_mode",
-                return_value="ledger",
-            ),
-            patch.object(
-                main,
-                "sync_registry_from_configs",
-            ) as sync_mock,
-            self.assertRaises(main.HTTPException) as raised,
-        ):
-            main.api_admin_registry_sync()
-
-        self.assertEqual(raised.exception.status_code, 409)
-        sync_mock.assert_not_called()
-
-
 class StartupSyncTests(unittest.TestCase):
     def test_startup_runs_registry_sync_once(self) -> None:
         with (
-            patch.object(
-                main,
-                "_daily_coordinator_mode",
-                return_value="legacy",
-            ),
             patch.object(main, "get_engine", return_value=object()),
             patch.object(
                 main,
@@ -1707,32 +666,8 @@ class StartupSyncTests(unittest.TestCase):
             main._sync_registry_on_startup()
         sync_mock.assert_called_once()
 
-    def test_ledger_startup_does_not_mutate_registry_before_admission(
-        self,
-    ) -> None:
-        with (
-            patch.object(
-                main,
-                "_daily_coordinator_mode",
-                return_value="ledger",
-            ),
-            patch.object(main, "get_engine", return_value=object()),
-            patch.object(
-                main,
-                "sync_registry_from_configs",
-            ) as sync_mock,
-        ):
-            main._sync_registry_on_startup()
-
-        sync_mock.assert_not_called()
-
     def test_startup_swallows_sync_errors(self) -> None:
         with (
-            patch.object(
-                main,
-                "_daily_coordinator_mode",
-                return_value="legacy",
-            ),
             patch.object(main, "get_engine", return_value=object()),
             patch.object(
                 main,

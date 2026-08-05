@@ -1043,6 +1043,34 @@ migration prefix 更新为 `001..019`，不改变 replay、ledger、dispatch 或
 **状态：** repo-only 已准备并完成隔离模拟；尚未对候选或生产数据库执行 018/019 apply、recovery 或
 `DROP TABLE`。该不可逆写入仍须在独立生产授权、只读 inspect 及精确 identity/digest fence 后执行。
 
+### G8.13 — backend ledger 管理面切断（2026-08-05，repo-only）
+
+**目标：** 在自然 launchd one-shot writer 保持不变的前提下，删除 backend/direct 单方案入口仍可
+读取或路由到 daily ledger、occurrence、epoch 与 daily recovery 的管理面。`/api/health` 保留
+`daily_schedule` 兼容字段，但固定为 `launchd_one_shot / not_enabled / LEDGER_RETIRED`；不再把
+历史 ledger 投影伪装为当前生产健康。
+
+**边界：** 删除仅 ledger 专用的 `/api/daily-schedule/visibility`、health projection、dashboard
+generation receipt 读取，以及 backend manual trigger 的 `DAILY_LEDGER` / occurrence / epoch / recovery
+分支。manual trigger 继续逐方案做 Registry、生命周期和 `DIRECT_SCHEDULED` 精确准入，再直接调用
+`run_prediction_job`；startup 与受保护 registry sync 继续同步/预热，不再按 coordinator mode 分支。
+`scheduler.direct_prediction` 同步删除 daily mode gate 与 recovery API。不得改自然 writer、V2 Gate、
+算法、业务表、installed plist、launchd 或服务；底层 legacy ledger/epoch/runtime 与其数据库表留待后续
+切片及独立删表授权。
+
+**TDD 与验证：**
+
+- [x] RED：新 health、route removal、direct daily 无 mode gate 与 AST boundary 测试在旧实现得到
+  `5 failed, 1 passed`，精确命中旧 health/visibility、daily mode/recovery 和 ledger import。
+- [x] GREEN：health fake engine 只允许一次 `SELECT 1`，固定兼容字段；visibility/projection 与
+  recovery 分支删除；相关 backend/direct/service/architecture/launchd selector 复跑为
+  `84 passed, 15 subtests passed`（仅现有 FastAPI `on_event` 弃用警告）。
+- [x] 独立规格审查确认未影响 Registry/lifecycle/V2/direct 准入，并恢复非 ledger 的
+  `get_engine` 不可用即 `503` 回归；独立质量审查通过。`git diff --check`、target AST/禁止符号
+  检查与 `compileall` 均通过。
+
+**状态：** 已完成（repo-only）；不代表数据库 ledger 表、installed 控制面或自然生产调度发生任何变化。
+
 ---
 
 ## 15. 执行中的统一停止条件

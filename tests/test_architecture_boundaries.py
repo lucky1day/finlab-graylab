@@ -305,6 +305,47 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
             "direct helper must not retain resident scheduler symbols",
         )
 
+    def test_backend_direct_paths_do_not_retain_daily_ledger_management(
+        self,
+    ) -> None:
+        """backend 手动触发与健康 API 不得再导入旧 ledger 管理面。"""
+        project_root = Path(__file__).resolve().parents[1]
+        paths = (
+            project_root / "backend" / "main.py",
+            project_root / "scheduler" / "direct_prediction.py",
+        )
+        forbidden_names = {
+            "DAILY_LEDGER",
+            "_daily_coordinator_mode",
+            "run_daily_operator_recovery_job",
+            "read_dashboard_source_generation",
+            "read_schedule_occurrence_snapshot",
+            "read_scheduler_heartbeat",
+            "require_current_daily_coordinator_identity",
+        }
+
+        for path in paths:
+            with self.subTest(path=path.relative_to(project_root)):
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+                imported_names = {
+                    alias.asname or alias.name
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.ImportFrom)
+                    for alias in node.names
+                }
+                defined_names = {
+                    node.name
+                    for node in ast.walk(tree)
+                    if isinstance(
+                        node,
+                        (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+                    )
+                }
+                self.assertFalse(
+                    forbidden_names & (imported_names | defined_names),
+                    path.read_text(encoding="utf-8"),
+                )
+
     def test_legacy_resident_scheduler_module_is_absent_from_current_paths(
         self,
     ) -> None:

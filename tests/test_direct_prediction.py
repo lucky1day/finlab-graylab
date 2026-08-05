@@ -88,11 +88,6 @@ class DirectPredictionTests(unittest.TestCase):
             ),
             patch.object(
                 direct_prediction,
-                "_daily_coordinator_mode",
-                return_value="legacy",
-            ),
-            patch.object(
-                direct_prediction,
                 "_is_trading_day",
                 return_value=False,
             ) as trading_day,
@@ -126,11 +121,6 @@ class DirectPredictionTests(unittest.TestCase):
                 "discover_schemes",
                 return_value=[config],
             ),
-            patch.object(
-                direct_prediction,
-                "_daily_coordinator_mode",
-                return_value="legacy",
-            ),
             patch.object(direct_prediction, "_is_trading_day", return_value=True),
             patch.object(
                 direct_prediction,
@@ -149,34 +139,14 @@ class DirectPredictionTests(unittest.TestCase):
             algo_env=direct_prediction.DEFAULT_ALGO_ENV,
         )
 
-    def test_ledger_mode_rejects_direct_daily_before_execution(self) -> None:
+    def test_direct_daily_path_has_no_ledger_mode_gate(self) -> None:
         direct_prediction = self._module()
-        config = _cfg("daily_demo", frequency="daily")
-        with (
-            patch.object(
-                direct_prediction,
-                "discover_schemes",
-                return_value=[config],
-            ),
-            patch.object(
-                direct_prediction,
-                "_daily_coordinator_mode",
-                return_value="ledger",
-            ),
-            patch.object(
-                direct_prediction,
-                "_run_prediction_config",
-            ) as run_config,
-            self.assertRaisesRegex(
-                RuntimeError,
-                "direct daily prediction.*ledger coordinator",
-            ),
-        ):
-            direct_prediction.run_prediction_job(
-                "daily_demo", run_date="2026-07-24"
-            )
-
-        run_config.assert_not_called()
+        self.assertFalse(
+            hasattr(direct_prediction, "_daily_coordinator_mode")
+        )
+        self.assertFalse(
+            hasattr(direct_prediction, "run_daily_operator_recovery_job")
+        )
 
     def test_blackbox_v2_requires_readiness_but_native_does_not(self) -> None:
         direct_prediction = self._module()
@@ -193,11 +163,6 @@ class DirectPredictionTests(unittest.TestCase):
                 direct_prediction,
                 "discover_schemes",
                 side_effect=[[blackbox], [native]],
-            ),
-            patch.object(
-                direct_prediction,
-                "_daily_coordinator_mode",
-                return_value="legacy",
             ),
             patch.object(direct_prediction, "_is_trading_day", return_value=True),
             patch.object(
@@ -379,11 +344,6 @@ class DirectPredictionTests(unittest.TestCase):
                     ),
                     patch.object(
                         direct_prediction,
-                        "_daily_coordinator_mode",
-                        return_value="legacy",
-                    ),
-                    patch.object(
-                        direct_prediction,
                         "_run_prediction_config",
                         return_value=expected,
                     ) as run_config,
@@ -464,47 +424,3 @@ class DirectPredictionTests(unittest.TestCase):
                     "2026-06-15",
                     algo_env=direct_prediction.DEFAULT_ALGO_ENV,
                 )
-
-    def test_operator_recovery_requires_ledger_and_routes_to_runtime(self) -> None:
-        direct_prediction = self._module()
-        with (
-            patch.object(
-                direct_prediction,
-                "_daily_coordinator_mode",
-                return_value="legacy",
-            ),
-            patch("scheduler.daily_runtime.run_operator_recovery") as recovery,
-            self.assertRaisesRegex(RuntimeError, "ledger coordinator mode"),
-        ):
-            direct_prediction.run_daily_operator_recovery_job(
-                "daily_demo",
-                run_date="2026-07-24",
-            )
-        recovery.assert_not_called()
-
-        with (
-            patch.object(
-                direct_prediction,
-                "_daily_coordinator_mode",
-                return_value="ledger",
-            ),
-            patch(
-                "scheduler.daily_runtime.run_operator_recovery",
-                return_value="recovered",
-            ) as recovery,
-        ):
-            result = direct_prediction.run_daily_operator_recovery_job(
-                "daily_demo",
-                run_date="2026-07-24",
-            )
-
-        self.assertEqual("recovered", result)
-        recovery.assert_called_once_with(
-            scheme_id="daily_demo",
-            run_date="2026-07-24",
-            algo_env=direct_prediction.DEFAULT_ALGO_ENV,
-        )
-
-
-if __name__ == "__main__":
-    unittest.main()

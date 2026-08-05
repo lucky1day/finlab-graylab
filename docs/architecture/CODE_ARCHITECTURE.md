@@ -152,9 +152,10 @@ launchd + plist 是真实生产调度控制面。任务是否挂载、触发时�
 物理删除。后续不得仅新增 Python job 或直调入口就宣称进入生产调度。
 
 当前目标入口由 launchd 的一次性 plist 触发：refresh、daily、weekly、monthly 和 actuals
-各自只有一个 writer。常驻 APScheduler 已不在仓库中；ledger/occurrence/epoch 仅作为现存代码
-或历史定位对象，不能被加入新的或过渡生产路径；daily-gray 与 v2-preflight 的 repo writer/
-template 已退役并移除。完整治理规则见[生产信号与调度治理](PRODUCTION_SCHEDULING_GOVERNANCE.md)。
+各自只有一个 writer。常驻 APScheduler 已不在仓库中；ledger/occurrence/epoch 仅作为待退役的
+legacy 实现或历史定位对象，不能被加入新的或过渡生产路径。backend health 与手动 direct
+trigger 已不读取 ledger、occurrence 或 epoch，也不再路由 daily recovery；daily-gray 与
+v2-preflight 的 repo writer/template 已退役并移除。完整治理规则见[生产信号与调度治理](PRODUCTION_SCHEDULING_GOVERNANCE.md)。
 
 ```text
 launchd installed plist（单一 cadence writer）
@@ -350,7 +351,7 @@ manifest 校验、schema inspect、pending apply 与 `APPLYING` recovery 都在�
 | `scheduler/daily_control_plane_probe.py` | L3 | LaunchAgent、全日期账本和算法进程的共用只读静默探针 | `probe_launchagent_service_states`、`probe_daily_transition_quiescence` |
 | `scheduler/{daily,weekly,monthly}_actuals_updater.py` | L3 | actuals 刷新 | `update_*_actuals` |
 | `scheduler/actuals_runner.py` | L3 | launchd one-shot actuals 刷新 | `run_actuals_job`、`main` |
-| `scheduler/direct_prediction.py` | L3 | backend 手动单方案预测/日频恢复的精确准入与执行闭包；不含 APScheduler、cron、Registry sync 或 DataBridge publish | `run_prediction_job`、`run_daily_operator_recovery_job` |
+| `scheduler/direct_prediction.py` | L3 | backend 手动单方案预测的精确准入与执行闭包；不含 APScheduler、cron、daily recovery、Registry sync 或 DataBridge publish | `run_prediction_job` |
 | `backend/main.py` `services.py` `db.py` | L4 | 只读 API + 静态前端 serve | `/api/*`、`scheme_metrics` |
 | `harness/daily_real_replay.py` | L5 | 历史隔离诊断 runtime；只接受已验证隔离 Engine 与冻结 generation，不定义当前生产规模或准入 | `open_real_replay_generations`、`RealReplayRuntime` |
 | `harness/daily_real_replay_operator.py` | L5 | 隔离诊断的只读控制面预检与锁会话；不参与日常 production owner 判定 | `run_real_replay_preflight` |

@@ -29,9 +29,6 @@ from scheduler.executor import DEFAULT_ALGO_ENV, SchemeRunResult, execute_scheme
 from scheduler.repository import create_engine_from_env
 from scheduler.v2_daily_gate import V2DailyGateBlocked, require_v2_daily_ready
 from shared.data_bridge.refresh import DataBridgeRefreshConfig
-from shared.daily_coordinator_mode import (
-    bootstrap_deployment_daily_coordinator_mode,
-)
 
 
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -73,16 +70,6 @@ def _env_int(name: str, default: int, *, min_value: int) -> int:
     if value < min_value:
         raise ValueError(f"{name} must be an integer >= {min_value}, got {value}")
     return value
-
-
-def _daily_coordinator_mode() -> str:
-    return bootstrap_deployment_daily_coordinator_mode()
-
-
-def _require_ledger_runtime_mode() -> None:
-    """外层只拒绝 mode 漂移；确定性 authority 由 runtime 内层执行。"""
-    if _daily_coordinator_mode() != "ledger":
-        raise RuntimeError("daily ledger entry requires ledger coordinator mode")
 
 
 def _configure_prediction_semaphore(max_concurrency: int) -> None:
@@ -308,30 +295,9 @@ def run_prediction_job(
             exc,
         )
         return _platform_configuration_failure(scheme_id, str(exc))
-    if cfg.frequency == "daily" and _daily_coordinator_mode() != "legacy":
-        raise RuntimeError(
-            "direct daily prediction is disabled; use the ledger coordinator"
-        )
     return _run_prediction_config(
         cfg,
         predict_date,
         algo_env=algo_env,
         force=force,
-    )
-
-
-def run_daily_operator_recovery_job(
-    scheme_id: str,
-    run_date: str | date | None = None,
-    *,
-    algo_env: str = DEFAULT_ALGO_ENV,
-):
-    """将 backend 日频单方案恢复请求路由到同一 occurrence 协调器。"""
-    _require_ledger_runtime_mode()
-    from scheduler.daily_runtime import run_operator_recovery
-
-    return run_operator_recovery(
-        scheme_id=scheme_id,
-        run_date=run_date,
-        algo_env=algo_env,
     )

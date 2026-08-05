@@ -8,14 +8,12 @@ import re
 import secrets
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, time as wall_time, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from threading import Lock
-from typing import Any, Literal, Mapping
+from typing import Any, Literal
 from urllib.parse import parse_qsl, urlsplit
 from uuid import uuid4
-from zoneinfo import ZoneInfo
 
 from fastapi import (
     BackgroundTasks,
@@ -61,40 +59,19 @@ from backend.services import (
 )
 from scheduler.executor import DEFAULT_ALGO_ENV
 from scheduler.blackbox_scheduler_admission import (
-    DAILY_LEDGER,
     DIRECT_SCHEDULED,
     ScheduledPredictionConfigurationError,
     ScheduledPredictionControlPlaneDenied,
     require_scheduled_prediction_control_plane,
 )
-from scheduler.daily_health import (
-    project_daily_health,
-    project_scheduler_heartbeat,
-)
 from scheduler.direct_prediction import (
-    _daily_coordinator_mode,
     resolve_scheduled_prediction_config,
-    run_daily_operator_recovery_job,
     run_prediction_job,
-)
-from scheduler.repository import (
-    find_schedule_occurrence_id,
-    read_dashboard_source_generation,
-    read_schedule_api_visibility_probe,
-    read_schedule_execution_envelope,
-    read_schedule_health_envelope,
-    read_schedule_occurrence_snapshot,
-    read_scheduler_heartbeat,
 )
 from shared.service_instance import (
     FINGERPRINT_VERSION,
     build_service_instance_identity,
     service_fingerprint_secret,
-)
-from shared.calendar_service import CalendarService
-from shared.daily_coordinator_mode import (
-    assert_daily_coordinator_epoch_matches_policy,
-    require_current_daily_coordinator_identity,
 )
 
 
@@ -115,10 +92,6 @@ _DASHBOARD_ERROR_UNAVAILABLE = "dashboard_snapshot_unavailable"
 _DASHBOARD_ERROR_STALE = "dashboard_snapshot_stale"
 _DASHBOARD_ERROR_NOT_PREWARMED = "dashboard_snapshot_not_prewarmed"
 _DASHBOARD_QUERY_ERROR = "dashboard_query_not_allowed"
-_DAILY_HEARTBEAT_SERVICE = "daily-coordinator"
-_DAILY_SCHEDULE_KEY = "critical-daily-signals-v1"
-_DAILY_TIMEZONE = ZoneInfo("Asia/Shanghai")
-_DAILY_NOT_BEFORE = wall_time(6, 30)
 _dashboard_health_lock = Lock()
 _dashboard_health: dict[str, str | None] = {
     "status": "degraded",
@@ -252,13 +225,8 @@ def _build_dashboard_snapshot() -> dict[str, Any]:
 
 
 def _dashboard_source_generation() -> str:
-    """ledger 模式以数据库 receipt 代次跨进程失效 dashboard。"""
-    if _daily_coordinator_mode() != "ledger":
-        return "legacy-ttl-only"
-    return read_dashboard_source_generation(
-        get_dashboard_engine(),
-        schedule_key=_DAILY_SCHEDULE_KEY,
-    )
+    """Dashboard 只使用固定 TTL 代次，不再读取 ledger receipt。"""
+    return "legacy-ttl-only"
 
 
 dashboard_snapshot_store = DashboardSnapshotStore(
@@ -372,12 +340,11 @@ app.add_middleware(QAwareGZipMiddleware)
 
 @app.on_event("startup")
 def _sync_registry_on_startup() -> None:
-    """legacy 启动时同步 registry；ledger 模式仅预热只读快照。"""
-    if _daily_coordinator_mode() != "ledger":
-        try:
-            sync_registry_from_configs(get_engine())
-        except Exception:
-            logger.error("Registry sync on startup failed")
+    """启动时同步 Registry，再预热只读 dashboard 快照。"""
+    try:
+        sync_registry_from_configs(get_engine())
+    except Exception:
+        logger.error("Registry sync on startup failed")
 
     try:
         result = dashboard_snapshot_store.prewarm()
@@ -427,14 +394,10 @@ class _TriggerValidationError(RuntimeError):
 
 @dataclass(frozen=True)
 class _TriggerAuthorization:
-    """从 active Registry 与 canonical config 重新推导的执行路由。"""
+    """从 active Registry 与 canonical config 重新推导的直接执行路由。"""
 
     registry_scheme_id: str
     base_scheme_id: str
-    runtime_type: str
-    scheme_version: str
-    frequency: str
-    plane: str
 
 
 @app.get("/api/health")
@@ -461,320 +424,16 @@ def health() -> dict:
             ),
             fingerprint_secret=fingerprint_secret,
         )
-    daily_schedule = _daily_schedule_health(engine)
-    daily_overall = daily_schedule.get("overall")
     return {
-        "status": (
-            "ok"
-            if daily_overall in {"ok", "not_enabled"}
-            else "error"
-        ),
+        "status": "ok",
         "service_instance": identity,
         "dashboard_snapshot": _dashboard_health_snapshot(),
-        "daily_schedule": daily_schedule,
-    }
-
-
-@app.get("/api/daily-schedule/visibility")
-def api_daily_schedule_visibility(response: Response) -> dict[str, object]:
-    """返回 fresh/no-store 的精确 target API 可见性探针。
-
-    DB ``visible_at`` 只作为 commit receipt 返回；调用方实际收到本
-    HTTP 响应的时刻，才构成外部 API visibility 观察证据。
-    """
-    try:
-        current_identity = (
-            require_current_daily_coordinator_identity()
-        )
-    except Exception:
-        raise HTTPException(
-            status_code=503,
-            detail="daily coordinator epoch is unavailable",
-        )
-    if current_identity.mode != "ledger":
-        raise HTTPException(
-            status_code=409,
-            detail="daily schedule visibility requires ledger mode",
-        )
-    engine = get_engine()
-    heartbeat = read_scheduler_heartbeat(
-        engine,
-        service_name=_DAILY_HEARTBEAT_SERVICE,
-    )
-    if heartbeat is None or heartbeat.occurrence_id is None:
-        raise HTTPException(
-            status_code=503,
-            detail="current daily occurrence is unavailable",
-        )
-    heartbeat_details = getattr(heartbeat, "details", None)
-    if (
-        not isinstance(heartbeat_details, Mapping)
-        or heartbeat_details.get("coordinator_mode") != "ledger"
-        or not _coordinator_epoch_matches(
-            current_identity,
-            heartbeat_details.get("daily_coordinator_epoch"),
-        )
-    ):
-        raise HTTPException(
-            status_code=503,
-            detail="daily coordinator heartbeat mode is unavailable",
-        )
-    snapshot = read_schedule_occurrence_snapshot(
-        engine,
-        occurrence_id=heartbeat.occurrence_id,
-    )
-    occurrence_policy = getattr(
-        snapshot.occurrence,
-        "policy_json",
-        None,
-    )
-    if (
-        not isinstance(occurrence_policy, Mapping)
-        or not _coordinator_epoch_matches(
-            current_identity,
-            occurrence_policy.get("daily_coordinator_epoch"),
-        )
-        or occurrence_policy.get("daily_coordinator_epoch")
-        != heartbeat_details.get("daily_coordinator_epoch")
-    ):
-        raise HTTPException(
-            status_code=503,
-            detail="daily schedule coordinator epoch mismatch",
-        )
-    probe = read_schedule_api_visibility_probe(
-        engine,
-        occurrence_id=heartbeat.occurrence_id,
-    )
-    linked = set(probe.linked_registry_ids)
-    db_visible = set(probe.db_visible_registry_ids)
-    api_ready_ids = sorted(linked & db_visible)
-    observed_at = probe.observed_at
-    if observed_at.tzinfo is None:
-        observed_at = observed_at.replace(tzinfo=timezone.utc)
-    else:
-        observed_at = observed_at.astimezone(timezone.utc)
-    occurrence = snapshot.occurrence
-    predict_date = str(occurrence.predict_date)
-    current_business_date = observed_at.astimezone(
-        _DAILY_TIMEZONE
-    ).date().isoformat()
-    heartbeat_projection = project_scheduler_heartbeat(
-        heartbeat,
-        expected_occurrence_id=occurrence.occurrence_id,
-        now=observed_at,
-    )
-    if heartbeat_projection["status"] in {"missing", "stale", "error"}:
-        raise HTTPException(
-            status_code=503,
-            detail="daily coordinator heartbeat is not current",
-        )
-    if (
-        int(probe.occurrence_id) != int(occurrence.occurrence_id)
-        or predict_date != current_business_date
-        or heartbeat_details.get("business_date") != predict_date
-    ):
-        raise HTTPException(
-            status_code=503,
-            detail="daily schedule occurrence is not current",
-        )
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["Pragma"] = "no-cache"
-    response.headers["X-Prediction-Visibility"] = (
-        "uncached-db-probe"
-    )
-    return {
-        "probe_completed": True,
-        "occurrence_id": probe.occurrence_id,
-        "predict_date": predict_date,
-        "observed_at": observed_at.isoformat().replace("+00:00", "Z"),
-        "expected": probe.expected_target_count,
-        "committed": len(probe.committed_registry_ids),
-        "linked": len(probe.linked_registry_ids),
-        "db_visible": len(probe.db_visible_registry_ids),
-        "api_ready": len(api_ready_ids),
-        "missing": max(
-            probe.expected_target_count - len(api_ready_ids),
-            0,
-        ),
-        "api_ready_registry_ids": api_ready_ids,
-        "missing_registry_ids": list(probe.missing_registry_ids),
-        "receipt_missing_registry_ids": list(
-            probe.receipt_missing_registry_ids
-        ),
-        "source_generation": probe.source_generation,
-        "db_receipt_semantics": "committed_prediction_db_visible",
-        "api_receipt_semantics": (
-            "caller_must_receive_this_uncached_response"
-        ),
-    }
-
-
-def _daily_schedule_health(engine) -> dict[str, object]:
-    """从 ledger 只读投影日批健康；legacy rollout 不触碰新表。"""
-    try:
-        current_identity = (
-            require_current_daily_coordinator_identity()
-        )
-        mode = current_identity.mode
-    except Exception:
-        return {
-            "mode": "unknown",
-            "overall": "error",
-            "reasons": ["COORDINATOR_EPOCH_UNAVAILABLE"],
-        }
-    if mode != "ledger":
-        return {
-            "mode": mode,
+        "daily_schedule": {
+            "mode": "launchd_one_shot",
             "overall": "not_enabled",
-            "reasons": ["LEDGER_ROLLOUT_DISABLED"],
-        }
-    try:
-        checked_at = datetime.now(timezone.utc)
-        local_now = checked_at.astimezone(_DAILY_TIMEZONE)
-        heartbeat = read_scheduler_heartbeat(
-            engine,
-            service_name=_DAILY_HEARTBEAT_SERVICE,
-        )
-        if heartbeat is None:
-            return {
-                "mode": "ledger",
-                "overall": "error",
-                "reasons": ["HEARTBEAT_MISSING"],
-            }
-        heartbeat_details = getattr(heartbeat, "details", {})
-        heartbeat_mode = (
-            heartbeat_details.get("coordinator_mode")
-            if isinstance(heartbeat_details, Mapping)
-            else None
-        )
-        if heartbeat_mode != "ledger":
-            return {
-                "mode": "ledger",
-                "overall": "error",
-                "reasons": ["MODE_MISMATCH"],
-                "scheduler_heartbeat": project_scheduler_heartbeat(
-                    heartbeat,
-                    expected_occurrence_id=heartbeat.occurrence_id,
-                    now=checked_at,
-                ),
-            }
-        if not _coordinator_epoch_matches(
-            current_identity,
-            heartbeat_details.get("daily_coordinator_epoch"),
-        ):
-            return {
-                "mode": "ledger",
-                "overall": "error",
-                "reasons": ["COORDINATOR_EPOCH_MISMATCH"],
-            }
-        if heartbeat.occurrence_id is None:
-            heartbeat_projection = project_scheduler_heartbeat(
-                heartbeat,
-                expected_occurrence_id=None,
-                now=checked_at,
-            )
-            reasons: list[str] = []
-            heartbeat_status = heartbeat_projection["status"]
-            if heartbeat_status == "stale":
-                reasons.append("HEARTBEAT_STALE")
-            elif heartbeat_status == "error":
-                reasons.append("HEARTBEAT_ERROR")
-            idle = str(heartbeat.state).upper() == "IDLE"
-            if not idle:
-                reasons.append("OCCURRENCE_MISSING")
-            if (
-                local_now.time().replace(tzinfo=None)
-                >= _DAILY_NOT_BEFORE
-                and CalendarService(engine).is_trading_day(
-                    local_now.date()
-                )
-                and "OCCURRENCE_MISSING" not in reasons
-            ):
-                reasons.append("OCCURRENCE_MISSING")
-            return {
-                "mode": "ledger",
-                "overall": "error" if reasons else "ok",
-                "reasons": reasons,
-                "scheduler_heartbeat": heartbeat_projection,
-            }
-        snapshot = read_schedule_occurrence_snapshot(
-            engine,
-            occurrence_id=heartbeat.occurrence_id,
-        )
-        occurrence_policy = getattr(
-            snapshot.occurrence,
-            "policy_json",
-            None,
-        )
-        if (
-            not isinstance(occurrence_policy, Mapping)
-            or not _coordinator_epoch_matches(
-                current_identity,
-                occurrence_policy.get("daily_coordinator_epoch"),
-            )
-            or occurrence_policy.get("daily_coordinator_epoch")
-            != heartbeat_details.get("daily_coordinator_epoch")
-        ):
-            return {
-                "mode": "ledger",
-                "overall": "error",
-                "reasons": ["COORDINATOR_EPOCH_MISMATCH"],
-            }
-        envelopes = tuple(
-            read_schedule_health_envelope(
-                engine,
-                item_id=summary.item.item_id,
-            )
-            for summary in snapshot.items
-        )
-        projection = project_daily_health(
-            snapshot,
-            heartbeat,
-            execution_envelopes=envelopes,
-            now=checked_at,
-        )
-        snapshot_occurrence = getattr(snapshot, "occurrence", None)
-        if (
-            snapshot_occurrence is not None
-            and snapshot_occurrence.predict_date
-            != local_now.date().isoformat()
-        ):
-            reasons = list(projection.get("reasons") or [])
-            if "OCCURRENCE_DATE_MISMATCH" not in reasons:
-                reasons.append("OCCURRENCE_DATE_MISMATCH")
-            projection = {
-                **projection,
-                "overall": "error",
-                "reasons": reasons,
-            }
-        return {"mode": "ledger", **projection}
-    except Exception as exc:
-        logger.error(
-            "Daily ledger health projection failed: error_type=%s",
-            type(exc).__name__,
-        )
-        return {
-            "mode": "ledger",
-            "overall": "error",
-            "reasons": ["LEDGER_HEALTH_UNAVAILABLE"],
-        }
-
-
-def _coordinator_epoch_matches(
-    current_identity: object,
-    frozen: object,
-) -> bool:
-    """不抛异常地比较 exact epoch capability。"""
-    if not isinstance(frozen, Mapping):
-        return False
-    try:
-        expected = current_identity.policy_payload()
-    except Exception:
-        return False
-    return (
-        set(frozen) == {"epoch", "mode", "record_sha256"}
-        and dict(frozen) == expected
-    )
+            "reasons": ["LEDGER_RETIRED"],
+        },
+    }
 
 
 def _request_id(request: Request) -> str:
@@ -1436,26 +1095,10 @@ def _resolve_trigger_authorization(
             f"registry_scheme_id={registry_scheme_id}",
         )
 
-    if config.frequency == "daily":
-        try:
-            coordinator_mode = _daily_coordinator_mode()
-        except Exception as exc:
-            raise _TriggerValidationError(
-                503,
-                "daily coordinator mode is unavailable",
-            ) from exc
-    else:
-        coordinator_mode = "legacy"
-    plane = (
-        DAILY_LEDGER
-        if config.frequency == "daily"
-        and coordinator_mode == "ledger"
-        else DIRECT_SCHEDULED
-    )
     try:
         require_scheduled_prediction_control_plane(
             config,
-            plane=plane,
+            plane=DIRECT_SCHEDULED,
         )
     except ScheduledPredictionControlPlaneDenied as exc:
         raise _TriggerValidationError(409, str(exc)) from exc
@@ -1467,118 +1110,11 @@ def _resolve_trigger_authorization(
     return _TriggerAuthorization(
         registry_scheme_id=registry_scheme_id,
         base_scheme_id=config.scheme_id,
-        runtime_type=config.runtime_type,
-        scheme_version=config.scheme_version,
-        frequency=config.frequency,
-        plane=plane,
     )
-
-
-def _require_daily_trigger_context(
-    engine,
-    authorization: _TriggerAuthorization,
-    predict_date: str | None,
-    *,
-    force: bool,
-) -> None:
-    """校验日频 epoch；ledger 还必须绑定真实 occurrence。"""
-    if authorization.frequency != "daily":
-        return
-    if (
-        authorization.plane == DAILY_LEDGER
-        and force
-    ):
-        raise _TriggerValidationError(
-            409,
-            "force is not supported by the ledger daily coordinator",
-        )
-    try:
-        current_identity = (
-            require_current_daily_coordinator_identity()
-        )
-    except Exception as exc:
-        raise _TriggerValidationError(
-            503,
-            "daily coordinator epoch is unavailable",
-        ) from exc
-    expected_mode = (
-        "ledger"
-        if authorization.plane == DAILY_LEDGER
-        else "legacy"
-    )
-    if current_identity.mode != expected_mode:
-        raise _TriggerValidationError(
-            503,
-            "daily coordinator epoch mode mismatch",
-        )
-    if authorization.plane != DAILY_LEDGER:
-        return
-
-    requested_date = date.fromisoformat(
-        predict_date
-        or datetime.now(_DAILY_TIMEZONE).date().isoformat()
-    )
-    try:
-        occurrence_id = find_schedule_occurrence_id(
-            engine,
-            schedule_key=_DAILY_SCHEDULE_KEY,
-            predict_date=requested_date.isoformat(),
-        )
-    except Exception as exc:
-        raise _TriggerValidationError(
-            503,
-            "daily schedule occurrence is unavailable",
-        ) from exc
-    if occurrence_id is None:
-        raise _TriggerValidationError(
-            503,
-            "daily schedule occurrence is unavailable",
-        )
-    try:
-        snapshot = read_schedule_occurrence_snapshot(
-            engine,
-            occurrence_id=occurrence_id,
-        )
-        frozen_identity = (
-            assert_daily_coordinator_epoch_matches_policy(
-                snapshot.occurrence.policy_json
-            )
-        )
-    except Exception as exc:
-        raise _TriggerValidationError(
-            503,
-            "daily schedule coordinator epoch mismatch",
-        ) from exc
-    if (
-        frozen_identity.policy_payload()
-        != current_identity.policy_payload()
-    ):
-        raise _TriggerValidationError(
-            503,
-            "daily schedule coordinator epoch mismatch",
-        )
-    if not any(
-        summary.item.base_scheme_id
-        == authorization.base_scheme_id
-        and summary.item.runtime_type
-        == authorization.runtime_type
-        and summary.item.scheme_version
-        == authorization.scheme_version
-        for summary in snapshot.items
-    ):
-        raise _TriggerValidationError(
-            503,
-            "scheme is not frozen in the daily schedule occurrence: "
-            f"identity={authorization.base_scheme_id}@"
-            f"{authorization.scheme_version}",
-        )
 
 
 def _preflight_trigger(
     registry_scheme_id: str,
-    *,
-    predict_date: str | None,
-    force: bool,
 ) -> _TriggerAuthorization:
     """执行同步或后台均相同的完整 trigger 重验。"""
     try:
@@ -1588,17 +1124,10 @@ def _preflight_trigger(
             503,
             "trigger database is unavailable",
         ) from exc
-    authorization = _resolve_trigger_authorization(
+    return _resolve_trigger_authorization(
         engine,
         registry_scheme_id,
     )
-    _require_daily_trigger_context(
-        engine,
-        authorization,
-        predict_date,
-        force=force,
-    )
-    return authorization
 
 
 def _run_trigger(
@@ -1612,22 +1141,11 @@ def _run_trigger(
         registry_scheme_id,
     )
     try:
-        authorization = _preflight_trigger(
-            registry_scheme_id,
-            predict_date=predict_date,
-            force=force,
-        )
+        authorization = _preflight_trigger(registry_scheme_id)
         effective_algo_env = algo_env or os.getenv(
             "BOND_ALGO_CONDA_ENV",
             DEFAULT_ALGO_ENV,
         )
-        if authorization.plane == DAILY_LEDGER:
-            run_daily_operator_recovery_job(
-                authorization.base_scheme_id,
-                run_date=predict_date,
-                algo_env=effective_algo_env,
-            )
-            return
         run_prediction_job(
             authorization.base_scheme_id,
             run_date=predict_date,
@@ -1652,11 +1170,7 @@ def _run_trigger(
 @app.post("/api/schemes/{scheme_id}/trigger", status_code=202, dependencies=[Depends(require_admin_token)])
 def api_trigger_scheme(scheme_id: str, request: TriggerRequest, background_tasks: BackgroundTasks) -> dict:
     try:
-        authorization = _preflight_trigger(
-            scheme_id,
-            predict_date=request.predict_date,
-            force=request.force,
-        )
+        authorization = _preflight_trigger(scheme_id)
     except _TriggerValidationError as exc:
         raise HTTPException(
             status_code=exc.status_code,
@@ -1681,15 +1195,6 @@ def api_trigger_scheme(scheme_id: str, request: TriggerRequest, background_tasks
 @app.post("/api/admin/registry/sync", dependencies=[Depends(require_admin_token)])
 def api_admin_registry_sync() -> dict:
     """受保护的管理端点：显式把 schemes/ 配置同步到 registry（写库）。"""
-    if _daily_coordinator_mode() == "ledger":
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "registry sync is disabled while the ledger coordinator "
-                "is active; change Registry only through the pre-cutover "
-                "authorized workflow"
-            ),
-        )
     synced = sync_registry_from_configs(get_engine(), force=True)
     return {"synced": synced}
 
