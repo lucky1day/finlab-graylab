@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from harness.contracts import import_rules
-from scheduler import daily_coordinator, repository
+from scheduler import daily_coordinator, main as scheduler_main, repository
 
 
 class RepositoryArchitectureBoundaryTests(unittest.TestCase):
@@ -270,6 +270,25 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
             [],
             [name for name in retired if hasattr(daily_coordinator, name)],
             "retired daily coordinator symbols must not return",
+        )
+
+    def test_retired_scheduler_startup_catchup_symbols_are_not_exposed(
+        self,
+    ) -> None:
+        retired = (
+            "run_ledger_startup_catchup",
+            "run_startup_prediction_catchup",
+            "_startup_prediction_catchup_due_jobs",
+            "_prediction_run_exists",
+            "_scheduled_datetime_for_date",
+            "_cron_field_matches",
+            "_cron_day_of_week_matches",
+        )
+
+        self.assertEqual(
+            [],
+            [name for name in retired if hasattr(scheduler_main, name)],
+            "retired scheduler startup catchup symbols must not return",
         )
 
     def test_retired_repository_symbols_are_not_exposed(self) -> None:

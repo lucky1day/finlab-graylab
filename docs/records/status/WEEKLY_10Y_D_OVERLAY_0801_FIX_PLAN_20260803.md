@@ -892,6 +892,34 @@ Harness 命令，也没有核对或操作 launchd / runner / installed state。
 
 **状态：** 已完成（repo-only）；没有物理删表、migration、DB bootstrap 或生产控制面变更结论。
 
+### G8.8 — 常驻 APScheduler startup-catchup 路径退役（2026-08-05，repo-only）
+
+**目标：** 删除旧常驻 APScheduler 在服务启动后按 cron 扫描并补跑错过预测的路径，确保遗漏的
+自然时钟不会被服务启动伪造为新的 `scheduled_live` 写入。
+
+**边界：** 仅删除 `scheduler.main` 的
+`run_ledger_startup_catchup`、`run_startup_prediction_catchup`、
+`_startup_prediction_catchup_due_jobs`、`_prediction_run_exists`、
+`_scheduled_datetime_for_date`、`_cron_field_matches` 和
+`_cron_day_of_week_matches`，以及只验证这些已退役行为的九个专测。保留
+`_staggered_prediction_jobs`、`build_scheduler`、`run_scheduled_prediction_job`、日频 recovery tick 与
+既有 `trigger_origin='startup_catchup'` ledger 审计枚举；不改 backend 的手动 trigger / recovery
+依赖，也不改 `scheduler.daily_control_plane_probe` 的遗留进程监测 token。不得操作 installed plist、
+launchctl、服务、业务 runner、数据库或 API。
+
+**TDD 与验证：**
+
+- [x] 在 `tests/test_architecture_boundaries.py` 新增精确负向回归，要求上述七个符号均不再公开；
+  删除前以 `bond_factor_lab_service` 运行得到 `1 failed`，失败精确列出全部七个仍存在的符号。
+- [x] 最小删除旧 startup-catchup cluster 与其九个专测；保留
+  `test_scheduler_never_registers_startup_catchup` 及其它不属于已退役行为的
+  `BOND_SCHEDULER_STARTUP_CATCHUP` 环境覆盖。
+- [x] architecture / scheduler main / launchd runner / 文档 / 控制面相关 pytest 为
+  `238 passed, 88 subtests passed`；随后运行 `compileall` 与 `git diff --check`。不以手工业务 runner
+  或自然时钟替代该 repo-only 验证。
+
+**状态：** 已完成（repo-only）；没有运行或改变业务 runner、installed plist、launchctl、服务、数据库或 API。
+
 ---
 
 ## 15. 执行中的统一停止条件
