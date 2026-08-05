@@ -818,6 +818,41 @@ launchctl、业务数据库、DataBridge 行为、cache 内容、ledger/reposito
 **状态：** 已完成（repo-only）；没有核对或改变任何 installed plist、
 loaded state、服务、launchctl、DataBridge publish、cache 或业务写入。
 
+### G8.6 — `scheduler.main` retired DataBridge CLI 退役（2026-08-05，repo-only）
+
+**目标：** 删除 `scheduler.main` 中已无仓库 desired plist 或生产调用、只会返回
+retired JSON 的 legacy DataBridge 兼容 CLI，避免它继续表达第二个 scheduler/DataBridge 入口。
+
+**边界：** 仅删除 `LegacySchedulerWriterRetired`、
+`run_data_bridge_refresh_job`、`data_bridge_refresh_is_current`、`run_startup_tasks`，以及
+`--run-once data-refresh` choice/early-return 和三项专属旧行为测试；保留
+`test_scheduler_does_not_own_daily_data_bridge_refresh` 的负向 scheduler ownership 保护。
+不改 DataBridge 实现或 cache、ledger/epoch、actuals、backend、Native 算法、migration 或业务 runner，
+也不核对或改变 installed plist、loaded state、launchctl、服务或数据库。
+
+**TDD 与证据：**
+
+- [x] 先新增
+  `RetiredDataBridgeCliTests.test_legacy_data_bridge_cli_is_absent_and_rejected_by_parser`；在
+  `bond_factor_lab_service` 环境运行该单测时，旧实现因 stdout 输出
+  `legacy-scheduler-writer-retired` JSON 而 RED（`1 failed`）。
+- [x] 最小删除后，该回归断言四个 retired symbol 不再由 module 暴露，
+  `--run-once data-refresh` 由 argparse 作为 invalid choice 返回 `2`、stdout 为空且 stderr
+  含 `invalid choice`；同一单测 GREEN（`1 passed`）。该测试独立于
+  `SchedulerMainTests` 的环境/patch fixture，独立 `unittest` selector 与 pytest selector 均通过。
+- [x] 聚焦回归：`tests.test_scheduler_main` 为 `80 passed, 37 subtests passed`；
+  `tests.test_architecture_boundaries tests.test_prediction_launchd
+  tests.test_launchd_prediction_runner` 为 `29 passed, 3 subtests passed`。
+- [x] 文档回归 `tests.test_onboarding_docs` 为 `47 passed, 22 subtests passed`；
+  最终相关回归扩展为 13 个模块、298 项并通过。`compileall -q scheduler shared tests scripts`、
+  全部 repo plist 的 `plutil -lint`、根规范一致性检查与 `git diff --check` 均通过。全量
+  `pytest -q -x` 仍在 11 项后停于既有 `test_active_scheme_contracts`：冻结的
+  `seven_y_current55_lgbm_001_v1/002_v1` 被 discovery 找到却不在 active config 目录；本切片未改
+  这两套方案或其发现规则，故该既有基线失败已单独保留。
+
+**状态：** 已完成（repo-only）；没有运行或改变业务 runner、DataBridge publish、cache、数据库、
+installed plist、loaded state、launchctl 或服务。
+
 ---
 
 ## 15. 执行中的统一停止条件

@@ -9,7 +9,7 @@ import os
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -103,60 +103,31 @@ def _cfg(
     )
 
 
-class SchedulerMainTests(unittest.TestCase):
-    def test_legacy_data_bridge_writer_is_retired_before_any_writer_dependency(
-        self,
-    ) -> None:
+class RetiredDataBridgeCliTests(unittest.TestCase):
+    def test_legacy_data_bridge_cli_is_absent_and_rejected_by_parser(self) -> None:
+        """退役 CLI 不能再作为 scheduler.main 的兼容入口。"""
         from scheduler import main as scheduler_main
 
-        engine = SimpleNamespace(dispose=Mock())
-        with (
-            patch.object(
-                scheduler_main,
-                "_previous_trading_day",
-                return_value="2026-07-28",
-            ) as previous_trading_day,
-            patch.object(
-                scheduler_main,
-                "create_engine_from_env",
-                return_value=engine,
-            ) as create_engine,
-            patch.object(
-                scheduler_main,
-                "resolve_databridge_continuity_authority_from_engine",
-                create=True,
-            ) as resolve,
-            patch(
-                "scheduler.main.DataBridgeClient",
-                create=True,
-            ) as client,
-            patch(
-                "scheduler.main.run_full_refresh",
-                create=True,
-            ) as refresh,
-        ):
-            with self.assertRaisesRegex(
-                RuntimeError,
-                "retired.*launchd one-shot",
-            ):
-                scheduler_main.run_data_bridge_refresh_job(
-                    "2026-07-29",
-                    enforce_deadline=False,
-                )
-
-        self.assertTrue(
-            issubclass(
-                scheduler_main.LegacySchedulerWriterRetired,
-                RuntimeError,
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            exit_code = scheduler_main.main(
+                ["--run-once", "data-refresh", "--date", "2026-07-24"]
             )
-        )
-        previous_trading_day.assert_not_called()
-        create_engine.assert_not_called()
-        resolve.assert_not_called()
-        client.assert_not_called()
-        refresh.assert_not_called()
-        engine.dispose.assert_not_called()
 
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("invalid choice", stderr.getvalue())
+        for legacy_name in (
+            "LegacySchedulerWriterRetired",
+            "run_data_bridge_refresh_job",
+            "data_bridge_refresh_is_current",
+            "run_startup_tasks",
+        ):
+            self.assertFalse(hasattr(scheduler_main, legacy_name), legacy_name)
+
+
+class SchedulerMainTests(unittest.TestCase):
     def setUp(self) -> None:
         self._mode_patcher = patch.dict(
             os.environ,
@@ -889,71 +860,6 @@ class SchedulerMainTests(unittest.TestCase):
                 scheduler.shutdown(wait=False)
 
         self.assertIsNone(job)
-
-    def test_run_once_data_refresh_is_retired_without_reads_or_writes(self) -> None:
-        from scheduler import main as scheduler_main
-
-        stdout = io.StringIO()
-        with (
-            patch.object(
-                scheduler_main,
-                "_daily_coordinator_mode",
-                side_effect=AssertionError("retired command must not resolve mode"),
-            ) as coordinator_mode,
-            patch.object(
-                scheduler_main,
-                "preflight_daily_storage",
-            ) as storage_preflight,
-            patch.object(
-                scheduler_main,
-                "data_bridge_refresh_is_current",
-            ) as check_current,
-            patch.object(
-                scheduler_main,
-                "run_data_bridge_refresh_job",
-            ) as publish_refresh,
-            redirect_stdout(stdout),
-        ):
-            exit_code = scheduler_main.main(
-                ["--run-once", "data-refresh", "--date", "2026-07-24"]
-            )
-
-        self.assertEqual(exit_code, 2)
-        payload = json.loads(stdout.getvalue())
-        self.assertEqual(payload["event"], "data_bridge_refresh")
-        self.assertEqual(
-            payload["reason"],
-            "legacy-scheduler-writer-retired",
-        )
-        self.assertEqual(payload["status"], "retired")
-        coordinator_mode.assert_not_called()
-        storage_preflight.assert_not_called()
-        check_current.assert_not_called()
-        publish_refresh.assert_not_called()
-
-    def test_startup_tasks_never_refresh_or_prediction_catchup(self) -> None:
-        from scheduler import main as scheduler_main
-
-        now = datetime(2026, 7, 19, 7, 30, tzinfo=scheduler_main.ASIA_SHANGHAI)
-        with (
-            patch.object(
-                scheduler_main,
-                "data_bridge_refresh_is_current",
-            ) as check_current,
-            patch.object(
-                scheduler_main,
-                "run_data_bridge_refresh_job",
-            ) as refresh,
-            patch.object(
-                scheduler_main,
-                "run_startup_prediction_catchup",
-            ) as catchup,
-        ):
-            scheduler_main.run_startup_tasks(now=now, algo_env="forecast_env")
-
-        check_current.assert_not_called()
-        refresh.assert_not_called()
-        catchup.assert_not_called()
 
     def test_scheduler_jobs_are_registered_once_per_base_scheme_not_per_tenor(self) -> None:
         from scheduler import main as scheduler_main

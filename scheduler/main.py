@@ -42,10 +42,7 @@ from scheduler.discovery import SchemeConfig, discover_schemes
 from scheduler.executor import DEFAULT_ALGO_ENV, SchemeRunResult, execute_scheme
 from scheduler.repository import create_engine_from_env, sync_scheme_registry
 from scheduler.v2_daily_gate import V2DailyGateBlocked, require_v2_daily_ready
-from shared.data_bridge.refresh import (
-    DataBridgeRefreshConfig,
-    check_current_dataset,
-)
+from shared.data_bridge.refresh import DataBridgeRefreshConfig
 from shared.daily_coordinator_mode import (
     DAILY_COORDINATOR_MODE_ENV,
     bootstrap_deployment_daily_coordinator_mode,
@@ -88,10 +85,6 @@ class StaggeredPredictionJob:
 
 class DirectScheduledPredictionDenied(RuntimeError):
     """直接 ``scheduled_live`` 入口未通过精确控制面准入。"""
-
-
-class LegacySchedulerWriterRetired(RuntimeError):
-    """旧常驻 scheduler 的 DataBridge writer 已退役。"""
 
 
 def _today() -> str:
@@ -682,43 +675,6 @@ def run_startup_prediction_catchup(
         summary = ", ".join(f"{result.scheme_id}={result.status}" for result in failures)
         raise RuntimeError(f"Startup prediction catchup failed: {summary}")
     return results
-
-
-def run_data_bridge_refresh_job(
-    run_date: str | date | None = None,
-    *,
-    enforce_deadline: bool = True,
-):
-    """拒绝旧 scheduler DataBridge writer，避免产生第二个发布者。"""
-    _ = (run_date, enforce_deadline)
-    raise LegacySchedulerWriterRetired(
-        "legacy scheduler DataBridge writer is retired; use the launchd "
-        "one-shot publisher: scripts/refresh_data_bridge_current.py --publish"
-    )
-
-
-def data_bridge_refresh_is_current(run_date: str | date | None = None) -> bool:
-    refresh_date = _normalize_run_date(run_date)
-    expected_daily_date = _previous_trading_day(refresh_date)
-    check_current_dataset(
-        DataBridgeRefreshConfig.from_env(),
-        required_refresh_date=refresh_date,
-        expected_daily_date=expected_daily_date,
-    )
-    return True
-
-
-def run_startup_tasks(
-    *,
-    now: datetime | None = None,
-    algo_env: str = DEFAULT_ALGO_ENV,
-) -> None:
-    """兼容入口：启动补刷与预测补跑均已退役。"""
-    _ = (now, algo_env)
-    logger.warning(
-        "Startup DataBridge refresh and prediction catchup are retired; "
-        "launchd one-shot runners own publication and scheduled execution"
-    )
 
 
 def _skips_non_trading_day(cfg: SchemeConfig) -> bool:
@@ -1329,7 +1285,7 @@ def build_scheduler(algo_env: str = DEFAULT_ALGO_ENV) -> BlockingScheduler:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Bond Factor Lab scheduler.")
     parser.add_argument("--algo-env", default=os.getenv("BOND_ALGO_CONDA_ENV", DEFAULT_ALGO_ENV))
-    parser.add_argument("--run-once", choices=["predictions", "actuals", "data-refresh"], default=None)
+    parser.add_argument("--run-once", choices=["predictions", "actuals"], default=None)
     parser.add_argument("--date", default=None, help="Run date in YYYY-MM-DD format")
     parser.add_argument("--scheme-id", default=None, help="Limit --run-once predictions to one scheme")
     parser.add_argument("--force", action="store_true", help="Run even when the date is not a trading day")
@@ -1339,19 +1295,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return int(exc.code or 0)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    if args.run_once == "data-refresh":
-        print(
-            json.dumps(
-                {
-                    "event": "data_bridge_refresh",
-                    "reason": "legacy-scheduler-writer-retired",
-                    "status": "retired",
-                },
-                ensure_ascii=True,
-                sort_keys=True,
-            )
-        )
-        return 2
     try:
         if args.run_once == "actuals":
             from scheduler.actuals_runner import run_actuals_job
@@ -1360,7 +1303,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         coordinator_mode = _daily_coordinator_mode()
-        if args.run_once in {"predictions", "data-refresh"}:
+        if args.run_once == "predictions":
             preflight_daily_storage()
         if args.run_once == "predictions":
             if coordinator_mode == "ledger":
