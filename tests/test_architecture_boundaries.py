@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from harness.contracts import import_rules
-from scheduler import daily_coordinator, direct_prediction, repository
+from scheduler import daily_coordinator, direct_prediction, executor, repository
 
 
 class RepositoryArchitectureBoundaryTests(unittest.TestCase):
@@ -303,6 +303,49 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
             [],
             [name for name in retired if hasattr(direct_prediction, name)],
             "direct helper must not retain resident scheduler symbols",
+        )
+
+    def test_retired_executor_aggregate_cli_is_absent(self) -> None:
+        """自然 writer 只能按方案调用 execute_scheme，不得恢复全量 CLI。"""
+        retired = (
+            "execute_all",
+            "_execute_all_scheduled",
+            "_scheduled_aggregate_configuration_failure",
+            "main",
+            "_executor_exit_code",
+        )
+        project_root = Path(__file__).resolve().parents[1]
+        executor_path = project_root / "scheduler" / "executor.py"
+
+        self.assertEqual(
+            [],
+            [name for name in retired if hasattr(executor, name)],
+            "retired broad executor CLI symbols must not return",
+        )
+        self.assertFalse(
+            (project_root / "tests" / "test_executor_cli.py").exists(),
+            "retired executor aggregate CLI tests must not return",
+        )
+        executor_tree = ast.parse(executor_path.read_text(encoding="utf-8"))
+        main_guards = [
+            node
+            for node in ast.walk(executor_tree)
+            if (
+                isinstance(node, ast.If)
+                and isinstance(node.test, ast.Compare)
+                and isinstance(node.test.left, ast.Name)
+                and node.test.left.id == "__name__"
+                and len(node.test.ops) == 1
+                and isinstance(node.test.ops[0], ast.Eq)
+                and len(node.test.comparators) == 1
+                and isinstance(node.test.comparators[0], ast.Constant)
+                and node.test.comparators[0].value == "__main__"
+            )
+        ]
+        self.assertEqual(
+            [],
+            main_guards,
+            "retired executor CLI module entry block must not return",
         )
 
     def test_backend_direct_paths_do_not_retain_daily_ledger_management(

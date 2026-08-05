@@ -1669,7 +1669,7 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
         self.assertNotIn("strip_daily_coordinator_mode", direct_kwargs)
         self.assertNotIn("strip_daily_coordinator_mode", gray_kwargs)
 
-    def test_ledger_mode_daily_executor_fails_before_algorithm_process(
+    def test_direct_daily_executor_fails_before_algorithm_process(
         self,
     ) -> None:
         from scheduler.executor import execute_scheme
@@ -1694,11 +1694,6 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
             patch(
                 "scheduler.executor._active_registry_targets",
                 return_value={("5Y", 1)},
-            ),
-            patch(
-                "scheduler.executor."
-                "bootstrap_deployment_daily_coordinator_mode",
-                return_value="ledger",
             ),
             patch(
                 "scheduler.executor.discover_schemes",
@@ -1732,7 +1727,7 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
         algorithm.assert_not_called()
         self.assertFalse(engine.disposed)
 
-    def test_daily_executor_without_explicit_mode_fails_before_run_creation(
+    def test_direct_daily_executor_fails_before_run_creation(
         self,
     ) -> None:
         from scheduler.executor import execute_scheme
@@ -1746,16 +1741,10 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
             frequency="daily",
         )
         with (
-            patch.dict(os.environ, {}, clear=True),
             patch(
                 "scheduler.executor.create_engine_from_env",
                 return_value=engine,
             ) as create_engine,
-            patch(
-                "scheduler.executor."
-                "bootstrap_deployment_daily_coordinator_mode",
-                side_effect=ValueError("invalid mode"),
-            ),
             patch(
                 "scheduler.executor.discover_schemes",
                 return_value=[cfg],
@@ -2615,7 +2604,7 @@ class ScheduledLiveExecutionFenceTests(_ExplicitLegacyModeTestCase):
         )
         create_engine.assert_not_called()
 
-    def test_launchd_one_shot_admitted_daily_reaches_engine_in_ledger_mode(
+    def test_launchd_one_shot_admitted_daily_reaches_engine_without_reading_daily_mode(
         self,
     ) -> None:
         """one-shot 的精确正式日频身份不受遗留 ledger 拦截。"""
@@ -2636,9 +2625,9 @@ class ScheduledLiveExecutionFenceTests(_ExplicitLegacyModeTestCase):
             ),
             patch.object(
                 executor,
-                "bootstrap_deployment_daily_coordinator_mode",
+                "require_daily_coordinator_mode",
                 side_effect=AssertionError(
-                    "launchd one-shot must not read legacy daily mode"
+                    "launchd one-shot must not read daily coordinator mode"
                 ),
             ) as coordinator_mode,
             patch.object(
@@ -2674,7 +2663,7 @@ class ScheduledLiveExecutionFenceTests(_ExplicitLegacyModeTestCase):
             result.error_msg or "",
         )
 
-    def test_ledger_daily_scheduled_live_rejects_native_and_formal_pre_engine(
+    def test_direct_daily_scheduled_live_rejects_native_and_formal_pre_engine(
         self,
     ) -> None:
         from scheduler.discovery import discover_schemes
@@ -2689,18 +2678,11 @@ class ScheduledLiveExecutionFenceTests(_ExplicitLegacyModeTestCase):
             if config.scheme_id
             == "daily_10y_lgbm_10y04_0629"
         )
-        with patch(
-            "scheduler.executor."
-            "bootstrap_deployment_daily_coordinator_mode",
-            return_value="ledger",
-        ):
-            for config in (native, formal):
-                with self.subTest(scheme_id=config.scheme_id):
-                    self._assert_rejected_before_side_effect(
-                        config
-                    )
+        for config in (native, formal):
+            with self.subTest(scheme_id=config.scheme_id):
+                self._assert_rejected_before_side_effect(config)
 
-    def test_ledger_missing_frequency_is_daily_like_and_rejected_pre_engine(
+    def test_missing_frequency_is_rejected_pre_engine(
         self,
     ) -> None:
         from scheduler.discovery import discover_schemes
@@ -2718,36 +2700,7 @@ class ScheduledLiveExecutionFenceTests(_ExplicitLegacyModeTestCase):
                 if key != "frequency"
             }
         )
-        with patch(
-            "scheduler.executor."
-            "bootstrap_deployment_daily_coordinator_mode",
-            return_value="ledger",
-        ):
-            self._assert_rejected_before_side_effect(config)
-
-    def test_authoritative_ledger_overrides_legacy_env_pre_engine(
-        self,
-    ) -> None:
-        from scheduler.discovery import discover_schemes
-
-        config = next(
-            candidate
-            for candidate in discover_schemes()
-            if candidate.scheme_id
-            == "daily_10y_lgbm_10y04_0629"
-        )
-        with (
-            patch.dict(
-                os.environ,
-                {"BOND_DAILY_COORDINATOR_MODE": "legacy"},
-            ),
-            patch(
-                "scheduler.executor."
-                "bootstrap_deployment_daily_coordinator_mode",
-                return_value="ledger",
-            ),
-        ):
-            self._assert_rejected_before_side_effect(config)
+        self._assert_rejected_before_side_effect(config)
 
     def test_canonical_daily_native_cannot_masquerade_as_weekly(
         self,
@@ -2766,12 +2719,7 @@ class ScheduledLiveExecutionFenceTests(_ExplicitLegacyModeTestCase):
                 "frequency": "weekly",
             }
         )
-        with patch(
-            "scheduler.executor."
-            "bootstrap_deployment_daily_coordinator_mode",
-            return_value="ledger",
-        ):
-            self._assert_rejected_before_side_effect(masquerade)
+        self._assert_rejected_before_side_effect(masquerade)
 
     def test_canonical_weekly_native_is_rejected_before_engine(
         self,
@@ -2787,7 +2735,7 @@ class ScheduledLiveExecutionFenceTests(_ExplicitLegacyModeTestCase):
         with (
             patch(
                 "scheduler.executor."
-                "bootstrap_deployment_daily_coordinator_mode",
+                "require_daily_coordinator_mode",
                 side_effect=AssertionError(
                     "weekly must not read daily coordinator mode"
                 ),

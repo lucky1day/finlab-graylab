@@ -182,7 +182,8 @@ generation 冻结副本。算法子进程、方案 adapter 和其它 Gate 不得
 - 方案 core 或 `predict.py` 直接执行 `INSERT/UPDATE/DELETE/ALTER/DROP`。
 - 为了让算法跑通而修改源数据表。
 - 用历史回测结果写入 `t_scheme_predictions`。
-- 用 broad `scheduler.executor --include-paused` 或全量 run-once 替代单方案 gate。
+- 旧的 broad `scheduler.executor` 全量 CLI 已退役；合法运行入口仅为按方案的 launchd runner、
+  backend direct，或取得专属授权后的 harness。不得新建等价批量入口。
 - 通过临时脚本绕过 `shared.input_artifacts` 生成算法输入。
 
 ---

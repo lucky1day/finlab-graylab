@@ -1071,6 +1071,30 @@ generation receipt 读取，以及 backend manual trigger 的 `DAILY_LEDGER` / o
 
 **状态：** 已完成（repo-only）；不代表数据库 ledger 表、installed 控制面或自然生产调度发生任何变化。
 
+### G8.14 — executor broad aggregate CLI 退役（2026-08-05，repo-only）
+
+**目标：** 移除 `scheduler.executor` 的旧全量聚合 CLI，避免它再次成为与按方案 launchd one-shot
+runner 并行的执行入口。自然调度继续直接按方案调用 `execute_scheme`；backend direct 与 harness 的
+既有单方案/授权边界不变。
+
+**边界：** 仅删除 `execute_all`、`_execute_all_scheduled`、
+`_scheduled_aggregate_configuration_failure`、CLI `main`、`_executor_exit_code`、`__main__` block 及
+其专属 import，并删除唯一 consumer 测试 `tests/test_executor_cli.py`。保留
+`execute_scheme`、`discover_schemes`、`require_daily_coordinator_mode` 和
+`_scheduled_config_matches_canonical`，不改 launchd、V2 Gate、业务库、plist、服务或自然 writer。
+
+**TDD 与验证：**
+
+- [x] RED：架构守卫在旧实现精确发现五个 aggregate CLI 符号，得到 `1 failed`。
+- [x] GREEN：删除后同一守卫得到 `1 passed`，并同时断言旧 CLI 测试文件不存在。
+- [x] 相关 architecture/executor-run-id/launchd/direct/repository/Harness/docs selector 复跑为
+  `185 passed, 64 subtests passed`；`compileall`、`git diff --check` 和 executor 禁止符号检查通过。
+- [x] 两轮独立规格审查确认 core `execute_scheme` 的 admission/canonical/one-shot fence 未受影响；
+  独立质量审查通过，无 P0–P2。旧 `python -m scheduler.executor ...` 不再是受支持 CLI；因 module
+  entry 已删除，不能以 tombstone 重新引入该入口。
+
+**状态：** 已完成（repo-only）；未连接数据库、未运行业务 runner，未改 launchd、installed plist 或服务。
+
 ---
 
 ## 15. 执行中的统一停止条件

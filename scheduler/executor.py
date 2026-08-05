@@ -5,7 +5,6 @@ import logging
 import os
 import stat
 import subprocess
-import sys
 import tempfile
 import time
 from collections import Counter
@@ -13,7 +12,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Callable, ContextManager, Sequence
+from typing import Callable, ContextManager
 
 from scheduler.discovery import SchemeConfig, discover_schemes
 from scheduler.daily_policy import (
@@ -36,7 +35,6 @@ from scheduler.repository import (
     create_engine_from_env,
     fail_scheme_run_atomic,
     read_blackbox_execution_approval,
-    sync_scheme_registry,
     write_run_log,
 )
 from shared.calendar_service import get_calendar
@@ -69,8 +67,6 @@ from shared.databridge_input_generation import (
 )
 from shared.daily_coordinator_mode import (
     DAILY_COORDINATOR_MODE_ENV,
-    DailyCoordinatorModeMissingError,
-    bootstrap_deployment_daily_coordinator_mode,
     require_daily_coordinator_mode,
 )
 from shared.models import PredictionRecord
@@ -1645,236 +1641,6 @@ def _effective_timeout_sec(cfg: SchemeConfig, default_timeout_sec: int) -> int:
     return timeout
 
 
-def execute_all(
-    predict_date: str,
-    algo_env: str = DEFAULT_ALGO_ENV,
-    include_paused: bool = False,
-    prediction_phase: str = "scheduled_live",
-    scheduled_control_plane: str = "direct_scheduled",
-) -> list[SchemeRunResult]:
-    """执行全部方案；正式调度先完成零写入 admission 快照。"""
-    if prediction_phase not in VALID_PREDICTION_PHASES:
-        raise ValueError(
-            "prediction_phase must be one of "
-            f"{sorted(VALID_PREDICTION_PHASES)}, got "
-            f"{prediction_phase}"
-        )
-    schemes = discover_schemes()
-    runnable = (
-        schemes
-        if include_paused
-        else [cfg for cfg in schemes if cfg.status == "active"]
-    )
-    if prediction_phase == "scheduled_live":
-        return _execute_all_scheduled(
-            runnable,
-            predict_date=predict_date,
-            algo_env=algo_env,
-            scheduled_control_plane=scheduled_control_plane,
-        )
-
-    engine = create_engine_from_env()
-    try:
-        sync_scheme_registry(engine, schemes)
-    finally:
-        engine.dispose()
-
-    return [
-        execute_scheme(
-            cfg,
-            predict_date,
-            algo_env=algo_env,
-            prediction_phase=prediction_phase,
-        )
-        for cfg in runnable
-    ]
-
-
-def _execute_all_scheduled(
-    runnable: list[SchemeConfig],
-    *,
-    predict_date: str,
-    algo_env: str,
-    scheduled_control_plane: str,
-) -> list[SchemeRunResult]:
-    """冻结指定 scheduled 控制面 policy 后按发现顺序执行或拒绝。"""
-    from scheduler.blackbox_scheduler_admission import (
-        DIRECT_SCHEDULED,
-        BlackboxSchedulerAdmissionError,
-        ScheduledPredictionConfigurationError,
-        ScheduledPredictionControlPlaneDenied,
-        load_blackbox_scheduler_admission,
-        require_scheduled_prediction_control_plane_with_policy_snapshot,
-        uses_blackbox_scheduler_admission,
-    )
-
-    canonical_snapshot_invalid = False
-    try:
-        canonical_schemes = discover_schemes()
-    except (OSError, RuntimeError, ValueError):
-        canonical_schemes = []
-        canonical_snapshot_invalid = True
-    canonical_by_scheme_id: dict[str, list[SchemeConfig]] = {}
-    for canonical in canonical_schemes:
-        canonical_by_scheme_id.setdefault(
-            canonical.scheme_id,
-            [],
-        ).append(canonical)
-
-    controlled = [
-        config
-        for config in runnable
-        if uses_blackbox_scheduler_admission(config)
-    ]
-    policy = None
-    policy_invalid = False
-    if controlled:
-        try:
-            policy = load_blackbox_scheduler_admission()
-        except BlackboxSchedulerAdmissionError:
-            policy_invalid = True
-
-    daily_like_present = any(
-        getattr(config, "frequency", None)
-        not in {"weekly", "monthly"}
-        for config in runnable
-    )
-    coordinator_mode: str | None = None
-    coordinator_mode_invalid = False
-    if (
-        daily_like_present
-        and scheduled_control_plane == DIRECT_SCHEDULED
-    ):
-        try:
-            coordinator_mode = (
-                bootstrap_deployment_daily_coordinator_mode()
-            )
-        except (
-            DailyCoordinatorModeMissingError,
-            RuntimeError,
-            ValueError,
-        ):
-            coordinator_mode_invalid = True
-
-    plan: list[
-        tuple[SchemeConfig, SchemeRunResult | None]
-    ] = []
-    for config in runnable:
-        failure: SchemeRunResult | None = None
-        canonical_matches = canonical_by_scheme_id.get(
-            config.scheme_id,
-            [],
-        )
-        if (
-            canonical_snapshot_invalid
-            or len(canonical_matches) != 1
-            or not _scheduled_config_matches_canonical(
-                config,
-                canonical_matches[0],
-            )
-        ):
-            failure = (
-                _scheduled_aggregate_configuration_failure(
-                    config,
-                    detail=(
-                        "canonical configuration is unavailable "
-                        "or drifted"
-                    ),
-                )
-            )
-        elif uses_blackbox_scheduler_admission(config):
-            if policy_invalid or policy is None:
-                failure = (
-                    _scheduled_aggregate_configuration_failure(
-                        config,
-                        detail=(
-                            "admission configuration is invalid"
-                        ),
-                    )
-                )
-            else:
-                try:
-                    require_scheduled_prediction_control_plane_with_policy_snapshot(
-                        config,
-                        plane=scheduled_control_plane,
-                        policy=policy,
-                    )
-                except ScheduledPredictionControlPlaneDenied:
-                    failure = (
-                        _scheduled_aggregate_configuration_failure(
-                            config,
-                            detail="scheduled control plane denied",
-                        )
-                    )
-                except ScheduledPredictionConfigurationError:
-                    failure = (
-                        _scheduled_aggregate_configuration_failure(
-                            config,
-                            detail=(
-                                "canonical identity, lifecycle, or "
-                                "execution metadata drift"
-                            ),
-                        )
-                    )
-        if (
-            failure is None
-            and scheduled_control_plane == DIRECT_SCHEDULED
-            and getattr(config, "frequency", None)
-            not in {"weekly", "monthly"}
-        ):
-            if coordinator_mode_invalid:
-                failure = (
-                    _scheduled_aggregate_configuration_failure(
-                        config,
-                        detail=(
-                            "daily coordinator mode is unavailable"
-                        ),
-                    )
-                )
-            elif coordinator_mode == "ledger":
-                failure = (
-                    _scheduled_aggregate_configuration_failure(
-                        config,
-                        detail=(
-                            "direct daily execution is disabled in "
-                            "ledger mode"
-                        ),
-                    )
-                )
-        plan.append((config, failure))
-
-    results: list[SchemeRunResult] = []
-    for config, failure in plan:
-        if failure is not None:
-            results.append(failure)
-        else:
-            results.append(
-                execute_scheme(
-                    config,
-                    predict_date,
-                    algo_env=algo_env,
-                    prediction_phase="scheduled_live",
-                    scheduled_control_plane=scheduled_control_plane,
-                )
-            )
-    return results
-
-
-def _scheduled_aggregate_configuration_failure(
-    config: SchemeConfig,
-    *,
-    detail: str,
-) -> SchemeRunResult:
-    return SchemeRunResult(
-        config.scheme_id,
-        "failed",
-        0,
-        0.0,
-        f"{PLATFORM_CONFIGURATION_ERROR_PREFIX} "
-        f"scheduled_live {detail}: scheme_id={config.scheme_id}",
-    )
-
-
 def _normalize_live_records(records: list[PredictionRecord], *, prediction_phase: str) -> list[PredictionRecord]:
     """补齐平台级 feature_date / prediction_phase，一处统一控制灰度和正式实盘语义。"""
     normalized: list[PredictionRecord] = []
@@ -2035,73 +1801,3 @@ def _verify_scheme_activation(engine, scheme_id: str, scheme_version: str | None
             )
 
     return True, "ok"
-
-
-def main(
-    argv: Sequence[str] | None = None,
-) -> int:
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Execute Bond Factor Lab schemes.")
-    parser.add_argument("predict_date", help="Prediction date in YYYY-MM-DD format")
-    parser.add_argument("--scheme-id", default=None, help="Only execute one scheme")
-    parser.add_argument("--algo-env", default=os.getenv("BOND_ALGO_CONDA_ENV", DEFAULT_ALGO_ENV))
-    parser.add_argument("--include-paused", action="store_true", help="Run/skip paused schemes and log skipped rows")
-    parser.add_argument(
-        "--prediction-phase",
-        choices=sorted(VALID_PREDICTION_PHASES),
-        default="scheduled_live",
-        help="Live prediction phase; gray backfill must pass gray_live explicitly.",
-    )
-    args = parser.parse_args(argv)
-
-    if args.scheme_id:
-        schemes = {cfg.scheme_id: cfg for cfg in discover_schemes()}
-        config = schemes.get(args.scheme_id)
-        if config is None:
-            print(
-                f"{PLATFORM_CONFIGURATION_ERROR_PREFIX} "
-                f"scheme not found: {args.scheme_id}",
-                file=sys.stderr,
-            )
-            return 2
-        result = execute_scheme(
-            config,
-            args.predict_date,
-            algo_env=args.algo_env,
-            prediction_phase=args.prediction_phase,
-        )
-        print(result)
-        return _executor_exit_code([result])
-
-    results = execute_all(
-        args.predict_date,
-        algo_env=args.algo_env,
-        include_paused=args.include_paused,
-        prediction_phase=args.prediction_phase,
-    )
-    for result in results:
-        print(result)
-    return _executor_exit_code(results)
-
-
-def _executor_exit_code(
-    results: list[SchemeRunResult],
-) -> int:
-    if any(
-        (result.error_msg or "").startswith(
-            PLATFORM_CONFIGURATION_ERROR_PREFIX
-        )
-        for result in results
-    ):
-        return 2
-    if any(
-        result.status not in {"success", "skipped"}
-        for result in results
-    ):
-        return 1
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
