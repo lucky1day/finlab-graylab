@@ -38,7 +38,19 @@ FORMAL_WEEKLY_CAPABILITIES = frozenset(
     )
 )
 DAILY_GRAY_CAPABILITIES = frozenset(("daily_ledger",))
+LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES = frozenset(
+    ("launchd_one_shot",)
+)
 NO_CAPABILITIES = frozenset()
+G31_LAUNCHD_ONE_SHOT_IDENTITIES = frozenset(
+    {
+        ("one_y_t1_quote_state_hv_v1", "1fd56dfcc264"),
+        ("three_y_adyn_lb1_k3_v1", "98233f0cb9ef"),
+        ("three_y_adyn_lb2_k1_v1", "47c7c1776db0"),
+        ("seven_y_current55_lgbm_001_v2", "cd0624ef3ead"),
+        ("seven_y_current55_lgbm_002_v2", "57e956513471"),
+    }
+)
 
 
 def _expected_admission(
@@ -253,56 +265,56 @@ EXPECTED_ADMISSIONS = {
         "one_y_t1_quote_state_hv_v1",
         "1fd56dfcc264",
     ): _expected_admission(
-        mode="gray",
+        mode="formal",
         frequency="daily",
         task_type="T+1",
         horizon=1,
         target_tenor="1Y",
-        capabilities=NO_CAPABILITIES,
+        capabilities=LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
     ),
     (
         "seven_y_current55_lgbm_001_v2",
         "cd0624ef3ead",
     ): _expected_admission(
-        mode="gray",
+        mode="formal",
         frequency="daily",
         task_type="T+1",
         horizon=1,
         target_tenor="7Y",
-        capabilities=NO_CAPABILITIES,
+        capabilities=LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
     ),
     (
         "seven_y_current55_lgbm_002_v2",
         "57e956513471",
     ): _expected_admission(
-        mode="gray",
+        mode="formal",
         frequency="daily",
         task_type="T+1",
         horizon=1,
         target_tenor="7Y",
-        capabilities=NO_CAPABILITIES,
+        capabilities=LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
     ),
     (
         "three_y_adyn_lb2_k1_v1",
         "47c7c1776db0",
     ): _expected_admission(
-        mode="gray",
+        mode="formal",
         frequency="daily",
         task_type="T+1",
         horizon=1,
         target_tenor="3Y",
-        capabilities=NO_CAPABILITIES,
+        capabilities=LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
     ),
     (
         "three_y_adyn_lb1_k3_v1",
         "98233f0cb9ef",
     ): _expected_admission(
-        mode="gray",
+        mode="formal",
         frequency="daily",
         task_type="T+1",
         horizon=1,
         target_tenor="3Y",
-        capabilities=NO_CAPABILITIES,
+        capabilities=LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
     ),
     (
         "ten_y_t5_maj3_k3_ic_static_v1",
@@ -578,8 +590,32 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
                         config,
                         plane="legacy_automatic",
                     ),
-                    mode == "formal",
+                    "legacy_automatic"
+                    in EXPECTED_ADMISSIONS[identity]["capabilities"],
                 )
+
+    def test_g31_exact_identities_are_launchd_one_shot_only(self) -> None:
+        """G3.1 formal 身份不继承 legacy、ledger 或 direct 能力。"""
+        policy = load_blackbox_scheduler_admission()
+
+        self.assertEqual(
+            G31_LAUNCHD_ONE_SHOT_IDENTITIES,
+            {
+                identity
+                for identity, expected in EXPECTED_ADMISSIONS.items()
+                if expected["capabilities"]
+                == LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES
+            },
+        )
+        for identity in G31_LAUNCHD_ONE_SHOT_IDENTITIES:
+            config = _config(*identity)
+            with self.subTest(identity=identity):
+                self.assertEqual(policy.mode(config), "formal")
+                for plane in CONTROL_PLANES:
+                    self.assertEqual(
+                        policy.allows(config, plane=plane),
+                        plane == "launchd_one_shot",
+                    )
 
     def test_native_is_scheduled_without_blackbox_policy_identity(
         self,
@@ -686,8 +722,8 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
                     )
                 )
 
-    def test_launchd_one_shot_is_exactly_formal_daily_and_weekly(self) -> None:
-        """one-shot 不从 active 身份推断，gray 和 7Y 均保持拒绝。"""
+    def test_launchd_one_shot_is_exactly_capability_listed(self) -> None:
+        """one-shot 只由 frozen capability 决定，不从 mode 或 tenor 推断。"""
         policy = load_blackbox_scheduler_admission()
         for identity, expected in EXPECTED_ADMISSIONS.items():
             with self.subTest(identity=identity):
@@ -696,8 +732,8 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
                         _config(*identity),
                         plane="launchd_one_shot",
                     ),
-                    expected["mode"] == "formal"
-                    and expected["frequency"] in {"daily", "weekly"},
+                    "launchd_one_shot"
+                    in expected["capabilities"],
                 )
 
     def test_empty_policy_is_rejected(self) -> None:

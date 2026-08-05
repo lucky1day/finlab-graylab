@@ -601,6 +601,21 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
             str(config_item.scheme_id)
             for config_item, _run_date, _kwargs in calls_by_cadence["daily"]
         ]
+        g31_launchd_only_ids = {
+            "one_y_t1_quote_state_hv_v1",
+            "three_y_adyn_lb1_k3_v1",
+            "three_y_adyn_lb2_k1_v1",
+            "seven_y_current55_lgbm_001_v2",
+            "seven_y_current55_lgbm_002_v2",
+        }
+        self.assertTrue(g31_launchd_only_ids.issubset(daily_ids))
+        self.assertEqual(
+            {
+                scheme_id: daily_ids.count(scheme_id)
+                for scheme_id in g31_launchd_only_ids
+            },
+            {scheme_id: 1 for scheme_id in g31_launchd_only_ids},
+        )
         publisher_ids = {
             publisher_id
             for _tenor, publisher_id in APPROVED_PHASE_A_CACHE_PUBLISHERS.values()

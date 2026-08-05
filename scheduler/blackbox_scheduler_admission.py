@@ -92,6 +92,9 @@ _FORMAL_WEEKLY_CAPABILITIES = frozenset(
     }
 )
 _DAILY_GRAY_CAPABILITIES = frozenset({DAILY_LEDGER})
+_LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES = frozenset(
+    {LAUNCHD_ONE_SHOT}
+)
 _NO_CAPABILITIES: frozenset[str] = frozenset()
 
 
@@ -292,56 +295,56 @@ EXPECTED_EXACT_ADMISSIONS: Mapping[
                 "one_y_t1_quote_state_hv_v1",
                 "1fd56dfcc264",
             ): _entry(
-                mode="gray",
+                mode="formal",
                 frequency="daily",
                 task_type="T+1",
                 horizon=1,
                 target_tenor="1Y",
-                capabilities=_NO_CAPABILITIES,
+                capabilities=_LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
             ),
             (
                 "seven_y_current55_lgbm_001_v2",
                 "cd0624ef3ead",
             ): _entry(
-                mode="gray",
+                mode="formal",
                 frequency="daily",
                 task_type="T+1",
                 horizon=1,
                 target_tenor="7Y",
-                capabilities=_NO_CAPABILITIES,
+                capabilities=_LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
             ),
             (
                 "seven_y_current55_lgbm_002_v2",
                 "57e956513471",
             ): _entry(
-                mode="gray",
+                mode="formal",
                 frequency="daily",
                 task_type="T+1",
                 horizon=1,
                 target_tenor="7Y",
-                capabilities=_NO_CAPABILITIES,
+                capabilities=_LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
             ),
             (
                 "three_y_adyn_lb2_k1_v1",
                 "47c7c1776db0",
             ): _entry(
-                mode="gray",
+                mode="formal",
                 frequency="daily",
                 task_type="T+1",
                 horizon=1,
                 target_tenor="3Y",
-                capabilities=_NO_CAPABILITIES,
+                capabilities=_LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
             ),
             (
                 "three_y_adyn_lb1_k3_v1",
                 "98233f0cb9ef",
             ): _entry(
-                mode="gray",
+                mode="formal",
                 frequency="daily",
                 task_type="T+1",
                 horizon=1,
                 target_tenor="3Y",
-                capabilities=_NO_CAPABILITIES,
+                capabilities=_LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
             ),
             (
                 "ten_y_t5_maj3_k3_ic_static_v1",
