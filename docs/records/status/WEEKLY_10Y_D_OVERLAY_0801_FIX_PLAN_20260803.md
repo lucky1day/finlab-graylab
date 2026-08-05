@@ -8,7 +8,7 @@
 
 **技术栈：** Python 3.12、FastAPI、MySQL、launchd、Harness、原生 HTML/JS Dashboard。
 
-**计划状态：** `ACTIVE EXECUTION PLAN`。本文只保留尚待执行的工作与必要的已闭环摘要；冗长历史过程已从工作树删除，可从 Git 提交、Harness/DB receipt、run 和 prediction 审计追溯。它不重定义当前生产控制面，后者以 `AGENTS.md`、`CLAUDE.md` 和 `docs/architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md` 为准。
+**计划状态：** `COMPLETED (2026-08-06)`。G3.1 已在授权边界内闭环；冗长历史过程不复制到本文，可从 Git 提交、Harness/DB receipt、run 和 prediction 审计追溯。它不重定义当前生产控制面，后者以 `AGENTS.md`、`CLAUDE.md` 和 `docs/architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md` 为准。
 
 ---
 
@@ -39,46 +39,40 @@
 以上阶段的长篇步骤、旧快照和已完成 checklist 已从本文移除。若需要审计，先查对应 Git commit、
 Harness receipt、`t_scheme_runs`/`t_scheme_predictions` 和现行架构文档，而不是重新启用旧路径。
 
-## 3. G3.1 — 当前事实与验收基线
+## 3. G3.1 — 闭环证据（2026-08-06）
 
-### 3.1 DB、API 与前端一致性
+- 刷新后只读冻结确认 DataBridge current 为
+  `full-20260806-063108-e08812802aff`（`refresh_date=2026-08-06`），8 月 3/4 日的 daily cutoff
+  分别精确到 `2026-08-03` / `2026-08-04`。受限 selection 为 `target_date=2026-08-04..05`、
+  `task_type=T+1`；写前 plan SHA
+  `cda60ed5dd9c604223620c46cbb269be371da78399c9b0ec2659c234d107331e` 冻结 20 个预期键：8 个 present、
+  12 个 `GRAY_LIVE_GAP`、11 个原子组，且无 T+5、8 月 1 日或范围外 target。
+- 提交 `2227922` 将 gap-plan selection 纳入 SHA/replay；提交 `e830f9e` 将五个 exact Blackbox identity
+  收敛为 `mode=formal + {launchd_one_shot}`，仍拒绝 legacy、ledger 与 direct，未执行 launchd、plist
+  或服务操作。
+- 为 `t1_daily` 的 8 月 4 日双 target 准备并登记 sealed current-snapshot Native artifact
+  `native-8499778c42a91c94ca6cfc0a`（feature `2026-08-03`）；其余十个键使用冻结的 DataBridge authority。
+  未记录 HMAC token、DSN 或凭据。
+- 单次 `signal-gap-fill` Gate 对该 SHA 返回 `PASSED`：runs `2156`–`2166` 全部 success，11 组 insert-only
+  共写入 12 条 `gray_live`。其 provenance 为 10 条 `databridge_current_generation` 与 2 条
+  `native_current_snapshot_artifact`；没有新增 `scheduled_live`、T+5、8 月 1 日或其它 target。
+- 写后受限 plan SHA
+  `aa5e915519aa754aa9518b42231f5a5ec20b3026cdf454e76eeea351f45c8596` 为 20 个 `SKIP_PRESENT`，open gap
+  为 0，无控制面 blocker 或范围外项。
 
-2026-08-06 的只读快照已按 active composite scope 逐行比较：
-
-| 范围 | DB raw live | canonical live | served API live | 最后一个可见月份（2026-08）信号 |
-|---|---:|---:|---:|---:|
-| T+1（10 scopes） | 458 | 458 | 458 | 18 |
-| T+5（24 scopes） | 1,211 | 1,211 | 1,211 | 155 |
-| 合计（34 scopes） | 1,669 | 1,669 | 1,669 | 173 |
-
-前端“样本”会把 historical backtest 与 actual join 合并，不能直接等同 live 行数；当前全月份筛选的
-详情/已评估样本分别为 T+1 `3,828/3,823`、T+5 `9,203/9,096`。该差异是指标定义，不是重复或漏行。
-因此，当前前端的空日是后端真实缺口，不是数据库重复、Dashboard cache 或页面过滤缺陷。
-
-| target_date | T+1（应有 10） | T+5（应有 24） | 结论 |
+| target_date | T+1（10 scopes） | T+5（24 scopes） | DB raw / canonical / fresh API |
 |---|---:|---:|---|
-| 2026-08-03 | 10/10 | 24/24 | 已闭环 |
-| 2026-08-04 | 3/10 | 24/24 | T+1 缺 7 |
-| 2026-08-05 | 5/10 | 24/24 | T+1 缺 5 |
+| 2026-08-03 | 10/10 | 24/24 | 一致 |
+| 2026-08-04 | 10/10 | 24/24 | 一致 |
+| 2026-08-05 | 10/10 | 24/24 | 一致 |
 
-### 3.2 根因与精确边界
+前端按 `target_date` 切换到 `仅实盘`、`2026-08..2026-08` 后已就绪；其 canonical duplicate 防线未触发。
+DB、Dashboard canonical 与 fresh API 的最后可见月 live 行数均为 `207`，前端的“样本”指标未被当作 live 行数。
 
-- `t1_daily__h1__5Y`、`t1_daily__h1__10Y` 仅缺 2026-08-04：该日 daily 已执行后，它们才完成
-  current exact version/Registry 激活；2026-08-05 已正常出现。
-- 五个 active Blackbox T+1 identity 在 2026-08-04/05 都缺失：当前 exact admission 为 `gray` 且
-  capabilities 为空，不含 `launchd_one_shot`，因而没有 one-shot writer。
-
-| base scheme / composite target | exact version | 缺失 target_date |
-|---|---|---|
-| `one_y_t1_quote_state_hv_v1__h1__1Y` | `1fd56dfcc264` | 2026-08-04、2026-08-05 |
-| `three_y_adyn_lb1_k3_v1__h1__3Y` | `98233f0cb9ef` | 2026-08-04、2026-08-05 |
-| `three_y_adyn_lb2_k1_v1__h1__3Y` | `47c7c1776db0` | 2026-08-04、2026-08-05 |
-| `seven_y_current55_lgbm_001_v2__h1__7Y` | `cd0624ef3ead` | 2026-08-04、2026-08-05 |
-| `seven_y_current55_lgbm_002_v2__h1__7Y` | `57e956513471` | 2026-08-04、2026-08-05 |
-| `t1_daily__h1__5Y`、`t1_daily__h1__10Y` | current active Native | 仅 2026-08-04 |
-
-总计是 **12 个 business key**，但运行原子组为 11 个：十个 Blackbox 单 target
-`(base_scheme_id, predict_date)` 组，加一个包含 5Y/10Y 两 target 的 `t1_daily` 组。
+精确 version 仍为：`one_y_t1_quote_state_hv_v1@1fd56dfcc264`、
+`three_y_adyn_lb1_k3_v1@98233f0cb9ef`、`three_y_adyn_lb2_k1_v1@47c7c1776db0`、
+`seven_y_current55_lgbm_001_v2@cd0624ef3ead`、`seven_y_current55_lgbm_002_v2@57e956513471`，以及
+`t1_daily@7898b9e47a9a`。
 
 ---
 
@@ -96,14 +90,12 @@ Harness receipt、`t_scheme_runs`/`t_scheme_predictions` 和现行架构文档�
 - 只读：`harness/signal_gap_plan.py`、`harness/gates/signal_gap_fill_gate.py`
 - 验证：`tests/test_launchd_prediction_runner.py`
 
-- [ ] 核对 Git 工作区、active Registry、精确版本、交易日历、DataBridge current、DB/API/前端读回；
-  若 active set、版本或缺口与第 3 节不同，停止并先更新本计划。
-- [ ] 在 fake engine/替身环境运行现有三 cadence no-write control-plane simulation；确认它不连接
-  业务数据库、不写 prediction/run、不启动算法子进程或 cache。
-- [ ] 对五个列明的 Blackbox exact identity 输出 admission 分类，预期为 `gray + no launchd_one_shot`；
-  对 `t1_daily` 确认 8 月 4 日仅为历史 visibility 缺口而非当前 admission 故障。
-- [ ] 只读生成 2026-08-04 至 2026-08-05 的 signal-gap plan，要求唯一 open keys 恰为表中 12 个；
-  8 月 1 日、T+5 和 8 月 11 日 Liwei future target 不得出现。
+- [x] 已核对 Git 工作区、active Registry、精确版本、交易日历、DataBridge current、DB/API/前端行集，并在
+  变更 admission 后重新冻结精确 scope。
+- [x] fake engine 三 cadence no-write control-plane simulation 保持零 DB、算法子进程、cache 和业务写入访问。
+- [x] 五个 exact identity 的最终 admission 为 formal + `launchd_one_shot` only；`t1_daily` 的 8 月 4 日
+  输入 generation 以专项 current-snapshot artifact 处理。
+- [x] 受限 plan 仅含 12 个 T+1 open key、11 个原子组；8 月 1 日、T+5 与 8 月 11 日均不在 selection 内。
 
 **通过条件：** 输出的 scope、version、target multiset 和输入 authority 全部匹配；否则不进入 Task 2。
 
@@ -121,19 +113,19 @@ Harness receipt、`t_scheme_runs`/`t_scheme_predictions` 和现行架构文档�
 - 修改：`tests/test_blackbox_scheduler_admission.py`
 - 修改：`tests/test_launchd_prediction_runner.py`
 
-- [ ] 先在两个测试模块写精确身份断言：上述五个 `scheme_id + scheme_version` 必须为
+- [x] 在两个测试模块写入精确身份断言：上述五个 `scheme_id + scheme_version` 为
   `mode=formal`、daily/T+1/h1/正确 tenor，且 capabilities 精确等于仅含
   `launchd_one_shot` 的 frozen set；其他 admission 不变。
-- [ ] 运行测试确认旧 admission 不能满足新断言。
-- [ ] 同步更新 Python frozen map 与 JSON frozen map；若需提取常量，只允许新增
+- [x] 已以测试先行验证旧 admission 不满足新断言。
+- [x] 已同步更新 Python frozen map 与 JSON frozen map；新增
   `_LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES = frozenset({LAUNCHD_ONE_SHOT})`。不得复用
   `_FORMAL_DAILY_CAPABILITIES`（它包含 `legacy_automatic`、`daily_ledger` 和
   `direct_scheduled`），也不改 `VALID_CONTROL_PLANES` 或恢复 `recurring`、ledger、
   direct/旧 scheduler capability。
-- [ ] 扩展 no-write runner simulation：五个 identity 必须各被一次
+- [x] 已扩展 no-write runner simulation：五个 identity 各被一次
   `scheduled_live + launchd_one_shot` dispatch 编排，engine、算法进程、cache 和业务写入仍为
   禁止访问的替身。
-- [ ] 运行 admission、launchd runner、repository one-shot、architecture/document 相关测试，
+- [x] 已运行 admission、launchd runner、repository one-shot、architecture/document 相关测试，
   `compileall` 和 `git diff --check`；只暂存本任务四个文件及必要测试文件并单独提交。
 
 **授权边界：** 这是正式调度语义变化；没有用户对这五个 exact identity 的独立授权，不得编辑上述
@@ -149,14 +141,13 @@ admission 文件，也不得通过重启/launchd 触发验证。
   `harness/gates/signal_gap_fill_gate.py`、`scheduler/repository.py` 的既有边界。
 - 执行证据仅写到既有 Harness、run 和 prediction 审计表；不把 `reports/` 暂存到 Git。
 
-- [ ] 在执行前再次重建只读 plan；若其 SHA、exact versions、12-key multiset 或 source authority
-  变化，废弃旧计划并停止。
-- [ ] 为十个 Blackbox 单 target 组和一个 `t1_daily` 双 target 组分别取得
+- [x] 已在执行前再次重建只读 plan，并以新 SHA、exact version、12-key multiset 与 source authority 作为唯一输入。
+- [x] 十个 Blackbox 单 target 组和一个 `t1_daily` 双 target 组均以短期、精确绑定的
   `signal_gap_fill_write` 一次性授权；每个 token 必须绑定 exact version、predict/feature/target
   日期、完整 target multiset、plan SHA 与 input authority。
-- [ ] 仅经 `signal-gap-fill` Gate 写入 insert-only `gray_live`；禁止 SQL、手动 runner、
+- [x] 仅经一次 `signal-gap-fill` Gate 写入 insert-only `gray_live`；未使用 SQL、手动 runner、
   `scheduled_live`、8 月 1 日周末、T+5、8 月 11 日或其他 target。
-- [ ] 任一组失败时停止剩余写入，保留失败 run/receipt；不以重试覆盖或手改状态伪造成功。
+- [x] Gate 无失败组；receipt、run 与 prediction 审计保留，未做手工重试或状态修改。
 
 **通过条件：** 仅新增冻结窗口的 12 个唯一业务键，保留既有记录；不存在 duplicate/overwrite。
 
@@ -167,12 +158,12 @@ admission 文件，也不得通过重启/launchd 触发验证。
 - 修改：本计划、`docs/CURRENT_STATUS.md`、`docs/TODO.md`（仅在 Task 3 成功后）
 - 验证：`tests/test_onboarding_docs.py`
 
-- [ ] 用同一 active scope 重跑 DB raw、canonical、served API 与前端 `target_date` 月份核对。
-- [ ] 验收 2026-08-03/04/05 均为 T+1 `10/10`、T+5 `24/24`；冻结窗口增量恰为 12，
+- [x] 已用同一 active scope 重跑 DB raw、canonical、fresh served API 与前端 `target_date` 月份核对。
+- [x] 2026-08-03/04/05 均为 T+1 `10/10`、T+5 `24/24`；冻结窗口增量恰为 12，
   且 DB/API/前端最后一个月信号数一致。全局总行数随自然批次变化，不使用 1,669 作为硬编码阈值。
-- [ ] 记录 exact runs、versions、plan SHA、input authority 和 `gray_live` provenance；从现行计划中
+- [x] 已记录 exact runs、versions、plan SHA、input authority 类型和 `gray_live` provenance；从现行计划中
   关闭 G3.1，不把证据复制成长篇历史过程。
-- [ ] 运行文档测试、`git diff --check`、`compileall` 与任务相关完整测试；仅提交本任务文件。
+- [x] 已运行文档测试、`git diff --check`、`compileall` 与任务相关完整测试；仅提交本任务文件。
 
 ---
 
@@ -204,5 +195,5 @@ repo-only 的安全零消费者清理已结束。后续必须先由用户决定�
 
 ## 7. 当前下一步
 
-**等待用户确认后仅执行 Task 1。** Task 1 是只读/无写库验证，不授权 Task 2 的 admission 变更或
-Task 3 的业务补写。
+**G3.1 已关闭。** 后续仅可按独立计划推进 G7 的 Native 版本语义收敛，或 G8 的 replay/ledger 最终设计；
+两者均不从本次 admission、artifact 或 `gray_live` 授权外推。
