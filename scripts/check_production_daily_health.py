@@ -573,8 +573,6 @@ def evaluate_v2_scheduler_gate(
         code = "v2_daily_gate_blocked"
     elif snapshot.generation_id != snapshot.current_generation_id:
         code = "v2_daily_gate_generation_mismatch"
-    elif not snapshot.restart_verified:
-        code = "v2_scheduler_restart_unverified"
     else:
         return []
     return [

@@ -1124,6 +1124,36 @@ launchd、V2 Gate、业务库、installed plist 或服务。
 
 **状态：** 已完成（repo-only）；未连接数据库、未运行业务 runner，未改 launchd、installed plist 或服务。
 
+### G8.16 — V2 health restart 信息化（2026-08-05，repo-only）
+
+**目标：** 让只读 `check_production_daily_health` 对 Blackbox V2 的 health 投影与实际
+`require_v2_daily_ready` admission 对齐。runtime admission 只严格校验凭证 schema、run date、
+`ready` status、expected daily date 以及当前 DataBridge 的 generation/refresh/digest；
+`restart.verified` 是 artifact 审计信息，不能单独把已就绪且 generation 相符的日频判为失败。
+
+**边界：** 仅删除 `evaluate_v2_scheduler_gate()` 对 `restart_verified=False` 生成 error 的分支。
+保留 `V2SchedulerGateSnapshot.restart_verified`、gate artifact 的 `restart` schema、读取和 CLI JSON
+输出，以及 `_gate_record_error` 的审计诊断；不改 `scheduler.v2_daily_gate`、DataBridge publisher、
+launchd、runner、ledger、数据库、installed plist 或服务。
+
+**TDD 与验证：**
+
+- [x] RED：新增 evaluator 与 main 组合回归；`ready`、matching generation、
+  `restart_verified=false` 在旧实现得到 `2 failed, 29 deselected`，分别精确复现 health CLI exit `2`
+  和 `v2_scheduler_restart_unverified`。
+- [x] GREEN：只移除该 health error 分支后，上述 health 回归为 `2 passed, 29 deselected`；CLI exit
+  为 `0`，JSON 仍原样输出 `restart_verified: false`。V2 runtime contract 也明确验证相同凭证为可接纳：
+  `1 passed, 7 deselected`。
+- [x] 关联 health/V2 gate/DataBridge refresh/launchd runner/direct/architecture selector：
+  `100 passed, 14 subtests passed`。
+- [x] `compileall`、禁止 `v2_scheduler_restart_unverified` 符号检查与 `git diff --check` 通过；两轮独立
+  规格/质量审查通过，修正后的组合回归也锁定默认 CLI 日期路径。
+- [x] 全量 `pytest -q -x` 在 `11 passed` 后复现既有非本切片基线：
+  `tests/test_active_scheme_contracts.py` 的 discovery 仍列出目录中不存在的
+  `seven_y_current55_lgbm_001_v1` / `seven_y_current55_lgbm_002_v1`，未在本最小修正中扩大范围。
+
+**状态：** 已完成（repo-only）；未连接数据库、未运行业务 runner，未改 launchd、installed plist 或服务。
+
 ---
 
 ## 15. 执行中的统一停止条件

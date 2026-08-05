@@ -41,6 +41,7 @@ class V2DailyGateTests(unittest.TestCase):
         status: str = "ready",
         generation_id: str = "full-20260722-a",
         business_digest: str = "digest-a",
+        restart: dict[str, object] | None = None,
     ) -> dict[str, object]:
         return write_gate_record(
             self.config,
@@ -52,6 +53,7 @@ class V2DailyGateTests(unittest.TestCase):
             expected_daily_date="2026-07-21",
             business_digest=business_digest,
             checks=[{"name": "current_dataset", "status": "passed"}],
+            restart=restart,
         )
 
     def test_ready_gate_round_trips_atomically(self) -> None:
@@ -137,6 +139,31 @@ class V2DailyGateTests(unittest.TestCase):
             strict_read_only=True,
             require_source_provenance=True,
         )
+
+    def test_matching_gate_accepts_unverified_restart_metadata(self) -> None:
+        expected = self._write_gate(
+            restart={"requested": False, "verified": False},
+        )
+        current = SimpleNamespace(
+            state={
+                "generation_id": "full-20260722-a",
+                "refresh_date": "2026-07-22",
+                "business_digest": "digest-a",
+            }
+        )
+
+        with patch(
+            "scheduler.v2_daily_gate.check_current_dataset",
+            return_value=current,
+        ):
+            actual = require_v2_daily_ready(
+                self.config,
+                "2026-07-22",
+                "2026-07-21",
+            )
+
+        self.assertEqual(actual, expected)
+        self.assertFalse(actual["restart"]["verified"])
 
     def test_invalid_json_gate_is_blocked(self) -> None:
         path = gate_record_path(self.config, "2026-07-22")
