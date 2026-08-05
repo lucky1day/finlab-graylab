@@ -448,26 +448,6 @@ class ScheduleExecutionEnvelope:
 
 
 @dataclass(frozen=True)
-class ScheduleApiVisibilityProbe:
-    """一次 fresh DB 事务中可供无缓存 HTTP 探针返回的证据。
-
-    ``db_visible_registry_ids`` 仍只表示 write-once DB receipt；只有外部
-    调用方实际收到承载本对象的 no-store HTTP 响应，才能形成 API
-    visibility 的观察证据。
-    """
-
-    occurrence_id: int
-    observed_at: datetime
-    expected_target_count: int
-    committed_registry_ids: tuple[str, ...]
-    linked_registry_ids: tuple[str, ...]
-    db_visible_registry_ids: tuple[str, ...]
-    missing_registry_ids: tuple[str, ...]
-    receipt_missing_registry_ids: tuple[str, ...]
-    source_generation: str
-
-
-@dataclass(frozen=True)
 class ScheduleOccurrenceItemSummary:
     """Occurrence 详情中的 item 与 target 聚合。"""
 
@@ -4038,78 +4018,6 @@ def read_dashboard_source_generation(
     )
 
 
-def read_schedule_api_visibility_probe(
-    engine: Engine,
-    *,
-    occurrence_id: int,
-    _clock: _LedgerClock | None = None,
-) -> ScheduleApiVisibilityProbe:
-    """fresh transaction 核验 target→scheduled prediction 与 DB receipt。"""
-    normalized_occurrence_id = int(occurrence_id)
-    with engine.begin() as conn:
-        occurrence = _read_schedule_occurrence_by_id_conn(
-            conn,
-            occurrence_id=normalized_occurrence_id,
-            for_update=False,
-        )
-        if occurrence is None:
-            raise RuntimeError(
-                f"schedule occurrence not found: {occurrence_id}"
-            )
-        target_rows = _read_schedule_targets_for_occurrence_conn(
-            conn,
-            occurrence_id=normalized_occurrence_id,
-        )
-        observed_at = _read_observed_at_utc(conn, clock=_clock)
-
-    valid_accepted = sorted(
-        _stored_text(row, "registry_scheme_id")
-        for row in target_rows
-        if _is_valid_accepted_schedule_target(row)
-    )
-    linked = list(valid_accepted)
-    db_visible = sorted(
-        _stored_text(row, "registry_scheme_id")
-        for row in target_rows
-        if (
-            _is_valid_accepted_schedule_target(row)
-            and row.get("visible_at") is not None
-        )
-    )
-    api_ready = set(linked) & set(db_visible)
-    all_registry_ids = {
-        _stored_text(row, "registry_scheme_id")
-        for row in target_rows
-    }
-    receipt_missing = sorted(
-        _stored_text(row, "registry_scheme_id")
-        for row in target_rows
-        if (
-            _is_valid_accepted_schedule_target(row)
-            and row.get("visible_at") is None
-        )
-    )
-    return ScheduleApiVisibilityProbe(
-        occurrence_id=normalized_occurrence_id,
-        observed_at=observed_at,
-        expected_target_count=int(
-            occurrence["expected_target_count"]
-        ),
-        committed_registry_ids=tuple(valid_accepted),
-        linked_registry_ids=tuple(linked),
-        db_visible_registry_ids=tuple(db_visible),
-        missing_registry_ids=tuple(
-            sorted(all_registry_ids - api_ready)
-        ),
-        receipt_missing_registry_ids=tuple(receipt_missing),
-        source_generation=_schedule_visibility_source_generation(
-            schedule_key=_stored_text(occurrence, "schedule_key"),
-            occurrence=occurrence,
-            target_rows=target_rows,
-        ),
-    )
-
-
 def upsert_scheduler_heartbeat(
     engine: Engine,
     *,
@@ -6735,26 +6643,6 @@ def _ledger_event_time_after_locks(
             f"{field} cannot be in the future relative to trusted clock"
         )
     return event_time, trusted_now
-
-
-def _read_observed_at_utc(
-    conn: Connection,
-    *,
-    clock: _LedgerClock | None,
-) -> datetime:
-    """只读观察使用同一事务的数据库 UTC 时钟。"""
-    if clock is not None:
-        return _trusted_ledger_now(clock)
-    if _dialect_name(conn) == "mysql":
-        observed = conn.execute(
-            text("SELECT UTC_TIMESTAMP(6)")
-        ).scalar_one()
-        return _utc_datetime6(
-            observed
-            if isinstance(observed, datetime)
-            else datetime.fromisoformat(str(observed))
-        )
-    return _trusted_ledger_now(None)
 
 
 def _require_not_before(

@@ -1289,6 +1289,35 @@ migration、launchd、replay、当前 runtime 或业务表。
 
 **状态：** 已完成（repo-only）；未连接数据库、未运行业务 runner，未改 launchd、installed plist 或服务。
 
+### G8.22 — repository legacy API visibility projection 退役（2026-08-05，repo-only）
+
+**目标：** 删除只服务于已移除 `/api/daily-schedule/visibility` route 的孤儿闭包：
+`ScheduleApiVisibilityProbe`、`read_schedule_api_visibility_probe` 与私有
+`_read_observed_at_utc`。它们不再代表当前 API、runtime 或 launchd 的可见性验收路径。
+
+**边界：** 仅删除上述 dataclass、reader 与私有观察时钟 helper，并新增 public absence + source-AST
+private-helper guard。保留共享 `_LedgerClock`、`_schedule_visibility_source_generation`、
+`read_dashboard_source_generation`、occurrence snapshot/read、visibility receipt/reconcile、数据库、
+launchd 与 replay；不改变 write-once receipt 或 dashboard generation 语义。
+
+**TDD 与验证：**
+
+- [x] RED：先新增 public/AST guard；旧实现得到 `1 failed, 24 deselected`，精确列出两个仍暴露的
+  public projection symbol，审计同时确认 source 仍定义 `_read_observed_at_utc`。
+- [x] GREEN：仅删除该闭包后，同一 guard 得到 `1 passed, 24 deselected`；目标源码/运行时的精确搜索
+  仅保留 guard（历史计划原文保留），`_LedgerClock`、dashboard generation、snapshot 与
+  receipt/reconcile 路径仍存在。
+- [x] architecture、repository launchd-one-shot/registry/input-artifacts、daily runtime、daily replay
+  operator migrations、launchd prediction runner、prediction launchd、scheduled executor、daily
+  control-plane probe、production health、dashboard snapshot/factor-lab dashboard/API selector 复跑为
+  `438 passed, 2 warnings, 149 subtests passed`；warnings 仅为既有 FastAPI startup 弃用提示。
+- [x] 全量 `pytest -q -x` 复验仍在既有 active-scheme discovery 基线停止：`1 failed, 11 passed,
+  2 warnings, 4 subtests passed`，失败为 `seven_y_current55_lgbm_001_v1`、
+  `seven_y_current55_lgbm_002_v1` 被 discovery 发现但缺少 active config dir；本切片未触及该 7Y
+  配置问题。
+
+**状态：** 已完成（repo-only）；未连接数据库、未运行业务 runner，未改 launchd、installed plist 或服务。
+
 ---
 
 ## 15. 执行中的统一停止条件

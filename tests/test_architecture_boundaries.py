@@ -666,6 +666,37 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
             "retired schedule health projection symbols must not return",
         )
 
+    def test_legacy_schedule_api_visibility_projection_is_not_exposed(
+        self,
+    ) -> None:
+        """已退役 visibility route 不得恢复其 repository projection。"""
+        retired_public = (
+            "ScheduleApiVisibilityProbe",
+            "read_schedule_api_visibility_probe",
+        )
+        self.assertEqual(
+            [],
+            [name for name in retired_public if hasattr(repository, name)],
+            "retired schedule API visibility symbols must not return",
+        )
+
+        project_root = Path(__file__).resolve().parents[1]
+        repository_tree = ast.parse(
+            (project_root / "scheduler" / "repository.py").read_text(
+                encoding="utf-8"
+            )
+        )
+        defined_names = {
+            node.name
+            for node in ast.walk(repository_tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        self.assertNotIn(
+            "_read_observed_at_utc",
+            defined_names,
+            "retired visibility projection clock helper must not return",
+        )
+
     def test_current_repository_has_no_layer_inversions(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
 
