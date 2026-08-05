@@ -97,7 +97,6 @@ BLACKBOX_BOOTSTRAP_EMPTY_TABLES = (
     "t_scheme_versions",
     "t_scheme_runs",
     "t_input_artifacts",
-    "t_scheme_serving_pointer",
     "t_scheme_predictions",
     "t_scheme_run_log",
     "t_scheme_actuals",

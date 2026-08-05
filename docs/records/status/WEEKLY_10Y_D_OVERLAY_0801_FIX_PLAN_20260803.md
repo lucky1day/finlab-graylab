@@ -853,6 +853,37 @@ retired JSON 的 legacy DataBridge 兼容 CLI，避免它继续表达第二个 s
 **状态：** 已完成（repo-only）；没有运行或改变业务 runner、DataBridge publish、cache、数据库、
 installed plist、loaded state、launchctl 或服务。
 
+### G8.7 — Blackbox certification bootstrap pointer preflight 去重（2026-08-05，repo-only）
+
+**目标：** 仅从 `scheduler.repository.BLACKBOX_BOOTSTRAP_EMPTY_TABLES` 移除
+`t_scheme_serving_pointer`，避免 Blackbox certification bootstrap 对该表重复执行“必须为空”的
+计数。该表的物理存在、migration 005、`migrations/release_manifest`、migration runner 的 schema
+fingerprint / FK、历史证据与文档、BootstrapGate / CLI、DataBridge、ledger / epoch、backend 和其它
+数据库代码均不在本刀范围。
+
+**安全边界：** 正常 serving pointer 仍必须以非空 FK 指向 `t_scheme_runs`，而
+`t_scheme_runs` 仍在 bootstrap 空表 preflight 中并继续拒绝非空值。本刀只移除 duplicate pointer
+count，不删除物理表，也不声称物理表已删除；其行为最多只会放宽 schema drift 或非法 orphan
+pointer 状态，不改变正常 FK 约束或 run 检查。没有连接或写入数据库、没有运行可 bootstrap 的
+Harness 命令，也没有核对或操作 launchd / runner / installed state。
+
+**TDD 与证据：**
+
+- [x] 先新增 `tests/test_blackbox_bootstrap_preflight.py` 的 fake-engine / fake-connection
+  repository 行为测试；RED 使用 `bond_factor_lab_service` 解释器运行，得到 `1 failed, 1 passed`，
+  失败精确为 `Blackbox bootstrap test Schema must be empty: t_scheme_serving_pointer=1`。
+- [x] 最小删除该 tuple 单项后，同一 focused 测试 GREEN：`2 passed`。成功路径断言 pointer 不会
+  被发出 `COUNT(*)` 查询、不会出现在返回的 `table_counts`；保留的 `t_scheme_runs=1` 仍被拒绝。
+- [x] bootstrap / repository / harness / API 相关 pytest 回归（含
+  `test_blackbox_bootstrap_preflight`、repository registry/input、Blackbox harness gates、harness
+  persistence、executor pointer-no-write、backend serving、Blackbox contracts/discovery/runner）均通过；
+  `compileall -q scheduler shared harness tests scripts`、全部 repo plist 的 `plutil -lint`、根规范
+  一致性检查与 `git diff --check` 均通过。全量 `pytest -q -x` 仍在 11 项后停于既有
+  `test_active_scheme_contracts`：冻结的 `seven_y_current55_lgbm_001_v1/002_v1` 被 discovery 找到却
+  不在 active config 目录；本切片未改这两套方案或其发现规则，故该既有基线失败已单独保留。
+
+**状态：** 已完成（repo-only）；没有物理删表、migration、DB bootstrap 或生产控制面变更结论。
+
 ---
 
 ## 15. 执行中的统一停止条件
