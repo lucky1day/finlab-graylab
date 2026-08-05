@@ -14,21 +14,22 @@
 
 ## 方案比较
 
-1. **仅修正 Dashboard 前端切换（采用）**：以最早 live `target_date` 为边界，
-   排除该日及之后的 backtest rows。它只影响当前生产 Dashboard 的展示与聚合，
-   不改写历史回测或实盘记录。
+1. **复用前端切换规则（采用）**：以最早 live `target_date` 为边界，排除该日
+   及之后的 backtest rows。Dashboard 与 legacy fallback 共用这条规则，保持两条
+   前端读取路径的结果等价；不改写历史回测或实盘记录。
 2. 在 API 层删除或筛掉回测记录：会改变审计可见的不可变回测数据，并扩大 API
    语义变更范围，不采用。
 3. 在数据库删除重叠历史记录：会破坏回测审计，不采用。
 
 ## 设计
 
-在 `frontend/aifin-shell.js` 的 Dashboard view-model 构建路径新增一个局部的、
-纯函数式 `target_date` cutoff 计算。它从已验证的 `liveRows` 取最早
-`targetDate`；若存在 cutoff，则只保留严格早于该日期的 `backtestRows`。
+在 `frontend/aifin-shell.js` 中把既有的月份级 live/backtest cutoff 收敛为纯函数
+的 `target_date` cutoff。它从 live 明细或 phase range 取最早 target date；若存在
+cutoff，则只保留严格早于该日期的 backtest rows。Dashboard view-model 与 legacy
+fallback 都调用该函数，不再依 task type 放宽日频或周频的切断规则。
 
-现有 legacy fallback 的月份级展示逻辑、数据库、Dashboard API 契约、算法和
-调度均不在本次范围内。这个边界避免改动尚未被本次生产路径使用的兼容逻辑。
+数据库、Dashboard API 契约、算法和调度均不在本次范围内。保留 legacy fallback
+本身的兼容接口，只让它使用与 Dashboard 相同的前端展示规则。
 
 ## 验收
 
@@ -36,6 +37,7 @@
   同日 live 行保留。
 - 聚合后不再有同一 `target_date` 的 backtest 与 live 双计数。
 - 该 fixture 的页面月度结果在 live 起点为月初时仅显示 live 月度行。
+- Dashboard 与 legacy fallback 对相同的 source rows 产出相同的 cutover 结果。
 - 现有前端测试继续通过；不修改业务库、API、算法或 launchd 配置。
 
 ## 批准

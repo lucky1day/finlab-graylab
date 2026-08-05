@@ -751,12 +751,13 @@ class FactorLabRankingTests(unittest.TestCase):
               return new Date(Date.UTC(2025, 0, 1 + index)).toISOString().slice(0, 10);
             }}
             for (let index = 0; index < 10000; index += 1) {{
-              const date = isoDay(index);
+              const backtestDate = isoDay(index);
+              const liveDate = isoDay(index + 10000);
               payload.schemes[0].live_rows.push([
-                date, date, date, "scheduled_live", index % 3 - 1, null
+                liveDate, liveDate, liveDate, "scheduled_live", index % 3 - 1, null
               ]);
               payload.schemes[0].backtest.rows.push([
-                date, date, date, null, index % 3 - 1, index % 2 ? 1 : -1
+                backtestDate, backtestDate, backtestDate, null, index % 3 - 1, index % 2 ? 1 : -1
               ]);
             }}
             const startedAt = process.hrtime.bigint();
@@ -963,7 +964,7 @@ class FactorLabRankingTests(unittest.TestCase):
         )
         self.assertEqual(nan_result, {"age": True, "horizon": True})
 
-    def test_dashboard_view_model_groups_sources_and_applies_monthly_cutoff(self) -> None:
+    def test_dashboard_view_model_groups_sources_and_applies_target_date_cutoff(self) -> None:
         daily = _dashboard_scheme(
             live_rows=[
                 ["2026-05-27", "2026-05-26", "2026-05-28", "gray_live", 1, 1],
@@ -977,6 +978,7 @@ class FactorLabRankingTests(unittest.TestCase):
                 "data_source_label": "当前DB对齐回测",
                 "latest_run_date": "2026-05-31",
                 "rows": [
+                    ["2026-05-25", "2026-05-25", "2026-05-27", None, 1, 1],
                     ["2026-05-26", "2026-05-26", "2026-05-28", None, -1, -1],
                     ["2026-05-27", "2026-05-27", "2026-05-29", None, 1, -1],
                 ],
@@ -1073,10 +1075,10 @@ class FactorLabRankingTests(unittest.TestCase):
                 {
                     "month": "2026-05",
                     "source": "backtest",
-                    "samples": 2,
-                    "metricSamples": 2,
+                    "samples": 1,
+                    "metricSamples": 1,
                     "correct": 1,
-                    "overall": 50,
+                    "overall": 100,
                 },
                 {
                     "month": "2026-05",
@@ -1097,7 +1099,14 @@ class FactorLabRankingTests(unittest.TestCase):
             ],
         )
         may_daily = daily_result["dailyRows"]["2026-05"]
-        self.assertEqual([row["source"] for row in may_daily], ["backtest", "backtest", "live", "live"])
+        self.assertEqual(
+            [(row["source"], row["targetDate"]) for row in may_daily],
+            [
+                ("backtest", "2026-05-27"),
+                ("live", "2026-05-28"),
+                ("live", "2026-05-29"),
+            ],
+        )
         self.assertEqual(may_daily[-1]["predictedDirection"], 0)
         self.assertEqual(may_daily[-1]["actualDirection"], 0)
         pending = daily_result["dailyRows"]["2026-06"][0]
@@ -1112,13 +1121,13 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertEqual(monthly_result["backtestEndMonth"], "2026-05")
         self.assertEqual(sorted(monthly_result["dailyRows"]), ["2026-05", "2026-06", "2026-07"])
 
-    def test_dashboard_builder_reuses_shared_monthly_live_cutoff_helper(self) -> None:
+    def test_dashboard_builder_reuses_shared_target_date_cutoff_helper(self) -> None:
         source = FRONTEND_SCRIPT.read_text(encoding="utf-8")
         builder = source.split("function buildFactorLabViewModel(decoded) {", 1)[1].split(
             "\n  function fetchJson", 1
         )[0]
 
-        self.assertIn("monthlyLiveBacktestCutoffMonth(", builder)
+        self.assertIn("liveBacktestCutoffTargetDate(", builder)
 
     def test_dashboard_and_legacy_fixture_builders_are_view_model_equivalent(self) -> None:
         dashboard = _dashboard_payload(
@@ -1136,6 +1145,7 @@ class FactorLabRankingTests(unittest.TestCase):
                         "data_source_label": "当前DB对齐回测",
                         "latest_run_date": "2026-05-31",
                         "rows": [
+                            ["2026-05-25", "2026-05-25", "2026-05-27", None, 1, 1],
                             ["2026-05-26", "2026-05-26", "2026-05-28", None, -1, -1],
                             ["2026-05-27", "2026-05-27", "2026-05-29", None, 1, -1],
                         ],
@@ -1368,6 +1378,13 @@ class FactorLabRankingTests(unittest.TestCase):
                         "monthly_metrics": [],
                         "daily_rows": [
                             {
+                                "predict_date": "2026-05-25",
+                                "feature_date": "2026-05-25",
+                                "target_date": "2026-05-27",
+                                "predicted_direction": 1,
+                                "actual_direction": 1,
+                            },
+                            {
                                 "predict_date": "2026-05-26",
                                 "feature_date": "2026-05-26",
                                 "target_date": "2026-05-28",
@@ -1519,21 +1536,32 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertEqual(result["modern"], result["legacy"])
         modern_by_task = {item["taskKey"]: item["schemes"] for item in result["modern"]}
 
+        daily = modern_by_task["5Y|T+1"][0]
+        self.assertEqual(
+            [(row["source"], row["targetDate"]) for row in daily["drawerRows"]],
+            [
+                ("backtest", "2026-05-27"),
+                ("live", "2026-05-28"),
+                ("live", "2026-05-29"),
+                ("live", "2026-06-01"),
+            ],
+        )
+
         weekly = modern_by_task["5Y|weekly_point"][0]
         self.assertEqual(
             [(row["month"], row["source"]) for row in weekly["months"]],
-            [("2026-06", "backtest"), ("2026-06", "live")],
+            [("2026-06", "live")],
         )
         self.assertEqual(
             [
                 (row["samples"], row["metricSamples"], row["correct"], row["accuracy"])
                 for row in weekly["months"]
             ],
-            [(1, 1, 1, 100), (1, 1, 0, 0)],
+            [(1, 1, 0, 0)],
         )
         self.assertEqual(
             [row["source"] for row in weekly["drawerRows"]],
-            ["backtest", "live"],
+            ["live"],
         )
         self.assertEqual(
             {row["targetDate"] for row in weekly["drawerRows"]},
@@ -1542,20 +1570,18 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertEqual(
             weekly["cumulativeAggregate"],
             {
-                "samples": 2,
-                "metricSamples": 2,
-                "correct": 1,
-                "overall": 50,
+                "samples": 1,
+                "metricSamples": 1,
+                "correct": 0,
+                "overall": 0,
                 "upPrecision": 0,
                 "upRecall": None,
-                "downPrecision": 100,
-                "downRecall": 50,
+                "downPrecision": None,
+                "downRecall": 0,
             },
         )
-        self.assertEqual(weekly["months"][0]["predictedCounts"], {"up": 0, "down": 1, "flat": 0})
-        self.assertEqual(weekly["months"][1]["predictedCounts"], {"up": 1, "down": 0, "flat": 0})
+        self.assertEqual(weekly["months"][0]["predictedCounts"], {"up": 1, "down": 0, "flat": 0})
         self.assertEqual(weekly["months"][0]["actualCounts"], {"up": 0, "down": 1, "flat": 0})
-        self.assertEqual(weekly["months"][1]["actualCounts"], {"up": 0, "down": 1, "flat": 0})
 
         monthly = modern_by_task["5Y|monthly"][0]
         self.assertEqual(
