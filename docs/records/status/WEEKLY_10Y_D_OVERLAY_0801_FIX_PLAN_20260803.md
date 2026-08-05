@@ -1318,6 +1318,33 @@ launchd 与 replay；不改变 write-once receipt 或 dashboard generation 语�
 
 **状态：** 已完成（repo-only）；未连接数据库、未运行业务 runner，未改 launchd、installed plist 或服务。
 
+### G8.23 — repository dashboard generation reader 退役（2026-08-05，repo-only）
+
+**目标：** 删除零消费者的 `scheduler.repository.read_dashboard_source_generation`。当前 backend 的
+source reader 固定返回 `legacy-ttl-only`，DashboardSnapshotStore、replay、daily runtime、executor
+与 launchd 均不再调用 repository reader；删除不改变现有 TTL/cache 语义。
+
+**边界：** 仅删除该 public reader 并新增不得暴露它的 architecture guard。`_schedule_visibility_source_generation`
+与 `_dashboard_generation_timestamp` 即使现已孤立，也明确保留给 G8.24 的独立审计；同时保留
+`_LedgerClock`、receipt/reconcile、snapshot/execution、数据库与当前 cache 语义。不改 backend、
+DashboardSnapshotStore、replay、runtime、launchd 或业务表。
+
+**TDD 与验证：**
+
+- [x] RED：先新增 absence guard；旧实现得到 `1 failed, 25 deselected`，精确发现 public reader 仍暴露。
+- [x] GREEN：仅删除 reader 后，同一 guard 得到 `1 passed, 25 deselected`；目标源码/运行时搜索仅保留
+  架构守卫与既有 backend-forbidden-name guard，两个 generation helper 仍在 repository source。
+- [x] architecture、dashboard snapshot/factor-lab dashboard/API/frontend、repository launchd-one-shot/
+  registry/input-artifacts、daily runtime、daily replay operator migrations、launchd prediction runner、
+  prediction/actuals launchd、scheduled executor、daily control-plane probe 与 production health selector
+  复跑为 `515 passed, 2 warnings, 217 subtests passed`；warnings 仅为既有 FastAPI startup 弃用提示。
+- [x] 全量 `pytest -q -x` 复验仍在既有 active-scheme discovery 基线停止：`1 failed, 11 passed,
+  2 warnings, 4 subtests passed`，失败为 `seven_y_current55_lgbm_001_v1`、
+  `seven_y_current55_lgbm_002_v1` 被 discovery 发现但缺少 active config dir；本切片未触及该 7Y
+  配置问题。
+
+**状态：** 已完成（repo-only）；未连接数据库、未运行业务 runner，未改 launchd、installed plist 或服务。
+
 ---
 
 ## 15. 执行中的统一停止条件

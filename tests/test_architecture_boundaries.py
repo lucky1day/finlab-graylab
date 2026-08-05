@@ -697,6 +697,15 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
             "retired visibility projection clock helper must not return",
         )
 
+    def test_legacy_dashboard_source_generation_reader_is_not_exposed(
+        self,
+    ) -> None:
+        """Dashboard 只用固定 TTL 代次，不得恢复 repository ledger reader。"""
+        self.assertFalse(
+            hasattr(repository, "read_dashboard_source_generation"),
+            "retired dashboard source generation reader must not return",
+        )
+
     def test_current_repository_has_no_layer_inversions(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
 
