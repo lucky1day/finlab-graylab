@@ -300,6 +300,9 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
             "_validate_generation_seal_dependencies_conn",
             "bind_schedule_item_input_generation",
             "abandon_current_schedule_attempt",
+            "require_daily_coordinator_mode",
+            "BLACKBOX_BOOTSTRAP_BASELINE_TABLES",
+            "BLACKBOX_BOOTSTRAP_GUARDED_TABLES",
         )
 
         self.assertEqual(

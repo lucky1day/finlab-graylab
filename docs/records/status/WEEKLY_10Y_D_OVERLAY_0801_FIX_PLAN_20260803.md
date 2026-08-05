@@ -920,6 +920,30 @@ launchctl、服务、业务 runner、数据库或 API。
 
 **状态：** 已完成（repo-only）；没有运行或改变业务 runner、installed plist、launchctl、服务、数据库或 API。
 
+### G8.9 — repository bootstrap 死导出退役（2026-08-05，repo-only）
+
+**目标：** 删除 `scheduler.repository` 中不参与 Blackbox bootstrap 实际 preflight 的一个未使用
+daily-mode import 和两个仅彼此引用的死常量，避免它们继续暗示不存在的 bootstrap guarded-table
+边界。
+
+**边界：** 仅删除 `require_daily_coordinator_mode` 的 repository import、
+`BLACKBOX_BOOTSTRAP_BASELINE_TABLES` 和 `BLACKBOX_BOOTSTRAP_GUARDED_TABLES`。保留
+`BLACKBOX_BOOTSTRAP_EMPTY_TABLES` 及其现有计数 preflight、`t_target_registry` 的专用 baseline
+校验、所有 bootstrap 写入/readback 与其它 repository 行为；不改 migration、schema、Harness、
+DataBridge、ledger、plist、launchd、服务、runner、数据库或 API。
+
+**TDD 与验证：**
+
+- [x] 在 repository retired-symbol guard 加入三个精确名称；旧实现以
+  `bond_factor_lab_service` 运行得到 `1 failed`，失败精确列出这三个仍公开的名称。
+- [x] 最小删除唯一未使用 import 与两个死常量；Green selector（architecture guard + Blackbox
+  bootstrap preflight）为 `3 passed`。
+- [x] 完整 architecture / repository / Blackbox bootstrap / contracts / 文档相关回归为
+  `148 passed, 104 subtests passed`；`compileall` 与 `git diff --check` 均通过。不以手工业务 runner、
+  数据库或自然时钟替代 repo-only 验证。
+
+**状态：** 已完成（repo-only）；没有运行或改变业务 runner、installed plist、launchd、服务、数据库或 API。
+
 ---
 
 ## 15. 执行中的统一停止条件

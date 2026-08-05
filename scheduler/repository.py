@@ -63,7 +63,6 @@ from scheduler.blackbox_scheduler_admission import LAUNCHD_ONE_SHOT
 from shared.blackbox_v2.lifecycle import assert_lifecycle_clear, lifecycle_operation_lock
 from shared.daily_coordinator_mode import (
     assert_daily_coordinator_epoch_payload_matches_current,
-    require_daily_coordinator_mode,
 )
 from shared.db_config import DatabaseConfig
 from shared.input_artifacts import InputArtifact
@@ -113,11 +112,6 @@ BLACKBOX_BOOTSTRAP_EMPTY_TABLES = (
     "t_schedule_items",
     "t_schedule_item_targets",
     "t_scheduler_heartbeat",
-)
-BLACKBOX_BOOTSTRAP_BASELINE_TABLES = ("t_target_registry",)
-BLACKBOX_BOOTSTRAP_GUARDED_TABLES = (
-    *BLACKBOX_BOOTSTRAP_EMPTY_TABLES,
-    *BLACKBOX_BOOTSTRAP_BASELINE_TABLES,
 )
 _TARGET_REGISTRY_BASELINE_VERSION = "migrations-003-013"
 _TARGET_REGISTRY_BUSINESS_FIELDS = (
