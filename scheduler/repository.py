@@ -448,23 +448,6 @@ class ScheduleExecutionEnvelope:
 
 
 @dataclass(frozen=True)
-class ScheduleHealthEnvelope:
-    """只读健康投影信封，不承担执行授权。
-
-    与 ``ScheduleExecutionEnvelope`` 不同，本信封允许 generation 尚未
-    绑定、仍在 BUILDING、已经 INVALIDATED，或其关联行缺失。调用方可
-    逐 item 呈现原因；执行入口仍必须使用严格信封并 fail-closed。
-    """
-
-    occurrence: ScheduleOccurrenceEnvelope
-    item: ScheduleItemEnvelope
-    generation: ScheduleInputGenerationEnvelope | None
-    calendar_generation: ScheduleInputGenerationEnvelope | None
-    targets: tuple[ScheduleTargetEnvelope, ...]
-    generation_issue: str | None
-
-
-@dataclass(frozen=True)
 class ScheduleApiVisibilityProbe:
     """一次 fresh DB 事务中可供无缓存 HTTP 探针返回的证据。
 
@@ -3908,98 +3891,6 @@ def read_schedule_execution_envelope(
                 _schedule_target_envelope(target)
                 for target in targets
             ),
-        )
-
-
-def read_schedule_health_envelope(
-    engine: Engine,
-    *,
-    item_id: int,
-) -> ScheduleHealthEnvelope:
-    """单事务读取可观察但不授权执行的 item 健康信封。
-
-    正常生命周期状态不会抛错：未绑定、BUILDING 与 INVALIDATED 都按
-    原样返回。只有 occurrence/item/target 等冻结账本本身不可解码时才
-    抛错，避免健康查询把数据损坏伪装成普通等待。
-    """
-    with engine.begin() as conn:
-        item = _read_schedule_item_conn(
-            conn,
-            item_id=int(item_id),
-            for_update=False,
-        )
-        if item is None:
-            raise RuntimeError(f"schedule item not found: {item_id}")
-        occurrence = _read_schedule_occurrence_by_id_conn(
-            conn,
-            occurrence_id=int(item["occurrence_id"]),
-            for_update=False,
-        )
-        if occurrence is None:
-            raise RuntimeError(
-                f"schedule occurrence not found: {item['occurrence_id']}"
-            )
-        targets = _read_schedule_targets_conn(
-            conn,
-            item_id=int(item_id),
-            for_update=False,
-        )
-        generation: Mapping[str, object] | None = None
-        calendar_generation: Mapping[str, object] | None = None
-        generation_issue: str | None = None
-        generation_id = item.get("input_generation_id")
-        if generation_id is None:
-            generation_issue = "UNBOUND_INPUT_GENERATION"
-        else:
-            generation = _read_input_generation_conn(
-                conn,
-                str(generation_id),
-                for_update=False,
-            )
-            if generation is None:
-                generation_issue = "BOUND_GENERATION_MISSING"
-            else:
-                generation_type = str(generation.get("generation_type"))
-                if generation_type == "native_source":
-                    calendar_generation = generation
-                elif generation_type == "databridge_v1":
-                    native_generation_id = generation.get(
-                        "native_generation_id"
-                    )
-                    if not native_generation_id:
-                        generation_issue = (
-                            "NATIVE_GENERATION_REFERENCE_MISSING"
-                        )
-                    else:
-                        calendar_generation = _read_input_generation_conn(
-                            conn,
-                            str(native_generation_id),
-                            for_update=False,
-                        )
-                        if calendar_generation is None:
-                            generation_issue = (
-                                "NATIVE_GENERATION_MISSING"
-                            )
-                else:
-                    generation_issue = "UNSUPPORTED_GENERATION_TYPE"
-        return ScheduleHealthEnvelope(
-            occurrence=_schedule_occurrence_envelope(occurrence),
-            item=_schedule_item_envelope(item, occurrence),
-            generation=(
-                None
-                if generation is None
-                else _schedule_generation_envelope(generation)
-            ),
-            calendar_generation=(
-                None
-                if calendar_generation is None
-                else _schedule_generation_envelope(calendar_generation)
-            ),
-            targets=tuple(
-                _schedule_target_envelope(target)
-                for target in targets
-            ),
-            generation_issue=generation_issue,
         )
 
 

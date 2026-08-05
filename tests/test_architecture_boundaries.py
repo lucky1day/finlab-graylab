@@ -652,6 +652,20 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
             "retired schedule occurrence locator must not return",
         )
 
+    def test_legacy_schedule_health_projection_is_not_exposed(
+        self,
+    ) -> None:
+        """非授权的 legacy health projection 不得重新成为 repository API。"""
+        retired = (
+            "ScheduleHealthEnvelope",
+            "read_schedule_health_envelope",
+        )
+        self.assertEqual(
+            [],
+            [name for name in retired if hasattr(repository, name)],
+            "retired schedule health projection symbols must not return",
+        )
+
     def test_current_repository_has_no_layer_inversions(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
 

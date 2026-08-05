@@ -1261,6 +1261,34 @@ schema 或生产控制面。
 
 **状态：** 已完成（repo-only）；未连接数据库、未运行业务 runner，未改 launchd、installed plist 或服务。
 
+### G8.21 — repository legacy health projection 退役（2026-08-05，repo-only）
+
+**目标：** 删除零消费者的 `ScheduleHealthEnvelope` 与
+`read_schedule_health_envelope`。二者是旧 ledger 的非授权 health projection，不能作为当前
+one-shot runtime 的执行、健康或可见性真相来源。
+
+**边界：** 仅删除该 dataclass 与 public reader，并新增两个不得暴露它们的 architecture guard。严格的
+`ScheduleExecutionEnvelope` / `read_schedule_execution_envelope`、occurrence snapshot、
+`read_schedule_api_visibility_probe`、dashboard generation 与所有私有 helper 均保留；不改数据库、
+migration、launchd、replay、当前 runtime 或业务表。
+
+**TDD 与验证：**
+
+- [x] RED：先新增两个 repository absence guard；旧实现得到 `1 failed, 23 deselected`，精确列出
+  `ScheduleHealthEnvelope` 与 `read_schedule_health_envelope`。
+- [x] GREEN：仅删除 legacy projection 后，同一 guard 得到 `1 passed, 23 deselected`；repository source
+  不再有这两个定义，严格 execution envelope、snapshot、API visibility probe 与 dashboard generation
+  仍存在。
+- [x] architecture、repository launchd-one-shot/registry/input-artifacts、daily runtime、daily replay
+  operator migrations、launchd prediction runner、prediction launchd、scheduled executor、daily
+  control-plane probe 与 production health selector 复跑为 `300 passed, 149 subtests passed`。
+- [x] 全量 `pytest -q -x` 复验仍在既有 active-scheme discovery 基线停止：`1 failed, 11 passed,
+  2 warnings, 4 subtests passed`，失败为 `seven_y_current55_lgbm_001_v1`、
+  `seven_y_current55_lgbm_002_v1` 被 discovery 发现但缺少 active config dir；本切片未触及该 7Y
+  配置问题。
+
+**状态：** 已完成（repo-only）；未连接数据库、未运行业务 runner，未改 launchd、installed plist 或服务。
+
 ---
 
 ## 15. 执行中的统一停止条件
