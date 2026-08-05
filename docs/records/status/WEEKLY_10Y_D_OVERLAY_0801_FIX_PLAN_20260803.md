@@ -78,6 +78,11 @@
 
 预测唯一业务键不包含 `prediction_phase`，所以两个 writer 对同一个 scheme/tenor/horizon/target date 写入时会互相覆盖 run 与 phase。这是数据完整性风险，不是单纯的重复日志。
 
+**2026-08-06 追加核对：** 本文的 8 月 3 日快照不覆盖后续交易日。以前端实际使用的
+`target_date` 口径重新验收后，2026-08-01 为非交易日，不应产生信号；2026-08-04/05 的
+T+1 覆盖仍不完整，具体事实、根因和最小修复边界见 G3.1。该核对已确认 DB、canonical
+Dashboard 语义层与 served API 行集一致，因此不是重复行、缓存或前端过滤造成的假象。
+
 ---
 
 ## 4. 总体阶段与当前进度
@@ -86,16 +91,18 @@
 |---|---|---|
 | P-1 | 两套 7Y T+1 方案进入灰度实验室并前端可见 | **授权范围闭环完成**：本地 v2 已全 Gate、入库、历史回补、Dashboard 读回和 formal served-API Gate；未授予 scheduler admission，`scheduled_live=0` |
 | G0 | 统一文档和治理口径 | **完成（开发分支）**：CURRENT 文档、SOP、部署说明和文档测试已收敛到 launchd-only 单 writer 口径；未修改 installed plist 或 loaded state |
-| G1 | 恢复本机 MySQL → DataBridge 的可靠刷新 | **受控 publish/retry 已闭环**：sealed local MySQL current 与 V2 ready Gate 已读回；待自然时钟观察 |
-| G2 | 收敛为 launchd-only 单 writer 调度 | **已受控切换**：旧 scheduler/daily-gray/v2-preflight 已退出，四个 one-shot label 已 loaded；待自然时钟观察 |
-| G3 | 补齐 8 月 3 日日频缺口 | **完成**：15 个 `gray_live` 缺口已按 14 个冻结原子组回补；最终 T+1 `10/10`、T+5 `24/24`，DB、served API 与 Dashboard 均已读回 |
+| G1 | 恢复本机 MySQL → DataBridge 的可靠刷新 | **功能闭环**：sealed local MySQL current 与 V2 ready Gate 已读回；自然时钟继续作为非阻塞观察 |
+| G2 | 收敛为 launchd-only 单 writer 调度 | **功能闭环**：旧 scheduler/daily-gray/v2-preflight 已退出，四个 one-shot label 已 loaded；自然时钟继续作为非阻塞观察 |
+| G3 | 补齐 8 月 3 日日频缺口 | **完成（仅 8 月 3 日）**：15 个 `gray_live` 缺口已按 14 个冻结原子组回补；最终 T+1 `10/10`、T+5 `24/24`，DB、served API 与 Dashboard 均已读回 |
+| G3.1 | 核对并补齐 8 月 4/5 日日频 active scope | **核对完成、补写待授权**：T+1 于 8 月 4 日 `3/10`、8 月 5 日 `5/10`；T+5 均为 `24/24`。已确定最小候选为 12 个 T+1 历史业务键 |
 | G4 | 闭环 D-overlay 8 月 1 日缺口 | **完成：fixed receipt、六段 `native-maintenance`、独立 activation 与受控 signal-gap fill 均已闭环；run `2106` 写入唯一 `gray_live` key，DB、served API 与 dashboard 均已读回** |
-| G5 | 挂载并验证周度、月度自然调度 | **已挂载，等待首次自然 weekly/monthly 触发证据** |
-| G6 | 完成 P0 生产观察闭环 | **观察中**：仍缺完整 natural daily/weekly/monthly 三频周期证据 |
+| G5 | 挂载并验证周度、月度自然调度 | **功能验收完成**：无写库三 cadence 模拟通过；首次自然 weekly/monthly 为非阻塞观察 |
+| G6 | 完成 P0 生产观察闭环 | **P0 功能闭环完成**：自然 daily/weekly/monthly 继续作为非阻塞观测与告警输入 |
 | G7 | 收敛 Native 版本模型 | **P1，未开始** |
-| G8 | 删除 legacy/ledger/旧调度债务 | **P2，须在 P0 稳定后开始** |
+| G8 | 删除 legacy/ledger/旧调度债务 | **repo-only 零消费者清理完成**：G8.1–G8.24 已提交；剩余 replay/ledger 闭包需先作收尾设计决策，不再逐函数删除 |
 
-当前执行顺序是 **P-1 → G0 → G1/G2 → G3/G5 → G6**；G4 已独立闭环。P-1 如果被 DataBridge 新鲜度阻塞，只允许把 G1 中满足这两套方案运行所需的最小前置修复提前，不得借机展开其它治理。G7、G8 不得抢跑进入 P0。
+当前唯一待处理的 P0 数据完整性事项为 **G3.1**。G7 仍未开始；G8 的 repo-only 清理已到达无
+零消费者可安全删除的停止点，不能把“继续删除”当作默认下一步。
 
 ---
 
@@ -475,6 +482,76 @@ P0 可以暂时保留底层 `legacy` 环境开关，以兼容现有 executor/rep
 
 ---
 
+### G3.1 — 2026-08-04/05 active 日频覆盖、样本与最后一个月信号数核对（2026-08-06）
+
+#### 验收口径
+
+前端日频格按 `target_date` 分组和展示；因此本节使用 active composite Registry 的
+`target_date` 核对，而不以 runner 的 `predict_date` 或历史回测日期替代。2026-08-01 是周六，
+交易日历为非交易日，**不应产生任何日频信号，也不属于缺口**。
+
+本次只读验收同时比较：
+
+1. `t_scheme_predictions` 的 raw live 行；
+2. Dashboard 的 canonical live 行（去重/业务语义层）；
+3. fresh `/api/factor-lab/dashboard` 返回的 live 行；
+4. 前端所使用的同一 Dashboard 行集及其 `target_date` 月份过滤。
+
+#### 已确认的结果
+
+- active 日频范围为 T+1 10 个 composite scope、T+5 24 个 composite scope，共 34 个。
+- 全部 live 行总数为 **1,669 / 1,669 / 1,669**（DB raw / canonical / served API），34 个 scope
+  的日期、phase、方向键逐行一致；没有 canonical 重复折叠或 API 漏行。
+- T+1 为 **458 / 458 / 458** 行，最后一个可见月份（2026-08、按 `target_date`）为
+  **18 / 18 / 18** 条信号；T+5 为 **1,211 / 1,211 / 1,211** 行，最后一个月份为
+  **155 / 155 / 155** 条信号。上述三元组均按 DB raw / canonical / served API 排列。
+- 前端的“样本”还会把历史回测与 actual join 合并，因此不是 live 行数的同义词；在当前全月份
+  筛选下，它读到的详情/已评估样本分别为 T+1 `3,828/3,823`、T+5 `9,203/9,096`。
+  该口径与 live 行数不同，但前端月度日期没有重复显示，也没有自行丢弃 served live 行。
+
+| target_date | T+1 覆盖（应有 10） | T+5 覆盖（应有 24） | 结论 |
+|---|---:|---:|---|
+| 2026-08-03 | 10/10 | 24/24 | G3 已闭环 |
+| 2026-08-04 | 3/10 | 24/24 | T+1 缺 7 个 |
+| 2026-08-05 | 5/10 | 24/24 | T+1 缺 5 个 |
+
+因此，样本总数和最后一个月信号数在 DB、API 与前端消费的同一 live 行集上是一致的；当前
+前端所见 T+1 空日来自后端真实缺失，**不是数据库重复、Dashboard cache 或页面渲染缺陷**。
+
+#### 根因已分离
+
+- 2026-08-04 的 `t1_daily__h1__5Y`、`t1_daily__h1__10Y` 两个 target，在该日自然 daily
+  已执行后才完成当前 exact version/Registry 激活。旧记录明确为“Registry 中未找到”，故这是
+  当前 active scope 的历史可见性缺口；两 target 已在 2026-08-05 正常出现。
+- 下列五个当前 active Blackbox T+1 identity 的 exact admission 仍是 `gray`，没有
+  `launchd_one_shot` capability，因而 2026-08-04 和 2026-08-05 都没有 scheduler writer：
+  `one_y_t1_quote_state_hv_v1__h1__1Y`、
+  `three_y_adyn_lb1_k3_v1__h1__3Y`、
+  `three_y_adyn_lb2_k1_v1__h1__3Y`、
+  `seven_y_current55_lgbm_001_v2__h1__7Y`、
+  `seven_y_current55_lgbm_002_v2__h1__7Y`。
+- 这两类原因合计正好是 **12 个精确 T+1 business key**：8 月 4 日 7 个、8 月 5 日 5 个。
+  与 8 月 3 日的已完成补写、8 月 1 日非交易日和 8 月 5 日另一条 Liwei consumer 的未来 target
+  失败互不混用；本节不扩展到 T+5 或 8 月 11 日。
+
+#### 最小修复与重新验收边界
+
+1. 先对上述五个 Blackbox exact identity 做无写库 admission/output 验证，证明当前输入与
+   `launchd_one_shot` 编排可用；不得因 Registry 是 active 就泛化授予其它方案能力。
+2. 仅在该验证通过且另获授权后，收敛这五个 exact admission 到正式 one-shot 能力；不改算法、
+   Registry、前端、日历、DataBridge、旧 scheduler 或任何 T+5 policy。
+3. 再冻结并复核上述 **12 个** `(base_scheme_id, target_tenor, horizon, target_date)` 业务键，
+   以独立的 `signal_gap_fill_write` 授权走 repository 的 insert-only `gray_live` 路径补写。
+   禁止手工 SQL、手动 runner、倒签 `scheduled_live` 或生成 2026-08-01 的周末信号。
+4. 写后必须按当时 active scope 重建同一只读核对：8 月 3/4/5 均为 T+1 `10/10`、T+5 `24/24`；
+   DB raw、canonical、served API 和前端最后一个月信号数一致；冻结窗口恰新增 12 个唯一键，
+   无覆盖、无重复。全局行数会随自然批次增长，不能把本节 1,669 的快照硬编码为未来验收常量。
+
+本节尚未授权 admission 变更或业务库写入；在步骤 1 的无写库结果与冻结计划复核完成前，不得开始
+步骤 2 或 3。
+
+---
+
 ## 10. G4 — 闭环 WEEKLY 10Y D-overlay 8 月 1 日缺口
 
 ### 当前问题与状态
@@ -653,8 +730,9 @@ Native hash 当前覆盖完整 config 和文件文本，展示、状态、schedu
 
 仓库仍保留常驻 APScheduler、daily-gray frozen policy、v2-preflight、ledger/occurrence/epoch、serving pointer 和相关测试/文档。部分底层执行路径仍要求 `legacy` 兼容开关；空 ledger 表并不代表代码已经不可达，但用户已经明确这些能力不会再投入使用。
 
-**状态：可在本次 G5/G6 功能验收提交后开始。** 自然周/月时钟保留为非阻塞观察；G8 仍必须按
-“先删代码与配置、验证、最后删表”的顺序，不得删除历史业务或 Harness 证据。
+**状态：repo-only 零消费者清理已完成。** G8.1 至 G8.24 已在开发分支完成并逐刀验证；当前没有
+可在不先作设计决定的前提下继续删除的零消费者候选。自然周/月时钟保持非阻塞观察；剩余
+replay/ledger/occurrence 闭包、installed plist 与数据库表不能被当成同一类“旧文件”随意删除。
 
 ### 造成的影响
 
@@ -1375,6 +1453,25 @@ DashboardSnapshotStore、replay、runtime、launchd 或业务表。
 
 ---
 
+### G8 收尾停止点（2026-08-06）
+
+- [x] G8.1–G8.24 已完成：已退役的 daily-gray、v2-preflight、常驻 APScheduler、旧 main、
+  无消费者 repository/dashboard helper 与 recurring capability 已从仓库当前生产路径移除；
+  actuals 已脱离旧 main，launchd one-shot 的 daily/weekly/monthly/actuals 保留。
+- [x] 没有下一项可以仅凭静态搜索安全删除的 repo-only 代码。继续按函数逐个删会破坏仍在使用的
+  隔离 real replay、occurrence 锁、recovery、历史 run 字段或 migration 边界，违背最小修复原则。
+- [ ] 若要继续 G8，必须先单列收尾设计并由用户确认：是否永久保留隔离 real replay/operator
+  recovery、Blackbox admission 是否只保留 `launchd_one_shot`/direct 所需词汇、
+  `BOND_DAILY_COORDINATOR_MODE` 的最终兼容边界，以及 `t_scheme_runs.schedule_item_id` 与
+  ledger 表的历史保留/迁移策略。
+- [ ] installed plist 的物理清理、backend 的 legacy 环境变量切换、serving-pointer migration 019、
+  ledger 表及其外键/索引的 DDL 均需要先有上述设计、只读现场/数据证据、恢复方案和独立生产或
+  数据库授权；不得改写旧 migration 或删除历史 run、prediction、version、Harness 证据。
+
+因此不新增 “G8.25”，也不把 G8 的剩余闭包伪装为普通死代码清理任务。
+
+---
+
 ## 15. 执行中的统一停止条件
 
 后续模型在任一阶段遇到以下情况必须停止副作用，先更新调研结论并向用户报告：
@@ -1393,4 +1490,9 @@ DashboardSnapshotStore、replay、runtime、launchd 或业务表。
 
 ## 16. 下一步
 
-P-1 的已授权算法、数据、Dashboard 和 served-API 闭环工作以及 G0 文档统一已完成；G3 的受控 `gray_live` 回补与 DB/API/页面读回亦已闭环，G4 的固定 10Y canonical receipt、六段 `native-maintenance`、独立 activation 与唯一 `gray_live` key 的 run `2106` 已完成。G1 已成功 publish 并通过 strict read/V2 ready Gate，G2 的 installed 控制面已按授权切换，G5/G6 的三 cadence 无写库功能模拟已通过。下一步在本阶段验证和提交后，按 G8 的最小边界清理 legacy/ledger/旧调度代码与配置；自然时钟继续记录为非阻塞观察，不扩大 7Y scheduler admission，也不把 gray/API 证据混同为自然生产运行。
+P-1、G0、G1/G2 的功能闭环、G3 的 8 月 3 日补写、G4、G5/G6 的无写库功能验收及 G8.1–G8.24
+repo-only 清理均已有记录。当前先执行 **G3.1 的步骤 1**：对五个 exact Blackbox identity 做无写库
+admission/output 验证，并重新冻结 12 个 T+1 历史业务键；该步骤不写数据库、不改 admission、不改
+前端、不操作 launchd。只有验证结果、当前 active scope 和一次性授权均齐备后，才可分别进入正式
+admission 收敛与 `gray_live` gap fill。G8 保持在收尾设计等待状态，不再自动扩大删除范围；自然
+时钟继续作为非阻塞观测，不把 gray/API 证据混同为自然生产运行。

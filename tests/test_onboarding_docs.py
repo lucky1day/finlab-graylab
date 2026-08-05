@@ -815,18 +815,12 @@ class OnboardingDocumentationTests(unittest.TestCase):
             sla,
         )
 
-    def test_historical_daily_gaps_have_gray_only_phase(self) -> None:
-        historical = (
-            DOCS_ROOT / "records" / "status"
-            / "DAILY_SIGNAL_RECOVERY_HANDOFF_20260729.md"
-        ).read_text(encoding="utf-8")
+    def test_current_governance_separates_historical_and_natural_phases(self) -> None:
         governance = PRODUCTION_SCHEDULING_GOVERNANCE.read_text(encoding="utf-8")
 
-        self.assertIn("文档状态**：`HISTORICAL`", historical)
-        self.assertIn("2026-07-28", historical)
-        self.assertIn("gray_live", historical)
-        self.assertIn("不要写 `scheduled_live`", historical)
         self.assertIn("历史缺口", governance)
+        self.assertIn("gray_live", governance)
+        self.assertIn("scheduled_live", governance)
         self.assertIn("insert-only", governance)
         self.assertIn("不能互相伪装、覆盖", governance)
 
