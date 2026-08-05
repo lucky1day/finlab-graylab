@@ -40,6 +40,16 @@ class _Calendar:
         self.previous_trading_day = Mock(return_value="2026-07-31")
 
 
+class _NoDatabaseEngine:
+    """测试中的数据库边界：runner 只能在 finally 调用 dispose。"""
+
+    def __init__(self) -> None:
+        self.dispose = Mock()
+
+    def __getattr__(self, name: str) -> object:
+        raise AssertionError(f"no-write simulation accessed database attribute: {name}")
+
+
 class LaunchdPredictionRunnerTests(unittest.TestCase):
     def _config(self, root: Path) -> SimpleNamespace:
         return SimpleNamespace(runtime_root=root / "runtime")
@@ -475,6 +485,143 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         self.assertEqual(summary.exit_code, 0)
         gate.assert_called_once_with(config, "2026-08-01", "2026-07-31")
         calendar.previous_trading_day.assert_called_once_with("2026-08-01")
+
+    def test_real_active_scope_three_cadences_use_no_write_control_plane_simulation(
+        self,
+    ) -> None:
+        """当前方案与准入策略在三种 cadence 下可被无写库地完整编排。"""
+        from scheduler import launchd_prediction_runner as runner
+        from shared.liwei_0616_cache_contract import APPROVED_PHASE_A_CACHE_PUBLISHERS
+
+        config = self._config(Path(tempfile.mkdtemp()))
+        engine = _NoDatabaseEngine()
+        calls_by_cadence: dict[str, list[tuple[object, str, dict[str, object]]]] = {
+            "daily": [],
+            "weekly": [],
+            "monthly": [],
+        }
+
+        simulations = (
+            ("daily", "2026-08-05", True, "2026-08-04"),
+            ("weekly", "2026-08-08", False, "2026-08-07"),
+            ("monthly", "2026-08-15", False, "2026-08-14"),
+        )
+
+        for cadence, predict_date, is_trading_day, feature_date in simulations:
+            calendar = _Calendar(trading=is_trading_day)
+            calendar.previous_trading_day.return_value = feature_date
+
+            def execute(config_item, run_date, **kwargs):
+                calls_by_cadence[cadence].append(
+                    (config_item, run_date, dict(kwargs))
+                )
+                return SimpleNamespace(
+                    scheme_id=config_item.scheme_id,
+                    status="success",
+                    records_written=1,
+                    error_msg=None,
+                    run_id=None,
+                )
+
+            with (
+                patch.object(
+                    runner.DataBridgeRefreshConfig,
+                    "from_env",
+                    return_value=config,
+                ),
+                patch.object(runner, "_runner_lock", return_value=nullcontext(True)),
+                patch.object(
+                    runner,
+                    "create_engine_from_env",
+                    return_value=engine,
+                ) as create_engine,
+                patch.object(runner, "get_calendar", return_value=calendar),
+                patch.object(runner, "require_v2_daily_ready") as v2_gate,
+                patch.object(runner, "execute_scheme", side_effect=execute) as execute_one,
+            ):
+                summary = runner.run(cadence, predict_date=predict_date)
+
+            expected_ids = {
+                cfg.scheme_id
+                for cfg in runner.discover_schemes(strict=True)
+                if cfg.status == "active" and cfg.frequency == cadence
+            }
+            self.assertTrue(expected_ids)
+            executed_ids = [
+                str(call_args.args[0].scheme_id)
+                for call_args in execute_one.call_args_list
+            ]
+            excluded_ids = {
+                str(item["scheme_id"])
+                for item in summary.excluded
+            }
+
+            self.assertEqual(summary.outcome, "success")
+            self.assertEqual(summary.exit_code, 0)
+            self.assertFalse(summary.blocked)
+            self.assertFalse(summary.denied)
+            self.assertFalse(summary.skipped)
+            self.assertFalse(summary.failed)
+            self.assertEqual(set(executed_ids) | excluded_ids, expected_ids)
+            self.assertTrue(executed_ids)
+            self.assertEqual(len(executed_ids), len(set(executed_ids)))
+            self.assertEqual(
+                set(executed_ids),
+                {str(item["scheme_id"]) for item in summary.executed},
+            )
+            self.assertEqual(create_engine.call_count, 1)
+            self.assertEqual(execute_one.call_count, len(executed_ids))
+            self.assertTrue(
+                all(
+                    run_date == predict_date
+                    and kwargs == {
+                        "algo_env": runner.DEFAULT_ALGO_ENV,
+                        "prediction_phase": "scheduled_live",
+                        "scheduled_control_plane": "launchd_one_shot",
+                    }
+                    for _config_item, run_date, kwargs in calls_by_cadence[cadence]
+                )
+            )
+            expected_v2_gate_calls = sum(
+                1
+                for config_item, _run_date, _kwargs in calls_by_cadence[cadence]
+                if config_item.runtime_type == "blackbox_v2"
+                and config_item.input_source == "data_bridge_current"
+            )
+            self.assertEqual(v2_gate.call_count, expected_v2_gate_calls)
+            self.assertEqual(
+                v2_gate.call_args_list,
+                [
+                    call(config, predict_date, feature_date)
+                    for _index in range(expected_v2_gate_calls)
+                ],
+            )
+
+        daily_ids = [
+            str(config_item.scheme_id)
+            for config_item, _run_date, _kwargs in calls_by_cadence["daily"]
+        ]
+        publisher_ids = {
+            publisher_id
+            for _tenor, publisher_id in APPROVED_PHASE_A_CACHE_PUBLISHERS.values()
+        }
+        daily_publisher_positions = [
+            index
+            for index, scheme_id in enumerate(daily_ids)
+            if scheme_id in publisher_ids
+        ]
+        daily_non_publisher_positions = [
+            index
+            for index, scheme_id in enumerate(daily_ids)
+            if scheme_id not in publisher_ids
+        ]
+        self.assertTrue(daily_publisher_positions)
+        self.assertTrue(daily_non_publisher_positions)
+        self.assertLess(
+            max(daily_publisher_positions),
+            min(daily_non_publisher_positions),
+        )
+        self.assertEqual(engine.dispose.call_count, len(simulations))
 
     def test_gate_blocked_candidate_does_not_prevent_native_execution(
         self,

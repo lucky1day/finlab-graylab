@@ -520,10 +520,11 @@ P0 可以暂时保留底层 `legacy` 环境开关，以兼容现有 executor/rep
 
 周度 14 个、月度 8 个 active execution 已能被代码发现，但当时只由旧常驻 APScheduler 负责触发；用户需要的独立 launchd plist 尚未形成 installed/loaded/observed 证据。用户观察到 7 月 31 日可能缺失，也说明不能只看“配置里有 cron”。
 
-**状态：已挂载、自然时钟观察待完成。** 2026-08-05 只读现场核对确认 weekly/monthly 的 installed
-plist 与仓库模板一致并已 loaded；两者仍为 `runs=0`、`last exit=(never exited)`，所以不能称为
-生产闭环。8 月 1 日周度只读完整性计划为 14/14 `SKIP_PRESENT`、0 open gap、0 blocker，没有可在
-当前时点扩大为历史补写的事项。
+**状态：功能验收已通过，进入非阻塞自然观察。** 2026-08-05 只读现场核对确认 weekly/monthly
+的 installed plist 与仓库模板一致并已 loaded；两者仍为 `runs=0`、`last exit=(never exited)`，
+但上文经授权的三 cadence 无写库控制面模拟已取代首次自然触发作为 G5 的阻塞证据。8 月 1 日周度
+只读完整性计划为 14/14 `SKIP_PRESENT`、0 open gap、0 blocker，没有可在当前时点扩大为历史补写的
+事项。
 
 ### 造成的影响
 
@@ -533,28 +534,59 @@ plist 与仓库模板一致并已 loaded；两者仍为 `runs=0`、`last exit=(n
 
 ### 为什么必须解决
 
-一个方案“已上线”的最低条件不是配置中写了 cron，而是生产时钟真实触发、正确输入被消费、结果被写入并可读回。周/月必须拥有与日频同样清晰且独立的 launchd 责任边界。
+一个方案“已上线”的最低条件不是配置中写了 cron，而是它有清晰且独立的 launchd 责任边界、正确的
+输入与调用编排。真实生产时钟仍继续观察；本阶段功能验收按已授权的无写库模拟执行。
 
 ### 什么叫解决完毕
 
 - 周度与月度均有独立 installed plist 和 loaded state，且旧 APScheduler 不再承担它们的触发。
-- DataBridge 在周六和自然月 15 日先完成合格刷新，周/月 runner 再自然运行。
+- 当前 strict discovery/admission policy 的 weekly/monthly 无写库控制面模拟通过；所有 active
+  方案完整分类为一次 dispatch 或合法排除，且不会触达数据库、子进程或 cache。
 - 重新按 Registry 和交易日历检查全部历史实盘点，特别核对 `feature_date=2026-07-31` 附近；发现缺口时逐条解释并经授权补齐。
-- 至少观察一次真实周六触发和一次真实自然月 15 日触发；周度 14/14、月度 8/8 或当时重新审计后的完整 active 集合全部成功。
-- 自然运行记录为 `scheduled_live`，历史补齐记录为 `gray_live`，两者没有混写。
+- 自然运行继续以 `scheduled_live` 记录、历史补齐保持 `gray_live`，并作为非阻塞观察，不混写。
 
 ---
 
 ## 12. G6 — P0 生产治理闭环
 
+### 验收口径修订（2026-08-05，用户明确授权）
+
+用户确认不以等待首次自然周六或自然月 15 日运行为 P0/G8 的阻塞条件。为保持
+launchd-only 的最小边界，同时避免手工运行生产 runner，新增的验收证据必须是**测试内**
+的无写库控制面模拟：它使用当前严格方案发现与精确 admission policy，分别覆盖
+daily、weekly、monthly；以 fake engine、交易日历、V2 Gate 与 `execute_scheme` 替身阻止
+DB 连接、业务写入、子进程与 cache 写入，并断言每个获准方案恰好一次以
+`scheduled_live + launchd_one_shot` 编排、Liwei publisher 先于 consumer。
+
+该模拟只替代 G5/G6 的**功能编排验收**，不伪称自然时钟已经发生；installed plist/
+loaded state 继续是生产控制面证据，后续自然运行继续作为非阻塞观察与告警输入。模拟
+通过前不得提前把 G5/G6 标为完成或启动 G8；模拟通过后，首次自然 weekly/monthly 不再
+阻塞 G8 的代码与配置清理。它不授权手工 runner、业务库写入、cache 写入、installed
+plist 或 launchd 变更。
+
+### 无写库控制面模拟结果（2026-08-05）
+
+`tests.test_launchd_prediction_runner.LaunchdPredictionRunnerTests.`
+`test_real_active_scope_three_cadences_use_no_write_control_plane_simulation`
+以当前 strict discovery 与 admission policy 验证 daily、weekly、monthly。每个 active
+方案都恰好归入一次获准 dispatch 或合法 `control_plane_excluded`，没有 blocked、denied、
+skipped 或 failed；获准项均以 `scheduled_live + launchd_one_shot` 调用，DataBridge Gate
+只在获准的 `blackbox_v2 + data_bridge_current` 项上收到相应 predict/feature 日期，所有
+Liwei cache publisher 均在非 publisher 前执行。测试的 engine 只允许 `dispose()`，其余
+任何数据库属性访问都会失败；`execute_scheme`、V2 Gate、日历与锁均为替身，因此没有
+真实 DB 连接、业务写入、算法子进程、cache 写入或 launchd 操作。
+
+**状态：G5/G6 的功能编排验收已通过；首次自然 weekly/monthly 改为非阻塞观察。**
+
 ### 当前问题与状态
 
-单项代码通过不能证明整条生产链稳定。DataBridge、daily、weekly、monthly、actuals、API/页面和日志必须共同经过真实时钟验证。
+单项代码通过不能证明整条生产链稳定。DataBridge、daily、weekly、monthly、actuals、API/页面和日志必须共同经过一致的控制面与数据边界验证。
 
-**状态：观察中。** 2026-08-05 只读现场确认 DataBridge、daily、weekly、monthly 均为新的 loaded
-one-shot，旧 scheduler/daily-gray/v2-preflight 均未 loaded 且 installed template 为 `Disabled=true`；
-DataBridge 的两次成功运行均为受控 kickstart，daily/weekly/monthly 尚无自然执行，不能计入本 Gate。
-actuals 已在切换后自然成功一次，但 G1–G5 尚未全部达到生产闭环。
+**状态：功能验收完成，进入非阻塞自然观察。** 2026-08-05 只读现场确认 DataBridge、daily、
+weekly、monthly 均为新的 loaded one-shot，旧 scheduler/daily-gray/v2-preflight 均未 loaded
+且 installed template 为 `Disabled=true`；DataBridge 已有成功 publish/strict-read 证据，actuals
+已在切换后自然成功一次。上方无写库模拟已覆盖三种 cadence 的当前 active scope，取代首次
+weekly/monthly 自然触发作为本 Gate 的阻塞条件。
 
 ### 造成的影响
 
@@ -562,18 +594,28 @@ actuals 已在切换后自然成功一次，但 G1–G5 尚未全部达到生产
 
 ### 为什么必须解决
 
-系统是否可用最终由真实生产行为决定，而不是单元测试数量。只有观察到“一次触发、一个 writer、完整信号、正确 provenance”，才能证明最小架构满足业务目标。
+系统需要同时具备单一 writer、正确参数编排、完整 scope 和可审计 provenance。真实生产行为仍
+持续观察，但用户已选择以严格无写库模拟替代首次周/月自然时钟作为功能验收阻塞项。
 
 ### 什么叫解决完毕
 
-- 至少观察一次完整日频周期、一次周频周期和一次月频周期。
-- 每个 active target 在应发时点完整存在，失败批次能从日志直接定位原因。
+- installed plist/loaded state 与 launchd-only 单 writer 现场状态一致；旧 scheduler、daily-gray
+  和 v2-preflight 均不加载。
+- 当前 strict discovery/admission policy 的 daily、weekly、monthly 无写库控制面模拟全部通过，
+  且模拟不触达数据库、子进程或 cache。
+- 已有历史 active target、actuals、API 与页面读回保持完整；后续自然批次若失败，仍能从日志直接
+  定位原因。
 - 每个 business key 只有一个自然 writer，没有旧 scheduler/daily-gray/actuals 双写证据。
 - 页面/API 与数据库读回一致，未因 archived/paused 版本或错误 phase 展示旧结果。
 - DataBridge 失败演练能够 fail-closed，且不会自动使用 stale artifact。
 - 回退只涉及 control-plane，不删除 predictions、runs、versions 或 artifact；回退步骤已经过只读审查。
 
-达到以上条件后，P0 才能标记为完成。用户已于 2026-08-05 明确授权：届时在当前开发分支完成验证与阶段提交后，可将精确候选以非强制 fast-forward 同步到 `master`，并推送开发分支与 `master`；在自然时钟证据齐备前不得提前执行该发布动作。
+首次自然 daily/weekly/monthly 此后作为非阻塞观测：它们仍必须记录、异常仍须定位并修正，但不再
+延后 G8 的代码与配置退役。
+
+达到以上功能验收条件后，P0 可标记为完成。用户已于 2026-08-05 明确授权：届时在当前开发分支
+完成验证与阶段提交后，可将精确候选以非强制 fast-forward 同步到 `master`，并推送开发分支与
+`master`；自然时钟继续观察，但不再单独阻塞 G8。
 
 ---
 
@@ -611,7 +653,8 @@ Native hash 当前覆盖完整 config 和文件文本，展示、状态、schedu
 
 仓库仍保留常驻 APScheduler、daily-gray frozen policy、v2-preflight、ledger/occurrence/epoch、serving pointer 和相关测试/文档。部分底层执行路径仍要求 `legacy` 兼容开关；空 ledger 表并不代表代码已经不可达，但用户已经明确这些能力不会再投入使用。
 
-**状态：有明确清理对象，但现在不能直接删除。** P0 尚未完成真实观察，旧路径暂时仍承担回退或底层兼容作用。
+**状态：可在本次 G5/G6 功能验收提交后开始。** 自然周/月时钟保留为非阻塞观察；G8 仍必须按
+“先删代码与配置、验证、最后删表”的顺序，不得删除历史业务或 Harness 证据。
 
 ### 造成的影响
 
@@ -625,7 +668,8 @@ Native hash 当前覆盖完整 config 和文件文本，展示、状态、schedu
 
 ### 什么叫解决完毕
 
-- P0 已完成观察期，旧路径的 installed label、runtime 调用和静态引用均为零。
+- P0 功能验收已完成；旧路径的 installed label、runtime 调用和静态引用在 G8 结束时均为零，
+  自然时钟观察不再单独阻塞该清理。
 - actuals 等仍有价值的一次性能力先脱离常驻 scheduler，再删除常驻 APScheduler 入口。
 - daily-gray、v2-preflight、ledger/occurrence/epoch 和 serving pointer 按“先替代并观察、再删代码、最后删表”的顺序治理。
 - `BOND_DAILY_COORDINATOR_MODE=legacy` 的底层依赖已从 executor/repository/DataBridge 中移除，生产 plist 不再需要该兼容变量。
@@ -652,4 +696,4 @@ Native hash 当前覆盖完整 config 和文件文本，展示、状态、schedu
 
 ## 16. 下一步
 
-P-1 的已授权算法、数据、Dashboard 和 served-API 闭环工作以及 G0 文档统一已完成；G3 的受控 `gray_live` 回补与 DB/API/页面读回亦已闭环，G4 的固定 10Y canonical receipt、六段 `native-maintenance`、独立 activation 与唯一 `gray_live` key 的 run `2106` 已完成。G1 已在新的单次授权中成功发布并通过 strict read/V2 ready Gate，G2 的 installed 控制面也已按授权切换。下一步只观察各频率的自然时钟证据，完成 G5/G6；在此之前不得启动 G7/G8、扩大 7Y scheduler admission，或把 gray/API 证据混同为生产稳定。G5/G6 完成后，按已授予权限进行最终验证、阶段提交、`master` fast-forward 与双分支远程推送。
+P-1 的已授权算法、数据、Dashboard 和 served-API 闭环工作以及 G0 文档统一已完成；G3 的受控 `gray_live` 回补与 DB/API/页面读回亦已闭环，G4 的固定 10Y canonical receipt、六段 `native-maintenance`、独立 activation 与唯一 `gray_live` key 的 run `2106` 已完成。G1 已成功 publish 并通过 strict read/V2 ready Gate，G2 的 installed 控制面已按授权切换，G5/G6 的三 cadence 无写库功能模拟已通过。下一步在本阶段验证和提交后，按 G8 的最小边界清理 legacy/ledger/旧调度代码与配置；自然时钟继续记录为非阻塞观察，不扩大 7Y scheduler admission，也不把 gray/API 证据混同为自然生产运行。
