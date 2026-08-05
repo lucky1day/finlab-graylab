@@ -130,7 +130,7 @@ class FrontendStaticCacheTests(unittest.TestCase):
         html = FRONTEND_INDEX.read_text(encoding="utf-8")
 
         self.assertIn('href="aifin-shell.css?v=20260727b"', html)
-        self.assertIn('src="aifin-shell.js?v=20260727b"', html)
+        self.assertIn('src="aifin-shell.js?v=20260805a"', html)
 
     def test_missing_versioned_asset_exception_is_explicitly_revalidated(self) -> None:
         async def exercise() -> None:
