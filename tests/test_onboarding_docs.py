@@ -772,8 +772,8 @@ class OnboardingDocumentationTests(unittest.TestCase):
         ):
             self.assertNotIn(duplicated_dynamic_fact, deploy)
 
-        self.assertIn("G0 — 文档与口径", todo)
-        self.assertIn("G1 — DataBridge refresh", todo)
+        self.assertIn("Task 1 — 只读重新冻结与无写库验证", todo)
+        self.assertIn("Task 2 — exact Blackbox admission", todo)
         self.assertNotIn("ledger 已启用", current)
         self.assertNotIn("2026-07-30 日频 ledger 本地运行基线", deploy)
 
@@ -829,8 +829,9 @@ class OnboardingDocumentationTests(unittest.TestCase):
         monthly = FENGRL_MONTHLY_RECORD.read_text(encoding="utf-8")
         ten_y = TEN_Y_T5_RECORD.read_text(encoding="utf-8")
 
-        self.assertIn("G0 — 文档与口径", todo)
-        self.assertIn("G4 — weekly 10Y D-overlay", todo)
+        self.assertIn("## 已关闭", todo)
+        self.assertIn("G3 的 8 月 3 日补写", todo)
+        self.assertIn("G4", todo)
         self.assertIn("MANUAL_GRAY_ACCEPTED_5_OF_5", monthly)
         self.assertIn("80 + 15 = 95", monthly)
         self.assertIn("10Y T+5 四方案", ten_y)

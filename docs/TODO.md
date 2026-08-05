@@ -2,47 +2,31 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验日期**：2026-08-04
+**最后核验日期**：2026-08-06
 
-本文只定义未完成工作的顺序与前置条件。生产控制面规则见
-[生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)，动态事实见
-[当前状态](CURRENT_STATUS.md)，带日期的完整调研见
-[2026-08-03 治理计划](records/status/WEEKLY_10Y_D_OVERLAY_0801_FIX_PLAN_20260803.md)。
+当前唯一执行计划见
+[active 日频覆盖与治理闭环计划](records/status/WEEKLY_10Y_D_OVERLAY_0801_FIX_PLAN_20260803.md)。任何生产
+副作用须单独授权；生产控制面规则以
+[生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)为准。
 
-## P0：生产信号治理
+## P0：G3.1 日频覆盖闭环
 
-按以下顺序推进；每一阶段开始前都重新只读核对 active Registry、输入截止、installed
-plist、`launchctl` loaded state、日志与实际缺口。任何生产副作用须单独授权。
+按以下顺序推进，任何日期/版本/active scope 漂移均停止并重新冻结：
 
-1. **G0 — 文档与口径（已完成，开发分支）**：CURRENT 架构、SLA、SOP、部署说明和
-   文档测试已统一为 launchd-only 单 writer 模型；ledger/daily-gray 只保留历史或待退役语境。
-2. **G1 — DataBridge refresh（下一阶段）**：用 launchd one-shot 从本机 MySQL 原子发布标准
-   artifact；保留源表、schema、连续性、稳定轮次和 cutoff 校验，失败不得回退 stale
-   artifact。
-3. **G2 — 调度单 writer**：将 refresh、daily、weekly、monthly 和 actuals 收敛为各自
-   明确的 launchd writer；旧 scheduler、daily-gray 和重复预检不再拥有生产写权。
-4. **G3 — 日频历史缺口**：仅在 G1/G2 完成并取得专项授权后重新枚举 2026-08-03 缺口，
-   对仍缺的 business key 写 `gray_live`，不覆盖既有记录。
-5. **G5 — 周/月自然调度**：形成独立 installed/loaded plist，并观察真实周六和自然月
-   15 日触发。历史修复只可经授权写 `gray_live`。
-6. **G6 — P0 观察闭环**：至少观察一个完整日/周/月周期，证明每个 cadence 只有一个
-   writer、输入 fail-closed、API/页面与数据库一致且可控回退。
+1. **Task 1 — 只读重新冻结与无写库验证**：核对 active Registry、exact version、日历、DataBridge、
+   DB/API/前端行集，并生成仅含 12 个 T+1 key 的 gap plan。
+2. **Task 2 — exact Blackbox admission（需独立授权）**：仅让五个列明 identity 获得
+   `launchd_one_shot`；不得同时授予 legacy、ledger 或 direct capability。
+3. **Task 3 — 历史补写（需独立业务写入授权）**：仅经 Harness `signal-gap-fill` 以
+   `gray_live` insert-only 补齐 12 key；不写 8 月 1 日、T+5 或其他日期。
+4. **Task 4 — 端到端读回**：验收 8 月 3/4/5 均为 T+1 `10/10`、T+5 `24/24`，并更新当前状态。
 
-## 后续阶段
+## 后续（不抢跑）
 
-- **G7（P1）**：在 P0 稳定后收敛 Native 版本模型；保留审计历史，不按创建时间猜测或
-  删除 sibling。
-- **G8（P2）**：仅在 P0 真实观察完成后，按“先替代并观察、再删代码、最后删表”退役
-  legacy、ledger、daily-gray、旧 scheduler 和相关债务。删表另需零读写证据、备份/恢复
-  方案与专项授权。
+- **G7**：Native 版本语义收敛；待 G3.1 关闭后另立最小计划。
+- **G8**：先完成 replay/ledger 的最终设计决策；installed plist、migration 019 和表/外键 DDL 另行授权。
 
-## 已完成但不外推的灰度闭环
+## 已关闭
 
-**G4 — weekly 10Y D-overlay（已完成）**：固定 receipt、六段 maintenance、独立 activation 与
-唯一 `2026-08-01 / 2026-07-31 / 2026-08-07 / 10Y / h6` 的 `gray_live` 补写均已闭环。run
-`2106` 成功写入 1 条方向 `-1`、置信度 `0.32` 的预测，DB、served API 与 dashboard 均已读回；
-这不授予 scheduler admission、其他业务写入或 installed 控制面权限。
-
-两套 `seven_y_current55_lgbm_*_v2` 已完成受控入库、回测、历史 `gray_live`、前端读回和
-formal served-API Gate。它们没有 scheduler admission，也没有 `scheduled_live`；该事实
-不改变以上 G1/G2 的前置顺序。
+P-1、G0、G1/G2 功能闭环、G3 的 8 月 3 日补写、G4、G5/G6 功能验收与 G8.1–G8.24 已从待办移除；
+证据保留在 Git、Harness、run/prediction 审计与现行架构文档中。
