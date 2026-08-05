@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -356,6 +357,40 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
             [],
             apscheduler_imports,
             "direct/manual helper must not load resident scheduler dependencies",
+        )
+
+    def test_current_service_manifests_retire_apscheduler_and_tzlocal(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        current_manifests = (
+            project_root / "pyproject.toml",
+            project_root / "requirements-service.txt",
+            project_root / "requirements-service.freeze.installable.txt",
+        )
+
+        for path in current_manifests:
+            with self.subTest(path=path.relative_to(project_root)):
+                content = path.read_text(encoding="utf-8").lower()
+                self.assertNotIn("apscheduler", content)
+                self.assertNotIn("tzlocal", content)
+
+        raw_historical_freeze = (
+            project_root / "requirements-service.freeze.txt"
+        ).read_text(encoding="utf-8").lower()
+        self.assertIn("apscheduler", raw_historical_freeze)
+        self.assertIn("tzlocal", raw_historical_freeze)
+        self.assertEqual(
+            (project_root / "AGENTS.md").read_bytes(),
+            (project_root / "CLAUDE.md").read_bytes(),
+        )
+
+        cloud_environment = (
+            project_root / "docs" / "operations" / "CLOUD_ENVIRONMENT.md"
+        ).read_text(encoding="utf-8").lower()
+        bash_blocks = re.findall(r"```bash\n(.*?)\n```", cloud_environment, re.DOTALL)
+        self.assertEqual(
+            [],
+            [block for block in bash_blocks if "apscheduler" in block],
+            "current Cloud smoke commands must not import retired APScheduler",
         )
 
     def test_retired_repository_symbols_are_not_exposed(self) -> None:

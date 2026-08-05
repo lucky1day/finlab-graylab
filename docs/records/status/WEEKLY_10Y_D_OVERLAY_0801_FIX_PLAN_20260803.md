@@ -972,6 +972,35 @@ cron、CLI、Registry sync、DataBridge publish 或 startup/catch-up。删除
 
 **状态：** 已完成（repo-only）；没有运行或改变业务 runner、installed plist、launchd、服务、数据库或 API。
 
+### G8.11 — APScheduler 包清单退役（2026-08-05，repo-only）
+
+**目标：** 在常驻 `scheduler.main` 已删除且当前生产 Python 路径零 APScheduler import 后，移除当前服务
+安装清单中已无运行时消费者的 `APScheduler==3.11.2`，以及其唯一依赖 `tzlocal==5.3.1`，避免新的
+服务环境继续安装已退役的常驻调度栈。
+
+**边界：** 仅修改 `pyproject.toml` 的 service extra、`requirements-service.txt`、
+`requirements-service.freeze.installable.txt`、根规范与当前 Cloud 安装/烟测说明。明确保留
+`requirements-service.freeze.txt` 这个 raw historical `pip freeze` 快照，其中可以继续含有这两个
+历史依赖；不得运行 `pip install` 或 `pip uninstall`，不得改变现有 Conda 环境、Python 代码、数据库、
+业务 runner、DataBridge、ledger、plist、launchd、服务或 API。
+
+**TDD 与验证：**
+
+- [x] 先在 `tests/test_architecture_boundaries.py` 新增聚焦契约；旧清单以
+  `bond_factor_lab_service` 运行得到 `3 failed, 1 passed`，失败精确指出三份 current manifest
+  仍含 `apscheduler`。
+- [x] 最小删除 current manifests 中的 retired pair；root `AGENTS.md` 与 `CLAUDE.md` 同步为
+  launchd-only / 无 APScheduler 技术栈表述，Cloud smoke command 不再 import 或打印 APScheduler，
+  并明确 raw historical freeze 保留与 current installable 清单排除的边界。
+- [x] Green selector 为 `1 passed, 3 subtests passed`；相关 manifest / architecture / direct backend /
+  文档 / launchd contract 回归为 `146 passed, 46 subtests passed`（仅有既有 FastAPI startup
+  deprecation warnings）。`compileall -q scheduler backend shared harness tests`、`git diff --check`、
+  root 规范字节一致性与 production Python APScheduler import 静态检查均通过；不以环境卸载或手工
+  runner 代替 repo-only 验证。
+
+**状态：** 已完成（repo-only）；没有运行或改变现有 Conda 环境、业务 runner、installed plist、launchd、
+服务、数据库或 API。
+
 ---
 
 ## 15. 执行中的统一停止条件

@@ -21,11 +21,15 @@
 | `environment-algo.from-history.yml` | 原 Mac 算法环境的 Conda 显式历史导出，保留本机 `prefix` 作为事实快照。 |
 | `requirements-algo.freeze.txt` | 原 Mac 算法环境的 `pip freeze` 原始导出。 |
 | `environment-service.cloud.yml` | 云端创建服务环境用，等价于去掉本机 `prefix` 的 Conda 基础环境。 |
-| `requirements-service.freeze.installable.txt` | 云端安装服务环境 Python 包用，由 `pip list --format=freeze --exclude pip` 生成。 |
+| `requirements-service.freeze.installable.txt` | 云端安装服务环境 Python 包用，基于该 `pip list --format=freeze --exclude pip` 输出维护的当前可安装服务包清单。 |
 | `environment-algo.cloud.yml` | 云端创建算法环境用，等价于去掉本机 `prefix` 的 Conda 基础环境。 |
 | `requirements-algo.freeze.installable.txt` | 云端安装算法环境 Python 包用，由 `pip list --format=freeze --exclude pip` 生成。 |
 
 `requirements-algo.freeze.txt` 是原始事实导出，其中 `packaging` 带有本机 Conda build 的 `file://` 来源；云服务器不能直接安装这条本机路径。因此云端安装使用 `requirements-algo.freeze.installable.txt`，其中 `packaging==25.0` 来自同一环境的安装元数据，不是人工猜测。
+
+`requirements-service.freeze.txt` 同样只保留原始历史事实，可能继续含有当前服务已退役的依赖；
+G8.11 退役的 `APScheduler` 与其唯一依赖 `tzlocal` 即保留在该 raw snapshot 中。当前服务安装应只使用
+`requirements-service.freeze.installable.txt`，其中已排除这一对退役依赖。
 
 ## 云端创建环境
 
@@ -76,7 +80,7 @@ BOND_CORS_ORIGINS=https://your-allowed-origin.example
 先验证两个环境的关键包版本：
 
 ```bash
-PYTHONNOUSERSITE=1 conda run -n bond_factor_lab_service python -c "import sys, fastapi, sqlalchemy, apscheduler, pandas, numpy, sklearn, lightgbm; from importlib.metadata import version; print(sys.version.split()[0]); print('fastapi', fastapi.__version__); print('sqlalchemy', sqlalchemy.__version__); print('apscheduler', apscheduler.__version__); print('pandas', pandas.__version__); print('numpy', numpy.__version__); print('sklearn', sklearn.__version__); print('lightgbm', lightgbm.__version__); print('PyMySQL', version('PyMySQL'))"
+PYTHONNOUSERSITE=1 conda run -n bond_factor_lab_service python -c "import sys, fastapi, sqlalchemy, pandas, numpy, sklearn, lightgbm; from importlib.metadata import version; print(sys.version.split()[0]); print('fastapi', fastapi.__version__); print('sqlalchemy', sqlalchemy.__version__); print('pandas', pandas.__version__); print('numpy', numpy.__version__); print('sklearn', sklearn.__version__); print('lightgbm', lightgbm.__version__); print('PyMySQL', version('PyMySQL'))"
 
 PYTHONNOUSERSITE=1 conda run -n forecast_env python -c "import sys, pandas, numpy, sklearn, lightgbm, scipy, xgboost, shap, catboost; from importlib.metadata import version; print(sys.version.split()[0]); print('pandas', pandas.__version__); print('numpy', numpy.__version__); print('sklearn', sklearn.__version__); print('lightgbm', lightgbm.__version__); print('scipy', scipy.__version__); print('xgboost', xgboost.__version__); print('shap', shap.__version__); print('catboost', catboost.__version__); print('PyMySQL', version('PyMySQL'))"
 ```
