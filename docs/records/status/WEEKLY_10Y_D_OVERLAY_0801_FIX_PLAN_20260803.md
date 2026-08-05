@@ -755,6 +755,30 @@ backend、SSH 等非 writer 模板。
 
 **状态：** 已完成（repo-only）；仓库删除不代表 installed scheduler/actuals 已切换、停用或观察完成。
 
+### G8.4 — root-only epoch transition operator 退役（2026-08-05，repo-only）
+
+**目标：** 删除无 plist、生产 import 或 entrypoint 的 root-only
+`scripts/daily_coordinator_epoch_operator.py`，移除一个不再采用的 epoch transition 操作入口。
+
+**边界：** 本刀只删除该脚本；不删除或修改 epoch contract、genesis、rollout、shared mode、
+daily runtime / ledger / repository、migration、数据库表、control-plane probe、DataBridge、backend
+或环境变量。不得核对、替换或修改 installed plist、loaded state、launchd、服务或业务数据库，
+也不运行任何业务 runner。
+
+**文件与验证：**
+
+- [x] 先在 `tests/test_onboarding_docs.py` 对精确脚本路径写入不存在断言；旧文件仍在时已确认
+  单测 RED。
+- [x] 删除 `scripts/daily_coordinator_epoch_operator.py`；保留其余 epoch 相关契约与现存代码。
+- [x] `tests/test_onboarding_docs.py` 保留 daily runtime 的 direct-authority / 无 legacy-admission
+  断言，并对脚本回归 fail-closed；`tests/test_architecture_boundaries.py` 的通用
+  harness-vs-one-shot-admin-script 边界改用既有 `scripts.refresh_data_bridge_current`。
+- [x] 已运行 `tests.test_onboarding_docs`、`tests.test_architecture_boundaries`、
+  `tests.test_daily_control_plane_probe`、`compileall scheduler shared tests` 和
+  `git diff --check`；全部通过。
+
+**状态：** 已完成（repo-only）；不表示 installed 状态、launchd、数据库或生产服务发生变化。
+
 ---
 
 ## 15. 执行中的统一停止条件

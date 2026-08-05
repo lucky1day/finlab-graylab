@@ -715,18 +715,20 @@ class OnboardingDocumentationTests(unittest.TestCase):
         runtime = (
             PROJECT_ROOT / "scheduler" / "daily_runtime.py"
         ).read_text(encoding="utf-8")
-        operator = (
+        epoch_operator_path = (
             PROJECT_ROOT / "scripts" / "daily_coordinator_epoch_operator.py"
-        ).read_text(encoding="utf-8")
+        )
         admission_path = (
             PROJECT_ROOT / "deploy" / "daily_capacity_admission_v2.json"
         )
 
         self.assertFalse(admission_path.exists())
+        self.assertFalse(
+            epoch_operator_path.exists(),
+            "root-only epoch transition operator must not reappear",
+        )
         self.assertNotIn("bind_capacity_admission", runtime)
         self.assertNotIn("require_current_capacity_admission", runtime)
-        self.assertNotIn("require_trusted_current_capacity_admission", operator)
-        self.assertNotIn("_validate_capacity_admission", operator)
         self.assertIn("bind_direct_cache_authorities", runtime)
         self.assertIn("revalidate_direct_authority", runtime)
 

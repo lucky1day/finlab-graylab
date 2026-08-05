@@ -105,8 +105,8 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
             root = Path(tmp)
             self._write(
                 root / "harness" / "bad.py",
-                "from scripts.daily_coordinator_epoch_operator "
-                "import probe_daily_transition_quiescence\n",
+                "from scripts.refresh_data_bridge_current "
+                "import check_current\n",
             )
 
             actual = [
@@ -119,7 +119,7 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
                 [
                     "harness/bad.py:1: forbidden layer import: "
                     "harness -> "
-                    "scripts.daily_coordinator_epoch_operator"
+                    "scripts.refresh_data_bridge_current"
                 ],
                 actual,
             )
