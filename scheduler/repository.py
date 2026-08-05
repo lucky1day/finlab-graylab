@@ -4057,38 +4057,6 @@ def read_schedule_occurrence_snapshot(
         )
 
 
-def find_schedule_occurrence_id(
-    engine: Engine,
-    *,
-    schedule_key: str,
-    predict_date: str,
-) -> int | None:
-    """只读定位唯一冻结 occurrence；供同步控制面 guard 使用。"""
-    normalized_key = _require_bounded_identifier(
-        schedule_key,
-        "schedule_key",
-        max_length=128,
-    )
-    normalized_date = date.fromisoformat(predict_date).isoformat()
-    with engine.connect() as conn:
-        value = conn.execute(
-            text(
-                """
-                SELECT occurrence_id
-                FROM t_schedule_occurrences
-                WHERE schedule_key = :schedule_key
-                  AND predict_date = :predict_date
-                LIMIT 1
-                """
-            ),
-            {
-                "schedule_key": normalized_key,
-                "predict_date": normalized_date,
-            },
-        ).scalar()
-    return None if value is None else int(value)
-
-
 def read_dashboard_source_generation(
     engine: Engine,
     *,

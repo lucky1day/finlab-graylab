@@ -1235,6 +1235,32 @@ runner、DataBridge、launchd、plist、installed service 或自然调度行为�
 
 **状态：** 已完成（repo-only）；未连接数据库、未运行业务 runner，未改 launchd、installed plist 或服务。
 
+### G8.20 — repository legacy occurrence locator 退役（2026-08-05，repo-only）
+
+**目标：** 删除无消费者的 `scheduler.repository.find_schedule_occurrence_id`。它只是旧同步控制面
+使用的 `schedule_key + predict_date` 纯 SELECT locator，不是当前 launchd one-shot runtime 的公共能力。
+
+**边界：** 仅删除该 public repository function 并新增不得暴露它的 architecture guard。保留
+`DefaultDailyRuntimeServices.find_occurrence_id`，它是 daily runtime 的独立内部 locator；保留所有
+occurrence snapshot/read、replay、migration、数据库、launchd/plist 与当前 runtime 行为。不改表、SQL
+schema 或生产控制面。
+
+**TDD 与验证：**
+
+- [x] RED：先新增 `not hasattr(repository, "find_schedule_occurrence_id")` guard；旧实现得到
+  `1 failed, 22 deselected`。
+- [x] GREEN：仅删除这段 public SELECT locator 后，同一 guard 得到 `1 passed, 22 deselected`；
+  精确搜索仅保留 guard 本身，daily runtime 的 `find_occurrence_id` 仍存在。
+- [x] architecture、repository launchd-one-shot/registry/input-artifacts、daily runtime、daily replay
+  operator migrations、launchd prediction runner 与 prediction launchd selector 复跑为
+  `230 passed, 115 subtests passed`。
+- [x] 全量 `pytest -q -x` 复验仍在既有 active-scheme discovery 基线停止：`1 failed, 11 passed,
+  2 warnings, 4 subtests passed`，失败为 `seven_y_current55_lgbm_001_v1`、
+  `seven_y_current55_lgbm_002_v1` 被 discovery 发现但缺少 active config dir；本切片未触及该 7Y
+  配置问题。
+
+**状态：** 已完成（repo-only）；未连接数据库、未运行业务 runner，未改 launchd、installed plist 或服务。
+
 ---
 
 ## 15. 执行中的统一停止条件

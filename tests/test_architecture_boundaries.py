@@ -643,6 +643,15 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
             "retired repository symbols must not return",
         )
 
+    def test_legacy_schedule_occurrence_locator_is_not_exposed(
+        self,
+    ) -> None:
+        """同步控制面 locator 不得重新成为 repository 公共 API。"""
+        self.assertFalse(
+            hasattr(repository, "find_schedule_occurrence_id"),
+            "retired schedule occurrence locator must not return",
+        )
+
     def test_current_repository_has_no_layer_inversions(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
 
