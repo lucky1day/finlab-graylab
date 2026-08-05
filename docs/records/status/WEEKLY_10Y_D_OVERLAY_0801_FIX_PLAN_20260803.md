@@ -1001,6 +1001,48 @@ cron、CLI、Registry sync、DataBridge publish 或 startup/catch-up。删除
 **状态：** 已完成（repo-only）；没有运行或改变现有 Conda 环境、业务 runner、installed plist、launchd、
 服务、数据库或 API。
 
+### G8.12 — serving-pointer 表退役迁移准备（2026-08-05，repo-only）
+
+**目标：** 在当前生产 Python 路径已经没有 `t_scheme_serving_pointer` 读写消费者的前提下，准备受
+manifest 约束的 forward-only migration `019_retire_scheme_serving_pointer.sql`。它只含严格的
+`DROP TABLE t_scheme_serving_pointer`（绝不使用 `IF EXISTS`），使异常源状态不能被静默当成已完成。
+Migration `005` 和 legacy-`016` baseline 继续保留其历史 pointer 定义，保证 fresh
+`001..019` 与已有 `001..016` bootstrap 的 schema 审计基线均可复现。
+
+**严格 source / recovery 口径：** 正常 `--apply` 会先完成 018，再执行 019。019 的 source
+preflight、APPLYING inspect 和 fenced recovery 对 source 与已删表 target 都以只读
+`information_schema` 读取并纳入 state digest：source pointer 必须是 legacy-016 的完整精确物理
+定义、仅有预期的 outbound FK、零 inbound FK，且零 view / trigger / routine / event 静态依赖；
+无论表是否存在，`t_scheme_runs.started_at` 都必须已经是 018 的
+`DATETIME(6) NULL DEFAULT CURRENT_TIMESTAMP(6)` target，且 static dependency surface 必须为零。
+完整 source 才是 `COMPATIBLE_PARTIAL`；只有表不存在、018 target 与零依赖同时成立才是
+`COMPLETE`；任何 shape、依赖、018 physical target、history 或 digest 漂移均为 `UNSAFE` 并拒绝
+replay。019 recovery 只接受精确
+`001..018=APPLIED + 019=APPLYING`，并只允许 fresh 全零或 legacy `001..016` bootstrap 的标志模式。
+
+**依赖检查边界：** MySQL 没有 synonym 概念；检查覆盖 information_schema 中可静态发现的、文本引用
+`t_scheme_serving_pointer` 的对象，无法读取定义（`NULL`）时也 fail-closed。运行时拼接且不含该文本的
+dynamic SQL 不会形成 information_schema 依赖，不能由这项 schema preflight 证明为安全，仍须作为单独的
+operator 代码审计边界处理，不能当作 waiver。
+
+**最小兼容面：** `scripts/apply_migrations.py` 仅新增只读 `--inspect-applying-019` 与带 identity / digest
+fence 的 `--recover-applying-019 --apply`；`harness/daily_real_replay_operator.py` 只将预期 production
+migration prefix 更新为 `001..019`，不改变 replay、ledger、dispatch 或任何业务 runner 行为。
+
+**TDD 与验证：**
+
+- [x] 先新增 019 strict-source 单测；缺少 019 source state 中 external dependency 与 018 physical
+  target 字段时得到 `2 failed`，随后最小实现转为 `2 passed`。
+- [x] 独立审阅后补 target-state 回归：bare `{"exists": false}` 曾被错误视为 `COMPLETE`，完整
+  target 在旧实现中反而为 `UNSAFE`（`1 failed`）；现已要求 target 也绑定零依赖与 018 shape，并转为
+  `9 passed` 的 019 单测。
+- [x] 在隔离 MySQL 中验证 normal 018→019 apply、019 DDL 前 recovery、DDL 后仅补 history，以及真实
+  view 依赖、pre-018 `started_at` 漂移及表已删后的 018 回漂均拒绝；所有此类测试只创建临时 schema，
+  未连接生产数据库。
+
+**状态：** repo-only 已准备并完成隔离模拟；尚未对候选或生产数据库执行 018/019 apply、recovery 或
+`DROP TABLE`。该不可逆写入仍须在独立生产授权、只读 inspect 及精确 identity/digest fence 后执行。
+
 ---
 
 ## 15. 执行中的统一停止条件

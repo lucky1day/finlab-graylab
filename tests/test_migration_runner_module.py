@@ -23,9 +23,11 @@ CLI_PUBLIC_EXPORTS = {
     "apply_pending_migration_files",
     "inspect_applying_migration_017",
     "inspect_applying_migration_018",
+    "inspect_applying_migration_019",
     "main",
     "recover_applying_migration_017",
     "recover_applying_migration_018",
+    "recover_applying_migration_019",
     "split_sql_statements",
     "validate_release_migration_manifest",
 }
@@ -163,7 +165,7 @@ class CanonicalMigrationRunnerModuleTests(unittest.TestCase):
                     completed.stderr,
                 )
 
-    def test_release_manifest_still_binds_exact_001_through_018(
+    def test_release_manifest_still_binds_exact_001_through_019(
         self,
     ) -> None:
         runner = self._load_runner()
@@ -174,7 +176,7 @@ class CanonicalMigrationRunnerModuleTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            list(range(1, 19)),
+            list(range(1, 20)),
             [migration.version for migration in prepared],
         )
 

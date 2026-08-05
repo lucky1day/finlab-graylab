@@ -36,6 +36,14 @@ class _BreakAfter018DDL(RuntimeError):
     pass
 
 
+class _BreakBefore019DDL(RuntimeError):
+    pass
+
+
+class _BreakAfter019DDL(RuntimeError):
+    pass
+
+
 def _release_manifest():
     return migration_runner.validate_release_migration_manifest(
         MIGRATIONS
@@ -209,6 +217,61 @@ def _apply_until_after_018_ddl(engine) -> None:
         migration_runner.apply_migration_files(engine, MIGRATIONS)
 
 
+def _apply_until_before_019_ddl(engine) -> None:
+    """通过公开 runner 让 019 history=APPLYING 且尚未执行 DDL。"""
+    _execute_legacy_016_without_history(engine)
+    original_execute = (
+        migration_runner._execute_prepared_migration_files
+    )
+
+    def break_before_019(candidate_engine, prepared):
+        prepared_files = [
+            (path, tuple(statements))
+            for path, statements in prepared
+        ]
+        if any(
+            path.name.startswith("019_")
+            for path, _ in prepared_files
+        ):
+            raise _BreakBefore019DDL(
+                "break before migration 019 DDL"
+            )
+        return original_execute(candidate_engine, prepared_files)
+
+    with (
+        patch.object(
+            migration_runner,
+            "_execute_prepared_migration_files",
+            side_effect=break_before_019,
+        ),
+        unittest.TestCase().assertRaises(_BreakBefore019DDL),
+    ):
+        migration_runner.apply_migration_files(engine, MIGRATIONS)
+
+
+def _apply_until_after_019_ddl(engine) -> None:
+    """通过公开 runner 在 019 DDL 完成、history mark 前中断。"""
+    _execute_legacy_016_without_history(engine)
+    original_mark = migration_runner._mark_migration_applied
+
+    def break_after_019(candidate_engine, migration):
+        if migration.version == 19:
+            raise _BreakAfter019DDL(
+                "break after migration 019 DDL before history mark"
+            )
+        return original_mark(candidate_engine, migration)
+
+    with (
+        patch.object(
+            migration_runner,
+            "_mark_migration_applied",
+            side_effect=break_after_019,
+        ),
+        unittest.TestCase().assertRaises(_BreakAfter019DDL),
+    ):
+        migration_runner.apply_migration_files(engine, MIGRATIONS)
+
+
 def _history_rows(engine):
     with engine.connect() as connection:
         return list(
@@ -271,6 +334,50 @@ def _assert_017_applied(
         int(rows[-1]["baseline_bootstrap"]),
     )
     testcase.assertIsNotNone(rows[-1]["applied_at"])
+
+
+def _assert_exact_applying_019_history(
+    testcase: unittest.TestCase,
+    engine,
+) -> None:
+    manifest = _release_manifest()
+    rows = _history_rows(engine)
+    testcase.assertEqual(
+        list(range(1, 20)),
+        [int(row["version"]) for row in rows],
+    )
+    for migration, row in zip(manifest[:19], rows):
+        testcase.assertEqual(migration.path.name, row["filename"])
+        testcase.assertEqual(migration.sha256, row["sha256"])
+        if migration.version <= 16:
+            testcase.assertEqual(1, int(row["baseline_bootstrap"]))
+            testcase.assertEqual("APPLIED", row["state"])
+            testcase.assertIsNotNone(row["applied_at"])
+        elif migration.version < 19:
+            testcase.assertEqual(0, int(row["baseline_bootstrap"]))
+            testcase.assertEqual("APPLIED", row["state"])
+            testcase.assertIsNotNone(row["applied_at"])
+        else:
+            testcase.assertEqual(0, int(row["baseline_bootstrap"]))
+            testcase.assertEqual("APPLYING", row["state"])
+            testcase.assertIsNone(row["applied_at"])
+
+
+def _serving_pointer_table_exists(engine) -> bool:
+    with engine.connect() as connection:
+        count = int(
+            connection.execute(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM information_schema.tables
+                    WHERE table_schema = DATABASE()
+                      AND table_name = 't_scheme_serving_pointer'
+                    """
+                )
+            ).scalar_one()
+        )
+    return count == 1
 
 
 def _assert_no_017_business_ddl(
@@ -509,7 +616,7 @@ class Migration017MySQLRecoveryTests(unittest.TestCase):
             self.assertEqual(first_history, second_history)
             self.assertEqual(first_fingerprint, second_fingerprint)
             self.assertEqual(
-                list(range(1, 19)),
+                list(range(1, 20)),
                 [row[0] for row in second_history],
             )
             self.assertTrue(
@@ -522,7 +629,7 @@ class Migration017MySQLRecoveryTests(unittest.TestCase):
             process=process,
         )
 
-    def test_canonical_cli_recovers_mid_017_then_applies_018(self) -> None:
+    def test_canonical_cli_recovers_mid_017_then_applies_suffix(self) -> None:
         retained_root = None
         process = None
         with isolated_replay_mysql() as server:
@@ -564,19 +671,20 @@ class Migration017MySQLRecoveryTests(unittest.TestCase):
                 [int(row["version"]) for row in _history_rows(engine)],
             )
 
-            apply_018 = _run_isolated_migration_cli(
+            apply_suffix = _run_isolated_migration_cli(
                 engine,
                 "--apply",
                 expected_database_name=schema,
                 expected_server_uuid=server.identity.server_uuid,
             )
-            _assert_isolated_cli_succeeded(self, apply_018)
+            _assert_isolated_cli_succeeded(self, apply_suffix)
             rows = _history_rows(engine)
             self.assertEqual(
-                list(range(1, 19)),
+                list(range(1, 20)),
                 [int(row["version"]) for row in rows],
             )
             self.assertEqual("APPLIED", rows[-1]["state"])
+            self.assertFalse(_serving_pointer_table_exists(engine))
 
         _assert_mysql_cleaned(
             self,
@@ -666,6 +774,223 @@ class Migration017MySQLRecoveryTests(unittest.TestCase):
             process=process,
         )
 
+    def test_canonical_cli_recovers_pre_ddl_019(self) -> None:
+        retained_root = None
+        process = None
+        with isolated_replay_mysql() as server:
+            retained_root = server.root
+            process = server.process
+            schema, engine = server.create_replay_database()
+            _apply_until_before_019_ddl(engine)
+            _assert_exact_applying_019_history(self, engine)
+            self.assertTrue(_serving_pointer_table_exists(engine))
+
+            inspection = _read_isolated_cli_json(
+                self,
+                engine,
+                "--inspect-applying-019",
+            )
+            self.assertEqual(
+                "COMPATIBLE_PARTIAL",
+                inspection["classification"],
+            )
+            recovery = _read_isolated_cli_json(
+                self,
+                engine,
+                "--recover-applying-019",
+                "--apply",
+                "--state-digest",
+                str(inspection["state_digest"]),
+                expected_database_name=schema,
+                expected_server_uuid=server.identity.server_uuid,
+            )
+
+            self.assertEqual("APPLIED", recovery["recovery_outcome"])
+            self.assertEqual(
+                "COMPATIBLE_PARTIAL",
+                recovery["initial_classification"],
+            )
+            rows = _history_rows(engine)
+            self.assertEqual(19, len(rows))
+            self.assertEqual("APPLIED", rows[-1]["state"])
+            self.assertFalse(_serving_pointer_table_exists(engine))
+
+        _assert_mysql_cleaned(
+            self,
+            retained_root=retained_root,
+            process=process,
+        )
+
+    def test_canonical_cli_marks_ddl_complete_019_history(self) -> None:
+        retained_root = None
+        process = None
+        with isolated_replay_mysql() as server:
+            retained_root = server.root
+            process = server.process
+            schema, engine = server.create_replay_database()
+            _apply_until_after_019_ddl(engine)
+            _assert_exact_applying_019_history(self, engine)
+            self.assertFalse(_serving_pointer_table_exists(engine))
+
+            inspection = _read_isolated_cli_json(
+                self,
+                engine,
+                "--inspect-applying-019",
+            )
+            self.assertEqual("COMPLETE", inspection["classification"])
+            recovery = _read_isolated_cli_json(
+                self,
+                engine,
+                "--recover-applying-019",
+                "--apply",
+                "--state-digest",
+                str(inspection["state_digest"]),
+                expected_database_name=schema,
+                expected_server_uuid=server.identity.server_uuid,
+            )
+
+            self.assertEqual("APPLIED", recovery["recovery_outcome"])
+            self.assertEqual("COMPLETE", recovery["initial_classification"])
+            rows = _history_rows(engine)
+            self.assertEqual(19, len(rows))
+            self.assertEqual("APPLIED", rows[-1]["state"])
+
+        _assert_mysql_cleaned(
+            self,
+            retained_root=retained_root,
+            process=process,
+        )
+
+    def test_019_complete_target_refuses_018_shape_drift(self) -> None:
+        """表已删也不能让 APPLYING 019 掩盖 018 的物理回漂。"""
+        retained_root = None
+        process = None
+        with isolated_replay_mysql() as server:
+            retained_root = server.root
+            process = server.process
+            _schema, engine = server.create_replay_database()
+            _apply_until_after_019_ddl(engine)
+            _assert_exact_applying_019_history(self, engine)
+            self.assertFalse(_serving_pointer_table_exists(engine))
+
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        """
+                        ALTER TABLE t_scheme_runs
+                        MODIFY COLUMN started_at
+                            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                        """
+                    )
+                )
+            inspection = _read_isolated_cli_json(
+                self,
+                engine,
+                "--inspect-applying-019",
+            )
+            self.assertEqual("UNSAFE", inspection["classification"])
+            self.assertIn("started_at", str(inspection["reason"]))
+            with self.assertRaisesRegex(
+                migration_runner.MigrationHistoryError,
+                "refused unsafe state",
+            ):
+                migration_runner.recover_applying_migration_019(
+                    engine,
+                    MIGRATIONS,
+                    expected_state_digest=str(
+                        inspection["state_digest"]
+                    ),
+                )
+            _assert_exact_applying_019_history(self, engine)
+            self.assertFalse(_serving_pointer_table_exists(engine))
+
+        _assert_mysql_cleaned(
+            self,
+            retained_root=retained_root,
+            process=process,
+        )
+
+    def test_019_preflight_refuses_actual_dependency_and_018_drift(
+        self,
+    ) -> None:
+        """隔离 MySQL 中确认 019 只能接受无依赖且已完成 018 的 source。"""
+        retained_root = None
+        process = None
+        with isolated_replay_mysql() as server:
+            retained_root = server.root
+            process = server.process
+            _schema, engine = server.create_replay_database()
+            _apply_until_before_019_ddl(engine)
+            _assert_exact_applying_019_history(self, engine)
+
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        """
+                        CREATE VIEW v_019_pointer_consumer AS
+                        SELECT id FROM t_scheme_serving_pointer
+                        """
+                    )
+                )
+            dependency = _read_isolated_cli_json(
+                self,
+                engine,
+                "--inspect-applying-019",
+            )
+            self.assertEqual("UNSAFE", dependency["classification"])
+            self.assertIn(
+                "dependent",
+                str(dependency["reason"]),
+            )
+
+            with engine.begin() as connection:
+                connection.execute(text("DROP VIEW v_019_pointer_consumer"))
+                connection.execute(
+                    text(
+                        """
+                        ALTER TABLE t_scheme_runs
+                        MODIFY COLUMN started_at
+                            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                        """
+                    )
+                )
+            started_at_drift = _read_isolated_cli_json(
+                self,
+                engine,
+                "--inspect-applying-019",
+            )
+            self.assertEqual(
+                "UNSAFE",
+                started_at_drift["classification"],
+            )
+            self.assertIn(
+                "started_at",
+                str(started_at_drift["reason"]),
+            )
+            self.assertNotEqual(
+                dependency["state_digest"],
+                started_at_drift["state_digest"],
+            )
+            with self.assertRaisesRegex(
+                migration_runner.MigrationHistoryError,
+                "refused unsafe state",
+            ):
+                migration_runner.recover_applying_migration_019(
+                    engine,
+                    MIGRATIONS,
+                    expected_state_digest=str(
+                        started_at_drift["state_digest"]
+                    ),
+                )
+            _assert_exact_applying_019_history(self, engine)
+            self.assertTrue(_serving_pointer_table_exists(engine))
+
+        _assert_mysql_cleaned(
+            self,
+            retained_root=retained_root,
+            process=process,
+        )
+
     def test_normal_apply_reaches_complete_history(self) -> None:
         retained_root = None
         process = None
@@ -688,7 +1013,7 @@ class Migration017MySQLRecoveryTests(unittest.TestCase):
             )
             rows = _history_rows(engine)
             self.assertEqual(
-                list(range(1, 19)),
+                list(range(1, 20)),
                 [int(row["version"]) for row in rows],
             )
             self.assertEqual("APPLIED", rows[16]["state"])
@@ -697,6 +1022,7 @@ class Migration017MySQLRecoveryTests(unittest.TestCase):
                 rows[16]["filename"],
             )
             self.assertIsNotNone(rows[16]["applied_at"])
+            self.assertFalse(_serving_pointer_table_exists(engine))
 
         _assert_mysql_cleaned(
             self,

@@ -71,7 +71,7 @@ from shared.source_runtime_database import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_BRANCH = "codex/audit-bugfixes-20260613"
 PREFLIGHT_SCHEMA_VERSION = "daily-real-replay-preflight-v1"
-EXPECTED_PRODUCTION_MIGRATIONS = tuple(range(1, 18))
+EXPECTED_PRODUCTION_MIGRATIONS = tuple(range(1, 20))
 LAUNCHAGENT_LABELS = (
     "com.bond-factor-lab.backend",
     "com.bond-factor-lab.scheduler",

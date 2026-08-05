@@ -24,8 +24,10 @@ from migrations.runner import (
     apply_pending_migration_files,
     inspect_applying_migration_017,
     inspect_applying_migration_018,
+    inspect_applying_migration_019,
     recover_applying_migration_017,
     recover_applying_migration_018,
+    recover_applying_migration_019,
     split_sql_statements,
     validate_release_migration_manifest,
 )
@@ -41,9 +43,11 @@ __all__ = (
     "apply_pending_migration_files",
     "inspect_applying_migration_017",
     "inspect_applying_migration_018",
+    "inspect_applying_migration_019",
     "main",
     "recover_applying_migration_017",
     "recover_applying_migration_018",
+    "recover_applying_migration_019",
     "split_sql_statements",
     "validate_release_migration_manifest",
 )
@@ -89,6 +93,22 @@ def _parse_args(
         action="store_true",
         help=(
             "recover migration 018 using --apply and the exact digest "
+            "from a prior read-only inspection"
+        ),
+    )
+    mode.add_argument(
+        "--inspect-applying-019",
+        action="store_true",
+        help=(
+            "connect to the live DB and classify an interrupted migration "
+            "019 using SELECT plus a named advisory lock only; no DDL/DML"
+        ),
+    )
+    mode.add_argument(
+        "--recover-applying-019",
+        action="store_true",
+        help=(
+            "recover migration 019 using --apply and the exact digest "
             "from a prior read-only inspection"
         ),
     )
@@ -142,10 +162,27 @@ def _parse_args(
             parser.error(
                 "--state-digest must be 64 lowercase hex characters"
             )
+    elif args.inspect_applying_019:
+        if args.apply or args.state_digest:
+            parser.error(
+                "read-only inspection does not accept --apply or "
+                "--state-digest"
+            )
+        return args
+    elif args.recover_applying_019:
+        if not args.apply or not args.state_digest:
+            parser.error(
+                "recovery requires both --apply and --state-digest"
+            )
+        if _re.fullmatch(r"[0-9a-f]{64}", args.state_digest) is None:
+            parser.error(
+                "--state-digest must be 64 lowercase hex characters"
+            )
     elif args.state_digest:
         parser.error(
             "--state-digest is only valid with "
-            "--recover-applying-017 or --recover-applying-018"
+            "--recover-applying-017, --recover-applying-018 or "
+            "--recover-applying-019"
         )
     elif not args.apply:
         parser.error("--apply is required to change the database")
@@ -207,6 +244,7 @@ def main(argv: _Iterable[str] | None = None) -> None:
         if not (
             args.inspect_applying_017
             or args.inspect_applying_018
+            or args.inspect_applying_019
         ):
             _assert_write_database_identity(
                 engine,
@@ -252,6 +290,31 @@ def main(argv: _Iterable[str] | None = None) -> None:
             )
         elif args.recover_applying_018:
             result = recover_applying_migration_018(  # noqa: F405
+                engine,
+                paths,
+                expected_state_digest=args.state_digest,
+            )
+            print(
+                _json.dumps(
+                    result,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+        elif args.inspect_applying_019:
+            result = inspect_applying_migration_019(  # noqa: F405
+                engine,
+                paths,
+            )
+            print(
+                _json.dumps(
+                    result,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+        elif args.recover_applying_019:
+            result = recover_applying_migration_019(  # noqa: F405
                 engine,
                 paths,
                 expected_state_digest=args.state_digest,

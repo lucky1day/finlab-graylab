@@ -78,6 +78,7 @@ MIGRATION_FILES = (
     "016_dual_runtime.sql",
     "017_daily_schedule_ledger.sql",
     "018_schedule_run_started_at_nullable.sql",
+    "019_retire_scheme_serving_pointer.sql",
 )
 RUNTIME_PROFILE_PATH = "deploy/blackbox_v2/runtime_profile_v1.json"
 NATIVE_EXPORTER_FILES = (
@@ -873,7 +874,7 @@ def _collect_migration_artifacts(root: Path) -> dict[str, str]:
     expected = set(MIGRATION_FILES)
     if actual != expected:
         raise CapacityCandidateRuntimeError(
-            "migration set must be exactly 001..018: "
+            "migration set must be exactly 001..019: "
             f"missing={sorted(expected - actual)} "
             f"unknown={sorted(actual - expected)}"
         )

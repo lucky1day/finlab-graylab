@@ -4338,6 +4338,11 @@ def _is_schedule_run_started_at_migration(path: Path) -> bool:
     return path.name == SCHEDULE_RUN_STARTED_AT_MIGRATION_FILENAME
 
 
+def _is_serving_pointer_retirement_migration(path: Path) -> bool:
+    """migration 019 需要精确 serving-pointer source/target 门禁。"""
+    return path.name == SERVING_POINTER_RETIREMENT_MIGRATION_FILENAME
+
+
 def _partial_apply_error(
     path: Path,
     *,
@@ -4379,6 +4384,14 @@ SCHEDULE_RUN_STARTED_AT_MIGRATION_SHA256 = (
 )
 SCHEDULE_RUN_STARTED_AT_TARGET_DEFINITION = (
     "datetime(6) NULL DEFAULT CURRENT_TIMESTAMP(6)"
+)
+SERVING_POINTER_RETIREMENT_MIGRATION_VERSION = 19
+SERVING_POINTER_RETIREMENT_MIGRATION_FILENAME = (
+    "019_retire_scheme_serving_pointer.sql"
+)
+SERVING_POINTER_RETIREMENT_MIGRATION_SHA256 = (
+    "c5713935b4c33c492cac54f8cf85725b"
+    "2353fc33079129b762a7ce868785b002"
 )
 
 
@@ -5077,6 +5090,847 @@ def recover_applying_migration_018(
         }
 
 
+def _expected_serving_pointer_retirement_state() -> dict[str, object]:
+    """返回 019 可重放前唯一允许存在的 serving-pointer 定义。"""
+    expected = expected_legacy_016_baseline()
+    table_name = "t_scheme_serving_pointer"
+    prefix = f"{table_name}."
+    table_definitions = expected["table_definitions"]
+    columns = expected["columns"]
+    indexes = expected["indexes"]
+    foreign_keys = expected["foreign_keys"]
+    checks = expected["checks"]
+    assert isinstance(table_definitions, Mapping)
+    assert isinstance(columns, Mapping)
+    assert isinstance(indexes, Mapping)
+    assert isinstance(foreign_keys, Mapping)
+    assert isinstance(checks, Mapping)
+    return {
+        "exists": True,
+        "table_definition": dict(table_definitions[table_name]),
+        "columns": {
+            name: dict(spec)
+            for name, spec in columns.items()
+            if str(name).startswith(prefix)
+        },
+        "indexes": {
+            name: dict(spec)
+            for name, spec in indexes.items()
+            if str(name).startswith(prefix)
+        },
+        "foreign_keys": {
+            name: dict(spec)
+            for name, spec in foreign_keys.items()
+            if str(spec.get("table") if isinstance(spec, Mapping) else "")
+            == table_name
+        },
+        "checks": {
+            name: dict(spec)
+            for name, spec in checks.items()
+            if str(spec.get("table") if isinstance(spec, Mapping) else "")
+            == table_name
+        },
+        "inbound_foreign_keys": {},
+        "dependent_objects": {
+            "views": (),
+            "triggers": (),
+            "routines": (),
+            "events": (),
+        },
+        "schedule_run_started_at_shape": {
+            "exists": True,
+            "column_type": "datetime(6)",
+            "is_nullable": "yes",
+            "column_default": "current_timestamp(6)",
+            "extra": "default_generated",
+        },
+    }
+
+
+def _expected_serving_pointer_retirement_target_state() -> dict[str, object]:
+    """返回 019 已删表后仍必须保持的闭世界 target。"""
+    source = _expected_serving_pointer_retirement_state()
+    return {
+        "exists": False,
+        "dependent_objects": dict(source["dependent_objects"]),
+        "schedule_run_started_at_shape": dict(
+            source["schedule_run_started_at_shape"]
+        ),
+    }
+
+
+def _normalize_serving_pointer_column(
+    row: Mapping[str, object],
+) -> dict[str, object]:
+    column_type = str(row["column_type"]).lower()
+    textual = column_type.startswith(("char(", "varchar(", "text", "enum("))
+    return {
+        "column_type": column_type,
+        "nullable": str(row["is_nullable"]).lower(),
+        "default": (
+            None
+            if row["column_default"] is None
+            else (
+                str(row["column_default"])
+                if textual
+                else str(row["column_default"]).lower()
+            )
+        ),
+        "extra": " ".join(str(row.get("extra") or "").lower().split()),
+        "comment": str(row.get("column_comment") or ""),
+        "character_set": (
+            None
+            if row.get("character_set_name") is None
+            else str(row["character_set_name"]).lower()
+        ),
+        "collation": (
+            None
+            if row.get("collation_name") is None
+            else str(row["collation_name"]).lower()
+        ),
+        "ordinal": int(row["ordinal_position"]),
+    }
+
+
+def _normalize_serving_pointer_indexes(
+    rows: Iterable[Mapping[str, object]],
+) -> dict[str, dict[str, object]]:
+    grouped: dict[str, list[Mapping[str, object]]] = {}
+    for row in rows:
+        identity = (
+            f"{str(row['table_name']).lower()}."
+            f"{str(row['index_name'])}"
+        )
+        grouped.setdefault(identity, []).append(row)
+    return {
+        identity: {
+            "unique": int(group[0]["non_unique"]) == 0,
+            "columns": tuple(
+                None
+                if row.get("column_name") is None
+                else str(row["column_name"]).lower()
+                for row in sorted(
+                    group,
+                    key=lambda item: int(item["seq_in_index"]),
+                )
+            ),
+            "sub_parts": tuple(
+                None
+                if row.get("sub_part") is None
+                else int(row["sub_part"])
+                for row in sorted(
+                    group,
+                    key=lambda item: int(item["seq_in_index"]),
+                )
+            ),
+            "orders": tuple(
+                str(row.get("collation") or "").lower()
+                for row in sorted(
+                    group,
+                    key=lambda item: int(item["seq_in_index"]),
+                )
+            ),
+            "index_type": str(group[0].get("index_type") or "").lower(),
+            "visible": str(group[0].get("is_visible") or "").upper()
+            == "YES",
+            "expressions": tuple(
+                None
+                if row.get("expression") is None
+                else str(row["expression"]).lower()
+                for row in sorted(
+                    group,
+                    key=lambda item: int(item["seq_in_index"]),
+                )
+            ),
+        }
+        for identity, group in grouped.items()
+    }
+
+
+def _normalize_serving_pointer_foreign_keys(
+    rows: Iterable[Mapping[str, object]],
+) -> dict[str, dict[str, object]]:
+    grouped: dict[str, list[Mapping[str, object]]] = {}
+    for row in rows:
+        grouped.setdefault(str(row["constraint_name"]), []).append(row)
+    return {
+        name: {
+            "table": str(group[0]["table_name"]).lower(),
+            "columns": tuple(
+                str(row["column_name"]).lower()
+                for row in sorted(
+                    group,
+                    key=lambda item: int(item["ordinal_position"]),
+                )
+            ),
+            "referenced_table": str(
+                group[0]["referenced_table_name"]
+            ).lower(),
+            "referenced_columns": tuple(
+                str(row["referenced_column_name"]).lower()
+                for row in sorted(
+                    group,
+                    key=lambda item: int(item["ordinal_position"]),
+                )
+            ),
+            "delete_rule": str(group[0]["delete_rule"]).lower(),
+            "update_rule": str(group[0]["update_rule"]).lower(),
+        }
+        for name, group in grouped.items()
+    }
+
+
+def _read_serving_pointer_dependent_objects(
+    connection: object,
+) -> dict[str, tuple[str, ...]]:
+    """只读枚举会使 019 DROP TABLE 不安全的外部对象。"""
+    view_rows = connection.execute(
+        text(
+            """
+            SELECT table_schema AS object_schema,
+                   table_name AS object_name
+            FROM information_schema.views
+            WHERE view_definition IS NULL
+               OR LOWER(view_definition) LIKE '%t_scheme_serving_pointer%'
+            ORDER BY table_schema, table_name
+            """
+        )
+    ).mappings().all()
+    trigger_rows = connection.execute(
+        text(
+            """
+            SELECT trigger_schema AS object_schema,
+                   trigger_name AS object_name
+            FROM information_schema.triggers
+            WHERE (
+                event_object_schema = DATABASE()
+                AND LOWER(event_object_table) = 't_scheme_serving_pointer'
+            )
+               OR action_statement IS NULL
+               OR LOWER(action_statement) LIKE '%t_scheme_serving_pointer%'
+            ORDER BY trigger_schema, trigger_name
+            """
+        )
+    ).mappings().all()
+    routine_rows = connection.execute(
+        text(
+            """
+            SELECT routine_schema AS object_schema,
+                   routine_type AS routine_type,
+                   routine_name AS routine_name
+            FROM information_schema.routines
+            WHERE routine_definition IS NULL
+               OR LOWER(routine_definition) LIKE '%t_scheme_serving_pointer%'
+            ORDER BY routine_schema, routine_type, routine_name
+            """
+        )
+    ).mappings().all()
+    event_rows = connection.execute(
+        text(
+            """
+            SELECT event_schema AS object_schema,
+                   event_name AS object_name
+            FROM information_schema.events
+            WHERE event_definition IS NULL
+               OR LOWER(event_definition) LIKE '%t_scheme_serving_pointer%'
+            ORDER BY event_schema, event_name
+            """
+        )
+    ).mappings().all()
+    return {
+        "views": tuple(
+            sorted(
+                f"{str(row['object_schema']).lower()}."
+                f"{str(row['object_name']).lower()}"
+                for row in view_rows
+            )
+        ),
+        "triggers": tuple(
+            sorted(
+                f"{str(row['object_schema']).lower()}."
+                f"{str(row['object_name']).lower()}"
+                for row in trigger_rows
+            )
+        ),
+        "routines": tuple(
+            sorted(
+                f"{str(row['object_schema']).lower()}."
+                f"{str(row['routine_type']).lower()}:"
+                f"{str(row['routine_name']).lower()}"
+                for row in routine_rows
+            )
+        ),
+        "events": tuple(
+            sorted(
+                f"{str(row['object_schema']).lower()}."
+                f"{str(row['object_name']).lower()}"
+                for row in event_rows
+            )
+        ),
+    }
+
+
+def _read_serving_pointer_retirement_state(
+    connection: object,
+) -> dict[str, object]:
+    """读取 019 物理删表前的闭世界 source 或已删 target。"""
+    table_rows = connection.execute(
+        text(
+            """
+            SELECT table_name AS table_name,
+                   table_type AS table_type,
+                   engine AS engine,
+                   table_collation AS table_collation
+            FROM information_schema.tables
+            WHERE table_schema = DATABASE()
+              AND table_name = 't_scheme_serving_pointer'
+            """
+        )
+    ).mappings().all()
+    if not table_rows:
+        return {
+            "exists": False,
+            "dependent_objects": _read_serving_pointer_dependent_objects(
+                connection
+            ),
+            "schedule_run_started_at_shape": (
+                _read_schedule_run_started_at_shape(connection)
+            ),
+        }
+    if len(table_rows) != 1:
+        raise MigrationHistoryError(
+            "duplicate t_scheme_serving_pointer table metadata rows"
+        )
+    table_row = table_rows[0]
+    if str(table_row["table_name"]).lower() != "t_scheme_serving_pointer":
+        raise MigrationHistoryError("unexpected serving-pointer table name")
+
+    column_rows = connection.execute(
+        text(
+            """
+            SELECT table_name AS table_name,
+                   column_name AS column_name,
+                   column_type AS column_type,
+                   is_nullable AS is_nullable,
+                   column_default AS column_default,
+                   extra AS extra,
+                   column_comment AS column_comment,
+                   character_set_name AS character_set_name,
+                   collation_name AS collation_name,
+                   ordinal_position AS ordinal_position
+            FROM information_schema.columns
+            WHERE table_schema = DATABASE()
+              AND table_name = 't_scheme_serving_pointer'
+            ORDER BY ordinal_position
+            """
+        )
+    ).mappings().all()
+    columns = {
+        f"{str(row['table_name']).lower()}."
+        f"{str(row['column_name']).lower()}": _normalize_serving_pointer_column(
+            row
+        )
+        for row in column_rows
+    }
+
+    index_rows = connection.execute(
+        text(
+            """
+            SELECT table_name AS table_name,
+                   index_name AS index_name,
+                   non_unique AS non_unique,
+                   seq_in_index AS seq_in_index,
+                   column_name AS column_name,
+                   sub_part AS sub_part,
+                   collation AS collation,
+                   index_type AS index_type,
+                   is_visible AS is_visible,
+                   expression AS expression
+            FROM information_schema.statistics
+            WHERE table_schema = DATABASE()
+              AND table_name = 't_scheme_serving_pointer'
+            ORDER BY index_name, seq_in_index
+            """
+        )
+    ).mappings().all()
+
+    outgoing_fk_rows = connection.execute(
+        text(
+            """
+            SELECT k.constraint_name AS constraint_name,
+                   k.table_name AS table_name,
+                   k.column_name AS column_name,
+                   k.ordinal_position AS ordinal_position,
+                   k.referenced_table_name AS referenced_table_name,
+                   k.referenced_column_name AS referenced_column_name,
+                   r.update_rule AS update_rule,
+                   r.delete_rule AS delete_rule
+            FROM information_schema.key_column_usage AS k
+            JOIN information_schema.referential_constraints AS r
+              ON r.constraint_schema = k.constraint_schema
+             AND r.constraint_name = k.constraint_name
+             AND r.table_name = k.table_name
+            WHERE k.constraint_schema = DATABASE()
+              AND k.table_name = 't_scheme_serving_pointer'
+              AND k.referenced_table_name IS NOT NULL
+            ORDER BY k.constraint_name, k.ordinal_position
+            """
+        )
+    ).mappings().all()
+    inbound_fk_rows = connection.execute(
+        text(
+            """
+            SELECT k.constraint_name AS constraint_name,
+                   k.table_name AS table_name,
+                   k.column_name AS column_name,
+                   k.ordinal_position AS ordinal_position,
+                   k.referenced_table_name AS referenced_table_name,
+                   k.referenced_column_name AS referenced_column_name,
+                   r.update_rule AS update_rule,
+                   r.delete_rule AS delete_rule
+            FROM information_schema.key_column_usage AS k
+            JOIN information_schema.referential_constraints AS r
+              ON r.constraint_schema = k.constraint_schema
+             AND r.constraint_name = k.constraint_name
+             AND r.table_name = k.table_name
+            WHERE k.referenced_table_schema = DATABASE()
+              AND k.referenced_table_name = 't_scheme_serving_pointer'
+            ORDER BY k.constraint_name, k.ordinal_position
+            """
+        )
+    ).mappings().all()
+    check_rows = connection.execute(
+        text(
+            """
+            SELECT t.constraint_name AS constraint_name,
+                   t.table_name AS table_name,
+                   t.enforced AS enforced,
+                   c.check_clause AS check_clause
+            FROM information_schema.table_constraints AS t
+            JOIN information_schema.check_constraints AS c
+              ON BINARY c.constraint_schema = BINARY t.constraint_schema
+             AND BINARY c.constraint_name = BINARY t.constraint_name
+            WHERE t.constraint_schema = DATABASE()
+              AND t.table_name = 't_scheme_serving_pointer'
+              AND t.constraint_type = 'CHECK'
+            ORDER BY t.constraint_name
+            """
+        )
+    ).mappings().all()
+    row_count = int(
+        connection.execute(
+            text("SELECT COUNT(*) FROM t_scheme_serving_pointer")
+        ).scalar_one()
+    )
+    return {
+        "exists": True,
+        "table_definition": {
+            "table_type": str(table_row["table_type"]).lower(),
+            "engine": str(table_row.get("engine") or "").lower(),
+            "collation": str(
+                table_row.get("table_collation") or ""
+            ).lower(),
+        },
+        "columns": columns,
+        "indexes": _normalize_serving_pointer_indexes(index_rows),
+        "foreign_keys": _normalize_serving_pointer_foreign_keys(
+            outgoing_fk_rows
+        ),
+        "checks": {
+            str(row["constraint_name"]): {
+                "table": str(row["table_name"]).lower(),
+                "clause": _canonical_check_clause(row["check_clause"]),
+                "enforced": str(row["enforced"]).upper() == "YES",
+            }
+            for row in check_rows
+        },
+        "inbound_foreign_keys": _normalize_serving_pointer_foreign_keys(
+            inbound_fk_rows
+        ),
+        "dependent_objects": _read_serving_pointer_dependent_objects(
+            connection
+        ),
+        "schedule_run_started_at_shape": (
+            _read_schedule_run_started_at_shape(connection)
+        ),
+        "row_count": row_count,
+    }
+
+
+def _classify_serving_pointer_retirement_state(
+    state: Mapping[str, object],
+) -> str:
+    """019 只接受完整旧表或已删除表，拒绝全部中间/漂移状态。"""
+    normalized = dict(state)
+    expected_target = _expected_serving_pointer_retirement_target_state()
+    if normalized == expected_target:
+        return "COMPLETE"
+    if normalized.get("exists") is False:
+        raise MigrationPreflightError(
+            "unexpected completed t_scheme_serving_pointer retirement "
+            f"state: {normalized}"
+        )
+    row_count = normalized.pop("row_count", None)
+    if isinstance(row_count, bool) or not isinstance(row_count, int):
+        raise MigrationPreflightError(
+            "t_scheme_serving_pointer retirement row_count is invalid"
+        )
+    if row_count < 0:
+        raise MigrationPreflightError(
+            "t_scheme_serving_pointer retirement row_count is negative"
+        )
+    if normalized.get("inbound_foreign_keys"):
+        raise MigrationPreflightError(
+            "t_scheme_serving_pointer has unexpected inbound foreign keys"
+        )
+    expected = _expected_serving_pointer_retirement_state()
+    dependent_objects = normalized.get("dependent_objects")
+    if not isinstance(dependent_objects, Mapping):
+        raise MigrationPreflightError(
+            "t_scheme_serving_pointer dependent objects state is invalid"
+        )
+    if dict(dependent_objects) != expected["dependent_objects"]:
+        raise MigrationPreflightError(
+            "t_scheme_serving_pointer has unexpected dependent objects"
+        )
+    started_at_shape = normalized.get("schedule_run_started_at_shape")
+    if not isinstance(started_at_shape, Mapping):
+        raise MigrationPreflightError(
+            "t_scheme_runs.started_at state is invalid before migration 019"
+        )
+    if _classify_schedule_run_started_at_shape(started_at_shape) != "COMPLETE":
+        raise MigrationPreflightError(
+            "t_scheme_runs.started_at must be the migration 018 target "
+            "before migration 019"
+        )
+    if normalized != expected:
+        raise MigrationPreflightError(
+            "unexpected t_scheme_serving_pointer retirement definition: "
+            f"{normalized}"
+        )
+    return "COMPATIBLE_PARTIAL"
+
+
+def _validate_applying_019_history(
+    manifest: Iterable[PreparedMigration],
+    history: Iterable[Mapping[str, object]],
+) -> PreparedMigration:
+    """只接受 001..018 APPLIED + 019 APPLYING 的精确连续历史。"""
+    migrations = [
+        migration
+        for migration in manifest
+        if migration.version <= SERVING_POINTER_RETIREMENT_MIGRATION_VERSION
+    ]
+    expected_versions = list(
+        range(1, SERVING_POINTER_RETIREMENT_MIGRATION_VERSION + 1)
+    )
+    if [migration.version for migration in migrations] != expected_versions:
+        raise MigrationHistoryError(
+            "APPLYING recovery requires contiguous migration files "
+            "001..019"
+        )
+    target = migrations[-1]
+    if (
+        target.path.name != SERVING_POINTER_RETIREMENT_MIGRATION_FILENAME
+        or target.sha256 != SERVING_POINTER_RETIREMENT_MIGRATION_SHA256
+    ):
+        raise MigrationHistoryError(
+            "migration 019 recovery identity/checksum is not the "
+            "reviewed serving-pointer retirement migration"
+        )
+    rows = sorted(history, key=lambda row: int(row["version"]))
+    if [int(row["version"]) for row in rows] != expected_versions:
+        raise MigrationHistoryError(
+            "APPLYING recovery history must be the exact contiguous "
+            "001..019 prefix"
+        )
+    by_version = {
+        migration.version: migration for migration in migrations
+    }
+    for row in rows:
+        version = int(row["version"])
+        migration = by_version[version]
+        if str(row.get("filename") or "") != migration.path.name:
+            raise MigrationHistoryError(
+                f"migration history filename drift for {version:03d}"
+            )
+        if str(row.get("sha256") or "").lower() != migration.sha256:
+            raise MigrationHistoryError(
+                f"migration history checksum drift for {version:03d}"
+            )
+        expected_state = (
+            "APPLYING"
+            if version == SERVING_POINTER_RETIREMENT_MIGRATION_VERSION
+            else "APPLIED"
+        )
+        if str(row.get("state") or "").upper() != expected_state:
+            raise MigrationHistoryError(
+                "only migration 019 may be APPLYING; "
+                f"version {version:03d} is {row.get('state')!r}"
+            )
+    bootstrap_flags = [
+        int(row.get("baseline_bootstrap") or 0) for row in rows
+    ]
+    fresh_history = [0] * SERVING_POINTER_RETIREMENT_MIGRATION_VERSION
+    legacy_bootstrap_history = [1] * 16 + [0, 0, 0]
+    if tuple(bootstrap_flags) not in {
+        tuple(fresh_history),
+        tuple(legacy_bootstrap_history),
+    }:
+        raise MigrationHistoryError(
+            "migration 019 APPLYING history has an invalid baseline "
+            f"bootstrap pattern: {bootstrap_flags}"
+        )
+    if int(rows[-1].get("baseline_bootstrap") or 0) != 0:
+        raise MigrationHistoryError(
+            "migration 019 APPLYING row cannot be a baseline bootstrap"
+        )
+    return target
+
+
+def build_applying_019_inspection(
+    *,
+    manifest: Iterable[PreparedMigration],
+    history: Iterable[Mapping[str, object]],
+    database_identity: Mapping[str, object],
+    pointer_state: Mapping[str, object],
+) -> dict[str, object]:
+    """构造只读 APPLYING 019 source/target/unsafe 检查及 digest。"""
+    migrations = list(manifest)
+    history_rows = sorted(
+        (dict(row) for row in history),
+        key=lambda row: int(row["version"]),
+    )
+    canonical_state = {
+        "database_identity": dict(database_identity),
+        "manifest": [
+            {
+                "version": migration.version,
+                "filename": migration.path.name,
+                "sha256": migration.sha256,
+            }
+            for migration in migrations
+            if migration.version <= SERVING_POINTER_RETIREMENT_MIGRATION_VERSION
+        ],
+        "history": history_rows,
+        "pointer_state": dict(pointer_state),
+    }
+    digest = _applying_017_state_digest(canonical_state)
+    classification = "UNSAFE"
+    reason: str | None = None
+    migration_identity: dict[str, object] | None = None
+    try:
+        database_name = str(
+            database_identity.get("database_name") or ""
+        ).strip()
+        server_uuid = str(
+            database_identity.get("server_uuid") or ""
+        ).strip()
+        if not database_name or not server_uuid:
+            raise MigrationHistoryError(
+                "database name and MySQL server UUID are required"
+            )
+        target = _validate_applying_019_history(migrations, history_rows)
+        migration_identity = {
+            "version": target.version,
+            "filename": target.path.name,
+            "sha256": target.sha256,
+        }
+        classification = _classify_serving_pointer_retirement_state(
+            pointer_state
+        )
+    except (
+        KeyError,
+        MigrationHistoryError,
+        MigrationPreflightError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        reason = str(exc)
+    return {
+        "classification": classification,
+        "state_digest": digest,
+        "database_identity": dict(database_identity),
+        "migration": migration_identity,
+        "reason": reason,
+    }
+
+
+def _unsafe_applying_019_inspection(
+    *,
+    manifest: Iterable[PreparedMigration],
+    database_identity: Mapping[str, object],
+    reason: BaseException,
+) -> dict[str, object]:
+    canonical_state = {
+        "database_identity": dict(database_identity),
+        "manifest": [
+            {
+                "version": migration.version,
+                "filename": migration.path.name,
+                "sha256": migration.sha256,
+            }
+            for migration in manifest
+            if migration.version <= SERVING_POINTER_RETIREMENT_MIGRATION_VERSION
+        ],
+        "inspection_error": {
+            "type": type(reason).__name__,
+            "message": str(reason),
+        },
+    }
+    return {
+        "classification": "UNSAFE",
+        "state_digest": _applying_017_state_digest(canonical_state),
+        "database_identity": dict(database_identity),
+        "migration": None,
+        "reason": str(reason),
+    }
+
+
+def _read_applying_019_inspection(
+    connection: object,
+    manifest: list[PreparedMigration],
+) -> dict[str, object]:
+    """在 owner lock 内读取一次 canonical APPLYING 019 状态。"""
+    identity_row = connection.execute(
+        text(
+            """
+            SELECT DATABASE() AS database_name,
+                   @@server_uuid AS server_uuid
+            """
+        )
+    ).mappings().one()
+    database_identity = {
+        "database_name": str(identity_row["database_name"] or ""),
+        "server_uuid": str(identity_row["server_uuid"] or ""),
+    }
+    try:
+        if not _migration_history_table_exists(connection):
+            raise MigrationHistoryError(
+                "migration history table does not exist"
+            )
+        _validate_migration_history_schema(
+            _read_migration_history_schema(connection)
+        )
+        return build_applying_019_inspection(
+            manifest=manifest,
+            history=_read_migration_history(connection),
+            database_identity=database_identity,
+            pointer_state=_read_serving_pointer_retirement_state(connection),
+        )
+    except (
+        AssertionError,
+        KeyError,
+        MigrationHistoryError,
+        MigrationPreflightError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        return _unsafe_applying_019_inspection(
+            manifest=manifest,
+            database_identity=database_identity,
+            reason=exc,
+        )
+
+
+def inspect_applying_migration_019(
+    engine: object,
+    paths: Iterable[Path],
+) -> dict[str, object]:
+    """连接 live DB，以 SELECT + named lock 检查 019，不执行 DDL/DML。"""
+    manifest = validate_release_migration_manifest(paths)
+    with _migration_owner_connection(engine) as owner_connection:
+        return _read_applying_019_inspection(owner_connection, manifest)
+
+
+def _serving_pointer_retirement_recovery_target(
+    manifest: Iterable[PreparedMigration],
+) -> PreparedMigration:
+    candidates = [
+        migration
+        for migration in manifest
+        if migration.version == SERVING_POINTER_RETIREMENT_MIGRATION_VERSION
+    ]
+    if len(candidates) != 1:
+        raise MigrationHistoryError(
+            "recovery requires exactly one migration 019 file"
+        )
+    target = candidates[0]
+    if (
+        target.path.name != SERVING_POINTER_RETIREMENT_MIGRATION_FILENAME
+        or target.sha256 != SERVING_POINTER_RETIREMENT_MIGRATION_SHA256
+    ):
+        raise MigrationHistoryError(
+            "recovery target is not the reviewed migration 019"
+        )
+    return target
+
+
+def recover_applying_migration_019(
+    engine: object,
+    paths: Iterable[Path],
+    *,
+    expected_state_digest: str,
+) -> dict[str, object]:
+    """以 inspect digest 为 fence 恢复唯一受支持的 APPLYING 019。"""
+    if re.fullmatch(r"[0-9a-f]{64}", expected_state_digest) is None:
+        raise MigrationHistoryError(
+            "expected state digest must be 64 lowercase hex characters"
+        )
+    manifest = validate_release_migration_manifest(paths)
+    target = _serving_pointer_retirement_recovery_target(manifest)
+    with _migration_owner_connection(engine) as owner_connection:
+        initial = _read_applying_019_inspection(owner_connection, manifest)
+        observed_digest = str(initial.get("state_digest") or "")
+        if not hmac.compare_digest(observed_digest, expected_state_digest):
+            raise MigrationHistoryError(
+                "APPLYING 019 state digest changed; run a new read-only "
+                "inspection before recovery"
+            )
+        classification = str(initial.get("classification") or "")
+        if classification == "UNSAFE":
+            raise MigrationHistoryError(
+                "APPLYING 019 recovery refused unsafe state: "
+                f"{initial.get('reason')}"
+            )
+        if classification == "COMPATIBLE_PARTIAL":
+            rollback = getattr(owner_connection, "rollback", None)
+            if callable(rollback):
+                rollback()
+            _execute_prepared_migration_files(
+                engine,
+                [(target.path, target.statements)],
+            )
+            if callable(rollback):
+                rollback()
+            completed = _read_applying_019_inspection(
+                owner_connection,
+                manifest,
+            )
+            if completed.get("classification") != "COMPLETE":
+                raise MigrationPartialApplyError(
+                    "migration 019 replay did not reach COMPLETE; "
+                    "history remains APPLYING. "
+                    f"inspection={completed}"
+                )
+        elif classification != "COMPLETE":
+            raise MigrationHistoryError(
+                "unknown APPLYING 019 inspection classification: "
+                f"{classification!r}"
+            )
+        _mark_migration_applied(engine, target)
+        return {
+            "recovery_outcome": "APPLIED",
+            "initial_classification": classification,
+            "initial_state_digest": observed_digest,
+            "migration": {
+                "version": target.version,
+                "filename": target.path.name,
+                "sha256": target.sha256,
+            },
+        }
+
+
 def _legacy_domain_table_count(connection: object) -> int:
     required = sorted(expected_legacy_016_baseline()["tables"])
     table_sql = ",".join(f"'{name}'" for name in required)
@@ -5262,6 +6116,9 @@ def _execute_prepared_migration_files(
         schedule_run_started_at = (
             _is_schedule_run_started_at_migration(path)
         )
+        serving_pointer_retirement = (
+            _is_serving_pointer_retirement_migration(path)
+        )
         mysql_session = False
         execution_started = False
         ddl_attempted = False
@@ -5282,6 +6139,20 @@ def _execute_prepared_migration_files(
                         ),
                         {"runner_guard": DAILY_LEDGER_RUNNER_GUARD},
                     )
+                if serving_pointer_retirement and mysql_session:
+                    classification = (
+                        _classify_serving_pointer_retirement_state(
+                            _read_serving_pointer_retirement_state(
+                                connection
+                            )
+                        )
+                    )
+                    if classification != "COMPATIBLE_PARTIAL":
+                        raise MigrationPreflightError(
+                            "migration 019 requires the complete "
+                            "serving-pointer source definition before "
+                            "DROP TABLE"
+                        )
                 for statement in statements:
                     execution_started = True
                     if mysql_session and _is_ddl_statement(statement):
@@ -5322,6 +6193,28 @@ def _execute_prepared_migration_files(
                     if classification != "COMPLETE":
                         raise MigrationPreflightError(
                             "migration 018 did not reach target definition"
+                        )
+            except BaseException as exc:
+                postcondition_error = exc
+        if (
+            serving_pointer_retirement
+            and mysql_session
+            and execution_started
+        ):
+            try:
+                with engine.begin() as connection:
+                    preflight_migration_session(connection)
+                    classification = (
+                        _classify_serving_pointer_retirement_state(
+                            _read_serving_pointer_retirement_state(
+                                connection
+                            )
+                        )
+                    )
+                    if classification != "COMPLETE":
+                        raise MigrationPreflightError(
+                            "migration 019 did not remove "
+                            "t_scheme_serving_pointer"
                         )
             except BaseException as exc:
                 postcondition_error = exc

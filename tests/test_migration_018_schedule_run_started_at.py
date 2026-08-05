@@ -96,6 +96,7 @@ class ScheduleRunStartedAtMigrationTests(unittest.TestCase):
                 "baseline_bootstrap": 0,
             }
             for migration in manifest
+            if migration.version <= 18
         ]
         return manifest, history
 

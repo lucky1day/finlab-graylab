@@ -2398,6 +2398,15 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
                     "a" * 64,
                 ],
             ),
+            (
+                "recover_019",
+                [
+                    "--recover-applying-019",
+                    "--apply",
+                    "--state-digest",
+                    "a" * 64,
+                ],
+            ),
         )
         incomplete_identities = (
             (
@@ -2457,6 +2466,12 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
             ],
             [
                 "--recover-applying-018",
+                "--apply",
+                "--state-digest",
+                "a" * 64,
+            ],
+            [
+                "--recover-applying-019",
                 "--apply",
                 "--state-digest",
                 "a" * 64,
@@ -2521,6 +2536,15 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
                     "a" * 64,
                 ],
             ),
+            (
+                "recover_019",
+                [
+                    "--recover-applying-019",
+                    "--apply",
+                    "--state-digest",
+                    "a" * 64,
+                ],
+            ),
         )
         mismatches = (
             (
@@ -2559,6 +2583,10 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
                             migration_cli,
                             "recover_applying_migration_018",
                         ) as recover_018,
+                        patch.object(
+                            migration_cli,
+                            "recover_applying_migration_019",
+                        ) as recover_019,
                         self.assertRaisesRegex(
                             RuntimeError,
                             "database identity",
@@ -2580,6 +2608,7 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
                     apply_pending.assert_not_called()
                     recover_017.assert_not_called()
                     recover_018.assert_not_called()
+                    recover_019.assert_not_called()
                     engine.dispose.assert_called_once_with()
 
     def test_reviewed_migration_017_bytes_are_unchanged(self) -> None:
@@ -2590,7 +2619,7 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
             hashlib.sha256(path.read_bytes()).hexdigest(),
         )
 
-    def test_release_manifest_exactly_binds_current_001_through_018(
+    def test_release_manifest_exactly_binds_current_001_through_019(
         self,
     ) -> None:
         prepared = migration_runner.validate_release_migration_manifest(
@@ -2601,11 +2630,11 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            list(range(1, 19)),
+            list(range(1, 20)),
             [row.version for row in prepared],
         )
         self.assertEqual(
-            [f"{version:03d}" for version in range(1, 19)],
+            [f"{version:03d}" for version in range(1, 20)],
             [row.path.name[:3] for row in prepared],
         )
 
@@ -2846,6 +2875,7 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
             [
                 "017_daily_schedule_ledger.sql",
                 "018_schedule_run_started_at_nullable.sql",
+                "019_retire_scheme_serving_pointer.sql",
             ],
             [migration.path.name for migration in pending],
         )
