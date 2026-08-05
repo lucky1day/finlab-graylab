@@ -114,7 +114,10 @@ class OnboardingDocumentationTests(unittest.TestCase):
         ):
             self.assertIn(marker, governance)
         self.assertIn("不得新增、扩容、迁移或补建", governance)
-        self.assertIn("仓库模板已移除", governance)
+        self.assertIn(
+            "仓库已移除 `com.bond-factor-lab.scheduler`",
+            governance,
+        )
         self.assertRegex(
             governance,
             r"也不得作为新的或过渡生产调度\s*路径",
@@ -335,14 +338,20 @@ class OnboardingDocumentationTests(unittest.TestCase):
         platform = PLATFORM_SOP.read_text(encoding="utf-8")
         governance = PRODUCTION_SCHEDULING_GOVERNANCE.read_text(encoding="utf-8")
 
-        self.assertIn("disabled 兼容模板", deploy)
+        self.assertIn(
+            "仓库已移除 `com.bond-factor-lab.scheduler`",
+            deploy,
+        )
         self.assertIn("文档状态**：`HISTORICAL`", sla)
         for text in (governance, platform):
             self.assertIn("launchd + installed plist", text)
             self.assertIn("一个", text)
             self.assertIn("writer", text)
         self.assertIn("不得新增、扩容、迁移或补建", governance)
-        self.assertIn("仓库模板已移除", governance)
+        self.assertIn(
+            "仓库已移除 `com.bond-factor-lab.scheduler`",
+            governance,
+        )
         self.assertIn("不能作为新的或过渡调度路径", platform)
         self.assertNotIn("BOND_DAILY_COORDINATOR_MODE=ledger", governance)
 
@@ -580,18 +589,6 @@ class OnboardingDocumentationTests(unittest.TestCase):
                 self.assertEqual(config["Label"], label)
                 self.assertEqual(config["StartCalendarInterval"], calendar)
                 self.assertFalse(config["RunAtLoad"])
-                self.assertNotIn("KeepAlive", config)
-
-        for filename, label in (
-            ("com.bond-factor-lab.scheduler.plist", "com.bond-factor-lab.scheduler"),
-        ):
-            with self.subTest(label=label):
-                with (launchd_root / filename).open("rb") as handle:
-                    config = plistlib.load(handle)
-                self.assertEqual(config["Label"], label)
-                self.assertTrue(config["Disabled"])
-                self.assertNotIn("StartCalendarInterval", config)
-                self.assertNotIn("RunAtLoad", config)
                 self.assertNotIn("KeepAlive", config)
 
     def test_scheduler_source_binding_runbook_keeps_secrets_out_of_plist(

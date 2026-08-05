@@ -50,8 +50,10 @@ panda_quantflow AIFin Lab Shell
 
 目标拓扑中 Actuals 不挂载在常驻 APScheduler 中。独立
 `com.bond-factor-lab.actuals` LaunchAgent 在 `08:30/19:00/23:45` 启动一次性
-`scheduler.actuals_runner` 进程；三个时点和进程退出状态均由 launchd 管理。为已安装旧
-template 保留的 `scheduler.main --run-once actuals` 只是兼容入口，不是仓库 desired state。
+`scheduler.actuals_runner` 进程；三个时点和进程退出状态均由 launchd 管理。
+`scheduler.main --run-once actuals` 只为已安装旧 actuals plist 保留兼容入口，不是仓库
+desired state。仓库的 disabled `com.bond-factor-lab.scheduler` 模板已移除；本次 repo-only
+变更不核对或改变任何 installed plist。
 
 任何 frequency 的预测都不得同时挂载两条自动路径。已退役的 daily-gray/v2-preflight
 writer 的仓库模板已移除；常驻 scheduler、per-scheme cron、ledger/occurrence/epoch
@@ -576,10 +578,10 @@ frontend/
 ### 7.1 进程管理（launchd）
 
 生产目标的 launchd plist 必须分别承担 DataBridge refresh、daily prediction、weekly
-prediction、monthly prediction、actuals 和 backend 的单一职责。仓库中仍存在
-`com.bond-factor-lab.scheduler` 这一 disabled legacy/过渡模板；它不是新的调度入口，也不能
-与目标 writer 并行写入。已退役的 daily-gray 和 v2-preflight 仓库模板已移除，且该仓库变更
-不说明 installed plist 状态。
+prediction、monthly prediction、actuals 和 backend 的单一职责。仓库已移除
+`com.bond-factor-lab.scheduler` 这一 disabled legacy/过渡模板，以消除该 legacy 调度表达；
+这项 repo-only 变更不说明或改变任何 installed plist 状态。已退役的 daily-gray 和
+v2-preflight 仓库模板也已移除。
 
 这些仓库文件描述期望配置，不自动代表 `~/Library/LaunchAgents` 中的 installed plist。
 任何安装、替换、`bootstrap/bootout/kickstart` 或重启都属于独立生产操作。当前规则与

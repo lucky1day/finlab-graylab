@@ -729,6 +729,32 @@ ledger import 的进一步脱钩留给后续切片，不能在本刀重写 repos
   G5/G6 无写库模拟测试，以及 `compileall` / `git diff --check`；本提交后仍须独立授权与现场
   核验，才能切换 installed actuals plist。
 
+### G8.3 — disabled legacy scheduler 模板退役（2026-08-05，repo-only）
+
+**目标：** 删除唯一仍直接表达常驻 APScheduler 的仓库 desired 模板
+`deploy/launchd/com.bond-factor-lab.scheduler.plist`，消除该 legacy 控制面表达；不涉及
+backend、SSH 等非 writer 模板。
+
+**边界：** 本刀只删除该 `Disabled=true` 模板及其“模板存在”测试/当前文档表述；不删除或
+实质重构 `scheduler/main.py`。`scheduler.main --run-once actuals` 仍是已安装旧 actuals plist
+的兼容入口。不得核对、替换或修改 installed plist、loaded state、服务、launchctl、业务数据库、
+预测/actuals 日期语义，也不运行任何手工业务 runner。
+
+**文件与验证：**
+
+- [x] 先将 `tests/test_prediction_launchd.py` 改为精确断言该模板不存在，并在删除前运行该单测，
+  确认它因模板仍存在而 RED。
+- [x] 删除 `deploy/launchd/com.bond-factor-lab.scheduler.plist`；保留 daily / weekly / monthly
+  prediction 与 actuals 的 desired one-shot 模板。
+- [x] 仅更新 `deploy/README.md`、`docs/architecture/ARCHITECTURE.md`、
+  `docs/architecture/CODE_ARCHITECTURE.md`、
+  `docs/architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md` 的当前描述；不改其它历史 records。
+- [x] 运行 prediction launchd、onboarding docs、architecture boundaries、actuals 目标测试，
+  对每个剩余 `deploy/launchd/*.plist` 执行 `plutil -lint`，再执行相关 `compileall` 与
+  `git diff --check`；全部通过。
+
+**状态：** 已完成（repo-only）；仓库删除不代表 installed scheduler/actuals 已切换、停用或观察完成。
+
 ---
 
 ## 15. 执行中的统一停止条件

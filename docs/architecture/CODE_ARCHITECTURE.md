@@ -147,8 +147,9 @@ V5–V6 没有建立基线豁免；修复后 repo-wide gate 的全仓扫描为�
 
 launchd + plist 是真实生产调度控制面。任务是否挂载、触发时点、环境、重启和日志
 均由 installed plist 与 `launchctl` 现场状态决定；`scheduler.main`/APScheduler 和专用
-runner 只是 plist 的子进程实现。仓库 `deploy/launchd/*.plist` 是期望配置，不等于已
-安装或已生效，后续不得仅向 APScheduler 添加 job 就宣称进入生产调度。
+runner 只是 plist 的子进程实现或待退役兼容代码。仓库已移除 disabled
+`com.bond-factor-lab.scheduler` 模板；这不表示任何 installed plist 已被安装、停用或替换。
+后续不得仅向 APScheduler 添加 job 就宣称进入生产调度。
 
 当前目标入口由 launchd 的一次性 plist 触发：refresh、daily、weekly、monthly 和 actuals
 各自只有一个 writer。`scheduler.main`/APScheduler、ledger/occurrence/epoch 仅作为现存代码
@@ -184,7 +185,7 @@ LaunchAgent 切换都必须先复核 installed plist、`launchctl` 状态和对�
 日频、周频、月频 actuals 由独立
 `com.bond-factor-lab.actuals` LaunchAgent 启动
 `scheduler.actuals_runner` 一次性刷新。`scheduler.main --run-once actuals` 只为已安装旧
-template 保留兼容委托，不是仓库 desired state。当前生产节奏为
+actuals plist 保留兼容委托，不是仓库 desired state；本次未改变 installed plist。当前生产节奏为
 `08:30/19:00/23:45`，其中夜间 `23:45` 用于承接上游 Wind 日频晚间导入；非交易日
 daily/weekly actuals 刷新到上一交易日，monthly actuals 仍刷新到自然 run date，以同时
 覆盖周末补刷和自然 15 号月度规则。常驻 APScheduler 不得再注册 `actuals:*` job。
@@ -347,7 +348,7 @@ manifest 校验、schema inspect、pending apply 与 `APPLYING` recovery 都在�
 | `scheduler/repository.py` | L3 | 写库单点；按 runtime/operation 原子提交 prediction + run + log | `create_scheme_run`、`complete_active_native_run`、`complete_approved_blackbox_run`、`complete_scheduled_attempt`、`complete_gray_gap_run`、`write_run_log`、`sync_scheme_registry`；`_insert_run_predictions_conn` 仅内部使用 |
 | `scheduler/daily_control_plane_probe.py` | L3 | LaunchAgent、全日期账本和算法进程的共用只读静默探针 | `probe_launchagent_service_states`、`probe_daily_transition_quiescence` |
 | `scheduler/{daily,weekly,monthly}_actuals_updater.py` | L3 | actuals 刷新 | `update_*_actuals` |
-| `scheduler/main.py` | L3 | launchd 管理的非日频常驻子进程 / APScheduler 实现 | `build_scheduler` |
+| `scheduler/main.py` | L3 | 待退役的常驻 APScheduler / installed old-actuals 兼容实现（无 repo desired 模板） | `build_scheduler`、`--run-once actuals` |
 | `backend/main.py` `services.py` `db.py` | L4 | 只读 API + 静态前端 serve | `/api/*`、`scheme_metrics` |
 | `harness/daily_real_replay.py` | L5 | 历史隔离诊断 runtime；只接受已验证隔离 Engine 与冻结 generation，不定义当前生产规模或准入 | `open_real_replay_generations`、`RealReplayRuntime` |
 | `harness/daily_real_replay_operator.py` | L5 | 隔离诊断的只读控制面预检与锁会话；不参与日常 production owner 判定 | `run_real_replay_preflight` |

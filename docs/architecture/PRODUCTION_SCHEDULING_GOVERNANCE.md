@@ -28,9 +28,10 @@ one-shot runner；`com.bond-factor-lab.actuals` 保持 08:30、19:00、23:45 的
 writer，并启动 `scheduler.actuals_runner`。这些是仓库 desired state，不是机器安装、加载或
 停用的现场结论。
 
-`com.bond-factor-lab.scheduler` 是仓库中保留的 `Disabled=true` 兼容模板，且没有自然日历
-触发。已退役的 `daily-gray` 与 `v2-preflight` writer 及其仓库模板已移除；这不说明任何
-installed plist 的现场状态。
+仓库已移除 `com.bond-factor-lab.scheduler` 的 `Disabled=true` legacy 模板；这项 repo-only
+变更不说明、更不改变任何 installed plist 的现场状态。`scheduler.main --run-once actuals`
+仍只为已安装旧 actuals plist 保留兼容入口，直到另一次独立的生产切换完成。已退役的
+`daily-gray` 与 `v2-preflight` writer 及其仓库模板也已移除。
 
 DataBridge 的 `BFL_DATABRIDGE_PRODUCER=launchd-one-shot` 是防误操作的准入标记，不是
 launchd 身份认证。仓库代码的同 UID 调用者属于受信任边界；不能由环境标记或 Python 内部

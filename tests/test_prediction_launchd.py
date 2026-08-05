@@ -109,17 +109,14 @@ class PredictionLaunchdTests(unittest.TestCase):
                     calendar=calendar,
                 )
 
-    def test_legacy_scheduler_templates_are_disabled_without_calendar_triggers(self) -> None:
-        for filename, label in (
-            ("com.bond-factor-lab.scheduler.plist", "com.bond-factor-lab.scheduler"),
-        ):
-            with self.subTest(label=label):
-                config = load_plist(filename)
-                self.assertEqual(config["Label"], label)
-                self.assertTrue(config["Disabled"])
-                self.assertNotIn("StartCalendarInterval", config)
-                self.assertNotIn("RunAtLoad", config)
-                self.assertNotIn("KeepAlive", config)
+    def test_legacy_scheduler_template_is_retired(self) -> None:
+        self.assertFalse(
+            (
+                LAUNCHD_ROOT
+                / "com.bond-factor-lab.scheduler.plist"
+            ).exists(),
+            "legacy scheduler template must not reappear",
+        )
 
 
 if __name__ == "__main__":
