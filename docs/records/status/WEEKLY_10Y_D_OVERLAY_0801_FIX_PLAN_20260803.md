@@ -1345,6 +1345,34 @@ DashboardSnapshotStore、replay、runtime、launchd 或业务表。
 
 **状态：** 已完成（repo-only）；未连接数据库、未运行业务 runner，未改 launchd、installed plist 或服务。
 
+### G8.24 — repository orphan dashboard generation helpers 退役（2026-08-05，repo-only）
+
+**目标：** 在 G8.22/G8.23 已删除唯一 consumer 后，删除精确零消费者的私有
+`_schedule_visibility_source_generation` 与其唯一子 helper
+`_dashboard_generation_timestamp`。它们不再参与当前 dashboard、receipt 或 runtime 语义。
+
+**边界：** 仅删除这两个 private function，并新增 repository AST absence guard。不得顺手删除或改动
+`hashlib`、`json`、`Iterable`、`Mapping`、`_as_datetime`、`_stored_iso_date`、`_stored_text`、
+`_optional_int`、receipt/reconcile、数据库、current cache、launchd 或 replay；这些名称在当前代码中
+仍各有独立职责或本切片不授权的审计边界。
+
+**TDD 与验证：**
+
+- [x] RED：先新增 AST absence guard；旧实现得到 `1 failed, 26 deselected`，精确列出两个 private
+  helper definition。
+- [x] GREEN：仅删除 helper definitions 后，同一 guard 得到 `1 passed, 26 deselected`；目标源码/运行时
+  搜索仅保留 guard（历史计划原文保留），imports 与列明的通用 helper/receipt-reconcile 路径仍在。
+- [x] architecture、dashboard snapshot/factor-lab dashboard/API/frontend、repository launchd-one-shot/
+  registry/input-artifacts、daily runtime、daily replay operator migrations、launchd prediction runner、
+  prediction/actuals launchd、scheduled executor、daily control-plane probe 与 production health selector
+  复跑为 `516 passed, 2 warnings, 217 subtests passed`；warnings 仅为既有 FastAPI startup 弃用提示。
+- [x] 全量 `pytest -q -x` 复验仍在既有 active-scheme discovery 基线停止：`1 failed, 11 passed,
+  2 warnings, 4 subtests passed`，失败为 `seven_y_current55_lgbm_001_v1`、
+  `seven_y_current55_lgbm_002_v1` 被 discovery 发现但缺少 active config dir；本切片未触及该 7Y
+  配置问题。
+
+**状态：** 已完成（repo-only）；未连接数据库、未运行业务 runner，未改 launchd、installed plist 或服务。
+
 ---
 
 ## 15. 执行中的统一停止条件

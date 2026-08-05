@@ -8997,65 +8997,6 @@ def _optional_stored_datetime(
     return None if value is None else _as_datetime(value, field)
 
 
-def _dashboard_generation_timestamp(value: object) -> str | None:
-    if value is None:
-        return None
-    return _as_datetime(value, "dashboard source timestamp").isoformat(
-        timespec="microseconds"
-    )
-
-
-def _schedule_visibility_source_generation(
-    *,
-    schedule_key: str,
-    occurrence: Mapping[str, object] | None,
-    target_rows: Iterable[Mapping[str, object]],
-) -> str:
-    payload = {
-        "schedule_key": schedule_key,
-        "occurrence_id": (
-            None
-            if occurrence is None
-            else int(occurrence["occurrence_id"])
-        ),
-        "predict_date": (
-            None
-            if occurrence is None
-            else _stored_iso_date(occurrence, "predict_date")
-        ),
-        "targets": [
-            {
-                "target_id": int(row["target_id"]),
-                "registry_scheme_id": _stored_text(
-                    row,
-                    "registry_scheme_id",
-                ),
-                "status": _stored_text(row, "status"),
-                "accepted_run_id": _optional_int(
-                    row.get("accepted_run_id")
-                ),
-                "accepted_prediction_id": _optional_int(
-                    row.get("accepted_prediction_id")
-                ),
-                "accepted_at": _dashboard_generation_timestamp(
-                    row.get("accepted_at")
-                ),
-                "visible_at": _dashboard_generation_timestamp(
-                    row.get("visible_at")
-                ),
-            }
-            for row in target_rows
-        ],
-    }
-    canonical = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(canonical).hexdigest()
-
-
 def _stored_text(row: Mapping[str, object], field: str) -> str:
     value = row.get(field)
     if value is None or not str(value).strip():

@@ -706,6 +706,31 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
             "retired dashboard source generation reader must not return",
         )
 
+    def test_legacy_dashboard_generation_helpers_are_not_defined(
+        self,
+    ) -> None:
+        """已退役 reader 的私有内容寻址 helper 不得单独回归。"""
+        project_root = Path(__file__).resolve().parents[1]
+        repository_tree = ast.parse(
+            (project_root / "scheduler" / "repository.py").read_text(
+                encoding="utf-8"
+            )
+        )
+        defined_names = {
+            node.name
+            for node in ast.walk(repository_tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        retired = {
+            "_dashboard_generation_timestamp",
+            "_schedule_visibility_source_generation",
+        }
+        self.assertEqual(
+            set(),
+            retired & defined_names,
+            "retired dashboard generation helper definitions must not return",
+        )
+
     def test_current_repository_has_no_layer_inversions(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
 
