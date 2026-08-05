@@ -36,10 +36,7 @@ from scheduler.daily_direct_authority import (
     DailyDirectAuthorityError,
     build_daily_direct_cache_authorities,
 )
-from scheduler.daily_actuals_updater import update_actuals
-from scheduler.monthly_actuals_updater import update_monthly_actuals
 from scheduler.daily_policy import POLICY_V2_PATH
-from scheduler.weekly_actuals_updater import update_weekly_actuals
 from scheduler.calendar import is_trading_day
 from scheduler.discovery import SchemeConfig, discover_schemes
 from scheduler.executor import DEFAULT_ALGO_ENV, SchemeRunResult, execute_scheme
@@ -1156,35 +1153,6 @@ def _emit_prediction_summary(results: Sequence[SchemeRunResult], exit_code: int)
     print(json.dumps(summary, sort_keys=True))
 
 
-def run_actuals_job(run_date: str | date | None = None, force: bool = False) -> None:
-    """执行 actuals 刷新任务。"""
-    target_date = _normalize_run_date(run_date)
-    is_trading_day = _is_trading_day(target_date)
-    if not force and not is_trading_day:
-        daily_weekly_end_date = _previous_trading_day(target_date)
-        logger.info(
-            "Refresh daily/weekly actuals to previous trading day %s on non-trading day %s; "
-            "monthly actuals still refresh to %s",
-            daily_weekly_end_date,
-            target_date,
-            target_date,
-        )
-    else:
-        daily_weekly_end_date = target_date
-    daily_written = update_actuals(end_date=daily_weekly_end_date)
-    weekly_written = update_weekly_actuals(end_date=daily_weekly_end_date)
-    monthly_written = update_monthly_actuals(end_date=target_date)
-    logger.info(
-        "Actuals refresh finished: date=%s daily_weekly_end_date=%s daily_records=%s weekly_records=%s "
-        "monthly_records=%s",
-        target_date,
-        daily_weekly_end_date,
-        daily_written,
-        weekly_written,
-        monthly_written,
-    )
-
-
 def build_scheduler(algo_env: str = DEFAULT_ALGO_ENV) -> BlockingScheduler:
     """创建 APScheduler 实例。"""
     coordinator_mode = _daily_coordinator_mode()
@@ -1385,6 +1353,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
     try:
+        if args.run_once == "actuals":
+            from scheduler.actuals_runner import run_actuals_job
+
+            run_actuals_job(run_date=args.date, force=args.force)
+            return 0
+
         coordinator_mode = _daily_coordinator_mode()
         if args.run_once in {"predictions", "data-refresh"}:
             preflight_daily_storage()
@@ -1428,9 +1402,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             exit_code = _prediction_exit_code(results)
             _emit_prediction_summary(results, exit_code)
             return exit_code
-        if args.run_once == "actuals":
-            run_actuals_job(run_date=args.date, force=args.force)
-            return 0
         preflight_daily_storage()
         scheduler = build_scheduler(algo_env=args.algo_env)
     except (

@@ -25,7 +25,8 @@ APScheduler、已退役 writer、预检进程或任何手工进程同时拥有�
 `com.bond-factor-lab.weekly-predictions` 于周六 11:30、
 `com.bond-factor-lab.monthly-predictions` 于自然月 15 日 18:00 分别启动相应 cadence 的
 one-shot runner；`com.bond-factor-lab.actuals` 保持 08:30、19:00、23:45 的既有唯一
-writer。这些是仓库 desired state，不是机器安装、加载或停用的现场结论。
+writer，并启动 `scheduler.actuals_runner`。这些是仓库 desired state，不是机器安装、加载或
+停用的现场结论。
 
 `com.bond-factor-lab.scheduler` 是仓库中保留的 `Disabled=true` 兼容模板，且没有自然日历
 触发。已退役的 `daily-gray` 与 `v2-preflight` writer 及其仓库模板已移除；这不说明任何

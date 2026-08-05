@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：平台开发和架构审计人员
-**最后核验日期**：2026-08-04
+**最后核验日期**：2026-08-05
 **版本**：v1.3
 
 > 本文是**系统架构**（部署、DB schema、API 契约、数据流）。代码层面的分层、包依赖方向规则、运行时调用图与扩展模型见 [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md)（代码架构主蓝图）。
@@ -29,7 +29,7 @@ Mac Studio
    ├─ weekly/monthly predictions one-shot
    │  └─ 各自自然时钟 → scheduled_live
    ├─ com.bond-factor-lab.actuals
-   │  └─ 08:30/19:00/23:45 一次性 scheduler.main --run-once actuals
+   │  └─ 08:30/19:00/23:45 一次性 scheduler.actuals_runner
    └─ 每个 cadence 只有一个 writer
 
 上述任务进程
@@ -50,7 +50,8 @@ panda_quantflow AIFin Lab Shell
 
 目标拓扑中 Actuals 不挂载在常驻 APScheduler 中。独立
 `com.bond-factor-lab.actuals` LaunchAgent 在 `08:30/19:00/23:45` 启动一次性
-`scheduler.main --run-once actuals` 进程；三个时点和进程退出状态均由 launchd 管理。
+`scheduler.actuals_runner` 进程；三个时点和进程退出状态均由 launchd 管理。为已安装旧
+template 保留的 `scheduler.main --run-once actuals` 只是兼容入口，不是仓库 desired state。
 
 任何 frequency 的预测都不得同时挂载两条自动路径。已退役的 daily-gray/v2-preflight
 writer 的仓库模板已移除；常驻 scheduler、per-scheme cron、ledger/occurrence/epoch

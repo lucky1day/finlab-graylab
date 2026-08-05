@@ -672,7 +672,8 @@ Native hash 当前覆盖完整 config 和文件文本，展示、状态、schedu
   自然时钟观察不再单独阻塞该清理。
 - actuals 等仍有价值的一次性能力先脱离常驻 scheduler，再删除常驻 APScheduler 入口。
 - daily-gray、v2-preflight、ledger/occurrence/epoch 和 serving pointer 按“先替代并观察、再删代码、最后删表”的顺序治理。
-- `BOND_DAILY_COORDINATOR_MODE=legacy` 的底层依赖已从 executor/repository/DataBridge 中移除，生产 plist 不再需要该兼容变量。
+- G8 结束前仍须从 executor/repository/DataBridge 移除 `BOND_DAILY_COORDINATOR_MODE=legacy` 的
+  底层依赖；完成后生产 plist 才不再需要该兼容变量。
 - 文档、测试和部署模板不再暗示旧控制面可用于新生产任务。
 - 删除数据库表前已有零读写证明、备份/恢复方案和用户专项授权；历史 run、prediction、version、harness 证据不因清债被删除。
 
@@ -704,6 +705,29 @@ Native hash 当前覆盖完整 config 和文件文本，展示、状态、schedu
 - [x] 更新当前测试与文档，删除对已移除 runner / template 的“当前存在”断言；不改历史记录。
 - [x] 运行该架构测试、预测 launchd / 文档 / harness selector 相关测试、G5/G6 无写库模拟、
   `compileall` 与 `git diff --check`；完成后将本节标为已完成并单独提交。
+
+### G8.2 — actuals 脱离 `scheduler.main` 的代码切片（2026-08-05，已授权）
+
+**目标：** 让仓库 desired actuals plist 直接启动一个一次性 `scheduler.actuals_runner`，避免
+actuals 进程加载 APScheduler / prediction CLI；现有 `scheduler.main --run-once actuals` 保留为
+已安装旧 plist 的兼容入口，直到另一次独立的生产切换完成。
+
+**边界：** 新 runner 只复现既有 actuals 日期语义：交易日三种 actuals 同用目标日；非交易日
+daily / weekly 使用上一交易日，monthly 保留自然目标日。它不调用 `scheduler.main`、不启动
+APScheduler、没有 cron / ledger / epoch 逻辑。updater 仍暂时通过既有 repository 访问数据库；
+ledger import 的进一步脱钩留给后续切片，不能在本刀重写 repository。仓库 plist 的
+`ProgramArguments` 和环境变量会更新，但 installed plist、loaded state、kickstart、手工 runner
+调用和业务数据库均不在授权范围。
+
+- [x] 新增 `tests/test_actuals_runner.py`，以 mock 锁定交易日、非交易日和 CLI 参数/错误码；
+  已确认初始运行因 runner 不存在而失败。
+- [x] 新增 `scheduler/actuals_runner.py`，将已有 actuals 计算与 CLI 以最小方式迁出；
+  `scheduler.main` 仅委托该兼容函数，不改变旧 `--run-once actuals` 行为。
+- [x] 更新仓库 actuals plist、其测试和当前部署/架构文档为新入口，移除仅为旧 main 兼容的
+  `BOND_DAILY_COORDINATOR_MODE=legacy` 环境变量；未改 installed plist。
+- [x] 已运行 actuals runner/main compatibility、actuals updater、launchd/document、架构边界与
+  G5/G6 无写库模拟测试，以及 `compileall` / `git diff --check`；本提交后仍须独立授权与现场
+  核验，才能切换 installed actuals plist。
 
 ---
 

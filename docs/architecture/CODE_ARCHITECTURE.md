@@ -183,7 +183,8 @@ LaunchAgent 切换都必须先复核 installed plist、`launchctl` 状态和对�
 
 日频、周频、月频 actuals 由独立
 `com.bond-factor-lab.actuals` LaunchAgent 启动
-`scheduler.main --run-once actuals` 一次性刷新。当前生产节奏为
+`scheduler.actuals_runner` 一次性刷新。`scheduler.main --run-once actuals` 只为已安装旧
+template 保留兼容委托，不是仓库 desired state。当前生产节奏为
 `08:30/19:00/23:45`，其中夜间 `23:45` 用于承接上游 Wind 日频晚间导入；非交易日
 daily/weekly actuals 刷新到上一交易日，monthly actuals 仍刷新到自然 run date，以同时
 覆盖周末补刷和自然 15 号月度规则。常驻 APScheduler 不得再注册 `actuals:*` job。

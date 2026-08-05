@@ -41,9 +41,7 @@ class ActualsLaunchdTests(unittest.TestCase):
                 "bond_factor_lab_service",
                 "python",
                 "-m",
-                "scheduler.main",
-                "--run-once",
-                "actuals",
+                "scheduler.actuals_runner",
             ],
         )
         self.assertEqual(
@@ -59,7 +57,6 @@ class ActualsLaunchdTests(unittest.TestCase):
             config["EnvironmentVariables"],
             {
                 "PYTHONNOUSERSITE": "1",
-                "BOND_DAILY_COORDINATOR_MODE": "legacy",
             },
         )
 

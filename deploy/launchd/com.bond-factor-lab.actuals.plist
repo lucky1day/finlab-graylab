@@ -18,17 +18,13 @@
     <string>bond_factor_lab_service</string>
     <string>python</string>
     <string>-m</string>
-    <string>scheduler.main</string>
-    <string>--run-once</string>
-    <string>actuals</string>
+    <string>scheduler.actuals_runner</string>
   </array>
 
   <key>EnvironmentVariables</key>
   <dict>
     <key>PYTHONNOUSERSITE</key>
     <string>1</string>
-    <key>BOND_DAILY_COORDINATOR_MODE</key>
-    <string>legacy</string>
   </dict>
 
   <key>StartCalendarInterval</key>
