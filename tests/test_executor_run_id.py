@@ -50,6 +50,57 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
             "ledger",
         )
 
+    def test_native_subprocess_can_strip_daily_coordinator_mode_only_when_requested(
+        self,
+    ) -> None:
+        from scheduler.executor import run_scheme_subprocess
+
+        environments: list[dict[str, str]] = []
+
+        def run_process(_cmd, **kwargs):
+            environments.append(dict(kwargs["env"]))
+            return SimpleNamespace(stdout="[]")
+
+        with (
+            patch.dict(
+                os.environ,
+                {"BOND_DAILY_COORDINATOR_MODE": "ledger"},
+                clear=False,
+            ),
+            patch(
+                "scheduler.executor._run_process_group",
+                side_effect=run_process,
+            ),
+        ):
+            self.assertEqual(
+                run_scheme_subprocess(
+                    "demo",
+                    "2026-07-03",
+                    algo_env="test_env",
+                    timeout_sec=7,
+                ),
+                [],
+            )
+            self.assertEqual(
+                run_scheme_subprocess(
+                    "demo",
+                    "2026-07-03",
+                    algo_env="test_env",
+                    timeout_sec=7,
+                    strip_daily_coordinator_mode=True,
+                ),
+                [],
+            )
+
+        self.assertEqual(
+            environments[0]["BOND_DAILY_COORDINATOR_MODE"],
+            "ledger",
+        )
+        self.assertNotIn(
+            "BOND_DAILY_COORDINATOR_MODE",
+            environments[1],
+        )
+
     def test_algorithm_environment_rejects_inherited_pycache_prefix(
         self,
     ) -> None:
@@ -1093,6 +1144,62 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
             process_start_guard,
         )
 
+    def test_run_configured_scheme_forwards_mode_strip_only_to_native(
+        self,
+    ) -> None:
+        """one-shot 隔离标记不得穿透到 Blackbox runner。"""
+        from scheduler.executor import run_configured_scheme
+
+        native_cfg = SimpleNamespace(
+            runtime_type="native_adapter",
+            scheme_id="native_mode_scope",
+        )
+        blackbox_cfg = SimpleNamespace(
+            runtime_type="blackbox_v2",
+            input_source="data_bridge_current",
+            scheme_id="blackbox_mode_scope",
+        )
+        with (
+            patch(
+                "scheduler.executor.run_scheme_subprocess",
+                return_value=[],
+            ) as native,
+            patch(
+                "scheduler.executor.run_blackbox_scheme_subprocess",
+                return_value=[],
+            ) as blackbox,
+        ):
+            self.assertEqual(
+                run_configured_scheme(
+                    native_cfg,
+                    "2026-07-03",
+                    engine="engine",
+                    algo_env="test_env",
+                    timeout_sec=7,
+                    strip_daily_coordinator_mode=True,
+                ),
+                [],
+            )
+            self.assertEqual(
+                run_configured_scheme(
+                    blackbox_cfg,
+                    "2026-07-03",
+                    engine="engine",
+                    algo_env="test_env",
+                    timeout_sec=7,
+                    strip_daily_coordinator_mode=True,
+                ),
+                [],
+            )
+
+        self.assertTrue(
+            native.call_args.kwargs["strip_daily_coordinator_mode"]
+        )
+        self.assertNotIn(
+            "strip_daily_coordinator_mode",
+            blackbox.call_args.kwargs,
+        )
+
     def test_run_configured_scheme_rejects_noncanonical_process_start_guard(
         self,
     ) -> None:
@@ -1469,6 +1576,98 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
             algo_env="test_env",
             timeout_sec=1800,
         )
+
+    def test_execute_scheme_scopes_mode_strip_to_native_one_shot(
+        self,
+    ) -> None:
+        from scheduler.executor import execute_scheme
+        from shared.models import PredictionRecord
+
+        cfg = SimpleNamespace(
+            scheme_id="native_mode_scope",
+            status="active",
+            scheme_version="native-version-1",
+            runtime_type="native_adapter",
+            frequency="weekly",
+            horizon=1,
+        )
+        record = PredictionRecord(
+            scheme_id="native_mode_scope",
+            target_tenor="10Y",
+            horizon=1,
+            predict_date="2026-07-20",
+            target_date="2026-07-21",
+            feature_date="2026-07-17",
+            predicted_direction=1,
+            extra={"feature_date": "2026-07-17"},
+        )
+
+        def run_with(
+            *,
+            prediction_phase: str,
+            scheduled_control_plane: str,
+        ) -> dict[str, object]:
+            engine = _FakeEngine()
+            with (
+                patch(
+                    "scheduler.executor.create_engine_from_env",
+                    return_value=engine,
+                ),
+                patch(
+                    "scheduler.executor."
+                    "_scheduled_live_execution_configuration_error",
+                    return_value=None,
+                ),
+                patch(
+                    "scheduler.executor._verify_scheme_activation",
+                    return_value=(True, "ok"),
+                ),
+                patch(
+                    "scheduler.executor._active_registry_targets",
+                    return_value={("10Y", 1)},
+                ),
+                patch(
+                    "scheduler.executor.create_scheme_run",
+                    return_value=601,
+                ),
+                patch(
+                    "scheduler.executor.run_configured_scheme",
+                    return_value=[record],
+                ) as runner,
+                patch(
+                    "scheduler.executor.complete_active_native_run",
+                    return_value=("success", 1, None),
+                ),
+                patch("scheduler.executor.write_run_log"),
+            ):
+                result = execute_scheme(
+                    cfg,
+                    "2026-07-20",
+                    algo_env="test_env",
+                    prediction_phase=prediction_phase,
+                    scheduled_control_plane=scheduled_control_plane,
+                )
+
+            self.assertEqual(result.status, "success")
+            self.assertTrue(engine.disposed)
+            return dict(runner.call_args.kwargs)
+
+        one_shot_kwargs = run_with(
+            prediction_phase="scheduled_live",
+            scheduled_control_plane="launchd_one_shot",
+        )
+        direct_kwargs = run_with(
+            prediction_phase="scheduled_live",
+            scheduled_control_plane="direct_scheduled",
+        )
+        gray_kwargs = run_with(
+            prediction_phase="gray_live",
+            scheduled_control_plane="launchd_one_shot",
+        )
+
+        self.assertTrue(one_shot_kwargs["strip_daily_coordinator_mode"])
+        self.assertNotIn("strip_daily_coordinator_mode", direct_kwargs)
+        self.assertNotIn("strip_daily_coordinator_mode", gray_kwargs)
 
     def test_ledger_mode_daily_executor_fails_before_algorithm_process(
         self,
@@ -1995,6 +2194,63 @@ class BlackboxExecutionApprovalTests(_ExplicitLegacyModeTestCase):
         self.assertEqual(complete_run.call_args.kwargs["scheme_version"], "blackbox-version-1")
         self.assertEqual(complete_run.call_args.kwargs["records_returned"], 1)
         native_complete.assert_not_called()
+        self.assertTrue(engine.disposed)
+
+    def test_blackbox_one_shot_does_not_forward_native_mode_strip(
+        self,
+    ) -> None:
+        """Blackbox 的 one-shot 调度不接受 Native 专属环境隔离标记。"""
+        from scheduler.executor import execute_scheme
+
+        engine = _FakeEngine()
+        cfg = self._config()
+        approval = SimpleNamespace(executable=True, reason="approved")
+        with (
+            patch(
+                "scheduler.executor.create_engine_from_env",
+                return_value=engine,
+            ),
+            patch(
+                "scheduler.executor."
+                "_scheduled_live_execution_configuration_error",
+                return_value=None,
+            ),
+            patch(
+                "scheduler.executor.read_blackbox_execution_approval",
+                return_value=approval,
+            ),
+            patch(
+                "scheduler.executor._active_registry_targets",
+                return_value={("10Y", 1)},
+            ),
+            patch(
+                "scheduler.executor.create_scheme_run",
+                return_value=504,
+            ),
+            patch(
+                "scheduler.executor.run_configured_scheme",
+                return_value=[self._record()],
+            ) as runner,
+            patch("scheduler.executor.attach_run_data_snapshot"),
+            patch(
+                "scheduler.executor.complete_approved_blackbox_run",
+                return_value=1,
+            ),
+            patch("scheduler.executor.write_run_log"),
+        ):
+            result = execute_scheme(
+                cfg,
+                "2026-07-20",
+                algo_env="test_env",
+                prediction_phase="scheduled_live",
+                scheduled_control_plane="launchd_one_shot",
+            )
+
+        self.assertEqual(result.status, "success")
+        self.assertNotIn(
+            "strip_daily_coordinator_mode",
+            runner.call_args.kwargs,
+        )
         self.assertTrue(engine.disposed)
 
     def test_blackbox_executor_forwards_historical_snapshot_mode_explicitly(self) -> None:

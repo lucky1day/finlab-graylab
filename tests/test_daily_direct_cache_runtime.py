@@ -158,6 +158,26 @@ def _build_real_projection(
 
 
 class DailyDirectCacheRuntimeTests(unittest.TestCase):
+    def test_liwei_compare_gate_treats_absent_mode_as_legacy(
+        self,
+    ) -> None:
+        from shared.liwei_0616_phase_a_cache import (
+            DAILY_COORDINATOR_MODE_ENV,
+            _compare_gate_required,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            absent = _compare_gate_required(None)
+        with patch.dict(
+            os.environ,
+            {DAILY_COORDINATOR_MODE_ENV: "legacy"},
+            clear=True,
+        ):
+            legacy = _compare_gate_required(None)
+
+        self.assertFalse(absent)
+        self.assertEqual(absent, legacy)
+
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
         self.cache_root = str(

@@ -40,7 +40,10 @@ launchd 身份认证。仓库代码的同 UID 调用者属于受信任边界；�
 `ledger`、`occurrence` 和 `epoch` 不得新增、扩容、迁移或补建，也不得作为新的或过渡生产调度
 路径。`daily-gray` 与旧预检的 repo writer/template 已退役并从仓库移除；常驻 scheduler
 仍是待退役兼容代码，且不构成可扩展的生产入口。`BOND_DAILY_COORDINATOR_MODE=legacy` 在
-尚存代码中只表示兼容条件，不授予调度权。
+尚存代码中只表示兼容条件，不授予调度权。DataBridge 与 daily / weekly / monthly 的四个
+one-shot 仓库期望模板均不声明该变量；作为纵深隔离，executor 仅在
+`scheduled_live + launchd_one_shot` 调度 Native 算法子进程时清除继承值。该隔离不改变 backend、
+direct、ledger、manual 或 `gray_live` 路径的兼容语义，也不构成 installed state 的结论。
 
 ## 2. 自然信号、历史修复与输入新鲜度
 

@@ -779,6 +779,45 @@ daily runtime / ledger / repository、migration、数据库表、control-plane p
 
 **状态：** 已完成（repo-only）；不表示 installed 状态、launchd、数据库或生产服务发生变化。
 
+### G8.5 — Native one-shot 子进程的 daily-mode 隔离（2026-08-05，repo-only）
+
+**目标：** 消除 `BOND_DAILY_COORDINATOR_MODE` 从 launchd one-shot 父环境泄漏到 Native 算法子进程的
+路径，同时保留底层 direct / ledger / manual / `gray_live` 兼容行为，不能把这次隔离混同为删除
+daily-mode、ledger 或 DataBridge/cache 逻辑。
+
+**边界：** `scheduler.executor` 只新增 default-False 的
+`strip_daily_coordinator_mode` 参数，并在 `run_scheme_subprocess` 完成正常 allowlist 环境构造后仅
+`pop` 该变量。`execute_scheme` 只在 `prediction_phase=scheduled_live`、
+`scheduled_control_plane=launchd_one_shot` 且 `runtime_type=native_adapter` 时传入 `True`；Blackbox
+和其它调用不传递该标记。仓库 desired 的 DataBridge、daily、weekly、monthly 四份 one-shot plist
+删除该 key；backend 不动，actuals 原本也没有该 key。不得改 installed plist、loaded state、
+launchctl、业务数据库、DataBridge 行为、cache 内容、ledger/repository 或 Native 算法。
+
+**TDD 与证据：**
+
+- [x] RED 基线证据：`HEAD` 的 executor 与该测试均不存在 `strip_daily_coordinator_mode`
+  （`git grep` 无匹配、退出码 1）；新增 wrapper 断言传入该关键字，因此该基线不能满足它。接手时
+  工作区已含实现，未为了重复 RED 临时回滚安全行为。
+- [x] `tests.test_executor_run_id` 同时锁定默认父环境仍透传、显式 flag 的 Native 子环境已 scrub、
+  `run_configured_scheme` 只将 flag 转给 Native runner，以及 `execute_scheme` 仅在 Native
+  `scheduled_live + launchd_one_shot` 转发它；另以 mutation RED 后的 Blackbox one-shot case 锁定
+  `scheduled_live + launchd_one_shot + blackbox_v2` 不会收到该 Native 专属 flag。
+- [x] `tests.test_prediction_launchd` 将该 key 列入 forbidden 环境变量，对 DataBridge 与三份预测
+  one-shot 模板全部执行断言；`tests.test_daily_direct_cache_runtime` 证明 mode 缺失仍按 legacy
+  解释，未重写 cache。
+- [x] 绿测：`tests.test_executor_run_id tests.test_executor_cli`（81）、
+  `tests.test_prediction_launchd tests.test_launchd_prediction_runner`（15）、
+  `tests.test_data_bridge_cli tests.test_data_bridge_refresh
+  tests.test_data_bridge_strict_current_read tests.test_daily_direct_cache_runtime
+  tests.test_onboarding_docs`（154）均通过；最终相关回归扩展为 16 个模块、326 项并通过。所有
+  `deploy/launchd/*.plist` 的 `plutil -lint`、`compileall -q scheduler shared tests scripts`、
+  `git diff --check` 与根规范一致性检查均通过。全量 `pytest -q -x` 仍在 11 项后停于既有的
+  `test_active_scheme_contracts`：冻结的 `seven_y_current55_lgbm_001_v1/002_v1` 被 discovery
+  找到却不在 active config 目录；本切片未改这两套方案或其发现规则，故该既有基线失败已单独保留。
+
+**状态：** 已完成（repo-only）；没有核对或改变任何 installed plist、
+loaded state、服务、launchctl、DataBridge publish、cache 或业务写入。
+
 ---
 
 ## 15. 执行中的统一停止条件

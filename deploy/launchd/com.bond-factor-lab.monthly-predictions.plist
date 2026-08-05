@@ -7,7 +7,7 @@
     <string>/Users/macstudio0/miniconda3/bin/conda</string><string>run</string><string>--no-capture-output</string><string>-n</string><string>bond_factor_lab_service</string><string>python</string><string>-m</string><string>scheduler.launchd_prediction_runner</string><string>--cadence</string><string>monthly</string>
   </array>
   <key>EnvironmentVariables</key><dict>
-    <key>PYTHONNOUSERSITE</key><string>1</string><key>BOND_ALGO_CONDA_ENV</key><string>forecast_env</string><key>BFL_SOURCE_DB_CONFIG_ROOT</key><string>/Users/macstudio0/.config/bond-factor-lab</string><key>BFL_SOURCE_DB_CONFIG_PATH</key><string>/Users/macstudio0/.config/bond-factor-lab/source-runtime-db.json</string><key>BOND_DAILY_COORDINATOR_MODE</key><string>legacy</string>
+    <key>PYTHONNOUSERSITE</key><string>1</string><key>BOND_ALGO_CONDA_ENV</key><string>forecast_env</string><key>BFL_SOURCE_DB_CONFIG_ROOT</key><string>/Users/macstudio0/.config/bond-factor-lab</string><key>BFL_SOURCE_DB_CONFIG_PATH</key><string>/Users/macstudio0/.config/bond-factor-lab/source-runtime-db.json</string>
   </dict>
   <key>StartCalendarInterval</key><dict><key>Day</key><integer>15</integer><key>Hour</key><integer>18</integer><key>Minute</key><integer>0</integer></dict>
   <key>RunAtLoad</key><false/>

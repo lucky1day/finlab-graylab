@@ -68,6 +68,7 @@ from shared.databridge_input_generation import (
     open_databridge_generation,
 )
 from shared.daily_coordinator_mode import (
+    DAILY_COORDINATOR_MODE_ENV,
     DailyCoordinatorModeMissingError,
     bootstrap_deployment_daily_coordinator_mode,
     require_daily_coordinator_mode,
@@ -153,7 +154,7 @@ _ALGORITHM_ENVIRONMENT_ALLOWLIST = frozenset(
         "ABSL_LOGGING_MIN_LEVEL",
         "MPLCONFIGDIR",
         "PYTHONDONTWRITEBYTECODE",
-        "BOND_DAILY_COORDINATOR_MODE",
+        DAILY_COORDINATOR_MODE_ENV,
         "LIWEI_0616_PHASE_A_CACHE_ROOT",
         CACHE_MUTATION_POLICY_ENV,
         "DAILY_0629_SOURCE_CACHE_DISABLE",
@@ -254,6 +255,7 @@ def run_scheme_subprocess(
     process_start_guard: ProcessStartGuard | None = None,
     native_execution_mode: str = NATIVE_EXECUTION_MODE_SCHEDULED,
     expected_native_feature_date: str | None = None,
+    strip_daily_coordinator_mode: bool = False,
 ) -> list[PredictionRecord]:
     """通过 conda 子进程在算法环境中运行方案。"""
     process_start_guard = require_process_start_guard(
@@ -280,6 +282,8 @@ def run_scheme_subprocess(
             "Native execution"
         )
     env = _build_algorithm_environment()
+    if strip_daily_coordinator_mode:
+        env.pop(DAILY_COORDINATOR_MODE_ENV, None)
     env.pop(SOURCE_RUNTIME_DATABASE_CONFIG_PATH_ENV, None)
     env.pop(SOURCE_RUNTIME_DATABASE_CONFIG_ROOT_ENV, None)
     if scheme_id in SOURCE_RUNTIME_SCHEME_IDS:
@@ -657,6 +661,7 @@ def run_configured_scheme(
     process_start_guard: ProcessStartGuard | None = None,
     native_execution_mode: str = NATIVE_EXECUTION_MODE_SCHEDULED,
     expected_native_feature_date: str | None = None,
+    strip_daily_coordinator_mode: bool = False,
 ) -> list[PredictionRecord]:
     """按显式 runtime_type 选择算法执行驱动。"""
     process_start_guard = require_process_start_guard(
@@ -701,6 +706,8 @@ def run_configured_scheme(
             native_kwargs["expected_native_feature_date"] = (
                 expected_native_feature_date
             )
+        if strip_daily_coordinator_mode:
+            native_kwargs["strip_daily_coordinator_mode"] = True
         if cache_use_qualification is not None:
             native_kwargs["cache_use_qualification"] = (
                 cache_use_qualification
@@ -1381,6 +1388,12 @@ def execute_scheme(
             "algo_env": algo_env,
             "timeout_sec": effective_timeout_sec,
         }
+        if (
+            prediction_phase == "scheduled_live"
+            and runtime_type == "native_adapter"
+            and scheduled_control_plane == "launchd_one_shot"
+        ):
+            run_kwargs["strip_daily_coordinator_mode"] = True
         if blackbox_snapshot_mode != BLACKBOX_SNAPSHOT_MODE_FRESH:
             run_kwargs["blackbox_snapshot_mode"] = blackbox_snapshot_mode
             run_kwargs["expected_generation_id"] = blackbox_expected_generation_id
