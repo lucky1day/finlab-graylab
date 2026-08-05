@@ -2846,27 +2846,20 @@ class SchedulerMainTests(unittest.TestCase):
             )
         )
 
-    def test_run_once_actuals_dispatches_existing_one_shot(self) -> None:
+    def test_run_once_actuals_is_rejected_without_business_dispatch(self) -> None:
+        """actuals 仅可由独立 runner CLI 进入，主入口不得再兼容委托。"""
         from scheduler import actuals_runner
         from scheduler import main as scheduler_main
 
+        stdout = io.StringIO()
+        stderr = io.StringIO()
         with (
-            patch.object(
-                scheduler_main,
-                "_daily_coordinator_mode",
-            ) as coordinator_mode,
-            patch.object(
-                scheduler_main,
-                "run_actuals_job",
-                create=True,
-                side_effect=AssertionError(
-                    "scheduler.main must delegate actuals to actuals_runner"
-                ),
-            ) as legacy_actuals_job,
             patch.object(
                 actuals_runner,
                 "run_actuals_job",
             ) as run_actuals_job,
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
         ):
             exit_code = scheduler_main.main(
                 [
@@ -2878,13 +2871,10 @@ class SchedulerMainTests(unittest.TestCase):
                 ]
             )
 
-        self.assertEqual(exit_code, 0)
-        coordinator_mode.assert_not_called()
-        legacy_actuals_job.assert_not_called()
-        run_actuals_job.assert_called_once_with(
-            run_date="2026-08-01",
-            force=True,
-        )
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("invalid choice", stderr.getvalue())
+        run_actuals_job.assert_not_called()
 
     def test_startup_prediction_catchup_detects_due_staggered_jobs(self) -> None:
         from scheduler import main as scheduler_main

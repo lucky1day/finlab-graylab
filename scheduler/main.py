@@ -1285,7 +1285,7 @@ def build_scheduler(algo_env: str = DEFAULT_ALGO_ENV) -> BlockingScheduler:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Bond Factor Lab scheduler.")
     parser.add_argument("--algo-env", default=os.getenv("BOND_ALGO_CONDA_ENV", DEFAULT_ALGO_ENV))
-    parser.add_argument("--run-once", choices=["predictions", "actuals"], default=None)
+    parser.add_argument("--run-once", choices=["predictions"], default=None)
     parser.add_argument("--date", default=None, help="Run date in YYYY-MM-DD format")
     parser.add_argument("--scheme-id", default=None, help="Limit --run-once predictions to one scheme")
     parser.add_argument("--force", action="store_true", help="Run even when the date is not a trading day")
@@ -1296,12 +1296,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     try:
-        if args.run_once == "actuals":
-            from scheduler.actuals_runner import run_actuals_job
-
-            run_actuals_job(run_date=args.date, force=args.force)
-            return 0
-
         coordinator_mode = _daily_coordinator_mode()
         if args.run_once == "predictions":
             preflight_daily_storage()

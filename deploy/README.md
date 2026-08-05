@@ -29,10 +29,9 @@ backend 模板，也不改变 direct、ledger、manual 或 `gray_live` 路径的
 `BFL_DATABRIDGE_PRODUCER` 仅是防止普通 shell 误 publish 的操作准入标记，不是 launchd
 身份认证；它和仓库模板都不能单独证明某个进程由 launchd 启动。
 
-仓库已移除 `com.bond-factor-lab.scheduler` 的 disabled legacy 模板；这项 repo-only 变更
-不描述、核对或改变任何 installed plist 的状态。`scheduler.main --run-once actuals` 仍只为
-已安装旧 actuals plist 保留兼容入口，直到另一次独立的生产切换完成。已退役的 `daily-gray`
-与 `v2-preflight` writer 及其仓库模板也已移除。
+仓库已移除 `com.bond-factor-lab.scheduler` 的 disabled legacy 模板。actuals 由独立的
+`scheduler.actuals_runner` 负责，`scheduler.main` 不再提供 `--run-once actuals` CLI。
+已退役的 `daily-gray` 与 `v2-preflight` writer 及其仓库模板也已移除。
 
 ## 生产操作边界
 

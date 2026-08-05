@@ -184,8 +184,8 @@ LaunchAgent 切换都必须先复核 installed plist、`launchctl` 状态和对�
 
 日频、周频、月频 actuals 由独立
 `com.bond-factor-lab.actuals` LaunchAgent 启动
-`scheduler.actuals_runner` 一次性刷新。`scheduler.main --run-once actuals` 只为已安装旧
-actuals plist 保留兼容委托，不是仓库 desired state；本次未改变 installed plist。当前生产节奏为
+`scheduler.actuals_runner` 一次性刷新；`scheduler.main` 不再提供 `--run-once actuals` CLI。
+当前生产节奏为
 `08:30/19:00/23:45`，其中夜间 `23:45` 用于承接上游 Wind 日频晚间导入；非交易日
 daily/weekly actuals 刷新到上一交易日，monthly actuals 仍刷新到自然 run date，以同时
 覆盖周末补刷和自然 15 号月度规则。常驻 APScheduler 不得再注册 `actuals:*` job。
@@ -348,7 +348,8 @@ manifest 校验、schema inspect、pending apply 与 `APPLYING` recovery 都在�
 | `scheduler/repository.py` | L3 | 写库单点；按 runtime/operation 原子提交 prediction + run + log | `create_scheme_run`、`complete_active_native_run`、`complete_approved_blackbox_run`、`complete_scheduled_attempt`、`complete_gray_gap_run`、`write_run_log`、`sync_scheme_registry`；`_insert_run_predictions_conn` 仅内部使用 |
 | `scheduler/daily_control_plane_probe.py` | L3 | LaunchAgent、全日期账本和算法进程的共用只读静默探针 | `probe_launchagent_service_states`、`probe_daily_transition_quiescence` |
 | `scheduler/{daily,weekly,monthly}_actuals_updater.py` | L3 | actuals 刷新 | `update_*_actuals` |
-| `scheduler/main.py` | L3 | 待退役的常驻 APScheduler / installed old-actuals 兼容实现（无 repo desired 模板） | `build_scheduler`、`--run-once actuals` |
+| `scheduler/actuals_runner.py` | L3 | launchd one-shot actuals 刷新 | `run_actuals_job`、`main` |
+| `scheduler/main.py` | L3 | 待退役的常驻 APScheduler / prediction CLI 兼容实现（无 repo desired 模板） | `build_scheduler`、`--run-once predictions` |
 | `backend/main.py` `services.py` `db.py` | L4 | 只读 API + 静态前端 serve | `/api/*`、`scheme_metrics` |
 | `harness/daily_real_replay.py` | L5 | 历史隔离诊断 runtime；只接受已验证隔离 Engine 与冻结 generation，不定义当前生产规模或准入 | `open_real_replay_generations`、`RealReplayRuntime` |
 | `harness/daily_real_replay_operator.py` | L5 | 隔离诊断的只读控制面预检与锁会话；不参与日常 production owner 判定 | `run_real_replay_preflight` |

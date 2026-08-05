@@ -51,9 +51,8 @@ panda_quantflow AIFin Lab Shell
 目标拓扑中 Actuals 不挂载在常驻 APScheduler 中。独立
 `com.bond-factor-lab.actuals` LaunchAgent 在 `08:30/19:00/23:45` 启动一次性
 `scheduler.actuals_runner` 进程；三个时点和进程退出状态均由 launchd 管理。
-`scheduler.main --run-once actuals` 只为已安装旧 actuals plist 保留兼容入口，不是仓库
-desired state。仓库的 disabled `com.bond-factor-lab.scheduler` 模板已移除；本次 repo-only
-变更不核对或改变任何 installed plist。
+actuals 不再经 `scheduler.main` 兼容委托，主入口也不再提供 `--run-once actuals` CLI。
+仓库的 disabled `com.bond-factor-lab.scheduler` 模板已移除。
 
 任何 frequency 的预测都不得同时挂载两条自动路径。已退役的 daily-gray/v2-preflight
 writer 的仓库模板已移除；常驻 scheduler、per-scheme cron、ledger/occurrence/epoch

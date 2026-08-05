@@ -729,6 +729,13 @@ ledger import 的进一步脱钩留给后续切片，不能在本刀重写 repos
   G5/G6 无写库模拟测试，以及 `compileall` / `git diff --check`；本提交后仍须独立授权与现场
   核验，才能切换 installed actuals plist。
 
+**后续执行记录（2026-08-05）：** 已在独立生产授权下完成 installed actuals plist 切换，使
+`com.bond-factor-lab.actuals` 直接启动 `scheduler.actuals_runner`。随后在用户授权下，以不写库的
+mock simulation 先将 `tests/test_scheduler_main.py` 改为要求
+`scheduler.main --run-once actuals` 由 argparse 拒绝；旧实现 RED（返回 `0`），最小删除兼容
+choice/import/branch 后 GREEN（返回 `2`、stdout 为空且不 dispatch actuals runner）。该模拟只证明
+兼容 CLI 已删除，不替代自然时钟的 launchd 退出、日志或业务读回证据。
+
 ### G8.3 — disabled legacy scheduler 模板退役（2026-08-05，repo-only）
 
 **目标：** 删除唯一仍直接表达常驻 APScheduler 的仓库 desired 模板
@@ -736,8 +743,9 @@ ledger import 的进一步脱钩留给后续切片，不能在本刀重写 repos
 backend、SSH 等非 writer 模板。
 
 **边界：** 本刀只删除该 `Disabled=true` 模板及其“模板存在”测试/当前文档表述；不删除或
-实质重构 `scheduler/main.py`。`scheduler.main --run-once actuals` 仍是已安装旧 actuals plist
-的兼容入口。不得核对、替换或修改 installed plist、loaded state、服务、launchctl、业务数据库、
+实质重构 `scheduler/main.py`。G8.3 执行时，`scheduler.main --run-once actuals` 仍是已安装旧
+actuals plist 的兼容入口；其后已在 G8.2 的后续执行记录中删除。不得核对、替换或修改 installed
+plist、loaded state、服务、launchctl、业务数据库、
 预测/actuals 日期语义，也不运行任何手工业务 runner。
 
 **文件与验证：**
