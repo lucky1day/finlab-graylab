@@ -23,7 +23,9 @@ from harness.gates.gray_backfill_gate import (
 from harness.result import Evidence, GateResult, GateStatus
 from harness.signal_gap_plan import (
     PLAN_SCHEMA_VERSION,
+    SignalGapPlanScope,
     canonical_plan_sha256,
+    normalize_signal_gap_plan_scope,
     plan_signal_gaps,
 )
 from scheduler.daily_coordinator import (
@@ -177,6 +179,7 @@ def run_signal_gap_fill(
 ) -> dict[str, Any]:
     """以单一协调写入者执行冻结计划中的原子算法组。"""
     frozen = _load_frozen_plan(plan_path)
+    scope = _scope_from_frozen_plan(frozen)
     try:
         groups = _build_groups(frozen)
     except ValueError as exc:
@@ -230,6 +233,7 @@ def run_signal_gap_fill(
             engine,
             start_date=frozen["start_date"],
             as_of_date=frozen["as_of_date"],
+            scope=scope,
             databridge_config=databridge_config,
         )
         classification = _classify_current_plan(
@@ -335,6 +339,7 @@ def run_signal_gap_fill(
                 engine,
                 start_date=frozen["start_date"],
                 as_of_date=frozen["as_of_date"],
+                scope=scope,
                 databridge_config=databridge_config,
             )
         except Exception as exc:  # noqa: BLE001
@@ -514,7 +519,23 @@ def _load_frozen_plan(path: Path) -> dict[str, Any]:
         raise ValueError("frozen signal gap plan SHA-256 is invalid")
     if not isinstance(payload.get("actions"), list):
         raise ValueError("frozen signal gap plan actions are invalid")
+    _scope_from_frozen_plan(payload)
     return payload
+
+
+def _scope_from_frozen_plan(
+    plan: Mapping[str, Any],
+) -> SignalGapPlanScope:
+    """只接受已进入 plan SHA 的完整 selection，并用于两次重放。"""
+    if "selection" not in plan:
+        raise ValueError("frozen signal gap plan scope is invalid")
+    try:
+        scope = normalize_signal_gap_plan_scope(plan["selection"])
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("frozen signal gap plan scope is invalid") from exc
+    if plan["selection"] != scope.as_payload():
+        raise ValueError("frozen signal gap plan scope is invalid")
+    return scope
 
 
 def _build_groups(plan: Mapping[str, Any]) -> tuple[_GapGroup, ...]:

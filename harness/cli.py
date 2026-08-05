@@ -36,7 +36,11 @@ from harness.legacy_native_admission_attestation import (
 from harness.orchestrator import onboard as run_onboard
 from harness.registry import gate_for_name
 from harness.result import GateResult, GateStatus, OnboardReport
-from harness.signal_gap_plan import SignalGapPlanError, plan_signal_gaps
+from harness.signal_gap_plan import (
+    SignalGapPlanError,
+    SignalGapPlanScope,
+    plan_signal_gaps,
+)
 from harness.signal_gap_native_artifact import (
     SignalGapNativeArtifactRegistrationError,
     prepare_signal_gap_native_artifact,
@@ -294,6 +298,11 @@ def main(argv: list[str] | None = None) -> int:
                     engine,
                     start_date=args.start,
                     as_of_date=args.as_of,
+                    scope=SignalGapPlanScope(
+                        target_date_start=args.target_date_start,
+                        target_date_end=args.target_date_end,
+                        task_types=tuple(args.task_type or ()),
+                    ),
                     databridge_config=databridge_config,
                 )
             finally:
@@ -534,6 +543,14 @@ def _build_parser() -> argparse.ArgumentParser:
     gap_parser = subparsers.add_parser("signal-gap-plan")
     gap_parser.add_argument("--start", required=True)
     gap_parser.add_argument("--as-of", required=True, dest="as_of")
+    gap_parser.add_argument("--target-date-start", default=None)
+    gap_parser.add_argument("--target-date-end", default=None)
+    gap_parser.add_argument(
+        "--task-type",
+        action="append",
+        choices=("T+1", "T+5", "weekly_point", "weekly_average", "monthly"),
+        default=None,
+    )
     gap_parser.add_argument(
         "--format",
         choices=("json",),

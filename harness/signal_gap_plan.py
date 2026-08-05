@@ -42,7 +42,7 @@ from shared.prediction_context import (
 )
 
 
-PLAN_SCHEMA_VERSION = "active-signal-gap-plan-v2"
+PLAN_SCHEMA_VERSION = "active-signal-gap-plan-v3"
 PLATFORM_LIVE_BOUNDARY_VERSION = "platform_live_boundary_v1"
 PLATFORM_LIVE_TARGET_START_DATE = "2026-06-01"
 NATIVE_TASK_COMBINATIONS = {
@@ -103,6 +103,115 @@ class SignalGapPlanError(RuntimeError):
         super().__init__(f"{code}: {detail}")
         self.code = code
         self.detail = detail
+
+
+@dataclass(frozen=True, slots=True)
+class SignalGapPlanScope:
+    """冻结 repair plan 的显式业务范围，默认仍为全 active/predict-date 范围。"""
+
+    target_date_start: str | None = None
+    target_date_end: str | None = None
+    task_types: tuple[str, ...] = ()
+
+    @property
+    def is_restricted(self) -> bool:
+        return (
+            self.target_date_start is not None
+            or bool(self.task_types)
+        )
+
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "target_date_start": self.target_date_start,
+            "target_date_end": self.target_date_end,
+            "task_types": list(self.task_types),
+        }
+
+
+_PLAN_SCOPE_FIELDS = frozenset(
+    {"target_date_start", "target_date_end", "task_types"}
+)
+_PLAN_SCOPE_TASK_TYPES = frozenset(
+    {*NATIVE_TASK_COMBINATIONS, *TASK_COMBINATIONS}
+)
+
+
+def normalize_signal_gap_plan_scope(
+    value: SignalGapPlanScope | Mapping[str, Any] | None,
+) -> SignalGapPlanScope:
+    """规范化计划范围；范围字段不完整或未知时一律拒绝。"""
+    if value is None:
+        raw_start = None
+        raw_end = None
+        raw_task_types: Any = ()
+    elif isinstance(value, SignalGapPlanScope):
+        raw_start = value.target_date_start
+        raw_end = value.target_date_end
+        raw_task_types = value.task_types
+    elif isinstance(value, Mapping):
+        if frozenset(value) != _PLAN_SCOPE_FIELDS:
+            raise SignalGapPlanError(
+                "INVALID_PLAN_SCOPE",
+                "plan scope schema is invalid",
+            )
+        raw_start = value["target_date_start"]
+        raw_end = value["target_date_end"]
+        raw_task_types = value["task_types"]
+    else:
+        raise SignalGapPlanError(
+            "INVALID_PLAN_SCOPE",
+            "plan scope must be an object",
+        )
+    if (raw_start is None) != (raw_end is None):
+        raise SignalGapPlanError(
+            "INVALID_PLAN_SCOPE",
+            "target_date_start and target_date_end must be paired",
+        )
+    normalized_start = (
+        _canonical_date(raw_start, "scope.target_date_start")
+        if raw_start is not None
+        else None
+    )
+    normalized_end = (
+        _canonical_date(raw_end, "scope.target_date_end")
+        if raw_end is not None
+        else None
+    )
+    if (
+        normalized_start is not None
+        and normalized_end is not None
+        and normalized_start > normalized_end
+    ):
+        raise SignalGapPlanError(
+            "INVALID_PLAN_SCOPE",
+            "target_date_start must not be after target_date_end",
+        )
+    if (
+        isinstance(raw_task_types, (str, bytes))
+        or not isinstance(raw_task_types, (list, tuple))
+    ):
+        raise SignalGapPlanError(
+            "INVALID_PLAN_SCOPE",
+            "task_types must be a list",
+        )
+    normalized_task_types = tuple(
+        sorted({str(task_type) for task_type in raw_task_types})
+    )
+    if any(
+        not task_type or task_type not in _PLAN_SCOPE_TASK_TYPES
+        for task_type in normalized_task_types
+    ):
+        raise SignalGapPlanError(
+            "INVALID_PLAN_SCOPE",
+            "task_types contains an unsupported task type",
+        )
+    if frozenset(normalized_task_types) == _PLAN_SCOPE_TASK_TYPES:
+        normalized_task_types = ()
+    return SignalGapPlanScope(
+        target_date_start=normalized_start,
+        target_date_end=normalized_end,
+        task_types=normalized_task_types,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -373,6 +482,7 @@ def plan_signal_gaps(
     *,
     start_date: str,
     as_of_date: str,
+    scope: SignalGapPlanScope | Mapping[str, Any] | None = None,
     snapshot_reader: SnapshotReader | None = None,
     execution_authority: Sequence[DiscoveredSchemeIdentity] | None = None,
     databridge_config: DataBridgeRefreshConfig,
@@ -385,6 +495,7 @@ def plan_signal_gaps(
             "INVALID_DATE_RANGE",
             "start_date must not be after as_of_date",
         )
+    normalized_scope = normalize_signal_gap_plan_scope(scope)
     authority = (
         tuple(execution_authority)
         if execution_authority is not None
@@ -420,6 +531,7 @@ def plan_signal_gaps(
                 snapshot,
                 start_date=normalized_start,
                 as_of_date=normalized_as_of,
+                scope=normalized_scope,
             )
         finally:
             connection.rollback()
@@ -430,13 +542,37 @@ def build_signal_gap_plan(
     *,
     start_date: str,
     as_of_date: str,
+    scope: SignalGapPlanScope | Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """将权威应有集合与现存结果按业务键做确定性差集。"""
     normalized_start = _canonical_date(start_date, "start_date")
     normalized_as_of = _canonical_date(as_of_date, "as_of_date")
+    normalized_scope = normalize_signal_gap_plan_scope(scope)
     target_by_registry = _validate_snapshot(snapshot)
-    control_plane_blockers = _normalized_control_plane_blockers(
+    all_control_plane_blockers = _normalized_control_plane_blockers(
         snapshot.control_plane_blockers
+    )
+    native_artifact_verifier = _NativeArtifactVerifier(
+        snapshot.input_generations
+    )
+    selected_cases = tuple(
+        item
+        for item in snapshot.expected_cases
+        if _case_is_within_plan_scope(
+            item,
+            start_date=normalized_start,
+            as_of_date=normalized_as_of,
+            scope=normalized_scope,
+        )
+    )
+    if normalized_scope.is_restricted and not selected_cases:
+        raise SignalGapPlanError(
+            "EMPTY_PLAN_SELECTION",
+            "restricted plan scope selected no expected cases",
+        )
+    control_plane_blockers = _control_plane_blockers_in_scope(
+        all_control_plane_blockers,
+        selected_cases,
     )
     blocker_codes_by_base_segment: dict[
         tuple[str, str],
@@ -448,14 +584,9 @@ def build_signal_gap_plan(
                 (str(blocker["base_scheme_id"]), str(segment)),
                 set(),
             ).add(str(blocker["code"]))
-    native_artifact_verifier = _NativeArtifactVerifier(
-        snapshot.input_generations
-    )
     expected_keys = {
         (case.segment, case.business_key)
-        for case in snapshot.expected_cases
-        if case.predict_date >= normalized_start
-        and case.predict_date <= normalized_as_of
+        for case in selected_cases
     }
     expected_business_keys = {
         business_key for _, business_key in expected_keys
@@ -466,6 +597,7 @@ def build_signal_gap_plan(
             expected_business_keys=expected_business_keys,
             start_date=normalized_start,
             as_of_date=normalized_as_of,
+            include_predict_date=(not normalized_scope.is_restricted),
         )
     )
     live = _index_observations(
@@ -474,6 +606,7 @@ def build_signal_gap_plan(
             expected_business_keys=expected_business_keys,
             start_date=normalized_start,
             as_of_date=normalized_as_of,
+            include_predict_date=(not normalized_scope.is_restricted),
         )
     )
     unexpected = sorted(
@@ -498,9 +631,7 @@ def build_signal_gap_plan(
     ]
 
     actions: list[dict[str, Any]] = []
-    for item in sorted(snapshot.expected_cases, key=_case_sort_key):
-        if not normalized_start <= item.predict_date <= normalized_as_of:
-            continue
+    for item in sorted(selected_cases, key=_case_sort_key):
         target = target_by_registry.get(item.registry_scheme_id)
         if target is None:
             raise SignalGapPlanError(
@@ -595,11 +726,8 @@ def build_signal_gap_plan(
     relevant_control_plane_blocker = bool(
         control_plane_blockers
     ) and (
-        not action_segments
-        or any(
-            action_segments.intersection(blocker["segment_scope"])
-            for blocker in control_plane_blockers
-        )
+        bool(action_segments)
+        or not normalized_scope.is_restricted
     )
     unsigned: dict[str, Any] = {
         "schema_version": PLAN_SCHEMA_VERSION,
@@ -614,6 +742,7 @@ def build_signal_gap_plan(
         ),
         "start_date": normalized_start,
         "as_of_date": normalized_as_of,
+        "selection": normalized_scope.as_payload(),
         "scope": {
             "active_target_count": len(snapshot.registry_targets),
             "execution_count": len(
@@ -629,6 +758,7 @@ def build_signal_gap_plan(
                 )
                 for frequency in ("daily", "weekly", "monthly")
             },
+            "selected_expected_count": len(selected_cases),
         },
         "control_plane": {
             "read_only": True,
@@ -2721,13 +2851,40 @@ def _observations_in_scope(
     expected_business_keys: set[tuple[str, str, int, str]],
     start_date: str,
     as_of_date: str,
+    include_predict_date: bool,
 ) -> tuple[ObservedSignal, ...]:
     return tuple(
         row
         for row in rows
         if row.business_key in expected_business_keys
-        or start_date <= row.predict_date <= as_of_date
+        or (
+            include_predict_date
+            and start_date <= row.predict_date <= as_of_date
+        )
     )
+
+
+def _case_is_within_plan_scope(
+    item: ExpectedSignalCase,
+    *,
+    start_date: str,
+    as_of_date: str,
+    scope: SignalGapPlanScope,
+) -> bool:
+    """先以原始 predict-date 窗口截断，再施加明确的 repair 选择器。"""
+    if not start_date <= item.predict_date <= as_of_date:
+        return False
+    if (
+        scope.target_date_start is not None
+        and scope.target_date_end is not None
+        and not (
+            scope.target_date_start
+            <= item.target_date
+            <= scope.target_date_end
+        )
+    ):
+        return False
+    return not scope.task_types or item.task_type in scope.task_types
 
 
 def _expected_business_keys_for_date_scope(
@@ -3257,6 +3414,36 @@ def _normalized_control_plane_blockers(
             canonical_json_sha256(item),
         ),
     )
+
+
+def _control_plane_blockers_in_scope(
+    blockers: Sequence[Mapping[str, Any]],
+    cases: Sequence[ExpectedSignalCase],
+) -> list[dict[str, Any]]:
+    """将全局控制面 blocker 投影到冻结 selection 的业务身份与段。"""
+    segments_by_base: dict[str, set[str]] = {}
+    for item in cases:
+        segments_by_base.setdefault(item.base_scheme_id, set()).add(
+            item.segment
+        )
+    scoped: list[dict[str, Any]] = []
+    for blocker in blockers:
+        base_scheme_id = str(blocker["base_scheme_id"])
+        selected_segments = segments_by_base.get(base_scheme_id, set())
+        applicable_segments = sorted(
+            selected_segments.intersection(
+                {str(item) for item in blocker["segment_scope"]}
+            )
+        )
+        if not applicable_segments:
+            continue
+        scoped.append(
+            {
+                **dict(blocker),
+                "segment_scope": applicable_segments,
+            }
+        )
+    return _normalized_control_plane_blockers(scoped)
 
 
 def _missing_discovery_identity(

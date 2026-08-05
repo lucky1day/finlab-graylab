@@ -156,6 +156,225 @@ def _valid_target() -> signal_gap_plan.RegistryTarget:
 
 
 class SignalGapPlanTests(unittest.TestCase):
+    def test_target_date_task_scope_excludes_unrelated_future_t5(self) -> None:
+        """受限 repair plan 只枚举目标日/T+1，不混入同预测日 T+5。"""
+        t1_target = _valid_target()
+        t5_target = replace(
+            t1_target,
+            registry_scheme_id="beta__h5__1Y",
+            base_scheme_id="beta",
+            task_type="T+5",
+            horizon=5,
+        )
+        t1_cases = (
+            signal_gap_plan.ExpectedSignalCase(
+                registry_scheme_id=t1_target.registry_scheme_id,
+                base_scheme_id=t1_target.base_scheme_id,
+                runtime_type=t1_target.runtime_type,
+                frequency=t1_target.frequency,
+                task_type=t1_target.task_type,
+                target_tenor=t1_target.target_tenor,
+                horizon=t1_target.horizon,
+                predict_date="2026-08-04",
+                feature_date="2026-08-03",
+                target_date="2026-08-04",
+                segment="live",
+            ),
+            signal_gap_plan.ExpectedSignalCase(
+                registry_scheme_id=t1_target.registry_scheme_id,
+                base_scheme_id=t1_target.base_scheme_id,
+                runtime_type=t1_target.runtime_type,
+                frequency=t1_target.frequency,
+                task_type=t1_target.task_type,
+                target_tenor=t1_target.target_tenor,
+                horizon=t1_target.horizon,
+                predict_date="2026-08-05",
+                feature_date="2026-08-04",
+                target_date="2026-08-05",
+                segment="live",
+            ),
+        )
+        t5_case = signal_gap_plan.ExpectedSignalCase(
+            registry_scheme_id=t5_target.registry_scheme_id,
+            base_scheme_id=t5_target.base_scheme_id,
+            runtime_type=t5_target.runtime_type,
+            frequency=t5_target.frequency,
+            task_type=t5_target.task_type,
+            target_tenor=t5_target.target_tenor,
+            horizon=t5_target.horizon,
+            predict_date="2026-08-04",
+            feature_date="2026-08-03",
+            target_date="2026-08-10",
+            segment="live",
+        )
+        present_t1 = tuple(
+            signal_gap_plan.ObservedSignal(
+                base_scheme_id=case.base_scheme_id,
+                target_tenor=case.target_tenor,
+                horizon=case.horizon,
+                target_date=case.target_date,
+                predict_date=case.predict_date,
+                feature_date=case.feature_date,
+                phase="gray_live",
+                scheme_version=t1_target.scheme_version,
+                run_status="success",
+            )
+            for case in t1_cases
+        )
+        unrelated_t5 = signal_gap_plan.ObservedSignal(
+            base_scheme_id=t5_case.base_scheme_id,
+            target_tenor=t5_case.target_tenor,
+            horizon=t5_case.horizon,
+            target_date=t5_case.target_date,
+            predict_date=t5_case.predict_date,
+            feature_date=t5_case.feature_date,
+            phase="gray_live",
+            scheme_version="wrong-version",
+            run_status="failed",
+        )
+        snapshot = signal_gap_plan.SignalGapSnapshot(
+            registry_targets=(t1_target, t5_target),
+            expected_cases=(*t1_cases, t5_case),
+            canonical_signals=(),
+            live_signals=(*present_t1, unrelated_t5),
+            input_generations=(),
+            input_watermarks={},
+            source_identity_sha256="1" * 64,
+            discovery_identity_sha256="2" * 64,
+            active_version_identity_sha256="3" * 64,
+            control_plane_blockers=(
+                {
+                    "base_scheme_id": t5_target.base_scheme_id,
+                    "code": "UNRELATED_T5_CONTROL_PLANE_BLOCKER",
+                    "segment_scope": ["live"],
+                },
+            ),
+        )
+
+        scoped = signal_gap_plan.build_signal_gap_plan(
+            snapshot,
+            start_date="2026-08-04",
+            as_of_date="2026-08-05",
+            scope=signal_gap_plan.SignalGapPlanScope(
+                target_date_start="2026-08-04",
+                target_date_end="2026-08-05",
+                task_types=("T+1",),
+            ),
+        )
+
+        self.assertEqual(scoped["status"], "READY")
+        self.assertEqual(scoped["counts"]["expected"], 2)
+        self.assertEqual(scoped["counts"]["SKIP_PRESENT"], 2)
+        self.assertEqual(scoped["observed_contract_anomalies"], [])
+        self.assertEqual(scoped["control_plane"]["blockers"], [])
+        self.assertEqual(
+            scoped["selection"],
+            {
+                "target_date_start": "2026-08-04",
+                "target_date_end": "2026-08-05",
+                "task_types": ["T+1"],
+            },
+        )
+
+    def test_scope_is_canonical_and_bound_into_plan_sha(self) -> None:
+        scope = signal_gap_plan.SignalGapPlanScope(
+            target_date_start="2026-08-04",
+            target_date_end="2026-08-05",
+            task_types=("T+1", "T+1"),
+        )
+
+        self.assertEqual(
+            signal_gap_plan.normalize_signal_gap_plan_scope(scope),
+            signal_gap_plan.SignalGapPlanScope(
+                target_date_start="2026-08-04",
+                target_date_end="2026-08-05",
+                task_types=("T+1",),
+            ),
+        )
+        self.assertNotEqual(
+            signal_gap_plan.canonical_plan_sha256(
+                {"selection": scope.as_payload(), "actions": []}
+            ),
+            signal_gap_plan.canonical_plan_sha256(
+                {
+                    "selection": {
+                        "target_date_start": "2026-08-04",
+                        "target_date_end": "2026-08-05",
+                        "task_types": ["T+5"],
+                    },
+                    "actions": [],
+                }
+            ),
+        )
+        self.assertEqual(
+            signal_gap_plan.normalize_signal_gap_plan_scope(
+                signal_gap_plan.SignalGapPlanScope(
+                    task_types=(
+                        "T+1",
+                        "T+5",
+                        "weekly_point",
+                        "weekly_average",
+                        "monthly",
+                    ),
+                )
+            ),
+            signal_gap_plan.SignalGapPlanScope(),
+        )
+
+    def test_scope_requires_complete_target_date_bounds(self) -> None:
+        with self.assertRaises(
+            signal_gap_plan.SignalGapPlanError
+        ) as raised:
+            signal_gap_plan.normalize_signal_gap_plan_scope(
+                {"target_date_start": "2026-08-04"}
+            )
+
+        self.assertEqual(raised.exception.code, "INVALID_PLAN_SCOPE")
+
+    def test_restricted_scope_rejects_an_empty_case_selection(self) -> None:
+        target = _valid_target()
+        snapshot = signal_gap_plan.SignalGapSnapshot(
+            registry_targets=(target,),
+            expected_cases=(
+                signal_gap_plan.ExpectedSignalCase(
+                    registry_scheme_id=target.registry_scheme_id,
+                    base_scheme_id=target.base_scheme_id,
+                    runtime_type=target.runtime_type,
+                    frequency=target.frequency,
+                    task_type=target.task_type,
+                    target_tenor=target.target_tenor,
+                    horizon=target.horizon,
+                    predict_date="2026-08-04",
+                    feature_date="2026-08-03",
+                    target_date="2026-08-04",
+                    segment="live",
+                ),
+            ),
+            canonical_signals=(),
+            live_signals=(),
+            input_generations=(),
+            input_watermarks={},
+            source_identity_sha256="1" * 64,
+            discovery_identity_sha256="2" * 64,
+            active_version_identity_sha256="3" * 64,
+        )
+
+        with self.assertRaises(
+            signal_gap_plan.SignalGapPlanError
+        ) as raised:
+            signal_gap_plan.build_signal_gap_plan(
+                snapshot,
+                start_date="2026-08-04",
+                as_of_date="2026-08-05",
+                scope=signal_gap_plan.SignalGapPlanScope(
+                    target_date_start="2026-08-05",
+                    target_date_end="2026-08-05",
+                    task_types=("T+1",),
+                ),
+            )
+
+        self.assertEqual(raised.exception.code, "EMPTY_PLAN_SELECTION")
+
     def test_read_registry_versions_accepts_53_targets_and_50_executions(
         self,
     ) -> None:
