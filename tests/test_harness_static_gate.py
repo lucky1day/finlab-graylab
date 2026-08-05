@@ -830,7 +830,6 @@ class HarnessRuntimeGateTests(unittest.TestCase):
             for name in (
                 "test_t1_daily_shap_retirement",
                 "test_daily_policy",
-                "test_daily_gray_launchd_policy",
                 "test_daily_runtime",
             ):
                 (tests_dir / f"{name}.py").write_text(
@@ -852,7 +851,6 @@ class HarnessRuntimeGateTests(unittest.TestCase):
         self.assertEqual(
             active,
             [
-                "tests.test_daily_gray_launchd_policy",
                 "tests.test_daily_policy",
                 "tests.test_daily_runtime",
                 "tests.test_t1_daily_shap_retirement",
@@ -874,7 +872,6 @@ class HarnessRuntimeGateTests(unittest.TestCase):
             (tests_dir / "__init__.py").write_text("", encoding="utf-8")
             for name in (
                 "test_daily_policy",
-                "test_daily_gray_launchd_policy",
                 "test_daily_runtime",
             ):
                 (tests_dir / f"{name}.py").write_text(
@@ -906,7 +903,6 @@ class HarnessRuntimeGateTests(unittest.TestCase):
         self.assertEqual(
             _evidence_dict(result)["test_modules"],
             [
-                "tests.test_daily_gray_launchd_policy",
                 "tests.test_daily_policy",
                 "tests.test_daily_runtime",
                 "tests.test_other_native",

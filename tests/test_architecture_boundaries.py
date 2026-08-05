@@ -237,6 +237,27 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
             "retired offline daily capacity gate and CLI must not return",
         )
 
+    def test_retired_daily_gray_and_v2_preflight_artifacts_are_absent(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        retired = (
+            project_root / "scheduler" / "daily_gray_runner.py",
+            project_root / "scheduler" / "daily_gray_launchd_policy.py",
+            project_root / "scheduler" / "v2_daily_preflight.py",
+            project_root / "deploy" / "daily_gray_launchd_policy_v1.json",
+            project_root / "deploy" / "launchd" / "com.bond-factor-lab.daily-gray.plist",
+            project_root / "deploy" / "launchd" / "com.bond-factor-lab.v2-preflight.plist",
+        )
+
+        self.assertEqual(
+            [],
+            [
+                path.relative_to(project_root).as_posix()
+                for path in retired
+                if path.exists()
+            ],
+            "retired daily-gray and v2-preflight artifacts must not return",
+        )
+
     def test_retired_daily_coordinator_symbols_are_not_exposed(self) -> None:
         retired = (
             "V2Release",

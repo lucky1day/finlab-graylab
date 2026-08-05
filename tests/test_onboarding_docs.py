@@ -114,7 +114,7 @@ class OnboardingDocumentationTests(unittest.TestCase):
         ):
             self.assertIn(marker, governance)
         self.assertIn("不得新增、扩容、迁移或补建", governance)
-        self.assertIn("daily-gray", governance)
+        self.assertIn("仓库模板已移除", governance)
         self.assertRegex(
             governance,
             r"也不得作为新的或过渡生产调度\s*路径",
@@ -181,16 +181,18 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertIn("bootstrap/bootout/kickstart", root_policy)
         self.assertIn("一个 cadence 只能有一个生产 writer", governance)
         self.assertIn("daily predictions 约 07:03", governance)
-        self.assertIn("daily-gray", architecture)
+        self.assertIn("仓库模板已移除", architecture)
         self.assertIn("不属于新的或过渡生产方案", architecture)
         self.assertNotIn("2026-08-02", architecture)
-        self.assertIn("不再要求更新 frozen daily-gray policy", code_architecture)
+        self.assertIn(
+            "不再存在需要维护的 frozen daily-gray policy",
+            code_architecture,
+        )
 
-    def test_native_daily_activation_coordinates_frozen_launchd_policy(self) -> None:
+    def test_native_daily_activation_uses_exact_validation_version(self) -> None:
         sop = NATIVE_MAINTENANCE_SOP.read_text(encoding="utf-8")
 
         for marker in (
-            "daily_gray_launchd_policy_v1.json",
             "不再要求维护",
             "不能作为新版本发布单元",
             "validation_scheme_version",
@@ -333,14 +335,14 @@ class OnboardingDocumentationTests(unittest.TestCase):
         platform = PLATFORM_SOP.read_text(encoding="utf-8")
         governance = PRODUCTION_SCHEDULING_GOVERNANCE.read_text(encoding="utf-8")
 
-        self.assertIn("`Disabled=true`", deploy)
+        self.assertIn("disabled 兼容模板", deploy)
         self.assertIn("文档状态**：`HISTORICAL`", sla)
         for text in (governance, platform):
             self.assertIn("launchd + installed plist", text)
             self.assertIn("一个", text)
             self.assertIn("writer", text)
         self.assertIn("不得新增、扩容、迁移或补建", governance)
-        self.assertIn("daily-gray", governance)
+        self.assertIn("仓库模板已移除", governance)
         self.assertIn("不能作为新的或过渡调度路径", platform)
         self.assertNotIn("BOND_DAILY_COORDINATOR_MODE=ledger", governance)
 
@@ -582,8 +584,6 @@ class OnboardingDocumentationTests(unittest.TestCase):
 
         for filename, label in (
             ("com.bond-factor-lab.scheduler.plist", "com.bond-factor-lab.scheduler"),
-            ("com.bond-factor-lab.daily-gray.plist", "com.bond-factor-lab.daily-gray"),
-            ("com.bond-factor-lab.v2-preflight.plist", "com.bond-factor-lab.v2-preflight"),
         ):
             with self.subTest(label=label):
                 with (launchd_root / filename).open("rb") as handle:
@@ -705,7 +705,7 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertIn("daily prediction", governance)
         self.assertRegex(
             governance,
-            r"不得让常驻\s+APScheduler、daily-gray",
+            r"不得让常驻\s+APScheduler",
         )
 
     def test_daily_runtime_uses_direct_authority_without_legacy_admission(

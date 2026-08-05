@@ -112,8 +112,6 @@ class PredictionLaunchdTests(unittest.TestCase):
     def test_legacy_scheduler_templates_are_disabled_without_calendar_triggers(self) -> None:
         for filename, label in (
             ("com.bond-factor-lab.scheduler.plist", "com.bond-factor-lab.scheduler"),
-            ("com.bond-factor-lab.daily-gray.plist", "com.bond-factor-lab.daily-gray"),
-            ("com.bond-factor-lab.v2-preflight.plist", "com.bond-factor-lab.v2-preflight"),
         ):
             with self.subTest(label=label):
                 config = load_plist(filename)

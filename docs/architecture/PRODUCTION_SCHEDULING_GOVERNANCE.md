@@ -4,7 +4,7 @@
 
 **目标读者**：平台开发、运维、审计和方案维护人员
 
-**最后核验日期**：2026-08-04
+**最后核验日期**：2026-08-05
 
 本文定义生产信号的唯一控制面。具体现场事实查看[当前状态](../CURRENT_STATUS.md)，
 分阶段治理和带日期的证据查看
@@ -18,7 +18,7 @@
 
 一个 cadence 只能有一个生产 writer。DataBridge refresh、daily prediction、weekly
 prediction、monthly prediction 和 actuals 分别由明确的 LaunchAgent 触发；不得让常驻
-APScheduler、daily-gray、预检进程或任何手工进程同时拥有同一 business key 的自然写入权。
+APScheduler、已退役 writer、预检进程或任何手工进程同时拥有同一 business key 的自然写入权。
 
 仓库期望模板的单 writer 映射为：`com.bond-factor-lab.data-bridge-refresh` 于 06:30
 发布 DataBridge；`com.bond-factor-lab.daily-predictions` 于工作日 07:03、
@@ -27,17 +27,18 @@ APScheduler、daily-gray、预检进程或任何手工进程同时拥有同一 b
 one-shot runner；`com.bond-factor-lab.actuals` 保持 08:30、19:00、23:45 的既有唯一
 writer。这些是仓库 desired state，不是机器安装、加载或停用的现场结论。
 
-`com.bond-factor-lab.scheduler`、`com.bond-factor-lab.daily-gray` 和
-`com.bond-factor-lab.v2-preflight` 在仓库模板中为 `Disabled=true` 且没有自然日历触发。
-它们不承担新的生产日历，也不具备 writer 权限。
+`com.bond-factor-lab.scheduler` 是仓库中保留的 `Disabled=true` 兼容模板，且没有自然日历
+触发。已退役的 `daily-gray` 与 `v2-preflight` writer 及其仓库模板已移除；这不说明任何
+installed plist 的现场状态。
 
 DataBridge 的 `BFL_DATABRIDGE_PRODUCER=launchd-one-shot` 是防误操作的准入标记，不是
 launchd 身份认证。仓库代码的同 UID 调用者属于受信任边界；不能由环境标记或 Python 内部
 调用单独证明 natural writer 身份，仍需 installed/loaded/log/run/prediction 现场证据。
 
 `ledger`、`occurrence` 和 `epoch` 不得新增、扩容、迁移或补建，也不得作为新的或过渡生产调度
-路径。`daily-gray`、常驻 scheduler 和旧预检仅是待退役兼容代码或历史证据，不是可扩展的
-生产入口；`BOND_DAILY_COORDINATOR_MODE=legacy` 在尚存代码中只表示兼容条件，不授予调度权。
+路径。`daily-gray` 与旧预检的 repo writer/template 已退役并从仓库移除；常驻 scheduler
+仍是待退役兼容代码，且不构成可扩展的生产入口。`BOND_DAILY_COORDINATOR_MODE=legacy` 在
+尚存代码中只表示兼容条件，不授予调度权。
 
 ## 2. 自然信号、历史修复与输入新鲜度
 

@@ -13,7 +13,6 @@ from harness.result import Evidence, GateResult, GateStatus
 
 _NATIVE_PREACTIVATION_EXCLUDED_MODULES = frozenset(
     {
-        "tests.test_daily_gray_launchd_policy",
         "tests.test_daily_policy",
         "tests.test_daily_runtime",
     }

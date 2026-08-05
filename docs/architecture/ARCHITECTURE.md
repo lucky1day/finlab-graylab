@@ -44,7 +44,7 @@ panda_quantflow AIFin Lab Shell
 
 `launchd + installed plist` 是唯一生产调度控制面：launchd 决定任务是否挂载、何时触发、
 使用什么环境、是否重启以及日志落点。`scheduler.main`/APScheduler、
-`scheduler.daily_gray_runner` 等模块只可能是具体 plist 启动的子进程实现或待退役兼容代码，
+其他旧调度模块只可能是具体 plist 启动的子进程实现或待退役兼容代码，
 不形成第二套生产控制面；仓库 plist 也只有与 installed plist 和 `launchctl` loaded state
 核对后，才能证明现场配置。
 
@@ -52,9 +52,9 @@ panda_quantflow AIFin Lab Shell
 `com.bond-factor-lab.actuals` LaunchAgent 在 `08:30/19:00/23:45` 启动一次性
 `scheduler.main --run-once actuals` 进程；三个时点和进程退出状态均由 launchd 管理。
 
-任何 frequency 的预测都不得同时挂载两条自动路径。daily-gray、常驻 scheduler、
-per-scheme cron、ledger/occurrence/epoch 和重复预检不属于新的或过渡生产方案；G2 将在
-明确授权后把它们从生产写入面移除，而不是以另一套控制面替换它们。
+任何 frequency 的预测都不得同时挂载两条自动路径。已退役的 daily-gray/v2-preflight
+writer 的仓库模板已移除；常驻 scheduler、per-scheme cron、ledger/occurrence/epoch
+均不属于新的或过渡生产方案；G2 将在明确授权后把它们从生产写入面移除，而不是以另一套控制面替换它们。
 
 当前 loaded 进程是否已经达到上述目标，统一以[当前状态](../CURRENT_STATUS.md)为准。
 installed plist 替换、`bootstrap/bootout/kickstart` 和服务重启都属于独立生产操作；必须先
@@ -576,9 +576,9 @@ frontend/
 
 生产目标的 launchd plist 必须分别承担 DataBridge refresh、daily prediction、weekly
 prediction、monthly prediction、actuals 和 backend 的单一职责。仓库中仍存在
-`com.bond-factor-lab.scheduler`、`com.bond-factor-lab.daily-gray` 和
-`com.bond-factor-lab.v2-preflight` 等 legacy/过渡模板；它们不是新的调度入口，也不能与
-目标 writer 并行写入。
+`com.bond-factor-lab.scheduler` 这一 disabled legacy/过渡模板；它不是新的调度入口，也不能
+与目标 writer 并行写入。已退役的 daily-gray 和 v2-preflight 仓库模板已移除，且该仓库变更
+不说明 installed plist 状态。
 
 这些仓库文件描述期望配置，不自动代表 `~/Library/LaunchAgents` 中的 installed plist。
 任何安装、替换、`bootstrap/bootout/kickstart` 或重启都属于独立生产操作。当前规则与

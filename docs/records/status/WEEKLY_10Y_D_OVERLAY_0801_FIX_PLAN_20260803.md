@@ -676,6 +676,35 @@ Native hash 当前覆盖完整 config 和文件文本，展示、状态、schedu
 - 文档、测试和部署模板不再暗示旧控制面可用于新生产任务。
 - 删除数据库表前已有零读写证明、备份/恢复方案和用户专项授权；历史 run、prediction、version、harness 证据不因清债被删除。
 
+### G8.1 — 第一刀：已禁用 writer / preflight 退役计划（2026-08-05）
+
+**目标：** 删除仓库中已不再承担任何 launchd writer 职责的 `daily-gray` 与
+`v2-preflight` 链路，不改变实际安装状态、自然时钟、业务数据库或仍在使用的
+`v2_daily_gate`。
+
+**边界：** 本提交只删除下列已 disabled 的 runner、专属 policy / plist 和对应测试；更新
+当前部署与架构文档以说明它们已经退役。历史 records / evidence 保留原文。`scheduler.main`
+仍被 actuals plist 使用，`scheduler.main`、ledger / occurrence / epoch、`t_input_generations`、
+`t_scheme_runs` 的 nullable 审计字段、migration `017/018` 与 serving pointer 均不在本刀范围。
+
+**文件结构：**
+
+- 删除：`scheduler/daily_gray_runner.py`、`scheduler/daily_gray_launchd_policy.py`、
+  `scheduler/v2_daily_preflight.py`、`deploy/daily_gray_launchd_policy_v1.json`、两个 disabled
+  legacy plist 及其专属测试模块。
+- 修改：`tests/test_architecture_boundaries.py` 固化“第一刀遗留物不得回归”的 fail-closed
+  断言；`tests/test_prediction_launchd.py`、`tests/test_onboarding_docs.py` 与
+  `harness/gates/unit_gate.py` 清除已删除模块 / 模板的当前契约；当前部署、架构与本计划文档
+  只描述保留的控制面。
+
+- [x] 先在 `tests/test_architecture_boundaries.py` 写入一个失败断言，精确要求上述三个 Python
+  模块、daily-gray policy 和两个 legacy plist 均不存在；运行该单测确认它在删除前失败。
+- [x] 删除第一刀遗留物；保留 `scheduler/v2_daily_gate.py` 与 daily / weekly / monthly
+  `scheduler.launchd_prediction_runner` 入口不变。
+- [x] 更新当前测试与文档，删除对已移除 runner / template 的“当前存在”断言；不改历史记录。
+- [x] 运行该架构测试、预测 launchd / 文档 / harness selector 相关测试、G5/G6 无写库模拟、
+  `compileall` 与 `git diff --check`；完成后将本节标为已完成并单独提交。
+
 ---
 
 ## 15. 执行中的统一停止条件

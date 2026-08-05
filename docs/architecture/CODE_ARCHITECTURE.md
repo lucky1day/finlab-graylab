@@ -151,9 +151,9 @@ runner 只是 plist 的子进程实现。仓库 `deploy/launchd/*.plist` 是期�
 安装或已生效，后续不得仅向 APScheduler 添加 job 就宣称进入生产调度。
 
 当前目标入口由 launchd 的一次性 plist 触发：refresh、daily、weekly、monthly 和 actuals
-各自只有一个 writer。`scheduler.main`/APScheduler、daily-gray、v2-preflight、ledger/
-occurrence/epoch 仅作为现存代码或历史定位对象，不能被加入新的或过渡生产路径。完整治理
-规则见[生产信号与调度治理](PRODUCTION_SCHEDULING_GOVERNANCE.md)。
+各自只有一个 writer。`scheduler.main`/APScheduler、ledger/occurrence/epoch 仅作为现存代码
+或历史定位对象，不能被加入新的或过渡生产路径；daily-gray 与 v2-preflight 的 repo writer/
+template 已退役并移除。完整治理规则见[生产信号与调度治理](PRODUCTION_SCHEDULING_GOVERNANCE.md)。
 
 ```text
 launchd installed plist（单一 cadence writer）
@@ -177,7 +177,7 @@ launchd installed plist（单一 cadence writer）
 `schedule.timeout_sec` 是 L3 调度执行层的运行预算配置，不是算法输入。它只控制
 `scheduler.executor` 等待算法子进程的最长时间，用于慢速 source-backed 方案；不得让
 adapter/core 根据该字段改变窗口、特征、fallback 或输出。Native 版本变化的激活遵循
-Native SOP 的 Gate 与授权边界，不再要求更新 frozen daily-gray policy。任何后续
+Native SOP 的 Gate 与授权边界，不再存在需要维护的 frozen daily-gray policy。任何后续
 LaunchAgent 切换都必须先复核 installed plist、`launchctl` 状态和对应日志，不能笼统以
 “重启 scheduler”代替控制面验收。
 

@@ -24,9 +24,9 @@ DataBridge 模板还声明 `BFL_DATABRIDGE_PRODUCER=launchd-one-shot`。模板�
 `BFL_DATABRIDGE_PRODUCER` 仅是防止普通 shell 误 publish 的操作准入标记，不是 launchd
 身份认证；它和仓库模板都不能单独证明某个进程由 launchd 启动。
 
-`com.bond-factor-lab.scheduler`、`com.bond-factor-lab.daily-gray` 与
-`com.bond-factor-lab.v2-preflight` 是待退役的兼容模板，在仓库期望状态中均为
-`Disabled=true`，且不带自然日历触发。它们不得成为新的生产 writer。
+`com.bond-factor-lab.scheduler` 是保留的 disabled 兼容模板，不带自然日历触发，不得成为
+新的生产 writer。已退役的 `daily-gray` 与 `v2-preflight` writer 及其仓库模板已移除；该
+仓库变更不说明任何 installed plist 的状态。
 
 ## 生产操作边界
 
