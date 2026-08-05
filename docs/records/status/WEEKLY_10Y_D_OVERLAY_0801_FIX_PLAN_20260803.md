@@ -1182,6 +1182,36 @@ ledger/epoch imports、mode resolver、projection loader/evaluator、`--coordina
 
 **状态：** 已完成（repo-only）；未连接数据库、未运行业务 runner，未改 launchd、installed plist 或服务。
 
+### G8.18 — 独立 heartbeat refresh/read API 退役（2026-08-05，repo-only）
+
+**目标：** 删除 daily coordinator 之外可单独刷新或读取 scheduler heartbeat 的公共入口，避免它继续形成
+与 launchd one-shot writer 平行的观察/控制面。legacy occurrence runtime 内部的 `heartbeat →
+upsert_scheduler_heartbeat → _read_scheduler_heartbeat_conn` 自校验链保持不变；本切片不改变当前
+launchd one-shot 行为。
+
+**边界：** 仅删除 `DefaultDailyRuntimeServices.heartbeat_tick`、顶层
+`run_scheduler_heartbeat`、`daily_runtime` 对公开 read wrapper 的 import，以及
+`scheduler.repository.read_scheduler_heartbeat`。删除四个专属 tick 测试和 public-entry test 中的
+standalone heartbeat 断言；保留 `heartbeat`、`upsert_scheduler_heartbeat`、
+`_read_scheduler_heartbeat_conn` 与 occurrence/replay 的内部写入路径。不改数据库/migration、业务
+runner、DataBridge、launchd、plist、installed service 或自然调度行为。
+
+**TDD 与验证：**
+
+- [x] RED：先新增精确 AST/module retired-symbol 守卫；旧实现得到 `1 failed`，精确发现
+  `DefaultDailyRuntimeServices.heartbeat_tick` 仍存在。
+- [x] GREEN：删除三个独立入口及其专属测试后，守卫得到 `1 passed, 20 deselected, 2 subtests passed`；
+  它同时只检查精确 public symbol，允许私有 `_read_scheduler_heartbeat_conn` 留在 upsert 自校验中。
+- [x] 日频运行时、architecture、repository one-shot、launchd runner 与 direct prediction selector 以
+  `python -m pytest -q tests/test_daily_runtime.py tests/test_architecture_boundaries.py tests/test_repository_registry.py tests/test_scheduled_executor.py tests/test_launchd_prediction_runner.py tests/test_direct_prediction.py`
+  复跑为 `256 passed, 140 subtests passed`。
+- [x] 全量 `pytest -q -x` 复验仍在既有 active-scheme discovery 基线停止：`1 failed, 11 passed,
+  2 warnings, 4 subtests passed`，失败为 `seven_y_current55_lgbm_001_v1`、
+  `seven_y_current55_lgbm_002_v1` 被 discovery 发现但缺少 active config dir；本切片未触及该 7Y
+  配置问题。
+
+**状态：** 已完成（repo-only）；未连接数据库、未运行业务 runner，未改 launchd、installed plist 或服务。
+
 ---
 
 ## 15. 执行中的统一停止条件

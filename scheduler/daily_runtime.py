@@ -53,7 +53,6 @@ from scheduler.repository import (
     read_sealed_input_generation,
     read_schedule_execution_envelope,
     read_schedule_occurrence_snapshot,
-    read_scheduler_heartbeat,
     reconcile_schedule_occurrence_visibility_receipts,
     resolve_reclaimable_generation_payloads,
     upsert_scheduler_heartbeat,
@@ -1291,110 +1290,6 @@ class DefaultDailyRuntimeServices:
                 "daily_coordinator_epoch": identity.policy_payload(),
             },
         )
-
-    def heartbeat_tick(
-        self,
-        run_date: str | date | None = None,
-    ) -> Mapping[str, object]:
-        now = self.now()
-        business_date = _business_date(run_date, now=now)
-        occurrence_id = (
-            self.find_occurrence_id(business_date)
-            if business_date == now.date()
-            else None
-        )
-        previous = read_scheduler_heartbeat(
-            self.engine,
-            service_name="daily-coordinator",
-        )
-        if occurrence_id is None:
-            state = "IDLE"
-            details: dict[str, object] = {
-                "business_date": business_date.isoformat(),
-            }
-            if (
-                previous is not None
-                and previous.occurrence_id is None
-                and str(previous.state).upper()
-                == "WAITING_NATIVE_READINESS"
-                and isinstance(previous.details, Mapping)
-                and previous.details.get("business_date")
-                == business_date.isoformat()
-            ):
-                state = "WAITING_NATIVE_READINESS"
-                missing = previous.details.get("missing_requirements")
-                if isinstance(missing, (list, tuple)):
-                    details["missing_requirements"] = [
-                        str(value)
-                        for value in missing
-                        if isinstance(value, str) and value
-                    ]
-                reason = previous.details.get("reason")
-                if isinstance(reason, str) and reason:
-                    details["reason"] = reason
-        else:
-            snapshot = self.read_snapshot(occurrence_id)
-            state = f"OCCURRENCE_{snapshot.occurrence.completion_state}"
-            details = {
-                "business_date": business_date.isoformat(),
-                "accepted_target_count":
-                    snapshot.actual_accepted_target_count,
-                "expected_target_count":
-                    snapshot.occurrence.expected_target_count,
-            }
-            if (
-                snapshot.actual_accepted_target_count
-                < snapshot.occurrence.expected_target_count
-                and previous is not None
-                and previous.occurrence_id == occurrence_id
-                and isinstance(previous.details, Mapping)
-                and str(previous.state).upper()
-                == "WAITING_NATIVE_READINESS"
-                and _snapshot_runtime_generation_id(
-                    snapshot,
-                    runtime_type="native_adapter",
-                )
-                is None
-            ):
-                state = "WAITING_NATIVE_READINESS"
-                feature_date = previous.details.get("feature_date")
-                if isinstance(feature_date, str) and feature_date:
-                    details["feature_date"] = feature_date
-                missing = previous.details.get("missing_requirements")
-                if isinstance(missing, (list, tuple)):
-                    details["missing_requirements"] = [
-                        str(value)
-                        for value in missing
-                        if isinstance(value, str) and value
-                    ]
-            elif (
-                snapshot.actual_accepted_target_count
-                < snapshot.occurrence.expected_target_count
-                and previous is not None
-                and previous.occurrence_id == occurrence_id
-                and str(previous.state).upper() == "WATCHDOG_PROGRESS"
-                and isinstance(previous.details, Mapping)
-                and (
-                    previous.details.get("eta_overline") is True
-                    or (
-                        previous.details.get("accepted_target_count") == 0
-                        and snapshot.actual_accepted_target_count == 0
-                    )
-                )
-            ):
-                state = "WATCHDOG_PROGRESS"
-                if previous.details.get("eta_overline") is True:
-                    details["eta_overline"] = True
-        self.heartbeat(
-            occurrence_id=occurrence_id,
-            state=state,
-            details=details,
-        )
-        return {
-            "state": state,
-            "occurrence_id": occurrence_id,
-            **details,
-        }
 
     def alert(
         self,
@@ -5296,57 +5191,6 @@ def run_operator_recovery(
             scheme_id=scheme_id,
             run_date=run_date,
         )
-    finally:
-        dispose()
-
-
-def run_scheduler_heartbeat(
-    run_date: str | date | None = None,
-    *,
-    _services: Any | None = None,
-) -> Mapping[str, object]:
-    """快速刷新独立 heartbeat；不持有 occurrence owner 锁。"""
-    services, dispose = _runtime_services(
-        _services,
-        verify_direct_authority=False,
-    )
-    try:
-        heartbeat_tick = getattr(services, "heartbeat_tick", None)
-        if callable(heartbeat_tick):
-            return heartbeat_tick(run_date)
-        policy = services.load_policy()
-        now = services.now().astimezone(ZoneInfo(policy.timezone))
-        business_date = _business_date(run_date, now=now)
-        occurrence_id = (
-            services.find_occurrence_id(business_date)
-            if business_date == now.date()
-            else None
-        )
-        if occurrence_id is None:
-            state = "IDLE"
-            details: dict[str, object] = {
-                "business_date": business_date.isoformat(),
-            }
-        else:
-            snapshot = services.read_snapshot(occurrence_id)
-            state = f"OCCURRENCE_{snapshot.occurrence.completion_state}"
-            details = {
-                "business_date": business_date.isoformat(),
-                "accepted_target_count":
-                    snapshot.actual_accepted_target_count,
-                "expected_target_count":
-                    snapshot.occurrence.expected_target_count,
-            }
-        services.heartbeat(
-            occurrence_id=occurrence_id,
-            state=state,
-            details=details,
-        )
-        return {
-            "state": state,
-            "occurrence_id": occurrence_id,
-            **details,
-        }
     finally:
         dispose()
 

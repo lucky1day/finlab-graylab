@@ -4380,25 +4380,6 @@ def upsert_scheduler_heartbeat(
         return _scheduler_heartbeat(stored)
 
 
-def read_scheduler_heartbeat(
-    engine: Engine,
-    *,
-    service_name: str,
-) -> SchedulerHeartbeat | None:
-    """只读指定 service 的最近一次跨进程 heartbeat。"""
-    normalized_service = _require_bounded_identifier(
-        service_name,
-        "service_name",
-        max_length=64,
-    )
-    with engine.begin() as conn:
-        stored = _read_scheduler_heartbeat_conn(
-            conn,
-            service_name=normalized_service,
-        )
-        return None if stored is None else _scheduler_heartbeat(stored)
-
-
 def _occurrence_feature_date(
     occurrence: Mapping[str, object],
     *,

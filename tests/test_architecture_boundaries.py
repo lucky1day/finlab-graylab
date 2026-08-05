@@ -7,7 +7,13 @@ import unittest
 from pathlib import Path
 
 from harness.contracts import import_rules
-from scheduler import daily_coordinator, direct_prediction, executor, repository
+from scheduler import (
+    daily_coordinator,
+    daily_runtime,
+    direct_prediction,
+    executor,
+    repository,
+)
 
 
 class RepositoryArchitectureBoundaryTests(unittest.TestCase):
@@ -347,6 +353,75 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
             main_guards,
             "retired executor CLI module entry block must not return",
         )
+
+    def test_standalone_scheduler_heartbeat_refresh_api_is_absent(
+        self,
+    ) -> None:
+        """自然 one-shot 写入不得恢复独立 heartbeat 刷新控制面。"""
+        project_root = Path(__file__).resolve().parents[1]
+        paths = (
+            project_root / "scheduler" / "daily_runtime.py",
+            project_root / "scheduler" / "repository.py",
+        )
+        retired_symbols = {
+            "heartbeat_tick",
+            "run_scheduler_heartbeat",
+            "read_scheduler_heartbeat",
+        }
+
+        self.assertFalse(
+            hasattr(daily_runtime.DefaultDailyRuntimeServices, "heartbeat_tick"),
+            "daily runtime must not retain a standalone heartbeat tick",
+        )
+        self.assertFalse(
+            hasattr(daily_runtime, "run_scheduler_heartbeat"),
+            "daily runtime must not retain a standalone heartbeat entrypoint",
+        )
+        self.assertFalse(
+            hasattr(repository, "read_scheduler_heartbeat"),
+            "repository must not retain the public heartbeat read wrapper",
+        )
+
+        for path in paths:
+            with self.subTest(path=path.relative_to(project_root)):
+                source = path.read_text(encoding="utf-8")
+                tree = ast.parse(source)
+                imported_names = {
+                    alias.asname or alias.name
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.ImportFrom)
+                    for alias in node.names
+                }
+                defined_names = {
+                    node.name
+                    for node in ast.walk(tree)
+                    if isinstance(
+                        node,
+                        (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+                    )
+                }
+                referenced_names = {
+                    node.id
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.Name)
+                }
+                string_literals = {
+                    node.value
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.Constant)
+                    and isinstance(node.value, str)
+                }
+                self.assertEqual(
+                    set(),
+                    retired_symbols
+                    & (
+                        imported_names
+                        | defined_names
+                        | referenced_names
+                        | string_literals
+                    ),
+                    source,
+                )
 
     def test_backend_direct_paths_do_not_retain_daily_ledger_management(
         self,
