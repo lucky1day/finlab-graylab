@@ -293,13 +293,35 @@ EXPECTED_EXACT_ADMISSIONS: Mapping[
             ),
             (
                 "one_y_t1_quote_state_hv_v1",
-                "d6d0cb43aacd",
+                "1fd56dfcc264",
             ): _entry(
                 mode="gray",
                 frequency="daily",
                 task_type="T+1",
                 horizon=1,
                 target_tenor="1Y",
+                capabilities=_NO_CAPABILITIES,
+            ),
+            (
+                "seven_y_current55_lgbm_001_v2",
+                "cd0624ef3ead",
+            ): _entry(
+                mode="gray",
+                frequency="daily",
+                task_type="T+1",
+                horizon=1,
+                target_tenor="7Y",
+                capabilities=_NO_CAPABILITIES,
+            ),
+            (
+                "seven_y_current55_lgbm_002_v2",
+                "57e956513471",
+            ): _entry(
+                mode="gray",
+                frequency="daily",
+                task_type="T+1",
+                horizon=1,
+                target_tenor="7Y",
                 capabilities=_NO_CAPABILITIES,
             ),
             (

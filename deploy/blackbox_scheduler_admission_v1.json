@@ -215,12 +215,34 @@
     },
     {
       "scheme_id": "one_y_t1_quote_state_hv_v1",
-      "scheme_version": "d6d0cb43aacd",
+      "scheme_version": "1fd56dfcc264",
       "runtime_type": "blackbox_v2",
       "frequency": "daily",
       "task_type": "T+1",
       "horizon": 1,
       "target_tenor": "1Y",
+      "mode": "gray",
+      "capabilities": []
+    },
+    {
+      "scheme_id": "seven_y_current55_lgbm_001_v2",
+      "scheme_version": "cd0624ef3ead",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+1",
+      "horizon": 1,
+      "target_tenor": "7Y",
+      "mode": "gray",
+      "capabilities": []
+    },
+    {
+      "scheme_id": "seven_y_current55_lgbm_002_v2",
+      "scheme_version": "57e956513471",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+1",
+      "horizon": 1,
+      "target_tenor": "7Y",
       "mode": "gray",
       "capabilities": []
     },

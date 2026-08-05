@@ -129,7 +129,47 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         )
         engine.dispose.assert_called_once_with()
 
-    def test_unadmitted_7y_is_denied_without_gate_or_execution(
+    def test_native_cache_publishers_run_before_consumers(self) -> None:
+        """共享 cache 的 publisher 必须先刷新，consumer 才能读取当前 generation。"""
+        from scheduler import launchd_prediction_runner as runner
+
+        consumer = _cfg("liwei_0616_10y01_cons_say_k3_div_k10")
+        unrelated = _cfg("native_daily")
+        publisher = _cfg("liwei_0616_10y01_full_oos_k3_div_k10")
+        config = self._config(Path(tempfile.mkdtemp()))
+        engine = self._engine()
+        calendar = _Calendar(trading=True)
+
+        def execute(config_item, *_args, **_kwargs):
+            return SimpleNamespace(
+                scheme_id=config_item.scheme_id,
+                status="success",
+                records_written=1,
+                error_msg=None,
+                run_id=100,
+            )
+
+        with (
+            patch.object(runner.DataBridgeRefreshConfig, "from_env", return_value=config),
+            patch.object(runner, "_runner_lock", return_value=nullcontext(True)),
+            patch.object(
+                runner,
+                "discover_schemes",
+                return_value=[consumer, unrelated, publisher],
+            ),
+            patch.object(runner, "create_engine_from_env", return_value=engine),
+            patch.object(runner, "get_calendar", return_value=calendar),
+            patch.object(runner, "execute_scheme", side_effect=execute) as execute_one,
+        ):
+            summary = runner.run("daily", predict_date="2026-08-03")
+
+        self.assertEqual(summary.exit_code, 0)
+        self.assertEqual(
+            [call_args.args[0] for call_args in execute_one.call_args_list],
+            [publisher, consumer, unrelated],
+        )
+
+    def test_unadmitted_7y_is_excluded_without_gate_or_execution(
         self,
     ) -> None:
         from scheduler import launchd_prediction_runner as runner
@@ -178,11 +218,16 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         ):
             summary = runner.run("daily", predict_date="2026-08-03")
 
-        self.assertEqual(summary.outcome, "partial")
-        self.assertEqual(summary.exit_code, 1)
+        self.assertEqual(summary.outcome, "success")
+        self.assertEqual(summary.exit_code, 0)
         self.assertEqual(
-            summary.denied,
-            [{"scheme_id": seven_y.scheme_id, "code": "control_plane_denied"}],
+            summary.excluded,
+            [
+                {
+                    "scheme_id": seven_y.scheme_id,
+                    "code": "control_plane_excluded",
+                }
+            ],
         )
         gate.assert_not_called()
         execute_one.assert_called_once_with(
@@ -210,7 +255,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         discover.assert_not_called()
         execute_one.assert_not_called()
 
-    def test_unadmitted_blackbox_never_opens_calendar_engine(self) -> None:
+    def test_excluded_blackbox_never_opens_calendar_engine(self) -> None:
         from scheduler import launchd_prediction_runner as runner
         from scheduler.blackbox_scheduler_admission import (
             ScheduledPredictionControlPlaneDenied,
@@ -239,34 +284,97 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         ):
             summary = runner.run("daily", predict_date="2026-08-03")
 
-        self.assertEqual(summary.outcome, "partial")
-        self.assertEqual(summary.exit_code, 1)
+        self.assertEqual(summary.outcome, "success")
+        self.assertEqual(summary.exit_code, 0)
         self.assertEqual(
-            summary.denied,
-            [{"scheme_id": blackbox.scheme_id, "code": "control_plane_denied"}],
+            summary.excluded,
+            [
+                {
+                    "scheme_id": blackbox.scheme_id,
+                    "code": "control_plane_excluded",
+                }
+            ],
         )
         create_engine.assert_not_called()
         get_calendar.assert_not_called()
         gate.assert_not_called()
         execute_one.assert_not_called()
 
+    def test_blackbox_configuration_drift_remains_partial(self) -> None:
+        from scheduler import launchd_prediction_runner as runner
+        from scheduler.blackbox_scheduler_admission import (
+            ScheduledPredictionConfigurationError,
+        )
+
+        blackbox = _cfg(
+            "unknown_blackbox",
+            runtime_type="blackbox_v2",
+            input_source="data_bridge_current",
+        )
+        config = self._config(Path(tempfile.mkdtemp()))
+        with (
+            patch.object(runner.DataBridgeRefreshConfig, "from_env", return_value=config),
+            patch.object(runner, "_runner_lock", return_value=nullcontext(True)),
+            patch.object(runner, "discover_schemes", return_value=[blackbox]),
+            patch.object(runner, "load_blackbox_scheduler_admission", return_value=object()),
+            patch.object(
+                runner,
+                "require_scheduled_prediction_control_plane_with_policy_snapshot",
+                side_effect=ScheduledPredictionConfigurationError("drift"),
+            ),
+            patch.object(runner, "create_engine_from_env") as create_engine,
+            patch.object(runner, "execute_scheme") as execute_one,
+        ):
+            summary = runner.run("daily", predict_date="2026-08-03")
+
+        self.assertEqual(summary.outcome, "partial")
+        self.assertEqual(summary.exit_code, 1)
+        self.assertEqual(
+            summary.blocked,
+            [
+                {
+                    "scheme_id": blackbox.scheme_id,
+                    "code": "admission_configuration_invalid",
+                }
+            ],
+        )
+        create_engine.assert_not_called()
+        execute_one.assert_not_called()
+
     def test_daily_non_trading_day_is_not_applicable_without_gate_or_execution(
         self,
     ) -> None:
         from scheduler import launchd_prediction_runner as runner
+        from scheduler.blackbox_scheduler_admission import (
+            ScheduledPredictionControlPlaneDenied,
+        )
 
         blackbox = _cfg(
             "formal_blackbox",
             runtime_type="blackbox_v2",
             input_source="data_bridge_current",
         )
+        excluded = _cfg(
+            "gray_blackbox",
+            runtime_type="blackbox_v2",
+            input_source="data_bridge_current",
+        )
         config = self._config(Path(tempfile.mkdtemp()))
         engine = self._engine()
         calendar = _Calendar(trading=False)
+
+        def admit_candidate(candidate, **_kwargs):
+            if candidate is excluded:
+                raise ScheduledPredictionControlPlaneDenied("denied")
+
         with (
             patch.object(runner.DataBridgeRefreshConfig, "from_env", return_value=config),
             patch.object(runner, "_runner_lock", return_value=nullcontext(True)),
-            patch.object(runner, "discover_schemes", return_value=[blackbox]),
+            patch.object(
+                runner,
+                "discover_schemes",
+                return_value=[blackbox, excluded],
+            ),
             patch.object(runner, "create_engine_from_env", return_value=engine),
             patch.object(runner, "get_calendar", return_value=calendar),
             patch.object(
@@ -277,6 +385,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
             patch.object(
                 runner,
                 "require_scheduled_prediction_control_plane_with_policy_snapshot",
+                side_effect=admit_candidate,
             ) as admit,
             patch.object(runner, "require_v2_daily_ready") as gate,
             patch.object(runner, "execute_scheme") as execute_one,
@@ -285,8 +394,9 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
 
         self.assertEqual(summary.outcome, "not_applicable")
         self.assertEqual(summary.exit_code, 0)
+        self.assertEqual(summary.excluded, [])
         policy.assert_called_once_with()
-        admit.assert_called_once()
+        self.assertEqual(admit.call_count, 2)
         gate.assert_not_called()
         execute_one.assert_not_called()
 

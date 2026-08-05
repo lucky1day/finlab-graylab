@@ -32,6 +32,7 @@ from scheduler.repository import create_engine_from_env
 from scheduler.v2_daily_gate import V2DailyGateBlocked, require_v2_daily_ready
 from shared.calendar_service import get_calendar
 from shared.data_bridge.refresh import DataBridgeRefreshConfig
+from shared.liwei_0616_cache_contract import APPROVED_PHASE_A_CACHE_PUBLISHERS
 
 
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -52,6 +53,7 @@ class LaunchdPredictionSummary:
     outcome: str = "success"
     exit_code: int = 0
     executed: list[dict[str, object]] = field(default_factory=list)
+    excluded: list[dict[str, object]] = field(default_factory=list)
     denied: list[dict[str, object]] = field(default_factory=list)
     blocked: list[dict[str, object]] = field(default_factory=list)
     skipped: list[dict[str, object]] = field(default_factory=list)
@@ -66,6 +68,7 @@ class LaunchdPredictionSummary:
             "outcome": self.outcome,
             "discovered": self.discovered,
             "executed": _sorted_items(self.executed),
+            "excluded": _sorted_items(self.excluded),
             "denied": _sorted_items(self.denied),
             "blocked": _sorted_items(self.blocked),
             "skipped": _sorted_items(self.skipped),
@@ -122,9 +125,29 @@ def _candidate_item(cfg: object, code: str) -> dict[str, object]:
     return {"scheme_id": str(getattr(cfg, "scheme_id", "")), "code": code}
 
 
+def _cache_publishers_first(candidates: Sequence[object]) -> list[object]:
+    """稳定地让当前批次的 Liwei cache publisher 先于其 consumer 执行。"""
+    publisher_ids = {
+        publisher_id
+        for _tenor, publisher_id in APPROVED_PHASE_A_CACHE_PUBLISHERS.values()
+    }
+    publishers = [
+        cfg
+        for cfg in candidates
+        if str(getattr(cfg, "scheme_id", "")) in publisher_ids
+    ]
+    others = [
+        cfg
+        for cfg in candidates
+        if str(getattr(cfg, "scheme_id", "")) not in publisher_ids
+    ]
+    return publishers + others
+
+
 def _finalize(summary: LaunchdPredictionSummary, *, configuration_error: bool) -> None:
     for items in (
         summary.executed,
+        summary.excluded,
         summary.denied,
         summary.blocked,
         summary.skipped,
@@ -220,8 +243,8 @@ def run(
                     policy=policy,
                 )
             except ScheduledPredictionControlPlaneDenied:
-                summary.denied.append(
-                    _candidate_item(cfg, "control_plane_denied")
+                summary.excluded.append(
+                    _candidate_item(cfg, "control_plane_excluded")
                 )
                 continue
             except ScheduledPredictionConfigurationError:
@@ -234,6 +257,7 @@ def run(
                 continue
             admitted_candidates.append(cfg)
 
+        admitted_candidates = _cache_publishers_first(admitted_candidates)
         if not admitted_candidates:
             _finalize(summary, configuration_error=policy_invalid)
             return summary
@@ -246,6 +270,7 @@ def run(
                 normalized_cadence == "daily"
                 and not calendar.is_trading_day(normalized_date)
             ):
+                summary.excluded.clear()
                 summary.denied.clear()
                 summary.blocked.clear()
                 summary.skipped.clear()

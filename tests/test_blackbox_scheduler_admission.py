@@ -253,13 +253,35 @@ EXPECTED_ADMISSIONS = {
     ),
     (
         "one_y_t1_quote_state_hv_v1",
-        "d6d0cb43aacd",
+        "1fd56dfcc264",
     ): _expected_admission(
         mode="gray",
         frequency="daily",
         task_type="T+1",
         horizon=1,
         target_tenor="1Y",
+        capabilities=NO_CAPABILITIES,
+    ),
+    (
+        "seven_y_current55_lgbm_001_v2",
+        "cd0624ef3ead",
+    ): _expected_admission(
+        mode="gray",
+        frequency="daily",
+        task_type="T+1",
+        horizon=1,
+        target_tenor="7Y",
+        capabilities=NO_CAPABILITIES,
+    ),
+    (
+        "seven_y_current55_lgbm_002_v2",
+        "57e956513471",
+    ): _expected_admission(
+        mode="gray",
+        frequency="daily",
+        task_type="T+1",
+        horizon=1,
+        target_tenor="7Y",
         capabilities=NO_CAPABILITIES,
     ),
     (
