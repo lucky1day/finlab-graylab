@@ -5,15 +5,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime
 from pathlib import Path
 from typing import Literal, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import bindparam, inspect, text
+from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Engine
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -21,13 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scheduler.calendar import is_trading_day  # noqa: E402
-from scheduler.daily_health import project_daily_health  # noqa: E402
-from scheduler.repository import (  # noqa: E402
-    create_engine_from_env,
-    read_schedule_health_envelope,
-    read_schedule_occurrence_snapshot,
-    read_scheduler_heartbeat,
-)
+from scheduler.repository import create_engine_from_env  # noqa: E402
 from scheduler.v2_daily_gate import (  # noqa: E402
     V2DailyGateBlocked,
     load_gate_record,
@@ -38,42 +31,11 @@ from shared.data_bridge.refresh import (  # noqa: E402
     DataBridgeStore,
     check_current_dataset,
 )
-from shared.daily_coordinator_mode import (  # noqa: E402
-    assert_daily_coordinator_epoch_matches_policy,
-    assert_daily_coordinator_epoch_payload_matches_current,
-    read_deployment_daily_coordinator_mode,
-    require_current_daily_coordinator_identity,
-)
 from shared.tenor_mapping import TENOR_TO_INDICATOR, indicator_for_tenor, normalize_tenor  # noqa: E402
 
 
 FindingLevel = Literal["warning", "error"]
 HealthStatus = Literal["ok", "warning", "error"]
-CoordinatorMode = Literal["auto", "legacy", "ledger"]
-DAILY_NOT_BEFORE = time(6, 30)
-
-
-def _resolve_coordinator_mode(
-    engine: Engine,
-    *,
-    requested_mode: CoordinatorMode,
-) -> Literal["legacy", "ledger"]:
-    """epoch chain 是唯一权威；显式 CLI 值只能作一致性断言。"""
-    if requested_mode != "auto":
-        if requested_mode not in {"legacy", "ledger"}:
-            raise ValueError(
-                "coordinator mode must be auto, legacy, or ledger"
-            )
-    identity = require_current_daily_coordinator_identity()
-    if (
-        requested_mode in {"legacy", "ledger"}
-        and requested_mode != identity.mode
-    ):
-        raise RuntimeError(
-            "explicit coordinator mode assertion differs from current epoch"
-        )
-    del engine
-    return identity.mode
 
 
 @dataclass(frozen=True)
@@ -161,7 +123,6 @@ SCHEME_REQUIRED_SOURCE_TENORS: dict[str, tuple[str, ...]] = {
     "t1_daily": ("5Y", "10Y"),
     "t5_daily": ("3Y", "5Y", "7Y", "10Y"),
 }
-DAILY_HEARTBEAT_SERVICE = "daily-coordinator"
 
 
 def _iso(value: object) -> str | None:
@@ -179,357 +140,6 @@ def status_from_findings(findings: Sequence[HealthFinding]) -> HealthStatus:
     if any(item.level == "warning" for item in findings):
         return "warning"
     return "ok"
-
-
-def evaluate_ledger_daily_health(
-    projection: Mapping[str, object],
-) -> list[HealthFinding]:
-    """按冻结 occurrence 的动态 item/target 基数评估日批健康。
-
-    Ledger 模式不再从运行表反推“哪些方案应该执行”，也不排除
-    Blackbox V2；冻结的 target rows 是唯一验收全集。
-    """
-    findings: list[HealthFinding] = []
-    occurrence = projection.get("occurrence")
-    items = projection.get("items")
-    targets = projection.get("targets")
-    if not all(
-        isinstance(value, Mapping)
-        for value in (occurrence, items, targets)
-    ):
-        return [
-            HealthFinding(
-                level="error",
-                code="daily_ledger_projection_invalid",
-                message="daily ledger health projection is incomplete",
-                detail={"reasons": list(projection.get("reasons") or [])},
-            )
-        ]
-    assert isinstance(occurrence, Mapping)
-    assert isinstance(items, Mapping)
-    assert isinstance(targets, Mapping)
-    try:
-        expected_items = int(items["expected"])
-        actual_items = int(items["actual"])
-        failed_items = int(items["failed"])
-        expected_targets = int(targets["expected"])
-        actual_targets = int(targets["actual"])
-        accepted_targets = int(targets["accepted"])
-        committed_targets = int(
-            targets.get("committed", accepted_targets)
-        )
-        linked_targets = int(
-            targets.get("linked", committed_targets)
-        )
-        reported_missing = int(targets["missing"])
-    except (KeyError, TypeError, ValueError):
-        return [
-            HealthFinding(
-                level="error",
-                code="daily_ledger_projection_invalid",
-                message="daily ledger health projection has invalid counts",
-                detail={"reasons": list(projection.get("reasons") or [])},
-            )
-        ]
-
-    if (
-        expected_items != actual_items
-        or expected_targets != actual_targets
-        or not (
-            0
-            <= accepted_targets
-            <= linked_targets
-            <= committed_targets
-            <= expected_targets
-        )
-        or reported_missing != expected_targets - accepted_targets
-    ):
-        findings.append(
-            HealthFinding(
-                level="error",
-                code="daily_ledger_cardinality_mismatch",
-                message="frozen daily occurrence cardinality does not match ledger rows",
-                detail={
-                    "items": dict(items),
-                    "targets": dict(targets),
-                },
-            )
-        )
-
-    if failed_items:
-        findings.append(
-            HealthFinding(
-                level="error",
-                code="daily_items_failed",
-                message=f"{failed_items} frozen daily items are terminally failed",
-                detail={
-                    "failed": failed_items,
-                    "failed_base_scheme_ids": list(
-                        items.get("failed_base_scheme_ids") or []
-                    ),
-                },
-            )
-        )
-
-    checked_at = _parse_health_datetime(projection.get("checked_at"))
-    deadline_at = _parse_health_datetime(
-        occurrence.get("sla_deadline_at")
-    )
-    sla_outcome = str(occurrence.get("sla_outcome") or "")
-    deadline_reached = (
-        checked_at is not None
-        and deadline_at is not None
-        and checked_at >= deadline_at
-    )
-    if deadline_reached and sla_outcome == "PENDING":
-        findings.append(
-            HealthFinding(
-                level="error",
-                code="sla_outcome_pending_after_deadline",
-                message=(
-                    "daily occurrence SLA outcome is still PENDING "
-                    "at or after its frozen deadline"
-                ),
-                detail={
-                    "checked_at": projection.get("checked_at"),
-                    "sla_deadline_at": occurrence.get(
-                        "sla_deadline_at"
-                    ),
-                    "sla_outcome": sla_outcome,
-                    "expected_targets": expected_targets,
-                    "accepted_targets": accepted_targets,
-                },
-            )
-        )
-
-    if accepted_targets < expected_targets:
-        level: FindingLevel = (
-            "error"
-            if deadline_reached or sla_outcome == "BREACHED"
-            else "warning"
-        )
-        findings.append(
-            HealthFinding(
-                level=level,
-                code=(
-                    "daily_targets_incomplete"
-                    if level == "error"
-                    else "daily_targets_pending"
-                ),
-                message=(
-                    f"{accepted_targets}/{expected_targets} frozen daily "
-                    "targets are accepted"
-                ),
-                detail={
-                    "expected": expected_targets,
-                    "accepted": accepted_targets,
-                    "committed": committed_targets,
-                    "linked": linked_targets,
-                    "missing": expected_targets - accepted_targets,
-                    "missing_registry_ids": list(
-                        targets.get("missing_registry_ids") or []
-                    ),
-                    "receipt_missing_registry_ids": list(
-                        targets.get(
-                            "receipt_missing_registry_ids"
-                        )
-                        or []
-                    ),
-                    "sla_outcome": sla_outcome,
-                    "sla_deadline_at": occurrence.get("sla_deadline_at"),
-                },
-            )
-        )
-
-    reasons = [str(value) for value in projection.get("reasons") or []]
-    if (
-        projection.get("overall") == "error"
-        and not any(finding.level == "error" for finding in findings)
-    ):
-        findings.append(
-            HealthFinding(
-                level="error",
-                code="daily_ledger_unhealthy",
-                message="daily coordinator ledger reports an unhealthy occurrence",
-                detail={"reasons": reasons},
-            )
-        )
-    return findings
-
-
-def _parse_health_datetime(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    normalized = value.strip().replace("Z", "+00:00")
-    try:
-        return datetime.fromisoformat(normalized)
-    except ValueError:
-        return None
-
-
-def load_ledger_daily_health(
-    engine: Engine,
-    *,
-    predict_date: str,
-    now: datetime | None = None,
-) -> dict[str, object]:
-    """读取当日 occurrence 的完整 21/25 动态验收投影。"""
-    checked_at = now or datetime.now(timezone.utc)
-    if checked_at.tzinfo is None:
-        checked_at = checked_at.replace(tzinfo=timezone.utc)
-    heartbeat = read_scheduler_heartbeat(
-        engine,
-        service_name=DAILY_HEARTBEAT_SERVICE,
-    )
-    if heartbeat is None:
-        return _ledger_unavailable_projection(
-            predict_date=predict_date,
-            checked_at=checked_at,
-            reason="HEARTBEAT_MISSING",
-        )
-    try:
-        current_identity = (
-            require_current_daily_coordinator_identity()
-        )
-        if current_identity.mode != "ledger":
-            raise RuntimeError("current coordinator epoch is not ledger")
-        heartbeat_details = getattr(heartbeat, "details", None)
-        if not isinstance(heartbeat_details, Mapping):
-            raise RuntimeError("heartbeat details are unavailable")
-        assert_daily_coordinator_epoch_payload_matches_current(
-            heartbeat_details.get("daily_coordinator_epoch"),
-            label="daily coordinator heartbeat epoch",
-        )
-    except Exception:
-        return _ledger_unavailable_projection(
-            predict_date=predict_date,
-            checked_at=checked_at,
-            reason="COORDINATOR_EPOCH_MISMATCH",
-        )
-    if heartbeat.occurrence_id is None:
-        local_checked_at = checked_at.astimezone(
-            ZoneInfo("Asia/Shanghai")
-        )
-        if not is_trading_day(engine, predict_date):
-            return _ledger_unavailable_projection(
-                predict_date=predict_date,
-                checked_at=checked_at,
-                reason="NON_TRADING_DAY",
-                overall="ok",
-            )
-        if (
-            local_checked_at.date() == date.fromisoformat(predict_date)
-            and local_checked_at.time().replace(tzinfo=None)
-            < DAILY_NOT_BEFORE
-        ):
-            return _ledger_unavailable_projection(
-                predict_date=predict_date,
-                checked_at=checked_at,
-                reason="BEFORE_NOT_BEFORE",
-                overall="ok",
-            )
-        return _ledger_unavailable_projection(
-            predict_date=predict_date,
-            checked_at=checked_at,
-            reason="OCCURRENCE_MISSING",
-        )
-    snapshot = read_schedule_occurrence_snapshot(
-        engine,
-        occurrence_id=heartbeat.occurrence_id,
-    )
-    try:
-        assert_daily_coordinator_epoch_matches_policy(
-            snapshot.occurrence.policy_json
-        )
-        frozen = snapshot.occurrence.policy_json.get(
-            "daily_coordinator_epoch"
-        )
-        if frozen != heartbeat_details.get(
-            "daily_coordinator_epoch"
-        ):
-            raise RuntimeError(
-                "heartbeat and occurrence epoch differ"
-            )
-    except Exception:
-        return _ledger_unavailable_projection(
-            predict_date=predict_date,
-            checked_at=checked_at,
-            reason="COORDINATOR_EPOCH_MISMATCH",
-        )
-    if snapshot.occurrence.predict_date != predict_date:
-        return _ledger_unavailable_projection(
-            predict_date=predict_date,
-            checked_at=checked_at,
-            reason="OCCURRENCE_DATE_MISMATCH",
-            detail={
-                "actual_predict_date": snapshot.occurrence.predict_date,
-            },
-        )
-    envelopes = tuple(
-        read_schedule_health_envelope(
-            engine,
-            item_id=summary.item.item_id,
-        )
-        for summary in snapshot.items
-    )
-    return project_daily_health(
-        snapshot,
-        heartbeat,
-        execution_envelopes=envelopes,
-        now=checked_at,
-    )
-
-
-def _ledger_unavailable_projection(
-    *,
-    predict_date: str,
-    checked_at: datetime,
-    reason: str,
-    detail: Mapping[str, object] | None = None,
-    overall: Literal["ok", "error"] = "error",
-) -> dict[str, object]:
-    checked = checked_at.astimezone(timezone.utc).isoformat().replace(
-        "+00:00",
-        "Z",
-    )
-    return {
-        "overall": overall,
-        "reasons": [reason],
-        "checked_at": checked,
-        "occurrence": {
-            "predict_date": predict_date,
-            "sla_deadline_at": None,
-            "sla_outcome": "PENDING",
-            **dict(detail or {}),
-        },
-        "items": {
-            "expected": 0,
-            "actual": 0,
-            "completed": 0,
-            "late": 0,
-            "failed": 0,
-            "failed_base_scheme_ids": [],
-        },
-        "targets": {
-            "expected": 0,
-            "actual": 0,
-            "accepted": 0,
-            "committed": 0,
-            "linked": 0,
-            "late": 0,
-            "missing": 0,
-            "missing_registry_ids": [],
-            "receipt_missing_registry_ids": [],
-            "availability_basis": "db_commit_visibility_receipt",
-        },
-        "api_visibility": {
-            "asserted": False,
-            "proof_required": "uncached_external_api_probe",
-            "probe_endpoint": "/api/daily-schedule/visibility",
-            "canonical_endpoint": "/api/predictions",
-            "cache_policy": "no-store",
-        },
-    }
 
 
 def evaluate_data_bridge_health(
@@ -1056,80 +666,8 @@ def main() -> int:
         action="store_true",
         help="Treat missing successful runs for active daily schemes as errors instead of warnings.",
     )
-    parser.add_argument(
-        "--coordinator-mode",
-        choices=("auto", "legacy", "ledger"),
-        default="auto",
-        help=(
-            "In auto mode, resolve from migrated ledger heartbeat and use "
-            "the environment only as a consistency check; ambiguous state "
-            "fails closed."
-        ),
-    )
     args = parser.parse_args()
-
     engine = create_engine_from_env()
-    try:
-        coordinator_mode = _resolve_coordinator_mode(
-            engine,
-            requested_mode=args.coordinator_mode,
-        )
-    except Exception as exc:
-        engine.dispose()
-        print(
-            json.dumps(
-                {
-                    "status": "error",
-                    "mode": "unknown",
-                    "findings": [
-                        {
-                            "level": "error",
-                            "code": "coordinator_mode_ambiguous",
-                            "message": (
-                                "daily coordinator mode could not be "
-                                "resolved safely"
-                            ),
-                            "details": {
-                                "error_type": type(exc).__name__,
-                            },
-                        }
-                    ],
-                },
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return 2
-    if coordinator_mode == "ledger":
-        try:
-            daily_schedule = load_ledger_daily_health(
-                engine,
-                predict_date=args.predict_date,
-            )
-        finally:
-            engine.dispose()
-        findings = evaluate_ledger_daily_health(daily_schedule)
-        status = status_from_findings(findings)
-        payload = {
-            "status": status,
-            "mode": "ledger",
-            "daily_schedule": daily_schedule,
-            "findings": [asdict(item) for item in findings],
-        }
-        print(
-            json.dumps(
-                payload,
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        if status == "error":
-            return 2
-        if status == "warning":
-            return 1
-        return 0
 
     try:
         snapshot = load_snapshot(engine, predict_date=args.predict_date, tenors=args.tenor)

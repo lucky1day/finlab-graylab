@@ -389,6 +389,67 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
                     path.read_text(encoding="utf-8"),
                 )
 
+    def test_production_daily_health_retires_ledger_epoch_control_plane(self) -> None:
+        """只读 health CLI 不得恢复 occurrence/epoch 第二控制面。"""
+        project_root = Path(__file__).resolve().parents[1]
+        retired = (
+            project_root / "scheduler" / "daily_health.py",
+            project_root / "tests" / "test_daily_health.py",
+        )
+        health_path = project_root / "scripts" / "check_production_daily_health.py"
+        source = health_path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        imported_names = {
+            alias.asname or alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            for alias in node.names
+        }
+        defined_names = {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        }
+        retired_symbols = {
+            "CoordinatorMode",
+            "DAILY_HEARTBEAT_SERVICE",
+            "DAILY_NOT_BEFORE",
+            "_ledger_unavailable_projection",
+            "_parse_health_datetime",
+            "_resolve_coordinator_mode",
+            "assert_daily_coordinator_epoch_matches_policy",
+            "assert_daily_coordinator_epoch_payload_matches_current",
+            "evaluate_ledger_daily_health",
+            "load_ledger_daily_health",
+            "project_daily_health",
+            "read_deployment_daily_coordinator_mode",
+            "read_schedule_health_envelope",
+            "read_schedule_occurrence_snapshot",
+            "read_scheduler_heartbeat",
+            "require_current_daily_coordinator_identity",
+        }
+
+        self.assertEqual(
+            [],
+            [
+                path.relative_to(project_root).as_posix()
+                for path in retired
+                if path.exists()
+            ],
+            "retired ledger health modules and tests must not return",
+        )
+        self.assertEqual(
+            set(),
+            retired_symbols & (imported_names | defined_names),
+            source,
+        )
+        for symbol in retired_symbols:
+            with self.subTest(symbol=symbol):
+                self.assertNotIn(symbol, source)
+        self.assertNotIn("--coordinator-mode", source)
+        self.assertNotIn("scheduler.daily_health", source)
+        self.assertNotIn("shared.daily_coordinator_mode", source)
+
     def test_legacy_resident_scheduler_module_is_absent_from_current_paths(
         self,
     ) -> None:

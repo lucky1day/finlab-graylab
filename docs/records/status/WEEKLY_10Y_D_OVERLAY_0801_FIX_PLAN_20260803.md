@@ -1154,6 +1154,34 @@ launchd、runner、ledger、数据库、installed plist 或服务。
 
 **状态：** 已完成（repo-only）；未连接数据库、未运行业务 runner，未改 launchd、installed plist 或服务。
 
+### G8.17 — 生产 health ledger/epoch 分支退役（2026-08-05，repo-only）
+
+**目标：** 删除只读 `check_production_daily_health` 中独立的 daily ledger/occurrence/epoch
+健康控制面，使该 CLI 始终按当前 nonledger 的 run、prediction、actual、日期语义、DataBridge 与
+V2 Gate 快照生成健康结果。`restart_verified` 继续只是 V2 JSON 审计信息，不会重新成为失败条件。
+
+**边界：** 删除 `scheduler/daily_health.py` 和 `tests/test_daily_health.py`；从 health CLI 删除
+ledger/epoch imports、mode resolver、projection loader/evaluator、`--coordinator-mode` 及其 main
+分支，并删除相应 ledger/mode/epoch 测试。保留非 ledger snapshot 与 DataBridge/V2 health CLI，
+不改 `scheduler.v2_daily_gate`、DataBridge publisher、launchd、runner、数据库、plist、service 或历史文档。
+
+**TDD 与验证：**
+
+- [x] RED：默认 main 回归阻止 retired coordinator/ledger 调用；旧实现返回 exit `2`。architecture
+  guard 同时精确发现 `scheduler/daily_health.py` 与 `tests/test_daily_health.py` 仍存在。
+- [x] GREEN：默认 main 始终读取 snapshot、DataBridge 与 V2 Gate，且 `ready` + matching generation +
+  `restart_verified=false` 仍 exit `0` 并保留 JSON 字段。删除过程中该回归捕获 shared `args/engine`
+  初始化被一并移除，已仅恢复该 nonledger 共享初始化。
+- [x] health/architecture/V2 gate/DataBridge refresh/launchd runner/direct selector：
+  `85 passed, 30 subtests passed`。
+- [x] `compileall`、`git diff --check`、retired file/symbol 零匹配检查通过；两轮独立规格/质量审查
+  均确认 default CLI、nonledger checks、V2 one-shot 语义与边界守卫完整。
+- [x] 全量 `pytest -q -x` 在 `11 passed` 后复现既有非本切片基线：
+  `tests/test_active_scheme_contracts.py` 的 discovery 仍列出目录中不存在的
+  `seven_y_current55_lgbm_001_v1` / `seven_y_current55_lgbm_002_v1`，未在本最小清理中扩大范围。
+
+**状态：** 已完成（repo-only）；未连接数据库、未运行业务 runner，未改 launchd、installed plist 或服务。
+
 ---
 
 ## 15. 执行中的统一停止条件
