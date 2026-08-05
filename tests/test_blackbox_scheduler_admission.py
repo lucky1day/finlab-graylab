@@ -19,7 +19,6 @@ from scheduler.discovery import discover_schemes
 CONTROL_PLANES = (
     "legacy_automatic",
     "daily_ledger",
-    "recurring",
     "direct_scheduled",
     "launchd_one_shot",
 )
@@ -34,7 +33,6 @@ FORMAL_DAILY_CAPABILITIES = frozenset(
 FORMAL_WEEKLY_CAPABILITIES = frozenset(
     (
         "legacy_automatic",
-        "recurring",
         "direct_scheduled",
         "launchd_one_shot",
     )
@@ -390,6 +388,34 @@ def _config(
 
 
 class BlackboxSchedulerAdmissionTests(unittest.TestCase):
+    def test_recurring_control_plane_is_retired(self) -> None:
+        """weekly exact identity 仅移除 recurring，保留其余冻结能力。"""
+        policy = load_blackbox_scheduler_admission()
+        config = _config(
+            "weekly_10y_lgbm_point_v1",
+            "0666a6989d6b",
+        )
+
+        self.assertFalse(hasattr(admission_module, "RECURRING"))
+        self.assertNotIn(
+            "recurring",
+            admission_module.VALID_CONTROL_PLANES,
+        )
+        with self.assertRaisesRegex(
+            BlackboxSchedulerAdmissionError,
+            "unknown Blackbox scheduler control plane: recurring",
+        ):
+            policy.allows(config, plane="recurring")
+        self.assertTrue(
+            policy.allows(config, plane="legacy_automatic")
+        )
+        self.assertTrue(
+            policy.allows(config, plane="direct_scheduled")
+        )
+        self.assertTrue(
+            policy.allows(config, plane="launchd_one_shot")
+        )
+
     def test_exact_control_plane_permission_matrix(self) -> None:
         """每个冻结 Blackbox 身份只获得明确列出的控制面能力。"""
         policy = load_blackbox_scheduler_admission()

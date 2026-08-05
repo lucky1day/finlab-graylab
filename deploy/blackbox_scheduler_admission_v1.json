@@ -76,7 +76,6 @@
       "mode": "formal",
       "capabilities": [
         "legacy_automatic",
-        "recurring",
         "direct_scheduled",
         "launchd_one_shot"
       ]

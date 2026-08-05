@@ -1095,6 +1095,35 @@ runner 并行的执行入口。自然调度继续直接按方案调用 `execute_
 
 **状态：** 已完成（repo-only）；未连接数据库、未运行业务 runner，未改 launchd、installed plist 或服务。
 
+### G8.15 — Blackbox recurring capability 退役（2026-08-05，repo-only）
+
+**目标：** 移除 Blackbox scheduler admission 中已不再使用的 `recurring` capability，避免它成为
+与 launchd one-shot 并行的可重新启用调度控制面。weekly exact identity 仅移除该旧能力，继续保留
+既有 `legacy_automatic`、`direct_scheduled` 与 `launchd_one_shot` 能力。
+
+**边界：** 仅删除 admission 模块的 `RECURRING` 常量、`VALID_CONTROL_PLANES` 成员和 formal weekly
+exact capability，以及部署 admission JSON 的同一 capability；同步更新 exact capability 测试。保留
+`legacy_automatic`、`daily_ledger`、`direct_scheduled` 和 `launchd_one_shot`，不改 daily policy、executor、
+launchd、V2 Gate、业务库、installed plist 或服务。
+
+**TDD 与验证：**
+
+- [x] RED：先移除测试期望并新增退役守卫，在旧实现得到 `2 failed, 27 deselected`，精确命中仍导出的
+  `RECURRING` 与 deployed JSON 的 weekly `recurring` capability。
+- [x] GREEN：删除 capability 后，退役守卫与 deployed exact-policy 断言得到 `2 passed, 27 deselected`；
+  它同时证明 `recurring` 为 unknown control plane，而 weekly 的 `legacy_automatic`、
+  `direct_scheduled` 和 `launchd_one_shot` 仍获准。
+- [x] admission、launchd runner、direct、executor、repository 与 architecture selector 复跑为
+  `139 passed, 330 subtests passed`；`compileall`、JSON 解析、repo-only `recurring` 禁止符号检查与
+  `git diff --check` 通过。
+- [x] 两轮独立规格/质量审查确认 weekly 仅移除 `recurring`，仍精确保留
+  `legacy_automatic`、`direct_scheduled` 与 `launchd_one_shot`；无 P0–P2。
+- [x] 全量 `pytest -q -x` 在 `11 passed` 后复现既有非本切片基线：
+  `tests/test_active_scheme_contracts.py` 的 discovery 仍列出目录中不存在的
+  `seven_y_current55_lgbm_001_v1` / `seven_y_current55_lgbm_002_v1`，未在本最小清理中扩大修复范围。
+
+**状态：** 已完成（repo-only）；未连接数据库、未运行业务 runner，未改 launchd、installed plist 或服务。
+
 ---
 
 ## 15. 执行中的统一停止条件

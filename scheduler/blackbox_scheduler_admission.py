@@ -13,14 +13,12 @@ SCHEMA_VERSION = "blackbox-scheduler-admission-v1"
 VALID_MODES = frozenset({"formal", "gray"})
 LEGACY_AUTOMATIC = "legacy_automatic"
 DAILY_LEDGER = "daily_ledger"
-RECURRING = "recurring"
 DIRECT_SCHEDULED = "direct_scheduled"
 LAUNCHD_ONE_SHOT = "launchd_one_shot"
 VALID_CONTROL_PLANES = frozenset(
     {
         LEGACY_AUTOMATIC,
         DAILY_LEDGER,
-        RECURRING,
         DIRECT_SCHEDULED,
         LAUNCHD_ONE_SHOT,
     }
@@ -89,7 +87,6 @@ _FORMAL_DAILY_CAPABILITIES = frozenset(
 _FORMAL_WEEKLY_CAPABILITIES = frozenset(
     {
         LEGACY_AUTOMATIC,
-        RECURRING,
         DIRECT_SCHEDULED,
         LAUNCHD_ONE_SHOT,
     }
