@@ -180,7 +180,7 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertIn("launchd + installed plist", current)
         self.assertIn("唯一生产调度控制面", current)
         self.assertIn("installed plist", current)
-        self.assertIn("`scheduler.main`/APScheduler", code_architecture)
+        self.assertIn("`scheduler.direct_prediction`", code_architecture)
         self.assertIn("bootstrap/bootout/kickstart", root_policy)
         self.assertIn("一个 cadence 只能有一个生产 writer", governance)
         self.assertIn("daily predictions 约 07:03", governance)

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import ast
 import tempfile
 import unittest
 from pathlib import Path
 
 from harness.contracts import import_rules
-from scheduler import daily_coordinator, main as scheduler_main, repository
+from scheduler import daily_coordinator, direct_prediction, repository
 
 
 class RepositoryArchitectureBoundaryTests(unittest.TestCase):
@@ -272,7 +273,7 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
             "retired daily coordinator symbols must not return",
         )
 
-    def test_retired_scheduler_startup_catchup_symbols_are_not_exposed(
+    def test_direct_prediction_does_not_expose_resident_scheduler_symbols(
         self,
     ) -> None:
         retired = (
@@ -283,12 +284,78 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
             "_scheduled_datetime_for_date",
             "_cron_field_matches",
             "_cron_day_of_week_matches",
+            "build_scheduler",
+            "run_scheduled_prediction_job",
+            "run_all_prediction_jobs",
+            "run_daily_coordinator_job",
+            "run_daily_recovery_tick_job",
+            "run_daily_watchdog_job",
+            "run_daily_heartbeat_job",
+            "_sync_registry",
+            "_preflight_source_runtime_database",
+            "_staggered_prediction_jobs",
+            "_automatic_prediction_schemes",
+            "main",
         )
 
         self.assertEqual(
             [],
-            [name for name in retired if hasattr(scheduler_main, name)],
-            "retired scheduler startup catchup symbols must not return",
+            [name for name in retired if hasattr(direct_prediction, name)],
+            "direct helper must not retain resident scheduler symbols",
+        )
+
+    def test_legacy_resident_scheduler_module_is_absent_from_current_paths(
+        self,
+    ) -> None:
+        """当前生产路径只能保留无 APScheduler 的 backend 直调辅助模块。"""
+        project_root = Path(__file__).resolve().parents[1]
+        legacy_main = project_root / "scheduler" / "main.py"
+        direct_prediction = project_root / "scheduler" / "direct_prediction.py"
+        backend_source = (project_root / "backend" / "main.py").read_text(
+            encoding="utf-8"
+        )
+        desired_plists = sorted(
+            (project_root / "deploy" / "launchd").glob("*.plist")
+        )
+
+        self.assertFalse(
+            legacy_main.exists(),
+            "retired resident APScheduler module must not return",
+        )
+        self.assertTrue(
+            direct_prediction.exists(),
+            "backend direct/manual helpers require an isolated module",
+        )
+        self.assertNotIn("from scheduler.main import", backend_source)
+        self.assertIn("from scheduler.direct_prediction import", backend_source)
+        self.assertEqual(
+            [],
+            [
+                path.relative_to(project_root).as_posix()
+                for path in desired_plists
+                if "scheduler.main" in path.read_text(encoding="utf-8")
+            ],
+            "repo desired launchd plists must not call the retired module",
+        )
+        tree = ast.parse(direct_prediction.read_text(encoding="utf-8"))
+        apscheduler_imports = [
+            node.module
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            and node.module
+            and node.module.startswith("apscheduler")
+        ]
+        apscheduler_imports.extend(
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+            if alias.name.startswith("apscheduler")
+        )
+        self.assertEqual(
+            [],
+            apscheduler_imports,
+            "direct/manual helper must not load resident scheduler dependencies",
         )
 
     def test_retired_repository_symbols_are_not_exposed(self) -> None:

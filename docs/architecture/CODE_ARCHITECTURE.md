@@ -146,13 +146,13 @@ V5–V6 没有建立基线豁免；修复后 repo-wide gate 的全仓扫描为�
 ### 5.1 预测路径（调度 / 手动触发）
 
 launchd + plist 是真实生产调度控制面。任务是否挂载、触发时点、环境、重启和日志
-均由 installed plist 与 `launchctl` 现场状态决定；`scheduler.main`/APScheduler 和专用
-runner 只是 plist 的子进程实现或待退役兼容代码。仓库已移除 disabled
-`com.bond-factor-lab.scheduler` 模板；这不表示任何 installed plist 已被安装、停用或替换。
-后续不得仅向 APScheduler 添加 job 就宣称进入生产调度。
+均由 installed plist 与 `launchctl` 现场状态决定；常驻 `scheduler.main`/APScheduler 已从
+仓库删除，专用 runner 只作为对应 plist 的一次性子进程实现。仓库已移除 disabled
+`com.bond-factor-lab.scheduler` 模板；这不表示任何 installed plist 已被安装、停用、替换或
+物理删除。后续不得仅新增 Python job 或直调入口就宣称进入生产调度。
 
 当前目标入口由 launchd 的一次性 plist 触发：refresh、daily、weekly、monthly 和 actuals
-各自只有一个 writer。`scheduler.main`/APScheduler、ledger/occurrence/epoch 仅作为现存代码
+各自只有一个 writer。常驻 APScheduler 已不在仓库中；ledger/occurrence/epoch 仅作为现存代码
 或历史定位对象，不能被加入新的或过渡生产路径；daily-gray 与 v2-preflight 的 repo writer/
 template 已退役并移除。完整治理规则见[生产信号与调度治理](PRODUCTION_SCHEDULING_GOVERNANCE.md)。
 
@@ -171,9 +171,10 @@ launchd installed plist（单一 cadence writer）
 历史 gap harness 只能经专项授权以 `gray_live` insert-only 修复；自然 launchd 触发才可以
 写 `scheduled_live`。早期失败/跳过只写审计日志，不能伪装为成功完成。
 
-入口（后端手动触发）：`backend.main POST /api/trigger/{scheme_id}` → 同一 `execute_scheme`。
+入口（后端手动触发）：`backend.main POST /api/trigger/{scheme_id}` →
+`scheduler.direct_prediction` 的精确准入/单方案闭包 → 同一 `execute_scheme`。
 
-日期语义由 `shared.prediction_context` 和各频率 adapter 统一落地：日频实盘为 `predict_date=T+1, feature_date=T`；周频实盘先由 `predict_date` 反推上一交易日 `feature_date`，再映射 `feature_week_id`；月频 source-backed 方案若声明自然 15 号触发，则 `predict_date` 保留自然月 15 号，`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。`scheduler.executor` 在日频 live 写库前再次校验 `predict_date/feature_date/target_date`，防止源表水位不足时算法复用旧 feature/target 覆盖旧 target 明细。`scheduler.main` 不再包含 startup catch-up：服务启动不会按 cron 推断或补跑错过的预测任务，`scheduled_live` 只由对应的一次性 launchd 自然时钟写入。`shared.calendar_service` 和 `scheduler.weekly_actuals_updater` 共享 `shared.week_calendar_normalizer`，只对源周历孤立 forward jump 做只读归一化，确保预测 target 与 weekly actuals 使用同一周历事实。所有前端月份归属、actual join 和 gray/backtest 分流仍以 `target_date` 为事实键。
+日期语义由 `shared.prediction_context` 和各频率 adapter 统一落地：日频实盘为 `predict_date=T+1, feature_date=T`；周频实盘先由 `predict_date` 反推上一交易日 `feature_date`，再映射 `feature_week_id`；月频 source-backed 方案若声明自然 15 号触发，则 `predict_date` 保留自然月 15 号，`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。`scheduler.executor` 在日频 live 写库前再次校验 `predict_date/feature_date/target_date`，防止源表水位不足时算法复用旧 feature/target 覆盖旧 target 明细。常驻 scheduler 的 startup catch-up 与 cron 路径已删除：服务启动不会按 cron 推断或补跑错过的预测任务，`scheduled_live` 只由对应的一次性 launchd 自然时钟写入。`shared.calendar_service` 和 `scheduler.weekly_actuals_updater` 共享 `shared.week_calendar_normalizer`，只对源周历孤立 forward jump 做只读归一化，确保预测 target 与 weekly actuals 使用同一周历事实。所有前端月份归属、actual join 和 gray/backtest 分流仍以 `target_date` 为事实键。
 
 `schedule.timeout_sec` 是 L3 调度执行层的运行预算配置，不是算法输入。它只控制
 `scheduler.executor` 等待算法子进程的最长时间，用于慢速 source-backed 方案；不得让
@@ -184,7 +185,7 @@ LaunchAgent 切换都必须先复核 installed plist、`launchctl` 状态和对�
 
 日频、周频、月频 actuals 由独立
 `com.bond-factor-lab.actuals` LaunchAgent 启动
-`scheduler.actuals_runner` 一次性刷新；`scheduler.main` 不再提供 `--run-once actuals` CLI。
+`scheduler.actuals_runner` 一次性刷新；仓库不再保留常驻 scheduler 或 `--run-once actuals` CLI。
 当前生产节奏为
 `08:30/19:00/23:45`，其中夜间 `23:45` 用于承接上游 Wind 日频晚间导入；非交易日
 daily/weekly actuals 刷新到上一交易日，monthly actuals 仍刷新到自然 run date，以同时
@@ -349,7 +350,7 @@ manifest 校验、schema inspect、pending apply 与 `APPLYING` recovery 都在�
 | `scheduler/daily_control_plane_probe.py` | L3 | LaunchAgent、全日期账本和算法进程的共用只读静默探针 | `probe_launchagent_service_states`、`probe_daily_transition_quiescence` |
 | `scheduler/{daily,weekly,monthly}_actuals_updater.py` | L3 | actuals 刷新 | `update_*_actuals` |
 | `scheduler/actuals_runner.py` | L3 | launchd one-shot actuals 刷新 | `run_actuals_job`、`main` |
-| `scheduler/main.py` | L3 | 待退役的常驻 APScheduler / prediction CLI 兼容实现（无 repo desired 模板） | `build_scheduler`、`--run-once predictions` |
+| `scheduler/direct_prediction.py` | L3 | backend 手动单方案预测/日频恢复的精确准入与执行闭包；不含 APScheduler、cron、Registry sync 或 DataBridge publish | `run_prediction_job`、`run_daily_operator_recovery_job` |
 | `backend/main.py` `services.py` `db.py` | L4 | 只读 API + 静态前端 serve | `/api/*`、`scheme_metrics` |
 | `harness/daily_real_replay.py` | L5 | 历史隔离诊断 runtime；只接受已验证隔离 Engine 与冻结 generation，不定义当前生产规模或准入 | `open_real_replay_generations`、`RealReplayRuntime` |
 | `harness/daily_real_replay_operator.py` | L5 | 隔离诊断的只读控制面预检与锁会话；不参与日常 production owner 判定 | `run_real_replay_preflight` |

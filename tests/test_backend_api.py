@@ -848,7 +848,7 @@ class TriggerEndpointTests(unittest.TestCase):
                     return_value=mode,
                 ),
                 patch(
-                    "scheduler.main.discover_schemes",
+                    "scheduler.direct_prediction.discover_schemes",
                     return_value=[config],
                 ),
             ):
@@ -881,7 +881,7 @@ class TriggerEndpointTests(unittest.TestCase):
                 return_value=[registry],
             ),
             patch(
-                "scheduler.main.discover_schemes",
+                "scheduler.direct_prediction.discover_schemes",
                 return_value=[config],
             ),
             patch(
@@ -924,7 +924,7 @@ class TriggerEndpointTests(unittest.TestCase):
                 return_value=[registry],
             ),
             patch(
-                "scheduler.main.discover_schemes",
+                "scheduler.direct_prediction.discover_schemes",
                 return_value=[config],
             ),
             patch.object(
@@ -975,7 +975,7 @@ class TriggerEndpointTests(unittest.TestCase):
                     return_value=[registry],
                 ),
                 patch(
-                    "scheduler.main.discover_schemes",
+                    "scheduler.direct_prediction.discover_schemes",
                     return_value=[config],
                 ),
             ):
@@ -1028,7 +1028,7 @@ class TriggerEndpointTests(unittest.TestCase):
                     return_value=[registry],
                 ),
                 patch(
-                    "scheduler.main.discover_schemes",
+                    "scheduler.direct_prediction.discover_schemes",
                     return_value=[config],
                 ),
                 patch.object(
@@ -1112,7 +1112,7 @@ class TriggerEndpointTests(unittest.TestCase):
                     return_value=[registry],
                 ),
                 patch(
-                    "scheduler.main.discover_schemes",
+                    "scheduler.direct_prediction.discover_schemes",
                     return_value=[config],
                 ),
                 patch.object(
@@ -1176,7 +1176,7 @@ class TriggerEndpointTests(unittest.TestCase):
                 return_value=[registry],
             ),
             patch(
-                "scheduler.main.discover_schemes",
+                "scheduler.direct_prediction.discover_schemes",
                 return_value=[drifted],
             ),
         ):
@@ -1215,7 +1215,7 @@ class TriggerEndpointTests(unittest.TestCase):
                 return_value=[registry],
             ),
             patch(
-                "scheduler.main.discover_schemes",
+                "scheduler.direct_prediction.discover_schemes",
                 side_effect=[[config], [drifted]],
             ),
             patch.object(main, "run_prediction_job") as prediction,
@@ -1499,7 +1499,7 @@ class TriggerEndpointTests(unittest.TestCase):
                 return_value=[registry],
             ),
             patch(
-                "scheduler.main.discover_schemes",
+                "scheduler.direct_prediction.discover_schemes",
                 return_value=[config],
             ),
         ):
@@ -1565,7 +1565,7 @@ class TriggerEndpointTests(unittest.TestCase):
                 return_value=[registry],
             ),
             patch(
-                "scheduler.main.discover_schemes",
+                "scheduler.direct_prediction.discover_schemes",
                 return_value=[config],
             ),
             patch.object(main, "run_prediction_job") as job_mock,
@@ -1600,7 +1600,7 @@ class TriggerEndpointTests(unittest.TestCase):
                 return_value=[registry],
             ),
             patch(
-                "scheduler.main.discover_schemes",
+                "scheduler.direct_prediction.discover_schemes",
                 return_value=[config],
             ),
             patch.object(

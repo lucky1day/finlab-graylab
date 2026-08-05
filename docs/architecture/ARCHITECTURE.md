@@ -43,16 +43,17 @@ panda_quantflow AIFin Lab Shell
 ```
 
 `launchd + installed plist` 是唯一生产调度控制面：launchd 决定任务是否挂载、何时触发、
-使用什么环境、是否重启以及日志落点。`scheduler.main`/APScheduler、
-其他旧调度模块只可能是具体 plist 启动的子进程实现或待退役兼容代码，
-不形成第二套生产控制面；仓库 plist 也只有与 installed plist 和 `launchctl` loaded state
-核对后，才能证明现场配置。
+使用什么环境、是否重启以及日志落点。常驻 `scheduler.main`/APScheduler 已从仓库删除；
+backend 手动单方案入口只调用不含 cron 的 `scheduler.direct_prediction`，不形成第二套生产
+控制面。仓库 plist 也只有与 installed plist 和 `launchctl` loaded state 核对后，才能证明
+现场配置；任何已安装 disabled legacy plist 的物理删除仍须单独授权。
 
 目标拓扑中 Actuals 不挂载在常驻 APScheduler 中。独立
 `com.bond-factor-lab.actuals` LaunchAgent 在 `08:30/19:00/23:45` 启动一次性
 `scheduler.actuals_runner` 进程；三个时点和进程退出状态均由 launchd 管理。
-actuals 不再经 `scheduler.main` 兼容委托，主入口也不再提供 `--run-once actuals` CLI。
-仓库的 disabled `com.bond-factor-lab.scheduler` 模板已移除。
+actuals 不再经常驻 scheduler 兼容委托，仓库也不保留 `scheduler.main` 或
+`--run-once actuals` CLI。disabled `com.bond-factor-lab.scheduler` 模板已移除；这不构成
+任何 installed legacy plist 已物理删除的结论。
 
 任何 frequency 的预测都不得同时挂载两条自动路径。已退役的 daily-gray/v2-preflight
 writer 的仓库模板已移除；常驻 scheduler、per-scheme cron、ledger/occurrence/epoch

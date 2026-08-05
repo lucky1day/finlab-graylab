@@ -28,9 +28,11 @@ one-shot runner；`com.bond-factor-lab.actuals` 保持 08:30、19:00、23:45 的
 writer，并启动 `scheduler.actuals_runner`。这些是仓库 desired state，不是机器安装、加载或
 停用的现场结论。
 
-仓库已移除 `com.bond-factor-lab.scheduler` 的 `Disabled=true` legacy 模板。actuals 的唯一
-runner 为 `scheduler.actuals_runner`；`scheduler.main` 不再提供 `--run-once actuals` 兼容入口。
-已退役的 `daily-gray` 与 `v2-preflight` writer 及其仓库模板也已移除。
+仓库已移除 `com.bond-factor-lab.scheduler` 的 `Disabled=true` legacy 模板和常驻
+`scheduler.main` 模块。actuals 的唯一 runner 为 `scheduler.actuals_runner`；backend 手动
+单方案路径仅使用 `scheduler.direct_prediction`，不提供 cron/常驻 scheduler 兼容入口。
+已退役的 `daily-gray` 与 `v2-preflight` writer 及其仓库模板也已移除。已安装 disabled legacy
+plist 是否仍存在、何时物理删除，仍须只读核对与独立生产授权。
 
 DataBridge 的 `BFL_DATABRIDGE_PRODUCER=launchd-one-shot` 是防误操作的准入标记，不是
 launchd 身份认证。仓库代码的同 UID 调用者属于受信任边界；不能由环境标记或 Python 内部
@@ -38,7 +40,7 @@ launchd 身份认证。仓库代码的同 UID 调用者属于受信任边界；�
 
 `ledger`、`occurrence` 和 `epoch` 不得新增、扩容、迁移或补建，也不得作为新的或过渡生产调度
 路径。`daily-gray` 与旧预检的 repo writer/template 已退役并从仓库移除；常驻 scheduler
-仍是待退役兼容代码，且不构成可扩展的生产入口。`BOND_DAILY_COORDINATOR_MODE=legacy` 在
+已从仓库删除，且不构成可扩展的生产入口。`BOND_DAILY_COORDINATOR_MODE=legacy` 在
 尚存代码中只表示兼容条件，不授予调度权。DataBridge 与 daily / weekly / monthly 的四个
 one-shot 仓库期望模板均不声明该变量；作为纵深隔离，executor 仅在
 `scheduled_live + launchd_one_shot` 调度 Native 算法子进程时清除继承值。该隔离不改变 backend、

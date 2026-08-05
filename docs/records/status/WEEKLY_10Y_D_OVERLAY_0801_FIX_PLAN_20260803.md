@@ -944,6 +944,34 @@ DataBridge、ledger、plist、launchd、服务、runner、数据库或 API。
 
 **状态：** 已完成（repo-only）；没有运行或改变业务 runner、installed plist、launchd、服务、数据库或 API。
 
+### G8.10 — 常驻 APScheduler 主模块退役（2026-08-05，repo-only）
+
+**目标：** 删除仓库中唯一常驻 APScheduler / cron / prediction CLI 聚合入口
+`scheduler.main`，使当前生产自然写入只能由各 cadence 的 launchd one-shot runner 承担；同时
+保留 backend 手动单方案 trigger 与日频 operator-recovery 的现有精确准入语义。
+
+**边界：** 将 backend 所需的最小直调闭包迁入 `scheduler.direct_prediction`：日期标准化、
+daily-mode guard、并发信号量、交易日/V2 readiness、Blackbox 直接准入与 canonical config
+解析、`run_prediction_job` 及 `run_daily_operator_recovery_job`。新模块不得导入 APScheduler、
+cron、CLI、Registry sync、DataBridge publish 或 startup/catch-up。删除
+`scheduler/main.py` 和只验证常驻 scheduler 的测试；backend 四个既有绑定改指向新模块，保留
+其 API 语义。已安装的 disabled legacy plist 是否仍存在及其物理删除不在本 repo-only 切片内，
+不得据此操作 launchctl、服务、runner 或数据库；历史 records/probe token 原文也不作清理。
+
+**TDD 与验证：**
+
+- [x] 先新增 direct module / architecture 负向测试；旧实现以
+  `bond_factor_lab_service` 运行得到 `2 failed`，分别精确指出缺少
+  `scheduler.direct_prediction` 和 `scheduler/main.py` 仍存在。
+- [x] 迁出 direct/manual 闭包并删除常驻主模块；保留 direct 非交易日跳过、单方案执行、ledger
+  daily 拒绝、V2 readiness / Native 不读 V2、零 Registry sync、unknown config、gray/inactive/
+  version 准入拒绝、formal daily/weekly、Native policy isolation、weekly/monthly 非交易日与
+  operator-recovery ledger guard/routing 回归。
+- [x] 更新当前 architecture/deploy 文档，明确 backend 直调模块不形成生产调度控制面，并将
+  installed disabled legacy plist 的物理删除保留为独立生产操作。
+
+**状态：** 已完成（repo-only）；没有运行或改变业务 runner、installed plist、launchd、服务、数据库或 API。
+
 ---
 
 ## 15. 执行中的统一停止条件

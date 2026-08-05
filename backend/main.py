@@ -71,7 +71,7 @@ from scheduler.daily_health import (
     project_daily_health,
     project_scheduler_heartbeat,
 )
-from scheduler.main import (
+from scheduler.direct_prediction import (
     _daily_coordinator_mode,
     resolve_scheduled_prediction_config,
     run_daily_operator_recovery_job,
