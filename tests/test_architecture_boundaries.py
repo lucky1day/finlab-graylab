@@ -423,6 +423,16 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
                     source,
                 )
 
+    def test_retired_scheduler_mount_verification_script_is_absent(
+        self,
+    ) -> None:
+        """当前 launchd one-shot 控制面不得恢复旧 scheduler mount 校验。"""
+        project_root = Path(__file__).resolve().parents[1]
+        self.assertFalse(
+            (project_root / "scripts" / "verify_scheduler_mount.py").exists(),
+            "retired scheduler mount verification script must not return",
+        )
+
     def test_backend_direct_paths_do_not_retain_daily_ledger_management(
         self,
     ) -> None:

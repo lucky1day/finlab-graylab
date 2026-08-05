@@ -1212,6 +1212,29 @@ runner、DataBridge、launchd、plist、installed service 或自然调度行为�
 
 **状态：** 已完成（repo-only）；未连接数据库、未运行业务 runner，未改 launchd、installed plist 或服务。
 
+### G8.19 — legacy scheduler mount verifier 退役（2026-08-05，repo-only）
+
+**目标：** 删除只验证已退役常驻 `com.bond-factor-lab.scheduler` 的
+`scripts/verify_scheduler_mount.py`。该脚本依赖旧 registry `schedule_cron` 对照和
+`Scheduled scheme ...` 日志，不是当前 launchd one-shot 控制面的验收入口。
+
+**边界：** 仅删除该脚本并新增它不得回归的 architecture guard。保留
+`daily_control_plane_probe`、replay、migration、数据库、launchd/plist 与所有历史记录；历史证据中对
+旧脚本的原文引用不改写。不得以删除脚本为由改变当前 one-shot runner 或生产验证语义。
+
+**TDD 与验证：**
+
+- [x] RED：先新增 script-absence guard；旧文件存在时得到 `1 failed, 21 deselected`。
+- [x] GREEN：仅删除该脚本后，同一 guard 得到 `1 passed, 21 deselected`。
+- [x] architecture、launchd prediction runner、prediction launchd 与 daily control-plane probe
+  selector 复跑为 `66 passed, 36 subtests passed`。
+- [x] 全量 `pytest -q -x` 复验仍在既有 active-scheme discovery 基线停止：`1 failed, 11 passed,
+  2 warnings, 4 subtests passed`，失败为 `seven_y_current55_lgbm_001_v1`、
+  `seven_y_current55_lgbm_002_v1` 被 discovery 发现但缺少 active config dir；本切片未触及该 7Y
+  配置问题。
+
+**状态：** 已完成（repo-only）；未连接数据库、未运行业务 runner，未改 launchd、installed plist 或服务。
+
 ---
 
 ## 15. 执行中的统一停止条件
