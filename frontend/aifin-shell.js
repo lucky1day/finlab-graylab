@@ -2297,16 +2297,6 @@
     renderFactorMonthSelects();
   }
 
-  function updateFactorLabSummary() {
-    var task = getTaskByKey(factorLabState.selectedTaskKey);
-    var scheme = getSelectedScheme();
-    var summaryValues = Array.prototype.slice.call(document.querySelectorAll(".factor-lab-summary strong"));
-    if (summaryValues.length < 3) return;
-    summaryValues[0].textContent = task.label;
-    summaryValues[1].textContent = getSchemesForTask(factorLabState.selectedTaskKey).length;
-    summaryValues[2].textContent = scheme ? getSchemeDisplayName(scheme) : "--";
-  }
-
   function updateFactorTrendToggles() {
     Array.prototype.slice.call(document.querySelectorAll("[data-factor-chart-metric]")).forEach(function (button) {
       var metricId = button.getAttribute("data-factor-chart-metric");
@@ -2488,7 +2478,6 @@
     ensureSelectedScheme();
     renderTaskOverview();
     renderSchemeRanking();
-    updateFactorLabSummary();
     renderFactorDetail();
   }
 

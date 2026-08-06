@@ -283,7 +283,6 @@ button {
   margin: 0 auto;
 }
 
-.factor-lab-hero,
 .factor-filter-bar,
 .factor-matrix-panel,
 .factor-task-panel,
@@ -295,71 +294,12 @@ button {
   box-shadow: var(--shadow-sm);
 }
 
-.factor-lab-hero {
-  display: grid;
-  grid-template-columns: minmax(260px, 0.8fr) minmax(0, 1.6fr);
-  gap: 16px;
-  align-items: center;
-  min-height: 96px;
-  padding: 16px 20px;
-}
-
-.factor-lab-hero h2 {
-  margin: 0;
-  color: var(--text);
-  font-family: var(--font-heading);
-  font-size: clamp(30px, 3vw, 42px);
-  font-weight: 760;
-  line-height: 1.08;
-  letter-spacing: 0;
-  word-break: keep-all;
-  overflow-wrap: normal;
-}
-
-.factor-lab-hero p {
-  max-width: 880px;
-  margin: 12px 0 0;
-  color: var(--text-secondary);
-  font-size: 15px;
-  line-height: 1.7;
-}
-
-.factor-lab-summary {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(94px, 1fr));
-  gap: 10px;
-  width: 100%;
-  min-width: 0;
-}
-
-.factor-lab-summary div {
-  min-width: 0;
-  padding: 14px 16px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.7);
-}
-
-.factor-lab-summary span,
 .factor-filter-bar label > span,
 .factor-filter-group > span {
   display: block;
   color: var(--text-tertiary);
   font-size: 12px;
   font-weight: 600;
-}
-
-.factor-lab-summary strong {
-  display: block;
-  margin-top: 6px;
-  color: var(--text);
-  font-size: 18px;
-  font-weight: 760;
-  line-height: 1.35;
-  overflow: visible;
-  text-overflow: clip;
-  white-space: normal;
-  overflow-wrap: anywhere;
 }
 
 .factor-filter-bar {
@@ -1224,14 +1164,6 @@ button {
     min-height: calc(100svh - 110px);
   }
 
-  .factor-lab-hero {
-    grid-template-columns: 1fr;
-  }
-
-  .factor-lab-summary {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
   .factor-panel-head {
     flex-direction: column;
     align-items: stretch;
@@ -1316,7 +1248,6 @@ button {
     padding: clamp(14px, 2vw, 28px);
   }
 
-  .factor-lab-hero,
   .factor-filter-bar,
   .factor-matrix-panel {
     padding: 16px;
@@ -1325,10 +1256,6 @@ button {
   .factor-task-panel,
   .factor-ranking-panel {
     padding: 16px 16px 18px;
-  }
-
-  .factor-lab-summary {
-    grid-template-columns: 1fr;
   }
 
   .factor-filter-bar,

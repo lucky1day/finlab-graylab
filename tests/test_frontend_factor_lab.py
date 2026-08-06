@@ -505,7 +505,7 @@ class FactorLabRankingTests(unittest.TestCase):
                 self.assertIn(marker, script)
 
         expected_asset_hashes = {
-            FRONTEND_INDEX: "8ebc644dbd020960bedc407a79df505497d479e2bbc4d82282c1da25638eb515",
+            FRONTEND_INDEX: "c53683f3cfc52798a294f7262ca87b79124352eb8615019c9c2c8d6d22073108",
             PROJECT_ROOT / "frontend" / "assets" / "aifin-lab-icon.svg": (
                 "e014fc86d69d61a32892b9799f83f8c784898d705c8df05313a04216281d2259"
             ),
@@ -538,6 +538,8 @@ class FactorLabRankingTests(unittest.TestCase):
             ".factor-accuracy-track {",
             ".factor-status-pill {",
             ".route-scanline {",
+            ".factor-lab-hero {",
+            ".factor-lab-summary {",
             "@keyframes scanline-sweep {",
             "@keyframes scanline-glow {",
         )
@@ -560,6 +562,8 @@ class FactorLabRankingTests(unittest.TestCase):
             ".factor-accuracy-track",
             ".factor-status-pill",
             ".route-scanline",
+            ".factor-lab-hero",
+            ".factor-lab-summary",
         )
         for token in dead_class_tokens:
             boundary_aware_pattern = re.escape(token) + r"(?![\w-])"
@@ -594,7 +598,6 @@ class FactorLabRankingTests(unittest.TestCase):
             ".status-strip {",
             ".shell-stage {",
             ".module-view {",
-            ".factor-lab-hero {",
             ".factor-accuracy-meta {",
             ".factor-matrix-panel {",
             ".factor-live-divider td {",
@@ -3131,7 +3134,7 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertEqual(drawer["aria-hidden"], "true")
         css_token = hashlib.sha256(FRONTEND_CSS.read_bytes()).hexdigest()
         self.assertEqual(parser.stylesheets, [f"aifin-shell.css?v={css_token}"])
-        self.assertEqual(parser.scripts, ["aifin-shell.js?v=20260806a"])
+        self.assertEqual(parser.scripts, ["aifin-shell.js?v=20260806b"])
 
     def test_frontend_uses_only_system_fonts_without_external_imports(self) -> None:
         css = FRONTEND_CSS.read_text(encoding="utf-8")
@@ -3143,18 +3146,17 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertIn('BlinkMacSystemFont', css)
         self.assertIn('"PingFang SC"', css)
 
-    def test_hero_summary_layout_allows_long_scheme_names_without_squeezing_title(self) -> None:
-        hero_rule = _css_rule(".factor-lab-hero")
-        summary_card_rule = _css_rule(".factor-lab-summary div")
-        summary_value_rule = _css_rule(".factor-lab-summary strong")
-        heading_rule = _css_rule(".factor-lab-hero h2")
+    def test_factor_lab_omits_redundant_top_summary(self) -> None:
+        html = FRONTEND_INDEX.read_text(encoding="utf-8")
+        css = FRONTEND_CSS.read_text(encoding="utf-8")
+        script = FRONTEND_SCRIPT.read_text(encoding="utf-8")
 
-        self.assertIn("grid-template-columns: minmax(260px, 0.8fr) minmax(0, 1.6fr);", hero_rule)
-        self.assertIn("min-width: 0;", summary_card_rule)
-        self.assertIn("white-space: normal;", summary_value_rule)
-        self.assertIn("overflow-wrap: anywhere;", summary_value_rule)
-        self.assertNotIn("white-space: nowrap;", summary_value_rule)
-        self.assertIn("word-break: keep-all;", heading_rule)
+        self.assertNotIn('class="factor-lab-hero"', html)
+        self.assertNotIn('class="factor-lab-summary"', html)
+        self.assertNotIn("预测准确率矩阵", html)
+        self.assertNotIn("updateFactorLabSummary", script)
+        self.assertNotIn(".factor-lab-hero", css)
+        self.assertNotIn(".factor-lab-summary", css)
 
     def test_filter_controls_share_a_single_compact_toolbar(self) -> None:
         html = FRONTEND_INDEX.read_text(encoding="utf-8")
@@ -3210,7 +3212,6 @@ class FactorLabRankingTests(unittest.TestCase):
 
         view_rule = _css_rule(".factor-lab-view")
         page_rule = _css_rule(".factor-lab-page")
-        hero_rule = _css_rule(".factor-lab-hero")
         filter_rule = _css_rule(".factor-filter-bar")
         task_and_ranking_panel_selector = ".factor-task-panel,\n.factor-ranking-panel"
         task_and_ranking_panel_start = css.rindex(
@@ -3244,9 +3245,6 @@ class FactorLabRankingTests(unittest.TestCase):
 
         self.assertIn("padding: clamp(14px, 2vw, 28px);", view_rule)
         self.assertIn("gap: 12px;", page_rule)
-        self.assertIn("min-height: 96px;", hero_rule)
-        self.assertIn("padding: 16px 20px;", hero_rule)
-        self.assertIn("gap: 16px;", hero_rule)
         self.assertNotIn("min-height", filter_rule)
         self.assertIn("padding: 10px 20px;", filter_rule)
         self.assertIn("gap: 8px;", filter_rule)
