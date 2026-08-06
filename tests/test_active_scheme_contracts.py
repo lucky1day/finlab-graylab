@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from scheduler.discovery import discover_schemes
+from scheduler.discovery import active_schemes
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -14,7 +14,7 @@ SCHEMES_ROOT = PROJECT_ROOT / "schemes"
 
 class ActiveSchemeContractTests(unittest.TestCase):
     def test_all_active_scheme_configs_have_runnable_platform_contracts(self) -> None:
-        configs = discover_schemes(SCHEMES_ROOT)
+        configs = active_schemes(SCHEMES_ROOT)
         active_dirs = {
             path.parent.name
             for path in SCHEMES_ROOT.glob("*/config.yaml")
