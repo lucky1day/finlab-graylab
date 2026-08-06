@@ -8,6 +8,29 @@
 
 **Tech Stack:** Python 3.12, Pandas, SQLAlchemy read-only transactions, Blackbox V2 Contract 1.0, `pytest`/`unittest`, existing `forecast_env` subprocess runner.
 
+## 实施状态（2026-08-06）
+
+已按本计划完成并单独提交的代码边界：
+
+- `345170c feat: add blackbox gray replay snapshot session`：一份物理三频截断、内容寻址的
+  `BlackboxGrayReplaySession`，每个 source identity 只读取一次 current DataBridge；
+- `c51f658 feat: batch blackbox gray replay execution`：同一 session 的 Blackbox Contract
+  batch 执行，不重开可变 DataBridge；
+- `ac21c23 feat: share snapshots across blackbox gray gaps`：冻结 authority override、同源 session
+  分组、严格 `request_id` fan-out，且 Native 路径保持原样；
+- `b1ad1b1 fix: isolate CGB batch cutoff signatures`：CGB 将输入身份固定为
+  `(daily_cutoff_key, weekly_cutoff_key, monthly_cutoff_key)`，对重复 signature 只独立计算一次，
+  对可证明的完整周序列才走一次 walk-forward。
+
+当前本地验证已通过：服务环境聚焦回归 `181 passed, 94 subtests passed`，DataBridge executor
+回归 `5 passed`，且 CGB 专属测试分别在服务测试环境与 `blackbox-v2-v1`
+(`forecast_env_blackbox_v1`) 运行时通过（均为 `6 passed`）。没有执行业务表写入、激活、
+Registry 变更、scheduler/launchd 操作或 persistent backtest。
+
+`b1ad1b1` 使 CGB 的当前精确 Blackbox version 变为 `59415aa789c5`；旧
+`ee921f65476c` 的 Harness 证据只能作为历史诊断，不能当作新版本的 Gate 证据。新版本的
+完整零写 Gate 序列及任何后续入库/激活仍须在专项授权下完成。
+
 ---
 
 ## Scope and invariants
@@ -36,14 +59,14 @@
 | `tests/test_cgb_causal_wk_1y_v128_delivery.py` | Test CGB signature isolation, duplicate fan-out, and one-pass eligibility. |
 | `docs/superpowers/specs/2026-08-06-cgb-weekly-batch-cutoff-identity-design.md` | Record implementation status and link this approved plan. |
 
-### Task 1: Add the immutable, physically clipped DataBridge replay session
+### Task 1: Add the immutable, physically clipped DataBridge replay session — 已完成（`345170c`）
 
 **Files:**
 
 - Modify: `shared/input_artifacts.py:42-46, 711-809`
 - Create: `tests/test_blackbox_gray_replay_session.py`
 
-- [ ] **Step 1: Write focused failing session tests**
+- [x] **Step 1: Write focused failing session tests**
 
 Create `tests/test_blackbox_gray_replay_session.py` with a fake `CurrentDataset` containing daily rows through `2026-08-06`, weekly keys through `202632`, and monthly keys through `202608`. Patch `shared.input_artifacts.check_current_dataset` and require one call while constructing a session whose frozen requests end at `2026-07-31`, `202631`, and `202607`.
 
@@ -68,13 +91,13 @@ self.assertTrue(session.manifest_path.is_file())
 
 Add a source-mutation test that proves persisted snapshot bytes and manifest SHA stay unchanged after the source frames change. Add an absent-cutoff test that expects `ValueError` containing `gray replay cutoff`.
 
-- [ ] **Step 2: Run the focused test to verify the API is absent**
+- [x] **Step 2: Run the focused test to verify the API is absent**
 
 Run: `PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 conda run --no-capture-output -n bond_factor_lab_service python -m pytest -q tests/test_blackbox_gray_replay_session.py`
 
 Expected: collection fails because `build_blackbox_gray_replay_session` is not yet exported by `shared.input_artifacts`.
 
-- [ ] **Step 3: Implement the session only in `shared.input_artifacts`**
+- [x] **Step 3: Implement the session only in `shared.input_artifacts`**
 
 Add this data class and public constructor near the existing Blackbox snapshot helpers. Keep all DataBridge reading, validation, clipping, and artifact writing in this module.
 
@@ -129,26 +152,26 @@ Use `create_snapshot_from_frames()` with the existing schema columns, attach ver
 
 If the manifest already exists, rehash and compare canonical bytes; only return it if every field matches. Validate each requested cutoff exists in the parent snapshot and none is later than `max_cutoffs`.
 
-- [ ] **Step 4: Run the session and input-artifact regressions**
+- [x] **Step 4: Run the session and input-artifact regressions**
 
 Run: `PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 conda run --no-capture-output -n bond_factor_lab_service python -m pytest -q tests/test_blackbox_gray_replay_session.py tests/test_input_artifacts.py`
 
 Expected: all selected tests pass, proving one current read, three physical upper bounds, and an immutable manifest.
 
-- [ ] **Step 5: Commit the isolated input-layer change**
+- [x] **Step 5: Commit the isolated input-layer change**
 
 Run: `git diff --check && git status --short && git add shared/input_artifacts.py tests/test_blackbox_gray_replay_session.py && git commit -m "feat: add blackbox gray replay snapshot session"`
 
 Expected: only the shared input module and its focused test are staged; ignored runtime artifacts and unrelated working-tree files remain unstaged.
 
-### Task 2: Execute a Blackbox scheme batch from the shared session
+### Task 2: Execute a Blackbox scheme batch from the shared session — 已完成（`c51f658`）
 
 **Files:**
 
 - Modify: `scheduler/executor.py:24-67, 801-1074`
 - Modify: `tests/test_blackbox_v2_runner.py:417-509, 1554-1702`
 
-- [ ] **Step 1: Add failing executor tests for one view, one parent snapshot, and original request dates**
+- [x] **Step 1: Add failing executor tests for one view, one parent snapshot, and original request dates**
 
 Add a `BlackboxGrayReplayBatchTests` class to `tests/test_blackbox_v2_runner.py`. Construct three same-frequency `BlackboxRequest` objects with dates and cutoffs already frozen by the plan. Cross-frequency session sharing is covered in Task 3. Mock `BlackboxGrayReplaySession`, `open_blackbox_runtime_view`, and `run_blackbox_backtest`.
 
@@ -174,13 +197,13 @@ self.assertTrue(all(row.extra["gray_replay_session_id"] == "a" * 64 for row in r
 
 Add a profile-cap case with 205 requests and `RuntimeProfile.for_tests(max_batch_requests=100)`. Assert that the batch runner receives one parent session and opens no second input snapshot; the existing internal Contract splitter may start three CLI batches. Add a cutoff-overrun case that asserts `run_blackbox_backtest()` is never called.
 
-- [ ] **Step 2: Run the focused executor test to verify the API is absent**
+- [x] **Step 2: Run the focused executor test to verify the API is absent**
 
 Run: `PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 conda run --no-capture-output -n bond_factor_lab_service python -m pytest -q tests/test_blackbox_v2_runner.py -k gray_replay_batch`
 
 Expected: FAIL because `run_blackbox_gray_replay_batch` does not exist.
 
-- [ ] **Step 3: Add `run_blackbox_gray_replay_batch()` without changing scheduled single-point execution**
+- [x] **Step 3: Add `run_blackbox_gray_replay_batch()` without changing scheduled single-point execution**
 
 Import `BlackboxGrayReplaySession`, `BlackboxRequest`, `RuntimeProfile`, `DEFAULT_RUNTIME_PROFILE`, and `run_blackbox_backtest`. Add this public executor function next to `run_blackbox_scheme_subprocess()`:
 
@@ -219,19 +242,19 @@ Build the effective `RuntimeProfile` from the supplied `profile`, replacing its 
 
 Leave `run_blackbox_scheme_subprocess()` untouched for normal scheduled `predict` and the legacy one-point path; Task 3 moves only `signal-gap-fill` to the new API.
 
-- [ ] **Step 4: Run batch and existing executor regressions**
+- [x] **Step 4: Run batch and existing executor regressions**
 
 Run: `PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 conda run --no-capture-output -n bond_factor_lab_service python -m pytest -q tests/test_blackbox_v2_runner.py tests/test_databridge_generation_executor.py tests/test_executor_run_id.py`
 
 Expected: all tests pass. Existing scheduled and bound-generation tests retain the old single-point path; new tests prove gray replay does not open mutable current input per request.
 
-- [ ] **Step 5: Commit the executor batch API**
+- [x] **Step 5: Commit the executor batch API**
 
 Run: `git diff --check && git status --short && git add scheduler/executor.py tests/test_blackbox_v2_runner.py && git commit -m "feat: batch blackbox gray replay execution"`
 
 Expected: no DataBridge output directory, report, or unrelated diagnostics is staged.
 
-### Task 3: Batch compatible signal-gap groups while keeping per-date writes atomic
+### Task 3: Batch compatible signal-gap groups while keeping per-date writes atomic — 已完成（`ac21c23`）
 
 **Files:**
 
@@ -240,7 +263,7 @@ Expected: no DataBridge output directory, report, or unrelated diagnostics is st
 - Modify: `tests/test_signal_gap_fill_gate.py:1-166`
 - Modify: `tests/test_signal_gap_plan.py`
 
-- [ ] **Step 1: Write failing gate tests for a mixed daily/weekly/monthly job**
+- [x] **Step 1: Write failing gate tests for a mixed daily/weekly/monthly job**
 
 Extend `tests/test_signal_gap_fill_gate.py` with frozen-plan helpers that create three missing Blackbox actions sharing one base source identity but carrying independent frozen cutoff payloads:
 
@@ -264,13 +287,13 @@ monthly = _blackbox_action(
 
 Patch the session builder, new executor batch runner, and mutable DataBridge authority resolver. Assert one session-builder call containing all three cutoff signatures, one executor batch call per config, and three `complete_gray_gap_run()` calls retaining original target keys and source authority. Assert the resolver is never called during fill preflight or postflight. Add a second test with a different monthly `generation_id` that asserts two sessions and no cross-source batch. Add a session-build failure test that asserts all created Blackbox runs fail and no completion write occurs.
 
-- [ ] **Step 2: Run the focused gate test and observe the current per-date coordinator failure**
+- [x] **Step 2: Run the focused gate test and observe the current per-date coordinator failure**
 
 Run: `PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 conda run --no-capture-output -n bond_factor_lab_service python -m pytest -q tests/test_signal_gap_fill_gate.py -k 'shared_snapshot or mixed_frequency or source_identity'`
 
 Expected: FAIL because `_run_algorithms()` currently submits one `run_configured_scheme()` call for each `(base_scheme_id, predict_date)` group, and `plan_signal_gaps()` currently resolves mutable current DataBridge during every replay.
 
-- [ ] **Step 3: Introduce Blackbox batch planning and record fan-out in the gate**
+- [x] **Step 3: Introduce Blackbox batch planning and record fan-out in the gate**
 
 Add `databridge_authority_overrides: Mapping[str, Mapping[str, Any]] | None = None` to `plan_signal_gaps()`. When it is absent, retain the existing `resolve_stable_databridge_current_authority()` path used by the standalone plan command. When it is present, require its feature-date keys to exactly equal missing Blackbox feature dates, validate every frozen payload with the same grammar as `_databridge_authority_payload()`, and pass it directly to Blackbox action eligibility without calling the mutable resolver.
 
@@ -287,7 +310,11 @@ def plan_signal_gaps(
     """生成计划；override 只复用已冻结 authority，不读取 mutable DataBridge。"""
 ```
 
-Normalize the override into `{feature_date: authority_payload}` and reject an override that has missing, extra, non-canonical, or cross-feature cutoff entries. The returned action payload must remain byte-for-byte canonical with the existing no-override path, so `canonical_plan_sha256()` retains one grammar.
+Normalize the override into `{feature_date: authority_payload}`. It must cover every currently missing
+scope-selected Blackbox feature date; extra keys are allowed only when they belong to another scoped
+Blackbox expected case already present/skip, and scope-external or non-canonical entries reject. The
+returned action payload must remain byte-for-byte canonical with the existing no-override path, so
+`canonical_plan_sha256()` retains one grammar.
 
 Add a private immutable `_BlackboxReplayBatch` holding `source_identity`, `session_id`, `executions`, and ordered `BlackboxRequest` values. Define source identity by canonicalizing each group's frozen `input_authority` after removing only its per-request `cutoff` field. It must retain generation, refresh date, schema, business digest, stable identity hash, and file identities.
 
@@ -308,26 +335,26 @@ After run creation, split executions into Native items and Blackbox batches. Pre
 
 Map returned records by `record.extra["request_id"]`. Reject duplicate, missing, and unexpected IDs before assigning `item.records`; invoke existing `_validate_group_records()` for every item. Do not alter `_create_runs()`, authorization issuance/consumption, plan postflight, `complete_gray_gap_run()`, or Native branches.
 
-- [ ] **Step 4: Run the signal-gap and repository validation set**
+- [x] **Step 4: Run the signal-gap and repository validation set**
 
 Run: `PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 conda run --no-capture-output -n bond_factor_lab_service python -m pytest -q tests/test_signal_gap_fill_gate.py tests/test_signal_gap_plan.py tests/test_repository_registry.py`
 
 Expected: all tests pass. The mixed-frequency test proves one parent snapshot per common source identity and one current-DataBridge read for the whole fill invocation, while each individual gray run still has one combined snapshot identity.
 
-- [ ] **Step 5: Commit the coordinator-only change**
+- [x] **Step 5: Commit the coordinator-only change**
 
 Run: `git diff --check && git status --short && git add harness/gates/signal_gap_fill_gate.py harness/signal_gap_plan.py tests/test_signal_gap_fill_gate.py tests/test_signal_gap_plan.py && git commit -m "feat: share snapshots across blackbox gray gaps"`
 
 Expected: authorization and persistence code outside the gate remains untouched.
 
-### Task 4: Fix CGB's complete cutoff-signature batch adapter
+### Task 4: Fix CGB's complete cutoff-signature batch adapter — 代码完成（`b1ad1b1`）；新版本 Gate 待办
 
 **Files:**
 
 - Modify: `schemes/cgb_causal_wk_1y_v128/delivery/cgb_causal_wk_1y_v128.py:2764-2829`
 - Create: `tests/test_cgb_causal_wk_1y_v128_delivery.py`
 
-- [ ] **Step 1: Write failing delivery-wrapper tests with a deterministic pipeline substitute**
+- [x] **Step 1: Write failing delivery-wrapper tests with a deterministic pipeline substitute**
 
 Load the delivery file by absolute path with `importlib.util.spec_from_file_location()` and patch only its non-frozen `_run_pipeline`. Build minimal real `weekly_output.csv`, `daily_output.csv`, and `api_wind_date.csv` frames so `truncate_for_request()` executes normally.
 
@@ -344,13 +371,13 @@ def test_same_week_two_daily_cutoffs_are_not_reused_by_week_id(self):
 
 Also require duplicate complete signatures to execute once and fan out in caller order, a six-week complete sequence to use one one-pass run plus three deterministic checks, and a reversed 100-request alternating conflict batch to produce the same `request_id -> direction` mapping as forward input.
 
-- [ ] **Step 2: Run the focused delivery tests and observe the known week collision**
+- [x] **Step 2: Run the focused delivery tests and observe the known week collision**
 
-Run: `PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 conda run --no-capture-output -n forecast_env python -m pytest -q tests/test_cgb_causal_wk_1y_v128_delivery.py`
+Run: `PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 /Users/macstudio0/miniconda3/envs/bond_factor_lab_service/bin/python -m pytest -q tests/test_cgb_causal_wk_1y_v128_delivery.py`
 
 Expected: the same-week test fails because `_one_pass_rows()` returns `week_id -> row` and `predict_batch()` reuses that row for both cutoff states.
 
-- [ ] **Step 3: Replace week-only identity with stable complete-signature identity**
+- [x] **Step 3: Replace week-only identity with stable complete-signature identity**
 
 Add these non-frozen adapter helpers before `_one_pass_rows()`:
 
@@ -370,25 +397,31 @@ def _unique_requests_by_signature(requests: list[dict]) -> list[dict]:
     return [by_signature[key] for key in sorted(by_signature)]
 ```
 
-Make `_one_pass_rows()` return `dict[tuple[str, str, str], pd.Series]`, and permit it only when each weekly key maps to one signature and each request's daily cutoff is the last daily observation for its weekly key in the widest input. Select widest input by `(daily_cutoff_key, weekly_cutoff_key, monthly_cutoff_key)`, never by an unstable weekly key alone.
+Make `_one_pass_rows()` return `dict[tuple[str, str, str], pd.Series]`, and permit it only when each weekly key maps to one signature and each request's daily cutoff is the last actual daily observation for its weekly key in the widest input. Select widest input by `(daily_cutoff_key, weekly_cutoff_key, monthly_cutoff_key)`, never by an unstable weekly key alone. The actual implementation also deduplicates every fallback by exact signature, so an alternating 100-row two-signature batch performs two independent model runs, not 100.
 
 Use `_unique_requests_by_signature()` for verification sampling and fallback caching. On failed eligibility or failed verification, run `predict_one()` once per signature and fan its result back in original input order. Do not edit any `_build_component_*` function, feature transform, model setting, or `predict_one()` date semantics.
 
-- [ ] **Step 4: Run delivery, Contract, and zero-write BacktestGate checks**
+- [x] **Step 4a: Run delivery and Contract checks**
 
-Run: `PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 conda run --no-capture-output -n forecast_env python -m pytest -q tests/test_cgb_causal_wk_1y_v128_delivery.py tests/test_blackbox_v2_contracts.py tests/test_blackbox_v2_runner.py`
+Run: `PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 /Users/macstudio0/miniconda3/envs/bond_factor_lab_service/bin/python -m pytest -q tests/test_cgb_causal_wk_1y_v128_delivery.py tests/test_blackbox_v2_contracts.py tests/test_blackbox_v2_runner.py`
 
-Run: `PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 conda run --no-capture-output -n bond_factor_lab_service python -m harness gate backtest --scheme-id cgb_causal_wk_1y_v128 --project-root . --algo-env forecast_env --timeout-sec 3600 --backtest-start-date 2025-01-01`
+Additionally run the delivery test under the actual profile without pytest (the profile does not install it):
+`PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 conda run --no-capture-output -n forecast_env_blackbox_v1 python tests/test_cgb_causal_wk_1y_v128_delivery.py -q`.
+
+- [ ] **Step 4b: Run the real zero-write BacktestGate for exact version `59415aa789c5`**
+
+Run only after confirming the target current DataBridge context and intended time budget:
+`PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 conda run --no-capture-output -n bond_factor_lab_service python -m harness gate backtest --scheme-id cgb_causal_wk_1y_v128 --project-root . --algo-env forecast_env --timeout-sec 3600 --backtest-start-date 2025-01-01`.
 
 Expected: unit and Contract tests pass; BacktestGate runs without `--persist`, reports zero protected-table deltas, and verifies cutoff isolation.
 
-- [ ] **Step 5: Commit the CGB adapter revision separately**
+- [x] **Step 5: Commit the CGB adapter revision separately**
 
 Run: `git diff --check && git status --short && git add schemes/cgb_causal_wk_1y_v128/delivery/cgb_causal_wk_1y_v128.py tests/test_cgb_causal_wk_1y_v128_delivery.py && git commit -m "fix: isolate CGB batch cutoff signatures"`
 
 Expected: the delivery-script hash changes in this commit. Treat it as a new exact Blackbox version for subsequent Gate and registration work; do not reuse prior evidence or business writes.
 
-### Task 5: Verify the integrated behavior and record its operational boundary
+### Task 5: Verify the integrated behavior and record its operational boundary — 进行中
 
 **Files:**
 
@@ -400,15 +433,17 @@ Expected: the delivery-script hash changes in this commit. Treat it as a new exa
 
 Extend the Task 3 fixture to use the real `build_blackbox_gray_replay_session()` against a temporary DataBridge root and a fake batch delivery. Require one current read, one parent snapshot, one session manifest, and separate daily/weekly/monthly record dates after fan-out. Mutate source files after the session is built and assert the fake delivery receives the original parent snapshot path and original cutoff keys.
 
-- [ ] **Step 2: Run the complete focused regression suite**
+- [x] **Step 2: Run the complete focused regression suite**
 
-Run: `PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 conda run --no-capture-output -n bond_factor_lab_service python -m pytest -q tests/test_blackbox_gray_replay_session.py tests/test_blackbox_v2_runner.py tests/test_databridge_generation_executor.py tests/test_signal_gap_fill_gate.py tests/test_signal_gap_plan.py tests/test_repository_registry.py tests/test_input_artifacts.py`
+Run (服务测试环境): `PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 /Users/macstudio0/miniconda3/envs/bond_factor_lab_service/bin/python -m pytest -q tests/test_blackbox_gray_replay_session.py tests/test_blackbox_v2_runner.py tests/test_signal_gap_fill_gate.py tests/test_signal_gap_plan.py tests/test_repository_registry.py tests/test_input_artifacts.py tests/test_cgb_causal_wk_1y_v128_delivery.py tests/test_blackbox_v2_contracts.py` → `181 passed, 94 subtests passed`.
 
-Run: `PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 conda run --no-capture-output -n forecast_env python -m pytest -q tests/test_cgb_causal_wk_1y_v128_delivery.py tests/test_blackbox_v2_contracts.py`
+Run (DataBridge executor): `PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 /Users/macstudio0/miniconda3/envs/bond_factor_lab_service/bin/python -m pytest -q tests/test_databridge_generation_executor.py` → `5 passed`（29 条既有 pandas FutureWarning）。
+
+Run (实际 Blackbox profile，无 pytest): `PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 conda run --no-capture-output -n forecast_env_blackbox_v1 python tests/test_cgb_causal_wk_1y_v128_delivery.py -q` → `6 passed`。
 
 Expected: every test passes. The run must not use `--persist`, issue a gray-gap write token, activate a scheme, change Registry state, invoke `launchctl`, or write business predictions.
 
-- [ ] **Step 3: Inspect the final diff, refresh design status, and commit documentation**
+- [x] **Step 3: Inspect the final diff, refresh design status, and commit documentation**
 
 Update the design document's implementation status with the shipped session manifest fields, executor batch boundary, CGB complete-signature identity, and exact passing test commands. Keep explicit exclusions for Native, production writes, activation, and launchd.
 

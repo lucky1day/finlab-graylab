@@ -274,7 +274,30 @@ Request 输入顺序影响。
 
 详细的 TDD 实施计划见
 [2026-08-06-blackbox-gray-replay-shared-snapshot.md](../plans/2026-08-06-blackbox-gray-replay-shared-snapshot.md)。
-当前状态为**已批准、尚未实施**；其提交边界与验收顺序固定如下：
+当前状态为**核心实现已在本分支完成、生产/业务入库尚未执行**。已完成的独立提交为：
+
+1. `345170c feat: add blackbox gray replay snapshot session`：一次 current DataBridge 读取、
+   三频物理截断与不可变 session manifest；
+2. `c51f658 feat: batch blackbox gray replay execution`：同一 session 的 Blackbox Contract
+   batch 执行；
+3. `ac21c23 feat: share snapshots across blackbox gray gaps`：冻结 authority 的 preflight/
+   postflight 回放与同源 Blackbox 批量 fan-out；
+4. `b1ad1b1 fix: isolate CGB batch cutoff signatures`：完整 signature 去重、同周冲突隔离、
+   真实日度周末资格判定、signature 行映射与稳定抽样核验。
+
+最后一项修复还解决了旧 Harness 诊断中的性能退化：100 条交替 Request 虽只含两个完整
+截止状态，旧代码在 one-pass 核验失败后会重跑 100 次；现在会对两个 signature 分别独立
+运行一次，再按原始 Request 顺序回填。连续且每周完整的历史序列仍使用一次
+walk-forward 加至多三条独立核验。
+
+本地代码回归已通过：服务环境的共享快照/执行器/信号补齐/CGB/Contract 聚焦套件为
+`181 passed, 94 subtests passed`，DataBridge executor 套件为 `5 passed`；CGB 交付测试也在
+`blackbox-v2-v1` 实际环境中以 `unittest` 通过。上述均未写业务表、未激活、未改 Registry、
+未触发 scheduler/launchd，且不构成生产入库。
+
+`b1ad1b1` 后重新计算的精确 CGB Blackbox version 为 `59415aa789c5`。旧
+`ee921f65476c` 的证据不可复用；真实零写 BacktestGate 和该精确版本完整七段 Gate 仍待在
+明确授权下执行。其提交边界与后续验收顺序固定如下：
 
 1. `shared.input_artifacts` 创建一次读取、一次物理三频截断、一次持久化 manifest 的
    `BlackboxGrayReplaySession`；所有请求的 cutoff 必须存在于该父快照。
