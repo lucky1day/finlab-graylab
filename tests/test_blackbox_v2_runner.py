@@ -2284,6 +2284,213 @@ class BlackboxV2RunnerTests(unittest.TestCase):
 
         self.assertEqual(len(rows), 3)
 
+    def test_gray_replay_batch_reuses_one_session_and_preserves_requests(
+        self,
+    ) -> None:
+        from scheduler.blackbox_v2_runner import RuntimeProfile
+        from scheduler.executor import run_blackbox_gray_replay_batch
+        from shared.models import PredictionRecord
+
+        session = _gray_replay_session()
+        requests = [
+            _gray_replay_request("gray-001", "2026-07-24", "202630"),
+            _gray_replay_request("gray-002", "2026-07-31", "202631"),
+        ]
+        cfg = SimpleNamespace(
+            scheme_id="blackbox_trial",
+            runtime_type="blackbox_v2",
+            input_source="data_bridge_current",
+            frequency="daily",
+            delivery_script=Path("trial.py"),
+            delivery_metadata=Path("trial.json"),
+            platform_inputs=(),
+        )
+        metadata = _metadata()
+        raw_records = [
+            PredictionRecord(
+                scheme_id=metadata.scheme_id,
+                target_tenor=metadata.target_tenor,
+                horizon=metadata.horizon,
+                predict_date=request.predict_date,
+                feature_date=request.feature_date,
+                target_date=request.target_date,
+                predicted_direction=1,
+                extra={"request_id": request.request_id},
+            )
+            for request in requests
+        ]
+
+        @contextmanager
+        def open_runtime_view(bundle):
+            yield SimpleNamespace(
+                data_dir=Path("/tmp/gray-replay-runtime-view"),
+                bundle=bundle,
+            )
+
+        with (
+            patch("scheduler.executor.load_metadata", return_value=metadata),
+            patch(
+                "scheduler.executor.open_blackbox_runtime_view",
+                side_effect=open_runtime_view,
+            ) as runtime_view,
+            patch(
+                "scheduler.executor.run_blackbox_backtest",
+                return_value=raw_records,
+            ) as backtest,
+        ):
+            records = run_blackbox_gray_replay_batch(
+                cfg,
+                requests=requests,
+                session=session,
+                engine=object(),
+                algo_env="forecast_env",
+                timeout_sec=600,
+                profile=RuntimeProfile.for_tests(),
+            )
+
+        runtime_view.assert_called_once()
+        backtest.assert_called_once()
+        self.assertEqual(
+            backtest.call_args.kwargs["requests"],
+            requests,
+        )
+        self.assertEqual(
+            [
+                (record.predict_date, record.feature_date, record.target_date)
+                for record in records
+            ],
+            [
+                (request.predict_date, request.feature_date, request.target_date)
+                for request in requests
+            ],
+        )
+        self.assertTrue(
+            all(
+                record.extra["gray_replay_session_id"] == "a" * 64
+                for record in records
+            )
+        )
+        self.assertTrue(
+            all(
+                record.extra["parent_data_snapshot_id"]
+                == session.snapshot.snapshot_id
+                for record in records
+            )
+        )
+
+    def test_gray_replay_batch_keeps_one_runtime_view_above_contract_cap(
+        self,
+    ) -> None:
+        from scheduler.blackbox_v2_runner import RuntimeProfile
+        from scheduler.executor import run_blackbox_gray_replay_batch
+        from shared.models import PredictionRecord
+
+        session = _gray_replay_session()
+        requests = [
+            _gray_replay_request(
+                f"gray-{index:03d}",
+                "2026-07-31",
+                "202631",
+            )
+            for index in range(205)
+        ]
+        cfg = SimpleNamespace(
+            scheme_id="blackbox_trial",
+            runtime_type="blackbox_v2",
+            input_source="data_bridge_current",
+            frequency="daily",
+            delivery_script=Path("trial.py"),
+            delivery_metadata=Path("trial.json"),
+            platform_inputs=(),
+        )
+
+        @contextmanager
+        def open_runtime_view(bundle):
+            yield SimpleNamespace(
+                data_dir=Path("/tmp/gray-replay-runtime-view"),
+                bundle=bundle,
+            )
+
+        records = [
+            PredictionRecord(
+                scheme_id="blackbox_trial",
+                target_tenor="10Y",
+                horizon=1,
+                predict_date=request.predict_date,
+                feature_date=request.feature_date,
+                target_date=request.target_date,
+                predicted_direction=1,
+                extra={"request_id": request.request_id},
+            )
+            for request in requests
+        ]
+        with (
+            patch("scheduler.executor.load_metadata", return_value=_metadata()),
+            patch(
+                "scheduler.executor.open_blackbox_runtime_view",
+                side_effect=open_runtime_view,
+            ) as runtime_view,
+            patch(
+                "scheduler.executor.run_blackbox_backtest",
+                return_value=records,
+            ) as backtest,
+        ):
+            result = run_blackbox_gray_replay_batch(
+                cfg,
+                requests=requests,
+                session=session,
+                engine=object(),
+                algo_env="forecast_env",
+                timeout_sec=600,
+                profile=RuntimeProfile.for_tests(max_batch_requests=100),
+            )
+
+        runtime_view.assert_called_once()
+        backtest.assert_called_once()
+        self.assertEqual(
+            backtest.call_args.kwargs["profile"].max_batch_requests,
+            100,
+        )
+        self.assertEqual(len(result), 205)
+
+    def test_gray_replay_batch_rejects_request_after_session_cutoff(self) -> None:
+        from scheduler.blackbox_v2_runner import RuntimeProfile
+        from scheduler.executor import run_blackbox_gray_replay_batch
+
+        cfg = SimpleNamespace(
+            scheme_id="blackbox_trial",
+            runtime_type="blackbox_v2",
+            input_source="data_bridge_current",
+            frequency="daily",
+            delivery_script=Path("trial.py"),
+            delivery_metadata=Path("trial.json"),
+            platform_inputs=(),
+        )
+        with (
+            patch("scheduler.executor.load_metadata", return_value=_metadata()),
+            patch("scheduler.executor.open_blackbox_runtime_view") as runtime_view,
+            patch("scheduler.executor.run_blackbox_backtest") as backtest,
+            self.assertRaisesRegex(ValueError, "exceeds gray replay session"),
+        ):
+            run_blackbox_gray_replay_batch(
+                cfg,
+                requests=[
+                    _gray_replay_request(
+                        "gray-after-session",
+                        "2026-08-06",
+                        "202632",
+                    ),
+                ],
+                session=_gray_replay_session(),
+                engine=object(),
+                algo_env="forecast_env",
+                timeout_sec=600,
+                profile=RuntimeProfile.for_tests(),
+            )
+
+        runtime_view.assert_not_called()
+        backtest.assert_not_called()
+
 
 def _metadata() -> BlackboxMetadata:
     return BlackboxMetadata(
@@ -2308,6 +2515,45 @@ def _request(request_id: str) -> BlackboxRequest:
         daily_cutoff_key="2026-07-15",
         weekly_cutoff_key="202627",
         monthly_cutoff_key="202606",
+    )
+
+
+def _gray_replay_session():
+    from shared.blackbox_v2.snapshot import BlackboxSnapshot, CutoffKeys
+    from shared.input_artifacts import BlackboxGrayReplaySession
+
+    session_id = "a" * 64
+    snapshot = BlackboxSnapshot(
+        snapshot_id="snapshot-gray-parent",
+        root_dir=Path("/tmp/gray-replay-parent"),
+        data_dir=Path("/tmp/gray-replay-parent/data"),
+        manifest_path=Path("/tmp/gray-replay-parent/manifest.json"),
+        schema_version="data-bridge-v1",
+        generation_id="gray-replay-generation-1",
+        refresh_date="2026-08-06",
+    )
+    return BlackboxGrayReplaySession(
+        snapshot=snapshot,
+        manifest_path=Path("/tmp") / session_id / "manifest.json",
+        manifest_sha256="b" * 64,
+        source_identity={},
+        max_cutoffs=CutoffKeys("2026-07-31", "202631", "202607"),
+    )
+
+
+def _gray_replay_request(
+    request_id: str,
+    daily_cutoff_key: str,
+    weekly_cutoff_key: str,
+) -> BlackboxRequest:
+    return BlackboxRequest(
+        request_id=request_id,
+        predict_date="2026-08-01",
+        feature_date="2026-07-31",
+        target_date="2026-08-07",
+        daily_cutoff_key=daily_cutoff_key,
+        weekly_cutoff_key=weekly_cutoff_key,
+        monthly_cutoff_key="202607",
     )
 
 

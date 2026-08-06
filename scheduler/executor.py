@@ -12,8 +12,13 @@ from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Callable, ContextManager
+from typing import Any, Callable, ContextManager, Sequence
 
+from scheduler.blackbox_v2_runner import (
+    DEFAULT_RUNTIME_PROFILE,
+    RuntimeProfile,
+    run_blackbox_backtest,
+)
 from scheduler.discovery import SchemeConfig, discover_schemes
 from scheduler.daily_policy import (
     APPROVED_0629_LIVE_SOURCE_SCHEMES,
@@ -38,7 +43,7 @@ from scheduler.repository import (
     write_run_log,
 )
 from shared.calendar_service import get_calendar
-from shared.blackbox_v2.contracts import load_metadata
+from shared.blackbox_v2.contracts import BlackboxRequest, load_metadata
 from shared.blackbox_v2.requests import build_live_request
 from shared.blackbox_v2.snapshot import compose_blackbox_input_bundle
 from shared.input_artifacts import (
@@ -57,6 +62,7 @@ from shared.input_artifacts import (
     NATIVE_MANIFEST_SHA256_ENV,
     capture_blackbox_platform_inputs_from_connection,
     capture_blackbox_platform_inputs_from_native_generation,
+    BlackboxGrayReplaySession,
     open_blackbox_input_snapshot,
     open_blackbox_runtime_view,
     resolve_blackbox_input_cutoffs,
@@ -1050,6 +1056,168 @@ def run_blackbox_scheme_subprocess(
             )
             record = replace(record, extra=extra)
     return [record]
+
+
+def run_blackbox_gray_replay_batch(
+    cfg: SchemeConfig,
+    *,
+    requests: Sequence[BlackboxRequest],
+    session: BlackboxGrayReplaySession,
+    engine: Any,
+    algo_env: str,
+    timeout_sec: int,
+    profile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE,
+) -> list[PredictionRecord]:
+    """在一个冻结 DataBridge gray replay session 内执行同一 Blackbox 方案。"""
+    if not isinstance(session, BlackboxGrayReplaySession):
+        raise TypeError("session must be a BlackboxGrayReplaySession")
+    if getattr(cfg, "runtime_type", None) != "blackbox_v2":
+        raise ValueError("gray replay batch requires runtime_type=blackbox_v2")
+    if getattr(cfg, "input_source", None) != "data_bridge_current":
+        raise ValueError(
+            "gray replay batch requires input_source=data_bridge_current"
+        )
+    if cfg.delivery_script is None or cfg.delivery_metadata is None:
+        raise ValueError(f"Blackbox V2 delivery paths missing for {cfg.scheme_id}")
+    if (
+        isinstance(timeout_sec, bool)
+        or not isinstance(timeout_sec, int)
+        or timeout_sec <= 0
+    ):
+        raise ValueError("gray replay batch timeout_sec must be positive")
+    if not isinstance(profile, RuntimeProfile):
+        raise TypeError("gray replay batch profile must be a RuntimeProfile")
+
+    batch_requests = list(requests)
+    if not batch_requests:
+        raise ValueError("gray replay batch requires at least one Request")
+    request_ids = [request.request_id for request in batch_requests]
+    if len(request_ids) != len(set(request_ids)):
+        raise ValueError("gray replay batch Request ids must be unique")
+    for request in batch_requests:
+        if not isinstance(request, BlackboxRequest):
+            raise TypeError("gray replay batch requests must be BlackboxRequest")
+        _validate_gray_replay_request_within_session(request, session)
+
+    metadata = load_metadata(cfg.delivery_metadata)
+    if metadata.scheme_id != cfg.scheme_id:
+        raise ValueError(
+            "Blackbox V2 metadata scheme_id does not match configured scheme"
+        )
+    configured_frequency = getattr(cfg, "frequency", None)
+    if configured_frequency != metadata.frequency:
+        raise ValueError(
+            "Blackbox V2 metadata frequency does not match configured scheme"
+        )
+
+    platform_input_ids = tuple(getattr(cfg, "platform_inputs", ()) or ())
+    if platform_input_ids:
+        platform_input_artifacts = _capture_blackbox_platform_inputs_from_engine(
+            engine,
+            platform_input_ids=platform_input_ids,
+            weekly_cutoff_key=session.max_cutoffs.weekly_cutoff_key,
+        )
+    else:
+        platform_input_artifacts = ()
+    input_bundle = compose_blackbox_input_bundle(
+        session.snapshot,
+        platform_input_ids=platform_input_ids,
+        platform_input_artifacts=platform_input_artifacts,
+    )
+    blackbox_env = (
+        profile.conda_env if algo_env == DEFAULT_ALGO_ENV else algo_env
+    )
+    effective_profile = replace(
+        profile,
+        conda_env=blackbox_env,
+        backtest_timeout_sec=timeout_sec,
+    )
+    with open_blackbox_runtime_view(input_bundle) as runtime_view:
+        trusted_bundle = runtime_view.bundle
+        backtest_kwargs: dict[str, Any] = {
+            "metadata": metadata,
+            "script_path": cfg.delivery_script,
+            "requests": batch_requests,
+            "data_dir": runtime_view.data_dir,
+            "data_snapshot_id": trusted_bundle.combined_snapshot_id,
+            "platform_input_ids": trusted_bundle.platform_input_ids,
+            "profile": effective_profile,
+        }
+        if trusted_bundle.platform_input_ids:
+            backtest_kwargs.update(
+                {
+                    "parent_data_snapshot_id": trusted_bundle.parent_snapshot_id,
+                    "input_identity_manifest": trusted_bundle.identity_manifest,
+                    "input_audit_manifest": trusted_bundle.audit_manifest,
+                }
+            )
+        records = run_blackbox_backtest(**backtest_kwargs)
+    records_by_request = _index_gray_replay_records(records, batch_requests)
+    return [
+        _with_gray_replay_provenance(
+            records_by_request[request.request_id],
+            request=request,
+            session=session,
+            parent_data_snapshot_id=trusted_bundle.parent_snapshot_id,
+        )
+        for request in batch_requests
+    ]
+
+
+def _validate_gray_replay_request_within_session(
+    request: BlackboxRequest,
+    session: BlackboxGrayReplaySession,
+) -> None:
+    if (
+        request.daily_cutoff_key > session.max_cutoffs.daily_cutoff_key
+        or request.weekly_cutoff_key > session.max_cutoffs.weekly_cutoff_key
+        or request.monthly_cutoff_key > session.max_cutoffs.monthly_cutoff_key
+    ):
+        raise ValueError(
+            "Request cutoff exceeds gray replay session maximum cutoff"
+        )
+
+
+def _index_gray_replay_records(
+    records: Sequence[PredictionRecord],
+    requests: Sequence[BlackboxRequest],
+) -> dict[str, PredictionRecord]:
+    expected_ids = {request.request_id for request in requests}
+    indexed: dict[str, PredictionRecord] = {}
+    for record in records:
+        request_id = (record.extra or {}).get("request_id")
+        if not isinstance(request_id, str) or request_id not in expected_ids:
+            raise ValueError("gray replay batch returned an unexpected request_id")
+        if request_id in indexed:
+            raise ValueError("gray replay batch returned duplicate request_id")
+        indexed[request_id] = record
+    if set(indexed) != expected_ids:
+        raise ValueError("gray replay batch returned missing request_id")
+    return indexed
+
+
+def _with_gray_replay_provenance(
+    record: PredictionRecord,
+    *,
+    request: BlackboxRequest,
+    session: BlackboxGrayReplaySession,
+    parent_data_snapshot_id: str,
+) -> PredictionRecord:
+    extra = dict(record.extra or {})
+    extra.update(
+        {
+            "replay_semantics": "current_snapshot_as_of_not_historical_vintage",
+            "gray_replay_session_id": session.manifest_path.parent.name,
+            "gray_replay_manifest_sha256": session.manifest_sha256,
+            "parent_data_snapshot_id": parent_data_snapshot_id,
+            "data_generation_id": session.snapshot.generation_id,
+            "source_refresh_date": session.snapshot.refresh_date,
+            "daily_cutoff_key": request.daily_cutoff_key,
+            "weekly_cutoff_key": request.weekly_cutoff_key,
+            "monthly_cutoff_key": request.monthly_cutoff_key,
+        }
+    )
+    return replace(record, extra=extra)
 
 
 def _capture_blackbox_platform_inputs_from_engine(
