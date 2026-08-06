@@ -103,6 +103,17 @@
       "capabilities": []
     },
     {
+      "scheme_id": "cgb_causal_wk_1y_v128",
+      "scheme_version": "ee921f65476c",
+      "runtime_type": "blackbox_v2",
+      "frequency": "weekly",
+      "task_type": "weekly_point",
+      "horizon": 1,
+      "target_tenor": "1Y",
+      "mode": "gray",
+      "capabilities": []
+    },
+    {
       "scheme_id": "wavg_1y_gapflip_v5",
       "scheme_version": "68999585142a",
       "runtime_type": "blackbox_v2",

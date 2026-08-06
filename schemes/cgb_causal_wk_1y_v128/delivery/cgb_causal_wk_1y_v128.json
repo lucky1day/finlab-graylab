@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "cgb_causal_wk_1y_v128",
+  "name": "CAUSAL_WALKFORWARD_V128_CONSENSUS_DOWN_REVERSAL",
+  "description": "以宏观传导通道下的日频与周频指标构建52周滚动z因果压力因子并聚合为通道压力,经walk-forward训练的Logistic与Ridge基模型、幅度回归、事件路由与跨专家否决多层组件融合出共识概率,概率不低于自适应阈值时判定下一周1Y活跃券到期收益率上行。",
+  "algorithm_version": "1.28.0-predict-only-1",
+  "target_tenor": "1Y",
+  "task_type": "weekly_point",
+  "horizon": 1,
+  "target_rule": "target_week_end_yield_vs_feature_week_end_yield"
+}

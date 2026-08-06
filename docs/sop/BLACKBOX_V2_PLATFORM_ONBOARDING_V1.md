@@ -402,7 +402,7 @@ scheduler。
 | `unit` | help 暴露两个模式；一个非法 Request 失败且无 Output | 所有非法组合均被覆盖 | help、非法输入、失败无 Output |
 | `dry-run` | 单点 predict、Result 校验、内存 `PredictionRecord` | 已写预测表或已进入业务 API | PredictionRecord、组合 ID、结果路径 |
 | `compare` | 重复、predict/backtest、分批、顺序、后续业务行隔离；平台制品哈希不变；同代时才比较上游结果 | 准确率、历史修订回放、跨 generation 逐行复现 | 五类一致性证据、`platform_input_hashes_unchanged=true`、输入对齐状态 |
-| `backtest` | 100 条全部返回、no-persist、组合输入一致 | 大于 100 条单进程能力、效果门槛 | 请求/结果数量、组合 ID、persist=false |
+| `backtest` | 100 条全部返回、no-persist、组合输入一致 | 大于 100 条单进程能力、效果门槛、算法内部是否使用[等价的一次性计算](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md#63-对每个-request-独立截断) | 请求/结果数量、组合 ID、persist=false |
 | `api-readiness` | composite 身份和结果结构兼容 | 真实 Registry、HTTP API 或 scheduler 探针 | registry ID、结构结果 |
 
 报告中的 `business_tables_written: false` 是声明性证据，不是数据库前后计数。`api-readiness` 中的 scheduler/API 状态也是结构预期，不能单独证明生产不可见。
