@@ -152,6 +152,17 @@ EXPECTED_ADMISSIONS = {
         capabilities=NO_CAPABILITIES,
     ),
     (
+        "cgb_causal_wk_1y_v128",
+        "ee921f65476c",
+    ): _expected_admission(
+        mode="gray",
+        frequency="weekly",
+        task_type="weekly_point",
+        horizon=1,
+        target_tenor="1Y",
+        capabilities=NO_CAPABILITIES,
+    ),
+    (
         "wavg_1y_gapflip_v5",
         "68999585142a",
     ): _expected_admission(
