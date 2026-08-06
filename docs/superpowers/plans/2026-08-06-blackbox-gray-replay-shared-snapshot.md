@@ -411,7 +411,7 @@ Additionally run the delivery test under the actual profile without pytest (the 
 - [ ] **Step 4b: Run the real zero-write BacktestGate for exact version `59415aa789c5`**
 
 Run only after confirming the target current DataBridge context and intended time budget:
-`PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 conda run --no-capture-output -n bond_factor_lab_service python -m harness gate backtest --scheme-id cgb_causal_wk_1y_v128 --project-root . --algo-env forecast_env --timeout-sec 3600 --backtest-start-date 2025-01-01`.
+`PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 conda run --no-capture-output -n bond_factor_lab_service python -m harness gate backtest --scheme-id cgb_causal_wk_1y_v128 --predict-date 2026-08-06 --project-root . --algo-env forecast_env --timeout-sec 3600 --backtest-start-date 2025-01-01`.
 
 Expected: unit and Contract tests pass; BacktestGate runs without `--persist`, reports zero protected-table deltas, and verifies cutoff isolation.
 
