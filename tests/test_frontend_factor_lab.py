@@ -505,7 +505,7 @@ class FactorLabRankingTests(unittest.TestCase):
                 self.assertIn(marker, script)
 
         expected_asset_hashes = {
-            FRONTEND_INDEX: "7f8ecfee71ed9f094529a7ebb34e4045093ed75f043e0b3ff588853234e32dbc",
+            FRONTEND_INDEX: "8ebc644dbd020960bedc407a79df505497d479e2bbc4d82282c1da25638eb515",
             PROJECT_ROOT / "frontend" / "assets" / "aifin-lab-icon.svg": (
                 "e014fc86d69d61a32892b9799f83f8c784898d705c8df05313a04216281d2259"
             ),
@@ -3184,6 +3184,19 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertNotIn("factorRankingMeta", script)
         self.assertNotIn("该任务格子下共有", script)
 
+    def test_detail_header_uses_only_the_selected_scheme_name(self) -> None:
+        html = FRONTEND_INDEX.read_text(encoding="utf-8")
+        script = FRONTEND_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('<h3 id="factorDetailTitle">选中方案详情</h3>', html)
+        self.assertNotIn('id="factorDetailMeta"', html)
+        self.assertNotIn("factorDetailMeta", script)
+        self.assertIn(
+            'textContent = scheme ? "选中方案详情：" + scheme.name : "选中方案详情";',
+            script,
+        )
+        self.assertNotIn('"选中方案详情：" + task.label', script)
+
     def test_factor_lab_compact_layout_and_task_highlight_style_contract(self) -> None:
         css = FRONTEND_CSS.read_text(encoding="utf-8")
 
@@ -4679,11 +4692,11 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
             var scheme = hooks.getSelectedScheme();
             return {
               dataMode: hooks.getFactorLabState().dataMode,
-	              selectedTaskKey: hooks.getFactorLabState().selectedTaskKey,
-	              liveSinceDate: scheme && scheme.liveSinceDate,
-	              phaseRanges: scheme && scheme.phaseRanges,
-	              months: scheme ? scheme.monthlyRows.map(function (r) { return r.month + ":" + r._source; }) : [],
-	              detailMeta: document.getElementById("factorDetailMeta").textContent
+              selectedTaskKey: hooks.getFactorLabState().selectedTaskKey,
+              liveSinceDate: scheme && scheme.liveSinceDate,
+              phaseRanges: scheme && scheme.phaseRanges,
+              months: scheme ? scheme.monthlyRows.map(function (r) { return r.month + ":" + r._source; }) : [],
+              detailTitle: document.getElementById("factorDetailTitle").textContent
             };
             """
         )
@@ -4693,14 +4706,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         self.assertEqual(result["liveSinceDate"], "2026-05-26")
         self.assertEqual(result["phaseRanges"][0]["prediction_phase"], "gray_live")
         self.assertEqual(result["months"], ["2026-04:backtest", "2026-06:live"])
-        self.assertIn("实盘预测目标区间：2026-06-18开始", result["detailMeta"])
-        for removed in (
-            "实盘发出起点",
-            "灰度实盘（目标期）",
-            "信号发出",
-            "正式调度发出起点",
-        ):
-            self.assertNotIn(removed, result["detailMeta"])
+        self.assertEqual(result["detailTitle"], "选中方案详情：V28日频5Y方案2")
 
     def test_same_month_backtest_and_live_split_into_two_rows(self) -> None:
         """同月既有回测又有实盘时，应展示两行（回测行 + 实盘行），不覆盖。"""
