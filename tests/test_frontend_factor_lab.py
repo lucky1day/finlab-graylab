@@ -3158,7 +3158,13 @@ class FactorLabRankingTests(unittest.TestCase):
     def test_factor_lab_compact_layout_and_task_highlight_style_contract(self) -> None:
         css = FRONTEND_CSS.read_text(encoding="utf-8")
 
-        self.assertIn(".factor-task-cell.is-accuracy-highlighted {", css)
+        self.assertIn(
+            ".factor-task-cell.is-accuracy-highlighted .factor-task-top {", css
+        )
+        self.assertNotRegex(
+            css,
+            r"\.factor-task-cell\.is-accuracy-highlighted\s*\{[^}]*(?:background|box-shadow)\s*:",
+        )
 
         view_rule = _css_rule(".factor-lab-view")
         page_rule = _css_rule(".factor-lab-page")
@@ -3178,7 +3184,9 @@ class FactorLabRankingTests(unittest.TestCase):
         )
         task_table_cell_rule = _css_rule(".factor-task-table td")
         task_cell_rule = _css_rule(".factor-task-cell")
-        highlight_rule = _css_rule(".factor-task-cell.is-accuracy-highlighted")
+        highlight_rule = _css_rule(
+            ".factor-task-cell.is-accuracy-highlighted .factor-task-top"
+        )
         selected_rule = _css_rule(
             ".factor-task-cell:hover,\n.factor-task-cell.is-selected"
         )
@@ -3212,10 +3220,7 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertIn("gap: 5px;", task_cell_rule)
         self.assertEqual(
             [line.strip() for line in highlight_rule.splitlines() if line.strip()],
-            [
-                "background: rgba(21, 92, 62, 0.05);",
-                "box-shadow: inset 0 0 0 1px rgba(21, 92, 62, 0.15);",
-            ],
+            ["color: var(--negative);"],
         )
         self.assertIn("background: rgba(21, 92, 62, 0.06);", selected_rule)
         self.assertIn("box-shadow: inset 0 0 0 2px rgba(21, 92, 62, 0.15);", selected_rule)

@@ -696,9 +696,8 @@ button {
   transition: background 160ms ease, box-shadow 160ms ease;
 }
 
-.factor-task-cell.is-accuracy-highlighted {
-  background: rgba(21, 92, 62, 0.05);
-  box-shadow: inset 0 0 0 1px rgba(21, 92, 62, 0.15);
+.factor-task-cell.is-accuracy-highlighted .factor-task-top {
+  color: var(--negative);
 }
 
 .factor-task-cell:hover,
