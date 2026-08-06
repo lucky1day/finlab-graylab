@@ -10,8 +10,8 @@
 
 - 当前没有可无条件删除的文档。关闭的 G3.1、Native maintenance、Blackbox onboarding、系统检查和审计记录仍是
   可复核的历史证据，不能因对应工作已闭环而直接删除。
-- 已识别 2 份**待用户确认的 `SUPERSEDED_DRAFT` 删除候选**：它们除彼此之间外没有仓库内入站引用，且实施 checkbox
-  已全部完成；但删除前仍须逐份确认其内容没有仅存于该计划/设计中的审计价值。
+- 已识别 2 份**待用户确认的 `SUPERSEDED_DRAFT` 删除候选**：排除本审计记录为列举候选而产生的自引用后，二者只
+  互相引用，且实施 checkbox 已全部完成；但删除前仍须逐份确认其内容没有仅存于该计划/设计中的审计价值。
 - 其余 `HISTORICAL` 文档不是当前规则，但仍由目录索引、测试、代码注释、产品/运维入口或唯一验收证据引用，继续保留。
 
 ## 审计方法与分类规则
@@ -19,7 +19,7 @@
 1. 以 `rg --files docs` 枚举已跟踪文档，以文档头部状态和
    [文档中心](../../README.md)的状态规则确定当前/历史边界。
 2. 以 `rg -l -F <filename>` 在仓库内检索入站引用，排除 `.git/`、`.worktrees/` 和
-   `reports/`；仅“零入站引用”不构成删除许可。
+   `reports/`。对本报告中为审计而列举的候选文件，另行排除本报告自身的候选列举引用；仅“零入站引用”不构成删除许可。
 3. 只有同时满足“已被现行入口或可复核记录完整替代、没有唯一审计价值、没有文档测试/代码引用、且用户确认”的
    文件才可从工作树删除。Git 历史不能替代仍被治理或验收使用的证据。
 
@@ -40,12 +40,12 @@
 
 | 文件 | 入站引用审计 | 当前判断 | 删除前必须补齐的确认 |
 |---|---|---|---|
-| `docs/superpowers/specs/2026-08-05-factor-lab-live-backtest-cutover-design.md` | 仅由配套实施计划引用 | `SUPERSEDED_DRAFT` 候选 | 确认 target-date cutover 的现行行为已完整由前端测试与产品/状态文档覆盖。 |
-| `docs/superpowers/plans/2026-08-05-factor-lab-live-backtest-cutover.md` | 仅引用配套设计；任务均已标记完成 | `SUPERSEDED_DRAFT` 候选 | 确认它没有独立的上线/回滚审计价值。 |
+| `docs/superpowers/specs/2026-08-05-factor-lab-live-backtest-cutover-design.md` | 排除本审计报告的候选列举后，仅由配套实施计划引用 | `SUPERSEDED_DRAFT` 候选 | 确认 target-date cutover 的现行行为已完整由前端测试与产品/状态文档覆盖。 |
+| `docs/superpowers/plans/2026-08-05-factor-lab-live-backtest-cutover.md` | 排除本审计报告的候选列举后，仅引用配套设计；任务均已标记完成 | `SUPERSEDED_DRAFT` 候选 | 确认它没有独立的上线/回滚审计价值。 |
 
 ## 后续闸门
 
 1. 由用户逐项确认上述 2 份候选是否允许进入删除批次；未确认即保持不动。
-2. 若获确认，先做逐份内容映射和再次入站引用检查，再只删除获批文件，并同步 `docs/README.md`、目录 README
-   和链接。
+2. 若获确认，先做逐份内容映射和再次入站引用检查，再只删除获批文件，并同步 `docs/README.md`、目录 README、
+   链接和本审计记录中的候选清单。
 3. 删除批次须独立提交，并运行文档测试与 `git diff --check`；不得与 G7/G8、D1、前端或生产操作混合。
