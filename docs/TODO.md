@@ -54,7 +54,7 @@ G1/G2、G3 的 8 月 3 日补写、G4、G5/G6 及 G8.1–G8.24 的 repo-only 零
 | 波次 | 工作流 | 当前状态 | 可并行性 | 结束产物 |
 |---|---|---|---|---|
 | 0 | R0：开发分支处置 | `WAITING_EXPLICIT_RELEASE_DECISION` | 不阻塞只读设计 | 用户确认 keep / PR / merge / push 中的明确路径 |
-| A | D1：Liwei 8/11 T+5 失败诊断 | `DIAGNOSIS_COMPLETE_NO_REPAIR_AUTHORIZED` | 不阻塞 G7/G8 | [高置信条件因果推断与独立授权边界](records/status/LIWEI_10Y01_T5_0811_FAILURE_DIAGNOSIS_20260806.md) |
+| A | D1：Liwei 8/11 T+5 失败诊断 | `REPOSITORY_REMEDIATION_VERIFIED_DATA_SCOPE_UNRESOLVED` | 不阻塞 G7/G8 | [代码修复验证与当前快照的独立授权边界](records/status/LIWEI_10Y01_T5_0811_FAILURE_DIAGNOSIS_20260806.md) |
 | A | G7.0：Native 版本模型事实矩阵 | `DECISION_DRAFT_READY` | 等待用户确认，未授权实施 | [26 identity / 30 composite 的事实矩阵](records/status/NATIVE_VERSION_MODEL_FACT_MATRIX_G7_0_20260806.md) |
 | A | G8.0：replay/ledger 保留决策矩阵 | `DECISION_DRAFT_READY` | 等待用户确认，未授权实施 | [保留/迁移/退役候选矩阵](records/status/G8_REPLAY_LEDGER_DECISION_MATRIX_20260806.md) |
 | A | D0：文档生命周期审计 | `AUDIT_COMPLETE_AWAITING_CONFIRMATION` | 不阻塞 G7/G8；不自动删除 | [保留边界与 2 份删除候选](records/status/D0_DOCUMENT_LIFECYCLE_AUDIT_20260806.md) |
@@ -82,15 +82,19 @@ G8，除非诊断证实存在会影响它们的共享控制面缺陷。
 **目标：** 独立诊断 `liwei_0616_10y01_cons_say_k3_div_k10` 的 2026-08-11 T+5 单次失败，不把它混入 G3.1、
 前端改动或日频 T+1 补写。
 
-**状态：** `DIAGNOSIS_COMPLETE_NO_REPAIR_AUTHORIZED`。完整材料见
+**状态：** `REPOSITORY_REMEDIATION_VERIFIED_DATA_SCOPE_UNRESOLVED`。完整材料见
 [D1 诊断记录](records/status/LIWEI_10Y01_T5_0811_FAILURE_DIAGNOSIS_20260806.md)。
 
 - [x] 只读核对 exact version、Registry、交易日历、input authority、cache generation 与 publisher/consumer 顺序。
 - [x] 形成最高置信的条件因果推断：事故前稳定 discovery 顺序使 consumer 先于共享 cache publisher，满足已知
   fail-closed 分支的条件；未读取原始 run-log 异常，因此它不是绝对确证或其它运行期异常的绝对排除。
-- [x] 确认影响只涉及一个 future T+5 key；任何原始异常读取、修复或补数均须另起精确 scope、重新冻结并获得独立授权。
+- [x] 确认已观察到的直接影响为一个 future T+5 key；原始异常未读前不绝对排除其它运行期错误，任何读取、修复或补数
+  均须另起精确 scope、重新冻结并获得独立授权。
+- [x] 复核 `d440091` 已是当前开发分支祖先，且 publisher-first 回归测试通过；没有需要重复提交的代码差异。
+- [x] 在当前配置的受控只读快照中重建该单键的受限 plan：未观察到该 key，且缺少精确 Native generation，
+  因而没有运行 recovery/write Gate；这不对其它环境中声称已补齐的数据作推断。
 
-**禁止：** 不写 2026-08-11、T+5 或其它历史数据；不手工 SQL；不以 G3.1 token、admission 或 provenance 外推权限。
+**禁止：** 不重复写入或伪造 `scheduled_live`；不手工 SQL；不以 G3.1 token、admission 或 provenance 外推权限。
 
 ### G7.0：Native 版本模型事实矩阵与决策稿
 

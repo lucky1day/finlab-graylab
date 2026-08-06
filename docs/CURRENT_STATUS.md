@@ -54,8 +54,9 @@
 
 ## 已完成的只读诊断与治理设计
 
-- D1 已完成 Liwei 2026-08-11 T+5 单次失败的只读诊断。事故前 consumer 位于共享 cache publisher 之前，是最高置信的
-  条件控制面因果推断；由于原始 failed run-log 异常未读取，它不是绝对确证，也不授权读取、修复或补数。详见
+- D1 的 publisher-first repository 修复已由当前分支祖先 `d440091` 和回归测试确认；事故前 consumer 位于共享 cache
+  publisher 之前仍只是最高置信的条件控制面因果推断，原始 failed run-log 异常未读取。当前配置的受控只读快照未观察到
+  该单键且缺精确 Native generation，因此未再次写入；这不推断其它环境的数据状态。详见
   [D1 诊断](records/status/LIWEI_10Y01_T5_0811_FAILURE_DIAGNOSIS_20260806.md)。
 - G7.0 已形成 Native 26 identity / 30 composite Registry 的事实矩阵和最小目标模型草案；DB/API/installed 状态仍须
   后续单独只读核验，G7.1 等待用户确认目标语义。详见
@@ -72,5 +73,5 @@
 - G7.1：Native 版本模型收敛等待用户确认 G7.0 目标语义；确认前没有授权的代码、数据库或控制面动作。
 - G8.1：最终退役等待用户确认 replay/recovery、legacy mode 和历史 ledger 数据保留；任何 installed plist 或
   数据库迁移仍须独立设计与授权。
-- D1 的原始异常读取或任何 2026-08-11 T+5 recovery 均须独立的只读/业务写入 scope；完整排序和边界以
+- D1 的原始异常读取或任何当前配置快照未见的 2026-08-11 T+5 recovery 均须独立的只读/业务写入 scope；完整排序和边界以
   [统一后续推进计划](TODO.md)为准。

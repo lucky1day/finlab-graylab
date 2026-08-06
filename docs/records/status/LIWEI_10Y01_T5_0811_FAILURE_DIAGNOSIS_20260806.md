@@ -265,3 +265,20 @@ index 6: liwei_0616_10y01_full_oos_k3_div_k10
 | `conda run --no-capture-output -n bond_factor_lab_service python -m unittest tests.test_native_generation_liwei` | 1 test，`OK`；验证 mocked/frozen generation 合同，不验证现场 artifact 重算。 |
 | `conda run --no-capture-output -n bond_factor_lab_service python -m unittest tests.test_launchd_prediction_runner` | 12 tests，`OK`；包含 publisher 先于 consumer 的 mock runner 测试，不验证历史 failed run 的原始异常。 |
 | `git diff --check` | exit 0，无输出 |
+
+---
+
+## 7. 2026-08-06 修复集成复核（不写入）
+
+- `d440091` 是当前开发分支的祖先；其中的 `_cache_publishers_first` 与
+  `test_native_cache_publishers_run_before_consumers` 已在当前源码中存在。当前回归命令
+  `tests/test_launchd_prediction_runner.py::LaunchdPredictionRunnerTests::test_native_cache_publishers_run_before_consumers`、
+  `tests/test_launchd_prediction_runner.py` 与 `tests/test_native_generation_liwei.py` 共 `13 passed, 10 subtests passed`。
+  因此没有新的 repository 行为差异可再次提交。
+- 使用既有 `plan_signal_gaps` 的 RR consistent、read-only snapshot，对
+  `predict_date=2026-08-05`、`target_date=2026-08-11`、`task_type=T+5` 重建受限计划。该快照选出 24 个
+  expected key，其中本方案 `10Y/h5` key 的 `business_key_present=false`，动作是
+  `BLOCKED_NO_GENERATION/NO_EXACT_NATIVE_GENERATION`；整个 selection 有 5 个 open gap。
+- 这项结果只描述当前配置连接的受控快照。它不否定其它数据库、环境或未纳入该 snapshot 的外部数据声明；同时也不构成
+  重复写入、手工 SQL、`scheduled_live` 伪造或 recovery Gate 的依据。本轮未执行业务写入、cache publish、算法子进程、
+  launchd、plist 或服务操作。
