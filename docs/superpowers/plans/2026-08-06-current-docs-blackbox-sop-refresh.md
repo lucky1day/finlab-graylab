@@ -171,7 +171,7 @@ git diff --check
 git commit -m "docs: clarify blackbox intake and admission boundaries"
 ```
 
-- [ ] **Step 3: 在根开发分支串行集成并推送**
+- [x] **Step 3: 在根开发分支串行集成并推送**
 
 确认根工作区仍只含预先存在的用户文件后，cherry-pick 本工作树的设计提交和实现提交到 `codex/audit-bugfixes-20260613`。随后只推送该开发分支：
 
