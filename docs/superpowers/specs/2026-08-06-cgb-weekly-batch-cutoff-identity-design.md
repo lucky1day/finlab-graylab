@@ -15,6 +15,8 @@ point-in-time 语义，批量执行不得将它们合并为同一个结果。
    原始 Request；
 3. 不修改 20 个冻结的源算法组件、特征公式、模型参数或预测语义，只修改 Contract
    1.0 的批量适配包装层。
+4. `gray_live` 是结果的生命周期/落库语义，不是回补时必须逐周获取 DataBridge、
+   逐周重跑模型的计算拓扑。连续灰度区间可以参与同一次批量计算。
 
 ## 入库补齐的主路径
 
@@ -34,20 +36,37 @@ point-in-time 语义，批量执行不得将它们合并为同一个结果。
 计算。若需补齐 72 个周点，逐周独立模式会重复计算 W01、W02 等历史前缀，而一次运行
 只计算 W01…W72 一次并返回所有行。
 
-截至边界必须按日期语义解释，不能只写一个自然日文本。例如在 2026-08-06 说“补齐到
-2026-08-01 的数据”若指输入数据截止，则应解析为不晚于 8 月 1 日的最后交易日
-2026-07-31；该特征日按本方案 h1 周度语义会生成目标周 2026-08-07 的信号。若指的是
-前端只显示 `target_date <= 2026-08-01`，最后一条则是目标周 2026-07-31，二者不是同一
-个边界，执行前必须明确选择。
+截至边界必须按日期语义解释，不能只写一个自然日文本。这里的“补齐到 2026-08-01
+的数据”定义为**输入数据 as-of 边界**，不是 `target_date` 上界。2026-08-01 是非交易日，
+因此必须由权威交易日历解析为 2026-07-31 的最后交易日。以该日为最大 feature cutoff
+的一次计算会同时返回此前所有周的结果，并包含以 2026-07-31 为 `feature_date`、下一
+实际周为 `target_date` 的最新信号。
 
 无论选择哪一种边界，数据库中已经存在更晚日期的数据也不得被读入这次运行。输入
 artifact 和 `daily_cutoff_key` 必须物理截断到选定 as-of 状态，保证补齐结果不吸收未来
 数据。
 
-历史与实盘写入仍须按预测语义分流：本方案 `target_date <= 2026-05-29` 的结果属于
-historical backtest；`target_date >= 2026-06-01` 的结果属于 `gray_live`/实盘信号，不能因
-为同样由一次回放产生就写入 `t_backtest_*`。前端展示由现有 Registry/API 读取已持久化
-的正确阶段结果，不需要为每个周点单独刷新或改写前端算法。
+同一批输出在**计算完成后**才按预测语义分流：本方案 `target_date <= 2026-05-29` 的结果
+属于 historical backtest；`target_date >= 2026-06-01` 的结果属于 `gray_live`/实盘信号，
+不能因为同样由一次回放产生就写入 `t_backtest_*`。对于 2026-06 至 2026-07 的灰度周，
+仍然为每条记录保留其原本的 `predict_date=T+1`、`feature_date=T`、`target_date`、各自
+cutoff 和 `prediction_phase=gray_live`；但它们共享一次输入读取和一次 batch delivery。
+前端展示由现有 Registry/API 读取已持久化的正确阶段结果，不需要为每个周点单独刷新
+或改写前端算法。
+
+具体执行顺序为：
+
+```text
+一次打开/生成截至 2026-07-31 的 DataBridge 快照
+  -> 由权威周历枚举历史 + gray_live 的每个预测点和各自 cutoff
+  -> 一次 Blackbox `backtest` 调用（当前 profile 单批上限 100 条）
+  -> delivery 一次 walk-forward 返回逐周结果
+  -> 按原始预测点回填日期、阶段和 provenance
+  -> 仅在持久化阶段拆回各自的 historical / gray_live 业务键与审计 run
+```
+
+这里“为每个预测点构建 cutoff”只是在内存中生成 Request 元数据；不是为每个周点重新
+查询数据库、生成 DataBridge 制品、复制 runtime 文件或启动算法进程。
 
 ## 问题边界
 
@@ -110,9 +129,17 @@ Request 输入顺序影响。
 
 ## 实现范围
 
-仅修改
-`schemes/cgb_causal_wk_1y_v128/delivery/cgb_causal_wk_1y_v128.py` 的非冻结 Contract
-包装区：
+实现分为两个边界清晰的层：
+
+1. `schemes/cgb_causal_wk_1y_v128/delivery/cgb_causal_wk_1y_v128.py` 的非冻结 Contract
+   包装区负责正确消费一个批次；
+2. 方案入库/gray gap 的 Blackbox 协调层负责把同一方案、同一精确版本、同一
+   DataBridge snapshot lineage（`generation_id`、manifest、`refresh_date`、replay mode
+   相同）的连续周点合并为一个输入快照和一个 batch 调用。每条 Request 自己的
+   `cutoff_date` 仍然不同且必须保留。协调层在计算完成后再把记录交回既有逐
+   `predict_date` 的审计和原子写入边界。
+
+交付包装层的职责：
 
 - 新增一个纯函数生成完整 cutoff signature，并据此稳定分组与回填结果；
 - 将 `_one_pass_rows()` 的结果从 `week_id -> row` 改为 `signature -> row`，且只在
@@ -123,11 +150,25 @@ Request 输入顺序影响。
 - 保留 `truncate_for_request()` 的逐 Request 截断与日历一致性检查，不放宽任何截止
   键校验。
 
+协调层的职责：
+
+- 新增一个只读的 Blackbox batch runner 接口：接收一个 config、同一 snapshot lineage
+  下的有序预测点和一个最大 as-of 边界；只打开一次输入快照/runtime view，生成每条
+  Request 的原始 live 日期和独立 cutoff，再调用现有 `run_blackbox_backtest()` 一次；
+- `signal-gap-fill` 对满足上述兼容条件的 Blackbox 周度 gray gap 使用该接口，而不再按
+  `(base_scheme_id, predict_date)` 分别调用 `run_configured_scheme()`；
+- 继续保留逐 `predict_date` 的授权、run 创建、insert-only 业务键和完成/失败审计；批量
+  只合并计算，不扩大任何 token 或写入权限；
+- 若 DataBridge snapshot lineage、精确版本、运行时、频率、输入身份不同，或批内出现
+  同周多个 cutoff signature，则不合并该集合，走已有的隔离路径；仅 `cutoff_date` 不同
+  是连续历史/灰度周点的正常情形，不能据此拆分 DataBridge 或算法运行。
+
 不修改以下内容：
 
 - 20 个 `_build_component_*` 冻结组件及其日频聚合、模型、阈值、训练窗口、投票和
   fallback 逻辑；
-- `predict` 单点路径、输入制品、日历、数据库、Harness Gate 通用实现或 scheduler；
+- `predict` 单点路径、日历、数据库 schema、Registry、scheduler 调度语义或 Harness
+  的授权范围；
 - 任何生产数据库、Registry、launchd plist 或 scheduler admission 的状态。
 
 修改交付脚本会生成新的精确 `scheme_version`。现有
@@ -161,9 +202,11 @@ Request 输入顺序影响。
    `request_id` 映射一致，且独立计算次数按唯一 signature 而非原始条数计。
 5. 现有 Blackbox Contract/Harness 单元测试和静态检查仍通过；执行实际零写 CGB
    no-persist BacktestGate 以验证批次大小不变性和截止隔离。
-6. 入库补齐回归用一个固定 as-of 输入覆盖连续历史周，断言 delivery 只启动一次完整
-   walk-forward、返回所需全部周行、不会读取截止日之后的数据；持久化测试分别断言
-   historical 与 `gray_live` 结果不会跨阶段落表。
+6. 入库补齐回归用一个固定 as-of 输入覆盖连续历史周和 2026-06 起的 gray_live 周，断言
+   DataBridge 快照/runtime view/Blackbox batch 各只打开或调用一次，delivery 只启动一次
+   完整 walk-forward、返回所需全部周行、不会读取截止日之后的数据；持久化测试分别
+   断言 historical 与 `gray_live` 结果不会跨阶段落表，且每条 gray 记录仍带原始 live
+   日期、cutoff、phase、exact version 和 authority。
 
 验收不以“同周不同截止日结果相同”为条件；验收条件是每条批量结果与同一条 Request
 的独立截断结果相同。
