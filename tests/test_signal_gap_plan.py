@@ -3,8 +3,13 @@ from __future__ import annotations
 from dataclasses import replace
 import unittest
 from typing import Any
+from unittest.mock import patch
 
 from harness import signal_gap_plan
+from shared.data_bridge.authority import (
+    StableDataBridgeCutoff,
+    StableDataBridgeFileIdentity,
+)
 
 
 _CODE_HASH = "a" * 64
@@ -155,7 +160,316 @@ def _valid_target() -> signal_gap_plan.RegistryTarget:
     )
 
 
+def _databridge_authority_payload(feature_date: str) -> dict[str, Any]:
+    return {
+        "authority_type": "stable_databridge_current",
+        "authority_schema_version": "stable-databridge-current-authority-v1",
+        "stable_identity_sha256": "c" * 64,
+        "generation_id": "gray-replay-generation-1",
+        "refresh_date": "2026-08-06",
+        "schema_version": "data-bridge-v1",
+        "business_digest": "d" * 64,
+        "publication_capability": None,
+        "files": [
+            {
+                "filename": "daily_output.csv",
+                "rows": 3,
+                "columns": 2,
+                "min_key": "2026-07-24",
+                "max_key": "2026-08-06",
+                "sha256": "1" * 64,
+                "business_hash": "4" * 64,
+            },
+            {
+                "filename": "monthly_output.csv",
+                "rows": 3,
+                "columns": 2,
+                "min_key": "202606",
+                "max_key": "202608",
+                "sha256": "2" * 64,
+                "business_hash": "5" * 64,
+            },
+            {
+                "filename": "weekly_output.csv",
+                "rows": 3,
+                "columns": 2,
+                "min_key": "202630",
+                "max_key": "202632",
+                "sha256": "3" * 64,
+                "business_hash": "6" * 64,
+            },
+        ],
+        "cutoff": {
+            "feature_date": feature_date,
+            "daily_cutoff_key": feature_date,
+            "weekly_cutoff_key": "202631",
+            "monthly_cutoff_key": "202607",
+        },
+    }
+
+
+def _stable_databridge_authority(
+    feature_date: str,
+) -> signal_gap_plan.StableDataBridgeCurrentAuthority:
+    payload = _databridge_authority_payload(feature_date)
+    return signal_gap_plan.StableDataBridgeCurrentAuthority(
+        authority_schema_version=str(
+            payload["authority_schema_version"]
+        ),
+        generation_id=str(payload["generation_id"]),
+        refresh_date=str(payload["refresh_date"]),
+        schema_version=str(payload["schema_version"]),
+        business_digest=str(payload["business_digest"]),
+        publication_capability=None,
+        files=tuple(
+            StableDataBridgeFileIdentity(
+                filename=str(item["filename"]),
+                rows=int(item["rows"]),
+                columns=int(item["columns"]),
+                min_key=str(item["min_key"]),
+                max_key=str(item["max_key"]),
+                sha256=str(item["sha256"]),
+                business_hash=str(item["business_hash"]),
+            )
+            for item in payload["files"]
+        ),
+        cutoffs=(
+            StableDataBridgeCutoff(
+                feature_date=feature_date,
+                daily_cutoff_key=feature_date,
+                weekly_cutoff_key="202631",
+                monthly_cutoff_key="202607",
+            ),
+        ),
+        publication_identity_sha256="e" * 64,
+        stable_identity_sha256="c" * 64,
+    )
+
+
 class SignalGapPlanTests(unittest.TestCase):
+    def test_authority_serializer_and_override_normalizer_round_trip(
+        self,
+    ) -> None:
+        feature_date = "2026-08-03"
+        payload = signal_gap_plan._databridge_authority_payload(
+            _stable_databridge_authority(feature_date),
+            feature_date=feature_date,
+        )
+
+        self.assertEqual(
+            signal_gap_plan._normalize_databridge_authority_payload(
+                payload,
+                expected_feature_date=feature_date,
+            ),
+            payload,
+        )
+
+    def test_authority_serializer_rejects_noncanonical_text(
+        self,
+    ) -> None:
+        authority = replace(
+            _stable_databridge_authority("2026-08-03"),
+            generation_id=" current-1 ",
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "DataBridge current authority fence is invalid",
+        ):
+            signal_gap_plan._databridge_authority_payload(
+                authority,
+                feature_date="2026-08-03",
+            )
+
+    def test_frozen_authority_path_never_calls_mutable_resolver(
+        self,
+    ) -> None:
+        feature_date = "2026-08-03"
+        authority = _databridge_authority_payload(feature_date)
+        with patch.object(
+            signal_gap_plan,
+            "resolve_stable_databridge_current_authority",
+            side_effect=AssertionError("mutable resolver must not run"),
+        ) as resolver:
+            (
+                current,
+                error,
+                overrides,
+            ) = signal_gap_plan._resolve_snapshot_databridge_authority(
+                scoped_blackbox_feature_dates=(feature_date,),
+                required_databridge_feature_dates=(feature_date,),
+                databridge_authority_overrides={
+                    feature_date: authority
+                },
+                databridge_config=object(),
+                connection=object(),
+            )
+
+        self.assertIsNone(current)
+        self.assertIsNone(error)
+        self.assertEqual(overrides, {feature_date: authority})
+        resolver.assert_not_called()
+
+    def test_frozen_authority_rejects_scope_external_override_date(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(
+            signal_gap_plan.SignalGapPlanError,
+            "DATABRIDGE_AUTHORITY_OVERRIDE_SCOPE_INVALID",
+        ):
+            signal_gap_plan._resolve_snapshot_databridge_authority(
+                scoped_blackbox_feature_dates=("2026-08-03",),
+                required_databridge_feature_dates=("2026-08-03",),
+                databridge_authority_overrides={
+                    "2026-08-02": _databridge_authority_payload(
+                        "2026-08-02"
+                    )
+                },
+                databridge_config=object(),
+                connection=object(),
+            )
+
+    def test_frozen_authority_preserves_canonical_action_and_plan_sha(
+        self,
+    ) -> None:
+        target = replace(
+            _valid_target(),
+            runtime_type="blackbox_v2",
+            input_mode="databridge_v1",
+        )
+        case = signal_gap_plan.ExpectedSignalCase(
+            registry_scheme_id=target.registry_scheme_id,
+            base_scheme_id=target.base_scheme_id,
+            runtime_type=target.runtime_type,
+            frequency=target.frequency,
+            task_type=target.task_type,
+            target_tenor=target.target_tenor,
+            horizon=target.horizon,
+            predict_date="2026-08-04",
+            feature_date="2026-08-03",
+            target_date="2026-08-04",
+            segment="live",
+        )
+        authority = _stable_databridge_authority(case.feature_date)
+        payload = _databridge_authority_payload(case.feature_date)
+        base_snapshot = signal_gap_plan.SignalGapSnapshot(
+            registry_targets=(target,),
+            expected_cases=(case,),
+            canonical_signals=(),
+            live_signals=(),
+            input_generations=(),
+            input_watermarks={},
+            source_identity_sha256="1" * 64,
+            discovery_identity_sha256="2" * 64,
+            active_version_identity_sha256="3" * 64,
+        )
+        current_plan = signal_gap_plan.build_signal_gap_plan(
+            replace(base_snapshot, databridge_authority=authority),
+            start_date="2026-08-04",
+            as_of_date="2026-08-05",
+        )
+        override_plan = signal_gap_plan.build_signal_gap_plan(
+            replace(
+                base_snapshot,
+                databridge_authority_overrides={
+                    case.feature_date: payload
+                },
+            ),
+            start_date="2026-08-04",
+            as_of_date="2026-08-05",
+        )
+
+        self.assertEqual(
+            current_plan["actions"],
+            override_plan["actions"],
+        )
+        self.assertEqual(
+            current_plan["plan_sha256"],
+            override_plan["plan_sha256"],
+        )
+
+    def test_frozen_databridge_authority_override_avoids_current_resolution(
+        self,
+    ) -> None:
+        target = replace(
+            _valid_target(),
+            runtime_type="blackbox_v2",
+            input_mode="databridge_v1",
+        )
+        case = signal_gap_plan.ExpectedSignalCase(
+            registry_scheme_id=target.registry_scheme_id,
+            base_scheme_id=target.base_scheme_id,
+            runtime_type=target.runtime_type,
+            frequency=target.frequency,
+            task_type=target.task_type,
+            target_tenor=target.target_tenor,
+            horizon=target.horizon,
+            predict_date="2026-08-04",
+            feature_date="2026-08-03",
+            target_date="2026-08-04",
+            segment="live",
+        )
+        authority = _databridge_authority_payload(case.feature_date)
+        snapshot = signal_gap_plan.SignalGapSnapshot(
+            registry_targets=(target,),
+            expected_cases=(case,),
+            canonical_signals=(),
+            live_signals=(),
+            input_generations=(),
+            input_watermarks={},
+            source_identity_sha256="1" * 64,
+            discovery_identity_sha256="2" * 64,
+            active_version_identity_sha256="3" * 64,
+        )
+        seen: dict[str, object] = {}
+
+        class Connection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc_info):
+                return None
+
+            def exec_driver_sql(self, statement: str) -> None:
+                seen.setdefault("statements", []).append(statement)
+
+            def rollback(self) -> None:
+                seen["rolled_back"] = True
+
+        class Engine:
+            def connect(self) -> Connection:
+                return Connection()
+
+        def reader(
+            _connection,
+            *,
+            databridge_authority_overrides,
+            **_kwargs,
+        ):
+            seen["overrides"] = databridge_authority_overrides
+            return replace(
+                snapshot,
+                databridge_authority_overrides=databridge_authority_overrides,
+            )
+
+        result = signal_gap_plan.plan_signal_gaps(
+            Engine(),
+            start_date="2026-08-04",
+            as_of_date="2026-08-05",
+            snapshot_reader=reader,
+            execution_authority=(),
+            databridge_config=object(),
+            databridge_authority_overrides={case.feature_date: authority},
+        )
+
+        self.assertEqual(seen["overrides"], {case.feature_date: authority})
+        self.assertTrue(seen["rolled_back"])
+        self.assertEqual(result["actions"][0]["action"], "GRAY_LIVE_GAP")
+        self.assertEqual(
+            result["actions"][0]["input_authority"],
+            authority,
+        )
+
     def test_target_date_task_scope_excludes_unrelated_future_t5(self) -> None:
         """受限 repair plan 只枚举目标日/T+1，不混入同预测日 T+5。"""
         t1_target = _valid_target()

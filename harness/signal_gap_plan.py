@@ -472,6 +472,9 @@ class SignalGapSnapshot:
     databridge_authority_error: (
         Literal["MISSING", "INVALID"] | None
     ) = None
+    databridge_authority_overrides: (
+        Mapping[str, Mapping[str, Any]] | None
+    ) = None
 
 
 SnapshotReader = Callable[..., SignalGapSnapshot]
@@ -486,6 +489,9 @@ def plan_signal_gaps(
     snapshot_reader: SnapshotReader | None = None,
     execution_authority: Sequence[DiscoveredSchemeIdentity] | None = None,
     databridge_config: DataBridgeRefreshConfig,
+    databridge_authority_overrides: (
+        Mapping[str, Mapping[str, Any]] | None
+    ) = None,
 ) -> dict[str, Any]:
     """在一个 RR consistent snapshot/read-only 事务中规划全部缺口。"""
     normalized_start = _canonical_date(start_date, "start_date")
@@ -503,6 +509,13 @@ def plan_signal_gaps(
     )
     discovery_identity_sha256 = _discovery_identity_sha256(authority)
     reader = snapshot_reader or read_signal_gap_snapshot
+    normalized_authority_overrides = (
+        _normalize_databridge_authority_overrides(
+            databridge_authority_overrides
+        )
+        if databridge_authority_overrides is not None
+        else None
+    )
     with engine.connect() as connection:
         connection.exec_driver_sql(
             "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
@@ -512,13 +525,27 @@ def plan_signal_gaps(
         )
         try:
             try:
+                reader_kwargs: dict[str, Any] = {
+                    "start_date": normalized_start,
+                    "as_of_date": normalized_as_of,
+                    "execution_authority": authority,
+                    "discovery_identity_sha256": (
+                        discovery_identity_sha256
+                    ),
+                    "databridge_config": databridge_config,
+                }
+                if (
+                    normalized_scope.is_restricted
+                    or normalized_authority_overrides is not None
+                ):
+                    reader_kwargs["scope"] = normalized_scope
+                if normalized_authority_overrides is not None:
+                    reader_kwargs["databridge_authority_overrides"] = (
+                        normalized_authority_overrides
+                    )
                 snapshot = reader(
                     connection,
-                    start_date=normalized_start,
-                    as_of_date=normalized_as_of,
-                    execution_authority=authority,
-                    discovery_identity_sha256=discovery_identity_sha256,
-                    databridge_config=databridge_config,
+                    **reader_kwargs,
                 )
             except SignalGapPlanError:
                 raise
@@ -674,6 +701,13 @@ def build_signal_gap_plan(
             databridge_authority=snapshot.databridge_authority,
             databridge_authority_error=(
                 snapshot.databridge_authority_error
+            ),
+            databridge_authority_override=(
+                snapshot.databridge_authority_overrides.get(
+                    item.feature_date
+                )
+                if snapshot.databridge_authority_overrides is not None
+                else None
             ),
             native_artifact_verifier=(
                 native_artifact_verifier.verify
@@ -979,8 +1013,13 @@ def read_signal_gap_snapshot(
     execution_authority: Sequence[DiscoveredSchemeIdentity],
     discovery_identity_sha256: str,
     databridge_config: DataBridgeRefreshConfig,
+    scope: SignalGapPlanScope | Mapping[str, Any] | None = None,
+    databridge_authority_overrides: (
+        Mapping[str, Mapping[str, Any]] | None
+    ) = None,
 ) -> SignalGapSnapshot:
     """读取真实 active/version/result 快照并建立可审计 authority。"""
+    normalized_scope = normalize_signal_gap_plan_scope(scope)
     (
         raw_registry,
         registry_targets,
@@ -1092,24 +1131,45 @@ def read_signal_gap_snapshot(
                 for case in live_cases
                 if case.runtime_type == "blackbox_v2"
                 and case.business_key not in observed_live_keys
+                and _case_is_within_plan_scope(
+                    case,
+                    start_date=start_date,
+                    as_of_date=as_of_date,
+                    scope=normalized_scope,
+                )
             }
         )
     )
-    databridge_authority = None
-    databridge_authority_error = None
-    if required_databridge_feature_dates:
-        try:
-            databridge_authority = (
-                resolve_stable_databridge_current_authority(
-                    databridge_config,
-                    feature_dates=required_databridge_feature_dates,
-                    connection=connection,
+    scoped_blackbox_feature_dates = tuple(
+        sorted(
+            {
+                case.feature_date
+                for case in live_cases
+                if case.runtime_type == "blackbox_v2"
+                and _case_is_within_plan_scope(
+                    case,
+                    start_date=start_date,
+                    as_of_date=as_of_date,
+                    scope=normalized_scope,
                 )
-            )
-        except DataBridgeCurrentMissingError:
-            databridge_authority_error = "MISSING"
-        except DataBridgeCurrentInvalidError:
-            databridge_authority_error = "INVALID"
+            }
+        )
+    )
+    (
+        databridge_authority,
+        databridge_authority_error,
+        selected_authority_overrides,
+    ) = _resolve_snapshot_databridge_authority(
+        scoped_blackbox_feature_dates=scoped_blackbox_feature_dates,
+        required_databridge_feature_dates=(
+            required_databridge_feature_dates
+        ),
+        databridge_authority_overrides=(
+            databridge_authority_overrides
+        ),
+        databridge_config=databridge_config,
+        connection=connection,
+    )
     identity = connection.execute(
         text(
             """
@@ -1160,6 +1220,7 @@ def read_signal_gap_snapshot(
         canonical_authorities=canonical_authorities,
         databridge_authority=databridge_authority,
         databridge_authority_error=databridge_authority_error,
+        databridge_authority_overrides=selected_authority_overrides,
     )
 
 
@@ -2196,6 +2257,7 @@ def _resolve_action(
     generations: Sequence[InputGeneration],
     databridge_authority: StableDataBridgeCurrentAuthority | None,
     databridge_authority_error: str | None,
+    databridge_authority_override: Mapping[str, Any] | None,
     native_artifact_verifier: Callable[
         [InputGeneration],
         tuple[Mapping[str, Any] | None, str | None],
@@ -2240,6 +2302,7 @@ def _resolve_action(
             item,
             authority=databridge_authority,
             authority_error=databridge_authority_error,
+            authority_override=databridge_authority_override,
         )
     return _native_generation_eligibility(
         item,
@@ -2253,7 +2316,33 @@ def _blackbox_generation_eligibility(
     *,
     authority: StableDataBridgeCurrentAuthority | None,
     authority_error: str | None,
+    authority_override: Mapping[str, Any] | None = None,
 ) -> tuple[Action, Mapping[str, Any] | None, str]:
+    if authority_override is not None:
+        try:
+            selected = _normalize_databridge_authority_payload(
+                authority_override,
+                expected_feature_date=item.feature_date,
+            )
+        except SignalGapPlanError:
+            return (
+                "BLOCKED_DATA_CONTRACT",
+                None,
+                "DATABRIDGE_CURRENT_INVALID",
+            )
+        if item.predict_date >= selected["refresh_date"]:
+            return (
+                "BLOCKED_NO_GENERATION",
+                selected,
+                "DATABRIDGE_CURRENT_REFRESH_REQUIRED",
+            )
+        if selected["cutoff"]["daily_cutoff_key"] != item.feature_date:
+            return (
+                "BLOCKED_DATA_CONTRACT",
+                selected,
+                "DATABRIDGE_CUTOFF_AUTHORITY_INVALID",
+            )
+        return "GRAY_LIVE_GAP", selected, "LIVE_BUSINESS_KEY_MISSING"
     if authority_error == "MISSING" or (
         authority is None and authority_error is None
     ):
@@ -2514,7 +2603,9 @@ def _databridge_authority_payload(
         authority.authority_schema_version
         != "stable-databridge-current-authority-v1"
         or not authority.generation_id.strip()
+        or authority.generation_id != authority.generation_id.strip()
         or not authority.schema_version.strip()
+        or authority.schema_version != authority.schema_version.strip()
         or not _is_sha256(authority.business_digest)
         or not _is_sha256(authority.stable_identity_sha256)
     ):
@@ -2612,6 +2703,413 @@ def _databridge_authority_payload(
             "weekly_cutoff_key": cutoff.weekly_cutoff_key,
             "monthly_cutoff_key": cutoff.monthly_cutoff_key,
         },
+    }
+
+
+_DATABRIDGE_AUTHORITY_FIELDS = frozenset(
+    {
+        "authority_type",
+        "authority_schema_version",
+        "stable_identity_sha256",
+        "generation_id",
+        "refresh_date",
+        "schema_version",
+        "business_digest",
+        "publication_capability",
+        "files",
+        "cutoff",
+    }
+)
+_DATABRIDGE_FILE_FIELDS = frozenset(
+    {
+        "filename",
+        "rows",
+        "columns",
+        "min_key",
+        "max_key",
+        "sha256",
+        "business_hash",
+    }
+)
+_DATABRIDGE_CUTOFF_FIELDS = frozenset(
+    {
+        "feature_date",
+        "daily_cutoff_key",
+        "weekly_cutoff_key",
+        "monthly_cutoff_key",
+    }
+)
+_DATABRIDGE_FILE_NAMES = (
+    "daily_output.csv",
+    "monthly_output.csv",
+    "weekly_output.csv",
+)
+
+
+def _normalize_databridge_authority_overrides(
+    overrides: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """校验并规范化已冻结的逐 feature-date DataBridge authority。"""
+    if not isinstance(overrides, Mapping):
+        raise SignalGapPlanError(
+            "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
+            "overrides must be a mapping keyed by feature_date",
+        )
+    normalized: dict[str, dict[str, Any]] = {}
+    for raw_feature_date, payload in overrides.items():
+        feature_date = _canonical_date(
+            raw_feature_date,
+            "databridge authority override feature_date",
+        )
+        if feature_date in normalized:
+            raise SignalGapPlanError(
+                "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
+                f"duplicate feature_date={feature_date}",
+            )
+        normalized[feature_date] = _normalize_databridge_authority_payload(
+            payload,
+            expected_feature_date=feature_date,
+        )
+    return {
+        feature_date: normalized[feature_date]
+        for feature_date in sorted(normalized)
+    }
+
+
+def _resolve_snapshot_databridge_authority(
+    *,
+    scoped_blackbox_feature_dates: Sequence[str],
+    required_databridge_feature_dates: Sequence[str],
+    databridge_authority_overrides: (
+        Mapping[str, Mapping[str, Any]] | None
+    ),
+    databridge_config: DataBridgeRefreshConfig,
+    connection: Any,
+) -> tuple[
+    StableDataBridgeCurrentAuthority | None,
+    Literal["MISSING", "INVALID"] | None,
+    Mapping[str, Mapping[str, Any]] | None,
+]:
+    """选择当前 authority 或冻结 override；两条路径互斥。"""
+    if databridge_authority_overrides is not None:
+        normalized_overrides = _normalize_databridge_authority_overrides(
+            databridge_authority_overrides
+        )
+        allowed_dates = set(scoped_blackbox_feature_dates)
+        extra_override_dates = set(normalized_overrides) - allowed_dates
+        if extra_override_dates:
+            raise SignalGapPlanError(
+                "DATABRIDGE_AUTHORITY_OVERRIDE_SCOPE_INVALID",
+                "override dates are outside the selected Blackbox scope: "
+                + ",".join(sorted(extra_override_dates)),
+            )
+        selected_overrides = {
+            feature_date: normalized_overrides[feature_date]
+            for feature_date in sorted(allowed_dates & set(normalized_overrides))
+        }
+        missing_override_dates = set(
+            required_databridge_feature_dates
+        ) - set(selected_overrides)
+        return (
+            None,
+            "MISSING" if missing_override_dates else None,
+            selected_overrides,
+        )
+    if not required_databridge_feature_dates:
+        return None, None, None
+    try:
+        authority = resolve_stable_databridge_current_authority(
+            databridge_config,
+            feature_dates=required_databridge_feature_dates,
+            connection=connection,
+        )
+    except DataBridgeCurrentMissingError:
+        return None, "MISSING", None
+    except DataBridgeCurrentInvalidError:
+        return None, "INVALID", None
+    return authority, None, None
+
+
+def _normalize_databridge_authority_payload(
+    payload: Mapping[str, Any],
+    *,
+    expected_feature_date: str | None = None,
+) -> dict[str, Any]:
+    """接受且只接受 `_databridge_authority_payload()` 的持久化语法。"""
+    if not isinstance(payload, Mapping):
+        raise SignalGapPlanError(
+            "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
+            "authority payload must be an object",
+        )
+    if set(payload) != _DATABRIDGE_AUTHORITY_FIELDS:
+        raise SignalGapPlanError(
+            "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
+            "authority payload fields do not match stable current grammar",
+        )
+    if payload["authority_type"] != "stable_databridge_current":
+        raise SignalGapPlanError(
+            "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
+            "authority_type must be stable_databridge_current",
+        )
+    if (
+        payload["authority_schema_version"]
+        != "stable-databridge-current-authority-v1"
+    ):
+        raise SignalGapPlanError(
+            "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
+            "authority_schema_version is unsupported",
+        )
+
+    generation_id = _required_authority_text(
+        payload["generation_id"],
+        "generation_id",
+    )
+    refresh_date = _canonical_date(
+        payload["refresh_date"],
+        "authority refresh_date",
+    )
+    schema_version = _required_authority_text(
+        payload["schema_version"],
+        "schema_version",
+    )
+    for field in ("stable_identity_sha256", "business_digest"):
+        if not _is_sha256(payload[field]):
+            raise SignalGapPlanError(
+                "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
+                f"{field} must be a lowercase SHA-256 digest",
+            )
+
+    files = _normalize_databridge_authority_files(payload["files"])
+    publication_capability = _normalize_publication_capability(
+        payload["publication_capability"]
+    )
+    cutoff = _normalize_databridge_authority_cutoff(
+        payload["cutoff"],
+        expected_feature_date=expected_feature_date,
+    )
+    return {
+        "authority_type": "stable_databridge_current",
+        "authority_schema_version": (
+            "stable-databridge-current-authority-v1"
+        ),
+        "stable_identity_sha256": payload["stable_identity_sha256"],
+        "generation_id": generation_id,
+        "refresh_date": refresh_date,
+        "schema_version": schema_version,
+        "business_digest": payload["business_digest"],
+        "publication_capability": publication_capability,
+        "files": files,
+        "cutoff": cutoff,
+    }
+
+
+def _required_authority_text(value: Any, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+    ):
+        raise SignalGapPlanError(
+            "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
+            f"{field} must be non-empty canonical text",
+        )
+    return value
+
+
+def _normalize_databridge_authority_files(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) != len(
+        _DATABRIDGE_FILE_NAMES
+    ):
+        raise SignalGapPlanError(
+            "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
+            "files must contain the three canonical DataBridge files",
+        )
+    normalized: list[dict[str, Any]] = []
+    for expected_name, raw_file in zip(_DATABRIDGE_FILE_NAMES, value):
+        if not isinstance(raw_file, Mapping) or set(raw_file) != (
+            _DATABRIDGE_FILE_FIELDS
+        ):
+            raise SignalGapPlanError(
+                "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
+                "file authority fields are invalid",
+            )
+        if raw_file["filename"] != expected_name:
+            raise SignalGapPlanError(
+                "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
+                "file authority order or filenames are invalid",
+            )
+        rows = raw_file["rows"]
+        columns = raw_file["columns"]
+        if (
+            isinstance(rows, bool)
+            or not isinstance(rows, int)
+            or rows < 0
+            or isinstance(columns, bool)
+            or not isinstance(columns, int)
+            or columns <= 0
+        ):
+            raise SignalGapPlanError(
+                "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
+                f"file={expected_name} rows/columns are invalid",
+            )
+        min_key, max_key = _normalize_databridge_file_keys(
+            expected_name,
+            raw_file["min_key"],
+            raw_file["max_key"],
+        )
+        for field in ("sha256", "business_hash"):
+            if not _is_sha256(raw_file[field]):
+                raise SignalGapPlanError(
+                    "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
+                    f"file={expected_name} {field} is invalid",
+                )
+        normalized.append(
+            {
+                "filename": expected_name,
+                "rows": rows,
+                "columns": columns,
+                "min_key": min_key,
+                "max_key": max_key,
+                "sha256": raw_file["sha256"],
+                "business_hash": raw_file["business_hash"],
+            }
+        )
+    return normalized
+
+
+def _normalize_databridge_file_keys(
+    filename: str,
+    raw_min_key: Any,
+    raw_max_key: Any,
+) -> tuple[str, str]:
+    if filename == "daily_output.csv":
+        min_key = _canonical_date(raw_min_key, f"{filename}.min_key")
+        max_key = _canonical_date(raw_max_key, f"{filename}.max_key")
+    else:
+        if (
+            not isinstance(raw_min_key, str)
+            or not isinstance(raw_max_key, str)
+            or len(raw_min_key) != 6
+            or len(raw_max_key) != 6
+            or not raw_min_key.isdigit()
+            or not raw_max_key.isdigit()
+        ):
+            raise SignalGapPlanError(
+                "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
+                f"{filename} period keys are invalid",
+            )
+        min_key, max_key = raw_min_key, raw_max_key
+    if min_key > max_key:
+        raise SignalGapPlanError(
+            "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
+            f"{filename} min_key is after max_key",
+        )
+    return min_key, max_key
+
+
+def _normalize_publication_capability(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or set(value) != {
+        "occurrence_id",
+        "business_date",
+        "daily_coordinator_epoch",
+    }:
+        raise SignalGapPlanError(
+            "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
+            "publication_capability fields are invalid",
+        )
+    occurrence_id = value["occurrence_id"]
+    if (
+        isinstance(occurrence_id, bool)
+        or not isinstance(occurrence_id, int)
+        or occurrence_id <= 0
+    ):
+        raise SignalGapPlanError(
+            "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
+            "publication occurrence_id is invalid",
+        )
+    business_date = _canonical_date(
+        value["business_date"],
+        "publication business_date",
+    )
+    epoch = value["daily_coordinator_epoch"]
+    if not isinstance(epoch, Mapping) or set(epoch) != {
+        "epoch",
+        "mode",
+        "record_sha256",
+    }:
+        raise SignalGapPlanError(
+            "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
+            "publication epoch fields are invalid",
+        )
+    epoch_value = epoch["epoch"]
+    if (
+        isinstance(epoch_value, bool)
+        or not isinstance(epoch_value, int)
+        or epoch_value <= 0
+        or epoch["mode"] != "ledger"
+        or not _is_sha256(epoch["record_sha256"])
+    ):
+        raise SignalGapPlanError(
+            "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
+            "publication epoch is invalid",
+        )
+    return {
+        "occurrence_id": occurrence_id,
+        "business_date": business_date,
+        "daily_coordinator_epoch": {
+            "epoch": epoch_value,
+            "mode": "ledger",
+            "record_sha256": epoch["record_sha256"],
+        },
+    }
+
+
+def _normalize_databridge_authority_cutoff(
+    value: Any,
+    *,
+    expected_feature_date: str | None,
+) -> dict[str, str]:
+    if not isinstance(value, Mapping) or set(value) != (
+        _DATABRIDGE_CUTOFF_FIELDS
+    ):
+        raise SignalGapPlanError(
+            "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
+            "cutoff authority fields are invalid",
+        )
+    feature_date = _canonical_date(
+        value["feature_date"],
+        "cutoff.feature_date",
+    )
+    daily_cutoff_key = _canonical_date(
+        value["daily_cutoff_key"],
+        "cutoff.daily_cutoff_key",
+    )
+    for field in ("weekly_cutoff_key", "monthly_cutoff_key"):
+        period_key = value[field]
+        if (
+            not isinstance(period_key, str)
+            or len(period_key) != 6
+            or not period_key.isdigit()
+        ):
+            raise SignalGapPlanError(
+                "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
+                f"cutoff.{field} is invalid",
+            )
+    if expected_feature_date is not None and feature_date != _canonical_date(
+        expected_feature_date,
+        "expected feature_date",
+    ):
+        raise SignalGapPlanError(
+            "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
+            "cutoff feature_date does not match override key",
+        )
+    return {
+        "feature_date": feature_date,
+        "daily_cutoff_key": daily_cutoff_key,
+        "weekly_cutoff_key": value["weekly_cutoff_key"],
+        "monthly_cutoff_key": value["monthly_cutoff_key"],
     }
 
 

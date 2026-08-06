@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -24,6 +25,7 @@ from harness.result import Evidence, GateResult, GateStatus
 from harness.signal_gap_plan import (
     PLAN_SCHEMA_VERSION,
     SignalGapPlanScope,
+    _normalize_databridge_authority_payload,
     canonical_plan_sha256,
     normalize_signal_gap_plan_scope,
     plan_signal_gaps,
@@ -37,14 +39,22 @@ from scheduler.executor import (
     BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF,
     NATIVE_EXECUTION_MODE_SIGNAL_GAP_ARCHIVED,
     NATIVE_EXECUTION_MODE_SIGNAL_GAP_CURRENT_SNAPSHOT,
+    run_blackbox_gray_replay_batch,
     run_configured_scheme,
 )
+from shared.blackbox_v2.contracts import BlackboxRequest
+from shared.blackbox_v2.requests import build_request
+from shared.blackbox_v2.snapshot import CutoffKeys
 from shared.daily_coordinator_mode import resolve_daily_runtime_root
 from shared.data_bridge.refresh import (
     DataBridgeRefreshConfig,
     _ensure_private_directory,
 )
-from shared.input_artifacts import open_native_generation
+from shared.input_artifacts import (
+    BlackboxGrayReplaySession,
+    build_blackbox_gray_replay_session,
+    open_native_generation,
+)
 from shared.models import PredictionRecord
 from shared.native_input_generation import (
     NATIVE_GENERATION_EXPORTER_VERSION,
@@ -96,6 +106,17 @@ class _Execution:
     started: float
     records: list[PredictionRecord] | None = None
     error: BaseException | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _BlackboxReplayBatch:
+    """同一冻结 DataBridge source 下、同一 delivery config 的请求批。"""
+
+    source_identity: dict[str, Any]
+    session_id: str
+    cfg: Any
+    executions: tuple[_Execution, ...]
+    requests: tuple[BlackboxRequest, ...]
 
 
 class SignalGapFillGate(Gate):
@@ -175,6 +196,12 @@ def run_signal_gap_fill(
     native_generation_opener: Callable[..., Any] = (
         open_native_generation
     ),
+    blackbox_session_builder: Callable[..., BlackboxGrayReplaySession] = (
+        build_blackbox_gray_replay_session
+    ),
+    blackbox_batch_runner: Callable[..., list[PredictionRecord]] = (
+        run_blackbox_gray_replay_batch
+    ),
     singleton_lock_factory: Callable[[], Any] | None = None,
 ) -> dict[str, Any]:
     """以单一协调写入者执行冻结计划中的原子算法组。"""
@@ -196,6 +223,18 @@ def run_signal_gap_fill(
             frozen,
             groups=(),
             failure_code=None,
+        )
+    try:
+        frozen_databridge_authority_overrides = (
+            _frozen_blackbox_authority_overrides(groups)
+        )
+    except ValueError as exc:
+        return _report(
+            "BLOCKED",
+            frozen,
+            groups=groups,
+            failure_code="PLAN_GROUP_INVALID",
+            errors=[str(exc)],
         )
     if engine_factory is None:
         return _report(
@@ -235,6 +274,9 @@ def run_signal_gap_fill(
             as_of_date=frozen["as_of_date"],
             scope=scope,
             databridge_config=databridge_config,
+            databridge_authority_overrides=(
+                frozen_databridge_authority_overrides
+            ),
         )
         classification = _classify_current_plan(
             frozen,
@@ -297,8 +339,11 @@ def run_signal_gap_fill(
                 engine=engine,
                 algo_env=algo_env,
                 timeout_sec=timeout_sec,
+                data_bridge_config=databridge_config,
                 algorithm_runner=algorithm_runner,
                 native_generation_opener=native_generation_opener,
+                blackbox_session_builder=blackbox_session_builder,
+                blackbox_batch_runner=blackbox_batch_runner,
             )
         except Exception as exc:  # noqa: BLE001
             _fail_executions(
@@ -341,6 +386,9 @@ def run_signal_gap_fill(
                 as_of_date=frozen["as_of_date"],
                 scope=scope,
                 databridge_config=databridge_config,
+                databridge_authority_overrides=(
+                    frozen_databridge_authority_overrides
+                ),
             )
         except Exception as exc:  # noqa: BLE001
             _fail_executions(
@@ -804,27 +852,46 @@ def _run_algorithms(
     engine: Any,
     algo_env: str,
     timeout_sec: int,
+    data_bridge_config: DataBridgeRefreshConfig,
     algorithm_runner: Callable[..., list[PredictionRecord]],
     native_generation_opener: Callable[..., Any],
+    blackbox_session_builder: Callable[..., BlackboxGrayReplaySession],
+    blackbox_batch_runner: Callable[..., list[PredictionRecord]],
 ) -> None:
+    blackbox_executions = [
+        item
+        for item in executions
+        if item.group.runtime_type == "blackbox_v2"
+    ]
+    _run_blackbox_gray_replay_batches(
+        blackbox_executions,
+        engine=engine,
+        algo_env=algo_env,
+        timeout_sec=timeout_sec,
+        data_bridge_config=data_bridge_config,
+        session_builder=blackbox_session_builder,
+        batch_runner=blackbox_batch_runner,
+    )
+    if any(item.error is not None for item in blackbox_executions):
+        return
+
+    futures: dict[Future[list[PredictionRecord]], _Execution] = {}
     native_pool = ThreadPoolExecutor(
         max_workers=2,
         thread_name_prefix="signal-gap-native",
     )
-    blackbox_pool = ThreadPoolExecutor(
-        max_workers=2,
-        thread_name_prefix="signal-gap-v2",
-    )
-    futures: dict[Future[list[PredictionRecord]], _Execution] = {}
     try:
         for item in executions:
-            pool = (
-                blackbox_pool
-                if item.group.runtime_type == "blackbox_v2"
-                else native_pool
-            )
+            if item.group.runtime_type == "blackbox_v2":
+                continue
+            if item.group.runtime_type != "native_adapter":
+                item.error = ValueError(
+                    "unsupported signal-gap runtime_type: "
+                    f"{item.group.runtime_type}"
+                )
+                continue
             futures[
-                pool.submit(
+                native_pool.submit(
                     _run_algorithm,
                     item,
                     engine=engine,
@@ -837,11 +904,320 @@ def _run_algorithms(
         for future, item in futures.items():
             try:
                 item.records = future.result()
-            except BaseException as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
                 item.error = exc
     finally:
         native_pool.shutdown(wait=True, cancel_futures=True)
-        blackbox_pool.shutdown(wait=True, cancel_futures=True)
+
+
+def _run_blackbox_gray_replay_batches(
+    executions: Sequence[_Execution],
+    *,
+    engine: Any,
+    algo_env: str,
+    timeout_sec: int,
+    data_bridge_config: DataBridgeRefreshConfig,
+    session_builder: Callable[..., BlackboxGrayReplaySession],
+    batch_runner: Callable[..., list[PredictionRecord]],
+) -> None:
+    """先固化每个 source session，再将各方案记录严格回填到原子 run。"""
+    batches = _build_blackbox_replay_batches(executions)
+    if any(item.error is not None for item in executions):
+        return
+    batches_by_source: dict[str, list[_BlackboxReplayBatch]] = {}
+    for batch in batches:
+        batches_by_source.setdefault(
+            _canonical_json(batch.source_identity),
+            [],
+        ).append(batch)
+    sessions_by_source: dict[str, BlackboxGrayReplaySession] = {}
+    for source_key in sorted(batches_by_source):
+        source_batches = batches_by_source[source_key]
+        source_identity = source_batches[0].source_identity
+        all_cutoffs = tuple(
+            cutoff
+            for batch in source_batches
+            for cutoff in _cutoffs_for_requests(batch.requests)
+        )
+        try:
+            session = session_builder(
+                session_id=source_batches[0].session_id,
+                source_identity=source_identity,
+                request_cutoffs=all_cutoffs,
+                data_bridge_config=data_bridge_config,
+            )
+        except Exception as exc:  # noqa: BLE001
+            for batch in source_batches:
+                for item in batch.executions:
+                    item.error = exc
+            return
+        sessions_by_source[source_key] = session
+
+    for source_key in sorted(batches_by_source):
+        source_batches = batches_by_source[source_key]
+        session = sessions_by_source[source_key]
+        for batch in source_batches:
+            try:
+                records = batch_runner(
+                    batch.cfg,
+                    requests=batch.requests,
+                    session=session,
+                    engine=engine,
+                    algo_env=algo_env,
+                    timeout_sec=timeout_sec,
+                )
+                _fan_out_blackbox_batch_records(batch, records)
+            except Exception as exc:  # noqa: BLE001
+                for item in batch.executions:
+                    item.error = exc
+
+
+def _build_blackbox_replay_batches(
+    executions: Sequence[_Execution],
+) -> tuple[_BlackboxReplayBatch, ...]:
+    """按完整 source identity 建 session，再按 exact config 建 Contract 批。"""
+    source_entries: dict[
+        str,
+        tuple[
+            dict[str, Any],
+            list[tuple[_Execution, BlackboxRequest]],
+        ],
+    ] = {}
+    for item in executions:
+        try:
+            authority = _frozen_blackbox_action_authority(item.group)
+            source_identity = _blackbox_replay_source_identity(authority)
+            request = _blackbox_request_for_execution(
+                item,
+                authority=authority,
+            )
+        except Exception as exc:  # noqa: BLE001
+            item.error = exc
+            continue
+        source_key = _canonical_json(source_identity)
+        if source_key not in source_entries:
+            source_entries[source_key] = (source_identity, [])
+        source_entries[source_key][1].append((item, request))
+
+    result: list[_BlackboxReplayBatch] = []
+    for source_key in sorted(source_entries):
+        source_identity, entries = source_entries[source_key]
+        session_id = _blackbox_replay_session_id(
+            source_identity,
+            [request for _, request in entries],
+        )
+        by_config: dict[
+            tuple[str, str, str, str],
+            list[tuple[_Execution, BlackboxRequest]],
+        ] = {}
+        for item, request in entries:
+            config_key = (
+                item.group.base_scheme_id,
+                item.group.scheme_version,
+                item.group.code_sha256,
+                item.group.config_sha256,
+            )
+            by_config.setdefault(config_key, []).append((item, request))
+        for config_key in sorted(by_config):
+            config_entries = by_config[config_key]
+            result.append(
+                _BlackboxReplayBatch(
+                    source_identity=source_identity,
+                    session_id=session_id,
+                    cfg=config_entries[0][0].cfg,
+                    executions=tuple(
+                        item for item, _ in config_entries
+                    ),
+                    requests=tuple(
+                        request for _, request in config_entries
+                    ),
+                )
+            )
+    return tuple(result)
+
+
+def _frozen_blackbox_authority_overrides(
+    groups: Sequence[_GapGroup],
+) -> dict[str, dict[str, Any]]:
+    """从已签名的 frozen actions 建立可重放的 feature-date authority 映射。"""
+    by_feature_date: dict[str, dict[str, Any]] = {}
+    for group in groups:
+        if group.runtime_type != "blackbox_v2":
+            continue
+        authority = _frozen_blackbox_action_authority(group)
+        feature_date = str(group.actions[0]["feature_date"])
+        previous = by_feature_date.get(feature_date)
+        if previous is not None and _canonical_json(previous) != (
+            _canonical_json(authority)
+        ):
+            raise ValueError(
+                "frozen Blackbox actions disagree on feature-date authority"
+            )
+        by_feature_date[feature_date] = authority
+    return {
+        feature_date: by_feature_date[feature_date]
+        for feature_date in sorted(by_feature_date)
+    }
+
+
+def _frozen_blackbox_action_authority(
+    group: _GapGroup,
+) -> dict[str, Any]:
+    if group.runtime_type != "blackbox_v2":
+        raise ValueError("Blackbox replay authority requires blackbox_v2")
+    if group.input_mode != "databridge_v1":
+        raise ValueError("Blackbox replay input_mode must be databridge_v1")
+    if len(group.actions) != 1:
+        raise ValueError(
+            "Blackbox signal-gap group must contain exactly one target action"
+        )
+    action = group.actions[0]
+    feature_date = str(action["feature_date"])
+    try:
+        authority = _normalize_databridge_authority_payload(
+            group.input_authority,
+            expected_feature_date=feature_date,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(
+            "frozen Blackbox DataBridge authority is invalid"
+        ) from exc
+    cutoff = authority["cutoff"]
+    if cutoff["daily_cutoff_key"] != feature_date:
+        raise ValueError(
+            "frozen Blackbox daily cutoff must equal feature_date"
+        )
+    if authority["refresh_date"] <= group.predict_date:
+        raise ValueError(
+            "frozen Blackbox refresh_date must be after predict_date"
+        )
+    return authority
+
+
+def _blackbox_replay_source_identity(
+    authority: Mapping[str, Any],
+) -> dict[str, Any]:
+    """从已经通过完整 authority grammar 的 action 提取 session source identity。"""
+    normalized = _normalize_databridge_authority_payload(authority)
+    fields = (
+        "generation_id",
+        "refresh_date",
+        "schema_version",
+        "business_digest",
+        "stable_identity_sha256",
+        "files",
+    )
+    return json.loads(
+        _canonical_json(
+            {field: normalized[field] for field in fields}
+        )
+    )
+
+
+def _blackbox_request_for_execution(
+    item: _Execution,
+    *,
+    authority: Mapping[str, Any],
+) -> BlackboxRequest:
+    group = item.group
+    action = group.actions[0]
+    cutoff = authority["cutoff"]
+    return build_request(
+        scheme_id=group.base_scheme_id,
+        predict_date=group.predict_date,
+        feature_date=str(action["feature_date"]),
+        target_date=str(action["target_date"]),
+        cutoffs=CutoffKeys(
+            daily_cutoff_key=str(cutoff["daily_cutoff_key"]),
+            weekly_cutoff_key=str(cutoff["weekly_cutoff_key"]),
+            monthly_cutoff_key=str(cutoff["monthly_cutoff_key"]),
+        ),
+    )
+
+
+def _blackbox_replay_session_id(
+    source_identity: Mapping[str, Any],
+    requests: Sequence[BlackboxRequest],
+) -> str:
+    signatures = sorted(
+        {
+            (
+                request.daily_cutoff_key,
+                request.weekly_cutoff_key,
+                request.monthly_cutoff_key,
+            )
+            for request in requests
+        }
+    )
+    payload = _canonical_json(
+        {
+            "source_identity": source_identity,
+            "cutoff_signatures": signatures,
+        }
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _cutoffs_for_requests(
+    requests: Sequence[BlackboxRequest],
+) -> tuple[CutoffKeys, ...]:
+    return tuple(
+        CutoffKeys(
+            daily_cutoff_key=request.daily_cutoff_key,
+            weekly_cutoff_key=request.weekly_cutoff_key,
+            monthly_cutoff_key=request.monthly_cutoff_key,
+        )
+        for request in requests
+    )
+
+
+def _fan_out_blackbox_batch_records(
+    batch: _BlackboxReplayBatch,
+    records: Sequence[PredictionRecord],
+) -> None:
+    expected_by_request_id = {
+        request.request_id: (item, request)
+        for item, request in zip(batch.executions, batch.requests)
+    }
+    if len(expected_by_request_id) != len(batch.requests):
+        raise ValueError("Blackbox replay batch request_ids are not unique")
+    by_request_id: dict[str, PredictionRecord] = {}
+    for record in records:
+        request_id = (record.extra or {}).get("request_id")
+        if (
+            not isinstance(request_id, str)
+            or request_id not in expected_by_request_id
+        ):
+            raise ValueError(
+                "Blackbox replay batch returned an unexpected request_id"
+            )
+        if request_id in by_request_id:
+            raise ValueError(
+                "Blackbox replay batch returned duplicate request_id"
+            )
+        by_request_id[request_id] = record
+    if set(by_request_id) != set(expected_by_request_id):
+        raise ValueError("Blackbox replay batch returned missing request_id")
+
+    assigned: list[tuple[_Execution, list[PredictionRecord]]] = []
+    for request_id, (item, _request) in expected_by_request_id.items():
+        group = item.group
+        record = by_request_id[request_id]
+        normalized = [
+            replace(
+                record,
+                prediction_phase="gray_live",
+                scheme_version=(
+                    group.scheme_version
+                    if record.scheme_version is None
+                    else record.scheme_version
+                ),
+            )
+        ]
+        _validate_group_records(group, normalized)
+        assigned.append((item, normalized))
+    for item, normalized in assigned:
+        item.records = normalized
 
 
 def _run_algorithm(
