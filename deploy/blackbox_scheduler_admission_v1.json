@@ -104,7 +104,7 @@
     },
     {
       "scheme_id": "cgb_causal_wk_1y_v128",
-      "scheme_version": "ee921f65476c",
+      "scheme_version": "59415aa789c5",
       "runtime_type": "blackbox_v2",
       "frequency": "weekly",
       "task_type": "weekly_point",

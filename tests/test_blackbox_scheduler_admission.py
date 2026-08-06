@@ -153,7 +153,7 @@ EXPECTED_ADMISSIONS = {
     ),
     (
         "cgb_causal_wk_1y_v128",
-        "ee921f65476c",
+        "59415aa789c5",
     ): _expected_admission(
         mode="gray",
         frequency="weekly",
