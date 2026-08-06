@@ -1236,51 +1236,17 @@ class _RunEngine:
 
 
 class ImmutablePredictionRepositoryTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self._mode_patcher = patch.dict(
-            os.environ,
-            {"BOND_DAILY_COORDINATOR_MODE": "legacy"},
-        )
-        self._mode_patcher.start()
-
-    def tearDown(self) -> None:
-        self._mode_patcher.stop()
-
-    def test_daily_run_creation_without_explicit_mode_fails_closed(
+    def test_scheduled_live_run_creation_without_launchd_plane_fails_closed(
         self,
     ) -> None:
         from scheduler.repository import create_scheme_run
 
-        with (
-            patch.dict(os.environ, {}, clear=True),
-            self.assertRaisesRegex(
-                RuntimeError,
-                "requires launchd_one_shot",
-            ),
-        ):
+        with self.assertRaisesRegex(RuntimeError, "requires launchd_one_shot"):
             create_scheme_run(
                 _RunEngine(),
                 scheme_id="t1_daily",
                 predict_date="2026-07-24",
                 prediction_phase="scheduled_live",
-                schedule_frequency="daily",
-            )
-
-    def test_daily_ledger_schema_detection_fails_closed_for_unknown_connection(self) -> None:
-        from scheduler.repository import (
-            _assert_prediction_keys_not_frozen_by_daily_ledger_conn,
-        )
-
-        class _UninspectableConnection:
-            pass
-
-        with self.assertRaisesRegex(
-            RuntimeError,
-            "cannot determine daily ledger schema availability",
-        ):
-            _assert_prediction_keys_not_frozen_by_daily_ledger_conn(
-                _UninspectableConnection(),
-                [],
             )
 
     def test_attach_run_data_snapshot_updates_only_the_run_audit_row(self) -> None:
@@ -1441,39 +1407,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
                 self.assertEqual(engine.store["prediction_rows"], [])
                 self.assertEqual(engine.store["run_row"]["status"], "running")
                 self.assertEqual(engine.store["run_log_rows"], [])
-
-    def test_active_native_completion_rejects_ledger_bound_run(self) -> None:
-        from scheduler.repository import complete_active_native_run
-        from shared.models import PredictionRecord
-
-        engine = _native_atomic_engine()
-        engine.store["run_row"]["schedule_item_id"] = 44
-        record = PredictionRecord(
-            scheme_id="native_daily",
-            target_tenor="5Y",
-            horizon=1,
-            predict_date="2026-07-20",
-            target_date="2026-07-21",
-            feature_date="2026-07-17",
-            prediction_phase="gray_live",
-            predicted_direction=1,
-        )
-
-        with self.assertRaisesRegex(RuntimeError, "use the daily ledger API"):
-            complete_active_native_run(
-                engine,
-                _native_config(),
-                run_id=101,
-                records=[record],
-                scheme_version="native-version-1",
-                records_returned=1,
-                run_date="2026-07-20",
-                duration_sec=2.5,
-            )
-
-        self.assertEqual(engine.store["prediction_rows"], [])
-        self.assertEqual(engine.store["run_row"]["status"], "running")
-        self.assertEqual(engine.store["run_log_rows"], [])
 
     def test_blackbox_gray_gap_completion_binds_record_snapshot_to_run(self) -> None:
         from scheduler.repository import complete_gray_gap_run
@@ -1719,11 +1652,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             "wrong_predict_date": ("predict_date", "2026-07-19"),
             "wrong_records_expected": ("records_expected", 2),
             "invalid_prediction_phase": ("prediction_phase", "backtest"),
-            "attempt_no_present": ("attempt_no", 1),
-            "trigger_origin_present": ("trigger_origin", "scheduler"),
-            "execution_token_present": ("execution_token", "token-1"),
-            "process_id_present": ("process_id", 1234),
-            "process_group_id_present": ("process_group_id", 5678),
         }
         for label, (field, value) in cases.items():
             with self.subTest(case=label), tempfile.TemporaryDirectory() as tmpdir:
@@ -1757,49 +1685,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
                 self.assertEqual(engine.store["prediction_rows"], [])
                 self.assertEqual(engine.store["run_log_rows"], [])
                 self.assertEqual(engine.store["run_row"], original_run)
-
-    def test_blackbox_completion_rejects_ledger_bound_run_via_daily_ledger_api(self) -> None:
-        from scheduler.repository import complete_approved_blackbox_run
-        from shared.models import PredictionRecord
-
-        engine = _AtomicEngine()
-        engine.store["run_row"]["schedule_item_id"] = 44
-        original_run = deepcopy(engine.store["run_row"])
-        record = PredictionRecord(
-            scheme_id="demo_blackbox",
-            target_tenor="10Y",
-            horizon=1,
-            predict_date="2026-07-20",
-            target_date="2026-07-21",
-            feature_date="2026-07-17",
-            prediction_phase="scheduled_live",
-            predicted_direction=1,
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cfg = _set_canonical_path(_blackbox_config(), Path(tmpdir))
-            with (
-                patch("scheduler.repository.load_scheme_config", return_value=cfg),
-                patch(
-                    "scheduler.repository._insert_run_predictions_conn",
-                    return_value=1,
-                ) as insert_predictions,
-                self.assertRaisesRegex(RuntimeError, "use the daily ledger API"),
-            ):
-                complete_approved_blackbox_run(
-                    engine,
-                    cfg,
-                    run_id=101,
-                    records=[record],
-                    scheme_version=cfg.scheme_version,
-                    records_returned=1,
-                    run_date="2026-07-20",
-                    duration_sec=2.5,
-                )
-
-        insert_predictions.assert_not_called()
-        self.assertEqual(engine.store["prediction_rows"], [])
-        self.assertEqual(engine.store["run_log_rows"], [])
-        self.assertEqual(engine.store["run_row"], original_run)
 
     def test_blackbox_completion_revalidates_records_against_locked_run(self) -> None:
         from scheduler.repository import complete_approved_blackbox_run

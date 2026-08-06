@@ -1,4 +1,4 @@
-"""真实日频隔离联跑使用的临时 MySQL 生命周期。"""
+"""迁移回归测试使用的隔离 MySQL 生命周期。"""
 
 from __future__ import annotations
 
@@ -18,12 +18,6 @@ from sqlalchemy import URL, create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError
 
-from shared.daily_coordinator_mode import (
-    VerifiedIsolatedDailyDatabase,
-    verify_and_register_isolated_daily_database,
-)
-
-
 MYSQLD = Path("/usr/local/mysql/bin/mysqld")
 MYSQLADMIN = Path("/usr/local/mysql/bin/mysqladmin")
 MYSQL_BASEDIR = Path("/usr/local/mysql")
@@ -39,7 +33,6 @@ _SCHEMA_NAME_PATTERN = re.compile(
 _START_TIMEOUT_SECONDS = 30
 _INITIALIZE_TIMEOUT_SECONDS = 45
 _SHUTDOWN_TIMEOUT_SECONDS = 15
-_CONNECTION_MARKER_KEY = "daily-real-replay-v1"
 _FORCED_COLD_CACHE_DIRNAME = "liwei-phase-a-cache"
 
 
@@ -331,9 +324,6 @@ class IsolatedReplayMySQL:
         self._root_password: str | None = None
         self._expected_server_uuid: str | None = None
         self._identity: IsolatedReplayMySQLIdentity | None = None
-        self._database_isolation: (
-            VerifiedIsolatedDailyDatabase | None
-        ) = None
         self._engines: list[Engine] = []
 
     @property
@@ -364,15 +354,6 @@ class IsolatedReplayMySQL:
             raise IsolatedReplayMySQLError("MYSQL_NOT_STARTED")
         return self._identity
 
-    @property
-    def database_isolation(
-        self,
-    ) -> VerifiedIsolatedDailyDatabase:
-        if self._database_isolation is None:
-            raise IsolatedReplayMySQLError(
-                "MYSQL_DATABASE_NOT_CREATED"
-            )
-        return self._database_isolation
 
     def create_forced_cold_cache_root(self) -> Path:
         """在本次隔离 root 内创建唯一、初始为空的 Liwei cache。"""
@@ -525,23 +506,10 @@ class IsolatedReplayMySQL:
         )
         try:
             self._verify_replay_engine(engine, schema=schema)
-            isolation = (
-                verify_and_register_isolated_daily_database(
-                    engine,
-                    expected_database_name=schema,
-                    expected_server_uuid=(
-                        self.identity.server_uuid
-                    ),
-                    expected_port=self.port,
-                    expected_private_root=self.root,
-                    connection_marker_key=_CONNECTION_MARKER_KEY,
-                )
-            )
         except BaseException:
             engine.dispose()
             raise
         self._engines.append(engine)
-        self._database_isolation = isolation
         return schema, engine
 
     def _close(self) -> None:
@@ -586,7 +554,6 @@ class IsolatedReplayMySQL:
             self._paths = None
             self._root_identity = None
             self._identity = None
-            self._database_isolation = None
         if cleanup_failed:
             raise IsolatedReplayMySQLError(
                 "MYSQL_CLEANUP_INCOMPLETE"

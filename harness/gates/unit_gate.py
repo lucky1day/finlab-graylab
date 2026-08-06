@@ -11,14 +11,6 @@ from harness.gates.base import Gate, guarded_result, utc_now
 from harness.result import Evidence, GateResult, GateStatus
 
 
-_NATIVE_PREACTIVATION_EXCLUDED_MODULES = frozenset(
-    {
-        "tests.test_daily_policy",
-        "tests.test_daily_runtime",
-    }
-)
-
-
 class UnitGate(Gate):
     name = "unit"
 
@@ -26,16 +18,7 @@ class UnitGate(Gate):
         return guarded_result(self.name, lambda started_at: self._run(ctx, started_at))
 
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
-        native_preactivation = (
-            ctx.scheme_id == "t1_daily"
-            and getattr(ctx.config, "runtime_type", None) == "native_adapter"
-            and getattr(ctx.config, "status", None) == "paused"
-        )
-        modules = _select_test_modules(
-            ctx.project_root,
-            ctx.scheme_id,
-            native_preactivation=native_preactivation,
-        )
+        modules = _select_test_modules(ctx.project_root, ctx.scheme_id)
         errors: list[str] = []
         if not modules:
             errors.append(f"no unittest modules selected for scheme_id={ctx.scheme_id}")
@@ -61,10 +44,8 @@ class UnitGate(Gate):
 def _select_test_modules(
     project_root: Path,
     scheme_id: str,
-    *,
-    native_preactivation: bool = False,
 ) -> list[str]:
-    """选择方案测试；仅 t1_daily 预激活期排除已退役日频控制面断言。"""
+    """选择与方案身份匹配的当前测试模块。"""
     tests_dir = project_root / "tests"
     if not tests_dir.exists():
         return []
@@ -75,11 +56,6 @@ def _select_test_modules(
         text = path.read_text(encoding="utf-8")
         if scheme_id in text or scheme_id in path.stem:
             module = f"tests.{path.stem}"
-            if (
-                native_preactivation
-                and module in _NATIVE_PREACTIVATION_EXCLUDED_MODULES
-            ):
-                continue
             modules.append(module)
     return modules
 

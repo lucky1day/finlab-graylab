@@ -9,7 +9,6 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 import pandas as pd
 
@@ -98,11 +97,7 @@ def _publish_valid_current(root: Path):
         data_root=config.data_root,
         runtime_root=config.runtime_root,
     )
-    with patch.dict(
-        os.environ,
-        {"BOND_DAILY_COORDINATOR_MODE": "legacy"},
-    ):
-        store.publish(candidate, state)
+    store.publish(candidate, state)
     return config, store
 
 

@@ -14,11 +14,6 @@ from harness.authorization import (
     NATIVE_LEGACY_ADMISSION_ATTEST_SCHEME_ID,
     issue_token,
 )
-from harness.daily_real_replay_operator import (
-    DailyRealReplayPreflightError,
-    run_real_replay_execute,
-    run_real_replay_preflight,
-)
 from harness.context import GateContext
 from harness.gates.activate_gate import ActivationGate
 from harness.gates.api_gate import ApiGate
@@ -59,15 +54,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-    if (
-        args.command == "daily-real-replay"
-        and args.execute_only
-        and args.policy_version is not None
-    ):
-        parser.error(
-            "daily-real-replay --policy-version is only valid with "
-            "--check-only"
-        )
     if args.command == "auth" and args.auth_command == "issue":
         if args.action in EXACT_PREDICT_DATE_ACTIONS and args.predict_date is None:
             parser.error(
@@ -222,68 +208,6 @@ def main(argv: list[str] | None = None) -> int:
                     "scheme_dir": str(scheme_dir),
                     "warnings": intake_warnings(metadata),
                 },
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
-        return 0
-    if args.command == "daily-real-replay":
-        execute_only = bool(args.execute_only)
-        schema_version = (
-            "daily-real-replay-execution-v1"
-            if execute_only
-            else "daily-real-replay-preflight-v1"
-        )
-        try:
-            runner = (
-                run_real_replay_execute
-                if execute_only
-                else run_real_replay_preflight
-            )
-            runner_kwargs = {
-                "native_manifest": args.native_manifest,
-                "databridge_manifest": args.databridge_manifest,
-            }
-            if not execute_only:
-                runner_kwargs["policy_version"] = (
-                    args.policy_version or "v1"
-                )
-            report = runner(
-                **runner_kwargs,
-            )
-        except DailyRealReplayPreflightError as exc:
-            print(
-                json.dumps(
-                    {
-                        "schema_version": schema_version,
-                        "status": "BLOCKED",
-                        "failure_code": exc.code,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
-            return 1
-        except Exception:
-            print(
-                json.dumps(
-                    {
-                        "schema_version": schema_version,
-                        "status": "ERROR",
-                        "failure_code": (
-                            "REPLAY_EXECUTION_INTERNAL_ERROR"
-                            if execute_only
-                            else "PREFLIGHT_INTERNAL_ERROR"
-                        ),
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
-            return 2
-        print(
-            json.dumps(
-                _jsonable(report),
                 ensure_ascii=False,
                 indent=2,
             )
@@ -512,35 +436,6 @@ def _build_parser() -> argparse.ArgumentParser:
         action="append",
         default=None,
         dest="platform_input",
-    )
-
-    replay_parser = subparsers.add_parser("daily-real-replay")
-    replay_action = replay_parser.add_mutually_exclusive_group(
-        required=True,
-    )
-    replay_action.add_argument(
-        "--check-only",
-        action="store_true",
-    )
-    replay_action.add_argument(
-        "--execute-only",
-        action="store_true",
-    )
-    replay_parser.add_argument(
-        "--native-manifest",
-        type=Path,
-        required=True,
-    )
-    replay_parser.add_argument(
-        "--databridge-manifest",
-        type=Path,
-        required=True,
-    )
-    replay_parser.add_argument(
-        "--policy-version",
-        choices=("v1", "v2"),
-        default=None,
-        help="check-only policy identity; execute-only is fixed to v2",
     )
 
     gap_parser = subparsers.add_parser("signal-gap-plan")

@@ -1,1 +1,0 @@
-{"epoch_filename":"epoch-%020d.json","first_epoch":1,"genesis_sha256":"561fc63fe5e1b72d36ae3fd46ad22b3d857844113e06b9f5bbc76c854ea9ca6d","modes":["legacy","ledger"],"record_schema_version":"daily-coordinator-epoch-v1","schema_version":"daily-coordinator-epoch-contract-v1","zero_previous_record_sha256":"0000000000000000000000000000000000000000000000000000000000000000"}

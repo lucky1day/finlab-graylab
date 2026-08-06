@@ -20,7 +20,7 @@ from scheduler.blackbox_v2_runner import (
     run_blackbox_backtest,
 )
 from scheduler.discovery import SchemeConfig, discover_schemes
-from scheduler.daily_policy import (
+from shared.live_source_contract import (
     APPROVED_0629_LIVE_SOURCE_SCHEMES,
 )
 from scheduler.process_control import (

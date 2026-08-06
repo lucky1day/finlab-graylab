@@ -129,7 +129,7 @@ class DataContractAuditTests(unittest.TestCase):
     def test_native_readiness_accepts_complete_post_0630_snapshot(
         self,
     ) -> None:
-        from scheduler.data_contract import inspect_native_input_readiness
+        from shared.data_contract import inspect_native_input_readiness
 
         self._insert_ready_native_anchor()
 
@@ -145,7 +145,7 @@ class DataContractAuditTests(unittest.TestCase):
     def test_native_readiness_lists_missing_required_anchor_data(
         self,
     ) -> None:
-        from scheduler.data_contract import inspect_native_input_readiness
+        from shared.data_contract import inspect_native_input_readiness
 
         readiness = inspect_native_input_readiness(
             self.engine,
@@ -172,7 +172,7 @@ class DataContractAuditTests(unittest.TestCase):
     def test_native_readiness_requires_all_curve_anchor_tenors(
         self,
     ) -> None:
-        from scheduler.data_contract import inspect_native_input_readiness
+        from shared.data_contract import inspect_native_input_readiness
 
         self._insert_ready_native_anchor(
             include_all_curve_tenors=False,
@@ -195,7 +195,7 @@ class DataContractAuditTests(unittest.TestCase):
     def test_detects_feature_day_write_after_0630_but_not_earlier_row(
         self,
     ) -> None:
-        from scheduler.data_contract import detect_late_source_writes
+        from shared.data_contract import detect_late_source_writes
 
         self._insert_factor(
             "api_wind_daily",
@@ -239,7 +239,7 @@ class DataContractAuditTests(unittest.TestCase):
     def test_detects_late_historical_revision_inside_full_input_domain(
         self,
     ) -> None:
-        from scheduler.data_contract import detect_late_source_writes
+        from shared.data_contract import detect_late_source_writes
 
         self._insert_factor(
             "api_wind_daily",
@@ -275,7 +275,7 @@ class DataContractAuditTests(unittest.TestCase):
         )
 
     def test_metadata_update_after_cutoff_is_a_contract_breach(self) -> None:
-        from scheduler.data_contract import detect_late_source_writes
+        from shared.data_contract import detect_late_source_writes
 
         with self.engine.begin() as connection:
             connection.exec_driver_sql(
@@ -313,7 +313,7 @@ class DataContractAuditTests(unittest.TestCase):
     def test_commit_evidence_is_stable_and_changes_with_source_rows(
         self,
     ) -> None:
-        from scheduler.data_contract import capture_source_commit_evidence
+        from shared.data_contract import capture_source_commit_evidence
 
         self._insert_factor(
             "api_wind_daily",
@@ -351,7 +351,7 @@ class DataContractAuditTests(unittest.TestCase):
     def test_commit_evidence_covers_historical_rows_consumed_by_native(
         self,
     ) -> None:
-        from scheduler.data_contract import capture_source_commit_evidence
+        from shared.data_contract import capture_source_commit_evidence
 
         first = capture_source_commit_evidence(
             self.engine,
@@ -380,7 +380,7 @@ class DataContractAuditTests(unittest.TestCase):
         self.assertEqual(daily.row_count, 1)
 
     def test_commit_evidence_pushes_factor_cutoff_into_sql(self) -> None:
-        from scheduler.data_contract import (
+        from shared.data_contract import (
             FACTOR_SOURCE_TABLES,
             capture_source_commit_evidence_from_connection,
         )
@@ -427,7 +427,7 @@ class DataContractAuditTests(unittest.TestCase):
     def test_commit_evidence_rejects_rows_after_contract_cutoff(
         self,
     ) -> None:
-        from scheduler.data_contract import (
+        from shared.data_contract import (
             assert_source_commit_evidence_at_cutoff,
             capture_source_commit_evidence,
         )
@@ -462,7 +462,7 @@ class DataContractAuditTests(unittest.TestCase):
     def test_commit_evidence_rejects_late_historical_revision(
         self,
     ) -> None:
-        from scheduler.data_contract import (
+        from shared.data_contract import (
             assert_source_commit_evidence_at_cutoff,
             capture_source_commit_evidence,
         )
@@ -495,7 +495,7 @@ class DataContractAuditTests(unittest.TestCase):
             )
 
     def test_cutoff_must_be_timezone_aware(self) -> None:
-        from scheduler.data_contract import detect_late_source_writes
+        from shared.data_contract import detect_late_source_writes
 
         with self.assertRaisesRegex(ValueError, "timezone-aware"):
             detect_late_source_writes(

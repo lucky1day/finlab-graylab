@@ -17,27 +17,12 @@ from scheduler.discovery import discover_schemes
 
 
 CONTROL_PLANES = (
-    "legacy_automatic",
-    "daily_ledger",
     "direct_scheduled",
     "launchd_one_shot",
 )
-FORMAL_DAILY_CAPABILITIES = frozenset(
-    (
-        "legacy_automatic",
-        "daily_ledger",
-        "direct_scheduled",
-        "launchd_one_shot",
-    )
+FORMAL_SCHEDULED_CAPABILITIES = frozenset(
+    ("direct_scheduled", "launchd_one_shot")
 )
-FORMAL_WEEKLY_CAPABILITIES = frozenset(
-    (
-        "legacy_automatic",
-        "direct_scheduled",
-        "launchd_one_shot",
-    )
-)
-DAILY_GRAY_CAPABILITIES = frozenset(("daily_ledger",))
 LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES = frozenset(
     ("launchd_one_shot",)
 )
@@ -83,7 +68,7 @@ EXPECTED_ADMISSIONS = {
         task_type="T+5",
         horizon=5,
         target_tenor="1Y",
-        capabilities=FORMAL_DAILY_CAPABILITIES,
+        capabilities=FORMAL_SCHEDULED_CAPABILITIES,
     ),
     (
         "one_y_t5_liq_excess_a_w252_l7_v1",
@@ -94,7 +79,7 @@ EXPECTED_ADMISSIONS = {
         task_type="T+5",
         horizon=5,
         target_tenor="1Y",
-        capabilities=FORMAL_DAILY_CAPABILITIES,
+        capabilities=FORMAL_SCHEDULED_CAPABILITIES,
     ),
     (
         "one_y_t5_liq_excess_a_w350_l7_v1",
@@ -105,7 +90,7 @@ EXPECTED_ADMISSIONS = {
         task_type="T+5",
         horizon=5,
         target_tenor="1Y",
-        capabilities=FORMAL_DAILY_CAPABILITIES,
+        capabilities=FORMAL_SCHEDULED_CAPABILITIES,
     ),
     (
         "one_y_t5_liq_excess_b_w252_l7_v1",
@@ -116,7 +101,7 @@ EXPECTED_ADMISSIONS = {
         task_type="T+5",
         horizon=5,
         target_tenor="1Y",
-        capabilities=FORMAL_DAILY_CAPABILITIES,
+        capabilities=FORMAL_SCHEDULED_CAPABILITIES,
     ),
     (
         "weekly_10y_lgbm_point_v1",
@@ -127,7 +112,7 @@ EXPECTED_ADMISSIONS = {
         task_type="weekly_point",
         horizon=1,
         target_tenor="10Y",
-        capabilities=FORMAL_WEEKLY_CAPABILITIES,
+        capabilities=FORMAL_SCHEDULED_CAPABILITIES,
     ),
     (
         "cgb_causal_wk_1y",
@@ -336,7 +321,7 @@ EXPECTED_ADMISSIONS = {
         task_type="T+5",
         horizon=5,
         target_tenor="10Y",
-        capabilities=DAILY_GRAY_CAPABILITIES,
+        capabilities=NO_CAPABILITIES,
     ),
     (
         "ten_y_t5_maj4_k3_ic_static_v1",
@@ -347,7 +332,7 @@ EXPECTED_ADMISSIONS = {
         task_type="T+5",
         horizon=5,
         target_tenor="10Y",
-        capabilities=DAILY_GRAY_CAPABILITIES,
+        capabilities=NO_CAPABILITIES,
     ),
     (
         "ten_y_t5_maj4_k3_ic_yearly_v1",
@@ -358,7 +343,7 @@ EXPECTED_ADMISSIONS = {
         task_type="T+5",
         horizon=5,
         target_tenor="10Y",
-        capabilities=DAILY_GRAY_CAPABILITIES,
+        capabilities=NO_CAPABILITIES,
     ),
     (
         "ten_y_t5_say_k5_sharpe_static_v1",
@@ -369,7 +354,7 @@ EXPECTED_ADMISSIONS = {
         task_type="T+5",
         horizon=5,
         target_tenor="10Y",
-        capabilities=DAILY_GRAY_CAPABILITIES,
+        capabilities=NO_CAPABILITIES,
     ),
 }
 EXPECTED_MODES = {
@@ -411,27 +396,29 @@ def _config(
 
 
 class BlackboxSchedulerAdmissionTests(unittest.TestCase):
-    def test_recurring_control_plane_is_retired(self) -> None:
-        """weekly exact identity 仅移除 recurring，保留其余冻结能力。"""
+    def test_retired_control_planes_are_rejected(self) -> None:
+        """只有 direct 与 launchd one-shot 能进入精确准入矩阵。"""
         policy = load_blackbox_scheduler_admission()
         config = _config(
             "weekly_10y_lgbm_point_v1",
             "0666a6989d6b",
         )
 
-        self.assertFalse(hasattr(admission_module, "RECURRING"))
-        self.assertNotIn(
+        for retired_plane in (
             "recurring",
-            admission_module.VALID_CONTROL_PLANES,
-        )
-        with self.assertRaisesRegex(
-            BlackboxSchedulerAdmissionError,
-            "unknown Blackbox scheduler control plane: recurring",
+            "legacy_automatic",
+            "daily_ledger",
         ):
-            policy.allows(config, plane="recurring")
-        self.assertTrue(
-            policy.allows(config, plane="legacy_automatic")
-        )
+            with self.subTest(retired_plane=retired_plane):
+                self.assertNotIn(
+                    retired_plane,
+                    admission_module.VALID_CONTROL_PLANES,
+                )
+                with self.assertRaisesRegex(
+                    BlackboxSchedulerAdmissionError,
+                    "unknown Blackbox scheduler control plane",
+                ):
+                    policy.allows(config, plane=retired_plane)
         self.assertTrue(
             policy.allows(config, plane="direct_scheduled")
         )
@@ -599,9 +586,9 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
                 self.assertEqual(
                     policy.allows(
                         config,
-                        plane="legacy_automatic",
+                        plane="launchd_one_shot",
                     ),
-                    "legacy_automatic"
+                    "launchd_one_shot"
                     in EXPECTED_ADMISSIONS[identity]["capabilities"],
                 )
 
@@ -640,7 +627,7 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
                     "not-listed",
                     runtime_type="native_adapter",
                 ),
-                plane="legacy_automatic",
+                plane="launchd_one_shot",
             )
         )
 
@@ -657,7 +644,7 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
         self.assertFalse(
             policy.allows(
                 reclassified,
-                plane="legacy_automatic",
+                plane="launchd_one_shot",
             )
         )
 
@@ -671,19 +658,19 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
         self.assertTrue(
             policy.allows(
                 config,
-                plane="legacy_automatic",
+                plane="launchd_one_shot",
             )
         )
         self.assertFalse(
             policy.allows(
                 _config("unknown_demo", "version-1"),
-                plane="legacy_automatic",
+                plane="launchd_one_shot",
             )
         )
         self.assertFalse(
             policy.allows(
                 _config(config.scheme_id, "version-drift"),
-                plane="legacy_automatic",
+                plane="launchd_one_shot",
             )
         )
 
@@ -698,7 +685,7 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
         self.assertFalse(
             policy.allows(
                 config,
-                plane="legacy_automatic",
+                plane="launchd_one_shot",
             )
         )
 
@@ -719,7 +706,7 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
                 self.assertFalse(
                     policy.allows(
                         config,
-                        plane="legacy_automatic",
+                        plane="launchd_one_shot",
                     )
                 )
                 self.assertFalse(
@@ -729,7 +716,7 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
                             scheme_version,
                             runtime_type="native_adapter",
                         ),
-                        plane="legacy_automatic",
+                        plane="launchd_one_shot",
                     )
                 )
 

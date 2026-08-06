@@ -8,8 +8,6 @@ from pathlib import Path
 
 from harness.contracts import import_rules
 from scheduler import (
-    daily_coordinator,
-    daily_runtime,
     direct_prediction,
     executor,
     repository,
@@ -266,18 +264,27 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
             "retired daily-gray and v2-preflight artifacts must not return",
         )
 
-    def test_retired_daily_coordinator_symbols_are_not_exposed(self) -> None:
+    def test_retired_daily_runtime_closure_is_absent(self) -> None:
+        """launchd one-shot 不得重新依赖 retired daily runtime 闭包。"""
+        project_root = Path(__file__).resolve().parents[1]
         retired = (
-            "V2Release",
-            "compute_v2_releases",
-            "_required_release_offset",
-            "decide_recovery",
+            "scheduler/daily_ledger.py",
+            "scheduler/daily_runtime.py",
+            "scheduler/scheduled_executor.py",
+            "scheduler/daily_control_plane_probe.py",
+            "scheduler/daily_direct_authority.py",
+            "scheduler/capacity_candidate_runtime.py",
+            "scheduler/capacity_attestation.py",
+            "scheduler/daily_coordinator.py",
+            "scheduler/daily_policy.py",
+            "shared/daily_coordinator_mode.py",
+            "harness/daily_real_replay.py",
+            "harness/daily_real_replay_operator.py",
         )
-
         self.assertEqual(
             [],
-            [name for name in retired if hasattr(daily_coordinator, name)],
-            "retired daily coordinator symbols must not return",
+            [item for item in retired if (project_root / item).exists()],
+            "retired daily runtime closure must not return",
         )
 
     def test_direct_prediction_does_not_expose_resident_scheduler_symbols(
@@ -357,71 +364,16 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
     def test_standalone_scheduler_heartbeat_refresh_api_is_absent(
         self,
     ) -> None:
-        """自然 one-shot 写入不得恢复独立 heartbeat 刷新控制面。"""
+        """自然 one-shot 写入不得恢复独立 heartbeat 控制面。"""
         project_root = Path(__file__).resolve().parents[1]
-        paths = (
-            project_root / "scheduler" / "daily_runtime.py",
-            project_root / "scheduler" / "repository.py",
-        )
-        retired_symbols = {
-            "heartbeat_tick",
-            "run_scheduler_heartbeat",
-            "read_scheduler_heartbeat",
-        }
-
         self.assertFalse(
-            hasattr(daily_runtime.DefaultDailyRuntimeServices, "heartbeat_tick"),
-            "daily runtime must not retain a standalone heartbeat tick",
-        )
-        self.assertFalse(
-            hasattr(daily_runtime, "run_scheduler_heartbeat"),
-            "daily runtime must not retain a standalone heartbeat entrypoint",
+            (project_root / "scheduler" / "daily_runtime.py").exists(),
+            "daily runtime must not return with a heartbeat entrypoint",
         )
         self.assertFalse(
             hasattr(repository, "read_scheduler_heartbeat"),
             "repository must not retain the public heartbeat read wrapper",
         )
-
-        for path in paths:
-            with self.subTest(path=path.relative_to(project_root)):
-                source = path.read_text(encoding="utf-8")
-                tree = ast.parse(source)
-                imported_names = {
-                    alias.asname or alias.name
-                    for node in ast.walk(tree)
-                    if isinstance(node, ast.ImportFrom)
-                    for alias in node.names
-                }
-                defined_names = {
-                    node.name
-                    for node in ast.walk(tree)
-                    if isinstance(
-                        node,
-                        (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
-                    )
-                }
-                referenced_names = {
-                    node.id
-                    for node in ast.walk(tree)
-                    if isinstance(node, ast.Name)
-                }
-                string_literals = {
-                    node.value
-                    for node in ast.walk(tree)
-                    if isinstance(node, ast.Constant)
-                    and isinstance(node.value, str)
-                }
-                self.assertEqual(
-                    set(),
-                    retired_symbols
-                    & (
-                        imported_names
-                        | defined_names
-                        | referenced_names
-                        | string_literals
-                    ),
-                    source,
-                )
 
     def test_retired_scheduler_mount_verification_script_is_absent(
         self,

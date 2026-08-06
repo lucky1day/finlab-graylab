@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 from sqlalchemy import text
 
-from harness.daily_real_replay_mysql import isolated_replay_mysql
+from tests.isolated_mysql import isolated_replay_mysql
 from migrations import runner as migration_runner
 
 

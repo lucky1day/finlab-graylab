@@ -97,8 +97,6 @@ HISTORICAL_DOCUMENTS = (
     / "bond_factor_lab_system_check_against_old_runbook_20260628.md",
 )
 T5_NO_FOREIGN_ABLATION_DESIGN = HISTORICAL_DOCUMENTS[1]
-DAILY_POLICY = PROJECT_ROOT / "deploy" / "daily_scheduler_policy_v2.json"
-
 class OnboardingDocumentationTests(unittest.TestCase):
     def test_current_governance_contract_exists_and_is_indexed(self) -> None:
         self.assertTrue(PRODUCTION_SCHEDULING_GOVERNANCE.exists())
@@ -689,60 +687,6 @@ class OnboardingDocumentationTests(unittest.TestCase):
             {"README.md", "CURRENT_STATUS.md", "TODO.md"},
         )
 
-    def test_legacy_daily_policy_is_not_the_current_production_contract(self) -> None:
-        policy = json.loads(DAILY_POLICY.read_text(encoding="utf-8"))
-        sla = DAILY_SIGNAL_SLA.read_text(encoding="utf-8")
-        current = CURRENT_STATUS.read_text(encoding="utf-8")
-        todo = TODO.read_text(encoding="utf-8")
-        governance = PRODUCTION_SCHEDULING_GOVERNANCE.read_text(encoding="utf-8")
-
-        self.assertEqual(policy["version"], "daily-scheduler-policy-v2")
-        self.assertGreater(len(policy["schemes"]), 0)
-        self.assertIn("文档状态**：`HISTORICAL`", sla)
-        for text in (current, todo):
-            self.assertIn("PRODUCTION_SCHEDULING_GOVERNANCE.md", text)
-            self.assertNotIn("1 个 `daily-signals` occurrence", text)
-        self.assertIn("一个 cadence 只能有一个生产 writer", governance)
-        self.assertIn("daily prediction", governance)
-        self.assertRegex(
-            governance,
-            r"不得让常驻\s+APScheduler",
-        )
-
-    def test_daily_runtime_uses_direct_authority_without_legacy_admission(
-        self,
-    ) -> None:
-        deploy = DEPLOY_README.read_text(encoding="utf-8")
-        sla = DAILY_SIGNAL_SLA.read_text(encoding="utf-8")
-        current = CURRENT_STATUS.read_text(encoding="utf-8")
-        todo = TODO.read_text(encoding="utf-8")
-        runtime = (
-            PROJECT_ROOT / "scheduler" / "daily_runtime.py"
-        ).read_text(encoding="utf-8")
-        epoch_operator_path = (
-            PROJECT_ROOT / "scripts" / "daily_coordinator_epoch_operator.py"
-        )
-        admission_path = (
-            PROJECT_ROOT / "deploy" / "daily_capacity_admission_v2.json"
-        )
-
-        self.assertFalse(admission_path.exists())
-        self.assertFalse(
-            epoch_operator_path.exists(),
-            "root-only epoch transition operator must not reappear",
-        )
-        self.assertNotIn("bind_capacity_admission", runtime)
-        self.assertNotIn("require_current_capacity_admission", runtime)
-        self.assertIn("bind_direct_cache_authorities", runtime)
-        self.assertIn("revalidate_direct_authority", runtime)
-
-        self.assertIn("PRODUCTION_SCHEDULING_GOVERNANCE.md", current)
-        self.assertIn("PRODUCTION_SCHEDULING_GOVERNANCE.md", todo)
-        self.assertIn("独立生产操作", deploy)
-        self.assertIn("fail-closed", deploy)
-        self.assertNotIn("capacity admission", sla)
-        self.assertIn("文档状态**：`HISTORICAL`", sla)
-
     def test_current_status_separates_target_from_installed_facts(self) -> None:
         current = CURRENT_STATUS.read_text(encoding="utf-8")
         todo = TODO.read_text(encoding="utf-8")
@@ -799,25 +743,6 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertIn("期望配置", deploy)
         self.assertNotIn("真实 ledger provenance", platform)
         self.assertNotIn("ledger provenance", governance)
-
-    def test_legacy_sla_does_not_bind_current_liwei_policy(self) -> None:
-        policy = json.loads(DAILY_POLICY.read_text(encoding="utf-8"))
-        sla = DAILY_SIGNAL_SLA.read_text(encoding="utf-8")
-        liwei_items = [
-            item
-            for item in policy["schemes"]
-            if item["scheme_id"].startswith("liwei_0616_")
-        ]
-        self.assertEqual(len(liwei_items), 10)
-        for item in liwei_items:
-            self.assertIn("cache_group", item)
-            self.assertIn("cache_spec_fingerprint", item)
-        self.assertIn("文档状态**：`HISTORICAL`", sla)
-        self.assertIn("不能作为安装、迁移、调度、验收或回滚操作说明", sla)
-        self.assertIn(
-            "PRODUCTION_SCHEDULING_GOVERNANCE.md",
-            sla,
-        )
 
     def test_current_governance_separates_historical_and_natural_phases(self) -> None:
         governance = PRODUCTION_SCHEDULING_GOVERNANCE.read_text(encoding="utf-8")

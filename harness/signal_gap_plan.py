@@ -12,11 +12,11 @@ from sqlalchemy import bindparam, text
 from backend.factor_lab_dashboard_semantics import (
     choose_latest_backtest_runs,
 )
-from scheduler.capacity_attestation import canonical_json_sha256
 from scheduler.discovery import discover_schemes
 from shared.actual_facts import build_week_calendar
 from shared.blackbox_v2.contracts import TASK_COMBINATIONS
 from shared.calendar_service import read_calendar_snapshot_from_connection
+from shared.canonical_json import canonical_json_sha256
 from shared.data_bridge.authority import (
     StableDataBridgeCurrentAuthority,
     StableDataBridgeCutoff,
@@ -39,6 +39,10 @@ from shared.prediction_context import (
     build_daily_live_context,
     build_monthly_live_context,
     build_weekly_live_context,
+)
+from shared.live_source_contract import (
+    APPROVED_0629_LIVE_SOURCE_SCHEMES,
+    APPROVED_0629_LIVE_SOURCE_PACKAGE_SHA256_BY_SCHEME,
 )
 from shared.scheme_config_schema import SCHEME_ID_PATTERN
 
@@ -66,13 +70,6 @@ VALID_ACTIONS = (
     "FULL_CANONICAL_RUN_REQUIRED",
     "BLOCKED_NO_GENERATION",
     "BLOCKED_DATA_CONTRACT",
-)
-APPROVED_0629_LIVE_SOURCE_SCHEMES = frozenset(
-    {
-        "daily_1y_xgb_1y13_0629",
-        "daily_5y_lgbm_5y10_0629",
-        "daily_10y_lgbm_10y04_0629",
-    }
 )
 Action = Literal[
     "SKIP_PRESENT",
@@ -4061,56 +4058,14 @@ def _active_version_identity_sha256(
 
 
 def _load_0629_source_packages() -> dict[str, str]:
-    policy_path = (
-        Path(__file__).resolve().parents[1]
-        / "deploy"
-        / "daily_scheduler_policy_v2.json"
-    )
-    try:
-        payload = json.loads(policy_path.read_text(encoding="utf-8"))
-        rows = payload["schemes"]
-    except (
-        OSError,
-        UnicodeError,
-        json.JSONDecodeError,
-        KeyError,
-        TypeError,
-    ) as exc:
+    result = dict(APPROVED_0629_LIVE_SOURCE_PACKAGE_SHA256_BY_SCHEME)
+    if (
+        set(result) != set(APPROVED_0629_LIVE_SOURCE_SCHEMES)
+        or not all(_is_sha256(value) for value in result.values())
+    ):
         raise SignalGapPlanError(
-            "LIVE_SOURCE_0629_POLICY_INVALID",
-            "daily scheduler v2 policy is unavailable",
-        ) from exc
-    if not isinstance(rows, list):
-        raise SignalGapPlanError(
-            "LIVE_SOURCE_0629_POLICY_INVALID",
-            "daily scheduler v2 policy schemes are invalid",
-        )
-    result: dict[str, str] = {}
-    for row in rows:
-        if (
-            not isinstance(row, dict)
-            or row.get("scheme_id")
-            not in APPROVED_0629_LIVE_SOURCE_SCHEMES
-        ):
-            continue
-        scheme_id = str(row["scheme_id"])
-        package_sha256 = str(
-            row.get("source_package_sha256") or ""
-        )
-        if (
-            row.get("input_compatibility") != "live_source_0629"
-            or not _is_sha256(package_sha256)
-            or scheme_id in result
-        ):
-            raise SignalGapPlanError(
-                "LIVE_SOURCE_0629_POLICY_INVALID",
-                scheme_id,
-            )
-        result[scheme_id] = package_sha256
-    if set(result) != set(APPROVED_0629_LIVE_SOURCE_SCHEMES):
-        raise SignalGapPlanError(
-            "LIVE_SOURCE_0629_POLICY_INVALID",
-            "approved 0629 policy identities are incomplete",
+            "LIVE_SOURCE_0629_CONTRACT_INVALID",
+            "approved 0629 source identities are incomplete",
         )
     return result
 

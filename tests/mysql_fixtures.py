@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from harness.daily_real_replay_mysql import (
+from tests.isolated_mysql import (
     IsolatedReplayMySQL,
     isolated_replay_mysql,
 )

@@ -11,14 +11,10 @@ from typing import Mapping
 
 SCHEMA_VERSION = "blackbox-scheduler-admission-v1"
 VALID_MODES = frozenset({"formal", "gray"})
-LEGACY_AUTOMATIC = "legacy_automatic"
-DAILY_LEDGER = "daily_ledger"
 DIRECT_SCHEDULED = "direct_scheduled"
 LAUNCHD_ONE_SHOT = "launchd_one_shot"
 VALID_CONTROL_PLANES = frozenset(
     {
-        LEGACY_AUTOMATIC,
-        DAILY_LEDGER,
         DIRECT_SCHEDULED,
         LAUNCHD_ONE_SHOT,
     }
@@ -76,22 +72,12 @@ def _entry(
     )
 
 
-_FORMAL_DAILY_CAPABILITIES = frozenset(
+_FORMAL_SCHEDULED_CAPABILITIES = frozenset(
     {
-        LEGACY_AUTOMATIC,
-        DAILY_LEDGER,
         DIRECT_SCHEDULED,
         LAUNCHD_ONE_SHOT,
     }
 )
-_FORMAL_WEEKLY_CAPABILITIES = frozenset(
-    {
-        LEGACY_AUTOMATIC,
-        DIRECT_SCHEDULED,
-        LAUNCHD_ONE_SHOT,
-    }
-)
-_DAILY_GRAY_CAPABILITIES = frozenset({DAILY_LEDGER})
 _LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES = frozenset(
     {LAUNCHD_ONE_SHOT}
 )
@@ -113,7 +99,7 @@ EXPECTED_EXACT_ADMISSIONS: Mapping[
                 task_type="T+5",
                 horizon=5,
                 target_tenor="1Y",
-                capabilities=_FORMAL_DAILY_CAPABILITIES,
+                capabilities=_FORMAL_SCHEDULED_CAPABILITIES,
             ),
             (
                 "one_y_t5_liq_excess_a_w252_l7_v1",
@@ -124,7 +110,7 @@ EXPECTED_EXACT_ADMISSIONS: Mapping[
                 task_type="T+5",
                 horizon=5,
                 target_tenor="1Y",
-                capabilities=_FORMAL_DAILY_CAPABILITIES,
+                capabilities=_FORMAL_SCHEDULED_CAPABILITIES,
             ),
             (
                 "one_y_t5_liq_excess_a_w350_l7_v1",
@@ -135,7 +121,7 @@ EXPECTED_EXACT_ADMISSIONS: Mapping[
                 task_type="T+5",
                 horizon=5,
                 target_tenor="1Y",
-                capabilities=_FORMAL_DAILY_CAPABILITIES,
+                capabilities=_FORMAL_SCHEDULED_CAPABILITIES,
             ),
             (
                 "one_y_t5_liq_excess_b_w252_l7_v1",
@@ -146,7 +132,7 @@ EXPECTED_EXACT_ADMISSIONS: Mapping[
                 task_type="T+5",
                 horizon=5,
                 target_tenor="1Y",
-                capabilities=_FORMAL_DAILY_CAPABILITIES,
+                capabilities=_FORMAL_SCHEDULED_CAPABILITIES,
             ),
             (
                 "weekly_10y_lgbm_point_v1",
@@ -157,7 +143,7 @@ EXPECTED_EXACT_ADMISSIONS: Mapping[
                 task_type="weekly_point",
                 horizon=1,
                 target_tenor="10Y",
-                capabilities=_FORMAL_WEEKLY_CAPABILITIES,
+                capabilities=_FORMAL_SCHEDULED_CAPABILITIES,
             ),
             (
                 "cgb_causal_wk_1y",
@@ -366,7 +352,7 @@ EXPECTED_EXACT_ADMISSIONS: Mapping[
                 task_type="T+5",
                 horizon=5,
                 target_tenor="10Y",
-                capabilities=_DAILY_GRAY_CAPABILITIES,
+                capabilities=_NO_CAPABILITIES,
             ),
             (
                 "ten_y_t5_maj4_k3_ic_static_v1",
@@ -377,7 +363,7 @@ EXPECTED_EXACT_ADMISSIONS: Mapping[
                 task_type="T+5",
                 horizon=5,
                 target_tenor="10Y",
-                capabilities=_DAILY_GRAY_CAPABILITIES,
+                capabilities=_NO_CAPABILITIES,
             ),
             (
                 "ten_y_t5_maj4_k3_ic_yearly_v1",
@@ -388,7 +374,7 @@ EXPECTED_EXACT_ADMISSIONS: Mapping[
                 task_type="T+5",
                 horizon=5,
                 target_tenor="10Y",
-                capabilities=_DAILY_GRAY_CAPABILITIES,
+                capabilities=_NO_CAPABILITIES,
             ),
             (
                 "ten_y_t5_say_k5_sharpe_static_v1",
@@ -399,7 +385,7 @@ EXPECTED_EXACT_ADMISSIONS: Mapping[
                 task_type="T+5",
                 horizon=5,
                 target_tenor="10Y",
-                capabilities=_DAILY_GRAY_CAPABILITIES,
+                capabilities=_NO_CAPABILITIES,
             ),
         }
     )

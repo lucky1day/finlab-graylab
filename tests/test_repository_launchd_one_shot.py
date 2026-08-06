@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import os
 import unittest
-from unittest.mock import patch
 
 
 class _Result:
@@ -39,26 +37,21 @@ class _Engine:
 
 
 class RepositoryLaunchdOneShotTests(unittest.TestCase):
-    def test_launchd_one_shot_daily_scheduled_live_needs_no_ledger_item(self) -> None:
+    def test_launchd_one_shot_scheduled_live_creates_a_normal_run(self) -> None:
         from scheduler.repository import create_scheme_run
 
         engine = _Engine()
-        with patch.dict(
-            os.environ,
-            {"BOND_DAILY_COORDINATOR_MODE": "ledger"},
-            clear=False,
-        ):
-            run_id = create_scheme_run(
-                engine,
-                scheme_id="formal_daily",
-                predict_date="2026-08-03",
-                prediction_phase="scheduled_live",
-                schedule_frequency="daily",
-                scheduled_control_plane="launchd_one_shot",
-            )
+        run_id = create_scheme_run(
+            engine,
+            scheme_id="formal_daily",
+            predict_date="2026-08-03",
+            prediction_phase="scheduled_live",
+            scheduled_control_plane="launchd_one_shot",
+        )
 
         self.assertEqual(run_id, 101)
-        self.assertIsNone(engine.store["params"]["schedule_item_id"])
+        self.assertNotIn("schedule_item_id", engine.store["params"])
+        self.assertNotIn("schedule_item_id", engine.store["sql"])
 
     def test_unknown_scheduled_control_plane_fails_closed(self) -> None:
         from scheduler.repository import create_scheme_run
@@ -69,27 +62,20 @@ class RepositoryLaunchdOneShotTests(unittest.TestCase):
                 scheme_id="formal_daily",
                 predict_date="2026-08-03",
                 prediction_phase="scheduled_live",
-                schedule_frequency="daily",
                 scheduled_control_plane="forged_plane",
             )
 
-    def test_direct_weekly_and_monthly_scheduled_live_require_item(self) -> None:
-        """无 ledger item 的 scheduled_live 只能是 launchd one-shot。"""
+    def test_scheduled_live_requires_launchd_one_shot(self) -> None:
+        """自然 scheduled_live 仅允许 launchd one-shot 身份。"""
         from scheduler.repository import create_scheme_run
 
-        for frequency in ("weekly", "monthly"):
-            with self.subTest(frequency=frequency):
-                with self.assertRaisesRegex(
-                    RuntimeError,
-                    "requires launchd_one_shot",
-                ):
-                    create_scheme_run(
-                        _Engine(),
-                        scheme_id=f"direct_{frequency}",
-                        predict_date="2026-08-03",
-                        prediction_phase="scheduled_live",
-                        schedule_frequency=frequency,
-                    )
+        with self.assertRaisesRegex(RuntimeError, "requires launchd_one_shot"):
+            create_scheme_run(
+                _Engine(),
+                scheme_id="formal_weekly",
+                predict_date="2026-08-03",
+                prediction_phase="scheduled_live",
+            )
 
 
 if __name__ == "__main__":

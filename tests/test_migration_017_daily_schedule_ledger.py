@@ -5,7 +5,30 @@ import unittest
 from pathlib import Path
 
 from migrations.runner import split_sql_statements
-from scheduler.daily_ledger import SCHEDULE_FAILURE_CODES
+
+
+# 017 的历史 DDL 词表属于 migration regression fixture，不依赖已经退役的
+# runtime module。
+SCHEDULE_FAILURE_CODES = frozenset(
+    {
+        "TRANSIENT_INFRA",
+        "TIMEOUT",
+        "DATA",
+        "CONTRACT",
+        "ALGORITHM",
+        "RESULT",
+        "NATIVE_GENERATION_UNSUPPORTED",
+        "GENERATION_BUILD_FAILED",
+        "GENERATION_HASH_MISMATCH",
+        "GENERATION_INVALIDATED",
+        "ABANDONED_FENCE_PENDING_CLEANUP",
+        "ABANDONED_ORPHAN_CLEANUP",
+        "RECOVERY_CUTOFF_EXPIRED",
+        "STALE_ATTEMPT",
+        "NO_CROSS_DAY",
+        "INVALID_ITEM_STATE",
+    }
+)
 
 
 MIGRATION = (
