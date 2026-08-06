@@ -116,7 +116,7 @@ class DataBridgeCliTests(unittest.TestCase):
                         "publish": publish,
                         "continuity_authority": authority,
                         "round_builder": builder,
-                        "enforce_legacy_publication_fence": False,
+                        "require_launchd_round_builder": True,
                     },
                 )
                 engine.dispose.assert_called_once_with()

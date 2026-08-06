@@ -163,13 +163,12 @@ def _valid_target() -> signal_gap_plan.RegistryTarget:
 def _databridge_authority_payload(feature_date: str) -> dict[str, Any]:
     return {
         "authority_type": "stable_databridge_current",
-        "authority_schema_version": "stable-databridge-current-authority-v1",
+        "authority_schema_version": "stable-databridge-current-authority-v2",
         "stable_identity_sha256": "c" * 64,
         "generation_id": "gray-replay-generation-1",
         "refresh_date": "2026-08-06",
         "schema_version": "data-bridge-v1",
         "business_digest": "d" * 64,
-        "publication_capability": None,
         "files": [
             {
                 "filename": "daily_output.csv",
@@ -220,7 +219,6 @@ def _stable_databridge_authority(
         refresh_date=str(payload["refresh_date"]),
         schema_version=str(payload["schema_version"]),
         business_digest=str(payload["business_digest"]),
-        publication_capability=None,
         files=tuple(
             StableDataBridgeFileIdentity(
                 filename=str(item["filename"]),
@@ -255,6 +253,33 @@ class SignalGapPlanTests(unittest.TestCase):
             _stable_databridge_authority(feature_date),
             feature_date=feature_date,
         )
+
+        self.assertEqual(
+            signal_gap_plan._normalize_databridge_authority_payload(
+                payload,
+                expected_feature_date=feature_date,
+            ),
+            payload,
+        )
+
+    def test_legacy_v1_authority_payload_remains_read_only_normalizable(
+        self,
+    ) -> None:
+        """已归档 v4 plan 的 authority 能校验，不能被新写路径再生成。"""
+        feature_date = "2026-08-03"
+        payload = _databridge_authority_payload(feature_date)
+        payload["authority_schema_version"] = (
+            "stable-databridge-current-authority-v1"
+        )
+        payload["publication_capability"] = {
+            "occurrence_id": 17,
+            "business_date": "2026-08-04",
+            "daily_coordinator_epoch": {
+                "epoch": 3,
+                "mode": "ledger",
+                "record_sha256": "7" * 64,
+            },
+        }
 
         self.assertEqual(
             signal_gap_plan._normalize_databridge_authority_payload(

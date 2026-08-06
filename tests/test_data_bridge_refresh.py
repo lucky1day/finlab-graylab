@@ -18,16 +18,6 @@ import pandas as pd
 
 
 class DataBridgeRefreshTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self._mode_patcher = patch.dict(
-            os.environ,
-            {"BOND_DAILY_COORDINATOR_MODE": "legacy"},
-        )
-        self._mode_patcher.start()
-
-    def tearDown(self) -> None:
-        self._mode_patcher.stop()
-
     def test_refresh_config_defaults_to_v2_preflight_timeline(self) -> None:
         from shared.data_bridge.refresh import DataBridgeRefreshConfig
 
@@ -113,386 +103,6 @@ class DataBridgeRefreshTests(unittest.TestCase):
                     publish=True,
                     deadline_at=datetime(2000, 1, 1, tzinfo=ZoneInfo("Asia/Shanghai")),
                 )
-
-    def test_ledger_publish_requires_coordinator_scope(self) -> None:
-        from shared.data_bridge.refresh import (
-            DataBridgeRefreshConfig,
-            DataBridgeRefreshError,
-            run_full_refresh,
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            client = _FakeClient()
-            config = DataBridgeRefreshConfig(
-                data_root=root / "data",
-                runtime_root=root / "runtime",
-                schema_path=_write_schema(root),
-            )
-            with (
-                patch.dict(
-                    os.environ,
-                    {"BOND_DAILY_COORDINATOR_MODE": "ledger"},
-                ),
-                self.assertRaisesRegex(
-                    DataBridgeRefreshError,
-                    "coordinator",
-                ),
-            ):
-                run_full_refresh(
-                    client=client,
-                    config=config,
-                    expected_daily_date="2026-07-18",
-                    refresh_date="2026-07-19",
-                    publish=True,
-                )
-
-            self.assertEqual(client.calls, [])
-
-    def test_ledger_dry_run_requires_coordinator_scope(self) -> None:
-        from shared.data_bridge.refresh import (
-            DataBridgeRefreshConfig,
-            DataBridgeRefreshError,
-            run_full_refresh,
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            client = _FakeClient()
-            config = DataBridgeRefreshConfig(
-                data_root=root / "data",
-                runtime_root=root / "runtime",
-                schema_path=_write_schema(root),
-            )
-            with (
-                patch.dict(
-                    os.environ,
-                    {"BOND_DAILY_COORDINATOR_MODE": "ledger"},
-                ),
-                self.assertRaisesRegex(
-                    DataBridgeRefreshError,
-                    "coordinator",
-                ),
-            ):
-                run_full_refresh(
-                    client=client,
-                    config=config,
-                    expected_daily_date="2026-07-18",
-                    refresh_date="2026-07-19",
-                    publish=False,
-                )
-
-            self.assertEqual(client.calls, [])
-
-    def test_machine_ledger_rejects_env_legacy_without_capability(
-        self,
-    ) -> None:
-        from shared.data_bridge.refresh import (
-            DataBridgePublicationFenceError,
-            _require_publish_authority,
-        )
-
-        with (
-            patch.dict(
-                os.environ,
-                {"BOND_DAILY_COORDINATOR_MODE": "legacy"},
-            ),
-            patch(
-                "shared.data_bridge.refresh."
-                "require_current_daily_coordinator_identity",
-                return_value=SimpleNamespace(mode="ledger"),
-            ),
-            self.assertRaises(DataBridgePublicationFenceError),
-        ):
-            _require_publish_authority(publish=True)
-
-    def test_env_ledger_cannot_override_machine_legacy_identity_error(
-        self,
-    ) -> None:
-        from shared.data_bridge.refresh import (
-            DataBridgePublicationFenceError,
-            _require_publish_authority,
-        )
-
-        with (
-            patch.dict(
-                os.environ,
-                {"BOND_DAILY_COORDINATOR_MODE": "ledger"},
-            ),
-            patch(
-                "shared.data_bridge.refresh."
-                "require_current_daily_coordinator_identity",
-                side_effect=RuntimeError(
-                    "process mode does not match current epoch mode legacy"
-                ),
-            ),
-            self.assertRaises(DataBridgePublicationFenceError),
-        ):
-            _require_publish_authority(publish=True)
-
-    def test_machine_chain_ledger_ignores_repository_rollout_legacy(
-        self,
-    ) -> None:
-        from shared.data_bridge.refresh import (
-            DataBridgePublicationFenceError,
-            _require_publish_authority,
-        )
-
-        identity = SimpleNamespace(
-            mode="ledger",
-            source="epoch_chain",
-        )
-        with (
-            patch(
-                "shared.data_bridge.refresh."
-                "require_current_daily_coordinator_identity",
-                return_value=identity,
-            ),
-            self.assertRaises(DataBridgePublicationFenceError),
-        ):
-            _require_publish_authority(publish=False)
-
-    def test_publication_capability_revalidates_exact_occurrence_identity(
-        self,
-    ) -> None:
-        from shared.data_bridge.refresh import (
-            DailyCoordinatorPublicationCapability,
-            DataBridgePublicationFenceError,
-            _validate_publication_capability,
-        )
-
-        occurrence = {
-            "occurrence_id": 42,
-            "business_date": "2026-07-24",
-            "daily_coordinator_epoch": {
-                "epoch": 2,
-                "mode": "ledger",
-                "record_sha256": "2" * 64,
-            },
-        }
-        capability = DailyCoordinatorPublicationCapability(
-            occurrence_id=42,
-            business_date="2026-07-24",
-            epoch=2,
-            mode="ledger",
-            record_sha256="2" * 64,
-        )
-        object.__setattr__(
-            capability,
-            "occurrence_validator",
-            lambda: dict(occurrence),
-        )
-
-        with patch(
-            "shared.data_bridge.refresh."
-            "assert_daily_coordinator_epoch_payload_matches_current",
-        ):
-            self.assertIs(
-                _validate_publication_capability(capability),
-                capability,
-            )
-            occurrence["occurrence_id"] = 43
-            with self.assertRaisesRegex(
-                DataBridgePublicationFenceError,
-                "occurrence",
-            ):
-                _validate_publication_capability(capability)
-
-    def test_store_lock_epoch_drift_preserves_current_previous_and_state(
-        self,
-    ) -> None:
-        from shared.data_bridge.refresh import (
-            DailyCoordinatorPublicationCapability,
-            DataBridgePublicationFenceError,
-            DataBridgeStore,
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            store = DataBridgeStore(
-                data_root=root / "data",
-                runtime_root=root / "runtime",
-            )
-            store.publish(
-                _write_candidate(root / "old", "old"),
-                _state("old"),
-            )
-            current_before = {
-                path.name: path.read_bytes()
-                for path in store.current_dir.iterdir()
-            }
-            state_before = store.state_path.read_bytes()
-            candidate = _write_candidate(root / "new", "new")
-            caller_state = _state("new")
-            caller_state_before = json.loads(json.dumps(caller_state))
-            capability = DailyCoordinatorPublicationCapability(
-                occurrence_id=42,
-                business_date="2026-07-24",
-                epoch=2,
-                mode="ledger",
-                record_sha256="2" * 64,
-            )
-            drift = DataBridgePublicationFenceError("epoch drift")
-
-            with (
-                patch(
-                    "shared.data_bridge.refresh."
-                    "require_current_daily_coordinator_identity",
-                    return_value=SimpleNamespace(mode="ledger"),
-                ),
-                patch(
-                    "shared.data_bridge.refresh."
-                    "_validate_publication_capability",
-                    side_effect=(capability, drift),
-                ),
-                patch(
-                    "shared.data_bridge.refresh.os.replace",
-                    wraps=os.replace,
-                ) as replace,
-                patch(
-                    "shared.data_bridge.refresh.shutil.rmtree",
-                    wraps=__import__("shutil").rmtree,
-                ) as remove,
-                self.assertRaises(DataBridgePublicationFenceError),
-            ):
-                store.publish(
-                    candidate,
-                    caller_state,
-                    publication_capability=capability,
-                )
-
-            replace.assert_not_called()
-            remove.assert_not_called()
-            self.assertEqual(
-                {
-                    path.name: path.read_bytes()
-                    for path in store.current_dir.iterdir()
-                },
-                current_before,
-            )
-            self.assertFalse(store.previous_dir.exists())
-            self.assertEqual(store.state_path.read_bytes(), state_before)
-            self.assertEqual(caller_state, caller_state_before)
-
-    def test_post_stability_epoch_drift_never_publishes_or_writes_state(
-        self,
-    ) -> None:
-        from shared.data_bridge.refresh import (
-            DailyCoordinatorPublicationCapability,
-            DataBridgePublicationFenceError,
-            DataBridgeRefreshConfig,
-            DataBridgeStore,
-            run_full_refresh,
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            config = DataBridgeRefreshConfig(
-                data_root=root / "data",
-                runtime_root=root / "runtime",
-                schema_path=_write_schema(root),
-            )
-            capability = DailyCoordinatorPublicationCapability(
-                occurrence_id=42,
-                business_date="2026-07-19",
-                epoch=2,
-                mode="ledger",
-                record_sha256="2" * 64,
-            )
-            drift = DataBridgePublicationFenceError("epoch drift")
-            with (
-                patch(
-                    "shared.data_bridge.refresh."
-                    "require_current_daily_coordinator_identity",
-                    return_value=SimpleNamespace(mode="ledger"),
-                ),
-                patch(
-                    "shared.data_bridge.refresh."
-                    "_validate_publication_capability",
-                    side_effect=(capability, capability, drift),
-                ),
-                patch.object(
-                    DataBridgeStore,
-                    "publish",
-                ) as publish,
-                patch.object(
-                    DataBridgeStore,
-                    "record_failed_attempt",
-                ) as record_failure,
-                self.assertRaises(DataBridgePublicationFenceError),
-            ):
-                run_full_refresh(
-                    client=_FakeClient(),
-                    config=config,
-                    expected_daily_date="2026-07-18",
-                    refresh_date="2026-07-19",
-                    publish=True,
-                    publication_capability=capability,
-                )
-
-            publish.assert_not_called()
-            record_failure.assert_not_called()
-            self.assertFalse(
-                (config.runtime_root / "state.json").exists()
-            )
-
-    def test_outer_refresh_lock_rechecks_epoch_before_recovery(
-        self,
-    ) -> None:
-        from shared.data_bridge.refresh import (
-            DailyCoordinatorPublicationCapability,
-            DataBridgePublicationFenceError,
-            DataBridgeRefreshConfig,
-            DataBridgeStore,
-            run_full_refresh,
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            config = DataBridgeRefreshConfig(
-                data_root=root / "data",
-                runtime_root=root / "runtime",
-                schema_path=_write_schema(root),
-            )
-            client = _FakeClient()
-            capability = DailyCoordinatorPublicationCapability(
-                occurrence_id=42,
-                business_date="2026-07-19",
-                epoch=2,
-                mode="ledger",
-                record_sha256="2" * 64,
-            )
-            with (
-                patch(
-                    "shared.data_bridge.refresh."
-                    "require_current_daily_coordinator_identity",
-                    return_value=SimpleNamespace(mode="ledger"),
-                ),
-                patch(
-                    "shared.data_bridge.refresh."
-                    "_validate_publication_capability",
-                    side_effect=(
-                        capability,
-                        DataBridgePublicationFenceError("epoch drift"),
-                    ),
-                ),
-                patch.object(DataBridgeStore, "recover") as recover,
-                self.assertRaises(DataBridgePublicationFenceError),
-            ):
-                run_full_refresh(
-                    client=client,
-                    config=config,
-                    expected_daily_date="2026-07-18",
-                    refresh_date="2026-07-19",
-                    publish=True,
-                    publication_capability=capability,
-                )
-
-            recover.assert_not_called()
-            self.assertEqual(client.calls, [])
-            self.assertFalse(
-                (config.runtime_root / "state.json").exists()
-            )
 
     def test_post_state_failure_restores_previous_dataset_and_state(
         self,
@@ -1444,7 +1054,7 @@ class DataBridgeRefreshTests(unittest.TestCase):
                     refresh_date="2026-07-19",
                     publish=True,
                     round_builder=builder,
-                    enforce_legacy_publication_fence=False,
+                    require_launchd_round_builder=True,
                 )
 
             self.assertIs(type(builder), MySqlDataBridgeRoundBuilder)
@@ -1514,7 +1124,7 @@ class DataBridgeRefreshTests(unittest.TestCase):
                     refresh_date="2026-07-19",
                     publish=True,
                     round_builder=OverridingRoundBuilder(),
-                    enforce_legacy_publication_fence=False,
+                    require_launchd_round_builder=True,
                 )
 
             self.assertFalse((config.data_root / "current").exists())
@@ -1575,7 +1185,7 @@ class DataBridgeRefreshTests(unittest.TestCase):
                     refresh_date="2026-07-19",
                     publish=True,
                     round_builder=ProtocolOnlyRoundBuilder(),
-                    enforce_legacy_publication_fence=False,
+                    require_launchd_round_builder=True,
                 )
 
             self.assertFalse((config.data_root / "current").exists())
@@ -1615,7 +1225,6 @@ class DataBridgeRefreshTests(unittest.TestCase):
             store.publish(
                 candidate,
                 state,
-                enforce_legacy_publication_fence=False,
             )
             with self.assertRaisesRegex(
                 DataBridgeRefreshError,
@@ -1681,7 +1290,6 @@ class DataBridgeRefreshTests(unittest.TestCase):
             ).publish(
                 candidate,
                 state,
-                enforce_legacy_publication_fence=False,
             )
 
             with self.assertRaisesRegex(
@@ -1733,7 +1341,6 @@ class DataBridgeRefreshTests(unittest.TestCase):
                 ).publish(
                     candidate,
                     state,
-                    enforce_legacy_publication_fence=False,
                 )
 
     def test_legacy_current_cannot_satisfy_local_mysql_freshness_read(self) -> None:
@@ -2827,7 +2434,10 @@ class DataBridgeRefreshTests(unittest.TestCase):
     def test_publication_manifest_excludes_post_rename_published_at(
         self,
     ) -> None:
-        from shared.data_bridge.refresh import DataBridgeStore
+        from shared.data_bridge.refresh import (
+            CURRENT_PUBLICATION_MANIFEST_VERSION,
+            DataBridgeStore,
+        )
         from shared.data_bridge.validation import write_validated_dataset
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2859,6 +2469,58 @@ class DataBridgeRefreshTests(unittest.TestCase):
             )
             self.assertIsNotNone(published["published_at"])
             self.assertNotIn("published_at", marker)
+
+    def test_new_publication_writes_v3_without_legacy_capability(
+        self,
+    ) -> None:
+        from shared.data_bridge.refresh import (
+            CURRENT_PUBLICATION_MANIFEST_VERSION,
+            DataBridgeStore,
+        )
+        from shared.data_bridge.validation import write_validated_dataset
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            schema = _write_schema(root)
+            dataset = _validated_dataset(root, schema)
+            state = _dataset_state(
+                dataset,
+                refresh_date="2026-07-24",
+            )
+            state["publication_capability"] = {
+                "occurrence_id": 17,
+                "business_date": "2026-07-24",
+                "daily_coordinator_epoch": {
+                    "epoch": 3,
+                    "mode": "ledger",
+                    "record_sha256": "7" * 64,
+                },
+            }
+            store = DataBridgeStore(
+                data_root=root / "data",
+                runtime_root=root / "runtime",
+            )
+            published = store.publish(
+                write_validated_dataset(dataset, root / "candidate"),
+                state,
+            )
+            marker = json.loads(
+                (
+                    store.current_dir
+                    / ".publication-manifest.json"
+                ).read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(
+            marker["manifest_version"],
+            CURRENT_PUBLICATION_MANIFEST_VERSION,
+        )
+        self.assertNotIn("publication_capability", marker)
+        self.assertNotIn("publication_capability", published)
+        self.assertEqual(
+            published["publication_manifest_version"],
+            CURRENT_PUBLICATION_MANIFEST_VERSION,
+        )
 
 
 def _round(round_id: str, digest: str):

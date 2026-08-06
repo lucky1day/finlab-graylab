@@ -15,7 +15,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable, Iterator, Mapping, Protocol
@@ -42,12 +42,6 @@ from shared.data_contract import (
     source_commit_evidence_payload,
     source_commit_evidence_sha256,
 )
-from shared.daily_coordinator_mode import (
-    assert_daily_coordinator_epoch_payload_matches_current,
-    require_current_daily_coordinator_identity,
-)
-
-
 class DataBridgeRefreshError(RuntimeError):
     """A full refresh could not produce a stable valid dataset."""
 
@@ -64,13 +58,10 @@ class DataBridgeCurrentInvalidError(DataBridgeCurrentReadError):
     """严格只读 current 的目录、状态或内容无效。"""
 
 
-class DataBridgePublicationFenceError(DataBridgeRefreshError):
-    """Occurrence-bound publication capability 已缺失或漂移。"""
-
-
 CURRENT_PUBLICATION_MANIFEST = ".publication-manifest.json"
 LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION = "data-bridge-current-v1"
-CURRENT_PUBLICATION_MANIFEST_VERSION = "data-bridge-current-v2"
+LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION = "data-bridge-current-v2"
+CURRENT_PUBLICATION_MANIFEST_VERSION = "data-bridge-current-v3"
 LEGACY_CURRENT_PUBLICATION_MANIFEST_FIELDS = frozenset(
     {
         "manifest_version",
@@ -82,9 +73,21 @@ LEGACY_CURRENT_PUBLICATION_MANIFEST_FIELDS = frozenset(
         "publication_capability",
     }
 )
-CURRENT_PUBLICATION_MANIFEST_FIELDS = frozenset(
+LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_FIELDS = frozenset(
     {
         *LEGACY_CURRENT_PUBLICATION_MANIFEST_FIELDS,
+        "source_mode",
+        "source_provenance",
+    }
+)
+CURRENT_PUBLICATION_MANIFEST_FIELDS = frozenset(
+    {
+        "manifest_version",
+        "generation_id",
+        "refresh_date",
+        "schema_version",
+        "business_digest",
+        "files",
         "source_mode",
         "source_provenance",
     }
@@ -93,9 +96,10 @@ CURRENT_PUBLICATION_MANIFEST_FIELDS_BY_VERSION = {
     LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION: (
         LEGACY_CURRENT_PUBLICATION_MANIFEST_FIELDS
     ),
-    CURRENT_PUBLICATION_MANIFEST_VERSION: (
-        CURRENT_PUBLICATION_MANIFEST_FIELDS
+    LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION: (
+        LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_FIELDS
     ),
+    CURRENT_PUBLICATION_MANIFEST_VERSION: CURRENT_PUBLICATION_MANIFEST_FIELDS,
 }
 LOCAL_MYSQL_SOURCE_MODE = "local_mysql"
 LOCAL_MYSQL_PROVENANCE_VERSION = "data-bridge-local-mysql-v1"
@@ -106,148 +110,6 @@ FAILED_ATTEMPT_ERROR_CATEGORIES = frozenset(
         "validation_failed",
     }
 )
-
-
-@dataclass(frozen=True)
-class DailyCoordinatorPublicationCapability:
-    """绑定单个 occurrence/date/exact epoch 的不可变发布能力。"""
-
-    occurrence_id: int
-    business_date: str
-    epoch: int
-    mode: str
-    record_sha256: str
-    occurrence_validator: (
-        Callable[[], Mapping[str, object]] | None
-    ) = field(default=None, repr=False, compare=False)
-
-    @classmethod
-    def from_occurrence(
-        cls,
-        *,
-        occurrence_id: int,
-        business_date: str,
-        policy_json: Mapping[str, object],
-        occurrence_validator: Callable[[], Mapping[str, object]],
-    ) -> "DailyCoordinatorPublicationCapability":
-        frozen = policy_json.get("daily_coordinator_epoch")
-        if not isinstance(frozen, Mapping):
-            raise DataBridgeRefreshError(
-                "daily occurrence publication epoch is unavailable"
-            )
-        return cls(
-            occurrence_id=int(occurrence_id),
-            business_date=date.fromisoformat(
-                business_date
-            ).isoformat(),
-            epoch=int(frozen.get("epoch", 0)),
-            mode=str(frozen.get("mode", "")),
-            record_sha256=str(frozen.get("record_sha256", "")),
-            occurrence_validator=occurrence_validator,
-        )
-
-    def epoch_payload(self) -> dict[str, object]:
-        return {
-            "epoch": self.epoch,
-            "mode": self.mode,
-            "record_sha256": self.record_sha256,
-        }
-
-
-def _validate_publication_capability(
-    capability: object,
-) -> DailyCoordinatorPublicationCapability:
-    if not isinstance(
-        capability,
-        DailyCoordinatorPublicationCapability,
-    ):
-        raise DataBridgePublicationFenceError(
-            "DataBridge publication capability is missing"
-        )
-    if capability.occurrence_id <= 0:
-        raise DataBridgePublicationFenceError(
-            "DataBridge publication occurrence_id is invalid"
-        )
-    if not callable(capability.occurrence_validator):
-        raise DataBridgePublicationFenceError(
-            "DataBridge publication occurrence validator is missing"
-        )
-    try:
-        normalized_date = date.fromisoformat(
-            capability.business_date
-        ).isoformat()
-        occurrence = capability.occurrence_validator()
-        if not isinstance(occurrence, Mapping):
-            raise ValueError("occurrence validator returned no snapshot")
-        snapshot_occurrence_id = int(
-            occurrence.get("occurrence_id", 0)
-        )
-        snapshot_business_date = date.fromisoformat(
-            str(occurrence.get("business_date", ""))
-        ).isoformat()
-        snapshot_epoch = occurrence.get("daily_coordinator_epoch")
-        if not isinstance(snapshot_epoch, Mapping):
-            raise ValueError("occurrence epoch is unavailable")
-        normalized_snapshot_epoch = {
-            "epoch": int(snapshot_epoch.get("epoch", 0)),
-            "mode": str(snapshot_epoch.get("mode", "")),
-            "record_sha256": str(
-                snapshot_epoch.get("record_sha256", "")
-            ),
-        }
-        if (
-            snapshot_occurrence_id != capability.occurrence_id
-            or snapshot_business_date != capability.business_date
-            or normalized_snapshot_epoch != capability.epoch_payload()
-        ):
-            raise ValueError("occurrence publication identity drifted")
-        assert_daily_coordinator_epoch_payload_matches_current(
-            normalized_snapshot_epoch,
-            label="DataBridge publication coordinator epoch",
-        )
-    except Exception as exc:
-        raise DataBridgePublicationFenceError(
-            "DataBridge publication occurrence snapshot or coordinator "
-            "epoch drifted"
-        ) from exc
-    if normalized_date != capability.business_date:
-        raise DataBridgePublicationFenceError(
-            "DataBridge publication business_date is non-canonical"
-        )
-    if capability.mode != "ledger":
-        raise DataBridgePublicationFenceError(
-            "DataBridge publication capability must use ledger mode"
-        )
-    return capability
-
-
-def _require_publish_authority(
-    *,
-    publish: bool,
-    publication_capability: (
-        DailyCoordinatorPublicationCapability | None
-    ) = None,
-) -> DailyCoordinatorPublicationCapability | None:
-    """DataBridge refresh 必须绑定显式模式，ledger 仅限协调器调用域。"""
-    del publish
-    try:
-        identity = require_current_daily_coordinator_identity()
-    except Exception as exc:
-        raise DataBridgePublicationFenceError(
-            "DataBridge coordinator epoch identity is unavailable"
-        ) from exc
-    mode = identity.mode
-    if mode != "ledger":
-        return None
-    capability = (
-        publication_capability
-    )
-    if capability is None:
-        raise DataBridgePublicationFenceError(
-            "DataBridge refresh is reserved for an occurrence-bound daily "
-            "coordinator capability in ledger mode"
-        )
-    return _validate_publication_capability(capability)
 
 
 REQUIRED_SOURCE_TABLES = frozenset(
@@ -559,43 +421,14 @@ def run_full_refresh(
     refresh_date: str,
     publish: bool,
     deadline_at: datetime | None = None,
-    publication_capability: (
-        DailyCoordinatorPublicationCapability | None
-    ) = None,
     continuity_authority: object | None = None,
     round_builder: DataBridgeRoundSource | None = None,
-    enforce_legacy_publication_fence: bool = True,
+    require_launchd_round_builder: bool = False,
 ) -> RefreshResult:
-    if (
-        not enforce_legacy_publication_fence
-        and publication_capability is not None
-    ):
-        raise DataBridgePublicationFenceError(
-            "legacy publication capability cannot be mixed with the "
-            "launchd-only refresh path"
-        )
-    if not enforce_legacy_publication_fence:
+    if require_launchd_round_builder:
         _require_launchd_round_builder(round_builder)
-    authority = (
-        _require_publish_authority(
-            publish=publish,
-            publication_capability=publication_capability,
-        )
-        if enforce_legacy_publication_fence
-        else None
-    )
-    if (
-        authority is not None
-        and authority.business_date != refresh_date
-    ):
-        raise DataBridgePublicationFenceError(
-            "DataBridge publication capability business_date does not "
-            "match refresh_date"
-        )
     store = DataBridgeStore(data_root=config.data_root, runtime_root=config.runtime_root)
     with store.lock(exclusive=True, blocking=False):
-        if authority is not None:
-            _validate_publication_capability(authority)
         refresh_started_at = _shanghai_now()
         started = time.monotonic()
         built_directories: list[Path] = []
@@ -652,8 +485,6 @@ def run_full_refresh(
                 rounds(),
                 max_rounds=config.max_rounds,
             )
-            if authority is not None:
-                _validate_publication_capability(authority)
             assert selected.dataset is not None
             _assert_frozen_exact_period_keys(
                 selected.dataset,
@@ -679,10 +510,6 @@ def run_full_refresh(
                 state = store.publish(
                     selected.directory,
                     state,
-                    publication_capability=authority,
-                    enforce_legacy_publication_fence=(
-                        enforce_legacy_publication_fence
-                    ),
                 )
             return RefreshResult(
                 state=state,
@@ -691,13 +518,7 @@ def run_full_refresh(
                 duration_sec=time.monotonic() - started,
             )
         except BaseException as exc:
-            if (
-                publish
-                and not isinstance(
-                    exc,
-                    DataBridgePublicationFenceError,
-                )
-            ):
+            if publish:
                 try:
                     store.record_failed_attempt(
                         refresh_date=refresh_date,
@@ -744,9 +565,6 @@ def check_current_dataset(
     expected_daily_date: str | None = None,
     expected_generation_id: str | None = None,
     expected_business_digest: str | None = None,
-    expected_publication_capability: (
-        DailyCoordinatorPublicationCapability | None
-    ) = None,
     strict_read_only: bool = False,
     require_source_provenance: bool = False,
 ) -> CurrentDataset:
@@ -777,17 +595,6 @@ def check_current_dataset(
                 current.state,
                 expected_daily_date=expected_daily_date,
             )
-        if expected_publication_capability is not None:
-            authority = _validate_publication_capability(
-                expected_publication_capability
-            )
-            if state.get("publication_capability") != (
-                _publication_capability_payload(authority)
-            ):
-                raise DataBridgePublicationFenceError(
-                    "DataBridge current publication capability does not "
-                    "match caller occurrence"
-                )
         if (
             expected_generation_id is not None
             and state.get("generation_id") != expected_generation_id
@@ -1115,6 +922,9 @@ def _build_state(
         )
     generation_id = f"full-{refresh_date.replace('-', '')}-{now.strftime('%H%M%S')}-{dataset.business_digest[:12]}"
     return {
+        "publication_manifest_version": (
+            CURRENT_PUBLICATION_MANIFEST_VERSION
+        ),
         "schema_version": dataset.schema_version,
         "generation_id": generation_id,
         "refresh_date": refresh_date,
@@ -1153,16 +963,6 @@ def _build_state(
     }
 
 
-def _publication_capability_payload(
-    capability: DailyCoordinatorPublicationCapability,
-) -> dict[str, object]:
-    return {
-        "occurrence_id": capability.occurrence_id,
-        "business_date": capability.business_date,
-        "daily_coordinator_epoch": capability.epoch_payload(),
-    }
-
-
 def _publication_identity_from_state(
     state: Mapping[str, object],
 ) -> dict[str, object]:
@@ -1171,8 +971,21 @@ def _publication_identity_from_state(
         raise DataBridgeRefreshError(
             "DataBridge publication state must be an object"
         )
+    version = state.get("manifest_version")
+    if version is None:
+        version = state.get("publication_manifest_version")
+    if version is None:
+        version = (
+            LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION
+            if state.get("source_provenance") is not None
+            else LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION
+        )
+    if not isinstance(version, str):
+        raise DataBridgeRefreshError(
+            "DataBridge publication manifest version is invalid"
+        )
     identity: dict[str, object] = {
-        "manifest_version": LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION,
+        "manifest_version": version,
         "generation_id": copy.deepcopy(state.get("generation_id")),
         "refresh_date": copy.deepcopy(state.get("refresh_date")),
         "schema_version": copy.deepcopy(state.get("schema_version")),
@@ -1180,25 +993,52 @@ def _publication_identity_from_state(
             state.get("business_digest")
         ),
         "files": copy.deepcopy(state.get("files")),
-        "publication_capability": (
+    }
+    if version == LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION:
+        identity["publication_capability"] = (
             _normalize_stored_publication_capability(
                 state.get("publication_capability")
             )
-        ),
-    }
-    source_provenance = state.get("source_provenance")
-    if source_provenance is None:
-        return identity
-    source_mode = state.get("source_mode")
-    if source_mode != LOCAL_MYSQL_SOURCE_MODE:
-        raise DataBridgeRefreshError(
-            "DataBridge local source provenance requires local_mysql mode"
         )
-    identity["manifest_version"] = CURRENT_PUBLICATION_MANIFEST_VERSION
+        return identity
+
+    source_provenance = state.get("source_provenance")
+    source_mode = state.get("source_mode")
+    if version == LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION:
+        if source_mode != LOCAL_MYSQL_SOURCE_MODE:
+            raise DataBridgeRefreshError(
+                "DataBridge local source provenance requires local_mysql mode"
+            )
+        identity["publication_capability"] = (
+            _normalize_stored_publication_capability(
+                state.get("publication_capability")
+            )
+        )
+        identity["source_mode"] = source_mode
+        identity["source_provenance"] = _normalize_source_provenance(
+            source_provenance
+        )
+        return identity
+    if version != CURRENT_PUBLICATION_MANIFEST_VERSION:
+        raise DataBridgeRefreshError(
+            "DataBridge publication manifest version is unsupported"
+        )
+    if source_mode is None:
+        source_mode = "full_export"
+    if not isinstance(source_mode, str) or not source_mode:
+        raise DataBridgeRefreshError("DataBridge source_mode is invalid")
+    if source_mode == LOCAL_MYSQL_SOURCE_MODE:
+        normalized_provenance: dict[str, object] | None = (
+            _normalize_source_provenance(source_provenance)
+        )
+    elif source_provenance is not None:
+        raise DataBridgeRefreshError(
+            "DataBridge non-local source must not carry local provenance"
+        )
+    else:
+        normalized_provenance = None
     identity["source_mode"] = source_mode
-    identity["source_provenance"] = _normalize_source_provenance(
-        source_provenance
-    )
+    identity["source_provenance"] = normalized_provenance
     return identity
 
 
@@ -1213,7 +1053,14 @@ def require_local_mysql_source_provenance(
             "DataBridge local source provenance state is invalid"
         )
     identity = _publication_identity_from_state(state)
-    if identity.get("manifest_version") != CURRENT_PUBLICATION_MANIFEST_VERSION:
+    if (
+        identity.get("manifest_version")
+        not in {
+            LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION,
+            CURRENT_PUBLICATION_MANIFEST_VERSION,
+        }
+        or identity.get("source_mode") != LOCAL_MYSQL_SOURCE_MODE
+    ):
         raise DataBridgeRefreshError(
             "DataBridge current lacks sealed local MySQL source provenance"
         )
@@ -1312,7 +1159,7 @@ def _is_no_current_failure_audit_state(state: object) -> bool:
 
 
 def _normalize_source_provenance(payload: object) -> dict[str, object]:
-    """校验并规范化写入 v2 current identity 的 MySQL 水位证据。"""
+    """校验并规范化写入 current identity 的 MySQL 水位证据。"""
     if not isinstance(payload, Mapping):
         raise DataBridgeRefreshError(
             "DataBridge source_provenance must be an object"
@@ -1706,12 +1553,27 @@ def _validate_identity_against_dataset(
     *,
     dataset: ValidatedDataBridgeDataset,
 ) -> None:
-    if identity.get("manifest_version") == CURRENT_PUBLICATION_MANIFEST_VERSION:
+    manifest_version = identity.get("manifest_version")
+    if manifest_version == LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION:
         if identity.get("source_mode") != LOCAL_MYSQL_SOURCE_MODE:
             raise DataBridgeRefreshError(
                 "DataBridge publication manifest local source mode is invalid"
             )
         _normalize_source_provenance(identity.get("source_provenance"))
+    elif manifest_version == CURRENT_PUBLICATION_MANIFEST_VERSION:
+        source_mode = identity.get("source_mode")
+        source_provenance = identity.get("source_provenance")
+        if not isinstance(source_mode, str) or not source_mode:
+            raise DataBridgeRefreshError(
+                "DataBridge publication manifest source mode is invalid"
+            )
+        if source_mode == LOCAL_MYSQL_SOURCE_MODE:
+            _normalize_source_provenance(source_provenance)
+        elif source_provenance is not None:
+            raise DataBridgeRefreshError(
+                "DataBridge publication manifest non-local source provenance "
+                "is invalid"
+            )
     generation_id = identity.get("generation_id")
     refresh_date = identity.get("refresh_date")
     business_digest = identity.get("business_digest")
@@ -1971,32 +1833,10 @@ class DataBridgeStore:
         state: dict[str, object],
         *,
         fail_after_backup: bool = False,
-        publication_capability: (
-            DailyCoordinatorPublicationCapability | None
-        ) = None,
-        enforce_legacy_publication_fence: bool = True,
     ) -> dict[str, object]:
-        if (
-            not enforce_legacy_publication_fence
-            and publication_capability is not None
-        ):
-            raise DataBridgePublicationFenceError(
-                "legacy publication capability cannot be mixed with the "
-                "launchd-only refresh path"
-            )
-        authority = (
-            _require_publish_authority(
-                publish=True,
-                publication_capability=publication_capability,
-            )
-            if enforce_legacy_publication_fence
-            else None
-        )
         candidate = Path(candidate_dir)
         _validate_publish_candidate(candidate)
         with self.lock(exclusive=True):
-            if authority is not None:
-                _validate_publication_capability(authority)
             _validate_publish_candidate(candidate)
             self._recover_locked()
             next_dir = Path(tempfile.mkdtemp(prefix=".current-next-", dir=self.data_root))
@@ -2008,11 +1848,12 @@ class DataBridgeStore:
             )
             _validate_publish_candidate(candidate)
             published_state = copy.deepcopy(state)
-            if authority is not None:
-                _validate_publication_capability(authority)
-                published_state["publication_capability"] = (
-                    _publication_capability_payload(authority)
-                )
+            published_state.pop("publication_capability", None)
+            published_state["publication_manifest_version"] = (
+                CURRENT_PUBLICATION_MANIFEST_VERSION
+            )
+            published_state.setdefault("source_mode", "full_export")
+            published_state.setdefault("source_provenance", None)
             _write_publication_manifest(
                 next_dir,
                 state=published_state,
@@ -2029,16 +1870,12 @@ class DataBridgeStore:
             )
             state_replaced = False
             try:
-                if authority is not None:
-                    _validate_publication_capability(authority)
                 if self.previous_dir.exists():
                     shutil.rmtree(self.previous_dir)
                 if had_current:
                     os.replace(self.current_dir, self.previous_dir)
                 if fail_after_backup:
                     raise RuntimeError("injected publication failure")
-                if authority is not None:
-                    _validate_publication_capability(authority)
                 os.replace(next_dir, self.current_dir)
                 published_state["published_at"] = (
                     _shanghai_now().isoformat(
@@ -2046,8 +1883,6 @@ class DataBridgeStore:
                     )
                 )
                 state_replaced = True
-                if authority is not None:
-                    _validate_publication_capability(authority)
                 self._write_state_locked(published_state)
                 _fsync_directory(self.data_root)
                 _fsync_directory(self.runtime_root)

@@ -213,9 +213,8 @@ class StableDataBridgeCurrentAuthorityTests(unittest.TestCase):
             authority.cutoffs[-1].weekly_cutoff_key,
             "202628",
         )
-        self.assertEqual(
-            authority.publication_capability.occurrence_id,
-            17,
+        self.assertFalse(
+            hasattr(authority, "publication_capability")
         )
         with self.assertRaises(dataclasses.FrozenInstanceError):
             authority.generation_id = "replacement"
@@ -270,9 +269,6 @@ class StableDataBridgeCurrentAuthorityTests(unittest.TestCase):
             "file_hash": self._resolve(
                 _current(daily_sha256="8" * 64),
             )[0],
-            "publication_capability": self._resolve(
-                _current(occurrence_id=18),
-            )[0],
             "cutoff": self._resolve(
                 _current(),
                 cutoffs=_cutoffs(weekly="202627"),
@@ -285,6 +281,18 @@ class StableDataBridgeCurrentAuthorityTests(unittest.TestCase):
                     baseline.stable_identity_sha256,
                     changed.stable_identity_sha256,
                 )
+
+        legacy_capability = self._resolve(
+            _current(occurrence_id=18),
+        )[0]
+        self.assertNotEqual(
+            baseline.publication_identity_sha256,
+            legacy_capability.publication_identity_sha256,
+        )
+        self.assertNotEqual(
+            baseline.stable_identity_sha256,
+            legacy_capability.stable_identity_sha256,
+        )
 
     def test_missing_and_invalid_checker_types_are_propagated(self) -> None:
         from shared.data_bridge.authority import (
@@ -781,8 +789,8 @@ class StableDataBridgeCurrentAuthorityTests(unittest.TestCase):
             resolve_stable_databridge_current_authority,
         )
         from shared.data_bridge.refresh import (
-            CURRENT_PUBLICATION_MANIFEST_VERSION,
             LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION,
+            LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION,
         )
 
         legacy_current = _current()
@@ -802,7 +810,9 @@ class StableDataBridgeCurrentAuthorityTests(unittest.TestCase):
         sealed_v2_current = dataclasses.replace(
             sealed_v2_current,
             publication_manifest={
-                "manifest_version": CURRENT_PUBLICATION_MANIFEST_VERSION,
+                "manifest_version": (
+                    LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION
+                ),
             },
         )
 

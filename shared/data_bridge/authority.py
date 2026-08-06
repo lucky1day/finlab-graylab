@@ -25,19 +25,10 @@ from shared.input_artifacts import (
 )
 
 
-AUTHORITY_SCHEMA_VERSION = "stable-databridge-current-authority-v1"
+AUTHORITY_SCHEMA_VERSION = "stable-databridge-current-authority-v2"
 
 
 DataBridgeCurrentAuthorityError = DataBridgeCurrentReadError
-
-
-@dataclass(frozen=True, slots=True)
-class StablePublicationCapability:
-    occurrence_id: int
-    business_date: str
-    epoch: int
-    mode: str
-    record_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +59,6 @@ class StableDataBridgeCurrentAuthority:
     refresh_date: str
     schema_version: str
     business_digest: str
-    publication_capability: StablePublicationCapability | None
     files: tuple[StableDataBridgeFileIdentity, ...]
     cutoffs: tuple[StableDataBridgeCutoff, ...]
     publication_identity_sha256: str
@@ -239,7 +229,6 @@ def resolve_stable_databridge_current_authority(
         raise DataBridgeCurrentInvalidError(
             "DataBridge current is invalid"
         ) from exc
-
     generation_id = _required_text(
         current.state,
         "generation_id",
@@ -247,9 +236,6 @@ def resolve_stable_databridge_current_authority(
     refresh_date = _required_date(
         current.state,
         "refresh_date",
-    )
-    publication_capability = _stable_publication_capability(
-        current.state.get("publication_capability")
     )
     files = tuple(
         StableDataBridgeFileIdentity(
@@ -329,9 +315,6 @@ def resolve_stable_databridge_current_authority(
         "refresh_date": refresh_date,
         "schema_version": current.dataset.schema_version,
         "business_digest": current.dataset.business_digest,
-        "publication_capability": (
-            _capability_payload(publication_capability)
-        ),
         "files": [
             {
                 "filename": item.filename,
@@ -376,42 +359,11 @@ def resolve_stable_databridge_current_authority(
         refresh_date=refresh_date,
         schema_version=current.dataset.schema_version,
         business_digest=current.dataset.business_digest,
-        publication_capability=publication_capability,
         files=files,
         cutoffs=cutoffs,
         publication_identity_sha256=publication_identity_sha256,
         stable_identity_sha256=stable_identity_sha256,
     )
-
-
-def _stable_publication_capability(
-    payload: object,
-) -> StablePublicationCapability | None:
-    if payload is None:
-        return None
-    if not isinstance(payload, Mapping):
-        raise DataBridgeCurrentInvalidError(
-            "DataBridge publication capability is invalid"
-        )
-    epoch = payload.get("daily_coordinator_epoch")
-    if not isinstance(epoch, Mapping):
-        raise DataBridgeCurrentInvalidError(
-            "DataBridge publication epoch is invalid"
-        )
-    try:
-        return StablePublicationCapability(
-            occurrence_id=int(payload["occurrence_id"]),
-            business_date=date.fromisoformat(
-                str(payload["business_date"])
-            ).isoformat(),
-            epoch=int(epoch["epoch"]),
-            mode=str(epoch["mode"]),
-            record_sha256=str(epoch["record_sha256"]),
-        )
-    except (KeyError, TypeError, ValueError) as exc:
-        raise DataBridgeCurrentInvalidError(
-            "DataBridge publication capability is invalid"
-        ) from exc
 
 
 def _required_text(
@@ -438,19 +390,3 @@ def _required_date(
         raise DataBridgeCurrentInvalidError(
             f"DataBridge current {field} is invalid"
         ) from exc
-
-
-def _capability_payload(
-    capability: StablePublicationCapability | None,
-) -> Mapping[str, object] | None:
-    if capability is None:
-        return None
-    return {
-        "occurrence_id": capability.occurrence_id,
-        "business_date": capability.business_date,
-        "daily_coordinator_epoch": {
-            "epoch": capability.epoch,
-            "mode": capability.mode,
-            "record_sha256": capability.record_sha256,
-        },
-    }

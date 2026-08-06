@@ -113,7 +113,7 @@ def refresh_current(
                 engine=engine,
                 config=config,
             ),
-            enforce_legacy_publication_fence=False,
+            require_launchd_round_builder=True,
         )
     finally:
         engine.dispose()

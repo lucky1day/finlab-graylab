@@ -23,6 +23,7 @@ from harness.gates.gray_backfill_gate import (
 )
 from harness.result import Evidence, GateResult, GateStatus
 from harness.signal_gap_plan import (
+    LEGACY_PLAN_SCHEMA_VERSION,
     PLAN_SCHEMA_VERSION,
     SignalGapPlanScope,
     _normalize_databridge_authority_payload,
@@ -548,7 +549,8 @@ def _signal_gap_fill_singleton_lock() -> ExclusiveFileLock:
     )
 
 
-def _load_frozen_plan(path: Path) -> dict[str, Any]:
+def _load_frozen_plan_read_only(path: Path) -> dict[str, Any]:
+    """读取并校验已归档计划；兼容 v4，但绝不改变其哈希内容。"""
     plan_path = Path(path)
     raw = plan_path.read_bytes()
     try:
@@ -557,7 +559,10 @@ def _load_frozen_plan(path: Path) -> dict[str, Any]:
         raise ValueError("frozen signal gap plan JSON is invalid") from exc
     if not isinstance(payload, dict):
         raise ValueError("frozen signal gap plan must be an object")
-    if payload.get("schema_version") != PLAN_SCHEMA_VERSION:
+    if payload.get("schema_version") not in {
+        LEGACY_PLAN_SCHEMA_VERSION,
+        PLAN_SCHEMA_VERSION,
+    }:
         raise ValueError("frozen signal gap plan schema is invalid")
     plan_sha256 = payload.get("plan_sha256")
     if (
@@ -568,6 +573,16 @@ def _load_frozen_plan(path: Path) -> dict[str, Any]:
     if not isinstance(payload.get("actions"), list):
         raise ValueError("frozen signal gap plan actions are invalid")
     _scope_from_frozen_plan(payload)
+    return payload
+
+
+def _load_frozen_plan(path: Path) -> dict[str, Any]:
+    """加载可执行计划；写入只接受当前无 ledger 的 v5 语法。"""
+    payload = _load_frozen_plan_read_only(path)
+    if payload["schema_version"] != PLAN_SCHEMA_VERSION:
+        raise ValueError(
+            "frozen signal gap plan execution requires current v5 schema"
+        )
     return payload
 
 

@@ -43,7 +43,14 @@ from shared.prediction_context import (
 from shared.scheme_config_schema import SCHEME_ID_PATTERN
 
 
-PLAN_SCHEMA_VERSION = "active-signal-gap-plan-v4"
+LEGACY_PLAN_SCHEMA_VERSION = "active-signal-gap-plan-v4"
+PLAN_SCHEMA_VERSION = "active-signal-gap-plan-v5"
+_DATABRIDGE_AUTHORITY_SCHEMA_VERSION = (
+    "stable-databridge-current-authority-v2"
+)
+_LEGACY_DATABRIDGE_AUTHORITY_SCHEMA_VERSION = (
+    "stable-databridge-current-authority-v1"
+)
 PLATFORM_LIVE_BOUNDARY_VERSION = "platform_live_boundary_v1"
 PLATFORM_LIVE_TARGET_START_DATE = "2026-06-01"
 NATIVE_TASK_COMBINATIONS = {
@@ -2640,7 +2647,7 @@ def _databridge_authority_payload(
     )
     if (
         authority.authority_schema_version
-        != "stable-databridge-current-authority-v1"
+        != _DATABRIDGE_AUTHORITY_SCHEMA_VERSION
         or not authority.generation_id.strip()
         or authority.generation_id != authority.generation_id.strip()
         or not authority.schema_version.strip()
@@ -2698,32 +2705,6 @@ def _databridge_authority_payload(
         )
     cutoff = matching_cutoffs[0]
     _validate_databridge_cutoff(cutoff)
-    capability_payload = None
-    if authority.publication_capability is not None:
-        capability = authority.publication_capability
-        if (
-            capability.occurrence_id <= 0
-            or _canonical_date(
-                capability.business_date,
-                "publication business_date",
-            )
-            != capability.business_date
-            or capability.epoch <= 0
-            or capability.mode != "ledger"
-            or not _is_sha256(capability.record_sha256)
-        ):
-            raise ValueError(
-                "DataBridge publication capability is invalid"
-            )
-        capability_payload = {
-            "occurrence_id": capability.occurrence_id,
-            "business_date": capability.business_date,
-            "daily_coordinator_epoch": {
-                "epoch": capability.epoch,
-                "mode": capability.mode,
-                "record_sha256": capability.record_sha256,
-            },
-        }
     return {
         "authority_type": "stable_databridge_current",
         "authority_schema_version":
@@ -2734,7 +2715,6 @@ def _databridge_authority_payload(
         "refresh_date": refresh_date,
         "schema_version": authority.schema_version,
         "business_digest": authority.business_digest,
-        "publication_capability": capability_payload,
         "files": file_payload,
         "cutoff": {
             "feature_date": cutoff.feature_date,
@@ -2754,10 +2734,12 @@ _DATABRIDGE_AUTHORITY_FIELDS = frozenset(
         "refresh_date",
         "schema_version",
         "business_digest",
-        "publication_capability",
         "files",
         "cutoff",
     }
+)
+_LEGACY_DATABRIDGE_AUTHORITY_FIELDS = frozenset(
+    {*_DATABRIDGE_AUTHORITY_FIELDS, "publication_capability"}
 )
 _DATABRIDGE_FILE_FIELDS = frozenset(
     {
@@ -2880,7 +2862,11 @@ def _normalize_databridge_authority_payload(
             "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
             "authority payload must be an object",
         )
-    if set(payload) != _DATABRIDGE_AUTHORITY_FIELDS:
+    payload_fields = frozenset(payload)
+    if payload_fields not in {
+        _DATABRIDGE_AUTHORITY_FIELDS,
+        _LEGACY_DATABRIDGE_AUTHORITY_FIELDS,
+    }:
         raise SignalGapPlanError(
             "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
             "authority payload fields do not match stable current grammar",
@@ -2890,10 +2876,13 @@ def _normalize_databridge_authority_payload(
             "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
             "authority_type must be stable_databridge_current",
         )
-    if (
-        payload["authority_schema_version"]
-        != "stable-databridge-current-authority-v1"
-    ):
+    is_legacy = payload_fields == _LEGACY_DATABRIDGE_AUTHORITY_FIELDS
+    expected_schema_version = (
+        _LEGACY_DATABRIDGE_AUTHORITY_SCHEMA_VERSION
+        if is_legacy
+        else _DATABRIDGE_AUTHORITY_SCHEMA_VERSION
+    )
+    if payload["authority_schema_version"] != expected_schema_version:
         raise SignalGapPlanError(
             "DATABRIDGE_AUTHORITY_OVERRIDE_INVALID",
             "authority_schema_version is unsupported",
@@ -2919,27 +2908,28 @@ def _normalize_databridge_authority_payload(
             )
 
     files = _normalize_databridge_authority_files(payload["files"])
-    publication_capability = _normalize_publication_capability(
-        payload["publication_capability"]
-    )
     cutoff = _normalize_databridge_authority_cutoff(
         payload["cutoff"],
         expected_feature_date=expected_feature_date,
     )
-    return {
+    normalized = {
         "authority_type": "stable_databridge_current",
-        "authority_schema_version": (
-            "stable-databridge-current-authority-v1"
-        ),
+        "authority_schema_version": expected_schema_version,
         "stable_identity_sha256": payload["stable_identity_sha256"],
         "generation_id": generation_id,
         "refresh_date": refresh_date,
         "schema_version": schema_version,
         "business_digest": payload["business_digest"],
-        "publication_capability": publication_capability,
         "files": files,
         "cutoff": cutoff,
     }
+    if is_legacy:
+        normalized["publication_capability"] = (
+            _normalize_publication_capability(
+                payload["publication_capability"]
+            )
+        )
+    return normalized
 
 
 def _required_authority_text(value: Any, field: str) -> str:

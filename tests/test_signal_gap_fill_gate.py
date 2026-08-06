@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from harness.gates import signal_gap_fill_gate
 from harness.signal_gap_plan import (
+    LEGACY_PLAN_SCHEMA_VERSION,
     PLAN_SCHEMA_VERSION,
     SignalGapPlanScope,
     canonical_plan_sha256,
@@ -26,14 +27,13 @@ def _databridge_authority(
     return {
         "authority_type": "stable_databridge_current",
         "authority_schema_version": (
-            "stable-databridge-current-authority-v1"
+            "stable-databridge-current-authority-v2"
         ),
         "stable_identity_sha256": "c" * 64,
         "generation_id": generation_id,
         "refresh_date": "2026-08-06",
         "schema_version": "data-bridge-v1",
         "business_digest": "d" * 64,
-        "publication_capability": None,
         "files": [
             {
                 "filename": "daily_output.csv",
@@ -324,6 +324,31 @@ class SignalGapFillPlanScopeTests(unittest.TestCase):
                 task_types=("T+1",),
             ),
         )
+
+    def test_legacy_v4_plan_is_readable_but_not_executable(self) -> None:
+        payload = {
+            "schema_version": LEGACY_PLAN_SCHEMA_VERSION,
+            "start_date": "2026-08-04",
+            "as_of_date": "2026-08-05",
+            "selection": {
+                "target_date_start": "2026-08-04",
+                "target_date_end": "2026-08-05",
+                "task_types": ["T+1"],
+                "base_scheme_ids": [],
+            },
+            "actions": [],
+        }
+        payload["plan_sha256"] = canonical_plan_sha256(payload)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "archived-v4-plan.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertEqual(
+                signal_gap_fill_gate._load_frozen_plan_read_only(path),
+                payload,
+            )
+            with self.assertRaisesRegex(ValueError, "requires current v5"):
+                signal_gap_fill_gate._load_frozen_plan(path)
 
     def test_frozen_plan_rejects_missing_or_malformed_selection(self) -> None:
         payload = {
