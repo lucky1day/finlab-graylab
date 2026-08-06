@@ -9,7 +9,7 @@ import stat
 import tempfile
 from bisect import bisect_right
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -41,6 +41,9 @@ DEFAULT_OUTPUT_ROOT = RUNTIME_INPUT_ROOT
 BLACKBOX_SNAPSHOT_ROOT = BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "snapshots"
 BLACKBOX_RUNTIME_SNAPSHOT_ROOT = BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "runtime_snapshots"
 BLACKBOX_RUNTIME_VIEW_ROOT = BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "runtime_views"
+BLACKBOX_GRAY_REPLAY_SESSION_ROOT = (
+    BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "gray_replay_sessions"
+)
 BLACKBOX_SCHEMA_PATH = Path(__file__).with_name("blackbox_v2") / "data_bridge_v1_schema.json"
 DATA_BRIDGE_ROOT = Path(__file__).resolve().parents[1] / "data" / "data_bridge"
 DATA_BRIDGE_REFRESH_RUNTIME_ROOT = BACKTEST_ARTIFACT_ROOT / "data_bridge_refresh"
@@ -167,6 +170,17 @@ class BlackboxRuntimeView:
         if self._closed:
             raise RuntimeError("runtime view is already closed")
         self._termination_uncertain = True
+
+
+@dataclass(frozen=True)
+class BlackboxGrayReplaySession:
+    """单个 gray replay 作业共享的不可变 DataBridge 父快照。"""
+
+    snapshot: BlackboxSnapshot
+    manifest_path: Path
+    manifest_sha256: str
+    source_identity: dict[str, Any]
+    max_cutoffs: CutoffKeys
 
 
 @dataclass(frozen=True)
@@ -740,6 +754,422 @@ def build_blackbox_input_snapshot(
         generation_id=generation_id,
         refresh_date=refresh_date,
     )
+
+
+_GRAY_REPLAY_SOURCE_IDENTITY_FIELDS = frozenset(
+    {
+        "generation_id",
+        "refresh_date",
+        "schema_version",
+        "business_digest",
+        "stable_identity_sha256",
+        "files",
+    }
+)
+_GRAY_REPLAY_SOURCE_FILE_FIELDS = frozenset(
+    {
+        "filename",
+        "rows",
+        "columns",
+        "min_key",
+        "max_key",
+        "sha256",
+        "business_hash",
+    }
+)
+
+
+def build_blackbox_gray_replay_session(
+    *,
+    session_id: str,
+    source_identity: Mapping[str, Any],
+    request_cutoffs: Iterable[CutoffKeys],
+    data_bridge_config: DataBridgeRefreshConfig,
+    output_root: str | Path = BLACKBOX_GRAY_REPLAY_SESSION_ROOT,
+) -> BlackboxGrayReplaySession:
+    """一次读取 current 后固化 gray replay 所有请求共用的三频父快照。"""
+    normalized_session_id = _normalize_gray_replay_session_id(session_id)
+    normalized_source_identity = _normalize_gray_replay_source_identity(
+        source_identity
+    )
+    normalized_cutoffs = _normalize_gray_replay_cutoffs(request_cutoffs)
+    current = check_current_dataset(
+        data_bridge_config,
+        strict_read_only=True,
+    )
+    _validate_gray_replay_current_identity(
+        current,
+        normalized_source_identity,
+    )
+
+    max_cutoffs = _gray_replay_max_cutoffs(
+        current.dataset.frames,
+        normalized_cutoffs,
+    )
+    clipped_frames = {
+        "daily_output.csv": _clip_gray_replay_frame(
+            current.dataset.frames["daily_output.csv"],
+            filename="daily_output.csv",
+            cutoff=max_cutoffs.daily_cutoff_key,
+        ),
+        "weekly_output.csv": _clip_gray_replay_frame(
+            current.dataset.frames["weekly_output.csv"],
+            filename="weekly_output.csv",
+            cutoff=max_cutoffs.weekly_cutoff_key,
+        ),
+        "monthly_output.csv": _clip_gray_replay_frame(
+            current.dataset.frames["monthly_output.csv"],
+            filename="monthly_output.csv",
+            cutoff=max_cutoffs.monthly_cutoff_key,
+        ),
+    }
+    schema_version, expected_columns = _load_blackbox_schema(
+        data_bridge_config.schema_path
+    )
+    session_root = Path(output_root) / normalized_session_id
+    snapshot = create_snapshot_from_frames(
+        clipped_frames,
+        output_root=session_root,
+        expected_columns=expected_columns,
+        schema_version=schema_version,
+    )
+    snapshot = replace(
+        snapshot,
+        generation_id=normalized_source_identity["generation_id"],
+        refresh_date=normalized_source_identity["refresh_date"],
+    )
+    manifest = {
+        "manifest_version": "blackbox-gray-replay-session-v1",
+        "session_id": normalized_session_id,
+        "parent_snapshot_id": snapshot.snapshot_id,
+        "parent_snapshot_manifest_sha256": _file_sha256(
+            snapshot.manifest_path
+        ),
+        "source_identity": normalized_source_identity,
+        "max_cutoffs": asdict(max_cutoffs),
+    }
+    manifest_path = _write_gray_replay_session_manifest(
+        session_root,
+        manifest,
+    )
+    return BlackboxGrayReplaySession(
+        snapshot=snapshot,
+        manifest_path=manifest_path,
+        manifest_sha256=_file_sha256(manifest_path),
+        source_identity=json.loads(
+            json.dumps(
+                normalized_source_identity,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        ),
+        max_cutoffs=max_cutoffs,
+    )
+
+
+def _normalize_gray_replay_session_id(value: object) -> str:
+    if not isinstance(value, str) or not _is_sha256(value):
+        raise ValueError("gray replay session_id must be a lower-case SHA-256")
+    return value
+
+
+def _normalize_gray_replay_source_identity(
+    source_identity: Mapping[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(source_identity, Mapping):
+        raise ValueError("gray replay source identity must be an object")
+    raw = dict(source_identity)
+    if set(raw) != _GRAY_REPLAY_SOURCE_IDENTITY_FIELDS:
+        raise ValueError("gray replay source identity fields are invalid")
+    generation_id = raw["generation_id"]
+    schema_version = raw["schema_version"]
+    if (
+        not isinstance(generation_id, str)
+        or not generation_id.strip()
+        or not isinstance(schema_version, str)
+        or not schema_version.strip()
+        or not _is_sha256(raw["business_digest"])
+        or not _is_sha256(raw["stable_identity_sha256"])
+    ):
+        raise ValueError("gray replay source identity is invalid")
+    refresh_date = _normalize_gray_replay_date(
+        raw["refresh_date"],
+        "source_identity.refresh_date",
+    )
+    raw_files = raw["files"]
+    if not isinstance(raw_files, list):
+        raise ValueError("gray replay source identity files are invalid")
+    normalized_files: list[dict[str, Any]] = []
+    for item in raw_files:
+        if not isinstance(item, Mapping):
+            raise ValueError("gray replay source identity files are invalid")
+        file_identity = dict(item)
+        if set(file_identity) != _GRAY_REPLAY_SOURCE_FILE_FIELDS:
+            raise ValueError("gray replay source identity files are invalid")
+        filename = file_identity["filename"]
+        if filename not in SNAPSHOT_FILENAMES:
+            raise ValueError("gray replay source identity files are invalid")
+        rows = file_identity["rows"]
+        columns = file_identity["columns"]
+        if (
+            isinstance(rows, bool)
+            or not isinstance(rows, int)
+            or rows < 1
+            or isinstance(columns, bool)
+            or not isinstance(columns, int)
+            or columns < 1
+            or not _is_sha256(file_identity["sha256"])
+            or not _is_sha256(file_identity["business_hash"])
+        ):
+            raise ValueError("gray replay source identity files are invalid")
+        key_normalizer = (
+            _normalize_gray_replay_date
+            if filename == "daily_output.csv"
+            else _normalize_gray_replay_period
+        )
+        min_key = key_normalizer(
+            file_identity["min_key"],
+            f"source_identity.{filename}.min_key",
+        )
+        max_key = key_normalizer(
+            file_identity["max_key"],
+            f"source_identity.{filename}.max_key",
+        )
+        if min_key > max_key:
+            raise ValueError("gray replay source identity files are invalid")
+        normalized_files.append(
+            {
+                "filename": filename,
+                "rows": rows,
+                "columns": columns,
+                "min_key": min_key,
+                "max_key": max_key,
+                "sha256": file_identity["sha256"],
+                "business_hash": file_identity["business_hash"],
+            }
+        )
+    expected_order = tuple(sorted(SNAPSHOT_FILENAMES))
+    if tuple(item["filename"] for item in normalized_files) != expected_order:
+        raise ValueError("gray replay source identity files must be sorted")
+    return {
+        "generation_id": generation_id,
+        "refresh_date": refresh_date,
+        "schema_version": schema_version,
+        "business_digest": raw["business_digest"],
+        "stable_identity_sha256": raw["stable_identity_sha256"],
+        "files": normalized_files,
+    }
+
+
+def _normalize_gray_replay_cutoffs(
+    request_cutoffs: Iterable[CutoffKeys],
+) -> tuple[CutoffKeys, ...]:
+    normalized: list[CutoffKeys] = []
+    for item in request_cutoffs:
+        if not isinstance(item, CutoffKeys):
+            raise ValueError("gray replay request_cutoffs must contain CutoffKeys")
+        normalized.append(
+            CutoffKeys(
+                daily_cutoff_key=_normalize_gray_replay_date(
+                    item.daily_cutoff_key,
+                    "gray replay daily cutoff",
+                ),
+                weekly_cutoff_key=_normalize_gray_replay_period(
+                    item.weekly_cutoff_key,
+                    "gray replay weekly cutoff",
+                ),
+                monthly_cutoff_key=_normalize_gray_replay_period(
+                    item.monthly_cutoff_key,
+                    "gray replay monthly cutoff",
+                ),
+            )
+        )
+    if not normalized:
+        raise ValueError("gray replay request_cutoffs must not be empty")
+    return tuple(normalized)
+
+
+def _normalize_gray_replay_date(value: object, field: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must use YYYY-MM-DD")
+    normalized = _normalize_feature_date(value)
+    if normalized != value:
+        raise ValueError(f"{field} must use YYYY-MM-DD")
+    return normalized
+
+
+def _normalize_gray_replay_period(value: object, field: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a six-digit platform key")
+    normalized = _normalize_period_key(value, field)
+    if normalized != value:
+        raise ValueError(f"{field} must be a six-digit platform key")
+    return normalized
+
+
+def _validate_gray_replay_current_identity(
+    current: Any,
+    source_identity: Mapping[str, Any],
+) -> None:
+    current_identity = {
+        "generation_id": _required_current_state_text(
+            current.state,
+            "generation_id",
+        ),
+        "refresh_date": _normalize_gray_replay_date(
+            _required_current_state_text(current.state, "refresh_date"),
+            "DataBridge current refresh_date",
+        ),
+        "schema_version": current.dataset.schema_version,
+        "business_digest": current.dataset.business_digest,
+        "files": [
+            {
+                "filename": profile.filename,
+                "rows": profile.rows,
+                "columns": profile.columns,
+                "min_key": profile.min_key,
+                "max_key": profile.max_key,
+                "sha256": profile.sha256,
+                "business_hash": profile.business_hash,
+            }
+            for _, profile in sorted(current.dataset.files.items())
+        ],
+    }
+    if any(
+        source_identity[field] != current_identity[field]
+        for field in current_identity
+    ):
+        raise ValueError(
+            "gray replay source identity does not match current DataBridge"
+        )
+
+
+def _gray_replay_max_cutoffs(
+    frames: Mapping[str, pd.DataFrame],
+    request_cutoffs: Iterable[CutoffKeys],
+) -> CutoffKeys:
+    cutoffs = tuple(request_cutoffs)
+    return CutoffKeys(
+        daily_cutoff_key=_gray_replay_max_cutoff(
+            frames["daily_output.csv"],
+            filename="daily_output.csv",
+            requested=[item.daily_cutoff_key for item in cutoffs],
+        ),
+        weekly_cutoff_key=_gray_replay_max_cutoff(
+            frames["weekly_output.csv"],
+            filename="weekly_output.csv",
+            requested=[item.weekly_cutoff_key for item in cutoffs],
+        ),
+        monthly_cutoff_key=_gray_replay_max_cutoff(
+            frames["monthly_output.csv"],
+            filename="monthly_output.csv",
+            requested=[item.monthly_cutoff_key for item in cutoffs],
+        ),
+    )
+
+
+def _gray_replay_max_cutoff(
+    frame: pd.DataFrame,
+    *,
+    filename: str,
+    requested: Iterable[str],
+) -> str:
+    keys = _gray_replay_frame_keys(frame, filename=filename)
+    positions = {key: index for index, key in enumerate(keys)}
+    requested_keys = tuple(requested)
+    for cutoff in requested_keys:
+        if cutoff not in positions:
+            raise ValueError(
+                f"gray replay cutoff {cutoff} is absent from {filename}"
+            )
+    return max(requested_keys, key=positions.__getitem__)
+
+
+def _clip_gray_replay_frame(
+    frame: pd.DataFrame,
+    *,
+    filename: str,
+    cutoff: str,
+) -> pd.DataFrame:
+    keys = _gray_replay_frame_keys(frame, filename=filename)
+    try:
+        position = keys.index(cutoff)
+    except ValueError as exc:
+        raise ValueError(
+            f"gray replay cutoff {cutoff} is absent from {filename}"
+        ) from exc
+    return frame.iloc[: position + 1].copy().reset_index(drop=True)
+
+
+def _gray_replay_frame_keys(
+    frame: pd.DataFrame,
+    *,
+    filename: str,
+) -> list[str]:
+    if filename == "daily_output.csv":
+        column = "date"
+        normalizer = _normalize_gray_replay_date
+    elif filename == "weekly_output.csv":
+        column = "week_id"
+        normalizer = _normalize_gray_replay_period
+    elif filename == "monthly_output.csv":
+        column = "month_id"
+        normalizer = _normalize_gray_replay_period
+    else:
+        raise ValueError(f"unsupported gray replay filename: {filename}")
+    if column not in frame.columns:
+        raise ValueError(f"{filename} is missing {column} cutoff column")
+    keys = [
+        normalizer(value, f"{filename}.{column}")
+        for value in frame[column].tolist()
+    ]
+    if keys != sorted(set(keys)):
+        raise ValueError(
+            f"{filename} gray replay cutoff keys must be unique and ascending"
+        )
+    return keys
+
+
+def _write_gray_replay_session_manifest(
+    session_root: Path,
+    manifest: Mapping[str, Any],
+) -> Path:
+    session_root.mkdir(parents=True, exist_ok=True)
+    if not session_root.is_dir():
+        raise ValueError("gray replay session root must be a directory")
+    rendered = (
+        json.dumps(
+            manifest,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+    manifest_path = session_root / "manifest.json"
+    if manifest_path.exists():
+        if not manifest_path.is_file() or manifest_path.read_bytes() != rendered:
+            raise ValueError("gray replay session manifest does not match")
+    else:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=".gray-replay-manifest-",
+            dir=session_root,
+        )
+        temporary_path = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(rendered)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, manifest_path)
+        finally:
+            if temporary_path.exists():
+                temporary_path.unlink()
+    manifest_path.chmod(0o444)
+    return manifest_path
 
 
 def capture_blackbox_platform_inputs_from_connection(
