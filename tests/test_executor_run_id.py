@@ -1597,7 +1597,7 @@ class ExecutorRunIdTests(unittest.TestCase):
                 ),
                 patch(
                     "scheduler.executor."
-                    "_scheduled_live_execution_configuration_error",
+                    "scheduled_live_execution_configuration_error",
                     return_value=None,
                 ),
                 patch(
@@ -2183,7 +2183,7 @@ class BlackboxExecutionApprovalTests(unittest.TestCase):
             ),
             patch(
                 "scheduler.executor."
-                "_scheduled_live_execution_configuration_error",
+                "scheduled_live_execution_configuration_error",
                 return_value=None,
             ),
             patch(

@@ -1439,7 +1439,7 @@ def execute_scheme(
         raise ValueError(f"prediction_phase must be one of {sorted(VALID_PREDICTION_PHASES)}, got {prediction_phase}")
     if prediction_phase == "scheduled_live":
         configuration_error = (
-            _scheduled_live_execution_configuration_error(
+            scheduled_live_execution_configuration_error(
                 cfg,
                 scheduled_control_plane=scheduled_control_plane,
             )
@@ -1649,7 +1649,7 @@ def execute_scheme(
         engine.dispose()
 
 
-def _scheduled_live_execution_configuration_error(
+def scheduled_live_execution_configuration_error(
     cfg: SchemeConfig,
     *,
     scheduled_control_plane: str,

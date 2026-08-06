@@ -57,7 +57,10 @@ from backend.services import (
     scheme_metrics,
     sync_registry_from_configs,
 )
-from scheduler.executor import DEFAULT_ALGO_ENV
+from scheduler.executor import (
+    DEFAULT_ALGO_ENV,
+    scheduled_live_execution_configuration_error,
+)
 from scheduler.blackbox_scheduler_admission import (
     DIRECT_SCHEDULED,
     ScheduledPredictionConfigurationError,
@@ -1107,6 +1110,12 @@ def _resolve_trigger_authorization(
             503,
             str(exc),
         ) from exc
+    execution_error = scheduled_live_execution_configuration_error(
+        config,
+        scheduled_control_plane=DIRECT_SCHEDULED,
+    )
+    if execution_error is not None:
+        raise _TriggerValidationError(409, execution_error)
     return _TriggerAuthorization(
         registry_scheme_id=registry_scheme_id,
         base_scheme_id=config.scheme_id,

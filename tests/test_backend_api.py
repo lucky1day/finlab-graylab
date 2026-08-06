@@ -486,54 +486,6 @@ class TriggerEndpointTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 503)
         self.assertEqual(background.tasks, [])
 
-    def test_trigger_background_revalidates_exact_identity_before_execution(
-        self,
-    ) -> None:
-        config = self._canonical(
-            "weekly_10y_lgbm_point_v1",
-            "0666a6989d6b",
-        )
-        drifted = SimpleNamespace(
-            **{
-                **vars(config),
-                "scheme_version": "drifted-version",
-            }
-        )
-        registry = self._registry_row(config)
-        background = BackgroundTasks()
-        with (
-            patch.object(main, "get_engine", return_value=object()),
-            patch.object(
-                main,
-                "list_schemes",
-                return_value=[registry],
-            ),
-            patch(
-                "scheduler.direct_prediction.discover_schemes",
-                side_effect=[[config], [drifted]],
-            ),
-            patch.object(main, "run_prediction_job") as prediction,
-            self.assertLogs(main.logger, level="ERROR") as logs,
-        ):
-            main.api_trigger_scheme(
-                registry["scheme_id"],
-                main.TriggerRequest(
-                    predict_date="2026-07-27",
-                ),
-                background,
-            )
-            task = background.tasks[0]
-            task.func(*task.args, **task.kwargs)
-
-        prediction.assert_not_called()
-        self.assertTrue(
-            any(
-                "admission revalidation failed" in message
-                and registry["scheme_id"] in message
-                for message in logs.output
-            )
-        )
-
     def test_trigger_unknown_scheme_is_404(self) -> None:
         with patch.object(main, "get_engine", return_value=object()), patch.object(
             main, "list_schemes", return_value=[{"scheme_id": "demo_daily__h1__10Y", "base_scheme_id": "demo_daily"}]
@@ -544,7 +496,10 @@ class TriggerEndpointTests(unittest.TestCase):
                 )
             self.assertEqual(ctx.exception.status_code, 404)
 
-    def test_trigger_known_scheme_is_accepted(self) -> None:
+    def test_trigger_preflight_rejects_direct_scheduled_without_manual_write_phase(
+        self,
+    ) -> None:
+        """手工入口不能把非自然写入伪装成 launchd scheduled_live。"""
         config = self._canonical(
             "weekly_10y_lgbm_point_v1",
             "0666a6989d6b",
@@ -562,30 +517,24 @@ class TriggerEndpointTests(unittest.TestCase):
                 "scheduler.direct_prediction.discover_schemes",
                 return_value=[config],
             ),
-        ):
-            result = main.api_trigger_scheme(
-                registry["scheme_id"],
-                main.TriggerRequest(predict_date="2026-06-09"),
-                background,
-            )
-        self.assertTrue(result["accepted"])
-        self.assertEqual(result["scheme_id"], registry["scheme_id"])
-        self.assertEqual(
-            result["base_scheme_id"],
-            config.scheme_id,
-        )
-        # 已排入后台任务（_run_trigger）。
-        self.assertEqual(len(background.tasks), 1)
-        task = background.tasks[0]
-        self.assertEqual(
-            task.args,
-            (
-                registry["scheme_id"],
-                "2026-06-09",
-                False,
-                None,
+            patch(
+                "scheduler.executor.discover_schemes",
+                return_value=[config],
             ),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                main.api_trigger_scheme(
+                    registry["scheme_id"],
+                    main.TriggerRequest(predict_date="2026-06-09"),
+                    background,
+                )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn(
+            "requires launchd_one_shot",
+            str(raised.exception.detail),
         )
+        self.assertEqual(background.tasks, [])
 
     def test_trigger_non_active_scheme_is_404(self) -> None:
         with patch.object(main, "get_engine", return_value=object()), patch.object(
@@ -611,7 +560,9 @@ class TriggerEndpointTests(unittest.TestCase):
         self.assertEqual(paused_ctx.exception.status_code, 404)
         self.assertEqual(archived_ctx.exception.status_code, 404)
 
-    def test_run_trigger_invokes_prediction_job(self) -> None:
+    def test_run_trigger_does_not_invoke_prediction_job_when_direct_write_is_unavailable(
+        self,
+    ) -> None:
         config = self._canonical(
             "weekly_10y_lgbm_point_v1",
             "0666a6989d6b",
@@ -628,7 +579,12 @@ class TriggerEndpointTests(unittest.TestCase):
                 "scheduler.direct_prediction.discover_schemes",
                 return_value=[config],
             ),
+            patch(
+                "scheduler.executor.discover_schemes",
+                return_value=[config],
+            ),
             patch.object(main, "run_prediction_job") as job_mock,
+            self.assertLogs(main.logger, level="ERROR") as logs,
         ):
             main._run_trigger(
                 registry["scheme_id"],
@@ -636,8 +592,14 @@ class TriggerEndpointTests(unittest.TestCase):
                 True,
                 None,
             )
-        job_mock.assert_called_once()
-        self.assertEqual(job_mock.call_args.kwargs.get("force"), True)
+        job_mock.assert_not_called()
+        self.assertTrue(
+            any(
+                "admission revalidation failed" in message
+                and "requires launchd_one_shot" in message
+                for message in logs.output
+            )
+        )
 
 class AdminRegistrySyncEndpointTests(unittest.TestCase):
     def test_admin_sync_runs_sync_with_force(self) -> None:
