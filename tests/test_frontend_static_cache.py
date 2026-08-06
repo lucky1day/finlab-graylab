@@ -129,8 +129,8 @@ class FrontendStaticCacheTests(unittest.TestCase):
     def test_index_uses_current_asset_cache_buster(self) -> None:
         html = FRONTEND_INDEX.read_text(encoding="utf-8")
 
-        self.assertIn('href="aifin-shell.css?v=20260727b"', html)
-        self.assertIn('src="aifin-shell.js?v=20260805a"', html)
+        self.assertIn('href="aifin-shell.css?v=20260806a"', html)
+        self.assertIn('src="aifin-shell.js?v=20260806a"', html)
 
     def test_missing_versioned_asset_exception_is_explicitly_revalidated(self) -> None:
         async def exercise() -> None:

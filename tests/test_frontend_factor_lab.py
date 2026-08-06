@@ -505,7 +505,7 @@ class FactorLabRankingTests(unittest.TestCase):
                 self.assertIn(marker, script)
 
         expected_asset_hashes = {
-            FRONTEND_INDEX: "8c7e78e49ca784d445c68e449a08156177e4e0e9ef6abec5cc6be670929a3911",
+            FRONTEND_INDEX: "f3698c2c79091c6ba18d110e051c6c4212d204e2b73b32542502d79b1561e29c",
             PROJECT_ROOT / "frontend" / "assets" / "aifin-lab-icon.svg": (
                 "e014fc86d69d61a32892b9799f83f8c784898d705c8df05313a04216281d2259"
             ),
@@ -3129,8 +3129,8 @@ class FactorLabRankingTests(unittest.TestCase):
         drawer_tag, drawer = parser.nodes_by_id["factorCalendarDrawer"]
         self.assertEqual(drawer_tag, "div")
         self.assertEqual(drawer["aria-hidden"], "true")
-        self.assertIn("aifin-shell.css?v=20260727b", parser.stylesheets)
-        self.assertIn("aifin-shell.js?v=20260805a", parser.scripts)
+        self.assertIn("aifin-shell.css?v=20260806a", parser.stylesheets)
+        self.assertIn("aifin-shell.js?v=20260806a", parser.scripts)
 
     def test_frontend_uses_only_system_fonts_without_external_imports(self) -> None:
         css = FRONTEND_CSS.read_text(encoding="utf-8")
@@ -3234,6 +3234,29 @@ class FactorLabRankingTests(unittest.TestCase):
 
     def test_task_matrix_highlights_only_qualifying_accuracy_metrics(self) -> None:
         scheme_id = "highlight_demo__h1__5Y"
+        challenger_id = "challenger_demo__h1__5Y"
+
+        def daily_rows_for(
+            month: str,
+            feature_month: str,
+            target_start_day: int,
+            directions: list[tuple[int, int]],
+        ) -> list[dict[str, object]]:
+            return [
+                {
+                    "predict_date": f"{month}-{day:02d}",
+                    "feature_date": f"{feature_month}-{day:02d}",
+                    "target_date": f"{month}-{target_start_day + day:02d}",
+                    "prediction_phase": "scheduled_live",
+                    "predicted_direction": predicted_direction,
+                    "actual_direction": actual_direction,
+                }
+                for day, (predicted_direction, actual_direction) in enumerate(
+                    directions,
+                    start=1,
+                )
+            ]
+
         july_directions = [
             (1, 1),
             (1, 1),
@@ -3246,44 +3269,40 @@ class FactorLabRankingTests(unittest.TestCase):
             (-1, 1),
             (-1, 1),
         ]
-        daily_rows = [
-            {
-                "predict_date": f"2026-07-{day:02d}",
-                "feature_date": f"2026-06-{day:02d}",
-                "target_date": f"2026-07-{day + 10:02d}",
-                "prediction_phase": "scheduled_live",
-                "predicted_direction": predicted_direction,
-                "actual_direction": actual_direction,
-            }
-            for day, (predicted_direction, actual_direction) in enumerate(
-                july_directions,
-                start=1,
-            )
-        ]
+        daily_rows = daily_rows_for("2026-07", "2026-06", 10, july_directions)
         daily_rows.extend(
-            [
-                {
-                    "predict_date": "2026-08-01",
-                    "feature_date": "2026-07-31",
-                    "target_date": "2026-08-03",
-                    "prediction_phase": "scheduled_live",
-                    "predicted_direction": 1,
-                    "actual_direction": -1,
-                },
-                {
-                    "predict_date": "2026-08-02",
-                    "feature_date": "2026-08-01",
-                    "target_date": "2026-08-04",
-                    "prediction_phase": "scheduled_live",
-                    "predicted_direction": -1,
-                    "actual_direction": 1,
-                },
-            ]
+            daily_rows_for("2026-08", "2026-07", 2, [(1, -1), (-1, 1)])
+        )
+        challenger_rows = daily_rows_for(
+            "2026-07",
+            "2026-06",
+            0,
+            [(1, 1), (1, 1), (-1, 1), (-1, 1)],
+        )
+        challenger_rows.extend(
+            daily_rows_for(
+                "2026-08",
+                "2026-07",
+                10,
+                [(1, 1), (1, -1), (-1, -1), (-1, 1)],
+            )
         )
         responses = {
             "/api/schemes": {
                 "target_labels": {"5Y": "5Y国债活跃"},
                 "schemes": [
+                    {
+                        "scheme_id": challenger_id,
+                        "base_scheme_id": "challenger_demo",
+                        "name": "挑战方案",
+                        "description": "",
+                        "target_tenor": "5Y",
+                        "horizon": 1,
+                        "task_type": "T+1",
+                        "frequency": "daily",
+                        "status": "active",
+                        "deployed_at": "2026-06-04",
+                    },
                     {
                         "scheme_id": scheme_id,
                         "base_scheme_id": "highlight_demo",
@@ -3303,6 +3322,11 @@ class FactorLabRankingTests(unittest.TestCase):
                 "monthly_metrics": [],
                 "daily_rows": daily_rows,
             },
+            f"/api/metrics/{challenger_id}": {
+                "target_label": "5Y国债活跃",
+                "monthly_metrics": [],
+                "daily_rows": challenger_rows,
+            },
             "/api/backtests/factor-lab": {
                 "target_labels": {"5Y": "5Y国债活跃"},
                 "schemes": [],
@@ -3314,59 +3338,63 @@ class FactorLabRankingTests(unittest.TestCase):
             const responses = {json.dumps(responses, ensure_ascii=False)};
             const taskKey = "5Y|T+1";
             const loaded = hooks.loadLegacyFixtureForTest(responses);
-            const highlightedScheme = hooks.getTaskSchemesForTest()[taskKey][0];
+            const taskSchemes = hooks.getTaskSchemesForTest()[taskKey];
+            const highlightedScheme = taskSchemes.filter(function (scheme) {{
+              return scheme.schemeId === {json.dumps(scheme_id)};
+            }})[0];
 
-            function taskCellClasses(key) {{
+            function taskCellSnapshot(key) {{
               const html = document.getElementById("factorTaskMatrixBody").innerHTML;
               const markerIndex = html.indexOf(' data-factor-task-key="' + key + '"');
               const buttonStart = html.lastIndexOf("<button", markerIndex);
-              const classMatch = html.slice(buttonStart, markerIndex).match(/class="([^"]+)"/);
-              return classMatch ? classMatch[1].split(/\\s+/) : [];
+              const buttonEnd = html.indexOf("</button>", markerIndex) + "</button>".length;
+              const cellHtml = html.slice(buttonStart, buttonEnd);
+              const classMatch = cellHtml.match(/class="([^"]+)"/);
+              const valueMatch = cellHtml.match(/<span class="factor-task-top">([^<]+)<\\/span>/);
+              return {{
+                classes: classMatch ? classMatch[1].split(/\\s+/) : [],
+                value: valueMatch ? valueMatch[1] : ""
+              }};
             }}
 
-            function hasClass(classes, className) {{
-              return classes.indexOf(className) >= 0;
+            function hasClass(snapshot, className) {{
+              return snapshot.classes.indexOf(className) >= 0;
             }}
 
-            function renderAt(metricId, month) {{
+            function renderAt(metricId, month, direction) {{
               hooks.setFactorLabStateForTest({{
                 selectedTaskKey: taskKey,
                 rankMetric: metricId,
-                rankDirection: "desc",
+                rankDirection: direction,
                 startMonth: month,
                 endMonth: month,
                 dataSource: "all"
               }});
               hooks.renderTaskOverviewForTest();
-              return taskCellClasses(taskKey);
+              const snapshot = taskCellSnapshot(taskKey);
+              const sorted = hooks.sortRankingSchemes(taskSchemes, metricId, direction);
+              return {{
+                winner: sorted.length ? sorted[0].schemeId : "",
+                value: snapshot.value,
+                highlighted: hasClass(snapshot, "is-accuracy-highlighted"),
+                selected: hasClass(snapshot, "is-selected")
+              }};
             }}
 
-            const highByMetric = {{}};
-            ["overall", "upPrecision", "downPrecision"].forEach(function (metricId) {{
-              const classes = renderAt(metricId, "2026-07");
-              highByMetric[metricId] = {{
-                highlighted: hasClass(classes, "is-accuracy-highlighted"),
-                selected: hasClass(classes, "is-selected"),
-                value: hooks.aggregateScheme(highlightedScheme)[metricId]
-              }};
-            }});
+            const highByMetric = {{
+              overall: renderAt("overall", "2026-07", "desc"),
+              upPrecision: renderAt("upPrecision", "2026-07", "desc"),
+              downPrecision: renderAt("downPrecision", "2026-07", "desc")
+            }};
+            const ascendingOverall = renderAt("overall", "2026-07", "asc");
 
             const lowByMetric = {{}};
             ["overall", "upPrecision", "downPrecision"].forEach(function (metricId) {{
-              lowByMetric[metricId] = hasClass(
-                renderAt(metricId, "2026-08"),
-                "is-accuracy-highlighted"
-              );
+              lowByMetric[metricId] = renderAt(metricId, "2026-08", "desc");
             }});
 
-            const samplesHighlighted = hasClass(
-              renderAt("samples", "2026-07"),
-              "is-accuracy-highlighted"
-            );
-            const nullMetricHighlighted = hasClass(
-              renderAt("overall", "2026-10"),
-              "is-accuracy-highlighted"
-            );
+            const samples = renderAt("samples", "2026-07", "desc");
+            const nullMetric = renderAt("overall", "2026-10", "desc");
             hooks.setFactorLabStateForTest({{
               selectedTaskKey: taskKey,
               rankMetric: "overall",
@@ -3375,43 +3403,64 @@ class FactorLabRankingTests(unittest.TestCase):
               endMonth: "2026-08",
               dataSource: "all"
             }});
-            const mutableMetric = hooks.aggregateScheme(highlightedScheme);
-            delete mutableMetric.overall;
+            const mutableMetrics = taskSchemes.map(function (scheme) {{
+              return hooks.aggregateScheme(scheme);
+            }});
+            mutableMetrics.forEach(function (metric) {{ delete metric.overall; }});
             hooks.renderTaskOverviewForTest();
-            const missingMetricHighlighted = hasClass(
-              taskCellClasses(taskKey),
-              "is-accuracy-highlighted"
-            );
-            mutableMetric.overall = Infinity;
+            const missingSnapshot = taskCellSnapshot(taskKey);
+            const missingMetric = {{
+              winner: hooks.sortRankingSchemes(taskSchemes, "overall", "desc")[0].schemeId,
+              highlighted: hasClass(missingSnapshot, "is-accuracy-highlighted")
+            }};
+            hooks.aggregateScheme(highlightedScheme).overall = Infinity;
             hooks.renderTaskOverviewForTest();
-            const nonFiniteHighlighted = hasClass(
-              taskCellClasses(taskKey),
-              "is-accuracy-highlighted"
-            );
+            const nonFiniteSnapshot = taskCellSnapshot(taskKey);
+            const nonFiniteMetric = {{
+              winner: hooks.sortRankingSchemes(taskSchemes, "overall", "desc")[0].schemeId,
+              highlighted: hasClass(nonFiniteSnapshot, "is-accuracy-highlighted")
+            }};
 
             return {{
               loaded,
               highByMetric,
+              ascendingOverall,
               lowByMetric,
-              samplesHighlighted,
-              nullMetricHighlighted,
-              missingMetricHighlighted,
-              nonFiniteHighlighted
+              samples,
+              nullMetric,
+              missingMetric,
+              nonFiniteMetric
             }};
             """
         )
 
         self.assertTrue(result["loaded"])
-        for metric_id in ("overall", "upPrecision", "downPrecision"):
+        expected_high = {
+            "overall": (scheme_id, "60.0%"),
+            "upPrecision": (challenger_id, "100.0%"),
+            "downPrecision": (scheme_id, "60.0%"),
+        }
+        for metric_id, (winner, value) in expected_high.items():
             with self.subTest(metric_id=metric_id):
-                self.assertEqual(result["highByMetric"][metric_id]["value"], 60)
+                self.assertEqual(result["highByMetric"][metric_id]["winner"], winner)
+                self.assertEqual(result["highByMetric"][metric_id]["value"], value)
                 self.assertTrue(result["highByMetric"][metric_id]["highlighted"])
                 self.assertTrue(result["highByMetric"][metric_id]["selected"])
-                self.assertFalse(result["lowByMetric"][metric_id])
-        self.assertFalse(result["samplesHighlighted"])
-        self.assertFalse(result["nullMetricHighlighted"])
-        self.assertFalse(result["missingMetricHighlighted"])
-        self.assertFalse(result["nonFiniteHighlighted"])
+                self.assertEqual(result["lowByMetric"][metric_id]["winner"], challenger_id)
+                self.assertEqual(result["lowByMetric"][metric_id]["value"], "50.0%")
+                self.assertFalse(result["lowByMetric"][metric_id]["highlighted"])
+        self.assertEqual(result["ascendingOverall"]["winner"], challenger_id)
+        self.assertEqual(result["ascendingOverall"]["value"], "50.0%")
+        self.assertFalse(result["ascendingOverall"]["highlighted"])
+        self.assertTrue(result["ascendingOverall"]["selected"])
+        self.assertEqual(result["samples"]["winner"], scheme_id)
+        self.assertFalse(result["samples"]["highlighted"])
+        self.assertEqual(result["nullMetric"]["winner"], challenger_id)
+        self.assertFalse(result["nullMetric"]["highlighted"])
+        self.assertEqual(result["missingMetric"]["winner"], challenger_id)
+        self.assertFalse(result["missingMetric"]["highlighted"])
+        self.assertEqual(result["nonFiniteMetric"]["winner"], scheme_id)
+        self.assertFalse(result["nonFiniteMetric"]["highlighted"])
 
     def test_api_urls_and_routes_use_public_base_path_when_served_under_prefix(self) -> None:
         payload = _dashboard_payload()
@@ -4219,6 +4268,71 @@ class FactorLabRankingTests(unittest.TestCase):
 
 
 class FactorLabTrendChartTests(unittest.TestCase):
+    def test_rendered_trend_chart_uses_compact_svg_height(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            const schemeId = "trend_height_demo__h1__5Y";
+            const loaded = hooks.loadLegacyFixtureForTest({
+              "/api/schemes": {
+                target_labels: { "5Y": "5Y国债活跃" },
+                schemes: [{
+                  scheme_id: schemeId,
+                  base_scheme_id: "trend_height_demo",
+                  name: "趋势高度测试方案",
+                  description: "",
+                  target_tenor: "5Y",
+                  horizon: 1,
+                  task_type: "T+1",
+                  frequency: "daily",
+                  status: "active",
+                  deployed_at: "2026-06-04"
+                }]
+              },
+              ["/api/metrics/" + schemeId]: {
+                target_label: "5Y国债活跃",
+                monthly_metrics: [],
+                daily_rows: [
+                  {
+                    predict_date: "2026-07-01",
+                    feature_date: "2026-06-30",
+                    target_date: "2026-07-02",
+                    prediction_phase: "scheduled_live",
+                    predicted_direction: 1,
+                    actual_direction: 1
+                  },
+                  {
+                    predict_date: "2026-07-02",
+                    feature_date: "2026-07-01",
+                    target_date: "2026-07-03",
+                    prediction_phase: "scheduled_live",
+                    predicted_direction: -1,
+                    actual_direction: -1
+                  }
+                ]
+              },
+              "/api/backtests/factor-lab": {
+                target_labels: { "5Y": "5Y国债活跃" },
+                schemes: []
+              }
+            });
+            hooks.setFactorLabStateForTest({
+              selectedTaskKey: "5Y|T+1",
+              selectedSchemeId: schemeId,
+              startMonth: "2026-07",
+              endMonth: "2026-07",
+              dataSource: "all"
+            });
+            hooks.renderFactorTrendChartForTest();
+            const html = document.getElementById("factorTrendChart").innerHTML;
+            const svgHeight = (html.match(/<svg[^>]* height="([^\"]+)"/) || [])[1];
+            return { loaded, svgHeight, html };
+            """
+        )
+
+        self.assertTrue(result["loaded"])
+        self.assertEqual(result["svgHeight"], "244")
+        self.assertIn('viewBox="0 0 960 244"', result["html"])
+
     def test_trend_chart_layout_expands_and_thins_axis_for_long_ranges(self) -> None:
         result = _run_factor_lab_hook(
             """

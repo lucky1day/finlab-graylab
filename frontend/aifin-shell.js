@@ -2345,7 +2345,7 @@
     var right = 24;
     var top = 24;
     var bottom = 46;
-    var height = 304;
+    var height = 244;
     var pointGap = 52;
     var minLabelGap = 96;
     var baseWidth = Math.max(960, Number(containerWidth) || 0);
@@ -2857,6 +2857,7 @@
     openFactorCalendarForTest: openFactorCalendar,
     closeFactorCalendarForTest: closeFactorCalendar,
     renderTaskOverviewForTest: renderTaskOverview,
+    renderFactorTrendChartForTest: renderFactorTrendChart,
     trendChartLayoutForTest: buildTrendChartLayout,
     trendMonthLabelVisibleForTest: shouldShowTrendMonthLabel,
     renderSchemeRankingRowForTest: renderSchemeRankingRow,
