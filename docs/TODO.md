@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验日期**：2026-08-06
+**最后核验日期**：2026-08-07
 
 本文是未完成工作的唯一当前入口：定义优先级、并行关系、停止条件和授权边界。带日期的执行证据只保留在
 [状态记录](records/status/README.md)，已验证事实只保留在[当前状态](CURRENT_STATUS.md)，生产调度规则以
@@ -36,7 +36,7 @@
   Task 4 端到端读回均已完成。完整证据见
   [G3.1 闭环记录](records/status/WEEKLY_10Y_D_OVERLAY_0801_FIX_PLAN_20260803.md)。
 
-G1/G2、G3 的 8 月 3 日补写、G4、G5/G6 及 G8.1–G8.24 的 repo-only 零消费者清理同样保持关闭；它们不授予
+G1/G2、G3 的 8 月 3 日补写、G4、G5/G6 及 ledger runtime 的 repo-only 退役同样保持关闭；它们不授予
 下列任何新操作。
 
 ### U0/U1：因子实验室 UX 紧凑化与准确率高亮（2026-08-06）
@@ -56,10 +56,10 @@ G1/G2、G3 的 8 月 3 日补写、G4、G5/G6 及 G8.1–G8.24 的 repo-only 零
 | 0 | R0：开发分支处置 | `WAITING_EXPLICIT_RELEASE_DECISION` | 不阻塞只读设计 | 用户确认 keep / PR / merge / push 中的明确路径 |
 | A | D1：Liwei 8/11 T+5 失败诊断 | `REPOSITORY_REMEDIATION_VERIFIED_DATA_SCOPE_UNRESOLVED` | 不阻塞 G7/G8 | [代码修复验证与当前快照的独立授权边界](records/status/LIWEI_10Y01_T5_0811_FAILURE_DIAGNOSIS_20260806.md) |
 | A | G7.0：Native 版本模型事实矩阵 | `DECISION_DRAFT_READY` | 等待用户确认，未授权实施 | [26 identity / 30 composite 的事实矩阵](records/status/NATIVE_VERSION_MODEL_FACT_MATRIX_G7_0_20260806.md) |
-| A | G8.0：replay/ledger 保留决策矩阵 | `DECISION_DRAFT_READY` | 等待用户确认，未授权实施 | [保留/迁移/退役候选矩阵](records/status/G8_REPLAY_LEDGER_DECISION_MATRIX_20260806.md) |
+| A | G8.0：历史 schema/archive 保留决策矩阵 | `DECISION_DRAFT_READY` | 等待用户确认，未授权实施 | [保留/迁移/退役候选矩阵](records/status/G8_REPLAY_LEDGER_DECISION_MATRIX_20260806.md) |
 | A | D0：文档生命周期审计 | `AUDIT_COMPLETE_AWAITING_CONFIRMATION` | 不阻塞 G7/G8；不自动删除 | [保留边界与 2 份删除候选](records/status/D0_DOCUMENT_LIFECYCLE_AUDIT_20260806.md) |
 | B | G7.1：Native 专项实施计划 | `BLOCKED_ON_G7.0_DECISION_APPROVAL` | 可与 G8.1 设计并行 | 已批准的最小实施计划 |
-| B | G8.1：replay/ledger 专项实施计划 | `BLOCKED_ON_G8.0_DECISION_APPROVAL` | 可与 G7.1 设计并行 | 已批准的分阶段收尾计划 |
+| B | G8.1：历史 schema/archive 专项实施计划 | `BLOCKED_ON_G8.0_DECISION_APPROVAL` | 可与 G7.1 设计并行 | 已批准的分阶段收尾计划 |
 | C | G7/G8 已批准实施 | `NOT_AUTHORIZED` | 按子计划确定 | 独立提交、独立验收与独立生产授权 |
 
 `R0` 是发布闸门而非其它只读工作的前置条件：默认保持开发分支，不自动合并或推送。`D1` 的结论也不阻塞 G7 或
@@ -112,11 +112,11 @@ G8，除非诊断证实存在会影响它们的共享控制面缺陷。
 
 **禁止：** 不改算法、不删版本、不改 Registry、不过载 activation、不写业务表或控制面。
 
-### G8.0：replay/ledger 保留决策矩阵
+### G8.0：历史 schema/archive 保留决策矩阵
 
-**目标：** 在退役前先决定 replay/recovery、legacy mode、历史 ledger 数据和外键/运行引用的保留语义。
+**目标：** 在物理退役前先决定历史 schema、数据、外键与 recovery evidence 的保留语义。
 
-**状态：** `DECISION_DRAFT_READY`。完整材料见
+**状态：** `REPOSITORY_RUNTIME_RETIRED_DECISION_DRAFT_READY`。完整材料见
 [G8.0 决策矩阵](records/status/G8_REPLAY_LEDGER_DECISION_MATRIX_20260806.md)。
 
 - [x] 只读枚举 replay、ledger、legacy mode、`schedule_item_id`、generation registry、migration 019、相关 consumer/
@@ -125,9 +125,11 @@ G8，除非诊断证实存在会影响它们的共享控制面缺陷。
   source/production 只读语义和 migration 019 的 `APPLYING` recovery 范围严格区分。
 - [x] 形成 repo 清理、运行时控制面、DDL/migration、installed plist 四个互不外推的候选阶段；未设计并授权的受控只读
   schema/data inventory 前，任何 ledger 或 019 forward DDL 均保持阻断。
+- [x] 在独立 repo-only 授权下退役 ledger/occurrence/epoch runtime、policy、replay 与对应测试闭包；保留
+  `t_input_generations` lineage、017 migration 与 migration recovery 测试，未执行 DDL、业务写入或 launchd 操作。
 - [ ] 用户确认保留决策后，才创建 G8.1 分阶段实施计划。
 
-**禁止：** 不删除仍有消费者的代码；不改变 installed plist；不执行 launchctl；不应用 migration 或 DDL。
+**禁止：** 不改变 installed plist；不执行 launchctl；不应用 migration 或 DDL；不得重建已退役 runtime 闭包。
 
 ### D0：文档生命周期审计
 

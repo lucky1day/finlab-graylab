@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：平台开发和代码审计人员
-**最后核验日期**：2026-08-04
+**最后核验日期**：2026-08-07
 **定位**：本仓库的代码架构主蓝图，定义分层模型、包依赖方向、运行时调用图和扩展边界。
 **与既有文档的关系**:
 - [ARCHITECTURE.md](ARCHITECTURE.md) = **系统架构**（部署、DB schema、API 契约、数据流）。
@@ -68,7 +68,7 @@
 |----|----|------|----------------------|
 | L1 | `shared/` | 唯一数据接入与公共模型 | `build_*_input_artifact`、`data_bridge_current` 刷新/快照、`get_calendar`、`PredictionRecord` |
 | L2 | `schemes/{id}/` | 原生 adapter/core 或 Blackbox 原始两文件 | `predict.run()` 或 Blackbox CLI |
-| L3 | `scheduler/` | 发现、dry-run、写库、actuals、调度 | `discover_schemes`、`run_scheme`、`execute_scheme`、`create_scheme_run`、`complete_active_native_run`、`complete_approved_blackbox_run`、`complete_scheduled_attempt`、`complete_gray_gap_run` |
+| L3 | `scheduler/` | 发现、dry-run、写库、actuals、调度 | `discover_schemes`、`run_scheme`、`execute_scheme`、`create_scheme_run`、`complete_active_native_run`、`complete_approved_blackbox_run`、`complete_gray_gap_run` |
 | L4 | `backend/` `backtests/` `tests/` | 只读 API、历史复现、验证 | `/api/*`、`run_<scheme>_reproduction` |
 | L5 | `harness/` | Gate 检查 / 编排 / 审计 | `python -m harness ...`、`GateResult` |
 
@@ -152,10 +152,10 @@ launchd + plist 是真实生产调度控制面。任务是否挂载、触发时�
 物理删除。后续不得仅新增 Python job 或直调入口就宣称进入生产调度。
 
 当前目标入口由 launchd 的一次性 plist 触发：refresh、daily、weekly、monthly 和 actuals
-各自只有一个 writer。常驻 APScheduler 已不在仓库中；ledger/occurrence/epoch 仅作为待退役的
-legacy 实现或历史定位对象，不能被加入新的或过渡生产路径。backend health 与手动 direct
-trigger 已不读取 ledger、occurrence 或 epoch，也不再路由 daily recovery；daily-gray 与
-v2-preflight 的 repo writer/template 已退役并移除。完整治理规则见[生产信号与调度治理](PRODUCTION_SCHEDULING_GOVERNANCE.md)。
+各自只有一个 writer。常驻 APScheduler 与 ledger/occurrence/epoch runtime 闭包均已从仓库移除；
+历史 migration/数据库对象只作为审计和受控 recovery 证据，不能被加入新的或过渡生产路径。backend health
+与手动 direct trigger 不读取这些历史控制面，也不路由 daily recovery；daily-gray 与 v2-preflight 的
+repo writer/template 已退役并移除。完整治理规则见[生产信号与调度治理](PRODUCTION_SCHEDULING_GOVERNANCE.md)。
 
 ```text
 launchd installed plist（单一 cadence writer）
@@ -296,7 +296,7 @@ schemes/{id}/                     schemes/{id}/
 | Native 入口 | `importlib.import_module("schemes.{id}.predict").run` | `scheduler/scheme_runner.py::run_scheme` |
 | Blackbox 入口 | 隔离执行 delivery 脚本的 `predict/backtest` CLI | `shared/blackbox_v2/` 与 runner |
 | 统一输出 | `list[PredictionRecord]` → JSON | `scheduler/scheme_runner.py` |
-| 统一写库 | `create_scheme_run` 建立 running 审计行；最终写入按 runtime/operation 进入 `complete_active_native_run` / `complete_approved_blackbox_run` / `complete_scheduled_attempt` / `complete_gray_gap_run` 原子完成 API | `scheduler/executor.py` + `scheduler/scheduled_executor.py` + `harness/gates/signal_gap_fill_gate.py` + `scheduler/repository.py` |
+| 统一写库 | `create_scheme_run` 建立 running 审计行；最终写入按 runtime/operation 进入 `complete_active_native_run` / `complete_approved_blackbox_run` / `complete_gray_gap_run` 原子完成 API | `scheduler/executor.py` + `harness/gates/signal_gap_fill_gate.py` + `scheduler/repository.py` |
 
 因此“用户给新方案”的代码落点是 Blackbox Intake 原样保存两文件并生成平台配置，再由 harness 按运行时驱动 Gate。不得手工创建新的 Native `predict.py + core/` 目录；Native StaticGate 与 ActivationGate 会拒绝政策清单外身份。
 
@@ -347,15 +347,12 @@ manifest 校验、schema inspect、pending apply 与 `APPLYING` recovery 都在�
 | `scheduler/discovery.py` | L3 | 约定发现 + 契约加载 | `discover_schemes`、`load_scheme_config`、`SchemeConfig` |
 | `scheduler/scheme_runner.py` | L3 | 只读 dry-run（importlib 运行方案） | `run_scheme` |
 | `scheduler/executor.py` | L3 | conda 子进程执行 + 写库编排 | `execute_scheme`、`run_scheme_subprocess`、`SchemeRunResult` |
-| `scheduler/repository.py` | L3 | 写库单点；按 runtime/operation 原子提交 prediction + run + log | `create_scheme_run`、`complete_active_native_run`、`complete_approved_blackbox_run`、`complete_scheduled_attempt`、`complete_gray_gap_run`、`write_run_log`、`sync_scheme_registry`；`_insert_run_predictions_conn` 仅内部使用 |
-| `scheduler/daily_control_plane_probe.py` | L3 | LaunchAgent、全日期账本和算法进程的共用只读静默探针 | `probe_launchagent_service_states`、`probe_daily_transition_quiescence` |
+| `scheduler/repository.py` | L3 | 写库单点；按 runtime/operation 原子提交 prediction + run + log | `create_scheme_run`、`complete_active_native_run`、`complete_approved_blackbox_run`、`complete_gray_gap_run`、`write_run_log`、`sync_scheme_registry`；`_insert_run_predictions_conn` 仅内部使用 |
 | `scheduler/{daily,weekly,monthly}_actuals_updater.py` | L3 | actuals 刷新 | `update_*_actuals` |
 | `scheduler/actuals_runner.py` | L3 | launchd one-shot actuals 刷新 | `run_actuals_job`、`main` |
-| `scheduler/direct_prediction.py` | L3 | backend 手动单方案预测的精确准入与执行闭包；不含 APScheduler、cron、daily recovery、Registry sync 或 DataBridge publish | `run_prediction_job` |
+| `scheduler/direct_prediction.py` | L3 | backend 手动单方案的精确准入与执行闭包；不含 APScheduler、cron、daily recovery、Registry sync 或 DataBridge publish。没有显式 manual 实盘阶段时，API 必须在入队前 fail-closed，不能伪装为自然 `scheduled_live` | `run_prediction_job` |
 | `backend/main.py` `services.py` `db.py` | L4 | 只读 API + 静态前端 serve | `/api/*`、`scheme_metrics` |
-| `harness/daily_real_replay.py` | L5 | 历史隔离诊断 runtime；只接受已验证隔离 Engine 与冻结 generation，不定义当前生产规模或准入 | `open_real_replay_generations`、`RealReplayRuntime` |
-| `harness/daily_real_replay_operator.py` | L5 | 隔离诊断的只读控制面预检与锁会话；不参与日常 production owner 判定 | `run_real_replay_preflight` |
-| `harness/daily_real_replay_mysql.py` | L5 | 真实联跑专用的隔离 MySQL 生命周期；不读取生产 env，不应用 migration | `isolated_replay_mysql`、`IsolatedReplayMySQL.create_replay_database` |
+| `tests/isolated_mysql.py` | 测试支持 | migration 回归专用的隔离 MySQL 生命周期；不读取生产 env，不应用生产 migration | `isolated_replay_mysql`、`IsolatedReplayMySQL.create_replay_database` |
 | `backtests/{id}_reproduction.py` | L4 | 历史复现 | `run_<scheme>_reproduction` |
 | `backtests/repository.py` | L4 | 回测写库单点 | `t_backtest_*` 写入 |
 | `migrations/runner.py` | 运维库层 | 唯一 migration 行为实现；caller-supplied `Engine` | manifest、inspect、apply、recovery |

@@ -4,7 +4,7 @@
 
 **目标读者**：平台开发、运维、审计和方案维护人员
 
-**最后核验日期**：2026-08-05
+**最后核验日期**：2026-08-07
 
 本文定义生产信号的唯一控制面。具体现场事实查看[当前状态](../CURRENT_STATUS.md)，
 分阶段治理和带日期的证据查看
@@ -31,6 +31,9 @@ writer，并启动 `scheduler.actuals_runner`。这些是仓库 desired state，
 仓库已移除 `com.bond-factor-lab.scheduler` 的 `Disabled=true` legacy 模板和常驻
 `scheduler.main` 模块。actuals 的唯一 runner 为 `scheduler.actuals_runner`；backend 手动
 单方案路径仅使用 `scheduler.direct_prediction`，不提供 cron/常驻 scheduler 兼容入口。
+当前不存在可把手工请求写成第三种实盘阶段的 manual writer；因此即使某个历史 exact identity
+通过 `direct_scheduled` admission，它若不能满足 launchd-only 的 `scheduled_live` 写入契约，也必须
+在 API preflight 以 409 fail-closed，不能返回 202 后再把手工请求伪装成自然 writer。
 已退役的 `daily-gray` 与 `v2-preflight` writer 及其仓库模板也已移除。已安装 disabled legacy
 plist 是否仍存在、何时物理删除，仍须只读核对与独立生产授权。
 
@@ -39,12 +42,10 @@ launchd 身份认证。仓库代码的同 UID 调用者属于受信任边界；�
 调用单独证明 natural writer 身份，仍需 installed/loaded/log/run/prediction 现场证据。
 
 `ledger`、`occurrence` 和 `epoch` 不得新增、扩容、迁移或补建，也不得作为新的或过渡生产调度
-路径。`daily-gray` 与旧预检的 repo writer/template 已退役并从仓库移除；常驻 scheduler
-已从仓库删除，且不构成可扩展的生产入口。`BOND_DAILY_COORDINATOR_MODE=legacy` 在
-尚存代码中只表示兼容条件，不授予调度权。DataBridge 与 daily / weekly / monthly 的四个
-one-shot 仓库期望模板均不声明该变量；作为纵深隔离，executor 仅在
-`scheduled_live + launchd_one_shot` 调度 Native 算法子进程时清除继承值。该隔离不改变 backend、
-direct、ledger、manual 或 `gray_live` 路径的兼容语义，也不构成 installed state 的结论。
+路径。相应的 repository/runtime/replay/policy 闭包已从仓库退役；017 历史 migration 与仍可能
+存在的数据库对象只保留为审计和受控 recovery 证据，任何物理归档或 DDL 仍须独立设计和授权。
+`BOND_DAILY_COORDINATOR_MODE` 不再被平台代码读取，算法子进程环境也不会转发它。旧 installed
+环境或 backend 期望模板若仍携带该变量，只是惰性兼容配置，不授予任何调度权，也不构成现场状态结论。
 
 ## 2. 自然信号、历史修复与输入新鲜度
 

@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：Harness 开发、平台入库和安全审计人员
-**最后核验日期**：2026-08-04
+**最后核验日期**：2026-08-07
 
 本文是双运行时 Harness 的强约束总纲。所有后续新方案只允许 Blackbox V2；Native V1 仅维护政策清单中的存量身份。Harness 统一编排 Gate，但按显式 `runtime_type` 选择检查和执行驱动。
 
@@ -161,12 +161,10 @@ Harness/check-only 冻结平台注册日历；scheduled 复用已核验的 Nativ
 generation 冻结副本。算法子进程、方案 adapter 和其它 Gate 不得直接
 查询该表。
 
-预测结果与终态审计的正式生产成功提交，只允许四个专用原子完成边界:
+预测结果与终态审计的正式生产成功提交，只允许三个专用原子完成边界:
 
 - `scheduler.repository.complete_active_native_run()` 提交普通 active Native run
 - `scheduler.repository.complete_approved_blackbox_run()` 提交普通已批准 Blackbox run
-- `scheduler.repository.complete_scheduled_attempt()` 是 legacy daily ledger attempt 的
-  既存完成边界；不得为新方案、新调度或过渡路径扩展它
 - `scheduler.repository.complete_gray_gap_run()` 提交受控 gray gap run
 
 `create_scheme_run()` 只建立执行前的 `running` 审计行；`write_run_log()` 仅用于尚未进入

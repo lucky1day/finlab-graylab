@@ -21,10 +21,10 @@
 DataBridge 模板还声明 `BFL_DATABRIDGE_PRODUCER=launchd-one-shot`。模板中不保存 DSN、
 凭证、admin token 或实例 nonce。
 
-DataBridge 与 daily / weekly / monthly 四个 one-shot **仓库期望模板**均刻意不声明
-`BOND_DAILY_COORDINATOR_MODE`。即使旧 installed 环境或父进程仍带有该变量，executor 也只会在
-`scheduled_live + launchd_one_shot` 调度 Native 子进程时、完成常规算法环境投影后将其移除；这不改变
-backend 模板，也不改变 direct、ledger、manual 或 `gray_live` 路径的兼容行为。
+DataBridge 与 daily / weekly / monthly 四个 one-shot **仓库期望模板**均不声明
+`BOND_DAILY_COORDINATOR_MODE`。平台代码已经不再读取该旧变量，算法子进程使用显式 allowlist，
+不会转发它；旧 installed 环境或 backend 模板若仍携带它，只是惰性兼容配置，不授予调度权。修改任一
+installed 或仓库 plist 都仍是独立生产操作，不由本次代码清理推断授权。
 
 `BFL_DATABRIDGE_PRODUCER` 仅是防止普通 shell 误 publish 的操作准入标记，不是 launchd
 身份认证；它和仓库模板都不能单独证明某个进程由 launchd 启动。

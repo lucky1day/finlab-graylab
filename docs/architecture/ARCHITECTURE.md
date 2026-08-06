@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：平台开发和架构审计人员
-**最后核验日期**：2026-08-05
+**最后核验日期**：2026-08-07
 **版本**：v1.3
 
 > 本文是**系统架构**（部署、DB schema、API 契约、数据流）。代码层面的分层、包依赖方向规则、运行时调用图与扩展模型见 [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md)（代码架构主蓝图）。
@@ -56,8 +56,9 @@ actuals 不再经常驻 scheduler 兼容委托，仓库也不保留 `scheduler.m
 任何 installed legacy plist 已物理删除的结论。
 
 任何 frequency 的预测都不得同时挂载两条自动路径。已退役的 daily-gray/v2-preflight
-writer 的仓库模板已移除；常驻 scheduler、per-scheme cron、ledger/occurrence/epoch
-均不属于新的或过渡生产方案；G2 将在明确授权后把它们从生产写入面移除，而不是以另一套控制面替换它们。
+writer 的仓库模板已移除，ledger/occurrence/epoch runtime 闭包也已从仓库移除；常驻 scheduler 与 per-scheme cron
+不属于新的或过渡生产方案。历史 migration 和数据库对象的物理归档仍须在独立 DDL 授权下处理，不能以
+另一套控制面替换它们。
 
 当前 loaded 进程是否已经达到上述目标，统一以[当前状态](../CURRENT_STATUS.md)为准。
 installed plist 替换、`bootstrap/bootout/kickstart` 和服务重启都属于独立生产操作；必须先

@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验日期**：2026-08-06
+**最后核验日期**：2026-08-07
 
 本文只保留当前已验证事实；带日期的执行证据在[状态记录](records/status/README.md)。未完成工作的顺序、
 并行关系和授权闸门见[统一后续推进计划](TODO.md)；生产调度规则以
@@ -14,7 +14,7 @@
 - `launchd + installed plist` 是唯一生产调度控制面；仓库代码/模板不单独证明生产挂载。
 - 自然时钟写 `scheduled_live`；经授权、insert-only 的历史修复写 `gray_live`；两者不可互相替代。
 - `ledger`、`occurrence`、`epoch`、daily-gray、常驻 APScheduler 和旧预检不再是新建或
-  过渡生产路径。
+  过渡生产路径；对应的仓库 runtime/config 闭包已退役。
 - 新的 installed plist、launchctl、服务、激活、admission、业务写入、持久化回测和 DDL 都须先只读核对并取得
   独立授权。
 
@@ -43,7 +43,8 @@
   现为 `launchd_one_shot` only。该事实不外推到其它 7Y identity 或控制面。
 - G1/G2 的 DataBridge 与 launchd-only 单 writer、G3 的 8 月 3 日补写、G4 的 D-overlay 唯一 key、
   G5/G6 的无写库功能验收均已闭环；自然时钟继续作为非阻塞观测。
-- G8.1–G8.24 的 repo-only 零消费者清理已完成；不能继续零散删除仍有消费者的 replay/ledger 闭包。
+- launchd-only 清理已移除 repo 内 ledger/occurrence/epoch runtime、policy 与 replay 闭包；
+  `t_input_generations` lineage、017 migration 与历史 schema recovery 测试仍保留。
 
 ## 已闭环的前端 UX
 
@@ -61,9 +62,9 @@
 - G7.0 已形成 Native 26 identity / 30 composite Registry 的事实矩阵和最小目标模型草案；DB/API/installed 状态仍须
   后续单独只读核验，G7.1 等待用户确认目标语义。详见
   [G7.0 矩阵](records/status/NATIVE_VERSION_MODEL_FACT_MATRIX_G7_0_20260806.md)。
-- G8.0 已形成 replay/ledger/legacy 的候选决策矩阵：isolated replay 的保留目的、历史 ledger 的 archive 策略和
-  capability/legacy mode 的目标语义均等待用户确认。019 inspection 仅限 `APPLYING` recovery；在新的受控只读
-  inventory capability 设计并获授权前，forward DDL 继续阻断。详见
+- G8.0 已形成历史 schema/archive 的候选决策矩阵；repo runtime 已退役，剩余的物理表、installed 状态和
+  archive/DDL 策略仍等待用户确认。019 inspection 仅限 `APPLYING` recovery；在新的受控只读 inventory
+  capability 设计并获授权前，forward DDL 继续阻断。详见
   [G8.0 矩阵](records/status/G8_REPLAY_LEDGER_DECISION_MATRIX_20260806.md)。
 - D0 已按用户确认完成文档清理：仅删除 2 份 superseded front-end cutover 草案，G3.1 与当前规范/证据均保留；此事不改变
   D1、G7.0 或 G8.0 的独立状态。详见 [D0 审计](records/status/D0_DOCUMENT_LIFECYCLE_AUDIT_20260806.md)。
@@ -71,7 +72,6 @@
 ## 未完成的生产治理
 
 - G7.1：Native 版本模型收敛等待用户确认 G7.0 目标语义；确认前没有授权的代码、数据库或控制面动作。
-- G8.1：最终退役等待用户确认 replay/recovery、legacy mode 和历史 ledger 数据保留；任何 installed plist 或
-  数据库迁移仍须独立设计与授权。
+- G8.1：物理 schema/archive 最终退役等待用户确认；任何 installed plist 操作或数据库迁移仍须独立设计与授权。
 - D1 的原始异常读取或任何当前配置快照未见的 2026-08-11 T+5 recovery 均须独立的只读/业务写入 scope；完整排序和边界以
   [统一后续推进计划](TODO.md)为准。

@@ -132,7 +132,7 @@ python -m harness activate \
 重批准时版本保持不变。
 
 日频 Native 激活不再要求维护 `daily_gray_launchd_policy_v1.json` 或任何 frozen
-daily-gray 清单；这些都是待退役兼容控制面，不能作为新版本发布单元。激活只绑定刚通过
+daily-gray 清单；这些已退役控制面不能作为新版本发布单元。激活只绑定刚通过
 的精确 `validation_scheme_version`、Registry 状态和专项授权。只有匹配 prior
 `static.business_identity` 的已入库同一身份修订，其历史 source-benchmark 输入 vintage
 漂移才只作归档诊断，不能单独阻断 activation、gap repair、`gray_live`、`scheduled_live` 或
