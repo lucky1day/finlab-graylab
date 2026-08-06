@@ -1,6 +1,6 @@
 # G7.0：Native 版本模型事实矩阵与目标决策稿（2026-08-06）
 
-**文档状态**：DRAFT_FOR_DECISION。本文不是已批准决策、当前生产控制面或任何生产操作授权。
+**文档状态**：`BLOCKED_DRAFT`。本文不是已批准决策、当前生产控制面或任何生产操作授权。
 
 **范围**：只整理仓库和既有带日期证据中可核验的 Native V1 身份、精确版本、composite Registry、
 Gate/admission 与 API/前端可见性关系，并提出最小目标语义。没有读取数据库、served API、
@@ -101,7 +101,7 @@ receipt、maintenance、activation 和单一 gray_live key 曾按各自独立授
 | 现有 exact active + 完整 active Registry → 同步后仍 active | config active、当前 exact version native_adapter/active、所有预期 Registry 行完整且 active | 同一 sync 函数只保留既有生命周期，不提升它 | 可继续满足 API/前端和 executor 的 Registry 条件 | 缺行、错 target 或 paused 时同步把当前预期行投影为 paused |
 | full all 技术验证 | 当前 exact version 的七 Gate 结果满足 full profile；benchmark-required 不接受 compare skipped | Harness persistence 写 t_harness_runs 和 t_harness_gate_results；它不是 Registry/version active 写入者 | api-readiness 只表示结构准备，不是 active API 验收 | 无 Gate 完成或 Gate 不通过则 ActivationGate fail-closed |
 | native-maintenance 技术验证 | policy 内同一业务身份、prior active Native all+compare、匹配 static.business_identity 或唯一固定 receipt、当前 version draft/active、Registry 全 paused 或全 active | NativeMaintenanceAdmissionGate 只读核验；Harness persistence 记录六 Gate 证据 | 预激活 profile 要求 public API/metrics 隐藏；维护阶段不写业务表、不改变生命周期 | draft+active Registry、缺/重复/错 identity、缺持久证据均阻断 |
-| 激活/重批准 → current exact version active + 预期 Registry 全 active | 一次性 activate token 精确绑定 validation version；严格 discovery；full all 或 maintenance profile 之一通过 | ActivationGate 是唯一的激活授权面；其唯一非测试调用点使用 scheduler.repository.apply_native_activation_state，在一个事务内写 version 和 Registry | active composite 行进入 API/前端；executor 仍须验证 config exact version active | Gate 在 DB 同步失败时回滚 config status；version/Registry 读回不精确则事务失败 |
+| 激活/重批准 → current exact version active + 预期 Registry 全 active | 一次性 activate token 精确绑定 validation version；严格 discovery；full all 或 maintenance profile 之一通过 | ActivationGate 是唯一的激活授权面；其唯一非测试调用点使用 scheduler.repository.apply_native_activation_state，在一个事务内写 version 和 Registry | active composite 行进入 API/前端；executor 仍须验证 config exact version active | token 在 DB 同步前已消费；同步失败时只尽力恢复 config status，恢复也可能失败并以 `status_rolled_back=False` 和错误证据返回；version/Registry 读回不精确则事务失败 |
 | executor live 路径 | 当前 config exact version 在 t_scheme_versions 为 active，且至少有 active Registry target | scheduler.executor 只读验证；预测/run/日志写入仍由 scheduler.repository | 只可写 active Registry target；active 以外 target 被拒绝 | 版本缺失、非 active 或 Registry 无 active target 均 fail-closed |
 | Registry active → paused/archived 或 Native active → retired | 没有在本轮检索中找到一个专用 Native deactivation/retirement Gate | generic sync 可在 candidate/identity 不满足时写 paused，并会 archive 不再在 config 预期集合内的旧 Registry 行；显式 retired 更新在仓库中出现于 Blackbox revision 路径 | paused/archived 不可 API/前端/trigger；旧 Native exact version 是否仍 active 不能由 Registry 行反推 | 当前语义没有一条同样清晰的 Native retire transaction，必须在 G7.1 前先决定 |
 
@@ -231,8 +231,12 @@ G7.1 在用户确认 C 节中的目标语义前保持阻断。经确认后，最
    V 和 expected composite IDs 精确比对，不能只按 base ID 汇总。
 5. 对每个拟修改 identity 的 prior admission、business identity snapshot、Gate profile、
    input cutoff 和 live-safe oracle 证据；任何缺失项都保留 fail-closed。
-6. 精确的回滚定义：数据库事务失败、Registry/version 读回漂移、API 可见性异常和
-   config/status hash 漂移时分别如何停止，不覆盖历史版本。
+6. 精确的失败恢复定义：数据库事务失败、Registry/version 读回漂移、API 可见性异常和
+   config/status hash 漂移时分别如何停止。ActivationGate 的 token 在 DB 同步前已消费；
+   失败后必须先重新做 version、Registry、config status 与失败证据的只读核验，不得假定
+   config 已回滚。若 token 已消费或 config status 与 DB 状态发散，不得重试或复用原 token；
+   必须取得绑定重新核验后 exact version 的新的一次性授权，才能进行任何 activation 或
+   reconciliation，且不覆盖历史版本。
 
 以下动作不因本文、G7.0 的阅读范围或未来只读清单而获得授权，均须用户再次明确授权：
 
@@ -241,7 +245,7 @@ G7.1 在用户确认 C 节中的目标语义前保持阻断。经确认后，最
 | 连接/查询生产或候选数据库、served API、installed plist、launchctl、服务或日志 | 本任务明确限制为仓库/既有证据；任何现场读取先取得新的明确只读 scope |
 | 修改 repository、Harness、backend、config、文档规范或测试 | 用户批准 G7.0 决策和 G7.1 专项实施计划后，才可进行仓库写入 |
 | DDL、迁移、数据修复、Registry/version 状态变更 | 独立数据库/生产授权；迁移仍只能走受控 migration CLI，不能手工 SQL |
-| native-maintenance receipt、activate token 消费、activation 或 re-approval | 每个 exact scheme_version、action、operator 与时点的独立一次性授权 |
+| native-maintenance receipt、activate token 消费、activation 或 re-approval | 每个 exact scheme_version、action、operator 与时点的独立一次性授权；失败后不得复用已消费 token，须先完成新的只读状态核验并取得新的精确授权 |
 | gray_live、scheduled_live、persistent backtest、scheduler admission | 分别的业务写入/生产授权；G7 版本模型不外推这些能力 |
 | installed plist 替换、launchctl、服务重启或自然调度观察 | 独立生产操作授权；不得与 G7.1 仓库变更混合 |
 | 合并 master、推送或发布 | 独立的分支/发布明确决定 |
