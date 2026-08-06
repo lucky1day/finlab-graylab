@@ -52,11 +52,25 @@
   `downPrecision` 排序、有限值和阈值判断保持不变；`samples`、缺失值与 `< 60` 不高亮，hover/selected 也不退化。
 - CSS 通过其精确内容 SHA-256 URL 交付，防止缓存客户端继续读取旧样式；前端行为、静态缓存和文档测试均已通过。
 
+## 已完成的只读诊断与治理设计
+
+- D1 已完成 Liwei 2026-08-11 T+5 单次失败的只读诊断。事故前 consumer 位于共享 cache publisher 之前，是最高置信的
+  条件控制面因果推断；由于原始 failed run-log 异常未读取，它不是绝对确证，也不授权读取、修复或补数。详见
+  [D1 诊断](records/status/LIWEI_10Y01_T5_0811_FAILURE_DIAGNOSIS_20260806.md)。
+- G7.0 已形成 Native 26 identity / 30 composite Registry 的事实矩阵和最小目标模型草案；DB/API/installed 状态仍须
+  后续单独只读核验，G7.1 等待用户确认目标语义。详见
+  [G7.0 矩阵](records/status/NATIVE_VERSION_MODEL_FACT_MATRIX_G7_0_20260806.md)。
+- G8.0 已形成 replay/ledger/legacy 的候选决策矩阵：isolated replay 的保留目的、历史 ledger 的 archive 策略和
+  capability/legacy mode 的目标语义均等待用户确认。019 inspection 仅限 `APPLYING` recovery；在新的受控只读
+  inventory capability 设计并获授权前，forward DDL 继续阻断。详见
+  [G8.0 矩阵](records/status/G8_REPLAY_LEDGER_DECISION_MATRIX_20260806.md)。
+- D0 已完成文档审计，没有删除任何文档；只有 2 份历史 front-end cutover 文档被列为待用户确认候选，G3.1 与当前
+  规范/证据均保留。详见 [D0 审计](records/status/D0_DOCUMENT_LIFECYCLE_AUDIT_20260806.md)。
+
 ## 未完成的生产治理
 
-- G7：Native 版本模型收敛仍须先完成只读事实矩阵和用户确认的目标语义；当前没有授权的代码、数据库或
-  控制面动作。
-- G8 最终退役仍须先决定 replay/recovery、legacy mode 和历史 ledger 数据保留，再考虑 installed plist 或
-  数据库迁移；均不在当前授权范围。
-- Liwei 2026-08-11 T+5 单次失败诊断与上述治理工作独立，完整排序和边界以
+- G7.1：Native 版本模型收敛等待用户确认 G7.0 目标语义；确认前没有授权的代码、数据库或控制面动作。
+- G8.1：最终退役等待用户确认 replay/recovery、legacy mode 和历史 ledger 数据保留；任何 installed plist 或
+  数据库迁移仍须独立设计与授权。
+- D1 的原始异常读取或任何 2026-08-11 T+5 recovery 均须独立的只读/业务写入 scope；完整排序和边界以
   [统一后续推进计划](TODO.md)为准。

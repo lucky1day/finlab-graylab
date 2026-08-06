@@ -54,10 +54,10 @@ G1/G2、G3 的 8 月 3 日补写、G4、G5/G6 及 G8.1–G8.24 的 repo-only 零
 | 波次 | 工作流 | 当前状态 | 可并行性 | 结束产物 |
 |---|---|---|---|---|
 | 0 | R0：开发分支处置 | `WAITING_EXPLICIT_RELEASE_DECISION` | 不阻塞只读设计 | 用户确认 keep / PR / merge / push 中的明确路径 |
-| A | D1：Liwei 8/11 T+5 失败诊断 | `IN_PROGRESS_READ_ONLY` | 可与 G7.0、G8.0、D0 并行 | 失败分类与独立后续建议 |
-| A | G7.0：Native 版本模型事实矩阵 | `IN_PROGRESS_READ_ONLY` | 可与 D1、G8.0、D0 并行 | 生命周期/身份/兼容性决策稿 |
-| A | G8.0：replay/ledger 保留决策矩阵 | `IN_PROGRESS_READ_ONLY` | 可与 D1、G7.0、D0 并行 | 保留、迁移或退役的明确选择 |
-| A | D0：文档生命周期审计 | `IN_PROGRESS_READ_ONLY` | 可与 D1、G7.0、G8.0 并行 | keep / migrate / remove 清单 |
+| A | D1：Liwei 8/11 T+5 失败诊断 | `DIAGNOSIS_COMPLETE_NO_REPAIR_AUTHORIZED` | 不阻塞 G7/G8 | [高置信条件因果推断与独立授权边界](records/status/LIWEI_10Y01_T5_0811_FAILURE_DIAGNOSIS_20260806.md) |
+| A | G7.0：Native 版本模型事实矩阵 | `DECISION_DRAFT_READY` | 等待用户确认，未授权实施 | [26 identity / 30 composite 的事实矩阵](records/status/NATIVE_VERSION_MODEL_FACT_MATRIX_G7_0_20260806.md) |
+| A | G8.0：replay/ledger 保留决策矩阵 | `DECISION_DRAFT_READY` | 等待用户确认，未授权实施 | [保留/迁移/退役候选矩阵](records/status/G8_REPLAY_LEDGER_DECISION_MATRIX_20260806.md) |
+| A | D0：文档生命周期审计 | `AUDIT_COMPLETE_AWAITING_CONFIRMATION` | 不阻塞 G7/G8；不自动删除 | [保留边界与 2 份删除候选](records/status/D0_DOCUMENT_LIFECYCLE_AUDIT_20260806.md) |
 | B | G7.1：Native 专项实施计划 | `BLOCKED_ON_G7.0_DECISION_APPROVAL` | 可与 G8.1 设计并行 | 已批准的最小实施计划 |
 | B | G8.1：replay/ledger 专项实施计划 | `BLOCKED_ON_G8.0_DECISION_APPROVAL` | 可与 G7.1 设计并行 | 已批准的分阶段收尾计划 |
 | C | G7/G8 已批准实施 | `NOT_AUTHORIZED` | 按子计划确定 | 独立提交、独立验收与独立生产授权 |
@@ -82,9 +82,13 @@ G8，除非诊断证实存在会影响它们的共享控制面缺陷。
 **目标：** 独立诊断 `liwei_0616_10y01_cons_say_k3_div_k10` 的 2026-08-11 T+5 单次失败，不把它混入 G3.1、
 前端改动或日频 T+1 补写。
 
-- [ ] 只读核对 exact version、Registry、交易日历、DataBridge/input authority、Harness/run receipt 和失败日志。
-- [ ] 将原因分类为输入/截止、算法子进程、业务契约、repository/写入、控制面或外部依赖之一，并记录支撑证据。
-- [ ] 明确此失败是否只影响未来 T+5 target；若需修复或补数，另起精确 scope、重新冻结并取得独立授权。
+**状态：** `DIAGNOSIS_COMPLETE_NO_REPAIR_AUTHORIZED`。完整材料见
+[D1 诊断记录](records/status/LIWEI_10Y01_T5_0811_FAILURE_DIAGNOSIS_20260806.md)。
+
+- [x] 只读核对 exact version、Registry、交易日历、input authority、cache generation 与 publisher/consumer 顺序。
+- [x] 形成最高置信的条件因果推断：事故前稳定 discovery 顺序使 consumer 先于共享 cache publisher，满足已知
+  fail-closed 分支的条件；未读取原始 run-log 异常，因此它不是绝对确证或其它运行期异常的绝对排除。
+- [x] 确认影响只涉及一个 future T+5 key；任何原始异常读取、修复或补数均须另起精确 scope、重新冻结并获得独立授权。
 
 **禁止：** 不写 2026-08-11、T+5 或其它历史数据；不手工 SQL；不以 G3.1 token、admission 或 provenance 外推权限。
 
@@ -92,10 +96,14 @@ G8，除非诊断证实存在会影响它们的共享控制面缺陷。
 
 **目标：** 统一 Native 的业务身份、精确版本、Registry 生命周期和维护/激活语义，不改变算法或当前前端身份。
 
-- [ ] 只读绘制 `base_scheme_id`、精确 `scheme_version`、composite Registry identity、runtime type、状态、
-  activation/maintenance evidence 与 admission 的关系矩阵。
-- [ ] 列出每个状态转换的合法前置条件、唯一写入者、失败闭环和 API/前端可见性，指出重复或矛盾语义。
-- [ ] 提出最小目标模型及兼容迁移边界；明确哪些既有历史记录必须只读保留。
+**状态：** `DECISION_DRAFT_READY`。本阶段是 `BLOCKED_DRAFT`，完整材料见
+[G7.0 事实矩阵](records/status/NATIVE_VERSION_MODEL_FACT_MATRIX_G7_0_20260806.md)。
+
+- [x] 只读绘制 26 个 `base_scheme_id`、30 个预期 composite Registry identity、current candidate exact version、
+  runtime type 与可证明的历史证据；未由仓库证明的 DB/API/现场状态明确标为 unknown。
+- [x] 列出状态转换的前置条件、写入者、失败闭环和 API/前端可见性，指出 config、exact version、Registry exposure
+  与 admission evidence 不能互相推导。
+- [x] 提出未批准的最小目标模型和历史只读保留边界；激活失败的 token 消费与 best-effort rollback 也已列为专项恢复边界。
 - [ ] 用户确认决策稿后，才创建 G7.1 的独立实施计划和测试矩阵。
 
 **禁止：** 不改算法、不删版本、不改 Registry、不过载 activation、不写业务表或控制面。
@@ -104,10 +112,15 @@ G8，除非诊断证实存在会影响它们的共享控制面缺陷。
 
 **目标：** 在退役前先决定 replay/recovery、legacy mode、历史 ledger 数据和外键/运行引用的保留语义。
 
-- [ ] 只读枚举 replay、ledger、legacy mode、`schedule_item_id`、migration 019、相关表/外键、repo consumer 与
-  installed plist 的每个消费者及其用途。
-- [ ] 对每项选择 retain、isolated recovery、migrate 或 retire，并说明对历史审计、故障恢复和生产单 writer 的影响。
-- [ ] 形成按仓库清理、运行时控制面、数据库迁移和 installed plist 分离的候选阶段；每阶段标明回滚和验证证据。
+**状态：** `DECISION_DRAFT_READY`。完整材料见
+[G8.0 决策矩阵](records/status/G8_REPLAY_LEDGER_DECISION_MATRIX_20260806.md)。
+
+- [x] 只读枚举 replay、ledger、legacy mode、`schedule_item_id`、generation registry、migration 019、相关 consumer/
+  外键、repo plist template 与 installed 现场未知项。
+- [x] 为每项给出未批准的 retain / isolated recovery / migrate / retire 建议，保留 `t_input_generations`，并将 replay、
+  source/production 只读语义和 migration 019 的 `APPLYING` recovery 范围严格区分。
+- [x] 形成 repo 清理、运行时控制面、DDL/migration、installed plist 四个互不外推的候选阶段；未设计并授权的受控只读
+  schema/data inventory 前，任何 ledger 或 019 forward DDL 均保持阻断。
 - [ ] 用户确认保留决策后，才创建 G8.1 分阶段实施计划。
 
 **禁止：** 不删除仍有消费者的代码；不改变 installed plist；不执行 launchctl；不应用 migration 或 DDL。
@@ -116,12 +129,13 @@ G8，除非诊断证实存在会影响它们的共享控制面缺陷。
 
 **目标：** 减少重复说明而不丢失当前规范、审计证据和可追溯性。
 
-- [ ] 将每份候选文档归为 `CURRENT`、`CURRENT INDEX`、`HISTORICAL EVIDENCE`、`SUPERSEDED DRAFT` 或
-  `GENERATED OUTPUT`，并记录其入站链接和替代入口。
-- [ ] `CURRENT`、当前索引和可复核的 Harness/DB/Git 证据一律保留；已关闭的 G3.1 status 记录属于
-  `HISTORICAL EVIDENCE`，不得因“已闭环”直接删除。
-- [ ] 只有已被现行入口完整替代、无入站链接、没有唯一审计信息且不被文档测试引用的
-  `SUPERSEDED DRAFT` 才可列为删除候选。
+**状态：** `AUDIT_COMPLETE_AWAITING_CONFIRMATION`。完整材料见
+[D0 生命周期审计](records/status/D0_DOCUMENT_LIFECYCLE_AUDIT_20260806.md)。
+
+- [x] 以 Git 跟踪文档清单、状态头与入站引用审计形成分类矩阵；候选列举产生的审计自引用已明确排除。
+- [x] `CURRENT`、当前索引和可复核证据一律保留；已关闭的 G3.1 status 记录属于 `HISTORICAL EVIDENCE`，不得因
+  “已闭环”直接删除。
+- [x] 仅列出 2 份 `SUPERSEDED_DRAFT` 候选；尚未删除、移动或修改任何候选文档。
 - [ ] 对每一批删除候选先提交清单供用户确认；确认后仅删除清单中的文件，更新索引和链接，运行文档测试与
   `git diff --check`，并单独提交。
 
