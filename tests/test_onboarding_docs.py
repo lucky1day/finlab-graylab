@@ -243,6 +243,10 @@ class OnboardingDocumentationTests(unittest.TestCase):
             "gray_backfill_write",
             "phase_ranges",
             "launchctl",
+            "launchd_one_shot",
+            "legacy_automatic",
+            "daily_ledger",
+            "direct_scheduled",
         )
         for marker in banned:
             self.assertNotIn(marker, text)
@@ -1350,6 +1354,27 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertIn("不自动授予生产运行权限", platform)
         self.assertIn("具体方案专项授权", platform)
         self.assertIn("不得把某个试验方案的授权外推", platform)
+
+    def test_blackbox_sops_separate_delivery_from_exact_scheduler_admission(self) -> None:
+        upstream = UPSTREAM_SOP.read_text(encoding="utf-8")
+        platform = PLATFORM_SOP.read_text(encoding="utf-8")
+
+        for marker in (
+            "交付不授予平台控制面权限",
+            "不授予 activation、灰度写入或平台准入",
+            "不得把两文件交付当作平台审批",
+        ):
+            self.assertIn(marker, upstream)
+
+        for marker in (
+            "精确 scheduler admission 是独立的仓库策略",
+            "scheduler/blackbox_scheduler_admission.py",
+            "deploy/blackbox_scheduler_admission_v1.json",
+            "`launchd_one_shot`",
+            "`legacy_automatic`、`daily_ledger`、`direct_scheduled`",
+            "不安装 plist、不运行 `launchctl`、不重启服务",
+        ):
+            self.assertIn(marker, platform)
 
     def test_all_markdown_relative_links_resolve(self) -> None:
         broken: list[str] = []
