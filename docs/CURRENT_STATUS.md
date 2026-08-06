@@ -4,7 +4,8 @@
 
 **最后核验日期**：2026-08-06
 
-本文只保留当前已验证事实；带日期的执行证据在[状态记录](records/status/README.md)。生产调度规则以
+本文只保留当前已验证事实；带日期的执行证据在[状态记录](records/status/README.md)。未完成工作的顺序、
+并行关系和授权闸门见[统一后续推进计划](TODO.md)；生产调度规则以
 [生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)为准；最近的 G3.1 闭环证据见
 [日频覆盖与治理闭环计划](records/status/WEEKLY_10Y_D_OVERLAY_0801_FIX_PLAN_20260803.md)。
 
@@ -46,6 +47,9 @@
 
 ## 未完成的生产治理
 
-- G7：Native 版本模型收敛，G3.1 已关闭后仍须另行计划。
-- G8 最终退役：先决定 replay/recovery、legacy mode 和历史 ledger 数据保留，再考虑 installed plist 或
+- G7：Native 版本模型收敛仍须先完成只读事实矩阵和用户确认的目标语义；当前没有授权的代码、数据库或
+  控制面动作。
+- G8 最终退役仍须先决定 replay/recovery、legacy mode 和历史 ledger 数据保留，再考虑 installed plist 或
   数据库迁移；均不在当前授权范围。
+- 前端紧凑化/高亮与 Liwei 2026-08-11 T+5 单次失败诊断均与上述治理工作独立，完整排序和边界以
+  [统一后续推进计划](TODO.md)为准。
