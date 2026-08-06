@@ -4,7 +4,7 @@
 
 **目标读者**：平台入库、审计和生产灰度人员
 
-**最后核验日期**：2026-07-31
+**最后核验日期**：2026-08-07
 
 这些记录提供时点证据，不定义通用接口或默认授权。
 
@@ -34,5 +34,6 @@
 - [WAVG_GAPFLIP_V5_5SCHEMES_ONBOARDING_20260731.evidence.json](WAVG_GAPFLIP_V5_5SCHEMES_ONBOARDING_20260731.evidence.json)：五个 exact identity/version、35 个持久化 Gate、run 和日期分区的机器可读未签名摘要。
 - [THREE_Y_ADYN_T1_2SCHEMES_ONBOARDING_20260731.md](THREE_Y_ADYN_T1_2SCHEMES_ONBOARDING_20260731.md)：PR #21 两个 3Y T+1 ADYN 方案的生产激活、674 条历史、86 条灰度、API/公网和既有 daily-gray 挂载记录。
 - [THREE_Y_ADYN_T1_2SCHEMES_ONBOARDING_20260731.evidence.json](THREE_Y_ADYN_T1_2SCHEMES_ONBOARDING_20260731.evidence.json)：两个 exact identity/version、14 个持久化 Gate、历史/灰度分区和 launchctl 状态的机器可读未签名摘要。
-- [CGB_CAUSAL_WK_1Y_V128_ONBOARDING_20260806.md](CGB_CAUSAL_WK_1Y_V128_ONBOARDING_20260806.md)：1Y 周度 V1.28 方案的交付适配（去 bundler、去 metadata 依赖、等价一次性计算）、七 Gate、生产激活、72 条历史、8 条灰度与 admission 隔离记录。
+- [CGB_CAUSAL_WK_1Y_V128_ONBOARDING_20260807.md](CGB_CAUSAL_WK_1Y_V128_ONBOARDING_20260807.md)：当前精确版本 `59415aa789c5` 的七 Gate、激活、一次 72-request 历史回测、9 个周点的单快照批量 `gray_live` 回补及 API 读回记录。
+- [CGB_CAUSAL_WK_1Y_V128_ONBOARDING_20260806.md](CGB_CAUSAL_WK_1Y_V128_ONBOARDING_20260806.md)：已保留的 V1.28 历史前身 `ee921f65476c` 的交付适配、七 Gate、历史和 8 条灰度记录；其证据不复用于当前精确版本。
 - [BACKTEST_PER_REQUEST_RECOMPUTE_FINDING_20260806.md](BACKTEST_PER_REQUEST_RECOMPUTE_FINDING_20260806.md)：walk-forward 类算法在逐 Request 独立截断下被放大成 O(N) 完整重算的成本观察、三点抽样对照证据，以及「上游声明 + Gate 抽样验证」的合同层改进建议；不修改 §6.3 或任何现行约束。

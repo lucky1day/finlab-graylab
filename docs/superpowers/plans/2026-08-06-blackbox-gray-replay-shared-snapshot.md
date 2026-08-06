@@ -462,7 +462,7 @@ Expected: documentation is committed separately from code; unrelated working-tre
 与 72-request historical backtest。gray-gap 写入、scheduler admission 与 launchd 仍是彼此独立的
 授权边界；本次仅继续 Task 6 的 CGB-only gray scope。
 
-### Task 6: Freeze a single-scheme CGB gray-fill plan — 进行中（2026-08-07）
+### Task 6: Freeze a single-scheme CGB gray-fill plan — 已完成（2026-08-07）
 
 **Why this task exists:** the original date/task-only `weekly_point` plan correctly included all active
 weekly schemes, but 24 unrelated existing data-contract blockers made its whole frozen plan
@@ -493,26 +493,34 @@ preflight/postflight identity replay. This task narrows authority rather than we
   selection. `PLAN_SCHEMA_VERSION` advances from v3 to v4, so prior frozen v3 plans regenerate
   fail-closed.
 
-- [ ] **Step 3: Generate and revalidate the exact CGB-only v4 plan.**
+- [x] **Step 3: Generate and revalidate the exact CGB-only v4 plan.**
 
-  Use `start_date=2026-06-01`, `as_of_date=2026-08-01`, target dates `2026-06-01..2026-08-07`,
-  `task_type=weekly_point`, and `base_scheme_id=cgb_causal_wk_1y_v128`. Require exactly nine
-  `GRAY_LIVE_GAP` actions, no blocked action, no cross-scheme action, and frozen DataBridge authority
-  whose latest CGB feature cutoff is `2026-07-31`.
+  Frozen selection used `start_date=2026-06-01`, logical `as_of_date=2026-08-01`, target dates
+  `2026-06-01..2026-08-07`, `task_type=weekly_point`, and
+  `base_scheme_id=cgb_causal_wk_1y_v128`. Initial v4 SHA
+  `02f74adaea902029931c71f3a9bf00fd0180c739b0835dfcfc099d20d6b5c5e0` had exactly nine
+  `GRAY_LIVE_GAP` actions, no blocker and no cross-scheme action. The frozen CGB authority uses
+  generation `full-20260806-063108-e08812802aff`; the session's latest physical CGB daily cutoff is
+  `2026-07-31`.
 
-- [ ] **Step 4: Issue group-bound authorizations and execute one batch fill.**
+- [x] **Step 4: Issue group-bound authorizations and execute one batch fill.**
 
-  Bind each token to its exact predict-date group, target key, source authority, version, and plan SHA.
-  Execute the normal `signal-gap-fill` gate once; do not use direct SQL, per-week current DataBridge
-  reads, a manual runner, scheduler admission, or launchd operations.
+  Nine group-bound one-time authorizations bound the exact predict-date group, target key, source
+  authority, version and plan SHA. The normal `signal-gap-fill` Gate executed once, producing success
+  runs `2193`–`2201`; all nine records share gray replay session
+  `2b518a7a840d88380e822c5463866eb21caf8585b3354e4e15e5af625f1e0072` and one CGB batch delivery.
+  No direct SQL, per-week current DataBridge reads, manual runner, scheduler admission or launchd
+  operation was used.
 
-- [ ] **Step 5: Read back closure evidence and commit.**
+- [x] **Step 5: Read back closure evidence and commit.**
 
-  Verify nine CGB `gray_live` records and nine success runs, a common gray replay session/manifest,
-  version `59415aa789c5`, no target beyond `2026-08-07`, zero remaining CGB gray gaps, and served
-  API/front-end visibility. Record non-secret evidence, rerun focused regressions, and commit only
-  the scoped plan code/tests/documentation; runtime artifacts, reports, and unrelated worktree files
-  stay unstaged.
+  Readback found nine CGB `gray_live` records and nine success runs, exact version `59415aa789c5`,
+  target maximum `2026-08-07`, and a common session manifest SHA
+  `86d156969c144881e509dca4d0ad0e1d1e0d604b6c803be347d5c879a5cd178e`. Replaying the scope yielded
+  nine `SKIP_PRESENT`, zero remaining CGB gray gaps, blocker or anomaly; the served dashboard returned
+  HTTP 200 with `stale=false`. Regression evidence and non-secret acceptance facts are recorded in
+  `CGB_CAUSAL_WK_1Y_V128_ONBOARDING_20260807.md`; runtime artifacts, reports and unrelated worktree
+  files remain unstaged.
 
 ## Plan self-review
 

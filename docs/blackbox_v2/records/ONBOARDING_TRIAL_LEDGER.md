@@ -703,6 +703,28 @@ launchd 每日灰度执行集合。`gray_live` 与正式 29/29 `scheduled_live` 
 MySQL/DataBridge 刷新故障按用户决定暂缓处理。该故障与激活日尾部连续性属于两类
 独立原因；本次数据补齐不能被描述为 DataBridge 自动恢复或 launchd 重试成功。
 
+### 4.26 记录 010：CGB 1Y V1.28 单快照批量入库与灰度补齐
+
+**最终只读核验日期**：2026-08-07，`Asia/Shanghai`。
+
+本记录固定 `cgb_causal_wk_1y_v128@59415aa789c5` 的当前精确版本证据。此前
+`ee921f65476c` 的同名历史记录继续保留，但不作为本版本准入或写入依据。
+
+| 项目 | 最终核验 |
+|---|---|
+| 准入与激活 | zero-write `all` 为 `hr_20260806T170243Z_351367853dc3`，持久化 `all` 为 `hr_20260806T172335Z_31865d2ed2f3`，七段 Gate 均通过；随后独立完成 `draft → shadow → active` |
+| 历史入库 | backtest run `206`，一次 batch 产生 72 条明细和 17 条月度指标；`predict_date` 为 2025-01-03 至 2026-05-22，目标最大为 2026-05-29，灰度边界后回测行数为 0 |
+| 方案范围计划 | `active-signal-gap-plan-v4` 将 `base_scheme_ids=[cgb_causal_wk_1y_v128]` 绑定至 SHA；初始 SHA 为 `02f74ada…5c5e0`，9 个 `GRAY_LIVE_GAP`、零 blocker、零跨方案 action |
+| 受控 gray 写入 | 正常 `signal-gap-fill` Gate 一次执行；run `2193`–`2201` 全部 success，九条均为 `gray_live`、exact version，且每个 group 均 `1/1/1` expected/returned/written |
+| 共享快照与截止 | 九条使用同一写入 snapshot `snapshot-0a19f001bbc2fe2f4ce85e99` 与同一回放 session `2b518a7a…1e0072`；物理最高 cutoff 为日 2026-07-31、周 202629、月 202608；每个 Request 仍按自身三频 cutoff 截断 |
+| 日期语义 | 覆盖 `predict_date` 2026-06-06 至 2026-08-01、`feature_date` 2026-06-05 至 2026-07-31、`target_date` 2026-06-12 至 2026-08-07；8 月 1 日非交易日按周历使用 7 月 31 日 feature、8 月 7 日 target |
+| 闭环与读回 | 重放同一 CGB-only scope 后为 9 个 `SKIP_PRESENT`、零 open gap/blocker/anomaly；本地 dashboard HTTP 200、`stale=false`，active composite 可见 9 条 gray 与 72 条历史 |
+| 未授予范围 | 未写 `scheduled_live`，未修改 scheduler、installed plist 或 launchctl；不外推为其它方案、版本或 generation 的授权 |
+
+本条证明单快照批量回补已经保留每个周点的物理 cutoff 与逐 group 的写入审计，避免旧式
+“每周重新拉取 DataBridge、每周重新运行完整回测”的非必要 I/O。它不把共享 source snapshot
+误述为共享的 feature cutoff，也不改变生产调度控制面。
+
 ## 5. 已确认的通用迭代规则
 
 1. 技术 Onboarding 可以使用最新通过完整性校验的 generation；scheduled-live 必须使用当日成功 generation，两者分开记录。

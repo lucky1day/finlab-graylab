@@ -307,8 +307,8 @@ admission、launchd 或任何其它方案的业务写入范围。
 
 详细的 TDD 实施计划见
 [2026-08-06-blackbox-gray-replay-shared-snapshot.md](../plans/2026-08-06-blackbox-gray-replay-shared-snapshot.md)。
-当前状态为**核心实现、精确版本准入、Registry 激活及 historical backtest 已完成；本方案
-受限 gray_live 补齐尚待执行**。已完成的独立提交为：
+当前状态为**核心实现、精确版本准入、Registry 激活、historical backtest 和本方案受限
+gray_live 补齐均已完成**。已完成的独立提交为：
 
 1. `345170c feat: add blackbox gray replay snapshot session`：一次 current DataBridge 读取、
    三频物理截断与不可变 session manifest；
@@ -318,6 +318,9 @@ admission、launchd 或任何其它方案的业务写入范围。
    postflight 回放与同源 Blackbox 批量 fan-out；
 4. `b1ad1b1 fix: isolate CGB batch cutoff signatures`：完整 signature 去重、同周冲突隔离、
    真实日度周末资格判定、signature 行映射与稳定抽样核验。
+5. `340d0eb fix: scope gray backfill plans by scheme`：将 CGB 的 active execution identity
+   选择器纳入冻结计划 v4 的 canonical payload、SHA、DataBridge authority read 与
+   preflight/postflight 重放，隔离无关方案 blocker 而不削弱 fail-closed 规则。
 
 最后一项修复还解决了旧 Harness 诊断中的性能退化：100 条交替 Request 虽只含两个完整
 截止状态，旧代码在 one-pass 核验失败后会重跑 100 次；现在会对两个 signature 分别独立
@@ -325,7 +328,7 @@ admission、launchd 或任何其它方案的业务写入范围。
 walk-forward 加至多三条独立核验。
 
 本地代码回归已通过：服务环境的共享快照/执行器/信号补齐/CGB/Contract 聚焦套件为
-`181 passed, 94 subtests passed`，DataBridge executor 套件为 `5 passed`；CGB 交付测试也在
+`184 passed, 94 subtests passed`，DataBridge executor 套件为 `5 passed`；CGB 交付测试也在
 `blackbox-v2-v1` 实际环境中以 `unittest` 通过。上述均未写业务表、未激活、未改 Registry、
 未触发 scheduler/launchd，且不构成生产入库。
 
@@ -334,8 +337,10 @@ walk-forward 加至多三条独立核验。
 `hr_20260806T170243Z_351367853dc3`，并取得持久化完整七段 Gate 证据
 `hr_20260806T172335Z_31865d2ed2f3`；随后按 draft → shadow → active 完成首次生命周期，
 且以一次 72-request batch 持久化 historical backtest（run `206`，target_date 截止
-`2026-05-29`）。这些步骤未写 gray/live 信号、未执行 scheduler 或 launchd。其已完成边界和
-剩余 gray 验收顺序如下：
+`2026-05-29`）。随后冻结 CGB-only v4 plan（初始 SHA
+`02f74adaea902029931c71f3a9bf00fd0180c739b0835dfcfc099d20d6b5c5e0`），通过一次正常
+`signal-gap-fill` Gate 写入九个 `gray_live` 周点（runs `2193`–`2201`）。这些步骤均未执行
+scheduler 或 launchd。其已完成边界如下：
 
 1. `shared.input_artifacts` 创建一次读取、一次物理三频截断、一次持久化 manifest 的
    `BlackboxGrayReplaySession`；所有请求的 cutoff 必须存在于该父快照。
@@ -347,6 +352,22 @@ walk-forward 加至多三条独立核验。
    原子写入边界。
 4. CGB delivery 将 `week_id` 缓存键改为完整 cutoff signature，并对不满足 one-pass 条件的
    请求按唯一 signature 独立回退；冻结算法组件零修改。
-5. 重新取得 exact Gate 证据、首次 activation 和 historical backtest 已完成；下一步只能使用
-   v4 CGB-only 冻结计划和逐 group token 执行 gray 写入。它不自动授予 scheduler admission、
-   launchd 或其它方案写入权限。
+5. 重新取得 exact Gate 证据、首次 activation、historical backtest 和以 v4 CGB-only 冻结
+   计划/逐 group token 的 gray 写入均已完成；它仍不自动授予 scheduler admission、launchd
+   或其它方案写入权限。
+
+## 2026-08-07 实施验收
+
+本次受限写入以同一 DataBridge generation
+`full-20260806-063108-e08812802aff` 创建一份父快照和 immutable gray replay session
+`2b518a7a840d88380e822c5463866eb21caf8585b3354e4e15e5af625f1e0072`。session 的物理最高
+cutoff 是日频 `2026-07-31`、周频 `202629`、月频 `202608`，并由 manifest SHA
+`86d156969c144881e509dca4d0ad0e1d1e0d604b6c803be347d5c879a5cd178e` 固定。九条记录各自
+保留原始周度 `predict_date/feature_date/target_date`、精确版本和 group-bound 审计；
+`2026-08-01` 的非交易日预测正确使用 `2026-07-31` feature 并目标到 `2026-08-07`。
+
+写后按同一 CGB-only scope 重放，得到 9 个 `SKIP_PRESENT`、零 remaining gray gap、零
+blocker/anomaly；本地 dashboard HTTP 200、`stale=false`。这验证了用户所要求的逻辑：
+连续历史/灰度周只需一次 DataBridge snapshot 和一次批量 delivery，但每个周点仍严格使用
+自身的三频 cutoff。完整非秘密证据见
+[CGB_CAUSAL_WK_1Y_V128_ONBOARDING_20260807.md](../../blackbox_v2/records/CGB_CAUSAL_WK_1Y_V128_ONBOARDING_20260807.md)。
