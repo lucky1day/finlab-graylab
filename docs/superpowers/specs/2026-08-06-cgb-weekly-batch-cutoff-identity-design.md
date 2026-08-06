@@ -269,3 +269,23 @@ Request 输入顺序影响。
 
 验收不以“同周不同截止日结果相同”为条件；验收条件是每条批量结果与同一条 Request
 的独立截断结果相同。
+
+## 已批准的实施计划
+
+详细的 TDD 实施计划见
+[2026-08-06-blackbox-gray-replay-shared-snapshot.md](../plans/2026-08-06-blackbox-gray-replay-shared-snapshot.md)。
+当前状态为**已批准、尚未实施**；其提交边界与验收顺序固定如下：
+
+1. `shared.input_artifacts` 创建一次读取、一次物理三频截断、一次持久化 manifest 的
+   `BlackboxGrayReplaySession`；所有请求的 cutoff 必须存在于该父快照。
+2. `scheduler.executor` 对同一 Blackbox config 从该 session 调用 Contract `backtest`；超过
+   批量上限只切分模型 CLI batch，不新建 DataBridge 快照。
+3. `signal-gap-fill` 将同源的日/周/月 Blackbox groups 合并为一个 session；本次 fill 的
+   preflight/postflight 复用该 session 已验证的冻结 authority，不再次读取 mutable
+   DataBridge。结果回填和 `complete_gray_gap_run()` 仍保持逐 `predict_date` 的授权、run 和
+   原子写入边界。
+4. CGB delivery 将 `week_id` 缓存键改为完整 cutoff signature，并对不满足 one-pass 条件的
+   请求按唯一 signature 独立回退；冻结算法组件零修改。
+5. 所有测试和零写 BacktestGate 通过后，因 delivery hash 改变而重新取得该精确 Blackbox
+   version 的 Gate 证据；不自动执行 activation、持久化回测、gray 写入、Registry 或
+   launchd 操作。
