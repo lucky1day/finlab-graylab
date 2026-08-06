@@ -65,8 +65,8 @@
   capability/legacy mode 的目标语义均等待用户确认。019 inspection 仅限 `APPLYING` recovery；在新的受控只读
   inventory capability 设计并获授权前，forward DDL 继续阻断。详见
   [G8.0 矩阵](records/status/G8_REPLAY_LEDGER_DECISION_MATRIX_20260806.md)。
-- D0 已完成文档审计，没有删除任何文档；只有 2 份历史 front-end cutover 文档被列为待用户确认候选，G3.1 与当前
-  规范/证据均保留。详见 [D0 审计](records/status/D0_DOCUMENT_LIFECYCLE_AUDIT_20260806.md)。
+- D0 已按用户确认完成文档清理：仅删除 2 份 superseded front-end cutover 草案，G3.1 与当前规范/证据均保留；此事不改变
+  D1、G7.0 或 G8.0 的独立状态。详见 [D0 审计](records/status/D0_DOCUMENT_LIFECYCLE_AUDIT_20260806.md)。
 
 ## 未完成的生产治理
 

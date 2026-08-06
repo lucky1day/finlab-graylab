@@ -107,7 +107,7 @@ Expected: PASS。
 - Modify: `docs/TODO.md:132-148`
 - Modify: `docs/CURRENT_STATUS.md:55-70`
 
-- [ ] **Step 1: 删除唯一已确认的两份 superseded 草案**
+- [x] **Step 1: 删除唯一已确认的两份 superseded 草案**
 
 只删除以下文件，不删除任何其它 `docs/superpowers`、`docs/records`、G3.1、G7、G8 或 D1 文档：
 
@@ -116,15 +116,15 @@ docs/superpowers/specs/2026-08-05-factor-lab-live-backtest-cutover-design.md
 docs/superpowers/plans/2026-08-05-factor-lab-live-backtest-cutover.md
 ```
 
-- [ ] **Step 2: 将 D0 从待确认改为已执行的审计事实**
+- [x] **Step 2: 将 D0 从待确认改为已执行的审计事实**
 
 将 D0 的候选小节改为“已确认并执行的删除（2026-08-06）”，保留两个路径、删除前仅互相引用/审计列举的入站引用结论，以及“没有其它文档被删除”的界限。不得重写其分类矩阵或删除审计记录。
 
-- [ ] **Step 3: 同步状态入口**
+- [x] **Step 3: 同步状态入口**
 
 将状态记录索引改为“已确认并执行的两份 superseded draft 删除”；将 TODO 的 D0 改为 `COMPLETE`，把所有待确认/待删除 checkbox 改为已完成；将当前状态的 D0 摘要改为已按确认删除两份草案、保留 G3.1 和当前规范/证据，且不影响 G7/G8/D1 的独立状态。
 
-- [ ] **Step 4: 核对删除后的入站链接**
+- [x] **Step 4: 核对删除后的入站链接**
 
 Run:
 
@@ -133,7 +133,7 @@ git grep -n -F '2026-08-05-factor-lab-live-backtest-cutover-design.md' || true
 git grep -n -F '2026-08-05-factor-lab-live-backtest-cutover.md' || true
 ```
 
-Expected: 只剩 D0 审计中作为已删除证据的文字路径；没有可解析的 Markdown 链接或运行时引用。
+Expected: 只剩 D0 审计、当前设计/实施计划中的原始历史路径；没有可解析的 Markdown 链接或运行时引用。
 
 ### Task 4: 全量文档验证、提交与开发分支集成
 

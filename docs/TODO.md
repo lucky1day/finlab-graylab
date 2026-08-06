@@ -133,15 +133,14 @@ G8，除非诊断证实存在会影响它们的共享控制面缺陷。
 
 **目标：** 减少重复说明而不丢失当前规范、审计证据和可追溯性。
 
-**状态：** `AUDIT_COMPLETE_AWAITING_CONFIRMATION`。完整材料见
+**状态：** `COMPLETE`。完整材料见
 [D0 生命周期审计](records/status/D0_DOCUMENT_LIFECYCLE_AUDIT_20260806.md)。
 
 - [x] 以 Git 跟踪文档清单、状态头与入站引用审计形成分类矩阵；候选列举产生的审计自引用已明确排除。
 - [x] `CURRENT`、当前索引和可复核证据一律保留；已关闭的 G3.1 status 记录属于 `HISTORICAL EVIDENCE`，不得因
   “已闭环”直接删除。
-- [x] 仅列出 2 份 `SUPERSEDED_DRAFT` 候选；尚未删除、移动或修改任何候选文档。
-- [ ] 对每一批删除候选先提交清单供用户确认；确认后仅删除清单中的文件，更新索引和链接，运行文档测试与
-  `git diff --check`，并单独提交。
+- [x] 仅列出 2 份 `SUPERSEDED_DRAFT` 候选；用户已确认并仅删除这两份 front-end cutover 草案。
+- [x] 已先提交精确清单并获得用户确认；删除后已更新索引和状态记录，运行文档测试与 `git diff --check`，并单独提交。
 
 **禁止：** 不批量删除 `docs/records/`、不删除当前规范或唯一证据、不删除用户未提交文件、不以 Git 历史替代仍被
 当前治理或审计需要的事实记录。
