@@ -10,7 +10,7 @@
       html, body { margin: 0; min-height: 100%; background: #F8F7F2; color: #171A20; }
       .aifin-shell { min-height: 100vh; background: #F8F7F2; }
     </style>
-    <link rel="stylesheet" href="aifin-shell.css?v=0963daf52ddc1773bddf414cf43a9f10a30884238e09f4c500251bd352725cbe">
+    <link rel="stylesheet" href="aifin-shell.css?v=fbd07d233b887b92c9df3ea1c3f27c3857d97844288d53eda09399621ffdc917">
   </head>
   <body>
     <div id="aifin-shell" class="aifin-shell">
@@ -42,7 +42,7 @@
             </div>
 
             <div class="factor-filter-bar" aria-label="因子实验室筛选">
-              <div class="factor-filter-row factor-filter-row-months" aria-label="月份区间">
+              <div class="factor-filter-row" aria-label="月份区间和方案排行筛选">
                 <strong>口径</strong>
                 <label class="factor-source-select">
                   <select id="factorDataSource">
@@ -72,8 +72,6 @@
                     <option value="2025-05" selected>2025-05</option>
                   </select>
                 </label>
-              </div>
-              <div class="factor-filter-row factor-filter-row-detail" aria-label="方案排行筛选">
                 <strong>排行</strong>
                 <div class="factor-filter-group" aria-label="排序口径">
                   <span>排序指标</span>
@@ -115,7 +113,6 @@
               <div class="factor-panel-head">
                 <div>
                   <h3 id="factorRankingTitle">3Y国债活跃 · T+5 候选方案排行</h3>
-                  <p id="factorRankingMeta">该任务格子下共有 5 个候选方案。</p>
                 </div>
               </div>
               <div class="factor-ranking-wrap">

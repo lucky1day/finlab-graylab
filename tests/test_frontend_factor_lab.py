@@ -505,7 +505,7 @@ class FactorLabRankingTests(unittest.TestCase):
                 self.assertIn(marker, script)
 
         expected_asset_hashes = {
-            FRONTEND_INDEX: "9b1bf0bf244863fcbeb31ea237cdace6a0eb99654f6aa5b123b9d303a377c52d",
+            FRONTEND_INDEX: "7f8ecfee71ed9f094529a7ebb34e4045093ed75f043e0b3ff588853234e32dbc",
             PROJECT_ROOT / "frontend" / "assets" / "aifin-lab-icon.svg": (
                 "e014fc86d69d61a32892b9799f83f8c784898d705c8df05313a04216281d2259"
             ),
@@ -3156,6 +3156,34 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertNotIn("white-space: nowrap;", summary_value_rule)
         self.assertIn("word-break: keep-all;", heading_rule)
 
+    def test_filter_controls_share_a_single_compact_toolbar(self) -> None:
+        html = FRONTEND_INDEX.read_text(encoding="utf-8")
+        css = FRONTEND_CSS.read_text(encoding="utf-8")
+        toolbar_start = html.index('<div class="factor-filter-bar"')
+        toolbar_end = html.index('<section class="factor-task-panel"', toolbar_start)
+        toolbar = html[toolbar_start:toolbar_end]
+        filter_row_rule = _css_rule(".factor-filter-row")
+
+        self.assertEqual(toolbar.count('class="factor-filter-row'), 1)
+        self.assertIn('aria-label="月份区间和方案排行筛选"', toolbar)
+        self.assertNotIn("factor-filter-row-detail", toolbar)
+        self.assertLess(toolbar.index("<strong>口径</strong>"), toolbar.index("<strong>排行</strong>"))
+        self.assertLess(
+            toolbar.index('id="factorEndMonth"'),
+            toolbar.index('data-factor-rank-metric="overall"'),
+        )
+        self.assertIn("flex-wrap: nowrap;", filter_row_rule)
+        self.assertIn("gap: 10px;", filter_row_rule)
+        self.assertIn("@media (max-width: 1180px)", css)
+
+    def test_candidate_ranking_omits_the_count_meta_line(self) -> None:
+        html = FRONTEND_INDEX.read_text(encoding="utf-8")
+        script = FRONTEND_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertNotIn('id="factorRankingMeta"', html)
+        self.assertNotIn("factorRankingMeta", script)
+        self.assertNotIn("该任务格子下共有", script)
+
     def test_factor_lab_compact_layout_and_task_highlight_style_contract(self) -> None:
         css = FRONTEND_CSS.read_text(encoding="utf-8")
 
@@ -3574,7 +3602,6 @@ class FactorLabRankingTests(unittest.TestCase):
             return {
               dataMode: hooks.getFactorLabState().dataMode,
               rankingHtml: document.getElementById("factorRankingBody").innerHTML,
-              metaText: document.getElementById("factorRankingMeta").textContent,
               selectedScheme: hooks.getSelectedScheme()
             };
             """

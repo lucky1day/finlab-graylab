@@ -2185,29 +2185,11 @@
   function renderSchemeRanking() {
     var body = document.getElementById("factorSchemeRankingBody");
     var title = document.getElementById("factorRankingTitle");
-    var meta = document.getElementById("factorRankingMeta");
     if (!body) return;
 
     var task = getTaskByKey(factorLabState.selectedTaskKey);
     var schemes = sortSchemesByMetric(getSelectedTaskSchemes());
     if (title) title.textContent = task.label + " 候选方案排行";
-    if (meta) {
-      if (factorLabRemoteLoading && factorLabRuntimeState.committedViewModel) {
-        meta.textContent = "正在刷新数据，当前继续显示上次成功快照。";
-      } else if (factorLabRemoteLoading) {
-        meta.textContent = "正在加载因子实验数据。";
-      } else if (factorLabApiError && factorLabRuntimeState.committedViewModel) {
-        meta.textContent = "刷新失败，当前显示 " + factorLabSnapshotAgeText() + " 的旧数据。";
-      } else if (factorLabApiError) {
-        meta.textContent = "数据暂不可用，系统将自动重试。";
-      } else if (factorLabDataMode === "backtest") {
-        meta.textContent = "该任务格子下共有 " + schemes.length + " 个历史回测方案。";
-      } else if (factorLabDataMode === "merged") {
-        meta.textContent = "该任务格子下共有 " + schemes.length + " 个候选方案。";
-      } else {
-        meta.textContent = "该任务格子下共有 " + schemes.length + " 个候选方案。";
-      }
-    }
 
     if (!schemes.length) {
       body.innerHTML = '<tr><td colspan="8" class="factor-empty-cell">该任务格子下暂无方案</td></tr>';
