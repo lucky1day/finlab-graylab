@@ -6,7 +6,7 @@
 
 **目标读者**：上游算法工程师
 
-**最后核验日期**：2026-07-30
+**最后核验日期**：2026-08-06
 
 本文是上游算法工程师唯一需要阅读的人类文档。完成开发只需要本文、随包提供的 `data_bridge_v1_schema.json` 和三份脱敏 sample；不需要再阅读仓库内其他文档。
 
@@ -89,6 +89,12 @@ python -m harness intake-blackbox ... \
 ```
 
 上游不得在 Metadata 中增加 `platform_inputs`，也不得用随包日历代替平台提供的权威制品。
+
+### 1.4 交付不授予平台控制面权限
+
+两文件交付、DataBridge 自验凭证和平台 Intake 接收只证明交付具备可被接收的资格，不构成平台控制面权限。它们不授予 activation、灰度写入或平台准入；不得把两文件交付当作平台审批。
+
+Metadata 和交付目录不得声明、携带或暗示仅由平台处理的运行或审批字段。交付方只提供本 SOP 规定的两文件和自验凭证；后续平台决策由平台专项流程独立处理。
 
 ---
 
@@ -684,6 +690,8 @@ python {scheme_id}.py backtest \
 - [ ] 只交付同名 `{scheme_id}.py + {scheme_id}.json`；
 - [ ] `.json` 的八个必填字段合法，且提供符合约束的 `description`；
 - [ ] Metadata 未增加 `platform_inputs`；如需平台周历，已告知平台在 Intake 使用 `--platform-input api-wind-date-v1`；
+- [ ] 两文件、DataBridge 自验凭证和平台 Intake 接收仅确认交付可接收资格，不构成平台控制面权限；
+- [ ] Metadata 和交付目录未声明平台专属运行或审批字段，且未将两文件交付视为平台审批；
 - [ ] `name` 是任务格子内的简洁方案名，没有重复期限、任务或“方向预测”；
 - [ ] `predict` 和 `backtest` 使用同一算法逻辑；
 - [ ] 真实 DataBridge 数据下载和 Schema 校验已通过；

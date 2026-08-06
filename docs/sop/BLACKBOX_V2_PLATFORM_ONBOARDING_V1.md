@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`blackbox_v2`
 **目标读者**：平台入库、运行和审计人员
-**最后核验日期**：2026-08-03
+**最后核验日期**：2026-08-06
 
 本文是平台操作人员接收、技术验收和登记 Blackbox V2 方案的唯一操作 SOP。上游交付契约见 [BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)；具体方案的版本、快照、运行结果和当前状态只追加到 [Blackbox V2 入库试验台账](../blackbox_v2/records/ONBOARDING_TRIAL_LEDGER.md)。文档分类和维护规则见 [Blackbox V2 文档管理](../blackbox_v2/README.md)。
 
@@ -235,6 +235,14 @@ occurrence/epoch 都不能成为第二入口。具体时点、installed state �
 历史 Onboarding 证据跨 generation 时必须明确标记数据版本变化，不能用当前生产结果
 反向覆盖旧验收。经授权的历史缺口只可 insert-only 写 `gray_live`；只有合格自然时钟
 触发才写 `scheduled_live`。
+
+### 2.5 精确 scheduler admission 是独立的仓库策略
+
+冻结的准入 parity 仅由 `scheduler/blackbox_scheduler_admission.py` 与 `deploy/blackbox_scheduler_admission_v1.json` 承载；两处的 Python/JSON map 必须逐项一致，并按精确身份核验。精确身份字段为 `scheme_id` + `scheme_version` + `runtime_type` + `frequency` + `task_type` + `horizon` + `target_tenor`。
+
+Intake、Gate、`shadow + paused`、activation、持久化回测、`gray_live` 和 API/前端验收均不自动授予 scheduler admission。新增或变更的 Blackbox admission 的 capability 只能为 `{launchd_one_shot}`，即仅允许 `launchd_one_shot`；`mode=formal` 不隐含任何权限，尤其不得作为 legacy/ledger/direct 的许可，且不得新增或扩大 `legacy_automatic`、`daily_ledger`、`direct_scheduled`。
+
+既有历史行仅属于 G8 精确身份迁移/退役范围，不构成后续准入先例。仓库 admission 本身不安装 plist、不运行 `launchctl`、不重启服务；它也不证明自然时钟已经产生 `scheduled_live`。历史补缺只可在独立授权下写入 `gray_live`。
 
 ## 3. 快照与 Request
 
@@ -721,6 +729,11 @@ Shadow 生命周期操作通过 journal、补偿和 reconciliation 收口；数�
 - [ ] `self_test_alignment=matched` 后才执行逐行算法对比；不一致已标记 `data_vintage_mismatch` 并同代重跑
 - [ ] 已明确 Onboarding 验收同代不等于生产永久冻结；scheduled live 仍使用当天最新 SEALED generation
 - [ ] 已确认本次只是 Onboarding/灰度验收，未把 active、Gate 通过或前端可见性外推为 scheduler admission
+- [ ] scheduler admission 已按精确身份独立审查；Intake、Gate、`shadow + paused`、activation、持久化回测、`gray_live` 和 API/前端验收均未被当作自动准入
+- [ ] `scheduler/blackbox_scheduler_admission.py` 与 `deploy/blackbox_scheduler_admission_v1.json` 的冻结 Python/JSON parity map 已逐项核对，且七个精确身份字段完全一致
+- [ ] 新增或变更的 Blackbox admission capability 仅为 `{launchd_one_shot}`；`mode=formal` 未被视为 legacy、ledger 或 direct 的隐含访问，未新增或扩大 `legacy_automatic`、`daily_ledger`、`direct_scheduled`
+- [ ] 既有历史行只按 G8 精确身份迁移/退役处理，未被当作后续 admission 的先例
+- [ ] admission 未安装 plist、未运行 `launchctl`、未重启服务，且未以此宣称已有 `scheduled_live` 的自然时钟证据；历史补缺仅在独立授权下写入 `gray_live`
 - [ ] 若申请自然调度，G1/G2 的 launchd-only 单 writer、当日 DataBridge freshness、installed plist、loaded state 和专项授权均已单独完成
 - [ ] 历史补缺只写 `gray_live`；只有合格自然时钟触发才写 `scheduled_live`，二者不得由日期标签互相倒签
 - [ ] 任一 cadence 的完整性以当时 active Registry、run、prediction 和日志核验；不得冻结旧方案数量、release 队列或 coordinator/ledger 口径

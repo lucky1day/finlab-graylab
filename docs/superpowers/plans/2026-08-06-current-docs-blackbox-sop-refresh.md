@@ -15,7 +15,7 @@
 **Files:**
 - Modify: `tests/test_onboarding_docs.py:1332-1360`
 
-- [ ] **Step 1: 写入失败的文档契约测试**
+- [x] **Step 1: 写入失败的文档契约测试**
 
 在 `test_blackbox_production_boundary_is_explicit()` 后新增：
 
@@ -42,7 +42,7 @@
             self.assertIn(marker, platform)
 ```
 
-- [ ] **Step 2: 运行测试，确认在文档更新前失败**
+- [x] **Step 2: 运行测试，确认在文档更新前失败**
 
 Run:
 
@@ -60,19 +60,19 @@ Expected: FAIL，因为两个 SOP 尚未包含这些新边界句。
 - Modify: `docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md:1-17,222-238,710-742`
 - Modify: `docs/sop/README.md:7-27,43-58`
 
-- [ ] **Step 1: 在上游 SOP 的第 1.3 节后新增交付权限边界**
+- [x] **Step 1: 在上游 SOP 的第 1.3 节后新增交付权限边界**
 
 新增 `### 1.4 交付不授予平台控制面权限`，明确以下文本语义：
 
 ```text
 两文件交付、DataBridge 自验凭证和 Intake 成功只证明交付可被平台接收；
-它们不授予 activation、灰度写入、scheduler admission、launchd_one_shot、installed plist 或服务操作。
-上游不得在 Metadata 或交付目录中声明上述平台权限，也不得把两文件交付当作平台审批。
+它们不授予 activation、灰度写入或平台准入。
+上游不得在 Metadata 或交付目录中声明平台专属运行或审批字段，也不得把两文件交付当作平台审批。
 ```
 
-同时在最终检查增加两项：交付不包含平台控制面字段；交付方已将 scheduler admission、`launchd_one_shot`、installed plist 与服务操作保留给平台专项流程。
+同时在最终检查增加两项：交付不包含平台专属运行或审批字段；交付方已将平台准入和平台审批保留给平台专项流程。
 
-- [ ] **Step 2: 在平台 SOP 的第 2.4 节后新增精确 admission 小节**
+- [x] **Step 2: 在平台 SOP 的第 2.4 节后新增精确 admission 小节**
 
 新增 `### 2.5 精确 scheduler admission 是独立的仓库策略`，包含以下准确规则：
 
@@ -87,11 +87,11 @@ Intake、Gate、shadow + paused、activation、持久化回测、gray_live 和 A
 
 在第 9 节最终检查增加 scheduler admission 的独立审查、Python/JSON parity、只含 `launchd_one_shot` 的新变更能力和现场操作分离检查。将两个 SOP 的最后核验日期更新为 2026-08-06。
 
-- [ ] **Step 3: 更新 SOP 索引**
+- [x] **Step 3: 更新 SOP 索引**
 
 将 `docs/sop/README.md` 的最后核验日期更新为 2026-08-06；把平台 SOP 的用途写为“收包、Gate、精确 scheduler admission 的独立审查、专项生产灰度和前端验收”；在场景决策或维护规则中明确上游两文件交付不等于平台 activation、scheduler admission 或现场生产操作。
 
-- [ ] **Step 4: 运行 Task 1 测试，确认通过**
+- [x] **Step 4: 运行 Task 1 测试，确认通过**
 
 Run the Task 1 command.
 
