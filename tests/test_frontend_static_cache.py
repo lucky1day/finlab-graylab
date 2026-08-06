@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import tempfile
 import unittest
+from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import parse_qsl, urlsplit
 
 from starlette.exceptions import HTTPException
 
@@ -14,7 +17,29 @@ NoCacheFrontendStaticFiles = main.NoCacheFrontendStaticFiles
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-FRONTEND_INDEX = PROJECT_ROOT / "frontend" / "index.html"
+FRONTEND_ROOT = PROJECT_ROOT / "frontend"
+FRONTEND_INDEX = FRONTEND_ROOT / "index.html"
+FRONTEND_CSS = FRONTEND_ROOT / "aifin-shell.css"
+
+
+class _FrontendIndexAssetParser(HTMLParser):
+    """解析真实 index 中的 stylesheet 与脚本资源 URL。"""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.stylesheets: list[str] = []
+        self.scripts: list[str] = []
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        attributes = dict(attrs)
+        if tag == "link" and attributes.get("rel") == "stylesheet":
+            self.stylesheets.append(attributes.get("href", ""))
+        if tag == "script" and attributes.get("src"):
+            self.scripts.append(attributes["src"] or "")
 
 
 def _scope(path: str, query_string: bytes = b"") -> dict:
@@ -127,10 +152,59 @@ class FrontendStaticCacheTests(unittest.TestCase):
             self.assertEqual(headers[name]["expires"], "0")
 
     def test_index_uses_current_asset_cache_buster(self) -> None:
-        html = FRONTEND_INDEX.read_text(encoding="utf-8")
+        css_token = hashlib.sha256(FRONTEND_CSS.read_bytes()).hexdigest()
+        parser = _FrontendIndexAssetParser()
+        parser.feed(FRONTEND_INDEX.read_text(encoding="utf-8"))
 
-        self.assertIn('href="aifin-shell.css?v=20260806b"', html)
-        self.assertIn('src="aifin-shell.js?v=20260806a"', html)
+        css_version_tokens = {
+            value
+            for stylesheet in parser.stylesheets
+            for key, value in parse_qsl(
+                urlsplit(stylesheet).query,
+                keep_blank_values=True,
+            )
+            if key == "v"
+        }
+        self.assertEqual(css_version_tokens, {css_token})
+        self.assertEqual(
+            parser.stylesheets,
+            [f"aifin-shell.css?v={css_token}"],
+        )
+        self.assertEqual(parser.scripts, ["aifin-shell.js?v=20260806a"])
+
+        async def _fetch_headers(
+            static: NoCacheFrontendStaticFiles,
+            query_string: bytes,
+        ) -> dict[str, str]:
+            response = await static.get_response(
+                "aifin-shell.css",
+                _scope("aifin-shell.css", query_string),
+            )
+            return dict(response.headers)
+
+        async def _exercise() -> dict[str, dict[str, str]]:
+            static = NoCacheFrontendStaticFiles(directory=FRONTEND_ROOT, html=True)
+            return {
+                "current_css": await _fetch_headers(
+                    static,
+                    f"v={css_token}".encode("ascii"),
+                ),
+                "stale_css": await _fetch_headers(static, b"v=20260806b"),
+            }
+
+        headers = asyncio.run(_exercise())
+        self.assertEqual(
+            headers["current_css"]["cache-control"],
+            main.VERSIONED_ASSET_CACHE_CONTROL,
+        )
+        self.assertNotIn("pragma", headers["current_css"])
+        self.assertNotIn("expires", headers["current_css"])
+        self.assertEqual(
+            headers["stale_css"]["cache-control"],
+            main.UNVERSIONED_ASSET_CACHE_CONTROL,
+        )
+        self.assertEqual(headers["stale_css"]["pragma"], "no-cache")
+        self.assertEqual(headers["stale_css"]["expires"], "0")
 
     def test_missing_versioned_asset_exception_is_explicitly_revalidated(self) -> None:
         async def exercise() -> None:
