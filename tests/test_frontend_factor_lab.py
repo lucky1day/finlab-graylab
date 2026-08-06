@@ -3155,6 +3155,264 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertNotIn("white-space: nowrap;", summary_value_rule)
         self.assertIn("word-break: keep-all;", heading_rule)
 
+    def test_factor_lab_compact_layout_and_task_highlight_style_contract(self) -> None:
+        css = FRONTEND_CSS.read_text(encoding="utf-8")
+
+        self.assertIn(".factor-task-cell.is-accuracy-highlighted {", css)
+
+        view_rule = _css_rule(".factor-lab-view")
+        page_rule = _css_rule(".factor-lab-page")
+        hero_rule = _css_rule(".factor-lab-hero")
+        filter_rule = _css_rule(".factor-filter-bar")
+        task_and_ranking_panel_selector = ".factor-task-panel,\n.factor-ranking-panel"
+        task_and_ranking_panel_start = css.rindex(
+            task_and_ranking_panel_selector + " {"
+        ) + len(task_and_ranking_panel_selector) + 2
+        task_and_ranking_panel_end = css.index("\n}", task_and_ranking_panel_start)
+        task_and_ranking_panel_rule = css[
+            task_and_ranking_panel_start:task_and_ranking_panel_end
+        ]
+        matrix_rule = _css_rule(".factor-matrix-panel")
+        task_header_rule = _css_rule(
+            ".factor-task-table th,\n.factor-ranking-table th"
+        )
+        task_table_cell_rule = _css_rule(".factor-task-table td")
+        task_cell_rule = _css_rule(".factor-task-cell")
+        highlight_rule = _css_rule(".factor-task-cell.is-accuracy-highlighted")
+        selected_rule = _css_rule(
+            ".factor-task-cell:hover,\n.factor-task-cell.is-selected"
+        )
+        ranking_row_selector = ".factor-ranking-table th,\n.factor-ranking-table td"
+        ranking_row_start = css.rindex(ranking_row_selector + " {") + len(
+            ranking_row_selector
+        ) + 2
+        ranking_row_end = css.index("\n}", ranking_row_start)
+        ranking_row_rule = css[ranking_row_start:ranking_row_end]
+        trend_panel_rule = _css_rule(".factor-trend-panel")
+        trend_chart_rule = _css_rule(".factor-trend-chart")
+        trend_empty_rule = _css_rule(".factor-trend-empty")
+
+        self.assertIn("padding: clamp(14px, 2vw, 28px);", view_rule)
+        self.assertIn("gap: 12px;", page_rule)
+        self.assertIn("min-height: 96px;", hero_rule)
+        self.assertIn("padding: 16px 20px;", hero_rule)
+        self.assertIn("gap: 16px;", hero_rule)
+        self.assertNotIn("min-height", filter_rule)
+        self.assertIn("padding: 10px 20px;", filter_rule)
+        self.assertIn("gap: 8px;", filter_rule)
+        self.assertIn("padding: 16px 20px 18px;", task_and_ranking_panel_rule)
+        self.assertNotIn("min-height", matrix_rule)
+        self.assertIn("padding: 18px 20px 14px;", matrix_rule)
+        self.assertIn("height: 36px;", task_header_rule)
+        self.assertIn("height: 76px;", task_table_cell_rule)
+        self.assertIn("min-height: 76px;", task_table_cell_rule)
+        self.assertIn("height: 76px;", task_cell_rule)
+        self.assertIn("min-height: 76px;", task_cell_rule)
+        self.assertIn("padding: 10px 14px;", task_cell_rule)
+        self.assertIn("gap: 5px;", task_cell_rule)
+        self.assertEqual(
+            [line.strip() for line in highlight_rule.splitlines() if line.strip()],
+            [
+                "background: rgba(21, 92, 62, 0.05);",
+                "box-shadow: inset 0 0 0 1px rgba(21, 92, 62, 0.15);",
+            ],
+        )
+        self.assertIn("background: rgba(21, 92, 62, 0.06);", selected_rule)
+        self.assertIn("box-shadow: inset 0 0 0 2px rgba(21, 92, 62, 0.15);", selected_rule)
+        self.assertIn("height: 42px;", ranking_row_rule)
+        self.assertIn("padding: 0 12px;", ranking_row_rule)
+        self.assertIn("margin-top: 12px;", trend_panel_rule)
+        self.assertIn("padding: 14px;", trend_panel_rule)
+        self.assertIn("min-height: 244px;", trend_chart_rule)
+        self.assertIn("min-height: 244px;", trend_empty_rule)
+
+        responsive_css = css[css.index("/* ─── Responsive ─── */"):]
+        self.assertNotRegex(
+            responsive_css,
+            r"(?:min-)?height:\s*(?:92|300|560)px;",
+        )
+
+    def test_task_matrix_highlights_only_qualifying_accuracy_metrics(self) -> None:
+        scheme_id = "highlight_demo__h1__5Y"
+        july_directions = [
+            (1, 1),
+            (1, 1),
+            (1, 1),
+            (1, -1),
+            (1, -1),
+            (-1, -1),
+            (-1, -1),
+            (-1, -1),
+            (-1, 1),
+            (-1, 1),
+        ]
+        daily_rows = [
+            {
+                "predict_date": f"2026-07-{day:02d}",
+                "feature_date": f"2026-06-{day:02d}",
+                "target_date": f"2026-07-{day + 10:02d}",
+                "prediction_phase": "scheduled_live",
+                "predicted_direction": predicted_direction,
+                "actual_direction": actual_direction,
+            }
+            for day, (predicted_direction, actual_direction) in enumerate(
+                july_directions,
+                start=1,
+            )
+        ]
+        daily_rows.extend(
+            [
+                {
+                    "predict_date": "2026-08-01",
+                    "feature_date": "2026-07-31",
+                    "target_date": "2026-08-03",
+                    "prediction_phase": "scheduled_live",
+                    "predicted_direction": 1,
+                    "actual_direction": -1,
+                },
+                {
+                    "predict_date": "2026-08-02",
+                    "feature_date": "2026-08-01",
+                    "target_date": "2026-08-04",
+                    "prediction_phase": "scheduled_live",
+                    "predicted_direction": -1,
+                    "actual_direction": 1,
+                },
+            ]
+        )
+        responses = {
+            "/api/schemes": {
+                "target_labels": {"5Y": "5Y国债活跃"},
+                "schemes": [
+                    {
+                        "scheme_id": scheme_id,
+                        "base_scheme_id": "highlight_demo",
+                        "name": "高亮测试方案",
+                        "description": "",
+                        "target_tenor": "5Y",
+                        "horizon": 1,
+                        "task_type": "T+1",
+                        "frequency": "daily",
+                        "status": "active",
+                        "deployed_at": "2026-06-04",
+                    }
+                ],
+            },
+            f"/api/metrics/{scheme_id}": {
+                "target_label": "5Y国债活跃",
+                "monthly_metrics": [],
+                "daily_rows": daily_rows,
+            },
+            "/api/backtests/factor-lab": {
+                "target_labels": {"5Y": "5Y国债活跃"},
+                "schemes": [],
+            },
+        }
+
+        result = _run_factor_lab_hook(
+            f"""
+            const responses = {json.dumps(responses, ensure_ascii=False)};
+            const taskKey = "5Y|T+1";
+            const loaded = hooks.loadLegacyFixtureForTest(responses);
+            const highlightedScheme = hooks.getTaskSchemesForTest()[taskKey][0];
+
+            function taskCellClasses(key) {{
+              const html = document.getElementById("factorTaskMatrixBody").innerHTML;
+              const markerIndex = html.indexOf(' data-factor-task-key="' + key + '"');
+              const buttonStart = html.lastIndexOf("<button", markerIndex);
+              const classMatch = html.slice(buttonStart, markerIndex).match(/class="([^"]+)"/);
+              return classMatch ? classMatch[1].split(/\\s+/) : [];
+            }}
+
+            function hasClass(classes, className) {{
+              return classes.indexOf(className) >= 0;
+            }}
+
+            function renderAt(metricId, month) {{
+              hooks.setFactorLabStateForTest({{
+                selectedTaskKey: taskKey,
+                rankMetric: metricId,
+                rankDirection: "desc",
+                startMonth: month,
+                endMonth: month,
+                dataSource: "all"
+              }});
+              hooks.renderTaskOverviewForTest();
+              return taskCellClasses(taskKey);
+            }}
+
+            const highByMetric = {{}};
+            ["overall", "upPrecision", "downPrecision"].forEach(function (metricId) {{
+              const classes = renderAt(metricId, "2026-07");
+              highByMetric[metricId] = {{
+                highlighted: hasClass(classes, "is-accuracy-highlighted"),
+                selected: hasClass(classes, "is-selected"),
+                value: hooks.aggregateScheme(highlightedScheme)[metricId]
+              }};
+            }});
+
+            const lowByMetric = {{}};
+            ["overall", "upPrecision", "downPrecision"].forEach(function (metricId) {{
+              lowByMetric[metricId] = hasClass(
+                renderAt(metricId, "2026-08"),
+                "is-accuracy-highlighted"
+              );
+            }});
+
+            const samplesHighlighted = hasClass(
+              renderAt("samples", "2026-07"),
+              "is-accuracy-highlighted"
+            );
+            const nullMetricHighlighted = hasClass(
+              renderAt("overall", "2026-10"),
+              "is-accuracy-highlighted"
+            );
+            hooks.setFactorLabStateForTest({{
+              selectedTaskKey: taskKey,
+              rankMetric: "overall",
+              rankDirection: "desc",
+              startMonth: "2026-08",
+              endMonth: "2026-08",
+              dataSource: "all"
+            }});
+            const mutableMetric = hooks.aggregateScheme(highlightedScheme);
+            delete mutableMetric.overall;
+            hooks.renderTaskOverviewForTest();
+            const missingMetricHighlighted = hasClass(
+              taskCellClasses(taskKey),
+              "is-accuracy-highlighted"
+            );
+            mutableMetric.overall = Infinity;
+            hooks.renderTaskOverviewForTest();
+            const nonFiniteHighlighted = hasClass(
+              taskCellClasses(taskKey),
+              "is-accuracy-highlighted"
+            );
+
+            return {{
+              loaded,
+              highByMetric,
+              lowByMetric,
+              samplesHighlighted,
+              nullMetricHighlighted,
+              missingMetricHighlighted,
+              nonFiniteHighlighted
+            }};
+            """
+        )
+
+        self.assertTrue(result["loaded"])
+        for metric_id in ("overall", "upPrecision", "downPrecision"):
+            with self.subTest(metric_id=metric_id):
+                self.assertEqual(result["highByMetric"][metric_id]["value"], 60)
+                self.assertTrue(result["highByMetric"][metric_id]["highlighted"])
+                self.assertTrue(result["highByMetric"][metric_id]["selected"])
+                self.assertFalse(result["lowByMetric"][metric_id])
+        self.assertFalse(result["samplesHighlighted"])
+        self.assertFalse(result["nullMetricHighlighted"])
+        self.assertFalse(result["missingMetricHighlighted"])
+        self.assertFalse(result["nonFiniteHighlighted"])
+
     def test_api_urls_and_routes_use_public_base_path_when_served_under_prefix(self) -> None:
         payload = _dashboard_payload()
         result = _run_factor_lab_hook(

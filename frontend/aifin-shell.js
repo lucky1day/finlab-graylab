@@ -2144,9 +2144,15 @@
         var schemes = getSchemesForTask(key);
         var best = sortSchemesByMetric(schemes)[0];
         var metric = best ? aggregateScheme(best) : null;
+        var metricValue = metric ? metric[factorLabState.rankMetric] : null;
+        var highlightClass = ["overall", "upPrecision", "downPrecision"].indexOf(
+          factorLabState.rankMetric
+        ) !== -1 && Number.isFinite(metricValue) && metricValue >= 60
+          ? " is-accuracy-highlighted"
+          : "";
         var selectedClass = key === factorLabState.selectedTaskKey ? " is-selected" : "";
-        var value = metric ? formatPercent(metric[factorLabState.rankMetric]) : "--";
-        return '<td><button type="button" class="factor-task-cell' + selectedClass + '" data-factor-task-key="' + escapeHtml(key) + '">' +
+        var value = formatPercent(metricValue);
+        return '<td><button type="button" class="factor-task-cell' + selectedClass + highlightClass + '" data-factor-task-key="' + escapeHtml(key) + '">' +
           '<span class="factor-task-top">' + value + '</span>' +
           '<span class="factor-task-count">' + schemes.length + ' 个方案</span>' +
           '</button></td>';
