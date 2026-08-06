@@ -112,3 +112,58 @@ git commit -m "fix(frontend): use red task-cell accuracy highlight"
 ```
 
 Expected: only the CSS and frontend test are included in this implementation commit. The already committed design and plan documents remain separate commits.
+
+### Task 3: Deliver the CSS revision through a new immutable URL
+
+**Files:**
+- Modify: `frontend/index.html:13`
+- Modify: `tests/test_frontend_static_cache.py:129-133`
+- Modify: `tests/test_frontend_factor_lab.py:3132-3133`
+- Modify: `docs/superpowers/specs/2026-08-06-task-cell-red-accuracy-design.md`
+- Modify: `docs/superpowers/plans/2026-08-06-task-cell-red-accuracy-implementation.md`
+
+- [ ] **Step 1: Set the CSS cache-buster before changing the HTML**
+
+Change only the CSS assertion in `test_index_uses_current_asset_cache_buster()` to
+`aifin-shell.css?v=20260806b`; retain the existing
+`aifin-shell.js?v=20260806a` assertion. Run:
+
+```bash
+PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
+conda run --no-capture-output -n bond_factor_lab_service \
+python -m pytest -q tests/test_frontend_static_cache.py \
+-k 'index_uses_current_asset_cache_buster'
+```
+
+Expected: FAIL while `index.html` still references `20260806a`, proving that a
+CSS asset change cannot reuse an immutable URL.
+
+- [ ] **Step 2: Advance only the CSS token and synchronize index contracts**
+
+Change the stylesheet URL in `frontend/index.html` from
+`aifin-shell.css?v=20260806a` to `aifin-shell.css?v=20260806b`. Update the
+HTML parser CSS assertion in `tests/test_frontend_factor_lab.py` to `20260806b`.
+Do not change the JavaScript URL or its `20260806a` assertions.
+
+- [ ] **Step 3: Record the immutable CSS delivery requirement**
+
+Document that the backend serves only the exact current CSS token with
+`public, max-age=31536000, immutable`; every delivered CSS revision therefore
+needs a new CSS token, while an unchanged JS asset retains its token.
+
+- [ ] **Step 4: Verify cache delivery and preserve separate commit boundaries**
+
+Run:
+
+```bash
+PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
+conda run --no-capture-output -n bond_factor_lab_service \
+python -m pytest -q tests/test_frontend_factor_lab.py \
+tests/test_frontend_static_cache.py
+PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
+conda run --no-capture-output -n bond_factor_lab_service \
+python -m pytest -q tests/test_onboarding_docs.py
+git diff --check
+```
+
+Commit the two documentation files separately from the index and test files.

@@ -15,6 +15,9 @@
   `--negative` 主题色，使数值显示为红色。
 - 不改变排序、筛选、选中、hover、键盘行为、HTML 结构、API、前端状态、
   数据库或后端接口。
+- CSS 变更必须独立更新 `frontend/index.html` 中的 CSS version token；当前精确
+  token 的静态响应使用 `public, max-age=31536000, immutable`，因此不能复用旧
+  token 交付新 CSS。未变更的 JS 保持其原有 token。
 
 ## 方案比较
 
@@ -29,4 +32,6 @@
 - 现有高亮条件的 DOM 测试继续通过。
 - CSS 契约断言高亮规则没有 `background` 或 `box-shadow`，且准确率数字使用
   `var(--negative)`。
+- 静态缓存契约断言 CSS 已使用新的 `20260806b` token，而 JS 仍为 `20260806a`，
+  使缓存客户端取得新的 immutable CSS URL。
 - 前端与静态缓存测试、`git diff --check` 通过。
