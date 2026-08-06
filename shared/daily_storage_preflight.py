@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-from shared.daily_coordinator_mode import resolve_daily_runtime_root
+from shared.runtime_paths import resolve_runtime_artifact_root
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -40,7 +40,7 @@ def resolve_daily_storage_roots(
     """解析当前代码实际使用的七个日频私有存储根。"""
     project = Path(project_root)
     runtime = (
-        resolve_daily_runtime_root()
+        resolve_runtime_artifact_root()
         if daily_runtime_root is None
         else Path(daily_runtime_root)
     )

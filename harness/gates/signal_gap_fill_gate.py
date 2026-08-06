@@ -30,10 +30,6 @@ from harness.signal_gap_plan import (
     normalize_signal_gap_plan_scope,
     plan_signal_gaps,
 )
-from scheduler.daily_coordinator import (
-    OccurrenceFileLock,
-    OccurrenceLockUnavailable,
-)
 from scheduler.discovery import load_scheme_config
 from scheduler.executor import (
     BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF,
@@ -45,7 +41,11 @@ from scheduler.executor import (
 from shared.blackbox_v2.contracts import BlackboxRequest
 from shared.blackbox_v2.requests import build_request
 from shared.blackbox_v2.snapshot import CutoffKeys
-from shared.daily_coordinator_mode import resolve_daily_runtime_root
+from shared.exclusive_file_lock import (
+    ExclusiveFileLock,
+    ExclusiveFileLockUnavailable,
+)
+from shared.runtime_paths import resolve_runtime_artifact_root
 from shared.data_bridge.refresh import (
     DataBridgeRefreshConfig,
     _ensure_private_directory,
@@ -249,7 +249,7 @@ def run_signal_gap_fill(
             or _signal_gap_fill_singleton_lock
         )()
         singleton_lock.acquire()
-    except OccurrenceLockUnavailable:
+    except ExclusiveFileLockUnavailable:
         return _report(
             "BLOCKED",
             frozen,
@@ -533,17 +533,17 @@ def run_signal_gap_fill(
             singleton_lock.release()
 
 
-def _signal_gap_fill_singleton_lock() -> OccurrenceFileLock:
+def _signal_gap_fill_singleton_lock() -> ExclusiveFileLock:
     """返回机器级 signal-gap-fill 非阻塞 owner 锁。"""
     lock_root = (
-        resolve_daily_runtime_root()
+        resolve_runtime_artifact_root()
         / "signal-gap-fill-locks"
     )
     _ensure_private_directory(
         lock_root,
         label="signal-gap-fill lock root",
     )
-    return OccurrenceFileLock(
+    return ExclusiveFileLock(
         lock_root / "signal-gap-fill.lock"
     )
 
