@@ -505,7 +505,7 @@ class FactorLabRankingTests(unittest.TestCase):
                 self.assertIn(marker, script)
 
         expected_asset_hashes = {
-            FRONTEND_INDEX: "f3698c2c79091c6ba18d110e051c6c4212d204e2b73b32542502d79b1561e29c",
+            FRONTEND_INDEX: "a42eef647f25b949a4f795ae54b1d44d2eae0e6a2833ffb6fcb580c71429ff1a",
             PROJECT_ROOT / "frontend" / "assets" / "aifin-lab-icon.svg": (
                 "e014fc86d69d61a32892b9799f83f8c784898d705c8df05313a04216281d2259"
             ),
@@ -3129,7 +3129,7 @@ class FactorLabRankingTests(unittest.TestCase):
         drawer_tag, drawer = parser.nodes_by_id["factorCalendarDrawer"]
         self.assertEqual(drawer_tag, "div")
         self.assertEqual(drawer["aria-hidden"], "true")
-        self.assertIn("aifin-shell.css?v=20260806a", parser.stylesheets)
+        self.assertIn("aifin-shell.css?v=20260806b", parser.stylesheets)
         self.assertIn("aifin-shell.js?v=20260806a", parser.scripts)
 
     def test_frontend_uses_only_system_fonts_without_external_imports(self) -> None:
