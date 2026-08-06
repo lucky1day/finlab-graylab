@@ -2761,27 +2761,203 @@ def predict_one(frames: dict, request: dict) -> int:
     return direction
 
 
-def _one_pass_rows(frames: dict, requests: list) -> dict:
-    """在批内最大截止键上跑一次, 返回 week_id -> 预测行。"""
-    widest = max(requests, key=lambda r: int(r["weekly_cutoff_key"]))
-    cut = truncate_for_request(frames, widest)
+def _cutoff_signature(request: dict) -> tuple[str, str, str]:
+    """批量适配的最小输入身份：日、周、月三重截止键。"""
+    return (
+        str(request["daily_cutoff_key"]),
+        str(request["weekly_cutoff_key"]),
+        str(request["monthly_cutoff_key"]),
+    )
+
+
+def _cutoff_signature_sort_key(signature: tuple[str, str, str]) -> tuple[int, int, int]:
+    """按日截止优先的稳定全序，供 widest 和抽样顺序共同使用。"""
+    return (
+        int(pd.Timestamp(signature[0]).value),
+        int(signature[1]),
+        int(signature[2]),
+    )
+
+
+def _unique_requests_by_cutoff_signature(
+    requests: list,
+) -> list[tuple[tuple[str, str, str], dict]]:
+    """按完整截止签名去重，并稳定选择用于实际计算的代表 Request。"""
+    representative_by_signature: dict[tuple[str, str, str], dict] = {}
+    for request in requests:
+        signature = _cutoff_signature(request)
+        current = representative_by_signature.get(signature)
+        if current is None or str(request["request_id"]) < str(current["request_id"]):
+            representative_by_signature[signature] = request
+    return sorted(
+        representative_by_signature.items(),
+        key=lambda item: _cutoff_signature_sort_key(item[0]),
+    )
+
+
+def _predict_unique_signatures(
+    frames: dict,
+    requests: list,
+    unique_requests: list[tuple[tuple[str, str, str], dict]],
+) -> list:
+    """逐完整截止签名独立计算一次，再按原始 Request 顺序 fan-out。"""
+    direction_by_signature = {
+        signature: predict_one(frames, request)
+        for signature, request in unique_requests
+    }
+    return [direction_by_signature[_cutoff_signature(request)] for request in requests]
+
+
+def _last_daily_record_by_week(cut: dict) -> dict[int, pd.Timestamp] | None:
+    """找出本次 widest 截断内每周实际拥有的最后一条日度记录。
+
+    日度表中的实际记录经全量权威周历映射；不能根据 ISO 周或 week_id
+    算术推断。若数据无法形成一一映射，one-pass 不具备可证明性，调用方
+    必须回退逐条独立截断。
+    """
+    daily = cut["daily_output.csv"]
+    calendar = cut["api_wind_date.csv"]
+    daily_dates = pd.to_datetime(daily["date"], errors="coerce")
+    calendar_dates = pd.to_datetime(calendar["rdate"], errors="coerce")
+    calendar_weeks = pd.to_numeric(calendar["week_id"], errors="coerce")
+    if (
+        daily_dates.isna().any()
+        or calendar_dates.isna().any()
+        or calendar_weeks.isna().any()
+        or calendar_dates.duplicated().any()
+    ):
+        return None
+
+    week_by_date = dict(
+        zip(calendar_dates, calendar_weeks.astype(int), strict=True)
+    )
+    mapped_weeks = daily_dates.map(week_by_date)
+    if mapped_weeks.isna().any():
+        return None
+
+    grouped = (
+        pd.DataFrame(
+            {
+                "week_id": mapped_weeks.astype(int),
+                "date": daily_dates,
+            }
+        )
+        .groupby("week_id", sort=True)["date"]
+        .max()
+    )
+    return {
+        int(week_id): pd.Timestamp(last_date)
+        for week_id, last_date in grouped.items()
+    }
+
+
+def _one_pass_plan(
+    frames: dict,
+    unique_requests: list[tuple[tuple[str, str, str], dict]],
+) -> tuple[list[tuple[tuple[str, str, str], dict]], dict, dict] | None:
+    """证明批内可安全共用一次 walk-forward，或明确拒绝快路径。
+
+    一次完整 walk-forward 只会为每个 week_id 产生一行。因此同一周绝不能
+    同时承载两个不同的完整截止签名。即便当前交付不消费月表，月截止仍属于
+    Contract Request 的输入身份，不能被忽略。
+
+    对跨周请求，早周的日截止还必须是 widest 截断内该周最后一条实际日度记录；
+    否则 widest 输入会带入该周之后的日度观测，改变日频聚合特征。
+    """
+    signatures_by_week: dict[str, set[tuple[str, str, str]]] = {}
+    for signature, _ in unique_requests:
+        signatures_by_week.setdefault(signature[1], set()).add(signature)
+    conflicting_weeks = sorted(
+        week_id
+        for week_id, signatures in signatures_by_week.items()
+        if len(signatures) > 1
+    )
+    if conflicting_weeks:
+        _log(
+            "one-pass 不适用: 同一 week_id 存在多个完整截止签名 "
+            f"{conflicting_weeks}; 回退逐条独立截断"
+        )
+        return None
+
+    widest_signature, widest = unique_requests[-1]
+    widest_week = int(widest_signature[1])
+    if any(
+        int(request["weekly_cutoff_key"]) > widest_week
+        for _, request in unique_requests
+    ):
+        _log(
+            "one-pass 不适用: 日截止优先的 widest 请求未覆盖全部周键; "
+            "回退逐条独立截断"
+        )
+        return None
+
+    widest_cut = truncate_for_request(frames, widest)
+    last_daily_by_week = _last_daily_record_by_week(widest_cut)
+    if last_daily_by_week is None:
+        _log(
+            "one-pass 不适用: widest 输入无法按权威周历确定日度周末观测; "
+            "回退逐条独立截断"
+        )
+        return None
+
+    for _, request in unique_requests:
+        weekly_cutoff = int(request["weekly_cutoff_key"])
+        daily_cutoff = pd.Timestamp(request["daily_cutoff_key"])
+        last_daily = last_daily_by_week.get(weekly_cutoff)
+        if last_daily != daily_cutoff:
+            _log(
+                "one-pass 不适用: "
+                f"[{request['request_id']}] week_id={weekly_cutoff} 的日截止 "
+                f"{request['daily_cutoff_key']} 不是 widest 输入内该周最后实际日度记录 "
+                f"{last_daily.date().isoformat() if last_daily is not None else '<missing>'}; "
+                "回退逐条独立截断"
+            )
+            return None
+
+    return unique_requests, widest, widest_cut
+
+
+def _one_pass_rows(
+    cut: dict,
+    widest: dict,
+    unique_requests: list[tuple[tuple[str, str, str], dict]],
+) -> dict[tuple[str, str, str], pd.Series]:
+    """在已证明安全的 widest 截断上跑一次，返回 signature -> 预测行。"""
     predictions = _run_pipeline(cut, f"one-pass<={widest['weekly_cutoff_key']}")
-    return {int(row["week_id"]): row for _, row in predictions.iterrows()}
+    rows_by_week = {int(row["week_id"]): row for _, row in predictions.iterrows()}
+    rows: dict[tuple[str, str, str], pd.Series] = {}
+    for signature, request in unique_requests:
+        weekly_cutoff = int(request["weekly_cutoff_key"])
+        if weekly_cutoff not in rows_by_week:
+            raise SchemeError(
+                f"[{request['request_id']}] 一次性计算未覆盖 "
+                f"weekly_cutoff_key={weekly_cutoff}"
+            )
+        rows[signature] = rows_by_week[weekly_cutoff]
+    return rows
 
 
-def _verify_one_pass(frames: dict, requests: list, rows: dict) -> bool:
-    """抽样复算: 独立截断的结果必须与一次性计算逐字段一致。"""
+def _verify_one_pass(
+    frames: dict,
+    requests: list[tuple[tuple[str, str, str], dict]],
+    rows: dict[tuple[str, str, str], pd.Series],
+) -> bool:
+    """抽样复算: 独立截断的结果必须与一次性计算逐字段一致。
+
+    ``requests`` 是已按完整截止签名去重、稳定排序后的代表请求，避免同一
+    签名的重复 request_id 挤占首/中/末三个核验位置。
+    """
     last = len(requests) - 1
     indices = sorted({0, last // 2, last})[:ONE_PASS_VERIFY_SAMPLES]
     for index in indices:
-        request = requests[index]
+        signature, request = requests[index]
         weekly_cutoff = int(request["weekly_cutoff_key"])
-        if weekly_cutoff not in rows:
-            _log(f"抽样核验: 一次性计算未覆盖 week_id={weekly_cutoff}, 整批回退")
+        if signature not in rows:
+            _log(f"抽样核验: 一次性计算未覆盖 signature={signature}, 整批回退")
             return False
         cut = truncate_for_request(frames, request)
         recomputed = _run_pipeline(cut, f"verify:{request['request_id']}").iloc[-1]
-        reference = rows[weekly_cutoff]
+        reference = rows[signature]
         for field in ("week_id", "pred_label", "prob_up", "center_pred_label", "center_prob_up"):
             a, b = recomputed[field], reference[field]
             same = (pd.isna(a) and pd.isna(b)) or a == b
@@ -2796,21 +2972,27 @@ def _verify_one_pass(frames: dict, requests: list, rows: dict) -> bool:
 
 
 def predict_batch(frames: dict, requests: list) -> list:
-    """批量: 满足条件时一次性计算并抽样自证, 否则逐条独立截断。"""
-    if len(requests) < ONE_PASS_MIN_BATCH:
-        return [predict_one(frames, request) for request in requests]
+    """批量: 先按完整截止签名去重，再选择 one-pass 或独立计算。"""
+    unique_requests = _unique_requests_by_cutoff_signature(requests)
+    if len(unique_requests) < ONE_PASS_MIN_BATCH:
+        return _predict_unique_signatures(frames, requests, unique_requests)
 
-    rows = _one_pass_rows(frames, requests)
-    if _verify_one_pass(frames, requests, rows):
+    plan = _one_pass_plan(frames, unique_requests)
+    if plan is None:
+        return _predict_unique_signatures(frames, requests, unique_requests)
+
+    unique_requests, widest, widest_cut = plan
+    rows = _one_pass_rows(widest_cut, widest, unique_requests)
+    if _verify_one_pass(frames, unique_requests, rows):
         directions = []
         for request in requests:
             weekly_cutoff = int(request["weekly_cutoff_key"])
-            if weekly_cutoff not in rows:
+            signature = _cutoff_signature(request)
+            if signature not in rows:
                 raise SchemeError(
-                    f"[{request['request_id']}] 一次性计算未覆盖 "
-                    f"weekly_cutoff_key={weekly_cutoff}"
+                    f"[{request['request_id']}] 一次性计算未覆盖 signature={signature}"
                 )
-            row = rows[weekly_cutoff]
+            row = rows[signature]
             direction = _row_direction(row, request, weekly_cutoff)
             _log(
                 f"[{request['request_id']}] week_id={weekly_cutoff} "
@@ -2818,11 +3000,12 @@ def predict_batch(frames: dict, requests: list) -> list:
             )
             directions.append(direction)
         _log(
-            f"批量 {len(requests)} 条: 一次性计算 + {ONE_PASS_VERIFY_SAMPLES} 条抽样核验通过"
+            f"批量 {len(requests)} 条 ({len(unique_requests)} 个完整截止签名): "
+            f"一次性计算 + 至多 {ONE_PASS_VERIFY_SAMPLES} 条抽样核验通过"
         )
         return directions
 
-    return [predict_one(frames, request) for request in requests]
+    return _predict_unique_signatures(frames, requests, unique_requests)
 
 
 # --------------------------------------------------------------------------- #
