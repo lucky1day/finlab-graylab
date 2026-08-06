@@ -158,25 +158,23 @@ def _build_real_projection(
 
 
 class DailyDirectCacheRuntimeTests(unittest.TestCase):
-    def test_liwei_compare_gate_treats_absent_mode_as_legacy(
+    def test_liwei_compare_gate_uses_only_explicit_authority(
         self,
     ) -> None:
-        from shared.liwei_0616_phase_a_cache import (
-            DAILY_COORDINATOR_MODE_ENV,
-            _compare_gate_required,
-        )
+        from shared.liwei_0616_phase_a_cache import _compare_gate_required
 
-        with patch.dict(os.environ, {}, clear=True):
-            absent = _compare_gate_required(None)
         with patch.dict(
             os.environ,
-            {DAILY_COORDINATOR_MODE_ENV: "legacy"},
+            {"BOND_DAILY_COORDINATOR_MODE": "ledger"},
             clear=True,
         ):
-            legacy = _compare_gate_required(None)
+            inherited = _compare_gate_required(None)
 
-        self.assertFalse(absent)
-        self.assertEqual(absent, legacy)
+        self.assertFalse(inherited)
+        self.assertFalse(_compare_gate_required(False))
+        self.assertTrue(_compare_gate_required(True))
+        with self.assertRaises(TypeError):
+            _compare_gate_required("true")  # type: ignore[arg-type]
 
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -309,7 +307,7 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "spec_fingerprint"):
             validate_direct_cache_runtime_context(drifted)
 
-    def test_ledger_accepts_direct_context_without_legacy_qualification(
+    def test_explicit_compare_gate_accepts_direct_context_without_trusted_qualification(
         self,
     ) -> None:
         from shared import liwei_0616_phase_a_cache as module
@@ -320,7 +318,6 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
             patch.dict(
                 os.environ,
                 {
-                    module.DAILY_COORDINATOR_MODE_ENV: "ledger",
                     module.DIRECT_CACHE_RUNTIME_CONTEXT_ENV:
                         module._canonical_json(self._context()),
                 },
@@ -348,6 +345,7 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
                 monthly_df=monthly,
                 test_ranges=(("2026-07-29", "2026-07-29"),),
                 train_missing=lambda _baseline, _ranges: {},
+                require_compare_gate=True,
                 cache_consumer_id="publisher",
                 native_generation=self._native(),
                 auxiliary_dependency_projection=object(),
@@ -360,7 +358,9 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
             prepare.call_args.kwargs["trusted_qualification"]
         )
 
-    def test_ledger_rejects_direct_context_identity_drift(self) -> None:
+    def test_explicit_compare_gate_rejects_direct_context_identity_drift(
+        self,
+    ) -> None:
         from shared import liwei_0616_phase_a_cache as module
 
         daily, weekly, monthly = _frames()
@@ -370,7 +370,6 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
             patch.dict(
                 os.environ,
                 {
-                    module.DAILY_COORDINATOR_MODE_ENV: "ledger",
                     module.DIRECT_CACHE_RUNTIME_CONTEXT_ENV:
                         module._canonical_json(context),
                 },
@@ -397,6 +396,7 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
                 monthly_df=monthly,
                 test_ranges=(("2026-07-29", "2026-07-29"),),
                 train_missing=lambda _baseline, _ranges: {},
+                require_compare_gate=True,
                 cache_consumer_id="publisher",
                 native_generation=self._native(),
                 auxiliary_dependency_projection=object(),
@@ -423,7 +423,6 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
             patch.dict(
                 os.environ,
                 {
-                    module.DAILY_COORDINATOR_MODE_ENV: "ledger",
                     module.DIRECT_CACHE_RUNTIME_CONTEXT_ENV:
                         module._canonical_json(context),
                 },
@@ -451,6 +450,7 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
                 monthly_df=monthly,
                 test_ranges=(("2026-07-29", "2026-07-29"),),
                 train_missing=lambda _baseline, _ranges: {},
+                require_compare_gate=True,
                 cache_consumer_id="reader",
                 native_generation=self._native(),
                 auxiliary_dependency_projection=object(),
@@ -473,7 +473,6 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
             patch.dict(
                 os.environ,
                 {
-                    module.DAILY_COORDINATOR_MODE_ENV: "ledger",
                     module.DIRECT_CACHE_RUNTIME_CONTEXT_ENV:
                         module._canonical_json(self._context()),
                 },
@@ -500,6 +499,7 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
                 monthly_df=monthly,
                 test_ranges=(("2026-07-29", "2026-07-29"),),
                 train_missing=lambda _baseline, _ranges: {},
+                require_compare_gate=True,
                 cache_consumer_id="publisher",
                 native_generation=self._native(),
                 auxiliary_dependency_projection=object(),
@@ -782,7 +782,6 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
         with patch.dict(
             os.environ,
             {
-                module.DAILY_COORDINATOR_MODE_ENV: "ledger",
                 module.DIRECT_CACHE_RUNTIME_CONTEXT_ENV:
                     module._canonical_json(context),
             },
@@ -797,6 +796,7 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
                     ("2026-01-02", "2026-01-06"),
                 ),
                 train_missing=trainer,
+                require_compare_gate=True,
                 cache_consumer_id="publisher",
                 native_generation=next_native,
                 auxiliary_dependency_projection=next_projection,

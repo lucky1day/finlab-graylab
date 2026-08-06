@@ -20,20 +20,8 @@ class _FakeEngine:
         self.disposed = True
 
 
-class _ExplicitLegacyModeTestCase(unittest.TestCase):
-    def setUp(self) -> None:
-        self._mode_patcher = patch.dict(
-            os.environ,
-            {"BOND_DAILY_COORDINATOR_MODE": "legacy"},
-        )
-        self._mode_patcher.start()
-
-    def tearDown(self) -> None:
-        self._mode_patcher.stop()
-
-
-class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
-    def test_algorithm_environment_propagates_daily_coordinator_mode(
+class ExecutorRunIdTests(unittest.TestCase):
+    def test_algorithm_environment_excludes_daily_coordinator_mode(
         self,
     ) -> None:
         from scheduler.executor import _build_algorithm_environment
@@ -45,12 +33,9 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
         ):
             environment = _build_algorithm_environment()
 
-        self.assertEqual(
-            environment["BOND_DAILY_COORDINATOR_MODE"],
-            "ledger",
-        )
+        self.assertNotIn("BOND_DAILY_COORDINATOR_MODE", environment)
 
-    def test_native_subprocess_can_strip_daily_coordinator_mode_only_when_requested(
+    def test_native_subprocess_excludes_daily_coordinator_mode(
         self,
     ) -> None:
         from scheduler.executor import run_scheme_subprocess
@@ -81,24 +66,10 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
                 ),
                 [],
             )
-            self.assertEqual(
-                run_scheme_subprocess(
-                    "demo",
-                    "2026-07-03",
-                    algo_env="test_env",
-                    timeout_sec=7,
-                    strip_daily_coordinator_mode=True,
-                ),
-                [],
-            )
 
-        self.assertEqual(
-            environments[0]["BOND_DAILY_COORDINATOR_MODE"],
-            "ledger",
-        )
         self.assertNotIn(
             "BOND_DAILY_COORDINATOR_MODE",
-            environments[1],
+            environments[0],
         )
 
     def test_algorithm_environment_rejects_inherited_pycache_prefix(
@@ -1144,11 +1115,23 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
             process_start_guard,
         )
 
-    def test_run_configured_scheme_forwards_mode_strip_only_to_native(
+    def test_run_configured_scheme_has_no_mode_strip_contract(
         self,
     ) -> None:
-        """one-shot 隔离标记不得穿透到 Blackbox runner。"""
-        from scheduler.executor import run_configured_scheme
+        """算法 runner 不再暴露 daily coordinator mode 的适配参数。"""
+        from scheduler.executor import (
+            run_configured_scheme,
+            run_scheme_subprocess,
+        )
+
+        self.assertNotIn(
+            "strip_daily_coordinator_mode",
+            inspect.signature(run_configured_scheme).parameters,
+        )
+        self.assertNotIn(
+            "strip_daily_coordinator_mode",
+            inspect.signature(run_scheme_subprocess).parameters,
+        )
 
         native_cfg = SimpleNamespace(
             runtime_type="native_adapter",
@@ -1176,7 +1159,6 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
                     engine="engine",
                     algo_env="test_env",
                     timeout_sec=7,
-                    strip_daily_coordinator_mode=True,
                 ),
                 [],
             )
@@ -1187,13 +1169,13 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
                     engine="engine",
                     algo_env="test_env",
                     timeout_sec=7,
-                    strip_daily_coordinator_mode=True,
                 ),
                 [],
             )
 
-        self.assertTrue(
-            native.call_args.kwargs["strip_daily_coordinator_mode"]
+        self.assertNotIn(
+            "strip_daily_coordinator_mode",
+            native.call_args.kwargs,
         )
         self.assertNotIn(
             "strip_daily_coordinator_mode",
@@ -1665,7 +1647,7 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
             scheduled_control_plane="launchd_one_shot",
         )
 
-        self.assertTrue(one_shot_kwargs["strip_daily_coordinator_mode"])
+        self.assertNotIn("strip_daily_coordinator_mode", one_shot_kwargs)
         self.assertNotIn("strip_daily_coordinator_mode", direct_kwargs)
         self.assertNotIn("strip_daily_coordinator_mode", gray_kwargs)
 
@@ -1886,7 +1868,7 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
         self.assertNotIn("update_serving_pointer", inspect.getsource(executor))
 
 
-class BlackboxExecutionApprovalTests(_ExplicitLegacyModeTestCase):
+class BlackboxExecutionApprovalTests(unittest.TestCase):
     @staticmethod
     def _config(
         *,
@@ -2403,7 +2385,7 @@ class BlackboxExecutionApprovalTests(_ExplicitLegacyModeTestCase):
         native_gate.assert_called_once_with(engine, "native_scheme", "native-version-1")
 
 
-class ScheduledLiveExecutionFenceTests(_ExplicitLegacyModeTestCase):
+class ScheduledLiveExecutionFenceTests(unittest.TestCase):
     @staticmethod
     def _blackbox_config(
         scheme_id: str,
@@ -2432,6 +2414,7 @@ class ScheduledLiveExecutionFenceTests(_ExplicitLegacyModeTestCase):
         self,
         config: SimpleNamespace,
     ):
+        from scheduler import executor
         from scheduler.executor import execute_scheme
 
         with (
@@ -2617,19 +2600,16 @@ class ScheduledLiveExecutionFenceTests(_ExplicitLegacyModeTestCase):
         class EngineReached(RuntimeError):
             pass
 
+        self.assertNotIn(
+            "require_daily_coordinator_mode",
+            vars(executor),
+        )
         with (
             patch.object(
                 executor,
                 "discover_schemes",
                 return_value=[config],
             ),
-            patch.object(
-                executor,
-                "require_daily_coordinator_mode",
-                side_effect=AssertionError(
-                    "launchd one-shot must not read daily coordinator mode"
-                ),
-            ) as coordinator_mode,
             patch.object(
                 executor,
                 "create_engine_from_env",
@@ -2645,7 +2625,6 @@ class ScheduledLiveExecutionFenceTests(_ExplicitLegacyModeTestCase):
             )
 
         create_engine.assert_called_once_with()
-        coordinator_mode.assert_not_called()
 
     def test_direct_scheduled_formal_weekly_rejected_before_engine(
         self,
@@ -2724,6 +2703,7 @@ class ScheduledLiveExecutionFenceTests(_ExplicitLegacyModeTestCase):
     def test_canonical_weekly_native_is_rejected_before_engine(
         self,
     ) -> None:
+        from scheduler import executor
         from scheduler.discovery import discover_schemes
         from scheduler.executor import execute_scheme
 
@@ -2732,14 +2712,11 @@ class ScheduledLiveExecutionFenceTests(_ExplicitLegacyModeTestCase):
             for config in discover_schemes()
             if config.scheme_id == "weekly_10y_d_overlay_0529"
         )
+        self.assertNotIn(
+            "require_daily_coordinator_mode",
+            vars(executor),
+        )
         with (
-            patch(
-                "scheduler.executor."
-                "require_daily_coordinator_mode",
-                side_effect=AssertionError(
-                    "weekly must not read daily coordinator mode"
-                ),
-            ),
             patch(
                 "scheduler.executor.create_engine_from_env",
             ) as create_engine,
@@ -2758,7 +2735,7 @@ class ScheduledLiveExecutionFenceTests(_ExplicitLegacyModeTestCase):
         create_engine.assert_not_called()
 
 
-class ExecutorTargetCompletenessTests(_ExplicitLegacyModeTestCase):
+class ExecutorTargetCompletenessTests(unittest.TestCase):
     @staticmethod
     def _record(
         target_tenor: str,

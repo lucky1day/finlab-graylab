@@ -109,9 +109,6 @@ FULL_COMPARE_FIELDS = (
     "internal_fields",
     "phase_a_cache",
 )
-DAILY_COORDINATOR_MODE_ENV = "BOND_DAILY_COORDINATOR_MODE"
-
-
 class CacheCapacityError(RuntimeError):
     """cache generation 会突破 family 或全局磁盘安全边界。"""
 
@@ -2248,14 +2245,7 @@ def _validate_cache_publisher_identity(spec: PhaseACacheSpec) -> None:
 def _compare_gate_required(explicit: bool | None) -> bool:
     if explicit is not None and not isinstance(explicit, bool):
         raise TypeError("require_compare_gate must be a boolean or None")
-    mode = str(
-        os.getenv(DAILY_COORDINATOR_MODE_ENV) or ""
-    ).strip()
-    if mode and mode not in {"legacy", "ledger"}:
-        raise ValueError(
-            f"{DAILY_COORDINATOR_MODE_ENV} must be legacy or ledger"
-        )
-    return mode == "ledger" or explicit is True
+    return explicit is True
 
 
 def _input_change_analysis(
