@@ -1,4 +1,4 @@
-# CGB 周度批量回测截止状态隔离设计
+# Blackbox 灰度信号单快照批量回补与 CGB 周度截止隔离设计
 
 ## 决策
 
@@ -18,11 +18,58 @@ point-in-time 语义，批量执行不得将它们合并为同一个结果。
 4. `gray_live` 是结果的生命周期/落库语义，不是回补时必须逐周获取 DataBridge、
    逐周重跑模型的计算拓扑。连续灰度区间可以参与同一次批量计算。
 
+## 所有频率共用的输入不变量
+
+灰度信号回补的最小输入单位必须是一次冻结的 DataBridge base snapshot，而不是一个
+`predict_date`、一个周点或一个月点。一次回补作业先确定最大 as-of 边界，物理生成并
+保存一份只含该边界及以前日/周/月数据的快照与 manifest；同一 DataBridge lineage、
+同一 schema、同一最大 as-of 边界的日频、周频、月频 Blackbox 请求都从这个只读父快照
+派生。
+
+```text
+一次 DataBridge 拉取 / 一份 base snapshot + manifest
+  ├─ 日频 Request 批次（每条有自己的 T+1 feature/target/cutoff）
+  ├─ 周频 Request 批次（每条有自己的 feature week/target week/cutoff）
+  └─ 月频 Request 批次（每条有自己的自然 15 日 feature/target/cutoff）
+```
+
+不同方案、runtime profile 或平台附加输入可以在同一父快照上各自创建只读 runtime view
+并各自调用模型；它们不应重新从数据库拉取、导出或保存另一份 DataBridge 数据。只有
+source lineage、schema 或最大 as-of 边界不同，才允许创建第二份 base snapshot。
+
+这里的“物理截断”必须同时覆盖三张输入表：日表不晚于 session 的最大日度 cutoff，
+周表和月表不晚于该最大 feature date 对应的权威 period cutoff。快照保存后再写一份
+不可变的 session manifest，绑定 `parent_snapshot_id`、DataBridge generation、refresh
+date、source manifest、schema、最大 as-of 和三频上界；后续每条 Request 只引用其中
+自己的已冻结 cutoff signature，不能再从可变的当前库重新推导截止键。
+
+现有 `open_blackbox_input_snapshot(snapshot_date=predict_date)` 不能充当这个 session：它为
+每条 Request 复制临时快照，而 `snapshot_date` 在当前实现中只是 current DataBridge 的
+新鲜度校验参数，并不把三张表物理截到该日期。新的 session 必须在整个作业开始时读取和
+校验一次 DataBridge，再永久化一次上述受最大 as-of 约束的 base snapshot；它绝不能在
+每个预测点再次打开当前 DataBridge。
+
+“单快照”不等价于所有算法必须只运行一次：能返回整条因果序列的方案（如本 CGB 周度
+方案）应一次 walk-forward 取全表；其他日频/月频方案至少应接收同一 snapshot 下的
+batch Request。若其交付契约无法证明一次模型运行等价于逐点独立截断，则保持逐
+signature 的模型计算，但绝不重复 DataBridge 拉取、制品生成或快照保存。
+
+对所有频率，单快照中的每条 Request 仍须保留自己的 point-in-time 语义：
+
+| 频率 | 灰度实盘 Request 语义 | 同一快照中的计算规则 |
+|---|---|---|
+| 日频 | `predict_date=T+1`、`feature_date=T`、`target_date=T+horizon` | 由同一父快照按每条 `feature_date` 截断；可批量调用，输出必须等于独立截断。 |
+| 周频 | `predict_date` 前一交易日为 feature，映射 feature week，目标为下一实际周 | CGB 等 walk-forward 交付件一次返回逐周表；同周多 cutoff 时按 signature 隔离。 |
+| 月频 | 自然月 15 日触发，feature/target 分别取该日及目标月同日以前最近交易日 | 由同一父快照按每月 cutoff 截断；是否一次模型运行取决于交付件的等价证明。 |
+
+快照一经冻结，任何 Request 需要晚于其最大 as-of 边界的数据都必须 fail-closed，不能
+在同一作业中临时再拉一份“更近”的 DataBridge 来补齐。
+
 ## 入库补齐的主路径
 
 本设计的性能主场景是**方案入库时补齐一段连续的历史信号**，不是为每个历史周重新
 生成输入并重启模型。操作员先选定一个权威数据截止边界，平台只使用不晚于该边界的
-同一份 DataBridge 输入制品：
+同一份 DataBridge base snapshot，并在该快照上构造每个预测点的输入视图：
 
 ```text
 一份固定 as-of 输入
@@ -57,16 +104,17 @@ cutoff 和 `prediction_phase=gray_live`；但它们共享一次输入读取和�
 具体执行顺序为：
 
 ```text
-一次打开/生成截至 2026-07-31 的 DataBridge 快照
+一次拉取、生成并保存截至 2026-07-31 的 DataBridge base snapshot
   -> 由权威周历枚举历史 + gray_live 的每个预测点和各自 cutoff
-  -> 一次 Blackbox `backtest` 调用（当前 profile 单批上限 100 条）
+  -> 按交付件分别发起 Blackbox `backtest` batch（当前 profile 单批上限 100 条）
   -> delivery 一次 walk-forward 返回逐周结果
   -> 按原始预测点回填日期、阶段和 provenance
   -> 仅在持久化阶段拆回各自的 historical / gray_live 业务键与审计 run
 ```
 
-这里“为每个预测点构建 cutoff”只是在内存中生成 Request 元数据；不是为每个周点重新
-查询数据库、生成 DataBridge 制品、复制 runtime 文件或启动算法进程。
+这里“为每个预测点构建 cutoff”只是在内存中生成 Request 元数据和对同一父快照的
+前缀视图；不是为每个日/周/月点重新查询数据库、生成或保存 DataBridge 制品、复制
+runtime 文件或启动算法进程。
 
 ## 问题边界
 
@@ -152,10 +200,16 @@ Request 输入顺序影响。
 
 协调层的职责：
 
+- 在整个 gray 回补作业范围内建立一个 `DataBridge base snapshot session`：一次读取、
+  一次保存不可变 manifest、一次冻结最大 as-of 边界并物理裁剪三频表；所有兼容的
+  日/周/月 Blackbox batch runner 只读复用该 session。每条 Action 已冻结的 cutoff
+  signature 必须存在于 session，且不得晚于其三频上界；
 - 新增一个只读的 Blackbox batch runner 接口：接收一个 config、同一 snapshot lineage
-  下的有序预测点和一个最大 as-of 边界；只打开一次输入快照/runtime view，生成每条
-  Request 的原始 live 日期和独立 cutoff，再调用现有 `run_blackbox_backtest()` 一次；
-- `signal-gap-fill` 对满足上述兼容条件的 Blackbox 周度 gray gap 使用该接口，而不再按
+  下的有序预测点和一个最大 as-of 边界；它使用冻结 Action 的原始 live 日期和独立
+  cutoff，而不是再查询当前库；每个 config 只打开一次输入快照/runtime view，并调用
+  `run_blackbox_backtest()`。超过 Contract batch 上限时只分割模型 CLI Request，不分割
+  DataBridge session；
+- `signal-gap-fill` 对满足上述兼容条件的 Blackbox 日/周/月 gray gap 使用该接口，而不再按
   `(base_scheme_id, predict_date)` 分别调用 `run_configured_scheme()`；
 - 继续保留逐 `predict_date` 的授权、run 创建、insert-only 业务键和完成/失败审计；批量
   只合并计算，不扩大任何 token 或写入权限；
@@ -207,6 +261,11 @@ Request 输入顺序影响。
    完整 walk-forward、返回所需全部周行、不会读取截止日之后的数据；持久化测试分别
    断言 historical 与 `gray_live` 结果不会跨阶段落表，且每条 gray 记录仍带原始 live
    日期、cutoff、phase、exact version 和 authority。
+7. 日/周/月混合的 gray 回补计划断言整个作业只生成一个 DataBridge base snapshot 和一个
+   immutable manifest；各频率 Request 都引用同一父 snapshot ID，并各自满足日频 T+1、
+   周频 feature-week、月频自然 15 日语义。日频或月频 delivery 若不能证明全序列一次
+   运行等价，允许多次模型运行，但 snapshot/export 计数仍必须为一；快照后的源数据
+   变动或任何晚于 session 上界的行都不能影响结果。
 
 验收不以“同周不同截止日结果相同”为条件；验收条件是每条批量结果与同一条 Request
 的独立截断结果相同。
