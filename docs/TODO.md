@@ -39,22 +39,30 @@
 G1/G2、G3 的 8 月 3 日补写、G4、G5/G6 及 G8.1–G8.24 的 repo-only 零消费者清理同样保持关闭；它们不授予
 下列任何新操作。
 
+### U0/U1：因子实验室 UX 紧凑化与准确率高亮（2026-08-06）
+
+- 已在不新增模块、控件、API、数据库字段或前端持久化状态的边界内完成 CSS 紧凑化：任务格由 `92px` 收紧为
+  `76px`，趋势图/空态由 `300px` 收紧为 `244px`，并移除矩阵的 `min-height: 560px`。
+- 用户已确认最终视觉方案：沿用既有 `is-accuracy-highlighted` 语义 class 和准确率判定；当当前筛选后的最优方案在
+  `overall`、`upPrecision` 或 `downPrecision` 达到 `>= 60` 时，仅准确率数字显示为红色。`samples`、缺失和
+  `< 60` 均不高亮；hover/selected、点击、排序、筛选和键盘行为不变。
+- CSS 通过精确内容 SHA-256 URL 交付；测试会拒绝 CSS 内容变更后复用 immutable URL。实现、静态缓存与行为测试均已
+  通过；当前证据见 [红色高亮设计](superpowers/specs/2026-08-06-task-cell-red-accuracy-design.md)。
+
 ## 队列总览与依赖
 
 | 波次 | 工作流 | 当前状态 | 可并行性 | 结束产物 |
 |---|---|---|---|---|
 | 0 | R0：开发分支处置 | `WAITING_EXPLICIT_RELEASE_DECISION` | 不阻塞只读设计 | 用户确认 keep / PR / merge / push 中的明确路径 |
-| A | U0：前端 UX 基线与规格 | `READY_FOR_READ_ONLY_DESIGN` | 可与 D1、G7.0、G8.0、D0 并行 | 可审阅的紧凑化与高亮规格 |
-| A | D1：Liwei 8/11 T+5 失败诊断 | `READY_FOR_READ_ONLY_DIAGNOSIS` | 可与 U0、G7.0、G8.0、D0 并行 | 失败分类与独立后续建议 |
-| A | G7.0：Native 版本模型事实矩阵 | `READY_FOR_READ_ONLY_DESIGN` | 可与 U0、D1、G8.0、D0 并行 | 生命周期/身份/兼容性决策稿 |
-| A | G8.0：replay/ledger 保留决策矩阵 | `READY_FOR_READ_ONLY_DESIGN` | 可与 U0、D1、G7.0、D0 并行 | 保留、迁移或退役的明确选择 |
-| A | D0：文档生命周期审计 | `READY_FOR_READ_ONLY_AUDIT` | 可与 U0、D1、G7.0、G8.0 并行 | keep / migrate / remove 清单 |
-| B | U1：前端紧凑化与 ≥60% 高亮 | `BLOCKED_ON_U0_SPEC_APPROVAL` | 不依赖 G7/G8 实施 | 独立的前端代码、测试和页面验收 |
-| B | G7.1：Native 专项实施计划 | `BLOCKED_ON_G7.0_DECISION_APPROVAL` | 可与 U1、G8.1 设计并行 | 已批准的最小实施计划 |
-| B | G8.1：replay/ledger 专项实施计划 | `BLOCKED_ON_G8.0_DECISION_APPROVAL` | 可与 U1、G7.1 设计并行 | 已批准的分阶段收尾计划 |
+| A | D1：Liwei 8/11 T+5 失败诊断 | `IN_PROGRESS_READ_ONLY` | 可与 G7.0、G8.0、D0 并行 | 失败分类与独立后续建议 |
+| A | G7.0：Native 版本模型事实矩阵 | `IN_PROGRESS_READ_ONLY` | 可与 D1、G8.0、D0 并行 | 生命周期/身份/兼容性决策稿 |
+| A | G8.0：replay/ledger 保留决策矩阵 | `IN_PROGRESS_READ_ONLY` | 可与 D1、G7.0、D0 并行 | 保留、迁移或退役的明确选择 |
+| A | D0：文档生命周期审计 | `IN_PROGRESS_READ_ONLY` | 可与 D1、G7.0、G8.0 并行 | keep / migrate / remove 清单 |
+| B | G7.1：Native 专项实施计划 | `BLOCKED_ON_G7.0_DECISION_APPROVAL` | 可与 G8.1 设计并行 | 已批准的最小实施计划 |
+| B | G8.1：replay/ledger 专项实施计划 | `BLOCKED_ON_G8.0_DECISION_APPROVAL` | 可与 G7.1 设计并行 | 已批准的分阶段收尾计划 |
 | C | G7/G8 已批准实施 | `NOT_AUTHORIZED` | 按子计划确定 | 独立提交、独立验收与独立生产授权 |
 
-`R0` 是发布闸门而非其它只读工作的前置条件：默认保持开发分支，不自动合并或推送。`D1` 的结论也不阻塞 U1、G7 或
+`R0` 是发布闸门而非其它只读工作的前置条件：默认保持开发分支，不自动合并或推送。`D1` 的结论也不阻塞 G7 或
 G8，除非诊断证实存在会影响它们的共享控制面缺陷。
 
 ## R0：开发分支处置
@@ -68,33 +76,6 @@ G8，除非诊断证实存在会影响它们的共享控制面缺陷。
 **禁止：** 把“G3.1 已关闭”解释为可自动合并、推送或发布。
 
 ## Wave A：可并行的只读设计与审计
-
-### U0：前端 UX 基线与规格
-
-**目标：** 固定现有因子实验室的紧凑化和高亮行为，再生成仅包含前端改动的专项实施计划。
-
-**范围与实现边界：**
-
-- 基线文件为 `frontend/index.html`、`frontend/aifin-shell.css`、`frontend/aifin-shell.js` 和
-  `tests/test_frontend_factor_lab.py`；不增加 API、数据库字段、后端状态、前端持久化状态、控件、模块隐藏或折叠。
-- 紧凑化只改现有 CSS：外边距、Hero、筛选栏、卡片内边距、表格行高和趋势区；任务格从 `92px` 收紧至 `76px`，
-  五行合计减少约 `80px`；趋势图和空态从 `300px` 收紧至 `244px`；移除
-  `.factor-matrix-panel` 的 `min-height: 560px`。
-- 规格必须逐项记录 `.factor-lab-view`、`.factor-lab-page`、`.factor-lab-hero`、`.factor-filter-bar`、
-  `.factor-task-panel`、`.factor-ranking-panel`、`.factor-matrix-panel`、`.factor-task-table td`、
-  `.factor-task-cell`、`.factor-ranking-table th/td`、`.factor-trend-panel`、`.factor-trend-chart` 和
-  `.factor-trend-empty` 的现值与目标值；不得顺带改变文案、数据或信息架构。
-- 高亮复用 `factorLabState.rankMetric`、`sortSchemesByMetric()` 和 `aggregateScheme()` 的当前结果。每次筛选后，
-  仅当当前排序指标是 `overall`、`upPrecision` 或 `downPrecision`，且该任务格最优方案的相同指标 `>= 60` 时，
-  才给 `.factor-task-cell` 加一个语义 CSS class 和底色。排序指标是 `samples` 或结果缺失时绝不高亮。
-- 高亮必须可与 hover/selected 状态共存，不能遮盖选中态、降低文字可读性或改变点击、键盘、筛选和排序语义。
-
-- [ ] 在真实页面的桌面与窄屏断点记录紧凑化前基线，确认目标尺寸不造成裁切、重叠或横向不可达。
-- [ ] 将上述 selector 的精确前后 CSS 值、底色 token、选中态叠加规则和视觉验收截图写入 UX 规格。
-- [ ] 用固定 dashboard fixture 验证三种准确率指标的 `>= 60`、`< 60`、缺失值与 `samples` 排序四类结果。
-- [ ] 经用户确认 UX 规格后，创建 U1 专项实施计划；此阶段本身不改前端代码。
-
-**U0 完成条件：** 已批准的 CSS 数值表和高亮状态矩阵；无 API/数据库/控制面变更。
 
 ### D1：Liwei 2026-08-11 T+5 单次失败诊断
 
@@ -149,28 +130,13 @@ G8，除非诊断证实存在会影响它们的共享控制面缺陷。
 
 ## Wave B：在各自设计闸门通过后执行
 
-### U1：前端紧凑化与 ≥60% 高亮
-
-**前置条件：** U0 的 CSS 数值表和高亮状态矩阵已获用户确认。
-
-- [ ] 测试先行扩展 `tests/test_frontend_factor_lab.py`：断言 CSS 紧凑化目标、`>= 60` 高亮、`< 60` 不高亮、
-  `samples` 排序不高亮、缺失值不高亮，以及筛选后重算。
-- [ ] 只改 `frontend/aifin-shell.css` 与 `frontend/aifin-shell.js` 的现有布局/渲染逻辑；不改
-  `frontend/index.html`，除非 U0 证明现有 DOM 无法承载语义 class，且用户单独确认该最小例外。
-- [ ] 运行前端静态/行为测试，并在真实页面检查桌面、窄屏、筛选、三种准确率排序、样本数排序、hover 与 selected
-  的共同状态。
-- [ ] 单独提交前端与测试；不夹带 API、DataBridge、Registry、scheduler 或文档清理变更。
-
-**完成条件：** 页面明显更紧凑，五行任务格减少约 `80px`，趋势区为 `244px`，高亮严格遵循当前准确率排序和
-60% 阈值，且所有既有交互保持可用。
-
 ### G7.1 与 G8.1：专项实施计划
 
 **前置条件：** 分别完成并获批准的 G7.0 / G8.0 决策稿。
 
 - [ ] 每条工作流各自创建一份独立实施计划，包含精确文件、迁移/控制面边界、测试、回滚和提交切分。
 - [ ] 任何生产或数据库动作都必须在该专项计划的对应闸门重新取得授权；不能将设计稿的阅读授权外推为写入授权。
-- [ ] G7/G8 的任何实施均不得与 U1、D1 或文档清理混入同一提交。
+- [ ] G7/G8 的任何实施均不得与 D1 或文档清理混入同一提交。
 
 ## Wave C：受控实施与发布
 
