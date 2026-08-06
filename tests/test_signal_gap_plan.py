@@ -470,6 +470,79 @@ class SignalGapPlanTests(unittest.TestCase):
             authority,
         )
 
+    def test_base_scheme_scope_is_forwarded_to_snapshot_reader(self) -> None:
+        """base-only selection 也必须收窄 DataBridge authority 读取范围。"""
+        target = replace(
+            _valid_target(),
+            runtime_type="blackbox_v2",
+            input_mode="databridge_v1",
+        )
+        case = signal_gap_plan.ExpectedSignalCase(
+            registry_scheme_id=target.registry_scheme_id,
+            base_scheme_id=target.base_scheme_id,
+            runtime_type=target.runtime_type,
+            frequency=target.frequency,
+            task_type=target.task_type,
+            target_tenor=target.target_tenor,
+            horizon=target.horizon,
+            predict_date="2026-08-04",
+            feature_date="2026-08-03",
+            target_date="2026-08-04",
+            segment="live",
+        )
+        snapshot = signal_gap_plan.SignalGapSnapshot(
+            registry_targets=(target,),
+            expected_cases=(case,),
+            canonical_signals=(),
+            live_signals=(),
+            input_generations=(),
+            input_watermarks={},
+            source_identity_sha256="1" * 64,
+            discovery_identity_sha256="2" * 64,
+            active_version_identity_sha256="3" * 64,
+            databridge_authority=_stable_databridge_authority(
+                case.feature_date
+            ),
+        )
+        seen: dict[str, object] = {}
+
+        class Connection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc_info):
+                return None
+
+            def exec_driver_sql(self, _statement: str) -> None:
+                return None
+
+            def rollback(self) -> None:
+                return None
+
+        class Engine:
+            def connect(self) -> Connection:
+                return Connection()
+
+        def reader(_connection, **kwargs):
+            seen["scope"] = kwargs.get("scope")
+            return snapshot
+
+        scope = signal_gap_plan.SignalGapPlanScope(
+            base_scheme_ids=("alpha",),
+        )
+        result = signal_gap_plan.plan_signal_gaps(
+            Engine(),
+            start_date="2026-08-04",
+            as_of_date="2026-08-05",
+            scope=scope,
+            snapshot_reader=reader,
+            execution_authority=(),
+            databridge_config=object(),
+        )
+
+        self.assertEqual(seen["scope"], scope)
+        self.assertEqual(result["actions"][0]["action"], "GRAY_LIVE_GAP")
+
     def test_target_date_task_scope_excludes_unrelated_future_t5(self) -> None:
         """受限 repair plan 只枚举目标日/T+1，不混入同预测日 T+5。"""
         t1_target = _valid_target()
@@ -587,7 +660,121 @@ class SignalGapPlanTests(unittest.TestCase):
                 "target_date_start": "2026-08-04",
                 "target_date_end": "2026-08-05",
                 "task_types": ["T+1"],
+                "base_scheme_ids": [],
             },
+        )
+
+    def test_base_scheme_scope_excludes_unrelated_active_blocker(
+        self,
+    ) -> None:
+        """方案选择器必须在 action/blocker 构建前隔离其它 active 身份。"""
+        target = _valid_target()
+        unrelated_target = replace(
+            target,
+            registry_scheme_id="beta__h1__1Y",
+            base_scheme_id="beta",
+            scheme_version="beta-v1",
+        )
+        alpha_case = signal_gap_plan.ExpectedSignalCase(
+            registry_scheme_id=target.registry_scheme_id,
+            base_scheme_id=target.base_scheme_id,
+            runtime_type=target.runtime_type,
+            frequency=target.frequency,
+            task_type=target.task_type,
+            target_tenor=target.target_tenor,
+            horizon=target.horizon,
+            predict_date="2026-08-04",
+            feature_date="2026-08-03",
+            target_date="2026-08-04",
+            segment="live",
+        )
+        beta_case = replace(
+            alpha_case,
+            registry_scheme_id=unrelated_target.registry_scheme_id,
+            base_scheme_id=unrelated_target.base_scheme_id,
+        )
+        alpha_present = signal_gap_plan.ObservedSignal(
+            base_scheme_id=alpha_case.base_scheme_id,
+            target_tenor=alpha_case.target_tenor,
+            horizon=alpha_case.horizon,
+            target_date=alpha_case.target_date,
+            predict_date=alpha_case.predict_date,
+            feature_date=alpha_case.feature_date,
+            phase="gray_live",
+            scheme_version=target.scheme_version,
+            run_status="success",
+        )
+        snapshot = signal_gap_plan.SignalGapSnapshot(
+            registry_targets=(target, unrelated_target),
+            expected_cases=(alpha_case, beta_case),
+            canonical_signals=(),
+            live_signals=(alpha_present,),
+            input_generations=(),
+            input_watermarks={},
+            source_identity_sha256="1" * 64,
+            discovery_identity_sha256="2" * 64,
+            active_version_identity_sha256="3" * 64,
+            control_plane_blockers=(
+                {
+                    "base_scheme_id": "beta",
+                    "code": "UNRELATED_ACTIVE_BLOCKER",
+                    "segment_scope": ["live"],
+                },
+            ),
+        )
+
+        scoped = signal_gap_plan.build_signal_gap_plan(
+            snapshot,
+            start_date="2026-08-04",
+            as_of_date="2026-08-05",
+            scope=signal_gap_plan.SignalGapPlanScope(
+                base_scheme_ids=("alpha",),
+            ),
+        )
+
+        self.assertEqual(scoped["status"], "READY")
+        self.assertEqual(scoped["counts"]["expected"], 1)
+        self.assertEqual(scoped["counts"]["SKIP_PRESENT"], 1)
+        self.assertEqual(scoped["control_plane"]["blockers"], [])
+        self.assertEqual(
+            scoped["selection"],
+            {
+                "target_date_start": None,
+                "target_date_end": None,
+                "task_types": [],
+                "base_scheme_ids": ["alpha"],
+            },
+        )
+
+    def test_base_scheme_scope_rejects_unknown_active_identity(self) -> None:
+        target = _valid_target()
+        snapshot = signal_gap_plan.SignalGapSnapshot(
+            registry_targets=(target,),
+            expected_cases=(),
+            canonical_signals=(),
+            live_signals=(),
+            input_generations=(),
+            input_watermarks={},
+            source_identity_sha256="1" * 64,
+            discovery_identity_sha256="2" * 64,
+            active_version_identity_sha256="3" * 64,
+        )
+
+        with self.assertRaises(
+            signal_gap_plan.SignalGapPlanError
+        ) as raised:
+            signal_gap_plan.build_signal_gap_plan(
+                snapshot,
+                start_date="2026-08-04",
+                as_of_date="2026-08-05",
+                scope=signal_gap_plan.SignalGapPlanScope(
+                    base_scheme_ids=("not_active",),
+                ),
+            )
+
+        self.assertEqual(
+            raised.exception.code,
+            "UNKNOWN_ACTIVE_BASE_SCHEME_SCOPE",
         )
 
     def test_scope_is_canonical_and_bound_into_plan_sha(self) -> None:
@@ -615,7 +802,26 @@ class SignalGapPlanTests(unittest.TestCase):
                         "target_date_start": "2026-08-04",
                         "target_date_end": "2026-08-05",
                         "task_types": ["T+5"],
+                        "base_scheme_ids": [],
                     },
+                    "actions": [],
+                }
+            ),
+        )
+        self.assertNotEqual(
+            signal_gap_plan.canonical_plan_sha256(
+                {
+                    "selection": signal_gap_plan.SignalGapPlanScope(
+                        base_scheme_ids=("alpha",),
+                    ).as_payload(),
+                    "actions": [],
+                }
+            ),
+            signal_gap_plan.canonical_plan_sha256(
+                {
+                    "selection": signal_gap_plan.SignalGapPlanScope(
+                        base_scheme_ids=("beta",),
+                    ).as_payload(),
                     "actions": [],
                 }
             ),
@@ -633,6 +839,16 @@ class SignalGapPlanTests(unittest.TestCase):
                 )
             ),
             signal_gap_plan.SignalGapPlanScope(),
+        )
+        self.assertEqual(
+            signal_gap_plan.normalize_signal_gap_plan_scope(
+                signal_gap_plan.SignalGapPlanScope(
+                    base_scheme_ids=("beta", "alpha", "beta"),
+                )
+            ),
+            signal_gap_plan.SignalGapPlanScope(
+                base_scheme_ids=("alpha", "beta"),
+            ),
         )
 
     def test_scope_requires_complete_target_date_bounds(self) -> None:

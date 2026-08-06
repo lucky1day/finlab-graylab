@@ -270,11 +270,45 @@ Request 输入顺序影响。
 验收不以“同周不同截止日结果相同”为条件；验收条件是每条批量结果与同一条 Request
 的独立截断结果相同。
 
+## 方案级冻结补齐范围（2026-08-07）
+
+灰度信号补齐不能通过删改冻结 JSON、暂停无关方案或只消费一部分 token 来绕过全局计划中的
+阻断项。计划的选择范围本身必须是被 SHA-256 绑定、preflight/postflight 都会重放的权威输入。
+因此 `active-signal-gap-plan-v4` 在既有日期和任务选择器之外增加：
+
+```json
+{
+  "target_date_start": "2026-06-01",
+  "target_date_end": "2026-08-07",
+  "task_types": ["weekly_point"],
+  "base_scheme_ids": ["cgb_causal_wk_1y_v128"]
+}
+```
+
+`base_scheme_ids=[]` 仍表示全部 active 执行身份；非空列表必须排序、去重、符合方案 ID
+语法，并且每个身份都必须存在于当前 active Registry。未知、暂停或非 canonical 选择器
+一律 fail-closed。选择器在读取 DataBridge authority 前即被传入 snapshot reader，并在构建
+冻结计划时再次核验；它只过滤 expected case、action 和相关 blocker，不改变全局 Registry
+digest 或放宽其它 active 身份的静态一致性约束。
+
+这使本 CGB 的连续灰度补齐可与无关周度方案的 `BLOCKED_DATA_CONTRACT` 隔离，同时保持：
+
+- 一份截至 `2026-08-01` 的 DataBridge 输入语义（该非交易日由权威日历解析为最大
+  `feature_date=2026-07-31`）；
+- 九个 `gray_live` 周点的原始 `predict_date/feature_date/target_date` 和各自 cutoff；
+- 一次灰度 fill 中一份共享的物理三频快照、一个 session manifest 和 CGB 的批量 delivery；
+- 逐预测点的授权、run、insert-only 落库及冻结计划的前后重放。
+
+v3 冻结计划不含这个新的身份选择器，不能手工补字段或复用；它们在 v4 gate 中 fail-closed，
+必须从当前 authoritative snapshot 重新生成。该范围修复不改变 Registry 生命周期、scheduler
+admission、launchd 或任何其它方案的业务写入范围。
+
 ## 已批准的实施计划
 
 详细的 TDD 实施计划见
 [2026-08-06-blackbox-gray-replay-shared-snapshot.md](../plans/2026-08-06-blackbox-gray-replay-shared-snapshot.md)。
-当前状态为**核心实现已在本分支完成、生产/业务入库尚未执行**。已完成的独立提交为：
+当前状态为**核心实现、精确版本准入、Registry 激活及 historical backtest 已完成；本方案
+受限 gray_live 补齐尚待执行**。已完成的独立提交为：
 
 1. `345170c feat: add blackbox gray replay snapshot session`：一次 current DataBridge 读取、
    三频物理截断与不可变 session manifest；
@@ -296,8 +330,12 @@ walk-forward 加至多三条独立核验。
 未触发 scheduler/launchd，且不构成生产入库。
 
 `b1ad1b1` 后重新计算的精确 CGB Blackbox version 为 `59415aa789c5`。旧
-`ee921f65476c` 的证据不可复用；真实零写 BacktestGate 和该精确版本完整七段 Gate 仍待在
-明确授权下执行。其提交边界与后续验收顺序固定如下：
+`ee921f65476c` 的证据不可复用。新精确版本已取得零写 `all` 证据
+`hr_20260806T170243Z_351367853dc3`，并取得持久化完整七段 Gate 证据
+`hr_20260806T172335Z_31865d2ed2f3`；随后按 draft → shadow → active 完成首次生命周期，
+且以一次 72-request batch 持久化 historical backtest（run `206`，target_date 截止
+`2026-05-29`）。这些步骤未写 gray/live 信号、未执行 scheduler 或 launchd。其已完成边界和
+剩余 gray 验收顺序如下：
 
 1. `shared.input_artifacts` 创建一次读取、一次物理三频截断、一次持久化 manifest 的
    `BlackboxGrayReplaySession`；所有请求的 cutoff 必须存在于该父快照。
@@ -309,6 +347,6 @@ walk-forward 加至多三条独立核验。
    原子写入边界。
 4. CGB delivery 将 `week_id` 缓存键改为完整 cutoff signature，并对不满足 one-pass 条件的
    请求按唯一 signature 独立回退；冻结算法组件零修改。
-5. 所有测试和零写 BacktestGate 通过后，因 delivery hash 改变而重新取得该精确 Blackbox
-   version 的 Gate 证据；不自动执行 activation、持久化回测、gray 写入、Registry 或
-   launchd 操作。
+5. 重新取得 exact Gate 证据、首次 activation 和 historical backtest 已完成；下一步只能使用
+   v4 CGB-only 冻结计划和逐 group token 执行 gray 写入。它不自动授予 scheduler admission、
+   launchd 或其它方案写入权限。

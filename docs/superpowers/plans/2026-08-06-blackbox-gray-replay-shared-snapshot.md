@@ -347,7 +347,7 @@ Run: `git diff --check && git status --short && git add harness/gates/signal_gap
 
 Expected: authorization and persistence code outside the gate remains untouched.
 
-### Task 4: Fix CGB's complete cutoff-signature batch adapter — 代码完成（`b1ad1b1`）；新版本 Gate 待办
+### Task 4: Fix CGB's complete cutoff-signature batch adapter — 已完成（`b1ad1b1`）
 
 **Files:**
 
@@ -408,10 +408,12 @@ Run: `PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 /Users/macstudio0/miniconda3/
 Additionally run the delivery test under the actual profile without pytest (the profile does not install it):
 `PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 conda run --no-capture-output -n forecast_env_blackbox_v1 python tests/test_cgb_causal_wk_1y_v128_delivery.py -q`.
 
-- [ ] **Step 4b: Run the real zero-write BacktestGate for exact version `59415aa789c5`**
+- [x] **Step 4b: Run the real zero-write BacktestGate for exact version `59415aa789c5`**
 
-Run only after confirming the target current DataBridge context and intended time budget:
-`PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 conda run --no-capture-output -n bond_factor_lab_service python -m harness gate backtest --scheme-id cgb_causal_wk_1y_v128 --predict-date 2026-08-06 --project-root . --algo-env forecast_env --timeout-sec 3600 --backtest-start-date 2025-01-01`.
+已通过 `onboard --stage all` 的零写完整七段 Gate：
+`hr_20260806T170243Z_351367853dc3`。BacktestGate 证明 100 条 cutoff-isolation 请求可在三次
+delivery subprocess 内完成，且不写业务表；持久化 `all` 证据随后写入
+`hr_20260806T172335Z_31865d2ed2f3`。
 
 Expected: unit and Contract tests pass; BacktestGate runs without `--persist`, reports zero protected-table deltas, and verifies cutoff isolation.
 
@@ -453,9 +455,64 @@ Run: `git add docs/superpowers/specs/2026-08-06-cgb-weekly-batch-cutoff-identity
 
 Expected: documentation is committed separately from code; unrelated working-tree files remain untouched.
 
-- [ ] **Step 4: Request fresh Blackbox admission evidence before any state-changing follow-up**
+- [x] **Step 4: Request fresh Blackbox admission evidence before any state-changing follow-up**
 
-Because Task 4 changes the delivery script, record the newly computed exact scheme version and run the normal zero-write Blackbox `static`, `input`, `unit`, `dry-run`, `compare`, `backtest`, and `api-readiness` evidence sequence for that exact version. Do not run activation, persistent backtest, gray-gap write, Registry updates, scheduler admission, or launchd operations without separate explicit authorization.
+已对 exact version `59415aa789c5` 取得 `static`、`input`、`unit`、`dry-run`、`compare`、
+`backtest`、`api-readiness` 的完整 Gate 证据，并在用户授权下独立完成 draft、shadow、activate
+与 72-request historical backtest。gray-gap 写入、scheduler admission 与 launchd 仍是彼此独立的
+授权边界；本次仅继续 Task 6 的 CGB-only gray scope。
+
+### Task 6: Freeze a single-scheme CGB gray-fill plan — 进行中（2026-08-07）
+
+**Why this task exists:** the original date/task-only `weekly_point` plan correctly included all active
+weekly schemes, but 24 unrelated existing data-contract blockers made its whole frozen plan
+non-executable. Manually removing those actions would invalidate the plan SHA and bypass
+preflight/postflight identity replay. This task narrows authority rather than weakening the blocker.
+
+**Files:**
+
+- Modify: `harness/signal_gap_plan.py`
+- Modify: `harness/cli.py`
+- Modify: `tests/test_signal_gap_plan.py`
+- Modify: `tests/test_signal_gap_fill_gate.py`
+- Modify: `docs/superpowers/specs/2026-08-06-cgb-weekly-batch-cutoff-identity-design.md`
+- Modify: this plan
+
+- [x] **Step 1: Add a failing single-scheme isolation test.**
+
+  Construct one selected active scheme and one unrelated active scheme with a live blocker; require a
+  plan selected by `base_scheme_ids=[selected]` to remain `READY`, contain only the selected action,
+  and omit the unrelated blocker. Also cover unknown active IDs and the frozen scope replay path.
+
+- [x] **Step 2: Bind `base_scheme_ids` into plan v4.**
+
+  `SignalGapPlanScope` now canonicalizes this list, counts it as a restricted scope (so DataBridge
+  authority reads are also narrowed), validates it once after active Registry discovery and again when
+  building a plan, and filters cases before actions/blockers are formed. The CLI accepts repeatable
+  `--base-scheme-id`; `signal-gap-fill` receives no new selector and can only replay the frozen v4
+  selection. `PLAN_SCHEMA_VERSION` advances from v3 to v4, so prior frozen v3 plans regenerate
+  fail-closed.
+
+- [ ] **Step 3: Generate and revalidate the exact CGB-only v4 plan.**
+
+  Use `start_date=2026-06-01`, `as_of_date=2026-08-01`, target dates `2026-06-01..2026-08-07`,
+  `task_type=weekly_point`, and `base_scheme_id=cgb_causal_wk_1y_v128`. Require exactly nine
+  `GRAY_LIVE_GAP` actions, no blocked action, no cross-scheme action, and frozen DataBridge authority
+  whose latest CGB feature cutoff is `2026-07-31`.
+
+- [ ] **Step 4: Issue group-bound authorizations and execute one batch fill.**
+
+  Bind each token to its exact predict-date group, target key, source authority, version, and plan SHA.
+  Execute the normal `signal-gap-fill` gate once; do not use direct SQL, per-week current DataBridge
+  reads, a manual runner, scheduler admission, or launchd operations.
+
+- [ ] **Step 5: Read back closure evidence and commit.**
+
+  Verify nine CGB `gray_live` records and nine success runs, a common gray replay session/manifest,
+  version `59415aa789c5`, no target beyond `2026-08-07`, zero remaining CGB gray gaps, and served
+  API/front-end visibility. Record non-secret evidence, rerun focused regressions, and commit only
+  the scoped plan code/tests/documentation; runtime artifacts, reports, and unrelated worktree files
+  stay unstaged.
 
 ## Plan self-review
 

@@ -240,6 +240,7 @@ class SignalGapFillPlanScopeTests(unittest.TestCase):
                 "target_date_start": "2026-08-04",
                 "target_date_end": "2026-08-05",
                 "task_types": ["T+1"],
+                "base_scheme_ids": ["alpha"],
             },
             "actions": [action],
         }
@@ -286,6 +287,7 @@ class SignalGapFillPlanScopeTests(unittest.TestCase):
                     target_date_start="2026-08-04",
                     target_date_end="2026-08-05",
                     task_types=("T+1",),
+                    base_scheme_ids=("alpha",),
                 )
             ],
         )
@@ -303,6 +305,7 @@ class SignalGapFillPlanScopeTests(unittest.TestCase):
                 "target_date_start": "2026-08-04",
                 "target_date_end": "2026-08-05",
                 "task_types": ["T+1"],
+                "base_scheme_ids": [],
             },
             "actions": [],
         }
@@ -349,6 +352,7 @@ class SignalGapFillPlanScopeTests(unittest.TestCase):
                 "target_date_start": "2026-08-04",
                 "target_date_end": "2026-08-05",
                 "task_types": ["T+1", "T+1"],
+                "base_scheme_ids": [],
             },
             "actions": [],
         }
@@ -378,6 +382,7 @@ class BlackboxGrayReplayBatchCoordinatorTests(unittest.TestCase):
                 "target_date_start": "2026-07-01",
                 "target_date_end": "2026-08-14",
                 "task_types": ["T+1", "monthly", "weekly_point"],
+                "base_scheme_ids": [],
             },
             "actions": actions,
         }

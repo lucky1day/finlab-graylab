@@ -40,9 +40,10 @@ from shared.prediction_context import (
     build_monthly_live_context,
     build_weekly_live_context,
 )
+from shared.scheme_config_schema import SCHEME_ID_PATTERN
 
 
-PLAN_SCHEMA_VERSION = "active-signal-gap-plan-v3"
+PLAN_SCHEMA_VERSION = "active-signal-gap-plan-v4"
 PLATFORM_LIVE_BOUNDARY_VERSION = "platform_live_boundary_v1"
 PLATFORM_LIVE_TARGET_START_DATE = "2026-06-01"
 NATIVE_TASK_COMBINATIONS = {
@@ -112,12 +113,14 @@ class SignalGapPlanScope:
     target_date_start: str | None = None
     target_date_end: str | None = None
     task_types: tuple[str, ...] = ()
+    base_scheme_ids: tuple[str, ...] = ()
 
     @property
     def is_restricted(self) -> bool:
         return (
             self.target_date_start is not None
             or bool(self.task_types)
+            or bool(self.base_scheme_ids)
         )
 
     def as_payload(self) -> dict[str, Any]:
@@ -125,11 +128,17 @@ class SignalGapPlanScope:
             "target_date_start": self.target_date_start,
             "target_date_end": self.target_date_end,
             "task_types": list(self.task_types),
+            "base_scheme_ids": list(self.base_scheme_ids),
         }
 
 
 _PLAN_SCOPE_FIELDS = frozenset(
-    {"target_date_start", "target_date_end", "task_types"}
+    {
+        "target_date_start",
+        "target_date_end",
+        "task_types",
+        "base_scheme_ids",
+    }
 )
 _PLAN_SCOPE_TASK_TYPES = frozenset(
     {*NATIVE_TASK_COMBINATIONS, *TASK_COMBINATIONS}
@@ -144,10 +153,12 @@ def normalize_signal_gap_plan_scope(
         raw_start = None
         raw_end = None
         raw_task_types: Any = ()
+        raw_base_scheme_ids: Any = ()
     elif isinstance(value, SignalGapPlanScope):
         raw_start = value.target_date_start
         raw_end = value.target_date_end
         raw_task_types = value.task_types
+        raw_base_scheme_ids = value.base_scheme_ids
     elif isinstance(value, Mapping):
         if frozenset(value) != _PLAN_SCOPE_FIELDS:
             raise SignalGapPlanError(
@@ -157,6 +168,7 @@ def normalize_signal_gap_plan_scope(
         raw_start = value["target_date_start"]
         raw_end = value["target_date_end"]
         raw_task_types = value["task_types"]
+        raw_base_scheme_ids = value["base_scheme_ids"]
     else:
         raise SignalGapPlanError(
             "INVALID_PLAN_SCOPE",
@@ -207,10 +219,29 @@ def normalize_signal_gap_plan_scope(
         )
     if frozenset(normalized_task_types) == _PLAN_SCOPE_TASK_TYPES:
         normalized_task_types = ()
+    if (
+        isinstance(raw_base_scheme_ids, (str, bytes))
+        or not isinstance(raw_base_scheme_ids, (list, tuple))
+    ):
+        raise SignalGapPlanError(
+            "INVALID_PLAN_SCOPE",
+            "base_scheme_ids must be a list",
+        )
+    if any(
+        not isinstance(scheme_id, str)
+        or SCHEME_ID_PATTERN.fullmatch(scheme_id) is None
+        for scheme_id in raw_base_scheme_ids
+    ):
+        raise SignalGapPlanError(
+            "INVALID_PLAN_SCOPE",
+            "base_scheme_ids contains an invalid scheme id",
+        )
+    normalized_base_scheme_ids = tuple(sorted(set(raw_base_scheme_ids)))
     return SignalGapPlanScope(
         target_date_start=normalized_start,
         target_date_end=normalized_end,
         task_types=normalized_task_types,
+        base_scheme_ids=normalized_base_scheme_ids,
     )
 
 
@@ -576,6 +607,10 @@ def build_signal_gap_plan(
     normalized_as_of = _canonical_date(as_of_date, "as_of_date")
     normalized_scope = normalize_signal_gap_plan_scope(scope)
     target_by_registry = _validate_snapshot(snapshot)
+    _validate_base_scheme_scope(
+        normalized_scope,
+        targets=target_by_registry.values(),
+    )
     all_control_plane_blockers = _normalized_control_plane_blockers(
         snapshot.control_plane_blockers
     )
@@ -1028,6 +1063,10 @@ def read_signal_gap_snapshot(
     ) = _read_registry_versions(
         connection,
         execution_authority=execution_authority,
+    )
+    _validate_base_scheme_scope(
+        normalized_scope,
+        targets=registry_targets,
     )
     calendar_snapshot = read_calendar_snapshot_from_connection(connection)
     calendar = _FrozenCalendar(
@@ -3370,6 +3409,11 @@ def _case_is_within_plan_scope(
     scope: SignalGapPlanScope,
 ) -> bool:
     """先以原始 predict-date 窗口截断，再施加明确的 repair 选择器。"""
+    if (
+        scope.base_scheme_ids
+        and item.base_scheme_id not in scope.base_scheme_ids
+    ):
+        return False
     if not start_date <= item.predict_date <= as_of_date:
         return False
     if (
@@ -3383,6 +3427,27 @@ def _case_is_within_plan_scope(
     ):
         return False
     return not scope.task_types or item.task_type in scope.task_types
+
+
+def _validate_base_scheme_scope(
+    scope: SignalGapPlanScope,
+    *,
+    targets: Sequence[RegistryTarget],
+) -> None:
+    """受限方案选择器只能指向当前 active Registry 的执行身份。"""
+    if not scope.base_scheme_ids:
+        return
+    active_base_scheme_ids = {
+        target.base_scheme_id for target in targets
+    }
+    unknown = sorted(
+        set(scope.base_scheme_ids) - active_base_scheme_ids
+    )
+    if unknown:
+        raise SignalGapPlanError(
+            "UNKNOWN_ACTIVE_BASE_SCHEME_SCOPE",
+            ",".join(unknown),
+        )
 
 
 def _expected_business_keys_for_date_scope(

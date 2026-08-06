@@ -302,6 +302,9 @@ def main(argv: list[str] | None = None) -> int:
                         target_date_start=args.target_date_start,
                         target_date_end=args.target_date_end,
                         task_types=tuple(args.task_type or ()),
+                        base_scheme_ids=tuple(
+                            args.base_scheme_id or ()
+                        ),
                     ),
                     databridge_config=databridge_config,
                 )
@@ -550,6 +553,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action="append",
         choices=("T+1", "T+5", "weekly_point", "weekly_average", "monthly"),
         default=None,
+    )
+    gap_parser.add_argument(
+        "--base-scheme-id",
+        action="append",
+        default=None,
+        help="restrict the frozen plan to exact active base scheme ids",
     )
     gap_parser.add_argument(
         "--format",
