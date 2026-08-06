@@ -141,7 +141,7 @@ Expected: 只剩 D0 审计、当前设计/实施计划中的原始历史路径�
 - Verify: `tests/test_onboarding_docs.py`
 - Verify: 所有上述改动文件
 
-- [ ] **Step 1: 运行完整文档契约测试和编译检查**
+- [x] **Step 1: 运行完整文档契约测试和编译检查**
 
 Run:
 
@@ -155,7 +155,7 @@ git diff --check
 
 Expected: 所有文档测试通过、`compileall` 退出码为 0、没有 whitespace error。
 
-- [ ] **Step 2: 审查提交范围并创建实现提交**
+- [x] **Step 2: 审查提交范围并创建实现提交**
 
 Run:
 
