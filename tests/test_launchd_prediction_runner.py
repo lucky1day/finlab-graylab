@@ -615,15 +615,16 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
 
         def execute(config_item, *_args, **kwargs):
             events.append(("execute", config_item.scheme_id))
+            preflight_failure = kwargs.get("scheduled_preflight_failure")
             return SimpleNamespace(
                 scheme_id=config_item.scheme_id,
                 status=(
                     "failed"
-                    if kwargs.get("scheduled_preflight_failure")
+                    if preflight_failure
                     else "success"
                 ),
                 records_written=1,
-                error_msg=None,
+                error_msg=preflight_failure,
                 run_id=11,
             )
 
@@ -668,6 +669,74 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         self.assertEqual(
             [call_args.args[0] for call_args in execute_one.call_args_list],
             [publisher, consumer, unrelated, blackbox],
+        )
+        self.assertEqual(
+            execute_one.call_args_list[-1].kwargs["scheduled_preflight_failure"],
+            "data_bridge_ready_timeout",
+        )
+
+    def test_daily_timeout_does_not_claim_preflight_run_when_executor_rejects(
+        self,
+    ) -> None:
+        """预检失败只有获得已持久化的 run 证据时才可归类为 timeout。"""
+        from scheduler import launchd_prediction_runner as runner
+        from scheduler.v2_daily_gate import V2DailyGateBlocked
+
+        native = _cfg("native_daily")
+        blackbox = _cfg(
+            "formal_blackbox",
+            runtime_type="blackbox_v2",
+            input_source="data_bridge_current",
+        )
+        config = self._config(Path(tempfile.mkdtemp()))
+        engine = self._engine()
+        calendar = _Calendar(trading=True)
+        clock = SimpleNamespace(
+            monotonic=Mock(side_effect=[100.0, 1900.0]),
+            sleep=Mock(),
+        )
+
+        def execute(config_item, *_args, **kwargs):
+            if kwargs.get("scheduled_preflight_failure"):
+                return SimpleNamespace(
+                    scheme_id=config_item.scheme_id,
+                    status="failed",
+                    records_written=0,
+                    error_msg="Blackbox V2 version is not production-approved",
+                    run_id=None,
+                )
+            return SimpleNamespace(
+                scheme_id=config_item.scheme_id,
+                status="success",
+                records_written=1,
+                error_msg=None,
+                run_id=101,
+            )
+
+        with (
+            patch.object(runner.DataBridgeRefreshConfig, "from_env", return_value=config),
+            patch.object(runner, "_runner_lock", return_value=nullcontext(True)),
+            patch.object(runner, "discover_schemes", return_value=[native, blackbox]),
+            patch.object(runner, "create_engine_from_env", return_value=engine),
+            patch.object(runner, "get_calendar", return_value=calendar),
+            patch.object(
+                runner,
+                "require_v2_daily_ready",
+                side_effect=V2DailyGateBlocked("gate missing"),
+            ),
+            patch.object(runner, "time", clock),
+            patch.object(runner, "execute_scheme", side_effect=execute) as execute_one,
+        ):
+            summary = runner.run("daily", predict_date="2026-08-03")
+
+        self.assertEqual(summary.outcome, "partial")
+        self.assertEqual(
+            summary.failed,
+            [{"scheme_id": blackbox.scheme_id, "code": "execution_failed"}],
+        )
+        self.assertNotIn(
+            {"scheme_id": blackbox.scheme_id, "code": "data_bridge_ready_timeout"},
+            summary.failed,
         )
         self.assertEqual(
             execute_one.call_args_list[-1].kwargs["scheduled_preflight_failure"],

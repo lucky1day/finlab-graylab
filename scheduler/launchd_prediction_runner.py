@@ -124,6 +124,15 @@ def _candidate_item(cfg: object, code: str) -> dict[str, object]:
     return {"scheme_id": str(getattr(cfg, "scheme_id", "")), "code": code}
 
 
+def _is_persisted_preflight_failure(result: object, expected_error: str) -> bool:
+    """只将已经持久化的预检失败归类为其安全错误码。"""
+    return (
+        str(getattr(result, "status", "")) == "failed"
+        and getattr(result, "error_msg", None) == expected_error
+        and getattr(result, "run_id", None) is not None
+    )
+
+
 def _cache_publishers_first(candidates: Sequence[object]) -> list[object]:
     """稳定地让当前批次的 Liwei cache publisher 先于其 consumer 执行。"""
     publisher_ids = {
@@ -196,15 +205,13 @@ def _execute_candidate(
             )
         result = execute_scheme(cfg, predict_date, **execute_kwargs)
     except Exception:  # noqa: BLE001 - isolate one candidate
-        summary.failed.append(
-            _candidate_item(
-                cfg,
-                scheduled_preflight_failure or "execution_exception",
-            )
-        )
+        summary.failed.append(_candidate_item(cfg, "execution_exception"))
         return
 
-    if scheduled_preflight_failure is not None:
+    if (
+        scheduled_preflight_failure is not None
+        and _is_persisted_preflight_failure(result, scheduled_preflight_failure)
+    ):
         summary.failed.append(_candidate_item(cfg, scheduled_preflight_failure))
         return
 

@@ -1766,21 +1766,28 @@ class ExecutorRunIdTests(unittest.TestCase):
     def test_launchd_preflight_timeout_persists_failed_run_before_algorithm(
         self,
     ) -> None:
+        from scheduler import launchd_prediction_runner as runner
         from scheduler.executor import (
-            _launchd_scheduled_execution_context,
-            execute_scheme,
+            SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT,
         )
 
         engine = _FakeEngine()
+        summary = runner.LaunchdPredictionSummary(
+            cadence="daily",
+            predict_date="2026-08-03",
+        )
         cfg = SimpleNamespace(
             scheme_id="daily_data_bridge",
             status="active",
             scheme_version="v1",
-            runtime_type="native_adapter",
+            runtime_type="blackbox_v2",
+            input_source="data_bridge_current",
+            version_status="active",
             frequency="daily",
             task_type="T+1",
             horizon=1,
             tenors=["5Y"],
+            path=Path(__file__).resolve().parents[1] / "schemes" / "daily_data_bridge",
         )
         with (
             patch(
@@ -1789,9 +1796,12 @@ class ExecutorRunIdTests(unittest.TestCase):
             ),
             patch("scheduler.executor.discover_schemes", return_value=[cfg]),
             patch(
-                "scheduler.executor._verify_scheme_activation",
-                return_value=(True, "ok"),
-            ) as activation,
+                "shared.blackbox_v2.lifecycle.assert_lifecycle_clear",
+            ) as lifecycle,
+            patch(
+                "scheduler.executor.read_blackbox_execution_approval",
+                return_value=SimpleNamespace(executable=True, reason="approved"),
+            ) as approval,
             patch(
                 "scheduler.executor._active_registry_targets",
                 return_value={("5Y", 1)},
@@ -1804,29 +1814,29 @@ class ExecutorRunIdTests(unittest.TestCase):
             patch("scheduler.executor.fail_scheme_run_atomic") as fail_run,
             patch("scheduler.executor.write_run_log") as write_log,
         ):
-            result = execute_scheme(
+            runner._execute_candidate(
+                summary,
                 cfg,
-                "2026-08-03",
+                predict_date="2026-08-03",
                 algo_env="test_env",
-                prediction_phase="scheduled_live",
-                scheduled_control_plane="launchd_one_shot",
-                scheduled_execution_context=(
-                    _launchd_scheduled_execution_context()
+                scheduled_preflight_failure=(
+                    SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT
                 ),
-                scheduled_preflight_failure="data_bridge_ready_timeout",
             )
 
-        self.assertEqual(result.status, "failed")
-        self.assertEqual(result.error_msg, "data_bridge_ready_timeout")
-        self.assertEqual(result.run_id, 701)
-        activation.assert_called_once_with(engine, cfg.scheme_id, cfg.scheme_version)
+        self.assertEqual(
+            summary.failed,
+            [{"scheme_id": cfg.scheme_id, "code": "data_bridge_ready_timeout"}],
+        )
+        lifecycle.assert_called_once()
+        approval.assert_called_once_with(engine, cfg)
         targets.assert_called_once_with(engine, cfg.scheme_id)
         create_run.assert_called_once_with(
             engine,
             scheme_id=cfg.scheme_id,
             predict_date="2026-08-03",
             scheme_version="v1",
-            runtime_type="native_adapter",
+            runtime_type="blackbox_v2",
             run_type="active",
             prediction_phase="scheduled_live",
             records_expected=1,
@@ -1840,6 +1850,68 @@ class ExecutorRunIdTests(unittest.TestCase):
         )
         write_log.assert_not_called()
         self.assertTrue(engine.disposed)
+
+    def test_direct_caller_cannot_inject_preflight_failure_with_imported_context(
+        self,
+    ) -> None:
+        from scheduler.executor import (
+            SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT,
+            _launchd_scheduled_execution_context,
+            execute_scheme,
+        )
+
+        engine = _FakeEngine()
+        cfg = SimpleNamespace(
+            scheme_id="daily_direct_preflight",
+            status="active",
+            scheme_version="v1",
+            runtime_type="native_adapter",
+            frequency="daily",
+            task_type="T+1",
+            horizon=1,
+            tenors=["5Y"],
+        )
+        with (
+            patch(
+                "scheduler.executor.create_engine_from_env",
+                return_value=engine,
+            ) as create_engine,
+            patch("scheduler.executor.discover_schemes", return_value=[cfg]),
+            patch(
+                "scheduler.executor._verify_scheme_activation",
+                return_value=(True, "ok"),
+            ),
+            patch(
+                "scheduler.executor._active_registry_targets",
+                return_value={("5Y", 1)},
+            ),
+            patch(
+                "scheduler.executor.create_scheme_run",
+                return_value=702,
+            ) as create_run,
+            patch("scheduler.executor.fail_scheme_run_atomic"),
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "scheduler.launchd_prediction_runner",
+            ):
+                execute_scheme(
+                    cfg,
+                    "2026-08-03",
+                    algo_env="test_env",
+                    prediction_phase="scheduled_live",
+                    scheduled_control_plane="launchd_one_shot",
+                    scheduled_execution_context=(
+                        _launchd_scheduled_execution_context()
+                    ),
+                    scheduled_preflight_failure=(
+                        SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT
+                    ),
+                )
+
+        create_engine.assert_not_called()
+        create_run.assert_not_called()
+        self.assertFalse(engine.disposed)
 
     def test_execute_scheme_rejects_records_outside_active_registry_targets(self) -> None:
         from scheduler.executor import execute_scheme

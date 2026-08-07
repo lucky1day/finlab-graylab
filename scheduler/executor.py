@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -1475,6 +1476,20 @@ def execute_scheme(
             raise ValueError(
                 "scheduled_preflight_failure requires launchd_one_shot "
                 "execution context"
+            )
+        caller_frame = inspect.currentframe()
+        try:
+            caller_module = (
+                caller_frame.f_back.f_globals.get("__name__")
+                if caller_frame is not None and caller_frame.f_back is not None
+                else None
+            )
+        finally:
+            del caller_frame
+        if caller_module != "scheduler.launchd_prediction_runner":
+            raise ValueError(
+                "scheduled_preflight_failure requires "
+                "scheduler.launchd_prediction_runner caller"
             )
         if (
             scheduled_preflight_failure
