@@ -2387,32 +2387,23 @@ class BlackboxExecutionApprovalTests(unittest.TestCase):
 
 class ScheduledLiveExecutionFenceTests(unittest.TestCase):
     @staticmethod
-    def _blackbox_config(
+    def _canonical_config(
         scheme_id: str,
-        scheme_version: str,
-    ) -> SimpleNamespace:
-        from scheduler.blackbox_scheduler_admission import (
-            EXPECTED_EXACT_ADMISSIONS,
-        )
+    ) -> object:
+        from scheduler.discovery import discover_schemes
 
-        admission = EXPECTED_EXACT_ADMISSIONS[
-            (scheme_id, scheme_version)
-        ]
-        return SimpleNamespace(
-            scheme_id=scheme_id,
-            scheme_version=scheme_version,
-            status="active",
-            version_status="active",
-            runtime_type="blackbox_v2",
-            frequency=admission.frequency,
-            task_type=admission.task_type,
-            horizon=admission.horizon,
-            tenors=[admission.target_tenor],
+        return next(
+            config
+            for config in discover_schemes()
+            if config.scheme_id == scheme_id
         )
 
     def _assert_rejected_before_side_effect(
         self,
         config: SimpleNamespace,
+        *,
+        scheduled_control_plane: str = "direct_scheduled",
+        scheduled_execution_context: object | None = None,
     ):
         from scheduler import executor
         from scheduler.executor import execute_scheme
@@ -2450,6 +2441,8 @@ class ScheduledLiveExecutionFenceTests(unittest.TestCase):
                 config,
                 "2026-07-27",
                 prediction_phase="scheduled_live",
+                scheduled_control_plane=scheduled_control_plane,
+                scheduled_execution_context=scheduled_execution_context,
             )
 
         self.assertEqual(result.status, "failed")
@@ -2474,19 +2467,12 @@ class ScheduledLiveExecutionFenceTests(unittest.TestCase):
     def test_scheduled_live_rejects_identity_and_lifecycle_drift_pre_engine(
         self,
     ) -> None:
-        formal = self._blackbox_config(
-            "weekly_10y_lgbm_point_v1",
-            "0666a6989d6b",
+        from scheduler import executor
+
+        formal = self._canonical_config(
+            "weekly_10y_lgbm_point_v1"
         )
         cases = (
-            self._blackbox_config(
-                "cgb_a4_fundseason_1y",
-                "04e7af163fb0",
-            ),
-            self._blackbox_config(
-                "ten_y_t5_maj3_k3_ic_static_v1",
-                "c54b90bcafa7",
-            ),
             SimpleNamespace(
                 **{
                     **vars(formal),
@@ -2524,44 +2510,21 @@ class ScheduledLiveExecutionFenceTests(unittest.TestCase):
                 version=config.scheme_version,
                 runtime=config.runtime_type,
             ):
-                self._assert_rejected_before_side_effect(config)
-
-    def test_scheduled_live_invalid_policy_is_sanitized_pre_engine(
-        self,
-    ) -> None:
-        from scheduler import blackbox_scheduler_admission
-        from scheduler.blackbox_scheduler_admission import (
-            BlackboxSchedulerAdmissionError,
-        )
-
-        config = self._blackbox_config(
-            "weekly_10y_lgbm_point_v1",
-            "0666a6989d6b",
-        )
-        with patch.object(
-            blackbox_scheduler_admission,
-            "load_blackbox_scheduler_admission",
-            side_effect=BlackboxSchedulerAdmissionError(
-                "invalid policy at /private/secret/admission.json"
-            ),
-        ):
-            result = self._assert_rejected_before_side_effect(
-                config
-            )
-        self.assertNotIn(
-            "/private/secret",
-            result.error_msg or "",
-        )
+                self._assert_rejected_before_side_effect(
+                    config,
+                    scheduled_control_plane="launchd_one_shot",
+                    scheduled_execution_context=(
+                        executor._launchd_scheduled_execution_context()
+                    ),
+                )
 
     def test_launchd_one_shot_active_gray_reaches_engine_without_legacy_admission(
         self,
     ) -> None:
         """自然 one-shot 只接受 canonical active 身份，不读取遗留 mode。"""
-        config = self._blackbox_config(
-            "cgb_causal_wk_1y",
-            "cba824c27f0e",
-        )
         from scheduler import executor
+
+        config = self._canonical_config("cgb_causal_wk_1y")
 
         class EngineReached(RuntimeError):
             pass
@@ -2584,19 +2547,86 @@ class ScheduledLiveExecutionFenceTests(unittest.TestCase):
                 "2026-07-27",
                 prediction_phase="scheduled_live",
                 scheduled_control_plane="launchd_one_shot",
+                scheduled_execution_context=(
+                    executor._launchd_scheduled_execution_context()
+                ),
             )
 
         create_engine.assert_called_once_with()
+
+    def test_public_launchd_plane_string_is_rejected_before_engine(
+        self,
+    ) -> None:
+        """调用方不能只靠公开 control-plane 字符串进入 scheduled_live。"""
+        from scheduler import executor
+
+        config = SimpleNamespace(
+            scheme_id="active_blackbox",
+            scheme_version="active-version",
+            status="active",
+            version_status="active",
+            runtime_type="blackbox_v2",
+            frequency="weekly",
+            task_type="weekly_point",
+            horizon=1,
+            tenors=["10Y"],
+        )
+        trusted_context = executor._launchd_scheduled_execution_context()
+        cases = (
+            ("default", {}),
+            (
+                "public launchd string",
+                {"scheduled_control_plane": "launchd_one_shot"},
+            ),
+            (
+                "arbitrary context",
+                {
+                    "scheduled_control_plane": "launchd_one_shot",
+                    "scheduled_execution_context": object(),
+                },
+            ),
+            (
+                "wrong control plane",
+                {
+                    "scheduled_control_plane": "direct_scheduled",
+                    "scheduled_execution_context": trusted_context,
+                },
+            ),
+        )
+        for case, execute_kwargs in cases:
+            with self.subTest(case=case):
+                with (
+                    patch.object(
+                        executor,
+                        "discover_schemes",
+                        return_value=[config],
+                    ),
+                    patch.object(
+                        executor,
+                        "create_engine_from_env",
+                    ) as create_engine,
+                ):
+                    result = executor.execute_scheme(
+                        config,
+                        "2026-07-27",
+                        prediction_phase="scheduled_live",
+                        **execute_kwargs,
+                    )
+
+                self.assertEqual(result.status, "failed")
+                self.assertIn(
+                    "requires launchd_one_shot execution context",
+                    result.error_msg or "",
+                )
+                create_engine.assert_not_called()
 
     def test_launchd_one_shot_admitted_daily_reaches_engine_without_reading_daily_mode(
         self,
     ) -> None:
         """one-shot 的精确正式日频身份不受遗留 ledger 拦截。"""
-        config = self._blackbox_config(
-            "one_y_t5_liq_excess_a_v1",
-            "8d583560c9f1",
-        )
         from scheduler import executor
+
+        config = self._canonical_config("one_y_t5_liq_excess_a_v1")
 
         class EngineReached(RuntimeError):
             pass
@@ -2623,6 +2653,9 @@ class ScheduledLiveExecutionFenceTests(unittest.TestCase):
                 "2026-07-27",
                 prediction_phase="scheduled_live",
                 scheduled_control_plane="launchd_one_shot",
+                scheduled_execution_context=(
+                    executor._launchd_scheduled_execution_context()
+                ),
             )
 
         create_engine.assert_called_once_with()
@@ -2631,10 +2664,7 @@ class ScheduledLiveExecutionFenceTests(unittest.TestCase):
         self,
     ) -> None:
         """无 item 的 direct scheduled 不能绕过 one-shot 锁和 gate。"""
-        config = self._blackbox_config(
-            "weekly_10y_lgbm_point_v1",
-            "0666a6989d6b",
-        )
+        config = self._canonical_config("weekly_10y_lgbm_point_v1")
 
         result = self._assert_rejected_before_side_effect(config)
 
@@ -2648,10 +2678,7 @@ class ScheduledLiveExecutionFenceTests(unittest.TestCase):
     ) -> None:
         from scheduler.discovery import discover_schemes
 
-        formal = self._blackbox_config(
-            "one_y_t5_liq_excess_a_v1",
-            "8d583560c9f1",
-        )
+        formal = self._canonical_config("one_y_t5_liq_excess_a_v1")
         native = next(
             config
             for config in discover_schemes()

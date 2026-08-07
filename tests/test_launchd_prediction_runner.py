@@ -32,29 +32,6 @@ def _cfg(
         tenors=["7Y"],
     )
 
-
-def _exact_blackbox_cfg(
-    scheme_id: str,
-    scheme_version: str,
-) -> SimpleNamespace:
-    """构造与遗留 admission 身份精确匹配的 active Blackbox config。"""
-    from scheduler.blackbox_scheduler_admission import EXPECTED_EXACT_ADMISSIONS
-
-    admission = EXPECTED_EXACT_ADMISSIONS[(scheme_id, scheme_version)]
-    return SimpleNamespace(
-        scheme_id=scheme_id,
-        scheme_version=scheme_version,
-        frequency=admission.frequency,
-        status="active",
-        runtime_type="blackbox_v2",
-        input_source="data_bridge_current",
-        version_status="active",
-        task_type=admission.task_type,
-        horizon=admission.horizon,
-        tenors=[admission.target_tenor],
-    )
-
-
 class _Calendar:
     def __init__(self, *, trading: bool) -> None:
         self.trading = trading
@@ -95,6 +72,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         config = self._config(Path(tempfile.mkdtemp()))
         engine = self._engine()
         calendar = _Calendar(trading=True)
+        execution_context = runner._launchd_scheduled_execution_context()
 
         def execute(config_item, *_args, **_kwargs):
             return SimpleNamespace(
@@ -135,6 +113,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                     algo_env="forecast_env",
                     prediction_phase="scheduled_live",
                     scheduled_control_plane="launchd_one_shot",
+                    scheduled_execution_context=execution_context,
                 ),
                 call(
                     blackbox,
@@ -142,6 +121,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                     algo_env="forecast_env",
                     prediction_phase="scheduled_live",
                     scheduled_control_plane="launchd_one_shot",
+                    scheduled_execution_context=execution_context,
                 ),
             ],
         )
@@ -194,31 +174,28 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
             [publisher, consumer, unrelated],
         )
 
-    def test_active_exact_blackbox_candidates_enter_cadence_regardless_of_legacy_mode(
+    def test_active_blackbox_candidates_enter_cadence_without_legacy_policy(
         self,
     ) -> None:
-        """gray/formal/capabilities 不得再决定自然 one-shot 的候选集合。"""
+        """自然 one-shot 只依 canonical active cadence，不读取遗留 policy。"""
         from scheduler import launchd_prediction_runner as runner
-        from scheduler.blackbox_scheduler_admission import (
-            LAUNCHD_ONE_SHOT,
-            load_blackbox_scheduler_admission,
-        )
 
-        formal = _exact_blackbox_cfg(
-            "weekly_10y_lgbm_point_v1",
-            "0666a6989d6b",
+        formal = _cfg(
+            "active_formal_blackbox",
+            frequency="weekly",
+            runtime_type="blackbox_v2",
+            input_source="data_bridge_current",
         )
-        gray = _exact_blackbox_cfg(
-            "cgb_causal_wk_1y",
-            "cba824c27f0e",
+        gray = _cfg(
+            "active_gray_blackbox",
+            frequency="weekly",
+            runtime_type="blackbox_v2",
+            input_source="data_bridge_current",
         )
         config = self._config(Path(tempfile.mkdtemp()))
         engine = self._engine()
         calendar = _Calendar(trading=False)
-        legacy_policy = load_blackbox_scheduler_admission()
-        self.assertEqual(legacy_policy.mode(formal), "formal")
-        self.assertEqual(legacy_policy.mode(gray), "gray")
-        self.assertFalse(legacy_policy.allows(gray, plane=LAUNCHD_ONE_SHOT))
+        self.assertNotIn("load_blackbox_scheduler_admission", vars(runner))
 
         def execute(config_item, *_args, **_kwargs):
             return SimpleNamespace(
@@ -386,6 +363,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
 
         config = self._config(Path(tempfile.mkdtemp()))
         engine = _NoDatabaseEngine()
+        execution_context = runner._launchd_scheduled_execution_context()
         calls_by_cadence: dict[str, list[tuple[object, str, dict[str, object]]]] = {
             "daily": [],
             "weekly": [],
@@ -469,6 +447,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                         "algo_env": runner.DEFAULT_ALGO_ENV,
                         "prediction_phase": "scheduled_live",
                         "scheduled_control_plane": "launchd_one_shot",
+                        "scheduled_execution_context": execution_context,
                     }
                     for _config_item, run_date, kwargs in calls_by_cadence[cadence]
                 )

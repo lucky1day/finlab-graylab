@@ -131,6 +131,8 @@ _SAFE_EXECUTION_TOKEN_CHARACTERS = frozenset(
 )
 logger = logging.getLogger(__name__)
 PLATFORM_CONFIGURATION_ERROR_PREFIX = "platform configuration error:"
+_LAUNCHD_ONE_SHOT_CONTROL_PLANE = "launchd_one_shot"
+_LAUNCHD_SCHEDULED_EXECUTION_CONTEXT = object()
 
 _ALGORITHM_ENVIRONMENT_ALLOWLIST = frozenset(
     {
@@ -180,6 +182,11 @@ class SchemeRunResult:
     duration_sec: float | None = None
     error_msg: str | None = None
     run_id: int | None = None
+
+
+def _launchd_scheduled_execution_context() -> object:
+    """返回仅供 launchd one-shot runner 传递的进程内 capability。"""
+    return _LAUNCHD_SCHEDULED_EXECUTION_CONTEXT
 
 
 def _record_from_payload(item: dict) -> PredictionRecord:
@@ -1422,6 +1429,7 @@ def execute_scheme(
     timeout_sec: int = 600,
     prediction_phase: str = "scheduled_live",
     scheduled_control_plane: str = "direct_scheduled",
+    scheduled_execution_context: object | None = None,
     blackbox_precommit_validator: Callable[[object], None] | None = None,
     blackbox_snapshot_mode: str = BLACKBOX_SNAPSHOT_MODE_FRESH,
     blackbox_expected_generation_id: str | None = None,
@@ -1442,6 +1450,7 @@ def execute_scheme(
             scheduled_live_execution_configuration_error(
                 cfg,
                 scheduled_control_plane=scheduled_control_plane,
+                scheduled_execution_context=scheduled_execution_context,
             )
         )
         if configuration_error is not None:
@@ -1508,7 +1517,11 @@ def execute_scheme(
         creation_fence: dict[str, object] = {}
         if prediction_phase == "scheduled_live":
             frequency = getattr(cfg, "frequency", None)
-            if scheduled_control_plane == "launchd_one_shot":
+            if (
+                scheduled_control_plane == _LAUNCHD_ONE_SHOT_CONTROL_PLANE
+                and scheduled_execution_context
+                is _LAUNCHD_SCHEDULED_EXECUTION_CONTEXT
+            ):
                 creation_fence[
                     "scheduled_control_plane"
                 ] = scheduled_control_plane
@@ -1653,6 +1666,7 @@ def scheduled_live_execution_configuration_error(
     cfg: SchemeConfig,
     *,
     scheduled_control_plane: str,
+    scheduled_execution_context: object | None = None,
 ) -> str | None:
     """在任何数据库或子进程副作用前校验低层 scheduled_live 入口。"""
     canonical_error = _scheduled_live_canonical_configuration_error(
@@ -1661,12 +1675,16 @@ def scheduled_live_execution_configuration_error(
     if canonical_error is not None:
         return canonical_error
 
-    if scheduled_control_plane == "launchd_one_shot":
+    if (
+        scheduled_control_plane == _LAUNCHD_ONE_SHOT_CONTROL_PLANE
+        and scheduled_execution_context
+        is _LAUNCHD_SCHEDULED_EXECUTION_CONTEXT
+    ):
         return None
     return (
         f"{PLATFORM_CONFIGURATION_ERROR_PREFIX} "
-        "scheduled_live without schedule_item_id requires "
-        f"launchd_one_shot: scheme_id={cfg.scheme_id}"
+        "scheduled_live requires launchd_one_shot execution context: "
+        f"scheme_id={cfg.scheme_id}"
     )
 
 

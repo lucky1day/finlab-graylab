@@ -18,7 +18,11 @@ from typing import Iterator, Sequence
 from zoneinfo import ZoneInfo
 
 from scheduler.discovery import discover_schemes
-from scheduler.executor import DEFAULT_ALGO_ENV, execute_scheme
+from scheduler.executor import (
+    DEFAULT_ALGO_ENV,
+    _launchd_scheduled_execution_context,
+    execute_scheme,
+)
 from scheduler.repository import create_engine_from_env
 from scheduler.v2_daily_gate import V2DailyGateBlocked, require_v2_daily_ready
 from shared.calendar_service import get_calendar
@@ -264,6 +268,9 @@ def run(
                         algo_env=algo_env,
                         prediction_phase="scheduled_live",
                         scheduled_control_plane="launchd_one_shot",
+                        scheduled_execution_context=(
+                            _launchd_scheduled_execution_context()
+                        ),
                     )
                 except Exception:  # noqa: BLE001 - isolate one candidate
                     summary.failed.append(
