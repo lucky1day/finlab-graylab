@@ -245,6 +245,77 @@ def _stable_databridge_authority(
 
 
 class SignalGapPlanTests(unittest.TestCase):
+    def test_same_day_current_refresh_can_fill_prior_feature_date(
+        self,
+    ) -> None:
+        """T+1 的同日快照可补齐前一交易日 feature 的缺失信号。"""
+        target = replace(
+            _valid_target(),
+            runtime_type="blackbox_v2",
+            input_mode="databridge_v1",
+        )
+        case = signal_gap_plan.ExpectedSignalCase(
+            registry_scheme_id=target.registry_scheme_id,
+            base_scheme_id=target.base_scheme_id,
+            runtime_type=target.runtime_type,
+            frequency=target.frequency,
+            task_type=target.task_type,
+            target_tenor=target.target_tenor,
+            horizon=target.horizon,
+            predict_date="2026-08-06",
+            feature_date="2026-08-05",
+            target_date="2026-08-07",
+            segment="live",
+        )
+        authority = replace(
+            _stable_databridge_authority(case.feature_date),
+            refresh_date=case.predict_date,
+        )
+
+        action, _, reason = signal_gap_plan._blackbox_generation_eligibility(
+            case,
+            authority=authority,
+            authority_error=None,
+        )
+
+        self.assertEqual(action, "GRAY_LIVE_GAP")
+        self.assertEqual(reason, "LIVE_BUSINESS_KEY_MISSING")
+
+    def test_same_day_frozen_authority_can_fill_prior_feature_date(
+        self,
+    ) -> None:
+        """重放时的冻结同日快照同样只受 feature cutoff 约束。"""
+        target = replace(
+            _valid_target(),
+            runtime_type="blackbox_v2",
+            input_mode="databridge_v1",
+        )
+        case = signal_gap_plan.ExpectedSignalCase(
+            registry_scheme_id=target.registry_scheme_id,
+            base_scheme_id=target.base_scheme_id,
+            runtime_type=target.runtime_type,
+            frequency=target.frequency,
+            task_type=target.task_type,
+            target_tenor=target.target_tenor,
+            horizon=target.horizon,
+            predict_date="2026-08-06",
+            feature_date="2026-08-05",
+            target_date="2026-08-07",
+            segment="live",
+        )
+        authority = _databridge_authority_payload(case.feature_date)
+        authority["refresh_date"] = case.predict_date
+
+        action, _, reason = signal_gap_plan._blackbox_generation_eligibility(
+            case,
+            authority=None,
+            authority_error=None,
+            authority_override=authority,
+        )
+
+        self.assertEqual(action, "GRAY_LIVE_GAP")
+        self.assertEqual(reason, "LIVE_BUSINESS_KEY_MISSING")
+
     def test_authority_serializer_and_override_normalizer_round_trip(
         self,
     ) -> None:

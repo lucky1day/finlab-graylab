@@ -301,6 +301,18 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         def open_snapshot(**kwargs):
             self.assertEqual(kwargs["snapshot_date"], "2026-07-16")
             self.assertTrue(kwargs["require_fresh"])
+            self.assertEqual(
+                kwargs["data_root"],
+                Path("/srv/bond/data_bridge"),
+            )
+            self.assertEqual(
+                kwargs["refresh_runtime_root"],
+                Path("/srv/bond/data_bridge_runtime"),
+            )
+            self.assertEqual(
+                kwargs["schema_path"],
+                Path("/srv/bond/data_bridge_schema.json"),
+            )
             events.append("opened")
             yield BlackboxSnapshot(
                 snapshot_id="snapshot-current",
@@ -322,6 +334,11 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             return None
 
         process_start_guard = ProcessStartGuard()
+        data_bridge_config = SimpleNamespace(
+            data_root=Path("/srv/bond/data_bridge"),
+            runtime_root=Path("/srv/bond/data_bridge_runtime"),
+            schema_path=Path("/srv/bond/data_bridge_schema.json"),
+        )
         trusted_bundle = SimpleNamespace(
             combined_snapshot_id="snapshot-trusted",
             platform_input_ids=("api-wind-date-v1",),
@@ -341,41 +358,51 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                 bundle=trusted_bundle,
             )
 
-        with patch("scheduler.executor.load_metadata", return_value=_metadata()):
-            with patch("scheduler.executor.open_blackbox_input_snapshot", side_effect=open_snapshot):
-                with patch("scheduler.executor.get_calendar", return_value="calendar"):
-                    with patch(
-                        "scheduler.executor.build_daily_live_context",
-                        return_value=SimpleNamespace(feature_date="2026-07-15"),
-                    ):
-                        with patch(
-                            "scheduler.executor.resolve_blackbox_input_cutoffs",
-                            return_value=CutoffKeys("2026-07-15", "202627", "202606"),
-                        ):
-                            with patch("scheduler.executor.build_live_request", return_value=_request("001")):
-                                with patch(
-                                    "scheduler.blackbox_v2_runner.run_blackbox_predict",
-                                    return_value="record",
-                                ) as predict:
-                                    with patch(
-                                        "scheduler.executor."
-                                        "open_blackbox_runtime_view",
-                                        side_effect=open_runtime_view,
-                                    ):
-                                        result = run_blackbox_scheme_subprocess(
-                                            cfg,
-                                            "2026-07-16",
-                                            engine="engine",
-                                            algo_env="forecast_env_blackbox_v1",
-                                            timeout_sec=3600,
-                                            execution_token="scheduled-token_123",
-                                            process_started=process_started,
-                                            process_start_guard=(
-                                                process_start_guard
-                                            ),
-                                        )
+        with (
+            patch("scheduler.executor.load_metadata", return_value=_metadata()),
+            patch(
+                "shared.data_bridge.refresh.DataBridgeRefreshConfig.from_env",
+                return_value=data_bridge_config,
+            ) as data_bridge_config_from_env,
+            patch(
+                "scheduler.executor.open_blackbox_input_snapshot",
+                side_effect=open_snapshot,
+            ),
+            patch("scheduler.executor.get_calendar", return_value="calendar"),
+            patch(
+                "scheduler.executor.build_daily_live_context",
+                return_value=SimpleNamespace(feature_date="2026-07-15"),
+            ),
+            patch(
+                "scheduler.executor.resolve_blackbox_input_cutoffs",
+                return_value=CutoffKeys("2026-07-15", "202627", "202606"),
+            ),
+            patch(
+                "scheduler.executor.build_live_request",
+                return_value=_request("001"),
+            ),
+            patch(
+                "scheduler.blackbox_v2_runner.run_blackbox_predict",
+                return_value="record",
+            ) as predict,
+            patch(
+                "scheduler.executor.open_blackbox_runtime_view",
+                side_effect=open_runtime_view,
+            ),
+        ):
+            result = run_blackbox_scheme_subprocess(
+                cfg,
+                "2026-07-16",
+                engine="engine",
+                algo_env="forecast_env_blackbox_v1",
+                timeout_sec=3600,
+                execution_token="scheduled-token_123",
+                process_started=process_started,
+                process_start_guard=process_start_guard,
+            )
 
         self.assertEqual(result, ["record"])
+        data_bridge_config_from_env.assert_called_once_with()
         self.assertEqual(events, ["opened", "closed"])
         self.assertIs(
             predict.call_args.kwargs["process_started"],
@@ -507,6 +534,24 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         self.assertEqual(extra["weekly_cutoff_key"], "202621")
         self.assertEqual(extra["monthly_cutoff_key"], "202605")
         self.assertTrue(extra["backfilled_at"].endswith("+00:00"))
+
+    def test_gray_backfill_allows_snapshot_refreshed_on_predict_date(
+        self,
+    ) -> None:
+        """同日 DataBridge 刷新可用于前一 feature 日的历史重放。"""
+        from scheduler.executor import _validate_historical_snapshot
+
+        snapshot = SimpleNamespace(
+            generation_id="full-20260807-test",
+            refresh_date="2026-08-07",
+        )
+
+        _validate_historical_snapshot(
+            snapshot,
+            predict_date="2026-08-07",
+            expected_generation_id="full-20260807-test",
+            expected_refresh_date="2026-08-07",
+        )
 
     def test_unconfirmed_process_cleanup_preserves_runtime_view(self) -> None:
         from scheduler.executor import run_blackbox_scheme_subprocess

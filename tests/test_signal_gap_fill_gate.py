@@ -394,6 +394,33 @@ class SignalGapFillPlanScopeTests(unittest.TestCase):
 
 
 class BlackboxGrayReplayBatchCoordinatorTests(unittest.TestCase):
+    def test_same_day_refresh_enters_frozen_blackbox_replay_batch(
+        self,
+    ) -> None:
+        """同日刷新只要覆盖 feature_date，就能进入受控 Blackbox 重放。"""
+        action = _blackbox_action(
+            scheme_id="daily_trial",
+            frequency="daily",
+            task_type="T+1",
+            target_tenor="1Y",
+            horizon=1,
+            predict_date="2026-08-07",
+            feature_date="2026-08-06",
+            target_date="2026-08-07",
+            weekly_cutoff_key="202632",
+            monthly_cutoff_key="202608",
+        )
+        action["input_authority"]["refresh_date"] = "2026-08-07"
+        groups = signal_gap_fill_gate._build_groups({"actions": [action]})
+        executions = _executions_for(groups)
+
+        batches = signal_gap_fill_gate._build_blackbox_replay_batches(
+            executions,
+        )
+
+        self.assertEqual(len(batches), 1)
+        self.assertIsNone(executions[0].error)
+
     def test_fill_replays_frozen_authority_in_preflight_and_postflight(
         self,
     ) -> None:

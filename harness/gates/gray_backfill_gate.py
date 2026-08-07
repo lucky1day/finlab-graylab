@@ -9,6 +9,7 @@ from harness.gates.live_gate import LiveGate
 from harness.result import Evidence
 from shared.blackbox_v2.contracts import load_metadata
 from shared.calendar_service import get_calendar
+from shared.data_bridge.refresh import DataBridgeRefreshConfig
 from shared.input_artifacts import read_blackbox_current_state
 from shared.models import PredictionRecord
 from shared.prediction_context import (
@@ -63,15 +64,20 @@ def _gray_backfill_preflight(
     engine,
 ) -> tuple[list[Evidence], list[str]]:
     errors: list[str] = []
-    state = read_blackbox_current_state()
+    data_bridge_config = DataBridgeRefreshConfig.from_env()
+    state = read_blackbox_current_state(
+        schema_path=data_bridge_config.schema_path,
+        data_root=data_bridge_config.data_root,
+        refresh_runtime_root=data_bridge_config.runtime_root,
+    )
     refresh_date = _canonical_date(state.get("refresh_date"), "refresh_date")
     generation_id = str(state.get("generation_id") or "")
     predict_date = _canonical_date(ctx.predict_date, "predict_date")
     if not generation_id:
         errors.append("DataBridge current generation_id must be non-empty")
-    if predict_date >= refresh_date:
+    if predict_date > refresh_date:
         errors.append(
-            "gray-backfill predict_date must be before current DataBridge "
+            "gray-backfill predict_date must be on or before current DataBridge "
             f"refresh_date: predict_date={predict_date}, refresh_date={refresh_date}"
         )
 

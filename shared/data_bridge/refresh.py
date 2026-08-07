@@ -166,8 +166,16 @@ class DataBridgeRefreshConfig:
     def from_env(cls) -> "DataBridgeRefreshConfig":
         project_root = Path(__file__).resolve().parents[2]
         config = cls(
-            data_root=project_root / "data" / "data_bridge",
-            runtime_root=project_root / "backtest_artifacts" / "data_bridge_refresh",
+            data_root=Path(
+                os.getenv("DATABRIDGE_DATA_ROOT")
+                or project_root / "data" / "data_bridge"
+            ),
+            runtime_root=Path(
+                os.getenv("DATABRIDGE_RUNTIME_ROOT")
+                or project_root
+                / "backtest_artifacts"
+                / "data_bridge_refresh"
+            ),
             schema_path=project_root / "shared" / "blackbox_v2" / "data_bridge_v1_schema.json",
             daily_chunk_months=int(os.getenv("DATABRIDGE_DAILY_CHUNK_MONTHS", "3")),
             download_concurrency=int(os.getenv("DATABRIDGE_DOWNLOAD_CONCURRENCY", "4")),

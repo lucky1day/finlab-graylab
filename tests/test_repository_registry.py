@@ -1449,7 +1449,7 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             "authority_type": "databridge_current_generation",
             "generation_id": "generation-live",
             "manifest_sha256": "a" * 64,
-            "refresh_date": "2026-08-04",
+            "refresh_date": "2026-07-20",
             "cutoff_date": "2026-07-17",
             "replay_mode": "historical_as_of_replay",
             "vintage_disclaimer": "current_snapshot_as_of_not_historical_vintage",

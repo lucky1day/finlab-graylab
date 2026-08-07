@@ -27,6 +27,28 @@ class DataBridgeRefreshTests(unittest.TestCase):
         self.assertEqual(config.refresh_start, "06:30")
         self.assertEqual(config.refresh_deadline, "06:55")
 
+    def test_refresh_config_uses_explicit_shared_paths_from_env(
+        self,
+    ) -> None:
+        """发布 worktree 可显式指向唯一的生产 DataBridge 快照。"""
+        from shared.data_bridge.refresh import DataBridgeRefreshConfig
+
+        with patch.dict(
+            "os.environ",
+            {
+                "DATABRIDGE_DATA_ROOT": "/srv/bond/data_bridge",
+                "DATABRIDGE_RUNTIME_ROOT": "/srv/bond/data_bridge_runtime",
+            },
+            clear=True,
+        ):
+            config = DataBridgeRefreshConfig.from_env()
+
+        self.assertEqual(config.data_root, Path("/srv/bond/data_bridge"))
+        self.assertEqual(
+            config.runtime_root,
+            Path("/srv/bond/data_bridge_runtime"),
+        )
+
     def test_exclusive_publish_waits_for_snapshot_shared_lock(self) -> None:
         from shared.data_bridge.refresh import DataBridgeStore
 

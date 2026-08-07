@@ -4343,9 +4343,9 @@ def _normalize_gray_gap_source_authority(
             source_authority["refresh_date"],
             "source_authority.refresh_date",
         )
-        if refresh_date <= predict_date:
+        if refresh_date < predict_date:
             raise ValueError(
-                "source_authority refresh_date must be after historical "
+                "source_authority refresh_date must be on or after historical "
                 "predict_date"
             )
         if source_authority["replay_mode"] != "historical_as_of_replay":

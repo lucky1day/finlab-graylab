@@ -71,6 +71,7 @@ from shared.databridge_input_generation import (
     DataBridgeGenerationContext,
     open_databridge_generation,
 )
+from shared.data_bridge.refresh import DataBridgeRefreshConfig
 from shared.models import PredictionRecord
 from shared.native_input_generation import (
     NATIVE_GENERATION_EXPORTER_VERSION,
@@ -896,8 +897,12 @@ def run_blackbox_scheme_subprocess(
                 "calendar_generation requires databridge_generation"
             )
         require_fresh = snapshot_mode == BLACKBOX_SNAPSHOT_MODE_FRESH
+        data_bridge_config = DataBridgeRefreshConfig.from_env()
         snapshot_context = open_blackbox_input_snapshot(
             snapshot_date=predict_date,
+            schema_path=data_bridge_config.schema_path,
+            data_root=data_bridge_config.data_root,
+            refresh_runtime_root=data_bridge_config.runtime_root,
             require_fresh=require_fresh,
         )
         calendar_source = engine
@@ -1264,9 +1269,10 @@ def _validate_historical_snapshot(
         raise ValueError(
             "historical Blackbox snapshot dates must use canonical YYYY-MM-DD"
         )
-    if predict_date >= refresh_date:
+    if predict_date > refresh_date:
         raise ValueError(
-            "historical Blackbox snapshot requires predict_date before refresh_date: "
+            "historical Blackbox snapshot requires predict_date on or before "
+            "refresh_date: "
             f"predict_date={predict_date}, refresh_date={refresh_date}"
         )
     if expected_generation_id is not None and generation_id != expected_generation_id:

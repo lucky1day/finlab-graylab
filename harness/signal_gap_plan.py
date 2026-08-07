@@ -2373,7 +2373,7 @@ def _blackbox_generation_eligibility(
                 None,
                 "DATABRIDGE_CURRENT_INVALID",
             )
-        if item.predict_date >= selected["refresh_date"]:
+        if item.predict_date > selected["refresh_date"]:
             return (
                 "BLOCKED_NO_GENERATION",
                 selected,
@@ -2411,7 +2411,7 @@ def _blackbox_generation_eligibility(
             None,
             "DATABRIDGE_CURRENT_INVALID",
         )
-    if item.predict_date >= authority.refresh_date:
+    if item.predict_date > authority.refresh_date:
         return (
             "BLOCKED_NO_GENERATION",
             selected,

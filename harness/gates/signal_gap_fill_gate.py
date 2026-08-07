@@ -1102,9 +1102,9 @@ def _frozen_blackbox_action_authority(
         raise ValueError(
             "frozen Blackbox daily cutoff must equal feature_date"
         )
-    if authority["refresh_date"] <= group.predict_date:
+    if authority["refresh_date"] < group.predict_date:
         raise ValueError(
-            "frozen Blackbox refresh_date must be after predict_date"
+            "frozen Blackbox refresh_date must be on or after predict_date"
         )
     return authority
 
@@ -1303,9 +1303,9 @@ def _run_algorithm(
                 kwargs["live_source_package_sha256"] = package_sha256
         elif group.runtime_type == "blackbox_v2":
             authority = group.source_authority
-            if authority["refresh_date"] <= group.predict_date:
+            if authority["refresh_date"] < group.predict_date:
                 raise ValueError(
-                    "DataBridge refresh_date must be after predict_date"
+                    "DataBridge refresh_date must be on or after predict_date"
                 )
             kwargs.update(
                 {
@@ -1470,9 +1470,9 @@ def _repository_source_authority(
         or not _is_sha256(manifest_sha256)
     ):
         raise ValueError("DataBridge cutoff authority is invalid")
-    if refresh_date <= str(action["predict_date"]):
+    if refresh_date < str(action["predict_date"]):
         raise ValueError(
-            "DataBridge refresh_date must be after predict_date"
+            "DataBridge refresh_date must be on or after predict_date"
         )
     return {
         "authority_type": "databridge_current_generation",
