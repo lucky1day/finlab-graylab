@@ -72,6 +72,10 @@ _CHECK_ONLY_ATTEMPT_FIELDS = (
 )
 
 
+class _ReadyGateWriteError(RuntimeError):
+    """ready gate 写入失败不应触发 refresh retry。"""
+
+
 def expected_daily_date(*, refresh_date: str) -> str:
     """通过平台唯一共享交易日历计算本次 feature date。"""
     engine = create_sqlalchemy_engine()
@@ -350,7 +354,7 @@ def _run_refresh_with_config(
                     current=current,
                 )
             except Exception as exc:
-                raise DataBridgeRefreshError(
+                raise _ReadyGateWriteError(
                     "local MySQL DataBridge ready gate write failed"
                 ) from exc
         return 0, {
@@ -383,6 +387,8 @@ def _run_refresh_with_config(
                 check_name="configuration_error",
             )
         return _configuration_error(mode)
+    except _ReadyGateWriteError:
+        raise
     except Exception:
         # CLI 是操作面边界：未知运行时异常不得把 DSN、凭据或驱动上下文
         # 透传给 launchd 日志。KeyboardInterrupt/SystemExit 不属于 Exception，
@@ -486,6 +492,18 @@ def run_command(mode: Mode, *, refresh_date: str) -> tuple[int, dict[str, object
                 config=config,
                 expected_feature_date=expected_feature_date,
             )
+    except _ReadyGateWriteError:
+        _try_write_blocked_gate(
+            config,
+            refresh_date=refresh_date,
+            expected_feature_date=expected_feature_date,
+            check_name="refresh_failed",
+        )
+        return 1, {
+            "status": "failed",
+            "mode": mode,
+            "error": "local MySQL DataBridge refresh or validation failed",
+        }
     except (OSError, ValueError, SQLAlchemyError):
         return _configuration_error(mode)
     except Exception:

@@ -276,6 +276,95 @@ class DataBridgeCliTests(unittest.TestCase):
         )
         sleep.assert_called_once_with(30)
 
+    def test_publish_retries_through_real_refresh_current_boundary(self) -> None:
+        from scripts import refresh_data_bridge_current as command
+        from shared.data_bridge.refresh import DataBridgeRefreshError
+
+        config = SimpleNamespace()
+        engine = SimpleNamespace(dispose=Mock())
+        authority = object()
+        builder = object()
+        result = SimpleNamespace(
+            state={"generation_id": "full-test", "business_digest": "a" * 64},
+            published=True,
+            rounds_completed=2,
+            duration_sec=1.25,
+        )
+        current = SimpleNamespace(
+            state={
+                "generation_id": "full-test",
+                "refresh_date": "2026-07-29",
+                "business_digest": "a" * 64,
+            }
+        )
+        with (
+            patch.object(command.DataBridgeRefreshConfig, "from_env", return_value=config),
+            patch.object(command, "expected_daily_date", return_value="2026-07-28"),
+            patch.object(command, "create_sqlalchemy_engine", return_value=engine),
+            patch.object(
+                command,
+                "resolve_databridge_continuity_authority_from_engine",
+                return_value=authority,
+            ),
+            patch.object(command, "MySqlDataBridgeRoundBuilder", return_value=builder),
+            patch.object(
+                command,
+                "run_full_refresh",
+                side_effect=[DataBridgeRefreshError("source unavailable"), result],
+            ) as full_refresh,
+            patch.object(command, "check_current_dataset", return_value=current),
+            patch.object(command, "_write_blocked_gate") as blocked,
+            patch.object(command, "_write_ready_gate") as ready,
+        ):
+            exit_code, payload = command.run_command(
+                "publish",
+                refresh_date="2026-07-29",
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(full_refresh.call_count, 2)
+        self.assertTrue(
+            all(
+                refresh_call.kwargs["deadline_at"]
+                == self._legacy_publish_deadline
+                for refresh_call in full_refresh.call_args_list
+            )
+        )
+        command.time.sleep.assert_called_once_with(
+            command.PUBLISH_REFRESH_RETRY_DELAY_SEC
+        )
+        self.assertEqual(engine.dispose.call_count, 2)
+        self.assertEqual(
+            blocked.call_args_list,
+            [
+                call(
+                    config,
+                    refresh_date="2026-07-29",
+                    expected_feature_date="2026-07-28",
+                    check_name="refresh_pending",
+                ),
+                call(
+                    config,
+                    refresh_date="2026-07-29",
+                    expected_feature_date="2026-07-28",
+                    check_name="refresh_failed",
+                ),
+                call(
+                    config,
+                    refresh_date="2026-07-29",
+                    expected_feature_date="2026-07-28",
+                    check_name="refresh_pending",
+                ),
+            ],
+        )
+        ready.assert_called_once_with(
+            config,
+            refresh_date="2026-07-29",
+            expected_feature_date="2026-07-28",
+            current=current,
+        )
+
     def test_publish_does_not_retry_or_sleep_at_deadline(self) -> None:
         from scripts import refresh_data_bridge_current as command
 
@@ -576,7 +665,7 @@ class DataBridgeCliTests(unittest.TestCase):
                 command,
                 "refresh_current",
                 side_effect=DataBridgeRefreshError("source unavailable"),
-            ),
+            ) as refresh,
             patch.object(command, "_write_blocked_gate") as blocked,
             patch.object(command, "_write_ready_gate") as ready,
         ):
@@ -607,6 +696,14 @@ class DataBridgeCliTests(unittest.TestCase):
                     ),
                 )
             ],
+        )
+        self.assertEqual(refresh.call_count, command.PUBLISH_REFRESH_MAX_ATTEMPTS)
+        self.assertTrue(
+            all(
+                refresh_call.kwargs["deadline_at"]
+                == self._legacy_publish_deadline
+                for refresh_call in refresh.call_args_list
+            )
         )
         ready.assert_not_called()
 
@@ -687,7 +784,7 @@ class DataBridgeCliTests(unittest.TestCase):
         with (
             patch.object(command.DataBridgeRefreshConfig, "from_env", return_value=config),
             patch.object(command, "expected_daily_date", return_value="2026-07-28"),
-            patch.object(command, "refresh_current", return_value=result),
+            patch.object(command, "refresh_current", return_value=result) as refresh,
             patch.object(command, "check_current_dataset", return_value=current),
             patch.object(command, "_write_blocked_gate") as blocked,
             patch.object(
@@ -704,9 +801,23 @@ class DataBridgeCliTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertEqual(payload["status"], "failed")
         self.assertNotIn("do-not-leak", str(payload))
+        refresh.assert_called_once()
         self.assertEqual(
-            blocked.call_count,
-            command.PUBLISH_REFRESH_MAX_ATTEMPTS * 2,
+            blocked.call_args_list,
+            [
+                call(
+                    config,
+                    refresh_date="2026-07-29",
+                    expected_feature_date="2026-07-28",
+                    check_name="refresh_pending",
+                ),
+                call(
+                    config,
+                    refresh_date="2026-07-29",
+                    expected_feature_date="2026-07-28",
+                    check_name="refresh_failed",
+                ),
+            ],
         )
 
     def test_unexpected_publish_exception_is_sanitized_and_blocks_gate(
