@@ -9,6 +9,7 @@ import fcntl
 import json
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, Mapping
@@ -41,6 +42,8 @@ from shared.data_service import create_sqlalchemy_engine  # noqa: E402
 Mode = Literal["dry-run", "publish", "check-only"]
 LAUNCHD_PUBLISHER_ENV = "BFL_DATABRIDGE_PRODUCER"
 LAUNCHD_PUBLISHER_VALUE = "launchd-one-shot"
+PUBLISH_REFRESH_MAX_ATTEMPTS = 3
+PUBLISH_REFRESH_RETRY_DELAY_SEC = 30
 _CHECK_ONLY_STATE_FIELDS = (
     "schema_version",
     "generation_id",
@@ -84,6 +87,7 @@ def refresh_current(
     expected_feature_date: str,
     publish: bool,
     config: DataBridgeRefreshConfig,
+    deadline_at: datetime | None = None,
 ):
     """仅通过本机 MySQL source 完成完整 DataBridge refresh。"""
     allow_legacy_v1_period_fallback = (
@@ -103,17 +107,22 @@ def refresh_current(
                 ),
             )
         )
-        return run_full_refresh(
-            config=config,
-            expected_daily_date=expected_feature_date,
-            refresh_date=refresh_date,
-            publish=publish,
-            continuity_authority=continuity_authority,
-            round_builder=MySqlDataBridgeRoundBuilder(
+        refresh_kwargs = {
+            "config": config,
+            "expected_daily_date": expected_feature_date,
+            "refresh_date": refresh_date,
+            "publish": publish,
+            "continuity_authority": continuity_authority,
+            "round_builder": MySqlDataBridgeRoundBuilder(
                 engine=engine,
                 config=config,
             ),
-            require_launchd_round_builder=True,
+            "require_launchd_round_builder": True,
+        }
+        if deadline_at is not None:
+            refresh_kwargs["deadline_at"] = deadline_at
+        return run_full_refresh(
+            **refresh_kwargs,
         )
     finally:
         engine.dispose()
@@ -134,6 +143,18 @@ def _checked_at() -> str:
     return datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(
         timespec="seconds"
     )
+
+
+def _now() -> datetime:
+    return datetime.now(ZoneInfo("Asia/Shanghai"))
+
+
+def _refresh_deadline_at(
+    config: DataBridgeRefreshConfig,
+    *,
+    refresh_date: str,
+) -> datetime:
+    return config.deadline_at(refresh_date)
 
 
 def _write_blocked_gate(
@@ -285,6 +306,7 @@ def _run_refresh_with_config(
     refresh_date: str,
     config: DataBridgeRefreshConfig,
     expected_feature_date: str,
+    deadline_at: datetime | None = None,
 ) -> tuple[int, dict[str, object]]:
     """在 publish caller 已持有 publisher lock 时执行刷新与 gate 事务。"""
     try:
@@ -299,11 +321,16 @@ def _run_refresh_with_config(
                 "mode": mode,
                 "error": "local MySQL DataBridge gate write failed",
             }
+        refresh_kwargs = {
+            "refresh_date": refresh_date,
+            "expected_feature_date": expected_feature_date,
+            "publish": mode == "publish",
+            "config": config,
+        }
+        if deadline_at is not None:
+            refresh_kwargs["deadline_at"] = deadline_at
         result = refresh_current(
-            refresh_date=refresh_date,
-            expected_feature_date=expected_feature_date,
-            publish=mode == "publish",
-            config=config,
+            **refresh_kwargs,
         )
         if mode == "publish":
             current = check_current_dataset(
@@ -370,6 +397,42 @@ def _run_refresh_with_config(
         return _refresh_failure(mode)
 
 
+def _run_publish_with_retries(
+    *,
+    refresh_date: str,
+    config: DataBridgeRefreshConfig,
+    expected_feature_date: str,
+) -> tuple[int, dict[str, object]]:
+    """在同一发布进程内，于已有 refresh deadline 前有限重试。"""
+    deadline_at = _refresh_deadline_at(config, refresh_date=refresh_date)
+    result: tuple[int, dict[str, object]] | None = None
+    for attempt in range(PUBLISH_REFRESH_MAX_ATTEMPTS):
+        if _now() >= deadline_at:
+            return result if result is not None else _refresh_failure("publish")
+        result = _run_refresh_with_config(
+            "publish",
+            refresh_date=refresh_date,
+            config=config,
+            expected_feature_date=expected_feature_date,
+            deadline_at=deadline_at,
+        )
+        exit_code, payload = result
+        if (
+            exit_code != 1
+            or payload.get("error")
+            != "local MySQL DataBridge refresh or validation failed"
+            or attempt + 1 == PUBLISH_REFRESH_MAX_ATTEMPTS
+        ):
+            return result
+
+        remaining_sec = (deadline_at - _now()).total_seconds()
+        if remaining_sec <= 0:
+            return result
+        time.sleep(min(PUBLISH_REFRESH_RETRY_DELAY_SEC, remaining_sec))
+
+    return result if result is not None else _refresh_failure("publish")
+
+
 def run_command(mode: Mode, *, refresh_date: str) -> tuple[int, dict[str, object]]:
     if (
         mode == "publish"
@@ -418,8 +481,7 @@ def run_command(mode: Mode, *, refresh_date: str) -> tuple[int, dict[str, object
                     "mode": mode,
                     "error": "local MySQL DataBridge publisher is already running",
                 }
-            return _run_refresh_with_config(
-                mode,
+            return _run_publish_with_retries(
                 refresh_date=refresh_date,
                 config=config,
                 expected_feature_date=expected_feature_date,

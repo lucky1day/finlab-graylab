@@ -4,19 +4,41 @@ import inspect
 import os
 import unittest
 from contextlib import nullcontext
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import Mock, call, patch
+from zoneinfo import ZoneInfo
+
+SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 class DataBridgeCliTests(unittest.TestCase):
     def setUp(self) -> None:
         from scripts import refresh_data_bridge_current as command
 
+        self._legacy_publish_deadline = datetime(
+            2099,
+            1,
+            1,
+            tzinfo=SHANGHAI,
+        )
         self._publish_marker = patch.dict(
             os.environ,
             {"BFL_DATABRIDGE_PRODUCER": "launchd-one-shot"},
         )
         self._publish_marker.start()
+        self._refresh_deadline = patch.object(
+            command,
+            "_refresh_deadline_at",
+            side_effect=lambda config, *, refresh_date: getattr(
+                config,
+                "deadline_at",
+                lambda _refresh_date: self._legacy_publish_deadline,
+            )(refresh_date),
+        )
+        self._refresh_deadline.start()
+        self._sleep = patch.object(command.time, "sleep")
+        self._sleep.start()
         self._publisher_lock = patch.object(
             command,
             "_publisher_lock",
@@ -27,6 +49,8 @@ class DataBridgeCliTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self._publisher_lock.stop()
+        self._sleep.stop()
+        self._refresh_deadline.stop()
         self._publish_marker.stop()
 
     def test_expected_feature_date_uses_shared_calendar(self) -> None:
@@ -167,6 +191,7 @@ class DataBridgeCliTests(unittest.TestCase):
             expected_feature_date="2026-07-28",
             publish=True,
             config=config,
+            deadline_at=self._legacy_publish_deadline,
         )
         check.assert_called_once_with(
             config,
@@ -182,6 +207,301 @@ class DataBridgeCliTests(unittest.TestCase):
             refresh_date="2026-07-29",
             expected_feature_date="2026-07-28",
             current=current,
+        )
+
+    def test_publish_retries_failed_refresh_before_deadline(self) -> None:
+        from scripts import refresh_data_bridge_current as command
+
+        deadline = datetime(2026, 7, 29, 7, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        config = SimpleNamespace(deadline_at=lambda _refresh_date: deadline)
+        first_failure = (
+            1,
+            {
+                "status": "failed",
+                "mode": "publish",
+                "error": "local MySQL DataBridge refresh or validation failed",
+            },
+        )
+        success = (
+            0,
+            {
+                "status": "ok",
+                "mode": "publish",
+            },
+        )
+        sleep = Mock()
+        with (
+            patch.object(
+                command,
+                "_run_refresh_with_config",
+                side_effect=[first_failure, success],
+            ) as refresh,
+            patch.object(
+                command,
+                "_now",
+                side_effect=[
+                    datetime(2026, 7, 29, 6, 30, tzinfo=ZoneInfo("Asia/Shanghai")),
+                    datetime(2026, 7, 29, 6, 30, tzinfo=ZoneInfo("Asia/Shanghai")),
+                    datetime(2026, 7, 29, 6, 31, tzinfo=ZoneInfo("Asia/Shanghai")),
+                ],
+                create=True,
+            ),
+            patch.object(command, "time", SimpleNamespace(sleep=sleep), create=True),
+        ):
+            actual = command._run_publish_with_retries(
+                refresh_date="2026-07-29",
+                config=config,
+                expected_feature_date="2026-07-28",
+            )
+
+        self.assertEqual(actual, success)
+        self.assertEqual(
+            refresh.call_args_list,
+            [
+                call(
+                    "publish",
+                    refresh_date="2026-07-29",
+                    config=config,
+                    expected_feature_date="2026-07-28",
+                    deadline_at=deadline,
+                ),
+                call(
+                    "publish",
+                    refresh_date="2026-07-29",
+                    config=config,
+                    expected_feature_date="2026-07-28",
+                    deadline_at=deadline,
+                ),
+            ],
+        )
+        sleep.assert_called_once_with(30)
+
+    def test_publish_does_not_retry_or_sleep_at_deadline(self) -> None:
+        from scripts import refresh_data_bridge_current as command
+
+        deadline = datetime(2026, 7, 29, 7, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        config = SimpleNamespace(deadline_at=lambda _refresh_date: deadline)
+        failure = (
+            1,
+            {
+                "status": "failed",
+                "mode": "publish",
+                "error": "local MySQL DataBridge refresh or validation failed",
+            },
+        )
+        sleep = Mock()
+        with (
+            patch.object(
+                command,
+                "_run_refresh_with_config",
+                return_value=failure,
+            ) as refresh,
+            patch.object(
+                command,
+                "_now",
+                side_effect=[
+                    datetime(2026, 7, 29, 6, 59, 59, tzinfo=ZoneInfo("Asia/Shanghai")),
+                    deadline,
+                ],
+                create=True,
+            ),
+            patch.object(command, "time", SimpleNamespace(sleep=sleep), create=True),
+        ):
+            actual = command._run_publish_with_retries(
+                refresh_date="2026-07-29",
+                config=config,
+                expected_feature_date="2026-07-28",
+            )
+
+        self.assertEqual(actual, failure)
+        refresh.assert_called_once_with(
+            "publish",
+            refresh_date="2026-07-29",
+            config=config,
+            expected_feature_date="2026-07-28",
+            deadline_at=deadline,
+        )
+        sleep.assert_not_called()
+
+    def test_publish_clips_retry_sleep_to_remaining_deadline(self) -> None:
+        from scripts import refresh_data_bridge_current as command
+
+        deadline = datetime(2026, 7, 29, 7, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        config = SimpleNamespace(deadline_at=lambda _refresh_date: deadline)
+        failure = (
+            1,
+            {
+                "status": "failed",
+                "mode": "publish",
+                "error": "local MySQL DataBridge refresh or validation failed",
+            },
+        )
+        sleep = Mock()
+        with (
+            patch.object(
+                command,
+                "_run_refresh_with_config",
+                return_value=failure,
+            ) as refresh,
+            patch.object(
+                command,
+                "_now",
+                side_effect=[
+                    datetime(2026, 7, 29, 6, 59, 50, tzinfo=ZoneInfo("Asia/Shanghai")),
+                    datetime(2026, 7, 29, 6, 59, 50, tzinfo=ZoneInfo("Asia/Shanghai")),
+                    deadline,
+                ],
+                create=True,
+            ),
+            patch.object(command, "time", SimpleNamespace(sleep=sleep), create=True),
+        ):
+            actual = command._run_publish_with_retries(
+                refresh_date="2026-07-29",
+                config=config,
+                expected_feature_date="2026-07-28",
+            )
+
+        self.assertEqual(actual, failure)
+        refresh.assert_called_once()
+        sleep.assert_called_once_with(10.0)
+
+    def test_publish_does_not_retry_configuration_result(self) -> None:
+        from scripts import refresh_data_bridge_current as command
+
+        deadline = datetime(2026, 7, 29, 7, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        config = SimpleNamespace(deadline_at=lambda _refresh_date: deadline)
+        configuration_error = (
+            2,
+            {
+                "status": "configuration_error",
+                "mode": "publish",
+                "error": "local MySQL DataBridge configuration is invalid or incomplete",
+            },
+        )
+        sleep = Mock()
+        with (
+            patch.object(
+                command,
+                "_run_refresh_with_config",
+                return_value=configuration_error,
+            ) as refresh,
+            patch.object(
+                command,
+                "_now",
+                return_value=datetime(
+                    2026,
+                    7,
+                    29,
+                    6,
+                    30,
+                    tzinfo=ZoneInfo("Asia/Shanghai"),
+                ),
+                create=True,
+            ),
+            patch.object(command, "time", SimpleNamespace(sleep=sleep), create=True),
+        ):
+            actual = command._run_publish_with_retries(
+                refresh_date="2026-07-29",
+                config=config,
+                expected_feature_date="2026-07-28",
+            )
+
+        self.assertEqual(actual, configuration_error)
+        refresh.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_publish_returns_sanitized_failure_without_late_first_attempt(self) -> None:
+        from scripts import refresh_data_bridge_current as command
+
+        deadline = datetime(2026, 7, 29, 7, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        config = SimpleNamespace(deadline_at=lambda _refresh_date: deadline)
+        sleep = Mock()
+        with (
+            patch.object(command, "_run_refresh_with_config") as refresh,
+            patch.object(command, "_now", return_value=deadline, create=True),
+            patch.object(command, "time", SimpleNamespace(sleep=sleep), create=True),
+        ):
+            exit_code, payload = command._run_publish_with_retries(
+                refresh_date="2026-07-29",
+                config=config,
+                expected_feature_date="2026-07-28",
+            )
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(payload["status"], "failed")
+        self.assertEqual(payload["mode"], "publish")
+        self.assertNotIn("deadline", payload["error"])
+        refresh.assert_not_called()
+        sleep.assert_not_called()
+
+    def test_refresh_current_forwards_deadline_to_run_full_refresh(self) -> None:
+        from scripts import refresh_data_bridge_current as command
+
+        deadline = datetime(2026, 7, 29, 7, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        engine = SimpleNamespace(dispose=Mock())
+        config = SimpleNamespace()
+        authority = object()
+        builder = object()
+        result = SimpleNamespace()
+        with (
+            patch.object(command, "create_sqlalchemy_engine", return_value=engine),
+            patch.object(
+                command,
+                "resolve_databridge_continuity_authority_from_engine",
+                return_value=authority,
+            ),
+            patch.object(
+                command,
+                "MySqlDataBridgeRoundBuilder",
+                return_value=builder,
+            ),
+            patch.object(
+                command,
+                "run_full_refresh",
+                return_value=result,
+            ) as refresh,
+        ):
+            actual = command.refresh_current(
+                refresh_date="2026-07-29",
+                expected_feature_date="2026-07-28",
+                publish=True,
+                config=config,
+                deadline_at=deadline,
+            )
+
+        self.assertIs(actual, result)
+        self.assertEqual(refresh.call_args.kwargs["deadline_at"], deadline)
+        engine.dispose.assert_called_once_with()
+
+    def test_non_publish_refresh_does_not_retry(self) -> None:
+        from scripts import refresh_data_bridge_current as command
+
+        config = SimpleNamespace()
+        failure = (
+            1,
+            {
+                "status": "failed",
+                "mode": "dry-run",
+                "error": "local MySQL DataBridge refresh or validation failed",
+            },
+        )
+        with (
+            patch.object(command.DataBridgeRefreshConfig, "from_env", return_value=config),
+            patch.object(command, "expected_daily_date", return_value="2026-07-28"),
+            patch.object(
+                command,
+                "_run_refresh_with_config",
+                return_value=failure,
+            ) as refresh,
+        ):
+            actual = command.run_command("dry-run", refresh_date="2026-07-29")
+
+        self.assertEqual(actual, failure)
+        refresh.assert_called_once_with(
+            "dry-run",
+            refresh_date="2026-07-29",
+            config=config,
+            expected_feature_date="2026-07-28",
         )
 
     def test_publish_rejects_missing_launchd_one_shot_marker(self) -> None:
@@ -270,18 +590,22 @@ class DataBridgeCliTests(unittest.TestCase):
         self.assertEqual(
             blocked.call_args_list,
             [
-                call(
-                    config,
-                    refresh_date="2026-07-29",
-                    expected_feature_date="2026-07-28",
-                    check_name="refresh_pending",
-                ),
-                call(
-                    config,
-                    refresh_date="2026-07-29",
-                    expected_feature_date="2026-07-28",
-                    check_name="refresh_failed",
-                ),
+                gate_call
+                for _ in range(command.PUBLISH_REFRESH_MAX_ATTEMPTS)
+                for gate_call in (
+                    call(
+                        config,
+                        refresh_date="2026-07-29",
+                        expected_feature_date="2026-07-28",
+                        check_name="refresh_pending",
+                    ),
+                    call(
+                        config,
+                        refresh_date="2026-07-29",
+                        expected_feature_date="2026-07-28",
+                        check_name="refresh_failed",
+                    ),
+                )
             ],
         )
         ready.assert_not_called()
@@ -380,7 +704,10 @@ class DataBridgeCliTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertEqual(payload["status"], "failed")
         self.assertNotIn("do-not-leak", str(payload))
-        self.assertEqual(blocked.call_count, 2)
+        self.assertEqual(
+            blocked.call_count,
+            command.PUBLISH_REFRESH_MAX_ATTEMPTS * 2,
+        )
 
     def test_unexpected_publish_exception_is_sanitized_and_blocks_gate(
         self,
