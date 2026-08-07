@@ -8,8 +8,9 @@ Asia/Shanghai 业务日）之后开始，Native 从 Registry ``created_at`` 日�
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from dataclasses import asdict, dataclass, replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal, Sequence
 from zoneinfo import ZoneInfo
 
@@ -546,13 +547,14 @@ class _SnapshotCalendar:
         return _date(value) in self.trading_set
 
     def previous_trading_day(self, value: str) -> str:
-        candidates = [day for day in self.trading_days if day < _date(value)]
-        if not candidates:
+        index = bisect_left(self.trading_days, _date(value))
+        if index == 0:
             raise ValueError("no previous trading day")
-        return candidates[-1]
+        return self.trading_days[index - 1]
 
     def next_trading_days(self, value: str, count: int) -> list[str]:
-        return [day for day in self.trading_days if day > _date(value)][:count]
+        index = bisect_right(self.trading_days, _date(value))
+        return list(self.trading_days[index : index + count])
 
     def nth_trading_day_after(self, value: str, n: int) -> str:
         days = self.next_trading_days(value, n)
@@ -570,7 +572,7 @@ class _SnapshotCalendar:
         if frequency == "daily":
             values = self.trading_days
         elif frequency == "weekly":
-            values = self.week.week_predict_date.values()
+            values = _weekly_live_dates(start_date, end_date)
         elif frequency == "monthly":
             values = _monthly_dates(start_date, end_date)
         else:
@@ -594,6 +596,17 @@ def _monthly_dates(start_date: str, end_date: str) -> tuple[str, ...]:
     while current.isoformat() <= end_date:
         result.append(current.isoformat())
         current = date(current.year + (current.month == 12), current.month % 12 + 1, 15)
+    return tuple(result)
+
+
+def _weekly_live_dates(start_date: str, end_date: str) -> tuple[str, ...]:
+    """返回与 weekly launchd 入口一致的自然周六信号日。"""
+    current = date.fromisoformat(start_date)
+    current += timedelta(days=(5 - current.weekday()) % 7)
+    result: list[str] = []
+    while current.isoformat() <= end_date:
+        result.append(current.isoformat())
+        current += timedelta(days=7)
     return tuple(result)
 
 

@@ -56,6 +56,8 @@ SCHEME_FIELDS = {
     "target_label",
     "status",
     "deployed_at",
+    "signal_status",
+    "signal_failure_category",
     "live_rows",
     "backtest",
 }
@@ -69,6 +71,7 @@ BACKTEST_FIELDS = {
 }
 TASK_TYPES = {"T+1", "T+5", "weekly_point", "weekly_average", "monthly"}
 LIVE_PHASES = {"gray_live", "scheduled_live"}
+SIGNAL_STATUSES = {"missing", "not_due", "present"}
 MAX_SAFE_INTEGER = 9_007_199_254_740_991
 SNAPSHOT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 GENERATED_AT_PATTERN = re.compile(
@@ -500,6 +503,21 @@ def validate_dashboard_schema(payload: object) -> None:
         if scheme["status"] != "active":
             raise ValueError("status must be active")
         _iso_date(scheme["deployed_at"])
+        signal_status = scheme["signal_status"]
+        if signal_status not in SIGNAL_STATUSES:
+            raise ValueError("signal_status is invalid")
+        signal_failure_category = scheme["signal_failure_category"]
+        if signal_status == "missing":
+            try:
+                _canonical_string(signal_failure_category)
+            except ValueError as error:
+                raise ValueError(
+                    "signal_failure_category is invalid for missing signal"
+                ) from error
+        elif signal_failure_category is not None:
+            raise ValueError(
+                "signal_failure_category must be null for available signal"
+            )
         _validate_rows(scheme["live_rows"], source="live")
         backtest = scheme["backtest"]
         if backtest is not None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 import io
 import json
 import unittest
@@ -96,6 +97,78 @@ class SignalGapReportTests(unittest.TestCase):
 
         self.assertEqual((weekly.feature_date, weekly.target_date), ("2026-08-07", "2026-08-14"))
         self.assertEqual((monthly.predict_date, monthly.feature_date, monthly.target_date), ("2026-08-15", "2026-08-14", "2026-09-15"))
+
+    def test_weekly_live_gap_report_uses_saturday_when_friday_is_holiday(self) -> None:
+        """周度实盘由 launchd 固定周六运行，不能把节假日周五报成缺口。"""
+        self._calendar("2026-06-12", "2026-06-26")
+        with self.engine.begin() as connection:
+            connection.execute(
+                text("UPDATE t_trade_calendar SET trade_flag = '0' WHERE rdate = '2026-06-19'")
+            )
+        self._registry(
+            "weekly__h6__10Y",
+            "weekly",
+            "native_adapter",
+            "weekly",
+            "weekly_point",
+            "10Y",
+            6,
+            "2026-06-11",
+        )
+        self._prediction(
+            "weekly",
+            "current",
+            "10Y",
+            6,
+            "2026-06-13",
+            "2026-06-12",
+            "2026-06-18",
+            "scheduled_live",
+        )
+        self._prediction(
+            "weekly",
+            "current",
+            "10Y",
+            6,
+            "2026-06-20",
+            "2026-06-18",
+            "2026-06-26",
+            "scheduled_live",
+        )
+
+        report = self._report("2026-06-12", "2026-06-20")
+
+        self.assertEqual(
+            [item.predict_date for item in report.expected],
+            ["2026-06-13", "2026-06-20"],
+        )
+        self.assertEqual(report.missing, ())
+
+    def test_snapshot_calendar_uses_indexed_trading_day_lookups(self) -> None:
+        """历史区间报告不得为每个预测日线性扫描整个交易日历。"""
+        from shared.signal_gap_report import _SnapshotCalendar
+
+        with self.engine.connect() as connection:
+            calendar = _SnapshotCalendar(connection)
+
+        with (
+            patch(
+                "shared.signal_gap_report.bisect_left",
+                wraps=bisect_left,
+            ) as previous_lookup,
+            patch(
+                "shared.signal_gap_report.bisect_right",
+                wraps=bisect_right,
+            ) as next_lookup,
+        ):
+            self.assertEqual(calendar.previous_trading_day("2026-08-03"), "2026-07-31")
+            self.assertEqual(
+                calendar.next_trading_days("2026-08-01", 2),
+                ["2026-08-03", "2026-08-04"],
+            )
+
+        previous_lookup.assert_called_once()
+        next_lookup.assert_called_once()
 
     def test_safe_failure_categories_and_historic_gap_survive_later_present_signal(self) -> None:
         self._registry("native__h1__5Y", "native", "native_adapter", "daily", "T+1", "5Y", 1, "2026-08-03")

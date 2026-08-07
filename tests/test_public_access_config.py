@@ -516,6 +516,48 @@ def test_public_check_script_is_bash3_safe_and_head_is_snapshot_independent() ->
     assert '"$actual_length" == "$expected_length"' not in script
 
 
+def test_public_check_uses_versioned_assets_advertised_by_the_page(
+    tmp_path: Path,
+) -> None:
+    """验收必须验证页面实际引用的资源，不能把一次性版本 token 写死。"""
+    script = CHECK_SCRIPT_PATH.read_text(encoding="utf-8")
+    assert "POLICY_VERSION" not in script
+    match = re.search(
+        r"# VERSIONED_ASSET_EXTRACTOR_BEGIN\n"
+        r"(?P<extractor>.*?)\n"
+        r"# VERSIONED_ASSET_EXTRACTOR_END",
+        script,
+        flags=re.DOTALL,
+    )
+    assert match is not None
+
+    page = tmp_path / "index.html"
+    page.write_text(
+        """
+        <link rel=\"stylesheet\" href=\"aifin-shell.css?v=css-next\">
+        <script src=\"aifin-shell.js?v=js-next\"></script>
+        """,
+        encoding="utf-8",
+    )
+
+    def extract(asset_name: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-c", match.group("extractor"), str(page), asset_name],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    assert extract("aifin-shell.css").stdout.strip() == "aifin-shell.css?v=css-next"
+    assert extract("aifin-shell.js").stdout.strip() == "aifin-shell.js?v=js-next"
+
+    page.write_text(
+        '<script src="https://invalid.example/aifin-shell.js?v=js-next"></script>',
+        encoding="utf-8",
+    )
+    assert extract("aifin-shell.js").returncode != 0
+
+
 def test_public_check_script_extracts_a_real_composite_id_from_v1_payload(
     tmp_path: Path,
 ) -> None:

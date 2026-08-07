@@ -9,7 +9,6 @@
 set -euo pipefail
 
 readonly USER_AGENT="bond-factor-lab-access-check/1.0"
-readonly POLICY_VERSION="20260722a"
 
 usage() {
   printf 'Usage: %s --mode rollout|final https://bond.finailab.cn\n' "$0" >&2
@@ -213,13 +212,53 @@ assert_last_not_gzip() {
   fi
 }
 
-assert_last_body_contains() {
-  local label="$1" expected="$2"
-  if grep -Fq -- "$expected" "$LAST_BODY"; then
-    record_pass "$label"
-  else
-    record_failure "$label" " body_token=missing"
-  fi
+extract_versioned_asset_url() {
+  local body_path="$1" asset_name="$2"
+  python3 - "$body_path" "$asset_name" <<'PY'
+# VERSIONED_ASSET_EXTRACTOR_BEGIN
+from html.parser import HTMLParser
+from pathlib import Path
+from urllib.parse import parse_qsl, urlsplit
+import sys
+
+
+body_path, asset_name = sys.argv[1:]
+
+
+class AssetParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.values = set()
+
+    def handle_starttag(self, tag, attrs):
+        if tag.casefold() not in {"link", "script"}:
+            return
+        attribute = "href" if tag.casefold() == "link" else "src"
+        raw_url = dict(attrs).get(attribute)
+        if not raw_url:
+            return
+        parsed = urlsplit(raw_url)
+        if (
+            parsed.scheme
+            or parsed.netloc
+            or parsed.fragment
+            or parsed.path != asset_name
+            or "%" in parsed.query
+        ):
+            return
+        query = parse_qsl(parsed.query, keep_blank_values=True)
+        if len(query) != 1 or query[0][0] not in {"v", "version"} or not query[0][1]:
+            return
+        self.values.add(raw_url)
+
+
+parser = AssetParser()
+parser.feed(Path(body_path).read_text(encoding="utf-8"))
+if len(parser.values) != 1:
+    raise SystemExit(1)
+print(next(iter(parser.values)))
+# VERSIONED_ASSET_EXTRACTOR_END
+PY
 }
 
 assert_last_head_contract() {
@@ -308,8 +347,8 @@ assert_body_valid() {
   fi
 }
 
-printf 'Bond Factor Lab public access check: mode=%s policy=%s\n' \
-  "$MODE" "$POLICY_VERSION"
+printf 'Bond Factor Lab public access check: mode=%s assets=page-advertised\n' \
+  "$MODE"
 
 # 固定域名 redirect；不跟随 Location。
 run_request http-redirect GET "$HTTP_ORIGIN/bond-factor-lab/" 301
@@ -321,16 +360,28 @@ assert_last_header_exact \
 
 # 页面和精确版本资源。
 run_request page GET "$APP_URL/" 200
-assert_last_body_contains page-css-version "aifin-shell.css?v=$POLICY_VERSION"
-assert_last_body_contains page-js-version "aifin-shell.js?v=$POLICY_VERSION"
+CSS_ASSET_URL="invalid-asset"
+if [[ "$LAST_REQUEST_SUCCEEDED" -eq 1 ]] \
+    && CSS_ASSET_URL="$(extract_versioned_asset_url "$LAST_BODY" "aifin-shell.css")"; then
+  record_pass page-css-version
+else
+  record_failure page-css-version " current_asset_reference=invalid"
+fi
+JS_ASSET_URL="invalid-asset"
+if [[ "$LAST_REQUEST_SUCCEEDED" -eq 1 ]] \
+    && JS_ASSET_URL="$(extract_versioned_asset_url "$LAST_BODY" "aifin-shell.js")"; then
+  record_pass page-js-version
+else
+  record_failure page-js-version " current_asset_reference=invalid"
+fi
 run_request versioned-css GET \
-  "$APP_URL/aifin-shell.css?v=$POLICY_VERSION" 200 \
+  "$APP_URL/$CSS_ASSET_URL" 200 \
   --header 'Accept-Encoding: gzip'
 assert_last_content_encoding versioned-css-gzip gzip
 assert_last_vary_token versioned-css-vary Accept-Encoding
 assert_body_valid versioned-css-body text gzip "$LAST_BODY" ':root'
 run_request versioned-js GET \
-  "$APP_URL/aifin-shell.js?v=$POLICY_VERSION" 200 \
+  "$APP_URL/$JS_ASSET_URL" 200 \
   --header 'Accept-Encoding: gzip'
 assert_last_content_encoding versioned-js-gzip gzip
 assert_last_vary_token versioned-js-vary Accept-Encoding
