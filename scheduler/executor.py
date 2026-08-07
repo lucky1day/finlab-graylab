@@ -133,6 +133,9 @@ logger = logging.getLogger(__name__)
 PLATFORM_CONFIGURATION_ERROR_PREFIX = "platform configuration error:"
 _LAUNCHD_ONE_SHOT_CONTROL_PLANE = "launchd_one_shot"
 _LAUNCHD_SCHEDULED_EXECUTION_CONTEXT = object()
+SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT = (
+    "data_bridge_ready_timeout"
+)
 
 _ALGORITHM_ENVIRONMENT_ALLOWLIST = frozenset(
     {
@@ -1430,6 +1433,7 @@ def execute_scheme(
     prediction_phase: str = "scheduled_live",
     scheduled_control_plane: str = "direct_scheduled",
     scheduled_execution_context: object | None = None,
+    scheduled_preflight_failure: str | None = None,
     blackbox_precommit_validator: Callable[[object], None] | None = None,
     blackbox_snapshot_mode: str = BLACKBOX_SNAPSHOT_MODE_FRESH,
     blackbox_expected_generation_id: str | None = None,
@@ -1461,6 +1465,22 @@ def execute_scheme(
                 0.0,
                 configuration_error,
             )
+    if scheduled_preflight_failure is not None:
+        if (
+            prediction_phase != "scheduled_live"
+            or scheduled_control_plane != _LAUNCHD_ONE_SHOT_CONTROL_PLANE
+            or scheduled_execution_context
+            is not _LAUNCHD_SCHEDULED_EXECUTION_CONTEXT
+        ):
+            raise ValueError(
+                "scheduled_preflight_failure requires launchd_one_shot "
+                "execution context"
+            )
+        if (
+            scheduled_preflight_failure
+            != SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT
+        ):
+            raise ValueError("unsupported scheduled_preflight_failure")
     engine = create_engine_from_env()
     started = time.monotonic()
     if cfg.status != "active":
@@ -1541,6 +1561,8 @@ def execute_scheme(
                 f"active registry targets empty for scheme {cfg.scheme_id}: "
                 "missing=[], extra=[], duplicates=[]"
             )
+        if scheduled_preflight_failure is not None:
+            raise RuntimeError(scheduled_preflight_failure)
         effective_timeout_sec = _effective_timeout_sec(cfg, timeout_sec)
         run_kwargs = {
             "engine": engine,

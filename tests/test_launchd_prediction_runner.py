@@ -174,6 +174,80 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
             [publisher, consumer, unrelated],
         )
 
+    def test_daily_data_bridge_dependents_poll_as_one_batch_then_execute(
+        self,
+    ) -> None:
+        """日频依赖方案共享一次就绪轮询，ready 后均使用当前快照执行。"""
+        from scheduler import launchd_prediction_runner as runner
+        from scheduler.v2_daily_gate import V2DailyGateBlocked
+
+        native = _cfg("native_daily")
+        first_dependent = _cfg(
+            "first_blackbox",
+            runtime_type="blackbox_v2",
+            input_source="data_bridge_current",
+        )
+        second_dependent = _cfg(
+            "second_blackbox",
+            runtime_type="blackbox_v2",
+            input_source="data_bridge_current",
+        )
+        config = self._config(Path(tempfile.mkdtemp()))
+        engine = self._engine()
+        calendar = _Calendar(trading=True)
+        clock = SimpleNamespace(
+            monotonic=Mock(side_effect=[0.0, 0.0]),
+            sleep=Mock(),
+        )
+
+        def execute(config_item, *_args, **_kwargs):
+            return SimpleNamespace(
+                scheme_id=config_item.scheme_id,
+                status="success",
+                records_written=1,
+                error_msg=None,
+                run_id=100,
+            )
+
+        with (
+            patch.object(
+                runner.DataBridgeRefreshConfig,
+                "from_env",
+                return_value=config,
+            ),
+            patch.object(runner, "_runner_lock", return_value=nullcontext(True)),
+            patch.object(
+                runner,
+                "discover_schemes",
+                return_value=[native, first_dependent, second_dependent],
+            ),
+            patch.object(runner, "create_engine_from_env", return_value=engine),
+            patch.object(runner, "get_calendar", return_value=calendar),
+            patch.object(
+                runner,
+                "require_v2_daily_ready",
+                side_effect=[V2DailyGateBlocked("not ready"), None],
+            ) as gate,
+            patch.object(runner, "time", clock, create=True),
+            patch.object(runner, "execute_scheme", side_effect=execute) as execute_one,
+        ):
+            summary = runner.run("daily", predict_date="2026-08-03")
+
+        self.assertEqual(
+            gate.call_args_list,
+            [
+                call(config, "2026-08-03", "2026-07-31"),
+                call(config, "2026-08-03", "2026-07-31"),
+            ],
+        )
+        self.assertEqual(
+            [call_args.args[0] for call_args in execute_one.call_args_list],
+            [native, first_dependent, second_dependent],
+        )
+        self.assertEqual(summary.outcome, "success")
+        self.assertEqual(summary.blocked, [])
+        clock.sleep.assert_called_once()
+
     def test_active_blackbox_candidates_enter_cadence_without_legacy_policy(
         self,
     ) -> None:
@@ -212,7 +286,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
             patch.object(runner, "discover_schemes", return_value=[formal, gray]),
             patch.object(runner, "create_engine_from_env", return_value=engine),
             patch.object(runner, "get_calendar", return_value=calendar),
-            patch.object(runner, "require_v2_daily_ready"),
+            patch.object(runner, "require_v2_daily_ready") as gate,
             patch.object(runner, "execute_scheme", side_effect=execute) as execute_one,
         ):
             summary = runner.run("weekly", predict_date="2026-08-01")
@@ -225,6 +299,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
             [call_args.args[0].scheme_id for call_args in execute_one.call_args_list],
             [formal.scheme_id, gray.scheme_id],
         )
+        gate.assert_not_called()
 
     def test_global_lock_conflict_has_no_discovery_or_execution(self) -> None:
         from scheduler import launchd_prediction_runner as runner
@@ -315,7 +390,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         gate.assert_not_called()
         execute_one.assert_called_once()
 
-    def test_weekly_saturday_uses_same_day_gate_and_previous_trading_day(
+    def test_weekly_saturday_does_not_use_daily_gate_or_calendar_mapping(
         self,
     ) -> None:
         from scheduler import launchd_prediction_runner as runner
@@ -351,8 +426,8 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
             summary = runner.run("weekly", predict_date="2026-08-01")
 
         self.assertEqual(summary.exit_code, 0)
-        gate.assert_called_once_with(config, "2026-08-01", "2026-07-31")
-        calendar.previous_trading_day.assert_called_once_with("2026-08-01")
+        gate.assert_not_called()
+        calendar.previous_trading_day.assert_not_called()
 
     def test_real_active_scope_three_cadences_use_no_write_control_plane_simulation(
         self,
@@ -452,11 +527,14 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                     for _config_item, run_date, kwargs in calls_by_cadence[cadence]
                 )
             )
-            expected_v2_gate_calls = sum(
-                1
-                for config_item, _run_date, _kwargs in calls_by_cadence[cadence]
-                if config_item.runtime_type == "blackbox_v2"
-                and config_item.input_source == "data_bridge_current"
+            expected_v2_gate_calls = int(
+                cadence == "daily"
+                and any(
+                    config_item.runtime_type == "blackbox_v2"
+                    and config_item.input_source == "data_bridge_current"
+                    for config_item, _run_date, _kwargs
+                    in calls_by_cadence[cadence]
+                )
             )
             self.assertEqual(v2_gate.call_count, expected_v2_gate_calls)
             self.assertEqual(
@@ -508,53 +586,93 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         )
         self.assertEqual(engine.dispose.call_count, len(simulations))
 
-    def test_gate_blocked_candidate_does_not_prevent_native_execution(
+    def test_daily_timeout_at_boundary_runs_non_dependents_then_hands_off_failures(
         self,
     ) -> None:
         from scheduler import launchd_prediction_runner as runner
         from scheduler.v2_daily_gate import V2DailyGateBlocked
 
-        native = _cfg("native_daily")
+        consumer = _cfg("liwei_0616_10y01_cons_say_k3_div_k10")
         blackbox = _cfg(
             "formal_blackbox",
             runtime_type="blackbox_v2",
             input_source="data_bridge_current",
         )
+        unrelated = _cfg("native_daily")
+        publisher = _cfg("liwei_0616_10y01_full_oos_k3_div_k10")
         config = self._config(Path(tempfile.mkdtemp()))
         engine = self._engine()
         calendar = _Calendar(trading=True)
+        events: list[tuple[str, str]] = []
+        clock = SimpleNamespace(
+            monotonic=Mock(side_effect=[100.0, 1900.0]),
+            sleep=Mock(),
+        )
+
+        def gate(*_args):
+            events.append(("gate", blackbox.scheme_id))
+            raise V2DailyGateBlocked("gate missing")
+
+        def execute(config_item, *_args, **kwargs):
+            events.append(("execute", config_item.scheme_id))
+            return SimpleNamespace(
+                scheme_id=config_item.scheme_id,
+                status=(
+                    "failed"
+                    if kwargs.get("scheduled_preflight_failure")
+                    else "success"
+                ),
+                records_written=1,
+                error_msg=None,
+                run_id=11,
+            )
+
         with (
             patch.object(runner.DataBridgeRefreshConfig, "from_env", return_value=config),
             patch.object(runner, "_runner_lock", return_value=nullcontext(True)),
-            patch.object(runner, "discover_schemes", return_value=[native, blackbox]),
+            patch.object(
+                runner,
+                "discover_schemes",
+                return_value=[consumer, blackbox, unrelated, publisher],
+            ),
             patch.object(runner, "create_engine_from_env", return_value=engine),
             patch.object(runner, "get_calendar", return_value=calendar),
             patch.object(
                 runner,
                 "require_v2_daily_ready",
-                side_effect=V2DailyGateBlocked("gate missing"),
-            ),
-            patch.object(
-                runner,
-                "execute_scheme",
-                return_value=SimpleNamespace(
-                    scheme_id=native.scheme_id,
-                    status="success",
-                    records_written=1,
-                    error_msg=None,
-                    run_id=11,
-                ),
-            ) as execute_one,
+                side_effect=gate,
+            ) as ready_gate,
+            patch.object(runner, "time", clock),
+            patch.object(runner, "execute_scheme", side_effect=execute) as execute_one,
         ):
             summary = runner.run("daily", predict_date="2026-08-03")
 
         self.assertEqual(summary.outcome, "partial")
         self.assertEqual(summary.exit_code, 1)
         self.assertEqual(
-            summary.blocked,
-            [{"scheme_id": blackbox.scheme_id, "code": "v2_gate_blocked"}],
+            summary.failed,
+            [{"scheme_id": blackbox.scheme_id, "code": "data_bridge_ready_timeout"}],
         )
-        execute_one.assert_called_once()
+        self.assertEqual(
+            events,
+            [
+                ("execute", publisher.scheme_id),
+                ("execute", consumer.scheme_id),
+                ("execute", unrelated.scheme_id),
+                ("gate", blackbox.scheme_id),
+                ("execute", blackbox.scheme_id),
+            ],
+        )
+        ready_gate.assert_called_once_with(config, "2026-08-03", "2026-07-31")
+        clock.sleep.assert_not_called()
+        self.assertEqual(
+            [call_args.args[0] for call_args in execute_one.call_args_list],
+            [publisher, consumer, unrelated, blackbox],
+        )
+        self.assertEqual(
+            execute_one.call_args_list[-1].kwargs["scheduled_preflight_failure"],
+            "data_bridge_ready_timeout",
+        )
 
     def test_monthly_non_15th_is_structured_configuration_error(self) -> None:
         from scheduler import launchd_prediction_runner as runner

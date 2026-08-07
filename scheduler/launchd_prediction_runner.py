@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -20,6 +21,7 @@ from zoneinfo import ZoneInfo
 from scheduler.discovery import discover_schemes
 from scheduler.executor import (
     DEFAULT_ALGO_ENV,
+    SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT,
     _launchd_scheduled_execution_context,
     execute_scheme,
 )
@@ -32,6 +34,8 @@ from shared.liwei_0616_cache_contract import APPROVED_PHASE_A_CACHE_PUBLISHERS
 
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
 VALID_CADENCES = frozenset({"daily", "weekly", "monthly"})
+DATA_BRIDGE_READY_MAX_WAIT_SEC = 30 * 60
+DATA_BRIDGE_READY_POLL_INTERVAL_SEC = 30
 
 
 class LaunchdPredictionConfigurationError(RuntimeError):
@@ -139,6 +143,89 @@ def _cache_publishers_first(candidates: Sequence[object]) -> list[object]:
     return publishers + others
 
 
+def _is_daily_data_bridge_dependent(cfg: object) -> bool:
+    """仅识别日频 Blackbox V2 对 current DataBridge 的显式依赖。"""
+    return (
+        getattr(cfg, "runtime_type", None) == "blackbox_v2"
+        and getattr(cfg, "input_source", None) == "data_bridge_current"
+    )
+
+
+def _wait_for_v2_daily_ready(
+    config: DataBridgeRefreshConfig,
+    *,
+    run_date: str,
+    expected_daily_date: str,
+) -> str | None:
+    """只读轮询一批日频 Blackbox 共同使用的就绪凭证。"""
+    deadline = time.monotonic() + DATA_BRIDGE_READY_MAX_WAIT_SEC
+    while True:
+        try:
+            require_v2_daily_ready(config, run_date, expected_daily_date)
+            return None
+        except V2DailyGateBlocked:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT
+            time.sleep(min(DATA_BRIDGE_READY_POLL_INTERVAL_SEC, remaining))
+        except Exception:  # noqa: BLE001 - never reveal low-level gate details
+            return "v2_gate_unavailable"
+
+
+def _execute_candidate(
+    summary: LaunchdPredictionSummary,
+    cfg: object,
+    *,
+    predict_date: str,
+    algo_env: str,
+    scheduled_preflight_failure: str | None = None,
+) -> None:
+    """执行一个候选并将稳定结果归入当前 one-shot 摘要。"""
+    try:
+        execute_kwargs = {
+            "algo_env": algo_env,
+            "prediction_phase": "scheduled_live",
+            "scheduled_control_plane": "launchd_one_shot",
+            "scheduled_execution_context": (
+                _launchd_scheduled_execution_context()
+            ),
+        }
+        if scheduled_preflight_failure is not None:
+            execute_kwargs["scheduled_preflight_failure"] = (
+                scheduled_preflight_failure
+            )
+        result = execute_scheme(cfg, predict_date, **execute_kwargs)
+    except Exception:  # noqa: BLE001 - isolate one candidate
+        summary.failed.append(
+            _candidate_item(
+                cfg,
+                scheduled_preflight_failure or "execution_exception",
+            )
+        )
+        return
+
+    if scheduled_preflight_failure is not None:
+        summary.failed.append(_candidate_item(cfg, scheduled_preflight_failure))
+        return
+
+    status = str(getattr(result, "status", "failed"))
+    if status == "success":
+        summary.executed.append(
+            {
+                "scheme_id": str(getattr(result, "scheme_id", cfg.scheme_id)),
+                "status": status,
+                "records_written": int(
+                    getattr(result, "records_written", 0) or 0
+                ),
+                "run_id": getattr(result, "run_id", None),
+            }
+        )
+    elif status == "skipped":
+        summary.skipped.append(_candidate_item(cfg, "execution_skipped"))
+    else:
+        summary.failed.append(_candidate_item(cfg, f"execution_{status}"))
+
+
 def _finalize(summary: LaunchdPredictionSummary, *, configuration_error: bool) -> None:
     for items in (
         summary.executed,
@@ -227,76 +314,66 @@ def run(
                 summary.exit_code = 0
                 return summary
 
-            expected_daily_date: str | None = None
+            daily_data_bridge_dependents = [
+                cfg
+                for cfg in candidates
+                if normalized_cadence == "daily"
+                and _is_daily_data_bridge_dependent(cfg)
+            ]
+            daily_data_bridge_dependent_ids = {
+                id(cfg) for cfg in daily_data_bridge_dependents
+            }
             for cfg in candidates:
-                if (
-                    getattr(cfg, "runtime_type", None) == "blackbox_v2"
-                    and getattr(cfg, "input_source", None)
-                    == "data_bridge_current"
-                ):
-                    if expected_daily_date is None:
-                        try:
-                            expected_daily_date = str(
-                                calendar.previous_trading_day(normalized_date)
-                            )[:10]
-                        except Exception:  # noqa: BLE001 - preserve calendar isolation
-                            summary.blocked.append(
-                                _candidate_item(cfg, "calendar_unavailable")
-                            )
-                            continue
-                    try:
-                        require_v2_daily_ready(
-                            data_bridge_config,
-                            normalized_date,
-                            expected_daily_date,
-                        )
-                    except V2DailyGateBlocked:
-                        summary.blocked.append(
-                            _candidate_item(cfg, "v2_gate_blocked")
-                        )
-                        continue
-                    except Exception:  # noqa: BLE001 - never reveal low-level gate details
-                        summary.blocked.append(
-                            _candidate_item(cfg, "v2_gate_unavailable")
-                        )
-                        continue
-
-                try:
-                    result = execute_scheme(
+                if id(cfg) not in daily_data_bridge_dependent_ids:
+                    _execute_candidate(
+                        summary,
                         cfg,
-                        normalized_date,
+                        predict_date=normalized_date,
                         algo_env=algo_env,
-                        prediction_phase="scheduled_live",
-                        scheduled_control_plane="launchd_one_shot",
-                        scheduled_execution_context=(
-                            _launchd_scheduled_execution_context()
-                        ),
                     )
-                except Exception:  # noqa: BLE001 - isolate one candidate
-                    summary.failed.append(
-                        _candidate_item(cfg, "execution_exception")
-                    )
-                    continue
 
-                status = str(getattr(result, "status", "failed"))
-                if status == "success":
-                    summary.executed.append(
-                        {
-                            "scheme_id": str(getattr(result, "scheme_id", cfg.scheme_id)),
-                            "status": status,
-                            "records_written": int(
-                                getattr(result, "records_written", 0) or 0
-                            ),
-                            "run_id": getattr(result, "run_id", None),
-                        }
+            if daily_data_bridge_dependents:
+                expected_daily_date: str | None = None
+                try:
+                    expected_daily_date = str(
+                        calendar.previous_trading_day(normalized_date)
+                    )[:10]
+                except Exception:  # noqa: BLE001 - preserve calendar isolation
+                    for cfg in daily_data_bridge_dependents:
+                        summary.blocked.append(
+                            _candidate_item(cfg, "calendar_unavailable")
+                        )
+                if expected_daily_date is not None:
+                    gate_code = _wait_for_v2_daily_ready(
+                        data_bridge_config,
+                        run_date=normalized_date,
+                        expected_daily_date=expected_daily_date,
                     )
-                elif status == "skipped":
-                    summary.skipped.append(
-                        _candidate_item(cfg, "execution_skipped")
-                    )
-                else:
-                    summary.failed.append(
-                        _candidate_item(cfg, f"execution_{status}"))
+                    if (
+                        gate_code
+                        == SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT
+                    ):
+                        for cfg in daily_data_bridge_dependents:
+                            _execute_candidate(
+                                summary,
+                                cfg,
+                                predict_date=normalized_date,
+                                algo_env=algo_env,
+                                scheduled_preflight_failure=(
+                                    SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT
+                                ),
+                            )
+                    elif gate_code is not None:
+                        for cfg in daily_data_bridge_dependents:
+                            summary.blocked.append(_candidate_item(cfg, gate_code))
+                    else:
+                        for cfg in daily_data_bridge_dependents:
+                            _execute_candidate(
+                                summary,
+                                cfg,
+                                predict_date=normalized_date,
+                                algo_env=algo_env,
+                            )
 
             _finalize(summary, configuration_error=False)
             return summary
