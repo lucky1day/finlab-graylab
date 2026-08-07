@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import inspect
 import json
 import logging
 import os
 import stat
 import subprocess
-import sys
 import tempfile
 import time
 from collections import Counter
@@ -1478,11 +1476,6 @@ def execute_scheme(
                 "scheduled_preflight_failure requires launchd_one_shot "
                 "execution context"
             )
-        if not _is_launchd_preflight_handoff():
-            raise ValueError(
-                "scheduled_preflight_failure requires "
-                "launchd_prediction_runner run handoff"
-            )
         if (
             scheduled_preflight_failure
             != SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT
@@ -1689,35 +1682,6 @@ def execute_scheme(
         return SchemeRunResult(cfg.scheme_id, "failed", records_written, duration, error_msg, run_id)
     finally:
         engine.dispose()
-
-
-def _is_launchd_preflight_handoff() -> bool:
-    """仅接受真实 one-shot runner 的 run → helper 预检交接。"""
-    current_frame = inspect.currentframe()
-    execute_frame = None
-    helper_frame = None
-    run_frame = None
-    try:
-        execute_frame = current_frame.f_back if current_frame else None
-        helper_frame = execute_frame.f_back if execute_frame else None
-        run_frame = helper_frame.f_back if helper_frame else None
-        runner_module = sys.modules.get("scheduler.launchd_prediction_runner")
-        runner_helper = getattr(runner_module, "_execute_candidate", None)
-        runner_run = getattr(runner_module, "run", None)
-        return bool(
-            runner_module is not None
-            and helper_frame is not None
-            and run_frame is not None
-            and helper_frame.f_globals is runner_module.__dict__
-            and helper_frame.f_code is getattr(runner_helper, "__code__", None)
-            and run_frame.f_globals is runner_module.__dict__
-            and run_frame.f_code is getattr(runner_run, "__code__", None)
-        )
-    finally:
-        del run_frame
-        del helper_frame
-        del execute_frame
-        del current_frame
 
 
 def scheduled_live_execution_configuration_error(

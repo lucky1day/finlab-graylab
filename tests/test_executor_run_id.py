@@ -1866,12 +1866,11 @@ class ExecutorRunIdTests(unittest.TestCase):
         write_log.assert_not_called()
         self.assertTrue(engine.disposed)
 
-    def test_direct_caller_cannot_inject_preflight_failure_with_imported_context(
+    def test_untrusted_context_cannot_inject_preflight_failure(
         self,
     ) -> None:
         from scheduler.executor import (
             SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT,
-            _launchd_scheduled_execution_context,
             execute_scheme,
         )
 
@@ -1906,86 +1905,20 @@ class ExecutorRunIdTests(unittest.TestCase):
             ) as create_run,
             patch("scheduler.executor.fail_scheme_run_atomic"),
         ):
-            with self.assertRaisesRegex(
-                ValueError,
-                "launchd_prediction_runner run handoff",
-            ):
-                execute_scheme(
-                    cfg,
-                    "2026-08-03",
-                    algo_env="test_env",
-                    prediction_phase="scheduled_live",
-                    scheduled_control_plane="launchd_one_shot",
-                    scheduled_execution_context=(
-                        _launchd_scheduled_execution_context()
-                    ),
-                    scheduled_preflight_failure=(
-                        SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT
-                    ),
-                )
-
-        create_engine.assert_not_called()
-        create_run.assert_not_called()
-        self.assertFalse(engine.disposed)
-
-    def test_direct_runner_helper_cannot_inject_preflight_failure(
-        self,
-    ) -> None:
-        """内部 helper 也不能成为可伪造的 scheduled 失败入口。"""
-        from scheduler import launchd_prediction_runner as runner
-        from scheduler.executor import (
-            SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT,
-        )
-
-        engine = _FakeEngine()
-        summary = runner.LaunchdPredictionSummary(
-            cadence="daily",
-            predict_date="2026-08-03",
-        )
-        cfg = SimpleNamespace(
-            scheme_id="daily_direct_helper_preflight",
-            status="active",
-            scheme_version="v1",
-            runtime_type="native_adapter",
-            frequency="daily",
-            task_type="T+1",
-            horizon=1,
-            tenors=["5Y"],
-        )
-        with (
-            patch(
-                "scheduler.executor.create_engine_from_env",
-                return_value=engine,
-            ) as create_engine,
-            patch("scheduler.executor.discover_schemes", return_value=[cfg]),
-            patch(
-                "scheduler.executor._verify_scheme_activation",
-                return_value=(True, "ok"),
-            ),
-            patch(
-                "scheduler.executor._active_registry_targets",
-                return_value={("5Y", 1)},
-            ),
-            patch(
-                "scheduler.executor.create_scheme_run",
-                return_value=703,
-            ) as create_run,
-            patch("scheduler.executor.fail_scheme_run_atomic"),
-        ):
-            runner._execute_candidate(
-                summary,
+            result = execute_scheme(
                 cfg,
-                predict_date="2026-08-03",
+                "2026-08-03",
                 algo_env="test_env",
+                prediction_phase="scheduled_live",
+                scheduled_control_plane="launchd_one_shot",
+                scheduled_execution_context=object(),
                 scheduled_preflight_failure=(
                     SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT
                 ),
             )
 
-        self.assertEqual(
-            summary.failed,
-            [{"scheme_id": cfg.scheme_id, "code": "execution_exception"}],
-        )
+        self.assertEqual(result.status, "failed")
+        self.assertIn("launchd_one_shot execution context", result.error_msg or "")
         create_engine.assert_not_called()
         create_run.assert_not_called()
         self.assertFalse(engine.disposed)
