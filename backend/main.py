@@ -10,8 +10,7 @@ import time
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
-from threading import Lock
-from typing import Any, Literal
+from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 from uuid import uuid4
 
@@ -32,17 +31,11 @@ from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from backend.db import get_dashboard_engine, get_engine
-from backend.dashboard_snapshot import (
-    DashboardSnapshotStore,
-    SnapshotResult,
-    SnapshotUnavailable,
-)
 from backend.factor_lab_dashboard import (
     build_factor_lab_dashboard,
     dashboard_build_diagnostics,
     encode_canonical_snapshot,
 )
-from backend.factor_lab_dashboard_semantics import DashboardDataError
 from backend.http_compression import QAwareGZipMiddleware
 from backend.services import (
     backtest_diffs,
@@ -91,16 +84,8 @@ FRONTEND_CACHE_CONTROL = UNVERSIONED_ASSET_CACHE_CONTROL
 logger = logging.getLogger(__name__)
 _DEFAULT_INSTANCE_NONCE = secrets.token_hex(32)
 _REQUEST_ID_PATTERN = re.compile(r"[!-~]{1,128}\Z", flags=re.ASCII)
-_DASHBOARD_ERROR_UNAVAILABLE = "dashboard_snapshot_unavailable"
-_DASHBOARD_ERROR_STALE = "dashboard_snapshot_stale"
-_DASHBOARD_ERROR_NOT_PREWARMED = "dashboard_snapshot_not_prewarmed"
+_DASHBOARD_ERROR_UNAVAILABLE = "dashboard_data_unavailable"
 _DASHBOARD_QUERY_ERROR = "dashboard_query_not_allowed"
-_dashboard_health_lock = Lock()
-_dashboard_health: dict[str, str | None] = {
-    "status": "degraded",
-    "error_code": _DASHBOARD_ERROR_NOT_PREWARMED,
-}
-_dashboard_health_revision = 0
 
 
 class _FrontendAssetReferenceParser(HTMLParser):
@@ -222,85 +207,6 @@ class NoCacheFrontendStaticFiles(StaticFiles):
         return response
 
 
-def _build_dashboard_snapshot() -> dict[str, Any]:
-    """延迟取得 DB engine；模块 import 不连接数据库。"""
-    return build_factor_lab_dashboard(get_dashboard_engine())
-
-
-def _dashboard_source_generation() -> str:
-    """Dashboard 只使用固定 TTL 代次，不再读取 ledger receipt。"""
-    return "legacy-ttl-only"
-
-
-dashboard_snapshot_store = DashboardSnapshotStore(
-    _build_dashboard_snapshot,
-    source_generation=_dashboard_source_generation,
-)
-
-
-def _set_dashboard_health(
-    status: Literal["ready", "degraded"],
-    error_code: str | None,
-    *,
-    observation_revision: int | None = None,
-) -> bool:
-    """原子更新 health 中不含内部异常文本的 dashboard 子状态。"""
-    global _dashboard_health_revision
-    if status == "ready":
-        error_code = None
-    with _dashboard_health_lock:
-        if observation_revision is None:
-            return False
-        if observation_revision < _dashboard_health_revision:
-            return False
-        _dashboard_health_revision = observation_revision
-        _dashboard_health["status"] = status
-        _dashboard_health["error_code"] = error_code
-        return True
-
-
-def _reset_dashboard_health_for_tests(
-    status: Literal["ready", "degraded"],
-    error_code: str | None,
-    *,
-    observation_revision: int = 0,
-) -> None:
-    """测试专用：显式重置 health 状态及其观察序号。"""
-    global _dashboard_health_revision
-    if status == "ready":
-        error_code = None
-    with _dashboard_health_lock:
-        _dashboard_health_revision = observation_revision
-        _dashboard_health["status"] = status
-        _dashboard_health["error_code"] = error_code
-
-
-def _dashboard_health_snapshot() -> dict[str, str | None]:
-    """返回 dashboard health 状态副本。"""
-    with _dashboard_health_lock:
-        return dict(_dashboard_health)
-
-
-def _record_dashboard_prewarm_failure(
-    observation_revision: int | None,
-) -> None:
-    """记录不含内部异常文本的稳定预热失败状态。"""
-    _set_dashboard_health(
-        "degraded",
-        _DASHBOARD_ERROR_UNAVAILABLE,
-        observation_revision=observation_revision,
-    )
-    event = {
-        "status": "degraded",
-        "error_code": _DASHBOARD_ERROR_UNAVAILABLE,
-    }
-    logger.error(
-        "factor_lab_dashboard_prewarm %s",
-        json.dumps(event, separators=(",", ":"), sort_keys=True),
-        extra={"dashboard_event": dict(event)},
-    )
-
-
 def _cors_origins() -> list[str]:
     """从环境变量读取 CORS 允许来源；未配置时退回本地白名单。"""
     raw = os.getenv("BOND_CORS_ORIGINS")
@@ -343,39 +249,11 @@ app.add_middleware(QAwareGZipMiddleware)
 
 @app.on_event("startup")
 def _sync_registry_on_startup() -> None:
-    """启动时同步 Registry，再预热只读 dashboard 快照。"""
+    """启动时同步 Registry；Dashboard 在请求中直接读取数据库。"""
     try:
         sync_registry_from_configs(get_engine())
     except Exception:
         logger.error("Registry sync on startup failed")
-
-    try:
-        result = dashboard_snapshot_store.prewarm()
-    except (SnapshotUnavailable, DashboardDataError):
-        request_diagnostics = _safe_request_diagnostics()
-        _record_dashboard_prewarm_failure(
-            _observation_revision(request_diagnostics)
-        )
-    except Exception:
-        request_diagnostics = _safe_request_diagnostics()
-        _record_dashboard_prewarm_failure(
-            _observation_revision(request_diagnostics)
-        )
-    else:
-        request_diagnostics = _safe_request_diagnostics()
-        observation_revision = _observation_revision(request_diagnostics)
-        if result.cache_status == "STALE":
-            _set_dashboard_health(
-                "degraded",
-                _DASHBOARD_ERROR_STALE,
-                observation_revision=observation_revision,
-            )
-        else:
-            _set_dashboard_health(
-                "ready",
-                None,
-                observation_revision=observation_revision,
-            )
 
 
 class TriggerRequest(BaseModel):
@@ -430,7 +308,6 @@ def health() -> dict:
     return {
         "status": "ok",
         "service_instance": identity,
-        "dashboard_snapshot": _dashboard_health_snapshot(),
         "daily_schedule": {
             "mode": "launchd_one_shot",
             "overall": "not_enabled",
@@ -445,28 +322,6 @@ def _request_id(request: Request) -> str:
     if candidate is not None and _REQUEST_ID_PATTERN.fullmatch(candidate):
         return candidate
     return uuid4().hex
-
-
-def _dashboard_age_ms(result: SnapshotResult) -> int:
-    return max(0, int(result.age_seconds * 1_000))
-
-
-def _safe_store_diagnostics() -> dict[str, Any]:
-    try:
-        return dict(dashboard_snapshot_store.diagnostics())
-    except Exception:
-        return {}
-
-
-def _safe_request_diagnostics() -> dict[str, Any]:
-    try:
-        return dict(dashboard_snapshot_store.request_diagnostics())
-    except Exception:
-        return {}
-
-
-def _observation_revision(diagnostics: dict[str, Any]) -> int | None:
-    return _integer_metric(diagnostics.get("observation_revision"))
 
 
 def _safe_build_diagnostics(snapshot_id: str) -> dict[str, Any]:
@@ -492,11 +347,6 @@ def _numeric_seconds(value: Any) -> float | None:
     return seconds if math.isfinite(seconds) and seconds >= 0.0 else None
 
 
-def _attempt_status(value: Any) -> str | None:
-    """仅记录稳定的刷新尝试状态枚举。"""
-    return value if value in {"success", "failed", "timeout"} else None
-
-
 def _integer_metric(value: Any) -> int | None:
     if isinstance(value, bool) or value is None:
         return None
@@ -519,36 +369,26 @@ def _actual_frequency_metrics(value: Any) -> dict[str, int | None]:
 def _server_timing(
     *,
     build_diagnostics: dict[str, Any],
-    snapshot_origin_build_seconds: float | None,
-    associated_attempt_seconds: float | None,
     response_encoding_name: str,
     response_encoding_seconds: float,
     route_seconds: float,
 ) -> str:
     timings: list[tuple[str, float | None]] = [
         (
-            "snapshot_origin_db",
+            "dashboard_db",
             _duration_ms(build_diagnostics.get("db_read_seconds")),
         ),
         (
-            "snapshot_origin_canonical",
+            "dashboard_canonical",
             _duration_ms(
                 build_diagnostics.get("canonical_build_seconds")
             ),
         ),
         (
-            "snapshot_origin_serialization",
+            "dashboard_serialization",
             _duration_ms(
                 build_diagnostics.get("canonical_serialization_seconds")
             ),
-        ),
-        (
-            "snapshot_origin_build",
-            _duration_ms(snapshot_origin_build_seconds),
-        ),
-        (
-            "associated_refresh_attempt",
-            _duration_ms(associated_attempt_seconds),
         ),
         (
             response_encoding_name,
@@ -567,25 +407,14 @@ def _dashboard_response_headers(
     *,
     request_id: str,
     snapshot_id: str,
-    cache_status: str,
-    age_ms: int,
     server_timing: str,
-    stale: bool,
-    source_generation: str | None = None,
 ) -> dict[str, str]:
-    headers = {
+    return {
         "Cache-Control": "no-store",
         "X-Request-ID": request_id,
         "X-Dashboard-Snapshot-ID": snapshot_id,
-        "X-Dashboard-Cache": cache_status,
-        "X-Dashboard-Snapshot-Age": str(age_ms),
         "Server-Timing": server_timing,
     }
-    if stale:
-        headers["X-Dashboard-Warning"] = "stale-last-known-good"
-    if source_generation is not None:
-        headers["X-Dashboard-Source-Generation"] = source_generation
-    return headers
 
 
 def _log_dashboard_request(event: dict[str, Any]) -> None:
@@ -608,8 +437,6 @@ def _dashboard_error_response(
     error_code: str,
     status_code: int,
     route_started_at: float,
-    request_diagnostics: dict[str, Any] | None = None,
-    store_diagnostics: dict[str, Any] | None = None,
 ) -> Response:
     encoding_started_at = time.perf_counter()
     raw_body = json.dumps(
@@ -618,61 +445,23 @@ def _dashboard_error_response(
     ).encode("utf-8")
     response_encoding_seconds = time.perf_counter() - encoding_started_at
     route_seconds = time.perf_counter() - route_started_at
-    request_diagnostics = request_diagnostics or {}
-    store_diagnostics = store_diagnostics or {}
-    active_waiter_count = _integer_metric(
-        store_diagnostics.get("active_waiter_count")
-    )
-    build_waiter_count = _integer_metric(
-        request_diagnostics.get("build_waiter_count")
-    )
-    associated_attempt_id = _integer_metric(
-        request_diagnostics.get("attempt_id")
-    )
-    associated_attempt_seconds = _numeric_seconds(
-        request_diagnostics.get("attempt_seconds")
-    )
     headers = _dashboard_response_headers(
         request_id=request_id,
         snapshot_id="unavailable",
-        cache_status="UNAVAILABLE",
-        age_ms=0,
         server_timing=_server_timing(
             build_diagnostics={},
-            snapshot_origin_build_seconds=None,
-            associated_attempt_seconds=associated_attempt_seconds,
             response_encoding_name="request_json_encoding",
             response_encoding_seconds=response_encoding_seconds,
             route_seconds=route_seconds,
         ),
-        stale=False,
     )
     _log_dashboard_request(
         {
             "request_id": request_id,
             "snapshot_id": "unavailable",
-            "cache": "UNAVAILABLE",
-            "snapshot_age_ms": 0,
-            "active_waiter_count": (
-                0 if active_waiter_count is None else active_waiter_count
-            ),
-            "request_waited": (
-                request_diagnostics.get("request_waited") is True
-            ),
-            "build_waiter_count": (
-                0 if build_waiter_count is None else build_waiter_count
-            ),
-            "associated_refresh_attempt_id": associated_attempt_id,
-            "associated_refresh_attempt_status": _attempt_status(
-                request_diagnostics.get("attempt_status")
-            ),
-            "associated_refresh_attempt_ms": _duration_ms(
-                associated_attempt_seconds
-            ),
-            "snapshot_origin_db_ms": None,
-            "snapshot_origin_canonical_ms": None,
-            "snapshot_origin_serialization_ms": None,
-            "snapshot_origin_build_ms": None,
+            "dashboard_db_ms": None,
+            "dashboard_canonical_ms": None,
+            "dashboard_serialization_ms": None,
             "request_json_encoding_ms": round(
                 response_encoding_seconds * 1_000,
                 3,
@@ -708,65 +497,25 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
         )
 
     try:
-        result = dashboard_snapshot_store.get()
-        request_diagnostics = _safe_request_diagnostics()
-        age_ms = _dashboard_age_ms(result)
-        response_payload = dict(result.payload)
-        is_stale = result.cache_status == "STALE"
-        response_payload["stale"] = is_stale
-        response_payload["snapshot_age_ms"] = age_ms
+        response_payload = build_factor_lab_dashboard(get_dashboard_engine())
         serialization_started_at = time.perf_counter()
         encoding = encode_canonical_snapshot(response_payload)
         response_serialization_seconds = (
             time.perf_counter() - serialization_started_at
         )
-    except (SnapshotUnavailable, DashboardDataError):
-        request_diagnostics = _safe_request_diagnostics()
-        _set_dashboard_health(
-            "degraded",
-            _DASHBOARD_ERROR_UNAVAILABLE,
-            observation_revision=_observation_revision(
-                request_diagnostics
-            ),
-        )
+    except Exception:  # noqa: BLE001 - 公开接口只能返回稳定可恢复状态
         return _dashboard_error_response(
             request_id=request_id,
             error_code=_DASHBOARD_ERROR_UNAVAILABLE,
             status_code=503,
             route_started_at=route_started_at,
-            request_diagnostics=request_diagnostics,
-            store_diagnostics=_safe_store_diagnostics(),
         )
 
     snapshot_id = str(response_payload["snapshot_id"])
     build_diagnostics = _safe_build_diagnostics(snapshot_id)
-    store_diagnostics = _safe_store_diagnostics()
-    snapshot_origin_build_seconds = result.build_seconds
-    if snapshot_origin_build_seconds is None:
-        snapshot_origin_build_seconds = _numeric_seconds(
-            store_diagnostics.get("snapshot_origin_build_seconds")
-        )
-    if snapshot_origin_build_seconds is None:
-        snapshot_origin_build_seconds = _numeric_seconds(
-            store_diagnostics.get("last_build_seconds")
-        )
-    active_waiter_count = _integer_metric(
-        store_diagnostics.get("active_waiter_count")
-    )
-    build_waiter_count = _integer_metric(
-        request_diagnostics.get("build_waiter_count")
-    )
-    associated_attempt_id = _integer_metric(
-        request_diagnostics.get("attempt_id")
-    )
-    associated_attempt_seconds = _numeric_seconds(
-        request_diagnostics.get("attempt_seconds")
-    )
     route_seconds = time.perf_counter() - route_started_at
     server_timing = _server_timing(
         build_diagnostics=build_diagnostics,
-        snapshot_origin_build_seconds=snapshot_origin_build_seconds,
-        associated_attempt_seconds=associated_attempt_seconds,
         response_encoding_name="request_compact_json_budget_gzip",
         response_encoding_seconds=response_serialization_seconds,
         route_seconds=route_seconds,
@@ -774,65 +523,24 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
     headers = _dashboard_response_headers(
         request_id=request_id,
         snapshot_id=snapshot_id,
-        cache_status=result.cache_status,
-        age_ms=age_ms,
         server_timing=server_timing,
-        stale=is_stale,
-        source_generation=result.source_generation,
     )
-    if is_stale:
-        _set_dashboard_health(
-            "degraded",
-            _DASHBOARD_ERROR_STALE,
-            observation_revision=_observation_revision(
-                request_diagnostics
-            ),
-        )
-    else:
-        _set_dashboard_health(
-            "ready",
-            None,
-            observation_revision=_observation_revision(
-                request_diagnostics
-            ),
-        )
     _log_dashboard_request(
         {
             "request_id": request_id,
             "snapshot_id": snapshot_id,
-            "cache": result.cache_status,
-            "snapshot_age_ms": age_ms,
-            "active_waiter_count": (
-                0 if active_waiter_count is None else active_waiter_count
-            ),
-            "request_waited": (
-                request_diagnostics.get("request_waited") is True
-            ),
-            "build_waiter_count": (
-                0 if build_waiter_count is None else build_waiter_count
-            ),
-            "associated_refresh_attempt_id": associated_attempt_id,
-            "associated_refresh_attempt_status": _attempt_status(
-                request_diagnostics.get("attempt_status")
-            ),
-            "associated_refresh_attempt_ms": _duration_ms(
-                associated_attempt_seconds
-            ),
-            "snapshot_origin_db_ms": _duration_ms(
+            "dashboard_db_ms": _duration_ms(
                 build_diagnostics.get("db_read_seconds")
             ),
-            "snapshot_origin_canonical_ms": _duration_ms(
+            "dashboard_canonical_ms": _duration_ms(
                 build_diagnostics.get("canonical_build_seconds")
             ),
-            "snapshot_origin_serialization_ms": _duration_ms(
+            "dashboard_serialization_ms": _duration_ms(
                 build_diagnostics.get("canonical_serialization_seconds")
             ),
             "request_compact_json_budget_gzip_ms": round(
                 response_serialization_seconds * 1_000,
                 3,
-            ),
-            "snapshot_origin_build_ms": _duration_ms(
-                snapshot_origin_build_seconds
             ),
             "request_route_ms": round(route_seconds * 1_000, 3),
             "scheme_count": _integer_metric(
@@ -854,18 +562,16 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
             "actual_direction_conflicts": _actual_frequency_metrics(
                 build_diagnostics.get("actual_direction_conflicts")
             ),
-            "snapshot_origin_raw_bytes": _integer_metric(
+            "dashboard_raw_bytes": _integer_metric(
                 build_diagnostics.get("raw_bytes")
             ),
-            "snapshot_origin_budget_gzip_bytes": _integer_metric(
+            "dashboard_budget_gzip_bytes": _integer_metric(
                 build_diagnostics.get("gzip_bytes")
             ),
             "response_raw_bytes": encoding.raw_size,
             "response_budget_gzip_bytes": encoding.gzip_size,
             "status": 200,
-            "error_code": (
-                _DASHBOARD_ERROR_STALE if is_stale else None
-            ),
+            "error_code": None,
         }
     )
     return Response(

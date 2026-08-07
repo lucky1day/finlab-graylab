@@ -251,12 +251,14 @@ python -m backtests.{scheme_id}_reproduction [--no-persist]
 
 ```
 前端 → backend.main GET /api/factor-lab/dashboard
-  └─ backend.dashboard_snapshot.DashboardSnapshotStore
-       ├─ TTL 1 秒 + single-flight + 显式 stale LKG（进程内只读展示缓存）
-       └─ backend.factor_lab_dashboard.build_factor_lab_dashboard(engine)
-            ├─ 同一 connection / repeatable-read readonly transaction
-            ├─ active registry + live predictions + scoped actuals + latest backtest 批量 SELECT
-            └─ canonical 选择 → compact V1 snapshot → gzip/identity 表示
+  └─ backend.factor_lab_dashboard.build_factor_lab_dashboard(engine)
+       ├─ 每个请求直接以 dashboard 专用只读 Engine 建立当前视图
+       ├─ 同一 connection / repeatable-read readonly transaction
+       ├─ active registry + live predictions + scoped actuals + latest backtest 批量 SELECT
+       └─ canonical 选择 → compact V1 response → gzip/identity 表示
+
+数据库或构建失败时 route 直接返回 `503 dashboard_data_unavailable`；不保留进程内
+last-known-good 数据，也不对前端返回 stale 快照。
 
 本机兼容/回滚路径：
 前端 legacy fallback → backend.main GET /api/metrics/{scheme_id}

@@ -1,15 +1,17 @@
 """只读计算 active 方案的 live 信号缺口。
 
-Blackbox 从当前精确 active version 的 ``approved_at`` 日历日之后开始，
-Native 从 Registry ``created_at`` 日历日之后开始。同日没有可审计的调度
-时钟，故不计为已到期；本模块从不读取 ``deployed_at``、DataBridge 或文件。
+Blackbox 从当前精确 active version 的 ``approved_at``（UTC 存储、映射到
+Asia/Shanghai 业务日）之后开始，Native 从 Registry ``created_at`` 日历日
+之后开始。同日没有可审计的调度时钟，故不计为已到期；本模块从不读取
+``deployed_at``、DataBridge 或文件。
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Literal, Sequence
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Connection, Engine
@@ -24,8 +26,10 @@ from shared.prediction_context import (
 
 
 ACCEPTED_LIVE_PHASES = ("gray_live", "scheduled_live")
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
 FailureCategory = Literal[
     "activation_unavailable",
+    "data_bridge_ready_timeout",
     "no_run",
     "prediction_ambiguous",
     "prediction_missing",
@@ -95,7 +99,7 @@ class LatestDueSignalStatus:
     base_scheme_id: str
     target_tenor: str
     horizon: int
-    state: Literal["missing", "not_due", "present", "unavailable"]
+    state: Literal["missing", "not_due", "present"]
     predict_date: str | None
     open_missing_count: int
     latest_missing_predict_date: str | None
@@ -157,7 +161,8 @@ def read_signal_gap_report(
         connection,
         table="t_scheme_runs",
         fields=(
-            "scheme_id, scheme_version, predict_date, prediction_phase, status",
+            "scheme_id, scheme_version, predict_date, prediction_phase, status, "
+            "error_message",
         ),
         base_ids=tuple(sorted({item.base_scheme_id for item in targets})),
         start_date=start,
@@ -243,7 +248,7 @@ def latest_due_signal_statuses(
                     target.base_scheme_id,
                     target.target_tenor,
                     target.horizon,
-                    "unavailable",
+                    "missing",
                     None,
                     0,
                     None,
@@ -317,7 +322,10 @@ def _targets(connection: Connection) -> tuple[SignalTarget, ...]:
         failure: FailureCategory | None = None
         if runtime == "blackbox_v2":
             versions = {
-                (str(item["scheme_version"]), _timestamp_date(item["approved_at"]))
+                (
+                    str(item["scheme_version"]),
+                    _blackbox_approved_calendar_date(item["approved_at"]),
+                )
                 for item in group
                 if item["scheme_version"] is not None
             }
@@ -488,6 +496,12 @@ def _classify(
 
 def _failure_category(rows: Sequence[dict[str, Any]]) -> FailureCategory:
     statuses = {str(row.get("status") or "") for row in rows}
+    if any(
+        str(row.get("status") or "") == "failed"
+        and str(row.get("error_message") or "") == "data_bridge_ready_timeout"
+        for row in rows
+    ):
+        return "data_bridge_ready_timeout"
     if statuses & {"success", "partial"}:
         return "prediction_missing"
     if "failed" in statuses:
@@ -597,6 +611,23 @@ def _range(start_date: str, end_date: str) -> tuple[str, str]:
 def _timestamp_date(value: object) -> str | None:
     try:
         return _date(value)
+    except ValueError:
+        return None
+
+
+def _blackbox_approved_calendar_date(value: object) -> str | None:
+    """将 version 生命周期中无时区 UTC 的 ``approved_at`` 映射为业务日。"""
+
+    try:
+        if isinstance(value, datetime):
+            timestamp = value
+        elif isinstance(value, date):
+            return value.isoformat()
+        else:
+            timestamp = datetime.fromisoformat(str(value or "").strip())
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        return timestamp.astimezone(_SHANGHAI).date().isoformat()
     except ValueError:
         return None
 

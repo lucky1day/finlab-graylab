@@ -30,6 +30,8 @@
         "target_label": "5Y国债活跃",
         "status": "active",
         "deployed_at": "2026-06-04",
+        "signal_status": "present",
+        "signal_failure_category": null,
         "live_rows": [
           ["2026-07-20", "2026-07-17", "2026-07-21", "scheduled_live", 1, null]
         ],
@@ -56,6 +58,8 @@
         "target_label": "5Y国债活跃",
         "status": "active",
         "deployed_at": "2026-06-04",
+        "signal_status": "present",
+        "signal_failure_category": null,
         "live_rows": [],
         "backtest": null
       }

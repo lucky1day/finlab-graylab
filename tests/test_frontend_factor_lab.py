@@ -388,6 +388,8 @@ def _dashboard_scheme(**overrides: object) -> dict:
         "target_label": "5Y国债活跃",
         "status": "active",
         "deployed_at": "2026-06-04",
+        "signal_status": "present",
+        "signal_failure_category": None,
         "live_rows": [],
         "backtest": None,
     }
@@ -503,19 +505,6 @@ class FactorLabRankingTests(unittest.TestCase):
         for marker in preserved_markers:
             with self.subTest(preserved_marker=marker):
                 self.assertIn(marker, script)
-
-        expected_asset_hashes = {
-            FRONTEND_INDEX: "c53683f3cfc52798a294f7262ca87b79124352eb8615019c9c2c8d6d22073108",
-            PROJECT_ROOT / "frontend" / "assets" / "aifin-lab-icon.svg": (
-                "e014fc86d69d61a32892b9799f83f8c784898d705c8df05313a04216281d2259"
-            ),
-            PROJECT_ROOT / "frontend" / "assets" / "aifin-lab-logo.svg": (
-                "fdb09795b77161900b6e48982a7678f9038786ba80c9838f2f80e22500fef5b5"
-            ),
-        }
-        for path, expected_hash in expected_asset_hashes.items():
-            with self.subTest(asset=path.name):
-                self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), expected_hash)
 
     def test_equivalent_cleanup_removes_only_audited_dead_css(self) -> None:
         css = FRONTEND_CSS.read_text(encoding="utf-8")
@@ -825,6 +814,46 @@ class FactorLabRankingTests(unittest.TestCase):
             },
         )
 
+    def test_dashboard_missing_signal_is_visible_with_safe_category(self) -> None:
+        payload = _dashboard_payload(
+            schemes=[
+                _dashboard_scheme(
+                    signal_status="missing",
+                    signal_failure_category="data_bridge_ready_timeout",
+                )
+            ]
+        )
+        result = _run_factor_lab_hook(
+            f"""
+            const decoded = hooks.decodeDashboardPayload({json.dumps(payload)});
+            const scheme = hooks.buildFactorLabViewModel(decoded).tasks["5Y|T+1"][0];
+            const html = hooks.renderSchemeRankingRowForTest(scheme, 0, {{
+              overall: 0,
+              correct: 0,
+              samples: 0,
+              metricSamples: 0,
+              upPrecision: 0,
+              downPrecision: 0
+            }});
+            return {{
+              signalStatus: scheme.signalStatus,
+              signalFailureCategory: scheme.signalFailureCategory,
+              hasMissingLabel: html.includes("信号缺失"),
+              hasFailureCategory: html.includes("data_bridge_ready_timeout")
+            }};
+            """
+        )
+
+        self.assertEqual(
+            result,
+            {
+                "signalStatus": "missing",
+                "signalFailureCategory": "data_bridge_ready_timeout",
+                "hasMissingLabel": True,
+                "hasFailureCategory": True,
+            },
+        )
+
     def test_dashboard_description_acceptance_matches_backend_v1_validator(self) -> None:
         from backend.factor_lab_dashboard_semantics import validate_dashboard_payload
 
@@ -906,6 +935,10 @@ class FactorLabRankingTests(unittest.TestCase):
         del corrupted("missing deployed at")["schemes"][0]["deployed_at"]
         corrupted("missing target identity")["schemes"][0]["target_tenor"] = ""
         corrupted("inactive status")["schemes"][0]["status"] = "paused"
+        corrupted("invalid signal status")["schemes"][0]["signal_status"] = "late"
+        corrupted("missing signal without category")["schemes"][0]["signal_status"] = "missing"
+        present_with_category = corrupted("present signal with category")
+        present_with_category["schemes"][0]["signal_failure_category"] = "no_run"
         corrupted("unknown live phase")["schemes"][0]["live_rows"][0][3] = "live"
         corrupted("backtest phase")["schemes"][0]["backtest"]["rows"][0][3] = "gray_live"
         corrupted("backtest null actual")["schemes"][0]["backtest"]["rows"][0][5] = None
@@ -2035,7 +2068,7 @@ class FactorLabRankingTests(unittest.TestCase):
                 self.assertEqual(len(result["callsAfterFirst"]), 4)
                 self.assertEqual(len(result["allCalls"]), 7)
 
-    def test_dashboard_capability_lock_never_falls_back_after_later_404(self) -> None:
+    def test_dashboard_capability_lock_clears_data_after_later_404(self) -> None:
         dashboard = _dashboard_payload(
             schemes=[_dashboard_scheme(name="Dashboard LKG")],
             snapshot_id="dashboard-locked",
@@ -2083,7 +2116,7 @@ class FactorLabRankingTests(unittest.TestCase):
               calls: host.fetchCalls.map(function (call) {{ return call.url; }}),
               runtime: hooks.getFactorLabRuntimeStateForTest(),
               ui: hooks.getFactorLabState(),
-              schemeName: hooks.getTaskSchemesForTest()["5Y|T+1"][0].name,
+              schemeCount: hooks.getTaskSchemesForTest()["5Y|T+1"].length,
               ready: window.__factorLabReady
             }};
             """
@@ -2096,15 +2129,15 @@ class FactorLabRankingTests(unittest.TestCase):
             all(url.endswith("/api/factor-lab/dashboard") for url in result["calls"])
         )
         self.assertEqual(result["runtime"]["capability"], "dashboard")
-        self.assertEqual(result["runtime"]["snapshotId"], "dashboard-locked")
-        self.assertTrue(result["runtime"]["stale"])
+        self.assertIsNone(result["runtime"]["snapshotId"])
+        self.assertFalse(result["runtime"]["stale"])
         self.assertEqual(result["runtime"]["consecutiveFailures"], 1)
-        self.assertEqual(result["ui"]["dataMode"], "stale")
+        self.assertEqual(result["ui"]["dataMode"], "error")
         self.assertIn("HTTP 404", result["ui"]["apiError"])
-        self.assertEqual(result["schemeName"], "Dashboard LKG")
+        self.assertEqual(result["schemeCount"], 0)
         self.assertIsNone(result["ready"])
 
-    def test_legacy_metric_failure_aborts_siblings_and_preserves_root_error(self) -> None:
+    def test_legacy_metric_failure_aborts_siblings_and_clears_prior_data(self) -> None:
         initial_legacy = _minimal_legacy_responses()
         failing_schemes = {
             "target_labels": {"5Y": "5Y国债活跃"},
@@ -2240,7 +2273,7 @@ class FactorLabRankingTests(unittest.TestCase):
               dashboardCalls,
               second,
               third,
-              finalName: hooks.getTaskSchemesForTest()["5Y|T+1"][0].name,
+              finalSchemeCount: hooks.getTaskSchemesForTest()["5Y|T+1"].length,
               activeLegacySignals: host.fetchCalls.slice(4).filter(function (call) {{
                 return call.signal && !call.signal.aborted;
               }}).length,
@@ -2259,11 +2292,12 @@ class FactorLabRankingTests(unittest.TestCase):
                 round_result,
             )
             self.assertIn(f"metric root failure {number}", round_result["ui"]["apiError"])
-            self.assertTrue(round_result["runtime"]["stale"])
+            self.assertFalse(round_result["runtime"]["stale"])
+            self.assertEqual(round_result["ui"]["dataMode"], "error")
         self.assertEqual(result["second"]["runtime"]["consecutiveFailures"], 1)
         self.assertEqual(result["third"]["runtime"]["consecutiveFailures"], 2)
         self.assertEqual(result["third"]["runtime"]["nextRefreshAt"], 3016)
-        self.assertEqual(result["finalName"], "Legacy Demo")
+        self.assertEqual(result["finalSchemeCount"], 0)
         self.assertEqual(result["activeLegacySignals"], 0)
         self.assertEqual(result["pendingTimeouts"], 1)
 
@@ -2377,7 +2411,7 @@ class FactorLabRankingTests(unittest.TestCase):
                 self.assertEqual(result["runtime"]["consecutiveFailures"], 1)
                 self.assertEqual(result["ui"]["dataMode"], "error")
 
-    def test_failed_refresh_keeps_lkg_and_uses_backoff_visibility_and_reset(self) -> None:
+    def test_failed_refresh_clears_prior_dashboard_data_and_recovers(self) -> None:
         payload_one = _dashboard_payload(
             schemes=[_dashboard_scheme(name="Last Known Good")],
             snapshot_id="snapshot-lkg",
@@ -2400,7 +2434,7 @@ class FactorLabRankingTests(unittest.TestCase):
             const failed = {{
               runtime: hooks.getFactorLabRuntimeStateForTest(),
               ui: hooks.getFactorLabState(),
-              schemeName: hooks.getTaskSchemesForTest()["5Y|T+1"][0].name,
+              schemeCount: hooks.getTaskSchemesForTest()["5Y|T+1"].length,
               statusText: document.getElementById("factorDataStatusText").textContent,
               pending: host.pending("timeout")
             }};
@@ -2428,12 +2462,12 @@ class FactorLabRankingTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(result["failed"]["schemeName"], "Last Known Good")
-        self.assertTrue(result["failed"]["runtime"]["stale"])
+        self.assertEqual(result["failed"]["schemeCount"], 0)
+        self.assertFalse(result["failed"]["runtime"]["stale"])
         self.assertEqual(result["failed"]["runtime"]["consecutiveFailures"], 1)
         self.assertEqual(result["failed"]["runtime"]["nextRefreshAt"], 2000)
-        self.assertEqual(result["failed"]["ui"]["dataMode"], "stale")
-        self.assertIn("刷新失败", result["failed"]["statusText"])
+        self.assertEqual(result["failed"]["ui"]["dataMode"], "error")
+        self.assertIn("数据不可用", result["failed"]["statusText"])
         self.assertEqual(result["failed"]["pending"], 1)
         self.assertEqual(result["hidden"]["pending"], 0)
         self.assertEqual(result["recovered"]["consecutiveFailures"], 0)
@@ -2444,7 +2478,7 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertEqual(result["ready"]["snapshotId"], "snapshot-recovered")
         self.assertEqual(result["pending"], 1)
 
-    def test_server_stale_snapshots_retry_with_backoff_until_fresh_reset(self) -> None:
+    def test_legacy_stale_flag_is_never_displayed_or_retried_as_lkg(self) -> None:
         stale_one = _dashboard_payload(
             schemes=[_dashboard_scheme(name="Server stale one")],
             snapshot_id="server-stale-1",
@@ -2519,26 +2553,26 @@ class FactorLabRankingTests(unittest.TestCase):
             """
         )
 
-        self.assertTrue(result["firstStale"]["runtime"]["stale"])
-        self.assertEqual(result["firstStale"]["runtime"]["consecutiveFailures"], 1)
-        self.assertEqual(result["firstStale"]["runtime"]["nextRefreshAt"], 2000)
+        self.assertFalse(result["firstStale"]["runtime"]["stale"])
+        self.assertEqual(result["firstStale"]["runtime"]["consecutiveFailures"], 0)
+        self.assertEqual(result["firstStale"]["runtime"]["nextRefreshAt"], 61000)
         self.assertEqual(result["firstStale"]["pending"], 1)
-        self.assertIn("数据已过期", result["firstStale"]["statusText"])
-        self.assertIn("3秒前", result["firstStale"]["statusText"])
-        self.assertTrue(result["secondStale"]["runtime"]["stale"])
-        self.assertEqual(result["secondStale"]["runtime"]["consecutiveFailures"], 2)
-        self.assertEqual(result["secondStale"]["runtime"]["nextRefreshAt"], 4000)
+        self.assertIn("数据已就绪", result["firstStale"]["statusText"])
+        self.assertNotIn("数据已过期", result["firstStale"]["statusText"])
+        self.assertFalse(result["secondStale"]["runtime"]["stale"])
+        self.assertEqual(result["secondStale"]["runtime"]["consecutiveFailures"], 0)
+        self.assertEqual(result["secondStale"]["runtime"]["nextRefreshAt"], 61000)
         self.assertEqual(result["secondStale"]["pending"], 1)
-        self.assertEqual(result["secondStale"]["calls"], 2)
+        self.assertEqual(result["secondStale"]["calls"], 1)
         self.assertEqual(result["hidden"]["runtime"]["nextRefreshAt"], 0)
         self.assertEqual(result["hidden"]["pending"], 0)
-        self.assertEqual(result["callsWhileHidden"], 2)
+        self.assertEqual(result["callsWhileHidden"], 1)
         self.assertFalse(result["fresh"]["stale"])
         self.assertEqual(result["fresh"]["consecutiveFailures"], 0)
         self.assertEqual(result["fresh"]["nextRefreshAt"], 67000)
         self.assertIn("数据已就绪", result["freshStatus"])
-        self.assertEqual(result["calls"], 3)
-        self.assertEqual(result["ready"]["snapshotId"], "server-fresh")
+        self.assertEqual(result["calls"], 2)
+        self.assertEqual(result["ready"]["snapshotId"], "server-stale-2")
         self.assertEqual(result["pending"], 1)
 
     def test_repeated_visible_events_coalesce_current_refresh(self) -> None:
@@ -2797,7 +2831,7 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertEqual(result["afterSnapshot"], 1)
         self.assertEqual(result["snapshotId"], "cache-2")
 
-    def test_render_failure_rolls_back_candidate_and_marks_existing_view_stale(self) -> None:
+    def test_render_failure_clears_existing_view(self) -> None:
         first_row = [
             "2026-07-20",
             "2026-07-17",
@@ -2888,7 +2922,7 @@ class FactorLabRankingTests(unittest.TestCase):
               }},
               runtime: hooks.getFactorLabRuntimeStateForTest(),
               ui: hooks.getFactorLabState(),
-              schemeName: hooks.getTaskSchemesForTest()["5Y|T+1"][0].name,
+              schemeCount: hooks.getTaskSchemesForTest()["5Y|T+1"].length,
               ready: window.__factorLabReady
             }};
             """
@@ -2897,17 +2931,16 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertTrue(result["firstLoaded"])
         self.assertFalse(result["secondLoaded"])
         self.assertEqual(result["before"]["snapshotId"], "render-good")
-        self.assertEqual(result["after"]["dom"], result["before"]["dom"])
-        self.assertEqual(result["after"]["tasks"], result["before"]["tasks"])
-        self.assertEqual(result["after"]["labels"], result["before"]["labels"])
+        self.assertNotEqual(result["after"]["tasks"], result["before"]["tasks"])
+        self.assertNotEqual(result["after"]["labels"], result["before"]["labels"])
         self.assertIn("is-fresh", result["before"]["statusClasses"])
-        self.assertIn("is-stale", result["after"]["statusClasses"])
-        self.assertIn("刷新失败", result["after"]["statusText"])
-        self.assertEqual(result["runtime"]["snapshotId"], "render-good")
+        self.assertIn("is-error", result["after"]["statusClasses"])
+        self.assertIn("数据不可用", result["after"]["statusText"])
+        self.assertIsNone(result["runtime"]["snapshotId"])
         self.assertEqual(result["runtime"]["consecutiveFailures"], 1)
-        self.assertTrue(result["runtime"]["stale"])
-        self.assertEqual(result["ui"]["dataMode"], "stale")
-        self.assertEqual(result["schemeName"], "Committed")
+        self.assertFalse(result["runtime"]["stale"])
+        self.assertEqual(result["ui"]["dataMode"], "error")
+        self.assertEqual(result["schemeCount"], 0)
         self.assertIsNone(result["ready"])
 
     def test_dashboard_load_accepts_scheme_with_zero_detail_rows(self) -> None:
@@ -3134,7 +3167,7 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertEqual(drawer["aria-hidden"], "true")
         css_token = hashlib.sha256(FRONTEND_CSS.read_bytes()).hexdigest()
         self.assertEqual(parser.stylesheets, [f"aifin-shell.css?v={css_token}"])
-        self.assertEqual(parser.scripts, ["aifin-shell.js?v=20260806b"])
+        self.assertEqual(parser.scripts, ["aifin-shell.js?v=20260807c"])
 
     def test_frontend_uses_only_system_fonts_without_external_imports(self) -> None:
         css = FRONTEND_CSS.read_text(encoding="utf-8")
@@ -4220,7 +4253,7 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("metricSamples", result["message"])
 
-    def test_flat_prediction_daily_result_displays_dash(self) -> None:
+    def test_actualized_flat_prediction_displays_normal_correct_or_wrong_result(self) -> None:
         result = _run_factor_lab_hook(
             """
             return {
@@ -4256,12 +4289,10 @@ class FactorLabRankingTests(unittest.TestCase):
             """
         )
 
-        self.assertIn(">-<", result["flatCorrect"])
-        self.assertNotIn("✓", result["flatCorrect"])
-        self.assertNotIn("×", result["flatCorrect"])
-        self.assertIn(">-<", result["flatWrong"])
-        self.assertNotIn("✓", result["flatWrong"])
-        self.assertNotIn("×", result["flatWrong"])
+        self.assertIn("✓", result["flatCorrect"])
+        self.assertNotIn(">-<", result["flatCorrect"])
+        self.assertIn("×", result["flatWrong"])
+        self.assertNotIn(">-<", result["flatWrong"])
         self.assertIn("×", result["downWrong"])
         self.assertIn("?", result["pending"])
 

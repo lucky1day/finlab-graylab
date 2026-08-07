@@ -25,9 +25,6 @@ USER_AGENT = "bond-factor-lab-api-benchmark/1.0"
 SCHEMA_VERSION = "factor-lab-dashboard-v1"
 MAX_RAW_JSON_BYTES = 1_500_000
 MAX_GZIP_JSON_BYTES = 100_000
-MAX_FRESH_SNAPSHOT_AGE_MS = 1_000
-CACHE_STATUSES = {"HIT", "MISS", "STALE", "UNAVAILABLE"}
-FRESH_CACHE_STATUSES = {"HIT", "MISS"}
 ROW_FIELDS = [
     "predict_date",
     "feature_date",
@@ -96,8 +93,6 @@ class Attempt:
     wire_bytes: int
     raw_bytes: int
     content_encoding: str | None
-    cache_status: str | None
-    stale_header: str | None
     server_timing: str | None
     schema_valid: bool
     stale: bool | None
@@ -110,9 +105,7 @@ class Attempt:
     cache_control: str | None = None
     vary: str | None = None
     snapshot_id_header: str | None = None
-    snapshot_age_ms_header: int | None = None
     snapshot_id_body: str | None = None
-    snapshot_age_ms_body: int | None = None
 
 
 def nearest_rank(values: list[float], percentile: float) -> float:
@@ -139,7 +132,7 @@ def _latency_summary(attempts: list[Attempt]) -> dict[str, float | int | None]:
 
 
 def summarize_attempts(attempts: list[Attempt]) -> dict[str, Any]:
-    """汇总全部尝试；任何失败、stale 或 schema 错误都会阻断验收。"""
+    """汇总全部尝试；任何失败或 schema/响应合同错误都会阻断验收。"""
 
     latency = _latency_summary(attempts)
     contract_errors = {
@@ -168,8 +161,6 @@ def summarize_attempts(attempts: list[Attempt]) -> dict[str, Any]:
         gate_failures.append("attempt_failures")
     if any(contract_errors.values()):
         gate_failures.append("response_contract_invalid")
-    if any(attempt.stale is True for attempt in attempts):
-        gate_failures.append("stale_response")
     if any(not attempt.schema_valid for attempt in attempts):
         gate_failures.append("schema_invalid")
     if latency["p95"] is None or float(latency["p95"]) >= 1000:
@@ -342,12 +333,7 @@ def _attempt_contract_violations(attempt: Attempt) -> list[str]:
     }
     if "accept-encoding" not in vary_tokens:
         violations.append("vary_accept_encoding")
-    cache_status = (
-        attempt.cache_status if isinstance(attempt.cache_status, str) else ""
-    )
-    if cache_status.strip().upper() not in FRESH_CACHE_STATUSES:
-        violations.append("cache_status")
-    if attempt.stale is not False or attempt.stale_header is not None:
+    if attempt.stale is not False:
         violations.append("stale")
     if attempt.status != 200:
         violations.append("status")
@@ -371,14 +357,6 @@ def _attempt_contract_violations(attempt: Attempt) -> list[str]:
         or attempt.snapshot_id_header != attempt.snapshot_id_body
     ):
         violations.append("snapshot_id")
-    if (
-        not _is_integer(attempt.snapshot_age_ms_header)
-        or not _is_integer(attempt.snapshot_age_ms_body)
-        or int(attempt.snapshot_age_ms_header) != int(attempt.snapshot_age_ms_body)
-        or int(attempt.snapshot_age_ms_header) < 0
-        or int(attempt.snapshot_age_ms_header) > MAX_FRESH_SNAPSHOT_AGE_MS
-    ):
-        violations.append("snapshot_age")
     return violations
 
 
@@ -562,8 +540,6 @@ def _single_attempt(
     wire = b""
     raw = b""
     encoding: str | None = None
-    cache_status: str | None = None
-    stale_header: str | None = None
     server_timing: str | None = None
     content_type: str | None = None
     content_length_header: str | None = None
@@ -571,10 +547,7 @@ def _single_attempt(
     cache_control: str | None = None
     vary: str | None = None
     snapshot_id_header: str | None = None
-    snapshot_age_header: str | None = None
-    snapshot_age_ms_header: int | None = None
     snapshot_id_body: str | None = None
-    snapshot_age_ms_body: int | None = None
     schema_valid = False
     stale: bool | None = None
     error_message: str | None = None
@@ -607,14 +580,9 @@ def _single_attempt(
                 encoding = response.getheader("Content-Encoding")
                 cache_control = response.getheader("Cache-Control")
                 vary = response.getheader("Vary")
-                cache_status = response.getheader("X-Dashboard-Cache")
                 snapshot_id_header = response.getheader(
                     "X-Dashboard-Snapshot-ID"
                 )
-                snapshot_age_header = response.getheader(
-                    "X-Dashboard-Snapshot-Age"
-                )
-                stale_header = response.getheader("X-Dashboard-Warning")
                 server_timing = response.getheader("Server-Timing")
                 try:
                     wire = response.read()
@@ -665,7 +633,6 @@ def _single_attempt(
         schema_valid = True
         stale = payload["stale"]
         snapshot_id_body = payload["snapshot_id"]
-        snapshot_age_ms_body = int(payload["snapshot_age_ms"])
         if normalized_encoding != "gzip":
             raise ValueError("gzip content-encoding is required for this probe")
         if len(wire) > MAX_GZIP_JSON_BYTES:
@@ -680,13 +647,6 @@ def _single_attempt(
             )
         if status != 200:
             raise ValueError(f"unexpected HTTP status {status}")
-        normalized_cache_status = (cache_status or "").strip().upper()
-        if normalized_cache_status not in CACHE_STATUSES:
-            raise ValueError("X-Dashboard-Cache is missing or invalid")
-        if normalized_cache_status not in FRESH_CACHE_STATUSES:
-            raise ValueError(
-                "X-Dashboard-Cache must be HIT or MISS for acceptance"
-            )
         if (
             snapshot_id_header is None
             or snapshot_id_header.strip() != snapshot_id_body
@@ -694,20 +654,7 @@ def _single_attempt(
             raise ValueError(
                 "X-Dashboard-Snapshot-ID does not match body snapshot_id"
             )
-        snapshot_age_ms_header = _nonnegative_integer_header(
-            snapshot_age_header,
-            name="X-Dashboard-Snapshot-Age",
-        )
-        if snapshot_age_ms_header != snapshot_age_ms_body:
-            raise ValueError(
-                "X-Dashboard-Snapshot-Age does not match body snapshot_age_ms"
-            )
-        if snapshot_age_ms_header > MAX_FRESH_SNAPSHOT_AGE_MS:
-            raise ValueError(
-                "fresh snapshot age exceeds one-second contract: "
-                f"age_ms={snapshot_age_ms_header}"
-            )
-        if stale or stale_header:
+        if stale:
             raise ValueError("dashboard response is stale")
     except Exception as error:  # 业务失败转为 attempt；进程中断必须向上传播。
         error_message = f"{type(error).__name__}: {error}"
@@ -726,8 +673,6 @@ def _single_attempt(
         wire_bytes=len(wire),
         raw_bytes=len(raw),
         content_encoding=encoding,
-        cache_status=cache_status,
-        stale_header=stale_header,
         server_timing=server_timing,
         schema_valid=schema_valid,
         stale=stale,
@@ -740,9 +685,7 @@ def _single_attempt(
         cache_control=cache_control,
         vary=vary,
         snapshot_id_header=snapshot_id_header,
-        snapshot_age_ms_header=snapshot_age_ms_header,
         snapshot_id_body=snapshot_id_body,
-        snapshot_age_ms_body=snapshot_age_ms_body,
     )
     if error_message is not None:
         connection.close()

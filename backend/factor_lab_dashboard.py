@@ -17,6 +17,8 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Connection, Engine
 
+from shared.signal_gap_report import read_latest_due_signal_statuses
+
 from backend.factor_lab_dashboard_semantics import (
     BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE,
     DASHBOARD_SCHEMA_VERSION,
@@ -122,6 +124,14 @@ def build_factor_lab_dashboard(
                 {int(row["id"]) for row in selected_backtest_runs.values()}
             ),
         )
+        signal_statuses = {
+            item.registry_scheme_id: item
+            for item in read_latest_due_signal_statuses(
+                connection,
+                start_date=FACTOR_LAB_HISTORY_START_DATE,
+                as_of_date=display_until,
+            )
+        }
     db_read_seconds = time.perf_counter() - db_read_started_at
 
     canonical_started_at = time.perf_counter()
@@ -191,6 +201,12 @@ def build_factor_lab_dashboard(
     backtest_row_count = 0
     history_backtest_rows_excluded = 0
     for scheme in registry:
+        signal_status = signal_statuses.get(scheme["scheme_id"])
+        if signal_status is None:
+            raise DashboardDataError(
+                "active registry scheme is missing signal status: "
+                f"scheme_id={scheme['scheme_id']}"
+            )
         selector = live_actual_selector(scheme["task_type"])
         live_rows: list[list[Any]] = []
         prediction_key = (
@@ -281,6 +297,8 @@ def build_factor_lab_dashboard(
             {
                 **scheme,
                 "target_label": target_labels[scheme["target_tenor"]],
+                "signal_status": signal_status.state,
+                "signal_failure_category": signal_status.failure_category,
                 "live_rows": live_rows,
                 "backtest": backtest,
             }
@@ -312,9 +330,8 @@ def build_factor_lab_dashboard(
     }
     validate_dashboard_payload(payload)
     canonical_build_seconds = time.perf_counter() - canonical_started_at
-    # This checks the canonical builder snapshot only. Task 6 must encode the
-    # final stale/snapshot_age_ms body and verify actual identity/gzip ASGI wire
-    # bytes after the route and middleware are integrated.
+    # 该校验覆盖 canonical builder 输出；route 继续负责 identity/gzip ASGI wire
+    # 表示。v1 的 stale/snapshot_age_ms 仅为兼容字段，不表示缓存状态。
     serialization_started_at = time.perf_counter()
     encoding = _validate_canonical_snapshot_budgets(
         payload,

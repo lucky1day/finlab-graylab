@@ -31,6 +31,8 @@ def test_dashboard_engine_uses_bounded_pymysql_and_query_timeouts(
     try:
         engine = db.get_dashboard_engine()
         assert db.get_dashboard_engine() is engine
+        assert engine.pool._pre_ping is True
+        assert engine.pool._recycle == 300
 
         captured_connect_args: dict[str, object] = {}
 

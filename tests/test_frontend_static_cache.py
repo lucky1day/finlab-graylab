@@ -170,7 +170,7 @@ class FrontendStaticCacheTests(unittest.TestCase):
             parser.stylesheets,
             [f"aifin-shell.css?v={css_token}"],
         )
-        self.assertEqual(parser.scripts, ["aifin-shell.js?v=20260806b"])
+        self.assertEqual(parser.scripts, ["aifin-shell.js?v=20260807c"])
 
         async def _fetch_headers(
             static: NoCacheFrontendStaticFiles,

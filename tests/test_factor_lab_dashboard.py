@@ -5,7 +5,7 @@ import logging
 import re
 from copy import deepcopy
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Iterator
 from zoneinfo import ZoneInfo
 
@@ -57,6 +57,19 @@ def _create_dashboard_schema(engine: Engine) -> None:
                     deployed_at TEXT,
                     created_at TEXT,
                     updated_at TEXT
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE t_scheme_versions (
+                    scheme_id TEXT NOT NULL,
+                    scheme_version TEXT NOT NULL,
+                    runtime_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    approved_at TEXT
                 )
                 """
             )
@@ -141,6 +154,7 @@ def _create_dashboard_schema(engine: Engine) -> None:
                 CREATE TABLE t_scheme_predictions (
                     id INTEGER PRIMARY KEY,
                     scheme_id TEXT NOT NULL,
+                    scheme_version TEXT,
                     target_tenor TEXT NOT NULL,
                     horizon INTEGER NOT NULL,
                     predict_date TEXT NOT NULL,
@@ -149,6 +163,40 @@ def _create_dashboard_schema(engine: Engine) -> None:
                     prediction_phase TEXT NOT NULL,
                     predicted_direction INTEGER NOT NULL,
                     extra TEXT
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE t_scheme_runs (
+                    scheme_id TEXT NOT NULL,
+                    scheme_version TEXT,
+                    predict_date TEXT NOT NULL,
+                    prediction_phase TEXT,
+                    status TEXT NOT NULL,
+                    error_message TEXT
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE t_trade_calendar (
+                    rdate TEXT NOT NULL,
+                    trade_flag TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE api_wind_date (
+                    rdate TEXT NOT NULL,
+                    week_id INTEGER
                 )
                 """
             )
@@ -305,6 +353,43 @@ def _seed_dashboard_rows(engine: Engine) -> None:
     ]
 
     with engine.begin() as connection:
+        calendar_rows = []
+        calendar_date = date(2026, 5, 1)
+        calendar_end = date(2026, 8, 31)
+        while calendar_date <= calendar_end:
+            calendar_rows.append(
+                {
+                    "rdate": calendar_date.isoformat(),
+                    "trade_flag": "1" if calendar_date.weekday() < 5 else "0",
+                    "week_id": calendar_date.isocalendar().week,
+                }
+            )
+            calendar_date += timedelta(days=1)
+        connection.execute(
+            text(
+                "INSERT INTO t_trade_calendar (rdate, trade_flag) "
+                "VALUES (:rdate, :trade_flag)"
+            ),
+            calendar_rows,
+        )
+        connection.execute(
+            text(
+                "INSERT INTO api_wind_date (rdate, week_id) "
+                "VALUES (:rdate, :week_id)"
+            ),
+            calendar_rows,
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_scheme_versions
+                    (scheme_id, scheme_version, runtime_type, status, approved_at)
+                VALUES
+                    ('weekly_point', 'current', 'blackbox_v2', 'active',
+                     '2026-06-01T09:00:00')
+                """
+            )
+        )
         connection.execute(
             text(
                 """
@@ -574,6 +659,10 @@ def test_builds_live_snapshot_from_active_registry_task_types(
         ("10Y", "monthly"),
     }
     assert schemes["daily_t1__h5__5Y"]["target_label"] == "5Y国债活跃"
+    assert schemes["daily_t1__h5__5Y"]["signal_status"] == "missing"
+    assert (
+        schemes["daily_t1__h5__5Y"]["signal_failure_category"] == "no_run"
+    )
 
     assert schemes["daily_t1__h5__5Y"]["live_rows"] == [
         ["2026-07-20", "2026-07-17", "2026-07-21", "scheduled_live", 1, 1],
@@ -634,11 +723,11 @@ def test_builds_live_snapshot_from_active_registry_task_types(
     assert len(trace.checkins) == 1
     assert len(set(trace.connection_ids)) == 1
     assert trace.transaction_flags and all(trace.transaction_flags)
-    assert len(trace.statements) == 6
+    assert len(trace.statements) == 11
     assert sum(
         statement.lstrip().upper().startswith("SELECT")
         for statement in trace.statements
-    ) <= 6
+    ) <= 11
     assert all(statement.lstrip().upper().startswith("SELECT") for statement in trace.statements)
     assert not any(
         re.match(r"\s*(INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE)\b", statement, re.I)
@@ -993,7 +1082,7 @@ def test_dashboard_and_legacy_default_backtest_projections_are_equal(
         for scheme in dashboard["schemes"]
         if scheme["backtest"] is not None
     ) == len(legacy_projection) == 5
-    assert dashboard_selects <= 6
+    assert dashboard_selects <= 11
 
 
 def test_legacy_default_backtest_order_is_stable_for_shuffled_inputs(
@@ -1082,7 +1171,7 @@ def test_selected_backtest_run_without_any_detail_fails_closed(
     assert sum(
         statement.lstrip().upper().startswith("SELECT")
         for statement in trace.statements
-    ) <= 6
+    ) <= 11
 
 
 def test_selected_multi_target_run_missing_one_active_target_fails_closed(
@@ -1356,7 +1445,7 @@ def test_build_diagnostics_report_actual_folding_by_frequency_without_extra_sql(
         "weekly": 0,
         "monthly": 0,
     }
-    assert len(trace.statements) == 6
+    assert len(trace.statements) == 11
 
 
 def test_build_diagnostics_nested_counts_are_defensive_copies(
@@ -1560,7 +1649,7 @@ def test_dashboard_source_row_caps_fail_closed_before_dto(
     assert len(trace.checkins) == 1
 
 
-def test_dashboard_source_queries_use_cap_plus_one_limits(
+def test_dashboard_primary_source_queries_use_cap_plus_one_limits(
     dashboard_db: tuple[Engine, SqlTrace],
 ) -> None:
     import backend.factor_lab_dashboard as dashboard
@@ -1570,9 +1659,11 @@ def test_dashboard_source_queries_use_cap_plus_one_limits(
     dashboard.build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
 
     expected_limits = {
-        "FROM t_scheme_registry": dashboard.MAX_REGISTRY_SOURCE_ROWS + 1,
+        "FROM t_scheme_registry\n        WHERE status": (
+            dashboard.MAX_REGISTRY_SOURCE_ROWS + 1
+        ),
         "FROM t_target_registry": dashboard.MAX_TARGET_SOURCE_ROWS + 1,
-        "FROM t_scheme_predictions": (
+        "FROM t_scheme_predictions\n        WHERE (": (
             dashboard.MAX_LIVE_PREDICTION_SOURCE_ROWS + 1
         ),
         "FROM t_scheme_actuals": dashboard.MAX_ACTUAL_SOURCE_ROWS + 1,
@@ -1581,7 +1672,7 @@ def test_dashboard_source_queries_use_cap_plus_one_limits(
             dashboard.MAX_BACKTEST_DETAIL_SOURCE_ROWS + 1
         ),
     }
-    assert len(trace.statements) == len(expected_limits)
+    assert len(trace.statements) == 11
     for marker, expected_limit in expected_limits.items():
         matches = [
             (statement, parameters)

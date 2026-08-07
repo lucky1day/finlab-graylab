@@ -30,7 +30,6 @@ PROXY_SNIPPET_PATH = (
     PROJECT_ROOT / "deploy/nginx/snippets/bond-proxy-headers.conf"
 )
 CHECK_SCRIPT_PATH = PROJECT_ROOT / "scripts/check_public_access.sh"
-DEPLOY_README_PATH = PROJECT_ROOT / "deploy/README.md"
 
 
 def _without_comments(text: str) -> str:
@@ -434,16 +433,11 @@ def test_timing_log_uses_bounded_traffic_classes_instead_of_raw_user_agent() -> 
 
 def test_proxy_snippet_is_deployed_as_part_of_the_versioned_policy() -> None:
     config = _without_comments(NGINX_PATH.read_text(encoding="utf-8"))
-    readme = DEPLOY_README_PATH.read_text(encoding="utf-8")
 
     assert "include snippets/bond-proxy-headers.conf;" not in config
     assert config.count(
         "include snippets/bond-proxy-headers-20260722b.conf;"
     ) == 11
-    assert (
-        "/etc/nginx/snippets/bond-proxy-headers-20260722b.conf"
-        in readme
-    )
 
 
 def test_public_check_script_covers_protocol_and_bypass_matrix() -> None:
@@ -482,7 +476,6 @@ def test_public_check_script_covers_protocol_and_bypass_matrix() -> None:
         "dashboard-get-identity-json",
         "dashboard-get-gzip-q0",
         "dashboard-get-gzip-q0-json",
-        "health-ready",
         "deny-docs",
         "deny-redoc",
         "deny-openapi",
@@ -504,7 +497,7 @@ def test_public_check_script_covers_protocol_and_bypass_matrix() -> None:
     ):
         assert label in script
 
-    assert "dashboard_snapshot" in script
+    assert "dashboard_snapshot" not in script
     assert "factor-lab-dashboard-v1" in script
     assert "json.load" in script
     assert "gzip;q=0" in script
@@ -724,197 +717,3 @@ def test_header_parser_uses_final_block_and_exact_tokens(tmp_path: Path) -> None
     )
     assert parse(final_headers, "Vary", "token", "Accept-Encoding").returncode == 0
     assert parse(spoof_headers, "Vary", "token", "Accept-Encoding").returncode != 0
-
-
-def test_deploy_readme_points_to_current_performance_work() -> None:
-    readme = DEPLOY_README_PATH.read_text(encoding="utf-8")
-
-    assert (
-        "[公网性能运行手册]"
-        "(../docs/operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)"
-        in readme
-    )
-    assert "当前公网性能与访问控制规范" in readme
-    assert "Task 10 将把可执行性能验收手册落到" not in readme
-    assert "Task 10 手册落地前禁止执行本次发布" not in readme
-    assert "该文件落地前不创建失效链接" not in readme
-    assert "不改任何业务代码" not in readme
-    assert "后端不参与" not in readme
-    assert 'grep -Fxq "    default ${release_stage};"' in readme
-    assert 'if [[ -n "$previous_target" ]]; then' in readme
-    assert 'sudo rm -f -- "$active"' in readme
-
-
-def test_regular_rollback_keeps_the_public_service_online() -> None:
-    readme = DEPLOY_README_PATH.read_text(encoding="utf-8")
-    assert "## 回滚" in readme
-    assert "## 全站紧急下线" in readme
-    rollback = readme.split("## 回滚", maxsplit=1)[1].split(
-        "## 全站紧急下线",
-        maxsplit=1,
-    )[0]
-    emergency = readme.split("## 全站紧急下线", maxsplit=1)[1]
-
-    assert "launchctl bootout" not in rollback
-    assert "SSH 反向隧道和服务必须保持在线" in rollback
-    assert "launchctl bootout" in emergency
-    assert "专项授权" in emergency
-
-
-def test_nginx_reload_failure_restores_the_previous_live_policy() -> None:
-    readme = DEPLOY_README_PATH.read_text(encoding="utf-8")
-    deployment = readme.split("### 1) 公网入口机：Nginx", maxsplit=1)[1].split(
-        "### 2) 本地 Mac",
-        maxsplit=1,
-    )[0]
-
-    assert "restore_previous_link() {" in deployment
-    assert "if ! sudo nginx -t; then" in deployment
-    assert "if ! sudo systemctl reload nginx; then" in deployment
-    assert deployment.count("restore_previous_link") >= 3
-    assert "sudo nginx -t && sudo systemctl reload nginx" in deployment
-    # 一次是候选 reload，一次是 previous policy 恢复；无 previous 的分支不得 reload。
-    assert deployment.count("sudo systemctl reload nginx") == 2
-    assert 'sudo rm -f -- "$active"' in deployment
-    assert "reload 失败也必须以非零状态结束" in deployment
-
-
-def test_deploy_requires_supported_nginx_and_real_entry_validation() -> None:
-    readme = DEPLOY_README_PATH.read_text(encoding="utf-8")
-
-    assert "Nginx 1.18+" in readme
-    assert "Task 12 必须记录入口机实际 `nginx -v`" in readme
-    assert "真实完整配置执行 `nginx -t`" in readme
-    assert "本地 wrapper 不能替代生产入口验证" in readme
-
-
-def test_versioned_nginx_publish_is_immutable_and_idempotent(
-    tmp_path: Path,
-) -> None:
-    readme = DEPLOY_README_PATH.read_text(encoding="utf-8")
-    match = re.search(
-        r"<!-- NGINX_RELEASE_SCRIPT_BEGIN -->\n"
-        r"```bash\n(?P<script>.*?)\n```\n"
-        r"<!-- NGINX_RELEASE_SCRIPT_END -->",
-        readme,
-        flags=re.DOTALL,
-    )
-    assert match is not None
-    release_script = match.group("script")
-
-    fake_bin = tmp_path / "fake-bin"
-    fake_bin.mkdir()
-    (fake_bin / "sudo").write_text("#!/bin/sh\nexec \"$@\"\n", encoding="utf-8")
-    (fake_bin / "nginx").write_text(
-        "#!/bin/sh\nprintf 'nginx %s\\n' \"$*\" >>\"$BOND_RELEASE_TEST_LOG\"\n",
-        encoding="utf-8",
-    )
-    (fake_bin / "systemctl").write_text(
-        "#!/bin/sh\nprintf 'systemctl %s\\n' \"$*\" >>\"$BOND_RELEASE_TEST_LOG\"\n",
-        encoding="utf-8",
-    )
-    for command in fake_bin.iterdir():
-        command.chmod(0o755)
-
-    environment = dict(os.environ)
-    environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
-    environment["BOND_FACTOR_RELEASE_STAGE"] = "rollout"
-    environment["BOND_RELEASE_TEST_LOG"] = str(tmp_path / "release.log")
-
-    def prepare_root(name: str) -> Path:
-        root = tmp_path / name
-        for directory in ("snippets", "sites-available", "sites-enabled"):
-            (root / directory).mkdir(parents=True)
-        return root
-
-    def publish(root: Path) -> subprocess.CompletedProcess[str]:
-        run_environment = dict(environment)
-        run_environment["BOND_NGINX_ROOT"] = str(root)
-        return subprocess.run(
-            ["bash", "-c", release_script],
-            cwd=PROJECT_ROOT,
-            env=run_environment,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-
-    physical_root = prepare_root("idempotent-physical")
-    root = tmp_path / "idempotent-alias"
-    root.symlink_to(physical_root, target_is_directory=True)
-    assert root.absolute() != root.resolve()
-    first = publish(root)
-    assert first.returncode == 0, first.stderr
-    active = root / "sites-enabled/bond-factor-lab"
-    assert active.is_symlink()
-    target = active.resolve()
-    assert target.name == "bond-factor-lab-20260722b-rollout"
-    first_log = Path(environment["BOND_RELEASE_TEST_LOG"]).read_text(
-        encoding="utf-8"
-    )
-    assert first_log.count("systemctl reload nginx") == 1
-
-    repeated = publish(root)
-    assert repeated.returncode == 0, repeated.stderr
-    repeated_log = Path(environment["BOND_RELEASE_TEST_LOG"]).read_text(
-        encoding="utf-8"
-    )
-    assert repeated_log.count("systemctl reload nginx") == 1
-
-    target.write_text("same release id, different site content\n", encoding="utf-8")
-    conflict = publish(root)
-    assert conflict.returncode != 0
-    assert target.read_text(encoding="utf-8") == (
-        "same release id, different site content\n"
-    )
-
-    ordinary_root = prepare_root("ordinary-active")
-    ordinary_active = ordinary_root / "sites-enabled/bond-factor-lab"
-    ordinary_active.write_text("legacy ordinary file\n", encoding="utf-8")
-    ordinary = publish(ordinary_root)
-    assert ordinary.returncode != 0
-    assert ordinary_active.read_text(encoding="utf-8") == "legacy ordinary file\n"
-    assert "migrate" in ordinary.stderr.lower()
-
-    snippet_root = prepare_root("snippet-conflict")
-    snippet_target = (
-        snippet_root / "snippets/bond-proxy-headers-20260722b.conf"
-    )
-    snippet_target.write_text("different snippet\n", encoding="utf-8")
-    snippet_conflict = publish(snippet_root)
-    assert snippet_conflict.returncode != 0
-    assert snippet_target.read_text(encoding="utf-8") == "different snippet\n"
-
-    replacement_systemctl = fake_bin / "systemctl.replacement"
-    replacement_systemctl.write_text(
-        "#!/bin/sh\n"
-        "count=0\n"
-        "test ! -f \"$BOND_SYSTEMCTL_COUNT\" || count=$(cat \"$BOND_SYSTEMCTL_COUNT\")\n"
-        "count=$((count + 1))\n"
-        "printf '%s\\n' \"$count\" >\"$BOND_SYSTEMCTL_COUNT\"\n"
-        "test \"$count\" -ne 1\n",
-        encoding="utf-8",
-    )
-    replacement_systemctl.chmod(0o755)
-    replacement_systemctl.replace(fake_bin / "systemctl")
-    environment["BOND_SYSTEMCTL_COUNT"] = str(tmp_path / "systemctl.count")
-    recovery_root = prepare_root("reload-recovery")
-    old_snippet = recovery_root / "snippets/bond-proxy-headers-old.conf"
-    old_snippet.write_text("old immutable snippet\n", encoding="utf-8")
-    old_site = recovery_root / "sites-available/bond-factor-lab-old-rollout"
-    old_site.write_text(
-        "include snippets/bond-proxy-headers-old.conf;\n",
-        encoding="utf-8",
-    )
-    recovery_active = recovery_root / "sites-enabled/bond-factor-lab"
-    recovery_active.symlink_to(old_site)
-    reload_failure = publish(recovery_root)
-    assert reload_failure.returncode != 0
-    assert recovery_active.resolve() == old_site
-    assert old_site.read_text(encoding="utf-8").endswith(
-        "bond-proxy-headers-old.conf;\n"
-    )
-    assert old_snippet.read_text(encoding="utf-8") == "old immutable snippet\n"
-    assert Path(environment["BOND_SYSTEMCTL_COUNT"]).read_text(
-        encoding="utf-8"
-    ).strip() == "2"

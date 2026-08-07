@@ -28,6 +28,7 @@ ROW_FIELDS = (
 )
 VALID_TASK_TYPES = {"T+1", "T+5", "weekly_point", "weekly_average", "monthly"}
 VALID_LIVE_PREDICTION_PHASES = {"gray_live", "scheduled_live"}
+VALID_SIGNAL_STATUSES = {"missing", "not_due", "present"}
 DAILY_TARGET_RULE = "target_date_yield_vs_feature_date_yield"
 LIVE_ACTUAL_SELECTORS = {
     "T+1": ("daily_1d", DAILY_TARGET_RULE),
@@ -104,6 +105,8 @@ SCHEME_FIELDS = {
     "target_label",
     "status",
     "deployed_at",
+    "signal_status",
+    "signal_failure_category",
     "live_rows",
     "backtest",
 }
@@ -505,6 +508,25 @@ def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
         if scheme.get("status") != "active":
             raise DashboardDataError(
                 f"dashboard scheme[{scheme_index}] status must be active"
+            )
+        signal_status = scheme.get("signal_status")
+        if signal_status not in VALID_SIGNAL_STATUSES:
+            raise DashboardDataError(
+                f"dashboard scheme[{scheme_index}] has invalid signal_status: "
+                f"{signal_status!r}"
+            )
+        signal_failure_category = scheme.get("signal_failure_category")
+        if signal_status == "missing":
+            _required_string(
+                signal_failure_category,
+                field=(
+                    f"scheme[{scheme_index}] signal_failure_category"
+                ),
+            )
+        elif signal_failure_category is not None:
+            raise DashboardDataError(
+                f"dashboard scheme[{scheme_index}] signal_failure_category "
+                "must be null when signal is available"
             )
         _required_string(
             scheme.get("name"), field=f"scheme[{scheme_index}] name"

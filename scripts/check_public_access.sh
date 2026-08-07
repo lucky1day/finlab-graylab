@@ -381,24 +381,6 @@ assert_last_not_gzip dashboard-get-gzip-q0-encoding
 assert_last_vary_token dashboard-get-gzip-q0-vary Accept-Encoding
 assert_body_valid dashboard-get-gzip-q0-json dashboard identity "$LAST_BODY"
 
-# Health 必须明确报告已预热 ready；用 JSON parser，不用易误判的 grep。
-run_request health-ready GET "$APP_URL/api/health" 200 \
-  --header 'Accept-Encoding: identity'
-if python3 - "$LAST_BODY" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as handle:
-    payload = json.load(handle)
-if payload.get("dashboard_snapshot", {}).get("status") != "ready":
-    raise SystemExit(1)
-PY
-then
-  record_pass health-ready-json
-else
-  record_failure health-ready-json " dashboard_snapshot.status!=ready"
-fi
-
 # 从 dashboard 严格取一个真实 composite scheme ID，供 rollout/final metrics 验收。
 SCHEME_ID_ENCODED=""
 if [[ -f "$CHECK_TMP_DIR/dashboard.json" ]] \

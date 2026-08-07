@@ -18,6 +18,7 @@ _DASHBOARD_DB_CONNECT_TIMEOUT_SECONDS = 0.5
 _DASHBOARD_DB_READ_TIMEOUT_SECONDS = 0.75
 _DASHBOARD_DB_WRITE_TIMEOUT_SECONDS = 0.5
 _DASHBOARD_DB_MAX_EXECUTION_TIME_MS = 500
+_DASHBOARD_DB_POOL_RECYCLE_SECONDS = 300
 
 
 @lru_cache(maxsize=1)
@@ -42,6 +43,8 @@ def get_dashboard_engine() -> Engine:
     return create_engine(
         url,
         future=True,
+        pool_pre_ping=True,
+        pool_recycle=_DASHBOARD_DB_POOL_RECYCLE_SECONDS,
         connect_args={
             "connect_timeout": _DASHBOARD_DB_CONNECT_TIMEOUT_SECONDS,
             "read_timeout": _DASHBOARD_DB_READ_TIMEOUT_SECONDS,

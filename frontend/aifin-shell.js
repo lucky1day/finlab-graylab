@@ -689,6 +689,8 @@
     "target_label",
     "status",
     "deployed_at",
+    "signal_status",
+    "signal_failure_category",
     "live_rows",
     "backtest"
   ];
@@ -702,6 +704,7 @@
   ];
   var DASHBOARD_TASK_TYPES = ["T+1", "T+5", "weekly_point", "weekly_average", "monthly"];
   var DASHBOARD_LIVE_PHASES = ["gray_live", "scheduled_live"];
+  var DASHBOARD_SIGNAL_STATUSES = ["missing", "not_due", "present"];
   var DASHBOARD_SNAPSHOT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
   var DASHBOARD_GENERATED_AT_PATTERN = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$/;
 
@@ -909,6 +912,19 @@
         throw dashboardDataError(context + ".task_type is invalid");
       }
       if (scheme.status !== "active") throw dashboardDataError(context + ".status must be active");
+      if (DASHBOARD_SIGNAL_STATUSES.indexOf(scheme.signal_status) === -1) {
+        throw dashboardDataError(context + ".signal_status is invalid");
+      }
+      var signalFailureCategory = scheme.signal_failure_category;
+      if (scheme.signal_status === "missing") {
+        signalFailureCategory = requireDashboardString(
+          signalFailureCategory, context + ".signal_failure_category", false
+        );
+      } else if (signalFailureCategory !== null) {
+        throw dashboardDataError(
+          context + ".signal_failure_category must be null when signal is available"
+        );
+      }
       var targetLabel = requireDashboardString(scheme.target_label, context + ".target_label", false);
       if (!Object.prototype.hasOwnProperty.call(targetLabels, targetTenor) ||
           targetLabels[targetTenor] !== targetLabel) {
@@ -929,6 +945,8 @@
         targetLabel: targetLabel,
         status: scheme.status,
         deployedAt: requireDashboardIsoDate(scheme.deployed_at, context + ".deployed_at"),
+        signalStatus: scheme.signal_status,
+        signalFailureCategory: signalFailureCategory,
         liveRows: decodeDashboardRows(scheme.live_rows, "live", context + ".live_rows"),
         backtest: null
       };
@@ -1120,6 +1138,8 @@
         name: scheme.name,
         description: scheme.description,
         status: scheme.status,
+        signalStatus: scheme.signalStatus,
+        signalFailureCategory: scheme.signalFailureCategory,
         latestRun: livePredictDates.length
           ? livePredictDates[livePredictDates.length - 1].slice(5)
           : (scheme.backtest ? scheme.backtest.latestRunDate.slice(5) : "--"),
@@ -1483,7 +1503,7 @@
       targetLabels: viewModel.targetLabels,
       snapshotId: viewModel.snapshotId,
       snapshotAgeMs: viewModel.snapshotAgeMs,
-      stale: viewModel.stale,
+      stale: false,
       source: "dashboard",
       mode: "dashboard"
     };
@@ -1562,7 +1582,7 @@
       factorLabApiError = "";
       factorLabDataMode = candidate.mode;
       factorLabRuntimeState.committedViewModel = candidate;
-      factorLabRuntimeState.stale = Boolean(candidate.stale);
+      factorLabRuntimeState.stale = false;
       factorLabRuntimeState.committedAt = factorLabNow();
       factorLabRuntimeState.aggregateCache = nextCache;
 
@@ -1603,17 +1623,8 @@
       throw error;
     }
 
-    if (candidate.stale) {
-      factorLabRuntimeState.consecutiveFailures += 1;
-      var staleDelayIndex = Math.min(
-        factorLabRuntimeState.consecutiveFailures - 1,
-        FACTOR_LAB_RETRY_DELAYS_MS.length - 1
-      );
-      scheduleFactorLabRefresh(FACTOR_LAB_RETRY_DELAYS_MS[staleDelayIndex]);
-    } else {
-      factorLabRuntimeState.consecutiveFailures = 0;
-      scheduleFactorLabRefresh(FACTOR_LAB_HEALTHY_REFRESH_MS);
-    }
+    factorLabRuntimeState.consecutiveFailures = 0;
+    scheduleFactorLabRefresh(FACTOR_LAB_HEALTHY_REFRESH_MS);
     var rowCounts = countFactorLabRows(candidate.tasks);
     var readyFrame = window.requestAnimationFrame || function (callback) {
       return window.setTimeout(callback, 0);
@@ -1625,7 +1636,7 @@
         seq: seq,
         snapshotId: candidate.snapshotId,
         committedAt: factorLabNow(),
-        stale: Boolean(candidate.stale),
+        stale: false,
         source: candidate.source,
         mode: candidate.source,
         schemeCount: rowCounts.schemes,
@@ -1643,10 +1654,14 @@
     factorLabRemoteLoading = false;
     factorLabRuntimeState.controller = null;
     factorLabRuntimeState.consecutiveFailures += 1;
-    var hasLkg = Boolean(factorLabRuntimeState.committedViewModel);
-    factorLabRuntimeState.stale = hasLkg;
-    factorLabDataMode = hasLkg ? "stale" : "error";
-    if (!hasLkg) factorTaskSchemes = initEmptyTaskSchemes();
+    factorTaskSchemes = initEmptyTaskSchemes();
+    factorTargetLabels = Object.assign(Object.create(null), factorDefaultTargetLabels);
+    factorLabRuntimeState.committedViewModel = null;
+    factorLabRuntimeState.stale = false;
+    factorLabRuntimeState.committedAt = 0;
+    factorLabRuntimeState.aggregateCache = new Map();
+    factorLabDataMode = "error";
+    closeFactorCalendar();
     renderFactorLab();
     var delayIndex = Math.min(
       factorLabRuntimeState.consecutiveFailures - 1,
@@ -2086,42 +2101,22 @@
     }
   }
 
-  function factorLabSnapshotAgeText() {
-    var committed = factorLabRuntimeState.committedViewModel;
-    if (!committed) return "";
-    var elapsed = factorLabRuntimeState.committedAt
-      ? Math.max(0, factorLabNow() - factorLabRuntimeState.committedAt)
-      : 0;
-    var ageMs = Math.max(0, Number(committed.snapshotAgeMs) || 0) + elapsed;
-    if (ageMs < 1000) return "刚刚";
-    if (ageMs < 60000) return Math.floor(ageMs / 1000) + "秒前";
-    return Math.floor(ageMs / 60000) + "分钟前";
-  }
-
   function renderFactorLabDataStatus() {
     var status = document.getElementById("factorDataStatus");
     var text = document.getElementById("factorDataStatusText");
     if (!status || !text) return;
-    ["is-loading", "is-fresh", "is-stale", "is-error"].forEach(function (className) {
+    ["is-loading", "is-fresh", "is-error"].forEach(function (className) {
       status.classList.remove(className);
     });
-    var hasLkg = Boolean(factorLabRuntimeState.committedViewModel);
-    var age = factorLabSnapshotAgeText();
     if (factorLabRemoteLoading) {
       status.classList.add("is-loading");
-      text.textContent = hasLkg ? "数据刷新中 · " + age : "Loading";
-    } else if (factorLabApiError && hasLkg) {
-      status.classList.add("is-stale");
-      text.textContent = "刷新失败 · 已显示旧数据 · " + age;
+      text.textContent = "数据刷新中";
     } else if (factorLabApiError) {
       status.classList.add("is-error");
       text.textContent = "数据不可用";
-    } else if (factorLabRuntimeState.stale) {
-      status.classList.add("is-stale");
-      text.textContent = "数据已过期 · " + age;
-    } else if (hasLkg) {
+    } else if (factorLabRuntimeState.committedViewModel) {
       status.classList.add("is-fresh");
-      text.textContent = "数据已就绪 · " + age;
+      text.textContent = "数据已就绪";
     } else {
       status.classList.add("is-loading");
       text.textContent = "Loading";
@@ -2165,6 +2160,10 @@
   function renderSchemeRankingRow(scheme, index, metric) {
     var selectedClass = scheme.id === factorLabState.selectedSchemeId ? " class=\"is-selected\"" : "";
     var lowSampleHtml = isLowSampleMetric(metric, scheme) ? '<span class="factor-sample-badge">样本不足</span>' : "";
+    var signalMissingHtml = scheme.signalStatus === "missing" &&
+      typeof scheme.signalFailureCategory === "string" && scheme.signalFailureCategory
+      ? '<span class="factor-signal-missing">信号缺失 · ' + escapeHtml(scheme.signalFailureCategory) + '</span>'
+      : "";
     var barWidth = clampPercent(metric.overall);
     var metricSamples = requireMetricSamples(metric, "ranking metric");
     var deploymentDate = requireSchemeDeploymentDate(scheme, "ranking scheme");
@@ -2172,7 +2171,7 @@
     var remark = escapeHtml(getSchemeRemark(scheme));
     return '<tr' + selectedClass + ' data-factor-scheme-id="' + escapeHtml(scheme.id) + '">' +
       '<td>' + (index + 1) + '</td>' +
-      '<td><strong class="factor-scheme-name" title="' + schemeName + '">' + schemeName + '</strong></td>' +
+      '<td><strong class="factor-scheme-name" title="' + schemeName + '">' + schemeName + '</strong>' + signalMissingHtml + '</td>' +
       '<td class="' + getMetricClass(metric.overall) + '"><div class="factor-score-cell"><span>' + formatPercent(metric.overall) + '（' + metric.correct + '/' + metricSamples + '）</span><span class="factor-score-bar" aria-hidden="true"><span style="width:' + barWidth.toFixed(1) + '%"></span></span></div></td>' +
       '<td><span class="factor-sample-count">' + metric.samples + '</span>' + lowSampleHtml + '</td>' +
       '<td class="' + getMetricClass(metric.upPrecision) + '">' + formatPercent(metric.upPrecision) + '</td>' +
@@ -2482,13 +2481,6 @@
   }
 
   function renderDailyResult(row) {
-    var predictedDirection = normalizeDirection(
-      row && row.predictedDirection !== undefined ? row.predictedDirection : row && row.predicted_direction
-    );
-    var predictedLabel = String(row && row.predicted || "").trim();
-    if (predictedDirection === 0 || predictedLabel === "平") {
-      return '<span class="factor-result-dot is-neutral">-</span>';
-    }
     if (row.correct === null) {
       return '<span class="factor-result-dot" style="background:#bfc5c0;">?</span>';
     }

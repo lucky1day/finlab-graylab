@@ -56,6 +56,35 @@ class SignalGapReportTests(unittest.TestCase):
             ["2026-08-05"],
         )
 
+    def test_blackbox_approval_utc_timestamp_uses_shanghai_calendar_date(self) -> None:
+        """UTC 晚间批准在北京时间跨日后，首个到期信号不得提前。"""
+        self._registry(
+            "blackbox__h5__10Y",
+            "blackbox",
+            "blackbox_v2",
+            "daily",
+            "T+5",
+            "10Y",
+            5,
+            "2026-01-01",
+        )
+        self._insert(
+            "t_scheme_versions",
+            scheme_id="blackbox",
+            scheme_version="current",
+            runtime_type="blackbox_v2",
+            status="active",
+            # 该 DATETIME 由 repository 规范为无时区 UTC；北京时间为 8/4 01:00。
+            approved_at="2026-08-03 17:00:00",
+        )
+
+        report = self._report("2026-08-03", "2026-08-05")
+
+        self.assertEqual(
+            [item.predict_date for item in report.expected if item.base_scheme_id == "blackbox"],
+            ["2026-08-05"],
+        )
+
     def test_daily_weekly_and_monthly_cadence_use_shared_contexts(self) -> None:
         self._registry("daily__h1__5Y", "daily", "native_adapter", "daily", "T+1", "5Y", 1, "2026-08-01")
         self._registry("weekly__h6__10Y", "weekly", "native_adapter", "weekly", "weekly_point", "10Y", 6, "2026-08-01")
@@ -70,7 +99,12 @@ class SignalGapReportTests(unittest.TestCase):
 
     def test_safe_failure_categories_and_historic_gap_survive_later_present_signal(self) -> None:
         self._registry("native__h1__5Y", "native", "native_adapter", "daily", "T+1", "5Y", 1, "2026-08-03")
-        self._run("native", "2026-08-04", "failed", "secret endpoint detail")
+        self._run(
+            "native",
+            "2026-08-04",
+            "failed",
+            "data_bridge_ready_timeout",
+        )
         self._run("native", "2026-08-05", "success")
         self._prediction("native", "current", "5Y", 1, "2026-08-06", "2026-08-05", "2026-08-06", "scheduled_live")
 
@@ -79,20 +113,23 @@ class SignalGapReportTests(unittest.TestCase):
 
         self.assertEqual(
             {item.predict_date: item.failure_category for item in report.missing},
-            {"2026-08-04": "run_failed", "2026-08-05": "prediction_missing"},
+            {
+                "2026-08-04": "data_bridge_ready_timeout",
+                "2026-08-05": "prediction_missing",
+            },
         )
         self.assertEqual((status.state, status.open_missing_count, status.latest_missing_predict_date), ("missing", 2, "2026-08-05"))
         with self.engine.connect() as connection:
             connection_status = read_latest_due_signal_statuses(connection, start_date="2026-08-03", as_of_date="2026-08-06")[0]
         self.assertEqual(connection_status.open_missing_count, 2)
-        self.assertNotIn("secret endpoint detail", json.dumps(serialize_signal_gap_report(report)))
+        self.assertNotIn("error_message", json.dumps(serialize_signal_gap_report(report)))
 
-    def test_missing_blackbox_activation_is_generic_unavailable(self) -> None:
+    def test_missing_blackbox_activation_is_exposed_as_signal_missing(self) -> None:
         self._registry("blackbox__h5__10Y", "blackbox", "blackbox_v2", "daily", "T+5", "10Y", 5, "2026-01-01")
 
         status = latest_due_signal_statuses(self._report("2026-08-03", "2026-08-05"))[0]
 
-        self.assertEqual((status.state, status.failure_category), ("unavailable", "activation_unavailable"))
+        self.assertEqual((status.state, status.failure_category), ("missing", "activation_unavailable"))
 
     def test_sorted_core_is_read_only_and_never_reads_deployed_at(self) -> None:
         self._registry("zeta__h1__5Y", "zeta", "native_adapter", "daily", "T+1", "5Y", 1, "2026-08-03")
