@@ -640,6 +640,7 @@ def _read_live_actuals(
                direction_1d AS actual_direction
         FROM t_scheme_actuals
         WHERE tenor IN :target_tenors
+          AND trade_date >= :history_start_date
         UNION ALL
         SELECT 'daily_5d' AS actual_kind,
                tenor AS target_tenor,
@@ -648,6 +649,7 @@ def _read_live_actuals(
                direction_5d AS actual_direction
         FROM t_scheme_actuals
         WHERE tenor IN :target_tenors
+          AND trade_date >= :history_start_date
         UNION ALL
         SELECT 'weekly' AS actual_kind,
                tenor AS target_tenor,
@@ -656,6 +658,7 @@ def _read_live_actuals(
                direction_weekly AS actual_direction
         FROM t_scheme_weekly_actuals
         WHERE tenor IN :target_tenors
+          AND target_date >= :history_start_date
         UNION ALL
         SELECT 'monthly' AS actual_kind,
                tenor AS target_tenor,
@@ -664,13 +667,17 @@ def _read_live_actuals(
                direction_monthly AS actual_direction
         FROM t_scheme_monthly_actuals
         WHERE tenor IN :target_tenors
+          AND target_date >= :history_start_date
         LIMIT :dashboard_source_limit
         """
     ).bindparams(bindparam("target_tenors", expanding=True))
     return _read_bounded_source_rows(
         connection,
         statement,
-        {"target_tenors": target_tenors},
+        {
+            "target_tenors": target_tenors,
+            "history_start_date": FACTOR_LAB_HISTORY_START_DATE,
+        },
         dataset="live_actuals",
         cap=MAX_ACTUAL_SOURCE_ROWS,
     )

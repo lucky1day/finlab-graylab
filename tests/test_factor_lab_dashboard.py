@@ -741,6 +741,64 @@ def test_builds_live_snapshot_from_active_registry_task_types(
     assert any("daily_t1" in str(parameters) for parameters in trace.parameters)
 
 
+def test_dashboard_ignores_pre_policy_actual_conflicts(
+    dashboard_db: tuple[Engine, SqlTrace],
+) -> None:
+    """展示窗口之前的 actual 既不参与渲染，也不能使当前 Dashboard 失败。"""
+    from backend.factor_lab_dashboard import build_factor_lab_dashboard
+
+    engine, trace = dashboard_db
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_scheme_actuals
+                    (tenor, trade_date, direction_1d, direction_5d)
+                VALUES
+                    ('5Y', '2024-12-31', 1, NULL),
+                    ('5Y', '2024-12-31', -1, NULL)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_scheme_weekly_actuals
+                    (tenor, target_date, direction_weekly, target_rule)
+                VALUES
+                    ('10Y', '2024-12-27', 1,
+                     'next_week_last_trading_day_vs_current_week_last_trading_day'),
+                    ('10Y', '2024-12-27', -1,
+                     'next_week_last_trading_day_vs_current_week_last_trading_day')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_scheme_monthly_actuals
+                    (tenor, target_date, direction_monthly, target_rule)
+                VALUES
+                    ('10Y', '2024-12-15', 1,
+                     'next_month_observation_yield_vs_feature_month_observation_yield'),
+                    ('10Y', '2024-12-15', -1,
+                     'next_month_observation_yield_vs_feature_month_observation_yield')
+                """
+            )
+        )
+
+    payload = build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
+
+    assert payload["display_until"] == "2026-07-22"
+    actual_statement = next(
+        statement
+        for statement in trace.statements
+        if "FROM t_scheme_actuals" in statement
+    )
+    assert actual_statement.count("trade_date >= ?") == 2
+    assert "target_date >= ?" in actual_statement
+
+
 def test_dashboard_excludes_all_pre_policy_rows_without_deleting_audit_data(
     dashboard_db: tuple[Engine, SqlTrace],
 ) -> None:
