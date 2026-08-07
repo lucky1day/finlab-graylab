@@ -1655,46 +1655,14 @@ def scheduled_live_execution_configuration_error(
     scheduled_control_plane: str,
 ) -> str | None:
     """在任何数据库或子进程副作用前校验低层 scheduled_live 入口。"""
-    from scheduler.blackbox_scheduler_admission import (
-        DIRECT_SCHEDULED,
-        LAUNCHD_ONE_SHOT,
-        ScheduledPredictionConfigurationError,
-        ScheduledPredictionControlPlaneDenied,
-        require_scheduled_prediction_control_plane,
-    )
-
     canonical_error = _scheduled_live_canonical_configuration_error(
         cfg
     )
     if canonical_error is not None:
         return canonical_error
 
-    try:
-        require_scheduled_prediction_control_plane(
-            cfg,
-            plane=scheduled_control_plane,
-        )
-    except ScheduledPredictionControlPlaneDenied:
-        return (
-            f"{PLATFORM_CONFIGURATION_ERROR_PREFIX} "
-            "scheduled_live direct control plane denied: "
-            f"scheme_id={cfg.scheme_id}"
-        )
-    except ScheduledPredictionConfigurationError:
-        return (
-            f"{PLATFORM_CONFIGURATION_ERROR_PREFIX} "
-            "scheduled_live admission configuration is invalid: "
-            f"scheme_id={cfg.scheme_id}"
-        )
-
-    if scheduled_control_plane == LAUNCHD_ONE_SHOT:
+    if scheduled_control_plane == "launchd_one_shot":
         return None
-    if scheduled_control_plane != DIRECT_SCHEDULED:
-        return (
-            f"{PLATFORM_CONFIGURATION_ERROR_PREFIX} "
-            "scheduled_live control plane is invalid: "
-            f"scheme_id={cfg.scheme_id}"
-        )
     return (
         f"{PLATFORM_CONFIGURATION_ERROR_PREFIX} "
         "scheduled_live without schedule_item_id requires "

@@ -1,7 +1,7 @@
 """由 launchd one-shot 启动的单批预测入口。
 
 本模块不保存 cron、ledger、occurrence 或 startup catch-up 状态。每次进程启动时
-只做一次严格发现、精确准入、DataBridge Gate 校验和逐方案执行；跨 cadence 的
+只做一次严格发现、按 active cadence 筛选、DataBridge Gate 校验和逐方案执行；跨 cadence 的
 互斥由 runtime 目录中的单一非阻塞锁保证。
 """
 
@@ -17,15 +17,6 @@ from pathlib import Path
 from typing import Iterator, Sequence
 from zoneinfo import ZoneInfo
 
-from scheduler.blackbox_scheduler_admission import (
-    LAUNCHD_ONE_SHOT,
-    BlackboxSchedulerAdmissionError,
-    ScheduledPredictionConfigurationError,
-    ScheduledPredictionControlPlaneDenied,
-    load_blackbox_scheduler_admission,
-    require_scheduled_prediction_control_plane_with_policy_snapshot,
-    uses_blackbox_scheduler_admission,
-)
 from scheduler.discovery import discover_schemes
 from scheduler.executor import DEFAULT_ALGO_ENV, execute_scheme
 from scheduler.repository import create_engine_from_env
@@ -210,56 +201,9 @@ def run(
         ]
         summary.discovered = len(candidates)
 
-        controlled_candidates = [
-            cfg
-            for cfg in candidates
-            if uses_blackbox_scheduler_admission(cfg)
-        ]
-        policy = None
-        policy_invalid = False
-        if controlled_candidates:
-            try:
-                policy = load_blackbox_scheduler_admission()
-            except BlackboxSchedulerAdmissionError:
-                policy_invalid = True
-
-        admitted_candidates: list[object] = []
-        for cfg in candidates:
-            if not uses_blackbox_scheduler_admission(cfg):
-                admitted_candidates.append(cfg)
-                continue
-            if policy_invalid:
-                summary.blocked.append(
-                    _candidate_item(
-                        cfg,
-                        "admission_configuration_invalid",
-                    )
-                )
-                continue
-            try:
-                require_scheduled_prediction_control_plane_with_policy_snapshot(
-                    cfg,
-                    plane=LAUNCHD_ONE_SHOT,
-                    policy=policy,
-                )
-            except ScheduledPredictionControlPlaneDenied:
-                summary.excluded.append(
-                    _candidate_item(cfg, "control_plane_excluded")
-                )
-                continue
-            except ScheduledPredictionConfigurationError:
-                summary.blocked.append(
-                    _candidate_item(
-                        cfg,
-                        "admission_configuration_invalid",
-                    )
-                )
-                continue
-            admitted_candidates.append(cfg)
-
-        admitted_candidates = _cache_publishers_first(admitted_candidates)
-        if not admitted_candidates:
-            _finalize(summary, configuration_error=policy_invalid)
+        candidates = _cache_publishers_first(candidates)
+        if not candidates:
+            _finalize(summary, configuration_error=False)
             return summary
 
         engine = None
@@ -280,7 +224,7 @@ def run(
                 return summary
 
             expected_daily_date: str | None = None
-            for cfg in admitted_candidates:
+            for cfg in candidates:
                 if (
                     getattr(cfg, "runtime_type", None) == "blackbox_v2"
                     and getattr(cfg, "input_source", None)
@@ -347,7 +291,7 @@ def run(
                     summary.failed.append(
                         _candidate_item(cfg, f"execution_{status}"))
 
-            _finalize(summary, configuration_error=policy_invalid)
+            _finalize(summary, configuration_error=False)
             return summary
         except LaunchdPredictionConfigurationError:
             raise

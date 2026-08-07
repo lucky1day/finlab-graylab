@@ -2553,39 +2553,40 @@ class ScheduledLiveExecutionFenceTests(unittest.TestCase):
             result.error_msg or "",
         )
 
-    def test_launchd_one_shot_rejects_gray_before_engine(self) -> None:
-        """one-shot 不能把 gray 精确身份升级为 scheduled writer。"""
+    def test_launchd_one_shot_active_gray_reaches_engine_without_legacy_admission(
+        self,
+    ) -> None:
+        """自然 one-shot 只接受 canonical active 身份，不读取遗留 mode。"""
         config = self._blackbox_config(
             "cgb_causal_wk_1y",
             "cba824c27f0e",
         )
         from scheduler import executor
 
+        class EngineReached(RuntimeError):
+            pass
+
         with (
             patch.object(
                 executor,
                 "create_engine_from_env",
+                side_effect=EngineReached("engine reached"),
             ) as create_engine,
             patch.object(
                 executor,
                 "discover_schemes",
                 return_value=[config],
             ),
+            self.assertRaisesRegex(EngineReached, "engine reached"),
         ):
-            result = executor.execute_scheme(
+            executor.execute_scheme(
                 config,
                 "2026-07-27",
                 prediction_phase="scheduled_live",
                 scheduled_control_plane="launchd_one_shot",
             )
 
-        self.assertEqual(result.status, "failed")
-        self.assertTrue(
-            (result.error_msg or "").startswith(
-                "platform configuration error:"
-            )
-        )
-        create_engine.assert_not_called()
+        create_engine.assert_called_once_with()
 
     def test_launchd_one_shot_admitted_daily_reaches_engine_without_reading_daily_mode(
         self,
