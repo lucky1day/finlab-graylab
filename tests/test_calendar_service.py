@@ -68,14 +68,12 @@ class CalendarServiceTests(unittest.TestCase):
 
     def test_nth_trading_day_after_uses_trade_calendar(self) -> None:
         from shared.calendar_service import get_calendar
-        from scheduler.calendar import is_trading_day as scheduler_is_trading_day
 
         calendar = get_calendar(engine=self.engine)
 
         self.assertTrue(calendar.is_trading_day("2026-06-05"))
         self.assertFalse(calendar.is_trading_day("2026-06-06"))
         self.assertFalse(calendar.is_trading_day("2026-06-15"))
-        self.assertFalse(scheduler_is_trading_day(self.engine, "2026-06-15"))
         self.assertEqual(calendar.nth_trading_day_after("2026-06-04", 5), "2026-06-11")
         self.assertEqual(
             calendar.next_trading_days("2026-06-04", 5),

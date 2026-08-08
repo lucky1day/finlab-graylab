@@ -14,8 +14,6 @@ import os
 import threading
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import text
-
 from scheduler.blackbox_scheduler_admission import (
     DIRECT_SCHEDULED,
     ScheduledPredictionConfigurationError,
@@ -23,11 +21,11 @@ from scheduler.blackbox_scheduler_admission import (
     require_scheduled_prediction_control_plane,
     uses_blackbox_scheduler_admission,
 )
-from scheduler.calendar import is_trading_day
 from scheduler.discovery import SchemeConfig, discover_schemes
 from scheduler.executor import DEFAULT_ALGO_ENV, SchemeRunResult, execute_scheme
 from scheduler.repository import create_engine_from_env
 from scheduler.v2_daily_gate import V2DailyGateBlocked, require_v2_daily_ready
+from shared.calendar_service import get_calendar
 from shared.data_bridge.refresh import DataBridgeRefreshConfig
 
 
@@ -107,7 +105,7 @@ def _prediction_slot():
 def _is_trading_day(run_date: str) -> bool:
     engine = create_engine_from_env()
     try:
-        return is_trading_day(engine, run_date)
+        return get_calendar(engine=engine).is_trading_day(run_date)
     finally:
         engine.dispose()
 
@@ -115,21 +113,7 @@ def _is_trading_day(run_date: str) -> bool:
 def _previous_trading_day(run_date: str) -> str:
     engine = create_engine_from_env()
     try:
-        sql = text(
-            """
-            SELECT MAX(rdate)
-            FROM t_trade_calendar
-            WHERE trade_flag = '1'
-              AND rdate < :rdate
-            """
-        )
-        with engine.connect() as conn:
-            value = conn.execute(sql, {"rdate": run_date}).scalar()
-        if value is None:
-            raise ValueError(f"no previous trading day before {run_date}")
-        if isinstance(value, date):
-            return value.isoformat()
-        return str(value)[:10]
+        return get_calendar(engine=engine).previous_trading_day(run_date)
     finally:
         engine.dispose()
 

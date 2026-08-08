@@ -19,7 +19,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scheduler.calendar import is_trading_day  # noqa: E402
 from scheduler.repository import create_engine_from_env  # noqa: E402
 from scheduler.v2_daily_gate import (  # noqa: E402
     V2DailyGateBlocked,
@@ -567,7 +566,7 @@ def load_snapshot(
     return DailyHealthSnapshot(
         predict_date=predict_date,
         expected_feature_date=expected_feature_date,
-        is_trading_day=is_trading_day(engine, predict_date),
+        is_trading_day=get_calendar(engine=engine).is_trading_day(predict_date),
         active_daily_base_schemes=active_schemes,
         successful_daily_run_schemes=tuple(str(item) for item in successful_rows),
         predictions_count=predictions_count,
