@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import json
 import math
 import os
@@ -12,7 +11,6 @@ import unittest
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -20,20 +18,16 @@ V2_SCHEME_IDS = (
     "seven_y_current55_lgbm_001_v2",
     "seven_y_current55_lgbm_002_v2",
 )
-V1_DELIVERY_SHA256 = {
-    "schemes/seven_y_current55_lgbm_001_v1/delivery/seven_y_current55_lgbm_001_v1.py": (
-        "cdf4ccc0f15712b776b23ed0b576d43ded928b19f3316c2279cbfe404fb5549e"
-    ),
-    "schemes/seven_y_current55_lgbm_001_v1/delivery/seven_y_current55_lgbm_001_v1.json": (
-        "6648239aa19b389d694706a98ceecfa6f1b882412d0056dee6a5475a24e71df6"
-    ),
-    "schemes/seven_y_current55_lgbm_002_v1/delivery/seven_y_current55_lgbm_002_v1.py": (
-        "cdf4ccc0f15712b776b23ed0b576d43ded928b19f3316c2279cbfe404fb5549e"
-    ),
-    "schemes/seven_y_current55_lgbm_002_v1/delivery/seven_y_current55_lgbm_002_v1.json": (
-        "95562c9039a0697e0c88feafd418804e9744f4cdd7b737a33bf94e025a065d01"
-    ),
-}
+HEADER_COMPATIBILITY_SCRIPT = (
+    PROJECT_ROOT
+    / "schemes"
+    / "one_y_t1_quote_state_hv_v1"
+    / "delivery"
+    / "one_y_t1_quote_state_hv_v1.py"
+)
+DATA_BRIDGE_SCHEMA = (
+    PROJECT_ROOT / "shared" / "blackbox_v2" / "data_bridge_v1_schema.json"
+)
 REQUEST_FIELDS = (
     "request_id",
     "predict_date",
@@ -119,7 +113,7 @@ class DataBridgeFixture:
     cutoff_index: int
 
 
-class SevenYCurrent55LgbmV2DeliveryTests(unittest.TestCase):
+class ActiveBlackboxConformanceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         conda = shutil.which("conda")
@@ -147,97 +141,51 @@ class SevenYCurrent55LgbmV2DeliveryTests(unittest.TestCase):
             )
         cls.blackbox_python = Path(completed.stdout.strip().splitlines()[-1])
 
-    def test_001_v2_two_file_delivery_exists_without_replacing_v1(self) -> None:
-        """001 本地因果 V2 身份必须作为独立的 Blackbox 交付存在。"""
-        self._assert_two_file_delivery("seven_y_current55_lgbm_001_v2")
-
-    def test_002_v2_two_file_delivery_exists_without_replacing_v1(self) -> None:
-        """002 本地因果 V2 身份必须作为独立的 Blackbox 交付存在。"""
-        self._assert_two_file_delivery("seven_y_current55_lgbm_002_v2")
-
-    def test_v1_hashes_are_frozen_and_v2_metadata_has_separate_identity(self) -> None:
-        """V1 交付保持冻结，已激活 V2 保持独立的本地因果身份。"""
-        for relative_path, expected_hash in V1_DELIVERY_SHA256.items():
-            with self.subTest(relative_path=relative_path):
-                actual_hash = hashlib.sha256(
-                    (PROJECT_ROOT / relative_path).read_bytes()
-                ).hexdigest()
-                self.assertEqual(actual_hash, expected_hash)
-
-        for scheme_id in V2_SCHEME_IDS:
-            with self.subTest(scheme_id=scheme_id):
-                scheme_dir = PROJECT_ROOT / "schemes" / scheme_id
-                delivery = scheme_dir / "delivery"
-                metadata = json.loads(
-                    (delivery / f"{scheme_id}.json").read_text(encoding="utf-8")
-                )
-                config_text = (scheme_dir / "config.yaml").read_text(encoding="utf-8")
-                self.assertEqual(metadata["scheme_id"], scheme_id)
-                self.assertEqual(metadata["algorithm_version"], "2.0.0")
-                self.assertIn("本地因果V2", metadata["name"])
-                self.assertIn("feature_date", metadata["description"])
-                self.assertNotIn("持久", metadata["description"])
-                self.assertNotIn("--cache-dir", metadata["description"])
-                self.assertIn("runtime_type: blackbox_v2", config_text)
-                self.assertIn("input_source: data_bridge_current", config_text)
-                self.assertIn("runtime_profile: blackbox-v2-v1", config_text)
-                self.assertIn("data_schema_version: data-bridge-v1", config_text)
-                self.assertIn("  - api-wind-date-v1", config_text)
-                self.assertIn("status: active", config_text)
-                self.assertIn("version_status: active", config_text)
-
-    def test_v2_parameters_and_help_have_no_persistent_cache_interface(self) -> None:
-        """002 V2 保持长窗常量，两个 V2 都不能暴露或写入持久缓存。"""
-        expected = {
-            "seven_y_current55_lgbm_001_v2": {
-                "IS_LONG_WINDOW": False,
-                "THRESHOLD": 0.55,
-                "FLIP_BELOW": 0.30,
-                "FLIP_LOOKBACK": 1,
-                "TRAIN_WINDOW": 756,
-                "FEATURE_WINDOW": 756,
-            },
-            "seven_y_current55_lgbm_002_v2": {
-                "IS_LONG_WINDOW": True,
-                "THRESHOLD": 0.52,
-                "FLIP_BELOW": 0.50,
-                "FLIP_LOOKBACK": 3,
-                "TRAIN_WINDOW": 1008,
-                "FEATURE_WINDOW": 1008,
-            },
-        }
-        forbidden_source_fragments = (
-            "pickle",
-            ".blackbox_model_cache",
-            "--cache-dir",
-            "persist_models",
-            "cache_dir",
-        )
+    def test_delivery_accepts_additive_databridge_columns(self) -> None:
+        """未消费的新增业务列不得让现役交付拒绝兼容 Snapshot。"""
+        schema = json.loads(DATA_BRIDGE_SCHEMA.read_text(encoding="utf-8"))
         with tempfile.TemporaryDirectory() as tmpdir:
-            workdir = Path(tmpdir)
-            for scheme_id in V2_SCHEME_IDS:
-                with self.subTest(scheme_id=scheme_id):
-                    script = self._script_for(scheme_id)
-                    source = script.read_text(encoding="utf-8")
-                    for fragment in forbidden_source_fragments:
-                        self.assertNotIn(fragment, source)
-                    self.assertIn('"_002_"', source)
+            data_dir = Path(tmpdir)
+            for filename, specification in schema["files"].items():
+                columns = [*specification["columns"], "UNUSED_ADDITIVE_FACTOR"]
+                with (data_dir / filename).open(
+                    "w", encoding="utf-8", newline=""
+                ) as handle:
+                    csv.writer(handle).writerow(columns)
 
-                    top_help = self._run_cli(script, "--help", cwd=workdir)
-                    predict_help = self._run_cli(
-                        script,
-                        "predict",
-                        "--help",
-                        cwd=workdir,
-                    )
-                    self._assert_cli_success(top_help)
-                    self._assert_cli_success(predict_help)
-                    self.assertNotIn("--cache-dir", top_help.stdout)
-                    self.assertNotIn("--cache-dir", predict_help.stdout)
-                    self.assertEqual(
-                        self._runtime_parameters(script, cwd=workdir),
-                        expected[scheme_id],
-                    )
+            completed = self._run_header_validation(data_dir)
+
+        self._assert_cli_success(completed)
+
+    def test_delivery_rejects_changed_databridge_time_key(self) -> None:
+        """增量列兼容不能放宽 DataBridge 时间键。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "weekly_output.csv"
+            with path.open("w", encoding="utf-8", newline="") as handle:
+                csv.writer(handle).writerow(["unexpected", "week_id"])
+            code = (
+                "import runpy, sys; from pathlib import Path; "
+                "namespace = runpy.run_path(sys.argv[1]); "
+                "namespace['_validate_schema_header'](Path(sys.argv[2]))"
+            )
+            completed = subprocess.run(
+                [
+                    str(self.blackbox_python),
+                    "-B",
+                    "-c",
+                    code,
+                    str(HEADER_COMPATIBILITY_SCRIPT),
+                    str(path),
+                ],
+                check=False,
+                capture_output=True,
+                cwd=PROJECT_ROOT,
+                env=self._runtime_env(),
+                text=True,
+            )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("does not match data-bridge-v1 schema", completed.stderr)
 
     def test_cutoff_t_cli_succeeds_without_a_target_daily_row(self) -> None:
         """T+1 在仅到 feature_date 的四文件输入上仍返回 Contract 输出。"""
@@ -306,114 +254,6 @@ class SevenYCurrent55LgbmV2DeliveryTests(unittest.TestCase):
                     )
                     self.assertIn(rows[0]["predicted_direction"], {"-1", "0", "1"})
 
-    def test_feature_state_controls_refit_selection_purge_and_flip_labels(self) -> None:
-        """模型/筛选状态属于 feature_date，训练和翻转都使用 H=1 标签。"""
-        probe = """
-import json
-import runpy
-import sys
-from pathlib import Path
-
-import numpy as np
-
-script, data_dir, request_path = sys.argv[1:]
-namespace = runpy.run_path(script)
-request = json.loads(Path(request_path).read_text(encoding="utf-8"))
-snapshot = namespace["clipped"](namespace["read_snapshot"](Path(data_dir)), request)
-engine = namespace["Engine"](snapshot)
-feature_index = engine.positions[request["feature_date"]]
-
-class ProbeModel:
-    def __init__(self, **_kwargs):
-        self.fit_indices = []
-        self.prediction_indices = []
-
-    def fit(self, features, _labels):
-        self.fit_indices = [int(value) for value in features[:, 0].tolist()]
-        return self
-
-    def predict_proba(self, features):
-        self.prediction_indices = [int(value) for value in features[:, 0].tolist()]
-        return np.array([[0.1, 0.9]], dtype="float64")
-
-namespace["Engine"].__init__.__globals__["LGBMClassifier"] = ProbeModel
-engine.x[:, 0] = np.arange(len(engine.x), dtype="float32")
-real_select_features = engine._select_features
-def select_for_probe(state_index):
-    real_select_features(state_index)
-    return np.array([0], dtype="int32")
-engine._select_features = select_for_probe
-engine.predict(request)
-feature_month = engine.dates[feature_index].strftime("%Y-%m")
-model, _selected = engine.models[feature_month]
-
-flip_engine = namespace["Engine"](snapshot)
-flip_engine.raw_signal = lambda _state_index: 1
-flip_engine.truth = np.full(len(flip_engine.truth), -1.0, dtype="float64")
-flip_engine.target_by_pred = np.full(
-    len(flip_engine.target_by_pred), 1.0, dtype="float64"
-)
-flip_signal = flip_engine.predict(request)
-
-print(json.dumps({
-    "feature_index": feature_index,
-    "feature_month": feature_month,
-    "model_months": sorted(engine.models),
-    "selected_years": sorted(engine.selected_by_year),
-    "fit_indices": model.fit_indices,
-    "prediction_indices": model.prediction_indices,
-    "target_is_h1_shift": bool(np.array_equal(
-        engine.target_by_pred[:-1], engine.truth[1:], equal_nan=True
-    )),
-    "flip_signal": flip_signal,
-}, sort_keys=True))
-"""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            workdir = Path(tmpdir)
-            fixture = self._write_data_bridge_fixture(workdir / "full")
-            request = self._request_for(fixture)
-            clipped_dir = workdir / "clipped"
-            self._copy_fixture_through_feature_date(fixture, request, clipped_dir)
-            request_path = workdir / "request.json"
-            request_path.write_text(json.dumps(request), encoding="utf-8")
-
-            for scheme_id in V2_SCHEME_IDS:
-                with self.subTest(scheme_id=scheme_id):
-                    completed = subprocess.run(
-                        [
-                            str(self.blackbox_python),
-                            "-B",
-                            "-c",
-                            probe,
-                            str(self._script_for(scheme_id)),
-                            str(clipped_dir),
-                            str(request_path),
-                        ],
-                        check=False,
-                        capture_output=True,
-                        cwd=workdir,
-                        env=self._runtime_env(),
-                        text=True,
-                    )
-                    self._assert_cli_success(completed)
-                    state = json.loads(completed.stdout.strip().splitlines()[-1])
-                    self.assertIn(state["feature_month"], state["model_months"])
-                    self.assertIn(
-                        int(request["feature_date"][:4]), state["selected_years"]
-                    )
-                    self.assertTrue(state["fit_indices"])
-                    self.assertTrue(
-                        all(
-                            index < state["feature_index"] - 1
-                            for index in state["fit_indices"]
-                        )
-                    )
-                    self.assertEqual(
-                        state["prediction_indices"], [state["feature_index"]]
-                    )
-                    self.assertTrue(state["target_is_h1_shift"])
-                    self.assertEqual(state["flip_signal"], 1)
-
     def test_future_mutation_is_invariant_and_no_cache_files_are_created(self) -> None:
         """严格 cutoff 后的四频值不会影响输出，独立进程也不留下缓存。"""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -479,17 +319,6 @@ print(json.dumps({
     def _script_for(self, scheme_id: str) -> Path:
         return PROJECT_ROOT / "schemes" / scheme_id / "delivery" / f"{scheme_id}.py"
 
-    def _assert_two_file_delivery(self, scheme_id: str) -> None:
-        delivery = PROJECT_ROOT / "schemes" / scheme_id / "delivery"
-        self.assertTrue(
-            (delivery / f"{scheme_id}.py").is_file(),
-            f"missing V2 delivery script for {scheme_id}",
-        )
-        self.assertTrue(
-            (delivery / f"{scheme_id}.json").is_file(),
-            f"missing V2 delivery metadata for {scheme_id}",
-        )
-
     def _runtime_env(self) -> dict[str, str]:
         environment = os.environ.copy()
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -519,24 +348,30 @@ print(json.dumps({
             f"stdout={completed.stdout}\nstderr={completed.stderr}",
         )
 
-    def _runtime_parameters(self, script: Path, *, cwd: Path) -> dict[str, Any]:
+    def _run_header_validation(
+        self, data_dir: Path
+    ) -> subprocess.CompletedProcess[str]:
         code = (
-            "import json, runpy, sys; "
-            "namespace = runpy.run_path(sys.argv[1]); "
-            "print(json.dumps({name: namespace[name] for name in "
-            "('IS_LONG_WINDOW', 'THRESHOLD', 'FLIP_BELOW', 'FLIP_LOOKBACK', "
-            "'TRAIN_WINDOW', 'FEATURE_WINDOW')}, sort_keys=True))"
+            "import runpy, sys; from pathlib import Path; "
+            "namespace = runpy.run_path(sys.argv[1]); root = Path(sys.argv[2]); "
+            "[namespace['_validate_schema_header'](root / name) for name in "
+            "('daily_output.csv', 'weekly_output.csv', 'monthly_output.csv')]"
         )
-        completed = subprocess.run(
-            [str(self.blackbox_python), "-B", "-c", code, str(script)],
+        return subprocess.run(
+            [
+                str(self.blackbox_python),
+                "-B",
+                "-c",
+                code,
+                str(HEADER_COMPATIBILITY_SCRIPT),
+                str(data_dir),
+            ],
             check=False,
             capture_output=True,
-            cwd=cwd,
+            cwd=PROJECT_ROOT,
             env=self._runtime_env(),
             text=True,
         )
-        self._assert_cli_success(completed)
-        return json.loads(completed.stdout.strip().splitlines()[-1])
 
     def _write_data_bridge_fixture(self, data_dir: Path) -> DataBridgeFixture:
         data_dir.mkdir()
