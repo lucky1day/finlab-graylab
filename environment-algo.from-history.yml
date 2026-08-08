@@ -1,6 +1,0 @@
-name: forecast_env
-channels:
-  - defaults
-dependencies:
-  - python=3.13
-prefix: /Users/macstudio0/miniconda3/envs/forecast_env
