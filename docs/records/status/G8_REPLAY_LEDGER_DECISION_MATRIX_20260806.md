@@ -103,15 +103,9 @@ flowchart LR
 | C. DDL / migration | 先冻结 archive 方案并验证恢复读回；在任何 forward 019 或 ledger DDL 前，先建立并取得授权使用受控只读 schema/data inventory capability。019 只能作为 serving-pointer 的独立动作；既有 `--inspect-applying-019` 只用于已进入 `APPLYING` 的恢复，不能充当此处的 normal preflight。只能使用受控 migration CLI，绝不手工 SQL。 | 经授权 inventory 的 archive 行数/主键/FK 映射与 external-object evidence、隔离 restore/readback、schema postcondition、migration history、现有 run/prediction/registry 读回不变。 | `DROP` 没有自动 down migration；回滚仅能依赖已验证 archive/备份恢复到隔离环境或新受控恢复计划。inventory capability 不存在、未授权或 archive 未验收时，DDL 必须 blocked。 |
 | D. installed plist | 最后逐 Label 处理现场 legacy agent/template 漂移；先只读比对，再由用户明确批准一次独立生产操作。不得把 repo 删除或 DB 迁移视为 installed 已清理。 | 精确 pre/post installed 文件摘要、loaded state、日志、自然触发的 run/prediction，并确认没有第二 writer。 | 仅在另行授权下恢复已捕获的精确 prior plist/loaded state；未知 prior state 不得猜测或重建。 |
 
-### 5.1 G8.1 no-ledger cleanup 的候选覆盖与测试边界
+### 5.1 G8.1 的测试边界
 
-以下是待批准的 repo-only 迁移清单，不是本次已执行的实现计划。
-
-1. **executor / run 合约**：移除 ledger 后仍须证明 `launchd_one_shot` 的日频 `scheduled_live` 不读取 coordinator mode、可创建无 `schedule_item_id` 的 run；非 one-shot 的 direct/gray 语义须单独保持或显式拒绝，不能因删除 mode 分支而静默改变。覆盖 `tests.test_executor_run_id` 的 launchd-one-shot/no-mode 路径、`tests.test_repository_launchd_one_shot` 及 admission 合约。
-2. **Phase-A cache CompareGate 合约**：用经批准的显式 authority 替代 `legacy` / `ledger` 环境判断后，仍须覆盖 `require_compare_gate=True/False`、非法 mode 拒绝（直至 mode 被正式删除）、trusted qualification 与 direct runtime context 的互斥、Native generation provenance、evidence binding、cold/full-output CompareGate 和 fail-closed 行为。覆盖 `tests.test_daily_direct_cache_runtime` 及相关 cache qualification fixtures/contract tests。
-3. **replay 隔离与输入合约**：保留 replay 时，测试须继续证明 migration（包含 019）只应用至经验证的 isolated Engine，production control-plane 使用 consistent read-only snapshot，source preflight 则使用 grant-validated source-readonly account 的 autocommit 路径；两者不能被混称为共享 snapshot。若未来批准去除这些读取，须先新增替代输入测试，不能删除现有 preflight 便宣称隔离闭包完成。覆盖 `tests.test_daily_real_replay_operator_migrations`、019/017 migration tests 与 replay MySQL isolation tests。
-4. **generation registry 合约**：明确迁移、retire 或 retain-archive occurrence-bound registration 的选择后，仍须证明 daily registration 拒绝缺失 `occurrence_id`、绑定原子性受替代 authority 保护，且 archived/gray-gap generation registration 与 `t_input_generations` lineage 未被破坏。覆盖 `tests.test_generation_registry`。
-5. **schema 退役前置条件**：只在上述 code consumer 已迁移、archive parity/readback 通过、受控只读 schema/data inventory capability 已存在且获授权，并且 ledger 相关 contract 不再被生产路径调用后，才可提出 forward DDL。schema 改动仍是 C 阶段的独立授权，不能由 A 阶段测试推定获批。
+G8.1 尚未获批。未来若实施 repo runtime、archive 或 DDL 迁移，应在对应变更中创建最小、临时的迁移验收，并在生产证据持久化后删除；当前仓库不永久保留历史 ledger、occurrence、migration recovery 或 replay 实施测试。长期保留的约束只由入库核心集中的 architecture、admission、Registry、Native maintenance 与 DataBridge 输入合同承担。
 
 ## 6. 不可跨越的实施约束
 

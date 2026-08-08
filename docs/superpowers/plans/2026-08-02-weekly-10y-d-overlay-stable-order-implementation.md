@@ -173,7 +173,7 @@ git commit -m "fix: stable cross-year order in weekly-10y d-overlay engineered f
 
 - [ ] **Step 1: 跑相关既有单测**
 
-Run: `python -m pytest tests/test_compare_gate.py tests/test_executor_run_id.py tests/test_signal_policy.py -q`
+Run: `python -m pytest tests/test_compare_gate.py tests/test_weekly_10y_d_overlay_stable_order.py -q`
 Expected: 全绿（这些用例引用 weekly_10y_d_overlay，验证无回归）。
 
 - [ ] **Step 2: 跑全仓静态边界门**

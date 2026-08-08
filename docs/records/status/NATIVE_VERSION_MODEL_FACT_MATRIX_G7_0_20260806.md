@@ -290,7 +290,7 @@ exposure + immutable admission/activation links + 历史只读保留”为最小
   harness/gates/native_maintenance_admission_gate.py、scheduler/executor.py：
   当前同步、maintenance、activation 与执行的读写边界。
 - tests/test_repository_registry.py、tests/test_activation_gate.py、
-  tests/test_native_maintenance_admission.py、tests/test_cli_activate.py：
+  tests/test_native_maintenance_admission.py：
   当前 lifecycle fail-closed、draft/paused 预激活、exact version drift 与 readback 契约。
 - AGENTS.md、docs/CURRENT_STATUS.md、docs/architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md、
   docs/records/SCHEME_ISSUE_LEDGER.md：现行授权边界与 weekly_10y_d_overlay_0529 的既有历史证据。

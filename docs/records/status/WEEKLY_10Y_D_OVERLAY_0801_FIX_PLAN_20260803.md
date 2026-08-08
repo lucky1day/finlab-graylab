@@ -88,7 +88,7 @@ DB、Dashboard canonical 与 fresh API 的最后可见月 live 行数均为 `207
 - 只读：`scheduler/blackbox_scheduler_admission.py`
 - 只读：`deploy/blackbox_scheduler_admission_v1.json`
 - 只读：`harness/signal_gap_plan.py`、`harness/gates/signal_gap_fill_gate.py`
-- 验证：`tests/test_launchd_prediction_runner.py`
+- 验证证据：对应实施提交中的 launchd runner 回归；当前仓库不永久保留该次事故测试。
 
 - [x] 已核对 Git 工作区、active Registry、精确版本、交易日历、DataBridge current、DB/API/前端行集，并在
   变更 admission 后重新冻结精确 scope。
@@ -111,7 +111,7 @@ DB、Dashboard canonical 与 fresh API 的最后可见月 live 行数均为 `207
 - 修改：`scheduler/blackbox_scheduler_admission.py`
 - 修改：`deploy/blackbox_scheduler_admission_v1.json`
 - 修改：`tests/test_blackbox_scheduler_admission.py`
-- 修改：`tests/test_launchd_prediction_runner.py`
+- 当次修改包含 launchd runner 回归；当前仓库只保留可复用入库合同。
 
 - [x] 在两个测试模块写入精确身份断言：上述五个 `scheme_id + scheme_version` 为
   `mode=formal`、daily/T+1/h1/正确 tenor，且 capabilities 精确等于仅含
