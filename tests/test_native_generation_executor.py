@@ -239,6 +239,113 @@ class NativeGenerationSubprocessTests(unittest.TestCase):
             "hit_only",
         )
 
+    def test_signal_gap_cache_prewarm_uses_sealed_input_and_private_root(
+        self,
+    ) -> None:
+        from scheduler.executor import run_scheme_subprocess
+        from shared import input_artifacts
+
+        context = replace(
+            _generation_context(),
+            business_date="2026-07-30",
+            feature_date="2026-07-27",
+            exporter_version="native-signal-gap-current-snapshot-v1",
+        )
+        cache_root = Path("/private/signal-gap-cache/native-123")
+        permit_path = cache_root / ".prewarm-permit-AbCdEf1234567890.json"
+        captured: dict[str, object] = {}
+
+        def fake_run(cmd, *, cwd, env, timeout):
+            from subprocess import CompletedProcess
+
+            captured.update(
+                {"cmd": cmd, "cwd": cwd, "env": env, "timeout": timeout}
+            )
+            return CompletedProcess(cmd, 0, "[]", "")
+
+        with patch(
+            "scheduler.executor._run_process_group",
+            side_effect=fake_run,
+        ):
+            records = run_scheme_subprocess(
+                "liwei_0616_10y01_full_oos_k3_div_k10",
+                "2026-07-28",
+                native_generation=context,
+                native_execution_mode="signal_gap_cache_prewarm",
+                expected_native_feature_date="2026-07-27",
+                phase_a_cache_root=cache_root,
+                phase_a_cache_prewarm_permit=permit_path,
+                phase_a_cache_prewarm_capability="permit_capability",
+            )
+
+        self.assertEqual(records, [])
+        environment = captured["env"]
+        self.assertEqual(
+            environment[input_artifacts.NATIVE_MANIFEST_PATH_ENV],
+            str(context.manifest_path),
+        )
+        self.assertEqual(
+            environment["LIWEI_0616_PHASE_A_CACHE_ROOT"],
+            str(cache_root),
+        )
+        self.assertEqual(
+            environment["BOND_LIWEI_0616_CACHE_MUTATION_POLICY"],
+            "prewarm",
+        )
+        self.assertEqual(
+            environment["BOND_LIWEI_0616_SIGNAL_GAP_PREWARM_PERMIT"],
+            str(permit_path),
+        )
+        self.assertEqual(
+            environment[
+                "BOND_LIWEI_0616_SIGNAL_GAP_PREWARM_CAPABILITY"
+            ],
+            "permit_capability",
+        )
+
+    def test_signal_gap_cache_prewarm_rejects_nonpublisher(
+        self,
+    ) -> None:
+        from scheduler.executor import run_scheme_subprocess
+
+        context = replace(
+            _generation_context(),
+            business_date="2026-07-30",
+            feature_date="2026-07-27",
+            exporter_version="native-signal-gap-current-snapshot-v1",
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "requires an approved publisher",
+        ):
+            run_scheme_subprocess(
+                "liwei_0616_10y01_cons_say_k3_div_k10",
+                "2026-07-28",
+                native_generation=context,
+                native_execution_mode="signal_gap_cache_prewarm",
+                expected_native_feature_date="2026-07-27",
+                phase_a_cache_root=Path("/private/signal-gap-cache/native-123"),
+            )
+
+    def test_signal_gap_cache_prewarm_requires_one_time_permit(self) -> None:
+        from scheduler.executor import run_scheme_subprocess
+
+        context = replace(
+            _generation_context(),
+            business_date="2026-07-30",
+            feature_date="2026-07-27",
+            exporter_version="native-signal-gap-current-snapshot-v1",
+        )
+        with self.assertRaisesRegex(ValueError, "cache root and permit"):
+            run_scheme_subprocess(
+                "liwei_0616_10y01_full_oos_k3_div_k10",
+                "2026-07-28",
+                native_generation=context,
+                native_execution_mode="signal_gap_cache_prewarm",
+                expected_native_feature_date="2026-07-27",
+                phase_a_cache_root=Path("/private/signal-gap-cache/native-123"),
+            )
+
     def test_signal_gap_archived_accepts_exact_normal_generation_hit_only(
         self,
     ) -> None:

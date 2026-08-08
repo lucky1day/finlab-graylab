@@ -31,6 +31,9 @@ from harness.signal_gap_plan import (
     normalize_signal_gap_plan_scope,
     plan_signal_gaps,
 )
+from harness.signal_gap_native_artifact import (
+    signal_gap_native_cache_root,
+)
 from scheduler.discovery import load_scheme_config
 from scheduler.executor import (
     BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF,
@@ -1291,6 +1294,20 @@ def _run_algorithm(
             kwargs["expected_native_feature_date"] = (
                 group.actions[0]["feature_date"]
             )
+            if (
+                exporter_version
+                == SIGNAL_GAP_NATIVE_EXPORTER_VERSION
+            ):
+                kwargs["phase_a_cache_root"] = (
+                    signal_gap_native_cache_root(
+                        storage_root=(
+                            Path(artifact["manifest_uri"])
+                            .parent
+                            .parent
+                        ),
+                        generation_id=context.generation_id,
+                    )
+                )
             if group.input_mode == "live_source_0629":
                 package_sha256 = group.actions[0].get(
                     "source_package_sha256"

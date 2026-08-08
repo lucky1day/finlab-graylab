@@ -33,10 +33,12 @@ from shared.liwei_0616_cache_contract import (
     APPROVED_PHASE_A_CACHE_PUBLISHERS,
     CACHE_MUTATION_POLICY_ENV,
     CACHE_MUTATION_POLICY_HIT_ONLY,
+    CACHE_MUTATION_POLICY_PREWARM,
     CACHE_USE_QUALIFICATION_ENV,
     DIRECT_CACHE_RUNTIME_CONTEXT_ENV,
     GENERATION_ACCEPTANCE_SCHEMA_VERSION,
     PHASE_A_CACHE_ABI_VERSION,
+    SIGNAL_GAP_CACHE_PREWARM_PUBLISHER_SCHEME_ID,
     trusted_qualification_audit_binding,
     validate_direct_cache_runtime_context,
     validate_generation_acceptance_record,
@@ -45,6 +47,9 @@ from shared.liwei_0616_cache_contract import (
 from shared.liwei_0616_cache_projection import (
     PROJECTION_SCHEMA_VERSION,
     AuxiliaryDependencyProjection,
+)
+from shared.liwei_0616_signal_gap_prewarm import (
+    consume_signal_gap_cache_prewarm_permit,
 )
 from shared.native_input_generation import (
     NATIVE_GENERATION_EXPORTER_VERSION,
@@ -357,7 +362,10 @@ def prepare_phase_a_caches(
                 native_generation,
                 allow_signal_gap_snapshot=(
                     mutation_policy
-                    == CACHE_MUTATION_POLICY_HIT_ONLY
+                    in {
+                        CACHE_MUTATION_POLICY_HIT_ONLY,
+                        CACHE_MUTATION_POLICY_PREWARM,
+                    }
                 ),
             )
         )
@@ -368,6 +376,17 @@ def prepare_phase_a_caches(
                 "Native cache authority is invalid"
             ) from exc
         raise
+    if (
+        mutation_policy == CACHE_MUTATION_POLICY_PREWARM
+        and (
+            native_generation_binding is None
+            or native_generation_binding["exporter_version"]
+            != SIGNAL_GAP_NATIVE_EXPORTER_VERSION
+        )
+    ):
+        raise RuntimeError(
+            "SIGNAL_GAP_CACHE_PREWARM_AUTHORITY_INVALID"
+        )
     root = _cache_root(cache_root)
     family_root = _family_cache_root(root, spec)
     if mutation_policy == CACHE_MUTATION_POLICY_HIT_ONLY:
@@ -383,6 +402,19 @@ def prepare_phase_a_caches(
             ),
             test_ranges=test_ranges,
             native_generation_binding=native_generation_binding,
+        )
+    if mutation_policy == CACHE_MUTATION_POLICY_PREWARM:
+        if (
+            cache_consumer_id
+            != SIGNAL_GAP_CACHE_PREWARM_PUBLISHER_SCHEME_ID
+        ):
+            raise RuntimeError(
+                "SIGNAL_GAP_CACHE_PREWARM_PUBLISHER_REQUIRED"
+            )
+        consume_signal_gap_cache_prewarm_permit(
+            cache_root=root,
+            cache_consumer_id=cache_consumer_id,
+            native_generation=native_generation_binding,
         )
     qualification_required = _compare_gate_required(
         require_compare_gate
@@ -1114,10 +1146,14 @@ def _cache_mutation_policy() -> str | None:
     if configured is None:
         return None
     policy = configured.strip()
-    if policy != CACHE_MUTATION_POLICY_HIT_ONLY:
+    if policy not in {
+        CACHE_MUTATION_POLICY_HIT_ONLY,
+        CACHE_MUTATION_POLICY_PREWARM,
+    }:
         raise ValueError(
             f"{CACHE_MUTATION_POLICY_ENV} must be "
-            f"{CACHE_MUTATION_POLICY_HIT_ONLY}"
+            f"{CACHE_MUTATION_POLICY_HIT_ONLY} or "
+            f"{CACHE_MUTATION_POLICY_PREWARM}"
         )
     return policy
 

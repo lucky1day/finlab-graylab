@@ -82,11 +82,17 @@ from shared.native_input_generation import (
 from shared.liwei_0616_cache_contract import (
     CACHE_MUTATION_POLICY_ENV,
     CACHE_MUTATION_POLICY_HIT_ONLY,
+    CACHE_MUTATION_POLICY_PREWARM,
     CACHE_USE_QUALIFICATION_ENV,
     DIRECT_CACHE_RUNTIME_CONTEXT_ENV,
+    SIGNAL_GAP_CACHE_PREWARM_PUBLISHER_SCHEME_ID,
     canonical_json_bytes as canonical_cache_contract_json_bytes,
     validate_direct_cache_runtime_context,
     validate_trusted_cache_use_qualification,
+)
+from shared.liwei_0616_signal_gap_prewarm import (
+    PREWARM_CAPABILITY_ENV,
+    PREWARM_PERMIT_ENV,
 )
 from shared.prediction_context import (
     build_daily_live_context,
@@ -110,11 +116,15 @@ NATIVE_EXECUTION_MODE_SIGNAL_GAP_CURRENT_SNAPSHOT = (
     "signal_gap_current_snapshot"
 )
 NATIVE_EXECUTION_MODE_SIGNAL_GAP_ARCHIVED = "signal_gap_archived"
+NATIVE_EXECUTION_MODE_SIGNAL_GAP_CACHE_PREWARM = (
+    "signal_gap_cache_prewarm"
+)
 _NATIVE_EXECUTION_MODES = frozenset(
     {
         NATIVE_EXECUTION_MODE_SCHEDULED,
         NATIVE_EXECUTION_MODE_SIGNAL_GAP_ARCHIVED,
         NATIVE_EXECUTION_MODE_SIGNAL_GAP_CURRENT_SNAPSHOT,
+        NATIVE_EXECUTION_MODE_SIGNAL_GAP_CACHE_PREWARM,
     }
 )
 VALID_PREDICTION_PHASES = {"gray_live", "scheduled_live"}
@@ -160,6 +170,8 @@ _ALGORITHM_ENVIRONMENT_ALLOWLIST = frozenset(
         "PYTHONDONTWRITEBYTECODE",
         "LIWEI_0616_PHASE_A_CACHE_ROOT",
         CACHE_MUTATION_POLICY_ENV,
+        PREWARM_PERMIT_ENV,
+        PREWARM_CAPABILITY_ENV,
         "DAILY_0629_SOURCE_CACHE_DISABLE",
         "DAILY_0629_SOURCE_CACHE_DIR",
         "DAILY_0629_SOURCE_TIMEOUT_SEC",
@@ -263,6 +275,9 @@ def run_scheme_subprocess(
     process_start_guard: ProcessStartGuard | None = None,
     native_execution_mode: str = NATIVE_EXECUTION_MODE_SCHEDULED,
     expected_native_feature_date: str | None = None,
+    phase_a_cache_root: str | Path | None = None,
+    phase_a_cache_prewarm_permit: str | Path | None = None,
+    phase_a_cache_prewarm_capability: str | None = None,
 ) -> list[PredictionRecord]:
     """通过 conda 子进程在算法环境中运行方案。"""
     process_start_guard = require_process_start_guard(
@@ -276,6 +291,17 @@ def run_scheme_subprocess(
     is_signal_gap_execution = (
         native_execution_mode != NATIVE_EXECUTION_MODE_SCHEDULED
     )
+    is_signal_gap_cache_prewarm = (
+        native_execution_mode
+        == NATIVE_EXECUTION_MODE_SIGNAL_GAP_CACHE_PREWARM
+    )
+    if (
+        is_signal_gap_cache_prewarm
+        and scheme_id != SIGNAL_GAP_CACHE_PREWARM_PUBLISHER_SCHEME_ID
+    ):
+        raise ValueError(
+            "signal-gap cache prewarm requires an approved publisher"
+        )
     if is_signal_gap_execution and native_generation is None:
         raise ValueError(
             "signal-gap Native execution requires native_generation"
@@ -321,11 +347,54 @@ def run_scheme_subprocess(
     env.pop(CACHE_USE_QUALIFICATION_ENV, None)
     env.pop(DIRECT_CACHE_RUNTIME_CONTEXT_ENV, None)
     env.pop(CACHE_MUTATION_POLICY_ENV, None)
+    env.pop(PREWARM_PERMIT_ENV, None)
+    env.pop(PREWARM_CAPABILITY_ENV, None)
     env.pop(SCHEDULE_EXECUTION_TOKEN_ENV, None)
-    if is_signal_gap_execution:
+    if is_signal_gap_cache_prewarm:
+        env[CACHE_MUTATION_POLICY_ENV] = (
+            CACHE_MUTATION_POLICY_PREWARM
+        )
+    elif is_signal_gap_execution:
         env[CACHE_MUTATION_POLICY_ENV] = (
             CACHE_MUTATION_POLICY_HIT_ONLY
         )
+    normalized_phase_a_cache_root = _normalize_phase_a_cache_root(
+        phase_a_cache_root
+    )
+    normalized_prewarm_permit = _normalize_prewarm_permit_path(
+        phase_a_cache_prewarm_permit
+    )
+    normalized_prewarm_capability = _validated_prewarm_capability(
+        phase_a_cache_prewarm_capability
+    )
+    if (
+        is_signal_gap_cache_prewarm
+        and (
+            normalized_phase_a_cache_root is None
+            or normalized_prewarm_permit is None
+            or normalized_prewarm_capability is None
+        )
+    ):
+        raise ValueError(
+            "signal-gap cache prewarm requires cache root and permit"
+        )
+    if (
+        not is_signal_gap_cache_prewarm
+        and (
+            normalized_prewarm_permit is not None
+            or normalized_prewarm_capability is not None
+        )
+    ):
+        raise ValueError(
+            "signal-gap cache prewarm permit is only valid for prewarm"
+        )
+    if normalized_phase_a_cache_root is not None:
+        env["LIWEI_0616_PHASE_A_CACHE_ROOT"] = str(
+            normalized_phase_a_cache_root
+        )
+    if normalized_prewarm_permit is not None:
+        env[PREWARM_PERMIT_ENV] = str(normalized_prewarm_permit)
+        env[PREWARM_CAPABILITY_ENV] = normalized_prewarm_capability
     validated_execution_token = _validated_execution_token(
         execution_token
     )
@@ -630,6 +699,43 @@ def _canonical_signal_gap_feature_date(value: str | None) -> str:
     return canonical
 
 
+def _normalize_phase_a_cache_root(
+    value: str | Path | None,
+) -> Path | None:
+    if value is None:
+        return None
+    path = Path(value)
+    if not path.is_absolute():
+        raise ValueError("phase_a_cache_root must be absolute")
+    return path
+
+
+def _normalize_prewarm_permit_path(
+    value: str | Path | None,
+) -> Path | None:
+    if value is None:
+        return None
+    path = Path(value)
+    if not path.is_absolute():
+        raise ValueError("signal-gap cache prewarm permit must be absolute")
+    return path
+
+
+def _validated_prewarm_capability(
+    value: str | None,
+) -> str | None:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 128
+        or any(character not in _SAFE_EXECUTION_TOKEN_CHARACTERS for character in value)
+    ):
+        raise ValueError("signal-gap cache prewarm capability is unsafe")
+    return value
+
+
 def _build_algorithm_environment() -> dict[str, str]:
     """仅向 Native 算法进程传递运行必需且不含凭据的环境变量。"""
     environment = {
@@ -666,6 +772,9 @@ def run_configured_scheme(
     process_start_guard: ProcessStartGuard | None = None,
     native_execution_mode: str = NATIVE_EXECUTION_MODE_SCHEDULED,
     expected_native_feature_date: str | None = None,
+    phase_a_cache_root: str | Path | None = None,
+    phase_a_cache_prewarm_permit: str | Path | None = None,
+    phase_a_cache_prewarm_capability: str | None = None,
 ) -> list[PredictionRecord]:
     """按显式 runtime_type 选择算法执行驱动。"""
     process_start_guard = require_process_start_guard(
@@ -680,6 +789,9 @@ def run_configured_scheme(
     if runtime_type != "native_adapter" and (
         native_execution_mode != NATIVE_EXECUTION_MODE_SCHEDULED
         or expected_native_feature_date is not None
+        or phase_a_cache_root is not None
+        or phase_a_cache_prewarm_permit is not None
+        or phase_a_cache_prewarm_capability is not None
     ):
         raise ValueError(
             "Native execution contract is only valid for native_adapter"
@@ -709,6 +821,16 @@ def run_configured_scheme(
         if expected_native_feature_date is not None:
             native_kwargs["expected_native_feature_date"] = (
                 expected_native_feature_date
+            )
+        if phase_a_cache_root is not None:
+            native_kwargs["phase_a_cache_root"] = phase_a_cache_root
+        if phase_a_cache_prewarm_permit is not None:
+            native_kwargs["phase_a_cache_prewarm_permit"] = (
+                phase_a_cache_prewarm_permit
+            )
+        if phase_a_cache_prewarm_capability is not None:
+            native_kwargs["phase_a_cache_prewarm_capability"] = (
+                phase_a_cache_prewarm_capability
             )
         if cache_use_qualification is not None:
             native_kwargs["cache_use_qualification"] = (

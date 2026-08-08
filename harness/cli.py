@@ -37,7 +37,10 @@ from harness.signal_gap_plan import (
     plan_signal_gaps,
 )
 from harness.signal_gap_native_artifact import (
+    SignalGapNativeCachePrewarmError,
     SignalGapNativeArtifactRegistrationError,
+    describe_signal_gap_native_cache_prewarm,
+    prewarm_signal_gap_native_cache,
     prepare_signal_gap_native_artifact,
     register_signal_gap_native_artifact,
 )
@@ -146,11 +149,14 @@ def main(argv: list[str] | None = None) -> int:
                     args.source_authority_json
                 ),
             }
-        elif args.action == "signal_gap_native_artifact_register":
+        elif args.action in {
+            "signal_gap_native_artifact_register",
+            "signal_gap_native_cache_prewarm",
+        }:
             if args.source_authority_json is None:
                 parser.error(
                     "auth issue --action "
-                    "signal_gap_native_artifact_register requires "
+                    f"{args.action} requires "
                     "--source-authority-json"
                 )
             signal_gap_kwargs = {
@@ -278,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
                     feature_date=args.feature_date,
                     output_root=args.output_root,
                 )
-            else:
+            elif args.native_artifact_command == "register":
                 result = register_signal_gap_native_artifact(
                     manifest=args.manifest,
                     historical_predict_date=
@@ -286,12 +292,44 @@ def main(argv: list[str] | None = None) -> int:
                     authorize=args.authorize,
                     storage_root=args.storage_root,
                 )
-        except SignalGapNativeArtifactRegistrationError as exc:
+            elif args.native_artifact_command == "prewarm-authority":
+                result = describe_signal_gap_native_cache_prewarm(
+                    manifest=args.manifest,
+                    historical_predict_date=(
+                        args.historical_predict_date
+                    ),
+                    publisher_scheme_id=args.publisher_scheme_id,
+                    storage_root=args.storage_root,
+                )
+            else:
+                result = prewarm_signal_gap_native_cache(
+                    manifest=args.manifest,
+                    historical_predict_date=(
+                        args.historical_predict_date
+                    ),
+                    publisher_scheme_id=args.publisher_scheme_id,
+                    authorize=args.authorize,
+                    storage_root=args.storage_root,
+                    algo_env=args.algo_env,
+                    timeout_sec=args.timeout_sec,
+                )
+        except (
+            SignalGapNativeArtifactRegistrationError,
+            SignalGapNativeCachePrewarmError,
+        ) as exc:
+            is_prewarm = args.native_artifact_command in {
+                "prewarm",
+                "prewarm-authority",
+            }
+            schema_version = (
+                "signal-gap-native-cache-prewarm-error-v1"
+                if is_prewarm
+                else "signal-gap-native-artifact-error-v1"
+            )
             print(
                 json.dumps(
                     {
-                        "schema_version":
-                            "signal-gap-native-artifact-error-v1",
+                        "schema_version": schema_version,
                         "status": "ERROR",
                         "failure_code": exc.failure_code,
                         "token_consumed": exc.token_consumed,
@@ -309,14 +347,24 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
         except Exception as exc:
+            is_prewarm = args.native_artifact_command in {
+                "prewarm",
+                "prewarm-authority",
+            }
             print(
                 json.dumps(
                     {
-                        "schema_version":
-                            "signal-gap-native-artifact-error-v1",
+                        "schema_version": (
+                            "signal-gap-native-cache-prewarm-error-v1"
+                            if is_prewarm
+                            else "signal-gap-native-artifact-error-v1"
+                        ),
                         "status": "ERROR",
-                        "failure_code":
-                            "SIGNAL_GAP_NATIVE_ARTIFACT_ERROR",
+                        "failure_code": (
+                            "SIGNAL_GAP_NATIVE_CACHE_PREWARM_ERROR"
+                            if is_prewarm
+                            else "SIGNAL_GAP_NATIVE_ARTIFACT_ERROR"
+                        ),
                         "token_consumed": False,
                         "audit_path": None,
                         "error_type": type(exc).__name__,
@@ -518,6 +566,61 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
     )
     native_artifact_register.add_argument(
+        "--storage-root",
+        type=Path,
+        required=True,
+    )
+    native_artifact_prewarm = native_artifact_subparsers.add_parser(
+        "prewarm"
+    )
+    native_artifact_prewarm.add_argument(
+        "--manifest",
+        type=Path,
+        required=True,
+    )
+    native_artifact_prewarm.add_argument(
+        "--historical-predict-date",
+        required=True,
+    )
+    native_artifact_prewarm.add_argument(
+        "--publisher-scheme-id",
+        required=True,
+    )
+    native_artifact_prewarm.add_argument(
+        "--authorize",
+        required=True,
+    )
+    native_artifact_prewarm.add_argument(
+        "--storage-root",
+        type=Path,
+        required=True,
+    )
+    native_artifact_prewarm.add_argument(
+        "--algo-env",
+        default="forecast_env",
+    )
+    native_artifact_prewarm.add_argument(
+        "--timeout-sec",
+        type=int,
+        default=600,
+    )
+    native_artifact_prewarm_authority = (
+        native_artifact_subparsers.add_parser("prewarm-authority")
+    )
+    native_artifact_prewarm_authority.add_argument(
+        "--manifest",
+        type=Path,
+        required=True,
+    )
+    native_artifact_prewarm_authority.add_argument(
+        "--historical-predict-date",
+        required=True,
+    )
+    native_artifact_prewarm_authority.add_argument(
+        "--publisher-scheme-id",
+        required=True,
+    )
+    native_artifact_prewarm_authority.add_argument(
         "--storage-root",
         type=Path,
         required=True,

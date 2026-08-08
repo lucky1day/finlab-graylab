@@ -210,6 +210,110 @@ def _record_for_request(
 
 
 class SignalGapFillPlanScopeTests(unittest.TestCase):
+    def test_current_snapshot_native_fill_uses_artifact_cache_root(
+        self,
+    ) -> None:
+        generation_id = "native-" + "a" * 24
+        manifest_path = (
+            Path("/private/signal-gap-native")
+            / generation_id
+            / "manifest.json"
+        )
+        group = signal_gap_fill_gate._GapGroup(
+            base_scheme_id="native_trial",
+            predict_date="2026-08-05",
+            runtime_type="native_adapter",
+            scheme_version="native-trial-v1",
+            code_sha256="a" * 64,
+            config_sha256="b" * 64,
+            input_mode="generation_v1",
+            actions=(
+                {
+                    "feature_date": "2026-08-04",
+                    "target_date": "2026-08-11",
+                    "frequency": "daily",
+                },
+            ),
+            expected_target_keys=(
+                {
+                    "target_tenor": "10Y",
+                    "horizon": 5,
+                    "predict_date": "2026-08-05",
+                    "feature_date": "2026-08-04",
+                    "target_date": "2026-08-11",
+                },
+            ),
+            input_authority={
+                "artifact": {
+                    "generation_id": generation_id,
+                    "manifest_uri": str(manifest_path),
+                    "manifest_sha256": "1" * 64,
+                    "dataset_content_id": "2" * 64,
+                    "source_commit_token": "3" * 64,
+                    "business_date": "2026-08-08",
+                    "feature_date": "2026-08-04",
+                    "exporter_version": (
+                        signal_gap_fill_gate.SIGNAL_GAP_NATIVE_EXPORTER_VERSION
+                    ),
+                }
+            },
+            source_authority={},
+        )
+        item = signal_gap_fill_gate._Execution(
+            group=group,
+            cfg=SimpleNamespace(scheme_id="native_trial"),
+            run_id=1,
+            started=0.0,
+        )
+        context = SimpleNamespace(generation_id=generation_id)
+        cache_root = Path("/private/cache") / generation_id
+        runner_calls: list[dict[str, Any]] = []
+
+        def runner(_cfg, _predict_date, **kwargs):
+            runner_calls.append(kwargs)
+            return [
+                PredictionRecord(
+                    scheme_id="native_trial",
+                    target_tenor="10Y",
+                    horizon=5,
+                    predict_date="2026-08-05",
+                    feature_date="2026-08-04",
+                    target_date="2026-08-11",
+                    predicted_direction=1,
+                )
+            ]
+
+        with patch.object(
+            signal_gap_fill_gate,
+            "signal_gap_native_cache_root",
+            return_value=cache_root,
+            create=True,
+        ) as derive_cache_root:
+            signal_gap_fill_gate._run_algorithm(
+                item,
+                engine=object(),
+                algo_env="forecast_env",
+                timeout_sec=600,
+                algorithm_runner=runner,
+                native_generation_opener=(
+                    lambda *_args, **_kwargs: context
+                ),
+            )
+
+        self.assertEqual(len(runner_calls), 1)
+        self.assertEqual(
+            runner_calls[0]["native_execution_mode"],
+            "signal_gap_current_snapshot",
+        )
+        self.assertEqual(
+            runner_calls[0]["phase_a_cache_root"],
+            cache_root,
+        )
+        derive_cache_root.assert_called_once_with(
+            storage_root=manifest_path.parent.parent,
+            generation_id=generation_id,
+        )
+
     def test_fill_replays_the_frozen_scope_during_preflight(self) -> None:
         action = {
             "registry_scheme_id": "alpha__h1__1Y",
