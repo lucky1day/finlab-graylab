@@ -31,7 +31,7 @@
 | [架构与契约](architecture/README.md) | 系统架构、launchd-only 调度治理、代码边界、日期语义和共享契约 | 是 |
 | [产品文档](product/README.md) | 当前用户手册 | 是 |
 | [运维文档](operations/README.md) | 当前运行与验收资料 | 是 |
-| [Blackbox V2](blackbox_v2/README.md) | V2 专属数据、生产准备和试验记录 | 规范与记录分开 |
+| [Blackbox V2](blackbox_v2/README.md) | V2 专属数据、生产准备和证据边界 | 是 |
 | [Native V1](native_v1/README.md) | 存量方案维护 | 仅存量维护 |
 | [统一后续推进计划](TODO.md) | 未完成工作、并行关系、前置依赖、排序与授权闸门 | 是 |
 | [审计与状态记录](records/README.md) | 全方案问题台账和仍待处理的状态记录；不定义当前生产控制面 | 否 |

@@ -259,10 +259,11 @@ draft -> validated -> shadow -> active -> paused -> retired
 | 上游交付、输入、Request、Result 和自验契约 | `docs/sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md` |
 | 平台 Intake、Preflight、Gate、shadow 和恢复步骤 | `docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md` |
 | 双运行时架构和当前实现边界 | 本文 |
-| 具体方案、generation、snapshot、run、版本和状态 | `docs/blackbox_v2/records/ONBOARDING_TRIAL_LEDGER.md` |
+| 精确 generation、snapshot、run 和版本证据 | Harness 控制面、数据库与本机 ignored reports |
+| 当前方案状态和未关闭问题 | `docs/CURRENT_STATUS.md` 与 `docs/records/SCHEME_ISSUE_LEDGER.md` |
 | DataBridge V1 Schema 入口和脱敏结构样例 | `docs/blackbox_v2/data_bridge_v1/` |
 | 文档分类、迁移映射和维护规则 | `docs/blackbox_v2/README.md` |
 | 废弃规范和决策演进 | Git 历史，不进入当前工作树 |
 | 机器契约 | `shared/blackbox_v2/` 与 `deploy/blackbox_v2/` |
 
-仓库文档是唯一事实源，外发副本只能由仓库现行文件生成。通用文档不得写入具体方案的当前状态；试验记录不得反向改变通用契约；Git 历史中的废弃规则不得作为验收依据。
+仓库文档是当前规则的唯一事实源，外发副本只能由仓库现行文件生成。通用文档不得写入具体运行 ID；Git 历史中的废弃规则不得作为验收依据。

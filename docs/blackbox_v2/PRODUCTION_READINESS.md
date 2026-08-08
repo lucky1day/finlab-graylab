@@ -69,5 +69,5 @@
 
 ## 4. 每次复核记录
 
-新的复核时点证据进入 `records/`，本文件只更新当前条件，不追加运行 ID、
-generation ID、数据库计数或旧控制面结论。
+新的复核证据由 Harness 控制面与本机 ignored reports 保存。本文件只更新当前条件，
+不追加运行 ID、generation ID、数据库计数或旧控制面结论。

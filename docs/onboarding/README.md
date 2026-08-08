@@ -15,7 +15,7 @@
 | 新算法、新方案 ID、新目标期限或新任务类型 | Blackbox V2 |
 | 现有 Native V1 的故障、数据口径或复现性修复 | Native V1 存量维护 |
 | Native V1 的算法升级、替代实现或能力扩展 | 创建独立 Blackbox V2 trial |
-| 查看具体方案状态或运行证据 | 当前状态或对应试验记录 |
+| 查看当前方案状态或未关闭问题 | 当前状态或全方案问题台账 |
 | 查看历史规则和旧草案 | 使用 Git 历史；不得用于当前验收 |
 
 不得通过复用旧 ID、复制 `predict.py + core/` 或修改 Native 白名单，把新算法伪装成存量维护。
@@ -41,7 +41,6 @@
 - 平台人员：[平台入库 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)
 - 生产准备：[生产准备清单](../blackbox_v2/PRODUCTION_READINESS.md)
 - 架构边界：[Blackbox V2 平台架构](../architecture/BLACKBOX_V2_PLATFORM.md)
-- 实验记录：[Blackbox V2 试验记录](../blackbox_v2/records/README.md)
 
 ### Native V1
 
