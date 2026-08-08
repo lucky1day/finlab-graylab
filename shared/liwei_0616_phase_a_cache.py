@@ -34,15 +34,10 @@ from shared.liwei_0616_cache_contract import (
     CACHE_MUTATION_POLICY_ENV,
     CACHE_MUTATION_POLICY_HIT_ONLY,
     CACHE_MUTATION_POLICY_PREWARM,
-    CACHE_USE_QUALIFICATION_ENV,
-    DIRECT_CACHE_RUNTIME_CONTEXT_ENV,
     GENERATION_ACCEPTANCE_SCHEMA_VERSION,
     PHASE_A_CACHE_ABI_VERSION,
     SIGNAL_GAP_CACHE_PREWARM_PUBLISHER_SCHEME_ID,
-    trusted_qualification_audit_binding,
-    validate_direct_cache_runtime_context,
     validate_generation_acceptance_record,
-    validate_trusted_cache_use_qualification,
 )
 from shared.liwei_0616_cache_projection import (
     PROJECTION_SCHEMA_VERSION,
@@ -64,35 +59,6 @@ GENERATION_MANIFEST_SCHEMA_VERSION = 3
 CURRENT_POINTER_SCHEMA_VERSION = 1
 LEGACY_INPUT_GENERATION_STATE_SCHEMA_VERSION = 2
 INPUT_GENERATION_STATE_SCHEMA_VERSION = 3
-DIRECT_RUNTIME_MANIFEST_FIELDS = frozenset(
-    {
-        "schema_version",
-        "generation_id",
-        "generation_content_id",
-        "abi_version",
-        "cache_family",
-        "tenor",
-        "spec_fingerprint",
-        "input_state",
-        "parent_generation_id",
-        "build_mode",
-        "input_change",
-        "created_at",
-        "baselines",
-        "compare_gate_evidence",
-        "generation_acceptance_evidence",
-    }
-)
-DIRECT_RUNTIME_BASELINE_FIELDS = frozenset(
-    {
-        "relative_path",
-        "file_sha256",
-        "baseline_fingerprint",
-        "cache_content_sha256",
-        "watermark",
-        "evidence",
-    }
-)
 DEFAULT_CACHE_ROOT = BACKTEST_ARTIFACT_ROOT / "runtime_cache" / "liwei_0616"
 CACHE_GENERATION_RETENTION = 3
 MAX_CACHE_FAMILY_BYTES = 512 * 1024 * 1024
@@ -116,74 +82,6 @@ FULL_COMPARE_FIELDS = (
 )
 class CacheCapacityError(RuntimeError):
     """cache generation 会突破 family 或全局磁盘安全边界。"""
-
-
-def verify_phase_a_cache_audit_files(
-    extra: Mapping[str, object],
-    *,
-    expected_qualification: Mapping[str, object],
-) -> Mapping[str, object]:
-    """重开 cache generation/parent 并复核逐 consumer acceptance 谱系。"""
-    audit = extra.get("phase_a_cache")
-    if not isinstance(audit, Mapping):
-        raise ValueError("PredictionRecord.extra.phase_a_cache is missing")
-    generation_id = str(audit.get("generation_id") or "")
-    manifest_sha256 = _require_cache_sha256(
-        audit.get("generation_manifest_sha256"),
-        "generation_manifest_sha256",
-    )
-    generation_path = Path(str(audit.get("generation_path") or ""))
-    if not generation_path.is_absolute():
-        raise ValueError("cache generation_path must be absolute")
-    trusted = validate_trusted_cache_use_qualification(
-        expected_qualification
-    )
-    qualification = trusted["qualification"]
-    expected_family_root = generation_path.parent.parent
-    if (
-        generation_path.name != generation_id
-        or generation_path.parent.name != "generations"
-        or expected_family_root.name
-        != safe_path_part(str(qualification["tenor"]).lower())
-        or expected_family_root.parent.name
-        != safe_path_part(str(qualification["cache_family"]))
-        or audit.get("family_root") != str(expected_family_root)
-        or audit.get("current_pointer")
-        != str(expected_family_root / "current.json")
-    ):
-        raise ValueError(
-            "cache audit generation path is not canonical"
-        )
-    generation = _load_generation_directory(
-        generation_path,
-        expected_generation_id=generation_id,
-        expected_manifest_sha256=manifest_sha256,
-        secure=True,
-    )
-    if audit.get("capacity_eligible") is not True:
-        raise ValueError("cache audit is not capacity eligible")
-    if audit.get(
-        "cache_use_qualification"
-    ) != trusted_qualification_audit_binding(trusted):
-        raise ValueError(
-            "cache audit qualification identity mismatch"
-        )
-    _verify_generation_acceptance_lineage(
-        generation,
-        trusted_qualification=trusted,
-    )
-    reported = audit.get("generation_acceptance")
-    actual = generation.manifest.get(
-        "generation_acceptance_evidence"
-    )
-    if (
-        not isinstance(reported, Mapping)
-        or _canonical_json(reported) != _canonical_json(actual)
-    ):
-        raise ValueError(
-            "reported generation acceptance differs from cache manifest"
-        )
-    return dict(actual)
 
 
 @dataclass(frozen=True)
@@ -283,8 +181,6 @@ def prepare_phase_a_caches(
         ]
         | None
     ) = None,
-    require_compare_gate: bool | None = None,
-    cache_use_qualification: Mapping[str, object] | None = None,
     cache_consumer_id: str | None = None,
     native_generation: Mapping[str, object] | None = None,
     auxiliary_dependency_projection: (
@@ -295,10 +191,8 @@ def prepare_phase_a_caches(
     """读取或生成不可变 Phase A cache generation。
 
     同一 ``cache_family + tenor`` 只有一个 publisher。完整 generation
-    写入并校验后才原子替换 ``current.json``。direct ledger runtime 只允许
-    可证明的 hit/append/suffix；任何需要 full rebuild 或无法证明的 Native
-    generation 变化都 fail-closed，full rebuild 仅允许无 direct context 的
-    显式 operator bootstrap。``compare_cold`` 只用于非生产诊断。
+    写入并校验后才原子替换 ``current.json``。``compare_cold`` 只用于
+    非生产诊断。
     """
     mutation_policy = _cache_mutation_policy()
     try:
@@ -334,20 +228,6 @@ def prepare_phase_a_caches(
                 "choose either offline qualify_compare_gate evidence "
                 "or runtime compare_full_output"
             )
-        trusted_qualification = _resolve_cache_use_qualification(
-            cache_use_qualification
-        )
-        direct_runtime_context = (
-            _resolve_direct_cache_runtime_context()
-        )
-        if (
-            trusted_qualification is not None
-            and direct_runtime_context is not None
-        ):
-            raise RuntimeError(
-                "legacy cache qualification and direct cache runtime "
-                "context are mutually exclusive"
-            )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         if mutation_policy == CACHE_MUTATION_POLICY_HIT_ONLY:
             raise RuntimeError(
@@ -355,7 +235,6 @@ def prepare_phase_a_caches(
                 "Phase A cache request is invalid"
             ) from exc
         raise
-    validated_direct_runtime_context: dict[str, object] | None = None
     try:
         native_generation_binding = (
             _resolve_native_generation_binding(
@@ -416,52 +295,6 @@ def prepare_phase_a_caches(
             cache_consumer_id=cache_consumer_id,
             native_generation=native_generation_binding,
         )
-    qualification_required = _compare_gate_required(
-        require_compare_gate
-    )
-    if qualification_required:
-        if (
-            trusted_qualification is None
-            and direct_runtime_context is None
-        ):
-            raise RuntimeError(
-                "trusted qualification or direct cache runtime context "
-                "is required for ledger/SLA cache use"
-            )
-        if native_generation_binding is None:
-            raise RuntimeError(
-                "Native generation provenance is required for ledger/SLA "
-                "cache use"
-            )
-        if (
-            compare_cold is not None
-            or qualify_compare_gate is not None
-            or compare_full_output is not None
-        ):
-            raise RuntimeError(
-                "ordinary ledger execution cannot self-sign cache "
-                "qualification with runtime compare callbacks"
-            )
-        if trusted_qualification is not None:
-            _validate_qualification_for_cache_use(
-                trusted_qualification,
-                cache_consumer_id=cache_consumer_id,
-                spec=spec,
-                native_generation=native_generation_binding,
-            )
-        else:
-            validated_direct_runtime_context = (
-                _validate_direct_context_for_cache_use(
-                    direct_runtime_context,
-                    cache_consumer_id=cache_consumer_id,
-                    spec=spec,
-                    native_generation=native_generation_binding,
-                    cache_root=_cache_root(cache_root),
-                    auxiliary_dependency_projection=(
-                        auxiliary_dependency_projection
-                    ),
-                )
-            )
     is_publisher = (
         cache_consumer_id == spec.publisher_consumer_id
     )
@@ -483,23 +316,14 @@ def prepare_phase_a_caches(
             compare_cold=compare_cold,
             qualify_compare_gate=qualify_compare_gate,
             compare_full_output=compare_full_output,
-            qualification_required=qualification_required,
-            trusted_qualification=trusted_qualification,
-            direct_runtime_context=(
-                validated_direct_runtime_context
-            ),
+            secure_runtime=False,
             native_generation_binding=native_generation_binding,
         )
     family_root.mkdir(parents=True, exist_ok=True)
-    if qualification_required:
-        _require_secure_directory(root, "cache root")
-        _require_secure_directory(family_root, "cache family")
     with _exclusive_lock(family_root / ".prewarmer.lock"):
-        if qualification_required:
-            _require_secure_directory(family_root, "cache family")
         _cleanup_staging_directories(
             family_root,
-            secure=qualification_required,
+            secure=False,
         )
         return _prepare_under_family_lock(
             spec=spec,
@@ -518,11 +342,7 @@ def prepare_phase_a_caches(
             compare_cold=compare_cold,
             qualify_compare_gate=qualify_compare_gate,
             compare_full_output=compare_full_output,
-            qualification_required=qualification_required,
-            trusted_qualification=trusted_qualification,
-            direct_runtime_context=(
-                validated_direct_runtime_context
-            ),
+            secure_runtime=False,
             native_generation_binding=native_generation_binding,
         )
 
@@ -566,9 +386,7 @@ def _prepare_under_family_lock(
         ]
         | None
     ),
-    qualification_required: bool,
-    trusted_qualification: Mapping[str, object] | None,
-    direct_runtime_context: Mapping[str, object] | None,
+    secure_runtime: bool,
     native_generation_binding: Mapping[str, object] | None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     requested_by_baseline: dict[str, list[str]] = {}
@@ -593,19 +411,8 @@ def _prepare_under_family_lock(
     )
     current, current_error = _load_current_generation(
         family_root,
-        secure=qualification_required or not is_publisher,
+        secure=secure_runtime or not is_publisher,
     )
-    if direct_runtime_context is not None:
-        if current is None:
-            raise RuntimeError(
-                "DIRECT_CACHE_OPERATOR_BOOTSTRAP_REQUIRED: "
-                "direct runtime current generation is unavailable"
-            )
-        _validate_direct_current_generation_authority(
-            current,
-            direct_runtime_context,
-            spec,
-        )
     input_change = _input_change_analysis(
         (
             current.manifest.get("input_state")
@@ -624,8 +431,7 @@ def _prepare_under_family_lock(
             input_state=input_state,
             input_change=input_change,
             family_root=family_root,
-            qualification_required=qualification_required,
-            trusted_qualification=trusted_qualification,
+            secure_runtime=secure_runtime,
             native_generation_binding=native_generation_binding,
         )
     legacy_caches = None
@@ -658,7 +464,7 @@ def _prepare_under_family_lock(
                 input_state,
             )
         ):
-            if qualification_required:
+            if secure_runtime:
                 _validate_generation_acceptance_for_use(
                     current,
                     native_generation_binding=native_generation_binding,
@@ -697,7 +503,6 @@ def _prepare_under_family_lock(
                 published=True,
                 input_state=input_state,
                 input_change=input_change,
-                trusted_qualification=trusted_qualification,
             )
     build_mode = "full"
     build_reason = current_error or "no_current_generation"
@@ -732,11 +537,6 @@ def _prepare_under_family_lock(
             if build_mode != "full":
                 cached = current.caches
 
-    _require_direct_runtime_incremental_build_mode(
-        direct_runtime_context,
-        build_mode=build_mode,
-        build_reason=build_reason,
-    )
     caches: dict[str, dict[str, Any]] = {}
     baseline_audits: dict[str, dict[str, Any]] = {}
     acceptance_scopes: dict[str, dict[str, Any]] = {}
@@ -852,8 +652,6 @@ def _prepare_under_family_lock(
 
     if not needs_build and current is not None:
         if (
-            not qualification_required
-            and
             compare_cold is not None
             and (
                 (
@@ -878,7 +676,7 @@ def _prepare_under_family_lock(
             build_reason = "compare_gate_qualification"
 
     if not needs_build and current is not None:
-        if qualification_required:
+        if secure_runtime:
             _validate_generation_acceptance_for_use(
                 current,
                 native_generation_binding=native_generation_binding,
@@ -894,7 +692,6 @@ def _prepare_under_family_lock(
             published=True,
             input_state=input_state,
             input_change=input_change,
-            trusted_qualification=trusted_qualification,
         )
 
     compare_gate_evidence = _build_compare_gate_evidence(
@@ -906,11 +703,6 @@ def _prepare_under_family_lock(
         tenor=spec.tenor,
         spec_fingerprint=spec_fingerprint,
         input_content_id=str(input_state["content_id"]),
-    )
-    _require_direct_runtime_incremental_build_mode(
-        direct_runtime_context,
-        build_mode=build_mode,
-        build_reason=build_reason,
     )
     generation = _create_generation(
         spec=spec,
@@ -924,9 +716,9 @@ def _prepare_under_family_lock(
         input_change=input_change,
         acceptance_scopes=acceptance_scopes,
         native_generation_binding=native_generation_binding,
-        secure=qualification_required,
+        secure=secure_runtime,
     )
-    if qualification_required:
+    if secure_runtime:
         _validate_generation_acceptance_for_use(
             generation,
             native_generation_binding=native_generation_binding,
@@ -950,7 +742,6 @@ def _prepare_under_family_lock(
             published=True,
             input_state=input_state,
             input_change=input_change,
-            trusted_qualification=trusted_qualification,
         )
         protected_generation_ids = {generation.generation_id}
         if current is not None:
@@ -958,21 +749,21 @@ def _prepare_under_family_lock(
         _prune_generations(
             family_root,
             protected_generation_ids=protected_generation_ids,
-            secure=qualification_required,
+            secure=secure_runtime,
         )
         # current.json 的原子 replace 是唯一 publication commit
         # point。所有可能失败的容量清理与返回值构造都必须在它之前完成。
         _switch_current_generation(
             family_root,
             generation,
-            secure=qualification_required,
+            secure=secure_runtime,
         )
     except BaseException as error:
         try:
             _discard_unpublished_generation(
                 family_root,
                 generation.generation_id,
-                secure=qualification_required,
+                secure=secure_runtime,
             )
         except BaseException as cleanup_error:
             error.add_note(
@@ -993,8 +784,7 @@ def _validated_consumer_hit(
     input_state: Mapping[str, Any],
     input_change: Mapping[str, Any],
     family_root: Path,
-    qualification_required: bool,
-    trusted_qualification: Mapping[str, object] | None,
+    secure_runtime: bool,
     native_generation_binding: Mapping[str, object] | None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     """非发布者只能读取同输入、完整覆盖且谱系可信的 current。"""
@@ -1033,17 +823,12 @@ def _validated_consumer_hit(
             "fingerprint": _baseline_fingerprint(spec, baseline),
             "preserved_newer_watermark": False,
         }
-    lineage_qualification = (
-        trusted_qualification
-        if trusted_qualification is not None
-        else _lineage_qualification_for_spec(spec)
-    )
     try:
         _verify_generation_acceptance_lineage(
             current,
-            trusted_qualification=lineage_qualification,
+            spec=spec,
         )
-        if qualification_required:
+        if secure_runtime:
             _validate_generation_acceptance_for_use(
                 current,
                 native_generation_binding=native_generation_binding,
@@ -1064,7 +849,6 @@ def _validated_consumer_hit(
         published=True,
         input_state=input_state,
         input_change=dict(input_change),
-        trusted_qualification=trusted_qualification,
     )
 
 
@@ -1116,23 +900,6 @@ def _consumer_input_state_comparable(
         "frames": state["frames"],
         "effective_auxiliary": effective,
         "native_generation": state["native_generation"],
-    }
-
-
-def _lineage_qualification_for_spec(
-    spec: PhaseACacheSpec,
-) -> dict[str, object]:
-    return {
-        "qualification": {
-            "cache_abi_version": PHASE_A_CACHE_ABI_VERSION,
-            "cache_family": spec.cache_family,
-            "tenor": spec.tenor,
-            "spec_fingerprint": _spec_fingerprint(spec),
-            "daily_dependency_lookback_rows": (
-                spec.daily_dependency_lookback_rows
-            ),
-            "daily_dependency_proof": spec.daily_dependency_proof,
-        }
     }
 
 
@@ -1225,8 +992,7 @@ def _prepare_signal_gap_hit_only(
             input_state=input_state,
             input_change=input_change,
             family_root=family_root,
-            qualification_required=True,
-            trusted_qualification=None,
+            secure_runtime=True,
             native_generation_binding=native_generation_binding,
         )
     except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
@@ -1234,53 +1000,6 @@ def _prepare_signal_gap_hit_only(
             "SIGNAL_GAP_CACHE_PREWARM_REQUIRED: "
             "exact read-only Phase A cache hit is unavailable"
         ) from exc
-
-
-def _resolve_cache_use_qualification(
-    explicit: Mapping[str, object] | None,
-) -> dict[str, object] | None:
-    if explicit is not None:
-        return validate_trusted_cache_use_qualification(explicit)
-    encoded = os.getenv(CACHE_USE_QUALIFICATION_ENV)
-    if encoded is None:
-        return None
-    if not encoded.strip():
-        raise ValueError(
-            f"{CACHE_USE_QUALIFICATION_ENV} cannot be empty"
-        )
-    try:
-        payload = json.loads(encoded)
-    except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"{CACHE_USE_QUALIFICATION_ENV} must be valid JSON"
-        ) from exc
-    if not isinstance(payload, Mapping):
-        raise ValueError(
-            f"{CACHE_USE_QUALIFICATION_ENV} must contain an object"
-        )
-    return validate_trusted_cache_use_qualification(payload)
-
-
-def _resolve_direct_cache_runtime_context(
-) -> dict[str, object] | None:
-    encoded = os.getenv(DIRECT_CACHE_RUNTIME_CONTEXT_ENV)
-    if encoded is None:
-        return None
-    if not encoded.strip():
-        raise ValueError(
-            f"{DIRECT_CACHE_RUNTIME_CONTEXT_ENV} cannot be empty"
-        )
-    try:
-        payload = json.loads(encoded)
-    except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"{DIRECT_CACHE_RUNTIME_CONTEXT_ENV} must be valid JSON"
-        ) from exc
-    if not isinstance(payload, Mapping):
-        raise ValueError(
-            f"{DIRECT_CACHE_RUNTIME_CONTEXT_ENV} must contain an object"
-        )
-    return validate_direct_cache_runtime_context(payload)
 
 
 def _resolve_native_generation_binding(
@@ -1398,219 +1117,6 @@ def _validate_native_generation_binding(
             "Native generation cache exporter_version mismatch"
         )
     return normalized
-
-
-def _validate_qualification_for_cache_use(
-    trusted: Mapping[str, object],
-    *,
-    cache_consumer_id: str,
-    spec: PhaseACacheSpec,
-    native_generation: Mapping[str, object],
-) -> None:
-    validated_trusted = validate_trusted_cache_use_qualification(
-        trusted,
-        expected_base_scheme_id=cache_consumer_id,
-    )
-    qualification = validated_trusted["qualification"]
-    expected = {
-        "base_scheme_id": cache_consumer_id,
-        "cache_group": f"{spec.cache_family}:{spec.tenor}",
-        "cache_family": spec.cache_family,
-        "tenor": spec.tenor,
-        "spec_fingerprint": _spec_fingerprint(spec),
-        "cache_abi_version": PHASE_A_CACHE_ABI_VERSION,
-        "native_generation_schema_version":
-            native_generation["schema_version"],
-        "native_exporter_version":
-            native_generation["exporter_version"],
-        "daily_dependency_lookback_rows":
-            spec.daily_dependency_lookback_rows,
-        "daily_dependency_proof": spec.daily_dependency_proof,
-    }
-    drift = sorted(
-        field
-        for field, expected_value in expected.items()
-        if qualification.get(field) != expected_value
-    )
-    if drift:
-        raise RuntimeError(
-            "cache use qualification identity drift: "
-            + ", ".join(drift)
-        )
-
-
-def _validate_direct_context_for_cache_use(
-    context: Mapping[str, object] | None,
-    *,
-    cache_consumer_id: str,
-    spec: PhaseACacheSpec,
-    native_generation: Mapping[str, object],
-    cache_root: Path,
-    auxiliary_dependency_projection: (
-        AuxiliaryDependencyProjection | None
-    ),
-) -> dict[str, object]:
-    if context is None:
-        raise RuntimeError("direct cache runtime context is missing")
-    validated = validate_direct_cache_runtime_context(context)
-    consumer = validated["consumer"]
-    contract = validated["contract"]
-    expected = {
-        "base_scheme_id": cache_consumer_id,
-        "cache_consumer_id": cache_consumer_id,
-        "cache_group": f"{spec.cache_family}:{spec.tenor}",
-        "cache_family": spec.cache_family,
-        "tenor": spec.tenor,
-        "publisher_consumer_id": spec.publisher_consumer_id,
-        "spec_fingerprint": _spec_fingerprint(spec),
-        "daily_dependency_lookback_rows":
-            spec.daily_dependency_lookback_rows,
-        "daily_dependency_proof": spec.daily_dependency_proof,
-    }
-    drift = sorted(
-        field
-        for field, expected_value in expected.items()
-        if consumer.get(field) != expected_value
-    )
-    if (
-        Path(str(validated["storage_root"])) != cache_root
-        or contract["native_generation_schema_version"]
-        != native_generation["schema_version"]
-        or contract["native_exporter_version"]
-        != native_generation["exporter_version"]
-        or contract["cache_abi_version"] != PHASE_A_CACHE_ABI_VERSION
-    ):
-        drift.append("runtime_contract")
-    if auxiliary_dependency_projection is None:
-        drift.append("effective_projection")
-    else:
-        effective = _effective_auxiliary_generation_state(
-            auxiliary_dependency_projection
-        )
-        if (
-            effective.get("schema_version")
-            != contract["projection_schema_version"]
-            or (
-                consumer["access_mode"] == "publisher"
-                and effective.get("proof_identity_sha256")
-                != consumer[
-                    "publisher_projection_proof_identity_sha256"
-                ]
-            )
-        ):
-            drift.append("effective_projection")
-    if drift:
-        raise RuntimeError(
-            "direct cache runtime context identity drift: "
-            + ", ".join(sorted(set(drift)))
-        )
-    return validated
-
-
-def _validate_direct_current_generation_authority(
-    current: object,
-    context: Mapping[str, object],
-    spec: PhaseACacheSpec,
-) -> None:
-    """要求实际 current 闭世界匹配冻结 direct authority。"""
-    validated = validate_direct_cache_runtime_context(context)
-    contract = validated["contract"]
-    consumer = validated["consumer"]
-    manifest = getattr(current, "manifest", None)
-    baselines = (
-        manifest.get("baselines")
-        if isinstance(manifest, Mapping)
-        else None
-    )
-    caches = getattr(current, "caches", None)
-    input_state = (
-        manifest.get("input_state")
-        if isinstance(manifest, Mapping)
-        else None
-    )
-    effective = (
-        input_state.get("effective_auxiliary")
-        if isinstance(input_state, Mapping)
-        else None
-    )
-    drift: list[str] = []
-    if (
-        not isinstance(manifest, Mapping)
-        or set(manifest) != DIRECT_RUNTIME_MANIFEST_FIELDS
-    ):
-        drift.append("manifest_fields")
-    expected_manifest = {
-        "schema_version": contract["manifest_schema_version"],
-        "abi_version": contract["cache_abi_version"],
-        "cache_family": consumer["cache_family"],
-        "tenor": consumer["tenor"],
-        "spec_fingerprint": consumer["spec_fingerprint"],
-    }
-    if isinstance(manifest, Mapping):
-        drift.extend(
-            field
-            for field, expected in expected_manifest.items()
-            if manifest.get(field) != expected
-        )
-    if (
-        not isinstance(input_state, Mapping)
-        or input_state.get("schema_version")
-        != contract["input_state_schema_version"]
-    ):
-        drift.append("input_state_schema")
-    expected_baselines = set(spec.baselines)
-    if (
-        not isinstance(baselines, Mapping)
-        or set(baselines) != expected_baselines
-        or not isinstance(caches, Mapping)
-        or set(caches) != expected_baselines
-    ):
-        drift.append("baselines")
-    elif any(
-        not isinstance(baselines[baseline], Mapping)
-        or set(baselines[baseline])
-        != DIRECT_RUNTIME_BASELINE_FIELDS
-        or baselines[baseline].get("baseline_fingerprint")
-        != _baseline_fingerprint(spec, baseline)
-        for baseline in spec.baselines
-    ):
-        drift.append("baseline_identity")
-    if not isinstance(effective, Mapping):
-        drift.append("effective_projection")
-    else:
-        if (
-            effective.get("schema_version")
-            != contract["projection_schema_version"]
-        ):
-            drift.append("projection_schema")
-        if (
-            effective.get("proof_identity_sha256")
-            != consumer[
-                "publisher_projection_proof_identity_sha256"
-            ]
-        ):
-            drift.append("publisher_projection")
-    if drift:
-        raise RuntimeError(
-            "DIRECT_CACHE_CURRENT_AUTHORITY_DRIFT: "
-            + ", ".join(sorted(set(drift)))
-        )
-
-
-def _require_direct_runtime_incremental_build_mode(
-    context: Mapping[str, object] | None,
-    *,
-    build_mode: str,
-    build_reason: str,
-) -> None:
-    """direct runtime 禁止隐式 full/rebind。"""
-    if context is None:
-        return
-    if build_mode not in {"hit", "append", "suffix"}:
-        raise RuntimeError(
-            "DIRECT_CACHE_OPERATOR_BOOTSTRAP_REQUIRED: "
-            f"direct runtime refuses {build_mode} ({build_reason})"
-        )
 
 
 def _require_cache_sha256(value: object, field: str) -> str:
@@ -2276,12 +1782,6 @@ def _validate_cache_publisher_identity(spec: PhaseACacheSpec) -> None:
         or spec.publisher_consumer_id != expected_publisher
     ):
         raise RuntimeError("CACHE_PUBLISHER_IDENTITY_DRIFT")
-
-
-def _compare_gate_required(explicit: bool | None) -> bool:
-    if explicit is not None and not isinstance(explicit, bool):
-        raise TypeError("require_compare_gate must be a boolean or None")
-    return explicit is True
 
 
 def _input_change_analysis(
@@ -3639,17 +3139,16 @@ def _validate_generation_acceptance_for_use(
 def _verify_generation_acceptance_lineage(
     generation: _LoadedGeneration,
     *,
-    trusted_qualification: Mapping[str, object],
+    spec: PhaseACacheSpec,
 ) -> None:
     """从真实 parent 文件重算 diff、build mode 与全部 scope。"""
-    qualification = trusted_qualification["qualification"]
     manifest = generation.manifest
     if (
-        manifest.get("abi_version") != qualification["cache_abi_version"]
-        or manifest.get("cache_family") != qualification["cache_family"]
-        or manifest.get("tenor") != qualification["tenor"]
+        manifest.get("abi_version") != PHASE_A_CACHE_ABI_VERSION
+        or manifest.get("cache_family") != spec.cache_family
+        or manifest.get("tenor") != spec.tenor
         or manifest.get("spec_fingerprint")
-        != qualification["spec_fingerprint"]
+        != _spec_fingerprint(spec)
     ):
         raise ValueError(
             "cache generation does not match qualified cache identity"
@@ -3706,7 +3205,7 @@ def _verify_generation_acceptance_lineage(
         parent=parent,
         generation=generation,
         input_change=recomputed_change,
-        qualification=qualification,
+        spec=spec,
     )
     public_change = _public_input_change(recomputed_change)
     if (
@@ -3787,9 +3286,9 @@ def _lineage_build_mode(
     parent: _LoadedGeneration | None,
     generation: _LoadedGeneration,
     input_change: dict[str, Any],
-    qualification: Mapping[str, object],
+    spec: PhaseACacheSpec,
 ) -> str:
-    """仅凭冻结 qualification 与前后 manifest 重放 build-mode 决策。"""
+    """按方案 cache 规格与前后 manifest 重放 build-mode 决策。"""
     if parent is None:
         return "full"
     manifest = generation.manifest
@@ -3817,8 +3316,8 @@ def _lineage_build_mode(
         elif effective["change_type"] not in {"unchanged", "append"}:
             return "full"
         if daily["change_type"] in {"revision", "unknown"}:
-            rows = qualification.get("daily_dependency_lookback_rows")
-            proof = qualification.get("daily_dependency_proof")
+            rows = spec.daily_dependency_lookback_rows
+            proof = spec.daily_dependency_proof
             earliest = daily["earliest_changed_key"]
             union_keys = input_change.get("_daily_union_keys")
             if (
@@ -4763,7 +4262,6 @@ def _generation_audit(
     published: bool,
     input_state: Mapping[str, Any],
     input_change: Mapping[str, Any],
-    trusted_qualification: Mapping[str, object] | None,
 ) -> dict[str, Any]:
     all_missing = sorted(
         {
@@ -4784,13 +4282,6 @@ def _generation_audit(
     acceptance = generation.manifest[
         "generation_acceptance_evidence"
     ]
-    trusted_binding = (
-        trusted_qualification_audit_binding(
-            trusted_qualification
-        )
-        if trusted_qualification is not None
-        else None
-    )
     acceptance_audit = validate_generation_acceptance_record(
         acceptance
     )
@@ -4821,11 +4312,6 @@ def _generation_audit(
         "family_root": str(family_root),
         "current_pointer": str(family_root / "current.json"),
         "published": published,
-        "capacity_eligible": (
-            trusted_binding is not None
-            and acceptance["status"] == "ACCEPTED"
-        ),
-        "cache_use_qualification": trusted_binding,
         "generation_acceptance": acceptance_audit,
         "retention_limit": CACHE_GENERATION_RETENTION,
         "family_limit_bytes": MAX_CACHE_FAMILY_BYTES,

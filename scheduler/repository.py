@@ -22,10 +22,6 @@ from scheduler.blackbox_scheduler_admission import LAUNCHD_ONE_SHOT
 from shared.blackbox_v2.lifecycle import assert_lifecycle_clear, lifecycle_operation_lock
 from shared.db_config import DatabaseConfig
 from shared.input_artifacts import InputArtifact
-from shared.liwei_0616_cache_contract import (
-    validate_prediction_cache_audit,
-    validate_trusted_cache_use_qualification,
-)
 from shared.models import ActualRecord, MonthlyActualRecord, PredictionRecord, WeeklyActualRecord
 from shared.native_input_generation import (
     NATIVE_GENERATION_EXPORTER_VERSION,

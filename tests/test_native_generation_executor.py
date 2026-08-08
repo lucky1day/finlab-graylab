@@ -8,9 +8,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tests.cache_qualification_fixtures import (
-    trusted_cache_use_qualification,
-)
 from tests.test_native_generation_input_artifacts import _generation_context
 
 
@@ -853,66 +850,6 @@ class NativeGenerationSubprocessTests(unittest.TestCase):
         self.assertFalse(runtime_config_path.exists())
         self.assertFalse(runtime_config_root.exists())
 
-    def test_cache_qualification_is_explicitly_validated_and_injected(
-        self,
-    ) -> None:
-        import json
-
-        from scheduler.executor import run_scheme_subprocess
-        from shared.liwei_0616_cache_contract import (
-            CACHE_USE_QUALIFICATION_ENV,
-        )
-        from shared.liwei_0616_phase_a_cache import PhaseACacheSpec
-
-        spec = PhaseACacheSpec(
-            cache_family="liwei_0616_5y_v31",
-            tenor="5Y",
-            publisher_consumer_id="daily_demo",
-            baselines=("STD",),
-            baseline_configs={"STD": {"window": 200}},
-            source_ic_screen_start="2024-01-01",
-            horizon=5,
-            purge_gap=5,
-        )
-        qualification = trusted_cache_use_qualification(
-            spec,
-            base_scheme_id="daily_demo",
-        )
-        captured: dict[str, str] = {}
-
-        def fake_run(cmd, *, cwd, env, timeout):
-            from subprocess import CompletedProcess
-
-            del cwd, timeout
-            captured.update(env)
-            return CompletedProcess(cmd, 0, "[]", "")
-
-        with patch(
-            "scheduler.executor._run_process_group",
-            side_effect=fake_run,
-        ):
-            run_scheme_subprocess(
-                "daily_demo",
-                "2026-07-24",
-                native_generation=_generation_context(),
-                cache_use_qualification=qualification,
-            )
-        self.assertEqual(
-            json.loads(captured[CACHE_USE_QUALIFICATION_ENV]),
-            qualification,
-        )
-
-        with self.assertRaisesRegex(
-            ValueError,
-            "cache_use_qualification is invalid",
-        ):
-            run_scheme_subprocess(
-                "other_consumer",
-                "2026-07-24",
-                native_generation=_generation_context(),
-                cache_use_qualification=qualification,
-            )
-
     def test_native_subprocess_rejects_generation_from_another_occurrence(
         self,
     ) -> None:
@@ -947,7 +884,6 @@ class NativeGenerationSubprocessTests(unittest.TestCase):
                 input_artifacts.NATIVE_BUSINESS_DATE_ENV,
                 input_artifacts.NATIVE_FEATURE_DATE_ENV,
                 input_artifacts.SCHEDULE_EXECUTION_TOKEN_ENV,
-                "BOND_LIWEI_0616_CACHE_USE_QUALIFICATION",
             ):
                 captured[name] = env.get(name, "<missing>")
             return CompletedProcess(cmd, 0, "[]", "")
@@ -962,9 +898,6 @@ class NativeGenerationSubprocessTests(unittest.TestCase):
             input_artifacts.NATIVE_BUSINESS_DATE_ENV: "2026-07-23",
             input_artifacts.NATIVE_FEATURE_DATE_ENV: "2026-07-22",
             input_artifacts.SCHEDULE_EXECUTION_TOKEN_ENV: "stale-attempt",
-            "BOND_LIWEI_0616_CACHE_USE_QUALIFICATION": (
-                '{"forged":true}'
-            ),
         }
         with (
             patch.dict(os.environ, inherited, clear=False),
