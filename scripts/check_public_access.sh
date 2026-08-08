@@ -498,7 +498,11 @@ run_request legacy-schemes GET "$APP_URL/api/schemes" "$LEGACY_CODE"
 run_request legacy-metrics GET \
   "$APP_URL/api/metrics/$SCHEME_ID_ENCODED" "$LEGACY_CODE"
 run_request legacy-backtest GET \
-  "$APP_URL/api/backtests/factor-lab" "$LEGACY_CODE"
+  "$APP_URL/api/backtests/factor-lab" "$LEGACY_CODE" \
+  --header 'Accept-Encoding: gzip'
+if [[ "$MODE" == "rollout" ]]; then
+  assert_last_content_encoding legacy-backtest-gzip-encoding gzip
+fi
 
 printf 'Summary: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 if [[ "$FAIL" -ne 0 ]]; then

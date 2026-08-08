@@ -494,6 +494,7 @@ def test_public_check_script_covers_protocol_and_bypass_matrix() -> None:
         "legacy-schemes",
         "legacy-metrics",
         "legacy-backtest",
+        "legacy-backtest-gzip-encoding",
     ):
         assert label in script
 
@@ -503,6 +504,15 @@ def test_public_check_script_covers_protocol_and_bypass_matrix() -> None:
     assert "gzip;q=0" in script
     assert "Vary" in script
     assert "--compressed" not in script
+    legacy_start = script.index("run_request legacy-backtest GET")
+    legacy_end = script.index("\nprintf 'Summary:", legacy_start)
+    legacy_backtest = script[legacy_start:legacy_end]
+    assert "--header 'Accept-Encoding: gzip'" in legacy_backtest
+    assert 'if [[ "$MODE" == "rollout" ]]; then' in legacy_backtest
+    assert (
+        "assert_last_content_encoding legacy-backtest-gzip-encoding gzip"
+        in legacy_backtest
+    )
 
 
 def test_public_check_script_is_bash3_safe_and_head_is_snapshot_independent() -> None:
