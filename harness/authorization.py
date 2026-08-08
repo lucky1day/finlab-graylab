@@ -22,10 +22,6 @@ AUTH_SECRET_ENV = "HARNESS_AUTH_SECRET"
 DEFAULT_BACKTEST_START_DATE = "2025-01-01"
 BLACKBOX_PRIVILEGED_AUTH_MAX_TTL_SECONDS = 900
 BLACKBOX_PRIVILEGED_AUTH_MAX_FUTURE_SKEW_SECONDS = 60
-NATIVE_LEGACY_ADMISSION_ATTEST_ACTION = (
-    "native_legacy_admission_identity_attest"
-)
-NATIVE_LEGACY_ADMISSION_ATTEST_SCHEME_ID = "weekly_10y_d_overlay_0529"
 EXACT_PREDICT_DATE_ACTIONS = frozenset(
     {
         "backtest_persist",
@@ -170,14 +166,6 @@ def issue_token(
     配置了 HARNESS_AUTH_SECRET 时附带 HMAC 签名；未配置时退化为明文信封，
     token 仍承担一次性 + 作用域绑定的确认职责（软默认，单用户场景无需配置）。
     """
-    if action == NATIVE_LEGACY_ADMISSION_ATTEST_ACTION:
-        _validate_native_legacy_admission_attest_issue(
-            scheme_id=scheme_id,
-            scheme_version=scheme_version,
-            harness_run_id=harness_run_id,
-            issued_by=issued_by,
-            ttl_seconds=ttl_seconds,
-        )
     if action in {
         "signal_gap_fill_write",
         "signal_gap_native_artifact_register",
@@ -475,9 +463,6 @@ def verify_authorization(
         errors.append(
             f"{action} issued_by must be a non-empty string"
         )
-    if action == NATIVE_LEGACY_ADMISSION_ATTEST_ACTION:
-        errors.extend(_native_legacy_admission_attest_token_errors(auth))
-
     if signing_enabled:
         digest = hmac.new(
             secret,
@@ -545,90 +530,6 @@ def verify_authorization(
     except (OSError, ValueError, json.JSONDecodeError):
         errors.append("authorization replay store is invalid or unavailable")
     return auth, errors
-
-
-def _validate_native_legacy_admission_attest_issue(
-    *,
-    scheme_id: str,
-    scheme_version: str | None,
-    harness_run_id: str | None,
-    issued_by: str | None,
-    ttl_seconds: int | None,
-) -> None:
-    """签发时限制 legacy Native 身份证明的唯一作用域与短期凭证。"""
-    errors = _native_legacy_admission_attest_field_errors(
-        scheme_id=scheme_id,
-        scheme_version=scheme_version,
-        harness_run_id=harness_run_id,
-        issued_by=issued_by,
-    )
-    if ttl_seconds is None:
-        errors.append(
-            f"{NATIVE_LEGACY_ADMISSION_ATTEST_ACTION} authorization requires "
-            "--expires-in"
-        )
-    elif isinstance(ttl_seconds, bool):
-        errors.append(
-            f"{NATIVE_LEGACY_ADMISSION_ATTEST_ACTION} authorization lifetime "
-            "must be a positive integer at most 900 seconds"
-        )
-    else:
-        try:
-            normalized_ttl = int(ttl_seconds)
-        except (TypeError, ValueError):
-            errors.append(
-                f"{NATIVE_LEGACY_ADMISSION_ATTEST_ACTION} authorization lifetime "
-                "must be a positive integer at most 900 seconds"
-            )
-        else:
-            if (
-                normalized_ttl <= 0
-                or normalized_ttl > BLACKBOX_PRIVILEGED_AUTH_MAX_TTL_SECONDS
-            ):
-                errors.append(
-                    f"{NATIVE_LEGACY_ADMISSION_ATTEST_ACTION} authorization lifetime "
-                    "must be a positive integer at most 900 seconds"
-                )
-    if errors:
-        raise ValueError("; ".join(errors))
-
-
-def _native_legacy_admission_attest_token_errors(
-    auth: Authorization,
-) -> list[str]:
-    """执行时重新核验 token 的固定 scope 和完整绑定字段。"""
-    return _native_legacy_admission_attest_field_errors(
-        scheme_id=auth.scheme_id,
-        scheme_version=auth.scheme_version,
-        harness_run_id=auth.harness_run_id,
-        issued_by=auth.issued_by,
-    )
-
-
-def _native_legacy_admission_attest_field_errors(
-    *,
-    scheme_id: str | None,
-    scheme_version: str | None,
-    harness_run_id: str | None,
-    issued_by: str | None,
-) -> list[str]:
-    errors: list[str] = []
-    if scheme_id != NATIVE_LEGACY_ADMISSION_ATTEST_SCHEME_ID:
-        errors.append(
-            f"{NATIVE_LEGACY_ADMISSION_ATTEST_ACTION} scheme_id must be "
-            f"{NATIVE_LEGACY_ADMISSION_ATTEST_SCHEME_ID}"
-        )
-    for field, value in (
-        ("scheme_version", scheme_version),
-        ("harness_run_id", harness_run_id),
-        ("issued_by", issued_by),
-    ):
-        if not isinstance(value, str) or not value.strip():
-            errors.append(
-                f"{NATIVE_LEGACY_ADMISSION_ATTEST_ACTION} {field} must be "
-                "a non-empty string"
-            )
-    return errors
 
 
 def issue_signal_gap_fill_token(

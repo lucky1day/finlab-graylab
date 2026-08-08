@@ -10,8 +10,6 @@ from typing import Any
 from harness.authorization import (
     DEFAULT_BACKTEST_START_DATE,
     EXACT_PREDICT_DATE_ACTIONS,
-    NATIVE_LEGACY_ADMISSION_ATTEST_ACTION,
-    NATIVE_LEGACY_ADMISSION_ATTEST_SCHEME_ID,
     issue_token,
 )
 from harness.context import GateContext
@@ -25,9 +23,6 @@ from harness.gates.input_gate import InputGate
 from harness.gates.live_gate import LiveGate
 from harness.gates.static_gate import StaticGate
 from harness.gates.unit_gate import UnitGate
-from harness.legacy_native_admission_attestation import (
-    run_legacy_native_admission_attestation,
-)
 from harness.orchestrator import onboard as run_onboard
 from harness.registry import gate_for_name
 from harness.result import GateResult, GateStatus, OnboardReport
@@ -82,43 +77,6 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error(
                     "auth issue --action blackbox_revision_activate requires "
                     f"{', '.join(missing)}"
-                )
-        if args.action == NATIVE_LEGACY_ADMISSION_ATTEST_ACTION:
-            if args.scheme_id != NATIVE_LEGACY_ADMISSION_ATTEST_SCHEME_ID:
-                parser.error(
-                    "auth issue --action "
-                    f"{NATIVE_LEGACY_ADMISSION_ATTEST_ACTION} requires "
-                    f"--scheme-id {NATIVE_LEGACY_ADMISSION_ATTEST_SCHEME_ID}"
-                )
-            required = {
-                "--scheme-version": args.scheme_version,
-                "--harness-run-id": args.harness_run_id,
-                "--issued-by": args.issued_by,
-                "--expires-in": args.expires_in,
-            }
-            missing = [flag for flag, value in required.items() if value is None]
-            if missing:
-                parser.error(
-                    "auth issue --action "
-                    f"{NATIVE_LEGACY_ADMISSION_ATTEST_ACTION} requires "
-                    f"{', '.join(missing)}"
-                )
-            if (
-                not isinstance(args.scheme_version, str)
-                or not args.scheme_version.strip()
-                or not isinstance(args.harness_run_id, str)
-                or not args.harness_run_id.strip()
-                or not isinstance(args.issued_by, str)
-                or not args.issued_by.strip()
-                or isinstance(args.expires_in, bool)
-                or args.expires_in <= 0
-                or args.expires_in > 900
-            ):
-                parser.error(
-                    "auth issue --action "
-                    f"{NATIVE_LEGACY_ADMISSION_ATTEST_ACTION} requires non-empty "
-                    "--scheme-version, --harness-run-id, --issued-by and a positive "
-                    "--expires-in no more than 900"
                 )
         issued_by = args.issued_by if args.issued_by is not None else "harness"
         signal_gap_kwargs: dict[str, Any] = {}
@@ -187,10 +145,6 @@ def main(argv: list[str] | None = None) -> int:
         return _exit_code_for_report(report)
     if args.command == "activate":
         result = _run_activate(args)
-        print(json.dumps(_jsonable(result), ensure_ascii=False, indent=2))
-        return _exit_code_for_result(result)
-    if args.command == "native-legacy-admission-attest":
-        result = _run_native_legacy_admission_attestation(args)
         print(json.dumps(_jsonable(result), ensure_ascii=False, indent=2))
         return _exit_code_for_result(result)
     if args.command == "report":
@@ -458,16 +412,6 @@ def _build_parser() -> argparse.ArgumentParser:
     activate_parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
     activate_parser.add_argument("--report-dir", type=Path, default=None)
     activate_parser.add_argument("--authorize", default=None)
-
-    legacy_attestation_parser = subparsers.add_parser(
-        "native-legacy-admission-attest"
-    )
-    legacy_attestation_parser.add_argument("--scheme-id", required=True)
-    legacy_attestation_parser.add_argument("--authorize", required=True)
-    legacy_attestation_parser.add_argument(
-        "--project-root", type=Path, default=PROJECT_ROOT
-    )
-    legacy_attestation_parser.add_argument("--report-dir", type=Path, default=None)
 
     report_parser = subparsers.add_parser("report")
     report_parser.add_argument("scheme_id")
@@ -763,37 +707,6 @@ def _run_activate(args: argparse.Namespace) -> GateResult:
         engine_factory=create_engine_from_env,
     )
     return ActivationGate().run(ctx)
-
-
-def _run_native_legacy_admission_attestation(
-    args: argparse.Namespace,
-) -> GateResult:
-    project_root = args.project_root.resolve()
-    report_dir = (
-        args.report_dir
-        or project_root
-        / "reports"
-        / "harness"
-        / args.scheme_id
-        / _timestamp()
-    )
-    config = _load_config_for_dispatch(
-        project_root / "schemes" / args.scheme_id / "config.yaml"
-    )
-    engine = create_engine_from_env()
-    ctx = GateContext(
-        scheme_id=args.scheme_id,
-        predict_date="legacy-admission-attestation",
-        project_root=project_root,
-        report_dir=report_dir,
-        config=config,
-        authorization=args.authorize,
-        engine_factory=lambda: engine,
-    )
-    try:
-        return run_legacy_native_admission_attestation(ctx)
-    finally:
-        engine.dispose()
 
 
 def _run_report(args: argparse.Namespace) -> int:

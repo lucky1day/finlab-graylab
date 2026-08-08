@@ -17,10 +17,6 @@ from harness.result import GateResult, GateStatus
 # never write prediction, backtest, registry, source, or other business tables.
 
 
-class LegacyNativeAdmissionAttestationPersistenceError(RuntimeError):
-    """单用途 legacy Native 身份收据无法原子落库。"""
-
-
 def new_harness_run_id() -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"hr_{stamp}_{uuid.uuid4().hex[:12]}"
@@ -138,120 +134,6 @@ def persist_harness_run_finish(
             )
 
     return _with_engine(ctx, operation)
-
-
-def persist_legacy_native_admission_attestation(
-    ctx: GateContext,
-    *,
-    harness_run_id: str,
-    stage: str,
-    gate_name: str,
-    triggered_by: str,
-    evidence_key: str,
-    evidence_value: dict,
-    started_at: str,
-    finished_at: str,
-) -> None:
-    """原子写入一个不含当前版本/hash 的 operator attestation receipt。
-
-    该专用入口刻意不复用普通 ``persist_harness_run_start``，避免把当前
-    code/config/version 元数据写入历史准入证明。
-    """
-    if ctx.engine_factory is None:
-        raise LegacyNativeAdmissionAttestationPersistenceError(
-            "legacy Native admission attestation requires a database engine"
-        )
-
-    engine = None
-    try:
-        engine = ctx.engine_factory()
-        if engine is None:
-            raise LegacyNativeAdmissionAttestationPersistenceError(
-                "legacy Native admission attestation cannot connect to database"
-            )
-        summary_json = json.dumps(
-            {
-                "passed": True,
-                "evidence": [
-                    {
-                        "key": evidence_key,
-                        "value": _jsonable(evidence_value),
-                        "detail": None,
-                    }
-                ],
-                "errors": [],
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        with engine.begin() as conn:
-            existing_run = conn.execute(
-                text(
-                    "SELECT harness_run_id FROM t_harness_runs "
-                    "WHERE harness_run_id = :harness_run_id"
-                ),
-                {"harness_run_id": harness_run_id},
-            ).first()
-            existing_gate = conn.execute(
-                text(
-                    "SELECT harness_run_id FROM t_harness_gate_results "
-                    "WHERE harness_run_id = :harness_run_id"
-                ),
-                {"harness_run_id": harness_run_id},
-            ).first()
-            if existing_run is not None or existing_gate is not None:
-                raise LegacyNativeAdmissionAttestationPersistenceError(
-                    "legacy Native admission attestation receipt already exists"
-                )
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO t_harness_runs
-                        (harness_run_id, scheme_id, scheme_version, stage, status,
-                         started_at, finished_at, triggered_by, project_root,
-                         git_commit, code_hash, config_hash, report_uri)
-                    VALUES
-                        (:harness_run_id, :scheme_id, NULL, :stage, 'passed',
-                         :started_at, :finished_at, :triggered_by, :project_root,
-                         NULL, NULL, NULL, NULL)
-                    """
-                ),
-                {
-                    "harness_run_id": harness_run_id,
-                    "scheme_id": ctx.scheme_id,
-                    "stage": stage,
-                    "started_at": _mysql_datetime(started_at),
-                    "finished_at": _mysql_datetime(finished_at),
-                    "triggered_by": triggered_by,
-                    "project_root": str(ctx.project_root),
-                },
-            )
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO t_harness_gate_results
-                        (harness_run_id, gate_name, status, started_at, finished_at,
-                         summary_json, report_uri)
-                    VALUES
-                        (:harness_run_id, :gate_name, 'passed', :started_at,
-                         :finished_at, :summary_json, NULL)
-                    """
-                ),
-                {
-                    "harness_run_id": harness_run_id,
-                    "gate_name": gate_name,
-                    "started_at": _mysql_datetime(started_at),
-                    "finished_at": _mysql_datetime(finished_at),
-                    "summary_json": summary_json,
-                },
-            )
-    except LegacyNativeAdmissionAttestationPersistenceError:
-        raise
-    except Exception as exc:  # noqa: BLE001 - token is already consumed; fail closed.
-        raise LegacyNativeAdmissionAttestationPersistenceError(
-            "legacy Native admission attestation persistence failed"
-        ) from exc
 
 
 def _with_engine(ctx: GateContext, operation: Callable[[object], None]) -> bool:
