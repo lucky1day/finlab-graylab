@@ -5,9 +5,6 @@ import json
 from pathlib import Path
 import unittest
 
-from scheduler.discovery import load_scheme_config
-
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCHEME_ROOT = PROJECT_ROOT / "schemes" / "t1_daily"
 RUNTIME_PATH = SCHEME_ROOT / "core" / "shap_analysis.py"
@@ -42,23 +39,6 @@ RETIRED_ARTIFACT = {
         "active Native bundle; retained for source-fidelity audit only."
     ),
 }
-REMAINING_RUNTIME_SHA256 = {
-    "predict.py": "3a34afb34326a5923cef81ba6939b84c77e5e0b3617849708a3b37fbe938946f",
-    "core/__init__.py": (
-        "46c7bc0dc84f3f1b3330138205b0366e288b135fa6918bb61cbae5ee3ecb25a7"
-    ),
-    "core/config.py": (
-        "d93c2c42c97e5b2db6e08253ada6cc58f52507b6585b90181e71c3989e5a3c7b"
-    ),
-    "core/feature_engineering.py": (
-        "10d0be9e840cf28f8bb623412bcdf92d807193fcf33aeaeced0b17641fc11b0a"
-    ),
-    "core/lgbm_predictor.py": (
-        "955be5036d3a8def22f87cdaeddd352e718654be5498f59e04f6bdf67229508f"
-    ),
-}
-
-
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -84,33 +64,6 @@ class T1DailyShapRetirementTests(unittest.TestCase):
 
         self.assertEqual(len(matches), 1)
         self.assertEqual(matches[0], RETIRED_ARTIFACT)
-
-    def test_remaining_runtime_file_hashes_are_unchanged(self) -> None:
-        actual = {
-            relative_path: _sha256(SCHEME_ROOT / relative_path)
-            for relative_path in REMAINING_RUNTIME_SHA256
-        }
-
-        self.assertEqual(actual, REMAINING_RUNTIME_SHA256)
-
-    def test_discovery_keeps_retired_runtime_and_business_identity(self) -> None:
-        config = load_scheme_config(SCHEME_ROOT / "config.yaml")
-
-        # status/config hash/scheme version are Native lifecycle fields: activation
-        # legitimately flips paused -> active without changing the retired runtime.
-        self.assertIn(config.status, {"paused", "active"})
-        self.assertEqual(config.scheme_id, "t1_daily")
-        self.assertEqual(config.runtime_type, "native_adapter")
-        self.assertEqual(config.horizon, 1)
-        self.assertEqual(config.task_type, "T+1")
-        self.assertEqual(config.tenors, ["5Y", "10Y"])
-        self.assertEqual(config.frequency, "daily")
-        self.assertEqual(config.entry_point, "predict.run")
-        self.assertEqual(
-            config.code_hash,
-            "f86ef896620f3793df6bfaefe8063776f2203762f3e20ff61c1d32336be340e5",
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

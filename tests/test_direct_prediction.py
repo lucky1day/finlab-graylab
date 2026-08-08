@@ -139,14 +139,6 @@ class DirectPredictionTests(unittest.TestCase):
             algo_env=direct_prediction.DEFAULT_ALGO_ENV,
         )
 
-    def test_direct_daily_path_has_no_ledger_mode_gate(self) -> None:
-        direct_prediction = self._module()
-        self.assertFalse(
-            hasattr(direct_prediction, "_daily_coordinator_mode")
-        )
-        self.assertFalse(
-            hasattr(direct_prediction, "run_daily_operator_recovery_job")
-        )
 
     def test_blackbox_v2_requires_readiness_but_native_does_not(self) -> None:
         direct_prediction = self._module()

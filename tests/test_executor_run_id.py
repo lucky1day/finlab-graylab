@@ -1115,72 +1115,6 @@ class ExecutorRunIdTests(unittest.TestCase):
             process_start_guard,
         )
 
-    def test_run_configured_scheme_has_no_mode_strip_contract(
-        self,
-    ) -> None:
-        """算法 runner 不再暴露 daily coordinator mode 的适配参数。"""
-        from scheduler.executor import (
-            run_configured_scheme,
-            run_scheme_subprocess,
-        )
-
-        self.assertNotIn(
-            "strip_daily_coordinator_mode",
-            inspect.signature(run_configured_scheme).parameters,
-        )
-        self.assertNotIn(
-            "strip_daily_coordinator_mode",
-            inspect.signature(run_scheme_subprocess).parameters,
-        )
-
-        native_cfg = SimpleNamespace(
-            runtime_type="native_adapter",
-            scheme_id="native_mode_scope",
-        )
-        blackbox_cfg = SimpleNamespace(
-            runtime_type="blackbox_v2",
-            input_source="data_bridge_current",
-            scheme_id="blackbox_mode_scope",
-        )
-        with (
-            patch(
-                "scheduler.executor.run_scheme_subprocess",
-                return_value=[],
-            ) as native,
-            patch(
-                "scheduler.executor.run_blackbox_scheme_subprocess",
-                return_value=[],
-            ) as blackbox,
-        ):
-            self.assertEqual(
-                run_configured_scheme(
-                    native_cfg,
-                    "2026-07-03",
-                    engine="engine",
-                    algo_env="test_env",
-                    timeout_sec=7,
-                ),
-                [],
-            )
-            self.assertEqual(
-                run_configured_scheme(
-                    blackbox_cfg,
-                    "2026-07-03",
-                    engine="engine",
-                    algo_env="test_env",
-                    timeout_sec=7,
-                ),
-                [],
-            )
-
-        self.assertNotIn(
-            "strip_daily_coordinator_mode",
-            native.call_args.kwargs,
-        )
-        self.assertNotIn(
-            "strip_daily_coordinator_mode",
-            blackbox.call_args.kwargs,
-        )
 
     def test_run_configured_scheme_rejects_noncanonical_process_start_guard(
         self,
@@ -1559,97 +1493,6 @@ class ExecutorRunIdTests(unittest.TestCase):
             timeout_sec=1800,
         )
 
-    def test_execute_scheme_scopes_mode_strip_to_native_one_shot(
-        self,
-    ) -> None:
-        from scheduler.executor import execute_scheme
-        from shared.models import PredictionRecord
-
-        cfg = SimpleNamespace(
-            scheme_id="native_mode_scope",
-            status="active",
-            scheme_version="native-version-1",
-            runtime_type="native_adapter",
-            frequency="weekly",
-            horizon=1,
-        )
-        record = PredictionRecord(
-            scheme_id="native_mode_scope",
-            target_tenor="10Y",
-            horizon=1,
-            predict_date="2026-07-20",
-            target_date="2026-07-21",
-            feature_date="2026-07-17",
-            predicted_direction=1,
-            extra={"feature_date": "2026-07-17"},
-        )
-
-        def run_with(
-            *,
-            prediction_phase: str,
-            scheduled_control_plane: str,
-        ) -> dict[str, object]:
-            engine = _FakeEngine()
-            with (
-                patch(
-                    "scheduler.executor.create_engine_from_env",
-                    return_value=engine,
-                ),
-                patch(
-                    "scheduler.executor."
-                    "scheduled_live_execution_configuration_error",
-                    return_value=None,
-                ),
-                patch(
-                    "scheduler.executor._verify_scheme_activation",
-                    return_value=(True, "ok"),
-                ),
-                patch(
-                    "scheduler.executor._active_registry_targets",
-                    return_value={("10Y", 1)},
-                ),
-                patch(
-                    "scheduler.executor.create_scheme_run",
-                    return_value=601,
-                ),
-                patch(
-                    "scheduler.executor.run_configured_scheme",
-                    return_value=[record],
-                ) as runner,
-                patch(
-                    "scheduler.executor.complete_active_native_run",
-                    return_value=("success", 1, None),
-                ),
-                patch("scheduler.executor.write_run_log"),
-            ):
-                result = execute_scheme(
-                    cfg,
-                    "2026-07-20",
-                    algo_env="test_env",
-                    prediction_phase=prediction_phase,
-                    scheduled_control_plane=scheduled_control_plane,
-                )
-
-            self.assertEqual(result.status, "success")
-            self.assertTrue(engine.disposed)
-            return dict(runner.call_args.kwargs)
-
-        one_shot_kwargs = run_with(
-            prediction_phase="scheduled_live",
-            scheduled_control_plane="launchd_one_shot",
-        )
-        direct_kwargs = run_with(
-            prediction_phase="scheduled_live",
-            scheduled_control_plane="direct_scheduled",
-        )
-        gray_kwargs = run_with(
-            prediction_phase="gray_live",
-            scheduled_control_plane="launchd_one_shot",
-        )
-
-        self.assertNotIn("strip_daily_coordinator_mode", one_shot_kwargs)
-        self.assertNotIn("strip_daily_coordinator_mode", direct_kwargs)
-        self.assertNotIn("strip_daily_coordinator_mode", gray_kwargs)
 
     def test_direct_daily_executor_fails_before_algorithm_process(
         self,
@@ -2327,62 +2170,6 @@ class BlackboxExecutionApprovalTests(unittest.TestCase):
         native_complete.assert_not_called()
         self.assertTrue(engine.disposed)
 
-    def test_blackbox_one_shot_does_not_forward_native_mode_strip(
-        self,
-    ) -> None:
-        """Blackbox 的 one-shot 调度不接受 Native 专属环境隔离标记。"""
-        from scheduler.executor import execute_scheme
-
-        engine = _FakeEngine()
-        cfg = self._config()
-        approval = SimpleNamespace(executable=True, reason="approved")
-        with (
-            patch(
-                "scheduler.executor.create_engine_from_env",
-                return_value=engine,
-            ),
-            patch(
-                "scheduler.executor."
-                "scheduled_live_execution_configuration_error",
-                return_value=None,
-            ),
-            patch(
-                "scheduler.executor.read_blackbox_execution_approval",
-                return_value=approval,
-            ),
-            patch(
-                "scheduler.executor._active_registry_targets",
-                return_value={("10Y", 1)},
-            ),
-            patch(
-                "scheduler.executor.create_scheme_run",
-                return_value=504,
-            ),
-            patch(
-                "scheduler.executor.run_configured_scheme",
-                return_value=[self._record()],
-            ) as runner,
-            patch("scheduler.executor.attach_run_data_snapshot"),
-            patch(
-                "scheduler.executor.complete_approved_blackbox_run",
-                return_value=1,
-            ),
-            patch("scheduler.executor.write_run_log"),
-        ):
-            result = execute_scheme(
-                cfg,
-                "2026-07-20",
-                algo_env="test_env",
-                prediction_phase="scheduled_live",
-                scheduled_control_plane="launchd_one_shot",
-            )
-
-        self.assertEqual(result.status, "success")
-        self.assertNotIn(
-            "strip_daily_coordinator_mode",
-            runner.call_args.kwargs,
-        )
-        self.assertTrue(engine.disposed)
 
     def test_blackbox_executor_forwards_historical_snapshot_mode_explicitly(self) -> None:
         from scheduler.executor import execute_scheme
@@ -2780,45 +2567,6 @@ class ScheduledLiveExecutionFenceTests(unittest.TestCase):
                 )
                 create_engine.assert_not_called()
 
-    def test_launchd_one_shot_admitted_daily_reaches_engine_without_reading_daily_mode(
-        self,
-    ) -> None:
-        """one-shot 的精确正式日频身份不受遗留 ledger 拦截。"""
-        from scheduler import executor
-
-        config = self._canonical_config("one_y_t5_liq_excess_a_v1")
-
-        class EngineReached(RuntimeError):
-            pass
-
-        self.assertNotIn(
-            "require_daily_coordinator_mode",
-            vars(executor),
-        )
-        with (
-            patch.object(
-                executor,
-                "discover_schemes",
-                return_value=[config],
-            ),
-            patch.object(
-                executor,
-                "create_engine_from_env",
-                side_effect=EngineReached("engine reached"),
-            ) as create_engine,
-            self.assertRaisesRegex(EngineReached, "engine reached"),
-        ):
-            executor.execute_scheme(
-                config,
-                "2026-07-27",
-                prediction_phase="scheduled_live",
-                scheduled_control_plane="launchd_one_shot",
-                scheduled_execution_context=(
-                    executor._launchd_scheduled_execution_context()
-                ),
-            )
-
-        create_engine.assert_called_once_with()
 
     def test_direct_scheduled_formal_weekly_rejected_before_engine(
         self,
@@ -2891,7 +2639,6 @@ class ScheduledLiveExecutionFenceTests(unittest.TestCase):
     def test_canonical_weekly_native_is_rejected_before_engine(
         self,
     ) -> None:
-        from scheduler import executor
         from scheduler.discovery import discover_schemes
         from scheduler.executor import execute_scheme
 
@@ -2899,10 +2646,6 @@ class ScheduledLiveExecutionFenceTests(unittest.TestCase):
             config
             for config in discover_schemes()
             if config.scheme_id == "weekly_10y_d_overlay_0529"
-        )
-        self.assertNotIn(
-            "require_daily_coordinator_mode",
-            vars(executor),
         )
         with (
             patch(

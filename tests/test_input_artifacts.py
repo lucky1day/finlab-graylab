@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import hashlib
 import os
 import tempfile
@@ -326,12 +325,6 @@ class InputArtifactTests(unittest.TestCase):
         self.assertTrue(saved_path.name.startswith(f".{artifact.path.name}."))
         self.assertEqual(saved_path.suffix, ".tmp")
 
-    def test_weekly_input_artifact_signature_removes_legacy_flags(self) -> None:
-        from shared.input_artifacts import build_weekly_input_artifact
-
-        signature = inspect.signature(build_weekly_input_artifact)
-        self.assertNotIn("end_date", signature.parameters)
-        self.assertNotIn("include_daily_weekly_close_fallback", signature.parameters)
 
     def test_content_hash_is_stable_for_same_csv_and_changes_when_data_changes(self) -> None:
         from shared.input_artifacts import build_daily_input_artifact

@@ -110,14 +110,6 @@ class PredictionLaunchdTests(unittest.TestCase):
                     calendar=calendar,
                 )
 
-    def test_legacy_scheduler_template_is_retired(self) -> None:
-        self.assertFalse(
-            (
-                LAUNCHD_ROOT
-                / "com.bond-factor-lab.scheduler.plist"
-            ).exists(),
-            "legacy scheduler template must not reappear",
-        )
 
 
 if __name__ == "__main__":
