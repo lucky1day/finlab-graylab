@@ -602,7 +602,7 @@ class TriggerEndpointTests(unittest.TestCase):
         )
 
 class AdminRegistrySyncEndpointTests(unittest.TestCase):
-    def test_admin_sync_runs_sync_with_force(self) -> None:
+    def test_admin_sync_runs_explicit_sync(self) -> None:
         with (
             patch.object(main, "get_engine", return_value=object()),
             patch.object(
@@ -613,34 +613,7 @@ class AdminRegistrySyncEndpointTests(unittest.TestCase):
         ):
             result = main.api_admin_registry_sync()
         sync_mock.assert_called_once()
-        self.assertTrue(sync_mock.call_args.kwargs.get("force"))
         self.assertTrue(result["synced"])
-
-class StartupSyncTests(unittest.TestCase):
-    def test_startup_runs_registry_sync_once(self) -> None:
-        with (
-            patch.object(main, "get_engine", return_value=object()),
-            patch.object(
-                main,
-                "sync_registry_from_configs",
-            ) as sync_mock,
-        ):
-            main._sync_registry_on_startup()
-        sync_mock.assert_called_once()
-
-    def test_startup_swallows_sync_errors(self) -> None:
-        with (
-            patch.object(main, "get_engine", return_value=object()),
-            patch.object(
-                main,
-                "sync_registry_from_configs",
-                side_effect=RuntimeError("db down"),
-            ),
-        ):
-            # 启动同步失败不应抛出（仅记录日志）。
-            with self.assertLogs("backend.main", level="ERROR") as logs:
-                main._sync_registry_on_startup()
-        self.assertIn("Registry sync on startup failed", "\n".join(logs.output))
 
 
 class AuthDependencyWiredTests(unittest.TestCase):

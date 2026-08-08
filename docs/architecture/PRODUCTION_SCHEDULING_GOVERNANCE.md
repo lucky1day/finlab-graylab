@@ -44,8 +44,8 @@ launchd 身份认证。仓库代码的同 UID 调用者属于受信任边界；�
 `ledger`、`occurrence` 和 `epoch` 不得新增、扩容、迁移或补建，也不得作为新的或过渡生产调度
 路径。相应的 repository/runtime/replay/policy 闭包已从仓库退役；017 历史 migration 与仍可能
 存在的数据库对象只保留为审计和受控 recovery 证据，任何物理归档或 DDL 仍须独立设计和授权。
-`BOND_DAILY_COORDINATOR_MODE` 不再被平台代码读取，算法子进程环境也不会转发它。旧 installed
-环境或 backend 期望模板若仍携带该变量，只是惰性兼容配置，不授予任何调度权，也不构成现场状态结论。
+`BOND_DAILY_COORDINATOR_MODE` 不再被平台代码读取，算法子进程环境也不会转发它，仓库模板亦不再
+声明该变量。旧 installed 环境若仍携带它，只是惰性兼容配置，不授予任何调度权，也不构成现场状态结论。
 
 ## 2. 自然信号、历史修复与输入新鲜度
 
@@ -81,7 +81,7 @@ Native 技术入库仍必须通过 source benchmark/CompareGate；ActivationGate
 config 或 version hash。maintenance 的 current exact `t_scheme_versions` 行必须为
 `runtime_type='native_adapter'` 且 status 为 `draft|active`；expected Registry identity 可在预激活时
 统一为 `paused`，或在激活后统一为 `active`，但 draft version 配 active Registry 必须 fail-closed。
-只有 ActivationGate 可在严格 discovery、精确版本与一次性授权核验后原子建立 active 状态。legacy admission 缺快照时仍 fail-closed；唯一实现的固定 scope 是 `weekly_10y_d_overlay_0529` 的 `native-legacy-admission-attest`，它仅为 maintenance 选定的 prior `all + compare=passed`、且 StaticGate 已通过但缺 identity 字段写入两张 Harness 表 receipt。它要求 issuer/exact prior version/run 绑定的 ≤900 秒一次性 token，不改历史、不启动调度、不激活或写业务表；2026-08-04 receipt 后，exact version `e50ad79a6c2f` 的六段 maintenance 与独立 activation 均已通过，DB version 与 Registry 均为 active。随后在独立精确授权下，DB-`SEALED` current-snapshot 制品 `native-cc249e2aec88fad7bcfc7c1c` 完成唯一 `gray_live` key 的 run `2106`；该写入不授予新的业务写入、scheduler 或 installed 控制面权限。任何后续修订仍必须满足输入 cutoff、统一周历、日期语义、
+只有 ActivationGate 可在严格 discovery、精确版本与一次性授权核验后原子建立 active 状态。legacy admission 缺快照时仍 fail-closed；唯一保留的固定 scope 是 `weekly_10y_d_overlay_0529` 已持久化的 canonical receipt；平台只读校验 maintenance 选定的 prior、缺 identity 的 StaticGate 与固定业务身份，writer 和 token action 已退役。该 receipt 不改历史、不启动调度、不激活或写业务表；2026-08-04 receipt 后，exact version `e50ad79a6c2f` 的六段 maintenance 与独立 activation 均已通过，DB version 与 Registry 均为 active。随后在独立精确授权下，DB-`SEALED` current-snapshot 制品 `native-cc249e2aec88fad7bcfc7c1c` 完成唯一 `gray_live` key 的 run `2106`；该写入不授予新的业务写入、scheduler 或 installed 控制面权限。任何后续修订仍必须满足输入 cutoff、统一周历、日期语义、
 Registry、live-safe oracle 与专项授权，随后也只能补其精确授权的 `gray_live` key；不得修改
 Native core 或 source benchmark。
 

@@ -247,15 +247,6 @@ app.add_middleware(
 app.add_middleware(QAwareGZipMiddleware)
 
 
-@app.on_event("startup")
-def _sync_registry_on_startup() -> None:
-    """启动时同步 Registry；Dashboard 在请求中直接读取数据库。"""
-    try:
-        sync_registry_from_configs(get_engine())
-    except Exception:
-        logger.error("Registry sync on startup failed")
-
-
 class TriggerRequest(BaseModel):
     """手动触发预测请求。"""
 
@@ -910,7 +901,7 @@ def api_trigger_scheme(scheme_id: str, request: TriggerRequest, background_tasks
 @app.post("/api/admin/registry/sync", dependencies=[Depends(require_admin_token)])
 def api_admin_registry_sync() -> dict:
     """受保护的管理端点：显式把 schemes/ 配置同步到 registry（写库）。"""
-    synced = sync_registry_from_configs(get_engine(), force=True)
+    synced = sync_registry_from_configs(get_engine())
     return {"synced": synced}
 
 

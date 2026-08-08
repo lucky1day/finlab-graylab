@@ -30,8 +30,6 @@
     <string>1</string>
     <key>BOND_ALGO_CONDA_ENV</key>
     <string>forecast_env</string>
-    <key>BOND_DAILY_COORDINATOR_MODE</key>
-    <string>legacy</string>
     <!--
       BOND_ADMIN_TOKEN：trigger / admin 写入接口的第二道闸（纵深防御）。
       公网入口 Nginx 已对这些 POST 直接返回 403；此处令牌再保证即便有人
