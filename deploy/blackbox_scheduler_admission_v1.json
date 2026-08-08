@@ -270,6 +270,138 @@
       "capabilities": ["launchd_one_shot"]
     },
     {
+      "scheme_id": "one_y_t5_xgb_10y_streak_anti7_b8_v1",
+      "scheme_version": "9ceb12fdbd55",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenor": "1Y",
+      "mode": "formal",
+      "capabilities": ["launchd_one_shot"]
+    },
+    {
+      "scheme_id": "one_y_t5_xgb_7y_cond_rev20_b12_v1",
+      "scheme_version": "9caa9227981f",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenor": "1Y",
+      "mode": "formal",
+      "capabilities": ["launchd_one_shot"]
+    },
+    {
+      "scheme_id": "one_y_t5_xgb_spr_zrev_10y5y_b12_v1",
+      "scheme_version": "2f80dbb20ae1",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenor": "1Y",
+      "mode": "formal",
+      "capabilities": ["launchd_one_shot"]
+    },
+    {
+      "scheme_id": "three_y_t5_lgbm_7yanti_b12_v2",
+      "scheme_version": "99523554aa06",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenor": "3Y",
+      "mode": "formal",
+      "capabilities": ["launchd_one_shot"]
+    },
+    {
+      "scheme_id": "three_y_t5_xgb_fxlead_b8_v2",
+      "scheme_version": "dc4e944f5aec",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenor": "3Y",
+      "mode": "formal",
+      "capabilities": ["launchd_one_shot"]
+    },
+    {
+      "scheme_id": "three_y_t5_xgb_tp_5y1y_b12_v2",
+      "scheme_version": "4ea0782cc210",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenor": "3Y",
+      "mode": "formal",
+      "capabilities": ["launchd_one_shot"]
+    },
+    {
+      "scheme_id": "five_y_t5_lgbm_3y_anti_lag252_b8_v1",
+      "scheme_version": "5cbbf665e081",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenor": "5Y",
+      "mode": "formal",
+      "capabilities": ["launchd_one_shot"]
+    },
+    {
+      "scheme_id": "five_y_t5_lgbm_3y_z_anti180_b12_v1",
+      "scheme_version": "ee62a61b4424",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenor": "5Y",
+      "mode": "formal",
+      "capabilities": ["launchd_one_shot"]
+    },
+    {
+      "scheme_id": "five_y_t5_xgb_spr_3y1y_b8_v1",
+      "scheme_version": "c7b5b0cc0fa0",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenor": "5Y",
+      "mode": "formal",
+      "capabilities": ["launchd_one_shot"]
+    },
+    {
+      "scheme_id": "seven_y_t5_lgbm_bf_z_anti40_b8_v1",
+      "scheme_version": "4f182bf23dfc",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenor": "7Y",
+      "mode": "formal",
+      "capabilities": ["launchd_one_shot"]
+    },
+    {
+      "scheme_id": "seven_y_t5_xgb_7y_rv_rev20_b0_v1",
+      "scheme_version": "24d775cc01b7",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenor": "7Y",
+      "mode": "formal",
+      "capabilities": ["launchd_one_shot"]
+    },
+    {
+      "scheme_id": "seven_y_t5_xgb_bf_z_anti40_b0_v1",
+      "scheme_version": "c75a87bb21a9",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenor": "7Y",
+      "mode": "formal",
+      "capabilities": ["launchd_one_shot"]
+    },
+    {
       "scheme_id": "ten_y_t5_maj3_k3_ic_static_v1",
       "scheme_version": "c54b90bcafa7",
       "runtime_type": "blackbox_v2",

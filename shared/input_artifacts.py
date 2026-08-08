@@ -741,6 +741,7 @@ def build_blackbox_input_snapshot(
         refresh_runtime_root=Path(refresh_runtime_root),
         require_fresh=require_fresh,
     )
+    _require_blackbox_databridge_monthly_additions(current.dataset.frames)
     snapshot = create_snapshot_from_frames(
         current.dataset.frames,
         output_root=Path(output_root),
@@ -754,6 +755,24 @@ def build_blackbox_input_snapshot(
         generation_id=generation_id,
         refresh_date=refresh_date,
     )
+
+
+def _require_blackbox_databridge_monthly_additions(
+    frames: Mapping[str, pd.DataFrame],
+) -> None:
+    monthly = frames.get("monthly_output.csv")
+    if monthly is None:
+        raise ValueError("Blackbox DataBridge monthly output is missing")
+    missing = [
+        code
+        for code in _data_service.DATA_BRIDGE_V1_ADDITIVE_MONTHLY_CODES
+        if code not in monthly.columns
+    ]
+    if missing:
+        raise ValueError(
+            "Blackbox DataBridge monthly output is missing required columns: "
+            f"{missing}"
+        )
 
 
 _GRAY_REPLAY_SOURCE_IDENTITY_FIELDS = frozenset(
@@ -801,6 +820,7 @@ def build_blackbox_gray_replay_session(
         current,
         normalized_source_identity,
     )
+    _require_blackbox_databridge_monthly_additions(current.dataset.frames)
 
     max_cutoffs = _gray_replay_max_cutoffs(
         current.dataset.frames,
@@ -1336,6 +1356,7 @@ def resolve_blackbox_input_cutoffs(
         monthly_as_of = _data_service.build_monthly_output_from_db(
             end_date=feature_date,
             engine=engine,
+            include_databridge_additions=True,
         )
         return resolve_cutoffs(
             snapshot,
@@ -1443,9 +1464,9 @@ def _resolve_blackbox_input_cutoffs_with_source_keys_bulk_from_keys(
         "api_wind_derivative_weekly",
         connection,
     )
-    monthly_selected = _data_service.select_factor_metadata(
+    monthly_selected = _data_service.select_monthly_factor_metadata(
         metadata,
-        "monthly",
+        include_databridge_additions=True,
     )
     monthly_codes = (
         monthly_selected["indicators_code"]
@@ -1476,6 +1497,7 @@ def _resolve_blackbox_input_cutoffs_with_source_keys_bulk_from_keys(
         monthly_raw,
         monthly_derivative,
         end_date=max_date,
+        include_databridge_additions=True,
     )
     daily_dates = snapshot_keys["date"]
     weekly_by_date = _resolve_period_cutoffs_bulk(

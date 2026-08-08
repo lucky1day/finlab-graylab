@@ -1,0 +1,176 @@
+{
+  "record_type": "blackbox_v2_metadata_curation",
+  "record_version": "1.0",
+  "curation_date": "2026-08-09",
+  "scheme_count": 12,
+  "schemes": [
+    {
+      "scheme_id": "five_y_t5_lgbm_3y_anti_lag252_b8_v1",
+      "original_python_sha256": "babd3ba956fddbb764fad530f701daba24919d4ede34fb6610d1de87972c8bec",
+      "original_json_sha256": "b907a13ed4ba0ad3703dff5f5519bfb2e51f7d615ae2aff15bc1b1b65e772bba",
+      "curated_json_sha256": "7b6aa9949942b1db2f6113603d1a48654ffdb96faf905ac1763d5fbb92c60b90",
+      "evidence_relative_path": "source_evidence/blackbox_v2_t5_20260809/curated_metadata/five_y_t5_lgbm_3y_anti_lag252_b8_v1.json",
+      "description": "5Y国债收益率日频T+5方向预测；使用日频市场数据、周频与月频因子；LightGBM模型，实际SCHEME信号为3Y_anti_lag252；B8规则：当前目标月第8个预测位时，若此前同目标月已实现历史方向仅单边出现则置为相反方向，否则保留当前方向。",
+      "field_diff": {
+        "added_keys": ["description"],
+        "removed_keys": [],
+        "changed_existing_keys": [],
+        "assertion": "description is the sole metadata change"
+      }
+    },
+    {
+      "scheme_id": "five_y_t5_lgbm_3y_z_anti180_b12_v1",
+      "original_python_sha256": "9194dff0dcbce8ccbeaa924fba1db89b0f3693cf3a20053f22d8836127d35b1d",
+      "original_json_sha256": "9e8cf7e0c23740c8482b1d6ebb3016b650009c1ccd3dd4000a1caf09effd8e07",
+      "curated_json_sha256": "618d8ad1e91384a2b47926bd3091951cc18a82dcbeab5c4584938968dfa840bc",
+      "evidence_relative_path": "source_evidence/blackbox_v2_t5_20260809/curated_metadata/five_y_t5_lgbm_3y_z_anti180_b12_v1.json",
+      "description": "5Y国债收益率日频T+5方向预测；使用日频市场数据、周频与月频因子；LightGBM模型，实际SCHEME信号为3Y_z_anti180；B12规则：当前目标月第12个预测位时，若此前同目标月已实现历史方向仅单边出现则置为相反方向，否则保留当前方向。",
+      "field_diff": {
+        "added_keys": ["description"],
+        "removed_keys": [],
+        "changed_existing_keys": [],
+        "assertion": "description is the sole metadata change"
+      }
+    },
+    {
+      "scheme_id": "five_y_t5_xgb_spr_3y1y_b8_v1",
+      "original_python_sha256": "2567515b2a68fa2e91910abd12586a0f684ecec68cec0b671d77c6907db50c20",
+      "original_json_sha256": "32127b18251eaa0f869b101a19e64db25c7c5b50438c3c10132cee605da8321f",
+      "curated_json_sha256": "267f67b589f22d86f5247c819227955e80b7f175f5bb86b40e97caf5e0246c71",
+      "evidence_relative_path": "source_evidence/blackbox_v2_t5_20260809/curated_metadata/five_y_t5_xgb_spr_3y1y_b8_v1.json",
+      "description": "5Y国债收益率日频T+5方向预测；使用日频市场数据、周频与月频因子；XGBoost模型，实际SCHEME信号为spr_3Y1Y_anti20；B8规则：当前目标月第8个预测位时，若此前同目标月已实现历史方向仅单边出现则置为相反方向，否则保留当前方向。",
+      "field_diff": {
+        "added_keys": ["description"],
+        "removed_keys": [],
+        "changed_existing_keys": [],
+        "assertion": "description is the sole metadata change"
+      }
+    },
+    {
+      "scheme_id": "one_y_t5_xgb_10y_streak_anti7_b8_v1",
+      "original_python_sha256": "811738e266853d8290e6f602f963ad612900d7d5dae26b82caca1ecd9faf3f89",
+      "original_json_sha256": "1794c13061c5eecaf77cad2a30a8a4832c44fa81b7308c1268cf579a8939b4d1",
+      "curated_json_sha256": "35cb05ace0b00e64a554b8c5da54585457efe88edb4f682a6a10366da0b61875",
+      "evidence_relative_path": "source_evidence/blackbox_v2_t5_20260809/curated_metadata/one_y_t5_xgb_10y_streak_anti7_b8_v1.json",
+      "description": "1Y国债收益率日频T+5方向预测；使用日频市场数据、周频与月频因子；XGBoost模型，实际SCHEME信号为10Y_streak_anti7；B8规则：当前目标月第8个预测位时，若此前同目标月已实现历史方向仅单边出现则置为相反方向，否则保留当前方向。",
+      "field_diff": {
+        "added_keys": ["description"],
+        "removed_keys": [],
+        "changed_existing_keys": [],
+        "assertion": "description is the sole metadata change"
+      }
+    },
+    {
+      "scheme_id": "one_y_t5_xgb_7y_cond_rev20_b12_v1",
+      "original_python_sha256": "9d686f83d22516480a732c35a37f6ab4a062cab93e203354b4af0cde6411545f",
+      "original_json_sha256": "926e934449b1e72f5357fc89549aa3976bb08cecf462f6e3a073cc6f3d7fd291",
+      "curated_json_sha256": "a3af9c4d5334f7022bbac5b333ec6b09f8ea2b95f2099ff388ea2af354700542",
+      "evidence_relative_path": "source_evidence/blackbox_v2_t5_20260809/curated_metadata/one_y_t5_xgb_7y_cond_rev20_b12_v1.json",
+      "description": "1Y国债收益率日频T+5方向预测；使用日频市场数据、周频与月频因子；XGBoost模型，实际SCHEME信号为7Y_cond_rev20；B12规则：当前目标月第12个预测位时，若此前同目标月已实现历史方向仅单边出现则置为相反方向，否则保留当前方向。",
+      "field_diff": {
+        "added_keys": ["description"],
+        "removed_keys": [],
+        "changed_existing_keys": [],
+        "assertion": "description is the sole metadata change"
+      }
+    },
+    {
+      "scheme_id": "one_y_t5_xgb_spr_zrev_10y5y_b12_v1",
+      "original_python_sha256": "70599e8a43ba955125fa692907639c9e3c7a70c6c478aa7ca95dc1ae5d786ba2",
+      "original_json_sha256": "6376ffd1e92f9d4b2db9743b20c0eda40a9f004023b48e790f9779e110f03090",
+      "curated_json_sha256": "ed42b2521b51f5ed8f3b9d3f5ff112d097da9f38398ad66a02fc9924d12aa9e0",
+      "evidence_relative_path": "source_evidence/blackbox_v2_t5_20260809/curated_metadata/one_y_t5_xgb_spr_zrev_10y5y_b12_v1.json",
+      "description": "1Y国债收益率日频T+5方向预测；使用日频市场数据、周频与月频因子；XGBoost模型，实际SCHEME信号为spr_zrev_10Y5Y_20；B12规则：当前目标月第12个预测位时，若此前同目标月已实现历史方向仅单边出现则置为相反方向，否则保留当前方向。",
+      "field_diff": {
+        "added_keys": ["description"],
+        "removed_keys": [],
+        "changed_existing_keys": [],
+        "assertion": "description is the sole metadata change"
+      }
+    },
+    {
+      "scheme_id": "seven_y_t5_lgbm_bf_z_anti40_b8_v1",
+      "original_python_sha256": "7d360ffc7b6754d57606ff35761967e2da9805b7189fe688f4454f5e152816cd",
+      "original_json_sha256": "11291f8d95ba984a13e66c90020bafd7b076aec5fa02721c2f068d3b2ef1b899",
+      "curated_json_sha256": "0cdda50f7a2529891a44ec2c8a5860800ab92a1e3cc002ddde8f235edc19b35d",
+      "evidence_relative_path": "source_evidence/blackbox_v2_t5_20260809/curated_metadata/seven_y_t5_lgbm_bf_z_anti40_b8_v1.json",
+      "description": "7Y国债收益率日频T+5方向预测；使用日频市场数据、周频与月频因子；LightGBM模型，实际SCHEME信号为bf_z_anti40；B8规则：当前目标月第8个预测位时，若此前同目标月已实现历史方向仅单边出现则置为相反方向，否则保留当前方向。",
+      "field_diff": {
+        "added_keys": ["description"],
+        "removed_keys": [],
+        "changed_existing_keys": [],
+        "assertion": "description is the sole metadata change"
+      }
+    },
+    {
+      "scheme_id": "seven_y_t5_xgb_7y_rv_rev20_b0_v1",
+      "original_python_sha256": "9e2a88932a6a22e7a486b335db4d3281c44e5bd7959d234a849d6008671c43ba",
+      "original_json_sha256": "ddee585e44c44f5c6a542de77844ec047d9c430f8b7217f22317f205fc8cd24e",
+      "curated_json_sha256": "164d73e026ef3b7f915fc6b9191d42e8bae10a7d9583b2379c21c3f20ad3770c",
+      "evidence_relative_path": "source_evidence/blackbox_v2_t5_20260809/curated_metadata/seven_y_t5_xgb_7y_rv_rev20_b0_v1.json",
+      "description": "7Y国债收益率日频T+5方向预测；使用日频市场数据、周频与月频因子；XGBoost模型，实际SCHEME信号为7Y_rv_rev20；B0规则：不启用月内方向平衡改写，保留模型与该信号合成的当前方向。",
+      "field_diff": {
+        "added_keys": ["description"],
+        "removed_keys": [],
+        "changed_existing_keys": [],
+        "assertion": "description is the sole metadata change"
+      }
+    },
+    {
+      "scheme_id": "seven_y_t5_xgb_bf_z_anti40_b0_v1",
+      "original_python_sha256": "38e4fa0c9f11fed2f60156b4955b7b3c8acf397759839dc9e68f34e61f7e7a77",
+      "original_json_sha256": "e91a8f99a587c55dfd6985df794fca0c5ae2ed36b9c1b5bfdc85cad89899214a",
+      "curated_json_sha256": "9efdad6e67e335fe93dd30f1521f884493f8aedaa172cf493ea9b6d0d62888c5",
+      "evidence_relative_path": "source_evidence/blackbox_v2_t5_20260809/curated_metadata/seven_y_t5_xgb_bf_z_anti40_b0_v1.json",
+      "description": "7Y国债收益率日频T+5方向预测；使用日频市场数据、周频与月频因子；XGBoost模型，实际SCHEME信号为bf_z_anti40；B0规则：不启用月内方向平衡改写，保留模型与该信号合成的当前方向。",
+      "field_diff": {
+        "added_keys": ["description"],
+        "removed_keys": [],
+        "changed_existing_keys": [],
+        "assertion": "description is the sole metadata change"
+      }
+    },
+    {
+      "scheme_id": "three_y_t5_lgbm_7yanti_b12_v2",
+      "original_python_sha256": "5a8c08210f55c8d336a8b6849db2a7c4515f10c2aa0a3f47b74fbba2e4ffb7e8",
+      "original_json_sha256": "5cf68919edfdb8c9107ccbaf267c5d8e560f2012caf30e8e6aa9e024a515a61e",
+      "curated_json_sha256": "c8ac482016aca77c93b4e78cde824928e01338212a283d7066775f44b610ef18",
+      "evidence_relative_path": "source_evidence/blackbox_v2_t5_20260809/curated_metadata/three_y_t5_lgbm_7yanti_b12_v2.json",
+      "description": "3Y国债收益率日频T+5方向预测；使用日频市场数据、周频与月频因子；LightGBM模型，实际SCHEME信号为7Y_anti_sum60；B12规则：当前目标月第12个预测位时，若此前同目标月已实现历史方向仅单边出现则置为相反方向，否则保留当前方向。",
+      "field_diff": {
+        "added_keys": ["description"],
+        "removed_keys": [],
+        "changed_existing_keys": [],
+        "assertion": "description is the sole metadata change"
+      }
+    },
+    {
+      "scheme_id": "three_y_t5_xgb_fxlead_b8_v2",
+      "original_python_sha256": "d2bda2d93c877b5706f1fb10c69a420fa9de16ebb26df56be0c08cdc33d029fc",
+      "original_json_sha256": "3d06dbeef59efddb2eee2b43d8f7deb896bb19c6e3ff4e16a1b09ee49c04183a",
+      "curated_json_sha256": "6d1ff7a43c148b66b79d7a01d88cf910534ee6e55b828aec26d59c6b7b8d7fd9",
+      "evidence_relative_path": "source_evidence/blackbox_v2_t5_20260809/curated_metadata/three_y_t5_xgb_fxlead_b8_v2.json",
+      "description": "3Y国债收益率日频T+5方向预测；使用日频市场数据、周频与月频因子；XGBoost模型，实际SCHEME信号为fx_usdcnh_lead60；B8规则：当前目标月第8个预测位时，若此前同目标月已实现历史方向仅单边出现则置为相反方向，否则保留当前方向。",
+      "field_diff": {
+        "added_keys": ["description"],
+        "removed_keys": [],
+        "changed_existing_keys": [],
+        "assertion": "description is the sole metadata change"
+      }
+    },
+    {
+      "scheme_id": "three_y_t5_xgb_tp_5y1y_b12_v2",
+      "original_python_sha256": "566756f6afa3f49f220ab4f1ece3621c1e6df77d0ab226195d5207c4159a5e2d",
+      "original_json_sha256": "475e1d78ed7117c97f1cda8640c5371dbeee9f71171b1d2e380568079c80c4fe",
+      "curated_json_sha256": "72121aac83c0be7d48d9f99f4e99e1ac3c91c45e7e356fe4639fcd5c0703c88d",
+      "evidence_relative_path": "source_evidence/blackbox_v2_t5_20260809/curated_metadata/three_y_t5_xgb_tp_5y1y_b12_v2.json",
+      "description": "3Y国债收益率日频T+5方向预测；使用日频市场数据、周频与月频因子；XGBoost模型，实际SCHEME信号为tp_5Y1Y_z_anti20；B12规则：当前目标月第12个预测位时，若此前同目标月已实现历史方向仅单边出现则置为相反方向，否则保留当前方向。",
+      "field_diff": {
+        "added_keys": ["description"],
+        "removed_keys": [],
+        "changed_existing_keys": [],
+        "assertion": "description is the sole metadata change"
+      }
+    }
+  ]
+}

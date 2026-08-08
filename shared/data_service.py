@@ -21,6 +21,12 @@ FREQUENCY_ALIASES = {
     "weekly": {"周", "weekly", "Weekly", "WEEKLY", "W", "w", "2"},
     "monthly": {"月", "monthly", "Monthly", "MONTHLY", "M", "m", "3"},
 }
+DATA_BRIDGE_V1_ADDITIVE_MONTHLY_CODES = (
+    "M0041340",
+    "M0041341",
+    "M0041342",
+)
+DATA_BRIDGE_V1_RAW_INDICATORS_SOURCE = "raw"
 
 
 @dataclass(frozen=True)
@@ -103,6 +109,69 @@ def select_factor_metadata(
         result = result[tenor_values.eq("") | tenor_values.isin(allowed)]
 
     return result.reset_index(drop=True)
+
+
+def _is_raw_metadata_source(value: object) -> bool:
+    return (
+        str(value).strip().lower()
+        == DATA_BRIDGE_V1_RAW_INDICATORS_SOURCE
+    )
+
+
+def select_monthly_factor_metadata(
+    metadata: pd.DataFrame,
+    *,
+    include_databridge_additions: bool = False,
+) -> pd.DataFrame:
+    """选择月频元数据；DataBridge 可显式补入批准的原始因子。"""
+    selected = select_factor_metadata(metadata, "monthly")
+    if not include_databridge_additions:
+        return selected
+
+    eligible = select_factor_metadata(
+        metadata,
+        "monthly",
+        pre_forecast_only=False,
+    )
+    if "status" not in eligible.columns:
+        raise ValueError(
+            "monthly DataBridge additive metadata missing status for "
+            + ", ".join(DATA_BRIDGE_V1_ADDITIVE_MONTHLY_CODES)
+        )
+    if "indicators_source" not in eligible.columns:
+        raise ValueError("monthly DataBridge additive metadata missing indicators_source")
+
+    additions: list[pd.DataFrame] = []
+    selected_codes = selected["indicators_code"].astype(str).str.strip()
+    eligible_codes = eligible["indicators_code"].astype(str).str.strip()
+    for code in DATA_BRIDGE_V1_ADDITIVE_MONTHLY_CODES:
+        candidates = eligible.loc[
+            eligible_codes.eq(code)
+            & eligible["indicators_source"].apply(_is_raw_metadata_source)
+        ]
+        selected_matches = selected.loc[selected_codes.eq(code)]
+        if len(candidates) != 1:
+            raise ValueError(
+                "monthly DataBridge additive metadata must contain exactly one "
+                f"active raw monthly row for {code}"
+            )
+        if selected_matches.empty:
+            additions.append(candidates)
+            continue
+        if (
+            len(selected_matches) != 1
+            or not selected_matches["indicators_source"].apply(
+                _is_raw_metadata_source
+            ).all()
+        ):
+            raise ValueError(
+                "monthly DataBridge additive metadata must select exactly one "
+                f"raw monthly row for {code}"
+            )
+
+    if not additions:
+        return selected
+    return pd.concat([selected, *additions], ignore_index=True)
 
 
 def _metadata_output_columns_and_lags(metadata: pd.DataFrame) -> tuple[list[str], dict[str, int]]:
@@ -583,8 +652,12 @@ def build_monthly_output_from_frames(
     derivative_monthly: Optional[pd.DataFrame] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    include_databridge_additions: bool = False,
 ) -> pd.DataFrame:
-    selected = select_factor_metadata(metadata, "monthly")
+    selected = select_monthly_factor_metadata(
+        metadata,
+        include_databridge_additions=include_databridge_additions,
+    )
     output_columns, lag_map = _metadata_output_columns_and_lags(selected)
     source_map = _metadata_source_map(selected)
     df = _prepare_monthly_long_frame([raw_monthly, derivative_monthly if derivative_monthly is not None else pd.DataFrame()])
@@ -618,9 +691,13 @@ def build_monthly_cutoff_index_from_frames(
     derivative_monthly: Optional[pd.DataFrame] = None,
     *,
     end_date: str,
+    include_databridge_additions: bool = False,
 ) -> pd.DataFrame:
     """构建月频 key 首次可用日期索引，保留月中归属与元数据筛选语义。"""
-    selected = select_factor_metadata(metadata, "monthly")
+    selected = select_monthly_factor_metadata(
+        metadata,
+        include_databridge_additions=include_databridge_additions,
+    )
     output_columns, _ = _metadata_output_columns_and_lags(selected)
     cutoff = pd.to_datetime(end_date).normalize()
     prepared = _prepare_monthly_long_frame(
@@ -645,6 +722,7 @@ def build_monthly_cutoff_index_from_frames(
         raw_monthly,
         derivative_monthly,
         end_date=end_date,
+        include_databridge_additions=include_databridge_additions,
     )
     if set(index["month_id"].astype(str)) != set(authoritative["month_id"].astype(str)):
         raise ValueError("monthly cutoff index does not match authoritative output builder")
@@ -674,12 +752,16 @@ def build_monthly_output_from_db(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     engine=None,
+    include_databridge_additions: bool = False,
 ) -> pd.DataFrame:
     own_engine = engine is None
     engine = engine or create_sqlalchemy_engine()
     try:
         metadata = read_factor_metadata_from_db(engine)
-        selected = select_factor_metadata(metadata, "monthly")
+        selected = select_monthly_factor_metadata(
+            metadata,
+            include_databridge_additions=include_databridge_additions,
+        )
         codes = selected["indicators_code"].astype(str).str.strip().tolist()
         raw = read_monthly_long_from_db(
             codes,
@@ -694,7 +776,14 @@ def build_monthly_output_from_db(
             include_month_id=True,
             end_date=end_date,
         )
-        return build_monthly_output_from_frames(selected, raw, derivative, start_date=start_date, end_date=end_date)
+        return build_monthly_output_from_frames(
+            metadata,
+            raw,
+            derivative,
+            start_date=start_date,
+            end_date=end_date,
+            include_databridge_additions=include_databridge_additions,
+        )
     finally:
         if own_engine:
             engine.dispose()

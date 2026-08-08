@@ -29,6 +29,54 @@ LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES = frozenset(
 NO_CAPABILITIES = frozenset()
 G31_LAUNCHD_ONE_SHOT_IDENTITIES = frozenset(
     {
+        (
+            "one_y_t5_xgb_10y_streak_anti7_b8_v1",
+            "9ceb12fdbd55",
+        ),
+        (
+            "one_y_t5_xgb_7y_cond_rev20_b12_v1",
+            "9caa9227981f",
+        ),
+        (
+            "one_y_t5_xgb_spr_zrev_10y5y_b12_v1",
+            "2f80dbb20ae1",
+        ),
+        (
+            "three_y_t5_lgbm_7yanti_b12_v2",
+            "99523554aa06",
+        ),
+        (
+            "three_y_t5_xgb_fxlead_b8_v2",
+            "dc4e944f5aec",
+        ),
+        (
+            "three_y_t5_xgb_tp_5y1y_b12_v2",
+            "4ea0782cc210",
+        ),
+        (
+            "five_y_t5_lgbm_3y_anti_lag252_b8_v1",
+            "5cbbf665e081",
+        ),
+        (
+            "five_y_t5_lgbm_3y_z_anti180_b12_v1",
+            "ee62a61b4424",
+        ),
+        (
+            "five_y_t5_xgb_spr_3y1y_b8_v1",
+            "c7b5b0cc0fa0",
+        ),
+        (
+            "seven_y_t5_lgbm_bf_z_anti40_b8_v1",
+            "4f182bf23dfc",
+        ),
+        (
+            "seven_y_t5_xgb_7y_rv_rev20_b0_v1",
+            "24d775cc01b7",
+        ),
+        (
+            "seven_y_t5_xgb_bf_z_anti40_b0_v1",
+            "c75a87bb21a9",
+        ),
         ("one_y_t1_quote_state_hv_v1", "1fd56dfcc264"),
         ("three_y_adyn_lb1_k3_v1", "98233f0cb9ef"),
         ("three_y_adyn_lb2_k1_v1", "47c7c1776db0"),
@@ -310,6 +358,138 @@ EXPECTED_ADMISSIONS = {
         task_type="T+1",
         horizon=1,
         target_tenor="3Y",
+        capabilities=LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
+    ),
+    (
+        "one_y_t5_xgb_10y_streak_anti7_b8_v1",
+        "9ceb12fdbd55",
+    ): _expected_admission(
+        mode="formal",
+        frequency="daily",
+        task_type="T+5",
+        horizon=5,
+        target_tenor="1Y",
+        capabilities=LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
+    ),
+    (
+        "one_y_t5_xgb_7y_cond_rev20_b12_v1",
+        "9caa9227981f",
+    ): _expected_admission(
+        mode="formal",
+        frequency="daily",
+        task_type="T+5",
+        horizon=5,
+        target_tenor="1Y",
+        capabilities=LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
+    ),
+    (
+        "one_y_t5_xgb_spr_zrev_10y5y_b12_v1",
+        "2f80dbb20ae1",
+    ): _expected_admission(
+        mode="formal",
+        frequency="daily",
+        task_type="T+5",
+        horizon=5,
+        target_tenor="1Y",
+        capabilities=LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
+    ),
+    (
+        "three_y_t5_lgbm_7yanti_b12_v2",
+        "99523554aa06",
+    ): _expected_admission(
+        mode="formal",
+        frequency="daily",
+        task_type="T+5",
+        horizon=5,
+        target_tenor="3Y",
+        capabilities=LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
+    ),
+    (
+        "three_y_t5_xgb_fxlead_b8_v2",
+        "dc4e944f5aec",
+    ): _expected_admission(
+        mode="formal",
+        frequency="daily",
+        task_type="T+5",
+        horizon=5,
+        target_tenor="3Y",
+        capabilities=LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
+    ),
+    (
+        "three_y_t5_xgb_tp_5y1y_b12_v2",
+        "4ea0782cc210",
+    ): _expected_admission(
+        mode="formal",
+        frequency="daily",
+        task_type="T+5",
+        horizon=5,
+        target_tenor="3Y",
+        capabilities=LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
+    ),
+    (
+        "five_y_t5_lgbm_3y_anti_lag252_b8_v1",
+        "5cbbf665e081",
+    ): _expected_admission(
+        mode="formal",
+        frequency="daily",
+        task_type="T+5",
+        horizon=5,
+        target_tenor="5Y",
+        capabilities=LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
+    ),
+    (
+        "five_y_t5_lgbm_3y_z_anti180_b12_v1",
+        "ee62a61b4424",
+    ): _expected_admission(
+        mode="formal",
+        frequency="daily",
+        task_type="T+5",
+        horizon=5,
+        target_tenor="5Y",
+        capabilities=LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
+    ),
+    (
+        "five_y_t5_xgb_spr_3y1y_b8_v1",
+        "c7b5b0cc0fa0",
+    ): _expected_admission(
+        mode="formal",
+        frequency="daily",
+        task_type="T+5",
+        horizon=5,
+        target_tenor="5Y",
+        capabilities=LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
+    ),
+    (
+        "seven_y_t5_lgbm_bf_z_anti40_b8_v1",
+        "4f182bf23dfc",
+    ): _expected_admission(
+        mode="formal",
+        frequency="daily",
+        task_type="T+5",
+        horizon=5,
+        target_tenor="7Y",
+        capabilities=LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
+    ),
+    (
+        "seven_y_t5_xgb_7y_rv_rev20_b0_v1",
+        "24d775cc01b7",
+    ): _expected_admission(
+        mode="formal",
+        frequency="daily",
+        task_type="T+5",
+        horizon=5,
+        target_tenor="7Y",
+        capabilities=LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
+    ),
+    (
+        "seven_y_t5_xgb_bf_z_anti40_b0_v1",
+        "c75a87bb21a9",
+    ): _expected_admission(
+        mode="formal",
+        frequency="daily",
+        task_type="T+5",
+        horizon=5,
+        target_tenor="7Y",
         capabilities=LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
     ),
     (

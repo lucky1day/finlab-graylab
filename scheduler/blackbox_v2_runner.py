@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import os
 import re
@@ -30,6 +31,8 @@ from shared.blackbox_v2.contracts import (
     BlackboxResult,
     load_backtest_results,
     load_prediction_result,
+    load_request,
+    load_requests,
 )
 from shared.blackbox_v2.platform_input_registry import (
     PLATFORM_INPUT_REGISTRY,
@@ -46,6 +49,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _RUNTIME_PROFILE_PATH = _PROJECT_ROOT / "deploy" / "blackbox_v2" / "runtime_profile_v1.json"
 _SAFE_ENVIRONMENT_KEYS = frozenset({"LANG", "LC_ALL", "TZ"})
 _SCHEDULE_EXECUTION_TOKEN_ENV = "BOND_SCHEDULE_EXECUTION_TOKEN"
+_API_WIND_DATE_PLATFORM_INPUT_ID = "api-wind-date-v1"
 _SAFE_EXECUTION_TOKEN_CHARACTERS = frozenset(
     "abcdefghijklmnopqrstuvwxyz"
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
@@ -471,6 +475,12 @@ def execute_blackbox_cli(
         )
 
     try:
+        _validate_api_wind_date_request_mappings(
+            mode=mode,
+            input_path=input_file,
+            data_dir=data,
+            platform_input_ids=normalized_platform_input_ids,
+        )
         input_flag = "--request" if mode == "predict" else "--requests"
         python_executable = str(runtime.executable)
         command = [
@@ -1046,6 +1056,90 @@ def _validate_data_dir(
                 f"{data_dir / filename}"
             )
     return tuple(states)
+
+
+def _validate_api_wind_date_request_mappings(
+    *,
+    mode: str,
+    input_path: Path,
+    data_dir: Path,
+    platform_input_ids: Sequence[str],
+) -> None:
+    """在启动上游进程前校验每条 Request 的冻结周历映射。"""
+    if _API_WIND_DATE_PLATFORM_INPUT_ID not in platform_input_ids:
+        return
+
+    try:
+        requests = (
+            (load_request(input_path),)
+            if mode == "predict"
+            else tuple(load_requests(input_path))
+        )
+    except ValueError:
+        # UnitGate 要求上游脚本本身拒绝故意构造的非法 raw Request；
+        # 只有已通过 Contract 解析的 Request 才进入本平台周历映射校验。
+        return
+    calendar_filename = PLATFORM_INPUT_REGISTRY.get(
+        _API_WIND_DATE_PLATFORM_INPUT_ID
+    ).filename
+    calendar_path = data_dir / calendar_filename
+    week_ids_by_rdate = _load_api_wind_date_week_ids(calendar_path)
+    for request in requests:
+        week_ids = week_ids_by_rdate.get(request.daily_cutoff_key, ())
+        if len(week_ids) != 1:
+            raise ValueError(
+                "Blackbox V2 calendar mapping "
+                f"request_id={request.request_id} must contain exactly one row "
+                f"for daily_cutoff_key={request.daily_cutoff_key}; "
+                f"found={len(week_ids)}"
+            )
+        actual_week_id = week_ids[0]
+        if actual_week_id != request.weekly_cutoff_key:
+            raise ValueError(
+                "Blackbox V2 calendar mapping "
+                f"request_id={request.request_id} weekly_cutoff_key mismatch: "
+                f"daily_cutoff_key={request.daily_cutoff_key}, "
+                f"expected={request.weekly_cutoff_key}, got={actual_week_id}"
+            )
+
+
+def _load_api_wind_date_week_ids(
+    calendar_path: Path,
+) -> dict[str, list[str]]:
+    """从已冻结的 api_wind_date.csv 读取原样的规范化周历键。"""
+    expected_columns = ("rdate", "week_id")
+    week_ids_by_rdate: dict[str, list[str]] = {}
+    try:
+        with calendar_path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            if tuple(reader.fieldnames or ()) != expected_columns:
+                raise ValueError(
+                    "Blackbox V2 api_wind_date.csv columns must be "
+                    f"{list(expected_columns)}"
+                )
+            for row in reader:
+                if set(row) != set(expected_columns):
+                    raise ValueError(
+                        "Blackbox V2 api_wind_date.csv row fields are invalid"
+                    )
+                rdate = row["rdate"]
+                week_id = row["week_id"]
+                if (
+                    not isinstance(rdate, str)
+                    or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", rdate)
+                    or not isinstance(week_id, str)
+                    or not re.fullmatch(r"\d{6}", week_id)
+                ):
+                    raise ValueError(
+                        "Blackbox V2 api_wind_date.csv contains a "
+                        "non-canonical calendar row"
+                    )
+                week_ids_by_rdate.setdefault(rdate, []).append(week_id)
+    except (OSError, UnicodeError, csv.Error) as exc:
+        raise ValueError(
+            f"Blackbox V2 api_wind_date.csv is invalid: {calendar_path}: {exc}"
+        ) from exc
+    return week_ids_by_rdate
 
 
 def _data_path_fingerprint(value: os.stat_result) -> tuple[int, ...]:

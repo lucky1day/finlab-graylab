@@ -344,6 +344,138 @@ EXPECTED_EXACT_ADMISSIONS: Mapping[
                 capabilities=_LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
             ),
             (
+                "one_y_t5_xgb_10y_streak_anti7_b8_v1",
+                "9ceb12fdbd55",
+            ): _entry(
+                mode="formal",
+                frequency="daily",
+                task_type="T+5",
+                horizon=5,
+                target_tenor="1Y",
+                capabilities=_LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
+            ),
+            (
+                "one_y_t5_xgb_7y_cond_rev20_b12_v1",
+                "9caa9227981f",
+            ): _entry(
+                mode="formal",
+                frequency="daily",
+                task_type="T+5",
+                horizon=5,
+                target_tenor="1Y",
+                capabilities=_LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
+            ),
+            (
+                "one_y_t5_xgb_spr_zrev_10y5y_b12_v1",
+                "2f80dbb20ae1",
+            ): _entry(
+                mode="formal",
+                frequency="daily",
+                task_type="T+5",
+                horizon=5,
+                target_tenor="1Y",
+                capabilities=_LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
+            ),
+            (
+                "three_y_t5_lgbm_7yanti_b12_v2",
+                "99523554aa06",
+            ): _entry(
+                mode="formal",
+                frequency="daily",
+                task_type="T+5",
+                horizon=5,
+                target_tenor="3Y",
+                capabilities=_LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
+            ),
+            (
+                "three_y_t5_xgb_fxlead_b8_v2",
+                "dc4e944f5aec",
+            ): _entry(
+                mode="formal",
+                frequency="daily",
+                task_type="T+5",
+                horizon=5,
+                target_tenor="3Y",
+                capabilities=_LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
+            ),
+            (
+                "three_y_t5_xgb_tp_5y1y_b12_v2",
+                "4ea0782cc210",
+            ): _entry(
+                mode="formal",
+                frequency="daily",
+                task_type="T+5",
+                horizon=5,
+                target_tenor="3Y",
+                capabilities=_LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
+            ),
+            (
+                "five_y_t5_lgbm_3y_anti_lag252_b8_v1",
+                "5cbbf665e081",
+            ): _entry(
+                mode="formal",
+                frequency="daily",
+                task_type="T+5",
+                horizon=5,
+                target_tenor="5Y",
+                capabilities=_LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
+            ),
+            (
+                "five_y_t5_lgbm_3y_z_anti180_b12_v1",
+                "ee62a61b4424",
+            ): _entry(
+                mode="formal",
+                frequency="daily",
+                task_type="T+5",
+                horizon=5,
+                target_tenor="5Y",
+                capabilities=_LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
+            ),
+            (
+                "five_y_t5_xgb_spr_3y1y_b8_v1",
+                "c7b5b0cc0fa0",
+            ): _entry(
+                mode="formal",
+                frequency="daily",
+                task_type="T+5",
+                horizon=5,
+                target_tenor="5Y",
+                capabilities=_LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
+            ),
+            (
+                "seven_y_t5_lgbm_bf_z_anti40_b8_v1",
+                "4f182bf23dfc",
+            ): _entry(
+                mode="formal",
+                frequency="daily",
+                task_type="T+5",
+                horizon=5,
+                target_tenor="7Y",
+                capabilities=_LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
+            ),
+            (
+                "seven_y_t5_xgb_7y_rv_rev20_b0_v1",
+                "24d775cc01b7",
+            ): _entry(
+                mode="formal",
+                frequency="daily",
+                task_type="T+5",
+                horizon=5,
+                target_tenor="7Y",
+                capabilities=_LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
+            ),
+            (
+                "seven_y_t5_xgb_bf_z_anti40_b0_v1",
+                "c75a87bb21a9",
+            ): _entry(
+                mode="formal",
+                frequency="daily",
+                task_type="T+5",
+                horizon=5,
+                target_tenor="7Y",
+                capabilities=_LAUNCHD_ONE_SHOT_ONLY_CAPABILITIES,
+            ),
+            (
                 "ten_y_t5_maj3_k3_ic_static_v1",
                 "c54b90bcafa7",
             ): _entry(

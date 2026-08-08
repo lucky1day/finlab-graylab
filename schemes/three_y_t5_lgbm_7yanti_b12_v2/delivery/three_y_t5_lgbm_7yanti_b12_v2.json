@@ -1,0 +1,1 @@
+{"schema_version":"1.0","scheme_id":"three_y_t5_lgbm_7yanti_b12_v2","name":"3年国债收益率T+5方向预测 LGBM七年期反转B12","algorithm_version":"2.0.0","target_tenor":"3Y","task_type":"T+5","horizon":5,"target_rule":"target_date_yield_vs_feature_date_yield","description":"3Y国债收益率日频T+5方向预测；使用日频市场数据、周频与月频因子；LightGBM模型，实际SCHEME信号为7Y_anti_sum60；B12规则：当前目标月第12个预测位时，若此前同目标月已实现历史方向仅单边出现则置为相反方向，否则保留当前方向。"}

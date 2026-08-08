@@ -1,0 +1,1 @@
+{"schema_version":"1.0","scheme_id":"seven_y_t5_xgb_7y_rv_rev20_b0_v1","name":"7年国债收益率T+5方向预测 XGB 7Y_rv_rev20","algorithm_version":"2.0.0","target_tenor":"7Y","task_type":"T+5","horizon":5,"target_rule":"target_date_yield_vs_feature_date_yield","description":"7Y国债收益率日频T+5方向预测；使用日频市场数据、周频与月频因子；XGBoost模型，实际SCHEME信号为7Y_rv_rev20；B0规则：不启用月内方向平衡改写，保留模型与该信号合成的当前方向。"}

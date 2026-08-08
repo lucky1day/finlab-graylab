@@ -254,6 +254,196 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         self.assertIn("predict", output)
         self.assertIn("backtest", output)
 
+    def test_predict_rejects_calendar_week_mapping_mismatch_before_process_start(
+        self,
+    ) -> None:
+        from scheduler.blackbox_v2_runner import (
+            RuntimeProfile,
+            execute_blackbox_cli,
+        )
+        from shared.blackbox_v2.requests import write_request
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data_dir = _write_data_dir(root)
+            (data_dir / "api_wind_date.csv").write_text(
+                "rdate,week_id\n2026-07-15,202628\n",
+                encoding="utf-8",
+            )
+            with (
+                patch(
+                    "scheduler.blackbox_v2_runner.subprocess.Popen",
+                    side_effect=AssertionError("child process started"),
+                ) as popen,
+                self.assertRaisesRegex(ValueError, "weekly_cutoff_key mismatch"),
+            ):
+                execute_blackbox_cli(
+                    script_path=_write_script(root / "trial.py", _SUCCESS_SCRIPT),
+                    mode="predict",
+                    input_path=write_request(_request("mismatch"), root / "request.json"),
+                    data_dir=data_dir,
+                    output_path=root / "run" / "prediction.json",
+                    platform_input_ids=("api-wind-date-v1",),
+                    profile=RuntimeProfile.for_tests(),
+                )
+
+        popen.assert_not_called()
+
+    def test_predict_rejects_missing_calendar_daily_cutoff_before_process_start(
+        self,
+    ) -> None:
+        from scheduler.blackbox_v2_runner import (
+            RuntimeProfile,
+            execute_blackbox_cli,
+        )
+        from shared.blackbox_v2.requests import write_request
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data_dir = _write_data_dir(root)
+            (data_dir / "api_wind_date.csv").write_text(
+                "rdate,week_id\n2026-07-14,202627\n",
+                encoding="utf-8",
+            )
+            with (
+                patch(
+                    "scheduler.blackbox_v2_runner.subprocess.Popen",
+                    side_effect=AssertionError("child process started"),
+                ) as popen,
+                self.assertRaisesRegex(
+                    ValueError,
+                    "exactly one row.*daily_cutoff_key=2026-07-15",
+                ),
+            ):
+                execute_blackbox_cli(
+                    script_path=_write_script(root / "trial.py", _SUCCESS_SCRIPT),
+                    mode="predict",
+                    input_path=write_request(_request("missing"), root / "request.json"),
+                    data_dir=data_dir,
+                    output_path=root / "run" / "prediction.json",
+                    platform_input_ids=("api-wind-date-v1",),
+                    profile=RuntimeProfile.for_tests(),
+                )
+
+        popen.assert_not_called()
+
+    def test_predict_rejects_duplicate_calendar_daily_cutoff_before_process_start(
+        self,
+    ) -> None:
+        from scheduler.blackbox_v2_runner import (
+            RuntimeProfile,
+            execute_blackbox_cli,
+        )
+        from shared.blackbox_v2.requests import write_request
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data_dir = _write_data_dir(root)
+            (data_dir / "api_wind_date.csv").write_text(
+                "rdate,week_id\n2026-07-15,202627\n2026-07-15,202627\n",
+                encoding="utf-8",
+            )
+            with (
+                patch(
+                    "scheduler.blackbox_v2_runner.subprocess.Popen",
+                    side_effect=AssertionError("child process started"),
+                ) as popen,
+                self.assertRaisesRegex(
+                    ValueError,
+                    "exactly one row.*daily_cutoff_key=2026-07-15",
+                ),
+            ):
+                execute_blackbox_cli(
+                    script_path=_write_script(root / "trial.py", _SUCCESS_SCRIPT),
+                    mode="predict",
+                    input_path=write_request(_request("duplicate"), root / "request.json"),
+                    data_dir=data_dir,
+                    output_path=root / "run" / "prediction.json",
+                    platform_input_ids=("api-wind-date-v1",),
+                    profile=RuntimeProfile.for_tests(),
+                )
+
+        popen.assert_not_called()
+
+    def test_invalid_predict_input_with_calendar_preserves_upstream_rejection(
+        self,
+    ) -> None:
+        from scheduler.blackbox_v2_runner import (
+            BlackboxExecutionError,
+            RuntimeProfile,
+            execute_blackbox_cli,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data_dir = _write_data_dir(root)
+            (data_dir / "api_wind_date.csv").write_text(
+                "rdate,week_id\n2026-07-15,202627\n",
+                encoding="utf-8",
+            )
+            invalid_request = root / "invalid-request.json"
+            invalid_request.write_text("{}\n", encoding="utf-8")
+            with self.assertRaisesRegex(BlackboxExecutionError, "exited"):
+                execute_blackbox_cli(
+                    script_path=_write_script(root / "trial.py", _SUCCESS_SCRIPT),
+                    mode="predict",
+                    input_path=invalid_request,
+                    data_dir=data_dir,
+                    output_path=root / "run" / "prediction.json",
+                    platform_input_ids=("api-wind-date-v1",),
+                    profile=RuntimeProfile.for_tests(),
+                )
+
+    def test_backtest_validates_every_calendar_request_before_process_start(
+        self,
+    ) -> None:
+        from scheduler.blackbox_v2_runner import (
+            RuntimeProfile,
+            execute_blackbox_cli,
+        )
+        from shared.blackbox_v2.requests import write_requests
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data_dir = _write_data_dir(root)
+            (data_dir / "api_wind_date.csv").write_text(
+                "rdate,week_id\n2026-07-15,202627\n2026-07-16,202628\n",
+                encoding="utf-8",
+            )
+            mismatched_second_request = BlackboxRequest(
+                request_id="second",
+                predict_date="2026-07-16",
+                feature_date="2026-07-16",
+                target_date="2026-07-17",
+                daily_cutoff_key="2026-07-16",
+                weekly_cutoff_key="202627",
+                monthly_cutoff_key="202606",
+            )
+            with (
+                patch(
+                    "scheduler.blackbox_v2_runner.subprocess.Popen",
+                    side_effect=AssertionError("child process started"),
+                ) as popen,
+                self.assertRaisesRegex(
+                    ValueError,
+                    "request_id=second.*weekly_cutoff_key mismatch",
+                ),
+            ):
+                execute_blackbox_cli(
+                    script_path=_write_script(root / "trial.py", _SUCCESS_SCRIPT),
+                    mode="backtest",
+                    input_path=write_requests(
+                        [_request("first"), mismatched_second_request],
+                        root / "requests.csv",
+                    ),
+                    data_dir=data_dir,
+                    output_path=root / "run" / "backtest.csv",
+                    platform_input_ids=("api-wind-date-v1",),
+                    profile=RuntimeProfile.for_tests(),
+                )
+
+        popen.assert_not_called()
+
     def test_scheduler_dispatches_by_explicit_runtime_type(self) -> None:
         from scheduler.executor import run_configured_scheme
 
@@ -751,7 +941,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             script = _write_script(root / "trial.py", _SUCCESS_SCRIPT)
             data_dir = _write_data_dir(root)
             (data_dir / "api_wind_date.csv").write_text(
-                "rdate,week_id\n2026-07-24,202629\n",
+                "rdate,week_id\n2026-07-15,202627\n",
                 encoding="utf-8",
             )
             record = run_blackbox_predict(
@@ -1628,7 +1818,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             root = Path(tmpdir)
             data_dir = _write_data_dir(root)
             (data_dir / "api_wind_date.csv").write_text(
-                "rdate,week_id\n2026-07-24,202629\n",
+                "rdate,week_id\n2026-07-15,202627\n",
                 encoding="utf-8",
             )
             records = run_blackbox_backtest(
@@ -2637,7 +2827,7 @@ def _platform_bundle_evidence():
         "api-wind-date-v1",
         pd.DataFrame(
             {
-                "rdate": ["2026-07-24"],
+                "rdate": ["2026-07-15"],
                 "week_id": ["202627"],
             }
         ),

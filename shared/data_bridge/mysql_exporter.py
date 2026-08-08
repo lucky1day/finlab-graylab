@@ -97,6 +97,7 @@ class MySqlDataBridgeRoundBuilder:
                             start_date=self.config.daily_start_date,
                             end_date=expected_daily_date,
                             engine=connection,
+                            include_databridge_additions=True,
                         ),
                     }
                     evidence = capture_source_commit_evidence_from_connection(
