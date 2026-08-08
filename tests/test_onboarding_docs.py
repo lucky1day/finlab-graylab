@@ -720,10 +720,50 @@ class OnboardingDocumentationTests(unittest.TestCase):
         ):
             self.assertNotIn(duplicated_dynamic_fact, deploy)
 
-        self.assertIn("Task 1 — 只读重新冻结与无写库验证", todo)
-        self.assertIn("Task 2 — exact Blackbox admission", todo)
+        self.assertIn("R0：生产修复发布", todo)
+        self.assertIn("D1：Native 日频缺口闭环", todo)
+        self.assertNotIn("WAITING_EXPLICIT_RELEASE_DECISION", todo)
+        self.assertNotIn(
+            "REPOSITORY_REMEDIATION_VERIFIED_DATA_SCOPE_UNRESOLVED",
+            todo,
+        )
         self.assertNotIn("ledger 已启用", current)
         self.assertNotIn("2026-07-30 日频 ledger 本地运行基线", deploy)
+
+    def test_completed_superpowers_process_docs_are_removed(self) -> None:
+        retired = (
+            "plans/2026-08-04-native-maintenance-g4.md",
+            "plans/2026-08-06-blackbox-gray-replay-shared-snapshot.md",
+            "plans/2026-08-06-current-docs-blackbox-sop-refresh.md",
+            "plans/2026-08-06-task-cell-red-accuracy-implementation.md",
+            "plans/2026-08-07-launchd-only-legacy-cleanup.md",
+            "plans/2026-08-07-weekly-live-gap-report.md",
+            "plans/2026-08-08-native-gap-cache-prewarm.md",
+            "specs/2026-08-04-post-admission-native-validation-design.md",
+            "specs/2026-08-06-cgb-weekly-batch-cutoff-identity-design.md",
+            "specs/2026-08-06-current-docs-blackbox-sop-refresh-design.md",
+            "specs/2026-08-06-task-cell-red-accuracy-design.md",
+            "specs/2026-08-07-launchd-only-legacy-cleanup-design.md",
+            "specs/2026-08-08-native-gap-cache-prewarm-design.md",
+        )
+        superpowers = DOCS_ROOT / "superpowers"
+
+        self.assertTrue(
+            (
+                superpowers
+                / "plans/2026-08-02-weekly-10y-d-overlay-stable-order-implementation.md"
+            ).exists()
+        )
+        self.assertTrue(
+            (
+                superpowers
+                / "specs/2026-08-02-weekly-10y-d-overlay-stable-order-design.md"
+            ).exists()
+        )
+        self.assertEqual(
+            [item for item in retired if (superpowers / item).exists()],
+            [],
+        )
 
     def test_scheduled_live_requires_future_real_occurrence_evidence(
         self,

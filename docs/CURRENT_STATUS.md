@@ -2,76 +2,56 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验日期**：2026-08-07
+**最后核验日期**：2026-08-08
 
-本文只保留当前已验证事实；带日期的执行证据在[状态记录](records/status/README.md)。未完成工作的顺序、
-并行关系和授权闸门见[统一后续推进计划](TODO.md)；生产调度规则以
-[生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)为准；最近的 G3.1 闭环证据见
-[日频覆盖与治理闭环计划](records/status/WEEKLY_10Y_D_OVERLAY_0801_FIX_PLAN_20260803.md)。
+本文只保留当前已验证事实。带日期的证据见[状态记录](records/status/README.md)，未完成工作的顺序见
+[统一后续推进计划](TODO.md)，生产调度规则以
+[生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)为准。
 
 ## 当前政策
 
-- `launchd + installed plist` 是唯一生产调度控制面；仓库代码/模板不单独证明生产挂载。
-- 自然时钟写 `scheduled_live`；经授权、insert-only 的历史修复写 `gray_live`；两者不可互相替代。
-- `ledger`、`occurrence`、`epoch`、daily-gray、常驻 APScheduler 和旧预检不再是新建或
-  过渡生产路径；对应的仓库 runtime/config 闭包已退役。
-- 新的 installed plist、launchctl、服务、激活、admission、业务写入、持久化回测和 DDL 都须先只读核对并取得
-  独立授权。
+- `launchd + installed plist` 是唯一生产调度控制面；仓库代码或模板不单独证明生产挂载。
+- 自然时钟写 `scheduled_live`；受控、insert-only 的历史修复写 `gray_live`，两者不可互相替代。
+- ledger、occurrence、epoch、daily-gray、常驻 APScheduler 和旧预检不再是生产或过渡路径。
+- 新的 installed plist、launchctl、服务、激活、admission、业务写入、持久化回测和 DDL 均需独立授权。
+
+## 当前生产验收
+
+- 截至 2026-08-07 的 active live 信号只读报告为 `expected=863`、`present=863`、`missing=0`。
+- 唯一 Native 日频缺口使用封存 `feature_date=2026-08-04` 输入完成受控 cache 预热，并由 run `2256`
+  insert-only 写入一条 `gray_live`；没有重跑既有 Blackbox 缺口或触发 DataBridge/launchd 任务。
+- Dashboard 每次直接读数据库；最新验收返回 `stale=false`、`snapshot_age_ms=0`，对应方案状态为 `present`。
+- 公网 rollout 验收为 `PASS=60`、`FAIL=0`。旧 backtest JSON 本机生成约 0.25 秒；公网探针使用现有 gzip
+  表示后传输约 239 KB，不再依赖扩大超时、重试或 fallback。
+- 开发分支与 `master` 已推送到同一提交 `49d77da`。本次授权已经消费，不外推到后续发布或生产操作。
 
 ## 已闭环的生产治理
 
-### G3.1：日频覆盖闭环（2026-08-06）
+- G3.1 的 Blackbox admission 与历史缺口补齐保持关闭；补写本身不授予 scheduler admission。
+- G1/G2 的 DataBridge 与 launchd-only single-writer、G3 的 8 月 3 日补写、G4 唯一键修复、G5/G6
+  无写库验收均已闭环。
+- launchd-only 清理已移除仓库中的 ledger/occurrence/epoch runtime、policy 与 replay 闭包；
+  `t_input_generations` lineage、017 migration 与受控 recovery 测试仍保留。
 
-- 2026-08-01 是非交易日，不应有日频信号。
-- 五个精确 Blackbox identity 已仅获得 `launchd_one_shot` admission（commit `e830f9e`）；没有 legacy、ledger 或
-  direct capability，也没有执行 launchd/plist/服务操作。
-- 写前受限 plan SHA `cda60ed5dd9c604223620c46cbb269be371da78399c9b0ec2659c234d107331e` 冻结 12 个 T+1 key / 11 组；
-  一次 `signal-gap-fill` Gate 以 `gray_live` insert-only 写入，runs `2156`–`2166` 全部 success。
-- 写后 plan SHA `aa5e915519aa754aa9518b42231f5a5ec20b3026cdf454e76eeea351f45c8596` 为 20 个 `SKIP_PRESENT`；没有新增
-  `scheduled_live`、T+5、8 月 1 日或范围外 target。
-- 本次 `gray_live` 历史修复本身**不授予 scheduler admission**，也不证明 installed plist 已挂载或自然时钟已现场触发；
-  五项 exact admission 是独立、仅限 `launchd_one_shot` 的仓库变更。
-- 34 个 active 日频 composite scope 在 DB raw、Dashboard canonical 与 fresh served API 一致：2026-08-03/04/05
-  均为 T+1 `10/10`、T+5 `24/24`。前端以 `target_date` 过滤 `2026-08` 的 live 行集为 207，未将指标“样本”
-  数当作 live 行数。
-- DataBridge current authority 为 `refresh_date=2026-08-06`，8 月 3/4 的 cutoff 精确匹配；12 条 provenance 为
-  10 条 DataBridge current generation 和 2 条 Native current-snapshot artifact。HMAC token、DSN 与凭据未写入文档。
+## 已验证的 7Y 灰度闭环
 
-## 已验证的 7Y 灰度闭环与阶段摘要
-
-- 两套 7Y v2 已完成 Gate、入库、历史 `gray_live`、served API 与前端读回；其列入 G3.1 的 exact version
-  现为 `launchd_one_shot` only。该事实不外推到其它 7Y identity 或控制面。
-- G1/G2 的 DataBridge 与 launchd-only 单 writer、G3 的 8 月 3 日补写、G4 的 D-overlay 唯一 key、
-  G5/G6 的无写库功能验收均已闭环；自然时钟继续作为非阻塞观测。
-- launchd-only 清理已移除 repo 内 ledger/occurrence/epoch runtime、policy 与 replay 闭包；
-  `t_input_generations` lineage、017 migration 与历史 schema recovery 测试仍保留。
+- 两套 active 7Y v2 方案已完成 Gate、入库、历史 `gray_live`、served API 与前端读回。
+- 它们的 exact admission 仅为 `launchd_one_shot`；该事实不外推到其它身份，也不证明 installed plist 已挂载。
 
 ## 已闭环的前端 UX
 
-- 因子实验室已完成 CSS 紧凑化：任务格为 `76px`、趋势图和空态为 `244px`，且不再保留矩阵 `min-height: 560px`。
-- 用户确认的 `>= 60%` 视觉语义是**仅准确率数字红色**，而非任务格绿底。现有 `overall`、`upPrecision`、
-  `downPrecision` 排序、有限值和阈值判断保持不变；`samples`、缺失值与 `< 60` 不高亮，hover/selected 也不退化。
-- CSS 通过其精确内容 SHA-256 URL 交付，防止缓存客户端继续读取旧样式；前端行为、静态缓存和文档测试均已通过。
+- 任务格高度为 `76px`，趋势图与空态为 `244px`，矩阵不再保留 `min-height: 560px`。
+- 当前筛选后的最优方案仅在 `overall`、`upPrecision` 或 `downPrecision >= 60` 时显示红色准确率数字；
+  samples、缺失值及低于阈值的结果不高亮。
+- CSS 使用精确内容版本 URL；前端行为与静态缓存合同由测试维护，不再依赖一次性实施计划。
 
-## 已完成的只读诊断与治理设计
+## 文档治理
 
-- D1 的 publisher-first repository 修复已由当前分支祖先 `d440091` 和回归测试确认；事故前 consumer 位于共享 cache
-  publisher 之前仍只是最高置信的条件控制面因果推断，原始 failed run-log 异常未读取。当前配置的受控只读快照未观察到
-  该单键且缺精确 Native generation，因此未再次写入；这不推断其它环境的数据状态。详见
-  [D1 诊断](records/status/LIWEI_10Y01_T5_0811_FAILURE_DIAGNOSIS_20260806.md)。
-- G7.0 已形成 Native 26 identity / 30 composite Registry 的事实矩阵和最小目标模型草案；DB/API/installed 状态仍须
-  后续单独只读核验，G7.1 等待用户确认目标语义。详见
-  [G7.0 矩阵](records/status/NATIVE_VERSION_MODEL_FACT_MATRIX_G7_0_20260806.md)。
-- G8.0 已形成历史 schema/archive 的候选决策矩阵；repo runtime 已退役，剩余的物理表、installed 状态和
-  archive/DDL 策略仍等待用户确认。019 inspection 仅限 `APPLYING` recovery；在新的受控只读 inventory
-  capability 设计并获授权前，forward DDL 继续阻断。详见
-  [G8.0 矩阵](records/status/G8_REPLAY_LEDGER_DECISION_MATRIX_20260806.md)。
-- D0 已按用户确认完成文档清理：仅删除 2 份 superseded front-end cutover 草案，G3.1 与当前规范/证据均保留；此事不改变
-  D1、G7.0 或 G8.0 的独立状态。详见 [D0 审计](records/status/D0_DOCUMENT_LIFECYCLE_AUDIT_20260806.md)。
+- 当前架构、SOP、正式 onboarding/状态/审计记录继续保留。
+- 13 份已完成且由现行资料、代码和测试替代的 `docs/superpowers` 过程文档已删除；Git 历史保留其过程。
+- Weekly 10Y stable-order 设计与计划仍被 Native core、回归测试和用户工作区记录引用，作为源算法保真证据保留。
 
 ## 未完成的生产治理
 
-- G7.1：Native 版本模型收敛等待用户确认 G7.0 目标语义；确认前没有授权的代码、数据库或控制面动作。
-- G8.1：物理 schema/archive 最终退役等待用户确认；任何 installed plist 操作或数据库迁移仍须独立设计与授权。
-- D1 的原始异常读取或任何当前配置快照未见的 2026-08-11 T+5 recovery 均须独立的只读/业务写入 scope；完整排序和边界以
-  [统一后续推进计划](TODO.md)为准。
+- G7.1：Native 版本模型等待 G7.0 目标语义确认；确认前不改变算法、版本、Registry 或控制面。
+- G8.1：物理 schema/archive 最终退役等待 G8.0 保留边界确认；installed plist、migration 与 DDL 仍需独立授权。
