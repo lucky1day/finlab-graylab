@@ -16,6 +16,7 @@ from harness.authorization import (
 from scheduler.discovery import load_scheme_config
 from scheduler.executor import (
     NATIVE_EXECUTION_MODE_SIGNAL_GAP_CACHE_PREWARM,
+    _effective_timeout_sec,
     run_configured_scheme,
 )
 from scheduler.generation_registry import (
@@ -576,12 +577,13 @@ def prewarm_signal_gap_native_cache(
     }
     _atomic_write_json(outcome_path, prewarm_started)
     try:
+        effective_timeout_sec = _effective_timeout_sec(cfg, timeout_sec)
         records = run_configured_scheme(
             cfg,
             historical_predict_date,
             engine=None,
             algo_env=algo_env,
-            timeout_sec=timeout_sec,
+            timeout_sec=effective_timeout_sec,
             native_generation=context,
             native_execution_mode=(
                 NATIVE_EXECUTION_MODE_SIGNAL_GAP_CACHE_PREWARM

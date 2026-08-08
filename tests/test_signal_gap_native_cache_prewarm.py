@@ -195,7 +195,7 @@ class SignalGapNativeCachePrewarmTests(unittest.TestCase):
         consume.assert_not_called()
         runner.assert_not_called()
 
-    def test_prewarm_runs_only_publisher_against_derived_cache_root(
+    def test_prewarm_runs_publisher_at_derived_cache_root_with_configured_timeout(
         self,
     ) -> None:
         from harness import signal_gap_native_artifact as module
@@ -221,6 +221,7 @@ class SignalGapNativeCachePrewarmTests(unittest.TestCase):
             cfg = SimpleNamespace(
                 scheme_id=PUBLISHER,
                 runtime_type="native_adapter",
+                schedule=SimpleNamespace(timeout_sec=3600),
             )
             auth = SimpleNamespace(
                 token="prewarm-token",
@@ -303,6 +304,7 @@ class SignalGapNativeCachePrewarmTests(unittest.TestCase):
             ],
             permit.capability,
         )
+        self.assertEqual(runner.call_args.kwargs["timeout_sec"], 3600)
 
     def test_prewarm_rejects_artifact_without_exact_sealed_fence(
         self,
