@@ -29,13 +29,12 @@
 | [入库导航](onboarding/README.md) | 判断使用 Blackbox V2 新增还是 Native V1 存量维护 | 是 |
 | [SOP](sop/README.md) | 上游交付、平台入库和 Native 存量维护步骤 | 是 |
 | [架构与契约](architecture/README.md) | 系统架构、launchd-only 调度治理、代码边界、日期语义和共享契约 | 是 |
-| [产品文档](product/README.md) | 用户手册和产品需求记录 | 以文档状态为准 |
-| [运维文档](operations/README.md) | 环境和部署资料 | 以文档状态为准 |
+| [产品文档](product/README.md) | 当前用户手册 | 是 |
+| [运维文档](operations/README.md) | 当前运行与验收资料 | 是 |
 | [Blackbox V2](blackbox_v2/README.md) | V2 专属数据、生产准备和试验记录 | 规范与记录分开 |
 | [Native V1](native_v1/README.md) | 存量方案维护 | 仅存量维护 |
 | [统一后续推进计划](TODO.md) | 未完成工作、并行关系、前置依赖、排序与授权闸门 | 是 |
-| [审计与状态记录](records/README.md) | 全方案问题台账、带日期的状态、审计和系统检查；不定义当前生产控制面 | 否 |
-| [内部设计记录](internal/README.md) | 实施计划与设计过程 | 否 |
+| [审计与状态记录](records/README.md) | 全方案问题台账和仍待处理的状态记录；不定义当前生产控制面 | 否 |
 
 ## 状态规则
 

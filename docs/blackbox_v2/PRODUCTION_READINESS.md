@@ -8,7 +8,7 @@
 
 本文定义“任意后续 Blackbox V2 交付可走标准生产流程”之前仍需完成的广义平台
 条件。它不撤销已经取得的逐方案专项授权，也不为未授权 identity 自动放行。
-日频运行本身以[日频信号 SLA](../architecture/DAILY_SIGNAL_SLA.md)为唯一契约。
+日频运行以[生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)为当前契约。
 
 ## 1. 当前边界
 

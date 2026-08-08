@@ -12,7 +12,6 @@
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 系统部署、数据流、Registry、API 和双运行时执行流 |
 | [PRODUCTION_SCHEDULING_GOVERNANCE.md](PRODUCTION_SCHEDULING_GOVERNANCE.md) | launchd + installed plist-only、单 writer、阶段语义、输入新鲜度和生产授权 |
-| [DAILY_SIGNAL_SLA.md](DAILY_SIGNAL_SLA.md) | 已废止的 ledger/epoch 日频 SLA；仅保留历史定位，不定义当前规则 |
 | [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md) | 分层、依赖方向、输入和写库单点 |
 | [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) | Gate、授权、证据和副作用边界 |
 | [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) | 双运行时共享身份、日期、结果和生命周期契约 |

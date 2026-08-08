@@ -357,7 +357,6 @@ A：不能。公网入口不放行 trigger/admin 接口，管理写接口还需�
 - `docs/architecture/ARCHITECTURE.md`
 - `docs/architecture/PREDICTION_SEMANTICS.md`
 - `docs/architecture/HARNESS_ARCHITECTURE.md`
-- `docs/product/PRD_PUBLIC_BOND_FACTOR_LAB_ACCESS.md`
 - `docs/architecture/BLACKBOX_V2_PLATFORM.md`
 
 若本文与上述 CURRENT 文档或机器契约冲突，应优先核对机器契约和 CURRENT 文档，并更新本手册。
