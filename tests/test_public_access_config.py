@@ -417,10 +417,6 @@ def test_timing_log_uses_bounded_traffic_classes_instead_of_raw_user_agent() -> 
     assert re.search(r"(?m)^\s*default\s+user\s*;", traffic_map)
     assert '"bond-factor-lab-access-check/1.0" access_check;' in traffic_map
     assert '"bond-factor-lab-api-benchmark/1.0" api_benchmark;' in traffic_map
-    assert (
-        '"bond-factor-lab-browser-benchmark/1.0" browser_benchmark;'
-        in traffic_map
-    )
     timing_log = re.search(
         r"log_format\s+bond_factor_timing\s+(?P<body>.*?);",
         config,

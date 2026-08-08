@@ -176,7 +176,7 @@ conda run -n bond_factor_lab_service python -m unittest tests.test_frontend_fact
 - 公网入口配置全部纳入 `deploy/` 版本管理（见 §11 决策）。
 - SSH 反向隧道改为 `launchd` 常驻：`deploy/launchd/com.bond-factor-lab.ssh-tunnel.plist`（ssh + KeepAlive）。
 - 后端 `BOND_ADMIN_TOKEN` 第二道闸（R7）：`deploy/launchd/com.bond-factor-lab.backend.plist` 占位符。
-- 验收脚本 `scripts/check_public_access.sh`（200/403 矩阵）+ 监控模板 `scripts/healthcheck_alert.sh`。
+- 验收脚本 `scripts/check_public_access.sh`（200/403 矩阵）。
 - 部署/回滚说明 `deploy/README.md`。
 
 待用户执行（无法在开发会话内完成）：
