@@ -4,7 +4,7 @@
 
 **目标读者**：项目负责人、平台运维和审计人员
 
-**最后核验日期**：2026-08-06
+**最后核验日期**：2026-08-08
 
 - [KNOWN_ISSUES_HANDOFF_20260802.md](KNOWN_ISSUES_HANDOFF_20260802.md)：2026-08-02 的已知问题、调查证据和后续处理边界。
 - [WEEKLY_10Y_D_OVERLAY_0801_FIX_PLAN_20260803.md](WEEKLY_10Y_D_OVERLAY_0801_FIX_PLAN_20260803.md)：已完成的 G3.1 日频覆盖闭环、精确 Blackbox admission 与历史补写证据。
