@@ -275,10 +275,6 @@ Canary 通过后串行补齐剩余 151 个缺口，每个日期独立签发并�
 
 API 返回四个 active composite 方案和短名称；四个 metrics endpoint 的 `phase_ranges` 均为 39 条 gray，backtest endpoint 均读取 run `178..181` 的 333 条明细。前端 `1Y国债活跃 × T+5` 显示 4 个候选，名称不重复任务说明；月度表在 2026-05 历史末月与 2026-06 gray 目标期首月之间插入分隔线。展示文案区分 `predict_date` 的“实盘发出起点”和 `target_date` 的“灰度实盘（目标期）”，不再把 2026-05-26 误写成灰度目标月份起点；强制刷新后的浏览器控制台 error/warning 均为 0。
 
-截图证据保存于忽略目录：
-
-- `reports/production-gray-20260720/frontend-1y-t5-candidate-ranking-20260720.png`
-- `reports/production-gray-20260720/frontend-1y-t5-four-schemes-20260720.png`
-- `reports/production-gray-20260720/frontend-1y-t5-may-june-divider-20260720.png`
+截图当时保存在本机 `reports/` 运行目录。仓库只保留本节的验收摘要；可再生成的截图和运行明细不进入版本控制。
 
 scheduler PID 始终为 `52329/52404`，当天没有重启，也没有新增 `scheduled_live`。四方案现为 `Onboarding Complete`；必须等下一交易日自然 scheduler 成功后才能标记为 `Production Observed`。上游算法交付 SOP 未修改，SHA-256 仍为 `b393bb37bd9e8b404fe1af73716e8ddb8951933159b22040243c1b7376598cae`。
