@@ -112,10 +112,10 @@ def select_factor_metadata(
 
 
 def _is_raw_metadata_source(value: object) -> bool:
-    return (
-        str(value).strip().lower()
-        == DATA_BRIDGE_V1_RAW_INDICATORS_SOURCE
-    )
+    return str(value).strip().lower() in {
+        DATA_BRIDGE_V1_RAW_INDICATORS_SOURCE,
+        "wind",
+    }
 
 
 def select_monthly_factor_metadata(

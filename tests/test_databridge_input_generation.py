@@ -397,6 +397,38 @@ class DataBridgeInputGenerationTests(unittest.TestCase):
             self.assertTrue(pd.isna(output.loc[1, code]))
             self.assertEqual(output.loc[2, code], float(10 + column_number))
 
+    def test_monthly_databridge_accepts_wind_macro_addition_metadata(
+        self,
+    ) -> None:
+        from shared.data_service import build_monthly_output_from_frames
+
+        metadata = self._monthly_metadata_with_macro_additions()
+        metadata.loc[
+            metadata["indicators_code"].isin(
+                {"M0041340", "M0041341", "M0041342"}
+            ),
+            "indicators_source",
+        ] = "wind"
+
+        output = build_monthly_output_from_frames(
+            metadata,
+            self._monthly_macro_long_frame(),
+            end_date="2026-03-01",
+            include_databridge_additions=True,
+        )
+
+        self.assertEqual(
+            output.columns.tolist(),
+            [
+                "month_id",
+                "MONTHLY_SELECTED_A",
+                "MONTHLY_SELECTED_B",
+                "M0041340",
+                "M0041341",
+                "M0041342",
+            ],
+        )
+
     def test_monthly_databridge_rejects_unusable_macro_addition_metadata(
         self,
     ) -> None:
