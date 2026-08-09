@@ -72,6 +72,7 @@ LIVE_SOURCE_PACKAGE_SHA256_ENV = (
     "BOND_NATIVE_LIVE_SOURCE_PACKAGE_SHA256"
 )
 SCHEDULE_EXECUTION_TOKEN_ENV = "BOND_SCHEDULE_EXECUTION_TOKEN"
+EPHEMERAL_NATIVE_INPUT_ROOT_ENV = "BOND_NATIVE_EPHEMERAL_INPUT_ROOT"
 _NATIVE_GENERATION_ENV_FIELDS = {
     NATIVE_INPUT_MODE_ENV,
     NATIVE_MANIFEST_PATH_ENV,
@@ -1651,6 +1652,14 @@ def input_artifact_path(
     if prefix is None:
         raise ValueError(f"unsupported frequency for input artifact path: {frequency}")
     filename = f"{prefix}_{safe_predict_date}.csv"
+    ephemeral_root = os.environ.get(EPHEMERAL_NATIVE_INPUT_ROOT_ENV)
+    if ephemeral_root is not None:
+        root = Path(ephemeral_root)
+        if not root.is_absolute():
+            raise ValueError(
+                f"{EPHEMERAL_NATIVE_INPUT_ROOT_ENV} must be absolute"
+            )
+        return root / safe_scheme_id / filename
     execution_token = os.environ.get(SCHEDULE_EXECUTION_TOKEN_ENV)
     if execution_token is None:
         return Path(output_root) / safe_scheme_id / filename

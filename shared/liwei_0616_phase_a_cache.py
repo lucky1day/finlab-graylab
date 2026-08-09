@@ -33,6 +33,7 @@ from shared.liwei_0616_cache_contract import (
     APPROVED_PHASE_A_CACHE_PUBLISHERS,
     CACHE_MUTATION_POLICY_ENV,
     CACHE_MUTATION_POLICY_HIT_ONLY,
+    CACHE_MUTATION_POLICY_PRIVATE_BUILD,
     CACHE_MUTATION_POLICY_PREWARM,
     GENERATION_ACCEPTANCE_SCHEMA_VERSION,
     PHASE_A_CACHE_ABI_VERSION,
@@ -143,13 +144,33 @@ def runtime_compare_gate_callbacks(
     ]
     | None,
 ]:
-    """日批不在 cache 层重复训练或重复 full output。
+    """自然日批不重复训练；私有重建执行完整 cold compare。
 
     日频生产由冻结的 direct authority 校验；本次 ``train_phase_a`` 的单次
     产物仅定义 generation acceptance 的 authoritative affected scope。
     """
-    del train_phase_a, run_full_output
-    return None, None
+    if _cache_mutation_policy() != CACHE_MUTATION_POLICY_PRIVATE_BUILD:
+        return None, None
+
+    def compare_cold(
+        baseline: str,
+        test_ranges: tuple[tuple[str, str], ...],
+    ) -> Mapping[str, Any]:
+        return train_phase_a(baseline, test_ranges)
+
+    def compare_full_output(
+        caches: Mapping[str, Mapping[str, Any]],
+    ) -> tuple[Any, Any]:
+        if run_full_output is None:
+            raise RuntimeError(
+                "private_build full output comparison is unavailable"
+            )
+        return run_full_output(caches)
+
+    return (
+        compare_cold,
+        compare_full_output if run_full_output is not None else None,
+    )
 
 
 def prepare_phase_a_caches(
@@ -267,6 +288,11 @@ def prepare_phase_a_caches(
             "SIGNAL_GAP_CACHE_PREWARM_AUTHORITY_INVALID"
         )
     root = _cache_root(cache_root)
+    if (
+        mutation_policy == CACHE_MUTATION_POLICY_PRIVATE_BUILD
+        and not root.is_absolute()
+    ):
+        raise ValueError("private_build cache root must be absolute")
     family_root = _family_cache_root(root, spec)
     if mutation_policy == CACHE_MUTATION_POLICY_HIT_ONLY:
         return _prepare_signal_gap_hit_only(
@@ -297,6 +323,7 @@ def prepare_phase_a_caches(
         )
     is_publisher = (
         cache_consumer_id == spec.publisher_consumer_id
+        or mutation_policy == CACHE_MUTATION_POLICY_PRIVATE_BUILD
     )
     if not is_publisher:
         return _prepare_under_family_lock(
@@ -915,12 +942,14 @@ def _cache_mutation_policy() -> str | None:
     policy = configured.strip()
     if policy not in {
         CACHE_MUTATION_POLICY_HIT_ONLY,
+        CACHE_MUTATION_POLICY_PRIVATE_BUILD,
         CACHE_MUTATION_POLICY_PREWARM,
     }:
         raise ValueError(
             f"{CACHE_MUTATION_POLICY_ENV} must be "
             f"{CACHE_MUTATION_POLICY_HIT_ONLY} or "
-            f"{CACHE_MUTATION_POLICY_PREWARM}"
+            f"{CACHE_MUTATION_POLICY_PREWARM} or "
+            f"{CACHE_MUTATION_POLICY_PRIVATE_BUILD}"
         )
     return policy
 

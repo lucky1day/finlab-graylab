@@ -12,6 +12,88 @@ from tests.test_native_generation_input_artifacts import _generation_context
 
 
 class NativeGenerationSubprocessTests(unittest.TestCase):
+    def test_ephemeral_native_runtime_sets_private_environment(self) -> None:
+        from scheduler.executor import run_scheme_subprocess
+        from shared.input_artifacts import (
+            EPHEMERAL_NATIVE_INPUT_ROOT_ENV,
+        )
+        from shared.liwei_0616_cache_contract import (
+            CACHE_MUTATION_POLICY_ENV,
+            CACHE_MUTATION_POLICY_PRIVATE_BUILD,
+        )
+
+        captured: dict[str, str] = {}
+
+        def fake_run(cmd, *, cwd, env, timeout):
+            from subprocess import CompletedProcess
+
+            captured.update(env)
+            return CompletedProcess(cmd, 0, "[]", "")
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "scheduler.executor._run_process_group",
+            side_effect=fake_run,
+        ):
+            root = Path(tmpdir).resolve()
+            run_scheme_subprocess(
+                "daily_demo",
+                "2026-07-24",
+                ephemeral_native_runtime_root=root,
+            )
+
+        self.assertEqual(
+            captured[EPHEMERAL_NATIVE_INPUT_ROOT_ENV],
+            str(root / "inputs"),
+        )
+        self.assertEqual(
+            captured["LIWEI_0616_PHASE_A_CACHE_ROOT"],
+            str(root / "phase-a-cache"),
+        )
+        self.assertEqual(
+            captured[CACHE_MUTATION_POLICY_ENV],
+            CACHE_MUTATION_POLICY_PRIVATE_BUILD,
+        )
+
+    def test_ephemeral_native_runtime_rejects_invalid_combinations(self) -> None:
+        from scheduler.executor import run_configured_scheme
+
+        native = SimpleNamespace(
+            runtime_type="native_adapter",
+            scheme_id="daily_demo",
+        )
+        blackbox = SimpleNamespace(
+            runtime_type="blackbox_v2",
+            input_source="data_bridge_current",
+            scheme_id="blackbox_demo",
+        )
+        common = {
+            "engine": object(),
+            "algo_env": "forecast_env",
+            "timeout_sec": 600,
+        }
+        with self.assertRaisesRegex(ValueError, "absolute"):
+            run_configured_scheme(
+                native,
+                "2026-07-24",
+                ephemeral_native_runtime_root="relative/root",
+                **common,
+            )
+        with self.assertRaisesRegex(ValueError, "native_generation"):
+            run_configured_scheme(
+                native,
+                "2026-07-24",
+                native_generation=_generation_context(),
+                ephemeral_native_runtime_root=Path("/private/native-gap"),
+                **common,
+            )
+        with self.assertRaisesRegex(ValueError, "native_adapter"):
+            run_configured_scheme(
+                blackbox,
+                "2026-07-24",
+                ephemeral_native_runtime_root=Path("/private/native-gap"),
+                **common,
+            )
+
     def test_frozen_native_mode_refuses_live_database_engine_creation(
         self,
     ) -> None:

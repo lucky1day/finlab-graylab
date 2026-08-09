@@ -228,6 +228,39 @@ class NativeGenerationEnvironmentTests(unittest.TestCase):
 
 
 class NativeGenerationArtifactBuilderTests(unittest.TestCase):
+    def test_ephemeral_input_root_overrides_persistent_output_root(self) -> None:
+        from shared import input_artifacts
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir).resolve()
+            with patch.dict(
+                os.environ,
+                {input_artifacts.EPHEMERAL_NATIVE_INPUT_ROOT_ENV: str(root)},
+                clear=True,
+            ):
+                path = input_artifacts.input_artifact_path(
+                    scheme_id="daily_demo",
+                    frequency="daily",
+                    predict_date="2026-07-24",
+                    output_root=Path("/persistent/inputs"),
+                )
+
+        self.assertEqual(
+            path,
+            root / "daily_demo" / "daily_output_2026-07-24.csv",
+        )
+
+        with patch.dict(
+            os.environ,
+            {input_artifacts.EPHEMERAL_NATIVE_INPUT_ROOT_ENV: "relative"},
+            clear=True,
+        ), self.assertRaisesRegex(ValueError, "absolute"):
+            input_artifacts.input_artifact_path(
+                scheme_id="daily_demo",
+                frequency="daily",
+                predict_date="2026-07-24",
+            )
+
     def test_scheduled_attempt_uses_generation_and_attempt_scoped_path(
         self,
     ) -> None:

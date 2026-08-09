@@ -56,6 +56,7 @@ from shared.input_artifacts import (
     NATIVE_BUSINESS_DATE_ENV,
     NATIVE_FEATURE_DATE_ENV,
     NATIVE_GENERATION_ID_ENV,
+    EPHEMERAL_NATIVE_INPUT_ROOT_ENV,
     NATIVE_INPUT_MODE,
     NATIVE_INPUT_MODE_ENV,
     NATIVE_MANIFEST_PATH_ENV,
@@ -82,6 +83,7 @@ from shared.native_input_generation import (
 from shared.liwei_0616_cache_contract import (
     CACHE_MUTATION_POLICY_ENV,
     CACHE_MUTATION_POLICY_HIT_ONLY,
+    CACHE_MUTATION_POLICY_PRIVATE_BUILD,
     CACHE_MUTATION_POLICY_PREWARM,
     SIGNAL_GAP_CACHE_PREWARM_PUBLISHER_SCHEME_ID,
 )
@@ -271,6 +273,7 @@ def run_scheme_subprocess(
     phase_a_cache_root: str | Path | None = None,
     phase_a_cache_prewarm_permit: str | Path | None = None,
     phase_a_cache_prewarm_capability: str | None = None,
+    ephemeral_native_runtime_root: str | Path | None = None,
 ) -> list[PredictionRecord]:
     """通过 conda 子进程在算法环境中运行方案。"""
     process_start_guard = require_process_start_guard(
@@ -298,6 +301,27 @@ def run_scheme_subprocess(
     if is_signal_gap_execution and native_generation is None:
         raise ValueError(
             "signal-gap Native execution requires native_generation"
+        )
+    normalized_ephemeral_root = _normalize_ephemeral_native_runtime_root(
+        ephemeral_native_runtime_root
+    )
+    if normalized_ephemeral_root is not None and native_generation is not None:
+        raise ValueError(
+            "ephemeral Native runtime cannot be combined with "
+            "native_generation"
+        )
+    if normalized_ephemeral_root is not None and (
+        native_execution_mode != NATIVE_EXECUTION_MODE_SCHEDULED
+        or expected_native_feature_date is not None
+        or phase_a_cache_root is not None
+        or phase_a_cache_prewarm_permit is not None
+        or phase_a_cache_prewarm_capability is not None
+        or live_source_compatibility
+        or live_source_package_sha256 is not None
+    ):
+        raise ValueError(
+            "ephemeral Native runtime cannot be combined with legacy "
+            "signal-gap execution controls"
         )
     if (
         native_execution_mode == NATIVE_EXECUTION_MODE_SCHEDULED
@@ -338,10 +362,21 @@ def run_scheme_subprocess(
     for name in live_source_environment_names:
         env.pop(name, None)
     env.pop(CACHE_MUTATION_POLICY_ENV, None)
+    env.pop(EPHEMERAL_NATIVE_INPUT_ROOT_ENV, None)
     env.pop(PREWARM_PERMIT_ENV, None)
     env.pop(PREWARM_CAPABILITY_ENV, None)
     env.pop(SCHEDULE_EXECUTION_TOKEN_ENV, None)
-    if is_signal_gap_cache_prewarm:
+    if normalized_ephemeral_root is not None:
+        env[EPHEMERAL_NATIVE_INPUT_ROOT_ENV] = str(
+            normalized_ephemeral_root / "inputs"
+        )
+        env["LIWEI_0616_PHASE_A_CACHE_ROOT"] = str(
+            normalized_ephemeral_root / "phase-a-cache"
+        )
+        env[CACHE_MUTATION_POLICY_ENV] = (
+            CACHE_MUTATION_POLICY_PRIVATE_BUILD
+        )
+    elif is_signal_gap_cache_prewarm:
         env[CACHE_MUTATION_POLICY_ENV] = (
             CACHE_MUTATION_POLICY_PREWARM
         )
@@ -639,6 +674,17 @@ def _normalize_phase_a_cache_root(
     return path
 
 
+def _normalize_ephemeral_native_runtime_root(
+    value: str | Path | None,
+) -> Path | None:
+    if value is None:
+        return None
+    path = Path(value)
+    if not path.is_absolute():
+        raise ValueError("ephemeral_native_runtime_root must be absolute")
+    return path
+
+
 def _normalize_prewarm_permit_path(
     value: str | Path | None,
 ) -> Path | None:
@@ -702,6 +748,7 @@ def run_configured_scheme(
     phase_a_cache_root: str | Path | None = None,
     phase_a_cache_prewarm_permit: str | Path | None = None,
     phase_a_cache_prewarm_capability: str | None = None,
+    ephemeral_native_runtime_root: str | Path | None = None,
 ) -> list[PredictionRecord]:
     """按显式 runtime_type 选择算法执行驱动。"""
     process_start_guard = require_process_start_guard(
@@ -713,17 +760,39 @@ def run_configured_scheme(
     if blackbox_snapshot_mode not in VALID_BLACKBOX_SNAPSHOT_MODES:
         raise ValueError(f"unsupported Blackbox snapshot mode: {blackbox_snapshot_mode}")
     runtime_type = getattr(cfg, "runtime_type", "native_adapter")
+    normalized_ephemeral_root = _normalize_ephemeral_native_runtime_root(
+        ephemeral_native_runtime_root
+    )
     if runtime_type != "native_adapter" and (
         native_execution_mode != NATIVE_EXECUTION_MODE_SCHEDULED
         or expected_native_feature_date is not None
         or phase_a_cache_root is not None
         or phase_a_cache_prewarm_permit is not None
         or phase_a_cache_prewarm_capability is not None
+        or normalized_ephemeral_root is not None
     ):
         raise ValueError(
             "Native execution contract is only valid for native_adapter"
         )
     if runtime_type == "native_adapter":
+        if normalized_ephemeral_root is not None and native_generation is not None:
+            raise ValueError(
+                "ephemeral Native runtime cannot be combined with "
+                "native_generation"
+            )
+        if normalized_ephemeral_root is not None and (
+            native_execution_mode != NATIVE_EXECUTION_MODE_SCHEDULED
+            or expected_native_feature_date is not None
+            or phase_a_cache_root is not None
+            or phase_a_cache_prewarm_permit is not None
+            or phase_a_cache_prewarm_capability is not None
+            or live_source_compatibility
+            or live_source_package_sha256 is not None
+        ):
+            raise ValueError(
+                "ephemeral Native runtime cannot be combined with legacy "
+                "signal-gap execution controls"
+            )
         if (
             databridge_generation is not None
             or calendar_generation is not None
@@ -758,6 +827,10 @@ def run_configured_scheme(
         if phase_a_cache_prewarm_capability is not None:
             native_kwargs["phase_a_cache_prewarm_capability"] = (
                 phase_a_cache_prewarm_capability
+            )
+        if normalized_ephemeral_root is not None:
+            native_kwargs["ephemeral_native_runtime_root"] = (
+                normalized_ephemeral_root
             )
         if live_source_compatibility:
             native_kwargs["live_source_compatibility"] = True
