@@ -32,25 +32,18 @@ from shared.input_artifacts import (
 from shared.liwei_0616_cache_contract import (
     APPROVED_PHASE_A_CACHE_PUBLISHERS,
     CACHE_MUTATION_POLICY_ENV,
-    CACHE_MUTATION_POLICY_HIT_ONLY,
     CACHE_MUTATION_POLICY_PRIVATE_BUILD,
-    CACHE_MUTATION_POLICY_PREWARM,
     GENERATION_ACCEPTANCE_SCHEMA_VERSION,
     PHASE_A_CACHE_ABI_VERSION,
-    SIGNAL_GAP_CACHE_PREWARM_PUBLISHER_SCHEME_ID,
     validate_generation_acceptance_record,
 )
 from shared.liwei_0616_cache_projection import (
     PROJECTION_SCHEMA_VERSION,
     AuxiliaryDependencyProjection,
 )
-from shared.liwei_0616_signal_gap_prewarm import (
-    consume_signal_gap_cache_prewarm_permit,
-)
 from shared.native_input_generation import (
     NATIVE_GENERATION_EXPORTER_VERSION,
     NATIVE_GENERATION_SCHEMA_VERSION,
-    SIGNAL_GAP_NATIVE_EXPORTER_VERSION,
 )
 
 
@@ -216,77 +209,36 @@ def prepare_phase_a_caches(
     非生产诊断。
     """
     mutation_policy = _cache_mutation_policy()
-    try:
-        _validate_cache_publisher_identity(spec)
-        _validate_daily_dependency_proof(spec)
-        if (
-            not isinstance(cache_consumer_id, str)
-            or not cache_consumer_id.strip()
-        ):
-            raise ValueError(
-                "cache_consumer_id must be a non-empty string"
-            )
-        cache_consumer_id = cache_consumer_id.strip()
-        if compare_cold is not None and compare_cold is train_missing:
-            raise ValueError(
-                "compare_cold must be independent from train_missing"
-            )
-        if qualify_compare_gate is not None and compare_cold is None:
-            raise ValueError(
-                "qualify_compare_gate requires an independent "
-                "compare_cold callback"
-            )
-        if compare_full_output is not None and compare_cold is None:
-            raise ValueError(
-                "compare_full_output requires an independent "
-                "compare_cold callback"
-            )
-        if (
-            qualify_compare_gate is not None
-            and compare_full_output is not None
-        ):
-            raise ValueError(
-                "choose either offline qualify_compare_gate evidence "
-                "or runtime compare_full_output"
-            )
-    except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        if mutation_policy == CACHE_MUTATION_POLICY_HIT_ONLY:
-            raise RuntimeError(
-                "SIGNAL_GAP_CACHE_PREWARM_REQUIRED: "
-                "Phase A cache request is invalid"
-            ) from exc
-        raise
-    try:
-        native_generation_binding = (
-            _resolve_native_generation_binding(
-                native_generation,
-                allow_signal_gap_snapshot=(
-                    mutation_policy
-                    in {
-                        CACHE_MUTATION_POLICY_HIT_ONLY,
-                        CACHE_MUTATION_POLICY_PREWARM,
-                    }
-                ),
-            )
-        )
-    except (OSError, TypeError, ValueError) as exc:
-        if mutation_policy == CACHE_MUTATION_POLICY_HIT_ONLY:
-            raise RuntimeError(
-                "SIGNAL_GAP_CACHE_PREWARM_REQUIRED: "
-                "Native cache authority is invalid"
-            ) from exc
-        raise
+    _validate_cache_publisher_identity(spec)
+    _validate_daily_dependency_proof(spec)
     if (
-        mutation_policy == CACHE_MUTATION_POLICY_PREWARM
-        and (
-            native_generation_binding is None
-            or native_generation_binding["exporter_version"]
-            != SIGNAL_GAP_NATIVE_EXPORTER_VERSION
-        )
+        not isinstance(cache_consumer_id, str)
+        or not cache_consumer_id.strip()
     ):
-        raise RuntimeError(
-            "SIGNAL_GAP_CACHE_PREWARM_AUTHORITY_INVALID"
+        raise ValueError("cache_consumer_id must be a non-empty string")
+    cache_consumer_id = cache_consumer_id.strip()
+    if compare_cold is not None and compare_cold is train_missing:
+        raise ValueError(
+            "compare_cold must be independent from train_missing"
         )
+    if qualify_compare_gate is not None and compare_cold is None:
+        raise ValueError(
+            "qualify_compare_gate requires an independent compare_cold "
+            "callback"
+        )
+    if compare_full_output is not None and compare_cold is None:
+        raise ValueError(
+            "compare_full_output requires an independent compare_cold "
+            "callback"
+        )
+    if qualify_compare_gate is not None and compare_full_output is not None:
+        raise ValueError(
+            "choose either offline qualify_compare_gate evidence or "
+            "runtime compare_full_output"
+        )
+    native_generation_binding = _resolve_native_generation_binding(
+        native_generation
+    )
     root = _cache_root(cache_root)
     if (
         mutation_policy == CACHE_MUTATION_POLICY_PRIVATE_BUILD
@@ -294,33 +246,6 @@ def prepare_phase_a_caches(
     ):
         raise ValueError("private_build cache root must be absolute")
     family_root = _family_cache_root(root, spec)
-    if mutation_policy == CACHE_MUTATION_POLICY_HIT_ONLY:
-        return _prepare_signal_gap_hit_only(
-            spec=spec,
-            cache_consumer_id=cache_consumer_id,
-            family_root=family_root,
-            daily_df=daily_df,
-            weekly_df=weekly_df,
-            monthly_df=monthly_df,
-            auxiliary_dependency_projection=(
-                auxiliary_dependency_projection
-            ),
-            test_ranges=test_ranges,
-            native_generation_binding=native_generation_binding,
-        )
-    if mutation_policy == CACHE_MUTATION_POLICY_PREWARM:
-        if (
-            cache_consumer_id
-            != SIGNAL_GAP_CACHE_PREWARM_PUBLISHER_SCHEME_ID
-        ):
-            raise RuntimeError(
-                "SIGNAL_GAP_CACHE_PREWARM_PUBLISHER_REQUIRED"
-            )
-        consume_signal_gap_cache_prewarm_permit(
-            cache_root=root,
-            cache_consumer_id=cache_consumer_id,
-            native_generation=native_generation_binding,
-        )
     is_publisher = (
         cache_consumer_id == spec.publisher_consumer_id
         or mutation_policy == CACHE_MUTATION_POLICY_PRIVATE_BUILD
@@ -940,107 +865,19 @@ def _cache_mutation_policy() -> str | None:
     if configured is None:
         return None
     policy = configured.strip()
-    if policy not in {
-        CACHE_MUTATION_POLICY_HIT_ONLY,
-        CACHE_MUTATION_POLICY_PRIVATE_BUILD,
-        CACHE_MUTATION_POLICY_PREWARM,
-    }:
+    if policy != CACHE_MUTATION_POLICY_PRIVATE_BUILD:
         raise ValueError(
             f"{CACHE_MUTATION_POLICY_ENV} must be "
-            f"{CACHE_MUTATION_POLICY_HIT_ONLY} or "
-            f"{CACHE_MUTATION_POLICY_PREWARM} or "
             f"{CACHE_MUTATION_POLICY_PRIVATE_BUILD}"
         )
     return policy
 
 
-def _prepare_signal_gap_hit_only(
-    *,
-    spec: PhaseACacheSpec,
-    cache_consumer_id: str,
-    family_root: Path,
-    daily_df: pd.DataFrame,
-    weekly_df: pd.DataFrame,
-    monthly_df: pd.DataFrame,
-    auxiliary_dependency_projection: (
-        AuxiliaryDependencyProjection | None
-    ),
-    test_ranges: tuple[tuple[str, str], ...],
-    native_generation_binding: Mapping[str, object] | None,
-) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
-    """历史补缺只读取已预热且精确匹配的 current generation。"""
-    try:
-        if native_generation_binding is None:
-            raise RuntimeError(
-                "Native generation binding is missing"
-            )
-        requested_by_baseline: dict[str, list[str]] = {}
-        for baseline in spec.baselines:
-            config = spec.baseline_configs.get(baseline)
-            if config is None:
-                raise KeyError(
-                    f"missing baseline config: {baseline}"
-                )
-            requested = _requested_dates(
-                daily_df,
-                config,
-                test_ranges,
-            )
-            if not requested:
-                raise ValueError(
-                    f"baseline {baseline} has no requested test dates"
-                )
-            requested_by_baseline[baseline] = requested
-        input_state = _input_generation_state(
-            daily_df=daily_df,
-            weekly_df=weekly_df,
-            monthly_df=monthly_df,
-            auxiliary_dependency_projection=(
-                auxiliary_dependency_projection
-            ),
-            native_generation_binding=native_generation_binding,
-        )
-        current, current_error = _load_current_generation(
-            family_root,
-            secure=True,
-        )
-        input_change = _input_change_analysis(
-            (
-                current.manifest.get("input_state")
-                if current is not None
-                else None
-            ),
-            input_state,
-        )
-        return _validated_consumer_hit(
-            spec=spec,
-            cache_consumer_id=cache_consumer_id,
-            current=current,
-            current_error=current_error,
-            requested_by_baseline=requested_by_baseline,
-            input_state=input_state,
-            input_change=input_change,
-            family_root=family_root,
-            secure_runtime=True,
-            native_generation_binding=native_generation_binding,
-        )
-    except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
-        raise RuntimeError(
-            "SIGNAL_GAP_CACHE_PREWARM_REQUIRED: "
-            "exact read-only Phase A cache hit is unavailable"
-        ) from exc
-
-
 def _resolve_native_generation_binding(
     explicit: Mapping[str, object] | None,
-    *,
-    allow_signal_gap_snapshot: bool = False,
 ) -> dict[str, object] | None:
     if explicit is not None:
-        return _validate_native_generation_binding(
-            explicit,
-            allow_signal_gap_snapshot=allow_signal_gap_snapshot,
-        )
+        return _validate_native_generation_binding(explicit)
     configured = {
         "generation_id": os.getenv(NATIVE_GENERATION_ID_ENV),
         "manifest_sha256": os.getenv(NATIVE_MANIFEST_SHA256_ENV),
@@ -1089,10 +926,7 @@ def _resolve_native_generation_binding(
         "schema_version": manifest.get("schema_version"),
         "exporter_version": manifest.get("exporter_version"),
     }
-    validated = _validate_native_generation_binding(
-        binding,
-        allow_signal_gap_snapshot=allow_signal_gap_snapshot,
-    )
+    validated = _validate_native_generation_binding(binding)
     for field in ("generation_id", "business_date", "feature_date"):
         if validated[field] != configured[field]:
             raise ValueError(
@@ -1103,8 +937,6 @@ def _resolve_native_generation_binding(
 
 def _validate_native_generation_binding(
     raw: Mapping[str, object],
-    *,
-    allow_signal_gap_snapshot: bool = False,
 ) -> dict[str, object]:
     required = {
         "generation_id",
@@ -1138,10 +970,7 @@ def _validate_native_generation_binding(
         raise ValueError(
             "Native generation cache schema_version mismatch"
         )
-    accepted_exporters = {NATIVE_GENERATION_EXPORTER_VERSION}
-    if allow_signal_gap_snapshot:
-        accepted_exporters.add(SIGNAL_GAP_NATIVE_EXPORTER_VERSION)
-    if normalized["exporter_version"] not in accepted_exporters:
+    if normalized["exporter_version"] != NATIVE_GENERATION_EXPORTER_VERSION:
         raise ValueError(
             "Native generation cache exporter_version mismatch"
         )
@@ -1360,10 +1189,7 @@ def _validate_input_generation_state_record(raw: Any) -> dict[str, Any]:
         )
     native = raw.get("native_generation")
     normalized_native = (
-        _validate_native_generation_binding(
-            native,
-            allow_signal_gap_snapshot=True,
-        )
+        _validate_native_generation_binding(native)
         if isinstance(native, Mapping)
         else None
     )
@@ -3058,10 +2884,7 @@ def _validate_generation_acceptance_evidence(
                 "unbound cache generation cannot be production accepted"
             )
     else:
-        validated_native = _validate_native_generation_binding(
-            native,
-            allow_signal_gap_snapshot=True,
-        )
+        validated_native = _validate_native_generation_binding(native)
         if (
             raw.get("status") != "ACCEPTED"
             or validated_native != input_state.get("native_generation")

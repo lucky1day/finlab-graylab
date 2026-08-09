@@ -63,9 +63,10 @@ python -m harness signal-gap-fill --predict-date YYYY-MM-DD
 ```
 
 该命令扫描当天所有应运行的 active 方案，冻结计划，仅对真实缺口按原子方案组在进程内签发
-精确短期 token，并统一 insert-only 写入 `gray_live`。缺少 HMAC secret、权威输入、计划异常或
-算法失败均直接退出；不准备输入、不回退旧版本、不覆盖、不重试。写后必须由同日期权威 plan
-确认缺口为零。
+精确短期 token，并统一 insert-only 写入 `gray_live`。Native 从当前数据库按指定日期推导的
+`feature_date` 截止重建，token 的 source authority 为 `null`；Blackbox 继续严格绑定冻结的
+DataBridge authority。缺少 HMAC secret、Blackbox 权威输入、计划异常或算法失败均直接退出；
+不回退旧版本、不覆盖、不重试。写后必须由同日期权威 plan 确认缺口为零。
 
 DataBridge 必须由本机 MySQL 原子发布标准日/周/月 artifact，并继续通过源表、schema、
 连续性、稳定轮次和 `feature_date` 截止验证。输入不新鲜、源表异常或两轮不稳定时必须
@@ -97,7 +98,7 @@ Native 技术入库仍必须通过 source benchmark/CompareGate；ActivationGate
 config 或 version hash。maintenance 的 current exact `t_scheme_versions` 行必须为
 `runtime_type='native_adapter'` 且 status 为 `draft|active`；expected Registry identity 可在预激活时
 统一为 `paused`，或在激活后统一为 `active`，但 draft version 配 active Registry 必须 fail-closed。
-只有 ActivationGate 可在严格 discovery、精确版本与一次性授权核验后原子建立 active 状态。legacy admission 缺快照时仍 fail-closed；唯一保留的固定 scope 是 `weekly_10y_d_overlay_0529` 已持久化的 canonical receipt；平台只读校验 maintenance 选定的 prior、缺 identity 的 StaticGate 与固定业务身份，writer 和 token action 已退役。该 receipt 不改历史、不启动调度、不激活或写业务表；2026-08-04 receipt 后，exact version `e50ad79a6c2f` 的六段 maintenance 与独立 activation 均已通过，DB version 与 Registry 均为 active。随后在独立精确授权下，DB-`SEALED` current-snapshot 制品 `native-cc249e2aec88fad7bcfc7c1c` 完成唯一 `gray_live` key 的 run `2106`；该写入不授予新的业务写入、scheduler 或 installed 控制面权限。任何后续修订仍必须满足输入 cutoff、统一周历、日期语义、
+只有 ActivationGate 可在严格 discovery、精确版本与一次性授权核验后原子建立 active 状态。legacy admission 缺快照时仍 fail-closed；唯一保留的固定 scope 是 `weekly_10y_d_overlay_0529` 已持久化的 canonical receipt；平台只读校验 maintenance 选定的 prior、缺 identity 的 StaticGate 与固定业务身份，writer 和 token action 已退役。该 receipt 不改历史、不启动调度、不激活或写业务表；2026-08-04 receipt 后，exact version `e50ad79a6c2f` 的六段 maintenance 与独立 activation 均已通过，DB version 与 Registry 均为 active。其历史补缺证据仍保留在 run 与状态记录中，但不构成当前 Native artifact/generation 控制面。任何后续修订仍必须满足输入 cutoff、统一周历、日期语义、
 Registry、live-safe oracle 与专项授权，随后也只能补其精确授权的 `gray_live` key；不得修改
 Native core 或 source benchmark。
 

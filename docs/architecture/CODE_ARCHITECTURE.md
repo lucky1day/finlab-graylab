@@ -174,7 +174,9 @@ launchd installed plist（单一 cadence writer）
 
 入口（单日历史补缺）：`python -m harness signal-gap-fill --predict-date YYYY-MM-DD` →
 冻结当天全 active scope plan → 进程内精确授权 → `SignalGapFillGate` → `gray_live`
-insert-only 写入 → 同日期 plan 读回。该入口不产生 `scheduled_live`。
+insert-only 写入 → 同日期 plan 读回。Native 方案从当前数据库按该日 `feature_date`
+截止重建，并在每个方案独立的临时 input/Phase-A 目录中执行；Blackbox 继续严格重放
+冻结的 DataBridge authority。该入口不产生 `scheduled_live`，也不读取 Native 历史 generation。
 
 日期语义由 `shared.prediction_context` 和各频率 adapter 统一落地：日频实盘为 `predict_date=T+1, feature_date=T`；周频实盘先由 `predict_date` 反推上一交易日 `feature_date`，再映射 `feature_week_id`；月频 source-backed 方案若声明自然 15 号触发，则 `predict_date` 保留自然月 15 号，`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。`scheduler.executor` 在日频 live 写库前再次校验 `predict_date/feature_date/target_date`，防止源表水位不足时算法复用旧 feature/target 覆盖旧 target 明细。常驻 scheduler 的 startup catch-up 与 cron 路径已删除：服务启动不会按 cron 推断或补跑错过的预测任务，`scheduled_live` 只由对应的一次性 launchd 自然时钟写入。`shared.calendar_service` 和 `scheduler.weekly_actuals_updater` 共享 `shared.week_calendar_normalizer`，只对源周历孤立 forward jump 做只读归一化，确保预测 target 与 weekly actuals 使用同一周历事实。所有前端月份归属、actual join 和 gray/backtest 分流仍以 `target_date` 为事实键。
 

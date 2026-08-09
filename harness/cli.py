@@ -38,14 +38,6 @@ from harness.signal_gap_plan import (
     SignalGapPlanScope,
     plan_signal_gaps,
 )
-from harness.signal_gap_native_artifact import (
-    SignalGapNativeCachePrewarmError,
-    SignalGapNativeArtifactRegistrationError,
-    describe_signal_gap_native_cache_prewarm,
-    prewarm_signal_gap_native_cache,
-    prepare_signal_gap_native_artifact,
-    register_signal_gap_native_artifact,
-)
 from scheduler.discovery import load_scheme_config
 from scheduler.repository import create_engine_from_env
 from shared.blackbox_v2.contracts import load_metadata
@@ -95,22 +87,6 @@ def main(argv: list[str] | None = None) -> int:
                     f"{', '.join(missing)}"
                 )
         issued_by = args.issued_by if args.issued_by is not None else "harness"
-        signal_gap_kwargs: dict[str, Any] = {}
-        if args.action in {
-            "signal_gap_native_artifact_register",
-            "signal_gap_native_cache_prewarm",
-        }:
-            if args.source_authority_json is None:
-                parser.error(
-                    "auth issue --action "
-                    f"{args.action} requires "
-                    "--source-authority-json"
-                )
-            signal_gap_kwargs = {
-                "source_authority": _read_json_file(
-                    args.source_authority_json
-                ),
-            }
         token = issue_token(
             args.scheme_id,
             args.action,
@@ -120,7 +96,6 @@ def main(argv: list[str] | None = None) -> int:
             ttl_seconds=args.expires_in,
             issued_by=issued_by,
             backtest_start_date=args.backtest_start_date,
-            **signal_gap_kwargs,
         )
         print(token)
         return 0
@@ -219,107 +194,6 @@ def main(argv: list[str] | None = None) -> int:
             or int(plan.get("counts", {}).get("blocked", 0))
             else 0
         )
-    if args.command == "signal-gap-native-artifact":
-        try:
-            if args.native_artifact_command == "prepare":
-                result = prepare_signal_gap_native_artifact(
-                    capture_business_date=args.capture_business_date,
-                    feature_date=args.feature_date,
-                    output_root=args.output_root,
-                )
-            elif args.native_artifact_command == "register":
-                result = register_signal_gap_native_artifact(
-                    manifest=args.manifest,
-                    historical_predict_date=
-                        args.historical_predict_date,
-                    authorize=args.authorize,
-                    storage_root=args.storage_root,
-                )
-            elif args.native_artifact_command == "prewarm-authority":
-                result = describe_signal_gap_native_cache_prewarm(
-                    manifest=args.manifest,
-                    historical_predict_date=(
-                        args.historical_predict_date
-                    ),
-                    publisher_scheme_id=args.publisher_scheme_id,
-                    storage_root=args.storage_root,
-                )
-            else:
-                result = prewarm_signal_gap_native_cache(
-                    manifest=args.manifest,
-                    historical_predict_date=(
-                        args.historical_predict_date
-                    ),
-                    publisher_scheme_id=args.publisher_scheme_id,
-                    authorize=args.authorize,
-                    storage_root=args.storage_root,
-                    algo_env=args.algo_env,
-                    timeout_sec=args.timeout_sec,
-                )
-        except (
-            SignalGapNativeArtifactRegistrationError,
-            SignalGapNativeCachePrewarmError,
-        ) as exc:
-            is_prewarm = args.native_artifact_command in {
-                "prewarm",
-                "prewarm-authority",
-            }
-            schema_version = (
-                "signal-gap-native-cache-prewarm-error-v1"
-                if is_prewarm
-                else "signal-gap-native-artifact-error-v1"
-            )
-            print(
-                json.dumps(
-                    {
-                        "schema_version": schema_version,
-                        "status": "ERROR",
-                        "failure_code": exc.failure_code,
-                        "token_consumed": exc.token_consumed,
-                        "audit_path": (
-                            str(exc.audit_path)
-                            if exc.audit_path is not None
-                            else None
-                        ),
-                        "error_type": type(exc).__name__,
-                        "error_message": str(exc),
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
-            return 2
-        except Exception as exc:
-            is_prewarm = args.native_artifact_command in {
-                "prewarm",
-                "prewarm-authority",
-            }
-            print(
-                json.dumps(
-                    {
-                        "schema_version": (
-                            "signal-gap-native-cache-prewarm-error-v1"
-                            if is_prewarm
-                            else "signal-gap-native-artifact-error-v1"
-                        ),
-                        "status": "ERROR",
-                        "failure_code": (
-                            "SIGNAL_GAP_NATIVE_CACHE_PREWARM_ERROR"
-                            if is_prewarm
-                            else "SIGNAL_GAP_NATIVE_ARTIFACT_ERROR"
-                        ),
-                        "token_consumed": False,
-                        "audit_path": None,
-                        "error_type": type(exc).__name__,
-                        "error_message": str(exc),
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
-            return 2
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0
     if args.command == "signal-gap-fill":
         return _run_signal_gap_fill_command(args)
     parser.error("unsupported command")
@@ -435,107 +309,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     fill_parser.add_argument("--timeout-sec", type=int, default=600)
 
-    native_artifact_parser = subparsers.add_parser(
-        "signal-gap-native-artifact"
-    )
-    native_artifact_subparsers = (
-        native_artifact_parser.add_subparsers(
-            dest="native_artifact_command",
-            required=True,
-        )
-    )
-    native_artifact_prepare = native_artifact_subparsers.add_parser(
-        "prepare"
-    )
-    native_artifact_prepare.add_argument(
-        "--capture-business-date",
-        required=True,
-    )
-    native_artifact_prepare.add_argument(
-        "--feature-date",
-        required=True,
-    )
-    native_artifact_prepare.add_argument(
-        "--output-root",
-        type=Path,
-        required=True,
-    )
-    native_artifact_register = native_artifact_subparsers.add_parser(
-        "register"
-    )
-    native_artifact_register.add_argument(
-        "--manifest",
-        type=Path,
-        required=True,
-    )
-    native_artifact_register.add_argument(
-        "--historical-predict-date",
-        required=True,
-    )
-    native_artifact_register.add_argument(
-        "--authorize",
-        required=True,
-    )
-    native_artifact_register.add_argument(
-        "--storage-root",
-        type=Path,
-        required=True,
-    )
-    native_artifact_prewarm = native_artifact_subparsers.add_parser(
-        "prewarm"
-    )
-    native_artifact_prewarm.add_argument(
-        "--manifest",
-        type=Path,
-        required=True,
-    )
-    native_artifact_prewarm.add_argument(
-        "--historical-predict-date",
-        required=True,
-    )
-    native_artifact_prewarm.add_argument(
-        "--publisher-scheme-id",
-        required=True,
-    )
-    native_artifact_prewarm.add_argument(
-        "--authorize",
-        required=True,
-    )
-    native_artifact_prewarm.add_argument(
-        "--storage-root",
-        type=Path,
-        required=True,
-    )
-    native_artifact_prewarm.add_argument(
-        "--algo-env",
-        default="forecast_env",
-    )
-    native_artifact_prewarm.add_argument(
-        "--timeout-sec",
-        type=int,
-        default=600,
-    )
-    native_artifact_prewarm_authority = (
-        native_artifact_subparsers.add_parser("prewarm-authority")
-    )
-    native_artifact_prewarm_authority.add_argument(
-        "--manifest",
-        type=Path,
-        required=True,
-    )
-    native_artifact_prewarm_authority.add_argument(
-        "--historical-predict-date",
-        required=True,
-    )
-    native_artifact_prewarm_authority.add_argument(
-        "--publisher-scheme-id",
-        required=True,
-    )
-    native_artifact_prewarm_authority.add_argument(
-        "--storage-root",
-        type=Path,
-        required=True,
-    )
     auth_parser = subparsers.add_parser("auth")
     auth_subparsers = auth_parser.add_subparsers(dest="auth_command", required=True)
     issue_parser = auth_subparsers.add_parser("issue")
@@ -549,11 +322,6 @@ def _build_parser() -> argparse.ArgumentParser:
     issue_parser.add_argument(
         "--backtest-start-date",
         default=DEFAULT_BACKTEST_START_DATE,
-    )
-    issue_parser.add_argument(
-        "--source-authority-json",
-        type=Path,
-        default=None,
     )
     return parser
 

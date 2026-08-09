@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -27,14 +29,8 @@ from harness.signal_gap_plan import (
     normalize_signal_gap_plan_scope,
     plan_signal_gaps,
 )
-from harness.signal_gap_native_artifact import (
-    signal_gap_native_cache_root,
-)
 from scheduler.discovery import load_scheme_config
 from scheduler.executor import (
-    BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF,
-    NATIVE_EXECUTION_MODE_SIGNAL_GAP_ARCHIVED,
-    NATIVE_EXECUTION_MODE_SIGNAL_GAP_CURRENT_SNAPSHOT,
     run_blackbox_gray_replay_batch,
     run_configured_scheme,
 )
@@ -53,13 +49,8 @@ from shared.data_bridge.refresh import (
 from shared.input_artifacts import (
     BlackboxGrayReplaySession,
     build_blackbox_gray_replay_session,
-    open_native_generation,
 )
 from shared.models import PredictionRecord
-from shared.native_input_generation import (
-    NATIVE_GENERATION_EXPORTER_VERSION,
-    SIGNAL_GAP_NATIVE_EXPORTER_VERSION,
-)
 
 
 AUTHORIZATION_ACTION = "signal_gap_fill_write"
@@ -276,9 +267,6 @@ def run_signal_gap_fill(
         run_configured_scheme
     ),
     repository_module: Any | None = None,
-    native_generation_opener: Callable[..., Any] = (
-        open_native_generation
-    ),
     blackbox_session_builder: Callable[..., BlackboxGrayReplaySession] = (
         build_blackbox_gray_replay_session
     ),
@@ -424,7 +412,6 @@ def run_signal_gap_fill(
                 timeout_sec=timeout_sec,
                 data_bridge_config=databridge_config,
                 algorithm_runner=algorithm_runner,
-                native_generation_opener=native_generation_opener,
                 blackbox_session_builder=blackbox_session_builder,
                 blackbox_batch_runner=blackbox_batch_runner,
             )
@@ -966,7 +953,6 @@ def _run_algorithms(
     timeout_sec: int,
     data_bridge_config: DataBridgeRefreshConfig,
     algorithm_runner: Callable[..., list[PredictionRecord]],
-    native_generation_opener: Callable[..., Any],
     blackbox_session_builder: Callable[..., BlackboxGrayReplaySession],
     blackbox_batch_runner: Callable[..., list[PredictionRecord]],
 ) -> None:
@@ -984,42 +970,46 @@ def _run_algorithms(
         session_builder=blackbox_session_builder,
         batch_runner=blackbox_batch_runner,
     )
-    if any(item.error is not None for item in blackbox_executions):
-        return
-
-    futures: dict[Future[list[PredictionRecord]], _Execution] = {}
-    native_pool = ThreadPoolExecutor(
-        max_workers=2,
-        thread_name_prefix="signal-gap-native",
-    )
-    try:
-        for item in executions:
-            if item.group.runtime_type == "blackbox_v2":
-                continue
-            if item.group.runtime_type != "native_adapter":
-                item.error = ValueError(
-                    "unsupported signal-gap runtime_type: "
-                    f"{item.group.runtime_type}"
-                )
-                continue
-            futures[
-                native_pool.submit(
-                    _run_algorithm,
-                    item,
-                    engine=engine,
-                    algo_env=algo_env,
-                    timeout_sec=timeout_sec,
-                    algorithm_runner=algorithm_runner,
-                    native_generation_opener=native_generation_opener,
-                )
-            ] = item
-        for future, item in futures.items():
-            try:
-                item.records = future.result()
-            except Exception as exc:  # noqa: BLE001
-                item.error = exc
-    finally:
-        native_pool.shutdown(wait=True, cancel_futures=True)
+    with tempfile.TemporaryDirectory(
+        prefix="bfl-native-gap-"
+    ) as temporary_root:
+        os.chmod(temporary_root, 0o700)
+        root = Path(temporary_root).resolve(strict=True)
+        futures: dict[Future[list[PredictionRecord]], _Execution] = {}
+        native_pool = ThreadPoolExecutor(
+            max_workers=2,
+            thread_name_prefix="signal-gap-native",
+        )
+        try:
+            for item in executions:
+                if item.group.runtime_type == "blackbox_v2":
+                    continue
+                if item.group.runtime_type != "native_adapter":
+                    item.error = ValueError(
+                        "unsupported signal-gap runtime_type: "
+                        f"{item.group.runtime_type}"
+                    )
+                    continue
+                scheme_root = root / item.group.base_scheme_id
+                scheme_root.mkdir(mode=0o700)
+                futures[
+                    native_pool.submit(
+                        _run_algorithm,
+                        item,
+                        engine=engine,
+                        algo_env=algo_env,
+                        timeout_sec=timeout_sec,
+                        algorithm_runner=algorithm_runner,
+                        ephemeral_native_runtime_root=scheme_root,
+                    )
+                ] = item
+            for future, item in futures.items():
+                try:
+                    item.records = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    item.error = exc
+        finally:
+            native_pool.shutdown(wait=True, cancel_futures=True)
 
 
 def _run_blackbox_gray_replay_batches(
@@ -1339,7 +1329,7 @@ def _run_algorithm(
     algo_env: str,
     timeout_sec: int,
     algorithm_runner: Callable[..., list[PredictionRecord]],
-    native_generation_opener: Callable[..., Any],
+    ephemeral_native_runtime_root: Path,
 ) -> list[PredictionRecord]:
     group = item.group
     kwargs: dict[str, Any] = {
@@ -1347,113 +1337,63 @@ def _run_algorithm(
         "algo_env": algo_env,
         "timeout_sec": timeout_sec,
     }
-    context = None
-    try:
-        if group.runtime_type == "native_adapter":
-            artifact = _native_artifact(group.input_authority)
-            if artifact["feature_date"] != group.actions[0]["feature_date"]:
-                raise ValueError("Native artifact feature cutoff drift")
-            exporter_version = artifact["exporter_version"]
-            if exporter_version == NATIVE_GENERATION_EXPORTER_VERSION:
-                if artifact["business_date"] != group.predict_date:
-                    raise ValueError(
-                        "archived Native artifact business date must "
-                        "equal predict_date"
-                    )
-                native_execution_mode = (
-                    NATIVE_EXECUTION_MODE_SIGNAL_GAP_ARCHIVED
-                )
-            elif exporter_version == SIGNAL_GAP_NATIVE_EXPORTER_VERSION:
-                if artifact["business_date"] <= group.predict_date:
-                    raise ValueError(
-                        "Native artifact capture date must be after "
-                        "predict_date"
-                    )
-                native_execution_mode = (
-                    NATIVE_EXECUTION_MODE_SIGNAL_GAP_CURRENT_SNAPSHOT
-                )
-            else:
-                raise ValueError(
-                    "Native artifact purpose/exporter drift"
-                )
-            context = native_generation_opener(
-                Path(artifact["manifest_uri"]),
-                expected_generation_id=artifact["generation_id"],
-                expected_manifest_sha256=artifact["manifest_sha256"],
-                expected_business_date=artifact["business_date"],
-                expected_feature_date=group.actions[0]["feature_date"],
-            )
-            kwargs["native_generation"] = context
-            kwargs["native_execution_mode"] = native_execution_mode
-            kwargs["expected_native_feature_date"] = (
-                group.actions[0]["feature_date"]
-            )
-            if (
-                exporter_version
-                == SIGNAL_GAP_NATIVE_EXPORTER_VERSION
-            ):
-                kwargs["phase_a_cache_root"] = (
-                    signal_gap_native_cache_root(
-                        storage_root=(
-                            Path(artifact["manifest_uri"])
-                            .parent
-                            .parent
-                        ),
-                        generation_id=context.generation_id,
-                    )
-                )
-            if group.input_mode == "live_source_0629":
-                package_sha256 = group.actions[0].get(
-                    "source_package_sha256"
-                )
-                if not _is_sha256(package_sha256):
-                    raise ValueError(
-                        "0629 source package SHA-256 is not frozen"
-                    )
-                kwargs["live_source_compatibility"] = True
-                kwargs["live_source_package_sha256"] = package_sha256
-        elif group.runtime_type == "blackbox_v2":
-            authority = group.source_authority
-            if authority["refresh_date"] < group.predict_date:
-                raise ValueError(
-                    "DataBridge refresh_date must be on or after predict_date"
-                )
-            kwargs.update(
-                {
-                    "blackbox_snapshot_mode":
-                        BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF,
-                    "expected_generation_id":
-                        authority["generation_id"],
-                    "expected_refresh_date":
-                        authority["refresh_date"],
-                }
-            )
-        else:
-            raise ValueError(
-                f"unsupported runtime_type: {group.runtime_type}"
-            )
-        records = algorithm_runner(
-            item.cfg,
-            group.predict_date,
-            **kwargs,
+    if group.runtime_type != "native_adapter":
+        raise ValueError(
+            f"private Native execution received {group.runtime_type}"
         )
-        normalized = [
-            replace(
-                record,
-                prediction_phase="gray_live",
-                scheme_version=(
-                    group.scheme_version
-                    if record.scheme_version is None
-                    else record.scheme_version
-                ),
-            )
-            for record in records
-        ]
-        _validate_group_records(group, normalized)
-        return normalized
-    finally:
-        if context is not None and hasattr(context, "dispose"):
-            context.dispose()
+    kwargs["ephemeral_native_runtime_root"] = (
+        ephemeral_native_runtime_root
+    )
+    records = algorithm_runner(
+        item.cfg,
+        group.predict_date,
+        **kwargs,
+    )
+    normalized = [
+        replace(
+            record,
+            prediction_phase="gray_live",
+            scheme_version=(
+                group.scheme_version
+                if record.scheme_version is None
+                else record.scheme_version
+            ),
+            extra=_strip_native_ephemeral_provenance(record.extra),
+        )
+        for record in records
+    ]
+    _validate_group_records(group, normalized)
+    return normalized
+
+
+_NATIVE_EPHEMERAL_PROVENANCE_FIELDS = frozenset(
+    {
+        "input_artifact_path",
+        "input_artifact_source",
+        "input_artifact_data_version",
+        "input_artifact_watermark",
+        "input_cutoff_date",
+        "phase_a_cache",
+    }
+)
+_NATIVE_EPHEMERAL_PROVENANCE_PREFIXES = (
+    "daily_input_artifact_",
+    "weekly_input_artifact_",
+    "monthly_input_artifact_",
+    "phase_a_cache_",
+)
+
+
+def _strip_native_ephemeral_provenance(
+    extra: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """只移除私有重建路径字段，保留算法业务与模型证据。"""
+    return {
+        key: value
+        for key, value in dict(extra or {}).items()
+        if key not in _NATIVE_EPHEMERAL_PROVENANCE_FIELDS
+        and not key.startswith(_NATIVE_EPHEMERAL_PROVENANCE_PREFIXES)
+    }
 
 
 def _validate_group_records(
@@ -1576,36 +1516,6 @@ def _repository_source_authority(
         "replay_mode": "historical_as_of_replay",
         "vintage_disclaimer": VINTAGE_DISCLAIMER,
     }
-
-
-def _native_artifact(
-    authority: Mapping[str, Any],
-) -> dict[str, Any]:
-    artifact = authority.get("artifact")
-    if not isinstance(artifact, dict):
-        raise ValueError("Native frozen artifact authority is missing")
-    required = (
-        "generation_id",
-        "manifest_uri",
-        "manifest_sha256",
-        "dataset_content_id",
-        "source_commit_token",
-        "business_date",
-        "feature_date",
-        "exporter_version",
-    )
-    if any(not str(artifact.get(field) or "") for field in required):
-        raise ValueError("Native frozen artifact authority is incomplete")
-    if not _is_sha256(artifact["manifest_sha256"]):
-        raise ValueError("Native artifact manifest SHA-256 is invalid")
-    if (
-        not _is_sha256(artifact["dataset_content_id"])
-        or not _is_sha256(artifact["source_commit_token"])
-    ):
-        raise ValueError(
-            "Native artifact content/source evidence SHA-256 is invalid"
-        )
-    return dict(artifact)
 
 
 def _expected_target_key(row: Mapping[str, Any]) -> dict[str, Any]:

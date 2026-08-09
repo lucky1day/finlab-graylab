@@ -64,6 +64,13 @@ UNSUPPORTED_PLAN = {
 }
 
 
+def test_harness_help_only_exposes_single_gap_fill_entry() -> None:
+    help_text = cli._build_parser().format_help()
+
+    assert "signal-gap-fill" in help_text
+    assert "signal-gap-native-" + "artifact" not in help_text
+
+
 def _claim() -> SimpleNamespace:
     return SimpleNamespace(
         base_scheme_id="demo_blackbox",

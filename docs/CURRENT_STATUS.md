@@ -19,8 +19,8 @@
 ## 当前生产验收
 
 - 截至 2026-08-07 的 active live 信号只读报告为 `expected=863`、`present=863`、`missing=0`。
-- 唯一 Native 日频缺口使用封存 `feature_date=2026-08-04` 输入完成受控 cache 预热，并由 run `2256`
-  insert-only 写入一条 `gray_live`；没有重跑既有 Blackbox 缺口或触发 DataBridge/launchd 任务。
+- 唯一 Native 日频缺口已由 run `2256` insert-only 写入一条 `gray_live`；当时的输入处置细节保留在
+  历史状态记录中，不再构成当前 Native 补缺控制面。
 - Dashboard 每次直接读数据库；最新验收返回 `stale=false`、`snapshot_age_ms=0`，对应方案状态为 `present`。
 - 公网 rollout 验收为 `PASS=60`、`FAIL=0`。旧 backtest JSON 本机生成约 0.25 秒；公网探针使用现有 gzip
   表示后传输约 239 KB，不再依赖扩大超时、重试或 fallback。
@@ -29,6 +29,8 @@
 ## 已闭环的生产治理
 
 - Blackbox Admission 已完整退役；历史补缺仅保留必须指定单日的 Harness 运维入口，且只写 `gray_live`。
+- Native 补缺使用当前数据库按历史 `feature_date` 截止重建，不再依赖历史 generation、artifact 或
+  Phase-A prewarm；Blackbox 继续严格使用 DataBridge replay。
 - G1/G2 的 DataBridge 与 launchd-only single-writer、G3 的 8 月 3 日补写、G4 唯一键修复、G5/G6
   无写库验收均已闭环。
 - launchd-only 清理已移除仓库中的 ledger/occurrence/epoch runtime、policy 与 replay 闭包；

@@ -649,7 +649,7 @@ conda run --no-capture-output -n bond_factor_lab_service \
     --predict-date {historical_signal_date}
 ```
 
-命令冻结该日全 active scope，只为 `GRAY_LIVE_GAP` 原子组在进程内签发绑定 plan SHA、exact version、target keys 与 source authority 的短期 HMAC token；旧逐方案 Gate 和外部 `gray_backfill_write` token 已退役。它使用 `historical_as_of_replay` 输入模式：完整校验当前 DataBridge 后，允许历史 `predict_date` 读取当前同代快照，但 Request 的三个 cutoff key 仍硬截止在该点的 `feature_date`。该结果必须标记 `current_snapshot_as_of_not_historical_vintage`，只能解释为当前快照上的 live-safe as-of replay，不能宣称历史 vintage PIT。Gate 在算法执行和提交前持续核对冻结 source authority；切代即失败。prediction `extra` 必须持久化 snapshot、generation、refresh、三频 cutoff、replay semantics 和 backfill 时间。
+命令冻结该日全 active scope，只为 `GRAY_LIVE_GAP` 原子组在进程内签发绑定 plan SHA、exact version 与 target keys 的短期 HMAC token；Native source authority 固定为 `null`，Blackbox token 继续绑定完整 DataBridge authority。旧逐方案 Gate 和外部 `gray_backfill_write` token 已退役。Blackbox 使用 `historical_as_of_replay` 输入模式：完整校验当前 DataBridge 后，允许历史 `predict_date` 读取当前同代快照，但 Request 的三个 cutoff key 仍硬截止在该点的 `feature_date`。该结果必须标记 `current_snapshot_as_of_not_historical_vintage`，只能解释为当前快照上的 live-safe as-of replay，不能宣称历史 vintage PIT。Gate 在算法执行和提交前持续核对冻结 source authority；切代即失败。Blackbox prediction `extra` 必须持久化 snapshot、generation、refresh、三频 cutoff、replay semantics 和 backfill 时间；Native 则从当前数据库按 `feature_date` 截止在私有临时目录中重建，不保存临时 artifact/cache provenance。
 
 历史 gray 写入采用 insert-only，并依赖 `uk_scheme_tenor_target` 原子拒绝重复 target；不得进入 `ON DUPLICATE KEY UPDATE`。预检已存在、竞争事务冲突、算法失败、provenance 缺失或 Gate 表增量不是 run/prediction/log 精确各 `+1` 时，事务失败且不能覆盖首条预测。补齐产生的 run、prediction 和 run log 必须一一对应；任一点失败时冻结当前方案的后续补齐，不得把缺口留给前端隐藏。
 

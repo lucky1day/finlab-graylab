@@ -13,11 +13,6 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from shared.liwei_0616_cache_contract import (
-    SIGNAL_GAP_CACHE_PREWARM_PUBLISHER_SCHEME_ID,
-)
-
-
 AUTH_SECRET_ENV = "HARNESS_AUTH_SECRET"
 DEFAULT_BACKTEST_START_DATE = "2025-01-01"
 BLACKBOX_PRIVILEGED_AUTH_MAX_TTL_SECONDS = 900
@@ -28,8 +23,6 @@ EXACT_PREDICT_DATE_ACTIONS = frozenset(
         "draft_register",
         "blackbox_revision_activate",
         "signal_gap_fill_write",
-        "signal_gap_native_artifact_register",
-        "signal_gap_native_cache_prewarm",
     }
 )
 _AUTHORIZATION_BASE_PAYLOAD_FIELDS = frozenset(
@@ -52,25 +45,6 @@ _SIGNAL_GAP_FILL_PAYLOAD_FIELDS = frozenset(
         "target_keys",
         "source_authority",
     }
-)
-_SIGNAL_GAP_NATIVE_ARTIFACT_PAYLOAD_FIELDS = frozenset(
-    {"source_authority"}
-)
-_SIGNAL_GAP_NATIVE_CACHE_PREWARM_PAYLOAD_FIELDS = frozenset(
-    {"source_authority"}
-)
-SIGNAL_GAP_NATIVE_ARTIFACT_SCHEME_ID = (
-    "signal-gap-native-artifact"
-)
-SIGNAL_GAP_NATIVE_CACHE_PREWARM_SCHEME_ID = "signal-gap-native-cache"
-SIGNAL_GAP_NATIVE_ARTIFACT_PURPOSE = (
-    "signal_gap_gray_live_current_snapshot"
-)
-SIGNAL_GAP_NATIVE_CACHE_PREWARM_PURPOSE = (
-    "signal_gap_native_cache_prewarm"
-)
-SIGNAL_GAP_NATIVE_ARTIFACT_EXPORTER_VERSION = (
-    "native-signal-gap-current-snapshot-v1"
 )
 _SIGNAL_GAP_TARGET_FIELDS = frozenset(
     {
@@ -171,8 +145,6 @@ def issue_token(
         )
     if action in {
         "signal_gap_fill_write",
-        "signal_gap_native_artifact_register",
-        "signal_gap_native_cache_prewarm",
         "blackbox_revision_activate",
     }:
         if _auth_secret() is None:
@@ -212,34 +184,6 @@ def issue_token(
         normalized_authority = _normalize_signal_gap_source_authority(
             source_authority
         )
-    elif action == "signal_gap_native_artifact_register":
-        if scheme_id != SIGNAL_GAP_NATIVE_ARTIFACT_SCHEME_ID:
-            raise ValueError(
-                "signal_gap_native_artifact_register scheme_id is invalid"
-            )
-        normalized_authority = (
-            _normalize_signal_gap_native_artifact_authority(
-                source_authority,
-                expected_historical_predict_date=predict_date,
-            )
-        )
-        normalized_plan_sha256 = None
-        normalized_base = None
-        normalized_targets = ()
-    elif action == "signal_gap_native_cache_prewarm":
-        if scheme_id != SIGNAL_GAP_NATIVE_CACHE_PREWARM_SCHEME_ID:
-            raise ValueError(
-                "signal_gap_native_cache_prewarm scheme_id is invalid"
-            )
-        normalized_authority = (
-            _normalize_signal_gap_native_cache_prewarm_authority(
-                source_authority,
-                expected_historical_predict_date=predict_date,
-            )
-        )
-        normalized_plan_sha256 = None
-        normalized_base = None
-        normalized_targets = ()
     else:
         normalized_plan_sha256 = None
         normalized_base = None
@@ -289,10 +233,6 @@ def issue_token(
                 "source_authority": normalized_authority,
             }
         )
-    elif action == "signal_gap_native_artifact_register":
-        payload["source_authority"] = normalized_authority
-    elif action == "signal_gap_native_cache_prewarm":
-        payload["source_authority"] = normalized_authority
     signature = _sign(payload)
     envelope: dict[str, Any] = {"payload": payload}
     if signature is not None:
@@ -355,16 +295,6 @@ def _validate_token_schema(decoded: dict[str, Any]) -> None:
     elif payload.get("action") == "signal_gap_fill_write":
         expected_fields = (
             expected_fields | _SIGNAL_GAP_FILL_PAYLOAD_FIELDS
-        )
-    elif payload.get("action") == "signal_gap_native_artifact_register":
-        expected_fields = (
-            expected_fields
-            | _SIGNAL_GAP_NATIVE_ARTIFACT_PAYLOAD_FIELDS
-        )
-    elif payload.get("action") == "signal_gap_native_cache_prewarm":
-        expected_fields = (
-            expected_fields
-            | _SIGNAL_GAP_NATIVE_CACHE_PREWARM_PAYLOAD_FIELDS
         )
     if frozenset(payload) != expected_fields:
         raise ValueError("authorization token schema is invalid")
@@ -551,301 +481,6 @@ def issue_signal_gap_fill_token(
         target_keys=target_keys,
         source_authority=source_authority,
     )
-
-
-def issue_signal_gap_native_artifact_register_token(
-    *,
-    historical_predict_date: str,
-    source_authority: Any,
-    ttl_seconds: int = BLACKBOX_PRIVILEGED_AUTH_MAX_TTL_SECONDS,
-    issued_by: str = "harness",
-) -> str:
-    """签发绑定完整 Native current-snapshot provenance 的 HMAC token。"""
-    return issue_token(
-        SIGNAL_GAP_NATIVE_ARTIFACT_SCHEME_ID,
-        "signal_gap_native_artifact_register",
-        historical_predict_date,
-        ttl_seconds=ttl_seconds,
-        issued_by=issued_by,
-        source_authority=source_authority,
-    )
-
-
-def issue_signal_gap_native_cache_prewarm_token(
-    *,
-    historical_predict_date: str,
-    source_authority: Any,
-    ttl_seconds: int = BLACKBOX_PRIVILEGED_AUTH_MAX_TTL_SECONDS,
-    issued_by: str = "harness",
-) -> str:
-    """签发绑定封存 Native artifact 与唯一 publisher 的短期 HMAC token。"""
-    return issue_token(
-        SIGNAL_GAP_NATIVE_CACHE_PREWARM_SCHEME_ID,
-        "signal_gap_native_cache_prewarm",
-        historical_predict_date,
-        ttl_seconds=ttl_seconds,
-        issued_by=issued_by,
-        source_authority=source_authority,
-    )
-
-
-def verify_signal_gap_native_artifact_register_authorization(
-    token: str | None,
-    *,
-    historical_predict_date: str,
-    source_authority: Any,
-    used_store_path: Path,
-) -> tuple[Authorization | None, list[str]]:
-    """验证 Native gap artifact 的 capture、feature 与完整 provenance。"""
-    auth, errors = verify_authorization(
-        token,
-        scheme_id=SIGNAL_GAP_NATIVE_ARTIFACT_SCHEME_ID,
-        action="signal_gap_native_artifact_register",
-        predict_date=historical_predict_date,
-        used_store_path=used_store_path,
-    )
-    if _auth_secret() is None:
-        errors.append(
-            "signal_gap_native_artifact_register authorization requires "
-            "HMAC signing"
-        )
-    try:
-        expected = _normalize_signal_gap_native_artifact_authority(
-            source_authority,
-            expected_historical_predict_date=historical_predict_date,
-        )
-    except ValueError as exc:
-        errors.append(str(exc))
-        return auth, errors
-    if auth is None:
-        return None, errors
-    errors.extend(
-        required_future_expiry_errors(
-            auth.issued_at,
-            auth.expires_at,
-        )
-    )
-    try:
-        token_authority = (
-            _normalize_signal_gap_native_artifact_authority(
-                auth.source_authority,
-                expected_historical_predict_date=historical_predict_date,
-            )
-        )
-    except ValueError:
-        token_authority = None
-    if token_authority != expected:
-        errors.append("source authority mismatch")
-    return auth, errors
-
-
-def verify_signal_gap_native_cache_prewarm_authorization(
-    token: str | None,
-    *,
-    historical_predict_date: str,
-    source_authority: Any,
-    used_store_path: Path,
-) -> tuple[Authorization | None, list[str]]:
-    """验证封存 Native cache prewarm 的完整 artifact/publisher scope。"""
-    auth, errors = verify_authorization(
-        token,
-        scheme_id=SIGNAL_GAP_NATIVE_CACHE_PREWARM_SCHEME_ID,
-        action="signal_gap_native_cache_prewarm",
-        predict_date=historical_predict_date,
-        used_store_path=used_store_path,
-    )
-    if _auth_secret() is None:
-        errors.append(
-            "signal_gap_native_cache_prewarm authorization requires "
-            "HMAC signing"
-        )
-    try:
-        expected = _normalize_signal_gap_native_cache_prewarm_authority(
-            source_authority,
-            expected_historical_predict_date=historical_predict_date,
-        )
-    except ValueError as exc:
-        errors.append(str(exc))
-        return auth, errors
-    if auth is None:
-        return None, errors
-    errors.extend(
-        required_future_expiry_errors(
-            auth.issued_at,
-            auth.expires_at,
-        )
-    )
-    try:
-        token_authority = (
-            _normalize_signal_gap_native_cache_prewarm_authority(
-                auth.source_authority,
-                expected_historical_predict_date=(
-                    historical_predict_date
-                ),
-            )
-        )
-    except ValueError:
-        token_authority = None
-    if token_authority != expected:
-        errors.append("source authority mismatch")
-    return auth, errors
-
-
-def _normalize_signal_gap_native_artifact_authority(
-    value: Any,
-    *,
-    expected_historical_predict_date: str | None,
-) -> dict[str, Any]:
-    expected_fields = frozenset(
-        {
-            "authority_type",
-            "purpose",
-            "artifact_id",
-            "manifest_uri",
-            "manifest_sha256",
-            "storage_root_identity",
-            "dataset_content_id",
-            "source_commit_token",
-            "capture_business_date",
-            "feature_date",
-            "exporter_version",
-            "vintage_disclaimer",
-        }
-    )
-    if not isinstance(value, dict) or frozenset(value) != expected_fields:
-        raise ValueError(
-            "signal-gap Native artifact authority schema is invalid"
-        )
-    normalized = {
-        "authority_type": str(value["authority_type"]),
-        "purpose": str(value["purpose"]),
-        "artifact_id": _require_text(
-            value["artifact_id"],
-            "artifact_id",
-        ),
-        "manifest_uri": _require_text(
-            value["manifest_uri"],
-            "manifest_uri",
-        ),
-        "manifest_sha256": _require_sha256(
-            value["manifest_sha256"],
-            "manifest_sha256",
-        ),
-        "storage_root_identity": _require_sha256(
-            value["storage_root_identity"],
-            "storage_root_identity",
-        ),
-        "dataset_content_id": _require_sha256(
-            value["dataset_content_id"],
-            "dataset_content_id",
-        ),
-        "source_commit_token": _require_sha256(
-            value["source_commit_token"],
-            "source_commit_token",
-        ),
-        "capture_business_date": _normalize_action_predict_date(
-            "signal_gap_native_artifact_register",
-            value["capture_business_date"],
-        ),
-        "feature_date": _normalize_action_predict_date(
-            "signal_gap_native_artifact_register",
-            value["feature_date"],
-        ),
-        "exporter_version": str(value["exporter_version"]),
-        "vintage_disclaimer": str(value["vintage_disclaimer"]),
-    }
-    if (
-        normalized["authority_type"]
-        != "native_current_snapshot_artifact"
-        or normalized["purpose"]
-        != SIGNAL_GAP_NATIVE_ARTIFACT_PURPOSE
-        or normalized["exporter_version"]
-        != SIGNAL_GAP_NATIVE_ARTIFACT_EXPORTER_VERSION
-        or normalized["vintage_disclaimer"]
-        != "current_snapshot_as_of_not_historical_vintage"
-    ):
-        raise ValueError(
-            "signal-gap Native artifact authority purpose is invalid"
-        )
-    manifest_path = Path(normalized["manifest_uri"])
-    if (
-        not manifest_path.is_absolute()
-        or manifest_path.name != "manifest.json"
-        or str(manifest_path) != normalized["manifest_uri"]
-    ):
-        raise ValueError(
-            "signal-gap Native artifact manifest_uri is not canonical"
-        )
-    historical_predict_date = _normalize_action_predict_date(
-        "signal_gap_native_artifact_register",
-        expected_historical_predict_date,
-    )
-    if normalized["feature_date"] >= historical_predict_date:
-        raise ValueError(
-            "signal-gap Native feature_date must precede predict_date"
-        )
-    if normalized["capture_business_date"] <= historical_predict_date:
-        raise ValueError(
-            "signal-gap Native capture date must be after predict_date"
-        )
-    return normalized
-
-
-def _normalize_signal_gap_native_cache_prewarm_authority(
-    value: Any,
-    *,
-    expected_historical_predict_date: str | None,
-) -> dict[str, Any]:
-    expected_fields = frozenset(
-        {
-            "authority_type",
-            "purpose",
-            "publisher_scheme_id",
-            "historical_predict_date",
-            "artifact",
-        }
-    )
-    if not isinstance(value, dict) or frozenset(value) != expected_fields:
-        raise ValueError(
-            "signal-gap Native cache prewarm authority schema is invalid"
-        )
-    historical_predict_date = _normalize_action_predict_date(
-        "signal_gap_native_cache_prewarm",
-        value["historical_predict_date"],
-    )
-    expected_predict_date = _normalize_action_predict_date(
-        "signal_gap_native_cache_prewarm",
-        expected_historical_predict_date,
-    )
-    if historical_predict_date != expected_predict_date:
-        raise ValueError(
-            "signal-gap Native cache prewarm predict_date mismatch"
-        )
-    normalized = {
-        "authority_type": str(value["authority_type"]),
-        "purpose": str(value["purpose"]),
-        "publisher_scheme_id": _require_text(
-            value["publisher_scheme_id"],
-            "publisher_scheme_id",
-        ),
-        "historical_predict_date": historical_predict_date,
-        "artifact": _normalize_signal_gap_native_artifact_authority(
-            value["artifact"],
-            expected_historical_predict_date=historical_predict_date,
-        ),
-    }
-    if (
-        normalized["authority_type"]
-        != "native_current_snapshot_cache_prewarm"
-        or normalized["purpose"]
-        != SIGNAL_GAP_NATIVE_CACHE_PREWARM_PURPOSE
-        or normalized["publisher_scheme_id"]
-        != SIGNAL_GAP_CACHE_PREWARM_PUBLISHER_SCHEME_ID
-    ):
-        raise ValueError(
-            "signal-gap Native cache prewarm authority purpose is invalid"
-        )
-    return normalized
 
 
 def verify_signal_gap_fill_authorization(

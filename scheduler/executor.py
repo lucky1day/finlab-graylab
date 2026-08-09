@@ -75,21 +75,12 @@ from shared.databridge_input_generation import (
 from shared.data_bridge.refresh import DataBridgeRefreshConfig
 from shared.models import PredictionRecord
 from shared.native_input_generation import (
-    NATIVE_GENERATION_EXPORTER_VERSION,
-    SIGNAL_GAP_NATIVE_EXPORTER_VERSION,
     NativeGenerationContext,
     open_native_generation,
 )
 from shared.liwei_0616_cache_contract import (
     CACHE_MUTATION_POLICY_ENV,
-    CACHE_MUTATION_POLICY_HIT_ONLY,
     CACHE_MUTATION_POLICY_PRIVATE_BUILD,
-    CACHE_MUTATION_POLICY_PREWARM,
-    SIGNAL_GAP_CACHE_PREWARM_PUBLISHER_SCHEME_ID,
-)
-from shared.liwei_0616_signal_gap_prewarm import (
-    PREWARM_CAPABILITY_ENV,
-    PREWARM_PERMIT_ENV,
 )
 from shared.prediction_context import (
     build_daily_live_context,
@@ -108,22 +99,6 @@ from shared.source_runtime_database import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ALGO_ENV = "forecast_env"
-NATIVE_EXECUTION_MODE_SCHEDULED = "scheduled"
-NATIVE_EXECUTION_MODE_SIGNAL_GAP_CURRENT_SNAPSHOT = (
-    "signal_gap_current_snapshot"
-)
-NATIVE_EXECUTION_MODE_SIGNAL_GAP_ARCHIVED = "signal_gap_archived"
-NATIVE_EXECUTION_MODE_SIGNAL_GAP_CACHE_PREWARM = (
-    "signal_gap_cache_prewarm"
-)
-_NATIVE_EXECUTION_MODES = frozenset(
-    {
-        NATIVE_EXECUTION_MODE_SCHEDULED,
-        NATIVE_EXECUTION_MODE_SIGNAL_GAP_ARCHIVED,
-        NATIVE_EXECUTION_MODE_SIGNAL_GAP_CURRENT_SNAPSHOT,
-        NATIVE_EXECUTION_MODE_SIGNAL_GAP_CACHE_PREWARM,
-    }
-)
 VALID_PREDICTION_PHASES = {"gray_live", "scheduled_live"}
 BLACKBOX_SNAPSHOT_MODE_FRESH = "fresh"
 BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF = "historical_as_of_replay"
@@ -167,8 +142,6 @@ _ALGORITHM_ENVIRONMENT_ALLOWLIST = frozenset(
         "PYTHONDONTWRITEBYTECODE",
         "LIWEI_0616_PHASE_A_CACHE_ROOT",
         CACHE_MUTATION_POLICY_ENV,
-        PREWARM_PERMIT_ENV,
-        PREWARM_CAPABILITY_ENV,
         "DAILY_0629_SOURCE_CACHE_DISABLE",
         "DAILY_0629_SOURCE_CACHE_DIR",
         "DAILY_0629_SOURCE_TIMEOUT_SEC",
@@ -268,40 +241,12 @@ def run_scheme_subprocess(
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
     process_start_guard: ProcessStartGuard | None = None,
-    native_execution_mode: str = NATIVE_EXECUTION_MODE_SCHEDULED,
-    expected_native_feature_date: str | None = None,
-    phase_a_cache_root: str | Path | None = None,
-    phase_a_cache_prewarm_permit: str | Path | None = None,
-    phase_a_cache_prewarm_capability: str | None = None,
     ephemeral_native_runtime_root: str | Path | None = None,
 ) -> list[PredictionRecord]:
     """通过 conda 子进程在算法环境中运行方案。"""
     process_start_guard = require_process_start_guard(
         process_start_guard
     )
-    if native_execution_mode not in _NATIVE_EXECUTION_MODES:
-        raise ValueError(
-            "unsupported Native execution mode: "
-            f"{native_execution_mode}"
-        )
-    is_signal_gap_execution = (
-        native_execution_mode != NATIVE_EXECUTION_MODE_SCHEDULED
-    )
-    is_signal_gap_cache_prewarm = (
-        native_execution_mode
-        == NATIVE_EXECUTION_MODE_SIGNAL_GAP_CACHE_PREWARM
-    )
-    if (
-        is_signal_gap_cache_prewarm
-        and scheme_id != SIGNAL_GAP_CACHE_PREWARM_PUBLISHER_SCHEME_ID
-    ):
-        raise ValueError(
-            "signal-gap cache prewarm requires an approved publisher"
-        )
-    if is_signal_gap_execution and native_generation is None:
-        raise ValueError(
-            "signal-gap Native execution requires native_generation"
-        )
     normalized_ephemeral_root = _normalize_ephemeral_native_runtime_root(
         ephemeral_native_runtime_root
     )
@@ -311,25 +256,10 @@ def run_scheme_subprocess(
             "native_generation"
         )
     if normalized_ephemeral_root is not None and (
-        native_execution_mode != NATIVE_EXECUTION_MODE_SCHEDULED
-        or expected_native_feature_date is not None
-        or phase_a_cache_root is not None
-        or phase_a_cache_prewarm_permit is not None
-        or phase_a_cache_prewarm_capability is not None
-        or live_source_compatibility
-        or live_source_package_sha256 is not None
+        live_source_compatibility or live_source_package_sha256 is not None
     ):
         raise ValueError(
-            "ephemeral Native runtime cannot be combined with legacy "
-            "signal-gap execution controls"
-        )
-    if (
-        native_execution_mode == NATIVE_EXECUTION_MODE_SCHEDULED
-        and expected_native_feature_date is not None
-    ):
-        raise ValueError(
-            "expected_native_feature_date is only valid for signal-gap "
-            "Native execution"
+            "ephemeral Native runtime cannot use live-source compatibility"
         )
     env = _build_algorithm_environment()
     env.pop(SOURCE_RUNTIME_DATABASE_CONFIG_PATH_ENV, None)
@@ -363,8 +293,6 @@ def run_scheme_subprocess(
         env.pop(name, None)
     env.pop(CACHE_MUTATION_POLICY_ENV, None)
     env.pop(EPHEMERAL_NATIVE_INPUT_ROOT_ENV, None)
-    env.pop(PREWARM_PERMIT_ENV, None)
-    env.pop(PREWARM_CAPABILITY_ENV, None)
     env.pop(SCHEDULE_EXECUTION_TOKEN_ENV, None)
     if normalized_ephemeral_root is not None:
         env[EPHEMERAL_NATIVE_INPUT_ROOT_ENV] = str(
@@ -376,51 +304,6 @@ def run_scheme_subprocess(
         env[CACHE_MUTATION_POLICY_ENV] = (
             CACHE_MUTATION_POLICY_PRIVATE_BUILD
         )
-    elif is_signal_gap_cache_prewarm:
-        env[CACHE_MUTATION_POLICY_ENV] = (
-            CACHE_MUTATION_POLICY_PREWARM
-        )
-    elif is_signal_gap_execution:
-        env[CACHE_MUTATION_POLICY_ENV] = (
-            CACHE_MUTATION_POLICY_HIT_ONLY
-        )
-    normalized_phase_a_cache_root = _normalize_phase_a_cache_root(
-        phase_a_cache_root
-    )
-    normalized_prewarm_permit = _normalize_prewarm_permit_path(
-        phase_a_cache_prewarm_permit
-    )
-    normalized_prewarm_capability = _validated_prewarm_capability(
-        phase_a_cache_prewarm_capability
-    )
-    if (
-        is_signal_gap_cache_prewarm
-        and (
-            normalized_phase_a_cache_root is None
-            or normalized_prewarm_permit is None
-            or normalized_prewarm_capability is None
-        )
-    ):
-        raise ValueError(
-            "signal-gap cache prewarm requires cache root and permit"
-        )
-    if (
-        not is_signal_gap_cache_prewarm
-        and (
-            normalized_prewarm_permit is not None
-            or normalized_prewarm_capability is not None
-        )
-    ):
-        raise ValueError(
-            "signal-gap cache prewarm permit is only valid for prewarm"
-        )
-    if normalized_phase_a_cache_root is not None:
-        env["LIWEI_0616_PHASE_A_CACHE_ROOT"] = str(
-            normalized_phase_a_cache_root
-        )
-    if normalized_prewarm_permit is not None:
-        env[PREWARM_PERMIT_ENV] = str(normalized_prewarm_permit)
-        env[PREWARM_CAPABILITY_ENV] = normalized_prewarm_capability
     validated_execution_token = _validated_execution_token(
         execution_token
     )
@@ -466,81 +349,12 @@ def run_scheme_subprocess(
         canonical_predict_date = date.fromisoformat(
             predict_date
         ).isoformat()
-        if native_execution_mode == NATIVE_EXECUTION_MODE_SCHEDULED:
-            if (
-                native_generation.exporter_version
-                == SIGNAL_GAP_NATIVE_EXPORTER_VERSION
-            ):
-                raise ValueError(
-                    "signal-gap Native exporter requires explicit "
-                    "signal-gap execution mode"
-                )
-            if native_generation.business_date != canonical_predict_date:
-                raise ValueError(
-                    "Native generation business_date does not match "
-                    f"predict_date: {native_generation.business_date} != "
-                    f"{canonical_predict_date}"
-                )
-        elif (
-            native_execution_mode
-            == NATIVE_EXECUTION_MODE_SIGNAL_GAP_ARCHIVED
-        ):
-            if (
-                native_generation.exporter_version
-                != NATIVE_GENERATION_EXPORTER_VERSION
-            ):
-                raise ValueError(
-                    "archived signal-gap Native generation "
-                    "exporter_version is invalid"
-                )
-            if (
-                native_generation.business_date
-                != canonical_predict_date
-            ):
-                raise ValueError(
-                    "archived signal-gap Native generation "
-                    "business_date does not match predict_date"
-                )
-            canonical_expected_feature_date = (
-                _canonical_signal_gap_feature_date(
-                    expected_native_feature_date
-                )
+        if native_generation.business_date != canonical_predict_date:
+            raise ValueError(
+                "Native generation business_date does not match "
+                f"predict_date: {native_generation.business_date} != "
+                f"{canonical_predict_date}"
             )
-            if (
-                native_generation.feature_date
-                != canonical_expected_feature_date
-            ):
-                raise ValueError(
-                    "signal-gap Native feature_date does not match "
-                    "expected feature_date"
-                )
-        else:
-            if (
-                native_generation.exporter_version
-                != SIGNAL_GAP_NATIVE_EXPORTER_VERSION
-            ):
-                raise ValueError(
-                    "signal-gap Native generation exporter_version "
-                    "is invalid"
-                )
-            if native_generation.business_date <= canonical_predict_date:
-                raise ValueError(
-                    "signal-gap Native capture date must be after "
-                    "predict_date"
-                )
-            canonical_expected_feature_date = (
-                _canonical_signal_gap_feature_date(
-                    expected_native_feature_date
-                )
-            )
-            if (
-                native_generation.feature_date
-                != canonical_expected_feature_date
-            ):
-                raise ValueError(
-                    "signal-gap Native feature_date does not match "
-                    "expected feature_date"
-                )
         if not native_generation.manifest_path.is_absolute():
             raise ValueError(
                 "Native generation manifest path must be absolute"
@@ -642,38 +456,6 @@ def run_scheme_subprocess(
     return [_record_from_payload(item) for item in payload]
 
 
-def _canonical_signal_gap_feature_date(value: str | None) -> str:
-    if value is None:
-        raise ValueError(
-            "expected_native_feature_date is required for "
-            "signal-gap Native execution"
-        )
-    try:
-        canonical = date.fromisoformat(value).isoformat()
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            "expected_native_feature_date must be a canonical "
-            "YYYY-MM-DD date"
-        ) from exc
-    if canonical != value:
-        raise ValueError(
-            "expected_native_feature_date must be a canonical "
-            "YYYY-MM-DD date"
-        )
-    return canonical
-
-
-def _normalize_phase_a_cache_root(
-    value: str | Path | None,
-) -> Path | None:
-    if value is None:
-        return None
-    path = Path(value)
-    if not path.is_absolute():
-        raise ValueError("phase_a_cache_root must be absolute")
-    return path
-
-
 def _normalize_ephemeral_native_runtime_root(
     value: str | Path | None,
 ) -> Path | None:
@@ -683,32 +465,6 @@ def _normalize_ephemeral_native_runtime_root(
     if not path.is_absolute():
         raise ValueError("ephemeral_native_runtime_root must be absolute")
     return path
-
-
-def _normalize_prewarm_permit_path(
-    value: str | Path | None,
-) -> Path | None:
-    if value is None:
-        return None
-    path = Path(value)
-    if not path.is_absolute():
-        raise ValueError("signal-gap cache prewarm permit must be absolute")
-    return path
-
-
-def _validated_prewarm_capability(
-    value: str | None,
-) -> str | None:
-    if value is None:
-        return None
-    if (
-        not isinstance(value, str)
-        or not value
-        or len(value) > 128
-        or any(character not in _SAFE_EXECUTION_TOKEN_CHARACTERS for character in value)
-    ):
-        raise ValueError("signal-gap cache prewarm capability is unsafe")
-    return value
 
 
 def _build_algorithm_environment() -> dict[str, str]:
@@ -743,11 +499,6 @@ def run_configured_scheme(
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
     process_start_guard: ProcessStartGuard | None = None,
-    native_execution_mode: str = NATIVE_EXECUTION_MODE_SCHEDULED,
-    expected_native_feature_date: str | None = None,
-    phase_a_cache_root: str | Path | None = None,
-    phase_a_cache_prewarm_permit: str | Path | None = None,
-    phase_a_cache_prewarm_capability: str | None = None,
     ephemeral_native_runtime_root: str | Path | None = None,
 ) -> list[PredictionRecord]:
     """按显式 runtime_type 选择算法执行驱动。"""
@@ -764,12 +515,7 @@ def run_configured_scheme(
         ephemeral_native_runtime_root
     )
     if runtime_type != "native_adapter" and (
-        native_execution_mode != NATIVE_EXECUTION_MODE_SCHEDULED
-        or expected_native_feature_date is not None
-        or phase_a_cache_root is not None
-        or phase_a_cache_prewarm_permit is not None
-        or phase_a_cache_prewarm_capability is not None
-        or normalized_ephemeral_root is not None
+        normalized_ephemeral_root is not None
     ):
         raise ValueError(
             "Native execution contract is only valid for native_adapter"
@@ -781,12 +527,7 @@ def run_configured_scheme(
                 "native_generation"
             )
         if normalized_ephemeral_root is not None and (
-            native_execution_mode != NATIVE_EXECUTION_MODE_SCHEDULED
-            or expected_native_feature_date is not None
-            or phase_a_cache_root is not None
-            or phase_a_cache_prewarm_permit is not None
-            or phase_a_cache_prewarm_capability is not None
-            or live_source_compatibility
+            live_source_compatibility
             or live_source_package_sha256 is not None
         ):
             raise ValueError(
@@ -810,24 +551,6 @@ def run_configured_scheme(
             if native_generation is not None
             else {}
         )
-        if native_execution_mode != NATIVE_EXECUTION_MODE_SCHEDULED:
-            native_kwargs["native_execution_mode"] = (
-                native_execution_mode
-            )
-        if expected_native_feature_date is not None:
-            native_kwargs["expected_native_feature_date"] = (
-                expected_native_feature_date
-            )
-        if phase_a_cache_root is not None:
-            native_kwargs["phase_a_cache_root"] = phase_a_cache_root
-        if phase_a_cache_prewarm_permit is not None:
-            native_kwargs["phase_a_cache_prewarm_permit"] = (
-                phase_a_cache_prewarm_permit
-            )
-        if phase_a_cache_prewarm_capability is not None:
-            native_kwargs["phase_a_cache_prewarm_capability"] = (
-                phase_a_cache_prewarm_capability
-            )
         if normalized_ephemeral_root is not None:
             native_kwargs["ephemeral_native_runtime_root"] = (
                 normalized_ephemeral_root
