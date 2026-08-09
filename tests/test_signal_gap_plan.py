@@ -26,7 +26,6 @@ def _native_snapshot(*, present: bool = False) -> signal_gap_plan.SignalGapSnaps
         scheme_version="version-1",
         live_target_start_date="2026-06-01",
         live_boundary_source="platform_live_boundary_v1",
-        input_mode="generation_v1",
         code_sha256="a" * 64,
         config_sha256="b" * 64,
     )
@@ -79,11 +78,13 @@ def _build_native_plan(*, present: bool = False) -> dict[str, object]:
 def test_native_gap_is_actionable_without_input_generation() -> None:
     plan = _build_native_plan()
 
-    assert plan["schema_version"] == "active-signal-gap-plan-v6"
+    assert plan["schema_version"] == "active-signal-gap-plan-v7"
     assert plan["status"] == "READY"
     assert plan["counts"]["GRAY_LIVE_GAP"] == 1
     assert plan["counts"]["BLOCKED_NO_GENERATION"] == 0
     assert plan["actions"][0]["input_authority"] is None
+    assert "input_mode" not in plan["actions"][0]
+    assert "source_package_sha256" not in plan["actions"][0]
 
 
 def test_present_native_signal_remains_skip_present() -> None:
@@ -100,7 +101,6 @@ def test_blackbox_gap_still_requires_databridge_generation() -> None:
         registry_scheme_id="demo_blackbox__h5__5Y",
         base_scheme_id="demo_blackbox",
         runtime_type="blackbox_v2",
-        input_mode="databridge_v1",
     )
     blackbox_case = replace(
         native.expected_cases[0],
@@ -138,7 +138,11 @@ def test_snapshot_reader_does_not_query_input_generations() -> None:
 
 @pytest.mark.parametrize(
     "legacy_schema",
-    ["active-signal-gap-plan-v4", "active-signal-gap-plan-v5"],
+    [
+        "active-signal-gap-plan-v4",
+        "active-signal-gap-plan-v5",
+        "active-signal-gap-plan-v6",
+    ],
 )
 def test_fill_rejects_legacy_plan_schemas(
     tmp_path: Path,

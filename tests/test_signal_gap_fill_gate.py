@@ -18,7 +18,7 @@ from shared.models import PredictionRecord
 from tests.test_signal_gap_plan import _build_native_plan
 
 
-def _native_execution(base_scheme_id: str, *, input_mode: str) -> _Execution:
+def _native_execution(base_scheme_id: str) -> _Execution:
     action = {
         "registry_scheme_id": f"{base_scheme_id}__h1__5Y",
         "base_scheme_id": base_scheme_id,
@@ -34,7 +34,6 @@ def _native_execution(base_scheme_id: str, *, input_mode: str) -> _Execution:
         "scheme_version": "version-1",
         "code_sha256": "a" * 64,
         "config_sha256": "b" * 64,
-        "input_mode": input_mode,
         "input_authority": None,
     }
     group = _GapGroup(
@@ -44,7 +43,6 @@ def _native_execution(base_scheme_id: str, *, input_mode: str) -> _Execution:
         scheme_version="version-1",
         code_sha256="a" * 64,
         config_sha256="b" * 64,
-        input_mode=input_mode,
         actions=(action,),
         expected_target_keys=(
             {
@@ -101,8 +99,8 @@ def _record(base_scheme_id: str) -> PredictionRecord:
 
 def test_native_groups_run_once_in_distinct_private_workspaces() -> None:
     executions = [
-        _native_execution("native_one", input_mode="generation_v1"),
-        _native_execution("native_two", input_mode="live_source_0629"),
+        _native_execution("native_one"),
+        _native_execution("native_two"),
     ]
     calls: list[tuple[str, Path, dict[str, object]]] = []
 
@@ -158,8 +156,8 @@ def test_native_groups_run_once_in_distinct_private_workspaces() -> None:
 
 def test_native_algorithm_failure_is_exposed_before_any_commit() -> None:
     executions = [
-        _native_execution("native_ok", input_mode="generation_v1"),
-        _native_execution("native_failed", input_mode="generation_v1"),
+        _native_execution("native_ok"),
+        _native_execution("native_failed"),
     ]
 
     def runner(cfg, predict_date, **kwargs):

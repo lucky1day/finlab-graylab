@@ -34,14 +34,10 @@ from shared.prediction_context import (
     build_monthly_live_context,
     build_weekly_live_context,
 )
-from shared.live_source_contract import (
-    APPROVED_0629_LIVE_SOURCE_SCHEMES,
-    APPROVED_0629_LIVE_SOURCE_PACKAGE_SHA256_BY_SCHEME,
-)
 from shared.scheme_config_schema import SCHEME_ID_PATTERN
 
 
-PLAN_SCHEMA_VERSION = "active-signal-gap-plan-v6"
+PLAN_SCHEMA_VERSION = "active-signal-gap-plan-v7"
 _DATABRIDGE_AUTHORITY_SCHEMA_VERSION = (
     "stable-databridge-current-authority-v2"
 )
@@ -228,7 +224,6 @@ class DiscoveredSchemeIdentity:
     code_sha256: str
     config_sha256: str
     status: str
-    source_package_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,10 +238,8 @@ class RegistryTarget:
     scheme_version: str
     live_target_start_date: str
     live_boundary_source: str = "explicit"
-    input_mode: str | None = None
     code_sha256: str | None = None
     config_sha256: str | None = None
-    source_package_sha256: str | None = None
 
     @property
     def business_identity(self) -> tuple[str, str, int]:
@@ -1318,14 +1311,8 @@ def _read_registry_versions(
                 scheme_version=authority.scheme_version,
                 live_target_start_date=PLATFORM_LIVE_TARGET_START_DATE,
                 live_boundary_source=PLATFORM_LIVE_BOUNDARY_VERSION,
-                input_mode=_input_mode_for_identity(
-                    base_scheme_id,
-                    authority.runtime_type,
-                ),
                 code_sha256=authority.code_sha256,
                 config_sha256=authority.config_sha256,
-                source_package_sha256=
-                    authority.source_package_sha256,
             )
         )
     targets = tuple(resolved_targets)
@@ -2076,14 +2063,6 @@ def _resolve_action(
             None,
             "CANONICAL_BUSINESS_KEY_MISSING",
         )
-    if target.input_mode == "live_source_0629" and not _is_sha256(
-        str(target.source_package_sha256 or "")
-    ):
-        return (
-            "BLOCKED_DATA_CONTRACT",
-            None,
-            "LIVE_SOURCE_0629_ATTESTATION_REQUIRED",
-        )
     if target.runtime_type == "blackbox_v2":
         return _blackbox_generation_eligibility(
             item,
@@ -2806,33 +2785,6 @@ def _validate_registry_target(target: RegistryTarget) -> None:
             "INVALID_REGISTRY_TARGET",
             "active target has invalid config SHA-256",
         )
-    if target.input_mode not in {
-        "generation_v1",
-        "live_source_0629",
-        "databridge_v1",
-    }:
-        raise SignalGapPlanError(
-            "INVALID_REGISTRY_TARGET",
-            "active target has invalid input_mode",
-        )
-    if (
-        target.input_mode == "live_source_0629"
-        and not _is_sha256(
-            str(target.source_package_sha256 or "")
-        )
-    ):
-        raise SignalGapPlanError(
-            "INVALID_REGISTRY_TARGET",
-            "live_source_0629 target has no package SHA-256",
-        )
-    if (
-        target.input_mode != "live_source_0629"
-        and target.source_package_sha256 is not None
-    ):
-        raise SignalGapPlanError(
-            "INVALID_REGISTRY_TARGET",
-            "source package SHA-256 is only valid for live_source_0629",
-        )
     _canonical_date(
         target.live_target_start_date,
         "live_target_start_date",
@@ -3096,8 +3048,6 @@ def _action_row(
         "scheme_version": target.scheme_version,
         "code_sha256": target.code_sha256,
         "config_sha256": target.config_sha256,
-        "input_mode": target.input_mode,
-        "source_package_sha256": target.source_package_sha256,
         "business_key": [
             item.base_scheme_id,
             item.target_tenor,
@@ -3379,7 +3329,6 @@ def _discover_execution_authority(
         for config in discover_schemes(strict=True)
         if str(config.status) == "active"
     )
-    source_packages = _load_0629_source_packages()
     identities = tuple(
         DiscoveredSchemeIdentity(
             base_scheme_id=str(config.scheme_id),
@@ -3388,9 +3337,6 @@ def _discover_execution_authority(
             code_sha256=str(config.code_hash),
             config_sha256=str(config.config_hash),
             status=str(config.status),
-            source_package_sha256=source_packages.get(
-                str(config.scheme_id)
-            ),
         )
         for config in discovered
     )
@@ -3444,8 +3390,6 @@ def _discovery_identity_sha256(
                 "code_sha256": identity.code_sha256,
                 "config_sha256": identity.config_sha256,
                 "status": identity.status,
-                "source_package_sha256":
-                    identity.source_package_sha256,
             }
             for identity in sorted(
                 identities,
@@ -3553,12 +3497,6 @@ def _missing_discovery_identity(
         code_sha256=marker,
         config_sha256=marker,
         status="active",
-        source_package_sha256=(
-            _load_0629_source_packages().get(base_scheme_id)
-            if base_scheme_id
-            in APPROVED_0629_LIVE_SOURCE_SCHEMES
-            else None
-        ),
     )
 
 
@@ -3597,30 +3535,6 @@ def _active_version_identity_sha256(
     )
 
 
-def _load_0629_source_packages() -> dict[str, str]:
-    result = dict(APPROVED_0629_LIVE_SOURCE_PACKAGE_SHA256_BY_SCHEME)
-    if (
-        set(result) != set(APPROVED_0629_LIVE_SOURCE_SCHEMES)
-        or not all(_is_sha256(value) for value in result.values())
-    ):
-        raise SignalGapPlanError(
-            "LIVE_SOURCE_0629_CONTRACT_INVALID",
-            "approved 0629 source identities are incomplete",
-        )
-    return result
-
-
-def _input_mode_for_identity(
-    base_scheme_id: str,
-    runtime_type: str,
-) -> str:
-    if runtime_type == "blackbox_v2":
-        return "databridge_v1"
-    if base_scheme_id in APPROVED_0629_LIVE_SOURCE_SCHEMES:
-        return "live_source_0629"
-    return "generation_v1"
-
-
 def _validate_active_scope(
     targets: Sequence[RegistryTarget],
 ) -> None:
@@ -3650,9 +3564,6 @@ def _registry_digest_sha256(
                 "live_target_start_date":
                     target.live_target_start_date,
                 "live_boundary_source": target.live_boundary_source,
-                "input_mode": target.input_mode,
-                "source_package_sha256":
-                    target.source_package_sha256,
             }
             for target in sorted(
                 targets,

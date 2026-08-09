@@ -150,7 +150,6 @@ class _GapGroup:
     scheme_version: str
     code_sha256: str
     config_sha256: str
-    input_mode: str
     actions: tuple[dict[str, Any], ...]
     expected_target_keys: tuple[dict[str, Any], ...]
     input_authority: dict[str, Any] | None
@@ -722,7 +721,6 @@ def _build_groups(plan: Mapping[str, Any]) -> tuple[_GapGroup, ...]:
             "scheme_version",
             "code_sha256",
             "config_sha256",
-            "input_mode",
             "task_type",
             "horizon",
             "feature_date",
@@ -751,7 +749,6 @@ def _build_groups(plan: Mapping[str, Any]) -> tuple[_GapGroup, ...]:
                 scheme_version=str(ordered[0]["scheme_version"]),
                 code_sha256=str(ordered[0]["code_sha256"]),
                 config_sha256=str(ordered[0]["config_sha256"]),
-                input_mode=str(ordered[0]["input_mode"]),
                 actions=ordered,
                 expected_target_keys=expected,
                 input_authority=input_authority,
@@ -1167,8 +1164,6 @@ def _frozen_blackbox_action_authority(
 ) -> dict[str, Any]:
     if group.runtime_type != "blackbox_v2":
         raise ValueError("Blackbox replay authority requires blackbox_v2")
-    if group.input_mode != "databridge_v1":
-        raise ValueError("Blackbox replay input_mode must be databridge_v1")
     if len(group.actions) != 1:
         raise ValueError(
             "Blackbox signal-gap group must contain exactly one target action"
