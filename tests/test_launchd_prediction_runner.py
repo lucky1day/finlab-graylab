@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib.util
+import inspect
 import unittest
 from contextlib import nullcontext
 from types import SimpleNamespace
@@ -33,11 +35,46 @@ def _blackbox_config(
 
 
 class LaunchdPredictionRunnerTests(unittest.TestCase):
+    def test_legacy_admission_module_is_retired(self) -> None:
+        self.assertIsNone(
+            importlib.util.find_spec(
+                "scheduler.blackbox_scheduler_admission"
+            )
+        )
+
+    def test_executor_requires_explicit_prediction_phase(self) -> None:
+        from scheduler import executor
+
+        parameter = inspect.signature(
+            executor.execute_scheme
+        ).parameters["prediction_phase"]
+        self.assertEqual(parameter.kind, inspect.Parameter.KEYWORD_ONLY)
+        self.assertIs(parameter.default, inspect.Parameter.empty)
+
+    def test_gray_live_rejects_scheduled_control_plane_before_db_access(
+        self,
+    ) -> None:
+        from scheduler import executor
+
+        cfg = _blackbox_config("gray_live")
+        with patch.object(executor, "create_engine_from_env") as create_engine:
+            with self.assertRaisesRegex(
+                ValueError,
+                "scheduled control plane requires scheduled_live",
+            ):
+                executor.execute_scheme(
+                    cfg,
+                    "2026-08-08",
+                    prediction_phase="gray_live",
+                    scheduled_control_plane="launchd_one_shot",
+                )
+
+        create_engine.assert_not_called()
+
     def test_active_weekly_blackboxes_run_regardless_of_legacy_admission(
         self,
     ) -> None:
         from scheduler import launchd_prediction_runner as runner
-        from scheduler import blackbox_scheduler_admission as legacy_admission
 
         formal = _blackbox_config(
             "formal_active",
@@ -80,11 +117,6 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
             patch.object(runner, "create_engine_from_env", return_value=engine),
             patch.object(runner, "get_calendar", return_value=Mock()),
             patch.object(runner, "execute_scheme", side_effect=execute) as execute_one,
-            patch.object(
-                legacy_admission,
-                "load_blackbox_scheduler_admission",
-                side_effect=AssertionError("launchd runner queried legacy admission"),
-            ) as load_legacy_admission,
         ):
             summary = runner.run(
                 "weekly",
@@ -104,7 +136,6 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                 args.kwargs["scheduled_control_plane"],
                 "launchd_one_shot",
             )
-        load_legacy_admission.assert_not_called()
         self.assertEqual(summary.discovered, 2)
         self.assertEqual(summary.excluded, [])
         self.assertEqual(summary.blocked, [])

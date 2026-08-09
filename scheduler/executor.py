@@ -1469,8 +1469,9 @@ def execute_scheme(
     predict_date: str,
     algo_env: str = DEFAULT_ALGO_ENV,
     timeout_sec: int = 600,
-    prediction_phase: str = "scheduled_live",
-    scheduled_control_plane: str = "direct_scheduled",
+    *,
+    prediction_phase: str,
+    scheduled_control_plane: str | None = None,
     scheduled_execution_context: object | None = None,
     scheduled_preflight_failure: str | None = None,
     blackbox_precommit_validator: Callable[[object], None] | None = None,
@@ -1488,6 +1489,14 @@ def execute_scheme(
     """
     if prediction_phase not in VALID_PREDICTION_PHASES:
         raise ValueError(f"prediction_phase must be one of {sorted(VALID_PREDICTION_PHASES)}, got {prediction_phase}")
+    if prediction_phase != "scheduled_live" and (
+        scheduled_control_plane is not None
+        or scheduled_execution_context is not None
+        or scheduled_preflight_failure is not None
+    ):
+        raise ValueError(
+            "scheduled control plane requires scheduled_live"
+        )
     if prediction_phase == "scheduled_live":
         configuration_error = (
             scheduled_live_execution_configuration_error(
@@ -1726,7 +1735,7 @@ def execute_scheme(
 def scheduled_live_execution_configuration_error(
     cfg: SchemeConfig,
     *,
-    scheduled_control_plane: str,
+    scheduled_control_plane: str | None,
     scheduled_execution_context: object | None = None,
 ) -> str | None:
     """在任何数据库或子进程副作用前校验低层 scheduled_live 入口。"""

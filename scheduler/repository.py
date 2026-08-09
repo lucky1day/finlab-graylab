@@ -18,7 +18,6 @@ from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Connection, Engine, URL
 
 from scheduler.discovery import SchemeConfig, load_scheme_config
-from scheduler.blackbox_scheduler_admission import LAUNCHD_ONE_SHOT
 from shared.blackbox_v2.lifecycle import assert_lifecycle_clear, lifecycle_operation_lock
 from shared.db_config import DatabaseConfig
 from shared.input_artifacts import InputArtifact
@@ -30,6 +29,7 @@ from shared.native_input_generation import (
 
 
 VALID_PREDICTION_PHASES = {"gray_live", "scheduled_live"}
+_LAUNCHD_ONE_SHOT_CONTROL_PLANE = "launchd_one_shot"
 VERSION_STATUSES = {"draft", "validated", "shadow", "active", "paused", "retired"}
 BLACKBOX_REGISTRY_STATUSES = {"active", "paused", "archived"}
 BLACKBOX_IMMUTABLE_VERSION_FIELDS = (
@@ -3023,7 +3023,10 @@ def create_scheme_run(
             "prediction_phase must be one of "
             f"{sorted(VALID_PREDICTION_PHASES)}, got {prediction_phase}"
         )
-    if scheduled_control_plane not in {None, LAUNCHD_ONE_SHOT}:
+    if scheduled_control_plane not in {
+        None,
+        _LAUNCHD_ONE_SHOT_CONTROL_PLANE,
+    }:
         raise ValueError(
             "scheduled_control_plane must be launchd_one_shot when set"
         )
@@ -3034,7 +3037,8 @@ def create_scheme_run(
             )
     if (
         prediction_phase == "scheduled_live"
-        and scheduled_control_plane != LAUNCHD_ONE_SHOT
+        and scheduled_control_plane
+        != _LAUNCHD_ONE_SHOT_CONTROL_PLANE
     ):
         raise RuntimeError(
             "scheduled_live requires launchd_one_shot"

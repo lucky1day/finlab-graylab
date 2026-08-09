@@ -7,7 +7,6 @@ import os
 import re
 import secrets
 import time
-from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -15,7 +14,6 @@ from urllib.parse import parse_qsl, urlsplit
 from uuid import uuid4
 
 from fastapi import (
-    BackgroundTasks,
     Depends,
     FastAPI,
     Header,
@@ -26,7 +24,6 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
 from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -49,20 +46,6 @@ from backend.services import (
     list_targets,
     scheme_metrics,
     sync_registry_from_configs,
-)
-from scheduler.executor import (
-    DEFAULT_ALGO_ENV,
-    scheduled_live_execution_configuration_error,
-)
-from scheduler.blackbox_scheduler_admission import (
-    DIRECT_SCHEDULED,
-    ScheduledPredictionConfigurationError,
-    ScheduledPredictionControlPlaneDenied,
-    require_scheduled_prediction_control_plane,
-)
-from scheduler.direct_prediction import (
-    resolve_scheduled_prediction_config,
-    run_prediction_job,
 )
 from shared.service_instance import (
     FINGERPRINT_VERSION,
@@ -245,31 +228,6 @@ app.add_middleware(
     allow_headers=["Content-Type", ADMIN_TOKEN_HEADER],
 )
 app.add_middleware(QAwareGZipMiddleware)
-
-
-class TriggerRequest(BaseModel):
-    """手动触发预测请求。"""
-
-    predict_date: str | None = Field(default=None, description="YYYY-MM-DD; omitted means today")
-    force: bool = Field(default=False, description="Run even when the date is not a trading day")
-    algo_env: str | None = Field(default=None, description="Override algorithm conda env")
-
-
-class _TriggerValidationError(RuntimeError):
-    """手工 scheduled trigger 同步或后台重验失败。"""
-
-    def __init__(self, status_code: int, detail: str) -> None:
-        super().__init__(detail)
-        self.status_code = status_code
-        self.detail = detail
-
-
-@dataclass(frozen=True)
-class _TriggerAuthorization:
-    """从 active Registry 与 canonical config 重新推导的直接执行路由。"""
-
-    registry_scheme_id: str
-    base_scheme_id: str
 
 
 @app.get("/api/health")
@@ -712,190 +670,6 @@ def api_backtest_factor_lab(
     data_source: str | None = None,
 ) -> dict:
     return backtest_factor_lab_results(get_engine(), benchmark_id=benchmark_id, data_source=data_source)
-
-
-def _resolve_trigger_authorization(
-    engine,
-    registry_scheme_id: str,
-) -> _TriggerAuthorization:
-    """从 active Registry 与部署 config 推导本次控制面。"""
-    try:
-        registry_row = next(
-            (
-                row
-                for row in list_schemes(engine)
-                if row.get("scheme_id") == registry_scheme_id
-                and row.get("status") == "active"
-            ),
-            None,
-        )
-    except Exception as exc:
-        raise _TriggerValidationError(
-            503,
-            "active scheme Registry is unavailable",
-        ) from exc
-    if registry_row is None:
-        raise _TriggerValidationError(
-            404,
-            f"scheme not found: {registry_scheme_id}",
-        )
-
-    base_scheme_id = str(
-        registry_row.get("base_scheme_id") or ""
-    )
-    try:
-        config = resolve_scheduled_prediction_config(
-            base_scheme_id
-        )
-    except ScheduledPredictionConfigurationError as exc:
-        raise _TriggerValidationError(
-            503,
-            "active Registry does not match a runnable canonical "
-            f"config: registry_scheme_id={registry_scheme_id} "
-            f"error={exc}",
-        ) from exc
-
-    registry_contract = {
-        "base_scheme_id": base_scheme_id,
-        "runtime_type": str(
-            registry_row.get("runtime_type") or ""
-        ),
-        "frequency": str(
-            registry_row.get("frequency") or ""
-        ),
-        "task_type": str(
-            registry_row.get("task_type") or ""
-        ),
-        "horizon": registry_row.get("horizon"),
-        "target_tenor": str(
-            registry_row.get("target_tenor") or ""
-        ),
-    }
-    canonical_contract = {
-        "base_scheme_id": config.scheme_id,
-        "runtime_type": config.runtime_type,
-        "frequency": config.frequency,
-        "task_type": config.task_type,
-        "horizon": config.horizon,
-        "target_tenor": registry_contract["target_tenor"],
-    }
-    target_tenor = registry_contract["target_tenor"]
-    expected_registry_scheme_id = (
-        f"{config.scheme_id}__h{config.horizon}"
-        f"__{target_tenor}"
-    )
-    if (
-        registry_contract != canonical_contract
-        or target_tenor not in tuple(config.tenors)
-        or registry_scheme_id != expected_registry_scheme_id
-    ):
-        raise _TriggerValidationError(
-            503,
-            "active Registry and canonical config drift: "
-            f"registry_scheme_id={registry_scheme_id}",
-        )
-
-    try:
-        require_scheduled_prediction_control_plane(
-            config,
-            plane=DIRECT_SCHEDULED,
-        )
-    except ScheduledPredictionControlPlaneDenied as exc:
-        raise _TriggerValidationError(409, str(exc)) from exc
-    except ScheduledPredictionConfigurationError as exc:
-        raise _TriggerValidationError(
-            503,
-            str(exc),
-        ) from exc
-    execution_error = scheduled_live_execution_configuration_error(
-        config,
-        scheduled_control_plane=DIRECT_SCHEDULED,
-    )
-    if execution_error is not None:
-        raise _TriggerValidationError(409, execution_error)
-    return _TriggerAuthorization(
-        registry_scheme_id=registry_scheme_id,
-        base_scheme_id=config.scheme_id,
-    )
-
-
-def _preflight_trigger(
-    registry_scheme_id: str,
-) -> _TriggerAuthorization:
-    """执行同步或后台均相同的完整 trigger 重验。"""
-    try:
-        engine = get_engine()
-    except Exception as exc:
-        raise _TriggerValidationError(
-            503,
-            "trigger database is unavailable",
-        ) from exc
-    return _resolve_trigger_authorization(
-        engine,
-        registry_scheme_id,
-    )
-
-
-def _run_trigger(
-    registry_scheme_id: str,
-    predict_date: str | None = None,
-    force: bool = False,
-    algo_env: str | None = None,
-) -> None:
-    logger.info(
-        "Manual trigger started for %s (triggered_by=admin_api)",
-        registry_scheme_id,
-    )
-    try:
-        authorization = _preflight_trigger(registry_scheme_id)
-        effective_algo_env = algo_env or os.getenv(
-            "BOND_ALGO_CONDA_ENV",
-            DEFAULT_ALGO_ENV,
-        )
-        run_prediction_job(
-            authorization.base_scheme_id,
-            run_date=predict_date,
-            algo_env=effective_algo_env,
-            force=force,
-        )
-    except _TriggerValidationError as exc:
-        logger.error(
-            "Manual trigger admission revalidation failed: "
-            "registry_scheme_id=%s status_code=%s error=%s",
-            registry_scheme_id,
-            exc.status_code,
-            exc.detail,
-        )
-    except Exception:
-        logger.exception(
-            "Manual trigger failed for %s",
-            registry_scheme_id,
-        )
-
-
-@app.post("/api/schemes/{scheme_id}/trigger", status_code=202, dependencies=[Depends(require_admin_token)])
-def api_trigger_scheme(scheme_id: str, request: TriggerRequest, background_tasks: BackgroundTasks) -> dict:
-    try:
-        authorization = _preflight_trigger(scheme_id)
-    except _TriggerValidationError as exc:
-        raise HTTPException(
-            status_code=exc.status_code,
-            detail=exc.detail,
-        ) from exc
-    background_tasks.add_task(
-        _run_trigger,
-        scheme_id,
-        request.predict_date,
-        request.force,
-        request.algo_env,
-    )
-    return {
-        "accepted": True,
-        "scheme_id": scheme_id,
-        "base_scheme_id": authorization.base_scheme_id,
-        "predict_date": request.predict_date,
-        "force": request.force,
-    }
 
 
 @app.post("/api/admin/registry/sync", dependencies=[Depends(require_admin_token)])
