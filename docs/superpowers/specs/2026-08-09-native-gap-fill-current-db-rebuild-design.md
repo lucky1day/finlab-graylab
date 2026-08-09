@@ -44,8 +44,7 @@ python -m harness signal-gap-fill --predict-date YYYY-MM-DD
 signal-gap-fill --predict-date
 → 扫描 active Registry 的真实缺口
 → 冻结 exact version、日期和 target keys
-→ 创建命令级临时 input/cache root
-→ 必要时通过正常预测入口先运行 Phase-A publisher
+→ 为每个方案创建隔离的临时 input/cache root
 → 通过正常预测入口运行缺口方案
 → 验证 scheme/version/target 和三个日期
 → 移除临时 input/cache provenance
@@ -54,7 +53,7 @@ signal-gap-fill --predict-date
 → 重新扫描同日缺口并要求全部 SKIP_PRESENT
 ```
 
-Native plan 不再查询 `t_input_generations`，也不再产生由 generation 缺失导致的 `BLOCKED_NO_GENERATION`。Blackbox gap-fill 数据流保持不变。
+Native plan 升级为 `active-signal-gap-plan-v6`，不再查询 `t_input_generations`，也不再产生由 generation 缺失导致的 `BLOCKED_NO_GENERATION`。Native action 的 `input_authority` 与授权中的 `source_authority` 均为 `null`。Blackbox gap-fill 继续严格绑定 DataBridge authority。v4/v5 计划只保留为历史 JSON，不再可执行。
 
 ## 4. 正常路径复用
 
@@ -75,33 +74,20 @@ Native 补缺直接调用正常 `run_configured_scheme()`：
 
 ```text
 signal-gap-fill-<execution-id>/
-├── inputs/
-└── phase-a-cache/
+└── <base-scheme-id>/
+    ├── inputs/
+    └── phase-a-cache/
 ```
 
-Executor 只增加传递本次 input artifact root 的普通可选参数；已有 `phase_a_cache_root` 参数继续复用。未指定临时 root 时，自然调度行为保持不变。
+Executor 只增加一个内部 `ephemeral_native_runtime_root` 可选参数，并由它派生 input 与 Phase-A root。未指定临时 root 时，自然调度行为保持不变。
 
 算法成功、失败或超时后都必须清理临时目录。清理发生在 prediction commit 之前；清理失败视为本次补缺失败，prediction 零提交。
 
-## 6. Phase-A publisher 依赖
+## 6. Phase-A 私有构建
 
-部分 Liwei Native consumer 无权在空 cache root 中自行发布 Phase-A cache。该依赖不能被删除，但不再作为独立运维控制面存在。
+历史补缺不再执行任何额外 publisher。每个目标方案在自己的临时 root 中使用唯一内部 `private_build` policy，复用方案已有的 `train_missing` 与 cached/cold 全输出比较。
 
-补缺命令复用共享 cache contract 的唯一 publisher 关系：
-
-```text
-target 本身是 publisher
-→ 正常执行 target 一次
-
-target 是 consumer
-→ 先通过正常预测入口执行唯一 publisher
-→ 丢弃 publisher prediction
-→ 在同一临时 cache root 中执行 target
-```
-
-publisher 只承担本次算法依赖准备：不写 prediction，不创建伪业务 run，不签发专项授权。publisher 缺失、身份漂移或执行失败时直接阻断依赖它的缺口组，整批 prediction 零提交。
-
-Harness 不复制第二份 publisher 身份矩阵；依赖查询由现有共享 cache contract 统一提供。
+`private_build` 只能由 Executor 与绝对临时路径一起注入，不暴露为 CLI、配置或授权动作。自然 launchd 不设置该 policy，继续使用现有共享 publisher 矩阵与 publisher-first 顺序。
 
 ## 7. 持久化边界
 
@@ -117,13 +103,13 @@ Harness 不复制第二份 publisher 身份矩阵；依赖查询由现有共享 
 
 Native gap prediction 写库前移除只与临时运行相关的 provenance：
 
-- input artifact path 和内容 hash；
+- `input_artifact_path/source/data_version/watermark` 及日、周、月同类字段；
 - generation ID、manifest URI/hash 和 exporter 信息；
-- cache root、cache fingerprint 和 permit 信息；
+- `phase_a_cache` 及所有 `phase_a_cache_*` 字段；
 - current-snapshot vintage disclaimer；
-- 重复的 cutoff 字段。
+- 重复的 `input_cutoff_date/source_cutoff_date` 字段。
 
-不修改算法返回逻辑；该清理属于平台 L0 输出适配。
+必须保留 `source_package_hash`、source model 身份、模型窗口、内部得分与业务输出；禁止按字段名包含 `hash/cache` 宽泛删除。该清理不修改算法返回逻辑，属于平台 L0 输出适配。
 
 ## 8. 退役范围
 
@@ -151,12 +137,12 @@ Native gap prediction 写库前移除只与临时运行相关的 provenance：
 - active config、exact version、Registry 或 cadence 漂移在算法前阻断；
 - 日历无法计算、重复业务键或 frozen plan 漂移在算法前阻断；
 - 当前数据库连接、数据完整性或输入构建失败时阻断；
-- Phase-A publisher/consumer 失败时阻断；
+- Phase-A 私有构建或 cached/cold 比较失败时阻断；
 - 返回的 scheme/version/target 或三个日期不一致时阻断；
 - 临时目录清理失败时阻断；
 - 任一算法失败时所有 prediction 零提交。
 
-结构化 gap run 可以保留为 `failed`，旧失败 run 永不覆盖。内部 publisher 不创建独立业务 run；其失败原因记录到依赖它的 gap run。
+结构化 gap run 可以保留为 `failed`，旧失败 run 永不覆盖。每个缺口方案只创建自己的 run，不存在隐式 publisher run。
 
 提交阶段继续使用现有原子目标组与 insert-only 语义。若数据库提交发生真实部分完成，报告 `completed` 和 `remaining` 并退出非零，不自动重试。
 
@@ -169,9 +155,9 @@ Native gap prediction 写库前移除只与临时运行相关的 provenance：
 3. 已存在 prediction 保持 `SKIP_PRESENT`；
 4. Native gap 使用正常 `run_configured_scheme()`，不传 generation 或特殊 mode；
 5. 历史 `predict_date` 与临时 input/cache root 正确传递；
-6. consumer 先执行唯一 publisher，publisher 输出不写库；
-7. target 本身是 publisher 时不重复执行；
-8. publisher、consumer、日期验证或清理失败时 prediction 零提交；
+6. consumer 在自己的空临时 cache root 中可 private-build，且不执行 publisher；
+7. 同 cache family 的方案也必须使用不同临时 root；
+8. private-build、cached/cold 比较、日期验证或清理失败时 prediction 零提交；
 9. 普通 Native、0629 source-backed Native 和 Phase-A Native 都复用正常入口；
 10. 临时路径/hash/generation/cache provenance 被移除，模型内部数值保留；
 11. 成功和失败路径都不留下临时输入或缓存；
@@ -192,6 +178,7 @@ Native gap prediction 写库前移除只与临时运行相关的 provenance：
 - 不修改 Blackbox DataBridge snapshot；
 - 不修改 Backend、前端、plist 或 launchd；
 - 不建立批次级跨方案数据库一致性快照。
+- 不修改 Native version hash 范围；当前顶层 `inference.py` 未进入 `compute_code_hash()` 是下一个独立模块的问题。
 
 各方案在命令执行期间分别读取当时的当前数据库，与自然生产执行语义一致。若未来需要跨方案批次快照，应作为输入模块独立评审，不能重新并入补缺控制面。
 
