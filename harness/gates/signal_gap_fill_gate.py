@@ -102,6 +102,17 @@ class _GapGroup:
         return self.base_scheme_id, self.predict_date
 
 
+@dataclass(frozen=True, slots=True)
+class SignalGapFillAuthorizationClaim:
+    """冻结计划中一个原子补缺组的精确授权声明。"""
+
+    base_scheme_id: str
+    scheme_version: str
+    predict_date: str
+    target_keys: tuple[dict[str, Any], ...]
+    source_authority: dict[str, Any]
+
+
 @dataclass(slots=True)
 class _Execution:
     group: _GapGroup
@@ -704,6 +715,25 @@ def _build_groups(plan: Mapping[str, Any]) -> tuple[_GapGroup, ...]:
             )
         )
     return tuple(result)
+
+
+def signal_gap_fill_authorization_claims(
+    plan: Mapping[str, Any],
+) -> tuple[SignalGapFillAuthorizationClaim, ...]:
+    """从冻结计划的原子组导出最小授权声明。"""
+    return tuple(
+        SignalGapFillAuthorizationClaim(
+            base_scheme_id=group.base_scheme_id,
+            scheme_version=group.scheme_version,
+            predict_date=group.predict_date,
+            target_keys=tuple(
+                dict(target_key)
+                for target_key in group.expected_target_keys
+            ),
+            source_authority=dict(group.source_authority),
+        )
+        for group in _build_groups(plan)
+    )
 
 
 def _classify_current_plan(
