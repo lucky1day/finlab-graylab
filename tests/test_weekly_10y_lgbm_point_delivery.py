@@ -9,19 +9,14 @@ from pathlib import Path
 import shutil
 import subprocess
 
-import pytest
-
-from schemes.weekly_10y_lgbm_point_v1.delivery import (
-    weekly_10y_lgbm_point_v1 as delivery,
-)
-
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WEEKLY_SCHEMA_PATH = PROJECT_ROOT / "shared/blackbox_v2/data_bridge_v1_schema.json"
 DELIVERY_SCRIPT = (
     PROJECT_ROOT
     / "schemes/weekly_10y_lgbm_point_v1/delivery/weekly_10y_lgbm_point_v1.py"
 )
+WEEKLY_FILENAME = "weekly_output.csv"
+TARGET_COLUMN = "TB0YWI1C"
 ADDITIONAL_TENORS = ("TB3YWI1C", "TB7YWI1C")
 COMPATIBILITY_SCRIPT = """
 import json
@@ -32,6 +27,8 @@ import sys
 import pandas as pd
 
 delivery = runpy.run_path(sys.argv[1])
+assert delivery["WEEKLY_FILENAME"] == sys.argv[5]
+assert delivery["TARGET_COLUMN"] == sys.argv[6]
 baseline = delivery["load_weekly_data"](Path(sys.argv[2]))
 extended = delivery["load_weekly_data"](Path(sys.argv[3]))
 baseline_features = delivery["build_features"](baseline)
@@ -42,12 +39,20 @@ request = json.loads(sys.argv[4])
 assert delivery["generate_results"]([request], baseline) == delivery["generate_results"](
     [request], extended
 )
+for missing_column in (delivery["TARGET_COLUMN"], delivery["FROZEN_FEATURES"][0]):
+    try:
+        delivery["build_features"](baseline.drop(columns=missing_column))
+    except ValueError as exc:
+        assert "missing required model columns" in str(exc)
+        assert missing_column in str(exc)
+    else:
+        raise AssertionError("build_features accepted a missing required model column")
 """
 
 
 def _baseline_header() -> list[str]:
     schema = json.loads(WEEKLY_SCHEMA_PATH.read_text(encoding="utf-8"))
-    header = schema["files"][delivery.WEEKLY_FILENAME]["columns"]
+    header = schema["files"][WEEKLY_FILENAME]["columns"]
     assert len(header) == 575
     assert header[0] == "week_id"
     return header
@@ -62,15 +67,13 @@ def _week_ids() -> list[str]:
 
 def _write_weekly_csv(data_dir: Path, header: list[str]) -> None:
     data_dir.mkdir()
-    with (data_dir / delivery.WEEKLY_FILENAME).open(
-        "w", encoding="utf-8", newline=""
-    ) as handle:
+    with (data_dir / WEEKLY_FILENAME).open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(header)
         for row_index, week_id in enumerate(_week_ids()):
             values = []
             for column_index, column in enumerate(header[1:], start=1):
-                if column == delivery.TARGET_COLUMN:
+                if column == TARGET_COLUMN:
                     value = 2.0 + 0.1 * (row_index % 2)
                 else:
                     value = column_index + row_index / 1000
@@ -122,10 +125,11 @@ def _runtime_env() -> dict[str, str]:
     return environment
 
 
-def test_extended_weekly_header_preserves_features_and_prediction(tmp_path: Path) -> None:
+def test_extended_weekly_header_preserves_delivery_behavior(tmp_path: Path) -> None:
     baseline_header = _baseline_header()
     assert not set(ADDITIONAL_TENORS).intersection(baseline_header)
     extended_header = [*baseline_header, *ADDITIONAL_TENORS]
+    assert tuple(extended_header[len(baseline_header) :]) == ADDITIONAL_TENORS
 
     baseline_dir = tmp_path / "baseline"
     extended_dir = tmp_path / "extended"
@@ -143,6 +147,8 @@ def test_extended_weekly_header_preserves_features_and_prediction(tmp_path: Path
             str(baseline_dir),
             str(extended_dir),
             json.dumps(request),
+            WEEKLY_FILENAME,
+            TARGET_COLUMN,
         ],
         check=False,
         capture_output=True,
@@ -155,21 +161,3 @@ def test_extended_weekly_header_preserves_features_and_prediction(tmp_path: Path
         "forecast_env_blackbox_v1 compatibility check failed:\n"
         f"stdout={completed.stdout}\nstderr={completed.stderr}"
     )
-
-
-@pytest.mark.parametrize(
-    "missing_column",
-    [delivery.TARGET_COLUMN, delivery.FROZEN_FEATURES[0]],
-)
-def test_build_features_rejects_missing_required_column(
-    tmp_path: Path,
-    missing_column: str,
-) -> None:
-    data_dir = tmp_path / "baseline"
-    _write_weekly_csv(data_dir, _baseline_header())
-    weekly = delivery.load_weekly_data(data_dir).drop(columns=missing_column)
-
-    with pytest.raises(ValueError, match="missing required model columns") as exc_info:
-        delivery.build_features(weekly)
-
-    assert missing_column in str(exc_info.value)
