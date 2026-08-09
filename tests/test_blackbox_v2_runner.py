@@ -984,7 +984,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             record.extra["platform_input_audit_manifest"][
                 "platform_inputs"
             ][0]["provenance"]["source_kind"],
-            "scheduled_native_generation",
+            "harness_database",
         )
 
     def test_predict_rejects_missing_platform_evidence_before_execution(
@@ -2833,9 +2833,9 @@ def _platform_bundle_evidence():
         ),
         weekly_cutoff_key="202627",
         audit_provenance={
-            "source_kind": "scheduled_native_generation",
-            "generation_id": "native-test",
-            "manifest_sha256": "a" * 64,
+            "source_kind": "harness_database",
+            "generation_id": None,
+            "manifest_sha256": None,
             "captured_at": "2026-07-24T00:00:00+00:00",
         },
     )

@@ -1,22 +1,12 @@
 from __future__ import annotations
 
 import math
-import os
-import re
 from typing import Any
 
 from shared.calendar_service import get_calendar
 from shared.daily_0629_source_evidence import DAILY_0629_SOURCE_ROLE, require_daily_0629_source_evidence
 from shared.daily_0629_source_runner import run_source_daily_live
-from shared.input_artifacts import (
-    LIVE_SOURCE_FEATURE_DATE_ENV,
-    LIVE_SOURCE_FENCE_GENERATION_ID_ENV,
-    LIVE_SOURCE_INPUT_MODE,
-    LIVE_SOURCE_INPUT_MODE_ENV,
-    LIVE_SOURCE_PACKAGE_SHA256_ENV,
-    build_daily_input_artifact,
-    create_input_engine,
-)
+from shared.input_artifacts import build_daily_input_artifact, create_input_engine
 from shared.models import PredictionRecord
 from shared.prediction_context import build_daily_live_context
 from shared.source_runtime_database import (
@@ -60,17 +50,7 @@ DAILY_0629_INTERNAL_FIELDS = (
 
 def run_daily_0629_prediction(scheme_id: str, predict_date: str) -> list[PredictionRecord]:
     """执行日度 0629 source-original T+1 binary runner adapter。"""
-    live_source_context = _scheduled_live_source_context()
     evidence = require_daily_0629_source_evidence(scheme_id)
-    if (
-        live_source_context is not None
-        and evidence.source_package_hash
-        != live_source_context["source_package_sha256"]
-    ):
-        raise RuntimeError(
-            f"{scheme_id}: live source package hash differs from "
-            "frozen occurrence policy"
-        )
     database_config = load_source_runtime_database_config()
     engine = create_input_engine(
         database_config=database_config,
@@ -88,22 +68,6 @@ def run_daily_0629_prediction(scheme_id: str, predict_date: str) -> list[Predict
     finally:
         engine.dispose()
 
-    if live_source_context is not None:
-        if (
-            live_source_context["feature_date"]
-            != context.feature_date
-        ):
-            raise RuntimeError(
-                f"{scheme_id}: frozen compatibility feature_date "
-                f"{live_source_context['feature_date']} differs from "
-                f"live context {context.feature_date}"
-            )
-        if input_artifact.source_watermark != context.feature_date:
-            raise RuntimeError(
-                f"{scheme_id}: live source data watermark "
-                f"{input_artifact.source_watermark} differs from "
-                f"feature_date {context.feature_date}"
-            )
     source_rows = run_source_daily_live(
         evidence,
         predict_date=predict_date,
@@ -114,14 +78,6 @@ def run_daily_0629_prediction(scheme_id: str, predict_date: str) -> list[Predict
         evidence.frequency,
         scheme_id,
     )
-    if live_source_context is not None:
-        source_watermark = _str_or_none(source.get("prediction_date"))
-        if source_watermark != context.feature_date:
-            raise RuntimeError(
-                f"{scheme_id}: source output data watermark "
-                f"{source_watermark!r} differs from feature_date "
-                f"{context.feature_date}"
-            )
     _assert_source_context_matches(source, context.feature_date, context.target_date, scheme_id)
     direction = _direction_from_source(source)
     confidence = _float_or_none(source.get("prob_up"))
@@ -143,10 +99,6 @@ def run_daily_0629_prediction(scheme_id: str, predict_date: str) -> list[Predict
                 target_date=context.target_date,
                 input_artifact_path=str(input_artifact.path),
                 input_artifact_source=str(input_artifact.source),
-                input_artifact_watermark=(
-                    input_artifact.source_watermark
-                ),
-                live_source_context=live_source_context,
             ),
         )
     ]
@@ -176,8 +128,6 @@ def _extra_from_source(
     target_date: str,
     input_artifact_path: str,
     input_artifact_source: str,
-    input_artifact_watermark: str | None,
-    live_source_context: dict[str, str] | None,
 ) -> dict[str, Any]:
     extra = {
         "source_role": DAILY_0629_SOURCE_ROLE,
@@ -192,74 +142,9 @@ def _extra_from_source(
         "input_artifact_path": input_artifact_path,
         "input_artifact_source": input_artifact_source,
     }
-    if live_source_context is not None:
-        extra.update(
-            {
-                "input_mode": LIVE_SOURCE_INPUT_MODE,
-                "data_watermark":
-                    _str_or_none(source.get("prediction_date")),
-                "data_watermark_basis":
-                    "source_output_prediction_date",
-                "input_artifact_watermark":
-                    input_artifact_watermark,
-                "live_source_fence_generation_id":
-                    live_source_context["generation_id"],
-            }
-        )
     for field in DAILY_0629_INTERNAL_FIELDS:
         extra[field] = _clean_internal_field(field, source.get(field))
     return extra
-
-
-def _scheduled_live_source_context() -> dict[str, str] | None:
-    """读取协调器显式注入的 0629 live-source compatibility fence。"""
-    environment = {
-        "input_mode": os.environ.get(LIVE_SOURCE_INPUT_MODE_ENV),
-        "generation_id": os.environ.get(
-            LIVE_SOURCE_FENCE_GENERATION_ID_ENV
-        ),
-        "feature_date": os.environ.get(LIVE_SOURCE_FEATURE_DATE_ENV),
-        "source_package_sha256": os.environ.get(
-            LIVE_SOURCE_PACKAGE_SHA256_ENV
-        ),
-    }
-    configured = {
-        key: value
-        for key, value in environment.items()
-        if value is not None
-    }
-    if not configured:
-        return None
-    missing = sorted(set(environment) - set(configured))
-    empty = sorted(
-        key
-        for key, value in configured.items()
-        if not isinstance(value, str) or not value.strip()
-    )
-    if missing or empty:
-        raise RuntimeError(
-            "partial daily 0629 live source compatibility environment: "
-            f"missing={missing}, empty={empty}"
-        )
-    if configured["input_mode"] != LIVE_SOURCE_INPUT_MODE:
-        raise RuntimeError(
-            "unsupported daily 0629 live source input mode: "
-            f"{configured['input_mode']}"
-        )
-    if re.fullmatch(
-        r"[0-9a-f]{64}",
-        str(configured["source_package_sha256"]),
-    ) is None:
-        raise RuntimeError(
-            "invalid daily 0629 live source package sha256"
-        )
-    return {
-        "generation_id": str(configured["generation_id"]),
-        "feature_date": str(configured["feature_date"]),
-        "source_package_sha256": str(
-            configured["source_package_sha256"]
-        ),
-    }
 
 
 def _model_version_from_evidence(evidence: Any) -> str:

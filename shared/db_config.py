@@ -9,13 +9,7 @@ try:
 except ImportError:
     load_dotenv = None
 
-_FROZEN_NATIVE_MODE = (
-    os.getenv("BOND_NATIVE_INPUT_MODE") == "native_generation_v1"
-)
-
-if _FROZEN_NATIVE_MODE:
-    pass
-elif load_dotenv is not None:
+if load_dotenv is not None:
     load_dotenv()
 else:
     env_path = Path(__file__).resolve().parents[1] / ".env"
@@ -42,10 +36,6 @@ class DatabaseConfig:
     @classmethod
     def from_env(cls) -> "DatabaseConfig":
         """从 BOND_DB_* 环境变量创建数据库配置。"""
-        if _FROZEN_NATIVE_MODE:
-            raise RuntimeError(
-                "frozen Native generation mode forbids live database access"
-            )
         return cls(
             user=os.getenv("BOND_DB_USER", "root"),
             password=os.getenv("BOND_DB_PASSWORD", ""),

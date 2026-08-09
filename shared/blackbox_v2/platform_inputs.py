@@ -24,8 +24,6 @@ from shared.calendar_service import read_calendar_snapshot_from_connection
 if TYPE_CHECKING:
     from sqlalchemy.engine import Connection
 
-    from shared.native_input_generation import NativeGenerationContext
-
 
 _ISO_DATE_PATTERN = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 _WEEK_ID_PATTERN = re.compile(r"^[0-9]{6}(?:\.0)?$")
@@ -135,7 +133,6 @@ class PlatformInputProvider:
     normalize_frame: Callable[[pd.DataFrame, PlatformInputSpec, object], pd.DataFrame]
     normalize_content: Callable[[pd.DataFrame, PlatformInputSpec], pd.DataFrame]
     calendar_snapshot_filename: str
-    native_generation_frame: str
 
 
 def freeze_platform_input(
@@ -201,37 +198,6 @@ def capture_platform_inputs_from_connection(
         )
         for artifact_id in artifact_ids
     )
-
-
-def capture_platform_inputs_from_native_generation(
-    platform_input_ids: Iterable[str],
-    *,
-    native_generation: NativeGenerationContext,
-    weekly_cutoff_key: object,
-    captured_at: str | None = None,
-) -> tuple[FrozenPlatformInput, ...]:
-    """从已校验 Native generation 捕获 scheduled 平台输入。"""
-    artifact_ids = _normalize_selection(platform_input_ids)
-    if not artifact_ids:
-        return ()
-    provenance = _provenance(
-        source_kind="scheduled_native_generation",
-        generation_id=native_generation.generation_id,
-        manifest_sha256=native_generation.manifest_sha256,
-        captured_at=captured_at,
-    )
-    artifacts: list[FrozenPlatformInput] = []
-    for artifact_id in artifact_ids:
-        provider = _provider(artifact_id)
-        artifacts.append(
-            freeze_platform_input(
-                artifact_id,
-                native_generation.frame(provider.native_generation_frame),
-                weekly_cutoff_key=weekly_cutoff_key,
-                audit_provenance=provenance,
-            )
-        )
-    return tuple(artifacts)
 
 
 def _normalize_api_wind_date(
@@ -426,7 +392,6 @@ PLATFORM_INPUT_PROVIDERS: Mapping[str, PlatformInputProvider] = MappingProxyType
             normalize_frame=_normalize_api_wind_date,
             normalize_content=_normalize_api_wind_date_content,
             calendar_snapshot_filename="api_wind_date.csv",
-            native_generation_frame="api_wind_date",
         ),
     }
 )

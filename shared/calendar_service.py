@@ -1,18 +1,14 @@
 from __future__ import annotations
 
-from bisect import bisect_left, bisect_right
 from datetime import date, datetime
 from functools import cached_property
-from typing import TYPE_CHECKING, Mapping
+from typing import Mapping
 
 import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
 from shared.week_calendar_normalizer import normalize_week_calendar_rows
-
-if TYPE_CHECKING:
-    from shared.native_input_generation import NativeGenerationContext
 
 
 def read_calendar_snapshot_from_connection(
@@ -173,120 +169,8 @@ class CalendarService:
         return result
 
 
-class FrozenCalendarService:
-    """仅从已校验 Native generation 读取的交易日历服务。"""
-
-    def __init__(self, context: NativeGenerationContext) -> None:
-        trade_calendar = context.frame("t_trade_calendar")
-        wind_date = context.frame("api_wind_date")
-        trade_flags = {
-            _date_string(row["rdate"]): str(row["trade_flag"]).strip()
-            for row in trade_calendar.to_dict(orient="records")
-        }
-        self._trading_days = sorted(
-            day
-            for day, flag in trade_flags.items()
-            if flag == "1"
-        )
-        trade_flag_rows = [
-            {
-                "rdate": row["rdate"],
-                "week_id": row["week_id"],
-                "trade_flag": trade_flags.get(
-                    _date_string(row["rdate"]),
-                ),
-            }
-            for row in wind_date.to_dict(orient="records")
-        ]
-        normalized = normalize_week_calendar_rows(trade_flag_rows)
-        self._date_to_week_id = {
-            _date_string(row["rdate"]): int(row["week_id"])
-            for row in normalized
-            if row.get("week_id") is not None
-        }
-        week_last: dict[int, str] = {}
-        for row in normalized:
-            if (
-                str(row.get("trade_flag")).strip() != "1"
-                or row.get("week_id") is None
-            ):
-                continue
-            week_id = int(row["week_id"])
-            day = _date_string(row["rdate"])
-            if week_id not in week_last or day > week_last[week_id]:
-                week_last[week_id] = day
-        self._week_last_trading_day = week_last
-
-    def is_trading_day(self, value: str | date | datetime) -> bool:
-        """从冻结交易日序列判断指定日期是否为交易日。"""
-        day = _date_string(value)
-        position = bisect_left(self._trading_days, day)
-        return (
-            position < len(self._trading_days)
-            and self._trading_days[position] == day
-        )
-
-    def next_trading_days(
-        self,
-        value: str | date | datetime,
-        count: int,
-    ) -> list[str]:
-        """返回冻结日历中指定日期之后的交易日。"""
-        if count <= 0:
-            return []
-        position = bisect_right(self._trading_days, _date_string(value))
-        return self._trading_days[position : position + int(count)]
-
-    def previous_trading_day(self, value: str | date | datetime) -> str:
-        """返回冻结日历中指定日期之前最近的交易日。"""
-        day = _date_string(value)
-        position = bisect_left(self._trading_days, day)
-        if position == 0:
-            raise ValueError(f"no previous trading day before {day}")
-        return self._trading_days[position - 1]
-
-    def nth_trading_day_after(
-        self,
-        value: str | date | datetime,
-        n: int,
-    ) -> str:
-        """返回冻结日历中指定日期之后第 n 个交易日。"""
-        days = self.next_trading_days(value, n)
-        if len(days) < n:
-            raise ValueError(f"not enough trading days after {_date_string(value)}")
-        return days[-1]
-
-    def week_id_for_date(
-        self,
-        value: str | date | datetime,
-    ) -> int | None:
-        """返回冻结且归一化的周编号。"""
-        return self._date_to_week_id.get(_date_string(value))
-
-    def week_id_to_last_trading_day(
-        self,
-        week_id: int | float | str,
-    ) -> str:
-        """返回冻结周编号中的最后交易日，不访问 DB fallback。"""
-        normalized_week_id = int(week_id)
-        row = self._week_last_trading_day.get(normalized_week_id)
-        if row is not None:
-            return row
-        raise ValueError(
-            "no trading day found for "
-            f"week_id={normalized_week_id} in frozen "
-            "api_wind_date/t_trade_calendar"
-        )
-
-
-def get_calendar(
-    engine: Engine | NativeGenerationContext,
-) -> CalendarService | FrozenCalendarService:
+def get_calendar(engine: Engine) -> CalendarService:
     """获取日历服务。"""
-    from shared.native_input_generation import NativeGenerationContext
-
-    if isinstance(engine, NativeGenerationContext):
-        return FrozenCalendarService(engine)
     return CalendarService(engine=engine)
 
 

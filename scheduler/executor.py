@@ -20,9 +20,6 @@ from scheduler.blackbox_v2_runner import (
     run_blackbox_backtest,
 )
 from scheduler.discovery import SchemeConfig, discover_schemes
-from shared.live_source_contract import (
-    APPROVED_0629_LIVE_SOURCE_SCHEMES,
-)
 from scheduler.process_control import (
     ProcessGroupTerminationError,
     ProcessGroupTerminationResult,
@@ -47,37 +44,15 @@ from shared.blackbox_v2.contracts import BlackboxRequest, load_metadata
 from shared.blackbox_v2.requests import build_live_request
 from shared.blackbox_v2.snapshot import compose_blackbox_input_bundle
 from shared.input_artifacts import (
-    BLACKBOX_SCHEMA_PATH,
-    LIVE_SOURCE_FEATURE_DATE_ENV,
-    LIVE_SOURCE_FENCE_GENERATION_ID_ENV,
-    LIVE_SOURCE_INPUT_MODE,
-    LIVE_SOURCE_INPUT_MODE_ENV,
-    LIVE_SOURCE_PACKAGE_SHA256_ENV,
-    NATIVE_BUSINESS_DATE_ENV,
-    NATIVE_FEATURE_DATE_ENV,
-    NATIVE_GENERATION_ID_ENV,
     EPHEMERAL_NATIVE_INPUT_ROOT_ENV,
-    NATIVE_INPUT_MODE,
-    NATIVE_INPUT_MODE_ENV,
-    NATIVE_MANIFEST_PATH_ENV,
-    NATIVE_MANIFEST_SHA256_ENV,
     capture_blackbox_platform_inputs_from_connection,
-    capture_blackbox_platform_inputs_from_native_generation,
     BlackboxGrayReplaySession,
     open_blackbox_input_snapshot,
     open_blackbox_runtime_view,
     resolve_blackbox_input_cutoffs,
 )
-from shared.databridge_input_generation import (
-    DataBridgeGenerationContext,
-    open_databridge_generation,
-)
 from shared.data_bridge.refresh import DataBridgeRefreshConfig
 from shared.models import PredictionRecord
-from shared.native_input_generation import (
-    NativeGenerationContext,
-    open_native_generation,
-)
 from shared.liwei_0616_cache_contract import (
     CACHE_MUTATION_POLICY_ENV,
     CACHE_MUTATION_POLICY_PRIVATE_BUILD,
@@ -107,7 +82,6 @@ VALID_BLACKBOX_SNAPSHOT_MODES = {
     BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF,
 }
 TIMEOUT_OUTPUT_DRAIN_SEC = 1
-SCHEDULE_EXECUTION_TOKEN_ENV = "BOND_SCHEDULE_EXECUTION_TOKEN"
 _SAFE_EXECUTION_TOKEN_CHARACTERS = frozenset(
     "abcdefghijklmnopqrstuvwxyz"
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
@@ -212,29 +186,11 @@ def _validated_execution_token(
     return execution_token
 
 
-def _validated_live_source_package_sha256(
-    value: str | None,
-) -> str | None:
-    if value is None:
-        return None
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(char not in "0123456789abcdef" for char in value)
-    ):
-        raise ValueError("live source package sha256 is invalid")
-    return value
-
-
 def run_scheme_subprocess(
     scheme_id: str,
     predict_date: str,
     algo_env: str = DEFAULT_ALGO_ENV,
     timeout_sec: int = 600,
-    native_generation: NativeGenerationContext | None = None,
-    live_source_compatibility: bool = False,
-    live_source_package_sha256: str | None = None,
-    execution_token: str | None = None,
     source_database_config: (
         SourceRuntimeDatabaseConfig | None
     ) = None,
@@ -250,17 +206,6 @@ def run_scheme_subprocess(
     normalized_ephemeral_root = _normalize_ephemeral_native_runtime_root(
         ephemeral_native_runtime_root
     )
-    if normalized_ephemeral_root is not None and native_generation is not None:
-        raise ValueError(
-            "ephemeral Native runtime cannot be combined with "
-            "native_generation"
-        )
-    if normalized_ephemeral_root is not None and (
-        live_source_compatibility or live_source_package_sha256 is not None
-    ):
-        raise ValueError(
-            "ephemeral Native runtime cannot use live-source compatibility"
-        )
     env = _build_algorithm_environment()
     env.pop(SOURCE_RUNTIME_DATABASE_CONFIG_PATH_ENV, None)
     env.pop(SOURCE_RUNTIME_DATABASE_CONFIG_ROOT_ENV, None)
@@ -273,27 +218,8 @@ def run_scheme_subprocess(
         raise ValueError(
             "source database config is only valid for source schemes"
         )
-    native_environment_names = (
-        NATIVE_INPUT_MODE_ENV,
-        NATIVE_MANIFEST_PATH_ENV,
-        NATIVE_GENERATION_ID_ENV,
-        NATIVE_MANIFEST_SHA256_ENV,
-        NATIVE_BUSINESS_DATE_ENV,
-        NATIVE_FEATURE_DATE_ENV,
-    )
-    for name in native_environment_names:
-        env.pop(name, None)
-    live_source_environment_names = (
-        LIVE_SOURCE_INPUT_MODE_ENV,
-        LIVE_SOURCE_FENCE_GENERATION_ID_ENV,
-        LIVE_SOURCE_FEATURE_DATE_ENV,
-        LIVE_SOURCE_PACKAGE_SHA256_ENV,
-    )
-    for name in live_source_environment_names:
-        env.pop(name, None)
     env.pop(CACHE_MUTATION_POLICY_ENV, None)
     env.pop(EPHEMERAL_NATIVE_INPUT_ROOT_ENV, None)
-    env.pop(SCHEDULE_EXECUTION_TOKEN_ENV, None)
     if normalized_ephemeral_root is not None:
         env[EPHEMERAL_NATIVE_INPUT_ROOT_ENV] = str(
             normalized_ephemeral_root / "inputs"
@@ -304,93 +230,6 @@ def run_scheme_subprocess(
         env[CACHE_MUTATION_POLICY_ENV] = (
             CACHE_MUTATION_POLICY_PRIVATE_BUILD
         )
-    validated_execution_token = _validated_execution_token(
-        execution_token
-    )
-    if validated_execution_token is not None:
-        env[SCHEDULE_EXECUTION_TOKEN_ENV] = validated_execution_token
-    if live_source_compatibility and native_generation is None:
-        raise ValueError(
-            "live source compatibility requires a frozen Native fence"
-        )
-    if live_source_compatibility and (
-        scheme_id not in APPROVED_0629_LIVE_SOURCE_SCHEMES
-    ):
-        raise ValueError(
-            f"live source compatibility is not approved for {scheme_id}"
-        )
-    validated_source_package_sha256 = (
-        _validated_live_source_package_sha256(
-            live_source_package_sha256
-        )
-    )
-    if (
-        live_source_compatibility
-        and validated_source_package_sha256 is None
-    ):
-        raise ValueError(
-            "live source compatibility requires a frozen source package "
-            "sha256"
-        )
-    if (
-        not live_source_compatibility
-        and validated_source_package_sha256 is not None
-    ):
-        raise ValueError(
-            "live source package sha256 is only valid for compatibility "
-            "mode"
-        )
-    if native_generation is not None:
-        if not isinstance(native_generation, NativeGenerationContext):
-            raise TypeError(
-                "native_generation must be a validated "
-                "NativeGenerationContext"
-            )
-        canonical_predict_date = date.fromisoformat(
-            predict_date
-        ).isoformat()
-        if native_generation.business_date != canonical_predict_date:
-            raise ValueError(
-                "Native generation business_date does not match "
-                f"predict_date: {native_generation.business_date} != "
-                f"{canonical_predict_date}"
-            )
-        if not native_generation.manifest_path.is_absolute():
-            raise ValueError(
-                "Native generation manifest path must be absolute"
-            )
-        if live_source_compatibility:
-            env.update(
-                {
-                    LIVE_SOURCE_INPUT_MODE_ENV:
-                        LIVE_SOURCE_INPUT_MODE,
-                    LIVE_SOURCE_FENCE_GENERATION_ID_ENV:
-                        native_generation.generation_id,
-                    LIVE_SOURCE_FEATURE_DATE_ENV:
-                        native_generation.feature_date,
-                    LIVE_SOURCE_PACKAGE_SHA256_ENV:
-                        validated_source_package_sha256,
-                    # 兼容桥每个 attempt 使用独立 source runtime，避免
-                    # 多进程竞争旧 runner 的共享临时 cache 文件。
-                    "DAILY_0629_SOURCE_CACHE_DISABLE": "1",
-                }
-            )
-        else:
-            env.update(
-                {
-                    NATIVE_INPUT_MODE_ENV: NATIVE_INPUT_MODE,
-                    NATIVE_MANIFEST_PATH_ENV:
-                        str(native_generation.manifest_path),
-                    NATIVE_GENERATION_ID_ENV:
-                        native_generation.generation_id,
-                    NATIVE_MANIFEST_SHA256_ENV:
-                        native_generation.manifest_sha256,
-                    NATIVE_BUSINESS_DATE_ENV:
-                        native_generation.business_date,
-                    NATIVE_FEATURE_DATE_ENV:
-                        native_generation.feature_date,
-                }
-            )
     cmd = [
         "conda",
         "run",
@@ -490,11 +329,6 @@ def run_configured_scheme(
     blackbox_snapshot_mode: str = BLACKBOX_SNAPSHOT_MODE_FRESH,
     expected_generation_id: str | None = None,
     expected_refresh_date: str | None = None,
-    native_generation: NativeGenerationContext | None = None,
-    live_source_compatibility: bool = False,
-    live_source_package_sha256: str | None = None,
-    databridge_generation: DataBridgeGenerationContext | None = None,
-    calendar_generation: NativeGenerationContext | None = None,
     execution_token: str | None = None,
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
@@ -521,52 +355,19 @@ def run_configured_scheme(
             "Native execution contract is only valid for native_adapter"
         )
     if runtime_type == "native_adapter":
-        if normalized_ephemeral_root is not None and native_generation is not None:
-            raise ValueError(
-                "ephemeral Native runtime cannot be combined with "
-                "native_generation"
-            )
-        if normalized_ephemeral_root is not None and (
-            live_source_compatibility
-            or live_source_package_sha256 is not None
-        ):
-            raise ValueError(
-                "ephemeral Native runtime cannot be combined with legacy "
-                "signal-gap execution controls"
-            )
-        if (
-            databridge_generation is not None
-            or calendar_generation is not None
-        ):
-            raise ValueError(
-                "DataBridge/calendar generation is not valid for "
-                "native_adapter"
-            )
         if blackbox_snapshot_mode != BLACKBOX_SNAPSHOT_MODE_FRESH:
             raise ValueError(
                 "historical Blackbox snapshot mode is not valid for native_adapter"
             )
-        native_kwargs = (
-            {"native_generation": native_generation}
-            if native_generation is not None
-            else {}
-        )
+        if validated_execution_token is not None:
+            raise ValueError(
+                "execution_token is reserved for Blackbox execution"
+            )
+        native_kwargs = {}
         if normalized_ephemeral_root is not None:
             native_kwargs["ephemeral_native_runtime_root"] = (
                 normalized_ephemeral_root
             )
-        if live_source_compatibility:
-            native_kwargs["live_source_compatibility"] = True
-            native_kwargs["live_source_package_sha256"] = (
-                live_source_package_sha256
-            )
-        elif live_source_package_sha256 is not None:
-            raise ValueError(
-                "live source package sha256 is only valid for "
-                "compatibility mode"
-            )
-        if validated_execution_token is not None:
-            native_kwargs["execution_token"] = validated_execution_token
         if process_started is not None:
             native_kwargs["process_started"] = process_started
         if process_fence is not None:
@@ -581,18 +382,6 @@ def run_configured_scheme(
             **native_kwargs,
         )
     if runtime_type == "blackbox_v2":
-        if live_source_compatibility:
-            raise ValueError(
-                "live source compatibility is not valid for blackbox_v2"
-            )
-        if live_source_package_sha256 is not None:
-            raise ValueError(
-                "live source package sha256 is not valid for blackbox_v2"
-            )
-        if native_generation is not None:
-            raise ValueError(
-                "Native generation is not valid for blackbox_v2"
-            )
         if getattr(cfg, "input_source", None) != "data_bridge_current":
             raise ValueError(f"Blackbox V2 input_source must be data_bridge_current: {cfg.scheme_id}")
         blackbox_kwargs = {
@@ -601,15 +390,6 @@ def run_configured_scheme(
             "timeout_sec": timeout_sec,
             "snapshot_mode": blackbox_snapshot_mode,
         }
-        if databridge_generation is not None:
-            blackbox_kwargs["databridge_generation"] = (
-                databridge_generation
-            )
-            blackbox_kwargs["calendar_generation"] = calendar_generation
-        elif calendar_generation is not None:
-            raise ValueError(
-                "calendar_generation requires databridge_generation"
-            )
         if blackbox_snapshot_mode == BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF:
             blackbox_kwargs["expected_generation_id"] = expected_generation_id
             blackbox_kwargs["expected_refresh_date"] = expected_refresh_date
@@ -643,8 +423,6 @@ def run_blackbox_scheme_subprocess(
     snapshot_mode: str = BLACKBOX_SNAPSHOT_MODE_FRESH,
     expected_generation_id: str | None = None,
     expected_refresh_date: str | None = None,
-    databridge_generation: DataBridgeGenerationContext | None = None,
-    calendar_generation: NativeGenerationContext | None = None,
     execution_token: str | None = None,
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
@@ -663,78 +441,15 @@ def run_blackbox_scheme_subprocess(
         raise ValueError(f"unsupported Blackbox snapshot mode: {snapshot_mode}")
     if cfg.delivery_script is None or cfg.delivery_metadata is None:
         raise ValueError(f"Blackbox V2 delivery paths missing for {cfg.scheme_id}")
-    bound_databridge: DataBridgeGenerationContext | None = None
-    if databridge_generation is not None:
-        if snapshot_mode != BLACKBOX_SNAPSHOT_MODE_FRESH:
-            raise ValueError(
-                "bound DataBridge generation only supports fresh live mode"
-            )
-        if not isinstance(
-            databridge_generation,
-            DataBridgeGenerationContext,
-        ):
-            raise TypeError(
-                "databridge_generation must be a validated context"
-            )
-        if not isinstance(calendar_generation, NativeGenerationContext):
-            raise ValueError(
-                "bound DataBridge generation requires a validated "
-                "calendar Native generation"
-            )
-        if databridge_generation.business_date != predict_date:
-            raise ValueError(
-                "DataBridge generation business_date does not match "
-                f"predict_date: {databridge_generation.business_date} != "
-                f"{predict_date}"
-            )
-        if (
-            calendar_generation.generation_id
-            != databridge_generation.native_generation_id
-        ):
-            raise ValueError(
-                "DataBridge generation linked Native generation mismatch"
-            )
-        if (
-            calendar_generation.manifest_sha256
-            != databridge_generation.native_manifest_sha256
-        ):
-            raise ValueError(
-                "DataBridge generation linked Native manifest mismatch"
-            )
-        verified_calendar = open_native_generation(
-            calendar_generation.manifest_path,
-            expected_generation_id=calendar_generation.generation_id,
-            expected_manifest_sha256=calendar_generation.manifest_sha256,
-            expected_business_date=predict_date,
-            expected_feature_date=databridge_generation.feature_date,
-        )
-        bound_databridge = open_databridge_generation(
-            databridge_generation.manifest_path,
-            expected_generation_id=databridge_generation.generation_id,
-            expected_manifest_sha256=(
-                databridge_generation.manifest_sha256
-            ),
-            expected_business_date=predict_date,
-            expected_feature_date=databridge_generation.feature_date,
-            schema_path=BLACKBOX_SCHEMA_PATH,
-        )
-        snapshot_context = nullcontext(bound_databridge.snapshot)
-        calendar_source = verified_calendar
-    else:
-        if calendar_generation is not None:
-            raise ValueError(
-                "calendar_generation requires databridge_generation"
-            )
-        require_fresh = snapshot_mode == BLACKBOX_SNAPSHOT_MODE_FRESH
-        data_bridge_config = DataBridgeRefreshConfig.from_env()
-        snapshot_context = open_blackbox_input_snapshot(
-            snapshot_date=predict_date,
-            schema_path=data_bridge_config.schema_path,
-            data_root=data_bridge_config.data_root,
-            refresh_runtime_root=data_bridge_config.runtime_root,
-            require_fresh=require_fresh,
-        )
-        calendar_source = engine
+    require_fresh = snapshot_mode == BLACKBOX_SNAPSHOT_MODE_FRESH
+    data_bridge_config = DataBridgeRefreshConfig.from_env()
+    snapshot_context = open_blackbox_input_snapshot(
+        snapshot_date=predict_date,
+        schema_path=data_bridge_config.schema_path,
+        data_root=data_bridge_config.data_root,
+        refresh_runtime_root=data_bridge_config.runtime_root,
+        require_fresh=require_fresh,
+    )
 
     metadata = load_metadata(cfg.delivery_metadata)
     with snapshot_context as snapshot:
@@ -745,7 +460,7 @@ def run_blackbox_scheme_subprocess(
                 expected_generation_id=expected_generation_id,
                 expected_refresh_date=expected_refresh_date,
             )
-        calendar = get_calendar(calendar_source)
+        calendar = get_calendar(engine)
         if metadata.frequency == "daily":
             feature_date = build_daily_live_context(
                 calendar,
@@ -756,20 +471,11 @@ def run_blackbox_scheme_subprocess(
             feature_date = build_weekly_live_context(calendar, predict_date).feature_date
         else:
             feature_date = build_monthly_live_context(calendar, predict_date).feature_date
-        if bound_databridge is not None:
-            if feature_date != bound_databridge.feature_date:
-                raise ValueError(
-                    "DataBridge generation feature_date does not match "
-                    f"calendar context: {bound_databridge.feature_date} != "
-                    f"{feature_date}"
-                )
-            cutoffs = bound_databridge.cutoffs
-        else:
-            cutoffs = resolve_blackbox_input_cutoffs(
-                snapshot,
-                feature_date=feature_date,
-                engine=engine,
-            )
+        cutoffs = resolve_blackbox_input_cutoffs(
+            snapshot,
+            feature_date=feature_date,
+            engine=engine,
+        )
         request = build_live_request(
             metadata,
             predict_date=predict_date,
@@ -779,15 +485,7 @@ def run_blackbox_scheme_subprocess(
         platform_input_ids = tuple(
             getattr(cfg, "platform_inputs", ()) or ()
         )
-        if platform_input_ids and bound_databridge is not None:
-            platform_input_artifacts = (
-                capture_blackbox_platform_inputs_from_native_generation(
-                    platform_input_ids,
-                    native_generation=verified_calendar,
-                    weekly_cutoff_key=cutoffs.weekly_cutoff_key,
-                )
-            )
-        elif platform_input_ids:
+        if platform_input_ids:
             platform_input_artifacts = (
                 _capture_blackbox_platform_inputs_from_engine(
                     engine,
@@ -849,26 +547,6 @@ def run_blackbox_scheme_subprocess(
             except ProcessGroupTerminationError:
                 runtime_view.mark_termination_uncertain()
                 raise
-        if bound_databridge is not None:
-            extra = dict(record.extra or {})
-            extra.update(
-                {
-                    "data_generation_id":
-                        bound_databridge.generation_id,
-                    "data_generation_manifest_sha256":
-                        bound_databridge.manifest_sha256,
-                    "source_refresh_date":
-                        bound_databridge.business_date,
-                    "upstream_data_generation_id":
-                        bound_databridge.upstream_generation_id,
-                    "native_generation_id":
-                        bound_databridge.native_generation_id,
-                    "daily_cutoff_key": cutoffs.daily_cutoff_key,
-                    "weekly_cutoff_key": cutoffs.weekly_cutoff_key,
-                    "monthly_cutoff_key": cutoffs.monthly_cutoff_key,
-                }
-            )
-            record = replace(record, extra=extra)
         if snapshot_mode == BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF:
             extra = dict(record.extra or {})
             extra.update(
