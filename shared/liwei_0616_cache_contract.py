@@ -63,17 +63,6 @@ _GENERATION_ACCEPTANCE_FIELDS = frozenset(
         "evidence_sha256",
     }
 )
-_NATIVE_BINDING_FIELDS = frozenset(
-    {
-        "generation_id",
-        "manifest_sha256",
-        "dataset_content_id",
-        "business_date",
-        "feature_date",
-        "schema_version",
-        "exporter_version",
-    }
-)
 _PARENT_FIELDS = frozenset(
     {
         "generation_id",
@@ -122,7 +111,6 @@ _BUILD_MODES = frozenset(
         "full",
         "append",
         "suffix",
-        "rebind",
         "migration",
         "qualification",
     }
@@ -146,8 +134,6 @@ def canonical_json_bytes(value: object) -> bytes:
 
 def validate_generation_acceptance_record(
     raw: Mapping[str, object],
-    *,
-    expected_native_generation: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """复算 generation acceptance canonical digest 并校验全部结构。"""
     value = _mapping(raw, "generation acceptance")
@@ -163,30 +149,10 @@ def validate_generation_acceptance_record(
         raise ValueError("generation acceptance schema_version mismatch")
     status = value.get("status")
     native = value.get("native_generation")
-    if native is None:
-        if status != "NON_PRODUCTION":
-            raise ValueError(
-                "unbound generation acceptance must be NON_PRODUCTION"
-            )
-    else:
-        if status != "ACCEPTED":
-            raise ValueError(
-                "bound generation acceptance must be ACCEPTED"
-            )
-        _validate_native_binding(
-            _mapping(native, "generation acceptance native_generation")
+    if native is not None or status != "NON_PRODUCTION":
+        raise ValueError(
+            "generation acceptance must be unbound NON_PRODUCTION"
         )
-    if expected_native_generation is not None:
-        expected_native = _validate_native_binding(
-            _mapping(
-                expected_native_generation,
-                "expected Native generation",
-            )
-        )
-        if native != expected_native:
-            raise ValueError(
-                "generation acceptance Native identity mismatch"
-            )
     _sha256(value.get("input_content_id"), "input_content_id")
     _sha256(
         value.get("candidate_content_id"),
@@ -230,6 +196,10 @@ def validate_generation_acceptance_record(
     ):
         raise ValueError(
             "input_change.native_generation_changed must be boolean"
+        )
+    if input_change["native_generation_changed"]:
+        raise ValueError(
+            "input_change.native_generation_changed must be false"
         )
     suffix_start = input_change.get("suffix_start_date")
     if suffix_start is not None and (
@@ -430,27 +400,6 @@ def _sha256(value: Any, field: str) -> str:
     if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
         raise ValueError(f"{field} must be lowercase SHA-256")
     return value
-
-
-def _validate_native_binding(
-    value: Mapping[str, object],
-) -> dict[str, object]:
-    _exact_fields(
-        value,
-        _NATIVE_BINDING_FIELDS,
-        "Native generation binding",
-    )
-    for field in (
-        "generation_id",
-        "business_date",
-        "feature_date",
-        "schema_version",
-        "exporter_version",
-    ):
-        _text(value.get(field), field)
-    for field in ("manifest_sha256", "dataset_content_id"):
-        _sha256(value.get(field), field)
-    return deepcopy(dict(value))
 
 
 def _date_list(value: Any, field: str) -> list[str]:

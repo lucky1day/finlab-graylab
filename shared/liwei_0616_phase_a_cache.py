@@ -22,13 +22,6 @@ import numpy as np
 import pandas as pd
 
 from shared.artifact_paths import BACKTEST_ARTIFACT_ROOT, safe_path_part
-from shared.input_artifacts import (
-    NATIVE_BUSINESS_DATE_ENV,
-    NATIVE_FEATURE_DATE_ENV,
-    NATIVE_GENERATION_ID_ENV,
-    NATIVE_MANIFEST_PATH_ENV,
-    NATIVE_MANIFEST_SHA256_ENV,
-)
 from shared.liwei_0616_cache_contract import (
     APPROVED_PHASE_A_CACHE_PUBLISHERS,
     CACHE_MUTATION_POLICY_ENV,
@@ -40,10 +33,6 @@ from shared.liwei_0616_cache_contract import (
 from shared.liwei_0616_cache_projection import (
     PROJECTION_SCHEMA_VERSION,
     AuxiliaryDependencyProjection,
-)
-from shared.native_input_generation import (
-    NATIVE_GENERATION_EXPORTER_VERSION,
-    NATIVE_GENERATION_SCHEMA_VERSION,
 )
 
 
@@ -196,7 +185,6 @@ def prepare_phase_a_caches(
         | None
     ) = None,
     cache_consumer_id: str | None = None,
-    native_generation: Mapping[str, object] | None = None,
     auxiliary_dependency_projection: (
         AuxiliaryDependencyProjection | None
     ) = None,
@@ -236,9 +224,6 @@ def prepare_phase_a_caches(
             "choose either offline qualify_compare_gate evidence or "
             "runtime compare_full_output"
         )
-    native_generation_binding = _resolve_native_generation_binding(
-        native_generation
-    )
     root = _cache_root(cache_root)
     if (
         mutation_policy == CACHE_MUTATION_POLICY_PRIVATE_BUILD
@@ -269,7 +254,6 @@ def prepare_phase_a_caches(
             qualify_compare_gate=qualify_compare_gate,
             compare_full_output=compare_full_output,
             secure_runtime=False,
-            native_generation_binding=native_generation_binding,
         )
     family_root.mkdir(parents=True, exist_ok=True)
     with _exclusive_lock(family_root / ".prewarmer.lock"):
@@ -295,7 +279,6 @@ def prepare_phase_a_caches(
             qualify_compare_gate=qualify_compare_gate,
             compare_full_output=compare_full_output,
             secure_runtime=False,
-            native_generation_binding=native_generation_binding,
         )
 
 
@@ -339,7 +322,6 @@ def _prepare_under_family_lock(
         | None
     ),
     secure_runtime: bool,
-    native_generation_binding: Mapping[str, object] | None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     requested_by_baseline: dict[str, list[str]] = {}
     for baseline in spec.baselines:
@@ -359,7 +341,6 @@ def _prepare_under_family_lock(
         auxiliary_dependency_projection=(
             auxiliary_dependency_projection
         ),
-        native_generation_binding=native_generation_binding,
     )
     current, current_error = _load_current_generation(
         family_root,
@@ -384,7 +365,6 @@ def _prepare_under_family_lock(
             input_change=input_change,
             family_root=family_root,
             secure_runtime=secure_runtime,
-            native_generation_binding=native_generation_binding,
         )
     legacy_caches = None
     if (
@@ -417,9 +397,9 @@ def _prepare_under_family_lock(
             )
         ):
             if secure_runtime:
-                _validate_generation_acceptance_for_use(
+                _verify_generation_acceptance_lineage(
                     current,
-                    native_generation_binding=native_generation_binding,
+                    spec=spec,
                 )
             truncated_audits: dict[str, dict[str, Any]] = {}
             for baseline in spec.baselines:
@@ -493,7 +473,7 @@ def _prepare_under_family_lock(
     baseline_audits: dict[str, dict[str, Any]] = {}
     acceptance_scopes: dict[str, dict[str, Any]] = {}
     needs_build = (
-        build_mode in {"full", "suffix", "rebind"}
+        build_mode in {"full", "suffix"}
         or legacy_caches is not None
         or (
             current is not None
@@ -628,11 +608,6 @@ def _prepare_under_family_lock(
             build_reason = "compare_gate_qualification"
 
     if not needs_build and current is not None:
-        if secure_runtime:
-            _validate_generation_acceptance_for_use(
-                current,
-                native_generation_binding=native_generation_binding,
-            )
         return caches, _generation_audit(
             spec=spec,
             generation=current,
@@ -667,14 +642,8 @@ def _prepare_under_family_lock(
         compare_gate_evidence=compare_gate_evidence,
         input_change=input_change,
         acceptance_scopes=acceptance_scopes,
-        native_generation_binding=native_generation_binding,
         secure=secure_runtime,
     )
-    if secure_runtime:
-        _validate_generation_acceptance_for_use(
-            generation,
-            native_generation_binding=native_generation_binding,
-        )
     try:
         overall_status = (
             "cold_build"
@@ -737,7 +706,6 @@ def _validated_consumer_hit(
     input_change: Mapping[str, Any],
     family_root: Path,
     secure_runtime: bool,
-    native_generation_binding: Mapping[str, object] | None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     """非发布者只能读取同输入、完整覆盖且谱系可信的 current。"""
     if current is None:
@@ -780,11 +748,6 @@ def _validated_consumer_hit(
             current,
             spec=spec,
         )
-        if secure_runtime:
-            _validate_generation_acceptance_for_use(
-                current,
-                native_generation_binding=native_generation_binding,
-            )
     except (OSError, RuntimeError, ValueError) as exc:
         raise RuntimeError(
             "CACHE_PUBLISHER_REQUIRED: "
@@ -871,110 +834,6 @@ def _cache_mutation_policy() -> str | None:
             f"{CACHE_MUTATION_POLICY_PRIVATE_BUILD}"
         )
     return policy
-
-
-def _resolve_native_generation_binding(
-    explicit: Mapping[str, object] | None,
-) -> dict[str, object] | None:
-    if explicit is not None:
-        return _validate_native_generation_binding(explicit)
-    configured = {
-        "generation_id": os.getenv(NATIVE_GENERATION_ID_ENV),
-        "manifest_sha256": os.getenv(NATIVE_MANIFEST_SHA256_ENV),
-        "business_date": os.getenv(NATIVE_BUSINESS_DATE_ENV),
-        "feature_date": os.getenv(NATIVE_FEATURE_DATE_ENV),
-        "manifest_path": os.getenv(NATIVE_MANIFEST_PATH_ENV),
-    }
-    present = {
-        field for field, value in configured.items() if value is not None
-    }
-    if not present:
-        return None
-    missing = sorted(set(configured) - present)
-    if missing:
-        raise ValueError(
-            "partial Native generation cache binding: "
-            + ", ".join(missing)
-        )
-    manifest_path = Path(str(configured["manifest_path"]))
-    if not manifest_path.is_absolute():
-        raise ValueError(
-            "Native generation cache manifest path must be absolute"
-        )
-    manifest_bytes = manifest_path.read_bytes()
-    actual_sha = hashlib.sha256(manifest_bytes).hexdigest()
-    if actual_sha != configured["manifest_sha256"]:
-        raise ValueError(
-            "Native generation cache manifest SHA-256 mismatch"
-        )
-    try:
-        manifest = json.loads(manifest_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError(
-            "Native generation cache manifest is invalid"
-        ) from exc
-    if not isinstance(manifest, Mapping):
-        raise ValueError(
-            "Native generation cache manifest must be an object"
-        )
-    binding = {
-        "generation_id": manifest.get("generation_id"),
-        "manifest_sha256": actual_sha,
-        "dataset_content_id": manifest.get("dataset_content_id"),
-        "business_date": manifest.get("business_date"),
-        "feature_date": manifest.get("feature_date"),
-        "schema_version": manifest.get("schema_version"),
-        "exporter_version": manifest.get("exporter_version"),
-    }
-    validated = _validate_native_generation_binding(binding)
-    for field in ("generation_id", "business_date", "feature_date"):
-        if validated[field] != configured[field]:
-            raise ValueError(
-                f"Native generation cache {field} mismatch"
-            )
-    return validated
-
-
-def _validate_native_generation_binding(
-    raw: Mapping[str, object],
-) -> dict[str, object]:
-    required = {
-        "generation_id",
-        "manifest_sha256",
-        "dataset_content_id",
-        "business_date",
-        "feature_date",
-        "schema_version",
-        "exporter_version",
-    }
-    if set(raw) != required:
-        raise ValueError(
-            "Native generation cache binding fields mismatch"
-        )
-    normalized = dict(raw)
-    for field in (
-        "generation_id",
-        "business_date",
-        "feature_date",
-        "schema_version",
-        "exporter_version",
-    ):
-        value = normalized.get(field)
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(
-                f"Native generation cache {field} is required"
-            )
-    for field in ("manifest_sha256", "dataset_content_id"):
-        _require_cache_sha256(normalized.get(field), field)
-    if normalized["schema_version"] != NATIVE_GENERATION_SCHEMA_VERSION:
-        raise ValueError(
-            "Native generation cache schema_version mismatch"
-        )
-    if normalized["exporter_version"] != NATIVE_GENERATION_EXPORTER_VERSION:
-        raise ValueError(
-            "Native generation cache exporter_version mismatch"
-        )
-    return normalized
 
 
 def _require_cache_sha256(value: object, field: str) -> str:
@@ -1103,18 +962,13 @@ def _input_generation_state(
     auxiliary_dependency_projection: (
         AuxiliaryDependencyProjection | None
     ),
-    native_generation_binding: Mapping[str, object] | None,
 ) -> dict[str, Any]:
     frames = {
         "daily": _frame_generation_state(daily_df, "date"),
         "weekly": _frame_generation_state(weekly_df, "week_id"),
         "monthly": _frame_generation_state(monthly_df, "month_id"),
     }
-    native_generation = (
-        dict(native_generation_binding)
-        if native_generation_binding is not None
-        else None
-    )
+    native_generation = None
     if auxiliary_dependency_projection is None:
         legacy_basis = {
             "frames": frames,
@@ -1188,20 +1042,15 @@ def _validate_input_generation_state_record(raw: Any) -> dict[str, Any]:
             label=f"cache input generation {name}",
         )
     native = raw.get("native_generation")
-    normalized_native = (
-        _validate_native_generation_binding(native)
-        if isinstance(native, Mapping)
-        else None
-    )
-    if native is not None and normalized_native is None:
-        raise ValueError("cache input Native generation is invalid")
+    if native is not None:
+        raise ValueError("cache input Native generation must be null")
     content_id = _require_cache_sha256(
         raw.get("content_id"),
         "input_state.content_id",
     )
     basis: dict[str, object] = {
         "frames": normalized_frames,
-        "native_generation": normalized_native,
+        "native_generation": None,
     }
     normalized_effective: dict[str, Any] | None = None
     if schema_version == INPUT_GENERATION_STATE_SCHEMA_VERSION:
@@ -1217,7 +1066,7 @@ def _validate_input_generation_state_record(raw: Any) -> dict[str, Any]:
     validated = {
         "schema_version": schema_version,
         "frames": normalized_frames,
-        "native_generation": normalized_native,
+        "native_generation": None,
         "content_id": content_id,
     }
     if normalized_effective is not None:
@@ -1682,12 +1531,6 @@ def _input_change_analysis(
                     set(prior_entries) | set(current_entries),
                     key=_frame_key_sort_value,
                 )
-    previous_native = (
-        previous.get("native_generation")
-        if isinstance(previous, Mapping)
-        else None
-    )
-    current_native = current.get("native_generation")
     previous_effective = (
         previous.get("effective_auxiliary")
         if isinstance(previous, Mapping)
@@ -1762,9 +1605,7 @@ def _input_change_analysis(
         "date_to_week": mapping_change,
         "projection_status": projection_status,
         "suffix_start_date": None,
-        "native_generation_changed": (
-            previous_native != current_native
-        ),
+        "native_generation_changed": False,
         "_daily_union_keys": daily_union_keys,
     }
 
@@ -2019,11 +1860,6 @@ def _projection_build_decision(
         )
     if effective["change_type"] not in {"unchanged", "append"}:
         return "full", "effective_auxiliary_projection_unknown", None
-    if (
-        input_change["native_generation_changed"]
-        and input_change["change_type"] != "append"
-    ):
-        return "rebind", "native_generation_rebound", None
     return (
         "append",
         (
@@ -2053,10 +1889,6 @@ def _legacy_build_decision(
             )
         if change_type == "append":
             return "full", f"{name}_input_append_unmappable", None
-    if input_change["native_generation_changed"] and (
-        input_change["change_type"] in {"unchanged", "append"}
-    ):
-        return "rebind", "native_generation_rebound", None
     if input_change["change_type"] in {"unchanged", "append"}:
         return (
             "append",
@@ -2190,7 +2022,6 @@ def _create_generation(
     compare_gate_evidence: Mapping[str, Any],
     input_change: Mapping[str, Any],
     acceptance_scopes: Mapping[str, Mapping[str, Any]],
-    native_generation_binding: Mapping[str, object] | None,
     secure: bool,
 ) -> _LoadedGeneration:
     family_root.mkdir(parents=True, exist_ok=True)
@@ -2272,7 +2103,6 @@ def _create_generation(
             _canonical_json(generation_basis).encode("utf-8")
         ).hexdigest()
         generation_acceptance = _build_generation_acceptance_evidence(
-            native_generation_binding=native_generation_binding,
             input_content_id=str(input_state["content_id"]),
             parent_generation=parent_generation,
             candidate_content_id=content_id,
@@ -2774,7 +2604,6 @@ def _phase_a_scope_sha256(
 
 def _build_generation_acceptance_evidence(
     *,
-    native_generation_binding: Mapping[str, object] | None,
     input_content_id: str,
     parent_generation: _LoadedGeneration | None,
     candidate_content_id: str,
@@ -2795,16 +2624,8 @@ def _build_generation_acceptance_evidence(
     )
     payload: dict[str, object] = {
         "schema_version": GENERATION_ACCEPTANCE_SCHEMA_VERSION,
-        "status": (
-            "ACCEPTED"
-            if native_generation_binding is not None
-            else "NON_PRODUCTION"
-        ),
-        "native_generation": (
-            dict(native_generation_binding)
-            if native_generation_binding is not None
-            else None
-        ),
+        "status": "NON_PRODUCTION",
+        "native_generation": None,
         "input_content_id": input_content_id,
         "parent": parent,
         "candidate_content_id": candidate_content_id,
@@ -2877,21 +2698,13 @@ def _validate_generation_acceptance_evidence(
         raise ValueError(
             "cache generation acceptance input hash mismatch"
         )
-    native = raw.get("native_generation")
-    if native is None:
-        if raw.get("status") != "NON_PRODUCTION":
-            raise ValueError(
-                "unbound cache generation cannot be production accepted"
-            )
-    else:
-        validated_native = _validate_native_generation_binding(native)
-        if (
-            raw.get("status") != "ACCEPTED"
-            or validated_native != input_state.get("native_generation")
-        ):
-            raise ValueError(
-                "cache generation acceptance Native binding mismatch"
-            )
+    if (
+        raw.get("native_generation") is not None
+        or raw.get("status") != "NON_PRODUCTION"
+    ):
+        raise ValueError(
+            "cache generation acceptance must remain unbound"
+        )
     baselines = raw.get("baselines")
     if (
         not isinstance(baselines, Mapping)
@@ -2962,30 +2775,6 @@ def _validate_generation_acceptance_evidence(
             raise ValueError(
                 "cache generation preserved prefix mismatch"
             )
-
-
-def _validate_generation_acceptance_for_use(
-    generation: _LoadedGeneration,
-    *,
-    native_generation_binding: Mapping[str, object] | None,
-) -> None:
-    if native_generation_binding is None:
-        raise RuntimeError(
-            "Native generation binding is required for cache use"
-        )
-    evidence = generation.manifest.get(
-        "generation_acceptance_evidence"
-    )
-    if (
-        not isinstance(evidence, Mapping)
-        or evidence.get("status") != "ACCEPTED"
-        or evidence.get("native_generation")
-        != dict(native_generation_binding)
-    ):
-        raise RuntimeError(
-            "cache generation acceptance does not match current Native "
-            "generation"
-        )
 
 
 def _verify_generation_acceptance_lineage(
@@ -3197,11 +2986,6 @@ def _lineage_build_mode(
         if effective_cutoff is not None:
             input_change["suffix_start_date"] = effective_cutoff
             return "suffix"
-        if (
-            input_change["native_generation_changed"]
-            and input_change["change_type"] != "append"
-        ):
-            return "rebind"
         return "append"
     else:
         if any(
@@ -3214,10 +2998,6 @@ def _lineage_build_mode(
             for name in ("weekly", "monthly")
         ):
             return "full"
-    if input_change["native_generation_changed"] and (
-        input_change["change_type"] in {"unchanged", "append"}
-    ):
-        return "rebind"
     if input_change["change_type"] in {"unchanged", "append"}:
         return "append"
     daily = frames["daily"]
@@ -3948,9 +3728,9 @@ def validate_phase_a_cache_input_change_audit(
             "cache input-change audit suffix_start_date is invalid"
         )
     native_changed = value.get("native_generation_changed")
-    if type(native_changed) is not bool:
+    if native_changed is not False:
         raise ValueError(
-            "cache input-change audit native flag is invalid"
+            "cache input-change audit native flag must be false"
         )
     return {
         "change_type": value["change_type"],
