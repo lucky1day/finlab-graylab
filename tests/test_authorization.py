@@ -132,38 +132,6 @@ class AuthorizationTest(unittest.TestCase):
 
         self.assertIn("predict_date is required", "\n".join(errors))
 
-    def test_gray_backfill_token_requires_canonical_predict_date(self) -> None:
-        for value in (None, "", "2026-5-26", " 2026-05-26"):
-            with self.subTest(value=value), self.assertRaisesRegex(
-                ValueError,
-                "gray_backfill_write predict_date",
-            ):
-                issue_token(
-                    "trial",
-                    "gray_backfill_write",
-                    predict_date=value,
-                )
-
-    def test_gray_backfill_verification_requires_exact_predict_date(self) -> None:
-        token = issue_token(
-            "trial",
-            "gray_backfill_write",
-            predict_date="2026-05-26",
-        )
-
-        for context_date in (None, "2026-05-27", "2026-5-26"):
-            with self.subTest(context_date=context_date):
-                _auth, errors = verify_authorization(
-                    token,
-                    scheme_id="trial",
-                    action="gray_backfill_write",
-                    predict_date=context_date,
-                    used_store_path=self._used_path(),
-                )
-
-                self.assertTrue(errors)
-                self.assertIn("predict_date", "\n".join(errors))
-
     def test_draft_register_token_requires_canonical_predict_date(self) -> None:
         for value in (None, "", "2026-7-20", " 2026-07-20"):
             with self.subTest(value=value), self.assertRaisesRegex(

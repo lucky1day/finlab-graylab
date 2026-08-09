@@ -1310,12 +1310,14 @@ def _validate_historical_snapshot(
         )
     if expected_generation_id is not None and generation_id != expected_generation_id:
         raise ValueError(
-            "DataBridge current generation changed after gray-backfill preflight: "
+            "DataBridge current generation changed after historical replay "
+            "preflight: "
             f"expected={expected_generation_id}, actual={generation_id}"
         )
     if expected_refresh_date is not None and refresh_date != expected_refresh_date:
         raise ValueError(
-            "DataBridge current refresh_date changed after gray-backfill preflight: "
+            "DataBridge current refresh_date changed after historical replay "
+            "preflight: "
             f"expected={expected_refresh_date}, actual={refresh_date}"
         )
 

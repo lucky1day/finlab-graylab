@@ -611,7 +611,7 @@ conda run --no-capture-output -n bond_factor_lab_service \
 
 ## 7. 生产激活、灰度补齐与前端验收
 
-本节适用于取得具体方案 `blackbox_activate`、`live_write`、`gray_backfill_write` 等专项授权后的生产动作。Shadow 完成不等于实盘；Activation 成功且 Registry 与 exact version 变为 active，表示方案进入业务可见状态，`deployed_at` 记录这一日期，同时按 frequency 自然进入对应 launchd one-shot 候选集合。Activation 不安装或加载 plist；生产调度是否已经挂载并自然执行，必须由对应 installed plist、`launchctl` loaded state 和任务日志证明，不能只由 active 或 `deployed_at` 推断。业务可见后不能继续把方案描述为仅有历史回测，也不能等待下一次 scheduler 后才补前端实盘段。
+本节适用于取得具体方案 activation、live 或单日补缺授权后的生产动作。Shadow 完成不等于实盘；Activation 成功且 Registry 与 exact version 变为 active，表示方案进入业务可见状态，`deployed_at` 记录这一日期，同时按 frequency 自然进入对应 launchd one-shot 候选集合。Activation 不安装或加载 plist；生产调度是否已经挂载并自然执行，必须由对应 installed plist、`launchctl` loaded state 和任务日志证明，不能只由 active 或 `deployed_at` 推断。业务可见后不能继续把方案描述为仅有历史回测，也不能等待下一次 scheduler 后才补前端实盘段。
 
 ### 7.1 灰度起点、部署时间和正式调度起点
 
@@ -641,31 +641,15 @@ Activation 完成后、前端验收前，必须按时间顺序补齐从 `gray_ta
 - 周频：先枚举应有目标周末，再反推上一轮调度日；`predict_date` 可能位于 5 月；
 - 月频：按目标月观察点反推自然触发日；若合同规定自然 15 号，不能顺延为交易日。
 
-普通 `live` Gate 仍是 fresh-only：它只接受 `live_write` token，并要求 DataBridge `refresh_date` 等于本次运行日。历史 gray 缺口只能使用显式 `gray-backfill` Gate；不得放宽普通 LiveGate、伪造 DataBridge freshness 或直接调用 repository 绕过授权。
-
-每个补齐点必须使用独立、范围匹配的一次性 `gray_backfill_write` token，并显式指定 `prediction_phase=gray_live`。token 必须绑定 canonical exact `predict_date`、scheme、version 和最新通过的 all-stage run，TTL 不超过 900 秒；缺失日期、日期不匹配、跨 Gate 使用、过期或重放全部拒绝。
+普通 `live` Gate 仍是 fresh-only：它只接受 `live_write` token，并要求 DataBridge `refresh_date` 等于本次运行日。历史 gray 缺口只能按日期使用唯一运维入口；不得放宽普通 LiveGate、伪造 DataBridge freshness 或直接调用 repository 绕过授权。
 
 ```bash
-TOKEN=$(conda run --no-capture-output -n bond_factor_lab_service \
-  python -m harness auth issue \
-    --scheme-id {scheme_id} \
-    --action gray_backfill_write \
-    --predict-date {historical_signal_date} \
-    --scheme-version {passed_scheme_version} \
-    --harness-run-id {passed_harness_run_id} \
-    --expires-in 900 \
-    --issued-by {operator})
-
 conda run --no-capture-output -n bond_factor_lab_service \
-  python -m harness gate gray-backfill \
-    --scheme-id {scheme_id} \
-    --predict-date {historical_signal_date} \
-    --prediction-phase gray_live \
-    --algo-env forecast_env_blackbox_v1 \
-    --authorize "$TOKEN"
+  python -m harness signal-gap-fill \
+    --predict-date {historical_signal_date}
 ```
 
-`gray-backfill` 使用 `historical_as_of_replay` 输入模式：完整校验当前 DataBridge 后，允许历史 `predict_date` 读取当前同代快照，但 Request 的三个 cutoff key 仍硬截止在该点的 `feature_date`。该结果必须标记 `current_snapshot_as_of_not_historical_vintage`，只能解释为当前快照上的 live-safe as-of replay，不能宣称历史 vintage PIT。Gate 在预检与实际快照之间 pin `generation_id + refresh_date`；切代即失败。prediction `extra` 必须持久化 snapshot、generation、refresh、三频 cutoff、replay semantics 和 backfill 时间。
+命令冻结该日全 active scope，只为 `GRAY_LIVE_GAP` 原子组在进程内签发绑定 plan SHA、exact version、target keys 与 source authority 的短期 HMAC token；旧逐方案 Gate 和外部 `gray_backfill_write` token 已退役。它使用 `historical_as_of_replay` 输入模式：完整校验当前 DataBridge 后，允许历史 `predict_date` 读取当前同代快照，但 Request 的三个 cutoff key 仍硬截止在该点的 `feature_date`。该结果必须标记 `current_snapshot_as_of_not_historical_vintage`，只能解释为当前快照上的 live-safe as-of replay，不能宣称历史 vintage PIT。Gate 在算法执行和提交前持续核对冻结 source authority；切代即失败。prediction `extra` 必须持久化 snapshot、generation、refresh、三频 cutoff、replay semantics 和 backfill 时间。
 
 历史 gray 写入采用 insert-only，并依赖 `uk_scheme_tenor_target` 原子拒绝重复 target；不得进入 `ON DUPLICATE KEY UPDATE`。预检已存在、竞争事务冲突、算法失败、provenance 缺失或 Gate 表增量不是 run/prediction/log 精确各 `+1` 时，事务失败且不能覆盖首条预测。补齐产生的 run、prediction 和 run log 必须一一对应；任一点失败时冻结当前方案的后续补齐，不得把缺口留给前端隐藏。
 
@@ -714,7 +698,7 @@ final 公网配置会拒绝这些旧接口，不能用它们代替 dashboard 验
 | shadow 失败但 Registry/版本已变 | 禁止自动重试或删除记录 | 完成配置、Registry、版本三方 reconciliation |
 | API/scheduler 意外出现 trial | 保持 Registry paused，不执行 live | 找到来源并移除生产入口 |
 | canonical backtest 含 gray target | 保留旧 run 审计，停止前端验收 | 用绑定 `gray_target_start` 的新 token 生成新的 immutable run；不得靠前端裁剪收口 |
-| 激活后 gray live 不连续 | 冻结该方案的完成状态，不伪造 `scheduled_live` | 按 target 日历补齐缺口并逐条通过 `gray-backfill`；普通 `live` Gate 保持 fresh-only |
+| 激活后 gray live 不连续 | 冻结该方案的完成状态，不伪造 `scheduled_live` | 按 target 日历逐日执行单日 `signal-gap-fill`；普通 `live` Gate 保持 fresh-only |
 | active Registry 缺 `deployed_at` | API/前端 fail-closed | 通过正式 Registry reconciliation 恢复真实部署日期 |
 | backtest/live 同一 target 重叠 | 阻断上线，保留冲突清单 | 新回测 run 或正式 correction 使 target 分区互斥后重验 |
 

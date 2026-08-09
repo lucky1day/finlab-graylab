@@ -10,6 +10,9 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from harness import cli
+from harness.authorization import issue_token, verify_authorization
+from harness.context import GateContext
+from harness.registry import gate_for_name as resolve_gate
 from harness.result import Evidence, GateResult, GateStatus
 
 
@@ -154,6 +157,45 @@ class SignalGapFillCliTests(unittest.TestCase):
                     "2026-08-08",
                 ]
             )
+
+    def test_legacy_gray_backfill_entry_and_action_are_retired(self) -> None:
+        with self.assertRaises(SystemExit):
+            cli._build_parser().parse_args(
+                [
+                    "gate",
+                    "gray-backfill",
+                    "--scheme-id",
+                    "demo_blackbox",
+                    "--predict-date",
+                    "2026-08-08",
+                ]
+            )
+
+        ctx = GateContext(
+            scheme_id="demo_blackbox",
+            predict_date="2026-08-08",
+            project_root=Path("/tmp/project"),
+            report_dir=Path("/tmp/report"),
+            config=SimpleNamespace(runtime_type="blackbox_v2"),
+        )
+        with self.assertRaisesRegex(ValueError, "unsupported Blackbox V2 gate"):
+            resolve_gate("gray-backfill", ctx=ctx)
+
+        with self.assertRaisesRegex(ValueError, "retired"):
+            issue_token(
+                "demo_blackbox",
+                "gray_backfill_write",
+                predict_date="2026-08-08",
+            )
+        authorization, errors = verify_authorization(
+            None,
+            scheme_id="demo_blackbox",
+            action="gray_backfill_write",
+            predict_date="2026-08-08",
+            used_store_path=Path("/tmp/unused-token-store.json"),
+        )
+        self.assertIsNone(authorization)
+        self.assertIn("retired", "\n".join(errors))
 
     def test_missing_hmac_secret_blocks_before_database_access(self) -> None:
         output = io.StringIO()

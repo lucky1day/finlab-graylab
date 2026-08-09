@@ -60,6 +60,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.command == "auth" and args.auth_command == "issue":
+        if args.action == "gray_backfill_write":
+            parser.error(
+                "gray_backfill_write is retired; use signal-gap-fill"
+            )
         if args.action == "signal_gap_fill_write":
             parser.error(
                 "signal_gap_fill_write tokens are issued only inside "
@@ -331,7 +335,7 @@ def _build_parser() -> argparse.ArgumentParser:
     for gate_name in (
         "static", "input", "unit", "dry-run", "compare", "backtest",
         "api-readiness", "draft-register", "shadow-register", "api", "live",
-        "gray-backfill", "lifecycle-reconcile", "revision-activate", "bootstrap",
+        "lifecycle-reconcile", "revision-activate", "bootstrap",
     ):
         item = gate_subparsers.add_parser(gate_name)
         item.add_argument("--scheme-id", required=True)
@@ -562,7 +566,6 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
         "shadow-register",
         "revision-activate",
         "live",
-        "gray-backfill",
     } and not args.predict_date:
         raise SystemExit(f"gate {args.gate_name} requires --predict-date")
     project_root = args.project_root.resolve()

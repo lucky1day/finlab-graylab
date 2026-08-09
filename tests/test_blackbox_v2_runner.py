@@ -631,7 +631,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             process_start_guard,
         )
 
-    def test_gray_backfill_uses_historical_as_of_snapshot_with_provenance(self) -> None:
+    def test_historical_replay_uses_as_of_snapshot_with_provenance(self) -> None:
         from scheduler.executor import run_blackbox_scheme_subprocess
         from shared.blackbox_v2.snapshot import (
             BlackboxSnapshot,
@@ -725,7 +725,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         self.assertEqual(extra["monthly_cutoff_key"], "202605")
         self.assertTrue(extra["backfilled_at"].endswith("+00:00"))
 
-    def test_gray_backfill_allows_snapshot_refreshed_on_predict_date(
+    def test_historical_replay_allows_snapshot_refreshed_on_predict_date(
         self,
     ) -> None:
         """同日 DataBridge 刷新可用于前一 feature 日的历史重放。"""
@@ -895,7 +895,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             weekly_cutoff_key="202627",
         )
 
-    def test_gray_backfill_rejects_changed_current_generation(self) -> None:
+    def test_historical_replay_rejects_changed_current_generation(self) -> None:
         from scheduler.executor import run_blackbox_scheme_subprocess
 
         @contextmanager

@@ -18,9 +18,6 @@ from harness.authorization import (
 )
 from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
-from harness.gates.gray_backfill_gate import (
-    _validate_gray_backfill_records,
-)
 from harness.result import Evidence, GateResult, GateStatus
 from harness.signal_gap_plan import (
     LEGACY_PLAN_SCHEMA_VERSION,
@@ -81,6 +78,78 @@ _TARGET_KEY_FIELDS = (
     "target_date",
     "prediction_phase",
 )
+
+
+def _validate_signal_gap_fill_records(
+    records: list[PredictionRecord],
+    *,
+    expected_generation_id: str,
+    expected_refresh_date: str,
+    expected_feature_date: str | None = None,
+    expected_target_date: str | None = None,
+    frequency: str | None = None,
+) -> None:
+    """提交前核对历史补缺记录的实际快照与 cutoff provenance。"""
+    if not records:
+        raise ValueError(
+            "signal-gap-fill must return at least one prediction record"
+        )
+    for record in records:
+        extra = dict(record.extra or {})
+        if extra.get("data_generation_id") != expected_generation_id:
+            raise ValueError(
+                "signal-gap-fill record data generation does not match "
+                "preflight: "
+                f"expected={expected_generation_id}, "
+                f"actual={extra.get('data_generation_id')}"
+            )
+        if extra.get("source_refresh_date") != expected_refresh_date:
+            raise ValueError(
+                "signal-gap-fill record source refresh_date does not match "
+                "preflight: "
+                f"expected={expected_refresh_date}, "
+                f"actual={extra.get('source_refresh_date')}"
+            )
+        if (
+            expected_feature_date
+            and record.feature_date != expected_feature_date
+        ):
+            raise ValueError(
+                "signal-gap-fill record feature_date does not match "
+                "preflight: "
+                f"expected={expected_feature_date}, "
+                f"actual={record.feature_date}"
+            )
+        if (
+            expected_target_date
+            and record.target_date != expected_target_date
+        ):
+            raise ValueError(
+                "signal-gap-fill record target_date does not match "
+                "preflight: "
+                f"expected={expected_target_date}, "
+                f"actual={record.target_date}"
+            )
+        cutoff_fields = (
+            "daily_cutoff_key",
+            "weekly_cutoff_key",
+            "monthly_cutoff_key",
+        )
+        missing = [field for field in cutoff_fields if not extra.get(field)]
+        if missing:
+            raise ValueError(
+                "signal-gap-fill record cutoff provenance is incomplete: "
+                f"{missing}"
+            )
+        if (
+            frequency == "daily"
+            and extra["daily_cutoff_key"] != record.feature_date
+        ):
+            raise ValueError(
+                "signal-gap-fill daily_cutoff_key must equal feature_date: "
+                f"cutoff={extra['daily_cutoff_key']}, "
+                f"feature_date={record.feature_date}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1427,7 +1496,7 @@ def _validate_group_records(
         )
     if group.runtime_type == "blackbox_v2":
         authority = group.source_authority
-        _validate_gray_backfill_records(
+        _validate_signal_gap_fill_records(
             records,
             expected_generation_id=authority["generation_id"],
             expected_refresh_date=authority["refresh_date"],

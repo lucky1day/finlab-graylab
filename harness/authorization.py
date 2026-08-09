@@ -27,7 +27,6 @@ EXACT_PREDICT_DATE_ACTIONS = frozenset(
         "backtest_persist",
         "draft_register",
         "blackbox_revision_activate",
-        "gray_backfill_write",
         "signal_gap_fill_write",
         "signal_gap_native_artifact_register",
         "signal_gap_native_cache_prewarm",
@@ -166,6 +165,10 @@ def issue_token(
     配置了 HARNESS_AUTH_SECRET 时附带 HMAC 签名；未配置时退化为明文信封，
     token 仍承担一次性 + 作用域绑定的确认职责（软默认，单用户场景无需配置）。
     """
+    if action == "gray_backfill_write":
+        raise ValueError(
+            "gray_backfill_write authorization action is retired"
+        )
     if action in {
         "signal_gap_fill_write",
         "signal_gap_native_artifact_register",
@@ -428,6 +431,10 @@ def verify_authorization(
     used_store_path: Path,
 ) -> tuple[Authorization | None, list[str]]:
     """从原始 token 校验信封模式、签名、过期、一次性和作用域。"""
+    if action == "gray_backfill_write":
+        return None, [
+            "gray_backfill_write authorization action is retired"
+        ]
     if token is None:
         return None, ["authorization token is required"]
 

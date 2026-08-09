@@ -1745,7 +1745,7 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
                 self.assertEqual(engine.store["run_log_rows"], [])
                 self.assertEqual(engine.store["run_row"], original_run)
 
-    def test_gray_backfill_completion_uses_insert_only_prediction_sql(self) -> None:
+    def test_signal_gap_completion_uses_insert_only_prediction_sql(self) -> None:
         from scheduler.repository import complete_approved_blackbox_run
         from shared.models import PredictionRecord
 
@@ -1788,7 +1788,7 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         )
         self.assertNotIn("ON DUPLICATE KEY UPDATE", prediction_sql)
 
-    def test_competing_gray_backfill_insert_cannot_overwrite_first_prediction(self) -> None:
+    def test_competing_signal_gap_insert_cannot_overwrite_first_prediction(self) -> None:
         from scheduler.repository import complete_approved_blackbox_run
         from shared.models import PredictionRecord
 
