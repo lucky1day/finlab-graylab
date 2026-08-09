@@ -162,8 +162,8 @@ class _GapGroup:
     input_mode: str
     actions: tuple[dict[str, Any], ...]
     expected_target_keys: tuple[dict[str, Any], ...]
-    input_authority: dict[str, Any]
-    source_authority: dict[str, Any]
+    input_authority: dict[str, Any] | None
+    source_authority: dict[str, Any] | None
 
     @property
     def identity(self) -> tuple[str, str]:
@@ -178,7 +178,7 @@ class SignalGapFillAuthorizationClaim:
     scheme_version: str
     predict_date: str
     target_keys: tuple[dict[str, Any], ...]
-    source_authority: dict[str, Any]
+    source_authority: dict[str, Any] | None
 
 
 @dataclass(slots=True)
@@ -790,7 +790,11 @@ def signal_gap_fill_authorization_claims(
                 dict(target_key)
                 for target_key in group.expected_target_keys
             ),
-            source_authority=dict(group.source_authority),
+            source_authority=(
+                dict(group.source_authority)
+                if group.source_authority is not None
+                else None
+            ),
         )
         for group in _build_groups(plan)
     )
@@ -1537,33 +1541,15 @@ def _fail_executions(
 
 def _repository_source_authority(
     action: Mapping[str, Any],
-    authority: Mapping[str, Any],
-) -> dict[str, Any]:
+    authority: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
     feature_date = str(action["feature_date"])
     if action["runtime_type"] == "native_adapter":
-        artifact = _native_artifact(authority)
-        if (
-            artifact["exporter_version"]
-            == NATIVE_GENERATION_EXPORTER_VERSION
-        ):
-            return {
-                "authority_type": "native_archived_generation",
-                "generation_id": artifact["generation_id"],
-                "manifest_sha256": artifact["manifest_sha256"],
-                "business_date": artifact["business_date"],
-                "feature_date": feature_date,
-                "cutoff_date": feature_date,
-                "replay_mode":
-                    "historical_sealed_generation_replay",
-            }
-        return {
-            "authority_type": "native_current_snapshot_artifact",
-            "artifact_id": artifact["generation_id"],
-            "manifest_sha256": artifact["manifest_sha256"],
-            "feature_date": feature_date,
-            "cutoff_date": feature_date,
-            "vintage_disclaimer": VINTAGE_DISCLAIMER,
-        }
+        if authority is not None:
+            raise ValueError("Native input authority must be null")
+        return None
+    if not isinstance(authority, Mapping):
+        raise ValueError("Blackbox DataBridge authority is missing")
     cutoff = authority.get("cutoff")
     if not isinstance(cutoff, dict):
         raise ValueError("DataBridge cutoff authority is missing")

@@ -388,6 +388,7 @@ def _native_registry_row(**updates) -> dict:
         "base_scheme_id": "native_daily",
         "runtime_type": "native_adapter",
         "status": "active",
+        "frequency": "daily",
         "task_type": "T+1",
         "target_tenor": "5Y",
         "horizon": 1,
@@ -1473,6 +1474,83 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             engine.store["run_row"]["data_snapshot_id"],
             "snapshot-live",
         )
+
+    def test_native_gray_gap_completion_uses_null_authority_without_replay_provenance(self) -> None:
+        from scheduler.repository import complete_gray_gap_run
+        from shared.models import PredictionRecord
+
+        engine = _native_atomic_engine()
+        engine.store["run_row"].update(
+            {
+                "predict_date": "2026-07-20",
+                "records_expected": 1,
+            }
+        )
+        record = PredictionRecord(
+            scheme_id="native_daily",
+            target_tenor="5Y",
+            horizon=1,
+            predict_date="2026-07-20",
+            target_date="2026-07-21",
+            feature_date="2026-07-17",
+            prediction_phase="gray_live",
+            predicted_direction=1,
+            extra={"vote_score": 0.75},
+        )
+        target = {
+            "registry_scheme_id": "native_daily__h1__5Y",
+            "base_scheme_id": "native_daily",
+            "target_tenor": "5Y",
+            "horizon": 1,
+            "task_type": "T+1",
+            "predict_date": "2026-07-20",
+            "feature_date": "2026-07-17",
+            "target_date": "2026-07-21",
+            "prediction_phase": "gray_live",
+        }
+
+        written = complete_gray_gap_run(
+            engine,
+            _native_config(),
+            run_id=101,
+            records=[record],
+            expected_target_keys=[target],
+            plan_sha256="b" * 64,
+            source_authority=None,
+            records_returned=1,
+            run_date="2026-07-20",
+            duration_sec=1.0,
+        )
+
+        self.assertEqual(written, 1)
+        stored_extra = engine.store["prediction_rows"][0]["extra"]
+        for forbidden in (
+            "source_authority",
+            "source_generation_id",
+            "source_artifact_id",
+            "replay_semantics",
+        ):
+            self.assertNotIn(forbidden, stored_extra)
+        self.assertIn("vote_score", stored_extra)
+        self.assertIn("execution_group_identity", stored_extra)
+
+    def test_gray_gap_authority_runtime_contract_is_strict(self) -> None:
+        from scheduler.repository import _normalize_gray_gap_source_authority
+
+        with self.assertRaisesRegex(ValueError, "Native.*None"):
+            _normalize_gray_gap_source_authority(
+                {"authority_type": "databridge_current_generation"},
+                runtime_type="native_adapter",
+                feature_date="2026-07-17",
+                predict_date="2026-07-20",
+            )
+        with self.assertRaisesRegex(ValueError, "DataBridge"):
+            _normalize_gray_gap_source_authority(
+                None,
+                runtime_type="blackbox_v2",
+                feature_date="2026-07-17",
+                predict_date="2026-07-20",
+            )
 
     def test_blackbox_gray_gap_snapshot_repair_only_updates_verified_run_audit(self) -> None:
         from scheduler.repository import (

@@ -3527,7 +3527,7 @@ def complete_gray_gap_run(
     records: Iterable[PredictionRecord],
     expected_target_keys: list[Mapping[str, object]],
     plan_sha256: str,
-    source_authority: Mapping[str, object],
+    source_authority: Mapping[str, object] | None,
     records_returned: int,
     run_date: str,
     duration_sec: float,
@@ -3584,10 +3584,6 @@ def complete_gray_gap_run(
     )
 
     with engine.begin() as conn:
-        _validate_gray_gap_archived_generation_conn(
-            conn,
-            normalized_authority,
-        )
         run = _read_scheme_run_conn(
             conn,
             run_id=int(run_id),
@@ -3979,27 +3975,6 @@ _GRAY_GAP_TARGET_FIELDS = frozenset(
         "prediction_phase",
     }
 )
-_GRAY_GAP_NATIVE_AUTHORITY_FIELDS = frozenset(
-    {
-        "authority_type",
-        "artifact_id",
-        "manifest_sha256",
-        "feature_date",
-        "cutoff_date",
-        "vintage_disclaimer",
-    }
-)
-_GRAY_GAP_ARCHIVED_NATIVE_AUTHORITY_FIELDS = frozenset(
-    {
-        "authority_type",
-        "generation_id",
-        "manifest_sha256",
-        "business_date",
-        "feature_date",
-        "cutoff_date",
-        "replay_mode",
-    }
-)
 _GRAY_GAP_DATABRIDGE_AUTHORITY_FIELDS = frozenset(
     {
         "authority_type",
@@ -4014,66 +3989,10 @@ _GRAY_GAP_DATABRIDGE_AUTHORITY_FIELDS = frozenset(
 _GRAY_GAP_VINTAGE_DISCLAIMER = (
     "current_snapshot_as_of_not_historical_vintage"
 )
-_GRAY_GAP_ARCHIVED_REPLAY_MODE = (
-    "historical_sealed_generation_replay"
-)
 _GRAY_GAP_FIXED_ATOMIC_TARGETS = {
     "t1_daily": frozenset({"5Y", "10Y"}),
     "t5_daily": frozenset({"3Y", "5Y", "7Y", "10Y"}),
 }
-
-
-def _validate_gray_gap_archived_generation_conn(
-    conn: Connection,
-    source_authority: Mapping[str, object],
-) -> None:
-    """事务内锁定并核对 archived Native provenance。"""
-    if (
-        source_authority.get("authority_type")
-        != "native_archived_generation"
-    ):
-        return
-    generation_id = str(source_authority["generation_id"])
-    row = _read_input_generation_conn(
-        conn,
-        generation_id,
-        for_update=True,
-    )
-    if row is None:
-        raise RuntimeError(
-            "archived Native generation does not exist: "
-            f"{generation_id}"
-        )
-    expected = {
-        "generation_id": generation_id,
-        "generation_type": "native_source",
-        "business_date": str(source_authority["business_date"]),
-        "feature_date": str(source_authority["feature_date"]),
-        "exporter_version": NATIVE_GENERATION_EXPORTER_VERSION,
-        "manifest_sha256": str(source_authority["manifest_sha256"]),
-        "state": INPUT_GENERATION_SEALED,
-    }
-    mismatches = {
-        field: (expected_value, row.get(field))
-        for field, expected_value in expected.items()
-        if str(row.get(field)) != expected_value
-    }
-    if (
-        row.get("sealed_at") is None
-        or row.get("invalidated_at") is not None
-    ):
-        mismatches["sealed_fence"] = (
-            "sealed and not invalidated",
-            {
-                "sealed_at": row.get("sealed_at"),
-                "invalidated_at": row.get("invalidated_at"),
-            },
-        )
-    if mismatches:
-        raise RuntimeError(
-            "archived Native generation authority drift: "
-            f"{mismatches}"
-        )
 
 
 def _require_lower_sha256(value: object, field: str) -> str:
@@ -4280,35 +4199,28 @@ def _gray_gap_execution_dates(
 
 
 def _normalize_gray_gap_source_authority(
-    source_authority: Mapping[str, object],
+    source_authority: Mapping[str, object] | None,
     *,
     runtime_type: str,
     feature_date: str,
     predict_date: str,
-) -> dict[str, object]:
-    if not isinstance(source_authority, Mapping):
-        raise ValueError("source_authority must be a mapping")
-    authority_type = source_authority.get("authority_type")
-    if authority_type == "native_current_snapshot_artifact":
-        expected_fields = _GRAY_GAP_NATIVE_AUTHORITY_FIELDS
-    elif authority_type == "native_archived_generation":
-        expected_fields = _GRAY_GAP_ARCHIVED_NATIVE_AUTHORITY_FIELDS
-    elif authority_type == "databridge_current_generation":
-        expected_fields = _GRAY_GAP_DATABRIDGE_AUTHORITY_FIELDS
-    else:
-        raise ValueError("source_authority authority_type is invalid")
-    expected_authority_types = {
-        "native_adapter": {
-            "native_archived_generation",
-            "native_current_snapshot_artifact",
-        },
-        "blackbox_v2": {"databridge_current_generation"},
-    }.get(runtime_type, set())
-    if authority_type not in expected_authority_types:
+) -> dict[str, object] | None:
+    if runtime_type == "native_adapter":
+        if source_authority is not None:
+            raise ValueError("Native source_authority must be None")
+        return None
+    if runtime_type != "blackbox_v2":
         raise ValueError(
-            "source_authority authority_type does not match cfg "
-            f"runtime_type={runtime_type}"
+            f"unsupported gray gap runtime_type={runtime_type}"
         )
+    if not isinstance(source_authority, Mapping):
+        raise ValueError("Blackbox DataBridge source_authority is required")
+    authority_type = source_authority.get("authority_type")
+    if authority_type != "databridge_current_generation":
+        raise ValueError(
+            "Blackbox source_authority must be a DataBridge authority"
+        )
+    expected_fields = _GRAY_GAP_DATABRIDGE_AUTHORITY_FIELDS
     if set(source_authority) != expected_fields:
         raise ValueError(
             "source_authority must contain exact fields "
@@ -4327,80 +4239,26 @@ def _normalize_gray_gap_source_authority(
         raise ValueError(
             "source_authority cutoff_date must equal execution feature_date"
         )
-    if authority_type == "native_current_snapshot_artifact":
-        if (
-            source_authority["vintage_disclaimer"]
-            != _GRAY_GAP_VINTAGE_DISCLAIMER
-        ):
-            raise ValueError(
-                "source_authority vintage_disclaimer is invalid"
-            )
-        normalized["artifact_id"] = _require_nonempty(
-            source_authority["artifact_id"],
-            "source_authority.artifact_id",
+    if (
+        source_authority["vintage_disclaimer"]
+        != _GRAY_GAP_VINTAGE_DISCLAIMER
+    ):
+        raise ValueError("source_authority vintage_disclaimer is invalid")
+    normalized["generation_id"] = _require_nonempty(
+        source_authority["generation_id"],
+        "source_authority.generation_id",
+    )
+    refresh_date = _require_iso_date(
+        source_authority["refresh_date"],
+        "source_authority.refresh_date",
+    )
+    if refresh_date < predict_date:
+        raise ValueError(
+            "source_authority refresh_date must be on or after historical "
+            "predict_date"
         )
-        authority_feature_date = _require_iso_date(
-            source_authority["feature_date"],
-            "source_authority.feature_date",
-        )
-        if authority_feature_date != feature_date:
-            raise ValueError(
-                "source_authority feature_date must equal execution "
-                "feature_date"
-            )
-    elif authority_type == "native_archived_generation":
-        normalized["generation_id"] = _require_nonempty(
-            source_authority["generation_id"],
-            "source_authority.generation_id",
-        )
-        authority_business_date = _require_iso_date(
-            source_authority["business_date"],
-            "source_authority.business_date",
-        )
-        authority_feature_date = _require_iso_date(
-            source_authority["feature_date"],
-            "source_authority.feature_date",
-        )
-        if authority_business_date != predict_date:
-            raise ValueError(
-                "source_authority business_date must equal execution "
-                "predict_date"
-            )
-        if authority_feature_date != feature_date:
-            raise ValueError(
-                "source_authority feature_date must equal execution "
-                "feature_date"
-            )
-        if (
-            source_authority["replay_mode"]
-            != _GRAY_GAP_ARCHIVED_REPLAY_MODE
-        ):
-            raise ValueError(
-                "source_authority replay_mode is invalid"
-            )
-    else:
-        if (
-            source_authority["vintage_disclaimer"]
-            != _GRAY_GAP_VINTAGE_DISCLAIMER
-        ):
-            raise ValueError(
-                "source_authority vintage_disclaimer is invalid"
-            )
-        normalized["generation_id"] = _require_nonempty(
-            source_authority["generation_id"],
-            "source_authority.generation_id",
-        )
-        refresh_date = _require_iso_date(
-            source_authority["refresh_date"],
-            "source_authority.refresh_date",
-        )
-        if refresh_date < predict_date:
-            raise ValueError(
-                "source_authority refresh_date must be on or after historical "
-                "predict_date"
-            )
-        if source_authority["replay_mode"] != "historical_as_of_replay":
-            raise ValueError("source_authority replay_mode is invalid")
+    if source_authority["replay_mode"] != "historical_as_of_replay":
+        raise ValueError("source_authority replay_mode is invalid")
     return normalized
 
 
@@ -4473,7 +4331,7 @@ def _enrich_gray_gap_records(
     records: list[PredictionRecord],
     expected_targets: list[Mapping[str, object]],
     plan_sha256: str,
-    source_authority: Mapping[str, object],
+    source_authority: Mapping[str, object] | None,
 ) -> list[PredictionRecord]:
     targets = [
         {
@@ -4516,48 +4374,13 @@ def _enrich_gray_gap_records(
         "signal_gap_plan_sha256": plan_sha256,
         "backfill_mode": "signal_gap_fill",
         "backfilled_at": backfilled_at,
-        "source_authority": dict(source_authority),
-        "replay_semantics": (
-            source_authority["replay_mode"]
-            if source_authority["authority_type"]
-            == "native_archived_generation"
-            else _GRAY_GAP_VINTAGE_DISCLAIMER
-        ),
         "execution_group_identity": execution_group_identity,
     }
-    if source_authority["authority_type"] == (
-        "native_current_snapshot_artifact"
-    ):
+    if source_authority is not None:
         common_extra.update(
             {
-                "source_artifact_id": source_authority["artifact_id"],
-                "source_artifact_manifest_sha256":
-                    source_authority["manifest_sha256"],
-                "source_artifact_feature_date":
-                    source_authority["feature_date"],
-                "source_cutoff_date": source_authority["cutoff_date"],
-            }
-        )
-    elif source_authority["authority_type"] == (
-        "native_archived_generation"
-    ):
-        common_extra.update(
-            {
-                "source_generation_id":
-                    source_authority["generation_id"],
-                "source_generation_manifest_sha256":
-                    source_authority["manifest_sha256"],
-                "source_generation_business_date":
-                    source_authority["business_date"],
-                "source_generation_feature_date":
-                    source_authority["feature_date"],
-                "source_cutoff_date":
-                    source_authority["cutoff_date"],
-            }
-        )
-    else:
-        common_extra.update(
-            {
+                "source_authority": dict(source_authority),
+                "replay_semantics": _GRAY_GAP_VINTAGE_DISCLAIMER,
                 "source_generation_id": source_authority["generation_id"],
                 "source_generation_manifest_sha256":
                     source_authority["manifest_sha256"],

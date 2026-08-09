@@ -100,6 +100,82 @@ class AuthorizationTest(unittest.TestCase):
 
         self.assertIn("backtest_start_date mismatch", "\n".join(errors))
 
+    def test_signal_gap_native_token_binds_null_source_authority(self) -> None:
+        from harness.authorization import (
+            issue_signal_gap_fill_token,
+            verify_signal_gap_fill_authorization,
+        )
+
+        target_keys = (
+            {
+                "registry_scheme_id": "native_daily__h1__5Y",
+                "base_scheme_id": "native_daily",
+                "target_tenor": "5Y",
+                "horizon": 1,
+                "task_type": "T+1",
+                "predict_date": "2026-07-20",
+                "feature_date": "2026-07-17",
+                "target_date": "2026-07-21",
+                "prediction_phase": "gray_live",
+            },
+        )
+        token = issue_signal_gap_fill_token(
+            plan_sha256="a" * 64,
+            base_scheme_id="native_daily",
+            predict_date="2026-07-20",
+            target_keys=target_keys,
+            scheme_version="native-version-1",
+            source_authority=None,
+        )
+
+        auth = parse_token(token)
+        self.assertIsNone(auth.source_authority)
+        _, errors = verify_signal_gap_fill_authorization(
+            token,
+            plan_sha256="a" * 64,
+            base_scheme_id="native_daily",
+            predict_date="2026-07-20",
+            target_keys=target_keys,
+            scheme_version="native-version-1",
+            source_authority=None,
+            used_store_path=self._used_path(),
+        )
+        self.assertEqual(errors, [])
+
+        _, mismatch_errors = verify_signal_gap_fill_authorization(
+            token,
+            plan_sha256="a" * 64,
+            base_scheme_id="native_daily",
+            predict_date="2026-07-20",
+            target_keys=target_keys,
+            scheme_version="native-version-1",
+            source_authority={
+                "authority_type": "databridge_current_generation",
+                "generation_id": "generation-live",
+                "manifest_sha256": "b" * 64,
+                "refresh_date": "2026-07-20",
+                "cutoff_date": "2026-07-17",
+                "replay_mode": "historical_as_of_replay",
+                "vintage_disclaimer": (
+                    "current_snapshot_as_of_not_historical_vintage"
+                ),
+            },
+            used_store_path=self._used_path(),
+        )
+        self.assertIn("source authority mismatch", mismatch_errors)
+
+        with self.assertRaisesRegex(ValueError, "authority type"):
+            issue_signal_gap_fill_token(
+                plan_sha256="a" * 64,
+                base_scheme_id="native_daily",
+                predict_date="2026-07-20",
+                target_keys=target_keys,
+                scheme_version="native-version-1",
+                source_authority={
+                    "authority_type": "native_archived_generation",
+                },
+            )
+
     def test_backtest_persist_token_defaults_start_date(self) -> None:
         auth = parse_token(
             issue_token("trial", "backtest_persist", predict_date="2026-07-20")

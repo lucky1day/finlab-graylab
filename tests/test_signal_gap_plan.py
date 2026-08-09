@@ -8,7 +8,10 @@ from pathlib import Path
 import pytest
 
 from harness import signal_gap_plan
-from harness.gates.signal_gap_fill_gate import _load_frozen_plan
+from harness.gates.signal_gap_fill_gate import (
+    _load_frozen_plan,
+    signal_gap_fill_authorization_claims,
+)
 
 
 def _native_snapshot(*, present: bool = False) -> signal_gap_plan.SignalGapSnapshot:
@@ -117,6 +120,13 @@ def test_blackbox_gap_still_requires_databridge_generation() -> None:
 
     assert plan["status"] == "BLOCKED"
     assert plan["actions"][0]["action"] == "BLOCKED_NO_GENERATION"
+
+
+def test_native_fill_claim_has_null_source_authority() -> None:
+    claims = signal_gap_fill_authorization_claims(_build_native_plan())
+
+    assert len(claims) == 1
+    assert claims[0].source_authority is None
 
 
 def test_snapshot_reader_does_not_query_input_generations() -> None:
