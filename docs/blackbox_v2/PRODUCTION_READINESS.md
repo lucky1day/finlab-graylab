@@ -31,7 +31,7 @@
 - 每个新 identity/version/runtime 仍需自己的 generation、确定性、超时、截止
   隔离、结果结构、失败恢复和标准结果证据；
 - 通用责任人、暂停/回退权限和 durable operator report 尚未形成最终 SOP；
-- 已有专项授权、active Registry、gray/formal 标签或另一方案的运行记录都不能
+- 已有专项授权、active Registry 或另一方案的运行记录都不能
   外推为新方案授权。
 
 ## 2. 必须保持的八项能力

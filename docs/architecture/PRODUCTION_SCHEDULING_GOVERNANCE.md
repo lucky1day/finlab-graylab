@@ -31,15 +31,12 @@ writer，并启动 `scheduler.actuals_runner`。这些是仓库 desired state，
 daily、weekly、monthly one-shot runner 都先严格发现方案；其自然候选集合只由
 `status=active`、Blackbox exact `version_status=active` 与 `frequency` 匹配当前 cadence
 决定。`paused`、`draft` 和其它 cadence 不进入本批次，不再另设 release queue、`mode` 或
-capability 准入。legacy admission 只保留历史审计与人工 `direct_scheduled` 入口语义，
-不得阻断 launchd one-shot 的 active 候选。
+capability 准入。Blackbox Admission 代码与配置已经退役；历史身份变化只通过 Git、Harness
+run 和授权审计追溯，不再保留第二份当前权限矩阵。
 
 仓库已移除 `com.bond-factor-lab.scheduler` 的 `Disabled=true` legacy 模板和常驻
-`scheduler.main` 模块。actuals 的唯一 runner 为 `scheduler.actuals_runner`；backend 手动
-单方案路径仅使用 `scheduler.direct_prediction`，不提供 cron/常驻 scheduler 兼容入口。
-当前不存在可把手工请求写成第三种实盘阶段的 manual writer；因此即使某个历史 exact identity
-通过 `direct_scheduled` admission，它若不能满足 launchd-only 的 `scheduled_live` 写入契约，也必须
-在 API preflight 以 409 fail-closed，不能返回 202 后再把手工请求伪装成自然 writer。
+`scheduler.main` 模块。actuals 的唯一 runner 为 `scheduler.actuals_runner`；Backend 不注册
+手动预测路由，也不存在可把手工请求写成第三种实盘阶段的 manual writer。
 已退役的 `daily-gray` 与 `v2-preflight` writer 及其仓库模板也已移除。已安装 disabled legacy
 plist 是否仍存在、何时物理删除，仍须只读核对与独立生产授权。
 
@@ -58,6 +55,17 @@ launchd 身份认证。仓库代码的同 UID 调用者属于受信任边界；�
 自然时钟触发的合格生产写入使用 `scheduled_live`。历史缺口的受控、insert-only 修复使用
 `gray_live`；两者不能互相伪装、覆盖或以日期标签替代 provenance。回测继续写入
 `t_backtest_*`，不与实盘预测混用。
+
+历史缺口先用 `signal-gap-plan` 只读检查；获授权的运维补齐只保留单日入口：
+
+```bash
+python -m harness signal-gap-fill --predict-date YYYY-MM-DD
+```
+
+该命令扫描当天所有应运行的 active 方案，冻结计划，仅对真实缺口按原子方案组在进程内签发
+精确短期 token，并统一 insert-only 写入 `gray_live`。缺少 HMAC secret、权威输入、计划异常或
+算法失败均直接退出；不准备输入、不回退旧版本、不覆盖、不重试。写后必须由同日期权威 plan
+确认缺口为零。
 
 DataBridge 必须由本机 MySQL 原子发布标准日/周/月 artifact，并继续通过源表、schema、
 连续性、稳定轮次和 `feature_date` 截止验证。输入不新鲜、源表异常或两轮不稳定时必须

@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验日期**：2026-08-08
+**最后核验日期**：2026-08-09
 
 本文只保留当前已验证事实。带日期的证据见[状态记录](records/status/README.md)，未完成工作的顺序见
 [统一后续推进计划](TODO.md)，生产调度规则以
@@ -13,7 +13,8 @@
 - `launchd + installed plist` 是唯一生产调度控制面；仓库代码或模板不单独证明生产挂载。
 - 自然时钟写 `scheduled_live`；受控、insert-only 的历史修复写 `gray_live`，两者不可互相替代。
 - ledger、occurrence、epoch、daily-gray、常驻 APScheduler 和旧预检不再是生产或过渡路径。
-- 新的 installed plist、launchctl、服务、激活、admission、业务写入、持久化回测和 DDL 均需独立授权。
+- 新的 installed plist、launchctl、服务、激活、业务写入、持久化回测和 DDL 均需独立授权。
+- Blackbox Admission 与 Backend 手动预测入口已退役；active 生命周期是唯一自动调度资格。
 
 ## 当前生产验收
 
@@ -23,11 +24,11 @@
 - Dashboard 每次直接读数据库；最新验收返回 `stale=false`、`snapshot_age_ms=0`，对应方案状态为 `present`。
 - 公网 rollout 验收为 `PASS=60`、`FAIL=0`。旧 backtest JSON 本机生成约 0.25 秒；公网探针使用现有 gzip
   表示后传输约 239 KB，不再依赖扩大超时、重试或 fallback。
-- 开发分支与 `master` 已推送到同一提交 `49d77da`。本次授权已经消费，不外推到后续发布或生产操作。
+- 截至 2026-08-08，生产基线 `master` 已推送至 `49d77da`；后续开发提交不自动获得发布或生产操作授权。
 
 ## 已闭环的生产治理
 
-- G3.1 的 Blackbox admission 与历史缺口补齐保持关闭；补写本身不授予 scheduler admission。
+- Blackbox Admission 已完整退役；历史补缺仅保留必须指定单日的 Harness 运维入口，且只写 `gray_live`。
 - G1/G2 的 DataBridge 与 launchd-only single-writer、G3 的 8 月 3 日补写、G4 唯一键修复、G5/G6
   无写库验收均已闭环。
 - launchd-only 清理已移除仓库中的 ledger/occurrence/epoch runtime、policy 与 replay 闭包；
@@ -36,7 +37,7 @@
 ## 已验证的 7Y 灰度闭环
 
 - 两套 active 7Y v2 方案已完成 Gate、入库、历史 `gray_live`、served API 与前端读回。
-- 它们的 exact admission 仅为 `launchd_one_shot`；该事实不外推到其它身份，也不证明 installed plist 已挂载。
+- 它们在 config、exact version 与 Registry 均 active 且 cadence 匹配时进入 launchd one-shot 候选；这不证明 installed plist 已挂载。
 
 ## 已闭环的前端 UX
 

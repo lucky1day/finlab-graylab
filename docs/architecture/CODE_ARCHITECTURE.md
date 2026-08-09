@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：平台开发和代码审计人员
-**最后核验日期**：2026-08-07
+**最后核验日期**：2026-08-09
 **定位**：本仓库的代码架构主蓝图，定义分层模型、包依赖方向、运行时调用图和扩展边界。
 **与既有文档的关系**:
 - [ARCHITECTURE.md](ARCHITECTURE.md) = **系统架构**（部署、DB schema、API 契约、数据流）。
@@ -143,7 +143,7 @@ V5–V6 没有建立基线豁免；修复后 repo-wide gate 的全仓扫描为�
 
 ## 5. 运行时调用图
 
-### 5.1 预测路径（调度 / 手动触发）
+### 5.1 预测路径（自然调度 / 单日补缺）
 
 launchd + plist 是真实生产调度控制面。任务是否挂载、触发时点、环境、重启和日志
 均由 installed plist 与 `launchctl` 现场状态决定；常驻 `scheduler.main`/APScheduler 已从
@@ -153,9 +153,9 @@ launchd + plist 是真实生产调度控制面。任务是否挂载、触发时�
 
 当前目标入口由 launchd 的一次性 plist 触发：refresh、daily、weekly、monthly 和 actuals
 各自只有一个 writer。常驻 APScheduler 与 ledger/occurrence/epoch runtime 闭包均已从仓库移除；
-历史 migration/数据库对象只作为审计和受控 recovery 证据，不能被加入新的或过渡生产路径。backend health
-与手动 direct trigger 不读取这些历史控制面，也不路由 daily recovery；daily-gray 与 v2-preflight 的
-repo writer/template 已退役并移除。完整治理规则见[生产信号与调度治理](PRODUCTION_SCHEDULING_GOVERNANCE.md)。
+历史 migration/数据库对象只作为审计和受控 recovery 证据，不能被加入新的或过渡生产路径。
+Backend 只提供查询与既有管理接口，不注册手动预测路由；daily-gray 与 v2-preflight 的 repo
+writer/template 已退役并移除。完整治理规则见[生产信号与调度治理](PRODUCTION_SCHEDULING_GOVERNANCE.md)。
 
 ```text
 launchd installed plist（单一 cadence writer）
@@ -172,8 +172,9 @@ launchd installed plist（单一 cadence writer）
 历史 gap harness 只能经专项授权以 `gray_live` insert-only 修复；自然 launchd 触发才可以
 写 `scheduled_live`。早期失败/跳过只写审计日志，不能伪装为成功完成。
 
-入口（后端手动触发）：`backend.main POST /api/trigger/{scheme_id}` →
-`scheduler.direct_prediction` 的精确准入/单方案闭包 → 同一 `execute_scheme`。
+入口（单日历史补缺）：`python -m harness signal-gap-fill --predict-date YYYY-MM-DD` →
+冻结当天全 active scope plan → 进程内精确授权 → `SignalGapFillGate` → `gray_live`
+insert-only 写入 → 同日期 plan 读回。该入口不产生 `scheduled_live`。
 
 日期语义由 `shared.prediction_context` 和各频率 adapter 统一落地：日频实盘为 `predict_date=T+1, feature_date=T`；周频实盘先由 `predict_date` 反推上一交易日 `feature_date`，再映射 `feature_week_id`；月频 source-backed 方案若声明自然 15 号触发，则 `predict_date` 保留自然月 15 号，`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。`scheduler.executor` 在日频 live 写库前再次校验 `predict_date/feature_date/target_date`，防止源表水位不足时算法复用旧 feature/target 覆盖旧 target 明细。常驻 scheduler 的 startup catch-up 与 cron 路径已删除：服务启动不会按 cron 推断或补跑错过的预测任务，`scheduled_live` 只由对应的一次性 launchd 自然时钟写入。`shared.calendar_service` 和 `scheduler.weekly_actuals_updater` 共享 `shared.week_calendar_normalizer`，只对源周历孤立 forward jump 做只读归一化，确保预测 target 与 weekly actuals 使用同一周历事实。所有前端月份归属、actual join 和 gray/backtest 分流仍以 `target_date` 为事实键。
 
@@ -350,9 +351,9 @@ manifest 校验、schema inspect、pending apply 与 `APPLYING` recovery 都在�
 | `scheduler/scheme_runner.py` | L3 | 只读 dry-run（importlib 运行方案） | `run_scheme` |
 | `scheduler/executor.py` | L3 | conda 子进程执行 + 写库编排 | `execute_scheme`、`run_scheme_subprocess`、`SchemeRunResult` |
 | `scheduler/repository.py` | L3 | 写库单点；按 runtime/operation 原子提交 prediction + run + log | `create_scheme_run`、`complete_active_native_run`、`complete_approved_blackbox_run`、`complete_gray_gap_run`、`write_run_log`、`sync_scheme_registry`；`_insert_run_predictions_conn` 仅内部使用 |
+| `scheduler/launchd_prediction_runner.py` | L3 | launchd daily/weekly/monthly one-shot active 方案编排 | `run_prediction_job`、`main` |
 | `scheduler/{daily,weekly,monthly}_actuals_updater.py` | L3 | actuals 刷新 | `update_*_actuals` |
 | `scheduler/actuals_runner.py` | L3 | launchd one-shot actuals 刷新 | `run_actuals_job`、`main` |
-| `scheduler/direct_prediction.py` | L3 | backend 手动单方案的精确准入与执行闭包；不含 APScheduler、cron、daily recovery、Registry sync 或 DataBridge publish。没有显式 manual 实盘阶段时，API 必须在入队前 fail-closed，不能伪装为自然 `scheduled_live` | `run_prediction_job` |
 | `backend/main.py` `services.py` `db.py` | L4 | 只读 API + 静态前端 serve | `/api/*`、`scheme_metrics` |
 | `tests/isolated_mysql.py` | 测试支持 | migration 回归专用的隔离 MySQL 生命周期；不读取生产 env，不应用生产 migration | `isolated_replay_mysql`、`IsolatedReplayMySQL.create_replay_database` |
 | `backtests/{id}_reproduction.py` | L4 | 历史复现 | `run_<scheme>_reproduction` |

@@ -242,7 +242,18 @@ occurrence/epoch 都不能成为第二入口。具体时点、installed state �
 
 因此，ActivationGate 在原有 Gate、生产准备核验和专项授权下把配置与 exact version 原子建立为 active 后，该方案自然进入相同 cadence 的 launchd one-shot 候选集合；这不放宽激活前置条件，也不安装 plist、不改变 loaded state、不重启服务。
 
-`scheduler/blackbox_scheduler_admission.py` 与 `deploy/blackbox_scheduler_admission_v1.json` 的旧 `mode`、capability 和精确身份行只保留历史审计与人工 `direct_scheduled` 入口语义；launchd one-shot 不读取它们，也不得因 `formal`、`gray` 或 capability 差异排除 active 候选。是否已由自然时钟产生 `scheduled_live`，仍须由 installed plist、loaded state、日志和成功 run/prediction 共同证明；历史补缺只可在独立授权下写入 `gray_live`。
+Blackbox Admission、`mode`、capability 身份矩阵和 Backend 手动预测入口已经退役。历史权限
+变化通过 Git、Harness run 与授权审计追溯，不保留第二份当前配置。是否已由自然时钟产生
+`scheduled_live`，仍须由 installed plist、loaded state、日志和成功 run/prediction 共同证明。
+
+历史缺口只可在独立授权下使用单日运维入口补齐：
+
+```bash
+python -m harness signal-gap-fill --predict-date YYYY-MM-DD
+```
+
+命令自动冻结当天全 active scope，只补真实缺口并写 `gray_live`；token 仅在进程内存在。
+缺少 HMAC secret、权威输入或任一算法失败时直接退出，不准备输入、不回退、不覆盖、不重试。
 
 ## 3. 快照与 Request
 
@@ -730,7 +741,7 @@ Shadow 生命周期操作通过 journal、补偿和 reconciliation 收口；数�
 - [ ] 已明确 Onboarding 验收同代不等于生产永久冻结；scheduled live 仍使用当天最新 SEALED generation
 - [ ] Activation 前已完成原有 Gate、生产准备核验和具体方案专项授权；`shadow + paused` 未进入自然调度
 - [ ] Activation 后 Registry 与 exact version 均为 active，方案按 frequency 进入对应 launchd one-shot 候选；paused、draft 和其它 cadence 被排除
-- [ ] legacy admission 仅用于历史审计和人工 `direct_scheduled` 语义，未以 `mode` 或 capability 阻断 launchd one-shot active 候选
+- [ ] Blackbox Admission 与 Backend 手动预测入口均不存在；active + exact active + active Registry + cadence 是唯一 launchd one-shot 候选规则
 - [ ] repo 状态或 active 候选未被当作已安装或已观察证据；installed plist、loaded state、日志和成功 run/prediction 已单独核验
 - [ ] 历史补缺只写 `gray_live`；只有合格自然时钟触发才写 `scheduled_live`，二者不得由日期标签互相倒签
 - [ ] 任一 cadence 的完整性以当时 active Registry、run、prediction 和日志核验；不得冻结旧方案数量、release 队列或 coordinator/ledger 口径

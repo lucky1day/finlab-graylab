@@ -31,8 +31,8 @@ installed 或仓库 plist 都仍是独立生产操作，不由本次代码清理
 身份认证；它和仓库模板都不能单独证明某个进程由 launchd 启动。
 
 仓库已移除 `com.bond-factor-lab.scheduler` 的 disabled legacy 模板和常驻
-`scheduler.main` 模块。actuals 由独立的 `scheduler.actuals_runner` 负责；backend 的手动
-单方案入口只调用不含 APScheduler/cron 的 `scheduler.direct_prediction`。已退役的
+`scheduler.main` 模块。actuals 由独立的 `scheduler.actuals_runner` 负责；Backend 不注册
+手动预测路由。已退役的
 `daily-gray` 与 `v2-preflight` writer 及其仓库模板也已移除。任何已安装 disabled legacy
 plist 的物理删除仍是独立生产操作，不由仓库期望配置推断或执行。
 

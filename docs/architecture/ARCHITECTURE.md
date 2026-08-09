@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：平台开发和架构审计人员
-**最后核验日期**：2026-08-07
+**最后核验日期**：2026-08-09
 **版本**：v1.3
 
 > 本文是**系统架构**（部署、DB schema、API 契约、数据流）。代码层面的分层、包依赖方向规则、运行时调用图与扩展模型见 [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md)（代码架构主蓝图）。
@@ -44,8 +44,8 @@ panda_quantflow AIFin Lab Shell
 
 `launchd + installed plist` 是唯一生产调度控制面：launchd 决定任务是否挂载、何时触发、
 使用什么环境、是否重启以及日志落点。常驻 `scheduler.main`/APScheduler 已从仓库删除；
-backend 手动单方案入口只调用不含 cron 的 `scheduler.direct_prediction`，不形成第二套生产
-控制面。仓库 plist 也只有与 installed plist 和 `launchctl` loaded state 核对后，才能证明
+Backend 不注册手动预测路由，也不形成第二套生产控制面。仓库 plist 也只有与 installed plist
+和 `launchctl` loaded state 核对后，才能证明
 现场配置；任何已安装 disabled legacy plist 的物理删除仍须单独授权。
 
 目标拓扑中 Actuals 不挂载在常驻 APScheduler 中。独立
@@ -279,7 +279,7 @@ CREATE TABLE t_scheme_registry (
 
 `t_scheme_registry` 是唯一方案注册表，一行就是前端/业务定义的一个方案。`scheme_id` 是唯一业务身份，统一格式为 `{base_scheme_id}__h{horizon}__{target_tenor}`，例如 `t5_daily__h5__10Y`；不再存在第二套 `(base_scheme_id, frequency, horizon, target_tenor)` 唯一键。`base_scheme_id` 是算法目录 / config / scheduler / backtest 存储使用的执行身份，例如 `t5_daily`；同一个 base 算法预测多个 Y 标的时，registry 拆成多行，但 scheduler 仍只按 `base_scheme_id` 挂载一个执行任务。`task_type` 是前端任务格子分列的唯一语义字段，固定取值为 `T+1`、`T+5`、`weekly_point`、`weekly_average`、`monthly`；字段缺失或非法时 API 必须 fail-closed，不得回退到 `frequency/horizon` 猜列。
 
-`active` 是唯一前端/业务可见状态。`GET /api/schemes`、`GET /api/metrics/{scheme_id}`、`GET /api/backtests/factor-lab` 和手动 trigger 只接受 / 返回 `status='active'` 的 registry composite `scheme_id`。`paused` 用于验证期管理，`archived` 用于保留审计历史；二者不进入当前前端矩阵，不允许 trigger，也不允许 scheduler 新写入对应 target。
+`active` 是唯一前端/业务可见和自动调度资格状态。`GET /api/schemes`、`GET /api/metrics/{scheme_id}`、`GET /api/backtests/factor-lab` 只返回 `status='active'` 的 registry composite `scheme_id`。`paused` 用于验证期管理，`archived` 用于保留审计历史；二者不进入当前前端矩阵，也不允许 scheduler 新写入对应 target。Backend 不提供手动预测接口。
 
 ### 3.5 t_scheme_runs
 

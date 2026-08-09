@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验日期**：2026-08-08
+**最后核验日期**：2026-08-09
 
 本文只列未完成工作及其授权边界。已验证事实见[当前状态](CURRENT_STATUS.md)，带日期的执行证据见
 [状态记录](records/status/README.md)，生产调度规则以
@@ -22,7 +22,7 @@
 - **R0：生产修复发布**：开发分支与 `master` 已在 2026-08-08 推送到同一验证提交；后续发布不沿用本次授权。
 - **D1：Native 日频缺口闭环**：封存输入的受控 cache 预热成功，唯一缺失键由 run `2256` 写入一条
   `gray_live`；截至 2026-08-07 的只读报告为 `expected=863`、`present=863`、`missing=0`。
-- **G3.1/G4**：G3 的 8 月 3 日补写、G4 唯一键修复及既有 Blackbox admission 保持关闭，不重复补写。
+- **G3.1/G4**：G3 的 8 月 3 日补写与 G4 唯一键修复保持关闭；Blackbox Admission 已退役，不重复补写。
 - **G1/G2、G5/G6 与 repo-only legacy cleanup**：DataBridge、launchd-only single-writer、前端验收和
   ledger/occurrence/epoch runtime 退役均保持关闭。
 - **D0 文档治理**：保留当前架构、SOP、正式 onboarding/状态/审计证据及仍被代码引用的 Weekly 10Y
