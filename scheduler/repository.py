@@ -149,6 +149,7 @@ class BlackboxRevisionActivationPreflight:
     """同一 Blackbox 业务身份修订切换前的锁定前置证据。"""
 
     prior_scheme_version: str
+    pending_scheme_versions: tuple[str, ...]
     registry_scheme_ids: tuple[str, ...]
 
 
@@ -1313,6 +1314,7 @@ def activate_blackbox_revision(
     cfg: SchemeConfig,
     *,
     prior_scheme_version: str,
+    pending_scheme_versions: tuple[str, ...],
     expected_harness_run_id: str,
     approved_by: str,
     approved_at: datetime,
@@ -1324,6 +1326,23 @@ def activate_blackbox_revision(
         raise ValueError("Blackbox revision activation requires prior_scheme_version")
     if prior_scheme_version == cfg.scheme_version:
         raise ValueError("Blackbox revision activation prior version must differ from candidate")
+    if not isinstance(pending_scheme_versions, tuple) or any(
+        not isinstance(version, str) or not version.strip()
+        for version in pending_scheme_versions
+    ):
+        raise ValueError(
+            "pending_scheme_versions must be a tuple of non-empty strings"
+        )
+    expected_pending_versions = tuple(sorted(pending_scheme_versions))
+    if (
+        len(expected_pending_versions) != len(set(expected_pending_versions))
+        or {cfg.scheme_version, prior_scheme_version}.intersection(
+            expected_pending_versions
+        )
+    ):
+        raise ValueError(
+            "pending_scheme_versions must be unique and exclude candidate/prior"
+        )
     if (
         not isinstance(expected_harness_run_id, str)
         or not expected_harness_run_id.strip()
@@ -1388,6 +1407,13 @@ def activate_blackbox_revision(
                     f"expected={prior_scheme_version}, "
                     f"actual={preflight.prior_scheme_version}"
                 )
+            if preflight.pending_scheme_versions != expected_pending_versions:
+                raise RuntimeError(
+                    "Blackbox revision activation pending versions changed before "
+                    "commit: "
+                    f"expected={list(expected_pending_versions)}, "
+                    f"actual={list(preflight.pending_scheme_versions)}"
+                )
 
             _upsert_scheme_version_conn(
                 conn,
@@ -1413,6 +1439,23 @@ def activate_blackbox_revision(
                     "Blackbox revision activation could not retire exactly one "
                     f"prior active version: rowcount={retired.rowcount}"
                 )
+            if expected_pending_versions:
+                retired_pending = conn.execute(
+                    text(
+                        "UPDATE t_scheme_versions SET status = 'retired' "
+                        "WHERE scheme_id = :scheme_id "
+                        "AND runtime_type = 'blackbox_v2' "
+                        "AND status IN ('draft', 'validated', 'shadow', 'paused')"
+                    ),
+                    {"scheme_id": cfg.scheme_id},
+                )
+                if retired_pending.rowcount != len(expected_pending_versions):
+                    raise RuntimeError(
+                        "Blackbox revision activation could not retire every locked "
+                        "pending version: "
+                        f"expected={len(expected_pending_versions)}, "
+                        f"rowcount={retired_pending.rowcount}"
+                    )
 
             version_rows = _read_scheme_version_rows_for_base_conn(
                 conn,
@@ -1480,6 +1523,18 @@ def activate_blackbox_revision(
             if len(prior_rows) != 1 or prior_rows[0].get("status") != "retired":
                 raise RuntimeError(
                     "Blackbox revision activation prior version readback is not retired"
+                )
+            non_retired_versions = sorted(
+                str(row.get("scheme_version"))
+                for row in version_rows
+                if row.get("runtime_type") == "blackbox_v2"
+                and row.get("scheme_version") != cfg.scheme_version
+                and row.get("status") != "retired"
+            )
+            if non_retired_versions:
+                raise RuntimeError(
+                    "Blackbox revision activation must retire every prior exact "
+                    f"version: got={non_retired_versions}"
                 )
             registry_rows = _read_scheme_registry_rows_conn(
                 conn,
@@ -1605,11 +1660,6 @@ def _read_blackbox_revision_activation_preflight_conn(
         for row in version_rows
         if row.get("status") in {"draft", "validated", "shadow", "paused"}
     )
-    if pending_versions:
-        raise ValueError(
-            "Blackbox revision identity has pending exact versions: "
-            f"{pending_versions}"
-        )
     active_rows = [
         row
         for row in version_rows
@@ -1649,6 +1699,7 @@ def _read_blackbox_revision_activation_preflight_conn(
         )
     return BlackboxRevisionActivationPreflight(
         prior_scheme_version=prior_version,
+        pending_scheme_versions=tuple(pending_versions),
         registry_scheme_ids=expected_registry_ids,
     )
 

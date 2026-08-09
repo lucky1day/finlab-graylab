@@ -189,6 +189,7 @@ def _run_with_engine_locked(
             engine,
             enriched_cfg,
             prior_scheme_version=preflight.prior_scheme_version,
+            pending_scheme_versions=preflight.pending_scheme_versions,
             expected_harness_run_id=passed_run.harness_run_id,
             approved_by=auth.issued_by,
             approved_at=datetime.now(timezone.utc),
@@ -215,6 +216,10 @@ def _run_with_engine_locked(
             Evidence("harness_run_id", passed_run.harness_run_id),
             Evidence("prior_scheme_version", preflight.prior_scheme_version),
             Evidence("retired_scheme_version", preflight.prior_scheme_version),
+            Evidence(
+                "retired_pending_versions",
+                list(preflight.pending_scheme_versions),
+            ),
             Evidence("version_status", state.version_status),
             Evidence("registry_status", state.registry_status),
             Evidence("registry_scheme_ids", list(state.registry_scheme_ids)),

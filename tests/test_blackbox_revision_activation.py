@@ -172,6 +172,22 @@ class BlackboxRevisionActivationTests(unittest.TestCase):
                 conn.execute(
                     text(
                         """
+                        INSERT INTO t_scheme_versions
+                            (scheme_id, scheme_version, runtime_type, status, created_by)
+                        VALUES
+                            (:scheme_id, 'validated-version-a', 'blackbox_v2',
+                             'validated', 'scheduler.discovery'),
+                            (:scheme_id, 'validated-version-b', 'blackbox_v2',
+                             'validated', 'scheduler.discovery'),
+                            (:scheme_id, 'shadow-version', 'blackbox_v2',
+                             'shadow', 'scheduler.discovery')
+                        """
+                    ),
+                    {"scheme_id": cfg.scheme_id},
+                )
+                conn.execute(
+                    text(
+                        """
                         INSERT INTO t_scheme_registry
                             (scheme_id, base_scheme_id, name, description, horizon,
                              task_type, runtime_type, tenors, frequency, target_tenor,
@@ -241,6 +257,11 @@ class BlackboxRevisionActivationTests(unittest.TestCase):
                 engine,
                 cfg,
                 prior_scheme_version="prior-version",
+                pending_scheme_versions=(
+                    "shadow-version",
+                    "validated-version-a",
+                    "validated-version-b",
+                ),
                 expected_harness_run_id="hr_candidate",
                 approved_by="revision-test-operator",
                 approved_at=datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc),
@@ -255,7 +276,13 @@ class BlackboxRevisionActivationTests(unittest.TestCase):
             ).mappings().all()
         self.assertEqual(
             [(row["scheme_version"], row["status"]) for row in rows],
-            [("candidate-version", "active"), ("prior-version", "retired")],
+            [
+                ("candidate-version", "active"),
+                ("prior-version", "retired"),
+                ("shadow-version", "retired"),
+                ("validated-version-a", "retired"),
+                ("validated-version-b", "retired"),
+            ],
         )
         engine.dispose()
 
@@ -280,6 +307,11 @@ class BlackboxRevisionActivationTests(unittest.TestCase):
                 rollback_engine,
                 rollback_cfg,
                 prior_scheme_version="prior-version",
+                pending_scheme_versions=(
+                    "shadow-version",
+                    "validated-version-a",
+                    "validated-version-b",
+                ),
                 expected_harness_run_id="hr_candidate",
                 approved_by="revision-test-operator",
                 approved_at=datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc),
@@ -293,7 +325,12 @@ class BlackboxRevisionActivationTests(unittest.TestCase):
             ).mappings().all()
         self.assertEqual(
             [(row["scheme_version"], row["status"]) for row in rows],
-            [("prior-version", "active")],
+            [
+                ("prior-version", "active"),
+                ("shadow-version", "shadow"),
+                ("validated-version-a", "validated"),
+                ("validated-version-b", "validated"),
+            ],
         )
         rollback_engine.dispose()
 
@@ -340,6 +377,7 @@ class BlackboxRevisionActivationTests(unittest.TestCase):
             )
             preflight = BlackboxRevisionActivationPreflight(
                 prior_scheme_version="prior-version",
+                pending_scheme_versions=("shadow-version", "validated-version"),
                 registry_scheme_ids=("demo_blackbox__h1__10Y",),
             )
             activated = BlackboxLifecycleState(
@@ -397,9 +435,17 @@ class BlackboxRevisionActivationTests(unittest.TestCase):
             activate.call_args.kwargs["prior_scheme_version"],
             "prior-version",
         )
+        self.assertEqual(
+            activate.call_args.kwargs["pending_scheme_versions"],
+            ("shadow-version", "validated-version"),
+        )
         evidence = {item.key: item.value for item in result.evidence}
         self.assertEqual(evidence["prior_scheme_version"], "prior-version")
         self.assertEqual(evidence["retired_scheme_version"], "prior-version")
+        self.assertEqual(
+            evidence["retired_pending_versions"],
+            ["shadow-version", "validated-version"],
+        )
         self.assertEqual(evidence["registry_status"], "active")
 
     def test_revision_activation_refuses_a_candidate_without_a_clean_prior_identity(self) -> None:
@@ -513,6 +559,7 @@ class BlackboxRevisionActivationTests(unittest.TestCase):
             )
             preflight = BlackboxRevisionActivationPreflight(
                 prior_scheme_version="prior-version",
+                pending_scheme_versions=(),
                 registry_scheme_ids=("demo_blackbox__h1__10Y",),
             )
             activated = BlackboxLifecycleState(
