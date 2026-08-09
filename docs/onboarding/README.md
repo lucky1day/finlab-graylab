@@ -4,7 +4,7 @@
 
 **目标读者**：平台维护人员、算法工程师、代码评审人员
 
-**最后核验日期**：2026-08-08
+**最后核验日期**：2026-08-10
 
 本文只负责选择入库路径，不记录方案数量、运行结果或生命周期现状。动态事实查看[当前状态](../CURRENT_STATUS.md)。
 
@@ -27,7 +27,7 @@
 | 机器标识 | `runtime_type: native_adapter` | `runtime_type: blackbox_v2` |
 | 管理定位 | 既有身份的存量维护 | 后续新增方案唯一入口 |
 | 上游形态 | 仓库内 `config + predict + core` | 一个 `.py` 和一个 `.json` |
-| 输入 | 配置/通用执行契约仍为 `legacy_db` 经统一输入层；正式 scheduled daily 按版本化 policy 使用 `generation_v1`，只有 policy 精确 allowlist 的存量兼容 ID 可使用 `live_source_0629` | 交付配置契约为 `data_bridge_current` 三频 Snapshot；正式 scheduled daily 必须绑定当天 `SEALED` generation，禁止旧代 fallback |
+| 输入 | `shared.input_artifacts` 从当前权威 `bond_db` 按 `feature_date` 截止构建；9 个 source-backed 身份连接同一实例和数据库，只使用现有 SELECT-only 身份 | `data_bridge_current` 三频 Snapshot；自然运行使用当前 DataBridge generation，历史补缺严格绑定冻结 authority |
 | 执行 | import adapter 子进程 | sandbox CLI 子进程 |
 | 生产权限 | 保持既有方案的独立状态 | 每个方案必须单独完成生产准备和专项授权 |
 
@@ -72,9 +72,9 @@ export PYTHONDONTWRITEBYTECODE=1
 |---|---|---|---|
 | 改动任意方案配置后 | active discovery、运行时身份和两文件入口 | `python -m pytest -q tests/test_active_scheme_contracts.py tests/test_config_schema.py tests/test_onboarding_policy.py` | 全部通过 |
 | 收到或修订 Blackbox V2 交付后 | Contract、Intake、discovery 和现役交付截止隔离 | `python -m pytest -q tests/test_blackbox_v2_contracts.py tests/test_blackbox_v2_intake.py tests/test_blackbox_v2_discovery.py tests/test_active_blackbox_conformance.py` | 全部通过；未来数据不改变结果且不产生缓存副产物 |
-| 修改 Blackbox 平台适配后 | 输入 cutoff、runner、七段 Gate | `python -m pytest -q tests/test_databridge_input_generation.py tests/test_blackbox_v2_runner.py tests/test_blackbox_v2_harness_gates.py` | 全部通过 |
+| 修改 Blackbox 平台适配后 | 输入 cutoff、runner、七段 Gate | `python -m pytest -q tests/test_data_bridge_current.py tests/test_blackbox_v2_runner.py tests/test_blackbox_v2_harness_gates.py` | 全部通过 |
 | 修改 Registry、API 或前端后 | active 方案可见性、actual join、Dashboard 基础状态 | `python -m pytest -q tests/test_repository_registry.py tests/test_backend_api.py tests/test_factor_lab_dashboard_api.py` | 全部通过 |
-| 修改 Native 存量适配后 | 统一输入代、执行器和 source isolation | `python -m pytest -q tests/test_native_input_generation.py tests/test_native_generation_executor.py tests/test_source_runner_database_isolation.py` | 全部通过；不得修改 Native core 算法口径 |
+| 修改 Native 存量适配后 | 当前数据库输入、执行器和 source isolation | `python -m pytest -q tests/test_native_input_artifacts.py tests/test_native_executor.py tests/test_source_runner_database_isolation.py` | 全部通过；不得修改 Native core 算法口径 |
 | 提交入库版本前 | 入库核心合同全集 | `python -m pytest -q` | 无失败；跳过项必须是已知的外部环境条件 |
 
 `tests/` 只保留跨方案复用的入库合同，不保存单次事故、迁移实施或生产 rollout 的永久回归。`harness onboard ... --stage all` 仍是方案入库 Gate，不由上述 pytest 代替；pytest 保护平台代码合同，Harness 验收精确方案版本和真实输入证据。

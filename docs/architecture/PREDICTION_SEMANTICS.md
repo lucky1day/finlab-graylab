@@ -53,7 +53,9 @@ DataBridge generation 与相同规范化 `api_wind_date.csv` 内容。完整
 输入身份由 `generation_id + 三频 SHA256 + 日历 SHA256 +
 combined_snapshot_id` 表达。任一部分不同，结果差异先归类
 `data_vintage_mismatch`，必须同代重跑后才能归因算法。该验收约束不
-永久冻结生产；scheduled live 仍使用当天最新且已封存的 generation。
+永久冻结生产；scheduled live 仍使用当天当前且通过校验的 DataBridge
+generation。平台注册日历由调用方只读数据库连接捕获，不再绑定第二份
+Native generation。
 
 ## 2. 三种运行口径
 

@@ -4,7 +4,7 @@
 
 **目标读者**：平台负责人、运维和生产授权审批人员
 
-**最后核验日期**：2026-08-02
+**最后核验日期**：2026-08-10
 
 本文定义“任意后续 Blackbox V2 交付可走标准生产流程”之前仍需完成的广义平台
 条件。它不撤销已经取得的逐方案专项授权，也不为未授权 identity 自动放行。
@@ -19,17 +19,16 @@
 - 七个自动 Gate、重复运行、no-persist 回测和零写库 check-only；
 - shadow/draft 登记、ActivationGate、完整历史持久化、gray live、actual join、
   API/前端探针和失败恢复；
-- sandbox 文件 allowlist、环境清理、严格整数 Result 和 stale generation 拒绝；
-- 日频目标代码路径支持单 coordinator、单 occurrence、17 Native + 8 V2、29/29
-  target receipt 和 V2 最大并发 2；production 仍为 migration 017 / legacy，
-  7 个 production Liwei family 的 schema 3 cache bootstrap 与同 authority 7/7
-  warm hit 已完成，但 ledger、migration 018 与 epoch cutover 尚未执行。
+- sandbox 文件 allowlist、环境清理、严格整数 Result 和 stale DataBridge
+  generation 拒绝；
+- launchd one-shot 按 active exact version、active Registry 和 cadence 发现方案；
+  Admission、ledger、occurrence 和 epoch 均不属于当前生产控制面。
 
 当前仍不能形成面向任意新交付的通用 `PRODUCTION_READY`：
 
 - 真实交付代表性、依赖栈和日/周/月任务覆盖仍需持续扩展；
-- 每个新 identity/version/runtime 仍需自己的 generation、确定性、超时、截止
-  隔离、结果结构、失败恢复和标准结果证据；
+- 每个新 identity/version/runtime 仍需自己的输入 authority、确定性、超时、
+  截止隔离、结果结构、失败恢复和标准结果证据；
 - 通用责任人、暂停/回退权限和 durable operator report 尚未形成最终 SOP；
 - 已有专项授权、active Registry 或另一方案的运行记录都不能
   外推为新方案授权。
@@ -38,7 +37,7 @@
 
 | 编号 | 条件 | 当前状态 |
 |---|---|---|
-| PR-01 | Gate 绑定 generation/freshness，stale generation fail-closed | `PASS` |
+| PR-01 | Gate 绑定 DataBridge snapshot/freshness，stale generation fail-closed | `PASS` |
 | PR-02 | Runtime Profile 是环境、资源和权限的唯一配置源 | `PASS` |
 | PR-03 | Harness 审计持久化与授权 identity fail-closed | `PASS` |
 | PR-04 | shadow/draft journal、补偿、reconciliation 和并发锁完整 | `PASS` |
@@ -56,11 +55,11 @@
 2. 不同依赖栈必须在版本化 Runtime Profile 中可重复运行，不临时安装依赖。
 3. 业务、平台和运维明确通用激活、暂停、纠错、回退和审计责任人。
 4. 将标准操作文档标记为 `CURRENT`；在此之前只接受逐方案专项授权。
-5. 日频方案必须进入同一 25/29 occurrence，绑定当天 DataBridge generation、
-   execution envelope、run fence 和 target receipt；不得恢复 per-scheme cron。
-6. 每个生产日保存 occurrence、Registry/code/config digest、Native/DataBridge
-   generation、8 个 V2 release/start/accepted 时间、29 target receipt 和
-   write-once SLA 结果。
+5. active exact version、active Registry 且 cadence 匹配的方案必须进入对应
+   launchd one-shot；Blackbox 绑定当天当前且通过校验的 DataBridge generation，
+   不得恢复 per-scheme cron 或第二调度控制面。
+6. 每次自然运行以 installed/loaded state、日志、Registry/code/config digest、
+   DataBridge snapshot（Blackbox）、run 和 prediction 相互一致作为生产证据。
 7. storage/input/cache 必须通过 owner/mode/inode、非 symlink、canonical path、
    manifest/payload hash 和 cutoff 验证；Liwei consumer 必须零写。
 

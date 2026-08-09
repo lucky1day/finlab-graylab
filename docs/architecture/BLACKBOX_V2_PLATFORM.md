@@ -132,10 +132,10 @@ columns: rdate,week_id
 
 方案通过 `config.yaml.platform_inputs` 声明版本化 artifact ID，
 Runner 再由 registry 推导精确文件名和列，不接受调用者提供任意
-文件名。Harness/check-only 用只读数据库连接捕获
-`api_wind_date`；scheduled 使用已和 DataBridge generation 核对
-ID/manifest SHA 的 Native generation 冻结帧。两者共享规范化与
-校验，但 `source provenance` 分别记录，不伪装为相同来源。
+文件名。Harness/check-only、自然调度和历史 replay 都用调用方的
+只读数据库连接捕获 `api_wind_date`，并共享同一套规范化与校验。
+DataBridge generation 只绑定三频父快照，不再承载第二份 Native
+平台输入 generation。
 
 ### 3.4 组合输入身份
 

@@ -156,10 +156,9 @@ no-persist，并拒绝授权 token、持久化、shadow/activate/live 或其它
 - `t_pre_market_forecast`
 - `t_shap`
 
-`api_wind_date` 仅由平台输入 provider 通过只读连接捕获，用于
-Harness/check-only 冻结平台注册日历；scheduled 复用已核验的 Native
-generation 冻结副本。算法子进程、方案 adapter 和其它 Gate 不得直接
-查询该表。
+`api_wind_date` 仅由平台输入 provider 通过调用方只读连接捕获；
+Harness/check-only、自然调度和历史 replay 使用同一数据库捕获与规范化
+路径。算法子进程、方案 adapter 和其它 Gate 不得直接查询该表。
 
 预测结果与终态审计的正式生产成功提交，只允许三个专用原子完成边界:
 

@@ -282,20 +282,19 @@ Provider 将 `rdate` 规范化为非空、唯一、严格升序的 `YYYY-MM-DD`�
 本次 Request 的 `weekly_cutoff_key`。日历按完整权威范围冻结，不按
 `feature_date` 截断；三频业务文件仍按各自 cutoff 使用。
 
-Harness/check-only 通过只读 DB capture 读取权威 `api_wind_date`；
-scheduled 路径只使用已与 DataBridge generation 核对 ID 和 manifest
-SHA 的 Native generation 冻结帧。两条路径使用同一个 provider
-规范化内容，但在 `source provenance` 中分别记录来源。来源类型、
-generation ID、捕获时间和临时路径仅进入 `audit_manifest`，不参与
-内容身份。
+Harness/check-only、自然调度和历史 replay 均通过调用方只读 DB
+连接捕获权威 `api_wind_date`，并使用同一个 provider 规范化内容。
+来源类型和捕获时间只进入 `audit_manifest`，不参与内容身份；
+DataBridge generation 只绑定三频父快照，不再承载第二份 Native
+平台输入 generation。
 
 组合对象同时记录 `combined_snapshot_id`、`parent_snapshot_id`、
 三频父快照、已排序 `platform_inputs`、制品摘要、`identity_manifest`
 和 `audit_manifest`。没有平台注册制品时，组合 ID 直接沿用父
 snapshot ID；有制品时只对身份 schema 版本、父 ID，以及按 ID 排序
 的 artifact ID、provider version、文件名、SHA256、大小、行数和列
-计算组合 ID。因此相同父快照和相同规范化日历跨 DB capture/Native
-generation 具有相同 `combined_snapshot_id`。
+计算组合 ID。因此相同父快照和相同规范化日历在重复 DB capture 后
+具有相同 `combined_snapshot_id`。
 
 每次子进程运行前，平台把三频父快照和声明的制品物化成独立、私有
 的临时运行视图。文件必须是普通文件而非 symlink/hardlink，写入后
@@ -722,7 +721,7 @@ Shadow 生命周期操作通过 journal、补偿和 reconciliation 收口；数�
 - [ ] 三频 SHA 已对应到选定 generation，规范化 `api_wind_date.csv` SHA 和 `combined_snapshot_id` 已核对
 - [ ] `daily_cutoff_key -> weekly_cutoff_key` 与本次日历精确一致；`week_id` 未按 ISO 周或连续数值解释
 - [ ] `self_test_alignment=matched` 后才执行逐行算法对比；不一致已标记 `data_vintage_mismatch` 并同代重跑
-- [ ] 已明确 Onboarding 验收同代不等于生产永久冻结；scheduled live 仍使用当天最新 SEALED generation
+- [ ] 已明确 Onboarding 验收同代不等于生产永久冻结；scheduled live 使用当天当前且通过校验的 DataBridge generation
 - [ ] Activation 前已完成原有 Gate、生产准备核验和具体方案专项授权；`shadow + paused` 未进入自然调度
 - [ ] Activation 后 Registry 与 exact version 均为 active，方案按 frequency 进入对应 launchd one-shot 候选；paused、draft 和其它 cadence 被排除
 - [ ] Blackbox Admission 与 Backend 手动预测入口均不存在；active + exact active + active Registry + cadence 是唯一 launchd one-shot 候选规则

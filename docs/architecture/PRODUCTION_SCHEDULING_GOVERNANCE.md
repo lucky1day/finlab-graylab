@@ -68,6 +68,9 @@ python -m harness signal-gap-fill --predict-date YYYY-MM-DD
 DataBridge authority。缺少 HMAC secret、Blackbox 权威输入、计划异常或算法失败均直接退出；
 不回退旧版本、不覆盖、不重试。写后必须由同日期权威 plan 确认缺口为零。
 
+当前可执行计划契约为 `active-signal-gap-plan-v7`。Native action 不再携带 `input_mode` 或
+source-package 输入资格字段；v6 及更早计划全部 fail-closed，不提供兼容执行分支。
+
 DataBridge 必须由本机 MySQL 原子发布标准日/周/月 artifact，并继续通过源表、schema、
 连续性、稳定轮次和 `feature_date` 截止验证。输入不新鲜、源表异常或两轮不稳定时必须
 fail-closed：不得发布半成品、不得回退旧 artifact、不得以旧数据制造“成功”信号。
