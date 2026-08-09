@@ -4,7 +4,7 @@
 
 **目标读者**：平台开发、运维、审计和方案维护人员
 
-**最后核验日期**：2026-08-07
+**最后核验日期**：2026-08-09
 
 本文定义生产信号的唯一控制面。具体现场事实查看[当前状态](../CURRENT_STATUS.md)，
 分阶段治理和带日期的证据查看
@@ -27,6 +27,12 @@ APScheduler、已退役 writer、预检进程或任何手工进程同时拥有�
 one-shot runner；`com.bond-factor-lab.actuals` 保持 08:30、19:00、23:45 的既有唯一
 writer，并启动 `scheduler.actuals_runner`。这些是仓库 desired state，不是机器安装、加载或
 停用的现场结论。
+
+daily、weekly、monthly one-shot runner 都先严格发现方案；其自然候选集合只由
+`status=active`、Blackbox exact `version_status=active` 与 `frequency` 匹配当前 cadence
+决定。`paused`、`draft` 和其它 cadence 不进入本批次，不再另设 release queue、`mode` 或
+capability 准入。legacy admission 只保留历史审计与人工 `direct_scheduled` 入口语义，
+不得阻断 launchd one-shot 的 active 候选。
 
 仓库已移除 `com.bond-factor-lab.scheduler` 的 `Disabled=true` legacy 模板和常驻
 `scheduler.main` 模块。actuals 的唯一 runner 为 `scheduler.actuals_runner`；backend 手动
@@ -71,8 +77,10 @@ predictions 周六 11:30、monthly predictions 自然月 15 日 18:00；actuals 
 
 ## 4. 阶段顺序与停止条件
 
-当前按 G0 → G1/G2 → G3/G5 → G6 推进；G4 已独立闭环。G1/G2 未形成真实 launchd 观察闭环前，不授予
-新的 scheduler admission。G4 已确认不需要 scoped waiver 或同源输入/环境重建选择：首次
+当前按 G0 → G1/G2 → G3/G5 → G6 推进；G4 已独立闭环。G1/G2 是否形成真实 launchd 观察闭环
+只决定能否宣称已生产挂载或 `Production Observed`，不改变 active + exact active + cadence 的
+自然候选规则。Activation 前仍须完成原有 Gate、生产准备核验与一次性专项授权；Activation
+本身不安装或加载 plist。G4 已确认不需要 scoped waiver 或同源输入/环境重建选择：首次
 Native 技术入库仍必须通过 source benchmark/CompareGate；ActivationGate 的 full-`all` 与
 `native-maintenance` profile 互斥：current exact version 完整 `all` 通过时使用
 `full_initial_onboarding_v1`，不要求 prior snapshot；只有 maintenance profile 才需要 prior

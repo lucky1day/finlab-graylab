@@ -3,13 +3,13 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`blackbox_v2`
 **目标读者**：平台入库、运行和审计人员
-**最后核验日期**：2026-08-06
+**最后核验日期**：2026-08-09
 
 本文是平台操作人员接收、技术验收和登记 Blackbox V2 方案的唯一操作 SOP。上游交付契约见 [BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)。精确版本、快照和运行结果由 Harness 控制面与本机 ignored reports 保存；当前状态和未关闭问题分别进入 [CURRENT_STATUS](../CURRENT_STATUS.md) 与 [全方案问题台账](../records/SCHEME_ISSUE_LEDGER.md)。文档分类和维护规则见 [Blackbox V2 文档管理](../blackbox_v2/README.md)。
 
 本文的通用入库流程止于 `shadow + paused`，不自动授予生产运行权限。`activate`、回测落库和 `live` 已有独立签名门禁，但只能在完成[生产准备清单](../blackbox_v2/PRODUCTION_READINESS.md)核验并取得具体方案专项授权后执行；不得把某个试验方案的授权外推为所有新方案的默认权限。具体生产灰度记录只写入平台试验台账。
 
-任何 scheduler admission 或自然 `scheduled_live` 还受
+自然 `scheduled_live` 还受
 [生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)约束：只有
 launchd + installed plist 可以成为生产控制面，`ledger`、`occurrence`、`epoch`、daily-gray
 和常驻 APScheduler 不能作为新的或过渡调度路径。本文中保留的旧生产时序仅用于解释历史
@@ -236,13 +236,13 @@ occurrence/epoch 都不能成为第二入口。具体时点、installed state �
 反向覆盖旧验收。经授权的历史缺口只可 insert-only 写 `gray_live`；只有合格自然时钟
 触发才写 `scheduled_live`。
 
-### 2.5 精确 scheduler admission 是独立的仓库策略
+### 2.5 自然 launchd one-shot 候选
 
-冻结的准入 parity 仅由 `scheduler/blackbox_scheduler_admission.py` 与 `deploy/blackbox_scheduler_admission_v1.json` 承载；两处的 Python/JSON map 必须逐项一致，并按精确身份核验。精确身份字段为 `scheme_id` + `scheme_version` + `runtime_type` + `frequency` + `task_type` + `horizon` + `target_tenor`。
+自然 launchd one-shot 的候选集合只由严格发现后的生命周期与 cadence 决定：配置必须为 `status=active`，Blackbox 对应的 exact version 必须为 `version_status=active`，并且 `frequency` 与本次 runner 的 cadence 一致。`paused`、`draft` 或其它 cadence 不进入本批次；除此之外不再设置 release queue、`mode` 或 capability 筛选。
 
-Intake、Gate、`shadow + paused`、activation、持久化回测、`gray_live` 和 API/前端验收均不自动授予 scheduler admission。新增或变更的 Blackbox admission 的 capability 只能为 `{launchd_one_shot}`，即仅允许 `launchd_one_shot`；`mode=formal` 不隐含任何权限，尤其不得作为 legacy/ledger/direct 的许可，且不得新增或扩大 `legacy_automatic`、`daily_ledger`、`direct_scheduled`。
+因此，ActivationGate 在原有 Gate、生产准备核验和专项授权下把配置与 exact version 原子建立为 active 后，该方案自然进入相同 cadence 的 launchd one-shot 候选集合；这不放宽激活前置条件，也不安装 plist、不改变 loaded state、不重启服务。
 
-既有历史行仅属于 G8 精确身份迁移/退役范围，不构成后续准入先例。仓库 admission 本身不安装 plist、不运行 `launchctl`、不重启服务；它也不证明自然时钟已经产生 `scheduled_live`。历史补缺只可在独立授权下写入 `gray_live`。
+`scheduler/blackbox_scheduler_admission.py` 与 `deploy/blackbox_scheduler_admission_v1.json` 的旧 `mode`、capability 和精确身份行只保留历史审计与人工 `direct_scheduled` 入口语义；launchd one-shot 不读取它们，也不得因 `formal`、`gray` 或 capability 差异排除 active 候选。是否已由自然时钟产生 `scheduled_live`，仍须由 installed plist、loaded state、日志和成功 run/prediction 共同证明；历史补缺只可在独立授权下写入 `gray_live`。
 
 ## 3. 快照与 Request
 
@@ -600,7 +600,7 @@ conda run --no-capture-output -n bond_factor_lab_service \
 
 ## 7. 生产激活、灰度补齐与前端验收
 
-本节适用于取得具体方案 `blackbox_activate`、`live_write`、`gray_backfill_write` 等专项授权后的生产动作。Shadow 完成不等于实盘；Activation 成功且 Registry 变为 active，表示方案进入业务可见状态，`deployed_at` 记录这一日期。自动生产调度是独立授权和验收项，必须由对应 installed plist、`launchctl` loaded state 和任务日志证明，不能由 active 或 `deployed_at` 推断。业务可见后不能继续把方案描述为仅有历史回测，也不能等待下一次 scheduler 后才补前端实盘段。
+本节适用于取得具体方案 `blackbox_activate`、`live_write`、`gray_backfill_write` 等专项授权后的生产动作。Shadow 完成不等于实盘；Activation 成功且 Registry 与 exact version 变为 active，表示方案进入业务可见状态，`deployed_at` 记录这一日期，同时按 frequency 自然进入对应 launchd one-shot 候选集合。Activation 不安装或加载 plist；生产调度是否已经挂载并自然执行，必须由对应 installed plist、`launchctl` loaded state 和任务日志证明，不能只由 active 或 `deployed_at` 推断。业务可见后不能继续把方案描述为仅有历史回测，也不能等待下一次 scheduler 后才补前端实盘段。
 
 ### 7.1 灰度起点、部署时间和正式调度起点
 
@@ -728,13 +728,10 @@ Shadow 生命周期操作通过 journal、补偿和 reconciliation 收口；数�
 - [ ] `daily_cutoff_key -> weekly_cutoff_key` 与本次日历精确一致；`week_id` 未按 ISO 周或连续数值解释
 - [ ] `self_test_alignment=matched` 后才执行逐行算法对比；不一致已标记 `data_vintage_mismatch` 并同代重跑
 - [ ] 已明确 Onboarding 验收同代不等于生产永久冻结；scheduled live 仍使用当天最新 SEALED generation
-- [ ] 已确认本次只是 Onboarding/灰度验收，未把 active、Gate 通过或前端可见性外推为 scheduler admission
-- [ ] scheduler admission 已按精确身份独立审查；Intake、Gate、`shadow + paused`、activation、持久化回测、`gray_live` 和 API/前端验收均未被当作自动准入
-- [ ] `scheduler/blackbox_scheduler_admission.py` 与 `deploy/blackbox_scheduler_admission_v1.json` 的冻结 Python/JSON parity map 已逐项核对，且七个精确身份字段完全一致
-- [ ] 新增或变更的 Blackbox admission capability 仅为 `{launchd_one_shot}`；`mode=formal` 未被视为 legacy、ledger 或 direct 的隐含访问，未新增或扩大 `legacy_automatic`、`daily_ledger`、`direct_scheduled`
-- [ ] 既有历史行只按 G8 精确身份迁移/退役处理，未被当作后续 admission 的先例
-- [ ] admission 未安装 plist、未运行 `launchctl`、未重启服务，且未以此宣称已有 `scheduled_live` 的自然时钟证据；历史补缺仅在独立授权下写入 `gray_live`
-- [ ] 若申请自然调度，G1/G2 的 launchd-only 单 writer、当日 DataBridge freshness、installed plist、loaded state 和专项授权均已单独完成
+- [ ] Activation 前已完成原有 Gate、生产准备核验和具体方案专项授权；`shadow + paused` 未进入自然调度
+- [ ] Activation 后 Registry 与 exact version 均为 active，方案按 frequency 进入对应 launchd one-shot 候选；paused、draft 和其它 cadence 被排除
+- [ ] legacy admission 仅用于历史审计和人工 `direct_scheduled` 语义，未以 `mode` 或 capability 阻断 launchd one-shot active 候选
+- [ ] repo 状态或 active 候选未被当作已安装或已观察证据；installed plist、loaded state、日志和成功 run/prediction 已单独核验
 - [ ] 历史补缺只写 `gray_live`；只有合格自然时钟触发才写 `scheduled_live`，二者不得由日期标签互相倒签
 - [ ] 任一 cadence 的完整性以当时 active Registry、run、prediction 和日志核验；不得冻结旧方案数量、release 队列或 coordinator/ledger 口径
 - [ ] Input 报告三 SHA 与选定 generation 完全一致
