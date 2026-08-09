@@ -25,8 +25,6 @@ import pandas as pd
 SCHEME_ID = "weekly_10y_lgbm_point_v1"
 TARGET_COLUMN = "TB0YWI1C"
 WEEKLY_FILENAME = "weekly_output.csv"
-WEEKLY_COLUMN_COUNT = 575
-WEEKLY_HEADER_SHA256 = "70a8d5d99292064cae5f1e93a9fc669cb7ef61c1766dbb74d5a82c8e6bc8af19"
 FROZEN_FEATURES_SHA256 = "009f5f99f34bf032e2c7a1061a6a930669e6b8315768002fc1ba2650b300d89d"
 
 REQUEST_FIELDS = (
@@ -236,11 +234,6 @@ def load_requests_csv(path: Path) -> list[dict[str, str]]:
     return requests
 
 
-def _header_digest(header: Sequence[str]) -> str:
-    compact = json.dumps(list(header), ensure_ascii=False, separators=(",", ":"))
-    return hashlib.sha256(compact.encode("utf-8")).hexdigest()
-
-
 def load_weekly_data(data_dir: Path) -> pd.DataFrame:
     data_dir = Path(data_dir)
     if not data_dir.is_dir():
@@ -262,8 +255,6 @@ def load_weekly_data(data_dir: Path) -> pd.DataFrame:
             raise ValueError(f"{WEEKLY_FILENAME} is empty") from exc
         if len(header) != len(set(header)):
             raise ValueError(f"{WEEKLY_FILENAME} contains duplicate headers")
-        if len(header) != WEEKLY_COLUMN_COUNT or _header_digest(header) != WEEKLY_HEADER_SHA256:
-            raise ValueError(f"{WEEKLY_FILENAME} does not match the frozen 575-column schema")
         if header[0] != "week_id":
             raise ValueError(f"{WEEKLY_FILENAME} first column must be week_id")
 

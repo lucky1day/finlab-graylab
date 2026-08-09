@@ -153,7 +153,7 @@ EXPECTED_ADMISSIONS = {
     ),
     (
         "weekly_10y_lgbm_point_v1",
-        "0666a6989d6b",
+        "5ec7d793f2ec",
     ): _expected_admission(
         mode="formal",
         frequency="weekly",
@@ -581,7 +581,7 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
         policy = load_blackbox_scheduler_admission()
         config = _config(
             "weekly_10y_lgbm_point_v1",
-            "0666a6989d6b",
+            "5ec7d793f2ec",
         )
 
         for retired_plane in (

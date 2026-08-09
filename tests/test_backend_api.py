@@ -310,7 +310,7 @@ class TriggerEndpointTests(unittest.TestCase):
     ) -> None:
         config = self._canonical(
             "weekly_10y_lgbm_point_v1",
-            "0666a6989d6b",
+            "5ec7d793f2ec",
         )
         registry = self._registry_row(config)
         background = BackgroundTasks()
@@ -350,7 +350,7 @@ class TriggerEndpointTests(unittest.TestCase):
     ) -> None:
         config = self._canonical(
             "weekly_10y_lgbm_point_v1",
-            "0666a6989d6b",
+            "5ec7d793f2ec",
         )
         registry = self._registry_row(
             config,
@@ -386,7 +386,7 @@ class TriggerEndpointTests(unittest.TestCase):
     ) -> None:
         config = self._canonical(
             "weekly_10y_lgbm_point_v1",
-            "0666a6989d6b",
+            "5ec7d793f2ec",
         )
         scenarios = (
             self._registry_row(
@@ -452,7 +452,7 @@ class TriggerEndpointTests(unittest.TestCase):
     ) -> None:
         canonical = self._canonical(
             "weekly_10y_lgbm_point_v1",
-            "0666a6989d6b",
+            "5ec7d793f2ec",
         )
         drifted = SimpleNamespace(
             **{
@@ -502,7 +502,7 @@ class TriggerEndpointTests(unittest.TestCase):
         """手工入口不能把非自然写入伪装成 launchd scheduled_live。"""
         config = self._canonical(
             "weekly_10y_lgbm_point_v1",
-            "0666a6989d6b",
+            "5ec7d793f2ec",
         )
         registry = self._registry_row(config)
         background = BackgroundTasks()
@@ -565,7 +565,7 @@ class TriggerEndpointTests(unittest.TestCase):
     ) -> None:
         config = self._canonical(
             "weekly_10y_lgbm_point_v1",
-            "0666a6989d6b",
+            "5ec7d793f2ec",
         )
         registry = self._registry_row(config)
         with (

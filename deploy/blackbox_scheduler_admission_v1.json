@@ -59,7 +59,7 @@
     },
     {
       "scheme_id": "weekly_10y_lgbm_point_v1",
-      "scheme_version": "0666a6989d6b",
+      "scheme_version": "5ec7d793f2ec",
       "runtime_type": "blackbox_v2",
       "frequency": "weekly",
       "task_type": "weekly_point",

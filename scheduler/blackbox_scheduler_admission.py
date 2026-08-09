@@ -136,7 +136,7 @@ EXPECTED_EXACT_ADMISSIONS: Mapping[
             ),
             (
                 "weekly_10y_lgbm_point_v1",
-                "0666a6989d6b",
+                "5ec7d793f2ec",
             ): _entry(
                 mode="formal",
                 frequency="weekly",
