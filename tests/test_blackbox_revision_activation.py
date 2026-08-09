@@ -55,10 +55,33 @@ def _config(root: Path) -> SimpleNamespace:
 
 class BlackboxRevisionActivationTests(unittest.TestCase):
     def test_repository_revision_switch_commits_or_rolls_back_as_one_transaction(self) -> None:
-        """真实事务必须留下唯一 active，candidate upsert 失败则完全回滚。"""
+        """真实事务必须留下唯一 active，后置失败则完整回滚。"""
         from sqlalchemy import create_engine, text
 
+        from scheduler import repository as scheduler_repository
         from scheduler.repository import activate_blackbox_revision
+
+        pending_versions = (
+            "draft-version",
+            "paused-version",
+            "shadow-version",
+            "validated-version",
+        )
+        initial_states = [
+            ("draft-version", "draft"),
+            ("paused-version", "paused"),
+            ("prior-version", "active"),
+            ("shadow-version", "shadow"),
+            ("validated-version", "validated"),
+        ]
+        activated_states = [
+            ("candidate-version", "active"),
+            ("draft-version", "retired"),
+            ("paused-version", "retired"),
+            ("prior-version", "retired"),
+            ("shadow-version", "retired"),
+            ("validated-version", "retired"),
+        ]
 
         def build_engine_and_config():
             engine = create_engine(
@@ -175,12 +198,14 @@ class BlackboxRevisionActivationTests(unittest.TestCase):
                         INSERT INTO t_scheme_versions
                             (scheme_id, scheme_version, runtime_type, status, created_by)
                         VALUES
-                            (:scheme_id, 'validated-version-a', 'blackbox_v2',
-                             'validated', 'scheduler.discovery'),
-                            (:scheme_id, 'validated-version-b', 'blackbox_v2',
+                            (:scheme_id, 'draft-version', 'blackbox_v2',
+                             'draft', 'scheduler.discovery'),
+                            (:scheme_id, 'validated-version', 'blackbox_v2',
                              'validated', 'scheduler.discovery'),
                             (:scheme_id, 'shadow-version', 'blackbox_v2',
-                             'shadow', 'scheduler.discovery')
+                             'shadow', 'scheduler.discovery'),
+                            (:scheme_id, 'paused-version', 'blackbox_v2',
+                             'paused', 'scheduler.discovery')
                         """
                     ),
                     {"scheme_id": cfg.scheme_id},
@@ -242,6 +267,44 @@ class BlackboxRevisionActivationTests(unittest.TestCase):
             )
             return cfg.scheme_version
 
+        def read_version_states(engine):
+            with engine.begin() as conn:
+                rows = conn.execute(
+                    text(
+                        "SELECT scheme_version, status FROM t_scheme_versions "
+                        "ORDER BY scheme_version"
+                    )
+                ).mappings().all()
+            return [(row["scheme_version"], row["status"]) for row in rows]
+
+        def activate(engine, cfg, *, pending=pending_versions):
+            return activate_blackbox_revision(
+                engine,
+                cfg,
+                prior_scheme_version="prior-version",
+                pending_scheme_versions=pending,
+                expected_harness_run_id="hr_candidate",
+                approved_by="revision-test-operator",
+                approved_at=datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc),
+            )
+
+        mismatch_engine, mismatch_cfg = build_engine_and_config()
+        with (
+            patch(
+                "scheduler.repository._blackbox_draft_register_advisory_lock",
+                return_value=nullcontext(),
+            ),
+            patch(
+                "scheduler.repository._upsert_scheme_version_conn",
+                side_effect=sqlite_candidate_upsert,
+            ) as candidate_upsert,
+            self.assertRaisesRegex(RuntimeError, "pending versions changed before commit"),
+        ):
+            activate(mismatch_engine, mismatch_cfg, pending=pending_versions[:-1])
+        candidate_upsert.assert_not_called()
+        self.assertEqual(read_version_states(mismatch_engine), initial_states)
+        mismatch_engine.dispose()
+
         engine, cfg = build_engine_and_config()
         with (
             patch(
@@ -253,44 +316,32 @@ class BlackboxRevisionActivationTests(unittest.TestCase):
                 side_effect=sqlite_candidate_upsert,
             ),
         ):
-            state = activate_blackbox_revision(
-                engine,
-                cfg,
-                prior_scheme_version="prior-version",
-                pending_scheme_versions=(
-                    "shadow-version",
-                    "validated-version-a",
-                    "validated-version-b",
-                ),
-                expected_harness_run_id="hr_candidate",
-                approved_by="revision-test-operator",
-                approved_at=datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc),
-            )
+            state = activate(engine, cfg)
         self.assertEqual(state.scheme_version, cfg.scheme_version)
-        with engine.begin() as conn:
-            rows = conn.execute(
-                text(
-                    "SELECT scheme_version, status FROM t_scheme_versions "
-                    "ORDER BY scheme_version"
-                )
-            ).mappings().all()
-        self.assertEqual(
-            [(row["scheme_version"], row["status"]) for row in rows],
-            [
-                ("candidate-version", "active"),
-                ("prior-version", "retired"),
-                ("shadow-version", "retired"),
-                ("validated-version-a", "retired"),
-                ("validated-version-b", "retired"),
-            ],
-        )
+        self.assertEqual(read_version_states(engine), activated_states)
         engine.dispose()
 
         rollback_engine, rollback_cfg = build_engine_and_config()
+        original_read_versions = (
+            scheduler_repository._read_scheme_version_rows_for_base_conn
+        )
+        read_calls = 0
 
-        def insert_then_fail(*args, **kwargs):
-            sqlite_candidate_upsert(*args, **kwargs)
-            raise RuntimeError("injected candidate upsert failure")
+        def fail_on_final_readback(conn, scheme_id, *, for_update):
+            nonlocal read_calls
+            rows = original_read_versions(
+                conn,
+                scheme_id,
+                for_update=for_update,
+            )
+            read_calls += 1
+            if read_calls == 2:
+                self.assertEqual(
+                    [(row["scheme_version"], row["status"]) for row in rows],
+                    activated_states,
+                )
+                raise RuntimeError("injected final version readback failure")
+            return rows
 
         with (
             patch(
@@ -299,39 +350,20 @@ class BlackboxRevisionActivationTests(unittest.TestCase):
             ),
             patch(
                 "scheduler.repository._upsert_scheme_version_conn",
-                side_effect=insert_then_fail,
+                side_effect=sqlite_candidate_upsert,
             ),
-            self.assertRaisesRegex(RuntimeError, "injected candidate upsert failure"),
+            patch(
+                "scheduler.repository._read_scheme_version_rows_for_base_conn",
+                side_effect=fail_on_final_readback,
+            ),
+            self.assertRaisesRegex(
+                RuntimeError,
+                "injected final version readback failure",
+            ),
         ):
-            activate_blackbox_revision(
-                rollback_engine,
-                rollback_cfg,
-                prior_scheme_version="prior-version",
-                pending_scheme_versions=(
-                    "shadow-version",
-                    "validated-version-a",
-                    "validated-version-b",
-                ),
-                expected_harness_run_id="hr_candidate",
-                approved_by="revision-test-operator",
-                approved_at=datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc),
-            )
-        with rollback_engine.begin() as conn:
-            rows = conn.execute(
-                text(
-                    "SELECT scheme_version, status FROM t_scheme_versions "
-                    "ORDER BY scheme_version"
-                )
-            ).mappings().all()
-        self.assertEqual(
-            [(row["scheme_version"], row["status"]) for row in rows],
-            [
-                ("prior-version", "active"),
-                ("shadow-version", "shadow"),
-                ("validated-version-a", "validated"),
-                ("validated-version-b", "validated"),
-            ],
-        )
+            activate(rollback_engine, rollback_cfg)
+        self.assertEqual(read_calls, 2)
+        self.assertEqual(read_version_states(rollback_engine), initial_states)
         rollback_engine.dispose()
 
     def test_active_recertified_revision_atomically_replaces_the_single_active_version(self) -> None:
