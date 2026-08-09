@@ -706,7 +706,6 @@ def _run_signal_gap_fill_command(args: argparse.Namespace) -> int:
     try:
         frozen_plan = _plan_signal_gap_date(
             args.predict_date,
-            project_root,
         )
     except SignalGapPlanError as exc:
         _print_signal_gap_fill_result(
@@ -737,6 +736,16 @@ def _run_signal_gap_fill_command(args: argparse.Namespace) -> int:
                 frozen_plan.get("failure_code")
                 or "SIGNAL_GAP_PLAN_BLOCKED"
             ),
+            predict_date=args.predict_date,
+            report_dir=report_dir,
+        )
+        return 2
+    if int(counts.get("open_gap", 0)) != int(
+        counts.get("GRAY_LIVE_GAP", 0)
+    ):
+        _print_signal_gap_fill_result(
+            status="BLOCKED",
+            failure_code="SIGNAL_GAP_PLAN_NOT_GRAY_LIVE_ONLY",
             predict_date=args.predict_date,
             report_dir=report_dir,
         )
@@ -791,7 +800,7 @@ def _run_signal_gap_fill_command(args: argparse.Namespace) -> int:
     _write_json_file(report_dir / "fill_result.json", _jsonable(result))
     if not result.passed:
         _print_signal_gap_fill_result(
-            status=result.status.value,
+            status=result.status.name,
             failure_code=(result.errors[0] if result.errors else None),
             predict_date=args.predict_date,
             report_dir=report_dir,
@@ -802,7 +811,6 @@ def _run_signal_gap_fill_command(args: argparse.Namespace) -> int:
     try:
         post_fill_plan = _plan_signal_gap_date(
             args.predict_date,
-            project_root,
         )
         _write_json_file(
             report_dir / "post_fill_plan.json",
@@ -855,9 +863,7 @@ def _run_signal_gap_fill_command(args: argparse.Namespace) -> int:
 
 def _plan_signal_gap_date(
     predict_date: str,
-    project_root: Path,
 ) -> dict[str, Any]:
-    del project_root
     databridge_config = DataBridgeRefreshConfig.from_env()
     engine = create_engine_from_env()
     try:

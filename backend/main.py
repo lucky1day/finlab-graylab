@@ -147,6 +147,11 @@ class NoCacheFrontendStaticFiles(StaticFiles):
         return parser.references
 
     async def get_response(self, path: str, scope):  # type: ignore[override]
+        if (
+            str(scope.get("path") or "").startswith("/api/")
+            and scope.get("method") not in {"GET", "HEAD"}
+        ):
+            return Response(status_code=404)
         normalized_path = path.removeprefix("./").lstrip("/")
         query_string = scope.get("query_string", b"").decode(
             "latin-1",

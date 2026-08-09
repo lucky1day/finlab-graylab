@@ -18,14 +18,24 @@ READY_PLAN = {
     "schema_version": "active-signal-gap-plan-v5",
     "status": "READY",
     "plan_sha256": PLAN_SHA,
-    "counts": {"blocked": 0, "actionable": 1, "open_gap": 1},
+    "counts": {
+        "blocked": 0,
+        "actionable": 1,
+        "open_gap": 1,
+        "GRAY_LIVE_GAP": 1,
+    },
     "actions": [{"action": "GRAY_LIVE_GAP"}],
 }
 PRESENT_PLAN = {
     "schema_version": "active-signal-gap-plan-v5",
     "status": "READY",
     "plan_sha256": "b" * 64,
-    "counts": {"blocked": 0, "actionable": 0, "open_gap": 0},
+    "counts": {
+        "blocked": 0,
+        "actionable": 0,
+        "open_gap": 0,
+        "GRAY_LIVE_GAP": 0,
+    },
     "actions": [{"action": "SKIP_PRESENT"}],
 }
 BLOCKED_PLAN = {
@@ -35,6 +45,19 @@ BLOCKED_PLAN = {
     "failure_code": "INPUT_AUTHORITY_BLOCKED",
     "counts": {"blocked": 1, "actionable": 0, "open_gap": 1},
     "actions": [{"action": "BLOCKED"}],
+}
+UNSUPPORTED_PLAN = {
+    "schema_version": "active-signal-gap-plan-v5",
+    "status": "READY",
+    "plan_sha256": "d" * 64,
+    "counts": {
+        "blocked": 0,
+        "actionable": 1,
+        "open_gap": 1,
+        "GRAY_LIVE_GAP": 0,
+        "FULL_CANONICAL_RUN_REQUIRED": 1,
+    },
+    "actions": [{"action": "FULL_CANONICAL_RUN_REQUIRED"}],
 }
 
 
@@ -84,6 +107,18 @@ def _passed_gate_result() -> GateResult:
             )
         ],
         errors=[],
+        started_at="2026-08-09T00:00:00+00:00",
+        finished_at="2026-08-09T00:00:01+00:00",
+    )
+
+
+def _failed_gate_result() -> GateResult:
+    return GateResult(
+        gate_name="signal-gap-fill",
+        status=GateStatus.FAILED,
+        passed=False,
+        evidence=[],
+        errors=["ALGORITHM_EXECUTION_FAILED"],
         started_at="2026-08-09T00:00:00+00:00",
         finished_at="2026-08-09T00:00:01+00:00",
     )
@@ -236,6 +271,54 @@ class SignalGapFillCliTests(unittest.TestCase):
         issue_token.assert_not_called()
         gate_for_name.assert_not_called()
 
+    def test_non_gray_gap_blocks_before_token_or_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = io.StringIO()
+            gate_for_name = Mock()
+            issue_token = Mock()
+            with (
+                patch.object(
+                    cli,
+                    "authorization_signing_enabled",
+                    return_value=True,
+                ),
+                patch.object(
+                    cli,
+                    "_plan_signal_gap_date",
+                    return_value=UNSUPPORTED_PLAN,
+                ),
+                patch.object(
+                    cli,
+                    "signal_gap_fill_authorization_claims",
+                    return_value=(),
+                ),
+                patch.object(
+                    cli,
+                    "issue_signal_gap_fill_token",
+                    issue_token,
+                ),
+                patch.object(cli, "gate_for_name", gate_for_name),
+                redirect_stdout(output),
+            ):
+                exit_code = cli.main(
+                    [
+                        "signal-gap-fill",
+                        "--predict-date",
+                        "2026-08-08",
+                        "--project-root",
+                        directory,
+                    ]
+                )
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(
+            payload["failure_code"],
+            "SIGNAL_GAP_PLAN_NOT_GRAY_LIVE_ONLY",
+        )
+        issue_token.assert_not_called()
+        gate_for_name.assert_not_called()
+
     def test_success_issues_exact_token_and_requires_postfill_zero_gap(
         self,
     ) -> None:
@@ -360,6 +443,57 @@ class SignalGapFillCliTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertEqual(payload["failure_code"], "POSTFILL_GAPS_REMAIN")
         issue_token.assert_called_once()
+        gate.run.assert_called_once()
+
+    def test_gate_failure_is_reported_without_postfill_or_retry(self) -> None:
+        claim = _claim()
+        gate = Mock()
+        gate.run.return_value = _failed_gate_result()
+        with tempfile.TemporaryDirectory() as directory:
+            output = io.StringIO()
+            with (
+                patch.object(
+                    cli,
+                    "authorization_signing_enabled",
+                    return_value=True,
+                ),
+                patch.object(
+                    cli,
+                    "_plan_signal_gap_date",
+                    return_value=READY_PLAN,
+                ) as planner,
+                patch.object(
+                    cli,
+                    "signal_gap_fill_authorization_claims",
+                    return_value=(claim,),
+                ),
+                patch.object(
+                    cli,
+                    "issue_signal_gap_fill_token",
+                    return_value="raw-secret-token",
+                ),
+                patch.object(cli, "gate_for_name", return_value=gate),
+                redirect_stdout(output),
+            ):
+                exit_code = cli.main(
+                    [
+                        "signal-gap-fill",
+                        "--predict-date",
+                        "2026-08-08",
+                        "--project-root",
+                        directory,
+                    ]
+                )
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(payload["status"], "FAILED")
+        self.assertEqual(
+            payload["failure_code"],
+            "ALGORITHM_EXECUTION_FAILED",
+        )
+        self.assertNotIn("raw-secret-token", output.getvalue())
+        planner.assert_called_once()
         gate.run.assert_called_once()
 
 

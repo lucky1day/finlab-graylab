@@ -3,7 +3,7 @@
 **文档状态**：`LEGACY_MAINTENANCE`
 **适用运行时**：`native_adapter`
 **目标读者**：平台维护人员
-**最后核验日期**：2026-08-04
+**最后核验日期**：2026-08-09
 
 本 SOP 只维护已登记的 Native V1 方案，不接受新增方案。新算法和替代版本使用 [Blackbox V2 平台 SOP](BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)。
 
@@ -139,9 +139,11 @@ daily-gray 清单；这些已退役控制面不能作为新版本发布单元。
 API；缺 legacy snapshot 时仍按本 SOP 的 full-`all` 路径 fail-closed，除非固定 10Y scope 的专项 receipt 已成功写入并经 maintenance admission 读取。receipt 不授予写业务表或调度权。
 输入截止、统一周历、日期语义、L0/L1/L2、live-safe oracle 与授权边界不变。
 
-激活本身也不授予自然调度权。若某个方案随后需要 scheduler admission，必须在
-[生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)规定的 G1/G2
-前置完成后，重新评估 writer、输入新鲜度和 installed plist，并另取授权。任何
+激活后，config、exact version 与 Registry target 均 active 的方案会按 cadence 自动进入
+launchd one-shot 候选，不再另取 scheduler admission。这不证明现场 plist 已安装或自然运行
+已经成功；宣称生产观察前仍须按
+[生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)核验 writer、输入新鲜度、
+installed plist、loaded state、日志、run 与 prediction。任何
 `bootout/bootstrap/kickstart`、installed plist 修改或服务重启同样必须另取明确生产
 操作授权并保存现场证据；本 SOP 的算法维护授权不自动包含这些控制面操作。
 

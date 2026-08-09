@@ -127,6 +127,41 @@ class ManualTriggerRemovedTests(unittest.TestCase):
             main.app.openapi()["paths"],
         )
 
+        sent: list[dict] = []
+
+        async def receive() -> dict:
+            return {"type": "http.request", "body": b"{}"}
+
+        async def send(message: dict) -> None:
+            sent.append(message)
+
+        asyncio.run(
+            main.app(
+                {
+                    "type": "http",
+                    "asgi": {"version": "3.0"},
+                    "http_version": "1.1",
+                    "method": "POST",
+                    "scheme": "http",
+                    "path": "/api/schemes/demo__h1__10Y/trigger",
+                    "raw_path": b"/api/schemes/demo__h1__10Y/trigger",
+                    "query_string": b"",
+                    "headers": [(b"content-type", b"application/json")],
+                    "client": ("127.0.0.1", 1),
+                    "server": ("127.0.0.1", 8100),
+                    "root_path": "",
+                },
+                receive,
+                send,
+            )
+        )
+        response_start = next(
+            message
+            for message in sent
+            if message["type"] == "http.response.start"
+        )
+        self.assertEqual(response_start["status"], 404)
+
 
 class BacktestMonthlyMetricsRemovedTests(unittest.TestCase):
     def test_backtest_monthly_metrics_route_is_not_registered(self) -> None:
