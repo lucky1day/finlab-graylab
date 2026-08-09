@@ -18,7 +18,7 @@ from harness.result import Evidence, GateResult, GateStatus
 
 PLAN_SHA = "a" * 64
 READY_PLAN = {
-    "schema_version": "active-signal-gap-plan-v5",
+    "schema_version": "active-signal-gap-plan-v6",
     "status": "READY",
     "plan_sha256": PLAN_SHA,
     "counts": {
@@ -30,7 +30,7 @@ READY_PLAN = {
     "actions": [{"action": "GRAY_LIVE_GAP"}],
 }
 PRESENT_PLAN = {
-    "schema_version": "active-signal-gap-plan-v5",
+    "schema_version": "active-signal-gap-plan-v6",
     "status": "READY",
     "plan_sha256": "b" * 64,
     "counts": {
@@ -42,7 +42,7 @@ PRESENT_PLAN = {
     "actions": [{"action": "SKIP_PRESENT"}],
 }
 BLOCKED_PLAN = {
-    "schema_version": "active-signal-gap-plan-v5",
+    "schema_version": "active-signal-gap-plan-v6",
     "status": "BLOCKED",
     "plan_sha256": "c" * 64,
     "failure_code": "INPUT_AUTHORITY_BLOCKED",
@@ -50,7 +50,7 @@ BLOCKED_PLAN = {
     "actions": [{"action": "BLOCKED"}],
 }
 UNSUPPORTED_PLAN = {
-    "schema_version": "active-signal-gap-plan-v5",
+    "schema_version": "active-signal-gap-plan-v6",
     "status": "READY",
     "plan_sha256": "d" * 64,
     "counts": {
