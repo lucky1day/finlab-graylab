@@ -7,7 +7,7 @@
 
 ```text
 Native
-当前配置的数据源 + predict_date 推导的 feature_date 截止
+当前权威 bond_db + predict_date 推导的 feature_date 截止
 → shared.input_artifacts
 → Native 方案
 
@@ -34,10 +34,12 @@ DataBridge current 三频业务文件
 
 因此当前生产行为是：
 
-- 普通 Native 通过 `create_input_engine()` 打开当前 `bond_db`；列入
-  `SOURCE_RUNTIME_SCHEME_IDS` 的 source-backed Native 通过同一入口绑定隔离的
-  source-runtime 数据库；两者都在输入构建时使用
-  `feature_date/as_of_date` 截断；
+- 普通 Native 与列入 `SOURCE_RUNTIME_SCHEME_IDS` 的 source-backed Native
+  最终连接同一个 MySQL `server_uuid`、同一个 `bond_db`；两者都在输入构建时
+  使用 `feature_date/as_of_date` 截断；
+- 普通 Native 使用平台进程的数据库连接；source-backed Native 的原始加密
+  runner 使用同一 `bond_db` 的独立 `SELECT`-only 身份。后者是权限隔离，
+  不是第二份数据库或第二个数据权威；
 - Blackbox 打开并校验 DataBridge current 三频文件，同时从权威数据库捕获
   日历和方案声明的平台注册输入，再生成单次运行组合快照；
 - 26 个 active Native 的最新生产结果没有 Native generation provenance；
@@ -57,7 +59,7 @@ Native 自然调度与单日补缺复用同一输入语义：
 
 ```text
 当前 active exact version
-+ 当前配置的数据源
++ 当前权威 bond_db
 + predict_date 推导的 feature_date 截止
 → 运行方案
 ```
@@ -66,16 +68,27 @@ Native 自然调度与单日补缺复用同一输入语义：
 私有临时 workspace。两者只在 artifact 存放位置不同，不再存在
 `generation_v1` 或 `live_source_0629` 的输入执行模式差异。
 
-“当前配置的数据源”不等于所有 Native 共用同一物理数据库：
+所有 Native 共用同一个当前业务数据权威：
 
-- 普通 Native 使用当前 `bond_db`；
-- `SOURCE_RUNTIME_SCHEME_IDS` 中 9 个 source-backed 方案继续使用隔离、只读的
-  source-runtime 数据库：daily 0629 三个、monthly 0629 三个以及
-  weekly average 0529 三个。
+- 普通 Native 使用平台进程的 `bond_db` 连接；
+- `SOURCE_RUNTIME_SCHEME_IDS` 中 9 个 source-backed 方案——daily 0629
+  三个、monthly 0629 三个及 weekly average 0529 三个——继续通过专用
+  `SELECT`-only 身份读取同一个 `bond_db`。
 
-这些方案继续验证正式 source evidence、source package hash、模型身份和输出
-日期；只删除依赖 Native generation 的 compatibility fence，不改变
-`create_input_engine(database_config=...)` 的数据库选择行为。
+`SOURCE_RUNTIME_SCHEME_IDS` 只决定是否向原始 runner 注入受限凭据，不再被描述
+为数据库选择或数据口径选择。该账号只允许读取算法所需源表，避免把平台进程可用
+的业务写权限交给归档原始代码；它不产生数据副本、同步任务或另一套数据 vintage。
+
+这里的“账号”是 MySQL 认证身份，不是另一个数据库。一个 `bond_db` 可以同时给
+不同进程授予不同权限：平台进程需要通过 Repository 写入 run、prediction 和
+Registry；原始 runner 只负责计算，只需要源表 `SELECT`。两者使用不同账号的目的
+是让原始代码即使发生缺陷也不能修改业务表、Schema 或授权。该权限边界不改变
+输入数据，且本模块不新增账号或权限配置。
+
+这 9 个方案继续验证正式 source evidence、source package hash、模型身份和输出
+日期。它们内部直接 SQL 是存量加密 runner 的冻结兼容例外，不是新增 Native
+可以复用的模式。本模块只删除依赖 Native generation 的 compatibility fence，
+不修改原始 runner 的输入接口，也不把 9 个方案迁移为 Blackbox。
 
 ### 3.2 Blackbox
 
@@ -138,7 +151,7 @@ source-backed adapter 仍在算法启动时通过既有
 - Signal Gap Fill 的私有临时 Native workspace；
 - Liwei Phase-A publisher-first 排序、cache identity、cold/cached compare 和
   `private_build`；
-- 0629 source database isolation 与 source package hash 验证；
+- source runner 的 `bond_db` 最小权限凭据隔离与 source package hash 验证；
 - 017 migration、`t_input_generations` 实体表及其 6 条历史行。
 
 已核对当前 7 个 pointer 与 21 个 Phase-A manifest：所有
@@ -196,9 +209,9 @@ Native 当前数据库构建包含多次查询，理论上存在查询之间源�
   契约测试迁入按真实职责命名的测试文件；
 - 删除 Native/二次 DataBridge generation 的创建、封存、retention、GC、
   tamper、环境绑定和 DB fence 测试；
-- 保留并增强 launchd Runner、Native 当前数据库输入、9 个 source-runtime
-  方案的数据库隔离、Phase-A cache、Signal Gap Fill 和 Blackbox current
-  回归；
+- 保留并增强 launchd Runner、Native 当前数据库输入、9 个 source-backed
+  方案的同库只读权限隔离、Phase-A cache、Signal Gap Fill 和 Blackbox
+  current 回归；
 - Signal Gap Plan 测试证明 v7 可执行、v6 及更早版本 fail-closed，且 Native
   action 不再携带 `input_mode` 或特殊 source-package 判别字段；
 - Phase-A 测试证明现有空绑定 manifest 仍可读取，非空
@@ -224,6 +237,10 @@ Native 当前数据库构建包含多次查询，理论上存在查询之间源�
 - 不做 DDL，不删除历史数据库行；
 - 不删除磁盘历史 artifact；
 - 不修改 plist、launchd、Backend 或前端；
+- 不改变数据库账号、授权或连接配置；
+- 不把 9 个 source-backed Native 转换为 Blackbox，也不新增 Native→Blackbox
+  runtime 转换控制面；若上游未来提供标准输入交付，另行决定新旧 scheme ID、
+  历史连续性和生产切换；
 - 不升级 Phase-A manifest schema、重建缓存或处理其
   `NON_PRODUCTION` acceptance 语义；
 - 不处理顶层 `inference.py` 是否纳入 exact version hash。
@@ -232,9 +249,9 @@ Native 当前数据库构建包含多次查询，理论上存在查询之间源�
 
 完成实现后必须证明：
 
-1. active Native 自然调度继续读取当前配置的数据源并按 feature cutoff
-   运行；普通 Native 使用 `bond_db`，9 个 source-backed Native 保持
-   source-runtime 数据库隔离；
+1. active Native 自然调度继续读取同一个当前权威 `bond_db` 并按 feature
+   cutoff 运行；9 个 source-backed Native 保持专用 `SELECT`-only 身份，
+   不出现第二数据库或第二数据口径；
 2. Native 单日补缺继续在私有临时 workspace 中运行，写入语义不变；
 3. Blackbox 自然调度继续严格使用 DataBridge current 三频文件和数据库
    日历/平台注册输入，结果仍携带 current generation/组合 snapshot
