@@ -75,11 +75,6 @@ _TARGET_REGISTRY_BASELINE = (
     ("10Y", "10Y国债活跃", "bond", "active_treasury", 100, "active", {"legacy_tenor": "10Y"}),
 )
 _BLACKBOX_CERTIFICATION_SCHEMA = re.compile(r"^bbv2_cert_[A-Za-z0-9_]+$")
-_GENERATION_TYPES = {"native_source", "databridge_v1"}
-_READINESS_BASES = {"UPSTREAM_SEAL", "CLOCK_CONTRACT"}
-INPUT_GENERATION_BUILDING = "BUILDING"
-INPUT_GENERATION_SEALED = "SEALED"
-INPUT_GENERATION_INVALIDATED = "INVALIDATED"
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -160,29 +155,6 @@ class BlackboxBootstrapState:
     registry_status: str
     table_counts: dict[str, int]
     target_registry_baseline: dict[str, object]
-
-
-@dataclass(frozen=True)
-class InputGenerationEnvelope:
-    """已封存输入 generation 的通用只读 provenance。"""
-
-    generation_id: str
-    generation_type: str
-    business_date: str
-    feature_date: str
-    readiness_basis: str
-    source_commit_token: str
-    dataset_content_id: str
-    schema_version: str
-    exporter_version: str
-    manifest_uri: str
-    manifest_sha256: str
-    native_generation_id: str | None
-    native_manifest_sha256: str | None
-    state: str
-    sealed_at: datetime | None
-    invalidated_at: datetime | None
-    invalid_reason: str | None
 
 
 def registry_scheme_id(base_scheme_id: str, horizon: int, target_tenor: str) -> str:
@@ -2269,233 +2241,6 @@ def _mysql_utc_datetime(value: datetime | None) -> datetime | None:
     return value.astimezone(timezone.utc).replace(tzinfo=None, microsecond=0)
 
 
-def _normalize_input_generation_registration(
-    *,
-    generation_id: str,
-    generation_type: str,
-    business_date: str,
-    feature_date: str,
-    readiness_basis: str,
-    source_commit_token: str,
-    dataset_content_id: str,
-    schema_version: str,
-    exporter_version: str,
-    manifest_uri: str,
-    manifest_sha256: str,
-    native_generation_id: str | None = None,
-    native_manifest_sha256: str | None = None,
-) -> dict[str, object]:
-    """规范化 generation 的不可变登记身份。"""
-    if generation_type not in _GENERATION_TYPES:
-        raise ValueError(
-            f"generation_type must be one of {sorted(_GENERATION_TYPES)}"
-        )
-    if readiness_basis not in _READINESS_BASES:
-        raise ValueError(
-            f"readiness_basis must be one of {sorted(_READINESS_BASES)}"
-        )
-    if generation_type == "databridge_v1":
-        if native_generation_id is None:
-            raise ValueError(
-                "native_generation_id is required for databridge_v1"
-            )
-        if native_manifest_sha256 is None:
-            raise ValueError(
-                "native_manifest_sha256 is required for databridge_v1"
-            )
-    elif (
-        native_generation_id is not None
-        or native_manifest_sha256 is not None
-    ):
-        raise ValueError(
-            "native generation relation is only valid for databridge_v1"
-        )
-    return {
-        "generation_id": _require_nonempty(generation_id, "generation_id"),
-        "generation_type": _require_nonempty(
-            generation_type,
-            "generation_type",
-        ),
-        "business_date": date.fromisoformat(business_date).isoformat(),
-        "feature_date": date.fromisoformat(feature_date).isoformat(),
-        "readiness_basis": _require_nonempty(
-            readiness_basis,
-            "readiness_basis",
-        ),
-        "source_commit_token": _require_opaque_id(
-            source_commit_token,
-            "source_commit_token",
-        ),
-        "dataset_content_id": _require_opaque_id(
-            dataset_content_id,
-            "dataset_content_id",
-        ),
-        "schema_version": _require_nonempty(
-            schema_version,
-            "schema_version",
-        ),
-        "exporter_version": _require_nonempty(
-            exporter_version,
-            "exporter_version",
-        ),
-        "manifest_uri": _require_nonempty(manifest_uri, "manifest_uri"),
-        "manifest_sha256": _require_sha256(
-            manifest_sha256,
-            "manifest_sha256",
-        ),
-        "native_generation_id": (
-            _require_nonempty(
-                native_generation_id,
-                "native_generation_id",
-            )
-            if native_generation_id is not None
-            else None
-        ),
-        "native_manifest_sha256": (
-            _require_sha256(
-                native_manifest_sha256,
-                "native_manifest_sha256",
-            )
-            if native_manifest_sha256 is not None
-            else None
-        ),
-    }
-
-
-def _create_or_match_input_generation_conn(
-    conn: Connection,
-    params: Mapping[str, object],
-) -> Mapping[str, object]:
-    """在调用方事务内恢复同 ID BUILDING，拒绝任何 provenance 漂移。"""
-    building_lock = (
-        ""
-        if _dialect_name(conn) == "sqlite"
-        else " FOR UPDATE"
-    )
-    unfinished = (
-        conn.execute(
-            text(
-                """
-                SELECT generation_id
-                FROM t_input_generations
-                WHERE business_date = :business_date
-                  AND generation_type = :generation_type
-                  AND state = :building
-                ORDER BY generation_id
-                """
-                + building_lock
-            ),
-            {
-                "business_date": params["business_date"],
-                "generation_type": params["generation_type"],
-                "building": INPUT_GENERATION_BUILDING,
-            },
-        )
-        .scalars()
-        .all()
-    )
-    conflicting_unfinished = sorted(
-        str(value)
-        for value in unfinished
-        if str(value) != str(params["generation_id"])
-    )
-    if conflicting_unfinished:
-        raise RuntimeError(
-            "unfinished input generation blocks same-day replacement: "
-            f"type={params['generation_type']} "
-            f"business_date={params['business_date']} "
-            f"existing={conflicting_unfinished}"
-        )
-    insert_prefix = (
-        "INSERT OR IGNORE"
-        if _dialect_name(conn) == "sqlite"
-        else "INSERT IGNORE"
-    )
-    conn.execute(
-        text(
-            f"""
-            {insert_prefix} INTO t_input_generations
-                (generation_id, generation_type, business_date, feature_date,
-                 readiness_basis, source_commit_token, dataset_content_id,
-                 schema_version, exporter_version, manifest_uri,
-                 manifest_sha256, native_generation_id,
-                 native_manifest_sha256, state)
-            VALUES
-                (:generation_id, :generation_type, :business_date,
-                 :feature_date, :readiness_basis, :source_commit_token,
-                 :dataset_content_id, :schema_version, :exporter_version,
-                 :manifest_uri, :manifest_sha256, :native_generation_id,
-                 :native_manifest_sha256, '{INPUT_GENERATION_BUILDING}')
-            """
-        ),
-        dict(params),
-    )
-    row = _read_input_generation_conn(
-        conn,
-        str(params["generation_id"]),
-        for_update=True,
-    )
-    if row is None:
-        raise RuntimeError(
-            "input generation insert/readback missing: "
-            f"{params['generation_id']}"
-        )
-    mismatches = {
-        field: (params[field], row.get(field))
-        for field in params
-        if str(row.get(field)) != str(params[field])
-    }
-    if mismatches:
-        raise RuntimeError(
-            f"input generation immutable provenance mismatch: {mismatches}"
-        )
-    return row
-
-
-def read_sealed_input_generation(
-    engine: Engine,
-    *,
-    generation_id: str,
-    expected_generation_type: str,
-) -> InputGenerationEnvelope:
-    """读取一个已 SEALED generation 的完整不可变 DB fence。"""
-    if expected_generation_type not in _GENERATION_TYPES:
-        raise ValueError(
-            "expected_generation_type must be one of "
-            f"{sorted(_GENERATION_TYPES)}"
-        )
-    normalized_generation_id = _require_nonempty(
-        generation_id,
-        "generation_id",
-    )
-    with engine.begin() as conn:
-        row = _read_input_generation_conn(
-            conn,
-            normalized_generation_id,
-            for_update=False,
-        )
-    if row is None:
-        raise RuntimeError(
-            f"input generation not found: {normalized_generation_id}"
-        )
-    if str(row.get("generation_type")) != expected_generation_type:
-        raise RuntimeError(
-            "input generation type differs from expected DB fence: "
-            f"{normalized_generation_id}"
-        )
-    if str(row.get("state")) != INPUT_GENERATION_SEALED:
-        raise RuntimeError(
-            "input generation DB fence is not SEALED: "
-            f"{normalized_generation_id}"
-        )
-    if row.get("sealed_at") is None:
-        raise RuntimeError(
-            "SEALED input generation DB fence has no sealed_at: "
-            f"{normalized_generation_id}"
-        )
-    return _input_generation_envelope(row)
-
-
 def _require_nonempty(value: str, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} must be a non-empty string")
@@ -2511,45 +2256,11 @@ def _require_sha256(value: str, field: str) -> str:
     return normalized
 
 
-def _require_opaque_id(value: str, field: str) -> str:
-    """校验上游提交或内容标识，不假定其一定是裸 SHA256。"""
-    return _require_bounded_identifier(value, field, max_length=128)
-
-
-def _require_bounded_identifier(
-    value: str,
-    field: str,
-    *,
-    max_length: int,
-) -> str:
-    normalized = _require_nonempty(value, field)
-    if len(normalized) > max_length or re.fullmatch(
-        r"[A-Za-z0-9][A-Za-z0-9._:/@+,\-=]*",
-        normalized,
-    ) is None:
-        raise ValueError(
-            f"{field} must be at most {max_length} safe identifier characters"
-        )
-    return normalized
-
-
 def _utc_datetime6(value: datetime | None) -> datetime:
     effective = value or datetime.now(timezone.utc)
     if effective.tzinfo is not None:
         effective = effective.astimezone(timezone.utc).replace(tzinfo=None)
     return effective
-
-
-def _database_or_local_utc_now(conn: Connection) -> datetime:
-    """封存时优先使用 MySQL UTC 时钟，SQLite 测试使用本地 UTC。"""
-    if _dialect_name(conn) == "mysql":
-        observed = conn.execute(text("SELECT UTC_TIMESTAMP(6)")).scalar_one()
-        return _utc_datetime6(
-            observed
-            if isinstance(observed, datetime)
-            else datetime.fromisoformat(str(observed))
-        )
-    return _utc_datetime6(None)
 
 
 def _dialect_name(conn: Connection) -> str:
@@ -2568,59 +2279,6 @@ def _select_mapping_one_or_none(
         conn.execute(text(sql + lock), dict(params))
         .mappings()
         .one_or_none()
-    )
-
-
-def _read_input_generation_conn(
-    conn: Connection,
-    generation_id: str,
-    *,
-    for_update: bool,
-) -> Mapping[str, object] | None:
-    return _select_mapping_one_or_none(
-        conn,
-        """
-        SELECT generation_id, generation_type, business_date, feature_date,
-               readiness_basis, source_commit_token, dataset_content_id,
-               schema_version, exporter_version, manifest_uri,
-               manifest_sha256, native_generation_id,
-               native_manifest_sha256, state, sealed_at,
-               invalidated_at, invalid_reason
-        FROM t_input_generations
-        WHERE generation_id = :generation_id
-        """,
-        {"generation_id": generation_id},
-        for_update=for_update,
-    )
-
-
-def _input_generation_envelope(
-    row: Mapping[str, object],
-) -> InputGenerationEnvelope:
-    return InputGenerationEnvelope(
-        generation_id=_stored_text(row, "generation_id"),
-        generation_type=_stored_text(row, "generation_type"),
-        business_date=_stored_iso_date(row, "business_date"),
-        feature_date=_stored_iso_date(row, "feature_date"),
-        readiness_basis=_stored_text(row, "readiness_basis"),
-        source_commit_token=_stored_text(row, "source_commit_token"),
-        dataset_content_id=_stored_text(row, "dataset_content_id"),
-        schema_version=_stored_text(row, "schema_version"),
-        exporter_version=_stored_text(row, "exporter_version"),
-        manifest_uri=_stored_text(row, "manifest_uri"),
-        manifest_sha256=_stored_text(row, "manifest_sha256"),
-        native_generation_id=_optional_stored_text(
-            row.get("native_generation_id")
-        ),
-        native_manifest_sha256=_optional_stored_text(
-            row.get("native_manifest_sha256")
-        ),
-        state=_stored_text(row, "state"),
-        sealed_at=_optional_stored_datetime(row.get("sealed_at"), "sealed_at"),
-        invalidated_at=_optional_stored_datetime(
-            row.get("invalidated_at"), "invalidated_at"
-        ),
-        invalid_reason=_optional_stored_text(row.get("invalid_reason")),
     )
 
 
@@ -2663,10 +2321,6 @@ def _as_datetime(value: object, field: str) -> datetime:
         except ValueError as exc:
             raise RuntimeError(f"invalid stored {field}: {value!r}") from exc
     raise RuntimeError(f"invalid stored {field}: {value!r}")
-
-
-def _optional_stored_datetime(value: object, field: str) -> datetime | None:
-    return None if value is None else _as_datetime(value, field)
 
 
 def _stored_text(row: Mapping[str, object], field: str) -> str:
