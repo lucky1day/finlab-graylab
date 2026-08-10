@@ -4,11 +4,9 @@
 
 **目标读者**：平台开发、运维、审计和方案维护人员
 
-**最后核验日期**：2026-08-09
+**最后核验日期**：2026-08-10
 
-本文定义生产信号的唯一控制面。具体现场事实查看[当前状态](../CURRENT_STATUS.md)，
-分阶段治理和带日期的证据查看
-[2026-08-03 生产信号与调度治理计划](../records/status/WEEKLY_10Y_D_OVERLAY_0801_FIX_PLAN_20260803.md)。
+本文定义生产信号的唯一控制面。当前稳定事实查看[当前状态](../CURRENT_STATUS.md)；具体运行证据由 installed state、日志、run、prediction、Harness 和数据库审计保存，不在文档复制一次性计划。
 
 ## 1. 唯一控制面与证明标准
 
@@ -87,23 +85,15 @@ template、installed plist、loaded state、日志和 run/prediction 证据；�
 predictions 周六 11:30、monthly predictions 自然月 15 日 18:00；actuals 保留既有三个时点，
 但任何时点只能有一个 writer。目标时点是治理合同，不是已安装或已观察的现场结论。
 
-## 4. 阶段顺序与停止条件
+## 4. 生命周期与停止条件
 
-当前按 G0 → G1/G2 → G3/G5 → G6 推进；G4 已独立闭环。G1/G2 是否形成真实 launchd 观察闭环
-只决定能否宣称已生产挂载或 `Production Observed`，不改变 active + exact active + cadence 的
-自然候选规则。Activation 前仍须完成原有 Gate、生产准备核验与一次性专项授权；Activation
-本身不安装或加载 plist。G4 已确认不需要 scoped waiver 或同源输入/环境重建选择：首次
-Native 技术入库仍必须通过 source benchmark/CompareGate；ActivationGate 的 full-`all` 与
-`native-maintenance` profile 互斥：current exact version 完整 `all` 通过时使用
-`full_initial_onboarding_v1`，不要求 prior snapshot；只有 maintenance profile 才需要 prior
-`all` 的匹配 `static.business_identity` 快照，历史 benchmark input-vintage 漂移才只归档。
-该快照只含业务字段（scheme/runtime/horizon/task/frequency/tenors/composite IDs），不含代码、
-config 或 version hash。maintenance 的 current exact `t_scheme_versions` 行必须为
-`runtime_type='native_adapter'` 且 status 为 `draft|active`；expected Registry identity 可在预激活时
-统一为 `paused`，或在激活后统一为 `active`，但 draft version 配 active Registry 必须 fail-closed。
-只有 ActivationGate 可在严格 discovery、精确版本与一次性授权核验后原子建立 active 状态。legacy admission 缺快照时仍 fail-closed；唯一保留的固定 scope 是 `weekly_10y_d_overlay_0529` 已持久化的 canonical receipt；平台只读校验 maintenance 选定的 prior、缺 identity 的 StaticGate 与固定业务身份，writer 和 token action 已退役。该 receipt 不改历史、不启动调度、不激活或写业务表；2026-08-04 receipt 后，exact version `e50ad79a6c2f` 的六段 maintenance 与独立 activation 均已通过，DB version 与 Registry 均为 active。其历史补缺证据仍保留在 run 与状态记录中，但不构成当前 Native artifact/generation 控制面。任何后续修订仍必须满足输入 cutoff、统一周历、日期语义、
-Registry、live-safe oracle 与专项授权，随后也只能补其精确授权的 `gray_live` key；不得修改
-Native core 或 source benchmark。
+Activation 前必须完成对应 Gate、生产准备核验与一次性专项授权；Activation 本身不安装或加载 plist。首次 Native 技术入库使用 current exact version 的完整 `all + compare`；同一存量身份维护只有在 prior `all` 已有匹配 `static.business_identity` 时才可使用 `native-maintenance`。两条 profile 互斥，缺失或不一致时直接失败。
 
-若 active 集、精确版本、输入截止、installed/loaded state、日志或缺口与已记录证据不符，
-或发现两个 writer 可能写同一 business key，立即停止副作用、更新调查结论并重新取得授权。
+`static.business_identity` 只包含 scheme/runtime/horizon/task/frequency/tenors/composite IDs，不含代码、config 或 version hash。maintenance 的 current exact version 必须为 native `draft|active`，Registry 必须统一 paused（预激活）或 active（激活后），draft version 配 active Registry 必须失败。唯一固定的 legacy identity receipt 只服务 `weekly_10y_d_overlay_0529` 的既有缺快照 prior，并仍须完整六段 maintenance 与独立 activation；它不能写业务表、启动调度或外推到其它身份。
+
+出现以下任一情况时立即停止副作用并保留证据：
+
+- active scope、exact version、Registry identity、输入截止或日期语义与预检不一致；
+- installed/loaded state、日志、run 和 prediction 不能相互证明同一自然运行；
+- 发现两个 writer 可能写同一 business key；
+- 需要 fallback、旧版本切换、覆盖、自动重试或恢复已退役控制面才能继续。

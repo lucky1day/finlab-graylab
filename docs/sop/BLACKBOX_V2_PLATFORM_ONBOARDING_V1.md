@@ -545,7 +545,7 @@ Token 必须绑定 exact scheme、action、predict date、version 和 Harness ru
 - `--backtest-start-date` 默认 `2025-01-01`；周度方案的持久化回测必须
   精确使用该正式起点，其他频率只有在专项授权明确绑定时才可传入其它
   规范 ISO 日期；
-- 生产授权前必须先在该方案的生命周期证据中登记 `gray_target_start`；当前生产灰度观察基线为 `2026-06-01`，即 `target_date >= gray_target_start` 全部属于实盘观察区；后续如使用不同起点，必须有方案级专项授权和证据，不得由算法 Metadata、部署日或操作当天自动推导；
+- 生产授权前必须先在该方案的生命周期证据中登记 `gray_target_start`；`target_date >= gray_target_start` 全部属于实盘观察区。该起点必须来自方案级专项授权和证据，不得由算法 Metadata、部署日、历史批次默认值或操作当天自动推导；
 - Backtest Gate 的 `predict_date` 参数承担 target 日期 exclusive cutoff，生产持久化时必须传已批准的 `gray_target_start`，只选择 `target_date < gray_target_start` 的历史样本；不得把激活日、`deployed_at` 或操作当天直接当作回测 cutoff；
 - 最早样本是 `predict_date >= backtest_start_date` 的第一个合格站位日，起点本身不要求是交易日；
 - `--sample-size` 只用于自动段的 no-persist 稳定性测试，和 `--persist` 同时使用时拒绝执行；
@@ -618,7 +618,7 @@ conda run --no-capture-output -n bond_factor_lab_service \
 
 | 边界 | 判定源 | 业务用途 |
 |---|---|---|
-| `gray_target_start` | 方案生命周期专项授权；当前生产灰度基线为 `2026-06-01` | 按 `target_date` 切分历史回测与实盘观察区 |
+| `gray_target_start` | 方案生命周期专项授权 | 按 `target_date` 切分历史回测与实盘观察区 |
 | `deployed_at` | Activation 后 active composite Registry 的真实业务上线日期 | 前端“部署时间”和 Registry 生命周期审计 |
 | 正式调度起点 | 经 launchd 控制面自然触发并成功写入的第一条 `prediction_phase=scheduled_live` 的 `predict_date` | 区分灰度实盘和正式生产实盘 |
 
@@ -632,11 +632,11 @@ conda run --no-capture-output -n bond_factor_lab_service \
 
 ### 7.2 激活后强制补齐 gray live
 
-Activation 完成后、前端验收前，必须按时间顺序补齐从 `gray_target_start` 到当前所有应有的实盘目标点。当前生产灰度基线下，从 `target_date=2026-06-01` 起就属于灰度实盘。
+Activation 完成后、前端验收前，必须按时间顺序补齐从该方案 `gray_target_start` 到当前所有应有的实盘目标点。
 
 补齐必须先枚举 `target_date >= gray_target_start` 的目标点，再按平台日历反推 `feature_date` 和应发 `predict_date`，不能从部署日向后枚举：
 
-- 日频 T+N：`feature_date` 是 `target_date` 前第 N 个交易日，`predict_date` 是 `feature_date` 的下一交易日；例如 T+5 的首个灰度目标 `2026-06-01` 对应 `feature_date=2026-05-25`、`predict_date=2026-05-26`；
+- 日频 T+N：`feature_date` 是 `target_date` 前第 N 个交易日，`predict_date` 是 `feature_date` 的下一交易日；必须由平台日历逐点计算，不能使用固定示例日期反推；
 - 周频：先枚举应有目标周末，再反推上一轮调度日；`predict_date` 可能位于 5 月；
 - 月频：按目标月观察点反推自然触发日；若合同规定自然 15 号，不能顺延为交易日。
 

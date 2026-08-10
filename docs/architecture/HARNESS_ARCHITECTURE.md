@@ -196,7 +196,7 @@ Harness/check-only、自然调度和历史 replay 使用同一数据库捕获与
 - 回测结论: `--no-persist` summary、样本总数、`metric_samples`、准确率、月度分布；预测为“平”的样本计入样本总数但不进入任何指标分母。
 - 算法保真结论: Native 首次技术入库记录 source 口径、L0/L1/L2 分级、原始 hash 和内部 benchmark；当前 exact version 若通过 full `all`，记录 `full_initial_onboarding_v1` 的七个 Gate。仅走 maintenance 时，另记录 prior `all + compare`、其匹配的 `static.business_identity` 业务快照或固定 10Y 的 canonical receipt、精确 Registry identity、`native-maintenance` 六个 Gate 与 live-safe oracle。receipt 只证明历史业务身份，不能被写成 current Compare pass，也不直接授权业务写入。历史 benchmark vintage 漂移只能标为归档诊断。Blackbox 记录上游脚本/Metadata hash、确定性、分批/顺序一致性和未来行隔离，不宣称平台已检查黑盒内部模型。
 - 日期语义结论: 回测样本满足 `predict_date == feature_date` 且最早 `predict_date >= 2025-01-01`；实盘样本满足对应频率的发出规则；周频实盘必须由 `feature_date=previous_trading_day(predict_date)` 再映射 `feature_week_id`，输入使用 `end_week=feature_week_id/as_of_date=feature_date`；月度 source-backed 方案若声明自然 15 号触发，必须证明 `predict_date` 保留自然 15 号，`feature_date/target_date` 分别取对应月 15 号及以前最近交易日；前端/业务表达数据截止时只用 `feature_date`，不依赖 `anchor_date`。
-- 实盘阶段结论: 灰度实盘和正式实盘必须能区分为 `gray_live` / `scheduled_live`；当前 V28/0629 灰度观察区按 `target_date >= 2026-06-01` 判定，后续方案使用方案级生命周期配置；月度回补必须按目标月枚举，不能按 `predict_date >= gray_start` 漏掉首个 target 月。
+- 实盘阶段结论: 灰度实盘和正式实盘必须能区分为 `gray_live` / `scheduled_live`；灰度观察区按方案级 `target_date >= gray_target_start` 判定；月度回补必须按目标月枚举，不能按 `predict_date >= gray_start` 漏掉首个 target 月。
 - 若落库: 写库前后受保护表行数对比，证明只影响授权表和授权 scheme。
 - 前端/API 结论: `/api/backtests/factor-lab` 或 `/api/metrics/{scheme_id}` 可读，矩阵格子不消失；前端月度样本数展示 `samples`，准确率括号展示 `correct/metric_samples`，每日/周度验证表中预测为“平”的行展示 `-`；有 live 区间时，前端必须按 live `target_date` 月份插入虚线分隔，backtest 区不得含 `target_date >= gray_start` 的 target 月。
 - 文档结论: 当前状态、测试记录、历史复现或上线计划已更新。

@@ -4,11 +4,10 @@
 
 **目标读者**：所有项目参与者
 
-**最后核验日期**：2026-08-08
+**最后核验日期**：2026-08-10
 
-本文是仓库文档的唯一总入口。这里不复制运行 ID、单次实验或生产时点状态；已验证
-的动态事实统一查看[当前状态](CURRENT_STATUS.md)，未完成工作的优先级、并行关系和授权闸门统一查看
-[统一后续推进计划](TODO.md)，生产调度当前规则统一查看
+本文是仓库文档的唯一总入口。这里不复制运行 ID、单次实验或生产时点状态；当前稳定事实查看
+[当前状态](CURRENT_STATUS.md)，未批准工作的顺序和边界查看[统一后续推进计划](TODO.md)，生产调度当前规则查看
 [生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。
 
 ## 按角色进入
@@ -20,7 +19,7 @@
 | 平台入库和审计人员 | [方案入库统一入口](onboarding/README.md) |
 | 平台开发人员 | [架构与契约](architecture/README.md) |
 | 平台运维人员 | [运维文档](operations/README.md) |
-| 项目负责人 | [当前状态](CURRENT_STATUS.md)、[统一后续推进计划](TODO.md)和[全方案问题台账](records/SCHEME_ISSUE_LEDGER.md) |
+| 项目负责人 | [当前状态](CURRENT_STATUS.md)、[统一后续推进计划](TODO.md)和[未关闭问题台账](records/SCHEME_ISSUE_LEDGER.md) |
 
 ## 文档域
 
@@ -33,8 +32,8 @@
 | [运维文档](operations/README.md) | 当前运行与验收资料 | 是 |
 | [Blackbox V2](blackbox_v2/README.md) | V2 专属数据、生产准备和证据边界 | 是 |
 | [Native V1](native_v1/README.md) | 存量方案维护 | 仅存量维护 |
-| [统一后续推进计划](TODO.md) | 未完成工作、并行关系、前置依赖、排序与授权闸门 | 是 |
-| [审计与状态记录](records/README.md) | 全方案问题台账和仍待处理的状态记录；不定义当前生产控制面 | 否 |
+| [统一后续推进计划](TODO.md) | 当前未批准工作的顺序与停止条件 | 是 |
+| [问题记录](records/README.md) | 当前未关闭问题；历史证据由 Git 和控制面保存 | 否 |
 
 ## 状态规则
 
@@ -42,17 +41,15 @@
 |---|---|
 | `CURRENT` | 当前有效规范、索引或操作手册 |
 | `LEGACY_MAINTENANCE` | 只适用于 Native V1 存量维护 |
-| `BLOCKED_DRAFT` | 前置能力未完成，不可作为操作 SOP |
-| `HISTORICAL` | 历史证据、计划或废弃规则，不得用于当前验收 |
+| `BLOCKED_DRAFT` | 未批准草案，不得被 CURRENT 文档作为操作入口 |
+| `HISTORICAL` | 历史证据，不得被 CURRENT 文档作为操作入口 |
 
 ## 维护规则
 
-1. 除 `docs/superpowers/` 中仍被代码或测试直接引用的历史实施证据外，每个包含 Markdown 的目录必须有
-   `README.md`，并登记本层文档和子目录；`docs/superpowers/` 不承载当前规则。
-2. 已验证的动态状态只写入 `CURRENT_STATUS.md`；未完成工作的排序只写入 `TODO.md`；带日期的详情进入 `records/`；具体方案问题统一写入 `records/SCHEME_ISSUE_LEDGER.md`，解决并验收后从当前台账删除。
+1. 每个包含 Markdown 的目录必须有 `README.md`，并登记本层文档和子目录。实施计划完成后从工作树删除，通过 Git 历史追溯。
+2. 当前稳定事实只写入 `CURRENT_STATUS.md`；未批准工作的排序只写入 `TODO.md`；具体方案问题统一写入 `records/SCHEME_ISSUE_LEDGER.md`，解决并验收后从当前台账删除。
 3. 通用 SOP 不记录具体方案、generation、snapshot 或 Harness run。
 4. 历史记录不反向定义当前规则；已被现行入口完整替代的过期文档从工作树删除，通过 Git 历史追溯。
 5. 文档移动必须同步更新相对链接，并通过文档门禁测试。
 6. `AGENTS.md` 与 `CLAUDE.md` 必须保持字节一致。
-7. 带日期的 status/handoff 记录只能保存证据；当前生产调度规则以
-   [生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)为准。
+7. CURRENT 文档不得依赖 `docs/superpowers/`、历史 status/handoff 或 `BLOCKED_DRAFT/HISTORICAL` 文档定义当前规则。

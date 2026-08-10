@@ -27,7 +27,7 @@
 | 机器标识 | `runtime_type: native_adapter` | `runtime_type: blackbox_v2` |
 | 管理定位 | 既有身份的存量维护 | 后续新增方案唯一入口 |
 | 上游形态 | 仓库内 `config + predict + core` | 一个 `.py` 和一个 `.json` |
-| 输入 | `shared.input_artifacts` 从当前权威 `bond_db` 按 `feature_date` 截止构建；9 个 source-backed 身份连接同一实例和数据库，只使用现有 SELECT-only 身份 | `data_bridge_current` 三频 Snapshot；自然运行使用当前 DataBridge generation，历史补缺严格绑定冻结 authority |
+| 输入 | `shared.input_artifacts` 从当前权威 `bond_db` 按 `feature_date` 截止构建；source-backed 身份连接同一实例和数据库，只使用现有 SELECT-only 身份 | `data_bridge_current` 三频 Snapshot；自然运行使用当前 DataBridge generation，历史补缺严格绑定冻结 authority |
 | 执行 | import adapter 子进程 | sandbox CLI 子进程 |
 | 生产权限 | 保持既有方案的独立状态 | 每个方案必须单独完成生产准备和专项授权 |
 

@@ -104,6 +104,48 @@ class OnboardingDocumentationTests(unittest.TestCase):
             {"README.md", "CURRENT_STATUS.md", "TODO.md"},
         )
 
+    def test_current_documents_only_link_to_current_authority(self) -> None:
+        violations: list[str] = []
+        for path in DOCS_ROOT.rglob("*.md"):
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if "**文档状态**：`CURRENT`" not in text:
+                continue
+            for raw in re.findall(r"\[[^\]]*\]\(([^)]+)\)", text):
+                target = raw.strip().split("#", 1)[0].strip("<>")
+                if not target or target.startswith(
+                    ("http://", "https://", "mailto:", "/", "#")
+                ):
+                    continue
+                resolved = (path.parent / target).resolve()
+                try:
+                    relative = resolved.relative_to(DOCS_ROOT)
+                except ValueError:
+                    continue
+                if relative.parts[:1] == ("superpowers",) or (
+                    relative.parts[:2] == ("records", "status")
+                ):
+                    violations.append(
+                        f"{path.relative_to(PROJECT_ROOT)} -> {relative}"
+                    )
+                    continue
+                if resolved.suffix != ".md" or not resolved.is_file():
+                    continue
+                target_text = resolved.read_text(
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                if any(
+                    marker in target_text
+                    for marker in (
+                        "**文档状态**：`BLOCKED_DRAFT`",
+                        "**文档状态**：`HISTORICAL`",
+                    )
+                ):
+                    violations.append(
+                        f"{path.relative_to(PROJECT_ROOT)} -> {relative}"
+                    )
+        self.assertEqual(violations, [])
+
     def test_each_document_directory_has_a_complete_index(self) -> None:
         missing: list[str] = []
         documentation_paths = tuple(

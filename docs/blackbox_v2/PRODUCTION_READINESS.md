@@ -1,72 +1,26 @@
-# Blackbox V2 生产晋级条件
+# Blackbox V2 生产准备清单
 
-**文档状态**：`BLOCKED_DRAFT`
+**文档状态**：`CURRENT`
 
-**目标读者**：平台负责人、运维和生产授权审批人员
+**目标读者**：平台负责人、运维和生产授权人员
 
 **最后核验日期**：2026-08-10
 
-本文定义“任意后续 Blackbox V2 交付可走标准生产流程”之前仍需完成的广义平台
-条件。它不撤销已经取得的逐方案专项授权，也不为未授权 identity 自动放行。
-日频运行以[生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)为当前契约。
+本文只定义单个 Blackbox exact version 进入生产前必须满足的条件，不记录具体方案、历史 rollout、运行数量或一次性证据。操作步骤见[平台入库 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)，自然调度见[生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。
 
-## 1. 当前边界
+## 必须满足
 
-当前已具备并完成隔离认证：
+1. 两文件 Intake、Metadata、目录身份、Contract 和 Runtime Profile 全部通过。
+2. 当前 exact version 的七段 Harness `all` 全部通过；报告中的 version、输入 snapshot、Request、cutoff 和结果身份精确一致。
+3. DataBridge current snapshot 通过 schema、freshness、cutoff 和完整性校验；平台注册输入由调用方只读数据库连接捕获，不存在 Native 二级 generation。
+4. sandbox、超时、环境 allowlist、确定性、顺序/分批一致性、未来数据隔离和严格 `-1/0/1` Result 均通过。
+5. activation、持久化回测和 live 分别使用精确的一次性授权；其它方案、旧版本或旧 run 的授权不得外推。
+6. activation 后 config、exact version 与全部 Registry target 均为 active；paused、draft、retired 或 cadence 不匹配的身份不得进入对应 one-shot runner。
+7. 自然生产观察必须由 installed plist、loaded state、日志、run、prediction、API/Dashboard 相互一致证明；仓库模板和测试不替代现场证据。
 
-- 两文件 Intake、Metadata、目录身份和 Runtime Profile 校验；
-- DataBridge 三频同代父快照、freshness、Snapshot identity 和 Request；
-- 七个自动 Gate、重复运行、no-persist 回测和零写库 check-only；
-- shadow/draft 登记、ActivationGate、完整历史持久化、gray live、actual join、
-  API/前端探针和失败恢复；
-- sandbox 文件 allowlist、环境清理、严格整数 Result 和 stale DataBridge
-  generation 拒绝；
-- launchd one-shot 按 active exact version、active Registry 和 cadence 发现方案；
-  Admission、ledger、occurrence 和 epoch 均不属于当前生产控制面。
+## 禁止替代
 
-当前仍不能形成面向任意新交付的通用 `PRODUCTION_READY`：
-
-- 真实交付代表性、依赖栈和日/周/月任务覆盖仍需持续扩展；
-- 每个新 identity/version/runtime 仍需自己的输入 authority、确定性、超时、
-  截止隔离、结果结构、失败恢复和标准结果证据；
-- 通用责任人、暂停/回退权限和 durable operator report 尚未形成最终 SOP；
-- 已有专项授权、active Registry 或另一方案的运行记录都不能
-  外推为新方案授权。
-
-## 2. 必须保持的八项能力
-
-| 编号 | 条件 | 当前状态 |
-|---|---|---|
-| PR-01 | Gate 绑定 DataBridge snapshot/freshness，stale generation fail-closed | `PASS` |
-| PR-02 | Runtime Profile 是环境、资源和权限的唯一配置源 | `PASS` |
-| PR-03 | Harness 审计持久化与授权 identity fail-closed | `PASS` |
-| PR-04 | shadow/draft journal、补偿、reconciliation 和并发锁完整 | `PASS` |
-| PR-05 | activate、persist、gray/live 均由 Blackbox 专项门禁控制 | `PASS` |
-| PR-06 | Registry、API、scheduler、actual 和前端探针一致 | `PASS` |
-| PR-07 | Result 方向只接受严格整数 `-1/0/1` | `PASS` |
-| PR-08 | sandbox 读取、网络、环境变量和数据目录权限收紧 | `PASS` |
-
-八项 PASS 说明生产路径能力存在，不等于具体方案已获生产授权。
-
-## 3. 标准生产 SOP 形成条件
-
-1. 至少三个独立真实上游交付批次覆盖日、周、月，并对每批重复 Intake、Gate、
-   历史、live、actual、API、前端和恢复矩阵。
-2. 不同依赖栈必须在版本化 Runtime Profile 中可重复运行，不临时安装依赖。
-3. 业务、平台和运维明确通用激活、暂停、纠错、回退和审计责任人。
-4. 将标准操作文档标记为 `CURRENT`；在此之前只接受逐方案专项授权。
-5. active exact version、active Registry 且 cadence 匹配的方案必须进入对应
-   launchd one-shot；Blackbox 绑定当天当前且通过校验的 DataBridge generation，
-   不得恢复 per-scheme cron 或第二调度控制面。
-6. 每次自然运行以 installed/loaded state、日志、Registry/code/config digest、
-   DataBridge snapshot（Blackbox）、run 和 prediction 相互一致作为生产证据。
-7. storage/input/cache 必须通过 owner/mode/inode、非 symlink、canonical path、
-   manifest/payload hash 和 cutoff 验证；Liwei consumer 必须零写。
-
-本文件保持 `BLOCKED_DRAFT`，直到“任意新交付的标准授权流程”形成。该状态不是
-日频运行的并发或性能门禁，也不改变已有专项授权。
-
-## 4. 每次复核记录
-
-新的复核证据由 Harness 控制面与本机 ignored reports 保存。本文件只更新当前条件，
-不追加运行 ID、generation ID、数据库计数或旧控制面结论。
+- 不得用另一方案的 Gate、历史 admission、旧版本、旧 snapshot 或前端显示替代当前 exact version 的证据。
+- 不得恢复 Backend trigger、direct scheduling、Admission capability、ledger、occurrence、epoch、常驻 scheduler 或 per-scheme cron。
+- 输入、算法或生命周期异常必须直接失败并保留证据，不自动 fallback、重试、切换旧版本或覆盖业务键。
+- 本清单通过不授权修改 installed plist、执行 launchctl、重启服务、写业务表或应用 DDL；这些操作仍需单独授权。

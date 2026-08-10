@@ -1,7 +1,7 @@
 """weekly_10y_d_overlay_0529 跨年排序确定性回归测试。
 
-背景（docs/superpowers/specs/2026-08-02-weekly-10y-d-overlay-stable-order-design.md）：
-week_id 202553 与 202601 都被 _legacy_segment_anchor_date 映射到 model_date=2025-12-29。
+根因：week_id 202553 与 202601 都被 _legacy_segment_anchor_date 映射到
+model_date=2025-12-29。
 load_engineered_frame() 旧实现进入 create_label() 前只按单键 date（pandas 默认不稳定
 quicksort）排序；滚动输入窗口行数变化时，这对并列日期行的顺序会翻转，把 202553 的未来
 收益错接到 202602（label -1）而非 202601（label +1），与 Score 严格 week_id 时序冲突，

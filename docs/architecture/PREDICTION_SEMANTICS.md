@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：算法、平台、回测、API 和前端开发人员
-**最后核验日期**：2026-08-02
+**最后核验日期**：2026-08-10
 
 本文是平台关于 `predict_date` / `feature_date` / `target_date` 与灰度实盘阶段的强制语义。前端、后端、回测、SOP、方案文档和测试用例必须使用同一套术语；如与旧文档冲突，以本文为准，并回写对应文档。
 
@@ -131,7 +131,7 @@ predict_date = 2026-05-28  # 历史回测中 predict_date=feature_date
 
 ## 3. 灰度实盘规则
 
-灰度实盘用于补齐从灰度 target 起点到正式部署前的实盘观察序列。当前 V28 批次的灰度 target 起点是 `target_date >= 2026-06-01`；后续方案必须按方案生命周期登记自己的灰度起点和正式调度起点，不能把日期写成全局常量。
+灰度实盘用于补齐从方案级 `gray_target_start` 到正式部署前的实盘观察序列。每个方案必须在生命周期证据中登记自己的灰度起点和正式调度起点，不能把任一历史批次日期写成全局常量。
 
 灰度补齐必须满足：
 
@@ -185,11 +185,7 @@ target_date  = T + horizon
 
 回测结果只写 `t_backtest_*`，不得读取或复制 `t_scheme_predictions` 中的灰度/正式实盘记录来拼历史结果。参与前端历史排行的样本统一要求 `predict_date >= 2025-01-01`；历史回测中 `predict_date=feature_date=T`，所以 runner 的输出起点判定必须落在 `feature_date` / source T 上，不得用 `target_date >= 2025-01-01` 反推保留样本。这是输出样本起点，不是训练起点。训练、筛因子、模型 warmup 和定期更新可使用更早历史数据，但每个预测点的输入和标签可见性都必须严格停在对应 `feature_date`。
 
-当方案已有灰度实盘观察区时，历史回测 runner 必须按 `target_date` 截断，避免同一 target 月同时由 backtest 和 live 区间重复解释。当前灰度批次的历史回测只保留 `target_date < 2026-06-01`。
-
-日度 0629 三方案的最终 SOP 口径是该规则的当前基准：历史段保留 `feature_date >= 2025-01-01` 且 `target_date < 2026-06-01`，因此每个方案 latest backtest 为 337 行；`target_date=2026-06-01..2026-07-01` 的 22 个交易日进入 `gray_live`，不进入 latest backtest。
-
-月度方案仍坚持“每个自然月 15 号预测一次”：`2026-06-15` 发出的月度预测属于灰度实盘，若目标月为下月观察点，则进入 live 侧并以 `target_date=2026-07-15` 等待 actual。对应地，`predict_date=2026-05-15,target_date=2026-06-15` 已落入灰度 target 区间，不得继续作为 latest historical backtest 样本，而应作为 `gray_live` 出现在前端虚线下方；月度 0629 三方案的 strict backtest latest 截止到 `predict_date=2026-04-15,target_date=2026-05-15`。
+当方案已有灰度实盘观察区时，历史回测 runner 必须按 `target_date < gray_target_start` 截断，避免同一 target 同时由 backtest 和 live 区间解释。日频、周频和月频都使用同一条 target 边界；月频仍按自然月 15 号的触发语义计算三日期，不能用 `predict_date` 替代 `target_date` 判断分区。
 
 `target_date` 是回测明细的必填事实字段。runner、`/api/backtests/factor-lab` 和前端月度聚合只能用 `target_date` 归属月份；如果 `t_backtest_predictions` 明细缺 `target_date`，必须 fail-closed。禁止用 `predict_date`、`feature_date`、月份字段或旧 `monthly_metrics` 表推断、替代或回填 `target_date`。
 
@@ -202,8 +198,8 @@ target_date  = T + horizon
 1. 只适用于历史回测写入 `t_backtest_*`，不得扩散到 gray/live/scheduled live adapter。
 2. 对已有 original benchmark 覆盖区间逐行一致；方向、`target_date`、`label/is_correct` 必须零差异，`confidence` 只允许浮点舍入误差。
 3. 回测输出仍必须使用平台统一日期字段：`predict_date=feature_date`，`target_date` 由平台日历确定。
-4. 回测仍必须排除灰度/实盘 target 区间，即当前 V28 批次 `target_date >= 2026-06-01` 不能进入 backtest latest。
-5. 文档必须写明为什么不能使用逐点 PIT，以及哪些 run 是被删除或替代的旧口径。
+4. 回测仍必须排除该方案 `target_date >= gray_target_start` 的灰度/实盘区间。
+5. 方案 benchmark 证据必须写明为什么不能使用逐点 PIT；被替代的旧运行只保留在 run/数据库审计，不复制到当前架构文档。
 
 若 source-original batch reproduction 的 benchmark row 跨入 gray/live target 区间，该 row 仍不得扩散为 live 数值真值；它只能证明 historical/source-original 口径。gray_live/scheduled_live adapter 与补齐必须继续按 `feature_date` 硬截止，并使用 live-safe oracle 或同口径 live benchmark 验收。
 
@@ -215,13 +211,7 @@ target_date  = T + horizon
 
 批准原因是这三个源算法家族的源文件历史评价均为 source-original batch reproduction，候选排行需要复现原始 benchmark 口径，而不是把源算法事后改造成逐周 PIT 口径。`weekly_10y_d_overlay_0529` 的冲突最明显：Model2 固定分段包含 `2025H2_2026`，逐周 PIT 切片在 2025H1 无法构造未来半年度测试段，会导致 2025 年上半年没有有效 D-overlay 当前周信号。`weekly_5y_direct_0529` 和 `weekly_7y_cross_d_overlay_0529` 虽然缺口较小，但逐周切片仍会改变源 benchmark 的样本覆盖和对比口径，因此同样按历史 batch 例外处理。
 
-旧 point-backed 周平均 `weekly_avg_5y_direct_0529` / `weekly_avg_7y_cross_d_overlay_0529` / `weekly_avg_10y_d_overlay_0529` 曾错误复用周度单点输出并生成 run_id=`131/132/133`，已从运行代码、Registry 和历史结果表中删除，不属于当前周平均入库口径。当前有效周平均 0529 方案来自 `/Users/macstudio0/Desktop/方案/0629/forecast_project/` 的独立 LGBM 原始周平均算法，只覆盖 `1Y/5Y/10Y`，没有 `7Y`：
-
-- `weekly_avg_1y_lgbm_0529`，latest backtest run_id=`137`，72 行。
-- `weekly_avg_5y_lgbm_0529`，latest backtest run_id=`138`，72 行。
-- `weekly_avg_10y_lgbm_0529`，latest backtest run_id=`139`，72 行。
-
-这三套周平均方案不得复用 `weekly_*` 周度单点方案的 label、Score、Model2、D-overlay 或 point runner；actual/label 固定为 `next_week_average_yield_vs_current_week_average_yield`，即“目标周平均收益率 vs 当前周平均收益率”。source package 每个期限原始输出 73 行，其中 `effective_week_id=202607` 重复且内容一致；平台按 weekly strict key 折叠为 72 个唯一有效周，并在 benchmark summary 记录该折叠。
+当前周平均 0529 身份为 `weekly_avg_1y_lgbm_0529`、`weekly_avg_5y_lgbm_0529` 和 `weekly_avg_10y_lgbm_0529`。它们不得复用 `weekly_*` 周度单点方案的 label、Score、Model2、D-overlay 或 point runner；actual/label 固定为 `next_week_average_yield_vs_current_week_average_yield`，即“目标周平均收益率 vs 当前周平均收益率”。source 输出出现内容一致的重复 strict key 时，平台只按既有 strict-key 契约折叠，并在 benchmark summary 记录，不能依赖固定行数或历史 run。
 
 上述周度单点例外只允许用于历史回测和 benchmark 复现。周度单点和周平均的灰度实盘、正式实盘 adapter 都必须严格遵守周频 T+1/T 规则：`feature_date=previous_trading_day(predict_date)`，输入 artifact 传 `end_week=feature_week_id`、`as_of_date=feature_date`，不得读取未来周或当前 DB 最新全量数据。
 
@@ -280,17 +270,3 @@ target_date  = T + horizon
 - 每日/周度验证明细中，只要预测方向为“平”（`predicted_direction=0` 或前端归一化后 `predicted="平"`），结果列统一展示 `-`，不展示 `✓` 或 `×`。这条展示规则独立于 `actual_direction` 和 `is_correct`，因为“平”不进入指标计算。
 - 待验证样本仍展示待验证符号；有方向预测才根据验证结果展示 `✓` 或 `×`。
 - 当 `t_scheme_actuals` 或 `t_scheme_weekly_actuals` 的源实际值水位尚未覆盖某个 `target_date` / `target_week_id` 时，该样本属于待验证；API 和前端应展示 `actual_direction = null` / 准确率 `--`，不得把它计为错误、缺数据修复项或前端刷新失败。运维排查必须先查源 actual 水位，再判断是否为后端 join 或前端计算问题；同一目标周内不同 tenor 的源水位可以不同，已覆盖的 tenor 应立即验证，未覆盖的 tenor 继续待验证。
-
-## 8. 当前 V28 判定
-
-对 `daily_5y_2_v28` 当前已知记录：
-
-| run_id | 日期范围 | 阶段 |
-|--------|----------|------|
-| `39`-`41`、`43`-`51`、`58` | `predict_date=2026-05-26` 至 `2026-06-11`，`target_date=2026-06-01` 至 `2026-06-17` | `gray_live` |
-| `42` | 旧连续 test window 口径写入的灰度明细已删除，`t_scheme_runs/t_scheme_run_log` 保留审计 | 历史审计 |
-| `52` | `predict_date=2026-06-12`，`feature_date=2026-06-11`，`target_date=2026-06-18` | `scheduled_live` |
-
-这些阶段标识已由迁移 `010_prediction_semantics.sql` 落到 `t_scheme_predictions.prediction_phase` 和 `t_scheme_runs.prediction_phase`，并由 `/api/metrics/{scheme_id}` 的 `daily_rows[].prediction_phase` 与 `phase_ranges` 对前端输出。`run_id=39`-`41`、`43`-`51`、`58` 是灰度实盘，`run_id=52` 是正式 scheduler 实盘，二者不得混称。
-
-2026-06-14 修复确认：旧 `run_id=42` 的 `feature_date=2026-05-28` 灰度明细使用了连续窗口 `2024-07-01..feature_date`，与源算法 May 2026 月度 test window 不一致，预测方向曾偏离 original benchmark。该明细已受控删除，并用共享 inference helper 重跑为 `run_id=58`：`predict_date=2026-05-29`、`feature_date=2026-05-28`、`target_date=2026-06-04`、`prediction_phase=gray_live`、`predicted_direction=1`、`confidence=1.0`。后续 V28 回测 latest 是否重落库，必须先完成 no-persist diff 并经人工确认。
