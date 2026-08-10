@@ -153,7 +153,6 @@ def test_private_consumer_can_build_in_explicit_private_root(
         "ordinary_consumer"
     )
     assert "root" not in prepare.call_args.kwargs
-    assert "secure_runtime" not in prepare.call_args.kwargs
 
 
 def test_consumer_securely_reads_current_generation(

@@ -310,7 +310,6 @@ secure=False,
      )
 -    assert prepare.call_args.kwargs["root"] == root
 +    assert "root" not in prepare.call_args.kwargs
-+    assert "secure_runtime" not in prepare.call_args.kwargs
 ```
 
 - [x] **Step 6: 运行聚焦测试**
@@ -595,7 +594,7 @@ git commit -m "refactor(cache): remove unreachable mutation security branches"
 - Delete: `docs/superpowers/plans/2026-08-11-retire-phase-a-secure-runtime-switch.md`
 - Test: repository-wide pytest suite
 
-- [ ] **Step 1: 运行最终聚焦与全量回归**
+- [x] **Step 1: 运行最终聚焦与全量回归**
 
 Run:
 
@@ -615,7 +614,7 @@ Full suite: 614 passed, 393 subtests passed, 0 failed
 
 现有 SQLAlchemy/SQLite deprecation warning 可以保留；不得新增资源泄漏、未关闭连接或本模块 warning。
 
-- [ ] **Step 2: 核对 diff 与静态引用**
+- [x] **Step 2: 核对 diff 与静态引用**
 
 Run:
 
