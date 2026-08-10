@@ -111,7 +111,6 @@ _BUILD_MODES = frozenset(
         "full",
         "append",
         "suffix",
-        "migration",
         "qualification",
     }
 )

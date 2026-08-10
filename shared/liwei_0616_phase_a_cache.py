@@ -37,7 +37,6 @@ from shared.liwei_0616_cache_projection import (
 
 
 CACHE_SCHEMA_VERSION = 2
-LEGACY_CACHE_SCHEMA_VERSION = 1
 GENERATION_MANIFEST_SCHEMA_VERSION = 3
 CURRENT_POINTER_SCHEMA_VERSION = 1
 LEGACY_INPUT_GENERATION_STATE_SCHEMA_VERSION = 2
@@ -366,19 +365,6 @@ def _prepare_under_family_lock(
             family_root=family_root,
             secure_runtime=secure_runtime,
         )
-    legacy_caches = None
-    if (
-        current is None
-        and current_error == "no_current_generation"
-    ):
-        legacy_caches = _load_legacy_v1_caches(
-            root=root,
-            family_root=family_root,
-            spec=spec,
-            daily_df=daily_df,
-            weekly_df=weekly_df,
-            monthly_df=monthly_df,
-        )
     if (
         current is not None
         and current.manifest.get("spec_fingerprint")
@@ -440,11 +426,7 @@ def _prepare_under_family_lock(
     build_reason = current_error or "no_current_generation"
     cached: dict[str, dict[str, Any]] = {}
     suffix_start_date: str | None = None
-    if legacy_caches is not None:
-        build_mode = "migration"
-        build_reason = "legacy_v1_migration"
-        cached = legacy_caches
-    elif current is not None:
+    if current is not None:
         manifest_spec = str(current.manifest.get("spec_fingerprint") or "")
         if manifest_spec != spec_fingerprint:
             build_reason = "spec_changed"
@@ -474,7 +456,6 @@ def _prepare_under_family_lock(
     acceptance_scopes: dict[str, dict[str, Any]] = {}
     needs_build = (
         build_mode in {"full", "suffix"}
-        or legacy_caches is not None
         or (
             current is not None
             and (
@@ -852,83 +833,6 @@ def _family_cache_root(root: Path, spec: PhaseACacheSpec) -> Path:
         / safe_path_part(spec.cache_family)
         / safe_path_part(spec.tenor.lower())
     )
-
-
-def _load_legacy_v1_caches(
-    *,
-    root: Path,
-    family_root: Path,
-    spec: PhaseACacheSpec,
-    daily_df: pd.DataFrame,
-    weekly_df: pd.DataFrame,
-    monthly_df: pd.DataFrame,
-) -> dict[str, dict[str, Any]] | None:
-    """只读校验并收编 v1 热缓存；任何不确定性都回退 cold build。"""
-    candidate_directories = (
-        root / safe_path_part(spec.tenor.lower()),
-        family_root,
-    )
-    for directory in candidate_directories:
-        paths = {
-            baseline: (
-                directory / f"{safe_path_part(baseline)}.pkl"
-            )
-            for baseline in spec.baselines
-        }
-        if not all(path.is_file() for path in paths.values()):
-            continue
-        caches: dict[str, dict[str, Any]] = {}
-        try:
-            for baseline, path in paths.items():
-                with path.open("rb") as handle:
-                    envelope = pickle.load(handle)
-                if (
-                    not isinstance(envelope, Mapping)
-                    or envelope.get("schema_version")
-                    != LEGACY_CACHE_SCHEMA_VERSION
-                    or envelope.get("cache_family")
-                    != spec.cache_family
-                    or str(envelope.get("tenor") or "").lower()
-                    != spec.tenor.lower()
-                    or envelope.get("baseline") != baseline
-                    or envelope.get("baseline_fingerprint")
-                    != _baseline_fingerprint(spec, baseline)
-                ):
-                    raise ValueError(
-                        "legacy v1 cache identity mismatch"
-                    )
-                cache = _validate_phase_a_cache(
-                    envelope.get("phase_a_cache")
-                )
-                if (
-                    str(envelope.get("watermark") or "")
-                    != max(cache["test_dates"])
-                ):
-                    raise ValueError(
-                        "legacy v1 cache watermark mismatch"
-                    )
-                if not _legacy_input_prefix_matches(
-                    envelope.get("input_prefix"),
-                    daily_df=daily_df,
-                    weekly_df=weekly_df,
-                    monthly_df=monthly_df,
-                ):
-                    raise ValueError(
-                        "legacy v1 cache input prefix mismatch"
-                    )
-                caches[baseline] = cache
-        except (
-            OSError,
-            EOFError,
-            pickle.PickleError,
-            AttributeError,
-            ImportError,
-            TypeError,
-            ValueError,
-        ):
-            continue
-        return caches
-    return None
 
 
 def _spec_fingerprint(spec: PhaseACacheSpec) -> str:
@@ -4454,46 +4358,6 @@ def _phase_a_cache_before(
             }
             for item in normalized["results"]
         ],
-    }
-
-
-def _legacy_input_prefix_matches(
-    value: Any,
-    *,
-    daily_df: pd.DataFrame,
-    weekly_df: pd.DataFrame,
-    monthly_df: pd.DataFrame,
-) -> bool:
-    """按 v1 原始 prefix 规则验证旧缓存绑定，禁止猜测式迁移。"""
-    if not isinstance(value, Mapping):
-        return False
-    bounds = value.get("bounds")
-    fingerprints = value.get("fingerprints")
-    if not isinstance(bounds, Mapping) or not isinstance(
-        fingerprints,
-        Mapping,
-    ):
-        return False
-    current = {
-        "daily": _frame_prefix_fingerprint(
-            daily_df,
-            "date",
-            bounds.get("daily"),
-        ),
-        "weekly": _frame_prefix_fingerprint(
-            weekly_df,
-            "week_id",
-            bounds.get("weekly"),
-        ),
-        "monthly": _frame_prefix_fingerprint(
-            monthly_df,
-            "month_id",
-            bounds.get("monthly"),
-        ),
-    }
-    return current == {
-        name: str(fingerprints.get(name))
-        for name in current
     }
 
 

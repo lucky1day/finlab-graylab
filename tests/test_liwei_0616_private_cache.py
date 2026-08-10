@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import pickle
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -15,7 +17,9 @@ from shared.liwei_0616_cache_contract import (
 )
 from shared.liwei_0616_phase_a_cache import (
     PhaseACacheSpec,
+    _baseline_fingerprint,
     _build_generation_acceptance_evidence,
+    _frame_prefix_fingerprint,
     prepare_phase_a_caches,
     runtime_compare_gate_callbacks,
 )
@@ -206,3 +210,105 @@ def test_private_build_enables_independent_cold_output_comparison(
     )
     assert compare_full is not None
     assert compare_full({"b": {}}) == ({"b": {}}, {"b": {}})
+
+
+def test_missing_current_rebuilds_instead_of_importing_v1_cache(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv(CACHE_MUTATION_POLICY_ENV, raising=False)
+    root = tmp_path.resolve()
+    daily = pd.DataFrame(
+        {"date": ["2026-01-02"], "close": [2.0]}
+    )
+    weekly = pd.DataFrame(
+        {"week_id": [202601], "value": [1.0]}
+    )
+    monthly = pd.DataFrame(
+        {"month_id": ["2026-01"], "value": [1.0]}
+    )
+    spec = PhaseACacheSpec(
+        cache_family="test_v1_retirement",
+        tenor="5Y",
+        publisher_consumer_id="publisher",
+        baselines=("baseline",),
+        baseline_configs={"baseline": {"close": "close"}},
+        source_ic_screen_start="2020-01-01",
+        horizon=5,
+        purge_gap=5,
+    )
+    cache = {
+        "test_dates": ["2026-01-02"],
+        "results": [
+            {
+                "config": {"name": "baseline"},
+                "preds": np.asarray([1], dtype=np.int32),
+                "probs": np.asarray([0.75], dtype=np.float64),
+            }
+        ],
+    }
+    bounds = {
+        "daily": "2026-01-02",
+        "weekly": 202601,
+        "monthly": "2026-01",
+    }
+    legacy_dir = root / "5y"
+    legacy_dir.mkdir(parents=True)
+    with (legacy_dir / "baseline.pkl").open("wb") as handle:
+        pickle.dump(
+            {
+                "schema_version": 1,
+                "cache_family": spec.cache_family,
+                "tenor": spec.tenor,
+                "baseline": "baseline",
+                "baseline_fingerprint": _baseline_fingerprint(
+                    spec, "baseline"
+                ),
+                "watermark": "2026-01-02",
+                "phase_a_cache": cache,
+                "input_prefix": {
+                    "bounds": bounds,
+                    "fingerprints": {
+                        "daily": _frame_prefix_fingerprint(
+                            daily, "date", bounds["daily"]
+                        ),
+                        "weekly": _frame_prefix_fingerprint(
+                            weekly, "week_id", bounds["weekly"]
+                        ),
+                        "monthly": _frame_prefix_fingerprint(
+                            monthly, "month_id", bounds["monthly"]
+                        ),
+                    },
+                },
+            },
+            handle,
+            protocol=pickle.HIGHEST_PROTOCOL,
+        )
+
+    train_calls: list[
+        tuple[str, tuple[tuple[str, str], ...]]
+    ] = []
+
+    def train_missing(
+        baseline: str,
+        ranges: tuple[tuple[str, str], ...],
+    ) -> dict[str, object]:
+        train_calls.append((baseline, ranges))
+        return cache
+
+    _caches, audit = prepare_phase_a_caches(
+        spec=spec,
+        daily_df=daily,
+        weekly_df=weekly,
+        monthly_df=monthly,
+        test_ranges=(("2026-01-02", "2026-01-02"),),
+        train_missing=train_missing,
+        cache_consumer_id="publisher",
+        cache_root=root,
+    )
+
+    assert train_calls == [
+        ("baseline", (("2026-01-02", "2026-01-02"),))
+    ]
+    assert audit["build_mode"] == "full"
+    assert audit["build_reason"] == "no_current_generation"
