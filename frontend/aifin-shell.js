@@ -2052,18 +2052,6 @@
     return metric[metricId];
   }
 
-  function lowSampleThresholdForTask(taskLike) {
-    var task = taskLike && taskLike.frequency ? taskLike : getTaskByKey(taskLike && taskLike.taskKey);
-    if (isWeeklyTask(task)) return 3;
-    if (isMonthlyTask(task)) return 12;
-    return 30;
-  }
-
-  function isLowSampleMetric(metric, taskLike) {
-    var samples = Number(metric && metric.samples || 0);
-    return samples > 0 && samples < lowSampleThresholdForTask(taskLike);
-  }
-
   function sortRankingSchemes(schemes, metricId, direction) {
     var sortMetric = metricId || "overall";
     var sortDirection = direction === "asc" ? "asc" : "desc";
@@ -2159,7 +2147,6 @@
 
   function renderSchemeRankingRow(scheme, index, metric) {
     var selectedClass = scheme.id === factorLabState.selectedSchemeId ? " class=\"is-selected\"" : "";
-    var lowSampleHtml = isLowSampleMetric(metric, scheme) ? '<span class="factor-sample-badge">样本不足</span>' : "";
     var signalMissingHtml = scheme.signalStatus === "missing" &&
       typeof scheme.signalFailureCategory === "string" && scheme.signalFailureCategory
       ? '<span class="factor-signal-missing">信号缺失 · ' + escapeHtml(scheme.signalFailureCategory) + '</span>'
@@ -2173,7 +2160,7 @@
       '<td>' + (index + 1) + '</td>' +
       '<td><strong class="factor-scheme-name" title="' + schemeName + '">' + schemeName + '</strong>' + signalMissingHtml + '</td>' +
       '<td class="' + getMetricClass(metric.overall) + '"><div class="factor-score-cell"><span>' + formatPercent(metric.overall) + '（' + metric.correct + '/' + metricSamples + '）</span><span class="factor-score-bar" aria-hidden="true"><span style="width:' + barWidth.toFixed(1) + '%"></span></span></div></td>' +
-      '<td><span class="factor-sample-count">' + metric.samples + '</span>' + lowSampleHtml + '</td>' +
+      '<td><span class="factor-sample-count">' + metric.samples + '</span></td>' +
       '<td class="' + getMetricClass(metric.upPrecision) + '">' + formatPercent(metric.upPrecision) + '</td>' +
       '<td class="' + getMetricClass(metric.downPrecision) + '">' + formatPercent(metric.downPrecision) + '</td>' +
       '<td class="mono">' + escapeHtml(deploymentDate) + '</td>' +
@@ -2797,7 +2784,6 @@
     getSchemeDeploymentDate: getSchemeDeploymentDate,
     requireSchemeDeploymentDate: requireSchemeDeploymentDate,
     getSchemeRemark: getSchemeRemark,
-    isLowSampleMetric: isLowSampleMetric,
     liveDividerTextForTest: liveDividerText,
     loadFactorLabData: loadFactorLabData,
     decodeDashboardPayload: decodeDashboardPayload,
