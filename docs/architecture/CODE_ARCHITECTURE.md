@@ -206,11 +206,13 @@ python -m harness onboard {scheme_id} --stage all
        ├─ DryRunGate   → scheduler.executor.run_scheme_subprocess + probes.table_guard(行数不变)
        ├─ CompareGate  → schemes/{id}/benchmarks original/current strict compare
        ├─ BacktestGate → backtests/{id}_reproduction(--no-persist)
-       └─ ApiReadinessGate → paused registry row + latest backtest + public API 不泄漏
+       └─ ApiReadinessGate → Native 只读 Registry/回测/旧分项 API；Blackbox 仅结构推演
   Blackbox 首轮授权卡点：ShadowRegisterGate → version=shadow + registry=paused，不写业务表
   Native 首次授权卡点：BacktestGate(--persist) / LiveGate(execute_scheme) / activate  ← 需 token，否则 BLOCKED
-  激活后验收：ApiGate(active-only public API 可见性)
+  激活后旧分项诊断：ApiGate（不替代统一 dashboard/前端验收）
 ```
+
+同名 `api-readiness` 当前存在 runtime-specific 语义，不能按上图推断为统一的真实 API Gate。正式产品读模型只认 `/api/factor-lab/dashboard`；现有 Native/Blackbox `api` Gate 仍读取旧分项接口，仅可作为本机诊断证据。
 
 上图的七段 `all` 是所有首次技术入库的固定路径；Native 的 source benchmark/CompareGate
 只在这里作为保真硬证据，Blackbox Compare 也保持原有确定性与截止隔离检查。已入库 Native

@@ -94,7 +94,7 @@ python -m harness gate live \
   --authorize "$TOKEN"
 ```
 
-`--stage all` 是首次技术入库的固定顺序: static -> input -> unit -> dry-run -> compare -> backtest-no-persist -> api-readiness。任何一步失败都停止。首次 Native 技术入库必须保留当前 source benchmark/CompareGate 证据；Blackbox Compare 继续完成确定性和隔离检查。`api-readiness` 只按其实现证据声明结构兼容性，不等同于真实 Registry、HTTP API 或 scheduler 探针。`live`、持久化 backtest、`activate` 不属于默认 `all`。
+`--stage all` 是首次技术入库的固定顺序: static -> input -> unit -> dry-run -> compare -> backtest-no-persist -> api-readiness。任何一步失败都停止。首次 Native 技术入库必须保留当前 source benchmark/CompareGate 证据；Blackbox Compare 继续完成确定性和隔离检查。当前同名 `api-readiness` 的实现并不统一：Native 会只读核对 Registry、最新成功回测并探测旧分项 API 的隐藏性；Blackbox 只再次执行一次 predict 并推演 Registry/API 应有状态，不访问真实 API。两者都不能代替统一 `/api/factor-lab/dashboard`、前端或 scheduler 验收。`live`、持久化 backtest、`activate` 不属于默认 `all`。
 
 `native-maintenance` 仅给已完成首次技术入库、且有可比较 prior snapshot 的同一 Native 业务身份使用，固定顺序为 `static -> native-maintenance-admission -> input -> unit -> dry-run -> api-readiness`。`native-maintenance-admission` 必须只读证明不同的旧 Native active version 已有 passed `all` 和 passed `compare`，并从该 prior `all` 的 `static.business_identity` 读取与当前精确匹配的业务快照：`scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors 与 composite Registry IDs；不得比较或持久化代码/config/version hash 作为身份字段。唯一保留的补证是 `weekly_10y_d_overlay_0529` 已持久化的 canonical receipt；平台只读校验其固定身份、唯一 prior 与 canonical 结构，writer 和 token action 已退役。current exact `t_scheme_versions` 行必须为 native `draft|active`；expected Registry identity 要么全 paused（预激活），要么全 active（激活后），且 draft version 配 active Registry 必须失败。只有 ActivationGate 才能原子翻转至 active。receipt 只将身份来源标为 `legacy_operator_attestation_v1`，不自动激活、补数或写业务表。ActivationGate 在这一路径才复核 prior 前提、当前精确 version 的六个 Gate 与一次性授权，并返回 `native_post_admission_revision_v1`；若当前 exact version 已有 passed `all`，则改走互斥的 `full_initial_onboarding_v1`，不要求 prior snapshot 或六段 Gate。这个 stage 不执行当前 historical `compare/backtest`，只持久化 Harness 审计证据且不写业务表，所以 `--check-only` 不可使用。Blackbox V2 不接受该 stage，仍走既有 `all`。
 
@@ -106,7 +106,9 @@ no-persist，并拒绝授权 token、持久化、shadow/activate/live 或其它
 
 - Static 只记录声明的 provider；
 - Input 创建并记录组合输入身份；
-- Unit/Dry-run/Compare/Backtest/API readiness 共享同一组合输入身份。
+- Unit/Dry-run/Compare/Backtest 共享同一组合输入身份；Blackbox API readiness 也复用该输入，Native API readiness 则读取现有 Registry、回测和旧分项 API。
+
+当前激活后的 `api` Gate 仍属于旧分项诊断路径：Native 使用 factor-lab/metrics，Blackbox 还会使用 health/schemes/metrics/backtests。正式产品验收的唯一合同是 `/api/factor-lab/dashboard`；旧 Gate 通过不得写成 dashboard 或前端已经验收。
 
 报告显式记录四个零写字段；本地通过报告不能代替可签发授权的持久
 审计记录。
