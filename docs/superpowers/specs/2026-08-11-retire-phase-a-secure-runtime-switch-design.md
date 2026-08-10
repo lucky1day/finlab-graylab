@@ -67,17 +67,40 @@ consumer
 - 可写路径的构建、容量校验、generation 发布或清理失败时，继续按现有异常路径退出。
 - 本次不增加重试、旧缓存回退或隐式重建路径。
 
+## 版本与发布边界
+
+本次修改位于共享平台模块，不修改任何 `schemes/<scheme_id>/` 目录。当前 Native exact version 只计算方案目录内的 `predict.py`、`core/**/*.py` 和 `config.yaml`，不包含本共享模块，因此本次：
+
+- 不产生新的 Native exact version；
+- 不执行 Intake、Harness onboarding、activation 或持久化回测；
+- 不修改 Registry 或数据库生命周期记录；
+- 只由 Git commit 记录共享运行时代码变化。
+
+本次不顺带扩大 Native exact version hash；该议题继续保持独立、延期状态。
+
 ## 验收设计
 
-聚焦验证必须证明：
+这是无行为变化的重构。新增 consumer 测试是修改前必须通过的 characterization test，不制造形式化 RED。执行顺序固定为：
+
+1. 修改前运行现有 Phase-A 聚焦测试并确认 GREEN。
+2. 增加一个 consumer characterization test，再次确认 GREEN。
+3. 实施参数、命名和死分支删除。
+4. 复跑 Phase-A 聚焦测试。
+5. 静态确认死参数、死分支和旧内部调用参数归零。
+6. 运行全量 `pytest`。
+
+行为断言必须证明：
 
 - 正式 publisher 的 cold build、current hit 和增量构建行为不变；private build 继续只能写其显式绝对私有根目录。
 - 增加一个聚焦 consumer 回归测试：普通 consumer 通过安全 current reader 命中合法 current，current 非法时继续返回 `CACHE_PUBLISHER_REQUIRED`。
+- 现有 private-build 测试改为断言 `can_mutate_cache=True`，并确认内部调用不再接收 `root`。
 - `secure_runtime` 在当前代码和测试中归零。
 - `_prepare_under_family_lock()` 不再接收无用 `root`。
 - mutation-only helpers 不再暴露不可启用的 `secure` 参数。
 - `_load_current_generation()`、`_load_generation_directory()` 的 consumer 安全读取和 parent lineage `secure=True` 调用仍然存在。
-- Phase-A 聚焦测试、架构测试和全量回归全部通过。
+- Phase-A 聚焦测试和全量回归全部通过。
+
+不单独重复 architecture test，不运行真实生产方案、全量 Liwei dry-run、生产缓存读取或 hash/缓存快照比较；这些操作不会为本次机械重构增加有效证据。
 
 ## 文档生命周期
 
