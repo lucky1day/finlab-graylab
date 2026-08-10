@@ -176,7 +176,7 @@ git commit -m "test(cache): characterize phase-a consumer safety"
 - Modify: `tests/test_liwei_0616_private_cache.py:114-155`
 - Test: `tests/test_liwei_0616_private_cache.py`
 
-- [ ] **Step 1: 将 `is_publisher` 精确改为 `can_mutate_cache`**
+- [x] **Step 1: 将 `is_publisher` 精确改为 `can_mutate_cache`**
 
 对 `prepare_phase_a_caches()` 和 `_prepare_under_family_lock()` 应用以下语义等价变更：
 
@@ -197,14 +197,18 @@ git commit -m "test(cache): characterize phase-a consumer safety"
              family_root=family_root,
 ```
 
-锁内调用固定传入真实能力值：
+锁内 mutation-only helper 的参数在 Task 3 一次性删除，因此本任务暂时保留其当前显式 false：
+
+```python
+_cleanup_staging_directories(
+    family_root,
+    secure=False,
+)
+```
+
+内部准备调用改为真实能力名称：
 
 ```diff
--        _cleanup_staging_directories(
--            family_root,
--            secure=False,
--        )
-+        _cleanup_staging_directories(family_root)
          return _prepare_under_family_lock(
              spec=spec,
              cache_consumer_id=cache_consumer_id,
@@ -214,7 +218,7 @@ git commit -m "test(cache): characterize phase-a consumer safety"
              family_root=family_root,
 ```
 
-- [ ] **Step 2: 从 `_prepare_under_family_lock()` 删除 `root` 与 `secure_runtime`**
+- [x] **Step 2: 从 `_prepare_under_family_lock()` 删除 `root` 与 `secure_runtime`**
 
 签名和 consumer 分派改为：
 
@@ -258,7 +262,7 @@ git commit -m "test(cache): characterize phase-a consumer safety"
 secure_runtime=False,
 ```
 
-- [ ] **Step 3: 删除截断输入和发布调用中的不可达参数**
+- [x] **Step 3: 删除截断输入的不可达分支并固定 mutation helper 的中间态参数**
 
 删除以下整个不可达块：
 
@@ -270,13 +274,13 @@ if secure_runtime:
     )
 ```
 
-从 `_create_generation()`、`_prune_generations()`、`_switch_current_generation()` 和 `_discard_unpublished_generation()` 调用中分别删除：
+在 Task 3 删除 mutation-only helper 签名前，其调用固定使用当前真实值：
 
 ```python
-secure=secure_runtime,
+secure=False,
 ```
 
-- [ ] **Step 4: 删除 `_validated_consumer_hit()` 的未使用参数**
+- [x] **Step 4: 删除 `_validated_consumer_hit()` 的未使用参数**
 
 ```diff
  def _validated_consumer_hit(
@@ -295,7 +299,7 @@ secure=secure_runtime,
 
 函数体的无 current、输入等价、覆盖范围和 `_verify_generation_acceptance_lineage()` 逻辑保持原字节不动。
 
-- [ ] **Step 5: 同步 private-build 内部契约测试**
+- [x] **Step 5: 同步 private-build 内部契约测试**
 
 ```diff
      assert actual == expected
@@ -309,7 +313,7 @@ secure=secure_runtime,
 +    assert "secure_runtime" not in prepare.call_args.kwargs
 ```
 
-- [ ] **Step 6: 运行聚焦测试**
+- [x] **Step 6: 运行聚焦测试**
 
 Run:
 
@@ -324,7 +328,7 @@ Expected:
 7 passed
 ```
 
-- [ ] **Step 7: 提交上层控制面清理**
+- [x] **Step 7: 提交上层控制面清理**
 
 ```bash
 git add shared/liwei_0616_phase_a_cache.py \

@@ -230,16 +230,15 @@ def prepare_phase_a_caches(
     ):
         raise ValueError("private_build cache root must be absolute")
     family_root = _family_cache_root(root, spec)
-    is_publisher = (
+    can_mutate_cache = (
         cache_consumer_id == spec.publisher_consumer_id
         or mutation_policy == CACHE_MUTATION_POLICY_PRIVATE_BUILD
     )
-    if not is_publisher:
+    if not can_mutate_cache:
         return _prepare_under_family_lock(
             spec=spec,
             cache_consumer_id=cache_consumer_id,
-            is_publisher=False,
-            root=root,
+            can_mutate_cache=False,
             family_root=family_root,
             daily_df=daily_df,
             weekly_df=weekly_df,
@@ -252,7 +251,6 @@ def prepare_phase_a_caches(
             compare_cold=compare_cold,
             qualify_compare_gate=qualify_compare_gate,
             compare_full_output=compare_full_output,
-            secure_runtime=False,
         )
     family_root.mkdir(parents=True, exist_ok=True)
     with _exclusive_lock(family_root / ".prewarmer.lock"):
@@ -263,8 +261,7 @@ def prepare_phase_a_caches(
         return _prepare_under_family_lock(
             spec=spec,
             cache_consumer_id=cache_consumer_id,
-            is_publisher=is_publisher,
-            root=root,
+            can_mutate_cache=can_mutate_cache,
             family_root=family_root,
             daily_df=daily_df,
             weekly_df=weekly_df,
@@ -277,7 +274,6 @@ def prepare_phase_a_caches(
             compare_cold=compare_cold,
             qualify_compare_gate=qualify_compare_gate,
             compare_full_output=compare_full_output,
-            secure_runtime=False,
         )
 
 
@@ -285,8 +281,7 @@ def _prepare_under_family_lock(
     *,
     spec: PhaseACacheSpec,
     cache_consumer_id: str,
-    is_publisher: bool,
-    root: Path,
+    can_mutate_cache: bool,
     family_root: Path,
     daily_df: pd.DataFrame,
     weekly_df: pd.DataFrame,
@@ -320,7 +315,6 @@ def _prepare_under_family_lock(
         ]
         | None
     ),
-    secure_runtime: bool,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     requested_by_baseline: dict[str, list[str]] = {}
     for baseline in spec.baselines:
@@ -343,7 +337,7 @@ def _prepare_under_family_lock(
     )
     current, current_error = _load_current_generation(
         family_root,
-        secure=secure_runtime or not is_publisher,
+        secure=not can_mutate_cache,
     )
     input_change = _input_change_analysis(
         (
@@ -353,7 +347,7 @@ def _prepare_under_family_lock(
         ),
         input_state,
     )
-    if not is_publisher:
+    if not can_mutate_cache:
         return _validated_consumer_hit(
             spec=spec,
             cache_consumer_id=cache_consumer_id,
@@ -363,7 +357,6 @@ def _prepare_under_family_lock(
             input_state=input_state,
             input_change=input_change,
             family_root=family_root,
-            secure_runtime=secure_runtime,
         )
     if (
         current is not None
@@ -382,11 +375,6 @@ def _prepare_under_family_lock(
                 input_state,
             )
         ):
-            if secure_runtime:
-                _verify_generation_acceptance_lineage(
-                    current,
-                    spec=spec,
-                )
             truncated_audits: dict[str, dict[str, Any]] = {}
             for baseline in spec.baselines:
                 requested = set(requested_by_baseline[baseline])
@@ -623,7 +611,7 @@ def _prepare_under_family_lock(
         compare_gate_evidence=compare_gate_evidence,
         input_change=input_change,
         acceptance_scopes=acceptance_scopes,
-        secure=secure_runtime,
+        secure=False,
     )
     try:
         overall_status = (
@@ -651,21 +639,21 @@ def _prepare_under_family_lock(
         _prune_generations(
             family_root,
             protected_generation_ids=protected_generation_ids,
-            secure=secure_runtime,
+            secure=False,
         )
         # current.json 的原子 replace 是唯一 publication commit
         # point。所有可能失败的容量清理与返回值构造都必须在它之前完成。
         _switch_current_generation(
             family_root,
             generation,
-            secure=secure_runtime,
+            secure=False,
         )
     except BaseException as error:
         try:
             _discard_unpublished_generation(
                 family_root,
                 generation.generation_id,
-                secure=secure_runtime,
+                secure=False,
             )
         except BaseException as cleanup_error:
             error.add_note(
@@ -686,7 +674,6 @@ def _validated_consumer_hit(
     input_state: Mapping[str, Any],
     input_change: Mapping[str, Any],
     family_root: Path,
-    secure_runtime: bool,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     """非发布者只能读取同输入、完整覆盖且谱系可信的 current。"""
     if current is None:
