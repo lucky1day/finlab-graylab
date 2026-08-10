@@ -155,6 +155,102 @@ def test_private_consumer_can_build_in_explicit_private_root(
     assert prepare.call_args.kwargs["root"] == root
 
 
+def test_consumer_securely_reads_current_generation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv(CACHE_MUTATION_POLICY_ENV, raising=False)
+    root = tmp_path.resolve()
+    root.chmod(0o700)
+    daily = pd.DataFrame(
+        {"date": ["2026-01-02"], "close": [2.0]}
+    )
+    weekly = pd.DataFrame(
+        {"week_id": [202601], "value": [1.0]}
+    )
+    monthly = pd.DataFrame(
+        {"month_id": ["2026-01"], "value": [1.0]}
+    )
+    spec = PhaseACacheSpec(
+        cache_family="test_consumer_secure",
+        tenor="5Y",
+        publisher_consumer_id="publisher",
+        baselines=("baseline",),
+        baseline_configs={"baseline": {"close": "close"}},
+        source_ic_screen_start="2020-01-01",
+        horizon=5,
+        purge_gap=5,
+    )
+    cache = {
+        "test_dates": ["2026-01-02"],
+        "results": [
+            {
+                "config": {"name": "baseline"},
+                "preds": np.asarray([1], dtype=np.int32),
+                "probs": np.asarray([0.75], dtype=np.float64),
+            }
+        ],
+    }
+    train_calls: list[str] = []
+
+    def train_missing(
+        baseline: str,
+        _ranges: tuple[tuple[str, str], ...],
+    ) -> dict[str, object]:
+        train_calls.append(baseline)
+        return cache
+
+    _publisher_caches, publisher_audit = prepare_phase_a_caches(
+        spec=spec,
+        daily_df=daily,
+        weekly_df=weekly,
+        monthly_df=monthly,
+        test_ranges=(("2026-01-02", "2026-01-02"),),
+        train_missing=train_missing,
+        cache_consumer_id="publisher",
+        cache_root=root,
+    )
+    assert publisher_audit["status"] == "cold_build"
+    assert train_calls == ["baseline"]
+
+    _consumer_caches, consumer_audit = prepare_phase_a_caches(
+        spec=spec,
+        daily_df=daily,
+        weekly_df=weekly,
+        monthly_df=monthly,
+        test_ranges=(("2026-01-02", "2026-01-02"),),
+        train_missing=train_missing,
+        cache_consumer_id="consumer",
+        cache_root=root,
+    )
+    assert consumer_audit["status"] == "hit"
+    assert consumer_audit["build_reason"] == "consumer_validated_hit"
+    assert train_calls == ["baseline"]
+
+    current_path = (
+        root
+        / spec.cache_family
+        / spec.tenor.lower()
+        / "current.json"
+    )
+    external_pointer = root / "external-current.json"
+    external_pointer.write_bytes(current_path.read_bytes())
+    current_path.unlink()
+    current_path.symlink_to(external_pointer)
+
+    with pytest.raises(RuntimeError, match="CACHE_PUBLISHER_REQUIRED"):
+        prepare_phase_a_caches(
+            spec=spec,
+            daily_df=daily,
+            weekly_df=weekly,
+            monthly_df=monthly,
+            test_ranges=(("2026-01-02", "2026-01-02"),),
+            train_missing=train_missing,
+            cache_consumer_id="consumer",
+            cache_root=root,
+        )
+
+
 def test_private_build_requires_absolute_cache_root(monkeypatch) -> None:
     monkeypatch.setenv(
         CACHE_MUTATION_POLICY_ENV,

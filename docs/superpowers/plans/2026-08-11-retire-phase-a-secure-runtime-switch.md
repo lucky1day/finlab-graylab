@@ -25,7 +25,7 @@
 - Modify: `tests/test_liwei_0616_private_cache.py:114-315`
 - Test: `tests/test_liwei_0616_private_cache.py`
 
-- [ ] **Step 1: 核对工作树并冻结现有 GREEN 基线**
+- [x] **Step 1: 核对工作树并冻结现有 GREEN 基线**
 
 Run:
 
@@ -42,7 +42,7 @@ Expected:
 6 passed
 ```
 
-- [ ] **Step 2: 增加修改前即可通过的 consumer characterization test**
+- [x] **Step 2: 增加修改前即可通过的 consumer characterization test**
 
 在 `tests/test_liwei_0616_private_cache.py` 的 private-build 测试之后增加：
 
@@ -145,7 +145,7 @@ def test_consumer_securely_reads_current_generation(
 
 该测试使用内容合法的 symlink pointer：普通文件读取会跟随并成功，只有现有 secure reader 会拒绝，因此它能够真实锁定 `secure=True`，而不是只测试 JSON 损坏。
 
-- [ ] **Step 3: 运行 characterization 并确认修改前仍为 GREEN**
+- [x] **Step 3: 运行 characterization 并确认修改前仍为 GREEN**
 
 Run:
 
@@ -160,7 +160,7 @@ Expected:
 7 passed
 ```
 
-- [ ] **Step 4: 提交 characterization**
+- [x] **Step 4: 提交 characterization**
 
 ```bash
 git add tests/test_liwei_0616_private_cache.py \
