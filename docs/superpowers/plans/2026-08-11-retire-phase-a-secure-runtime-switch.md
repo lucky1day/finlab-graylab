@@ -344,7 +344,7 @@ git commit -m "refactor(cache): remove phase-a secure runtime switch"
 - Modify: `shared/liwei_0616_phase_a_cache.py:1917-2181,3704-3995`
 - Test: `tests/test_liwei_0616_private_cache.py`
 
-- [ ] **Step 1: 收敛 generation 创建与 staged validation**
+- [x] **Step 1: 收敛 generation 创建与 staged validation**
 
 从 `_create_generation()` 签名删除：
 
@@ -394,7 +394,7 @@ def _validate_staged_generation(
     return _load_generation_directory(staging)
 ```
 
-- [ ] **Step 2: 收敛 current pointer 原子切换**
+- [x] **Step 2: 收敛 current pointer 原子切换**
 
 从 `_switch_current_generation()` 删除 `secure` 参数以及所有 `if secure:` 分支。以下 publication commit point 必须保持原顺序：
 
@@ -439,7 +439,7 @@ except OSError:
 
 保留现有注释：`os.replace()` 是唯一 publication commit point，replace 后的目录 fsync 失败不能向调用方报告发布失败。
 
-- [ ] **Step 3: 收敛 staging cleanup**
+- [x] **Step 3: 收敛 staging cleanup**
 
 替换为：
 
@@ -450,7 +450,7 @@ def _cleanup_staging_directories(family_root: Path) -> None:
             shutil.rmtree(path)
 ```
 
-- [ ] **Step 4: 收敛未发布 candidate 清理**
+- [x] **Step 4: 收敛未发布 candidate 清理**
 
 函数签名改为：
 
@@ -492,7 +492,7 @@ if candidate.exists():
     _fsync_directory(generation_root)
 ```
 
-- [ ] **Step 5: 收敛 generation prune**
+- [x] **Step 5: 收敛 generation prune**
 
 从 `_prune_generations()` 删除 `secure` 参数以及两个 `if secure:` 目录检查块。以下保护规则必须保持不变：
 
@@ -510,7 +510,7 @@ if not protected:
 
 保留现有 retention、family byte limit、protected generation 排除、`CacheCapacityError` 和删除后 `_fsync_directory(generation_root)` 逻辑。
 
-- [ ] **Step 6: 运行聚焦测试**
+- [x] **Step 6: 运行聚焦测试**
 
 Run:
 
@@ -525,7 +525,7 @@ Expected:
 7 passed
 ```
 
-- [ ] **Step 7: 运行静态边界验证**
+- [x] **Step 7: 运行静态边界验证**
 
 Run:
 
@@ -579,7 +579,7 @@ PY
 
 Expected: exit code `0`，无输出。
 
-- [ ] **Step 8: 提交 mutation-only helper 清理**
+- [x] **Step 8: 提交 mutation-only helper 清理**
 
 ```bash
 git add shared/liwei_0616_phase_a_cache.py \

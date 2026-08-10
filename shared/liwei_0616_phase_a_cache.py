@@ -254,10 +254,7 @@ def prepare_phase_a_caches(
         )
     family_root.mkdir(parents=True, exist_ok=True)
     with _exclusive_lock(family_root / ".prewarmer.lock"):
-        _cleanup_staging_directories(
-            family_root,
-            secure=False,
-        )
+        _cleanup_staging_directories(family_root)
         return _prepare_under_family_lock(
             spec=spec,
             cache_consumer_id=cache_consumer_id,
@@ -611,7 +608,6 @@ def _prepare_under_family_lock(
         compare_gate_evidence=compare_gate_evidence,
         input_change=input_change,
         acceptance_scopes=acceptance_scopes,
-        secure=False,
     )
     try:
         overall_status = (
@@ -639,21 +635,18 @@ def _prepare_under_family_lock(
         _prune_generations(
             family_root,
             protected_generation_ids=protected_generation_ids,
-            secure=False,
         )
         # current.json 的原子 replace 是唯一 publication commit
         # point。所有可能失败的容量清理与返回值构造都必须在它之前完成。
         _switch_current_generation(
             family_root,
             generation,
-            secure=False,
         )
     except BaseException as error:
         try:
             _discard_unpublished_generation(
                 family_root,
                 generation.generation_id,
-                secure=False,
             )
         except BaseException as cleanup_error:
             error.add_note(
@@ -1913,14 +1906,8 @@ def _create_generation(
     compare_gate_evidence: Mapping[str, Any],
     input_change: Mapping[str, Any],
     acceptance_scopes: Mapping[str, Mapping[str, Any]],
-    secure: bool,
 ) -> _LoadedGeneration:
     family_root.mkdir(parents=True, exist_ok=True)
-    family_identity = (
-        _require_secure_directory(family_root, "cache family")
-        if secure
-        else None
-    )
     staging = Path(
         tempfile.mkdtemp(
             dir=family_root,
@@ -2041,10 +2028,7 @@ def _create_generation(
                 generation_acceptance,
         }
         _atomic_json_dump(staging / "manifest.json", manifest)
-        validated = _validate_staged_generation(
-            staging,
-            secure=secure,
-        )
+        validated = _validate_staged_generation(staging)
         staged_bytes = _directory_size_bytes(staging)
         if staged_bytes > MAX_CACHE_FAMILY_BYTES:
             raise CacheCapacityError(
@@ -2057,43 +2041,8 @@ def _create_generation(
 
         generation_root = family_root / "generations"
         generation_root.mkdir(exist_ok=True)
-        generation_root_identity = None
-        if secure:
-            generation_root_identity = _require_secure_directory(
-                generation_root,
-                "cache generations root",
-            )
-            _require_unchanged_directory(
-                family_root,
-                family_identity,
-                "cache family",
-            )
         target = generation_root / generation_id
-        if secure:
-            try:
-                os.lstat(target)
-            except FileNotFoundError:
-                pass
-            else:
-                raise ValueError(
-                    "cache generation target already exists"
-                )
-            _require_unchanged_directory(
-                generation_root,
-                generation_root_identity,
-                "cache generations root",
-            )
         os.replace(staging, target)
-        if secure:
-            _require_unchanged_directory(
-                generation_root,
-                generation_root_identity,
-                "cache generations root",
-            )
-            _require_secure_directory(
-                target,
-                "cache generation",
-            )
         _fsync_directory(generation_root)
         finalized = True
         return _LoadedGeneration(
@@ -2162,10 +2111,8 @@ def _load_current_generation(
 
 def _validate_staged_generation(
     staging: Path,
-    *,
-    secure: bool = False,
 ) -> _LoadedGeneration:
-    return _load_generation_directory(staging, secure=secure)
+    return _load_generation_directory(staging)
 
 
 def _load_generation_directory(
@@ -3691,27 +3638,9 @@ def _validate_input_change_frame_audit(
 def _switch_current_generation(
     family_root: Path,
     generation: _LoadedGeneration,
-    *,
-    secure: bool = False,
 ) -> None:
-    family_identity = (
-        _require_secure_directory(family_root, "cache family")
-        if secure
-        else None
-    )
     pointer_path = family_root / "current.json"
     pointer_path.parent.mkdir(parents=True, exist_ok=True)
-    if secure:
-        try:
-            os.lstat(pointer_path)
-        except FileNotFoundError:
-            pass
-        else:
-            _secure_read_regular_file(
-                pointer_path,
-                "cache current pointer",
-                max_bytes=1024 * 1024,
-            )
     encoded = (
         _canonical_json(
             {
@@ -3736,30 +3665,8 @@ def _switch_current_generation(
             handle.flush()
             os.fsync(handle.fileno())
         json.loads(temp_path.read_text(encoding="utf-8"))
-        if secure:
-            _secure_read_regular_file(
-                temp_path,
-                "cache current pointer candidate",
-                max_bytes=1024 * 1024,
-            )
-            _require_unchanged_directory(
-                family_root,
-                family_identity,
-                "cache family",
-            )
         os.replace(temp_path, pointer_path)
         temp_path = None
-        if secure:
-            _secure_read_regular_file(
-                pointer_path,
-                "cache current pointer",
-                max_bytes=1024 * 1024,
-            )
-            _require_unchanged_directory(
-                family_root,
-                family_identity,
-                "cache family",
-            )
     finally:
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)
@@ -3842,24 +3749,8 @@ def _generation_audit(
     }
 
 
-def _cleanup_staging_directories(
-    family_root: Path,
-    *,
-    secure: bool = False,
-) -> None:
-    family_identity = (
-        _require_secure_directory(family_root, "cache family")
-        if secure
-        else None
-    )
+def _cleanup_staging_directories(family_root: Path) -> None:
     for path in family_root.glob(".building-*"):
-        if secure:
-            _require_secure_directory(path, "cache staging directory")
-            _require_unchanged_directory(
-                family_root,
-                family_identity,
-                "cache family",
-            )
         if path.is_dir():
             shutil.rmtree(path)
 
@@ -3867,30 +3758,12 @@ def _cleanup_staging_directories(
 def _discard_unpublished_generation(
     family_root: Path,
     generation_id: str,
-    *,
-    secure: bool = False,
 ) -> None:
     """删除未提交 candidate；绝不删除 current 指针引用的 generation。"""
     pointer_path = family_root / "current.json"
-    pointer_exists = pointer_path.exists()
-    if secure:
+    if pointer_path.exists():
         try:
-            os.lstat(pointer_path)
-        except FileNotFoundError:
-            pointer_exists = False
-        else:
-            pointer_exists = True
-    if pointer_exists:
-        try:
-            pointer_bytes = (
-                _secure_read_regular_file(
-                    pointer_path,
-                    "cache current pointer",
-                    max_bytes=1024 * 1024,
-                )
-                if secure
-                else pointer_path.read_bytes()
-            )
+            pointer_bytes = pointer_path.read_bytes()
             pointer = json.loads(pointer_bytes.decode("utf-8"))
             current_generation_id = str(
                 pointer.get("generation_id") or ""
@@ -3907,15 +3780,6 @@ def _discard_unpublished_generation(
     generation_root = family_root / "generations"
     candidate = generation_root / generation_id
     if candidate.exists():
-        if secure:
-            _require_secure_directory(
-                generation_root,
-                "cache generations root",
-            )
-            _require_secure_directory(
-                candidate,
-                "cache unpublished generation",
-            )
         shutil.rmtree(candidate)
         _fsync_directory(generation_root)
 
@@ -3924,17 +3788,11 @@ def _prune_generations(
     family_root: Path,
     *,
     protected_generation_ids: set[str],
-    secure: bool = False,
 ) -> None:
     """提交前清理历史 generation，同时保护 old current 与 candidate。"""
     generation_root = family_root / "generations"
     if not generation_root.is_dir():
         return
-    if secure:
-        _require_secure_directory(
-            generation_root,
-            "cache generations root",
-        )
     protected = {
         str(generation_id)
         for generation_id in protected_generation_ids
@@ -3971,11 +3829,6 @@ def _prune_generations(
                 "cannot satisfy retention or family limit"
             )
         removed_bytes = _directory_size_bytes(removable)
-        if secure:
-            _require_secure_directory(
-                removable,
-                "cache removable generation",
-            )
         shutil.rmtree(removable)
         generations.remove(removable)
         total_bytes -= removed_bytes
