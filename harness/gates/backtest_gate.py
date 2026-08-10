@@ -12,11 +12,11 @@ from harness.authorization import (
     verify_authorization,
     write_authorization_audit,
 )
-from harness.config_loader import load_config_raw
 from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
 from harness.probes.table_guard import PROTECTED_TABLES, diff_snapshots, snapshot_table_counts
 from harness.result import Evidence, GateResult, GateStatus
+from shared.scheme_config_loader import load_yaml_mapping
 
 
 IGNORE_PATHS = frozenset({"$.elapsed_sec"})
@@ -34,7 +34,8 @@ class BacktestGate(Gate):
         return guarded_result(self.name, lambda started_at: self._run(ctx, started_at))
 
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
-        config = load_config_raw(ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml")
+        config_path = ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml"
+        config = load_yaml_mapping(config_path)
         runner = _runner_from_config(config)
         runner_args = _runner_args_from_config(config)
         if not runner:
@@ -56,14 +57,19 @@ class BacktestGate(Gate):
         try:
             before = snapshot_table_counts(engine, PROTECTED_TABLES)
             if ctx.persist_backtest:
+                from scheduler.discovery import load_scheme_config
+
+                cfg = load_scheme_config(config_path)
                 auth, auth_errors = verify_authorization(
                     ctx.authorization,
                     scheme_id=ctx.scheme_id,
                     action="backtest_persist",
                     predict_date=ctx.predict_date,
+                    scheme_version=cfg.scheme_version,
+                    backtest_start_date=ctx.backtest_start_date,
                     used_store_path=used_tokens_path(ctx.project_root),
                 )
-                if auth_errors:
+                if auth is None or auth_errors:
                     finished_at = utc_now()
                     return GateResult(
                         gate_name=self.name,

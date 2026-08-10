@@ -4,7 +4,6 @@ import ast
 from pathlib import Path
 from typing import Any
 
-from harness.config_loader import load_config_raw, try_load_scheme_config
 from harness.context import GateContext
 from harness.contracts.config_schema import validate_config
 from harness.contracts.onboarding_policy import validate_onboarding_policy
@@ -34,6 +33,8 @@ from harness.gates.native_maintenance_admission_gate import (
     native_business_identity_snapshot,
 )
 from harness.result import Evidence, GateResult, GateStatus
+from scheduler.discovery import load_scheme_config
+from shared.scheme_config_loader import load_yaml_mapping
 
 
 class StaticGate(Gate):
@@ -68,8 +69,8 @@ class StaticGate(Gate):
         config_path = required_files["config.yaml"]
         if config_path.exists():
             try:
-                config_raw = load_config_raw(config_path)
-                try_load_scheme_config(config_path)
+                config_raw = load_yaml_mapping(config_path)
+                load_scheme_config(config_path)
             except Exception as exc:
                 config_errors.append(str(exc))
             config_errors.extend(validate_config(config_raw, scheme_dir.name))

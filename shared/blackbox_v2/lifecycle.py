@@ -385,44 +385,26 @@ def _reconcile_journal_unlocked(
     token_hash: str | None,
 ) -> LifecycleState:
     journal = load_journal(path)
-    if journal.phase in {"verified", "compensated"}:
-        return journal.previous if journal.phase == "compensated" else journal.target
-    if journal.phase == "unresolved":
-        return _reconcile_unresolved_with_linked_journal(
-            path,
-            journal,
-            config_path=config_path,
-            apply_database=apply_database,
-            read_state=read_state,
-            token_hash=token_hash,
+    project_root = _project_root_from_journal_path(path, journal.scheme_id)
+    pending = pending_journals(project_root, journal.scheme_id)
+    if (
+        len(pending) != 1
+        or pending[0][1].operation_id != journal.operation_id
+    ):
+        raise RuntimeError(
+            "journal is no longer the unique pending lifecycle journal"
         )
-    errors: list[str] = []
-    try:
-        atomic_update_config(config_path, journal.previous)
-    except BaseException as exc:
-        errors.append(f"config reconciliation failed: {exc}")
-    try:
-        apply_database(journal.previous)
-    except BaseException as exc:
-        errors.append(f"database reconciliation failed: {exc}")
-    try:
-        actual = read_state()
-        if actual != journal.previous:
-            errors.append(
-                f"reconciliation verification mismatch: expected={journal.previous}, actual={actual}"
-            )
-    except BaseException as exc:
-        errors.append(f"reconciliation verification failed: {exc}")
-    if errors:
-        updated = journal.transition("unresolved", error="; ".join(errors))
-        _atomic_write_journal_path(path, updated)
-        raise RuntimeError(updated.error)
-    updated = journal.transition("compensated", error=journal.error)
-    _atomic_write_journal_path(path, updated)
-    return journal.previous
+    return _reconcile_with_linked_journal(
+        path,
+        journal,
+        config_path=config_path,
+        apply_database=apply_database,
+        read_state=read_state,
+        token_hash=token_hash,
+    )
 
 
-def _reconcile_unresolved_with_linked_journal(
+def _reconcile_with_linked_journal(
     original_path: Path,
     original: LifecycleJournal,
     *,
@@ -431,7 +413,7 @@ def _reconcile_unresolved_with_linked_journal(
     read_state: Callable[[], LifecycleState],
     token_hash: str | None,
 ) -> LifecycleState:
-    """以新 journal 对账 unresolved，保留原终态及错误证据。"""
+    """以新 journal 对账 pending 操作，保留原 phase 及错误证据。"""
     actual_before = read_state()
     reconciliation = LifecycleJournal.prepare(
         action="lifecycle_reconcile",

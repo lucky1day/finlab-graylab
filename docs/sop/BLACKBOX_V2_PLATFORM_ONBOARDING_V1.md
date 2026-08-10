@@ -246,14 +246,17 @@ Blackbox Admission、`mode`、capability 身份矩阵和 Backend 手动预测入
 变化通过 Git、Harness run 与授权审计追溯，不保留第二份当前配置。是否已由自然时钟产生
 `scheduled_live`，仍须由 installed plist、loaded state、日志和成功 run/prediction 共同证明。
 
-历史缺口只可在独立授权下使用单日运维入口补齐：
+历史缺口只通过单日运维入口补齐；可选限定一个 base scheme：
 
 ```bash
 python -m harness signal-gap-fill --predict-date YYYY-MM-DD
+python -m harness signal-gap-fill --predict-date YYYY-MM-DD --scheme-id <base_scheme_id>
 ```
 
-命令自动冻结当天全 active scope，只补真实缺口并写 `gray_live`；token 仅在进程内存在。
-缺少 HMAC secret、权威输入或任一算法失败时直接退出，不准备输入、不回退、不覆盖、不重试。
+命令执行本身就是补数动作，不接收 operator、token、外部 plan、plan SHA 或日期范围。它在
+进程内生成 `single-date-active-live-gap-plan-v1`：不带 `--scheme-id` 时扫描当天全部 active
+due 方案，带参数时只检查该 active base scheme。`SKIP_NOT_DUE` 和 `SKIP_PRESENT` 都是正常
+零写终态；任一权威输入或算法失败时直接退出，不回退、不覆盖、不重试。
 
 ## 3. 快照与 Request
 
@@ -366,7 +369,7 @@ conda run --no-capture-output -n bond_factor_lab_service \
 固定顺序：
 
 ```text
-static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness
+static -> input -> unit -> dry-run -> compare -> backtest
 ```
 
 任一 Gate 失败时 fail-fast，不进入后续 Gate，不签发 shadow 授权。
@@ -385,7 +388,7 @@ conda run --no-capture-output -n bond_factor_lab_service \
 ```
 
 `--check-only` 仍使用只读 Engine 构造平台日历、三个 cutoff 和
-Request，仍按固定七 Gate 顺序 fail-fast，并生成本地
+Request，仍按固定六 Gate 顺序 fail-fast，并生成本地
 `harness_run_id`、逐 Gate JSON 与统一报告；但完全不调用 Harness
 控制面 run/gate 持久化，也不写任何业务表。统一报告必须同时写明：
 
@@ -399,9 +402,8 @@ persist_backtest=false
 该模式只允许 `--stage all`，且与授权 token、持久化 backtest、
 shadow、activate、gray/live 和真实 API 等任何副作用阶段不兼容；
 出现组合参数时必须 fail-closed。Backtest Gate 固定执行 100 条
-no-persist 验收，必须得到 `100/100` 且 `persist=false`；
-`api-readiness` 仍只做结构验证，不访问真实 Registry、HTTP API 或
-scheduler。
+no-persist 验收，必须得到 `100/100` 且 `persist=false`。技术 `all`
+不访问 Backend；激活后的 HTTP 验收另行运行 `dashboard` Gate。
 
 ### 4.2 Gate 证据边界
 
@@ -413,11 +415,9 @@ scheduler。
 | `dry-run` | 单点 predict、Result 校验、内存 `PredictionRecord` | 已写预测表或已进入业务 API | PredictionRecord、组合 ID、结果路径 |
 | `compare` | 重复、predict/backtest、分批、顺序、后续业务行隔离；平台制品哈希不变；同代时才比较上游结果 | 准确率、历史修订回放、跨 generation 逐行复现 | 五类一致性证据、`platform_input_hashes_unchanged=true`、输入对齐状态 |
 | `backtest` | 100 条全部返回、no-persist、组合输入一致 | 大于 100 条单进程能力、效果门槛、算法内部是否使用[等价的一次性计算](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md#63-对每个-request-独立截断) | 请求/结果数量、组合 ID、persist=false |
-| `api-readiness` | composite 身份和结果结构兼容 | 真实 Registry、HTTP API 或 scheduler 探针 | registry ID、结构结果 |
-
-报告中的 `business_tables_written: false` 是声明性证据，不是数据库前后计数。`api-readiness` 中的 scheduler/API 状态也是结构预期，不能单独证明生产不可见。
-
-`api-readiness` 按生命周期区分两种结构模式：首次入库的 `paused` 方案使用 `pre_shadow`，预期 scheduler/API 不可见；已经专项激活的方案重新执行 all-stage 时使用 `active_recertification`，要求 `status=active + version_status=active`，并把 scheduler/API 可见性记录为 active 预期。两种模式都只做内存结构验证，不在自动段写业务表，也不能替代正式 HTTP、Registry 或 scheduler 探针。
+报告中的 `business_tables_written: false` 是声明性证据，不是数据库前后计数。激活后的
+`DashboardGate` 只验证 `/api/factor-lab/dashboard` 当前业务读模型；它不属于 `all`，且
+Dashboard payload 不含 exact version，因此不能替代生命周期、Registry 和数据库版本证据。
 
 ### 4.3 自动段副作用
 
@@ -428,7 +428,7 @@ scheduler。
 
 它不得写 `t_scheme_runs`、`t_scheme_predictions`、`t_backtest_*` 业务记录、active Registry 或前端可见状态。
 
-Harness 控制面持久化采用 fail-closed。即使 `onboard_report.json` 为 `overall_passed=true`，仍必须确认 exact `harness_run_id` 和七个 Gate 已存在于审计数据库，才能授权 shadow。
+Harness 控制面持久化采用 fail-closed。即使 `onboard_report.json` 为 `overall_passed=true`，仍必须确认 exact `harness_run_id` 和六个 Gate 已存在于审计数据库，才能授权 shadow。
 
 `--check-only` 恰好相反：它不得尝试写
 `t_harness_runs`/`t_harness_gate_results`，本地通过报告也不能用于
@@ -442,7 +442,7 @@ Result 解析器严格要求 JSON 的 `predicted_direction` 为整数 `-1/0/1`�
 
 ### 5.1 授权前核验
 
-从最新通过报告取得 `harness_run_id`、`scheme_version`、`predict_date`、七个 Gate 状态、snapshot ID 和三 SHA，并另外完成：
+从最新通过报告取得 `harness_run_id`、`scheme_version`、`predict_date`、六个 Gate 状态、snapshot ID 和三 SHA，并另外完成：
 
 1. 重新运行环境自检；
 2. 使用只读 SQL 确认 exact run 已写入审计 DB；`python -m harness report {scheme_id} --latest` 只读取本地最新报告，不能代替数据库核验；
@@ -646,9 +646,21 @@ Activation 完成后、前端验收前，必须按时间顺序补齐从该方案
 conda run --no-capture-output -n bond_factor_lab_service \
   python -m harness signal-gap-fill \
     --predict-date {historical_signal_date}
+
+conda run --no-capture-output -n bond_factor_lab_service \
+  python -m harness signal-gap-fill \
+    --predict-date {historical_signal_date} \
+    --scheme-id {base_scheme_id}
 ```
 
-命令冻结该日全 active scope，只为 `GRAY_LIVE_GAP` 原子组在进程内签发绑定 plan SHA、exact version 与 target keys 的短期 HMAC token；Native source authority 固定为 `null`，Blackbox token 继续绑定完整 DataBridge authority。旧逐方案 Gate 和外部 `gray_backfill_write` token 已退役。Blackbox 使用 `historical_as_of_replay` 输入模式：完整校验当前 DataBridge 后，允许历史 `predict_date` 读取当前同代快照，但 Request 的三个 cutoff key 仍硬截止在该点的 `feature_date`。该结果必须标记 `current_snapshot_as_of_not_historical_vintage`，只能解释为当前快照上的 live-safe as-of replay，不能宣称历史 vintage PIT。Gate 在算法执行和提交前持续核对冻结 source authority；切代即失败。Blackbox prediction `extra` 必须持久化 snapshot、generation、refresh、三频 cutoff、replay semantics 和 backfill 时间；Native 则从当前数据库按 `feature_date` 截止在私有临时目录中重建，不保存临时 artifact/cache provenance。
+命令在进程内生成单日计划并冻结本次 Blackbox DataBridge authority；Native 从当前数据库按
+`feature_date` 截止在私有临时目录中重建。所有缺口算法必须先全部成功，任一算法失败则
+prediction 零提交；全部成功后才按 base scheme group insert-only 写入，并在所有 group 完成后
+只做一次同日期权威读回。Blackbox 使用 `historical_as_of_replay`，Request 的三个 cutoff key
+仍硬截止在该点的 `feature_date`；结果标记 `current_snapshot_as_of_not_historical_vintage`，只能
+解释为当前快照上的 live-safe as-of replay，不能宣称历史 vintage PIT。Blackbox prediction
+`extra` 继续持久化 snapshot、generation、refresh、三频 cutoff、replay semantics 和 backfill
+时间；Native 不保存临时 artifact/cache provenance。
 
 历史 gray 写入采用 insert-only，并依赖 `uk_scheme_tenor_target` 原子拒绝重复 target；不得进入 `ON DUPLICATE KEY UPDATE`。预检已存在、竞争事务冲突、算法失败、provenance 缺失或 Gate 表增量不是 run/prediction/log 精确各 `+1` 时，事务失败且不能覆盖首条预测。补齐产生的 run、prediction 和 run log 必须一一对应；任一点失败时冻结当前方案的后续补齐，不得把缺口留给前端隐藏。
 
@@ -661,6 +673,9 @@ Activation 当天还必须为当前可运行点执行至少一次受控 `gray_li
 旧 `/api/schemes`、`/api/backtests/factor-lab` 和
 `/api/metrics/{registry_scheme_id}` 只允许作为本机分项诊断或公网 rollout 兼容验证；
 final 公网配置会拒绝这些旧接口，不能用它们代替 dashboard 验收：
+
+激活后的 Harness HTTP 验收只运行 `DashboardGate`。它验证当前业务读模型，但 Dashboard
+payload 不含 exact version；版本身份必须由 lifecycle、Registry 与数据库 readback 独立证明。
 
 1. dashboard 中 active composite Registry 方案必须包含真实、非空的 `deployed_at`；前端候选排行的“部署时间”只能来自该字段，不得使用 hardcoded 日期、默认值或 scheme ID 特判。
 2. dashboard 中 canonical latest-success 回测明细必须全部满足 `target_date < gray_target_start`；前端不得靠裁剪或覆盖历史行来掩盖错误的回测落库。
@@ -677,8 +692,8 @@ final 公网配置会拒绝这些旧接口，不能用它们代替 dashboard 验
 
 ### 7.4 生产完成状态
 
-- **Onboarding Complete**：Activation、完整历史回测、从 `gray_target_start` 起的 gray live 补齐，以及 API 和前端验收均通过；它本身不授予生产控制面挂载或 `scheduled_live`。
-- **Production Observed**：在 Onboarding Complete 基础上，对应 LaunchAgent 经真实时钟自然产生至少一条成功 `prediction_phase=scheduled_live`，并能从 installed plist、`launchctl`、任务日志、run、prediction、API 和前端追溯。
+- **Onboarding Complete**：Activation、完整历史回测、从 `gray_target_start` 起的 gray live 补齐，以及 Dashboard 和前端验收均通过；它本身不授予生产控制面挂载或 `scheduled_live`。
+- **Production Observed**：在 Onboarding Complete 基础上，对应 LaunchAgent 经真实时钟自然产生至少一条成功 `prediction_phase=scheduled_live`，并能从 installed plist、`launchctl`、任务日志、run、prediction、Dashboard 和前端追溯。
 
 仅 active 但未补齐灰度实盘、前端仍混入灰度 target 的回测、缺 `deployed_at`，或没有 launchd 控制面挂载证据，都不得标记为 Onboarding Complete。
 
@@ -691,23 +706,27 @@ final 公网配置会拒绝这些旧接口，不能用它们代替 dashboard 验
 | 上游自测与平台输入摘要不同 | 标记 `data_vintage_mismatch`，停止算法结果归因 | 上游在平台选定的同一 generation 与规范化日历上重跑，完整输入身份一致 |
 | Intake 失败 | 不手工拼方案目录，不改交付文件 | 清理未完成 trial 后重新 Intake |
 | 自动 Gate 失败 | 不签发 token，保留报告 | 问题修复后从 static 重跑全套 |
-| 报告通过但审计 DB 缺失 | 不签发 token | exact run 和七个 Gate 完整持久化 |
+| 报告通过但审计 DB 缺失 | 不签发 token | exact run 和六个 Gate 完整持久化 |
 | 临时快照残留 | 不交给下一次运行 | 无进程占用后清理并重建 |
 | shadow 失败且 Registry/版本未变 | 核对 token、审计和前置状态 | 仍为 draft/paused 且身份未占用 |
-| shadow 失败但 Registry/版本已变 | 禁止自动重试或删除记录 | 完成配置、Registry、版本三方 reconciliation |
+| shadow 失败但 Registry/版本已变 | 禁止自动重试或删除记录，pending 直接阻断 | 唯一 pending journal 已通过显式 HMAC `blackbox_reconcile` 回退 previous safe state并完成 readback |
 | API/scheduler 意外出现 trial | 保持 Registry paused，不执行 live | 找到来源并移除生产入口 |
 | canonical backtest 含 gray target | 保留旧 run 审计，停止前端验收 | 用绑定 `gray_target_start` 的新 token 生成新的 immutable run；不得靠前端裁剪收口 |
 | 激活后 gray live 不连续 | 冻结该方案的完成状态，不伪造 `scheduled_live` | 按 target 日历逐日执行单日 `signal-gap-fill`；普通 `live` Gate 保持 fresh-only |
 | active Registry 缺 `deployed_at` | API/前端 fail-closed | 通过正式 Registry reconciliation 恢复真实部署日期 |
 | backtest/live 同一 target 重叠 | 阻断上线，保留冲突清单 | 新回测 run 或正式 correction 使 target 分区互斥后重验 |
 
-Shadow 生命周期操作通过 journal、补偿和 reconciliation 收口；数据库与配置文件不能组成单一事务，因此命令异常后仍必须执行三方对账。若发现任一 shadow 版本或 Registry 行：
+Blackbox lifecycle journal 一旦存在 pending，新的 shadow、activate 或 revision activate 都必须
+直接阻断，不得在授权前隐式恢复。只有独立 HMAC `blackbox_reconcile` 可以处理唯一 pending
+journal：它只回退到 previous safe state，保留原 journal，并新增 linked reconciliation journal；
+多个 pending 或恢复失败继续阻断并转人工核查。数据库与配置文件不能组成单一事务，因此命令
+异常后仍必须执行三方只读对账：
 
-1. 不再次签发 token；
-2. 保存命令、报告和只读查询结果；
-3. 检查配置、Registry、版本表是否构成完整 `shadow + paused`；
-4. 三者完整且业务表零新增时，按登记后检查收口；
-5. 三者不一致时保持 paused，登记整改，不手工删除历史版本或覆盖原生方案。
+1. 不重试原 lifecycle 动作，保存命令、报告和只读查询结果；
+2. 确认只有一个 pending journal，并核对其 previous safe state；
+3. 为该 exact scheme/version/run 签发独立 `blackbox_reconcile` HMAC token；
+4. 显式运行 `lifecycle-reconcile`，回读 safe state、原 journal 与新 linked journal；
+5. 多个 pending、恢复失败或 readback 不一致时继续阻断并转人工核查，不手工删除历史版本。
 
 ## 9. 最终检查
 
@@ -729,9 +748,9 @@ Shadow 生命周期操作通过 journal、补偿和 reconciliation 收口；数�
 - [ ] 历史补缺只写 `gray_live`；只有合格自然时钟触发才写 `scheduled_live`，二者不得由日期标签互相倒签
 - [ ] 任一 cadence 的完整性以当时 active Registry、run、prediction 和日志核验；不得冻结旧方案数量、release 队列或 coordinator/ledger 口径
 - [ ] Input 报告三 SHA 与选定 generation 完全一致
-- [ ] 七个 Gate 通过，并理解各 Gate 没有证明什么
-- [ ] 技术零写入批次使用 `--check-only`，报告四个零写字段正确，Backtest 为 `100/100 + persist=false`，API readiness 仅为结构验证
-- [ ] 如准备 shadow（非 check-only），exact Harness run 和七个结果已进入审计 DB
+- [ ] 六个 Gate 通过，并理解各 Gate 没有证明什么；技术 `all` 未访问 Backend
+- [ ] 技术零写入批次使用 `--check-only`，报告四个零写字段正确，Backtest 为 `100/100 + persist=false`
+- [ ] 如准备 shadow（非 check-only），exact Harness run 和六个结果已进入审计 DB
 - [ ] 普通自动段只产生控制面审计，没有业务表新增；check-only 连控制面也未持久化
 - [ ] Shadow token 绑定 exact version/run 并设置短有效期
 - [ ] 登记后配置、版本、Registry 为 `shadow + paused`
@@ -741,7 +760,7 @@ Shadow 生命周期操作通过 journal、补偿和 reconciliation 收口；数�
 - [ ] 如执行持久化回测，授权已绑定实际起点和 `gray_target_start`，完整区间已分批计算并在单一事务中写入一个 immutable run
 - [ ] canonical backtest 全部满足 `target_date < gray_target_start`，与 live target 零重叠
 - [ ] 激活即登记真实 `deployed_at`，并已补齐 `target_date >= gray_target_start` 的连续 `gray_live`
-- [ ] `/api/metrics/{registry_scheme_id}` 返回三日期、`prediction_phase` 和 `phase_ranges`
+- [ ] 激活后 `DashboardGate` 已通过，且 exact version 已由 lifecycle、Registry 与数据库证据独立确认
 - [ ] 前端单独展示部署时间；详情分隔文案为 `实盘预测目标区间`，有 scheduled target 时显示 `{scheduled_live.start_target_date}开始`，否则显示“待产生”；actual pending 继续显示“待验证”
 - [ ] 前端三个数据口径与 DB/API 一致，任务格子、短名称、样本数、分隔线和控制台均通过
 

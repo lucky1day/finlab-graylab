@@ -5,30 +5,22 @@ from pathlib import Path
 from typing import Any
 
 
-def load_config_raw(config_path: Path) -> dict[str, Any]:
-    """读取 config.yaml；优先 PyYAML，缺失时使用项目 config 子集解析。"""
+def load_yaml_mapping(path: Path) -> dict[str, Any]:
+    """读取 YAML mapping；缺少 PyYAML 时使用项目配置子集解析器。"""
+    text = path.read_text(encoding="utf-8")
     try:
         yaml_module = importlib.import_module("yaml")
-    except ModuleNotFoundError:
-        return parse_project_yaml_subset(config_path.read_text(encoding="utf-8"))
-    raw = yaml_module.safe_load(config_path.read_text(encoding="utf-8"))
+    except ModuleNotFoundError as exc:
+        if exc.name != "yaml":
+            raise
+        return _parse_project_yaml_subset(text)
+    raw = yaml_module.safe_load(text)
     if not isinstance(raw, dict):
-        raise ValueError(f"{config_path}: config.yaml must contain a mapping")
+        raise ValueError(f"{path} must contain a YAML mapping")
     return raw
 
 
-def try_load_scheme_config(config_path: Path) -> Any | None:
-    """尽力复用 scheduler.discovery.load_scheme_config；依赖不可用时返回 None。"""
-    try:
-        discovery = importlib.import_module("scheduler.discovery")
-    except ModuleNotFoundError as exc:
-        if exc.name == "yaml":
-            return None
-        raise
-    return discovery.load_scheme_config(config_path)
-
-
-def parse_project_yaml_subset(text: str) -> dict[str, Any]:
+def _parse_project_yaml_subset(text: str) -> dict[str, Any]:
     import ast as literal_ast
 
     lines = _yaml_subset_lines(text)
@@ -138,12 +130,10 @@ def _split_key_value(line: str) -> tuple[str, str]:
 
 
 def _parse_scalar(value: str, literal_ast_module) -> Any:
-    # YAML 式布尔值
     if value.lower() in ("true", "yes", "on"):
         return True
     if value.lower() in ("false", "no", "off"):
         return False
-    # Python 字面量
     try:
         return literal_ast_module.literal_eval(value)
     except Exception:

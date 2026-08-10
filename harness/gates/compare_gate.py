@@ -10,6 +10,7 @@ from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
 from harness.result import Evidence, GateResult, GateStatus
 from shared.monthly_source_evidence import MONTHLY_SOURCE_ROLE, PLATFORM_CURRENT_MONTHLY_ROLE
+from shared.scheme_config_loader import load_yaml_mapping
 from shared.weekly_average_source_evidence import (
     PLATFORM_CURRENT_SOURCE_ROLE,
     WEEKLY_AVERAGE_SOURCE_ROLE,
@@ -105,7 +106,9 @@ class CompareGate(Gate):
         summary_path = bench_dir / "original_backtest_summary.json"
 
         # 读取配置判断 benchmark 是否为必需
-        config = _load_config(ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml")
+        config = load_yaml_mapping(
+            ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml"
+        )
         backtest_config = config.get("backtest", {}) if isinstance(config.get("backtest"), dict) else {}
         benchmark_required = bool(backtest_config.get("benchmark_required", False))
         strict_fields = _strict_prediction_fields(config)
@@ -850,16 +853,4 @@ def _current_backtest_summary(ctx: GateContext) -> dict[str, Any]:
     candidate = ctx.project_root / "schemes" / ctx.scheme_id / "benchmarks" / "current_backtest_summary.json"
     if candidate.exists():
         return json.loads(candidate.read_text(encoding="utf-8"))
-    return {}
-
-
-def _load_config(config_path: Path) -> dict[str, Any]:
-    """读取 config.yaml 返回字典；失败时返回空 dict 不阻断 gate。"""
-    try:
-        if config_path.exists():
-            from harness.config_loader import load_config_raw
-
-            return load_config_raw(config_path) or {}
-    except Exception:
-        pass
     return {}

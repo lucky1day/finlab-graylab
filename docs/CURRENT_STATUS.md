@@ -26,4 +26,10 @@
 
 - 当前规则只由根规范、CURRENT 架构/契约、Onboarding、SOP、生产准备清单和运维/产品手册定义。
 - 已实施计划、已关闭交接和被后续规则替代的决策草案不保留在工作树；需要追溯时使用 Git、Harness、run/prediction 和数据库审计。
-- `harness/` 简化评审已经进入决策阶段；在用户确认具体建议前，不删除 Gate、授权、审计或生命周期代码。
+
+## 当前 Harness 合同
+
+- 首次技术入库 `all` 固定为六段 `static -> input -> unit -> dry-run -> compare -> backtest`；`native-maintenance` 固定为五段 `static -> native-maintenance-admission -> input -> unit -> dry-run`。两者都不访问 Backend。
+- 激活后只用 `dashboard` Gate 校验 `/api/factor-lab/dashboard` 的当前业务快照；该 payload 不携带 exact version，因此不能用来证明 exact version。
+- `signal-gap-fill` 只支持单个 `predict_date`，可选限定一个 base scheme；命令执行权本身就是补数授权，不另设用户、token、确认或 plan SHA 层。Native 从当前数据库重建，Blackbox 重放冻结 DataBridge authority；所有算法成功后才按 group insert-only 写 `gray_live`，最后执行一次权威读回。
+- Blackbox lifecycle 存在 pending 时直接阻断后续操作；只有显式、独立 HMAC 授权的 `lifecycle-reconcile` 可修改状态，其它 Gate 不做隐式恢复。

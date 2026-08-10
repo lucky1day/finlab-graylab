@@ -22,7 +22,6 @@ NATIVE_MAINTENANCE_SEQUENCE = (
     "input",
     "unit",
     "dry-run",
-    "api-readiness",
 )
 _VALIDATION_PROFILE = "native_post_admission_revision_v1"
 NATIVE_BUSINESS_IDENTITY_EVIDENCE_KEY = "native_business_identity"

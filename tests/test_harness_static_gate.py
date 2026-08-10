@@ -3,12 +3,15 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+
+from scheduler.discovery import load_scheme_config
 
 
 class HarnessStaticGateTests(unittest.TestCase):
@@ -1066,10 +1069,18 @@ class HarnessLiveGateTests(unittest.TestCase):
         from harness.gates.live_gate import LiveGate
         from harness.result import GateStatus
 
-        token = issue_token("other_daily", "live_write", "2026-06-08")
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"HARNESS_AUTH_SECRET": "native-live-test-secret"},
+        ):
             project_root = Path(tmpdir)
-            _write_minimal_scheme(project_root, scheme_id="demo_daily")
+            config_path = _write_minimal_scheme(project_root, scheme_id="demo_daily")
+            token = issue_token(
+                "other_daily",
+                "live_write",
+                "2026-06-08",
+                scheme_version=load_scheme_config(config_path / "config.yaml").scheme_version,
+            )
             engine = SimpleNamespace(dispose=lambda: None)
             with patch("harness.gates.live_gate.snapshot_table_counts", return_value={"t_scheme_predictions": 10, "t_scheme_run_log": 20}):
                 with patch("harness.gates.live_gate.execute_scheme") as execute:
@@ -1094,11 +1105,19 @@ class HarnessLiveGateTests(unittest.TestCase):
         from harness.gates.live_gate import LiveGate
         from harness.result import GateStatus
 
-        token = issue_token("demo_daily", "live_write", "2026-06-08")
         run_result = SimpleNamespace(status="success", records_written=1, error_msg=None)
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"HARNESS_AUTH_SECRET": "native-live-test-secret"},
+        ):
             project_root = Path(tmpdir)
-            _write_minimal_scheme(project_root, scheme_id="demo_daily")
+            config_path = _write_minimal_scheme(project_root, scheme_id="demo_daily")
+            token = issue_token(
+                "demo_daily",
+                "live_write",
+                "2026-06-08",
+                scheme_version=load_scheme_config(config_path / "config.yaml").scheme_version,
+            )
             engine = SimpleNamespace(dispose=lambda: None)
             snapshots = [
                 {"t_scheme_predictions": 10, "t_scheme_run_log": 20, "t_scheme_runs": 5, "api_wind_daily": 30},
@@ -1159,10 +1178,18 @@ class HarnessLiveGateTests(unittest.TestCase):
         from harness.gates.live_gate import LiveGate
         from harness.result import GateStatus
 
-        token = issue_token("demo_daily", "live_write", "2026-06-08")
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"HARNESS_AUTH_SECRET": "native-live-test-secret"},
+        ):
             project_root = Path(tmpdir)
-            _write_minimal_scheme(project_root, scheme_id="demo_daily")
+            config_path = _write_minimal_scheme(project_root, scheme_id="demo_daily")
+            token = issue_token(
+                "demo_daily",
+                "live_write",
+                "2026-06-08",
+                scheme_version=load_scheme_config(config_path / "config.yaml").scheme_version,
+            )
             engine = SimpleNamespace(dispose=lambda: None)
             with patch("harness.gates.live_gate.snapshot_table_counts", return_value={"t_scheme_predictions": 10, "t_scheme_run_log": 20}):
                 with patch("harness.gates.live_gate.snapshot_scheme_counts", return_value={"t_scheme_predictions": 0, "t_scheme_run_log": 0}):
@@ -1238,51 +1265,45 @@ class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
         self.assertEqual(evidence["monthly_count"], 1)
         self.assertEqual(evidence["protected_table_deltas"], {"t_backtest_runs": 0, "t_scheme_predictions": 0, "t_scheme_run_log": 0})
 
-    def test_api_gate_passes_when_factor_lab_cell_exists(self) -> None:
-        from harness.context import GateContext
-        from harness.gates.api_gate import ApiGate
-
-        payload = {
-            "schemes": [
-                {
-                    "scheme_id": "demo_daily__h1__10Y",
-                    "target_tenor": "10Y",
-                    "monthly_metrics": [{"month": "2026-05", "samples": 2}],
-                }
-            ]
-        }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            project_root = Path(tmpdir)
-            _write_minimal_scheme(project_root, scheme_id="demo_daily")
-            with patch("harness.gates.api_gate.fetch_json", return_value=payload):
-                result = ApiGate().run(
-                    GateContext(
-                        scheme_id="demo_daily",
-                        predict_date="2026-06-08",
-                        project_root=project_root,
-                        report_dir=project_root / "reports" / "harness" / "demo_daily",
-                    )
-                )
-
-        self.assertTrue(result.passed, result.errors)
-        evidence = _evidence_dict(result)
-        self.assertTrue(evidence["matrix_cell_present"])
-        self.assertEqual(evidence["matched_tenor"], "10Y")
-
     def test_registry_all_excludes_live_and_orders_auto_gates(self) -> None:
         from harness.registry import sequence_for_stage
 
         self.assertEqual(
             sequence_for_stage("all"),
-            ["static", "input", "unit", "dry-run", "compare", "backtest", "api-readiness"],
+            ["static", "input", "unit", "dry-run", "compare", "backtest"],
         )
         self.assertNotIn("api", sequence_for_stage("all"))
+        self.assertNotIn("api-readiness", sequence_for_stage("all"))
         self.assertNotIn("live", sequence_for_stage("all"))
 
-    def test_activation_history_requires_api_readiness_not_active_api(self) -> None:
+    def test_native_maintenance_stage_has_exact_pre_activation_sequence(self) -> None:
+        from harness.registry import sequence_for_stage
+
+        self.assertEqual(
+            sequence_for_stage("native-maintenance"),
+            [
+                "static",
+                "native-maintenance-admission",
+                "input",
+                "unit",
+                "dry-run",
+            ],
+        )
+        self.assertNotIn(
+            "api-readiness",
+            sequence_for_stage("native-maintenance"),
+        )
+
+    def test_activation_history_requires_exact_all_sequence_without_api_readiness(self) -> None:
         from harness.gates.activate_gate import REQUIRED_ACTIVATE_GATES
 
-        self.assertIn("api-readiness", REQUIRED_ACTIVATE_GATES)
+        self.assertEqual(
+            REQUIRED_ACTIVATE_GATES,
+            frozenset(
+                {"static", "input", "unit", "dry-run", "compare", "backtest"}
+            ),
+        )
+        self.assertNotIn("api-readiness", REQUIRED_ACTIVATE_GATES)
         self.assertNotIn("api", REQUIRED_ACTIVATE_GATES)
 
     def test_orchestrator_fail_fast_stops_after_first_failure(self) -> None:
@@ -1373,7 +1394,13 @@ class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
                 with contextlib.redirect_stdout(output):
                     fail_code = main(["onboard", "demo_daily", "--predict-date", "2026-06-08", "--stage", "all"])
 
-        with contextlib.redirect_stdout(output):
+        with (
+            patch(
+                "harness.cli._run_activate",
+                return_value=make_result(GateStatus.BLOCKED),
+            ),
+            contextlib.redirect_stdout(output),
+        ):
             blocked_code = main(["activate", "--scheme-id", "demo_daily"])
 
         self.assertEqual(pass_code, 0)

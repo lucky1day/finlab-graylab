@@ -5,9 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from harness.authorization import (
-    authorization_signing_enabled,
     mark_token_used,
-    required_future_expiry_errors,
     used_tokens_path,
     verify_authorization,
     write_authorization_audit,
@@ -65,23 +63,6 @@ class LiveGate(Gate):
             )
         auth = None
         passed_run = None
-        preflight_errors: list[str] = []
-        if runtime_type == "blackbox_v2":
-            auth, preflight_errors = _verify_blackbox_live_authorization(
-                ctx,
-                cfg,
-                action=self.authorization_action,
-            )
-            if preflight_errors:
-                return _blocked_blackbox_live(
-                    ctx,
-                    started_at,
-                    preflight_errors,
-                    scheme_version=cfg.scheme_version,
-                    gate_name=self.name,
-                    authorization_action=self.authorization_action,
-                    blackbox_snapshot_mode=self.blackbox_snapshot_mode,
-                )
 
         engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
         try:
@@ -137,14 +118,16 @@ class LiveGate(Gate):
             if runtime_type == "blackbox_v2":
                 try:
                     passed_run = _verify_blackbox_passed_all(engine, cfg)
-                    if auth is None:
-                        auth_errors = ["Blackbox live authorization is unavailable"]
-                    elif auth.harness_run_id != passed_run.harness_run_id:
-                        auth_errors = [
-                            "authorization harness_run_id must match latest passed all-stage run: "
-                            f"token={auth.harness_run_id}, latest={passed_run.harness_run_id}"
-                        ]
-                    else:
+                    auth, auth_errors = verify_authorization(
+                        ctx.authorization,
+                        scheme_id=ctx.scheme_id,
+                        action=self.authorization_action,
+                        predict_date=ctx.predict_date,
+                        scheme_version=cfg.scheme_version,
+                        harness_run_id=passed_run.harness_run_id,
+                        used_store_path=used_tokens_path(ctx.project_root),
+                    )
+                    if not auth_errors:
                         approval = read_blackbox_execution_approval(engine, cfg)
                         auth_errors = [] if approval.executable else [
                             "Blackbox live requires exact active production approval: "
@@ -158,6 +141,7 @@ class LiveGate(Gate):
                     scheme_id=ctx.scheme_id,
                     action=self.authorization_action,
                     predict_date=ctx.predict_date,
+                    scheme_version=cfg.scheme_version,
                     used_store_path=used_tokens_path(ctx.project_root),
                 )
             if auth_errors:
@@ -326,41 +310,6 @@ def _load_config_for_execution(ctx: GateContext):
     from scheduler.discovery import load_scheme_config
 
     return load_scheme_config(ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml")
-
-
-def _verify_blackbox_live_authorization(
-    ctx: GateContext,
-    cfg,
-    *,
-    action: str = "live_write",
-):
-    if not authorization_signing_enabled():
-        return None, ["Blackbox live requires HMAC signing via HARNESS_AUTH_SECRET"]
-    if not isinstance(ctx.authorization, str):
-        return None, ["Blackbox live requires the original signed token string"]
-    auth, errors = verify_authorization(
-        ctx.authorization,
-        scheme_id=ctx.scheme_id,
-        action=action,
-        predict_date=ctx.predict_date,
-        used_store_path=used_tokens_path(ctx.project_root),
-    )
-    if auth is None:
-        return None, errors
-    errors.extend(required_future_expiry_errors(auth.issued_at, auth.expires_at))
-    if not auth.issued_by.strip():
-        errors.append("Blackbox live authorization requires non-empty issued_by")
-    if auth.scheme_version != cfg.scheme_version:
-        errors.append(
-            "authorization scheme_version must match current canonical version: "
-            f"token={auth.scheme_version}, current={cfg.scheme_version}"
-        )
-    if cfg.status != "active" or cfg.version_status != "active":
-        errors.append(
-            "Blackbox live requires actual config active+active: "
-            f"got={cfg.status}+{cfg.version_status}"
-        )
-    return auth, errors
 
 
 def _verify_blackbox_passed_all(engine, cfg):

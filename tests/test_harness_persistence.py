@@ -249,7 +249,6 @@ class HarnessPersistenceTests(unittest.TestCase):
                             "dry-run",
                             "compare",
                             "backtest",
-                            "api-readiness",
                         )
                     ],
                 ),
@@ -464,7 +463,7 @@ class HarnessPersistenceTests(unittest.TestCase):
         self.assertFalse(disk_report["overall_passed"])
         self.assertFalse(disk_report["control_plane_persisted"])
 
-    def test_native_maintenance_happy_path_persists_all_six_gate_records(self) -> None:
+    def test_native_maintenance_happy_path_persists_all_five_gate_records(self) -> None:
         from harness.gates.native_maintenance_admission_gate import (
             NATIVE_MAINTENANCE_STAGE,
             NATIVE_MAINTENANCE_SEQUENCE,
@@ -676,7 +675,7 @@ class HarnessPersistenceTests(unittest.TestCase):
                         check_only=True,
                     )
 
-    def test_check_only_reports_seven_gates_in_order_and_fails_fast(self) -> None:
+    def test_check_only_reports_six_gates_in_order_and_fails_fast(self) -> None:
         from harness.gates.base import Gate, utc_now
         from harness.orchestrator import onboard
         from harness.registry import AUTO_SEQUENCE

@@ -232,10 +232,10 @@ flowchart LR
 自动 Gate 的固定顺序是：
 
 ```text
-static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness
+static -> input -> unit -> dry-run -> compare -> backtest
 ```
 
-自动段可以留下审计报告和控制面记录，但不得写正式预测表、正式回测结果表或 active 前端可见状态。`dry-run` 和 `no-persist` 的目的就是在不产生业务副作用的情况下验证结构、日期语义、确定性和结果格式。
+自动段可以留下审计报告和控制面记录，但不得写正式预测表、正式回测结果表或 active 前端可见状态，也不访问 Backend。`dry-run` 和 `no-persist` 的目的就是在不产生业务副作用的情况下验证结构、日期语义、确定性和结果格式。激活后的 HTTP 验收只使用 `DashboardGate`；它证明当前业务读模型可用，但 Dashboard 响应不携带 exact version，版本仍由生命周期、Registry 和数据库权威证据确认。
 
 真正的业务写入只允许发生在受控边界：
 
@@ -246,9 +246,9 @@ static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness
 
 ### 5.4 当前沙盒与生产边界
 
-Blackbox V2 已具备受控的生产路径，包括严格 Result 校验、文件读取 allowlist、最小环境变量、专用 Activation/Live 门禁、回测持久化和失败 reconciliation。自动 Gate 仍然只完成技术验收，不会自动写业务表或授予生产权限。
+Blackbox V2 已具备受控的生产路径，包括严格 Result 校验、文件读取 allowlist、最小环境变量、专用 Activation/Live 门禁、回测持久化和显式 lifecycle reconciliation。任一 pending journal 都会阻断新的 lifecycle 动作，不存在授权前隐式恢复；只有独立 HMAC 授权的 `blackbox_reconcile` 可以回退 previous safe state，并保留原 journal、新建 linked reconciliation journal。自动 Gate 仍然只完成技术验收，不会自动写业务表或授予生产权限。
 
-单个方案只有完成生产准备核验并取得专项授权后，才可进入 `active`、持久化回测或 live。当前已有真实方案完成专项生产灰度，但平台仍缺少日、周、月多种真实交付覆盖，因此不能把单方案结论扩大为所有 Blackbox V2 方案已普遍生产稳定。最新结论统一查看[当前状态](../CURRENT_STATUS.md)。
+单个方案只有完成生产准备核验并取得专项授权后，才可进入 `active`、持久化回测或 live。具体方案数量、频率覆盖和生产观察结论属于时点信息，统一查看[当前状态](../CURRENT_STATUS.md)，不在本手册冻结。
 
 ## 6. 生命周期与状态解释
 

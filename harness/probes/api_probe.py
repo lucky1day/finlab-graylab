@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from typing import Any
 from urllib.error import HTTPError
-from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
@@ -64,56 +63,3 @@ def fetch_json(
             status_code=status,
         )
     return payload, status
-
-
-def factor_lab_url(
-    base_url: str,
-    *,
-    data_source: str | None = None,
-    benchmark_id: str | None = None,
-) -> str:
-    url = f"{base_url.rstrip('/')}/api/backtests/factor-lab"
-    query = urlencode(
-        {
-            key: value
-            for key, value in {
-                "data_source": data_source,
-                "benchmark_id": benchmark_id,
-            }.items()
-            if value is not None
-        }
-    )
-    return f"{url}?{query}" if query else url
-
-
-def schemes_url(base_url: str) -> str:
-    return f"{base_url.rstrip('/')}/api/schemes"
-
-
-def health_url(base_url: str) -> str:
-    return f"{base_url.rstrip('/')}/api/health"
-
-
-def metrics_url(base_url: str, registry_scheme_id: str) -> str:
-    return f"{base_url.rstrip().rstrip('/')}/api/metrics/{registry_scheme_id}"
-
-
-def find_factor_lab_cell(payload: dict[str, Any], registry_scheme_ids: list[str]) -> dict[str, Any] | None:
-    """在 factor-lab 矩阵 payload 中定位指定方案的可展示格子。"""
-    rows = payload.get("schemes", [])
-    if not isinstance(rows, list):
-        return None
-    scheme_id_set = {str(item) for item in registry_scheme_ids}
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        if str(row.get("scheme_id") or "") not in scheme_id_set:
-            continue
-        if "monthly_metrics" in row or "daily_rows" in row:
-            return row
-    return None
-
-
-def metrics_cell_present(payload: dict[str, Any]) -> bool:
-    """判定 /api/metrics/{id} 返回了前端所需的月度或日度指标字段。"""
-    return isinstance(payload.get("monthly_metrics"), list) or isinstance(payload.get("daily_rows"), list)

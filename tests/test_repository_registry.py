@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import unittest
 from copy import deepcopy
@@ -405,6 +406,34 @@ def _set_canonical_path(cfg: SimpleNamespace, project_root: Path) -> SimpleNames
     cfg.path = project_root / "schemes" / cfg.scheme_id
     cfg.path.mkdir(parents=True)
     return cfg
+
+
+class RetiredRepositoryApiTests(unittest.TestCase):
+    def test_blackbox_bootstrap_and_snapshot_repair_apis_are_absent(self) -> None:
+        import scheduler.repository as repository
+
+        retired_names = {
+            "BLACKBOX_BOOTSTRAP_EMPTY_TABLES",
+            "BlackboxBootstrapLockTimeout",
+            "BlackboxBootstrapState",
+            "BlackboxTargetRegistryBaselineError",
+            "_BLACKBOX_CERTIFICATION_SCHEMA",
+            "_TARGET_REGISTRY_BASELINE",
+            "_TARGET_REGISTRY_BASELINE_VERSION",
+            "_TARGET_REGISTRY_BUSINESS_FIELDS",
+            "_blackbox_bootstrap_advisory_lock",
+            "_target_registry_baseline_diff",
+            "_target_registry_digest",
+            "_validate_blackbox_gray_gap_snapshot_repair_run",
+            "_validate_target_registry_baseline_conn",
+            "bootstrap_blackbox_control_plane",
+            "repair_blackbox_gray_gap_run_snapshot_provenance",
+        }
+
+        self.assertEqual(
+            [],
+            sorted(name for name in retired_names if hasattr(repository, name)),
+        )
 
 
 class RegistrySyncTests(unittest.TestCase):
@@ -1462,7 +1491,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             run_id=101,
             records=[record],
             expected_target_keys=[target],
-            plan_sha256="b" * 64,
             source_authority=authority,
             records_returned=1,
             run_date="2026-07-20",
@@ -1474,6 +1502,19 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             engine.store["run_row"]["data_snapshot_id"],
             "snapshot-live",
         )
+        stored_extra = json.loads(
+            engine.store["prediction_rows"][0]["extra"]
+        )
+        self.assertEqual(stored_extra["backfill_mode"], "signal_gap_fill")
+        self.assertEqual(stored_extra["source_authority"], authority)
+        for forbidden in (
+            "signal_gap_plan_sha256",
+            "execution_group_identity",
+            "execution_group_identity_sha256",
+            "backfilled_at",
+            "backfilled_by",
+        ):
+            self.assertNotIn(forbidden, stored_extra)
 
     def test_native_gray_gap_completion_uses_null_authority_without_replay_provenance(self) -> None:
         from scheduler.repository import complete_gray_gap_run
@@ -1495,7 +1536,14 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             feature_date="2026-07-17",
             prediction_phase="gray_live",
             predicted_direction=1,
-            extra={"vote_score": 0.75},
+            extra={
+                "vote_score": 0.75,
+                "signal_gap_plan_sha256": "untrusted",
+                "execution_group_identity": {"untrusted": True},
+                "execution_group_identity_sha256": "untrusted",
+                "backfilled_at": "untrusted",
+                "backfilled_by": "untrusted",
+            },
         )
         target = {
             "registry_scheme_id": "native_daily__h1__5Y",
@@ -1515,7 +1563,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             run_id=101,
             records=[record],
             expected_target_keys=[target],
-            plan_sha256="b" * 64,
             source_authority=None,
             records_returned=1,
             run_date="2026-07-20",
@@ -1523,16 +1570,135 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         )
 
         self.assertEqual(written, 1)
-        stored_extra = engine.store["prediction_rows"][0]["extra"]
+        stored_extra = json.loads(
+            engine.store["prediction_rows"][0]["extra"]
+        )
         for forbidden in (
             "source_authority",
             "source_generation_id",
             "source_artifact_id",
             "replay_semantics",
+            "signal_gap_plan_sha256",
+            "execution_group_identity",
+            "execution_group_identity_sha256",
+            "backfilled_at",
+            "backfilled_by",
         ):
             self.assertNotIn(forbidden, stored_extra)
         self.assertIn("vote_score", stored_extra)
-        self.assertIn("execution_group_identity", stored_extra)
+        self.assertEqual(stored_extra["backfill_mode"], "signal_gap_fill")
+
+    def test_gray_gap_completion_accepts_missing_subset_of_active_targets(self) -> None:
+        from scheduler.repository import complete_gray_gap_run
+        from shared.models import PredictionRecord
+
+        engine = _native_atomic_engine()
+        engine.store["registry_rows"] = [
+            _native_registry_row(),
+            _native_registry_row(
+                scheme_id="native_daily__h1__10Y",
+                target_tenor="10Y",
+            ),
+        ]
+        engine.store["run_row"].update(
+            {
+                "predict_date": "2026-07-20",
+                "records_expected": 1,
+            }
+        )
+        cfg = _native_config()
+        cfg.tenors = ["5Y", "10Y"]
+        record = PredictionRecord(
+            scheme_id="native_daily",
+            target_tenor="10Y",
+            horizon=1,
+            predict_date="2026-07-20",
+            target_date="2026-07-21",
+            feature_date="2026-07-17",
+            prediction_phase="gray_live",
+            predicted_direction=1,
+        )
+        target = {
+            "registry_scheme_id": "native_daily__h1__10Y",
+            "base_scheme_id": "native_daily",
+            "target_tenor": "10Y",
+            "horizon": 1,
+            "task_type": "T+1",
+            "predict_date": "2026-07-20",
+            "feature_date": "2026-07-17",
+            "target_date": "2026-07-21",
+            "prediction_phase": "gray_live",
+        }
+
+        written = complete_gray_gap_run(
+            engine,
+            cfg,
+            run_id=101,
+            records=[record],
+            expected_target_keys=[target],
+            source_authority=None,
+            records_returned=1,
+            run_date="2026-07-20",
+            duration_sec=1.0,
+        )
+
+        self.assertEqual(written, 1)
+        self.assertEqual(
+            [row["target_tenor"] for row in engine.store["prediction_rows"]],
+            ["10Y"],
+        )
+
+    def test_gray_gap_completion_rechecks_exact_active_version(self) -> None:
+        from scheduler.repository import complete_gray_gap_run
+        from shared.models import PredictionRecord
+
+        engine = _native_atomic_engine()
+        engine.store["version_row"]["status"] = "paused"
+        engine.store["run_row"].update(
+            {
+                "predict_date": "2026-07-20",
+                "records_expected": 1,
+            }
+        )
+        record = PredictionRecord(
+            scheme_id="native_daily",
+            target_tenor="5Y",
+            horizon=1,
+            predict_date="2026-07-20",
+            target_date="2026-07-21",
+            feature_date="2026-07-17",
+            prediction_phase="gray_live",
+            predicted_direction=1,
+        )
+        target = {
+            "registry_scheme_id": "native_daily__h1__5Y",
+            "base_scheme_id": "native_daily",
+            "target_tenor": "5Y",
+            "horizon": 1,
+            "task_type": "T+1",
+            "predict_date": "2026-07-20",
+            "feature_date": "2026-07-17",
+            "target_date": "2026-07-21",
+            "prediction_phase": "gray_live",
+        }
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "exact active version",
+        ):
+            complete_gray_gap_run(
+                engine,
+                _native_config(),
+                run_id=101,
+                records=[record],
+                expected_target_keys=[target],
+                source_authority=None,
+                records_returned=1,
+                run_date="2026-07-20",
+                duration_sec=1.0,
+            )
+
+        self.assertEqual(engine.store["prediction_rows"], [])
 
     def test_gray_gap_authority_runtime_contract_is_strict(self) -> None:
         from scheduler.repository import _normalize_gray_gap_source_authority
@@ -1551,92 +1717,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
                 feature_date="2026-07-17",
                 predict_date="2026-07-20",
             )
-
-    def test_blackbox_gray_gap_snapshot_repair_only_updates_verified_run_audit(self) -> None:
-        from scheduler.repository import (
-            repair_blackbox_gray_gap_run_snapshot_provenance,
-        )
-
-        engine = _AtomicEngine()
-        engine.store["run_row"].update(
-            {
-                "prediction_phase": "gray_live",
-                "predict_date": "2026-07-20",
-                "status": "success",
-                "records_expected": 1,
-                "records_returned": 1,
-                "records_written": 1,
-                "data_snapshot_id": None,
-            }
-        )
-        engine.store["prediction_rows"] = [
-            {
-                "run_id": 101,
-                "scheme_id": "demo_blackbox",
-                "scheme_version": "abc123def456",
-                "predict_date": "2026-07-20",
-                "feature_date": "2026-07-17",
-                "target_date": "2026-07-21",
-                "prediction_phase": "gray_live",
-                "extra": '{"request_id":"demo_blackbox:2026-07-20:2026-07-17:2026-07-21","data_snapshot_id":"snapshot-live","backfill_mode":"signal_gap_fill","signal_gap_plan_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}',
-            }
-        ]
-        original_prediction_rows = deepcopy(engine.store["prediction_rows"])
-
-        snapshot_id = repair_blackbox_gray_gap_run_snapshot_provenance(
-            engine,
-            _blackbox_config(),
-            run_id=101,
-        )
-
-        self.assertEqual(snapshot_id, "snapshot-live")
-        self.assertEqual(
-            engine.store["run_row"]["data_snapshot_id"],
-            "snapshot-live",
-        )
-        self.assertEqual(engine.store["prediction_rows"], original_prediction_rows)
-
-    def test_blackbox_gray_gap_snapshot_repair_rejects_prediction_date_mismatch(self) -> None:
-        from scheduler.repository import (
-            repair_blackbox_gray_gap_run_snapshot_provenance,
-        )
-
-        engine = _AtomicEngine()
-        engine.store["run_row"].update(
-            {
-                "prediction_phase": "gray_live",
-                "predict_date": "2026-07-20",
-                "status": "success",
-                "records_expected": 1,
-                "records_returned": 1,
-                "records_written": 1,
-                "data_snapshot_id": None,
-            }
-        )
-        engine.store["prediction_rows"] = [
-            {
-                "run_id": 101,
-                "scheme_id": "demo_blackbox",
-                "scheme_version": "abc123def456",
-                "predict_date": "2026-07-21",
-                "feature_date": "2026-07-17",
-                "target_date": "2026-07-22",
-                "prediction_phase": "gray_live",
-                "extra": '{"request_id":"demo_blackbox:2026-07-21:2026-07-17:2026-07-22","data_snapshot_id":"snapshot-live","backfill_mode":"signal_gap_fill","signal_gap_plan_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}',
-            }
-        ]
-
-        with self.assertRaisesRegex(
-            RuntimeError,
-            "prediction predict_date does not match run",
-        ):
-            repair_blackbox_gray_gap_run_snapshot_provenance(
-                engine,
-                _blackbox_config(),
-                run_id=101,
-            )
-
-        self.assertIsNone(engine.store["run_row"]["data_snapshot_id"])
 
     def test_blackbox_completion_locks_revalidates_and_commits_atomically(self) -> None:
         from scheduler.repository import complete_approved_blackbox_run

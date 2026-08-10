@@ -28,6 +28,9 @@ from shared.blackbox_v2.snapshot import (
     create_snapshot_from_frames,
     resolve_cutoffs,
 )
+from shared.data_bridge.authority import (
+    _normalize_blackbox_gray_replay_source_identity,
+)
 from shared.data_bridge.refresh import (
     DataBridgeRefreshConfig,
     check_current_dataset,
@@ -708,29 +711,6 @@ def _require_blackbox_databridge_monthly_additions(
         )
 
 
-_GRAY_REPLAY_SOURCE_IDENTITY_FIELDS = frozenset(
-    {
-        "generation_id",
-        "refresh_date",
-        "schema_version",
-        "business_digest",
-        "stable_identity_sha256",
-        "files",
-    }
-)
-_GRAY_REPLAY_SOURCE_FILE_FIELDS = frozenset(
-    {
-        "filename",
-        "rows",
-        "columns",
-        "min_key",
-        "max_key",
-        "sha256",
-        "business_hash",
-    }
-)
-
-
 def build_blackbox_gray_replay_session(
     *,
     session_id: str,
@@ -741,8 +721,10 @@ def build_blackbox_gray_replay_session(
 ) -> BlackboxGrayReplaySession:
     """一次读取 current 后固化 gray replay 所有请求共用的三频父快照。"""
     normalized_session_id = _normalize_gray_replay_session_id(session_id)
-    normalized_source_identity = _normalize_gray_replay_source_identity(
-        source_identity
+    normalized_source_identity = (
+        _normalize_blackbox_gray_replay_source_identity(
+            source_identity
+        )
     )
     normalized_cutoffs = _normalize_gray_replay_cutoffs(request_cutoffs)
     current = check_current_dataset(
@@ -826,94 +808,6 @@ def _normalize_gray_replay_session_id(value: object) -> str:
     if not isinstance(value, str) or not _is_sha256(value):
         raise ValueError("gray replay session_id must be a lower-case SHA-256")
     return value
-
-
-def _normalize_gray_replay_source_identity(
-    source_identity: Mapping[str, Any],
-) -> dict[str, Any]:
-    if not isinstance(source_identity, Mapping):
-        raise ValueError("gray replay source identity must be an object")
-    raw = dict(source_identity)
-    if set(raw) != _GRAY_REPLAY_SOURCE_IDENTITY_FIELDS:
-        raise ValueError("gray replay source identity fields are invalid")
-    generation_id = raw["generation_id"]
-    schema_version = raw["schema_version"]
-    if (
-        not isinstance(generation_id, str)
-        or not generation_id.strip()
-        or not isinstance(schema_version, str)
-        or not schema_version.strip()
-        or not _is_sha256(raw["business_digest"])
-        or not _is_sha256(raw["stable_identity_sha256"])
-    ):
-        raise ValueError("gray replay source identity is invalid")
-    refresh_date = _normalize_gray_replay_date(
-        raw["refresh_date"],
-        "source_identity.refresh_date",
-    )
-    raw_files = raw["files"]
-    if not isinstance(raw_files, list):
-        raise ValueError("gray replay source identity files are invalid")
-    normalized_files: list[dict[str, Any]] = []
-    for item in raw_files:
-        if not isinstance(item, Mapping):
-            raise ValueError("gray replay source identity files are invalid")
-        file_identity = dict(item)
-        if set(file_identity) != _GRAY_REPLAY_SOURCE_FILE_FIELDS:
-            raise ValueError("gray replay source identity files are invalid")
-        filename = file_identity["filename"]
-        if filename not in SNAPSHOT_FILENAMES:
-            raise ValueError("gray replay source identity files are invalid")
-        rows = file_identity["rows"]
-        columns = file_identity["columns"]
-        if (
-            isinstance(rows, bool)
-            or not isinstance(rows, int)
-            or rows < 1
-            or isinstance(columns, bool)
-            or not isinstance(columns, int)
-            or columns < 1
-            or not _is_sha256(file_identity["sha256"])
-            or not _is_sha256(file_identity["business_hash"])
-        ):
-            raise ValueError("gray replay source identity files are invalid")
-        key_normalizer = (
-            _normalize_gray_replay_date
-            if filename == "daily_output.csv"
-            else _normalize_gray_replay_period
-        )
-        min_key = key_normalizer(
-            file_identity["min_key"],
-            f"source_identity.{filename}.min_key",
-        )
-        max_key = key_normalizer(
-            file_identity["max_key"],
-            f"source_identity.{filename}.max_key",
-        )
-        if min_key > max_key:
-            raise ValueError("gray replay source identity files are invalid")
-        normalized_files.append(
-            {
-                "filename": filename,
-                "rows": rows,
-                "columns": columns,
-                "min_key": min_key,
-                "max_key": max_key,
-                "sha256": file_identity["sha256"],
-                "business_hash": file_identity["business_hash"],
-            }
-        )
-    expected_order = tuple(sorted(SNAPSHOT_FILENAMES))
-    if tuple(item["filename"] for item in normalized_files) != expected_order:
-        raise ValueError("gray replay source identity files must be sorted")
-    return {
-        "generation_id": generation_id,
-        "refresh_date": refresh_date,
-        "schema_version": schema_version,
-        "business_digest": raw["business_digest"],
-        "stable_identity_sha256": raw["stable_identity_sha256"],
-        "files": normalized_files,
-    }
 
 
 def _normalize_gray_replay_cutoffs(

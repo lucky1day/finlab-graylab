@@ -7,10 +7,8 @@ from pathlib import Path
 
 from harness.authorization import (
     _atomic_write_json,
-    authorization_signing_enabled,
     authorization_token_hash,
     mark_token_used,
-    required_future_expiry_errors,
     used_tokens_path,
     verify_authorization,
     write_authorization_audit,
@@ -38,41 +36,13 @@ class BlackboxDraftRegisterGate(Gate):
 
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
         cfg = _config(ctx)
-        if not authorization_signing_enabled():
-            return _blocked(
-                started_at,
-                ["Blackbox draft registration requires HMAC signing via HARNESS_AUTH_SECRET"],
-            )
-        if not isinstance(ctx.authorization, str):
-            return _blocked(
-                started_at,
-                ["Blackbox draft registration requires the original signed token string"],
-            )
-        auth, errors = verify_authorization(
-            ctx.authorization,
-            scheme_id=cfg.scheme_id,
-            action="draft_register",
-            predict_date=ctx.predict_date,
-            used_store_path=used_tokens_path(ctx.project_root),
-        )
-        if auth is not None:
-            errors.extend(required_future_expiry_errors(auth.issued_at, auth.expires_at))
-            if not isinstance(auth.issued_by, str) or not auth.issued_by.strip():
-                errors.append(
-                    "Blackbox draft registration authorization requires issued_by "
-                    "to be a non-empty string"
-                )
-            if auth.scheme_version != cfg.scheme_version:
-                errors.append(
-                    "authorization scheme_version must match current canonical version: "
-                    f"token={auth.scheme_version}, current={cfg.scheme_version}"
-                )
+        errors: list[str] = []
         if cfg.status != "paused" or cfg.version_status != "draft":
             errors.append(
                 "Blackbox draft registration requires config paused+draft: "
                 f"got={cfg.status}+{cfg.version_status}"
             )
-        if auth is None or errors:
+        if errors:
             return _blocked(started_at, errors)
 
         engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
@@ -81,23 +51,25 @@ class BlackboxDraftRegisterGate(Gate):
         try:
             passed_run = _verify_passed_all(engine, cfg)
             passed_predict_date = _passed_run_predict_date(passed_run, cfg)
-            if auth.harness_run_id != passed_run.harness_run_id:
-                return _blocked(
-                    started_at,
-                    [
-                        "authorization harness_run_id must match latest passed all-stage run: "
-                        f"token={auth.harness_run_id}, latest={passed_run.harness_run_id}"
-                    ],
-                )
-            if ctx.predict_date != passed_predict_date or auth.predict_date != passed_predict_date:
+            if ctx.predict_date != passed_predict_date:
                 return _blocked(
                     started_at,
                     [
                         "draft-register predict_date must match latest passed all-stage run: "
-                        f"token={auth.predict_date}, ctx={ctx.predict_date}, "
-                        f"latest={passed_predict_date}"
+                        f"ctx={ctx.predict_date}, latest={passed_predict_date}"
                     ],
                 )
+            auth, errors = verify_authorization(
+                ctx.authorization,
+                scheme_id=cfg.scheme_id,
+                action="draft_register",
+                predict_date=passed_predict_date,
+                scheme_version=cfg.scheme_version,
+                harness_run_id=passed_run.harness_run_id,
+                used_store_path=used_tokens_path(ctx.project_root),
+            )
+            if auth is None or errors:
+                return _blocked(started_at, errors)
             environment_fingerprint = str(
                 passed_run.environment_fingerprint or ""
             ).strip()
@@ -244,24 +216,16 @@ class BlackboxDraftRegisterGate(Gate):
                     "status": "failed",
                     "database_outcome": "committed_identity_present",
                     "rollback_outcome": "not_applicable_committed",
-                    "reconciliation_required": True,
+                    "reconciliation_required": False,
                     "error": _error_payload(audit_error),
                 }
-                fallback_path = outcome_path.with_name(
-                    "outcome.reconciliation-required.json"
-                )
-                fallback_errors = _try_write_fallback_outcome(
-                    fallback_path,
-                    outcome,
-                )
                 return _failed(
                     started_at,
-                    [*audit_errors, *fallback_errors],
+                    audit_errors,
                     outcome=outcome,
                     authorization_audit_path=audit_path,
-                    outcome_audit_path=(
-                        fallback_path if not fallback_errors else outcome_path
-                    ),
+                    outcome_audit_path=None,
+                    suppress_report_path=True,
                 )
         finally:
             if hasattr(engine, "dispose"):
@@ -400,20 +364,6 @@ def _try_write_outcome(
     return []
 
 
-def _try_write_fallback_outcome(
-    path: Path,
-    outcome: dict[str, object],
-) -> list[str]:
-    try:
-        _atomic_write_json(path, outcome)
-    except Exception as exc:  # noqa: BLE001
-        return [
-            "draft registration reconciliation audit fallback write failed: "
-            f"{exc}"
-        ]
-    return []
-
-
 @dataclass(frozen=True)
 class _DatabaseFailureProbe:
     identity_state: str
@@ -481,6 +431,7 @@ def _failed(
     outcome: dict[str, object],
     authorization_audit_path: Path | None,
     outcome_audit_path: Path | None,
+    suppress_report_path: bool = False,
 ) -> GateResult:
     return GateResult(
         gate_name="draft-register",
@@ -512,10 +463,14 @@ def _failed(
         started_at=started_at,
         finished_at=utc_now(),
         report_path=(
-            outcome_audit_path
-            if outcome_audit_path is not None
-            and outcome_audit_path.is_file()
-            else authorization_audit_path
+            None
+            if suppress_report_path
+            else (
+                outcome_audit_path
+                if outcome_audit_path is not None
+                and outcome_audit_path.is_file()
+                else authorization_audit_path
+            )
         ),
     )
 

@@ -6,9 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from harness.authorization import (
-    authorization_signing_enabled,
     mark_token_used,
-    required_future_expiry_errors,
     used_tokens_path,
     verify_authorization,
     write_authorization_audit,
@@ -38,52 +36,18 @@ class BlackboxRevisionActivateGate(Gate):
 
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
         cfg = _config(ctx)
-        if not authorization_signing_enabled():
-            return _blocked(
-                started_at,
-                [
-                    "Blackbox revision activation requires HMAC signing via "
-                    "HARNESS_AUTH_SECRET"
-                ],
-            )
-        if not isinstance(ctx.authorization, str):
-            return _blocked(
-                started_at,
-                [
-                    "Blackbox revision activation requires the original signed "
-                    "token string"
-                ],
-            )
-        auth, errors = verify_authorization(
-            ctx.authorization,
-            scheme_id=cfg.scheme_id,
-            action="blackbox_revision_activate",
-            predict_date=ctx.predict_date,
-            used_store_path=used_tokens_path(ctx.project_root),
-        )
-        if auth is not None:
-            errors.extend(required_future_expiry_errors(auth.issued_at, auth.expires_at))
-            if not isinstance(auth.issued_by, str) or not auth.issued_by.strip():
-                errors.append(
-                    "Blackbox revision activation authorization requires non-empty "
-                    "issued_by"
-                )
-            if auth.scheme_version != cfg.scheme_version:
-                errors.append(
-                    "authorization scheme_version must match current canonical "
-                    f"version: token={auth.scheme_version}, current={cfg.scheme_version}"
-                )
+        errors: list[str] = []
         if cfg.status != "active" or cfg.version_status != "active":
             errors.append(
                 "Blackbox revision activation requires config active+active: "
                 f"got={cfg.status}+{cfg.version_status}"
             )
-        if auth is None or errors:
+        if errors:
             return _blocked(started_at, errors)
 
         engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
         try:
-            return _run_with_engine(ctx, started_at, cfg, auth, engine)
+            return _run_with_engine(ctx, started_at, cfg, engine)
         finally:
             if hasattr(engine, "dispose"):
                 engine.dispose()
@@ -93,13 +57,12 @@ def _run_with_engine(
     ctx: GateContext,
     started_at: str,
     cfg: SchemeConfig,
-    auth,
     engine,
 ) -> GateResult:
     """在已创建 engine 的边界内运行，并让调用方统一释放连接池。"""
     try:
         with lifecycle_operation_lock(ctx.project_root, cfg.scheme_id):
-            return _run_with_engine_locked(ctx, started_at, cfg, auth, engine)
+            return _run_with_engine_locked(ctx, started_at, cfg, engine)
     except Exception as exc:  # noqa: BLE001
         return _failed(
             started_at,
@@ -111,7 +74,6 @@ def _run_with_engine_locked(
     ctx: GateContext,
     started_at: str,
     cfg: SchemeConfig,
-    auth,
     engine,
 ) -> GateResult:
     """在同身份 lifecycle 互斥锁内完成 preflight、token 消费与原子切换。"""
@@ -121,25 +83,26 @@ def _run_with_engine_locked(
         pinned_cfg = _reload_pinned_canonical(cfg)
         passed_run = _verify_passed_all(engine, pinned_cfg)
         passed_predict_date = _passed_run_predict_date(passed_run, pinned_cfg)
-        if auth.harness_run_id != passed_run.harness_run_id:
-            return _blocked(
-                started_at,
-                [
-                    "authorization harness_run_id must match latest passed "
-                    "all-stage run: "
-                    f"token={auth.harness_run_id}, latest={passed_run.harness_run_id}"
-                ],
-            )
-        if ctx.predict_date != passed_predict_date or auth.predict_date != passed_predict_date:
+        if ctx.predict_date != passed_predict_date:
             return _blocked(
                 started_at,
                 [
                     "revision-activate predict_date must match latest passed "
                     "all-stage run: "
-                    f"token={auth.predict_date}, ctx={ctx.predict_date}, "
-                    f"latest={passed_predict_date}"
+                    f"ctx={ctx.predict_date}, latest={passed_predict_date}"
                 ],
             )
+        auth, errors = verify_authorization(
+            ctx.authorization,
+            scheme_id=cfg.scheme_id,
+            action="blackbox_revision_activate",
+            predict_date=passed_predict_date,
+            scheme_version=pinned_cfg.scheme_version,
+            harness_run_id=passed_run.harness_run_id,
+            used_store_path=used_tokens_path(ctx.project_root),
+        )
+        if auth is None or errors:
+            return _blocked(started_at, errors)
         evidence_errors = _execution_evidence_errors(ctx, pinned_cfg, passed_run)
         if evidence_errors:
             return _blocked(started_at, evidence_errors)
@@ -180,11 +143,11 @@ def _run_with_engine_locked(
         )
 
     try:
+        mark_token_used(auth, used_tokens_path(ctx.project_root))
         audit_path = write_authorization_audit(
             auth,
             ctx.report_dir / "revision_activate_authorization",
         )
-        mark_token_used(auth, used_tokens_path(ctx.project_root))
         state = activate_blackbox_revision(
             engine,
             enriched_cfg,

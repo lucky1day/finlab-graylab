@@ -169,14 +169,16 @@ launchd installed plist（单一 cadence writer）
             → t_scheme_runs + t_scheme_predictions + run log
 ```
 
-历史 gap harness 只能经专项授权以 `gray_live` insert-only 修复；自然 launchd 触发才可以
+历史 gap harness 只以 `gray_live` insert-only 修复；自然 launchd 触发才可以
 写 `scheduled_live`。早期失败/跳过只写审计日志，不能伪装为成功完成。
 
-入口（单日历史补缺）：`python -m harness signal-gap-fill --predict-date YYYY-MM-DD` →
-冻结当天全 active scope plan → 进程内精确授权 → `SignalGapFillGate` → `gray_live`
-insert-only 写入 → 同日期 plan 读回。Native 方案从当前数据库按该日 `feature_date`
-截止重建，并在每个方案独立的临时 input/Phase-A 目录中执行；Blackbox 继续严格重放
-冻结的 DataBridge authority。该入口不产生 `scheduled_live`，也不读取 Native 历史 generation。
+入口（单日历史补缺）：`python -m harness signal-gap-fill --predict-date YYYY-MM-DD
+[--scheme-id <base_scheme_id>]` → 进程内生成 `single-date-active-live-gap-plan-v1` →
+跳过 `SKIP_NOT_DUE` / `SKIP_PRESENT` → 执行真实缺口 → 所有算法成功后按 base scheme group
+以 `gray_live` insert-only 写入 → 单次同日期权威读回。命令本身就是补数授权，不接收外部
+plan、日期范围、operator、HMAC token 或 plan SHA；任一算法失败时 prediction 零提交。
+Native 从当前数据库按该日 `feature_date` 截止重建；Blackbox 严格重放计划绑定的冻结
+DataBridge authority。该入口不产生 `scheduled_live`，也不读取 Native 历史 generation。
 
 日期语义由 `shared.prediction_context` 和各频率 adapter 统一落地：日频实盘为 `predict_date=T+1, feature_date=T`；周频实盘先由 `predict_date` 反推上一交易日 `feature_date`，再映射 `feature_week_id`；月频 source-backed 方案若声明自然 15 号触发，则 `predict_date` 保留自然月 15 号，`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。`scheduler.executor` 在日频 live 写库前再次校验 `predict_date/feature_date/target_date`，防止源表水位不足时算法复用旧 feature/target 覆盖旧 target 明细。常驻 scheduler 的 startup catch-up 与 cron 路径已删除：服务启动不会按 cron 推断或补跑错过的预测任务，`scheduled_live` 只由对应的一次性 launchd 自然时钟写入。`shared.calendar_service` 和 `scheduler.weekly_actuals_updater` 共享 `shared.week_calendar_normalizer`，只对源周历孤立 forward jump 做只读归一化，确保预测 target 与 weekly actuals 使用同一周历事实。所有前端月份归属、actual join 和 gray/backtest 分流仍以 `target_date` 为事实键。
 
@@ -205,22 +207,23 @@ python -m harness onboard {scheme_id} --stage all
        ├─ UnitGate     → unittest（tests/*{scheme_id}*）
        ├─ DryRunGate   → scheduler.executor.run_scheme_subprocess + probes.table_guard(行数不变)
        ├─ CompareGate  → schemes/{id}/benchmarks original/current strict compare
-       ├─ BacktestGate → backtests/{id}_reproduction(--no-persist)
-       └─ ApiReadinessGate → Native 只读 Registry/回测/旧分项 API；Blackbox 仅结构推演
+       └─ BacktestGate → backtests/{id}_reproduction(--no-persist)
   Blackbox 首轮授权卡点：ShadowRegisterGate → version=shadow + registry=paused，不写业务表
   Native 首次授权卡点：BacktestGate(--persist) / LiveGate(execute_scheme) / activate  ← 需 token，否则 BLOCKED
-  激活后旧分项诊断：ApiGate（不替代统一 dashboard/前端验收）
+  激活后产品读模型验收：DashboardGate → GET /api/factor-lab/dashboard
 ```
 
-同名 `api-readiness` 当前存在 runtime-specific 语义，不能按上图推断为统一的真实 API Gate。正式产品读模型只认 `/api/factor-lab/dashboard`；现有 Native/Blackbox `api` Gate 仍读取旧分项接口，仅可作为本机诊断证据。
+技术 `all` 不访问 Backend。激活后的唯一 HTTP 验收是 `DashboardGate`；它验证 active
+composite、信号与回测分区可见，但 dashboard payload 不携带 exact version，因此版本身份仍由
+生命周期和数据库权威回读证明。
 
-上图的七段 `all` 是所有首次技术入库的固定路径；Native 的 source benchmark/CompareGate
+上图的六段 `all` 是所有首次技术入库的固定路径；Native 的 source benchmark/CompareGate
 只在这里作为保真硬证据，Blackbox Compare 也保持原有确定性与截止隔离检查。已入库 Native
 修订仅在不同 prior Native version 的 passed `all + compare` 所属 StaticGate 已持久化
 `static.business_identity`，且该快照与当前身份精确匹配时，才可走：
 
 ```text
-static -> native-maintenance-admission -> input -> unit -> dry-run -> api-readiness
+static -> native-maintenance-admission -> input -> unit -> dry-run
 ```
 
 快照只保存 `scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors
@@ -233,10 +236,10 @@ Registry 必须 fail-closed。只有 ActivationGate 可在严格 discovery、精
 passed `all + compare` prior、缺 identity 的 StaticGate 和固定业务身份；writer 与 token action 已退役。
 receipt 仅存在于两张 Harness 控制面表、无当前 hash、不改历史，且只作
 `legacy_operator_attestation_v1` 身份来源。它不是通用命令或 waiver，不能自动生成、推断、激活或写业务表。
-该六段路径不运行当前 historical `compare/backtest`、不写业务表，且不适用于 Blackbox；其后
-activation 仍要核验当前精确 version、六个 Gate 与一次性 token。反之，current exact version 的
+该五段路径不运行当前 historical `compare/backtest`、不写业务表，且不适用于 Blackbox；其后
+activation 仍要核验当前精确 version、五个 Gate 与一次性 token。反之，current exact version 的
 完整 `all` 通过时，ActivationGate 走互斥的 `full_initial_onboarding_v1`，不要求此 prior snapshot
-或六段路径。
+或五段路径。
 
 详见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)。
 
@@ -303,7 +306,7 @@ schemes/{id}/                     schemes/{id}/
 | Native 入口 | `importlib.import_module("schemes.{id}.predict").run` | `scheduler/scheme_runner.py::run_scheme` |
 | Blackbox 入口 | 隔离执行 delivery 脚本的 `predict/backtest` CLI | `shared/blackbox_v2/` 与 runner |
 | 统一输出 | `list[PredictionRecord]` → JSON | `scheduler/scheme_runner.py` |
-| 统一写库 | `create_scheme_run` 建立 running 审计行；最终写入按 runtime/operation 进入 `complete_active_native_run` / `complete_approved_blackbox_run` / `complete_gray_gap_run` 原子完成 API | `scheduler/executor.py` + `harness/gates/signal_gap_fill_gate.py` + `scheduler/repository.py` |
+| 统一写库 | `create_scheme_run` 建立 running 审计行；最终写入按 runtime/operation 进入 `complete_active_native_run` / `complete_approved_blackbox_run` / `complete_gray_gap_run` 原子完成 API | `scheduler/executor.py` + `harness/signal_gap_fill.py` + `scheduler/repository.py` |
 
 因此“用户给新方案”的代码落点是 Blackbox Intake 原样保存两文件并生成平台配置，再由 harness 按运行时驱动 Gate。不得手工创建新的 Native `predict.py + core/` 目录；Native StaticGate 与 ActivationGate 会拒绝政策清单外身份。
 

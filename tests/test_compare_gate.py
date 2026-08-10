@@ -108,16 +108,30 @@ class CompareGateTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
+        config = self.root / "schemes" / "demo" / "config.yaml"
+        config.parent.mkdir(parents=True)
+        config.write_text("scheme_id: demo\n", encoding="utf-8")
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
     def test_no_benchmark_skips(self) -> None:
         ctx = _make_ctx(self.root)
-        (self.root / "schemes" / "demo").mkdir(parents=True)
         result = CompareGate(ctx).run()
         self.assertEqual(result.status, GateStatus.SKIPPED)
         self.assertTrue(result.passed)
+
+    def test_invalid_config_fails_instead_of_continuing_with_empty_config(self) -> None:
+        ctx = _make_ctx(self.root)
+        config = self.root / "schemes" / "demo" / "config.yaml"
+        config.write_text("scheme: [unterminated\n", encoding="utf-8")
+
+        result = CompareGate(ctx).run()
+
+        self.assertEqual(result.status, GateStatus.FAILED)
+        self.assertFalse(result.passed)
+        evidence = {item.key: item.value for item in result.evidence}
+        self.assertIn("ParserError", evidence["exception_type"])
 
     def test_identical_outputs_passed(self) -> None:
         ctx = _make_ctx(self.root)

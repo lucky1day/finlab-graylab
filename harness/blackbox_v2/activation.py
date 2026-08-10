@@ -5,10 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from harness.authorization import (
-    authorization_signing_enabled,
     authorization_token_hash,
     mark_token_used,
-    required_future_expiry_errors,
     used_tokens_path,
     verify_authorization,
     write_authorization_audit,
@@ -38,33 +36,11 @@ def activate_blackbox(ctx: GateContext) -> GateResult:
 
 def _activate(ctx: GateContext, started_at: str) -> GateResult:
     cfg = _config(ctx)
-    if not authorization_signing_enabled():
-        return _blocked(started_at, ["Blackbox activation requires HMAC signing via HARNESS_AUTH_SECRET"])
-    if not isinstance(ctx.authorization, str):
-        return _blocked(started_at, ["Blackbox activation requires the original signed token string"])
     try:
-        cfg = reconcile_incomplete_before_authorization(ctx, cfg)
+        assert_lifecycle_clear(ctx.project_root, cfg.scheme_id)
     except RuntimeError as exc:
         return _blocked(started_at, [str(exc)])
-
-    auth, errors = verify_authorization(
-        ctx.authorization,
-        scheme_id=ctx.scheme_id,
-        action="blackbox_activate",
-        predict_date=None,
-        used_store_path=used_tokens_path(ctx.project_root),
-    )
-    if auth is not None:
-        errors.extend(required_future_expiry_errors(auth.issued_at, auth.expires_at))
-    if auth is None or errors:
-        return _blocked(started_at, errors)
-    if not auth.issued_by.strip():
-        errors.append("Blackbox activation authorization requires non-empty issued_by")
-    if auth.scheme_version != cfg.scheme_version:
-        errors.append(
-            "authorization scheme_version must match current canonical version: "
-            f"token={auth.scheme_version}, current={cfg.scheme_version}"
-        )
+    errors: list[str] = []
     if cfg.status != "paused" or cfg.version_status != "shadow":
         errors.append(
             "Blackbox activation requires config paused+shadow: "
@@ -77,14 +53,16 @@ def _activate(ctx: GateContext, started_at: str) -> GateResult:
     audit_path: Path | None = None
     try:
         passed_run = _verify_passed_all(engine, cfg)
-        if auth.harness_run_id != passed_run.harness_run_id:
-            return _blocked(
-                started_at,
-                [
-                    "authorization harness_run_id must match latest passed all-stage run: "
-                    f"token={auth.harness_run_id}, latest={passed_run.harness_run_id}"
-                ],
-            )
+        auth, errors = verify_authorization(
+            ctx.authorization,
+            scheme_id=ctx.scheme_id,
+            action="blackbox_activate",
+            scheme_version=cfg.scheme_version,
+            harness_run_id=passed_run.harness_run_id,
+            used_store_path=used_tokens_path(ctx.project_root),
+        )
+        if auth is None or errors:
+            return _blocked(started_at, errors)
         evidence_errors = _validate_execution_evidence(ctx, cfg, passed_run)
         db_state = read_blackbox_lifecycle_state(engine, cfg)
         evidence_errors.extend(_validate_shadow_state(cfg, db_state, passed_run))
@@ -201,31 +179,6 @@ class BlackboxLifecycleReconcileGate(Gate):
 
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
         cfg = _config(ctx)
-        if not authorization_signing_enabled():
-            return _blocked(started_at, ["Blackbox reconciliation requires HMAC signing"], gate_name=self.name)
-        if not isinstance(ctx.authorization, str):
-            return _blocked(
-                started_at,
-                ["Blackbox reconciliation requires the original signed token string"],
-                gate_name=self.name,
-            )
-        auth, errors = verify_authorization(
-            ctx.authorization,
-            scheme_id=cfg.scheme_id,
-            action="blackbox_reconcile",
-            predict_date=None,
-            used_store_path=used_tokens_path(ctx.project_root),
-        )
-        if auth is not None:
-            errors.extend(required_future_expiry_errors(auth.issued_at, auth.expires_at))
-        if auth is None or errors:
-            return _blocked(started_at, errors, gate_name=self.name)
-        if not auth.issued_by.strip():
-            return _blocked(
-                started_at,
-                ["reconciliation authorization requires issued_by"],
-                gate_name=self.name,
-            )
         pending = pending_journals(ctx.project_root, cfg.scheme_id)
         if not pending:
             return _failed(
@@ -234,29 +187,34 @@ class BlackboxLifecycleReconcileGate(Gate):
                 gate_name=self.name,
             )
         if len(pending) != 1:
-            return _failed(
+            return _blocked(
                 started_at,
                 [f"multiple incomplete lifecycle journals require inspection: {len(pending)}"],
                 gate_name=self.name,
             )
         path, journal = pending[0]
         current_cfg = _reload_with_evidence(cfg)
-        if not (
-            journal.scheme_version
-            == current_cfg.scheme_version
-            == auth.scheme_version
-        ):
+        if journal.scheme_version != current_cfg.scheme_version:
             return _blocked(
                 started_at,
                 [
                     "reconciliation scheme_version mismatch: "
                     f"journal={journal.scheme_version}, "
-                    f"current={current_cfg.scheme_version}, "
-                    f"authorization={auth.scheme_version}"
+                    f"current={current_cfg.scheme_version}"
                 ],
                 gate_name=self.name,
             )
         cfg = current_cfg
+        auth, errors = verify_authorization(
+            ctx.authorization,
+            scheme_id=cfg.scheme_id,
+            action="blackbox_reconcile",
+            scheme_version=cfg.scheme_version,
+            harness_run_id=journal.harness_run_id,
+            used_store_path=used_tokens_path(ctx.project_root),
+        )
+        if auth is None or errors:
+            return _blocked(started_at, errors, gate_name=self.name)
         if "active" in {
             journal.previous.config_status,
             str(journal.previous.config_version_status),
@@ -306,9 +264,9 @@ class BlackboxLifecycleReconcileGate(Gate):
             )
 
         try:
+            actual_before = read_state()
             mark_token_used(auth, used_tokens_path(ctx.project_root))
             audit_path = write_authorization_audit(auth, ctx.report_dir / "reconcile_authorization")
-            actual_before = read_state()
             restored = reconcile_journal(
                 path,
                 config_path=cfg.path / "config.yaml",
@@ -343,74 +301,6 @@ class BlackboxLifecycleReconcileGate(Gate):
             finished_at=utc_now(),
             report_path=audit_path,
         )
-
-
-def reconcile_incomplete_before_authorization(ctx: GateContext, cfg: SchemeConfig) -> SchemeConfig:
-    """在新授权校验前自动回退可恢复中断；unresolved 必须人工处理。"""
-    pending = pending_journals(ctx.project_root, cfg.scheme_id)
-    if not pending:
-        return cfg
-    if any(journal.phase == "unresolved" for _, journal in pending):
-        assert_lifecycle_clear(ctx.project_root, cfg.scheme_id)
-    if len(pending) != 1:
-        raise RuntimeError(
-            f"multiple incomplete lifecycle journals block {cfg.scheme_id}: {len(pending)}"
-        )
-    path, journal = pending[0]
-    current_cfg = _reload_with_evidence(cfg)
-    if journal.scheme_version != current_cfg.scheme_version:
-        raise RuntimeError(
-            "incomplete lifecycle journal version mismatch: "
-            f"journal={journal.scheme_version}, config={current_cfg.scheme_version}"
-        )
-    cfg = current_cfg
-    if "active" in {
-        journal.previous.config_status,
-        str(journal.previous.config_version_status),
-        journal.previous.version_status,
-        journal.previous.registry_status,
-    }:
-        raise RuntimeError("automatic lifecycle reconciliation refuses an active previous state")
-    engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
-    try:
-        db_evidence = read_blackbox_lifecycle_state(engine, cfg)
-        enriched = replace(
-            cfg,
-            environment_fingerprint=db_evidence.environment_fingerprint,
-            data_snapshot_id=db_evidence.data_snapshot_id,
-        )
-
-        def apply_database(state: LifecycleState) -> None:
-            current = _reload_pinned_with_evidence(enriched, journal.scheme_version)
-            apply_blackbox_lifecycle_state(
-                engine,
-                current,
-                version_status=state.version_status,
-                registry_status=state.registry_status,
-            )
-
-        def read_state() -> LifecycleState:
-            current = _reload_pinned_with_evidence(enriched, journal.scheme_version)
-            current_db = read_blackbox_lifecycle_state(engine, current)
-            return LifecycleState(
-                current.status,
-                current_db.version_status,
-                current_db.registry_status,
-                config_version_status=current.version_status,
-            )
-
-        reconcile_journal(
-            path,
-            config_path=cfg.path / "config.yaml",
-            apply_database=apply_database,
-            read_state=read_state,
-        )
-        return _reload_pinned_with_evidence(enriched, journal.scheme_version)
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"automatic lifecycle reconciliation failed: {exc}") from exc
-    finally:
-        if hasattr(engine, "dispose"):
-            engine.dispose()
 
 
 def _validate_execution_evidence(ctx: GateContext, cfg: SchemeConfig, passed_run) -> list[str]:

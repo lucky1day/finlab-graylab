@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,9 +13,104 @@ from unittest.mock import patch
 
 from harness.context import GateContext
 import pandas as pd
+from sqlalchemy import create_engine, text
 
 
 class BlackboxV2HarnessGateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._previous_auth_secret = os.environ.get("HARNESS_AUTH_SECRET")
+        os.environ["HARNESS_AUTH_SECRET"] = "blackbox-gate-test-secret"
+
+    def tearDown(self) -> None:
+        if self._previous_auth_secret is None:
+            os.environ.pop("HARNESS_AUTH_SECRET", None)
+        else:
+            os.environ["HARNESS_AUTH_SECRET"] = self._previous_auth_secret
+
+    def test_automatic_blackbox_gate_registry_excludes_api_readiness(self) -> None:
+        from harness.blackbox_v2.gates import BLACKBOX_GATES
+
+        self.assertEqual(
+            list(BLACKBOX_GATES),
+            [
+                "static",
+                "input",
+                "unit",
+                "dry-run",
+                "compare",
+                "backtest",
+                "shadow-register",
+            ],
+        )
+        self.assertNotIn("api-readiness", BLACKBOX_GATES)
+
+    def test_passed_all_rejects_legacy_seven_gate_history(self) -> None:
+        from harness.blackbox_v2.gates import _verify_passed_all
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.intake import intake_delivery
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            scheme_dir = intake_delivery(
+                _delivery(root / "incoming"),
+                schemes_root=root / "schemes",
+            )
+            config = load_scheme_config(scheme_dir / "config.yaml")
+            engine = create_engine("sqlite:///:memory:")
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "CREATE TABLE t_harness_runs ("
+                        "harness_run_id TEXT, scheme_id TEXT, scheme_version TEXT, "
+                        "stage TEXT, status TEXT, finished_at TEXT, report_uri TEXT)"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE TABLE t_harness_gate_results ("
+                        "harness_run_id TEXT, gate_name TEXT, status TEXT)"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "INSERT INTO t_harness_runs VALUES ("
+                        "'hr-legacy-seven', :scheme_id, :scheme_version, "
+                        "'all', 'passed', '2026-08-10 12:00:00', :report_uri)"
+                    ),
+                    {
+                        "scheme_id": config.scheme_id,
+                        "scheme_version": config.scheme_version,
+                        "report_uri": str(root / "reports" / "all"),
+                    },
+                )
+                conn.execute(
+                    text(
+                        "INSERT INTO t_harness_gate_results VALUES ("
+                        "'hr-legacy-seven', :gate_name, 'passed')"
+                    ),
+                    [
+                        {"gate_name": gate_name}
+                        for gate_name in (
+                            "static",
+                            "input",
+                            "unit",
+                            "dry-run",
+                            "compare",
+                            "backtest",
+                            "api-readiness",
+                        )
+                    ],
+                )
+
+            try:
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "exact persisted Blackbox V2 gate set",
+                ):
+                    _verify_passed_all(engine, config)
+            finally:
+                engine.dispose()
+
     def test_stable_private_file_reader_rejects_path_replacement_during_read(self) -> None:
         from harness.blackbox_v2.gates import (
             _read_stable_private_file,
@@ -641,7 +738,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
 
     def test_backtest_sample_size_is_no_persist_only(self) -> None:
         from harness.cli import _build_parser
-        from harness.blackbox_v2.gates import BlackboxBacktestGate
+        from harness.blackbox_v2.gates import BlackboxBacktestGate, PassedAllRun
 
         args = _build_parser().parse_args(
             [
@@ -1033,7 +1130,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
 
     def test_automatic_execution_gates_run_end_to_end_without_business_writes(self) -> None:
         from harness.blackbox_v2.gates import (
-            BlackboxApiReadinessGate,
             BlackboxBacktestGate,
             BlackboxCompareGate,
             BlackboxDryRunGate,
@@ -1106,7 +1202,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 BlackboxDryRunGate(),
                 BlackboxCompareGate(),
                 BlackboxBacktestGate(),
-                BlackboxApiReadinessGate(),
             ]
             with patch("harness.blackbox_v2.gates._ensure_input_state", return_value=state):
                 with patch(
@@ -1184,64 +1279,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             "platform input",
             "\n".join(tampered_compare.errors).lower(),
         )
-
-    def test_api_readiness_allows_active_scheme_recertification(self) -> None:
-        from harness.blackbox_v2.gates import BlackboxApiReadinessGate, InputState
-        from scheduler.blackbox_v2_runner import RuntimeProfile
-        from scheduler.discovery import load_scheme_config
-        from shared.blackbox_v2.contracts import BlackboxRequest
-        from shared.blackbox_v2.intake import intake_delivery
-        from shared.blackbox_v2.requests import write_request
-        from shared.blackbox_v2.snapshot import create_snapshot_from_frames
-        from tests.test_blackbox_v2_runner import _SUCCESS_SCRIPT
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            scheme_dir = intake_delivery(
-                _delivery(root / "incoming", script=_SUCCESS_SCRIPT),
-                schemes_root=root / "schemes",
-            )
-            config = replace(
-                load_scheme_config(scheme_dir / "config.yaml"),
-                status="active",
-                version_status="active",
-            )
-            frames = _snapshot_frames()
-            snapshot = create_snapshot_from_frames(
-                frames,
-                output_root=root / "snapshots",
-                expected_columns={name: list(frame.columns) for name, frame in frames.items()},
-                schema_version="data-bridge-v1",
-            )
-            request = BlackboxRequest(
-                request_id="trial-request",
-                predict_date="2026-07-20",
-                feature_date="2026-07-17",
-                target_date="2026-07-24",
-                daily_cutoff_key="2026-07-15",
-                weekly_cutoff_key="202627",
-                monthly_cutoff_key="202606",
-            )
-            state = InputState(
-                snapshot=snapshot,
-                request_path=write_request(request, root / "request.json"),
-                request=request,
-            )
-            ctx = _context(root, config)
-            with (
-                patch("harness.blackbox_v2.gates._ensure_input_state", return_value=state),
-                patch(
-                    "harness.blackbox_v2.gates._profile",
-                    return_value=RuntimeProfile.for_tests(),
-                ),
-            ):
-                result = BlackboxApiReadinessGate().run(ctx)
-
-        evidence = {item.key: item.value for item in result.evidence}
-        self.assertTrue(result.passed, result.errors)
-        self.assertEqual(evidence["lifecycle_mode"], "active_recertification")
-        self.assertTrue(evidence["scheduler_eligible"])
-        self.assertTrue(evidence["api_visible"])
 
     def test_persist_backtest_requires_signed_exact_authorization_and_verifies_deltas(self) -> None:
         from harness.authorization import issue_token
@@ -1416,9 +1453,114 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             bundle.combined_snapshot_id,
         )
 
+    def test_persist_backtest_mark_failure_skips_audit_and_persist(self) -> None:
+        from harness.authorization import issue_token
+        from harness.blackbox_v2.gates import BlackboxBacktestGate, InputState, PassedAllRun
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.intake import intake_delivery
+        from shared.blackbox_v2.requests import write_request
+        from shared.blackbox_v2.snapshot import create_snapshot_from_frames
+        from tests.blackbox_backtest_fixtures import backtest_output, historical_cases
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            scheme_dir = intake_delivery(
+                _delivery(root / "incoming"),
+                schemes_root=root / "schemes",
+            )
+            config = load_scheme_config(scheme_dir / "config.yaml")
+            snapshot = create_snapshot_from_frames(
+                _snapshot_frames(),
+                output_root=root / "snapshots",
+                expected_columns={
+                    name: list(frame.columns)
+                    for name, frame in _snapshot_frames().items()
+                },
+                schema_version="data-bridge-v1",
+            )
+            cases = historical_cases(1)
+            request = cases[0].request
+            state = InputState(
+                snapshot,
+                write_request(request, root / "request.json"),
+                request,
+            )
+            passed = PassedAllRun(
+                "hr_passed",
+                root / "reports" / "all",
+                snapshot.snapshot_id,
+                generation_id="generation",
+                runtime_profile="blackbox-v2-v1",
+                environment_fingerprint="e" * 64,
+            )
+            token = issue_token(
+                config.scheme_id,
+                "backtest_persist",
+                "2026-07-16",
+                scheme_version=config.scheme_version,
+                harness_run_id=passed.harness_run_id,
+                ttl_seconds=300,
+                issued_by="tester",
+            )
+            ctx = GateContext(
+                config.scheme_id,
+                "2026-07-16",
+                root,
+                root / "reports",
+                config=config,
+                authorization=token,
+                persist_backtest=True,
+                engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
+            )
+
+            with (
+                patch("harness.blackbox_v2.gates._ensure_input_state", return_value=state),
+                patch("harness.blackbox_v2.gates._verify_passed_all", return_value=passed),
+                patch(
+                    "harness.blackbox_v2.gates._data_bridge_provenance",
+                    return_value={
+                        "generation_id": "generation",
+                        "runtime_profile": "blackbox-v2-v1",
+                        "environment_fingerprint": "e" * 64,
+                    },
+                ),
+                patch(
+                    "harness.blackbox_v2.gates._environment_fingerprint",
+                    return_value="e" * 64,
+                ),
+                patch(
+                    "harness.blackbox_v2.gates.build_historical_cases",
+                    return_value=cases,
+                ),
+                patch(
+                    "harness.blackbox_v2.gates.run_blackbox_historical_backtest",
+                    return_value=backtest_output(1),
+                ),
+                patch(
+                    "harness.blackbox_v2.gates.snapshot_backtest_scope_counts",
+                    return_value={
+                        "t_backtest_runs": 1,
+                        "t_backtest_predictions": 1,
+                        "t_backtest_monthly_metrics": 1,
+                    },
+                ),
+                patch(
+                    "harness.blackbox_v2.gates.mark_token_used",
+                    side_effect=RuntimeError("mark failed"),
+                ),
+                patch("harness.blackbox_v2.gates.write_authorization_audit") as audit,
+                patch("harness.blackbox_v2.gates.persist_backtest_output_atomic") as persist,
+            ):
+                result = BlackboxBacktestGate().run(ctx)
+
+        self.assertFalse(result.passed)
+        self.assertIn("mark failed", result.errors)
+        audit.assert_not_called()
+        persist.assert_not_called()
+
     def test_persist_backtest_token_start_date_must_match_context(self) -> None:
         from harness.authorization import issue_token
-        from harness.blackbox_v2.gates import BlackboxBacktestGate
+        from harness.blackbox_v2.gates import BlackboxBacktestGate, PassedAllRun
         from scheduler.discovery import load_scheme_config
         from shared.blackbox_v2.intake import intake_delivery
 
@@ -1450,8 +1592,13 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 authorization=token,
                 persist_backtest=True,
                 backtest_start_date="2025-02-01",
+                engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
             )
-            with patch("harness.blackbox_v2.gates.build_historical_cases") as build_cases:
+            passed = PassedAllRun("hr_passed", root / "all", "snapshot")
+            with (
+                patch("harness.blackbox_v2.gates._verify_passed_all", return_value=passed),
+                patch("harness.blackbox_v2.gates.build_historical_cases") as build_cases,
+            ):
                 result = BlackboxBacktestGate().run(ctx)
 
         self.assertFalse(result.passed)
@@ -1514,7 +1661,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
 
     def test_persist_backtest_blocks_unsigned_or_mismatched_token_before_business_work(self) -> None:
         from harness.authorization import issue_token
-        from harness.blackbox_v2.gates import BlackboxBacktestGate
+        from harness.blackbox_v2.gates import BlackboxBacktestGate, PassedAllRun
         from scheduler.discovery import load_scheme_config
         from shared.blackbox_v2.intake import intake_delivery
 
@@ -1522,8 +1669,9 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             root = Path(tmpdir)
             scheme_dir = intake_delivery(_delivery(root / "incoming"), schemes_root=root / "schemes")
             config = load_scheme_config(scheme_dir / "config.yaml")
-            with patch.dict(os.environ, {"HARNESS_AUTH_SECRET": ""}):
-                unsigned = issue_token(
+            passed = PassedAllRun("hr_passed", root / "all", "snapshot")
+            with patch.dict(os.environ, {"HARNESS_AUTH_SECRET": "test-secret"}):
+                signed = issue_token(
                     config.scheme_id,
                     "backtest_persist",
                     "2026-07-16",
@@ -1537,11 +1685,16 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     project_root=root,
                     report_dir=root / "reports" / "unsigned",
                     config=config,
-                    authorization=unsigned,
+                    authorization=signed,
                     persist_backtest=True,
+                    engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
                 )
-                with patch("harness.blackbox_v2.gates.build_historical_cases") as build_cases:
-                    unsigned_result = BlackboxBacktestGate().run(unsigned_ctx)
+            with (
+                patch.dict(os.environ, {"HARNESS_AUTH_SECRET": ""}),
+                patch("harness.blackbox_v2.gates._verify_passed_all", return_value=passed),
+                patch("harness.blackbox_v2.gates.build_historical_cases") as build_cases,
+            ):
+                unsigned_result = BlackboxBacktestGate().run(unsigned_ctx)
             self.assertFalse(unsigned_result.passed)
             self.assertEqual(unsigned_result.status.value, "blocked")
             build_cases.assert_not_called()
@@ -1556,7 +1709,10 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     ttl_seconds=300,
                 )
                 mismatch_ctx = replace(unsigned_ctx, authorization=mismatch)
-                with patch("harness.blackbox_v2.gates.build_historical_cases") as build_cases:
+                with (
+                    patch("harness.blackbox_v2.gates._verify_passed_all", return_value=passed),
+                    patch("harness.blackbox_v2.gates.build_historical_cases") as build_cases,
+                ):
                     mismatch_result = BlackboxBacktestGate().run(mismatch_ctx)
                 self.assertFalse(mismatch_result.passed)
                 self.assertEqual(mismatch_result.status.value, "blocked")
@@ -1660,8 +1816,150 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
 
         self.assertFalse(result.passed)
         self.assertEqual(result.status.value, "blocked")
-        self.assertIn("latest passed all-stage", "\n".join(result.errors))
+        self.assertIn("harness_run_id mismatch", "\n".join(result.errors))
         build_cases.assert_not_called()
+
+    def test_draft_register_committed_identity_survives_outcome_audit_failure(
+        self,
+    ) -> None:
+        from harness import cli
+        from harness.authorization import _atomic_write_json, issue_token
+        from harness.blackbox_v2.draft_register import BlackboxDraftRegisterGate
+        from harness.result import GateStatus
+        from scheduler.discovery import load_scheme_config
+        from scheduler.repository import BlackboxLifecycleState
+        from shared.blackbox_v2.intake import intake_delivery
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            scheme_dir = intake_delivery(
+                _delivery(root / "incoming"),
+                schemes_root=root / "schemes",
+            )
+            config = load_scheme_config(scheme_dir / "config.yaml")
+            passed_run = SimpleNamespace(
+                harness_run_id="hr_passed",
+                predict_date="2026-07-16",
+                environment_fingerprint="e" * 64,
+                data_snapshot_id="snapshot-test",
+            )
+            token = issue_token(
+                config.scheme_id,
+                "draft_register",
+                passed_run.predict_date,
+                scheme_version=config.scheme_version,
+                harness_run_id=passed_run.harness_run_id,
+                ttl_seconds=300,
+                issued_by="tester",
+            )
+            ctx = GateContext(
+                config.scheme_id,
+                passed_run.predict_date,
+                root,
+                root / "reports",
+                config=config,
+                authorization=token,
+                engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
+            )
+            database = {"identity": None}
+
+            def register(_engine, enriched, *, expected_harness_run_id):
+                self.assertEqual(
+                    expected_harness_run_id,
+                    passed_run.harness_run_id,
+                )
+                state = BlackboxLifecycleState(
+                    scheme_id=enriched.scheme_id,
+                    scheme_version=enriched.scheme_version,
+                    runtime_type=enriched.runtime_type,
+                    version_status="draft",
+                    registry_status="paused",
+                    environment_fingerprint=enriched.environment_fingerprint,
+                    data_snapshot_id=enriched.data_snapshot_id,
+                    code_hash=enriched.code_hash,
+                    config_hash=enriched.config_hash,
+                    manifest_hash=enriched.manifest_hash,
+                    approved_by=None,
+                    approved_at=None,
+                    registry_scheme_ids=(
+                        f"{enriched.scheme_id}__h{enriched.horizon}__10Y",
+                    ),
+                )
+                database["identity"] = state
+                return state
+
+            audit_attempts: list[Path] = []
+
+            def fail_final_outcome(path, payload):
+                audit_attempts.append(path)
+                if len(audit_attempts) == 2:
+                    raise OSError("outcome disk full")
+                _atomic_write_json(path, payload)
+
+            with (
+                patch(
+                    "harness.blackbox_v2.draft_register._verify_passed_all",
+                    return_value=passed_run,
+                ),
+                patch(
+                    "harness.blackbox_v2.draft_register.register_blackbox_draft_identity",
+                    side_effect=register,
+                ),
+                patch(
+                    "harness.blackbox_v2.draft_register._atomic_write_json",
+                    side_effect=fail_final_outcome,
+                ),
+            ):
+                result = BlackboxDraftRegisterGate().run(ctx)
+
+            evidence = {item.key: item.value for item in result.evidence}
+            outcome = evidence["outcome"]
+            fallback = (
+                ctx.report_dir
+                / "draft_register_authorization"
+                / "outcome.reconciliation-required.json"
+            )
+            output = io.StringIO()
+            with (
+                patch.object(cli, "_run_gate", return_value=result),
+                redirect_stdout(output),
+            ):
+                exit_code = cli.main(
+                    [
+                        "gate",
+                        "draft-register",
+                        "--scheme-id",
+                        config.scheme_id,
+                        "--predict-date",
+                        passed_run.predict_date,
+                        "--project-root",
+                        str(root),
+                    ]
+                )
+            stdout = json.loads(output.getvalue())
+            stdout_evidence = {
+                item["key"]: item["value"] for item in stdout["evidence"]
+            }
+
+        self.assertEqual(result.status, GateStatus.FAILED)
+        self.assertFalse(result.passed)
+        self.assertIsNotNone(database["identity"])
+        self.assertEqual(outcome["database_outcome"], "committed_identity_present")
+        self.assertEqual(outcome["rollback_outcome"], "not_applicable_committed")
+        self.assertFalse(outcome["reconciliation_required"])
+        self.assertIsNone(evidence["outcome_audit_path"])
+        self.assertFalse(fallback.exists())
+        self.assertEqual(len(audit_attempts), 2)
+        self.assertIsNone(result.report_path)
+        self.assertIn("outcome disk full", "\n".join(result.errors))
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(
+            stdout_evidence["outcome"]["database_outcome"],
+            "committed_identity_present",
+        )
+        self.assertFalse(stdout_evidence["outcome"]["reconciliation_required"])
+        self.assertIn("outcome disk full", "\n".join(stdout["errors"]))
+        self.assertIsNone(stdout["report_path"])
 
     def test_shadow_register_requires_scoped_token_and_keeps_registry_paused(self) -> None:
         from harness.authorization import issue_token
@@ -1736,6 +2034,92 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
         self.assertEqual(evidence["config_hash"], "f" * 64)
         self.assertEqual(evidence["manifest_hash"], "m" * 64)
         self.assertEqual(evidence["journal_phase"], "verified")
+
+    def test_shadow_register_blocks_every_pending_journal_before_authorization_or_database_use(self) -> None:
+        from harness.authorization import issue_token, used_tokens_path
+        from harness.blackbox_v2.gates import BlackboxShadowRegisterGate
+        from harness.result import GateStatus
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.intake import intake_delivery
+        from shared.blackbox_v2.lifecycle import (
+            LifecycleJournal,
+            LifecycleState,
+            write_journal,
+        )
+
+        for phase in ("prepared", "config_written", "db_committed", "unresolved"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+                os.environ,
+                {"HARNESS_AUTH_SECRET": "lifecycle-test-secret"},
+            ):
+                root = Path(tmpdir)
+                scheme_dir = intake_delivery(
+                    _delivery(root / "incoming"),
+                    schemes_root=root / "schemes",
+                )
+                config = load_scheme_config(scheme_dir / "config.yaml")
+                previous = LifecycleState("paused", "draft", "paused")
+                journal = LifecycleJournal.prepare(
+                    action="shadow_register",
+                    scheme_id=config.scheme_id,
+                    scheme_version=config.scheme_version,
+                    harness_run_id="hr_passed",
+                    previous=previous,
+                    target=LifecycleState("paused", "shadow", "paused"),
+                    token_hash="original-token-hash",
+                )
+                if phase in {"config_written", "db_committed"}:
+                    journal = journal.transition("config_written")
+                if phase == "db_committed":
+                    journal = journal.transition("db_committed")
+                if phase == "unresolved":
+                    journal = journal.transition("unresolved", error="forced interruption")
+                write_journal(root, journal)
+                config_bytes = (scheme_dir / "config.yaml").read_bytes()
+                token = issue_token(
+                    config.scheme_id,
+                    "shadow_register",
+                    "2026-07-16",
+                    scheme_version=config.scheme_version,
+                    harness_run_id="hr_passed",
+                    ttl_seconds=60,
+                    issued_by="release-owner",
+                )
+                ctx = GateContext(
+                    scheme_id=config.scheme_id,
+                    predict_date="2026-07-16",
+                    project_root=root,
+                    report_dir=root / "reports" / "shadow",
+                    config=config,
+                    authorization=token,
+                    engine_factory=lambda: self.fail(
+                        "pending shadow registration must not open an engine"
+                    ),
+                )
+
+                with (
+                    patch("harness.blackbox_v2.activation.reconcile_journal") as reconcile,
+                    patch(
+                        "harness.blackbox_v2.activation.apply_blackbox_lifecycle_state"
+                    ) as apply_database,
+                    patch("harness.blackbox_v2.gates.mark_token_used") as mark_used,
+                    patch(
+                        "harness.blackbox_v2.gates._verify_passed_all",
+                        side_effect=AssertionError("passed-all must not be queried"),
+                    ) as passed_all,
+                    patch("harness.blackbox_v2.gates._register_shadow") as register,
+                ):
+                    result = BlackboxShadowRegisterGate().run(ctx)
+
+                self.assertEqual(result.status, GateStatus.BLOCKED)
+                self.assertIn("lifecycle journal", "\n".join(result.errors))
+                reconcile.assert_not_called()
+                apply_database.assert_not_called()
+                mark_used.assert_not_called()
+                passed_all.assert_not_called()
+                register.assert_not_called()
+                self.assertEqual((scheme_dir / "config.yaml").read_bytes(), config_bytes)
+                self.assertFalse(used_tokens_path(root).exists())
 
     def test_register_shadow_persists_exact_shadow_db_state(self) -> None:
         from harness.blackbox_v2.gates import _register_shadow

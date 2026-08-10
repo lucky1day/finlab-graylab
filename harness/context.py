@@ -24,11 +24,6 @@ class GateContext:
     persist_backtest: bool = False
     backtest_sample_size: int | None = None
     backtest_start_date: str = DEFAULT_BACKTEST_START_DATE
-    expected_empty_schema: str | None = None
     timeout_sec: int = 600
     api_base_url: str = "http://127.0.0.1:8100"
-    api_instance_nonce: str | None = None
     check_only: bool = False
-    signal_gap_plan_path: Path | None = None
-    signal_gap_authorizations: tuple[str, ...] = ()
-    signal_gap_databridge_config: Any | None = None

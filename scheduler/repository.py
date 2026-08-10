@@ -5,7 +5,6 @@ import json
 import logging
 import math
 import os
-import re
 import sys
 from collections import Counter
 from contextlib import contextmanager
@@ -39,58 +38,7 @@ BLACKBOX_IMMUTABLE_VERSION_FIELDS = (
     "config_hash",
     "manifest_hash",
 )
-BLACKBOX_BOOTSTRAP_EMPTY_TABLES = (
-    "t_scheme_registry",
-    "t_scheme_versions",
-    "t_scheme_runs",
-    "t_input_artifacts",
-    "t_scheme_predictions",
-    "t_scheme_run_log",
-    "t_scheme_actuals",
-    "t_scheme_weekly_actuals",
-    "t_scheme_monthly_actuals",
-    "t_backtest_runs",
-    "t_backtest_predictions",
-    "t_backtest_monthly_metrics",
-    "t_backtest_reproduction_checks",
-    "t_harness_runs",
-    "t_harness_gate_results",
-    "t_input_generations",
-)
-_TARGET_REGISTRY_BASELINE_VERSION = "migrations-003-013"
-_TARGET_REGISTRY_BUSINESS_FIELDS = (
-    "target_code",
-    "display_name",
-    "asset_class",
-    "target_type",
-    "sort_order",
-    "status",
-    "extra",
-)
-_TARGET_REGISTRY_BASELINE = (
-    ("1Y", "1Y国债活跃", "bond", "active_treasury", 10, "active", {"legacy_tenor": "1Y"}),
-    ("3Y", "3Y国债活跃", "bond", "active_treasury", 30, "active", {"legacy_tenor": "3Y"}),
-    ("5Y", "5Y国债活跃", "bond", "active_treasury", 50, "active", {"legacy_tenor": "5Y"}),
-    ("7Y", "7Y国债活跃", "bond", "active_treasury", 70, "active", {"legacy_tenor": "7Y"}),
-    ("10Y", "10Y国债活跃", "bond", "active_treasury", 100, "active", {"legacy_tenor": "10Y"}),
-)
-_BLACKBOX_CERTIFICATION_SCHEMA = re.compile(r"^bbv2_cert_[A-Za-z0-9_]+$")
 _LOGGER = logging.getLogger(__name__)
-
-
-class BlackboxTargetRegistryBaselineError(RuntimeError):
-    """携带 target_registry 失败证据的 bootstrap 阻断。"""
-
-    def __init__(self, summary: dict[str, object]) -> None:
-        self.summary = summary
-        super().__init__(
-            "target_registry baseline mismatch: "
-            + json.dumps(summary, ensure_ascii=False, sort_keys=True)
-        )
-
-
-class BlackboxBootstrapLockTimeout(RuntimeError):
-    """隔离 Schema bootstrap 互斥锁未在限定时间内取得。"""
 
 
 class BlackboxDraftRegisterLockTimeout(RuntimeError):
@@ -144,19 +92,6 @@ class BlackboxRevisionActivationPreflight:
     registry_scheme_ids: tuple[str, ...]
 
 
-@dataclass(frozen=True)
-class BlackboxBootstrapState:
-    """空隔离 Schema 初始化后的只读证据。"""
-
-    schema_name: str
-    scheme_id: str
-    scheme_version: str
-    version_status: str
-    registry_status: str
-    table_counts: dict[str, int]
-    target_registry_baseline: dict[str, object]
-
-
 def registry_scheme_id(base_scheme_id: str, horizon: int, target_tenor: str) -> str:
     """生成前端/业务层唯一方案 ID。"""
     return f"{base_scheme_id}__h{int(horizon)}__{target_tenor}"
@@ -200,105 +135,6 @@ def _set_mysql_session_utc_on_checkout(
         cursor.execute("SET SESSION time_zone = '+00:00'")
     finally:
         cursor.close()
-
-
-def bootstrap_blackbox_control_plane(
-    engine: Engine,
-    cfg: SchemeConfig,
-    *,
-    expected_schema: str,
-    lock_timeout_sec: float = 5.0,
-) -> BlackboxBootstrapState:
-    """仅在全新认证 Schema 中原子建立 Blackbox draft/paused 身份。"""
-    if getattr(cfg, "runtime_type", None) != "blackbox_v2":
-        raise ValueError("Blackbox bootstrap requires runtime_type=blackbox_v2")
-    if cfg.status != "paused" or cfg.version_status != "draft":
-        raise ValueError(
-            "Blackbox bootstrap requires config paused+draft: "
-            f"got={cfg.status}+{cfg.version_status}"
-        )
-    if not _BLACKBOX_CERTIFICATION_SCHEMA.fullmatch(str(expected_schema)):
-        raise ValueError(
-            "expected certification Schema must match bbv2_cert_[A-Za-z0-9_]+"
-        )
-    expected_tenors, expected_registry_ids = _expected_registry_identity(cfg)
-    effective_statuses = {scheme_id: "paused" for scheme_id in expected_registry_ids}
-
-    with _blackbox_bootstrap_advisory_lock(
-        engine,
-        expected_schema=expected_schema,
-        timeout_sec=lock_timeout_sec,
-    ):
-        with engine.begin() as conn:
-            actual_schema = str(conn.execute(text("SELECT DATABASE()")).scalar_one() or "")
-            if actual_schema != expected_schema:
-                raise RuntimeError(
-                    "database Schema mismatch for Blackbox bootstrap: "
-                    f"expected={expected_schema}, actual={actual_schema}"
-                )
-            table_counts = {
-                table: int(
-                    conn.execute(text(f"SELECT COUNT(*) FROM `{table}`")).scalar_one()
-                )
-                for table in BLACKBOX_BOOTSTRAP_EMPTY_TABLES
-            }
-            nonempty = {table: count for table, count in table_counts.items() if count != 0}
-            if nonempty:
-                raise RuntimeError(
-                    "Blackbox bootstrap test Schema must be empty: "
-                    + ", ".join(f"{table}={count}" for table, count in sorted(nonempty.items()))
-                )
-            target_registry_baseline = _validate_target_registry_baseline_conn(conn)
-
-            _upsert_scheme_version_conn(
-                conn,
-                cfg,
-                trusted_status="draft",
-                approved_by=None,
-                approved_at=None,
-            )
-            _sync_scheme_registry_conn(
-                conn,
-                [cfg],
-                effective_statuses=effective_statuses,
-            )
-            version_row = _read_scheme_version_conn(conn, cfg, for_update=True)
-            registry_rows = _read_scheme_registry_rows_conn(
-                conn,
-                cfg,
-                expected_registry_ids,
-                for_update=True,
-            )
-            if version_row is None:
-                raise RuntimeError("Blackbox bootstrap version readback is missing")
-            if (
-                version_row.get("scheme_id") != cfg.scheme_id
-                or version_row.get("scheme_version") != cfg.scheme_version
-                or version_row.get("runtime_type") != "blackbox_v2"
-                or version_row.get("status") != "draft"
-                or version_row.get("approved_by") is not None
-                or version_row.get("approved_at") is not None
-            ):
-                raise RuntimeError("Blackbox bootstrap version readback is not exact draft state")
-            registry_error = _registry_identity_error(
-                cfg,
-                expected_tenors,
-                expected_registry_ids,
-                registry_rows,
-                expected_status="paused",
-            )
-            if registry_error is not None:
-                raise RuntimeError(f"Blackbox bootstrap Registry readback mismatch: {registry_error}")
-
-    return BlackboxBootstrapState(
-        schema_name=actual_schema,
-        scheme_id=cfg.scheme_id,
-        scheme_version=cfg.scheme_version,
-        version_status="draft",
-        registry_status="paused",
-        table_counts=table_counts,
-        target_registry_baseline=target_registry_baseline,
-    )
 
 
 def register_blackbox_draft_identity(
@@ -639,163 +475,6 @@ def _normalize_registry_tenors(value: object) -> object:
     if isinstance(value, (list, tuple)):
         return [str(item) for item in value]
     return value
-
-
-@contextmanager
-def _blackbox_bootstrap_advisory_lock(
-    engine: Engine,
-    *,
-    expected_schema: str,
-    timeout_sec: float,
-) -> Iterator[None]:
-    """用连接级 MySQL advisory lock 串行化认证 Schema 初始化。"""
-    if timeout_sec < 0:
-        raise ValueError("bootstrap lock_timeout_sec must be non-negative")
-    schema_digest = hashlib.sha256(expected_schema.encode("utf-8")).hexdigest()[:32]
-    lock_name = f"bfl:bbv2-bootstrap:{schema_digest}"
-    with engine.connect() as lock_conn:
-        acquired = lock_conn.execute(
-            text("SELECT GET_LOCK(:lock_name, :timeout_sec)"),
-            {"lock_name": lock_name, "timeout_sec": float(timeout_sec)},
-        ).scalar_one()
-        if int(acquired or 0) != 1:
-            raise BlackboxBootstrapLockTimeout(
-                "timed out waiting for Blackbox bootstrap advisory lock: "
-                f"schema_hash={schema_digest} timeout_sec={timeout_sec:g}"
-            )
-        try:
-            yield
-        finally:
-            active_error = sys.exc_info()[1]
-            try:
-                released = lock_conn.execute(
-                    text("SELECT RELEASE_LOCK(:lock_name)"),
-                    {"lock_name": lock_name},
-                ).scalar_one()
-                if int(released or 0) != 1:
-                    raise RuntimeError(
-                        "failed to release Blackbox bootstrap advisory lock: "
-                        f"schema_hash={schema_digest}"
-                    )
-            except BaseException as release_error:
-                if active_error is None:
-                    raise
-                if hasattr(active_error, "add_note"):
-                    active_error.add_note(f"bootstrap advisory lock release failed: {release_error}")
-
-
-def _validate_target_registry_baseline_conn(conn: Connection) -> dict[str, object]:
-    rows = (
-        conn.execute(
-            text(
-                "SELECT target_code, display_name, asset_class, target_type, "
-                "sort_order, status, extra "
-                "FROM t_target_registry "
-                "ORDER BY sort_order, target_code FOR UPDATE"
-            )
-        )
-        .mappings()
-        .all()
-    )
-    expected = [
-        dict(zip(_TARGET_REGISTRY_BUSINESS_FIELDS, values))
-        for values in _TARGET_REGISTRY_BASELINE
-    ]
-    try:
-        actual = [_normalize_target_registry_row(row) for row in rows]
-    except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise BlackboxTargetRegistryBaselineError(
-            {
-                "status": "failed",
-                "table": "t_target_registry",
-                "baseline_version": _TARGET_REGISTRY_BASELINE_VERSION,
-                "business_fields": list(_TARGET_REGISTRY_BUSINESS_FIELDS),
-                "expected_count": len(expected),
-                "actual_count": len(rows),
-                "error": f"malformed row: {exc}",
-            }
-        ) from exc
-    if actual != expected:
-        raise BlackboxTargetRegistryBaselineError(
-            _target_registry_baseline_diff(expected, actual)
-        )
-    return {
-        "status": "passed",
-        "table": "t_target_registry",
-        "baseline_version": _TARGET_REGISTRY_BASELINE_VERSION,
-        "business_fields": list(_TARGET_REGISTRY_BUSINESS_FIELDS),
-        "row_count": len(actual),
-        "target_codes": [str(row["target_code"]) for row in actual],
-        "sha256": _target_registry_digest(actual),
-    }
-
-
-def _normalize_target_registry_row(row: Mapping[str, object]) -> dict[str, object]:
-    extra = row.get("extra")
-    if isinstance(extra, bytes):
-        extra = extra.decode("utf-8")
-    if isinstance(extra, str):
-        extra = json.loads(extra)
-    if not isinstance(extra, dict):
-        raise TypeError(f"extra must be a JSON object, got {type(extra).__name__}")
-    sort_order = int(row.get("sort_order"))
-    return {
-        "target_code": row.get("target_code"),
-        "display_name": row.get("display_name"),
-        "asset_class": row.get("asset_class"),
-        "target_type": row.get("target_type"),
-        "sort_order": sort_order,
-        "status": row.get("status"),
-        "extra": extra,
-    }
-
-
-def _target_registry_digest(rows: list[dict[str, object]]) -> str:
-    payload = json.dumps(
-        rows,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
-def _target_registry_baseline_diff(
-    expected: list[dict[str, object]],
-    actual: list[dict[str, object]],
-) -> dict[str, object]:
-    expected_by_code = {str(row["target_code"]): row for row in expected}
-    actual_by_code = {str(row["target_code"]): row for row in actual}
-    actual_codes = [str(row["target_code"]) for row in actual]
-    duplicate_codes = sorted(
-        {code for code in actual_codes if actual_codes.count(code) > 1}
-    )
-    shared_codes = sorted(set(expected_by_code) & set(actual_by_code))
-    changed = {
-        code: {
-            field: {
-                "expected": expected_by_code[code][field],
-                "actual": actual_by_code[code][field],
-            }
-            for field in _TARGET_REGISTRY_BUSINESS_FIELDS
-            if expected_by_code[code][field] != actual_by_code[code][field]
-        }
-        for code in shared_codes
-    }
-    return {
-        "status": "failed",
-        "table": "t_target_registry",
-        "baseline_version": _TARGET_REGISTRY_BASELINE_VERSION,
-        "business_fields": list(_TARGET_REGISTRY_BUSINESS_FIELDS),
-        "expected_count": len(expected),
-        "actual_count": len(actual),
-        "expected_sha256": _target_registry_digest(expected),
-        "actual_sha256": _target_registry_digest(actual),
-        "missing_target_codes": sorted(set(expected_by_code) - set(actual_by_code)),
-        "extra_target_codes": sorted(set(actual_by_code) - set(expected_by_code)),
-        "duplicate_target_codes": duplicate_codes,
-        "changed": {code: fields for code, fields in changed.items() if fields},
-    }
 
 
 def sync_scheme_registry(engine: Engine, schemes: Iterable[SchemeConfig]) -> None:
@@ -2895,7 +2574,6 @@ def complete_gray_gap_run(
     run_id: int,
     records: Iterable[PredictionRecord],
     expected_target_keys: list[Mapping[str, object]],
-    plan_sha256: str,
     source_authority: Mapping[str, object] | None,
     records_returned: int,
     run_date: str,
@@ -2906,10 +2584,6 @@ def complete_gray_gap_run(
     目标集合、活跃 Registry、输入 authority、prediction、run 成功状态与
     成功日志在同一事务内复核或提交；任何一步失败都不保留部分结果。
     """
-    normalized_plan_sha256 = _require_lower_sha256(
-        plan_sha256,
-        "plan_sha256",
-    )
     normalized_targets = _normalize_gray_gap_target_keys(
         cfg,
         expected_target_keys,
@@ -2943,8 +2617,6 @@ def complete_gray_gap_run(
     enriched_records = _enrich_gray_gap_records(
         cfg,
         records=record_list,
-        expected_targets=normalized_targets,
-        plan_sha256=normalized_plan_sha256,
         source_authority=normalized_authority,
     )
     blackbox_snapshot_id = _blackbox_gray_gap_snapshot_id(
@@ -2965,6 +2637,7 @@ def complete_gray_gap_run(
             expected_count=len(normalized_targets),
             predict_date=execution_dates["predict_date"],
         )
+        _validate_gray_gap_active_version(conn, cfg)
         if blackbox_snapshot_id is not None:
             _bind_blackbox_gray_gap_snapshot_conn(
                 conn,
@@ -2975,7 +2648,6 @@ def complete_gray_gap_run(
         _validate_gray_gap_active_registry(
             conn,
             cfg,
-            normalized_targets,
         )
         _assert_gray_gap_business_keys_absent(
             conn,
@@ -3149,188 +2821,6 @@ def _blackbox_gray_gap_record_snapshot_id(
     return snapshot_id
 
 
-def repair_blackbox_gray_gap_run_snapshot_provenance(
-    engine: Engine,
-    cfg: SchemeConfig,
-    *,
-    run_id: int,
-) -> str:
-    """受控补回已成功 Blackbox gray-gap run 缺失的运行级 snapshot。
-
-    仅接受 current active 的精确 Blackbox config、未绑定任何 snapshot 的
-    普通成功 gray_live run，并从其已落库预测的 canonical provenance 推导唯一
-    snapshot；不修改 prediction、日期或业务键。
-    """
-    if str(getattr(cfg, "runtime_type", "")) != "blackbox_v2":
-        raise ValueError(
-            "Blackbox gray gap snapshot repair requires runtime_type=blackbox_v2"
-        )
-    if (
-        getattr(cfg, "status", None) != "active"
-        or getattr(cfg, "version_status", None) != "active"
-    ):
-        raise ValueError(
-            "Blackbox gray gap snapshot repair requires config active+active"
-        )
-    exact_scheme_version = str(cfg.scheme_version)
-    with engine.begin() as conn:
-        run = _read_scheme_run_conn(
-            conn,
-            run_id=int(run_id),
-            for_update=True,
-        )
-        _validate_blackbox_gray_gap_snapshot_repair_run(
-            cfg,
-            run_id=int(run_id),
-            run=run,
-        )
-        lock = "" if _dialect_name(conn) == "sqlite" else " FOR UPDATE"
-        prediction_rows = list(
-            conn.execute(
-                text(
-                    """
-                    SELECT scheme_id, scheme_version, predict_date, feature_date,
-                           target_date, prediction_phase, extra
-                    FROM t_scheme_predictions
-                    WHERE run_id = :run_id
-                    ORDER BY id
-                    """
-                    + lock
-                ),
-                {"run_id": int(run_id)},
-            )
-            .mappings()
-            .all()
-        )
-        expected_count = int(run["records_written"])
-        if len(prediction_rows) != expected_count:
-            raise RuntimeError(
-                "Blackbox gray gap snapshot repair prediction count mismatch: "
-                f"expected={expected_count}, actual={len(prediction_rows)}"
-            )
-        expected_run_date = _stored_iso_date(run, "predict_date")
-        snapshot_ids: set[str] = set()
-        for row in prediction_rows:
-            if row.get("scheme_version") != exact_scheme_version:
-                raise RuntimeError(
-                    "Blackbox gray gap snapshot repair prediction version mismatch"
-                )
-            if row.get("prediction_phase") != "gray_live":
-                raise RuntimeError(
-                    "Blackbox gray gap snapshot repair prediction phase mismatch"
-                )
-            prediction_date = _stored_iso_date(row, "predict_date")
-            if prediction_date != expected_run_date:
-                raise RuntimeError(
-                    "Blackbox gray gap snapshot repair prediction predict_date "
-                    "does not match run"
-                )
-            extra = _stored_json_mapping(row, "extra")
-            if extra.get("backfill_mode") != "signal_gap_fill":
-                raise RuntimeError(
-                    "Blackbox gray gap snapshot repair requires signal_gap_fill "
-                    "prediction provenance"
-                )
-            _require_lower_sha256(
-                extra.get("signal_gap_plan_sha256"),
-                "Blackbox gray gap snapshot repair signal_gap_plan_sha256",
-            )
-            snapshot_ids.add(
-                _blackbox_gray_gap_record_snapshot_id(
-                    cfg,
-                    scheme_id=row.get("scheme_id"),
-                    predict_date=prediction_date,
-                    feature_date=_stored_iso_date(row, "feature_date"),
-                    target_date=_stored_iso_date(row, "target_date"),
-                    extra=extra,
-                )
-            )
-        if len(snapshot_ids) != 1:
-            raise RuntimeError(
-                "Blackbox gray gap snapshot repair requires exactly one "
-                "prediction data_snapshot_id"
-            )
-        snapshot_id = next(iter(snapshot_ids))
-        repaired = conn.execute(
-            text(
-                """
-                UPDATE t_scheme_runs
-                SET data_snapshot_id = :data_snapshot_id
-                WHERE run_id = :run_id
-                  AND data_snapshot_id IS NULL
-                  AND scheme_id = :scheme_id
-                  AND scheme_version = :scheme_version
-                  AND runtime_type = 'blackbox_v2'
-                  AND status = 'success'
-                  AND run_type = 'active'
-                  AND prediction_phase = 'gray_live'
-                """
-            ),
-            {
-                "run_id": int(run_id),
-                "data_snapshot_id": snapshot_id,
-                "scheme_id": str(cfg.scheme_id),
-                "scheme_version": exact_scheme_version,
-            },
-        )
-        _require_rowcount(
-            repaired,
-            1,
-            "Blackbox gray gap run data snapshot provenance repair",
-        )
-        return snapshot_id
-
-
-def _validate_blackbox_gray_gap_snapshot_repair_run(
-    cfg: SchemeConfig,
-    *,
-    run_id: int,
-    run: Mapping[str, object] | None,
-) -> None:
-    """为 provenance-only repair 严格限定历史 run 的不可变业务身份。"""
-    if run is None:
-        raise RuntimeError(f"Blackbox gray gap snapshot repair run missing: {run_id}")
-    expected = {
-        "scheme_id": str(cfg.scheme_id),
-        "scheme_version": str(cfg.scheme_version),
-        "runtime_type": "blackbox_v2",
-        "run_type": "active",
-        "prediction_phase": "gray_live",
-        "status": "success",
-    }
-    mismatches = [
-        f"{field}: expected={value!r}, got={run.get(field)!r}"
-        for field, value in expected.items()
-        if run.get(field) != value
-    ]
-    if run.get("data_snapshot_id") is not None:
-        mismatches.append("data_snapshot_id must be NULL before repair")
-    records_expected = run.get("records_expected")
-    records_returned = run.get("records_returned")
-    records_written = run.get("records_written")
-    if (
-        isinstance(records_expected, bool)
-        or isinstance(records_returned, bool)
-        or isinstance(records_written, bool)
-        or not isinstance(records_expected, int)
-        or not isinstance(records_returned, int)
-        or not isinstance(records_written, int)
-        or records_expected <= 0
-        or records_returned <= 0
-        or records_expected != records_returned
-        or records_returned != records_written
-    ):
-        mismatches.append(
-            "records_expected/records_returned/records_written must be equal "
-            "positive integers"
-        )
-    if mismatches:
-        raise RuntimeError(
-            "Blackbox gray gap snapshot repair run identity mismatch: "
-            + "; ".join(mismatches)
-        )
-
-
 _GRAY_GAP_TARGET_FIELDS = frozenset(
     {
         "registry_scheme_id",
@@ -3357,6 +2847,15 @@ _GRAY_GAP_DATABRIDGE_AUTHORITY_FIELDS = frozenset(
 )
 _GRAY_GAP_VINTAGE_DISCLAIMER = (
     "current_snapshot_as_of_not_historical_vintage"
+)
+_RETIRED_GRAY_GAP_EXTRA_FIELDS = frozenset(
+    {
+        "signal_gap_plan_sha256",
+        "execution_group_identity",
+        "execution_group_identity_sha256",
+        "backfilled_at",
+        "backfilled_by",
+    }
 )
 _GRAY_GAP_FIXED_ATOMIC_TARGETS = {
     "t1_daily": frozenset({"5Y", "10Y"}),
@@ -3523,11 +3022,11 @@ def _normalize_gray_gap_target_keys(
         normalized.append(row)
 
     actual_tenors = Counter(str(row["target_tenor"]) for row in normalized)
-    expected_tenors = Counter(cfg_tenors)
-    if actual_tenors != expected_tenors:
+    unknown_tenors = sorted(set(actual_tenors) - set(cfg_tenors))
+    if unknown_tenors:
         raise RuntimeError(
-            "expected target multiset does not match exact config: "
-            f"expected={dict(expected_tenors)}, actual={dict(actual_tenors)}"
+            "expected target subset does not match exact config: "
+            f"unknown={unknown_tenors}, configured={sorted(cfg_tenors)}"
         )
     identities = [
         tuple(row[field] for field in sorted(_GRAY_GAP_TARGET_FIELDS))
@@ -3698,52 +3197,10 @@ def _enrich_gray_gap_records(
     cfg: SchemeConfig,
     *,
     records: list[PredictionRecord],
-    expected_targets: list[Mapping[str, object]],
-    plan_sha256: str,
     source_authority: Mapping[str, object] | None,
 ) -> list[PredictionRecord]:
-    targets = [
-        {
-            "registry_scheme_id": row["registry_scheme_id"],
-            "target_tenor": row["target_tenor"],
-            "horizon": row["horizon"],
-        }
-        for row in expected_targets
-    ]
-    dates = _gray_gap_execution_dates(expected_targets)
-    unsigned_group = {
-        "base_scheme_id": str(cfg.scheme_id),
-        "scheme_version": str(cfg.scheme_version),
-        "runtime_type": str(cfg.runtime_type),
-        "task_type": str(cfg.task_type),
-        "predict_date": dates["predict_date"],
-        "feature_date": dates["feature_date"],
-        "target_date": dates["target_date"],
-        "prediction_phase": "gray_live",
-        "record_count": len(targets),
-        "targets": targets,
-    }
-    group_digest = hashlib.sha256(
-        json.dumps(
-            unsigned_group,
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-    ).hexdigest()
-    execution_group_identity = {
-        **unsigned_group,
-        "identity_sha256": group_digest,
-    }
-    backfilled_at = datetime.now(timezone.utc).isoformat(
-        timespec="seconds"
-    )
     common_extra: dict[str, object] = {
-        "signal_gap_plan_sha256": plan_sha256,
         "backfill_mode": "signal_gap_fill",
-        "backfilled_at": backfilled_at,
-        "execution_group_identity": execution_group_identity,
     }
     if source_authority is not None:
         common_extra.update(
@@ -3762,7 +3219,14 @@ def _enrich_gray_gap_records(
             record,
             prediction_phase="gray_live",
             scheme_version=str(cfg.scheme_version),
-            extra={**dict(record.extra or {}), **common_extra},
+            extra={
+                **{
+                    key: value
+                    for key, value in dict(record.extra or {}).items()
+                    if key not in _RETIRED_GRAY_GAP_EXTRA_FIELDS
+                },
+                **common_extra,
+            },
         )
         for record in records
     ]
@@ -3803,10 +3267,29 @@ def _validate_gray_gap_run(
         )
 
 
+def _validate_gray_gap_active_version(
+    conn: Connection,
+    cfg: SchemeConfig,
+) -> None:
+    version = _read_scheme_version_conn(conn, cfg, for_update=True)
+    expected = {
+        "scheme_id": str(cfg.scheme_id),
+        "scheme_version": str(cfg.scheme_version),
+        "runtime_type": str(cfg.runtime_type),
+        "status": "active",
+    }
+    if version is None or any(
+        str(version.get(field) or "") != value
+        for field, value in expected.items()
+    ):
+        raise RuntimeError(
+            "gray gap completion requires the exact active version"
+        )
+
+
 def _validate_gray_gap_active_registry(
     conn: Connection,
     cfg: SchemeConfig,
-    expected_targets: list[Mapping[str, object]],
 ) -> None:
     lock = "" if _dialect_name(conn) == "sqlite" else " FOR UPDATE"
     rows = list(
@@ -3843,15 +3326,19 @@ def _validate_gray_gap_active_registry(
     )
     expected = Counter(
         (
-            str(row["registry_scheme_id"]),
-            str(row["base_scheme_id"]),
+            registry_scheme_id(
+                str(cfg.scheme_id),
+                int(cfg.horizon),
+                str(target_tenor),
+            ),
+            str(cfg.scheme_id),
             str(cfg.runtime_type),
             str(cfg.frequency),
-            str(row["task_type"]),
-            str(row["target_tenor"]),
-            int(row["horizon"]),
+            str(cfg.task_type),
+            str(target_tenor),
+            int(cfg.horizon),
         )
-        for row in expected_targets
+        for target_tenor in cfg.tenors
     )
     if actual != expected:
         raise RuntimeError(

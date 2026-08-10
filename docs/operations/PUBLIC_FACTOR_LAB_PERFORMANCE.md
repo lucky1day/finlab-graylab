@@ -59,8 +59,10 @@ python scripts/report_signal_gaps.py --as-of 2026-08-07
 ```
 
 报告按 Blackbox 当前精确 active version 的 `approved_at`、或 Native Registry 的
-`created_at` 之后首个信号点开始计算，绝不读取 `deployed_at`。它只报告缺口，不写库；受控
-补齐仍必须另行授权，并只写缺失键的 `gray_live`。
+`created_at` 之后首个信号点开始计算，绝不读取 `deployed_at`。它只报告缺口，不写库；补齐需
+显式执行单日运维命令 `python -m harness signal-gap-fill --predict-date YYYY-MM-DD
+[--scheme-id BASE_SCHEME_ID]`，该命令只对缺失键 insert-only 写 `gray_live`，不再增加第二层
+用户、token 或确认授权。
 
 ## 故障处理边界
 

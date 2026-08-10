@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from harness.config_loader import load_config_raw
 from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
 from harness.gates.prediction_semantics import validate_live_record_semantics
@@ -11,6 +10,7 @@ from harness.probes.table_guard import DRY_RUN_GUARD_TABLES, diff_snapshots, sna
 from harness.result import Evidence, GateResult, GateStatus
 from shared.calendar_service import get_calendar
 from shared.models import PredictionRecord
+from shared.scheme_config_loader import load_yaml_mapping
 
 
 COMMON_EXTRA_KEYS = ("input_artifact_path", "input_artifact_source")
@@ -36,7 +36,9 @@ class DryRunGate(Gate):
         return guarded_result(self.name, lambda started_at: self._run(ctx, started_at))
 
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
-        config = load_config_raw(ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml")
+        config = load_yaml_mapping(
+            ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml"
+        )
         engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
         before: dict[str, int] = {}
         after: dict[str, int] = {}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from datetime import datetime, timezone
+import json
 import os
 import sqlite3
 import tempfile
@@ -764,6 +765,552 @@ class BlackboxRevisionActivationTests(unittest.TestCase):
 
         self.assertFalse(result.passed)
         self.assertTrue(engine.disposed)
+
+
+class BlackboxInitialLifecycleFailClosedTests(unittest.TestCase):
+    @staticmethod
+    def _scaffold(root: Path, *, version_status: str = "shadow"):
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.intake import intake_delivery
+
+        delivery = root / "incoming"
+        delivery.mkdir()
+        (delivery / "trial_10y.py").write_text("import argparse\n", encoding="utf-8")
+        (delivery / "trial_10y.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "scheme_id": "trial_10y",
+                    "name": "Trial",
+                    "algorithm_version": "1.0.0",
+                    "target_tenor": "10Y",
+                    "task_type": "T+1",
+                    "horizon": 1,
+                    "target_rule": "target_date_yield_vs_feature_date_yield",
+                }
+            ),
+            encoding="utf-8",
+        )
+        scheme_dir = intake_delivery(delivery, schemes_root=root / "schemes")
+        config_path = scheme_dir / "config.yaml"
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8").replace(
+                "version_status: draft",
+                f"version_status: {version_status}",
+            ),
+            encoding="utf-8",
+        )
+        return load_scheme_config(config_path)
+
+    @staticmethod
+    def _write_pending_journal(
+        root: Path,
+        cfg,
+        *,
+        phase: str = "unresolved",
+        scheme_version: str | None = None,
+        harness_run_id: str = "hr_passed",
+        previous=None,
+    ):
+        from shared.blackbox_v2.lifecycle import (
+            LifecycleJournal,
+            LifecycleState,
+            write_journal,
+        )
+
+        journal = LifecycleJournal.prepare(
+            action="activate",
+            scheme_id=cfg.scheme_id,
+            scheme_version=scheme_version or cfg.scheme_version,
+            harness_run_id=harness_run_id,
+            previous=previous or LifecycleState("paused", "shadow", "paused"),
+            target=LifecycleState("active", "active", "active"),
+            token_hash="original-token-hash",
+        )
+        if phase in {"config_written", "db_committed"}:
+            journal = journal.transition("config_written")
+        if phase == "db_committed":
+            journal = journal.transition("db_committed")
+        if phase == "unresolved":
+            journal = journal.transition("unresolved", error="forced interruption")
+        return write_journal(root, journal), journal
+
+    @staticmethod
+    def _context(root: Path, cfg, token: str, *, engine_factory):
+        return GateContext(
+            scheme_id=cfg.scheme_id,
+            predict_date="2026-07-20",
+            project_root=root,
+            report_dir=root / "reports" / "lifecycle",
+            config=cfg,
+            authorization=token,
+            engine_factory=engine_factory,
+        )
+
+    @staticmethod
+    def _reconcile_token(
+        cfg,
+        *,
+        scheme_version: str | None = None,
+        harness_run_id: str = "hr_passed",
+        ttl_seconds: int = 60,
+    ) -> str:
+        from harness.authorization import issue_token
+
+        return issue_token(
+            cfg.scheme_id,
+            "blackbox_reconcile",
+            scheme_version=scheme_version or cfg.scheme_version,
+            harness_run_id=harness_run_id,
+            ttl_seconds=ttl_seconds,
+            issued_by="recovery-owner",
+        )
+
+    def _run_reconcile_preflight(self, root: Path, cfg, token: str):
+        from harness.blackbox_v2.activation import BlackboxLifecycleReconcileGate
+        from harness.authorization import used_tokens_path
+
+        config_path = cfg.path / "config.yaml"
+        config_bytes = config_path.read_bytes()
+        used_path = used_tokens_path(root)
+        used_bytes = used_path.read_bytes() if used_path.exists() else None
+        ctx = self._context(
+            root,
+            cfg,
+            token,
+            engine_factory=lambda: self.fail("blocked reconcile must not open an engine"),
+        )
+        with (
+            patch("harness.blackbox_v2.activation.mark_token_used") as mark_used,
+            patch("harness.blackbox_v2.activation.write_authorization_audit") as audit,
+            patch("harness.blackbox_v2.activation.apply_blackbox_lifecycle_state") as apply_database,
+        ):
+            result = BlackboxLifecycleReconcileGate().run(ctx)
+
+        mark_used.assert_not_called()
+        audit.assert_not_called()
+        apply_database.assert_not_called()
+        self.assertEqual(config_path.read_bytes(), config_bytes)
+        self.assertEqual(
+            used_path.read_bytes() if used_path.exists() else None,
+            used_bytes,
+        )
+        return result
+
+    def test_activate_blocks_every_pending_journal_before_reconcile_or_authorization_use(self) -> None:
+        from harness.result import GateStatus
+        from harness.authorization import issue_token, used_tokens_path
+        from harness.blackbox_v2.activation import activate_blackbox
+
+        for phase in ("prepared", "config_written", "db_committed", "unresolved"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+                os.environ,
+                {"HARNESS_AUTH_SECRET": "lifecycle-test-secret"},
+            ):
+                root = Path(tmpdir)
+                cfg = self._scaffold(root)
+                self._write_pending_journal(root, cfg, phase=phase)
+                config_bytes = (cfg.path / "config.yaml").read_bytes()
+                token = issue_token(
+                    cfg.scheme_id,
+                    "blackbox_activate",
+                    scheme_version=cfg.scheme_version,
+                    harness_run_id="hr_passed",
+                    ttl_seconds=60,
+                    issued_by="release-owner",
+                )
+                ctx = self._context(
+                    root,
+                    cfg,
+                    token,
+                    engine_factory=lambda: self.fail(
+                        "pending activation must not open an engine"
+                    ),
+                )
+
+                with (
+                    patch("harness.blackbox_v2.activation.reconcile_journal") as reconcile,
+                    patch(
+                        "harness.blackbox_v2.activation.apply_blackbox_lifecycle_state"
+                    ) as apply_database,
+                    patch(
+                        "harness.blackbox_v2.activation.mark_token_used"
+                    ) as mark_used,
+                    patch(
+                        "harness.blackbox_v2.activation._verify_passed_all",
+                        side_effect=AssertionError("passed-all must not be queried"),
+                    ) as passed_all,
+                ):
+                    result = activate_blackbox(ctx)
+
+                self.assertEqual(result.status, GateStatus.BLOCKED)
+                self.assertIn("lifecycle journal", "\n".join(result.errors))
+                reconcile.assert_not_called()
+                apply_database.assert_not_called()
+                mark_used.assert_not_called()
+                passed_all.assert_not_called()
+                self.assertEqual((cfg.path / "config.yaml").read_bytes(), config_bytes)
+                self.assertFalse(used_tokens_path(root).exists())
+
+    def test_reconcile_multiple_journals_blocks_before_writes(self) -> None:
+        from harness.result import GateStatus
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"HARNESS_AUTH_SECRET": "lifecycle-test-secret"},
+        ):
+            root = Path(tmpdir)
+            cfg = self._scaffold(root)
+            self._write_pending_journal(root, cfg)
+            self._write_pending_journal(root, cfg)
+            result = self._run_reconcile_preflight(
+                root,
+                cfg,
+                self._reconcile_token(cfg),
+            )
+
+            self.assertEqual(result.status, GateStatus.BLOCKED)
+            self.assertIn("multiple incomplete", "\n".join(result.errors))
+
+    def test_reconcile_binds_token_to_journal_harness_run_before_writes(self) -> None:
+        from harness.result import GateStatus
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"HARNESS_AUTH_SECRET": "lifecycle-test-secret"},
+        ):
+            root = Path(tmpdir)
+            cfg = self._scaffold(root)
+            self._write_pending_journal(root, cfg)
+            result = self._run_reconcile_preflight(
+                root,
+                cfg,
+                self._reconcile_token(cfg, harness_run_id="hr_other"),
+            )
+
+            self.assertEqual(result.status, GateStatus.BLOCKED)
+            self.assertIn("harness_run_id", "\n".join(result.errors))
+
+    def test_reconcile_without_journal_fails_without_writes(self) -> None:
+        from harness.result import GateStatus
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"HARNESS_AUTH_SECRET": "lifecycle-test-secret"},
+        ):
+            root = Path(tmpdir)
+            cfg = self._scaffold(root)
+            result = self._run_reconcile_preflight(
+                root,
+                cfg,
+                self._reconcile_token(cfg),
+            )
+
+        self.assertEqual(result.status, GateStatus.FAILED)
+        self.assertIn("no incomplete", "\n".join(result.errors))
+
+    def test_reconcile_blocks_each_version_mismatch_without_writes(self) -> None:
+        from harness.result import GateStatus
+
+        for mismatch in ("journal", "current", "token"):
+            with self.subTest(mismatch=mismatch), tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+                os.environ,
+                {"HARNESS_AUTH_SECRET": "lifecycle-test-secret"},
+            ):
+                root = Path(tmpdir)
+                cfg = self._scaffold(root)
+                self._write_pending_journal(
+                    root,
+                    cfg,
+                    scheme_version=("wrong-journal-version" if mismatch == "journal" else None),
+                )
+                token = self._reconcile_token(
+                    cfg,
+                    scheme_version=("wrong-token-version" if mismatch == "token" else cfg.scheme_version),
+                )
+                if mismatch == "current":
+                    script = cfg.path / "delivery" / f"{cfg.scheme_id}.py"
+                    script.chmod(0o644)
+                    script.write_text("import argparse\n# current version drift\n", encoding="utf-8")
+                result = self._run_reconcile_preflight(root, cfg, token)
+
+            self.assertEqual(result.status, GateStatus.BLOCKED)
+            self.assertIn("scheme_version", "\n".join(result.errors))
+
+    def test_reconcile_blocks_active_in_each_previous_dimension_without_writes(self) -> None:
+        from harness.result import GateStatus
+        from shared.blackbox_v2.lifecycle import LifecycleState
+
+        previous_states = (
+            LifecycleState("active", "shadow", "paused"),
+            LifecycleState("paused", "shadow", "paused", config_version_status="active"),
+            LifecycleState("paused", "active", "paused"),
+            LifecycleState("paused", "shadow", "active"),
+        )
+        for previous in previous_states:
+            with self.subTest(previous=previous), tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+                os.environ,
+                {"HARNESS_AUTH_SECRET": "lifecycle-test-secret"},
+            ):
+                root = Path(tmpdir)
+                cfg = self._scaffold(root)
+                self._write_pending_journal(root, cfg, previous=previous)
+                result = self._run_reconcile_preflight(
+                    root,
+                    cfg,
+                    self._reconcile_token(cfg),
+                )
+
+            self.assertEqual(result.status, GateStatus.BLOCKED)
+            self.assertIn("non-active safe state", "\n".join(result.errors))
+
+    def test_reconcile_blocks_invalid_authorization_without_writes(self) -> None:
+        import base64
+
+        from harness.authorization import (
+            _sign,
+            mark_token_used,
+            parse_token,
+            used_tokens_path,
+        )
+        from harness.result import GateStatus
+
+        for case in ("unsigned", "invalid-signature", "expired", "consumed"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                cfg = self._scaffold(root)
+                self._write_pending_journal(root, cfg)
+                issue_secret = "lifecycle-test-secret"
+                with patch.dict(os.environ, {"HARNESS_AUTH_SECRET": issue_secret}):
+                    token = self._reconcile_token(cfg, ttl_seconds=60)
+                    if case == "expired":
+                        padding = "=" * (-len(token) % 4)
+                        envelope = json.loads(
+                            base64.urlsafe_b64decode(
+                                (token + padding).encode("ascii")
+                            ).decode("utf-8")
+                        )
+                        envelope["payload"]["issued_at"] = (
+                            "2020-01-01T00:00:00+00:00"
+                        )
+                        envelope["payload"]["expires_at"] = (
+                            "2020-01-01T00:01:00+00:00"
+                        )
+                        envelope["sig"] = _sign(envelope["payload"])
+                        token = base64.urlsafe_b64encode(
+                            json.dumps(
+                                envelope,
+                                ensure_ascii=False,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ).encode("utf-8")
+                        ).decode("ascii").rstrip("=")
+                    if case == "consumed":
+                        mark_token_used(parse_token(token), used_tokens_path(root))
+                verify_secret = (
+                    ""
+                    if case == "unsigned"
+                    else
+                    "different-lifecycle-secret"
+                    if case == "invalid-signature"
+                    else issue_secret
+                )
+                with patch.dict(os.environ, {"HARNESS_AUTH_SECRET": verify_secret}):
+                    result = self._run_reconcile_preflight(root, cfg, token)
+
+            self.assertEqual(result.status, GateStatus.BLOCKED)
+
+    def test_reconcile_read_before_failure_does_not_consume_or_write(self) -> None:
+        from harness.authorization import used_tokens_path
+        from harness.blackbox_v2.activation import BlackboxLifecycleReconcileGate
+        from harness.result import GateStatus
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"HARNESS_AUTH_SECRET": "lifecycle-test-secret"},
+        ):
+            root = Path(tmpdir)
+            cfg = self._scaffold(root)
+            self._write_pending_journal(root, cfg)
+            ctx = self._context(
+                root,
+                cfg,
+                self._reconcile_token(cfg),
+                engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
+            )
+            initial_evidence = SimpleNamespace(
+                environment_fingerprint="e" * 64,
+                data_snapshot_id="snapshot-1",
+            )
+            with (
+                patch(
+                    "harness.blackbox_v2.activation.read_blackbox_lifecycle_state",
+                    side_effect=[
+                        initial_evidence,
+                        RuntimeError("read-before failed"),
+                    ],
+                ),
+                patch("harness.blackbox_v2.activation.mark_token_used") as mark_used,
+                patch("harness.blackbox_v2.activation.write_authorization_audit") as audit,
+                patch("harness.blackbox_v2.activation.reconcile_journal") as reconcile,
+            ):
+                result = BlackboxLifecycleReconcileGate().run(ctx)
+
+        self.assertEqual(result.status, GateStatus.FAILED)
+        self.assertIn("read-before failed", "\n".join(result.errors))
+        mark_used.assert_not_called()
+        audit.assert_not_called()
+        reconcile.assert_not_called()
+        self.assertFalse(used_tokens_path(root).exists())
+
+    def test_reconcile_all_pending_phases_use_linked_journal_without_rewriting_original(self) -> None:
+        from harness.result import GateStatus
+        from harness.blackbox_v2.activation import BlackboxLifecycleReconcileGate
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.lifecycle import load_journal, pending_journals
+
+        for phase in ("prepared", "config_written", "db_committed", "unresolved"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+                os.environ,
+                {"HARNESS_AUTH_SECRET": "lifecycle-test-secret"},
+            ):
+                root = Path(tmpdir)
+                cfg = self._scaffold(root)
+                config_path = cfg.path / "config.yaml"
+                original_path, original = self._write_pending_journal(root, cfg, phase=phase)
+                original_bytes = original_path.read_bytes()
+                db_status = "shadow"
+                registry_status = "paused"
+                if phase in {"config_written", "db_committed", "unresolved"}:
+                    config_path.write_text(
+                        config_path.read_text(encoding="utf-8")
+                        .replace("status: paused", "status: active")
+                        .replace("version_status: shadow", "version_status: active"),
+                        encoding="utf-8",
+                    )
+                if phase in {"db_committed", "unresolved"}:
+                    db_status = "active"
+                    registry_status = "active"
+                token = self._reconcile_token(cfg)
+                state = {
+                    "db": SimpleNamespace(
+                        version_status=db_status,
+                        registry_status=registry_status,
+                        environment_fingerprint="e" * 64,
+                        data_snapshot_id="snapshot-1",
+                    )
+                }
+
+                def apply_database(_engine, _cfg, **kwargs):
+                    state["db"] = SimpleNamespace(
+                        version_status=kwargs["version_status"],
+                        registry_status=kwargs["registry_status"],
+                        environment_fingerprint="e" * 64,
+                        data_snapshot_id="snapshot-1",
+                    )
+
+                ctx = self._context(
+                    root,
+                    load_scheme_config(config_path),
+                    token,
+                    engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
+                )
+                with (
+                    patch(
+                        "harness.blackbox_v2.activation.read_blackbox_lifecycle_state",
+                        side_effect=lambda *_: state["db"],
+                    ),
+                    patch(
+                        "harness.blackbox_v2.activation.apply_blackbox_lifecycle_state",
+                        side_effect=apply_database,
+                    ),
+                ):
+                    result = BlackboxLifecycleReconcileGate().run(ctx)
+
+                self.assertEqual(result.status, GateStatus.PASSED, result.errors)
+                restored = load_scheme_config(config_path)
+                self.assertEqual((restored.status, restored.version_status), ("paused", "shadow"))
+                self.assertEqual(
+                    (state["db"].version_status, state["db"].registry_status),
+                    ("shadow", "paused"),
+                )
+                self.assertEqual(original_path.read_bytes(), original_bytes)
+                linked = [
+                    load_journal(path)
+                    for path in original_path.parent.glob("*.json")
+                    if path != original_path
+                ]
+                self.assertEqual(len(linked), 1)
+                self.assertEqual(linked[0].action, "lifecycle_reconcile")
+                self.assertEqual(linked[0].reconciliation_of, original.operation_id)
+                self.assertEqual(linked[0].phase, "verified")
+                self.assertEqual(linked[0].target, original.previous)
+                self.assertEqual(pending_journals(root, cfg.scheme_id), [])
+                evidence = {item.key: item.value for item in result.evidence}
+                self.assertEqual(evidence["actual_state_after"], {
+                    "config_status": "paused",
+                    "config_version_status": "shadow",
+                    "version_status": "shadow",
+                    "registry_status": "paused",
+                })
+                self.assertFalse(evidence["promoted"])
+
+    def test_reconcile_rejects_original_journal_after_linked_reconciliation(self) -> None:
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.lifecycle import LifecycleState, reconcile_journal
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cfg = self._scaffold(root)
+            config_path = cfg.path / "config.yaml"
+            original_path, _original = self._write_pending_journal(root, cfg)
+            database_state = {"version": "shadow", "registry": "paused"}
+            apply_calls: list[LifecycleState] = []
+
+            def apply_database(state: LifecycleState) -> None:
+                apply_calls.append(state)
+                database_state["version"] = state.version_status
+                database_state["registry"] = state.registry_status
+
+            def read_state() -> LifecycleState:
+                current = load_scheme_config(config_path)
+                return LifecycleState(
+                    current.status,
+                    database_state["version"],
+                    database_state["registry"],
+                    config_version_status=current.version_status,
+                )
+
+            reconcile_journal(
+                original_path,
+                config_path=config_path,
+                apply_database=apply_database,
+                read_state=read_state,
+            )
+            config_path.write_text(
+                config_path.read_text(encoding="utf-8")
+                .replace("status: paused", "status: active")
+                .replace("version_status: shadow", "version_status: active"),
+                encoding="utf-8",
+            )
+            database_state.update(version="active", registry="active")
+            calls_before_stale_attempt = len(apply_calls)
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "no longer the unique pending lifecycle journal",
+            ):
+                reconcile_journal(
+                    original_path,
+                    config_path=config_path,
+                    apply_database=apply_database,
+                    read_state=read_state,
+                )
+
+            current = load_scheme_config(config_path)
+            self.assertEqual((current.status, current.version_status), ("active", "active"))
+            self.assertEqual(database_state, {"version": "active", "registry": "active"})
+            self.assertEqual(len(apply_calls), calls_before_stale_attempt)
 
 
 if __name__ == "__main__":

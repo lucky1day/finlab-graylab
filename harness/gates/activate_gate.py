@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Mapping
 
 from harness.authorization import (
     mark_token_used,
@@ -13,12 +13,12 @@ from harness.authorization import (
     verify_authorization,
     write_authorization_audit,
 )
-from harness.config_loader import load_config_raw
 from harness.context import GateContext
 from harness.contracts.config_schema import validate_config
 from harness.contracts.onboarding_policy import validate_onboarding_policy
 from harness.gates.base import Gate, guarded_result, utc_now
 from harness.result import Evidence, GateResult, GateStatus
+from shared.scheme_config_loader import load_yaml_mapping
 
 if TYPE_CHECKING:
     from scheduler.discovery import SchemeConfig
@@ -75,6 +75,25 @@ class NativeActivationValidation:
     benchmark_validation: str
 
 
+@dataclass(frozen=True)
+class NativePersistedBacktest:
+    """Native 激活前所需的最新持久化回测事实。"""
+
+    run_id: int
+    data_source: str
+    prediction_count: int
+
+
+@dataclass(frozen=True)
+class NativeActivationLifecycle:
+    """Native 激活入口读取到的精确版本与 Registry lifecycle。"""
+
+    activation_noop: bool
+    version_status: str
+    registry_status: str
+    registry_scheme_ids: tuple[str, ...]
+
+
 class ActivationGate(Gate):
     """Native 激活 gate：授权后执行 paused→active 或 active 精确版本重批准。"""
 
@@ -87,7 +106,7 @@ class ActivationGate(Gate):
         raw_runtime_type = None
         if config_path.is_file():
             try:
-                raw = load_config_raw(config_path)
+                raw = load_yaml_mapping(config_path)
                 raw_runtime_type = raw.get("runtime_type") if isinstance(raw, dict) else None
             except (OSError, UnicodeError, ValueError):
                 raw_runtime_type = getattr(cfg, "runtime_type", None)
@@ -109,28 +128,6 @@ class ActivationGate(Gate):
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
         config_path = ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml"
 
-        auth, auth_errors = verify_authorization(
-            ctx.authorization,
-            scheme_id=ctx.scheme_id,
-            action="activate",
-            predict_date=None,
-            used_store_path=used_tokens_path(ctx.project_root),
-        )
-        if auth_errors:
-            finished_at = utc_now()
-            return GateResult(
-                gate_name=self.name,
-                status=GateStatus.BLOCKED,
-                passed=False,
-                evidence=[
-                    Evidence("scheme_id", ctx.scheme_id),
-                    Evidence("authorization_required", True),
-                ],
-                errors=auth_errors,
-                started_at=started_at,
-                finished_at=finished_at,
-            )
-
         errors: list[str] = []
         if not config_path.exists():
             finished_at = utc_now()
@@ -144,7 +141,7 @@ class ActivationGate(Gate):
                 finished_at=finished_at,
             )
 
-        raw = load_config_raw(config_path)
+        raw = load_yaml_mapping(config_path)
         config_errors = validate_config(raw, ctx.scheme_id)
         if config_errors:
             finished_at = utc_now()
@@ -181,11 +178,14 @@ class ActivationGate(Gate):
 
         # 当前精确版本须有完整首次入库，或满足已准入 Native 修订的维护路径。
         validation_scheme_version = _compute_scheme_version(ctx)
-        binding_errors = _native_activation_authorization_errors(
-            auth,
-            validation_scheme_version,
+        auth, auth_errors = verify_authorization(
+            ctx.authorization,
+            scheme_id=ctx.scheme_id,
+            action="activate",
+            scheme_version=validation_scheme_version,
+            used_store_path=used_tokens_path(ctx.project_root),
         )
-        if binding_errors:
+        if auth is None or auth_errors:
             finished_at = utc_now()
             return GateResult(
                 gate_name=self.name,
@@ -196,7 +196,7 @@ class ActivationGate(Gate):
                     Evidence("validation_scheme_version", validation_scheme_version),
                     Evidence("authorization_required", True),
                 ],
-                errors=binding_errors,
+                errors=auth_errors,
                 started_at=started_at,
                 finished_at=finished_at,
             )
@@ -221,6 +221,55 @@ class ActivationGate(Gate):
                 finished_at=finished_at,
             )
         validation_ctx = replace(ctx, config=preflight.validation_config)
+        lifecycle, lifecycle_errors = _native_activation_lifecycle_preflight(
+            validation_ctx,
+        )
+        if lifecycle_errors:
+            finished_at = utc_now()
+            return GateResult(
+                gate_name=self.name,
+                status=GateStatus.BLOCKED,
+                passed=False,
+                evidence=[
+                    Evidence("scheme_id", ctx.scheme_id),
+                    Evidence("validation_scheme_version", validation_scheme_version),
+                    Evidence("activation_noop", False),
+                ],
+                errors=lifecycle_errors,
+                started_at=started_at,
+                finished_at=finished_at,
+            )
+        assert lifecycle is not None
+        if lifecycle.activation_noop:
+            finished_at = utc_now()
+            return GateResult(
+                gate_name=self.name,
+                status=GateStatus.PASSED,
+                passed=True,
+                evidence=[
+                    Evidence("scheme_id", ctx.scheme_id),
+                    Evidence("validation_scheme_version", validation_scheme_version),
+                    Evidence("activated_scheme_version", validation_scheme_version),
+                    Evidence("config_path", str(config_path)),
+                    Evidence("previous_status", "active"),
+                    Evidence("new_status", "active"),
+                    Evidence("status_flipped", False),
+                    Evidence("activation_noop", True),
+                    Evidence("version_status", lifecycle.version_status),
+                    Evidence("registry_status", lifecycle.registry_status),
+                    Evidence(
+                        "registry_scheme_ids",
+                        list(lifecycle.registry_scheme_ids),
+                    ),
+                    Evidence("gate_history_verified", False),
+                    Evidence("persisted_backtest_verified", False),
+                    Evidence("registry_synced", False),
+                    Evidence("authorization_consumed", False),
+                ],
+                errors=[],
+                started_at=started_at,
+                finished_at=finished_at,
+            )
         validation, gate_history_errors = _resolve_native_activation_validation(
             validation_ctx,
             validation_scheme_version,
@@ -256,6 +305,27 @@ class ActivationGate(Gate):
                 started_at=started_at,
                 finished_at=finished_at,
             )
+
+        backtest, backtest_errors = _native_persisted_backtest_preflight(
+            validation_ctx,
+        )
+        if backtest_errors:
+            finished_at = utc_now()
+            return GateResult(
+                gate_name=self.name,
+                status=GateStatus.BLOCKED,
+                passed=False,
+                evidence=[
+                    Evidence("scheme_id", ctx.scheme_id),
+                    Evidence("validation_scheme_version", validation_scheme_version),
+                    *_validation_evidence(validation),
+                    *_persisted_backtest_evidence(backtest),
+                ],
+                errors=backtest_errors,
+                started_at=started_at,
+                finished_at=finished_at,
+            )
+        assert backtest is not None
 
         # 消费是首次授权副作用；锁内重检保证并发输家不会修改配置或 Registry。
         mark_token_used(auth, used_tokens_path(ctx.project_root))
@@ -327,6 +397,7 @@ class ActivationGate(Gate):
                 Evidence("gate_history_verified", True),
                 Evidence("registry_synced", True),
                 *_validation_evidence(validation),
+                *_persisted_backtest_evidence(backtest),
                 Evidence("authorization_audit_path", str(audit_path)),
             ],
             errors=errors,
@@ -423,34 +494,6 @@ def _compute_scheme_version(ctx: GateContext) -> str:
     return compute_scheme_version(code_hash, config_hash)
 
 
-def _native_activation_authorization_errors(
-    auth,
-    validation_scheme_version: str,
-) -> list[str]:
-    """校验 Native 激活授权绑定验证版本并携带可审计签发者。"""
-    if auth is None:
-        return ["authorization token is required"]
-    errors: list[str] = []
-    if getattr(auth, "scheme_version", None) != validation_scheme_version:
-        errors.append(
-            "activate authorization scheme_version mismatch: "
-            f"token={getattr(auth, 'scheme_version', None)}, "
-            f"validation={validation_scheme_version}"
-        )
-    issued_by = getattr(auth, "issued_by", None)
-    if not isinstance(issued_by, str) or not issued_by.strip():
-        errors.append("activate authorization issued_by must be a non-empty string")
-    issued_at = getattr(auth, "issued_at", None)
-    try:
-        parsed_issued_at = datetime.fromisoformat(issued_at)
-    except (TypeError, ValueError):
-        errors.append("activate authorization issued_at must be an ISO datetime")
-    else:
-        if parsed_issued_at.tzinfo is None:
-            errors.append("activate authorization issued_at must include timezone")
-    return errors
-
-
 def _strict_native_activation_preflight(
     ctx: GateContext,
     validation_scheme_version: str,
@@ -536,6 +579,218 @@ def _strict_native_activation_preflight(
     )
 
 
+def _native_activation_lifecycle_preflight(
+    ctx: GateContext,
+) -> tuple[NativeActivationLifecycle | None, list[str]]:
+    """一次只读核验 exact Native version 与 expected Registry lifecycle。"""
+    from sqlalchemy import text
+
+    from scheduler.repository import registry_scheme_id
+
+    cfg = ctx.config
+    if cfg is None:
+        return None, ["Native activation lifecycle preflight requires config"]
+    try:
+        expected_tenors = tuple(str(tenor) for tenor in cfg.tenors)
+        if not expected_tenors or len(expected_tenors) != len(set(expected_tenors)):
+            raise ValueError("Native target tenors must be non-empty and unique")
+        expected_registry_ids = tuple(
+            registry_scheme_id(cfg.scheme_id, int(cfg.horizon), tenor)
+            for tenor in expected_tenors
+        )
+    except Exception as exc:  # noqa: BLE001 - malformed identity blocks activation.
+        return None, [f"Native activation lifecycle identity is invalid: {exc}"]
+
+    registry_placeholders = ", ".join(
+        f":registry_scheme_id_{index}"
+        for index, _registry_id in enumerate(expected_registry_ids)
+    )
+    registry_params: dict[str, object] = {"base_scheme_id": cfg.scheme_id}
+    registry_params.update(
+        {
+            f"registry_scheme_id_{index}": registry_id
+            for index, registry_id in enumerate(expected_registry_ids)
+        }
+    )
+
+    engine, owns_engine = _validation_history_engine(ctx)
+    if engine is None:
+        return None, ["Native activation lifecycle preflight database unavailable"]
+    try:
+        with engine.begin() as conn:
+            version_row = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT scheme_id, scheme_version, runtime_type, status
+                        FROM t_scheme_versions
+                        WHERE scheme_id = :scheme_id
+                          AND scheme_version = :scheme_version
+                        LIMIT 1
+                        """
+                    ),
+                    {
+                        "scheme_id": cfg.scheme_id,
+                        "scheme_version": cfg.scheme_version,
+                    },
+                )
+                .mappings()
+                .one_or_none()
+            )
+            registry_rows = (
+                conn.execute(
+                    text(
+                        "SELECT scheme_id, base_scheme_id, horizon, task_type, "
+                        "runtime_type, frequency, target_tenor, status "
+                        "FROM t_scheme_registry "
+                        f"WHERE scheme_id IN ({registry_placeholders}) "
+                        "OR base_scheme_id = :base_scheme_id"
+                    ),
+                    registry_params,
+                )
+                .mappings()
+                .all()
+            )
+    except Exception as exc:  # noqa: BLE001 - control-plane read must fail closed.
+        return None, [f"Native activation lifecycle preflight read failed: {exc}"]
+    finally:
+        if owns_engine and hasattr(engine, "dispose"):
+            engine.dispose()
+
+    errors: list[str] = []
+    if version_row is None:
+        errors.append(
+            "Native activation lifecycle exact version is missing: "
+            f"{cfg.scheme_id}/{cfg.scheme_version}"
+        )
+        return None, errors
+
+    expected_version_values = {
+        "scheme_id": cfg.scheme_id,
+        "scheme_version": cfg.scheme_version,
+        "runtime_type": "native_adapter",
+    }
+    version_mismatches = [
+        f"{field}: expected={expected!r}, actual={version_row.get(field)!r}"
+        for field, expected in expected_version_values.items()
+        if version_row.get(field) != expected
+    ]
+    if version_mismatches:
+        errors.append(
+            "Native activation lifecycle exact version identity mismatch: "
+            + "; ".join(version_mismatches)
+        )
+
+    version_status = str(version_row.get("status") or "")
+    registry_statuses = {str(row.get("status") or "") for row in registry_rows}
+    registry_status = (
+        next(iter(registry_statuses)) if len(registry_statuses) == 1 else ""
+    )
+    if version_status == "active" and registry_status == "active":
+        activation_noop = True
+        if cfg.status != "active":
+            errors.append(
+                "Native activation lifecycle config status is "
+                f"{cfg.status}, expected active for active production state"
+            )
+    elif version_status == "draft" and registry_status == "paused":
+        activation_noop = False
+    else:
+        activation_noop = False
+        errors.append(
+            "Native activation lifecycle is inconsistent: "
+            f"config_status={cfg.status}, version_status={version_status!r}, "
+            f"registry_statuses={sorted(registry_statuses)}"
+        )
+
+    if registry_status in {"active", "paused"}:
+        registry_errors = _native_activation_registry_errors(
+            cfg,
+            expected_tenors,
+            expected_registry_ids,
+            registry_rows,
+            expected_status=registry_status,
+        )
+        errors.extend(registry_errors)
+    else:
+        errors.append(
+            "Native activation lifecycle Registry statuses must be uniformly "
+            f"active or paused: {sorted(registry_statuses)}"
+        )
+
+    if errors:
+        return None, errors
+    return (
+        NativeActivationLifecycle(
+            activation_noop=activation_noop,
+            version_status=version_status,
+            registry_status=registry_status,
+            registry_scheme_ids=expected_registry_ids,
+        ),
+        [],
+    )
+
+
+def _native_activation_registry_errors(
+    cfg: "SchemeConfig",
+    expected_tenors: tuple[str, ...],
+    expected_registry_ids: tuple[str, ...],
+    registry_rows: list[Mapping[str, object]],
+    *,
+    expected_status: str,
+) -> list[str]:
+    """核验 Native composite Registry 的生产业务身份与统一状态。"""
+    actual_ids = [str(row.get("scheme_id")) for row in registry_rows]
+    errors: list[str] = []
+    duplicate_ids = sorted(
+        {registry_id for registry_id in actual_ids if actual_ids.count(registry_id) > 1}
+    )
+    if duplicate_ids:
+        errors.append(
+            "Native activation lifecycle Registry has duplicate rows: "
+            f"{duplicate_ids}"
+        )
+    if set(actual_ids) != set(expected_registry_ids):
+        errors.append(
+            "Native activation lifecycle Registry identity mismatch: "
+            f"expected={sorted(expected_registry_ids)}, actual={sorted(actual_ids)}"
+        )
+        return errors
+
+    rows_by_id = {str(row.get("scheme_id")): row for row in registry_rows}
+    for target_tenor, registry_id in zip(
+        expected_tenors,
+        expected_registry_ids,
+    ):
+        row = rows_by_id[registry_id]
+        expected_values = {
+            "base_scheme_id": cfg.scheme_id,
+            "runtime_type": "native_adapter",
+            "task_type": cfg.task_type,
+            "target_tenor": target_tenor,
+            "frequency": cfg.frequency,
+            "status": expected_status,
+        }
+        for field, expected in expected_values.items():
+            if row.get(field) != expected:
+                errors.append(
+                    "Native activation lifecycle Registry field mismatch: "
+                    f"registry_id={registry_id}, field={field}, "
+                    f"expected={expected!r}, actual={row.get(field)!r}"
+                )
+        try:
+            actual_horizon = int(row.get("horizon"))
+        except (TypeError, ValueError):
+            actual_horizon = None
+        if actual_horizon != int(cfg.horizon):
+            errors.append(
+                "Native activation lifecycle Registry field mismatch: "
+                f"registry_id={registry_id}, field=horizon, "
+                f"expected={int(cfg.horizon)!r}, actual={row.get('horizon')!r}"
+            )
+    return errors
+
+
 def _native_activation_business_identity(
     cfg: "SchemeConfig",
 ) -> tuple[tuple[str, object], ...]:
@@ -566,7 +821,7 @@ def _freeze_identity_value(value: object) -> object:
 
 
 REQUIRED_ACTIVATE_GATES = frozenset({
-    "static", "input", "unit", "dry-run", "compare", "backtest", "api-readiness",
+    "static", "input", "unit", "dry-run", "compare", "backtest",
 })
 
 
@@ -728,7 +983,7 @@ def _passed_full_all_validation(
     from sqlalchemy import text
 
     config_path = ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml"
-    raw_config = load_config_raw(config_path) if config_path.exists() else {}
+    raw_config = load_yaml_mapping(config_path) if config_path.exists() else {}
     backtest_config = (
         raw_config.get("backtest")
         if isinstance(raw_config.get("backtest"), dict)
@@ -786,8 +1041,14 @@ def _passed_full_all_validation(
         if owns_engine and hasattr(engine, "dispose"):
             engine.dispose()
 
-    gate_statuses = {str(row[0]): str(row[1]) for row in rows}
-    if benchmark_required and gate_statuses.get("compare") == "skipped":
+    gate_rows = [(str(row[0]), str(row[1])) for row in rows]
+    gate_names = [gate_name for gate_name, _status in gate_rows]
+    duplicates = sorted(
+        {gate_name for gate_name in gate_names if gate_names.count(gate_name) > 1}
+    )
+    missing = sorted(REQUIRED_ACTIVATE_GATES - set(gate_names))
+    extra = sorted(set(gate_names) - REQUIRED_ACTIVATE_GATES)
+    if benchmark_required and ("compare", "skipped") in gate_rows:
         return (
             None,
             [
@@ -796,18 +1057,31 @@ def _passed_full_all_validation(
             ],
             True,
         )
-    passed_gates = {
-        gate_name
-        for gate_name, status in gate_statuses.items()
-        if status == "passed" or (status == "skipped" and not benchmark_required)
-    }
-    missing = REQUIRED_ACTIVATE_GATES - passed_gates
-    if missing:
+    invalid_statuses = sorted(
+        f"{gate_name}={status}"
+        for gate_name, status in gate_rows
+        if status != "passed"
+        and not (
+            gate_name == "compare"
+            and status == "skipped"
+            and not benchmark_required
+        )
+    )
+    if (
+        len(gate_rows) != len(REQUIRED_ACTIVATE_GATES)
+        or duplicates
+        or missing
+        or extra
+        or invalid_statuses
+    ):
         return (
             None,
             [
-                f"required gates not all passed for harness run {run[0]}: "
-                f"missing/not passed: {sorted(missing)}"
+                "all-stage harness run must have the exact current gate multiset "
+                "with benchmark-policy statuses: "
+                f"harness_run_id={run[0]}, row_count={len(gate_rows)}, "
+                f"duplicates={duplicates}, missing={missing}, extra={extra}, "
+                f"invalid_statuses={invalid_statuses}"
             ],
             True,
         )
@@ -829,7 +1103,7 @@ def _passed_native_maintenance_validation(
     ctx: GateContext,
     scheme_version: str,
 ) -> tuple[str | None, list[str], bool]:
-    """读取维护阶段的当前版本六 Gate，不读取当前 compare/backtest 结果。"""
+    """读取维护阶段的当前版本五 Gate，不读取当前 compare/backtest 结果。"""
     from sqlalchemy import text
 
     from harness.gates.native_maintenance_admission_gate import (
@@ -843,17 +1117,6 @@ def _passed_native_maintenance_validation(
             ["cannot connect to database to verify native-maintenance gate history"],
             False,
         )
-    gate_params = {
-        "harness_run_id": None,
-        **{
-            f"gate_name_{index}": gate_name
-            for index, gate_name in enumerate(NATIVE_MAINTENANCE_SEQUENCE)
-        },
-    }
-    gate_placeholders = ", ".join(
-        f":gate_name_{index}"
-        for index, _ in enumerate(NATIVE_MAINTENANCE_SEQUENCE)
-    )
     try:
         with engine.begin() as conn:
             run = conn.execute(
@@ -880,15 +1143,13 @@ def _passed_native_maintenance_validation(
                     ],
                     True,
                 )
-            gate_params["harness_run_id"] = run[0]
             rows = conn.execute(
                 text(
                     "SELECT gate_name, status "
                     "FROM t_harness_gate_results "
-                    "WHERE harness_run_id = :harness_run_id "
-                    f"AND gate_name IN ({gate_placeholders})"
+                    "WHERE harness_run_id = :harness_run_id"
                 ),
-                gate_params,
+                {"harness_run_id": run[0]},
             ).fetchall()
     except Exception as exc:  # noqa: BLE001 - database errors block activation.
         return (
@@ -900,24 +1161,34 @@ def _passed_native_maintenance_validation(
         if owns_engine and hasattr(engine, "dispose"):
             engine.dispose()
 
-    statuses_by_gate: dict[str, list[str]] = {
-        gate_name: [] for gate_name in NATIVE_MAINTENANCE_SEQUENCE
-    }
-    for row in rows:
-        gate_name = str(row[0])
-        if gate_name in statuses_by_gate:
-            statuses_by_gate[gate_name].append(str(row[1]))
-    missing_or_not_passed = [
-        gate_name
-        for gate_name, statuses in statuses_by_gate.items()
-        if not statuses or any(status != "passed" for status in statuses)
-    ]
-    if missing_or_not_passed:
+    required = frozenset(NATIVE_MAINTENANCE_SEQUENCE)
+    gate_rows = [(str(row[0]), str(row[1])) for row in rows]
+    gate_names = [gate_name for gate_name, _status in gate_rows]
+    duplicates = sorted(
+        {gate_name for gate_name in gate_names if gate_names.count(gate_name) > 1}
+    )
+    missing = sorted(required - set(gate_names))
+    extra = sorted(set(gate_names) - required)
+    non_passed = sorted(
+        f"{gate_name}={status}"
+        for gate_name, status in gate_rows
+        if status != "passed"
+    )
+    if (
+        len(gate_rows) != len(required)
+        or duplicates
+        or missing
+        or extra
+        or non_passed
+    ):
         return (
             None,
             [
-                "required native-maintenance gates not all passed for harness "
-                f"run {run[0]}: missing/not passed: {missing_or_not_passed}"
+                "native-maintenance harness run must have the exact current "
+                "five passed gate rows: "
+                f"harness_run_id={run[0]}, row_count={len(gate_rows)}, "
+                f"duplicates={duplicates}, missing={missing}, extra={extra}, "
+                f"non_passed={non_passed}"
             ],
             True,
         )
@@ -925,10 +1196,90 @@ def _passed_native_maintenance_validation(
 
 
 def _validation_history_engine(ctx: GateContext) -> tuple[object | None, bool]:
-    """优先复用 GateContext 的数据库连接，且仅释放本地创建的连接。"""
+    """创建验证查询 engine，并由调用方负责释放。"""
     if ctx.engine_factory is not None:
-        return ctx.engine_factory(), False
+        return ctx.engine_factory(), True
     return _db_engine(), True
+
+
+def _native_persisted_backtest_preflight(
+    ctx: GateContext,
+) -> tuple[NativePersistedBacktest | None, list[str]]:
+    """只读核验 base scheme 在运行时默认口径下的最新成功回测。"""
+    from sqlalchemy import text
+
+    from backend.factor_lab_dashboard_semantics import (
+        BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE,
+    )
+
+    runtime_type = str(getattr(ctx.config, "runtime_type", ""))
+    try:
+        data_source = BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE[runtime_type]
+    except KeyError:
+        return (
+            None,
+            [
+                "Native activation runtime_type has no default persisted backtest "
+                f"data_source: {runtime_type!r}"
+            ],
+        )
+
+    engine, owns_engine = _validation_history_engine(ctx)
+    if engine is None:
+        return None, ["cannot read persisted backtest: database unavailable"]
+    try:
+        with engine.begin() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT r.id AS run_id, COUNT(p.id) AS prediction_count
+                    FROM t_backtest_runs AS r
+                    LEFT JOIN t_backtest_predictions AS p
+                      ON p.run_id = r.id
+                    WHERE r.scheme_id = :scheme_id
+                      AND r.data_source = :data_source
+                      AND r.status = 'success'
+                    GROUP BY r.id, r.updated_at
+                    ORDER BY r.updated_at DESC, r.id DESC
+                    LIMIT 1
+                    """
+                ),
+                {
+                    "scheme_id": ctx.scheme_id,
+                    "data_source": data_source,
+                },
+            ).one_or_none()
+    except Exception as exc:  # noqa: BLE001 - DB read failure blocks activation.
+        return None, [f"cannot read persisted backtest for Native activation: {exc}"]
+    finally:
+        if owns_engine and hasattr(engine, "dispose"):
+            engine.dispose()
+
+    if row is None:
+        return (
+            None,
+            [
+                "latest successful persisted backtest run missing for "
+                f"scheme_id={ctx.scheme_id} data_source={data_source}"
+            ],
+        )
+    run_id = int(row[0])
+    prediction_count = int(row[1] or 0)
+    backtest = NativePersistedBacktest(
+        run_id=run_id,
+        data_source=data_source,
+        prediction_count=prediction_count,
+    )
+    if prediction_count <= 0:
+        return (
+            backtest,
+            [
+                "latest successful persisted backtest has no prediction rows: "
+                f"run_id={run_id} scheme_id={ctx.scheme_id} "
+                f"data_source={data_source}"
+            ],
+        )
+    return backtest, []
 
 
 def _combine_validation_errors(*error_sets: list[str]) -> list[str]:
@@ -939,6 +1290,26 @@ def _combine_validation_errors(*error_sets: list[str]) -> list[str]:
             if error not in combined:
                 combined.append(error)
     return combined
+
+
+def _persisted_backtest_evidence(
+    backtest: NativePersistedBacktest | None,
+) -> list[Evidence]:
+    """将 Native persisted backtest preflight 编码为激活证据。"""
+    return [
+        Evidence(
+            "latest_backtest_run_id",
+            backtest.run_id if backtest is not None else None,
+        ),
+        Evidence(
+            "latest_backtest_data_source",
+            backtest.data_source if backtest is not None else None,
+        ),
+        Evidence(
+            "latest_backtest_prediction_count",
+            backtest.prediction_count if backtest is not None else 0,
+        ),
+    ]
 
 
 def _validation_evidence(

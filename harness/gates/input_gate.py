@@ -4,11 +4,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from harness.config_loader import load_config_raw
 from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
 from harness.result import Evidence, GateResult, GateStatus
 from shared.prediction_context import build_monthly_live_context
+from shared.scheme_config_loader import load_yaml_mapping
 
 
 MONTHLY_SOURCE_START_DATE = "2010-01-01"
@@ -21,7 +21,9 @@ class InputGate(Gate):
         return guarded_result(self.name, lambda started_at: self._run(ctx, started_at))
 
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
-        config = load_config_raw(ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml")
+        config = load_yaml_mapping(
+            ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml"
+        )
         input_spec = config.get("input_spec") if isinstance(config.get("input_spec"), dict) else {}
         frequency = str(config.get("frequency", "")).strip()
         required_columns = [str(item) for item in input_spec.get("required_columns", [])]

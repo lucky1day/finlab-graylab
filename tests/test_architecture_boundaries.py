@@ -8,6 +8,52 @@ from harness.contracts import import_rules
 
 
 class RepositoryArchitectureBoundaryTests(unittest.TestCase):
+    def test_certification_bootstrap_runtime_surface_is_absent(self) -> None:
+        from harness.context import GateContext
+        from harness import registry
+
+        project_root = Path(__file__).resolve().parents[1]
+        bootstrap_module = project_root / "harness" / "blackbox_v2" / "bootstrap.py"
+        production_sources = [
+            project_root / "harness" / "cli.py",
+            project_root / "harness" / "context.py",
+            project_root / "harness" / "registry.py",
+            project_root / "scheduler" / "repository.py",
+        ]
+        retired_symbols = {
+            "BLACKBOX_BOOTSTRAP_EMPTY_TABLES",
+            "BlackboxBootstrapGate",
+            "BlackboxBootstrapLockTimeout",
+            "BlackboxBootstrapState",
+            "BlackboxTargetRegistryBaselineError",
+            "bootstrap_blackbox_control_plane",
+            "expected_empty_schema",
+            "repair_blackbox_gray_gap_run_snapshot_provenance",
+        }
+
+        self.assertFalse(bootstrap_module.exists())
+        self.assertFalse(hasattr(registry, "EXPLICIT_SEQUENCE"))
+        self.assertNotIn("expected_empty_schema", GateContext.__dataclass_fields__)
+        for source_path in production_sources:
+            source = source_path.read_text(encoding="utf-8")
+            for symbol in retired_symbols:
+                with self.subTest(source=source_path.name, symbol=symbol):
+                    self.assertNotIn(symbol, source)
+
+    def test_cli_gate_choices_exclude_retired_bootstrap(self) -> None:
+        from harness.cli import _build_parser
+
+        parser = _build_parser()
+        gate_parser = next(
+            action for action in parser._actions if action.dest == "command"
+        ).choices["gate"]
+        gate_name_arg = next(
+            action for action in gate_parser._actions
+            if action.dest == "gate_name"
+        )
+
+        self.assertNotIn("bootstrap", gate_name_arg.choices)
+
     def test_repository_boundary_scanner_is_available(self) -> None:
         self.assertTrue(
             hasattr(import_rules, "repository_layer_import_violations"),

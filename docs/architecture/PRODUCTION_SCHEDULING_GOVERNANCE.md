@@ -54,20 +54,23 @@ launchd 身份认证。仓库代码的同 UID 调用者属于受信任边界；�
 `gray_live`；两者不能互相伪装、覆盖或以日期标签替代 provenance。回测继续写入
 `t_backtest_*`，不与实盘预测混用。
 
-历史缺口先用 `signal-gap-plan` 只读检查；获授权的运维补齐只保留单日入口：
+历史缺口可以先用 `signal-gap-plan` 只读检查；运维补齐只保留单日入口，并可选限定一个
+`base_scheme_id`：
 
 ```bash
 python -m harness signal-gap-fill --predict-date YYYY-MM-DD
+python -m harness signal-gap-fill --predict-date YYYY-MM-DD --scheme-id <base_scheme_id>
 ```
 
-该命令扫描当天所有应运行的 active 方案，冻结计划，仅对真实缺口按原子方案组在进程内签发
-精确短期 token，并统一 insert-only 写入 `gray_live`。Native 从当前数据库按指定日期推导的
-`feature_date` 截止重建，token 的 source authority 为 `null`；Blackbox 继续严格绑定冻结的
-DataBridge authority。缺少 HMAC secret、Blackbox 权威输入、计划异常或算法失败均直接退出；
-不回退旧版本、不覆盖、不重试。写后必须由同日期权威 plan 确认缺口为零。
+该命令在进程内生成 `single-date-active-live-gap-plan-v1` 计划；不接收外部 plan、日期范围、
+operator、HMAC token 或 plan SHA。全量模式扫描当天所有应运行的 active 方案，单方案模式只检查
+指定的 active base scheme。`SKIP_NOT_DUE` 和 `SKIP_PRESENT` 都是正常无写入结果；只有真实
+`GRAY_LIVE_GAP` 才进入执行。Native 从当前数据库按指定日期推导的 `feature_date` 截止重建；
+Blackbox 严格重放该批次计划绑定的冻结 DataBridge authority。
 
-当前可执行计划契约为 `active-signal-gap-plan-v7`。Native action 不再携带 `input_mode` 或
-source-package 输入资格字段；v6 及更早计划全部 fail-closed，不提供兼容执行分支。
+所有缺口算法必须先全部成功，任一算法失败则 prediction 零提交；算法全部成功后才按
+base scheme group 执行 insert-only `gray_live` 写入，并只做一次同日期最终权威读回。计划异常、
+Blackbox 权威输入缺失或执行失败均直接暴露；不回退旧版本、不覆盖、不自动重试。
 
 DataBridge 必须由本机 MySQL 原子发布标准日/周/月 artifact，并继续通过源表、schema、
 连续性、稳定轮次和 `feature_date` 截止验证。输入不新鲜、源表异常或两轮不稳定时必须
@@ -87,9 +90,19 @@ predictions 周六 11:30、monthly predictions 自然月 15 日 18:00；actuals 
 
 ## 4. 生命周期与停止条件
 
-Activation 前必须完成对应 Gate、生产准备核验与一次性专项授权；Activation 本身不安装或加载 plist。首次 Native 技术入库使用 current exact version 的完整 `all + compare`；同一存量身份维护只有在 prior `all` 已有匹配 `static.business_identity` 时才可使用 `native-maintenance`。两条 profile 互斥，缺失或不一致时直接失败。
+Activation 前必须完成对应 Gate、生产准备核验与一次性专项授权；Activation 本身不安装或加载 plist。首次 Native 技术入库使用 current exact version 的完整六段 `all`（`static → input → unit → dry-run → compare → backtest`）；同一存量身份维护只有在 prior `all` 已有匹配 `static.business_identity` 时才可使用五段 `native-maintenance`（`static → native-maintenance-admission → input → unit → dry-run`）。两条 profile 互斥，缺失或不一致时直接失败。
 
-`static.business_identity` 只包含 scheme/runtime/horizon/task/frequency/tenors/composite IDs，不含代码、config 或 version hash。maintenance 的 current exact version 必须为 native `draft|active`，Registry 必须统一 paused（预激活）或 active（激活后），draft version 配 active Registry 必须失败。唯一固定的 legacy identity receipt 只服务 `weekly_10y_d_overlay_0529` 的既有缺快照 prior，并仍须完整六段 maintenance 与独立 activation；它不能写业务表、启动调度或外推到其它身份。
+`static.business_identity` 只包含 scheme/runtime/horizon/task/frequency/tenors/composite IDs，不含代码、config 或 version hash。maintenance 的 current exact version 必须为 native `draft|active`，Registry 必须统一 paused（预激活）或 active（激活后），draft version 配 active Registry 必须失败。唯一固定的 legacy identity receipt 只服务 `weekly_10y_d_overlay_0529` 的既有缺快照 prior，并仍须完整五段 maintenance 与独立 activation；它不能写业务表、启动调度或外推到其它身份。
+
+技术 `all` 不访问 Backend。方案激活后唯一产品读模型检查为 `dashboard` Gate，它只读取
+`/api/factor-lab/dashboard` 并验证 active composite、信号和回测分区可见；dashboard payload
+不携带 exact version，因此该 Gate 不能证明某个 exact version，版本身份仍由生命周期与数据库
+权威回读证明。
+
+Blackbox 任一 lifecycle journal 处于 pending 时，新的 shadow、activate 或 revision activate
+必须直接阻断，不得在授权前隐式恢复。唯一恢复入口是显式 HMAC 授权的
+`blackbox_reconcile`：它只回退到原 journal 记录的 previous safe state，保留原 journal 不变，
+并新建与其关联的 reconciliation journal 记录全过程；失败继续保留 pending 证据。
 
 出现以下任一情况时立即停止副作用并保留证据：
 

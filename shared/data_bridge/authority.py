@@ -20,12 +20,37 @@ from shared.data_bridge.refresh import (
     data_bridge_publication_identity_sha256,
 )
 from shared.data_bridge.validation import DataBridgeValidationError
-from shared.input_artifacts import (
-    _resolve_blackbox_input_cutoffs_with_source_keys_bulk_from_keys,
-)
 
 
 AUTHORITY_SCHEMA_VERSION = "stable-databridge-current-authority-v2"
+_GRAY_REPLAY_FILENAMES = frozenset(
+    {
+        "daily_output.csv",
+        "weekly_output.csv",
+        "monthly_output.csv",
+    }
+)
+_GRAY_REPLAY_SOURCE_IDENTITY_FIELDS = frozenset(
+    {
+        "generation_id",
+        "refresh_date",
+        "schema_version",
+        "business_digest",
+        "stable_identity_sha256",
+        "files",
+    }
+)
+_GRAY_REPLAY_SOURCE_FILE_FIELDS = frozenset(
+    {
+        "filename",
+        "rows",
+        "columns",
+        "min_key",
+        "max_key",
+        "sha256",
+        "business_hash",
+    }
+)
 
 
 DataBridgeCurrentAuthorityError = DataBridgeCurrentReadError
@@ -63,6 +88,155 @@ class StableDataBridgeCurrentAuthority:
     cutoffs: tuple[StableDataBridgeCutoff, ...]
     publication_identity_sha256: str
     stable_identity_sha256: str
+
+
+def blackbox_gray_replay_source_identity(
+    authority: StableDataBridgeCurrentAuthority,
+) -> dict[str, Any]:
+    """序列化 Blackbox gray replay 唯一允许的 current source identity。"""
+    if not isinstance(authority, StableDataBridgeCurrentAuthority):
+        raise ValueError(
+            "gray replay authority must be StableDataBridgeCurrentAuthority"
+        )
+    if authority.authority_schema_version != AUTHORITY_SCHEMA_VERSION:
+        raise ValueError("gray replay authority must use current authority v2")
+    return _normalize_blackbox_gray_replay_source_identity(
+        {
+            "generation_id": authority.generation_id,
+            "refresh_date": authority.refresh_date,
+            "schema_version": authority.schema_version,
+            "business_digest": authority.business_digest,
+            "stable_identity_sha256": authority.stable_identity_sha256,
+            "files": [
+                {
+                    "filename": item.filename,
+                    "rows": item.rows,
+                    "columns": item.columns,
+                    "min_key": item.min_key,
+                    "max_key": item.max_key,
+                    "sha256": item.sha256,
+                    "business_hash": item.business_hash,
+                }
+                for item in authority.files
+            ],
+        }
+    )
+
+
+def _normalize_blackbox_gray_replay_source_identity(
+    source_identity: Mapping[str, Any],
+) -> dict[str, Any]:
+    """供 authority serializer 与 replay session 共用的字段校验。"""
+    if not isinstance(source_identity, Mapping):
+        raise ValueError("gray replay source identity must be an object")
+    raw = dict(source_identity)
+    if set(raw) != _GRAY_REPLAY_SOURCE_IDENTITY_FIELDS:
+        raise ValueError("gray replay source identity fields are invalid")
+    generation_id = raw["generation_id"]
+    schema_version = raw["schema_version"]
+    if (
+        not isinstance(generation_id, str)
+        or not generation_id.strip()
+        or not isinstance(schema_version, str)
+        or not schema_version.strip()
+        or not _is_sha256(raw["business_digest"])
+        or not _is_sha256(raw["stable_identity_sha256"])
+    ):
+        raise ValueError("gray replay source identity is invalid")
+    refresh_date = _canonical_gray_replay_key(
+        raw["refresh_date"],
+        filename="daily_output.csv",
+        field="source_identity.refresh_date",
+    )
+    raw_files = raw["files"]
+    if not isinstance(raw_files, list):
+        raise ValueError("gray replay source identity files are invalid")
+    normalized_files: list[dict[str, Any]] = []
+    for item in raw_files:
+        if not isinstance(item, Mapping):
+            raise ValueError("gray replay source identity files are invalid")
+        file_identity = dict(item)
+        if set(file_identity) != _GRAY_REPLAY_SOURCE_FILE_FIELDS:
+            raise ValueError("gray replay source identity files are invalid")
+        filename = file_identity["filename"]
+        rows = file_identity["rows"]
+        columns = file_identity["columns"]
+        if (
+            filename not in _GRAY_REPLAY_FILENAMES
+            or isinstance(rows, bool)
+            or not isinstance(rows, int)
+            or rows < 1
+            or isinstance(columns, bool)
+            or not isinstance(columns, int)
+            or columns < 1
+            or not _is_sha256(file_identity["sha256"])
+            or not _is_sha256(file_identity["business_hash"])
+        ):
+            raise ValueError("gray replay source identity files are invalid")
+        min_key = _canonical_gray_replay_key(
+            file_identity["min_key"],
+            filename=filename,
+            field=f"source_identity.{filename}.min_key",
+        )
+        max_key = _canonical_gray_replay_key(
+            file_identity["max_key"],
+            filename=filename,
+            field=f"source_identity.{filename}.max_key",
+        )
+        if min_key > max_key:
+            raise ValueError("gray replay source identity files are invalid")
+        normalized_files.append(
+            {
+                "filename": filename,
+                "rows": rows,
+                "columns": columns,
+                "min_key": min_key,
+                "max_key": max_key,
+                "sha256": file_identity["sha256"],
+                "business_hash": file_identity["business_hash"],
+            }
+        )
+    if tuple(item["filename"] for item in normalized_files) != tuple(
+        sorted(_GRAY_REPLAY_FILENAMES)
+    ):
+        raise ValueError("gray replay source identity files must be sorted")
+    return {
+        "generation_id": generation_id,
+        "refresh_date": refresh_date,
+        "schema_version": schema_version,
+        "business_digest": raw["business_digest"],
+        "stable_identity_sha256": raw["stable_identity_sha256"],
+        "files": normalized_files,
+    }
+
+
+def _canonical_gray_replay_key(
+    value: Any,
+    *,
+    filename: str,
+    field: str,
+) -> str:
+    if filename == "daily_output.csv":
+        if not isinstance(value, str):
+            raise ValueError(f"{field} must use YYYY-MM-DD")
+        try:
+            normalized = date.fromisoformat(value).isoformat()
+        except ValueError as exc:
+            raise ValueError(f"{field} must use YYYY-MM-DD") from exc
+        if normalized != value:
+            raise ValueError(f"{field} must use YYYY-MM-DD")
+        return normalized
+    if not isinstance(value, str) or len(value) != 6 or not value.isdigit():
+        raise ValueError(f"{field} must be a six-digit platform key")
+    return value
+
+
+def _is_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def resolve_databridge_continuity_authority(
@@ -204,6 +378,10 @@ def resolve_stable_databridge_current_authority(
     allow_legacy_v1_period_fallback: bool = False,
 ) -> StableDataBridgeCurrentAuthority:
     """校验 current，并用 caller Connection 冻结稳定发布与截止身份。"""
+    from shared.input_artifacts import (
+        _resolve_blackbox_input_cutoffs_with_source_keys_bulk_from_keys,
+    )
+
     if connection is None:
         raise ValueError("connection is required")
     normalized_dates = tuple(sorted({

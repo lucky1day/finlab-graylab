@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import argparse
-import getpass
 import json
 import re
+import tempfile
 from datetime import date, datetime, timezone
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -12,30 +12,25 @@ from typing import Any
 from harness.authorization import (
     DEFAULT_BACKTEST_START_DATE,
     EXACT_PREDICT_DATE_ACTIONS,
-    authorization_signing_enabled,
-    issue_signal_gap_fill_token,
+    HARNESS_RUN_SCOPED_ACTIONS,
+    SIDE_EFFECT_ACTIONS,
     issue_token,
 )
 from harness.context import GateContext
 from harness.gates.activate_gate import ActivationGate
-from harness.gates.api_gate import ApiGate
-from harness.gates.api_readiness_gate import ApiReadinessGate
 from harness.gates.backtest_gate import BacktestGate
 from harness.gates.compare_gate import CompareGate
 from harness.gates.dry_run_gate import DryRunGate
 from harness.gates.input_gate import InputGate
 from harness.gates.live_gate import LiveGate
-from harness.gates.signal_gap_fill_gate import (
-    signal_gap_fill_authorization_claims,
-)
 from harness.gates.static_gate import StaticGate
 from harness.gates.unit_gate import UnitGate
 from harness.orchestrator import onboard as run_onboard
 from harness.registry import gate_for_name
 from harness.result import GateResult, GateStatus, OnboardReport
+from harness.signal_gap_fill import run_signal_gap_fill
 from harness.signal_gap_plan import (
     SignalGapPlanError,
-    SignalGapPlanScope,
     plan_signal_gaps,
 )
 from scheduler.discovery import load_scheme_config
@@ -48,45 +43,44 @@ from shared.data_bridge.refresh import DataBridgeRefreshConfig
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+class _StoreOnce(argparse.Action):
+    """拒绝同一精确范围参数在一次命令中重复出现。"""
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        if getattr(namespace, self.dest, None) is not None:
+            parser.error(f"{option_string} may be specified only once")
+        setattr(namespace, self.dest, values)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.command == "auth" and args.auth_command == "issue":
-        if args.action == "gray_backfill_write":
-            parser.error(
-                "gray_backfill_write is retired; use signal-gap-fill"
-            )
-        if args.action == "signal_gap_fill_write":
-            parser.error(
-                "signal_gap_fill_write tokens are issued only inside "
-                "signal-gap-fill"
-            )
         if args.action in EXACT_PREDICT_DATE_ACTIONS and args.predict_date is None:
             parser.error(
                 f"auth issue --action {args.action} requires --predict-date"
             )
-        if args.action == "activate":
-            if not isinstance(args.scheme_version, str) or not args.scheme_version.strip():
-                parser.error(
-                    "auth issue --action activate requires non-empty --scheme-version"
-                )
-            if not isinstance(args.issued_by, str) or not args.issued_by.strip():
-                parser.error(
-                    "auth issue --action activate requires non-empty --issued-by"
-                )
-        if args.action == "blackbox_revision_activate":
-            required = {
-                "--scheme-version": args.scheme_version,
-                "--harness-run-id": args.harness_run_id,
-                "--issued-by": args.issued_by,
-            }
-            missing = [flag for flag, value in required.items() if value is None]
-            if missing:
-                parser.error(
-                    "auth issue --action blackbox_revision_activate requires "
-                    f"{', '.join(missing)}"
-                )
-        issued_by = args.issued_by if args.issued_by is not None else "harness"
+        if args.action not in EXACT_PREDICT_DATE_ACTIONS and args.predict_date is not None:
+            parser.error(
+                f"auth issue --action {args.action} does not accept --predict-date"
+            )
+        if not isinstance(args.scheme_version, str) or not args.scheme_version.strip():
+            parser.error("auth issue requires non-empty --scheme-version")
+        if not isinstance(args.issued_by, str) or not args.issued_by.strip():
+            parser.error("auth issue requires non-empty --issued-by")
+        if args.action in HARNESS_RUN_SCOPED_ACTIONS and (
+            not isinstance(args.harness_run_id, str)
+            or not args.harness_run_id.strip()
+        ):
+            parser.error(
+                f"auth issue --action {args.action} requires --harness-run-id"
+            )
         token = issue_token(
             args.scheme_id,
             args.action,
@@ -94,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
             scheme_version=args.scheme_version,
             harness_run_id=args.harness_run_id,
             ttl_seconds=args.expires_in,
-            issued_by=issued_by,
+            issued_by=args.issued_by,
             backtest_start_date=args.backtest_start_date,
         )
         print(token)
@@ -144,16 +138,8 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 plan = plan_signal_gaps(
                     engine,
-                    start_date=args.start,
-                    as_of_date=args.as_of,
-                    scope=SignalGapPlanScope(
-                        target_date_start=args.target_date_start,
-                        target_date_end=args.target_date_end,
-                        task_types=tuple(args.task_type or ()),
-                        base_scheme_ids=tuple(
-                            args.base_scheme_id or ()
-                        ),
-                    ),
+                    predict_date=args.predict_date,
+                    base_scheme_id=args.scheme_id,
                     databridge_config=databridge_config,
                 )
             finally:
@@ -163,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
                 json.dumps(
                     {
                         "schema_version":
-                            "active-signal-gap-plan-error-v1",
+                            "single-date-active-live-gap-plan-error-v1",
                         "status": "BLOCKED",
                         "failure_code": exc.code,
                     },
@@ -177,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
                 json.dumps(
                     {
                         "schema_version":
-                            "active-signal-gap-plan-error-v1",
+                            "single-date-active-live-gap-plan-error-v1",
                         "status": "ERROR",
                         "failure_code":
                             "SIGNAL_GAP_PLAN_INTERNAL_ERROR",
@@ -208,22 +194,31 @@ def _build_parser() -> argparse.ArgumentParser:
     gate_subparsers = gate_parser.add_subparsers(dest="gate_name", required=True)
     for gate_name in (
         "static", "input", "unit", "dry-run", "compare", "backtest",
-        "api-readiness", "draft-register", "shadow-register", "api", "live",
-        "lifecycle-reconcile", "revision-activate", "bootstrap",
+        "dashboard", "draft-register", "shadow-register", "live",
+        "lifecycle-reconcile", "revision-activate",
     ):
         item = gate_subparsers.add_parser(gate_name)
         item.add_argument("--scheme-id", required=True)
         item.add_argument(
             "--predict-date",
-            default="static" if gate_name in {"static", "unit", "compare", "backtest", "api-readiness", "api"} else None,
+            default=(
+                "dashboard"
+                if gate_name == "dashboard"
+                else "static"
+                if gate_name in {"static", "unit", "compare", "backtest"}
+                else None
+            ),
         )
         item.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
         item.add_argument("--report-dir", type=Path, default=None)
         item.add_argument("--algo-env", default="forecast_env")
         item.add_argument("--timeout-sec", type=int, default=600)
         item.add_argument("--authorize", default=None)
-        item.add_argument("--api-base-url", default="http://127.0.0.1:8100")
-        item.add_argument("--api-instance-nonce", default=None)
+        if gate_name == "dashboard":
+            item.add_argument(
+                "--api-base-url",
+                default="http://127.0.0.1:8100",
+            )
         item.add_argument("--prediction-phase", choices=("gray_live", "scheduled_live"), default=None)
         if gate_name == "backtest":
             item.add_argument("--persist", action="store_true")
@@ -232,9 +227,6 @@ def _build_parser() -> argparse.ArgumentParser:
                 "--backtest-start-date",
                 default=DEFAULT_BACKTEST_START_DATE,
             )
-        if gate_name == "bootstrap":
-            item.add_argument("--expected-empty-schema", required=True)
-
     onboard_parser = subparsers.add_parser("onboard")
     onboard_parser.add_argument("scheme_id")
     onboard_parser.add_argument("--predict-date", required=True)
@@ -243,8 +235,6 @@ def _build_parser() -> argparse.ArgumentParser:
     onboard_parser.add_argument("--report-dir", type=Path, default=None)
     onboard_parser.add_argument("--algo-env", default="forecast_env")
     onboard_parser.add_argument("--timeout-sec", type=int, default=600)
-    onboard_parser.add_argument("--api-base-url", default="http://127.0.0.1:8100")
-    onboard_parser.add_argument("--api-instance-nonce", default=None)
     onboard_parser.add_argument("--authorize", default=None)
     onboard_parser.add_argument("--prediction-phase", choices=("gray_live", "scheduled_live"), default=None)
     onboard_parser.add_argument("--check-only", action="store_true")
@@ -274,26 +264,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     gap_parser = subparsers.add_parser("signal-gap-plan")
-    gap_parser.add_argument("--start", required=True)
-    gap_parser.add_argument("--as-of", required=True, dest="as_of")
-    gap_parser.add_argument("--target-date-start", default=None)
-    gap_parser.add_argument("--target-date-end", default=None)
     gap_parser.add_argument(
-        "--task-type",
-        action="append",
-        choices=("T+1", "T+5", "weekly_point", "weekly_average", "monthly"),
-        default=None,
+        "--predict-date",
+        required=True,
+        type=_iso_date,
     )
     gap_parser.add_argument(
-        "--base-scheme-id",
-        action="append",
+        "--scheme-id",
+        action=_StoreOnce,
+        type=_base_scheme_id,
         default=None,
-        help="restrict the frozen plan to exact active base scheme ids",
-    )
-    gap_parser.add_argument(
-        "--format",
-        choices=("json",),
-        default="json",
+        help="restrict the plan to one exact active base scheme id",
     )
 
     fill_parser = subparsers.add_parser("signal-gap-fill")
@@ -301,6 +282,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--predict-date",
         required=True,
         type=_iso_date,
+    )
+    fill_parser.add_argument(
+        "--scheme-id",
+        action=_StoreOnce,
+        type=_base_scheme_id,
+        default=None,
+        help="fill one exact active base scheme id",
     )
     fill_parser.add_argument(
         "--project-root",
@@ -313,10 +301,14 @@ def _build_parser() -> argparse.ArgumentParser:
     auth_subparsers = auth_parser.add_subparsers(dest="auth_command", required=True)
     issue_parser = auth_subparsers.add_parser("issue")
     issue_parser.add_argument("--scheme-id", required=True)
-    issue_parser.add_argument("--action", required=True)
+    issue_parser.add_argument(
+        "--action",
+        required=True,
+        choices=sorted(SIDE_EFFECT_ACTIONS),
+    )
     issue_parser.add_argument("--predict-date", default=None)
     issue_parser.add_argument("--issued-by", default=None)
-    issue_parser.add_argument("--expires-in", type=int, default=None, dest="expires_in")
+    issue_parser.add_argument("--expires-in", type=int, default=900, dest="expires_in")
     issue_parser.add_argument("--scheme-version", default=None, dest="scheme_version")
     issue_parser.add_argument("--harness-run-id", default=None, dest="harness_run_id")
     issue_parser.add_argument(
@@ -361,9 +353,11 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
             "backtest_start_date",
             DEFAULT_BACKTEST_START_DATE,
         ),
-        expected_empty_schema=getattr(args, "expected_empty_schema", None),
-        api_base_url=args.api_base_url,
-        api_instance_nonce=args.api_instance_nonce,
+        api_base_url=getattr(
+            args,
+            "api_base_url",
+            "http://127.0.0.1:8100",
+        ),
     )
     gate = gate_for_name(args.gate_name, ctx=ctx)
     try:
@@ -398,8 +392,6 @@ def _run_onboard_command(args: argparse.Namespace) -> OnboardReport:
         timeout_sec=args.timeout_sec,
         authorization=args.authorize,
         prediction_phase=getattr(args, "prediction_phase", None),
-        api_base_url=args.api_base_url,
-        api_instance_nonce=args.api_instance_nonce,
         engine_factory=create_engine_from_env,
         check_only=bool(args.check_only),
     )
@@ -456,193 +448,133 @@ def _exit_code_for_result(result: GateResult) -> int:
 
 def _run_signal_gap_fill_command(args: argparse.Namespace) -> int:
     """规划并一次性补齐单个日期的 active 方案信号缺口。"""
-    if not authorization_signing_enabled():
-        _print_signal_gap_fill_result(
-            status="BLOCKED",
-            failure_code="SIGNAL_GAP_FILL_SIGNING_REQUIRED",
-            predict_date=args.predict_date,
-        )
-        return 2
-
     project_root = args.project_root.resolve()
-    report_dir = (
+    report_root = (
         project_root
         / "reports"
         / "harness"
         / "signal-gap-fill"
-        / _timestamp()
     )
-    report_dir.mkdir(parents=True)
-    frozen_path = report_dir / "frozen_plan.json"
     try:
-        frozen_plan = _plan_signal_gap_date(
+        report_root.mkdir(parents=True)
+    except FileExistsError:
+        if not report_root.is_dir():
+            raise
+    report_dir = Path(
+        tempfile.mkdtemp(prefix=f"{_timestamp()}-", dir=report_root)
+    )
+    plan_path = report_dir / "signal_gap_plan.json"
+    try:
+        databridge_config = DataBridgeRefreshConfig.from_env()
+        plan = _plan_signal_gap_date(
             args.predict_date,
+            args.scheme_id,
+            databridge_config=databridge_config,
         )
     except SignalGapPlanError as exc:
         _print_signal_gap_fill_result(
-            status="BLOCKED",
-            failure_code=exc.code,
-            predict_date=args.predict_date,
+            {
+                "schema_version": "single-date-signal-gap-fill-v2",
+                "status": "BLOCKED",
+                "failure_code": exc.code,
+                "predict_date": args.predict_date,
+                "base_scheme_id": args.scheme_id,
+                "completed": [],
+                "remaining": [],
+            },
             report_dir=report_dir,
         )
         return 2
     except Exception:
         _print_signal_gap_fill_result(
-            status="ERROR",
-            failure_code="SIGNAL_GAP_PLAN_INTERNAL_ERROR",
-            predict_date=args.predict_date,
+            {
+                "schema_version": "single-date-signal-gap-fill-v2",
+                "status": "BLOCKED",
+                "failure_code": "SIGNAL_GAP_PLAN_INTERNAL_ERROR",
+                "predict_date": args.predict_date,
+                "base_scheme_id": args.scheme_id,
+                "completed": [],
+                "remaining": [],
+            },
             report_dir=report_dir,
         )
         return 2
-    _write_json_file(frozen_path, frozen_plan)
+    _write_json_file(plan_path, plan)
 
-    counts = frozen_plan.get("counts", {})
+    counts = plan.get("counts", {})
     if (
-        frozen_plan.get("status") == "BLOCKED"
+        plan.get("status") == "BLOCKED"
         or int(counts.get("blocked", 0)) > 0
     ):
         _print_signal_gap_fill_result(
-            status="BLOCKED",
-            failure_code=str(
-                frozen_plan.get("failure_code")
-                or "SIGNAL_GAP_PLAN_BLOCKED"
-            ),
-            predict_date=args.predict_date,
+            {
+                "schema_version": "single-date-signal-gap-fill-v2",
+                "status": "BLOCKED",
+                "failure_code": str(
+                    plan.get("failure_code")
+                    or "SIGNAL_GAP_PLAN_BLOCKED"
+                ),
+                "predict_date": args.predict_date,
+                "base_scheme_id": args.scheme_id,
+                "completed": [],
+                "remaining": [],
+            },
             report_dir=report_dir,
         )
         return 2
-    if int(counts.get("open_gap", 0)) != int(
-        counts.get("GRAY_LIVE_GAP", 0)
-    ):
-        _print_signal_gap_fill_result(
-            status="BLOCKED",
-            failure_code="SIGNAL_GAP_PLAN_NOT_GRAY_LIVE_ONLY",
-            predict_date=args.predict_date,
-            report_dir=report_dir,
+    if int(counts.get("actionable", 0)) == 0:
+        skip_status = (
+            "SKIP_NOT_DUE"
+            if int(counts.get("expected", 0)) == 0
+            else "SKIP_PRESENT"
         )
-        return 2
-
-    try:
-        claims = signal_gap_fill_authorization_claims(frozen_plan)
-    except (KeyError, TypeError, ValueError):
         _print_signal_gap_fill_result(
-            status="BLOCKED",
-            failure_code="PLAN_GROUP_INVALID",
-            predict_date=args.predict_date,
-            report_dir=report_dir,
-        )
-        return 2
-    if not claims:
-        _print_signal_gap_fill_result(
-            status="SKIP_PRESENT",
-            failure_code=None,
-            predict_date=args.predict_date,
+            {
+                "schema_version": "single-date-signal-gap-fill-v2",
+                "status": skip_status,
+                "failure_code": None,
+                "predict_date": args.predict_date,
+                "base_scheme_id": args.scheme_id,
+                "completed": [],
+                "remaining": [],
+            },
             report_dir=report_dir,
         )
         return 0
 
-    plan_sha256 = str(frozen_plan.get("plan_sha256") or "")
-    issued_by = f"harness-cli:{getpass.getuser()}"
-    authorizations = tuple(
-        issue_signal_gap_fill_token(
-            plan_sha256=plan_sha256,
-            base_scheme_id=claim.base_scheme_id,
-            predict_date=claim.predict_date,
-            target_keys=claim.target_keys,
-            scheme_version=claim.scheme_version,
-            source_authority=claim.source_authority,
-            ttl_seconds=900,
-            issued_by=issued_by,
-        )
-        for claim in claims
-    )
-    ctx = GateContext(
-        scheme_id="signal-gap-fill",
-        predict_date=args.predict_date,
+    result = run_signal_gap_fill(
+        plan=plan,
         project_root=project_root,
-        report_dir=report_dir,
         engine_factory=create_engine_from_env,
+        databridge_config=databridge_config,
         algo_env="forecast_env",
         timeout_sec=args.timeout_sec,
-        signal_gap_plan_path=frozen_path,
-        signal_gap_authorizations=authorizations,
     )
-    result = gate_for_name("signal-gap-fill", ctx=ctx).run(ctx)
-    _write_json_file(report_dir / "fill_result.json", _jsonable(result))
-    if not result.passed:
-        _print_signal_gap_fill_result(
-            status=result.status.name,
-            failure_code=(result.errors[0] if result.errors else None),
-            predict_date=args.predict_date,
-            report_dir=report_dir,
-            gate_result=result,
-        )
-        return _exit_code_for_result(result)
-
-    try:
-        post_fill_plan = _plan_signal_gap_date(
-            args.predict_date,
-        )
-        _write_json_file(
-            report_dir / "post_fill_plan.json",
-            post_fill_plan,
-        )
-        remaining = signal_gap_fill_authorization_claims(post_fill_plan)
-    except SignalGapPlanError as exc:
-        _print_signal_gap_fill_result(
-            status="BLOCKED",
-            failure_code=exc.code,
-            predict_date=args.predict_date,
-            report_dir=report_dir,
-            gate_result=result,
-        )
-        return 2
-    except Exception:
-        _print_signal_gap_fill_result(
-            status="ERROR",
-            failure_code="SIGNAL_GAP_POSTFILL_READBACK_ERROR",
-            predict_date=args.predict_date,
-            report_dir=report_dir,
-            gate_result=result,
-        )
-        return 2
-    post_counts = post_fill_plan.get("counts", {})
-    if (
-        remaining
-        or post_fill_plan.get("status") == "BLOCKED"
-        or int(post_counts.get("blocked", 0)) > 0
-        or int(post_counts.get("actionable", 0)) > 0
-        or int(post_counts.get("open_gap", 0)) > 0
-    ):
-        _print_signal_gap_fill_result(
-            status="FAILED",
-            failure_code="POSTFILL_GAPS_REMAIN",
-            predict_date=args.predict_date,
-            report_dir=report_dir,
-            gate_result=result,
-        )
-        return 1
     _print_signal_gap_fill_result(
-        status="PASSED",
-        failure_code=None,
-        predict_date=args.predict_date,
+        result,
         report_dir=report_dir,
-        gate_result=result,
     )
-    return 0
+    if result.get("status") == "BLOCKED":
+        return 2
+    return 0 if result.get("status") in {
+        "PASSED",
+        "SKIP_NOT_DUE",
+        "SKIP_PRESENT",
+    } else 1
 
 
 def _plan_signal_gap_date(
     predict_date: str,
+    base_scheme_id: str | None,
+    *,
+    databridge_config: DataBridgeRefreshConfig,
 ) -> dict[str, Any]:
-    databridge_config = DataBridgeRefreshConfig.from_env()
     engine = create_engine_from_env()
     try:
         return plan_signal_gaps(
             engine,
-            start_date=predict_date,
-            as_of_date=predict_date,
-            scope=SignalGapPlanScope(),
+            predict_date=predict_date,
+            base_scheme_id=base_scheme_id,
             databridge_config=databridge_config,
         )
     finally:
@@ -650,23 +582,13 @@ def _plan_signal_gap_date(
 
 
 def _print_signal_gap_fill_result(
+    report: Mapping[str, Any],
     *,
-    status: str,
-    failure_code: str | None,
-    predict_date: str,
     report_dir: Path | None = None,
-    gate_result: GateResult | None = None,
 ) -> None:
-    payload: dict[str, Any] = {
-        "schema_version": "single-date-signal-gap-fill-v1",
-        "status": status,
-        "failure_code": failure_code,
-        "predict_date": predict_date,
-    }
+    payload = dict(report)
     if report_dir is not None:
         payload["report_dir"] = str(report_dir)
-    if gate_result is not None:
-        payload["gate_result"] = _jsonable(gate_result)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
@@ -688,6 +610,22 @@ def _iso_date(value: str) -> str:
         raise argparse.ArgumentTypeError(
             "predict date must be a valid calendar date"
         ) from exc
+    return value
+
+
+def _base_scheme_id(value: str) -> str:
+    if (
+        not re.fullmatch(r"[a-z][a-z0-9_]*", value)
+        or re.fullmatch(
+            r"[a-z][a-z0-9_]*__h\d+__(?:1Y|3Y|5Y|7Y|10Y)",
+            value,
+        )
+        is not None
+        or "," in value
+    ):
+        raise argparse.ArgumentTypeError(
+            "scheme id must be one exact base scheme id"
+        )
     return value
 
 

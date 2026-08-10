@@ -215,12 +215,12 @@ scheduler/backtest 的受控副作用层决定，算法脚本本身没有写库�
 自动技术验收顺序为：
 
 ```text
-static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness
+static -> input -> unit -> dry-run -> compare -> backtest
 ```
 
-自动段可以写 Harness 报告和控制面审计记录，不得写预测、回测等业务表。`api-readiness` 当前是结构兼容检查，不是实际 Registry/API/scheduler 探针。
+自动段可以写 Harness 报告和控制面审计记录，不得写预测、回测等业务表，也不访问 Backend。
 
-`onboard --stage all --check-only` 使用相同七 Gate 和同一组合输入
+`onboard --stage all --check-only` 使用相同六 Gate 和同一组合输入
 身份，但禁止控制面持久化和所有业务副作用。它只生成本地
 `harness_run_id`、Gate JSON 与统一报告，并明确记录
 `check_only=true`、`control_plane_persisted=false`、
@@ -236,6 +236,11 @@ draft -> validated -> shadow -> active -> paused -> retired
 
 状态转换必须通过独立授权。Contract 1.0 trial 的发布边界、授权前置检查和失败恢复以平台操作 SOP 为准；本架构文档不记录任何具体方案处于哪个状态。
 
+任一 lifecycle journal 处于 pending 时，新的 shadow、activate 或 revision activate 都直接
+阻断，不得在授权前隐式恢复。唯一恢复入口是显式 HMAC 授权的 `blackbox_reconcile`：只回退到
+原 journal 记录的 previous safe state，保留原 journal 不变，并创建与其关联的新
+reconciliation journal；恢复失败时继续保留 pending 证据。
+
 ## 6. 当前实现边界
 
 生产路径控制已经完成以下收敛：
@@ -246,11 +251,11 @@ draft -> validated -> shadow -> active -> paused -> retired
 - Harness 审计、版本批准、生命周期 journal 与 reconciliation 均 fail-closed；
 - ActivationGate、持久化 BacktestGate 和 LiveGate 要求精确版本与专项授权；
 - sandbox 使用文件读取 allowlist、最小环境变量和网络、写路径限制；
-- 生产准备 Gate 可执行真实 Registry、API 和 scheduler 探针。
+- 激活后的 `DashboardGate` 读取 `/api/factor-lab/dashboard`，验证 active composite、信号与回测分区可见。
 
-自动 `api-readiness` 仍只是无业务副作用的结构兼容检查，不能替代生产 Gate 的真实探针。临时 Snapshot、原始 Result 和 stderr 也不构成永久历史修订回放资产。
+Dashboard payload 不携带 exact version，因此 `DashboardGate` 不能证明某个 exact version；版本身份仍由生命周期与数据库权威回读证明。临时 Snapshot、原始 Result 和 stderr 也不构成永久历史修订回放资产。
 
-因此，“七个自动 Gate 通过”只表示技术契约验收通过，不等于 active、正式生产、已调度、API 可见或算法效果达标。具体方案必须完成生产准备核验并取得专项授权，才能进入受控生产路径。
+因此，“六个自动 Gate 通过”只表示技术契约验收通过，不等于 active、正式生产、已调度、Dashboard 可见或算法效果达标。具体方案必须完成生产准备核验并取得专项授权，才能进入受控生产路径。
 
 ## 7. 文档职责
 

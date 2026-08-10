@@ -53,13 +53,13 @@ def test_native_rejects_blackbox_execution_token_before_subprocess(
         )
 
 
-def test_signal_gap_plan_v7_has_no_native_input_identity_matrix() -> None:
+def test_single_date_signal_gap_plan_has_no_native_input_identity_matrix() -> None:
     from harness import signal_gap_plan
 
     fields = signal_gap_plan.RegistryTarget.__dataclass_fields__
 
     assert signal_gap_plan.PLAN_SCHEMA_VERSION == (
-        "active-signal-gap-plan-v7"
+        "single-date-active-live-gap-plan-v1"
     )
     assert "input_mode" not in fields
     assert "source_package_sha256" not in fields

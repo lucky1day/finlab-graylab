@@ -615,7 +615,7 @@ BOND_DB_NAME=bond_db
 
 - 新算法、新方案 ID、新 target、新 task type 和替代版本一律使用 Blackbox V2。
 - Native V1 只能维护 `deploy/onboarding_policy_v1.json` 登记的既有身份；StaticGate 和 ActivationGate 同时阻断清单外 Native ID。
-- Blackbox Intake 原样保存两文件，生成 `paused/draft` 平台配置，再执行七个自动 Gate。
+- Blackbox Intake 原样保存两文件，生成 `paused/draft` 平台配置，再执行六个自动 Gate。
 - 自动 Gate 只授予技术验收权限；生产准备通过的具体方案仍须取得专项授权，才能执行 activate、持久化回测或 live。
 - 两种运行时都遵守三日期、composite Registry 身份、失败不生成业务信号和写库授权边界。
 
@@ -641,14 +641,14 @@ Bond Factor Lab 后续按“强约束 harness”管理方案入库。Harness 的
 
 ### 9.2 Harness Gate 顺序
 
-首次技术入库的 Native 与 Blackbox 都固定使用七段 `all`：`static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness`。Native 的 source benchmark/CompareGate 是这条首次路径的硬证据；Blackbox Compare 仍验证确定性、分批/顺序与截止隔离，二者都没有全局关闭 CompareGate 的例外。
+首次技术入库的 Native 与 Blackbox 都固定使用六段 `all`：`static -> input -> unit -> dry-run -> compare -> backtest`。技术 `all` 不访问 Backend。Native 的 source benchmark/CompareGate 是这条首次路径的硬证据；Blackbox Compare 仍验证确定性、分批/顺序与截止隔离，二者都没有全局关闭 CompareGate 的例外。
 
-ActivationGate 的两条 Native 路径互斥：当前 exact version 通过完整七段 `all` 时，按 `full_initial_onboarding_v1` 激活，只核验该 current `all` 的七个 Gate（含当前 Compare），不要求 prior snapshot 或 `native-maintenance`。只有未使用 full-`all` 的已入库 Native 修订才可能使用六段 `native-maintenance`：`static -> native-maintenance-admission -> input -> unit -> dry-run -> api-readiness`。后者必须只读复核不同 prior Native version 的 passed `all + compare`，以及该 prior `all` 的持久化 `static.business_identity` 与当前身份精确匹配。该快照只含 `scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors 和 composite Registry IDs，不含代码、config 或 version hash。唯一保留的补证是 `weekly_10y_d_overlay_0529` 已持久化的 canonical receipt；平台只读校验其 prior、StaticGate 与固定业务身份，writer 与 token action 已退役。receipt 不改历史或当前 hash、不自动生成或推断、不激活、不补数，只让 maintenance 标记 `legacy_operator_attestation_v1` 后继续六段 Gate。maintenance 的 current exact `t_scheme_versions` 行必须为 `runtime_type='native_adapter'` 且 status 为 `draft|active`；expected Registry identity 可在预激活时统一为 `paused`，或在激活后统一为 `active`，但 draft version 配 active Registry 必须 fail-closed。只有 ActivationGate 可在严格 discovery、精确版本与一次性授权核验后原子建立 active 状态。
+ActivationGate 的两条 Native 路径互斥：当前 exact version 通过完整六段 `all` 时，按 `full_initial_onboarding_v1` 激活，只核验该 current `all` 的六个 Gate（含当前 Compare），不要求 prior snapshot 或 `native-maintenance`。只有未使用 full-`all` 的已入库 Native 修订才可能使用五段 `native-maintenance`：`static -> native-maintenance-admission -> input -> unit -> dry-run`。后者必须只读复核不同 prior Native version 的 passed `all + compare`，以及该 prior `all` 的持久化 `static.business_identity` 与当前身份精确匹配。该快照只含 `scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors 和 composite Registry IDs，不含代码、config 或 version hash。唯一保留的补证是 `weekly_10y_d_overlay_0529` 已持久化的 canonical receipt；平台只读校验其 prior、StaticGate 与固定业务身份，writer 与 token action 已退役。receipt 不改历史或当前 hash、不自动生成或推断、不激活、不补数，只让 maintenance 标记 `legacy_operator_attestation_v1` 后继续五段 Gate。maintenance 的 current exact `t_scheme_versions` 行必须为 `runtime_type='native_adapter'` 且 status 为 `draft|active`；expected Registry identity 可在预激活时统一为 `paused`，或在激活后统一为 `active`，但 draft version 配 active Registry 必须 fail-closed。只有 ActivationGate 可在严格 discovery、精确版本与一次性授权核验后原子建立 active 状态。
 
 1. Blackbox onboarding 继续验证两文件、Metadata、三频快照、CLI、确定性、分批/顺序一致性、截止隔离和 Result 转换。
 2. 自动段只生成 Harness 报告和控制面审计，不得写预测、回测等业务表。
 3. Native 的既有受控副作用继续沿用授权边界；Blackbox 通用入库只登记 `shadow + paused`，生产副作用必须逐方案通过专用 Gate 和专项授权。
-4. `api-readiness` 只声明其实际探测范围，不得把结构兼容证据写成真实 Registry/API/scheduler 探针。
+4. 激活后的唯一 Harness HTTP 验收是 `DashboardGate`；它验证 `/api/factor-lab/dashboard` 的当前业务读模型，但 payload 不含 exact version，版本身份仍由生命周期与数据库权威回读证明。
 
 ### 9.3 CLI 入口
 
@@ -674,4 +674,4 @@ python -m harness gate live \
   --authorize "$TOKEN"
 ```
 
-`--stage all` 固定执行七段 `static -> input -> unit -> dry-run -> compare -> backtest-no-persist -> api-readiness`；任一步失败即停止，并且是首次 Native 技术入库唯一保留 source benchmark/CompareGate 的路径。当前 exact version 的 `all` 通过时，ActivationGate 采用 `full_initial_onboarding_v1`，不再附加 maintenance 或 prior-snapshot 条件。`--stage native-maintenance` 仅对有匹配 prior `static.business_identity` 快照的既有 Native 身份执行六段 `static -> native-maintenance-admission -> input -> unit -> dry-run -> api-readiness`，不运行当前 historical `compare/backtest`，并采用独立的 `native_post_admission_revision_v1` profile。若 prior StaticGate 已通过但仅 identity 字段缺失，只有 `weekly_10y_d_overlay_0529` 可先使用专用 receipt；receipt 不是 stage、不能替代六段 Gate 或 activation，也不能应用于其它身份。写库动作和 active-only `api` gate 不属于任何默认自动段，必须由受控 backtest/live/activate 命令或激活后验收单独执行。
+`--stage all` 固定执行六段 `static -> input -> unit -> dry-run -> compare -> backtest-no-persist`；任一步失败即停止，并且是首次 Native 技术入库唯一保留 source benchmark/CompareGate 的路径。当前 exact version 的 `all` 通过时，ActivationGate 采用 `full_initial_onboarding_v1`，不再附加 maintenance 或 prior-snapshot 条件。`--stage native-maintenance` 仅对有匹配 prior `static.business_identity` 快照的既有 Native 身份执行五段 `static -> native-maintenance-admission -> input -> unit -> dry-run`，不运行当前 historical `compare/backtest`，并采用独立的 `native_post_admission_revision_v1` profile。若 prior StaticGate 已通过但仅 identity 字段缺失，只有 `weekly_10y_d_overlay_0529` 可先使用专用 receipt；receipt 不是 stage、不能替代五段 Gate 或 activation，也不能应用于其它身份。写库动作不属于默认自动段，必须由受控 backtest/live/activate 命令执行；激活后另行运行 `dashboard` Gate 验收公开读模型。

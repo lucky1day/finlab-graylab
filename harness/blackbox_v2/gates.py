@@ -20,10 +20,8 @@ import pandas as pd
 from harness.context import GateContext
 from harness.authorization import (
     DEFAULT_BACKTEST_START_DATE,
-    authorization_signing_enabled,
     authorization_token_hash,
     mark_token_used,
-    required_future_expiry_errors,
     used_tokens_path,
     verify_authorization,
     write_authorization_audit,
@@ -75,6 +73,7 @@ from shared.input_artifacts import (
 from shared.blackbox_v2.lifecycle import (
     LifecycleOperationError,
     LifecycleState,
+    assert_lifecycle_clear,
     perform_lifecycle_transition,
 )
 
@@ -615,52 +614,23 @@ class BlackboxBacktestGate(_BlackboxGate):
                     f"backtest_start_date={DEFAULT_BACKTEST_START_DATE}"
                 ],
             )
-        if not authorization_signing_enabled():
-            return _blocked(
-                self.name,
-                started_at,
-                ["Blackbox backtest persistence requires HMAC signing via HARNESS_AUTH_SECRET"],
-            )
-        if not isinstance(ctx.authorization, str):
-            return _blocked(
-                self.name,
-                started_at,
-                ["Blackbox backtest persistence requires the original signed token string"],
-            )
-        auth, auth_errors = verify_authorization(
-            ctx.authorization,
-            scheme_id=ctx.scheme_id,
-            action="backtest_persist",
-            predict_date=ctx.predict_date,
-            backtest_start_date=ctx.backtest_start_date,
-            used_store_path=used_tokens_path(ctx.project_root),
-        )
-        if auth is not None:
-            auth_errors.extend(required_future_expiry_errors(auth.issued_at, auth.expires_at))
-            if not auth.issued_by.strip():
-                auth_errors.append("Blackbox backtest authorization requires non-empty issued_by")
-            if auth.scheme_version != cfg.scheme_version:
-                auth_errors.append(
-                    "authorization scheme_version must match current canonical version: "
-                    f"token={auth.scheme_version}, current={cfg.scheme_version}"
-                )
-        if auth is None or auth_errors:
-            return _blocked(self.name, started_at, auth_errors)
-
         engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
         audit_path: Path | None = None
         try:
             cfg = _reload_pinned_blackbox_config(cfg, phase="persisted backtest preflight")
             passed_run = _verify_passed_all(engine, cfg)
-            if auth.harness_run_id != passed_run.harness_run_id:
-                return _blocked(
-                    self.name,
-                    started_at,
-                    [
-                        "authorization harness_run_id must match latest passed all-stage run: "
-                        f"token={auth.harness_run_id}, latest={passed_run.harness_run_id}"
-                    ],
-                )
+            auth, auth_errors = verify_authorization(
+                ctx.authorization,
+                scheme_id=ctx.scheme_id,
+                action="backtest_persist",
+                predict_date=ctx.predict_date,
+                scheme_version=cfg.scheme_version,
+                harness_run_id=passed_run.harness_run_id,
+                backtest_start_date=ctx.backtest_start_date,
+                used_store_path=used_tokens_path(ctx.project_root),
+            )
+            if auth is None or auth_errors:
+                return _blocked(self.name, started_at, auth_errors)
             state = _ensure_input_state(ctx)
             provenance = _data_bridge_provenance(ctx, state.snapshot)
             generation_id = str(provenance.get("generation_id", "")).strip()
@@ -727,8 +697,8 @@ class BlackboxBacktestGate(_BlackboxGate):
                 )
             cfg = _reload_pinned_blackbox_config(cfg, phase="persisted backtest commit")
             before = snapshot_backtest_scope_counts(engine, benchmark_id)
-            audit_path = write_authorization_audit(auth, ctx.report_dir / "backtest_authorization")
             mark_token_used(auth, used_tokens_path(ctx.project_root))
+            audit_path = write_authorization_audit(auth, ctx.report_dir / "backtest_authorization")
             run_id = persist_backtest_output_atomic(engine, output, benchmark_id=benchmark_id)
             after = snapshot_backtest_scope_counts(engine, benchmark_id)
             deltas = diff_snapshots(before, after)
@@ -773,60 +743,6 @@ class BlackboxBacktestGate(_BlackboxGate):
         return replace(result, report_path=audit_path)
 
 
-class BlackboxApiReadinessGate(_BlackboxGate):
-    name = "api-readiness"
-
-    def _run(self, ctx: GateContext, started_at: str) -> GateResult:
-        cfg = _config(ctx)
-        metadata = _metadata(cfg)
-        state = _ensure_input_state(ctx)
-        bundle = _input_bundle(state)
-        with _open_runtime_input(ctx, state) as runtime_view:
-            record = run_blackbox_predict(
-                metadata=metadata,
-                script_path=_script(cfg),
-                request=state.request,
-                data_dir=runtime_view.data_dir,
-                profile=_profile(ctx),
-                **_runner_bundle_kwargs(runtime_view.bundle),
-            )
-        registry_id = f"{cfg.scheme_id}__h{cfg.horizon}__{metadata.target_tenor}"
-        errors: list[str] = []
-        if record.scheme_id != cfg.scheme_id:
-            errors.append("PredictionRecord scheme_id does not match base scheme identity")
-        if record.target_tenor != metadata.target_tenor or record.horizon != metadata.horizon:
-            errors.append("PredictionRecord target identity does not match Metadata")
-        if cfg.status == "paused":
-            lifecycle_mode = "pre_shadow"
-            scheduler_eligible = False
-            api_visible = False
-        elif cfg.status == "active":
-            lifecycle_mode = "active_recertification"
-            scheduler_eligible = True
-            api_visible = True
-            if cfg.version_status != "active":
-                errors.append(
-                    "active Blackbox V2 recertification requires version_status=active"
-                )
-        else:
-            lifecycle_mode = "invalid"
-            scheduler_eligible = False
-            api_visible = False
-            errors.append(
-                "Blackbox V2 api-readiness requires paused onboarding or active recertification"
-            )
-        evidence = [
-            *_bundle_evidence(bundle),
-            Evidence("prediction_record", asdict(record)),
-            Evidence("registry_id", registry_id),
-            Evidence("registry_status", cfg.status),
-            Evidence("lifecycle_mode", lifecycle_mode),
-            Evidence("scheduler_eligible", scheduler_eligible),
-            Evidence("api_visible", api_visible),
-        ]
-        return _finish(self.name, started_at, evidence, errors)
-
-
 class BlackboxShadowRegisterGate(_BlackboxGate):
     name = "shadow-register"
     requires_authorization = True
@@ -834,45 +750,26 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
         cfg = _config(ctx)
         try:
-            from harness.blackbox_v2.activation import reconcile_incomplete_before_authorization
-
-            cfg = reconcile_incomplete_before_authorization(ctx, cfg)
+            assert_lifecycle_clear(ctx.project_root, cfg.scheme_id)
         except RuntimeError as exc:
             return _blocked(self.name, started_at, [str(exc)])
-        auth, auth_errors = verify_authorization(
-            ctx.authorization,
-            scheme_id=ctx.scheme_id,
-            action="shadow_register",
-            predict_date=ctx.predict_date,
-            used_store_path=used_tokens_path(ctx.project_root),
-        )
-        if auth_errors or auth is None:
-            return _blocked(self.name, started_at, auth_errors)
-        if auth.scheme_version != cfg.scheme_version:
-            return _blocked(
-                self.name,
-                started_at,
-                [
-                    "authorization scheme_version must match the validated delivery: "
-                    f"token={auth.scheme_version}, current={cfg.scheme_version}"
-                ],
-            )
-
         engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
         config_path = cfg.path / "config.yaml"
         audit_path: Path | None = None
         registered_state = None
         try:
             passed_run = _verify_passed_all(engine, cfg)
-            if auth.harness_run_id != passed_run.harness_run_id:
-                return _blocked(
-                    self.name,
-                    started_at,
-                    [
-                        "authorization harness_run_id must match the passed all-stage run: "
-                        f"token={auth.harness_run_id}, passed={passed_run.harness_run_id}"
-                    ],
-                )
+            auth, auth_errors = verify_authorization(
+                ctx.authorization,
+                scheme_id=ctx.scheme_id,
+                action="shadow_register",
+                predict_date=ctx.predict_date,
+                scheme_version=cfg.scheme_version,
+                harness_run_id=passed_run.harness_run_id,
+                used_store_path=used_tokens_path(ctx.project_root),
+            )
+            if auth is None or auth_errors:
+                return _blocked(self.name, started_at, auth_errors)
             environment_fingerprint = _environment_fingerprint(ctx.project_root)
             validated_cfg = replace(
                 cfg,
@@ -1027,7 +924,6 @@ BLACKBOX_GATES: dict[str, type[Gate]] = {
     "dry-run": BlackboxDryRunGate,
     "compare": BlackboxCompareGate,
     "backtest": BlackboxBacktestGate,
-    "api-readiness": BlackboxApiReadinessGate,
     "shadow-register": BlackboxShadowRegisterGate,
 }
 
@@ -2064,7 +1960,6 @@ def _verify_passed_all(engine, cfg: SchemeConfig) -> PassedAllRun:
         "dry-run",
         "compare",
         "backtest",
-        "api-readiness",
     }
     with engine.begin() as connection:
         row = connection.execute(

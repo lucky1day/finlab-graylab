@@ -56,6 +56,15 @@
 - [源算法保真](../architecture/SOURCE_ALGORITHM_FIDELITY.md)
 - [Harness 架构](../architecture/HARNESS_ARCHITECTURE.md)
 
+## Harness 当前工作流
+
+- `python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all` 固定执行六段技术 Gate：`static → input → unit → dry-run → compare → backtest`。该流程不访问 Backend。
+- Native 同一业务身份维护固定执行五段：`static → native-maintenance-admission → input → unit → dry-run`。
+- 激活后的 HTTP 验收只使用 `DashboardGate`，只验证 `/api/factor-lab/dashboard` 当前业务可见性；Dashboard 响应不携带 exact version，不能用来证明版本身份。
+- 单日信号补缺使用 `python -m harness signal-gap-fill --predict-date YYYY-MM-DD`；需要限制为单个方案时增加 `--scheme-id {base_scheme_id}`。命令直接扫描并补齐真实缺口，不接收 token、operator、frozen plan、plan SHA 或日期范围。
+- Native 补缺按指定日期从当前权威数据库重建输入；Blackbox 使用冻结 DataBridge replay。整批算法必须先全部成功，才按 group insert-only 写入 `gray_live`；任一算法失败则 prediction 零提交，完成后只做一次最终权威 readback。
+- Blackbox lifecycle 只要存在 pending journal 就阻断后续生命周期动作，不做隐式恢复。仅显式 `blackbox_reconcile` HMAC 操作可以恢复 previous safe state；原 journal 保持不变，并新增 linked reconciliation journal。
+
 ## 可复用测试矩阵
 
 下列命令只列长期维护的系统合同测试。新方案不得复制一份以方案名、固定日期或固定 hash 命名的测试；方案特有但可复用的接口行为应加入现有参数化 conformance。
@@ -72,8 +81,8 @@ export PYTHONDONTWRITEBYTECODE=1
 |---|---|---|---|
 | 改动任意方案配置后 | active discovery、运行时身份和两文件入口 | `python -m pytest -q tests/test_active_scheme_contracts.py tests/test_config_schema.py tests/test_onboarding_policy.py` | 全部通过 |
 | 收到或修订 Blackbox V2 交付后 | Contract、Intake、discovery 和现役交付截止隔离 | `python -m pytest -q tests/test_blackbox_v2_contracts.py tests/test_blackbox_v2_intake.py tests/test_blackbox_v2_discovery.py tests/test_active_blackbox_conformance.py` | 全部通过；未来数据不改变结果且不产生缓存副产物 |
-| 修改 Blackbox 平台适配后 | 输入 cutoff、runner、七段 Gate | `python -m pytest -q tests/test_data_bridge_current.py tests/test_blackbox_v2_runner.py tests/test_blackbox_v2_harness_gates.py` | 全部通过 |
-| 修改 Registry、API 或前端后 | active 方案可见性、actual join、Dashboard 基础状态 | `python -m pytest -q tests/test_repository_registry.py tests/test_backend_api.py tests/test_factor_lab_dashboard_api.py` | 全部通过 |
+| 修改 Blackbox 平台适配后 | 输入 cutoff、runner、六段 Gate | `python -m pytest -q tests/test_data_bridge_current.py tests/test_blackbox_v2_runner.py tests/test_blackbox_v2_harness_gates.py` | 全部通过 |
+| 修改 Registry、API 或前端后 | active 方案可见性、actual join、Dashboard 基础状态与 Harness HTTP 验收 | `python -m pytest -q tests/test_repository_registry.py tests/test_backend_api.py tests/test_factor_lab_dashboard_api.py tests/test_dashboard_gate.py` | 全部通过 |
 | 修改 Native 存量适配后 | 当前数据库输入、执行器和 source isolation | `python -m pytest -q tests/test_native_input_artifacts.py tests/test_native_executor.py tests/test_source_runner_database_isolation.py` | 全部通过；不得修改 Native core 算法口径 |
 | 提交入库版本前 | 入库核心合同全集 | `python -m pytest -q` | 无失败；跳过项必须是已知的外部环境条件 |
 

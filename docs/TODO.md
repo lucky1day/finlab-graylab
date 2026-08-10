@@ -8,13 +8,7 @@
 
 ## 当前队列
 
-| 顺序 | 工作流 | 当前状态 | 下一步 |
-|---|---|---|---|
-| 1 | Blackbox 生命周期隐式恢复退役 | `REVIEW_READY` | 审阅是否删除 activate/shadow-register 的授权前自动 reconciliation；发现未完成 journal 时直接阻断，只允许显式、专项授权的 lifecycle-reconcile 修改状态 |
-| 2 | Harness 单日信号补缺控制面收敛 | `REVIEW_READY` | 审阅是否删除 canonical/range scope、自签名 token 与重复 plan-hash 重放，只保留单日 active live 缺口、Blackbox DataBridge authority 和 insert-only 写入 |
-| 3 | Harness 授权模式收敛 | `REVIEW_READY` | 审阅是否删除无密钥明文 token、旧无信封兼容和无调用者异常类型；保留副作用操作的唯一 HMAC 模式，单日补缺不再自签自验 |
-| 4 | Harness API Gate 统一 | `REVIEW_READY` | 审阅是否移除 runtime-specific `api-readiness` 与旧分项 API Gate，改为激活前生命周期检查 + 激活后统一 dashboard 验收 |
-| 5 | Harness 死路径与配置读取清理 | `REVIEW_READY` | 审阅是否删除无文档/无测试调用的 Blackbox certification bootstrap，并合并重复 YAML 子集解析器、去掉 CompareGate 配置读取 fail-open |
+当前没有已批准、尚未实施的 Harness 清理工作。
 
 ## 评审边界
 
