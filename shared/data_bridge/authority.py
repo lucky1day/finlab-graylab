@@ -7,6 +7,7 @@ from datetime import date
 from typing import Any, Iterable, Mapping
 
 from shared.data_bridge.refresh import (
+    CURRENT_PUBLICATION_MANIFEST_VERSION,
     LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION,
     DataBridgeCurrentInvalidError,
     DataBridgeCurrentMissingError,
@@ -245,6 +246,7 @@ def resolve_databridge_continuity_authority(
     feature_date: str,
     connection: Any,
     allow_legacy_v1_period_fallback: bool = False,
+    allow_producer_period_bootstrap: bool = False,
 ) -> DataBridgeContinuityAuthority | None:
     """从现有 current 和 caller 只读连接解析下一轮连续性截止键。
 
@@ -257,6 +259,8 @@ def resolve_databridge_continuity_authority(
     kwargs: dict[str, object] = {}
     if allow_legacy_v1_period_fallback:
         kwargs["allow_legacy_v1_period_fallback"] = True
+    if allow_producer_period_bootstrap:
+        kwargs["allow_producer_period_bootstrap"] = True
     try:
         authority = resolve_stable_databridge_current_authority(
             config,
@@ -342,6 +346,7 @@ def resolve_databridge_continuity_authority_from_engine(
     feature_date: str,
     engine: Any,
     allow_legacy_v1_period_fallback: bool = False,
+    allow_producer_period_bootstrap: bool = False,
 ) -> DataBridgeContinuityAuthority | None:
     """在单个 RR consistent snapshot 只读事务中解析 current authority。"""
     store = DataBridgeStore(
@@ -360,6 +365,8 @@ def resolve_databridge_continuity_authority_from_engine(
             kwargs: dict[str, object] = {}
             if allow_legacy_v1_period_fallback:
                 kwargs["allow_legacy_v1_period_fallback"] = True
+            if allow_producer_period_bootstrap:
+                kwargs["allow_producer_period_bootstrap"] = True
             return resolve_databridge_continuity_authority(
                 config,
                 feature_date=feature_date,
@@ -376,6 +383,7 @@ def resolve_stable_databridge_current_authority(
     feature_dates: Iterable[str],
     connection: Any,
     allow_legacy_v1_period_fallback: bool = False,
+    allow_producer_period_bootstrap: bool = False,
 ) -> StableDataBridgeCurrentAuthority:
     """校验 current，并用 caller Connection 冻结稳定发布与截止身份。"""
     from shared.input_artifacts import (
@@ -445,6 +453,12 @@ def resolve_stable_databridge_current_authority(
         and publication_manifest.get("manifest_version")
         == LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION
     )
+    producer_v3_period_bootstrap = (
+        allow_producer_period_bootstrap
+        and isinstance(publication_manifest, Mapping)
+        and publication_manifest.get("manifest_version")
+        == CURRENT_PUBLICATION_MANIFEST_VERSION
+    )
     try:
         resolved = _resolve_blackbox_input_cutoffs_with_source_keys_bulk_from_keys(
             cutoff_keys,
@@ -453,6 +467,7 @@ def resolve_stable_databridge_current_authority(
             schema_path=config.schema_path,
             allow_legacy_v1_period_fallback=(
                 legacy_v1_period_fallback
+                or producer_v3_period_bootstrap
             ),
         )
     except ValueError as exc:

@@ -94,7 +94,7 @@ def refresh_current(
     deadline_at: datetime | None = None,
 ):
     """仅通过本机 MySQL source 完成完整 DataBridge refresh。"""
-    allow_legacy_v1_period_fallback = (
+    launchd_publisher = (
         publish
         and os.getenv(LAUNCHD_PUBLISHER_ENV)
         == LAUNCHD_PUBLISHER_VALUE
@@ -107,8 +107,9 @@ def refresh_current(
                 feature_date=expected_feature_date,
                 engine=engine,
                 allow_legacy_v1_period_fallback=(
-                    allow_legacy_v1_period_fallback
+                    launchd_publisher
                 ),
+                allow_producer_period_bootstrap=launchd_publisher,
             )
         )
         refresh_kwargs = {

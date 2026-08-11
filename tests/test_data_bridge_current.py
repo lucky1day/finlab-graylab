@@ -662,3 +662,168 @@ class DataBridgeCurrentTests(unittest.TestCase):
                 ),
                 output_root=Path(tmpdir) / "sessions",
             )
+
+    def test_v3_producer_bootstrap_freezes_new_week_for_candidate_validation(
+        self,
+    ) -> None:
+        """跨周首日只允许 producer 用旧快照作连续性基线。"""
+        from shared import input_artifacts
+        from shared.blackbox_v2.snapshot import CutoffKeys
+        from shared.data_bridge import authority
+        from shared.data_bridge.refresh import DataBridgeRefreshConfig
+
+        current = _current_dataset()
+        state = dict(current.state)
+        state["publication_manifest_version"] = "data-bridge-current-v3"
+        current = replace(
+            current,
+            state=MappingProxyType(state),
+            publication_manifest={"manifest_version": "data-bridge-current-v3"},
+        )
+        resolved = input_artifacts._ResolvedBlackboxInputCutoffs(
+            cutoff_keys=CutoffKeys(
+                daily_cutoff_key="2026-08-07",
+                weekly_cutoff_key="202630",
+                monthly_cutoff_key="202608",
+            ),
+            source_weekly_cutoff_key="202631",
+            source_monthly_cutoff_key="202608",
+        )
+        config = DataBridgeRefreshConfig(
+            data_root=Path("/tmp/data"),
+            runtime_root=Path("/tmp/runtime"),
+            schema_path=SCHEMA_PATH,
+        )
+
+        with (
+            patch.object(
+                authority,
+                "check_current_dataset",
+                return_value=current,
+            ),
+            patch.object(
+                input_artifacts,
+                "_resolve_blackbox_input_cutoffs_with_source_keys_bulk_from_keys",
+                return_value={"2026-08-10": resolved},
+            ) as resolve_cutoffs,
+        ):
+            result = authority.resolve_databridge_continuity_authority(
+                config,
+                feature_date="2026-08-10",
+                connection=object(),
+                allow_producer_period_bootstrap=True,
+            )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.weekly_cutoff_key, "202630")
+        self.assertEqual(result.required_weekly_key, "202631")
+        self.assertTrue(
+            resolve_cutoffs.call_args.kwargs[
+                "allow_legacy_v1_period_fallback"
+            ]
+        )
+
+    def test_v3_consumer_does_not_enable_producer_period_bootstrap(
+        self,
+    ) -> None:
+        """消费者继续严格拒绝缺少当前周键的 v3 current。"""
+        from shared import input_artifacts
+        from shared.blackbox_v2.snapshot import CutoffKeys
+        from shared.data_bridge import authority
+        from shared.data_bridge.refresh import DataBridgeRefreshConfig
+
+        current = _current_dataset()
+        state = dict(current.state)
+        state["publication_manifest_version"] = "data-bridge-current-v3"
+        current = replace(
+            current,
+            state=MappingProxyType(state),
+            publication_manifest={"manifest_version": "data-bridge-current-v3"},
+        )
+        resolved = input_artifacts._ResolvedBlackboxInputCutoffs(
+            cutoff_keys=CutoffKeys(
+                daily_cutoff_key="2026-08-07",
+                weekly_cutoff_key="202630",
+                monthly_cutoff_key="202608",
+            ),
+            source_weekly_cutoff_key="202631",
+            source_monthly_cutoff_key="202608",
+        )
+        config = DataBridgeRefreshConfig(
+            data_root=Path("/tmp/data"),
+            runtime_root=Path("/tmp/runtime"),
+            schema_path=SCHEMA_PATH,
+        )
+
+        with (
+            patch.object(
+                authority,
+                "check_current_dataset",
+                return_value=current,
+            ),
+            patch.object(
+                input_artifacts,
+                "_resolve_blackbox_input_cutoffs_with_source_keys_bulk_from_keys",
+                return_value={"2026-08-10": resolved},
+            ) as resolve_cutoffs,
+        ):
+            authority.resolve_stable_databridge_current_authority(
+                config,
+                feature_dates=("2026-08-10",),
+                connection=object(),
+            )
+
+        self.assertFalse(
+            resolve_cutoffs.call_args.kwargs[
+                "allow_legacy_v1_period_fallback"
+            ]
+        )
+
+    def test_launchd_publisher_enables_producer_period_bootstrap(self) -> None:
+        """只有 launchd producer 可请求跨周首键 bootstrap。"""
+        from scripts import refresh_data_bridge_current as refresh_script
+
+        engine = MagicMock()
+        config = SimpleNamespace()
+        result = object()
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    refresh_script.LAUNCHD_PUBLISHER_ENV: (
+                        refresh_script.LAUNCHD_PUBLISHER_VALUE
+                    )
+                },
+                clear=False,
+            ),
+            patch.object(
+                refresh_script,
+                "create_sqlalchemy_engine",
+                return_value=engine,
+            ),
+            patch.object(
+                refresh_script,
+                "resolve_databridge_continuity_authority_from_engine",
+                return_value=object(),
+            ) as resolve_authority,
+            patch.object(refresh_script, "MySqlDataBridgeRoundBuilder"),
+            patch.object(
+                refresh_script,
+                "run_full_refresh",
+                return_value=result,
+            ),
+        ):
+            actual = refresh_script.refresh_current(
+                refresh_date="2026-08-11",
+                expected_feature_date="2026-08-10",
+                publish=True,
+                config=config,
+            )
+
+        self.assertIs(actual, result)
+        self.assertTrue(
+            resolve_authority.call_args.kwargs[
+                "allow_producer_period_bootstrap"
+            ]
+        )
