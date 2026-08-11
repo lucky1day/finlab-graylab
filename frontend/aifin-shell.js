@@ -2147,10 +2147,6 @@
 
   function renderSchemeRankingRow(scheme, index, metric) {
     var selectedClass = scheme.id === factorLabState.selectedSchemeId ? " class=\"is-selected\"" : "";
-    var signalMissingHtml = scheme.signalStatus === "missing" &&
-      typeof scheme.signalFailureCategory === "string" && scheme.signalFailureCategory
-      ? '<span class="factor-signal-missing">信号缺失 · ' + escapeHtml(scheme.signalFailureCategory) + '</span>'
-      : "";
     var barWidth = clampPercent(metric.overall);
     var metricSamples = requireMetricSamples(metric, "ranking metric");
     var deploymentDate = requireSchemeDeploymentDate(scheme, "ranking scheme");
@@ -2158,7 +2154,7 @@
     var remark = escapeHtml(getSchemeRemark(scheme));
     return '<tr' + selectedClass + ' data-factor-scheme-id="' + escapeHtml(scheme.id) + '">' +
       '<td>' + (index + 1) + '</td>' +
-      '<td><strong class="factor-scheme-name" title="' + schemeName + '">' + schemeName + '</strong>' + signalMissingHtml + '</td>' +
+      '<td><strong class="factor-scheme-name" title="' + schemeName + '">' + schemeName + '</strong></td>' +
       '<td class="' + getMetricClass(metric.overall) + '"><div class="factor-score-cell"><span>' + formatPercent(metric.overall) + '（' + metric.correct + '/' + metricSamples + '）</span><span class="factor-score-bar" aria-hidden="true"><span style="width:' + barWidth.toFixed(1) + '%"></span></span></div></td>' +
       '<td><span class="factor-sample-count">' + metric.samples + '</span></td>' +
       '<td class="' + getMetricClass(metric.upPrecision) + '">' + formatPercent(metric.upPrecision) + '</td>' +

@@ -749,21 +749,6 @@ button {
   overflow-wrap: anywhere;
 }
 
-.factor-signal-missing {
-  display: inline-flex;
-  align-items: center;
-  min-height: 20px;
-  margin: 4px 0 0;
-  padding: 0 7px;
-  border: 1px solid rgba(174, 91, 12, 0.26);
-  border-radius: 999px;
-  color: #9c5008;
-  background: rgba(174, 91, 12, 0.08);
-  font-size: 11px;
-  font-weight: 760;
-  white-space: nowrap;
-}
-
 /* ─── 口径选择 ─── */
 .factor-source-select select {
   padding: 6px 10px;

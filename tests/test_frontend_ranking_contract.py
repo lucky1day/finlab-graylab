@@ -18,6 +18,8 @@ def test_ranking_only_displays_selected_range_sample_count() -> None:
         "isLowSampleMetric",
         "factor-sample-badge",
         "样本不足",
+        "factor-signal-missing",
+        "信号缺失",
     ):
         assert retired_rule not in javascript
         assert retired_rule not in stylesheet
