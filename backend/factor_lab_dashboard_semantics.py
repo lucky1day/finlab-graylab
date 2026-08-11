@@ -651,8 +651,13 @@ def _is_better_prediction_for_point(
     candidate: Mapping[str, Any],
     current: Mapping[str, Any],
 ) -> bool:
-    candidate_extra = _json_object(candidate.get("extra"))
-    if _is_weekly_metric(candidate.get("horizon"), candidate_extra):
+    # 周频判定必须同时看两侧：人工补发行可能不带 extra.task_type，
+    # 只看一侧会让同一批数据因输入顺序不同选出不同的 canonical 行。
+    if _is_weekly_metric(
+        candidate.get("horizon"), _json_object(candidate.get("extra"))
+    ) or _is_weekly_metric(
+        current.get("horizon"), _json_object(current.get("extra"))
+    ):
         return _is_better_weekly_prediction(candidate, current)
     return _row_id(candidate) > _row_id(current)
 

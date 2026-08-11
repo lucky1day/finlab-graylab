@@ -107,6 +107,33 @@ class WeeklyCanonicalSelectionTests(unittest.TestCase):
         selected = self._selected(_rows(horizon=1, task_type=None))
         self.assertEqual(selected["id"], 20)
 
+    def test_mixed_task_type_rows_are_order_independent(self) -> None:
+        """同一点位内混有缺 task_type 的行时，结果不得依赖输入顺序。
+
+        人工补发行可能不带 ``extra.task_type``。周频判定若只看比较的一侧，
+        同一批数据换个顺序就会选出相反方向。
+        """
+        marked = _row(
+            row_id=10,
+            horizon=1,
+            task_type="weekly_point",
+            predict_date="2026-07-25",
+            feature_date="2026-07-24",
+            direction=1,
+        )
+        unmarked = _row(
+            row_id=20,
+            horizon=1,
+            task_type=None,
+            predict_date="2026-07-26",
+            feature_date="2026-07-23",
+            direction=-1,
+        )
+        forward = self._selected([marked, unmarked])
+        backward = self._selected([unmarked, marked])
+        self.assertEqual(forward["id"], backward["id"])
+        self.assertEqual(forward["id"], 10)
+
 
 if __name__ == "__main__":
     unittest.main()
