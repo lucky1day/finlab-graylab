@@ -27,6 +27,7 @@ ROW_FIELDS = (
     "actual_direction",
 )
 VALID_TASK_TYPES = {"T+1", "T+5", "weekly_point", "weekly_average", "monthly"}
+WEEKLY_METRIC_TASK_TYPES = {"weekly_point", "weekly_average"}
 VALID_LIVE_PREDICTION_PHASES = {"gray_live", "scheduled_live"}
 VALID_SIGNAL_STATUSES = {"missing", "not_due", "present"}
 DAILY_TARGET_RULE = "target_date_yield_vs_feature_date_yield"
@@ -684,6 +685,8 @@ def _prediction_feature_date(row: Mapping[str, Any]) -> str:
 
 
 def _is_weekly_metric(horizon: Any, extra: Mapping[str, Any]) -> bool:
+    if str(extra.get("task_type") or "") in WEEKLY_METRIC_TASK_TYPES:
+        return True
     frequency = str(extra.get("frequency") or "").lower()
     try:
         is_weekly = int(horizon) == 6
