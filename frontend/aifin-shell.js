@@ -390,15 +390,39 @@
     updateBacktestMonthRange(scheme);
   }
 
-  function scheduledLiveTargetStart(phaseRanges) {
-    var scheduled = (phaseRanges || []).find(function (range) {
-      return String(range.prediction_phase || "") === "scheduled_live";
-    });
-    return normalizeIsoDate(scheduled && scheduled.start_target_date);
-  }
-
   function liveDividerText(scheme) {
-    var targetStart = scheduledLiveTargetStart(scheme && scheme.phaseRanges);
+    var deploymentValue = scheme && (
+      scheme.deploymentIsoDate ||
+      scheme.deployedAt ||
+      scheme.deployed_at ||
+      scheme.deployment_date ||
+      scheme.deploymentDate
+    );
+    var deploymentDate = normalizeIsoDate(
+      String(deploymentValue || "").replace(/\//g, "-")
+    );
+    var candidates = [];
+    var dailyRows = scheme && scheme.dailyRowsByMonth || {};
+    Object.keys(dailyRows).forEach(function (month) {
+      (dailyRows[month] || []).forEach(function (row) {
+        if (!row || row._source !== "live") return;
+        var predictDate = normalizeIsoDate(row.predictDate || row.predict_date);
+        var targetDate = normalizeIsoDate(row.targetDate || row.target_date);
+        if (deploymentDate && predictDate > deploymentDate && targetDate) {
+          candidates.push({ predictDate: predictDate, targetDate: targetDate });
+        }
+      });
+    });
+    candidates.sort(function (left, right) {
+      if (left.predictDate !== right.predictDate) {
+        return left.predictDate < right.predictDate ? -1 : 1;
+      }
+      if (left.targetDate !== right.targetDate) {
+        return left.targetDate < right.targetDate ? -1 : 1;
+      }
+      return 0;
+    });
+    var targetStart = candidates.length ? candidates[0].targetDate : "";
     return targetStart
       ? "实盘预测目标区间：" + targetStart + "开始"
       : "实盘预测目标区间：待产生";
