@@ -13,11 +13,6 @@ from shared.actual_facts import (
 )
 from shared.tenor_mapping import TENOR_TO_INDICATOR
 from shared.models import WeeklyActualRecord
-from shared.prediction_context import WEEKLY_AVERAGE_TARGET_RULE, WEEKLY_TARGET_RULE
-
-
-TARGET_RULE = WEEKLY_TARGET_RULE
-TARGET_RULES = (WEEKLY_TARGET_RULE, WEEKLY_AVERAGE_TARGET_RULE)
 
 
 def read_week_calendar(engine: Engine) -> list[dict]:
