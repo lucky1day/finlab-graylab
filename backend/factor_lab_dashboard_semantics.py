@@ -27,6 +27,7 @@ ROW_FIELDS = (
     "actual_direction",
 )
 VALID_TASK_TYPES = {"T+1", "T+5", "weekly_point", "weekly_average", "monthly"}
+WEEKLY_METRIC_TASK_TYPES = {"weekly_point", "weekly_average"}
 VALID_LIVE_PREDICTION_PHASES = {"gray_live", "scheduled_live"}
 VALID_SIGNAL_STATUSES = {"missing", "not_due", "present"}
 DAILY_TARGET_RULE = "target_date_yield_vs_feature_date_yield"
@@ -249,12 +250,45 @@ def backtest_data_source_label(data_source: Any) -> str:
     return BACKTEST_DATA_SOURCE_LABELS.get(value, value)
 
 
+def registry_task_type_index(
+    registry_rows: Iterable[Mapping[str, Any]],
+) -> dict[tuple[str, str, int], str]:
+    """按预测行可匹配的键索引 active Registry 的权威 task_type。"""
+    index: dict[tuple[str, str, int], str] = {}
+    for row in registry_rows:
+        if row.get("status") not in (None, "active"):
+            continue
+        base_scheme_id = _required_text(
+            row.get("base_scheme_id"), field="registry base_scheme_id"
+        )
+        target_tenor = _required_text(
+            row.get("target_tenor"), field="registry target_tenor"
+        )
+        try:
+            horizon = int(row["horizon"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise DashboardDataError(
+                f"registry horizon is invalid: {row.get('horizon')!r}"
+            ) from exc
+        index[(base_scheme_id, target_tenor, horizon)] = _required_text(
+            row.get("task_type"), field="registry task_type"
+        )
+    return index
+
+
 def choose_live_prediction_rows(
     rows: Iterable[Mapping[str, Any]],
     *,
     display_until: Any,
+    task_type_by_scheme: Mapping[tuple[str, str, int], str],
 ) -> list[Mapping[str, Any]]:
-    """按旧 API 规则选择 canonical 实盘预测，再过滤未来发出日。"""
+    """按旧 API 规则选择 canonical 实盘预测，再过滤未来发出日。
+
+    ``task_type_by_scheme`` 是 active Registry 的权威 task_type 索引，键为
+    ``(base_scheme_id, target_tenor, horizon)``，是判定周频归属的唯一依据。
+    去重分组键的前三段就是该索引键，因此同一分组内判据恒定。不在索引中的
+    行不属于当前 active 业务范围，按点位规则去重，其结果不进入展示。
+    """
     latest_by_point: dict[tuple[Any, Any, Any, str], Mapping[str, Any]] = {}
     for row in rows:
         point_date = _required_iso_date(row.get("target_date"), field="target_date")
@@ -264,8 +298,16 @@ def choose_live_prediction_rows(
             row.get("horizon"),
             point_date,
         )
+        is_weekly = (
+            task_type_by_scheme.get(_prediction_scheme_key(row))
+            in WEEKLY_METRIC_TASK_TYPES
+        )
         current = latest_by_point.get(key)
-        if current is None or _is_better_prediction_for_point(row, current):
+        if current is None or _is_better_prediction_for_point(
+            row,
+            current,
+            is_weekly=is_weekly,
+        ):
             latest_by_point[key] = row
 
     selected = sorted(
@@ -646,12 +688,25 @@ def _validate_exact_fields(
         )
 
 
+def _prediction_scheme_key(row: Mapping[str, Any]) -> tuple[str, str, int] | None:
+    """预测行的方案键；字段缺失或非法时返回 None，视为不在 active 范围。"""
+    try:
+        return (
+            str(row["scheme_id"]),
+            str(row["target_tenor"]),
+            int(row["horizon"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _is_better_prediction_for_point(
     candidate: Mapping[str, Any],
     current: Mapping[str, Any],
+    *,
+    is_weekly: bool,
 ) -> bool:
-    candidate_extra = _json_object(candidate.get("extra"))
-    if _is_weekly_metric(candidate.get("horizon"), candidate_extra):
+    if is_weekly:
         return _is_better_weekly_prediction(candidate, current)
     return _row_id(candidate) > _row_id(current)
 
@@ -681,15 +736,6 @@ def _prediction_feature_date(row: Mapping[str, Any]) -> str:
         or _optional_iso_date(row.get("predict_date"))
         or ""
     )
-
-
-def _is_weekly_metric(horizon: Any, extra: Mapping[str, Any]) -> bool:
-    frequency = str(extra.get("frequency") or "").lower()
-    try:
-        is_weekly = int(horizon) == 6
-    except (TypeError, ValueError):
-        is_weekly = False
-    return is_weekly or frequency == "weekly"
 
 
 def _json_object(value: Any) -> Mapping[str, Any]:
