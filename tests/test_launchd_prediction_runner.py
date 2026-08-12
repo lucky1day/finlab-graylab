@@ -34,6 +34,16 @@ def _blackbox_config(
     )
 
 
+class _WeeklyCalendar:
+    """周频到期判定需要真实交易日；2026-08-01 是关闭了新 feature 周的周六。"""
+
+    def previous_trading_day(self, value: str) -> str:
+        return "2026-07-31"
+
+    def is_trading_day(self, value: str) -> bool:
+        return True
+
+
 class LaunchdPredictionRunnerTests(unittest.TestCase):
     def test_legacy_admission_module_is_retired(self) -> None:
         self.assertIsNone(
@@ -115,7 +125,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                 return_value=[formal, gray, paused, monthly],
             ),
             patch.object(runner, "create_engine_from_env", return_value=engine),
-            patch.object(runner, "get_calendar", return_value=Mock()),
+            patch.object(runner, "get_calendar", return_value=_WeeklyCalendar()),
             patch.object(runner, "execute_scheme", side_effect=execute) as execute_one,
         ):
             summary = runner.run(

@@ -29,6 +29,7 @@ from shared.prediction_context import (
     build_daily_live_context,
     build_monthly_live_context,
     build_weekly_live_context,
+    is_weekly_signal_date,
 )
 from shared.scheme_config_schema import SCHEME_ID_PATTERN
 
@@ -1027,7 +1028,7 @@ def _is_frequency_due(
     if frequency == "daily":
         return calendar.is_trading_day(predict_date)
     if frequency == "weekly":
-        return date.fromisoformat(predict_date).weekday() == 5
+        return is_weekly_signal_date(calendar, predict_date)
     if frequency == "monthly":
         return date.fromisoformat(predict_date).day == 15
     raise SignalGapPlanError(

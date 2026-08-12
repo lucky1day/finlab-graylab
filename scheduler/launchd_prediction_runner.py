@@ -28,6 +28,7 @@ from scheduler.executor import (
 from scheduler.repository import create_engine_from_env
 from scheduler.v2_daily_gate import V2DailyGateBlocked, require_v2_daily_ready
 from shared.calendar_service import get_calendar
+from shared.prediction_context import is_weekly_signal_date
 from shared.data_bridge.refresh import DataBridgeRefreshConfig
 from shared.liwei_0616_cache_contract import APPROVED_PHASE_A_CACHE_PUBLISHERS
 
@@ -308,10 +309,18 @@ def run(
         try:
             engine = create_engine_from_env()
             calendar = get_calendar(engine)
-            if (
-                normalized_cadence == "daily"
-                and not calendar.is_trading_day(normalized_date)
-            ):
+            # 本次调度是否适用于当前 cadence。周频除了自然周六，还要求这一周
+            # 真的关闭了新的 feature 周——整周无交易日时，该周六与上一个周六
+            # 推导出同一业务键，执行只会用相同输入覆写上一周已发布的记录，并让
+            # 缺口报告与上一周的 predict_date 永久对不上。
+            not_applicable = (
+                not calendar.is_trading_day(normalized_date)
+                if normalized_cadence == "daily"
+                else not is_weekly_signal_date(calendar, normalized_date)
+                if normalized_cadence == "weekly"
+                else False
+            )
+            if not_applicable:
                 summary.excluded.clear()
                 summary.denied.clear()
                 summary.blocked.clear()

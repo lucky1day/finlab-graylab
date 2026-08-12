@@ -26,6 +26,7 @@ from shared.prediction_context import (
     build_daily_live_context,
     build_monthly_live_context,
     build_weekly_live_context,
+    is_weekly_signal_date,
 )
 
 
@@ -579,7 +580,11 @@ class _SnapshotCalendar:
         if frequency == "daily":
             values = self.trading_days
         elif frequency == "weekly":
-            values = _weekly_live_dates(start_date, end_date)
+            values = tuple(
+                value
+                for value in _weekly_live_dates(start_date, end_date)
+                if is_weekly_signal_date(self, value)
+            )
         elif frequency == "monthly":
             values = _monthly_dates(start_date, end_date)
         else:
