@@ -45,8 +45,8 @@ class LoadSchemeOwnersTests(unittest.TestCase):
             load_scheme_owners(self.root), {"demo__h1__10Y": "LW"}
         )
 
-    def test_padded_key_still_matches_composite_scheme_id(self) -> None:
-        """登记表是人工编辑的：键的多余空白不得导致静默匹配不上。"""
+    def test_non_canonical_key_fails_closed(self) -> None:
+        """键必须自身就是 canonical：静默 trim 会把人工笔误变成看不见的行为。"""
         _write(
             self.root,
             {
@@ -54,9 +54,20 @@ class LoadSchemeOwnersTests(unittest.TestCase):
                 "owners": {" demo__h1__10Y ": "LW"},
             },
         )
-        self.assertEqual(
-            load_scheme_owners(self.root), {"demo__h1__10Y": "LW"}
+        with self.assertRaises(SchemeOwnerError):
+            load_scheme_owners(self.root)
+
+    def test_keys_differing_only_by_whitespace_fail_closed(self) -> None:
+        """两个原始键归一化后相同会按文件顺序静默覆盖归属，必须拒绝。"""
+        _write(
+            self.root,
+            {
+                "schema_version": "scheme-owner-v1",
+                "owners": {"demo__h1__10Y": "LW", " demo__h1__10Y ": "ZS"},
+            },
         )
+        with self.assertRaises(SchemeOwnerError):
+            load_scheme_owners(self.root)
 
     def test_empty_owners_is_valid(self) -> None:
         _write(self.root, {"schema_version": "scheme-owner-v1", "owners": {}})
