@@ -90,3 +90,59 @@ class WeeklySignalDateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LaunchdWeeklySkipTests(unittest.TestCase):
+    """非 signal 周六必须不执行，否则 UPSERT 会覆写首个周六的 predict_date。
+
+    `t_scheme_predictions` 的 UPSERT 是
+    ``ON DUPLICATE KEY UPDATE ... predict_date = VALUES(predict_date)``，唯一键
+    是 ``(scheme_id, target_tenor, horizon, target_date)``。整周无交易日时两个
+    周六解析出同一业务键，若后一个也执行，保留行的 predict_date 会被改成
+    2026-02-21，而缺口报告仍按 2026-02-14 匹配，幽灵缺口依旧存在。
+    """
+
+    def _run(self, predict_date: str):
+        from contextlib import nullcontext
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+
+        from scheduler import launchd_prediction_runner as runner
+
+        config = SimpleNamespace(
+            scheme_id="weekly_demo",
+            scheme_version="v1",
+            frequency="weekly",
+            status="active",
+            runtime_type="blackbox_v2",
+            input_source="data_bridge_current",
+            version_status="active",
+            task_type="weekly_point",
+            horizon=1,
+            tenors=["10Y"],
+            legacy_mode="formal",
+            capabilities=frozenset({"launchd_one_shot"}),
+        )
+        calendar = _StubCalendar(TRADING_DAYS)
+        with (
+            patch.object(
+                runner.DataBridgeRefreshConfig, "from_env", return_value=object()
+            ),
+            patch.object(runner, "_runner_lock", return_value=nullcontext(True)),
+            patch.object(runner, "discover_schemes", return_value=[config]),
+            patch.object(runner, "create_engine_from_env", return_value=Mock()),
+            patch.object(runner, "get_calendar", return_value=calendar),
+            patch.object(runner, "execute_scheme") as execute_one,
+        ):
+            return runner.run("weekly", predict_date=predict_date), execute_one
+
+    def test_signal_saturday_executes(self) -> None:
+        summary, execute_one = self._run("2026-02-14")
+        self.assertNotEqual(summary.outcome, "not_applicable")
+        execute_one.assert_called()
+
+    def test_non_signal_saturday_is_not_applicable(self) -> None:
+        summary, execute_one = self._run("2026-02-21")
+        self.assertEqual(summary.outcome, "not_applicable")
+        self.assertEqual(summary.exit_code, 0)
+        execute_one.assert_not_called()
