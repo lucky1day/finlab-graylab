@@ -18,7 +18,10 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Connection, Engine
 
 from shared.actual_facts import build_week_calendar
-from shared.calendar_service import read_calendar_snapshot_from_connection
+from shared.calendar_service import (
+    is_trading_day_row,
+    read_calendar_snapshot_from_connection,
+)
 from shared.prediction_context import (
     build_daily_live_context,
     build_monthly_live_context,
@@ -530,7 +533,11 @@ class _SnapshotCalendar:
             _date(row["rdate"]): str(row["trade_flag"]).strip()
             for row in snapshot["t_trade_calendar.csv"].to_dict("records")
         }
-        self.trading_days = tuple(sorted(day for day, flag in flags.items() if flag == "1"))
+        self.trading_days = tuple(
+            sorted(
+                day for day, flag in flags.items() if is_trading_day_row(day, flag)
+            )
+        )
         if not self.trading_days:
             raise SignalGapReportError("trade_calendar_unavailable")
         self.trading_set = frozenset(self.trading_days)

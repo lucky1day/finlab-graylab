@@ -19,7 +19,7 @@ from shared.blackbox_v2.contracts import (
 )
 from shared.blackbox_v2.requests import build_request
 from shared.blackbox_v2.snapshot import BlackboxSnapshot
-from shared.calendar_service import get_calendar
+from shared.calendar_service import get_calendar, is_trading_day_row
 from shared.input_artifacts import resolve_blackbox_input_cutoffs_bulk
 from shared.prediction_context import (
     MONTHLY_TARGET_RULE,
@@ -89,7 +89,6 @@ def build_historical_cases(
             trade_calendar_rows,
             predict_date_from=predict_date_from,
             target_date_before=target_date_before,
-            weekday_only=True,
         )
 
     eligible = [
@@ -118,7 +117,6 @@ def build_historical_cases(
             trade_calendar_rows,
             predict_date_from=selected[0].feature_date,
             target_date_before=target_date_before,
-            weekday_only=True,
             source_gap_is_horizon_violation=True,
         )
     cutoffs_by_feature_date = resolve_blackbox_input_cutoffs_bulk(
@@ -203,8 +201,7 @@ def _daily_candidates(
     trading_days = sorted(
         str(row["rdate"])[:10]
         for row in calendar_rows
-        if str(row.get("trade_flag", "")).strip() == "1"
-        and date.fromisoformat(str(row["rdate"])[:10]).weekday() < 5
+        if is_trading_day_row(str(row["rdate"])[:10], row.get("trade_flag"))
     )
     calendar_index = {value: index for index, value in enumerate(trading_days)}
     source_rows = sorted(
@@ -316,10 +313,10 @@ def _weekday_trading_week_ends(calendar_rows: list[dict]) -> dict[int, str]:
     """返回每周最后一个工作日债券观测日，忽略通用日历中的调休周末。"""
     result: dict[int, str] = {}
     for row in normalize_week_calendar_rows(calendar_rows):
-        if str(row.get("trade_flag", "")).strip() != "1" or row.get("week_id") is None:
-            continue
         rdate = str(row["rdate"])[:10]
-        if date.fromisoformat(rdate).weekday() >= 5:
+        if row.get("week_id") is None or not is_trading_day_row(
+            rdate, row.get("trade_flag")
+        ):
             continue
         week_id = int(str(row["week_id"]).replace(".0", ""))
         if week_id not in result or rdate > result[week_id]:
@@ -397,7 +394,6 @@ def _require_actual_source_coverage(
     *,
     predict_date_from: str,
     target_date_before: str,
-    weekday_only: bool = False,
     source_gap_is_horizon_violation: bool = False,
 ) -> None:
     source_dates = {str(row["trade_date"])[:10] for row in yield_rows}
@@ -407,12 +403,8 @@ def _require_actual_source_coverage(
     expected_dates = {
         str(row["rdate"])[:10]
         for row in calendar_rows
-        if str(row.get("trade_flag", "")).strip() == "1"
+        if is_trading_day_row(str(row["rdate"])[:10], row.get("trade_flag"))
         and coverage_start <= str(row["rdate"])[:10] < target_date_before
-        and (
-            not weekday_only
-            or date.fromisoformat(str(row["rdate"])[:10]).weekday() < 5
-        )
     }
     missing = sorted(expected_dates - source_dates)
     if missing:

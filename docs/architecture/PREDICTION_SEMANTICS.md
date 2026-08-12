@@ -44,6 +44,16 @@ Native V1 既有周频 `horizon=6` 和月频 `horizon=30` 是历史平台计日�
 | `t_trade_calendar` / 平台冻结交易日历 | 平台内部计算前后交易日、调度日和目标日 | Blackbox 算法不得直接访问，也不得用它覆盖 Request |
 | 七字段 Request | 本次运行的三日期与三个 cutoff 的唯一合同 | 算法不得修改、顺延、回退或重新生成 |
 
+`t_trade_calendar` 是**工作日历**，跟随国务院节假日安排：法定假期期间的工作日
+`trade_flag='0'`，而调休补班的周六/周日 `trade_flag` 同样为 `'1'`。平台标的在调休
+补班日无行情，因此平台交易日必须在工作日基础上再排除周末：
+
+> **交易日 = `t_trade_calendar.trade_flag='1'` 且 该日为周一至周五**
+
+该判定的唯一实现是 `shared.calendar_service.is_trading_day_row()`，所有需要判断
+交易日的代码都必须调用它，不得各自比较 `trade_flag`，也不得另行叠加星期过滤。
+`week_id` 的权威来源仍然只有 `api_wind_date`，不得改用 `t_trade_calendar.week_id`。
+
 `week_id` 是不透明的六位字符串业务键。算法要找相邻周，只能使用平台
 给定的 Request、`weekly_output.csv` 中的有序实际键以及声明后的
 `api_wind_date.csv` 映射，不能依赖数值连续性。

@@ -10,7 +10,10 @@ from sqlalchemy import bindparam, text
 from scheduler.discovery import discover_schemes
 from shared.actual_facts import build_week_calendar
 from shared.blackbox_v2.contracts import TASK_COMBINATIONS
-from shared.calendar_service import read_calendar_snapshot_from_connection
+from shared.calendar_service import (
+    is_trading_day_row,
+    read_calendar_snapshot_from_connection,
+)
 from shared.data_bridge.authority import (
     StableDataBridgeCurrentAuthority,
     StableDataBridgeCutoff,
@@ -944,7 +947,7 @@ class _SingleDateCalendar:
             sorted(
                 str(row["rdate"])[:10]
                 for row in trade_calendar_rows
-                if str(row.get("trade_flag", "")).strip() == "1"
+                if is_trading_day_row(str(row["rdate"])[:10], row.get("trade_flag"))
             )
         )
         if not self._trading_days:
