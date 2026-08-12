@@ -2,10 +2,10 @@
 
 周频方案在同一 ``target_date`` 上可能存在多行预测（补发、重跑、灰度与正式
 实盘并存）。canonical 规则要求先取更新的 ``feature_date``，同 feature_date
-再取更早的 ``predict_date``；日频/点位方案才按行 id 取最新一行。
+再取更早的 ``predict_date``；点位方案才按行 id 取最新一行。
 
-判定该走哪条规则时，Registry ``task_type`` 是唯一权威依据。仅按 ``horizon``
-推断会把 ``horizon != 6`` 的周频方案误判成点位方案，从而选出非 canonical 行。
+判定该走哪条规则的唯一依据是 active Registry 的 ``task_type``。预测行自身的
+``horizon`` 与 ``extra`` 都不参与该判定。
 """
 
 from __future__ import annotations
@@ -19,70 +19,69 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.factor_lab_dashboard_semantics import (  # noqa: E402
+    DashboardDataError,
     choose_live_prediction_rows,
+    registry_task_type_index,
 )
 
 DISPLAY_UNTIL = "2026-08-11"
 TARGET_DATE = "2026-07-31"
+SCHEME_ID = "weekly_10y_lgbm_point_v1"
+TENOR = "10Y"
 
 
 def _row(
     *,
     row_id: int,
     horizon: int,
-    task_type: str | None,
     predict_date: str,
     feature_date: str,
     direction: int,
+    extra: dict | None = None,
 ) -> dict:
-    extra: dict[str, object] = {"feature_date": feature_date}
-    if task_type is not None:
-        extra["task_type"] = task_type
+    payload = {"feature_date": feature_date}
+    payload.update(extra or {})
     return {
         "id": row_id,
-        "scheme_id": "weekly_10y_lgbm_point_v1",
-        "target_tenor": "10Y",
+        "scheme_id": SCHEME_ID,
+        "target_tenor": TENOR,
         "horizon": horizon,
         "predict_date": predict_date,
         "feature_date": feature_date,
         "target_date": TARGET_DATE,
         "predicted_direction": direction,
-        "extra": extra,
+        "extra": payload,
     }
 
 
-def _rows(*, horizon: int, task_type: str | None) -> list[dict]:
+def _rows(*, horizon: int, extra: dict | None = None) -> list[dict]:
     """同一 target_date 的两行：id 较小的一行 feature_date 更新，是 canonical。"""
     return [
         _row(
             row_id=10,
             horizon=horizon,
-            task_type=task_type,
             predict_date="2026-07-25",
             feature_date="2026-07-24",
             direction=1,
+            extra=extra,
         ),
         _row(
             row_id=20,
             horizon=horizon,
-            task_type=task_type,
             predict_date="2026-07-26",
             feature_date="2026-07-23",
             direction=-1,
+            extra=extra,
         ),
     ]
 
 
-REGISTRY_KEY = ("weekly_10y_lgbm_point_v1", "10Y", 1)
+def _index(task_type: str, *, horizon: int) -> dict:
+    return {(SCHEME_ID, TENOR, horizon): task_type}
 
 
 class WeeklyCanonicalSelectionTests(unittest.TestCase):
-    def _selected(
-        self,
-        rows: list[dict],
-        *,
-        task_type_by_scheme: dict | None = None,
-    ) -> dict:
+    def _selected(self, rows: list[dict], task_type_by_scheme: dict) -> dict:
         selected = choose_live_prediction_rows(
             rows,
             display_until=DISPLAY_UNTIL,
@@ -91,81 +90,98 @@ class WeeklyCanonicalSelectionTests(unittest.TestCase):
         self.assertEqual(len(selected), 1)
         return dict(selected[0])
 
-    def test_legacy_weekly_horizon_selects_newest_feature_date(self) -> None:
-        """存量周频方案（horizon=6）已按 canonical 周频规则选择。"""
-        selected = self._selected(_rows(horizon=6, task_type=None))
+    def test_registry_weekly_point_selects_newest_feature_date(self) -> None:
+        """Registry 判为 weekly_point：取更新的 feature_date。"""
+        selected = self._selected(
+            _rows(horizon=1),
+            _index("weekly_point", horizon=1),
+        )
         self.assertEqual(selected["id"], 10)
         self.assertEqual(selected["feature_date"], "2026-07-24")
 
-    def test_weekly_task_type_selects_newest_feature_date(self) -> None:
-        """horizon != 6 的周频方案必须同样按 canonical 周频规则选择。"""
-        selected = self._selected(_rows(horizon=1, task_type="weekly_point"))
-        self.assertEqual(selected["id"], 10)
-        self.assertEqual(selected["feature_date"], "2026-07-24")
-
-    def test_weekly_average_task_type_selects_newest_feature_date(self) -> None:
+    def test_registry_weekly_average_selects_newest_feature_date(self) -> None:
         """weekly_average 与 weekly_point 适用同一 canonical 规则。"""
-        selected = self._selected(_rows(horizon=1, task_type="weekly_average"))
-        self.assertEqual(selected["id"], 10)
-        self.assertEqual(selected["feature_date"], "2026-07-24")
-
-    def test_point_task_type_keeps_latest_row_rule(self) -> None:
-        """点位方案不受影响，仍按最新行 id 选择。"""
-        selected = self._selected(_rows(horizon=1, task_type="T+1"))
-        self.assertEqual(selected["id"], 20)
-
-    def test_rows_without_task_type_keep_horizon_behaviour(self) -> None:
-        """缺 task_type 的存量点位行保持既有行为，不因本次改动变化。"""
-        selected = self._selected(_rows(horizon=1, task_type=None))
-        self.assertEqual(selected["id"], 20)
-
-    def test_registry_weekly_applies_when_no_row_carries_task_type(self) -> None:
-        """全部候选行都缺 extra.task_type 时，仍须按 Registry 判为周频。
-
-        历史行与人工补发行都可能不带该字段。业务任务类型的权威来源是
-        Registry，不是预测行的 extra。
-        """
         selected = self._selected(
-            _rows(horizon=1, task_type=None),
-            task_type_by_scheme={REGISTRY_KEY: "weekly_point"},
+            _rows(horizon=1),
+            _index("weekly_average", horizon=1),
         )
         self.assertEqual(selected["id"], 10)
-        self.assertEqual(selected["feature_date"], "2026-07-24")
 
-    def test_registry_point_task_type_overrides_row_hint(self) -> None:
-        """Registry 判为点位时不受行内 extra 提示影响。"""
+    def test_legacy_weekly_horizon_still_selects_by_registry(self) -> None:
+        """存量 horizon=6 的周频方案同样由 Registry 判定。"""
         selected = self._selected(
-            _rows(horizon=1, task_type="weekly_point"),
-            task_type_by_scheme={REGISTRY_KEY: "T+1"},
+            _rows(horizon=6),
+            _index("weekly_point", horizon=6),
+        )
+        self.assertEqual(selected["id"], 10)
+
+    def test_registry_point_task_type_keeps_latest_row_rule(self) -> None:
+        """Registry 判为点位：按最新行 id 选择。"""
+        selected = self._selected(
+            _rows(horizon=1),
+            _index("T+1", horizon=1),
         )
         self.assertEqual(selected["id"], 20)
 
-    def test_mixed_task_type_rows_are_order_independent(self) -> None:
-        """同一点位内混有缺 task_type 的行时，结果不得依赖输入顺序。
+    def test_horizon_six_does_not_imply_weekly(self) -> None:
+        """horizon=6 不再隐式代表周频；Registry 判为点位即按点位处理。"""
+        selected = self._selected(
+            _rows(horizon=6),
+            _index("T+5", horizon=6),
+        )
+        self.assertEqual(selected["id"], 20)
 
-        人工补发行可能不带 ``extra.task_type``。周频判定若只看比较的一侧，
-        同一批数据换个顺序就会选出相反方向。
-        """
-        marked = _row(
-            row_id=10,
-            horizon=1,
-            task_type="weekly_point",
-            predict_date="2026-07-25",
-            feature_date="2026-07-24",
-            direction=1,
+    def test_row_extra_hints_do_not_decide(self) -> None:
+        """预测行 extra 里的 task_type / frequency 不参与判定。"""
+        selected = self._selected(
+            _rows(horizon=1, extra={"task_type": "weekly_point", "frequency": "weekly"}),
+            _index("T+1", horizon=1),
         )
-        unmarked = _row(
-            row_id=20,
-            horizon=1,
-            task_type=None,
-            predict_date="2026-07-26",
-            feature_date="2026-07-23",
-            direction=-1,
-        )
-        forward = self._selected([marked, unmarked])
-        backward = self._selected([unmarked, marked])
+        self.assertEqual(selected["id"], 20)
+
+    def test_rows_outside_active_registry_use_point_rule(self) -> None:
+        """不在 active Registry 中的行不属于当前业务范围，按点位规则去重。"""
+        selected = self._selected(_rows(horizon=1), {})
+        self.assertEqual(selected["id"], 20)
+
+    def test_selection_is_order_independent(self) -> None:
+        """判据来自 Registry 且分组内恒定，结果不依赖输入顺序。"""
+        index = _index("weekly_point", horizon=1)
+        rows = _rows(horizon=1)
+        forward = self._selected(rows, index)
+        backward = self._selected(list(reversed(rows)), index)
         self.assertEqual(forward["id"], backward["id"])
         self.assertEqual(forward["id"], 10)
+
+
+class RegistryTaskTypeIndexTests(unittest.TestCase):
+    @staticmethod
+    def _registry_row(**overrides) -> dict:
+        row = {
+            "base_scheme_id": SCHEME_ID,
+            "target_tenor": TENOR,
+            "horizon": 1,
+            "task_type": "weekly_point",
+            "status": "active",
+        }
+        row.update(overrides)
+        return row
+
+    def test_index_key_matches_prediction_row_shape(self) -> None:
+        index = registry_task_type_index([self._registry_row()])
+        self.assertEqual(index, {(SCHEME_ID, TENOR, 1): "weekly_point"})
+
+    def test_non_active_registry_rows_are_excluded(self) -> None:
+        index = registry_task_type_index([self._registry_row(status="paused")])
+        self.assertEqual(index, {})
+
+    def test_invalid_horizon_fails_closed(self) -> None:
+        with self.assertRaises(DashboardDataError):
+            registry_task_type_index([self._registry_row(horizon="weekly")])
+
+    def test_missing_task_type_fails_closed(self) -> None:
+        with self.assertRaises(DashboardDataError):
+            registry_task_type_index([self._registry_row(task_type="")])
 
 
 if __name__ == "__main__":

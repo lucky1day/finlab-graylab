@@ -280,31 +280,33 @@ def choose_live_prediction_rows(
     rows: Iterable[Mapping[str, Any]],
     *,
     display_until: Any,
-    task_type_by_scheme: Mapping[tuple[str, str, int], str] | None = None,
+    task_type_by_scheme: Mapping[tuple[str, str, int], str],
 ) -> list[Mapping[str, Any]]:
     """按旧 API 规则选择 canonical 实盘预测，再过滤未来发出日。
 
     ``task_type_by_scheme`` 是 active Registry 的权威 task_type 索引，键为
-    ``(base_scheme_id, target_tenor, horizon)``。预测行自身的 ``extra`` 只在
-    Registry 未覆盖该键时兜底，不作为业务任务类型的权威来源。
+    ``(base_scheme_id, target_tenor, horizon)``，是判定周频归属的唯一依据。
+    去重分组键的前三段就是该索引键，因此同一分组内判据恒定。不在索引中的
+    行不属于当前 active 业务范围，按点位规则去重，其结果不进入展示。
     """
-    rows = list(rows)
-    weekly_by_scheme = _weekly_by_scheme(rows, task_type_by_scheme)
     latest_by_point: dict[tuple[Any, Any, Any, str], Mapping[str, Any]] = {}
     for row in rows:
         point_date = _required_iso_date(row.get("target_date"), field="target_date")
-        scheme_key = _prediction_scheme_key(row)
         key = (
             row.get("scheme_id"),
             row.get("target_tenor"),
             row.get("horizon"),
             point_date,
         )
+        is_weekly = (
+            task_type_by_scheme.get(_prediction_scheme_key(row))
+            in WEEKLY_METRIC_TASK_TYPES
+        )
         current = latest_by_point.get(key)
         if current is None or _is_better_prediction_for_point(
             row,
             current,
-            is_weekly=weekly_by_scheme.get(scheme_key, False),
+            is_weekly=is_weekly,
         ):
             latest_by_point[key] = row
 
@@ -687,7 +689,7 @@ def _validate_exact_fields(
 
 
 def _prediction_scheme_key(row: Mapping[str, Any]) -> tuple[str, str, int] | None:
-    """预测行的方案键；缺字段时返回 None，由行内兜底判据处理。"""
+    """预测行的方案键；字段缺失或非法时返回 None，视为不在 active 范围。"""
     try:
         return (
             str(row["scheme_id"]),
@@ -696,30 +698,6 @@ def _prediction_scheme_key(row: Mapping[str, Any]) -> tuple[str, str, int] | Non
         )
     except (KeyError, TypeError, ValueError):
         return None
-
-
-def _weekly_by_scheme(
-    rows: Iterable[Mapping[str, Any]],
-    task_type_by_scheme: Mapping[tuple[str, str, int], str] | None,
-) -> dict[tuple[str, str, int] | None, bool]:
-    """按方案键解析周频归属，使同一去重分组内判据恒定。"""
-    resolved: dict[tuple[str, str, int] | None, bool] = {}
-    for row in rows:
-        scheme_key = _prediction_scheme_key(row)
-        registry_task_type = (
-            task_type_by_scheme.get(scheme_key)
-            if task_type_by_scheme and scheme_key is not None
-            else None
-        )
-        if registry_task_type is not None:
-            resolved[scheme_key] = registry_task_type in WEEKLY_METRIC_TASK_TYPES
-            continue
-        # Registry 未覆盖时才回退到行内判据；同组任一行判为周频即整组周频。
-        weekly = _is_weekly_metric(
-            row.get("horizon"), _json_object(row.get("extra"))
-        )
-        resolved[scheme_key] = resolved.get(scheme_key, False) or weekly
-    return resolved
 
 
 def _is_better_prediction_for_point(
@@ -758,17 +736,6 @@ def _prediction_feature_date(row: Mapping[str, Any]) -> str:
         or _optional_iso_date(row.get("predict_date"))
         or ""
     )
-
-
-def _is_weekly_metric(horizon: Any, extra: Mapping[str, Any]) -> bool:
-    if str(extra.get("task_type") or "") in WEEKLY_METRIC_TASK_TYPES:
-        return True
-    frequency = str(extra.get("frequency") or "").lower()
-    try:
-        is_weekly = int(horizon) == 6
-    except (TypeError, ValueError):
-        is_weekly = False
-    return is_weekly or frequency == "weekly"
 
 
 def _json_object(value: Any) -> Mapping[str, Any]:
