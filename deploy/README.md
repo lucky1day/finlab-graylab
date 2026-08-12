@@ -45,3 +45,25 @@ plist 的物理删除仍是独立生产操作，不由仓库期望配置推断�
 本文件不提供 bootstrap、bootout 或 kickstart 的可执行指令，也不声称任何机器已经安装、
 加载或停用上述模板。实际生产治理、证据标准与停止条件见
 [生产信号与调度治理](../docs/architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。
+
+## 只读配置漂移审计
+
+在生产变更前或 installed plist 调整后，可运行以下只读检查：
+
+```bash
+PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
+  conda run --no-capture-output -n bond_factor_lab_service \
+  python scripts/audit_launchd_config_drift.py
+```
+
+脚本只读取 `deploy/launchd/*.plist`、`~/Library/LaunchAgents/*.plist` 与
+`launchctl print`；它没有修改、reload、bootout、bootstrap 或 kickstart 功能。JSON 只报告
+变量名、存在性、语义差异路径及启动参数/触发器 hash，不输出 token、DSN、SSH 用户、密钥路径或
+环境变量值。
+
+审计固定禁止所有正式模板和 installed 环境出现
+`BOND_DAILY_COORDINATOR_MODE`，并要求 DataBridge 保留
+`BFL_DATABRIDGE_PRODUCER=launchd-one-shot`。Backend 的 admin token/日志路径，以及 SSH 隧道
+模板明确标注的本机身份参数/日志路径，只作为批准的本机差异；其余启动参数、工作目录、调度触发器
+和环境变量差异仍使脚本退出 `1`。脚本退出 `0` 只表示当前只读配置审计通过，不代表生产任务已
+自然运行成功，也不授予任何生产操作权限。
