@@ -70,6 +70,15 @@ class CalendarService:
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
 
+    def covers(self, value: str | date | datetime) -> bool:
+        """日历是否收录该日期，与是否交易日无关。
+
+        ``is_trading_day`` 对未收录日期返回 False，无法区分「节假日」与
+        「日历尚未延长到该日期」。需要区分二者的调用方（例如按日历判断本次
+        调度是否适用）必须先用本方法确认覆盖，否则会把运维事件误判成休市。
+        """
+        return _date_string(value) in self._calendar_dates
+
     def is_trading_day(self, value: str | date | datetime) -> bool:
         """日历未收录的日期返回 False，与既有契约一致。"""
         return _date_string(value) in self._trading_day_set
@@ -113,16 +122,27 @@ class CalendarService:
         )
 
     @cached_property
-    def _trading_days(self) -> tuple[str, ...]:
-        """一次载入并冻结交易日序列，判定口径见 is_trading_day_row。"""
+    def _calendar_rows(self) -> tuple[tuple[str, object], ...]:
+        """一次载入并冻结整张工作日历。"""
         stmt = text("SELECT rdate, trade_flag FROM t_trade_calendar ORDER BY rdate")
         with self._engine.connect() as conn:
             rows = conn.execute(stmt).mappings().all()
         return tuple(
+            (_date_string(row["rdate"]), row["trade_flag"]) for row in rows
+        )
+
+    @cached_property
+    def _calendar_dates(self) -> frozenset[str]:
+        return frozenset(rdate for rdate, _flag in self._calendar_rows)
+
+    @cached_property
+    def _trading_days(self) -> tuple[str, ...]:
+        """交易日序列，判定口径见 is_trading_day_row。"""
+        return tuple(
             sorted(
-                _date_string(row["rdate"])
-                for row in rows
-                if is_trading_day_row(row["rdate"], row["trade_flag"])
+                rdate
+                for rdate, flag in self._calendar_rows
+                if is_trading_day_row(rdate, flag)
             )
         )
 

@@ -129,6 +129,9 @@ class _Calendar:
 
 
 class _MonthlyCalendar:
+    def covers(self, day: str) -> bool:
+        return day in {"2026-04-15", "2026-05-15"}
+
     def is_trading_day(self, day: str) -> bool:
         return day in {"2026-04-15", "2026-05-15"}
 
@@ -146,6 +149,9 @@ class _MonthlyCalendar:
 
 
 class _NonTradingMonthlyCalendar:
+    def covers(self, day: str) -> bool:
+        return day in {"2025-02-15", "2025-03-15"}
+
     def is_trading_day(self, day: str) -> bool:
         return day in {"2025-02-14", "2025-03-14"}
 

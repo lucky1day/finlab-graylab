@@ -309,6 +309,13 @@ def run(
         try:
             engine = create_engine_from_env()
             calendar = get_calendar(engine)
+            if not calendar.covers(normalized_date):
+                # 日历需要人工逐年延长。覆盖耗尽时 is_trading_day 同样返回
+                # False，若不先区分，整批生产会伪装成节假日静默跳过并以退出码
+                # 0 结束；周频/月频连这层判定都没有，会直接沿用陈旧交易日。
+                raise LaunchdPredictionConfigurationError(
+                    "trade calendar does not cover predict_date"
+                )
             # 本次调度是否适用于当前 cadence。周频除了自然周六，还要求这一周
             # 真的关闭了新的 feature 周——整周无交易日时，该周六与上一个周六
             # 推导出同一业务键，执行只会用相同输入覆写上一周已发布的记录，并让

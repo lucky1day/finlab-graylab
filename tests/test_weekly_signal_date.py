@@ -43,6 +43,13 @@ class _StubCalendar:
     def __init__(self, trading: list[str]) -> None:
         self._days = sorted(trading)
 
+    def covers(self, value: str) -> bool:
+        return str(value)[:10] in {
+            "2026-02-14",
+            "2026-02-21",
+            "2026-02-28",
+        }
+
     def previous_trading_day(self, value: str) -> str:
         position = bisect_left(self._days, str(value)[:10])
         if position == 0:

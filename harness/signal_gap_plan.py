@@ -957,7 +957,13 @@ class _SingleDateCalendar:
                 "trade calendar has no trading days",
             )
         self._trading_day_set = frozenset(self._trading_days)
+        self._calendar_date_set = frozenset(
+            str(row["rdate"])[:10] for row in trade_calendar_rows
+        )
         self._week_calendar = build_week_calendar(week_calendar_rows)
+
+    def covers(self, value: str) -> bool:
+        return str(value)[:10] in self._calendar_date_set
 
     def is_trading_day(self, value: str) -> bool:
         return str(value)[:10] in self._trading_day_set

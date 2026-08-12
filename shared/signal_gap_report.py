@@ -534,6 +534,7 @@ class _SnapshotCalendar:
             _date(row["rdate"]): str(row["trade_flag"]).strip()
             for row in snapshot["t_trade_calendar.csv"].to_dict("records")
         }
+        self.calendar_set = frozenset(flags)
         self.trading_days = tuple(
             sorted(
                 day for day, flag in flags.items() if is_trading_day_row(day, flag)
@@ -553,6 +554,9 @@ class _SnapshotCalendar:
 
     def is_trading_day(self, value: str) -> bool:
         return _date(value) in self.trading_set
+
+    def covers(self, value: str) -> bool:
+        return _date(value) in self.calendar_set
 
     def previous_trading_day(self, value: str) -> str:
         index = bisect_left(self.trading_days, _date(value))
