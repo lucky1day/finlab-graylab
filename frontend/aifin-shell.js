@@ -706,6 +706,7 @@
     "target_label",
     "status",
     "deployed_at",
+    "owner",
     "signal_status",
     "signal_failure_category",
     "live_rows",
@@ -954,6 +955,7 @@
         schemeId: schemeId,
         baseSchemeId: baseSchemeId,
         name: requireDashboardString(scheme.name, context + ".name", false),
+        owner: requireDashboardString(scheme.owner, context + ".owner", true),
         description: scheme.description,
         horizon: horizon,
         taskType: scheme.task_type,
@@ -1153,6 +1155,7 @@
         targetTenor: scheme.targetTenor,
         column: column.id,
         name: scheme.name,
+        owner: scheme.owner || "",
         description: scheme.description,
         status: scheme.status,
         signalStatus: scheme.signalStatus,
@@ -2177,6 +2180,7 @@
       '<td class="' + getMetricClass(metric.upPrecision) + '">' + formatPercent(metric.upPrecision) + '</td>' +
       '<td class="' + getMetricClass(metric.downPrecision) + '">' + formatPercent(metric.downPrecision) + '</td>' +
       '<td class="mono">' + escapeHtml(deploymentDate) + '</td>' +
+      '<td class="mono">' + escapeHtml(scheme.owner || "--") + '</td>' +
       '<td class="factor-remark-cell"><span class="factor-remark-text" title="' + remark + '">' + remark + '</span></td>' +
       '</tr>';
   }
@@ -2191,7 +2195,7 @@
     if (title) title.textContent = task.label + " 候选方案排行";
 
     if (!schemes.length) {
-      body.innerHTML = '<tr><td colspan="8" class="factor-empty-cell">该任务格子下暂无方案</td></tr>';
+      body.innerHTML = '<tr><td colspan="9" class="factor-empty-cell">该任务格子下暂无方案</td></tr>';
       return;
     }
 

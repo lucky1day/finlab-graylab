@@ -98,6 +98,7 @@ SCHEME_FIELDS = {
     "scheme_id",
     "base_scheme_id",
     "name",
+    "owner",
     "description",
     "horizon",
     "task_type",

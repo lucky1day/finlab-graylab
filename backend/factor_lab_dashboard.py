@@ -19,6 +19,7 @@ from sqlalchemy.engine import Connection, Engine
 
 from shared.signal_gap_report import read_latest_due_signal_statuses
 
+from backend.scheme_owner import load_scheme_owners
 from backend.factor_lab_dashboard_semantics import (
     BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE,
     DASHBOARD_SCHEMA_VERSION,
@@ -136,7 +137,8 @@ def build_factor_lab_dashboard(
     db_read_seconds = time.perf_counter() - db_read_started_at
 
     canonical_started_at = time.perf_counter()
-    registry = [_registry_dto(row) for row in registry_rows]
+    scheme_owners = load_scheme_owners()
+    registry = [_registry_dto(row, scheme_owners) for row in registry_rows]
     targets = [_target_dto(row) for row in target_rows]
     target_labels = {
         target["target_code"]: target["display_name"] for target in targets
@@ -813,7 +815,10 @@ def _actual_frequency(actual_kind: str) -> str:
     )
 
 
-def _registry_dto(row: Mapping[str, Any]) -> dict[str, Any]:
+def _registry_dto(
+    row: Mapping[str, Any],
+    owners: Mapping[str, str],
+) -> dict[str, Any]:
     scheme_id = _required_text(row.get("scheme_id"), field="registry scheme_id")
     base_scheme_id = _required_text(
         row.get("base_scheme_id"), field="registry base_scheme_id"
@@ -832,6 +837,7 @@ def _registry_dto(row: Mapping[str, Any]) -> dict[str, Any]:
         "scheme_id": scheme_id,
         "base_scheme_id": base_scheme_id,
         "name": _required_text(row.get("name"), field="registry name"),
+        "owner": str(owners.get(scheme_id) or ""),
         "description": str(row.get("description") or ""),
         "horizon": _required_int(row.get("horizon"), field="registry horizon"),
         "task_type": task_type,

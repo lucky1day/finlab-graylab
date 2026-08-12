@@ -55,6 +55,7 @@ def _scheme(target_tenor: str, *, signal_status: str) -> dict[str, Any]:
         "scheme_id": f"{BASE_SCHEME_ID}__h1__{target_tenor}",
         "base_scheme_id": BASE_SCHEME_ID,
         "name": "Demo Daily",
+        "owner": "",
         "description": "Dashboard gate fixture",
         "horizon": 1,
         "task_type": "T+1",
