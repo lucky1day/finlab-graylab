@@ -435,7 +435,16 @@ def load_snapshot(
     predict_date: str,
     tenors: Sequence[str] | None = None,
 ) -> DailyHealthSnapshot:
-    """从生产库读取只读健康快照。"""
+    """从生产库读取只读健康快照。
+
+    日历未收录 ``predict_date`` 时先行 fail-closed：``is_trading_day`` 对未收录
+    日期同样返回 False，若不区分，本检查会把「日历没续期」当成节假日，在
+    ``evaluate_daily_health`` 提前返回、跳过全部预测缺失判定——恰好在生产缺口
+    最可能发生时报无发现。
+    """
+    calendar = get_calendar(engine=engine)
+    if not calendar.covers(predict_date):
+        raise ValueError(f"trade calendar does not cover predict_date {predict_date}")
     normalized_tenors = tuple(normalize_tenor(item) for item in (tenors or TENOR_TO_INDICATOR.keys()))
     with engine.connect() as conn:
         active_rows = conn.execute(
@@ -566,7 +575,7 @@ def load_snapshot(
     return DailyHealthSnapshot(
         predict_date=predict_date,
         expected_feature_date=expected_feature_date,
-        is_trading_day=get_calendar(engine=engine).is_trading_day(predict_date),
+        is_trading_day=calendar.is_trading_day(predict_date),
         active_daily_base_schemes=active_schemes,
         successful_daily_run_schemes=tuple(str(item) for item in successful_rows),
         predictions_count=predictions_count,
