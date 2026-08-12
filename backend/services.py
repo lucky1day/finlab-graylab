@@ -486,6 +486,27 @@ def list_actuals(
     }
 
 
+def _require_single_actual_direction(
+    variants: Any,
+    *,
+    fact: str,
+    target_date: str,
+    target_tenor: str,
+) -> None:
+    """周/月 actual 表按事实键可能有多行，方向冲突时必须 fail-closed。
+
+    这两张表的唯一键是 ``(tenor, predict_date, target_rule)``，而 join 键是
+    ``(tenor, target_date, target_rule)``，因此同一事实键合法地可以出现多行。
+    方向一致时折叠即可；方向冲突说明事实本身矛盾，不得静默取其中一条。
+    """
+    if variants is not None and int(variants) > 1:
+        raise ValueError(
+            f"conflicting {fact} actual directions for "
+            f"tenor={target_tenor} target_date={target_date}: "
+            f"{int(variants)} distinct values"
+        )
+
+
 def _registry_scheme_row(engine: Engine, scheme_id: str) -> dict[str, Any]:
     """读取单个 registry 业务方案行；metrics/API 只接受该 ID。"""
     sql = text(
@@ -552,17 +573,27 @@ def scheme_metrics(
         SELECT p.id, p.run_id, p.scheme_version, p.scheme_id, p.target_tenor, p.horizon,
                p.predict_date, p.feature_date, p.target_date,
                p.prediction_phase, p.predicted_direction, p.confidence, p.model_version, p.extra,
-               a.direction_1d, a.direction_5d, wa.direction_weekly, ma.direction_monthly
+               a.direction_1d, a.direction_5d, wa.direction_weekly, ma.direction_monthly,
+               wa.direction_variants AS weekly_direction_variants,
+               ma.direction_variants AS monthly_direction_variants
         FROM t_scheme_predictions p
         LEFT JOIN t_scheme_actuals a
           ON a.tenor = p.target_tenor
          AND a.trade_date = p.target_date
-        LEFT JOIN t_scheme_weekly_actuals wa
+        LEFT JOIN (
+            SELECT tenor, target_date, target_rule,
+                   MIN(direction_weekly) AS direction_weekly,
+                   COUNT(DISTINCT direction_weekly) AS direction_variants
+            FROM t_scheme_weekly_actuals
+            GROUP BY tenor, target_date, target_rule
+        ) wa
           ON wa.tenor = p.target_tenor
          AND wa.target_date = p.target_date
          AND wa.target_rule = :weekly_target_rule
         LEFT JOIN (
-            SELECT tenor, target_date, target_rule, MAX(direction_monthly) AS direction_monthly
+            SELECT tenor, target_date, target_rule,
+                   MIN(direction_monthly) AS direction_monthly,
+                   COUNT(DISTINCT direction_monthly) AS direction_variants
             FROM t_scheme_monthly_actuals
             GROUP BY tenor, target_date, target_rule
         ) ma
@@ -602,8 +633,20 @@ def scheme_metrics(
         if end_month and metric_month > end_month:
             continue
         if task_type in WEEKLY_TASK_TARGET_RULES:
+            _require_single_actual_direction(
+                row["weekly_direction_variants"],
+                fact="weekly",
+                target_date=target_date,
+                target_tenor=target_tenor,
+            )
             actual_direction = row["direction_weekly"]
         elif task_type == "monthly":
+            _require_single_actual_direction(
+                row["monthly_direction_variants"],
+                fact="monthly",
+                target_date=target_date,
+                target_tenor=target_tenor,
+            )
             actual_direction = row["direction_monthly"]
         elif row["horizon"] == 1:
             actual_direction = row["direction_1d"]
