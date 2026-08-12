@@ -34,6 +34,7 @@ ACCEPTED_LIVE_PHASES = ("gray_live", "scheduled_live")
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 FailureCategory = Literal[
     "activation_unavailable",
+    "calendar_context_unavailable",
     "data_bridge_ready_timeout",
     "no_run",
     "prediction_ambiguous",
@@ -150,7 +151,7 @@ def read_signal_gap_report(
     start, end = _range(start_date, end_date)
     targets = _targets(connection)
     calendar = _SnapshotCalendar(connection)
-    expected = _expected(targets, calendar, start, end)
+    expected, targets = _expected(targets, calendar, start, end)
     predictions = _live_rows(
         connection,
         table="t_scheme_predictions",
@@ -210,7 +211,21 @@ def latest_due_signal_statuses(
     for target in report.targets:
         due = sorted(expected.get(target.registry_scheme_id, ()), key=_case_sort_key)
         unresolved = sorted(missing.get(target.registry_scheme_id, ()), key=_case_sort_key)
-        if unresolved:
+        if target.failure_category:
+            result.append(
+                LatestDueSignalStatus(
+                    target.registry_scheme_id,
+                    target.base_scheme_id,
+                    target.target_tenor,
+                    target.horizon,
+                    "missing",
+                    None,
+                    len(unresolved),
+                    unresolved[-1].predict_date if unresolved else None,
+                    target.failure_category,
+                )
+            )
+        elif unresolved:
             latest = due[-1]
             latest_missing = unresolved[-1]
             result.append(
@@ -244,20 +259,6 @@ def latest_due_signal_statuses(
                     0,
                     None,
                     None,
-                )
-            )
-        elif target.failure_category:
-            result.append(
-                LatestDueSignalStatus(
-                    target.registry_scheme_id,
-                    target.base_scheme_id,
-                    target.target_tenor,
-                    target.horizon,
-                    "missing",
-                    None,
-                    0,
-                    None,
-                    target.failure_category,
                 )
             )
         else:
@@ -404,9 +405,12 @@ def _expected(
     calendar: "_SnapshotCalendar",
     start_date: str,
     end_date: str,
-) -> tuple[SignalCase, ...]:
+) -> tuple[tuple[SignalCase, ...], tuple[SignalTarget, ...]]:
+    """返回预期 case 与（可能被标记为日历不可用的）target。"""
     result: list[SignalCase] = []
+    resolved: list[SignalTarget] = []
     for target in targets:
+        resolved.append(target)
         if target.available_after is None or target.failure_category:
             continue
         for predict_date in calendar.predict_dates(target.frequency, start_date, end_date):
@@ -426,7 +430,15 @@ def _expected(
             except SignalGapReportError:
                 raise
             except (KeyError, ValueError):
-                raise SignalGapReportError("calendar_context_unavailable") from None
+                # 单个 target 的日历问题不得让整份报告不可用（dashboard 会因此
+                # 整页 503），但也不能静默降级成"未到期"——无法区分"日历还没
+                # 延长"与"周历数据缺行"。把该 target 标记为日历不可用后跳过，
+                # 由 latest_due_signal_statuses 以 missing + failure_category
+                # 呈现，保持可见且 fail-closed。
+                resolved[-1] = replace(
+                    target, failure_category="calendar_context_unavailable"
+                )
+                break
             result.append(
                 SignalCase(
                     target.registry_scheme_id,
@@ -442,7 +454,7 @@ def _expected(
                     str(context.target_date),
                 )
             )
-    return tuple(sorted(result, key=_case_sort_key))
+    return tuple(sorted(result, key=_case_sort_key)), tuple(resolved)
 
 
 def _classify(
