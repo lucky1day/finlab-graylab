@@ -317,13 +317,6 @@
     return task && task.taskType === "weekly_average";
   }
 
-  function isMonthlyTask(task) {
-    return task && (
-      String(task.frequency || "").toLowerCase() === "monthly" ||
-      task.taskType === "monthly"
-    );
-  }
-
   function liveBacktestCutoffTargetDate(liveScheme) {
     var targetDates = [];
     var dailyRows = liveScheme && liveScheme.dailyRowsByMonth || {};
