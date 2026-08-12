@@ -56,6 +56,7 @@ SCHEME_FIELDS = {
     "target_label",
     "status",
     "deployed_at",
+    "owner",
     "signal_status",
     "signal_failure_category",
     "live_rows",
@@ -503,6 +504,7 @@ def validate_dashboard_schema(payload: object) -> None:
         if scheme["status"] != "active":
             raise ValueError("status must be active")
         _iso_date(scheme["deployed_at"])
+        _canonical_string(scheme["owner"], allow_empty=True)
         signal_status = scheme["signal_status"]
         if signal_status not in SIGNAL_STATUSES:
             raise ValueError("signal_status is invalid")
