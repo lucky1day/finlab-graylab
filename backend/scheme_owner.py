@@ -53,5 +53,5 @@ def load_scheme_owners(project_root: Path | None = None) -> dict[str, str]:
             raise SchemeOwnerError(
                 f"scheme owner registry has invalid owner for {scheme_id}: {owner!r}"
             )
-        result[scheme_id] = owner.strip()
+        result[scheme_id.strip()] = owner.strip()
     return result

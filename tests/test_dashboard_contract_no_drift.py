@@ -1,14 +1,22 @@
-"""独立校验器与后端 payload 契约不得漂移。
+"""dashboard payload 契约的所有独立副本不得漂移。
 
-`scripts/benchmark_factor_lab_dashboard.py` 刻意不 import 仓库模块——它要能对着
-已部署实例单独运行，因此字段集是独立声明的。代价是后端加字段时它不会自动跟随，
-而它用的是精确集合相等（`set(scheme) != SCHEME_FIELDS`），一旦漂移整个基准测试
-会判定所有方案字段不符而失败。本测试锁死这份重复声明的一致性。
+同一份字段集在三处独立声明，且三处都用精确集合相等：
+
+- `backend/factor_lab_dashboard_semantics.py` —— 权威定义
+- `scripts/benchmark_factor_lab_dashboard.py` —— 纯标准库、零仓库依赖，要能对着
+  已部署实例单独运行，因此不能 import 权威定义
+- `frontend/aifin-shell.js` —— 浏览器端，无构建步骤，同样无法 import
+
+后端加字段时另外两处不会自动跟随，而它们都是硬失败：脚本抛
+`scheme fields are invalid`，前端抛 `fields must match v1 exactly` 导致整个
+dashboard 渲染不出来。本测试锁死三份声明的一致性。
 """
 
 from __future__ import annotations
 
 import ast
+import json
+import re
 import sys
 from pathlib import Path
 
@@ -19,6 +27,17 @@ if str(PROJECT_ROOT) not in sys.path:
 from backend import factor_lab_dashboard_semantics as semantics  # noqa: E402
 
 SCRIPT = PROJECT_ROOT / "scripts" / "benchmark_factor_lab_dashboard.py"
+SHELL_JS = PROJECT_ROOT / "frontend" / "aifin-shell.js"
+
+
+def _js_literal(name: str) -> set[str]:
+    """取前端某个顶层字符串数组字面量。"""
+    match = re.search(
+        r"\bvar\s+" + re.escape(name) + r"\s*=\s*(\[[^\]]*\])", SHELL_JS.read_text(encoding="utf-8")
+    )
+    if match is None:
+        raise AssertionError(f"{SHELL_JS.name} 未定义 {name}")
+    return set(json.loads(match.group(1)))
 
 
 def _script_literal(name: str) -> set[str]:
@@ -59,3 +78,27 @@ def test_task_types_match() -> None:
 
 def test_signal_statuses_match() -> None:
     assert _script_literal("SIGNAL_STATUSES") == set(semantics.VALID_SIGNAL_STATUSES)
+
+
+def test_frontend_scheme_fields_match() -> None:
+    assert _js_literal("DASHBOARD_SCHEME_FIELDS") == set(semantics.SCHEME_FIELDS)
+
+
+def test_frontend_top_level_fields_match() -> None:
+    assert _js_literal("DASHBOARD_TOP_FIELDS") == set(semantics.TOP_LEVEL_FIELDS)
+
+
+def test_frontend_row_fields_match() -> None:
+    assert _js_literal("DASHBOARD_ROW_FIELDS") == set(semantics.ROW_FIELDS)
+
+
+def test_frontend_backtest_fields_match() -> None:
+    assert _js_literal("DASHBOARD_BACKTEST_FIELDS") == set(semantics.BACKTEST_FIELDS)
+
+
+def test_frontend_task_types_match() -> None:
+    assert _js_literal("DASHBOARD_TASK_TYPES") == set(semantics.VALID_TASK_TYPES)
+
+
+def test_frontend_signal_statuses_match() -> None:
+    assert _js_literal("DASHBOARD_SIGNAL_STATUSES") == set(semantics.VALID_SIGNAL_STATUSES)

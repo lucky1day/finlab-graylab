@@ -45,6 +45,19 @@ class LoadSchemeOwnersTests(unittest.TestCase):
             load_scheme_owners(self.root), {"demo__h1__10Y": "LW"}
         )
 
+    def test_padded_key_still_matches_composite_scheme_id(self) -> None:
+        """登记表是人工编辑的：键的多余空白不得导致静默匹配不上。"""
+        _write(
+            self.root,
+            {
+                "schema_version": "scheme-owner-v1",
+                "owners": {" demo__h1__10Y ": "LW"},
+            },
+        )
+        self.assertEqual(
+            load_scheme_owners(self.root), {"demo__h1__10Y": "LW"}
+        )
+
     def test_empty_owners_is_valid(self) -> None:
         _write(self.root, {"schema_version": "scheme-owner-v1", "owners": {}})
         self.assertEqual(load_scheme_owners(self.root), {})
