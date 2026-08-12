@@ -308,6 +308,13 @@ def run(
         try:
             engine = create_engine_from_env()
             calendar = get_calendar(engine)
+            if not calendar.covers(normalized_date):
+                # 日历需要人工逐年延长。覆盖耗尽时 is_trading_day 同样返回
+                # False，若不先区分，整批生产会伪装成节假日静默跳过并以退出码
+                # 0 结束；周频/月频连这层判定都没有，会直接沿用陈旧交易日。
+                raise LaunchdPredictionConfigurationError(
+                    "trade calendar does not cover predict_date"
+                )
             if (
                 normalized_cadence == "daily"
                 and not calendar.is_trading_day(normalized_date)
