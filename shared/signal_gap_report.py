@@ -425,7 +425,10 @@ def _expected(
             except SignalGapReportError:
                 raise
             except (KeyError, ValueError):
-                raise SignalGapReportError("calendar_context_unavailable") from None
+                # 日历尚未覆盖该 predict_date 的目标周或后续交易日时，平台当初
+                # 同样产不出这个信号，因此它不是缺口。单个 target 的日历边界不得
+                # 让整份报告不可用——dashboard 会因此整页 503。
+                continue
             result.append(
                 SignalCase(
                     target.registry_scheme_id,
