@@ -226,3 +226,96 @@ class MonthlyAnchorCoverageTests(unittest.TestCase):
                 _CoveredOnlyThroughTargetFourteenth(),
                 "2026-12-15",
             )
+
+
+class ActualsRunnerCoverageTests(unittest.TestCase):
+    """launchd actuals 入口同样不得把日历耗尽当成非交易日。
+
+    `run_actuals_job` 在非交易日会把 daily/weekly 的 end_date 回退到上一个交易
+    日。日历未覆盖时 `is_trading_day` 也返回 False，于是覆盖耗尽会伪装成节假
+    日：每天都用日历最后一个交易日重刷同一批 actuals，日志是 INFO、退出码 0，
+    运维看不出 actuals 早已停止推进。
+    """
+
+    def setUp(self) -> None:
+        self.engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        with self.engine.begin() as conn:
+            conn.execute(
+                text(
+                    "CREATE TABLE t_trade_calendar "
+                    "(rdate TEXT PRIMARY KEY, trade_flag TEXT)"
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO t_trade_calendar (rdate, trade_flag) "
+                    "VALUES (:rdate, :trade_flag)"
+                ),
+                [{"rdate": r, "trade_flag": f} for r, f in CALENDAR_ROWS],
+            )
+        self.calendar = get_calendar(engine=self.engine)
+        self.addCleanup(self.engine.dispose)
+
+    def _patches(self):
+        from unittest.mock import patch as _patch
+
+        return (
+            _patch(
+                "scheduler.actuals_runner.create_engine_from_env",
+                return_value=Mock(),
+            ),
+            _patch(
+                "scheduler.actuals_runner.get_calendar",
+                return_value=self.calendar,
+            ),
+            _patch("scheduler.actuals_runner.update_actuals", return_value=0),
+            _patch(
+                "scheduler.actuals_runner.update_weekly_actuals", return_value=0
+            ),
+            _patch(
+                "scheduler.actuals_runner.update_monthly_actuals", return_value=0
+            ),
+        )
+
+    def test_uncovered_run_date_fails_closed_without_writing(self) -> None:
+        from scheduler.actuals_runner import run_actuals_job
+
+        engine_p, calendar_p, daily_p, weekly_p, monthly_p = self._patches()
+        with engine_p, calendar_p, daily_p as daily, weekly_p as weekly, (
+            monthly_p
+        ) as monthly:
+            with self.assertRaises(ValueError):
+                run_actuals_job(run_date=UNCOVERED)
+            daily.assert_not_called()
+            weekly.assert_not_called()
+            monthly.assert_not_called()
+
+    def test_covered_holiday_still_rolls_back_to_previous_trading_day(self) -> None:
+        """真实节假日的既有语义不变——修复不得把节假日也一起挡掉。"""
+        from scheduler.actuals_runner import run_actuals_job
+
+        engine_p, calendar_p, daily_p, weekly_p, monthly_p = self._patches()
+        with engine_p, calendar_p, daily_p as daily, weekly_p as weekly, (
+            monthly_p
+        ) as monthly:
+            run_actuals_job(run_date=COVERED_HOLIDAY)
+            self.assertEqual(daily.call_args.kwargs["end_date"], "2026-06-02")
+            self.assertEqual(weekly.call_args.kwargs["end_date"], "2026-06-02")
+            self.assertEqual(
+                monthly.call_args.kwargs["end_date"], COVERED_HOLIDAY
+            )
+
+    def test_covered_trading_day_uses_run_date(self) -> None:
+        from scheduler.actuals_runner import run_actuals_job
+
+        engine_p, calendar_p, daily_p, weekly_p, monthly_p = self._patches()
+        with engine_p, calendar_p, daily_p as daily, weekly_p as weekly, (
+            monthly_p
+        ) as monthly:
+            run_actuals_job(run_date=COVERED_TRADING)
+            self.assertEqual(
+                daily.call_args.kwargs["end_date"], COVERED_TRADING
+            )
+            self.assertEqual(
+                monthly.call_args.kwargs["end_date"], COVERED_TRADING
+            )
