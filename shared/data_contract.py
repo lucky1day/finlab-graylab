@@ -12,6 +12,8 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
+from shared.calendar_service import is_trading_day_row
+
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 NATIVE_READINESS_DAILY_ANCHORS = (
     "TB1YWI0C",
@@ -167,7 +169,7 @@ def inspect_native_input_readiness(
     missing: list[str] = []
     if wind_week is None or not str(wind_week).strip():
         missing.append("calendar:api_wind_date")
-    if str(trade_flag or "").strip() != "1":
+    if not is_trading_day_row(normalized_feature_date, trade_flag):
         missing.append("calendar:t_trade_calendar")
     present_targets = {
         str(value).strip()

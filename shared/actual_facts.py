@@ -9,6 +9,7 @@ from typing import Iterable
 from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Engine
 
+from shared.calendar_service import is_trading_day_row
 from shared.models import ActualRecord, MonthlyActualRecord, WeeklyActualRecord
 from shared.prediction_context import (
     MONTHLY_TARGET_RULE,
@@ -161,7 +162,11 @@ def build_week_calendar(rows: Iterable[dict]) -> WeekCalendar:
         week_id = _week_id(raw.get("week_id"))
         if rdate is None or week_id is None:
             continue
-        item = {"rdate": rdate, "is_trading": str(raw.get("trade_flag")).strip() == "1"}
+        item = {
+            "rdate": rdate,
+            "is_trading": is_trading_day_row(rdate, raw.get("trade_flag")),
+            "is_workday": str(raw.get("trade_flag")).strip() == "1",
+        }
         date_to_week_id[rdate] = week_id
         rows_by_week[week_id].append(item)
     week_ids = sorted(rows_by_week, key=lambda value: min(row["rdate"] for row in rows_by_week[value]))
@@ -173,8 +178,18 @@ def build_week_calendar(rows: Iterable[dict]) -> WeekCalendar:
         if not trading:
             continue
         last_days[week_id] = trading[-1]
-        later = [row["rdate"] for row in week_rows if row["rdate"] > trading[-1]]
-        predict_dates[week_id] = later[0] if later else (date.fromisoformat(trading[-1]) + timedelta(days=1)).isoformat()
+        # predict_date 是审计字段「信号发出日」，跟随调度用的工作日历，而不是
+        # 交易日历；它同时是 t_scheme_weekly_actuals 唯一键
+        # uk_weekly_actual_predict_rule(tenor, predict_date, target_rule) 的成分，
+        # 若随交易日定义漂移，全量重算会插入新行而旧行不删，产生重复事实。
+        workdays = [row["rdate"] for row in week_rows if row["is_workday"]]
+        issue_anchor = workdays[-1] if workdays else trading[-1]
+        later = [row["rdate"] for row in week_rows if row["rdate"] > issue_anchor]
+        predict_dates[week_id] = (
+            later[0]
+            if later
+            else (date.fromisoformat(issue_anchor) + timedelta(days=1)).isoformat()
+        )
     return WeekCalendar(
         date_to_week_id=date_to_week_id,
         week_last_trading_day=last_days,
@@ -296,9 +311,8 @@ def build_month_calendar(rows: Iterable[dict]) -> MonthCalendar:
     trading_days = sorted(
         value
         for raw in rows
-        if str(raw.get("trade_flag", "")).strip() == "1"
         for value in [normalize_date(raw.get("rdate"))]
-        if value is not None
+        if value is not None and is_trading_day_row(value, raw.get("trade_flag"))
     )
     return MonthCalendar(tuple(trading_days))
 

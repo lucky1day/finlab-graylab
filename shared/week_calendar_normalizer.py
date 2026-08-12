@@ -23,10 +23,13 @@ def normalize_week_calendar_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict
 
 
 def _normalize_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    # 局部导入避免与 calendar_service 形成模块级循环依赖。
+    from shared.calendar_service import is_trading_day_row
+
     item = dict(row)
     item["rdate"] = _date_string(item["rdate"])
     item["_week_id_int"] = _week_id_int(item.get("week_id"))
-    item["_is_trading"] = str(item.get("trade_flag")).strip() == "1"
+    item["_is_trading"] = is_trading_day_row(item["rdate"], item.get("trade_flag"))
     return item
 
 

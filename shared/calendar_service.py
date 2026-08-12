@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from datetime import date, datetime
 from functools import cached_property
 from typing import Mapping
@@ -48,6 +49,21 @@ def read_calendar_snapshot_from_connection(
     }
 
 
+def is_trading_day_row(
+    rdate: str | date | datetime,
+    trade_flag: object,
+) -> bool:
+    """判断一行日历是否为交易日：工作日历 trade_flag='1' 且非周末。
+
+    ``t_trade_calendar`` 是工作日历，跟随国务院节假日安排：调休补班的周六/周日
+    ``trade_flag`` 同样为 ``'1'``，但市场在这些日子无行情。平台的交易日必须在
+    工作日基础上再排除周末，本函数是该判定的唯一定义。
+    """
+    if str(trade_flag).strip() != "1":
+        return False
+    return _to_date(rdate).weekday() < 5
+
+
 class CalendarService:
     """交易日历和周编号查询服务。"""
 
@@ -55,46 +71,24 @@ class CalendarService:
         self._engine = engine
 
     def is_trading_day(self, value: str | date | datetime) -> bool:
-        """只读 t_trade_calendar.trade_flag 判断交易日，无回退。"""
-        day = _date_string(value)
-        stmt = text("SELECT trade_flag FROM t_trade_calendar WHERE rdate = :rdate LIMIT 1")
-        with self._engine.connect() as conn:
-            flag = conn.execute(stmt, {"rdate": day}).scalar()
-        if flag is not None:
-            return str(flag).strip() == "1"
-        return False
+        """日历未收录的日期返回 False，与既有契约一致。"""
+        return _date_string(value) in self._trading_day_set
 
     def next_trading_days(self, value: str | date | datetime, count: int) -> list[str]:
         """返回指定日期之后的后续交易日。"""
         if count <= 0:
             return []
-        stmt = text(
-            """
-            SELECT rdate
-            FROM t_trade_calendar
-            WHERE trade_flag = '1' AND rdate > :rdate
-            ORDER BY rdate
-            LIMIT :limit
-            """
-        )
-        with self._engine.connect() as conn:
-            rows = conn.execute(stmt, {"rdate": _date_string(value), "limit": int(count)}).scalars().all()
-        return [_date_string(row) for row in rows]
+        days = self._trading_days
+        return list(days[bisect_right(days, _date_string(value)) :][: int(count)])
 
     def previous_trading_day(self, value: str | date | datetime) -> str:
         """返回指定日期之前最近的交易日。"""
-        stmt = text(
-            """
-            SELECT MAX(rdate)
-            FROM t_trade_calendar
-            WHERE trade_flag = '1' AND rdate < :rdate
-            """
-        )
-        with self._engine.connect() as conn:
-            row = conn.execute(stmt, {"rdate": _date_string(value)}).scalar()
-        if row is None:
-            raise ValueError(f"no previous trading day before {_date_string(value)}")
-        return _date_string(row)
+        day = _date_string(value)
+        days = self._trading_days
+        position = bisect_left(days, day)
+        if position == 0:
+            raise ValueError(f"no previous trading day before {day}")
+        return days[position - 1]
 
     def nth_trading_day_after(self, value: str | date | datetime, n: int) -> str:
         """返回指定日期之后第 n 个交易日。"""
@@ -109,28 +103,32 @@ class CalendarService:
         return self._date_to_week_id.get(target_date)
 
     def week_id_to_last_trading_day(self, week_id: int | float | str) -> str:
-        """同周日期中取 t_trade_calendar.trade_flag='1' 的最大日期。"""
+        """同周日期中取最大的交易日（工作日历 trade_flag='1' 且非周末）。"""
         wid = int(week_id)
         row = self._week_last_trading_day.get(wid)
         if row is not None:
             return row
-
-        raw_wid = str(wid)
-        fallback = text(
-            """
-            SELECT MAX(wd.rdate)
-            FROM api_wind_date wd
-            JOIN t_trade_calendar tc
-              ON tc.rdate = wd.rdate
-             AND tc.trade_flag = '1'
-            WHERE wd.week_id = :week_id
-            """
+        raise ValueError(
+            f"no trading day found for week_id={wid} in api_wind_date/t_trade_calendar"
         )
+
+    @cached_property
+    def _trading_days(self) -> tuple[str, ...]:
+        """一次载入并冻结交易日序列，判定口径见 is_trading_day_row。"""
+        stmt = text("SELECT rdate, trade_flag FROM t_trade_calendar ORDER BY rdate")
         with self._engine.connect() as conn:
-            row = conn.execute(fallback, {"week_id": raw_wid}).scalar()
-        if row is not None:
-            return _date_string(row)
-        raise ValueError(f"no trading day found for week_id={raw_wid} in api_wind_date/t_trade_calendar")
+            rows = conn.execute(stmt).mappings().all()
+        return tuple(
+            sorted(
+                _date_string(row["rdate"])
+                for row in rows
+                if is_trading_day_row(row["rdate"], row["trade_flag"])
+            )
+        )
+
+    @cached_property
+    def _trading_day_set(self) -> frozenset[str]:
+        return frozenset(self._trading_days)
 
     @cached_property
     def _normalized_week_rows(self) -> list[dict]:
@@ -160,7 +158,9 @@ class CalendarService:
     def _week_last_trading_day(self) -> dict[int, str]:
         result: dict[int, str] = {}
         for row in self._normalized_week_rows:
-            if str(row.get("trade_flag")).strip() != "1" or row.get("week_id") is None:
+            if row.get("week_id") is None or not is_trading_day_row(
+                row["rdate"], row.get("trade_flag")
+            ):
                 continue
             week_id = int(row["week_id"])
             rdate = _date_string(row["rdate"])
