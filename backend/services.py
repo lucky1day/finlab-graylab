@@ -577,7 +577,13 @@ def scheme_metrics(
         raw_rows = conn.execute(sql, params).mappings().all()
 
     display_until = _today_iso()
-    raw_rows = choose_live_prediction_rows(raw_rows, display_until=display_until)
+    raw_rows = choose_live_prediction_rows(
+        raw_rows,
+        display_until=display_until,
+        task_type_by_scheme={
+            (base_scheme_id, target_tenor, horizon): task_type,
+        },
+    )
 
     daily_rows: list[dict[str, Any]] = []
     matched_rows: list[dict[str, Any]] = []

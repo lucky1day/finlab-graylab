@@ -29,6 +29,7 @@ from backend.factor_lab_dashboard_semantics import (
     backtest_data_source_label,
     choose_latest_backtest_runs,
     choose_live_prediction_rows,
+    registry_task_type_index,
     collapse_actual_facts_with_diagnostics,
     compact_detail_row,
     is_factor_lab_history_visible,
@@ -159,6 +160,7 @@ def build_factor_lab_dashboard(
     canonical_predictions = choose_live_prediction_rows(
         prediction_rows,
         display_until=display_until,
+        task_type_by_scheme=registry_task_type_index(registry_rows),
     )
     history_live_rows_excluded = 0
     predictions_by_scheme: dict[tuple[str, str, int], list[Mapping[str, Any]]] = (

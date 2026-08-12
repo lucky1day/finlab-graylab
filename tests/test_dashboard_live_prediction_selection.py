@@ -73,9 +73,21 @@ def _rows(*, horizon: int, task_type: str | None) -> list[dict]:
     ]
 
 
+REGISTRY_KEY = ("weekly_10y_lgbm_point_v1", "10Y", 1)
+
+
 class WeeklyCanonicalSelectionTests(unittest.TestCase):
-    def _selected(self, rows: list[dict]) -> dict:
-        selected = choose_live_prediction_rows(rows, display_until=DISPLAY_UNTIL)
+    def _selected(
+        self,
+        rows: list[dict],
+        *,
+        task_type_by_scheme: dict | None = None,
+    ) -> dict:
+        selected = choose_live_prediction_rows(
+            rows,
+            display_until=DISPLAY_UNTIL,
+            task_type_by_scheme=task_type_by_scheme,
+        )
         self.assertEqual(len(selected), 1)
         return dict(selected[0])
 
@@ -105,6 +117,27 @@ class WeeklyCanonicalSelectionTests(unittest.TestCase):
     def test_rows_without_task_type_keep_horizon_behaviour(self) -> None:
         """缺 task_type 的存量点位行保持既有行为，不因本次改动变化。"""
         selected = self._selected(_rows(horizon=1, task_type=None))
+        self.assertEqual(selected["id"], 20)
+
+    def test_registry_weekly_applies_when_no_row_carries_task_type(self) -> None:
+        """全部候选行都缺 extra.task_type 时，仍须按 Registry 判为周频。
+
+        历史行与人工补发行都可能不带该字段。业务任务类型的权威来源是
+        Registry，不是预测行的 extra。
+        """
+        selected = self._selected(
+            _rows(horizon=1, task_type=None),
+            task_type_by_scheme={REGISTRY_KEY: "weekly_point"},
+        )
+        self.assertEqual(selected["id"], 10)
+        self.assertEqual(selected["feature_date"], "2026-07-24")
+
+    def test_registry_point_task_type_overrides_row_hint(self) -> None:
+        """Registry 判为点位时不受行内 extra 提示影响。"""
+        selected = self._selected(
+            _rows(horizon=1, task_type="weekly_point"),
+            task_type_by_scheme={REGISTRY_KEY: "T+1"},
+        )
         self.assertEqual(selected["id"], 20)
 
     def test_mixed_task_type_rows_are_order_independent(self) -> None:
