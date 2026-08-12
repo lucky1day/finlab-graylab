@@ -165,3 +165,45 @@ class LaunchdRunnerCoverageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MonthlyAnchorCoverageTests(unittest.TestCase):
+    """月频目标锚点必须落在声明的目标月内。
+
+    日历在当前月 15 日仍覆盖、但下月锚点未覆盖时，`previous_trading_day`
+    会静默回退到日历末端，产出 `target_month_id` 与 `target_date` 不属同一月
+    的组合（例：target_month=2027-01 而 target_date=2026-12-31）。
+    """
+
+    class _EndOfCalendar:
+        """只覆盖到 2026-12-31 的日历替身。"""
+
+        TRADING = ("2026-12-14", "2026-12-15", "2026-12-30", "2026-12-31")
+
+        def is_trading_day(self, value) -> bool:
+            return str(value)[:10] in self.TRADING
+
+        def previous_trading_day(self, value) -> str:
+            earlier = [d for d in self.TRADING if d < str(value)[:10]]
+            if not earlier:
+                raise ValueError(f"no previous trading day before {value}")
+            return earlier[-1]
+
+    def test_target_anchor_beyond_calendar_fails_closed(self) -> None:
+        from shared.prediction_context import build_monthly_live_context
+
+        with self.assertRaises(ValueError) as caught:
+            build_monthly_live_context(self._EndOfCalendar(), "2026-12-15")
+        self.assertIn("2027-01", str(caught.exception))
+
+    def test_covered_month_still_resolves(self) -> None:
+        """目标月被覆盖时行为不变。"""
+        from shared.prediction_context import build_monthly_live_context
+
+        class _Covered(self._EndOfCalendar):
+            TRADING = ("2026-11-13", "2026-12-14", "2026-12-15")
+
+        ctx = build_monthly_live_context(_Covered(), "2026-11-15")
+        self.assertEqual(ctx.feature_date, "2026-11-13")
+        self.assertEqual(ctx.target_month_id, "2026-12")
+        self.assertEqual(ctx.target_date, "2026-12-15")

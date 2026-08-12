@@ -111,6 +111,11 @@ def build_monthly_live_context(calendar: Any, predict_date: str) -> MonthlyLiveC
     feature_date = _last_trading_day_on_or_before(calendar, trigger)
     target_anchor = _add_month(trigger)
     target_date = _last_trading_day_on_or_before(calendar, target_anchor)
+    # 日历未覆盖某个锚点时 previous_trading_day 会静默回退到日历末端，产出
+    # target_month_id 与 target_date 不属同一月的组合。月频语义要求两个日期都
+    # 落在各自声明的月内，这里对该不变量 fail-closed。
+    _require_anchor_month(feature_date, trigger, label="feature")
+    _require_anchor_month(target_date, target_anchor, label="target")
     return MonthlyLiveContext(
         trigger_date=trigger.isoformat(),
         scheduled_trigger_date=trigger.isoformat(),
@@ -130,6 +135,15 @@ def next_calendar_week_id(calendar: Any, feature_week_id: int) -> int:
         if next_week is not None and int(next_week) != int(feature_week_id):
             return int(next_week)
     raise ValueError(f"无法在 DB 日历中找到 week_id={feature_week_id} 的下一周")
+
+
+def _require_anchor_month(resolved: str, anchor: date, *, label: str) -> None:
+    month_id = anchor.strftime("%Y-%m")
+    if not resolved.startswith(month_id):
+        raise ValueError(
+            f"monthly {label} anchor {anchor.isoformat()} resolved to {resolved}, "
+            f"outside month {month_id}; trade calendar does not cover it"
+        )
 
 
 def _last_trading_day_on_or_before(calendar: Any, value: date) -> str:
