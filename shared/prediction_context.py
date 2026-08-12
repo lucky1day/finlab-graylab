@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 
@@ -42,6 +42,27 @@ def build_daily_live_context(calendar: Any, predict_date: str, *, horizon: int) 
     feature_date = calendar.previous_trading_day(predict_date)
     target_date = calendar.nth_trading_day_after(feature_date, int(horizon))
     return DailyLiveContext(feature_date=str(feature_date), target_date=str(target_date))
+
+
+def is_weekly_signal_date(calendar: Any, predict_date: str) -> bool:
+    """周六触发日是否真的关闭了一个新的 feature 周。
+
+    周频由自然周六触发，但整周无交易日时（春节、国庆长假），相邻两个周六的
+    ``previous_trading_day`` 相同，会推导出同一 ``feature_date`` /
+    ``target_date``——也就是同一业务键。``t_scheme_predictions`` 的唯一键正是
+    该业务键，因此只有第一个周六是真实信号日；把后一个也算成到期会产生永远
+    补不上的缺口。
+
+    判据：该周六之前最近的交易日必须落在刚结束的这一周内。
+    """
+    day = date.fromisoformat(str(predict_date)[:10])
+    if day.weekday() != 5:
+        return False
+    try:
+        feature_date = str(calendar.previous_trading_day(day.isoformat()))[:10]
+    except ValueError:
+        return False
+    return date.fromisoformat(feature_date) > day - timedelta(days=7)
 
 
 def build_weekly_live_context(calendar: Any, predict_date: str) -> WeeklyLiveContext:
