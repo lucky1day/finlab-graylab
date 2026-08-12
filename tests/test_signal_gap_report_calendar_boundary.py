@@ -65,7 +65,7 @@ class CalendarBoundaryIsolationTests(unittest.TestCase):
         """horizon=5 在日历末端算不出 target_date，不得影响 horizon=1。"""
         near = _target("near", 1)
         far = _target("far", 5)
-        cases = _expected(
+        cases, _targets = _expected(
             [near, far], _BoundaryCalendar(), "2026-06-01", "2026-06-04"
         )
         produced = {case.base_scheme_id for case in cases}
@@ -75,18 +75,35 @@ class CalendarBoundaryIsolationTests(unittest.TestCase):
         """可计算的 case 全部保留，数量与内容不受边界 target 影响。"""
         near = _target("near", 1)
         far = _target("far", 5)
-        alone = _expected([near], _BoundaryCalendar(), "2026-06-01", "2026-06-04")
-        together = _expected(
+        alone, _ = _expected([near], _BoundaryCalendar(), "2026-06-01", "2026-06-04")
+        together, _ = _expected(
             [near, far], _BoundaryCalendar(), "2026-06-01", "2026-06-04"
         )
         near_only = [c for c in together if c.base_scheme_id == "near"]
         self.assertEqual([c.key for c in alone], [c.key for c in near_only])
 
-    def test_uncomputable_case_is_not_reported_as_gap(self) -> None:
-        """算不出上下文的日期不计入 expected：平台当初也产不出该信号。"""
+    def test_broken_target_is_flagged_not_silently_not_due(self) -> None:
+        """日历算不出上下文的 target 必须以 failure_category 可见。
+
+        静默跳过会让它在 latest_due_signal_statuses 里变成 not_due，
+        与"日历数据缺行"无法区分。
+        """
         far = _target("far", 5)
-        cases = _expected([far], _BoundaryCalendar(), "2026-06-01", "2026-06-04")
+        cases, targets = _expected(
+            [far], _BoundaryCalendar(), "2026-06-01", "2026-06-04"
+        )
         self.assertEqual(cases, ())
+        self.assertEqual(
+            [t.failure_category for t in targets],
+            ["calendar_context_unavailable"],
+        )
+
+    def test_healthy_target_keeps_no_failure_category(self) -> None:
+        near = _target("near", 1)
+        _cases, targets = _expected(
+            [near], _BoundaryCalendar(), "2026-06-01", "2026-06-04"
+        )
+        self.assertEqual([t.failure_category for t in targets], [None])
 
 
 if __name__ == "__main__":
