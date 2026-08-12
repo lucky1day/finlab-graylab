@@ -31,9 +31,18 @@ def _normalize_run_date(value: str | date | None) -> str:
 
 
 def _is_trading_day(run_date: str) -> bool:
+    """判定是否交易日；日历未收录该日期时以配置错误 fail-closed。
+
+    `t_trade_calendar` 需要人工逐年延长。覆盖耗尽时 `is_trading_day` 同样返回
+    False，若不先区分，本入口会把「日历没续期」当成节假日，每天用日历最后一个
+    交易日重刷同一批 actuals 并以退出码 0 结束，运维看不出 actuals 已停止推进。
+    """
     engine = create_engine_from_env()
     try:
-        return get_calendar(engine=engine).is_trading_day(run_date)
+        calendar = get_calendar(engine=engine)
+        if not calendar.covers(run_date):
+            raise ValueError(f"trade calendar does not cover run date {run_date}")
+        return calendar.is_trading_day(run_date)
     finally:
         engine.dispose()
 
