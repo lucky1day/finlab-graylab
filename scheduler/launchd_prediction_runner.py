@@ -2,7 +2,7 @@
 
 本模块不保存 cron、ledger、occurrence 或 startup catch-up 状态。每次进程启动时
 只做一次严格发现、按 active cadence 筛选、DataBridge Gate 校验和逐方案执行；跨 cadence 的
-互斥由 runtime 目录中的单一非阻塞锁保证。
+互斥由 runtime 目录中的单一阻塞锁保证。
 """
 
 from __future__ import annotations
@@ -100,19 +100,15 @@ def _normalize_predict_date(value: str) -> str:
 
 
 @contextmanager
-def _runner_lock(config: DataBridgeRefreshConfig) -> Iterator[bool]:
-    """以跨 cadence 的全局非阻塞锁排除第二个 generic writer。"""
+def _runner_lock(config: DataBridgeRefreshConfig) -> Iterator[None]:
+    """以跨 cadence 的全局阻塞锁串行化 generic writer。"""
     lock_path = config.runtime_root / "launchd_prediction_runner" / "predictions.lock"
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a+b") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                yield False
-                return
-            try:
-                yield True
+                yield
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     except OSError as exc:
@@ -280,12 +276,7 @@ def run(
         cadence=normalized_cadence,
         predict_date=normalized_date,
     )
-    with _runner_lock(data_bridge_config) as acquired:
-        if not acquired:
-            summary.outcome = "lock_conflict"
-            summary.exit_code = 1
-            return summary
-
+    with _runner_lock(data_bridge_config):
         try:
             discovered = discover_schemes(strict=True)
         except Exception as exc:  # noqa: BLE001 - strict discovery is configuration
