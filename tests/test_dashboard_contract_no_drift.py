@@ -102,3 +102,17 @@ def test_frontend_task_types_match() -> None:
 
 def test_frontend_signal_statuses_match() -> None:
     assert _js_literal("DASHBOARD_SIGNAL_STATUSES") == set(semantics.VALID_SIGNAL_STATUSES)
+
+
+def test_response_budget_matches_producer() -> None:
+    """独立 benchmark 校验器的响应预算必须与生产端同值（issue #40 同族漂移）。"""
+    from backend.factor_lab_dashboard import MAX_RAW_JSON_BYTES
+
+    tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "MAX_RAW_JSON_BYTES":
+                    assert node.value.value == MAX_RAW_JSON_BYTES
+                    return
+    raise AssertionError("benchmark script no longer defines MAX_RAW_JSON_BYTES")

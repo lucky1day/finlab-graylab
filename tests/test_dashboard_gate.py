@@ -161,10 +161,12 @@ def test_dashboard_gate_accepts_present_not_due_pending_actual_and_empty_backtes
     result = _run_gate(tmp_path, fetcher)
 
     assert result.passed, result.errors
+    from backend.factor_lab_dashboard import MAX_RAW_JSON_BYTES
+
     assert calls == [
         (
             "http://127.0.0.1:8100/api/factor-lab/dashboard",
-            {"timeout_sec": 30},
+            {"timeout_sec": 30, "max_response_bytes": MAX_RAW_JSON_BYTES},
         )
     ]
     evidence = _evidence(result)
@@ -488,3 +490,33 @@ def test_fetch_json_fails_when_bounded_read_exceeds_response_budget(
 
     assert exc_info.value.status_code == 200
     assert response.read_sizes == [api_probe.DEFAULT_MAX_RESPONSE_BYTES + 1]
+
+
+def test_dashboard_gate_forwards_producer_response_budget(tmp_path: Path) -> None:
+    """Gate 探针预算必须来自生产端同一权威常量（issue #40）。
+
+    生产端允许原始 JSON 至 MAX_RAW_JSON_BYTES=1.5MB，而通用探针默认 1MiB。
+    Gate 不显式传预算时，1MiB..1.5MB 之间的合法 Dashboard 会同时得到
+    「前端可用」和「Gate 超限失败」两个结论。
+    """
+    from backend.factor_lab_dashboard import MAX_RAW_JSON_BYTES
+
+    _write_config(tmp_path)
+    payload = _payload()
+    calls: list[dict[str, Any]] = []
+
+    def fetcher(url: str, **kwargs: Any):
+        calls.append(kwargs)
+        return payload, 200
+
+    result = _run_gate(tmp_path, fetcher)
+
+    assert result.passed, result.errors
+    assert calls[0]["max_response_bytes"] == MAX_RAW_JSON_BYTES
+
+
+def test_probe_default_budget_still_guards_other_consumers() -> None:
+    """探针默认值保持 1MiB 不变——放宽默认会把其它消费者一并放宽。"""
+    from harness.probes.api_probe import DEFAULT_MAX_RESPONSE_BYTES
+
+    assert DEFAULT_MAX_RESPONSE_BYTES == 1024 * 1024
