@@ -20,6 +20,7 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
         self.assertEqual(config.version_status, "draft")
         self.assertEqual(config.name, "10Y Trial")
         self.assertEqual(config.description, "")
+        self.assertIsNone(config.owner)
         self.assertEqual(config.algorithm_version, "1.2.3")
         self.assertEqual(config.contract_version, "1.0")
         self.assertEqual(config.target_rule, "target_date_yield_vs_feature_date_yield")
@@ -168,6 +169,58 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
         self.assertEqual(displayed.description, "")
         self.assertEqual(original.config_hash, displayed.config_hash)
         self.assertEqual(original.scheme_version, displayed.scheme_version)
+
+    def test_new_blackbox_metadata_owner_is_mapped_and_name_is_authoritative(self) -> None:
+        from scheduler.discovery import load_scheme_config
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
+            metadata_path = scheme_dir / "delivery" / "trial_10y.json"
+            raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+            raw.update(
+                owner="ALGO-A",
+                description="使用期限利差和滚动分类模型形成方向信号。",
+            )
+            metadata_path.write_text(
+                json.dumps(raw, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            config = load_scheme_config(scheme_dir / "config.yaml")
+
+        self.assertEqual(config.name, "10Y Trial")
+        self.assertEqual(config.owner, "ALGO-A")
+        self.assertEqual(
+            config.description,
+            "使用期限利差和滚动分类模型形成方向信号。",
+        )
+
+    def test_new_blackbox_rejects_display_name_override(self) -> None:
+        from scheduler.discovery import load_scheme_config
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
+            metadata_path = scheme_dir / "delivery" / "trial_10y.json"
+            raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+            raw.update(
+                owner="ALGO-A",
+                description="使用期限利差和滚动分类模型形成方向信号。",
+            )
+            metadata_path.write_text(
+                json.dumps(raw, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            config_path = scheme_dir / "config.yaml"
+            config_path.write_text(
+                config_path.read_text(encoding="utf-8").replace(
+                    "scheme_id: trial_10y\n",
+                    "scheme_id: trial_10y\ndisplay_name: forbidden\n",
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "display_name"):
+                load_scheme_config(config_path)
 
     def test_blackbox_description_is_mapped_and_version_bound(self) -> None:
         from scheduler.discovery import load_scheme_config

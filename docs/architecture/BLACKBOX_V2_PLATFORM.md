@@ -53,7 +53,7 @@ schemes/{scheme_id}/
     └── {scheme_id}.json
 ```
 
-`delivery/` 保留上游原始字节并设为只读。Metadata 是名称、算法版本、期限、任务类型、horizon 和 target rule 的唯一来源。平台配置只保存运行信息：
+`delivery/` 保留上游原始字节并设为只读。正式新交付的 Metadata 是名称、owner、算法说明、算法版本、期限、任务类型、horizon 和 target rule 的唯一来源；Intake 会把 owner 按 composite Registry ID 原子登记到平台 owner registry。历史不可变 Metadata 缺 owner 时只按显式 ID + Metadata SHA-256 清单兼容，不得原地改写。平台配置只保存运行信息：
 
 ```yaml
 scheme_id: <scheme_id>

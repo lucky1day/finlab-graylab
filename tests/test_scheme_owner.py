@@ -17,6 +17,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.scheme_owner import SchemeOwnerError, load_scheme_owners  # noqa: E402
+from shared.scheme_owner_registry import (  # noqa: E402
+    owner_registry_scheme_id,
+)
 
 
 def _write(root: Path, payload: object) -> None:
@@ -45,6 +48,12 @@ class LoadSchemeOwnersTests(unittest.TestCase):
             load_scheme_owners(self.root), {"demo__h1__10Y": "LW"}
         )
 
+    def test_builds_canonical_composite_scheme_id(self) -> None:
+        self.assertEqual(
+            owner_registry_scheme_id("demo", 5, "10Y"),
+            "demo__h5__10Y",
+        )
+
     def test_non_canonical_key_fails_closed(self) -> None:
         """键必须自身就是 canonical：静默 trim 会把人工笔误变成看不见的行为。"""
         _write(
@@ -52,6 +61,17 @@ class LoadSchemeOwnersTests(unittest.TestCase):
             {
                 "schema_version": "scheme-owner-v1",
                 "owners": {" demo__h1__10Y ": "LW"},
+            },
+        )
+        with self.assertRaises(SchemeOwnerError):
+            load_scheme_owners(self.root)
+
+    def test_non_composite_key_fails_closed(self) -> None:
+        _write(
+            self.root,
+            {
+                "schema_version": "scheme-owner-v1",
+                "owners": {"demo": "LW"},
             },
         )
         with self.assertRaises(SchemeOwnerError):
@@ -93,6 +113,17 @@ class LoadSchemeOwnersTests(unittest.TestCase):
         _write(
             self.root,
             {"schema_version": "scheme-owner-v1", "owners": {"demo__h1__10Y": 7}},
+        )
+        with self.assertRaises(SchemeOwnerError):
+            load_scheme_owners(self.root)
+
+    def test_placeholder_owner_fails_closed(self) -> None:
+        _write(
+            self.root,
+            {
+                "schema_version": "scheme-owner-v1",
+                "owners": {"demo__h1__10Y": "unknown"},
+            },
         )
         with self.assertRaises(SchemeOwnerError):
             load_scheme_owners(self.root)

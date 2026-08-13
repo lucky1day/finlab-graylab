@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import os
 import tempfile
@@ -2411,6 +2412,107 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
 
         self.assertTrue(result.passed, result.errors)
 
+    def test_static_gate_requires_exact_owner_registry_readback(self) -> None:
+        from harness.blackbox_v2.gates import BlackboxStaticGate
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.intake import intake_delivery
+
+        for owner in (None, "ALGO-B"):
+            with self.subTest(owner=owner), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                scheme_dir = intake_delivery(
+                    _delivery(root / "incoming"),
+                    schemes_root=root / "schemes",
+                )
+                registry_path = root / "deploy" / "scheme_owner_v1.json"
+                payload = json.loads(registry_path.read_text(encoding="utf-8"))
+                registry_id = "trial_10y__h1__10Y"
+                if owner is None:
+                    payload["owners"].pop(registry_id)
+                else:
+                    payload["owners"][registry_id] = owner
+                registry_path.write_text(json.dumps(payload), encoding="utf-8")
+                config = load_scheme_config(scheme_dir / "config.yaml")
+
+                result = BlackboxStaticGate().run(_context(root, config))
+
+            self.assertFalse(result.passed)
+            self.assertIn("owner registry", "\n".join(result.errors))
+
+    def test_static_gate_keeps_immutable_historical_metadata_compatible(self) -> None:
+        from harness.blackbox_v2.gates import BlackboxStaticGate
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.intake import intake_delivery
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            scheme_dir = intake_delivery(
+                _delivery(root / "incoming"),
+                schemes_root=root / "schemes",
+            )
+            metadata_path = scheme_dir / "delivery" / "trial_10y.json"
+            metadata_path.chmod(0o644)
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+            payload.pop("owner")
+            payload.pop("description")
+            metadata_path.write_text(json.dumps(payload), encoding="utf-8")
+            _write_legacy_metadata_policy(root, metadata_path)
+            config = load_scheme_config(scheme_dir / "config.yaml")
+
+            result = BlackboxStaticGate().run(_context(root, config))
+
+        self.assertTrue(result.passed, result.errors)
+
+    def test_static_gate_rejects_unlisted_ownerless_metadata(self) -> None:
+        from harness.blackbox_v2.gates import BlackboxStaticGate
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.intake import intake_delivery
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            scheme_dir = intake_delivery(
+                _delivery(root / "incoming"),
+                schemes_root=root / "schemes",
+            )
+            metadata_path = scheme_dir / "delivery" / "trial_10y.json"
+            metadata_path.chmod(0o644)
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+            payload.pop("owner")
+            metadata_path.write_text(json.dumps(payload), encoding="utf-8")
+            _write_legacy_metadata_policy(root, None)
+            config = load_scheme_config(scheme_dir / "config.yaml")
+
+            result = BlackboxStaticGate().run(_context(root, config))
+
+        self.assertFalse(result.passed)
+        self.assertIn("explicit legacy metadata policy", "\n".join(result.errors))
+
+    def test_static_gate_rejects_changed_metadata_under_legacy_scheme_id(self) -> None:
+        from harness.blackbox_v2.gates import BlackboxStaticGate
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.intake import intake_delivery
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            scheme_dir = intake_delivery(
+                _delivery(root / "incoming"),
+                schemes_root=root / "schemes",
+            )
+            metadata_path = scheme_dir / "delivery" / "trial_10y.json"
+            metadata_path.chmod(0o644)
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+            payload.pop("owner")
+            metadata_path.write_text(json.dumps(payload), encoding="utf-8")
+            _write_legacy_metadata_policy(root, metadata_path)
+            payload["algorithm_version"] = "changed-without-owner"
+            metadata_path.write_text(json.dumps(payload), encoding="utf-8")
+            config = load_scheme_config(scheme_dir / "config.yaml")
+
+            result = BlackboxStaticGate().run(_context(root, config))
+
+        self.assertFalse(result.passed)
+        self.assertIn("metadata SHA-256", "\n".join(result.errors))
+
     def test_static_gate_tolerates_pycache_left_by_execution(self) -> None:
         """执行过方案后遗留的 __pycache__ 不得让复验误判交付结构不合规。
 
@@ -2563,6 +2665,17 @@ def _context(root: Path, config) -> GateContext:
 
 
 def _delivery(path: Path, *, script: str = "import argparse\nimport json\n") -> Path:
+    registry_path = path.parent / "deploy" / "scheme_owner_v1.json"
+    if not registry_path.exists():
+        registry_path.parent.mkdir(parents=True)
+        registry_path.write_text(
+            json.dumps(
+                {"schema_version": "scheme-owner-v1", "owners": {}},
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
     path.mkdir(parents=True)
     (path / "trial_10y.py").write_text(script, encoding="utf-8")
     (path / "trial_10y.json").write_text(
@@ -2576,11 +2689,40 @@ def _delivery(path: Path, *, script: str = "import argparse\nimport json\n") -> 
                 "task_type": "T+1",
                 "horizon": 1,
                 "target_rule": "target_date_yield_vs_feature_date_yield",
+                "owner": "ALGO-A",
+                "description": "使用期限利差和滚动分类模型形成方向信号。",
             }
         ),
         encoding="utf-8",
     )
     return path
+
+
+def _write_legacy_metadata_policy(
+    root: Path,
+    metadata_path: Path | None,
+) -> None:
+    deploy = root / "deploy"
+    deploy.mkdir(parents=True, exist_ok=True)
+    (deploy / "blackbox_v2_legacy_metadata_v1.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "blackbox-v2-legacy-metadata-v1",
+                "metadata_sha256": (
+                    {}
+                    if metadata_path is None
+                    else {
+                        "trial_10y": hashlib.sha256(
+                            metadata_path.read_bytes()
+                        ).hexdigest()
+                    }
+                ),
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def _snapshot_frames() -> dict[str, pd.DataFrame]:

@@ -775,6 +775,16 @@ class BlackboxInitialLifecycleFailClosedTests(unittest.TestCase):
 
         delivery = root / "incoming"
         delivery.mkdir()
+        owner_registry = root / "deploy" / "scheme_owner_v1.json"
+        owner_registry.parent.mkdir(parents=True)
+        owner_registry.write_text(
+            json.dumps(
+                {"schema_version": "scheme-owner-v1", "owners": {}},
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         (delivery / "trial_10y.py").write_text("import argparse\n", encoding="utf-8")
         (delivery / "trial_10y.json").write_text(
             json.dumps(
@@ -787,6 +797,8 @@ class BlackboxInitialLifecycleFailClosedTests(unittest.TestCase):
                     "task_type": "T+1",
                     "horizon": 1,
                     "target_rule": "target_date_yield_vs_feature_date_yield",
+                    "owner": "ALGO-A",
+                    "description": "使用期限利差和滚动分类模型形成方向信号。",
                 }
             ),
             encoding="utf-8",

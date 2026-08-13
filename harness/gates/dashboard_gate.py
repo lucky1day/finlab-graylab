@@ -63,6 +63,18 @@ class DashboardGate(Gate):
             for tenor in config.tenors
         ]
         matched_rows: list[Mapping[str, Any]] = []
+        new_blackbox_identity: dict[str, str] | None = None
+        if config.runtime_type == "blackbox_v2" and config.owner is not None:
+            new_blackbox_identity = {
+                "name": config.name,
+                "owner": config.owner,
+                "description": config.description,
+            }
+            for field, value in new_blackbox_identity.items():
+                if not value.strip():
+                    errors.append(
+                        f"new Blackbox V2 config {field} must be non-empty"
+                    )
         if errors:
             return _result(
                 started_at,
@@ -98,6 +110,8 @@ class DashboardGate(Gate):
                 "target_tenor": target_tenor,
                 "status": "active",
             }
+            if new_blackbox_identity is not None:
+                expected_fields.update(new_blackbox_identity)
             for field, expected in expected_fields.items():
                 if row[field] != expected:
                     errors.append(

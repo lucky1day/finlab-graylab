@@ -6,6 +6,30 @@ import unittest
 from pathlib import Path
 
 
+class BlackboxV2MetadataContractTests(unittest.TestCase):
+    def test_owner_is_optional_for_immutable_historical_metadata(self) -> None:
+        metadata = _load_metadata(_metadata_payload())
+
+        self.assertIsNone(metadata.owner)
+
+    def test_owner_is_normalized_when_present(self) -> None:
+        payload = _metadata_payload()
+        payload["owner"] = "  ALGO-A  "
+
+        metadata = _load_metadata(payload)
+
+        self.assertEqual(metadata.owner, "ALGO-A")
+
+    def test_owner_rejects_ambiguous_or_placeholder_values(self) -> None:
+        for owner in ("", "   ", "ALGO\nA", "<ALGO-A>", "--", "unknown", "UNKNOWN", "待定"):
+            with self.subTest(owner=owner):
+                payload = _metadata_payload()
+                payload["owner"] = owner
+
+                with self.assertRaisesRegex(ValueError, "owner"):
+                    _load_metadata(payload)
+
+
 class BlackboxV2RequestContractTests(unittest.TestCase):
     def test_request_can_be_strictly_parsed_from_verified_bytes(self) -> None:
         from shared.blackbox_v2.contracts import load_request_bytes
@@ -198,6 +222,28 @@ def _request_payload() -> dict:
         "weekly_cutoff_key": "202628",
         "monthly_cutoff_key": "202607",
     }
+
+
+def _metadata_payload() -> dict:
+    return {
+        "schema_version": "1.0",
+        "scheme_id": "trial_10y",
+        "name": "10Y Trial",
+        "algorithm_version": "1.0.0",
+        "target_tenor": "10Y",
+        "task_type": "T+1",
+        "horizon": 1,
+        "target_rule": "target_date_yield_vs_feature_date_yield",
+    }
+
+
+def _load_metadata(payload: dict):
+    from shared.blackbox_v2.contracts import load_metadata
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "metadata.json"
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        return load_metadata(path)
 
 
 def _result_payload() -> dict:

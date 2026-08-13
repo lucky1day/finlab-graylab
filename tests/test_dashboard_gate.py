@@ -50,6 +50,53 @@ def _write_config(
     )
 
 
+def _write_blackbox_config(project_root: Path) -> None:
+    scheme_dir = project_root / "schemes" / BASE_SCHEME_ID
+    delivery_dir = scheme_dir / "delivery"
+    delivery_dir.mkdir(parents=True)
+    (delivery_dir / f"{BASE_SCHEME_ID}.py").write_text(
+        "print('fixture')\n",
+        encoding="utf-8",
+    )
+    (delivery_dir / f"{BASE_SCHEME_ID}.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "scheme_id": BASE_SCHEME_ID,
+                "name": "Demo Blackbox",
+                "owner": "ALGO-A",
+                "description": "Blackbox dashboard fixture",
+                "algorithm_version": "1.0.0",
+                "target_tenor": "5Y",
+                "task_type": "T+1",
+                "horizon": 1,
+                "target_rule": "target_date_yield_vs_feature_date_yield",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (scheme_dir / "config.yaml").write_text(
+        "\n".join(
+            [
+                f"scheme_id: {BASE_SCHEME_ID}",
+                "runtime_type: blackbox_v2",
+                "input_source: data_bridge_current",
+                "runtime_profile: blackbox-v2-v1",
+                "data_schema_version: data-bridge-v1",
+                "status: active",
+                "version_status: active",
+                "schedule:",
+                '  cron: "3 7 * * 1-5"',
+                "delivery:",
+                f"  script: delivery/{BASE_SCHEME_ID}.py",
+                f"  metadata: delivery/{BASE_SCHEME_ID}.json",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def _scheme(target_tenor: str, *, signal_status: str) -> dict[str, Any]:
     return {
         "scheme_id": f"{BASE_SCHEME_ID}__h1__{target_tenor}",
@@ -319,6 +366,71 @@ def test_dashboard_gate_requires_backtest_partition(tmp_path: Path) -> None:
 
     assert not result.passed
     assert any("backtest" in error for error in result.errors)
+
+
+@pytest.mark.parametrize("field", ["name", "owner", "description"])
+@pytest.mark.parametrize("mode", ["empty", "mismatch"])
+def test_dashboard_gate_requires_exact_new_blackbox_display_identity(
+    tmp_path: Path,
+    field: str,
+    mode: str,
+) -> None:
+    _write_blackbox_config(tmp_path)
+    payload = _payload(tenors=("5Y",))
+    payload["schemes"][0].update(
+        name="Demo Blackbox",
+        owner="ALGO-A",
+        description="Blackbox dashboard fixture",
+    )
+    payload["schemes"][0][field] = "" if mode == "empty" else "different"
+
+    result = _run_gate(tmp_path, lambda _url, **_kwargs: (payload, 200))
+
+    assert not result.passed
+    assert any(field in error for error in result.errors)
+
+
+def test_dashboard_gate_accepts_exact_new_blackbox_display_identity(
+    tmp_path: Path,
+) -> None:
+    _write_blackbox_config(tmp_path)
+    payload = _payload(tenors=("5Y",))
+    payload["schemes"][0].update(
+        name="Demo Blackbox",
+        owner="ALGO-A",
+        description="Blackbox dashboard fixture",
+    )
+
+    result = _run_gate(tmp_path, lambda _url, **_kwargs: (payload, 200))
+
+    assert result.passed, result.errors
+
+
+def test_dashboard_gate_rejects_empty_new_blackbox_config_description(
+    tmp_path: Path,
+) -> None:
+    _write_blackbox_config(tmp_path)
+    metadata_path = (
+        tmp_path
+        / "schemes"
+        / BASE_SCHEME_ID
+        / "delivery"
+        / f"{BASE_SCHEME_ID}.json"
+    )
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata.pop("description")
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    payload = _payload(tenors=("5Y",))
+    payload["schemes"][0].update(
+        name="Demo Blackbox",
+        owner="ALGO-A",
+        description="",
+    )
+
+    result = _run_gate(tmp_path, lambda _url, **_kwargs: (payload, 200))
+
+    assert not result.passed
+    assert any("description" in error for error in result.errors)
 
 
 def test_registry_exposes_only_dashboard_post_activation_gate() -> None:
