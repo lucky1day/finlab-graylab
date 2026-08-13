@@ -242,6 +242,7 @@
     { day: "05/26", predicted: "跌", actual: "跌", correct: true }
   ];
   var factorLabBound = false;
+  var factorRemarkTrigger = null;
   var factorLabRemoteLoaded = false;
   var factorLabRemoteLoading = false;
   var factorLabApiError = "";
@@ -2171,7 +2172,10 @@
     var metricSamples = requireMetricSamples(metric, "ranking metric");
     var deploymentDate = requireSchemeDeploymentDate(scheme, "ranking scheme");
     var schemeName = escapeHtml(scheme.name);
-    var remark = escapeHtml(getSchemeRemark(scheme));
+    var remark = getSchemeRemark(scheme);
+    var remarkControl = remark
+      ? '<button type="button" class="factor-remark-detail" data-factor-remark-open="' + escapeHtml(scheme.id) + '" aria-controls="factorRemarkPopover" aria-expanded="false"><span aria-hidden="true">ⓘ</span><span>详情</span></button>'
+      : '<span class="factor-remark-empty">--</span>';
     return '<tr' + selectedClass + ' data-factor-scheme-id="' + escapeHtml(scheme.id) + '">' +
       '<td>' + (index + 1) + '</td>' +
       '<td><strong class="factor-scheme-name" title="' + schemeName + '">' + schemeName + '</strong></td>' +
@@ -2181,8 +2185,70 @@
       '<td class="' + getMetricClass(metric.downPrecision) + '">' + formatPercent(metric.downPrecision) + '</td>' +
       '<td class="mono">' + escapeHtml(deploymentDate) + '</td>' +
       '<td class="mono">' + escapeHtml(scheme.owner || "--") + '</td>' +
-      '<td class="factor-remark-cell"><span class="factor-remark-text" title="' + remark + '">' + remark + '</span></td>' +
+      '<td class="factor-remark-cell">' + remarkControl + '</td>' +
       '</tr>';
+  }
+
+  function placeFactorRemarkPopover(trigger) {
+    var popover = document.getElementById("factorRemarkPopover");
+    if (!popover || !trigger) return;
+    var margin = 12;
+    var gap = 8;
+    var triggerRect = trigger.getBoundingClientRect();
+    var width = popover.offsetWidth;
+    var height = popover.offsetHeight;
+    var left = Math.min(
+      Math.max(margin, triggerRect.right - width),
+      window.innerWidth - width - margin
+    );
+    var top = triggerRect.bottom + gap;
+    if (top + height > window.innerHeight - margin) {
+      top = Math.max(margin, triggerRect.top - height - gap);
+    }
+    popover.style.left = Math.round(left) + "px";
+    popover.style.top = Math.round(top) + "px";
+  }
+
+  function closeFactorRemark(restoreFocus) {
+    var popover = document.getElementById("factorRemarkPopover");
+    var body = document.getElementById("factorRemarkBody");
+    var trigger = factorRemarkTrigger;
+    if (trigger) trigger.setAttribute("aria-expanded", "false");
+    factorRemarkTrigger = null;
+    if (popover) {
+      popover.hidden = true;
+      popover.setAttribute("aria-hidden", "true");
+      popover.style.removeProperty("left");
+      popover.style.removeProperty("top");
+    }
+    if (body) body.textContent = "";
+    if (restoreFocus && trigger && trigger.isConnected && typeof trigger.focus === "function") {
+      trigger.focus();
+    }
+  }
+
+  function openFactorRemark(trigger) {
+    var schemeId = trigger && trigger.getAttribute("data-factor-remark-open");
+    var scheme = getSelectedTaskSchemes().find(function (candidate) {
+      return candidate.id === schemeId;
+    });
+    var remark = getSchemeRemark(scheme);
+    var popover = document.getElementById("factorRemarkPopover");
+    var body = document.getElementById("factorRemarkBody");
+    if (!trigger || !remark || !popover || !body) return;
+
+    closeFactorRemark(false);
+    factorRemarkTrigger = trigger;
+    body.textContent = remark;
+    popover.hidden = false;
+    popover.setAttribute("aria-hidden", "false");
+    trigger.setAttribute("aria-expanded", "true");
+    placeFactorRemarkPopover(trigger);
+
+    var closeButton = popover.querySelector("[data-factor-remark-close]");
+    if (closeButton && typeof closeButton.focus === "function") {
+      closeButton.focus({ preventScroll: true });
+    }
   }
 
   function renderSchemeRanking() {
@@ -2627,6 +2693,22 @@
     var pageHost = document.querySelector('[data-view="factor-lab"]');
     if (pageHost) {
       pageHost.addEventListener("click", function (event) {
+        var remarkButton = event.target.closest("[data-factor-remark-open]");
+        if (remarkButton) {
+          event.preventDefault();
+          event.stopPropagation();
+          openFactorRemark(remarkButton);
+          return;
+        }
+
+        var remarkCloseButton = event.target.closest("[data-factor-remark-close]");
+        if (remarkCloseButton) {
+          event.preventDefault();
+          event.stopPropagation();
+          closeFactorRemark(true);
+          return;
+        }
+
         var taskButton = event.target.closest("[data-factor-task-key]");
         if (taskButton) {
           factorLabState.selectedTaskKey = taskButton.getAttribute("data-factor-task-key");
@@ -2707,6 +2789,13 @@
       });
     }
 
+    document.addEventListener("click", function (event) {
+      var popover = document.getElementById("factorRemarkPopover");
+      if (!popover || popover.hidden) return;
+      if (popover.contains(event.target) || event.target.closest("[data-factor-remark-open]")) return;
+      closeFactorRemark(true);
+    });
+
     var startMonthInput = document.getElementById("factorStartMonth");
     var endMonthInput = document.getElementById("factorEndMonth");
     if (startMonthInput && !startMonthInput.dataset.factorBound) {
@@ -2756,6 +2845,7 @@
 
   window.addEventListener("keydown", function (event) {
     if (event.key === "Escape") {
+      closeFactorRemark(true);
       closeFactorCalendar();
     }
   });

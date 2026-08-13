@@ -91,7 +91,7 @@ def test_remark_popover_supports_all_dismissal_and_focus_paths() -> None:
     assert 'document.addEventListener("click"' in javascript
     assert 'event.key === "Escape"' in javascript
     assert "closeFactorRemark(true)" in javascript
-    assert "factorRemarkTrigger.focus()" in javascript
+    assert "trigger.focus()" in javascript
     assert "textContent = remark" in javascript
 
 
