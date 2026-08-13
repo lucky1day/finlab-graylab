@@ -201,46 +201,6 @@
     { id: "downRecall", label: "下跌召回率", color: "#6f5aa8" }
   ];
 
-  var factorDailyBaseRows = [
-    { month: "2025-01", samples: 18, actualDist: "10/6/2", predictedDist: "13/5/0", overall: 38.9, correct: 7, upPrecision: 46.2, upRecall: 60.0, downPrecision: 20.0, downRecall: 16.7 },
-    { month: "2025-02", samples: 18, actualDist: "14/4/0", predictedDist: "13/5/0", overall: 50.0, correct: 9, upPrecision: 69.2, upRecall: 64.3, downPrecision: 0.0, downRecall: 0.0 },
-    { month: "2025-03", samples: 21, actualDist: "8/13/0", predictedDist: "5/16/0", overall: 76.2, correct: 16, upPrecision: 80.0, upRecall: 50.0, downPrecision: 75.0, downRecall: 92.3 },
-    { month: "2025-04", samples: 21, actualDist: "10/11/0", predictedDist: "11/10/0", overall: 85.7, correct: 18, upPrecision: 81.8, upRecall: 90.0, downPrecision: 90.0, downRecall: 81.8 },
-    { month: "2025-05", samples: 19, actualDist: "10/8/1", predictedDist: "11/8/0", overall: 73.7, correct: 14, upPrecision: 72.7, upRecall: 80.0, downPrecision: 75.0, downRecall: 75.0 }
-  ];
-  var factorWeeklyBaseRows = [
-    { month: "2025-01", samples: 4, actualDist: "2/2/0", predictedDist: "3/1/0", overall: 50.0, correct: 2, upPrecision: 66.7, upRecall: 100.0, downPrecision: 0.0, downRecall: 0.0 },
-    { month: "2025-02", samples: 4, actualDist: "3/1/0", predictedDist: "2/2/0", overall: 75.0, correct: 3, upPrecision: 100.0, upRecall: 66.7, downPrecision: 50.0, downRecall: 100.0 },
-    { month: "2025-03", samples: 5, actualDist: "2/3/0", predictedDist: "2/3/0", overall: 80.0, correct: 4, upPrecision: 100.0, upRecall: 100.0, downPrecision: 66.7, downRecall: 66.7 },
-    { month: "2025-04", samples: 4, actualDist: "2/2/0", predictedDist: "2/2/0", overall: 75.0, correct: 3, upPrecision: 100.0, upRecall: 100.0, downPrecision: 50.0, downRecall: 50.0 },
-    { month: "2025-05", samples: 4, actualDist: "2/1/1", predictedDist: "2/2/0", overall: 50.0, correct: 2, upPrecision: 50.0, upRecall: 50.0, downPrecision: 50.0, downRecall: 100.0 }
-  ];
-  var factorDailyRows = [
-    { day: "05/06", predicted: "涨", actual: "涨", correct: true },
-    { day: "05/07", predicted: "跌", actual: "跌", correct: true },
-    { day: "05/08", predicted: "涨", actual: "跌", correct: false },
-    { day: "05/11", predicted: "跌", actual: "跌", correct: true },
-    { day: "05/12", predicted: "涨", actual: "涨", correct: true },
-    { day: "05/13", predicted: "涨", actual: "涨", correct: true },
-    { day: "05/14", predicted: "跌", actual: "涨", correct: false },
-    { day: "05/15", predicted: "涨", actual: "涨", correct: true },
-    { day: "05/18", predicted: "涨", actual: "涨", correct: true },
-    { day: "05/19", predicted: "涨", actual: "涨", correct: true },
-    { day: "05/20", predicted: "跌", actual: "涨", correct: false },
-    { day: "05/21", predicted: "跌", actual: "跌", correct: true },
-    { day: "05/22", predicted: "涨", actual: "涨", correct: true },
-    { day: "05/25", predicted: "涨", actual: "涨", correct: true },
-    { day: "05/26", predicted: "涨", actual: "跌", correct: false },
-    { day: "05/27", predicted: "跌", actual: "跌", correct: true },
-    { day: "05/28", predicted: "涨", actual: "涨", correct: true },
-    { day: "05/29", predicted: "待验证", actual: "待验证", correct: null }
-  ];
-  var factorWeeklyRows = [
-    { day: "05/05", predicted: "涨", actual: "涨", correct: true },
-    { day: "05/12", predicted: "跌", actual: "涨", correct: false },
-    { day: "05/19", predicted: "涨", actual: "涨", correct: true },
-    { day: "05/26", predicted: "跌", actual: "跌", correct: true }
-  ];
   var factorLabBound = false;
   var factorRemarkTrigger = null;
   var factorLabRemoteLoaded = false;
@@ -2309,13 +2269,6 @@
   function getFactorAvailableMonths() {
     var src = factorLabState.dataSource;
     var months = [];
-    if (factorLabDataMode === "mock") {
-      months = factorDailyBaseRows.concat(factorWeeklyBaseRows).reduce(function (result, row) {
-        if (src !== "all" && row._source && row._source !== src) return result;
-        if (result.indexOf(row.month) === -1) result.push(row.month);
-        return result;
-      }, []);
-    }
     Object.keys(factorTaskSchemes).forEach(function (key) {
       factorTaskSchemes[key].forEach(function (scheme) {
         scheme.monthlyRows.forEach(function (row) {
@@ -2598,7 +2551,7 @@
       ? scheme.dailyRowsByMonth[month].filter(function (r) {
           return src === "all" || r._source === src;
         })
-      : (isWeekly ? factorWeeklyRows : factorDailyRows);
+      : [];
     if (!rows.length) {
       body.innerHTML = '<tr><td colspan="5" class="factor-empty-cell">当前月份暂无每日明细</td></tr>';
       return;
