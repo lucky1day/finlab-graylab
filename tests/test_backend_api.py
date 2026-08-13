@@ -309,3 +309,65 @@ class CorsConfigTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DateParameterSemanticsTests(unittest.TestCase):
+    """日期参数必须校验日历语义，不能只校验字符形状（issue #41）。
+
+    `^\d{4}-\d{2}-\d{2}$` 里的 `\d{2}` 同样匹配 `99`，也匹配 2 月的 `31`。
+    这类输入过了形状检查后直接进 SQL 日期比较，由 MySQL 被动承担最后的日期
+    验证职责，而数据库异常又被呈现为 HTTP 500——同一类用户输入错误按字符
+    外观走两套通道，污染服务错误率且客户端无法区分参数问题与平台故障。
+    """
+
+    IMPOSSIBLE = ("2026-99-99", "2026-02-31", "2026-13-01", "2026-04-31", "2026-02-29")
+    MALFORMED = ("garbage", "2026-1-15", "20260115", "2026-01-15T00:00", "")
+
+    def test_predictions_rejects_impossible_dates(self) -> None:
+        for value in self.IMPOSSIBLE:
+            for field in ("start_date", "end_date"):
+                with self.subTest(value=value, field=field):
+                    with self.assertRaises(HTTPException) as ctx:
+                        main.api_predictions(
+                            "demo_daily__h1__10Y",
+                            response=Response(),
+                            **{field: value},
+                        )
+                    self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_actuals_rejects_impossible_dates(self) -> None:
+        for value in self.IMPOSSIBLE:
+            for field in ("start_date", "end_date"):
+                with self.subTest(value=value, field=field):
+                    with self.assertRaises(HTTPException) as ctx:
+                        main.api_actuals(**{field: value})
+                    self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_malformed_dates_use_the_same_channel(self) -> None:
+        """形状错误与语义错误必须同为 400，不再按字符外观分流。"""
+        for value in self.MALFORMED:
+            with self.subTest(value=value):
+                with self.assertRaises(HTTPException) as ctx:
+                    main.api_actuals(start_date=value)
+                self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_valid_dates_pass_through_unchanged(self) -> None:
+        engine = object()
+        with patch.object(main, "get_engine", return_value=engine), patch.object(
+            main, "list_actuals", return_value={"items": []}
+        ) as actuals_mock:
+            # 2026 不是闰年：2026-02-29 会被正确拒绝，这里用真实存在的日期。
+            main.api_actuals(start_date="2026-01-15", end_date="2026-02-28")
+
+        self.assertEqual(actuals_mock.call_args.kwargs["start_date"], "2026-01-15")
+        self.assertEqual(actuals_mock.call_args.kwargs["end_date"], "2026-02-28")
+
+    def test_none_dates_remain_optional(self) -> None:
+        engine = object()
+        with patch.object(main, "get_engine", return_value=engine), patch.object(
+            main, "list_actuals", return_value={"items": []}
+        ) as actuals_mock:
+            main.api_actuals()
+
+        self.assertIsNone(actuals_mock.call_args.kwargs["start_date"])
+        self.assertIsNone(actuals_mock.call_args.kwargs["end_date"])

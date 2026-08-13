@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import time
+from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -67,6 +68,7 @@ FRONTEND_CACHE_CONTROL = UNVERSIONED_ASSET_CACHE_CONTROL
 logger = logging.getLogger(__name__)
 _DEFAULT_INSTANCE_NONCE = secrets.token_hex(32)
 _REQUEST_ID_PATTERN = re.compile(r"[!-~]{1,128}\Z", flags=re.ASCII)
+_DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
 _DASHBOARD_ERROR_UNAVAILABLE = "dashboard_data_unavailable"
 _DASHBOARD_QUERY_ERROR = "dashboard_query_not_allowed"
 
@@ -193,6 +195,29 @@ class NoCacheFrontendStaticFiles(StaticFiles):
             )
             _apply_revalidation_headers(response.headers, cache_control)
         return response
+
+
+def _require_iso_date(value: str | None, *, field: str) -> str | None:
+    """校验日期参数的形状与日历语义。
+
+    只做形状约束时 ``\d{2}`` 同样匹配 ``99``，也匹配 2 月的 ``31``；这类值会
+    直接进入 SQL 日期比较，由 MySQL 被动承担最后的日期验证，而数据库异常又
+    被呈现为 HTTP 500。形状与语义在此一并校验，使同一类输入错误只有一个
+    响应通道。
+    """
+    if value is None:
+        return None
+    if not _DATE_PATTERN.fullmatch(value):
+        raise HTTPException(
+            status_code=400, detail=f"{field} must be formatted as YYYY-MM-DD"
+        )
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(
+            status_code=400, detail=f"{field} is not a real calendar date"
+        ) from None
+    return value
 
 
 def _cors_origins() -> list[str]:
@@ -585,8 +610,8 @@ def api_predictions(
     scheme_id: str,
     response: Response,
     tenor: str | None = None,
-    start_date: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
-    end_date: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    start_date: str | None = None,
+    end_date: str | None = None,
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
@@ -595,6 +620,8 @@ def api_predictions(
     response.headers["X-Prediction-Visibility"] = "uncached-db"
     if tenor is not None:
         raise HTTPException(status_code=400, detail="tenor query is not supported; use registry scheme_id")
+    start_date = _require_iso_date(start_date, field="start_date")
+    end_date = _require_iso_date(end_date, field="end_date")
     try:
         return list_predictions(
             get_engine(),
@@ -611,11 +638,13 @@ def api_predictions(
 @app.get("/api/actuals")
 def api_actuals(
     tenor: str | None = None,
-    start_date: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
-    end_date: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    start_date: str | None = None,
+    end_date: str | None = None,
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
+    start_date = _require_iso_date(start_date, field="start_date")
+    end_date = _require_iso_date(end_date, field="end_date")
     return list_actuals(
         get_engine(),
         tenor=tenor,
