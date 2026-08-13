@@ -25,6 +25,9 @@ from scheduler.v2_daily_gate import write_gate_record  # noqa: E402
 from shared.calendar_service import get_calendar  # noqa: E402
 from shared.data_bridge.refresh import (  # noqa: E402
     DataBridgeRefreshConfig,
+    DataBridgeCurrentInvalidError,
+    DataBridgeCurrentMissingError,
+    DataBridgeCurrentReadError,
     DataBridgeRefreshError,
     FAILED_ATTEMPT_ERROR_CATEGORIES,
     check_current_dataset,
@@ -289,18 +292,43 @@ def _publisher_lock(config: DataBridgeRefreshConfig):
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+# 异常类型是安全的分类事实：它由代码结构决定，不含 DSN、凭据或驱动上下文。
+# 顺序从具体到一般——第一个匹配即为该次失败的类别。
+_FAILURE_CATEGORIES: tuple[tuple[type[BaseException], str], ...] = (
+    (DataBridgeCurrentMissingError, "current_dataset_missing"),
+    (DataBridgeCurrentInvalidError, "current_dataset_invalid"),
+    (DataBridgeCurrentReadError, "current_dataset_read_failed"),
+    (DataBridgeRefreshError, "refresh_failed"),
+    (DataBridgeValidationError, "validation_failed"),
+)
+
+
+def _failure_category(exc: BaseException) -> str:
+    """把异常类型映射成稳定类别码，绝不携带异常自身的文本。"""
+    for exc_type, category in _FAILURE_CATEGORIES:
+        if isinstance(exc, exc_type):
+            return category
+    if isinstance(exc, (OSError, ValueError, SQLAlchemyError)):
+        return "configuration_error"
+    return "unexpected_error"
+
+
 def _configuration_error(mode: Mode) -> tuple[int, dict[str, object]]:
     return 2, {
         "status": "configuration_error",
         "mode": mode,
+        "failure_category": "configuration_error",
         "error": "local MySQL DataBridge configuration is invalid or incomplete",
     }
 
 
-def _refresh_failure(mode: Mode) -> tuple[int, dict[str, object]]:
+def _refresh_failure(
+    mode: Mode, *, failure_category: str = "refresh_failed"
+) -> tuple[int, dict[str, object]]:
     return 1, {
         "status": "failed",
         "mode": mode,
+        "failure_category": failure_category,
         "error": "local MySQL DataBridge refresh failed",
     }
 
@@ -366,26 +394,29 @@ def _run_refresh_with_config(
             "duration_sec": round(result.duration_sec, 3),
             "state": result.state,
         }
-    except (DataBridgeRefreshError, DataBridgeValidationError):
+    except (DataBridgeRefreshError, DataBridgeValidationError) as exc:
+        category = _failure_category(exc)
         if mode == "publish":
             _try_write_blocked_gate(
                 config,
                 refresh_date=refresh_date,
                 expected_feature_date=expected_feature_date,
-                check_name="refresh_failed",
+                check_name=category,
             )
         return 1, {
             "status": "failed",
             "mode": mode,
+            "failure_category": category,
             "error": "local MySQL DataBridge refresh or validation failed",
         }
-    except (OSError, ValueError, SQLAlchemyError):
+    except (OSError, ValueError, SQLAlchemyError) as exc:
+        category = _failure_category(exc)
         if mode == "publish":
             _try_write_blocked_gate(
                 config,
                 refresh_date=refresh_date,
                 expected_feature_date=expected_feature_date,
-                check_name="configuration_error",
+                check_name=category,
             )
         return _configuration_error(mode)
     except _ReadyGateWriteError:
@@ -399,9 +430,9 @@ def _run_refresh_with_config(
                 config,
                 refresh_date=refresh_date,
                 expected_feature_date=expected_feature_date,
-                check_name="refresh_failed",
+                check_name="unexpected_error",
             )
-        return _refresh_failure(mode)
+        return _refresh_failure(mode, failure_category="unexpected_error")
 
 
 def _run_publish_with_retries(
@@ -453,12 +484,12 @@ def run_command(mode: Mode, *, refresh_date: str) -> tuple[int, dict[str, object
     if mode == "check-only":
         try:
             current = check_current(refresh_date=refresh_date)
-        except (DataBridgeRefreshError, DataBridgeValidationError):
-            return _refresh_failure(mode)
+        except (DataBridgeRefreshError, DataBridgeValidationError) as exc:
+            return _refresh_failure(mode, failure_category=_failure_category(exc))
         except (OSError, ValueError, SQLAlchemyError):
             return _configuration_error(mode)
         except Exception:
-            return _refresh_failure(mode)
+            return _refresh_failure(mode, failure_category="unexpected_error")
         return 0, {
             "status": "ok",
             "mode": mode,
@@ -467,12 +498,12 @@ def run_command(mode: Mode, *, refresh_date: str) -> tuple[int, dict[str, object
     try:
         config = DataBridgeRefreshConfig.from_env()
         expected_feature_date = expected_daily_date(refresh_date=refresh_date)
-    except (DataBridgeRefreshError, DataBridgeValidationError):
-        return _refresh_failure(mode)
+    except (DataBridgeRefreshError, DataBridgeValidationError) as exc:
+        return _refresh_failure(mode, failure_category=_failure_category(exc))
     except (OSError, ValueError, SQLAlchemyError):
         return _configuration_error(mode)
     except Exception:
-        return _refresh_failure(mode)
+        return _refresh_failure(mode, failure_category="unexpected_error")
     if mode != "publish":
         return _run_refresh_with_config(
             mode,
