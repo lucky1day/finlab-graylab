@@ -24,7 +24,11 @@ from scheduler.v2_daily_gate import (  # noqa: E402
     V2DailyGateBlocked,
     load_gate_record,
 )
+from scheduler.daily_actuals_updater import (  # noqa: E402
+    ACTUAL_TASK_TYPES_BY_FREQUENCY,
+)
 from shared.calendar_service import get_calendar  # noqa: E402
+from shared.prediction_context import is_weekly_signal_date  # noqa: E402
 from shared.data_bridge.refresh import (  # noqa: E402
     DataBridgeRefreshConfig,
     DataBridgeStore,
@@ -70,8 +74,8 @@ class DailyHealthSnapshot:
     predict_date: str
     expected_feature_date: str | None
     is_trading_day: bool
-    active_daily_base_schemes: tuple[str, ...]
-    successful_daily_run_schemes: tuple[str, ...]
+    active_base_schemes: tuple[str, ...]
+    successful_run_schemes: tuple[str, ...]
     predictions_count: int
     run_prediction_counts: tuple[RunPredictionCount, ...]
     prediction_date_checks: tuple[PredictionDateCheck, ...]
@@ -80,6 +84,10 @@ class DailyHealthSnapshot:
     # 但不参与任何健康判定——正式调度健康只认 scheduled_live。
     gray_live_run_schemes: tuple[str, ...] = ()
     gray_live_predictions_count: int = 0
+    cadence: str = "daily"
+    # is_trading_day 是字面日历事实；is_due 才是「本 cadence 今天是否应当出信号」。
+    # 周频在周六触发——沿用日频的交易日门会让周频健康检查永远提前返回。
+    is_due: bool = True
 
 
 @dataclass(frozen=True)
@@ -126,6 +134,29 @@ SCHEME_REQUIRED_SOURCE_TENORS: dict[str, tuple[str, ...]] = {
     "t1_daily": ("5Y", "10Y"),
     "t5_daily": ("3Y", "5Y", "7Y", "10Y"),
 }
+
+
+def _cadence_task_types(cadence: str) -> tuple[str, ...]:
+    """cadence -> task_type 的唯一权威，复用 actuals updater 的既有映射。"""
+    try:
+        return ACTUAL_TASK_TYPES_BY_FREQUENCY[cadence]
+    except KeyError as exc:
+        raise ValueError(f"unsupported cadence: {cadence!r}") from exc
+
+
+def _cadence_is_due(calendar: object, cadence: str, predict_date: str) -> bool:
+    """本 cadence 在 predict_date 是否应当出信号。
+
+    三频的应出判定各不相同，且都不是「是不是交易日」：周频在周六触发、月频在
+    自然月 15 日触发。沿用日频的门会让周频与月频的健康检查永远什么都不检查。
+    """
+    if cadence == "daily":
+        return bool(calendar.is_trading_day(predict_date))
+    if cadence == "weekly":
+        return is_weekly_signal_date(calendar, predict_date)
+    if cadence == "monthly":
+        return date.fromisoformat(str(predict_date)[:10]).day == 15
+    raise ValueError(f"unsupported cadence: {cadence!r}")
 
 
 def _iso(value: object) -> str | None:
@@ -277,8 +308,8 @@ def evaluate_daily_health(
 ) -> list[HealthFinding]:
     """根据只读快照生成健康检查发现。"""
     findings: list[HealthFinding] = []
-    active = set(snapshot.active_daily_base_schemes)
-    successful = set(snapshot.successful_daily_run_schemes)
+    active = set(snapshot.active_base_schemes)
+    successful = set(snapshot.successful_run_schemes)
     missing_runs = sorted(active - successful)
     blocked_schemes = _source_blocked_schemes(snapshot, missing_runs)
     blocked_scheme_ids = {str(item["scheme_id"]) for item in blocked_schemes}
@@ -310,7 +341,7 @@ def evaluate_daily_health(
                 )
             )
 
-    if not snapshot.is_trading_day:
+    if not snapshot.is_due:
         return findings
 
     if active and snapshot.predictions_count == 0:
@@ -442,6 +473,7 @@ def load_snapshot(
     *,
     predict_date: str,
     tenors: Sequence[str] | None = None,
+    cadence: str = "daily",
 ) -> DailyHealthSnapshot:
     """从生产库读取只读健康快照。
 
@@ -450,6 +482,7 @@ def load_snapshot(
     ``evaluate_daily_health`` 提前返回、跳过全部预测缺失判定——恰好在生产缺口
     最可能发生时报无发现。
     """
+    task_types = _cadence_task_types(cadence)
     calendar = get_calendar(engine=engine)
     if not calendar.covers(predict_date):
         raise ValueError(f"trade calendar does not cover predict_date {predict_date}")
@@ -461,11 +494,12 @@ def load_snapshot(
                 SELECT DISTINCT base_scheme_id
                 FROM t_scheme_registry
                 WHERE status = 'active'
-                  AND frequency = 'daily'
-                  AND task_type IN ('T+1', 'T+5')
+                  AND frequency = :cadence
+                  AND task_type IN :task_types
                 ORDER BY base_scheme_id
                 """
-            )
+            ).bindparams(bindparam("task_types", expanding=True)),
+            {"cadence": cadence, "task_types": list(task_types)},
         ).scalars().all()
         active_schemes = tuple(str(item) for item in active_rows)
 
@@ -542,14 +576,18 @@ def load_snapshot(
                  AND r.target_tenor = p.target_tenor
                  AND r.horizon = p.horizon
                  AND r.status = 'active'
-                 AND r.frequency = 'daily'
-                 AND r.task_type IN ('T+1', 'T+5')
+                 AND r.frequency = :cadence
+                 AND r.task_type IN :task_types
                 WHERE p.predict_date = :predict_date
                   AND p.prediction_phase = 'scheduled_live'
                 ORDER BY p.id
                 """
-            ),
-            {"predict_date": predict_date},
+            ).bindparams(bindparam("task_types", expanding=True)),
+            {
+                "predict_date": predict_date,
+                "cadence": cadence,
+                "task_types": list(task_types),
+            },
         ).mappings().all()
         predictions_count = len(prediction_rows)
 
@@ -583,13 +621,17 @@ def load_snapshot(
                      AND r.target_tenor = p.target_tenor
                      AND r.horizon = p.horizon
                      AND r.status = 'active'
-                     AND r.frequency = 'daily'
-                     AND r.task_type IN ('T+1', 'T+5')
+                     AND r.frequency = :cadence
+                     AND r.task_type IN :task_types
                     WHERE p.predict_date = :predict_date
                       AND p.prediction_phase = 'gray_live'
                     """
-                ),
-                {"predict_date": predict_date},
+                ).bindparams(bindparam("task_types", expanding=True)),
+                {
+                    "predict_date": predict_date,
+                    "cadence": cadence,
+                    "task_types": list(task_types),
+                },
             ).scalar_one()
         )
 
@@ -627,14 +669,16 @@ def load_snapshot(
         predict_date=predict_date,
         expected_feature_date=expected_feature_date,
         is_trading_day=calendar.is_trading_day(predict_date),
-        active_daily_base_schemes=active_schemes,
-        successful_daily_run_schemes=tuple(str(item) for item in successful_rows),
+        active_base_schemes=active_schemes,
+        successful_run_schemes=tuple(str(item) for item in successful_rows),
         predictions_count=predictions_count,
         run_prediction_counts=run_prediction_counts,
         prediction_date_checks=prediction_date_checks,
         actual_watermarks=tuple(actual_watermarks),
         gray_live_run_schemes=tuple(str(item) for item in gray_live_run_rows),
         gray_live_predictions_count=gray_live_predictions_count,
+        cadence=cadence,
+        is_due=_cadence_is_due(calendar, cadence, predict_date),
     )
 
 
@@ -723,6 +767,12 @@ def main() -> int:
     parser.add_argument("--predict-date", default=_default_predict_date(), help="YYYY-MM-DD, defaults to today")
     parser.add_argument("--tenor", action="append", help="Limit actual watermark checks to one tenor")
     parser.add_argument(
+        "--cadence",
+        default="daily",
+        choices=sorted(ACTUAL_TASK_TYPES_BY_FREQUENCY),
+        help="Reconcile expected vs actual signals for this cadence (default: daily).",
+    )
+    parser.add_argument(
         "--strict-runs",
         action="store_true",
         help="Treat missing successful runs for active daily schemes as errors instead of warnings.",
@@ -731,7 +781,12 @@ def main() -> int:
     engine = create_engine_from_env()
 
     try:
-        snapshot = load_snapshot(engine, predict_date=args.predict_date, tenors=args.tenor)
+        snapshot = load_snapshot(
+            engine,
+            predict_date=args.predict_date,
+            tenors=args.tenor,
+            cadence=args.cadence,
+        )
     finally:
         engine.dispose()
 

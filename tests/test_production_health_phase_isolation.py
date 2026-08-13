@@ -113,7 +113,7 @@ class PhaseIsolationTests(unittest.TestCase):
             ],
             predictions=[(1, 2, "gray_live")],
         )
-        self.assertEqual(snapshot.successful_daily_run_schemes, ())
+        self.assertEqual(snapshot.successful_run_schemes, ())
         self.assertEqual(snapshot.predictions_count, 0)
         self.assertEqual(snapshot.run_prediction_counts, ())
         self.assertIn("daily_predictions_missing", self._codes(snapshot))
@@ -136,7 +136,7 @@ class PhaseIsolationTests(unittest.TestCase):
             runs=[(1, "success", "scheduled_live", 1)],
             predictions=[(1, 1, "scheduled_live")],
         )
-        self.assertEqual(snapshot.successful_daily_run_schemes, ("demo_daily",))
+        self.assertEqual(snapshot.successful_run_schemes, ("demo_daily",))
         self.assertEqual(snapshot.predictions_count, 1)
         self.assertEqual(snapshot.gray_live_run_schemes, ())
         self.assertNotIn("daily_predictions_missing", self._codes(snapshot))
@@ -161,7 +161,7 @@ class PhaseIsolationTests(unittest.TestCase):
             runs=[(1, "success", None, 1)],
             predictions=[(1, 1, None)],
         )
-        self.assertEqual(snapshot.successful_daily_run_schemes, ())
+        self.assertEqual(snapshot.successful_run_schemes, ())
         self.assertEqual(snapshot.predictions_count, 0)
         self.assertEqual(snapshot.gray_live_run_schemes, ())
 

@@ -78,8 +78,11 @@ class EvaluateDailyHealthTests(unittest.TestCase):
             predict_date="2026-06-04",
             expected_feature_date="2026-06-02",
             is_trading_day=is_trading_day,
-            active_daily_base_schemes=("demo",),
-            successful_daily_run_schemes=(),
+            # 日频语义下「今天该不该出」就等于「今天是不是交易日」；
+            # 两者自 cadence 参数化后是两个字段，构造时必须都写明。
+            is_due=is_trading_day,
+            active_base_schemes=("demo",),
+            successful_run_schemes=(),
             predictions_count=predictions_count,
             run_prediction_counts=(),
             prediction_date_checks=(),
