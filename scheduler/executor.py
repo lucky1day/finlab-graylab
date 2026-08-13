@@ -325,7 +325,7 @@ def run_configured_scheme(
     *,
     engine,
     algo_env: str,
-    timeout_sec: int,
+    timeout_sec: int | None,
     blackbox_snapshot_mode: str = BLACKBOX_SNAPSHOT_MODE_FRESH,
     expected_generation_id: str | None = None,
     expected_refresh_date: str | None = None,
@@ -362,6 +362,10 @@ def run_configured_scheme(
         if validated_execution_token is not None:
             raise ValueError(
                 "execution_token is reserved for Blackbox execution"
+            )
+        if timeout_sec is None:
+            raise ValueError(
+                "Native execution timeout must be resolved before dispatch"
             )
         native_kwargs = {}
         if normalized_ephemeral_root is not None:
@@ -419,7 +423,7 @@ def run_blackbox_scheme_subprocess(
     *,
     engine,
     algo_env: str,
-    timeout_sec: int,
+    timeout_sec: int | None,
     snapshot_mode: str = BLACKBOX_SNAPSHOT_MODE_FRESH,
     expected_generation_id: str | None = None,
     expected_refresh_date: str | None = None,
@@ -504,7 +508,6 @@ def run_blackbox_scheme_subprocess(
         profile = replace(
             DEFAULT_RUNTIME_PROFILE,
             conda_env=blackbox_env,
-            predict_timeout_sec=timeout_sec,
         )
         with open_blackbox_runtime_view(input_bundle) as runtime_view:
             trusted_bundle = runtime_view.bundle
@@ -519,6 +522,8 @@ def run_blackbox_scheme_subprocess(
                     trusted_bundle.platform_input_ids,
                 "profile": profile,
             }
+            if timeout_sec is not None:
+                predict_kwargs["timeout_sec"] = timeout_sec
             if trusted_bundle.platform_input_ids:
                 predict_kwargs.update(
                     {
@@ -944,7 +949,7 @@ def execute_scheme(
     cfg: SchemeConfig,
     predict_date: str,
     algo_env: str = DEFAULT_ALGO_ENV,
-    timeout_sec: int = 600,
+    timeout_sec: int | None = None,
     *,
     prediction_phase: str,
     scheduled_control_plane: str | None = None,
@@ -1303,32 +1308,23 @@ def _append_audit_error(error_msg: str, operation: str, exc: Exception) -> str:
     return f"{error_msg}; {operation} audit failed: {exc}"
 
 
-def _effective_timeout_sec(cfg: SchemeConfig, default_timeout_sec: int) -> int:
-    """读取执行 timeout；Blackbox 的调用方 policy 值是不可放宽上限。"""
-    schedule = getattr(cfg, "schedule", None)
-    configured = getattr(schedule, "timeout_sec", None)
-    if configured is None:
-        configured = getattr(cfg, "execution_timeout_sec", None)
-    timeout = int(configured) if configured is not None else int(default_timeout_sec)
-    if getattr(cfg, "runtime_type", "native_adapter") == "blackbox_v2":
-        capped = min(timeout, int(default_timeout_sec))
-        if capped != timeout:
-            # 上限本身是有意策略，但平台不能同时「接受一个值」又「永不兑现它」：
-            # 沉默截断会让方案作者、容量评估与实际子进程用的不是同一个预算，
-            # 超时表象也会退化成意外执行失败而非显式配置冲突。
-            event = {
-                "scheme_id": getattr(cfg, "scheme_id", None),
-                "runtime_type": "blackbox_v2",
-                "configured_timeout_sec": timeout,
-                "effective_timeout_sec": capped,
-                "platform_ceiling_sec": int(default_timeout_sec),
-            }
-            logger.warning(
-                "blackbox_timeout_truncated %s",
-                json.dumps(event, ensure_ascii=False, sort_keys=True),
-                extra={"blackbox_timeout_event": event},
-            )
-        timeout = capped
+def _effective_timeout_sec(
+    cfg: SchemeConfig,
+    operation_timeout_sec: int | None,
+) -> int | None:
+    """解析本次执行 deadline；Blackbox 基础预算只来自 Runtime Profile。"""
+    runtime_type = getattr(cfg, "runtime_type", "native_adapter")
+    if runtime_type == "blackbox_v2":
+        if operation_timeout_sec is None:
+            return None
+        timeout = int(operation_timeout_sec)
+    else:
+        schedule = getattr(cfg, "schedule", None)
+        configured = getattr(schedule, "timeout_sec", None)
+        if configured is None:
+            configured = getattr(cfg, "execution_timeout_sec", None)
+        fallback = 600 if operation_timeout_sec is None else int(operation_timeout_sec)
+        timeout = int(configured) if configured is not None else fallback
     if timeout <= 0:
         raise ValueError(f"scheme {cfg.scheme_id} timeout_sec must be positive, got {timeout}")
     return timeout
