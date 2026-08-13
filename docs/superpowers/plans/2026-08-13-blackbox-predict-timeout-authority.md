@@ -1,125 +1,104 @@
-# Blackbox Predict Timeout Authority Implementation Plan
+# Blackbox Predict Timeout Budget Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make `blackbox-v2-v1` Runtime Profile the only Blackbox prediction-timeout authority, preserving the current 600-second scheduled behavior while rejecting scheme-level timeout declarations.
+**Goal:** Stop scheduled Blackbox predictions from being implicitly capped at 600 seconds while preserving all 39 existing exact scheme versions and applying explicit operation deadlines only as narrowing constraints.
 
-**Architecture:** The Blackbox config contract, Intake, canonical versioning, and discovery will remove `schedule.timeout_sec`. The runtime profile will declare 600 seconds, while executor callers may pass an optional operation deadline that the runner can only narrow with `min(profile, deadline)`; Native and Blackbox backtest budgets remain unchanged. Existing Blackbox configs are migrated atomically, which intentionally produces new exact scheme versions and therefore requires the existing separately authorized Gate/activation workflow before any production deployment.
+**Architecture:** Keep `config.yaml.schedule.timeout_sec` as the scheme request and `blackbox-v2-v1.predict_timeout_sec` as the platform ceiling. Make `execute_scheme()` default to no operation deadline, resolve the scheme request against an explicitly supplied deadline, and let the existing Blackbox runner cap that request against the Runtime Profile. Do not change Native or backtest behavior and do not perform any production lifecycle operation.
 
-**Tech Stack:** Python 3.12, dataclasses, JSON/YAML configuration, `unittest`/pytest, existing Blackbox V2 runner and Harness contracts.
+**Tech Stack:** Python 3.12, YAML/JSON configuration, dataclasses, unittest/pytest, existing Blackbox V2 executor and subprocess runner.
 
 ---
 
 ## File map
 
-- `shared/scheme_config_schema.py`: runtime-aware config validation; Blackbox rejects `schedule.timeout_sec`, Native keeps it.
-- `shared/blackbox_v2/intake.py`: generated Blackbox config no longer contains a timeout.
-- `shared/blackbox_v2/versioning.py`: canonical Blackbox config no longer versions a scheme-level timeout.
-- `scheduler/discovery.py`: Blackbox `SchemeSchedule.timeout_sec` is always `None` after validation.
-- `deploy/blackbox_v2/runtime_profile_v1.json`: the sole Blackbox predict budget changes from the stale declaration 3600 to the already-effective 600 seconds.
-- `scheduler/executor.py`: preserves optional operation deadlines without rewriting Runtime Profile limits or logging a truncation warning.
-- `scheduler/blackbox_v2_runner.py`: threads an optional predict deadline into the existing `min(profile, deadline)` subprocess boundary.
-- `tests/test_config_schema.py`, `tests/test_blackbox_v2_intake.py`, `tests/test_blackbox_v2_discovery.py`: fail-closed config, Intake, and canonical hash coverage.
-- `tests/test_blackbox_timeout_drift.py`, `tests/test_blackbox_v2_runner.py`: Runtime Profile authority, narrowing-only deadline, Native isolation, and repository inventory coverage.
-- `schemes/*/config.yaml` for the 39 Blackbox schemes listed in Task 3: remove the obsolete field only.
-- `docs/architecture/ARCHITECTURE.md`, `docs/architecture/BLACKBOX_V2_PLATFORM.md`, `docs/architecture/CODE_ARCHITECTURE.md`, `docs/architecture/HARNESS_ARCHITECTURE.md`, `docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md`: describe the single authority and production version boundary.
+- `schemes/*/config.yaml`: restore and retain `schedule.timeout_sec: 3600` for all 39 Blackbox schemes.
+- `shared/scheme_config_schema.py`: require a positive Blackbox schedule timeout instead of forbidding it.
+- `shared/blackbox_v2/intake.py`: continue generating the 3600-second scheme request.
+- `shared/blackbox_v2/versioning.py`: continue including the scheme request in the canonical config hash.
+- `scheduler/discovery.py`: load the Blackbox scheme request into `SchemeSchedule.timeout_sec`.
+- `deploy/blackbox_v2/runtime_profile_v1.json`: retain the 3600-second platform ceiling and 14400-second backtest ceiling.
+- `scheduler/executor.py`: distinguish optional operation deadline from scheme request and stop rewriting Runtime Profile values.
+- `scheduler/blackbox_v2_runner.py`: preserve the already-supported `min(profile ceiling, supplied request)` subprocess boundary.
+- `tests/test_config_schema.py`, `tests/test_blackbox_v2_intake.py`, `tests/test_blackbox_v2_discovery.py`, `tests/test_blackbox_timeout_drift.py`, `tests/test_blackbox_v2_runner.py`: lock the three-layer contract and exact-version preservation.
+- Five existing architecture/SOP documents: replace the superseded single-authority wording with the three-layer budget contract.
 
-### Task 1: Retire the Blackbox scheme-level timeout contract
+### Task 1: Restore the version-preserving configuration contract
 
 **Files:**
-- Modify: `tests/test_config_schema.py`
-- Modify: `tests/test_blackbox_v2_intake.py`
-- Modify: `tests/test_blackbox_v2_discovery.py`
+- Modify: `schemes/*/config.yaml` for the 39 Blackbox schemes
 - Modify: `shared/scheme_config_schema.py`
 - Modify: `shared/blackbox_v2/intake.py`
 - Modify: `shared/blackbox_v2/versioning.py`
 - Modify: `scheduler/discovery.py`
-- Modify: the 39 Blackbox `schemes/*/config.yaml` paths listed in Step 5
+- Modify: `deploy/blackbox_v2/runtime_profile_v1.json`
+- Modify: `tests/test_config_schema.py`
+- Modify: `tests/test_blackbox_v2_intake.py`
+- Modify: `tests/test_blackbox_v2_discovery.py`
 
-- [ ] **Step 1: Write the failing config and Intake tests**
+- [ ] **Step 1: Restore the target-branch contract files without copying user work**
 
-Add a Blackbox fixture and rejection test to `tests/test_config_schema.py`, while retaining the existing Native positive-timeout test:
+Use `git show 9fe8b73:<path>` only as read-only reference and `apply_patch` to restore:
+
+```yaml
+schedule:
+  cron: '<existing cron>'
+  timezone: Asia/Shanghai
+  timeout_sec: 3600
+```
+
+Restore Intake generation:
 
 ```python
-def _base_blackbox_config() -> dict:
-    return {
-        "scheme_id": "demo_blackbox",
-        "runtime_type": "blackbox_v2",
-        "input_source": "data_bridge_current",
-        "runtime_profile": "blackbox-v2-v1",
-        "data_schema_version": "data-bridge-v1",
-        "status": "paused",
-        "version_status": "draft",
-        "schedule": {
-            "cron": "3 7 * * 1-5",
-            "timezone": "Asia/Shanghai",
-        },
-        "delivery": {
-            "script": "delivery/demo_blackbox.py",
-            "metadata": "delivery/demo_blackbox.json",
-        },
-    }
+"  timeout_sec: 3600\n"
+```
 
+Restore canonical versioning:
 
-def test_blackbox_schedule_timeout_sec_is_forbidden(self) -> None:
+```python
+timeout_sec = schedule.get("timeout_sec")
+canonical["schedule"] = {
+    "cron": str(_required_value(schedule, "cron", "schedule.cron")),
+    "timezone": str(schedule.get("timezone", DEFAULT_TIMEZONE)),
+    "timeout_sec": int(timeout_sec) if timeout_sec is not None else None,
+}
+```
+
+Restore discovery:
+
+```python
+timeout_sec=(
+    int(schedule_raw["timeout_sec"])
+    if schedule_raw.get("timeout_sec") is not None
+    else None
+),
+```
+
+Restore Runtime Profile values:
+
+```json
+"predict_timeout_sec": 3600,
+"backtest_timeout_sec": 14400
+```
+
+- [ ] **Step 2: Add a failing missing-timeout schema test**
+
+In `tests/test_config_schema.py`, use the existing Blackbox fixture and add:
+
+```python
+def test_blackbox_schedule_timeout_sec_is_required(self) -> None:
     config = _base_blackbox_config()
-    config["schedule"]["timeout_sec"] = 600
+    config["schedule"].pop("timeout_sec", None)
 
     errors = validate_config(config, dirname="demo_blackbox")
 
     self.assertIn(
-        "Blackbox V2 schedule.timeout_sec is forbidden; "
-        "predict timeout is owned by runtime_profile",
+        "Blackbox V2 schedule.timeout_sec must be a positive integer",
         errors,
     )
 ```
 
-In `tests/test_blackbox_v2_intake.py::test_intake_preserves_delivery_bytes_and_generates_paused_config`, add:
-
-```python
-self.assertNotIn("timeout_sec", config)
-```
-
-In `tests/test_blackbox_v2_discovery.py`:
-
-```python
-def test_blackbox_rejects_schedule_timeout(self) -> None:
-    from scheduler.discovery import load_scheme_config
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        scheme_dir = _write_blackbox_scheme(Path(tmpdir))
-        config_path = scheme_dir / "config.yaml"
-        config_path.write_text(
-            config_path.read_text(encoding="utf-8").replace(
-                "  timezone: Asia/Shanghai\n",
-                "  timezone: Asia/Shanghai\n  timeout_sec: 600\n",
-            ),
-            encoding="utf-8",
-        )
-
-        with self.assertRaisesRegex(ValueError, "schedule.timeout_sec is forbidden"):
-            load_scheme_config(config_path)
-```
-
-Also assert the valid fixture resolves `config.schedule.timeout_sec is None`.
-
-Add a repository-inventory test to the same class:
-
-```python
-def test_repository_blackbox_configs_do_not_declare_timeout(self) -> None:
-    import yaml
-
-    project_root = Path(__file__).resolve().parents[1]
-    blackbox_paths = []
-    for path in sorted((project_root / "schemes").glob("*/config.yaml")):
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-        if raw.get("runtime_type") == "blackbox_v2":
-            blackbox_paths.append(path)
-            self.assertNotIn("timeout_sec", raw["schedule"], str(path))
-    self.assertEqual(len(blackbox_paths), 39)
-```
-
-- [ ] **Step 2: Run the contract tests and verify they fail for the intended reasons**
+- [ ] **Step 3: Run the new test and verify RED**
 
 Run:
 
@@ -127,106 +106,26 @@ Run:
 PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
 conda run --no-capture-output -n bond_factor_lab_service \
 python -m pytest -q \
-  tests/test_config_schema.py::ConfigSchemaScheduleTests \
-  tests/test_blackbox_v2_intake.py::BlackboxV2IntakeTests::test_intake_preserves_delivery_bytes_and_generates_paused_config \
-  tests/test_blackbox_v2_discovery.py::BlackboxV2DiscoveryTests::test_blackbox_rejects_schedule_timeout \
-  tests/test_blackbox_v2_discovery.py::BlackboxV2DiscoveryTests::test_repository_blackbox_configs_do_not_declare_timeout
+  tests/test_config_schema.py::ConfigSchemaScheduleTests::test_blackbox_schedule_timeout_sec_is_required
 ```
 
-Expected: FAIL because Blackbox validation still accepts `timeout_sec`, Intake still emits it, discovery does not reject it, and all 39 repository configs still declare it.
+Expected: FAIL because the restored baseline accepts an omitted Blackbox timeout.
 
-- [ ] **Step 3: Implement fail-closed Blackbox validation and stop Intake generation**
+- [ ] **Step 4: Require the Blackbox scheme request**
 
-Add this check inside the Blackbox schedule branch in `shared/scheme_config_schema.py`:
+Inside the Blackbox schedule validation branch in `shared/scheme_config_schema.py`, implement:
 
 ```python
-if "timeout_sec" in schedule:
+timeout_sec = schedule.get("timeout_sec")
+if type(timeout_sec) is not int or timeout_sec <= 0:
     errors.append(
-        "Blackbox V2 schedule.timeout_sec is forbidden; "
-        "predict timeout is owned by runtime_profile"
+        "Blackbox V2 schedule.timeout_sec must be a positive integer"
     )
 ```
 
-Delete only this line from `shared/blackbox_v2/intake.py::_config_text`:
+Do not add a default or compatibility fallback.
 
-```python
-"  timeout_sec: 3600\n"
-```
-
-- [ ] **Step 4: Remove timeout from canonical Blackbox versioning and discovery**
-
-Change `shared/blackbox_v2/versioning.py::canonical_platform_config` so its schedule payload is exactly:
-
-```python
-canonical["schedule"] = {
-    "cron": str(_required_value(schedule, "cron", "schedule.cron")),
-    "timezone": str(schedule.get("timezone", DEFAULT_TIMEZONE)),
-}
-```
-
-Change the Blackbox schedule construction in `scheduler/discovery.py::_load_blackbox_config` to:
-
-```python
-schedule=SchemeSchedule(
-    cron=str(schedule_raw["cron"]),
-    timezone=str(schedule_raw.get("timezone", "Asia/Shanghai")),
-    timeout_sec=None,
-),
-```
-
-In `tests/test_blackbox_v2_discovery.py`, delete the old `test_blackbox_version_changes_when_schedule_timeout_changes`, remove `timeout_sec` from `_canonical_raw_config()` and the reordered canonical fixture, rename the frozen hash test to describe the single-authority canonical contract, and update its exact expected SHA-256 to:
-
-```python
-"7cced30aca764474c1771890d755d6bdfc868e90f1da28f2196b91edb5bbe6ff"
-```
-
-- [ ] **Step 5: Remove only the obsolete field from the 39 Blackbox configs**
-
-Delete exactly the line `  timeout_sec: 3600` from each file below; do not change cron, timezone, lifecycle state, delivery paths, display names, platform inputs, or metadata:
-
-```text
-schemes/cgb_a4_fundseason_10y/config.yaml
-schemes/cgb_a4_fundseason_1y/config.yaml
-schemes/cgb_a4_fundseason_3y/config.yaml
-schemes/cgb_a4_fundseason_5y/config.yaml
-schemes/cgb_a4_fundseason_7y/config.yaml
-schemes/cgb_causal_wk_1y/config.yaml
-schemes/cgb_causal_wk_1y_v128/config.yaml
-schemes/cgb_causal_wk_3y/config.yaml
-schemes/five_y_t5_lgbm_3y_anti_lag252_b8_v1/config.yaml
-schemes/five_y_t5_lgbm_3y_z_anti180_b12_v1/config.yaml
-schemes/five_y_t5_xgb_spr_3y1y_b8_v1/config.yaml
-schemes/one_y_t1_quote_state_hv_v1/config.yaml
-schemes/one_y_t5_liq_excess_a_v1/config.yaml
-schemes/one_y_t5_liq_excess_a_w252_l7_v1/config.yaml
-schemes/one_y_t5_liq_excess_a_w350_l7_v1/config.yaml
-schemes/one_y_t5_liq_excess_b_w252_l7_v1/config.yaml
-schemes/one_y_t5_xgb_10y_streak_anti7_b8_v1/config.yaml
-schemes/one_y_t5_xgb_7y_cond_rev20_b12_v1/config.yaml
-schemes/one_y_t5_xgb_spr_zrev_10y5y_b12_v1/config.yaml
-schemes/seven_y_current55_lgbm_001_v2/config.yaml
-schemes/seven_y_current55_lgbm_002_v2/config.yaml
-schemes/seven_y_t5_lgbm_bf_z_anti40_b8_v1/config.yaml
-schemes/seven_y_t5_xgb_7y_rv_rev20_b0_v1/config.yaml
-schemes/seven_y_t5_xgb_bf_z_anti40_b0_v1/config.yaml
-schemes/ten_y_t5_maj3_k3_ic_static_v1/config.yaml
-schemes/ten_y_t5_maj4_k3_ic_static_v1/config.yaml
-schemes/ten_y_t5_maj4_k3_ic_yearly_v1/config.yaml
-schemes/ten_y_t5_say_k5_sharpe_static_v1/config.yaml
-schemes/three_y_adyn_lb1_k3_v1/config.yaml
-schemes/three_y_adyn_lb2_k1_v1/config.yaml
-schemes/three_y_t5_lgbm_7yanti_b12_v2/config.yaml
-schemes/three_y_t5_xgb_fxlead_b8_v2/config.yaml
-schemes/three_y_t5_xgb_tp_5y1y_b12_v2/config.yaml
-schemes/wavg_10y_gapflip_v5/config.yaml
-schemes/wavg_1y_gapflip_v5/config.yaml
-schemes/wavg_3y_gapflip_v5/config.yaml
-schemes/wavg_5y_gapflip_v5/config.yaml
-schemes/wavg_7y_gapflip_v5/config.yaml
-schemes/weekly_10y_lgbm_point_v1/config.yaml
-```
-
-- [ ] **Step 6: Run the focused contract tests and verify they pass**
+- [ ] **Step 5: Run focused config, Intake, discovery, and version tests**
 
 Run:
 
@@ -240,230 +139,120 @@ python -m pytest -q \
   tests/test_active_blackbox_conformance.py
 ```
 
-Expected: all selected tests PASS; Native positive `schedule.timeout_sec` remains valid.
+Expected: PASS.
 
-- [ ] **Step 7: Commit the contract and repository migration atomically**
+- [ ] **Step 6: Prove all scheme configs and exact versions match the target branch**
+
+Run:
 
 ```bash
-git add \
-  shared/scheme_config_schema.py \
-  shared/blackbox_v2/intake.py \
-  shared/blackbox_v2/versioning.py \
-  scheduler/discovery.py \
-  tests/test_config_schema.py \
-  tests/test_blackbox_v2_intake.py \
-  tests/test_blackbox_v2_discovery.py \
-  schemes/*/config.yaml
-git diff --cached --check
-git commit -m "fix(blackbox): retire scheme predict timeout"
+git diff --exit-code 9fe8b73 -- schemes
+git diff --exit-code 9fe8b73 -- deploy/blackbox_v2/runtime_profile_v1.json
 ```
 
-Before committing, use `git diff --cached --name-only` and confirm every staged `schemes/*/config.yaml` is one of the 39 paths above. Each staged Blackbox config diff must contain exactly one deleted `timeout_sec` line and no addition.
+Expected: both commands exit 0 with no output.
 
-### Task 2: Make Runtime Profile and operation deadline semantics executable
+- [ ] **Step 7: Commit the contract restoration**
+
+```bash
+git add deploy/blackbox_v2/runtime_profile_v1.json schemes \
+  shared/scheme_config_schema.py shared/blackbox_v2/intake.py \
+  shared/blackbox_v2/versioning.py scheduler/discovery.py \
+  tests/test_config_schema.py tests/test_blackbox_v2_intake.py \
+  tests/test_blackbox_v2_discovery.py
+git commit -m "fix(blackbox): preserve timeout version contract"
+```
+
+### Task 2: Implement the three-layer predict budget with TDD
 
 **Files:**
 - Modify: `tests/test_blackbox_timeout_drift.py`
 - Modify: `tests/test_blackbox_v2_runner.py`
-- Modify: `deploy/blackbox_v2/runtime_profile_v1.json`
 - Modify: `scheduler/executor.py`
 - Modify: `scheduler/blackbox_v2_runner.py`
 
-- [ ] **Step 1: Replace truncation-warning tests with authority tests**
+- [ ] **Step 1: Write failing executor hierarchy tests**
 
-Rewrite `tests/test_blackbox_timeout_drift.py` so its focused unit tests are:
-
-```python
-from __future__ import annotations
-
-import json
-import sys
-import unittest
-from pathlib import Path
-from types import SimpleNamespace
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-
-def _cfg(runtime_type: str, configured: int | None):
-    return SimpleNamespace(
-        scheme_id="demo",
-        runtime_type=runtime_type,
-        schedule=SimpleNamespace(timeout_sec=configured),
-    )
-
-
-class TimeoutAuthorityTests(unittest.TestCase):
-    def _effective(self, cfg, deadline=None):
-        from scheduler.executor import _effective_timeout_sec
-
-        return _effective_timeout_sec(cfg, deadline)
-
-    def test_runtime_profile_owns_600_second_predict_budget(self) -> None:
-        from scheduler.blackbox_v2_runner import DEFAULT_RUNTIME_PROFILE
-
-        self.assertEqual(DEFAULT_RUNTIME_PROFILE.predict_timeout_sec, 600)
-        self.assertEqual(DEFAULT_RUNTIME_PROFILE.backtest_timeout_sec, 14400)
-
-    def test_blackbox_without_operation_deadline_defers_to_profile(self) -> None:
-        self.assertIsNone(self._effective(_cfg("blackbox_v2", None)))
-
-    def test_blackbox_operation_deadline_remains_independent(self) -> None:
-        self.assertEqual(self._effective(_cfg("blackbox_v2", None), 300), 300)
-        self.assertEqual(self._effective(_cfg("blackbox_v2", None), 1800), 1800)
-
-    def test_native_config_is_still_honoured(self) -> None:
-        self.assertEqual(self._effective(_cfg("native_adapter", 3600)), 3600)
-
-    def test_native_without_config_keeps_600_second_default(self) -> None:
-        self.assertEqual(self._effective(_cfg("native_adapter", None)), 600)
-
-    def test_runtime_profile_file_matches_loaded_contract(self) -> None:
-        raw = json.loads(
-            (PROJECT_ROOT / "deploy/blackbox_v2/runtime_profile_v1.json")
-            .read_text(encoding="utf-8")
-        )
-        self.assertEqual(raw["predict_timeout_sec"], 600)
-        self.assertEqual(raw["backtest_timeout_sec"], 14400)
-```
-
-- [ ] **Step 2: Add runner tests for an independent optional deadline**
-
-In `tests/test_blackbox_v2_runner.py`, extend the scheduled Blackbox mock assertion so a call with `timeout_sec=300` proves:
+Replace the superseded single-authority assertions in `tests/test_blackbox_timeout_drift.py` with:
 
 ```python
-self.assertEqual(predict.call_args.kwargs["profile"].predict_timeout_sec, 600)
-self.assertEqual(predict.call_args.kwargs["timeout_sec"], 300)
+def test_runtime_profile_keeps_3600_second_predict_ceiling(self) -> None:
+    from scheduler.blackbox_v2_runner import DEFAULT_RUNTIME_PROFILE
+
+    self.assertEqual(DEFAULT_RUNTIME_PROFILE.predict_timeout_sec, 3600)
+    self.assertEqual(DEFAULT_RUNTIME_PROFILE.backtest_timeout_sec, 14400)
+
+def test_blackbox_without_operation_deadline_uses_scheme_request(self) -> None:
+    self.assertEqual(self._effective(_cfg("blackbox_v2", 3600)), 3600)
+
+def test_blackbox_explicit_deadline_can_only_narrow_scheme_request(self) -> None:
+    cfg = _cfg("blackbox_v2", 3600)
+    self.assertEqual(self._effective(cfg, 600), 600)
+    self.assertEqual(self._effective(cfg, 7200), 3600)
+
+def test_blackbox_missing_scheme_request_fails_closed(self) -> None:
+    with self.assertRaisesRegex(ValueError, "timeout_sec must be configured"):
+        self._effective(_cfg("blackbox_v2", None))
 ```
 
-Add a direct `run_blackbox_predict` mock test that verifies `timeout_sec=None` is omitted and `timeout_sec=1800` is passed independently to `execute_blackbox_cli`:
+Keep the Native assertions:
 
 ```python
-def test_predict_forwards_optional_operation_deadline_independently(self) -> None:
-    from scheduler.blackbox_v2_runner import RuntimeProfile, run_blackbox_predict
-
-    for deadline in (None, 1800):
-        with self.subTest(deadline=deadline), tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            kwargs = {
-                "metadata": _metadata(),
-                "script_path": root / "trial.py",
-                "request": _request("001"),
-                "data_dir": root / "data",
-                "data_snapshot_id": "snapshot-test",
-                "profile": RuntimeProfile.for_tests(predict_timeout_sec=600),
-                "timeout_sec": deadline,
-            }
-            with (
-                patch("scheduler.blackbox_v2_runner.execute_blackbox_cli") as execute,
-                patch(
-                    "scheduler.blackbox_v2_runner.load_prediction_result",
-                    return_value="result",
-                ),
-                patch(
-                    "scheduler.blackbox_v2_runner._to_prediction_record",
-                    return_value="record",
-                ),
-            ):
-                self.assertEqual(run_blackbox_predict(**kwargs), "record")
-
-            if deadline is None:
-                self.assertNotIn("timeout_sec", execute.call_args.kwargs)
-            else:
-                self.assertEqual(execute.call_args.kwargs["timeout_sec"], deadline)
+self.assertEqual(self._effective(_cfg("native_adapter", 3600)), 3600)
+self.assertEqual(self._effective(_cfg("native_adapter", None)), 600)
 ```
 
-Add this focused CLI boundary test using `_run_process` mocking so the actual subprocess wait value is observable without sleeping:
-
-```python
-def test_predict_operation_deadline_cannot_enlarge_profile(self) -> None:
-    from scheduler.blackbox_v2_runner import RuntimeProfile, execute_blackbox_cli
-    from shared.blackbox_v2.requests import write_request
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        root = Path(tmpdir)
-        script = _write_script(root / "trial.py", _SUCCESS_SCRIPT)
-        data_dir = _write_data_dir(root)
-        request = write_request(_request("001"), root / "request.json")
-        output = root / "run" / "prediction.json"
-        output.parent.mkdir()
-        def completed(*_args, **_kwargs):
-            output.write_text("{}\n", encoding="utf-8")
-            return subprocess.CompletedProcess([], 0, "", "")
-
-        with patch(
-            "scheduler.blackbox_v2_runner._run_process",
-            side_effect=completed,
-        ) as run:
-            execute_blackbox_cli(
-                script_path=script,
-                mode="predict",
-                input_path=request,
-                data_dir=data_dir,
-                output_path=output,
-                profile=RuntimeProfile.for_tests(predict_timeout_sec=600),
-                timeout_sec=1800,
-            )
-
-    self.assertEqual(run.call_args.kwargs["timeout"], 600.0)
-```
-
-Repeat the call with a fresh temporary root and `timeout_sec=300`; assert `_run_process(..., timeout=300.0)`.
-
-- [ ] **Step 3: Run the new authority tests and verify they fail**
+- [ ] **Step 2: Run hierarchy tests and verify RED**
 
 Run:
 
 ```bash
 PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
 conda run --no-capture-output -n bond_factor_lab_service \
-python -m pytest -q \
-  tests/test_blackbox_timeout_drift.py \
-  tests/test_blackbox_v2_runner.py -k 'timeout or scheduled_blackbox'
+python -m pytest -q tests/test_blackbox_timeout_drift.py
 ```
 
-Expected: FAIL because the profile still declares 3600, executor still rewrites it, and `run_blackbox_predict` has no independent operation-deadline parameter.
+Expected: FAIL because current Blackbox `_effective_timeout_sec()` ignores the scheme request.
 
-- [ ] **Step 4: Correct the Runtime Profile declaration**
+- [ ] **Step 3: Implement the minimal executor resolution**
 
-In `deploy/blackbox_v2/runtime_profile_v1.json`, change only:
-
-```json
-"predict_timeout_sec": 600
-```
-
-Keep `"backtest_timeout_sec": 14400` unchanged.
-
-- [ ] **Step 5: Implement optional operation deadlines without Profile mutation**
-
-Change `scheduler.executor.execute_scheme` to accept an optional deadline:
+Make `execute_scheme()` keep the optional operation deadline:
 
 ```python
 timeout_sec: int | None = None,
 ```
 
-Replace `_effective_timeout_sec` with:
+Implement `_effective_timeout_sec()` as:
 
 ```python
 def _effective_timeout_sec(
     cfg: SchemeConfig,
     operation_timeout_sec: int | None,
-) -> int | None:
-    """解析本次执行 deadline；Blackbox 基础预算只来自 Runtime Profile。"""
+) -> int:
     runtime_type = getattr(cfg, "runtime_type", "native_adapter")
+    schedule = getattr(cfg, "schedule", None)
+    configured = getattr(schedule, "timeout_sec", None)
+    if configured is None:
+        configured = getattr(cfg, "execution_timeout_sec", None)
+
     if runtime_type == "blackbox_v2":
-        if operation_timeout_sec is None:
-            return None
-        timeout = int(operation_timeout_sec)
-    else:
-        schedule = getattr(cfg, "schedule", None)
-        configured = getattr(schedule, "timeout_sec", None)
         if configured is None:
-            configured = getattr(cfg, "execution_timeout_sec", None)
+            raise ValueError(
+                f"scheme {cfg.scheme_id} timeout_sec must be configured"
+            )
+        timeout = int(configured)
+        if operation_timeout_sec is not None:
+            operation_timeout = int(operation_timeout_sec)
+            if operation_timeout <= 0:
+                raise ValueError(
+                    f"scheme {cfg.scheme_id} timeout_sec must be positive, "
+                    f"got {operation_timeout}"
+                )
+            timeout = min(timeout, operation_timeout)
+    else:
         fallback = 600 if operation_timeout_sec is None else int(operation_timeout_sec)
         timeout = int(configured) if configured is not None else fallback
+
     if timeout <= 0:
         raise ValueError(
             f"scheme {cfg.scheme_id} timeout_sec must be positive, got {timeout}"
@@ -471,51 +260,29 @@ def _effective_timeout_sec(
     return timeout
 ```
 
-Delete the `blackbox_timeout_truncated` event and warning. Keep module-level `json`, `logging`, and `replace` imports if other code in `scheduler/executor.py` still uses them.
+Keep `run_blackbox_scheme_subprocess()` passing `timeout_sec` separately to
+`run_blackbox_predict()` and keep the Runtime Profile unchanged except for the existing conda-env
+selection.
 
-Update these signatures to accept `int | None` for the Blackbox branch only:
+- [ ] **Step 4: Run hierarchy tests and verify GREEN**
 
-```python
-def run_configured_scheme(..., timeout_sec: int | None, ...) -> list[PredictionRecord]:
-def run_blackbox_scheme_subprocess(..., timeout_sec: int | None, ...) -> list[PredictionRecord]:
-```
+Run the same command as Step 2.
 
-Before calling `run_scheme_subprocess` in the Native branch, fail if `timeout_sec is None`; the only legal caller is `execute_scheme`, which resolves Native `None` to 600:
+Expected: all tests pass.
 
-```python
-if timeout_sec is None:
-    raise ValueError("Native execution timeout must be resolved before dispatch")
-```
+- [ ] **Step 5: Lock the runner ceiling independently**
 
-In `run_blackbox_scheme_subprocess`, keep only the conda environment override:
+In `tests/test_blackbox_v2_runner.py`, keep or add a table-driven test around
+`execute_blackbox_cli()` that captures `_run_process(timeout=...)` and asserts:
 
 ```python
-profile = replace(DEFAULT_RUNTIME_PROFILE, conda_env=blackbox_env)
+for requested, expected in ((None, 3600), (600, 600), (7200, 3600)):
+    # execute_blackbox_cli(profile=predict_timeout_sec=3600,
+    #                      timeout_sec=requested)
+    self.assertEqual(run_process.call_args.kwargs["timeout"], expected)
 ```
 
-and pass the independent deadline in `predict_kwargs` only when present:
-
-```python
-if timeout_sec is not None:
-    predict_kwargs["timeout_sec"] = timeout_sec
-```
-
-Add the optional parameter to `scheduler.blackbox_v2_runner.run_blackbox_predict`:
-
-```python
-timeout_sec: float | None = None,
-```
-
-and forward it to `execute_blackbox_cli` only when present:
-
-```python
-if timeout_sec is not None:
-    execute_kwargs["timeout_sec"] = timeout_sec
-```
-
-Do not change `run_blackbox_backtest`, `BacktestExecutionBudget`, or `run_blackbox_gray_replay_batch`.
-
-- [ ] **Step 6: Run focused runner and Native regression tests**
+- [ ] **Step 6: Run executor/runner integration tests**
 
 Run:
 
@@ -525,28 +292,23 @@ conda run --no-capture-output -n bond_factor_lab_service \
 python -m pytest -q \
   tests/test_blackbox_timeout_drift.py \
   tests/test_blackbox_v2_runner.py \
-  tests/test_native_executor.py \
   tests/test_launchd_prediction_runner.py \
-  tests/test_signal_gap_fill.py \
-  tests/test_signal_gap_fill_cli.py
+  tests/test_signal_gap_plan.py \
+  tests/test_live_gate.py
 ```
 
-Expected: all selected tests PASS; Blackbox predict is capped by Profile, Native keeps its config timeout, and gray replay/backtest behavior remains unchanged.
+Expected: PASS, including scheduled calls with no operation deadline and explicit Harness/gap
+deadlines.
 
-- [ ] **Step 7: Commit the execution-authority change**
+- [ ] **Step 7: Commit the runtime fix**
 
 ```bash
-git add \
-  deploy/blackbox_v2/runtime_profile_v1.json \
-  scheduler/executor.py \
-  scheduler/blackbox_v2_runner.py \
-  tests/test_blackbox_timeout_drift.py \
-  tests/test_blackbox_v2_runner.py
-git diff --cached --check
-git commit -m "fix(runtime): make profile own blackbox timeout"
+git add scheduler/executor.py scheduler/blackbox_v2_runner.py \
+  tests/test_blackbox_timeout_drift.py tests/test_blackbox_v2_runner.py
+git commit -m "fix(runtime): honor blackbox timeout hierarchy"
 ```
 
-### Task 3: Update the timeout contract documentation
+### Task 3: Align documentation and verify the complete branch
 
 **Files:**
 - Modify: `docs/architecture/ARCHITECTURE.md`
@@ -554,92 +316,48 @@ git commit -m "fix(runtime): make profile own blackbox timeout"
 - Modify: `docs/architecture/CODE_ARCHITECTURE.md`
 - Modify: `docs/architecture/HARNESS_ARCHITECTURE.md`
 - Modify: `docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md`
+- Modify: `docs/superpowers/plans/2026-08-13-blackbox-predict-timeout-authority.md`
 
-- [ ] **Step 1: Verify the repository migration is complete and Native declarations remain**
+- [ ] **Step 1: Replace the superseded single-authority wording**
 
-Run:
-
-```bash
-test "$(rg -l '^runtime_type:[[:space:]]*blackbox_v2[[:space:]]*$' schemes/*/config.yaml | wc -l | tr -d ' ')" = "39"
-test -z "$(for f in $(rg -l '^runtime_type:[[:space:]]*blackbox_v2[[:space:]]*$' schemes/*/config.yaml); do rg -l '^[[:space:]]*timeout_sec:' "$f"; done)"
-rg -n '^[[:space:]]*timeout_sec:' schemes/*/config.yaml
-```
-
-Expected: first two commands exit 0; final output contains only Native configs that still own their execution budgets.
-
-- [ ] **Step 2: Update architecture and platform SOP wording**
-
-Make these statements explicit and consistent:
+Document exactly:
 
 ```text
-Blackbox predict timeout is fixed by deploy/blackbox_v2/runtime_profile_v1.json.
-Blackbox config.yaml must not declare schedule.timeout_sec.
-An operation deadline can only narrow the profile budget and cannot enlarge it.
-Native schedule.timeout_sec remains a scheme-level L3 execution budget.
-Blackbox backtest_timeout_sec remains an independent Runtime Profile budget.
-Changing the 39 canonical configs creates new exact versions; deployment requires the existing Gate and revision activation workflow and is not authorized by the code merge.
+Blackbox predict final timeout = min(
+  scheme schedule.timeout_sec,
+  Runtime Profile predict_timeout_sec,
+  explicit operation deadline when supplied
+)
 ```
 
-Apply that contract at the existing timeout/budget paragraphs in:
+State that scheme configuration is the request, Runtime Profile is the ceiling, operation deadline
+is optional and narrowing-only, and no exact version or lifecycle transition is required.
 
-- `docs/architecture/ARCHITECTURE.md`: prediction flow reads Native scheme timeout or Blackbox Runtime Profile.
-- `docs/architecture/BLACKBOX_V2_PLATFORM.md`: remove the three-source/preflight alignment description and state single authority.
-- `docs/architecture/CODE_ARCHITECTURE.md`: split the Native scheme-level row from the Blackbox profile rule.
-- `docs/architecture/HARNESS_ARCHITECTURE.md`: replace Blackbox-config budget evidence with Runtime Profile budget and actual duration evidence.
-- `docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md`: add the fail-closed Intake/StaticGate rule and production exact-version boundary near the Runtime Profile section.
+- [ ] **Step 2: Verify no stale heavy-design claims remain**
 
-Do not add rollout automation, database commands, launchd commands, or compatibility instructions.
+Run:
 
-- [ ] **Step 3: Run the migrated-repository contract suite**
+```bash
+rg -n "only Blackbox prediction-timeout authority|sole Blackbox predict|new exact version|39.*Gate|predict_timeout_sec.*600" \
+  docs deploy scheduler shared tests
+```
+
+Expected: no stale contract claim; test fixture occurrences are allowed only when explicitly testing
+deadline narrowing.
+
+- [ ] **Step 3: Compile changed Python directories**
 
 Run:
 
 ```bash
 PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
 conda run --no-capture-output -n bond_factor_lab_service \
-python -m pytest -q \
-  tests/test_blackbox_timeout_drift.py \
-  tests/test_active_blackbox_conformance.py \
-  tests/test_blackbox_v2_discovery.py \
-  tests/test_blackbox_v2_intake.py \
-  tests/test_blackbox_v2_harness_gates.py
+python -m compileall -q scheduler shared tests
 ```
 
-Expected: all selected tests PASS, including discovery of all repository Blackbox configs.
+Expected: exit 0.
 
-- [ ] **Step 4: Commit the documentation update**
-
-```bash
-git add \
-  docs/architecture/ARCHITECTURE.md \
-  docs/architecture/BLACKBOX_V2_PLATFORM.md \
-  docs/architecture/CODE_ARCHITECTURE.md \
-  docs/architecture/HARNESS_ARCHITECTURE.md \
-  docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md
-git diff --cached --check
-git commit -m "docs: align blackbox timeout contract"
-```
-
-### Task 4: Fresh verification and production-version handoff gate
-
-**Files:**
-- No new implementation files
-- Verify: all files changed in Tasks 1-3
-
-- [ ] **Step 1: Run whitespace and compilation checks**
-
-Run:
-
-```bash
-git diff --check 9fe8b73fee1d2f42d318e3f4cecd72c7cfc0b38d..HEAD
-PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
-conda run --no-capture-output -n bond_factor_lab_service \
-python -m compileall -q shared/blackbox_v2 shared scheduler tests
-```
-
-Expected: both commands exit 0 with no output.
-
-- [ ] **Step 2: Run the complete test suite**
+- [ ] **Step 4: Run complete pytest**
 
 Run:
 
@@ -649,65 +367,72 @@ conda run --no-capture-output -n bond_factor_lab_service \
 python -m pytest -q
 ```
 
-Expected: all tests and subtests PASS; record exact counts and warnings from this fresh run.
+Expected: all tests pass.
 
-- [ ] **Step 3: Review the exact diff and production boundary**
-
-Run:
-
-```bash
-git status --short
-git diff --stat 9fe8b73fee1d2f42d318e3f4cecd72c7cfc0b38d..HEAD
-git diff --name-status 9fe8b73fee1d2f42d318e3f4cecd72c7cfc0b38d..HEAD
-rg -n 'blackbox_timeout_truncated|schedule\.timeout_sec' \
-  scheduler shared tests docs/architecture docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md
-```
-
-Expected: worktree is clean; the old warning is absent; remaining `schedule.timeout_sec` references are explicitly Native-only or the Blackbox forbidden-field contract; no production operation script or migration was added.
-
-- [ ] **Step 4: Prove the live control plane reads the shared development worktree**
-
-Read the three installed one-shot plists without modifying or reloading them:
-
-```bash
-for f in \
-  "$HOME/Library/LaunchAgents/com.bond-factor-lab.daily-predictions.plist" \
-  "$HOME/Library/LaunchAgents/com.bond-factor-lab.weekly-predictions.plist" \
-  "$HOME/Library/LaunchAgents/com.bond-factor-lab.monthly-predictions.plist"
-do
-  /usr/libexec/PlistBuddy -c 'Print :WorkingDirectory' "$f"
-done
-```
-
-Expected: all three print `/Users/macstudio0/bond-factor-lab`. Record this as the reason a merge into the current development worktree is a production-visible configuration switch, not a harmless repository-only step.
-
-- [ ] **Step 5: Stop at the production-version gate**
-
-Leave `codex/issue-45-timeout-authority-20260813` fully committed and clean. Do not merge it into `codex/audit-bugfixes-20260613`, do not push it, and do not close #45 yet.
-
-Handoff evidence must include:
-
-```text
-The 39 canonical config changes create 39 new exact scheme versions.
-Installed prediction LaunchAgents execute from /Users/macstudio0/bond-factor-lab.
-Merging before database preparation would expose natural scheduling to unregistered versions and fail closed.
-No production DB, Gate side effect, activation, launchd, service, development-branch, remote, or master operation was performed.
-```
-
-The separate production migration design must establish an authorized, fail-closed sequence for registering/Gating/activating the new exact versions and switching the shared worktree without creating an execution window where repository configs and active database versions disagree. It may not solve ordering with a compatibility fallback.
-
-- [ ] **Step 6: Record the feature-branch terminal state**
+- [ ] **Step 5: Verify diff safety and exact-version preservation**
 
 Run:
 
 ```bash
-git branch --show-current
+git diff --check 9fe8b73..HEAD
+git diff --exit-code 9fe8b73 -- schemes deploy/blackbox_v2/runtime_profile_v1.json
 git status --short
-git log --oneline --decorate 9fe8b73fee1d2f42d318e3f4cecd72c7cfc0b38d..HEAD
-git rev-parse HEAD
+```
+
+Expected: diff check exits 0; scheme/Profile diff is empty; only intended tracked branch changes
+remain and the isolated worktree is clean after the final commit.
+
+- [ ] **Step 6: Commit documentation**
+
+```bash
+git add docs/architecture/ARCHITECTURE.md \
+  docs/architecture/BLACKBOX_V2_PLATFORM.md \
+  docs/architecture/CODE_ARCHITECTURE.md \
+  docs/architecture/HARNESS_ARCHITECTURE.md \
+  docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md \
+  docs/superpowers/plans/2026-08-13-blackbox-predict-timeout-authority.md
+git commit -m "docs: align blackbox timeout hierarchy"
+```
+
+### Task 4: Integrate only into the authorized development branch
+
+**Files:**
+- No source edits
+- Preserve all existing untracked files in `/Users/macstudio0/bond-factor-lab`
+
+- [ ] **Step 1: Re-run shared-worktree safety checks**
+
+```bash
 git -C /Users/macstudio0/bond-factor-lab branch --show-current
-git -C /Users/macstudio0/bond-factor-lab rev-parse HEAD
 git -C /Users/macstudio0/bond-factor-lab status --short
+git -C /Users/macstudio0/bond-factor-lab rev-parse '@{upstream}'
+git -C /Users/macstudio0/bond-factor-lab rev-parse HEAD
+git ls-remote origin refs/heads/codex/audit-bugfixes-20260613
 ```
 
-Expected: the feature branch is clean and contains the design, plan, implementation, config, and documentation commits; the shared development branch remains exactly at its pre-task HEAD with only the two known unrelated untracked paths. #45 remains open until the separately authorized exact-version migration and development-branch push are actually complete.
+Expected: exact branch/upstream match; local HEAD equals remote target; no tracked edits; untracked user
+paths do not overlap the changed files.
+
+- [ ] **Step 2: Merge with a normal merge commit**
+
+```bash
+git -C /Users/macstudio0/bond-factor-lab merge --no-ff --no-edit \
+  codex/issue-45-timeout-authority-20260813
+```
+
+Expected: clean merge without touching `master`.
+
+- [ ] **Step 3: Re-run diff check, focused tests, and complete pytest on the development branch**
+
+Use the exact commands from Tasks 2 and 3 in `/Users/macstudio0/bond-factor-lab`.
+
+Expected: all checks pass.
+
+- [ ] **Step 4: Push normally and verify remote readback**
+
+```bash
+git -C /Users/macstudio0/bond-factor-lab push origin codex/audit-bugfixes-20260613
+git ls-remote origin refs/heads/codex/audit-bugfixes-20260613
+```
+
+Expected: remote SHA exactly equals local development-branch HEAD; never force push.
