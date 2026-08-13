@@ -2203,8 +2203,12 @@
     );
     var top = triggerRect.bottom + gap;
     if (top + height > window.innerHeight - margin) {
-      top = Math.max(margin, triggerRect.top - height - gap);
+      top = triggerRect.top - height - gap;
     }
+    top = Math.min(
+      Math.max(margin, top),
+      Math.max(margin, window.innerHeight - height - margin)
+    );
     popover.style.left = Math.round(left) + "px";
     popover.style.top = Math.round(top) + "px";
   }
@@ -2223,7 +2227,14 @@
     }
     if (body) body.textContent = "";
     if (restoreFocus && trigger && trigger.isConnected && typeof trigger.focus === "function") {
-      trigger.focus();
+      window.requestAnimationFrame(function () {
+        if (!trigger.isConnected) return;
+        try {
+          trigger.focus({ preventScroll: true });
+        } catch (error) {
+          trigger.focus();
+        }
+      });
     }
   }
 
@@ -2701,14 +2712,6 @@
           return;
         }
 
-        var remarkCloseButton = event.target.closest("[data-factor-remark-close]");
-        if (remarkCloseButton) {
-          event.preventDefault();
-          event.stopPropagation();
-          closeFactorRemark(true);
-          return;
-        }
-
         var taskButton = event.target.closest("[data-factor-task-key]");
         if (taskButton) {
           factorLabState.selectedTaskKey = taskButton.getAttribute("data-factor-task-key");
@@ -2790,6 +2793,13 @@
     }
 
     document.addEventListener("click", function (event) {
+      var remarkCloseButton = event.target.closest("[data-factor-remark-close]");
+      if (remarkCloseButton) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeFactorRemark(true);
+        return;
+      }
       var popover = document.getElementById("factorRemarkPopover");
       if (!popover || popover.hidden) return;
       if (popover.contains(event.target) || event.target.closest("[data-factor-remark-open]")) return;

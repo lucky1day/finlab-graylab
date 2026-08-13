@@ -74,6 +74,14 @@ def test_remark_popover_is_one_accessible_non_modal_dialog() -> None:
     assert 'data-factor-remark-close' in html
 
 
+def test_remark_popover_is_outside_animated_view_container() -> None:
+    html = INDEX.read_text(encoding="utf-8")
+
+    shell_end = html.index("    </div>\n    <aside")
+    popover_index = html.index('id="factorRemarkPopover"')
+    assert popover_index > shell_end
+
+
 def test_remark_trigger_precedes_row_selection_and_stops_bubbling() -> None:
     body = _function_body("bindFactorLabEvents")
 
@@ -91,8 +99,17 @@ def test_remark_popover_supports_all_dismissal_and_focus_paths() -> None:
     assert 'document.addEventListener("click"' in javascript
     assert 'event.key === "Escape"' in javascript
     assert "closeFactorRemark(true)" in javascript
-    assert "trigger.focus()" in javascript
+    assert 'event.target.closest("[data-factor-remark-close]")' in javascript
+    assert "window.requestAnimationFrame" in javascript
+    assert "trigger.focus({ preventScroll: true })" in javascript
     assert "textContent = remark" in javascript
+
+
+def test_remark_popover_position_is_clamped_to_viewport() -> None:
+    body = _function_body("placeFactorRemarkPopover")
+
+    assert "Math.max(margin, top)" in body
+    assert "window.innerHeight - height - margin" in body
 
 
 def test_remark_popover_is_readable_without_full_screen_backdrop() -> None:
