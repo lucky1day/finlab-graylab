@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from backend.factor_lab_dashboard import MAX_RAW_JSON_BYTES
 from backend.factor_lab_dashboard_semantics import validate_dashboard_payload
 from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
@@ -45,7 +46,14 @@ class DashboardGate(Gate):
             raise ValueError("dashboard gate requires non-empty api_base_url")
         endpoint = f"{base_url}/api/factor-lab/dashboard"
         payload, http_status = _fetch_response(
-            self._fetcher(endpoint, timeout_sec=min(ctx.timeout_sec, 30))
+            # 响应大小预算以生产端 MAX_RAW_JSON_BYTES 为唯一权威：探针默认
+            # 1MiB 小于生产端 1.5MB，不显式传预算时 1MiB..1.5MB 之间的合法
+            # Dashboard 会被 Gate 误报为超限（issue #40）。
+            self._fetcher(
+                endpoint,
+                timeout_sec=min(ctx.timeout_sec, 30),
+                max_response_bytes=MAX_RAW_JSON_BYTES,
+            )
         )
         errors: list[str] = []
         if http_status != 200:
