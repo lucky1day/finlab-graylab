@@ -107,7 +107,7 @@ python -m harness gate live \
 
 其它副作用 Gate 只接受 `HARNESS_AUTH_SECRET` 签发的最长 900 秒、精确作用域、一次性 HMAC token。当 Blackbox lifecycle journal 存在 pending 时，activate/shadow/revision 直接阻断；只有显式、独立 HMAC 授权的 `lifecycle-reconcile` 可以修改 pending 状态，不得在其它 Gate 前隐式恢复。
 
-`config.yaml.schedule.timeout_sec` 是 executor 层运行预算，harness config schema 只校验其为正整数。它不能替代 Unit/Dry-run/Compare/Backtest 证据，也不能作为放宽 source fidelity、日期语义或 protected table guard 的理由。若方案依赖更长 timeout 才能完成，验证报告应同时记录实际 `duration_sec` 与配置值。
+Native 的 `config.yaml.schedule.timeout_sec` 是 executor 层方案级运行预算，harness config schema 校验其为正整数。Blackbox predict 预算只来自版本化 Runtime Profile，Blackbox 配置一旦声明该字段必须 fail-closed；operation deadline 只能缩短 Profile 预算。Blackbox backtest 使用独立的 Profile 预算。任何运行预算都不能替代 Unit/Dry-run/Compare/Backtest 证据，也不能作为放宽 source fidelity、日期语义或 protected table guard 的理由。
 
 ---
 
@@ -187,7 +187,7 @@ Harness/check-only、自然调度和历史 replay 使用同一数据库捕获与
 - 静态检查结论: 目录、命名、接口、危险导入全部通过。
 - 输入 artifact 结论: 主输入 frequency、path、source、行列规模、日期/week 覆盖；如声明 `auxiliary_inputs`，同时保留每个辅助输入的 frequency、path、source、data_version、行列规模、覆盖范围和缺列结论。
 - dry-run 结论: JSON 输出、预测条数、关键字段、正式表行数不变。
-- 执行预算结论: 若方案配置 `schedule.timeout_sec`，记录实际运行耗时、timeout 配置和是否仍在预算内；确认该字段只影响 executor 等待，不改变算法输出。
+- 执行预算结论: Native 若配置 `schedule.timeout_sec`，记录实际耗时、配置值和是否仍在预算内；Blackbox 记录 Runtime Profile 的 predict/backtest 预算、实际耗时及任何独立 operation deadline，并证明 deadline 只会缩短预算。确认预算只影响 executor 等待，不改变算法输出。
 - 回测结论: `--no-persist` summary、样本总数、`metric_samples`、准确率、月度分布；预测为“平”的样本计入样本总数但不进入任何指标分母。
 - 算法保真结论: Native 首次技术入库记录 source 口径、L0/L1/L2 分级、原始 hash 和内部 benchmark；当前 exact version 若通过 full `all`，记录 `full_initial_onboarding_v1` 的六个 Gate。仅走 maintenance 时，另记录 prior `all + compare`、其匹配的 `static.business_identity` 业务快照或固定 10Y 的 canonical receipt、精确 Registry identity、`native-maintenance` 五个 Gate 与 live-safe oracle。receipt 只证明历史业务身份，不能被写成 current Compare pass，也不直接授权业务写入。历史 benchmark vintage 漂移只能标为归档诊断。Blackbox 记录上游脚本/Metadata hash、确定性、分批/顺序一致性和未来行隔离，不宣称平台已检查黑盒内部模型。
 - 日期语义结论: 回测样本满足 `predict_date == feature_date` 且最早 `predict_date >= 2025-01-01`；实盘样本满足对应频率的发出规则；周频实盘必须由 `feature_date=previous_trading_day(predict_date)` 再映射 `feature_week_id`，输入使用 `end_week=feature_week_id/as_of_date=feature_date`；月度 source-backed 方案若声明自然 15 号触发，必须证明 `predict_date` 保留自然 15 号，`feature_date/target_date` 分别取对应月 15 号及以前最近交易日；前端/业务表达数据截止时只用 `feature_date`，不依赖 `anchor_date`。
