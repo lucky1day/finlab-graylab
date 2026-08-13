@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import tempfile
+import threading
 import unittest
 from contextlib import nullcontext
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -48,6 +51,50 @@ class _WeeklyCalendar:
 
 
 class LaunchdPredictionRunnerTests(unittest.TestCase):
+    def test_global_runner_lock_waits_until_current_cadence_releases(self) -> None:
+        from scheduler import launchd_prediction_runner as runner
+
+        contender_attempting = threading.Event()
+        contender_entered = threading.Event()
+        failures: list[BaseException] = []
+
+        with tempfile.TemporaryDirectory() as runtime_root:
+            config = SimpleNamespace(runtime_root=Path(runtime_root))
+            real_flock = runner.fcntl.flock
+            contender: threading.Thread
+
+            def observed_flock(file_descriptor: int, operation: int) -> None:
+                if (
+                    threading.current_thread() is contender
+                    and operation & runner.fcntl.LOCK_EX
+                ):
+                    contender_attempting.set()
+                real_flock(file_descriptor, operation)
+
+            def wait_for_lock() -> None:
+                try:
+                    with runner._runner_lock(config):
+                        contender_entered.set()
+                except BaseException as exc:  # pragma: no cover - thread bridge
+                    failures.append(exc)
+                    contender_entered.set()
+
+            contender = threading.Thread(target=wait_for_lock)
+            with runner._runner_lock(config):
+                with patch.object(runner.fcntl, "flock", new=observed_flock):
+                    contender.start()
+                    self.assertTrue(contender_attempting.wait(timeout=3))
+                    entered_before_release = contender_entered.wait(timeout=0.2)
+
+            self.assertTrue(contender_entered.wait(timeout=3))
+            contender.join(timeout=3)
+
+        self.assertFalse(contender.is_alive())
+        if failures:
+            raise failures[0]
+        self.assertFalse(entered_before_release)
+        self.assertTrue(contender_entered.is_set())
+
     def test_legacy_admission_module_is_retired(self) -> None:
         self.assertIsNone(
             importlib.util.find_spec(
@@ -121,7 +168,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                 "from_env",
                 return_value=object(),
             ),
-            patch.object(runner, "_runner_lock", return_value=nullcontext(True)),
+            patch.object(runner, "_runner_lock", return_value=nullcontext()),
             patch.object(
                 runner,
                 "discover_schemes",
