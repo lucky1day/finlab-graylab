@@ -90,7 +90,7 @@ class BlackboxV2IntakeTests(unittest.TestCase):
             self.assertIn("status: paused", config)
             self.assertIn("version_status: draft", config)
             self.assertIn("cron: '3 7 * * 1-5'", config)
-            self.assertNotIn("timeout_sec", config)
+            self.assertIn("timeout_sec: 3600", config)
             self.assertNotIn("platform_inputs:", config)
             self.assertNotIn("display_name:", config)
             registry = json.loads(

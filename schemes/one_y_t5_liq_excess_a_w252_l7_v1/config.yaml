@@ -9,6 +9,7 @@ version_status: active
 schedule:
   cron: '3 7 * * 1-5'
   timezone: Asia/Shanghai
+  timeout_sec: 3600
 delivery:
   script: delivery/one_y_t5_liq_excess_a_w252_l7_v1.py
   metadata: delivery/one_y_t5_liq_excess_a_w252_l7_v1.json

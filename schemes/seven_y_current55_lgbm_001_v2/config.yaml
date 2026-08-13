@@ -10,6 +10,7 @@ version_status: active
 schedule:
   cron: '3 7 * * 1-5'
   timezone: Asia/Shanghai
+  timeout_sec: 3600
 delivery:
   script: delivery/seven_y_current55_lgbm_001_v2.py
   metadata: delivery/seven_y_current55_lgbm_001_v2.json

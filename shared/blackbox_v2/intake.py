@@ -283,6 +283,7 @@ def _config_text(
         "schedule:\n"
         f"  cron: '{cron}'\n"
         "  timezone: Asia/Shanghai\n"
+        "  timeout_sec: 3600\n"
         "delivery:\n"
         f"  script: delivery/{metadata.scheme_id}.py\n"
         f"  metadata: delivery/{metadata.scheme_id}.json\n"

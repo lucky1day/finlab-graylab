@@ -8,6 +8,7 @@ version_status: active
 schedule:
   cron: '3 7 * * 1-5'
   timezone: Asia/Shanghai
+  timeout_sec: 3600
 delivery:
   script: delivery/three_y_adyn_lb1_k3_v1.py
   metadata: delivery/three_y_adyn_lb1_k3_v1.json

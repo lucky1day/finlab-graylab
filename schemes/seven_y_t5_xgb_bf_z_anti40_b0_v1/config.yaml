@@ -10,6 +10,7 @@ version_status: active
 schedule:
   cron: '3 7 * * 1-5'
   timezone: Asia/Shanghai
+  timeout_sec: 3600
 delivery:
   script: delivery/seven_y_t5_xgb_bf_z_anti40_b0_v1.py
   metadata: delivery/seven_y_t5_xgb_bf_z_anti40_b0_v1.json

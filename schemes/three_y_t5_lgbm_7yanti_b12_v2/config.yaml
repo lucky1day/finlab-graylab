@@ -10,6 +10,7 @@ version_status: active
 schedule:
   cron: '3 7 * * 1-5'
   timezone: Asia/Shanghai
+  timeout_sec: 3600
 delivery:
   script: delivery/three_y_t5_lgbm_7yanti_b12_v2.py
   metadata: delivery/three_y_t5_lgbm_7yanti_b12_v2.json

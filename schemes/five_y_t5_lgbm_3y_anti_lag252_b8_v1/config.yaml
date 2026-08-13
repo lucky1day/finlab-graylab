@@ -10,6 +10,7 @@ version_status: active
 schedule:
   cron: '3 7 * * 1-5'
   timezone: Asia/Shanghai
+  timeout_sec: 3600
 delivery:
   script: delivery/five_y_t5_lgbm_3y_anti_lag252_b8_v1.py
   metadata: delivery/five_y_t5_lgbm_3y_anti_lag252_b8_v1.json

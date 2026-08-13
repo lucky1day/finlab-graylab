@@ -8,6 +8,7 @@ version_status: active
 schedule:
   cron: '3 7 * * 1-5'
   timezone: Asia/Shanghai
+  timeout_sec: 3600
 delivery:
   script: delivery/one_y_t1_quote_state_hv_v1.py
   metadata: delivery/one_y_t1_quote_state_hv_v1.json

@@ -222,10 +222,10 @@ def _validate_blackbox_config(raw: dict) -> list[str]:
         timezone = schedule.get("timezone", "Asia/Shanghai")
         if not isinstance(timezone, str) or not _valid_timezone(timezone):
             errors.append("schedule.timezone must be a valid timezone")
-        if "timeout_sec" in schedule:
+        timeout_sec = schedule.get("timeout_sec")
+        if type(timeout_sec) is not int or timeout_sec <= 0:
             errors.append(
-                "Blackbox V2 schedule.timeout_sec is forbidden; "
-                "predict timeout is owned by runtime_profile"
+                "Blackbox V2 schedule.timeout_sec must be a positive integer"
             )
 
     delivery = raw.get("delivery")

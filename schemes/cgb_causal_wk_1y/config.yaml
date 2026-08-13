@@ -10,6 +10,7 @@ version_status: active
 schedule:
   cron: '30 11 * * 6'
   timezone: Asia/Shanghai
+  timeout_sec: 3600
 delivery:
   script: delivery/cgb_causal_wk_1y.py
   metadata: delivery/cgb_causal_wk_1y.json

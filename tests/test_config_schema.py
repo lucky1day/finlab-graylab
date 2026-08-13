@@ -36,6 +36,7 @@ def _base_blackbox_config() -> dict:
         "schedule": {
             "cron": "3 7 * * 1-5",
             "timezone": "Asia/Shanghai",
+            "timeout_sec": 3600,
         },
         "delivery": {
             "script": "delivery/demo_blackbox.py",
@@ -151,15 +152,25 @@ class ConfigSchemaScheduleTests(unittest.TestCase):
 
         self.assertIn("schedule.timeout_sec must be a positive integer when present", errors)
 
-    def test_blackbox_schedule_timeout_sec_is_forbidden(self) -> None:
+    def test_blackbox_schedule_timeout_sec_is_positive_when_present(self) -> None:
         config = _base_blackbox_config()
-        config["schedule"]["timeout_sec"] = 600
+        config["schedule"]["timeout_sec"] = 0
 
         errors = validate_config(config, dirname="demo_blackbox")
 
         self.assertIn(
-            "Blackbox V2 schedule.timeout_sec is forbidden; "
-            "predict timeout is owned by runtime_profile",
+            "Blackbox V2 schedule.timeout_sec must be a positive integer",
+            errors,
+        )
+
+    def test_blackbox_schedule_timeout_sec_is_required(self) -> None:
+        config = _base_blackbox_config()
+        del config["schedule"]["timeout_sec"]
+
+        errors = validate_config(config, dirname="demo_blackbox")
+
+        self.assertIn(
+            "Blackbox V2 schedule.timeout_sec must be a positive integer",
             errors,
         )
 
