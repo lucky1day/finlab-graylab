@@ -1311,18 +1311,28 @@ def _append_audit_error(error_msg: str, operation: str, exc: Exception) -> str:
 def _effective_timeout_sec(
     cfg: SchemeConfig,
     operation_timeout_sec: int | None,
-) -> int | None:
-    """解析本次执行 deadline；Blackbox 基础预算只来自 Runtime Profile。"""
+) -> int:
+    """解析方案预算与本次调用 deadline；Profile 上限由 runner 施加。"""
     runtime_type = getattr(cfg, "runtime_type", "native_adapter")
+    schedule = getattr(cfg, "schedule", None)
+    configured = getattr(schedule, "timeout_sec", None)
+    if configured is None:
+        configured = getattr(cfg, "execution_timeout_sec", None)
     if runtime_type == "blackbox_v2":
-        if operation_timeout_sec is None:
-            return None
-        timeout = int(operation_timeout_sec)
-    else:
-        schedule = getattr(cfg, "schedule", None)
-        configured = getattr(schedule, "timeout_sec", None)
         if configured is None:
-            configured = getattr(cfg, "execution_timeout_sec", None)
+            raise ValueError(
+                f"scheme {cfg.scheme_id} timeout_sec must be configured"
+            )
+        timeout = int(configured)
+        if operation_timeout_sec is not None:
+            operation_timeout = int(operation_timeout_sec)
+            if operation_timeout <= 0:
+                raise ValueError(
+                    f"scheme {cfg.scheme_id} timeout_sec must be positive, "
+                    f"got {operation_timeout}"
+                )
+            timeout = min(timeout, operation_timeout)
+    else:
         fallback = 600 if operation_timeout_sec is None else int(operation_timeout_sec)
         timeout = int(configured) if configured is not None else fallback
     if timeout <= 0:

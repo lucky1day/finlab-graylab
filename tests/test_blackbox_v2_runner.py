@@ -628,7 +628,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         )
         self.assertEqual(
             predict.call_args.kwargs["profile"].predict_timeout_sec,
-            600,
+            3600,
         )
         self.assertEqual(
             predict.call_args.kwargs["timeout_sec"],
@@ -660,7 +660,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                     "data_dir": root / "data",
                     "data_snapshot_id": "snapshot-test",
                     "profile": RuntimeProfile.for_tests(
-                        predict_timeout_sec=600
+                        predict_timeout_sec=3600
                     ),
                     "timeout_sec": deadline,
                 }
@@ -703,7 +703,11 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         )
         from shared.blackbox_v2.requests import write_request
 
-        for deadline, expected in ((1800, 600.0), (300, 300.0)):
+        for deadline, expected in (
+            (None, 3600.0),
+            (600, 600.0),
+            (7200, 3600.0),
+        ):
             with (
                 self.subTest(deadline=deadline),
                 tempfile.TemporaryDirectory() as tmpdir,
@@ -732,7 +736,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                         data_dir=data_dir,
                         output_path=output,
                         profile=RuntimeProfile.for_tests(
-                            predict_timeout_sec=600
+                            predict_timeout_sec=3600
                         ),
                         timeout_sec=deadline,
                     )

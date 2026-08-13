@@ -1,4 +1,4 @@
-"""Blackbox predict timeout 只能由 Runtime Profile 声明。"""
+"""Blackbox predict timeout 由方案请求、平台上限和显式 deadline 分层计算。"""
 
 from __future__ import annotations
 
@@ -27,18 +27,24 @@ class TimeoutAuthorityTests(unittest.TestCase):
 
         return _effective_timeout_sec(cfg, deadline)
 
-    def test_runtime_profile_owns_600_second_predict_budget(self) -> None:
+    def test_runtime_profile_keeps_3600_second_predict_ceiling(self) -> None:
         from scheduler.blackbox_v2_runner import DEFAULT_RUNTIME_PROFILE
 
-        self.assertEqual(DEFAULT_RUNTIME_PROFILE.predict_timeout_sec, 600)
+        self.assertEqual(DEFAULT_RUNTIME_PROFILE.predict_timeout_sec, 3600)
         self.assertEqual(DEFAULT_RUNTIME_PROFILE.backtest_timeout_sec, 14400)
 
-    def test_blackbox_without_operation_deadline_defers_to_profile(self) -> None:
-        self.assertIsNone(self._effective(_cfg("blackbox_v2", None)))
+    def test_blackbox_without_operation_deadline_uses_scheme_request(self) -> None:
+        self.assertEqual(self._effective(_cfg("blackbox_v2", 3600)), 3600)
 
-    def test_blackbox_operation_deadline_remains_independent(self) -> None:
-        self.assertEqual(self._effective(_cfg("blackbox_v2", None), 300), 300)
-        self.assertEqual(self._effective(_cfg("blackbox_v2", None), 1800), 1800)
+    def test_blackbox_explicit_deadline_can_only_narrow_scheme_request(self) -> None:
+        cfg = _cfg("blackbox_v2", 3600)
+
+        self.assertEqual(self._effective(cfg, 600), 600)
+        self.assertEqual(self._effective(cfg, 7200), 3600)
+
+    def test_blackbox_missing_scheme_request_fails_closed(self) -> None:
+        with self.assertRaisesRegex(ValueError, "timeout_sec must be configured"):
+            self._effective(_cfg("blackbox_v2", None))
 
     def test_native_config_is_still_honoured(self) -> None:
         self.assertEqual(self._effective(_cfg("native_adapter", 3600)), 3600)
@@ -51,7 +57,7 @@ class TimeoutAuthorityTests(unittest.TestCase):
             (PROJECT_ROOT / "deploy/blackbox_v2/runtime_profile_v1.json")
             .read_text(encoding="utf-8")
         )
-        self.assertEqual(raw["predict_timeout_sec"], 600)
+        self.assertEqual(raw["predict_timeout_sec"], 3600)
         self.assertEqual(raw["backtest_timeout_sec"], 14400)
 
 
