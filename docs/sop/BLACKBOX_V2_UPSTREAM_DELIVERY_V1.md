@@ -6,7 +6,7 @@
 
 **目标读者**：上游算法工程师
 
-**最后核验日期**：2026-08-06
+**最后核验日期**：2026-08-13
 
 本文是上游算法工程师唯一需要阅读的人类文档。完成开发只需要本文、随包提供的 `data_bridge_v1_schema.json` 和三份脱敏 sample；不需要再阅读仓库内其他文档。
 
@@ -15,6 +15,16 @@
 若方案需要平台统一周历，上游必须按第 3 节从同一个 DataBridge 下载 `api_wind_date.csv` 做本地自验。它不是交付物：正式交付目录仍然只能包含同名 `.py + .json`；`api_wind_date.csv` 只允许作为上游自验材料，不得进入正式两文件交付目录。平台通过 Intake 参数声明和提供该制品，不从 Metadata 或上游目录取日历。
 
 本文中的 `Blackbox V2` 是运行时代际，`schema_version=1.0` 是交付接口合同版本，`data-bridge-v1` 是三频数据 Schema；三者不能混作算法版本。
+
+> **方案 A 文档先行过渡（2026-08-13）**：正式新交付从现在起必须在
+> `{scheme_id}.json` 中同时提供 `name`、`owner` 和 `description`。其中
+> `owner` 表示前端“来源”列中的方案交付归属，不是 DataBridge 数据源。
+> 当前平台机器 Contract 尚未接受 `owner`；配套实现上线前，算法同事应按本文准备并
+> 保留完整两文件包，由平台先做人工内容核对，但平台不得运行旧
+> `intake-blackbox`、不得删除 `owner` 代收，也不得把它改成交接备注或命令行参数。
+> 当前平台还有少量历史方案使用 `config.yaml.display_name` 覆盖 Metadata `name`；
+> 这只属于既有不可变方案兼容，不是新交付接口。正式新包仍只在 Metadata 提供唯一
+> `name`，不另交“显示名”；平台配套实现上线前也不能宣称这条名称链已由机器守护。
 
 ---
 
@@ -404,13 +414,14 @@ Contract 1.0 只允许以下组合：
 
 ### 4.2 填写 `{scheme_id}.json`
 
-Metadata 必须是无 BOM 的 UTF-8 JSON。机器兼容解析保留八个历史必填字段；对所有正式新交付，`description` 是正式交付必填字段：
+Metadata 必须是无 BOM 的 UTF-8 JSON。八个历史机器字段中已经包含 `name`；对所有正式新交付，必须另外提供 `owner` 和 `description`，三者共同构成前端展示信息：
 
 ```json
 {
   "schema_version": "1.0",
   "scheme_id": "one_y_t5_liq_excess_a_w252_l7_v1",
   "name": "LIQ_EXCESS_A_W252_L7",
+  "owner": "ALGO-A",
   "description": "使用流动性指标和滚动窗口构建特征，通过分类模型判断未来5个交易日1Y国债收益率方向。",
   "algorithm_version": "1.0.0",
   "target_tenor": "1Y",
@@ -426,11 +437,15 @@ Metadata 必须是无 BOM 的 UTF-8 JSON。机器兼容解析保留八个历史�
 - `scheme_id` 是算法执行身份；`name` 是当前任务格子内用于区分候选方案的简洁业务名称，两者不要混用。
 - `name` 不得重复 `target_tenor`、不得重复 `task_type` 或 `horizon`，也不得追加“方向预测”等已经由任务格子表达的说明。
 - `name` 和 `algorithm_version` 必须是非空字符串；`algorithm_version` 不强制使用特定版本格式。
+- `owner` 是前端“来源”列中的方案交付归属，可填写交付同事姓名缩写、姓名或稳定团队代码；它不是 DataBridge 数据源、`input_source`、算法依赖来源或审批人。
+- `owner` 去除首尾空白后必须仍为非空的单段纯文本，不得包含换行、HTML 或其他标记文本，也不得使用 `--`、`unknown`、`待定` 等占位值。
 - `description` 必须简述主要输入、窗口或规则、模型类型以及最终方向形成方式；平台不会根据脚本或名称代写算法逻辑。
 - `description` 必须是单段非空纯文本，最多 300 个字符，不得包含换行、HTML 或其他标记文本。
-- 机器 Intake 为读取既有不可变交付而保留缺失字段兼容，不改变正式交付规则；正式新交付缺少 `description` 时不得进入平台 Gate。
+- `name`、`owner` 和 `description` 职责不同，不得用方案名代替来源、用来源代替算法说明，或把任一字段留给平台推测。
+- 历史不可变交付可以缺少 `owner` 或 `description`，但这不改变正式新交付规则；新包缺少三者任一项均不得进入平台 Gate，也没有 owner waiver。
+- 文档先行过渡期内，带 `owner` 的新包必须保持原字节等待平台机器支持；旧 Intake 报 extra field 是预期阻断，不得通过删字段绕过。
 - `task_type`、`horizon` 和 `target_rule` 必须来自上一节的同一行。
-- Metadata 不得增加 `platform_inputs`、`frequency`、输入路径、运行开关、可变阈值、特征列表或模型参数。
+- 除本节规定的 `owner` 和 `description` 外，Metadata 不得增加 `platform_inputs`、`frequency`、输入路径、运行开关、可变阈值、特征列表或模型参数。
 
 ---
 
@@ -679,7 +694,7 @@ python {scheme_id}.py backtest \
 | 周历与 Request | 用同批 `api_wind_date.csv` 映射每条 `daily_cutoff_key` | 恰好等于 Request 的 `weekly_cutoff_key`，且消费周频时该键存在 |
 | 自测输入凭证 | 保存下载时间、四文件摘要、行数、起止键和 Request | 平台能够把三频摘要匹配到一个 generation，并核对规范化日历摘要 |
 | 同代复现 | 在平台选定的 generation 与组合输入上复跑 | 输入身份一致后才比较结果；不一致标记 `data_vintage_mismatch` |
-| 交付物 | 检查文件数量、命名、Metadata 历史八字段、必填 `description` 和任务组合 | 只有两个交付文件，身份、说明和任务组合合法；自验日历不进入交付目录 |
+| 交付物 | 检查文件数量、命名、包含 `name` 的 Metadata 历史八字段、另行必填的 `owner`、`description` 和任务组合 | 只有两个交付文件；方案名称、交付来源、算法说明、身份和任务组合合法；自验日历不进入交付目录 |
 | 命令与日志 | 执行 `--help`、`predict`、`backtest` 并分别捕获 stdout/stderr | 命令存在；成功运行 stdout 为空 |
 | 单点预测 | 使用一个合法 Request 执行 `predict` | 退出码 `0`，恰好一条五字段结果 |
 | 批量回测 | 使用至少两个不同截止键执行 `backtest` | 每个 Request 恰好一条结果，数量和顺序一致 |
@@ -699,11 +714,14 @@ python {scheme_id}.py backtest \
 提交前逐项确认：
 
 - [ ] 只交付同名 `{scheme_id}.py + {scheme_id}.json`；
-- [ ] `.json` 的八个必填字段合法，且提供符合约束的 `description`；
+- [ ] `.json` 的八个历史字段合法，且正式提供符合约束的 `name`、`owner` 和 `description`；
 - [ ] Metadata 未增加 `platform_inputs`；如需平台周历，已告知平台在 Intake 使用 `--platform-input api-wind-date-v1`；
 - [ ] 两文件、DataBridge 自验凭证和平台 Intake 接收仅确认交付可接收资格，不构成平台控制面权限；
 - [ ] Metadata 和交付目录未声明平台专属运行或审批字段，且未将两文件交付视为平台审批；
 - [ ] `name` 是任务格子内的简洁方案名，没有重复期限、任务或“方向预测”；
+- [ ] `owner` 是真实、稳定、非占位的交付同事标识或团队代码，未误填为 DataBridge 数据源、`input_source` 或审批人；
+- [ ] `description` 是不超过 300 字的单段纯文本算法说明，未用 `name` 或 `owner` 代替；
+- [ ] 如仍处于文档先行过渡期，已保留包含 `owner` 的原始两文件包，未要求平台删除字段后运行旧 Intake；
 - [ ] `predict` 和 `backtest` 使用同一算法逻辑；
 - [ ] 真实 DataBridge 数据下载和 Schema 校验已通过；
 - [ ] 如依赖周历，已从 DataBridge 专用接口同批下载 `api_wind_date.csv`，未使用内嵌、参考包或手工日历；
