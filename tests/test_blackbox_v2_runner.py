@@ -585,7 +585,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                 "2026-07-16",
                 engine="engine",
                 algo_env="forecast_env_blackbox_v1",
-                timeout_sec=3600,
+                timeout_sec=300,
                 execution_token="scheduled-token_123",
                 process_started=process_started,
                 process_start_guard=process_start_guard,
@@ -626,10 +626,125 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             predict.call_args.kwargs["input_audit_manifest"],
             {"audit": "trusted"},
         )
+        self.assertEqual(
+            predict.call_args.kwargs["profile"].predict_timeout_sec,
+            3600,
+        )
+        self.assertEqual(
+            predict.call_args.kwargs["timeout_sec"],
+            300,
+        )
         self.assertIs(
             predict.call_args.kwargs["process_start_guard"],
             process_start_guard,
         )
+
+    def test_predict_forwards_optional_operation_deadline_independently(
+        self,
+    ) -> None:
+        from scheduler.blackbox_v2_runner import (
+            RuntimeProfile,
+            run_blackbox_predict,
+        )
+
+        for deadline in (None, 1800):
+            with (
+                self.subTest(deadline=deadline),
+                tempfile.TemporaryDirectory() as tmpdir,
+            ):
+                root = Path(tmpdir)
+                kwargs = {
+                    "metadata": _metadata(),
+                    "script_path": root / "trial.py",
+                    "request": _request("001"),
+                    "data_dir": root / "data",
+                    "data_snapshot_id": "snapshot-test",
+                    "profile": RuntimeProfile.for_tests(
+                        predict_timeout_sec=3600
+                    ),
+                    "timeout_sec": deadline,
+                }
+                with (
+                    patch(
+                        "scheduler.blackbox_v2_runner."
+                        "execute_blackbox_cli"
+                    ) as execute,
+                    patch(
+                        "scheduler.blackbox_v2_runner."
+                        "load_prediction_result",
+                        return_value="result",
+                    ),
+                    patch(
+                        "scheduler.blackbox_v2_runner."
+                        "_to_prediction_record",
+                        return_value="record",
+                    ),
+                ):
+                    self.assertEqual(
+                        run_blackbox_predict(**kwargs),
+                        "record",
+                    )
+
+                if deadline is None:
+                    self.assertNotIn(
+                        "timeout_sec",
+                        execute.call_args.kwargs,
+                    )
+                else:
+                    self.assertEqual(
+                        execute.call_args.kwargs["timeout_sec"],
+                        deadline,
+                    )
+
+    def test_predict_operation_deadline_cannot_enlarge_profile(self) -> None:
+        from scheduler.blackbox_v2_runner import (
+            RuntimeProfile,
+            execute_blackbox_cli,
+        )
+        from shared.blackbox_v2.requests import write_request
+
+        for deadline, expected in (
+            (None, 3600.0),
+            (600, 600.0),
+            (7200, 3600.0),
+        ):
+            with (
+                self.subTest(deadline=deadline),
+                tempfile.TemporaryDirectory() as tmpdir,
+            ):
+                root = Path(tmpdir)
+                script = _write_script(root / "trial.py", _SUCCESS_SCRIPT)
+                data_dir = _write_data_dir(root)
+                request = write_request(
+                    _request("001"),
+                    root / "request.json",
+                )
+                output = root / "run" / "prediction.json"
+
+                def completed(*_args, **_kwargs):
+                    output.write_text("{}\n", encoding="utf-8")
+                    return subprocess.CompletedProcess([], 0, "", "")
+
+                with patch(
+                    "scheduler.blackbox_v2_runner._run_process",
+                    side_effect=completed,
+                ) as run:
+                    execute_blackbox_cli(
+                        script_path=script,
+                        mode="predict",
+                        input_path=request,
+                        data_dir=data_dir,
+                        output_path=output,
+                        profile=RuntimeProfile.for_tests(
+                            predict_timeout_sec=3600
+                        ),
+                        timeout_sec=deadline,
+                    )
+
+                self.assertEqual(
+                    run.call_args.kwargs["timeout"],
+                    expected,
+                )
 
     def test_historical_replay_uses_as_of_snapshot_with_provenance(self) -> None:
         from scheduler.executor import run_blackbox_scheme_subprocess

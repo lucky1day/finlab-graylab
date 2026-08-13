@@ -24,6 +24,27 @@ def _base_config() -> dict:
     }
 
 
+def _base_blackbox_config() -> dict:
+    return {
+        "scheme_id": "demo_blackbox",
+        "runtime_type": "blackbox_v2",
+        "input_source": "data_bridge_current",
+        "runtime_profile": "blackbox-v2-v1",
+        "data_schema_version": "data-bridge-v1",
+        "status": "paused",
+        "version_status": "draft",
+        "schedule": {
+            "cron": "3 7 * * 1-5",
+            "timezone": "Asia/Shanghai",
+            "timeout_sec": 3600,
+        },
+        "delivery": {
+            "script": "delivery/demo_blackbox.py",
+            "metadata": "delivery/demo_blackbox.json",
+        },
+    }
+
+
 class ConfigSchemaAuxiliaryInputTests(unittest.TestCase):
     def test_config_without_auxiliary_inputs_remains_valid(self) -> None:
         config = _base_config()
@@ -130,6 +151,28 @@ class ConfigSchemaScheduleTests(unittest.TestCase):
         errors = validate_config(config, dirname="demo_daily")
 
         self.assertIn("schedule.timeout_sec must be a positive integer when present", errors)
+
+    def test_blackbox_schedule_timeout_sec_is_positive_when_present(self) -> None:
+        config = _base_blackbox_config()
+        config["schedule"]["timeout_sec"] = 0
+
+        errors = validate_config(config, dirname="demo_blackbox")
+
+        self.assertIn(
+            "Blackbox V2 schedule.timeout_sec must be a positive integer",
+            errors,
+        )
+
+    def test_blackbox_schedule_timeout_sec_is_required(self) -> None:
+        config = _base_blackbox_config()
+        del config["schedule"]["timeout_sec"]
+
+        errors = validate_config(config, dirname="demo_blackbox")
+
+        self.assertIn(
+            "Blackbox V2 schedule.timeout_sec must be a positive integer",
+            errors,
+        )
 
 
 class ConfigSchemaBacktestStartTests(unittest.TestCase):

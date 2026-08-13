@@ -589,6 +589,7 @@ def run_blackbox_predict(
     input_identity_manifest: Mapping[str, Any] | None = None,
     input_audit_manifest: Mapping[str, Any] | None = None,
     profile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE,
+    timeout_sec: float | None = None,
     execution_token: str | None = None,
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
@@ -622,6 +623,8 @@ def run_blackbox_predict(
             "profile": profile,
             "platform_input_ids": normalized_platform_input_ids,
         }
+        if timeout_sec is not None:
+            execute_kwargs["timeout_sec"] = timeout_sec
         if execution_token is not None:
             execute_kwargs["execution_token"] = execution_token
         if process_started is not None:
