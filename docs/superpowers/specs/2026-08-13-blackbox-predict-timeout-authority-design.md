@@ -90,13 +90,20 @@ Intake 只生成调度时刻和时区；方案交付者不能声明、扩大或�
 
 ## 版本与生产边界
 
-移除 39 份配置中的 timeout 会改变精确方案版本。仓库开发分支可以原子提交代码、配置、
-文档与测试，但该提交不是生产激活授权，也不能直接写生产数据库。
+移除 39 份配置中的 timeout 会改变精确方案版本。installed daily、weekly、monthly
+LaunchAgent 的 `WorkingDirectory` 均为 `/Users/macstudio0/bond-factor-lab`，所以把该变更
+合并到当前开发分支本身就会改变下一次自然调度读取的代码和配置；它不是与生产运行
+完全隔离的普通分支更新。
 
-后续若发布到生产，必须在发布前按现有 Blackbox revision 流程为每个新精确版本取得
-相应 Gate 证据并受控激活，使 `t_scheme_versions`、Registry 与仓库配置精确一致。未完成
-该步骤时不得部署本变更；不得增加“接受旧 timeout”“沿用旧版本 hash”或“找不到新版
-就运行旧版”的 fallback 来绕过版本闭包。
+代码、配置、文档与测试必须先在隔离功能分支原子完成。在 39 个新精确版本尚未完成
+既有 Gate 与受控激活前，不得把功能分支合并或推送到现场开发分支。功能分支通过测试
+不构成生产激活授权，也不能直接写生产数据库。
+
+后续发布必须另行设计原子切换顺序，并取得生产数据库写入授权：按现有 Blackbox
+revision 流程为每个新精确版本取得相应 Gate 证据并受控激活，使
+`t_scheme_versions`、Registry 与待合并仓库配置精确一致。未完成该步骤时不得部署本变更；
+不得增加“接受旧 timeout”“沿用旧版本 hash”或“找不到新版就运行旧版”的 fallback
+来绕过版本闭包，也不得先合并后等待补激活。
 
 ## 错误处理
 
@@ -123,8 +130,9 @@ Intake 只生成调度时刻和时区；方案交付者不能声明、扩大或�
 3. Intake、discovery、StaticGate、Blackbox runner、launchd runner、signal-gap 相关测试
    全部通过。
 4. `compileall`、`git diff --check` 和完整 `python -m pytest -q` 全部通过。
-5. 只在目标开发分支完成普通 merge/push 与远程 SHA 回读；不触及 `master`，不执行任何
-   生产 DB、launchd 或服务操作。
+5. 本阶段停在隔离功能分支的已提交、全量验证状态；不触及目标开发分支或 `master`，
+   不执行任何生产 DB、launchd 或服务操作。后续 merge/push 必须等待独立的生产版本
+   Gate/激活方案和授权。
 
 ## 完成定义
 
@@ -132,4 +140,5 @@ Intake 只生成调度时刻和时区；方案交付者不能声明、扩大或�
 - 配置、Intake、版本计算、executor 和文档不再表达第二个 Blackbox 基础预算；
 - 全部预测调用路径对 600 秒合同一致，调用方只能收紧；
 - Native 与 Blackbox backtest 行为未发生范围外变化；
-- 新精确版本的生产迁移边界被明确记录，没有兼容 fallback。
+- 新精确版本的生产迁移边界被明确记录，没有兼容 fallback；未授权前不进入现场开发
+  分支。
