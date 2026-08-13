@@ -26,11 +26,9 @@ def canonical_platform_config(raw: Mapping[str, Any]) -> dict[str, Any]:
     }
     schedule = _required_mapping(raw, "schedule")
     delivery = _required_mapping(raw, "delivery")
-    timeout_sec = schedule.get("timeout_sec")
     canonical["schedule"] = {
         "cron": str(_required_value(schedule, "cron", "schedule.cron")),
         "timezone": str(schedule.get("timezone", DEFAULT_TIMEZONE)),
-        "timeout_sec": int(timeout_sec) if timeout_sec is not None else None,
     }
     canonical["delivery"] = {
         "script": str(_required_value(delivery, "script", "delivery.script")),

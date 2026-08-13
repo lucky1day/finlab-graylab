@@ -10,7 +10,6 @@ version_status: active
 schedule:
   cron: '30 11 * * 6'
   timezone: Asia/Shanghai
-  timeout_sec: 3600
 delivery:
   script: delivery/wavg_5y_gapflip_v5.py
   metadata: delivery/wavg_5y_gapflip_v5.json

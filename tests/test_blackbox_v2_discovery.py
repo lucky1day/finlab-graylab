@@ -29,6 +29,7 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
         self.assertEqual(config.tenors, ["10Y"])
         self.assertEqual(config.frequency, "daily")
         self.assertEqual(config.entry_point, "blackbox_v2")
+        self.assertIsNone(config.schedule.timeout_sec)
         self.assertEqual(config.platform_inputs, ())
         self.assertEqual(config.delivery_script, (scheme_dir / "delivery" / "trial_10y.py").resolve())
         self.assertEqual(config.delivery_metadata, (scheme_dir / "delivery" / "trial_10y.json").resolve())
@@ -341,23 +342,35 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
         self.assertNotEqual(first.config_hash, second.config_hash)
         self.assertNotEqual(first.scheme_version, second.scheme_version)
 
-    def test_blackbox_version_changes_when_schedule_timeout_changes(self) -> None:
+    def test_blackbox_rejects_schedule_timeout(self) -> None:
         from scheduler.discovery import load_scheme_config
 
         with tempfile.TemporaryDirectory() as tmpdir:
             scheme_dir = _write_blackbox_scheme(Path(tmpdir))
             config_path = scheme_dir / "config.yaml"
-            first = load_scheme_config(config_path)
             text = config_path.read_text(encoding="utf-8").replace(
                 "  timezone: Asia/Shanghai\n",
-                "  timezone: Asia/Shanghai\n  timeout_sec: 300\n",
+                "  timezone: Asia/Shanghai\n  timeout_sec: 600\n",
             )
             config_path.write_text(text, encoding="utf-8")
 
-            second = load_scheme_config(config_path)
+            with self.assertRaisesRegex(
+                ValueError,
+                "schedule.timeout_sec is forbidden",
+            ):
+                load_scheme_config(config_path)
 
-        self.assertNotEqual(first.config_hash, second.config_hash)
-        self.assertNotEqual(first.scheme_version, second.scheme_version)
+    def test_repository_blackbox_configs_do_not_declare_timeout(self) -> None:
+        import yaml
+
+        project_root = Path(__file__).resolve().parents[1]
+        blackbox_paths = []
+        for path in sorted((project_root / "schemes").glob("*/config.yaml")):
+            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if raw.get("runtime_type") == "blackbox_v2":
+                blackbox_paths.append(path)
+                self.assertNotIn("timeout_sec", raw["schedule"], str(path))
+        self.assertEqual(len(blackbox_paths), 39)
 
     def test_blackbox_version_changes_when_delivery_script_path_changes(self) -> None:
         from scheduler.discovery import load_scheme_config
@@ -469,7 +482,6 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
                 "script": "delivery/trial_10y.py",
             },
             "schedule": {
-                "timeout_sec": None,
                 "timezone": "Asia/Shanghai",
                 "cron": "3 7 * * 1-5",
             },
@@ -484,12 +496,12 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
             compute_blackbox_config_hash(reordered),
         )
 
-    def test_blackbox_legacy_canonical_hash_is_frozen(self) -> None:
+    def test_blackbox_single_authority_canonical_hash_is_frozen(self) -> None:
         from shared.blackbox_v2.versioning import compute_blackbox_config_hash
 
         self.assertEqual(
             compute_blackbox_config_hash(_canonical_raw_config()),
-            "268f80abf7391ead1ee31c775a7d303aa3500b4ad081663d45e476b8b928f669",
+            "7cced30aca764474c1771890d755d6bdfc868e90f1da28f2196b91edb5bbe6ff",
         )
 
     def test_blackbox_canonical_config_rejects_invalid_platform_inputs(self) -> None:
@@ -638,7 +650,6 @@ def _canonical_raw_config() -> dict:
         "schedule": {
             "cron": "3 7 * * 1-5",
             "timezone": "Asia/Shanghai",
-            "timeout_sec": None,
         },
         "delivery": {
             "script": "delivery/trial_10y.py",

@@ -108,7 +108,7 @@ def load_scheme_config(config_path: Path) -> SchemeConfig:
         schedule=SchemeSchedule(
             cron=str(schedule_raw["cron"]),
             timezone=str(schedule_raw.get("timezone", "Asia/Shanghai")),
-            timeout_sec=int(schedule_raw["timeout_sec"]) if schedule_raw.get("timeout_sec") is not None else None,
+            timeout_sec=None,
         ),
         entry_point=str(raw.get("entry_point", "predict.run")),
         status=str(raw["status"]),

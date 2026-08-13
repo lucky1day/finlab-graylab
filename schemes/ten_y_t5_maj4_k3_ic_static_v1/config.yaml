@@ -8,7 +8,6 @@ version_status: active
 schedule:
   cron: '3 7 * * 1-5'
   timezone: Asia/Shanghai
-  timeout_sec: 3600
 delivery:
   script: delivery/ten_y_t5_maj4_k3_ic_static_v1.py
   metadata: delivery/ten_y_t5_maj4_k3_ic_static_v1.json

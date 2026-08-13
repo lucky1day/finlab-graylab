@@ -10,7 +10,6 @@ version_status: active
 schedule:
   cron: '0 18 15 * *'
   timezone: Asia/Shanghai
-  timeout_sec: 3600
 delivery:
   script: delivery/cgb_a4_fundseason_3y.py
   metadata: delivery/cgb_a4_fundseason_3y.json
