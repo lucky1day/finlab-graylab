@@ -69,6 +69,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_INSTANCE_NONCE = secrets.token_hex(32)
 _REQUEST_ID_PATTERN = re.compile(r"[!-~]{1,128}\Z", flags=re.ASCII)
 _DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
+_MONTH_PATTERN = re.compile(r"[0-9]{4}-(0[1-9]|1[0-2])")
 _DASHBOARD_ERROR_UNAVAILABLE = "dashboard_data_unavailable"
 _DASHBOARD_QUERY_ERROR = "dashboard_query_not_allowed"
 
@@ -597,6 +598,12 @@ def api_metrics(
 ) -> dict:
     if tenor is not None:
         raise HTTPException(status_code=400, detail="tenor query is not supported; use registry scheme_id")
+    for field, value in (("start_month", start_month), ("end_month", end_month)):
+        if value and not _MONTH_PATTERN.fullmatch(value):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{field} must be formatted as YYYY-MM",
+            )
     if start_month and end_month and end_month < start_month:
         raise HTTPException(status_code=400, detail="end_month must be greater than or equal to start_month")
     try:
