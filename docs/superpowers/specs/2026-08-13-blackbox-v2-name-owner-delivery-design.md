@@ -8,7 +8,7 @@
 - `owner`：候选排行“来源”列中的交付同事姓名缩写、姓名或稳定团队代码；
 - `description`：候选排行“备注”详情中的算法说明。
 
-本阶段先更新算法交付 SOP 与本地灰度实验室入库 SOP，供算法同事准备新交付。机器 Contract、Intake 原子登记与 Gate 守护在后续独立实现。
+算法交付 SOP、本地灰度实验室入库 SOP 与配套机器闭环均已完成。当前 Contract 接受并校验 owner，正式 Intake 强制三项展示字段并原子登记 owner，StaticGate 与 DashboardGate 负责精确读回。
 
 ## 选择方案
 
@@ -57,30 +57,15 @@ Dashboard.owner → 前端来源列
 
 Intake 必须在任何文件写入前完成 Metadata 与 owner registry preflight。相同 composite ID 和相同 owner 可幂等接受；相同 composite ID 和不同 owner 必须 fail-closed，不能覆盖。交付保存与 owner 登记必须形成单一成功或单一失败结果，不得留下半写状态。
 
-## 文档先行过渡
+## 机器闭环状态
 
-当前机器 Contract 尚未接受 `owner` 字段，因此文档提交后到配套机器变更上线前：
+- 通用 Metadata 解析器接受 owner，并对空白、换行、标记文本和占位值 fail-closed；
+- 正式 `intake-blackbox` 缺 owner 或 description 时在写入前失败；
+- Intake 以进程锁串行 owner registry 更新，原子替换 registry 和 scheme，提交异常时恢复原 registry；
+- 相同 composite ID + 同 owner 幂等接受，不同 owner 拒绝覆盖；
+- 新交付不允许 `config.yaml.display_name`，名称只来自 Metadata；
+- StaticGate 精确读回 Metadata owner 与 composite owner registry；
+- DashboardGate 对新激活方案精确核对 `name/owner/description`；
+- 历史缺 owner Metadata 仅按 `deploy/blackbox_v2_legacy_metadata_v1.json` 中的 base ID + Metadata SHA-256 兼容，任何字节变化都必须进入方案 A 新合同。
 
-- 算法同事按新 SOP 准备包含 `owner` 的两文件包；
-- 平台可以做人工内容核对，但不得运行旧 `intake-blackbox`；
-- 平台不得删除 `owner` 后代收，也不得把 owner 改放命令行或平台私有交接材料；
-- 配套机器变更上线并验证后，平台再按新 SOP 执行 Intake。
-
-这段过渡防止新包被旧 Contract 以“extra field”拒绝，也防止平台为了兼容旧实现破坏方案 A 的来源闭环。
-
-## 本阶段文档变更
-
-1. `docs/sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md`
-   - 更新 Metadata 示例、字段约束、自验表和最终交付清单；
-   - 明确 `name`、`owner`、`description` 的展示职责；
-   - 加入文档先行过渡说明。
-2. `docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md`
-   - 更新接收前检查、Contract 对照、目标传播链路、Gate 与前端验收；
-   - 明确 owner registry 冲突和缺失时 fail-closed；
-   - 加入旧 Intake 暂停执行说明。
-
-本阶段不修改算法脚本、Contract 解析器、Intake、Gate、数据库、Registry 或前端代码。
-
-## 后续机器实现验收
-
-后续实现至少覆盖：新 Intake 缺 `name`、`owner` 或 `description` 失败；owner 非纯文本失败；owner 原子登记；同值幂等；异值冲突；失败无半写；历史缺 owner Metadata 仍可发现；Dashboard Gate 对新激活方案要求非空 `name`、`owner`、`description`。
+本实现不修改算法脚本、数据库 Schema、预测/回测逻辑或前端显示逻辑。

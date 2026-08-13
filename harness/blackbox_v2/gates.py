@@ -50,6 +50,10 @@ from shared.blackbox_v2.contracts import (
     load_request_bytes,
 )
 from shared.blackbox_v2.history import CURRENT_SNAPSHOT_REPLAY, build_historical_cases
+from shared.blackbox_v2.legacy_metadata_policy import (
+    LegacyMetadataPolicyError,
+    load_legacy_metadata_hashes,
+)
 from shared.blackbox_v2.requests import (
     build_live_request,
     build_request,
@@ -64,6 +68,11 @@ from shared.blackbox_v2.snapshot import (
     create_snapshot_from_frames,
 )
 from shared.calendar_service import get_calendar
+from shared.scheme_owner_registry import (
+    SchemeOwnerError,
+    load_scheme_owners,
+    owner_registry_scheme_id,
+)
 from shared.input_artifacts import (
     build_blackbox_input_snapshot,
     capture_blackbox_platform_inputs_from_connection,
@@ -200,6 +209,51 @@ class BlackboxStaticGate(_BlackboxGate):
         if cfg.data_schema_version != "data-bridge-v1":
             errors.append(f"data_schema_version must be data-bridge-v1: got={cfg.data_schema_version}")
 
+        registry_id: str | None = None
+        legacy_metadata_compatible = False
+        if metadata.owner is None:
+            try:
+                legacy_metadata_hashes = load_legacy_metadata_hashes(
+                    ctx.project_root
+                )
+            except LegacyMetadataPolicyError as exc:
+                errors.append(f"legacy metadata policy is unavailable: {exc}")
+            else:
+                legacy_metadata_compatible = (
+                    cfg.manifest_hash is not None
+                    and legacy_metadata_hashes.get(metadata.scheme_id)
+                    == cfg.manifest_hash
+                )
+                if not legacy_metadata_compatible:
+                    errors.append(
+                        "owner is required for a new Blackbox V2 delivery; "
+                        f"scheme_id={metadata.scheme_id!r} and metadata SHA-256 "
+                        "do not match the explicit legacy metadata policy"
+                    )
+        else:
+            if metadata.description is None:
+                errors.append(
+                    "description is required for new Blackbox V2 deliveries"
+                )
+            registry_id = owner_registry_scheme_id(
+                metadata.scheme_id,
+                metadata.horizon,
+                metadata.target_tenor,
+            )
+            try:
+                registered_owner = load_scheme_owners(ctx.project_root).get(
+                    registry_id
+                )
+            except SchemeOwnerError as exc:
+                errors.append(f"owner registry is unavailable: {exc}")
+            else:
+                if registered_owner != metadata.owner:
+                    errors.append(
+                        "owner registry mismatch: "
+                        f"registry_id={registry_id} "
+                        f"expected={metadata.owner!r} got={registered_owner!r}"
+                    )
+
         evidence = [
             Evidence("runtime_type", cfg.runtime_type),
             Evidence("scheme_version", cfg.scheme_version),
@@ -208,6 +262,11 @@ class BlackboxStaticGate(_BlackboxGate):
             Evidence("script_violations", violations),
             Evidence("metadata", asdict(metadata)),
             Evidence("platform_inputs", list(cfg.platform_inputs)),
+            Evidence("owner_registry_id", registry_id),
+            Evidence(
+                "legacy_metadata_compatible",
+                legacy_metadata_compatible,
+            ),
         ]
         return _finish(self.name, started_at, evidence, errors)
 

@@ -15,15 +15,12 @@ launchd + installed plist 可以成为生产控制面，`ledger`、`occurrence`�
 和常驻 APScheduler 不能作为新的或过渡调度路径。本文中保留的旧生产时序仅用于解释历史
 证据，不能据此安装、迁移或启动服务。
 
-> **方案 A 文档先行过渡（2026-08-13）**：正式新交付现在必须在
-> Metadata 中同时提供 `name`、`owner` 和 `description`。当前机器 Contract
-> 仍会把 `owner` 判为额外字段，因此配套 Contract、Intake 原子登记和 Gate
-> 守护上线前，平台只能核对并保管原始两文件包，不得执行旧
-> `intake-blackbox`、不得删除 `owner` 代收，也不得把 `owner` 改为命令行参数。
-> 当前 runtime 还可能用 `config.yaml.display_name` 覆盖 Metadata `name`；配套实现
-> 还必须禁止正式新交付生成或新增这种覆盖，使 `name` 回到 Metadata 单一权威。
+> **方案 A 机器合同已生效（2026-08-13）**：正式新交付必须在 Metadata
+> 中同时提供 `name`、`owner` 和 `description`。Contract、Intake 原子登记、
+> StaticGate owner readback 和新方案 DashboardGate 展示身份核对均已实现；任何
+> 缺项、非法 owner、owner 冲突或三字段读回偏移均 fail-closed。正式新交付的
+> `name` 只来自 Metadata，Intake 不生成 `config.yaml.display_name`。
 > 已入库且正在使用 `display_name` 的历史方案继续兼容，不得为迁移新规则原地改写。
-> 本节后续 Intake 命令只适用于这些配套机器实现上线并通过验证之后。
 
 ## 1. Intake 与身份
 
@@ -59,9 +56,8 @@ shasum -a 256 <delivery-dir>/{scheme_id}.py <delivery-dir>/{scheme_id}.json
 
 ### 1.2 执行 Intake
 
-先确认方案 A 的配套机器实现已经上线且验证通过；若当前 Contract 仍拒绝
-`owner`，立即停止并保留原始包，不执行以下命令。以下示例为目标流程，
-不构成文档先行过渡期的绕过授权。
+先确认当前代码包含方案 A 机器合同；若 Contract 仍把 `owner` 报为额外字段，
+立即停止并保留原始包，核对分支和版本，不得删除字段后重试。
 
 以下示例为需要平台周历的方案；不需要任何平台注册制品时省略最后一行：
 
@@ -109,15 +105,15 @@ owner 可幂等接受；相同 composite ID 与不同 owner 必须 fail-closed�
 
 `owner` 是前端“来源”列的方案交付归属，可填写交付同事姓名缩写、姓名或稳定团队代码；它不是 DataBridge 数据源、`input_source`、算法依赖来源或审批人。去除首尾空白后必须仍非空，且不得包含换行、`<`、`>`、HTML 或其他标记文本，也不得使用 `--`、`unknown`、`待定` 等占位值。
 
-`description` 是正式新交付的必填算法逻辑摘要。为兼容已有不可变交付，机器兼容 Intake 对历史八字段包仍可能以退出码 `0` 返回，并在机器 JSON 的 `warnings` 数组提示缺少说明；机器兼容 Intake 不等于正式收包通过。平台必须在 Gate 前 fail-closed，拒绝任何缺少 `name`、`owner` 或 `description` 的正式新交付。说明必须是单段非空纯文本、最多 300 个字符，换行、`<`、`>`、空字符串或错误类型均拒绝。
+`description` 是正式新交付的必填算法逻辑摘要。通用 Metadata 解析仍可读取历史不可变八字段包，但 `intake-blackbox` 会在写入前 fail-closed，拒绝任何缺少 `name`、`owner` 或 `description` 的正式新交付。说明必须是单段非空纯文本、最多 300 个字符，换行、`<`、`>`、空字符串或错误类型均拒绝。
 
-已有不可变方案缺少 `owner` 或 `description` 时不修改只读 Metadata、不推测交付来源或算法逻辑，也不制造新版本。历史来源继续由平台在 `deploy/scheme_owner_v1.json` 中补录；历史缺失说明仍按现有发现与运行兼容边界映射为空字符串，但不能据此把技术 Gate 通过解释为说明已经补齐。正式新交付没有 owner 或 description waiver。
+已有不可变方案缺少 `owner` 或 `description` 时不修改只读 Metadata、不推测交付来源或算法逻辑，也不制造新版本。历史兼容只适用于 `deploy/blackbox_v2_legacy_metadata_v1.json` 中锁定的精确 base ID + Metadata SHA-256；同一 ID 的任何新 revision 只要 Metadata 字节变化，就必须提供方案 A 三字段。历史来源继续由平台在 `deploy/scheme_owner_v1.json` 中补录；历史缺失说明仍按现有发现与运行兼容边界映射为空字符串，但不能据此把技术 Gate 通过解释为说明已经补齐。正式新交付没有 owner 或 description waiver。
 
 ### 1.3 对照 Contract 1.0
 
 机器契约 `shared.blackbox_v2.contracts` 是字段和组合的判定源；平台注册输入则由 Intake 参数和 `config.yaml` 表达，不写入 Metadata：
 
-- Metadata 的历史机器基线包含八字段：`schema_version`、`scheme_id`、`name`、`algorithm_version`、`target_tenor`、`task_type`、`horizon`、`target_rule`；方案 A 配套机器实现必须兼容历史不可变包，并要求正式新交付另外具有 `owner` 和 `description`。除这两个正式字段外，其他额外字段（包括 `platform_inputs`）继续 fail-closed。
+- Metadata 的历史机器基线包含八字段：`schema_version`、`scheme_id`、`name`、`algorithm_version`、`target_tenor`、`task_type`、`horizon`、`target_rule`；当前机器合同兼容历史不可变包，并由正式新 Intake 强制 `owner` 和 `description`。除这两个正式字段外，其他额外字段（包括 `platform_inputs`）继续 fail-closed。
 - Request 恰好七字段：`request_id`、`predict_date`、`feature_date`、`target_date`、`daily_cutoff_key`、`weekly_cutoff_key`、`monthly_cutoff_key`。
 - Result 恰好五字段：`request_id`、`predict_date`、`feature_date`、`target_date`、`predicted_direction`。
 
@@ -443,7 +439,7 @@ no-persist 验收，必须得到 `100/100` 且 `persist=false`。技术 `all`
 
 | Gate | 当前检查 | 当前没有证明 | 主要证据 |
 |---|---|---|---|
-| `static` | 两文件、Metadata、已声明 provider、语法、禁止 import/调用，以及 `/Users/`、`/home/`、Windows 盘符形式的绝对路径字面量 | 其他绝对路径、算法效果、全局文件读取隔离 | runtime、版本、Metadata、`platform_inputs`、违规列表 |
+| `static` | 两文件、Metadata、新交付三字段、无新 `display_name`、owner composite readback、已声明 provider、语法、禁止 import/调用，以及 `/Users/`、`/home/`、Windows 盘符形式的绝对路径字面量 | 其他绝对路径、算法效果、全局文件读取隔离 | runtime、版本、Metadata、owner registry ID、`platform_inputs`、违规列表 |
 | `input` | 三频 Schema、父/组合快照、平台注册制品、七字段 Request、三个截止键；如有上游自测则核对同代输入身份 | 当天 freshness、跨 generation 结果可比性 | 两类文件摘要、父/组合 ID、两个 manifest、Request、`self_test_alignment` |
 | `unit` | help 暴露两个模式；一个非法 Request 失败且无 Output | 所有非法组合均被覆盖 | help、非法输入、失败无 Output |
 | `dry-run` | 单点 predict、Result 校验、内存 `PredictionRecord` | 已写预测表或已进入业务 API | PredictionRecord、组合 ID、结果路径 |
@@ -453,12 +449,10 @@ no-persist 验收，必须得到 `100/100` 且 `persist=false`。技术 `all`
 `DashboardGate` 只验证 `/api/factor-lab/dashboard` 当前业务读模型；它不属于 `all`，且
 Dashboard payload 不含 exact version，因此不能替代生命周期、Registry 和数据库版本证据。
 
-文档先行过渡期间，现有 `static` 尚不证明 `owner` 合法、owner composite
-已登记或新交付未使用 `display_name` 覆盖，因此不得把上表的当前 Gate 当作
-方案 A 已上线证据。配套机器实现上线后，`static` 必须新增
-`name/owner/description`、无新 `display_name` override 与 owner registry readback
-证据，且这些证据通过后才允许继续后续 Gate。历史已入库 override 由明确的兼容
-范围识别，不得被 StaticGate 当作新交付放行样例。
+当前 `static` 对带 owner 的正式新交付验证 `name/owner/description`、禁止新
+`display_name` override，并精确读回 owner registry；证据通过后才允许继续后续 Gate。
+历史已入库且 Metadata 缺 owner 的不可变包只按显式 ID + Metadata SHA-256 兼容范围发现，StaticGate
+不会要求为它们原地改写 Metadata，也不能把这种历史兼容当成新交付 waiver。
 
 ### 4.3 自动段副作用
 
@@ -746,7 +740,7 @@ payload 不含 exact version；版本身份必须由 lifecycle、Registry 与数
 | 环境自检失败 | 停止 Intake/Onboarding | 冻结环境恢复并重新自检 |
 | scheduled-live DataBridge 失败 | 保留旧 generation 供审计，但本次自然运行禁止 fallback，阻断 V2 并告警 | 当天全新 generation 已 SEALED，仍满足 feature cutoff 且有执行预算 |
 | 上游自测与平台输入摘要不同 | 标记 `data_vintage_mismatch`，停止算法结果归因 | 上游在平台选定的同一 generation 与规范化日历上重跑，完整输入身份一致 |
-| 文档先行期收到含 `owner` 的新包 | 原字节保管并停止旧 Intake；不得删字段代收 | 方案 A 配套 Contract、Intake 原子登记和 Gate 守护已上线且验证通过 |
+| 当前环境仍拒绝 Metadata `owner` | 原字节保管并停止 Intake；不得删字段代收 | 核对到包含方案 A 机器合同的精确开发版本并重新执行完整 Intake |
 | owner composite 已登记为不同值 | Intake fail-closed，不覆盖 owner registry，不写方案文件 | 交付方确认正确归属并提交一致的新包，或按独立受控 owner correction 流程处理历史登记 |
 | 新交付缺 `name`、`owner` 或 `description` | 拒绝 Intake/Gate，不推测、不硬编码、不使用占位值 | 上游重新提交三个展示字段均合法的完整两文件包 |
 | Intake 失败 | 不手工拼方案目录，不改交付文件 | 清理未完成 trial 后重新 Intake |
@@ -775,11 +769,12 @@ journal：它只回退到 previous safe state，保留原 journal，并新增 li
 
 ## 9. 最终检查
 
-- [ ] 方案 A 配套机器实现已上线并验证；若仍处于文档先行期，仅原字节保管新包，未运行旧 Intake、未删除或迁移 `owner`
+- [ ] 当前代码版本包含方案 A Contract、原子 Intake、StaticGate 与 DashboardGate 守护；未通过删字段或手工拼目录绕过
 - [ ] 两文件和 Metadata 通过 Intake，摘要已记录
 - [ ] 正式新交付含合法且职责独立的 `name`、`owner` 和 `description`；自验日历未进入两文件目录，Metadata 未声明 `platform_inputs`
 - [ ] 正式新交付的 Intake 配置未生成或新增 `display_name`；历史现存 override 仅按既有兼容范围保留，未被当作新名称入口
 - [ ] owner 已按 `{scheme_id}__h{horizon}__{target_tenor}` 原子登记到 `deploy/scheme_owner_v1.json`；同值幂等、异值冲突和失败无半写均已核对
+- [ ] 历史缺 owner Metadata 仅在 `deploy/blackbox_v2_legacy_metadata_v1.json` 的精确 ID + SHA-256 范围内兼容；清单外或字节变化未被误放行
 - [ ] base/composite 身份无冲突，配置为 `blackbox_v2 + paused + draft`
 - [ ] 需要平台周历的方案以 `--platform-input api-wind-date-v1` Intake，父快照仍严格三文件
 - [ ] 冻结环境和 sandbox 自检通过

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from shared.scheme_config_schema import ALLOWED_TENORS, SCHEME_ID_PATTERN
+from shared.scheme_owner_registry import normalize_scheme_owner
 
 
 TASK_COMBINATIONS = {
@@ -29,7 +30,7 @@ REQUIRED_METADATA_FIELDS = {
     "horizon",
     "target_rule",
 }
-OPTIONAL_METADATA_FIELDS = {"description"}
+OPTIONAL_METADATA_FIELDS = {"description", "owner"}
 MAX_DESCRIPTION_LENGTH = 300
 REQUEST_FIELDS = (
     "request_id",
@@ -61,6 +62,7 @@ class BlackboxMetadata:
     target_rule: str
     frequency: str
     description: str | None = None
+    owner: str | None = None
 
 
 @dataclass(frozen=True)
@@ -118,6 +120,7 @@ def load_metadata(path: str | Path) -> BlackboxMetadata:
         raise ValueError("horizon must be a positive integer")
     target_rule = _non_empty_string(raw, "target_rule")
     description = _optional_description(raw)
+    owner = _optional_owner(raw)
     expected_horizon, expected_rule, frequency = combination
     if (horizon, target_rule) != (expected_horizon, expected_rule):
         raise ValueError(
@@ -135,6 +138,7 @@ def load_metadata(path: str | Path) -> BlackboxMetadata:
         target_rule=target_rule,
         frequency=frequency,
         description=description,
+        owner=owner,
     )
 
 
@@ -149,6 +153,12 @@ def _optional_description(raw: dict[str, Any]) -> str | None:
     if any(marker in description for marker in ("\n", "\r", "<", ">")):
         raise ValueError("description must be single-paragraph plain text")
     return description
+
+
+def _optional_owner(raw: dict[str, Any]) -> str | None:
+    if "owner" not in raw:
+        return None
+    return normalize_scheme_owner(raw["owner"])
 
 
 def load_request(path: str | Path) -> BlackboxRequest:
