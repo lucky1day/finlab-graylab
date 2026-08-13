@@ -92,7 +92,7 @@ launchd 按 installed plist 在一个明确 cadence 启动一次性任务
   → DataBridge artifact 先验证 refresh 与 feature cutoff
   → 一个 writer 调用 scheduler.executor：
   → native_adapter: 读取 schedule.timeout_sec（如有）并隔离调用 schemes.{id}.predict.run(predict_date)
-  → blackbox_v2: 从 Runtime Profile 读取 predict 预算，构造只读快照和 Request，隔离调用交付脚本 CLI
+  → blackbox_v2: 以 schedule.timeout_sec 申请预算、以 Runtime Profile 为上限，构造只读快照和 Request，隔离调用交付脚本 CLI
   → 返回 list[PredictionRecord]
   → scheduler.repository 写 t_scheme_runs / predictions / run_log
 ```

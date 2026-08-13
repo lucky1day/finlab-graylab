@@ -294,7 +294,7 @@ python -m pytest -q \
   tests/test_blackbox_v2_runner.py \
   tests/test_launchd_prediction_runner.py \
   tests/test_signal_gap_plan.py \
-  tests/test_live_gate.py
+  tests/test_harness_static_gate.py
 ```
 
 Expected: PASS, including scheduled calls with no operation deadline and explicit Harness/gap

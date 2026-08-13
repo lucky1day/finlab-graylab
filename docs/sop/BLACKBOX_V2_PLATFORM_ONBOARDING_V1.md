@@ -176,9 +176,9 @@ conda run --no-capture-output -n bond_factor_lab_service \
   python scripts/probe_blackbox_v2_sandbox.py
 ```
 
-执行器从版本化 JSON 加载 Runtime Profile，并在启动时严格校验字段、类型和安全边界。环境 manifest 用于核验实际环境指纹；方案配置不得覆盖 profile 的算法执行资源、读路径、环境变量、网络权限或 predict timeout。Intake 不生成 `schedule.timeout_sec`，StaticGate/发现层对 Blackbox 配置中的该字段 fail-closed。operation deadline 只能在子进程边界缩短 Profile 的 predict 预算，不能放宽；backtest timeout 仍是独立 Profile 预算。Profile、manifest 或实际环境任一漂移时停止验收。
+执行器从版本化 JSON 加载 Runtime Profile，并在启动时严格校验字段、类型和安全边界。环境 manifest 用于核验实际环境指纹；方案配置不得覆盖 Profile 的算法执行资源、读路径、环境变量或网络权限。Intake 为 Blackbox 生成正整数 `schedule.timeout_sec` 作为 predict 预算申请，Profile 的 `predict_timeout_sec` 是平台上限，显式 operation deadline 是可选的第三层收紧约束；最终取三者最小值。backtest timeout 仍是独立 Profile 预算。Profile、manifest 或实际环境任一漂移时停止验收。
 
-记录环境清单摘要和自检时间。环境不一致、资源基准漂移、sandbox 网络拒绝或数据目录写保护失效时，不得继续。CPU、内存、predict/backtest 超时、100 条批量上限、Output 和日志大小上限以核对一致后的实际执行值为准。移除既有 Blackbox 配置字段会改变 canonical config hash 并产生新的 exact scheme version；代码合并不等于生产切换，仍须逐方案完成现行 Gate、revision activation 与调度前精确版本核验。
+记录环境清单摘要和自检时间。环境不一致、资源基准漂移、sandbox 网络拒绝或数据目录写保护失效时，不得继续。CPU、内存、predict/backtest 超时、100 条批量上限、Output 和日志大小上限以核对一致后的实际执行值为准。当前清理不修改既有 Blackbox 配置或 canonical config hash，因此不产生新 exact scheme version，也不触发 Gate、revision activation 或 Registry 切换。
 
 ### 2.2 验证 DataBridge current
 

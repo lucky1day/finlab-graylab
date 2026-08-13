@@ -87,6 +87,7 @@ def _write_blackbox_config(project_root: Path) -> None:
                 "version_status: active",
                 "schedule:",
                 '  cron: "3 7 * * 1-5"',
+                "  timeout_sec: 3600",
                 "delivery:",
                 f"  script: delivery/{BASE_SCHEME_ID}.py",
                 f"  metadata: delivery/{BASE_SCHEME_ID}.json",

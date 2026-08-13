@@ -193,7 +193,7 @@ blackbox_v2
   -> PredictionRecord
 ```
 
-`deploy/blackbox_v2/runtime_profile_v1.json` 是 Blackbox runtime 的唯一发布基准，并引用独立 conda 环境。Blackbox predict 预算固定为该 Profile 的 600 秒；`config.yaml` 禁止声明 `schedule.timeout_sec`。调用方可传入独立 operation deadline，但执行边界只取它与 Profile 预算的较小值，因此只能缩短、不能放宽 Profile。Blackbox backtest 预算仍由同一 Profile 的独立 `backtest_timeout_sec=14400` 控制。平台使用子进程和 sandbox 施加网络、写路径、资源、超时、Output、stdout/stderr 和批量限制。
+`deploy/blackbox_v2/runtime_profile_v1.json` 是 Blackbox runtime 的发布基准，并引用独立 conda 环境。Blackbox predict 的最终预算取方案 `schedule.timeout_sec` 申请值、Profile `predict_timeout_sec` 平台上限和调用方显式 operation deadline（如有）的最小值；当前方案申请与 Profile 上限均为 3600 秒。调用方 deadline 只能缩短、不能放宽前两层预算。Blackbox backtest 预算仍由 Profile 的独立 `backtest_timeout_sec=14400` 控制。平台使用子进程和 sandbox 施加网络、写路径、资源、超时、Output、stdout/stderr 和批量限制。
 
 脚本协议固定为：
 
