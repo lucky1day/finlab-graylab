@@ -1311,7 +1311,24 @@ def _effective_timeout_sec(cfg: SchemeConfig, default_timeout_sec: int) -> int:
         configured = getattr(cfg, "execution_timeout_sec", None)
     timeout = int(configured) if configured is not None else int(default_timeout_sec)
     if getattr(cfg, "runtime_type", "native_adapter") == "blackbox_v2":
-        timeout = min(timeout, int(default_timeout_sec))
+        capped = min(timeout, int(default_timeout_sec))
+        if capped != timeout:
+            # 上限本身是有意策略，但平台不能同时「接受一个值」又「永不兑现它」：
+            # 沉默截断会让方案作者、容量评估与实际子进程用的不是同一个预算，
+            # 超时表象也会退化成意外执行失败而非显式配置冲突。
+            event = {
+                "scheme_id": getattr(cfg, "scheme_id", None),
+                "runtime_type": "blackbox_v2",
+                "configured_timeout_sec": timeout,
+                "effective_timeout_sec": capped,
+                "platform_ceiling_sec": int(default_timeout_sec),
+            }
+            logger.warning(
+                "blackbox_timeout_truncated %s",
+                json.dumps(event, ensure_ascii=False, sort_keys=True),
+                extra={"blackbox_timeout_event": event},
+            )
+        timeout = capped
     if timeout <= 0:
         raise ValueError(f"scheme {cfg.scheme_id} timeout_sec must be positive, got {timeout}")
     return timeout
