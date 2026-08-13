@@ -1,144 +1,164 @@
-# Blackbox 预测超时单一权威设计
+# Blackbox 预测超时预算分层设计
 
 ## 范围
 
-本阶段只根治 GitHub #45：Blackbox V2 的预测超时目前同时由方案配置、Runtime
-Profile 和 executor 调用参数表达，导致配置声明 3600 秒、正式调度实际执行 600 秒。
+本阶段只根治 GitHub #45：Blackbox V2 的方案配置声明 3600 秒、Runtime
+Profile 也声明 3600 秒，但 `execute_scheme()` 默认把 600 秒当成平台上限，导致正式调度
+实际最多只等待 600 秒。
 
-本阶段不改变 Native 超时语义、不改变 Blackbox 回测预算、不调整 launchd 触发时刻、
-不修改算法、输入、日期或写库逻辑，也不执行生产数据库登记、Gate、激活或服务发布。
+本阶段不改变 39 个 Blackbox 方案的配置或精确版本，不改变 Native 超时语义、不改变
+Blackbox 回测预算、不调整 launchd、不修改算法、输入、日期或写库逻辑，也不执行生产
+数据库登记、Gate、激活、迁移或服务操作。
 
 ## 根因
 
-当前 39 份 Blackbox `config.yaml` 和 Intake 生成器都写入
-`schedule.timeout_sec: 3600`，`blackbox-v2-v1` Runtime Profile 的
-`predict_timeout_sec` 也为 3600；但 `execute_scheme()` 的调用方默认预算为 600，
-`_effective_timeout_sec()` 再对 Blackbox 取两者最小值。随后 executor 用该结果覆盖
-Runtime Profile，正式调度因此始终只得到 600 秒。
+当前实现没有区分三种含义：
 
-这不是单纯缺少告警，而是一个资源限制拥有三个权威来源。平台接受并版本化一个它在
-正式调度中不会兑现的方案值，方案作者、Gate、运维容量评估和真实子进程因而无法从
-同一合同得到同一答案。现有 `blackbox_timeout_truncated` 告警只暴露冲突，没有消除
-冲突。
+- `config.yaml.schedule.timeout_sec`：方案对单次 predict 的预算申请；
+- Runtime Profile `predict_timeout_sec`：平台允许的 predict 最大预算；
+- executor 调用参数 `timeout_sec`：某次上层操作的剩余 deadline。
+
+`execute_scheme()` 把调用参数默认成 600，再由 `_effective_timeout_sec()` 对 Blackbox 取
+`min(config, 600)`。因此，即使调用方没有要求收紧 deadline，正常 scheduled launchd
+仍被无条件截断为 600 秒。根因不是预算值本身错误，而是把“缺省的操作 deadline”错误
+建模为“平台上限”。
 
 ## 设计决策
 
-### 1. Runtime Profile 是 Blackbox 预测预算的唯一权威
+### 1. 保留既有方案配置与版本身份
 
-`deploy/blackbox_v2/runtime_profile_v1.json` 中的
-`predict_timeout_sec` 改为 600。所有 Blackbox predict 路径均从加载后的
-`DEFAULT_RUNTIME_PROFILE.predict_timeout_sec` 取得基础预算。
+39 份现有 Blackbox `config.yaml` 继续保留：
 
-继续只支持当前 `blackbox-v2-v1`，不新增第二个 Runtime Profile，也不保留 3600 秒
-兼容分支。原因是正式调度的有效预算本来就是 600 秒；本次将合同修正为既有生产事实，
-而不是扩大或缩小正式调度窗口。此前直接调用 Runtime Profile、未经过 executor 的
-predict 路径会由 3600 秒收敛为 600 秒，从而与生产调度一致。Blackbox
-`backtest_timeout_sec=14400` 保持不变。
-
-### 2. 方案配置不再拥有 Blackbox 超时字段
-
-- 从全部 Blackbox `config.yaml` 删除 `schedule.timeout_sec`。
-- Blackbox Intake 不再生成该字段。
-- Blackbox 配置校验只要发现该字段就 fail-closed，不接受旧字段、不忽略旧字段，也不
-  做默认值兼容。
-- Blackbox canonical config hash 不再包含 timeout；`schedule` 只保留 `cron` 和
-  `timezone`。
-- `SchemeSchedule.timeout_sec` 继续为 Native 所用；Blackbox discovery 得到的值固定为
-  `None`，executor 不读取它。
-
-这会使仓库内 39 个 Blackbox 配置产生新的 canonical config hash 和精确
-`scheme_version`。不伪造旧哈希，也不让新合同继续映射到旧版本。
-
-### 3. 调用方只可收紧一次执行的 deadline
-
-executor、Harness 或 gap 工具传入的 `timeout_sec` 改为“本次操作剩余 deadline”，
-不是第二个基础预算。Blackbox 实际预测等待时间为：
-
-```text
-min(Runtime Profile predict_timeout_sec, caller operation deadline)
+```yaml
+schedule:
+  timeout_sec: 3600
 ```
 
-调用方未提供 deadline 时直接使用 Runtime Profile；提供 300 秒时可收紧为 300 秒，
-提供 1800 秒时仍为 600 秒，不能放宽 Runtime Profile。非正数在进程启动前
-fail-closed。
+Intake 继续为新交付生成 3600 秒，Blackbox 配置校验继续要求该值为正整数，canonical
+config hash 继续包含该字段，discovery 继续把它加载到 `SchemeSchedule.timeout_sec`。
 
-executor 不再用 `replace(..., predict_timeout_sec=...)` 改写 Profile，而是把可选的
-operation deadline 独立传给已经具备 `min(profile, deadline)` 语义的 Blackbox CLI
-执行层。这样审计时可以明确区分“发布资源合同”和“某次操作剩余时间”。
+为避免静默 fallback，Blackbox 正式配置缺少 `schedule.timeout_sec` 时应 fail-closed；当前
+39 份配置已经满足该约束，因此不会产生任何新 config hash、`scheme_version`、Gate 或
+activation 工作。
 
-Native 继续按既有优先级使用其方案级 `schedule.timeout_sec`，否则使用 executor 默认
-600 秒；本次不改变 Native 行为。Blackbox gray replay/backtest 继续使用独立的
-backtest budget，本次不把预测预算外推到回测。
+### 2. Runtime Profile 保持平台最大预算
 
-### 4. 删除过渡告警
+`blackbox-v2-v1` 的 `predict_timeout_sec` 保持 3600 秒；
+`backtest_timeout_sec=14400` 保持不变。Runtime Profile 是平台资源上限，方案配置不能
+放宽它。
 
-删除 `blackbox_timeout_truncated` 及只验证截断告警的测试。新合同下不存在合法的
-Blackbox 方案级 timeout，因此没有需要截断的配置值；若重新出现该字段，应在
-StaticGate/discovery 阶段直接失败，而不是运行时告警后继续。
+### 3. operation deadline 只在调用方显式提供时生效
+
+`execute_scheme(..., timeout_sec=...)` 的参数改为可选值：
+
+- `None`：调用方没有额外 deadline；
+- 正整数：本次操作的剩余 deadline，只能收紧基础预算；
+- 非正数：在启动子进程前 fail-closed。
+
+最终 predict 等待预算为：
+
+```text
+min(
+  scheme schedule.timeout_sec,
+  Runtime Profile predict_timeout_sec,
+  explicitly supplied operation deadline (if any),
+)
+```
+
+这三个值不再是相互竞争的默认值，而是依次表达“方案申请”“平台上限”“本次调用剩余
+时间”。
+
+### 4. executor 不再改写 Runtime Profile
+
+executor 先用方案预算和可选 operation deadline 计算本次请求上限，再把这个上限独立
+传给 Blackbox runner。runner 使用既有 `min(profile, timeout)` 语义施加最终平台上限。
+executor 不再用 `replace(..., predict_timeout_sec=...)` 把某次调用值伪装成 Runtime
+Profile 配置。
+
+正常 scheduled launchd 不传 operation deadline，因此当前配置得到：
+
+```text
+min(3600, 3600) = 3600
+```
+
+Harness、gap 或其它受控调用若显式传 600，则得到：
+
+```text
+min(3600, 3600, 600) = 600
+```
+
+显式传 7200 也不能越过方案或平台上限，最终仍为 3600。
+
+### 5. 删除误导性的截断告警
+
+删除 `blackbox_timeout_truncated`。旧告警把正常的层级收紧描述成配置冲突；新合同下，
+显式 operation deadline 小于方案预算是合法行为，不应告警。非法或缺失的配置在校验
+阶段直接失败。
+
+### 6. Native 行为保持不变
+
+Native 仍优先使用自己的 `schedule.timeout_sec`；未配置时仍使用既有 600 秒默认值。
+本阶段不把 Blackbox 的三层预算合同外推到 Native，也不改变 Native 调用方参数的既有
+优先级。
 
 ## 数据流
 
 ```text
-blackbox-v2-v1 Runtime Profile (predict_timeout_sec=600)
-  -> discovery 验证 config.schedule 不含 timeout_sec
-  -> executor 取得 Profile 基础预算
-  -> 可选 caller deadline 只做 min() 收紧
-  -> Blackbox CLI 子进程使用最终预算
+Blackbox config request (3600)
+  -> executor applies explicit operation deadline only when present
+  -> Blackbox runner caps request by Runtime Profile ceiling (3600)
+  -> subprocess timeout
 ```
 
-Intake 只生成调度时刻和时区；方案交付者不能声明、扩大或覆盖平台资源预算。
+方案配置、Runtime Profile 和 operation deadline 各自只有一种含义；没有旧值兼容、
+版本回退或第二套 Profile。
 
-## 版本与生产边界
+## 生产与副作用边界
 
-移除 39 份配置中的 timeout 会改变精确方案版本。installed daily、weekly、monthly
-LaunchAgent 的 `WorkingDirectory` 均为 `/Users/macstudio0/bond-factor-lab`，所以把该变更
-合并到当前开发分支本身就会改变下一次自然调度读取的代码和配置；它不是与生产运行
-完全隔离的普通分支更新。
+本设计不修改方案配置、canonical hash 或精确版本，因此不需要 39 个新 exact versions，
+不需要重新运行 Gate、activation 或 Registry 切换，也不需要任何生产数据库写入。
 
-代码、配置、文档与测试必须先在隔离功能分支原子完成。在 39 个新精确版本尚未完成
-既有 Gate 与受控激活前，不得把功能分支合并或推送到现场开发分支。功能分支通过测试
-不构成生产激活授权，也不能直接写生产数据库。
-
-后续发布必须另行设计原子切换顺序，并取得生产数据库写入授权：按现有 Blackbox
-revision 流程为每个新精确版本取得相应 Gate 证据并受控激活，使
-`t_scheme_versions`、Registry 与待合并仓库配置精确一致。未完成该步骤时不得部署本变更；
-不得增加“接受旧 timeout”“沿用旧版本 hash”或“找不到新版就运行旧版”的 fallback
-来绕过版本闭包，也不得先合并后等待补激活。
+代码合并到当前开发分支后，使用该工作目录的下一次自然 scheduled launchd 会读取新的
+executor 语义：通常在 10 分钟内完成的方案没有行为差异；运行 10–60 分钟的方案不再被
+错误地在 600 秒终止；真正卡死的方案最多可占用已声明的 3600 秒。此次不 kickstart、
+不 reload、不手工触发预测。
 
 ## 错误处理
 
-- Blackbox 配置含 `schedule.timeout_sec`：配置校验失败，方案不进入 discovery/执行。
-- Runtime Profile 的预测预算缺失、非整数或非正数：Profile 加载失败，fail-closed。
-- caller deadline 非正数：子进程启动前失败。
-- caller deadline 大于 600：仍执行 600 秒，不告警，因为收紧规则本身就是公开合同。
-- caller deadline 小于 600：按较小 deadline 执行，并由现有运行审计记录失败结果。
+- Blackbox `schedule.timeout_sec` 缺失、非整数或非正数：配置校验失败；
+- Runtime Profile 预测预算缺失、非整数或非正数：Profile 加载失败；
+- operation deadline 非正数：子进程启动前失败；
+- operation deadline 大于方案预算或 Profile 上限：不能放宽，按较小上限执行；
+- subprocess 到达最终预算：沿用现有进程组终止与运行失败审计。
 
 ## 测试与验收
 
-1. 先用失败测试锁定新合同：
-   - Blackbox 配置出现 `schedule.timeout_sec` 必须被拒绝；
-   - Intake 产物不得包含该字段；
-   - canonical Blackbox config 不包含 timeout；
-   - 仓库全部 Blackbox 配置均无该字段；
-   - Runtime Profile 的预测预算为 600、回测预算仍为 14400。
-2. executor/runner 定向测试证明：
-   - 未提供 operation deadline 时使用 Profile 的 600；
-   - 300 可收紧，1800 不可放宽；
-   - executor 不再改写 Profile；
-   - Native 的方案级 3600 仍然生效；
-   - 旧截断告警路径已删除。
-3. Intake、discovery、StaticGate、Blackbox runner、launchd runner、signal-gap 相关测试
-   全部通过。
-4. `compileall`、`git diff --check` 和完整 `python -m pytest -q` 全部通过。
-5. 本阶段停在隔离功能分支的已提交、全量验证状态；不触及目标开发分支或 `master`，
-   不执行任何生产 DB、launchd 或服务操作。后续 merge/push 必须等待独立的生产版本
-   Gate/激活方案和授权。
+1. 配置与版本不变：
+   - 39 份 Blackbox 配置继续包含正整数 `timeout_sec: 3600`；
+   - Intake 继续生成该字段；
+   - canonical hash 继续包含该字段；
+   - 相对目标开发分支不产生任何 Blackbox config 或 version hash 变化。
+2. executor 层级测试：
+   - Blackbox 未提供 operation deadline 时请求 3600；
+   - 显式 600 时请求 600；
+   - 显式 7200 时请求不超过方案的 3600；
+   - executor 不改写 Runtime Profile；
+   - Native 既有超时优先级不变。
+3. runner 上限测试：
+   - 3600 方案请求在 3600 Profile 下得到 3600；
+   - 600 operation deadline 得到 600；
+   - 7200 请求不能放宽 3600 Profile；
+   - backtest 14400 不变。
+4. 运行相关定向测试、`compileall`、`git diff --check` 和完整
+   `python -m pytest -q`。
+5. 合并前再次确认共享工作区分支、upstream、tracked 状态和未跟踪路径不与改动冲突；
+   只普通推送 `codex/audit-bugfixes-20260613`，不触及 `master`。
 
 ## 完成定义
 
-- 仓库中 Blackbox 预测预算只有 Runtime Profile 一个基础权威；
-- 配置、Intake、版本计算、executor 和文档不再表达第二个 Blackbox 基础预算；
-- 全部预测调用路径对 600 秒合同一致，调用方只能收紧；
-- Native 与 Blackbox backtest 行为未发生范围外变化；
-- 新精确版本的生产迁移边界被明确记录，没有兼容 fallback；未授权前不进入现场开发
-  分支。
+- scheduled Blackbox 不再被隐式 600 秒默认值截断；
+- 三层预算各自含义明确，最终值严格按最小值计算；
+- 39 个方案配置、精确版本和生产生命周期状态完全不变；
+- 无兼容 fallback、无新 Runtime Profile、无生产 DB/launchd/服务操作；
+- Native 与 Blackbox backtest 行为没有范围外变化；
+- 定向与全量测试通过，开发分支普通推送后远程 SHA 回读一致。
