@@ -202,6 +202,35 @@ class MetricsEndpointTests(unittest.TestCase):
             main.api_metrics("demo_daily__h1__10Y", tenor="10Y")
         self.assertEqual(ctx.exception.status_code, 400)
 
+    def test_metrics_endpoint_rejects_malformed_month(self) -> None:
+        """月份过滤是字典序字符串比较，格式错误会静默改变结果而非报错。
+
+        `2026-9` 与 `2026-10` 逐字符比较得 `'1' < '9'`，十月被错误排除；
+        `2026-13` 与任何真实月份都比不中。两者都返回 200 且数据缺失，
+        调用方无法与「区间内确实无数据」区分。
+        """
+        # 空串不在此列：它在现有代码里全程等价于「未传」，语义一致无缺陷。
+        # "invalid" 与 "2026-99" 是 issue #42 报告的原始复现输入。
+        for value in ("2026-9", "garbage", "2026-13", "2026-00", "invalid", "2026-99"):
+            for field in ("start_month", "end_month"):
+                with self.subTest(value=value, field=field):
+                    with self.assertRaises(HTTPException) as ctx:
+                        main.api_metrics("demo_daily__h1__10Y", **{field: value})
+                    self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_metrics_endpoint_accepts_canonical_month(self) -> None:
+        engine = object()
+        with patch.object(main, "get_engine", return_value=engine), patch.object(
+            main, "scheme_metrics", return_value={"scheme_id": "demo_daily__h1__10Y"}
+        ) as metrics_mock:
+            main.api_metrics(
+                "demo_daily__h1__10Y",
+                start_month="2026-01",
+                end_month="2026-12",
+            )
+        self.assertEqual(metrics_mock.call_args.kwargs["start_month"], "2026-01")
+        self.assertEqual(metrics_mock.call_args.kwargs["end_month"], "2026-12")
+
 
 class PredictionsEndpointTests(unittest.TestCase):
     def test_predictions_endpoint_uses_registry_scheme_id_only(self) -> None:
