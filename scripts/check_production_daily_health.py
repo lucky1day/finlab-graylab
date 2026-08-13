@@ -76,6 +76,10 @@ class DailyHealthSnapshot:
     run_prediction_counts: tuple[RunPredictionCount, ...]
     prediction_date_checks: tuple[PredictionDateCheck, ...]
     actual_watermarks: tuple[ActualWatermark, ...]
+    # 以下两项只用于可见性：让运维看到业务是否已被事后补缺覆盖，
+    # 但不参与任何健康判定——正式调度健康只认 scheduled_live。
+    gray_live_run_schemes: tuple[str, ...] = ()
+    gray_live_predictions_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -319,6 +323,7 @@ def evaluate_daily_health(
                     "predict_date": snapshot.predict_date,
                     "active_daily_base_count": len(active),
                     "all_missing_due_source_watermark": all_missing_due_source_watermark,
+                    "gray_live_predictions_count": snapshot.gray_live_predictions_count,
                 },
             )
         )
@@ -371,6 +376,9 @@ def evaluate_daily_health(
                     "predict_date": snapshot.predict_date,
                     "missing_base_schemes": missing_runs,
                     "successful_base_schemes": sorted(successful),
+                    "gray_live_covered_base_schemes": sorted(
+                        set(snapshot.gray_live_run_schemes) & set(missing_runs)
+                    ),
                 },
             )
         )
@@ -469,6 +477,7 @@ def load_snapshot(
                     FROM t_scheme_runs
                     WHERE predict_date = :predict_date
                       AND status = 'success'
+                      AND prediction_phase = 'scheduled_live'
                       AND scheme_id IN :scheme_ids
                     ORDER BY scheme_id
                     """
@@ -492,6 +501,7 @@ def load_snapshot(
                       ON p.run_id = r.run_id
                     WHERE r.predict_date = :predict_date
                       AND r.status = 'success'
+                      AND r.prediction_phase = 'scheduled_live'
                       AND r.scheme_id IN :scheme_ids
                     GROUP BY r.run_id, r.scheme_id, r.records_written
                     ORDER BY r.run_id
@@ -535,12 +545,53 @@ def load_snapshot(
                  AND r.frequency = 'daily'
                  AND r.task_type IN ('T+1', 'T+5')
                 WHERE p.predict_date = :predict_date
+                  AND p.prediction_phase = 'scheduled_live'
                 ORDER BY p.id
                 """
             ),
             {"predict_date": predict_date},
         ).mappings().all()
         predictions_count = len(prediction_rows)
+
+        # gray_live 补缺只做可见性呈现：它证明业务已恢复，不证明当天正式调度健康。
+        gray_live_run_rows = (
+            conn.execute(
+                text(
+                    """
+                    SELECT DISTINCT scheme_id
+                    FROM t_scheme_runs
+                    WHERE predict_date = :predict_date
+                      AND status = 'success'
+                      AND prediction_phase = 'gray_live'
+                      AND scheme_id IN :scheme_ids
+                    ORDER BY scheme_id
+                    """
+                ).bindparams(bindparam("scheme_ids", expanding=True)),
+                {"predict_date": predict_date, "scheme_ids": list(active_schemes)},
+            ).scalars().all()
+            if active_schemes
+            else []
+        )
+        gray_live_predictions_count = int(
+            conn.execute(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM t_scheme_predictions p
+                    JOIN t_scheme_registry r
+                      ON r.base_scheme_id = p.scheme_id
+                     AND r.target_tenor = p.target_tenor
+                     AND r.horizon = p.horizon
+                     AND r.status = 'active'
+                     AND r.frequency = 'daily'
+                     AND r.task_type IN ('T+1', 'T+5')
+                    WHERE p.predict_date = :predict_date
+                      AND p.prediction_phase = 'gray_live'
+                    """
+                ),
+                {"predict_date": predict_date},
+            ).scalar_one()
+        )
 
         actual_watermarks: list[ActualWatermark] = []
         for tenor in normalized_tenors:
@@ -582,6 +633,8 @@ def load_snapshot(
         run_prediction_counts=run_prediction_counts,
         prediction_date_checks=prediction_date_checks,
         actual_watermarks=tuple(actual_watermarks),
+        gray_live_run_schemes=tuple(str(item) for item in gray_live_run_rows),
+        gray_live_predictions_count=gray_live_predictions_count,
     )
 
 
