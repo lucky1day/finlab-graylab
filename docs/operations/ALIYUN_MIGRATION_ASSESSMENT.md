@@ -43,6 +43,25 @@
 
 源/目标六类规范化对象 hash 的共同值为：tables `3a8a5e8982a15aa72526aae3995876a16e2cfda2090cd34407d5049287c11cbf`、columns `22fde81fe2a6176def4eb2eb7405ac1a6767a577ec42d126e0929f5e37eac119`、indexes `b2992c24df8dc5c588e7666661aa9481f0d79abb3fc3323acfd475dfaee390d0`、routines `8f7bc92dff94eefe13416c9bb2b590b061a7280b702bdd41610f7a3c83658e5f`、triggers `09f0052d2ce81020d8dc24a0cdaa822cf482bc9891649db60f3a779597df1350`、events `5c1f75f108f9594123d8f5dd00d3444316d27660acd6f106d20cc18e84ece313`。
 
+### 0.0.1 v1.22 状态变化（2026-08-17 只读复核）
+
+两项与 v1.21 记录不同的现场事实，以及一项新完成的代码变更：
+
+| 项 | v1.21 记录 | 2026-08-17 实测 |
+|---|---|---|
+| ECS cron | 28 条全部注释，`root` crontab absent | **已启用**：`crontab -l` 返回 28 条有效触发，上游数据链正在 ECS 本地生产并写库 |
+| 磁盘 | 恢复与清理后约 14 GiB 已用 | 40 GiB 盘已用 15 GiB、可用 23 GiB，其中 `/var/lib/mysql` 占 8.3 GiB |
+| Blackbox 运行期沙箱 | MIG-003 STOP_SHIP | 已退役（commit `713ee33`），保证前移到入库 StaticGate + 版本哈希绑定 + 运行后输入目录指纹复验 |
+
+ECS cron 启用带来一个需要判定的副作用：v1.21 第 9 条要求"正式启用 ECS cron 与停止 Mac 对应 28 条 cron
+必须作为同一个后续切换动作"，理由是避免**双份外部数据源请求**。若 Mac 的 28 条 cron 仍在运行，
+则两地正在同时向同一批外部数据源（Wind API、东方财富、中国货币网、中债）发起请求。
+这既可能触及配额或频率限制，也可能触及数据许可的节点约束。**需要确认 Mac 侧 cron 的当前状态并作出处置。**
+
+沙箱退役后仍需注意：`network_access: false` 与 `database_access: false` 在运行期不再有强制机制，
+仅作为契约声明由入库 StaticGate 静态强制；`database_access` 另有 `environment_allowlist`
+（仅 `LANG/LC_ALL/TZ`）兜底。验收报告不得声称存在 OS 级网络或文件系统隔离。
+
 ## 0. 单一迁移交接入口（先读）
 
 本节是新接手人员的第一入口。除非注明“目标/待实施”，下列值均为 2026-08-16（Asia/Shanghai）对专用 ECS 的现场实施与读回结果。数据库克隆、`BondPrediction` 发布和手工增量验证已完成；Web、DataBridge、算法、Actuals、systemd timer、Nginx、DNS 与生产流量尚未部署或切换。任何超出第 0.0.1 节已完成范围的 Reload、启停、写库、切流或安全组操作，仍须取得对应授权。本文的服务器资源基线只以本节记录的专用 ECS 为准。
@@ -273,7 +292,7 @@ Authority 顺序固定为：**云控制台/实例元数据与 installed/loaded s
 | 评估日期 | 2026-08-16（Asia/Shanghai） |
 | 当前阶段 | 专用 ECS `i-uf68h8wsd7ks5wqod85s` 的 `DB-CLONE-A`、MySQL 8.4.10、`BondPrediction` 工作目录/Python/Chrome 环境、静态 disabled cron 和手工增量验收已完成；Mac P65、MySQL 与 28 条有效 `BondPrediction` cron 未变。下一步是 Bond Factor Lab C56 release、DataBridge、算法、Actuals 和 Timer-disabled systemd 部署 |
 | 当前总判定 | **数据库完整克隆和每日增量脚本的 Linux 能力已经通过，可以继续整套服务部署；4C16G 当前有约 13 GiB 可用内存、24 GiB 可用盘，但 56 方案完整批次与 Web 同机容量仍须实测。生产切换继续 No-Go，因为 ECS cron、应用 Writer、Web/Nginx/DNS 和流量均未启用；全量 65 个方案继续延期** |
-| 文档版本 | 1.21 |
+| 文档版本 | 1.22 |
 
 自 1.19 起，仓库内 `docs/operations/ALIYUN_MIGRATION_ASSESSMENT.md` 是本文的 canonical 版本，外部同名文件仅保留为工作副本，不得覆盖 Git 中更新的内容。用户已明确授权将本文提交并推送至远程开发分支和 `master`。本文包含公网 IP、实例/VPC 标识和本机 SSH 私钥路径引用，但不包含私钥内容、数据库密码、Token 或云 AccessKey，仍应按内部运维资料控制仓库访问。1.21 回填 `DB-CLONE-A` 的实际快照、恢复、环境、测试和增量验证结果；仍不授权启用 ECS cron、停用 Mac cron、运行历史回测、切换应用 Writer/域名/流量或修改 Mac 生产代码与服务。
 
@@ -866,7 +885,7 @@ DataBridge 不是数据库里的共享服务，而是每台主机本地文件系
 |---|---|---|---|---|
 | MIG-001 | P0 | 历史数据库公网端点拒绝连接 | RESOLVED / RETIRED BY TOPOLOGY | 端点曾恢复；`DB-CLONE-A` 后运行期不再使用该端点，不影响当前部署 |
 | MIG-002 | P0 | 新专用 `ecs.u1-c1m4.xlarge` Candidate 的 4 vCPU/16 GiB 已真实生效，但完整逐方案准备 + 串行 C56 批次尚未实测 | EXPERIMENT_REQUIRED（主机资源门已通过） | G2 使用该专用节点做可移植性 Spike，G5 分别给出功能试跑与生产容量结论；不再等待规格配置，也不把 4C16G 写成未经完整负载验证的保证 |
-| MIG-003 | P0 | 39 个交付本身未见 Darwin 二进制，但现有 Runner/profile 硬绑定 macOS Sandbox；Linux direct 基线已确认、尚未实现 | STOP_SHIP | 39 个 Blackbox 的 Linux 运行 |
+| MIG-003 | P0 | 运行期 sandbox-exec 已于 2026-08-17 退役（commit `713ee33`），Runner 与 profile 不再绑定 macOS；剩余阻断只有 `environment_manifest.json` 仍为 `osx-arm64` | **平台执行层已解决 / 环境指纹待重建** | 39 个 Blackbox 的 Linux 运行 |
 | MIG-004 | P0 | 当前项目控制面只承认 launchd；Linux 必须采用一次性 `systemd` unit/timer，固定 `Persistent=false`、无 startup catch-up/自动补跑，代码与证据尚未实现 | STOP_SHIP（实施项，设计已确认） | Linux 生产调度和运行 provenance；语义已确定，不再需要用户选择控制面 |
 | MIG-005 | P0 | 历史 DB-TRANSPORT-A 的 NATApp 默认连接缺少 TLS/hostname 校验 | RESOLVED BY TOPOLOGY | ECS 运行期只连 `127.0.0.1:3306`；一次性快照经固定 Host Key 的 SSH 传输，NATApp 不再承载业务数据库链路 |
 | MIG-006 | P0 | 9 个 active Native 只有 Darwin ARM64 二进制 | DEFERRED_BY_SCOPE | 不阻断阶段一 56 方案；恢复全量 65 时重新成为 HARD_BLOCKED |
@@ -1508,186 +1527,111 @@ Blackbox 需额外分解为：
 - 两次迁移的工程和运维成本；
 - 未来恢复 9 个延期方案所需的上游重新交付和 Gate 等待时间（不计入阶段一 TCO）。
 
-## 13. 修订后的阶段计划
+## 13. 剩余阶段计划（v1.22 精简版）
 
-### G0A：目标与责任门
+数据库、上游数据链与 Blackbox 运行期沙箱三块已经解决，原 G0A–G9 中围绕
+`ECS 经 NATApp 直连 Mac MySQL` 与 `sandbox-exec 移植` 展开的门已不再适用。
+本节以当前事实重排剩余工作，只保留仍然成立的约束。历史门的论证保留在 6–12 节作为证据。
 
-- 确定 SLO、RTO/RPO、批次 deadline 和混合期限；
-- 2026-08-16 用户已确认具备阿里云控制台、安全组查看、实例重启、升配和续费权限，MIG-021A 已关闭；本次不额外建设 RAM 组织体系；
-- 当前 `root + finlab-key.pem` 可继续用于受控迁移操作；个人账号、密钥轮换/回收和值班升级路径在稳态运行前完成，不作为首次部署前置；
-- 固定已完成的数据库边界：阶段一采用 `DB-CLONE-A`，ECS 运行期只连接本地 MySQL；不使用 NATApp、复制、LKG/RDS、双写或自动补跑；单 ECS/单 MySQL 故障时显式 503/批次失败；
-- 固定已完成的账号/传输边界：一次性 dump 经固定 Host Key 的 SSH 传输；Ubuntu 目标使用 `bond_app@localhost` 共用账号语义，MySQL 仅监听 loopback，不拆成多个角色账号；
-- 固定已确认的运行处置：阶段一不执行 9 个延期方案，不采用云/Mac 56/9 拆分执行；
-- 固定已确认的 Blackbox 边界：首轮保留当前逐方案 DataBridge 准备和串行语义，Linux 只做 direct 子进程平台适配，容器隔离后置；
-- 固定 MIG-018/MIG-020 为延期优化：不预先做 `BatchInputSession`、共享 view、队列或并发；只有六项 ROE 条件满足并获用户批准才重开；
-- 确定预算和生产 DB 操作责任人；阶段一不要求其创建或拆分账号。告警和值班责任在正式稳态运行前确定，RDS 权限不属于阶段一前置；
-- 未完成剩余业务目标项时，已完成现场读回的 4 vCPU/16 GiB `ecs.u1-c1m4.xlarge` 专用 Candidate 仍可继续首次安装和 no-persist Spike，但不执行生产切换。
+**已关闭，不再是计划的一部分**
 
-### G0B：P65 零干扰证据与 C56 隔离候选门
+| 原议题 | 关闭依据 |
+|---|---|
+| 数据库可用性、公网链路带宽、NATApp 单点与传输安全 | `DB-CLONE-A`：运行期连接 ECS 本机 `127.0.0.1:3306`，不再有跨公网数据库路径 |
+| 上游数据 authority（原 MIG-012 HARD_BLOCKED） | `BondPrediction` 数据链已在 ECS 本地生产并写库 |
+| Blackbox 的 macOS `sandbox-exec` 平台绑定（MIG-003 执行层） | 运行期沙箱已退役，保证前移到入库 StaticGate + 版本哈希绑定 + 运行后输入目录指纹复验 |
 
-- 对 P65 只做低开销只读取证：记录 branch/HEAD/既有 worktree 状态、相关文件与 installed plist hash、`launchctl` loaded state、进程/端口、65 个生产 Registry/config 状态、当前 DataBridge generation，以及已有 Request/Output、日志和运行指标；不得为了“补证据”在 P65 新跑全量预测、回测、DataBridge refresh 或压力测试；
-- `/Users/macstudio0/bond-factor-lab` 在切流前视为不可变生产目录：不切分支、不改代码/config、不安装依赖、不清理既有 untracked 文件、不改变共享 Conda/Python 环境，不执行 `launchctl bootstrap/bootout/kickstart`，不替换 plist，不重启服务，不占用现有生产端口；
-- 不写生产 DB/Registry，不修改生产账号权限，不刷新或发布 Mac `DataBridge current`，不改变公网链路。迁移准备期间 P65 的 65 方案、Backend、DataBridge、Actuals 和日/周/月任务继续按原状态正常运行；
-- 从 P65 exact commit 在新的独立 git worktree 中形成 C56；使用独立 Python 环境、cache/artifact/log/tmp 目录和非生产端口。config/Registry 双暂停、API 隐藏、scheduled candidate/缺批监控排除只对 C56 配置与隔离 DB fixture 验证，绝不写入生产 Registry；
-- Mac 上只允许有界、短时、低优先级的单元/契约测试；完整算法 Shadow、容量和压力试验全部放在 ECS Candidate。所需输入优先使用固定 fixture 或离线冻结 artifact，不对 Mac 生产数据库发起重复历史扫描；
-- 固定 C56 exact candidate commit、clean tree、依赖/配置身份、输入 hash、预期输出、Gate 报告和 C56-compatible Mac rollback release。P65 只要求忠实记录其既有状态，不为制造 `clean tree` 而改变现场；
-- 在 G0B 结束时再次读回 P65 的 commit/worktree、plist、loaded state、进程、端口、Registry 和 DataBridge 身份，证明迁移准备没有造成状态变化、任务漏跑或服务异常；
-- 输出一份变更分类清单，证明 M-track 只剩第 1.3.4 节平台适配 allowlist，所有非必要优化均已排除。
+**剩余六段**。每段的出口条件是下一段的入口条件；未通过不进入下一段。
 
-本门未通过时，不开始有生产意义的 Linux 实施。任何一次 P65 状态变化、生产任务异常或可归因的资源退化都立即停止迁移试验并先恢复正常运行。若后续 M-track 失败，先完成根因与资源方案排查；只有 G2R 获批后才在隔离 worktree 修改功能并形成新的 C56，P65 始终不作为开发环境。
+### L1 Linux 环境重建
 
-### G1：阶段一范围与 Linux 可执行物门
+- 三套独立环境：Service 3.12、Native `forecast_env` 3.13、Blackbox 3.13；`/opt/miniconda3` 已就位；
+- 依赖必须包含 `cryptography`——ECS MySQL 账号使用 `caching_sha2_password`，PyMySQL 缺该包无法完成握手；
+- 12 个保留方案依赖 numba/llvmlite，是整批里对 numpy 版本区间约束最严、与 LLVM 后端相关的一环，风险最高；
+- 产出 `linux-64` 的 `environment_manifest.json` 与部署级 environment fingerprint，保留 Mac 侧历史证据不覆盖；
+- **`runtime_profile` 的 `profile_name` 必须保持 `blackbox-v2-v1` 不变**——改名会改 39 个 `config_hash`
+  从而改动全部 `scheme_version`，并使历史 passed run 的 profile 比对全部失配。
 
-- 固定 56 个保留 ID 与 9 个延期 ID，并绑定 exact release；
-- 对 C56 自动断言 9 个 `config.status == paused`，并在隔离 Registry fixture 中断言 9 个 composite Registry `status == paused`，而 56 个保留方案的目标状态与清单一致；生产 P65 config/Registry 此时仍保持 65 个 active，不把候选断言写入生产；
-- 用自动化负面检查证明 Linux strict discovery、systemd 调度候选和批次结果均不包含 9 个延期 ID；手工 scheduled-live 调用在算法执行和业务写入前 skip/deny；
-- Dashboard、`/api/schemes`、metrics/backtest 公网接口和前端均不呈现 9 个 paused ID，直接业务读取返回 404；缺批次监控不要求它们产生新信号；
-- 证明 9 个方案目录、adapter、配置、加密 `.so`、source evidence、benchmark/backtest、Gate 证据和历史数据库行均未被删除或替换；
-- 17 个保留 Native 在 Linux 可导入、可 dry-run，并完成依赖/ABI 清单；
-- 未来恢复 9 个方案时，另行取得权威 Linux bundle/源码构建链并重新开启 MIG-006 全部 Gate。
+出口：三套环境可复现重建、指纹已记录、39 个 `--help` 通过。
 
-### G2：低成本 Linux 可移植性 Spike
+### L2 可执行性与等价性
 
-- 主机与数据资源门已通过：只在专用 `i-uf68h8wsd7ks5wqod85s` 上执行本 Gate；其 `ecs.u1-c1m4.xlarge`、4 vCPU/约 14.96 GiB Guest RAM和 40 GiB 根盘已读回，本地 MySQL/`BondPrediction` 已部署，当前约 13 GiB available 内存、24 GiB 可用盘；
-- 只部署 C56；Timer 全 disabled，无业务写权限、不接生产流量，不改变当前 Mac 公网链路，也不在 Mac 启动迁移服务；
-- 重建 Service、17 个保留 Native 和 39 个 Blackbox 的 Linux 环境；
-- 实现 Blackbox Linux direct execution mode，不要求逐方案容器；
-- 使用固定 fixture/离线 artifact 复现 C56 从 P65 继承的逐方案 snapshot/runtime view、全量校验、复制和串行执行；禁止在本 Gate 引入 `BatchInputSession`、共享 view 或并发；
-- 证明子进程不注入 DB Secret、只使用批准输入和独立输出，且超时/中止后进程树被回收；
-- 迁移适配变更逐项落在第 1.3.4 节 allowlist；出现功能变化则拒绝该变更；
-- 记录完整串行批次的 wall/RSS/I/O/临时磁盘/deadline，失败时先区分迁移缺陷、资源不足和真正的功能瓶颈；
-- 强网络/宿主文件系统 Sandbox 不进入本 Gate，按已批准残余风险后置。
+- **先单测日批里最慢的那个 Native**（Mac 上 41 分 34 秒），不要等全量 Shadow。日批 Native 占 97.5%
+  CPU 时间，而 ECS 是 4 vCPU / 2 物理核，Mac 是 M3 Ultra 32 核——这是当前最大的单点未知；
+- 39 个 Blackbox 与 17 个保留 Native 在固定 fixture 上完成 no-persist 执行；
+- **跨平台数值等价必须先定容差判据再比对**：x86_64 与 ARM64 的浮点末位差异几乎必然存在，
+  而 source-backed Native 禁止用改算法贴结果。判据需明确方向一致率要求、内部 score 的相对误差阈值、
+  样本量，以及差异不可消除时的出口；不得借用也不得放宽 Native 首次入库的 CompareGate 口径。
 
-### G2R：必要优化例外门（默认跳过）
+出口：56 个精确版本可执行、等价性判据已批准并通过、最慢单任务耗时已知。
 
-只有 G2/G5 产生决定性阻断时才检查本门：
+### L3 调度控制面
 
-- 第 1.3.2 节六项 ROE 条件必须全部有证据；
-- 先修迁移实现缺陷，再把 4 vCPU/16 GiB 下的精确资源证据交由用户协调基础设施，不把“目标资源上的一次失败”直接等同于“必须改功能”；
-- 明确最小优化、直接因果、验收指标、回滚点和受影响 Gate；
-- 取得用户对该单项 ROE 的明确批准；
-- 回到 Mac 的隔离 worktree/环境独立实现和有界验证，P65 不变；冻结新的 C56 exact commit，再重跑受影响的 G2–G5。
+- `launchd` → `systemd` one-shot/timer；`Asia/Shanghai`、`Persistent=false`、`RandomizedDelaySec=0`、无补跑；
+- 改造 `scheduler/repository.py` 与 `scheduler/executor.py` 中的 launchd 双因子门禁（字符串常量 + 模块级
+  哨兵对象），使 Linux 真实运行不再伪装成 `launchd_one_shot`；注意运行来源当前**不落库**，
+  provenance 只存在于 journal，若要求数据库内可证明需单独设计；
+- **unit 必须显式固定 `PATH`**：runner 用 `shutil.which("conda")` 定位 conda，systemd 不继承登录 shell 的
+  PATH，不固定会以"无法解析 conda 环境"的形式静默失败；
+- 单一 `EnvironmentFile` 承载 `BOND_DB_*` 与 `DATABRIDGE_RUNTIME_ROOT` / `DATABRIDGE_REFRESH_DEADLINE`，
+  保证 DataBridge unit 与 prediction unit 解析到同一 runtime root，否则 `v2_daily_gate` 凭证永远对不上；
+- 保留 `v2_daily_gate` 的跨 unit 就绪依赖（30 秒轮询、上限 1800 秒、逐项比对
+  `generation_id/refresh_date/business_digest`、fail-closed 且不自动补跑）；
+- **上游 cron 与 DataBridge 的时序**：ECS crontab 已承载上游数据链，昨日数据在前一日 17:10–23:25
+  分四批落库、当日 05:00 再补一次，06:30 的 DataBridge 安全；07:10 的 `windApiDailyMS` 写当日实时数据，
+  不影响 `feature_date=T` 的硬截止。唯一需实测的是 05:15 的 `run_cal_derivative_strategy.sh`
+  是否稳定在 06:30 前完成——它产出 DataBridge 要读的 `api_wind_derivative_*`。
+  cron 与 systemd timer 之间没有依赖机制，两者都是纯时间触发。
 
-没有满足本门时，MIG-018/MIG-020 保持延期，迁移计划不得实现它们。
+出口：全部 timer 已建立且保持 disabled、`OnCalendar`/时区/错过触发语义已验证、手工启动各 cadence 的
+one-shot 完成 no-persist 验证。
 
-### G3：数据库真实链路门
+### L4 容量与全量 Shadow
 
-本 Gate 分成已完成的数据层和待完成的应用层。
+- 完整日/周/月串行 no-persist Shadow，采集墙钟、Peak RSS、I/O、临时空间，并同时观测本机 API；
+- **磁盘是明确的硬约束**：40 GiB 盘在数据库落盘后仅余约 23 GiB，而 Native 的日期 CSV 保留无界增长。
+  上线前必须在扩盘、加数据盘、定保留策略三者中选一；
+  注意旧的年增长估算（68–71 GiB/年）建立在一个被混用的方案计数上，须先澄清口径再重算；
+- 先给"功能试跑 OK/不 OK"，再给"生产容量 OK"；不满足时提交精确资源曲线，不自动改功能、不加并发。
 
-**数据层已完成：**
+出口：56 个方案全量串行 Shadow 通过、批次 deadline 与资源余量结论成立、磁盘策略已定。
 
-- 从 Mac MySQL 8.0.45 直接导出 `2026-08-16 22:27:59 +08:00` 静态完整快照，经固定 Host Key SSH 传输并恢复到 ECS MySQL 8.4.10；
-- 两端压缩文件 SHA-256 均为 `1e5c443148153815b2818b26441846c6c3c8af9600a10baec1d568c6000e57af`，对象数量、六类结构 hash、DEFINER coverage 与 `mysqlcheck` 通过；
-- 全局 `event_scheduler=OFF` 已持久化并在 MySQL 重启后复核；MySQL 仅监听 loopback；
-- `BondPrediction` 真实本地连接、日期表首次增量写入、同命令幂等重跑、精确 cron shell 命令和 Wind 日频 dry-run 均通过；
-- 28 条 `BondPrediction` 候选 schedule 已生成但未安装，且明确不包含用户不需要的 4 条 `forecast_project` 定时任务；Mac MySQL、crontab、应用和生产服务未改。
+### L5 切流（两个独立窗口，各自单独授权）
 
-**应用层待完成：**
+**L5a Web** — 保留现有公网入口机承载域名，只改其 nginx upstream 指向 ECS，不切 DNS。
+回滚是改回一行 + reload，秒级；Mac 侧反向隧道保持运行作为常温回滚目标。这样避开重建
+default-deny 白名单站点配置、证书签发、DNS TTL 与 ICP 备案接入等一整类问题。
 
-- 部署 `/etc/bond-factor-lab/bond-factor-lab.env`，权限 `root:root`、`0600`，host/port 固定 `127.0.0.1:3306`；
-- 覆盖 Backend、Dashboard、scheduler/repository（含 Actuals）和 DataBridge/data_service 四类真实运行路径；不启动历史 backtest runner，Dashboard 对既有 backtest 数据的只读访问随 Dashboard 一并验证；
-- DataBridge 使用最近可用 live 调度日做 no-publish、单并发、带超时/停止阈值的本地库导出；用固定 Artifact 运行 Dashboard 和代表性保留 Native；
-- 验证本地 MySQL 不可用时 Dashboard/API 明确 503、批处理明确失败，不存在 stale-read、自动补跑或延迟双写；
-- 本 Gate 不运行历史回测、不补历史区间、不向 `t_backtest_*` 写入结果。
+**L5b Writer** — 同一窗口内按序完成：停用 Mac 的 prediction/DataBridge/Actuals launchd job、
+停用 Mac 的 28 条数据采集 cron、按业务日期补齐快照后的空窗、启用 ECS timer、
+把生产 Registry 的 9 个 composite 置 `paused`。
 
-本 Gate 的当前结论是：数据库克隆和每日增量脚本能力已通过，不再是卡点；只有 Bond Factor Lab 四类应用路径仍待随应用部署完成。生产启用前另按 G7 处理静态快照后的空窗和双库 authority 切换。
+- Mac launchd 的"持久停用"必须区分 `disable`（写入 per-user override，跨重启持久）与
+  `bootout`（仅当前会话），并复验跨重启有效；
+- 两端现在是两个独立数据库，第二 Writer 不会产生 UPSERT 冲突信号，**数据分叉是静默的**，
+  单 Writer 证据只能来自调度状态、进程与实际 run 来源；
+- 前端/API 的验收分母是 **60 个 active composite**（69 − 9），不是 56；56 是执行身份的分母。
 
-### G4：systemd 与生命周期门
+出口：公网读流量与全部 Writer 均由 ECS 承载、Mac 侧无残留触发、单 Writer 证据完整。
 
-- 批准并实现真实 `systemd_one_shot`；
-- 为 `LIVE-SCHEDULE-ONLY` 的 DataBridge 每日 06:30、日频周一至周五 07:03、周频周六 11:30、月频每月 15 日 18:00、Actuals 每日 08:30/19:00/23:45 建立精确 unit/timer 映射；
-- 所有 timer 明确写入 `Persistent=false`、`RandomizedDelaySec=0`，不配置 startup catch-up、自动 retry 或历史补跑；ECS 停机期间错过的触发在开机后不得自动生成 run，人工重跑必须是另行授权、可审计的一次性操作；
-- 用 `systemd-analyze calendar`、`systemctl cat/show` 和可控时钟/隔离 timer 测试核对 `Asia/Shanghai`、下一触发时间、星期/自然日，以及 `Persistent=false` 下重启和错过触发不会补跑；
-- 在 Timer-disabled 状态分别手工启动各 cadence 的 one-shot，以当前或最近可用 live 输入做 no-persist 验证；不得用历史 backtest runner 替代调度验证；
-- unit/timer hardening、漂移审计、退出码、日志和进程回收通过；
-- 建立一个锁定的 Linux direct execution profile/部署级 fingerprint，保留 Mac fingerprint 不变；
-- 优先选择与现有 Gate 兼容的最小实现，不把 39 份人工 revision 或一对多环境治理改造写成迁移 Spike 前置；
-- Timer 仍全部 disabled。
+### L6 稳态
 
-### G5：容量与阶段一完整 Shadow Gate
+- **漏跑检测**：`Persistent=false` 下停机不产生 run，"漏跑记失败并告警"无实现主体。
+  仓库已有 `shared/signal_gap_report.py` 与 `scripts/report_signal_gaps.py`、
+  `scripts/check_production_daily_health.py`，缺的是一个 unit 和**一条不经过 ECS 的外部心跳**——
+  检测器若与被检测对象同机，ECS 宕机时同样不会响；
+- 备份与恢复演练：数据库现在是 ECS 本地库，ECS 快照成为可用手段，需实测 restore 与 RTO/RPO；
+- 实例 2026-09-16 到期、包年包月手动续费——到期停机等于全部调度归零，须在进入持续运行前闭环；
+- 云盘加密是创建时属性，事后转需停机换盘；
+- 自然观察：至少 5 个交易日、1 个自然周频周期、Actuals 三个时点、1 个每月 15 日的月频触发。
 
-- 只运行 live-schedule 的 no-persist/Shadow，不执行历史 backtest runner，不新增 `t_backtest_*` 结果；固定 fixture/Compare 只用于等价性，不扩展为历史回测；
-- 执行第 12 节容量矩阵；
-- 现场读回的 Candidate 为 4 vCPU/16 GiB `ecs.u1-c1m4.xlarge`，实际实例身份、内存、Swap 和云盘容量进入验收证据；
-- 56 个阶段一 exact version 全部可运行；
-- Native/Blackbox 的方向、日期、内部字段、confidence、输入 cutoff 和确定性通过；
-- 无 L2 改动；
-- 39 项日批、12 项周频和 5 项月频通过；
-- Blackbox 逐方案输入准备、snapshot/cutoff、失败隔离和串行顺序与 C56 从 P65 继承的行为一致；不以重复次数较多为迁移失败；
-- 完整串行 Shadow 在 4 vCPU/16 GiB 上先形成“功能试跑”结论；只有满足批准的资源/deadline 和在线服务稳定条件，才形成“生产容量 OK”。若有精确资源缺口，交由用户协调并在调整后重跑；只有通过 G2R 才能另行形成新的功能基线；默认不测试并发度 2；
-- 9 个延期方案没有被发现、执行、写入新业务结果或计入成功率；在 C56 隔离 Registry/API 验收中不呈现且既有历史/代码保留。此时生产 Registry 仍为 P65 状态，不要求现网提前隐藏；
-- DB 无业务写入。
+出口：SLO/RTO/RPO 已定、告警实际送达责任人、自然周频与月频各完成一轮。
 
-### G6：只读 Web 切换
+### 仓库外的待议问题
 
-- 本 Gate 已进入有意切换公网读流量的阶段，必须另行取得窗口授权；G0B–G5 的“切流前零干扰”不自动授权本 Gate；
-- 在专用 ECS 安装并验收 Nginx/Certbot，FastAPI 只绑定 `127.0.0.1:8100`；从阿里云控制台精确读回并批准 22/80/443 与必要出站 DNS/HTTPS 的 Security Group 规则；8100/3306 都不进入公网入站规则；
-- 不原样复制仓库现有 Site 模板：渲染 ECS 本机直连版，把 upstream 精确设为 `127.0.0.1:8100`；将仓库 proxy-header snippet 安装为 Site `include` 使用的精确文件名，或同步修改两处引用；任何一种都必须由 `nginx -t` 和 `nginx -T` 证明闭合；
-- 当前域名 A 尚未指向 Candidate，因此切流前默认用 DNS-01 的受控 TXT 记录为 `bond.finailab.cn` 预签证书；若届时已有可受控交付且覆盖该域名的有效证书，可作为等价替代，但不得把 Candidate 直连 HTTP-01 写成切流前已可验证；
-- 证书预置后，用本地解析覆盖或等价方式在不改公网 DNS 的前提下验证 Candidate HTTPS、完整链、SNI、健康检查、错误页和回滚配置；
-- 记录切流前 DNS 值和 TTL 到受控变更记录，然后把域名 A 切到 EIP `47.103.45.193`，并确认没有会把客户端导向其它主机的 AAAA 记录；
-- DNS 生效后，为 HTTP 80 提供只限 `/.well-known/acme-challenge/` 的 webroot 路径，将后续自动续期收敛为本机 HTTP-01，完成 `certbot renew --dry-run` 和到期告警；不为了首期续期在 ECS 长期保存宽权限 DNS API Secret；
-- 只切 Web 读流量到 Linux FastAPI，不同时切 Writer；
-- 所有生产 Writers 仍留在 Mac；
-- 不修改生产 Registry。由于 P65 的 9 个 Registry 此时仍是 active，G6 公网读模型会临时继续呈现当前 65 个方案；paused-hidden 只在 C56 隔离 fixture 中已验证，直到 G7 才正式生效。不得为了提前隐藏而在 G6 偷跑生产写库；
-- 在真实 ECS 本地 DB 下观察 Dashboard 200/503、p95/p99、Snapshot consistency、gzip 和静态资源；
-- 预演按切流前 DNS 值回滚，并确认 TTL/客户端缓存带来的恢复时间；
-- Web 切换与 Writer 切换不放在同一窗口。
-
-### G7：Writer 依赖组切换
-
-G7 是第一次必须改变 Mac 生产 Writer 状态的阶段，因此不属于前述准备期授权。执行前必须由用户对具体时间窗、精确 unit、生产 Registry 九项更新和回滚命令做独立批准；“同意方案 B”本身不授权执行 G7。
-
-在不新增 ownership 机制时，推荐切换单位：
-
-1. 28 条 `BondPrediction` 数据更新 cron 作为一个组切换；用户明确不需要的 4 条 `forecast_project` 定时任务永不进入目标组；
-2. Actuals 可独立切换；
-3. 在 9 个方案不进入阶段一执行的前提下，DataBridge + 56 方案的全部日/周/月 prediction cadences（保留 Native 与 Blackbox）作为一个依赖组切换；
-4. 不按 runtime type 拆分同一 cadence，验证整批只有一个 owner 和一种数据库 authority。
-
-每次切换必须：
-
-- 发生在无在途批次的空窗；
-- 明确处理初始静态快照 `2026-08-16 22:27:59 +08:00` 之后的空窗：优先重新取最终静态快照；若选择按日期补齐，则先形成源/目标水位对账并记录范围；
-- 预先在与 P65 分离的位置准备并验证 C56-compatible Mac rollback release；回滚不得重新启用会执行 9 个方案的旧 P65 prediction writer；
-- 先持久停用精确的旧 Mac Writer unit；不改写 `/Users/macstudio0/bond-factor-lab` 中的 P65 代码；
-- 确认旧 launchd/jobs/crontab 持久 disabled、旧进程/子进程退出且无在途批次；双库方案不使用按主机撤权来代替调度与水位证据；
-- 以受控、可审计操作把生产 Registry 中精确 9 个 composite ID 改为 `paused`；C56 的 9 个 config 已是 `paused`，两层从此同时生效；
-- 再启用新 Writer 和唯一 timer；
-- 验证 DB run/prediction/log 只有一个来源、云端候选只有 56 个、9 个不产生新结果且公网读模型不再呈现它们；
-- 回滚时严格先 disable/stop 云端新 Writer、确认退出，再启用预先验证的 C56-compatible Mac rollback Writer；生产 Registry 保持九项 `paused`。Web 可按 G6 的受控 DNS 记录独立回切，P65 Backend 会依据同一生产 Registry 隐藏这 9 个，但旧 P65 prediction writer 不得恢复。
-
-若 9 个方案继续由 Mac 执行，或坚持逐 cadence 迁移，必须先验收迁移期双端 DataBridge、跨主机 Artifact 发布或受治理 ownership filter 中的一种，并为两端建立明确 Writer fence；否则不得停旧 DataBridge，也不得把现有 runner 当成可按 Native/Blackbox 或 56/9 自动分割。
-
-### G8：自然观察与恢复演练
-
-故障场景默认在 ECS Candidate 或隔离数据库注入；不得为了“证明能恢复”而主动中断 Mac 生产 MySQL 或 P65 服务。真实事件优先使用自然故障证据；若仍需受控重启，必须取得独立维护窗口授权并先确认回滚和影响通知。`BondPrediction` 的增量能力已按用户确认用手工真实入口和幂等重跑验收，不额外等待自然 cron 周期。
-
-至少覆盖：
-
-- 5 个日频交易日；
-- 至少 1 个周频自然触发周期；
-- Actuals 三个自然触发时点；
-- 至少 1 个每月 15 日的月频自然触发；在此之前只能标记为“已部署并进入观察”，不能关闭全部 live cadence 的生产验收；
-- Linux 重启；
-- ECS 本地 MySQL 短断与应用重连；
-- 隔离 MySQL 重启；生产 DB 重启仅在独立维护授权下可做；
-- 算法 OOM/timeout；
-- DataBridge 失败；
-- 日志轮转、磁盘和证书告警；
-- 隔离数据库 restore；
-- Writer 回滚演练。
-- 9 个延期方案不会触发错误缺批告警、不会被批次成功率吞掉，也不会在 Mac/ECS 意外产生新双写。
-
-### G9：数据 authority 稳定态
-
-G9 是后续可选的高可用演进，不是当前迁移完成条件：
-
-- 依据真实 SLO/故障数据决定是否继续单机 MySQL，或迁到 RDS/等价托管 authority；
-- 若迁托管库，再验证上游 `BondPrediction` 持续写入、新旧库数据、大小写、时区、账号、备份和回切；
-- 未启动该演进时，ECS 本地 MySQL 是阶段一唯一 authority，并按 G8 的备份/恢复规则运维。
-- 数据新鲜度不再依赖 Mac；
-- 之后才讨论退役 Mac 数据/应用链路。
+尚未解决、需要逐一讨论的问题（含沙箱退役后的残留、ECS 与生产 MySQL 的六项差异、
+文档口径问题）统一记录在 `/Users/macstudio0/bond-factor-lab-migration-docs/OPEN_ISSUES.md`，
+不进入本文，避免把未决项与已确认方案混在一起。
 
 ## 14. 上线验收证据
 
@@ -1905,6 +1849,7 @@ G9 是后续可选的高可用演进，不是当前迁移完成条件：
 
 | 日期 | 版本 | 更新 |
 |---|---|---|
+| 2026-08-17 | 1.22 | 记录三项状态变化并重排剩余计划。一，Blackbox 运行期 `sandbox-exec` 已退役（commit `713ee33`）：保证前移到入库 StaticGate（新增相对路径穿越规则，对 39 份交付与 90 份 Native 文件实扫零误伤）、版本哈希绑定与新增的运行后输入目录指纹复验；`profile_name` 保持 `blackbox-v2-v1` 不变，未改动任何 `scheme_version`；全量测试 810 passed。MIG-003 的平台执行层阻断关闭，仅剩 `environment_manifest.json` 的 `osx-arm64` 指纹。二，只读复核发现 ECS cron 已由 v1.21 记录的全部注释状态变为已启用，上游数据链正在 ECS 本地生产写库；同时提示 Mac 侧 28 条 cron 若仍在运行，两地会对同一批外部数据源产生双份请求，需确认并处置。三，磁盘在数据库落盘后可用空间为 23 GiB，成为明确硬约束。第 13 节以当前事实重排为 L1–L6 六段（Linux 环境重建 / 可执行性与等价性 / 调度控制面 / 容量与全量 Shadow / 切流 / 稳态），原 G0A–G9 中围绕 NATApp 直连与 sandbox 移植的门已不再适用，其论证保留在 6–12 节作为证据。未决问题移入仓库外 `/Users/macstudio0/bond-factor-lab-migration-docs/OPEN_ISSUES.md`。本轮只做只读核实与文档更新，未变更 ECS 服务、数据库、cron、Nginx、DNS、Security Group、launchd/systemd 或生产流量 |
 | 2026-08-16 | 1.21 | 实际完成 `DB-CLONE-A`：从 Mac MySQL 8.0.45 直接取得 `22:27:59 +08:00` 静态完整快照，压缩文件 `332,565,676` bytes、SHA-256 `1e5c443148153815b2818b26441846c6c3c8af9600a10baec1d568c6000e57af`，经固定 Host Key SSH 传到 ECS 并恢复至 loopback-only MySQL 8.4.10。源/目标 322 BASE TABLE、5 VIEW、9 PROCEDURE、36 TRIGGER、3 EVENT 以及六类结构 hash 一致，DEFINER coverage 与 `mysqlcheck` 通过，`event_scheduler=OFF` 经重启复核。`BondPrediction` 当前工作目录已发布到 `/opt/bondprediction/current`，Python 3.13.12/Chrome 151 环境和 `74 passed, 6 subtests passed` 通过；日期入口首次增量 2 行、同键重跑 0 行，Wind 日频 dry-run 404 成功/0 跳过。28 条 `BondPrediction` Linux cron 只保存为 disabled 候选且 root crontab absent；用户进一步确认 4 条 `forecast_project` 定时任务不需要，明确不得迁移、生成或启用。Mac MySQL、28+4 原任务、应用与生产服务未改；Web/DataBridge/算法/Actuals/systemd/Nginx/DNS/流量仍待后续，生产切换继续 No-Go |
 | 2026-08-16 | 1.20 | 用户以 `DB-CLONE-A` 取代长期 NATApp 公网直连：完整 `bond_db` 一次性 dump/load 到 ECS 本地 MySQL，复制 `BondPrediction` 当前工作目录生产 bytes，并以其现有 28 条数据采集 schedule 形成云端独立增量更新能力；4 条 `forecast_project` 任务、历史回测和 3 个历史回溯 Event 执行均排除。恢复后只做受控手工入口、同键重跑和对象/数据对账，不做 24 小时 Mac/ECS 双跑；ECS cron 保持 disabled，正式启用与 Mac 对应 cron 停用留到后续同一切换动作。旧 `DB-A`/`DB-TRANSPORT-A`/NATApp 运行期描述降为历史，不得实施。用户已授权开始 ECS 安装、完整 dump/load、代码发布和手工验证，但未授权自然 cron、Mac 停任务或业务流量切换 |
 | 2026-08-16 | 1.19 | 按用户明确授权，将迁移评估从仓库外工作文档升级为仓库内 `CURRENT` 运维文档；canonical 路径为 `docs/operations/ALIYUN_MIGRATION_ASSESSMENT.md`，并由 `docs/operations/README.md` 登记。开发分支继续使用 `codex/audit-bugfixes-20260613`，文档提交随后同步到 `master` 并推送两个远程分支；ECS 不创建或跟踪开发分支。入库前执行敏感值扫描，文档只保留已授权的基础设施标识和密钥路径引用，不包含私钥内容、数据库密码、Token 或云 AccessKey。本版本只进行文档/Git 集成，不连接或变更 ECS、数据库、Nginx、DNS、Security Group、systemd/launchd、任务或生产流量 |
