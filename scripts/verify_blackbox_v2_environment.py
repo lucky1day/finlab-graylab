@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -44,9 +43,6 @@ def main() -> int:
         )
     if actual_packages != manifest.get("explicit_packages"):
         errors.append("environment package list changed")
-    if profile.get("sandbox_enabled") and shutil.which("sandbox-exec") is None:
-        errors.append("sandbox-exec is required but unavailable")
-
     import_probe = subprocess.run(
         [
             "conda",
@@ -70,7 +66,6 @@ def main() -> int:
         "conda_env": env_name,
         "environment_fingerprint": actual_fingerprint,
         "package_count": len(actual_packages),
-        "sandbox_exec": shutil.which("sandbox-exec"),
         "errors": errors,
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))

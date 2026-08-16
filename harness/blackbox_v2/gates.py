@@ -107,6 +107,8 @@ FORBIDDEN_IMPORT_ROOTS = {
 FORBIDDEN_CALLS = {"eval", "exec", "compile", "__import__"}
 FORBIDDEN_QUALIFIED_CALLS = {"os.system", "os.popen", "os.spawnl", "os.spawnv"}
 ABSOLUTE_PATH_PATTERN = re.compile(r"^(?:/Users/|/home/|[A-Za-z]:[\\/])")
+# 只把被路径分隔符或字符串边界包围的完整 ".." 段判为穿越，避免误伤散文里的省略号。
+RELATIVE_TRAVERSAL_PATTERN = re.compile(r"(?:^|[/\\])\.\.(?:[/\\]|$)")
 INPUT_STATE_INITIALIZED_SEAL = (
     b'{"schema_version":"blackbox-input-state-initialized-v1"}\n'
 )
@@ -1789,8 +1791,13 @@ def _script_violations(tree: ast.AST) -> list[str]:
             if name in FORBIDDEN_CALLS or name in FORBIDDEN_QUALIFIED_CALLS:
                 violations.append(f"line {node.lineno}: forbidden call {name}")
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            if ABSOLUTE_PATH_PATTERN.match(node.value.strip()):
+            literal = node.value.strip()
+            if ABSOLUTE_PATH_PATTERN.match(literal):
                 violations.append(f"line {node.lineno}: hard-coded absolute path is forbidden")
+            if RELATIVE_TRAVERSAL_PATTERN.search(literal):
+                violations.append(
+                    f"line {node.lineno}: relative path traversal literal is forbidden"
+                )
     return sorted(set(violations))
 
 

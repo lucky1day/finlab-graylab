@@ -24,7 +24,7 @@
 - **分层（Layered）**：自下而上 5 层，依赖只能向下，禁止向上与跨层回指。
 - **插件（Plugin）**：方案通过 `schemes/{scheme_id}/config.yaml` 被发现，再按显式 `runtime_type` 分派；所有新身份只能由 Blackbox V2 Intake 创建。
 - **横切（Cross-cutting）**：`harness/` 横切所有层，只读探测 + 编排 + 留证，不被任何层依赖；`python -m harness` 是统一机器入口。
-- **环境隔离（Process isolation）**：Native 原生算法在 `forecast_env`，Blackbox V2 只按 `blackbox-v2-v1` Runtime Profile 选择环境和 sandbox，服务在 `bond_factor_lab_service`。运行驱动不同，统一输出均收敛到 `PredictionRecord`。
+- **环境隔离（Process isolation）**：Native 原生算法在 `forecast_env`，Blackbox V2 只按 `blackbox-v2-v1` Runtime Profile 选择环境与执行预算，服务在 `bond_factor_lab_service`。运行驱动不同，统一输出均收敛到 `PredictionRecord`。
 
 ---
 
@@ -163,7 +163,7 @@ launchd installed plist（单一 cadence writer）
   → shared.input_artifacts 校验 artifact freshness 与 feature cutoff
   → scheduler.executor.execute_scheme(cfg, predict_date, prediction_phase)
        ├─ native_adapter: run_scheme_subprocess → schemes.{id}.predict.run
-       ├─ blackbox_v2: build_blackbox_input_snapshot → sandbox CLI
+       ├─ blackbox_v2: build_blackbox_input_snapshot → 受控 CLI
        ├─ strict PredictionRecord/日期语义校验
        └─ scheduler.repository 的专用原子完成边界
             → t_scheme_runs + t_scheme_predictions + run log

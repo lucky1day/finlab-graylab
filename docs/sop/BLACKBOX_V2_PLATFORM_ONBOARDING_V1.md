@@ -172,13 +172,11 @@ deploy/blackbox_v2/environment_manifest.json
 conda run --no-capture-output -n bond_factor_lab_service \
   python scripts/verify_blackbox_v2_environment.py
 
-conda run --no-capture-output -n bond_factor_lab_service \
-  python scripts/probe_blackbox_v2_sandbox.py
 ```
 
 执行器从版本化 JSON 加载 Runtime Profile，并在启动时严格校验字段、类型和安全边界。环境 manifest 用于核验实际环境指纹；方案配置不得覆盖 Profile 的算法执行资源、读路径、环境变量或网络权限。Intake 为 Blackbox 生成正整数 `schedule.timeout_sec` 作为 predict 预算申请，Profile 的 `predict_timeout_sec` 是平台上限，显式 operation deadline 是可选的第三层收紧约束；最终取三者最小值。backtest timeout 仍是独立 Profile 预算。Profile、manifest 或实际环境任一漂移时停止验收。
 
-记录环境清单摘要和自检时间。环境不一致、资源基准漂移、sandbox 网络拒绝或数据目录写保护失效时，不得继续。CPU、内存、predict/backtest 超时、100 条批量上限、Output 和日志大小上限以核对一致后的实际执行值为准。当前清理不修改既有 Blackbox 配置或 canonical config hash，因此不产生新 exact scheme version，也不触发 Gate、revision activation 或 Registry 切换。
+记录环境清单摘要和自检时间。环境不一致、资源基准漂移、入库 StaticGate 违规、精确版本不匹配或运行后输入目录指纹变化时，不得继续。CPU、内存、predict/backtest 超时、100 条批量上限、Output 和日志大小上限以核对一致后的实际执行值为准。当前清理不修改既有 Blackbox 配置或 canonical config hash，因此不产生新 exact scheme version，也不触发 Gate、revision activation 或 Registry 切换。
 
 ### 2.2 验证 DataBridge current
 
@@ -777,7 +775,7 @@ journal：它只回退到 previous safe state，保留原 journal，并新增 li
 - [ ] 历史缺 owner Metadata 仅在 `deploy/blackbox_v2_legacy_metadata_v1.json` 的精确 ID + SHA-256 范围内兼容；清单外或字节变化未被误放行
 - [ ] base/composite 身份无冲突，配置为 `blackbox_v2 + paused + draft`
 - [ ] 需要平台周历的方案以 `--platform-input api-wind-date-v1` Intake，父快照仍严格三文件
-- [ ] 冻结环境和 sandbox 自检通过
+- [ ] 冻结环境自检与输入目录指纹自检通过
 - [ ] DataBridge generation 状态和三 SHA 已保存
 - [ ] 已取得上游自测的下载时间、三频/日历 SHA、行数、起止键和 Request；未要求上游编造 `generation_id`
 - [ ] 三频 SHA 已对应到选定 generation，规范化 `api_wind_date.csv` SHA 和 `combined_snapshot_id` 已核对
