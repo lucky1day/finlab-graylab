@@ -69,6 +69,15 @@ def test_c56_active_execution_scope_is_56() -> None:
     }
 
 
+def test_c56_preserves_activated_weekly_10y_overlay_exact_version() -> None:
+    configs = {config.scheme_id: config for config in _candidate_configs()}
+
+    assert (
+        configs["weekly_10y_d_overlay_0529"].scheme_version
+        == "e50ad79a6c2f"
+    )
+
+
 def test_c56_keeps_deferred_scheme_implementations_in_release() -> None:
     configs = {config.scheme_id: config for config in _candidate_configs()}
 
