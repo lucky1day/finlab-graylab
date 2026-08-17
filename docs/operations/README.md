@@ -4,10 +4,11 @@
 
 **目标读者**：平台运维和部署人员
 
-**最后核验日期**：2026-08-16
+**最后核验日期**：2026-08-17
 
 | 文档 | 状态 | 用途 |
 |---|---|---|
+| [ALIYUN_ECS_MANUAL_WRITE_ACCEPTANCE_20260817.md](ALIYUN_ECS_MANUAL_WRITE_ACCEPTANCE_20260817.md) | `CURRENT` | ECS timers 关闭阶段的缓存复用、隔离 DataBridge 快照、daily/weekly/monthly/actuals 手工真写库与后端健康验收记录 |
 | [ALIYUN_MIGRATION_ASSESSMENT.md](ALIYUN_MIGRATION_ASSESSMENT.md) | `CURRENT` | Bond Factor Lab 从 Mac Studio 迁移到阿里云 Linux ECS 的单一需求、决策、资源、风险与阶段 Gate 交接入口 |
 | [PUBLIC_FACTOR_LAB_PERFORMANCE.md](PUBLIC_FACTOR_LAB_PERFORMANCE.md) | `CURRENT` | 公网 dashboard 的 API 性能验收和故障处理边界 |
 
