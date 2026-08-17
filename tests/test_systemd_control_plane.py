@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from contextlib import nullcontext
+import os
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -124,6 +125,71 @@ class SystemdControlPlaneTests(unittest.TestCase):
             summary.to_payload()["event"],
             "systemd_prediction_run",
         )
+
+    def test_databridge_publish_accepts_systemd_one_shot_producer(
+        self,
+    ) -> None:
+        from scripts import refresh_data_bridge_current as entry
+
+        with (
+            patch.dict(
+                os.environ,
+                {"BFL_DATABRIDGE_PRODUCER": "systemd-one-shot"},
+                clear=False,
+            ),
+            patch.object(
+                entry.DataBridgeRefreshConfig,
+                "from_env",
+                return_value=object(),
+            ),
+            patch.object(
+                entry,
+                "expected_daily_date",
+                return_value="2026-08-14",
+            ),
+            patch.object(
+                entry,
+                "_publisher_lock",
+                return_value=nullcontext(True),
+            ),
+            patch.object(
+                entry,
+                "_run_publish_with_retries",
+                return_value=(0, {"status": "ok", "mode": "publish"}),
+            ),
+        ):
+            code, payload = entry.run_command(
+                "publish",
+                refresh_date="2026-08-17",
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["status"], "ok")
+
+    def test_databridge_publish_rejects_noncanonical_producers(self) -> None:
+        from scripts import refresh_data_bridge_current as entry
+
+        for producer in (
+            "",
+            "cron",
+            "systemd_one_shot",
+            "systemd-one-shot-extra",
+        ):
+            with self.subTest(producer=producer):
+                with patch.dict(
+                    os.environ,
+                    {"BFL_DATABRIDGE_PRODUCER": producer},
+                    clear=False,
+                ):
+                    code, payload = entry.run_command(
+                        "publish",
+                        refresh_date="2026-08-17",
+                    )
+                self.assertEqual(code, 2)
+                self.assertEqual(
+                    payload["status"],
+                    "configuration_error",
+                )
 
 
 if __name__ == "__main__":

@@ -103,6 +103,51 @@ class DailyScheduleCompatibilityTests(unittest.TestCase):
         )
         self.assertEqual(1, connection.execute.call_count)
 
+    def test_health_reports_systemd_one_shot_when_installed(self) -> None:
+        engine = MagicMock()
+        connection = engine.connect.return_value.__enter__.return_value
+        select_one = MagicMock()
+        select_one.scalar_one.return_value = 1
+        connection.execute.return_value = select_one
+
+        with (
+            patch.dict(
+                os.environ,
+                {"BOND_FACTOR_LAB_CONTROL_PLANE": "systemd_one_shot"},
+                clear=False,
+            ),
+            patch.object(main, "get_engine", return_value=engine),
+            patch.object(main, "service_fingerprint_secret", return_value=None),
+        ):
+            result = main.health()
+
+        self.assertEqual(
+            result["daily_schedule"]["mode"],
+            "systemd_one_shot",
+        )
+
+    def test_health_rejects_unknown_control_plane(self) -> None:
+        engine = MagicMock()
+        connection = engine.connect.return_value.__enter__.return_value
+        select_one = MagicMock()
+        select_one.scalar_one.return_value = 1
+        connection.execute.return_value = select_one
+
+        with (
+            patch.dict(
+                os.environ,
+                {"BOND_FACTOR_LAB_CONTROL_PLANE": "cron"},
+                clear=False,
+            ),
+            patch.object(main, "get_engine", return_value=engine),
+            patch.object(main, "service_fingerprint_secret", return_value=None),
+            self.assertRaisesRegex(
+                ValueError,
+                "unsupported scheduled one-shot control plane",
+            ),
+        ):
+            main.health()
+
     def test_ledger_visibility_route_and_health_projection_are_removed(
         self,
     ) -> None:

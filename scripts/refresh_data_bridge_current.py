@@ -41,10 +41,17 @@ from shared.data_bridge.mysql_exporter import (  # noqa: E402
 )
 from shared.data_bridge.validation import DataBridgeValidationError  # noqa: E402
 from shared.data_service import create_sqlalchemy_engine  # noqa: E402
+from shared.one_shot_control_plane import (  # noqa: E402
+    DATABRIDGE_LAUNCHD_PRODUCER,
+    DATABRIDGE_ONE_SHOT_PRODUCERS,
+    DATABRIDGE_SYSTEMD_PRODUCER,
+)
 
 Mode = Literal["dry-run", "publish", "check-only"]
-LAUNCHD_PUBLISHER_ENV = "BFL_DATABRIDGE_PRODUCER"
-LAUNCHD_PUBLISHER_VALUE = "launchd-one-shot"
+DATABRIDGE_PRODUCER_ENV = "BFL_DATABRIDGE_PRODUCER"
+LAUNCHD_PUBLISHER_ENV = DATABRIDGE_PRODUCER_ENV
+LAUNCHD_PUBLISHER_VALUE = DATABRIDGE_LAUNCHD_PRODUCER
+SYSTEMD_PUBLISHER_VALUE = DATABRIDGE_SYSTEMD_PRODUCER
 PUBLISH_REFRESH_MAX_ATTEMPTS = 3
 PUBLISH_REFRESH_RETRY_DELAY_SEC = 30
 _CHECK_ONLY_STATE_FIELDS = (
@@ -97,10 +104,10 @@ def refresh_current(
     deadline_at: datetime | None = None,
 ):
     """仅通过本机 MySQL source 完成完整 DataBridge refresh。"""
-    launchd_publisher = (
+    one_shot_publisher = (
         publish
-        and os.getenv(LAUNCHD_PUBLISHER_ENV)
-        == LAUNCHD_PUBLISHER_VALUE
+        and os.getenv(DATABRIDGE_PRODUCER_ENV)
+        in DATABRIDGE_ONE_SHOT_PRODUCERS
     )
     engine = create_sqlalchemy_engine()
     try:
@@ -110,9 +117,9 @@ def refresh_current(
                 feature_date=expected_feature_date,
                 engine=engine,
                 allow_legacy_v1_period_fallback=(
-                    launchd_publisher
+                    one_shot_publisher
                 ),
-                allow_producer_period_bootstrap=launchd_publisher,
+                allow_producer_period_bootstrap=one_shot_publisher,
             )
         )
         refresh_kwargs = {
@@ -474,12 +481,13 @@ def _run_publish_with_retries(
 def run_command(mode: Mode, *, refresh_date: str) -> tuple[int, dict[str, object]]:
     if (
         mode == "publish"
-        and os.getenv(LAUNCHD_PUBLISHER_ENV) != LAUNCHD_PUBLISHER_VALUE
+        and os.getenv(DATABRIDGE_PRODUCER_ENV)
+        not in DATABRIDGE_ONE_SHOT_PRODUCERS
     ):
         return 2, {
             "status": "configuration_error",
             "mode": mode,
-            "error": "local MySQL DataBridge publish requires launchd one-shot admission",
+            "error": "local MySQL DataBridge publish requires installed one-shot admission",
         }
     if mode == "check-only":
         try:

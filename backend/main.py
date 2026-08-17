@@ -53,6 +53,10 @@ from shared.service_instance import (
     build_service_instance_identity,
     service_fingerprint_secret,
 )
+from shared.one_shot_control_plane import (
+    LAUNCHD_ONE_SHOT_CONTROL_PLANE,
+    require_scheduled_one_shot_control_plane,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -268,6 +272,12 @@ def health() -> dict:
         value = connection.execute(text("SELECT 1")).scalar_one()
     if int(value) != 1:
         raise RuntimeError("database health check returned an unexpected value")
+    control_plane = require_scheduled_one_shot_control_plane(
+        os.getenv(
+            "BOND_FACTOR_LAB_CONTROL_PLANE",
+            LAUNCHD_ONE_SHOT_CONTROL_PLANE,
+        )
+    )
     fingerprint_secret = service_fingerprint_secret()
     if fingerprint_secret is None:
         identity = {"fingerprint_version": FINGERPRINT_VERSION, "fingerprint": None}
@@ -289,7 +299,7 @@ def health() -> dict:
         "status": "ok",
         "service_instance": identity,
         "daily_schedule": {
-            "mode": "launchd_one_shot",
+            "mode": control_plane,
             "overall": "not_enabled",
             "reasons": ["LEDGER_RETIRED"],
         },
