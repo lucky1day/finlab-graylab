@@ -73,6 +73,14 @@ _ACTIVE_RECEIPT: ContextVar[dict[str, Any] | None] = ContextVar(
 )
 
 
+class CacheMigrationRebindComplete(RuntimeError):
+    """通知一次性 operator：当前 family 已发布并应停止方案执行。"""
+
+    def __init__(self, audit: Mapping[str, object]) -> None:
+        self.audit = deepcopy(dict(audit))
+        super().__init__("cache migration rebind completed")
+
+
 def validate_cache_rebind_receipt(
     raw: Mapping[str, object],
 ) -> dict[str, Any]:

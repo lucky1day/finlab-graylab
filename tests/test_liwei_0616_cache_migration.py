@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from shared.liwei_0616_cache_contract import canonical_json_bytes
 from shared.liwei_0616_cache_migration import (
+    CacheMigrationRebindComplete,
     active_cache_rebind_entry,
     authorized_cache_rebind,
     validate_cache_rebind_receipt,
@@ -160,3 +163,102 @@ def test_authorized_cache_rebind_rejects_nested_context() -> None:
         with pytest.raises(RuntimeError, match="already active"):
             with authorized_cache_rebind(_receipt()):
                 raise AssertionError("unreachable")
+
+
+def _write_receipt(path: Path) -> tuple[Path, dict[str, Any]]:
+    receipt = _receipt()
+    receipt_path = path / "receipt.json"
+    receipt_path.write_text(
+        json.dumps(
+            receipt,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+    receipt_path.chmod(0o600)
+    return receipt_path, receipt
+
+
+def test_rebind_cli_runs_only_exact_receipt_publishers(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    from scripts import rebind_liwei_0616_phase_a_cache as command
+
+    receipt_path, receipt = _write_receipt(tmp_path)
+    entries_by_publisher = {
+        entry["publisher_consumer_id"]: entry
+        for entry in receipt["entries"]
+    }
+    calls: list[tuple[str, str]] = []
+
+    def fake_run_scheme(
+        scheme_id: str,
+        predict_date: str,
+    ) -> list[dict[str, Any]]:
+        calls.append((scheme_id, predict_date))
+        entry = entries_by_publisher[scheme_id]
+        authorization = active_cache_rebind_entry(
+            cache_family=entry["cache_family"],
+            tenor=entry["tenor"],
+            publisher_consumer_id=scheme_id,
+        )
+        assert authorization is not None
+        raise CacheMigrationRebindComplete(
+            {
+                "status": "rebound",
+                "build_mode": "migration_rebind",
+                "cache_family": entry["cache_family"],
+                "tenor": entry["tenor"],
+                "generation_id": f"generation-child-{scheme_id}",
+                "generation_manifest_sha256": "a" * 64,
+                "input_content_id": entry[
+                    "target_input_content_id"
+                ],
+                "missing_dates": [],
+            }
+        )
+
+    monkeypatch.setattr(command, "run_scheme", fake_run_scheme)
+
+    assert command.main(
+        [
+            "--receipt",
+            str(receipt_path),
+            "--predict-date",
+            "2026-08-17",
+        ]
+    ) == 0
+
+    assert calls == [
+        (entry["publisher_consumer_id"], "2026-08-17")
+        for entry in receipt["entries"]
+    ]
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "completed"
+    assert output["receipt_sha256"] == receipt["receipt_sha256"]
+    assert output["training_calls"] == 0
+    assert len(output["families"]) == 7
+
+
+def test_rebind_cli_rejects_publisher_that_returns_normally(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from scripts import rebind_liwei_0616_phase_a_cache as command
+
+    receipt_path, _receipt_value = _write_receipt(tmp_path)
+    monkeypatch.setattr(command, "run_scheme", lambda *_args: [])
+
+    with pytest.raises(RuntimeError, match="did not publish"):
+        command.main(
+            [
+                "--receipt",
+                str(receipt_path),
+                "--predict-date",
+                "2026-08-17",
+            ]
+        )

@@ -31,6 +31,7 @@ from shared.liwei_0616_cache_contract import (
     validate_generation_acceptance_record,
 )
 from shared.liwei_0616_cache_migration import (
+    CacheMigrationRebindComplete,
     active_cache_rebind_entry,
     validate_cache_rebind_evidence,
 )
@@ -365,7 +366,7 @@ def _prepare_under_family_lock(
         publisher_consumer_id=cache_consumer_id,
     )
     if migration_rebind_evidence is not None:
-        return _prepare_migration_rebind(
+        _rebound_caches, rebound_audit = _prepare_migration_rebind(
             spec=spec,
             family_root=family_root,
             current=current,
@@ -377,6 +378,7 @@ def _prepare_under_family_lock(
                 migration_rebind_evidence
             ),
         )
+        raise CacheMigrationRebindComplete(rebound_audit)
     if (
         current is not None
         and current.manifest.get("spec_fingerprint")

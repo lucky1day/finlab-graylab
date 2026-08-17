@@ -17,7 +17,10 @@ from shared.liwei_0616_cache_contract import (
     canonical_json_bytes,
     validate_generation_acceptance_record,
 )
-from shared.liwei_0616_cache_migration import authorized_cache_rebind
+from shared.liwei_0616_cache_migration import (
+    CacheMigrationRebindComplete,
+    authorized_cache_rebind,
+)
 from shared.liwei_0616_phase_a_cache import (
     PhaseACacheSpec,
     _baseline_fingerprint,
@@ -335,27 +338,21 @@ def test_phase_a_migration_rebind_reuses_parent_without_training(
     with authorized_cache_rebind(
         _migration_receipt(approved_entry)
     ):
-        rebound_caches, rebound_audit = prepare_phase_a_caches(
-            spec=spec,
-            daily_df=revised_daily,
-            weekly_df=weekly,
-            monthly_df=monthly,
-            test_ranges=(("2026-01-02", "2026-01-02"),),
-            train_missing=forbidden_train,
-            cache_consumer_id="publisher",
-            cache_root=root,
-        )
+        with pytest.raises(CacheMigrationRebindComplete) as completed:
+            prepare_phase_a_caches(
+                spec=spec,
+                daily_df=revised_daily,
+                weekly_df=weekly,
+                monthly_df=monthly,
+                test_ranges=(("2026-01-02", "2026-01-02"),),
+                train_missing=forbidden_train,
+                cache_consumer_id="publisher",
+                cache_root=root,
+            )
 
     assert train_calls == ["baseline"]
+    rebound_audit = completed.value.audit
     assert rebound_audit["build_mode"] == "migration_rebind"
-    np.testing.assert_array_equal(
-        rebound_caches["baseline"]["results"][0]["preds"],
-        parent_caches["baseline"]["results"][0]["preds"],
-    )
-    np.testing.assert_array_equal(
-        rebound_caches["baseline"]["results"][0]["probs"],
-        parent_caches["baseline"]["results"][0]["probs"],
-    )
 
     child_pointer = json.loads(
         (family_root / "current.json").read_text()
@@ -390,6 +387,14 @@ def test_phase_a_migration_rebind_reuses_parent_without_training(
     child_manifest = json.loads(child_manifest_path.read_text())
     assert child_manifest["build_mode"] == "migration_rebind"
     assert "migration_rebind_evidence" in child_manifest
+    assert (
+        child_manifest["baselines"]["baseline"][
+            "cache_content_sha256"
+        ]
+        == parent_manifest["baselines"]["baseline"][
+            "cache_content_sha256"
+        ]
+    )
     del child_manifest["migration_rebind_evidence"]
     tampered_manifest_bytes = (
         json.dumps(
