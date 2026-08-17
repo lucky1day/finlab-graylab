@@ -9,7 +9,7 @@
 | 章节 | 内容 | 什么时候看 |
 |---|---|---|
 | **0.0** | 数据库克隆决策 `DB-CLONE-A` 与实施回填 | 想知道数据库现在在哪、怎么来的 |
-| **0.0.2–0.0.4** | v1.22/v1.24/v1.25 状态变化（沙箱、ECS cron、Linux L1、独立灰度实验室） | 了解与上一版的差异 |
+| **0.0.2–0.0.5** | v1.22/v1.24/v1.25/v1.26 状态变化（沙箱、ECS cron、Linux L1、独立灰度实验室、单一源码发布） | 了解与上一版的差异 |
 | **0.1–0.10** | 单一交接入口：速查表、SSH、资源盘点、目标拓扑、Secret 边界、接手步骤 | **新同事第一入口** |
 | 1 | 需求重述、阶段一范围、纯迁移原则与 ROE 准入 | 判断某项改动该不该进本次迁移 |
 | 2 | 执行摘要与分层可行性结论 | 快速了解整体判定 |
@@ -139,9 +139,26 @@ L1 的**当前主机功能出口**已经通过，可以进入 L2 fixture/数值/
 该决策把“独立灰度运行”设为生产切换前的正式阶段，而不是短暂的部署 smoke test；没有预设固定切换
 日期，也不因为若干次手工成功就自动升级为生产。
 
+### 0.0.5 v1.26 单一源码双主机发布决策（2026-08-18）
+
+Mac3 与 ECS 不维护两条环境分支。`master@2b62a2e9ae7c661f4a7f1741b5ff6c351819a4ad`
+冻结为本阶段开始前的备份点，`codex/aliyun-db-clone-20260816` 是唯一活动集成分支；每个候选
+提交只生成一个带 SHA-256 的源码 archive，两端使用相同 bytes，但独立切换 `current`、Registry、
+数据库和调度状态。ECS 保持 release-only，不保存 `.git`、不执行 `git pull`、不允许主机本地修改源码。
+
+canonical 源码恢复全部 65 个 config 为 `active`。ECS 的 56/9 边界改由
+`BFL_DEPLOYMENT_TARGET=aliyun-gray` 与 `deploy/scheme_deployment_matrix_v1.json` 在 discovery
+单点强制；Mac3 使用 `mac3-production` 并发现 65 个。ECS 已有 9 个 composite Registry 行继续
+保持 `paused`，矩阵不会自动删除、激活或暂停 Registry。launchd 只能与 `mac3-production` 配对，
+systemd 只能与 `aliyun-gray` 配对；目标缺失或错配会在 DataBridge 配置、数据库连接和算法子进程前失败。
+
+该代码变更只形成可部署 release，不授权安装服务模板、重载服务、启用 ECS timer、修改 Mac3
+installed launchd、切换域名或操作两端数据库。后续仍先把同一 archive 部署到 ECS 灰度并观察，
+再由用户另行决定是否把完全相同的 archive 晋级到 Mac3。
+
 ## 0. 单一迁移交接入口（先读）
 
-本节是新接手人员的第一入口。除非注明“目标/待实施”，下列值均为 2026-08-17（Asia/Shanghai）
+本节是新接手人员的第一入口。除非注明“目标/待实施”，下列值均为 2026-08-18（Asia/Shanghai）
 对专用 ECS 的现场实施与读回结果。数据库克隆、`BondPrediction` 增量能力、C56 release、三套 Linux
 环境、热缓存重绑定、DataBridge/日周月预测/Actuals 手工真写库和 localhost Backend 已完成；五个
 项目 timer 仍保持 disabled。当前目标不是立即切流，而是在另行授权后把 ECS 启动为独立灰度实验室，
@@ -165,7 +182,7 @@ L1 的**当前主机功能出口**已经通过，可以进入 L2 fixture/数值/
 | 阶段一数据库账号 | ECS 使用仅本机可连接的 `bond_app@localhost` 承载 `BondPrediction`，后续也供 Backend、Dashboard、DataBridge、scheduler/Actuals 使用；凭据只落 root-only 配置 | 已保留 `root@localhost` 的 socket 管理语义；未复制 `mysql` 系统库、未开放公网 3306；DEFINER coverage 已通过 |
 | Secret 交付 | `BondPrediction` 与 Bond Factor Lab 的运行配置均已在目标机 root-only 文件中交付 | Secret 不进入 Git、release、unit 正文、命令行、日志或本文；灰度运行不改变该边界 |
 | 阶段一数据库传输 | 一次性 `mysqldump` 压缩快照已经固定 Host Key 的 SSH 传输；两端 SHA-256 与压缩完整性一致并已恢复 | NATApp 只保留为历史端点/必要只读核验，不再是应用运行期数据库链路 |
-| 阶段一算法范围 | 17 个可迁 Native + 39 个 Blackbox，共 56 个；9 个 Darwin-only Native 采用“暂停隐藏、代码保留” | ECS config 与 Registry 已读回为 56 active base、60 active composite、9 paused；手工验收期间 paused 方案运行数为 0 |
+| 阶段一算法范围 | canonical 源码 65 active；ECS 矩阵保留 17 个 Native + 39 个 Blackbox，共 56 个；9 个 Darwin-only Native 采用“Mac-only、ECS Registry 暂停、代码保留” | ECS effective discovery 为 56 base/60 composite，Registry 为 60 active/9 paused；手工验收期间 9 个排除方案运行数为 0 |
 | 阶段一回测范围 | **不执行历史回测，不补跑或持久化新的 `t_backtest_*` 结果**；保留 backtest 代码、既有历史数据及 Dashboard/API 只读展示 | 用户已确认；迁移验收聚焦 live schedule、当前输入和 no-persist/fixture 证据 |
 | 阶段一调度范围 | `LIVE-SCHEDULE-ONLY`：DataBridge 每日 06:30；日频周一至周五 07:03；周频周六 11:30；月频每月 15 日 18:00；Actuals 每日 08:30、19:00、23:45 | 用户已确认所有 live 日/周/月任务按各自日历正常运行；不包含历史回测、历史补跑或自动 backfill |
 | 阶段一部署基线 | **独立灰度实验室**：干净 C56 release + ECS 本地 MySQL + `BondPrediction` + Linux 环境 + 本地 DataBridge + 56 个 active base + Actuals + systemd one-shot/timer + localhost Backend | timer-disabled 部署和手工真写库已完成；生产 Nginx/HTTPS、DNS 与流量不进入灰度启动范围 |
@@ -289,14 +306,14 @@ flowchart LR
 | DataBridge | 从 ECS 本地 `bond_db` 生成 current Artifact；不依赖 Mac 数据库或 NATApp | 已完成 one-shot 发布与手工验收；灰度自然运行待 timer 授权 |
 | 39 个 Blackbox | 使用锁定 Linux Python 环境直接启动子进程。运行期沙箱已退役，Runner 无 macOS 绑定 | 已完成 daily/weekly/monthly 手工真实执行和写库；不声明跨平台数值等价 |
 | 调度与 Actuals | 用真实 `systemd_one_shot` unit/timer 承载现有一次性入口、时间和失败语义 | unit 已安装、one-shot 已验收、timer 仍 disabled；不新增第二 Python 控制面 |
-| 9 个延期 Native | C56 中 paused-hidden，代码和历史保留，不在 Linux 执行 | 已批准的阶段范围差异 |
+| 9 个延期 Native | canonical config active；矩阵仅允许 `mac3-production`，ECS Registry paused，代码和历史保留，不在 Linux 执行 | 已批准的阶段范围差异 |
 | 公网入口 | 灰度期不安装生产 Nginx/Certbot，不修改 `bond.finailab.cn` | Mac3 继续承载生产；公网入口只在 L4G 通过后的 L5 单独设计和授权 |
 
-这里的“整仓”对两个代码源有不同的精确含义：Bond Factor Lab 使用绑定 exact commit 的干净 C56 release；`BondPrediction` 因现场存在生产所需的未提交文件，使用当前工作目录 bytes 制作带 SHA-256 清单的受控发布包。两者都排除 `.git`、本机 Conda 环境、日志、cache、`outputs/`、历史 `runtime_inputs` 和临时产物；数据库/应用 Secret 单独受控交付，不混入普通 release。DataBridge current、日志和运行目录在 ECS 重新生成。9 个延期方案的后端代码/加密包保留，但由 paused-hidden 机器边界保证不会加载。
+这里的“整仓”对两个代码源有不同的精确含义：Bond Factor Lab 使用绑定 exact commit 的单一源码 release，Mac3/ECS 不生成两份环境源码；`BondPrediction` 因现场存在生产所需的未提交文件，使用当前工作目录 bytes 制作带 SHA-256 清单的受控发布包。两者都排除 `.git`、本机 Conda 环境、日志、cache、`outputs/`、历史 `runtime_inputs` 和临时产物；数据库/应用 Secret 单独受控交付，不混入普通 release。DataBridge current、日志和运行目录在 ECS 重新生成。9 个延期方案的后端代码/加密包保留，但在 ECS 由 deployment matrix 保证不会进入 discovery。
 
 当前变化只有：FastAPI、DataBridge、17 个可迁 Native、39 个 Blackbox、Actuals 和一次性调度入口已部署到专用 Linux ECS，作为独立灰度实验室运行；用户已选择直接使用 root 身份，不创建非 root 服务用户。生产 Nginx/HTTPS、域名和流量仍留在 Mac3，未来 L5 是否以及如何切换必须在 L4G 观察达标后重新决定。
 
-阶段一不包含：9 个 Darwin-only Native、DataBridge 批次共享、队列/并发、逐方案容器、LKG、RDS、自动故障转移或算法功能调整。只有某项优化被证据证明为迁移必要条件并满足 ROE 六项准入时，才回 Mac 的隔离 worktree 独立实现、验证和重新冻结 C56；P65 仍不变。
+阶段一不包含：9 个 Darwin-only Native 的 Linux 执行、DataBridge 批次共享、队列/并发、逐方案容器、LKG、RDS、自动故障转移或算法功能调整。只有某项优化被证据证明为迁移必要条件并满足 ROE 六项准入时，才在活动集成分支的隔离 worktree 独立实现、验证并冻结新的 exact release；不得修改 Mac3 现场或复制环境分支。
 
 ### 0.6 数据库连接与 Secret 边界
 
@@ -339,7 +356,7 @@ Authority 顺序固定为：**云控制台/实例元数据与 installed/loaded s
 2. 由当前 ECS/密钥责任人安全发放个人可审计的访问方式，核对 Host Key 后只读登录；不要复制本文中的路径并假设私钥在自己的电脑存在。
 3. 在专用 ECS 用 `hostnamectl`、`free -h`、`df -hT`、`ss -lntp`、`systemctl status mysql` 和 `systemctl --failed` 复核当前 Candidate；不得把 MySQL 的存在误当成整套服务已上线。Nginx 尚未安装时，`systemctl status nginx` 失败不表示系统故障。
 4. 保留第 0.0.1 的历史 disabled-cron 证据和第 0.0.2 的后续启用事实；不要覆盖安装 `/opt/bondprediction/cron.disabled`。只读核对当前 root/Mac crontab，任何启停都须独立 Writer 授权。
-5. 后续实现继续使用独立迁移 worktree 与 exact C56 release；不得把 `/Users/macstudio0/bond-factor-lab` 当迁移开发 worktree，不得修改 Mac crontab。
+5. 后续实现继续使用活动集成分支的独立迁移 worktree，并从一个 exact commit 生成一份 release；不得把 `/Users/macstudio0/bond-factor-lab` 当迁移开发 worktree，不得修改 Mac crontab，也不得在 ECS 使用 Git checkout。
 6. 下一步先取得 L4G 专项授权，再启用 ECS 五个 timer 并按第 13 节持续观察；不要停止 Mac3、修改生产域名或安装生产公网入口。L2 跨平台等价未执行且不作声明，容量和自然调度证据在灰度期收集。
 
 ### 0.9 控制面确认台账（含已确认项）
@@ -359,7 +376,7 @@ Authority 顺序固定为：**云控制台/实例元数据与 installed/loaded s
 | 本地数据库 Secret 与增量验证 | ECS 已创建 `bond_app@localhost`，`BondPrediction` 与平台 root-only 配置均完成不回显交付；DataBridge、Backend、scheduler/Actuals 均真实命中本地库 | **RESOLVED FOR L4G**；Mac3 与 ECS 各用各自 Secret/数据库，不共享配置 |
 | SSH/DB/应用 Secret 的长期保管、轮换和回收机制 | 两套 ECS 配置已交付，长期 owner/轮换/回收尚未治理 | 不阻止短期 L4G，但必须在任何生产切换前闭环 |
 | 实例业务 Owner、值班与升级联系人 | 控制台操作能力已确认，但每日观察和故障响应责任尚未指定 | 启用 L4G timers 前确认每日检查责任人和异常处置路径 |
-| 9 个延期方案的 Registry/API 展示与历史数据语义 | 2026-08-16 用户确认：暂时隐藏、不执行、不产生新结果；保留后端代码、加密 `.so`、配置和全部历史/审计数据 | **DECIDED**；G0B 只在 Mac 隔离 worktree/fixture 中形成 C56，P65 不变；G1 证明 Linux release 不会误执行；MIG-017 |
+| 9 个延期方案的 Registry/API 展示与历史数据语义 | 暂时隐藏、不执行、不产生 ECS 新结果；保留后端代码、加密 `.so`、canonical active config 和全部历史/审计数据 | **DECIDED**；deployment matrix 精确限制为 Mac-only，ECS Registry 保持 9 paused；MIG-017 |
 | SLO、批次 deadline、RTO/RPO、混合阶段期限 | 需要业务决策，不能由机器推导 | G0A/G5/G8 |
 
 ### 0.10 文档信息
@@ -369,15 +386,15 @@ Authority 顺序固定为：**云控制台/实例元数据与 installed/loaded s
 | 文档用途 | 从本节即可获得 ECS 连接、资源、网络、当前/目标拓扑、Secret 边界与接手步骤；正文继续记录从 Mac Studio 迁移到阿里云 Linux ECS 的事实证据、对抗性审查、真实阻断、可解问题、架构选项、资源需求和阶段 Gate |
 | 文档位置 | 仓库 canonical：`docs/operations/ALIYUN_MIGRATION_ASSESSMENT.md`；外部工作副本：`/Users/macstudio0/bond-factor-lab-migration-docs/ALIYUN_MIGRATION_ASSESSMENT.md` |
 | 仓库位置 | `/Users/macstudio0/bond-factor-lab` |
-| 调研/生产基线分支 | `codex/audit-bugfixes-20260613`；远端调研文档基线 `6403059` |
-| 本次实施分支 | `codex/aliyun-db-clone-20260816`，从 `origin/codex/audit-bugfixes-20260613@6403059` 隔离创建；数据库方案提交起点 `a64acc8` |
-| 本次迁移分支基线 | 用户已授权把验证后的文档同步到远端开发分支和 `master`；实施始终在独立 worktree 进行，未切换、清理或改写 P65 活跃工作目录。该授权不等于生产流量或 Writer 切换授权 |
-| 评估日期 | 2026-08-17（Asia/Shanghai） |
-| 当前阶段 | ECS timer-disabled 部署和手工真写库已验收：DataBridge、daily、weekly、monthly、Actuals 均 exit 0，56 个 active base 的最新运行全部成功，localhost Backend 健康；下一步经单独授权进入独立灰度自然运行 |
+| 冻结备份分支 | 本地 `master@2b62a2e9ae7c661f4a7f1741b5ff6c351819a4ad`；本阶段不继续承接日常提交，未经新授权不得移动或推送 |
+| 当前活动集成分支 | `codex/aliyun-db-clone-20260816`；Mac3/ECS 不创建长期环境分支，每个候选提交只生成一份源码 archive |
+| 当前源码范围 | canonical config 65 active；`mac3-production` effective discovery 65/69 composite，`aliyun-gray` effective discovery 56/60 composite；ECS 的精确 9 个 composite Registry 行保持 paused |
+| 评估日期 | 2026-08-18（Asia/Shanghai） |
+| 当前阶段 | 单一源码双主机适配已在开发分支实现；ECS 现有 timer-disabled 手工写库验收仍有效。下一步先形成 exact archive 并只更新 ECS release/unit 期望状态，读回 target/Registry/timers 后再申请独立灰度自然运行授权 |
 | 当前总判定 | **独立灰度实验室准备完成，生产切换有意保持 No-Go。Mac3 继续承载生产域名和服务；ECS 使用自己的数据库、数据链、调度和 localhost 前端独立观察。五个项目 timer 仍为 disabled，实际启用须另行授权；达到稳定性和资源条件后再重新决定 Web/Writer 切换。** |
-| 文档版本 | 1.25 |
+| 文档版本 | 1.26 |
 
-自 1.19 起（原第 19 章，现为第 22 章），仓库内 `docs/operations/ALIYUN_MIGRATION_ASSESSMENT.md` 是本文的 canonical 版本，外部同名文件仅保留为工作副本，不得覆盖 Git 中更新的内容。1.19 对当时版本的远程开发分支/`master` 同步授权只属于历史操作，不自动授权后续版本；1.25 未获推送或合并 `master` 权限。本文包含公网 IP、实例/VPC 标识和本机 SSH 私钥路径引用，但不包含私钥内容、数据库密码、Token 或云 AccessKey，仍应按内部运维资料控制仓库访问。1.25 固化独立灰度实验室决策；本轮只授权文档和项目上下文更新，不包含启用 ECS timer、启停 Mac3、运行历史回测、切换域名/流量或修改任何服务与数据库。
+自 1.19 起（原第 19 章，现为第 22 章），仓库内 `docs/operations/ALIYUN_MIGRATION_ASSESSMENT.md` 是本文的 canonical 版本，外部同名文件仅保留为工作副本，不得覆盖 Git 中更新的内容。1.19 对当时版本的远程开发分支/`master` 同步授权只属于历史操作，不自动授权后续版本；1.26 的代码与文档提交也不授权移动或推送冻结的 `master`。本文包含公网 IP、实例/VPC 标识和本机 SSH 私钥路径引用，但不包含私钥内容、数据库密码、Token 或云 AccessKey，仍应按内部运维资料控制仓库访问。1.25 固化独立灰度实验室决策，1.26 固化单一源码双主机发布；两者都不自动授权启用 ECS timer、启停 Mac3、运行历史回测、切换域名/流量或修改现场服务与数据库。
 
 ## 1. 需求重述与第一性原理目标
 
@@ -406,25 +423,28 @@ Authority 顺序固定为：**云控制台/实例元数据与 installed/loaded s
 
 这是**业务范围延期**，不是 MIG-006 的技术修复。它可以解除 MIG-006 对阶段一 56 个方案部署的阻断，但全量 65 个方案迁移仍未完成。并且，“跳过”必须在生产切换前落实成明确的调度、Registry/API、监控和 Writer 状态；仅在文档中减去 9 个、而让当前 active 配置继续被调度发现，不构成有效排除。
 
-2026-08-16，用户进一步确认这 9 个方案采用统一的**阶段性暂停隐藏（paused-hidden）**语义：
+2026-08-16，用户进一步确认这 9 个方案采用统一的**阶段性暂停隐藏（paused-hidden）**语义；
+2026-08-18 的 v1.26 只改变了执行资格的表达方式，不改变这 9 个方案在 ECS 灰度中的业务处置：
 
-- 当前生产目录中 9 份 `config.yaml` 仍是 `status: active`，这是已核实的 P65 现场。在明确切换窗口前不得修改；目标 `status: paused` 先只在隔离 worktree 的 C56 候选 release 中实现和验证，使其严格 discovery 与日/周/月 scheduled runner 不把这 9 个纳入候选；
-- 对应 composite `t_scheme_registry` 目标状态统一为 `paused`。切流前只在隔离测试数据库/fixture 验证；生产 Registry 继续保持现状，直到 Writer 停止且用户对切换窗口另行授权。切换后 Backend、Dashboard、`/api/schemes`、metrics 和 backtest 公网读模型只读取 `status='active'`，所以这 9 个方案不再出现在前端/API；直接访问 paused registry ID 也不得返回当前业务数据；
-- 不单独做前端 CSS/名称黑名单。隐藏的 authority 是 Registry `paused`，停止执行的 authority 是 config `paused`，两层必须同时成立，避免“界面隐藏但仍在跑”或“停止运行但界面仍显示”；
+- canonical 源码的 65 份 `config.yaml` 统一保持 `status: active`，算法身份和 exact version 不再因主机不同而变化。Mac3 的 `mac3-production` 目标发现 65 个；ECS 的 `aliyun-gray` 目标由 `deploy/scheme_deployment_matrix_v1.json` 精确排除这 9 个，只发现 56 个；
+- ECS 对应 9 个 composite `t_scheme_registry` 行已经统一为 `paused`，读回为 60 active、9 paused。Mac3 Registry 独立管理，不因 ECS 矩阵自动变化；未来从任一目标加入或移除方案都必须单独完成该环境的受控 Registry 生命周期和读回；
+- 不单独做前端 CSS/名称黑名单。隐藏 authority 仍是各环境 Registry `paused`，停止执行 authority 改为部署目标矩阵；两层必须同时成立，避免“界面隐藏但仍在跑”或“停止运行但界面仍显示”；
 - 自暂停生效起不再调度，不再产生新的成功 live business run 或 prediction，不纳入缺批告警、批次成功率、容量、Shadow 或上线验收分母；专门的负面测试可以保留 `skipped/denied` 审计证据，但不得执行算法或写业务结果；
 - `schemes/{scheme_id}/`、adapter、配置、加密 Darwin `.so` source package、`source_evidence`、benchmark/backtest 代码和 Harness 证据全部保留，不删除、不改写、不以相似算法替换；
 - 既有预测、回测、run、log 和 actual 数据不删除。它们从公网 active 读模型隐藏，但继续留在数据库/审计面；共享 actual 表仍服务其余 active 方案，不能按这 9 个 scheme 做物理清理；
 - 当前 exact version 与既有 Gate/激活证据保留作审计，不因暂时隐藏而伪造新的算法版本。以后取得权威 Linux bundle/源码后，必须重新开启 MIG-006、通过适用 Gate 并取得专项激活授权，不能只把两个 `paused` 改回 `active`；
-- 这是完成 56/9 范围迁移所必需的业务范围适配，不是性能优化。按“功能变化先在 Mac 验证”原则，它必须在 Mac 的**隔离 worktree + 隔离测试数据**中作为独立变更完成验证并形成 C56 候选基线；“先在 Mac 验证”绝不等于先改当前 Mac 生产。Linux runner/systemd 适配基于 C56 继续推进，但生产 config/Registry/launchd 直到独立切换窗口前保持不变。
+- 这是完成 56/9 范围迁移所必需的业务范围适配，不是性能优化。适配器、矩阵和模板先在隔离 worktree 完成本地测试；随后只从一个 exact commit 构建一份 archive，先部署 ECS 灰度。Mac3 installed launchd、Registry、`current` 和生产流量仍须更晚的独立授权。
 
 “保留后端代码”在本文中的准确含义是**不删除仓库和受控证据中的实现/二进制**。不可执行的 Darwin `.so` 是否物理进入 Linux 生产部署包不影响暂停语义，也不是阶段一功能前置；部署清单只需证明它们即使存在也不会被 discovery、timer 或手工 live 路径加载。
 
-为避免“当前基线”混淆，本文从 1.3 起使用两个精确名称：
+为避免“当前基线”混淆，v1.26 起不再把 P65/C56 当成两套可修改源码：
 
-- **P65（Production-65）生产基线**：当前 `/Users/macstudio0/bond-factor-lab`、生产 DB/Registry、installed launchd 和 65 个 active 方案的真实现场；迁移开发与验证期间只读、零变更、持续正常运行；
-- **C56（Candidate-56）候选基线**：从 P65 的 exact commit/行为复制到隔离 worktree，只增加已批准的 9 个 paused-hidden 范围差异；其 config/Registry fixture、API、调度和监控语义先在隔离环境验收，是 Linux 等价迁移的目标基线。
+- **Canonical source release**：活动集成分支某个 exact commit 生成的唯一 archive，包含 65 个 canonical active config 和部署矩阵；Mac3/ECS 接收相同 bytes。
+- **Mac3 effective scope**：`mac3-production` 发现 65 个 base / 69 个 composite，真实业务可见性仍由 Mac3 Registry 决定。
+- **ECS effective scope**：`aliyun-gray` 发现 56 个 base / 60 个 composite；9 个 Mac-only Native 不进入 strict discovery，ECS Registry 对应 9 行继续 paused。
 
-C56 通过不改变 P65。只有最终切换窗口才把“停止旧 Writer、生产 Registry 九项 paused、启用云端 C56、验证单 Writer和公网读模型”作为一个受控状态转换；失败回滚也必须使用已准备的 C56-compatible Mac rollback release，不能恢复会重新运行 9 个方案的旧 P65 Writer。
+源码同步不等于环境同步。两端各自管理数据库、Registry、installed 调度、`current` 与回滚；ECS
+灰度通过不会自动修改 Mac3，未来晋级也只能把已经在 ECS 观察过的同一 archive 部署到 Mac3。
 
 2026-08-16，用户进一步把迁移验收收敛为 **live-schedule-only**：本次不执行历史回测，不补跑历史区间，不调用 backtest runner 生成或持久化新的 `t_backtest_*` 结果。仓库中的 backtest 实现、既有数据库历史结果、审计证据和 Dashboard/API 对既有结果的只读展示全部保留；“不跑”不等于删除代码、清表或关闭既有只读页面。Linux 等价性使用当前/最近可用调度输入、固定 fixture、contract、Compare 和 no-persist Shadow 证明，不能把历史回测重新包装成迁移 Gate。
 
@@ -438,10 +458,10 @@ C56 通过不改变 P65。只有最终切换窗口才把“停止旧 Writer、�
 
 | 阶段 | 对 Mac 允许的动作 | 必须保持不变的结果 |
 |---|---|---|
-| G0B–G2/G4/G5 准备与离线验证 | 低开销只读盘点；隔离 worktree 中的短时、有界单元/契约测试 | P65 代码与依赖、installed launchd、进程/端口、生产 DB/Registry、DataBridge current、公网服务、任务准点性和业务结果均不变；全量 Shadow/容量测试在 ECS 完成 |
+| G0B–G2/G4/G5 准备与离线验证 | 低开销只读盘点；隔离 worktree 中的短时、有界单元/契约测试 | Mac3 代码与依赖、installed launchd、进程/端口、生产 DB/Registry、DataBridge current、公网服务、任务准点性和业务结果均不变；全量 Shadow/容量测试在 ECS 完成 |
 | G3 完整快照与本地库验证 | 在 Mac 最后一个当日数据任务后执行一次非阻塞 logical dump；在 ECS 恢复后只对克隆库做受控写入与同键重跑 | 不改 Mac 数据、代码、crontab 或服务；不在 Mac 执行额外 Writer，不做 24 小时双跑 |
 | G6 Web 切换 | 仅在独立授权窗口启用本机 Nginx/HTTPS 并切换 `bond.finailab.cn` DNS | Mac Writer、DB、Registry、launchd 和代码保持不变；按切流前写入受控变更记录的 DNS 值回滚 |
-| G7 Writer 切换 | 只有独立授权后，按受控顺序停止旧 Writer、更新九项 Registry、启用云 Writer | 这是有意的生产 ownership 转换，不属于准备期“零变化”；必须有单 Writer 证据和 C56-compatible Mac 回滚路径 |
+| G7 Writer 切换 | 只有独立授权后，按受控顺序停止旧 Writer、核对两端 Registry、启用云 Writer | 这是有意的生产 ownership 转换，不属于准备期“零变化”；必须有单 Writer 证据和同一 canonical archive 的 Mac 回滚路径 |
 
 因此，方案 B 的承诺不是“永远不触碰 Mac”——最终 Writer 接管在逻辑上必然要求旧 Writer 停止——而是**切流前不改变、不干扰；切流时另行授权、最小改变、可验证回滚**。本轮只更新方案文档，不授权上述任何实施或切流动作。
 
@@ -452,7 +472,7 @@ C56 通过不改变 P65。只有最终切换窗口才把“停止旧 Writer、�
 - `BatchInputSession` 的设计仍保留为候选优化，但当前不实施：重复校验/复制/物化是已知低效，尚无证据证明它阻止 Linux 部署；
 - 第一轮 Linux Candidate 必须按当前逐方案 DataBridge 准备和串行语义做 no-persist 等价迁移，不提前实现共享 view；
 - 只有当前行为在目标环境可复现地无法满足已批准的内存、磁盘或批次 deadline，且修正迁移缺陷或调整合理 ECS 资源/配置仍不能接受时，才允许回到 Mac 开启最小 `BatchInputSession` 优化；
-- 队列/并发同样不进入当前迁移范围；目标 Candidate 即使有 4 vCPU，也不构成增加并发的正确性、吞吐收益或内存安全证据。若未来成为迁移必需优化，仍须先在隔离 Mac worktree 实现、验收和重新冻结 C56，不触碰 P65。
+- 队列/并发同样不进入当前迁移范围；目标 Candidate 即使有 4 vCPU，也不构成增加并发的正确性、吞吐收益或内存安全证据。若未来成为迁移必需优化，仍须在活动集成分支的隔离 worktree 实现、验收和重新冻结 exact release，不触碰 Mac3 生产。
 
 这些是当前已确认的设计基线，不表示代码、ECS 或生产调度已经变更。容器级网络/文件系统隔离改为后续硬化项，文档不将“直接运行”伪装成已经具备同等 Sandbox 强度。
 
@@ -466,28 +486,29 @@ C56 通过不改变 P65。只有最终切换窗口才把“停止旧 Writer、�
 
 本文采用统一术语：
 
-- **P65 生产基线（Production-65 Baseline）**：只读冻结当前生产 exact commit、依赖/配置身份、65 方案状态、输入、预期输出、逐方案 DataBridge 准备和串行执行语义；它描述真实现场，迁移实施不得修改它；
-- **C56 候选基线（Candidate-56 Baseline）**：在隔离 worktree/环境/测试数据中复制 P65，仅加入用户批准的 9 个 paused-hidden 范围差异；它是 Linux 迁移的唯一目标基线；
-- **Linux 迁移轨（M-track）**：只把 C56 搬到 Linux，并做不可避免的平台适配、等价性验证和资源定容；
-- **必要优化例外（Required Optimization Exception，ROE）**：只有 M-track 被可复现证据阻断，且平台修正或合理资源/配置调整不能解决时，才允许在隔离 Mac worktree 开启的最小功能优化；它仍不得触碰 P65 生产；
+- **冻结备份点**：`master@2b62a2e9ae7c661f4a7f1741b5ff6c351819a4ad`，只用于回溯本阶段开始前的仓库状态，不承接日常提交；
+- **Canonical source release**：从活动集成分支 exact commit 生成的一份 archive；65 个 config 保持统一算法生命周期，Mac3/ECS 不维护环境分支或环境 config；
+- **Effective deployment scope**：Mac3 由 `mac3-production` 得到 65/69，ECS 由 `aliyun-gray` 得到 56/60；Registry 与调度激活仍由两端独立管理；
+- **Linux 迁移轨（M-track）**：把同一 canonical release 部署到 Linux，并做不可避免的平台适配、等价性验证和资源定容；
+- **必要优化例外（Required Optimization Exception，ROE）**：只有 M-track 被可复现证据阻断，且平台修正或合理资源/配置调整不能解决时，才允许在活动集成分支的隔离 worktree 开启最小功能优化；它仍不得触碰 Mac3 生产现场；
 - **延期优化（Deferred Optimization）**：有收益但未证明为迁移必要条件的优化，不进入本次范围。
 
-旧版本中的未限定词“Current Frozen Baseline”从本文 1.3 起废止：描述当前真实生产时使用 P65，描述 Linux 迁移目标时使用 C56，不能再把两者混称为同一份可修改基线。
+旧版本中的 P65/C56 仍可用于解释历史证据，但 v1.26 起不得再把它们实现成两套源码或长期分支。
 
 默认顺序固定为：
 
 ```mermaid
 flowchart LR
-    P["只读冻结 P65\n生产继续运行"] --> C0["隔离构建/验证 C56\n仅 9 项 paused-hidden 差异"]
-    C0 --> M1["Linux 最小平台适配"]
+    P["活动集成分支\ncanonical 65 config"] --> C0["一个 exact commit\n一份源码 archive"]
+    C0 --> M1["ECS aliyun-gray\n矩阵得到 56"]
     M1 --> M2["同输入 no-persist / Shadow"]
-    M2 -->|"通过"| M3["继续部署切换"]
+    M2 -->|"通过"| M3["ECS 独立灰度观察"]
     M2 -->|"失败"| C["分类根因"]
     C -->|"迁移实现缺陷"| M1
     C -->|"资源/配置可解"| R["调整 ECS 规格或部署参数"]
     R --> M2
     C -->|"功能优化确为必需且获批"| O["隔离 Mac worktree\n做最小 ROE 优化"]
-    O --> F["重新冻结 C56"]
+    O --> F["重新冻结 exact release"]
     F --> M1
 ```
 
@@ -497,7 +518,7 @@ flowchart LR
 
 任何功能优化进入迁移范围前必须同时满足：
 
-1. 已有只读 P65 证据和隔离 C56 候选基线，能够证明 56 个保留方案行为未变且 9 个仅发生批准的 paused-hidden 差异；
+1. 已有冻结备份点、canonical source 与 deployment matrix 证据，能够证明 Mac3/ECS 使用同一源码 bytes，ECS 只在 effective scope 排除精确 9 个方案；
 2. 必要的 Linux 平台适配已经完成，失败不是缺包、路径、权限、runner、systemd、Secret 或配置错误；
 3. 在固定输入和目标候选环境中可稳定复现明确阻断，例如 OOM、磁盘空间不足、无法完成批准 deadline，或迁移必须保持的数据一致性条件无法满足；
 4. 已比较合理的 ECS 升配、磁盘扩容或部署参数调整；若基础设施调整更简单且成本可接受，优先调整资源，不改功能；
@@ -526,7 +547,7 @@ flowchart LR
 | Linux Python 环境与 `environment_manifest` 指纹 | 是；三套环境与 linux-64 manifest 已验证 | L1 已完成；未来 activation/revision 仍须 Linux exact-version Gate |
 | `launchd → systemd` 与真实调度 provenance | 是；Linux 没有 launchd | M-track 实施 |
 | ECS 本地 MySQL、完整 dump/load、账号配置和受控保存 | 是；所有云端服务与 `BondPrediction` 必须使用同一克隆库 | M-track 部署配置；逐路径验证 loopback endpoint，不改 DB 业务代码 |
-| 56/9 目标范围的机器强制 | 是；9 个 Darwin-only Native 不能在 Linux 执行，且用户已确定采用 paused-hidden | 候选 config/release 与测试已形成 C56；P65 不变。生产 Registry 暂停只在另行授权的切换窗口生效 |
+| 56/9 目标范围的机器强制 | 是；9 个 Darwin-only Native 不能在 Linux 执行，且用户已确定采用 paused-hidden | canonical config 65 active；deployment matrix 在 ECS 形成 56/60 effective scope，ECS Registry 已读回 60 active/9 paused |
 | `BatchInputSession`、一次校验和共享 view | 否；当前只证明低效，未证明无法迁移 | `DEFERRED_OPTIMIZATION` |
 | 有界队列、并发度 2 | 否；当前并行实测不加速且内存更高 | `DEFERRED_OPTIMIZATION`，首期串行 |
 | LKG、RDS、复制、自动故障转移 | 否；当前先完成单 ECS 本地数据库能力 | 后续稳定性需求 |
@@ -573,7 +594,7 @@ flowchart LR
 - `gray_live`、`scheduled_live`、三日期、Registry、exact version 和 Source Fidelity 语义不变；
 - Linux 真实运行不能继续伪装成 `launchd_one_shot`；
 - 任何生产安装、启停、写库、激活和切换仍分别需要明确授权；
-- M-track 不得混入功能优化；只有满足六项 ROE 准入条件并经用户批准，才能在隔离 Mac worktree 做最小优化并重新冻结 C56；P65 始终不变。
+- M-track 不得混入功能优化；只有满足六项 ROE 准入条件并经用户批准，才能在活动集成分支的隔离 worktree 做最小优化并重新冻结 exact release；Mac3 生产现场始终不变。
 
 ## 2. 执行摘要：修订后的可行性结论
 
@@ -585,7 +606,7 @@ flowchart LR
 | 在 Linux ECS 做全量功能试跑/容量观察 | 功能试跑完成，持续容量待 L4G | 56 个 active base 的日/周/月 one-shot 已真实写库；Peak RSS、长期磁盘增长和自然批次曲线在灰度期收集 |
 | 39 个 Blackbox 在 Linux 运行 | **当前 release 可执行** | daily/weekly/monthly 最新运行全部成功；跨平台数值等价未执行且不作声明 |
 | 17 个保留 Native 在 Linux 运行 | **当前 release 可执行** | daily/weekly 最新运行全部成功，Liwei 7/7 cache hit、无重建；跨平台数值等价未执行且不作声明 |
-| 阶段一 56 个方案迁到 Linux | **灰度准备完成** | C56、systemd、Registry、缓存与手工真写库已验收；五个 timer 待 L4G 专项授权后启用，生产切流仍为 No-Go |
+| 阶段一 56 个方案迁到 Linux | **灰度准备完成，canonical release 待更新** | 旧 C56 release、systemd、Registry、缓存与手工真写库已验收；下一步部署含矩阵的单一源码 release 并保持五个 timer disabled，生产切流仍为 No-Go |
 | 65 个方案全部迁到 Linux | **延期/仍硬阻断** | 被延期的 9 个 Native 仍只有 CPython 3.13 Darwin ARM64 Mach-O 扩展，仓库无 Linux 构建 |
 | 云端接管生产 Writer | **不在当前阶段 / Stop-Ship** | 当前路线是 Mac3 与 ECS 各自独立运行；只有 L4G 达标并再次授权后才设计生产 Writer 交接 |
 | Mac/NATApp 短断时仍稳定可读 | 运行拓扑问题已消除 | 目标运行期使用 ECS loopback MySQL，不再经 NATApp；仍受单 ECS/单 MySQL 故障影响 |
@@ -808,7 +829,7 @@ DataBridge 不是数据库里的共享服务，而是每台主机本地文件系
 
 旧版“阶段一完整云独立数据 authority”已不再是当前硬卡点：`BondPrediction` 上游代码、环境、28 条 schedule 和代表性增量写入已经随完整数据库克隆迁到 ECS。剩余自然任务/许可观察属于生产验收，不再要求先设计 RDS。
 
-原先“继续混合运行还是移除 9 个方案”的范围取舍已经解决：按用户“先跳过、不影响部署”的指示，阶段一目标架构不执行这 9 个，也不采用“Mac 留 9、云跑 56”的拆分执行。精确 9 个 config 已只在 C56 候选中 paused，Mac P65 未因此改变；生产 Registry 暂停与调度启停仍是后续独立生产操作。MIG-017 的候选边界已关闭，生产写操作仍为 Stop-Ship。
+原先“继续混合运行还是移除 9 个方案”的范围取舍已经解决：Mac3 与 ECS 使用同一份 canonical source，Mac3 effective scope 保留 65，ECS effective scope 为 56；这不是跨主机拆分同一数据库 Writer，而是两个独立环境各自运行。ECS 的精确 9 个方案由矩阵排除且 Registry paused；MIG-017 的灰度边界已关闭，未来 Mac3 Registry、调度或流量变化仍须独立授权。
 
 ### 4.3 可解决但会阻止生产切换的问题
 
@@ -866,13 +887,13 @@ DataBridge 不是数据库里的共享服务，而是每台主机本地文件系
 | MIG-010 | P1 | 已保留并校验一份完整逻辑快照，但自动备份、保留周期、告警和恢复演练未闭环 | STOP_SHIP | 不阻止继续部署；阻止把单 ECS/单 MySQL 宣称为可运维生产稳定态 |
 | MIG-011 | P0 | Linux 71 包 canonical manifest 与 fingerprint 已记录，Mac 64 包历史 manifest 已按字节归档，profile 名未变 | **RESOLVED FOR CURRENT CANDIDATE** | 未来 Linux activation/revision 仍须 exact-version Linux Gate；ECS 灰度 Registry 已按 56/9 范围验收 |
 | MIG-012 | P0 | 数据源增量生产者是否能脱离 Mac | RESOLVED FOR PHASE 1 | `BondPrediction` 当前工作目录、Python/Chrome 环境、28 条 schedule 和代表性增量写入已迁移验证；RDS 不再是首期前置，外部数据源许可与全量自然任务在后续 Gate 观察 |
-| MIG-013 | P0 | SLO、RTO/RPO、混合期限、预算和责任人尚未最终定义 | DECISION_REQUIRED（后续 Gate） | 不阻止隔离 C56、G1–G4 和 no-persist Spike；阻止最终定容、切流与稳态验收 |
+| MIG-013 | P0 | SLO、RTO/RPO、混合期限、预算和责任人尚未最终定义 | DECISION_REQUIRED（后续 Gate） | 不阻止 canonical release、ECS 灰度部署和 no-persist Spike；阻止最终定容、切流与稳态验收 |
 | MIG-014 | P0 | DataBridge + 全部日/周/月 prediction cadence 的 systemd 控制面和手工 one-shot 证据已完成；L4G 允许与 Mac3 独立并行，不执行 Writer 交接 | **RESOLVED FOR L4G / OPEN FOR L5** | 灰度启动只启用 ECS timer；未来生产切换仍须重新设计并验收单 Writer 顺序 |
 | MIG-015 | P0 | ECS 本地账号、root-only 配置以及 Backend、Dashboard、DataBridge、scheduler/Actuals loopback endpoint 均已部署并真实写库验证 | **RESOLVED FOR L4G** | Secret 不得进入 release/unit 正文/日志；历史 backtest runner 不进入验证范围 |
 | MIG-016 | P1 | 97 个实际 wheel 的文件名/SHA 已与官方 PyPI metadata 逐个匹配，三套 hash-lock、conda explicit/JSON、环境 fingerprint 与 exact release SHA 已归档；原始 Miniconda installer 文件已被清理，缺少其文件 hash | **PARTIAL / INSTALLER PROVENANCE OPEN** | 当前主机依赖与 release 可审计；阻止宣称“从裸机完全可复现”，下次零起点重建前钉死 installer 版本与 SHA |
-| MIG-017 | P0 | ECS 精确 9 个 Native 已在 config/Registry paused，读回为 56 active base、60 active composite、9 paused，手工验收未执行 paused 方案；Mac3 生产保持原状 | **RESOLVED FOR ECS GRAY / PRODUCTION CUTOVER OPEN** | 灰度分母已闭环；未来生产切换仍须单独确定 Mac3 Registry 和展示状态 |
+| MIG-017 | P0 | canonical config 65 active；deployment matrix 在 ECS 精确排除 9 个 Native，effective discovery 为 56 base/60 composite；ECS Registry 读回 60 active/9 paused，手工验收未执行排除方案 | **RESOLVED FOR ECS GRAY / PRODUCTION CUTOVER OPEN** | 灰度分母已闭环；未来生产切换仍须单独确定 Mac3 Registry 和展示状态 |
 | MIG-018 | P1 | scheduled Blackbox 按方案重复 DataBridge 全量校验/快照/复制，且同批可跨 generation | DEFERRED_OPTIMIZATION | 当前不是 Linux 兼容前置；只有纯迁移实测满足 ROE 六项条件才回 Mac 实现 |
-| MIG-019 | P0 | 隔离迁移 worktree、C56 配置、exact release、Linux manifest 与 release/cache/environment SHA 证据已冻结并部署 | **RESOLVED FOR C56/L4G PREPARATION** | Mac3 生产现场不得夹带变更；灰度观察继续绑定 exact deployed release，未来切换重新冻结 |
+| MIG-019 | P0 | 单一活动集成分支、冻结 master 备份点、deployment matrix、Linux manifest 与既有 release/cache/environment SHA 证据已形成；新 canonical release 尚待重新构建和部署 ECS | **RESOLVED FOR SOURCE MODEL / OPEN FOR NEXT ECS RELEASE** | Mac3 生产现场不得夹带变更；灰度观察绑定 ECS exact deployed release，Mac3 只允许以后晋级同一 archive |
 | MIG-020 | P2 | 有界队列/并发能力尚未实现 | DEFERRED_OPTIMIZATION | 首期明确保持串行；只有未来成为迁移决定性阻断并满足 ROE 时才单独重开 |
 | MIG-021A | P0 | 是否有人具备本实例的阿里云控制台、安全组查看、重启、升配和续费权限 | RESOLVED | 2026-08-16 用户明确确认具备全部上述权限；不再是迁移卡点 |
 | MIG-021B | P0 | Candidate 的包年包月、手动续费和 `2026-09-16 23:59:59` 到期已读回；Security Group 精确规则与实际续费动作尚未闭环 | OPEN（部分已核实） | 不阻止安装与 no-persist Spike；Security Group 在 G6 切流前确认，进入持续 Shadow/生产前完成续费或确认替代资源 |
@@ -889,20 +910,20 @@ MIG-006 当前状态为 `DEFERRED_BY_SCOPE`，而非 `RESOLVED`。用户已确�
 
 | Base scheme ID | Cadence / target | Composite Registry ID | 阶段一目标 |
 |---|---|---|---|
-| `daily_1y_xgb_1y13_0629` | daily / 1Y / h1 | `daily_1y_xgb_1y13_0629__h1__1Y` | config paused；Registry paused；不展示、不执行 |
-| `daily_5y_lgbm_5y10_0629` | daily / 5Y / h1 | `daily_5y_lgbm_5y10_0629__h1__5Y` | config paused；Registry paused；不展示、不执行 |
-| `daily_10y_lgbm_10y04_0629` | daily / 10Y / h1 | `daily_10y_lgbm_10y04_0629__h1__10Y` | config paused；Registry paused；不展示、不执行 |
-| `monthly_1y_rf_top30_0629` | monthly / 1Y / h30 | `monthly_1y_rf_top30_0629__h30__1Y` | config paused；Registry paused；不展示、不执行 |
-| `monthly_5y_knn_top20_0629` | monthly / 5Y / h30 | `monthly_5y_knn_top20_0629__h30__5Y` | config paused；Registry paused；不展示、不执行 |
-| `monthly_10y_rf_top5_0629` | monthly / 10Y / h30 | `monthly_10y_rf_top5_0629__h30__10Y` | config paused；Registry paused；不展示、不执行 |
-| `weekly_avg_1y_lgbm_0529` | weekly_average / 1Y / h6 | `weekly_avg_1y_lgbm_0529__h6__1Y` | config paused；Registry paused；不展示、不执行 |
-| `weekly_avg_5y_lgbm_0529` | weekly_average / 5Y / h6 | `weekly_avg_5y_lgbm_0529__h6__5Y` | config paused；Registry paused；不展示、不执行 |
-| `weekly_avg_10y_lgbm_0529` | weekly_average / 10Y / h6 | `weekly_avg_10y_lgbm_0529__h6__10Y` | config paused；Registry paused；不展示、不执行 |
+| `daily_1y_xgb_1y13_0629` | daily / 1Y / h1 | `daily_1y_xgb_1y13_0629__h1__1Y` | canonical active；矩阵 Mac-only；ECS Registry paused；不展示、不执行 |
+| `daily_5y_lgbm_5y10_0629` | daily / 5Y / h1 | `daily_5y_lgbm_5y10_0629__h1__5Y` | canonical active；矩阵 Mac-only；ECS Registry paused；不展示、不执行 |
+| `daily_10y_lgbm_10y04_0629` | daily / 10Y / h1 | `daily_10y_lgbm_10y04_0629__h1__10Y` | canonical active；矩阵 Mac-only；ECS Registry paused；不展示、不执行 |
+| `monthly_1y_rf_top30_0629` | monthly / 1Y / h30 | `monthly_1y_rf_top30_0629__h30__1Y` | canonical active；矩阵 Mac-only；ECS Registry paused；不展示、不执行 |
+| `monthly_5y_knn_top20_0629` | monthly / 5Y / h30 | `monthly_5y_knn_top20_0629__h30__5Y` | canonical active；矩阵 Mac-only；ECS Registry paused；不展示、不执行 |
+| `monthly_10y_rf_top5_0629` | monthly / 10Y / h30 | `monthly_10y_rf_top5_0629__h30__10Y` | canonical active；矩阵 Mac-only；ECS Registry paused；不展示、不执行 |
+| `weekly_avg_1y_lgbm_0529` | weekly_average / 1Y / h6 | `weekly_avg_1y_lgbm_0529__h6__1Y` | canonical active；矩阵 Mac-only；ECS Registry paused；不展示、不执行 |
+| `weekly_avg_5y_lgbm_0529` | weekly_average / 5Y / h6 | `weekly_avg_5y_lgbm_0529__h6__5Y` | canonical active；矩阵 Mac-only；ECS Registry paused；不展示、不执行 |
+| `weekly_avg_10y_lgbm_0529` | weekly_average / 10Y / h6 | `weekly_avg_10y_lgbm_0529__h6__10Y` | canonical active；矩阵 Mac-only；ECS Registry paused；不展示、不执行 |
 
 阶段一不要求取得源码或 Linux bundle，但在任何生产 Writer 切换前必须满足：
 
 - 固定一份精确的 56 个保留 scheme ID 与 9 个延期 scheme ID 清单，并绑定 exact release；
-- 9 个 config 均为 `paused`，Linux strict discovery、systemd timer 和批次摘要不能把它们作为候选；手工 scheduled-live 负面调用必须在算法和业务写入前 skip/deny；
+- 65 个 canonical config 均为 `active`；9 个延期 ID 的矩阵目标精确为 `mac3-production`，Linux strict discovery、systemd timer 和批次摘要不能把它们作为候选；direct scheduled-live 负面调用必须在数据库和算法副作用前拒绝；
 - 9 个 composite Registry 行均为 `paused`；Dashboard、`/api/schemes`、metrics/backtest 公网接口和前端矩阵均不呈现它们，paused ID 的直接业务读取按现有合同返回 404；
 - 缺批次监控不再要求这 9 个产生新信号，批次成功率和“已迁移数量”分母固定为 56，不能把“没有新结果”误报为成功，也不能继续承诺 65 个方案均在云端生产；
 - 仓库中的方案目录、adapter、配置、加密 `.so`、source evidence、benchmark/backtest 和 Harness 证据全部保留；既有业务表/审计表行不删除、不覆盖，暂停只改变当前运行资格和公网可见性；
@@ -917,7 +938,7 @@ MIG-006 当前状态为 `DEFERRED_BY_SCOPE`，而非 `RESOLVED`。用户已确�
 | 9 个方案 paused-hidden，生产切换时不再产生新结果 | 56 个方案可作为完整执行范围迁移；9 个从 active 产品读模型隐藏，但代码与历史数据保留 | **已采用并已明确展示语义** |
 | 9 个方案继续由 Mac 执行 | 不是简单跳过，而是云/Mac 拆分执行；必须新增受治理 ownership、双端 Artifact/DataBridge 和跨主机 Writer 设计 | 未采用；除非用户以后明确改变范围 |
 
-当前已在隔离迁移 worktree/release 完成 9 个候选 config 暂停及 65/56、69/60、9 paused 的 contract 测试，P65 未改变。MIG-017 剩余 `STOP_SHIP` 是生产 Registry 与调度操作：Linux L2/部署证据继续证明 9 个方案不会执行；生产 9 个 composite 暂停只在明确授权的切换窗口、旧 Writer 完全停止后写入，并读回 9 paused/60 active。
+当前已在隔离迁移 worktree 完成 canonical 65 active、Mac3 65/69、ECS 56/60、精确 9 个 Mac-only 以及 direct scheduled-live 拒绝的 contract 测试。ECS Registry 既有 9 个 composite paused 状态不由矩阵自动改写；下一版 ECS release 部署后仍须只读读回 60 active/9 paused 和 9 个排除方案零执行。Mac3 Registry、installed launchd 与生产流量保持不变。
 
 #### 未来：恢复全量 65 个方案
 
@@ -937,7 +958,7 @@ MIG-006 当前状态为 `DEFERRED_BY_SCOPE`，而非 `RESOLVED`。用户已确�
 - 未产生 L2 算法改动。
 
 重新把这 9 个方案纳入 Linux 范围时，以上条件全部恢复为硬 Gate。不能通过换成 Linux ARM、容器、Rosetta 或更大 ECS 解决，也不能把 `bondprojectpro` 中语义相近但身份不一致的代码当作等价源码。
-即使 paused-hidden 期间保留了当前 exact version、代码和历史证据，未来恢复也不能仅把 config/Registry 改回 `active`；必须先取得权威 Linux 可执行物、完成适用 Gate，并取得独立激活与生产操作授权。
+即使 paused-hidden 期间保留了当前 exact version、代码和历史证据，未来恢复也不能仅把 `aliyun-gray` 加入矩阵或把 Registry 改回 `active`；必须先取得权威 Linux 可执行物、完成适用 Gate，并取得独立激活与生产操作授权。
 
 ### 7.2 MIG-012：RDS 与源数据 authority
 
@@ -1061,7 +1082,7 @@ Mac 和 ECS 现在是两个独立数据库，跨主机 `flock`/UPSERT 覆盖不�
 
 ### 9.5 Web 与 Batch 资源争用
 
-专用 Candidate 已核实为 4 vCPU/16 GiB，当前已运行 MySQL 并保存 `BondPrediction` 环境，但没有 Nginx、FastAPI、DataBridge、算法或生产业务进程。目标设计会让本机 MySQL、Nginx/FastAPI 与间歇性批计算共享同一 4C16G，算法的 CPU/RSS/OOM、临时文件、文件句柄和磁盘满可能影响公网 API。首轮忠实复现 C56 从 P65 继承的逐方案输入准备和串行执行，同时观测本机 API；不得因 4 核而先实现共享输入或测试两路并行。只有实证显示同机方案影响 Dashboard，才独立评估简单 systemd slice/cgroup 或拆分 Web/Batch 节点。
+专用 Candidate 已核实为 4 vCPU/16 GiB，当前运行 loopback MySQL、`BondPrediction` 上游、localhost FastAPI，并已完成 DataBridge/算法/Actuals one-shot；项目 timers 保持 disabled，未安装生产 Nginx。灰度自然运行会让本机 MySQL/FastAPI 与间歇性批计算共享同一 4C16G，算法的 CPU/RSS/OOM、临时文件、文件句柄和磁盘满可能影响本地 API。首轮继续保持 canonical source 既有的逐方案输入准备和串行执行，同时观测本机 API；不得因 4 核而先实现共享输入或测试两路并行。只有实证显示同机方案影响 Dashboard，才独立评估简单 systemd slice/cgroup 或拆分 Web/Batch 节点。
 
 ### 9.6 供应链与跨平台数值
 
@@ -1081,7 +1102,7 @@ Mac 和 ECS 现在是两个独立数据库，跨主机 `flock`/UPSERT 覆盖不�
 
 ### 12.2 试验矩阵
 
-目标实例 **`ecs.u1-c1m4.xlarge`、4 vCPU/16 GiB** 已读回。只有 MIG-017 已在隔离环境把 56/9 范围做成可验证 C56 发布边界、MIG-019 已冻结 P65/C56 证据后，才运行容量矩阵；MIG-018/MIG-020 不再是前置：
+目标实例 **`ecs.u1-c1m4.xlarge`、4 vCPU/16 GiB** 已读回。MIG-017 已用 deployment matrix 把 56/9 范围做成可验证发布边界，MIG-019 已冻结单一源码模型；下一版 exact release 部署和读回后再进入持续容量观察，MIG-018/MIG-020 不再是前置：
 
 - 固定 4 vCPU/16 GiB，并发度 1；
 - 首轮只测试当前串行行为，不测试并发度 2；
@@ -1102,7 +1123,7 @@ Blackbox 需额外分解为：
 - 当前逐方案输入准备的 wall/CPU/RSS/I/O，以及整批累计临时写入；
 - 算法子进程自身的 wall/CPU/RSS；
 - 串行完整批次是否满足批准的内存、磁盘和 deadline；
-- 每方案校验、snapshot 和 runtime view 次数保持 C56 从 P65 继承的语义；这些重复先作为观测数据，不因数值较大自动判失败。
+- 每方案校验、snapshot 和 runtime view 次数保持 canonical source 既有语义；这些重复先作为观测数据，不因数值较大自动判失败。
 
 每档至少 3–5 次，全部 no-persist/shadow。
 
@@ -1334,14 +1355,14 @@ default-deny 白名单站点配置、证书签发、DNS TTL 与 ICP 备案接入
 
 ## 14. 上线验收证据
 
-### 14.1 P65 零干扰、Release 与供应链
+### 14.1 Mac3 零干扰、单一 Release 与供应链
 
-- P65 的实际 branch、exact commit、既有 worktree 状态和 untracked 清单被原样记录；不要求通过切分支、清理或覆盖把活跃生产目录伪造成 `master + clean tree`；
-- G0B 开始/结束及每个 Mac 侧有界测试前后，P65 代码/config/依赖身份、installed plist hash、`launchctl` loaded state、进程/端口、生产 Registry、DataBridge generation 和业务任务结果一致；无迁移引起的重启、漏批、错误率或延迟退化；
-- C56 位于独立 worktree，绑定一个 exact candidate commit 和 clean tree；它相对 P65 只有已经批准的九项 paused-hidden 范围差异，API/调度/监控行为用隔离 Registry fixture 验收；
-- P65 的输入 hash、结果、既有测试/Gate、逐方案输入准备、串行语义和运行指标证据完整；重负载验证没有在 P65 上执行；
-- 从 C56 到 Linux release 的差异清单逐项属于 M-track 平台适配，不含首次出现的 DataBridge、队列/并发、API、Registry、监控或落库语义优化；若有 ROE，另附六项准入、用户授权和新的 C56 证据；
-- release archive hash 与 Linux environment fingerprint；如未使用容器，不虚构 image digest；
+- Mac3 活跃 checkout 的实际 branch、exact commit、既有 worktree 状态和 untracked 清单被原样记录；不要求通过切分支、清理或覆盖把生产目录伪造成 `master + clean tree`；
+- 迁移开发前后，Mac3 代码/config/依赖身份、installed plist hash、`launchctl` loaded state、进程/端口、生产 Registry、DataBridge generation 和业务任务结果一致；无迁移引起的重启、漏批、错误率或延迟退化；
+- `master@2b62a2e9ae7c661f4a7f1741b5ff6c351819a4ad` 保持冻结，活动集成分支绑定一个 exact candidate commit 和 clean tree；不创建 Mac3/ECS 环境分支；
+- 一个 exact commit 只生成一个 release archive；ECS 与未来 Mac3 候选的 archive SHA-256 相同，主机差异只来自 deployment target、Registry、数据库和 installed 调度；
+- 从 canonical source 到 Linux release 的差异清单逐项属于 M-track 平台适配，不含首次出现的 DataBridge、队列/并发、API、Registry、监控或落库语义优化；若有 ROE，另附六项准入、用户授权和新的 exact release 证据；
+- release archive hash 与 Linux environment fingerprint；如未使用容器，不虚构 image digest；ECS release 不含 `.git`；
 - 56 个保留 ID、9 个延期 ID 及其运行处置绑定同一 release 证据；
 - Linux package hash、platform、Python ABI、SBOM 和构建记录；
 - 部署包无 `.env`、`outputs/`、历史 `dist/`、明文 Secret 或非必要 Artifact。
@@ -1381,10 +1402,10 @@ default-deny 白名单站点配置、证书签发、DNS TTL 与 ICP 备案接入
 - 日志真实记录 `systemd_one_shot`；
 - 服务按用户选择以现有 root 身份运行，验收报告明确标记整机权限爆炸半径为 `ACCEPTED_RISK`；超时/中断后整个 Blackbox 进程树回收通过；
 - 平台不通过 Request、命令行或子进程环境向 Blackbox 注入 DB/Writer Secret，只传递批准输入路径与独立输出路径；不把这一点误报为 root 子进程无法读取宿主文件；
-- Blackbox 保持 C56 从 P65 继承的逐方案 snapshot/runtime view、全量校验、复制、hash 和清理语义；
+- Blackbox 保持 canonical source 既有的逐方案 snapshot/runtime view、全量校验、复制、hash 和清理语义；
 - 每个方案的 `generation_id/refresh_date/parent_data_snapshot_id/cutoff` 与固定输入下的 Mac 基线相符；不把“一批只校验一次”作为默认验收条件；
 - 验收记录明确标注：运行期沙箱已退役，网络与宿主文件系统无 OS 级强隔离；隔离保证来自入库 StaticGate 静态检查、版本哈希绑定与运行后输入目录指纹复验，不得把直接执行误报为 Sandbox 通过；
-- strict discovery、timer candidate 和批次摘要均不包含 9 个延期方案；9 个 config/Registry 均 paused，Dashboard/API 不呈现且直接读取返回 404；
+- ECS strict discovery、timer candidate 和批次摘要均不包含 9 个延期方案；canonical config 保持 active，9 个 ID 在矩阵中为 Mac-only、ECS Registry paused，Dashboard/API 不呈现且直接读取返回 404；
 - 负面验收同时证明方案目录、加密 `.so`、source evidence、benchmark/Gate 和历史数据库行仍在，暂停没有被错误实现成物理删除。
 
 ### 14.6 算法与容量
@@ -1401,7 +1422,7 @@ default-deny 白名单站点配置、证书签发、DNS TTL 与 ICP 备案接入
 ### 14.7 数据库、备份与故障
 
 - 完整 Dashboard、DataBridge 和日批真实链路通过；
-- 本地 DB 短断/重连和隔离 DB 重启不产生重复或覆盖；不得主动重启 P65 MySQL 来制造验收证据；
+- 本地 DB 短断/重连和隔离 DB 重启不产生重复或覆盖；不得主动重启 Mac3 MySQL 来制造验收证据；
 - 初始一致性逻辑快照已异机保存并有 hash；生产启用前补齐自动备份/保留策略；
 - 初始真实 restore 的 schema、对象、DEFINER、关键表结构和业务连接已通过；后续恢复演练继续验证 watermark 和业务查询；
 - 实测 RTO/RPO 达标；
@@ -1847,7 +1868,7 @@ Phase A 缓存。缓存根目录：
 DEFAULT_CACHE_ROOT = BACKTEST_ARTIFACT_ROOT / "runtime_cache" / "liwei_0616"
 ```
 
-它落在 `backtest_artifacts/` 下——而迁移文档明确写着该目录"不进入 C56 release、不复制到 ECS"。
+它落在 `backtest_artifacts/` 下——而迁移文档明确写着该目录“不进入 canonical source release、不复制到 ECS”。
 它既不在 git 里也不在数据库里，是**只存在于主机磁盘上的运行期必需热状态**，此前的迁移清单完全没有它。
 
 **不迁的后果是一条不会自愈的死锁**：
@@ -2178,6 +2199,7 @@ DataBridge 与日批之间的一致性，不校验上游与 DataBridge 之间。
 
 | 日期 | 版本 | 更新 |
 |---|---|---|
+| 2026-08-18 | 1.26 | 固化单一源码双主机发布模型：本地 `master@2b62a2e9ae7c661f4a7f1741b5ff6c351819a4ad` 冻结为备份点，`codex/aliyun-db-clone-20260816` 成为唯一活动集成分支，不创建 Mac3/ECS 长期环境分支。canonical 65 个 config 恢复 active，新增 `BFL_DEPLOYMENT_TARGET` 与 `deploy/scheme_deployment_matrix_v1.json` 在 discovery 单点形成 Mac3 65/69、ECS 56/60；ECS 精确 9 个 Registry 行继续 paused，矩阵不自动改写 Registry。launchd/Mac3 与 systemd/ECS 目标交叉或缺失时在运行期副作用前失败；仓库模板已声明目标但未安装、重载或启用。下一步从最终 exact commit 只构建一份 archive，先部署 ECS 并读回 release/target/Registry/timers；Mac3 晋级继续单独授权。本轮未连接 ECS、未移动或推送 master、未修改数据库、installed 服务、timer、域名或流量。 |
 | 2026-08-17 | 1.25 | 固化会议确定的独立灰度实验室路线：Mac3 继续承载现有生产域名、生产前端和 Writer；ECS 使用本地 MySQL、上游数据链、DataBridge、56 个 active base、Actuals 与 localhost Backend 独立运行，两端不复制、不双写、不共享运行期 authority。timer-disabled 部署与日/周/月手工真写库已经验收，下一步不是直接 L5 切流，而是在单独授权后启用 ECS 五个 timer，进入新增的 L4G 自然运行观察；每日核验调度、写库、日期链、缓存、资源、磁盘和 localhost 前端，至少覆盖连续交易日、自然周频、自然月频及 Actuals。观察达标并再次开会批准前，不停 Mac3、不改 Nginx/DNS/域名或生产流量。本次仅更新文档与项目上下文，未启用 timer、未变更服务或数据库。 |
 | 2026-08-17 | 1.24 | 用户选择 conda-forge-only 后完成 Linux L1：冻结 C56 exact release（9 个延期 Native 在候选 config paused，17 Native + 39 Blackbox active），三套环境精确安装 Service 48/Native 49/Blackbox 49 个 distribution，97 个实际 wheel 文件名/SHA 与官方 PyPI metadata 匹配，`pip check`、核心 import、CPU XGBoost 与 Service fresh MySQL/cryptography 连接通过。canonical Blackbox manifest 更新为 linux-64/71 包并归档原 Mac manifest，profile 名与 39 个 scheme version 不变；39/39 Blackbox 正式 CLI 探针通过。Liwei bundle 精确为 75 文件/100,622,640 bytes，Linux secure loader 重放 7/7 current + parent lineage 且前后 hash 不变。release、环境和 cache 只在 ECS bootstrap staging，未安装/启用项目服务、systemd、Registry、Web 或流量。唯一 L1 供应链缺口是原始 Miniconda installer 已清理、缺少 installer 文件 SHA，因此不得宣称从裸机完全可复现。当前进入 L2；ECS 28 条 BondPrediction cron 已启用这一 v1.22 现场事实保持不变，Mac 对应 cron 状态须在 Writer 切换前重新确认 |
 | 2026-08-17 | 1.23 | 把此前分散在仓库外的两份工作文档合并入本文，形成单一来源：新增第 20 章「开工执行手册」（照着做即可的九节执行清单，每条标注 `[已核实]`/`[待实测]`）与第 21 章「待解决问题台账」（A–E 五类，含 11 条 B 项与撤销/合并分流表）。文档最前面新增索引，按章节内容组合并标出五处最常用入口（0.1 速查、5 MIG 台账、13 阶段计划、20 开工手册、21 问题台账）。同时修正三处：重复的 `0.0.1` 编号改为 `0.0.2`；更新记录由第 19 章改为第 22 章置于文末；liwei 缓存迁移命令由 `rsync -av` 改为 `rsync -rlt --chmod=D700,F600 --no-owner --no-group`——`liwei_0616_phase_a_cache.py:3872-4001` 对缓存文件做 `st_uid != geteuid()` 与 `S_IMODE & 0o022` 双重校验，`-a` 保留源侧属主会使校验必然失败。仓库外仅保留 `artifacts/linux-envs/` 构建物料（含本机路径，不宜入库），其结论已全部并入本文。本轮为文档整合，未变更任何服务、数据库、cron、代码或生产状态 |

@@ -8,10 +8,11 @@
 
 ## 当前工作上下文（必须遵守）
 
-- 当前开发分支：`codex/audit-bugfixes-20260613`。
-- 生产分支：`master`。`master` 是后续生产版本的基准。
-- 经过验证的开发分支只有在用户明确确认后，才能合并或覆盖到 `master` 并推送远程；agent 不得自行决定发布到 `master`。
-- 不再维护第二生产分支；除非用户明确要求，验证后的更新也不得发布到其它发布分支。
+- 当前活动集成分支：`codex/aliyun-db-clone-20260816`。本阶段日常修改只进入该分支；需要并行时可以使用短期 `codex/<task>` 分支，但不得创建 Mac3/ECS 两条长期环境分支。
+- `master` 已冻结在 `2b62a2e9ae7c661f4a7f1741b5ff6c351819a4ad`，作为本阶段开始前的备份点；未经用户新的明确授权，不得移动或推送 `master`。
+- Mac3 与 ECS 必须接收从同一精确集成提交构建的同一份源码 archive；两端只独立管理 Registry、数据库、调度启用、`current` 与回滚，不允许在 ECS 上保留 Git checkout、执行 `git pull` 或本地修改 release。
+- 环境方案范围只由 `BFL_DEPLOYMENT_TARGET` 与 `deploy/scheme_deployment_matrix_v1.json` 表达；不得再通过为不同主机修改 canonical `config.yaml` 的 `status` 制造两个 `scheme_version`。
+- 经过验证的开发分支只有在用户明确确认后，才能合并或覆盖到 `master` 并推送远程；agent 不得自行决定发布到 `master` 或其它发布分支。
 - 用户口头说根目录 `agent.md` 时，优先理解为根目录 `AGENTS.md`；本项目要求 `AGENTS.md` 与 `CLAUDE.md` 内容一致，更新根规范时两者要同步。
 - 分支操作、提交或暂存前必须先核对 `git status --short` 和相关分支列表，避免把未跟踪的新方案、`outputs/` 产物或其他草稿混入当前任务提交。
 - 提 PR 前先判断该问题能否在本机测试验证。本机可验证的，直接在 PR 中修复并附复现与验证证据；需要结合生产环境才能确认的（launchd 现场状态、生产 DataBridge、真实调度时钟、跨环境数据漂移等），不得夹带未经验证的代码改动，只提交「现象 / 问题点 / 造成的影响 / 推荐解决方案」四段式报告 PR，由能验证该环节的同事结合建议自行处理。判断依据是能否在本机跑出决定性证据，不是主观把握程度。
