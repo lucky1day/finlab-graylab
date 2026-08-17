@@ -1266,12 +1266,15 @@ class _RunEngine:
 
 
 class ImmutablePredictionRepositoryTests(unittest.TestCase):
-    def test_scheduled_live_run_creation_without_launchd_plane_fails_closed(
+    def test_scheduled_live_run_creation_without_one_shot_plane_fails_closed(
         self,
     ) -> None:
         from scheduler.repository import create_scheme_run
 
-        with self.assertRaisesRegex(RuntimeError, "requires launchd_one_shot"):
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "requires an installed one-shot control plane",
+        ):
             create_scheme_run(
                 _RunEngine(),
                 scheme_id="t1_daily",
@@ -1317,6 +1320,40 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertEqual(params["input_artifact_id"], "artifact-1")
         self.assertEqual(params["data_snapshot_id"], "snapshot-1")
         self.assertEqual(params["runtime_type"], "native_adapter")
+
+    def test_create_scheme_run_accepts_systemd_one_shot_for_scheduled_live(
+        self,
+    ) -> None:
+        from scheduler.repository import create_scheme_run
+
+        engine = _RunEngine()
+        run_id = create_scheme_run(
+            engine,
+            scheme_id="linux_daily",
+            predict_date="2026-08-17",
+            prediction_phase="scheduled_live",
+            scheduled_control_plane="systemd_one_shot",
+        )
+
+        self.assertEqual(run_id, 101)
+        self.assertEqual(
+            engine.store["params"]["prediction_phase"],
+            "scheduled_live",
+        )
+
+    def test_create_scheme_run_rejects_unknown_scheduled_control_plane(
+        self,
+    ) -> None:
+        from scheduler.repository import create_scheme_run
+
+        with self.assertRaisesRegex(ValueError, "scheduled_control_plane"):
+            create_scheme_run(
+                _RunEngine(),
+                scheme_id="unknown",
+                predict_date="2026-08-17",
+                prediction_phase="scheduled_live",
+                scheduled_control_plane="cron",
+            )
 
     def test_active_native_completion_upserts_prediction_and_finishes_atomically(self) -> None:
         from scheduler.repository import complete_active_native_run

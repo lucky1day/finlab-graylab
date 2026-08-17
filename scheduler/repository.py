@@ -21,10 +21,10 @@ from shared.blackbox_v2.lifecycle import assert_lifecycle_clear, lifecycle_opera
 from shared.db_config import DatabaseConfig
 from shared.input_artifacts import InputArtifact
 from shared.models import ActualRecord, MonthlyActualRecord, PredictionRecord, WeeklyActualRecord
+from shared.one_shot_control_plane import SCHEDULED_ONE_SHOT_CONTROL_PLANES
 
 
 VALID_PREDICTION_PHASES = {"gray_live", "scheduled_live"}
-_LAUNCHD_ONE_SHOT_CONTROL_PLANE = "launchd_one_shot"
 VERSION_STATUSES = {"draft", "validated", "shadow", "active", "paused", "retired"}
 BLACKBOX_REGISTRY_STATUSES = {"active", "paused", "archived"}
 BLACKBOX_IMMUTABLE_VERSION_FIELDS = (
@@ -2062,7 +2062,7 @@ def create_scheme_run(
     records_expected: int | None = None,
     scheduled_control_plane: str | None = None,
 ) -> int:
-    """创建正常预测运行；自然写入只接受 launchd one-shot 身份。"""
+    """创建正常预测运行；自然写入只接受已安装的一次性控制面。"""
     if (
         prediction_phase is not None
         and prediction_phase not in VALID_PREDICTION_PHASES
@@ -2071,12 +2071,12 @@ def create_scheme_run(
             "prediction_phase must be one of "
             f"{sorted(VALID_PREDICTION_PHASES)}, got {prediction_phase}"
         )
-    if scheduled_control_plane not in {
-        None,
-        _LAUNCHD_ONE_SHOT_CONTROL_PLANE,
-    }:
+    if (
+        scheduled_control_plane is not None
+        and scheduled_control_plane not in SCHEDULED_ONE_SHOT_CONTROL_PLANES
+    ):
         raise ValueError(
-            "scheduled_control_plane must be launchd_one_shot when set"
+            "scheduled_control_plane must be an installed one-shot control plane"
         )
     if scheduled_control_plane is not None:
         if prediction_phase != "scheduled_live":
@@ -2085,11 +2085,10 @@ def create_scheme_run(
             )
     if (
         prediction_phase == "scheduled_live"
-        and scheduled_control_plane
-        != _LAUNCHD_ONE_SHOT_CONTROL_PLANE
+        and scheduled_control_plane not in SCHEDULED_ONE_SHOT_CONTROL_PLANES
     ):
         raise RuntimeError(
-            "scheduled_live requires launchd_one_shot"
+            "scheduled_live requires an installed one-shot control plane"
         )
     with engine.begin() as conn:
         return _create_scheme_run_conn(
