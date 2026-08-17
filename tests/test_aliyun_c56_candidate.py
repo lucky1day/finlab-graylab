@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections import Counter
+import hashlib
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -99,3 +101,53 @@ def test_c56_preserves_native_policy_and_all_composite_owners() -> None:
     assert len(native_ids) == 26
     assert set(owners) == composite_ids
     assert len(composite_ids) == 69
+
+
+def test_c56_uses_linux_blackbox_manifest_and_preserves_mac_evidence() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    deploy_root = project_root / "deploy" / "blackbox_v2"
+    profile = json.loads(
+        (deploy_root / "runtime_profile_v1.json").read_text(encoding="utf-8")
+    )
+    linux_manifest = json.loads(
+        (deploy_root / "environment_manifest.json").read_text(encoding="utf-8")
+    )
+    mac_manifest = json.loads(
+        (deploy_root / "environment_manifest.osx-arm64.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert linux_manifest["runtime_profile"] == profile["profile_name"]
+    assert linux_manifest["conda_env"] == profile["conda_env"]
+    assert linux_manifest["platform"] == "linux-64"
+    assert (
+        linux_manifest["environment_fingerprint"]
+        == "b37b78e89aeb65600edb909d7e98dcfbf69429edb4f3232526331021570ec565"
+    )
+    assert mac_manifest["platform"] == "osx-arm64"
+    assert (
+        mac_manifest["environment_fingerprint"]
+        == "720ad40ab77cd6c7156ff35a80cf3604ac3a6153425ed235a4e3158b0631f8bd"
+    )
+    assert hashlib.sha256(
+        (deploy_root / "environment_manifest.osx-arm64.json").read_bytes()
+    ).hexdigest() == (
+        "e5dc7c002a342318836137bf917995faf600f5f558271935a0f7b036daae5107"
+    )
+
+    packages = linux_manifest["explicit_packages"]
+    canonical = json.dumps(
+        packages,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    assert hashlib.sha256(canonical.encode("utf-8")).hexdigest() == (
+        linux_manifest["environment_fingerprint"]
+    )
+    versions = {package["name"]: package["version"] for package in packages}
+    assert len(packages) == len(versions) == 71
+    assert versions["cryptography"] == "46.0.4"
+    assert versions["nvidia-nccl-cu12"] == "2.31.2"
+    assert versions["xgboost"] == "3.1.3"
