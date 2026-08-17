@@ -112,6 +112,7 @@ _BUILD_MODES = frozenset(
         "append",
         "suffix",
         "qualification",
+        "migration_rebind",
     }
 )
 
