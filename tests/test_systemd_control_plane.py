@@ -227,6 +227,12 @@ class SystemdControlPlaneTests(unittest.TestCase):
             self.assertNotIn("systemctl", content, name)
             if name.endswith(".service"):
                 self.assertIn(
+                    "After=network-online.target mysql.service",
+                    content,
+                    name,
+                )
+                self.assertNotIn("mysqld.service", content, name)
+                self.assertIn(
                     "WorkingDirectory=/opt/bond-factor-lab/current",
                     content,
                     name,

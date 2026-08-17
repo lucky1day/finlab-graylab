@@ -1,6 +1,6 @@
 [Unit]
 Description=Bond Factor Lab DataBridge refresh one-shot
-After=network-online.target mysqld.service mysql.service
+After=network-online.target mysql.service
 Wants=network-online.target
 
 [Service]
