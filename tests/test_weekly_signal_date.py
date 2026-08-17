@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from bisect import bisect_left
@@ -132,6 +133,11 @@ class LaunchdWeeklySkipTests(unittest.TestCase):
         )
         calendar = _StubCalendar(TRADING_DAYS)
         with (
+            patch.dict(
+                os.environ,
+                {"BFL_DEPLOYMENT_TARGET": "mac3-production"},
+                clear=False,
+            ),
             patch.object(
                 runner.DataBridgeRefreshConfig, "from_env", return_value=object()
             ),
