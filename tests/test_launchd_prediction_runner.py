@@ -201,3 +201,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         self.assertEqual(summary.blocked, [])
         self.assertEqual(summary.outcome, "success")
         self.assertEqual(summary.exit_code, 0)
+        self.assertEqual(
+            summary.to_payload()["event"],
+            "launchd_prediction_run",
+        )
