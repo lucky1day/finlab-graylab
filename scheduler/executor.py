@@ -52,6 +52,7 @@ from shared.input_artifacts import (
     resolve_blackbox_input_cutoffs,
 )
 from shared.data_bridge.refresh import DataBridgeRefreshConfig
+from shared.db_config import DATABASE_ENV_FILE_ENV
 from shared.models import PredictionRecord
 from shared.one_shot_control_plane import (
     LAUNCHD_ONE_SHOT_CONTROL_PLANE,
@@ -121,6 +122,7 @@ _ALGORITHM_ENVIRONMENT_ALLOWLIST = frozenset(
         "ABSL_LOGGING_MIN_LEVEL",
         "MPLCONFIGDIR",
         "PYTHONDONTWRITEBYTECODE",
+        DATABASE_ENV_FILE_ENV,
         "LIWEI_0616_PHASE_A_CACHE_ROOT",
         CACHE_MUTATION_POLICY_ENV,
         "DAILY_0629_SOURCE_CACHE_DISABLE",

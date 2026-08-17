@@ -265,6 +265,11 @@ class SystemdControlPlaneTests(unittest.TestCase):
                 f"bond-factor-lab-prediction-{cadence}.service"
             ]
             self.assertIn(
+                "Environment=BFL_DATABASE_ENV_FILE="
+                "/etc/bond-factor-lab/bond-factor-lab.env",
+                service,
+            )
+            self.assertIn(
                 "python -m scheduler.systemd_prediction_runner "
                 f"--cadence {cadence}",
                 service,
