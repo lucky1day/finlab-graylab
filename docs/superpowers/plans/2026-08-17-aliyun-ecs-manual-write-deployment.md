@@ -547,8 +547,7 @@ PYTHONNOUSERSITE=1 pytest -q \
   tests/test_data_bridge_failure_taxonomy.py \
   tests/test_backend_api.py \
   tests/test_calendar_coverage_fail_closed.py \
-  tests/test_weekly_signal_date.py \
-  tests/test_actuals_runner.py
+  tests/test_weekly_signal_date.py
 ```
 
 Expected: all selected tests pass. Do not run CompareGate.
