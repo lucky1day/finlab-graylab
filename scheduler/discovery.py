@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from scheduler.deployment_scope import filter_schemes_for_configured_target
 from shared.blackbox_v2.versioning import compute_blackbox_config_hash
 from shared.blackbox_v2.platform_input_registry import (
     normalize_platform_input_ids,
@@ -222,7 +223,7 @@ def discover_schemes(schemes_root: Path = SCHEMES_ROOT, strict: bool = False) ->
             if strict:
                 raise
             logger.exception("Skip invalid scheme config: %s", config_path)
-    return configs
+    return filter_schemes_for_configured_target(configs)
 
 
 def active_schemes(schemes_root: Path = SCHEMES_ROOT) -> list[SchemeConfig]:
