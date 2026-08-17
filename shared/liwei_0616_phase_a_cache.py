@@ -30,6 +30,11 @@ from shared.liwei_0616_cache_contract import (
     PHASE_A_CACHE_ABI_VERSION,
     validate_generation_acceptance_record,
 )
+from shared.liwei_0616_cache_migration import (
+    CacheMigrationRebindComplete,
+    active_cache_rebind_entry,
+    validate_cache_rebind_evidence,
+)
 from shared.liwei_0616_cache_projection import (
     PROJECTION_SCHEMA_VERSION,
     AuxiliaryDependencyProjection,
@@ -355,6 +360,25 @@ def _prepare_under_family_lock(
             input_change=input_change,
             family_root=family_root,
         )
+    migration_rebind_evidence = active_cache_rebind_entry(
+        cache_family=spec.cache_family,
+        tenor=spec.tenor,
+        publisher_consumer_id=cache_consumer_id,
+    )
+    if migration_rebind_evidence is not None:
+        _rebound_caches, rebound_audit = _prepare_migration_rebind(
+            spec=spec,
+            family_root=family_root,
+            current=current,
+            current_error=current_error,
+            requested_by_baseline=requested_by_baseline,
+            input_state=input_state,
+            input_change=input_change,
+            migration_rebind_evidence=(
+                migration_rebind_evidence
+            ),
+        )
+        raise CacheMigrationRebindComplete(rebound_audit)
     if (
         current is not None
         and current.manifest.get("spec_fingerprint")
@@ -642,6 +666,187 @@ def _prepare_under_family_lock(
             family_root,
             generation,
         )
+    except BaseException as error:
+        try:
+            _discard_unpublished_generation(
+                family_root,
+                generation.generation_id,
+            )
+        except BaseException as cleanup_error:
+            error.add_note(
+                "failed to discard unpublished cache generation "
+                f"{generation.generation_id}: {cleanup_error}"
+            )
+        raise
+    return generation.caches, audit
+
+
+def _prepare_migration_rebind(
+    *,
+    spec: PhaseACacheSpec,
+    family_root: Path,
+    current: _LoadedGeneration | None,
+    current_error: str | None,
+    requested_by_baseline: Mapping[str, list[str]],
+    input_state: Mapping[str, Any],
+    input_change: Mapping[str, Any],
+    migration_rebind_evidence: Mapping[str, object],
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    """按一次性 receipt 复用父缓存并绑定当前 Linux 输入。"""
+    evidence = validate_cache_rebind_evidence(
+        migration_rebind_evidence
+    )
+    entry = evidence["entry"]
+    if current is None:
+        raise RuntimeError(
+            "CACHE_MIGRATION_REBIND_REJECTED: "
+            f"{current_error or 'no_current_generation'}"
+        )
+    secure_current, secure_error = _load_current_generation(
+        family_root,
+        secure=True,
+    )
+    if secure_current is None:
+        raise RuntimeError(
+            "CACHE_MIGRATION_REBIND_REJECTED: "
+            f"{secure_error or 'secure_parent_unavailable'}"
+        )
+    if (
+        secure_current.generation_id != current.generation_id
+        or secure_current.manifest_sha256 != current.manifest_sha256
+    ):
+        raise RuntimeError(
+            "CACHE_MIGRATION_REBIND_REJECTED: current changed"
+        )
+    current = secure_current
+    _verify_generation_acceptance_lineage(current, spec=spec)
+
+    parent_input_state = current.manifest.get("input_state")
+    parent_input_content_id = (
+        parent_input_state.get("content_id")
+        if isinstance(parent_input_state, Mapping)
+        else None
+    )
+    expected_parent = {
+        "cache_family": spec.cache_family,
+        "tenor": spec.tenor,
+        "publisher_consumer_id": spec.publisher_consumer_id,
+        "spec_fingerprint": _spec_fingerprint(spec),
+        "parent_generation_id": current.generation_id,
+        "parent_manifest_sha256": current.manifest_sha256,
+        "parent_generation_content_id": current.manifest.get(
+            "generation_content_id"
+        ),
+        "parent_input_content_id": parent_input_content_id,
+        "target_input_content_id": input_state.get("content_id"),
+    }
+    if any(entry.get(key) != value for key, value in expected_parent.items()):
+        raise RuntimeError(
+            "CACHE_MIGRATION_REBIND_REJECTED: receipt identity mismatch"
+        )
+    if parent_input_content_id == input_state.get("content_id"):
+        raise RuntimeError(
+            "CACHE_MIGRATION_REBIND_REJECTED: input is already bound"
+        )
+    if (
+        current.manifest.get("spec_fingerprint")
+        != _spec_fingerprint(spec)
+        or set(current.caches) != set(spec.baselines)
+    ):
+        raise RuntimeError(
+            "CACHE_MIGRATION_REBIND_REJECTED: parent spec mismatch"
+        )
+    if _generation_compare_gate_status(current) != "unqualified":
+        raise RuntimeError(
+            "CACHE_MIGRATION_REBIND_REJECTED: "
+            "qualified evidence cannot be rebound"
+        )
+    parent_baseline_evidence = {
+        baseline: current.manifest["baselines"][baseline][
+            "evidence"
+        ]
+        for baseline in sorted(current.caches)
+    }
+    if entry.get("baselines") != parent_baseline_evidence:
+        raise RuntimeError(
+            "CACHE_MIGRATION_REBIND_REJECTED: "
+            "parent cache evidence mismatch"
+        )
+
+    baseline_audits: dict[str, dict[str, Any]] = {}
+    acceptance_scopes: dict[str, dict[str, Any]] = {}
+    for baseline in spec.baselines:
+        cache = current.caches[baseline]
+        requested_dates = set(requested_by_baseline[baseline])
+        available_dates = set(cache["test_dates"])
+        if not requested_dates.issubset(available_dates):
+            raise RuntimeError(
+                "CACHE_MIGRATION_REBIND_REJECTED: "
+                f"baseline {baseline} lacks requested coverage"
+            )
+        acceptance_scopes[baseline] = _generation_acceptance_scope(
+            parent_cache=cache,
+            candidate_cache=cache,
+            authoritative_cache=None,
+            affected_dates=[],
+            preserve_parent=True,
+        )
+        baseline_audits[baseline] = {
+            "status": "hit",
+            "watermark": max(cache["test_dates"]),
+            "missing_dates": [],
+            "fingerprint": _baseline_fingerprint(spec, baseline),
+            "preserved_newer_watermark": False,
+        }
+
+    compare_gate_evidence = _build_compare_gate_evidence(
+        current.caches,
+        compare_cold=None,
+        qualify_compare_gate=None,
+        compare_full_output=None,
+        cache_family=spec.cache_family,
+        tenor=spec.tenor,
+        spec_fingerprint=_spec_fingerprint(spec),
+        input_content_id=str(input_state["content_id"]),
+    )
+    generation = _create_generation(
+        spec=spec,
+        family_root=family_root,
+        spec_fingerprint=_spec_fingerprint(spec),
+        input_state=input_state,
+        caches=current.caches,
+        parent_generation=current,
+        build_mode="migration_rebind",
+        compare_gate_evidence=compare_gate_evidence,
+        input_change=input_change,
+        acceptance_scopes=acceptance_scopes,
+        migration_rebind_evidence=evidence,
+    )
+    try:
+        _verify_generation_acceptance_lineage(
+            generation,
+            spec=spec,
+        )
+        audit = _generation_audit(
+            spec=spec,
+            generation=generation,
+            baseline_audits=baseline_audits,
+            status="rebound",
+            build_mode="migration_rebind",
+            build_reason="authorized_linux_input_state_rebind",
+            family_root=family_root,
+            published=True,
+            input_state=input_state,
+            input_change=input_change,
+        )
+        _prune_generations(
+            family_root,
+            protected_generation_ids={
+                current.generation_id,
+                generation.generation_id,
+            },
+        )
+        _switch_current_generation(family_root, generation)
     except BaseException as error:
         try:
             _discard_unpublished_generation(
@@ -1906,6 +2111,7 @@ def _create_generation(
     compare_gate_evidence: Mapping[str, Any],
     input_change: Mapping[str, Any],
     acceptance_scopes: Mapping[str, Mapping[str, Any]],
+    migration_rebind_evidence: Mapping[str, object] | None = None,
 ) -> _LoadedGeneration:
     family_root.mkdir(parents=True, exist_ok=True)
     staging = Path(
@@ -2027,6 +2233,10 @@ def _create_generation(
             "generation_acceptance_evidence":
                 generation_acceptance,
         }
+        if migration_rebind_evidence is not None:
+            manifest["migration_rebind_evidence"] = dict(
+                migration_rebind_evidence
+            )
         _atomic_json_dump(staging / "manifest.json", manifest)
         validated = _validate_staged_generation(staging)
         staged_bytes = _directory_size_bytes(staging)
@@ -2680,12 +2890,29 @@ def _verify_generation_acceptance_lineage(
         previous_input,
         current_input,
     )
-    expected_mode = _lineage_build_mode(
-        parent=parent,
-        generation=generation,
-        input_change=recomputed_change,
-        spec=spec,
+    manifest_mode = manifest.get("build_mode")
+    migration_evidence = manifest.get(
+        "migration_rebind_evidence"
     )
+    if manifest_mode == "migration_rebind":
+        _verify_migration_rebind_lineage(
+            generation=generation,
+            parent=parent,
+            spec=spec,
+            migration_rebind_evidence=migration_evidence,
+        )
+        expected_mode = "migration_rebind"
+    else:
+        if migration_evidence is not None:
+            raise ValueError(
+                "non-migration generation carries rebind evidence"
+            )
+        expected_mode = _lineage_build_mode(
+            parent=parent,
+            generation=generation,
+            input_change=recomputed_change,
+            spec=spec,
+        )
     public_change = _public_input_change(recomputed_change)
     if (
         acceptance.get("input_change") != public_change
@@ -2719,7 +2946,10 @@ def _verify_generation_acceptance_lineage(
             if parent_cache is not None
             else []
         )
-        if expected_mode == "full":
+        if expected_mode == "migration_rebind":
+            affected_dates = []
+            preserved_dates = parent_dates
+        elif expected_mode == "full":
             affected_dates = candidate_dates
             preserved_dates: list[str] = []
         elif expected_mode == "suffix":
@@ -2757,6 +2987,98 @@ def _verify_generation_acceptance_lineage(
         if scope.get("parent_preserved_sha256") != expected_parent_sha:
             raise ValueError(
                 f"cache generation {baseline} parent scope mismatch"
+            )
+
+
+def _verify_migration_rebind_lineage(
+    *,
+    generation: _LoadedGeneration,
+    parent: _LoadedGeneration | None,
+    spec: PhaseACacheSpec,
+    migration_rebind_evidence: object,
+) -> None:
+    """校验一次性重绑定只改变 input lineage。"""
+    if parent is None:
+        raise ValueError("cache migration rebind requires a parent")
+    evidence = validate_cache_rebind_evidence(
+        migration_rebind_evidence
+    )
+    entry = evidence["entry"]
+    parent_input = parent.manifest.get("input_state")
+    candidate_input = generation.manifest.get("input_state")
+    parent_input_content_id = (
+        parent_input.get("content_id")
+        if isinstance(parent_input, Mapping)
+        else None
+    )
+    candidate_input_content_id = (
+        candidate_input.get("content_id")
+        if isinstance(candidate_input, Mapping)
+        else None
+    )
+    expected_identity = {
+        "cache_family": spec.cache_family,
+        "tenor": spec.tenor,
+        "publisher_consumer_id": spec.publisher_consumer_id,
+        "spec_fingerprint": _spec_fingerprint(spec),
+        "parent_generation_id": parent.generation_id,
+        "parent_manifest_sha256": parent.manifest_sha256,
+        "parent_generation_content_id": parent.manifest.get(
+            "generation_content_id"
+        ),
+        "parent_input_content_id": parent_input_content_id,
+        "target_input_content_id": candidate_input_content_id,
+    }
+    if any(
+        entry.get(key) != value
+        for key, value in expected_identity.items()
+    ):
+        raise ValueError("cache migration rebind identity mismatch")
+    if parent_input_content_id == candidate_input_content_id:
+        raise ValueError("cache migration rebind did not change input")
+    if parent.manifest.get("build_mode") == "migration_rebind":
+        raise ValueError("cache migration rebind cannot be chained")
+    if (
+        parent.manifest.get("spec_fingerprint")
+        != generation.manifest.get("spec_fingerprint")
+        or set(parent.caches) != set(generation.caches)
+        or set(parent.caches) != set(spec.baselines)
+    ):
+        raise ValueError("cache migration rebind spec mismatch")
+    if (
+        _generation_compare_gate_status(parent) != "unqualified"
+        or _generation_compare_gate_status(generation)
+        != "unqualified"
+    ):
+        raise ValueError(
+            "cache migration rebind must remain unqualified"
+        )
+    parent_evidence = {
+        baseline: parent.manifest["baselines"][baseline][
+            "evidence"
+        ]
+        for baseline in sorted(parent.caches)
+    }
+    candidate_evidence = {
+        baseline: _phase_a_cache_evidence(
+            generation.caches[baseline]
+        )
+        for baseline in sorted(generation.caches)
+    }
+    if (
+        entry.get("baselines") != parent_evidence
+        or candidate_evidence != parent_evidence
+    ):
+        raise ValueError(
+            "cache migration rebind changed baseline evidence"
+        )
+    for baseline in parent.caches:
+        if not _phase_a_caches_equal(
+            parent.caches[baseline],
+            generation.caches[baseline],
+        ):
+            raise ValueError(
+                f"cache migration rebind changed {baseline} results"
             )
 
 

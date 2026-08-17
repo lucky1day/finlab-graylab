@@ -30,7 +30,7 @@ occurrence、epoch、daily-gray 或 resident APScheduler 说明只能作为既�
 | `runtime_type` | 上游形态 | 算法执行入口 |
 |---|---|---|
 | `native_adapter` | `config.yaml + predict.py + core/` | import `predict.run()` |
-| `blackbox_v2` | 一个 `.py` 和一个 `.json` | sandbox CLI 子进程 |
+| `blackbox_v2` | 一个 `.py` 和一个 `.json` | 受控 CLI 子进程 |
 
 从 `PredictionRecord` 开始，后续业务链路不再区分 runtime。
 
@@ -101,7 +101,7 @@ current generation
   -> 三文件完整性校验
   -> 临时只读 Snapshot
   -> data_snapshot_id
-  -> Request + sandbox CLI
+  -> Request + 受控 CLI
   -> 清理临时 Snapshot
 ```
 
@@ -193,7 +193,7 @@ blackbox_v2
   -> PredictionRecord
 ```
 
-`deploy/blackbox_v2/runtime_profile_v1.json` 是 Blackbox runtime 的发布基准，并引用独立 conda 环境。Blackbox predict 的最终预算取方案 `schedule.timeout_sec` 申请值、Profile `predict_timeout_sec` 平台上限和调用方显式 operation deadline（如有）的最小值；当前方案申请与 Profile 上限均为 3600 秒。调用方 deadline 只能缩短、不能放宽前两层预算。Blackbox backtest 预算仍由 Profile 的独立 `backtest_timeout_sec=14400` 控制。平台使用子进程和 sandbox 施加网络、写路径、资源、超时、Output、stdout/stderr 和批量限制。
+`deploy/blackbox_v2/runtime_profile_v1.json` 是 Blackbox runtime 的发布基准，并引用独立 conda 环境。Blackbox predict 的最终预算取方案 `schedule.timeout_sec` 申请值、Profile `predict_timeout_sec` 平台上限和调用方显式 operation deadline（如有）的最小值；当前方案申请与 Profile 上限均为 3600 秒。调用方 deadline 只能缩短、不能放宽前两层预算。Blackbox backtest 预算仍由 Profile 的独立 `backtest_timeout_sec=14400` 控制。平台使用受控子进程（`python -I` 隔离模式 + 环境 allowlist + `RLIMIT_FSIZE`）施加资源、超时、Output、stdout/stderr 和批量限制；网络与写路径的保证由入库 StaticGate 静态检查（禁网络/数据库/子进程 import、禁 eval/exec/os.system、禁绝对路径与相对路径穿越字面量）、版本哈希绑定（通过检查的字节即执行的字节）与运行后输入目录指纹复验共同承担，不再依赖 OS 级 sandbox。
 
 脚本协议固定为：
 
@@ -250,7 +250,7 @@ reconciliation journal；恢复失败时继续保留 pending 证据。
 - Runtime Profile 是 Blackbox 执行环境、资源和权限的唯一配置源；
 - Harness 审计、版本批准、生命周期 journal 与 reconciliation 均 fail-closed；
 - ActivationGate、持久化 BacktestGate 和 LiveGate 要求精确版本与专项授权；
-- sandbox 使用文件读取 allowlist、最小环境变量和网络、写路径限制；
+- 执行隔离由最小环境变量 allowlist、`python -I`、写入大小上限与运行后输入目录指纹复验构成；网络与数据库禁令在入库 StaticGate 静态强制；
 - 激活后的 `DashboardGate` 读取 `/api/factor-lab/dashboard`，验证 active composite、信号与回测分区可见。
 
 Dashboard payload 不携带 exact version，因此 `DashboardGate` 不能证明某个 exact version；版本身份仍由生命周期与数据库权威回读证明。临时 Snapshot、原始 Result 和 stderr 也不构成永久历史修订回放资产。

@@ -52,7 +52,13 @@ from shared.input_artifacts import (
     resolve_blackbox_input_cutoffs,
 )
 from shared.data_bridge.refresh import DataBridgeRefreshConfig
+from shared.db_config import DATABASE_ENV_FILE_ENV
 from shared.models import PredictionRecord
+from shared.one_shot_control_plane import (
+    LAUNCHD_ONE_SHOT_CONTROL_PLANE,
+    SCHEDULED_ONE_SHOT_CONTROL_PLANES,
+    SYSTEMD_ONE_SHOT_CONTROL_PLANE,
+)
 from shared.liwei_0616_cache_contract import (
     CACHE_MUTATION_POLICY_ENV,
     CACHE_MUTATION_POLICY_PRIVATE_BUILD,
@@ -88,8 +94,10 @@ _SAFE_EXECUTION_TOKEN_CHARACTERS = frozenset(
 )
 logger = logging.getLogger(__name__)
 PLATFORM_CONFIGURATION_ERROR_PREFIX = "platform configuration error:"
-_LAUNCHD_ONE_SHOT_CONTROL_PLANE = "launchd_one_shot"
-_LAUNCHD_SCHEDULED_EXECUTION_CONTEXT = object()
+_SCHEDULED_EXECUTION_CONTEXTS = {
+    LAUNCHD_ONE_SHOT_CONTROL_PLANE: object(),
+    SYSTEMD_ONE_SHOT_CONTROL_PLANE: object(),
+}
 SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT = (
     "data_bridge_ready_timeout"
 )
@@ -114,6 +122,7 @@ _ALGORITHM_ENVIRONMENT_ALLOWLIST = frozenset(
         "ABSL_LOGGING_MIN_LEVEL",
         "MPLCONFIGDIR",
         "PYTHONDONTWRITEBYTECODE",
+        DATABASE_ENV_FILE_ENV,
         "LIWEI_0616_PHASE_A_CACHE_ROOT",
         CACHE_MUTATION_POLICY_ENV,
         "DAILY_0629_SOURCE_CACHE_DISABLE",
@@ -146,7 +155,26 @@ class SchemeRunResult:
 
 def _launchd_scheduled_execution_context() -> object:
     """返回仅供 launchd one-shot runner 传递的进程内 capability。"""
-    return _LAUNCHD_SCHEDULED_EXECUTION_CONTEXT
+    return _SCHEDULED_EXECUTION_CONTEXTS[
+        LAUNCHD_ONE_SHOT_CONTROL_PLANE
+    ]
+
+
+def _systemd_scheduled_execution_context() -> object:
+    """返回仅供 systemd one-shot runner 传递的进程内 capability。"""
+    return _SCHEDULED_EXECUTION_CONTEXTS[
+        SYSTEMD_ONE_SHOT_CONTROL_PLANE
+    ]
+
+
+def _is_scheduled_execution_context(
+    control_plane: object,
+    context: object,
+) -> bool:
+    """只接受控制面名称与其进程内 capability 的精确配对。"""
+    if control_plane not in SCHEDULED_ONE_SHOT_CONTROL_PLANES:
+        return False
+    return context is _SCHEDULED_EXECUTION_CONTEXTS[control_plane]
 
 
 def _record_from_payload(item: dict) -> PredictionRecord:
@@ -997,12 +1025,13 @@ def execute_scheme(
     if scheduled_preflight_failure is not None:
         if (
             prediction_phase != "scheduled_live"
-            or scheduled_control_plane != _LAUNCHD_ONE_SHOT_CONTROL_PLANE
-            or scheduled_execution_context
-            is not _LAUNCHD_SCHEDULED_EXECUTION_CONTEXT
+            or not _is_scheduled_execution_context(
+                scheduled_control_plane,
+                scheduled_execution_context,
+            )
         ):
             raise ValueError(
-                "scheduled_preflight_failure requires launchd_one_shot "
+                "scheduled_preflight_failure requires one-shot "
                 "execution context"
             )
         if (
@@ -1066,10 +1095,9 @@ def execute_scheme(
         creation_fence: dict[str, object] = {}
         if prediction_phase == "scheduled_live":
             frequency = getattr(cfg, "frequency", None)
-            if (
-                scheduled_control_plane == _LAUNCHD_ONE_SHOT_CONTROL_PLANE
-                and scheduled_execution_context
-                is _LAUNCHD_SCHEDULED_EXECUTION_CONTEXT
+            if _is_scheduled_execution_context(
+                scheduled_control_plane,
+                scheduled_execution_context,
             ):
                 creation_fence[
                     "scheduled_control_plane"
@@ -1226,15 +1254,14 @@ def scheduled_live_execution_configuration_error(
     if canonical_error is not None:
         return canonical_error
 
-    if (
-        scheduled_control_plane == _LAUNCHD_ONE_SHOT_CONTROL_PLANE
-        and scheduled_execution_context
-        is _LAUNCHD_SCHEDULED_EXECUTION_CONTEXT
+    if _is_scheduled_execution_context(
+        scheduled_control_plane,
+        scheduled_execution_context,
     ):
         return None
     return (
         f"{PLATFORM_CONFIGURATION_ERROR_PREFIX} "
-        "scheduled_live requires launchd_one_shot execution context: "
+        "scheduled_live requires one-shot execution context: "
         f"scheme_id={cfg.scheme_id}"
     )
 

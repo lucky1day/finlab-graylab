@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import copy
 import hashlib
+import json
 import pickle
 from pathlib import Path
 from unittest.mock import patch
@@ -15,11 +17,17 @@ from shared.liwei_0616_cache_contract import (
     canonical_json_bytes,
     validate_generation_acceptance_record,
 )
+from shared.liwei_0616_cache_migration import (
+    CacheMigrationRebindComplete,
+    authorized_cache_rebind,
+)
 from shared.liwei_0616_phase_a_cache import (
     PhaseACacheSpec,
     _baseline_fingerprint,
     _build_generation_acceptance_evidence,
     _frame_prefix_fingerprint,
+    _input_generation_state,
+    _spec_fingerprint,
     prepare_phase_a_caches,
     runtime_compare_gate_callbacks,
 )
@@ -82,6 +90,82 @@ def _refresh_evidence_sha(record: dict[str, object]) -> None:
     ).hexdigest()
 
 
+def _migration_receipt_entry(
+    *,
+    cache_family: str,
+    tenor: str,
+    publisher_consumer_id: str,
+    spec_fingerprint: str,
+    parent_generation_id: str,
+    parent_manifest_sha256: str,
+    parent_generation_content_id: str,
+    parent_input_content_id: str,
+    target_input_content_id: str,
+    baselines: dict[str, object],
+) -> dict[str, object]:
+    entry: dict[str, object] = {
+        "cache_family": cache_family,
+        "tenor": tenor,
+        "publisher_consumer_id": publisher_consumer_id,
+        "spec_fingerprint": spec_fingerprint,
+        "parent_generation_id": parent_generation_id,
+        "parent_manifest_sha256": parent_manifest_sha256,
+        "parent_generation_content_id": parent_generation_content_id,
+        "parent_input_content_id": parent_input_content_id,
+        "target_input_content_id": target_input_content_id,
+        "baselines": baselines,
+    }
+    entry["entry_sha256"] = hashlib.sha256(
+        canonical_json_bytes(entry)
+    ).hexdigest()
+    return entry
+
+
+def _migration_receipt(
+    approved_entry: dict[str, object],
+) -> dict[str, object]:
+    dummy_entries = [
+        _migration_receipt_entry(
+            cache_family=f"zz-dummy-family-{index}",
+            tenor=f"{index + 1}Y",
+            publisher_consumer_id=f"dummy-publisher-{index}",
+            spec_fingerprint="1" * 64,
+            parent_generation_id=f"generation-dummy-{index}",
+            parent_manifest_sha256="2" * 64,
+            parent_generation_content_id="3" * 64,
+            parent_input_content_id="4" * 64,
+            target_input_content_id="5" * 64,
+            baselines={
+                "baseline": {
+                    "cache_content_sha256": "6" * 64,
+                    "field_sha256": {
+                        "test_dates": "7" * 64,
+                        "results[].config": "8" * 64,
+                        "results[].preds": "9" * 64,
+                        "results[].probs": "a" * 64,
+                    },
+                    "test_date_count": 1,
+                    "result_config_count": 1,
+                }
+            },
+        )
+        for index in range(6)
+    ]
+    entries = sorted(
+        [approved_entry, *dummy_entries],
+        key=lambda item: (item["cache_family"], item["tenor"]),
+    )
+    receipt: dict[str, object] = {
+        "schema_version": "liwei-0616-migration-rebind-v1",
+        "migration_id": "aliyun-linux-x86_64-20260817-v1",
+        "entries": entries,
+    }
+    receipt["receipt_sha256"] = hashlib.sha256(
+        canonical_json_bytes(receipt)
+    ).hexdigest()
+    return receipt
+
+
 def test_phase_a_acceptance_is_permanently_unbound() -> None:
     record = _acceptance_record()
 
@@ -109,6 +193,244 @@ def test_phase_a_rejects_generation_binding_and_rebind() -> None:
     _refresh_evidence_sha(rebound)
     with pytest.raises(ValueError, match="build_mode"):
         validate_generation_acceptance_record(rebound)
+
+    migration_rebind = _acceptance_record()
+    migration_rebind["build_mode"] = "migration_rebind"
+    _refresh_evidence_sha(migration_rebind)
+    assert (
+        validate_generation_acceptance_record(migration_rebind)
+        == migration_rebind
+    )
+
+
+def test_phase_a_migration_rebind_reuses_parent_without_training(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv(CACHE_MUTATION_POLICY_ENV, raising=False)
+    root = tmp_path.resolve()
+    daily = pd.DataFrame(
+        {"date": ["2026-01-02"], "close": [2.0]}
+    )
+    revised_daily = daily.copy()
+    revised_daily.loc[0, "close"] = np.nextafter(2.0, np.inf)
+    weekly = pd.DataFrame(
+        {"week_id": [202601], "value": [1.0]}
+    )
+    monthly = pd.DataFrame(
+        {"month_id": ["2026-01"], "value": [1.0]}
+    )
+    spec = PhaseACacheSpec(
+        cache_family="test_migration_rebind",
+        tenor="5Y",
+        publisher_consumer_id="publisher",
+        baselines=("baseline",),
+        baseline_configs={"baseline": {"close": "close"}},
+        source_ic_screen_start="2020-01-01",
+        horizon=5,
+        purge_gap=5,
+    )
+    cache = {
+        "test_dates": ["2026-01-02"],
+        "results": [
+            {
+                "config": {"name": "baseline"},
+                "preds": np.asarray([1], dtype=np.int32),
+                "probs": np.asarray([0.75], dtype=np.float64),
+            }
+        ],
+    }
+    train_calls: list[str] = []
+
+    def initial_train(
+        baseline: str,
+        _ranges: tuple[tuple[str, str], ...],
+    ) -> dict[str, object]:
+        train_calls.append(baseline)
+        return cache
+
+    parent_caches, _parent_audit = prepare_phase_a_caches(
+        spec=spec,
+        daily_df=daily,
+        weekly_df=weekly,
+        monthly_df=monthly,
+        test_ranges=(("2026-01-02", "2026-01-02"),),
+        train_missing=initial_train,
+        cache_consumer_id="publisher",
+        cache_root=root,
+    )
+    family_root = root / spec.cache_family / spec.tenor.lower()
+    parent_pointer = json.loads(
+        (family_root / "current.json").read_text()
+    )
+    parent_manifest = json.loads(
+        (
+            family_root
+            / "generations"
+            / parent_pointer["generation_id"]
+            / "manifest.json"
+        ).read_text()
+    )
+    target_input_state = _input_generation_state(
+        daily_df=revised_daily,
+        weekly_df=weekly,
+        monthly_df=monthly,
+        auxiliary_dependency_projection=None,
+    )
+    approved_entry = _migration_receipt_entry(
+        cache_family=spec.cache_family,
+        tenor=spec.tenor,
+        publisher_consumer_id=spec.publisher_consumer_id,
+        spec_fingerprint=_spec_fingerprint(spec),
+        parent_generation_id=parent_pointer["generation_id"],
+        parent_manifest_sha256=parent_pointer["manifest_sha256"],
+        parent_generation_content_id=(
+            parent_manifest["generation_content_id"]
+        ),
+        parent_input_content_id=(
+            parent_manifest["input_state"]["content_id"]
+        ),
+        target_input_content_id=target_input_state["content_id"],
+        baselines={
+            name: entry["evidence"]
+            for name, entry in parent_manifest["baselines"].items()
+        },
+    )
+
+    def forbidden_train(
+        baseline: str,
+        _ranges: tuple[tuple[str, str], ...],
+    ) -> dict[str, object]:
+        train_calls.append(baseline)
+        raise AssertionError("migration rebind must not train")
+
+    wrong_entry = copy.deepcopy(approved_entry)
+    wrong_entry["target_input_content_id"] = "f" * 64
+    wrong_entry["entry_sha256"] = hashlib.sha256(
+        canonical_json_bytes(
+            {
+                key: value
+                for key, value in wrong_entry.items()
+                if key != "entry_sha256"
+            }
+        )
+    ).hexdigest()
+    with authorized_cache_rebind(_migration_receipt(wrong_entry)):
+        with pytest.raises(
+            RuntimeError,
+            match="receipt identity mismatch",
+        ):
+            prepare_phase_a_caches(
+                spec=spec,
+                daily_df=revised_daily,
+                weekly_df=weekly,
+                monthly_df=monthly,
+                test_ranges=(("2026-01-02", "2026-01-02"),),
+                train_missing=forbidden_train,
+                cache_consumer_id="publisher",
+                cache_root=root,
+            )
+    assert train_calls == ["baseline"]
+    assert json.loads(
+        (family_root / "current.json").read_text()
+    )["generation_id"] == parent_pointer["generation_id"]
+
+    with authorized_cache_rebind(
+        _migration_receipt(approved_entry)
+    ):
+        with pytest.raises(CacheMigrationRebindComplete) as completed:
+            prepare_phase_a_caches(
+                spec=spec,
+                daily_df=revised_daily,
+                weekly_df=weekly,
+                monthly_df=monthly,
+                test_ranges=(("2026-01-02", "2026-01-02"),),
+                train_missing=forbidden_train,
+                cache_consumer_id="publisher",
+                cache_root=root,
+            )
+
+    assert train_calls == ["baseline"]
+    rebound_audit = completed.value.audit
+    assert rebound_audit["build_mode"] == "migration_rebind"
+
+    child_pointer = json.loads(
+        (family_root / "current.json").read_text()
+    )
+    assert child_pointer["generation_id"] != parent_pointer["generation_id"]
+    assert (
+        family_root
+        / "generations"
+        / parent_pointer["generation_id"]
+    ).is_dir()
+
+    _hit_caches, hit_audit = prepare_phase_a_caches(
+        spec=spec,
+        daily_df=revised_daily,
+        weekly_df=weekly,
+        monthly_df=monthly,
+        test_ranges=(("2026-01-02", "2026-01-02"),),
+        train_missing=forbidden_train,
+        cache_consumer_id="consumer",
+        cache_root=root,
+    )
+    assert hit_audit["status"] == "hit"
+    assert hit_audit["build_mode"] == "hit"
+    assert train_calls == ["baseline"]
+
+    child_manifest_path = (
+        family_root
+        / "generations"
+        / child_pointer["generation_id"]
+        / "manifest.json"
+    )
+    child_manifest = json.loads(child_manifest_path.read_text())
+    assert child_manifest["build_mode"] == "migration_rebind"
+    assert "migration_rebind_evidence" in child_manifest
+    assert (
+        child_manifest["baselines"]["baseline"][
+            "cache_content_sha256"
+        ]
+        == parent_manifest["baselines"]["baseline"][
+            "cache_content_sha256"
+        ]
+    )
+    del child_manifest["migration_rebind_evidence"]
+    tampered_manifest_bytes = (
+        json.dumps(
+            child_manifest,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+    child_manifest_path.write_bytes(tampered_manifest_bytes)
+    child_pointer["manifest_sha256"] = hashlib.sha256(
+        tampered_manifest_bytes
+    ).hexdigest()
+    (family_root / "current.json").write_text(
+        json.dumps(
+            child_pointer,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+
+    with pytest.raises(RuntimeError, match="CACHE_PUBLISHER_REQUIRED"):
+        prepare_phase_a_caches(
+            spec=spec,
+            daily_df=revised_daily,
+            weekly_df=weekly,
+            monthly_df=monthly,
+            test_ranges=(("2026-01-02", "2026-01-02"),),
+            train_missing=forbidden_train,
+            cache_consumer_id="consumer",
+            cache_root=root,
+        )
 
 
 def test_private_consumer_can_build_in_explicit_private_root(

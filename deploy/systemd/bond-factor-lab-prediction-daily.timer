@@ -1,0 +1,11 @@
+[Unit]
+Description=Bond Factor Lab daily prediction timer
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 07:03:00 Asia/Shanghai
+Persistent=false
+RandomizedDelaySec=0
+Unit=bond-factor-lab-prediction-daily.service
+
+[Install]
+WantedBy=timers.target

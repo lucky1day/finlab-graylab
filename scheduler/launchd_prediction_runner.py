@@ -31,6 +31,7 @@ from shared.calendar_service import get_calendar
 from shared.prediction_context import is_weekly_signal_date
 from shared.data_bridge.refresh import DataBridgeRefreshConfig
 from shared.liwei_0616_cache_contract import APPROVED_PHASE_A_CACHE_PUBLISHERS
+from shared.one_shot_control_plane import LAUNCHD_ONE_SHOT_CONTROL_PLANE
 
 
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -49,6 +50,7 @@ class LaunchdPredictionSummary:
 
     cadence: str
     predict_date: str
+    event: str = "launchd_prediction_run"
     discovered: int = 0
     outcome: str = "success"
     exit_code: int = 0
@@ -62,7 +64,7 @@ class LaunchdPredictionSummary:
     def to_payload(self) -> dict[str, object]:
         """返回字段与顺序稳定、可写入 launchd 日志的 JSON 对象。"""
         return {
-            "event": "launchd_prediction_run",
+            "event": self.event,
             "cadence": self.cadence,
             "predict_date": self.predict_date,
             "outcome": self.outcome,
@@ -184,6 +186,8 @@ def _execute_candidate(
     *,
     predict_date: str,
     algo_env: str,
+    scheduled_control_plane: str,
+    scheduled_execution_context: object,
     scheduled_preflight_failure: str | None = None,
 ) -> None:
     """执行一个候选并将稳定结果归入当前 one-shot 摘要。"""
@@ -191,10 +195,8 @@ def _execute_candidate(
         execute_kwargs = {
             "algo_env": algo_env,
             "prediction_phase": "scheduled_live",
-            "scheduled_control_plane": "launchd_one_shot",
-            "scheduled_execution_context": (
-                _launchd_scheduled_execution_context()
-            ),
+            "scheduled_control_plane": scheduled_control_plane,
+            "scheduled_execution_context": scheduled_execution_context,
         }
         if scheduled_preflight_failure is not None:
             execute_kwargs["scheduled_preflight_failure"] = (
@@ -257,7 +259,29 @@ def run(
     predict_date: str,
     algo_env: str = DEFAULT_ALGO_ENV,
 ) -> LaunchdPredictionSummary:
-    """执行一次指定 cadence 的 launchd-only scheduled_live 批次。"""
+    """执行一次指定 cadence 的 launchd scheduled_live 批次。"""
+    return _run_one_shot(
+        cadence,
+        predict_date=predict_date,
+        algo_env=algo_env,
+        scheduled_control_plane=LAUNCHD_ONE_SHOT_CONTROL_PLANE,
+        scheduled_execution_context=(
+            _launchd_scheduled_execution_context()
+        ),
+        event="launchd_prediction_run",
+    )
+
+
+def _run_one_shot(
+    cadence: str,
+    *,
+    predict_date: str,
+    algo_env: str,
+    scheduled_control_plane: str,
+    scheduled_execution_context: object,
+    event: str,
+) -> LaunchdPredictionSummary:
+    """执行一次指定 cadence 的受控 scheduled_live 批次。"""
     normalized_cadence = _normalize_cadence(cadence)
     normalized_date = _normalize_predict_date(predict_date)
     if normalized_cadence == "monthly" and date.fromisoformat(normalized_date).day != 15:
@@ -275,6 +299,7 @@ def run(
     summary = LaunchdPredictionSummary(
         cadence=normalized_cadence,
         predict_date=normalized_date,
+        event=event,
     )
     with _runner_lock(data_bridge_config):
         try:
@@ -344,6 +369,10 @@ def run(
                         cfg,
                         predict_date=normalized_date,
                         algo_env=algo_env,
+                        scheduled_control_plane=scheduled_control_plane,
+                        scheduled_execution_context=(
+                            scheduled_execution_context
+                        ),
                     )
 
             if daily_data_bridge_dependents:
@@ -373,6 +402,12 @@ def run(
                                 cfg,
                                 predict_date=normalized_date,
                                 algo_env=algo_env,
+                                scheduled_control_plane=(
+                                    scheduled_control_plane
+                                ),
+                                scheduled_execution_context=(
+                                    scheduled_execution_context
+                                ),
                                 scheduled_preflight_failure=(
                                     SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT
                                 ),
@@ -387,6 +422,12 @@ def run(
                                 cfg,
                                 predict_date=normalized_date,
                                 algo_env=algo_env,
+                                scheduled_control_plane=(
+                                    scheduled_control_plane
+                                ),
+                                scheduled_execution_context=(
+                                    scheduled_execution_context
+                                ),
                             )
 
             _finalize(summary, configuration_error=False)
@@ -402,10 +443,16 @@ def run(
                 engine.dispose()
 
 
-def _configuration_summary(cadence: str, predict_date: str) -> LaunchdPredictionSummary:
+def _configuration_summary(
+    cadence: str,
+    predict_date: str,
+    *,
+    event: str = "launchd_prediction_run",
+) -> LaunchdPredictionSummary:
     summary = LaunchdPredictionSummary(
         cadence=str(cadence).strip().lower(),
         predict_date=str(predict_date),
+        event=event,
         outcome="configuration_error",
         exit_code=2,
     )

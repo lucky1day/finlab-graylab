@@ -20,17 +20,6 @@ from unittest.mock import Mock, patch
 from shared.blackbox_v2.contracts import BlackboxMetadata, BlackboxRequest
 
 
-_UNDECLARED_SYSTEM_READ_PROBES = {
-    "passwd_read_denied": Path("/private/etc/passwd"),
-    "language_assets_read_denied": Path(
-        "/usr/share/com.apple.languageassetd/_CodeSignature/CodeResources"
-    ),
-    "calculator_info_read_denied": Path(
-        "/System/Applications/Calculator.app/Contents/Info.plist"
-    ),
-}
-
-
 class BlackboxV2RunnerTests(unittest.TestCase):
     def test_runner_validates_exact_files_from_platform_input_ids(self) -> None:
         from scheduler.blackbox_v2_runner import _validate_data_dir
@@ -138,50 +127,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                     platform_input_ids=("api-wind-date-v1",),
                 )
 
-    def test_sandbox_grants_only_declared_platform_input_literal_read(
-        self,
-    ) -> None:
-        from scheduler.blackbox_v2_runner import (
-            RuntimeProfile,
-            _sandbox_command,
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            data_dir = _write_data_dir(root)
-            run_dir = root / "run"
-            run_dir.mkdir()
-            calendar_path = data_dir / "api_wind_date.csv"
-            calendar_path.write_text(
-                "rdate,week_id\n2026-07-24,202629\n",
-                encoding="utf-8",
-            )
-            delivery_dir = root / "delivery"
-            delivery_dir.mkdir()
-            delivery_calendar = delivery_dir / "api_wind_date.csv"
-            delivery_calendar.write_text(
-                "rdate,week_id\n1900-01-01,190001\n",
-                encoding="utf-8",
-            )
-            command = _sandbox_command(
-                [sys.executable, "-c", "pass"],
-                run_dir,
-                profile=RuntimeProfile.for_tests(sandbox_enabled=True),
-                data_dir=data_dir,
-                platform_input_ids=("api-wind-date-v1",),
-            )
-
-        policy = command[4]
-        self.assertIn(
-            f'(literal "{calendar_path.resolve()}")',
-            policy,
-        )
-        self.assertNotIn(
-            f'(literal "{delivery_calendar.resolve()}")',
-            policy,
-        )
-        self.assertIn("(deny network*)", policy)
-
     def test_runtime_environment_does_not_inherit_parent_secrets(self) -> None:
         from scheduler.blackbox_v2_runner import RuntimeProfile, _runtime_environment
 
@@ -211,38 +156,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         self.assertEqual(env["TZ"], "Asia/Shanghai")
         self.assertEqual(env["HOME"], str(run_dir))
         self.assertEqual(env["TMPDIR"], str(run_dir))
-
-    def test_sandbox_policy_has_no_unrestricted_file_read_clause(self) -> None:
-        from scheduler.blackbox_v2_runner import RuntimeProfile, _sandbox_command
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            command = _sandbox_command(
-                [sys.executable, "-c", "pass"],
-                Path(tmpdir),
-                profile=RuntimeProfile.for_tests(sandbox_enabled=True),
-            )
-
-        policy = command[4]
-        self.assertNotIn("(allow file-read*)", policy)
-        self.assertNotIn('(import "system.sb")', policy)
-        self.assertNotIn("(allow process*)", policy)
-        self.assertNotIn("(allow mach-lookup)", policy)
-        self.assertNotIn("(allow signal)", policy)
-        self.assertNotIn("(allow sysctl-read)", policy)
-        self.assertNotIn('(allow file-read-data file-test-existence (literal "/"))', policy)
-        forbidden_subpaths = {
-            "/",
-            "/Users",
-            str(Path.home()),
-            str(Path(__file__).resolve().parents[1]),
-            "/etc",
-            "/private/etc",
-            "/usr/share",
-            "/System",
-            "/Library",
-        }
-        for path in forbidden_subpaths:
-            self.assertNotIn(f'(subpath "{path}")', policy)
 
     def test_help_probe_requires_both_cli_modes(self) -> None:
         from scheduler.blackbox_v2_runner import RuntimeProfile, probe_blackbox_help
@@ -2464,67 +2377,38 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             self.assertNotIn("shell", launcher_calls[0].kwargs)
             self.assertEqual(json.loads(output.read_text(encoding="utf-8")), {"rlimit": True})
 
-    @unittest.skipUnless(shutil.which("sandbox-exec"), "requires macOS sandbox-exec")
-    def test_macos_sandbox_denies_control_writes_root_listing_hardlinks_and_children(self) -> None:
-        from scheduler.blackbox_v2_runner import RuntimeProfile, execute_blackbox_cli
+    def test_data_dir_mutation_during_execution_fails_the_run(self) -> None:
+        """运行后输入目录指纹复验：沙箱退役后，这是阻止算法改写输入的保证。"""
+        from scheduler.blackbox_v2_runner import (
+            BlackboxExecutionError,
+            RuntimeProfile,
+            execute_blackbox_cli,
+        )
         from shared.blackbox_v2.requests import write_request
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            script = _write_script(root / "control-probe.py", _CONTROL_PROBE_SCRIPT)
+            script = _write_script(root / "mutating-probe.py", _DATA_DIR_MUTATION_SCRIPT)
             request = write_request(_request("001"), root / "request.json")
             data_dir = _write_data_dir(root)
-            script_before = script.read_bytes()
-            request_before = request.read_bytes()
-            data_before = {
-                path.name: path.read_bytes()
-                for path in data_dir.iterdir()
-            }
             run_dir = root / "run"
             run_dir.mkdir()
             output = run_dir / "result.json"
-            execute_blackbox_cli(
-                script_path=script,
-                mode="predict",
-                input_path=request,
-                data_dir=data_dir,
-                output_path=output,
-                profile=RuntimeProfile.for_tests(
-                    conda_env=None,
-                    sandbox_enabled=True,
-                    cpu_threads=1,
-                ),
-            )
-            result = json.loads(output.read_text(encoding="utf-8"))
-            self.assertEqual(
-                result,
-                {
-                    "child_execution_denied": True,
-                    "data_write_denied": True,
-                    "hardlink_denied": True,
-                    "request_write_denied": True,
-                    "root_listing_denied": True,
-                    "script_write_denied": True,
-                },
-            )
-            self.assertEqual(script.read_bytes(), script_before)
-            self.assertEqual(request.read_bytes(), request_before)
-            self.assertEqual(
-                {path.name: path.read_bytes() for path in data_dir.iterdir()},
-                data_before,
-            )
+            with self.assertRaisesRegex(
+                BlackboxExecutionError, "data-dir changed during execution"
+            ):
+                execute_blackbox_cli(
+                    script_path=script,
+                    mode="predict",
+                    input_path=request,
+                    data_dir=data_dir,
+                    output_path=output,
+                    profile=RuntimeProfile.for_tests(conda_env=None, cpu_threads=1),
+                )
+            self.assertFalse(run_dir.exists(), "失败后必须清理 run 目录")
 
-    def test_sandbox_quote_rejects_control_characters_and_escapes_literals(self) -> None:
-        from scheduler.blackbox_v2_runner import _sandbox_quote
-
-        self.assertEqual(_sandbox_quote(Path('/tmp/a"b\\c')), '/tmp/a\\"b\\\\c')
-        for value in ("/tmp/a\nb", "/tmp/a\rb", "/tmp/a\0b"):
-            with self.subTest(value=repr(value)):
-                with self.assertRaisesRegex(ValueError, "control character"):
-                    _sandbox_quote(Path(value))
-
-    @unittest.skipUnless(shutil.which("sandbox-exec"), "requires macOS sandbox-exec")
-    def test_macos_sandbox_enforces_runtime_boundaries(self) -> None:
+    def test_runtime_environment_isolates_inherited_secrets(self) -> None:
+        """环境 allowlist 是双平台通用的凭据隔离，与运行期沙箱无关。"""
         from scheduler.blackbox_v2_runner import RuntimeProfile, execute_blackbox_cli
         from shared.blackbox_v2.requests import write_request
 
@@ -2532,7 +2416,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             root = Path(tmpdir)
             script_dir = root / "delivery"
             script_dir.mkdir()
-            script = _write_script(script_dir / "probe.py", _SANDBOX_PROBE_SCRIPT)
+            script = _write_script(script_dir / "probe.py", _RUNTIME_ENV_PROBE_SCRIPT)
             request = write_request(_request("001"), root / "request.json")
             data_dir = _write_data_dir(root)
             secret_dir = root / "external"
@@ -2552,29 +2436,18 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                     output_path=output,
                     profile=RuntimeProfile.for_tests(
                         conda_env=None,
-                        sandbox_enabled=True,
                         cpu_threads=1,
                     ),
                 )
 
             result = json.loads(output.read_text(encoding="utf-8"))
 
+        # 批准输入可读、父进程 Secret 不被继承——两条都由 _runtime_environment
+        # 的 allowlist 保证，在 macOS 与 Linux 上行为一致。
         self.assertTrue(result["allowed_csv_read"])
-        self.assertTrue(result["hosts_read_denied"])
-        self.assertTrue(result["external_secret_read_denied"])
         self.assertTrue(result["inherited_secret_absent"])
-        self.assertTrue(result["network_denied"])
-        self.assertTrue(result["data_write_denied"])
-        for result_key, path in _UNDECLARED_SYSTEM_READ_PROBES.items():
-            with self.subTest(undeclared_read=str(path)):
-                if path.is_file():
-                    self.assertTrue(
-                        result[result_key],
-                        f"sandbox read unexpectedly allowed: {path}",
-                    )
 
-    @unittest.skipUnless(shutil.which("sandbox-exec"), "requires macOS sandbox-exec")
-    def test_macos_sandbox_runs_frozen_scientific_environment(self) -> None:
+    def test_frozen_scientific_environment_runs(self) -> None:
         from scheduler.blackbox_v2_runner import RuntimeProfile, execute_blackbox_cli
         from shared.blackbox_v2.requests import write_request
 
@@ -2595,7 +2468,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                 output_path=output,
                 profile=RuntimeProfile.for_tests(
                     conda_env="forecast_env_blackbox_v1",
-                    sandbox_enabled=True,
                     cpu_threads=1,
                 ),
             )
@@ -2603,8 +2475,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
 
         self.assertEqual(result, {"features": 1, "rows": 1})
 
-    @unittest.skipUnless(shutil.which("sandbox-exec"), "requires macOS sandbox-exec")
-    def test_macos_sandbox_runs_frozen_scientific_backtest(self) -> None:
+    def test_frozen_scientific_backtest_runs(self) -> None:
         from scheduler.blackbox_v2_runner import RuntimeProfile, execute_blackbox_cli
         from shared.blackbox_v2.requests import write_requests
 
@@ -2626,7 +2497,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                 output_path=output,
                 profile=RuntimeProfile.for_tests(
                     conda_env="forecast_env_blackbox_v1",
-                    sandbox_enabled=True,
                     cpu_threads=1,
                 ),
             )
@@ -3234,6 +3104,25 @@ Path(args.output).write_text(json.dumps({"rlimit": limited}), encoding="utf-8")
 '''
 
 
+_DATA_DIR_MUTATION_SCRIPT = r'''
+import argparse
+import json
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("mode")
+parser.add_argument("--request")
+parser.add_argument("--data-dir", required=True)
+parser.add_argument("--output", required=True)
+args = parser.parse_args()
+
+# 故意改写平台输入，用来验证运行后指纹复验会判定本次执行不可信。
+target = Path(args.data_dir) / "daily_output.csv"
+target.write_text(target.read_text(encoding="utf-8") + "tampered\n", encoding="utf-8")
+Path(args.output).write_text(json.dumps({"direction": 1}), encoding="utf-8")
+'''
+
+
 _CONTROL_PROBE_SCRIPT = r'''
 import argparse
 import json
@@ -3286,12 +3175,10 @@ Path(args.output).write_text(json.dumps(result, sort_keys=True), encoding="utf-8
 '''
 
 
-_SANDBOX_PROBE_SCRIPT = r'''
+_RUNTIME_ENV_PROBE_SCRIPT = r'''
 import argparse
-import errno
 import json
 import os
-import socket
 from pathlib import Path
 
 parser = argparse.ArgumentParser()
@@ -3301,10 +3188,7 @@ parser.add_argument("--data-dir", required=True)
 parser.add_argument("--output", required=True)
 args = parser.parse_args()
 
-request = json.loads(Path(args.request).read_text(encoding="utf-8"))
 data_dir = Path(args.data_dir)
-external_secret = data_dir.parent / "external" / "secret.txt"
-
 try:
     allowed_csv_read = "key,value" in (data_dir / "daily_output.csv").read_text(
         encoding="utf-8"
@@ -3312,57 +3196,9 @@ try:
 except OSError:
     allowed_csv_read = False
 
-try:
-    Path("/etc/hosts").read_text(encoding="utf-8")
-    hosts_read_denied = False
-except OSError:
-    hosts_read_denied = True
-
-try:
-    external_secret.read_text(encoding="utf-8")
-    external_secret_read_denied = False
-except OSError:
-    external_secret_read_denied = True
-
-undeclared_system_reads = {}
-for result_key, path in {
-    "passwd_read_denied": "/private/etc/passwd",
-    "language_assets_read_denied": (
-        "/usr/share/com.apple.languageassetd/_CodeSignature/CodeResources"
-    ),
-    "calculator_info_read_denied": (
-        "/System/Applications/Calculator.app/Contents/Info.plist"
-    ),
-}.items():
-    try:
-        Path(path).read_bytes()
-        undeclared_system_reads[result_key] = False
-    except OSError:
-        undeclared_system_reads[result_key] = True
-
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-try:
-    sock.bind(("127.0.0.1", 0))
-    network_denied = False
-except OSError as exc:
-    network_denied = exc.errno in {errno.EPERM, errno.EACCES}
-finally:
-    sock.close()
-
-try:
-    (data_dir / "forbidden.txt").write_text("forbidden", encoding="utf-8")
-    data_write_denied = False
-except OSError:
-    data_write_denied = True
-
 result = {
-    "allowed_csv_read": allowed_csv_read and request["request_id"] == "001",
-    "hosts_read_denied": hosts_read_denied,
-    "external_secret_read_denied": external_secret_read_denied,
-    "inherited_secret_absent": "BLACKBOX_TEST_SECRET" not in os.environ,
-    "network_denied": network_denied,
-    "data_write_denied": data_write_denied,
-    **undeclared_system_reads,
+    "allowed_csv_read": allowed_csv_read,
+    "inherited_secret_absent": os.environ.get("BLACKBOX_TEST_SECRET") is None,
 }
 Path(args.output).write_text(json.dumps(result, sort_keys=True), encoding="utf-8")
 '''

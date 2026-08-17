@@ -1,0 +1,11 @@
+[Unit]
+Description=Bond Factor Lab DataBridge refresh timer
+
+[Timer]
+OnCalendar=*-*-* 06:30:00 Asia/Shanghai
+Persistent=false
+RandomizedDelaySec=0
+Unit=bond-factor-lab-data-bridge.service
+
+[Install]
+WantedBy=timers.target

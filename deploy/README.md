@@ -3,9 +3,24 @@
 本目录保存版本控制的部署**期望配置**。它不描述任何机器的安装、加载或停用状态，也不能
 替代生产变更授权。
 
-## launchd 单 writer 目标
+## 双平台一次性控制面
 
-生产调度的唯一控制面是 `launchd + installed plist`。仓库中的
+Mac Studio 继续使用 `launchd_one_shot`，阿里云 Linux 候选使用
+`systemd_one_shot`。两者只承载一次性 Python 入口，共用同一套严格发现、
+DataBridge Gate、repository 写库和进程清理语义；不得同时恢复常驻 scheduler、
+APScheduler、ledger 或其它 Python 调度控制面。
+
+`deploy/systemd/*.service` 与 `deploy/systemd/*.timer` 是 Linux 的仓库期望模板。
+文件存在或被复制到 `/etc/systemd/system` 不代表 timer 已启用。候选阶段安装前后都必须
+显式读回所有 Bond Factor Lab timer 为 `disabled` 且 `inactive`，并且只允许手工启动
+对应 `.service`；任何 `enable`、timer start 或自然调度都需要下一阶段的独立授权。
+
+Linux timer 全部声明 `Persistent=false`，停机或禁用期间不补跑。Backend 模板只监听
+`127.0.0.1:8100`，本目录不授权 Nginx、DNS、安全组或公网切流。
+
+## Mac Studio launchd 单 writer 目标
+
+Mac Studio 当前生产调度的唯一控制面是 `launchd + installed plist`。仓库中的
 `deploy/launchd/*.plist` 只定义候选期望状态；Python runner 仅是对应 plist 启动的
 一次性子进程。
 
