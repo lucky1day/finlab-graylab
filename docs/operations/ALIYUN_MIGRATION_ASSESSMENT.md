@@ -204,7 +204,7 @@ flowchart LR
 | 数据库 | 完整 `bond_db` 已 dump/load 到 ECS MySQL 8.4.10；运行期固定 `BOND_DB_HOST=127.0.0.1`、`BOND_DB_PORT=3306`，未改 Schema 和业务 SQL | **已完成并验收**；一次性数据迁移 + 配置替换；不做复制、RDS、双写或公网 3306 |
 | `BondPrediction` | 已复制 `/Users/macstudio0/bondprojectpro/BondPrediction` 当前生产工作目录 bytes，重建 Python 3.13 + Chrome 环境，并等价生成 28 条 Linux schedule | **Candidate 已完成并手工验证**；schedule 保持 disabled |
 | DataBridge | 从 ECS 本地 `bond_db` 生成 current Artifact；不再依赖 Mac 数据库或 NATApp | 现有能力换主机运行；不实施批次共享或一次校验优化 |
-| 39 个 Blackbox | 使用锁定 Linux Python 环境直接启动子进程，去除运行路径对 macOS `sandbox-exec` 和 `/opt/homebrew` 的依赖 | 必需 Linux 适配；不改 39 份算法 |
+| 39 个 Blackbox | 使用锁定 Linux Python 环境直接启动子进程。运行期沙箱已退役，Runner 无 macOS 绑定 | 剩余工作只有 Linux 环境重建与 `environment_manifest` 指纹 |
 | 调度与 Actuals | 用真实 `systemd_one_shot` unit/timer 承载现有一次性入口、时间和失败语义 | 必需 Linux 适配；不新增第二 Python 控制面 |
 | 9 个延期 Native | C56 中 paused-hidden，代码和历史保留，不在 Linux 执行 | 已批准的阶段范围差异 |
 | 公网入口 | 在本机安装 Nginx/Certbot，受控签发或部署 `bond.finailab.cn` 证书；G6 将 DNS 切到 `47.103.45.193` | 单服务器目标已收敛；安装、证书、Security Group、DNS 和切流仍分别需要授权 |
@@ -452,7 +452,7 @@ ROE 不能直接在 ECS 或 P65 生产目录上开发。顺序固定为：
 
 - `launchd` 到 `systemd` 的 one-shot/unit/timer 映射与真实 provenance；
 - Linux Python/conda 包、ABI、wheel bytes、BLAS/OpenMP 和 environment fingerprint；
-- Blackbox 从 macOS `sandbox-exec` 切换为已批准的 Linux direct runner；
+- Blackbox 运行期沙箱退役（已于 2026-08-17 完成，见 3.7）；
 - Linux 文件路径、服务用户、权限、日志、进程回收和部署包；
 - ECS 本地 MySQL 的 endpoint/Secret/连接参数、一次性 dump/load，以及 Nginx/upstream/健康检查；
 - 目标 ECS 的容量测量、实例规格、磁盘和部署参数选择。
@@ -475,7 +475,7 @@ ROE 不能直接在 ECS 或 P65 生产目录上开发。顺序固定为：
 
 | 事项 | 是否为当前迁移必需 | 当前处置 |
 |---|---|---|
-| Linux Python 环境与 Blackbox direct runner | 是；现有 macOS profile/`sandbox-exec` 不能在 Linux 使用 | M-track 实施 |
+| Linux Python 环境与 `environment_manifest` 指纹 | 是；manifest 仍为 `osx-arm64`，激活期 fail-closed | L1 实施；Runner 侧已无阻断 |
 | `launchd → systemd` 与真实调度 provenance | 是；Linux 没有 launchd | M-track 实施 |
 | ECS 本地 MySQL、完整 dump/load、账号配置和受控保存 | 是；所有云端服务与 `BondPrediction` 必须使用同一克隆库 | M-track 部署配置；逐路径验证 loopback endpoint，不改 DB 业务代码 |
 | 56/9 目标范围的机器强制 | 是；9 个 Darwin-only Native 不能在 Linux 执行，且用户已确定采用 paused-hidden | 在隔离 Mac worktree/测试 Registry 实施双暂停并形成 C56；P65 不变。生产双暂停只在另行授权的切换窗口生效 |
@@ -583,18 +583,6 @@ root 选择的精确含义是：部署命令、Candidate 手工进程以及后�
 3. **按方案重复的 DataBridge 校验和物化是已知低效，但当前只进入延期优化清单。**代表方案总墙钟约 11.5 秒，算法子进程约 1.9 秒，算法启动前的平台准备约 7–8 秒。这些数据说明优化潜力，不证明不优化就无法迁移；首轮 Candidate 保留当前路径。
 4. **队列/并发也不进入当前迁移范围。**既有两个独立进程并行实验约 21.35 秒，串行约 19.78 秒，聚合进程树峰值约 2.34 GiB。现有证据没有证明并发带来收益；先做串行纯迁移和本机定容，只有满足 ROE 六项条件才在隔离 Mac worktree 单独优化。
 5. **本次不需要 RDS。**完整静态库与既有 `BondPrediction` 增量脚本已经一起迁到 ECS，单机 MySQL 足以满足首期功能目标；RDS、只读副本和自动故障转移只在后续可用性要求提高时另立需求。
-
-### 2.2 端到端可用性的串联上限
-
-当前目标架构的一次 Dashboard 请求串联：
-
-```text
-专用 ECS
-  -> 本机 FastAPI
-  -> 本机 MySQL loopback
-```
-
-它消除了 Mac/NATApp 运行链路，但仍是同一实例上的单机故障域。端到端可用性不会高于 ECS、Nginx/FastAPI 和 MySQL 中最弱环节；监控能缩短发现时间，不能替代备份和恢复。
 
 ## 3. 已核实的现状与证据
 
@@ -720,26 +708,30 @@ Blackbox 的专项实测进一步显示：
 
 用户已经把这 9 个方案从阶段一迁移范围中延期，因此本事实不再阻断 56 方案的候选部署；它仍然阻断未来恢复全量 65 方案。技术状态没有改变。
 
-### 3.7 Blackbox 当前平台身份与 Linux 直接执行边界
+### 3.7 Blackbox 平台身份与剩余的环境指纹阻断
 
-[`deploy/blackbox_v2/runtime_profile_v1.json`](../../deploy/blackbox_v2/runtime_profile_v1.json) 和 [`environment_manifest.json`](../../deploy/blackbox_v2/environment_manifest.json) 显示：
+运行期沙箱已于 2026-08-17（commit `713ee33`）退役，`runtime_profile_v1.json` 不再含
+`sandbox_enabled` 与 `read_roots`，Runner 也不再有任何 macOS 绑定。Blackbox 的执行隔离现由
+入库 StaticGate 静态检查、版本哈希绑定（通过检查的字节即执行的字节）与运行后输入目录
+指纹复验共同承担，`python -I` + `RLIMIT_FSIZE` + 环境变量 allowlist 在两个平台上行为一致。
 
-- 平台为 `osx-arm64`；
-- profile 为 `blackbox-v2-v1`；
-- 8 线程是允许上限，不是保证占有 8 核；
-- 64 GiB 是终止阈值，不是实测 Peak RSS；
-- Sandbox 使用 macOS `libsandbox`/`sandbox-exec` 语义和 `/opt/homebrew` 路径；
-- 39 个 active Blackbox 当前共享一个已持久化的环境指纹和 profile。
+因此本节只剩一条仍然成立的阻断：[`environment_manifest.json`](../../deploy/blackbox_v2/environment_manifest.json)
+的平台字段与 17 个 conda 包的 `build_string` 仍为 `osx-arm64`。它在**运行期不校验**
+（Blackbox discovery 直接写空 `environment_fingerprint`），但在**激活期强校验且 fail-closed**。
 
-Linux 环境会产生新指纹。当前已放弃“先建立逐次 OCI Sandbox，再让 39 个配置逐一形成新 revision”作为迁移验证前置。首期最小路径是：
+后果因此是分层的：换 Linux manifest **不会**让已 active 的 39 个方案掉线；但此后任何方案想在
+Linux 上 activate 或 revision-activate，都必须先在 Linux 重跑一次 `all` 并持久化新指纹。
 
-1. 在 Linux 主机建立一套锁定 Python ABI、依赖版本和安装 bytes/hash 的共享执行环境；
-2. 实现一个明确的 Linux direct execution mode/profile，跳过 macOS `sandbox-exec` 实现，但仍使用现有 Request/Output Contract、超时和进程组回收；
-3. 保留现有 Mac profile/fingerprint 历史证据，不用 Linux bytes 静默覆盖它；
-4. 先在 no-persist/Timer-disabled 候选环境记录一份部署级 Linux environment fingerprint，完成 39 个 `--help`/代表 predict/全量 Shadow；
-5. 生产 Writer 启用前，再把该 Linux 环境身份纳入现有 exact-version/Gate 的最小兼容路径；不预设一定需要 39 份人工 revision，也不允许零证据地替换环境。
+两条必须保持的不变量：
 
-这是一个待实现的最小平台适配，不需要修改 39 份算法脚本。
+- **`profile_name` 保持 `blackbox-v2-v1` 不变。** Blackbox 的 `config_hash` 由 canonical 平台配置计算，
+  其必填字段包含 `runtime_profile` 这个名字字符串。改名会改 39 份 `config.yaml` 的 `config_hash`，
+  进而改动全部 `scheme_version`，使精确版本查找失败、39 个方案当天全部拒绝执行，并使
+  历史 passed run 的 profile 比对全部失配。
+- **保留 Mac 侧的 profile/fingerprint 历史证据**，不用 Linux bytes 静默覆盖。
+
+profile 中仍然有效的执行预算：8 线程是允许上限而非保证占有 8 核，64 GiB 是终止阈值而非实测
+Peak RSS；39 个 active Blackbox 共享同一个已持久化的环境指纹和 profile。
 
 ### 3.8 Artifact 与磁盘
 
@@ -762,30 +754,6 @@ Linux 环境会产生新指纹。当前已放弃“先建立逐次 OCI Sandbox�
 干净 release 约 40 MiB；数据库已经落在 ECS，当前 `/var/lib/mysql` 约 8.3 GiB，受控压缩 dump 约 318 MiB，DataBridge 约 24 MiB 且正常发布后轮换 previous，Liwei cache 有代际/容量边界，Blackbox snapshot/runtime view 正常结束后清理。真正无界的是现有 scheduled Native 日期 CSV 保留；任何固定云盘在无限保留时最终都会满。当前 ESSD 40 GiB 在恢复与安装后约 24 GiB 可用；容量 Gate 按“数据库/系统/环境/双 release/日志/临时峰值/Native 保留增长/安全余量”验证。Native 保留策略如需改变，仍作为独立功能/运维优化处理，不因迁移顺手修改。
 
 实时 Blackbox 路径还有另一层临时 I/O 重复：每个方案先从 current DataBridge 重新校验并写出一份父快照，再把父快照重新校验、复制到私有 runtime view，复制后再哈希。以约 24 MiB 的三频输出计，日频 25 个 Blackbox 仅“父快照 + runtime view”两层写出就约为 1.2 GiB，尚未计算多轮全文件读取、CSV 解析和哈希。批次共享输入可能同时改善性能和磁盘，但它不解决 Linux 兼容性；在纯迁移实测证明必要前，保持 `DEFERRED_OPTIMIZATION`。
-
-### 3.9 数据库与 NATApp（历史源端证据，运行拓扑已替代）
-
-本节记录为什么早期公网直连方案不适合作为长期基线。当前 authority 是第 0.0 节：ECS 本地 MySQL 已恢复并只监听 loopback，下面的 NATApp 证据不得再用于部署配置。
-
-- MySQL 8.0.45 Community；
-- 数据库 `bond_db`；
-- 约 327 张表；
-- 估算数据量约 2.04 GiB；
-- 本机 `lower_case_table_names=2`；
-- MySQL 支持 TLS 1.2/1.3；
-- `require_secure_transport=OFF`；
-- 应用账号权限偏大并包含 `GRANT OPTION`；
-- Source Runtime 账号已按项目合同做只读授权预检。
-
-端点恢复后的只读现场证据还显示：
-
-- NATApp Client 当时由交互式 zsh 手工启动，没有 launchd/daemon 监督；终端退出或 Mac 重启后可能再次离线；
-- 通过 NATApp 连接时，MySQL 看到的客户端来源是 `127.0.0.1`，不是 ECS EIP；
-- 因此 MySQL `user@host` 不能通过该反向隧道识别真实 ECS 来源；固定 EIP 只有配置在 NATApp 产品侧 IP 白名单时才可能形成网络限制；
-- Source 账号虽然限制为本机来源，但任何持有其凭据并能访问公网 NATApp 端点的客户端，也会被隧道转换成本地来源；
-- 当前多个应用连接工厂只传 user/password/host/port/database/charset，没有统一 SSL/CA/hostname 参数；Source Runtime 的严格 JSON 合同也不接受 TLS 字段。
-
-所以，手工客户端成功协商 TLS 1.3 只能证明端点能力，不能证明 Backend、Dashboard、scheduler/Actuals 和 DataBridge 四类阶段一生产运行路径均已加密并验证身份。历史 backtest runner 和 source runner 不在本阶段执行范围。
 
 ### 3.10 DataBridge 的真实依赖
 
@@ -907,65 +875,6 @@ DataBridge 不是数据库里的共享服务，而是每台主机本地文件系
 | MIG-021B | P0 | Candidate 的包年包月、手动续费和 `2026-09-16 23:59:59` 到期已读回；Security Group 精确规则与实际续费动作尚未闭环 | OPEN（部分已核实） | 不阻止安装与 no-persist Spike；Security Group 在 G6 切流前确认，进入持续 Shadow/生产前完成续费或确认替代资源 |
 | MIG-021C | P1 | Candidate EIP 与固定 3 Mbps 带宽、ESSD 40 GiB 已读回；实际 IOPS、自动快照、长期值班和 SSH 密钥生命周期尚未闭环 | OPEN（部分已核实） | IOPS/真实流量进入 G5/G6，快照进入 G8，值班/密钥进入稳态运维；不阻止首次功能部署 |
 | MIG-022 | P0 | 仓库 Nginx 模板仍按反向隧道拓扑生成，且当前 DNS A 尚未指向 Candidate；模板不能原样安装，Candidate 直连 HTTP-01 也不能作为切流前证书签发路径 | STOP_SHIP（仅阻止 G6，设计已解决） | ECS 渲染版固定 upstream `127.0.0.1:8100` 并闭合 snippet；切流前 DNS-01 预签，切流后建立 HTTP-01/webroot 自动续期。它不阻止 G0B–G5 |
-
-## 6. MIG-001：数据库端点恢复的狭义结论（历史证据）
-
-本节保留故障调查时间线；`DB-CLONE-A` 完成后，NATApp 端点不再是 ECS 运行期依赖。任何“阶段一继续 DB-A”的句子均只描述当时决策，不得覆盖第 0.0 节。
-
-### 6.1 时间线
-
-初始故障：
-
-```text
-2026-08-15 16:35:33 CST
-DNS: ac8d81722546a052.natapp.cc -> 47.97.153.27
-TCP: 47.97.153.27:33306 -> Connection refused
-```
-
-恢复后：
-
-```text
-2026-08-15 16:49:48 CST
-Mac TCP: succeeded
-MySQL protocol greeting: protocol 10 / MySQL 8.0.45
-
-2026-08-16 专用 ECS
-DNS: ac8d81722546a052.natapp.cc -> 47.97.153.27
-TCP 33306: 3/3 succeeded, 10.0–20.6 ms
-```
-
-只读进程检查发现 NATApp Client 已恢复并与服务端保持控制连接；启动时间与端点恢复窗口一致。因为没有 NATApp 平台审计，本结论只表达“Client 恢复与端点恢复高度一致”，不武断断言平台端具体变更。
-
-### 6.2 当前保留的验证证据
-
-| 验证项 | 状态 / 结果 |
-|---|---|
-| DNS 解析 | PASS |
-| Mac TCP 建连 | PASS |
-| 专用 ECS TCP 建连 | PASS，3/3；10.0–20.6 ms |
-| 外网端点映射到正确实例 | PASS；实例身份一致，未输出或落盘 UUID |
-| Mac 应用账号基础只读 | PASS，`SELECT 1` |
-| Mac Source 账号完整只读 Preflight | PASS |
-| 专用 ECS MySQL 凭据/协议/查询 | **PENDING**；本轮未向该主机交付 DB Secret，不能沿用其它节点的握手或查询数据 |
-| 专用 ECS 完整 DataBridge | **PENDING**；进入 G3 受控只读窗口后执行 |
-| 手工客户端 TLS 能力 | TLS 1.3，`TLS_AES_256_GCM_SHA384` |
-| 默认可信 CA/主机校验 | FAIL，`CERTIFICATE_VERIFY_FAILED` |
-| 突发短连接 | WARN，曾出现握手未完成和 MySQL 2013 |
-
-### 6.3 MIG-001 不代表什么
-
-`RESOLVED` 不表示：
-
-- NATApp Client 已被监督并能跨重启自动恢复；
-- NATApp 套餐、SLA、到期和平台告警已确认；
-- 实际应用连接已使用 MySQL TLS；
-- CA/hostname 验证已通过；
-- 权限和公网暴露已达标；
-- 完整 Dashboard、DataBridge 或全日批远程运行已通过；
-- 45 分钟空闲、短断和 Client 重启已通过；
-- 混合链路满足任何已批准生产 SLO。
-
-**MIG-001 的历史端点故障已恢复；当前又被 `DB-CLONE-A` 从运行拓扑中移除。MIG-005/MIG-009 的 NATApp 风险随之关闭，单 ECS/单 MySQL 的可运维性转由 MIG-010 承担，Bond Factor Lab 剩余路径的 Secret/endpoint 验证仍由 MIG-015 承担。**
 
 ## 7. 真正硬卡点与范围延期的闭环要求
 
@@ -1157,61 +1066,6 @@ Mac 和 ECS 现在是两个独立数据库，跨主机 `flock`/UPSERT 覆盖不�
 
 专用非 root 用户、`NoNewPrivileges`、`ProtectSystem/Home`、`PrivateTmp`、额外 namespace、复杂 cgroup/slice 等 systemd hardening 不作为首次功能部署前置；阶段一只落地基础路径、日志和进程回收，root 权限爆炸半径如实记录，避免把安全强化重新包装成迁移必需项。
 
-### 8.6 Blackbox Linux 直接执行：只属于 M-track
-
-#### 8.6.1 已核实的执行边界
-
-39 个 active Blackbox 均为一份 `.py` 和一份 `.json` 交付。对 39 份交付的 AST、路径字面量、随包文件和形式调用图做只读核验后：
-
-- 未发现随交付携带的 `.so`、`.dylib`、`.whl`、pickle/joblib 或其他平台二进制；
-- 未发现直接导入 socket、HTTP client、PyMySQL、SQLAlchemy、subprocess 或 ctypes；
-- 未发现硬编码 `/Users`、`/opt/homebrew`、Darwin/osx/arm64 路径或 URL；
-- 12 份文件虽包含 `multiprocessing.Pool` 和 `n_workers=10`，但在正式 `main -> predict` 路径中均不可达；正式路径的模型设置使用 `n_jobs=1`，不应把历史/辅助代码当成实盘并行事实；
-- 39 个 active config 全部绑定 `blackbox-v2-v1`，频率分布为 25 日频、9 周频、5 月频。
-
-因此，MIG-003 的主要 Linux 阻断不在算法交付，而在平台执行层：`scheduler/blackbox_v2_runner.py` 和当前 Runtime Profile 硬绑定 `sandbox-exec`、macOS 路径与 `osx-arm64` environment manifest。这些需要做 Linux 最小适配，但不需要改写 39 份算法。
-
-#### 8.6.2 已批准的阶段一最小执行模型
-
-阶段一不在每次 Blackbox 预测时创建 OCI 容器或 namespace Sandbox。最小模型是：
-
-```text
-systemd one-shot / 批次 runner
-  -> 一个锁定的 Linux Python 环境
-  -> 直接启动算法 Python 子进程
-  -> 每个方案独立 request/output/log
-  -> 平台验证 Contract 后才由 repository 落库
-```
-
-首期保留的最小控制：
-
-- 平台不通过 Request、命令行或子进程环境向算法注入数据库密码、Writer credential 或完整服务 `.env`；阶段一算法随服务以 root 运行，仍可能主动读取主机上其他 root 可读 Secret/文件，这项整机权限风险已被用户接受，不能写成凭据或文件系统隔离已经实现；
-- 每个方案使用独立 Request、Output 和日志目录；
-- 保留超时、独立进程组、异常退出、输出大小限制和整棵子进程回收；
-- 首轮保留当前逐方案 `open_blackbox_input_snapshot` 和私有 `open_blackbox_runtime_view` 行为，包括既有校验、复制、哈希与清理；
-- 交付默认被当作已经入库验收的受信代码；输入和输出仍按现有 Contract 校验，不在 M-track 新增共享目录或批次级失败语义。
-
-该模型不能像容器/namespace 一样从内核层阻止算法访问网络或其他同用户可读文件。这是用户为了先完成功能部署而接受的阶段一残余风险；后续可根据实际暴露和成本再增加 systemd hardening、namespace 或 OCI，不在首期一次性堆叠。
-
-#### 8.6.3 Linux 环境与运行身份的最小方案
-
-- 优先用一套共享 Linux Python 3.12/3.13 环境满足实际交付，不先为每个方案创建独立环境；
-- 锁定 Python ABI、平台、依赖版本、wheel/conda package hash、OpenMP/BLAS 和环境 fingerprint；
-- 建立一个 Linux direct execution profile，保留现有 Mac profile/fingerprint 不变；
-- no-persist Spike 先用部署级 environment manifest 记录证据，不要求在第一个 Linux 功能样本前就完成 39 份人工 revision；
-- 在生产 Writer 启用前，必须将 Linux profile/fingerprint 接入现有 Gate 可验证路径，但实现应选最小兼容改动，不先扩展一对多环境治理模型。
-
-#### 8.6.4 M-track 通过条件
-
-- 输入准备必须复现 C56 从 P65 继承的逐方案 snapshot/runtime view 合同，M-track 不重新设计或首次实现共享输入；
-- Linux 锁定环境中 39 个 `--help` 通过；
-- 代表日/周/月方案可直接子进程运行，不依赖 macOS `sandbox-exec` 或 `/opt/homebrew`；
-- 同一固定输入在 Mac 与 Linux 上比较方向、日期、内部字段、snapshot/cutoff 身份、确定性和运行时间；任何差异先定位平台/依赖原因，不改算法或 DataBridge 逻辑贴结果；
-- Linux 记录当前路径的每方案校验/复制次数、临时空间、墙钟和 RSS，作为是否触发 ROE 的证据；“次数很多”本身不是失败，只有违反批准的硬约束才构成阻断；
-- 超时、异常退出和人工中止后整个算法进程树消失；
-- 输入目录前后轻量指纹不变，算法只写独立 output；
-- 迁移初始执行方式保持串行；不得在 Linux Spike 中首次新增队列/并发代码或改变失败语义。
-
 ### 8.7 条件性 ROE 候选：`BatchInputSession`（当前不实施）
 
 当前代码证据显示，这项优化与 Linux 兼容本身无关：`scheduler/launchd_prediction_runner.py` 逐方案串行调用 `execute_scheme`，而每次 Blackbox 执行都会在 `scheduler/executor.py` 内重新调用 `open_blackbox_input_snapshot` 和 `open_blackbox_runtime_view`。相关实现属于平台共享 Python 功能路径。
@@ -1281,30 +1135,6 @@ cadence + predict_date + DataBridge generation_id
 - 实际触发 DB、Timer、缺批次、DataBridge stale、OOM、磁盘、备份过期和证书到期告警，并确认有人收到。
 
 ## 9. 对抗性审查发现的遗漏
-
-### 9.1 产品读取对数据库零缓冲
-
-Dashboard 一次请求会在同一一致性事务读取 Registry、Target、Prediction、Actuals、Backtest 和 Signal Status。没有 Last-Known-Good 快照，短断直接 503。
-
-该问题的阶段一取舍已经完成：
-
-- 采用 ECS 本地 MySQL，数据库路径失败时返回 503，不读取旧快照；
-- LKG、读副本和 RDS 都不是阶段一功能迁移前置；
-- 不做自动故障转移，不自动补跑/补写；
-- 上线后若真实 503、延迟或批次失败不可接受，再用观测数据选择连接池、带明确陈旧上限的 LKG、只读副本或 RDS。
-
-这是一项有边界的简化，不是“稳定性已解决”：阶段一消除了 Mac/NATApp 依赖，代价是数据能力的可用性上限仍由单 ECS 与单 MySQL 决定。
-
-### 9.2 真实数据库负载未测
-
-恢复校验、`SELECT 1` 和单个增量脚本不能代表：
-
-- 完整 Dashboard 多查询快照；
-- DataBridge 全历史读取和三频构建；
-- 17 个保留 Native 的按方案输入构建；
-- 阶段一 39 项日批中的连接数、SQL 数和传输字节；
-- 9 个延期方案不执行，因此不进入当前负载分母；
-- Actuals 与日批可能重叠时的负载。
 
 ### 9.3 DataBridge 切换依赖图
 
@@ -1684,7 +1514,7 @@ default-deny 白名单站点配置、证书签发、DNS TTL 与 ICP 备案接入
 - 平台不通过 Request、命令行或子进程环境向 Blackbox 注入 DB/Writer Secret，只传递批准输入路径与独立输出路径；不把这一点误报为 root 子进程无法读取宿主文件；
 - Blackbox 保持 C56 从 P65 继承的逐方案 snapshot/runtime view、全量校验、复制、hash 和清理语义；
 - 每个方案的 `generation_id/refresh_date/parent_data_snapshot_id/cutoff` 与固定输入下的 Mac 基线相符；不把“一批只校验一次”作为默认验收条件；
-- 未做逐次容器/namespace 时，验收记录明确标注网络与宿主文件系统强隔离尚未实现，不将直接执行误报为 Sandbox 通过；
+- 验收记录明确标注：运行期沙箱已退役，网络与宿主文件系统无 OS 级强隔离；隔离保证来自入库 StaticGate 静态检查、版本哈希绑定与运行后输入目录指纹复验，不得把直接执行误报为 Sandbox 通过；
 - strict discovery、timer candidate 和批次摘要均不包含 9 个延期方案；9 个 config/Registry 均 paused，Dashboard/API 不呈现且直接读取返回 404；
 - 负面验收同时证明方案目录、加密 `.so`、source evidence、benchmark/Gate 和历史数据库行仍在，暂停没有被错误实现成物理删除。
 
@@ -1829,12 +1659,7 @@ default-deny 白名单站点配置、证书签发、DNS TTL 与 ICP 备案接入
 
 ## 18. 外部参考
 
-- NATApp TCP 隧道与数据库使用：<https://natapp.cn/article/tcp>
 - 阿里云 ECS 通用算力型 u1 规格与平台差异说明：<https://help.aliyun.com/zh/ecs/user-guide/general-work-force>
-- NATApp FAQ/SLA 说明：<https://natapp.cn/article/faq>
-- NATApp IP 白名单与访问 Token：<https://natapp.cn/article/whitelist>
-- NATApp 访问日志：<https://natapp.cn/article/access_log>
-- NATApp Client/系统服务：<https://natapp.cn/download>
 - 阿里云 ECS 配置变更：<https://www.alibabacloud.com/help/en/ecs/user-guide/overview-of-instance-configuration-changes>
 - 阿里云内存型实例：<https://www.alibabacloud.com/help/en/ecs/user-guide/memory-optimized-instance-families-1>
 - 阿里云安全组建议：<https://www.alibabacloud.com/help/en/ecs/user-guide/security-groups-for-different-use-cases>
