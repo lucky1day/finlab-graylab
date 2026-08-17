@@ -71,6 +71,11 @@ class SystemdControlPlaneTests(unittest.TestCase):
         cfg = _blackbox_config("systemd_candidate")
         engine = Mock()
         with (
+            patch.dict(
+                os.environ,
+                {"BFL_DEPLOYMENT_TARGET": "aliyun-gray"},
+                clear=False,
+            ),
             patch.object(
                 common_runner.DataBridgeRefreshConfig,
                 "from_env",
@@ -126,6 +131,35 @@ class SystemdControlPlaneTests(unittest.TestCase):
             summary.to_payload()["event"],
             "systemd_prediction_run",
         )
+
+    def test_systemd_runner_rejects_mac3_target_before_runtime_access(
+        self,
+    ) -> None:
+        from scheduler import launchd_prediction_runner as common_runner
+        from scheduler import systemd_prediction_runner as runner
+
+        with (
+            patch.dict(
+                os.environ,
+                {"BFL_DEPLOYMENT_TARGET": "mac3-production"},
+                clear=False,
+            ),
+            patch.object(
+                common_runner.DataBridgeRefreshConfig,
+                "from_env",
+            ) as data_bridge_config,
+        ):
+            with self.assertRaisesRegex(
+                common_runner.LaunchdPredictionConfigurationError,
+                "deployment target does not match one-shot control plane",
+            ):
+                runner.run(
+                    "weekly",
+                    predict_date="2026-08-15",
+                    algo_env="forecast_env",
+                )
+
+        data_bridge_config.assert_not_called()
 
     def test_databridge_publish_accepts_systemd_one_shot_producer(
         self,

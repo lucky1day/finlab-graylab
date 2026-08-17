@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import os
 import tempfile
 import threading
 import unittest
@@ -111,6 +112,38 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         self.assertEqual(parameter.kind, inspect.Parameter.KEYWORD_ONLY)
         self.assertIs(parameter.default, inspect.Parameter.empty)
 
+    def test_one_shot_requires_matching_target_before_runtime_access(
+        self,
+    ) -> None:
+        from scheduler import launchd_prediction_runner as runner
+
+        cases = ({}, {"BFL_DEPLOYMENT_TARGET": "aliyun-gray"})
+        for environment in cases:
+            with (
+                self.subTest(environment=environment),
+                patch.dict(os.environ, environment, clear=True),
+                patch.object(
+                    runner.DataBridgeRefreshConfig,
+                    "from_env",
+                ) as data_bridge_config,
+                patch.object(
+                    runner,
+                    "create_engine_from_env",
+                ) as create_engine,
+            ):
+                with self.assertRaisesRegex(
+                    runner.LaunchdPredictionConfigurationError,
+                    "deployment target does not match one-shot control plane",
+                ):
+                    runner.run(
+                        "weekly",
+                        predict_date="2026-08-01",
+                        algo_env="forecast_env",
+                    )
+
+                data_bridge_config.assert_not_called()
+                create_engine.assert_not_called()
+
     def test_gray_live_rejects_scheduled_control_plane_before_db_access(
         self,
     ) -> None:
@@ -163,6 +196,11 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
 
         engine = Mock()
         with (
+            patch.dict(
+                os.environ,
+                {"BFL_DEPLOYMENT_TARGET": "mac3-production"},
+                clear=False,
+            ),
             patch.object(
                 runner.DataBridgeRefreshConfig,
                 "from_env",

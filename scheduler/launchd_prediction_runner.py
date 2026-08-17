@@ -18,6 +18,10 @@ from pathlib import Path
 from typing import Iterator, Sequence
 from zoneinfo import ZoneInfo
 
+from scheduler.deployment_scope import (
+    DeploymentScopeError,
+    require_deployment_target_for_control_plane,
+)
 from scheduler.discovery import discover_schemes
 from scheduler.executor import (
     DEFAULT_ALGO_ENV,
@@ -288,6 +292,13 @@ def _run_one_shot(
         raise LaunchdPredictionConfigurationError(
             "monthly one-shot must run on natural month day 15"
         )
+
+    try:
+        require_deployment_target_for_control_plane(scheduled_control_plane)
+    except DeploymentScopeError as exc:
+        raise LaunchdPredictionConfigurationError(
+            "deployment target does not match one-shot control plane"
+        ) from exc
 
     try:
         data_bridge_config = DataBridgeRefreshConfig.from_env()
