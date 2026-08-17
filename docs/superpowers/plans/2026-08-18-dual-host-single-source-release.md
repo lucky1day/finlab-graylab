@@ -694,7 +694,7 @@ Run:
 /Users/macstudio0/miniconda3/envs/bond_factor_lab_service/bin/python -m pytest -q \
   tests/test_aliyun_c56_candidate.py \
   tests/test_onboarding_policy.py \
-  tests/test_scheme_owner_registry.py \
+  tests/test_scheme_owner.py \
   tests/test_repository_registry.py
 ```
 
@@ -981,7 +981,7 @@ Run:
   tests/test_blackbox_v2_runner.py \
   tests/test_repository_registry.py \
   tests/test_onboarding_policy.py \
-  tests/test_scheme_owner_registry.py \
+  tests/test_scheme_owner.py \
   tests/test_onboarding_docs.py
 ```
 

@@ -10,7 +10,7 @@ schedule:
   cron: "30 11 * * 6"
   timezone: "Asia/Shanghai"
 entry_point: predict.run
-status: paused
+status: active
 input_spec:
   data_version: shared_data_service_weekly.v1
   required_columns: ["week_id", "TB0YWI1C"]

@@ -3,8 +3,10 @@ from __future__ import annotations
 from collections import Counter
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 
 if TYPE_CHECKING:
@@ -26,43 +28,45 @@ DEFERRED_NATIVE_SCHEME_IDS = frozenset(
 )
 
 
-def _candidate_configs() -> list[SchemeConfig]:
+def _target_configs(target: str | None) -> list[SchemeConfig]:
     from scheduler.discovery import discover_schemes
 
     project_root = Path(__file__).resolve().parents[1]
-    return discover_schemes(project_root / "schemes", strict=True)
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("BFL_DEPLOYMENT_TARGET", None)
+        if target is not None:
+            os.environ["BFL_DEPLOYMENT_TARGET"] = target
+        return discover_schemes(project_root / "schemes", strict=True)
 
 
-def test_c56_defers_the_exact_nine_native_schemes() -> None:
+def test_canonical_configs_keep_all_65_schemes_active() -> None:
     from shared.source_runtime_database import SOURCE_RUNTIME_SCHEME_IDS
 
-    configs = {config.scheme_id: config for config in _candidate_configs()}
+    configs = {
+        config.scheme_id: config
+        for config in _target_configs(None)
+    }
 
     assert DEFERRED_NATIVE_SCHEME_IDS == SOURCE_RUNTIME_SCHEME_IDS
     assert len(configs) == 65
-    assert {
-        scheme_id
-        for scheme_id, config in configs.items()
-        if config.status == "paused"
-    } == DEFERRED_NATIVE_SCHEME_IDS
+    assert all(config.status == "active" for config in configs.values())
     assert all(
         configs[scheme_id].runtime_type == "native_adapter"
         for scheme_id in DEFERRED_NATIVE_SCHEME_IDS
     )
 
 
-def test_c56_active_execution_scope_is_56() -> None:
-    configs = _candidate_configs()
-    active = [config for config in configs if config.status == "active"]
+def test_aliyun_execution_scope_is_56_active_base_and_60_composite() -> None:
+    configs = _target_configs("aliyun-gray")
 
-    assert len(active) == 56
-    assert sum(len(config.tenors) for config in configs) == 69
-    assert sum(len(config.tenors) for config in active) == 60
-    assert Counter(config.runtime_type for config in active) == {
+    assert len(configs) == 56
+    assert all(config.status == "active" for config in configs)
+    assert sum(len(config.tenors) for config in configs) == 60
+    assert Counter(config.runtime_type for config in configs) == {
         "native_adapter": 17,
         "blackbox_v2": 39,
     }
-    assert Counter(config.frequency for config in active) == {
+    assert Counter(config.frequency for config in configs) == {
         "daily": 39,
         "weekly": 12,
         "monthly": 5,
@@ -70,7 +74,10 @@ def test_c56_active_execution_scope_is_56() -> None:
 
 
 def test_c56_preserves_activated_weekly_10y_overlay_exact_version() -> None:
-    configs = {config.scheme_id: config for config in _candidate_configs()}
+    configs = {
+        config.scheme_id: config
+        for config in _target_configs(None)
+    }
 
     assert (
         configs["weekly_10y_d_overlay_0529"].scheme_version
@@ -79,7 +86,10 @@ def test_c56_preserves_activated_weekly_10y_overlay_exact_version() -> None:
 
 
 def test_c56_keeps_deferred_scheme_implementations_in_release() -> None:
-    configs = {config.scheme_id: config for config in _candidate_configs()}
+    configs = {
+        config.scheme_id: config
+        for config in _target_configs(None)
+    }
 
     for scheme_id in DEFERRED_NATIVE_SCHEME_IDS:
         scheme_dir = configs[scheme_id].path
@@ -92,7 +102,7 @@ def test_c56_preserves_native_policy_and_all_composite_owners() -> None:
     from shared.scheme_owner_registry import load_scheme_owners
 
     project_root = Path(__file__).resolve().parents[1]
-    configs = _candidate_configs()
+    configs = _target_configs(None)
     native_ids = {
         config.scheme_id
         for config in configs
