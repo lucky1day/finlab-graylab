@@ -1,0 +1,22 @@
+[Unit]
+Description=Bond Factor Lab private backend
+After=network-online.target mysqld.service mysql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/bond-factor-lab/current
+EnvironmentFile=/etc/bond-factor-lab/bond-factor-lab.env
+Environment=PATH=/opt/miniconda3/condabin:/opt/miniconda3/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/root
+Environment=PYTHONNOUSERSITE=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=BOND_FACTOR_LAB_CONTROL_PLANE=systemd_one_shot
+ExecStart=/opt/miniconda3/envs/bond_factor_lab_service/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8100
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=30
+UMask=0077

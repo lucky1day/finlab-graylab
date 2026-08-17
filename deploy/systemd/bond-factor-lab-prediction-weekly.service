@@ -1,0 +1,22 @@
+[Unit]
+Description=Bond Factor Lab weekly prediction one-shot
+After=network-online.target mysqld.service mysql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/bond-factor-lab/current
+EnvironmentFile=/etc/bond-factor-lab/bond-factor-lab.env
+EnvironmentFile=-/run/bond-factor-lab/manual-run.env
+Environment=PATH=/opt/miniconda3/condabin:/opt/miniconda3/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/root
+Environment=PYTHONNOUSERSITE=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=BOND_FACTOR_LAB_CONTROL_PLANE=systemd_one_shot
+Environment=BOND_ALGO_CONDA_ENV=forecast_env
+ExecStart=/opt/miniconda3/envs/bond_factor_lab_service/bin/python -m scheduler.systemd_prediction_runner --cadence weekly
+TimeoutStartSec=infinity
+KillMode=control-group
+UMask=0077

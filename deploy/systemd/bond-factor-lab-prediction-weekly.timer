@@ -1,0 +1,11 @@
+[Unit]
+Description=Bond Factor Lab weekly prediction timer
+
+[Timer]
+OnCalendar=Sat *-*-* 11:30:00 Asia/Shanghai
+Persistent=false
+RandomizedDelaySec=0
+Unit=bond-factor-lab-prediction-weekly.service
+
+[Install]
+WantedBy=timers.target

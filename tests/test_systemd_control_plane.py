@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from contextlib import nullcontext
 import os
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -190,6 +191,114 @@ class SystemdControlPlaneTests(unittest.TestCase):
                     payload["status"],
                     "configuration_error",
                 )
+
+    def test_systemd_templates_are_disabled_first_one_shots(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        deploy_root = project_root / "deploy" / "systemd"
+        expected_files = {
+            "bond-factor-lab-backend.service",
+            "bond-factor-lab-data-bridge.service",
+            "bond-factor-lab-data-bridge.timer",
+            "bond-factor-lab-prediction-daily.service",
+            "bond-factor-lab-prediction-daily.timer",
+            "bond-factor-lab-prediction-weekly.service",
+            "bond-factor-lab-prediction-weekly.timer",
+            "bond-factor-lab-prediction-monthly.service",
+            "bond-factor-lab-prediction-monthly.timer",
+            "bond-factor-lab-actuals.service",
+            "bond-factor-lab-actuals.timer",
+        }
+
+        self.assertTrue(deploy_root.is_dir())
+        self.assertEqual(
+            {path.name for path in deploy_root.iterdir() if path.is_file()},
+            expected_files,
+        )
+        contents = {
+            name: (deploy_root / name).read_text(encoding="utf-8")
+            for name in expected_files
+        }
+
+        for name, content in contents.items():
+            self.assertNotIn("scheduler.main", content, name)
+            self.assertNotIn("APScheduler", content, name)
+            self.assertNotIn("ledger", content.lower(), name)
+            self.assertNotIn("backtest", content.lower(), name)
+            self.assertNotIn("systemctl", content, name)
+            if name.endswith(".service"):
+                self.assertIn(
+                    "WorkingDirectory=/opt/bond-factor-lab/current",
+                    content,
+                    name,
+                )
+                self.assertIn(
+                    "EnvironmentFile=/etc/bond-factor-lab/bond-factor-lab.env",
+                    content,
+                    name,
+                )
+
+        backend = contents["bond-factor-lab-backend.service"]
+        self.assertIn("--host 127.0.0.1 --port 8100", backend)
+        self.assertIn(
+            "Environment=BOND_FACTOR_LAB_CONTROL_PLANE=systemd_one_shot",
+            backend,
+        )
+
+        data_bridge = contents["bond-factor-lab-data-bridge.service"]
+        self.assertIn(
+            "Environment=BFL_DATABRIDGE_PRODUCER=systemd-one-shot",
+            data_bridge,
+        )
+        self.assertIn(
+            "scripts/refresh_data_bridge_current.py --publish",
+            data_bridge,
+        )
+
+        for cadence in ("daily", "weekly", "monthly"):
+            service = contents[
+                f"bond-factor-lab-prediction-{cadence}.service"
+            ]
+            self.assertIn(
+                "python -m scheduler.systemd_prediction_runner "
+                f"--cadence {cadence}",
+                service,
+            )
+
+        self.assertIn(
+            "python -m scheduler.actuals_runner",
+            contents["bond-factor-lab-actuals.service"],
+        )
+
+        expected_schedules = {
+            "bond-factor-lab-data-bridge.timer": (
+                "OnCalendar=*-*-* 06:30:00 Asia/Shanghai",
+            ),
+            "bond-factor-lab-prediction-daily.timer": (
+                "OnCalendar=Mon..Fri *-*-* 07:03:00 Asia/Shanghai",
+            ),
+            "bond-factor-lab-prediction-weekly.timer": (
+                "OnCalendar=Sat *-*-* 11:30:00 Asia/Shanghai",
+            ),
+            "bond-factor-lab-prediction-monthly.timer": (
+                "OnCalendar=*-*-15 18:00:00 Asia/Shanghai",
+            ),
+            "bond-factor-lab-actuals.timer": (
+                "OnCalendar=*-*-* 08:30:00 Asia/Shanghai",
+                "OnCalendar=*-*-* 19:00:00 Asia/Shanghai",
+                "OnCalendar=*-*-* 23:45:00 Asia/Shanghai",
+            ),
+        }
+        for name, schedules in expected_schedules.items():
+            content = contents[name]
+            self.assertIn("Persistent=false", content, name)
+            self.assertIn("RandomizedDelaySec=0", content, name)
+            self.assertIn(
+                f"Unit={name.removesuffix('.timer')}.service",
+                content,
+                name,
+            )
+            for schedule in schedules:
+                self.assertIn(schedule, content, name)
 
 
 if __name__ == "__main__":
