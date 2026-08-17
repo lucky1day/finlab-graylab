@@ -14,15 +14,11 @@ from shared.one_shot_control_plane import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEPLOYMENT_MATRIX_PATH = (
-    PROJECT_ROOT / "deploy" / "scheme_deployment_matrix_v1.json"
-)
+DEPLOYMENT_MATRIX_PATH = PROJECT_ROOT / "deploy" / "scheme_deployment_matrix_v1.json"
 DEPLOYMENT_TARGET_ENV = "BFL_DEPLOYMENT_TARGET"
 MAC3_PRODUCTION_TARGET = "mac3-production"
 ALIYUN_GRAY_TARGET = "aliyun-gray"
-DEPLOYMENT_TARGETS = frozenset(
-    {MAC3_PRODUCTION_TARGET, ALIYUN_GRAY_TARGET}
-)
+DEPLOYMENT_TARGETS = frozenset({MAC3_PRODUCTION_TARGET, ALIYUN_GRAY_TARGET})
 CONTROL_PLANE_TARGETS = {
     LAUNCHD_ONE_SHOT_CONTROL_PLANE: MAC3_PRODUCTION_TARGET,
     SYSTEMD_ONE_SHOT_CONTROL_PLANE: ALIYUN_GRAY_TARGET,
@@ -52,16 +48,11 @@ def require_deployment_target_for_control_plane(control_plane: str) -> str:
     if target is None:
         raise DeploymentScopeError("deployment target is required")
     if expected is None or target != expected:
-        raise DeploymentScopeError(
-            "deployment target does not match control plane"
-        )
+        raise DeploymentScopeError("deployment target does not match control plane")
     return target
 
 
-def _load_matrix(
-    path: Path,
-    scheme_ids: list[str],
-) -> dict[str, frozenset[str]]:
+def _load_matrix(path: Path, scheme_ids: list[str]) -> dict[str, frozenset[str]]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -77,15 +68,11 @@ def _load_matrix(
         raise DeploymentScopeError("deployment matrix targets are invalid")
     raw_schemes = payload.get("schemes")
     if not isinstance(raw_schemes, dict):
-        raise DeploymentScopeError(
-            "deployment matrix schemes must be an object"
-        )
+        raise DeploymentScopeError("deployment matrix schemes must be an object")
     if len(scheme_ids) != len(set(scheme_ids)):
         raise DeploymentScopeError("duplicate discovered scheme id")
     if set(raw_schemes) != set(scheme_ids):
-        raise DeploymentScopeError(
-            "deployment matrix scheme coverage mismatch"
-        )
+        raise DeploymentScopeError("deployment matrix scheme coverage mismatch")
     matrix: dict[str, frozenset[str]] = {}
     for scheme_id, raw_targets in raw_schemes.items():
         if (
@@ -94,9 +81,7 @@ def _load_matrix(
             or len(raw_targets) != len(set(raw_targets))
             or not set(raw_targets).issubset(DEPLOYMENT_TARGETS)
         ):
-            raise DeploymentScopeError(
-                "deployment matrix contains invalid target list"
-            )
+            raise DeploymentScopeError("deployment matrix contains invalid target list")
         matrix[str(scheme_id)] = frozenset(raw_targets)
     return matrix
 
@@ -112,10 +97,7 @@ def filter_schemes_for_configured_target(
     if target is None:
         return items
     scheme_ids = [str(getattr(item, "scheme_id", "")) for item in items]
-    matrix = _load_matrix(
-        matrix_path or DEPLOYMENT_MATRIX_PATH,
-        scheme_ids,
-    )
+    matrix = _load_matrix(matrix_path or DEPLOYMENT_MATRIX_PATH, scheme_ids)
     return [
         item
         for item in items
