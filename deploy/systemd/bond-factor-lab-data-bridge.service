@@ -14,6 +14,7 @@ Environment=PATH=/opt/miniconda3/condabin:/opt/miniconda3/bin:/usr/local/bin:/us
 Environment=HOME=/root
 Environment=PYTHONNOUSERSITE=1
 Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=BFL_DEPLOYMENT_TARGET=aliyun-gray
 Environment=BOND_FACTOR_LAB_CONTROL_PLANE=systemd_one_shot
 Environment=BFL_DATABRIDGE_PRODUCER=systemd-one-shot
 ExecStart=/opt/miniconda3/envs/bond_factor_lab_service/bin/python scripts/refresh_data_bridge_current.py --publish

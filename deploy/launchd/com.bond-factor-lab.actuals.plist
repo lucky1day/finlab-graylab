@@ -25,6 +25,8 @@
   <dict>
     <key>PYTHONNOUSERSITE</key>
     <string>1</string>
+    <key>BFL_DEPLOYMENT_TARGET</key>
+    <string>mac3-production</string>
   </dict>
 
   <key>StartCalendarInterval</key>

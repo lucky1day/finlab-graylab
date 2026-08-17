@@ -18,6 +18,19 @@ APScheduler、ledger 或其它 Python 调度控制面。
 Linux timer 全部声明 `Persistent=false`，停机或禁用期间不补跑。Backend 模板只监听
 `127.0.0.1:8100`，本目录不授权 Nginx、DNS、安全组或公网切流。
 
+## 部署目标与方案矩阵
+
+Mac3 的应用 launchd 模板固定声明
+`BFL_DEPLOYMENT_TARGET=mac3-production`，ECS 的应用 systemd service 固定声明
+`BFL_DEPLOYMENT_TARGET=aliyun-gray`。生产 one-shot 的目标与控制面必须分别为
+`launchd_one_shot/mac3-production` 和 `systemd_one_shot/aliyun-gray`；缺失或交叉配对会在
+DataBridge 配置、数据库连接和算法子进程之前失败。
+
+`deploy/scheme_deployment_matrix_v1.json` 是唯一主机资格清单。未设置目标的开发和 Harness
+发现保持全量；生产服务设置目标后，discovery 严格校验矩阵与全部 config 一一覆盖再过滤。
+矩阵不自动删除或暂停 Registry 行；目标移除与加入仍须分别完成受控 Registry 生命周期和读回。
+模板变更不表示 installed launchd/systemd 已更新，现场安装、重载、启停和 timer enable 均需独立授权。
+
 ## Mac Studio launchd 单 writer 目标
 
 Mac Studio 当前生产调度的唯一控制面是 `launchd + installed plist`。仓库中的

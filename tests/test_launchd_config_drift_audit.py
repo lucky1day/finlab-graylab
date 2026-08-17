@@ -14,6 +14,14 @@ from scripts.audit_launchd_config_drift import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LAUNCHD_ROOT = PROJECT_ROOT / "deploy" / "launchd"
 LEGACY_VARIABLE = "BOND_DAILY_COORDINATOR_MODE"
+APPLICATION_LAUNCHD_TEMPLATES = (
+    "com.bond-factor-lab.backend.plist",
+    "com.bond-factor-lab.data-bridge-refresh.plist",
+    "com.bond-factor-lab.daily-predictions.plist",
+    "com.bond-factor-lab.weekly-predictions.plist",
+    "com.bond-factor-lab.monthly-predictions.plist",
+    "com.bond-factor-lab.actuals.plist",
+)
 
 
 def _write_plist(path: Path, payload: dict[str, object]) -> None:
@@ -109,6 +117,15 @@ def test_data_bridge_template_requires_controlled_producer_identity() -> None:
     assert payload["EnvironmentVariables"]["BFL_DATABRIDGE_PRODUCER"] == (
         "launchd-one-shot"
     )
+
+
+def test_application_launchd_templates_bind_mac3_target() -> None:
+    for name in APPLICATION_LAUNCHD_TEMPLATES:
+        with (LAUNCHD_ROOT / name).open("rb") as handle:
+            payload = plistlib.load(handle)
+        assert payload["EnvironmentVariables"]["BFL_DEPLOYMENT_TARGET"] == (
+            "mac3-production"
+        ), name
 
 
 def test_audit_reports_legacy_drift_without_exposing_environment_values(

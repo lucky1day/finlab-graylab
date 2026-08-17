@@ -276,6 +276,11 @@ class SystemdControlPlaneTests(unittest.TestCase):
                     content,
                     name,
                 )
+                self.assertIn(
+                    "Environment=BFL_DEPLOYMENT_TARGET=aliyun-gray",
+                    content,
+                    name,
+                )
 
         backend = contents["bond-factor-lab-backend.service"]
         self.assertIn("--host 127.0.0.1 --port 8100", backend)
