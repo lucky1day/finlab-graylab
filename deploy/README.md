@@ -18,9 +18,9 @@ APScheduler、ledger 或其它 Python 调度控制面。
 Linux timer 全部声明 `Persistent=false`，停机或禁用期间不补跑。Backend 模板只监听
 `127.0.0.1:8100`，本目录不授权 Nginx、DNS、安全组或公网切流。
 
-## launchd 单 writer 目标
+## Mac Studio launchd 单 writer 目标
 
-生产调度的唯一控制面是 `launchd + installed plist`。仓库中的
+Mac Studio 当前生产调度的唯一控制面是 `launchd + installed plist`。仓库中的
 `deploy/launchd/*.plist` 只定义候选期望状态；Python runner 仅是对应 plist 启动的
 一次性子进程。
 

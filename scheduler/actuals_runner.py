@@ -1,4 +1,4 @@
-"""由 launchd 单次执行的 daily / weekly / monthly actuals 刷新入口。"""
+"""由已安装 one-shot 控制面单次执行的三频 actuals 刷新入口。"""
 from __future__ import annotations
 
 import argparse
