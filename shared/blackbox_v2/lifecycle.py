@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from shared.runtime_paths import resolve_runtime_state_path
+
 
 INCOMPLETE_PHASES = frozenset({"prepared", "config_written", "db_committed", "unresolved"})
 TERMINAL_PHASES = frozenset({"verified", "compensated", "unresolved"})
@@ -111,12 +113,15 @@ class LifecycleLockTimeout(RuntimeError):
 
 
 def lifecycle_root(project_root: str | Path, scheme_id: str) -> Path:
-    return (
-        Path(project_root)
-        / "backtest_artifacts"
-        / "blackbox_v2_lifecycle"
-        / scheme_id
+    root = resolve_runtime_state_path(
+        relative_path="artifacts/blackbox-v2-lifecycle",
+        development_default=(
+            Path(project_root)
+            / "backtest_artifacts"
+            / "blackbox_v2_lifecycle"
+        ),
     )
+    return root / scheme_id
 
 
 def write_journal(project_root: str | Path, journal: LifecycleJournal) -> Path:

@@ -121,6 +121,7 @@ def test_native_subprocess_environment_is_allowlisted() -> None:
         "LC_ALL": "en_US.UTF-8",
         "OMP_NUM_THREADS": "2",
         "LIWEI_0616_PHASE_A_CACHE_ROOT": "/tmp/cache",
+        "BFL_RUNTIME_ROOT": "/var/lib/bond-factor-lab/runtime",
         "BFL_DATABASE_ENV_FILE": "/etc/bond-factor-lab/bond-factor-lab.env",
         "BOND_DB_PASSWORD": "secret",
         "BOND_NATIVE_GENERATION_ID": "retired-inherited-value",
@@ -136,6 +137,9 @@ def test_native_subprocess_environment_is_allowlisted() -> None:
 
     assert captured["PATH"] == parent["PATH"]
     assert captured["LIWEI_0616_PHASE_A_CACHE_ROOT"] == "/tmp/cache"
+    assert captured["BFL_RUNTIME_ROOT"] == (
+        "/var/lib/bond-factor-lab/runtime"
+    )
     assert captured["BFL_DATABASE_ENV_FILE"] == parent[
         "BFL_DATABASE_ENV_FILE"
     ]

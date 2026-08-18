@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验时间**：2026-08-18 17:54（Asia/Shanghai）
+**最后核验时间**：2026-08-18 21:24（Asia/Shanghai）
 
 **当前阶段**：ECS 部署闭环已完成，正在进行独立自然灰度观察；生产切换尚未批准。
 
@@ -252,7 +252,8 @@ set +a
    archive，两个主机读回的 archive SHA256 必须一致。
 3. release 目录创建后只读、不可原地修补。任何代码或受版本控制配置变化都产生新 release ID。
 4. `current` 只在安装、清单、依赖、路径和只读健康预检全部通过且没有相关 one-shot 正在运行时
-   原子切换；失败时保持旧 `current`。
+   原子切换；`current` 替换前的失败保持旧版本，替换后或调用结果不确定时，以 `current` 现场读回
+   为唯一 authority。
 5. 源码 release、Python/conda 环境、数据库 schema 和运行期状态是四个独立版本维度。切回源码
    symlink 只表示代码回滚，不能自动宣称数据库、环境或缓存已经回滚。
 6. ECS 继续作为独立灰度实验室；Mac3 继续作为生产 authority，直到自然灰度达标、切换方案另行
@@ -323,12 +324,13 @@ Mac3 的 installed launchd 当前仍以现场读回为准；只有在专项变�
    取得路径；业务算法、repository 和 scheme config 不感知 Mac/ECS 路径。
 3. `deploy/launchd/` 与 `deploy/systemd/` 只声明各自的 `BFL_RUNTIME_ROOT`、
    `BFL_DEPLOYMENT_TARGET` 和既有平台环境清单；平台差异不得进入算法代码或环境分支。
-4. Blackbox 环境指纹必须按目标平台选择仓库已有的 Linux/macOS manifest，不再硬编码只指向
-   Linux 文件；两端允许不同依赖环境，但运行同一个源码 release。
+4. Blackbox 环境指纹已在 `codex/develop` 候选中按目标平台选择仓库已有的 Linux/macOS
+   manifest，不再硬编码只指向 Linux 文件；两端允许不同依赖环境，但运行同一个源码 release，
+   未知平台 fail-closed。该候选尚未部署到任一主机。
 5. `shared/service_instance.py` 必须从已校验 release manifest/显式环境读取精确 commit；开发环境
    才允许回退到 `git rev-parse`。生产 release 不包含 `.git`，不得因服务指纹当前未启用而把这一
    缺口带入 Mac3。
-6. 计划新增 `scripts/build_source_release.py` 负责 clean SHA 的 archive、manifest 和 checksum，
+6. 已新增 `scripts/build_source_release.py` 负责 clean SHA 的 archive、manifest 和 checksum，
    `scripts/install_source_release.py` 负责目标主机的 checksum 校验、staging 安装、只读预检、原子
    symlink 和 revision 记录；共同合同放在 `tests/test_source_release_tools.py`。两者不得顺带操作
    数据库、Registry、DNS、Nginx 或启停调度。
@@ -343,12 +345,14 @@ Mac3 的 installed launchd 当前仍以现场读回为准；只有在专项变�
 1. **分支与文档收敛（2026-08-18 完成）**：已将当前活动集成分支原地改名为
    `codex/develop` 并同步当前治理文档。验收读回只有一个长期活动集成线，`master` 未移动，
    Mac3 checkout 和 installed launchd 未改变。
-2. **路径适配器**：先为显式根、开发默认、相对路径拒绝和缓存/DataBridge 路由补测试，再最小
-   修改现有路径调用点。验收为相关单元测试和当前调度合同测试通过，生产路径不再依赖 Git
-   checkout，且算法输出/写库接口未改变。
-3. **可重复 release**：从 clean Git SHA 生成 source archive、manifest 和 SHA256；同一 SHA
-   重复构建必须得到相同源码内容清单。验收为 archive 不含 `.git`、`outputs/`、运行日志、凭据或
-   主机本地状态，manifest 能唯一追到 Git SHA。
+2. **路径适配器（2026-08-18 develop 候选完成，未部署）**：已为显式根、开发默认、相对路径
+   拒绝和缓存/DataBridge 路由补测试，并最小修改现有路径调用点。生产目标缺少显式状态根时
+   fail-closed；算法输出和 repository 写库接口未改变。
+3. **可重复 release（2026-08-18 develop 候选完成，未部署）**：已实现 clean Git HEAD 的
+   deterministic source archive、manifest 和 SHA256。安装必须另传批准的 archive SHA256，默认
+   只做隔离解包、source tree digest 和只读预安装；独立激活会重新核验 archive/tree、目录权限与
+   expected-current CAS，拒绝同 SHA，并将 `current` 原子替换留作最后文件动作。该完成状态只描述
+   `codex/develop` 候选，不表示 ECS/Mac3 已安装。
 4. **ECS 演练**：不改变自然灰度业务范围，在无批次运行时安装新 release，核验 checksum、环境、
    DataBridge/cache compatibility 和 Backend 只读健康，再原子切换 `current` 并记录 revision。
    验收为失败可保持/切回 previous，现有 timers、Registry 和数据库 authority 未被部署工具修改。
@@ -374,7 +378,7 @@ Mac3 的 installed launchd 当前仍以现场读回为准；只有在专项变�
 | Native runtime inputs | 当前约 22 GiB；`build_*_input_artifact` 每次从数据库生成并原子替换目标 CSV，不读取旧文件作为计算缓存。结论：这批是历史/审计 artifact，不是热缓存；不得为换根整批复制，旧路径暂留作历史证据，新 run 写入外置 runtime root |
 | daily/monthly source cache | Mac3 遗留约 92 MiB/80 KiB 文件使用旧字段和旧目录结构；候选代码要求 database identity 与 immutable input token，且当前 scheduled 环境没有该 token，因此这些旧文件不会命中。结论：不做不安全字段补写，也不把它们纳入首轮 handoff；这不影响已验证的 Liwei 主缓存复用 |
 | Blackbox 临时目录 | Mac3 仍有历史 runtime snapshot/view/debris；其中 active path marker 含绝对临时路径，但只用于受控清理，不属于跨 release 身份。结论：不迁移 active/debris；新 runtime 根重新创建临时目录，持久 DataBridge authority 单独 handoff |
-| release commit 身份 | `git archive` 不含 `.git`；在无 Git 目录调用当前 `shared.service_instance._git_commit` 已稳定失败为 `service code commit is unavailable`。结论：release manifest commit 适配是代码解耦前硬阻断，不能依赖当前未配置 fingerprint secret 规避 |
+| release commit 身份 | `git archive` 不含 `.git`；已复现 installed 版本调用 `_git_commit` 会失败。`codex/develop` 候选现改为生产必须读取由已校验 release 生成的 `BFL_RELEASE_COMMIT`，只有无部署目标的开发环境才回退 Git。结论：代码阻断已在候选关闭，ECS installed release 仍未改变 |
 | ECS release 现场 | 已连接 ECS 并固定 ED25519 Host Key，后续核验使用严格 Host Key 校验。`current` 指向 release `a749b17d5ad3e3f248a1cb788d892aa36d30f518`，目录不含 `.git`；五个业务 timer 均为 enabled/active，Backend 正常运行，五个 one-shot 当前均为成功后的 inactive。六个 unit 均以 `/opt/bond-factor-lab/current` 为工作目录，并声明 `BFL_DEPLOYMENT_TARGET=aliyun-gray` |
 | ECS 热缓存 | Liwei 主缓存已经外置到 `/var/lib/bond-factor-lab/cache-builds/linux-x86_64-20260817-v1/liwei_0616`，不是 release-local 状态。使用当前 release 与 `forecast_env` 对 7 个 current family 执行 secure loader，7/7 成功、共读回 27 个 baseline，未触发重建。结论：该缓存可由后续同架构 release 直接复用 |
 | ECS DataBridge | data 与 refresh runtime 仍分别绑定在 `/opt/bond-factor-lab/current/data/data_bridge` 和 `/opt/bond-factor-lab/current/backtest_artifacts/data_bridge_refresh`。现场严格只读校验通过：generation `full-20260818-130421-9cdf0632d47a`、refresh date `2026-08-18`，daily/monthly/weekly 分别为 3899/200/852 行。结论：当前可正常运行，但下一次 release 前必须先外置并保持 owner/mode 与 manifest 校验 |
@@ -384,6 +388,20 @@ Mac3 的 installed launchd 当前仍以现场读回为准；只有在专项变�
 `cgb_a4_fundseason_*` 因 DataBridge `refresh_date=2026-08-14` 不满足当日要求而失败；这 5 个业务
 键已于 2026-08-17 以同一 `predict_date` 成功写入。业务缺口已补齐，但 8 月自然 monthly 触发本身
 不能记为全成功证据。该问题不由目录换根造成，仍须作为 Mac3 调度/DataBridge 日历的独立观察项。
+
+### 9.8 develop 候选实现证据（2026-08-18）
+
+本阶段只修改 `codex/develop` 隔离 worktree 与远程开发分支候选，没有切换 Mac3 checkout、修改
+installed launchd/systemd、重启服务、写数据库或改变 ECS `current`。集中路径适配器保留“单项
+显式路径优先”语义，因此 ECS 既有 Liwei 外置根可直接继续复用；DataBridge 后续可单独 handoff
+到统一 runtime 根，不要求捆绑重建缓存。
+
+候选合同覆盖：路径优先级与逃逸拒绝、生产缺根 fail-closed、DataBridge/Liwei/source cache/
+artifact/lifecycle 路由、Native 子进程环境 allowlist、systemd release env、无 Git commit 身份、
+Linux/macOS Blackbox manifest 选择、同 commit 可重复构建、独立批准 hash、dirty/checksum/
+unsafe tar 拒绝、source tree 防篡改、只读预安装、同 SHA 拒绝、expected-current CAS 和
+`previous/current` 切换。全仓库验证结果为 `870 passed, 476 subtests passed`。下一道门是 ECS
+安装前 handoff 与原子切换演练，仍需独立生产操作授权。
 
 ## 10. 文档与 Git 权威
 

@@ -35,6 +35,7 @@ from shared.liwei_0616_cache_projection import (
     PROJECTION_SCHEMA_VERSION,
     AuxiliaryDependencyProjection,
 )
+from shared.runtime_paths import resolve_runtime_state_path
 
 
 CACHE_SCHEMA_VERSION = 2
@@ -42,7 +43,13 @@ GENERATION_MANIFEST_SCHEMA_VERSION = 3
 CURRENT_POINTER_SCHEMA_VERSION = 1
 LEGACY_INPUT_GENERATION_STATE_SCHEMA_VERSION = 2
 INPUT_GENERATION_STATE_SCHEMA_VERSION = 3
-DEFAULT_CACHE_ROOT = BACKTEST_ARTIFACT_ROOT / "runtime_cache" / "liwei_0616"
+DEFAULT_CACHE_ROOT = resolve_runtime_state_path(
+    relative_path="cache/liwei-0616",
+    development_default=(
+        BACKTEST_ARTIFACT_ROOT / "runtime_cache" / "liwei_0616"
+    ),
+    override_env="LIWEI_0616_PHASE_A_CACHE_ROOT",
+)
 CACHE_GENERATION_RETENTION = 3
 MAX_CACHE_FAMILY_BYTES = 512 * 1024 * 1024
 GLOBAL_MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024
@@ -781,7 +788,11 @@ def _consumer_input_state_comparable(
 
 
 def _cache_root(cache_root: str | Path | None) -> Path:
-    configured = cache_root or os.getenv("LIWEI_0616_PHASE_A_CACHE_ROOT") or DEFAULT_CACHE_ROOT
+    configured = (
+        cache_root
+        or os.getenv("LIWEI_0616_PHASE_A_CACHE_ROOT")
+        or DEFAULT_CACHE_ROOT
+    )
     return Path(configured)
 
 

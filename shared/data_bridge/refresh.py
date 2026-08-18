@@ -42,6 +42,7 @@ from shared.data_contract import (
     source_commit_evidence_payload,
     source_commit_evidence_sha256,
 )
+from shared.runtime_paths import resolve_runtime_state_path
 class DataBridgeRefreshError(RuntimeError):
     """A full refresh could not produce a stable valid dataset."""
 
@@ -166,15 +167,21 @@ class DataBridgeRefreshConfig:
     def from_env(cls) -> "DataBridgeRefreshConfig":
         project_root = Path(__file__).resolve().parents[2]
         config = cls(
-            data_root=Path(
-                os.getenv("DATABRIDGE_DATA_ROOT")
-                or project_root / "data" / "data_bridge"
+            data_root=resolve_runtime_state_path(
+                relative_path="data-bridge/data",
+                development_default=(
+                    project_root / "data" / "data_bridge"
+                ),
+                override_env="DATABRIDGE_DATA_ROOT",
             ),
-            runtime_root=Path(
-                os.getenv("DATABRIDGE_RUNTIME_ROOT")
-                or project_root
-                / "backtest_artifacts"
-                / "data_bridge_refresh"
+            runtime_root=resolve_runtime_state_path(
+                relative_path="data-bridge/refresh",
+                development_default=(
+                    project_root
+                    / "backtest_artifacts"
+                    / "data_bridge_refresh"
+                ),
+                override_env="DATABRIDGE_RUNTIME_ROOT",
             ),
             schema_path=project_root / "shared" / "blackbox_v2" / "data_bridge_v1_schema.json",
             daily_chunk_months=int(os.getenv("DATABRIDGE_DAILY_CHUNK_MONTHS", "3")),

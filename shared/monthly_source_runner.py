@@ -29,6 +29,7 @@ from shared.source_runtime_database import (
     source_timeout_seconds,
     write_private_json_atomic,
 )
+from shared.runtime_paths import resolve_runtime_state_path
 
 
 PREDICTION_RELATIVE_PATH = Path("prediction") / "monthly_selected_predictions.csv"
@@ -131,8 +132,15 @@ def _source_cache_path(
     token = input_token or source_immutable_input_token()
     if token is None:
         return None
-    raw_root = os.environ.get("MONTHLY_SOURCE_CACHE_DIR")
-    root = Path(raw_root) if raw_root else Path(__file__).resolve().parents[1] / "backtest_artifacts" / "monthly_source_cache"
+    root = resolve_runtime_state_path(
+        relative_path="cache/monthly",
+        development_default=(
+            Path(__file__).resolve().parents[1]
+            / "backtest_artifacts"
+            / "monthly_source_cache"
+        ),
+        override_env="MONTHLY_SOURCE_CACHE_DIR",
+    )
     module_key = hashlib.sha256(runner_module.encode("utf-8")).hexdigest()[:16]
     return (
         root

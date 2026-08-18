@@ -35,6 +35,7 @@ from shared.data_bridge.refresh import (
     DataBridgeRefreshConfig,
     check_current_dataset,
 )
+from shared.runtime_paths import resolve_runtime_state_path
 
 DEFAULT_OUTPUT_ROOT = RUNTIME_INPUT_ROOT
 BLACKBOX_SNAPSHOT_ROOT = BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "snapshots"
@@ -44,8 +45,18 @@ BLACKBOX_GRAY_REPLAY_SESSION_ROOT = (
     BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "gray_replay_sessions"
 )
 BLACKBOX_SCHEMA_PATH = Path(__file__).with_name("blackbox_v2") / "data_bridge_v1_schema.json"
-DATA_BRIDGE_ROOT = Path(__file__).resolve().parents[1] / "data" / "data_bridge"
-DATA_BRIDGE_REFRESH_RUNTIME_ROOT = BACKTEST_ARTIFACT_ROOT / "data_bridge_refresh"
+DATA_BRIDGE_ROOT = resolve_runtime_state_path(
+    relative_path="data-bridge/data",
+    development_default=(
+        Path(__file__).resolve().parents[1] / "data" / "data_bridge"
+    ),
+    override_env="DATABRIDGE_DATA_ROOT",
+)
+DATA_BRIDGE_REFRESH_RUNTIME_ROOT = resolve_runtime_state_path(
+    relative_path="data-bridge/refresh",
+    development_default=BACKTEST_ARTIFACT_ROOT / "data_bridge_refresh",
+    override_env="DATABRIDGE_RUNTIME_ROOT",
+)
 DAILY_DATA_VERSION = "shared_data_service_daily.v1"
 WEEKLY_DATA_VERSION = "shared_data_service_weekly.v1"
 MONTHLY_DATA_VERSION = "shared_data_service_monthly.v1"

@@ -301,6 +301,12 @@ class SystemdControlPlaneTests(unittest.TestCase):
                     name,
                 )
                 self.assertIn(
+                    "EnvironmentFile=/opt/bond-factor-lab/current/"
+                    ".bfl-release.env",
+                    content,
+                    name,
+                )
+                self.assertIn(
                     "Environment=BFL_DEPLOYMENT_TARGET=aliyun-gray",
                     content,
                     name,

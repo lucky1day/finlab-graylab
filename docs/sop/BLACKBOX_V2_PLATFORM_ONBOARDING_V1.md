@@ -161,7 +161,8 @@ owner 可幂等接受；相同 composite ID 与不同 owner 必须 fail-closed�
 
 ```text
 deploy/blackbox_v2/runtime_profile_v1.json
-deploy/blackbox_v2/environment_manifest.json
+deploy/blackbox_v2/environment_manifest.json             # Linux x86_64
+deploy/blackbox_v2/environment_manifest.osx-arm64.json   # Mac arm64
 ```
 
 `data-bridge-v1` 的机器 Schema 和脱敏结构样例入口见 [DataBridge V1 数据契约与样例](../blackbox_v2/data_bridge_v1/README.md)。
@@ -174,7 +175,7 @@ conda run --no-capture-output -n bond_factor_lab_service \
 
 ```
 
-执行器从版本化 JSON 加载 Runtime Profile，并在启动时严格校验字段、类型和安全边界。环境 manifest 用于核验实际环境指纹；方案配置不得覆盖 Profile 的算法执行资源、读路径、环境变量或网络权限。Intake 为 Blackbox 生成正整数 `schedule.timeout_sec` 作为 predict 预算申请，Profile 的 `predict_timeout_sec` 是平台上限，显式 operation deadline 是可选的第三层收紧约束；最终取三者最小值。backtest timeout 仍是独立 Profile 预算。Profile、manifest 或实际环境任一漂移时停止验收。
+执行器从版本化 JSON 加载 Runtime Profile，并在启动时严格校验字段、类型和安全边界。环境验证按当前平台只选择上述唯一匹配 manifest；未知平台 fail-closed。环境 manifest 用于核验实际环境指纹；方案配置不得覆盖 Profile 的算法执行资源、读路径、环境变量或网络权限。Intake 为 Blackbox 生成正整数 `schedule.timeout_sec` 作为 predict 预算申请，Profile 的 `predict_timeout_sec` 是平台上限，显式 operation deadline 是可选的第三层收紧约束；最终取三者最小值。backtest timeout 仍是独立 Profile 预算。Profile、manifest 或实际环境任一漂移时停止验收。
 
 记录环境清单摘要和自检时间。环境不一致、资源基准漂移、入库 StaticGate 违规、精确版本不匹配或运行后输入目录指纹变化时，不得继续。CPU、内存、predict/backtest 超时、100 条批量上限、Output 和日志大小上限以核对一致后的实际执行值为准。当前清理不修改既有 Blackbox 配置或 canonical config hash，因此不产生新 exact scheme version，也不触发 Gate、revision activation 或 Registry 切换。
 

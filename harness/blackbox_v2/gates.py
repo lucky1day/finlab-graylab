@@ -2145,7 +2145,13 @@ def _read_shadow_state(engine, cfg: SchemeConfig):
 
 
 def _environment_fingerprint(project_root: Path) -> str:
-    path = project_root / "deploy" / "blackbox_v2" / "environment_manifest.json"
+    from shared.blackbox_v2.environment_manifest import (
+        environment_manifest_path,
+        runtime_environment_platform,
+    )
+
+    expected_platform = runtime_environment_platform()
+    path = environment_manifest_path(project_root)
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -2159,6 +2165,10 @@ def _environment_fingerprint(project_root: Path) -> str:
     if raw.get("runtime_profile") != DEFAULT_RUNTIME_PROFILE.name:
         raise ValueError(
             "environment manifest runtime_profile must match frozen Blackbox runtime profile"
+        )
+    if raw.get("platform") != expected_platform:
+        raise ValueError(
+            "environment manifest platform must match runtime platform"
         )
     computed = hashlib.sha256(
         json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")

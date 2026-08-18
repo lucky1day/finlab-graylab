@@ -29,6 +29,7 @@ from shared.source_runtime_database import (
     source_timeout_seconds,
     write_private_json_atomic,
 )
+from shared.runtime_paths import resolve_runtime_state_path
 
 
 SELECTED_ROWS_RELATIVE_PATH = Path("prediction") / "daily_selected_prediction_rows.csv"
@@ -212,8 +213,15 @@ def _source_cache_path(
     token = input_token or source_immutable_input_token()
     if token is None:
         return None
-    raw_root = os.environ.get("DAILY_0629_SOURCE_CACHE_DIR")
-    root = Path(raw_root) if raw_root else Path(__file__).resolve().parents[1] / "backtest_artifacts" / "daily_0629_source_cache"
+    root = resolve_runtime_state_path(
+        relative_path="cache/daily-0629",
+        development_default=(
+            Path(__file__).resolve().parents[1]
+            / "backtest_artifacts"
+            / "daily_0629_source_cache"
+        ),
+        override_env="DAILY_0629_SOURCE_CACHE_DIR",
+    )
     module_key = hashlib.sha256(runner_module.encode("utf-8")).hexdigest()[:16]
     return (
         root

@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from shared.runtime_paths import resolve_runtime_state_path
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BACKTEST_ARTIFACT_ROOT = PROJECT_ROOT / "backtest_artifacts"
+BACKTEST_ARTIFACT_ROOT = resolve_runtime_state_path(
+    relative_path="artifacts",
+    development_default=PROJECT_ROOT / "backtest_artifacts",
+)
 RUNTIME_INPUT_ROOT = BACKTEST_ARTIFACT_ROOT / "runtime_inputs"
 HISTORICAL_BACKTEST_ROOT = BACKTEST_ARTIFACT_ROOT / "backtests"
 SOURCE_EVIDENCE_ROOT = PROJECT_ROOT / "source_evidence"

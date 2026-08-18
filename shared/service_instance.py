@@ -12,11 +12,14 @@ from typing import Any
 
 from sqlalchemy import text
 
+from shared.runtime_paths import DEPLOYMENT_TARGET_ENV
+
 
 _GIT_COMMIT = re.compile(r"^[0-9a-f]{40,64}$")
 FINGERPRINT_VERSION = "2"
 SERVICE_FINGERPRINT_SECRET_ENV = "BOND_FACTOR_LAB_SERVICE_FINGERPRINT_SECRET"
 FALLBACK_FINGERPRINT_SECRET_ENV = "HARNESS_AUTH_SECRET"
+RELEASE_COMMIT_ENV = "BFL_RELEASE_COMMIT"
 
 
 def build_service_instance_identity(
@@ -38,7 +41,7 @@ def build_service_instance_identity(
     if not secret:
         raise ValueError("service fingerprint secret must be non-empty")
     database_identity = _effective_database_identity(engine)
-    code_commit = _git_commit(Path(project_root).resolve())
+    code_commit = resolve_code_commit(Path(project_root).resolve())
     fingerprint_payload = {
         "fingerprint_version": FINGERPRINT_VERSION,
         "database_identity": database_identity,
@@ -92,6 +95,20 @@ def _effective_database_identity(engine) -> str:
         "effective_database": effective_schema,
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def resolve_code_commit(project_root: str | Path) -> str:
+    """返回 release 注入的 commit，开发环境才回退到 Git。"""
+    configured = str(os.getenv(RELEASE_COMMIT_ENV) or "").strip().lower()
+    if configured:
+        if not _GIT_COMMIT.fullmatch(configured):
+            raise RuntimeError("BFL_RELEASE_COMMIT is invalid")
+        return configured
+    if str(os.getenv(DEPLOYMENT_TARGET_ENV) or "").strip():
+        raise RuntimeError(
+            "production release requires BFL_RELEASE_COMMIT"
+        )
+    return _git_commit(Path(project_root).resolve())
 
 
 @lru_cache(maxsize=8)

@@ -4,27 +4,40 @@ import argparse
 import hashlib
 import json
 import subprocess
+import sys
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from shared.blackbox_v2.environment_manifest import (
+    environment_manifest_path,
+    runtime_environment_platform,
+)
+
+
 DEPLOY_ROOT = PROJECT_ROOT / "deploy" / "blackbox_v2"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Verify the frozen Blackbox V2 runtime environment.")
     parser.add_argument("--profile", type=Path, default=DEPLOY_ROOT / "runtime_profile_v1.json")
-    parser.add_argument("--manifest", type=Path, default=DEPLOY_ROOT / "environment_manifest.json")
+    parser.add_argument("--manifest", type=Path)
     args = parser.parse_args()
 
     profile = json.loads(args.profile.read_text(encoding="utf-8"))
-    manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+    expected_platform = runtime_environment_platform()
+    manifest_path = args.manifest or environment_manifest_path(PROJECT_ROOT)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     errors: list[str] = []
     env_name = str(profile["conda_env"])
     if manifest.get("conda_env") != env_name:
         errors.append("profile and environment manifest conda_env values differ")
     if manifest.get("runtime_profile") != profile.get("profile_name"):
         errors.append("profile and environment manifest runtime_profile values differ")
+    if manifest.get("platform") != expected_platform:
+        errors.append("environment manifest platform differs from runtime platform")
 
     actual_raw = json.loads(
         subprocess.run(

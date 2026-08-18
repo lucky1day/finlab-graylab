@@ -31,6 +31,33 @@ DataBridge 配置、数据库连接和算法子进程之前失败。
 矩阵不自动删除或暂停 Registry 行；目标移除与加入仍须分别完成受控 Registry 生命周期和读回。
 模板变更不表示 installed launchd/systemd 已更新，现场安装、重载、启停和 timer 状态改变均需独立授权。
 
+## 源码 release 与外置状态
+
+`scripts/build_source_release.py` 只接受 clean Git worktree 的当前 `HEAD`，生成 deterministic
+`source.tar.gz`、精确 commit/tree manifest 和 archive SHA256。`scripts/install_source_release.py`
+要求 operator 另行提供批准的 `--expected-archive-sha256`；默认只做校验、隔离解包、source tree
+digest 和只读预安装。`--activate` 只接受已经预安装且重新通过 archive/tree 校验的 release，并在
+显式 `--expected-current` 匹配时更新 `previous/current`；它不包含 SSH、systemctl、launchctl、
+数据库、Registry、Nginx 或 DNS 操作。
+
+激活拒绝同 SHA 重试，避免覆盖可用的 `previous`。revision intent 和 `previous` 都在切换前完成，
+`current` 的原子替换是最后一个强制文件动作；命令返回后以 `current` 现场读回作为是否激活的最终
+authority。既有 deploy/runtime root 必须是当前 operator 所有的真实目录，且不能 group/world
+writable；工具不会静默修正不安全目录。
+
+安装器在 release 内生成 `.bfl-release.env`，只记录 `BFL_RELEASE_COMMIT` 与
+`BFL_RUNTIME_ROOT`。ECS 的六个仓库 systemd 候选模板读取该文件，使无 `.git` release 仍有稳定
+代码身份，并让状态路径位于源码 release 外。单项显式路径（例如既有
+`LIWEI_0616_PHASE_A_CACHE_ROOT`）优先于统一根，因此可以原样复用已校验缓存；没有单项覆盖时，
+DataBridge、artifact 和 source cache 才从 `BFL_RUNTIME_ROOT` 派生。设置了生产部署目标却缺少
+两者时，代码 fail-closed。
+
+Blackbox Gate、activation、revision activation 和环境验证 CLI 通过同一个 selector 选择 frozen
+manifest：Linux x86_64 使用 `linux-64`，Mac arm64 使用 `osx-arm64`，其它平台 fail-closed。
+
+这些是仓库候选能力，不表示 ECS installed unit 已替换，也不表示 Mac3 launchd 已切换。Mac3
+release 环境的 plist 注入方式留在后续 Mac3 解耦窗口设计，本阶段不修改或 reload Mac3 模板。
+
 ## Mac Studio launchd 单 writer 目标
 
 Mac Studio 当前生产调度的唯一控制面是 `launchd + installed plist`。仓库中的
