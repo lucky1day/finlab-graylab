@@ -192,12 +192,19 @@ git archive --format=tar --prefix=bond-factor-lab/ "$release_commit" \
   | gzip -n -9 >"$release_archive"
 (cd "$release_root" && shasum -a 256 "$(basename "$release_archive")" \
   >"$(basename "$release_archive").sha256")
-git archive --format=tar "$release_commit" | tar -tf - | rg '(^|/)\.git/' && exit 1 || true
+if tar -tzf "$release_archive" \
+  | rg '(^|/)(\.git|\.env|outputs|backtest_artifacts)(/|$)'; then
+  exit 1
+fi
+test "$(tar -tzf "$release_archive" | rg '(^|/)reports/' | wc -l | tr -d ' ')" -eq 2
+tar -tzf "$release_archive" | rg '(^|/)reports/README\.md$'
 printf '%s\n' "$release_commit"
 cat "${release_archive}.sha256"
 ```
 
-Expected: archive 只含 tracked source；不含 `.git`、本地 `.env`、缓存、日志、`outputs/` 或工作树未跟踪文件。最终 commit 和 SHA-256 写入部署记录。
+Expected: archive 只含 tracked source；不含 `.git`、本地 `.env`、缓存、日志、`outputs/`、
+`backtest_artifacts/` 或工作树未跟踪文件。`reports/` 只允许 tracked 的目录项与
+`reports/README.md`，不得包含运行报告。最终 commit 和 SHA-256 写入部署记录。
 
 - [ ] **Step 4: 建立不变的候选记录**
 
