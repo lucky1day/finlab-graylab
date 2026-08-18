@@ -9,7 +9,7 @@
 | 章节 | 内容 | 什么时候看 |
 |---|---|---|
 | **0.0** | 数据库克隆决策 `DB-CLONE-A` 与实施回填 | 想知道数据库现在在哪、怎么来的 |
-| **0.0.2–0.0.6** | v1.22–v1.27 状态变化（沙箱、ECS cron、Linux L1、独立灰度、单一源码、当前部署计划） | 了解与上一版的差异 |
+| **0.0.2–0.0.6** | v1.22–v1.28 状态变化（沙箱、ECS cron、Linux L1、独立灰度、单一源码、灰度 release 验收） | 了解与上一版的差异 |
 | **0.1–0.10** | 单一交接入口：速查表、SSH、资源盘点、目标拓扑、Secret 边界、接手步骤 | **新同事第一入口** |
 | 1 | 需求重述、阶段一范围、纯迁移原则与 ROE 准入 | 判断某项改动该不该进本次迁移 |
 | 2 | 执行摘要与分层可行性结论 | 快速了解整体判定 |
@@ -156,31 +156,29 @@ systemd 只能与 `aliyun-gray` 配对；目标缺失或错配会在 DataBridge 
 installed launchd、切换域名或操作两端数据库。后续仍先把同一 archive 部署到 ECS 灰度并观察，
 再由用户另行决定是否把完全相同的 archive 晋级到 Mac3。
 
-### 0.0.6 v1.27 当前 ECS release 部署计划（2026-08-18）
+### 0.0.6 v1.28 ECS 灰度 release 手工验收完成（2026-08-18）
 
-已完成的手工部署、Linux cache input-state rebind 和单一源码适配 implementation plan 已从活动计划目录
-删除；对应 design spec、代码提交、测试和本文历史回填继续作为审计证据。当前唯一活动 implementation
-plan 是 `docs/superpowers/plans/2026-08-18-aliyun-gray-release-deployment.md`。
+exact release `a749b17d5ad3e3f248a1cb788d892aa36d30f518` 已安装到 ECS；六个 installed
+service 与 release 模板逐字一致，current 已原子切换，Backend 在 `127.0.0.1:8100` 健康运行。
+五个 one-shot 的实际总时限为 DataBridge/Actuals 1 小时、daily/weekly/monthly 2 小时，停止宽限
+统一 300 秒；没有增加内存限制或 Backend 开机自启。
 
-计划按以下顺序执行，当前文档审阅本身不授权连接或修改 ECS：
+timer-disabled 手工真写库结果：daily 39 / 39 成功、43 条预测、49 分 33 秒；weekly 12 / 12
+成功、12 条预测、7 分 34 秒；monthly 5 / 5 成功、5 条预测、1 分 51 秒；Actuals 29 秒成功，
+日频实际值推进到 2026-08-17。所有 run/prediction linkage 完整、业务键无重复、残留 running 为 0，
+9 个 Mac-only base 零新增；discovery 56 / 60、Registry 60 active / 9 paused 保持不变。
 
-1. 先在仓库中把五个 ECS `Type=oneshot` service 的总时限写死：DataBridge/Actuals 各 1 小时，
-   daily/weekly/monthly 各 2 小时，停止宽限统一 300 秒。使用对 oneshot 实际生效的
-   `TimeoutStartSec`，不使用 `RuntimeMaxSec`。
-2. 不增加 `MemoryMax`、`MemoryHigh`，不修改 runtime profile 内存上限，不增加 Swap；现有批次峰值约
-   1 GiB、主机约 14 GiB，灰度期只记录实际资源曲线。
-3. Backend 只做部署后的手工 restart 和 localhost 健康检查，不 `enable` 开机自启。
-4. 从最终干净 exact commit 只生成一个 `git archive` 和 SHA-256；ECS 只安装该 release，不保存 `.git`。
-5. 先只读核对 current、installed unit、五个 timer、56/60 discovery、Registry 60 active/9 paused 和
-   7 个 Liwei cache lineage；随后另行取得部署/手工写库授权，才允许安装 service、原子切换 current、
-   手工执行 DataBridge、daily、weekly、monthly、Actuals。
-6. 热缓存只能走已有普通 cache-hit 路径，要求 7/7 hit、`training_calls=0`；出现 miss 时停止，不允许借
-   本轮部署重建缓存。手工验收全程保持五个 timer disabled/inactive。
-7. 只有部署证据再次提交用户审阅并获得新的自然灰度授权后，才允许启用五个 timer；Mac3、域名、
-   Nginx/DNS 和生产流量继续不变。
+Liwei 缓存没有全量重建：7 个 family 均复用迁移 parent，只对新出现的
+`feature_date=2026-08-17` 各做一次 `build_mode=append`，同 family 后续消费者为 hit。原计划要求
+新交易日仍 7 / 7 纯 hit、`training_calls=0`，与移动水位缓存语义不一致；发现 append 后曾停止后续
+批次，用户确认 49 分钟耗时可以接受并授权继续。终态缓存为 7 current / 21 manifest / 81 pickle，
+无 invalid generation。
 
-本节取代本文旧段落中“`RuntimeMaxSec=4–5h`、`MemoryMax=10G`、runtime profile 内存改为 8 GiB”
-等尚未实施的建议；这些建议不得进入当前 release。跨平台数值等价仍不属于本阶段验收。
+完整脱敏证据见
+[`ALIYUN_ECS_GRAY_RELEASE_ACCEPTANCE_20260818.md`](ALIYUN_ECS_GRAY_RELEASE_ACCEPTANCE_20260818.md)。
+对应 implementation plan 已完成并从活动计划目录删除。五个 timer 仍为 disabled/inactive；下一步只有
+取得新的明确授权，才能启用 timer 进入 ECS 独立灰度自然运行。Mac3、域名、Nginx/DNS 和生产流量
+继续不变。
 
 ## 0. 单一迁移交接入口（先读）
 
@@ -2158,6 +2156,7 @@ DataBridge 与日批之间的一致性，不校验上游与 DataBridge 之间。
 
 | 日期 | 版本 | 更新 |
 |---|---|---|
+| 2026-08-18 | 1.28 | 安装并验收 ECS 灰度 release `a749b17d5ad3e3f248a1cb788d892aa36d30f518`：六个 service 与 release 模板一致，DataBridge/daily/weekly/monthly/Actuals 均 exit 0；日/周/月分别 39/12/5 个 base 全成功并写入 43/12/5 条预测，Actuals 日频水位推进到 2026-08-17；Registry 60 active/9 paused、Mac-only 零新增、Backend loopback 健康、无 OOM/孤儿进程，五个 timer 全程 disabled/inactive。Liwei 7 个 family 复用 parent 并只 append 唯一新 feature date，没有 full rebuild；用户确认 49 分钟 daily 可接受后授权继续。新增当前脱敏验收报告并删除已完成 implementation plan；timer 启用仍需新的独立授权。 |
 | 2026-08-18 | 1.27 | 清理已经完成的 ECS 手工部署、Liwei Linux input-state rebind 与双主机单一源码 implementation plan，保留 design spec 和正文历史证据；新增唯一当前计划 `2026-08-18-aliyun-gray-release-deployment.md`。当前顺序为：先设置 `Type=oneshot` 真正生效的批次总时限（DataBridge/Actuals 1h，日/周/月 2h，停止宽限 300s），不加内存保护、不启用 Backend 开机自启；再从最终 exact commit 构建唯一 archive，ECS 只读预检后另行授权安装 release/service、保持 timer disabled 并手工真写库；缓存必须 7/7 hit、`training_calls=0`，miss 即停止；验收报告再次审阅后才单独授权启用五个 timer。本轮只完成分支/计划文档清理和计划更新，未连接 ECS、未修改 service/timer/数据库、未动 Mac3/master/域名/流量。 |
 | 2026-08-18 | 1.26 | 固化单一源码双主机发布模型：本地 `master@2b62a2e9ae7c661f4a7f1741b5ff6c351819a4ad` 冻结为备份点，`codex/aliyun-db-clone-20260816` 成为唯一活动集成分支，不创建 Mac3/ECS 长期环境分支。canonical 65 个 config 恢复 active，新增 `BFL_DEPLOYMENT_TARGET` 与 `deploy/scheme_deployment_matrix_v1.json` 在 discovery 单点形成 Mac3 65/69、ECS 56/60；ECS 精确 9 个 Registry 行继续 paused，矩阵不自动改写 Registry。launchd/Mac3 与 systemd/ECS 目标交叉或缺失时在运行期副作用前失败；仓库模板已声明目标但未安装、重载或启用。下一步从最终 exact commit 只构建一份 archive，先部署 ECS 并读回 release/target/Registry/timers；Mac3 晋级继续单独授权。本轮未连接 ECS、未移动或推送 master、未修改数据库、installed 服务、timer、域名或流量。 |
 | 2026-08-17 | 1.25 | 固化会议确定的独立灰度实验室路线：Mac3 继续承载现有生产域名、生产前端和 Writer；ECS 使用本地 MySQL、上游数据链、DataBridge、56 个 active base、Actuals 与 localhost Backend 独立运行，两端不复制、不双写、不共享运行期 authority。timer-disabled 部署与日/周/月手工真写库已经验收，下一步不是直接 L5 切流，而是在单独授权后启用 ECS 五个 timer，进入新增的 L4G 自然运行观察；每日核验调度、写库、日期链、缓存、资源、磁盘和 localhost 前端，至少覆盖连续交易日、自然周频、自然月频及 Actuals。观察达标并再次开会批准前，不停 Mac3、不改 Nginx/DNS/域名或生产流量。本次仅更新文档与项目上下文，未启用 timer、未变更服务或数据库。 |
