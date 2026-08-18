@@ -8,9 +8,12 @@
 
 ## 当前工作上下文（必须遵守）
 
-- 当前活动集成分支：`codex/aliyun-db-clone-20260816`。本阶段日常修改只进入该分支；需要并行时可以使用短期 `codex/<task>` 分支，但不得创建 Mac3/ECS 两条长期环境分支。
+- 当前活动集成分支：`codex/develop`。本阶段日常修改只进入该分支；需要并行时可以使用短期 `codex/<task>` 分支，但不得创建 Mac3/ECS 两条长期环境分支。
 - `master` 已冻结在 `2b62a2e9ae7c661f4a7f1741b5ff6c351819a4ad`，作为本阶段开始前的备份点；未经用户新的明确授权，不得移动或推送 `master`。
 - Mac3 与 ECS 必须接收从同一精确集成提交构建的同一份源码 archive；两端只独立管理 Registry、数据库、调度启用、`current` 与回滚，不允许在 ECS 上保留 Git checkout、执行 `git pull` 或本地修改 release。
+- 已批准的长期发布治理目标是“单一代码线 + 不可变 release + 独立部署环境”：ECS 先验证精确 archive，Mac3 后续只能晋级同一 archive；环境差异只放在 launchd/systemd、环境变量、部署矩阵和平台依赖清单中，不得进入长期环境分支或复制算法代码。生产 release 不携带 `.git`，代码提交身份必须来自已校验 release manifest/显式环境，不能在生产依赖 `git rev-parse`。迁移期 `master` 仍按上一条冻结；稳定后是否恢复为默认集成线须另行授权，发布备份由精确 SHA、tag、archive 校验和与部署记录表达。
+- Mac3 的开发 Git 工作区与未来生产 runtime 根必须分离；目标生产结构为 `current -> releases/<release_id>` 加外置 `shared/state/revisions.log`。在专项授权完成 installed plist 切换前，这只是已批准的实施目标，当前生产 authority 仍是 installed plist 与现场 `launchctl` 读回。
+- 跨 release 状态不得无条件共用：日志和部署记录可永久外置；DataBridge、缓存和输入 artifact 只有通过既有 manifest、lineage、business digest、input state 与 ready gate 才能复用；源码 symlink 回滚不等于数据库、Python 环境或运行期状态回滚。
 - 环境方案范围只由 `BFL_DEPLOYMENT_TARGET` 与 `deploy/scheme_deployment_matrix_v1.json` 表达；不得再通过为不同主机修改 canonical `config.yaml` 的 `status` 制造两个 `scheme_version`。
 - 经过验证的开发分支只有在用户明确确认后，才能合并或覆盖到 `master` 并推送远程；agent 不得自行决定发布到 `master` 或其它发布分支。
 - 用户口头说根目录 `agent.md` 时，优先理解为根目录 `AGENTS.md`；本项目要求 `AGENTS.md` 与 `CLAUDE.md` 内容一致，更新根规范时两者要同步。

@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验时间**：2026-08-18 15:51（Asia/Shanghai）
+**最后核验时间**：2026-08-18 17:54（Asia/Shanghai）
 
 **当前阶段**：ECS 部署闭环已完成，正在进行独立自然灰度观察；生产切换尚未批准。
 
@@ -231,7 +231,161 @@ set +a
 
 不得在诊断输出、文档或提交中记录数据库密码、Token、私钥内容、云 AccessKey 或完整 DSN。
 
-## 9. 文档与 Git 权威
+## 9. 双主机源码与发布治理（方案 A′）
+
+2026-08-18 已批准采用方案 A′：**单一代码线、不可变源码 release、ECS 与 Mac3 两个独立部署
+环境**。本节批准的是后续治理设计和实施计划，不表示已切换 Mac3 installed plist、已修改 ECS
+`current`，也不授权任何服务重启、生产写入或域名切换。
+
+该决定采用成熟项目的四项稳定约定：GitHub Flow 用短期工作分支合入单一集成线；部署环境表达
+灰度/生产目标而不是维护环境源码分支；release 创建后不可修改；宿主机通过
+`current -> releases/<release_id>` 发布，并将跨 release 状态放在 release 外。参考：
+[GitHub Flow](https://docs.github.com/en/get-started/using-github/github-flow)、
+[GitHub deployments and environments](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)、
+[Twelve-Factor build/release/run](https://12factor.net/build-release-run) 和
+[Capistrano directory structure](https://capistranorb.com/documentation/getting-started/structure/)。
+
+### 9.1 不变量
+
+1. Mac3 与 ECS 不建立长期环境分支，也不在主机上维护不同算法源码。
+2. 一个候选只从一个精确 Git SHA 构建一次源码 archive；ECS 先灰度，Mac3 后续只能晋级同一
+   archive，两个主机读回的 archive SHA256 必须一致。
+3. release 目录创建后只读、不可原地修补。任何代码或受版本控制配置变化都产生新 release ID。
+4. `current` 只在安装、清单、依赖、路径和只读健康预检全部通过且没有相关 one-shot 正在运行时
+   原子切换；失败时保持旧 `current`。
+5. 源码 release、Python/conda 环境、数据库 schema 和运行期状态是四个独立版本维度。切回源码
+   symlink 只表示代码回滚，不能自动宣称数据库、环境或缓存已经回滚。
+6. ECS 继续作为独立灰度实验室；Mac3 继续作为生产 authority，直到自然灰度达标、切换方案另行
+   设计并再次获得明确授权。
+
+### 9.2 Git 生命周期
+
+迁移期保留当前约束：
+
+- `codex/develop` 是唯一活动集成分支；它已由 `codex/aliyun-db-clone-20260816` 原地改名，
+  没有创建第二条分叉分支；
+- 功能或修复需要并行时，从活动集成提交创建短期 `codex/<task>`，验证后合回并删除；
+- `master` 在迁移期继续冻结，未经用户明确授权不得移动；它是阶段性基线，不是 Mac3 环境分支；
+- 稳定期是否恢复 `master` 为默认集成线是未来独立决策。发布备份最终应由精确 Git SHA、release
+  tag、archive 校验和与部署记录共同表达，而不是永久依赖一个含义逐渐陈旧的冻结分支。
+
+### 9.3 两端目标目录
+
+Mac3 同时作为开发机和生产机，但两个职责必须使用不同目录：
+
+```text
+/Users/macstudio0/bond-factor-lab/             # Git 开发工作区
+/Users/macstudio0/bond-factor-lab-runtime/     # 未来生产运行根
+├── current -> releases/<release_id>
+├── previous -> releases/<previous_release_id>
+├── releases/<release_id>/
+├── shared/
+├── state/
+└── revisions.log
+```
+
+ECS 保持 release-only：
+
+```text
+/opt/bond-factor-lab/
+├── current -> releases/<release_id>
+├── previous -> releases/<previous_release_id>
+├── releases/<release_id>/
+├── shared/
+├── state/
+└── revisions.log
+```
+
+Mac3 的 installed launchd 当前仍以现场读回为准；只有在专项变更窗口完成空闲检查、候选 plist
+审计、备份和回滚演练后，才允许把 `WorkingDirectory`/程序路径从 Git 工作区切到 runtime
+`current`。ECS 也不得仅因仓库模板更新就推断 installed systemd 已替换。
+
+### 9.4 运行期状态边界
+
+`shared/` 不能成为无条件复用所有旧文件的兜底目录。状态按兼容性分三类：
+
+| 类型 | 示例 | 发布规则 |
+|---|---|---|
+| 永久外置状态 | 日志、部署记录、运维报告 | 保留在 release 外，跨 release 延续 |
+| 兼容性约束状态 | DataBridge generation、Liwei/source cache、输入 artifact | 可跨 release 复用，但必须先通过现有 manifest、lineage、business digest、input state 和 ready gate；不兼容时停止发布，不静默重建或错绑 |
+| 临时状态 | 解包 staging、临时下载、失败候选 | 不链接进 `current`，失败后可独立清理 |
+
+数据库继续位于应用 release 外，但 schema/data 变更不属于 `shared/` 文件复用。任何 migration apply、
+恢复或跨库动作继续遵守数据库专项授权和 identity 校验。
+
+### 9.5 最小代码与配置改动面
+
+实施时只允许一个集中式路径适配器，不新增平台抽象层：
+
+1. 扩展现有 `shared/runtime_paths.py`，以显式 `BFL_RUNTIME_ROOT` 解析 runtime 根；生产服务缺失或
+   使用相对路径时 fail-closed，开发/Harness 保留与生产隔离的默认目录。
+2. `shared/artifact_paths.py`、DataBridge、Liwei cache、daily/monthly source cache 通过该适配器
+   取得路径；业务算法、repository 和 scheme config 不感知 Mac/ECS 路径。
+3. `deploy/launchd/` 与 `deploy/systemd/` 只声明各自的 `BFL_RUNTIME_ROOT`、
+   `BFL_DEPLOYMENT_TARGET` 和既有平台环境清单；平台差异不得进入算法代码或环境分支。
+4. Blackbox 环境指纹必须按目标平台选择仓库已有的 Linux/macOS manifest，不再硬编码只指向
+   Linux 文件；两端允许不同依赖环境，但运行同一个源码 release。
+5. `shared/service_instance.py` 必须从已校验 release manifest/显式环境读取精确 commit；开发环境
+   才允许回退到 `git rev-parse`。生产 release 不包含 `.git`，不得因服务指纹当前未启用而把这一
+   缺口带入 Mac3。
+6. 计划新增 `scripts/build_source_release.py` 负责 clean SHA 的 archive、manifest 和 checksum，
+   `scripts/install_source_release.py` 负责目标主机的 checksum 校验、staging 安装、只读预检、原子
+   symlink 和 revision 记录；共同合同放在 `tests/test_source_release_tools.py`。两者不得顺带操作
+   数据库、Registry、DNS、Nginx 或启停调度。
+
+预计新增代码只集中在现有路径适配器和小型 release 工具，不复制 scheduler、算法、配置或服务
+模板，不引入容器、GitOps 配置仓库、Capistrano 或第二套部署框架。
+
+### 9.6 后续实施顺序与验收
+
+以下阶段必须依次完成；每个生产操作仍需单独授权：
+
+1. **分支与文档收敛（2026-08-18 完成）**：已将当前活动集成分支原地改名为
+   `codex/develop` 并同步当前治理文档。验收读回只有一个长期活动集成线，`master` 未移动，
+   Mac3 checkout 和 installed launchd 未改变。
+2. **路径适配器**：先为显式根、开发默认、相对路径拒绝和缓存/DataBridge 路由补测试，再最小
+   修改现有路径调用点。验收为相关单元测试和当前调度合同测试通过，生产路径不再依赖 Git
+   checkout，且算法输出/写库接口未改变。
+3. **可重复 release**：从 clean Git SHA 生成 source archive、manifest 和 SHA256；同一 SHA
+   重复构建必须得到相同源码内容清单。验收为 archive 不含 `.git`、`outputs/`、运行日志、凭据或
+   主机本地状态，manifest 能唯一追到 Git SHA。
+4. **ECS 演练**：不改变自然灰度业务范围，在无批次运行时安装新 release，核验 checksum、环境、
+   DataBridge/cache compatibility 和 Backend 只读健康，再原子切换 `current` 并记录 revision。
+   验收为失败可保持/切回 previous，现有 timers、Registry 和数据库 authority 未被部署工具修改。
+5. **Mac3 解耦**：自然灰度达标后另开生产窗口，把同一已验 archive 安装到 Mac3 runtime 根，
+   审计候选 plist 并演练回滚；经再次授权才替换 installed plist 和重启对应服务。验收为 launchd
+   不再执行 Git 工作区，开发切分支不改变生产 release，Mac3 仍只运行批准的精确 SHA。
+6. **长期规范化评审**：双主机稳定后再决定是否让 `master` 恢复默认集成职责，并为实际部署 SHA
+   建立 tag/发布记录。该步骤不是当前迁移自动动作。
+
+任一阶段发现正在运行的 one-shot、dirty worktree、archive checksum 不一致、状态兼容检查失败、
+需要数据库变更或需要重启服务时立即停止；不得用现场编辑 release、重建缓存或强制切换绕过。
+
+### 9.7 实施前只读验证（2026-08-18）
+
+本轮验证没有修改 installed plist、launchctl/systemd、数据库、业务文件或两个主机的 `current`。
+为验证路径无关性建立的 APFS 临时克隆已移入本机废纸篓，没有留在仓库或生产路径。
+
+| 检查项 | 证据与结论 |
+|---|---|
+| Mac3 控制面 | Backend、DataBridge、daily、weekly、monthly、Actuals 六个 installed plist 全部以 `/Users/macstudio0/bond-factor-lab` 为 `WorkingDirectory`，且均未声明统一 runtime root；候选模板要求的 `BFL_DEPLOYMENT_TARGET` 尚未安装，当前代码切换不能只换 symlink |
+| Liwei 主热缓存 | 现有 7 个 current family、27 个 baseline 的 manifest 只保存相对 baseline 路径，input state 由数据/schema/digest 构成；把 496 MiB cache clone 到全新绝对根后，候选代码 secure loader 7/7 读回成功，generation ID 与 baseline 数量不变。结论：主热缓存可直接换根复用，不需要 full rebuild 或 migration rebind |
+| DataBridge | Mac3 canonical data 约 24 MiB、runtime state 约 108 KiB，文件和 manifest 未包含旧 project/release 绝对路径；复制到新根并将 data/runtime 根收紧为 `0700` 后，候选严格只读校验通过，generation、refresh date、business digest 与三频行数保持不变。结论：可原样 handoff，目录 owner/mode 是安装前硬门 |
+| Native runtime inputs | 当前约 22 GiB；`build_*_input_artifact` 每次从数据库生成并原子替换目标 CSV，不读取旧文件作为计算缓存。结论：这批是历史/审计 artifact，不是热缓存；不得为换根整批复制，旧路径暂留作历史证据，新 run 写入外置 runtime root |
+| daily/monthly source cache | Mac3 遗留约 92 MiB/80 KiB 文件使用旧字段和旧目录结构；候选代码要求 database identity 与 immutable input token，且当前 scheduled 环境没有该 token，因此这些旧文件不会命中。结论：不做不安全字段补写，也不把它们纳入首轮 handoff；这不影响已验证的 Liwei 主缓存复用 |
+| Blackbox 临时目录 | Mac3 仍有历史 runtime snapshot/view/debris；其中 active path marker 含绝对临时路径，但只用于受控清理，不属于跨 release 身份。结论：不迁移 active/debris；新 runtime 根重新创建临时目录，持久 DataBridge authority 单独 handoff |
+| release commit 身份 | `git archive` 不含 `.git`；在无 Git 目录调用当前 `shared.service_instance._git_commit` 已稳定失败为 `service code commit is unavailable`。结论：release manifest commit 适配是代码解耦前硬阻断，不能依赖当前未配置 fingerprint secret 规避 |
+| ECS release 现场 | 已连接 ECS 并固定 ED25519 Host Key，后续核验使用严格 Host Key 校验。`current` 指向 release `a749b17d5ad3e3f248a1cb788d892aa36d30f518`，目录不含 `.git`；五个业务 timer 均为 enabled/active，Backend 正常运行，五个 one-shot 当前均为成功后的 inactive。六个 unit 均以 `/opt/bond-factor-lab/current` 为工作目录，并声明 `BFL_DEPLOYMENT_TARGET=aliyun-gray` |
+| ECS 热缓存 | Liwei 主缓存已经外置到 `/var/lib/bond-factor-lab/cache-builds/linux-x86_64-20260817-v1/liwei_0616`，不是 release-local 状态。使用当前 release 与 `forecast_env` 对 7 个 current family 执行 secure loader，7/7 成功、共读回 27 个 baseline，未触发重建。结论：该缓存可由后续同架构 release 直接复用 |
+| ECS DataBridge | data 与 refresh runtime 仍分别绑定在 `/opt/bond-factor-lab/current/data/data_bridge` 和 `/opt/bond-factor-lab/current/backtest_artifacts/data_bridge_refresh`。现场严格只读校验通过：generation `full-20260818-130421-9cdf0632d47a`、refresh date `2026-08-18`，daily/monthly/weekly 分别为 3899/200/852 行。结论：当前可正常运行，但下一次 release 前必须先外置并保持 owner/mode 与 manifest 校验 |
+| ECS release 治理缺口 | `/opt/bond-factor-lab/previous` 当前不存在；同时无 Git release 仍缺少 `BFL_RELEASE_COMMIT` 的稳定注入。结论：现有灰度运行不因此中断，但在首次执行同源 release 原子切换前，必须补齐 release commit 适配、manifest 校验和 `current/previous` 回滚指针 |
+
+另发现 Mac3 2026-08-15 自然 monthly 为 partial：3 个旧月频成功，5 个
+`cgb_a4_fundseason_*` 因 DataBridge `refresh_date=2026-08-14` 不满足当日要求而失败；这 5 个业务
+键已于 2026-08-17 以同一 `predict_date` 成功写入。业务缺口已补齐，但 8 月自然 monthly 触发本身
+不能记为全成功证据。该问题不由目录换根造成，仍须作为 Mac3 调度/DataBridge 日历的独立观察项。
+
+## 10. 文档与 Git 权威
 
 当前文档职责：
 
@@ -245,7 +399,7 @@ set +a
 
 Git 当前职责：
 
-- `codex/aliyun-db-clone-20260816`：唯一活动集成分支；
+- `codex/develop`：唯一活动集成分支，由 `codex/aliyun-db-clone-20260816` 原地改名；
 - `master@2b62a2e9ae7c661f4a7f1741b5ff6c351819a4ad`：冻结备份点，未经新授权不得移动或推送；
 - `codex/audit-bugfixes-20260613`：Mac3 当前 checkout 使用的既有分支，不在清理中切换或删除；
 - Mac3 与 ECS 不创建长期环境分支；两个主机接收同一精确源码 release，通过部署目标适配环境差异；
