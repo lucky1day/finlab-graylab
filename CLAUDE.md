@@ -18,7 +18,7 @@
 - 提 PR 前先判断该问题能否在本机测试验证。本机可验证的，直接在 PR 中修复并附复现与验证证据；需要结合生产环境才能确认的（launchd 现场状态、生产 DataBridge、真实调度时钟、跨环境数据漂移等），不得夹带未经验证的代码改动，只提交「现象 / 问题点 / 造成的影响 / 推荐解决方案」四段式报告 PR，由能验证该环节的同事结合建议自行处理。判断依据是能否在本机跑出决定性证据，不是主观把握程度。
 - 当前未跟踪的 `outputs/` 属于临时分析/导出产物；除非用户明确要求，不要纳入文档、方案或修复提交。
 - 2026-08-17 会议决定：阿里云 ECS 暂时作为独立灰度实验室，不直接替换 Mac3 生产。Mac3 继续承载现有生产域名和生产服务；ECS 使用自己的本地 MySQL、DataBridge、算法调度、Actuals 与 localhost 前端，各自独立运行，不建立复制、双写、跨主机共享数据库或共享 DataBridge。ECS 每日任务写入本地数据库后，localhost 前端通过 API 展示最新数据；“每天更新前端”不是每日重新构建或部署静态前端。只有在独立观察期证明任务、数据、资源和前端稳定，并再次取得切换窗口授权后，才考虑把 Mac3 对应域名或生产 Writer 切到 ECS。
-- 上述会议决定本身只授权更新方案和项目上下文，不授权立即启用 ECS timer。后续启用 ECS DataBridge、daily、weekly、monthly、Actuals timer 必须取得单独授权；灰度期不停止 Mac3、不修改生产域名/Nginx/DNS，也不把 ECS localhost 前端开放为生产公网入口。
+- 2026-08-18 用户已在 timer-disabled 手工真写库验收后单独授权启动 ECS 自然灰度：DataBridge、daily、weekly、monthly、Actuals 五个 systemd timer 已 `enabled/active/waiting`。这只启动 ECS 独立灰度调度；灰度期不停止 Mac3、不修改生产域名/Nginx/DNS，也不把 ECS localhost 前端开放为生产公网入口。以后替换 installed unit/timer、改变触发、停用或重启服务仍是独立运维操作，必须先只读核对并取得明确授权。
 - Mac3 继续以 launchd + plist 作为真实生产调度控制面：任务是否生产挂载、触发时间、进程环境、重启策略和日志位置以 installed plist 与 `launchctl` 现场状态为准。仓库 `deploy/launchd/*.plist` 是受版本控制的期望配置，但文件存在不等于已经安装或生效。ECS 独立灰度实验室只允许使用仓库 `deploy/systemd/` 的 one-shot service/timer，现场状态以 installed unit 与 `systemctl` 读回为准。
 - 常驻 `scheduler.main`/APScheduler 模块已删除；调度只能由 Mac3 launchd 或 ECS systemd timer 承载的一次性入口驱动，不得恢复第二 Python 控制面。后续新增或迁移调度必须先明确对应 plist/unit、触发、时区、错过触发和失败恢复语义。
 - 后续明确不采用 daily ledger、occurrence 或 epoch 作为生产或过渡调度方案：不得新增、扩容、迁移或补建 ledger policy、任务或表，也不得把任何新方案的 Intake、激活、灰度可见或定时调度绑定到 ledger 建设。仓库 runtime/config 闭包已退役；历史 migration 与现存数据库对象只保留为审计/恢复证据，任何物理归档或 DDL 仍须独立设计和授权，绝不得重建运行时闭包。

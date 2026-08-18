@@ -8,16 +8,17 @@ Actuals 五个 one-shot 均以 exit 0 完成手工真写库；Backend 在 `127.0
 健康运行。ECS effective discovery 为 56 base / 60 composite，Registry 保持
 60 active / 9 paused，9 个 Mac-only base 在本次 run 范围内零新增。
 
-本轮仍然明确没有执行：
+timer-disabled 手工验收阶段明确没有执行：
 
-- 没有启用任何 systemd timer；
+- 在手工批次及其数据库闭环完成前没有启用任何 systemd timer；
 - 没有修改 Mac3、`master`、launchd、Nginx、DNS、域名或生产流量；
 - 没有运行 macOS/Linux 数值 CompareGate；
 - 没有执行历史回测、自动 backfill 或手工删除数据库审计行；
 - 没有把 Backend 设置为开机自启。
 
-因此本报告关闭的是“新 release 安装 + timer-disabled 手工真写库”验收，不构成
-自然灰度 timer 的启用授权，也不构成生产切流授权。
+因此第 1–8 节关闭的是“新 release 安装 + timer-disabled 手工真写库”验收；它本身不构成
+自然灰度 timer 的启用授权，也不构成生产切流授权。用户随后于 2026-08-18 单独授权启动
+自然灰度，实际启用与读回结果记录在第 9 节。
 
 ## 2. Release 与回滚材料
 
@@ -137,9 +138,9 @@ Actuals 终态：
 | monthly | success | 0 | 2h | 5min |
 | Actuals | success | 0 | 1h | 5min |
 
-五个 timer 全部 `disabled/inactive`。Backend 为 `active/static`，仅监听
+手工验收交接点的五个 timer 全部 `disabled/inactive`。Backend 为 `active/static`，仅监听
 `127.0.0.1:8100`；`/api/health` 返回 `status=ok`，调度显示
-`mode=systemd_one_shot`、`overall=not_enabled`，与 timer-disabled 阶段一致。
+`mode=systemd_one_shot`、`overall=not_enabled`，与当时的 timer-disabled 阶段一致。
 
 终态安全与资源：
 
@@ -165,8 +166,28 @@ Actuals 终态：
 
 这些记录不改变终态成功证据，也没有授权手工删除任何业务行或审计行。
 
-## 9. 下一道独立授权门
+## 9. 自然灰度 timer 启动结果
 
-当前可以提交用户审阅是否启用五个 ECS timer，进入独立灰度自然运行。启用前不需要再次重跑
-本次 daily/weekly/monthly；启用动作必须单独授权，并在启用后立即读回 next trigger、时区、
-`Persistent=false`、Backend 和 Registry。Mac3、域名、Nginx、DNS 与生产流量继续保持不变。
+用户于 2026-08-18 明确授权启用五个 ECS timer。15:22:58（Asia/Shanghai）执行后，五个 timer
+均已读回为 `enabled/active/waiting`；installed timer 与 release 模板逐字一致，均保持
+`Persistent=false`、`RandomizedDelayUSec=0`。启用没有立即触发 one-shot，五个 service 均保持
+`inactive` 且上一结果为 `success`；`t_scheme_runs` 最大 `run_id` 仍为 3311，`running` 为 0。
+
+| Timer | 启用后下一次触发（Asia/Shanghai） |
+|---|---|
+| Actuals | 2026-08-18 19:00:00 |
+| DataBridge | 2026-08-19 06:30:00 |
+| daily | 2026-08-19 07:03:00 |
+| weekly | 2026-08-22 11:30:00 |
+| monthly | 2026-09-15 18:00:00 |
+
+启用后 current 仍精确指向本报告 release；Backend 保持 `active/static`，没有设置开机自启，正确端口
+`127.0.0.1:8100` 的 `/api/health` 返回 HTTP 200、`status=ok`。只读
+`check_production_daily_health.py --predict-date 2026-08-18` 返回 `status=ok`、`findings=[]`。
+按 installed unit 的 `aliyun-gray` 目标复核 discovery 仍为 56 base / 60 composite，Registry 仍为
+60 active / 9 paused。
+启动证据保存在 ECS root-only 目录
+`/var/lib/bond-factor-lab/acceptance/timer-activation-20260818T072258Z-a749b17`。
+
+至此 ECS 已进入独立自然灰度观察期。Mac3、域名、Nginx、DNS 与生产流量仍未修改；下一道门是
+收集并复核连续日频、自然周频、自然月频、Actuals、缓存和资源证据，不是自动进入生产切流。

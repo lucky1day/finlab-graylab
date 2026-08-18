@@ -9,7 +9,7 @@
 | 章节 | 内容 | 什么时候看 |
 |---|---|---|
 | **0.0** | 数据库克隆决策 `DB-CLONE-A` 与实施回填 | 想知道数据库现在在哪、怎么来的 |
-| **0.0.2–0.0.6** | v1.22–v1.28 状态变化（沙箱、ECS cron、Linux L1、独立灰度、单一源码、灰度 release 验收） | 了解与上一版的差异 |
+| **0.0.2–0.0.7** | v1.22–v1.29 状态变化（沙箱、ECS cron、Linux L1、独立灰度、单一源码、灰度 release 验收与 timer 启动） | 了解与上一版的差异 |
 | **0.1–0.10** | 单一交接入口：速查表、SSH、资源盘点、目标拓扑、Secret 边界、接手步骤 | **新同事第一入口** |
 | 1 | 需求重述、阶段一范围、纯迁移原则与 ROE 准入 | 判断某项改动该不该进本次迁移 |
 | 2 | 执行摘要与分层可行性结论 | 快速了解整体判定 |
@@ -129,7 +129,8 @@ L1 的**当前主机功能出口**已经通过，可以进入 L2 fixture/数值/
    每日任务把新数据写入 ECS 本地数据库后，localhost 前端通过 API 读取并展示最新结果；这里的
    “每天更新前端”不新增每日静态文件构建、发布或重启任务。
 5. 下一步目标是在取得**单独授权**后启用 ECS 的 DataBridge、daily、weekly、monthly、Actuals
-   systemd timers，让其按自己的数据库和日历自然运行。本次会议决定和文档更新本身不构成启用授权。
+   systemd timers，让其按自己的数据库和日历自然运行。本次会议决定和文档更新本身不构成启用授权；
+   该专项授权及实际启动已于 2026-08-18 完成，见 0.0.7。
 6. 灰度期每日观察调度成功率、预测/Actuals 写库、水位与日期链、DataBridge generation、缓存命中、
    批次耗时、Peak RSS/OOM、磁盘增长、Backend 健康和异常日志；周频与月频按各自自然日历验收，
    “每天观察”不等于把周/月任务改成每日运行。
@@ -176,18 +177,35 @@ Liwei 缓存没有全量重建：7 个 family 均复用迁移 parent，只对新
 
 完整脱敏证据见
 [`ALIYUN_ECS_GRAY_RELEASE_ACCEPTANCE_20260818.md`](ALIYUN_ECS_GRAY_RELEASE_ACCEPTANCE_20260818.md)。
-对应 implementation plan 已完成并从活动计划目录删除。五个 timer 仍为 disabled/inactive；下一步只有
-取得新的明确授权，才能启用 timer 进入 ECS 独立灰度自然运行。Mac3、域名、Nginx/DNS 和生产流量
-继续不变。
+对应 implementation plan 已完成并从活动计划目录删除。本节记录的交接点仍是五个 timer
+`disabled/inactive`；后续专项授权及启动结果见 0.0.7。Mac3、域名、Nginx/DNS 和生产流量继续不变。
+
+### 0.0.7 v1.29 ECS 自然灰度 timer 已启动（2026-08-18）
+
+用户在完整手工验收后明确授权启动自然灰度。2026-08-18 15:22:58（Asia/Shanghai），ECS 的
+DataBridge、daily、weekly、monthly、Actuals 五个 timer 已启用，现场均读回
+`enabled/active/waiting`；installed timer 与 exact release 模板逐字一致，保持
+`Persistent=false`、`RandomizedDelayUSec=0`。启用没有立即触发 one-shot，五个 service 均为
+`inactive` 且上一结果 `success`；最大 `run_id` 仍为 3311，残留 `running` 为 0。
+
+启用后 current 仍指向 exact release `a749b17d5ad3e3f248a1cb788d892aa36d30f518`；Backend 保持
+`active/static` 并仅监听 `127.0.0.1:8100`，健康检查 HTTP 200、`status=ok`。只读日频健康检查为
+`status=ok`、`findings=[]`；discovery 仍为 56 / 60，Registry 仍为 60 active / 9 paused。下一次自然触发依次为：Actuals 2026-08-18 19:00、DataBridge
+2026-08-19 06:30、daily 2026-08-19 07:03、weekly 2026-08-22 11:30、monthly 2026-09-15 18:00。
+启动证据保存在 ECS root-only 目录
+`/var/lib/bond-factor-lab/acceptance/timer-activation-20260818T072258Z-a749b17`。
+
+该授权只启动 ECS 独立灰度调度。Mac3、生产域名、Nginx、DNS 与生产流量均未修改；后续 unit/timer
+替换、触发调整、服务停用/重启以及任何 Web/Writer 切换仍需独立只读预检和明确授权。
 
 ## 0. 单一迁移交接入口（先读）
 
 本节是新接手人员的第一入口。除非注明“目标/待实施”，下列值均为 2026-08-18（Asia/Shanghai）
 对专用 ECS 的现场实施与读回结果。数据库克隆、`BondPrediction` 增量能力、C56 release、三套 Linux
 环境、热缓存重绑定、DataBridge/日周月预测/Actuals 手工真写库和 localhost Backend 已完成；五个
-项目 timer 仍保持 disabled。当前目标不是立即切流，而是在另行授权后把 ECS 启动为独立灰度实验室，
-与 Mac3 各自运行并持续观察。任何 timer 启用、Mac3 启停、Nginx/DNS/域名或生产流量操作仍须取得
-对应授权。本文的服务器资源基线只以本节记录的专用 ECS 为准。
+项目 timer 已经专项授权启用，ECS 正在与 Mac3 各自独立运行并进入自然灰度观察。后续 timer/unit
+变更、Mac3 启停、Nginx/DNS/域名或生产流量操作仍须取得对应授权。本文的服务器资源基线只以本节
+记录的专用 ECS 为准。
 
 ### 0.1 一页速查
 
@@ -201,7 +219,7 @@ Liwei 缓存没有全量重建：7 个 family 均复用迁移 parent，只对新
 | 专用 ECS 身份/网络 | `i-uf68h8wsd7ks5wqod85s`；EIP `47.103.45.193`；私网 `172.22.56.176/20` | 已由实例元数据核实；`cn-shanghai-e` |
 | 专用 Candidate 资源 | **`ecs.u1-c1m4.xlarge`；4 vCPU；Guest 可见 `16,061,423,616` bytes（约 14.96 GiB）；40 GiB ext4 系统盘** | 2026-08-16 已通过 SSH/元数据读回生效；可开始 Candidate 准备，但功能/生产容量尚未验收 |
 | 专用 Candidate 系统 | Ubuntu 26.04 LTS；Linux `7.0.0-28-generic`；x86_64；systemd 259；无 Swap | 已核实；系统 Python 3.14.4，不可替代项目要求的独立 3.12/3.13 环境 |
-| Candidate 当前状态 | ECS 本地 MySQL、`BondPrediction`、C56 release、三套 Linux 环境、Liwei cache、DataBridge/预测/Actuals one-shot 与 localhost Backend 已部署；56 个 active base 已完成手工真写库 | timer-disabled 手工验收完成；等待单独授权后进入独立灰度自然运行，不承载生产流量 |
+| Candidate 当前状态 | ECS 本地 MySQL、`BondPrediction`、C56 release、三套 Linux 环境、Liwei cache、DataBridge/预测/Actuals one-shot 与 localhost Backend 已部署；56 个 active base 已完成手工真写库 | 五个 timer 已启用，正在独立自然灰度观察；不承载生产流量 |
 | 阶段一数据库 | `DB-CLONE-A`：Mac MySQL 8.0.45 的完整 `bond_db` 已一次性 dump/load 到 ECS 本机 MySQL 8.4.10；运行期连接 `127.0.0.1` | **Candidate 已完成并验收**；不建立复制，后续由 ECS `BondPrediction` 独立增量更新 |
 | 阶段一数据库账号 | ECS 使用仅本机可连接的 `bond_app@localhost` 承载 `BondPrediction`，后续也供 Backend、Dashboard、DataBridge、scheduler/Actuals 使用；凭据只落 root-only 配置 | 已保留 `root@localhost` 的 socket 管理语义；未复制 `mysql` 系统库、未开放公网 3306；DEFINER coverage 已通过 |
 | Secret 交付 | `BondPrediction` 与 Bond Factor Lab 的运行配置均已在目标机 root-only 文件中交付 | Secret 不进入 Git、release、unit 正文、命令行、日志或本文；灰度运行不改变该边界 |
@@ -209,7 +227,7 @@ Liwei 缓存没有全量重建：7 个 family 均复用迁移 parent，只对新
 | 阶段一算法范围 | canonical 源码 65 active；ECS 矩阵保留 17 个 Native + 39 个 Blackbox，共 56 个；9 个 Darwin-only Native 采用“Mac-only、ECS Registry 暂停、代码保留” | ECS effective discovery 为 56 base/60 composite，Registry 为 60 active/9 paused；手工验收期间 9 个排除方案运行数为 0 |
 | 阶段一回测范围 | **不执行历史回测，不补跑或持久化新的 `t_backtest_*` 结果**；保留 backtest 代码、既有历史数据及 Dashboard/API 只读展示 | 用户已确认；迁移验收聚焦 live schedule、当前输入和 no-persist/fixture 证据 |
 | 阶段一调度范围 | `LIVE-SCHEDULE-ONLY`：DataBridge 每日 06:30；日频周一至周五 07:03；周频周六 11:30；月频每月 15 日 18:00；Actuals 每日 08:30、19:00、23:45 | 用户已确认所有 live 日/周/月任务按各自日历正常运行；不包含历史回测、历史补跑或自动 backfill |
-| 阶段一部署基线 | **独立灰度实验室**：干净 C56 release + ECS 本地 MySQL + `BondPrediction` + Linux 环境 + 本地 DataBridge + 56 个 active base + Actuals + systemd one-shot/timer + localhost Backend | timer-disabled 部署和手工真写库已完成；生产 Nginx/HTTPS、DNS 与流量不进入灰度启动范围 |
+| 阶段一部署基线 | **独立灰度实验室**：干净 C56 release + ECS 本地 MySQL + `BondPrediction` + Linux 环境 + 本地 DataBridge + 56 个 active base + Actuals + systemd one-shot/timer + localhost Backend | timer-disabled 手工验收与后续 timer 启用均已完成；生产 Nginx/HTTPS、DNS 与流量不进入灰度范围 |
 | Web 内部监听 | FastAPI 仅监听 `127.0.0.1:8100`，直接提供 ECS 本机前端/API；8100 不对公网开放 | 已启动并通过 `/api/health`；灰度观察通过受控 SSH 隧道访问 |
 | Timer 错过触发 | 所有 live timer 固定 `Persistent=false`、`RandomizedDelaySec=0`；ECS 停机期间错过的触发不在开机后自动补跑 | 与“无历史补跑/无 startup catch-up”一致；漏跑记失败并告警，人工重跑须走独立受控操作 |
 | G6 证书引导 | 当前域名 A 记录尚未指向 Candidate；切流前默认以 DNS-01 预签证书，切流后再把自动续期收敛到本机 HTTP-01/webroot 并 dry-run | 不阻止 G0B–G5；G6 只需确认 DNS/TXT 操作权限和切换窗口，不引入长期 DNS API Secret |
@@ -264,10 +282,10 @@ ssh-keyscan -t ed25519 47.103.45.193 2>/dev/null | ssh-keygen -lf -
 | 当前监听 | 公网 `22/tcp`；MySQL 仅监听 `127.0.0.1:3306/33060`；另有本地 resolver/Agent loopback | 尚无 Nginx/FastAPI 公网服务，不承载生产流量；3306 不进安全组 |
 | 已有工具/运行时 | 系统 Python 3.14.4、Git 2.53.0、GCC/G++ 15.2、make、curl/wget/rsync、OpenSSL 3.5.5；MySQL 8.4.10；`/opt/miniconda3`；Bond Factor Lab 三套精确环境；`/opt/bondprediction/venv` Python 3.13.12；Chrome/ChromeDriver 151.0.7922.137 | 数据更新与 Bond Factor Lab Linux L1 环境均完成 |
 | 尚未安装/部署 | Nginx、TLS、生产公网入口、Docker、Podman | 灰度期明确不安装生产 Nginx/TLS；FastAPI、DataBridge/算法/Actuals 与 systemd unit/timer 已安装 |
-| 系统状态 | cloud-init done；system state running；MySQL、cron 和 localhost Backend active；root crontab 有 28 条 `BondPrediction` 触发；五个项目 timer disabled/inactive | 上游数据链正在 ECS 本地运行；Bond Factor Lab one-shot 手工验收完成，尚无生产流量 |
+| 系统状态 | cloud-init done；system state running；MySQL、cron 和 localhost Backend active；root crontab 有 28 条 `BondPrediction` 触发；五个项目 timer enabled/active/waiting | 上游数据链与 Bond Factor Lab 自然灰度均在 ECS 本地运行；尚无生产流量 |
 | 基础连通 | PyPI/Conda/GitHub/Google Chrome 下载链路可用；本地 `bond_app@localhost` 对 `bond_db` 的真实应用 TCP 连接通过 | NATApp 只是历史证据；DataBridge、算法、Actuals 与 Backend 已逐条命中 ECS 本地库并完成手工验收 |
 
-2026-08-16，用户把该实例指定为本次迁移唯一专用服务器，并要求按 4C16G 验证。现场已证明规格、内存和网络真实生效，因此“是否有可用 Candidate 主机”已关闭；MIG-002 只剩持续容量观察，不再等待资源配置。该节点目前运行 loopback-only MySQL、`BondPrediction` 上游任务、localhost Backend，并已安装 Bond Factor Lab C56/env/cache、DataBridge/算法/Actuals one-shot 与 disabled timers；Web 与 Batch 共享这 4C16G，须在 L4G 自然运行中持续观测。
+2026-08-16，用户把该实例指定为本次迁移唯一专用服务器，并要求按 4C16G 验证。现场已证明规格、内存和网络真实生效，因此“是否有可用 Candidate 主机”已关闭；MIG-002 只剩持续容量观察，不再等待资源配置。该节点目前运行 loopback-only MySQL、`BondPrediction` 上游任务、localhost Backend，并已安装 Bond Factor Lab C56/env/cache、DataBridge/算法/Actuals one-shot；五个 timers 已启动自然灰度。Web 与 Batch 共享这 4C16G，须在 L4G 自然运行中持续观测。
 
 实例 Guest 内仍无法可靠回答 Security Group 精确规则、自动快照策略和带宽计费细节。用户已确认具备控制台权限，因此这些按其实际 Gate 回填，不阻止 L2。云盘 40 GiB 在 Linux L1 完成后约 16 GiB 可用，足够进入短期 fixture/性能实验；它不构成长周期无界增长保证，正式运行前仍须量化临时 Artifact、日志、Native CSV 与 MySQL/binlog 增长。
 
@@ -285,7 +303,7 @@ flowchart LR
     O["灰度观察者"] -->|"受控 SSH 隧道"| A["ECS localhost Backend/前端\n127.0.0.1:8100"]
     A --> L["ECS 本地 MySQL 8.4\n独立灰度数据"]
     B["ECS BondPrediction\n28 cron"] --> L
-    T["ECS systemd timers\n当前 disabled / 另行授权启用"] --> X["DataBridge / 56 方案 / Actuals"]
+    T["ECS systemd timers\nenabled / active / waiting"] --> X["DataBridge / 56 方案 / Actuals"]
     X --> L
     D -.->|"仅历史一次性静态 dump/load"| L
 ```
@@ -301,7 +319,7 @@ flowchart LR
 | MySQL | 8.4.10 active；`bond_db` 已恢复；`event_scheduler=OFF` 已持久化并经重启复核；本地应用连接通过 |
 | `BondPrediction` | `/opt/bondprediction/current` 与 Python/Chrome 环境已部署；测试、增量写入、幂等重跑和 Wind dry-run 通过 |
 | 数据更新 schedule | `/opt/bondprediction/cron.disabled` 仍保留候选副本；2026-08-17 只读复核时 root crontab 已有 28 条有效 `BondPrediction` 触发，4 条 `forecast_project` 未迁移 |
-| Bond Factor Lab systemd unit/timer | one-shot 与五个 timer 已安装；timer 均为 disabled/inactive，等待 L4G 启动专项授权 |
+| Bond Factor Lab systemd unit/timer | one-shot 与五个 timer 已安装；五个 timer 已专项授权并为 enabled/active/waiting，正在 L4G 自然灰度观察 |
 | 生产流量 | 0；当前 Mac 生产保持原状 |
 
 installed systemd 配置和 loaded state 是本机运行 authority；仓库模板不能代替现场状态。未来若进入 L5，
@@ -313,7 +331,7 @@ installed Nginx/TLS 与实际流量读回才构成切换证据，灰度期 local
 flowchart LR
     O["灰度观察者"] -->|"SSH 隧道"| A["ECS FastAPI/前端\n127.0.0.1:8100"]
     A --> DB["ECS 本地 MySQL 8.4\n127.0.0.1:3306 / bond_db"]
-    T["ECS systemd one-shot + timers\n另行授权启用"] --> X["56 方案 / DataBridge / Actuals"]
+    T["ECS systemd one-shot + timers\n自然灰度已启用"] --> X["56 方案 / DataBridge / Actuals"]
     B["BondPrediction\n28 条 schedule"] --> DB
     X --> DB
     M["Mac3 生产系统\n域名 / Writer / 本地数据库"]
@@ -327,9 +345,9 @@ flowchart LR
 | 前端 + FastAPI | 已部署干净 C56 release，FastAPI 仅监听 `127.0.0.1:8100` | 灰度 localhost 前端；8100 不进入 Security Group 公网入站 |
 | 数据库 | 完整 `bond_db` 已 dump/load 到 ECS MySQL 8.4.10；运行期固定 `BOND_DB_HOST=127.0.0.1`、`BOND_DB_PORT=3306`，未改 Schema 和业务 SQL | **已完成并验收**；一次性数据迁移 + 配置替换；不做复制、RDS、双写或公网 3306 |
 | `BondPrediction` | 已复制 `/Users/macstudio0/bondprojectpro/BondPrediction` 当前生产工作目录 bytes，重建 Python 3.13 + Chrome 环境，并等价生成 28 条 Linux schedule | **Candidate 已完成并验证**；2026-08-17 只读复核发现 28 条 schedule 已由 root crontab 启用 |
-| DataBridge | 从 ECS 本地 `bond_db` 生成 current Artifact；不依赖 Mac 数据库或 NATApp | 已完成 one-shot 发布与手工验收；灰度自然运行待 timer 授权 |
+| DataBridge | 从 ECS 本地 `bond_db` 生成 current Artifact；不依赖 Mac 数据库或 NATApp | 已完成 one-shot 发布与手工验收；timer 已启用并进入自然灰度 |
 | 39 个 Blackbox | 使用锁定 Linux Python 环境直接启动子进程。运行期沙箱已退役，Runner 无 macOS 绑定 | 已完成 daily/weekly/monthly 手工真实执行和写库；不声明跨平台数值等价 |
-| 调度与 Actuals | 用真实 `systemd_one_shot` unit/timer 承载现有一次性入口、时间和失败语义 | unit 已安装、one-shot 已验收、timer 仍 disabled；不新增第二 Python 控制面 |
+| 调度与 Actuals | 用真实 `systemd_one_shot` unit/timer 承载现有一次性入口、时间和失败语义 | unit 已安装、one-shot 已验收、五个 timer 已启用；不新增第二 Python 控制面 |
 | 9 个延期 Native | canonical config active；矩阵仅允许 `mac3-production`，ECS Registry paused，代码和历史保留，不在 Linux 执行 | 已批准的阶段范围差异 |
 | 公网入口 | 灰度期不安装生产 Nginx/Certbot，不修改 `bond.finailab.cn` | Mac3 继续承载生产；公网入口只在 L4G 通过后的 L5 单独设计和授权 |
 
@@ -369,7 +387,7 @@ flowchart LR
 | Mac 调度 | installed plist + `launchctl print` 优先 | 仓库 plist 只是期望配置；启停/替换需另授权 |
 | Mac 活跃生产代码 | `/Users/macstudio0/bond-factor-lab`；Backend、DataBridge、日/周/月预测和 Actuals 的 installed plist 均以此为 `WorkingDirectory` | 该目录不是安全的迁移开发目录；切流前不得在其中切分支、改代码/config、改依赖或生成会被生产读取的制品 |
 | Mac 活跃 checkout 身份 | 2026-08-16 只读复核：branch `codex/audit-bugfixes-20260613`，HEAD `e593c86cd8a3e8ba5f2a849c2e77b1e50c46ecb3`；已有两个与本迁移无关的 untracked 路径 | 不把“生产分支应为 `master`”误当成现场事实；P65 冻结需记录现状并保留用户文件，不能为制造 clean tree 而清理、切分支或覆盖 |
-| ECS 灰度调度 | installed systemd unit/timer + `systemctl show/cat` | unit/timer 已安装；五个 timer 当前 disabled/inactive，启用需 L4G 专项授权 |
+| ECS 灰度调度 | installed systemd unit/timer + `systemctl show/cat` | 五个 timer 已于 2026-08-18 经 L4G 专项授权启用，当前 enabled/active/waiting；未来任何变更仍需独立授权 |
 | 应用 release | exact Git commit + 锁定依赖 bytes/hash + 部署清单 | `/opt/bond-factor-lab/current` 指向已验收的不可变 C56 release；灰度身份不等于生产 current |
 
 Authority 顺序固定为：**云控制台/实例元数据与 installed/loaded state（事实） > 经核实的部署清单（期望） > 仓库模板（设计） > 本文中过往历史描述**。本文是迁移需求、决策和交接的单一入口，但不能让旧的文档快照覆盖变化后的真实现场；每次生产动作前仍须只读复核，并把新的可复现事实回写本文。
@@ -381,7 +399,7 @@ Authority 顺序固定为：**云控制台/实例元数据与 installed/loaded s
 3. 在专用 ECS 用 `hostnamectl`、`free -h`、`df -hT`、`ss -lntp`、`systemctl status mysql` 和 `systemctl --failed` 复核当前 Candidate；不得把 MySQL 的存在误当成整套服务已上线。Nginx 尚未安装时，`systemctl status nginx` 失败不表示系统故障。
 4. 保留第 0.0.1 的历史 disabled-cron 证据和第 0.0.2 的后续启用事实；不要覆盖安装 `/opt/bondprediction/cron.disabled`。只读核对当前 root/Mac crontab，任何启停都须独立 Writer 授权。
 5. 后续实现继续使用活动集成分支的独立迁移 worktree，并从一个 exact commit 生成一份 release；不得把 `/Users/macstudio0/bond-factor-lab` 当迁移开发 worktree，不得修改 Mac crontab，也不得在 ECS 使用 Git checkout。
-6. 下一步先取得 L4G 专项授权，再启用 ECS 五个 timer 并按第 13 节持续观察；不要停止 Mac3、修改生产域名或安装生产公网入口。L2 跨平台等价未执行且不作声明，容量和自然调度证据在灰度期收集。
+6. ECS 五个 timer 已经 L4G 专项授权启用；下一步按第 13 节持续收集自然运行证据。不要停止 Mac3、修改生产域名或安装生产公网入口。L2 跨平台等价未执行且不作声明，容量和自然调度证据在灰度期收集。
 
 ### 0.9 控制面确认台账（含已确认项）
 
@@ -395,7 +413,7 @@ Authority 顺序固定为：**云控制台/实例元数据与 installed/loaded s
 | Candidate 试验资源 | **`ecs.u1-c1m4.xlarge`，4 vCPU/16 GiB 已在新专用实例真实生效** | **RESOLVED FOR TRIAL**；MIG-002 进入功能/容量实验，不再等待实例或规格读回 |
 | 公网入口归属 | 灰度期继续由 Mac3 承载 `bond.finailab.cn`；ECS 只提供 localhost 前端 | **DECIDED FOR L4G**；不安装生产 Nginx/TLS、不改 DNS；未来 L5 拓扑和回滚重新开会决定 |
 | ECS 部署目录、Python 环境、systemd unit/timer 名 | `BondPrediction` 使用 `/opt/bondprediction/{current,venv,logs}`；Bond Factor Lab current 在 `/opt/bond-factor-lab/current`，三套 env 在 `/opt/miniconda3/envs/`，灰度 cache 在 `/var/lib/bond-factor-lab/cache-builds/`；unit/timer 已安装，运行身份为 root | **RESOLVED FOR L4G PREPARATION**；现场 authority 是 current symlink 与 `systemctl cat/show`，不再创建非 root 服务用户 |
-| Candidate 准备权限 | 2026-08-16 用户允许构建并安装 Timer-disabled Candidate；2026-08-17 已完成 release、配置、缓存、unit 和手工真写库 | **RESOLVED**；不含 Mac3 变更、ECS timer enable、Nginx/TLS/DNS、安全组或生产流量变更 |
+| Candidate 准备权限 | 2026-08-16 用户允许构建并安装 Timer-disabled Candidate；release、配置、缓存、unit 和手工真写库已完成；2026-08-18 又单独授权启用五个 timer | **RESOLVED FOR L4G START**；不含 Mac3 变更、后续 unit/timer 变更、Nginx/TLS/DNS、安全组或生产流量变更 |
 | 阶段一 ECS 运行身份 | 用户明确选择直接使用现有 root 权限，不创建非 root 服务用户 | **DECIDED / ACCEPTED_RISK**；部署更简单，但 Candidate/服务/算法拥有整机权限，可能读取其他 root 可读文件或影响同机服务；不得声称已做进程权限隔离 |
 | 本地数据库 Secret 与增量验证 | ECS 已创建 `bond_app@localhost`，`BondPrediction` 与平台 root-only 配置均完成不回显交付；DataBridge、Backend、scheduler/Actuals 均真实命中本地库 | **RESOLVED FOR L4G**；Mac3 与 ECS 各用各自 Secret/数据库，不共享配置 |
 | SSH/DB/应用 Secret 的长期保管、轮换和回收机制 | 两套 ECS 配置已交付，长期 owner/轮换/回收尚未治理 | 不阻止短期 L4G，但必须在任何生产切换前闭环 |
@@ -414,11 +432,11 @@ Authority 顺序固定为：**云控制台/实例元数据与 installed/loaded s
 | 当前活动集成分支 | `codex/aliyun-db-clone-20260816`；Mac3/ECS 不创建长期环境分支，每个候选提交只生成一份源码 archive |
 | 当前源码范围 | canonical config 65 active；`mac3-production` effective discovery 65/69 composite，`aliyun-gray` effective discovery 56/60 composite；ECS 的精确 9 个 composite Registry 行保持 paused |
 | 评估日期 | 2026-08-18（Asia/Shanghai） |
-| 当前阶段 | 单一源码双主机适配已在开发分支实现；ECS 现有 timer-disabled 手工写库验收仍有效。下一步先形成 exact archive 并只更新 ECS release/unit 期望状态，读回 target/Registry/timers 后再申请独立灰度自然运行授权 |
-| 当前总判定 | **独立灰度实验室准备完成，生产切换有意保持 No-Go。Mac3 继续承载生产域名和服务；ECS 使用自己的数据库、数据链、调度和 localhost 前端独立观察。五个项目 timer 仍为 disabled，实际启用须另行授权；达到稳定性和资源条件后再重新决定 Web/Writer 切换。** |
-| 文档版本 | 1.26 |
+| 当前阶段 | 单一源码双主机适配、ECS timer-disabled 手工写库验收和五个 timer 专项启用均已完成；当前正在 L4G 独立自然灰度观察，持续收集日/周/月、Actuals、缓存和资源证据 |
+| 当前总判定 | **独立灰度实验室已启动，生产切换有意保持 No-Go。Mac3 继续承载生产域名和服务；ECS 使用自己的数据库、数据链、调度和 localhost 前端独立观察。达到稳定性和资源条件后，仍须重新决定并授权 Web/Writer 切换。** |
+| 文档版本 | 1.29 |
 
-自 1.19 起（原第 19 章，现为第 22 章），仓库内 `docs/operations/ALIYUN_MIGRATION_ASSESSMENT.md` 是本文的 canonical 版本，外部同名文件仅保留为工作副本，不得覆盖 Git 中更新的内容。1.19 对当时版本的远程开发分支/`master` 同步授权只属于历史操作，不自动授权后续版本；1.26 的代码与文档提交也不授权移动或推送冻结的 `master`。本文包含公网 IP、实例/VPC 标识和本机 SSH 私钥路径引用，但不包含私钥内容、数据库密码、Token 或云 AccessKey，仍应按内部运维资料控制仓库访问。1.25 固化独立灰度实验室决策，1.26 固化单一源码双主机发布；两者都不自动授权启用 ECS timer、启停 Mac3、运行历史回测、切换域名/流量或修改现场服务与数据库。
+自 1.19 起（原第 19 章，现为第 22 章），仓库内 `docs/operations/ALIYUN_MIGRATION_ASSESSMENT.md` 是本文的 canonical 版本，外部同名文件仅保留为工作副本，不得覆盖 Git 中更新的内容。1.19 对当时版本的远程开发分支/`master` 同步授权只属于历史操作，不自动授权后续版本；1.26 的代码与文档提交也不授权移动或推送冻结的 `master`。本文包含公网 IP、实例/VPC 标识和本机 SSH 私钥路径引用，但不包含私钥内容、数据库密码、Token 或云 AccessKey，仍应按内部运维资料控制仓库访问。1.25 固化独立灰度实验室决策，1.26 固化单一源码双主机发布，1.29 记录已独立授权的 ECS timer 启用；该授权不外推到 Mac3、后续服务变更、历史回测、域名或生产流量切换。
 
 ## 1. 需求重述与第一性原理目标
 
@@ -629,8 +647,8 @@ flowchart LR
 | 在 Linux 部署 localhost 前端和 FastAPI | **已完成** | Backend service 仅监听 `127.0.0.1:8100`，健康检查通过；不承载生产公网流量 |
 | 在 Linux ECS 做全量功能试跑/容量观察 | 功能试跑完成，持续容量待 L4G | 56 个 active base 的日/周/月 one-shot 已真实写库；Peak RSS、长期磁盘增长和自然批次曲线在灰度期收集 |
 | 39 个 Blackbox 在 Linux 运行 | **当前 release 可执行** | daily/weekly/monthly 最新运行全部成功；跨平台数值等价未执行且不作声明 |
-| 17 个保留 Native 在 Linux 运行 | **当前 release 可执行** | daily/weekly 最新运行全部成功，Liwei 7/7 cache hit、无重建；跨平台数值等价未执行且不作声明 |
-| 阶段一 56 个方案迁到 Linux | **灰度准备完成，canonical release 待更新** | 旧 C56 release、systemd、Registry、缓存与手工真写库已验收；下一步部署含矩阵的单一源码 release 并保持五个 timer disabled，生产切流仍为 No-Go |
+| 17 个保留 Native 在 Linux 运行 | **当前 release 可执行** | daily/weekly 最新运行全部成功；Liwei 7/7 复用 parent，仅 append 唯一新日期且无 full rebuild；跨平台数值等价未执行且不作声明 |
+| 阶段一 56 个方案迁到 Linux | **独立灰度已启动** | exact release、systemd、Registry、缓存与手工真写库已验收；五个 timer 已启用并进入自然观察，生产切流仍为 No-Go |
 | 65 个方案全部迁到 Linux | **延期/仍硬阻断** | 被延期的 9 个 Native 仍只有 CPython 3.13 Darwin ARM64 Mach-O 扩展，仓库无 Linux 构建 |
 | 云端接管生产 Writer | **不在当前阶段 / Stop-Ship** | 当前路线是 Mac3 与 ECS 各自独立运行；只有 L4G 达标并再次授权后才设计生产 Writer 交接 |
 | Mac/NATApp 短断时仍稳定可读 | 运行拓扑问题已消除 | 目标运行期使用 ECS loopback MySQL，不再经 NATApp；仍受单 ECS/单 MySQL 故障影响 |
@@ -1047,14 +1065,14 @@ Source Runtime 的独立 PyMySQL 路径只属于未来恢复 9 个延期 Native 
 
 Mac 和 ECS 现在是两个独立数据库，跨主机 `flock`/UPSERT 覆盖不再是同一数据库上的直接冲突；真正风险变成数据分叉、重复调用外部数据源和“用户到底读哪一份”的 authority 歧义。最小方案仍只用**调度启停围栏**，不新增复制、ledger、分布式锁或双写：
 
-- 当前偏差是 ECS 28 条数据 cron 已启用，而 Mac 对应 cron 状态尚未在 v1.24 重验；所有 Bond Factor Lab 应用 Writer timer 仍须保持 disabled，Mac 应用继续是生产 authority；
+- ECS 28 条数据 cron 与五个 Bond Factor Lab 灰度 timer 均已启用，Mac 对应 cron 状态尚未在 v1.24 后重验；两端当前按会议决策写各自独立数据库，Mac 应用仍是唯一对外生产 authority；
 - handoff 固定在空窗，先停用精确 Mac Writer，并等待所有父/子进程退出；
 - 对 `2026-08-16 22:27:59 +08:00` 静态快照之后的空窗，选择重新做最终静态快照，或按明确业务日期补齐；不得静默忽略；
 - 在切换前先消除两端数据 cron 重复请求并验收目标库水位；DataBridge + 全部日/周/月 prediction cadence 作为一个应用切换组，Actuals 可单独切换；
 - 回滚先停 ECS cron/timer 和进程，再根据两库实际水位决定是否恢复 Mac；不能直接双开两边来“保证有一个成功”；
 - 任一时刻对外 DNS/应用连接与被授权 Writer 必须指向同一个数据库 authority，日志记录来源与切换时间。
 
-这是一项生产切换操作约束，不是功能优化，也不影响先完成 ECS 的 Timer-disabled 功能部署。
+这是一项未来生产切换操作约束，不是功能优化，也不阻止当前 ECS 独立自然灰度；切换窗口仍须重新建立单一生产 authority。
 
 ### 8.5 systemd 控制面
 
@@ -1184,15 +1202,14 @@ Blackbox 需额外分解为：
 - 两次迁移的工程和运维成本；
 - 未来恢复 9 个延期方案所需的上游重新交付和 Gate 等待时间（不计入阶段一 TCO）。
 
-## 13. 剩余阶段计划（v1.27）
+## 13. 剩余阶段计划（v1.29）
 
 数据库、上游数据链与 Blackbox 运行期沙箱三块已经解决，原 G0A–G9 中围绕
 `ECS 经 NATApp 直连 Mac MySQL` 与 `sandbox-exec 移植` 展开的门已不再适用。
 本节以当前事实重排剩余工作，只保留仍然成立的约束。历史门的论证保留在 6–12 节作为证据。
 
-当前执行步骤、命令、停止条件和回滚以
-`docs/superpowers/plans/2026-08-18-aliyun-gray-release-deployment.md` 为准；本节只说明阶段关系，
-不替代独立授权。
+timer-disabled 部署计划已经执行完成并删除；当前执行 authority 是本节、0.0.7、当前验收报告及
+ECS installed/loaded state。本节只说明阶段关系，不替代后续独立授权。
 
 **已关闭，不再是计划的一部分**
 
@@ -1202,8 +1219,8 @@ Blackbox 需额外分解为：
 | 上游数据 authority（原 MIG-012 HARD_BLOCKED） | `BondPrediction` 数据链已在 ECS 本地生产并写库 |
 | Blackbox 的 macOS `sandbox-exec` 平台绑定（MIG-003 执行层） | 运行期沙箱已退役，保证前移到入库 StaticGate + 版本哈希绑定 + 运行后输入目录指纹复验 |
 
-**L1、timer-disabled 部署与手工真写库已经通过。当前先进入 L4G 独立灰度实验室，不直接进入
-L5 切流。**L2 跨平台数值等价未执行，是用户对本次部署/灰度范围的明确取舍；这不修改既有方案
+**L1、timer-disabled 部署、手工真写库与 L4G timer 启动已经通过，当前正在独立自然灰度观察，
+不直接进入 L5 切流。**L2 跨平台数值等价未执行，是用户对本次部署/灰度范围的明确取舍；这不修改既有方案
 首次技术入库的 CompareGate，也不得据此声称跨平台数值等价。L3/L4 中尚未形成的容量和自然调度证据
 改由 L4G 持续收集，并在任何生产切换前闭环。
 
@@ -1232,13 +1249,14 @@ release 可执行；用户明确不要求以 Linux/macOS CompareGate 作为本�
   而 source-backed Native 禁止用改算法贴结果。判据需明确方向一致率要求、内部 score 的相对误差阈值、
   样本量，以及差异不可消除时的出口；不得借用也不得放宽 Native 首次入库的 CompareGate 口径。
 
-出口：56 个精确版本可执行、等价性判据已批准并通过、最慢单任务耗时已知。
+本阶段已采用的出口：56 个精确版本可执行且批次耗时已知；跨平台数值等价未执行、未声明，也不作为
+本次自然灰度启动前置。未来若要作等价声明或修改 exact version，仍按上述 Gate 单独处理。
 
 ### L3 调度控制面
 
-状态说明：systemd one-shot/service/timer 已部署，五个 timer 均为 `disabled/inactive`；DataBridge、
-daily、weekly、monthly、Actuals 已经手工启动并以 exit 0 完成真实写库，Backend 已在
-`127.0.0.1:8100` 健康运行。下一次启用 timer 是独立灰度实验室的启动操作，必须取得单独授权。
+状态说明：systemd one-shot/service/timer 已部署；DataBridge、daily、weekly、monthly、Actuals
+已经手工启动并以 exit 0 完成真实写库。用户于 2026-08-18 单独授权后，五个 timer 已启用并读回
+`enabled/active/waiting`；Backend 保持 `active/static`，在 `127.0.0.1:8100` 健康运行。
 
 - `launchd` → `systemd` one-shot/timer；`Asia/Shanghai`、`Persistent=false`、`RandomizedDelaySec=0`、无补跑；
 - 改造 `scheduler/repository.py` 与 `scheduler/executor.py` 中的 launchd 双因子门禁（字符串常量 + 模块级
@@ -1269,14 +1287,15 @@ daily、weekly、monthly、Actuals 已经手工启动并以 exit 0 完成真实�
   是否稳定在 06:30 前完成——它产出 DataBridge 要读的 `api_wind_derivative_*`。
   cron 与 systemd timer 之间没有依赖机制，两者都是纯时间触发。
 
-出口：全部 timer 已建立且保持 disabled、`OnCalendar`/时区/错过触发语义已验证、手工启动各 cadence 的
-one-shot 完成 no-persist 验证。
+出口：全部 timer 已建立并启用，`OnCalendar`/时区/错过触发语义已验证；手工启动各 cadence 的
+one-shot 已完成真写库验收，启用动作没有立即触发 one-shot。后续以自然触发证据验证长期行为。
 
 ### L4 容量与全量 Shadow
 
-状态说明：56 个 active base 的全 cadence 功能试跑已完成，缓存正常消费者路径为 7/7 hit 且没有
-重新训练；完整 Peak RSS、批次资源曲线、长期磁盘增长和 SLO 仍未闭环。这些指标在 L4G 自然运行期
-持续收集，未达到资源条件不得进入 L5。
+状态说明：56 个 active base 的全 cadence 功能试跑已完成。Liwei 7 个 family 均复用迁移 parent，
+第一次消费者只 append 唯一缺失的 `feature_date=2026-08-17`，同 family 后续消费者均 hit；没有
+full rebuild。完整长期资源曲线、磁盘增长和 SLO 仍未闭环，这些指标在 L4G 自然运行期持续收集，
+未达到资源条件不得进入 L5。
 
 - 完整日/周/月串行 no-persist Shadow，采集墙钟、Peak RSS、I/O、临时空间，并同时观测本机 API；
 - **磁盘是明确的硬约束**：40 GiB 盘在 Linux L1 后仅余约 16 GiB，而 Native 的日期 CSV 保留无界增长。
@@ -1298,12 +1317,11 @@ one-shot 完成 no-persist 验证。
 L4G 的目标是验证 ECS 能否作为一个自给自足、持续稳定但不承载生产流量的实验室运行。它不是
 Mac3 的热备、复制节点或双写节点，也不是 L5 的自动倒计时。
 
-启动前置与动作（均尚未授权执行）：
+启动前置与动作（均已于 2026-08-18 完成，后续变更仍须独立授权）：
 
 1. 保持 Mac3 的 launchd、数据库、域名和生产前端不变；
-2. 先按 v1.27 当前计划部署单一 archive、安装有总时限的 service、手工验证缓存和所有真写库路径，
-   此时五个 timer 必须继续 disabled/inactive；
-3. 手工验收报告经用户复核后，再取得独立授权并启用 ECS DataBridge、daily、weekly、monthly、Actuals
+2. 已部署单一 archive、安装有总时限的 service，并在 timer-disabled 状态手工验证缓存和所有真写库路径；
+3. 手工验收报告经用户复核后，已取得独立授权并启用 ECS DataBridge、daily、weekly、monthly、Actuals
    五个 systemd timer；
 4. 保持 `Persistent=false`、`RandomizedDelaySec=0`，不补跑停机期间错过的任务；
 5. 保持 ECS Backend 仅监听 `127.0.0.1:8100`，通过受控 SSH 隧道观察本机前端；Backend 不设开机自启；
@@ -2156,6 +2174,7 @@ DataBridge 与日批之间的一致性，不校验上游与 DataBridge 之间。
 
 | 日期 | 版本 | 更新 |
 |---|---|---|
+| 2026-08-18 | 1.29 | 用户在 timer-disabled 手工真写库验收后单独授权启动 ECS 自然灰度。15:22:58（Asia/Shanghai）启用 DataBridge、daily、weekly、monthly、Actuals 五个 systemd timer，全部读回 enabled/active/waiting，模板保持 `Persistent=false`、`RandomizedDelayUSec=0`；启用未立即触发 one-shot。current 仍为 exact release `a749b17d5ad3e3f248a1cb788d892aa36d30f518`，Backend 保持 active/static、loopback 8100 健康，日频只读健康检查 status=ok/findings=[]。Mac3、master、Nginx、DNS、域名和生产流量未变；当前进入 L4G 自然运行观察，后续服务变更与 Web/Writer 切换仍须独立授权。 |
 | 2026-08-18 | 1.28 | 安装并验收 ECS 灰度 release `a749b17d5ad3e3f248a1cb788d892aa36d30f518`：六个 service 与 release 模板一致，DataBridge/daily/weekly/monthly/Actuals 均 exit 0；日/周/月分别 39/12/5 个 base 全成功并写入 43/12/5 条预测，Actuals 日频水位推进到 2026-08-17；Registry 60 active/9 paused、Mac-only 零新增、Backend loopback 健康、无 OOM/孤儿进程，五个 timer 全程 disabled/inactive。Liwei 7 个 family 复用 parent 并只 append 唯一新 feature date，没有 full rebuild；用户确认 49 分钟 daily 可接受后授权继续。新增当前脱敏验收报告并删除已完成 implementation plan；timer 启用仍需新的独立授权。 |
 | 2026-08-18 | 1.27 | 清理已经完成的 ECS 手工部署、Liwei Linux input-state rebind 与双主机单一源码 implementation plan，保留 design spec 和正文历史证据；新增唯一当前计划 `2026-08-18-aliyun-gray-release-deployment.md`。当前顺序为：先设置 `Type=oneshot` 真正生效的批次总时限（DataBridge/Actuals 1h，日/周/月 2h，停止宽限 300s），不加内存保护、不启用 Backend 开机自启；再从最终 exact commit 构建唯一 archive，ECS 只读预检后另行授权安装 release/service、保持 timer disabled 并手工真写库；缓存必须 7/7 hit、`training_calls=0`，miss 即停止；验收报告再次审阅后才单独授权启用五个 timer。本轮只完成分支/计划文档清理和计划更新，未连接 ECS、未修改 service/timer/数据库、未动 Mac3/master/域名/流量。 |
 | 2026-08-18 | 1.26 | 固化单一源码双主机发布模型：本地 `master@2b62a2e9ae7c661f4a7f1741b5ff6c351819a4ad` 冻结为备份点，`codex/aliyun-db-clone-20260816` 成为唯一活动集成分支，不创建 Mac3/ECS 长期环境分支。canonical 65 个 config 恢复 active，新增 `BFL_DEPLOYMENT_TARGET` 与 `deploy/scheme_deployment_matrix_v1.json` 在 discovery 单点形成 Mac3 65/69、ECS 56/60；ECS 精确 9 个 Registry 行继续 paused，矩阵不自动改写 Registry。launchd/Mac3 与 systemd/ECS 目标交叉或缺失时在运行期副作用前失败；仓库模板已声明目标但未安装、重载或启用。下一步从最终 exact commit 只构建一份 archive，先部署 ECS 并读回 release/target/Registry/timers；Mac3 晋级继续单独授权。本轮未连接 ECS、未移动或推送 master、未修改数据库、installed 服务、timer、域名或流量。 |
