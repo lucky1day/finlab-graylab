@@ -1,30 +1,28 @@
-# 生产信号与调度治理
+# 运行信号与调度治理
 
 **文档状态**：`CURRENT`
 
 **目标读者**：平台开发、运维、审计和方案维护人员
 
-**最后核验日期**：2026-08-10
+**最后核验日期**：2026-08-18
 
-本文定义生产信号的唯一控制面。当前稳定事实查看[当前状态](../CURRENT_STATUS.md)；具体运行证据由 installed state、日志、run、prediction、Harness 和数据库审计保存，不在文档复制一次性计划。
+本文定义 Mac3 生产与 ECS 独立灰度的调度控制面。当前稳定事实查看[当前状态](../CURRENT_STATUS.md)；具体运行证据由 installed state、日志、run、prediction、Harness 和数据库审计保存，不在文档复制一次性计划。
 
 ## 1. 唯一控制面与证明标准
 
-`launchd + installed plist` 是唯一生产调度控制面。只有 installed plist、对应
-`launchctl` loaded state、任务日志、run 和 prediction 相互一致，才能证明任务已生产挂载；
-仓库 `deploy/launchd/*.plist` 只是期望配置，Python 模块只是被 plist 调用的一次性执行器。
+每个部署目标只有一个宿主调度控制面：Mac3 生产使用 `launchd + installed plist`，ECS 独立灰度
+使用 `systemd + installed unit/timer`。只有 installed 配置、对应 loaded state、任务日志、run 和
+prediction 相互一致，才能证明任务已挂载；仓库 `deploy/launchd/` 与 `deploy/systemd/` 只是期望配置，
+Python 模块只是被宿主控制面调用的一次性执行器。
 
-一个 cadence 只能有一个生产 writer。DataBridge refresh、daily prediction、weekly
-prediction、monthly prediction 和 actuals 分别由明确的 LaunchAgent 触发；不得让常驻
-APScheduler、已退役 writer、预检进程或任何手工进程同时拥有同一 business key 的自然写入权。
+一个部署目标和数据库 authority 内，每个 cadence 只能有一个自然 writer。Mac3 与 ECS 当前写各自
+独立数据库，不构成同一 business key 上的双写；任一主机都不得让常驻 APScheduler、已退役 writer、
+预检进程或手工进程同时拥有自然写入权。
 
-仓库期望模板的单 writer 映射为：`com.bond-factor-lab.data-bridge-refresh` 于 06:30
-发布 DataBridge；`com.bond-factor-lab.daily-predictions` 于工作日 07:03、
-`com.bond-factor-lab.weekly-predictions` 于周六 11:30、
-`com.bond-factor-lab.monthly-predictions` 于自然月 15 日 18:00 分别启动相应 cadence 的
-one-shot runner；`com.bond-factor-lab.actuals` 保持 08:30、19:00、23:45 的既有唯一
-writer，并启动 `scheduler.actuals_runner`。这些是仓库 desired state，不是机器安装、加载或
-停用的现场结论。
+两个宿主控制面使用相同业务日历：DataBridge 06:30、daily 工作日 07:03、weekly 周六 11:30、
+monthly 自然月 15 日 18:00、Actuals 每日 08:30/19:00/23:45。Mac3 对应
+`com.bond-factor-lab.*` LaunchAgent，ECS 对应 `bond-factor-lab-*.timer`。仓库模板只表达 desired
+state；当前 installed/loaded 状态以各自主机读回为准。
 
 daily、weekly、monthly one-shot runner 都先严格发现方案；其自然候选集合只由
 `status=active`、Blackbox exact `version_status=active` 与 `frequency` 匹配当前 cadence
@@ -38,8 +36,9 @@ run 和授权审计追溯，不再保留第二份当前权限矩阵。
 已退役的 `daily-gray` 与 `v2-preflight` writer 及其仓库模板也已移除。已安装 disabled legacy
 plist 是否仍存在、何时物理删除，仍须只读核对与独立生产授权。
 
-DataBridge 的 `BFL_DATABRIDGE_PRODUCER=launchd-one-shot` 是防误操作的准入标记，不是
-launchd 身份认证。仓库代码的同 UID 调用者属于受信任边界；不能由环境标记或 Python 内部
+DataBridge 在 Mac3 使用 `BFL_DATABRIDGE_PRODUCER=launchd-one-shot`，在 ECS 使用
+`BFL_DATABRIDGE_PRODUCER=systemd-one-shot`；两者都是防误操作的准入标记，不是宿主控制面身份认证。
+仓库代码的同 UID 调用者属于受信任边界；不能由环境标记或 Python 内部
 调用单独证明 natural writer 身份，仍需 installed/loaded/log/run/prediction 现场证据。
 
 `ledger`、`occurrence` 和 `epoch` 不得新增、扩容、迁移或补建，也不得作为新的或过渡生产调度
@@ -78,11 +77,10 @@ fail-closed：不得发布半成品、不得回退旧 artifact、不得以旧数
 
 ## 3. 生产操作授权
 
-installed plist 的替换或编辑、loaded state 的改变、服务停止或重启、激活、持久化回测、
-live 写入和历史补数均是独立生产操作。每项操作先做只读现场核验：比较 repo desired
-template、installed plist、loaded state、日志和 run/prediction 证据；再取得明确授权。
-开发测试、仓库 plist 或代码通过不自动授予这些权限。本文不提供任何 bootstrap、bootout
-或 kickstart 的可执行指令。
+installed plist/unit/timer 的替换或编辑、loaded state 的改变、服务停止或重启、激活、持久化回测、
+live 写入和历史补数均是独立操作。每项操作先做只读现场核验：比较 repo desired template、
+installed 配置、loaded state、日志和 run/prediction 证据；再取得明确授权。开发测试、仓库模板或
+代码通过不自动授予这些权限。本文不提供 `launchctl` 或 `systemctl` 的变更指令。
 
 自然调度的目标时点为：DataBridge refresh 约 06:30、daily predictions 约 07:03、weekly
 predictions 周六 11:30、monthly predictions 自然月 15 日 18:00；actuals 保留既有三个时点，
@@ -107,6 +105,6 @@ Blackbox 任一 lifecycle journal 处于 pending 时，新的 shadow、activate 
 出现以下任一情况时立即停止副作用并保留证据：
 
 - active scope、exact version、Registry identity、输入截止或日期语义与预检不一致；
-- installed/loaded state、日志、run 和 prediction 不能相互证明同一自然运行；
+- 对应主机的 installed/loaded state、日志、run 和 prediction 不能相互证明同一自然运行；
 - 发现两个 writer 可能写同一 business key；
 - 需要 fallback、旧版本切换、覆盖、自动重试或恢复已退役控制面才能继续。

@@ -4,7 +4,7 @@
 
 **目标读者**：所有项目参与者
 
-**最后核验日期**：2026-08-10
+**最后核验日期**：2026-08-18
 
 本文是仓库文档的唯一总入口。这里不复制运行 ID、单次实验或生产时点状态；当前稳定事实查看
 [当前状态](CURRENT_STATUS.md)，未批准工作的顺序和边界查看[统一后续推进计划](TODO.md)，生产调度当前规则查看
@@ -27,7 +27,7 @@
 |---|---|---|
 | [入库导航](onboarding/README.md) | 判断使用 Blackbox V2 新增还是 Native V1 存量维护 | 是 |
 | [SOP](sop/README.md) | 上游交付、平台入库和 Native 存量维护步骤 | 是 |
-| [架构与契约](architecture/README.md) | 系统架构、launchd-only 调度治理、代码边界、日期语义和共享契约 | 是 |
+| [架构与契约](architecture/README.md) | 系统架构、Mac3 launchd / ECS systemd 调度治理、代码边界、日期语义和共享契约 | 是 |
 | [产品文档](product/README.md) | 当前用户手册 | 是 |
 | [运维文档](operations/README.md) | 当前运行与验收资料 | 是 |
 | [Blackbox V2](blackbox_v2/README.md) | V2 专属数据、生产准备和证据边界 | 是 |

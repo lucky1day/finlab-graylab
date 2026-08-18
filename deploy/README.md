@@ -5,15 +5,15 @@
 
 ## 双平台一次性控制面
 
-Mac Studio 继续使用 `launchd_one_shot`，阿里云 Linux 候选使用
+Mac Studio 继续使用 `launchd_one_shot`，阿里云 ECS 独立灰度使用
 `systemd_one_shot`。两者只承载一次性 Python 入口，共用同一套严格发现、
 DataBridge Gate、repository 写库和进程清理语义；不得同时恢复常驻 scheduler、
 APScheduler、ledger 或其它 Python 调度控制面。
 
 `deploy/systemd/*.service` 与 `deploy/systemd/*.timer` 是 Linux 的仓库期望模板。
-文件存在或被复制到 `/etc/systemd/system` 不代表 timer 已启用。候选阶段安装前后都必须
-显式读回所有 Bond Factor Lab timer 为 `disabled` 且 `inactive`，并且只允许手工启动
-对应 `.service`；任何 `enable`、timer start 或自然调度都需要下一阶段的独立授权。
+文件存在或被复制到 `/etc/systemd/system` 不代表 timer 已启用。ECS 五个 timer 已于 2026-08-18
+经专项授权启用，当前现场状态仍须用 `systemctl` 读回；以后替换模板、改变触发、停用、重启或重新
+启用仍是独立操作，不从仓库文件推断授权。
 
 Linux timer 全部声明 `Persistent=false`，停机或禁用期间不补跑。Backend 模板只监听
 `127.0.0.1:8100`，本目录不授权 Nginx、DNS、安全组或公网切流。
@@ -29,7 +29,7 @@ DataBridge 配置、数据库连接和算法子进程之前失败。
 `deploy/scheme_deployment_matrix_v1.json` 是唯一主机资格清单。未设置目标的开发和 Harness
 发现保持全量；生产服务设置目标后，discovery 严格校验矩阵与全部 config 一一覆盖再过滤。
 矩阵不自动删除或暂停 Registry 行；目标移除与加入仍须分别完成受控 Registry 生命周期和读回。
-模板变更不表示 installed launchd/systemd 已更新，现场安装、重载、启停和 timer enable 均需独立授权。
+模板变更不表示 installed launchd/systemd 已更新，现场安装、重载、启停和 timer 状态改变均需独立授权。
 
 ## Mac Studio launchd 单 writer 目标
 
@@ -66,8 +66,8 @@ plist 的物理删除仍是独立生产操作，不由仓库期望配置推断�
 
 ## 生产操作边界
 
-替换 installed plist、修改 loaded state、启动、停止或重载服务均为独立生产操作。生产
-授权之前只能进行只读核对：比较仓库模板、目标机器上的 installed plist、loaded state、
+替换 installed plist/unit/timer、修改 loaded state、启动、停止或重载服务均为独立操作。操作
+授权之前只能进行只读核对：比较仓库模板、目标机器上的 installed 配置、loaded state、
 相关日志和 run/prediction 证据；任一项不一致时 fail-closed 并重新取得授权。
 
 本文件不提供 bootstrap、bootout 或 kickstart 的可执行指令，也不声称任何机器已经安装、

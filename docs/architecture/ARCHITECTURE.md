@@ -3,8 +3,8 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：平台开发和架构审计人员
-**最后核验日期**：2026-08-09
-**版本**：v1.3
+**最后核验日期**：2026-08-18
+**版本**：v1.4
 
 > 本文是**系统架构**（部署、DB schema、API 契约、数据流）。代码层面的分层、包依赖方向规则、运行时调用图与扩展模型见 [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md)（代码架构主蓝图）。
 > 预测日期与实盘阶段语义以 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) 为准。
@@ -14,43 +14,36 @@
 
 ## 1. 系统架构图
 
-下图是 G1/G2 完成后应形成的目标拓扑，不是 installed/loaded 现场快照。每个生产任务
-都必须由独立授权的 installed plist、`launchctl`、日志、run 与 prediction 共同证明。
+下图是当前双主机运行架构，不是 installed/loaded 现场快照。每个任务都必须由对应主机的 installed
+配置、loaded state、日志、run 与 prediction 共同证明。
 
 ```
-Mac Studio
-└─ launchd + installed plist                         ← 真实生产调度控制面
-   ├─ com.bond-factor-lab.backend
-   │  └─ FastAPI :8100 + frontend 静态文件
-   ├─ DataBridge refresh one-shot
-   │  └─ 本机 MySQL → 原子发布日/周/月 artifact
-   ├─ daily predictions one-shot
-   │  └─ active discovery → scheduled_live
-   ├─ weekly/monthly predictions one-shot
-   │  └─ 各自自然时钟 → scheduled_live
-   ├─ com.bond-factor-lab.actuals
-   │  └─ 08:30/19:00/23:45 一次性 scheduler.actuals_runner
-   └─ 每个 cadence 只有一个 writer
+Mac3 生产
+├─ launchd + installed plist
+├─ FastAPI / frontend / DataBridge / predictions / Actuals one-shot
+└─ Mac3 MySQL bond_db
 
-上述任务进程
-├─ discovery / executor / repository
-└─ MySQL bond_db
-   ├─ 只读源表：api_wind_* / t_trade_calendar
-   └─ 平台表：t_scheme_* / t_backtest_* / t_target_registry
+阿里云 ECS 独立灰度
+├─ systemd + installed service/timer
+├─ localhost FastAPI / frontend
+├─ DataBridge / 56 active base / Actuals one-shot
+└─ ECS loopback MySQL bond_db
 
-panda_quantflow AIFin Lab Shell
-└─ iframe → http://mac-studio:8100/
+两端
+├─ 使用同一精确源码 release
+├─ 使用各自数据库、DataBridge、Registry、run 和 prediction
+├─ 每个目标和 cadence 只有一个 writer
+└─ 不复制、不双写、不共享运行期 authority
 ```
 
-`launchd + installed plist` 是唯一生产调度控制面：launchd 决定任务是否挂载、何时触发、
-使用什么环境、是否重启以及日志落点。常驻 `scheduler.main`/APScheduler 已从仓库删除；
-Backend 不注册手动预测路由，也不形成第二套生产控制面。仓库 plist 也只有与 installed plist
-和 `launchctl` loaded state 核对后，才能证明
-现场配置；任何已安装 disabled legacy plist 的物理删除仍须单独授权。
+Mac3 只认 `launchd + installed plist`，ECS 灰度只认 `systemd + installed unit/timer`。宿主控制面
+决定任务是否挂载、何时触发、使用什么环境、是否重启以及日志落点。常驻
+`scheduler.main`/APScheduler 已从仓库删除；Backend 不注册手动预测路由，也不形成第二套 Python
+控制面。仓库模板只有与目标机 installed/loaded state 核对后才能证明现场配置。
 
-目标拓扑中 Actuals 不挂载在常驻 APScheduler 中。独立
-`com.bond-factor-lab.actuals` LaunchAgent 在 `08:30/19:00/23:45` 启动一次性
-`scheduler.actuals_runner` 进程；三个时点和进程退出状态均由 launchd 管理。
+Actuals 不挂载在常驻 APScheduler 中。Mac3 的 `com.bond-factor-lab.actuals` LaunchAgent 和 ECS 的
+`bond-factor-lab-actuals.timer` 都在 `08:30/19:00/23:45` 启动一次性
+`scheduler.actuals_runner` 进程；三个时点和进程退出状态由各自宿主控制面管理。
 actuals 不再经常驻 scheduler 兼容委托，仓库也不保留 `scheduler.main` 或
 `--run-once actuals` CLI。disabled `com.bond-factor-lab.scheduler` 模板已移除；这不构成
 任何 installed legacy plist 已物理删除的结论。
@@ -60,9 +53,9 @@ writer 的仓库模板已移除，ledger/occurrence/epoch runtime 闭包也已�
 不属于新的或过渡生产方案。历史 migration 和数据库对象的物理归档仍须在独立 DDL 授权下处理，不能以
 另一套控制面替换它们。
 
-当前 loaded 进程是否已经达到上述目标，统一以[当前状态](../CURRENT_STATUS.md)为准。
-installed plist 替换、`bootstrap/bootout/kickstart` 和服务重启都属于独立生产操作；必须先
-只读核对现场、取得明确授权，再以 `launchctl`、任务日志、run 与 prediction 确认收敛。
+当前 loaded 进程是否已经达到上述目标，统一以[当前状态](../CURRENT_STATUS.md)为准。installed
+plist/unit/timer 替换、loaded state 改变和服务重启都属于独立操作；必须先只读核对现场、取得明确
+授权，再以对应宿主控制面、任务日志、run 与 prediction 确认收敛。
 
 方案执行层有两个显式驱动：Native V1 仅运行政策清单中的存量 adapter；Blackbox V2 接收所有后续新增方案，通过 DataBridge 三频同代快照和隔离 CLI 执行。两者都转换为 `PredictionRecord`，之后共用 Registry、actual join、落库、API 和前端链路。
 
@@ -87,7 +80,7 @@ Source-backed 方案必须先声明 source 执行口径：`source_original_repro
 ### 2.1 预测流程
 
 ```
-launchd 按 installed plist 在一个明确 cadence 启动一次性任务
+launchd 或 systemd 按对应 installed 配置在一个明确 cadence 启动一次性任务
   → discovery.py 按显式 runtime_type 构建 active SchemeConfig
   → DataBridge artifact 先验证 refresh 与 feature cutoff
   → 一个 writer 调用 scheduler.executor：
@@ -102,12 +95,12 @@ launchd 按 installed plist 在一个明确 cadence 启动一次性任务
 并发、timeout 与方案依赖属于执行器实现细节，不能改变一 cadence 一 writer、日期语义、
 feature cutoff 或 source 算法逻辑。生产上修改调度配置前必须核对仓库与 installed plist
 差异；取得独立生产授权后再按对应 LaunchAgent 生效方式操作。仅看到
-`Scheduled scheme ...` 注册记录不能单独证明任务已由真实生产控制面接管。
+`Scheduled scheme ...` 注册记录不能单独证明任务已由真实宿主控制面接管。
 
 ### 2.2 实际方向更新（每日08:30、19:00与23:45）
 
 ```
-launchd 在每日08:30、19:00和23:45启动一次性 Actuals 任务；交易日 daily/weekly 刷新到当日，非交易日 daily/weekly 刷新到上一交易日，monthly 仍刷新到自然 run date
+launchd 或 systemd 在每日08:30、19:00和23:45启动一次性 Actuals 任务；交易日 daily/weekly 刷新到当日，非交易日 daily/weekly 刷新到上一交易日，monthly 仍刷新到自然 run date
   → 从 api_wind_daily 读取最新收盘收益率
   → 计算各tenor的T+1和T+5方向
   → 写入 t_scheme_actuals (UPSERT)

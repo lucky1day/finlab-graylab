@@ -4,14 +4,14 @@
 
 **目标读者**：平台开发、架构评审和代码审计人员
 
-**最后核验日期**：2026-08-10
+**最后核验日期**：2026-08-18
 
 本目录只保存长期有效的系统规则和实现边界，不记录具体方案状态或单次测试结论。
 
 | 文档 | 权威范围 |
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 系统部署、数据流、Registry、API 和双运行时执行流 |
-| [PRODUCTION_SCHEDULING_GOVERNANCE.md](PRODUCTION_SCHEDULING_GOVERNANCE.md) | launchd + installed plist-only、单 writer、阶段语义、输入新鲜度和生产授权 |
+| [PRODUCTION_SCHEDULING_GOVERNANCE.md](PRODUCTION_SCHEDULING_GOVERNANCE.md) | Mac3 launchd / ECS systemd 宿主控制面、单 writer、阶段语义、输入新鲜度和操作授权 |
 | [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md) | 分层、依赖方向、输入和写库单点 |
 | [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) | Gate、授权、证据和副作用边界 |
 | [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) | 双运行时共享身份、日期、结果和生命周期契约 |
