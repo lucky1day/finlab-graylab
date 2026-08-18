@@ -8,6 +8,15 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 
+EXPECTED_ONE_SHOT_TIMEOUTS = {
+    "bond-factor-lab-data-bridge.service": "1h",
+    "bond-factor-lab-prediction-daily.service": "2h",
+    "bond-factor-lab-prediction-weekly.service": "2h",
+    "bond-factor-lab-prediction-monthly.service": "2h",
+    "bond-factor-lab-actuals.service": "1h",
+}
+
+
 def _blackbox_config(scheme_id: str) -> SimpleNamespace:
     return SimpleNamespace(
         scheme_id=scheme_id,
@@ -35,6 +44,21 @@ class _CoveredCalendar:
 
 
 class SystemdControlPlaneTests(unittest.TestCase):
+    def test_systemd_one_shots_have_total_runtime_limits(self) -> None:
+        systemd_dir = (
+            Path(__file__).resolve().parents[1] / "deploy" / "systemd"
+        )
+
+        for name, timeout in EXPECTED_ONE_SHOT_TIMEOUTS.items():
+            with self.subTest(service=name):
+                content = (systemd_dir / name).read_text(encoding="utf-8")
+                self.assertIn(f"TimeoutStartSec={timeout}", content)
+                self.assertIn("TimeoutStopSec=300", content)
+                self.assertIn("KillMode=control-group", content)
+                self.assertNotIn("RuntimeMaxSec=", content)
+                self.assertNotIn("MemoryMax=", content)
+                self.assertNotIn("MemoryHigh=", content)
+
     def test_executor_accepts_only_matching_systemd_context(self) -> None:
         from scheduler import executor
 

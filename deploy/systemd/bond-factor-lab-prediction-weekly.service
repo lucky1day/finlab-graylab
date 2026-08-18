@@ -19,6 +19,7 @@ Environment=BFL_DATABASE_ENV_FILE=/etc/bond-factor-lab/bond-factor-lab.env
 Environment=BOND_FACTOR_LAB_CONTROL_PLANE=systemd_one_shot
 Environment=BOND_ALGO_CONDA_ENV=forecast_env
 ExecStart=/opt/miniconda3/envs/bond_factor_lab_service/bin/python -m scheduler.systemd_prediction_runner --cadence weekly
-TimeoutStartSec=infinity
+TimeoutStartSec=2h
+TimeoutStopSec=300
 KillMode=control-group
 UMask=0077

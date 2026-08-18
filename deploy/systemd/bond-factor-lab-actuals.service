@@ -16,6 +16,7 @@ Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=BFL_DEPLOYMENT_TARGET=aliyun-gray
 Environment=BOND_FACTOR_LAB_CONTROL_PLANE=systemd_one_shot
 ExecStart=/opt/miniconda3/envs/bond_factor_lab_service/bin/python -m scheduler.actuals_runner
-TimeoutStartSec=infinity
+TimeoutStartSec=1h
+TimeoutStopSec=300
 KillMode=control-group
 UMask=0077
