@@ -9,7 +9,7 @@
 | 章节 | 内容 | 什么时候看 |
 |---|---|---|
 | **0.0** | 数据库克隆决策 `DB-CLONE-A` 与实施回填 | 想知道数据库现在在哪、怎么来的 |
-| **0.0.2–0.0.5** | v1.22/v1.24/v1.25/v1.26 状态变化（沙箱、ECS cron、Linux L1、独立灰度实验室、单一源码发布） | 了解与上一版的差异 |
+| **0.0.2–0.0.6** | v1.22–v1.27 状态变化（沙箱、ECS cron、Linux L1、独立灰度、单一源码、当前部署计划） | 了解与上一版的差异 |
 | **0.1–0.10** | 单一交接入口：速查表、SSH、资源盘点、目标拓扑、Secret 边界、接手步骤 | **新同事第一入口** |
 | 1 | 需求重述、阶段一范围、纯迁移原则与 ROE 准入 | 判断某项改动该不该进本次迁移 |
 | 2 | 执行摘要与分层可行性结论 | 快速了解整体判定 |
@@ -155,6 +155,32 @@ systemd 只能与 `aliyun-gray` 配对；目标缺失或错配会在 DataBridge 
 该代码变更只形成可部署 release，不授权安装服务模板、重载服务、启用 ECS timer、修改 Mac3
 installed launchd、切换域名或操作两端数据库。后续仍先把同一 archive 部署到 ECS 灰度并观察，
 再由用户另行决定是否把完全相同的 archive 晋级到 Mac3。
+
+### 0.0.6 v1.27 当前 ECS release 部署计划（2026-08-18）
+
+已完成的手工部署、Linux cache input-state rebind 和单一源码适配 implementation plan 已从活动计划目录
+删除；对应 design spec、代码提交、测试和本文历史回填继续作为审计证据。当前唯一活动 implementation
+plan 是 `docs/superpowers/plans/2026-08-18-aliyun-gray-release-deployment.md`。
+
+计划按以下顺序执行，当前文档审阅本身不授权连接或修改 ECS：
+
+1. 先在仓库中把五个 ECS `Type=oneshot` service 的总时限写死：DataBridge/Actuals 各 1 小时，
+   daily/weekly/monthly 各 2 小时，停止宽限统一 300 秒。使用对 oneshot 实际生效的
+   `TimeoutStartSec`，不使用 `RuntimeMaxSec`。
+2. 不增加 `MemoryMax`、`MemoryHigh`，不修改 runtime profile 内存上限，不增加 Swap；现有批次峰值约
+   1 GiB、主机约 14 GiB，灰度期只记录实际资源曲线。
+3. Backend 只做部署后的手工 restart 和 localhost 健康检查，不 `enable` 开机自启。
+4. 从最终干净 exact commit 只生成一个 `git archive` 和 SHA-256；ECS 只安装该 release，不保存 `.git`。
+5. 先只读核对 current、installed unit、五个 timer、56/60 discovery、Registry 60 active/9 paused 和
+   7 个 Liwei cache lineage；随后另行取得部署/手工写库授权，才允许安装 service、原子切换 current、
+   手工执行 DataBridge、daily、weekly、monthly、Actuals。
+6. 热缓存只能走已有普通 cache-hit 路径，要求 7/7 hit、`training_calls=0`；出现 miss 时停止，不允许借
+   本轮部署重建缓存。手工验收全程保持五个 timer disabled/inactive。
+7. 只有部署证据再次提交用户审阅并获得新的自然灰度授权后，才允许启用五个 timer；Mac3、域名、
+   Nginx/DNS 和生产流量继续不变。
+
+本节取代本文旧段落中“`RuntimeMaxSec=4–5h`、`MemoryMax=10G`、runtime profile 内存改为 8 GiB”
+等尚未实施的建议；这些建议不得进入当前 release。跨平台数值等价仍不属于本阶段验收。
 
 ## 0. 单一迁移交接入口（先读）
 
@@ -1160,11 +1186,15 @@ Blackbox 需额外分解为：
 - 两次迁移的工程和运维成本；
 - 未来恢复 9 个延期方案所需的上游重新交付和 Gate 等待时间（不计入阶段一 TCO）。
 
-## 13. 剩余阶段计划（v1.25）
+## 13. 剩余阶段计划（v1.27）
 
 数据库、上游数据链与 Blackbox 运行期沙箱三块已经解决，原 G0A–G9 中围绕
 `ECS 经 NATApp 直连 Mac MySQL` 与 `sandbox-exec 移植` 展开的门已不再适用。
 本节以当前事实重排剩余工作，只保留仍然成立的约束。历史门的论证保留在 6–12 节作为证据。
+
+当前执行步骤、命令、停止条件和回滚以
+`docs/superpowers/plans/2026-08-18-aliyun-gray-release-deployment.md` 为准；本节只说明阶段关系，
+不替代独立授权。
 
 **已关闭，不再是计划的一部分**
 
@@ -1224,15 +1254,13 @@ daily、weekly、monthly、Actuals 已经手工启动并以 exit 0 完成真实�
   一次解决全部 7 处，零代码改动；并配部署自检断言 `command -v conda` 落在 `/opt/miniconda3`，
   否则失败信息不指向 PATH。**不要**顺手把 `conda run` 改成直接调 `<env>/bin/python`——
   那正是会打断这条隐式链的改法，且属于 M-track 之外的功能改动。
-- **补齐 Native 超时配置**：17 个保留 Native 中 11 个未配 `timeout_sec`，落到 `executor.py:193`
-  的 600 秒默认。按最近三个月实测余量，其中 4 个需显式配 3600 与已配的 6 个 liwei 对齐：
-  `daily_5y_2_v28`（最大 476s，余量 1.3×）、`liwei_0616_10y01_cons_say_k3_div_k10`（304s，2.0×）、
-  `liwei_0616_7y01_cons_say_k3_div_k10`（253s，2.4×）、`liwei_0616_7y03_cons_all_k3_div_k8`（254s，2.4×）。
-  其余 7 个余量在 3.5×–270× 之间，保持默认——超时的价值是"卡住时能失败"，不做一刀切放宽。
-- **补批次级总时限**：日批目前没有批次层 deadline，`launchd_prediction_runner` 里唯一的是等
-  DataBridge 就绪的 1800 秒。39 个任务若各自跑到超时上限，最坏可跑进次日。建议 unit 加
-  `RuntimeMaxSec=`（4–5 小时量级，待 L4 实测后定）与 `TimeoutStopSec=300`（默认 90 秒不足以
-  让 Blackbox 进程树优雅回收）。
+- **本次不修改 Native 单方案超时**：`timeout_sec` 位于 scheme config，修改会产生新的 exact version，
+  不能夹带在主机部署适配中。当前 release 只增加 systemd 批次总时限；若自然灰度证明某个方案的
+  600 秒默认不够，必须按该 Native 的 maintenance/activation 生命周期单独处理。
+- **补批次级总时限**：五个 Linux batch 都是 `Type=oneshot`，因此使用实际覆盖整个启动/运行阶段的
+  `TimeoutStartSec`，不用对 oneshot 无效的 `RuntimeMaxSec`。DataBridge/Actuals 各 1 小时，
+  daily/weekly/monthly 各 2 小时，`TimeoutStopSec=300`、`KillMode=control-group`；daily 超过 2 小时
+  直接视为算法效率或任务卡死问题，不继续无限运行。
 - 单一 `EnvironmentFile` 承载 `BOND_DB_*` 与 `DATABRIDGE_RUNTIME_ROOT` / `DATABRIDGE_REFRESH_DEADLINE`，
   保证 DataBridge unit 与 prediction unit 解析到同一 runtime root，否则 `v2_daily_gate` 凭证永远对不上；
 - 保留 `v2_daily_gate` 的跨 unit 就绪依赖（30 秒轮询、上限 1800 秒、逐项比对
@@ -1256,14 +1284,10 @@ one-shot 完成 no-persist 验证。
 - **磁盘是明确的硬约束**：40 GiB 盘在 Linux L1 后仅余约 16 GiB，而 Native 的日期 CSV 保留无界增长。
   上线前必须在扩盘、加数据盘、定保留策略三者中选一；
   注意旧的年增长估算（68–71 GiB/年）建立在一个被混用的方案计数上，须先澄清口径再重算；
-- **资源常量必须先按目标机型重设**，否则实测无意义。ECS 实测为 4 vCPU（2 物理核 × 2 线程）、
-  内存 14 GiB 可用 13 GiB、mysqld RSS 约 521 MB。三项调整：
-  runtime profile 的 `cpu_threads` 由 8 改为 4（串行执行，4 个 vCPU 全给当前方案；8 是 2 倍超订）；
-  `memory_limit_bytes` 由 64 GiB 改为约 8 GiB——原值是物理内存的 4 倍多，**看门狗永不触发**，
-  真正兜底的变成内核 OOM killer，而它按 RSS 挑受害者，同机最大常驻进程正是 mysqld；
-  批处理 unit 加 `MemoryMax=10G`（内核只在批次 cgroup 内回收，结构上碰不到数据库），
-  mysqld unit 加 `OOMScoreAdjust=-500`。改 profile 数值**不影响任何 `scheme_version`**——
-  `config_hash` 哈希的是 `runtime_profile` 名字字符串而非文件内容。
+- **当前不实施批次内存保护**：ECS 实测约 14 GiB 内存，现有批次峰值约 1 GiB。本阶段不修改
+  `memory_limit_bytes`，不加 `MemoryMax`/`MemoryHigh`，也不改 mysqld OOM 参数；灰度期只记录实际
+  Peak RSS/OOM。CPU 线程或运行时 profile 的进一步调优必须根据自然灰度证据另开变更，不能夹带在
+  本次 release 部署中。
 - **`innodb_buffer_pool_size` 当前未配置**（默认 128 MB），而库有 8.3 GB。DataBridge 每轮约 159 MB
   的全表扫描与 14 个 Native 各自的全历史查询几乎全部落盘。调到 4 GiB 是最便宜的性能提升，
   且直接影响容量实验的有效性。
@@ -1276,13 +1300,16 @@ one-shot 完成 no-persist 验证。
 L4G 的目标是验证 ECS 能否作为一个自给自足、持续稳定但不承载生产流量的实验室运行。它不是
 Mac3 的热备、复制节点或双写节点，也不是 L5 的自动倒计时。
 
-启动动作（尚未授权执行）：
+启动前置与动作（均尚未授权执行）：
 
 1. 保持 Mac3 的 launchd、数据库、域名和生产前端不变；
-2. 单独授权并启用 ECS DataBridge、daily、weekly、monthly、Actuals 五个 systemd timer；
-3. 保持 `Persistent=false`、`RandomizedDelaySec=0`，不补跑停机期间错过的任务；
-4. 保持 ECS Backend 仅监听 `127.0.0.1:8100`，通过受控 SSH 隧道观察本机前端；
-5. 不安装生产 Nginx/TLS、不改 DNS、不把 Mac3 upstream 指向 ECS。
+2. 先按 v1.27 当前计划部署单一 archive、安装有总时限的 service、手工验证缓存和所有真写库路径，
+   此时五个 timer 必须继续 disabled/inactive；
+3. 手工验收报告经用户复核后，再取得独立授权并启用 ECS DataBridge、daily、weekly、monthly、Actuals
+   五个 systemd timer；
+4. 保持 `Persistent=false`、`RandomizedDelaySec=0`，不补跑停机期间错过的任务；
+5. 保持 ECS Backend 仅监听 `127.0.0.1:8100`，通过受控 SSH 隧道观察本机前端；Backend 不设开机自启；
+6. 不安装生产 Nginx/TLS、不改 DNS、不把 Mac3 upstream 指向 ECS。
 
 每日观察至少覆盖：
 
@@ -1606,43 +1633,19 @@ fail-closed**，是停止而非降级。不是"盘满才出事"，是剩 2 GiB �
 
 ---
 
-### 4. 资源常量（改配置，零版本代价）
+### 4. 资源常量（v1.27 当前不修改）
 
-改 `deploy/blackbox_v2/runtime_profile_v1.json` 的数值**不影响任何 `scheme_version`** `[已核实]`——
-`config_hash` 哈希的是 `config.yaml` 里的 `runtime_profile` **名字字符串**，不是文件内容。
-
-| 项 | 现值 | 改为 | 理由 |
-|---|---|---|---|
-| `cpu_threads` | 8 | **4** | 串行执行，4 个 vCPU 全给当前方案；8 是 2 倍超订。2 vs 4 建议实测（超线程对 FP 密集 BLAS 收益常接近零） |
-| `memory_limit_bytes` | 64 GiB | **约 8 GiB** | 原值是物理内存 4 倍多，**看门狗永不触发**，兜底变成内核 OOM killer，而它按 RSS 挑受害者——同机最大常驻进程正是 mysqld |
-
-配套两条 unit 设置：
-
-```ini
-# 批处理 unit —— 内核只在批次自己的 cgroup 内回收，结构上碰不到数据库
-MemoryMax=10G
-
-# mysqld unit —— 兜底偏置
-OOMScoreAdjust=-500
-```
-
-内存预算：mysqld + 4 GiB buffer pool ≈ 5 GiB，系统与服务 ≈ 1 GiB，批处理 8–10 GiB。
+ECS 约 14 GiB 内存，现有批次峰值约 1 GiB。当前 release 不修改
+`deploy/blackbox_v2/runtime_profile_v1.json`，不增加 `MemoryMax`/`MemoryHigh`，也不修改 mysqld
+OOM 参数。灰度期只采集 CPU、Peak RSS、I/O 和磁盘曲线；将来确有证据需要调优时再形成独立变更。
 
 ---
 
-### 5. Native 超时（只改 4 个）
+### 5. Native 单方案超时（v1.27 当前不修改）
 
-按最近三个月实测（41–74 次成功样本）算 600s 默认的余量 `[已核实]`：
-
-| 方案 | 最大耗时 | 余量 | 动作 |
-|---|---:|---:|---|
-| `daily_5y_2_v28` | 476s | 1.3× | 配 `timeout_sec: 3600` |
-| `liwei_0616_10y01_cons_say_k3_div_k10` | 304s | 2.0× | 配 `timeout_sec: 3600` |
-| `liwei_0616_7y01_cons_say_k3_div_k10` | 253s | 2.4× | 配 `timeout_sec: 3600` |
-| `liwei_0616_7y03_cons_all_k3_div_k8` | 254s | 2.4× | 配 `timeout_sec: 3600` |
-| 其余 7 个 | ≤170s | 3.5×–270× | **保持默认** |
-
-不做一刀切：`t1_daily` 现在 23 秒、余量 26 倍，给 3600 等于关闭超时保护。
+Native `timeout_sec` 改动会改变 config bytes 和 exact version。本次只部署同一源码 release 和批次级
+systemd 总时限，不修改任何 scheme config。灰度期若出现单方案 600 秒超时，再按该方案独立的
+maintenance/activation 生命周期处理，不在部署现场临时放宽。
 
 ---
 
@@ -1656,17 +1659,12 @@ OOMScoreAdjust=-500
 #    子进程环境白名单含 PATH 但不含 CONDA_*，没有后备
 Environment=PATH=/opt/miniconda3/condabin:/opt/miniconda3/bin:/usr/local/bin:/usr/bin:/bin
 
-# 2. 停止超时 —— 默认 90 秒不足以让 Blackbox 进程树优雅回收
-#    （注：Type=oneshot 的 TimeoutStartSec 默认是 infinity，不需要设）
+# 2. Type=oneshot 总时限与停止宽限
+#    DataBridge/Actuals 使用 1h；daily/weekly/monthly 使用 2h
+TimeoutStartSec=2h
 TimeoutStopSec=300
 
-# 3. 批次总时限 —— 日批目前没有批次层 deadline，唯一的是等 DataBridge 就绪的 1800 秒
-RuntimeMaxSec=<4-5h，待 L4 实测后定>
-
-# 4. 内存与 OOM（见第 4 节）
-MemoryMax=10G
-
-# 5. 时区
+# 3. 时区
 Environment=TZ=Asia/Shanghai
 ```
 
@@ -1953,7 +1951,7 @@ rsync -rlt --chmod=D700,F600 --no-owner --no-group \
 覆盖余量告警（例如剩余覆盖不足 60 个交易日即告警）。
 
 
-#### B-6 runtime profile 的资源常量按 M3 Ultra 写死，且内存看门狗永不触发 — P0（处置已定）
+#### B-6 runtime profile 的资源常量按 M3 Ultra 写死 — ACCEPTED FOR GRAY OBSERVATION
 
 `deploy/blackbox_v2/runtime_profile_v1.json`：`cpu_threads: 8`、`memory_limit_bytes: 68719476736`（64 GiB）。
 `scheduler/blackbox_v2_runner.py` 把 `cpu_threads` 直接注入 OMP/OPENBLAS/MKL/NUMEXPR/VECLIB 五个线程变量；
@@ -1962,26 +1960,10 @@ rsync -rlt --chmod=D700,F600 --no-owner --no-group \
 **ECS 现场（2026-08-17 实测）**：4 vCPU = 2 物理核 × 2 线程（Xeon Platinum）；
 内存 14 GiB 总、已用 1.2 GiB、可用 13 GiB；mysqld RSS 仅 521 MB；cgroup v2 可用。
 
-**问题不是"数字太大"，而是**：64 GiB 是物理内存的 4 倍多，**看门狗永远不会触发**，
-真正兜底的变成 Linux OOM killer——而内核按 RSS 挑受害者，同机最大的常驻进程正是 mysqld。
-**这是把数据库搬到同机才产生的新交互，Mac 时代不存在。**
-
-**处置（三层，各司其职）**：
-
-| 层 | 设置 | 作用 |
-|---|---|---|
-| 批处理 unit | `MemoryMax=10G` | 内核只在批次自己的 cgroup 内回收，结构上碰不到 mysqld |
-| runtime profile | `memory_limit_bytes` ≈ 8 GiB | 平台看门狗先动手，产出可归因失败而非被静默处决 |
-| mysqld unit | `OOMScoreAdjust=-500` | 兜底偏置 |
-
-内存预算：mysqld 及调优后 buffer pool 约 5 GiB、系统与服务约 1 GiB、批处理 8–10 GiB。
-
-**`cpu_threads: 8 → 4`**。执行串行、一次只跑一个方案，4 个 vCPU 应当全给它；8 是 2 倍超订。
-2 与 4 之间是经验问题——超线程上 FP 密集的 BLAS 收益常接近零甚至为负，
-建议在最慢的 Native 上顺手量一次 `OMP_NUM_THREADS=2` vs `4`。
-
-**版本代价为零**：`config_hash` 哈希的是 `config.yaml` 里的 `runtime_profile` **名字字符串**，
-不是 profile 文件内容；文件内容不进任何哈希。改这些数值不触发重新入库或激活。
+当前已观察到的批次峰值约 1 GiB，主机约 14 GiB。用户明确决定本阶段不增加批次内存保护，
+因此不修改 `memory_limit_bytes`，不加 `MemoryMax`/`MemoryHigh`，不改 mysqld OOM 参数，也不顺带修改
+`cpu_threads`。灰度期只采集资源曲线；若后续出现实际 OOM、持续内存逼近或明确 CPU 超订证据，再把
+runtime profile 调优作为独立变更评审。旧版三层内存保护建议已由 v1.27 取代，不得实施。
 
 #### B-7 `innodb_buffer_pool_size` 未配置，8.3 GB 的库跑在 128 MB 默认缓冲池上 — P0（性能）
 
@@ -2004,40 +1986,17 @@ rsync -rlt --chmod=D700,F600 --no-owner --no-group \
 在此之前量到的数字既不代表 ECS 真实能力，也不能用于容量决策。
 
 
-#### B-9 11 个保留 Native 未配 `timeout_sec` 落到 600s 默认；另缺批次级总时限 — P0（处置已定）
+#### B-9 Native 默认超时与批次级总时限 — PARTIALLY RESOLVED BY v1.27
 
 `scheduler/executor.py:193` 的默认 `timeout_sec: int = 600`；`:1336` 的
 `timeout = int(configured) if configured is not None else fallback`（fallback=600）。
 17 个保留 Native 中 **6 个已配（全为 3600s，均为 liwei）、11 个未配**。
 
-按最近三个月实测（41–74 次成功样本）逐个算 600s 余量：
-
-| 方案 | 最大耗时 | 余量 | 处置 |
-|---|---:|---:|---|
-| `daily_5y_2_v28` | 476s | 1.3× | **配 3600** |
-| `liwei_0616_10y01_cons_say_k3_div_k10` | 304s | 2.0× | **配 3600** |
-| `liwei_0616_7y01_cons_say_k3_div_k10` | 253s | 2.4× | **配 3600** |
-| `liwei_0616_7y03_cons_all_k3_div_k8` | 254s | 2.4× | **配 3600** |
-| `liwei_0616_cons_sda_k3_div_k10` | 170s | 3.5× | 保持默认 |
-| `daily_7y_1_v28` | 69s | 8.7× | 保持默认 |
-| `weekly_10y_d_overlay_0529` | 27s | 22× | 保持默认 |
-| `t1_daily` / `t5_daily` | 23s / 22s | 26× / 27× | 保持默认 |
-| `weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529` | 2s | 270× | 保持默认 |
-
-用 3600 而非"4–6 倍观测最大值"，是为与已配的 6 个 liwei 对齐，同族同值便于维护。
-
-**不做一刀切**：`t1_daily` 余量 26 倍，给它 3600 秒等于关闭超时保护。
-超时的价值是"卡住时能失败"，只在余量不足 3 倍处放宽。
-
-7y01/7y03 是 cache publisher。缓存迁移后走增量路径、死锁链已断（见 B-4）；
-配 3600 是廉价双保险，避免某天缓存被判无效需重建时每天在 600 秒处被砍。
-
-**核实时发现的附带缺口：日批没有批次级总时限。**
-`scheduler/launchd_prediction_runner.py` 里唯一的 deadline 是
-`DATA_BRIDGE_READY_MAX_WAIT_SEC`（等就绪的 1800 秒），批次本身逐方案跑到完为止。
-39 个日频任务若各自跑到超时上限，理论最坏是十几小时，而 08:30 有 Actuals、
-次日 06:30 有 DataBridge。**建议在 unit 层加 `RuntimeMaxSec=`**（4–5 小时量级，
-待 L4 实测后定），超时整个 cgroup 被清理，好过批次无声跑进第二天。零代码改动。
+本次不修改任何 scheme `timeout_sec`：这会改变 config bytes 和 exact version，必须走独立 Native
+maintenance/activation 生命周期。v1.27 只补主机批次硬边界：DataBridge/Actuals 的
+`TimeoutStartSec=1h`，daily/weekly/monthly 的 `TimeoutStartSec=2h`，统一
+`TimeoutStopSec=300` 与 `KillMode=control-group`。这解决“整批无限运行”，但不掩盖具体方案超过
+600 秒的诊断；若自然灰度确实触发单方案超时，再按精确方案单独处理。
 
 #### B-10 后端只监听 loopback，"只改入口机 upstream"的前提不成立 — P0（处置已定）
 
@@ -2199,6 +2158,7 @@ DataBridge 与日批之间的一致性，不校验上游与 DataBridge 之间。
 
 | 日期 | 版本 | 更新 |
 |---|---|---|
+| 2026-08-18 | 1.27 | 清理已经完成的 ECS 手工部署、Liwei Linux input-state rebind 与双主机单一源码 implementation plan，保留 design spec 和正文历史证据；新增唯一当前计划 `2026-08-18-aliyun-gray-release-deployment.md`。当前顺序为：先设置 `Type=oneshot` 真正生效的批次总时限（DataBridge/Actuals 1h，日/周/月 2h，停止宽限 300s），不加内存保护、不启用 Backend 开机自启；再从最终 exact commit 构建唯一 archive，ECS 只读预检后另行授权安装 release/service、保持 timer disabled 并手工真写库；缓存必须 7/7 hit、`training_calls=0`，miss 即停止；验收报告再次审阅后才单独授权启用五个 timer。本轮只完成分支/计划文档清理和计划更新，未连接 ECS、未修改 service/timer/数据库、未动 Mac3/master/域名/流量。 |
 | 2026-08-18 | 1.26 | 固化单一源码双主机发布模型：本地 `master@2b62a2e9ae7c661f4a7f1741b5ff6c351819a4ad` 冻结为备份点，`codex/aliyun-db-clone-20260816` 成为唯一活动集成分支，不创建 Mac3/ECS 长期环境分支。canonical 65 个 config 恢复 active，新增 `BFL_DEPLOYMENT_TARGET` 与 `deploy/scheme_deployment_matrix_v1.json` 在 discovery 单点形成 Mac3 65/69、ECS 56/60；ECS 精确 9 个 Registry 行继续 paused，矩阵不自动改写 Registry。launchd/Mac3 与 systemd/ECS 目标交叉或缺失时在运行期副作用前失败；仓库模板已声明目标但未安装、重载或启用。下一步从最终 exact commit 只构建一份 archive，先部署 ECS 并读回 release/target/Registry/timers；Mac3 晋级继续单独授权。本轮未连接 ECS、未移动或推送 master、未修改数据库、installed 服务、timer、域名或流量。 |
 | 2026-08-17 | 1.25 | 固化会议确定的独立灰度实验室路线：Mac3 继续承载现有生产域名、生产前端和 Writer；ECS 使用本地 MySQL、上游数据链、DataBridge、56 个 active base、Actuals 与 localhost Backend 独立运行，两端不复制、不双写、不共享运行期 authority。timer-disabled 部署与日/周/月手工真写库已经验收，下一步不是直接 L5 切流，而是在单独授权后启用 ECS 五个 timer，进入新增的 L4G 自然运行观察；每日核验调度、写库、日期链、缓存、资源、磁盘和 localhost 前端，至少覆盖连续交易日、自然周频、自然月频及 Actuals。观察达标并再次开会批准前，不停 Mac3、不改 Nginx/DNS/域名或生产流量。本次仅更新文档与项目上下文，未启用 timer、未变更服务或数据库。 |
 | 2026-08-17 | 1.24 | 用户选择 conda-forge-only 后完成 Linux L1：冻结 C56 exact release（9 个延期 Native 在候选 config paused，17 Native + 39 Blackbox active），三套环境精确安装 Service 48/Native 49/Blackbox 49 个 distribution，97 个实际 wheel 文件名/SHA 与官方 PyPI metadata 匹配，`pip check`、核心 import、CPU XGBoost 与 Service fresh MySQL/cryptography 连接通过。canonical Blackbox manifest 更新为 linux-64/71 包并归档原 Mac manifest，profile 名与 39 个 scheme version 不变；39/39 Blackbox 正式 CLI 探针通过。Liwei bundle 精确为 75 文件/100,622,640 bytes，Linux secure loader 重放 7/7 current + parent lineage 且前后 hash 不变。release、环境和 cache 只在 ECS bootstrap staging，未安装/启用项目服务、systemd、Registry、Web 或流量。唯一 L1 供应链缺口是原始 Miniconda installer 已清理、缺少 installer 文件 SHA，因此不得宣称从裸机完全可复现。当前进入 L2；ECS 28 条 BondPrediction cron 已启用这一 v1.22 现场事实保持不变，Mac 对应 cron 状态须在 Writer 切换前重新确认 |
