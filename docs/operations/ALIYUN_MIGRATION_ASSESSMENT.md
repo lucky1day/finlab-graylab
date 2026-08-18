@@ -401,7 +401,72 @@ artifact/lifecycle 路由、Native 子进程环境 allowlist、systemd release e
 Linux/macOS Blackbox manifest 选择、同 commit 可重复构建、独立批准 hash、dirty/checksum/
 unsafe tar 拒绝、source tree 防篡改、只读预安装、同 SHA 拒绝、expected-current CAS 和
 `previous/current` 切换。全仓库验证结果为 `870 passed, 476 subtests passed`。下一道门是 ECS
-安装前 handoff 与原子切换演练，仍需独立生产操作授权。
+安装前 handoff 与原子切换演练；该门随后已获授权并执行，现场结果与未闭环项见 9.9。
+
+### 9.9 ECS 首次同源 release 演练与 Native 编译缓存设计（2026-08-18）
+
+用户已授权并完成 `b0470d43ac26cb0674f83b7a980ab093f2e483c6` 的 ECS 首次同源 release
+演练。archive SHA-256 为
+`13bd822ac0a91db02ba0b5a58d7331cbe4940a8fd7a141b7ad8bf00768ad64dc`；DataBridge data/runtime
+已经从 release-local 路径原样 handoff 到 `/var/lib/bond-factor-lab/state/data-bridge/{data,refresh}`，
+两个显式 DataBridge override 也已精确改为这两个外置路径。旧 release 对外置 authority 的严格
+只读校验通过，因此该配置同时保留 legacy rollback 兼容性。
+
+本次精确 release 的 installed one-shot 真写库结果为：DataBridge 3 分 5 秒成功；daily 39/39、
+43 条、43 分 38 秒成功；weekly 12/12、12 条、7 分 34 秒成功；monthly 5/5、5 条、1 分 49 秒
+成功；Actuals 29 秒成功。数据库读回为 56 个 success run、60 条 prediction linkage、0 linkage
+mismatch、0 重复业务键、0 残留 running，9 个 Mac-only base 零新增，Registry 仍为 60 active /
+9 paused。Backend、五个 timer 和 canonical DataBridge 均保持正常，所有手工临时 env 已删除。
+
+该结果关闭了业务执行与写库验证，但尚未关闭不可变 release 验收。最终 source digest 复核发现：
+
+- Native 中声明 `cache=True` 的 Numba kernel 在 12 个 `schemes/*/core/__pycache__` 下生成
+  `.nbi/.nbc`；`PYTHONDONTWRITEBYTECODE` 只约束 Python bytecode，不约束 Numba 编译缓存；
+- 既有 `MPLCONFIGDIR` 仍在 source release 下创建了空的 `backtest_artifacts/matplotlib`；
+- 安装器因此正确拒绝该 active release，返回 `existing release source integrity differs`。
+
+这些运行文件不改变本次业务结果，但 `b0470d4` 只能作为功能正常、source integrity 未闭环的灰度
+证据，不得晋级到 Mac3，也不得通过删除现场文件把它重新声明为不可变 release。两次预激活失败
+候选已经整体隔离在 `/var/lib/bond-factor-lab/failed-releases/`，保留为审计证据。
+
+#### 9.9.1 已批准方案 A
+
+2026-08-18 用户在比较三种方案后批准方案 A：由 release 自动生成、按精确 commit 隔离的外置
+Native 编译/绘图库缓存。安装器生成的 `.bfl-release.env` 在既有两项之外增加：
+
+```text
+NUMBA_CACHE_DIR=<runtime-root>/cache/native/<commit>/numba
+MPLCONFIGDIR=<runtime-root>/cache/native/<commit>/matplotlib
+```
+
+Native 子进程环境 allowlist 只增加 `NUMBA_CACHE_DIR`；`MPLCONFIGDIR` 已在 allowlist。两个目录按需
+创建在 release 外，同一 commit 后续运行可复用，新的 commit 自动进入新目录。不得改 Native
+算法、Numba decorator、scheme config 或 repository 接口，也不新增第二套缓存框架。Mac3 与 ECS
+继续使用同一 source archive 和相同规则，只由各自主机的 `runtime-root` 区分物理目录。
+
+没有采用的方案及理由：主机 `/etc` 单独配置会把 authority 分散到 ECS 与 Mac3 并产生 installed
+配置漂移；每次子进程使用临时 Numba cache 虽隔离最强，但会放弃日常 JIT 复用并增加 daily 墙钟
+波动。方案 A 只扩展现有 release 环境合同和 Native allowlist，以最小代码面兼顾不可变性和效率。
+
+#### 9.9.2 实施与验收门
+
+实施必须使用新 Git commit 和新 source archive，不得原地修补 `b0470d4`：
+
+1. 先更新 release installer 环境合同、Native allowlist、合同测试和本节完成状态；全仓库测试通过后
+   才能构建新 archive。
+2. ECS 只预安装新 release，复核 archive/source digest、外置 DataBridge、56/60 discovery 和
+   Blackbox Linux 环境；没有 one-shot 运行时才可用 expected-current CAS 激活。
+3. 至少执行一个确定会生成 `.nbi/.nbc` 的 Native 方案两次：文件只能位于
+   `<runtime-root>/cache/native/<commit>/numba`；第二次必须复用同目录，不能回写 `schemes/*/core/`。
+4. 代表性验证后重新运行安装器 source digest；只有仍与 archive 完全一致，才允许执行完整
+   DataBridge、daily、weekly、monthly、Actuals installed one-shot 验收或进入自然观察。
+5. 最终验收必须同时满足：source release 无额外文件、五类任务 exit 0、run/prediction linkage
+   完整、0 running、60 active / 9 paused、9 个 Mac-only base 零新增、Backend 健康、五个 timer
+   仍为原 enabled/waiting 状态、`current/previous` 指向可读回且不同的精确 SHA。
+
+失败时停止在当前可运行 release，不删除数据库审计记录，不重建 Liwei 模型缓存，不修改 Mac3、
+Nginx、DNS 或域名。只有新的精确 release 同时通过业务与 source integrity 两类证据，ECS 的同源
+release 阶段才可记为闭环。
 
 ## 10. 文档与 Git 权威
 
