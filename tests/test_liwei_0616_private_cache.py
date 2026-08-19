@@ -18,6 +18,7 @@ from shared.liwei_0616_cache_contract import (
     validate_generation_acceptance_record,
 )
 from shared.liwei_0616_phase_a_cache import (
+    DAILY_REVISION_SUFFIX_PROOF_V1,
     PhaseACacheSpec,
     _LoadedGeneration,
     _baseline_fingerprint,
@@ -30,6 +31,7 @@ from shared.liwei_0616_phase_a_cache import (
     _phase_a_cache_evidence,
     _revision_build_decision,
     _spec_fingerprint,
+    _validate_daily_dependency_proof,
     _verify_migration_rebind_lineage,
     prepare_phase_a_caches,
     runtime_compare_gate_callbacks,
@@ -601,7 +603,7 @@ def _bounded_spec() -> PhaseACacheSpec:
         horizon=5,
         purge_gap=3,
         daily_dependency_lookback_rows=5,
-        daily_dependency_proof="liwei_0616_daily_revision_suffix_v1",
+        daily_dependency_proof=DAILY_REVISION_SUFFIX_PROOF_V1,
     )
 
 
@@ -934,6 +936,109 @@ def test_only_legacy_empty_proof_fingerprint_is_compatible() -> None:
     assert _matching_generation_spec(current_generation, current) == current
 
 
+def test_daily_dependency_proof_accepts_only_exact_contracts() -> None:
+    canonical = _bounded_spec()
+    legacy = replace(
+        canonical,
+        daily_dependency_lookback_rows=None,
+        daily_dependency_proof=None,
+    )
+
+    _validate_daily_dependency_proof(canonical)
+    _validate_daily_dependency_proof(legacy)
+
+
+@pytest.mark.parametrize(
+    ("rows", "proof"),
+    (
+        (0, DAILY_REVISION_SUFFIX_PROOF_V1),
+        (4, DAILY_REVISION_SUFFIX_PROOF_V1),
+        (6, DAILY_REVISION_SUFFIX_PROOF_V1),
+        (True, DAILY_REVISION_SUFFIX_PROOF_V1),
+        (5.0, DAILY_REVISION_SUFFIX_PROOF_V1),
+        (5, "typo"),
+        (5, ""),
+        (5, f" {DAILY_REVISION_SUFFIX_PROOF_V1} "),
+        (5, 1),
+        (None, "nonempty"),
+        (5, None),
+        (None, ""),
+    ),
+)
+def test_daily_dependency_proof_rejects_noncanonical_declarations(
+    rows: object,
+    proof: object,
+) -> None:
+    spec = replace(
+        _bounded_spec(),
+        daily_dependency_lookback_rows=rows,
+        daily_dependency_proof=proof,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="literal None/None legacy declaration or canonical proof",
+    ):
+        _validate_daily_dependency_proof(spec)
+
+
+@pytest.mark.parametrize(
+    ("rows", "proof"),
+    (
+        (0, DAILY_REVISION_SUFFIX_PROOF_V1),
+        (5, "typo"),
+    ),
+)
+def test_invalid_daily_dependency_proof_cannot_select_suffix(
+    rows: object,
+    proof: object,
+) -> None:
+    invalid = replace(
+        _bounded_spec(),
+        daily_dependency_lookback_rows=rows,
+        daily_dependency_proof=proof,
+    )
+
+    assert _revision_build_decision(
+        spec=invalid,
+        input_change=_daily_revision_change(),
+    ) == ("full", "input_revision", None)
+
+
+@pytest.mark.parametrize(
+    ("rows", "proof"),
+    (
+        (0, DAILY_REVISION_SUFFIX_PROOF_V1),
+        (4, DAILY_REVISION_SUFFIX_PROOF_V1),
+        (5, "typo"),
+    ),
+)
+def test_invalid_daily_dependency_proof_cannot_match_legacy_generation(
+    rows: object,
+    proof: object,
+) -> None:
+    canonical = _bounded_spec()
+    legacy = replace(
+        canonical,
+        daily_dependency_lookback_rows=None,
+        daily_dependency_proof=None,
+    )
+    legacy_generation = _LoadedGeneration(
+        generation_id="legacy",
+        path=Path("/unused/legacy"),
+        manifest={"spec_fingerprint": _spec_fingerprint(legacy)},
+        manifest_sha256="a" * 64,
+        caches={"baseline": {"test_dates": []}},
+    )
+    invalid = replace(
+        canonical,
+        daily_dependency_lookback_rows=rows,
+        daily_dependency_proof=proof,
+    )
+
+    assert _matching_generation_spec(legacy_generation, invalid) is None
+
+
 def test_daily_revision_uses_bounded_suffix() -> None:
     assert _revision_build_decision(
         spec=_bounded_spec(),
@@ -943,6 +1048,19 @@ def test_daily_revision_uses_bounded_suffix() -> None:
         "proven_daily_input_revision",
         "2026-08-10",
     )
+
+
+def test_legacy_daily_revision_stays_full() -> None:
+    legacy = replace(
+        _bounded_spec(),
+        daily_dependency_lookback_rows=None,
+        daily_dependency_proof=None,
+    )
+
+    assert _revision_build_decision(
+        spec=legacy,
+        input_change=_daily_revision_change(),
+    ) == ("full", "input_revision", None)
 
 
 @pytest.mark.parametrize(

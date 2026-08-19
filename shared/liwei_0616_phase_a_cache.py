@@ -863,18 +863,22 @@ def _spec_fingerprint(spec: PhaseACacheSpec) -> str:
     ).hexdigest()
 
 
+def _has_exact_daily_dependency_proof(spec: PhaseACacheSpec) -> bool:
+    rows = spec.daily_dependency_lookback_rows
+    proof = spec.daily_dependency_proof
+    return (
+        not isinstance(rows, bool)
+        and isinstance(rows, int)
+        and rows == max(spec.horizon, spec.purge_gap)
+        and isinstance(proof, str)
+        and proof == DAILY_REVISION_SUFFIX_PROOF_V1
+    )
+
+
 def _legacy_daily_dependency_fingerprint(
     spec: PhaseACacheSpec,
 ) -> str | None:
-    rows = spec.daily_dependency_lookback_rows
-    proof = spec.daily_dependency_proof
-    if (
-        isinstance(rows, bool)
-        or not isinstance(rows, int)
-        or rows < 0
-        or not isinstance(proof, str)
-        or not proof.strip()
-    ):
+    if not _has_exact_daily_dependency_proof(spec):
         return None
     payload = _spec_fingerprint_payload(
         spec,
@@ -1410,20 +1414,18 @@ def _validate_daily_dependency_proof(
     spec: PhaseACacheSpec,
 ) -> None:
     rows = spec.daily_dependency_lookback_rows
-    proof = str(spec.daily_dependency_proof or "").strip()
-    if rows is None and not proof:
+    proof = spec.daily_dependency_proof
+    if rows is None and proof is None:
         return
-    if rows is None or not proof:
-        raise ValueError(
-            "daily suffix invalidation requires both "
-            "daily_dependency_lookback_rows and "
-            "daily_dependency_proof"
-        )
-    if isinstance(rows, bool) or not isinstance(rows, int) or rows < 0:
-        raise ValueError(
-            "daily_dependency_lookback_rows must be a "
-            "non-negative integer"
-        )
+    if _has_exact_daily_dependency_proof(spec):
+        return
+    raise ValueError(
+        "daily dependency declaration must be either a literal None/None "
+        "legacy declaration or canonical proof "
+        f"{DAILY_REVISION_SUFFIX_PROOF_V1!r} with "
+        "daily_dependency_lookback_rows exactly "
+        "max(horizon, purge_gap)"
+    )
 
 
 def _validate_cache_publisher_identity(spec: PhaseACacheSpec) -> None:
@@ -1864,10 +1866,7 @@ def _revision_build_decision(
     ignore_raw_auxiliary: bool = False,
 ) -> tuple[str, str, str | None]:
     frames = input_change["frames"]
-    has_daily_proof = (
-        spec.daily_dependency_lookback_rows is not None
-        and bool(str(spec.daily_dependency_proof or "").strip())
-    )
+    has_daily_proof = _has_exact_daily_dependency_proof(spec)
     if not ignore_raw_auxiliary:
         for name in ("weekly", "monthly"):
             change = frames[name]
