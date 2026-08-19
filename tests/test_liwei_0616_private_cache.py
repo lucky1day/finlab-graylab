@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import pickle
@@ -24,11 +25,14 @@ from shared.liwei_0616_phase_a_cache import (
     _baseline_fingerprint,
     _build_generation_acceptance_evidence,
     _frame_prefix_fingerprint,
+    _input_change_analysis,
     _input_generation_state,
     _legacy_build_decision,
     _lineage_build_mode,
+    _load_current_generation,
     _matching_generation_spec,
     _phase_a_cache_evidence,
+    _phase_a_caches_equal,
     _revision_build_decision,
     _spec_fingerprint,
     _validate_daily_dependency_proof,
@@ -665,6 +669,280 @@ def _revision_inputs(
         {"month_id": ["2026-08"], "value": [1.0]}
     )
     return daily, weekly, monthly
+
+
+def _full_compare_output() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "direction": [1],
+            "vote_score": [0.75],
+            "baseline_scores": [{"baseline": 0.75}],
+            "baseline_signs": [{"baseline": 1}],
+            "probability": [0.8],
+            "confidence": [0.6],
+        }
+    )
+
+
+def _publish_qualification_generation(
+    root: Path,
+    *,
+    legacy_parent: bool,
+) -> tuple[
+    PhaseACacheSpec,
+    tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame],
+    _LoadedGeneration,
+    _LoadedGeneration,
+]:
+    spec = _bounded_spec()
+    parent_spec = (
+        replace(
+            spec,
+            daily_dependency_lookback_rows=None,
+            daily_dependency_proof=None,
+        )
+        if legacy_parent
+        else spec
+    )
+    daily, weekly, monthly = _revision_inputs(revised=False)
+    expected_dates = _REVISION_DATES[:-1]
+    training_calls: list[str] = []
+
+    def train_parent(
+        baseline: str,
+        ranges: tuple[tuple[str, str], ...],
+    ) -> dict[str, object]:
+        training_calls.append(baseline)
+        return _cache_for_dates(
+            [start for start, end in ranges if start == end],
+            1,
+        )
+
+    prepare_phase_a_caches(
+        spec=parent_spec,
+        daily_df=daily,
+        weekly_df=weekly,
+        monthly_df=monthly,
+        test_ranges=((expected_dates[0], expected_dates[-1]),),
+        train_missing=train_parent,
+        cache_consumer_id="publisher",
+        cache_root=root,
+    )
+    family_root = root / spec.cache_family / spec.tenor.lower()
+    parent, parent_error = _load_current_generation(family_root)
+    assert parent_error is None
+    assert parent is not None
+    assert parent.manifest["compare_gate_evidence"][
+        "qualification_status"
+    ] == "unqualified"
+
+    def unexpected_training(
+        _baseline: str,
+        _ranges: tuple[tuple[str, str], ...],
+    ) -> dict[str, object]:
+        raise AssertionError("qualification must reuse the parent cache")
+
+    expected_cache = _cache_for_dates(expected_dates, 1)
+
+    def compare_cold(
+        baseline: str,
+        ranges: tuple[tuple[str, str], ...],
+    ) -> dict[str, object]:
+        assert baseline == "baseline"
+        assert [start for start, end in ranges if start == end] == (
+            expected_dates
+        )
+        return expected_cache
+
+    output = _full_compare_output()
+    _caches, qualification_audit = prepare_phase_a_caches(
+        spec=spec,
+        daily_df=daily,
+        weekly_df=weekly,
+        monthly_df=monthly,
+        test_ranges=((expected_dates[0], expected_dates[-1]),),
+        train_missing=unexpected_training,
+        compare_cold=compare_cold,
+        compare_full_output=lambda _caches: (
+            output,
+            output.copy(deep=True),
+        ),
+        cache_consumer_id="publisher",
+        cache_root=root,
+    )
+    child, child_error = _load_current_generation(family_root)
+    assert child_error is None
+    assert child is not None
+    assert child.generation_id != parent.generation_id
+    assert qualification_audit["build_mode"] == "qualification"
+    assert qualification_audit["input_change"]["change_type"] == (
+        "unchanged"
+    )
+    assert child.manifest["parent_generation_id"] == parent.generation_id
+    assert child.manifest["spec_fingerprint"] == _spec_fingerprint(spec)
+    assert child.manifest["input_state"] == parent.manifest["input_state"]
+    assert child.manifest["compare_gate_evidence"][
+        "qualification_status"
+    ] == "qualified"
+    assert child.manifest["compare_gate_evidence"][
+        "capacity_eligible"
+    ] is True
+    scope = child.manifest["generation_acceptance_evidence"][
+        "baselines"
+    ]["baseline"]
+    assert scope["affected_dates"] == []
+    assert scope["preserved_dates"] == expected_dates
+    assert _phase_a_caches_equal(
+        parent.caches["baseline"],
+        child.caches["baseline"],
+    )
+    assert training_calls == ["baseline"]
+    return spec, (daily, weekly, monthly), parent, child
+
+
+def _assert_secure_consumer_replays_qualification(
+    root: Path,
+    *,
+    legacy_parent: bool,
+) -> None:
+    spec, inputs, parent, child = _publish_qualification_generation(
+        root,
+        legacy_parent=legacy_parent,
+    )
+    daily, weekly, monthly = inputs
+
+    def unexpected_training(
+        _baseline: str,
+        _ranges: tuple[tuple[str, str], ...],
+    ) -> dict[str, object]:
+        raise AssertionError("secure consumer must not train")
+
+    consumer_caches, consumer_audit = prepare_phase_a_caches(
+        spec=spec,
+        daily_df=daily,
+        weekly_df=weekly,
+        monthly_df=monthly,
+        test_ranges=((_REVISION_DATES[0], _REVISION_DATES[-2]),),
+        train_missing=unexpected_training,
+        cache_consumer_id="consumer",
+        cache_root=root,
+    )
+
+    assert consumer_audit["status"] == "hit"
+    assert consumer_audit["build_reason"] == "consumer_validated_hit"
+    assert consumer_audit["generation_id"] == child.generation_id
+    assert _phase_a_caches_equal(
+        consumer_caches["baseline"],
+        parent.caches["baseline"],
+    )
+
+
+def test_secure_consumer_replays_legacy_parent_qualification(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path.resolve()
+    root.chmod(0o700)
+
+    _assert_secure_consumer_replays_qualification(
+        root,
+        legacy_parent=True,
+    )
+
+
+def test_secure_consumer_replays_exact_parent_qualification(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path.resolve()
+    root.chmod(0o700)
+
+    _assert_secure_consumer_replays_qualification(
+        root,
+        legacy_parent=False,
+    )
+
+
+def test_qualification_lineage_rejects_noncanonical_transitions(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path.resolve()
+    root.chmod(0o700)
+    spec, _inputs, parent, child = _publish_qualification_generation(
+        root,
+        legacy_parent=False,
+    )
+    unchanged = _input_change_analysis(
+        parent.manifest["input_state"],
+        child.manifest["input_state"],
+    )
+
+    changed_cache = copy.deepcopy(child.caches)
+    changed_cache["baseline"]["results"][0]["preds"][0] = -1
+    cache_changed_child = _LoadedGeneration(
+        generation_id=child.generation_id,
+        path=child.path,
+        manifest=child.manifest,
+        manifest_sha256=child.manifest_sha256,
+        caches=changed_cache,
+    )
+    assert _lineage_build_mode(
+        parent=parent,
+        generation=cache_changed_child,
+        input_change=copy.deepcopy(unchanged),
+        spec=spec,
+    ) != "qualification"
+
+    changed_input = copy.deepcopy(unchanged)
+    changed_input["change_type"] = "append"
+    changed_input["raw_change_type"] = "append"
+    changed_input["frames"]["daily"]["change_type"] = "append"
+    assert _lineage_build_mode(
+        parent=parent,
+        generation=child,
+        input_change=changed_input,
+        spec=spec,
+    ) != "qualification"
+
+    for invalid_evidence in (
+        None,
+        {
+            "qualification_status": "qualified",
+            "capacity_eligible": True,
+        },
+    ):
+        invalid_manifest = copy.deepcopy(child.manifest)
+        invalid_manifest["compare_gate_evidence"] = invalid_evidence
+        invalid_child = _LoadedGeneration(
+            generation_id=child.generation_id,
+            path=child.path,
+            manifest=invalid_manifest,
+            manifest_sha256=child.manifest_sha256,
+            caches=child.caches,
+        )
+        assert _lineage_build_mode(
+            parent=parent,
+            generation=invalid_child,
+            input_change=copy.deepcopy(unchanged),
+            spec=spec,
+        ) != "qualification"
+
+    next_manifest = copy.deepcopy(child.manifest)
+    next_manifest["build_mode"] = "qualification"
+    next_child = _LoadedGeneration(
+        generation_id="generation-next",
+        path=child.path,
+        manifest=next_manifest,
+        manifest_sha256=child.manifest_sha256,
+        caches=child.caches,
+    )
+    assert _lineage_build_mode(
+        parent=child,
+        generation=next_child,
+        input_change=_input_change_analysis(
+            child.manifest["input_state"],
+            next_child.manifest["input_state"],
+        ),
+        spec=spec,
+    ) != "qualification"
 
 
 def _prepare_revision_parent(

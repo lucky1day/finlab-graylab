@@ -2957,6 +2957,13 @@ def _lineage_build_mode(
         or set(parent.caches) != set(generation.caches)
     ):
         return "full"
+    if _is_replayable_qualification_transition(
+        parent=parent,
+        generation=generation,
+        input_change=input_change,
+        spec=spec,
+    ):
+        return "qualification"
     if input_change.get("projection_status") != "absent":
         mode, _reason, _cutoff = _projection_build_decision(
             spec=spec,
@@ -2968,6 +2975,104 @@ def _lineage_build_mode(
             input_change=input_change,
         )
     return mode
+
+
+def _is_replayable_qualification_transition(
+    *,
+    parent: _LoadedGeneration,
+    generation: _LoadedGeneration,
+    input_change: Mapping[str, Any],
+    spec: PhaseACacheSpec,
+) -> bool:
+    """严格识别只补 CompareGate 证据、未改变输入与 cache 的子代。"""
+    if generation.manifest.get("build_mode") != "qualification":
+        return False
+    parent_input = parent.manifest.get("input_state")
+    candidate_input = generation.manifest.get("input_state")
+    if (
+        not isinstance(parent_input, Mapping)
+        or not isinstance(candidate_input, Mapping)
+        or parent_input != candidate_input
+        or input_change.get("change_type") != "unchanged"
+        or input_change.get("raw_change_type") != "unchanged"
+        or input_change.get("suffix_start_date") is not None
+        or input_change.get("native_generation_changed") is not False
+    ):
+        return False
+    frames = input_change.get("frames")
+    if not isinstance(frames, Mapping) or any(
+        not isinstance(frames.get(name), Mapping)
+        or frames[name].get("change_type") != "unchanged"
+        or frames[name].get("earliest_changed_key") is not None
+        or frames[name].get("schema_changed") is not False
+        for name in ("daily", "weekly", "monthly")
+    ):
+        return False
+    if any(
+        not _phase_a_caches_equal(
+            parent.caches[baseline],
+            generation.caches[baseline],
+        )
+        for baseline in spec.baselines
+    ):
+        return False
+    try:
+        acceptance = validate_generation_acceptance_record(
+            generation.manifest.get(
+                "generation_acceptance_evidence"
+            )
+        )
+        scopes = acceptance.get("baselines")
+        if (
+            acceptance.get("build_mode") != "qualification"
+            or not isinstance(scopes, Mapping)
+            or set(scopes) != set(spec.baselines)
+            or any(
+                not isinstance(scopes.get(baseline), Mapping)
+                or scopes[baseline].get("affected_dates") != []
+                or scopes[baseline].get("preserved_dates")
+                != list(parent.caches[baseline]["test_dates"])
+                for baseline in spec.baselines
+            )
+        ):
+            return False
+        parent_status = _validated_compare_gate_status(parent)
+        candidate_status = _validated_compare_gate_status(generation)
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (
+        parent_status in {"unqualified", "phase_a_compared"}
+        and candidate_status == "qualified"
+    )
+
+
+def _validated_compare_gate_status(
+    generation: _LoadedGeneration,
+) -> str:
+    """完整校验 generation CompareGate 证据并返回其状态。"""
+    cached_integrity = {
+        baseline: _phase_a_cache_evidence(cache)
+        for baseline, cache in generation.caches.items()
+    }
+    manifest = generation.manifest
+    input_state = manifest.get("input_state")
+    if not isinstance(input_state, Mapping):
+        raise ValueError("cache generation input state is missing")
+    _validate_compare_gate_evidence(
+        manifest.get("compare_gate_evidence"),
+        cached_integrity,
+        qualification_binding=_compare_qualification_binding(
+            cache_family=str(manifest.get("cache_family") or ""),
+            tenor=str(manifest.get("tenor") or ""),
+            abi_version=str(manifest.get("abi_version") or ""),
+            spec_fingerprint=str(
+                manifest.get("spec_fingerprint") or ""
+            ),
+            input_content_id=str(input_state.get("content_id") or ""),
+            cached_integrity=cached_integrity,
+        ),
+    )
+    return _generation_compare_gate_status(generation)
 
 
 def _build_compare_gate_evidence(
