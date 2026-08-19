@@ -2947,104 +2947,28 @@ def _lineage_build_mode(
     input_change: dict[str, Any],
     spec: PhaseACacheSpec,
 ) -> str:
-    """按方案 cache 规格与前后 manifest 重放 build-mode 决策。"""
+    """按同一 cache 决策函数重放 generation build mode。"""
     if parent is None:
         return "full"
-    manifest = generation.manifest
     if (
         _matching_generation_spec(parent, spec) is None
-        or manifest.get("spec_fingerprint") != _spec_fingerprint(spec)
+        or generation.manifest.get("spec_fingerprint")
+        != _spec_fingerprint(spec)
+        or set(parent.caches) != set(spec.baselines)
         or set(parent.caches) != set(generation.caches)
     ):
         return "full"
-    frames = input_change["frames"]
-    projection_status = input_change.get("projection_status")
-    if projection_status != "absent":
-        if projection_status != "valid":
-            return "full"
-        daily = frames["daily"]
-        effective = input_change["effective_auxiliary"]
-        effective_cutoff: str | None = None
-        if effective["change_type"] == "revision":
-            effective_cutoff = effective["earliest_changed_key"]
-            if (
-                effective["schema_changed"]
-                or not isinstance(effective_cutoff, str)
-            ):
-                return "full"
-        elif effective["change_type"] not in {"unchanged", "append"}:
-            return "full"
-        if daily["change_type"] in {"revision", "unknown"}:
-            rows = spec.daily_dependency_lookback_rows
-            proof = spec.daily_dependency_proof
-            earliest = daily["earliest_changed_key"]
-            union_keys = input_change.get("_daily_union_keys")
-            if (
-                daily["change_type"] != "revision"
-                or daily["schema_changed"]
-                or isinstance(rows, bool)
-                or not isinstance(rows, int)
-                or rows < 0
-                or not isinstance(proof, str)
-                or not proof.strip()
-                or not isinstance(earliest, str)
-                or not isinstance(union_keys, list)
-                or earliest not in union_keys
-            ):
-                return "full"
-            position = union_keys.index(earliest)
-            daily_cutoff = union_keys[max(0, position - rows)]
-            if not isinstance(daily_cutoff, str):
-                return "full"
-            input_change["suffix_start_date"] = min(
-                daily_cutoff,
-                effective_cutoff or daily_cutoff,
-            )
-            return "suffix"
-        if effective_cutoff is not None:
-            input_change["suffix_start_date"] = effective_cutoff
-            return "suffix"
-        return "append"
+    if input_change.get("projection_status") != "absent":
+        mode, _reason, _cutoff = _projection_build_decision(
+            spec=spec,
+            input_change=input_change,
+        )
     else:
-        if any(
-            frames[name]["change_type"] in {"revision", "unknown"}
-            for name in ("weekly", "monthly")
-        ):
-            return "full"
-        if any(
-            frames[name]["change_type"] == "append"
-            for name in ("weekly", "monthly")
-        ):
-            return "full"
-    if input_change["change_type"] in {"unchanged", "append"}:
-        return "append"
-    daily = frames["daily"]
-    rows = qualification.get("daily_dependency_lookback_rows")
-    proof = qualification.get("daily_dependency_proof")
-    if (
-        daily["change_type"] != "revision"
-        or daily["schema_changed"]
-        or isinstance(rows, bool)
-        or not isinstance(rows, int)
-        or rows < 0
-        or not isinstance(proof, str)
-        or not proof.strip()
-    ):
-        return "full"
-    earliest = daily["earliest_changed_key"]
-    union_keys = input_change.get("_daily_union_keys")
-    if (
-        not isinstance(earliest, str)
-        or not isinstance(union_keys, list)
-        or earliest not in union_keys
-    ):
-        return "full"
-    position = union_keys.index(earliest)
-    cutoff = union_keys[max(0, position - rows)]
-    if not isinstance(cutoff, str):
-        return "full"
-    input_change["suffix_start_date"] = cutoff
-    return "suffix"
+        mode, _reason, _cutoff = _legacy_build_decision(
+            spec=spec,
+            input_change=input_change,
+        )
+    return mode
 
 
 def _build_compare_gate_evidence(

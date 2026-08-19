@@ -679,6 +679,62 @@ def test_daily_revision_uses_bounded_suffix() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("frame_name", "change_type"),
+    (("weekly", "revision"), ("monthly", "append")),
+)
+def test_unmapped_auxiliary_change_stays_full(
+    frame_name: str,
+    change_type: str,
+) -> None:
+    change = _daily_revision_change()
+    change["frames"][frame_name]["change_type"] = change_type
+    assert _legacy_build_decision(
+        spec=_bounded_spec(),
+        input_change=change,
+    )[0] == "full"
+
+
+def test_daily_schema_change_stays_full() -> None:
+    change = _daily_revision_change()
+    change["frames"]["daily"]["schema_changed"] = True
+    assert _revision_build_decision(
+        spec=_bounded_spec(),
+        input_change=change,
+    ) == ("full", "input_revision", None)
+
+
+def test_lineage_rejects_baseline_set_outside_spec() -> None:
+    spec = _bounded_spec()
+    fingerprint = _spec_fingerprint(spec)
+    parent = _LoadedGeneration(
+        generation_id="parent",
+        path=Path("/unused/parent"),
+        manifest={"spec_fingerprint": fingerprint},
+        manifest_sha256="a" * 64,
+        caches={"unexpected": {"test_dates": []}},
+    )
+    candidate = _LoadedGeneration(
+        generation_id="candidate",
+        path=Path("/unused/candidate"),
+        manifest={"spec_fingerprint": fingerprint},
+        manifest_sha256="b" * 64,
+        caches={"unexpected": {"test_dates": []}},
+    )
+    input_change = _daily_revision_change()
+    input_change["change_type"] = "append"
+    input_change["raw_change_type"] = "append"
+    input_change["frames"]["daily"]["change_type"] = "append"
+    input_change["frames"]["daily"]["earliest_changed_key"] = None
+
+    assert _lineage_build_mode(
+        parent=parent,
+        generation=candidate,
+        input_change=input_change,
+        spec=spec,
+    ) == "full"
+
+
 def test_daily_revision_lineage_replays_same_suffix_decision() -> None:
     spec = _bounded_spec()
     fingerprint = _spec_fingerprint(spec)
