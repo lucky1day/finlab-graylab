@@ -535,28 +535,49 @@ cache family 的独立 cold CompareGate 逐一证明；任一 family 的同一 `
 
 #### 9.10.4 本地实施证据与后续边界
 
-本地实现链截至代码/测试 HEAD
-`0812fbcd43387df40f810aa87d2d93426944d9ad`；本次仅补充本文档，不构成 archive 或最终 release
-commit。十个 Liwei adapter 均以既有 suffix 机制设置
+本地代码/测试实现链截至 HEAD
+`3049a42dd845ffbd7bdcd5049f4670f8084faa3b`；本文档同步不等于 archive 构建、ECS validation 或
+release 部署。十个 Liwei adapter 均以既有 suffix 机制设置
 `daily_dependency_lookback_rows=max(HORIZON, PURGE_GAP)=5`，并使用唯一 canonical proof
 `liwei_0616_daily_revision_suffix_v1`。变更没有涉及 Native core、scheme config、算法、repository、
 数据库或 timeout；仅复用既有 suffix build mode，未新增 build mode 或运行时结构。
 
-兼容性复用只接受精确 proof-bearing fingerprint，或两项 dependency 字段均为 `None` 的精确、其余完全相同的
+dependency declaration 只接受两种精确形式；没有字符串 trim、数值转换或其它 normalization：
+
+- legacy 形式必须是 literal `daily_dependency_lookback_rows is None` 且
+  `daily_dependency_proof is None`；它只用于精确识别旧 fingerprint，不具备 revision suffix 资格；
+- proof-bearing 形式要求 rows 是非 bool 的 `int`，且精确等于 `max(horizon, purge_gap)`，proof 也必须
+  精确等于 canonical `liwei_0616_daily_revision_suffix_v1`。
+
+任何其它 partial、空字符串、带空白 proof、bool/float、偏小或偏大的 rows 都无效：不能申请 suffix，不能
+匹配 legacy fingerprint；publisher 按 full/fail-closed 处理，secure consumer 保持 fail-closed。兼容性
+复用因此只接受上述 canonical proof-bearing fingerprint，或上述 literal `None`/`None` 且其余身份完全相同的
 历史 fingerprint；决策按以下顺序：
 
 1. 对 approved family，`publisher_consumer_id` 或 expected tenor identity 漂移首先以
    `CACHE_PUBLISHER_IDENTITY_DRIFT` 失败。
-2. dependency declaration validation 按 normalization 只接受两种有效形式：legacy 为 `rows is None` 且
-   normalized proof 为空，不具备日频 revision suffix 资格，revision 仍为 full；proof-bearing 为 rows 是
-   非 bool 的 `int >= 0` 且 normalized proof 非空，是有效 bounded-proof spec。其余所有 partial 或
-   malformed 组合均为 validation failure。
+2. legacy `None`/`None` 的 revision 仍为 full；只有 canonical proof-bearing spec 才能按
+   `max(horizon, purge_gap)` 计算 suffix 边界。
 3. 缺失或不兼容的 current fingerprint，或由 fingerprint identity 覆盖的 horizon/purge/baseline 漂移时，
    publisher 拒绝复用并 full rebuild；non-publisher 以 `CACHE_PUBLISHER_REQUIRED` fail-closed。
 
 上述十个 adapter 以当前 spec 发布的新 generation 始终写入 proof-bearing fingerprint。build 与 lineage
 均委托同一组决策 helpers，仅使用既有字段、acceptance 和 `current.json` 指针；不新增 runtime schema、
 DB table、revision 或 lineage state file、服务或第二套 cache framework。
+
+只补 CompareGate 证据的 `qualification` generation 现在也可被 secure consumer 严格 replay，但必须同时满足：
+输入及 daily/weekly/monthly frame 均为 unchanged；父子每个 baseline 的 cache 精确相同；每个 baseline 的
+`affected_dates=[]` 且 `preserved_dates` 完整等于 parent `test_dates`；parent 尚未 qualified（只允许
+`unqualified` 或 `phase_a_compared`）；candidate 具有完整、绑定当前输入与 cache 内容且校验通过的
+`qualified` CompareGate evidence。任一条件不成立都不会识别为 qualification，也不放宽 full、append、
+suffix、rebind 或其它 lineage mode。
+
+generation publication 顺序固定为：candidate 完整落盘并 finalize（包括 move 后 generation-root fsync；该步
+失败会清理已移动 candidate）→只读计算 prune plan→以 `current.json` atomic replace 作为唯一 commit point
+→提交后 best-effort prune。prune 始终保护 candidate 与 old current。任一 commit 前失败都保持旧 pointer 和
+既有 generations 不变并清理未发布 candidate；commit 后普通 `Exception` 清理失败不会把已成功 publication
+报告为失败。`KeyboardInterrupt`、`SystemExit` 等 `BaseException` 仍向上传播，但已提交 candidate 保留，
+不得因错误回滚路径删除 current 指向的 generation。
 
 基于合成 DataFrame 的真实临时 generation 发布测试已覆盖：legacy parent 到 cutoff `2026-08-10` 的 suffix
 child，`2026-08-03` 至 `2026-08-07` preserved digest 相同，`2026-08-10` 至 `2026-08-18` 重训，secure
@@ -572,23 +593,27 @@ PYTHONNOUSERSITE=1 conda run -n bond_factor_lab_service python -m pytest \
   tests/test_systemd_control_plane.py -q
 ```
 
-结果为 `50 passed, 1 warning, 41 subtests passed in 1.37s`。全量 command（`exit 0`）为：
+结果为 `80 passed, 1 warning, 41 subtests passed in 1.72s`。全量 command（`exit 0`）为：
 
 ```bash
 PYTHONNOUSERSITE=1 conda run -n bond_factor_lab_service python -m pytest -q
 ```
 
-结果为 `893 passed, 44 warnings, 476 subtests passed in 55.43s`。warning 仍包括 `backend/main.py` 的既有
+结果为 `923 passed, 44 warnings, 476 subtests passed in 54.28s`。warning 仍包括 `backend/main.py` 的既有
 `SyntaxWarning` 及 SQLite datetime/timestamp adapter 的 deprecation warnings。
+
+canonical proof、qualification lineage replay 与 publication/prune 事务分别在独立实现任务中完成，并且
+Task 6A、6B、6C 均通过独立 spec review 与 code-quality review；上述 focused 与全量结果是在三项修复全部
+进入当前代码 HEAD 后重新取得的本地 fresh evidence。
 
 对已经发布 proof-bearing suffix generation 的 family，回滚不能只切换代码 symlink：必须把所有受影响、
 已保存的 `current.json` 指针与旧代码一起恢复到 release 前 parent，因为旧代码不能 replay 新的
-proof-bearing suffix lineage。本地测试不是七个 family 的真实 ECS cold equivalence gate；isolated-root ECS
+proof-bearing suffix lineage。本地测试不是七个 family 的真实 ECS cold-equivalence gate；isolated-root ECS
 七-family cold equivalence 需要其自身授权，且仅允许在
 `/var/lib/bond-factor-lab/validation/liwei-revision-suffix-20260819`（或精确计划指定的 validation root）内
 传输与解压 candidate archive、基于 preserved inputs 执行七-family cold-equivalence validation，以及创建、
 更新或删除完全位于该 validation root 内的临时 validation cache、log、evidence 与 `current.json` pointer。
-该授权不允许修改任何 production Liwei hot-cache `current.json`、在 live
+这项 ECS validation 尚未执行；该授权不允许修改任何 production Liwei hot-cache `current.json`、在 live
 `/opt/bond-factor-lab/releases` 安装、改变 `current/previous` release symlink、activate、修改 installed
 unit/service/systemd state、run、prediction 或 DB row。候选仍未由本任务部署或激活；failed unit reset、
 incident run 3369 reconciliation（其当前状态须先从 ECS DB 新鲜读取）、release install/activation、daily
