@@ -2,9 +2,9 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验时间**：2026-08-19 22:06（Asia/Shanghai）
+**最后核验时间**：2026-08-20 01:48（Asia/Shanghai）
 
-**当前阶段**：ECS 部署闭环已完成，独立自然灰度观察进行中；Mac3 生产切换尚未批准。
+**当前阶段**：ECS 部署闭环和压缩式调度等价验收均已完成，独立灰度运行中；Mac3 生产切换尚未批准。
 
 本文是 ECS 迁移、运行和接手的唯一当前入口。已完成计划、旧候选、一次性测试过程和中间验收报告
 不留在工作树；需要追溯时使用 Git、ECS root-only evidence、systemd journal 和数据库审计记录。
@@ -12,8 +12,9 @@
 ## 1. 当前结论
 
 ECS 已具备独立数据库、增量数据链、DataBridge、算法环境、项目 release、systemd 调度、Actuals 和
-loopback Backend。五个 timer 已启用，daily 保持两小时总运行上限。2026-08-19 的上游晚到值修订、
-Phase-A 缓存效率和当日日频写库缺口已经闭环。
+loopback Backend。五个 timer 已启用，daily 保持两小时总运行上限。冻结同源数据下的 DataBridge、
+daily、weekly、monthly 和 Actuals 已按 systemd one-shot 等价路径完成隔离真写库；Phase-A 的 7 个
+family 全部复用 parent 并执行有限 suffix，没有全量重建。无需再把“等待五个自然日”作为本轮上线门。
 
 代码治理也已落地为单一代码线：
 
@@ -95,20 +96,34 @@ flowchart LR
 该设计只复用既有 `build_mode=suffix`、manifest、CompareGate、acceptance lineage 和 `current.json`
 原子发布；没有新增数据库表、revision ledger、后台服务、第二套 cache 或算法分支。
 
-## 5. 灰度观察与切换门
+## 5. 压缩式调度验收与后续灰度
 
-下一阶段只收集自然运行证据，不继续增加迁移代码。至少需要覆盖：
+为避免等待多个自然日，2026-08-20 已在 ECS 创建一次性隔离库、冻结源数据和热缓存副本，使用与
+installed service 相同的 Python 环境、release、控制面变量、超时和 `systemd` cgroup 语义，直接模拟
+自然 DataBridge、daily、weekly、monthly 和 Actuals。隔离环境不连接生产写库路径；验收结束后，
+隔离数据库、缓存副本、临时环境文件和 transient unit 已全部删除。
 
-1. 多个连续交易日的 DataBridge 和 daily 自然触发；
-2. 一次自然 weekly；
-3. 一次自然 monthly；
-4. 对应的 Actuals 三频水位；
-5. 每批 run/prediction linkage、日期链、重复键、Mac-only 隔离和全库 running；
-6. Liwei cache hit/suffix/full 计数、墙钟、CPU、内存、磁盘和 source integrity；
-7. Backend `/api/health` 和 localhost 页面数据可见性。
+| 批次 | 真写库结果 | 墙钟 | 峰值内存 |
+|---|---:|---:|---:|
+| daily（2026-08-19） | 39/39 run 成功，43 条 prediction | 1 小时 1 分 38 秒 | 1.9 GiB |
+| weekly（2026-08-15） | 12/12 run 成功，12 条 prediction | 7 分 34 秒 | 768 MiB |
+| monthly（2026-08-15） | 5/5 run 成功，5 条 prediction | 1 分 51 秒 | 436 MiB |
+| Actuals（截止 2026-08-18） | daily 14,165、weekly 5,954、monthly 刷新 684 条 | 27 秒 | 81 MiB |
 
-只有上述证据稳定，才进入新的生产切换评审。评审必须重新确定：Web 是否切换、Writer 是否切换、
-Mac3 是否继续运行、切换窗口、DNS/Nginx 变更、数据库 authority 和回滚范围。当前文档不授予这些操作。
+验收同时确认：
+
+- 60 条 prediction 全部关联 success run，重复键、孤儿记录、写入计数不一致和残留 running 均为 0；
+- daily 的 `predict_date/feature_date` 为 `2026-08-19/2026-08-18`，weekly 和 monthly 的
+  `predict_date/feature_date` 为 `2026-08-15/2026-08-14`，全部为 `scheduled_live`；
+- 9 个 Mac-only paused base 均未执行；Registry 保持 60 active / 9 paused；
+- 7 个 Liwei cache family 均为 `build_mode=suffix`，从 parent 重算 `2026-08-11` 起的有限区间，
+  full build 为 0；
+- 生产 `bond_db` 的最大 run 仍为 3408、prediction 总数仍为 2965，7 个生产 cache pointer 哈希、
+  `current/previous` release、Backend 和五个 timer 均未改变；DataBridge 测试状态已恢复并通过 check-only。
+
+自然 timer 继续承担日常运行和故障监控，但不再要求等待五个自然日后才能认定 ECS 灰度部署可用。
+后续若进入生产切换评审，仍须重新确定 Web、Writer、Mac3、切换窗口、DNS/Nginx、数据库 authority
+和回滚范围；本轮验收不授予这些生产切换操作。
 
 ## 6. 接手检查
 
