@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验时间**：2026-08-18 21:24（Asia/Shanghai）
+**最后核验时间**：2026-08-19 22:06（Asia/Shanghai）
 
 **当前阶段**：ECS 部署闭环已完成，正在进行独立自然灰度观察；生产切换尚未批准。
 
@@ -59,11 +59,11 @@ flowchart LR
 | 数据库 | Mac `bond_db` 已完整恢复到 ECS loopback MySQL 8.4；结构、对象、Trigger、Procedure 和 Event 定义完成核验，`event_scheduler=OFF` |
 | 增量数据链 | `BondPrediction` 已部署到 `/opt/bondprediction/current`，28 条有效数据任务在 ECS 本地运行；4 条 `forecast_project` 任务明确不迁移 |
 | Python 依赖 | `BondPrediction` requirements 已包含 `cryptography`；项目三套 Linux 环境使用 conda-forge-only，依赖完整性和数据库连接已验证 |
-| 项目 release | current 指向不可变 release `a749b17d5ad3e3f248a1cb788d892aa36d30f518` |
+| 项目 release | current 指向不可变 release `fd296812e7acef2869f54f706ba8f4f0bc776896`，previous 指向 `b0470d43ac26cb0674f83b7a980ab093f2e483c6` |
 | 方案范围 | canonical 源码保持 65 个 base；ECS 由 `aliyun-gray` 部署矩阵发现 56 base / 60 composite，9 个 Mac-only base 不进入 ECS 执行 |
 | Registry | ECS 为 60 active / 9 paused；部署矩阵不自动改写 Registry 生命周期 |
 | DataBridge | 使用 ECS 本地数据库发布 current generation，严格健康检查通过 |
-| Liwei 缓存 | 7 个 family 复用迁移 parent；首次消费者只 append 唯一缺失交易日，同 family 后续消费者 hit；没有 full rebuild |
+| Liwei 缓存 | 7 个 family 已在真实 2026-08-18/19 数据修订上发布有限 suffix generation；production secure loader 7/7 通过，同 family 后续消费者 hit；没有 full rebuild |
 | 手工真写库 | daily 39/39、weekly 12/12、monthly 5/5 全成功，分别写入 43、12、5 条预测；Actuals 成功更新 |
 | 数据闭环 | run/prediction linkage 完整、业务键无重复、残留 running 为 0、9 个 Mac-only base 零新增 |
 | Backend / 前端 | Backend `active/static`，只监听 `127.0.0.1:8100`；首页和 `/api/health` 均为 HTTP 200，页面实际数据已渲染 |
@@ -326,7 +326,7 @@ Mac3 的 installed launchd 当前仍以现场读回为准；只有在专项变�
    `BFL_DEPLOYMENT_TARGET` 和既有平台环境清单；平台差异不得进入算法代码或环境分支。
 4. Blackbox 环境指纹已在 `codex/develop` 候选中按目标平台选择仓库已有的 Linux/macOS
    manifest，不再硬编码只指向 Linux 文件；两端允许不同依赖环境，但运行同一个源码 release，
-   未知平台 fail-closed。该候选尚未部署到任一主机。
+   未知平台 fail-closed。该能力现已部署到 ECS；Mac3 仍使用既有生产 checkout，尚未进入解耦窗口。
 5. `shared/service_instance.py` 必须从已校验 release manifest/显式环境读取精确 commit；开发环境
    才允许回退到 `git rev-parse`。生产 release 不包含 `.git`，不得因服务指纹当前未启用而把这一
    缺口带入 Mac3。
@@ -338,22 +338,22 @@ Mac3 的 installed launchd 当前仍以现场读回为准；只有在专项变�
 预计新增代码只集中在现有路径适配器和小型 release 工具，不复制 scheduler、算法、配置或服务
 模板，不引入容器、GitOps 配置仓库、Capistrano 或第二套部署框架。
 
-### 9.6 后续实施顺序与验收
+### 9.6 实施顺序与当前状态
 
 以下阶段必须依次完成；每个生产操作仍需单独授权：
 
 1. **分支与文档收敛（2026-08-18 完成）**：已将当前活动集成分支原地改名为
    `codex/develop` 并同步当前治理文档。验收读回只有一个长期活动集成线，`master` 未移动，
    Mac3 checkout 和 installed launchd 未改变。
-2. **路径适配器（2026-08-18 develop 候选完成，未部署）**：已为显式根、开发默认、相对路径
+2. **路径适配器（2026-08-18 候选完成，ECS 已部署）**：已为显式根、开发默认、相对路径
    拒绝和缓存/DataBridge 路由补测试，并最小修改现有路径调用点。生产目标缺少显式状态根时
    fail-closed；算法输出和 repository 写库接口未改变。
-3. **可重复 release（2026-08-18 develop 候选完成，未部署）**：已实现 clean Git HEAD 的
+3. **可重复 release（2026-08-18 候选完成，ECS 已部署）**：已实现 clean Git HEAD 的
    deterministic source archive、manifest 和 SHA256。安装必须另传批准的 archive SHA256，默认
    只做隔离解包、source tree digest 和只读预安装；独立激活会重新核验 archive/tree、目录权限与
-   expected-current CAS，拒绝同 SHA，并将 `current` 原子替换留作最后文件动作。该完成状态只描述
-   `codex/develop` 候选，不表示 ECS/Mac3 已安装。
-4. **ECS 演练**：不改变自然灰度业务范围，在无批次运行时安装新 release，核验 checksum、环境、
+   expected-current CAS，拒绝同 SHA，并将 `current` 原子替换留作最后文件动作。ECS 当前 release 已
+   通过完整运行后的 source integrity 复核；Mac3 尚未安装该 release。
+4. **ECS 演练（已完成）**：不改变自然灰度业务范围，在无批次运行时安装新 release，核验 checksum、环境、
    DataBridge/cache compatibility 和 Backend 只读健康，再原子切换 `current` 并记录 revision。
    验收为失败可保持/切回 previous，现有 timers、Registry 和数据库 authority 未被部署工具修改。
 5. **Mac3 解耦**：自然灰度达标后另开生产窗口，把同一已验 archive 安装到 Mac3 runtime 根，
@@ -535,9 +535,8 @@ cache family 的独立 cold CompareGate 逐一证明；任一 family 的同一 `
 
 #### 9.10.4 本地实施证据与后续边界
 
-本地代码/测试实现链截至 HEAD
-`3049a42dd845ffbd7bdcd5049f4670f8084faa3b`；本文档同步不等于 archive 构建、ECS validation 或
-release 部署。十个 Liwei adapter 均以既有 suffix 机制设置
+本地代码/测试实现链从 `3049a42dd845ffbd7bdcd5049f4670f8084faa3b` 起步，经过 canonical proof、
+qualification replay 和 publication/prune 修复后收敛为 9.10.5 的 `fd296812`。十个 Liwei adapter 均以既有 suffix 机制设置
 `daily_dependency_lookback_rows=max(HORIZON, PURGE_GAP)=5`，并使用唯一 canonical proof
 `liwei_0616_daily_revision_suffix_v1`。变更没有涉及 Native core、scheme config、算法、repository、
 数据库或 timeout；仅复用既有 suffix build mode，未新增 build mode 或运行时结构。
@@ -608,16 +607,50 @@ Task 6A、6B、6C 均通过独立 spec review 与 code-quality review；上述 f
 
 对已经发布 proof-bearing suffix generation 的 family，回滚不能只切换代码 symlink：必须把所有受影响、
 已保存的 `current.json` 指针与旧代码一起恢复到 release 前 parent，因为旧代码不能 replay 新的
-proof-bearing suffix lineage。本地测试不是七个 family 的真实 ECS cold-equivalence gate；isolated-root ECS
-七-family cold equivalence 需要其自身授权，且仅允许在
-`/var/lib/bond-factor-lab/validation/liwei-revision-suffix-20260819`（或精确计划指定的 validation root）内
-传输与解压 candidate archive、基于 preserved inputs 执行七-family cold-equivalence validation，以及创建、
-更新或删除完全位于该 validation root 内的临时 validation cache、log、evidence 与 `current.json` pointer。
-这项 ECS validation 尚未执行；该授权不允许修改任何 production Liwei hot-cache `current.json`、在 live
-`/opt/bond-factor-lab/releases` 安装、改变 `current/previous` release symlink、activate、修改 installed
-unit/service/systemd state、run、prediction 或 DB row。候选仍未由本任务部署或激活；failed unit reset、
-incident run 3369 reconciliation（其当前状态须先从 ECS DB 新鲜读取）、release install/activation、daily
-重跑，以及每一项 systemd/service/DB mutation 均须各自单独的明确授权；历史 predictions 未被修改。
+proof-bearing suffix lineage。2026-08-19 的发布前快照已经保存 7 个 parent pointer，可作为本 release 的
+配套回滚材料；日常灰度继续使用新 generation，不执行回滚。
+
+#### 9.10.5 ECS 隔离验证与生产闭环
+
+最终候选为 `fd296812e7acef2869f54f706ba8f4f0bc776896`，tree
+`4596757f3b657bb290cc601b1a11d64b6abe7a77`，deterministic source archive SHA-256 为
+`120259334ed2ebe3fd8fc7648917f4e52836be85deff1bddaf475f2c66b481bd`。本地 fresh focused 为
+`80 passed, 41 subtests passed`，全量为 `923 passed, 476 subtests passed`；三项独立修复和最终全局
+review 均已通过。
+
+ECS 隔离验证只在
+`/var/lib/bond-factor-lab/validation/liwei-revision-suffix-20260819/run-fd296812` 内执行。七个 family
+分别以两个独立 generation 重放相同最新输入：7/7 A/B 内容 ID 一致、preserved prefix 摘要一致、
+affected suffix 与 cold 结果一致、secure consumer 通过；canonical A/B 运行总计约 79 分 57 秒。
+验证前后 production 的 7 个 pointer、release symlink、11 个 systemd unit 状态和 600 条 Liwei 历史
+prediction 摘要均逐字不变。最终证据为 `evidence/seven-family-final.json`，SHA-256
+`424d0d634584f56077a24aad9453ec39ad20c5ce822224daefd93372cb9c0696`。首次 7Y 验证错误使用连续日期区间，
+被真实双窗口 coverage 合同拒绝；失败材料隔离保留，修正为 prior same-month + current-month 合同后通过，
+生产状态未受影响。
+
+用户随后授权 release 安装、systemd 变更、incident reconciliation 和受控日频重跑。安装器以
+expected-current CAS 将 `current` 切到 `fd296812`，`previous` 保留 `b0470d4`；四个 prediction/DataBridge
+unit 只调整 release env 的最终优先级，11 个 installed unit/timer 最终均与 release 模板逐字一致。Backend
+从新 release 启动并在 `127.0.0.1:8100` 健康；五个 timer 全程保持 `enabled/active/waiting`。
+
+自然批次遗留的 run 3369 在确认进程组为空、0 prediction、0 log 后，仅通过
+`scheduler.repository.fail_scheme_run_atomic` 原子闭环为 failed 并写入一条失败日志。受控日频于
+20:58:50 启动、22:03:38 结束，墙钟 64 分 48 秒，低于两小时硬门：run 3370–3408 共 39/39 success，
+写入 43 条 `scheduled_live` prediction，全部 `feature_date=2026-08-18`；0 failed、0 running、0 linkage
+mismatch、0 重复业务键，9 个 Mac-only base 零写入，Registry 仍为 60 active / 9 paused。
+
+批次前后 `predict_date < 2026-08-19` 的 2,922 条历史 prediction 摘要均为
+`60060f712de905feb50fff077db0208c94f1f3aa208909c99c264dbff201fc2c`，证明事后数据修订没有回写历史业务
+预测。7 个 production pointer 均切到新的 `build_mode=suffix` generation，secure loader 7/7 通过；
+完整运行后 source installer 再校验 archive/tree 成功，release 内没有 `.pyc/.nbi/.nbc`，17 组 Numba
+`.nbi/.nbc` 只存在于 commit 隔离的外置 runtime cache。最终 daily evidence SHA-256 为
+`066ce9ae3a5118d9e6eb5345b0f3c595f46fba7ac9f05a6518be58b2d0bef472`，生产健康报告为
+`status=ok`、`findings=[]`，SHA-256
+`5bc924c1087bbf2d4de6d77ffed5b55a810f39f67d5bc71924cadfad5be49693`。
+
+该结果关闭 2026-08-19 数据修订、缓存效率、release 不可变性和当日日频写库缺口；不改变当前灰度
+边界。Mac3、launchd、域名、Nginx、DNS 和生产流量均未修改。下一道门仍是连续自然日、自然周频、
+自然月频及 Actuals 的灰度稳定性复核，不自动进入生产切换。
 
 ## 10. 文档与 Git 权威
 

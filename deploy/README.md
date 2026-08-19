@@ -40,6 +40,12 @@ digest 和只读预安装。`--activate` 只接受已经预安装且重新通过
 显式 `--expected-current` 匹配时更新 `previous/current`；它不包含 SSH、systemctl、launchctl、
 数据库、Registry、Nginx 或 DNS 操作。
 
+目标主机必须使用**候选 archive 同版本**的安装器完成预安装与激活，不能从旧 `current` 调用旧版
+安装器生成候选 release 环境。运行安装器时必须设置 `PYTHONDONTWRITEBYTECODE=1`，并从候选 release
+目录之外调用；不得为二次校验直接执行只读 release 内的 Python 文件，以免 root 生成 `__pycache__`
+后触发 source integrity 拒绝。任何环境合同不完整或 source digest 不一致的未激活目录都应整体隔离，
+不得现场补写后继续激活。
+
 激活拒绝同 SHA 重试，避免覆盖可用的 `previous`。revision intent 和 `previous` 都在切换前完成，
 `current` 的原子替换是最后一个强制文件动作；命令返回后以 `current` 现场读回作为是否激活的最终
 authority。既有 deploy/runtime root 必须是当前 operator 所有的真实目录，且不能 group/world

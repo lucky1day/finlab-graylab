@@ -191,3 +191,32 @@ Actuals 终态：
 
 至此 ECS 已进入独立自然灰度观察期。Mac3、域名、Nginx、DNS 与生产流量仍未修改；下一道门是
 收集并复核连续日频、自然周频、自然月频、Actuals、缓存和资源证据，不是自动进入生产切流。
+
+## 10. 2026-08-19 数据修订修复与日频恢复
+
+8 月 19 日首次自然 daily 在旧 release 上因 8 月 17 日十个字段晚到修订触发 Phase-A 全量重建：首个
+10Y 子任务 3600 秒超时，第二个 5Y 随 systemd 两小时总限被终止，其余 37 个方案未启动，当时 8 月
+19 日 prediction 为 0。修复保留历史业务预测不变，只为十个 Liwei adapter 声明 canonical 有限依赖，
+让普通同结构数值修订重算经验证的 suffix；算法、Native core、scheme config、repository、数据库 schema
+和 timeout 均未改变。
+
+候选 `fd296812e7acef2869f54f706ba8f4f0bc776896` 的 source archive SHA-256 为
+`120259334ed2ebe3fd8fc7648917f4e52836be85deff1bddaf475f2c66b481bd`。ECS 隔离验证 7/7 family 通过
+A/B cold equivalence、preserved-prefix、secure consumer 和 production pointer 不变检查后，release 才以
+expected-current CAS 激活；current/previous 分别为 `fd296812` / `b0470d4`。Backend 健康，五个 timer
+保持 `enabled/active/waiting`。
+
+遗留 run 3369 在确认进程组为空、0 prediction、0 log 后，经 repository 原子闭环为 failed。受控日频
+于 20:58:50–22:03:38 完成，39/39 success，写入 43 条 `scheduled_live` prediction；全部
+`feature_date=2026-08-18`，0 running、0 linkage mismatch、0 重复业务键，9 个 Mac-only base 零写入。
+7 个 production pointer 均发布 `build_mode=suffix` generation 并通过 secure loader；39 个方案总墙钟
+64 分 48 秒，未放宽两小时硬门。
+
+批次前后 2,922 条既有历史 prediction 的 SHA-256 均为
+`60060f712de905feb50fff077db0208c94f1f3aa208909c99c264dbff201fc2c`。完整运行后 release source digest
+仍与 archive 一致，源码目录没有 `.pyc/.nbi/.nbc`；17 组 Numba cache 只写入 release 外的 commit 隔离
+目录。生产健康检查返回 `status=ok`、`findings=[]`。精确隔离和生产证据保存在 ECS root-only 目录
+`/var/lib/bond-factor-lab/validation/liwei-revision-suffix-20260819/run-fd296812/evidence`。
+
+这关闭了当日数据修订和日频写库缺口，但不构成生产切换。ECS 继续作为独立灰度实验室收集自然日、
+自然周、自然月与 Actuals 证据；Mac3、域名、Nginx、DNS 和生产流量保持不变。
