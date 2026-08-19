@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import shared.liwei_0616_phase_a_cache as phase_a_cache_module
 from shared.liwei_0616_cache_contract import (
     CACHE_MUTATION_POLICY_ENV,
     CACHE_MUTATION_POLICY_PRIVATE_BUILD,
@@ -19,6 +20,7 @@ from shared.liwei_0616_cache_contract import (
     validate_generation_acceptance_record,
 )
 from shared.liwei_0616_phase_a_cache import (
+    CacheCapacityError,
     DAILY_REVISION_SUFFIX_PROOF_V1,
     PhaseACacheSpec,
     _LoadedGeneration,
@@ -981,6 +983,430 @@ def _prepare_revision_parent(
         current_path.read_text(encoding="utf-8")
     )["generation_id"]
     return spec, current_path, parent_generation_id
+
+
+def _publish_retention_generations(
+    root: Path,
+    *,
+    count: int,
+) -> tuple[
+    PhaseACacheSpec,
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    Path,
+]:
+    spec = PhaseACacheSpec(
+        cache_family="test_publish_prune",
+        tenor="5Y",
+        publisher_consumer_id="publisher",
+        baselines=("baseline",),
+        baseline_configs={"baseline": {"close": "close"}},
+        source_ic_screen_start="2020-01-01",
+        horizon=5,
+        purge_gap=5,
+    )
+    dates = pd.date_range("2026-01-05", periods=count + 1, freq="B")
+    weekly = pd.DataFrame({"week_id": [202602], "value": [1.0]})
+    monthly = pd.DataFrame({"month_id": ["2026-01"], "value": [1.0]})
+    daily = pd.DataFrame()
+
+    for size in range(1, count + 1):
+        daily = pd.DataFrame(
+            {
+                "date": dates[:size].strftime("%Y-%m-%d").tolist(),
+                "close": [1.0] * size,
+            }
+        )
+
+        def train_missing(
+            _baseline: str,
+            ranges: tuple[tuple[str, str], ...],
+            *,
+            value: int = size,
+        ) -> dict[str, object]:
+            return _cache_for_dates(
+                [start for start, end in ranges if start == end],
+                value,
+            )
+
+        prepare_phase_a_caches(
+            spec=spec,
+            daily_df=daily,
+            weekly_df=weekly,
+            monthly_df=monthly,
+            test_ranges=(
+                (
+                    str(daily.iloc[0]["date"]),
+                    str(daily.iloc[-1]["date"]),
+                ),
+            ),
+            train_missing=train_missing,
+            cache_consumer_id="publisher",
+            cache_root=root,
+        )
+
+    family_root = root / spec.cache_family / spec.tenor.lower()
+    return spec, daily, weekly, monthly, family_root
+
+
+def _generation_snapshot(generation_root: Path) -> dict[str, dict[str, bytes]]:
+    return {
+        generation.name: {
+            str(path.relative_to(generation)): path.read_bytes()
+            for path in sorted(generation.rglob("*"))
+            if path.is_file()
+        }
+        for generation in sorted(generation_root.iterdir())
+        if generation.is_dir()
+    }
+
+
+def _publish_next_retention_generation(
+    *,
+    spec: PhaseACacheSpec,
+    daily: pd.DataFrame,
+    weekly: pd.DataFrame,
+    monthly: pd.DataFrame,
+    root: Path,
+) -> tuple[dict[str, dict[str, object]], dict[str, object]]:
+    next_date = (
+        pd.Timestamp(daily.iloc[-1]["date"]) + pd.offsets.BDay(1)
+    ).strftime("%Y-%m-%d")
+    extended = pd.concat(
+        [
+            daily,
+            pd.DataFrame({"date": [next_date], "close": [9.0]}),
+        ],
+        ignore_index=True,
+    )
+
+    def train_missing(
+        _baseline: str,
+        ranges: tuple[tuple[str, str], ...],
+    ) -> dict[str, object]:
+        return _cache_for_dates(
+            [start for start, end in ranges if start == end],
+            9,
+        )
+
+    return prepare_phase_a_caches(
+        spec=spec,
+        daily_df=extended,
+        weekly_df=weekly,
+        monthly_df=monthly,
+        test_ranges=((str(extended.iloc[0]["date"]), next_date),),
+        train_missing=train_missing,
+        cache_consumer_id="publisher",
+        cache_root=root,
+    )
+
+
+def test_pointer_failure_at_retention_limit_preserves_all_generations(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path.resolve()
+    spec, daily, weekly, monthly, family_root = (
+        _publish_retention_generations(root, count=3)
+    )
+    current_path = family_root / "current.json"
+    generation_root = family_root / "generations"
+    pointer_bytes = current_path.read_bytes()
+    generations_before = _generation_snapshot(generation_root)
+    real_replace = phase_a_cache_module.os.replace
+
+    def fail_pointer_replace(source: Path, target: Path) -> None:
+        if Path(target) == current_path:
+            raise OSError("pointer replace failed")
+        real_replace(source, target)
+
+    with patch.object(
+        phase_a_cache_module.os,
+        "replace",
+        side_effect=fail_pointer_replace,
+    ):
+        with pytest.raises(OSError, match="pointer replace failed"):
+            _publish_next_retention_generation(
+                spec=spec,
+                daily=daily,
+                weekly=weekly,
+                monthly=monthly,
+                root=root,
+            )
+
+    assert current_path.read_bytes() == pointer_bytes
+    assert _generation_snapshot(generation_root) == generations_before
+    assert not list(family_root.glob(".building-*"))
+
+
+def test_prune_preflight_failure_preserves_pointer_and_generations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path.resolve()
+    spec, daily, weekly, monthly, family_root = (
+        _publish_retention_generations(root, count=3)
+    )
+    current_path = family_root / "current.json"
+    generation_root = family_root / "generations"
+    pointer_bytes = current_path.read_bytes()
+    generations_before = _generation_snapshot(generation_root)
+
+    monkeypatch.setattr(
+        phase_a_cache_module,
+        "CACHE_GENERATION_RETENTION",
+        1,
+    )
+    with pytest.raises(
+        CacheCapacityError,
+        match="protected current and candidate",
+    ):
+        _publish_next_retention_generation(
+            spec=spec,
+            daily=daily,
+            weekly=weekly,
+            monthly=monthly,
+            root=root,
+        )
+
+    assert current_path.read_bytes() == pointer_bytes
+    assert _generation_snapshot(generation_root) == generations_before
+    assert not list(family_root.glob(".building-*"))
+
+
+def test_family_byte_prune_plan_uses_real_directory_sizes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    family_root = tmp_path / "family"
+    generation_root = family_root / "generations"
+    sizes = {"old": 4, "current": 4, "candidate": 4}
+    for index, (generation_id, size) in enumerate(sizes.items(), start=1):
+        path = generation_root / generation_id
+        path.mkdir(parents=True)
+        (path / "payload").write_bytes(b"x" * size)
+        phase_a_cache_module.os.utime(path, ns=(index, index))
+    protected = {"current", "candidate"}
+    monkeypatch.setattr(
+        phase_a_cache_module,
+        "CACHE_GENERATION_RETENTION",
+        10,
+    )
+    monkeypatch.setattr(
+        phase_a_cache_module,
+        "MAX_CACHE_FAMILY_BYTES",
+        8,
+    )
+
+    assert phase_a_cache_module._plan_generation_prune(
+        family_root,
+        protected_generation_ids=protected,
+    ) == ("old",)
+
+    monkeypatch.setattr(
+        phase_a_cache_module,
+        "MAX_CACHE_FAMILY_BYTES",
+        7,
+    )
+    with pytest.raises(
+        CacheCapacityError,
+        match="protected current and candidate",
+    ):
+        phase_a_cache_module._plan_generation_prune(
+            family_root,
+            protected_generation_ids=protected,
+        )
+
+
+def test_generation_root_fsync_failure_discards_moved_candidate(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path.resolve()
+    spec, daily, weekly, monthly, family_root = (
+        _publish_retention_generations(root, count=3)
+    )
+    current_path = family_root / "current.json"
+    generation_root = family_root / "generations"
+    pointer_bytes = current_path.read_bytes()
+    generations_before = _generation_snapshot(generation_root)
+    real_fsync_directory = phase_a_cache_module._fsync_directory
+
+    def fail_generation_root_fsync(path: Path) -> None:
+        if path == generation_root:
+            raise OSError("generation root fsync failed")
+        real_fsync_directory(path)
+
+    with patch.object(
+        phase_a_cache_module,
+        "_fsync_directory",
+        side_effect=fail_generation_root_fsync,
+    ):
+        with pytest.raises(OSError, match="generation root fsync failed"):
+            _publish_next_retention_generation(
+                spec=spec,
+                daily=daily,
+                weekly=weekly,
+                monthly=monthly,
+                root=root,
+            )
+
+    assert current_path.read_bytes() == pointer_bytes
+    assert _generation_snapshot(generation_root) == generations_before
+    assert not list(family_root.glob(".building-*"))
+
+
+def test_post_replace_runtime_fsync_failure_keeps_publication_successful(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path.resolve()
+    spec, daily, weekly, monthly, family_root = (
+        _publish_retention_generations(root, count=3)
+    )
+    current_path = family_root / "current.json"
+    generation_root = family_root / "generations"
+    old_current = json.loads(current_path.read_text(encoding="utf-8"))[
+        "generation_id"
+    ]
+    real_fsync_directory = phase_a_cache_module._fsync_directory
+
+    def fail_pointer_directory_fsync(path: Path) -> None:
+        if path == family_root:
+            raise RuntimeError("pointer directory fsync failed")
+        real_fsync_directory(path)
+
+    with patch.object(
+        phase_a_cache_module,
+        "_fsync_directory",
+        side_effect=fail_pointer_directory_fsync,
+    ):
+        _caches, audit = _publish_next_retention_generation(
+            spec=spec,
+            daily=daily,
+            weekly=weekly,
+            monthly=monthly,
+            root=root,
+        )
+
+    pointer = json.loads(current_path.read_text(encoding="utf-8"))
+    assert pointer["generation_id"] == audit["generation_id"]
+    assert pointer["generation_id"] != old_current
+    assert (generation_root / pointer["generation_id"]).is_dir()
+    assert not list(family_root.glob(".building-*"))
+
+
+def test_postcommit_prune_failure_keeps_published_candidate(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path.resolve()
+    spec, daily, weekly, monthly, family_root = (
+        _publish_retention_generations(root, count=3)
+    )
+    current_path = family_root / "current.json"
+    generation_root = family_root / "generations"
+    old_pointer = json.loads(current_path.read_text(encoding="utf-8"))
+    generations_before = _generation_snapshot(generation_root)
+
+    with patch(
+        "shared.liwei_0616_phase_a_cache._prune_generations",
+        side_effect=RuntimeError("postcommit prune failed"),
+    ):
+        _caches, audit = _publish_next_retention_generation(
+            spec=spec,
+            daily=daily,
+            weekly=weekly,
+            monthly=monthly,
+            root=root,
+        )
+
+    pointer = json.loads(current_path.read_text(encoding="utf-8"))
+    assert pointer["generation_id"] == audit["generation_id"]
+    assert pointer["generation_id"] != old_pointer["generation_id"]
+    assert (generation_root / pointer["generation_id"]).is_dir()
+    assert set(_generation_snapshot(generation_root)) == (
+        set(generations_before) | {pointer["generation_id"]}
+    )
+    assert not list(family_root.glob(".building-*"))
+
+
+def test_postcommit_prune_continues_after_one_removal_fails(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path.resolve()
+    spec, daily, weekly, monthly, family_root = (
+        _publish_retention_generations(root, count=3)
+    )
+    current_path = family_root / "current.json"
+    generation_root = family_root / "generations"
+    old_current = json.loads(current_path.read_text(encoding="utf-8"))[
+        "generation_id"
+    ]
+    for index, generation_id in enumerate(("extra-old-a", "extra-old-b")):
+        path = generation_root / generation_id
+        path.mkdir()
+        (path / "payload").write_bytes(b"old")
+        phase_a_cache_module.os.utime(path, ns=(index + 1, index + 1))
+    real_rmtree = phase_a_cache_module.shutil.rmtree
+    removal_attempts: list[str] = []
+
+    def fail_one_removal(path: Path) -> None:
+        generation_id = Path(path).name
+        removal_attempts.append(generation_id)
+        if generation_id == "extra-old-a":
+            raise OSError("one old generation is busy")
+        real_rmtree(path)
+
+    with patch.object(
+        phase_a_cache_module.shutil,
+        "rmtree",
+        side_effect=fail_one_removal,
+    ):
+        _caches, audit = _publish_next_retention_generation(
+            spec=spec,
+            daily=daily,
+            weekly=weekly,
+            monthly=monthly,
+            root=root,
+        )
+
+    assert removal_attempts[:2] == ["extra-old-a", "extra-old-b"]
+    assert (generation_root / "extra-old-a").is_dir()
+    assert not (generation_root / "extra-old-b").exists()
+    assert (generation_root / old_current).is_dir()
+    assert (generation_root / audit["generation_id"]).is_dir()
+    pointer = json.loads(current_path.read_text(encoding="utf-8"))
+    assert pointer["generation_id"] == audit["generation_id"]
+
+
+def test_successful_publication_prunes_after_pointer_commit(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path.resolve()
+    spec, daily, weekly, monthly, family_root = (
+        _publish_retention_generations(root, count=3)
+    )
+    current_path = family_root / "current.json"
+    generation_root = family_root / "generations"
+    old_current = json.loads(current_path.read_text(encoding="utf-8"))[
+        "generation_id"
+    ]
+
+    _caches, audit = _publish_next_retention_generation(
+        spec=spec,
+        daily=daily,
+        weekly=weekly,
+        monthly=monthly,
+        root=root,
+    )
+
+    pointer = json.loads(current_path.read_text(encoding="utf-8"))
+    remaining = {
+        path.name for path in generation_root.iterdir() if path.is_dir()
+    }
+    assert pointer["generation_id"] == audit["generation_id"]
+    assert len(remaining) == 3
+    assert pointer["generation_id"] in remaining
+    assert old_current in remaining
+    assert not list(family_root.glob(".building-*"))
 
 
 def test_revision_suffix_preserves_parent_prefix(

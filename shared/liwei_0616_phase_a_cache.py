@@ -641,12 +641,12 @@ def _prepare_under_family_lock(
         protected_generation_ids = {generation.generation_id}
         if current is not None:
             protected_generation_ids.add(current.generation_id)
-        _prune_generations(
+        prune_generation_ids = _plan_generation_prune(
             family_root,
             protected_generation_ids=protected_generation_ids,
         )
-        # current.json 的原子 replace 是唯一 publication commit
-        # point。所有可能失败的容量清理与返回值构造都必须在它之前完成。
+        # current.json 的原子 replace 是唯一 publication commit point。
+        # 提交前仅校验清理方案，绝不删除既有 generation。
         _switch_current_generation(
             family_root,
             generation,
@@ -663,6 +663,16 @@ def _prepare_under_family_lock(
                 f"{generation.generation_id}: {cleanup_error}"
             )
         raise
+    # publication 已提交；历史清理只能 best effort，不能把已发布 candidate
+    # 重新报告为失败。Exception 被隔离，KeyboardInterrupt/SystemExit 继续传播。
+    try:
+        _prune_generations(
+            family_root,
+            prune_generation_ids=prune_generation_ids,
+            protected_generation_ids=protected_generation_ids,
+        )
+    except Exception:
+        pass
     return generation.caches, audit
 
 
@@ -1982,6 +1992,7 @@ def _create_generation(
         )
     )
     finalized = False
+    moved_target: Path | None = None
     try:
         baseline_directory = staging / "baselines"
         baseline_directory.mkdir()
@@ -2110,18 +2121,23 @@ def _create_generation(
         generation_root.mkdir(exist_ok=True)
         target = generation_root / generation_id
         os.replace(staging, target)
+        moved_target = target
         _fsync_directory(generation_root)
-        finalized = True
-        return _LoadedGeneration(
+        generation = _LoadedGeneration(
             generation_id=generation_id,
             path=target,
             manifest=validated.manifest,
             manifest_sha256=validated.manifest_sha256,
             caches=validated.caches,
         )
+        finalized = True
+        return generation
     finally:
-        if not finalized and staging.exists():
-            shutil.rmtree(staging)
+        if not finalized:
+            if staging.exists():
+                shutil.rmtree(staging)
+            if moved_target is not None and moved_target.exists():
+                shutil.rmtree(moved_target)
 
 
 def _load_current_generation(
@@ -3884,7 +3900,7 @@ def _switch_current_generation(
     # fsync。
     try:
         _fsync_directory(pointer_path.parent)
-    except OSError:
+    except Exception:
         return
 
 
@@ -3992,15 +4008,15 @@ def _discard_unpublished_generation(
         _fsync_directory(generation_root)
 
 
-def _prune_generations(
+def _plan_generation_prune(
     family_root: Path,
     *,
     protected_generation_ids: set[str],
-) -> None:
-    """提交前清理历史 generation，同时保护 old current 与 candidate。"""
+) -> tuple[str, ...]:
+    """只读计算清理方案，同时保护 old current 与 candidate。"""
     generation_root = family_root / "generations"
     if not generation_root.is_dir():
-        return
+        return ()
     protected = {
         str(generation_id)
         for generation_id in protected_generation_ids
@@ -4018,7 +4034,16 @@ def _prune_generations(
         ),
         key=lambda path: (path.stat().st_mtime_ns, path.name),
     )
-    total_bytes = sum(_directory_size_bytes(path) for path in generations)
+    if not protected.issubset({path.name for path in generations}):
+        raise CacheCapacityError(
+            "protected cache generation is unavailable during preflight"
+        )
+    sizes = {
+        path.name: _directory_size_bytes(path)
+        for path in generations
+    }
+    total_bytes = sum(sizes.values())
+    prune_generation_ids: list[str] = []
     while (
         len(generations) > CACHE_GENERATION_RETENTION
         or total_bytes > MAX_CACHE_FAMILY_BYTES
@@ -4036,11 +4061,42 @@ def _prune_generations(
                 "protected current and candidate cache generations "
                 "cannot satisfy retention or family limit"
             )
-        removed_bytes = _directory_size_bytes(removable)
-        shutil.rmtree(removable)
+        prune_generation_ids.append(removable.name)
         generations.remove(removable)
-        total_bytes -= removed_bytes
-    _fsync_directory(generation_root)
+        total_bytes -= sizes[removable.name]
+    return tuple(prune_generation_ids)
+
+
+def _prune_generations(
+    family_root: Path,
+    *,
+    prune_generation_ids: tuple[str, ...],
+    protected_generation_ids: set[str],
+) -> None:
+    """提交后按预检方案逐个 best-effort 清理历史 generation。"""
+    generation_root = family_root / "generations"
+    protected = {
+        str(generation_id)
+        for generation_id in protected_generation_ids
+        if str(generation_id)
+    }
+    if not protected:
+        raise ValueError(
+            "cache generation pruning requires protected generations"
+        )
+    for generation_id in prune_generation_ids:
+        if generation_id in protected:
+            continue
+        path = generation_root / generation_id
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+        except Exception:
+            continue
+    try:
+        _fsync_directory(generation_root)
+    except Exception:
+        pass
 
 
 def _directory_size_bytes(path: Path) -> int:
