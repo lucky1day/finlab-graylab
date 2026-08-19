@@ -605,6 +605,272 @@ def _bounded_spec() -> PhaseACacheSpec:
     )
 
 
+_REVISION_DATES = [
+    "2026-08-03",
+    "2026-08-04",
+    "2026-08-05",
+    "2026-08-06",
+    "2026-08-07",
+    "2026-08-10",
+    "2026-08-11",
+    "2026-08-12",
+    "2026-08-13",
+    "2026-08-14",
+    "2026-08-17",
+    "2026-08-18",
+]
+
+
+def _cache_for_dates(
+    dates: list[str],
+    value: int,
+) -> dict[str, object]:
+    return {
+        "test_dates": dates,
+        "results": [
+            {
+                "config": {"name": "baseline"},
+                "preds": np.asarray(
+                    [value] * len(dates),
+                    dtype=np.int32,
+                ),
+                "probs": np.asarray(
+                    [0.5 + value / 10] * len(dates),
+                    dtype=np.float64,
+                ),
+            }
+        ],
+    }
+
+
+def _revision_inputs(
+    revised: bool,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    daily_dates = _REVISION_DATES if revised else _REVISION_DATES[:-1]
+    daily = pd.DataFrame(
+        {
+            "date": daily_dates,
+            "close": [
+                2.0 if revised and day == "2026-08-17" else 1.0
+                for day in daily_dates
+            ],
+        }
+    )
+    weekly = pd.DataFrame(
+        {"week_id": [202632], "value": [1.0]}
+    )
+    monthly = pd.DataFrame(
+        {"month_id": ["2026-08"], "value": [1.0]}
+    )
+    return daily, weekly, monthly
+
+
+def _prepare_revision_parent(
+    root: Path,
+) -> tuple[PhaseACacheSpec, Path, str]:
+    spec = _bounded_spec()
+    legacy_spec = replace(
+        spec,
+        daily_dependency_lookback_rows=None,
+        daily_dependency_proof=None,
+    )
+    daily, weekly, monthly = _revision_inputs(revised=False)
+
+    def train_parent(
+        _baseline: str,
+        ranges: tuple[tuple[str, str], ...],
+    ) -> dict[str, object]:
+        return _cache_for_dates(
+            [start for start, end in ranges if start == end],
+            1,
+        )
+
+    prepare_phase_a_caches(
+        spec=legacy_spec,
+        daily_df=daily,
+        weekly_df=weekly,
+        monthly_df=monthly,
+        test_ranges=((_REVISION_DATES[0], _REVISION_DATES[-2]),),
+        train_missing=train_parent,
+        cache_consumer_id="publisher",
+        cache_root=root,
+    )
+    family_root = root / spec.cache_family / spec.tenor.lower()
+    current_path = family_root / "current.json"
+    parent_generation_id = json.loads(
+        current_path.read_text(encoding="utf-8")
+    )["generation_id"]
+    return spec, current_path, parent_generation_id
+
+
+def test_revision_suffix_preserves_parent_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(CACHE_MUTATION_POLICY_ENV, raising=False)
+    root = tmp_path.resolve()
+    root.chmod(0o700)
+    spec, current_path, parent_generation_id = _prepare_revision_parent(root)
+    legacy_spec = replace(
+        spec,
+        daily_dependency_lookback_rows=None,
+        daily_dependency_proof=None,
+    )
+    daily, weekly, monthly = _revision_inputs(revised=True)
+    trained_dates: list[str] = []
+
+    def train_suffix(
+        _baseline: str,
+        ranges: tuple[tuple[str, str], ...],
+    ) -> dict[str, object]:
+        trained_dates.extend(
+            start for start, end in ranges if start == end
+        )
+        return _cache_for_dates(trained_dates, 2)
+
+    caches, audit = prepare_phase_a_caches(
+        spec=spec,
+        daily_df=daily,
+        weekly_df=weekly,
+        monthly_df=monthly,
+        test_ranges=((_REVISION_DATES[0], _REVISION_DATES[-1]),),
+        train_missing=train_suffix,
+        cache_consumer_id="publisher",
+        cache_root=root,
+    )
+
+    assert audit["build_mode"] == "suffix"
+    assert audit["build_reason"] == "proven_daily_input_revision"
+    assert audit["input_change"]["suffix_start_date"] == "2026-08-10"
+    assert trained_dates == _REVISION_DATES[5:]
+    cache = caches["baseline"]
+    assert cache["test_dates"] == _REVISION_DATES
+    np.testing.assert_array_equal(
+        cache["results"][0]["preds"],
+        np.asarray([1] * 5 + [2] * 7, dtype=np.int32),
+    )
+    np.testing.assert_allclose(
+        cache["results"][0]["probs"],
+        np.asarray([0.6] * 5 + [0.7] * 7, dtype=np.float64),
+    )
+
+    pointer = json.loads(current_path.read_text(encoding="utf-8"))
+    candidate_generation_id = pointer["generation_id"]
+    family_root = current_path.parent
+    candidate_manifest_path = (
+        family_root
+        / "generations"
+        / candidate_generation_id
+        / "manifest.json"
+    )
+    candidate_manifest_bytes = candidate_manifest_path.read_bytes()
+    candidate_manifest = json.loads(candidate_manifest_bytes)
+    parent_manifest_path = (
+        family_root
+        / "generations"
+        / parent_generation_id
+        / "manifest.json"
+    )
+    parent_manifest_bytes = parent_manifest_path.read_bytes()
+    parent_manifest = json.loads(parent_manifest_bytes)
+    scope = candidate_manifest["generation_acceptance_evidence"][
+        "baselines"
+    ]["baseline"]
+
+    assert pointer["manifest_sha256"] == hashlib.sha256(
+        candidate_manifest_bytes
+    ).hexdigest()
+    assert candidate_manifest["parent_generation_id"] == parent_generation_id
+    assert candidate_manifest["generation_acceptance_evidence"]["parent"] == {
+        "generation_id": parent_generation_id,
+        "manifest_sha256": hashlib.sha256(
+            parent_manifest_bytes
+        ).hexdigest(),
+        "generation_content_id": parent_manifest[
+            "generation_content_id"
+        ],
+    }
+    assert scope["preserved_dates"] == _REVISION_DATES[:5]
+    assert scope["parent_preserved_sha256"] is not None
+    assert scope["parent_preserved_sha256"] == scope[
+        "candidate_preserved_sha256"
+    ]
+    assert (family_root / "generations" / parent_generation_id).is_dir()
+    assert candidate_generation_id != parent_generation_id
+    assert candidate_manifest["spec_fingerprint"] == _spec_fingerprint(spec)
+    assert parent_manifest["spec_fingerprint"] == _spec_fingerprint(
+        legacy_spec
+    )
+
+    def unexpected_training(
+        _baseline: str,
+        _ranges: tuple[tuple[str, str], ...],
+    ) -> dict[str, object]:
+        raise AssertionError("consumer must not train")
+
+    consumer_caches, consumer_audit = prepare_phase_a_caches(
+        spec=spec,
+        daily_df=daily,
+        weekly_df=weekly,
+        monthly_df=monthly,
+        test_ranges=((_REVISION_DATES[0], _REVISION_DATES[-1]),),
+        train_missing=unexpected_training,
+        cache_consumer_id="consumer",
+        cache_root=root,
+    )
+
+    consumer_cache = consumer_caches["baseline"]
+    assert consumer_audit["status"] == "hit"
+    assert consumer_audit["build_reason"] == "consumer_validated_hit"
+    assert consumer_cache["test_dates"] == _REVISION_DATES
+    np.testing.assert_array_equal(
+        consumer_cache["results"][0]["preds"],
+        np.asarray([1] * 5 + [2] * 7, dtype=np.int32),
+    )
+    np.testing.assert_allclose(
+        consumer_cache["results"][0]["probs"],
+        np.asarray([0.6] * 5 + [0.7] * 7, dtype=np.float64),
+    )
+
+
+def test_revision_suffix_failure_keeps_parent_pointer(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path.resolve()
+    spec, current_path, _parent_generation_id = _prepare_revision_parent(root)
+    daily, weekly, monthly = _revision_inputs(revised=True)
+    current_bytes = current_path.read_bytes()
+    family_root = current_path.parent
+    generation_root = family_root / "generations"
+    generation_names = sorted(
+        path.name for path in generation_root.iterdir() if path.is_dir()
+    )
+
+    def fail_training(
+        _baseline: str,
+        _ranges: tuple[tuple[str, str], ...],
+    ) -> dict[str, object]:
+        raise RuntimeError("suffix training failed")
+
+    with pytest.raises(RuntimeError, match="suffix training failed"):
+        prepare_phase_a_caches(
+            spec=spec,
+            daily_df=daily,
+            weekly_df=weekly,
+            monthly_df=monthly,
+            test_ranges=((_REVISION_DATES[0], _REVISION_DATES[-1]),),
+            train_missing=fail_training,
+            cache_consumer_id="publisher",
+            cache_root=root,
+        )
+
+    assert current_path.read_bytes() == current_bytes
+    assert sorted(
+        path.name for path in generation_root.iterdir() if path.is_dir()
+    ) == generation_names
+    assert not list(family_root.glob(".building-*"))
+
+
 def test_only_legacy_empty_proof_fingerprint_is_compatible() -> None:
     current = _bounded_spec()
     legacy = replace(
