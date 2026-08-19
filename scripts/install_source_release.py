@@ -34,6 +34,7 @@ else:
 
 _GIT_OBJECT = re.compile(r"^[0-9a-f]{40,64}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_SAFE_RUNTIME_ROOT = re.compile(r"^/[A-Za-z0-9/._-]+$")
 _MANIFEST_FIELDS = frozenset(
     {"schema_version", "commit", "tree", "root_prefix", "archive"}
 )
@@ -72,6 +73,16 @@ class InstalledSourceRelease:
     previous_commit: str | None
 
 
+def _release_environment(*, commit: str, runtime_root: Path) -> str:
+    native_cache_root = runtime_root / "cache" / "native" / commit
+    return (
+        f"BFL_RELEASE_COMMIT={commit}\n"
+        f"BFL_RUNTIME_ROOT={json.dumps(str(runtime_root))}\n"
+        f"NUMBA_CACHE_DIR={json.dumps(str(native_cache_root / 'numba'))}\n"
+        f"MPLCONFIGDIR={json.dumps(str(native_cache_root / 'matplotlib'))}\n"
+    )
+
+
 def install_source_release(
     *,
     manifest_path: str | Path,
@@ -90,6 +101,7 @@ def install_source_release(
     archive_file = Path(archive_path).resolve()
     deploy = _require_absolute_path(deploy_root, "deploy root")
     runtime = _require_absolute_path(runtime_root, "runtime root")
+    _validate_runtime_root(runtime)
     normalized_expected = _normalize_expected_current(expected_current)
     manifest = _read_manifest(manifest_file)
     commit = str(manifest["commit"])
@@ -239,9 +251,9 @@ def _install_archive(
             raise ReleaseInstallError(
                 "extracted source integrity differs from approved archive"
             )
-        release_environment = (
-            f"BFL_RELEASE_COMMIT={commit}\n"
-            f"BFL_RUNTIME_ROOT={json.dumps(str(runtime_root))}\n"
+        release_environment = _release_environment(
+            commit=commit,
+            runtime_root=runtime_root,
         )
         (source_root / ".bfl-release.env").write_text(
             release_environment,
@@ -294,9 +306,9 @@ def _validate_existing_release(
     actual_tree_sha256 = _source_tree_sha256(release_root)
     if actual_tree_sha256 != archive_tree_sha256:
         raise ReleaseInstallError("existing release source integrity differs")
-    expected_environment = (
-        f"BFL_RELEASE_COMMIT={commit}\n"
-        f"BFL_RUNTIME_ROOT={json.dumps(str(runtime_root))}\n"
+    expected_environment = _release_environment(
+        commit=commit,
+        runtime_root=runtime_root,
     )
     try:
         actual_environment = (
@@ -587,6 +599,13 @@ def _require_absolute_path(value: str | Path, label: str) -> Path:
     if path.is_symlink():
         raise ReleaseInstallError(f"{label} must not be a symlink")
     return path.resolve(strict=False)
+
+
+def _validate_runtime_root(runtime_root: Path) -> None:
+    if not _SAFE_RUNTIME_ROOT.fullmatch(str(runtime_root)):
+        raise ReleaseInstallError(
+            "runtime root contains unsafe/unsupported characters"
+        )
 
 
 def _parser() -> argparse.ArgumentParser:

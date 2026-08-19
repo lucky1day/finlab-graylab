@@ -122,6 +122,12 @@ def test_native_subprocess_environment_is_allowlisted() -> None:
         "OMP_NUM_THREADS": "2",
         "LIWEI_0616_PHASE_A_CACHE_ROOT": "/tmp/cache",
         "BFL_RUNTIME_ROOT": "/var/lib/bond-factor-lab/runtime",
+        "NUMBA_CACHE_DIR": (
+            "/var/lib/bond-factor-lab/runtime/cache/native/abc/numba"
+        ),
+        "MPLCONFIGDIR": (
+            "/var/lib/bond-factor-lab/runtime/cache/native/abc/matplotlib"
+        ),
         "BFL_DATABASE_ENV_FILE": "/etc/bond-factor-lab/bond-factor-lab.env",
         "BOND_DB_PASSWORD": "secret",
         "BOND_NATIVE_GENERATION_ID": "retired-inherited-value",
@@ -140,6 +146,8 @@ def test_native_subprocess_environment_is_allowlisted() -> None:
     assert captured["BFL_RUNTIME_ROOT"] == (
         "/var/lib/bond-factor-lab/runtime"
     )
+    assert captured["NUMBA_CACHE_DIR"] == parent["NUMBA_CACHE_DIR"]
+    assert captured["MPLCONFIGDIR"] == parent["MPLCONFIGDIR"]
     assert captured["BFL_DATABASE_ENV_FILE"] == parent[
         "BFL_DATABASE_ENV_FILE"
     ]

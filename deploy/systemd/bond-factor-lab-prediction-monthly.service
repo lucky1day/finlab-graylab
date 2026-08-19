@@ -9,8 +9,8 @@ User=root
 Group=root
 WorkingDirectory=/opt/bond-factor-lab/current
 EnvironmentFile=/etc/bond-factor-lab/bond-factor-lab.env
-EnvironmentFile=/opt/bond-factor-lab/current/.bfl-release.env
 EnvironmentFile=-/run/bond-factor-lab/manual-run.env
+EnvironmentFile=/opt/bond-factor-lab/current/.bfl-release.env
 Environment=PATH=/opt/miniconda3/condabin:/opt/miniconda3/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/root
 Environment=PYTHONNOUSERSITE=1

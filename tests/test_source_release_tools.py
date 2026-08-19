@@ -117,6 +117,58 @@ def test_install_rejects_archive_checksum_mismatch(tmp_path: Path) -> None:
         )
 
 
+def test_install_rejects_unsafe_runtime_root_before_side_effects(
+    tmp_path: Path,
+) -> None:
+    repo = _make_source_repo(tmp_path)
+    built = build_source_release(repo, tmp_path / "out")
+    deploy_root = (tmp_path / "deploy").resolve()
+    runtime_root = (tmp_path / "$USER" / "café").resolve()
+
+    with pytest.raises(
+        ReleaseInstallError,
+        match="runtime root contains unsafe/unsupported characters",
+    ):
+        install_source_release(
+            manifest_path=built.manifest_path,
+            archive_path=built.archive_path,
+            deploy_root=deploy_root,
+            runtime_root=runtime_root,
+            activate=False,
+            expected_current=None,
+            expected_archive_sha256=built.archive_sha256,
+        )
+
+    assert not deploy_root.exists()
+    assert not runtime_root.exists()
+
+
+@pytest.mark.parametrize("runtime_root_value", ["/", "//", "/."])
+def test_install_rejects_filesystem_root_runtime_values_before_side_effects(
+    tmp_path: Path,
+    runtime_root_value: str,
+) -> None:
+    repo = _make_source_repo(tmp_path)
+    built = build_source_release(repo, tmp_path / "out")
+    deploy_root = (tmp_path / "deploy").resolve()
+
+    with pytest.raises(
+        ReleaseInstallError,
+        match="runtime root contains unsafe/unsupported characters",
+    ):
+        install_source_release(
+            manifest_path=built.manifest_path,
+            archive_path=built.archive_path,
+            deploy_root=deploy_root,
+            runtime_root=runtime_root_value,
+            activate=False,
+            expected_current=None,
+            expected_archive_sha256=built.archive_sha256,
+        )
+
+    assert not deploy_root.exists()
+
+
 def test_install_rejects_manifest_commit_not_bound_to_archive(
     tmp_path: Path,
 ) -> None:
@@ -190,7 +242,7 @@ def test_install_rejects_tar_path_escape(tmp_path: Path) -> None:
         )
 
 
-def test_activate_sets_previous_and_release_environment(
+def test_preinstall_then_activate_release(
     tmp_path: Path,
 ) -> None:
     repo = _make_source_repo(tmp_path)
@@ -229,11 +281,16 @@ def test_activate_sets_previous_and_release_environment(
     assert installed.previous_commit == old_commit
     assert (deploy_root / "current").resolve() == installed.release_root
     assert (deploy_root / "previous").resolve() == old_release.resolve()
+    native_cache_root = runtime_root / "cache" / "native" / built.commit
+    numba_cache_root = native_cache_root / "numba"
+    matplotlib_cache_root = native_cache_root / "matplotlib"
     assert (installed.release_root / ".bfl-release.env").read_text(
         encoding="utf-8"
     ) == (
         f"BFL_RELEASE_COMMIT={built.commit}\n"
         f'BFL_RUNTIME_ROOT="{runtime_root}"\n'
+        f'NUMBA_CACHE_DIR="{numba_cache_root}"\n'
+        f'MPLCONFIGDIR="{matplotlib_cache_root}"\n'
     )
     assert not (
         installed.release_root / "AGENTS.md"

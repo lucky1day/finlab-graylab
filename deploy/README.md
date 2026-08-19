@@ -45,12 +45,19 @@ digest 和只读预安装。`--activate` 只接受已经预安装且重新通过
 authority。既有 deploy/runtime root 必须是当前 operator 所有的真实目录，且不能 group/world
 writable；工具不会静默修正不安全目录。
 
-安装器在 release 内生成 `.bfl-release.env`，只记录 `BFL_RELEASE_COMMIT` 与
-`BFL_RUNTIME_ROOT`。ECS 的六个仓库 systemd 候选模板读取该文件，使无 `.git` release 仍有稳定
-代码身份，并让状态路径位于源码 release 外。单项显式路径（例如既有
-`LIWEI_0616_PHASE_A_CACHE_ROOT`）优先于统一根，因此可以原样复用已校验缓存；没有单项覆盖时，
-DataBridge、artifact 和 source cache 才从 `BFL_RUNTIME_ROOT` 派生。设置了生产部署目标却缺少
-两者时，代码 fail-closed。
+安装器在 release 内生成 `.bfl-release.env`，包含精确的
+`BFL_RELEASE_COMMIT`、`BFL_RUNTIME_ROOT`，以及
+`NUMBA_CACHE_DIR=<runtime-root>/cache/native/<exact-release-commit>/numba` 和
+`MPLCONFIGDIR=<runtime-root>/cache/native/<exact-release-commit>/matplotlib`。ECS 的六个仓库
+systemd 候选模板读取该文件，使无 `.git` release 仍有稳定代码身份，并让状态路径位于源码 release
+外。安装器生成这些路径；operator 不得在 ECS `/etc` 或 Mac3 launchd 配置中重复声明或覆盖它们。
+同一 host、同一 `BFL_RUNTIME_ROOT` 且同一精确 commit 复用同一 Numba/Matplotlib cache；不同 commit
+路径保持隔离。`runtime_root` 必须是
+非根目录、仅含字母、数字、`/._-` 的绝对 ASCII-safe 路径；不安全形式会在安装器进行任何文件系统
+变更前 fail-closed。这些第三方 cache 位于 immutable source 外，不改变既有 per-scheme cache 的
+优先级：例如 `LIWEI_0616_PHASE_A_CACHE_ROOT` 仍优先于统一根，因此可以原样复用已校验缓存；没有
+单项覆盖时，DataBridge、artifact 和 source cache 才从 `BFL_RUNTIME_ROOT` 派生。设置了生产部署
+目标却缺少所需 release 环境时，代码 fail-closed。
 
 Blackbox Gate、activation、revision activation 和环境验证 CLI 通过同一个 selector 选择 frozen
 manifest：Linux x86_64 使用 `linux-64`，Mac arm64 使用 `osx-arm64`，其它平台 fail-closed。
