@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import pickle
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,6 +26,7 @@ from shared.liwei_0616_phase_a_cache import (
     _input_generation_state,
     _legacy_build_decision,
     _lineage_build_mode,
+    _matching_generation_spec,
     _phase_a_cache_evidence,
     _revision_build_decision,
     _spec_fingerprint,
@@ -601,6 +603,69 @@ def _bounded_spec() -> PhaseACacheSpec:
         daily_dependency_lookback_rows=5,
         daily_dependency_proof="liwei_0616_daily_revision_suffix_v1",
     )
+
+
+def test_only_legacy_empty_proof_fingerprint_is_compatible() -> None:
+    current = _bounded_spec()
+    legacy = replace(
+        current,
+        daily_dependency_lookback_rows=None,
+        daily_dependency_proof=None,
+    )
+    legacy_generation = _LoadedGeneration(
+        generation_id="legacy",
+        path=Path("/unused/legacy"),
+        manifest={"spec_fingerprint": _spec_fingerprint(legacy)},
+        manifest_sha256="a" * 64,
+        caches={"baseline": {"test_dates": []}},
+    )
+    current_generation = _LoadedGeneration(
+        generation_id="current",
+        path=Path("/unused/current"),
+        manifest={"spec_fingerprint": _spec_fingerprint(current)},
+        manifest_sha256="b" * 64,
+        caches={"baseline": {"test_dates": []}},
+    )
+    missing_fingerprint_generation = _LoadedGeneration(
+        generation_id="missing-fingerprint",
+        path=Path("/unused/missing-fingerprint"),
+        manifest={},
+        manifest_sha256="c" * 64,
+        caches={"baseline": {"test_dates": []}},
+    )
+
+    assert _spec_fingerprint(legacy) != _spec_fingerprint(current)
+    assert _matching_generation_spec(legacy_generation, current) == legacy
+    assert (
+        _matching_generation_spec(
+            legacy_generation,
+            replace(current, horizon=current.horizon + 1),
+        )
+        is None
+    )
+    assert (
+        _matching_generation_spec(
+            legacy_generation,
+            replace(current, purge_gap=current.purge_gap + 1),
+        )
+        is None
+    )
+    assert (
+        _matching_generation_spec(
+            legacy_generation,
+            replace(current, daily_dependency_proof=" "),
+        )
+        is None
+    )
+    assert _matching_generation_spec(
+        missing_fingerprint_generation,
+        legacy,
+    ) is None
+    assert _matching_generation_spec(
+        missing_fingerprint_generation,
+        replace(current, daily_dependency_proof=" "),
+    ) is None
+    assert _matching_generation_spec(current_generation, current) == current
 
 
 def test_daily_revision_uses_bounded_suffix() -> None:

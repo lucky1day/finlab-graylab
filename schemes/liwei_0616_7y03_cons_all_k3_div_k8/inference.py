@@ -13,6 +13,7 @@ from shared.liwei_0616_cache_projection import (
     build_auxiliary_dependency_projection,
 )
 from shared.liwei_0616_phase_a_cache import (
+    DAILY_REVISION_SUFFIX_PROOF_V1,
     PhaseACacheSpec,
     prepare_phase_a_caches,
     runtime_compare_gate_callbacks,
@@ -174,6 +175,8 @@ def _prepare_incremental_phase_a_caches(
         source_ic_screen_start=SOURCE_IC_SCREEN_START,
         horizon=HORIZON,
         purge_gap=PURGE_GAP,
+        daily_dependency_lookback_rows=max(HORIZON, PURGE_GAP),
+        daily_dependency_proof=DAILY_REVISION_SUFFIX_PROOF_V1,
     )
 
     def train_missing(baseline: str, missing_ranges: tuple[tuple[str, str], ...]) -> Mapping[str, Any]:

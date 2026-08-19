@@ -11,7 +11,7 @@ import stat
 import tempfile
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
@@ -59,6 +59,9 @@ FULL_COMPARE_QUALIFICATION_VERSION = (
 )
 COMPARE_QUALIFICATION_BINDING_VERSION = (
     "liwei-0616-compare-qualification-binding-v1"
+)
+DAILY_REVISION_SUFFIX_PROOF_V1 = (
+    "liwei_0616_daily_revision_suffix_v1"
 )
 FULL_COMPARE_FIELDS = (
     "direction",
@@ -365,8 +368,7 @@ def _prepare_under_family_lock(
         )
     if (
         current is not None
-        and current.manifest.get("spec_fingerprint")
-        == spec_fingerprint
+        and _matching_generation_spec(current, spec) is not None
         and set(current.caches) == set(spec.baselines)
     ):
         current_watermark = max(
@@ -420,8 +422,7 @@ def _prepare_under_family_lock(
     cached: dict[str, dict[str, Any]] = {}
     suffix_start_date: str | None = None
     if current is not None:
-        manifest_spec = str(current.manifest.get("spec_fingerprint") or "")
-        if manifest_spec != spec_fingerprint:
+        if _matching_generation_spec(current, spec) is None:
             build_reason = "spec_changed"
         elif set(current.caches) != set(spec.baselines):
             build_reason = "baseline_set_changed"
@@ -684,8 +685,7 @@ def _validated_consumer_hit(
             f"({current_error or 'no_current_generation'})"
         )
     if (
-        current.manifest.get("spec_fingerprint")
-        != _spec_fingerprint(spec)
+        _matching_generation_spec(current, spec) is None
         or set(current.caches) != set(spec.baselines)
         or not _consumer_input_states_equivalent(
             current.manifest.get("input_state"),
@@ -827,8 +827,13 @@ def _family_cache_root(root: Path, spec: PhaseACacheSpec) -> Path:
     )
 
 
-def _spec_fingerprint(spec: PhaseACacheSpec) -> str:
-    payload = {
+def _spec_fingerprint_payload(
+    spec: PhaseACacheSpec,
+    *,
+    daily_dependency_lookback_rows: int | None,
+    daily_dependency_proof: str | None,
+) -> dict[str, Any]:
+    return {
         "abi": PHASE_A_CACHE_ABI_VERSION,
         "cache_family": spec.cache_family,
         "tenor": spec.tenor,
@@ -840,14 +845,65 @@ def _spec_fingerprint(spec: PhaseACacheSpec) -> str:
         "source_ic_screen_start": spec.source_ic_screen_start,
         "horizon": spec.horizon,
         "purge_gap": spec.purge_gap,
-        "daily_dependency_lookback_rows": (
+        "daily_dependency_lookback_rows": daily_dependency_lookback_rows,
+        "daily_dependency_proof": daily_dependency_proof,
+    }
+
+
+def _spec_fingerprint(spec: PhaseACacheSpec) -> str:
+    payload = _spec_fingerprint_payload(
+        spec,
+        daily_dependency_lookback_rows=(
             spec.daily_dependency_lookback_rows
         ),
-        "daily_dependency_proof": spec.daily_dependency_proof,
-    }
+        daily_dependency_proof=spec.daily_dependency_proof,
+    )
     return hashlib.sha256(
         _canonical_json(payload).encode("utf-8")
     ).hexdigest()
+
+
+def _legacy_daily_dependency_fingerprint(
+    spec: PhaseACacheSpec,
+) -> str | None:
+    rows = spec.daily_dependency_lookback_rows
+    proof = spec.daily_dependency_proof
+    if (
+        isinstance(rows, bool)
+        or not isinstance(rows, int)
+        or rows < 0
+        or not isinstance(proof, str)
+        or not proof.strip()
+    ):
+        return None
+    payload = _spec_fingerprint_payload(
+        spec,
+        daily_dependency_lookback_rows=None,
+        daily_dependency_proof=None,
+    )
+    return hashlib.sha256(
+        _canonical_json(payload).encode("utf-8")
+    ).hexdigest()
+
+
+def _matching_generation_spec(
+    generation: _LoadedGeneration,
+    spec: PhaseACacheSpec,
+) -> PhaseACacheSpec | None:
+    manifest_fingerprint = generation.manifest.get("spec_fingerprint")
+    if manifest_fingerprint == _spec_fingerprint(spec):
+        return spec
+    legacy_fingerprint = _legacy_daily_dependency_fingerprint(spec)
+    if (
+        legacy_fingerprint is None
+        or manifest_fingerprint != legacy_fingerprint
+    ):
+        return None
+    return replace(
+        spec,
+        daily_dependency_lookback_rows=None,
+        daily_dependency_proof=None,
+    )
 
 
 def _input_generation_state(
@@ -2634,12 +2690,12 @@ def _verify_generation_acceptance_lineage(
 ) -> None:
     """从真实 parent 文件重算 diff、build mode 与全部 scope。"""
     manifest = generation.manifest
+    lineage_spec = _matching_generation_spec(generation, spec)
     if (
         manifest.get("abi_version") != PHASE_A_CACHE_ABI_VERSION
         or manifest.get("cache_family") != spec.cache_family
         or manifest.get("tenor") != spec.tenor
-        or manifest.get("spec_fingerprint")
-        != _spec_fingerprint(spec)
+        or lineage_spec is None
     ):
         raise ValueError(
             "cache generation does not match qualified cache identity"
@@ -2700,7 +2756,7 @@ def _verify_generation_acceptance_lineage(
         _verify_migration_rebind_lineage(
             generation=generation,
             parent=parent,
-            spec=spec,
+            spec=lineage_spec,
             migration_rebind_evidence=migration_evidence,
         )
         expected_mode = "migration_rebind"
@@ -2713,7 +2769,7 @@ def _verify_generation_acceptance_lineage(
             parent=parent,
             generation=generation,
             input_change=recomputed_change,
-            spec=spec,
+            spec=lineage_spec,
         )
     public_change = _public_input_change(recomputed_change)
     if (
@@ -2896,8 +2952,8 @@ def _lineage_build_mode(
         return "full"
     manifest = generation.manifest
     if (
-        parent.manifest.get("spec_fingerprint")
-        != manifest.get("spec_fingerprint")
+        _matching_generation_spec(parent, spec) is None
+        or manifest.get("spec_fingerprint") != _spec_fingerprint(spec)
         or set(parent.caches) != set(generation.caches)
     ):
         return "full"
