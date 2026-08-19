@@ -468,6 +468,71 @@ Native 子进程环境 allowlist 只增加 `NUMBA_CACHE_DIR`；`MPLCONFIGDIR` �
 Nginx、DNS 或域名。只有新的精确 release 同时通过业务与 source integrity 两类证据，ECS 的同源
 release 阶段才可记为闭环。
 
+### 9.10 日频数据修订与 Phase-A suffix 缓存语义（2026-08-19）
+
+#### 9.10.1 现场事实与术语边界
+
+`codex/develop` 已生成并推送原子候选
+`d293f12224ee2c1790d60c3f5630f14bec1e886a`；本地全仓库结果为
+`874 passed, 476 subtests passed`，source archive SHA-256 为
+`3113a5d47d449d947f94016100feccd5e7d2222a2d08df2f17e87af8da53544b`。ECS 预检发现
+2026-08-19 自然 daily 已在旧 release `b0470d4` 上运行满两小时并 timeout，因此按 fail-closed
+停止；候选 archive 尚未传输或预安装，`current/previous`、installed units、timer 和服务均未改动。
+
+根因不是 Numba、内存、磁盘或并发：当日 DataBridge 在新增 `2026-08-18` 的同时，把
+`2026-08-17` 的 10 个 Wind 化工品现货价由前一交易日延用值更新为晚到正式值。Phase-A input
+state 正确识别为 `revision`；7 个 publisher 没有有限 daily dependency proof，只能选择
+`full/input_revision`。首个 10Y publisher 在自身 3600 秒上限失败，第二个 5Y publisher 随后被
+systemd 两小时总上限终止；其余 37 个方案未启动。数据库没有 2026-08-19 prediction，但保留一条
+failed run 和一条被 SIGTERM 中断的 running run，未获独立授权前不得清理、改终态或重跑。
+
+本节固定两个不同对象：
+
+- **历史业务预测**：已经写入 `t_scheme_predictions`、曾经真实发布的结果，表达当时可获得数据下的
+  决策；后到数据不得回写其方向、分数或业务键。
+- **Phase-A 派生缓存**：为未来预测加速的内部 baseline 结果，不是业务历史记录；为保证新的
+  `feature_date` 使用最新输入，可以在严格等价门下局部更新受影响 suffix。
+
+#### 9.10.2 已批准的最小设计
+
+普通数据值修订不得再默认触发全历史重建，也不得把全部内部 cache 永久冻结。最早修订交易日为
+`R` 时，Phase-A 以现有 spec 的 `horizon` 与 `purge_gap` 计算保守候选边界：
+
+```text
+safe_lookback = max(horizon, purge_gap)
+suffix_start = R 向前 safe_lookback 个交易日
+```
+
+`suffix_start` 之前的内部 cache 通过现有 `parent_preserved_sha256` 原样复用；从该日到最新请求日只
+执行现有 `build_mode=suffix`，训练时仍传入完整最新输入。该公式只是候选安全边界，必须由 7 个
+cache family 的独立 cold CompareGate 逐一证明；任一 family 的同一 `feature_date` 输出不一致，
+均保持 fail-closed，不得调参、降低精度或把 full rebuild 包装成增量成功。
+
+本设计只复用现有 `daily_dependency_lookback_rows`、`daily_dependency_proof`、
+`parent_generation_id`、`input_change`、`preserved_dates`、`affected_dates`、CompareGate 和
+`current.json` 原子切换。不得新增数据库表、revision 文件、逐字段/逐日期 lineage、新 build mode、
+第二套 cache、后台服务或调度任务，也不得修改 Native core、算法参数或历史业务预测。普通数值更新、
+空值补齐和同结构晚到值可以申请 suffix；算法/spec/ABI/publisher/schema/字段类型改变、历史日期删除、
+交易日历或 date-to-week 结构改变、cache 损坏仍必须 full/fail-closed。
+
+#### 9.10.3 实施与验收门
+
+代码实施前先用真实 2026-08-18/19 artifact 建立失败合同，随后只允许 L0 cache 适配。验收必须同时
+满足：
+
+1. 真实 revision 的决策由 `full/input_revision` 变为 `suffix`，`train_missing` 不得收到 2024 年
+   以来的完整日期；
+2. 7 个 family 的 preserved prefix 摘要与 parent 完全一致，suffix 与相同最新输入下的独立 cold
+   输出逐字段一致；
+3. 新预测使用修订后的最新输入，但运行前已经存在的 prediction business keys、方向和分数前后摘要
+   完全不变；cache 构建路径不得调用 repository；
+4. 任一 CompareGate、lineage、容量或 source integrity 检查失败时，不切换 cache generation、
+   不写 prediction；
+5. 修复后的完整 daily 必须在既有两小时总上限内完成，不以提高 timeout 代替效率修复。
+
+该缓存修复、ECS failed unit reset、running run reconciliation、daily 重跑、`d293f122` 预安装/
+激活和 installed unit 替换是不同操作权限；本设计确认不自动授予任何生产写入或 systemd 变更。
+
 ## 10. 文档与 Git 权威
 
 当前文档职责：
