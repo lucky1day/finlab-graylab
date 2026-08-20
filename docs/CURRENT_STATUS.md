@@ -46,6 +46,8 @@
 - 两端使用各自数据库、DataBridge 和运行记录，不复制、不双写、不共享运行期 authority；ECS Backend 仅监听 loopback，不承载生产公网流量。
 - 仓库模板、代码和测试不能单独证明任一主机现场已加载或已运行；ECS 现场验收和后续自然监控也不
   自动授权 Web/Writer 切换。
+- `codex/develop` 候选已移除 release manifest 中无效的 Git tree 字段，并在 release 测试 teardown
+  恢复临时只读目录的清理权限；该候选尚未部署到 Mac3 或 ECS。
 - config active、exact version active、Registry target active 且 cadence 匹配，是进入对应 one-shot runner 的唯一资格。
 - 自然运行写 `scheduled_live`；单日人工补缺只经 `python -m harness signal-gap-fill --predict-date YYYY-MM-DD` 写 insert-only `gray_live`。
 - Blackbox Admission、Backend 手动预测、direct scheduling、ledger、occurrence、epoch、daily-gray 和常驻 APScheduler 均已退役。

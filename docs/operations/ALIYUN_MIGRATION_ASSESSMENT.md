@@ -132,8 +132,10 @@ Mac3 的 `runtime/config/service.env` 是唯一生产应用本机配置 authorit
 
 以后每次 release 更新仍按以下最小顺序执行：
 
-1. clean HEAD 构建并固定 commit、tree 和 archive SHA-256；
-2. 目标机只读预检和只读预安装；
+1. clean HEAD 构建并固定 commit 和 archive SHA-256；
+2. 目标机使用候选同版本 installer 做只读预检和只读预安装，校验独立批准的
+   archive SHA-256、archive pax commit 标记与 manifest commit，以及 archive/解包/已安装
+   source digest 一致；
 3. 候选 Backend、DataBridge check-only 和 release identity 验证；
 4. 在独立授权窗口执行 `current` CAS、替换 installed 配置并重载；
 5. 读回健康、source identity、loaded state、调度空闲状态和 tunnel；

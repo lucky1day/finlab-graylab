@@ -41,9 +41,13 @@ DataBridge 配置、数据库连接和算法子进程之前失败。
 ## 源码 release 与外置状态
 
 `scripts/build_source_release.py` 只接受 clean Git worktree 的当前 `HEAD`，生成 deterministic
-`source.tar.gz`、精确 commit/tree manifest 和 archive SHA256。`scripts/install_source_release.py`
-要求 operator 另行提供批准的 `--expected-archive-sha256`；默认只做校验、隔离解包、source tree
-digest 和只读预安装。`--activate` 只接受已经预安装且重新通过 archive/tree 校验的 release，并在
+`source.tar.gz`、manifest v2 和 archive SHA256。manifest v2 精确仅包含
+`schema_version`、`commit`、`root_prefix` 与 `archive.filename/sha256`。
+`scripts/install_source_release.py` 要求 operator 另行提供批准的
+`--expected-archive-sha256`；安装器校验实际 archive SHA-256 同时等于该独立批准值和 manifest
+记录值、archive pax commit 标记等于 manifest commit，以及 archive、解包目录与已安装目录的
+source digest 一致。默认只做校验、隔离解包和只读预安装。`--activate` 只接受已经预安装且
+重新通过上述校验的 release，并在
 显式 `--expected-current` 匹配时更新 `previous/current`；它不包含 SSH、systemctl、launchctl、
 数据库、Registry、Nginx 或 DNS 操作。
 
