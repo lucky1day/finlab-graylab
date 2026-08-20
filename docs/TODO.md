@@ -2,18 +2,18 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验日期**：2026-08-20
+**最后核验日期**：2026-08-21
 
 本文只列当前尚待推进或尚需独立生产授权的工作。当前事实见[当前状态](CURRENT_STATUS.md)，生产规则见[生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。已完成工作通过 Git 和控制面审计追溯，不在这里保存关闭清单。
 
 ## 当前队列
 
-当前部署迁移、ECS immutable prediction release 晋级、Native active completion 隔离 MySQL 三态及
+当前部署迁移、ECS R3 immutable prediction release 晋级、Native active completion 隔离 MySQL 三态及
 共享 repository 写入核心验收已经闭环，不再作为待办；Blackbox 入口本次由本地完整回归覆盖，不表述为
 已单独真库调用。剩余工作均为新的开发或未来生产项目：
 
 1. 安排独立 Mac3 夜间生产窗口，把 Mac3 从 `e692285d47e41c384dc915758abe0c51f9ac3aaf`
-   晋级到 ECS 已验证的同一份 `5c5603a23266e563e142e319d4e5d13907649598` archive，使生产 Writer
+   晋级到 ECS 已验证的同一份 R3 archive（`08645a87852bbc307d3f6def22d7d457b1014bcb`），使生产 Writer
    取得 insert-only prediction completion。该操作须先用 ECS 已验证的同一 archive 完成 Mac3 只读
    预检、预安装和候选核验，再以 CAS 更新 `current`；不替换 installed plist、调度或环境合同，只重启
    常驻 Backend，后续 prediction one-shot 自然从新 `current` 启动。操作必须避开运行批次并读回
@@ -22,7 +22,7 @@
    Blackbox V2 两文件交付。前端先走 ECS 灰度 release；两个方案分别走 Intake/Gate/ECS-only
    activation，不把两个方案绑成一个提交、发布或回滚单元。
 3. 若未来决定把生产域名或 Writer 从 Mac3 切到 ECS，必须作为新的生产项目重新设计 Web、数据库
-   authority、单 Writer、DNS/Nginx、切换窗口和回滚范围，不从本次灰度或 R2 验收外推授权。
+   authority、单 Writer、DNS/Nginx、切换窗口和回滚范围，不能从当前灰度或 immutable release 验收外推授权。
 4. 独立评估 systemd/launchd runner 的 CLI 日期入口；设计并取得生产授权后替换 ECS installed
    DataBridge、daily、weekly、monthly 四个 unit，执行 `systemctl daemon-reload` 并读回现场状态。
    执行前只读确认 `/run/bond-factor-lab/manual-run.env` 不存在且相关 one-shot 任务 idle，不得从仓库

@@ -12,10 +12,15 @@
 - 双主机共用唯一 `codex/develop` source release 代码线，但允许按“ECS 先验证、Mac3 后晋级”分阶段
   发布；两端 `current` 不要求在灰度验证期始终相同，也不因此建立环境分支。
 - Mac3 `current` 仍为 tag `mac3-immutable-r2-20260820` 对应的精确提交
-  `e692285d47e41c384dc915758abe0c51f9ac3aaf`。ECS `current` 已晋级为 immutable prediction release
-  `5c5603a23266e563e142e319d4e5d13907649598`，`previous` 为上述 R2 提交。
+  `e692285d47e41c384dc915758abe0c51f9ac3aaf`。ECS `current` 已晋级为 R3 immutable prediction release
+  `08645a87852bbc307d3f6def22d7d457b1014bcb`，`previous` 为已保留的
+  `5c5603a23266e563e142e319d4e5d13907649598`。
+- ECS R3 archive SHA-256 为
+  `9e530d6ed64dc9f60639f5a2182c01cd660a4ee2412579f98d7e4e6c987b9f9d`，source digest 为
+  `9dffed3508cec2852329d75bfbd7b3a81fc9c7c5ac797b3c28c076cc485a6bc4`，对应 tag
+  `bfl-source-r3-20260821`。
 - 因此 insert-only prediction completion 当前只在 ECS 灰度运行态生效；Mac3 的 prediction Writer 仍运行旧
-  `e692...` 语义。Mac3 晋级同一份 ECS 已验证 `5c...` archive 需要独立夜间生产窗口，在完成前不得
+  `e692...` 语义。Mac3 晋级同一份 ECS 已验证 R3 archive 需要独立夜间生产窗口，在完成前不得
   把 ECS 验收外推为 Mac3 已具备该写入保护。
 - Mac3 生产应用从独立 `bond-factor-lab-production/current` 启动；运行状态位于外置
   `bond-factor-lab-runtime`。`runtime/config/service.env` 是生产应用本机配置 authority，Git 根 `.env`
@@ -26,11 +31,13 @@
 - Mac3 Git 开发根在保留既有未跟踪草稿的前提下切到 `codex/develop`；该分支切换不再影响生产进程。
 - ECS 是独立灰度实验室，不是 Mac3 热备或复制节点；其 DataBridge、daily、weekly、monthly、Actuals 五个 systemd timer 已于 2026-08-18 经专项授权启用，现场 authority 是 installed unit/timer 与 `systemctl` 读回。
 - 仓库候选模板中的 ECS 自然 DataBridge、daily、weekly、monthly 四个 service 已不再引用共享
-  `/run/bond-factor-lab/manual-run.env`，但 ECS installed 四个 unit 仍保留该旧引用。2026-08-20 只读
+  `/run/bond-factor-lab/manual-run.env`，但 ECS installed 四个 unit 仍保留该旧引用。2026-08-21 只读
   确认该文件不存在，因此没有正在生效的旧日期覆盖；仓库候选状态不等于现场已经生效。
-- ECS immutable prediction release 已完成不可变预安装、`current/previous` 原子切换和 Backend 重启；
-  Backend 健康、首页、方案 API、五个 timer 与 installed unit/template 一致性均已读回。高频采样观察到的
-  Backend 切换窗口约为 1.0036 秒，切换期间 ECS 灰度主库 `bond_db` 没有业务写入；Mac3 服务未受影响。
+- ECS R3 immutable prediction release 已完成不可变预安装、`current/previous` 原子切换和 Backend 重启；
+  Backend 健康、首页、方案 API、五个 timer 均为 `enabled/active/waiting`、五个 writer 均 idle，且 11 个
+  installed unit hash 均未改变并已读回。高频采样观察到的
+  Backend 切换窗口约为 1.0036 秒，切换期间 ECS 灰度主库 `bond_db` 没有业务写入，binlog 读回为
+  `binlog.000033:158`；Mac3 服务未受影响。
 - ECS 一次性隔离 MySQL 真库直接调用了 Native active completion，并验证共享的 business-key decision
   与 plain INSERT：首次发布整组成功，完整重复 benign `skipped` 且旧行不变，部分冲突整组失败且缺失键
   不补写。Blackbox active completion 复用同一 repository decision/plain-INSERT 核心，本次未在隔离
@@ -46,8 +53,6 @@
 - 两端使用各自数据库、DataBridge 和运行记录，不复制、不双写、不共享运行期 authority；ECS Backend 仅监听 loopback，不承载生产公网流量。
 - 仓库模板、代码和测试不能单独证明任一主机现场已加载或已运行；ECS 现场验收和后续自然监控也不
   自动授权 Web/Writer 切换。
-- `codex/develop` 候选已移除 release manifest 中无效的 Git tree 字段，并在 release 测试 teardown
-  恢复临时只读目录的清理权限；该候选尚未部署到 Mac3 或 ECS。
 - config active、exact version active、Registry target active 且 cadence 匹配，是进入对应 one-shot runner 的唯一资格。
 - 自然运行写 `scheduled_live`；单日人工补缺只经 `python -m harness signal-gap-fill --predict-date YYYY-MM-DD` 写 insert-only `gray_live`。
 - Blackbox Admission、Backend 手动预测、direct scheduling、ledger、occurrence、epoch、daily-gray 和常驻 APScheduler 均已退役。
@@ -68,10 +73,6 @@
 - Native 与旧 DataBridge 的二级 generation 运行控制面已退役。`t_input_generations`、migration 017 和历史行仅保留为历史 schema/审计证据，不再参与 Native 运行资格或输入构建。
 - Phase-A manifest 继续兼容 `native_generation=null`、`native_generation_changed=false` 和 `NON_PRODUCTION`，不再支持 bind/rebind。
 - Phase-A 只复用 manifest v3 current generation；current 缺失时由 publisher 按当前输入完整重建，旧松散 v1 `.pkl` 不再作为迁移来源。普通同结构数据值修订只允许在 canonical dependency proof 下重算经验证的有限 suffix；算法、spec、ABI、schema、日期删除或交易日结构变化仍 full/fail-closed。已经写入数据库的历史业务预测不因事后数据修订而回写。
-- `codex/develop` 候选代码已为 Phase-A publication 后的 generation prune 增加 deferred IDs audit
-  与脱敏 warning，并通过删除和 fsync 异常的失败注入回归；该候选尚未部署到 Mac3 或 ECS，现场
-  能力仍以各自主机的精确 immutable release 为准。
-
 ## 当前文档与评审边界
 
 - 当前规则只由根规范、CURRENT 架构/契约、Onboarding、SOP、生产准备清单和运维/产品手册定义。

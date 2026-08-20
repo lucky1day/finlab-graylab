@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验日期**：2026-08-20
+**最后核验日期**：2026-08-21
 
 本文是 ECS 灰度运行、双主机 release 治理和未来生产切换边界的当前入口。迁移实施过程、旧候选、
 一次性验收脚本和逐次运行证据不保留在工作树；需要追溯时使用 Git、systemd/launchd journal、数据库
@@ -50,18 +50,18 @@ flowchart LR
 
 | 主机 | 当前 release | archive SHA-256 | 回滚基线 |
 |---|---|---|---|
-| ECS | `5c5603a23266e563e142e319d4e5d13907649598` | `160ba5572f660d169f5275bb9ada25796632653238a3c3e2e7a2e23f04ed6cff` | `previous` 指向 `e692285d47e41c384dc915758abe0c51f9ac3aaf` |
+| ECS | `08645a87852bbc307d3f6def22d7d457b1014bcb`（`bfl-source-r3-20260821`） | `9e530d6ed64dc9f60639f5a2182c01cd660a4ee2412579f98d7e4e6c987b9f9d` | `previous` 指向 `5c5603a23266e563e142e319d4e5d13907649598` |
 | Mac3 | tag `mac3-immutable-r2-20260820` / `e692285d47e41c384dc915758abe0c51f9ac3aaf` | `9b414792f51f5a47fda46ae403dfdf5f8909fdebe511512fd4cead36f666dac4` | 以 Mac3 现场 immutable 指针和 installed plist 备份为准 |
 
-ECS 当前版本包含 live prediction insert-only 三态；其不可变预安装、CAS 激活、Backend 重启、健康
-与 timer/unit 读回均已通过。Backend 切换窗口观测约 1.0036 秒，激活窗口内 ECS 灰度主库 `bond_db`
-无业务写入。一次性 ECS 隔离 MySQL 真库直接调用了 Native active completion，并验证共享的
-business-key decision 与 plain INSERT 三态。Blackbox active completion 复用同一 repository 核心，
-本次未在隔离 MySQL 中单独调用，其运行时入口由本地完整回归覆盖。验证前后 ECS 灰度主库 `bond_db`
-的 `t_scheme_predictions`、`t_scheme_versions`、`t_scheme_registry`、`t_scheme_runs`、
+ECS R3 source digest 为 `9dffed3508cec2852329d75bfbd7b3a81fc9c7c5ac797b3c28c076cc485a6bc4`。
+
+ECS R3 当前版本包含 live prediction insert-only 三态；其不可变预安装、CAS 激活、Backend 重启、健康
+与 timer/unit 读回均已通过；五个 timer 为 `enabled/active/waiting`，五个 writer 均 idle，11 个 installed
+unit hash 未改变。Backend 切换窗口观测约 1.0036 秒，激活窗口内 ECS 灰度主库 `bond_db`
+无业务写入，binlog 读回为 `binlog.000033:158`。验证前后 ECS 灰度主库 `bond_db` 的
+`t_scheme_predictions`、`t_scheme_versions`、`t_scheme_registry`、`t_scheme_runs`、
 `t_scheme_run_log` 五表 count 与全行摘要、五表 schema 摘要以及 17 条 migration history 均一致；
-Mac3 生产库不在测试路径中，隔离数据库已删除。Mac3 尚未晋级该版本，生产域名、数据库 authority
-与 Writer 均保持在 Mac3。
+Mac3 仍为 `e692285d47e41c384dc915758abe0c51f9ac3aaf`，生产域名、数据库 authority 与 Writer 均保持在 Mac3。
 
 | 范围 | ECS | Mac3 |
 |---|---|---|
@@ -88,11 +88,8 @@ scheduler、repository、算法或 scheme config。
 | monthly | 自然月 15 日 18:00 | 2 小时 |
 | Actuals | 每日 08:30、19:00、23:45 | 1 小时 |
 
-五个 timer 均为 `Persistent=false`，停机或禁用期间不补跑。已用冻结同源数据、隔离数据库和热缓存
-副本按 installed one-shot 语义模拟完整调度：daily、weekly、monthly 和 Actuals 全部成功，daily 墙钟
-约 62 分钟，低于两小时硬限；7 个 Liwei cache family 均走有限 suffix，未发生 full build。隔离库、
-缓存副本、临时环境和 transient unit 已删除。该结果替代“等待五个自然日”作为本轮部署验收门，
-自然 timer 继续承担日常运行与监控。
+五个 timer 均为 `Persistent=false`，停机或禁用期间不补跑；自然 timer 继续承担日常运行与监控。实际
+服务、timer 和 writer 状态以 installed unit/timer 与 `systemctl` 读回为准。
 
 ECS 自然 DataBridge、daily、weekly、monthly unit 不得共享手工环境文件；历史日期的手工补缺只允许
 执行 `python -m harness signal-gap-fill --predict-date YYYY-MM-DD`。installed unit 变更必须独立授权；
@@ -137,7 +134,8 @@ Mac3 的 `runtime/config/service.env` 是唯一生产应用本机配置 authorit
    archive SHA-256、archive pax commit 标记与 manifest commit，以及 archive/解包/已安装
    source digest 一致；
 3. 候选 Backend、DataBridge check-only 和 release identity 验证；
-4. 在独立授权窗口执行 `current` CAS、替换 installed 配置并重载；
+4. 在独立授权窗口执行 `current` CAS；仅当 installed 配置确有差异且已取得独立授权时才替换并重载，
+   本次及默认路径只按需重启 Backend；
 5. 读回健康、source identity、loaded state、调度空闲状态和 tunnel；
 6. 保留可用 `previous`、installed 配置备份和运行审计。
 
@@ -171,7 +169,7 @@ curl --fail --silent http://127.0.0.1:8100/api/health
 
 cd /opt/bond-factor-lab/current
 env BFL_DATABASE_ENV_FILE=/etc/bond-factor-lab/bond-factor-lab.env \
-  PYTHONNOUSERSITE=1 PYTHONDWRITEBYTECODE=1 \
+  PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
   /opt/miniconda3/envs/bond_factor_lab_service/bin/python -B \
   scripts/check_production_daily_health.py --predict-date YYYY-MM-DD --strict-runs
 ```
@@ -183,9 +181,12 @@ source digest 漂移、Backend 不健康、timer 漂移或磁盘不足时停止�
 ## 8. 回滚与长期保留边界
 
 - 回滚同时考虑 source release、installed 控制面和外置状态；只切代码 symlink 不是完整回滚。
-- ECS `previous` 的 R2/e692 仍使用旧 prediction UPSERT。它只允许在 5c 尚无 prediction writer 运行前
-  作为即时源码回滚；一旦 5c prediction writer 已运行，禁止只把 `current` 切回 e692 后恢复预测调度，
+- ECS `previous` 的 5c release 保留 insert-only rollback 基线和可用回滚材料；R3 已有 prediction writer
+  运行后，source-only 回滚不能撤销已经写入的 R3 数据库/runtime 状态，禁止只切回 5c 后恢复预测调度，
   必须先独立评审数据库状态、单 Writer 边界和可执行回滚范围。
+- ECS installed 的 DataBridge、daily、weekly、monthly 四个 natural service 仍保留旧
+  `/run/bond-factor-lab/manual-run.env` 引用；该文件当前不存在，因而没有生效的旧日期覆盖。替换这些
+  installed unit、执行 `daemon-reload` 并重新读回是独立后续操作，不由本次 release 治理授权。
 - 对已经发布 proof-bearing suffix generation 的 family，回滚旧代码时必须恢复发布前保存的 7 个
   `current.json` parent pointer。
 - 回滚不得删除 run、prediction、日志或失败 evidence，不得修改历史预测伪造成功。

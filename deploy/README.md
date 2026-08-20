@@ -11,9 +11,8 @@ DataBridge Gate、repository 写库和进程清理语义；不得同时恢复常
 APScheduler、ledger 或其它 Python 调度控制面。
 
 `deploy/systemd/*.service` 与 `deploy/systemd/*.timer` 是 Linux 的仓库期望模板。
-文件存在或被复制到 `/etc/systemd/system` 不代表 timer 已启用。ECS 五个 timer 已于 2026-08-18
-经专项授权启用，当前现场状态仍须用 `systemctl` 读回；以后替换模板、改变触发、停用、重启或重新
-启用仍是独立操作，不从仓库文件推断授权。
+文件存在或被复制到 `/etc/systemd/system` 不代表 timer 已启用；现场状态必须用 `systemctl` 读回。
+以后替换模板、改变触发、停用、重启或重新启用仍是独立操作，不从仓库文件推断授权。
 
 Linux timer 全部声明 `Persistent=false`，停机或禁用期间不补跑。Backend 模板只监听
 `127.0.0.1:8100`，本目录不授权 Nginx、DNS、安全组或公网切流。
@@ -103,26 +102,13 @@ launcher 通过目录 fd 与 `O_NOFOLLOW` 打开文件，并在同一 fd 上完�
 若未来 launcher 引入项目模块，模板必须同步改为 `python -I -B`、补充相应回归并重新完成 immutable
 release 验收。
 
-2026-08-20 R2 已冻结为 tag `mac3-immutable-r2-20260820`。Mac3 `current` 仍为精确提交
-`e692285d47e41c384dc915758abe0c51f9ac3aaf`，并已完成 `service.env` 与 DataBridge current 的外置迁移、
-六个应用 plist 和 SSH tunnel plist 替换；七项 loaded-state audit、Backend/DataBridge/tunnel 读回均
-通过，生产不再由 Git 工作区运行。ECS 已沿同一 `codex/develop` 代码线分阶段晋级到 immutable
-prediction release `5c5603a23266e563e142e319d4e5d13907649598`，`previous` 为上述 R2；不可变预安装、
-CAS 激活、Backend 重启、健康与 timer/unit 读回均通过。该晋级未修改 Mac3、生产域名或生产 Writer。
-一次性 ECS 隔离 MySQL 真库直接调用了 Native active completion，并验证共享的 business-key decision
-与 plain INSERT 三态。Blackbox active completion 复用同一 repository 核心，本次未在隔离 MySQL 中
-单独调用，其入口由本地完整回归覆盖。验证前后 ECS 灰度主库 `bond_db` 的
-`t_scheme_predictions`、`t_scheme_versions`、`t_scheme_registry`、`t_scheme_runs`、
-`t_scheme_run_log` 五表 count 与全行摘要、五表 schema 摘要以及 17 条 migration history 均一致；
-Mac3 生产库不在测试路径中，隔离数据库已删除。
-
-分阶段晋级允许两端 `current` 暂时不同，但每个准备晋级 Mac3 的版本仍必须使用 ECS 已验证的同一份
+分阶段晋级允许两端 `current` 暂时不同，但每个准备晋级另一主机的版本仍必须使用已验证的同一份
 精确 archive，不得从环境分支重建“近似版本”。以后预安装、激活、替换 installed plist、
-bootstrap/bootout/kickstart 和服务重启仍分别属于生产操作，不能从本次已完成授权外推。
+bootstrap/bootout/kickstart 和服务重启仍分别属于生产操作，不能从某次授权外推。
 
-ECS `previous` 的 R2/e692 仍使用旧 prediction UPSERT。它只允许在 5c 尚无 prediction writer 运行前
-作为即时源码回滚；一旦 5c prediction writer 已运行，禁止只把 `current` 切回 e692 后恢复预测调度，
-必须先独立评审数据库状态、单 Writer 边界和可执行回滚范围。
+回滚必须同时评估 source release、installed 控制面、数据库和外置 runtime 状态；只切
+`current/previous` 不能撤销 writer 已写入的业务数据。保留可用 `previous`、安装记录和回滚审计，任何
+prediction writer 已运行后的回滚都必须先重新核对数据库状态、单 Writer 边界和可执行范围。
 
 ## Mac Studio launchd 单 writer 目标
 
