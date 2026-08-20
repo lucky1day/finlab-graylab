@@ -24,9 +24,12 @@ The existing unique key remains the database authority for prediction identity:
 (scheme_id, target_tenor, horizon, target_date)
 ```
 
+Here `t_scheme_predictions.scheme_id` is the base scheme / algorithm execution
+identity, not the Registry composite `scheme_id` exposed to business APIs.
+
 ## Confirmed Root Cause
 
-`_insert_run_predictions_conn` currently defaults to UPSERT. Normal Native completion uses that default, and normal fresh Blackbox completion asks for UPSERT. A repeated run for an existing business key can therefore update prediction direction, confidence, run lineage, version, dates, phase, model metadata, and `extra`.
+Before this change, `_insert_run_predictions_conn` defaulted to UPSERT. Normal Native completion used that default, and normal fresh Blackbox completion requested UPSERT. A repeated run for an existing business key could therefore update prediction direction, confidence, run lineage, version, dates, phase, model metadata, and `extra`.
 
 The cache design does not protect persisted predictions. It only controls which training/cache suffix is recomputed.
 
@@ -54,15 +57,21 @@ An early optimization may be considered separately after correctness is closed, 
 
 A trigger could reject UPDATE, and a new history table could retain multiple attempts. Both introduce schema and operational complexity without improving the required behavior. The current unique key plus insert-only repository logic is sufficient.
 
-## Approved State Machine
+## Approved State Machine — Ordinary Active Completion
 
-For the complete set of validated records returned by one scheme run:
+For the complete set of validated records returned by one ordinary Native or
+Blackbox active completion:
 
 | Existing business keys | Prediction writes | `t_scheme_runs.status` | `t_scheme_run_log.status` | Meaning |
 |---|---:|---|---|---|
 | None | All records, plain INSERT | `success` | `success` | First valid publication |
 | All | 0 | `skipped` | `skipped` | Idempotent duplicate; existing predictions remain authoritative |
 | Some, but not all | 0 | `failed` | `failed` | Inconsistent partial batch; operator investigation required |
+
+Authorized gray-gap does not use this three-state duplicate policy. It keeps its
+stricter rule: if any authorized business key already exists, the entire gray-gap
+group is rejected with zero writes, missing keys remain absent, and the result must
+not be converted into a benign `skipped` outcome.
 
 For both `skipped` and `failed` outcomes:
 
@@ -84,7 +93,17 @@ The partial-conflict message may additionally include the sorted existing and mi
 An all-existing skip with reason `prediction_keys_already_exist` is benign at the
 one-shot control plane: it remains visible in the structured `skipped` list but does
 not by itself change the batch outcome to `partial` or the process exit code to `1`.
-All other skip reasons retain their current non-zero behavior.
+The one-shot summary allowlists only this exact constant. Every other `skipped`
+detail is suppressed rather than copied from `error_msg`; the summary emits the
+generic code `execution_skipped`, treats it as actionable, and exits with code `1`.
+
+The benign duplicate is a per-scheme publication outcome reached only after the
+algorithm has executed and its returned records have passed completion validation;
+it is not a scheduler preflight skip, so the algorithm compute cost has already
+been incurred. A one-shot batch exit code of `0` means only that no actionable
+failure occurred. The same successful batch may contain both first-publication
+`success` items and benign duplicate `skipped` items, and exit `0` must not be read
+as evidence that no candidate executed.
 
 ## Transaction and Concurrency Design
 
@@ -116,10 +135,10 @@ The gray-gap path remains stricter: any pre-existing gray-gap business key conti
 ## Error Handling
 
 - Invalid record sets, dates, versions, phases, or Registry state continue to fail before conflict classification.
-- A full duplicate is not an exception; it atomically completes as `skipped`.
+- For ordinary Native/Blackbox active completion, a full duplicate is not an exception; it atomically completes as `skipped`.
 - A partial duplicate is not allowed to reach INSERT; it atomically completes as `failed` with zero writes.
 - An unexpected database error rolls back prediction, run completion, and run log together; the existing executor failure-audit path records the failed attempt in a separate transaction.
-- The implementation must not compare prediction values to decide whether replacement is safe. Even byte-identical reruns are `skipped`, because immutability is based on business identity rather than value equality.
+- Ordinary Native/Blackbox active completion must not compare prediction values to decide whether replacement is safe. Even byte-identical reruns on that path are `skipped`, because immutability is based on business identity rather than value equality.
 
 ## Verification Contract
 
@@ -138,7 +157,8 @@ Executor/control-plane tests must verify that:
 
 - Native and Blackbox `skipped` results propagate to the one-shot summary;
 - `prediction_keys_already_exist` does not by itself produce a non-zero one-shot
-  exit code, while every other skip reason remains actionable;
+  exit code, while every other skip is redacted to `execution_skipped`, remains
+  actionable, and produces exit code `1`;
 - partial conflicts propagate as `failed` and cause the batch/unit failure behavior already used for scheme failures;
 - no scheduler or systemd configuration is required for the database guarantee.
 
@@ -150,8 +170,8 @@ The design is complete when all of the following are true:
 
 - no live prediction code path contains prediction UPSERT behavior;
 - a second completion for the same full business-key set cannot change any existing prediction column;
-- all-existing, none-existing, and partial-existing outcomes exactly match the approved state table;
-- only the stable all-existing reason is treated as a benign one-shot skip;
+- for approved ordinary Native/Blackbox active completion, all-existing, none-existing, and partial-existing outcomes exactly match the approved state table;
+- only the stable all-existing reason from that ordinary completion path is treated as a benign one-shot skip;
 - run status, run log, and prediction writes are atomic for each outcome;
 - Native, Blackbox, and gray-gap regression tests pass;
 - the full local test suite passes;

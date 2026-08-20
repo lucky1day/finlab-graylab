@@ -325,7 +325,11 @@ schemes/{id}/                     schemes/{id}/
 | **进程/依赖隔离** | Native `forecast_env`、Blackbox Runtime Profile、服务 `bond_factor_lab_service`；子进程 + JSON | Runtime Profile 是 Blackbox 环境、资源和权限的唯一配置源 |
 | **错误处理** | executor 捕获子进程失败写 `run_log(status=failed)` | harness Gate 失败安全（异常→`GateResult(FAILED)`），不抛穿 |
 | **命名标识符** | `scheme_id`(方案) / `benchmark_id`(基准批次) / `data_source`(口径) 三者分离 | 维持；StaticGate 校验命名规范子集 |
-| **写库安全** | UPSERT 幂等；唯一键隔离 scheme | harness `table_guard` 行数保护 + 授权 token |
+| **写库安全** | 所有 live prediction insert-only，四字段唯一键拒绝覆盖；仅普通 Native/Blackbox active completion 的完整重复记 benign `skipped`、部分冲突整批失败 | repository 单事务 + harness 授权边界 |
+
+Authorized gray-gap 使用更严格的例外语义：任一授权业务键已经存在即整组拒绝并保持 `records_written=0`，未存在的键也不写入，且不得转为 benign `skipped`。
+
+上述 insert-only 约束仅适用于 `t_scheme_predictions` 的 `gray_live` / `scheduled_live` 发布；actual 与 input artifact 等既有 UPSERT 路径仍按各自契约保持合法，不得将本规则扩张为全库禁用 UPSERT。
 
 ### 7.1 数据库迁移的库层与 operator 边界
 

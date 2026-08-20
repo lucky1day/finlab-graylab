@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make every live prediction publication insert-only so repeated runs cannot alter an existing `(scheme_id, target_tenor, horizon, target_date)` row.
+**Goal:** Make every live prediction publication insert-only so repeated runs cannot alter an existing `(scheme_id, target_tenor, horizon, target_date)` row. In this key, `t_scheme_predictions.scheme_id` is the base scheme / algorithm execution identity, not the Registry composite `scheme_id`.
 
-**Architecture:** Keep the guarantee in `scheduler.repository`, the sole prediction writer. After existing lifecycle, Registry, run, and record validation has succeeded, classify the returned business-key set as none/all/partial inside the current transaction; publish with plain INSERT, complete as benign `skipped`, or complete as zero-write `failed`. Propagate the stable result through the existing executor and one-shot summary without adding a schema, service, ledger, or early scheduler preflight.
+**Architecture:** Keep the guarantee in `scheduler.repository`, the sole prediction writer. For ordinary Native/Blackbox active completion, after existing lifecycle, Registry, run, and record validation has succeeded, classify the returned business-key set as none/all/partial inside the current transaction; publish with plain INSERT, complete as benign `skipped`, or complete as zero-write `failed`. Authorized gray-gap retains its stricter rule: any existing authorized key rejects the entire group with zero writes and never becomes benign `skipped`. Propagate the stable ordinary-completion result through the existing executor and one-shot summary without adding a schema, service, ledger, or early scheduler preflight.
 
 **Tech Stack:** Python 3.12, SQLAlchemy, MySQL 8.0 production semantics, SQLite/test repository fakes, unittest/pytest, launchd/systemd shared one-shot runner.
 
@@ -20,32 +20,43 @@
 - Modify: `tests/test_repository_registry.py:1758-1825`
 - Test: `tests/test_repository_registry.py`
 
-- [ ] **Step 1: Teach the transactional fake to read exact prediction business keys**
+- [x] **Step 1: Teach the transactional fake to read exact prediction business keys**
 
 Add this branch to `_AtomicConnection.execute` before the INSERT branch so the tests exercise the same four-field identity as MySQL:
 
 ```python
+        compact_sql = " ".join(sql_text.split())
         if (
-            sql_text.lstrip().startswith("SELECT")
-            and "FROM t_scheme_predictions" in sql_text
-            and "scheme_id = :scheme_id" in sql_text
-            and "target_tenor = :target_tenor" in sql_text
-            and "horizon = :horizon" in sql_text
-            and "target_date = :target_date" in sql_text
+            compact_sql.startswith(
+                "SELECT scheme_id, target_tenor, horizon, target_date "
+                "FROM t_scheme_predictions"
+            )
+            and "WHERE scheme_id = :scheme_id" in compact_sql
+            and "AND target_tenor = :target_tenor" in compact_sql
+            and "AND horizon = :horizon" in compact_sql
+            and "AND target_date = :target_date" in compact_sql
         ):
             self._store.setdefault("calls", []).append((sql_text, rows))
-            matches = [
-                row
+            prediction_rows = [
+                {
+                    key: row[key]
+                    for key in (
+                        "scheme_id",
+                        "target_tenor",
+                        "horizon",
+                        "target_date",
+                    )
+                }
                 for row in self._store.get("prediction_rows", [])
                 if row["scheme_id"] == rows["scheme_id"]
                 and row["target_tenor"] == rows["target_tenor"]
                 and int(row["horizon"]) == int(rows["horizon"])
                 and str(row["target_date"]) == str(rows["target_date"])
             ]
-            return _MappingResult(matches)
+            return _MappingResult(prediction_rows)
 ```
 
-- [ ] **Step 2: Replace the obsolete Native UPSERT assertion with a plain-INSERT assertion**
+- [x] **Step 2: Replace the obsolete Native UPSERT assertion with a plain-INSERT assertion**
 
 Rename `test_active_native_completion_upserts_prediction_and_finishes_atomically` to `test_active_native_completion_inserts_prediction_and_finishes_atomically` and assert:
 
@@ -59,7 +70,7 @@ Rename `test_active_native_completion_upserts_prediction_and_finishes_atomically
         self.assertEqual((status, written, error_message), ("success", 1, None))
 ```
 
-- [ ] **Step 3: Add full-duplicate immutability tests for Native and Blackbox**
+- [x] **Step 3: Add full-duplicate immutability tests for Native and Blackbox**
 
 For each runtime, preload `engine.store["prediction_rows"]` with an original row containing a different `run_id`, direction, confidence, version, phase, and `extra`; execute a new completion for the same four-field key and assert:
 
@@ -79,7 +90,7 @@ For each runtime, preload `engine.store["prediction_rows"]` with an original row
 
 Use the same assertions for `complete_approved_blackbox_run`; its expected return becomes the same three-element tuple.
 
-- [ ] **Step 4: Add partial-conflict zero-write tests for Native and Blackbox**
+- [x] **Step 4: Add partial-conflict zero-write tests for Native and Blackbox**
 
 Configure each test scheme with `tenors=["5Y", "10Y"]`, matching active Registry rows and `records_expected=2`. Preload only the `5Y` prediction, return both records, and assert:
 
@@ -97,7 +108,7 @@ Configure each test scheme with `tenors=["5Y", "10Y"]`, matching active Registry
 
 Repeat for Blackbox and assert the missing `10Y` key was not inserted.
 
-- [ ] **Step 5: Run the new tests and capture the expected RED result**
+- [x] **Step 5: Run the new tests and capture the expected RED result**
 
 Run:
 
@@ -120,7 +131,7 @@ Expected: the new duplicate/partial tests fail because current completion still 
 - Modify: `scheduler/repository.py:3516-3600`
 - Test: `tests/test_repository_registry.py`
 
-- [ ] **Step 1: Add stable reason constants and the shared decision helper**
+- [x] **Step 1: Add stable reason constants and the shared decision helper**
 
 Add repository-level constants:
 
@@ -134,25 +145,24 @@ Add one private helper near the existing gray-gap business-key query:
 ```python
 def _prediction_write_decision_conn(
     conn: Connection,
-    records: Iterable[PredictionRecord],
-) -> tuple[str, str | None]:
+    prediction_rows: Iterable[Mapping[str, object]],
+) -> tuple[str, int, str | None]:
     keys = sorted(
-        {
-            (
-                str(record.scheme_id),
-                str(record.target_tenor),
-                int(record.horizon),
-                str(record.target_date),
-            )
-            for record in records
-        }
+        (
+            str(row["scheme_id"]),
+            str(row["target_tenor"]),
+            int(row["horizon"]),
+            str(row["target_date"]),
+        )
+        for row in prediction_rows
     )
-    existing: list[tuple[str, str, int, str]] = []
-    for scheme_id, target_tenor, horizon, target_date in keys:
+    existing = []
+    missing = []
+    for key in keys:
         row = _select_mapping_one_or_none(
             conn,
             """
-            SELECT id, run_id
+            SELECT scheme_id, target_tenor, horizon, target_date
             FROM t_scheme_predictions
             WHERE scheme_id = :scheme_id
               AND target_tenor = :target_tenor
@@ -160,43 +170,98 @@ def _prediction_write_decision_conn(
               AND target_date = :target_date
             """,
             {
-                "scheme_id": scheme_id,
-                "target_tenor": target_tenor,
-                "horizon": horizon,
-                "target_date": target_date,
+                "scheme_id": key[0],
+                "target_tenor": key[1],
+                "horizon": key[2],
+                "target_date": key[3],
             },
             for_update=True,
         )
-        if row is not None:
-            existing.append((scheme_id, target_tenor, horizon, target_date))
+        (existing if row is not None else missing).append(key)
 
     if not existing:
-        return "success", None
-    if len(existing) == len(keys):
-        return "skipped", PREDICTION_KEYS_ALREADY_EXIST
-    missing = [key for key in keys if key not in set(existing)]
+        return "success", len(keys), None
+    if not missing:
+        return "skipped", 0, PREDICTION_KEYS_ALREADY_EXIST
+
+    def format_keys(values: list[tuple[str, str, int, str]]) -> str:
+        return "[" + ", ".join(
+            f"{scheme_id}/{target_tenor}/h{horizon}/{target_date}"
+            for scheme_id, target_tenor, horizon, target_date in values
+        ) + "]"
+
     return (
         "failed",
+        0,
         f"{PARTIAL_PREDICTION_KEY_CONFLICT}: "
-        f"existing={existing}, missing={missing}",
+        f"existing={format_keys(existing)}; missing={format_keys(missing)}",
     )
 ```
 
 Keep the helper private and tuple-based; do not introduce a dataclass or service object for this one decision.
 
-- [ ] **Step 2: Make the prediction INSERT unconditionally insert-only**
+- [x] **Step 2: Prepare final SQL rows, then make their INSERT unconditionally insert-only**
 
-Remove `insert_only: bool = False` from `_insert_run_predictions_conn`, delete both UPSERT suffixes, and retain one dialect-aware INSERT solely for the JSON expression:
+Normalize and validate records once before conflict classification. The implemented preparation boundary is:
 
 ```python
-def _insert_run_predictions_conn(
-    conn: Connection,
+def _prepare_run_prediction_rows(
     run_id: int,
     records: Iterable[PredictionRecord],
     *,
     scheme_version: str | None,
+) -> list[dict[str, object]]:
+    """将 prediction records 规范化并验证为最终 SQL rows。"""
+    rows: list[dict[str, object]] = []
+    for record in records:
+        row = asdict(record)
+        extra = dict(record.extra or {})
+        feature_date = record.feature_date or extra.get("feature_date")
+        if not feature_date:
+            raise ValueError(
+                "feature_date is required for prediction record "
+                f"{record.scheme_id}/{record.target_tenor}"
+            )
+        anchor_date = extra.get("anchor_date")
+        if anchor_date and str(anchor_date) != str(feature_date):
+            raise ValueError(
+                "anchor_date must equal feature_date for prediction record "
+                f"{record.scheme_id}/{record.target_tenor}"
+            )
+        phase = record.prediction_phase or extra.get("prediction_phase")
+        if phase not in VALID_PREDICTION_PHASES:
+            raise ValueError(
+                f"prediction_phase must be one of {sorted(VALID_PREDICTION_PHASES)} "
+                f"for prediction record {record.scheme_id}/{record.target_tenor}"
+            )
+        extra["feature_date"] = str(feature_date)
+        extra["prediction_phase"] = str(phase)
+        row["run_id"] = record.run_id if record.run_id is not None else run_id
+        if int(row["run_id"]) != int(run_id):
+            raise RuntimeError(
+                "prediction record run_id must match the committing run: "
+                f"{row['run_id']} != {run_id}"
+            )
+        row["scheme_version"] = (
+            record.scheme_version
+            if record.scheme_version is not None
+            else scheme_version
+        )
+        row["feature_date"] = str(feature_date)
+        row["prediction_phase"] = str(phase)
+        row["extra"] = json.dumps(extra, ensure_ascii=False)
+        rows.append(row)
+    return rows
+```
+
+Remove `insert_only: bool = False` from `_insert_run_predictions_conn`, delete both UPSERT suffixes, and make the insert helper accept only those prepared mappings:
+
+```python
+def _insert_run_predictions_conn(
+    conn: Connection,
+    prediction_rows: Iterable[Mapping[str, object]],
 ) -> int:
-    """在调用方事务中 insert-only 写入预测。"""
+    """在调用方事务中以 plain INSERT 写入已验证的 prediction rows。"""
     sqlite = _dialect_name(conn) == "sqlite"
     extra_expression = ":extra" if sqlite else "CAST(:extra AS JSON)"
     statement = """
@@ -210,26 +275,32 @@ def _insert_run_predictions_conn(
              :predicted_direction, :confidence, :model_version,
              {extra_expression})
     """.format(extra_expression=extra_expression)
+    rows = list(prediction_rows)
+    if not rows:
+        return 0
+    conn.execute(text(statement), rows)
+    return len(rows)
 ```
 
 Remove the obsolete `insert_only=True` argument from `complete_gray_gap_run`; its existing `_assert_gray_gap_business_keys_absent` remains unchanged.
 
-- [ ] **Step 3: Apply the decision in Native completion**
+- [x] **Step 3: Apply the decision in Native completion**
 
 After all current record validation and before INSERT:
 
 ```python
-        status, error_message = _prediction_write_decision_conn(
-            conn,
+        prediction_rows = _prepare_run_prediction_rows(
+            int(run_id),
             record_list,
+            scheme_version=exact_scheme_version,
         )
-        records_written = 0
+        status, records_written, error_message = (
+            _prediction_write_decision_conn(conn, prediction_rows)
+        )
         if status == "success":
             records_written = _insert_run_predictions_conn(
                 conn,
-                int(run_id),
-                record_list,
-                scheme_version=exact_scheme_version,
+                prediction_rows,
             )
             if records_written != len(expected_targets):
                 raise RuntimeError(
@@ -241,31 +312,36 @@ After all current record validation and before INSERT:
 
 Use the resulting `status`, `records_written`, and `error_message` in the existing `_finish_scheme_run_conn`, `_write_run_log_conn`, and return tuple. Do not retain the old UPSERT-derived `partial` branch.
 
-- [ ] **Step 4: Apply the same decision in Blackbox completion**
+- [x] **Step 4: Apply the same decision in Blackbox completion**
 
 Change the return type to `tuple[str, int, str | None]`, remove `insert_only_predictions`, and use the same decision code. Only execute `precommit_validator` on the `success` branch after the plain INSERT and run/log updates:
 
 ```python
-        status, error_message = _prediction_write_decision_conn(conn, record_list)
-        records_written = 0
+        prediction_rows = _prepare_run_prediction_rows(
+            int(run_id),
+            record_list,
+            scheme_version=exact_scheme_version,
+        )
+        status, records_written, error_message = (
+            _prediction_write_decision_conn(conn, prediction_rows)
+        )
         if status == "success":
             records_written = _insert_run_predictions_conn(
                 conn,
-                int(run_id),
-                record_list,
-                scheme_version=exact_scheme_version,
+                prediction_rows,
             )
             if records_written != records_returned:
-                raise RuntimeError(...)
-
-        _finish_scheme_run_conn(..., status=status, ...)
-        _write_run_log_conn(..., status, ..., error_message, run_id)
-        if status == "success" and precommit_validator is not None:
-            precommit_validator(conn)
-        return status, records_written, error_message
+                raise RuntimeError(
+                    "Blackbox completion records_written mismatch: "
+                    f"returned={records_returned}, written={records_written}"
+                )
 ```
 
-- [ ] **Step 5: Run the repository suite**
+The existing run-finish and run-log calls consume that exact three-element result;
+`precommit_validator` remains limited to the `success` branch, and the completion
+returns `status, records_written, error_message`.
+
+- [x] **Step 5: Run the repository suite**
 
 Run:
 
@@ -276,13 +352,22 @@ Run:
 
 Expected: all repository tests pass; the first-publication SQL contains no prediction UPDATE clause; Native and Blackbox duplicate/partial contracts pass; gray-gap tests remain green.
 
-- [ ] **Step 6: Commit the repository boundary**
+- [x] **Step 6: Commit the repository boundary**
 
 ```bash
 git add scheduler/repository.py tests/test_repository_registry.py
 git diff --cached --check
 git commit -m "fix(repository): make live predictions immutable"
 ```
+
+#### Implementation Evidence
+
+This is a concise record from the implementation session, not an independently
+persisted command log in the repository. The repository contract tests first moved
+from 7 failed to 7 passed. Review of invalid duplicate inputs then produced 8 failed
+subtests before the correction. Final session evidence was 65 passed / 73 subtests
+for the repository suite and 13 passed for the gap suite. The resulting repository
+commit is `62e54de`.
 
 ---
 
@@ -295,7 +380,7 @@ git commit -m "fix(repository): make live predictions immutable"
 - Modify: `tests/test_launchd_prediction_runner.py`
 - Test: `tests/test_systemd_control_plane.py`
 
-- [ ] **Step 1: Add RED one-shot summary tests**
+- [x] **Step 1: Add RED one-shot summary tests**
 
 Call `_execute_candidate` with a mocked `execute_scheme` result and then `_finalize`:
 
@@ -330,9 +415,9 @@ Call `_execute_candidate` with a mocked `execute_scheme` result and then `_final
         self.assertEqual((summary.outcome, summary.exit_code), ("success", 0))
 ```
 
-Add a companion test with `error_msg="activation_not_approved"` and assert `outcome="partial"`, `exit_code=1`, proving only the approved duplicate reason is benign.
+Add companion cases with `error_msg=None` and a sensitive-looking arbitrary detail. Both must emit only `code="execution_skipped"` and assert `outcome="partial"`, `exit_code=1`, proving that only the exact approved duplicate constant is visible and benign; arbitrary `error_msg` values must never be copied into the one-shot summary.
 
-- [ ] **Step 2: Propagate the Blackbox completion tuple in the executor**
+- [x] **Step 2: Propagate the Blackbox completion tuple in the executor**
 
 Replace the assumed Blackbox success result with:
 
@@ -360,13 +445,18 @@ Replace the assumed Blackbox success result with:
 
 Delete the historical-snapshot `insert_only_predictions` switch because every live path is now insert-only.
 
-- [ ] **Step 3: Preserve the stable skip reason in the one-shot summary**
+- [x] **Step 3: Allowlist only the stable duplicate reason in the one-shot summary**
 
-Import `PREDICTION_KEYS_ALREADY_EXIST` from `scheduler.repository`. In `_execute_candidate` use the returned reason instead of collapsing every skip to `execution_skipped`:
+Import `PREDICTION_KEYS_ALREADY_EXIST` from `scheduler.repository`. In `_execute_candidate`, expose only that exact constant; collapse every other skipped detail to the generic `execution_skipped` code:
 
 ```python
     elif status == "skipped":
-        code = str(getattr(result, "error_msg", "") or "execution_skipped")
+        error_msg = getattr(result, "error_msg", None)
+        code = (
+            PREDICTION_KEYS_ALREADY_EXIST
+            if error_msg == PREDICTION_KEYS_ALREADY_EXIST
+            else "execution_skipped"
+        )
         summary.skipped.append(_candidate_item(cfg, code))
 ```
 
@@ -394,11 +484,11 @@ In `_finalize`, only actionable skips contribute to a non-zero outcome:
 
 Do not make every `skipped` status benign.
 
-- [ ] **Step 4: Correct the stale weekly comment**
+- [x] **Step 4: Correct the stale weekly comment**
 
 Update `scheduler/launchd_prediction_runner.py:346-349` so it no longer claims a duplicate week overwrites a prediction. It should say that duplicate weekly business keys are now protected as benign skips, while the calendar applicability check remains necessary to avoid misleading run dates and wasted algorithm execution.
 
-- [ ] **Step 5: Run shared launchd/systemd control-plane tests**
+- [x] **Step 5: Run shared launchd/systemd control-plane tests**
 
 Run:
 
@@ -411,7 +501,7 @@ Run:
 
 Expected: all tests pass; a duplicate-only batch exits 0 on both control planes because systemd reuses the shared runner, while other skipped/failed results remain non-zero.
 
-- [ ] **Step 6: Commit status propagation**
+- [x] **Step 6: Commit status propagation**
 
 ```bash
 git add scheduler/executor.py scheduler/launchd_prediction_runner.py \
@@ -419,6 +509,14 @@ git add scheduler/executor.py scheduler/launchd_prediction_runner.py \
 git diff --cached --check
 git commit -m "fix(scheduler): treat duplicate predictions as benign skips"
 ```
+
+#### Implementation Evidence
+
+This is a concise record from the implementation session, not an independently
+persisted command log in the repository. The control-plane tests initially had 4
+failures; the security allowlist review then exposed 1 failed subtest. Final session
+evidence for the shared launchd/systemd control plane was 17 passed / 13 subtests.
+The resulting scheduler commit is `bc92501`.
 
 ---
 
@@ -430,35 +528,43 @@ git commit -m "fix(scheduler): treat duplicate predictions as benign skips"
 - Modify: `AGENTS.md:147`
 - Modify: `CLAUDE.md:147`
 
-- [ ] **Step 1: Document the live publication state machine**
+- [x] **Step 1: Document the live publication state machine**
 
 Add under the live date validation section in `PREDICTION_SEMANTICS.md`:
 
 ```markdown
 `t_scheme_predictions` 的业务键为
-`scheme_id + target_tenor + horizon + target_date`，所有 `gray_live` 与
-`scheduled_live` 写入均为 insert-only。完整业务键集合已存在时，本次 run
-以 `skipped / prediction_keys_already_exist / records_written=0` 收口；仅部分键
-存在时整批 `failed` 且零写入。任何事后数据或代码修订都不得更新已发布预测。
+`scheme_id + target_tenor + horizon + target_date`；其中表内 `scheme_id` 是
+base scheme / 算法执行身份，不是 Registry composite `scheme_id`。所有
+`gray_live` 与 `scheduled_live` 写入均为 insert-only。仅普通 Native/Blackbox
+active completion 使用 none/all/partial 三态：完整重复以
+`skipped / prediction_keys_already_exist / records_written=0` 收口，部分重复整批
+`failed` 且零写入。该 benign `skipped` 是算法执行、records 返回并验证后的
+per-scheme publication outcome；one-shot exit `0` 仅表示无 actionable failure，
+可同时包含首次发布 success 与 benign duplicate，不能解释为候选未执行。
+Authorized gray-gap 任一授权键已存在即整组拒绝并零写入，不得转 benign skipped。
+任何事后数据或代码修订都不得更新已发布预测。
 ```
 
-- [ ] **Step 2: Remove the obsolete architecture claim that prediction UPSERT is idempotent**
+- [x] **Step 2: Remove the obsolete architecture claim that prediction UPSERT is idempotent**
 
 Change the prediction write-safety row in `CODE_ARCHITECTURE.md` from UPSERT wording to:
 
 ```markdown
-| **写库安全** | live prediction insert-only；四字段唯一键拒绝覆盖；完整重复记为 benign skipped，部分冲突整批失败 | repository 单事务 + harness 授权边界 |
+| **写库安全** | 所有 live prediction insert-only，四字段唯一键拒绝覆盖；仅普通 Native/Blackbox active completion 的完整重复记 benign skipped、部分冲突整批失败 | repository 单事务 + harness 授权边界 |
+
+Authorized gray-gap 任一授权业务键已存在即整组拒绝、零写入，不转 benign skipped。
 ```
 
-- [ ] **Step 3: Add the invariant to both root instruction files**
+- [x] **Step 3: Add the invariant to both root instruction files**
 
 Add the same sentence to the `t_scheme_predictions` database-table bullet in both files:
 
 ```markdown
-  已发布 live 业务键永久 insert-only：完整重复记 `skipped`，部分重复整批失败，禁止因数据或代码修订覆盖历史预测。
+  所有已发布 live 业务键永久 insert-only、禁止覆盖。仅普通 Native/Blackbox active completion 使用三态：完整重复记 benign `skipped`，部分重复整批失败；authorized gray-gap 任一键已存在即整组拒绝、`records_written=0`，不得转为 benign `skipped`。数据或代码修订不得覆盖历史预测。
 ```
 
-- [ ] **Step 4: Verify root instructions remain byte-identical**
+- [x] **Step 4: Verify root instructions remain byte-identical**
 
 Run:
 
@@ -468,7 +574,7 @@ cmp -s AGENTS.md CLAUDE.md
 
 Expected: exit code 0.
 
-- [ ] **Step 5: Commit documentation truthfulness**
+- [x] **Step 5: Commit documentation truthfulness**
 
 ```bash
 git add AGENTS.md CLAUDE.md \

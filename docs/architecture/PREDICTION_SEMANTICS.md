@@ -167,6 +167,12 @@ scheduler 可以为了降低机器负载对同一业务 cron 下的 active 方�
 
 日频正式实盘由 `scheduler.executor` 在写库前做统一日期语义校验：记录中的 `predict_date` 必须等于本次 run 日期，`feature_date` 必须等于 `previous_trading_day(predict_date)`，`target_date` 必须等于该 `feature_date` 后第 `horizon` 个交易日。若算法因为源表水位不足而复用旧 `feature_date` 或旧 `target_date`，必须 fail-closed，不得写入 `t_scheme_predictions`；前端显示的“待验证”不能通过人工补写旧预测解决。
 
+`t_scheme_predictions` 的业务键为 `scheme_id + target_tenor + horizon + target_date`；其中 `t_scheme_predictions.scheme_id` 保存 base scheme / 算法执行身份，不是 Registry composite `scheme_id`。所有 `gray_live` 与 `scheduled_live` 写入均为 insert-only。对普通 Native/Blackbox active completion，完整业务键集合均不存在时，全部记录以 plain INSERT 发布并以 `success` 收口；完整集合已存在时，本次 run 以 `skipped / prediction_keys_already_exist / records_written=0` 收口；仅部分键存在时整批以 `failed / records_written=0` 收口，缺失键也不得写入。任何事后数据或代码修订都不得更新、替换已发布预测。
+
+普通 active completion 的 benign `skipped` 是算法已经执行、records 已返回并通过该方案写入前复核之后产生的 per-scheme publication outcome，不是 scheduler preflight skip；算法计算成本已经发生。one-shot batch 的 exit code `0` 只表示该批次没有 actionable failure：同一摘要可以同时包含首次发布的 `success` 与完整重复的 benign `skipped`，不能据此声称整个批次没有执行候选方案。
+
+Authorized gray-gap 使用更严格的例外语义：只要授权组内任一业务键已经存在，就必须拒绝整个 gray-gap 组并保持 `records_written=0`，未存在的键也不得写入；该结果不得转换为 benign `skipped`。
+
 周频实盘也遵守同一条 T/T+1 规则：adapter 必须先用平台冻结交易日历计算 `feature_date = previous_trading_day(predict_date)`，再由与本次输入身份绑定的 `api_wind_date.csv` 将 `feature_date` 映射为 `feature_week_id`，并以 `end_week=feature_week_id`、`as_of_date=feature_date` 构建周频输入。禁止直接用 `predict_date` 所在周作为 feature week，也禁止由日期自行换算 ISO 周；否则交易日手工运行或灰度补齐可能读到当前周未来数据。
 
 源周历可能在调度日附近提前切到新 `week_id`，而 `previous_trading_day(predict_date)` 所在周在 DB 周历中暂时找不到下一实际周。平台允许 `shared.prediction_context.build_weekly_live_context()` 做受限日历 fallback：只有当触发日所在源周已经拥有完整的上一交易日、且可由 DB 周历推导出目标周时，才用触发日源周确定完整输入周。该 fallback 只解决周历上下文，不得把旧 `feature_week_id` 的算法信号复用到新周。对已批准 `no_signal_to_flat_v1` 的投票类方案，只有在输入、日历和 core 正常完成、core 结果非空、但当前 `feature_week_id` 缺少最终输出时，才生成审计可识别的平信号；label、selector 所需上下文缺失，或输入、周历、模型、超时、代码异常，仍必须 fail-closed。

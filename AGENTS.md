@@ -145,7 +145,7 @@ Blackbox V2 自动 Gate 不自动授予生产运行权限；具体方案必须�
 源数据表只读：`api_wind_date`、`api_wind_daily/weekly/monthly`(+derivative)、`api_wind_indicators_all`、`t_trade_calendar`。
 
 写库表：
-- `t_scheme_predictions` — 统一预测结果表
+- `t_scheme_predictions` — 统一预测结果表；所有已发布 live 业务键永久 insert-only、禁止覆盖。仅普通 Native/Blackbox active completion 使用三态：完整重复记 benign `skipped`，部分重复整批失败；authorized gray-gap 任一键已存在即整组拒绝、`records_written=0`，不得转为 benign `skipped`。数据或代码修订不得覆盖历史预测
 - `t_scheme_actuals` / `t_scheme_weekly_actuals` / `t_scheme_monthly_actuals` — 实际方向表（日频 / 周频 / 月频）
 - `t_scheme_registry` — 方案注册表
 - `t_scheme_runs` — 结构化运行表（版本、阶段、输入 artifact 链接）
