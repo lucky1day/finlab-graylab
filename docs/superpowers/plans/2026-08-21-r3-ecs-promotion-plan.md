@@ -98,27 +98,36 @@
 **Files:**
 - Remote mutable state limited to immutable pointers, revision log and Backend process state.
 
-- [ ] **Step 1: 激活窗口 fresh gate**
+- [ ] **Step 1: 先建立可执行的 5c 回滚包**
+
+  从精确 `5c5603a...` detached clean worktree 双构建同版本 archive/manifest，必须复现已批准 archive
+  SHA-256 `160ba5572f660d169f5275bb9ada25796632653238a3c3e2e7a2e23f04ed6cff`。把 archive、manifest
+  与 archive 内同版本 installer 放入独立 root-only rollback inbound；无 `--activate` 复验现存 5c release。
+  仅有 `previous -> 5c` 指针不算可执行回滚材料，不满足本步骤时禁止激活 R3。
+
+- [ ] **Step 2: 激活窗口 fresh gate**
 
   重新检查 expected current/previous、candidate exact、五 writer idle、timer 余量、Backend health、DB 快照、
   installed unit hash。任何漂移停止，不禁用 timer。
 
-- [ ] **Step 2: 原子激活**
+- [ ] **Step 3: 原子激活**
 
   使用候选 archive 同版本 external installer，显式 `--activate`、
   `--expected-current 5c5603a...` 与批准 archive SHA。权威结果以 pointer/revision 读回为准：
   `current=08645a8...`、`previous=5c5603a...`。
 
-- [ ] **Step 3: 重启 Backend**
+- [ ] **Step 4: 重启 Backend**
 
   不替换 unit、不 daemon-reload；只重启 `bond-factor-lab-backend.service`。验证 active/running/result、
   MainPID 更新、cwd 解析到 R3、release commit env 为 R3、loopback health 与 service fingerprint 一致。
 
-- [ ] **Step 4: 激活后不变量**
+- [ ] **Step 5: 激活后不变量与失败边界**
 
   验证五 timer 仍 enabled/active/waiting，五 writer idle，installed unit hashes 不变，DB 关键表快照与
-  migration history 未变化，candidate/source tree 仍只读且无 bytecode。清理精确 inbound 与本地临时
-  worktree/build root；不得删除任何 release 目录。
+  migration history 未变化，candidate/source tree 仍只读且无 bytecode。若 R3 CAS、Backend health/identity
+  或 postflight 失败，且确认尚无 R3 writer/DB 写入，才允许用 5c 同版本 installer、`--expected-current=086...`
+  回切并重启 Backend；一旦 R3 writer 已写入则停止，不能把 source-only rollback 当作数据库回滚。
+  R3 inbound 在成功后精确清理；5c rollback inbound 至少保留到完整 postflight 结束。不得删除 release 目录。
 
 ### Task 5: 冻结并推送 R3 tag
 
