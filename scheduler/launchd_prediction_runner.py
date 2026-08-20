@@ -29,7 +29,10 @@ from scheduler.executor import (
     _launchd_scheduled_execution_context,
     execute_scheme,
 )
-from scheduler.repository import create_engine_from_env
+from scheduler.repository import (
+    PREDICTION_KEYS_ALREADY_EXIST,
+    create_engine_from_env,
+)
 from scheduler.v2_daily_gate import V2DailyGateBlocked, require_v2_daily_ready
 from shared.calendar_service import get_calendar
 from shared.prediction_context import is_weekly_signal_date
@@ -231,7 +234,13 @@ def _execute_candidate(
             }
         )
     elif status == "skipped":
-        summary.skipped.append(_candidate_item(cfg, "execution_skipped"))
+        error_msg = getattr(result, "error_msg", None)
+        code = (
+            PREDICTION_KEYS_ALREADY_EXIST
+            if error_msg == PREDICTION_KEYS_ALREADY_EXIST
+            else "execution_skipped"
+        )
+        summary.skipped.append(_candidate_item(cfg, code))
     else:
         summary.failed.append(_candidate_item(cfg, f"execution_{status}"))
 
@@ -246,10 +255,19 @@ def _finalize(summary: LaunchdPredictionSummary, *, configuration_error: bool) -
         summary.failed,
     ):
         items.sort(key=lambda item: str(item.get("scheme_id", "")))
+    actionable_skips = any(
+        item.get("code") != PREDICTION_KEYS_ALREADY_EXIST
+        for item in summary.skipped
+    )
     if configuration_error:
         summary.outcome = "configuration_error"
         summary.exit_code = 2
-    elif summary.denied or summary.blocked or summary.skipped or summary.failed:
+    elif (
+        summary.denied
+        or summary.blocked
+        or actionable_skips
+        or summary.failed
+    ):
         summary.outcome = "partial"
         summary.exit_code = 1
     else:
@@ -344,9 +362,9 @@ def _run_one_shot(
                     "trade calendar does not cover predict_date"
                 )
             # 本次调度是否适用于当前 cadence。周频除了自然周六，还要求这一周
-            # 真的关闭了新的 feature 周——整周无交易日时，该周六与上一个周六
-            # 推导出同一业务键，执行只会用相同输入覆写上一周已发布的记录，并让
-            # 缺口报告与上一周的 predict_date 永久对不上。
+            # 真的关闭了新的 feature 周——整周无交易日时，重复业务键虽会以
+            # insert-only benign skip 收口，仍会产生误导性的 run date 并浪费
+            # 算法执行。
             not_applicable = (
                 not calendar.is_trading_day(normalized_date)
                 if normalized_cadence == "daily"

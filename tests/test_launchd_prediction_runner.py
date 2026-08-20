@@ -11,6 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from shared.models import PredictionRecord
+
 
 def _blackbox_config(
     scheme_id: str,
@@ -33,6 +35,7 @@ def _blackbox_config(
         task_type=task_type,
         horizon=1,
         tenors=["10Y"],
+        execution_timeout_sec=600,
         legacy_mode=legacy_mode,
         capabilities=capabilities,
     )
@@ -52,6 +55,203 @@ class _WeeklyCalendar:
 
 
 class LaunchdPredictionRunnerTests(unittest.TestCase):
+    def test_blackbox_completion_propagates_duplicate_skip(self) -> None:
+        from scheduler import executor
+
+        cfg = _blackbox_config("duplicate_completion")
+        engine = Mock()
+        record = PredictionRecord(
+            scheme_id=cfg.scheme_id,
+            target_tenor="10Y",
+            horizon=1,
+            predict_date="2026-08-01",
+            feature_date="2026-07-31",
+            target_date="2026-08-07",
+            predicted_direction=1,
+            extra={"data_snapshot_id": "snapshot-1"},
+        )
+        with (
+            patch.object(
+                executor,
+                "create_engine_from_env",
+                return_value=engine,
+            ),
+            patch.object(
+                executor,
+                "read_blackbox_execution_approval",
+                return_value=SimpleNamespace(executable=True),
+            ),
+            patch.object(
+                executor,
+                "_active_registry_targets",
+                return_value={("10Y", 1)},
+            ),
+            patch.object(executor, "create_scheme_run", return_value=101),
+            patch.object(
+                executor,
+                "run_configured_scheme",
+                return_value=[record],
+            ),
+            patch.object(executor, "attach_run_data_snapshot"),
+            patch.object(
+                executor,
+                "complete_approved_blackbox_run",
+                return_value=(
+                    "skipped",
+                    0,
+                    "prediction_keys_already_exist",
+                ),
+            ) as complete_run,
+            patch(
+                "shared.blackbox_v2.lifecycle.assert_lifecycle_clear"
+            ),
+        ):
+            result = executor.execute_scheme(
+                cfg,
+                "2026-08-01",
+                prediction_phase="gray_live",
+            )
+
+        self.assertEqual(result.scheme_id, cfg.scheme_id)
+        self.assertEqual(result.status, "skipped")
+        self.assertEqual(result.records_written, 0)
+        self.assertEqual(
+            result.error_msg,
+            "prediction_keys_already_exist",
+        )
+        self.assertEqual(result.run_id, 101)
+        complete_run.assert_called_once()
+        self.assertNotIn(
+            "insert_only_predictions",
+            complete_run.call_args.kwargs,
+        )
+
+    def test_duplicate_prediction_skip_is_benign_but_visible(self) -> None:
+        from scheduler import launchd_prediction_runner as runner
+
+        summary = runner.LaunchdPredictionSummary("daily", "2026-08-20")
+        cfg = _blackbox_config("duplicate")
+        result = SimpleNamespace(
+            scheme_id=cfg.scheme_id,
+            status="skipped",
+            records_written=0,
+            error_msg="prediction_keys_already_exist",
+            run_id=101,
+        )
+        with patch.object(runner, "execute_scheme", return_value=result):
+            runner._execute_candidate(
+                summary,
+                cfg,
+                predict_date="2026-08-20",
+                algo_env="forecast_env",
+                scheduled_control_plane="launchd_one_shot",
+                scheduled_execution_context=object(),
+            )
+        runner._finalize(summary, configuration_error=False)
+
+        self.assertEqual(
+            summary.skipped,
+            [
+                {
+                    "scheme_id": "duplicate",
+                    "code": "prediction_keys_already_exist",
+                }
+            ],
+        )
+        self.assertEqual((summary.outcome, summary.exit_code), ("success", 0))
+
+    def test_other_prediction_skips_remain_partial(self) -> None:
+        from scheduler import launchd_prediction_runner as runner
+
+        cases = (
+            (
+                "activation failed: scheme_version=secret-version "
+                "db_status=paused",
+                "execution_skipped",
+            ),
+            (None, "execution_skipped"),
+        )
+        for error_msg, expected_code in cases:
+            with self.subTest(error_msg=error_msg):
+                summary = runner.LaunchdPredictionSummary(
+                    "daily",
+                    "2026-08-20",
+                )
+                cfg = _blackbox_config("not_approved")
+                result = SimpleNamespace(
+                    scheme_id=cfg.scheme_id,
+                    status="skipped",
+                    records_written=0,
+                    error_msg=error_msg,
+                    run_id=102,
+                )
+                with patch.object(
+                    runner,
+                    "execute_scheme",
+                    return_value=result,
+                ):
+                    runner._execute_candidate(
+                        summary,
+                        cfg,
+                        predict_date="2026-08-20",
+                        algo_env="forecast_env",
+                        scheduled_control_plane="launchd_one_shot",
+                        scheduled_execution_context=object(),
+                    )
+                runner._finalize(summary, configuration_error=False)
+
+                self.assertEqual(
+                    summary.skipped,
+                    [
+                        {
+                            "scheme_id": "not_approved",
+                            "code": expected_code,
+                        }
+                    ],
+                )
+                self.assertEqual(
+                    (summary.outcome, summary.exit_code),
+                    ("partial", 1),
+                )
+
+    def test_success_with_duplicate_skip_remains_successful(self) -> None:
+        from scheduler import launchd_prediction_runner as runner
+
+        summary = runner.LaunchdPredictionSummary("daily", "2026-08-20")
+        executed = _blackbox_config("executed")
+        duplicate = _blackbox_config("duplicate")
+        results = [
+            SimpleNamespace(
+                scheme_id=executed.scheme_id,
+                status="success",
+                records_written=1,
+                error_msg=None,
+                run_id=103,
+            ),
+            SimpleNamespace(
+                scheme_id=duplicate.scheme_id,
+                status="skipped",
+                records_written=0,
+                error_msg="prediction_keys_already_exist",
+                run_id=104,
+            ),
+        ]
+        with patch.object(runner, "execute_scheme", side_effect=results):
+            for cfg in (executed, duplicate):
+                runner._execute_candidate(
+                    summary,
+                    cfg,
+                    predict_date="2026-08-20",
+                    algo_env="forecast_env",
+                    scheduled_control_plane="launchd_one_shot",
+                    scheduled_execution_context=object(),
+                )
+        runner._finalize(summary, configuration_error=False)
+
+        self.assertEqual(len(summary.executed), 1)
+        self.assertEqual(len(summary.skipped), 1)
+        self.assertEqual((summary.outcome, summary.exit_code), ("success", 0))
+
     def test_global_runner_lock_waits_until_current_cadence_releases(self) -> None:
         from scheduler import launchd_prediction_runner as runner
 

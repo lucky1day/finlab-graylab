@@ -1161,27 +1161,25 @@ def execute_scheme(
                     f"expected={expected}, returned={records_returned}, written=0"
                 )
             duration = time.monotonic() - started
-            records_written = complete_approved_blackbox_run(
-                engine,
-                cfg,
-                run_id=run_id,
-                records=records,
-                scheme_version=scheme_version,
-                records_returned=records_returned,
-                run_date=predict_date,
-                duration_sec=duration,
-                precommit_validator=blackbox_precommit_validator,
-                insert_only_predictions=(
-                    blackbox_snapshot_mode
-                    == BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF
-                ),
+            status, records_written, error_msg = (
+                complete_approved_blackbox_run(
+                    engine,
+                    cfg,
+                    run_id=run_id,
+                    records=records,
+                    scheme_version=scheme_version,
+                    records_returned=records_returned,
+                    run_date=predict_date,
+                    duration_sec=duration,
+                    precommit_validator=blackbox_precommit_validator,
+                )
             )
             return SchemeRunResult(
                 cfg.scheme_id,
-                "success",
+                status,
                 records_written,
                 duration,
-                None,
+                error_msg,
                 run_id,
             )
         else:
