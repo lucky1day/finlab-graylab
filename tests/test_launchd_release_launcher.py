@@ -11,6 +11,7 @@ import pytest
 from scripts.run_launchd_release import (
     LaunchdReleaseError,
     load_release_environment,
+    load_service_environment,
     main,
     prepare_exec_environment,
 )
@@ -44,6 +45,29 @@ def _release(tmp_path: Path) -> Path:
     release.mkdir(parents=True)
     runtime = tmp_path / "runtime"
     runtime.mkdir(mode=0o700)
+    config = runtime / "config"
+    config.mkdir(mode=0o700)
+    service_environment = config / "service.env"
+    service_environment.write_text(
+        "\n".join(
+            (
+                "BOND_ADMIN_TOKEN=local-admin-token",
+                "BOND_DB_USER=bond_user",
+                'BOND_DB_PASSWORD="database secret"',
+                "BOND_DB_HOST=127.0.0.1",
+                "BOND_DB_PORT=3306",
+                "BOND_DB_NAME=bond_db",
+                "BOND_DB_CHARSET=utf8mb4",
+                "BOND_FACTOR_LAB_INSTANCE_NONCE='mac3-instance'",
+                "DATABRIDGE_API_BASE_URL=https://example.invalid",
+                "DATABRIDGE_API_USERNAME=bridge_user",
+                "DATABRIDGE_API_PASSWORD='bridge$(literal)${HOME}`value`'",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    service_environment.chmod(0o600)
     native = runtime / "cache" / "native" / COMMIT
     environment = release / ".bfl-release.env"
     environment.write_text(
@@ -61,6 +85,18 @@ def _release(tmp_path: Path) -> Path:
     environment.chmod(0o444)
     release.chmod(0o555)
     return release
+
+
+def _rewrite_service_environment(
+    release: Path,
+    transform,
+) -> Path:
+    runtime = Path(load_release_environment(release)["BFL_RUNTIME_ROOT"])
+    path = runtime / "config" / "service.env"
+    original = path.read_text(encoding="utf-8")
+    path.write_text(transform(original), encoding="utf-8")
+    path.chmod(0o600)
+    return path
 
 
 def test_launchd_templates_use_immutable_current_release() -> None:
@@ -125,6 +161,180 @@ def test_loader_accepts_exact_installed_release_environment(
     assert values["BFL_RUNTIME_ROOT"] == str(tmp_path / "runtime")
     assert values["NUMBA_CACHE_DIR"].endswith(f"/{COMMIT}/numba")
     assert values["MPLCONFIGDIR"].endswith(f"/{COMMIT}/matplotlib")
+
+
+@pytest.mark.parametrize("mode", [0o400, 0o600])
+def test_service_environment_loads_required_values_without_shell_expansion(
+    tmp_path: Path,
+    mode: int,
+) -> None:
+    release = _release(tmp_path)
+    runtime = load_release_environment(release)["BFL_RUNTIME_ROOT"]
+    (Path(runtime) / "config" / "service.env").chmod(mode)
+
+    values = load_service_environment(runtime)
+
+    assert values["BOND_ADMIN_TOKEN"] == "local-admin-token"
+    assert values["BOND_DB_PASSWORD"] == "database secret"
+    assert values["BOND_FACTOR_LAB_INSTANCE_NONCE"] == "mac3-instance"
+    assert values["DATABRIDGE_API_PASSWORD"] == (
+        "bridge$(literal)${HOME}`value`"
+    )
+
+
+@pytest.mark.parametrize("mode", [0o000, 0o200, 0o640, 0o644])
+def test_service_environment_rejects_non_private_file_mode(
+    tmp_path: Path,
+    mode: int,
+) -> None:
+    release = _release(tmp_path)
+    runtime = Path(load_release_environment(release)["BFL_RUNTIME_ROOT"])
+    service_environment = runtime / "config" / "service.env"
+    service_environment.chmod(mode)
+
+    with pytest.raises(LaunchdReleaseError, match="private regular file"):
+        load_service_environment(runtime)
+
+
+def test_service_environment_rejects_insecure_or_linked_config(
+    tmp_path: Path,
+) -> None:
+    release = _release(tmp_path)
+    runtime = Path(load_release_environment(release)["BFL_RUNTIME_ROOT"])
+    config = runtime / "config"
+
+    config.chmod(0o755)
+    with pytest.raises(LaunchdReleaseError, match="config directory is insecure"):
+        load_service_environment(runtime)
+
+    config.chmod(0o700)
+    service_environment = config / "service.env"
+    outside = tmp_path / "outside.env"
+    service_environment.replace(outside)
+    service_environment.symlink_to(outside)
+    with pytest.raises(LaunchdReleaseError, match="private regular file"):
+        load_service_environment(runtime)
+
+
+def test_service_environment_rejects_file_replaced_during_open(
+    tmp_path: Path,
+) -> None:
+    release = _release(tmp_path)
+    runtime = Path(load_release_environment(release)["BFL_RUNTIME_ROOT"])
+    service_environment = runtime / "config" / "service.env"
+    outside = tmp_path / "outside.env"
+    outside.write_text(
+        service_environment.read_text(encoding="utf-8").replace(
+            "BOND_ADMIN_TOKEN=local-admin-token",
+            "BOND_ADMIN_TOKEN=outside-token",
+        ),
+        encoding="utf-8",
+    )
+    outside.chmod(0o600)
+    original_open = os.open
+    original_read_text = Path.read_text
+    replaced = False
+
+    def replace_before_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal replaced
+        if path == "service.env" and not replaced:
+            replaced = True
+            service_environment.replace(tmp_path / "checked.env")
+            service_environment.symlink_to(outside)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    def replace_before_path_read(path: Path, *args, **kwargs):
+        nonlocal replaced
+        if path == service_environment and not replaced:
+            replaced = True
+            service_environment.replace(tmp_path / "checked.env")
+            service_environment.symlink_to(outside)
+        return original_read_text(path, *args, **kwargs)
+
+    with (
+        patch("scripts.run_launchd_release.os.open", side_effect=replace_before_open),
+        patch.object(Path, "read_text", new=replace_before_path_read),
+        pytest.raises(LaunchdReleaseError, match="private regular file"),
+    ):
+        load_service_environment(runtime)
+
+    assert replaced is True
+
+
+@pytest.mark.parametrize(
+    "invalid_line",
+    (
+        "export EXTRA=value",
+        "INVALID KEY=value",
+        "BROKEN",
+        'UNCLOSED="value',
+    ),
+)
+def test_service_environment_rejects_invalid_syntax(
+    tmp_path: Path,
+    invalid_line: str,
+) -> None:
+    release = _release(tmp_path)
+    path = _rewrite_service_environment(
+        release,
+        lambda value: value + invalid_line + "\n",
+    )
+
+    with pytest.raises(LaunchdReleaseError, match="invalid syntax"):
+        load_service_environment(path.parents[1])
+
+
+def test_service_environment_rejects_duplicate_reserved_or_missing_keys(
+    tmp_path: Path,
+) -> None:
+    release = _release(tmp_path)
+    runtime = Path(load_release_environment(release)["BFL_RUNTIME_ROOT"])
+    path = runtime / "config" / "service.env"
+    original = path.read_text(encoding="utf-8")
+
+    path.write_text(original + "BOND_DB_NAME=other\n", encoding="utf-8")
+    path.chmod(0o600)
+    with pytest.raises(LaunchdReleaseError, match="duplicate keys"):
+        load_service_environment(runtime)
+
+    path.write_text(original + "BFL_RELEASE_COMMIT=bad\n", encoding="utf-8")
+    path.chmod(0o600)
+    with pytest.raises(LaunchdReleaseError, match="reserved keys"):
+        load_service_environment(runtime)
+
+    path.write_text(
+        original.replace("BOND_ADMIN_TOKEN=local-admin-token\n", ""),
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+    with pytest.raises(LaunchdReleaseError, match="missing required keys"):
+        load_service_environment(runtime)
+
+    path.write_text(
+        original.replace(
+            "BOND_ADMIN_TOKEN=local-admin-token",
+            "BOND_ADMIN_TOKEN='   '",
+        ),
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+    with pytest.raises(LaunchdReleaseError, match="BOND_ADMIN_TOKEN"):
+        load_service_environment(runtime)
+
+
+@pytest.mark.parametrize("key", ["PYTHONNOUSERSITE", "PYTHONWARNINGS"])
+def test_service_environment_rejects_all_python_control_keys(
+    tmp_path: Path,
+    key: str,
+) -> None:
+    release = _release(tmp_path)
+    path = _rewrite_service_environment(
+        release,
+        lambda value: value + f"{key}=1\n",
+    )
+
+    with pytest.raises(LaunchdReleaseError, match="reserved keys"):
+        load_service_environment(path.parents[1])
 
 
 def test_loader_rejects_missing_or_untrusted_release_environment(
@@ -192,6 +402,24 @@ def test_prepare_environment_rejects_ambient_release_override(
             release,
             {"BFL_RELEASE_COMMIT": "b" * 40},
         )
+
+
+def test_prepare_environment_merges_service_values_and_rejects_conflict(
+    tmp_path: Path,
+) -> None:
+    release = _release(tmp_path)
+
+    merged = prepare_exec_environment(
+        release,
+        {"BOND_DB_HOST": "127.0.0.1", "AMBIENT_SAFE": "kept"},
+    )
+
+    assert merged["BOND_DB_PASSWORD"] == "database secret"
+    assert merged["BOND_ADMIN_TOKEN"] == "local-admin-token"
+    assert merged["AMBIENT_SAFE"] == "kept"
+
+    with pytest.raises(LaunchdReleaseError, match="service key"):
+        prepare_exec_environment(release, {"BOND_DB_HOST": "wrong-host"})
 
 
 @pytest.mark.parametrize("name", ["PYTHONPATH", "PYTHONHOME"])

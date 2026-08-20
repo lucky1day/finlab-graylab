@@ -71,9 +71,13 @@ manifest：Linux x86_64 使用 `linux-64`，Mac arm64 使用 `osx-arm64`，其�
 这些是仓库候选能力，不表示任一 installed unit/plist 已替换。Mac3 仓库 launchd 模板使用
 `/Users/macstudio0/bond-factor-lab-production/current` 作为工作目录，并先由
 隔离模式 `/usr/bin/python3 -I` 执行 `scripts/run_launchd_release.py`，从当前已经解析的精确 release
-读取 `.bfl-release.env`，再 `exec`
+读取 `.bfl-release.env`，再从其可信 `BFL_RUNTIME_ROOT` 唯一派生并加载
+`config/service.env`，最后 `exec`
 既有 conda 入口。启动器拒绝 Git 工作区、非 `releases/<commit>` 目录、可写/软链接环境文件、commit、
-runtime root、Numba/Matplotlib cache 漂移、外层同名环境覆盖以及 `PYTHONPATH/PYTHONHOME`。release
+runtime root、Numba/Matplotlib cache 漂移、外层同名环境覆盖以及所有 `PYTHON*` 外置变量。外置配置
+目录必须是运行用户拥有的真实 `0700` 目录，文件必须是同一用户拥有的真实 `0400/0600` 普通文件；
+launcher 通过目录 fd 与 `O_NOFOLLOW` 打开文件，并在同一 fd 上完成属性检查和限长读取，避免轮换时的
+路径替换竞态。解析只识别唯一 `KEY=VALUE`，不会执行 shell 展开。release
 安装器同时创建外置
 `/Users/macstudio0/bond-factor-lab-runtime/logs` 期望目录；仓库模板的 stdout/stderr 不再写入 Git
 工作区。SSH tunnel 不执行项目代码，只使用用户主目录作为工作目录；夜间闭环仍须独立替换并读回
@@ -143,8 +147,9 @@ PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
 
 审计固定禁止所有正式模板和 installed 环境出现
 `BOND_DAILY_COORDINATOR_MODE`，并要求 DataBridge 保留
-`BFL_DATABRIDGE_PRODUCER=launchd-one-shot`。只有 Backend 的真实 admin token 值，以及 SSH 隧道
-模板明确标注且已验证的本机 key/user，属于批准的本机差异；Backend/tunnel 必须处于 running，七个
-任务的日志路径必须与外置 runtime 模板精确一致。其余启动参数、工作目录、调度触发器和环境变量
-差异仍使脚本退出 `1`。脚本退出 `0` 只表示当前只读配置审计通过，不代表生产任务已自然运行成功，
-也不授予任何生产操作权限。
+`BFL_DATABRIDGE_PRODUCER=launchd-one-shot`。Backend admin token 只存在于外置 `service.env`，不再作为
+plist 的批准差异；SSH 隧道模板明确标注且已验证的本机 key/user 是唯一批准的 plist 本机差异。
+`service.env` 在顶层只校验一次，报告只含变量名与错误类别；Backend/tunnel 必须处于 running，七个
+任务的日志路径必须与外置 runtime 模板精确一致。其余启动参数、工作目录、调度触发器和环境变量差异
+仍使脚本退出 `1`。脚本退出 `0` 只表示当前只读配置审计通过，不代表生产任务已自然运行成功，也不
+授予任何生产操作权限。

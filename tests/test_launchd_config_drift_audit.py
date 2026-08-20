@@ -10,6 +10,7 @@ import pytest
 from scripts.audit_launchd_config_drift import (
     audit_installed_launchd,
     audit_plist_pair,
+    audit_service_environment,
     main,
 )
 
@@ -30,6 +31,34 @@ APPLICATION_LAUNCHD_TEMPLATES = (
 def _write_plist(path: Path, payload: dict[str, object]) -> None:
     with path.open("wb") as handle:
         plistlib.dump(payload, handle)
+
+
+def _runtime_environment(tmp_path: Path) -> Path:
+    runtime = tmp_path / "runtime"
+    config = runtime / "config"
+    config.mkdir(parents=True, mode=0o700)
+    environment = config / "service.env"
+    environment.write_text(
+        "\n".join(
+            (
+                "BOND_ADMIN_TOKEN=audit-secret-token",
+                "BOND_DB_USER=bond_user",
+                "BOND_DB_PASSWORD=audit-db-secret",
+                "BOND_DB_HOST=127.0.0.1",
+                "BOND_DB_PORT=3306",
+                "BOND_DB_NAME=bond_db",
+                "BOND_DB_CHARSET=utf8mb4",
+                "BOND_FACTOR_LAB_INSTANCE_NONCE=mac3-instance",
+                "DATABRIDGE_API_BASE_URL=https://example.invalid",
+                "DATABRIDGE_API_USERNAME=bridge_user",
+                "DATABRIDGE_API_PASSWORD=audit-bridge-secret",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    environment.chmod(0o600)
+    return runtime
 
 
 def _plist(
@@ -156,6 +185,14 @@ def test_application_launchd_templates_bind_mac3_target() -> None:
         ), name
 
 
+def test_backend_template_does_not_embed_admin_token() -> None:
+    path = LAUNCHD_ROOT / "com.bond-factor-lab.backend.plist"
+    with path.open("rb") as handle:
+        payload = plistlib.load(handle)
+
+    assert "BOND_ADMIN_TOKEN" not in payload["EnvironmentVariables"]
+
+
 def test_audit_reports_legacy_drift_without_exposing_environment_values(
     tmp_path: Path,
 ) -> None:
@@ -202,16 +239,13 @@ def test_audit_reports_legacy_drift_without_exposing_environment_values(
     assert "=> legacy" not in serialized
 
 
-def test_backend_allows_real_local_token_but_requires_exact_log_paths(
+def test_backend_rejects_installed_token_drift_without_exposing_value(
     tmp_path: Path,
 ) -> None:
     label = "com.bond-factor-lab.backend"
     result = _audit_payloads(
         tmp_path,
-        _plist(
-            label,
-            environment={"BOND_ADMIN_TOKEN": "__SET_REAL_TOKEN__"},
-        ),
+        _plist(label, environment={}),
         _plist(
             label,
             environment={"BOND_ADMIN_TOKEN": "local-secret"},
@@ -219,72 +253,41 @@ def test_backend_allows_real_local_token_but_requires_exact_log_paths(
         state="running",
     )
 
-    assert result["unexpected_drift_paths"] == []
-    assert result["approved_local_difference_paths"] == [
+    assert result["unexpected_drift_paths"] == [
         "EnvironmentVariables.BOND_ADMIN_TOKEN",
     ]
-    assert result["required_environment_missing"] == []
-    assert result["loaded_required_environment_missing"] == []
+    assert result["approved_local_difference_paths"] == []
     assert result["loaded_state"] == "running"
-    assert result["ok"] is True
+    assert result["ok"] is False
     assert "local-secret" not in json.dumps(result, sort_keys=True)
 
 
-def test_backend_fails_closed_for_missing_placeholder_or_unloaded_token(
+def test_backend_pair_no_longer_requires_token_in_plist_or_loaded_state(
     tmp_path: Path,
 ) -> None:
     label = "com.bond-factor-lab.backend"
-    template_payload = _plist(
-        label,
-        environment={"BOND_ADMIN_TOKEN": "__SET_REAL_TOKEN__"},
-    )
-
-    for environment in (
-        {},
-        {"BOND_ADMIN_TOKEN": "__SET_REAL_TOKEN__"},
-        {"BOND_ADMIN_TOKEN": "  __SET_REAL_TOKEN__  "},
-        {"BOND_ADMIN_TOKEN": "   "},
-    ):
-        installed_payload = _plist(label, environment=environment)
-        result = _audit_payloads(
-            tmp_path,
-            template_payload,
-            installed_payload,
-            state="running",
-        )
-        assert result["required_environment_missing"] == ["BOND_ADMIN_TOKEN"]
-        assert result["loaded_required_environment_missing"] == [
-            "BOND_ADMIN_TOKEN"
-        ]
-        assert result["ok"] is False
-
-    installed_payload = _plist(
-        label,
-        environment={"BOND_ADMIN_TOKEN": "local-secret"},
-    )
-    loaded_missing = _audit_payloads(
+    payload = _plist(label, environment={})
+    result = _audit_payloads(
         tmp_path,
-        template_payload,
-        installed_payload,
+        payload,
+        payload,
         state="running",
-        environment={},
     )
-    assert loaded_missing["required_environment_missing"] == []
-    assert loaded_missing["loaded_required_environment_missing"] == [
-        "BOND_ADMIN_TOKEN"
-    ]
-    assert loaded_missing["ok"] is False
+
+    assert result["required_environment_missing"] == []
+    assert result["loaded_required_environment_missing"] == []
+    assert result["ok"] is True
 
 
 def test_backend_log_path_drift_is_not_approved(tmp_path: Path) -> None:
     label = "com.bond-factor-lab.backend"
     template_payload = _plist(
         label,
-        environment={"BOND_ADMIN_TOKEN": "__SET_REAL_TOKEN__"},
+        environment={},
     )
     installed_payload = _plist(
         label,
-        environment={"BOND_ADMIN_TOKEN": "local-secret"},
+        environment={},
         stdout="/tmp/backend.log",
         stderr="/tmp/backend.err",
     )
@@ -300,6 +303,55 @@ def test_backend_log_path_drift_is_not_approved(tmp_path: Path) -> None:
         "StandardOutPath",
     ]
     assert result["ok"] is False
+
+
+def test_service_environment_audit_reports_names_without_values(
+    tmp_path: Path,
+) -> None:
+    runtime = _runtime_environment(tmp_path)
+
+    result = audit_service_environment(runtime)
+    serialized = json.dumps(result, sort_keys=True)
+
+    assert result["ok"] is True
+    assert result["environment_variable_names"] == sorted(
+        (
+            "BOND_ADMIN_TOKEN",
+            "BOND_DB_CHARSET",
+            "BOND_DB_HOST",
+            "BOND_DB_NAME",
+            "BOND_DB_PASSWORD",
+            "BOND_DB_PORT",
+            "BOND_DB_USER",
+            "BOND_FACTOR_LAB_INSTANCE_NONCE",
+            "DATABRIDGE_API_BASE_URL",
+            "DATABRIDGE_API_PASSWORD",
+            "DATABRIDGE_API_USERNAME",
+        )
+    )
+    assert "audit-secret-token" not in serialized
+    assert "audit-db-secret" not in serialized
+    assert "audit-bridge-secret" not in serialized
+
+
+def test_service_environment_audit_fails_closed_without_leaking_values(
+    tmp_path: Path,
+) -> None:
+    runtime = _runtime_environment(tmp_path)
+    environment = runtime / "config" / "service.env"
+    environment.write_text(
+        "BOND_ADMIN_TOKEN=do-not-leak\nBFL_RELEASE_COMMIT=also-do-not-leak\n",
+        encoding="utf-8",
+    )
+    environment.chmod(0o600)
+
+    result = audit_service_environment(runtime)
+    serialized = json.dumps(result, sort_keys=True)
+
+    assert result["ok"] is False
+    assert result["error"] == "service environment has reserved keys"
+    assert "do-not-leak" not in serialized
+    assert "also-do-not-leak" not in serialized
 
 
 def test_data_bridge_audit_fails_closed_when_producer_identity_is_missing(
@@ -554,10 +606,12 @@ def test_empty_template_directory_fails_closed(
     tmp_path: Path,
     capsys,
 ) -> None:
+    runtime = _runtime_environment(tmp_path)
     report = audit_installed_launchd(
         project_root=tmp_path,
         installed_root=tmp_path,
         domain="gui/0",
+        runtime_root=runtime,
     )
 
     assert report["services"] == []
@@ -571,6 +625,8 @@ def test_empty_template_directory_fails_closed(
             str(tmp_path),
             "--domain",
             "gui/0",
+            "--runtime-root",
+            str(runtime),
         ]
     ) == 1
     assert json.loads(capsys.readouterr().out)["ok"] is False

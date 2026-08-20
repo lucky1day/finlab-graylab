@@ -151,11 +151,11 @@ launcher 同时拒绝外层 `PYTHONPATH/PYTHONHOME`。SSH tunnel 不执行项目
 → 保留回滚”执行。tunnel 重载可能短暂重连，只能在窗口内进行。验收完成前不得切换 Mac3 Git 根
 分支；完成后可在保留未跟踪文件的前提下切到 `codex/develop`，此时双主机单一代码线治理才算闭环。
 
-installed plist 不能用仓库模板直接覆盖：Backend 的真实 `BOND_ADMIN_TOKEN` 必须从现有 installed
-配置原位保留且不得输出，SSH tunnel 的本地 key/user 也不得由占位符覆盖。窗口前先以
-`scripts/audit_launchd_config_drift.py` 读取脱敏差异；审计必须确认 installed/loaded Backend 都保留
-非空、非占位的 token，installed/loaded tunnel 都已替换真实 key/user，且七个任务日志路径与候选
-精确一致。任何超出批准本地 secret 与本次 release 路径变更的 drift 都必须停止切换。
+本段是 R1 冻结时的历史边界；其 Backend token-in-plist 做法已由 5.2 的 R2 外置环境合同取代。
+R2 installed Backend plist 不保存 token，真实值只从 `service.env` 加载；SSH tunnel 的本地 key/user
+仍不得由占位符覆盖。窗口前先以 `scripts/audit_launchd_config_drift.py` 读取脱敏差异；审计必须在顶层
+确认外置环境有效、installed/loaded tunnel 已替换真实 key/user，且七个任务日志路径与候选精确一致。
+任何超出 tunnel 本机 key/user 与本次 release 路径变更的 plist drift 都必须停止切换。
 
 R1 已冻结为 tag `mac3-immutable-r1-20260820`，archive SHA256 为
 `654795f268fc4b25287cc33f4205a17ffc7eda1b9ea10e282fd553539ecd720f`。因此前端和两个新方案的开发
@@ -186,18 +186,22 @@ R1 只预安装在 Mac3 `releases/<commit>`，尚未创建 `current`。
    必须由运行用户拥有、是非 symlink 普通文件、权限为 `0400` 或 `0600`。完成切换后 Git 根 `.env`
    只服务开发工作区，不再参与生产启动；外置 `service.env` 只服务 production release。两者只在首次
    迁移时复制一次，此后永久独立、永不自动同步。开发 `.env` 的增删改不传播到生产；生产配置或凭据
-   更新只修改 `service.env`、走独立授权并重启对应服务后生效，不引入 watcher 或热加载。
+   更新只修改 `service.env`、走独立授权并重启对应服务后生效，不引入 watcher 或热加载。launcher
+   通过目录 fd 与 `O_NOFOLLOW` 打开文件，并在同一 fd 上核验属性、限长读取，避免检查后路径替换。
 3. 解析器只接受空行、注释和唯一的 `KEY=VALUE`；key 必须是环境变量标识符，value 可为未引号文本或
-   完整单/双引号文本。拒绝 duplicate、`export`、插值、命令替换和无法完整解析的行。
-4. 外置文件不得设置 release 身份、部署目标、控制面或 Python 解析路径，包括
+   完整单/双引号文本。拒绝 duplicate、`export` 和无法完整解析的行。解析器不调用 shell，也不执行
+   插值、命令替换或转义；`$()`、`${}` 和反引号等特殊字符只作为普通 value 字节进入子进程。
+4. 外置文件不得设置 release 身份、部署目标、控制面或任何 `PYTHON*` 运行变量，包括
    `BFL_RELEASE_COMMIT`、`BFL_RUNTIME_ROOT`、`NUMBA_CACHE_DIR`、`MPLCONFIGDIR`、
-   `BFL_DEPLOYMENT_TARGET`、`BOND_FACTOR_LAB_CONTROL_PLANE`、`PYTHONPATH`、`PYTHONHOME`。
-   外置值与 plist/进程已有同名值完全相等时允许合并；不等时 fail-closed，禁止静默覆盖。
+   `BFL_DEPLOYMENT_TARGET`、`BOND_FACTOR_LAB_CONTROL_PLANE`、`PYTHONPATH`、`PYTHONHOME` 和
+   `PYTHONNOUSERSITE`。
+   其它非保留外置值与 plist/进程已有同名值完全相等时允许合并；不等时 fail-closed，禁止静默覆盖。
 5. `BOND_ADMIN_TOKEN` 复用现有值，不生成、不轮换。它和 `BOND_DB_*` 由外置文件一次加载到应用子进程；
    不写入 Git、release manifest、日志或审计 JSON。只有显式凭据轮换才需要新的专项授权。
-6. drift audit 同时校验 release/plist 结构与外置文件的存在、权限、所有权、语法、保留键及必要变量；
-   输出只含变量名、缺失项和错误类别。Backend 必须证明 token 已从外置 authority 可用，不再要求 token
-   明文存在于 installed plist。
+6. drift audit 同时校验 release/plist 结构，并在顶层只校验一次外置文件的存在、权限、所有权、语法、
+   保留键及必要变量；输出只含变量名、缺失项和错误类别。必要变量固定为数据库六项、实例 nonce、
+   DataBridge 三项和 `BOND_ADMIN_TOKEN`。Backend 必须证明 token 已从外置 authority 可用，不再要求
+   token 明文存在于 installed plist。
 
 R2 的验收顺序固定为：聚焦和全量回归 → clean HEAD deterministic archive → ECS 精确 archive
 预安装/source 校验/CAS 激活/Backend/DataBridge/systemd 读回 → Mac3 预安装 → 18100 候选连接真实数据库、

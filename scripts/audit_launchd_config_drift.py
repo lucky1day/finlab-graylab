@@ -14,6 +14,17 @@ import subprocess
 from pathlib import Path
 from typing import Any, Sequence
 
+if __package__:
+    from scripts.run_launchd_release import (
+        LaunchdReleaseError,
+        load_service_environment,
+    )
+else:
+    from run_launchd_release import (  # type: ignore[no-redef]
+        LaunchdReleaseError,
+        load_service_environment,
+    )
+
 
 FORBIDDEN_ENVIRONMENT_VARIABLES = frozenset({"BOND_DAILY_COORDINATOR_MODE"})
 LAUNCHD_INJECTED_ENVIRONMENT_VARIABLES = frozenset(
@@ -22,10 +33,8 @@ LAUNCHD_INJECTED_ENVIRONMENT_VARIABLES = frozenset(
 DATA_BRIDGE_LABEL = "com.bond-factor-lab.data-bridge-refresh"
 DATA_BRIDGE_PRODUCER = ("BFL_DATABRIDGE_PRODUCER", "launchd-one-shot")
 BACKEND_LABEL = "com.bond-factor-lab.backend"
-BACKEND_ADMIN_TOKEN = ("BOND_ADMIN_TOKEN", "__SET_REAL_TOKEN__")
-APPROVED_LOCAL_DIFFERENCES: dict[str, frozenset[str]] = {
-    BACKEND_LABEL: frozenset({"EnvironmentVariables.BOND_ADMIN_TOKEN"}),
-}
+APPROVED_LOCAL_DIFFERENCES: dict[str, frozenset[str]] = {}
+DEFAULT_RUNTIME_ROOT = Path("/Users/macstudio0/bond-factor-lab-runtime")
 
 SSH_TUNNEL_LOCAL_ARGUMENT_PLACEHOLDERS = {
     "/Users/macstudio0/.ssh/<TUNNEL_KEY>",
@@ -235,24 +244,6 @@ def audit_plist_pair(
             required_missing.append(name)
         if loaded_environment is None or loaded_environment.get(name) != expected_value:
             loaded_required_missing.append(name)
-    if label == BACKEND_LABEL:
-        name, placeholder = BACKEND_ADMIN_TOKEN
-        installed_value = installed_environment.get(name)
-        if (
-            not isinstance(installed_value, str)
-            or not installed_value.strip()
-            or installed_value.strip() == placeholder
-        ):
-            required_missing.append(name)
-        loaded_value = (
-            None if loaded_environment is None else loaded_environment.get(name)
-        )
-        if (
-            not isinstance(loaded_value, str)
-            or not loaded_value.strip()
-            or loaded_value.strip() == placeholder
-        ):
-            loaded_required_missing.append(name)
     required_local_missing: list[str] = []
     loaded_required_local_missing: list[str] = []
     if label == "com.bond-factor-lab.ssh-tunnel":
@@ -379,6 +370,25 @@ def audit_plist_pair(
     return result
 
 
+def audit_service_environment(runtime_root: Path) -> dict[str, object]:
+    """只报告外置生产配置的变量名和校验类别，不返回变量值。"""
+    path = runtime_root / "config" / "service.env"
+    try:
+        values = load_service_environment(runtime_root)
+    except LaunchdReleaseError as exc:
+        return {
+            "path": str(path),
+            "environment_variable_names": [],
+            "ok": False,
+            "error": str(exc),
+        }
+    return {
+        "path": str(path),
+        "environment_variable_names": sorted(values),
+        "ok": True,
+    }
+
+
 def _launchctl_print(label: str, *, domain: str) -> str | None:
     result = subprocess.run(
         ["/bin/launchctl", "print", f"{domain}/{label}"],
@@ -395,6 +405,7 @@ def audit_installed_launchd(
     project_root: Path,
     installed_root: Path,
     domain: str,
+    runtime_root: Path = DEFAULT_RUNTIME_ROOT,
 ) -> dict[str, object]:
     """扫描正式仓库模板；缺失或无效 installed plist 均 fail-closed。"""
 
@@ -435,13 +446,18 @@ def audit_installed_launchd(
                     "error": "installed_plist_unreadable",
                 }
             )
+    service_environment = audit_service_environment(runtime_root)
     report: dict[str, object] = {
         "schema_version": "bfl-launchd-config-drift-v1",
         "read_only": True,
         "project_root": str(project_root),
         "installed_root": str(installed_root),
+        "runtime_root": str(runtime_root),
         "domain": domain,
-        "ok": bool(template_paths) and all(bool(item.get("ok")) for item in results),
+        "ok": bool(template_paths)
+        and bool(service_environment["ok"])
+        and all(bool(item.get("ok")) for item in results),
+        "service_environment": service_environment,
         "services": results,
     }
     if not template_paths:
@@ -462,6 +478,11 @@ def _parser() -> argparse.ArgumentParser:
         default=Path.home() / "Library" / "LaunchAgents",
     )
     parser.add_argument("--domain", default=f"gui/{os.getuid()}")
+    parser.add_argument(
+        "--runtime-root",
+        type=Path,
+        default=DEFAULT_RUNTIME_ROOT,
+    )
     return parser
 
 
@@ -471,6 +492,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         project_root=args.project_root.resolve(),
         installed_root=args.installed_root.resolve(),
         domain=str(args.domain),
+        runtime_root=args.runtime_root,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
     return 0 if report["ok"] else 1
