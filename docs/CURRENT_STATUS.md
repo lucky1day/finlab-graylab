@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验日期**：2026-08-20
+**最后核验日期**：2026-08-21
 
 本文只记录当前稳定事实。实时方案、run、prediction、DataBridge、API 和调度状态必须从各自权威数据源读取；除当前部署基线所需的精确 release 身份外，不在仓库文档冻结时点数量、运行 ID 或逐次校验 hash。未批准工作见[统一后续推进计划](TODO.md)，生产调度规则见[生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。
 
@@ -66,6 +66,9 @@
 - Native 与旧 DataBridge 的二级 generation 运行控制面已退役。`t_input_generations`、migration 017 和历史行仅保留为历史 schema/审计证据，不再参与 Native 运行资格或输入构建。
 - Phase-A manifest 继续兼容 `native_generation=null`、`native_generation_changed=false` 和 `NON_PRODUCTION`，不再支持 bind/rebind。
 - Phase-A 只复用 manifest v3 current generation；current 缺失时由 publisher 按当前输入完整重建，旧松散 v1 `.pkl` 不再作为迁移来源。普通同结构数据值修订只允许在 canonical dependency proof 下重算经验证的有限 suffix；算法、spec、ABI、schema、日期删除或交易日结构变化仍 full/fail-closed。已经写入数据库的历史业务预测不因事后数据修订而回写。
+- `codex/develop` 候选代码已为 Phase-A publication 后的 generation prune 增加 deferred IDs audit
+  与脱敏 warning，并通过删除和 fsync 异常的失败注入回归；该候选尚未部署到 Mac3 或 ECS，现场
+  能力仍以各自主机的精确 immutable release 为准。
 
 ## 当前文档与评审边界
 

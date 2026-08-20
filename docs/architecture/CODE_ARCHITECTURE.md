@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：平台开发和代码审计人员
-**最后核验日期**：2026-08-20
+**最后核验日期**：2026-08-21
 **定位**：本仓库的代码架构主蓝图，定义分层模型、包依赖方向、运行时调用图和扩展边界。
 **与既有文档的关系**:
 - [ARCHITECTURE.md](ARCHITECTURE.md) = **系统架构**（部署、DB schema、API 契约、数据流）。
@@ -326,6 +326,13 @@ schemes/{id}/                     schemes/{id}/
 | **错误处理** | executor 捕获子进程失败写 `run_log(status=failed)` | harness Gate 失败安全（异常→`GateResult(FAILED)`），不抛穿 |
 | **命名标识符** | `scheme_id`(方案) / `benchmark_id`(基准批次) / `data_source`(口径) 三者分离 | 维持；StaticGate 校验命名规范子集 |
 | **写库安全** | 所有 live prediction insert-only，四字段唯一键拒绝覆盖；仅普通 Native/Blackbox active completion 的完整重复记 benign `skipped`、部分冲突整批失败 | repository 单事务 + harness 授权边界 |
+
+Phase-A cache 的 `current` pointer publication 成功后，历史 generation prune 仍同步执行且仅为
+best-effort；清理失败绝不回滚 `current`，也不得使 publication 或预测失败。`_prune_generations`
+返回 deferred generation IDs，publisher 将其写入既有 phase_a cache audit 的 `prune_deferred`；
+非空时只输出一条包含 cache family、tenor 与 deferred IDs 的脱敏 warning。单项删除失败记录精确
+ID；generation root fsync 不确定或未预期普通异常时保守标记本次计划清理的全部 IDs。该合同不增加
+daemon、retry、queue、数据库或 scheduler 控制面。
 
 Authorized gray-gap 使用更严格的例外语义：任一授权业务键已经存在即整组拒绝并保持 `records_written=0`，未存在的键也不写入，且不得转为 benign `skipped`。
 
