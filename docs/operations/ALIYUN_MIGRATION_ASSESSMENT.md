@@ -20,8 +20,8 @@ family 全部复用 parent 并执行有限 suffix，没有全量重建。无需�
 代码治理也已落地为单一代码线：
 
 - `codex/develop` 是唯一活动集成分支；不维护 Mac3/ECS 两条长期环境分支；
-- 单一 archive、不可变 release 和小型平台适配器能力已经实现，ECS 已实际采用；Mac3 仓库候选也已
-  具备最小 release launcher，但后续只能在独立窗口晋级 ECS 已验证的同一精确 archive；
+- 单一 archive、不可变 release 和小型平台适配器能力已经实现，ECS 已实际采用；Mac3 R1 也已冻结，
+  但该精确 R1 archive 仍须先晋级 ECS current 并读回，之后 Mac3 才能在独立窗口晋级同一 archive；
 - ECS 使用不可变 `releases/<commit>` 和 `current/previous`，不保留 Git checkout、不执行 `git pull`、
   不允许主机本地修改 release；
 - Mac3 与 ECS 的差异只存在于 launchd/systemd、部署目标、环境文件、部署矩阵和平台依赖 manifest；
@@ -161,6 +161,10 @@ R1 已冻结为 tag `mac3-immutable-r1-20260820`，archive SHA256 为
 `654795f268fc4b25287cc33f4205a17ffc7eda1b9ea10e282fd553539ecd720f`。因此前端和两个新方案的开发
 现在即可继续，不需要等待夜间窗口。前端先在 ECS 灰度验证再决定 Mac3 晋级；两个新方案分别执行
 Blackbox V2 Intake/Gate/ECS-only activation，不得合并为一个不可独立回滚的上线单元。
+
+R1 当前只完成本机双构建和隔离预安装；部署线下一步必须使用上述精确 archive 在 ECS 执行预安装、
+hash/source 校验、current CAS 激活与 loopback Backend、DataBridge check-only、systemd release
+identity 读回。只有该读回通过，才满足 Mac3 夜间窗口的同源前置条件；后续 develop 提交不能替代 R1。
 
 ## 6. 接手检查
 
