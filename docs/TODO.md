@@ -13,16 +13,13 @@
 1. 开发线立即开始，不等待 Mac3 窗口：先确认前端变更清单和验收口径；两个新方案各自接收独立的
    Blackbox V2 两文件交付。前端先走 ECS 灰度 release；两个方案分别走 Intake/Gate/ECS-only
    activation，不把两个方案绑成一个提交、发布或回滚单元。
-2. 部署线先实现并冻结 R2：launcher 从外置 runtime `config/service.env` 加载 Mac3 本机配置，经过权限、
-   所有权、语法、保留键和冲突校验；audit 只报告变量名/缺失，不输出值。首次迁移从现有生产 `.env`
-   复制一次并复用现有 admin token，之后开发 `.env` 与生产 `service.env` 永久独立、永不自动同步；
-   不增加 watcher、热加载、自动 token 轮换或第二套配置控制面。精确 R2 先完成 ECS source/hash、Backend、
-   DataBridge 和 systemd identity 读回，不得用后续 develop HEAD 替代。
-3. 在不与 06:30 DataBridge、07:03 daily、08:30/19:00/23:45 Actuals、周/月批次重叠的 Mac3 窗口，
-   另行授权执行同一 R2 的预安装/激活、六个应用 plist 与一个 SSH tunnel
+2. 精确 R2 `e692285d47e41c384dc915758abe0c51f9ac3aaf` 已冻结并通过 ECS source/hash、Backend、
+   DataBridge check-only 和 systemd identity 读回；不得用后续 develop HEAD 替代。在不与 06:30
+   DataBridge、07:03 daily、08:30/19:00/23:45 Actuals、周/月批次重叠的 Mac3 窗口，另行授权执行
+   同一 R2 的 `service.env` 首次复制、预安装/激活、六个应用 plist 与一个 SSH tunnel
    plist 切换、Backend 重启、七个 loaded state 的只读健康检查和回滚读回；tunnel 必须保留真实
    key/user，短暂重连只在窗口内执行。
-4. 现场确认所有应用进程均从 immutable `current` 运行、tunnel 日志已外置后，保留未跟踪文件并把
+3. 现场确认所有应用进程均从 immutable `current` 运行、tunnel 日志已外置后，保留未跟踪文件并把
    Mac3 Git 开发根切到 `codex/develop`；不得在生产解耦前先切分支。
 
 ECS 继续独立灰度运行。Mac3 域名、Nginx、DNS、数据库 authority 和生产 Writer 均保持不变；是否
@@ -30,7 +27,7 @@ ECS 继续独立灰度运行。Mac3 域名、Nginx、DNS、数据库 authority �
 
 ## 评审边界
 
-- 等待 R2 窗口期间不得修改 installed plist、launchd loaded state、数据库、Backend 进程或
+- 等待 Mac3 窗口期间不得修改 installed plist、launchd loaded state、数据库、Backend 进程或
   生产任务。
 - 不因文件较大就拆分，不因极小概率事件增加 fallback、兼容层、重试、第二控制面或额外 hash。
 - 只有能证明业务职责已经重复、没有调用者、被现行规则替代或妨碍错误直接暴露的设计，才进入删除候选。

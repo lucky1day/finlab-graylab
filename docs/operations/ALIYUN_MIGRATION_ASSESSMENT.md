@@ -2,9 +2,9 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验时间**：2026-08-20 10:35（Asia/Shanghai）
+**最后核验时间**：2026-08-20 11:46（Asia/Shanghai）
 
-**当前阶段**：ECS 部署闭环、压缩式调度等价验收和精确 R1 晋级均已完成；Mac3 installed launchd
+**当前阶段**：ECS 部署闭环、压缩式调度等价验收和精确 R2 晋级均已完成；Mac3 installed launchd
 尚未切换，今日 Mac3 生产运行不受影响。
 
 本文是 ECS 迁移、运行和接手的唯一当前入口。已完成计划、旧候选、一次性测试过程和中间验收报告
@@ -20,8 +20,8 @@ family 全部复用 parent 并执行有限 suffix，没有全量重建。无需�
 代码治理也已落地为单一代码线：
 
 - `codex/develop` 是唯一活动集成分支；不维护 Mac3/ECS 两条长期环境分支；
-- 单一 archive、不可变 release 和小型平台适配器能力已经实现；精确 R1 archive 已晋级 ECS current
-  并完成读回，Mac3 可在独立夜间窗口晋级同一 archive；
+- 单一 archive、不可变 release 和小型平台适配器能力已经实现；精确 R2 archive 已晋级 ECS current
+  并完成读回，Mac3 下一步只在独立窗口预安装、候选验证并晋级同一 archive；
 - ECS 使用不可变 `releases/<commit>` 和 `current/previous`，不保留 Git checkout、不执行 `git pull`、
   不允许主机本地修改 release；
 - Mac3 与 ECS 的差异只存在于 launchd/systemd、部署目标、环境文件、部署矩阵和平台依赖 manifest；
@@ -61,7 +61,7 @@ flowchart LR
 | 数据库 | ECS loopback MySQL 8.4，独立 `bond_db`；应用经 `BFL_DATABASE_ENV_FILE` 读取 root-only 环境文件 |
 | 增量数据链 | `/opt/bondprediction/current` 独立运行；requirements 已包含 `cryptography` |
 | Python 环境 | service、forecast、Blackbox 三套 Linux conda 环境；依赖来源为 conda-forge-only |
-| 项目 release | `current=c4e15eb9fbf0a278a961a7dce4d3a25b9394a724`；`previous=fd296812e7acef2869f54f706ba8f4f0bc776896` |
+| 项目 release | R2 `current=e692285d47e41c384dc915758abe0c51f9ac3aaf`；R1 `previous=c4e15eb9fbf0a278a961a7dce4d3a25b9394a724` |
 | 外置状态 | `/var/lib/bond-factor-lab/state`；DataBridge、artifact、日志和第三方 cache 均位于 release 外 |
 | Liwei 热缓存 | 7 个 family 位于独立 cache root；当前 generation 均通过 secure loader |
 | 方案范围 | ECS discovery 为 56 active base / 60 active composite；9 个 Mac-only base 不进入 ECS runner |
@@ -209,6 +209,20 @@ R2 的验收顺序固定为：聚焦和全量回归 → clean HEAD deterministic
 读回。候选或切换后任一检查失败时，立即恢复旧 installed plist 和 Git Backend；不得回写数据库或
 修改调度任务来掩盖失败。Backend 单项通过后，其余五个应用 plist 与 SSH tunnel 仍须在独立窗口统一
 到同一 R2，混合 release 不得作为长期完成状态。
+
+2026-08-20 11:46，R2 已冻结为 tag `mac3-immutable-r2-20260820`，精确 commit 为
+`e692285d47e41c384dc915758abe0c51f9ac3aaf`，archive SHA256 为
+`9b414792f51f5a47fda46ae403dfdf5f8909fdebe511512fd4cead36f666dac4`。两次 clean HEAD 构建的
+archive 和 manifest 摘要一致；聚焦回归为 88 passed、14 subtests passed，全量回归为 959 passed、
+476 subtests passed，独立审查无 Critical/Important。
+
+同日 ECS 已使用候选同版本安装器完成精确 R2 预安装、source/hash 校验和以 R1 为
+`expected-current` 的 CAS 激活。读回确认 `current=e692285d47e41c384dc915758abe0c51f9ac3aaf`、
+`previous=c4e15eb9fbf0a278a961a7dce4d3a25b9394a724`，Backend 进程 cwd 和
+`BFL_RELEASE_COMMIT` 均指向 R2，`/api/health` 与 DataBridge `--check-only` 返回 `status=ok`；五个
+timer 保持 enabled/active，五个业务 one-shot 均空闲。验证未发布 DataBridge、未写业务数据库、未改
+unit/timer，临时 transient unit 和探针生成的 `__pycache__` 已删除。至此 R2 的 ECS 证据已闭环，下一步
+只剩 Mac3 独立生产窗口，后续 develop 提交不得替代该精确 archive。
 
 R1 因不能加载外置生产环境，不是 Mac3 的功能性回滚版本。R2 首次切换失败时，回滚目标是已备份的旧
 installed plist 与原 Git Backend；成功稳定运行 R2 后，后续 release 才能把 R2 作为正常 previous。

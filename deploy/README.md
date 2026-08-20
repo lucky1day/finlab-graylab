@@ -83,8 +83,9 @@ launcher 通过目录 fd 与 `O_NOFOLLOW` 打开文件，并在同一 fd 上完�
 工作区。SSH tunnel 不执行项目代码，只使用用户主目录作为工作目录；夜间闭环仍须独立替换并读回
 该 plist，保留真实 key/user，同时验证日志精确外置。
 
-2026-08-20 R1 已冻结为 tag `mac3-immutable-r1-20260820`；但 installed Mac3 plist 和 loaded
-launchd 尚未替换，生产仍由原 Git 工作区运行。预安装、激活、替换 installed plist、
+2026-08-20 R2 已冻结为 tag `mac3-immutable-r2-20260820`，并已在 ECS 精确晋级和完成 Backend、
+DataBridge check-only、systemd identity 读回；但 installed Mac3 plist 和 loaded launchd 尚未替换，
+生产仍由原 Git 工作区运行。Mac3 预安装、激活、替换 installed plist、
 bootstrap/bootout/kickstart、Backend 重启和开发工作区切分均属于后续夜间窗口的独立生产操作。
 
 ## Mac Studio launchd 单 writer 目标
