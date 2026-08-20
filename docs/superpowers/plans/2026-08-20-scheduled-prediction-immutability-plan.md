@@ -595,7 +595,7 @@ git commit -m "docs: define immutable live prediction writes"
 - Verify only: `tests/`
 - Verify only: `docs/`
 
-- [ ] **Step 1: Run focused behavioral tests fresh**
+- [x] **Step 1: Run focused behavioral tests fresh**
 
 ```bash
 /Users/macstudio0/miniconda3/bin/conda run -n bond_factor_lab_service \
@@ -608,7 +608,7 @@ git commit -m "docs: define immutable live prediction writes"
 
 Expected: all tests pass.
 
-- [ ] **Step 2: Compile the changed production modules**
+- [x] **Step 2: Compile the changed production modules**
 
 ```bash
 /Users/macstudio0/miniconda3/bin/conda run -n bond_factor_lab_service \
@@ -617,7 +617,7 @@ Expected: all tests pass.
 
 Expected: exit code 0 with no output.
 
-- [ ] **Step 3: Run the complete local suite**
+- [x] **Step 3: Run the complete local suite**
 
 ```bash
 /Users/macstudio0/miniconda3/bin/conda run -n bond_factor_lab_service \
@@ -626,7 +626,7 @@ Expected: exit code 0 with no output.
 
 Expected: all tests and subtests pass. Existing release-temp cleanup warnings may remain, but no new warning category is accepted in this change.
 
-- [ ] **Step 4: Audit the final diff and worktree**
+- [x] **Step 4: Audit the final diff and worktree**
 
 ```bash
 git diff --check HEAD~3..HEAD
@@ -636,6 +636,28 @@ git log -4 --oneline --decorate
 
 Expected: no tracked changes remain. Only the pre-existing untracked `.superpowers/` and unrelated old `docs/superpowers/plans/2026-08-11-hide-missing-signal-prompt-plan.md` may remain outside the exact commits.
 
-- [ ] **Step 5: Stop at the production boundary and report evidence**
+- [x] **Step 5: Stop at the production boundary and report evidence**
 
 Report exact commit SHAs, focused/full test counts, and the resulting state matrix. Do not build/promote a new immutable release, write a production prediction, change an installed plist/unit, restart Mac3, or reload ECS systemd without a separate user-approved production step.
+
+#### Final Verification Evidence
+
+The following is fresh independent verification evidence for exact HEAD
+`9539c2a5f81bbc22a79ee98dcbd821a98ada637d`, not a test rerun performed while
+editing this plan:
+
+- Focused scope (`test_repository_registry`, `test_launchd_prediction_runner`,
+  `test_systemd_control_plane`, and `test_signal_gap_fill`): exit `0`, 95 passed
+  plus 86 subtests, 30 warnings, 0.67s.
+- Compile scope (`scheduler`, `shared`, and `scripts`): `compileall` exit `0`.
+- Full local suite: exit `0`, 968 passed plus 486 subtests, 76 warnings, 55.49s.
+- Warning classification: 3 existing invalid-escape `SyntaxWarning`, 43 Python
+  3.12 sqlite/SQLAlchemy `DeprecationWarning`, and 30 pytest temporary-directory
+  `rm_rf` warnings.
+- Documentation/worktree checks: root `AGENTS.md` / `CLAUDE.md` comparison and
+  diff check both exited `0`; status contained only the pre-existing untracked
+  `.superpowers/` and
+  `docs/superpowers/plans/2026-08-11-hide-missing-signal-prompt-plan.md`.
+- Production boundary: verification did not deploy or promote a release, write a
+  production prediction, modify or reload an installed plist/unit, restart Mac3,
+  reload ECS systemd, or otherwise touch production.
