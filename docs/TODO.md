@@ -23,6 +23,10 @@
    activation，不把两个方案绑成一个提交、发布或回滚单元。
 3. 若未来决定把生产域名或 Writer 从 Mac3 切到 ECS，必须作为新的生产项目重新设计 Web、数据库
    authority、单 Writer、DNS/Nginx、切换窗口和回滚范围，不从本次灰度或 R2 验收外推授权。
+4. 独立评估 systemd/launchd runner 的 CLI 日期入口；设计并取得生产授权后替换 ECS installed
+   DataBridge、daily、weekly、monthly 四个 unit，执行 `systemctl daemon-reload` 并读回现场状态。
+   执行前只读确认 `/run/bond-factor-lab/manual-run.env` 不存在且相关 one-shot 任务 idle，不得从仓库
+   模板变更外推现场状态或授权。
 
 ECS 继续独立灰度运行。Mac3 域名、Nginx、DNS、数据库 authority 和生产 Writer 均保持不变；是否
 未来切到 ECS 是新的生产项目，不是本轮双主机代码治理闭环的前提。

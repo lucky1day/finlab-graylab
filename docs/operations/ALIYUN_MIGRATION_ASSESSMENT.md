@@ -94,6 +94,10 @@ scheduler、repository、算法或 scheme config。
 缓存副本、临时环境和 transient unit 已删除。该结果替代“等待五个自然日”作为本轮部署验收门，
 自然 timer 继续承担日常运行与监控。
 
+ECS 自然 DataBridge、daily、weekly、monthly unit 不得共享手工环境文件；历史日期的手工补缺只允许
+执行 `python -m harness signal-gap-fill --predict-date YYYY-MM-DD`。installed unit 变更必须独立授权；
+现场事实见[当前状态](../CURRENT_STATUS.md)，后续步骤见[统一后续推进计划](../TODO.md)。
+
 ## 5. 数据修订与缓存规则
 
 - 已写入 `t_scheme_predictions` 的历史预测表达当时可用数据下的决策，事后数据修订不得回写。

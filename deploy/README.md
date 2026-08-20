@@ -18,6 +18,13 @@ APScheduler、ledger 或其它 Python 调度控制面。
 Linux timer 全部声明 `Persistent=false`，停机或禁用期间不补跑。Backend 模板只监听
 `127.0.0.1:8100`，本目录不授权 Nginx、DNS、安全组或公网切流。
 
+仓库期望配置中的 ECS 自然 DataBridge、daily、weekly、monthly 四个 service 已不再加载共享
+`/run/bond-factor-lab/manual-run.env`。这些 unit 的 `EnvironmentFile` 只允许先读取
+`/etc/bond-factor-lab/bond-factor-lab.env`，再读取当前 release 的 `.bfl-release.env`，仓库测试精确
+守护该合同。历史日期的手工补缺仍只允许执行
+`python -m harness signal-gap-fill --predict-date YYYY-MM-DD`；本阶段未改变 systemd/launchd runner 的
+CLI `--predict-date` 或内部 `run(..., predict_date=...)` 接口。
+
 ## 部署目标与方案矩阵
 
 Mac3 的应用 launchd 模板固定声明

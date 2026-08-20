@@ -25,6 +25,9 @@
   loopback tunnel 读回全部通过。生产进程不再引用 Git 工作区，旧七个 plist 保留为首次回滚备份。
 - Mac3 Git 开发根在保留既有未跟踪草稿的前提下切到 `codex/develop`；该分支切换不再影响生产进程。
 - ECS 是独立灰度实验室，不是 Mac3 热备或复制节点；其 DataBridge、daily、weekly、monthly、Actuals 五个 systemd timer 已于 2026-08-18 经专项授权启用，现场 authority 是 installed unit/timer 与 `systemctl` 读回。
+- 仓库候选模板中的 ECS 自然 DataBridge、daily、weekly、monthly 四个 service 已不再引用共享
+  `/run/bond-factor-lab/manual-run.env`，但 ECS installed 四个 unit 仍保留该旧引用。2026-08-20 只读
+  确认该文件不存在，因此没有正在生效的旧日期覆盖；仓库候选状态不等于现场已经生效。
 - ECS immutable prediction release 已完成不可变预安装、`current/previous` 原子切换和 Backend 重启；
   Backend 健康、首页、方案 API、五个 timer 与 installed unit/template 一致性均已读回。高频采样观察到的
   Backend 切换窗口约为 1.0036 秒，切换期间 ECS 灰度主库 `bond_db` 没有业务写入；Mac3 服务未受影响。
