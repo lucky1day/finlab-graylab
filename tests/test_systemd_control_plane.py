@@ -306,6 +306,11 @@ class SystemdControlPlaneTests(unittest.TestCase):
                     content,
                     name,
                 )
+                self.assertNotIn(
+                    "EnvironmentFile=-/run/bond-factor-lab/manual-run.env",
+                    content,
+                    name,
+                )
                 environment_files = [
                     line
                     for line in content.splitlines()
@@ -319,25 +324,11 @@ class SystemdControlPlaneTests(unittest.TestCase):
                     "EnvironmentFile=/opt/bond-factor-lab/current/"
                     ".bfl-release.env"
                 )
-                self.assertLess(
-                    environment_files.index(etc_environment),
-                    environment_files.index(release_environment),
+                self.assertEqual(
+                    environment_files,
+                    [etc_environment, release_environment],
                     name,
                 )
-                manual_environment = (
-                    "EnvironmentFile=-/run/bond-factor-lab/manual-run.env"
-                )
-                if manual_environment in environment_files:
-                    self.assertLess(
-                        environment_files.index(manual_environment),
-                        environment_files.index(release_environment),
-                        name,
-                    )
-                    self.assertEqual(
-                        environment_files[-1],
-                        release_environment,
-                        name,
-                    )
                 self.assertIn(
                     "Environment=BFL_DEPLOYMENT_TARGET=aliyun-gray",
                     content,
