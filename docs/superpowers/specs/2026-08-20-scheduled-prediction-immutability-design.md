@@ -81,6 +81,11 @@ partial_prediction_key_conflict
 
 The partial-conflict message may additionally include the sorted existing and missing business keys for operator diagnosis.
 
+An all-existing skip with reason `prediction_keys_already_exist` is benign at the
+one-shot control plane: it remains visible in the structured `skipped` list but does
+not by itself change the batch outcome to `partial` or the process exit code to `1`.
+All other skip reasons retain their current non-zero behavior.
+
 ## Transaction and Concurrency Design
 
 The decision remains inside the existing Native or Blackbox completion transaction, after all current checks have passed:
@@ -132,6 +137,8 @@ Repository tests must cover Native and Blackbox independently:
 Executor/control-plane tests must verify that:
 
 - Native and Blackbox `skipped` results propagate to the one-shot summary;
+- `prediction_keys_already_exist` does not by itself produce a non-zero one-shot
+  exit code, while every other skip reason remains actionable;
 - partial conflicts propagate as `failed` and cause the batch/unit failure behavior already used for scheme failures;
 - no scheduler or systemd configuration is required for the database guarantee.
 
@@ -144,6 +151,7 @@ The design is complete when all of the following are true:
 - no live prediction code path contains prediction UPSERT behavior;
 - a second completion for the same full business-key set cannot change any existing prediction column;
 - all-existing, none-existing, and partial-existing outcomes exactly match the approved state table;
+- only the stable all-existing reason is treated as a benign one-shot skip;
 - run status, run log, and prediction writes are atomic for each outcome;
 - Native, Blackbox, and gray-gap regression tests pass;
 - the full local test suite passes;
