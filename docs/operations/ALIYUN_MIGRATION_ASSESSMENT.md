@@ -2,10 +2,10 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验时间**：2026-08-20 11:46（Asia/Shanghai）
+**最后核验时间**：2026-08-20 13:49（Asia/Shanghai）
 
-**当前阶段**：ECS 部署闭环、压缩式调度等价验收和精确 R2 晋级均已完成；Mac3 installed launchd
-尚未切换，今日 Mac3 生产运行不受影响。
+**当前阶段**：ECS 独立灰度部署、压缩式调度等价验收、精确 R2 晋级和 Mac3 immutable release
+解耦均已完成；生产域名和 Writer 仍由 Mac3 承载，未切换到 ECS。
 
 本文是 ECS 迁移、运行和接手的唯一当前入口。已完成计划、旧候选、一次性测试过程和中间验收报告
 不留在工作树；需要追溯时使用 Git、ECS root-only evidence、systemd journal 和数据库审计记录。
@@ -26,8 +26,8 @@ family 全部复用 parent 并执行有限 suffix，没有全量重建。无需�
   不允许主机本地修改 release；
 - Mac3 与 ECS 的差异只存在于 launchd/systemd、部署目标、环境文件、部署矩阵和平台依赖 manifest；
   scheduler、repository、算法和 scheme config 不复制；
-- Mac3 目前仍由既有 checkout 和 installed launchd 承载生产。把 Mac3 切到不可变 runtime release
-  是灰度达标后的独立生产窗口，不属于本轮已完成操作。
+- Mac3 的七个 installed/loaded plist 已统一到精确 R2；六个应用从 production `current` 启动，
+  SSH tunnel 使用外置日志和本机真实 key/user，生产进程不再依赖 Git 开发工作区。
 
 因此需要区分两个结论：**ECS 迁移部署已完成**；**生产域名和 Writer 从 Mac3 切换到 ECS 尚未开始**。
 
@@ -221,8 +221,24 @@ archive 和 manifest 摘要一致；聚焦回归为 88 passed、14 subtests pass
 `previous=c4e15eb9fbf0a278a961a7dce4d3a25b9394a724`，Backend 进程 cwd 和
 `BFL_RELEASE_COMMIT` 均指向 R2，`/api/health` 与 DataBridge `--check-only` 返回 `status=ok`；五个
 timer 保持 enabled/active，五个业务 one-shot 均空闲。验证未发布 DataBridge、未写业务数据库、未改
-unit/timer，临时 transient unit 和探针生成的 `__pycache__` 已删除。至此 R2 的 ECS 证据已闭环，下一步
-只剩 Mac3 独立生产窗口，后续 develop 提交不得替代该精确 archive。
+unit/timer，临时 transient unit 和探针生成的 `__pycache__` 已删除。至此 R2 的 ECS 证据已闭环；
+随后执行的 Mac3 独立生产窗口见下文，后续 develop 提交不能替代该精确 archive。
+
+2026-08-20 13:49，Mac3 已完成同一精确 R2 的正式切换。首次 Backend 切换因 `bootout` 后立即
+`bootstrap` 遇到 launchd 异步清理窗口而返回 EIO，旧 Backend 在约 13 秒内恢复；确认根因后改为等待
+label 完全卸载，第二次切换的中断为 3 秒。最终读回确认：
+
+- `current=e692285d47e41c384dc915758abe0c51f9ac3aaf`，Backend cwd 与 release identity 精确一致；
+- 首页、健康接口、69 个方案读回和 admin 401/403 合同通过；
+- 现有 DataBridge current 与 refresh/gate 状态按内容摘要原样复制到外置 runtime，未重建、未发布，
+  `--check-only` 返回 `status=ok`；
+- 七个 installed/loaded plist 的 drift audit 为 `ok=true`，Backend 与 SSH tunnel 为 running，五个
+  one-shot 为 loaded/not running；
+- SSH tunnel 已从远端 loopback `127.0.0.1:18100` 端到端读回 Mac3 `/api/health=status=ok`；
+- 旧 plist 保存在外置 runtime 备份目录，Mac3 数据库、历史预测和调度业务数据未修改。
+
+至此 Mac3 immutable release 解耦和双主机单一 source release 治理已经闭环。后续 release 更新继续
+使用精确 archive、预安装、候选端口、CAS 和 loaded-state 读回；不得重新把生产进程指回 Git 工作区。
 
 R1 因不能加载外置生产环境，不是 Mac3 的功能性回滚版本。R2 首次切换失败时，回滚目标是已备份的旧
 installed plist 与原 Git Backend；成功稳定运行 R2 后，后续 release 才能把 R2 作为正常 previous。
@@ -288,6 +304,6 @@ env BFL_DATABASE_ENV_FILE=/etc/bond-factor-lab/bond-factor-lab.env \
 - 本文：ECS 当前运行、观察、接手和切换边界。
 - Git、ECS evidence、systemd journal 和数据库：历史与精确时点证据。
 
-`codex/develop` 是唯一活动集成分支。`master` 继续保持冻结备份，未经授权不得移动。Mac3 当前生产
-仍绑定旧 checkout；只有 R2 窗口验收完成后才能切换开发根分支。ECS 保持 release-only，不保存
-环境分支或 Git 工作区。
+`codex/develop` 是唯一活动集成分支。`master` 继续保持冻结备份，未经授权不得移动。Mac3 生产已与
+Git checkout 解耦，开发根可安全使用 `codex/develop`；ECS 保持 release-only，不保存环境分支或
+Git 工作区。

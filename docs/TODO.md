@@ -8,27 +8,21 @@
 
 ## 当前队列
 
-当前分为两条可并行推进的工作线：
+当前部署迁移已经闭环，剩余工作均为新的开发或未来生产项目：
 
-1. 开发线立即开始，不等待 Mac3 窗口：先确认前端变更清单和验收口径；两个新方案各自接收独立的
+1. 开发线可以立即开始：先确认前端变更清单和验收口径；两个新方案各自接收独立的
    Blackbox V2 两文件交付。前端先走 ECS 灰度 release；两个方案分别走 Intake/Gate/ECS-only
    activation，不把两个方案绑成一个提交、发布或回滚单元。
-2. 精确 R2 `e692285d47e41c384dc915758abe0c51f9ac3aaf` 已冻结并通过 ECS source/hash、Backend、
-   DataBridge check-only 和 systemd identity 读回；不得用后续 develop HEAD 替代。在不与 06:30
-   DataBridge、07:03 daily、08:30/19:00/23:45 Actuals、周/月批次重叠的 Mac3 窗口，另行授权执行
-   同一 R2 的 `service.env` 首次复制、预安装/激活、六个应用 plist 与一个 SSH tunnel
-   plist 切换、Backend 重启、七个 loaded state 的只读健康检查和回滚读回；tunnel 必须保留真实
-   key/user，短暂重连只在窗口内执行。
-3. 现场确认所有应用进程均从 immutable `current` 运行、tunnel 日志已外置后，保留未跟踪文件并把
-   Mac3 Git 开发根切到 `codex/develop`；不得在生产解耦前先切分支。
+2. 若未来决定把生产域名或 Writer 从 Mac3 切到 ECS，必须作为新的生产项目重新设计 Web、数据库
+   authority、单 Writer、DNS/Nginx、切换窗口和回滚范围，不从本次灰度或 R2 验收外推授权。
 
 ECS 继续独立灰度运行。Mac3 域名、Nginx、DNS、数据库 authority 和生产 Writer 均保持不变；是否
 未来切到 ECS 是新的生产项目，不是本轮双主机代码治理闭环的前提。
 
 ## 评审边界
 
-- 等待 Mac3 窗口期间不得修改 installed plist、launchd loaded state、数据库、Backend 进程或
-  生产任务。
+- 后续 release 更新仍须避开正在运行的生产批次，并分别授权 installed plist、loaded state、服务和
+  数据库操作。
 - 不因文件较大就拆分，不因极小概率事件增加 fallback、兼容层、重试、第二控制面或额外 hash。
 - 只有能证明业务职责已经重复、没有调用者、被现行规则替代或妨碍错误直接暴露的设计，才进入删除候选。
 - 任一实施建议都必须独立获得用户确认，并以可复现现象和聚焦回归证明删除没有放宽 Gate、授权、insert-only、生命周期或输入截止约束。

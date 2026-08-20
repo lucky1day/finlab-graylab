@@ -16,15 +16,17 @@
   launcher；两次确定性构建、全量回归、独立审查和 ECS 精确 archive 晋级读回均已通过。ECS 当前
   `current=e692285d47e41c384dc915758abe0c51f9ac3aaf`、
   `previous=c4e15eb9fbf0a278a961a7dce4d3a25b9394a724`。Backend 与 DataBridge check-only 已通过，五个 timer
-  保持 enabled/active。这些操作均未改变 Mac3 installed plist。
-  当前六个 Mac3 应用 plist 现场仍绑定 `/Users/macstudio0/bond-factor-lab`，开发根工作区仍为
-  `codex/audit-bugfixes-20260613`，因此尚不能切换该工作区分支。
+  保持 enabled/active。
 - 2026-08-20 Mac3 已在不创建 `current`、不替换 plist 的前提下预安装 R1；备用端口候选验证证明旧
-  Backend 隐式依赖 Git 根 `.env`，immutable release 因没有数据库凭据而 fail-closed。现有 8100
-  Backend、前端和调度均未改变。R2 已实现从 runtime `config/service.env` 显式、安全加载本机配置；
+  Backend 隐式依赖 Git 根 `.env`，immutable release 因没有数据库凭据而 fail-closed。该次候选期间
+  8100 Backend、前端和调度均未改变。R2 已实现从 runtime `config/service.env` 显式、安全加载本机配置；
   不把 `.env` 复制进只读 release，也不把全部 secret 展开到每个 plist。Git 根 `.env` 只服务开发工作区，
   `service.env` 只服务 Mac3 生产 release；
   两者仅首次迁移时复制一次，此后永久独立、永不自动同步，生产配置变更只在重启对应服务后生效。
+- 同日 Mac3 已正式切换到精确 R2：六个应用 plist 均从 production `current` 启动，SSH tunnel 的
+  工作目录和日志已外置；七项 drift audit、Backend/首页/方案/admin、DataBridge check-only 和远端
+  loopback tunnel 读回全部通过。生产进程不再引用 Git 工作区，旧七个 plist 保留为首次回滚备份。
+- Mac3 Git 开发根在保留既有未跟踪草稿的前提下切到 `codex/develop`；该分支切换不再影响生产进程。
 - ECS 是独立灰度实验室，不是 Mac3 热备或复制节点；其 DataBridge、daily、weekly、monthly、Actuals 五个 systemd timer 已于 2026-08-18 经专项授权启用，现场 authority 是 installed unit/timer 与 `systemctl` 读回。
 - 2026-08-20 已使用冻结同源数据、隔离数据库和热缓存副本完成 DataBridge、daily、weekly、monthly
   与 Actuals 的 systemd 调度等价验收；三频 56 个 run、60 条预测全部成功，7 个 Liwei family 均走
@@ -41,12 +43,9 @@
 ## 当前迁移完成边界
 
 - ECS 独立灰度迁移已经完成。
-- 双主机单一 source release 治理的 R2 外置环境合同和 ECS 精确验证均已完成；下一步进入 Mac3
-  独立窗口预安装并激活同一 R2、替换
-  六个 installed 应用 plist，并独立替换 SSH tunnel plist（保留真实 key/user）、
-  读回七个 loaded state、Backend/release identity，并证明应用进程与 tunnel 日志都不再引用 Git。
-- 上述现场验收完成后，才能把 Mac3 开发根工作区切到 `codex/develop`；该时点即为本轮部署治理
-  迁移闭环。生产域名或 Writer 改切 ECS 是未来可选项目，不属于本轮完成条件。
+- 双主机单一 source release 治理、R2 外置环境合同、ECS 精确验证和 Mac3 immutable release
+  现场切换均已完成，本轮部署治理迁移已经闭环。
+- 生产域名或 Writer 改切 ECS 是未来可选项目，不属于本轮完成条件，也未由本次操作授权。
 
 ## 当前输入权威
 
