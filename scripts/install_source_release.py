@@ -36,7 +36,7 @@ _GIT_OBJECT = re.compile(r"^[0-9a-f]{40,64}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_RUNTIME_ROOT = re.compile(r"^/[A-Za-z0-9/._-]+$")
 _MANIFEST_FIELDS = frozenset(
-    {"schema_version", "commit", "tree", "root_prefix", "archive"}
+    {"schema_version", "commit", "root_prefix", "archive"}
 )
 _ARCHIVE_FIELDS = frozenset({"filename", "sha256"})
 _INSTALL_RECORD_FIELDS = frozenset(
@@ -214,10 +214,9 @@ def _read_manifest(path: Path) -> dict[str, object]:
         raise ReleaseInstallError("release manifest schema is invalid")
     if payload.get("root_prefix") != SOURCE_ROOT_PREFIX:
         raise ReleaseInstallError("release root prefix is invalid")
-    for field in ("commit", "tree"):
-        value = payload.get(field)
-        if not isinstance(value, str) or not _GIT_OBJECT.fullmatch(value):
-            raise ReleaseInstallError(f"release manifest {field} is invalid")
+    commit = payload.get("commit")
+    if not isinstance(commit, str) or not _GIT_OBJECT.fullmatch(commit):
+        raise ReleaseInstallError("release manifest commit is invalid")
     archive = payload.get("archive")
     if not isinstance(archive, dict) or set(archive) != _ARCHIVE_FIELDS:
         raise ReleaseInstallError("release archive manifest is invalid")

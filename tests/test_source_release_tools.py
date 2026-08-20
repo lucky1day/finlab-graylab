@@ -69,6 +69,13 @@ def test_same_clean_commit_builds_identical_release(tmp_path: Path) -> None:
     assert first.archive_path.read_bytes() == second.archive_path.read_bytes()
     assert first.manifest_path.read_bytes() == second.manifest_path.read_bytes()
     manifest = json.loads(first.manifest_path.read_text(encoding="utf-8"))
+    assert set(manifest) == {
+        "schema_version",
+        "commit",
+        "root_prefix",
+        "archive",
+    }
+    assert "tree" not in manifest
     assert manifest["schema_version"] == MANIFEST_SCHEMA_VERSION
     assert manifest["commit"] == first.commit
     assert manifest["archive"]["sha256"] == hashlib.sha256(
@@ -196,6 +203,29 @@ def test_install_rejects_manifest_commit_not_bound_to_archive(
         )
 
 
+def test_install_rejects_obsolete_manifest_tree_field(tmp_path: Path) -> None:
+    repo = _make_source_repo(tmp_path)
+    built = build_source_release(repo, tmp_path / "out")
+    manifest = json.loads(built.manifest_path.read_text(encoding="utf-8"))
+    manifest["tree"] = "a" * 40
+    forged_manifest = tmp_path / "forged.manifest.json"
+    forged_manifest.write_text(
+        json.dumps(manifest, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ReleaseInstallError, match="manifest fields"):
+        install_source_release(
+            manifest_path=forged_manifest,
+            archive_path=built.archive_path,
+            deploy_root=(tmp_path / "deploy").resolve(),
+            runtime_root=(tmp_path / "runtime").resolve(),
+            activate=False,
+            expected_current=None,
+            expected_archive_sha256=built.archive_sha256,
+        )
+
+
 def test_install_rejects_tar_path_escape(tmp_path: Path) -> None:
     commit = "c" * 40
     archive_path = tmp_path / f"{commit}.source.tar.gz"
@@ -219,7 +249,6 @@ def test_install_rejects_tar_path_escape(tmp_path: Path) -> None:
             {
                 "schema_version": MANIFEST_SCHEMA_VERSION,
                 "commit": commit,
-                "tree": "d" * 40,
                 "root_prefix": "source/",
                 "archive": {
                     "filename": archive_path.name,

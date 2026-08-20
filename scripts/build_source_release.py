@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Sequence
 
 
-MANIFEST_SCHEMA_VERSION = "bfl-source-release-v1"
+MANIFEST_SCHEMA_VERSION = "bfl-source-release-v2"
 SOURCE_ROOT_PREFIX = "source/"
 _GIT_OBJECT = re.compile(r"^[0-9a-f]{40,64}$")
 
@@ -29,7 +29,6 @@ class ReleaseBuildError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class BuiltSourceRelease:
     commit: str
-    tree: str
     archive_path: Path
     manifest_path: Path
     archive_sha256: str
@@ -48,9 +47,8 @@ def build_source_release(
         raise ReleaseBuildError("source release requires a clean repository")
 
     commit = _git(root, "rev-parse", "--verify", "HEAD^{commit}").lower()
-    tree = _git(root, "rev-parse", "--verify", "HEAD^{tree}").lower()
-    if not _GIT_OBJECT.fullmatch(commit) or not _GIT_OBJECT.fullmatch(tree):
-        raise ReleaseBuildError("Git commit or tree identity is invalid")
+    if not _GIT_OBJECT.fullmatch(commit):
+        raise ReleaseBuildError("Git commit identity is invalid")
 
     tar_bytes = _git_bytes(
         root,
@@ -76,7 +74,6 @@ def build_source_release(
     manifest = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "commit": commit,
-        "tree": tree,
         "root_prefix": SOURCE_ROOT_PREFIX,
         "archive": {
             "filename": archive_name,
@@ -100,7 +97,6 @@ def build_source_release(
     _write_reproducible_output(manifest_path, manifest_bytes)
     return BuiltSourceRelease(
         commit=commit,
-        tree=tree,
         archive_path=archive_path,
         manifest_path=manifest_path,
         archive_sha256=archive_sha256,
@@ -173,7 +169,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             {
                 "status": "ok",
                 "commit": built.commit,
-                "tree": built.tree,
                 "archive": str(built.archive_path),
                 "manifest": str(built.manifest_path),
                 "archive_sha256": built.archive_sha256,
