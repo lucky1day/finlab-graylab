@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,6 +24,21 @@ from scripts.install_source_release import (
     ReleaseInstallError,
     install_source_release,
 )
+
+
+@pytest.fixture(autouse=True)
+def _restore_release_directory_permissions(tmp_path: Path) -> Iterator[None]:
+    """允许 pytest 清理由安装器设为只读的临时 release 目录。"""
+    yield
+    for root, _, _ in os.walk(tmp_path, followlinks=False):
+        path = Path(root)
+        mode = path.lstat().st_mode
+        if stat.S_ISDIR(mode):
+            os.chmod(
+                path,
+                stat.S_IMODE(mode) | stat.S_IWUSR,
+                follow_symlinks=False,
+            )
 
 
 def _run_git(repo: Path, *args: str) -> str:
