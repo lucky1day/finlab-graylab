@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：平台开发和架构审计人员
-**最后核验日期**：2026-08-18
+**最后核验日期**：2026-08-20
 **版本**：v1.4
 
 > 本文是**系统架构**（部署、DB schema、API 契约、数据流）。代码层面的分层、包依赖方向规则、运行时调用图与扩展模型见 [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md)（代码架构主蓝图）。
@@ -30,7 +30,7 @@ Mac3 生产
 └─ ECS loopback MySQL bond_db
 
 两端
-├─ 使用同一精确源码 release
+├─ 共用一条 source release 代码线；同一版本使用同一精确 archive，允许分阶段晋级
 ├─ 使用各自数据库、DataBridge、Registry、run 和 prediction
 ├─ 每个目标和 cadence 只有一个 writer
 └─ 不复制、不双写、不共享运行期 authority

@@ -41,10 +41,14 @@ digest 和只读预安装。`--activate` 只接受已经预安装且重新通过
 数据库、Registry、Nginx 或 DNS 操作。
 
 目标主机必须使用**候选 archive 同版本**的安装器完成预安装与激活，不能从旧 `current` 调用旧版
-安装器生成候选 release 环境。运行安装器时必须设置 `PYTHONDONTWRITEBYTECODE=1`，并从候选 release
-目录之外调用；不得为二次校验直接执行只读 release 内的 Python 文件，以免 root 生成 `__pycache__`
-后触发 source integrity 拒绝。任何环境合同不完整或 source digest 不一致的未激活目录都应整体隔离，
-不得现场补写后继续激活。
+安装器生成候选 release 环境。任何可能 import 候选/current immutable release 中项目模块的运维或
+审查命令，解释器都必须显式携带 `-B`；若同时使用隔离模式，必须写成 `python -I -B`。
+`PYTHONDONTWRITEBYTECODE=1` 只能作为非隔离模式下的附加防护，不能替代 `-B`，因为 `-I` 会忽略
+`PYTHON*` 环境变量。可以从已激活的 `current` 执行健康检查，也可以直接运行 release 内脚本；禁止
+的是在未禁用 bytecode 写入时 import 项目模块。只导入标准库、不 import 项目模块的 release launcher
+不受此条限制。当前 launcher 实现只使用标准库；未来若引入项目模块，必须同步改为
+`python -I -B`、补充相应回归并重新完成 immutable release 核验。任何环境合同不完整或 source
+digest 不一致的未激活目录都应整体隔离，不得现场补写后继续激活。
 
 激活拒绝同 SHA 重试，避免覆盖可用的 `previous`。revision intent 和 `previous` 都在切换前完成，
 `current` 的原子替换是最后一个强制文件动作；命令返回后以 `current` 现场读回作为是否激活的最终
@@ -83,11 +87,31 @@ launcher 通过目录 fd 与 `O_NOFOLLOW` 打开文件，并在同一 fd 上完�
 工作区。SSH tunnel 不执行项目代码，只使用用户主目录作为工作目录；夜间闭环仍须独立替换并读回
 该 plist，保留真实 key/user，同时验证日志精确外置。
 
-2026-08-20 R2 已冻结为 tag `mac3-immutable-r2-20260820`，并已在 ECS 精确晋级。Mac3 同日完成
-`service.env` 与 DataBridge current 的外置迁移、精确 R2 激活、六个应用 plist 和 SSH tunnel plist
-替换；七项 loaded-state audit、Backend/DataBridge/tunnel 读回均通过，生产不再由 Git 工作区运行。
-以后预安装、激活、替换 installed plist、bootstrap/bootout/kickstart 和服务重启仍分别属于生产操作，
-不能从本次已完成授权外推。
+上述 `/usr/bin/python3 -I scripts/run_launchd_release.py` 是明确的 stdlib-only launcher 例外：launcher
+当前不 import release 内的项目模块，因此不会依赖 `PYTHONDONTWRITEBYTECODE` 防止项目模块 pyc。
+若未来 launcher 引入项目模块，模板必须同步改为 `python -I -B`、补充相应回归并重新完成 immutable
+release 验收。
+
+2026-08-20 R2 已冻结为 tag `mac3-immutable-r2-20260820`。Mac3 `current` 仍为精确提交
+`e692285d47e41c384dc915758abe0c51f9ac3aaf`，并已完成 `service.env` 与 DataBridge current 的外置迁移、
+六个应用 plist 和 SSH tunnel plist 替换；七项 loaded-state audit、Backend/DataBridge/tunnel 读回均
+通过，生产不再由 Git 工作区运行。ECS 已沿同一 `codex/develop` 代码线分阶段晋级到 immutable
+prediction release `5c5603a23266e563e142e319d4e5d13907649598`，`previous` 为上述 R2；不可变预安装、
+CAS 激活、Backend 重启、健康与 timer/unit 读回均通过。该晋级未修改 Mac3、生产域名或生产 Writer。
+一次性 ECS 隔离 MySQL 真库直接调用了 Native active completion，并验证共享的 business-key decision
+与 plain INSERT 三态。Blackbox active completion 复用同一 repository 核心，本次未在隔离 MySQL 中
+单独调用，其入口由本地完整回归覆盖。验证前后 ECS 灰度主库 `bond_db` 的
+`t_scheme_predictions`、`t_scheme_versions`、`t_scheme_registry`、`t_scheme_runs`、
+`t_scheme_run_log` 五表 count 与全行摘要、五表 schema 摘要以及 17 条 migration history 均一致；
+Mac3 生产库不在测试路径中，隔离数据库已删除。
+
+分阶段晋级允许两端 `current` 暂时不同，但每个准备晋级 Mac3 的版本仍必须使用 ECS 已验证的同一份
+精确 archive，不得从环境分支重建“近似版本”。以后预安装、激活、替换 installed plist、
+bootstrap/bootout/kickstart 和服务重启仍分别属于生产操作，不能从本次已完成授权外推。
+
+ECS `previous` 的 R2/e692 仍使用旧 prediction UPSERT。它只允许在 5c 尚无 prediction writer 运行前
+作为即时源码回滚；一旦 5c prediction writer 已运行，禁止只把 `current` 切回 e692 后恢复预测调度，
+必须先独立评审数据库状态、单 Writer 边界和可执行回滚范围。
 
 ## Mac Studio launchd 单 writer 目标
 
@@ -139,7 +163,7 @@ plist 的物理删除仍是独立生产操作，不由仓库期望配置推断�
 ```bash
 PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
   conda run --no-capture-output -n bond_factor_lab_service \
-  python scripts/audit_launchd_config_drift.py
+  python -B scripts/audit_launchd_config_drift.py
 ```
 
 脚本只读取 `deploy/launchd/*.plist`、`~/Library/LaunchAgents/*.plist` 与

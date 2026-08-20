@@ -4,15 +4,19 @@
 
 **最后核验日期**：2026-08-20
 
-本文只记录当前稳定事实。实时方案、run、prediction、DataBridge、API 和调度状态必须从各自权威数据源读取，不在仓库文档冻结数量、运行 ID 或 Git SHA。未批准工作见[统一后续推进计划](TODO.md)，生产调度规则见[生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。
+本文只记录当前稳定事实。实时方案、run、prediction、DataBridge、API 和调度状态必须从各自权威数据源读取；除当前部署基线所需的精确 release 身份外，不在仓库文档冻结时点数量、运行 ID 或逐次校验 hash。未批准工作见[统一后续推进计划](TODO.md)，生产调度规则见[生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。
 
 ## 当前双主机运行规则
 
 - Mac3 继续承载生产域名、前端、数据库和 Writer；`launchd + installed plist` 是 Mac3 的自然生产调度控制面。
-- Mac3 与 ECS 当前运行 tag `mac3-immutable-r2-20260820` 的同一精确 source release；commit 为
-  `e692285d47e41c384dc915758abe0c51f9ac3aaf`，archive SHA256 为
-  `9b414792f51f5a47fda46ae403dfdf5f8909fdebe511512fd4cead36f666dac4`。ECS Backend、DataBridge
-  check-only 和五个 enabled/active timer 已读回通过。
+- 双主机共用唯一 `codex/develop` source release 代码线，但允许按“ECS 先验证、Mac3 后晋级”分阶段
+  发布；两端 `current` 不要求在灰度验证期始终相同，也不因此建立环境分支。
+- Mac3 `current` 仍为 tag `mac3-immutable-r2-20260820` 对应的精确提交
+  `e692285d47e41c384dc915758abe0c51f9ac3aaf`。ECS `current` 已晋级为 immutable prediction release
+  `5c5603a23266e563e142e319d4e5d13907649598`，`previous` 为上述 R2 提交。
+- 因此 insert-only prediction completion 当前只在 ECS 灰度运行态生效；Mac3 的 prediction Writer 仍运行旧
+  `e692...` 语义。Mac3 晋级同一份 ECS 已验证 `5c...` archive 需要独立夜间生产窗口，在完成前不得
+  把 ECS 验收外推为 Mac3 已具备该写入保护。
 - Mac3 生产应用从独立 `bond-factor-lab-production/current` 启动；运行状态位于外置
   `bond-factor-lab-runtime`。`runtime/config/service.env` 是生产应用本机配置 authority，Git 根 `.env`
   只服务开发工作区；两者不自动同步，生产配置变更必须独立授权并重启对应服务。
@@ -21,6 +25,17 @@
   loopback tunnel 读回全部通过。生产进程不再引用 Git 工作区，旧七个 plist 保留为首次回滚备份。
 - Mac3 Git 开发根在保留既有未跟踪草稿的前提下切到 `codex/develop`；该分支切换不再影响生产进程。
 - ECS 是独立灰度实验室，不是 Mac3 热备或复制节点；其 DataBridge、daily、weekly、monthly、Actuals 五个 systemd timer 已于 2026-08-18 经专项授权启用，现场 authority 是 installed unit/timer 与 `systemctl` 读回。
+- ECS immutable prediction release 已完成不可变预安装、`current/previous` 原子切换和 Backend 重启；
+  Backend 健康、首页、方案 API、五个 timer 与 installed unit/template 一致性均已读回。高频采样观察到的
+  Backend 切换窗口约为 1.0036 秒，切换期间 ECS 灰度主库 `bond_db` 没有业务写入；Mac3 服务未受影响。
+- ECS 一次性隔离 MySQL 真库直接调用了 Native active completion，并验证共享的 business-key decision
+  与 plain INSERT：首次发布整组成功，完整重复 benign `skipped` 且旧行不变，部分冲突整组失败且缺失键
+  不补写。Blackbox active completion 复用同一 repository decision/plain-INSERT 核心，本次未在隔离
+  MySQL 中单独调用，其运行时入口由本地完整回归覆盖。
+- 验证前后 ECS 灰度主库 `bond_db` 的 `t_scheme_predictions`、`t_scheme_versions`、
+  `t_scheme_registry`、`t_scheme_runs`、`t_scheme_run_log` 五表 count 与全行摘要、五表 schema 摘要以及
+  17 条 migration history 均一致；Mac3 生产库不在本次测试路径中。隔离数据库已删除，仓库没有保留
+  一次性验收脚本。
 - 2026-08-20 已使用冻结同源数据、隔离数据库和热缓存副本完成 DataBridge、daily、weekly、monthly
   与 Actuals 的 systemd 调度等价验收；三频 56 个 run、60 条预测全部成功，7 个 Liwei family 均走
   有限 suffix、full build 为 0，daily 墙钟约 62 分钟，低于两小时硬限。隔离资源已删除，生产库、
@@ -36,7 +51,7 @@
 ## 当前迁移完成边界
 
 - ECS 独立灰度迁移已经完成。
-- 双主机单一 source release 治理、R2 外置环境合同、ECS 精确验证和 Mac3 immutable release
+- 双主机单一 source release 代码线治理、分阶段晋级、R2 外置环境合同、ECS 精确验证和 Mac3 immutable release
   现场切换均已完成，本轮部署治理迁移已经闭环。
 - 生产域名或 Writer 改切 ECS 是未来可选项目，不属于本轮完成条件，也未由本次操作授权。
 

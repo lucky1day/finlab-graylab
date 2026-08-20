@@ -14,11 +14,11 @@
   daily/weekly/monthly/Actuals 和五个 systemd timer 均已落地。
 - Mac3 immutable release 解耦已经完成：生产应用从不可变 `current` 启动，运行配置、日志、DataBridge
   状态和第三方 cache 位于 release 外，生产进程不再依赖 Git 开发工作区。
-- Mac3 与 ECS 当前运行同一精确 R2 source release；`codex/develop` 是唯一活动集成分支，不维护环境
-  专用长期分支。
+- Mac3 与 ECS 共用唯一 `codex/develop` source release 代码线，不维护环境专用长期分支。发布按 ECS
+  先验证、Mac3 后晋级分阶段执行，因此灰度验证期间两端 `current` 可以不同。
 - Mac3 继续承载生产域名、生产数据库和 Writer；ECS 只监听 loopback，独立运行和观察，不接生产流量。
 
-因此本轮“ECS 灰度部署 + 双主机单一 source release 治理”已经闭环。未来把域名或 Writer 切到 ECS
+因此本轮“ECS 灰度部署 + 双主机单一 source release 代码线治理”已经闭环。未来把域名或 Writer 切到 ECS
 是新的生产项目，不属于本轮完成条件，也未由本轮授权。
 
 ## 2. 双主机运行边界
@@ -46,13 +46,22 @@ flowchart LR
 
 ## 3. 当前部署基线
 
-两端当前精确 release 为：
+两端属于同一 source release 代码线，但当前处于分阶段晋级状态：
 
-```text
-tag:     mac3-immutable-r2-20260820
-commit:  e692285d47e41c384dc915758abe0c51f9ac3aaf
-archive: 9b414792f51f5a47fda46ae403dfdf5f8909fdebe511512fd4cead36f666dac4
-```
+| 主机 | 当前 release | archive SHA-256 | 回滚基线 |
+|---|---|---|---|
+| ECS | `5c5603a23266e563e142e319d4e5d13907649598` | `160ba5572f660d169f5275bb9ada25796632653238a3c3e2e7a2e23f04ed6cff` | `previous` 指向 `e692285d47e41c384dc915758abe0c51f9ac3aaf` |
+| Mac3 | tag `mac3-immutable-r2-20260820` / `e692285d47e41c384dc915758abe0c51f9ac3aaf` | `9b414792f51f5a47fda46ae403dfdf5f8909fdebe511512fd4cead36f666dac4` | 以 Mac3 现场 immutable 指针和 installed plist 备份为准 |
+
+ECS 当前版本包含 live prediction insert-only 三态；其不可变预安装、CAS 激活、Backend 重启、健康
+与 timer/unit 读回均已通过。Backend 切换窗口观测约 1.0036 秒，激活窗口内 ECS 灰度主库 `bond_db`
+无业务写入。一次性 ECS 隔离 MySQL 真库直接调用了 Native active completion，并验证共享的
+business-key decision 与 plain INSERT 三态。Blackbox active completion 复用同一 repository 核心，
+本次未在隔离 MySQL 中单独调用，其运行时入口由本地完整回归覆盖。验证前后 ECS 灰度主库 `bond_db`
+的 `t_scheme_predictions`、`t_scheme_versions`、`t_scheme_registry`、`t_scheme_runs`、
+`t_scheme_run_log` 五表 count 与全行摘要、五表 schema 摘要以及 17 条 migration history 均一致；
+Mac3 生产库不在测试路径中，隔离数据库已删除。Mac3 尚未晋级该版本，生产域名、数据库 authority
+与 Writer 均保持在 Mac3。
 
 | 范围 | ECS | Mac3 |
 |---|---|---|
@@ -105,6 +114,13 @@ scheduler、repository、算法或 scheme config。
 `expected-current` compare-and-swap 更新 `current/previous`。release 目录无 `.git` 且只读，目标机
 不得 `git pull` 或现场修改。
 
+任何可能 import 候选/current immutable release 中项目模块的运维或审查命令，解释器都必须显式
+携带 `-B`；若同时使用隔离模式，必须写成 `python -I -B`。`PYTHONDONTWRITEBYTECODE=1` 只能作为
+非隔离模式下的附加防护，不能替代 `-B`，因为 `-I` 会忽略 `PYTHON*` 环境变量。可以从已激活的
+`current` 执行健康检查，也可以直接运行 release 内脚本；禁止的是在未禁用 bytecode 写入时 import
+项目模块。当前 release launcher 只使用标准库、不 import 项目模块，因此不受此条限制；未来若引入
+项目模块，必须同步改为 `python -I -B`、补充相应回归并重新完成 immutable release 核验。
+
 Mac3 的 `runtime/config/service.env` 是唯一生产应用本机配置 authority；Git 根 `.env` 只服务开发。
 两者仅首次迁移时复制一次，此后不自动同步。launcher 使用目录 fd、`O_NOFOLLOW`、owner/mode、
 语法、保留键和必要变量检查后才加载配置；任何 `PYTHON*`、release 身份或控制面覆盖均 fail-closed。
@@ -123,7 +139,18 @@ Mac3 的 `runtime/config/service.env` 是唯一生产应用本机配置 authorit
 
 ## 7. ECS 只读接手检查
 
-执行前使用受控 SSH 和严格 Host Key 校验：
+当前灰度 ECS 的受控网络 authority 是 `47.103.45.193`。`bond.finailab.cn` 当前不是这台灰度 ECS，
+不得用该 DNS 名称替代 ECS authority 或据此执行接手命令。公网 IP 本身不是凭据，可以在本运维文档
+中固定；SSH 仍必须使用批准的本机密钥、已钉住的 Host Key 和严格校验，禁止临时接受未知 Host Key：
+
+```bash
+ECS_GRAY_HOST=47.103.45.193
+ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+  -i "<approved-private-key-path>" \
+  root@"${ECS_GRAY_HOST}"
+```
+
+进入该 authority 后执行只读检查：
 
 ```bash
 readlink -f /opt/bond-factor-lab/current
@@ -139,7 +166,7 @@ curl --fail --silent http://127.0.0.1:8100/api/health
 cd /opt/bond-factor-lab/current
 env BFL_DATABASE_ENV_FILE=/etc/bond-factor-lab/bond-factor-lab.env \
   PYTHONNOUSERSITE=1 PYTHONDWRITEBYTECODE=1 \
-  /opt/miniconda3/envs/bond_factor_lab_service/bin/python \
+  /opt/miniconda3/envs/bond_factor_lab_service/bin/python -B \
   scripts/check_production_daily_health.py --predict-date YYYY-MM-DD --strict-runs
 ```
 
@@ -150,6 +177,9 @@ source digest 漂移、Backend 不健康、timer 漂移或磁盘不足时停止�
 ## 8. 回滚与长期保留边界
 
 - 回滚同时考虑 source release、installed 控制面和外置状态；只切代码 symlink 不是完整回滚。
+- ECS `previous` 的 R2/e692 仍使用旧 prediction UPSERT。它只允许在 5c 尚无 prediction writer 运行前
+  作为即时源码回滚；一旦 5c prediction writer 已运行，禁止只把 `current` 切回 e692 后恢复预测调度，
+  必须先独立评审数据库状态、单 Writer 边界和可执行回滚范围。
 - 对已经发布 proof-bearing suffix generation 的 family，回滚旧代码时必须恢复发布前保存的 7 个
   `current.json` parent pointer。
 - 回滚不得删除 run、prediction、日志或失败 evidence，不得修改历史预测伪造成功。
