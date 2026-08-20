@@ -12,8 +12,9 @@
 - Mac3 immutable release R1 已冻结为 tag `mac3-immutable-r1-20260820`；archive SHA256 为
   `654795f268fc4b25287cc33f4205a17ffc7eda1b9ea10e282fd553539ecd720f`。其仓库能力已收敛为独立
   `bond-factor-lab-production/current`、外置 `bond-factor-lab-runtime` 和最小 launchd release
-  launcher；两次确定性构建与本机隔离预安装已经通过，但精确 R1 archive 尚未晋级 ECS current。
-  这些构建和测试均未改变 Mac3 installed plist。
+  launcher；两次确定性构建、本机隔离预安装和 ECS 精确 archive 晋级读回均已通过。ECS 当前
+  `current=c4e15eb9fbf0a278a961a7dce4d3a25b9394a724`、
+  `previous=fd296812e7acef2869f54f706ba8f4f0bc776896`。这些操作均未改变 Mac3 installed plist。
   当前六个 Mac3 应用 plist 现场仍绑定 `/Users/macstudio0/bond-factor-lab`，开发根工作区仍为
   `codex/audit-bugfixes-20260613`，因此尚不能切换该工作区分支。
 - ECS 是独立灰度实验室，不是 Mac3 热备或复制节点；其 DataBridge、daily、weekly、monthly、Actuals 五个 systemd timer 已于 2026-08-18 经专项授权启用，现场 authority 是 installed unit/timer 与 `systemctl` 读回。
@@ -32,9 +33,8 @@
 ## 当前迁移完成边界
 
 - ECS 独立灰度迁移已经完成。
-- 双主机单一 source release 治理还差两道门：先在 ECS 预安装、校验并激活精确 R1 archive，完成
-  loopback Backend、DataBridge check-only 与 systemd identity 读回；再进入 Mac3 夜间窗口，预安装并
-  激活同一 R1、替换六个 installed 应用 plist，并独立替换 SSH tunnel plist（保留真实 key/user）、
+- 双主机单一 source release 治理只差 Mac3 夜间窗口：预安装并激活已经在 ECS 验证的同一 R1、替换
+  六个 installed 应用 plist，并独立替换 SSH tunnel plist（保留真实 key/user）、
   读回七个 loaded state、Backend/release identity，并证明应用进程与 tunnel 日志都不再引用 Git。
 - 上述现场验收完成后，才能把 Mac3 开发根工作区切到 `codex/develop`；该时点即为本轮部署治理
   迁移闭环。生产域名或 Writer 改切 ECS 是未来可选项目，不属于本轮完成条件。

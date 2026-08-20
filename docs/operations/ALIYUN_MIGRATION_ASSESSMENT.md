@@ -2,10 +2,10 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验时间**：2026-08-20 08:25（Asia/Shanghai）
+**最后核验时间**：2026-08-20 10:21（Asia/Shanghai）
 
-**当前阶段**：ECS 部署闭环和压缩式调度等价验收均已完成；Mac3 immutable release R1 已冻结，
-installed launchd 尚未切换，今日 Mac3 生产运行不受影响。
+**当前阶段**：ECS 部署闭环、压缩式调度等价验收和精确 R1 晋级均已完成；Mac3 installed launchd
+尚未切换，今日 Mac3 生产运行不受影响。
 
 本文是 ECS 迁移、运行和接手的唯一当前入口。已完成计划、旧候选、一次性测试过程和中间验收报告
 不留在工作树；需要追溯时使用 Git、ECS root-only evidence、systemd journal 和数据库审计记录。
@@ -20,8 +20,8 @@ family 全部复用 parent 并执行有限 suffix，没有全量重建。无需�
 代码治理也已落地为单一代码线：
 
 - `codex/develop` 是唯一活动集成分支；不维护 Mac3/ECS 两条长期环境分支；
-- 单一 archive、不可变 release 和小型平台适配器能力已经实现，ECS 已实际采用；Mac3 R1 也已冻结，
-  但该精确 R1 archive 仍须先晋级 ECS current 并读回，之后 Mac3 才能在独立窗口晋级同一 archive；
+- 单一 archive、不可变 release 和小型平台适配器能力已经实现；精确 R1 archive 已晋级 ECS current
+  并完成读回，Mac3 可在独立夜间窗口晋级同一 archive；
 - ECS 使用不可变 `releases/<commit>` 和 `current/previous`，不保留 Git checkout、不执行 `git pull`、
   不允许主机本地修改 release；
 - Mac3 与 ECS 的差异只存在于 launchd/systemd、部署目标、环境文件、部署矩阵和平台依赖 manifest；
@@ -61,7 +61,7 @@ flowchart LR
 | 数据库 | ECS loopback MySQL 8.4，独立 `bond_db`；应用经 `BFL_DATABASE_ENV_FILE` 读取 root-only 环境文件 |
 | 增量数据链 | `/opt/bondprediction/current` 独立运行；requirements 已包含 `cryptography` |
 | Python 环境 | service、forecast、Blackbox 三套 Linux conda 环境；依赖来源为 conda-forge-only |
-| 项目 release | `current=fd296812e7acef2869f54f706ba8f4f0bc776896`；`previous=b0470d43ac26cb0674f83b7a980ab093f2e483c6` |
+| 项目 release | `current=c4e15eb9fbf0a278a961a7dce4d3a25b9394a724`；`previous=fd296812e7acef2869f54f706ba8f4f0bc776896` |
 | 外置状态 | `/var/lib/bond-factor-lab/state`；DataBridge、artifact、日志和第三方 cache 均位于 release 外 |
 | Liwei 热缓存 | 7 个 family 位于独立 cache root；当前 generation 均通过 secure loader |
 | 方案范围 | ECS discovery 为 56 active base / 60 active composite；9 个 Mac-only base 不进入 ECS runner |
@@ -162,9 +162,12 @@ R1 已冻结为 tag `mac3-immutable-r1-20260820`，archive SHA256 为
 现在即可继续，不需要等待夜间窗口。前端先在 ECS 灰度验证再决定 Mac3 晋级；两个新方案分别执行
 Blackbox V2 Intake/Gate/ECS-only activation，不得合并为一个不可独立回滚的上线单元。
 
-R1 当前只完成本机双构建和隔离预安装；部署线下一步必须使用上述精确 archive 在 ECS 执行预安装、
-hash/source 校验、current CAS 激活与 loopback Backend、DataBridge check-only、systemd release
-identity 读回。只有该读回通过，才满足 Mac3 夜间窗口的同源前置条件；后续 develop 提交不能替代 R1。
+2026-08-20 10:17，精确 R1 已在 ECS 完成预安装、hash/source 校验、以旧 current 为 compare-and-swap
+前提的激活和 Backend 重启。读回确认 `current=c4e15eb9fbf0a278a961a7dce4d3a25b9394a724`、
+`previous=fd296812e7acef2869f54f706ba8f4f0bc776896`，Backend 进程 cwd 与
+`BFL_RELEASE_COMMIT` 均指向 R1，DataBridge check-only 和当天 daily 严格只读健康检查通过，五个 timer
+保持 enabled/active，全部批次 one-shot 空闲且最近结果为 success。R1 的 ECS 同源前置条件已满足；
+部署线下一步是另行授权的 Mac3 夜间窗口，后续 develop 提交不能替代 R1。
 
 ## 6. 接手检查
 
