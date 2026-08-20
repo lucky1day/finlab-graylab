@@ -25,6 +25,8 @@ from shared.one_shot_control_plane import SCHEDULED_ONE_SHOT_CONTROL_PLANES
 
 
 VALID_PREDICTION_PHASES = {"gray_live", "scheduled_live"}
+PREDICTION_KEYS_ALREADY_EXIST = "prediction_keys_already_exist"
+PARTIAL_PREDICTION_KEY_CONFLICT = "partial_prediction_key_conflict"
 VERSION_STATUSES = {"draft", "validated", "shadow", "active", "paused", "retired"}
 BLACKBOX_REGISTRY_STATUSES = {"active", "paused", "archived"}
 BLACKBOX_IMMUTABLE_VERSION_FIELDS = (
@@ -2214,6 +2216,62 @@ def _finish_scheme_run_conn(
         )
 
 
+def _prediction_write_decision_conn(
+    conn: Connection,
+    prediction_rows: Iterable[Mapping[str, object]],
+) -> tuple[str, int, str | None]:
+    """锁定已验证的实盘业务键并决定整组提交语义。"""
+    keys = sorted(
+        (
+            str(row["scheme_id"]),
+            str(row["target_tenor"]),
+            int(row["horizon"]),
+            str(row["target_date"]),
+        )
+        for row in prediction_rows
+    )
+    existing = []
+    missing = []
+    for key in keys:
+        row = _select_mapping_one_or_none(
+            conn,
+            """
+            SELECT scheme_id, target_tenor, horizon, target_date
+            FROM t_scheme_predictions
+            WHERE scheme_id = :scheme_id
+              AND target_tenor = :target_tenor
+              AND horizon = :horizon
+              AND target_date = :target_date
+            """,
+            {
+                "scheme_id": key[0],
+                "target_tenor": key[1],
+                "horizon": key[2],
+                "target_date": key[3],
+            },
+            for_update=True,
+        )
+        (existing if row is not None else missing).append(key)
+
+    if not existing:
+        return "success", len(keys), None
+    if not missing:
+        return "skipped", 0, PREDICTION_KEYS_ALREADY_EXIST
+
+    def format_keys(values: list[tuple[str, str, int, str]]) -> str:
+        return "[" + ", ".join(
+            f"{scheme_id}/{target_tenor}/h{horizon}/{target_date}"
+            for scheme_id, target_tenor, horizon, target_date in values
+        ) + "]"
+
+    return (
+        "failed",
+        0,
+        f"{PARTIAL_PREDICTION_KEY_CONFLICT}: "
+        f"existing={format_keys(existing)}; missing={format_keys(missing)}",
+    )
+
+
 def complete_approved_blackbox_run(
     engine: Engine,
     cfg: SchemeConfig,
@@ -2225,9 +2283,8 @@ def complete_approved_blackbox_run(
     run_date: str,
     duration_sec: float,
     precommit_validator: Callable[[Connection], None] | None = None,
-    insert_only_predictions: bool = False,
-) -> int:
-    """原子提交 Blackbox prediction、成功 run 状态与成功日志。"""
+) -> tuple[str, int, str | None]:
+    """原子提交 Blackbox prediction、终态 run 与运行日志。"""
     normalized_run_date = _require_iso_date(run_date, "run_date")
     expected_tenors, _expected_registry_ids = _expected_registry_identity(cfg)
     expected_targets = {
@@ -2329,39 +2386,45 @@ def complete_approved_blackbox_run(
                 "Blackbox completion records revalidation failed: "
                 + "; ".join(record_errors)
             )
-        records_written = _insert_run_predictions_conn(
-            conn,
+        prediction_rows = _prepare_run_prediction_rows(
             int(run_id),
             record_list,
             scheme_version=exact_scheme_version,
-            insert_only=insert_only_predictions,
         )
-        if records_written != records_returned:
-            raise RuntimeError(
-                "Blackbox completion records_written mismatch: "
-                f"returned={records_returned}, written={records_written}"
+        status, records_written, error_message = (
+            _prediction_write_decision_conn(conn, prediction_rows)
+        )
+        if status == "success":
+            records_written = _insert_run_predictions_conn(
+                conn,
+                prediction_rows,
             )
+            if records_written != records_returned:
+                raise RuntimeError(
+                    "Blackbox completion records_written mismatch: "
+                    f"returned={records_returned}, written={records_written}"
+                )
         _finish_scheme_run_conn(
             conn,
             run_id=run_id,
-            status="success",
+            status=status,
             records_returned=records_returned,
             records_written=records_written,
-            error_message=None,
+            error_message=error_message,
             require_exact_run=True,
         )
         _write_run_log_conn(
             conn,
             cfg.scheme_id,
             normalized_run_date,
-            "success",
+            status,
             duration_sec,
-            None,
+            error_message,
             run_id,
         )
-        if precommit_validator is not None:
+        if status == "success" and precommit_validator is not None:
             precommit_validator(conn)
-        return records_written
+        return status, records_written, error_message
 
 
 def complete_active_native_run(
@@ -2482,6 +2545,11 @@ def complete_active_native_run(
                 "running run identity revalidation failed: invalid "
                 f"prediction_phase={run_phase!r}"
             )
+        if records_returned != len(record_list):
+            raise RuntimeError(
+                "Native completion records_returned mismatch: "
+                f"returned={records_returned}, records={len(record_list)}"
+            )
         returned_targets = Counter(
             (str(record.target_tenor), int(record.horizon))
             for record in record_list
@@ -2525,26 +2593,25 @@ def complete_active_native_run(
                 + "; ".join(record_errors)
             )
 
-        records_written = _insert_run_predictions_conn(
-            conn,
+        prediction_rows = _prepare_run_prediction_rows(
             int(run_id),
             record_list,
             scheme_version=exact_scheme_version,
         )
-        expected = len(expected_targets)
-        status = (
-            "success"
-            if expected == records_returned == records_written
-            else "partial"
+        status, records_written, error_message = (
+            _prediction_write_decision_conn(conn, prediction_rows)
         )
-        error_message = (
-            None
-            if status == "success"
-            else (
-                f"expected={expected}, returned={records_returned}, "
-                f"written={records_written}"
+        if status == "success":
+            records_written = _insert_run_predictions_conn(
+                conn,
+                prediction_rows,
             )
-        )
+            if records_written != len(expected_targets):
+                raise RuntimeError(
+                    "Native completion records_written mismatch: "
+                    f"expected={len(expected_targets)}, "
+                    f"written={records_written}"
+                )
         _finish_scheme_run_conn(
             conn,
             run_id=int(run_id),
@@ -2652,12 +2719,14 @@ def complete_gray_gap_run(
             conn,
             normalized_targets,
         )
-        records_written = _insert_run_predictions_conn(
-            conn,
+        prediction_rows = _prepare_run_prediction_rows(
             int(run_id),
             enriched_records,
             scheme_version=str(cfg.scheme_version),
-            insert_only=True,
+        )
+        records_written = _insert_run_predictions_conn(
+            conn,
+            prediction_rows,
         )
         if records_written != len(normalized_targets):
             raise RuntimeError(
@@ -3513,67 +3582,28 @@ def _approved_blackbox_write_transaction(
             yield conn, record_list, exact_scheme_version
 
 
-def _insert_run_predictions_conn(
-    conn: Connection,
+def _prepare_run_prediction_rows(
     run_id: int,
     records: Iterable[PredictionRecord],
     *,
     scheme_version: str | None,
-    insert_only: bool = False,
-) -> int:
-    """在调用方事务中写入预测；历史灰度补齐使用 insert-only。"""
-    sqlite = _dialect_name(conn) == "sqlite"
-    extra_expression = ":extra" if sqlite else "CAST(:extra AS JSON)"
-    statement = """
-        INSERT INTO t_scheme_predictions
-            (run_id, scheme_version, scheme_id, target_tenor, horizon, predict_date, feature_date, target_date,
-             prediction_phase, predicted_direction, confidence, model_version, extra)
-        VALUES
-            (:run_id, :scheme_version, :scheme_id, :target_tenor, :horizon, :predict_date, :feature_date, :target_date,
-             :prediction_phase, :predicted_direction, :confidence, :model_version, {extra_expression})
-        """.format(extra_expression=extra_expression)
-    if not insert_only:
-        if sqlite:
-            statement += """
-            ON CONFLICT(scheme_id, target_tenor, horizon, target_date)
-            DO UPDATE SET
-                run_id = excluded.run_id,
-                scheme_version = excluded.scheme_version,
-                predict_date = excluded.predict_date,
-                feature_date = excluded.feature_date,
-                prediction_phase = excluded.prediction_phase,
-                predicted_direction = excluded.predicted_direction,
-                confidence = excluded.confidence,
-                model_version = excluded.model_version,
-                extra = excluded.extra,
-                updated_at = CURRENT_TIMESTAMP
-            """
-        else:
-            statement += """
-            ON DUPLICATE KEY UPDATE
-                run_id = VALUES(run_id),
-                scheme_version = VALUES(scheme_version),
-                predict_date = VALUES(predict_date),
-                feature_date = VALUES(feature_date),
-                prediction_phase = VALUES(prediction_phase),
-                predicted_direction = VALUES(predicted_direction),
-                confidence = VALUES(confidence),
-                model_version = VALUES(model_version),
-                extra = VALUES(extra),
-                updated_at = CURRENT_TIMESTAMP
-            """
-    sql = text(statement)
-    rows = []
+) -> list[dict[str, object]]:
+    """将 prediction records 规范化并验证为最终 SQL rows。"""
+    rows: list[dict[str, object]] = []
     for record in records:
         row = asdict(record)
         extra = dict(record.extra or {})
         feature_date = record.feature_date or extra.get("feature_date")
         if not feature_date:
-            raise ValueError(f"feature_date is required for prediction record {record.scheme_id}/{record.target_tenor}")
+            raise ValueError(
+                "feature_date is required for prediction record "
+                f"{record.scheme_id}/{record.target_tenor}"
+            )
         anchor_date = extra.get("anchor_date")
         if anchor_date and str(anchor_date) != str(feature_date):
             raise ValueError(
-                f"anchor_date must equal feature_date for prediction record {record.scheme_id}/{record.target_tenor}"
+                "anchor_date must equal feature_date for prediction record "
+                f"{record.scheme_id}/{record.target_tenor}"
             )
         phase = record.prediction_phase or extra.get("prediction_phase")
         if phase not in VALID_PREDICTION_PHASES:
@@ -3589,14 +3619,37 @@ def _insert_run_predictions_conn(
                 "prediction record run_id must match the committing run: "
                 f"{row['run_id']} != {run_id}"
             )
-        row["scheme_version"] = record.scheme_version if record.scheme_version is not None else scheme_version
+        row["scheme_version"] = (
+            record.scheme_version
+            if record.scheme_version is not None
+            else scheme_version
+        )
         row["feature_date"] = str(feature_date)
         row["prediction_phase"] = str(phase)
         row["extra"] = json.dumps(extra, ensure_ascii=False)
         rows.append(row)
+    return rows
+
+
+def _insert_run_predictions_conn(
+    conn: Connection,
+    prediction_rows: Iterable[Mapping[str, object]],
+) -> int:
+    """在调用方事务中以 plain INSERT 写入已验证的 prediction rows。"""
+    sqlite = _dialect_name(conn) == "sqlite"
+    extra_expression = ":extra" if sqlite else "CAST(:extra AS JSON)"
+    statement = """
+        INSERT INTO t_scheme_predictions
+            (run_id, scheme_version, scheme_id, target_tenor, horizon, predict_date, feature_date, target_date,
+             prediction_phase, predicted_direction, confidence, model_version, extra)
+        VALUES
+            (:run_id, :scheme_version, :scheme_id, :target_tenor, :horizon, :predict_date, :feature_date, :target_date,
+             :prediction_phase, :predicted_direction, :confidence, :model_version, {extra_expression})
+        """.format(extra_expression=extra_expression)
+    rows = list(prediction_rows)
     if not rows:
         return 0
-    conn.execute(sql, rows)
+    conn.execute(text(statement), rows)
     return len(rows)
 
 
