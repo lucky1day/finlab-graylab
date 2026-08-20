@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import logging
 import pickle
 from dataclasses import replace
 from pathlib import Path
@@ -354,6 +355,7 @@ def test_consumer_securely_reads_current_generation(
         cache_root=root,
     )
     assert publisher_audit["status"] == "cold_build"
+    assert publisher_audit["prune_deferred"] == []
     assert train_calls == ["baseline"]
 
     _consumer_caches, consumer_audit = prepare_phase_a_caches(
@@ -368,6 +370,7 @@ def test_consumer_securely_reads_current_generation(
     )
     assert consumer_audit["status"] == "hit"
     assert consumer_audit["build_reason"] == "consumer_validated_hit"
+    assert consumer_audit["prune_deferred"] == []
     assert train_calls == ["baseline"]
 
     current_path = (
@@ -1102,6 +1105,17 @@ def _publish_next_retention_generation(
     )
 
 
+def _module_warning_records(
+    caplog: pytest.LogCaptureFixture,
+) -> list[logging.LogRecord]:
+    return [
+        record
+        for record in caplog.records
+        if record.name == phase_a_cache_module.__name__
+        and record.levelno == logging.WARNING
+    ]
+
+
 def test_pointer_failure_at_retention_limit_preserves_all_generations(
     tmp_path: Path,
 ) -> None:
@@ -1218,6 +1232,21 @@ def test_family_byte_prune_plan_uses_real_directory_sizes(
         )
 
 
+def test_empty_prune_plan_returns_without_fsync(tmp_path: Path) -> None:
+    with patch.object(
+        phase_a_cache_module,
+        "_fsync_directory",
+    ) as fsync_directory:
+        deferred = phase_a_cache_module._prune_generations(
+            tmp_path / "family",
+            prune_generation_ids=(),
+            protected_generation_ids=set(),
+        )
+
+    assert deferred == ()
+    fsync_directory.assert_not_called()
+
+
 def test_generation_root_fsync_failure_discards_moved_candidate(
     tmp_path: Path,
 ) -> None:
@@ -1296,6 +1325,7 @@ def test_post_replace_runtime_fsync_failure_keeps_publication_successful(
 
 def test_postcommit_prune_failure_keeps_published_candidate(
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     root = tmp_path.resolve()
     spec, daily, weekly, monthly, family_root = (
@@ -1306,9 +1336,27 @@ def test_postcommit_prune_failure_keeps_published_candidate(
     old_pointer = json.loads(current_path.read_text(encoding="utf-8"))
     generations_before = _generation_snapshot(generation_root)
 
-    with patch(
-        "shared.liwei_0616_phase_a_cache._prune_generations",
-        side_effect=RuntimeError("postcommit prune failed"),
+    planned_ids: tuple[str, ...] = ()
+
+    def fail_prune(
+        _family_root: Path,
+        *,
+        prune_generation_ids: tuple[str, ...],
+        protected_generation_ids: set[str],
+    ) -> tuple[str, ...]:
+        nonlocal planned_ids
+        assert protected_generation_ids
+        planned_ids = prune_generation_ids
+        raise RuntimeError("postcommit prune failed")
+
+    caplog.set_level(
+        logging.WARNING,
+        logger=phase_a_cache_module.__name__,
+    )
+    with patch.object(
+        phase_a_cache_module,
+        "_prune_generations",
+        side_effect=fail_prune,
     ):
         _caches, audit = _publish_next_retention_generation(
             spec=spec,
@@ -1325,11 +1373,23 @@ def test_postcommit_prune_failure_keeps_published_candidate(
     assert set(_generation_snapshot(generation_root)) == (
         set(generations_before) | {pointer["generation_id"]}
     )
+    assert planned_ids
+    assert audit["prune_deferred"] == list(planned_ids)
+    warnings = _module_warning_records(caplog)
+    assert len(warnings) == 1
+    assert warnings[0].getMessage().startswith(
+        "Phase-A cache prune deferred"
+    )
+    assert spec.cache_family in warnings[0].getMessage()
+    assert spec.tenor in warnings[0].getMessage()
+    assert ",".join(planned_ids) in warnings[0].getMessage()
+    assert "postcommit prune failed" not in warnings[0].getMessage()
     assert not list(family_root.glob(".building-*"))
 
 
 def test_postcommit_prune_continues_after_one_removal_fails(
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     root = tmp_path.resolve()
     spec, daily, weekly, monthly, family_root = (
@@ -1355,6 +1415,10 @@ def test_postcommit_prune_continues_after_one_removal_fails(
             raise OSError("one old generation is busy")
         real_rmtree(path)
 
+    caplog.set_level(
+        logging.WARNING,
+        logger=phase_a_cache_module.__name__,
+    )
     with patch.object(
         phase_a_cache_module.shutil,
         "rmtree",
@@ -1373,12 +1437,119 @@ def test_postcommit_prune_continues_after_one_removal_fails(
     assert not (generation_root / "extra-old-b").exists()
     assert (generation_root / old_current).is_dir()
     assert (generation_root / audit["generation_id"]).is_dir()
+    assert audit["prune_deferred"] == ["extra-old-a"]
+    warnings = _module_warning_records(caplog)
+    assert len(warnings) == 1
+    assert warnings[0].getMessage().startswith(
+        "Phase-A cache prune deferred"
+    )
+    assert spec.cache_family in warnings[0].getMessage()
+    assert spec.tenor in warnings[0].getMessage()
+    assert "extra-old-a" in warnings[0].getMessage()
+    assert "one old generation is busy" not in warnings[0].getMessage()
     pointer = json.loads(current_path.read_text(encoding="utf-8"))
     assert pointer["generation_id"] == audit["generation_id"]
 
 
+def test_postcommit_generation_root_fsync_failure_is_deferred(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    root = tmp_path.resolve()
+    spec, daily, weekly, monthly, family_root = (
+        _publish_retention_generations(root, count=3)
+    )
+    current_path = family_root / "current.json"
+    generation_root = family_root / "generations"
+    old_current = json.loads(current_path.read_text(encoding="utf-8"))[
+        "generation_id"
+    ]
+    for index, generation_id in enumerate(
+        ("extra-fsync-old-a", "extra-fsync-old-b"),
+        start=1,
+    ):
+        path = generation_root / generation_id
+        path.mkdir()
+        (path / "payload").write_bytes(b"old")
+        phase_a_cache_module.os.utime(path, ns=(index, index))
+    generations_before_publish = [
+        path
+        for path in generation_root.iterdir()
+        if path.is_dir()
+    ]
+    unprotected_before_publish = sorted(
+        (
+            path
+            for path in generations_before_publish
+            if path.name != old_current
+        ),
+        key=lambda path: (path.stat().st_mtime_ns, path.name),
+    )
+    expected_prune_count = max(
+        0,
+        len(generations_before_publish)
+        + 1
+        - phase_a_cache_module.CACHE_GENERATION_RETENTION,
+    )
+    expected_planned_ids = tuple(
+        path.name
+        for path in unprotected_before_publish[:expected_prune_count]
+    )
+    assert len(expected_planned_ids) >= 2
+    assert expected_planned_ids[:2] == (
+        "extra-fsync-old-a",
+        "extra-fsync-old-b",
+    )
+    real_fsync_directory = phase_a_cache_module._fsync_directory
+
+    def fail_postcommit_generation_root_fsync(path: Path) -> None:
+        if path == generation_root:
+            pointed_generation = json.loads(
+                current_path.read_text(encoding="utf-8")
+            )["generation_id"]
+            if pointed_generation != old_current:
+                raise OSError("postcommit generation root fsync failed")
+        real_fsync_directory(path)
+
+    caplog.set_level(
+        logging.WARNING,
+        logger=phase_a_cache_module.__name__,
+    )
+    with patch.object(
+        phase_a_cache_module,
+        "_fsync_directory",
+        side_effect=fail_postcommit_generation_root_fsync,
+    ):
+        _caches, audit = _publish_next_retention_generation(
+            spec=spec,
+            daily=daily,
+            weekly=weekly,
+            monthly=monthly,
+            root=root,
+        )
+
+    pointer = json.loads(current_path.read_text(encoding="utf-8"))
+    assert pointer["generation_id"] == audit["generation_id"]
+    assert pointer["generation_id"] != old_current
+    assert (generation_root / pointer["generation_id"]).is_dir()
+    assert audit["prune_deferred"] == list(expected_planned_ids)
+    warnings = _module_warning_records(caplog)
+    assert len(warnings) == 1
+    assert warnings[0].getMessage().startswith(
+        "Phase-A cache prune deferred"
+    )
+    assert spec.cache_family in warnings[0].getMessage()
+    assert spec.tenor in warnings[0].getMessage()
+    assert ",".join(expected_planned_ids) in warnings[0].getMessage()
+    assert "postcommit generation root fsync failed" not in (
+        warnings[0].getMessage()
+    )
+    assert not list(family_root.glob(".building-*"))
+
+
 def test_successful_publication_prunes_after_pointer_commit(
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     root = tmp_path.resolve()
     spec, daily, weekly, monthly, family_root = (
@@ -1390,6 +1561,10 @@ def test_successful_publication_prunes_after_pointer_commit(
         "generation_id"
     ]
 
+    caplog.set_level(
+        logging.WARNING,
+        logger=phase_a_cache_module.__name__,
+    )
     _caches, audit = _publish_next_retention_generation(
         spec=spec,
         daily=daily,
@@ -1406,6 +1581,8 @@ def test_successful_publication_prunes_after_pointer_commit(
     assert len(remaining) == 3
     assert pointer["generation_id"] in remaining
     assert old_current in remaining
+    assert audit["prune_deferred"] == []
+    assert _module_warning_records(caplog) == []
     assert not list(family_root.glob(".building-*"))
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import json
+import logging
 import os
 import pickle
 import platform
@@ -36,6 +37,9 @@ from shared.liwei_0616_cache_projection import (
     AuxiliaryDependencyProjection,
 )
 from shared.runtime_paths import resolve_runtime_state_path
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 CACHE_SCHEMA_VERSION = 2
@@ -666,13 +670,22 @@ def _prepare_under_family_lock(
     # publication 已提交；历史清理只能 best effort，不能把已发布 candidate
     # 重新报告为失败。Exception 被隔离，KeyboardInterrupt/SystemExit 继续传播。
     try:
-        _prune_generations(
+        prune_deferred = _prune_generations(
             family_root,
             prune_generation_ids=prune_generation_ids,
             protected_generation_ids=protected_generation_ids,
         )
     except Exception:
-        pass
+        prune_deferred = prune_generation_ids
+    audit["prune_deferred"] = list(prune_deferred)
+    if prune_deferred:
+        _LOGGER.warning(
+            "Phase-A cache prune deferred "
+            "cache_family=%s tenor=%s generation_ids=%s",
+            spec.cache_family,
+            spec.tenor,
+            ",".join(prune_deferred),
+        )
     return generation.caches, audit
 
 
@@ -3970,6 +3983,7 @@ def _generation_audit(
         "retention_limit": CACHE_GENERATION_RETENTION,
         "family_limit_bytes": MAX_CACHE_FAMILY_BYTES,
         "global_free_reserve_bytes": GLOBAL_MIN_FREE_BYTES,
+        "prune_deferred": [],
     }
 
 
@@ -4072,8 +4086,10 @@ def _prune_generations(
     *,
     prune_generation_ids: tuple[str, ...],
     protected_generation_ids: set[str],
-) -> None:
+) -> tuple[str, ...]:
     """提交后按预检方案逐个 best-effort 清理历史 generation。"""
+    if not prune_generation_ids:
+        return ()
     generation_root = family_root / "generations"
     protected = {
         str(generation_id)
@@ -4084,6 +4100,7 @@ def _prune_generations(
         raise ValueError(
             "cache generation pruning requires protected generations"
         )
+    deferred: list[str] = []
     for generation_id in prune_generation_ids:
         if generation_id in protected:
             continue
@@ -4092,11 +4109,13 @@ def _prune_generations(
             if path.is_dir():
                 shutil.rmtree(path)
         except Exception:
+            deferred.append(generation_id)
             continue
     try:
         _fsync_directory(generation_root)
     except Exception:
-        pass
+        return prune_generation_ids
+    return tuple(deferred)
 
 
 def _directory_size_bytes(path: Path) -> int:
