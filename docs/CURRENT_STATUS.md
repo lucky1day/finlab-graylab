@@ -21,7 +21,8 @@
   Backend 隐式依赖 Git 根 `.env`，immutable release 因没有数据库凭据而 fail-closed。现有 8100
   Backend、前端和调度均未改变。已批准的修复是把该本机配置一次迁移到 runtime `config/service.env`，
   由最小 launcher 显式、安全加载后冻结 R2；不得把 `.env` 复制进只读 release 或把全部 secret 展开
-  到每个 plist。
+  到每个 plist。已确认 Git 根 `.env` 只服务开发工作区，`service.env` 只服务 Mac3 生产 release；
+  两者仅首次迁移时复制一次，此后永久独立、永不自动同步，生产配置变更只在重启对应服务后生效。
 - ECS 是独立灰度实验室，不是 Mac3 热备或复制节点；其 DataBridge、daily、weekly、monthly、Actuals 五个 systemd timer 已于 2026-08-18 经专项授权启用，现场 authority 是 installed unit/timer 与 `systemctl` 读回。
 - 2026-08-20 已使用冻结同源数据、隔离数据库和热缓存副本完成 DataBridge、daily、weekly、monthly
   与 Actuals 的 systemd 调度等价验收；三频 56 个 run、60 条预测全部成功，7 个 Liwei family 均走

@@ -14,8 +14,10 @@
    Blackbox V2 两文件交付。前端先走 ECS 灰度 release；两个方案分别走 Intake/Gate/ECS-only
    activation，不把两个方案绑成一个提交、发布或回滚单元。
 2. 部署线先实现并冻结 R2：launcher 从外置 runtime `config/service.env` 加载 Mac3 本机配置，经过权限、
-   所有权、语法、保留键和冲突校验；audit 只报告变量名/缺失，不输出值。精确 R2 先完成 ECS
-   source/hash、Backend、DataBridge 和 systemd identity 读回，不得用后续 develop HEAD 替代。
+   所有权、语法、保留键和冲突校验；audit 只报告变量名/缺失，不输出值。首次迁移从现有生产 `.env`
+   复制一次并复用现有 admin token，之后开发 `.env` 与生产 `service.env` 永久独立、永不自动同步；
+   不增加 watcher、热加载、自动 token 轮换或第二套配置控制面。精确 R2 先完成 ECS source/hash、Backend、
+   DataBridge 和 systemd identity 读回，不得用后续 develop HEAD 替代。
 3. 在不与 06:30 DataBridge、07:03 daily、08:30/19:00/23:45 Actuals、周/月批次重叠的 Mac3 窗口，
    另行授权执行同一 R2 的预安装/激活、六个应用 plist 与一个 SSH tunnel
    plist 切换、Backend 重启、七个 loaded state 的只读健康检查和回滚读回；tunnel 必须保留真实

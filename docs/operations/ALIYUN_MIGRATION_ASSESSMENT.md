@@ -184,7 +184,9 @@ R1 只预安装在 Mac3 `releases/<commit>`，尚未创建 `current`。
    `<runtime>/config/service.env`；不接受 plist、shell 或调用方提供第二路径。
 2. `service.env` 是 Mac3 唯一本机应用配置 authority。首次迁移逐字节复制现有 Git 根 `.env`，文件
    必须由运行用户拥有、是非 symlink 普通文件、权限为 `0400` 或 `0600`。完成切换后 Git 根 `.env`
-   不再参与生产启动；后续凭据更新只修改外置文件并走独立授权。
+   只服务开发工作区，不再参与生产启动；外置 `service.env` 只服务 production release。两者只在首次
+   迁移时复制一次，此后永久独立、永不自动同步。开发 `.env` 的增删改不传播到生产；生产配置或凭据
+   更新只修改 `service.env`、走独立授权并重启对应服务后生效，不引入 watcher 或热加载。
 3. 解析器只接受空行、注释和唯一的 `KEY=VALUE`；key 必须是环境变量标识符，value 可为未引号文本或
    完整单/双引号文本。拒绝 duplicate、`export`、插值、命令替换和无法完整解析的行。
 4. 外置文件不得设置 release 身份、部署目标、控制面或 Python 解析路径，包括
@@ -203,6 +205,9 @@ R2 的验收顺序固定为：聚焦和全量回归 → clean HEAD deterministic
 读回。候选或切换后任一检查失败时，立即恢复旧 installed plist 和 Git Backend；不得回写数据库或
 修改调度任务来掩盖失败。Backend 单项通过后，其余五个应用 plist 与 SSH tunnel 仍须在独立窗口统一
 到同一 R2，混合 release 不得作为长期完成状态。
+
+R1 因不能加载外置生产环境，不是 Mac3 的功能性回滚版本。R2 首次切换失败时，回滚目标是已备份的旧
+installed plist 与原 Git Backend；成功稳定运行 R2 后，后续 release 才能把 R2 作为正常 previous。
 
 ## 6. 接手检查
 
@@ -266,5 +271,5 @@ env BFL_DATABASE_ENV_FILE=/etc/bond-factor-lab/bond-factor-lab.env \
 - Git、ECS evidence、systemd journal 和数据库：历史与精确时点证据。
 
 `codex/develop` 是唯一活动集成分支。`master` 继续保持冻结备份，未经授权不得移动。Mac3 当前生产
-仍绑定旧 checkout；只有 R1 夜间窗口验收完成后才能切换开发根分支。ECS 保持 release-only，不保存
+仍绑定旧 checkout；只有 R2 窗口验收完成后才能切换开发根分支。ECS 保持 release-only，不保存
 环境分支或 Git 工作区。
