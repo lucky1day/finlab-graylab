@@ -4,7 +4,7 @@
 
 **目标读者**：平台开发、运维、审计和方案维护人员
 
-**最后核验日期**：2026-08-18
+**最后核验日期**：2026-08-20
 
 本文定义 Mac3 生产与 ECS 独立灰度的调度控制面。当前稳定事实查看[当前状态](../CURRENT_STATUS.md)；具体运行证据由 installed state、日志、run、prediction、Harness 和数据库审计保存，不在文档复制一次性计划。
 
@@ -18,6 +18,13 @@ Python 模块只是被宿主控制面调用的一次性执行器。
 一个部署目标和数据库 authority 内，每个 cadence 只能有一个自然 writer。Mac3 与 ECS 当前写各自
 独立数据库，不构成同一 business key 上的双写；任一主机都不得让常驻 APScheduler、已退役 writer、
 预检进程或手工进程同时拥有自然写入权。
+
+生产调度控制面与生产源码 authority 也必须分开。ECS service 只从 `/opt/bond-factor-lab/current`
+immutable release 启动；Mac3 仓库候选只从 `/Users/macstudio0/bond-factor-lab-production/current`
+启动，并由 `scripts/run_launchd_release.py` 核验 `.bfl-release.env` 后 `exec` 既有入口。launcher 不增加
+调度权，只保证 commit、runtime root 和第三方 cache 与当前精确 release 一致。仓库模板不能证明
+installed 状态；在 Mac3 installed plist 完成独立切换前，现场仍可能运行旧 Git 工作区，必须以
+plist、`launchctl` 和进程 cwd 读回判定，不能提前切换或清理开发工作区。
 
 两个宿主控制面使用相同业务日历：DataBridge 06:30、daily 工作日 07:03、weekly 周六 11:30、
 monthly 自然月 15 日 18:00、Actuals 每日 08:30/19:00/23:45。Mac3 对应

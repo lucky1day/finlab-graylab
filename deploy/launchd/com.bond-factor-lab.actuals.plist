@@ -7,10 +7,14 @@
   <string>com.bond-factor-lab.actuals</string>
 
   <key>WorkingDirectory</key>
-  <string>/Users/macstudio0/bond-factor-lab</string>
+  <string>/Users/macstudio0/bond-factor-lab-production/current</string>
 
   <key>ProgramArguments</key>
   <array>
+    <string>/usr/bin/python3</string>
+    <string>-I</string>
+    <string>scripts/run_launchd_release.py</string>
+    <string>--</string>
     <string>/Users/macstudio0/miniconda3/bin/conda</string>
     <string>run</string>
     <string>--no-capture-output</string>
@@ -55,9 +59,9 @@
   <false/>
 
   <key>StandardOutPath</key>
-  <string>/Users/macstudio0/bond-factor-lab/logs/com.bond-factor-lab.actuals.log</string>
+  <string>/Users/macstudio0/bond-factor-lab-runtime/logs/com.bond-factor-lab.actuals.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/macstudio0/bond-factor-lab/logs/com.bond-factor-lab.actuals.err</string>
+  <string>/Users/macstudio0/bond-factor-lab-runtime/logs/com.bond-factor-lab.actuals.err</string>
 </dict>
 </plist>

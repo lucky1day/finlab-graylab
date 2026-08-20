@@ -12,7 +12,7 @@
 - `master` 已冻结在 `2b62a2e9ae7c661f4a7f1741b5ff6c351819a4ad`，作为本阶段开始前的备份点；未经用户新的明确授权，不得移动或推送 `master`。
 - Mac3 与 ECS 必须接收从同一精确集成提交构建的同一份源码 archive；两端只独立管理 Registry、数据库、调度启用、`current` 与回滚，不允许在 ECS 上保留 Git checkout、执行 `git pull` 或本地修改 release。
 - 已批准的长期发布治理目标是“单一代码线 + 不可变 release + 独立部署环境”：ECS 先验证精确 archive，Mac3 后续只能晋级同一 archive；环境差异只放在 launchd/systemd、环境变量、部署矩阵和平台依赖清单中，不得进入长期环境分支或复制算法代码。生产 release 不携带 `.git`，代码提交身份必须来自已校验 release manifest/显式环境，不能在生产依赖 `git rev-parse`。迁移期 `master` 仍按上一条冻结；稳定后是否恢复为默认集成线须另行授权，发布备份由精确 SHA、tag、archive 校验和与部署记录表达。
-- Mac3 的开发 Git 工作区与未来生产 runtime 根必须分离；目标生产结构为 `current -> releases/<release_id>` 加外置 `shared/state/revisions.log`。在专项授权完成 installed plist 切换前，这只是已批准的实施目标，当前生产 authority 仍是 installed plist 与现场 `launchctl` 读回。
+- Mac3 的开发 Git 工作区与生产 runtime 根必须分离；仓库候选结构固定为 `/Users/macstudio0/bond-factor-lab-production/current -> releases/<release_id>`，运行状态与日志外置到 `/Users/macstudio0/bond-factor-lab-runtime`。候选 launchd 模板只经 `scripts/run_launchd_release.py` 加载安装器生成的精确 release 环境；但 2026-08-20 当前 installed plist 尚未切换，Mac3 生产仍运行 `/Users/macstudio0/bond-factor-lab`，现场 authority 仍是 installed plist 与 `launchctl` 读回。只有在新的夜间窗口专项授权、切换和验收完成后，才能把开发 Git 根工作区改到 `codex/develop`。
 - 跨 release 状态不得无条件共用：日志和部署记录可永久外置；DataBridge、缓存和输入 artifact 只有通过既有 manifest、lineage、business digest、input state 与 ready gate 才能复用；源码 symlink 回滚不等于数据库、Python 环境或运行期状态回滚。
 - 环境方案范围只由 `BFL_DEPLOYMENT_TARGET` 与 `deploy/scheme_deployment_matrix_v1.json` 表达；不得再通过为不同主机修改 canonical `config.yaml` 的 `status` 制造两个 `scheme_version`。
 - 经过验证的开发分支只有在用户明确确认后，才能合并或覆盖到 `master` 并推送远程；agent 不得自行决定发布到 `master` 或其它发布分支。

@@ -68,8 +68,20 @@ systemd 候选模板读取该文件，使无 `.git` release 仍有稳定代码�
 Blackbox Gate、activation、revision activation 和环境验证 CLI 通过同一个 selector 选择 frozen
 manifest：Linux x86_64 使用 `linux-64`，Mac arm64 使用 `osx-arm64`，其它平台 fail-closed。
 
-这些是仓库候选能力，不表示 ECS installed unit 已替换，也不表示 Mac3 launchd 已切换。Mac3
-release 环境的 plist 注入方式留在后续 Mac3 解耦窗口设计，本阶段不修改或 reload Mac3 模板。
+这些是仓库候选能力，不表示任一 installed unit/plist 已替换。Mac3 仓库 launchd 模板使用
+`/Users/macstudio0/bond-factor-lab-production/current` 作为工作目录，并先由
+隔离模式 `/usr/bin/python3 -I` 执行 `scripts/run_launchd_release.py`，从当前已经解析的精确 release
+读取 `.bfl-release.env`，再 `exec`
+既有 conda 入口。启动器拒绝 Git 工作区、非 `releases/<commit>` 目录、可写/软链接环境文件、commit、
+runtime root、Numba/Matplotlib cache 漂移、外层同名环境覆盖以及 `PYTHONPATH/PYTHONHOME`。release
+安装器同时创建外置
+`/Users/macstudio0/bond-factor-lab-runtime/logs` 期望目录；仓库模板的 stdout/stderr 不再写入 Git
+工作区。SSH tunnel 不执行项目代码，只使用用户主目录作为工作目录；夜间闭环仍须独立替换并读回
+该 plist，保留真实 key/user，同时验证日志精确外置。
+
+2026-08-20 当前这些仍是 R1 候选期望状态：installed Mac3 plist 和 loaded launchd 尚未替换，生产
+仍由原 Git 工作区运行。预安装、激活、替换 installed plist、bootstrap/bootout/kickstart、Backend
+重启和开发工作区切分均属于后续夜间窗口的独立生产操作。
 
 ## Mac Studio launchd 单 writer 目标
 
@@ -131,7 +143,8 @@ PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
 
 审计固定禁止所有正式模板和 installed 环境出现
 `BOND_DAILY_COORDINATOR_MODE`，并要求 DataBridge 保留
-`BFL_DATABRIDGE_PRODUCER=launchd-one-shot`。Backend 的 admin token/日志路径，以及 SSH 隧道
-模板明确标注的本机身份参数/日志路径，只作为批准的本机差异；其余启动参数、工作目录、调度触发器
-和环境变量差异仍使脚本退出 `1`。脚本退出 `0` 只表示当前只读配置审计通过，不代表生产任务已
-自然运行成功，也不授予任何生产操作权限。
+`BFL_DATABRIDGE_PRODUCER=launchd-one-shot`。只有 Backend 的真实 admin token 值，以及 SSH 隧道
+模板明确标注且已验证的本机 key/user，属于批准的本机差异；Backend/tunnel 必须处于 running，七个
+任务的日志路径必须与外置 runtime 模板精确一致。其余启动参数、工作目录、调度触发器和环境变量
+差异仍使脚本退出 `1`。脚本退出 `0` 只表示当前只读配置审计通过，不代表生产任务已自然运行成功，
+也不授予任何生产操作权限。

@@ -42,6 +42,7 @@ def _make_source_repo(tmp_path: Path) -> Path:
         "shared/service_instance.py": "RELEASE_TEST = True\n",
         "backend/main.py": "APP_TEST = True\n",
         "scheduler/executor.py": "EXECUTOR_TEST = True\n",
+        "scripts/run_launchd_release.py": "#!/usr/bin/env python3\n",
         "scripts/tool.py": "#!/usr/bin/env python3\n",
     }
     for relative, content in required_files.items():
@@ -49,6 +50,7 @@ def _make_source_repo(tmp_path: Path) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
     (repo / "scripts" / "tool.py").chmod(0o755)
+    (repo / "scripts" / "run_launchd_release.py").chmod(0o755)
     _run_git(repo, "init", "-q")
     _run_git(repo, "config", "user.name", "Release Test")
     _run_git(repo, "config", "user.email", "release@example.invalid")
@@ -297,6 +299,10 @@ def test_preinstall_then_activate_release(
     ).stat().st_mode & stat.S_IWUSR
     assert (installed.release_root / "scripts" / "tool.py").stat().st_mode & (
         stat.S_IXUSR
+    )
+    assert (runtime_root / "logs").is_dir()
+    assert not (runtime_root / "logs").stat().st_mode & (
+        stat.S_IWGRP | stat.S_IWOTH
     )
     events = [
         json.loads(line)

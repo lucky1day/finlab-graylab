@@ -37,7 +37,7 @@
   <string>com.bond-factor-lab.ssh-tunnel</string>
 
   <key>WorkingDirectory</key>
-  <string>/Users/macstudio0/bond-factor-lab</string>
+  <string>/Users/macstudio0</string>
 
   <key>ProgramArguments</key>
   <array>
@@ -71,9 +71,9 @@
   <integer>10</integer>
 
   <key>StandardOutPath</key>
-  <string>/Users/macstudio0/bond-factor-lab/logs/com.bond-factor-lab.ssh-tunnel.log</string>
+  <string>/Users/macstudio0/bond-factor-lab-runtime/logs/com.bond-factor-lab.ssh-tunnel.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/macstudio0/bond-factor-lab/logs/com.bond-factor-lab.ssh-tunnel.err</string>
+  <string>/Users/macstudio0/bond-factor-lab-runtime/logs/com.bond-factor-lab.ssh-tunnel.err</string>
 </dict>
 </plist>

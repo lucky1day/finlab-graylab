@@ -9,6 +9,7 @@ import json
 import os
 import plistlib
 import re
+import stat
 import subprocess
 from pathlib import Path
 from typing import Any, Sequence
@@ -20,26 +21,39 @@ LAUNCHD_INJECTED_ENVIRONMENT_VARIABLES = frozenset(
 )
 DATA_BRIDGE_LABEL = "com.bond-factor-lab.data-bridge-refresh"
 DATA_BRIDGE_PRODUCER = ("BFL_DATABRIDGE_PRODUCER", "launchd-one-shot")
+BACKEND_LABEL = "com.bond-factor-lab.backend"
+BACKEND_ADMIN_TOKEN = ("BOND_ADMIN_TOKEN", "__SET_REAL_TOKEN__")
 APPROVED_LOCAL_DIFFERENCES: dict[str, frozenset[str]] = {
-    "com.bond-factor-lab.backend": frozenset(
-        {
-            "EnvironmentVariables.BOND_ADMIN_TOKEN",
-            "StandardErrorPath",
-            "StandardOutPath",
-        }
-    ),
-    "com.bond-factor-lab.ssh-tunnel": frozenset(
-        {
-            "StandardErrorPath",
-            "StandardOutPath",
-        }
-    ),
+    BACKEND_LABEL: frozenset({"EnvironmentVariables.BOND_ADMIN_TOKEN"}),
 }
 
 SSH_TUNNEL_LOCAL_ARGUMENT_PLACEHOLDERS = {
     "/Users/macstudio0/.ssh/<TUNNEL_KEY>",
     "<SSH_USER>@bond.finailab.cn",
 }
+SSH_TUNNEL_KEY_PLACEHOLDER = "/Users/macstudio0/.ssh/<TUNNEL_KEY>"
+SSH_TUNNEL_REMOTE = re.compile(r"^[^@<>\s]+@bond\.finailab\.cn$")
+ALWAYS_RUNNING_LABELS = frozenset(
+    {BACKEND_LABEL, "com.bond-factor-lab.ssh-tunnel"}
+)
+
+
+def _valid_ssh_local_argument(template_value: object, value: object) -> bool:
+    candidate = str(value).strip()
+    if template_value != SSH_TUNNEL_KEY_PLACEHOLDER:
+        return SSH_TUNNEL_REMOTE.fullmatch(candidate) is not None
+    key_path = Path(candidate)
+    if not key_path.is_absolute() or key_path.is_symlink():
+        return False
+    try:
+        metadata = key_path.stat()
+    except OSError:
+        return False
+    return bool(
+        stat.S_ISREG(metadata.st_mode)
+        and metadata.st_uid == os.geteuid()
+        and stat.S_IMODE(metadata.st_mode) in {0o400, 0o600}
+    )
 
 
 def _load_plist(path: Path) -> dict[str, Any]:
@@ -221,6 +235,51 @@ def audit_plist_pair(
             required_missing.append(name)
         if loaded_environment is None or loaded_environment.get(name) != expected_value:
             loaded_required_missing.append(name)
+    if label == BACKEND_LABEL:
+        name, placeholder = BACKEND_ADMIN_TOKEN
+        installed_value = installed_environment.get(name)
+        if (
+            not isinstance(installed_value, str)
+            or not installed_value.strip()
+            or installed_value.strip() == placeholder
+        ):
+            required_missing.append(name)
+        loaded_value = (
+            None if loaded_environment is None else loaded_environment.get(name)
+        )
+        if (
+            not isinstance(loaded_value, str)
+            or not loaded_value.strip()
+            or loaded_value.strip() == placeholder
+        ):
+            loaded_required_missing.append(name)
+    required_local_missing: list[str] = []
+    loaded_required_local_missing: list[str] = []
+    if label == "com.bond-factor-lab.ssh-tunnel":
+        template_arguments = template.get("ProgramArguments") or []
+        installed_arguments = installed.get("ProgramArguments") or []
+        loaded_arguments = _loaded_arguments(loaded_text) if launchctl_output else None
+        for index, value in enumerate(template_arguments):
+            if value not in SSH_TUNNEL_LOCAL_ARGUMENT_PLACEHOLDERS:
+                continue
+            path = f"ProgramArguments[{index}]"
+            if (
+                index >= len(installed_arguments)
+                or not _valid_ssh_local_argument(
+                    value,
+                    installed_arguments[index],
+                )
+            ):
+                required_local_missing.append(path)
+            if (
+                loaded_arguments is None
+                or index >= len(loaded_arguments)
+                or not _valid_ssh_local_argument(
+                    value,
+                    loaded_arguments[index],
+                )
+            ):
+                loaded_required_local_missing.append(path)
     loaded = launchctl_output is not None
     loaded_mismatch: list[str] = []
     if loaded:
@@ -230,6 +289,8 @@ def audit_plist_pair(
             or Path(path_match.group(1).strip()).resolve() != installed_path.resolve()
         ):
             loaded_mismatch.append("Path")
+        if label in ALWAYS_RUNNING_LABELS and _loaded_state(loaded_text) != "running":
+            loaded_mismatch.append("State")
         if _loaded_arguments(loaded_text) != installed.get("ProgramArguments"):
             loaded_mismatch.append("ProgramArguments")
         working_match = re.search(
@@ -296,6 +357,10 @@ def audit_plist_pair(
         "loaded_forbidden_variables_present": loaded_forbidden,
         "required_environment_missing": required_missing,
         "loaded_required_environment_missing": loaded_required_missing,
+        "required_local_configuration_missing": required_local_missing,
+        "loaded_required_local_configuration_missing": (
+            loaded_required_local_missing
+        ),
         "loaded_configuration_mismatch_fields": sorted(loaded_mismatch),
         "approved_local_difference_paths": approved_drift,
         "unexpected_drift_paths": unexpected_drift,
@@ -306,6 +371,8 @@ def audit_plist_pair(
         or loaded_forbidden
         or required_missing
         or loaded_required_missing
+        or required_local_missing
+        or loaded_required_local_missing
         or loaded_mismatch
         or unexpected_drift
     )

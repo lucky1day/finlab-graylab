@@ -57,6 +57,7 @@ _REQUIRED_SOURCE_PATHS = (
     "shared/service_instance.py",
     "backend/main.py",
     "scheduler/executor.py",
+    "scripts/run_launchd_release.py",
 )
 
 
@@ -145,6 +146,11 @@ def install_source_release(
                 "runtime root",
                 create=False,
             )
+            _ensure_secure_directory(
+                runtime / "logs",
+                "runtime logs root",
+                create=False,
+            )
             _validate_existing_release(
                 release_root=release_root,
                 commit=commit,
@@ -163,6 +169,11 @@ def install_source_release(
             _ensure_secure_directory(
                 runtime,
                 "runtime root",
+                create=True,
+            )
+            _ensure_secure_directory(
+                runtime / "logs",
+                "runtime logs root",
                 create=True,
             )
             if release_root.exists() or release_root.is_symlink():

@@ -9,6 +9,10 @@
 ## 当前双主机运行规则
 
 - Mac3 继续承载生产域名、前端、数据库和 Writer；`launchd + installed plist` 是 Mac3 的自然生产调度控制面。
+- Mac3 immutable release 的仓库候选已收敛为独立 `bond-factor-lab-production/current`、外置
+  `bond-factor-lab-runtime` 和最小 launchd release launcher；候选测试不改变 installed plist。
+  当前六个 Mac3 应用 plist 现场仍绑定 `/Users/macstudio0/bond-factor-lab`，开发根工作区仍为
+  `codex/audit-bugfixes-20260613`，因此尚不能切换该工作区分支。
 - ECS 是独立灰度实验室，不是 Mac3 热备或复制节点；其 DataBridge、daily、weekly、monthly、Actuals 五个 systemd timer 已于 2026-08-18 经专项授权启用，现场 authority 是 installed unit/timer 与 `systemctl` 读回。
 - 2026-08-20 已使用冻结同源数据、隔离数据库和热缓存副本完成 DataBridge、daily、weekly、monthly
   与 Actuals 的 systemd 调度等价验收；三频 56 个 run、60 条预测全部成功，7 个 Liwei family 均走
@@ -21,6 +25,15 @@
 - 自然运行写 `scheduled_live`；单日人工补缺只经 `python -m harness signal-gap-fill --predict-date YYYY-MM-DD` 写 insert-only `gray_live`。
 - Blackbox Admission、Backend 手动预测、direct scheduling、ledger、occurrence、epoch、daily-gray 和常驻 APScheduler 均已退役。
 - installed plist/unit/timer、launchctl/systemctl 服务变更、激活、持久化回测、额外业务写入和 DDL 仍是独立操作，必须获得明确授权。
+
+## 当前迁移完成边界
+
+- ECS 独立灰度迁移已经完成。
+- 双主机单一 source release 治理尚差 Mac3 夜间窗口：预安装并激活已冻结 R1、替换六个 installed
+  应用 plist，并独立替换 SSH tunnel plist（保留真实 key/user）、读回七个 loaded state、Backend/
+  release identity，并证明应用进程与 tunnel 日志都不再引用 Git 根目录。
+- 上述现场验收完成后，才能把 Mac3 开发根工作区切到 `codex/develop`；该时点即为本轮部署治理
+  迁移闭环。生产域名或 Writer 改切 ECS 是未来可选项目，不属于本轮完成条件。
 
 ## 当前输入权威
 

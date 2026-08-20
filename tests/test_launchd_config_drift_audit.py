@@ -174,7 +174,7 @@ def test_audit_reports_legacy_drift_without_exposing_environment_values(
     assert "=> legacy" not in serialized
 
 
-def test_backend_allows_local_token_and_log_paths_but_not_legacy_variable(
+def test_backend_allows_real_local_token_but_requires_exact_log_paths(
     tmp_path: Path,
 ) -> None:
     label = "com.bond-factor-lab.backend"
@@ -191,9 +191,7 @@ def test_backend_allows_local_token_and_log_paths_but_not_legacy_variable(
         installed,
         _plist(
             label,
-            environment={},
-            stdout="/tmp/backend.log",
-            stderr="/tmp/backend.err",
+            environment={"BOND_ADMIN_TOKEN": "local-secret"},
         ),
     )
 
@@ -203,9 +201,7 @@ def test_backend_allows_local_token_and_log_paths_but_not_legacy_variable(
         launchctl_output=_launchctl(
             _plist(
                 label,
-                environment={},
-                stdout="/tmp/backend.log",
-                stderr="/tmp/backend.err",
+                environment={"BOND_ADMIN_TOKEN": "local-secret"},
             ),
             state="running",
             installed_path=installed,
@@ -215,10 +211,103 @@ def test_backend_allows_local_token_and_log_paths_but_not_legacy_variable(
     assert result["unexpected_drift_paths"] == []
     assert result["approved_local_difference_paths"] == [
         "EnvironmentVariables.BOND_ADMIN_TOKEN",
+    ]
+    assert result["required_environment_missing"] == []
+    assert result["loaded_required_environment_missing"] == []
+    assert result["loaded_state"] == "running"
+    assert result["ok"] is True
+    assert "local-secret" not in json.dumps(result, sort_keys=True)
+
+
+def test_backend_fails_closed_for_missing_placeholder_or_unloaded_token(
+    tmp_path: Path,
+) -> None:
+    label = "com.bond-factor-lab.backend"
+    template = tmp_path / "template.plist"
+    installed = tmp_path / "installed.plist"
+    template_payload = _plist(
+        label,
+        environment={"BOND_ADMIN_TOKEN": "__SET_REAL_TOKEN__"},
+    )
+    _write_plist(template, template_payload)
+
+    for environment in (
+        {},
+        {"BOND_ADMIN_TOKEN": "__SET_REAL_TOKEN__"},
+        {"BOND_ADMIN_TOKEN": "  __SET_REAL_TOKEN__  "},
+        {"BOND_ADMIN_TOKEN": "   "},
+    ):
+        installed_payload = _plist(label, environment=environment)
+        _write_plist(installed, installed_payload)
+        result = audit_plist_pair(
+            template_path=template,
+            installed_path=installed,
+            launchctl_output=_launchctl(
+                installed_payload,
+                state="running",
+                installed_path=installed,
+            ),
+        )
+        assert result["required_environment_missing"] == ["BOND_ADMIN_TOKEN"]
+        assert result["loaded_required_environment_missing"] == [
+            "BOND_ADMIN_TOKEN"
+        ]
+        assert result["ok"] is False
+
+    installed_payload = _plist(
+        label,
+        environment={"BOND_ADMIN_TOKEN": "local-secret"},
+    )
+    _write_plist(installed, installed_payload)
+    loaded_missing = audit_plist_pair(
+        template_path=template,
+        installed_path=installed,
+        launchctl_output=_launchctl(
+            installed_payload,
+            state="running",
+            installed_path=installed,
+            environment={},
+        ),
+    )
+    assert loaded_missing["required_environment_missing"] == []
+    assert loaded_missing["loaded_required_environment_missing"] == [
+        "BOND_ADMIN_TOKEN"
+    ]
+    assert loaded_missing["ok"] is False
+
+
+def test_backend_log_path_drift_is_not_approved(tmp_path: Path) -> None:
+    label = "com.bond-factor-lab.backend"
+    template = tmp_path / "template.plist"
+    installed = tmp_path / "installed.plist"
+    template_payload = _plist(
+        label,
+        environment={"BOND_ADMIN_TOKEN": "__SET_REAL_TOKEN__"},
+    )
+    installed_payload = _plist(
+        label,
+        environment={"BOND_ADMIN_TOKEN": "local-secret"},
+        stdout="/tmp/backend.log",
+        stderr="/tmp/backend.err",
+    )
+    _write_plist(template, template_payload)
+    _write_plist(installed, installed_payload)
+
+    result = audit_plist_pair(
+        template_path=template,
+        installed_path=installed,
+        launchctl_output=_launchctl(
+            installed_payload,
+            state="running",
+            installed_path=installed,
+        ),
+    )
+
+    assert result["unexpected_drift_paths"] == [
         "StandardErrorPath",
         "StandardOutPath",
     ]
-    assert result["loaded_state"] == "running"
+    assert result["ok"] is False
 
 
 def test_data_bridge_audit_fails_closed_when_producer_identity_is_missing(
@@ -317,18 +406,19 @@ def test_ssh_tunnel_allows_only_declared_local_placeholders(tmp_path: Path) -> N
         "127.0.0.1:18100:127.0.0.1:8100",
         "<SSH_USER>@bond.finailab.cn",
     ]
+    key_path = tmp_path / "real-key"
+    key_path.write_text("test-private-key", encoding="utf-8")
+    key_path.chmod(0o600)
     installed_payload = dict(template_payload)
     installed_payload["ProgramArguments"] = [
         "/usr/bin/ssh",
         "-N",
         "-i",
-        "/Users/macstudio0/.ssh/real-key",
+        str(key_path),
         "-R",
         "127.0.0.1:18100:127.0.0.1:8100",
         "real-user@bond.finailab.cn",
     ]
-    installed_payload["StandardOutPath"] = "/tmp/ssh-tunnel.log"
-    installed_payload["StandardErrorPath"] = "/tmp/ssh-tunnel.err"
     _write_plist(template, template_payload)
     _write_plist(installed, installed_payload)
 
@@ -346,10 +436,40 @@ def test_ssh_tunnel_allows_only_declared_local_placeholders(tmp_path: Path) -> N
     assert result["approved_local_difference_paths"] == [
         "ProgramArguments[3]",
         "ProgramArguments[6]",
-        "StandardErrorPath",
-        "StandardOutPath",
     ]
     assert result["ok"] is True
+
+    for mode in (0o000, 0o100, 0o200):
+        key_path.chmod(mode)
+        unreadable = audit_plist_pair(
+            template_path=template,
+            installed_path=installed,
+            launchctl_output=_launchctl(
+                installed_payload,
+                state="running",
+                installed_path=installed,
+            ),
+        )
+        assert unreadable["required_local_configuration_missing"] == [
+            "ProgramArguments[3]"
+        ]
+        assert unreadable["loaded_required_local_configuration_missing"] == [
+            "ProgramArguments[3]"
+        ]
+        assert unreadable["ok"] is False
+    key_path.chmod(0o600)
+
+    not_running = audit_plist_pair(
+        template_path=template,
+        installed_path=installed,
+        launchctl_output=_launchctl(
+            installed_payload,
+            state="not running",
+            installed_path=installed,
+        ),
+    )
+    assert not_running["loaded_configuration_mismatch_fields"] == ["State"]
+    assert not_running["ok"] is False
 
     installed_payload["ProgramArguments"][5] = "0.0.0.0:18100:127.0.0.1:8100"
     _write_plist(installed, installed_payload)
@@ -365,6 +485,23 @@ def test_ssh_tunnel_allows_only_declared_local_placeholders(tmp_path: Path) -> N
 
     assert changed["unexpected_drift_paths"] == ["ProgramArguments[5]"]
     assert changed["ok"] is False
+
+    installed_payload["ProgramArguments"][5] = (
+        "127.0.0.1:18100:127.0.0.1:8100"
+    )
+    installed_payload["StandardOutPath"] = "/tmp/ssh-tunnel.log"
+    _write_plist(installed, installed_payload)
+    log_changed = audit_plist_pair(
+        template_path=template,
+        installed_path=installed,
+        launchctl_output=_launchctl(
+            installed_payload,
+            state="running",
+            installed_path=installed,
+        ),
+    )
+    assert log_changed["unexpected_drift_paths"] == ["StandardOutPath"]
+    assert log_changed["ok"] is False
 
 
 def test_ssh_tunnel_does_not_approve_fixed_indexes_without_placeholders(
@@ -393,6 +530,96 @@ def test_ssh_tunnel_does_not_approve_fixed_indexes_without_placeholders(
 
     assert result["unexpected_drift_paths"] == ["ProgramArguments[14]"]
     assert result["ok"] is False
+
+
+def test_ssh_tunnel_requires_real_local_key_and_user(tmp_path: Path) -> None:
+    label = "com.bond-factor-lab.ssh-tunnel"
+    template = tmp_path / "template.plist"
+    installed = tmp_path / "installed.plist"
+    payload = _plist(label, environment={})
+    payload["ProgramArguments"] = [
+        "/usr/bin/ssh",
+        "-N",
+        "-i",
+        "/Users/macstudio0/.ssh/<TUNNEL_KEY>",
+        "-R",
+        "127.0.0.1:18100:127.0.0.1:8100",
+        "<SSH_USER>@bond.finailab.cn",
+    ]
+    _write_plist(template, payload)
+    _write_plist(installed, payload)
+
+    result = audit_plist_pair(
+        template_path=template,
+        installed_path=installed,
+        launchctl_output=_launchctl(
+            payload,
+            state="running",
+            installed_path=installed,
+        ),
+    )
+
+    assert result["required_local_configuration_missing"] == [
+        "ProgramArguments[3]",
+        "ProgramArguments[6]",
+    ]
+    assert result["loaded_required_local_configuration_missing"] == [
+        "ProgramArguments[3]",
+        "ProgramArguments[6]",
+    ]
+    assert result["ok"] is False
+
+    padded_payload = dict(payload)
+    padded_payload["ProgramArguments"] = list(payload["ProgramArguments"])
+    padded_payload["ProgramArguments"][3] = (
+        "  /Users/macstudio0/.ssh/<TUNNEL_KEY>  "
+    )
+    padded_payload["ProgramArguments"][6] = (
+        "  <SSH_USER>@bond.finailab.cn  "
+    )
+    _write_plist(installed, padded_payload)
+    padded = audit_plist_pair(
+        template_path=template,
+        installed_path=installed,
+        launchctl_output=_launchctl(
+            padded_payload,
+            state="running",
+            installed_path=installed,
+        ),
+    )
+    assert padded["required_local_configuration_missing"] == [
+        "ProgramArguments[3]",
+        "ProgramArguments[6]",
+    ]
+    assert padded["loaded_required_local_configuration_missing"] == [
+        "ProgramArguments[3]",
+        "ProgramArguments[6]",
+    ]
+    assert padded["ok"] is False
+
+    invalid_payload = dict(payload)
+    invalid_payload["ProgramArguments"] = list(payload["ProgramArguments"])
+    invalid_payload["ProgramArguments"][3] = "/does/not/exist"
+    invalid_payload["ProgramArguments"][6] = "not-a-host"
+    _write_plist(installed, invalid_payload)
+    invalid = audit_plist_pair(
+        template_path=template,
+        installed_path=installed,
+        launchctl_output=_launchctl(
+            invalid_payload,
+            state="running",
+            installed_path=installed,
+        ),
+    )
+    assert invalid["required_local_configuration_missing"] == [
+        "ProgramArguments[3]",
+        "ProgramArguments[6]",
+    ]
+    assert invalid["loaded_required_local_configuration_missing"] == [
+        "ProgramArguments[3]",
+        "ProgramArguments[6]",
+    ]
+    assert invalid["ok"] is False
 
 
 def test_empty_template_directory_fails_closed(
