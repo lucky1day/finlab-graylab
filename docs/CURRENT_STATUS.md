@@ -9,20 +9,13 @@
 ## 当前双主机运行规则
 
 - Mac3 继续承载生产域名、前端、数据库和 Writer；`launchd + installed plist` 是 Mac3 的自然生产调度控制面。
-- Mac3 immutable release R2 已冻结为 tag `mac3-immutable-r2-20260820`，精确 commit 为
+- Mac3 与 ECS 当前运行 tag `mac3-immutable-r2-20260820` 的同一精确 source release；commit 为
   `e692285d47e41c384dc915758abe0c51f9ac3aaf`，archive SHA256 为
-  `9b414792f51f5a47fda46ae403dfdf5f8909fdebe511512fd4cead36f666dac4`。其仓库能力已收敛为独立
-  `bond-factor-lab-production/current`、外置 `bond-factor-lab-runtime` 和最小 launchd release
-  launcher；两次确定性构建、全量回归、独立审查和 ECS 精确 archive 晋级读回均已通过。ECS 当前
-  `current=e692285d47e41c384dc915758abe0c51f9ac3aaf`、
-  `previous=c4e15eb9fbf0a278a961a7dce4d3a25b9394a724`。Backend 与 DataBridge check-only 已通过，五个 timer
-  保持 enabled/active。
-- 2026-08-20 Mac3 已在不创建 `current`、不替换 plist 的前提下预安装 R1；备用端口候选验证证明旧
-  Backend 隐式依赖 Git 根 `.env`，immutable release 因没有数据库凭据而 fail-closed。该次候选期间
-  8100 Backend、前端和调度均未改变。R2 已实现从 runtime `config/service.env` 显式、安全加载本机配置；
-  不把 `.env` 复制进只读 release，也不把全部 secret 展开到每个 plist。Git 根 `.env` 只服务开发工作区，
-  `service.env` 只服务 Mac3 生产 release；
-  两者仅首次迁移时复制一次，此后永久独立、永不自动同步，生产配置变更只在重启对应服务后生效。
+  `9b414792f51f5a47fda46ae403dfdf5f8909fdebe511512fd4cead36f666dac4`。ECS Backend、DataBridge
+  check-only 和五个 enabled/active timer 已读回通过。
+- Mac3 生产应用从独立 `bond-factor-lab-production/current` 启动；运行状态位于外置
+  `bond-factor-lab-runtime`。`runtime/config/service.env` 是生产应用本机配置 authority，Git 根 `.env`
+  只服务开发工作区；两者不自动同步，生产配置变更必须独立授权并重启对应服务。
 - 同日 Mac3 已正式切换到精确 R2：六个应用 plist 均从 production `current` 启动，SSH tunnel 的
   工作目录和日志已外置；七项 drift audit、Backend/首页/方案/admin、DataBridge check-only 和远端
   loopback tunnel 读回全部通过。生产进程不再引用 Git 工作区，旧七个 plist 保留为首次回滚备份。

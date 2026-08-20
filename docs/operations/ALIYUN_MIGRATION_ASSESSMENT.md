@@ -2,36 +2,26 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验时间**：2026-08-20 13:49（Asia/Shanghai）
+**最后核验日期**：2026-08-20
 
-**当前阶段**：ECS 独立灰度部署、压缩式调度等价验收、精确 R2 晋级和 Mac3 immutable release
-解耦均已完成；生产域名和 Writer 仍由 Mac3 承载，未切换到 ECS。
-
-本文是 ECS 迁移、运行和接手的唯一当前入口。已完成计划、旧候选、一次性测试过程和中间验收报告
-不留在工作树；需要追溯时使用 Git、ECS root-only evidence、systemd journal 和数据库审计记录。
+本文是 ECS 灰度运行、双主机 release 治理和未来生产切换边界的当前入口。迁移实施过程、旧候选、
+一次性验收脚本和逐次运行证据不保留在工作树；需要追溯时使用 Git、systemd/launchd journal、数据库
+审计和目标机 root-only evidence。
 
 ## 1. 当前结论
 
-ECS 已具备独立数据库、增量数据链、DataBridge、算法环境、项目 release、systemd 调度、Actuals 和
-loopback Backend。五个 timer 已启用，daily 保持两小时总运行上限。冻结同源数据下的 DataBridge、
-daily、weekly、monthly 和 Actuals 已按 systemd one-shot 等价路径完成隔离真写库；Phase-A 的 7 个
-family 全部复用 parent 并执行有限 suffix，没有全量重建。无需再把“等待五个自然日”作为本轮上线门。
+- ECS 独立灰度部署已经完成：独立 MySQL、增量数据链、DataBridge、三套 Python 环境、Backend、
+  daily/weekly/monthly/Actuals 和五个 systemd timer 均已落地。
+- Mac3 immutable release 解耦已经完成：生产应用从不可变 `current` 启动，运行配置、日志、DataBridge
+  状态和第三方 cache 位于 release 外，生产进程不再依赖 Git 开发工作区。
+- Mac3 与 ECS 当前运行同一精确 R2 source release；`codex/develop` 是唯一活动集成分支，不维护环境
+  专用长期分支。
+- Mac3 继续承载生产域名、生产数据库和 Writer；ECS 只监听 loopback，独立运行和观察，不接生产流量。
 
-代码治理也已落地为单一代码线：
+因此本轮“ECS 灰度部署 + 双主机单一 source release 治理”已经闭环。未来把域名或 Writer 切到 ECS
+是新的生产项目，不属于本轮完成条件，也未由本轮授权。
 
-- `codex/develop` 是唯一活动集成分支；不维护 Mac3/ECS 两条长期环境分支；
-- 单一 archive、不可变 release 和小型平台适配器能力已经实现；精确 R2 archive 已晋级 ECS current
-  并完成读回，Mac3 下一步只在独立窗口预安装、候选验证并晋级同一 archive；
-- ECS 使用不可变 `releases/<commit>` 和 `current/previous`，不保留 Git checkout、不执行 `git pull`、
-  不允许主机本地修改 release；
-- Mac3 与 ECS 的差异只存在于 launchd/systemd、部署目标、环境文件、部署矩阵和平台依赖 manifest；
-  scheduler、repository、算法和 scheme config 不复制；
-- Mac3 的七个 installed/loaded plist 已统一到精确 R2；六个应用从 production `current` 启动，
-  SSH tunnel 使用外置日志和本机真实 key/user，生产进程不再依赖 Git 开发工作区。
-
-因此需要区分两个结论：**ECS 迁移部署已完成**；**生产域名和 Writer 从 Mac3 切换到 ECS 尚未开始**。
-
-## 2. 双主机边界
+## 2. 双主机运行边界
 
 ```mermaid
 flowchart LR
@@ -48,30 +38,40 @@ flowchart LR
     MDB -.->|"不复制、不双写"| EDB
 ```
 
-- Mac3 继续承载生产域名、生产前端和生产 Writer。
-- ECS 是独立灰度实验室，不是 Mac3 热备、复制节点或共享数据库节点。
 - 两端各自维护数据库、DataBridge、Registry、run、prediction、调度状态和回滚指针。
-- ECS Backend 只监听 `127.0.0.1:8100`；本阶段不安装生产 Nginx/TLS，不修改 DNS 或生产流量。
-- 灰度达标不会自动触发切换；Web、Writer、域名、窗口和回滚范围必须再次明确授权。
+- ECS 不是 Mac3 热备或共享数据库节点；本阶段不安装生产 Nginx/TLS，不修改 DNS 或安全组公网入口。
+- 仓库模板只表示期望配置。Mac3 的现场 authority 是 installed plist 与 `launchctl`；ECS 的现场
+  authority 是 installed unit/timer 与 `systemctl`。
+- 灰度健康不会自动授权切流；Web、Writer、数据库 authority、域名、窗口和回滚范围必须分别评审。
 
-## 3. ECS 当前运行状态
+## 3. 当前部署基线
 
-| 范围 | 当前状态 |
-|---|---|
-| 数据库 | ECS loopback MySQL 8.4，独立 `bond_db`；应用经 `BFL_DATABASE_ENV_FILE` 读取 root-only 环境文件 |
-| 增量数据链 | `/opt/bondprediction/current` 独立运行；requirements 已包含 `cryptography` |
-| Python 环境 | service、forecast、Blackbox 三套 Linux conda 环境；依赖来源为 conda-forge-only |
-| 项目 release | R2 `current=e692285d47e41c384dc915758abe0c51f9ac3aaf`；R1 `previous=c4e15eb9fbf0a278a961a7dce4d3a25b9394a724` |
-| 外置状态 | `/var/lib/bond-factor-lab/state`；DataBridge、artifact、日志和第三方 cache 均位于 release 外 |
-| Liwei 热缓存 | 7 个 family 位于独立 cache root；当前 generation 均通过 secure loader |
-| 方案范围 | ECS discovery 为 56 active base / 60 active composite；9 个 Mac-only base 不进入 ECS runner |
-| Backend | systemd service 运行，`/api/health` 返回 `status=ok`，仅监听 loopback |
-| 调度 | DataBridge、daily、weekly、monthly、Actuals 五个 timer 均为 `enabled/active/waiting` |
-| 生产影响 | Mac3、launchd、Nginx、DNS、域名和生产流量均未改变 |
+两端当前精确 release 为：
 
-### 3.1 systemd 计划
+```text
+tag:     mac3-immutable-r2-20260820
+commit:  e692285d47e41c384dc915758abe0c51f9ac3aaf
+archive: 9b414792f51f5a47fda46ae403dfdf5f8909fdebe511512fd4cead36f666dac4
+```
 
-| 职责 | 触发 | 总时限 |
+| 范围 | ECS | Mac3 |
+|---|---|---|
+| 角色 | 独立灰度实验室 | 当前生产 Web / DB / Writer |
+| 控制面 | systemd one-shot + timer | launchd one-shot + plist |
+| Backend | `127.0.0.1:8100` | 生产域名现有入口 |
+| release | `/opt/bond-factor-lab/current` | `/Users/macstudio0/bond-factor-lab-production/current` |
+| 外置状态 | `/var/lib/bond-factor-lab/state` | `/Users/macstudio0/bond-factor-lab-runtime` |
+| 本机配置 | root-only database env | `runtime/config/service.env` |
+| Git 工作区 | 无 | `/Users/macstudio0/bond-factor-lab`，仅开发使用 |
+
+ECS 使用 conda-forge-only 的 service、forecast 和 Blackbox 环境；BondPrediction requirements 已包含
+`cryptography`。ECS discovery 为 56 active base / 60 active composite，9 个 Mac-only base 不进入
+ECS runner。两端 release 的环境差异只由部署模板、目标矩阵和平台依赖 manifest 表达，不复制
+scheduler、repository、算法或 scheme config。
+
+## 4. 调度与运行上限
+
+| 职责 | ECS 触发 | 总时限 |
 |---|---|---:|
 | DataBridge | 每日 06:30 | 1 小时 |
 | daily | 工作日 07:03 | 2 小时 |
@@ -79,173 +79,51 @@ flowchart LR
 | monthly | 自然月 15 日 18:00 | 2 小时 |
 | Actuals | 每日 08:30、19:00、23:45 | 1 小时 |
 
-所有 timer 均为 `Persistent=false`；停机或禁用期间不补跑。systemd installed unit/timer 和现场
-`systemctl` 是运行 authority，仓库模板只表示期望配置。
+五个 timer 均为 `Persistent=false`，停机或禁用期间不补跑。已用冻结同源数据、隔离数据库和热缓存
+副本按 installed one-shot 语义模拟完整调度：daily、weekly、monthly 和 Actuals 全部成功，daily 墙钟
+约 62 分钟，低于两小时硬限；7 个 Liwei cache family 均走有限 suffix，未发生 full build。隔离库、
+缓存副本、临时环境和 transient unit 已删除。该结果替代“等待五个自然日”作为本轮部署验收门，
+自然 timer 继续承担日常运行与监控。
 
-## 4. 数据修订与缓存规则
+## 5. 数据修订与缓存规则
 
-历史业务预测和 Phase-A 派生缓存必须分开：
-
-- 已写入 `t_scheme_predictions` 的历史预测表达当时可获得数据下的决策，事后数据修订不得回写；
-- Phase-A cache 是未来预测的内部加速状态，可以在安全边界内更新；
+- 已写入 `t_scheme_predictions` 的历史预测表达当时可用数据下的决策，事后数据修订不得回写。
+- Phase-A cache 是未来预测的内部加速状态，可以在安全边界内更新。
 - 普通同结构数值修订只有在 spec 携带 canonical dependency proof 时才能重算有限 suffix；
-- `safe_lookback=max(horizon, purge_gap)`，当前十个 Liwei adapter 的边界为 5 个交易日；
-- suffix 之前的 cache 必须保持 parent digest 不变，受影响 suffix 必须通过 cold equivalence 和 lineage；
-- 算法、spec、ABI、publisher、schema、字段类型、历史日期删除、交易日或 date-to-week 结构改变仍然
-  full/fail-closed；不得把不兼容输入包装成增量成功。
+  `safe_lookback=max(horizon, purge_gap)`，当前十个 Liwei adapter 的边界为 5 个交易日。
+- suffix 之前的 cache 必须保持 parent digest 不变；受影响 suffix 必须通过 cold equivalence 和 lineage。
+- 算法、spec、ABI、publisher、schema、字段类型、历史日期删除、交易日或 date-to-week 结构变化仍然
+  full/fail-closed，不得伪装成增量成功。
 
-该设计只复用既有 `build_mode=suffix`、manifest、CompareGate、acceptance lineage 和 `current.json`
-原子发布；没有新增数据库表、revision ledger、后台服务、第二套 cache 或算法分支。
+实现继续复用 `build_mode=suffix`、manifest、CompareGate、acceptance lineage 和 `current.json` 原子
+发布；不增加 revision ledger、数据库表、后台服务、第二套 cache 或算法分支。
 
-## 5. 压缩式调度验收与后续灰度
+## 6. Immutable release 与本机配置合同
 
-为避免等待多个自然日，2026-08-20 已在 ECS 创建一次性隔离库、冻结源数据和热缓存副本，使用与
-installed service 相同的 Python 环境、release、控制面变量、超时和 `systemd` cgroup 语义，直接模拟
-自然 DataBridge、daily、weekly、monthly 和 Actuals。隔离环境不连接生产写库路径；验收结束后，
-隔离数据库、缓存副本、临时环境文件和 transient unit 已全部删除。
+`scripts/build_source_release.py` 只从 clean HEAD 生成 deterministic archive；目标机使用候选同版本的
+`scripts/install_source_release.py` 校验 archive、manifest 和 source digest，并通过
+`expected-current` compare-and-swap 更新 `current/previous`。release 目录无 `.git` 且只读，目标机
+不得 `git pull` 或现场修改。
 
-| 批次 | 真写库结果 | 墙钟 | 峰值内存 |
-|---|---:|---:|---:|
-| daily（2026-08-19） | 39/39 run 成功，43 条 prediction | 1 小时 1 分 38 秒 | 1.9 GiB |
-| weekly（2026-08-15） | 12/12 run 成功，12 条 prediction | 7 分 34 秒 | 768 MiB |
-| monthly（2026-08-15） | 5/5 run 成功，5 条 prediction | 1 分 51 秒 | 436 MiB |
-| Actuals（截止 2026-08-18） | daily 14,165、weekly 5,954、monthly 刷新 684 条 | 27 秒 | 81 MiB |
+Mac3 的 `runtime/config/service.env` 是唯一生产应用本机配置 authority；Git 根 `.env` 只服务开发。
+两者仅首次迁移时复制一次，此后不自动同步。launcher 使用目录 fd、`O_NOFOLLOW`、owner/mode、
+语法、保留键和必要变量检查后才加载配置；任何 `PYTHON*`、release 身份或控制面覆盖均 fail-closed。
+真实 secret 不写入 Git、release manifest、plist、日志或审计 JSON。
 
-验收同时确认：
+以后每次 release 更新仍按以下最小顺序执行：
 
-- 60 条 prediction 全部关联 success run，重复键、孤儿记录、写入计数不一致和残留 running 均为 0；
-- daily 的 `predict_date/feature_date` 为 `2026-08-19/2026-08-18`，weekly 和 monthly 的
-  `predict_date/feature_date` 为 `2026-08-15/2026-08-14`，全部为 `scheduled_live`；
-- 9 个 Mac-only paused base 均未执行；Registry 保持 60 active / 9 paused；
-- 7 个 Liwei cache family 均为 `build_mode=suffix`，从 parent 重算 `2026-08-11` 起的有限区间，
-  full build 为 0；
-- 生产 `bond_db` 的最大 run 仍为 3408、prediction 总数仍为 2965，7 个生产 cache pointer 哈希、
-  `current/previous` release、Backend 和五个 timer 均未改变；DataBridge 测试状态已恢复并通过 check-only。
+1. clean HEAD 构建并固定 commit、tree 和 archive SHA-256；
+2. 目标机只读预检和只读预安装；
+3. 候选 Backend、DataBridge check-only 和 release identity 验证；
+4. 在独立授权窗口执行 `current` CAS、替换 installed 配置并重载；
+5. 读回健康、source identity、loaded state、调度空闲状态和 tunnel；
+6. 保留可用 `previous`、installed 配置备份和运行审计。
 
-自然 timer 继续承担日常运行和故障监控，但不再要求等待五个自然日后才能认定 ECS 灰度部署可用。
-后续若进入生产切换评审，仍须重新确定 Web、Writer、Mac3、切换窗口、DNS/Nginx、数据库 authority
-和回滚范围；本轮验收不授予这些生产切换操作。
+具体工具、环境合同和 drift audit 见 [`deploy/README.md`](../../deploy/README.md)。
 
-### 5.1 Mac3 immutable release R1
+## 7. ECS 只读接手检查
 
-R1 只完成仓库基础设施、长期测试、文档和 deterministic archive 冻结，不在白天修改 Mac3 现场：
-
-```text
-/Users/macstudio0/bond-factor-lab                 # Git 开发工作区
-/Users/macstudio0/bond-factor-lab-production/
-├── current -> releases/<exact_commit>
-├── previous -> releases/<prior_commit>
-└── releases/<exact_commit>/                     # 只读、无 .git
-/Users/macstudio0/bond-factor-lab-runtime/        # 日志、状态和第三方 cache
-```
-
-六个应用 launchd 候选模板从 production `current` 启动，先由隔离模式的系统 Python 执行
-`scripts/run_launchd_release.py`，核验并加载安装器生成的 `.bfl-release.env`，再执行原 conda 命令；
-launcher 同时拒绝外层 `PYTHONPATH/PYTHONHOME`。SSH tunnel 不执行项目代码，但其工作目录和日志也
-必须脱离 Git。候选模板、launcher 或 R1 archive 存在都不能证明 Mac3 已切换，installed plist 和
-`launchctl` 仍是现场 authority。
-
-夜间窗口建议位于 23:45 Actuals 完成后、次日 06:30 DataBridge 之前，并避开仍在运行的批次。该窗口
-必须另行授权，按“只读预检 → 预安装 → source 校验 → current CAS 激活 → 替换六个应用 plist →
-独立替换 SSH tunnel plist → 读回七个 loaded state → Backend/DataBridge check-only/release identity
-→ 保留回滚”执行。tunnel 重载可能短暂重连，只能在窗口内进行。验收完成前不得切换 Mac3 Git 根
-分支；完成后可在保留未跟踪文件的前提下切到 `codex/develop`，此时双主机单一代码线治理才算闭环。
-
-本段是 R1 冻结时的历史边界；其 Backend token-in-plist 做法已由 5.2 的 R2 外置环境合同取代。
-R2 installed Backend plist 不保存 token，真实值只从 `service.env` 加载；SSH tunnel 的本地 key/user
-仍不得由占位符覆盖。窗口前先以 `scripts/audit_launchd_config_drift.py` 读取脱敏差异；审计必须在顶层
-确认外置环境有效、installed/loaded tunnel 已替换真实 key/user，且七个任务日志路径与候选精确一致。
-任何超出 tunnel 本机 key/user 与本次 release 路径变更的 plist drift 都必须停止切换。
-
-R1 已冻结为 tag `mac3-immutable-r1-20260820`，archive SHA256 为
-`654795f268fc4b25287cc33f4205a17ffc7eda1b9ea10e282fd553539ecd720f`。因此前端和两个新方案的开发
-现在即可继续，不需要等待夜间窗口。前端先在 ECS 灰度验证再决定 Mac3 晋级；两个新方案分别执行
-Blackbox V2 Intake/Gate/ECS-only activation，不得合并为一个不可独立回滚的上线单元。
-
-2026-08-20 10:17，精确 R1 已在 ECS 完成预安装、hash/source 校验、以旧 current 为 compare-and-swap
-前提的激活和 Backend 重启。读回确认 `current=c4e15eb9fbf0a278a961a7dce4d3a25b9394a724`、
-`previous=fd296812e7acef2869f54f706ba8f4f0bc776896`，Backend 进程 cwd 与
-`BFL_RELEASE_COMMIT` 均指向 R1，DataBridge check-only 和当天 daily 严格只读健康检查通过，五个 timer
-保持 enabled/active，全部批次 one-shot 空闲且最近结果为 success。R1 的 ECS 同源前置条件已满足；
-其后的 Mac3 候选验证发现 R1 缺少外置本机环境合同，因此 R1 不再作为 Mac3 晋级候选。部署线下一步
-是按下节冻结并先验证精确 R2；后续 develop 提交不能替代已经批准的精确 archive。
-
-### 5.2 Mac3 外置本机环境与 R2 设计
-
-2026-08-20 的 Mac3 备用端口候选验证发现，旧 Backend 依赖 Git 根目录下 mode `0600` 的 `.env`：
-`python-dotenv` 因旧 working directory 恰好位于 Git 根而隐式加载数据库、实例、DataBridge 和 admin
-配置。R1 release 正确地没有打包该文件，所以候选回退到无密码的本机 MySQL 默认值并在健康检查
-fail-closed。该候选已终止；8100 Backend、前端、installed/loaded plist、数据库和调度均未改变。
-R1 只预安装在 Mac3 `releases/<commit>`，尚未创建 `current`。
-
-已批准的最小修复是冻结 R2，而不是修改 R1 tag。R2 只扩展既有 `scripts/run_launchd_release.py`：
-
-1. 安装器生成并校验 `.bfl-release.env` 后，launcher 由可信 `BFL_RUNTIME_ROOT` 唯一派生
-   `<runtime>/config/service.env`；不接受 plist、shell 或调用方提供第二路径。
-2. `service.env` 是 Mac3 唯一本机应用配置 authority。首次迁移逐字节复制现有 Git 根 `.env`，文件
-   必须由运行用户拥有、是非 symlink 普通文件、权限为 `0400` 或 `0600`。完成切换后 Git 根 `.env`
-   只服务开发工作区，不再参与生产启动；外置 `service.env` 只服务 production release。两者只在首次
-   迁移时复制一次，此后永久独立、永不自动同步。开发 `.env` 的增删改不传播到生产；生产配置或凭据
-   更新只修改 `service.env`、走独立授权并重启对应服务后生效，不引入 watcher 或热加载。launcher
-   通过目录 fd 与 `O_NOFOLLOW` 打开文件，并在同一 fd 上核验属性、限长读取，避免检查后路径替换。
-3. 解析器只接受空行、注释和唯一的 `KEY=VALUE`；key 必须是环境变量标识符，value 可为未引号文本或
-   完整单/双引号文本。拒绝 duplicate、`export` 和无法完整解析的行。解析器不调用 shell，也不执行
-   插值、命令替换或转义；`$()`、`${}` 和反引号等特殊字符只作为普通 value 字节进入子进程。
-4. 外置文件不得设置 release 身份、部署目标、控制面或任何 `PYTHON*` 运行变量，包括
-   `BFL_RELEASE_COMMIT`、`BFL_RUNTIME_ROOT`、`NUMBA_CACHE_DIR`、`MPLCONFIGDIR`、
-   `BFL_DEPLOYMENT_TARGET`、`BOND_FACTOR_LAB_CONTROL_PLANE`、`PYTHONPATH`、`PYTHONHOME` 和
-   `PYTHONNOUSERSITE`。
-   其它非保留外置值与 plist/进程已有同名值完全相等时允许合并；不等时 fail-closed，禁止静默覆盖。
-5. `BOND_ADMIN_TOKEN` 复用现有值，不生成、不轮换。它和 `BOND_DB_*` 由外置文件一次加载到应用子进程；
-   不写入 Git、release manifest、日志或审计 JSON。只有显式凭据轮换才需要新的专项授权。
-6. drift audit 同时校验 release/plist 结构，并在顶层只校验一次外置文件的存在、权限、所有权、语法、
-   保留键及必要变量；输出只含变量名、缺失项和错误类别。必要变量固定为数据库六项、实例 nonce、
-   DataBridge 三项和 `BOND_ADMIN_TOKEN`。Backend 必须证明 token 已从外置 authority 可用，不再要求
-   token 明文存在于 installed plist。
-
-R2 的验收顺序固定为：聚焦和全量回归 → clean HEAD deterministic archive → ECS 精确 archive
-预安装/source 校验/CAS 激活/Backend/DataBridge/systemd 读回 → Mac3 预安装 → 18100 候选连接真实数据库、
-前端首页、健康接口及 admin 401/403 验证 → 备份旧 installed plist → CAS 激活 → Backend 单项切换和
-读回。候选或切换后任一检查失败时，立即恢复旧 installed plist 和 Git Backend；不得回写数据库或
-修改调度任务来掩盖失败。Backend 单项通过后，其余五个应用 plist 与 SSH tunnel 仍须在独立窗口统一
-到同一 R2，混合 release 不得作为长期完成状态。
-
-2026-08-20 11:46，R2 已冻结为 tag `mac3-immutable-r2-20260820`，精确 commit 为
-`e692285d47e41c384dc915758abe0c51f9ac3aaf`，archive SHA256 为
-`9b414792f51f5a47fda46ae403dfdf5f8909fdebe511512fd4cead36f666dac4`。两次 clean HEAD 构建的
-archive 和 manifest 摘要一致；聚焦回归为 88 passed、14 subtests passed，全量回归为 959 passed、
-476 subtests passed，独立审查无 Critical/Important。
-
-同日 ECS 已使用候选同版本安装器完成精确 R2 预安装、source/hash 校验和以 R1 为
-`expected-current` 的 CAS 激活。读回确认 `current=e692285d47e41c384dc915758abe0c51f9ac3aaf`、
-`previous=c4e15eb9fbf0a278a961a7dce4d3a25b9394a724`，Backend 进程 cwd 和
-`BFL_RELEASE_COMMIT` 均指向 R2，`/api/health` 与 DataBridge `--check-only` 返回 `status=ok`；五个
-timer 保持 enabled/active，五个业务 one-shot 均空闲。验证未发布 DataBridge、未写业务数据库、未改
-unit/timer，临时 transient unit 和探针生成的 `__pycache__` 已删除。至此 R2 的 ECS 证据已闭环；
-随后执行的 Mac3 独立生产窗口见下文，后续 develop 提交不能替代该精确 archive。
-
-2026-08-20 13:49，Mac3 已完成同一精确 R2 的正式切换。首次 Backend 切换因 `bootout` 后立即
-`bootstrap` 遇到 launchd 异步清理窗口而返回 EIO，旧 Backend 在约 13 秒内恢复；确认根因后改为等待
-label 完全卸载，第二次切换的中断为 3 秒。最终读回确认：
-
-- `current=e692285d47e41c384dc915758abe0c51f9ac3aaf`，Backend cwd 与 release identity 精确一致；
-- 首页、健康接口、69 个方案读回和 admin 401/403 合同通过；
-- 现有 DataBridge current 与 refresh/gate 状态按内容摘要原样复制到外置 runtime，未重建、未发布，
-  `--check-only` 返回 `status=ok`；
-- 七个 installed/loaded plist 的 drift audit 为 `ok=true`，Backend 与 SSH tunnel 为 running，五个
-  one-shot 为 loaded/not running；
-- SSH tunnel 已从远端 loopback `127.0.0.1:18100` 端到端读回 Mac3 `/api/health=status=ok`；
-- 旧 plist 保存在外置 runtime 备份目录，Mac3 数据库、历史预测和调度业务数据未修改。
-
-至此 Mac3 immutable release 解耦和双主机单一 source release 治理已经闭环。后续 release 更新继续
-使用精确 archive、预安装、候选端口、CAS 和 loaded-state 读回；不得重新把生产进程指回 Git 工作区。
-
-R1 因不能加载外置生产环境，不是 Mac3 的功能性回滚版本。R2 首次切换失败时，回滚目标是已备份的旧
-installed plist 与原 Git Backend；成功稳定运行 R2 后，后续 release 才能把 R2 作为正常 previous。
-
-## 6. 接手检查
-
-以下命令均为只读；执行前仍须使用受控 SSH 和严格 Host Key 校验：
+执行前使用受控 SSH 和严格 Host Key 校验：
 
 ```bash
 readlink -f /opt/bond-factor-lab/current
@@ -260,50 +138,21 @@ curl --fail --silent http://127.0.0.1:8100/api/health
 
 cd /opt/bond-factor-lab/current
 env BFL_DATABASE_ENV_FILE=/etc/bond-factor-lab/bond-factor-lab.env \
-  PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
+  PYTHONNOUSERSITE=1 PYTHONDWRITEBYTECODE=1 \
   /opt/miniconda3/envs/bond_factor_lab_service/bin/python \
   scripts/check_production_daily_health.py --predict-date YYYY-MM-DD --strict-runs
 ```
 
-发现以下任一情况必须停止自动外推结论：任务超时或 failed、残留 running、预测缺失或重复、DataBridge
-日期/摘要不一致、cache lineage 拒绝、source digest 改变、timer/installed unit 漂移、Backend 不健康、
-磁盘空间不足或需要修改数据库 schema/业务数据。
+出现任务超时/failed、残留 running、预测缺失或重复、DataBridge 日期/摘要不一致、cache lineage 拒绝、
+source digest 漂移、Backend 不健康、timer 漂移或磁盘不足时停止外推结论。数据库 schema、Registry、
+业务数据、unit/timer、Nginx 或 DNS 的修改必须另行设计和授权。
 
-## 7. Release 与回滚边界
+## 8. 回滚与长期保留边界
 
-- 构建只允许 clean Git HEAD，archive、manifest、commit、tree 和批准 SHA-256 必须一致。
-- 目标机必须使用候选同版本安装器，并设置 `PYTHONDONTWRITEBYTECODE=1`；不得从旧 `current` 调用旧
-  安装器，也不得直接从不可变 release 内执行 Python 后再声称 source integrity 不变。
-- 激活必须使用 `expected-current` CAS；安装器不顺带操作数据库、systemd、Nginx、DNS 或 Registry。
-- 对已经发布 proof-bearing suffix generation 的 family，回滚旧代码时必须同时恢复发布前保存的
-  7 个 `current.json` parent pointer；只切代码 symlink 不是完整回滚。
-- 回滚不得删除 run、prediction、日志或失败 evidence，不得修改历史预测以伪造成功。
-- release、installed unit、service、timer、数据库和 cache pointer 变更继续是独立生产操作。
-
-## 8. 仓库长期保留边界
-
-以下测试是长期合同，必须保留：
-
-| 测试 | 长期职责 |
-|---|---|
-| `tests/test_liwei_0616_revision_suffix_contract.py` | 固定十个 adapter 的 canonical dependency proof 和有限 lookback |
-| `tests/test_liwei_0616_private_cache.py` | 固定 suffix/qualification lineage、secure consumer 和原子 publication/prune |
-| `tests/test_source_release_tools.py` | 固定 deterministic archive、批准 hash、source integrity 和 CAS 激活 |
-| `tests/test_launchd_release_launcher.py` | 固定 Mac3 immutable current、release 环境核验和 Git 工作区解耦 |
-| `tests/test_launchd_config_drift_audit.py` | 固定 template/installed/loaded 三层漂移与本地秘密脱敏 |
-| `tests/test_systemd_control_plane.py` | 固定 ECS one-shot、部署目标、timer 和两小时 daily 上限 |
-
-一次性 ECS validation 脚本、迁移 rebind 脚本、候选专项测试和时点验收文档不属于长期代码，已经从
-工作树删除。后续新的临时验证也只能写入隔离目录或 `/tmp`，完成后删除；不能重新污染仓库。
-
-## 9. 文档与 Git authority
-
-- `AGENTS.md` / `CLAUDE.md`：根约束和单一代码线治理；两者必须字节一致。
-- `docs/CURRENT_STATUS.md`：当前稳定事实。
-- `docs/TODO.md`：尚未批准工作的唯一队列。
-- 本文：ECS 当前运行、观察、接手和切换边界。
-- Git、ECS evidence、systemd journal 和数据库：历史与精确时点证据。
-
-`codex/develop` 是唯一活动集成分支。`master` 继续保持冻结备份，未经授权不得移动。Mac3 生产已与
-Git checkout 解耦，开发根可安全使用 `codex/develop`；ECS 保持 release-only，不保存环境分支或
-Git 工作区。
+- 回滚同时考虑 source release、installed 控制面和外置状态；只切代码 symlink 不是完整回滚。
+- 对已经发布 proof-bearing suffix generation 的 family，回滚旧代码时必须恢复发布前保存的 7 个
+  `current.json` parent pointer。
+- 回滚不得删除 run、prediction、日志或失败 evidence，不得修改历史预测伪造成功。
+- `master` 保持冻结备份，未经授权不得移动；日常修改只进入 `codex/develop`。
+- 仓库只保留通用 release/launchd/systemd/cache 回归测试。一次性迁移脚本、候选专项测试、时点报告
+  和已完成实施计划不得重新进入工作树；需要追溯时使用 Git 和现场审计证据。
