@@ -10,14 +10,12 @@
 
 当前顺序固定为：
 
-1. 完成 Mac3 immutable release 候选的测试、文档、clean commit 和 deterministic R1 archive 冻结；
-   本步不得修改 installed plist、launchctl 或 Mac3 生产运行。
-2. R1 archive 冻结后立即开始前端和两个新方案开发，不等待夜间窗口；前端先走 ECS 灰度 release，
+1. 立即开始前端和两个新方案开发，不等待夜间窗口；前端先走 ECS 灰度 release，
    两个方案分别走 Blackbox V2 Intake/Gate/ECS-only activation，不把两个方案绑成一个回滚单元。
-3. 在不与 06:30 DataBridge、07:03 daily、08:30/19:00/23:45 Actuals、周/月批次重叠的夜间窗口，
+2. 在不与 06:30 DataBridge、07:03 daily、08:30/19:00/23:45 Actuals、周/月批次重叠的夜间窗口，
    另行授权执行 R1 预安装/激活、六个应用 plist 与一个 SSH tunnel plist 切换、Backend 重启、七个
    loaded state 的只读健康检查和回滚读回；tunnel 必须保留真实 key/user，短暂重连只在窗口内执行。
-4. 现场确认所有应用进程均从 immutable `current` 运行、tunnel 日志已外置后，保留未跟踪文件并把
+3. 现场确认所有应用进程均从 immutable `current` 运行、tunnel 日志已外置后，保留未跟踪文件并把
    Mac3 Git 开发根切到 `codex/develop`；不得在生产解耦前先切分支。
 
 ECS 继续独立灰度运行。Mac3 域名、Nginx、DNS、数据库 authority 和生产 Writer 均保持不变；是否
@@ -25,7 +23,8 @@ ECS 继续独立灰度运行。Mac3 域名、Nginx、DNS、数据库 authority �
 
 ## 评审边界
 
-- R1 仓库开发阶段不得修改 installed plist、launchd loaded state、数据库、Backend 进程或生产任务。
+- 等待 R1 夜间窗口期间不得修改 installed plist、launchd loaded state、数据库、Backend 进程或
+  生产任务。
 - 不因文件较大就拆分，不因极小概率事件增加 fallback、兼容层、重试、第二控制面或额外 hash。
 - 只有能证明业务职责已经重复、没有调用者、被现行规则替代或妨碍错误直接暴露的设计，才进入删除候选。
 - 任一实施建议都必须独立获得用户确认，并以可复现现象和聚焦回归证明删除没有放宽 Gate、授权、insert-only、生命周期或输入截止约束。

@@ -4,8 +4,8 @@
 
 **最后核验时间**：2026-08-20 08:25（Asia/Shanghai）
 
-**当前阶段**：ECS 部署闭环和压缩式调度等价验收均已完成；Mac3 immutable release R1 候选正在
-冻结，installed launchd 尚未切换，今日 Mac3 生产运行不受影响。
+**当前阶段**：ECS 部署闭环和压缩式调度等价验收均已完成；Mac3 immutable release R1 已冻结，
+installed launchd 尚未切换，今日 Mac3 生产运行不受影响。
 
 本文是 ECS 迁移、运行和接手的唯一当前入口。已完成计划、旧候选、一次性测试过程和中间验收报告
 不留在工作树；需要追溯时使用 Git、ECS root-only evidence、systemd journal 和数据库审计记录。
@@ -157,9 +157,10 @@ installed plist 不能用仓库模板直接覆盖：Backend 的真实 `BOND_ADMI
 非空、非占位的 token，installed/loaded tunnel 都已替换真实 key/user，且七个任务日志路径与候选
 精确一致。任何超出批准本地 secret 与本次 release 路径变更的 drift 都必须停止切换。
 
-R1 archive 一旦冻结，前端和两个新方案的开发即可在后续提交继续，不需要等待夜间窗口。前端先在
-ECS 灰度验证再决定 Mac3 晋级；两个新方案分别执行 Blackbox V2 Intake/Gate/ECS-only activation，
-不得合并为一个不可独立回滚的上线单元。
+R1 已冻结为 tag `mac3-immutable-r1-20260820`，archive SHA256 为
+`654795f268fc4b25287cc33f4205a17ffc7eda1b9ea10e282fd553539ecd720f`。因此前端和两个新方案的开发
+现在即可继续，不需要等待夜间窗口。前端先在 ECS 灰度验证再决定 Mac3 晋级；两个新方案分别执行
+Blackbox V2 Intake/Gate/ECS-only activation，不得合并为一个不可独立回滚的上线单元。
 
 ## 6. 接手检查
 
