@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.12, SQLAlchemy, MySQL 8.0 production semantics, SQLite/test repository fakes, unittest/pytest, launchd/systemd shared one-shot runner.
 
+**Execution Mode:** Use subagent-driven implementation with review between tasks under the user's standing preference. Do not pause for an inline-versus-subagent choice; stop only at an independent production or destructive-action authority boundary.
+
 ---
 
 ### Task 1: Lock the repository behavior with RED contract tests
