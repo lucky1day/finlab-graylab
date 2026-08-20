@@ -17,6 +17,11 @@
   `previous=fd296812e7acef2869f54f706ba8f4f0bc776896`。这些操作均未改变 Mac3 installed plist。
   当前六个 Mac3 应用 plist 现场仍绑定 `/Users/macstudio0/bond-factor-lab`，开发根工作区仍为
   `codex/audit-bugfixes-20260613`，因此尚不能切换该工作区分支。
+- 2026-08-20 Mac3 已在不创建 `current`、不替换 plist 的前提下预安装 R1；备用端口候选验证证明旧
+  Backend 隐式依赖 Git 根 `.env`，immutable release 因没有数据库凭据而 fail-closed。现有 8100
+  Backend、前端和调度均未改变。已批准的修复是把该本机配置一次迁移到 runtime `config/service.env`，
+  由最小 launcher 显式、安全加载后冻结 R2；不得把 `.env` 复制进只读 release 或把全部 secret 展开
+  到每个 plist。
 - ECS 是独立灰度实验室，不是 Mac3 热备或复制节点；其 DataBridge、daily、weekly、monthly、Actuals 五个 systemd timer 已于 2026-08-18 经专项授权启用，现场 authority 是 installed unit/timer 与 `systemctl` 读回。
 - 2026-08-20 已使用冻结同源数据、隔离数据库和热缓存副本完成 DataBridge、daily、weekly、monthly
   与 Actuals 的 systemd 调度等价验收；三频 56 个 run、60 条预测全部成功，7 个 Liwei family 均走
@@ -33,7 +38,8 @@
 ## 当前迁移完成边界
 
 - ECS 独立灰度迁移已经完成。
-- 双主机单一 source release 治理只差 Mac3 夜间窗口：预安装并激活已经在 ECS 验证的同一 R1、替换
+- 双主机单一 source release 治理先补齐 R2 的外置本机环境合同，并在 ECS 验证精确 R2；再进入 Mac3
+  窗口预安装并激活同一 R2、替换
   六个 installed 应用 plist，并独立替换 SSH tunnel plist（保留真实 key/user）、
   读回七个 loaded state、Backend/release identity，并证明应用进程与 tunnel 日志都不再引用 Git。
 - 上述现场验收完成后，才能把 Mac3 开发根工作区切到 `codex/develop`；该时点即为本轮部署治理

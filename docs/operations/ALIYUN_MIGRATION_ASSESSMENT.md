@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验时间**：2026-08-20 10:21（Asia/Shanghai）
+**最后核验时间**：2026-08-20 10:35（Asia/Shanghai）
 
 **当前阶段**：ECS 部署闭环、压缩式调度等价验收和精确 R1 晋级均已完成；Mac3 installed launchd
 尚未切换，今日 Mac3 生产运行不受影响。
@@ -167,7 +167,42 @@ Blackbox V2 Intake/Gate/ECS-only activation，不得合并为一个不可独立�
 `previous=fd296812e7acef2869f54f706ba8f4f0bc776896`，Backend 进程 cwd 与
 `BFL_RELEASE_COMMIT` 均指向 R1，DataBridge check-only 和当天 daily 严格只读健康检查通过，五个 timer
 保持 enabled/active，全部批次 one-shot 空闲且最近结果为 success。R1 的 ECS 同源前置条件已满足；
-部署线下一步是另行授权的 Mac3 夜间窗口，后续 develop 提交不能替代 R1。
+其后的 Mac3 候选验证发现 R1 缺少外置本机环境合同，因此 R1 不再作为 Mac3 晋级候选。部署线下一步
+是按下节冻结并先验证精确 R2；后续 develop 提交不能替代已经批准的精确 archive。
+
+### 5.2 Mac3 外置本机环境与 R2 设计
+
+2026-08-20 的 Mac3 备用端口候选验证发现，旧 Backend 依赖 Git 根目录下 mode `0600` 的 `.env`：
+`python-dotenv` 因旧 working directory 恰好位于 Git 根而隐式加载数据库、实例、DataBridge 和 admin
+配置。R1 release 正确地没有打包该文件，所以候选回退到无密码的本机 MySQL 默认值并在健康检查
+fail-closed。该候选已终止；8100 Backend、前端、installed/loaded plist、数据库和调度均未改变。
+R1 只预安装在 Mac3 `releases/<commit>`，尚未创建 `current`。
+
+已批准的最小修复是冻结 R2，而不是修改 R1 tag。R2 只扩展既有 `scripts/run_launchd_release.py`：
+
+1. 安装器生成并校验 `.bfl-release.env` 后，launcher 由可信 `BFL_RUNTIME_ROOT` 唯一派生
+   `<runtime>/config/service.env`；不接受 plist、shell 或调用方提供第二路径。
+2. `service.env` 是 Mac3 唯一本机应用配置 authority。首次迁移逐字节复制现有 Git 根 `.env`，文件
+   必须由运行用户拥有、是非 symlink 普通文件、权限为 `0400` 或 `0600`。完成切换后 Git 根 `.env`
+   不再参与生产启动；后续凭据更新只修改外置文件并走独立授权。
+3. 解析器只接受空行、注释和唯一的 `KEY=VALUE`；key 必须是环境变量标识符，value 可为未引号文本或
+   完整单/双引号文本。拒绝 duplicate、`export`、插值、命令替换和无法完整解析的行。
+4. 外置文件不得设置 release 身份、部署目标、控制面或 Python 解析路径，包括
+   `BFL_RELEASE_COMMIT`、`BFL_RUNTIME_ROOT`、`NUMBA_CACHE_DIR`、`MPLCONFIGDIR`、
+   `BFL_DEPLOYMENT_TARGET`、`BOND_FACTOR_LAB_CONTROL_PLANE`、`PYTHONPATH`、`PYTHONHOME`。
+   外置值与 plist/进程已有同名值完全相等时允许合并；不等时 fail-closed，禁止静默覆盖。
+5. `BOND_ADMIN_TOKEN` 复用现有值，不生成、不轮换。它和 `BOND_DB_*` 由外置文件一次加载到应用子进程；
+   不写入 Git、release manifest、日志或审计 JSON。只有显式凭据轮换才需要新的专项授权。
+6. drift audit 同时校验 release/plist 结构与外置文件的存在、权限、所有权、语法、保留键及必要变量；
+   输出只含变量名、缺失项和错误类别。Backend 必须证明 token 已从外置 authority 可用，不再要求 token
+   明文存在于 installed plist。
+
+R2 的验收顺序固定为：聚焦和全量回归 → clean HEAD deterministic archive → ECS 精确 archive
+预安装/source 校验/CAS 激活/Backend/DataBridge/systemd 读回 → Mac3 预安装 → 18100 候选连接真实数据库、
+前端首页、健康接口及 admin 401/403 验证 → 备份旧 installed plist → CAS 激活 → Backend 单项切换和
+读回。候选或切换后任一检查失败时，立即恢复旧 installed plist 和 Git Backend；不得回写数据库或
+修改调度任务来掩盖失败。Backend 单项通过后，其余五个应用 plist 与 SSH tunnel 仍须在独立窗口统一
+到同一 R2，混合 release 不得作为长期完成状态。
 
 ## 6. 接手检查
 
