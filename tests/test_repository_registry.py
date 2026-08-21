@@ -439,6 +439,43 @@ def _set_canonical_path(cfg: SimpleNamespace, project_root: Path) -> SimpleNames
     return cfg
 
 
+class DatabaseEngineFactoryTests(unittest.TestCase):
+    def test_common_mysql_engine_pre_pings_pooled_connections(self) -> None:
+        import scheduler.repository as repository
+
+        config = SimpleNamespace(
+            user="service-user",
+            password="secret",
+            host="127.0.0.1",
+            port=3306,
+            database="bond_db",
+            charset="utf8mb4",
+        )
+        engine = object()
+        with (
+            patch.object(
+                repository.DatabaseConfig,
+                "from_env",
+                return_value=config,
+            ),
+            patch.object(
+                repository,
+                "create_engine",
+                return_value=engine,
+            ) as create_engine,
+            patch.object(repository.event, "listen") as listen,
+        ):
+            actual = repository.create_engine_from_env()
+
+        self.assertIs(actual, engine)
+        self.assertIs(create_engine.call_args.kwargs.get("pool_pre_ping"), True)
+        listen.assert_called_once_with(
+            engine,
+            "checkout",
+            repository._set_mysql_session_utc_on_checkout,
+        )
+
+
 class RetiredRepositoryApiTests(unittest.TestCase):
     def test_blackbox_bootstrap_and_snapshot_repair_apis_are_absent(self) -> None:
         import scheduler.repository as repository

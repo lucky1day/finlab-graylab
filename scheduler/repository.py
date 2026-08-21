@@ -114,6 +114,7 @@ def create_engine_from_env() -> Engine:
     engine = create_engine(
         url,
         future=True,
+        pool_pre_ping=True,
         connect_args={
             "init_command": "SET SESSION time_zone = '+00:00'",
         },
