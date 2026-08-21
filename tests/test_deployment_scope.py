@@ -38,20 +38,36 @@ def _discover(target: str | None):
         return discover_schemes(strict=True)
 
 
-def test_unscoped_discovery_keeps_all_schemes_for_harness() -> None:
-    configs = _discover(None)
-    assert len(configs) == 66
+def _matrix_schemes() -> dict[str, list[str]]:
+    payload = json.loads(MATRIX_PATH.read_text(encoding="utf-8"))
+    return payload["schemes"]
 
 
-def test_mac3_target_keeps_all_65_schemes() -> None:
-    configs = _discover(MAC3_TARGET)
-    assert len(configs) == 65
+def test_unscoped_discovery_matches_matrix_coverage() -> None:
+    """未设目标时 Harness 保持全量发现，且与矩阵逐一对应。
+
+    断言集合相等而非数量：新增方案只需登记矩阵，无需修改本测试。
+    """
+    discovered_ids = {cfg.scheme_id for cfg in _discover(None)}
+    assert discovered_ids == set(_matrix_schemes())
 
 
-def test_aliyun_target_keeps_57_and_excludes_exact_nine() -> None:
+def test_each_target_discovery_matches_its_matrix_entries() -> None:
+    matrix = _matrix_schemes()
+    for target in (MAC3_TARGET, ALIYUN_TARGET):
+        expected = {
+            scheme_id
+            for scheme_id, targets in matrix.items()
+            if target in targets
+        }
+        actual = {cfg.scheme_id for cfg in _discover(target)}
+        assert actual == expected, target
+        assert actual, f"{target} 过滤后不应为空"
+
+
+def test_aliyun_excludes_exactly_the_mac_only_schemes() -> None:
     unscoped_ids = {cfg.scheme_id for cfg in _discover(None)}
     aliyun_ids = {cfg.scheme_id for cfg in _discover(ALIYUN_TARGET)}
-    assert len(aliyun_ids) == 57
     assert unscoped_ids - aliyun_ids == MAC_ONLY_SCHEME_IDS
 
 

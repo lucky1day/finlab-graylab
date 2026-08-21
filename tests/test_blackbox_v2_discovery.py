@@ -370,7 +370,15 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
             if raw.get("runtime_type") == "blackbox_v2":
                 blackbox_paths.append(path)
                 self.assertEqual(raw["schedule"]["timeout_sec"], 3600, str(path))
-        self.assertEqual(len(blackbox_paths), 40)
+        # 断言结构不变量而非清单数量：runtime_type=blackbox_v2 恰好等价于存在 delivery/ 目录。
+        # 数量由被测数据推导，新增方案无需修改本测试。
+        self.assertTrue(blackbox_paths, "未发现任何 Blackbox 方案配置")
+        delivery_dirs = {
+            path.parent.name
+            for path in (project_root / "schemes").glob("*/delivery")
+            if path.is_dir()
+        }
+        self.assertEqual({path.parent.name for path in blackbox_paths}, delivery_dirs)
 
     def test_blackbox_version_changes_when_delivery_script_path_changes(self) -> None:
         from scheduler.discovery import load_scheme_config
