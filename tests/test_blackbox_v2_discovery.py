@@ -370,7 +370,7 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
             if raw.get("runtime_type") == "blackbox_v2":
                 blackbox_paths.append(path)
                 self.assertEqual(raw["schedule"]["timeout_sec"], 3600, str(path))
-        self.assertEqual(len(blackbox_paths), 39)
+        self.assertEqual(len(blackbox_paths), 40)
 
     def test_blackbox_version_changes_when_delivery_script_path_changes(self) -> None:
         from scheduler.discovery import load_scheme_config

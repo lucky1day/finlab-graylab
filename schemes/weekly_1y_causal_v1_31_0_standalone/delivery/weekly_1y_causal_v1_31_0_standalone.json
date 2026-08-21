@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "weekly_1y_causal_v1_31_0_standalone",
+  "name": "CAUSAL_CURVE_TRUST_V1_31",
+  "owner": "CWG",
+  "description": "使用周频利率、流动性、机构行为、市场状态与日频路径特征，经滚动标准化和多窗口逻辑回归/岭分类的因果集成生成中心方向，再以52周3Y减1Y曲线极值和最近两次事件胜率门控形成下一周1Y收益率方向。",
+  "algorithm_version": "1.31.0",
+  "target_tenor": "1Y",
+  "task_type": "weekly_point",
+  "horizon": 1,
+  "target_rule": "target_week_end_yield_vs_feature_week_end_yield"
+}

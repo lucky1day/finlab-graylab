@@ -40,7 +40,7 @@ def _discover(target: str | None):
 
 def test_unscoped_discovery_keeps_all_schemes_for_harness() -> None:
     configs = _discover(None)
-    assert len(configs) == 65
+    assert len(configs) == 66
 
 
 def test_mac3_target_keeps_all_65_schemes() -> None:
@@ -48,10 +48,10 @@ def test_mac3_target_keeps_all_65_schemes() -> None:
     assert len(configs) == 65
 
 
-def test_aliyun_target_keeps_56_and_excludes_exact_nine() -> None:
+def test_aliyun_target_keeps_57_and_excludes_exact_nine() -> None:
     unscoped_ids = {cfg.scheme_id for cfg in _discover(None)}
     aliyun_ids = {cfg.scheme_id for cfg in _discover(ALIYUN_TARGET)}
-    assert len(aliyun_ids) == 56
+    assert len(aliyun_ids) == 57
     assert unscoped_ids - aliyun_ids == MAC_ONLY_SCHEME_IDS
 
 

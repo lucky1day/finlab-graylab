@@ -64,6 +64,7 @@
     "wavg_7y_gapflip_v5__h1__7Y": "rl",
     "weekly_10y_d_overlay_0529__h6__10Y": "rl",
     "weekly_10y_lgbm_point_v1__h1__10Y": "wg",
+    "weekly_1y_causal_v1_31_0_standalone__h1__1Y": "CWG",
     "weekly_5y_direct_0529__h6__5Y": "wg",
     "weekly_7y_cross_d_overlay_0529__h6__7Y": "wg",
     "weekly_avg_10y_lgbm_0529__h6__10Y": "rl",
