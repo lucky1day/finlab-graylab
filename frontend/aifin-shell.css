@@ -518,18 +518,26 @@ button {
   font-weight: 760;
 }
 
-.factor-month-table .metric-good {
-  color: var(--accent);
-  font-weight: 760;
-}
-
-.factor-month-table .metric-warn {
-  color: var(--gold);
-  font-weight: 760;
-}
-
-.factor-month-table .metric-bad {
+.factor-task-top.metric-high,
+.factor-ranking-table .metric-high,
+.factor-month-table .metric-high {
   color: var(--negative);
+}
+
+.factor-task-top.metric-low,
+.factor-ranking-table .metric-low,
+.factor-month-table .metric-low {
+  color: var(--accent);
+}
+
+.factor-task-top.metric-empty,
+.factor-ranking-table .metric-empty,
+.factor-month-table .metric-empty {
+  color: var(--text-tertiary);
+}
+
+.factor-month-table .metric-high,
+.factor-month-table .metric-low {
   font-weight: 760;
 }
 
@@ -622,10 +630,6 @@ button {
   font: inherit;
   text-align: center;
   transition: background 160ms ease, box-shadow 160ms ease;
-}
-
-.factor-task-cell.is-accuracy-highlighted .factor-task-top {
-  color: var(--negative);
 }
 
 .factor-task-cell:hover,
@@ -1165,13 +1169,17 @@ button {
 }
 
 .factor-daily-table .direction-up {
-  color: var(--accent);
+  color: var(--negative);
   font-weight: 760;
 }
 
 .factor-daily-table .direction-down {
-  color: var(--negative);
+  color: var(--accent);
   font-weight: 760;
+}
+
+.factor-daily-table .direction-neutral {
+  color: var(--text-tertiary);
 }
 
 .factor-result-dot {

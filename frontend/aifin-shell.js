@@ -237,11 +237,10 @@
   }
 
   function getMetricClass(value) {
-    if (value === null || value === undefined || value === "") return "";
-    if (!Number.isFinite(Number(value))) return "";
-    if (value >= 62) return "metric-good";
-    if (value >= 55) return "metric-warn";
-    return "metric-bad";
+    if (value === null || value === undefined || value === "") return "metric-empty";
+    var numeric = Number(value);
+    if (!Number.isFinite(numeric)) return "metric-empty";
+    return numeric >= 60 ? "metric-high" : "metric-low";
   }
 
   function getMetricLabel(metricId) {
@@ -454,6 +453,12 @@
     if (value === -1) return "跌";
     if (value === 0) return "平";
     return "待验证";
+  }
+
+  function getDirectionClass(value) {
+    if (value === "涨") return "direction-up";
+    if (value === "跌") return "direction-down";
+    return "direction-neutral";
   }
 
   function normalizeDirection(value) {
@@ -2109,15 +2114,15 @@
         var best = sortSchemesByMetric(schemes)[0];
         var metric = best ? aggregateScheme(best) : null;
         var metricValue = metric ? metric[factorLabState.rankMetric] : null;
-        var highlightClass = ["overall", "upPrecision", "downPrecision"].indexOf(
+        var metricClass = ["overall", "upPrecision", "downPrecision"].indexOf(
           factorLabState.rankMetric
-        ) !== -1 && Number.isFinite(metricValue) && metricValue >= 60
-          ? " is-accuracy-highlighted"
+        ) !== -1
+          ? " " + getMetricClass(metricValue)
           : "";
         var selectedClass = key === factorLabState.selectedTaskKey ? " is-selected" : "";
         var value = formatPercent(metricValue);
-        return '<td><button type="button" class="factor-task-cell' + selectedClass + highlightClass + '" data-factor-task-key="' + escapeHtml(key) + '">' +
-          '<span class="factor-task-top">' + value + '</span>' +
+        return '<td><button type="button" class="factor-task-cell' + selectedClass + '" data-factor-task-key="' + escapeHtml(key) + '">' +
+          '<span class="factor-task-top' + metricClass + '">' + value + '</span>' +
           '<span class="factor-task-count">' + schemes.length + ' 个方案</span>' +
           '</button></td>';
       }).join("");
@@ -2515,8 +2520,8 @@
   }
 
   function renderDailyResult(row) {
-    if (row.correct === null) {
-      return '<span class="factor-result-dot" style="background:#bfc5c0;">?</span>';
+    if (row.correct !== true && row.correct !== false) {
+      return '<span class="factor-result-dot is-neutral">?</span>';
     }
     return '<span class="factor-result-dot ' + (row.correct ? "is-correct" : "is-wrong") + '">' + (row.correct ? "✓" : "×") + '</span>';
   }
@@ -2557,8 +2562,8 @@
       return;
     }
     rows.forEach(function (row) {
-      var predictedClass = row.predicted === "涨" ? "direction-up" : (row.predicted === "跌" ? "direction-down" : "");
-      var actualClass = row.actual === "涨" ? "direction-up" : (row.actual === "跌" ? "direction-down" : "");
+      var predictedClass = getDirectionClass(row.predicted);
+      var actualClass = getDirectionClass(row.actual);
       var displayDay = row.day.replace(/^\d{2}/, monthLabel);
       var result = renderDailyResult(row);
       html += '<tr>';
@@ -2863,6 +2868,8 @@
     apiUrlForTest: apiUrl,
     normalizeRouteForTest: normalizeRoute,
     routeUrlForTest: routeUrl,
+    getMetricClassForTest: getMetricClass,
+    getDirectionClassForTest: getDirectionClass,
     renderDailyResultForTest: renderDailyResult,
     renderFactorDailyRowsForTest: renderFactorDailyRows,
     openFactorCalendarForTest: openFactorCalendar,
