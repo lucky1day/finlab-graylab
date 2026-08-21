@@ -68,6 +68,7 @@ from shared.blackbox_v2.snapshot import (
     create_snapshot_from_frames,
 )
 from shared.calendar_service import get_calendar
+from shared.data_bridge.refresh import DataBridgeRefreshConfig, DataBridgeStore
 from shared.scheme_owner_registry import (
     SchemeOwnerError,
     load_scheme_owners,
@@ -1298,7 +1299,13 @@ def _validate_input_state_seal(seal_path: Path) -> None:
 
 
 def _data_bridge_provenance(ctx: GateContext, snapshot: BlackboxSnapshot) -> dict[str, str]:
-    state_path = ctx.project_root / "backtest_artifacts" / "data_bridge_refresh" / "state.json"
+    # DataBridge state 由 refresh 生产者按 runtime root 解析；此处必须复用同一 canonical
+    # 入口，不得复制其 development_default。不可变 release 中 backtest_artifacts/ 不存在。
+    databridge_config = DataBridgeRefreshConfig.from_env()
+    state_path = DataBridgeStore(
+        data_root=databridge_config.data_root,
+        runtime_root=databridge_config.runtime_root,
+    ).state_path
     try:
         state = json.loads(state_path.read_text(encoding="utf-8"))
         manifest = json.loads(snapshot.manifest_path.read_text(encoding="utf-8"))

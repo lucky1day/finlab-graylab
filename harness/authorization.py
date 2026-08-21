@@ -13,8 +13,12 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from shared.runtime_paths import resolve_runtime_state_path
+
 AUTH_SECRET_ENV = "HARNESS_AUTH_SECRET"
 DEFAULT_BACKTEST_START_DATE = "2025-01-01"
+USED_TOKENS_FILENAME = ".used_authorization_tokens.json"
+USED_TOKENS_RELATIVE_PATH = f"reports/harness/{USED_TOKENS_FILENAME}"
 AUTH_MAX_TTL_SECONDS = 900
 AUTH_MAX_FUTURE_SKEW_SECONDS = 60
 
@@ -485,7 +489,17 @@ def write_authorization_audit(auth: Authorization, audit_dir: Path) -> Path:
 
 
 def used_tokens_path(project_root: Path) -> Path:
-    return project_root / "reports" / "harness" / ".used_authorization_tokens.json"
+    """一次性授权 token 的重放保护存储。
+
+    该记录是**主机级**状态，必须跨 source release 存活：release 的 `reports/` 出厂即空
+    （`reports/**` 被 gitignore），把它留在源码树内会使已用 token 在切换 release 后复活。
+    """
+    return resolve_runtime_state_path(
+        relative_path=USED_TOKENS_RELATIVE_PATH,
+        development_default=(
+            Path(project_root) / "reports" / "harness" / USED_TOKENS_FILENAME
+        ),
+    )
 
 
 def _read_used_tokens(path: Path) -> set[str]:

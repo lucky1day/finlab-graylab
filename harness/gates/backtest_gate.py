@@ -16,7 +16,30 @@ from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
 from harness.probes.table_guard import PROTECTED_TABLES, diff_snapshots, snapshot_table_counts
 from harness.result import Evidence, GateResult, GateStatus
+from shared.runtime_paths import resolve_runtime_state_path
 from shared.scheme_config_loader import load_yaml_mapping
+
+
+BACKTEST_BASELINE_FILENAME = "backtest_no_persist.json"
+
+
+def backtest_baseline_path(project_root: Path, scheme_id: str) -> Path:
+    """no-persist 回测基线路径。
+
+    基线是**主机级**运行状态，不属于 source release 内容；不可变 release 下写入源码树会
+    破坏 source tree digest。
+    """
+    relative = f"reports/refactor_baseline/{scheme_id}/{BACKTEST_BASELINE_FILENAME}"
+    return resolve_runtime_state_path(
+        relative_path=relative,
+        development_default=(
+            Path(project_root)
+            / "reports"
+            / "refactor_baseline"
+            / scheme_id
+            / BACKTEST_BASELINE_FILENAME
+        ),
+    )
 
 
 IGNORE_PATHS = frozenset({"$.elapsed_sec"})
@@ -103,7 +126,7 @@ class BacktestGate(Gate):
             if engine is not None and hasattr(engine, "dispose"):
                 engine.dispose()
 
-        baseline_path = ctx.project_root / "reports" / "refactor_baseline" / ctx.scheme_id / "backtest_no_persist.json"
+        baseline_path = backtest_baseline_path(ctx.project_root, ctx.scheme_id)
         errors: list[str] = []
         diff_count: int | None = None
         first_diffs: list[str] = []

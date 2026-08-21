@@ -37,11 +37,38 @@ from scheduler.discovery import load_scheme_config
 from scheduler.repository import create_engine_from_env
 from shared.blackbox_v2.contracts import load_metadata
 from shared.blackbox_v2.intake import intake_delivery
+from shared.runtime_paths import resolve_runtime_state_path
 from shared.scheme_owner_registry import owner_registry_scheme_id
 from shared.data_bridge.refresh import DataBridgeRefreshConfig
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SIGNAL_GAP_FILL_REPORT_RELATIVE_PATH = "reports/harness/signal-gap-fill"
+
+
+def default_report_dir(project_root: Path, scheme_id: str) -> Path:
+    """Harness 报告目录默认值。
+
+    报告是**主机级**运行状态，不属于 source release 内容；不可变 release 下写入源码树会
+    破坏 source tree digest。`--report-dir` 仍可显式覆盖。
+    """
+    timestamp = _timestamp()
+    return resolve_runtime_state_path(
+        relative_path=f"reports/harness/{scheme_id}/{timestamp}",
+        development_default=(
+            Path(project_root) / "reports" / "harness" / scheme_id / timestamp
+        ),
+    )
+
+
+def signal_gap_fill_report_root(project_root: Path) -> Path:
+    """signal-gap-fill 报告根目录；语义同 `default_report_dir`。"""
+    return resolve_runtime_state_path(
+        relative_path=SIGNAL_GAP_FILL_REPORT_RELATIVE_PATH,
+        development_default=(
+            Path(project_root) / "reports" / "harness" / "signal-gap-fill"
+        ),
+    )
 
 
 class _StoreOnce(argparse.Action):
@@ -335,7 +362,7 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
     } and not args.predict_date:
         raise SystemExit(f"gate {args.gate_name} requires --predict-date")
     project_root = args.project_root.resolve()
-    report_dir = args.report_dir or project_root / "reports" / "harness" / args.scheme_id / _timestamp()
+    report_dir = args.report_dir or default_report_dir(project_root, args.scheme_id)
     config = _load_config_for_dispatch(project_root / "schemes" / args.scheme_id / "config.yaml")
     ctx = GateContext(
         scheme_id=args.scheme_id,
@@ -386,7 +413,7 @@ def _run_onboard_command(args: argparse.Namespace) -> OnboardReport:
             "or prediction side-effect phases"
         )
     project_root = args.project_root.resolve()
-    report_dir = args.report_dir or project_root / "reports" / "harness" / args.scheme_id / _timestamp()
+    report_dir = args.report_dir or default_report_dir(project_root, args.scheme_id)
     config = _load_config_for_dispatch(project_root / "schemes" / args.scheme_id / "config.yaml")
     ctx = GateContext(
         scheme_id=args.scheme_id,
@@ -420,7 +447,7 @@ def _load_config_for_dispatch(config_path: Path):
 
 def _run_activate(args: argparse.Namespace) -> GateResult:
     project_root = args.project_root.resolve()
-    report_dir = args.report_dir or project_root / "reports" / "harness" / args.scheme_id / _timestamp()
+    report_dir = args.report_dir or default_report_dir(project_root, args.scheme_id)
     config = _load_config_for_dispatch(project_root / "schemes" / args.scheme_id / "config.yaml")
     ctx = GateContext(
         scheme_id=args.scheme_id,
@@ -455,12 +482,7 @@ def _exit_code_for_result(result: GateResult) -> int:
 def _run_signal_gap_fill_command(args: argparse.Namespace) -> int:
     """规划并一次性补齐单个日期的 active 方案信号缺口。"""
     project_root = args.project_root.resolve()
-    report_root = (
-        project_root
-        / "reports"
-        / "harness"
-        / "signal-gap-fill"
-    )
+    report_root = signal_gap_fill_report_root(project_root)
     try:
         report_root.mkdir(parents=True)
     except FileExistsError:
