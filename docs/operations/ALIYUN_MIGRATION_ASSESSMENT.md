@@ -46,14 +46,14 @@ flowchart LR
 
 ## 3. 当前部署基线
 
-两端属于同一 source release 代码线，但当前处于分阶段晋级状态：
+两端属于同一 source release 代码线，当前已晋级到同一 R4 source：
 
 | 主机 | 当前 release | archive SHA-256 | 回滚基线 |
 |---|---|---|---|
 | ECS | `92a93713656d8534e68312f123676b5d2054d8a6`（`bfl-source-r4-frontend-colors-20260821`） | `e2f1c59c5e183940903de0d3eac39c9cd27e24a3b518ce28446a5d87db96ee37` | `previous` 指向 R3 `08645a87852bbc307d3f6def22d7d457b1014bcb` |
-| Mac3 | tag `mac3-immutable-r2-20260820` / `e692285d47e41c384dc915758abe0c51f9ac3aaf` | `9b414792f51f5a47fda46ae403dfdf5f8909fdebe511512fd4cead36f666dac4` | 以 Mac3 现场 immutable 指针和 installed plist 备份为准 |
+| Mac3 | `92a93713656d8534e68312f123676b5d2054d8a6`（`bfl-source-r4-frontend-colors-20260821`） | `e2f1c59c5e183940903de0d3eac39c9cd27e24a3b518ce28446a5d87db96ee37` | `previous` 指向 R2 `e692285d47e41c384dc915758abe0c51f9ac3aaf`；R2 可执行回滚包外置保留 |
 
-ECS R4 source digest 为 `406b407c624f26137b0d7a84317dcb7cdee8a6d4fa20eccbf9fc7dec9c0bb2b4`。
+R4 source digest 为 `406b407c624f26137b0d7a84317dcb7cdee8a6d4fa20eccbf9fc7dec9c0bb2b4`。
 
 ECS R3 基线包含 live prediction insert-only 三态；其不可变预安装、CAS 激活、Backend 重启、健康
 与 timer/unit 读回均已通过；五个 timer 为 `enabled/active/waiting`，五个 writer 均 idle，11 个 installed
@@ -61,12 +61,15 @@ unit hash 未改变。Backend 切换窗口观测约 1.0036 秒，激活窗口内
 无业务写入，binlog 读回为 `binlog.000033:158`。验证前后 ECS 灰度主库 `bond_db` 的
 `t_scheme_predictions`、`t_scheme_versions`、`t_scheme_registry`、`t_scheme_runs`、
 `t_scheme_run_log` 五表 count 与全行摘要、五表 schema 摘要以及 17 条 migration history 均一致；
-Mac3 仍为 `e692285d47e41c384dc915758abe0c51f9ac3aaf`，生产域名、数据库 authority 与 Writer 均保持在 Mac3。
+Mac3 生产域名、数据库 authority 与 Writer 均保持在 Mac3。
 
 R4 在 R3 之上只调整前端颜色映射、相关测试和静态资源缓存标识。R3 可执行回滚包已在切换前复验；
 R4 不可变预安装、CAS 激活和 Backend 重启通过，重启窗口约 1.2 秒，切换前后 binlog 位点精确保持
 `binlog.000033:7444533`。真实浏览器已验收任务格、排行、逐月和每日明细的红/绿/灰规则，并确认趋势图
-系列色与普通文字未改变；Mac3 未触碰。
+系列色与普通文字未改变。Mac3 随后使用同一 archive 完成候选复验、CAS 激活和仅 Backend 重启；
+切换窗口约 1.8 秒，`current/previous` 为 R4/R2，五张关键业务表 count、migration 与 Registry 快照未变。
+窗口内 binlog 增量全部属于既有 `qrtz_scheduler_state` 心跳，不是 Bond Factor Lab 业务写入；真实浏览器
+复验同样通过，installed plist、生产域名、数据库 authority 与 Writer 主机均未改变。
 
 | 范围 | ECS | Mac3 |
 |---|---|---|
@@ -189,6 +192,9 @@ source digest 漂移、Backend 不健康、timer 漂移或磁盘不足时停止�
 - ECS `previous` 的 R3 release 保留 insert-only rollback 基线和可用回滚材料；R4 只含前端颜色变更，
   但 source-only 回滚仍不能撤销已经写入的 R3/R4 数据库/runtime 状态，禁止只切回旧 release 后恢复预测调度，
   必须先独立评审数据库状态、单 Writer 边界和可执行回滚范围。
+- Mac3 `previous` 的 R2 仍含旧 prediction UPSERT 语义；在任何 R4 prediction one-shot 运行后，不得只把
+  `current` 切回 R2 并恢复 Writer。回滚必须先停止相关 Writer，独立核对数据库状态与重复键边界，再决定
+  是否允许 source 回退；R2 外置可执行包只提供代码回滚能力，不自动回滚业务数据。
 - ECS installed 的 DataBridge、daily、weekly、monthly 四个 natural service 仍保留旧
   `/run/bond-factor-lab/manual-run.env` 引用；该文件当前不存在，因而没有生效的旧日期覆盖。替换这些
   installed unit、执行 `daemon-reload` 并重新读回是独立后续操作，不由本次 release 治理授权。

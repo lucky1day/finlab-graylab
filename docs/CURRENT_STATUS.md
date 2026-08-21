@@ -11,21 +11,20 @@
 - Mac3 继续承载生产域名、前端、数据库和 Writer；`launchd + installed plist` 是 Mac3 的自然生产调度控制面。
 - 双主机共用唯一 `codex/develop` source release 代码线，但允许按“ECS 先验证、Mac3 后晋级”分阶段
   发布；两端 `current` 不要求在灰度验证期始终相同，也不因此建立环境分支。
-- Mac3 `current` 仍为 tag `mac3-immutable-r2-20260820` 对应的精确提交
-  `e692285d47e41c384dc915758abe0c51f9ac3aaf`。ECS `current` 已晋级为前端颜色 R4
-  `92a93713656d8534e68312f123676b5d2054d8a6`，`previous` 为 R3
+- Mac3 与 ECS `current` 均已晋级为前端颜色 R4
+  `92a93713656d8534e68312f123676b5d2054d8a6`；Mac3 `previous` 为 R2
+  `e692285d47e41c384dc915758abe0c51f9ac3aaf`，ECS `previous` 为 R3
   `08645a87852bbc307d3f6def22d7d457b1014bcb`。
-- ECS R4 archive SHA-256 为
+- 双主机使用的同一份 R4 archive SHA-256 为
   `e2f1c59c5e183940903de0d3eac39c9cd27e24a3b518ce28446a5d87db96ee37`，source digest 为
   `406b407c624f26137b0d7a84317dcb7cdee8a6d4fa20eccbf9fc7dec9c0bb2b4`，对应 tag
   `bfl-source-r4-frontend-colors-20260821`。
-- 因此 insert-only prediction completion 当前只在 ECS 灰度运行态生效；Mac3 的 prediction Writer 仍运行旧
-  `e692...` 语义。Mac3 晋级同一份 ECS 已验证 R4 archive 需要独立夜间生产窗口，在完成前不得
-  把 ECS 验收外推为 Mac3 已具备该写入保护。
+- 双主机当前 source 均含 insert-only prediction completion；Mac3 后续自然 prediction one-shot 将从
+  R4 `current` 启动。R4 晋级本身不等于 2026-08-21 daily 已成功，也不授权手工重跑 Writer。
 - Mac3 生产应用从独立 `bond-factor-lab-production/current` 启动；运行状态位于外置
   `bond-factor-lab-runtime`。`runtime/config/service.env` 是生产应用本机配置 authority，Git 根 `.env`
   只服务开发工作区；两者不自动同步，生产配置变更必须独立授权并重启对应服务。
-- 同日 Mac3 已正式切换到精确 R2：六个应用 plist 均从 production `current` 启动，SSH tunnel 的
+- Mac3 immutable 解耦时已正式切换到精确 R2：六个应用 plist 均从 production `current` 启动，SSH tunnel 的
   工作目录和日志已外置；七项 drift audit、Backend/首页/方案/admin、DataBridge check-only 和远端
   loopback tunnel 读回全部通过。生产进程不再引用 Git 工作区，旧七个 plist 保留为首次回滚备份。
 - Mac3 Git 开发根在保留既有未跟踪草稿的前提下切到 `codex/develop`；该分支切换不再影响生产进程。
@@ -41,6 +40,16 @@
 - ECS 真实浏览器已验收任务格子、候选排行、逐月表现和每日明细：百分比使用 60% 红/绿两档且空值
   为灰色，目标表格无黄色百分比；涨/跌/平为红/绿/灰，结果 ✓/×/? 独立保持绿/红/灰。趋势图固定
   系列色、月份、样本数、表头和普通正文未改变，浏览器控制台无 warning/error。
+- Mac3 于 2026-08-21 使用同一份 ECS 已验证 R4 archive 完成候选复验、CAS 激活和仅 Backend 重启；
+  `current/previous` 分别为 R4/R2，R2 可执行回滚包保留在外置 runtime backup。Backend 中断窗口约
+  1.8 秒，健康、首页、方案 API、SSH tunnel、七项 drift audit 与五个 idle one-shot 均读回。真实浏览器
+  再次验收任务格子、候选排行、逐月表现、每日方向与结果状态；R4 CSS/JS 内容摘要和缓存标识精确匹配，
+  控制台无 warning/error。Mac3 生产域名、数据库 authority、Writer 主机、installed plist 和环境合同未改。
+- Mac3 切换前后五张关键业务表 count、migration 与 Registry 快照一致。binlog 窗口内只有既有
+  `qrtz_scheduler_state` 心跳更新，不是 Bond Factor Lab 预测、Registry、run 或 run-log 写入。
+- Mac3 2026-08-21 daily 的既有终态仍为 `partial`（25 个方案成功、17 个 `execution_failed`，launchd
+  last exit code 为 1）；当前无残留 runner 或 running run。本次 R4 发布没有重跑或修复该批次，后续须
+  独立诊断，且在结论闭环前不得称今日 daily 全量健康。
 - ECS 一次性隔离 MySQL 真库直接调用了 Native active completion，并验证共享的 business-key decision
   与 plain INSERT：首次发布整组成功，完整重复 benign `skipped` 且旧行不变，部分冲突整组失败且缺失键
   不补写。Blackbox active completion 复用同一 repository decision/plain-INSERT 核心，本次未在隔离
