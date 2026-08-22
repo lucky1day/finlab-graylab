@@ -90,13 +90,26 @@ Registry 生命周期；授权要求；`t_scheme_versions` 与 `t_scheme_registr
 第 3 条是关键：release 一旦更换使方案代码或平台配置变化，`scheme_version` 随之改变，旧覆盖层
 自动失效，方案回落为未激活。**代码变了就必须重新激活**，不会被过期状态带上线。
 
-### 3. 写入点改向
+### 3. 写入点改向（本次范围：仅 Blackbox）
 
-- Native：`activate_gate._set_status` / `_write_expected_active_config` 改写覆盖层；
-- Blackbox：`lifecycle.atomic_update_config` 改写覆盖层。
+`lifecycle.atomic_update_config` 改为 `apply_lifecycle_state`，写覆盖层而非 config.yaml。
+原子写入、`_fsync_directory`、journal 记录与补偿语义原样保留，只更换目标路径。
 
-两者的原子写入、`_fsync_directory`、journal 记录与补偿语义原样保留，只更换目标路径。
-`config.yaml` 从此**只读**，激活链路不再触碰 release 树。
+**Native 明确不在本次范围**，理由是两者存在实质差异：
+
+```
+Blackbox：canonical_platform_config 排除 status → 翻转不改 scheme_version
+Native  ：compute_config_hash 哈希整个文件      → 翻转 status 改变 scheme_version
+          实测 liwei_0616_cons_sda_k3_div_k10：active bdb322ef65fd / paused 8c448210019a
+```
+
+Native 的 `NativeActivationPreflight` 预计算 `expected_active_scheme_version`，
+`_sync_registry_after_activation` 写入 registry 的正是该预计算值——整条路径**依赖**「激活改变
+版本号」这一行为。把 Native 的 status 移出 config 会改变其 `scheme_version` 语义，需要独立设计。
+
+考虑到 Native V1 按政策只维护存量身份、29 个方案均已 active、激活属罕见路径，而后续待入库方案
+全部为 Blackbox，本设计把 Native 留作独立议题。**代价是 Native 激活仍会造成 digest 漂移**，
+该路径的现有行为保持自洽。
 
 ### 4. 三重资格不变
 
