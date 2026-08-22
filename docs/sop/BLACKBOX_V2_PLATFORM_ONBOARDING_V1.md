@@ -521,7 +521,6 @@ TOKEN=$(conda run --no-capture-output -n bond_factor_lab_service \
     --scheme-id {scheme_id} \
     --action shadow_register \
     --predict-date {latest_all_stage_predict_date} \
-    --scheme-version {passed_scheme_version} \
     --harness-run-id {passed_harness_run_id} \
     --issued-by {operator})
 
@@ -534,6 +533,10 @@ conda run --no-capture-output -n bond_factor_lab_service \
 
 Token 必须绑定 exact scheme、action、predict date、version 和 Harness run，一次性使用，
 不得跨方案或跨 run 复用。
+
+`--scheme-version` 已不需要手填：签发时从 `schemes/{scheme_id}/config.yaml` 解析，与 Gate
+使用 token 时重算并比对的是同一份 config。显式传入仍然支持，但与 config 不符会在**签发这一刻**
+失败，而不是等到用 token 时。`--harness-run-id` 仍须显式提供。
 
 证据里的 `identity_created` 表明本次是否执行了首次创建：新方案为 `true`，
 revision 路径为 `false`。
@@ -588,7 +591,6 @@ TOKEN=$(conda run --no-capture-output -n bond_factor_lab_service \
     --action backtest_persist \
     --predict-date {gray_target_start} \
     --backtest-start-date 2025-01-01 \
-    --scheme-version {passed_scheme_version} \
     --harness-run-id {passed_harness_run_id} \
     --expires-in 900 \
     --issued-by {operator})
