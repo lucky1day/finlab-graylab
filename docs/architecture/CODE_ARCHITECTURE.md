@@ -219,8 +219,9 @@ python -m harness onboard {scheme_id} --stage all
 composite、信号与回测分区可见，但 dashboard payload 不携带 exact version，因此版本身份仍由
 生命周期和数据库权威回读证明。
 
-上图的六段 `all` 是所有首次技术入库的固定路径；Native 的 source benchmark/CompareGate
-只在这里作为保真硬证据，Blackbox Compare 也保持原有确定性与截止隔离检查。已入库 Native
+上图的 `all` 按 `runtime_type` 分派（Blackbox 四段、Native 六段），是所有首次技术入库的
+固定路径；Native 的 source benchmark/CompareGate 只在这里作为保真硬证据。Blackbox Compare
+只做平台输入校验与一次冒烟 predict——确定性与截止隔离属上游义务，平台不重验。已入库 Native
 修订仅在不同 prior Native version 的 passed `all + compare` 所属 StaticGate 已持久化
 `static.business_identity`，且该快照与当前身份精确匹配时，才可走：
 

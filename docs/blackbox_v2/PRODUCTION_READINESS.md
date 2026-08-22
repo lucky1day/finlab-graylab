@@ -12,11 +12,14 @@
 
 1. 两文件 Intake、Metadata、目录身份、Contract 和 Runtime Profile 全部通过。
 2. 当前 exact version 的 Harness `all` 全部通过：Blackbox V2 为四段
-   `static → input → unit → compare`（dry-run 与 no-persist backtest 的断言已由同一 runtime 的
-   CompareGate 更强覆盖，故不再重复执行）。报告中的 version、输入 snapshot、Request、cutoff 和
-   结果身份精确一致。技术 `all` 不访问 Backend。
+   `static → input → unit → compare`（原 dry-run 与 CompareGate 的 baseline 是同一次 predict，
+   已并入）。报告中的 version、输入 snapshot、Request、cutoff 和结果身份精确一致。
+   技术 `all` 不访问 Backend。
 3. DataBridge current snapshot 通过 schema、freshness、cutoff 和完整性校验；平台注册输入由调用方只读数据库连接捕获，不存在 Native 二级 generation。
-4. 入库 StaticGate、运行后输入目录指纹复验、超时、环境 allowlist、确定性、顺序/分批一致性、未来数据隔离和严格 `-1/0/1` Result 均通过。
+4. 入库 StaticGate、运行后输入目录指纹复验、超时、环境 allowlist 和严格 `-1/0/1` Result 均通过。
+   确定性、顺序/分批一致性与未来数据隔离**不在平台验收范围内**——它们是交付代码自身的性质，
+   由上游按 [上游交付契约](../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md) 保证；生产准备核验
+   不得据此宣称平台已验证过这些性质。
 5. activation、持久化回测和 live 分别使用精确的一次性授权；其它方案、旧版本或旧 run 的授权不得外推。
 6. activation 后 config、exact version 与全部 Registry target 均为 active；paused、draft、retired 或 cadence 不匹配的身份不得进入对应 one-shot runner。
 7. 激活后的 HTTP 验收只使用 `DashboardGate` 检查 `/api/factor-lab/dashboard` 当前业务可见性；Dashboard 响应不携带 exact version，不能替代 exact version、Gate 或生命周期证据。

@@ -235,7 +235,7 @@ flowchart LR
 static -> input -> unit -> dry-run -> compare -> backtest
 ```
 
-自动段可以留下审计报告和控制面记录，但不得写正式预测表、正式回测结果表或 active 前端可见状态，也不访问 Backend。`dry-run` 和 `no-persist` 的目的就是在不产生业务副作用的情况下验证结构、日期语义、确定性和结果格式。激活后的 HTTP 验收只使用 `DashboardGate`；它证明当前业务读模型可用，但 Dashboard 响应不携带 exact version，版本仍由生命周期、Registry 和数据库权威证据确认。
+自动段可以留下审计报告和控制面记录，但不得写正式预测表、正式回测结果表或 active 前端可见状态，也不访问 Backend。`dry-run` 和 `no-persist` 的目的就是在不产生业务副作用的情况下验证结构、日期语义和结果格式；算法自身的确定性由上游按其交付契约保证，平台不重验。激活后的 HTTP 验收只使用 `DashboardGate`；它证明当前业务读模型可用，但 Dashboard 响应不携带 exact version，版本仍由生命周期、Registry 和数据库权威证据确认。
 
 真正的业务写入只允许发生在受控边界：
 

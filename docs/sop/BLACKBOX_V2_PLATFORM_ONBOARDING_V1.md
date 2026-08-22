@@ -398,10 +398,25 @@ conda run --no-capture-output -n bond_factor_lab_service \
 固定顺序：
 
 ```text
-static -> input -> unit -> dry-run -> compare -> backtest
+static -> input -> unit -> compare
 ```
 
 任一 Gate 失败时 fail-fast，不进入后续 Gate，不签发 shadow 授权。
+
+**自动 Gate 的验证边界**：平台只验证平台自己新增或修改的部分——数据接入、写出与平台侧
+逻辑。交付代码自身的性质由上游按 [上游交付契约](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)
+保证，平台不重验：
+
+| 性质 | 契约条款 | 平台是否重验 |
+|---|---|---|
+| 重复执行一致性 | 第 614 行（抽样确定性）、第 470 行 | 否 |
+| `predict` 与 `backtest` 结果一致 | 第 470 行 | 否 |
+| 不同批次大小/分区/顺序结果一致 | 第 470、472、581 行 | 否 |
+| 按截止键隔离未来数据 | 第 198、377、580 行 | 否 |
+
+新增任何 Gate 断言前必须先回答：**这条断言失败，是谁的代码错了？** 若答案是交付脚本，
+它就属上游义务，不进平台 Gate。历史上这一条缺失，导致 CompareGate 一度用 10 次全量拟合
+重验上游已明文承诺的性质，单次 `all` 耗时 40 分钟。
 
 仅做技术入库准备、要求生产数据库零写入时，必须使用正式
 `--check-only` 编排：
@@ -417,7 +432,7 @@ conda run --no-capture-output -n bond_factor_lab_service \
 ```
 
 `--check-only` 仍使用只读 Engine 构造平台日历、三个 cutoff 和
-Request，仍按固定六 Gate 顺序 fail-fast，并生成本地
+Request，仍按固定四 Gate 顺序 fail-fast，并生成本地
 `harness_run_id`、逐 Gate JSON 与统一报告；但完全不调用 Harness
 控制面 run/gate 持久化，也不写任何业务表。统一报告必须同时写明：
 
@@ -441,8 +456,7 @@ no-persist 验收，必须得到 `100/100` 且 `persist=false`。技术 `all`
 | `static` | 两文件、Metadata、新交付三字段、无新 `display_name`、owner composite readback、已声明 provider、语法、禁止 import/调用，以及 `/Users/`、`/home/`、Windows 盘符形式的绝对路径字面量 | 其他绝对路径、算法效果、全局文件读取隔离 | runtime、版本、Metadata、owner registry ID、`platform_inputs`、违规列表 |
 | `input` | 三频 Schema、父/组合快照、平台注册制品、七字段 Request、三个截止键；如有上游自测则核对同代输入身份 | 当天 freshness、跨 generation 结果可比性 | 两类文件摘要、父/组合 ID、两个 manifest、Request、`self_test_alignment` |
 | `unit` | help 暴露两个模式；一个非法 Request 失败且无 Output | 所有非法组合均被覆盖 | help、非法输入、失败无 Output |
-| `dry-run` | 单点 predict、Result 校验、内存 `PredictionRecord` | 已写预测表或已进入业务 API | PredictionRecord、组合 ID、结果路径 |
-| `compare` | 重复、predict/backtest、分批、顺序、后续业务行隔离；平台制品哈希不变；同代时才比较上游结果 | 准确率、历史修订回放、跨 generation 逐行复现 | 五类一致性证据、`platform_input_hashes_unchanged=true`、输入对齐状态 |
+| `compare` | 平台输入逐字节等于声明值；一次冒烟 predict 证明交付在平台喂进去的输入下产出合法 Result（原 dry-run 即此次调用） | 准确率、历史修订回放、跨 generation 逐行复现，以及**交付自身的性质**（重复执行确定性、predict/backtest 一致、截止隔离、跨请求无状态）——那些属上游义务 | PredictionRecord、组合 ID、结果路径 |
 | `backtest` | 100 条全部返回、no-persist、组合输入一致 | 大于 100 条单进程能力、效果门槛、算法内部是否使用[等价的一次性计算](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md#63-对每个-request-独立截断) | 请求/结果数量、组合 ID、persist=false |
 报告中的 `business_tables_written: false` 是声明性证据，不是数据库前后计数。激活后的
 `DashboardGate` 只验证 `/api/factor-lab/dashboard` 当前业务读模型；它不属于 `all`，且

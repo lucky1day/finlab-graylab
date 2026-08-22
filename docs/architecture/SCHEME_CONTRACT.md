@@ -136,7 +136,7 @@ python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
 Native ActivationGate 的两条 profile 互斥：当前 exact version 已通过完整 `all` 时，采用 `full_initial_onboarding_v1`，只复核当前六个 Gate（含 Compare）和一次性授权，不要求 prior snapshot 或 `native-maintenance`。只有未走该 full-`all` profile 的已有 Native V1 修订，在 prior `all` 的 `static.business_identity` 已持久化且与当前业务身份精确匹配时，才可改走 `native-maintenance`：`static -> native-maintenance-admission -> input -> unit -> dry-run`。快照只含 `scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors 和 composite Registry IDs，不含代码/config/version hash。maintenance profile 还要求 current exact `t_scheme_versions` 为 native `draft|active`、expected Registry 全 paused（预激活）或全 active（激活后）、draft+active fail-closed、prior Native version 的 passed `all + compare`、当前精确 version 的五段持久证据和一次性授权；只有 ActivationGate 能原子建立 active。唯一保留的补证是 `weekly_10y_d_overlay_0529` 已持久化的 canonical receipt；平台只读校验其固定身份与 prior 绑定，writer 和 token action 已退役。它仅作为 `legacy_operator_attestation_v1` 身份来源继续五段 Gate。maintenance 不运行当前 historical `compare/backtest`，也不写业务表，故不能使用 `--check-only`。满足任一已实现 profile 的同一身份修订，其历史 source-benchmark 输入 vintage 漂移只归档，不单独阻断 activation、gap repair、`gray_live`、`scheduled_live` 或 Dashboard；新 Native 身份和 Blackbox V2 仍只能走 `all`。
 
 - Native：校验 adapter/core、输入 artifact 和 source fidelity。
-- Blackbox：校验两文件、CLI、三频快照、确定性、截止隔离和标准结果。
+- Blackbox：校验两文件、CLI、三频快照和标准结果；确定性与截止隔离属上游交付契约义务，平台不重验。
 - persist、shadow、activate 或 live 都不包含在无授权自动段中。
 - `--check-only` 仍执行七个自动 Gate，但只写本地报告，控制面和业务表均零持久化。
 
@@ -146,7 +146,7 @@ Native ActivationGate 的两条 profile 互斥：当前 exact version 已通过�
 |---|---|---|
 | 算法内部保真 | full-`all` profile 检查 core 和内部 benchmark；maintenance profile 保留 prior admission 的 `static.business_identity` 快照与 live-safe 证据。仅固定 10Y 已持久化且只读校验的 canonical receipt 可补“已通过但缺字段”的 legacy snapshot；其余缺快照只能走 full `all` | 上游负责；平台不反编译或改写脚本 |
 | 输入 | `shared.input_artifacts` 注入 | 三频父快照 + 显式声明的平台制品 + 平台 Request |
-| 结果验收 | `PredictionRecord` 与 source evidence | Result 合同、确定性和截止隔离 |
+| 结果验收 | `PredictionRecord` 与 source evidence | Result 合同（确定性与截止隔离由上游保证） |
 | 新身份 | 禁止 | 唯一允许路径 |
 | 业务写入 | 受授权 repository | 默认禁止；生产准备通过并取得专项授权后由专用 Gate 执行 |
 
