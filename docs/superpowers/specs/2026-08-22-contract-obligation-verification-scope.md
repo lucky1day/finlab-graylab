@@ -47,16 +47,22 @@ compare    10 次全量拟合   2400s   → 6 条断言全过，0 命中
 
 ## 最小设计
 
-### 1. 建立交付内容指纹
+### 1. 缓存键：复用既有交付哈希，不引入新身份
 
-新增 `delivery_digest`：对 `schemes/{scheme_id}/delivery/` 下 `{scheme_id}.py` 与
-`{scheme_id}.json` 的规范化摘要（按文件名排序，逐文件 SHA-256，再对 canonical JSON 取 SHA-256）。
+`scheduler/discovery.py` 对 Blackbox 已经计算并记录：
 
-该指纹**顺带填补一个既有缺口**：Blackbox 的 `compute_code_hash` 只覆盖 Native 布局的
-`predict.py` 与 `core/**/*.py`，对 Blackbox 恒为空字符串的 SHA-256，因此 `scheme_version`
-完全不反映交付字节。引入 `delivery_digest` 后，交付内容首次具备可审计身份。
+```python
+code_hash     = _hash_file(script_path)     # delivery/{scheme_id}.py 的 SHA-256
+manifest_hash = _hash_file(metadata_path)   # delivery/{scheme_id}.json 的 SHA-256
+```
 
-`delivery_digest` 不进入 `scheme_version`（避免改变既有版本语义），只作为证据与缓存键。
+两者精确覆盖交付两文件，因此 `(code_hash, manifest_hash)` 直接作为缓存键，**不新增任何身份概念**。
+
+> **更正记录（2026-08-22）**：本节初稿曾断言「Blackbox 的 `code_hash` 恒为空字符串 SHA-256，
+> `scheme_version` 完全不反映交付字节」，并据此提出新增 `delivery_digest`。该结论来自直接调用
+> `shared.versioning.compute_code_hash`——但生产路径不走该函数。实测
+> `code_hash == sha256(delivery/{scheme_id}.py)`，交付字节**本来就**参与 `scheme_version`。
+> 不存在追溯缺口，`delivery_digest` 提案随之取消。
 
 ### 2. 把 `all` 的自动段分成两层
 
@@ -80,8 +86,8 @@ contract-invariants: repeat_deterministic / predict_backtest_equal
 
 ### 3. 缓存查找，无需 DDL
 
-CompareGate 在 evidence 中输出 `delivery_digest`。`t_harness_gate_results.summary_json` 是 JSON
-列且完整保存 evidence，因此后续运行可查询「是否存在同一 `scheme_id` + 同一 `delivery_digest` 且
+CompareGate 在 evidence 中输出 `code_hash` 与 `manifest_hash`。`t_harness_gate_results.summary_json` 是 JSON
+列且完整保存 evidence，因此后续运行可查询「是否存在同一 `scheme_id` + 同一 `(code_hash, manifest_hash)` 且
 `status='passed'` 的 compare 结果」。命中则跳过并在本次 evidence 中记录
 `contract_invariants_reused_from`（被复用的 `harness_run_id`）。
 
@@ -125,7 +131,7 @@ CompareGate 在 evidence 中输出 `delivery_digest`。`t_harness_gate_results.s
    错误文案与判定不变。
 2. 指纹命中时跳过不变量套件，且 evidence 记录被复用的 `harness_run_id`；交付字节改动一个字节
    即不命中。
-3. 缓存查询失败、digest 不可计算或记录歧义时执行完整套件（fail-closed），并有对应用例。
+3. 缓存查询失败、哈希不可计算或记录歧义时执行完整套件（fail-closed），并有对应用例。
 4. `smoke` 产出的 `prediction_record` 与原 dry-run 逐字段一致。
 5. `gate dry-run`、`gate backtest` 单独调用行为不变。
 6. `backtest --persist` 路径完全不受影响。
