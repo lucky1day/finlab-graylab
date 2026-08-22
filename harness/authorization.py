@@ -28,6 +28,7 @@ SIDE_EFFECT_ACTIONS = frozenset(
         "draft_register",
         "shadow_register",
         "blackbox_activate",
+        "blackbox_lifecycle_bootstrap",
         "blackbox_reconcile",
         "blackbox_revision_activate",
     }
@@ -46,6 +47,7 @@ HARNESS_RUN_SCOPED_ACTIONS = frozenset(
         "draft_register",
         "shadow_register",
         "blackbox_activate",
+        "blackbox_lifecycle_bootstrap",
         "blackbox_reconcile",
         "blackbox_revision_activate",
     }

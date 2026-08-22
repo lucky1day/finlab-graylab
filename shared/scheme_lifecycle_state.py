@@ -51,15 +51,17 @@ def lifecycle_state_path(project_root: Path | str, scheme_id: str) -> Path:
     safe_id = str(scheme_id).strip()
     if not safe_id or "/" in safe_id or safe_id.startswith("."):
         raise ValueError(f"invalid scheme_id for lifecycle state: {scheme_id!r}")
-    return resolve_runtime_state_path(
-        relative_path=f"{LIFECYCLE_RELATIVE_ROOT}/{safe_id}.json",
+    root = resolve_runtime_state_path(
+        relative_path=LIFECYCLE_RELATIVE_ROOT,
         development_default=(
             Path(project_root)
             / "backtest_artifacts"
             / LIFECYCLE_RELATIVE_ROOT
-            / f"{safe_id}.json"
         ),
     )
+    # 只规范化受控根目录，不 resolve 最终文件名；否则一个已存在的 symlink
+    # 会把 no-clobber 检查和写入目标悄悄改到链接指向的位置。
+    return root / f"{safe_id}.json"
 
 
 def read_lifecycle_state(
@@ -115,11 +117,56 @@ def write_lifecycle_state(
     harness_run_id: str | None = None,
 ) -> Path:
     """原子写入本机生命周期状态。取值非法一律拒绝。"""
+    path = lifecycle_state_path(project_root, scheme_id)
+    payload = _lifecycle_payload(
+        scheme_id=scheme_id,
+        scheme_version=scheme_version,
+        status=status,
+        version_status=version_status,
+        harness_run_id=harness_run_id,
+    )
+    _atomic_write_json(path, payload)
+    return path
+
+
+def create_lifecycle_state(
+    project_root: Path | str,
+    *,
+    scheme_id: str,
+    scheme_version: str,
+    status: str,
+    version_status: str,
+    harness_run_id: str | None = None,
+) -> Path:
+    """原子、insert-only 地建立本机生命周期状态。
+
+    仅供需要证明「此前没有覆盖层」的受控迁移入口使用；目标路径已存在时
+    绝不覆盖。
+    """
+    path = lifecycle_state_path(project_root, scheme_id)
+    payload = _lifecycle_payload(
+        scheme_id=scheme_id,
+        scheme_version=scheme_version,
+        status=status,
+        version_status=version_status,
+        harness_run_id=harness_run_id,
+    )
+    _atomic_create_json(path, payload)
+    return path
+
+
+def _lifecycle_payload(
+    *,
+    scheme_id: str,
+    scheme_version: str,
+    status: str,
+    version_status: str,
+    harness_run_id: str | None,
+) -> dict[str, str]:
     if status not in _VALID_STATUS:
         raise ValueError(f"unsupported lifecycle status: {status!r}")
     if version_status not in _VALID_VERSION_STATUS:
         raise ValueError(f"unsupported lifecycle version_status: {version_status!r}")
-    path = lifecycle_state_path(project_root, scheme_id)
     payload = {
         "schema_version": SCHEMA_VERSION,
         "scheme_id": str(scheme_id),
@@ -130,8 +177,7 @@ def write_lifecycle_state(
     }
     if harness_run_id:
         payload["harness_run_id"] = str(harness_run_id)
-    _atomic_write_json(path, payload)
-    return path
+    return payload
 
 
 def _atomic_write_json(path: Path, payload: dict) -> None:
@@ -152,6 +198,26 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
     finally:
         if temporary.exists():
             temporary.unlink(missing_ok=True)
+
+
+def _atomic_create_json(path: Path, payload: dict) -> None:
+    """用同目录临时文件和 hard-link 原子发布，且拒绝覆盖目标。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        dir=path.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=True, sort_keys=True, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(temporary, path)
+        _fsync_directory(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _fsync_directory(path: Path) -> None:

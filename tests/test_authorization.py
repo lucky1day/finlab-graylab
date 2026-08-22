@@ -106,6 +106,7 @@ class AuthorizationTest(unittest.TestCase):
                     "draft_register",
                     "shadow_register",
                     "blackbox_activate",
+                    "blackbox_lifecycle_bootstrap",
                     "blackbox_reconcile",
                     "blackbox_revision_activate",
                 }
@@ -116,7 +117,13 @@ class AuthorizationTest(unittest.TestCase):
         self.assertNotIn("source_authority", authorization.Authorization.__dataclass_fields__)
 
     def test_side_effect_gates_delegate_security_checks_to_unified_verifier(self) -> None:
-        from harness.blackbox_v2 import activation, draft_register, gates, revision_activation
+        from harness.blackbox_v2 import (
+            activation,
+            draft_register,
+            gates,
+            lifecycle_bootstrap,
+            revision_activation,
+        )
         from harness.gates import activate_gate, backtest_gate, live_gate
 
         sources = "\n".join(
@@ -128,6 +135,7 @@ class AuthorizationTest(unittest.TestCase):
                 activation,
                 draft_register,
                 gates,
+                lifecycle_bootstrap,
                 revision_activation,
             )
         )
@@ -439,6 +447,7 @@ class AuthorizationTest(unittest.TestCase):
                 "draft_register",
                 "shadow_register",
                 "blackbox_activate",
+                "blackbox_lifecycle_bootstrap",
                 "blackbox_reconcile",
                 "blackbox_revision_activate",
             }

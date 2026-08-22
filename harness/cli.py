@@ -266,7 +266,7 @@ def _build_parser() -> argparse.ArgumentParser:
     for gate_name in (
         "static", "input", "unit", "dry-run", "compare", "backtest",
         "dashboard", "draft-register", "shadow-register", "live",
-        "lifecycle-reconcile", "revision-activate",
+        "lifecycle-reconcile", "lifecycle-bootstrap", "revision-activate",
     ):
         item = gate_subparsers.add_parser(gate_name)
         item.add_argument("--scheme-id", required=True)
