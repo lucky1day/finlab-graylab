@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验日期**：2026-08-21
+**最后核验日期**：2026-08-23
 
 本文只记录当前稳定事实。实时方案、run、prediction、DataBridge、API 和调度状态必须从各自权威数据源读取；除当前部署基线所需的精确 release 身份外，不在仓库文档冻结时点数量、运行 ID 或逐次校验 hash。未批准工作见[统一后续推进计划](TODO.md)，生产调度规则见[生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。
 
@@ -70,6 +70,13 @@
 - Blackbox Admission、Backend 手动预测、direct scheduling、ledger、occurrence、epoch、daily-gray 和常驻 APScheduler 均已退役。
 - installed plist/unit/timer、launchctl/systemctl 服务变更、激活、持久化回测、额外业务写入和 DDL 仍是独立操作，必须获得明确授权。
 
+## 2026-08-23 最新方案闭环
+
+- ECS 灰度实验室中的 `weekly_1y_causal_v1_31_0_standalone` exact version `c93f76489d5b` 已完成 Blackbox 技术 Gate、shadow/paused 登记、完整持久化回测、原子 activation 和 Registry active 读回。
+- 该方案的已批准单日灰度信号已按冻结 DataBridge authority 经 `signal-gap-fill` insert-only 写入；再次运行 gap plan 为 `present`、`actionable=0`，没有重复写入。
+- 激活后的 `DashboardGate` 已通过，dashboard 可读到一条 `gray_live`。这完成方案的 Onboarding Complete 证据；是否形成 `scheduled_live` 仍只由下一次 ECS systemd 自然触发、任务日志、run/prediction 和 Dashboard 后续读回证明。
+- 本轮单维护者授权简化已在 `codex/develop` 工作区完成实施和回归：用户侧 `HARNESS_AUTH_SECRET`、`auth issue`、token 复制及 `--authorize` 已从 CLI 移除，副作用命令自动绑定 exact version/latest passed run 并记录 `direct_operator_command_v1`。该本地代码变更尚未构建或晋级 ECS/Mac3 release，不改变当前 installed unit/timer 或运行中服务。
+
 ## 当前迁移完成边界
 
 - ECS 独立灰度迁移已经完成。
@@ -94,7 +101,8 @@
 
 ## 当前 Harness 合同
 
-- 首次技术入库 `all` 固定为六段 `static -> input -> unit -> dry-run -> compare -> backtest`；`native-maintenance` 固定为五段 `static -> native-maintenance-admission -> input -> unit -> dry-run`。两者都不访问 Backend。
+- 首次技术入库 `all` 按 runtime type 分派：Blackbox 为四段 `static -> input -> unit -> compare`，Native 为六段 `static -> input -> unit -> dry-run -> compare -> backtest`；`native-maintenance` 固定为五段 `static -> native-maintenance-admission -> input -> unit -> dry-run`。这些技术流程都不访问 Backend。
 - 激活后只用 `dashboard` Gate 校验 `/api/factor-lab/dashboard` 的当前业务快照；该 payload 不携带 exact version，因此不能用来证明 exact version。
 - `signal-gap-fill` 只支持单个 `predict_date`，可选限定一个 base scheme；命令执行权本身就是补数授权，不另设用户、token、确认或 plan SHA 层。Native 从当前数据库重建，Blackbox 重放冻结 DataBridge authority；所有算法成功后才按 group insert-only 写 `gray_live`，最后执行一次权威读回。
-- Blackbox lifecycle 存在 pending 时直接阻断后续操作；只有显式、独立 HMAC 授权的 `lifecycle-reconcile` 可修改状态，其它 Gate 不做隐式恢复。
+- 单维护者人工副作用统一使用直接命令授权：不生成密钥、不签发或复制 token；CLI 自动绑定 exact version，Gate 自动选择 latest passed exact run，operator、action、日期/起点与 operation hash 持久审计。这个应用内简化不取消 agent 对 ECS/Mac3 生产写操作取得用户明确授权的要求。
+- Blackbox lifecycle 存在 pending 时直接阻断后续操作；只有显式、独立执行 `gate lifecycle-reconcile` 可修改状态，其它 Gate 不做隐式恢复。

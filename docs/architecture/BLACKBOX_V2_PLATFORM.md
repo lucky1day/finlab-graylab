@@ -234,10 +234,10 @@ static -> input -> unit -> dry-run -> compare -> backtest
 draft -> validated -> shadow -> active -> paused -> retired
 ```
 
-状态转换必须通过独立授权。Contract 1.0 trial 的发布边界、授权前置检查和失败恢复以平台操作 SOP 为准；本架构文档不记录任何具体方案处于哪个状态。
+状态转换必须通过独立直接命令。Contract 1.0 trial 的发布边界、生产准备检查和失败恢复以平台操作 SOP 为准；本架构文档不记录任何具体方案处于哪个状态。
 
 任一 lifecycle journal 处于 pending 时，新的 shadow、activate 或 revision activate 都直接
-阻断，不得在授权前隐式恢复。唯一恢复入口是显式 HMAC 授权的 `blackbox_reconcile`：只回退到
+阻断，不得在其它命令前隐式恢复。唯一恢复入口是独立执行 `gate lifecycle-reconcile`：只回退到
 原 journal 记录的 previous safe state，保留原 journal 不变，并创建与其关联的新
 reconciliation journal；恢复失败时继续保留 pending 证据。
 

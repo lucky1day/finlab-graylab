@@ -1070,58 +1070,35 @@ class BlackboxInitialLifecycleFailClosedTests(unittest.TestCase):
             self.assertIn("non-active safe state", "\n".join(result.errors))
 
     def test_reconcile_blocks_invalid_authorization_without_writes(self) -> None:
-        import base64
-
         from harness.authorization import (
-            _sign,
+            issue_token,
             mark_token_used,
             parse_token,
             used_tokens_path,
         )
         from harness.result import GateStatus
 
-        for case in ("unsigned", "invalid-signature", "expired", "consumed"):
+        for case in ("missing", "malformed", "wrong-scope", "consumed"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as tmpdir:
                 root = Path(tmpdir)
                 cfg = self._scaffold(root)
                 self._write_pending_journal(root, cfg)
-                issue_secret = "lifecycle-test-secret"
-                with patch.dict(os.environ, {"HARNESS_AUTH_SECRET": issue_secret}):
-                    token = self._reconcile_token(cfg)
-                    if case == "expired":
-                        padding = "=" * (-len(token) % 4)
-                        envelope = json.loads(
-                            base64.urlsafe_b64decode(
-                                (token + padding).encode("ascii")
-                            ).decode("utf-8")
-                        )
-                        envelope["payload"]["issued_at"] = (
-                            "2020-01-01T00:00:00+00:00"
-                        )
-                        envelope["payload"]["expires_at"] = (
-                            "2020-01-01T00:01:00+00:00"
-                        )
-                        envelope["sig"] = _sign(envelope["payload"])
-                        token = base64.urlsafe_b64encode(
-                            json.dumps(
-                                envelope,
-                                ensure_ascii=False,
-                                sort_keys=True,
-                                separators=(",", ":"),
-                            ).encode("utf-8")
-                        ).decode("ascii").rstrip("=")
-                    if case == "consumed":
-                        mark_token_used(parse_token(token), used_tokens_path(root))
-                verify_secret = (
-                    ""
-                    if case == "unsigned"
-                    else
-                    "different-lifecycle-secret"
-                    if case == "invalid-signature"
-                    else issue_secret
-                )
-                with patch.dict(os.environ, {"HARNESS_AUTH_SECRET": verify_secret}):
-                    result = self._run_reconcile_preflight(root, cfg, token)
+                token = self._reconcile_token(cfg)
+                if case == "missing":
+                    token = None
+                elif case == "malformed":
+                    token = "not-a-canonical-operation"
+                elif case == "wrong-scope":
+                    token = issue_token(
+                        cfg.scheme_id,
+                        "blackbox_reconcile",
+                        scheme_version="wrong-version",
+                        harness_run_id="hr_passed",
+                        issued_by="recovery-owner",
+                    )
+                elif case == "consumed":
+                    mark_token_used(parse_token(token), used_tokens_path(root))
+                result = self._run_reconcile_preflight(root, cfg, token)
 
             self.assertEqual(result.status, GateStatus.BLOCKED)
 

@@ -3,19 +3,17 @@ from __future__ import annotations
 import base64
 import fcntl
 import hashlib
-import hmac
 import json
 import os
 import secrets
 import tempfile
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 from shared.runtime_paths import resolve_runtime_state_path
 
-AUTH_SECRET_ENV = "HARNESS_AUTH_SECRET"
 DEFAULT_BACKTEST_START_DATE = "2025-01-01"
 USED_TOKENS_FILENAME = ".used_authorization_tokens.json"
 USED_TOKENS_RELATIVE_PATH = f"reports/harness/{USED_TOKENS_FILENAME}"
@@ -78,25 +76,12 @@ class Authorization:
     backtest_start_date: str | None = None
 
 
-class AuthorizationSecretError(RuntimeError):
-    """授权密钥未配置。"""
-
-
 class AuthorizationTokenAlreadyUsedError(RuntimeError):
-    """授权 token 已被权威消费。"""
-
-
-def _auth_secret() -> bytes:
-    secret = os.environ.get(AUTH_SECRET_ENV)
-    if not isinstance(secret, str) or not secret:
-        raise AuthorizationSecretError(
-            "HARNESS_AUTH_SECRET is required for authorization tokens"
-        )
-    return secret.encode("utf-8")
+    """本次直接操作授权已经被消费。"""
 
 
 def authorization_token_hash(token: str | Authorization) -> str:
-    """返回可安全持久化的授权 token SHA-256。"""
+    """返回可持久化的直接操作 ID 摘要。"""
     raw = token.token if isinstance(token, Authorization) else str(token)
     return _token_hash(raw)
 
@@ -110,16 +95,6 @@ def _canonical_json_bytes(value: Any) -> bytes:
     ).encode("utf-8")
 
 
-def _sign(payload: dict[str, Any]) -> str:
-    """使用必需的 HMAC 密钥签名 canonical payload。"""
-    digest = hmac.new(
-        _auth_secret(),
-        _canonical_json_bytes(payload),
-        hashlib.sha256,
-    ).digest()
-    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
-
-
 def issue_token(
     scheme_id: str,
     action: str,
@@ -130,12 +105,12 @@ def issue_token(
     issued_by: str = "harness",
     backtest_start_date: str | None = None,
 ) -> str:
-    """签发绑定精确作用域的一次性 HMAC token。
+    """构造一次 CLI 调用内部使用的直接操作授权。
 
-    不设有效期：token 已经一次性消费且绑死 exact scheme/version/run，过期时间只增加
-    「签发后必须限时用完」的操作摩擦，不提供额外保护。
+    该值不是凭据，不依赖密钥，也不应由操作者手工签发或复制。CLI 在执行副作用命令时
+    自动构造它；Gate 再把系统选出的 exact Harness run 绑定到审计记录。保留这个函数名
+    只为兼容内部调用和测试，用户操作面不再暴露 ``auth issue``。
     """
-    _auth_secret()
     if action not in SIDE_EFFECT_ACTIONS:
         raise ValueError(f"unknown authorization action: {action}")
     normalized_scheme_id = _require_text(scheme_id, "scheme_id")
@@ -148,9 +123,7 @@ def issue_token(
             raise ValueError(f"{action} authorization does not accept predict_date")
         normalized_predict_date = None
 
-    if action in HARNESS_RUN_SCOPED_ACTIONS:
-        normalized_run_id = _require_text(harness_run_id, "harness_run_id")
-    elif harness_run_id is None:
+    if harness_run_id is None:
         normalized_run_id = None
     else:
         normalized_run_id = _require_text(harness_run_id, "harness_run_id")
@@ -168,7 +141,7 @@ def issue_token(
         payload["backtest_start_date"] = normalize_backtest_start_date(
             backtest_start_date
         )
-    envelope = {"payload": payload, "sig": _sign(payload)}
+    envelope = {"payload": payload}
     return base64.urlsafe_b64encode(_canonical_json_bytes(envelope)).decode(
         "ascii"
     ).rstrip("=")
@@ -176,13 +149,13 @@ def issue_token(
 
 def _decode_envelope(token: str) -> dict[str, Any]:
     if not isinstance(token, str) or not token or not token.isascii():
-        raise ValueError("authorization token encoding is not canonical")
+        raise ValueError("direct authorization encoding is not canonical")
     if "=" in token or any(
         character
         not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
         for character in token
     ):
-        raise ValueError("authorization token encoding is not canonical")
+        raise ValueError("direct authorization encoding is not canonical")
     padding = "=" * (-len(token) % 4)
     try:
         decoded_bytes = base64.b64decode(
@@ -191,45 +164,42 @@ def _decode_envelope(token: str) -> dict[str, Any]:
             validate=True,
         )
     except (ValueError, TypeError) as exc:
-        raise ValueError("authorization token encoding is not canonical") from exc
+        raise ValueError("direct authorization encoding is not canonical") from exc
     canonical_token = base64.urlsafe_b64encode(decoded_bytes).decode("ascii").rstrip("=")
-    if not hmac.compare_digest(canonical_token, token):
-        raise ValueError("authorization token encoding is not canonical")
+    if canonical_token != token:
+        raise ValueError("direct authorization encoding is not canonical")
     try:
         decoded = json.loads(decoded_bytes.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("authorization token payload is invalid") from exc
+        raise ValueError("direct authorization payload is invalid") from exc
     if not isinstance(decoded, dict):
-        raise ValueError("authorization token schema is invalid")
-    if not hmac.compare_digest(_canonical_json_bytes(decoded), decoded_bytes):
-        raise ValueError("authorization token payload encoding is not canonical")
+        raise ValueError("direct authorization schema is invalid")
+    if _canonical_json_bytes(decoded) != decoded_bytes:
+        raise ValueError("direct authorization payload encoding is not canonical")
     _validate_token_schema(decoded)
     return decoded
 
 
 def _validate_token_schema(envelope: dict[str, Any]) -> None:
-    if frozenset(envelope) != frozenset({"payload", "sig"}):
-        raise ValueError("authorization token schema is invalid")
+    if frozenset(envelope) != frozenset({"payload"}):
+        raise ValueError("direct authorization schema is invalid")
     payload = envelope.get("payload")
     if not isinstance(payload, dict):
-        raise ValueError("authorization token schema is invalid")
+        raise ValueError("direct authorization schema is invalid")
     action = payload.get("action")
     if action not in SIDE_EFFECT_ACTIONS:
-        raise ValueError("authorization token schema is invalid")
+        raise ValueError("direct authorization schema is invalid")
     expected_fields = _BASE_PAYLOAD_FIELDS
     if action == "backtest_persist":
         expected_fields = expected_fields | {"backtest_start_date"}
     if frozenset(payload) != expected_fields:
-        raise ValueError("authorization token schema is invalid")
-    _validate_canonical_signature(envelope.get("sig"))
+        raise ValueError("direct authorization schema is invalid")
     _require_text(payload.get("scheme_id"), "scheme_id")
     _require_text(payload.get("scheme_version"), "scheme_version")
     _require_text(payload.get("issued_by"), "issued_by")
     _require_text(payload.get("nonce"), "nonce")
     harness_run_id = payload.get("harness_run_id")
-    if action in HARNESS_RUN_SCOPED_ACTIONS:
-        _require_text(harness_run_id, "harness_run_id")
-    elif harness_run_id is not None:
+    if harness_run_id is not None:
         _require_text(harness_run_id, "harness_run_id")
     if action in EXACT_PREDICT_DATE_ACTIONS:
         _normalize_action_predict_date(action, payload.get("predict_date"))
@@ -239,33 +209,8 @@ def _validate_token_schema(envelope: dict[str, Any]) -> None:
         normalize_backtest_start_date(payload.get("backtest_start_date"))
 
 
-def _validate_canonical_signature(signature: Any) -> None:
-    if not isinstance(signature, str) or not signature or "=" in signature:
-        raise ValueError("authorization token schema is invalid")
-    if any(
-        character
-        not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-        for character in signature
-    ):
-        raise ValueError("authorization token schema is invalid")
-    try:
-        decoded = base64.b64decode(
-            (signature + "=" * (-len(signature) % 4)).encode("ascii"),
-            altchars=b"-_",
-            validate=True,
-        )
-    except (ValueError, TypeError) as exc:
-        raise ValueError("authorization token schema is invalid") from exc
-    canonical = base64.urlsafe_b64encode(decoded).decode("ascii").rstrip("=")
-    if len(decoded) != hashlib.sha256().digest_size or not hmac.compare_digest(
-        canonical,
-        signature,
-    ):
-        raise ValueError("authorization token schema is invalid")
-
-
 def parse_token(token: str) -> Authorization:
-    """只解析精确 signed canonical envelope，不替代完整验证。"""
+    """解析 CLI 内部生成的 canonical 直接操作授权。"""
     payload = _decode_envelope(token)["payload"]
     return Authorization(
         scheme_id=payload["scheme_id"],
@@ -291,45 +236,54 @@ def verify_authorization(
     backtest_start_date: str | None = None,
     used_store_path: Path,
 ) -> tuple[Authorization | None, list[str]]:
-    """统一校验密钥、签名、精确作用域与 replay store。"""
-    try:
-        secret = _auth_secret()
-    except AuthorizationSecretError as exc:
-        return None, [str(exc)]
+    """校验直接操作意图、精确作用域与 replay store。
+
+    ``harness_run_id`` 由 Gate 从数据库选择，不再要求单人操作者查询并誊写。若内部测试或
+    调用方显式提供了 run id，仍会逐字校验；否则在验证成功后将系统选择的 run id 绑定到
+    返回的审计对象。
+    """
     if token is None:
-        return None, ["authorization token is required"]
+        return None, ["direct operator command authorization is required"]
     if not isinstance(token, str):
-        return None, ["authorization requires the original raw token string"]
+        return None, ["direct authorization requires an internal operation id"]
     try:
-        envelope = _decode_envelope(token)
         auth = parse_token(token)
     except Exception as exc:  # noqa: BLE001
-        return None, [f"invalid authorization token: {exc}"]
+        return None, [f"invalid direct authorization: {exc}"]
 
     errors: list[str] = []
-    expected_signature = base64.urlsafe_b64encode(
-        hmac.new(
-            secret,
-            _canonical_json_bytes(envelope["payload"]),
-            hashlib.sha256,
-        ).digest()
-    ).decode("ascii").rstrip("=")
-    if not hmac.compare_digest(expected_signature, envelope["sig"]):
-        errors.append("authorization token signature is invalid")
-
     if auth.scheme_id != scheme_id:
-        errors.append(f"scheme_id mismatch: token={auth.scheme_id}, ctx={scheme_id}")
+        errors.append(
+            f"scheme_id mismatch: operation={auth.scheme_id}, ctx={scheme_id}"
+        )
     if auth.action != action:
-        errors.append(f"action mismatch: token={auth.action}, expected={action}")
+        errors.append(
+            f"action mismatch: operation={auth.action}, expected={action}"
+        )
     if auth.scheme_version != scheme_version:
         errors.append(
             "scheme_version mismatch: "
-            f"token={auth.scheme_version}, ctx={scheme_version}"
+            f"operation={auth.scheme_version}, ctx={scheme_version}"
         )
-    if auth.harness_run_id != harness_run_id:
+    expected_harness_run_id = harness_run_id
+    expected_harness_run_is_valid = True
+    if action in HARNESS_RUN_SCOPED_ACTIONS:
+        try:
+            expected_harness_run_id = _require_text(
+                harness_run_id,
+                "expected harness_run_id",
+            )
+        except ValueError as exc:
+            errors.append(str(exc))
+            expected_harness_run_is_valid = False
+    if (
+        expected_harness_run_is_valid
+        and auth.harness_run_id is not None
+        and auth.harness_run_id != expected_harness_run_id
+    ):
         errors.append(
             "harness_run_id mismatch: "
-            f"token={auth.harness_run_id}, ctx={harness_run_id}"
+            f"operation={auth.harness_run_id}, ctx={expected_harness_run_id}"
         )
 
     if action in EXACT_PREDICT_DATE_ACTIONS:
@@ -341,7 +295,7 @@ def verify_authorization(
             if auth.predict_date != expected_predict_date:
                 errors.append(
                     "predict_date mismatch: "
-                    f"token={auth.predict_date}, ctx={expected_predict_date}"
+                    f"operation={auth.predict_date}, ctx={expected_predict_date}"
                 )
     elif predict_date is not None:
         errors.append(f"{action} authorization does not accept predict_date")
@@ -354,13 +308,15 @@ def verify_authorization(
             if auth.backtest_start_date != expected_start:
                 errors.append(
                     "backtest_start_date mismatch: "
-                    f"token={auth.backtest_start_date}, ctx={expected_start}"
+                    f"operation={auth.backtest_start_date}, ctx={expected_start}"
                 )
     try:
         if _token_hash(auth.token) in _read_used_tokens(used_store_path):
-            errors.append("authorization token already used")
+            errors.append("direct authorization operation already used")
     except (OSError, ValueError, json.JSONDecodeError):
         errors.append("authorization replay store is invalid or unavailable")
+    if not errors and auth.harness_run_id is None:
+        auth = replace(auth, harness_run_id=expected_harness_run_id)
     return auth, errors
 
 
@@ -423,7 +379,7 @@ def mark_token_used(auth: Authorization, used_store_path: Path) -> None:
             used = _read_used_tokens(used_store_path)
             if token_hash in used:
                 raise AuthorizationTokenAlreadyUsedError(
-                    "authorization token already used"
+                    "direct authorization operation already used"
                 )
             used.add(token_hash)
             _atomic_write_json(used_store_path, sorted(used))
@@ -435,17 +391,19 @@ def write_authorization_audit(auth: Authorization, audit_dir: Path) -> Path:
     audit_dir.mkdir(parents=True, exist_ok=True)
     path = audit_dir / "authorization.json"
     payload: dict[str, Any] = asdict(auth)
-    payload["token_sha256"] = _token_hash(auth.token)
+    payload["authorization_mode"] = "direct_operator_command_v1"
+    payload["operation_id_sha256"] = _token_hash(auth.token)
     payload.pop("token", None)
     _atomic_write_json(path, payload)
     return path
 
 
 def used_tokens_path(project_root: Path) -> Path:
-    """一次性授权 token 的重放保护存储。
+    """单次 CLI 操作 ID 的重放保护存储。
 
     该记录是**主机级**状态，必须跨 source release 存活：release 的 `reports/` 出厂即空
-    （`reports/**` 被 gitignore），把它留在源码树内会使已用 token 在切换 release 后复活。
+    （`reports/**` 被 gitignore），把它留在源码树内会使已消费 operation id 在切换 release
+    后复活。操作者不需要接触该文件。
     """
     return resolve_runtime_state_path(
         relative_path=USED_TOKENS_RELATIVE_PATH,
@@ -467,9 +425,9 @@ def _read_used_tokens(path: Path) -> set[str]:
         or any(character not in "0123456789abcdef" for character in item)
         for item in payload
     ):
-        raise ValueError("authorization replay store contains an invalid token hash")
+        raise ValueError("authorization replay store contains an invalid operation hash")
     if len(payload) != len(set(payload)):
-        raise ValueError("authorization replay store contains duplicate token hashes")
+        raise ValueError("authorization replay store contains duplicate operation hashes")
     return set(payload)
 
 

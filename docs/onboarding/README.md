@@ -4,7 +4,7 @@
 
 **目标读者**：平台维护人员、算法工程师、代码评审人员
 
-**最后核验日期**：2026-08-10
+**最后核验日期**：2026-08-23
 
 本文只负责选择入库路径，不记录方案数量、运行结果或生命周期现状。动态事实查看[当前状态](../CURRENT_STATUS.md)。
 
@@ -72,7 +72,22 @@
 - 激活后的 HTTP 验收只使用 `DashboardGate`，只验证 `/api/factor-lab/dashboard` 当前业务可见性；Dashboard 响应不携带 exact version，不能用来证明版本身份。
 - 单日信号补缺使用 `python -m harness signal-gap-fill --predict-date YYYY-MM-DD`；需要限制为单个方案时增加 `--scheme-id {base_scheme_id}`。命令直接扫描并补齐真实缺口，不接收 token、operator、frozen plan、plan SHA 或日期范围。
 - Native 补缺按指定日期从当前权威数据库重建输入；Blackbox 使用冻结 DataBridge replay。整批算法必须先全部成功，才按 group insert-only 写入 `gray_live`；任一算法失败则 prediction 零提交，完成后只做一次最终权威 readback。
-- Blackbox lifecycle 只要存在 pending journal 就阻断后续生命周期动作，不做隐式恢复。仅显式 `blackbox_reconcile` HMAC 操作可以恢复 previous safe state；原 journal 保持不变，并新增 linked reconciliation journal。
+- 所有人工副作用采用单维护者直接命令模型：命令本身就是本次操作授权，不生成密钥、不运行 `auth issue`、不复制 token、不传 `--authorize`。CLI 自动从 canonical config 绑定 exact version，Gate 自动选择 latest passed exact Harness run；日期、回测起点和 action 仍逐字绑定，审计记录非秘密 operator、内部 operation hash 和完整作用域。operator 默认取 `BFL_OPERATOR_ID` 或 OS 用户，仅在需要稳定审计名称时传 `--operator`。
+- Blackbox lifecycle 只要存在 pending journal 就阻断后续生命周期动作，不做隐式恢复。只有独立执行 `gate lifecycle-reconcile` 才可以恢复 previous safe state；原 journal 保持不变，并新增 linked reconciliation journal。
+
+## 单维护者最快稳定路径
+
+新 Blackbox 方案进入 ECS 灰度实验室时，长期保留的最短链路为：
+
+1. `intake-blackbox` 收取两文件，并检查生成的 paused/draft canonical config；
+2. `onboard ... --stage all` 一次运行四个技术 Gate；只有需要证明零控制面写入时才用 `--check-only`，不能先跑 check-only 再把它当生产证据；
+3. `gate shadow-register` 一条命令完成首次 draft identity 创建和 shadow/paused 登记；不再单独运行 `draft-register`；
+4. 明确 `gray_target_start` 后，运行一次完整持久化 backtest；
+5. `activate` 原子激活 exact version 与 composite Registry；
+6. 对激活日前应有的单日灰度信号运行 `signal-gap-plan`，只有 `actionable=1` 时才执行 `signal-gap-fill`；
+7. 运行 `gate dashboard`，核验统一 Dashboard 读模型；最后只读核对 systemd timer 与下一次自然触发。
+
+为了稳定性，不把 shadow、回测和 activation 合并成一个跨事务“万能命令”：三者的数据库对象、失败恢复和重试语义不同。提速来自删除无效的人工签名往返、自动选择 exact version/run、删除重复 Gate，以及只对真实缺口补写；保留三道可独立验收的提交边界，能避免某一步失败后整条流程状态不明。
 
 ## 可复用测试矩阵
 
@@ -90,7 +105,7 @@ export PYTHONDONTWRITEBYTECODE=1
 |---|---|---|---|
 | 改动任意方案配置后 | active discovery、运行时身份和两文件入口 | `python -m pytest -q tests/test_active_scheme_contracts.py tests/test_config_schema.py tests/test_onboarding_policy.py` | 全部通过 |
 | 收到或修订 Blackbox V2 交付后 | Contract、Intake、discovery，以及现役交付对**平台侧数据接入变更**的耐受（DataBridge 加列、改时间键、目标日缺日频行） | `python -m pytest -q tests/test_blackbox_v2_contracts.py tests/test_blackbox_v2_intake.py tests/test_blackbox_v2_discovery.py tests/test_active_blackbox_conformance.py` | 全部通过。交付自身的截止隔离与跨批无状态属上游义务，不在此矩阵内 |
-| 修改 Blackbox 平台适配后 | 输入 cutoff、runner、六段 Gate | `python -m pytest -q tests/test_data_bridge_current.py tests/test_blackbox_v2_runner.py tests/test_blackbox_v2_harness_gates.py` | 全部通过 |
+| 修改 Blackbox 平台适配后 | 输入 cutoff、runner、四段自动 Gate及独立副作用 Gate | `python -m pytest -q tests/test_data_bridge_current.py tests/test_blackbox_v2_runner.py tests/test_blackbox_v2_harness_gates.py` | 全部通过 |
 | 修改 Registry、API 或前端后 | active 方案可见性、actual join、Dashboard 基础状态与 Harness HTTP 验收 | `python -m pytest -q tests/test_repository_registry.py tests/test_backend_api.py tests/test_factor_lab_dashboard_api.py tests/test_dashboard_gate.py` | 全部通过 |
 | 修改 Native 存量适配后 | 当前数据库输入、执行器和 source isolation | `python -m pytest -q tests/test_native_input_artifacts.py tests/test_native_executor.py tests/test_source_runner_database_isolation.py` | 全部通过；不得修改 Native core 算法口径 |
 | 提交入库版本前 | 入库核心合同全集 | `python -m pytest -q` | 无失败；跳过项必须是已知的外部环境条件 |

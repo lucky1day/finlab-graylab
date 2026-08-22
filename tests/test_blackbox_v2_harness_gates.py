@@ -18,16 +18,6 @@ from sqlalchemy import create_engine, text
 
 
 class BlackboxV2HarnessGateTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self._previous_auth_secret = os.environ.get("HARNESS_AUTH_SECRET")
-        os.environ["HARNESS_AUTH_SECRET"] = "blackbox-gate-test-secret"
-
-    def tearDown(self) -> None:
-        if self._previous_auth_secret is None:
-            os.environ.pop("HARNESS_AUTH_SECRET", None)
-        else:
-            os.environ["HARNESS_AUTH_SECRET"] = self._previous_auth_secret
-
     def test_automatic_blackbox_gate_registry_excludes_api_readiness(self) -> None:
         from harness.blackbox_v2.gates import BLACKBOX_GATES
 
@@ -1324,7 +1314,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
 
         self.assertTrue(all(result.passed for result in results), [result.errors for result in results])
 
-    def test_persist_backtest_requires_signed_exact_authorization_and_verifies_deltas(self) -> None:
+    def test_persist_backtest_requires_exact_direct_authorization_and_verifies_deltas(self) -> None:
         from harness.authorization import issue_token
         from harness.blackbox_v2.gates import BlackboxBacktestGate, InputState, PassedAllRun
         from scheduler.discovery import load_scheme_config
@@ -1700,7 +1690,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
         )
         self.assertEqual(engine_calls, [])
 
-    def test_persist_backtest_blocks_unsigned_or_mismatched_token_before_business_work(self) -> None:
+    def test_persist_backtest_blocks_missing_or_mismatched_direct_intent_before_business_work(self) -> None:
         from harness.authorization import issue_token
         from harness.blackbox_v2.gates import BlackboxBacktestGate, PassedAllRun
         from scheduler.discovery import load_scheme_config
@@ -1711,52 +1701,42 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             scheme_dir = intake_delivery(_delivery(root / "incoming"), schemes_root=root / "schemes")
             config = load_scheme_config(scheme_dir / "config.yaml")
             passed = PassedAllRun("hr_passed", root / "all", "snapshot")
-            with patch.dict(os.environ, {"HARNESS_AUTH_SECRET": "test-secret"}):
-                signed = issue_token(
-                    config.scheme_id,
-                    "backtest_persist",
-                    "2026-07-16",
-                    scheme_version=config.scheme_version,
-                    harness_run_id="hr_passed",
-                )
-                unsigned_ctx = GateContext(
-                    scheme_id=config.scheme_id,
-                    predict_date="2026-07-16",
-                    project_root=root,
-                    report_dir=root / "reports" / "unsigned",
-                    config=config,
-                    authorization=signed,
-                    persist_backtest=True,
-                    engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
-                )
+            missing_ctx = GateContext(
+                scheme_id=config.scheme_id,
+                predict_date="2026-07-16",
+                project_root=root,
+                report_dir=root / "reports" / "missing",
+                config=config,
+                authorization=None,
+                persist_backtest=True,
+                engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
+            )
             with (
-                patch.dict(os.environ, {"HARNESS_AUTH_SECRET": ""}),
                 patch("harness.blackbox_v2.gates._verify_passed_all", return_value=passed),
                 patch("harness.blackbox_v2.gates.build_historical_cases") as build_cases,
             ):
-                unsigned_result = BlackboxBacktestGate().run(unsigned_ctx)
-            self.assertFalse(unsigned_result.passed)
-            self.assertEqual(unsigned_result.status.value, "blocked")
+                missing_result = BlackboxBacktestGate().run(missing_ctx)
+            self.assertFalse(missing_result.passed)
+            self.assertEqual(missing_result.status.value, "blocked")
             build_cases.assert_not_called()
 
-            with patch.dict(os.environ, {"HARNESS_AUTH_SECRET": "test-secret"}):
-                mismatch = issue_token(
-                    config.scheme_id,
-                    "backtest_persist",
-                    "2026-07-16",
-                    scheme_version="wrong-version",
-                    harness_run_id="hr_passed",
-                )
-                mismatch_ctx = replace(unsigned_ctx, authorization=mismatch)
-                with (
-                    patch("harness.blackbox_v2.gates._verify_passed_all", return_value=passed),
-                    patch("harness.blackbox_v2.gates.build_historical_cases") as build_cases,
-                ):
-                    mismatch_result = BlackboxBacktestGate().run(mismatch_ctx)
-                self.assertFalse(mismatch_result.passed)
-                self.assertEqual(mismatch_result.status.value, "blocked")
-                self.assertIn("scheme_version", "\n".join(mismatch_result.errors))
-                build_cases.assert_not_called()
+            mismatch = issue_token(
+                config.scheme_id,
+                "backtest_persist",
+                "2026-07-16",
+                scheme_version="wrong-version",
+                harness_run_id="hr_passed",
+            )
+            mismatch_ctx = replace(missing_ctx, authorization=mismatch)
+            with (
+                patch("harness.blackbox_v2.gates._verify_passed_all", return_value=passed),
+                patch("harness.blackbox_v2.gates.build_historical_cases") as build_cases,
+            ):
+                mismatch_result = BlackboxBacktestGate().run(mismatch_ctx)
+            self.assertFalse(mismatch_result.passed)
+            self.assertEqual(mismatch_result.status.value, "blocked")
+            self.assertIn("scheme_version", "\n".join(mismatch_result.errors))
+            build_cases.assert_not_called()
 
     def test_persist_backtest_cannot_pass_when_table_deltas_are_zero(self) -> None:
         from harness.authorization import issue_token

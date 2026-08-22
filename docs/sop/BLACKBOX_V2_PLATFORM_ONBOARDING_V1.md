@@ -7,7 +7,7 @@
 
 本文是平台操作人员接收、技术验收和登记 Blackbox V2 方案的唯一操作 SOP。上游交付契约见 [BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)。精确版本、快照和运行结果由 Harness 控制面与本机 ignored reports 保存；当前状态和未关闭问题分别进入 [CURRENT_STATUS](../CURRENT_STATUS.md) 与 [全方案问题台账](../records/SCHEME_ISSUE_LEDGER.md)。文档分类和维护规则见 [Blackbox V2 文档管理](../blackbox_v2/README.md)。
 
-本文的通用入库流程止于 `shadow + paused`，不自动授予生产运行权限。`activate`、回测落库和 `live` 已有独立签名门禁，但只能在完成[生产准备清单](../blackbox_v2/PRODUCTION_READINESS.md)核验并取得具体方案专项授权后执行；不得把某个试验方案的授权外推为所有新方案的默认权限。具体生产灰度记录只写入平台试验台账。
+本文的通用入库流程止于 `shadow + paused`，不自动授予生产运行权限。仓库由一名维护者独立管理，因此 `activate`、回测落库和 `live` 使用直接副作用命令：命令本身是该次明确操作授权，不再生成密钥、签发 token 或复制 `--authorize`。这些命令仍只能在完成[生产准备清单](../blackbox_v2/PRODUCTION_READINESS.md)核验并决定具体方案范围后执行；不得把某个试验方案的操作外推为所有新方案的默认权限。具体生产灰度记录只写入平台试验台账。
 
 自然 `scheduled_live` 还受
 [生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)约束：只有
@@ -437,7 +437,7 @@ conda run --no-capture-output -n bond_factor_lab_service \
 static -> input -> unit -> compare
 ```
 
-任一 Gate 失败时 fail-fast，不进入后续 Gate，不签发 shadow 授权。
+任一 Gate 失败时 fail-fast，不进入后续 Gate，也不能执行 shadow 登记。
 
 **自动 Gate 的验证边界**：平台只验证平台自己新增或修改的部分——数据接入、写出与平台侧
 逻辑。交付代码自身的性质由上游按 [上游交付契约](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)
@@ -479,7 +479,7 @@ business_tables_written=false
 persist_backtest=false
 ```
 
-该模式只允许 `--stage all`，且与授权 token、持久化 backtest、
+该模式只允许 `--stage all`，且与持久化 backtest、
 shadow、activate、gray/live 和真实 API 等任何副作用阶段不兼容；
 出现组合参数时必须 fail-closed。Backtest Gate 固定执行 100 条
 no-persist 验收，必须得到 `100/100` 且 `persist=false`。技术 `all`
@@ -512,11 +512,11 @@ Dashboard payload 不含 exact version，因此不能替代生命周期、Regist
 
 它不得写 `t_scheme_runs`、`t_scheme_predictions`、`t_backtest_*` 业务记录、active Registry 或前端可见状态。
 
-Harness 控制面持久化采用 fail-closed。即使 `onboard_report.json` 为 `overall_passed=true`，仍必须确认 exact `harness_run_id` 和六个 Gate 已存在于审计数据库，才能授权 shadow。
+Harness 控制面持久化采用 fail-closed。即使 `onboard_report.json` 为 `overall_passed=true`，仍必须确认 exact `harness_run_id` 和 Blackbox 四个 Gate 已存在于审计数据库，才能执行 shadow。
 
 `--check-only` 恰好相反：它不得尝试写
 `t_harness_runs`/`t_harness_gate_results`，本地通过报告也不能用于
-签发 shadow 或任何生产授权。两种模式的报告不得混称。
+执行 shadow 或任何生产副作用。两种模式的报告不得混称。
 
 Result 解析器严格要求 JSON 的 `predicted_direction` 为整数 `-1/0/1`，拒绝字符串、布尔值和浮点数；CSV 继续按合同接受文本 token `-1/0/1`。
 
@@ -524,9 +524,9 @@ Result 解析器严格要求 JSON 的 `predicted_direction` 为整数 `-1/0/1`�
 
 ## 5. Shadow 登记
 
-### 5.1 授权前核验
+### 5.1 Shadow 前核验
 
-从最新通过报告取得 `harness_run_id`、`scheme_version`、`predict_date`、六个 Gate 状态、snapshot ID 和三 SHA，并另外完成：
+从最新通过报告取得 `harness_run_id`、`scheme_version`、`predict_date`、四个 Gate 状态、snapshot ID 和三 SHA，并另外完成：
 
 1. 重新运行环境自检；
 2. 使用只读 SQL 确认 exact run 已写入审计 DB；`python -m harness report {scheme_id} --latest` 只读取本地最新报告，不能代替数据库核验；
@@ -549,7 +549,7 @@ WHERE harness_run_id = '<passed_harness_run_id>'
 ORDER BY id;
 ```
 
-第一条必须恰好一行且为 exact scheme/version、`stage=all`、`status=passed`；第二条必须恰好覆盖七个固定 Gate，并且全部为 `passed`。
+第一条必须恰好一行且为 exact scheme/version、`stage=all`、`status=passed`；第二条必须恰好覆盖 `static/input/unit/compare` 四个固定 Gate，并且全部为 `passed`。日常操作不需要手工查询这些字段：ShadowGate 会从数据库自动选择 current exact version 的 latest passed run 并逐项复核；上述 SQL 只用于诊断或独立审计。
 
 ### 5.2 Shadow 登记（首次身份自动创建）
 
@@ -566,35 +566,24 @@ Gate 运行期间发生漂移。
 本 Gate 不改业务表、不写 run/prediction/backtest、不激活，也不产生 scheduler 可执行身份。
 
 ```bash
-TOKEN=$(conda run --no-capture-output -n bond_factor_lab_service \
-  python -m harness auth issue \
-    --scheme-id {scheme_id} \
-    --action shadow_register \
-    --predict-date {latest_all_stage_predict_date} \
-    --harness-run-id {passed_harness_run_id} \
-    --issued-by {operator})
-
 conda run --no-capture-output -n bond_factor_lab_service \
   python -m harness gate shadow-register \
     --scheme-id {scheme_id} \
-    --predict-date {latest_all_stage_predict_date} \
-    --authorize "$TOKEN"
+    --predict-date {latest_all_stage_predict_date}
 ```
 
-Token 必须绑定 exact scheme、action、predict date、version 和 Harness run，一次性使用，
-不得跨方案或跨 run 复用。
-
-`--scheme-version` 已不需要手填：签发时从 `schemes/{scheme_id}/config.yaml` 解析，与 Gate
-使用 token 时重算并比对的是同一份 config。显式传入仍然支持，但与 config 不符会在**签发这一刻**
-失败，而不是等到用 token 时。`--harness-run-id` 仍须显式提供。
+该命令本身就是一次 shadow 操作授权。CLI 从 `config.yaml` 自动解析 exact version，Gate 自动选择
+current exact version 的 latest passed `all` run，并把 scheme、action、predict date、version、run 与
+operator 写入审计；不再存在密钥、`auth issue`、`--scheme-version`、`--harness-run-id` 或
+`--authorize` 的人工传递。operator 默认取 `BFL_OPERATOR_ID` 或 OS 用户，需要稳定展示名时增加
+`--operator {operator}`。内部 operation id 只用于一次性重放保护，操作者无需接触。
 
 证据里的 `identity_created` 表明本次是否执行了首次创建：新方案为 `true`，
 revision 路径为 `false`。
 
 ### 5.3 独立的 draft-register（一般不需要）
 
-`gate draft-register` 仍作为独立命令保留，只做创建、不做迁移，需要 `draft_register`
-动作的独立 token。正常入库流程**不需要**它——5.2 已经涵盖。仅在需要把创建与迁移分成两次
+`gate draft-register` 仍作为独立命令保留，只做创建、不做迁移。正常入库流程**不需要**它——5.2 已经涵盖。仅在需要把创建与迁移分成两次
 受控操作时使用。
 
 ### 5.4 登记后独立检查
@@ -630,23 +619,12 @@ revision 路径为 `false`。
 - 全部批次使用同一 scheme version、DataBridge generation、snapshot 和环境指纹，并共享一个总执行超时预算；
 - 当前历史运行是 `current snapshot as-of replay`，不提供历史 vintage PIT，不得写成历史时点原貌复现。
 
-### 6.2 签发范围绑定授权
+### 6.2 直接命令的范围绑定
 
-从最新通过的 all-stage 记录取得 exact `scheme_version + harness_run_id`。签发 token 时必须写入实际回测起点：
-
-```bash
-TOKEN=$(conda run --no-capture-output -n bond_factor_lab_service \
-  python -m harness auth issue \
-    --scheme-id {scheme_id} \
-    --action backtest_persist \
-    --predict-date {gray_target_start} \
-    --backtest-start-date 2025-01-01 \
-    --harness-run-id {passed_harness_run_id} \
-    --expires-in 900 \
-    --issued-by {operator})
-```
-
-`backtest_persist` token 必须同时包含规范且非空的 `predict_date` 与 `backtest_start_date`。此处 token 的 `predict_date` 必须等于已登记的 `gray_target_start`，不是部署日期。Gate 参数和 token 中的 exclusive cutoff、起点都必须完全一致；CLI 缺少 `--predict-date` 时拒绝签发，旧 token、任一日期缺失或不匹配、过期、已消费或签名不正确都必须 fail-closed。
+不再从报告抄写 `scheme_version + harness_run_id` 或签发 token。持久化命令必须显式写入实际
+`gray_target_start` 和回测起点；CLI 自动绑定 canonical exact version，Gate 自动选择 latest passed
+exact `all` run。`predict_date` 必须等于已登记的 `gray_target_start`，不是部署日期；任一日期非法、
+current config 已漂移、passed run 缺失、scope 不一致或内部 operation 已消费都必须 fail-closed。
 
 ### 6.3 执行完整持久化回测
 
@@ -658,13 +636,12 @@ conda run --no-capture-output -n bond_factor_lab_service \
     --persist \
     --backtest-start-date 2025-01-01 \
     --timeout-sec 1800 \
-    --algo-env forecast_env_blackbox_v1 \
-    --authorize "$TOKEN"
+    --algo-env forecast_env_blackbox_v1
 ```
 
-平台必须在全部批次成功后，完成全区间数量、Request/Result 顺序、echo、日期唯一性和非空月度指标校验，再进入授权审计和写库。任一批次失败、超时或结果不合同时，不消费尚未进入提交段的 token，不写 `t_backtest_*` 业务表。
+平台必须在全部批次成功后，完成全区间数量、Request/Result 顺序、echo、日期唯一性和非空月度指标校验，再进入操作审计和写库。任一批次失败、超时或结果不合同时，不进入提交段，也不写 `t_backtest_*` 业务表。
 
-提交段通过单一事务写入一个 immutable run、完整 prediction 明细和完整 monthly metrics，并把该 run 更新为 success。任一写入数量不匹配时整个事务回滚；token 已进入提交段后即视为已消费，数据库失败重试必须重新签发。
+提交段通过单一事务写入一个 immutable run、完整 prediction 明细和完整 monthly metrics，并把该 run 更新为 success。任一写入数量不匹配时整个事务回滚；数据库失败后必须重新执行完整命令，由 CLI 生成新的内部 operation id，不能复用半完成状态。
 
 ### 6.4 持久化后验收
 
@@ -682,7 +659,7 @@ conda run --no-capture-output -n bond_factor_lab_service \
 | API | canonical latest success 指向新完整 run |
 | 历史 | 旧 run 保持不可变并可审计，不删除、不覆盖、不原地扩充 |
 
-同一 all-stage run 可以使用新 token 重新执行并追加新 run；默认 API 通过 canonical latest-success 规则选择最后成功记录。不得直接更新旧 run 或手工删除 100 条历史记录来伪造完整回测。
+同一 all-stage run 可以通过新的明确命令追加新 run；默认 API 通过 canonical latest-success 规则选择最后成功记录。不得直接更新旧 run 或手工删除 100 条历史记录来伪造完整回测。
 
 ## 7. 生产激活、灰度补齐与前端验收
 
@@ -716,7 +693,7 @@ Activation 完成后、前端验收前，必须按时间顺序补齐从该方案
 - 周频：先枚举应有目标周末，再反推上一轮调度日；`predict_date` 可能位于 5 月；
 - 月频：按目标月观察点反推自然触发日；若合同规定自然 15 号，不能顺延为交易日。
 
-普通 `live` Gate 仍是 fresh-only：它只接受 `live_write` token，并要求 DataBridge `refresh_date` 等于本次运行日。历史 gray 缺口只能按日期使用唯一运维入口；不得放宽普通 LiveGate、伪造 DataBridge freshness 或直接调用 repository 绕过授权。
+普通 `live` Gate 仍是 fresh-only：它只接受一次明确的 `gate live` 直接命令，并要求 DataBridge `refresh_date` 等于本次运行日。历史 gray 缺口只能按日期使用唯一运维入口；不得放宽普通 LiveGate、伪造 DataBridge freshness 或直接调用 repository 绕过命令边界。
 
 ```bash
 conda run --no-capture-output -n bond_factor_lab_service \
@@ -785,27 +762,27 @@ payload 不含 exact version；版本身份必须由 lifecycle、Registry 与数
 | owner composite 已登记为不同值 | Intake fail-closed，不覆盖 owner registry，不写方案文件 | 交付方确认正确归属并提交一致的新包，或按独立受控 owner correction 流程处理历史登记 |
 | 新交付缺 `name`、`owner` 或 `description` | 拒绝 Intake/Gate，不推测、不硬编码、不使用占位值 | 上游重新提交三个展示字段均合法的完整两文件包 |
 | Intake 失败 | 不手工拼方案目录，不改交付文件 | 清理未完成 trial 后重新 Intake |
-| 自动 Gate 失败 | 不签发 token，保留报告 | 问题修复后从 static 重跑全套 |
-| 报告通过但审计 DB 缺失 | 不签发 token | exact run 和六个 Gate 完整持久化 |
+| 自动 Gate 失败 | 保留报告，不执行副作用命令 | 问题修复后从 static 重跑全套 |
+| 报告通过但审计 DB 缺失 | 不执行副作用命令 | exact run 和四个 Gate 完整持久化 |
 | 临时快照残留 | 不交给下一次运行 | 无进程占用后清理并重建 |
-| shadow 失败且 Registry/版本未变 | 核对 token、审计和前置状态 | 仍为 draft/paused 且身份未占用 |
-| shadow 失败但 Registry/版本已变 | 禁止自动重试或删除记录，pending 直接阻断 | 唯一 pending journal 已通过显式 HMAC `blackbox_reconcile` 回退 previous safe state并完成 readback |
+| shadow 失败且 Registry/版本未变 | 核对操作审计和前置状态 | 仍为 draft/paused 且身份未占用 |
+| shadow 失败但 Registry/版本已变 | 禁止自动重试或删除记录，pending 直接阻断 | 唯一 pending journal 已通过独立 `lifecycle-reconcile` 命令回退 previous safe state并完成 readback |
 | API/scheduler 意外出现 trial | 保持 Registry paused，不执行 live | 找到来源并移除生产入口 |
-| canonical backtest 含 gray target | 保留旧 run 审计，停止前端验收 | 用绑定 `gray_target_start` 的新 token 生成新的 immutable run；不得靠前端裁剪收口 |
+| canonical backtest 含 gray target | 保留旧 run 审计，停止前端验收 | 用绑定 `gray_target_start` 的新直接命令生成 immutable run；不得靠前端裁剪收口 |
 | 激活后 gray live 不连续 | 冻结该方案的完成状态，不伪造 `scheduled_live` | 按 target 日历逐日执行单日 `signal-gap-fill`；普通 `live` Gate 保持 fresh-only |
 | active Registry 缺 `deployed_at` | API/前端 fail-closed | 通过正式 Registry reconciliation 恢复真实部署日期 |
 | backtest/live 同一 target 重叠 | 阻断上线，保留冲突清单 | 新回测 run 或正式 correction 使 target 分区互斥后重验 |
 
 Blackbox lifecycle journal 一旦存在 pending，新的 shadow、activate 或 revision activate 都必须
-直接阻断，不得在授权前隐式恢复。只有独立 HMAC `blackbox_reconcile` 可以处理唯一 pending
+直接阻断，不得在其它命令前隐式恢复。只有独立 `gate lifecycle-reconcile` 命令可以处理唯一 pending
 journal：它只回退到 previous safe state，保留原 journal，并新增 linked reconciliation journal；
 多个 pending 或恢复失败继续阻断并转人工核查。数据库与配置文件不能组成单一事务，因此命令
 异常后仍必须执行三方只读对账：
 
 1. 不重试原 lifecycle 动作，保存命令、报告和只读查询结果；
 2. 确认只有一个 pending journal，并核对其 previous safe state；
-3. 为该 exact scheme/version/run 签发独立 `blackbox_reconcile` HMAC token；
-4. 显式运行 `lifecycle-reconcile`，回读 safe state、原 journal 与新 linked journal；
+3. 显式运行 `gate lifecycle-reconcile --scheme-id ...`；CLI/Gate 自动绑定 exact scheme/version/latest passed run 与 operator；
+4. 回读 safe state、原 journal 与新 linked journal；
 5. 多个 pending、恢复失败或 readback 不一致时继续阻断并转人工核查，不手工删除历史版本。
 
 ## 9. 最终检查
@@ -832,11 +809,11 @@ journal：它只回退到 previous safe state，保留原 journal，并新增 li
 - [ ] 历史补缺只写 `gray_live`；只有合格自然时钟触发才写 `scheduled_live`，二者不得由日期标签互相倒签
 - [ ] 任一 cadence 的完整性以当时 active Registry、run、prediction 和日志核验；不得冻结旧方案数量、release 队列或 coordinator/ledger 口径
 - [ ] Input 报告三 SHA 与选定 generation 完全一致
-- [ ] 六个 Gate 通过，并理解各 Gate 没有证明什么；技术 `all` 未访问 Backend
+- [ ] Blackbox 四个 Gate 通过，并理解各 Gate 没有证明什么；技术 `all` 未访问 Backend
 - [ ] 技术零写入批次使用 `--check-only`，报告四个零写字段正确，Backtest 为 `100/100 + persist=false`
-- [ ] 如准备 shadow（非 check-only），exact Harness run 和六个结果已进入审计 DB
+- [ ] 如准备 shadow（非 check-only），exact Harness run 和四个结果已进入审计 DB
 - [ ] 普通自动段只产生控制面审计，没有业务表新增；check-only 连控制面也未持久化
-- [ ] Shadow token 绑定 exact version/run 并设置短有效期
+- [ ] Shadow 直接命令已自动绑定 exact version/latest passed run，审计中记录 `direct_operator_command_v1` 与 operation hash
 - [ ] 登记后配置、版本、Registry 为 `shadow + paused`
 - [ ] 独立 DB、scheduler 和 API 检查证明 trial 未进入生产链路
 - [ ] 失败按恢复矩阵处理，没有把部分状态当成成功

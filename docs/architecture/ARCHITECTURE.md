@@ -662,8 +662,7 @@ python -m harness gate input \
 python -m harness gate live \
   --scheme-id t1_daily \
   --predict-date 2026-06-06 \
-  --prediction-phase scheduled_live \
-  --authorize "$TOKEN"
+  --prediction-phase scheduled_live
 ```
 
 `--stage all` 固定执行六段 `static -> input -> unit -> dry-run -> compare -> backtest-no-persist`；任一步失败即停止，并且是首次 Native 技术入库唯一保留 source benchmark/CompareGate 的路径。当前 exact version 的 `all` 通过时，ActivationGate 采用 `full_initial_onboarding_v1`，不再附加 maintenance 或 prior-snapshot 条件。`--stage native-maintenance` 仅对有匹配 prior `static.business_identity` 快照的既有 Native 身份执行五段 `static -> native-maintenance-admission -> input -> unit -> dry-run`，不运行当前 historical `compare/backtest`，并采用独立的 `native_post_admission_revision_v1` profile。若 prior StaticGate 已通过但仅 identity 字段缺失，只有 `weekly_10y_d_overlay_0529` 可先使用专用 receipt；receipt 不是 stage、不能替代五段 Gate 或 activation，也不能应用于其它身份。写库动作不属于默认自动段，必须由受控 backtest/live/activate 命令执行；激活后另行运行 `dashboard` Gate 验收公开读模型。

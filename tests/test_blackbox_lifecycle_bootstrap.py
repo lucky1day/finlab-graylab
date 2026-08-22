@@ -39,7 +39,7 @@ class _DisposeFailingEngine(_Engine):
 
 @pytest.fixture(autouse=True)
 def _runtime_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("HARNESS_AUTH_SECRET", "bootstrap-test-secret")
+    monkeypatch.delenv("HARNESS_AUTH_SECRET", raising=False)
     monkeypatch.setenv("BFL_RUNTIME_ROOT", str(tmp_path / "runtime"))
     monkeypatch.delenv("BFL_DEPLOYMENT_TARGET", raising=False)
 
@@ -132,10 +132,25 @@ def test_bootstrap_writes_only_exact_active_overlay_after_read_only_preflight(
         BlackboxLifecycleBootstrapGate,
     )
 
+    from argparse import Namespace
+
+    from harness.authorization import parse_token
+    from harness.cli import _direct_authorization, _gate_action
+
     cfg = _config(tmp_path)
     engine = _Engine()
-    token = _token(cfg)
-    ctx = _context(tmp_path, cfg, token, engine)
+    operation = _direct_authorization(
+        action=_gate_action(Namespace(gate_name="lifecycle-bootstrap")),
+        scheme_id=cfg.scheme_id,
+        config=cfg,
+        predict_date="bootstrap",
+        operator="migration-owner",
+    )
+    assert operation is not None
+    parsed = parse_token(operation)
+    assert parsed.action == "blackbox_lifecycle_bootstrap"
+    assert parsed.harness_run_id is None
+    ctx = _context(tmp_path, cfg, operation, engine)
 
     with (
         patch(
@@ -576,3 +591,11 @@ def test_bootstrap_is_registered_as_blackbox_gate_and_cli_subcommand(
         action for action in gate_parser._actions if action.dest == "gate_name"
     ).choices
     assert "lifecycle-bootstrap" in gate_choices
+    lifecycle_parser = gate_choices["lifecycle-bootstrap"]
+    option_strings = {
+        option
+        for action in lifecycle_parser._actions
+        for option in action.option_strings
+    }
+    assert "--authorize" not in option_strings
+    assert "--operator" in option_strings

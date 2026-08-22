@@ -91,21 +91,20 @@ python -m harness onboard t1_daily \
 python -m harness gate live \
   --scheme-id t1_daily \
   --predict-date 2026-06-06 \
-  --prediction-phase gray_live \
-  --authorize "$TOKEN"
+  --prediction-phase gray_live
 ```
 
 `--stage all` 按 `runtime_type` 分派：Blackbox V2 为四段 `static -> input -> unit -> compare`；Native V1 为六段 `static -> input -> unit -> dry-run -> compare -> backtest-no-persist`。任何一步失败都停止。首次 Native 技术入库必须保留 source benchmark/CompareGate 证据；Blackbox Compare 只做平台输入校验与一次冒烟 predict。技术 `all` 不访问 Backend；`dashboard`、`live`、持久化 backtest 和 `activate` 都不属于 `all`。
 
 `native-maintenance` 仅给已完成首次技术入库、且有可比较 prior snapshot 的同一 Native 业务身份使用，固定五段顺序为 `static -> native-maintenance-admission -> input -> unit -> dry-run`。`native-maintenance-admission` 必须只读证明不同的旧 Native active version 已有 passed `all` 和 passed `compare`，并从该 prior `all` 的 `static.business_identity` 读取与当前精确匹配的业务快照：`scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors 与 composite Registry IDs；不得比较或持久化代码/config/version hash 作为身份字段。唯一保留的补证是 `weekly_10y_d_overlay_0529` 已持久化的 canonical receipt；平台只读校验其固定身份、唯一 prior 与 canonical 结构，writer 和 token action 已退役。current exact `t_scheme_versions` 行必须为 native `draft|active`；expected Registry identity 要么全 paused（预激活），要么全 active（激活后），且 draft version 配 active Registry 必须失败。只有 ActivationGate 才能原子翻转至 active。receipt 只将身份来源标为 `legacy_operator_attestation_v1`，不自动激活、补数或写业务表。ActivationGate 在这一路径复核 prior 前提、当前精确 version 的五个 Gate 与一次性授权，并返回 `native_post_admission_revision_v1`；若当前 exact version 已有 passed `all`，则改走互斥的 `full_initial_onboarding_v1`，不要求 prior snapshot 或五段 Gate。这个 stage 不执行当前 historical `compare/backtest`，只持久化 Harness 审计证据且不写业务表，所以 `--check-only` 不可使用。Blackbox V2 不接受该 stage，仍走既有 `all`。
 
-`--check-only` 只允许 canonical `--stage all`，仍执行六个自动 Gate。它可通过只读 Engine 捕获日历和构造 Request，但控制面零持久化、业务表零写入；Backtest 固定 no-persist，并拒绝授权 token、持久化、shadow/activate/live 或其它副作用上下文。Static 记录 provider，Input 建立组合输入身份，Unit/Dry-run/Compare/Backtest 共享该身份。
+`--check-only` 只允许 canonical `--stage all`，并按 runtime type 执行 Blackbox 四段或 Native 六段自动 Gate。它可通过只读 Engine 捕获日历和构造 Request，但控制面零持久化、业务表零写入；Backtest 固定 no-persist，并拒绝持久化、shadow/activate/live 或其它副作用上下文。Static 记录 provider，Input 建立组合输入身份，后续 Gate 共享该身份。
 
 激活后的唯一 Harness HTTP 验收是 `python -m harness gate dashboard --scheme-id ...`。DashboardGate 只校验统一 dashboard 快照的当前业务可读性；由于 payload 不携带 exact version，该 Gate 不能证明某个 exact version 已上线。
 
 单日补缺仅保留 `python -m harness signal-gap-fill --predict-date YYYY-MM-DD [--scheme-id BASE_SCHEME_ID]`。命令执行权本身就是本次补数授权，不再引入用户、token、确认层、plan SHA 或日期范围。Native 按该日 `feature_date` 从当前数据库重建；Blackbox 严格重放该日冻结的 DataBridge authority。所有算法先成功后，再按 base scheme group insert-only 写入 `gray_live`，最后只做一次同日权威读回。
 
-其它副作用 Gate 只接受 `HARNESS_AUTH_SECRET` 签发的最长 900 秒、精确作用域、一次性 HMAC token。当 Blackbox lifecycle journal 存在 pending 时，activate/shadow/revision 直接阻断；只有显式、独立 HMAC 授权的 `lifecycle-reconcile` 可以修改 pending 状态，不得在其它 Gate 前隐式恢复。
+其它副作用 Gate 采用单维护者直接命令模型：执行精确的 `gate ...` 或 `activate` 命令本身就是该次操作授权，不再配置 `HARNESS_AUTH_SECRET`，也没有 `auth issue`、`--authorize`、有效期或复制凭据步骤。CLI 从 canonical config 自动绑定 exact version，由 Gate 选择并绑定 current exact version 的 latest passed Harness run；命令参数绑定 action、scheme、日期和回测起点，操作人默认取 `BFL_OPERATOR_ID` 或 OS 用户，也可用 `--operator` 显式覆盖。内部随机 operation id 只用于重放保护，审计仅保存其 SHA-256 和 `direct_operator_command_v1`，不作为操作者凭据。当 Blackbox lifecycle journal 存在 pending 时，activate/shadow/revision 仍直接阻断；只有独立执行 `lifecycle-reconcile` 命令才能修改 pending 状态，不得在其它 Gate 前隐式恢复。
 
 `config.yaml.schedule.timeout_sec` 是 executor 层方案预算，harness config schema 对 Blackbox 要求该字段存在且为正整数。Blackbox predict 的最终预算取方案申请、版本化 Runtime Profile 平台上限和显式 operation deadline（如有）的最小值；deadline 只能收紧。Blackbox backtest 使用独立的 Profile 预算。任何运行预算都不能替代 Unit/Dry-run/Compare/Backtest 证据，也不能作为放宽 source fidelity、日期语义或 protected table guard 的理由。
 

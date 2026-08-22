@@ -2,18 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import tempfile
 from datetime import date, datetime, timezone
 from dataclasses import asdict, is_dataclass
+from getpass import getuser
 from pathlib import Path
 from typing import Any
 
 from harness.authorization import (
     DEFAULT_BACKTEST_START_DATE,
     EXACT_PREDICT_DATE_ACTIONS,
-    HARNESS_RUN_SCOPED_ACTIONS,
-    SIDE_EFFECT_ACTIONS,
     issue_token,
 )
 from harness.context import GateContext
@@ -86,79 +86,68 @@ class _StoreOnce(argparse.Action):
         setattr(namespace, self.dest, values)
 
 
-def _declared_scheme_version(scheme_id: str) -> tuple[str | None, str]:
-    """从 `schemes/{scheme_id}/config.yaml` 解析当前精确版本。
-
-    纯文件系统操作，不查数据库——签发器保持离线。解析不出来时返回 (None, 原因)，
-    由调用方决定是报错还是沿用显式传入的值。
-    """
-    try:
-        from scheduler.discovery import load_scheme_config
-
-        config = load_scheme_config(
-            PROJECT_ROOT / "schemes" / str(scheme_id) / "config.yaml"
+def _operator_id(explicit: str | None) -> str:
+    """取得非秘密的操作人标识；单人环境默认无需每次填写。"""
+    value = explicit or os.environ.get("BFL_OPERATOR_ID") or getuser()
+    if not isinstance(value, str) or not value.strip() or value != value.strip():
+        raise SystemExit(
+            "direct side-effect command requires a non-empty operator id; "
+            "set BFL_OPERATOR_ID or pass --operator"
         )
-    except Exception as exc:  # noqa: BLE001 - 解析失败一律降级为「无法确定」
-        return None, str(exc)
+    return value
+
+
+def _gate_action(args: argparse.Namespace) -> str | None:
+    """把副作用 Gate 映射为内部精确审计 action。"""
+    if args.gate_name == "backtest":
+        return "backtest_persist" if bool(getattr(args, "persist", False)) else None
+    return {
+        "draft-register": "draft_register",
+        "shadow-register": "shadow_register",
+        "live": "live_write",
+        "lifecycle-reconcile": "blackbox_reconcile",
+        "lifecycle-bootstrap": "blackbox_lifecycle_bootstrap",
+        "revision-activate": "blackbox_revision_activate",
+    }.get(args.gate_name)
+
+
+def _direct_authorization(
+    *,
+    action: str | None,
+    scheme_id: str,
+    config: Any,
+    predict_date: str | None,
+    operator: str | None,
+    backtest_start_date: str | None = None,
+) -> str | None:
+    """为一次明确副作用命令自动构造内部操作授权。
+
+    操作者不再生成密钥、查询 Harness run、签发 token 或复制 ``--authorize``。Gate 会从
+    数据库选择当前 exact version 的 latest passed run，并把它绑定到最终审计对象。
+    """
+    if action is None:
+        return None
     version = str(getattr(config, "scheme_version", "") or "").strip()
     if not version:
-        return None, "config declares no scheme_version"
-    return version, ""
+        raise SystemExit(
+            "direct side-effect command requires a valid canonical scheme config"
+        )
+    scoped_predict_date = (
+        predict_date if action in EXACT_PREDICT_DATE_ACTIONS else None
+    )
+    return issue_token(
+        scheme_id,
+        action,
+        scoped_predict_date,
+        scheme_version=version,
+        issued_by=_operator_id(operator),
+        backtest_start_date=backtest_start_date,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-    if args.command == "auth" and args.auth_command == "issue":
-        if args.action in EXACT_PREDICT_DATE_ACTIONS and args.predict_date is None:
-            parser.error(
-                f"auth issue --action {args.action} requires --predict-date"
-            )
-        if args.action not in EXACT_PREDICT_DATE_ACTIONS and args.predict_date is not None:
-            parser.error(
-                f"auth issue --action {args.action} does not accept --predict-date"
-            )
-        declared_version, declared_error = _declared_scheme_version(args.scheme_id)
-        if args.scheme_version is None:
-            # 该值只有一个正确答案：Gate 使用时会从同一份 config 重算并逐字比对，
-            # 填错必然被拦。因此默认从 config 解析，不要求 operator 誊写。
-            if declared_version is None:
-                parser.error(
-                    "auth issue could not resolve --scheme-version for "
-                    f"{args.scheme_id}: {declared_error}"
-                )
-            args.scheme_version = declared_version
-        elif not isinstance(args.scheme_version, str) or not args.scheme_version.strip():
-            parser.error("auth issue requires non-empty --scheme-version")
-        elif (
-            declared_version is not None
-            and args.scheme_version.strip() != declared_version
-        ):
-            # 显式传入且与 config 不符：在签发这一刻就失败，不要等到用 token 时。
-            parser.error(
-                "auth issue --scheme-version does not match the declared config: "
-                f"given={args.scheme_version.strip()}, declared={declared_version}"
-            )
-        if not isinstance(args.issued_by, str) or not args.issued_by.strip():
-            parser.error("auth issue requires non-empty --issued-by")
-        if args.action in HARNESS_RUN_SCOPED_ACTIONS and (
-            not isinstance(args.harness_run_id, str)
-            or not args.harness_run_id.strip()
-        ):
-            parser.error(
-                f"auth issue --action {args.action} requires --harness-run-id"
-            )
-        token = issue_token(
-            args.scheme_id,
-            args.action,
-            args.predict_date,
-            scheme_version=args.scheme_version,
-            harness_run_id=args.harness_run_id,
-            issued_by=args.issued_by,
-            backtest_start_date=args.backtest_start_date,
-        )
-        print(token)
-        return 0
     if args.command == "gate":
         result = _run_gate(args)
         print(json.dumps(_jsonable(result), ensure_ascii=False, indent=2))
@@ -284,7 +273,11 @@ def _build_parser() -> argparse.ArgumentParser:
         item.add_argument("--report-dir", type=Path, default=None)
         item.add_argument("--algo-env", default="forecast_env")
         item.add_argument("--timeout-sec", type=int, default=600)
-        item.add_argument("--authorize", default=None)
+        item.add_argument(
+            "--operator",
+            default=None,
+            help="non-secret audit identity; defaults to BFL_OPERATOR_ID or OS user",
+        )
         if gate_name == "dashboard":
             item.add_argument(
                 "--api-base-url",
@@ -306,7 +299,6 @@ def _build_parser() -> argparse.ArgumentParser:
     onboard_parser.add_argument("--report-dir", type=Path, default=None)
     onboard_parser.add_argument("--algo-env", default="forecast_env")
     onboard_parser.add_argument("--timeout-sec", type=int, default=600)
-    onboard_parser.add_argument("--authorize", default=None)
     onboard_parser.add_argument("--prediction-phase", choices=("gray_live", "scheduled_live"), default=None)
     onboard_parser.add_argument("--check-only", action="store_true")
 
@@ -315,7 +307,11 @@ def _build_parser() -> argparse.ArgumentParser:
     activate_parser.add_argument("--predict-date", default="activate")
     activate_parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
     activate_parser.add_argument("--report-dir", type=Path, default=None)
-    activate_parser.add_argument("--authorize", default=None)
+    activate_parser.add_argument(
+        "--operator",
+        default=None,
+        help="non-secret audit identity; defaults to BFL_OPERATOR_ID or OS user",
+    )
 
     report_parser = subparsers.add_parser("report")
     report_parser.add_argument("scheme_id")
@@ -368,23 +364,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     fill_parser.add_argument("--timeout-sec", type=int, default=600)
 
-    auth_parser = subparsers.add_parser("auth")
-    auth_subparsers = auth_parser.add_subparsers(dest="auth_command", required=True)
-    issue_parser = auth_subparsers.add_parser("issue")
-    issue_parser.add_argument("--scheme-id", required=True)
-    issue_parser.add_argument(
-        "--action",
-        required=True,
-        choices=sorted(SIDE_EFFECT_ACTIONS),
-    )
-    issue_parser.add_argument("--predict-date", default=None)
-    issue_parser.add_argument("--issued-by", default=None)
-    issue_parser.add_argument("--scheme-version", default=None, dest="scheme_version")
-    issue_parser.add_argument("--harness-run-id", default=None, dest="harness_run_id")
-    issue_parser.add_argument(
-        "--backtest-start-date",
-        default=DEFAULT_BACKTEST_START_DATE,
-    )
     return parser
 
 
@@ -401,6 +380,12 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
     project_root = args.project_root.resolve()
     report_dir = args.report_dir or default_report_dir(project_root, args.scheme_id)
     config = _load_config_for_dispatch(project_root / "schemes" / args.scheme_id / "config.yaml")
+    action = _gate_action(args)
+    backtest_start_date = getattr(
+        args,
+        "backtest_start_date",
+        DEFAULT_BACKTEST_START_DATE,
+    )
     ctx = GateContext(
         scheme_id=args.scheme_id,
         predict_date=args.predict_date,
@@ -410,7 +395,14 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
         algo_env=args.algo_env,
         engine_factory=create_engine_from_env,
         timeout_sec=args.timeout_sec,
-        authorization=args.authorize,
+        authorization=_direct_authorization(
+            action=action,
+            scheme_id=args.scheme_id,
+            config=config,
+            predict_date=args.predict_date,
+            operator=getattr(args, "operator", None),
+            backtest_start_date=backtest_start_date,
+        ),
         prediction_phase=getattr(args, "prediction_phase", None),
         persist_backtest=bool(getattr(args, "persist", False)),
         backtest_sample_size=(
@@ -418,11 +410,7 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
             if getattr(args, "sample_size", None) is not None
             else None
         ),
-        backtest_start_date=getattr(
-            args,
-            "backtest_start_date",
-            DEFAULT_BACKTEST_START_DATE,
-        ),
+        backtest_start_date=backtest_start_date,
         api_base_url=getattr(
             args,
             "api_base_url",
@@ -442,12 +430,11 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
 def _run_onboard_command(args: argparse.Namespace) -> OnboardReport:
     if args.check_only and (
         args.stage.strip().lower() != "all"
-        or args.authorize is not None
         or args.prediction_phase is not None
     ):
         raise SystemExit(
-            "--check-only requires --stage all and forbids authorization "
-            "or prediction side-effect phases"
+            "--check-only requires --stage all and forbids prediction "
+            "side-effect phases"
         )
     project_root = args.project_root.resolve()
     report_dir = args.report_dir or default_report_dir(project_root, args.scheme_id)
@@ -460,7 +447,6 @@ def _run_onboard_command(args: argparse.Namespace) -> OnboardReport:
         config=config,
         algo_env=args.algo_env,
         timeout_sec=args.timeout_sec,
-        authorization=args.authorize,
         prediction_phase=getattr(args, "prediction_phase", None),
         engine_factory=create_engine_from_env,
         check_only=bool(args.check_only),
@@ -486,13 +472,24 @@ def _run_activate(args: argparse.Namespace) -> GateResult:
     project_root = args.project_root.resolve()
     report_dir = args.report_dir or default_report_dir(project_root, args.scheme_id)
     config = _load_config_for_dispatch(project_root / "schemes" / args.scheme_id / "config.yaml")
+    action = (
+        "blackbox_activate"
+        if getattr(config, "runtime_type", None) == "blackbox_v2"
+        else "activate"
+    )
     ctx = GateContext(
         scheme_id=args.scheme_id,
         predict_date=args.predict_date,
         project_root=project_root,
         report_dir=report_dir,
         config=config,
-        authorization=args.authorize,
+        authorization=_direct_authorization(
+            action=action,
+            scheme_id=args.scheme_id,
+            config=config,
+            predict_date=None,
+            operator=args.operator,
+        ),
         engine_factory=create_engine_from_env,
     )
     return ActivationGate().run(ctx)
