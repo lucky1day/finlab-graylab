@@ -1329,7 +1329,7 @@ def _build_component_19(_components):
             module_cols.append(score_col)
         out['yield_pressure_score'] = out[module_cols].mean(axis=1)
         out['bond_price_score'] = -out['yield_pressure_score']
-        module_abs = out[module_cols].abs()
+        module_abs = out[module_cols].abs().astype('float64')
         out['top_pressure_module_id'] = module_abs.idxmax(axis=1).str.replace('_yield_pressure', '', regex=False)
         out['top_pressure_module'] = out['top_pressure_module_id'].map(MODULE_CN)
         return out
