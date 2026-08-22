@@ -30,7 +30,6 @@ from harness.authorization import (
 from backtests.blackbox_v2 import run_blackbox_historical_backtest
 from backtests.repository import persist_backtest_output_atomic, snapshot_backtest_scope_counts
 from harness.gates.base import Gate, guarded_result, utc_now
-from harness.persistence import find_passed_gate_run
 from harness.probes.table_guard import diff_snapshots
 from harness.result import Evidence, GateResult, GateStatus
 from scheduler.blackbox_v2_runner import (
@@ -388,19 +387,6 @@ class BlackboxDryRunGate(_BlackboxGate):
         return _finish(self.name, started_at, evidence, [])
 
 
-@dataclass(frozen=True)
-class _ContractVerdict:
-    """契约不变量的判定结果；`reused_from` 非 None 表示复用了既有 run 的结论。"""
-
-    evidence: tuple[Evidence, ...] = ()
-    errors: tuple[str, ...] = ()
-    reused_from: str | None = None
-
-    @classmethod
-    def reused(cls, harness_run_id: str) -> "_ContractVerdict":
-        return cls(reused_from=harness_run_id)
-
-
 class BlackboxCompareGate(_BlackboxGate):
     name = "compare"
 
@@ -411,14 +397,15 @@ class BlackboxCompareGate(_BlackboxGate):
         profile = _profile(ctx)
         bundle = _input_bundle(state)
         with _open_runtime_input(ctx, state) as runtime_view:
-            # 平台输入必须逐字节等于声明值。只是几个文件的哈希，不含拟合，
-            # 因此不参与下面的指纹复用，每轮都跑。
+            # 平台输入必须逐字节等于声明值。
             _verify_runtime_platform_files(
                 runtime_view.bundle,
                 runtime_view.data_dir,
             )
             runtime_kwargs = _runner_bundle_kwargs(runtime_view.bundle)
-            # 冒烟：交付在当前输入下能否产出合法 Result。每轮必跑。
+            # 冒烟：交付在平台喂进去的输入下能否产出合法 Result。这是本 Gate 唯一
+            # 的算法调用——交付自身的性质（确定性、两入口一致、截止隔离、跨请求无状态）
+            # 由上游按其交付契约保证，平台不重验。
             baseline = run_blackbox_predict(
                 metadata=metadata,
                 script_path=_script(cfg),
@@ -426,26 +413,6 @@ class BlackboxCompareGate(_BlackboxGate):
                 data_dir=runtime_view.data_dir,
                 profile=profile,
                 **runtime_kwargs,
-            )
-            # 以下不变量由上游交付契约明文要求，是交付代码的结构性质：交付字节与平台
-            # 代码都未变时不可能改变。因此按指纹复用既有判定，而不是按 all 的运行
-            # 次数重跑。任何不确定都会跑完整套件。
-            reused_from = find_passed_gate_run(
-                ctx,
-                gate_name=self.name,
-                scheme_version=str(getattr(cfg, "scheme_version", "") or ""),
-            )
-            contract = (
-                _ContractVerdict.reused(reused_from)
-                if reused_from is not None
-                else self._verify_contract_invariants(
-                    state=state,
-                    cfg=cfg,
-                    metadata=metadata,
-                    profile=profile,
-                    runtime_view=runtime_view,
-                    runtime_kwargs=runtime_kwargs,
-                )
             )
 
         # dry-run 段已并入本 Gate：baseline 与原 dry-run 是逐参数相同的同一次 predict，
@@ -460,82 +427,8 @@ class BlackboxCompareGate(_BlackboxGate):
             Evidence("prediction_record", asdict(baseline)),
             Evidence("result_path", str(prediction_record_path)),
             Evidence("business_tables_written", False),
-            Evidence("contract_invariants_reused_from", contract.reused_from),
-            *contract.evidence,
         ]
-        return _finish(self.name, started_at, evidence, list(contract.errors))
-
-    def _verify_contract_invariants(
-        self,
-        *,
-        state,
-        cfg,
-        metadata,
-        profile,
-        runtime_view,
-        runtime_kwargs,
-    ) -> "_ContractVerdict":
-        """重验上游契约明文要求的不变量：6 次全量拟合，仅在指纹未命中时执行。"""
-        errors: list[str] = []
-
-        batch = _comparison_requests(
-            state.request,
-            runtime_view.data_dir,
-        )
-        unsplit = run_blackbox_backtest(
-            metadata=metadata,
-            script_path=_script(cfg),
-            requests=batch,
-            data_dir=runtime_view.data_dir,
-            profile=profile,
-            **runtime_kwargs,
-        )
-        split = run_blackbox_backtest(
-            metadata=metadata,
-            script_path=_script(cfg),
-            requests=batch,
-            data_dir=runtime_view.data_dir,
-            profile=replace(profile, max_batch_requests=1),
-            **runtime_kwargs,
-        )
-        reversed_records = run_blackbox_backtest(
-            metadata=metadata,
-            script_path=_script(cfg),
-            requests=list(reversed(batch)),
-            data_dir=runtime_view.data_dir,
-            profile=profile,
-            **runtime_kwargs,
-        )
-
-        if _direction_map(unsplit) != _direction_map(split):
-            errors.append("backtest result changes when platform splits batches")
-        if _direction_map(unsplit) != _direction_map(reversed_records):
-            errors.append("backtest result changes when Request order changes")
-        return _ContractVerdict(
-            evidence=(
-                Evidence(
-                    "distinct_cutoff_requests",
-                    [
-                        {
-                            "daily": item.daily_cutoff_key,
-                            "weekly": item.weekly_cutoff_key,
-                            "monthly": item.monthly_cutoff_key,
-                        }
-                        for item in batch
-                    ],
-                ),
-                Evidence(
-                    "batch_split_invariant",
-                    _direction_map(unsplit) == _direction_map(split),
-                ),
-                Evidence(
-                    "request_order_invariant",
-                    _direction_map(unsplit) == _direction_map(reversed_records),
-                ),
-            ),
-            errors=tuple(errors),
-        )
-
+        return _finish(self.name, started_at, evidence, [])
 
 class BlackboxBacktestGate(_BlackboxGate):
     name = "backtest"

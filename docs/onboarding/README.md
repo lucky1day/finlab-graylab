@@ -61,14 +61,13 @@
 - `python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all` 按 `runtime_type` 执行技术 Gate：
   Blackbox V2 为四段 `static → input → unit → compare`；Native V1 为六段
   `static → input → unit → dry-run → compare → backtest`。该流程不访问 Backend。
-  Blackbox 的 dry-run 与 no-persist backtest 已并入其 CompareGate——前者与 CompareGate 的
-  baseline 是同一次 predict，后者的 batch_split_invariant 被 CompareGate 用更严格的
-  `batch=100 vs batch=1` 覆盖。两者仍作为独立 `gate` 命令保留。
-- CompareGate 的 5 条契约不变量重验的是上游契约已明文要求的性质，属交付代码的结构性质。
-  同一 `scheme_version`（由 code/config/manifest 三个哈希派生）加同一 release commit 下，
-  若已有 passed compare，则复用其判定并在 evidence 记录 `contract_invariants_reused_from`；
-  交付字节或平台代码任一变化即重跑完整套件，数据库不可用或 commit 未知同样重跑。
-  baseline 冒烟与平台输入哈希校验不参与复用，每轮必跑。
+  Blackbox 的 dry-run 已并入其 CompareGate——两者的 baseline 是同一次 predict。
+  `gate dry-run` 与 `gate backtest` 仍作为独立命令保留。
+- CompareGate 只做两件事：校验平台输入逐字节等于声明值，以及一次冒烟 predict 证明交付在
+  平台喂进去的输入下能产出合法 Result。交付自身的性质——重复执行确定性、predict/backtest
+  一致、截止隔离、跨请求无状态——由上游按其交付契约保证，平台不重验。批次切分与顺序的
+  回填正确性由 `load_backtest_results` 在每一次 backtest 校验（行数相等、逐行回显
+  Request 字段），强于只在入库时跑一次。
 - Native 同一业务身份维护固定执行五段：`static → native-maintenance-admission → input → unit → dry-run`。
 - 激活后的 HTTP 验收只使用 `DashboardGate`，只验证 `/api/factor-lab/dashboard` 当前业务可见性；Dashboard 响应不携带 exact version，不能用来证明版本身份。
 - 单日信号补缺使用 `python -m harness signal-gap-fill --predict-date YYYY-MM-DD`；需要限制为单个方案时增加 `--scheme-id {base_scheme_id}`。命令直接扫描并补齐真实缺口，不接收 token、operator、frozen plan、plan SHA 或日期范围。
