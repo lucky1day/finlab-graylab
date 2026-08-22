@@ -13,8 +13,9 @@ import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 import pymysql
 
@@ -98,6 +99,18 @@ _SOURCE_PROCESS_ESCAPE_PATTERNS = (
 _SOURCE_PROCESS_ESCAPE_SUFFIXES = frozenset(
     {".py", ".sh", ".bash", ".zsh"}
 )
+
+
+# 已编译扩展模块的后缀，形如 ".cpython-313-darwin.so"。
+_COMPILED_EXTENSION_PATTERN = re.compile(
+    r"\.cpython-[0-9]+[a-z]*-[A-Za-z0-9_][A-Za-z0-9_-]*\.so$"
+)
+_INTERPRETER_SUFFIX_PROBE = (
+    "import importlib.machinery, sys; "
+    "sys.stdout.write(chr(10).join("
+    "importlib.machinery.EXTENSION_SUFFIXES))"
+)
+_INTERPRETER_PROBE_TIMEOUT_SECONDS = 60
 _SOURCE_PROCESS_PARENT_WATCHDOG = """\
 import os
 import signal
@@ -646,6 +659,74 @@ def assert_source_package_tree_safe(path: Path) -> None:
                     "source package process isolation forbids "
                     "session escape or daemon primitives"
                 )
+
+
+def compiled_extension_suffixes(source_package_path: Path) -> set[str]:
+    """返回 source package 中已编译扩展模块所要求的后缀集合。"""
+    return {
+        match.group(0)
+        for child in source_package_path.rglob("*.so")
+        if (match := _COMPILED_EXTENSION_PATTERN.search(child.name))
+    }
+
+
+def assert_source_interpreter_supports_package(
+    python_command: Sequence[str],
+    source_package_path: Path,
+    *,
+    label: str,
+) -> None:
+    """确认解释器能加载 source package 中的已编译扩展模块。
+
+    这些扩展模块没有对应源码，无法重新编译；解释器 ABI 或平台一旦不匹配，
+    对应方案将永久无法运行。因此在启动子进程前 fail-closed，而不是让 import
+    在子进程里抛出难以定位的 ImportError。
+    """
+    required = compiled_extension_suffixes(source_package_path)
+    if not required:
+        return
+    supported = _interpreter_extension_suffixes(tuple(python_command))
+    missing = sorted(
+        suffix for suffix in required if suffix not in supported
+    )
+    if missing:
+        raise RuntimeError(
+            f"{label} source package requires compiled extension "
+            f"suffixes {missing} that the resolved interpreter cannot "
+            "load; these modules have no source and cannot be "
+            "rebuilt, so restore an interpreter with the matching "
+            "ABI rather than replacing the compiled package"
+        )
+
+
+@lru_cache(maxsize=8)
+def _interpreter_extension_suffixes(
+    python_command: tuple[str, ...],
+) -> frozenset[str]:
+    """探测解释器接受的扩展模块后缀。"""
+    try:
+        completed = subprocess.run(
+            [*python_command, "-c", _INTERPRETER_SUFFIX_PROBE],
+            capture_output=True,
+            text=True,
+            timeout=_INTERPRETER_PROBE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(
+            "could not probe the source runtime interpreter: "
+            f"{list(python_command)}"
+        ) from exc
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "source runtime interpreter probe failed: "
+            f"{list(python_command)}"
+        )
+    return frozenset(
+        line.strip()
+        for line in completed.stdout.splitlines()
+        if line.strip()
+    )
 
 
 def prepare_private_source_runtime_tree(path: Path) -> None:

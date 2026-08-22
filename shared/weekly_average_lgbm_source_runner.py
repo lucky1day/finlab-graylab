@@ -12,6 +12,7 @@ import pandas as pd
 from shared.source_runtime_database import (
     SourceRuntimeDatabaseConfig,
     assert_source_package_identity,
+    assert_source_interpreter_supports_package,
     assert_source_package_tree_safe,
     assert_source_runtime_payload_safe,
     install_source_runtime_database_config,
@@ -192,7 +193,13 @@ def _run_python_module(
         ]
     )
     env["DRY_RUN"] = "1"
-    command = [*_python_command(), "-m", module, *args]
+    python_command = _python_command()
+    assert_source_interpreter_supports_package(
+        python_command,
+        source_root,
+        label="weekly average lgbm",
+    )
+    command = [*python_command, "-m", module, *args]
     timeout_sec = source_timeout_seconds(
         "WEEKLY_AVERAGE_SOURCE_TIMEOUT_SEC"
     )
