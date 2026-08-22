@@ -89,7 +89,7 @@ export PYTHONDONTWRITEBYTECODE=1
 | 时机 | 验证目标 | 命令 | 通过标准 |
 |---|---|---|---|
 | 改动任意方案配置后 | active discovery、运行时身份和两文件入口 | `python -m pytest -q tests/test_active_scheme_contracts.py tests/test_config_schema.py tests/test_onboarding_policy.py` | 全部通过 |
-| 收到或修订 Blackbox V2 交付后 | Contract、Intake、discovery 和现役交付截止隔离 | `python -m pytest -q tests/test_blackbox_v2_contracts.py tests/test_blackbox_v2_intake.py tests/test_blackbox_v2_discovery.py tests/test_active_blackbox_conformance.py` | 全部通过；未来数据不改变结果且不产生缓存副产物 |
+| 收到或修订 Blackbox V2 交付后 | Contract、Intake、discovery，以及现役交付对**平台侧数据接入变更**的耐受（DataBridge 加列、改时间键、目标日缺日频行） | `python -m pytest -q tests/test_blackbox_v2_contracts.py tests/test_blackbox_v2_intake.py tests/test_blackbox_v2_discovery.py tests/test_active_blackbox_conformance.py` | 全部通过。交付自身的截止隔离与跨批无状态属上游义务，不在此矩阵内 |
 | 修改 Blackbox 平台适配后 | 输入 cutoff、runner、六段 Gate | `python -m pytest -q tests/test_data_bridge_current.py tests/test_blackbox_v2_runner.py tests/test_blackbox_v2_harness_gates.py` | 全部通过 |
 | 修改 Registry、API 或前端后 | active 方案可见性、actual join、Dashboard 基础状态与 Harness HTTP 验收 | `python -m pytest -q tests/test_repository_registry.py tests/test_backend_api.py tests/test_factor_lab_dashboard_api.py tests/test_dashboard_gate.py` | 全部通过 |
 | 修改 Native 存量适配后 | 当前数据库输入、执行器和 source isolation | `python -m pytest -q tests/test_native_input_artifacts.py tests/test_native_executor.py tests/test_source_runner_database_isolation.py` | 全部通过；不得修改 Native core 算法口径 |
