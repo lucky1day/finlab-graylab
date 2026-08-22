@@ -710,7 +710,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 )
                 evidence = {item.key: item.value for item in result.evidence}
                 self.assertEqual(evidence["sample_size"], sample_size)
-                self.assertTrue(evidence["batch_split_invariant"])
                 self.assertLessEqual(
                     evidence["subprocesses_started"],
                     evidence["max_subprocesses"],
@@ -811,7 +810,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             self.assertEqual(batch_sizes[0], 100)
             self.assertLess(batch_sizes[1], DEFAULT_NO_PERSIST_SAMPLE_SIZE)
             self.assertGreaterEqual(evidence["max_subprocesses"], 3)
-            self.assertTrue(evidence["batch_split_invariant"])
 
     def test_backtest_sample_size_is_no_persist_only(self) -> None:
         from harness.cli import _build_parser

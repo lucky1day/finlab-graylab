@@ -463,7 +463,7 @@ class BlackboxBacktestGate(_BlackboxGate):
         bundle = _input_bundle(state)
         profile = _profile(ctx)
         # alternate 分区必须小于实际样本量，否则两种分区都是单批，
-        # batch_split_invariant 就没有被真正检验。
+        # 平台的切片与合并循环就没有在第二个 N 下被真正走过。
         alternate_batch_size = _alternate_batch_size(
             min(profile.max_batch_requests, sample_size)
         )
@@ -517,9 +517,6 @@ class BlackboxBacktestGate(_BlackboxGate):
             )
         if [record.extra["request_id"] for record in records] != [item.request_id for item in requests]:
             errors.append("no-persist backtest did not preserve one-to-one Request order")
-        batch_split_invariant = _direction_map(records) == _direction_map(alternate_records)
-        if not batch_split_invariant:
-            errors.append("no-persist backtest results changed with platform batch partitioning")
         if [record.extra["request_id"] for record in alternate_records] != [
             item.request_id for item in requests
         ]:
@@ -535,7 +532,6 @@ class BlackboxBacktestGate(_BlackboxGate):
             Evidence("subprocesses_started", budget.subprocesses_started),
             Evidence("max_subprocesses", budget.max_subprocesses),
             Evidence("total_deadline_sec", ctx.timeout_sec),
-            Evidence("batch_split_invariant", batch_split_invariant),
             Evidence("persist", False),
             Evidence("business_tables_written", False),
         ]
@@ -1802,8 +1798,9 @@ def _direction_map(records) -> dict[str, int]:
 DEFAULT_NO_PERSIST_SAMPLE_SIZE = 4
 """no-persist 回测的默认样本量。
 
-该 Gate 只验证「平台分批方式不改变结果」这一结构性不变量，其输入只有
-`_comparison_requests` 产出的两个模板。样本量只需足够构造一次真实的分批差异。
+该 Gate 验证平台自己的切片与合并循环：跨批次合并后总数正确、两种分区下 request_id
+都与 Request 一一对应保序。其输入只有 `_comparison_requests` 产出的两个模板，
+样本量只需足够构造一次真实的分批差异。交付跨请求是否带状态属上游义务，平台不验。
 """
 
 
