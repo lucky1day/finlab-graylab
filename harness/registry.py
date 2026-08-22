@@ -19,17 +19,34 @@ from shared.scheme_config_loader import load_yaml_mapping
 
 
 AUTO_SEQUENCE = ["static", "input", "unit", "dry-run", "compare", "backtest"]
+# Blackbox 的 CompareGate 已经更强地覆盖了 dry-run 与 no-persist backtest 的全部断言：
+# 其 baseline 与 dry-run 是逐参数相同的同一次 predict；其 batch=100 vs batch=1 比 no-persist
+# backtest 的 100 vs 80 更严格。Native 的 CompareGate 是完全不同的 benchmark 对比实现，
+# 不覆盖这两段，因此 Native 序列保持不变。
+BLACKBOX_AUTO_SEQUENCE = ["static", "input", "unit", "compare"]
 
 
-def sequence_for_stage(stage: str) -> list[str]:
+def auto_sequence_for_runtime(runtime_type: str | None) -> list[str]:
+    """返回该 runtime 的自动段序列。"""
+    if str(runtime_type or "").strip() == "blackbox_v2":
+        return list(BLACKBOX_AUTO_SEQUENCE)
+    return list(AUTO_SEQUENCE)
+
+
+def sequence_for_stage(
+    stage: str,
+    *,
+    runtime_type: str | None = None,
+) -> list[str]:
     normalized = stage.strip().lower()
-    if normalized == "all":
-        return list(AUTO_SEQUENCE)
     if normalized == NATIVE_MAINTENANCE_STAGE:
         return list(NATIVE_MAINTENANCE_SEQUENCE)
-    if normalized not in AUTO_SEQUENCE:
+    sequence = auto_sequence_for_runtime(runtime_type)
+    if normalized == "all":
+        return sequence
+    if normalized not in sequence:
         raise ValueError(f"unsupported onboard stage: {stage}")
-    return AUTO_SEQUENCE[: AUTO_SEQUENCE.index(normalized) + 1]
+    return sequence[: sequence.index(normalized) + 1]
 
 
 def gate_for_name(name: str, *, ctx: GateContext | None = None) -> Gate:
@@ -72,7 +89,8 @@ def gate_for_name(name: str, *, ctx: GateContext | None = None) -> Gate:
 
 
 def gates_for_stage(stage: str, *, ctx: GateContext | None = None) -> list[Gate]:
-    return [gate_for_name(name, ctx=ctx) for name in sequence_for_stage(stage)]
+    names = sequence_for_stage(stage, runtime_type=_runtime_type(ctx))
+    return [gate_for_name(name, ctx=ctx) for name in names]
 
 
 def _runtime_type(ctx: GateContext | None) -> str:

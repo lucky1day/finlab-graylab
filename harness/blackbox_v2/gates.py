@@ -531,8 +531,18 @@ class BlackboxCompareGate(_BlackboxGate):
             errors.append(
                 "CompareGate changed a declared platform input artifact"
             )
+        # dry-run 段已并入本 Gate：baseline 与原 dry-run 是逐参数相同的同一次 predict，
+        # 因此在此原样产出其证据与结果文件，避免重复一次全量拟合。
+        prediction_record_path = _gate_root(ctx) / "dry_run_prediction_record.json"
+        prediction_record_path.write_text(
+            json.dumps(asdict(baseline), ensure_ascii=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
         evidence = [
             *_bundle_evidence(bundle),
+            Evidence("prediction_record", asdict(baseline)),
+            Evidence("result_path", str(prediction_record_path)),
+            Evidence("business_tables_written", False),
             Evidence("repeat_deterministic", repeated.predicted_direction == baseline_direction),
             Evidence("predict_backtest_equal", _direction_map(unsplit) == direct_directions),
             Evidence(
