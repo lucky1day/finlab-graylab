@@ -13,6 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MATRIX_PATH = PROJECT_ROOT / "deploy" / "scheme_deployment_matrix_v1.json"
 MAC3_TARGET = "mac3-production"
 ALIYUN_TARGET = "aliyun-gray"
+WEEKLY_1Y_CAUSAL_SCHEME_ID = "weekly_1y_causal_v1_31_0_standalone"
 MAC_ONLY_SCHEME_IDS = frozenset(
     {
         "daily_10y_lgbm_10y04_0629",
@@ -69,6 +70,13 @@ def test_aliyun_excludes_exactly_the_mac_only_schemes() -> None:
     unscoped_ids = {cfg.scheme_id for cfg in _discover(None)}
     aliyun_ids = {cfg.scheme_id for cfg in _discover(ALIYUN_TARGET)}
     assert unscoped_ids - aliyun_ids == MAC_ONLY_SCHEME_IDS
+
+
+def test_weekly_1y_causal_is_deployed_to_both_targets() -> None:
+    assert _matrix_schemes()[WEEKLY_1Y_CAUSAL_SCHEME_ID] == [
+        MAC3_TARGET,
+        ALIYUN_TARGET,
+    ]
 
 
 def test_matrix_covers_every_discovered_scheme_exactly_once() -> None:

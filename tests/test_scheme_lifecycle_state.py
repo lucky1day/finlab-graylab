@@ -165,8 +165,9 @@ def test_discovery_falls_back_to_config_when_no_overlay(tmp_path: Path) -> None:
     with patch.dict(os.environ, {"BFL_RUNTIME_ROOT": str(tmp_path / "empty")}, clear=False):
         cfg = load_scheme_config(root / "schemes" / scheme_id / "config.yaml")
 
-    # config.yaml 当前声明为 active/active，覆盖层缺失时应原样保留
-    assert (cfg.status, cfg.version_status) == ("active", "active")
+    # 新 release 在主机覆盖层建立前必须保持安全默认。
+    assert (cfg.status, cfg.version_status) == ("paused", "draft")
+    assert cfg.scheme_version == "c93f76489d5b"
 
 
 def test_discovery_applies_overlay_for_matching_version(tmp_path: Path) -> None:
@@ -180,12 +181,12 @@ def test_discovery_applies_overlay_for_matching_version(tmp_path: Path) -> None:
             root,
             scheme_id=scheme_id,
             scheme_version=declared.scheme_version,
-            status="paused",
-            version_status="draft",
+            status="active",
+            version_status="active",
         )
         effective = load_scheme_config(config_path)
 
-    assert (effective.status, effective.version_status) == ("paused", "draft")
+    assert (effective.status, effective.version_status) == ("active", "active")
     assert effective.scheme_version == declared.scheme_version
 
 
@@ -205,7 +206,7 @@ def test_discovery_ignores_overlay_from_another_version(tmp_path: Path) -> None:
         )
         cfg = load_scheme_config(config_path)
 
-    assert (cfg.status, cfg.version_status) == ("active", "active")
+    assert (cfg.status, cfg.version_status) == ("paused", "draft")
 
 
 # --------------------------------------------------------------------------
