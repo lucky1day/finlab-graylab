@@ -75,7 +75,15 @@
 - ECS 灰度实验室中的 `weekly_1y_causal_v1_31_0_standalone` exact version `c93f76489d5b` 已完成 Blackbox 技术 Gate、shadow/paused 登记、完整持久化回测、原子 activation 和 Registry active 读回。
 - 该方案的已批准单日灰度信号已按冻结 DataBridge authority 经 `signal-gap-fill` insert-only 写入；再次运行 gap plan 为 `present`、`actionable=0`，没有重复写入。
 - 激活后的 `DashboardGate` 已通过，dashboard 可读到一条 `gray_live`。这完成方案的 Onboarding Complete 证据；是否形成 `scheduled_live` 仍只由下一次 ECS systemd 自然触发、任务日志、run/prediction 和 Dashboard 后续读回证明。
-- 本轮单维护者授权简化已在 `codex/develop` 工作区完成实施和回归：用户侧 `HARNESS_AUTH_SECRET`、`auth issue`、token 复制及 `--authorize` 已从 CLI 移除，副作用命令自动绑定 exact version/latest passed run 并记录 `direct_operator_command_v1`。该本地代码变更尚未构建或晋级 ECS/Mac3 release，不改变当前 installed unit/timer 或运行中服务。
+- 单维护者授权简化已提交并用于本轮 ECS 入库：用户侧 `HARNESS_AUTH_SECRET`、`auth issue`、token 复制及 `--authorize` 已从 CLI 移除，副作用命令自动绑定 exact version/latest passed run 并记录 `direct_operator_command_v1`。
+
+### M0 周平均五方案
+
+- `m0_weekly_avg_{1y,3y,5y,7y,10y}_v1` 已逐方案完成两文件 Intake、Blackbox 四 Gate `all`、首次 shadow identity 创建、完整持久化回测、原子 activation、单日 gray gap fill 和 DashboardGate。五个 composite Registry 均为 `active + weekly_average`，只在部署矩阵的 `aliyun-gray` 范围内，不进入 Mac3 production。
+- 五个 exact version 分别为 1Y `246cc5b71238`、3Y `0726b172d237`、5Y `6208c1fc671d`、7Y `8c0eeae6ec6e`、10Y `d56548e8f295`。每个 canonical backtest 均为 84 条、20 个月度指标，目标区间 `2025-01-10..2026-08-21`；五个 gray live 均为 `predict=2026-08-22 / feature=2026-08-21 / target=2026-08-28`，方向依 1Y/3Y/5Y/7Y/10Y 为 `-1/+1/-1/+1/+1`。重复 gap plan 均为 `present=1 / actionable=0`，历史与 live target 零重叠。
+- ECS `current` 已晋级到精确 source release `2b89046975ec11225394e9b00ef686aaf47a6986`，tag 为 `bfl-source-m0-weekly-average-5-20260823`，archive SHA-256 为 `4d147e6ef102f3cf74d29e57d338dacd92770b993083328a8db30fdc82ae5ca1`，`previous` 为 `0b248879c934b1251d523d946ccbf6e4df88d862`。候选五方案 check-only、候选 Backend、激活后 Backend、严格 discovery、数据库与 Dashboard 读回均通过。
+- ECS weekly systemd timer 保持 `enabled/active/waiting`，五个方案均已进入严格 active weekly 候选集合；下一次自然触发为 2026-08-29 11:30 Asia/Shanghai。当前完成状态是 Onboarding Complete；首次 `scheduled_live` 只能在该真实时钟触发后，由 service 日志、run、prediction 与 Dashboard 共同确认，不能由 timer waiting 预先宣称。
+- ECS installed weekly service 已与该 release 的仓库模板逐字节对齐，历史可选 `/run/bond-factor-lab/manual-run.env` 引用已移除；原 unit 备份为 `/etc/systemd/system/bond-factor-lab-prediction-weekly.service.pre-m0-20260823`。`systemd-analyze verify` 与 daemon-reload 后 timer 仍为 `enabled/active/waiting`，没有 kickstart 或倒签 `scheduled_live`。
 
 ## 当前迁移完成边界
 
