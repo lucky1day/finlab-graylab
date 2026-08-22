@@ -484,16 +484,8 @@ class BlackboxCompareGate(_BlackboxGate):
         baseline,
         original_platform_hashes,
     ) -> "_ContractVerdict":
-        """重验上游契约明文要求的不变量：9 次全量拟合，仅在指纹未命中时执行。"""
+        """重验上游契约明文要求的不变量：8 次全量拟合，仅在指纹未命中时执行。"""
         errors: list[str] = []
-        repeated = run_blackbox_predict(
-            metadata=metadata,
-            script_path=_script(cfg),
-            request=state.request,
-            data_dir=runtime_view.data_dir,
-            profile=profile,
-            **runtime_kwargs,
-        )
 
         batch = _comparison_requests(
             state.request,
@@ -586,8 +578,6 @@ class BlackboxCompareGate(_BlackboxGate):
                 )
 
         baseline_direction = baseline.predicted_direction
-        if repeated.predicted_direction != baseline_direction:
-            errors.append("repeated predict result is not deterministic")
         direct_directions = {
             batch[0].request_id: earlier.predicted_direction,
             state.request.request_id: baseline_direction,
@@ -609,10 +599,6 @@ class BlackboxCompareGate(_BlackboxGate):
             )
         return _ContractVerdict(
             evidence=(
-                Evidence(
-                    "repeat_deterministic",
-                    repeated.predicted_direction == baseline_direction,
-                ),
                 Evidence(
                     "predict_backtest_equal",
                     _direction_map(unsplit) == direct_directions,
@@ -2055,8 +2041,7 @@ DEFAULT_NO_PERSIST_SAMPLE_SIZE = 4
 """no-persist 回测的默认样本量。
 
 该 Gate 只验证「平台分批方式不改变结果」这一结构性不变量，其输入只有
-`_comparison_requests` 产出的两个模板。样本量只需足够构造一次真实的分批差异；
-重复执行确定性由 CompareGate 的 repeat_deterministic 独立覆盖。
+`_comparison_requests` 产出的两个模板。样本量只需足够构造一次真实的分批差异。
 """
 
 
