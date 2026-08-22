@@ -105,8 +105,8 @@ Activation 前必须完成对应 Gate、生产准备核验与一次性专项授�
 权威回读证明。
 
 Blackbox 任一 lifecycle journal 处于 pending 时，新的 shadow、activate 或 revision activate
-必须直接阻断，不得在授权前隐式恢复。唯一恢复入口是显式 HMAC 授权的
-`blackbox_reconcile`：它只回退到原 journal 记录的 previous safe state，保留原 journal 不变，
+必须直接阻断，不得在其它命令前隐式恢复。唯一恢复入口是独立执行
+`gate lifecycle-reconcile`：它只回退到原 journal 记录的 previous safe state，保留原 journal 不变，
 并新建与其关联的 reconciliation journal 记录全过程；失败继续保留 pending 证据。
 
 出现以下任一情况时立即停止副作用并保留证据：

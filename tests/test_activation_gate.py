@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -151,16 +150,6 @@ class ActivationGateHistoryTests(unittest.TestCase):
 
 
 class NativeActivationValidationTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self._previous_auth_secret = os.environ.get("HARNESS_AUTH_SECRET")
-        os.environ["HARNESS_AUTH_SECRET"] = "native-activation-test-secret"
-
-    def tearDown(self) -> None:
-        if self._previous_auth_secret is None:
-            os.environ.pop("HARNESS_AUTH_SECRET", None)
-        else:
-            os.environ["HARNESS_AUTH_SECRET"] = self._previous_auth_secret
-
     def test_current_full_all_history_returns_initial_admission_profile(self) -> None:
         from harness.gates.activate_gate import (
             REQUIRED_ACTIVATE_GATES,

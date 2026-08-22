@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**目标读者**：平台负责人、运维和生产授权人员
+**目标读者**：单人平台维护者和运维操作者
 
 **最后核验日期**：2026-08-10
 
@@ -20,7 +20,7 @@
    确定性、顺序/分批一致性与未来数据隔离**不在平台验收范围内**——它们是交付代码自身的性质，
    由上游按 [上游交付契约](../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md) 保证；生产准备核验
    不得据此宣称平台已验证过这些性质。
-5. activation、持久化回测和 live 分别使用精确的一次性授权；其它方案、旧版本或旧 run 的授权不得外推。
+5. activation、持久化回测和 live 分别使用精确的直接副作用命令；命令本身是该次操作授权，系统自动绑定 scheme、exact version、latest passed run、日期/起点与非秘密 operator，不生成或复制密钥/token，也不得把一次命令外推到其它方案或操作。
 6. activation 后 config、exact version 与全部 Registry target 均为 active；paused、draft、retired 或 cadence 不匹配的身份不得进入对应 one-shot runner。
 7. 激活后的 HTTP 验收只使用 `DashboardGate` 检查 `/api/factor-lab/dashboard` 当前业务可见性；Dashboard 响应不携带 exact version，不能替代 exact version、Gate 或生命周期证据。
 8. 自然生产观察必须由 installed plist、loaded state、日志、run、prediction、API/Dashboard 相互一致证明；仓库模板和测试不替代现场证据。
@@ -28,7 +28,7 @@
 ## 生命周期异常
 
 - 任一 pending lifecycle journal 都必须阻断新的 lifecycle 动作，不允许激活、shadow 或 revision 路径隐式恢复。
-- 只有显式 `blackbox_reconcile` HMAC 授权可以把身份恢复到 journal 记录的 previous safe state；原 journal 保持不变，并新增 linked reconciliation journal 记录恢复结果。
+- 只有独立执行 `gate lifecycle-reconcile` 命令才可以把身份恢复到 journal 记录的 previous safe state；原 journal 保持不变，并新增 linked reconciliation journal 记录恢复结果。
 
 ## 禁止替代
 

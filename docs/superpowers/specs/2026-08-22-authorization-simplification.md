@@ -1,5 +1,10 @@
 # 授权机制瘦身设计
 
+**实施状态（2026-08-23）**：核心授权瘦身已按进一步简化后的单维护者模型实现。最终实现比
+初稿更短：副作用子命令本身就是意图，不再增加 `--i-authorize` 确认串；exact version 与 latest
+passed run 由系统绑定，operator 默认取环境或 OS 用户。为保持失败隔离，没有增加跨 shadow、回测、
+activate 的万能命令；service fingerprint 与本次入库授权无关，继续留在范围外。
+
 ## 背景
 
 当前副作用操作（activate、backtest_persist、live、三段 register 等 8 个 action）需要一个用
@@ -53,15 +58,14 @@ scheme_version / harness_run_id / predict_date / backtest_start_date 精确匹�
 删除的是信封本身：`_auth_secret()`、`_sign()`、`_decode_envelope()`、`_validate_canonical_signature()`
 以及 `AUTH_SECRET_ENV`。
 
-操作者改为提供必须逐字匹配的显式确认串：
+操作者直接执行精确的副作用子命令。子命令名已经表达 action，`--scheme-id`、日期、回测起点等
+参数已经表达目标；再要求抄写一遍 `<action>:<scheme>@<version>` 仍是重复输入，并会重新引入拼写
+和复制错误。CLI 从 canonical config 解析 exact version，Gate 从控制面选择 current exact version 的
+latest passed run，并在执行前逐项复核。operator 默认取 `BFL_OPERATOR_ID` 或 OS 用户，可用
+`--operator` 显式覆盖；它是审计身份，不是凭据。
 
-```
---i-authorize "<action>:<scheme_id>@<scheme_version>"
---issued-by <operator>
-```
-
-系统用当前 exact version 自行拼出期望串比对，不一致即拒绝。该串**不是凭据**，不需要保密，
-它的作用是强制人写出精确身份——防的是操作错对象，不是防攻击者。
+内部仍生成 canonical、随机的 operation id，但该值不暴露在用户操作面。它只用于并发安全的一次性
+消费，审计仅保存 SHA-256、完整 scope 和 `authorization_mode=direct_operator_command_v1`。
 
 ### 2. 去掉 900 秒有效期
 
@@ -71,25 +75,21 @@ scheme_version / harness_run_id / predict_date / backtest_start_date 精确匹�
 
 `issued_by` 与授权发生时间仍写入审计记录。
 
-### 3. 三段登记合并为一次操作面
+### 3. 压缩正常路径，但保留提交边界
 
-**保留三段各自的内部事务与 lifecycle journal，只合并操作者面。**
+`shadow-register` 已经在首次身份不存在时自动完成 draft identity 创建，因此正常流程不再单独运行
+`draft-register`。完整回测与 activation 继续是两条独立命令，因为它们修改不同业务对象、使用不同
+事务和失败恢复语义。删除 HMAC 后，每条命令已经没有签发往返；继续合并只能少两次命令，却会让
+回测失败、lifecycle pending 和 activation 回滚混在一个长操作里，降低稳定性。
 
-`draft-register`（insert-only 建 draft version + paused registry）、`shadow-register`、
-`activate` 三者的数据库效果和 journal 语义不变，仍按序执行、逐段可回滚。变化只有两点：
+最终最短路径是 `intake -> all(4 gates) -> shadow-register -> backtest --persist -> activate ->
+gap plan/fill -> dashboard`。提速重点放在删除重复 Gate、自动推导 scope、只补真实 gap，而不是压平
+有价值的事务边界。
 
-- 新增一个操作者命令一次驱动三段；
-- 三段共用**同一个授权**，不再各签一次。
+### 4. 不改 `BOND_FACTOR_LAB_SERVICE_FINGERPRINT_SECRET`
 
-不采用"融合成单事务"：那会改变 lifecycle journal 语义和分段回滚能力，风险远大于收益。
-
-### 4. 删除 `BOND_FACTOR_LAB_SERVICE_FINGERPRINT_SECRET`
-
-唯一消费者是 `backend/main.py` 通过 `service_fingerprint_secret()` 构造 `/api/health` 的
-`service_instance` 信息字段；未设置时为 `None`，现场实证即为 `None`。
-
-删除该 env、`shared/service_instance.py` 中的相关分支，并同步调整 `/api/health` 响应结构与
-`tests/test_backend_api.py`、`tests/test_service_instance.py`。
+该变量属于 release/service instance 识别，不参与 Harness 入库授权。即使 ECS 当前未设置，也不能
+从“未启用”直接推出“应和授权重构一起删除”。为避免扩大变更面和混淆 `/api/health` 契约，本次不改。
 
 ## 范围外
 
@@ -106,14 +106,15 @@ scheme_version / harness_run_id / predict_date / backtest_start_date 精确匹�
 ## 测试与验收
 
 1. **scope 校验不回退**：现有 `verify_authorization` 的全部拒绝用例（错 scheme、错 version、
-   错 run、错 predict_date、错 action）必须继续拒绝，只是构造方式从签名 token 改为确认串。
-2. **一次性仍成立**：同一授权第二次使用必须拒绝；且沿用 `01d1fec` 后的外置重放存储，
+   错 run、错 predict_date、错 action）必须继续拒绝，CLI 正常路径自动构造内部 operation。
+2. **一次性仍成立**：同一 operation 第二次使用必须拒绝；且沿用 `01d1fec` 后的外置重放存储，
    换 project_root 仍拒绝。
-3. **确认串必须逐字匹配**：version 差一个字符、action 不符、scheme 不符均拒绝。
-4. **fail-closed**：缺 `--i-authorize` 或缺 `--issued-by` 时拒绝，且无任何数据库副作用。
-5. **合并命令**：三段中任一段失败时，已完成段的 journal 保留、后续段不执行，与分开执行时一致。
-6. **health 响应**：删除 fingerprint 字段后，`/api/health` 契约测试同步更新并通过。
-7. 全量回归对照纯净 HEAD，不得出现新增失败。
+3. **用户面清理完整**：CLI 不再暴露 `auth`、`auth issue` 或 `--authorize`；副作用命令提供可选
+   `--operator`，不要求秘密环境变量。
+4. **fail-closed**：canonical config/version 缺失、latest passed run 缺失、scope 不一致、operation
+   重放或 lifecycle pending 时拒绝，且无越界数据库副作用。
+5. **审计不降级**：审计含 operator、scope、run、mode 和 operation hash，但不保存原始 operation id。
+6. 全量回归对照纯净 HEAD，不得出现新增失败。
 
 ## 停止条件
 

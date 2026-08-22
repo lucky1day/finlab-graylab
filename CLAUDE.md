@@ -137,10 +137,10 @@ python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
 # 自动段按 runtime_type 分派（fail-fast，退出码 0/1/2）：
 #   Blackbox V2：static → input → unit → compare
 #   Native V1  ：static → input → unit → dry-run → compare → backtest
-# 副作用段不在 all 内，必须显式授权且 fail-closed
+# 副作用段不在 all 内，必须以精确独立命令执行且 fail-closed
 ```
 
-Blackbox V2 自动 Gate 不自动授予生产运行权限；具体方案必须完成生产准备核验并取得专项授权后，才可执行 activate、持久化回测或 live，且授权不得外推到其他方案。平台操作见 [docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md](docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)，生产条件见 [docs/blackbox_v2/PRODUCTION_READINESS.md](docs/blackbox_v2/PRODUCTION_READINESS.md)。Native 存量维护见 [docs/sop/NATIVE_V1_MAINTENANCE_SOP.md](docs/sop/NATIVE_V1_MAINTENANCE_SOP.md)。Harness 边界见 [docs/architecture/HARNESS_ARCHITECTURE.md](docs/architecture/HARNESS_ARCHITECTURE.md)。
+仓库和灰度实验室由单人维护，人工副作用采用直接命令授权：执行精确的 `gate ...`、`activate` 或 `signal-gap-fill` 命令本身就是该次操作授权，不生成 `HARNESS_AUTH_SECRET`，不运行 `auth issue`，也不复制 `--authorize` token。CLI 自动从 canonical config 绑定 exact version，Gate 自动选择 current exact version 的 latest passed Harness run；action、scheme、日期、回测起点、非秘密 operator 与内部 operation hash 仍完整审计，scope 漂移、run 缺失、重放或 lifecycle pending 均 fail-closed。operator 默认取 `BFL_OPERATOR_ID` 或 OS 用户，可用 `--operator` 显式覆盖。这个简化只删除同一操作者给自己签名的冗余步骤，不把技术 Gate 通过外推为生产操作许可；agent 在 ECS/Mac3 执行写库、激活、服务或调度变更前仍须获得用户对具体操作的明确授权。Blackbox V2 自动 Gate 不自动授予生产运行权限；具体方案完成生产准备核验后，shadow、持久化回测、activate、live/gap fill 仍按各自独立命令和事务边界执行，不得跨方案外推。平台操作见 [docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md](docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)，生产条件见 [docs/blackbox_v2/PRODUCTION_READINESS.md](docs/blackbox_v2/PRODUCTION_READINESS.md)。Native 存量维护见 [docs/sop/NATIVE_V1_MAINTENANCE_SOP.md](docs/sop/NATIVE_V1_MAINTENANCE_SOP.md)。Harness 边界见 [docs/architecture/HARNESS_ARCHITECTURE.md](docs/architecture/HARNESS_ARCHITECTURE.md)。
 
 ## 数据库表
 

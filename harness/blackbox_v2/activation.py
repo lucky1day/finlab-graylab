@@ -30,7 +30,7 @@ from shared.blackbox_v2.lifecycle import (
 
 
 def activate_blackbox(ctx: GateContext) -> GateResult:
-    """执行签名授权、可补偿的 Blackbox 正式激活。"""
+    """执行直接操作授权、可补偿的 Blackbox 正式激活。"""
     return guarded_result("activate", lambda started_at: _activate(ctx, started_at))
 
 

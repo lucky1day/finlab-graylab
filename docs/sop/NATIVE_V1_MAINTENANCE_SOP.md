@@ -81,7 +81,7 @@ python -m harness onboard {scheme_id} \
 static -> native-maintenance-admission -> input -> unit -> dry-run
 ```
 
-`native-maintenance-admission` 只读复核 prior `all + compare`、匹配的 prior `static.business_identity` 与当前 Registry identity；current exact `t_scheme_versions` 必须为 `native_adapter` 的 `draft|active` 行，expected Registry 必须全 paused（预激活）或全 active（激活后），且 draft+active fail-closed。整个阶段持久化 Harness 审计证据但不写业务表，故不得用 `--check-only`；任一 run-start、gate-result 或 run-finish 持久化失败时必须留下本地 `BLOCKED` 证据，且该 run 不可作为 activation 依据。只有 ActivationGate 才能原子建立 active。legacy admission 缺快照时一律 fail-closed，唯一保留的补证是 `weekly_10y_d_overlay_0529` 已持久化的 canonical receipt；平台只读校验其 prior、固定身份和 canonical 结构，writer 与 token action 已退役。它只让 Gate 记录 `legacy_operator_attestation_v1`，但不替代完整五段 maintenance；activation 仍要求一条已通过且完整持久化的五 Gate run 与独立 token。它不执行当前 historical `compare/backtest`，不是全局关闭 CompareGate：新身份、业务身份漂移或任何前提不满足时都必须回到 `all`。任一所选阶段 Gate 失败时，从该阶段的 static 重跑，不跳过失败项。
+`native-maintenance-admission` 只读复核 prior `all + compare`、匹配的 prior `static.business_identity` 与当前 Registry identity；current exact `t_scheme_versions` 必须为 `native_adapter` 的 `draft|active` 行，expected Registry 必须全 paused（预激活）或全 active（激活后），且 draft+active fail-closed。整个阶段持久化 Harness 审计证据但不写业务表，故不得用 `--check-only`；任一 run-start、gate-result 或 run-finish 持久化失败时必须留下本地 `BLOCKED` 证据，且该 run 不可作为 activation 依据。只有 ActivationGate 才能原子建立 active。legacy admission 缺快照时一律 fail-closed，唯一保留的补证是 `weekly_10y_d_overlay_0529` 已持久化的 canonical receipt；平台只读校验其 prior、固定身份和 canonical 结构，writer 与旧 token action 已退役。它只让 Gate 记录 `legacy_operator_attestation_v1`，但不替代完整五段 maintenance；activation 仍要求一条已通过且完整持久化的五 Gate run 与独立直接命令。它不执行当前 historical `compare/backtest`，不是全局关闭 CompareGate：新身份、业务身份漂移或任何前提不满足时都必须回到 `all`。任一所选阶段 Gate 失败时，从该阶段的 static 重跑，不跳过失败项。
 
 ## 5. 数据与结果核验
 
@@ -95,41 +95,27 @@ static -> native-maintenance-admission -> input -> unit -> dry-run
 - 回测不包含 gray/live target 区间；
 - `predicted_direction=0` 不进入准确率分母。
 
-## 6. 授权副作用
+## 6. 直接命令副作用
 
-自动段通过后，任何 persist、live 写库或状态切换仍使用既有一次性授权流程。操作前后独立查询：
+自动段通过后，任何 persist、live 写库或状态切换仍须使用精确的独立副作用命令。命令本身是单维护者对本次操作的明确授权；不生成密钥、不签发 token、不复制 `--authorize`。操作前后独立查询：
 
 Native 激活授权必须绑定刚通过 `all` 或 `native-maintenance` 的
 `validation_scheme_version`，并记录非空 operator 身份。两条 profile 互斥：当前 exact version
 有 passed `all` 及 CompareGate 时，ActivationGate 使用 `full_initial_onboarding_v1`，不检查
 prior snapshot 或 maintenance；后续维护 profile 才须有 prior passed `all + compare`、匹配的 prior
-`static.business_identity`、当前五个 Gate、native `draft|active` exact version 与统一 paused/active 的精确 Registry identity。draft+active 必须失败，且只有 ActivationGate 能原子建立 active。缺 legacy snapshot 时 ActivationGate 仍 fail-closed；唯一固定 receipt 不构成激活 token 或写库授权，它只让 `weekly_10y_d_overlay_0529` 的已通过、identity 缺字段 prior 作为 `legacy_operator_attestation_v1` 通过 maintenance admission。receipt 后仍要五段 Gate 与独立 activation token。用同一标准 discovery 入口只读
+`static.business_identity`、当前五个 Gate、native `draft|active` exact version 与统一 paused/active 的精确 Registry identity。draft+active 必须失败，且只有 ActivationGate 能原子建立 active。缺 legacy snapshot 时 ActivationGate 仍 fail-closed；唯一固定 receipt 不构成激活或写库授权，它只让 `weekly_10y_d_overlay_0529` 的已通过、identity 缺字段 prior 作为 `legacy_operator_attestation_v1` 通过 maintenance admission。receipt 后仍要五段 Gate 与独立 activation 命令。用同一标准 discovery 入口只读
 计算当前精确版本；该值必须与最近一次 passed `t_harness_runs.scheme_version` 一致，ActivationGate
-会再次严格核验。随后显式签发和消费：
+会再次严格核验。随后显式执行：
 
 ```bash
-NATIVE_SCHEME_ID="{scheme_id}"
-VALIDATION_SCHEME_VERSION="$(
-  python -c 'import sys; from pathlib import Path; from scheduler.discovery import load_scheme_config; print(load_scheme_config(Path("schemes") / sys.argv[1] / "config.yaml").scheme_version)' \
-    "${NATIVE_SCHEME_ID}"
-)"
-NATIVE_RELEASE_OPERATOR="<operator-id>"
-
-python -m harness auth issue \
-  --scheme-id "${NATIVE_SCHEME_ID}" \
-  --action activate \
-  --scheme-version "${VALIDATION_SCHEME_VERSION}" \
-  --issued-by "${NATIVE_RELEASE_OPERATOR}"
-
 python -m harness activate \
-  --scheme-id "${NATIVE_SCHEME_ID}" \
-  --authorize "<raw-one-time-token>"
+  --scheme-id "{scheme_id}"
 ```
 
-`--scheme-version` 可以省略：签发时从同一份 `config.yaml` 用同一入口解析，与上面
-`VALIDATION_SCHEME_VERSION` 的算法完全一致；显式传入且不符会在签发这一刻失败。
-`--issued-by` 不得省略。仍不得用修改配置后的新版本号替代已通过 Gate 的
-`validation_scheme_version`。paused 配置激活后因为只翻转
+CLI 从 canonical `config.yaml` 自动解析 current exact version，ActivationGate 自动选择并绑定
+latest passed exact `all` 或 `native-maintenance` run。operator 默认取 `BFL_OPERATOR_ID` 或 OS
+用户；只有需要固定审计名称时才传 `--operator "{operator-id}"`。仍不得用修改配置后的新版本号
+替代已通过 Gate 的 `validation_scheme_version`；一旦 config 漂移就 fail-closed。paused 配置激活后因为只翻转
 根级 `status`，`activated_scheme_version` 会变化；已 active 的 legacy 精确版本
 重批准时版本保持不变。
 
