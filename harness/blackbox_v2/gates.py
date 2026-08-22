@@ -1895,14 +1895,12 @@ def _persisted_backtest_provenance_errors(
 def _verify_passed_all(engine, cfg: SchemeConfig) -> PassedAllRun:
     from sqlalchemy import text
 
-    required = {
-        "static",
-        "input",
-        "unit",
-        "dry-run",
-        "compare",
-        "backtest",
-    }
+    # 从唯一的序列定义派生，不再写第二份。写死过一次已经导致：自动段缩到四段后，
+    # 依赖本函数的 shadow-register / backtest --persist / activate 三条路径全部
+    # 因「missing=['backtest','dry-run']」而阻断。
+    from harness.registry import BLACKBOX_AUTO_SEQUENCE
+
+    required = set(BLACKBOX_AUTO_SEQUENCE)
     with engine.begin() as connection:
         row = connection.execute(
             text(

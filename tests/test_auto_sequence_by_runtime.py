@@ -56,3 +56,24 @@ def test_blackbox_compare_carries_the_former_dry_run_evidence() -> None:
     for key in ("prediction_record", "result_path", "business_tables_written"):
         assert f'Evidence("{key}"' in source, key
     assert "dry_run_prediction_record.json" in source
+
+
+def test_passed_all_verification_derives_its_gate_set_from_the_sequence() -> None:
+    """写死过一次就出过事：自动段缩到四段后，依赖 _verify_passed_all 的三条副作用
+    路径（shadow-register / backtest --persist / activate）全部被
+    「missing=['backtest','dry-run']」阻断。此处钉死它必须派生而非复制。"""
+    import inspect
+
+    from harness.blackbox_v2.gates import _verify_passed_all
+
+    source = inspect.getsource(_verify_passed_all)
+    assert "BLACKBOX_AUTO_SEQUENCE" in source
+    for stale in ('"dry-run"', '"backtest"'):
+        assert stale not in source, f"{stale} 不得再出现在期望集合里"
+
+
+def test_blackbox_sequence_has_no_algorithm_only_gates() -> None:
+    """Blackbox 自动段只保留平台自己要验的东西。"""
+    from harness.registry import BLACKBOX_AUTO_SEQUENCE
+
+    assert BLACKBOX_AUTO_SEQUENCE == ["static", "input", "unit", "compare"]
