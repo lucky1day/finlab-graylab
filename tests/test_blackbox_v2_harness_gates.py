@@ -737,6 +737,103 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     evidence["max_subprocesses"],
                 )
 
+    def test_no_persist_backtest_default_sample_size_still_splits_batches(self) -> None:
+        """默认样本量必须足够小，同时仍构造出真实的分批差异。"""
+        from harness.blackbox_v2.gates import (
+            DEFAULT_NO_PERSIST_SAMPLE_SIZE,
+            BlackboxBacktestGate,
+            InputState,
+        )
+        from scheduler.blackbox_v2_runner import RuntimeProfile
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.contracts import BlackboxRequest
+        from shared.blackbox_v2.intake import intake_delivery
+        from shared.blackbox_v2.requests import write_request
+        from shared.blackbox_v2.snapshot import create_snapshot_from_frames
+
+        self.assertLessEqual(DEFAULT_NO_PERSIST_SAMPLE_SIZE, 8)
+        self.assertGreaterEqual(DEFAULT_NO_PERSIST_SAMPLE_SIZE, 2)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            scheme_dir = intake_delivery(
+                _delivery(root / "incoming"),
+                schemes_root=root / "schemes",
+            )
+            config = load_scheme_config(scheme_dir / "config.yaml")
+            snapshot = create_snapshot_from_frames(
+                _snapshot_frames(),
+                output_root=root / "snapshots",
+                expected_columns={
+                    name: list(frame.columns)
+                    for name, frame in _snapshot_frames().items()
+                },
+                schema_version="data-bridge-v1",
+            )
+            request = BlackboxRequest(
+                request_id="trial-request",
+                predict_date="2026-07-15",
+                feature_date="2026-07-15",
+                target_date="2026-07-16",
+                daily_cutoff_key="2026-07-15",
+                weekly_cutoff_key="202627",
+                monthly_cutoff_key="202606",
+            )
+            state = InputState(
+                snapshot,
+                write_request(request, root / "request.json"),
+                request,
+            )
+            ctx = GateContext(
+                scheme_id=config.scheme_id,
+                predict_date="2026-07-16",
+                project_root=root,
+                report_dir=root / "reports",
+                config=config,
+            )
+
+            def records_for(**kwargs):
+                return [
+                    SimpleNamespace(
+                        predicted_direction=index % 3 - 1,
+                        extra={"request_id": item.request_id},
+                    )
+                    for index, item in enumerate(kwargs["requests"])
+                ]
+
+            with (
+                patch(
+                    "harness.blackbox_v2.gates._ensure_input_state",
+                    return_value=state,
+                ),
+                patch(
+                    "harness.blackbox_v2.gates._profile",
+                    return_value=RuntimeProfile.for_tests(max_batch_requests=100),
+                ),
+                patch(
+                    "harness.blackbox_v2.gates._comparison_requests",
+                    return_value=[request],
+                ),
+                patch(
+                    "harness.blackbox_v2.gates.run_blackbox_backtest",
+                    side_effect=records_for,
+                ) as run_backtest,
+            ):
+                result = BlackboxBacktestGate().run(ctx)
+
+            self.assertTrue(result.passed, result.errors)
+            evidence = {item.key: item.value for item in result.evidence}
+            self.assertEqual(evidence["sample_size"], DEFAULT_NO_PERSIST_SAMPLE_SIZE)
+            # alternate 分区必须小于样本量，否则不构成真实分批差异
+            batch_sizes = [
+                call.kwargs["profile"].max_batch_requests
+                for call in run_backtest.call_args_list
+            ]
+            self.assertEqual(batch_sizes[0], 100)
+            self.assertLess(batch_sizes[1], DEFAULT_NO_PERSIST_SAMPLE_SIZE)
+            self.assertGreaterEqual(evidence["max_subprocesses"], 3)
+            self.assertTrue(evidence["batch_split_invariant"])
+
     def test_backtest_sample_size_is_no_persist_only(self) -> None:
         from harness.cli import _build_parser
         from harness.blackbox_v2.gates import BlackboxBacktestGate, PassedAllRun
@@ -1260,8 +1357,15 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 item.key: item.value
                 for item in results[3].evidence
             }
-            self.assertEqual(backtest_evidence["requests"], 100)
-            self.assertEqual(backtest_evidence["records"], 100)
+            # 断言与默认样本量一致，而非写死数字：该 Gate 只检验分批不变量。
+            from harness.blackbox_v2.gates import DEFAULT_NO_PERSIST_SAMPLE_SIZE
+
+            self.assertEqual(
+                backtest_evidence["requests"], DEFAULT_NO_PERSIST_SAMPLE_SIZE
+            )
+            self.assertEqual(
+                backtest_evidence["records"], DEFAULT_NO_PERSIST_SAMPLE_SIZE
+            )
             self.assertFalse(backtest_evidence["persist"])
             compare_evidence = {
                 item.key: item.value

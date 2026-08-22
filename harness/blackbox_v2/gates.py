@@ -573,7 +573,11 @@ class BlackboxBacktestGate(_BlackboxGate):
                     ],
                 )
             return self._run_persist(ctx, started_at)
-        sample_size = 100 if ctx.backtest_sample_size is None else int(ctx.backtest_sample_size)
+        sample_size = (
+            DEFAULT_NO_PERSIST_SAMPLE_SIZE
+            if ctx.backtest_sample_size is None
+            else int(ctx.backtest_sample_size)
+        )
         if sample_size < 1 or sample_size > 1000:
             return _finish(
                 self.name,
@@ -586,7 +590,11 @@ class BlackboxBacktestGate(_BlackboxGate):
         state = _ensure_input_state(ctx)
         bundle = _input_bundle(state)
         profile = _profile(ctx)
-        alternate_batch_size = _alternate_batch_size(profile.max_batch_requests)
+        # alternate 分区必须小于实际样本量，否则两种分区都是单批，
+        # batch_split_invariant 就没有被真正检验。
+        alternate_batch_size = _alternate_batch_size(
+            min(profile.max_batch_requests, sample_size)
+        )
         max_subprocesses = (
             math.ceil(sample_size / profile.max_batch_requests)
             + math.ceil(sample_size / alternate_batch_size)
@@ -1933,6 +1941,15 @@ def _comparison_requests(request: BlackboxRequest, data_dir: Path) -> list[Black
 
 def _direction_map(records) -> dict[str, int]:
     return {str(record.extra["request_id"]): int(record.predicted_direction) for record in records}
+
+
+DEFAULT_NO_PERSIST_SAMPLE_SIZE = 4
+"""no-persist 回测的默认样本量。
+
+该 Gate 只验证「平台分批方式不改变结果」这一结构性不变量，其输入只有
+`_comparison_requests` 产出的两个模板。样本量只需足够构造一次真实的分批差异；
+重复执行确定性由 CompareGate 的 repeat_deterministic 独立覆盖。
+"""
 
 
 def _alternate_batch_size(primary_batch_size: int) -> int:
