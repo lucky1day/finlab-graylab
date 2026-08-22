@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from scheduler.deployment_scope import filter_schemes_for_configured_target
 from shared.blackbox_v2.versioning import compute_blackbox_config_hash
+from shared.scheme_lifecycle_state import read_lifecycle_state
 from shared.blackbox_v2.platform_input_registry import (
     normalize_platform_input_ids,
 )
@@ -76,7 +77,38 @@ def _require_mapping(value: Any, path: Path) -> dict[str, Any]:
 
 
 def load_scheme_config(config_path: Path) -> SchemeConfig:
-    """读取单个方案 config.yaml。"""
+    """读取单个方案配置，并叠加本机生命周期状态。"""
+    return _apply_lifecycle_overlay(
+        config_path,
+        _load_declared_scheme_config(config_path),
+    )
+
+
+def _apply_lifecycle_overlay(
+    config_path: Path,
+    config: SchemeConfig,
+) -> SchemeConfig:
+    """用本机生命周期状态覆盖 config.yaml 中的初始声明。
+
+    覆盖层与当前 `scheme_version` 精确绑定；缺失、不可读或版本不匹配时保留 config.yaml
+    的初始声明（新 intake 方案即 paused/draft），因此是 fail-closed 的。
+    """
+    record = read_lifecycle_state(
+        config_path.parent.parent.parent,
+        config.scheme_id,
+        config.scheme_version,
+    )
+    if record is None:
+        return config
+    return replace(
+        config,
+        status=record.status,
+        version_status=record.version_status,
+    )
+
+
+def _load_declared_scheme_config(config_path: Path) -> SchemeConfig:
+    """读取单个方案 config.yaml 中声明的配置，不含本机生命周期状态。"""
     raw = load_yaml_mapping(config_path)
     errors = validate_config(raw, config_path.parent.name)
     if errors:

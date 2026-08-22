@@ -146,3 +146,63 @@ def test_development_default_stays_inside_the_worktree(tmp_path: Path) -> None:
 
 def test_schema_version_is_pinned() -> None:
     assert SCHEMA_VERSION == "scheme-lifecycle-state-v1"
+
+
+# --------------------------------------------------------------------------
+# discovery 注入：覆盖层如何影响 load_scheme_config
+# --------------------------------------------------------------------------
+
+
+def _real_scheme() -> tuple[Path, str]:
+    root = Path(__file__).resolve().parents[1]
+    return root, "weekly_1y_causal_v1_31_0_standalone"
+
+
+def test_discovery_falls_back_to_config_when_no_overlay(tmp_path: Path) -> None:
+    from scheduler.discovery import load_scheme_config
+
+    root, scheme_id = _real_scheme()
+    with patch.dict(os.environ, {"BFL_RUNTIME_ROOT": str(tmp_path / "empty")}, clear=False):
+        cfg = load_scheme_config(root / "schemes" / scheme_id / "config.yaml")
+
+    # config.yaml 当前声明为 active/active，覆盖层缺失时应原样保留
+    assert (cfg.status, cfg.version_status) == ("active", "active")
+
+
+def test_discovery_applies_overlay_for_matching_version(tmp_path: Path) -> None:
+    from scheduler.discovery import load_scheme_config
+
+    root, scheme_id = _real_scheme()
+    config_path = root / "schemes" / scheme_id / "config.yaml"
+    with patch.dict(os.environ, {"BFL_RUNTIME_ROOT": str(tmp_path / "state")}, clear=False):
+        declared = load_scheme_config(config_path)
+        write_lifecycle_state(
+            root,
+            scheme_id=scheme_id,
+            scheme_version=declared.scheme_version,
+            status="paused",
+            version_status="draft",
+        )
+        effective = load_scheme_config(config_path)
+
+    assert (effective.status, effective.version_status) == ("paused", "draft")
+    assert effective.scheme_version == declared.scheme_version
+
+
+def test_discovery_ignores_overlay_from_another_version(tmp_path: Path) -> None:
+    """代码变更后旧覆盖层必须失效，方案回落为 config.yaml 的声明。"""
+    from scheduler.discovery import load_scheme_config
+
+    root, scheme_id = _real_scheme()
+    config_path = root / "schemes" / scheme_id / "config.yaml"
+    with patch.dict(os.environ, {"BFL_RUNTIME_ROOT": str(tmp_path / "state")}, clear=False):
+        write_lifecycle_state(
+            root,
+            scheme_id=scheme_id,
+            scheme_version="stale-version",
+            status="paused",
+            version_status="draft",
+        )
+        cfg = load_scheme_config(config_path)
+
+    assert (cfg.status, cfg.version_status) == ("active", "active")
