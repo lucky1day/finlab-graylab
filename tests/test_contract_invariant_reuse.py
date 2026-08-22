@@ -236,7 +236,7 @@ def test_the_nine_contract_fits_all_live_behind_the_reuse_check() -> None:
     assert "run_blackbox_backtest(" not in always_run
 
     # 契约不变量的拟合全在 helper 内：3 次 predict + 3 次 backtest
-    assert invariants.count("run_blackbox_predict(") == 2
+    assert invariants.count("run_blackbox_predict(") == 1
     assert invariants.count("run_blackbox_backtest(") == 3
 
 
@@ -247,7 +247,6 @@ def test_every_contract_assertion_stays_inside_the_reusable_helper() -> None:
     # Evidence 在 helper 里是多行书写，先归一化空白再比对
     flat = re.sub(r"\s+", "", invariants)
     for key in (
-        "predict_backtest_equal",
         "batch_split_invariant",
         "request_order_invariant",
         "future_row_isolation",

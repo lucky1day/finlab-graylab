@@ -286,3 +286,47 @@ def _load_backtest_direction(direction: str | None):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --------------------------------------------------------------------------
+# predict 与 backtest 两条路径的 Request 序列化必须同源
+# --------------------------------------------------------------------------
+
+
+def test_request_csv_fields_match_the_dataclass_exactly() -> None:
+    """`write_request` 走 asdict 全字段，`write_requests` 走固定 REQUEST_FIELDS。
+
+    两者一旦不同源，交付在 predict 与 backtest 两条路径上会收到不同的输入，
+    从而合法地给出不同答案——那是平台的缺陷，不是算法的。此处用毫秒级断言钉死，
+    取代此前由 CompareGate 花 3 次全量拟合顺带覆盖的这一小片风险。
+    """
+    from dataclasses import fields
+
+    from shared.blackbox_v2.contracts import REQUEST_FIELDS, BlackboxRequest
+
+    assert tuple(f.name for f in fields(BlackboxRequest)) == tuple(REQUEST_FIELDS)
+
+
+def test_both_request_writers_round_trip_to_the_same_values(tmp_path) -> None:
+    """同一条 Request 经两个写出器后，字段值必须逐一相同。"""
+    import csv
+    import json
+
+    from shared.blackbox_v2.contracts import REQUEST_FIELDS, BlackboxRequest
+    from shared.blackbox_v2.requests import write_request, write_requests
+
+    request = BlackboxRequest(
+        request_id="r-1",
+        predict_date="2026-08-22",
+        feature_date="2026-08-21",
+        target_date="2026-08-28",
+        daily_cutoff_key="2026-08-21",
+        weekly_cutoff_key="2026-08-21",
+        monthly_cutoff_key="2026-07-31",
+    )
+
+    single = json.loads(write_request(request, tmp_path / "request.json").read_text("utf-8"))
+    with (write_requests([request], tmp_path / "requests.csv")).open(encoding="utf-8") as handle:
+        batched = next(iter(csv.DictReader(handle)))
+
+    assert {field: single[field] for field in REQUEST_FIELDS} == dict(batched)

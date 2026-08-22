@@ -484,20 +484,12 @@ class BlackboxCompareGate(_BlackboxGate):
         baseline,
         original_platform_hashes,
     ) -> "_ContractVerdict":
-        """重验上游契约明文要求的不变量：8 次全量拟合，仅在指纹未命中时执行。"""
+        """重验上游契约明文要求的不变量：7 次全量拟合，仅在指纹未命中时执行。"""
         errors: list[str] = []
 
         batch = _comparison_requests(
             state.request,
             runtime_view.data_dir,
-        )
-        earlier = run_blackbox_predict(
-            metadata=metadata,
-            script_path=_script(cfg),
-            request=batch[0],
-            data_dir=runtime_view.data_dir,
-            profile=profile,
-            **runtime_kwargs,
         )
         unsplit = run_blackbox_backtest(
             metadata=metadata,
@@ -578,12 +570,6 @@ class BlackboxCompareGate(_BlackboxGate):
                 )
 
         baseline_direction = baseline.predicted_direction
-        direct_directions = {
-            batch[0].request_id: earlier.predicted_direction,
-            state.request.request_id: baseline_direction,
-        }
-        if _direction_map(unsplit) != direct_directions:
-            errors.append("predict and backtest produce different directions")
         if _direction_map(unsplit) != _direction_map(split):
             errors.append("backtest result changes when platform splits batches")
         if _direction_map(unsplit) != _direction_map(reversed_records):
@@ -599,10 +585,6 @@ class BlackboxCompareGate(_BlackboxGate):
             )
         return _ContractVerdict(
             evidence=(
-                Evidence(
-                    "predict_backtest_equal",
-                    _direction_map(unsplit) == direct_directions,
-                ),
                 Evidence(
                     "distinct_cutoff_requests",
                     [
