@@ -248,7 +248,43 @@ generation。正式 `scheduled_live` 仍使用当天最新、完整校验且
 `generation_id + combined_snapshot_id`。不同 generation 的结果只能
 用于稳定性观察，不能宣称逐行复现。
 
-### 2.4 当前生产时序边界
+### 2.4 确认回测成本（一次性计算 vs 逐条重算）
+
+**收包阶段就要定这件事**，否则阶段 6 的持久化回测可能从十几分钟变成一夜。
+
+持久化回测的耗时不由条数决定，由交付怎么实现 `backtest` 决定：
+
+```
+等价一次性计算   ≈ 1 次整体计算 + 3 次批内自证复算 = 4 次，与条数几乎无关
+逐条重算         N 次，N = Request 条数
+```
+
+按当前实测口径（周频方案约 80 条 Request、单次全量计算约 4 分钟）：前者约 16 分钟，
+后者约 5.6 小时。
+
+**只读判定**（不跑算法、不写库）：
+
+```bash
+grep -nE "一次性|self_check|self-proof|_can_optimize|batch.*optimiz" \
+  schemes/{scheme_id}/delivery/{scheme_id}.py
+```
+
+交付若实现了一次性计算，应能看到三个结构：整段只算一次的构建、按截止键从结果中提取每条
+Request、以及覆盖批内首/中/末的独立复算自证（自证结论写入 `stderr`）。
+
+判定规则：
+
+| 情况 | 处理 |
+|---|---|
+| 算法是 walk-forward 结构、已实现一次性计算 | 正常推进；阶段 6 预算按十几分钟安排 |
+| 算法是 walk-forward 结构、未实现 | **退回上游**。[上游契约](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md#6-读取输入并按截止键截断)已将其列为必须项 |
+| 算法不是 walk-forward 结构 | 上游必须在交付时显式声明，并给出预估条数与单次耗时；据此安排阶段 6 预算，不得不声明就交付 |
+
+条数可只读估算：同 `task_type` 的现役方案在 `t_backtest_predictions` 里的条数即同量级
+（当前 ECS 实测：`weekly_point` / `weekly_average` 各 72 条，`monthly` 16–17 条，
+`T+1` 中位 337 条，`T+5` 中位 333 条）。
+
+### 2.5 当前生产时序边界
 
 DataBridge 为 Blackbox 日/周/月任务提供标准三频 artifact；每次自然运行都必须使用
 当天新鲜、已验证且严格截止到 `feature_date` 的输入。generation、manifest、
@@ -265,7 +301,7 @@ occurrence/epoch 都不能成为第二入口。具体时点、installed state �
 反向覆盖旧验收。经授权的历史缺口只可 insert-only 写 `gray_live`；只有合格自然时钟
 触发才写 `scheduled_live`。
 
-### 2.5 自然 launchd one-shot 候选
+### 2.6 自然 launchd one-shot 候选
 
 自然 launchd one-shot 的候选集合只由严格发现后的生命周期与 cadence 决定：配置必须为 `status=active`，Blackbox 对应的 exact version 必须为 `version_status=active`，并且 `frequency` 与本次 runner 的 cadence 一致。`paused`、`draft` 或其它 cadence 不进入本批次；除此之外不再设置 release queue、`mode` 或 capability 筛选。
 
