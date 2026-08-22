@@ -10,6 +10,7 @@ from sqlalchemy import text
 
 from harness.context import GateContext
 from harness.result import GateResult, GateStatus
+from shared.service_instance import resolve_code_commit
 
 
 # Approved harness control-plane write boundary.
@@ -62,7 +63,7 @@ def persist_harness_run_start(
                     "started_at": _mysql_datetime(started_at),
                     "triggered_by": "harness",
                     "project_root": str(ctx.project_root),
-                    "git_commit": None,
+                    "git_commit": _release_commit(ctx),
                     "code_hash": getattr(cfg, "code_hash", None),
                     "config_hash": getattr(cfg, "config_hash", None),
                     "report_uri": str(ctx.report_dir),
@@ -134,6 +135,65 @@ def persist_harness_run_finish(
             )
 
     return _with_engine(ctx, operation)
+
+
+def _release_commit(ctx: GateContext) -> str | None:
+    """本次运行所属的 release commit；无法确定时返回 None。"""
+    try:
+        return resolve_code_commit(ctx.project_root)
+    except Exception:
+        return None
+
+
+def find_passed_gate_run(
+    ctx: GateContext,
+    *,
+    gate_name: str,
+    scheme_version: str,
+) -> str | None:
+    """查找同一方案、同一精确版本、同一 release commit 下已通过的 gate run。
+
+    命中返回该 `harness_run_id`。任何不确定——数据库不可用、commit 未知、
+    版本为空、查询失败——一律返回 None，由调用方执行完整检查。
+    """
+    commit = _release_commit(ctx)
+    if not commit or not str(scheme_version or "").strip():
+        return None
+    if ctx.engine_factory is None:
+        return None
+    engine = None
+    try:
+        engine = ctx.engine_factory()
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT r.harness_run_id
+                    FROM t_harness_runs AS r
+                    JOIN t_harness_gate_results AS g
+                      ON g.harness_run_id = r.harness_run_id
+                    WHERE r.scheme_id = :scheme_id
+                      AND r.scheme_version = :scheme_version
+                      AND r.git_commit = :git_commit
+                      AND g.gate_name = :gate_name
+                      AND g.status = 'passed'
+                    ORDER BY g.finished_at DESC
+                    LIMIT 1
+                    """
+                ),
+                {
+                    "scheme_id": ctx.scheme_id,
+                    "scheme_version": str(scheme_version).strip(),
+                    "git_commit": commit,
+                    "gate_name": gate_name,
+                },
+            ).first()
+    except Exception:
+        return None
+    finally:
+        if engine is not None and hasattr(engine, "dispose"):
+            engine.dispose()
+    return str(row[0]) if row else None
 
 
 def _with_engine(ctx: GateContext, operation: Callable[[object], None]) -> bool:

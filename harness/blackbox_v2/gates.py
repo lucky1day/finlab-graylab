@@ -29,6 +29,7 @@ from harness.authorization import (
 from backtests.blackbox_v2 import run_blackbox_historical_backtest
 from backtests.repository import persist_backtest_output_atomic, snapshot_backtest_scope_counts
 from harness.gates.base import Gate, guarded_result, utc_now
+from harness.persistence import find_passed_gate_run
 from harness.probes.table_guard import diff_snapshots
 from harness.result import Evidence, GateResult, GateStatus
 from scheduler.blackbox_v2_runner import (
@@ -386,6 +387,19 @@ class BlackboxDryRunGate(_BlackboxGate):
         return _finish(self.name, started_at, evidence, [])
 
 
+@dataclass(frozen=True)
+class _ContractVerdict:
+    """契约不变量的判定结果；`reused_from` 非 None 表示复用了既有 run 的结论。"""
+
+    evidence: tuple[Evidence, ...] = ()
+    errors: tuple[str, ...] = ()
+    reused_from: str | None = None
+
+    @classmethod
+    def reused(cls, harness_run_id: str) -> "_ContractVerdict":
+        return cls(reused_from=harness_run_id)
+
+
 class BlackboxCompareGate(_BlackboxGate):
     name = "compare"
 
@@ -396,11 +410,14 @@ class BlackboxCompareGate(_BlackboxGate):
         profile = _profile(ctx)
         bundle = _input_bundle(state)
         with _open_runtime_input(ctx, state) as runtime_view:
+            # 平台输入必须逐字节等于声明值。只是几个文件的哈希，不含拟合，
+            # 因此不参与下面的指纹复用，每轮都跑。
             original_platform_hashes = _verify_runtime_platform_files(
                 runtime_view.bundle,
                 runtime_view.data_dir,
             )
             runtime_kwargs = _runner_bundle_kwargs(runtime_view.bundle)
+            # 冒烟：交付在当前输入下能否产出合法 Result。每轮必跑。
             baseline = run_blackbox_predict(
                 metadata=metadata,
                 script_path=_script(cfg),
@@ -409,107 +426,164 @@ class BlackboxCompareGate(_BlackboxGate):
                 profile=profile,
                 **runtime_kwargs,
             )
-            repeated = run_blackbox_predict(
-                metadata=metadata,
-                script_path=_script(cfg),
-                request=state.request,
-                data_dir=runtime_view.data_dir,
-                profile=profile,
-                **runtime_kwargs,
+            # 以下不变量由上游交付契约明文要求，是交付代码的结构性质：交付字节与平台
+            # 代码都未变时不可能改变。因此按指纹复用既有判定，而不是按 all 的运行
+            # 次数重跑。任何不确定都会跑完整套件。
+            reused_from = find_passed_gate_run(
+                ctx,
+                gate_name=self.name,
+                scheme_version=str(getattr(cfg, "scheme_version", "") or ""),
             )
-
-            batch = _comparison_requests(
-                state.request,
-                runtime_view.data_dir,
-            )
-            earlier = run_blackbox_predict(
-                metadata=metadata,
-                script_path=_script(cfg),
-                request=batch[0],
-                data_dir=runtime_view.data_dir,
-                profile=profile,
-                **runtime_kwargs,
-            )
-            unsplit = run_blackbox_backtest(
-                metadata=metadata,
-                script_path=_script(cfg),
-                requests=batch,
-                data_dir=runtime_view.data_dir,
-                profile=profile,
-                **runtime_kwargs,
-            )
-            split = run_blackbox_backtest(
-                metadata=metadata,
-                script_path=_script(cfg),
-                requests=batch,
-                data_dir=runtime_view.data_dir,
-                profile=replace(profile, max_batch_requests=1),
-                **runtime_kwargs,
-            )
-            reversed_records = run_blackbox_backtest(
-                metadata=metadata,
-                script_path=_script(cfg),
-                requests=list(reversed(batch)),
-                data_dir=runtime_view.data_dir,
-                profile=profile,
-                **runtime_kwargs,
-            )
-
-            with tempfile.TemporaryDirectory(
-                prefix="blackbox-v2-future-isolation-"
-            ) as tmpdir:
-                probe_root = Path(tmpdir)
-                mutated_data = probe_root / "data"
-                shutil.copytree(runtime_view.data_dir, mutated_data)
-                appended_rows = _append_future_rows(mutated_data)
-                mutated_platform_hashes = (
-                    _verify_runtime_platform_files(
-                        bundle,
-                        mutated_data,
-                    )
-                )
-                mutated_frames = {
-                    filename: pd.read_csv(
-                        mutated_data / filename,
-                        dtype=str,
-                        keep_default_na=False,
-                    )
-                    for filename in SNAPSHOT_FILENAMES
-                }
-                mutated_snapshot = create_snapshot_from_frames(
-                    mutated_frames,
-                    output_root=probe_root / "snapshots",
-                    expected_columns={
-                        filename: list(frame.columns)
-                        for filename, frame in mutated_frames.items()
-                    },
-                    schema_version=state.snapshot.schema_version,
-                )
-                mutated_bundle = compose_blackbox_input_bundle(
-                    mutated_snapshot,
-                    platform_input_ids=bundle.platform_input_ids,
-                    platform_input_artifacts=bundle.platform_input_artifacts,
-                )
-                mutated_state = replace(
-                    state,
-                    snapshot=mutated_snapshot,
-                    bundle=mutated_bundle,
-                )
-                with _open_runtime_input(
+            contract = (
+                _ContractVerdict.reused(reused_from)
+                if reused_from is not None
+                else self._verify_contract_invariants(
                     ctx,
-                    mutated_state,
-                ) as mutated_view:
-                    future_record = run_blackbox_predict(
-                        metadata=metadata,
-                        script_path=_script(cfg),
-                        request=state.request,
-                        data_dir=mutated_view.data_dir,
-                        profile=profile,
-                        **_runner_bundle_kwargs(mutated_view.bundle),
-                    )
+                    state=state,
+                    cfg=cfg,
+                    metadata=metadata,
+                    profile=profile,
+                    bundle=bundle,
+                    runtime_view=runtime_view,
+                    runtime_kwargs=runtime_kwargs,
+                    baseline=baseline,
+                    original_platform_hashes=original_platform_hashes,
+                )
+            )
+
+        # dry-run 段已并入本 Gate：baseline 与原 dry-run 是逐参数相同的同一次 predict，
+        # 因此在此原样产出其证据与结果文件，避免重复一次全量拟合。
+        prediction_record_path = _gate_root(ctx) / "dry_run_prediction_record.json"
+        prediction_record_path.write_text(
+            json.dumps(asdict(baseline), ensure_ascii=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        evidence = [
+            *_bundle_evidence(bundle),
+            Evidence("prediction_record", asdict(baseline)),
+            Evidence("result_path", str(prediction_record_path)),
+            Evidence("business_tables_written", False),
+            Evidence("contract_invariants_reused_from", contract.reused_from),
+            *contract.evidence,
+        ]
+        return _finish(self.name, started_at, evidence, list(contract.errors))
+
+    def _verify_contract_invariants(
+        self,
+        ctx: GateContext,
+        *,
+        state,
+        cfg,
+        metadata,
+        profile,
+        bundle,
+        runtime_view,
+        runtime_kwargs,
+        baseline,
+        original_platform_hashes,
+    ) -> "_ContractVerdict":
+        """重验上游契约明文要求的不变量：9 次全量拟合，仅在指纹未命中时执行。"""
+        errors: list[str] = []
+        repeated = run_blackbox_predict(
+            metadata=metadata,
+            script_path=_script(cfg),
+            request=state.request,
+            data_dir=runtime_view.data_dir,
+            profile=profile,
+            **runtime_kwargs,
+        )
+
+        batch = _comparison_requests(
+            state.request,
+            runtime_view.data_dir,
+        )
+        earlier = run_blackbox_predict(
+            metadata=metadata,
+            script_path=_script(cfg),
+            request=batch[0],
+            data_dir=runtime_view.data_dir,
+            profile=profile,
+            **runtime_kwargs,
+        )
+        unsplit = run_blackbox_backtest(
+            metadata=metadata,
+            script_path=_script(cfg),
+            requests=batch,
+            data_dir=runtime_view.data_dir,
+            profile=profile,
+            **runtime_kwargs,
+        )
+        split = run_blackbox_backtest(
+            metadata=metadata,
+            script_path=_script(cfg),
+            requests=batch,
+            data_dir=runtime_view.data_dir,
+            profile=replace(profile, max_batch_requests=1),
+            **runtime_kwargs,
+        )
+        reversed_records = run_blackbox_backtest(
+            metadata=metadata,
+            script_path=_script(cfg),
+            requests=list(reversed(batch)),
+            data_dir=runtime_view.data_dir,
+            profile=profile,
+            **runtime_kwargs,
+        )
+
+        with tempfile.TemporaryDirectory(
+            prefix="blackbox-v2-future-isolation-"
+        ) as tmpdir:
+            probe_root = Path(tmpdir)
+            mutated_data = probe_root / "data"
+            shutil.copytree(runtime_view.data_dir, mutated_data)
+            appended_rows = _append_future_rows(mutated_data)
+            mutated_platform_hashes = (
+                _verify_runtime_platform_files(
+                    bundle,
+                    mutated_data,
+                )
+            )
+            mutated_frames = {
+                filename: pd.read_csv(
+                    mutated_data / filename,
+                    dtype=str,
+                    keep_default_na=False,
+                )
+                for filename in SNAPSHOT_FILENAMES
+            }
+            mutated_snapshot = create_snapshot_from_frames(
+                mutated_frames,
+                output_root=probe_root / "snapshots",
+                expected_columns={
+                    filename: list(frame.columns)
+                    for filename, frame in mutated_frames.items()
+                },
+                schema_version=state.snapshot.schema_version,
+            )
+            mutated_bundle = compose_blackbox_input_bundle(
+                mutated_snapshot,
+                platform_input_ids=bundle.platform_input_ids,
+                platform_input_artifacts=bundle.platform_input_artifacts,
+            )
+            mutated_state = replace(
+                state,
+                snapshot=mutated_snapshot,
+                bundle=mutated_bundle,
+            )
+            with _open_runtime_input(
+                ctx,
+                mutated_state,
+            ) as mutated_view:
+                future_record = run_blackbox_predict(
+                    metadata=metadata,
+                    script_path=_script(cfg),
+                    request=state.request,
+                    data_dir=mutated_view.data_dir,
+                    profile=profile,
+                    **_runner_bundle_kwargs(mutated_view.bundle),
+                )
 
         baseline_direction = baseline.predicted_direction
-        errors: list[str] = []
         if repeated.predicted_direction != baseline_direction:
             errors.append("repeated predict result is not deterministic")
         direct_directions = {
@@ -531,41 +605,47 @@ class BlackboxCompareGate(_BlackboxGate):
             errors.append(
                 "CompareGate changed a declared platform input artifact"
             )
-        # dry-run 段已并入本 Gate：baseline 与原 dry-run 是逐参数相同的同一次 predict，
-        # 因此在此原样产出其证据与结果文件，避免重复一次全量拟合。
-        prediction_record_path = _gate_root(ctx) / "dry_run_prediction_record.json"
-        prediction_record_path.write_text(
-            json.dumps(asdict(baseline), ensure_ascii=True, indent=2) + "\n",
-            encoding="utf-8",
+        return _ContractVerdict(
+            evidence=(
+                Evidence(
+                    "repeat_deterministic",
+                    repeated.predicted_direction == baseline_direction,
+                ),
+                Evidence(
+                    "predict_backtest_equal",
+                    _direction_map(unsplit) == direct_directions,
+                ),
+                Evidence(
+                    "distinct_cutoff_requests",
+                    [
+                        {
+                            "daily": item.daily_cutoff_key,
+                            "weekly": item.weekly_cutoff_key,
+                            "monthly": item.monthly_cutoff_key,
+                        }
+                        for item in batch
+                    ],
+                ),
+                Evidence(
+                    "batch_split_invariant",
+                    _direction_map(unsplit) == _direction_map(split),
+                ),
+                Evidence(
+                    "request_order_invariant",
+                    _direction_map(unsplit) == _direction_map(reversed_records),
+                ),
+                Evidence(
+                    "future_row_isolation",
+                    future_record.predicted_direction == baseline_direction,
+                ),
+                Evidence("future_rows_appended", appended_rows),
+                Evidence(
+                    "platform_input_hashes_unchanged",
+                    platform_input_hashes_unchanged,
+                ),
+            ),
+            errors=tuple(errors),
         )
-        evidence = [
-            *_bundle_evidence(bundle),
-            Evidence("prediction_record", asdict(baseline)),
-            Evidence("result_path", str(prediction_record_path)),
-            Evidence("business_tables_written", False),
-            Evidence("repeat_deterministic", repeated.predicted_direction == baseline_direction),
-            Evidence("predict_backtest_equal", _direction_map(unsplit) == direct_directions),
-            Evidence(
-                "distinct_cutoff_requests",
-                [
-                    {
-                        "daily": item.daily_cutoff_key,
-                        "weekly": item.weekly_cutoff_key,
-                        "monthly": item.monthly_cutoff_key,
-                    }
-                    for item in batch
-                ],
-            ),
-            Evidence("batch_split_invariant", _direction_map(unsplit) == _direction_map(split)),
-            Evidence("request_order_invariant", _direction_map(unsplit) == _direction_map(reversed_records)),
-            Evidence("future_row_isolation", future_record.predicted_direction == baseline_direction),
-            Evidence("future_rows_appended", appended_rows),
-            Evidence(
-                "platform_input_hashes_unchanged",
-                platform_input_hashes_unchanged,
-            ),
-        ]
-        return _finish(self.name, started_at, evidence, errors)
 
 
 class BlackboxBacktestGate(_BlackboxGate):
