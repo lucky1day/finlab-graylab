@@ -396,7 +396,6 @@ class BlackboxRevisionActivationTests(unittest.TestCase):
                 "2026-08-04",
                 scheme_version=cfg.scheme_version,
                 harness_run_id=passed.harness_run_id,
-                ttl_seconds=300,
                 issued_by="revision-test-operator",
             )
             ctx = GateContext(
@@ -506,7 +505,6 @@ class BlackboxRevisionActivationTests(unittest.TestCase):
                 "2026-08-04",
                 scheme_version=cfg.scheme_version,
                 harness_run_id=passed.harness_run_id,
-                ttl_seconds=300,
                 issued_by="revision-test-operator",
             )
             ctx = GateContext(
@@ -578,7 +576,6 @@ class BlackboxRevisionActivationTests(unittest.TestCase):
                 "2026-08-04",
                 scheme_version=cfg.scheme_version,
                 harness_run_id=passed.harness_run_id,
-                ttl_seconds=300,
                 issued_by="revision-test-operator",
             )
             ctx = GateContext(
@@ -744,7 +741,6 @@ class BlackboxRevisionActivationTests(unittest.TestCase):
                 "2026-08-04",
                 scheme_version=cfg.scheme_version,
                 harness_run_id="hr_candidate",
-                ttl_seconds=300,
                 issued_by="revision-test-operator",
             )
             engine = _DisposableEngine()
@@ -865,7 +861,6 @@ class BlackboxInitialLifecycleFailClosedTests(unittest.TestCase):
         *,
         scheme_version: str | None = None,
         harness_run_id: str = "hr_passed",
-        ttl_seconds: int = 60,
     ) -> str:
         from harness.authorization import issue_token
 
@@ -874,7 +869,6 @@ class BlackboxInitialLifecycleFailClosedTests(unittest.TestCase):
             "blackbox_reconcile",
             scheme_version=scheme_version or cfg.scheme_version,
             harness_run_id=harness_run_id,
-            ttl_seconds=ttl_seconds,
             issued_by="recovery-owner",
         )
 
@@ -928,7 +922,6 @@ class BlackboxInitialLifecycleFailClosedTests(unittest.TestCase):
                     "blackbox_activate",
                     scheme_version=cfg.scheme_version,
                     harness_run_id="hr_passed",
-                    ttl_seconds=60,
                     issued_by="release-owner",
                 )
                 ctx = self._context(
@@ -1094,7 +1087,7 @@ class BlackboxInitialLifecycleFailClosedTests(unittest.TestCase):
                 self._write_pending_journal(root, cfg)
                 issue_secret = "lifecycle-test-secret"
                 with patch.dict(os.environ, {"HARNESS_AUTH_SECRET": issue_secret}):
-                    token = self._reconcile_token(cfg, ttl_seconds=60)
+                    token = self._reconcile_token(cfg)
                     if case == "expired":
                         padding = "=" * (-len(token) % 4)
                         envelope = json.loads(

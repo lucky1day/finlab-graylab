@@ -1451,7 +1451,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     "2026-07-16",
                     scheme_version=config.scheme_version,
                     harness_run_id="hr_passed",
-                    ttl_seconds=300,
                     issued_by="platform-test",
                 )
                 ctx = GateContext(
@@ -1604,7 +1603,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 "2026-07-16",
                 scheme_version=config.scheme_version,
                 harness_run_id=passed.harness_run_id,
-                ttl_seconds=300,
                 issued_by="tester",
             )
             ctx = GateContext(
@@ -1685,7 +1683,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 "2026-07-20",
                 scheme_version=config.scheme_version,
                 harness_run_id="hr_passed",
-                ttl_seconds=300,
                 backtest_start_date="2025-01-01",
             )
             ctx = GateContext(
@@ -1782,7 +1779,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     "2026-07-16",
                     scheme_version=config.scheme_version,
                     harness_run_id="hr_passed",
-                    ttl_seconds=300,
                 )
                 unsigned_ctx = GateContext(
                     scheme_id=config.scheme_id,
@@ -1811,7 +1807,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     "2026-07-16",
                     scheme_version="wrong-version",
                     harness_run_id="hr_passed",
-                    ttl_seconds=300,
                 )
                 mismatch_ctx = replace(unsigned_ctx, authorization=mismatch)
                 with (
@@ -1849,8 +1844,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             state = InputState(snapshot, write_request(request, root / "request.json"), request)
             token = issue_token(
                 config.scheme_id, "backtest_persist", "2026-07-16",
-                scheme_version=config.scheme_version, harness_run_id="hr_passed",
-                ttl_seconds=300, issued_by="tester",
+                scheme_version=config.scheme_version, harness_run_id="hr_passed", issued_by="tester",
             )
             ctx = GateContext(
                 config.scheme_id, "2026-07-16", root, root / "reports", config=config,
@@ -1904,8 +1898,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             config = load_scheme_config(scheme_dir / "config.yaml")
             token = issue_token(
                 config.scheme_id, "backtest_persist", "2026-07-16",
-                scheme_version=config.scheme_version, harness_run_id="hr_old",
-                ttl_seconds=300, issued_by="tester",
+                scheme_version=config.scheme_version, harness_run_id="hr_old", issued_by="tester",
             )
             ctx = GateContext(
                 config.scheme_id, "2026-07-16", root, root / "reports", config=config,
@@ -1954,7 +1947,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 passed_run.predict_date,
                 scheme_version=config.scheme_version,
                 harness_run_id=passed_run.harness_run_id,
-                ttl_seconds=300,
                 issued_by="tester",
             )
             ctx = GateContext(
@@ -2187,7 +2179,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     "2026-07-16",
                     scheme_version=config.scheme_version,
                     harness_run_id="hr_passed",
-                    ttl_seconds=60,
                     issued_by="release-owner",
                 )
                 ctx = GateContext(

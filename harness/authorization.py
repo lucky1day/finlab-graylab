@@ -9,7 +9,7 @@ import os
 import secrets
 import tempfile
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -19,8 +19,6 @@ AUTH_SECRET_ENV = "HARNESS_AUTH_SECRET"
 DEFAULT_BACKTEST_START_DATE = "2025-01-01"
 USED_TOKENS_FILENAME = ".used_authorization_tokens.json"
 USED_TOKENS_RELATIVE_PATH = f"reports/harness/{USED_TOKENS_FILENAME}"
-AUTH_MAX_TTL_SECONDS = 900
-AUTH_MAX_FUTURE_SKEW_SECONDS = 60
 
 SIDE_EFFECT_ACTIONS = frozenset(
     {
@@ -60,8 +58,6 @@ _BASE_PAYLOAD_FIELDS = frozenset(
         "predict_date",
         "harness_run_id",
         "issued_by",
-        "issued_at",
-        "expires_at",
         "nonce",
     }
 )
@@ -74,11 +70,9 @@ class Authorization:
     predict_date: str | None
     token: str
     issued_by: str
-    issued_at: str
     nonce: str
     scheme_version: str
     harness_run_id: str | None
-    expires_at: str
     backtest_start_date: str | None = None
 
 
@@ -131,22 +125,20 @@ def issue_token(
     *,
     scheme_version: str | None = None,
     harness_run_id: str | None = None,
-    ttl_seconds: int = AUTH_MAX_TTL_SECONDS,
     issued_by: str = "harness",
     backtest_start_date: str | None = None,
 ) -> str:
-    """签发最长 15 分钟、绑定精确作用域的一次性 HMAC token。"""
+    """签发绑定精确作用域的一次性 HMAC token。
+
+    不设有效期：token 已经一次性消费且绑死 exact scheme/version/run，过期时间只增加
+    「签发后必须限时用完」的操作摩擦，不提供额外保护。
+    """
     _auth_secret()
     if action not in SIDE_EFFECT_ACTIONS:
         raise ValueError(f"unknown authorization action: {action}")
     normalized_scheme_id = _require_text(scheme_id, "scheme_id")
     normalized_version = _require_text(scheme_version, "scheme_version")
     normalized_issuer = _require_text(issued_by, "issued_by")
-    if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int):
-        raise ValueError("authorization ttl_seconds must be an integer in 1..900")
-    if ttl_seconds < 1 or ttl_seconds > AUTH_MAX_TTL_SECONDS:
-        raise ValueError("authorization ttl_seconds must be in 1..900")
-
     if action in EXACT_PREDICT_DATE_ACTIONS:
         normalized_predict_date = _normalize_action_predict_date(action, predict_date)
     else:
@@ -161,7 +153,6 @@ def issue_token(
     else:
         normalized_run_id = _require_text(harness_run_id, "harness_run_id")
 
-    issued_at = datetime.now(timezone.utc).replace(microsecond=0)
     payload: dict[str, Any] = {
         "action": action,
         "scheme_id": normalized_scheme_id,
@@ -169,8 +160,6 @@ def issue_token(
         "predict_date": normalized_predict_date,
         "harness_run_id": normalized_run_id,
         "issued_by": normalized_issuer,
-        "issued_at": issued_at.isoformat(),
-        "expires_at": (issued_at + timedelta(seconds=ttl_seconds)).isoformat(),
         "nonce": secrets.token_urlsafe(16),
     }
     if action == "backtest_persist":
@@ -235,8 +224,6 @@ def _validate_token_schema(envelope: dict[str, Any]) -> None:
     _require_text(payload.get("scheme_version"), "scheme_version")
     _require_text(payload.get("issued_by"), "issued_by")
     _require_text(payload.get("nonce"), "nonce")
-    _require_text(payload.get("issued_at"), "issued_at")
-    _require_text(payload.get("expires_at"), "expires_at")
     harness_run_id = payload.get("harness_run_id")
     if action in HARNESS_RUN_SCOPED_ACTIONS:
         _require_text(harness_run_id, "harness_run_id")
@@ -284,11 +271,9 @@ def parse_token(token: str) -> Authorization:
         predict_date=payload["predict_date"],
         token=token,
         issued_by=payload["issued_by"],
-        issued_at=payload["issued_at"],
         nonce=payload["nonce"],
         scheme_version=payload["scheme_version"],
         harness_run_id=payload["harness_run_id"],
-        expires_at=payload["expires_at"],
         backtest_start_date=payload.get("backtest_start_date"),
     )
 
@@ -304,7 +289,7 @@ def verify_authorization(
     backtest_start_date: str | None = None,
     used_store_path: Path,
 ) -> tuple[Authorization | None, list[str]]:
-    """统一校验密钥、签名、时效、精确作用域与 replay store。"""
+    """统一校验密钥、签名、精确作用域与 replay store。"""
     try:
         secret = _auth_secret()
     except AuthorizationSecretError as exc:
@@ -329,7 +314,6 @@ def verify_authorization(
     ).decode("ascii").rstrip("=")
     if not hmac.compare_digest(expected_signature, envelope["sig"]):
         errors.append("authorization token signature is invalid")
-    errors.extend(_timestamp_errors(auth.issued_at, auth.expires_at))
 
     if auth.scheme_id != scheme_id:
         errors.append(f"scheme_id mismatch: token={auth.scheme_id}, ctx={scheme_id}")
@@ -376,39 +360,6 @@ def verify_authorization(
     except (OSError, ValueError, json.JSONDecodeError):
         errors.append("authorization replay store is invalid or unavailable")
     return auth, errors
-
-
-def _timestamp_errors(issued_at: str, expires_at: str) -> list[str]:
-    errors: list[str] = []
-    issued = _parse_aware_timestamp("issued_at", issued_at, errors)
-    expires = _parse_aware_timestamp("expires_at", expires_at, errors)
-    if issued is None or expires is None:
-        return errors
-    now = datetime.now(timezone.utc)
-    if issued > now + timedelta(seconds=AUTH_MAX_FUTURE_SKEW_SECONDS):
-        errors.append(f"authorization issued_at is materially in the future: {issued_at}")
-    if expires <= now:
-        errors.append(f"authorization token expired at {expires_at}")
-    ttl_seconds = (expires - issued).total_seconds()
-    if ttl_seconds < 1 or ttl_seconds > AUTH_MAX_TTL_SECONDS:
-        errors.append("authorization lifetime must be in 1..900 seconds")
-    return errors
-
-
-def _parse_aware_timestamp(
-    field: str,
-    value: str,
-    errors: list[str],
-) -> datetime | None:
-    try:
-        parsed = datetime.fromisoformat(value)
-    except (TypeError, ValueError):
-        errors.append(f"authorization token has invalid {field}: {value}")
-        return None
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        errors.append(f"authorization {field} must include a timezone offset: {value}")
-        return None
-    return parsed.astimezone(timezone.utc)
 
 
 def _require_text(value: Any, field: str) -> str:

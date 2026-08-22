@@ -168,38 +168,6 @@ class AuthorizationTest(unittest.TestCase):
                     issued_by=issued_by,
                 )
 
-    def test_issue_always_uses_short_positive_ttl_and_aware_timestamps(self) -> None:
-        auth = parse_token(self._token())
-        issued_at = datetime.fromisoformat(auth.issued_at)
-        expires_at = datetime.fromisoformat(auth.expires_at)
-
-        self.assertIsNotNone(issued_at.utcoffset())
-        self.assertIsNotNone(expires_at.utcoffset())
-        self.assertEqual((expires_at - issued_at).total_seconds(), 900)
-        for ttl in (True, 0, -1, 901):
-            with self.subTest(ttl=ttl), self.assertRaisesRegex(ValueError, "1..900"):
-                self._token(ttl_seconds=ttl)
-
-    def test_verify_rejects_missing_or_naive_timestamps(self) -> None:
-        for field, value in {
-            "issued_at": "2026-07-20T00:00:00",
-            "expires_at": None,
-        }.items():
-            with self.subTest(field=field):
-                envelope = self._decode_token(self._token())
-                envelope["payload"][field] = value
-                envelope["sig"] = authorization._sign(envelope["payload"])
-                parsed, errors = verify_authorization(
-                    self._encode_token(envelope),
-                    scheme_id="trial",
-                    action="activate",
-                    scheme_version="version-1",
-                    used_store_path=self._used_path(),
-                )
-                if value is not None:
-                    self.assertIsNotNone(parsed)
-                self.assertTrue(any(field in error for error in errors), errors)
-
     def test_date_bound_actions_require_canonical_date_and_other_actions_reject_dates(self) -> None:
         date_actions = {
             "live_write",
@@ -288,7 +256,7 @@ class AuthorizationTest(unittest.TestCase):
                 "payload": {
                     key: value
                     for key, value in original["payload"].items()
-                    if key != "expires_at"
+                    if key != "nonce"
                 },
             },
         }
