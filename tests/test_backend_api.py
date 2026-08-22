@@ -88,7 +88,6 @@ class DailyScheduleCompatibilityTests(unittest.TestCase):
 
         with (
             patch.object(main, "get_engine", return_value=engine),
-            patch.object(main, "service_fingerprint_secret", return_value=None),
         ):
             result = main.health()
 
@@ -101,6 +100,8 @@ class DailyScheduleCompatibilityTests(unittest.TestCase):
             },
             result["daily_schedule"],
         )
+        # 服务实例指纹已退役：health 不再暴露该字段，也不再依赖任何共享密钥。
+        self.assertNotIn("service_instance", result)
         self.assertEqual(1, connection.execute.call_count)
 
     def test_health_reports_systemd_one_shot_when_installed(self) -> None:
@@ -117,7 +118,6 @@ class DailyScheduleCompatibilityTests(unittest.TestCase):
                 clear=False,
             ),
             patch.object(main, "get_engine", return_value=engine),
-            patch.object(main, "service_fingerprint_secret", return_value=None),
         ):
             result = main.health()
 
@@ -140,7 +140,6 @@ class DailyScheduleCompatibilityTests(unittest.TestCase):
                 clear=False,
             ),
             patch.object(main, "get_engine", return_value=engine),
-            patch.object(main, "service_fingerprint_secret", return_value=None),
             self.assertRaisesRegex(
                 ValueError,
                 "unsupported scheduled one-shot control plane",

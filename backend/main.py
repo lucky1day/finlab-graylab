@@ -48,11 +48,6 @@ from backend.services import (
     scheme_metrics,
     sync_registry_from_configs,
 )
-from shared.service_instance import (
-    FINGERPRINT_VERSION,
-    build_service_instance_identity,
-    service_fingerprint_secret,
-)
 from shared.one_shot_control_plane import (
     LAUNCHD_ONE_SHOT_CONTROL_PLANE,
     require_scheduled_one_shot_control_plane,
@@ -70,7 +65,6 @@ UNVERSIONED_ASSET_CACHE_CONTROL = "no-cache, must-revalidate"
 # the three explicit policies above.
 FRONTEND_CACHE_CONTROL = UNVERSIONED_ASSET_CACHE_CONTROL
 logger = logging.getLogger(__name__)
-_DEFAULT_INSTANCE_NONCE = secrets.token_hex(32)
 _REQUEST_ID_PATTERN = re.compile(r"[!-~]{1,128}\Z", flags=re.ASCII)
 _DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
 _MONTH_PATTERN = re.compile(r"[0-9]{4}-(0[1-9]|1[0-2])")
@@ -278,26 +272,8 @@ def health() -> dict:
             LAUNCHD_ONE_SHOT_CONTROL_PLANE,
         )
     )
-    fingerprint_secret = service_fingerprint_secret()
-    if fingerprint_secret is None:
-        identity = {"fingerprint_version": FINGERPRINT_VERSION, "fingerprint": None}
-    else:
-        identity = build_service_instance_identity(
-            engine,
-            project_root=PROJECT_ROOT,
-            runtime_profile=os.getenv(
-                "BOND_FACTOR_LAB_RUNTIME_PROFILE",
-                "blackbox-v2-v1",
-            ),
-            instance_nonce=os.getenv(
-                "BOND_FACTOR_LAB_INSTANCE_NONCE",
-                _DEFAULT_INSTANCE_NONCE,
-            ),
-            fingerprint_secret=fingerprint_secret,
-        )
     return {
         "status": "ok",
-        "service_instance": identity,
         "daily_schedule": {
             "mode": control_plane,
             "overall": "not_enabled",
