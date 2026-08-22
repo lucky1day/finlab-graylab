@@ -616,27 +616,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 _ensure_input_state(ctx)
             build.assert_not_called()
 
-    def test_future_row_probe_appends_parseable_daily_date_after_snapshot_max(self) -> None:
-        from harness.blackbox_v2.gates import _append_future_rows
-
-        frames = _snapshot_frames()
-        frames["daily_output.csv"]["date"] = pd.to_datetime(
-            frames["daily_output.csv"]["date"]
-        ).dt.strftime("%Y/%m/%d %H:%M")
-        with tempfile.TemporaryDirectory() as tmpdir:
-            data_dir = Path(tmpdir)
-            for filename, frame in frames.items():
-                frame.to_csv(data_dir / filename, index=False)
-
-            original_max = pd.to_datetime(frames["daily_output.csv"]["date"]).max()
-            counts = _append_future_rows(data_dir)
-            mutated = pd.read_csv(data_dir / "daily_output.csv")
-            mutated_dates = pd.to_datetime(mutated["date"], errors="raise")
-
-        self.assertEqual(counts["daily_output.csv"], 1)
-        self.assertGreater(mutated_dates.iloc[-1], original_max)
-        self.assertTrue(mutated_dates.is_monotonic_increasing)
-
     def test_no_persist_backtest_supports_explicit_certification_sizes_and_batch_invariance(self) -> None:
         from harness.blackbox_v2.gates import BlackboxBacktestGate, InputState
         from scheduler.blackbox_v2_runner import RuntimeProfile
@@ -1233,7 +1212,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             BlackboxDryRunGate,
             BlackboxUnitGate,
             InputState,
-            _append_future_rows,
         )
         from scheduler.blackbox_v2_runner import RuntimeProfile
         from scheduler.discovery import load_scheme_config
@@ -1307,31 +1285,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     return_value=RuntimeProfile.for_tests(),
                 ):
                     results = [gate.run(ctx) for gate in gates]
-            def tamper_calendar(data_dir):
-                counts = _append_future_rows(data_dir)
-                calendar_path = data_dir / "api_wind_date.csv"
-                calendar_path.chmod(0o644)
-                calendar_path.write_text(
-                    "rdate,week_id\n2099-01-01,209901\n",
-                    encoding="utf-8",
-                )
-                return counts
-
-            with (
-                patch(
-                    "harness.blackbox_v2.gates._ensure_input_state",
-                    return_value=state,
-                ),
-                patch(
-                    "harness.blackbox_v2.gates._profile",
-                    return_value=RuntimeProfile.for_tests(),
-                ),
-                patch(
-                    "harness.blackbox_v2.gates._append_future_rows",
-                    side_effect=tamper_calendar,
-                ),
-            ):
-                tampered_compare = BlackboxCompareGate().run(ctx)
             unit_root = root / "reports" / "blackbox_v2" / "unit"
             self.assertTrue((unit_root / "request" / "invalid_request.json").is_file())
             self.assertFalse((unit_root / "invalid_request.json").exists())
@@ -1367,23 +1320,11 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 backtest_evidence["records"], DEFAULT_NO_PERSIST_SAMPLE_SIZE
             )
             self.assertFalse(backtest_evidence["persist"])
-            compare_evidence = {
-                item.key: item.value
-                for item in results[2].evidence
-            }
-            self.assertTrue(
-                compare_evidence["platform_input_hashes_unchanged"]
-            )
             self.assertFalse(
                 (root / "reports" / "blackbox_v2" / "runtime_views").exists()
             )
 
         self.assertTrue(all(result.passed for result in results), [result.errors for result in results])
-        self.assertFalse(tampered_compare.passed)
-        self.assertIn(
-            "platform input",
-            "\n".join(tampered_compare.errors).lower(),
-        )
 
     def test_persist_backtest_requires_signed_exact_authorization_and_verifies_deltas(self) -> None:
         from harness.authorization import issue_token

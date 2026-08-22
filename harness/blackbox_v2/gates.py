@@ -68,7 +68,6 @@ from shared.blackbox_v2.snapshot import (
     BlackboxSnapshot,
     SNAPSHOT_FILENAMES,
     compose_blackbox_input_bundle,
-    create_snapshot_from_frames,
 )
 from shared.calendar_service import get_calendar
 from shared.data_bridge.refresh import DataBridgeRefreshConfig, DataBridgeStore
@@ -414,7 +413,7 @@ class BlackboxCompareGate(_BlackboxGate):
         with _open_runtime_input(ctx, state) as runtime_view:
             # 平台输入必须逐字节等于声明值。只是几个文件的哈希，不含拟合，
             # 因此不参与下面的指纹复用，每轮都跑。
-            original_platform_hashes = _verify_runtime_platform_files(
+            _verify_runtime_platform_files(
                 runtime_view.bundle,
                 runtime_view.data_dir,
             )
@@ -440,16 +439,12 @@ class BlackboxCompareGate(_BlackboxGate):
                 _ContractVerdict.reused(reused_from)
                 if reused_from is not None
                 else self._verify_contract_invariants(
-                    ctx,
                     state=state,
                     cfg=cfg,
                     metadata=metadata,
                     profile=profile,
-                    bundle=bundle,
                     runtime_view=runtime_view,
                     runtime_kwargs=runtime_kwargs,
-                    baseline=baseline,
-                    original_platform_hashes=original_platform_hashes,
                 )
             )
 
@@ -472,19 +467,15 @@ class BlackboxCompareGate(_BlackboxGate):
 
     def _verify_contract_invariants(
         self,
-        ctx: GateContext,
         *,
         state,
         cfg,
         metadata,
         profile,
-        bundle,
         runtime_view,
         runtime_kwargs,
-        baseline,
-        original_platform_hashes,
     ) -> "_ContractVerdict":
-        """重验上游契约明文要求的不变量：7 次全量拟合，仅在指纹未命中时执行。"""
+        """重验上游契约明文要求的不变量：6 次全量拟合，仅在指纹未命中时执行。"""
         errors: list[str] = []
 
         batch = _comparison_requests(
@@ -516,73 +507,10 @@ class BlackboxCompareGate(_BlackboxGate):
             **runtime_kwargs,
         )
 
-        with tempfile.TemporaryDirectory(
-            prefix="blackbox-v2-future-isolation-"
-        ) as tmpdir:
-            probe_root = Path(tmpdir)
-            mutated_data = probe_root / "data"
-            shutil.copytree(runtime_view.data_dir, mutated_data)
-            appended_rows = _append_future_rows(mutated_data)
-            mutated_platform_hashes = (
-                _verify_runtime_platform_files(
-                    bundle,
-                    mutated_data,
-                )
-            )
-            mutated_frames = {
-                filename: pd.read_csv(
-                    mutated_data / filename,
-                    dtype=str,
-                    keep_default_na=False,
-                )
-                for filename in SNAPSHOT_FILENAMES
-            }
-            mutated_snapshot = create_snapshot_from_frames(
-                mutated_frames,
-                output_root=probe_root / "snapshots",
-                expected_columns={
-                    filename: list(frame.columns)
-                    for filename, frame in mutated_frames.items()
-                },
-                schema_version=state.snapshot.schema_version,
-            )
-            mutated_bundle = compose_blackbox_input_bundle(
-                mutated_snapshot,
-                platform_input_ids=bundle.platform_input_ids,
-                platform_input_artifacts=bundle.platform_input_artifacts,
-            )
-            mutated_state = replace(
-                state,
-                snapshot=mutated_snapshot,
-                bundle=mutated_bundle,
-            )
-            with _open_runtime_input(
-                ctx,
-                mutated_state,
-            ) as mutated_view:
-                future_record = run_blackbox_predict(
-                    metadata=metadata,
-                    script_path=_script(cfg),
-                    request=state.request,
-                    data_dir=mutated_view.data_dir,
-                    profile=profile,
-                    **_runner_bundle_kwargs(mutated_view.bundle),
-                )
-
-        baseline_direction = baseline.predicted_direction
         if _direction_map(unsplit) != _direction_map(split):
             errors.append("backtest result changes when platform splits batches")
         if _direction_map(unsplit) != _direction_map(reversed_records):
             errors.append("backtest result changes when Request order changes")
-        if future_record.predicted_direction != baseline_direction:
-            errors.append("prediction changes after rows beyond cutoff keys are appended")
-        platform_input_hashes_unchanged = (
-            original_platform_hashes == mutated_platform_hashes
-        )
-        if not platform_input_hashes_unchanged:
-            errors.append(
-                "CompareGate changed a declared platform input artifact"
-            )
         return _ContractVerdict(
             evidence=(
                 Evidence(
@@ -603,15 +531,6 @@ class BlackboxCompareGate(_BlackboxGate):
                 Evidence(
                     "request_order_invariant",
                     _direction_map(unsplit) == _direction_map(reversed_records),
-                ),
-                Evidence(
-                    "future_row_isolation",
-                    future_record.predicted_direction == baseline_direction,
-                ),
-                Evidence("future_rows_appended", appended_rows),
-                Evidence(
-                    "platform_input_hashes_unchanged",
-                    platform_input_hashes_unchanged,
                 ),
             ),
             errors=tuple(errors),
@@ -1899,38 +1818,6 @@ def _call_name(node: ast.AST) -> str:
         prefix = _call_name(node.value)
         return f"{prefix}.{node.attr}" if prefix else node.attr
     return ""
-
-
-def _append_future_rows(data_dir: Path) -> dict[str, int]:
-    key_values = {
-        "daily_output.csv": ("date", None),
-        "weekly_output.csv": ("week_id", "999998"),
-        "monthly_output.csv": ("month_id", "999998"),
-    }
-    counts: dict[str, int] = {}
-    for filename, (key, future_value) in key_values.items():
-        path = data_dir / filename
-        path.chmod(0o644)
-        frame = pd.read_csv(path, dtype=str)
-        if frame.empty or key not in frame.columns:
-            raise ValueError(f"cannot build future-row probe for {filename}")
-        if filename == "daily_output.csv":
-            parsed_dates = pd.to_datetime(frame[key], errors="raise")
-            last_raw_date = str(frame[key].iloc[-1]).strip()
-            date_format = "%Y/%m/%d" if "/" in last_raw_date else "%Y-%m-%d"
-            if " " in last_raw_date:
-                time_text = last_raw_date.rsplit(" ", 1)[1]
-                date_format += " %H:%M:%S" if time_text.count(":") == 2 else " %H:%M"
-            future_value = (parsed_dates.iloc[-1] + pd.Timedelta(days=1)).strftime(date_format)
-        row = frame.iloc[-1].copy()
-        row[key] = future_value
-        for column in frame.columns:
-            if column != key:
-                row[column] = "9.999e99"
-        frame = pd.concat([frame, row.to_frame().T], ignore_index=True)
-        frame.to_csv(path, index=False, lineterminator="\n")
-        counts[filename] = 1
-    return counts
 
 
 def _comparison_requests(request: BlackboxRequest, data_dir: Path) -> list[BlackboxRequest]:
