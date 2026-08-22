@@ -501,58 +501,48 @@ ORDER BY id;
 
 第一条必须恰好一行且为 exact scheme/version、`stage=all`、`status=passed`；第二条必须恰好覆盖七个固定 Gate，并且全部为 `passed`。
 
-### 5.2 首次 Draft 登记
+### 5.2 Shadow 登记（首次身份自动创建）
 
-生产 Schema 已包含其它方案、但当前 Blackbox 的 base/composite 身份完全不存在
-时，先使用独立的 insert-only Gate 登记 `draft + paused`。必须启用
-`HARNESS_AUTH_SECRET`，并使用非空 operator、最长 900 秒且绑定 latest persisted all-stage exact scheme/version/run/predict date 的一次性 token：
+一条命令完成登记。当方案的 base/composite 身份在生产 Schema 中**完全不存在**时，
+`shadow-register` 先在 scheme-scoped MySQL advisory lock 下重检 exact
+base/composite/version/Registry 全部不存在，再在单事务中 insert-only 写入
+`t_scheme_versions` draft 与 composite `t_scheme_registry` paused 并精确 readback，
+随后走既有的 shadow 迁移。身份已存在时（revision 路径）行为完全不变，不触碰创建路径。
 
-```bash
-TOKEN=$(conda run --no-capture-output -n bond_factor_lab_service \
-  python -m harness auth issue \
-    --scheme-id {scheme_id} \
-    --action draft_register \
-    --predict-date {latest_all_stage_predict_date} \
-    --scheme-version {passed_scheme_version} \
-    --harness-run-id {passed_harness_run_id} \
-    --issued-by {operator} \
-    --expires-in 900)
+任何冲突或 readback 不一致均回滚，禁止覆盖或 upsert。环境指纹与 snapshot ID 只取自
+latest passed all-stage。创建前重读 canonical config 并逐字段比对身份，拒绝交付在
+Gate 运行期间发生漂移。
 
-conda run --no-capture-output -n bond_factor_lab_service \
-  python -m harness gate draft-register \
-    --scheme-id {scheme_id} \
-    --predict-date {latest_all_stage_predict_date} \
-    --authorize "$TOKEN"
-```
-
-`draft-register` 只允许 `blackbox_v2` 的 `paused + draft` config。它在
-scheme-scoped MySQL advisory lock 下重检 exact base/composite/version/Registry
-全部不存在，再在单事务中 insert-only 写入 `t_scheme_versions` draft 与
-composite `t_scheme_registry` paused，并精确 readback；任何冲突或 readback
-不一致均回滚，禁止覆盖或 upsert。环境指纹和 snapshot ID 只取自该 latest
-passed all-stage。此 Gate 不改 config，不写 run/prediction/backtest，不激活，
-也不产生 scheduler 可执行身份。
-
-### 5.3 签发并使用 Shadow 授权
+本 Gate 不改业务表、不写 run/prediction/backtest、不激活，也不产生 scheduler 可执行身份。
 
 ```bash
 TOKEN=$(conda run --no-capture-output -n bond_factor_lab_service \
   python -m harness auth issue \
     --scheme-id {scheme_id} \
     --action shadow_register \
-    --predict-date YYYY-MM-DD \
+    --predict-date {latest_all_stage_predict_date} \
     --scheme-version {passed_scheme_version} \
     --harness-run-id {passed_harness_run_id} \
-    --expires-in 900)
+    --issued-by {operator})
 
 conda run --no-capture-output -n bond_factor_lab_service \
   python -m harness gate shadow-register \
     --scheme-id {scheme_id} \
-    --predict-date YYYY-MM-DD \
+    --predict-date {latest_all_stage_predict_date} \
     --authorize "$TOKEN"
 ```
 
-Token 必须绑定 exact scheme、action、predict date、version 和 Harness run，且使用短有效期，不得跨方案或跨 run 复用。
+Token 必须绑定 exact scheme、action、predict date、version 和 Harness run，一次性使用，
+不得跨方案或跨 run 复用。
+
+证据里的 `identity_created` 表明本次是否执行了首次创建：新方案为 `true`，
+revision 路径为 `false`。
+
+### 5.3 独立的 draft-register（一般不需要）
+
+`gate draft-register` 仍作为独立命令保留，只做创建、不做迁移，需要 `draft_register`
+动作的独立 token。正常入库流程**不需要**它——5.2 已经涵盖。仅在需要把创建与迁移分成两次
+受控操作时使用。
 
 ### 5.4 登记后独立检查
 

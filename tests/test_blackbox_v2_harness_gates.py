@@ -2132,6 +2132,99 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
         self.assertEqual(evidence["manifest_hash"], "m" * 64)
         self.assertEqual(evidence["journal_phase"], "verified")
 
+    def _run_shadow_register(self, root, *, identity_absent: bool):
+        """跑一次 shadow-register，返回 (result, create_mock, register_mock)。
+
+        `identity_absent=True` 模拟身份尚未登记——首次读状态抛
+        BlackboxLifecycleIdentityAbsent，创建后再读则返回 draft+paused。
+        """
+        from harness.authorization import issue_token
+        from harness.blackbox_v2.gates import BlackboxShadowRegisterGate, PassedAllRun
+        from scheduler.discovery import load_scheme_config
+        from scheduler.repository import BlackboxLifecycleIdentityAbsent
+        from shared.blackbox_v2.intake import intake_delivery
+
+        scheme_dir = intake_delivery(_delivery(root / "incoming"), schemes_root=root / "schemes")
+        config = load_scheme_config(scheme_dir / "config.yaml")
+        token = issue_token(
+            "trial_10y",
+            "shadow_register",
+            "2026-07-16",
+            scheme_version=config.scheme_version,
+            harness_run_id="hr_passed",
+        )
+        ctx = GateContext(
+            scheme_id="trial_10y",
+            predict_date="2026-07-16",
+            project_root=root,
+            report_dir=root / "reports" / "shadow",
+            config=config,
+            authorization=token,
+            engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
+        )
+        passed = PassedAllRun(
+            harness_run_id="hr_passed",
+            report_uri=root / "reports" / "all",
+            data_snapshot_id="snapshot-test",
+        )
+
+        reads: list[int] = []
+
+        def read_state(_engine, current):
+            reads.append(1)
+            if identity_absent and len(reads) == 1:
+                raise BlackboxLifecycleIdentityAbsent("identity absent")
+            return SimpleNamespace(
+                version_status=current.version_status,
+                registry_status="paused",
+            )
+
+        with patch("harness.blackbox_v2.gates._verify_passed_all", return_value=passed):
+            with patch("harness.blackbox_v2.gates._environment_fingerprint", return_value="e" * 64):
+                with patch("harness.blackbox_v2.gates._read_shadow_state", side_effect=read_state):
+                    with patch("harness.blackbox_v2.gates.create_draft_identity") as create:
+                        with patch("harness.blackbox_v2.gates._register_shadow") as register:
+                            register.return_value = SimpleNamespace(
+                                scheme_version=config.scheme_version,
+                                version_status="shadow",
+                                registry_status="paused",
+                                runtime_type="blackbox_v2",
+                                data_snapshot_id="db-snapshot",
+                                environment_fingerprint="d" * 64,
+                                code_hash="c" * 64,
+                                config_hash="f" * 64,
+                                manifest_hash="m" * 64,
+                            )
+                            result = BlackboxShadowRegisterGate().run(ctx)
+        return result, create, register
+
+    def test_shadow_register_creates_the_identity_when_it_does_not_exist_yet(self) -> None:
+        """新方案不再需要单独一步 draft-register。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result, create, _ = self._run_shadow_register(Path(tmpdir), identity_absent=True)
+
+        self.assertTrue(result.passed, result.errors)
+        evidence = {item.key: item.value for item in result.evidence}
+        self.assertTrue(evidence["identity_created"])
+        self.assertEqual(evidence["version_status"], "shadow")
+        self.assertEqual(evidence["registry_status"], "paused")
+
+        create.assert_called_once()
+        kwargs = create.call_args.kwargs
+        self.assertEqual(kwargs["expected_harness_run_id"], "hr_passed")
+        self.assertEqual(kwargs["data_snapshot_id"], "snapshot-test")
+        self.assertEqual(kwargs["environment_fingerprint"], "e" * 64)
+
+    def test_shadow_register_does_not_create_when_the_identity_already_exists(self) -> None:
+        """revision 路径行为完全不变，不得触碰 insert-only 创建。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result, create, _ = self._run_shadow_register(Path(tmpdir), identity_absent=False)
+
+        self.assertTrue(result.passed, result.errors)
+        evidence = {item.key: item.value for item in result.evidence}
+        self.assertFalse(evidence["identity_created"])
+        create.assert_not_called()
+
     def test_shadow_register_blocks_every_pending_journal_before_authorization_or_database_use(self) -> None:
         from harness.authorization import issue_token, used_tokens_path
         from harness.blackbox_v2.gates import BlackboxShadowRegisterGate

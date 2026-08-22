@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
+from harness.blackbox_v2.draft_register import create_draft_identity
 from harness.context import GateContext
 from harness.authorization import (
     DEFAULT_BACKTEST_START_DATE,
@@ -44,6 +45,7 @@ from scheduler.blackbox_v2_runner import (
 )
 from scheduler.process_control import ProcessGroupTerminationError
 from scheduler.discovery import SchemeConfig, load_scheme_config
+from scheduler.repository import BlackboxLifecycleIdentityAbsent
 from shared.blackbox_v2.contracts import (
     BlackboxMetadata,
     BlackboxRequest,
@@ -937,7 +939,27 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
                 environment_fingerprint=environment_fingerprint,
                 data_snapshot_id=passed_run.data_snapshot_id,
             )
-            db_before = _read_shadow_state(engine, cfg)
+            original_identity = replace(
+                cfg,
+                environment_fingerprint=environment_fingerprint,
+                data_snapshot_id=passed_run.data_snapshot_id,
+            )
+            # 身份尚不存在时先按 insert-only 语义创建 draft+paused，再走既有迁移。
+            # 对新方案这两步永远背靠背发生，中间的 draft 状态不被任何人观察；
+            # 身份已存在（revision 路径）时行为完全不变。
+            identity_created = False
+            try:
+                db_before = _read_shadow_state(engine, cfg)
+            except BlackboxLifecycleIdentityAbsent:
+                create_draft_identity(
+                    engine,
+                    cfg,
+                    environment_fingerprint=environment_fingerprint,
+                    data_snapshot_id=passed_run.data_snapshot_id,
+                    expected_harness_run_id=passed_run.harness_run_id,
+                )
+                identity_created = True
+                db_before = _read_shadow_state(engine, cfg)
             previous = LifecycleState(
                 cfg.status,
                 db_before.version_status,
@@ -956,11 +978,6 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
                     f"version status draft or validated, got {previous}"
                 )
             target = LifecycleState("paused", "shadow", "paused")
-            original_identity = replace(
-                cfg,
-                environment_fingerprint=environment_fingerprint,
-                data_snapshot_id=passed_run.data_snapshot_id,
-            )
             compensating = False
 
             def consume() -> None:
@@ -1058,6 +1075,7 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
             raise RuntimeError("shadow lifecycle completed without database state evidence")
         evidence = [
             Evidence("harness_run_id", passed_run.harness_run_id),
+            Evidence("identity_created", identity_created),
             Evidence("validated_scheme_version", validated_cfg.scheme_version),
             Evidence("shadow_scheme_version", registered_state.scheme_version),
             Evidence("registry_status", registered_state.registry_status),
