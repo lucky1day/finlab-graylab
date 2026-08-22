@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from shared.runtime_paths import resolve_runtime_state_path
+from shared.scheme_config_schema import ALLOWED_STATUS, ALLOWED_VERSION_STATUS
 
 
 LIFECYCLE_RELATIVE_ROOT = "lifecycle"
@@ -30,8 +31,9 @@ _REQUIRED_FIELDS = (
     "status",
     "version_status",
 )
-_VALID_STATUS = frozenset({"active", "paused", "archived"})
-_VALID_VERSION_STATUS = frozenset({"active", "draft", "retired"})
+# 合法取值直接复用配置 schema 的权威定义，不在此处另立一份。
+_VALID_STATUS = ALLOWED_STATUS
+_VALID_VERSION_STATUS = ALLOWED_VERSION_STATUS
 
 
 @dataclass(frozen=True)

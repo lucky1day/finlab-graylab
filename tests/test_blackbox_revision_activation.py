@@ -1292,11 +1292,15 @@ class BlackboxInitialLifecycleFailClosedTests(unittest.TestCase):
                 apply_database=apply_database,
                 read_state=read_state,
             )
-            config_path.write_text(
-                config_path.read_text(encoding="utf-8")
-                .replace("status: paused", "status: active")
-                .replace("version_status: shadow", "version_status: active"),
-                encoding="utf-8",
+            # 模拟随后的激活：生命周期状态是主机级覆盖层，不再写 config.yaml
+            from shared.scheme_lifecycle_state import write_lifecycle_state
+
+            write_lifecycle_state(
+                root,
+                scheme_id=cfg.scheme_id,
+                scheme_version=cfg.scheme_version,
+                status="active",
+                version_status="active",
             )
             database_state.update(version="active", registry="active")
             calls_before_stale_attempt = len(apply_calls)

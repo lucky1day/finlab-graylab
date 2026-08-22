@@ -206,3 +206,43 @@ def test_discovery_ignores_overlay_from_another_version(tmp_path: Path) -> None:
         cfg = load_scheme_config(config_path)
 
     assert (cfg.status, cfg.version_status) == ("active", "active")
+
+
+# --------------------------------------------------------------------------
+# 核心验收：生命周期切换不得触碰 release 树
+# --------------------------------------------------------------------------
+
+
+def test_lifecycle_transition_leaves_config_yaml_byte_identical(tmp_path: Path) -> None:
+    """apply_lifecycle_state 只写覆盖层；config.yaml 必须逐字节不变。"""
+    import hashlib
+
+    from shared.blackbox_v2.lifecycle import LifecycleState, apply_lifecycle_state
+
+    root, scheme_id = _real_scheme()
+    config_path = root / "schemes" / scheme_id / "config.yaml"
+    before = hashlib.sha256(config_path.read_bytes()).hexdigest()
+
+    with patch.dict(os.environ, {"BFL_RUNTIME_ROOT": str(tmp_path / "state")}, clear=False):
+        apply_lifecycle_state(
+            root,
+            scheme_id=scheme_id,
+            scheme_version="v-under-test",
+            state=LifecycleState("paused", "shadow", "paused"),
+            harness_run_id="hr_test",
+        )
+        record = read_lifecycle_state(root, scheme_id, "v-under-test")
+
+    assert hashlib.sha256(config_path.read_bytes()).hexdigest() == before
+    assert record is not None
+    assert (record.status, record.version_status) == ("paused", "shadow")
+
+
+def test_no_lifecycle_writer_targets_the_schemes_tree() -> None:
+    """静态守护：生命周期写入实现不得再指向 schemes/ 下的 config.yaml。"""
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "shared" / "blackbox_v2" / "lifecycle.py").read_text(encoding="utf-8")
+
+    assert "atomic_update_config" not in source
+    assert "_replace_top_level_scalar" not in source
+    assert "write_lifecycle_state" in source

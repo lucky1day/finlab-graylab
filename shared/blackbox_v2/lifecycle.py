@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Callable
 
 from shared.runtime_paths import resolve_runtime_state_path
+from shared.scheme_lifecycle_state import write_lifecycle_state
 
 
 INCOMPLETE_PHASES = frozenset({"prepared", "config_written", "db_committed", "unresolved"})
@@ -204,21 +205,27 @@ def assert_lifecycle_clear(project_root: str | Path, scheme_id: str) -> None:
     raise RuntimeError(f"{label} blocks {scheme_id}: {details}")
 
 
-def atomic_update_config(
-    config_path: str | Path,
-    state: LifecycleState,
+def apply_lifecycle_state(
+    project_root: str | Path,
     *,
-    original_text: str | None = None,
+    scheme_id: str,
+    scheme_version: str,
+    state: LifecycleState,
+    harness_run_id: str | None = None,
 ) -> None:
-    path = Path(config_path)
-    text = original_text if original_text is not None else path.read_text(encoding="utf-8")
-    text = _replace_top_level_scalar(text, "status", state.config_status)
-    text = _replace_top_level_scalar(
-        text,
-        "version_status",
-        str(state.config_version_status),
+    """把生效生命周期状态写入本机覆盖层。
+
+    该状态是主机级运行状态，不写入 immutable release 内的 config.yaml——后者参与
+    source_tree_sha256，写它会使 release 相对安装记录漂移。
+    """
+    write_lifecycle_state(
+        project_root,
+        scheme_id=scheme_id,
+        scheme_version=scheme_version,
+        status=state.config_status,
+        version_status=str(state.config_version_status),
+        harness_run_id=harness_run_id,
     )
-    _atomic_write_bytes(path, text.encode("utf-8"))
 
 
 def perform_lifecycle_transition(
@@ -274,7 +281,6 @@ def _perform_lifecycle_transition_unlocked(
 ) -> tuple[LifecycleState, Path]:
     assert_lifecycle_clear(project_root, scheme_id)
     config_path = Path(config_path)
-    original_text = config_path.read_text(encoding="utf-8")
     actual_before = read_state()
     if actual_before != previous:
         raise RuntimeError(
@@ -308,7 +314,13 @@ def _perform_lifecycle_transition_unlocked(
         ) from exc
 
     try:
-        atomic_update_config(config_path, target)
+        apply_lifecycle_state(
+            project_root,
+            scheme_id=scheme_id,
+            scheme_version=scheme_version,
+            state=target,
+            harness_run_id=harness_run_id,
+        )
         next_journal = journal.transition("config_written")
         write_journal(project_root, next_journal)
         journal = next_journal
@@ -326,11 +338,13 @@ def _perform_lifecycle_transition_unlocked(
     except BaseException as exc:
         compensation_errors: list[str] = []
         try:
-            if compensation == previous:
-                # Restore the exact original text for Shadow/normal Activation rollback.
-                _atomic_write_bytes(config_path, original_text.encode("utf-8"))
-            else:
-                atomic_update_config(config_path, compensation)
+            apply_lifecycle_state(
+                project_root,
+                scheme_id=scheme_id,
+                scheme_version=scheme_version,
+                state=compensation,
+                harness_run_id=harness_run_id,
+            )
         except BaseException as rollback_exc:
             compensation_errors.append(f"config compensation failed: {rollback_exc}")
         try:
@@ -433,7 +447,12 @@ def _reconcile_with_linked_journal(
     project_root = _project_root_from_journal_path(original_path, original.scheme_id)
     reconciliation_path = write_journal(project_root, reconciliation)
     try:
-        atomic_update_config(config_path, original.previous)
+        apply_lifecycle_state(
+            project_root,
+            scheme_id=original.scheme_id,
+            scheme_version=original.scheme_version,
+            state=original.previous,
+        )
         next_journal = reconciliation.transition("config_written")
         write_journal(project_root, next_journal)
         reconciliation = next_journal
@@ -522,17 +541,6 @@ def _atomic_write_journal_path(path: Path, journal: LifecycleJournal) -> None:
         path,
         (json.dumps(asdict(journal), ensure_ascii=True, indent=2, sort_keys=True) + "\n").encode("utf-8"),
     )
-
-
-def _replace_top_level_scalar(text: str, key: str, value: str) -> str:
-    lines = text.splitlines(keepends=True)
-    for index, line in enumerate(lines):
-        if line.startswith(f"{key}:"):
-            newline = "\n" if line.endswith("\n") else ""
-            lines[index] = f"{key}: {value}{newline}"
-            return "".join(lines)
-    suffix = "" if text.endswith("\n") or not text else "\n"
-    return f"{text}{suffix}{key}: {value}\n"
 
 
 def _atomic_write_bytes(path: Path, payload: bytes) -> None:
