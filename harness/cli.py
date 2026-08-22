@@ -86,6 +86,26 @@ class _StoreOnce(argparse.Action):
         setattr(namespace, self.dest, values)
 
 
+def _declared_scheme_version(scheme_id: str) -> tuple[str | None, str]:
+    """从 `schemes/{scheme_id}/config.yaml` 解析当前精确版本。
+
+    纯文件系统操作，不查数据库——签发器保持离线。解析不出来时返回 (None, 原因)，
+    由调用方决定是报错还是沿用显式传入的值。
+    """
+    try:
+        from scheduler.discovery import load_scheme_config
+
+        config = load_scheme_config(
+            PROJECT_ROOT / "schemes" / str(scheme_id) / "config.yaml"
+        )
+    except Exception as exc:  # noqa: BLE001 - 解析失败一律降级为「无法确定」
+        return None, str(exc)
+    version = str(getattr(config, "scheme_version", "") or "").strip()
+    if not version:
+        return None, "config declares no scheme_version"
+    return version, ""
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -98,8 +118,27 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(
                 f"auth issue --action {args.action} does not accept --predict-date"
             )
-        if not isinstance(args.scheme_version, str) or not args.scheme_version.strip():
+        declared_version, declared_error = _declared_scheme_version(args.scheme_id)
+        if args.scheme_version is None:
+            # 该值只有一个正确答案：Gate 使用时会从同一份 config 重算并逐字比对，
+            # 填错必然被拦。因此默认从 config 解析，不要求 operator 誊写。
+            if declared_version is None:
+                parser.error(
+                    "auth issue could not resolve --scheme-version for "
+                    f"{args.scheme_id}: {declared_error}"
+                )
+            args.scheme_version = declared_version
+        elif not isinstance(args.scheme_version, str) or not args.scheme_version.strip():
             parser.error("auth issue requires non-empty --scheme-version")
+        elif (
+            declared_version is not None
+            and args.scheme_version.strip() != declared_version
+        ):
+            # 显式传入且与 config 不符：在签发这一刻就失败，不要等到用 token 时。
+            parser.error(
+                "auth issue --scheme-version does not match the declared config: "
+                f"given={args.scheme_version.strip()}, declared={declared_version}"
+            )
         if not isinstance(args.issued_by, str) or not args.issued_by.strip():
             parser.error("auth issue requires non-empty --issued-by")
         if args.action in HARNESS_RUN_SCOPED_ACTIONS and (

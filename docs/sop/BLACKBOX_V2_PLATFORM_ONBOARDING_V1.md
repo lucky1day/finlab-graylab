@@ -248,7 +248,43 @@ generation。正式 `scheduled_live` 仍使用当天最新、完整校验且
 `generation_id + combined_snapshot_id`。不同 generation 的结果只能
 用于稳定性观察，不能宣称逐行复现。
 
-### 2.4 当前生产时序边界
+### 2.4 确认回测成本（一次性计算 vs 逐条重算）
+
+**收包阶段就要定这件事**，否则阶段 6 的持久化回测可能从十几分钟变成一夜。
+
+持久化回测的耗时不由条数决定，由交付怎么实现 `backtest` 决定：
+
+```
+等价一次性计算   ≈ 1 次整体计算 + 3 次批内自证复算 = 4 次，与条数几乎无关
+逐条重算         N 次，N = Request 条数
+```
+
+按当前实测口径（周频方案约 80 条 Request、单次全量计算约 4 分钟）：前者约 16 分钟，
+后者约 5.6 小时。
+
+**只读判定**（不跑算法、不写库）：
+
+```bash
+grep -nE "一次性|self_check|self-proof|_can_optimize|batch.*optimiz" \
+  schemes/{scheme_id}/delivery/{scheme_id}.py
+```
+
+交付若实现了一次性计算，应能看到三个结构：整段只算一次的构建、按截止键从结果中提取每条
+Request、以及覆盖批内首/中/末的独立复算自证（自证结论写入 `stderr`）。
+
+判定规则：
+
+| 情况 | 处理 |
+|---|---|
+| 算法是 walk-forward 结构、已实现一次性计算 | 正常推进；阶段 6 预算按十几分钟安排 |
+| 算法是 walk-forward 结构、未实现 | **退回上游**。[上游契约](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md#6-读取输入并按截止键截断)已将其列为必须项 |
+| 算法不是 walk-forward 结构 | 上游必须在交付时显式声明，并给出预估条数与单次耗时；据此安排阶段 6 预算，不得不声明就交付 |
+
+条数可只读估算：同 `task_type` 的现役方案在 `t_backtest_predictions` 里的条数即同量级
+（当前 ECS 实测：`weekly_point` / `weekly_average` 各 72 条，`monthly` 16–17 条，
+`T+1` 中位 337 条，`T+5` 中位 333 条）。
+
+### 2.5 当前生产时序边界
 
 DataBridge 为 Blackbox 日/周/月任务提供标准三频 artifact；每次自然运行都必须使用
 当天新鲜、已验证且严格截止到 `feature_date` 的输入。generation、manifest、
@@ -265,7 +301,7 @@ occurrence/epoch 都不能成为第二入口。具体时点、installed state �
 反向覆盖旧验收。经授权的历史缺口只可 insert-only 写 `gray_live`；只有合格自然时钟
 触发才写 `scheduled_live`。
 
-### 2.5 自然 launchd one-shot 候选
+### 2.6 自然 launchd one-shot 候选
 
 自然 launchd one-shot 的候选集合只由严格发现后的生命周期与 cadence 决定：配置必须为 `status=active`，Blackbox 对应的 exact version 必须为 `version_status=active`，并且 `frequency` 与本次 runner 的 cadence 一致。`paused`、`draft` 或其它 cadence 不进入本批次；除此之外不再设置 release queue、`mode` 或 capability 筛选。
 
@@ -398,10 +434,25 @@ conda run --no-capture-output -n bond_factor_lab_service \
 固定顺序：
 
 ```text
-static -> input -> unit -> dry-run -> compare -> backtest
+static -> input -> unit -> compare
 ```
 
 任一 Gate 失败时 fail-fast，不进入后续 Gate，不签发 shadow 授权。
+
+**自动 Gate 的验证边界**：平台只验证平台自己新增或修改的部分——数据接入、写出与平台侧
+逻辑。交付代码自身的性质由上游按 [上游交付契约](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)
+保证，平台不重验：
+
+| 性质 | 契约条款 | 平台是否重验 |
+|---|---|---|
+| 重复执行一致性 | 第 614 行（抽样确定性）、第 470 行 | 否 |
+| `predict` 与 `backtest` 结果一致 | 第 470 行 | 否 |
+| 不同批次大小/分区/顺序结果一致 | 第 470、472、581 行 | 否 |
+| 按截止键隔离未来数据 | 第 198、377、580 行 | 否 |
+
+新增任何 Gate 断言前必须先回答：**这条断言失败，是谁的代码错了？** 若答案是交付脚本，
+它就属上游义务，不进平台 Gate。历史上这一条缺失，导致 CompareGate 一度用 10 次全量拟合
+重验上游已明文承诺的性质，单次 `all` 耗时 40 分钟。
 
 仅做技术入库准备、要求生产数据库零写入时，必须使用正式
 `--check-only` 编排：
@@ -417,7 +468,7 @@ conda run --no-capture-output -n bond_factor_lab_service \
 ```
 
 `--check-only` 仍使用只读 Engine 构造平台日历、三个 cutoff 和
-Request，仍按固定六 Gate 顺序 fail-fast，并生成本地
+Request，仍按固定四 Gate 顺序 fail-fast，并生成本地
 `harness_run_id`、逐 Gate JSON 与统一报告；但完全不调用 Harness
 控制面 run/gate 持久化，也不写任何业务表。统一报告必须同时写明：
 
@@ -441,8 +492,7 @@ no-persist 验收，必须得到 `100/100` 且 `persist=false`。技术 `all`
 | `static` | 两文件、Metadata、新交付三字段、无新 `display_name`、owner composite readback、已声明 provider、语法、禁止 import/调用，以及 `/Users/`、`/home/`、Windows 盘符形式的绝对路径字面量 | 其他绝对路径、算法效果、全局文件读取隔离 | runtime、版本、Metadata、owner registry ID、`platform_inputs`、违规列表 |
 | `input` | 三频 Schema、父/组合快照、平台注册制品、七字段 Request、三个截止键；如有上游自测则核对同代输入身份 | 当天 freshness、跨 generation 结果可比性 | 两类文件摘要、父/组合 ID、两个 manifest、Request、`self_test_alignment` |
 | `unit` | help 暴露两个模式；一个非法 Request 失败且无 Output | 所有非法组合均被覆盖 | help、非法输入、失败无 Output |
-| `dry-run` | 单点 predict、Result 校验、内存 `PredictionRecord` | 已写预测表或已进入业务 API | PredictionRecord、组合 ID、结果路径 |
-| `compare` | 重复、predict/backtest、分批、顺序、后续业务行隔离；平台制品哈希不变；同代时才比较上游结果 | 准确率、历史修订回放、跨 generation 逐行复现 | 五类一致性证据、`platform_input_hashes_unchanged=true`、输入对齐状态 |
+| `compare` | 平台输入逐字节等于声明值；一次冒烟 predict 证明交付在平台喂进去的输入下产出合法 Result（原 dry-run 即此次调用） | 准确率、历史修订回放、跨 generation 逐行复现，以及**交付自身的性质**（重复执行确定性、predict/backtest 一致、截止隔离、跨请求无状态）——那些属上游义务 | PredictionRecord、组合 ID、结果路径 |
 | `backtest` | 100 条全部返回、no-persist、组合输入一致 | 大于 100 条单进程能力、效果门槛、算法内部是否使用[等价的一次性计算](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md#63-对每个-request-独立截断) | 请求/结果数量、组合 ID、persist=false |
 报告中的 `business_tables_written: false` 是声明性证据，不是数据库前后计数。激活后的
 `DashboardGate` 只验证 `/api/factor-lab/dashboard` 当前业务读模型；它不属于 `all`，且
@@ -501,58 +551,51 @@ ORDER BY id;
 
 第一条必须恰好一行且为 exact scheme/version、`stage=all`、`status=passed`；第二条必须恰好覆盖七个固定 Gate，并且全部为 `passed`。
 
-### 5.2 首次 Draft 登记
+### 5.2 Shadow 登记（首次身份自动创建）
 
-生产 Schema 已包含其它方案、但当前 Blackbox 的 base/composite 身份完全不存在
-时，先使用独立的 insert-only Gate 登记 `draft + paused`。必须启用
-`HARNESS_AUTH_SECRET`，并使用非空 operator、最长 900 秒且绑定 latest persisted all-stage exact scheme/version/run/predict date 的一次性 token：
+一条命令完成登记。当方案的 base/composite 身份在生产 Schema 中**完全不存在**时，
+`shadow-register` 先在 scheme-scoped MySQL advisory lock 下重检 exact
+base/composite/version/Registry 全部不存在，再在单事务中 insert-only 写入
+`t_scheme_versions` draft 与 composite `t_scheme_registry` paused 并精确 readback，
+随后走既有的 shadow 迁移。身份已存在时（revision 路径）行为完全不变，不触碰创建路径。
 
-```bash
-TOKEN=$(conda run --no-capture-output -n bond_factor_lab_service \
-  python -m harness auth issue \
-    --scheme-id {scheme_id} \
-    --action draft_register \
-    --predict-date {latest_all_stage_predict_date} \
-    --scheme-version {passed_scheme_version} \
-    --harness-run-id {passed_harness_run_id} \
-    --issued-by {operator} \
-    --expires-in 900)
+任何冲突或 readback 不一致均回滚，禁止覆盖或 upsert。环境指纹与 snapshot ID 只取自
+latest passed all-stage。创建前重读 canonical config 并逐字段比对身份，拒绝交付在
+Gate 运行期间发生漂移。
 
-conda run --no-capture-output -n bond_factor_lab_service \
-  python -m harness gate draft-register \
-    --scheme-id {scheme_id} \
-    --predict-date {latest_all_stage_predict_date} \
-    --authorize "$TOKEN"
-```
-
-`draft-register` 只允许 `blackbox_v2` 的 `paused + draft` config。它在
-scheme-scoped MySQL advisory lock 下重检 exact base/composite/version/Registry
-全部不存在，再在单事务中 insert-only 写入 `t_scheme_versions` draft 与
-composite `t_scheme_registry` paused，并精确 readback；任何冲突或 readback
-不一致均回滚，禁止覆盖或 upsert。环境指纹和 snapshot ID 只取自该 latest
-passed all-stage。此 Gate 不改 config，不写 run/prediction/backtest，不激活，
-也不产生 scheduler 可执行身份。
-
-### 5.3 签发并使用 Shadow 授权
+本 Gate 不改业务表、不写 run/prediction/backtest、不激活，也不产生 scheduler 可执行身份。
 
 ```bash
 TOKEN=$(conda run --no-capture-output -n bond_factor_lab_service \
   python -m harness auth issue \
     --scheme-id {scheme_id} \
     --action shadow_register \
-    --predict-date YYYY-MM-DD \
-    --scheme-version {passed_scheme_version} \
+    --predict-date {latest_all_stage_predict_date} \
     --harness-run-id {passed_harness_run_id} \
-    --expires-in 900)
+    --issued-by {operator})
 
 conda run --no-capture-output -n bond_factor_lab_service \
   python -m harness gate shadow-register \
     --scheme-id {scheme_id} \
-    --predict-date YYYY-MM-DD \
+    --predict-date {latest_all_stage_predict_date} \
     --authorize "$TOKEN"
 ```
 
-Token 必须绑定 exact scheme、action、predict date、version 和 Harness run，且使用短有效期，不得跨方案或跨 run 复用。
+Token 必须绑定 exact scheme、action、predict date、version 和 Harness run，一次性使用，
+不得跨方案或跨 run 复用。
+
+`--scheme-version` 已不需要手填：签发时从 `schemes/{scheme_id}/config.yaml` 解析，与 Gate
+使用 token 时重算并比对的是同一份 config。显式传入仍然支持，但与 config 不符会在**签发这一刻**
+失败，而不是等到用 token 时。`--harness-run-id` 仍须显式提供。
+
+证据里的 `identity_created` 表明本次是否执行了首次创建：新方案为 `true`，
+revision 路径为 `false`。
+
+### 5.3 独立的 draft-register（一般不需要）
+
+`gate draft-register` 仍作为独立命令保留，只做创建、不做迁移，需要 `draft_register`
+动作的独立 token。正常入库流程**不需要**它——5.2 已经涵盖。仅在需要把创建与迁移分成两次
+受控操作时使用。
 
 ### 5.4 登记后独立检查
 
@@ -598,7 +641,6 @@ TOKEN=$(conda run --no-capture-output -n bond_factor_lab_service \
     --action backtest_persist \
     --predict-date {gray_target_start} \
     --backtest-start-date 2025-01-01 \
-    --scheme-version {passed_scheme_version} \
     --harness-run-id {passed_harness_run_id} \
     --expires-in 900 \
     --issued-by {operator})

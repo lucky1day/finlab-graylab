@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
+from harness.blackbox_v2.draft_register import create_draft_identity
 from harness.context import GateContext
 from harness.authorization import (
     DEFAULT_BACKTEST_START_DATE,
@@ -43,6 +44,7 @@ from scheduler.blackbox_v2_runner import (
 )
 from scheduler.process_control import ProcessGroupTerminationError
 from scheduler.discovery import SchemeConfig, load_scheme_config
+from scheduler.repository import BlackboxLifecycleIdentityAbsent
 from shared.blackbox_v2.contracts import (
     BlackboxMetadata,
     BlackboxRequest,
@@ -65,7 +67,6 @@ from shared.blackbox_v2.snapshot import (
     BlackboxSnapshot,
     SNAPSHOT_FILENAMES,
     compose_blackbox_input_bundle,
-    create_snapshot_from_frames,
 )
 from shared.calendar_service import get_calendar
 from shared.data_bridge.refresh import DataBridgeRefreshConfig, DataBridgeStore
@@ -396,11 +397,15 @@ class BlackboxCompareGate(_BlackboxGate):
         profile = _profile(ctx)
         bundle = _input_bundle(state)
         with _open_runtime_input(ctx, state) as runtime_view:
-            original_platform_hashes = _verify_runtime_platform_files(
+            # 平台输入必须逐字节等于声明值。
+            _verify_runtime_platform_files(
                 runtime_view.bundle,
                 runtime_view.data_dir,
             )
             runtime_kwargs = _runner_bundle_kwargs(runtime_view.bundle)
+            # 冒烟：交付在平台喂进去的输入下能否产出合法 Result。这是本 Gate 唯一
+            # 的算法调用——交付自身的性质（确定性、两入口一致、截止隔离、跨请求无状态）
+            # 由上游按其交付契约保证，平台不重验。
             baseline = run_blackbox_predict(
                 metadata=metadata,
                 script_path=_script(cfg),
@@ -409,154 +414,21 @@ class BlackboxCompareGate(_BlackboxGate):
                 profile=profile,
                 **runtime_kwargs,
             )
-            repeated = run_blackbox_predict(
-                metadata=metadata,
-                script_path=_script(cfg),
-                request=state.request,
-                data_dir=runtime_view.data_dir,
-                profile=profile,
-                **runtime_kwargs,
-            )
 
-            batch = _comparison_requests(
-                state.request,
-                runtime_view.data_dir,
-            )
-            earlier = run_blackbox_predict(
-                metadata=metadata,
-                script_path=_script(cfg),
-                request=batch[0],
-                data_dir=runtime_view.data_dir,
-                profile=profile,
-                **runtime_kwargs,
-            )
-            unsplit = run_blackbox_backtest(
-                metadata=metadata,
-                script_path=_script(cfg),
-                requests=batch,
-                data_dir=runtime_view.data_dir,
-                profile=profile,
-                **runtime_kwargs,
-            )
-            split = run_blackbox_backtest(
-                metadata=metadata,
-                script_path=_script(cfg),
-                requests=batch,
-                data_dir=runtime_view.data_dir,
-                profile=replace(profile, max_batch_requests=1),
-                **runtime_kwargs,
-            )
-            reversed_records = run_blackbox_backtest(
-                metadata=metadata,
-                script_path=_script(cfg),
-                requests=list(reversed(batch)),
-                data_dir=runtime_view.data_dir,
-                profile=profile,
-                **runtime_kwargs,
-            )
-
-            with tempfile.TemporaryDirectory(
-                prefix="blackbox-v2-future-isolation-"
-            ) as tmpdir:
-                probe_root = Path(tmpdir)
-                mutated_data = probe_root / "data"
-                shutil.copytree(runtime_view.data_dir, mutated_data)
-                appended_rows = _append_future_rows(mutated_data)
-                mutated_platform_hashes = (
-                    _verify_runtime_platform_files(
-                        bundle,
-                        mutated_data,
-                    )
-                )
-                mutated_frames = {
-                    filename: pd.read_csv(
-                        mutated_data / filename,
-                        dtype=str,
-                        keep_default_na=False,
-                    )
-                    for filename in SNAPSHOT_FILENAMES
-                }
-                mutated_snapshot = create_snapshot_from_frames(
-                    mutated_frames,
-                    output_root=probe_root / "snapshots",
-                    expected_columns={
-                        filename: list(frame.columns)
-                        for filename, frame in mutated_frames.items()
-                    },
-                    schema_version=state.snapshot.schema_version,
-                )
-                mutated_bundle = compose_blackbox_input_bundle(
-                    mutated_snapshot,
-                    platform_input_ids=bundle.platform_input_ids,
-                    platform_input_artifacts=bundle.platform_input_artifacts,
-                )
-                mutated_state = replace(
-                    state,
-                    snapshot=mutated_snapshot,
-                    bundle=mutated_bundle,
-                )
-                with _open_runtime_input(
-                    ctx,
-                    mutated_state,
-                ) as mutated_view:
-                    future_record = run_blackbox_predict(
-                        metadata=metadata,
-                        script_path=_script(cfg),
-                        request=state.request,
-                        data_dir=mutated_view.data_dir,
-                        profile=profile,
-                        **_runner_bundle_kwargs(mutated_view.bundle),
-                    )
-
-        baseline_direction = baseline.predicted_direction
-        errors: list[str] = []
-        if repeated.predicted_direction != baseline_direction:
-            errors.append("repeated predict result is not deterministic")
-        direct_directions = {
-            batch[0].request_id: earlier.predicted_direction,
-            state.request.request_id: baseline_direction,
-        }
-        if _direction_map(unsplit) != direct_directions:
-            errors.append("predict and backtest produce different directions")
-        if _direction_map(unsplit) != _direction_map(split):
-            errors.append("backtest result changes when platform splits batches")
-        if _direction_map(unsplit) != _direction_map(reversed_records):
-            errors.append("backtest result changes when Request order changes")
-        if future_record.predicted_direction != baseline_direction:
-            errors.append("prediction changes after rows beyond cutoff keys are appended")
-        platform_input_hashes_unchanged = (
-            original_platform_hashes == mutated_platform_hashes
+        # dry-run 段已并入本 Gate：baseline 与原 dry-run 是逐参数相同的同一次 predict，
+        # 因此在此原样产出其证据与结果文件，避免重复一次全量拟合。
+        prediction_record_path = _gate_root(ctx) / "dry_run_prediction_record.json"
+        prediction_record_path.write_text(
+            json.dumps(asdict(baseline), ensure_ascii=True, indent=2) + "\n",
+            encoding="utf-8",
         )
-        if not platform_input_hashes_unchanged:
-            errors.append(
-                "CompareGate changed a declared platform input artifact"
-            )
         evidence = [
             *_bundle_evidence(bundle),
-            Evidence("repeat_deterministic", repeated.predicted_direction == baseline_direction),
-            Evidence("predict_backtest_equal", _direction_map(unsplit) == direct_directions),
-            Evidence(
-                "distinct_cutoff_requests",
-                [
-                    {
-                        "daily": item.daily_cutoff_key,
-                        "weekly": item.weekly_cutoff_key,
-                        "monthly": item.monthly_cutoff_key,
-                    }
-                    for item in batch
-                ],
-            ),
-            Evidence("batch_split_invariant", _direction_map(unsplit) == _direction_map(split)),
-            Evidence("request_order_invariant", _direction_map(unsplit) == _direction_map(reversed_records)),
-            Evidence("future_row_isolation", future_record.predicted_direction == baseline_direction),
-            Evidence("future_rows_appended", appended_rows),
-            Evidence(
-                "platform_input_hashes_unchanged",
-                platform_input_hashes_unchanged,
-            ),
+            Evidence("prediction_record", asdict(baseline)),
+            Evidence("result_path", str(prediction_record_path)),
+            Evidence("business_tables_written", False),
         ]
-        return _finish(self.name, started_at, evidence, errors)
-
+        return _finish(self.name, started_at, evidence, [])
 
 class BlackboxBacktestGate(_BlackboxGate):
     name = "backtest"
@@ -591,7 +463,7 @@ class BlackboxBacktestGate(_BlackboxGate):
         bundle = _input_bundle(state)
         profile = _profile(ctx)
         # alternate 分区必须小于实际样本量，否则两种分区都是单批，
-        # batch_split_invariant 就没有被真正检验。
+        # 平台的切片与合并循环就没有在第二个 N 下被真正走过。
         alternate_batch_size = _alternate_batch_size(
             min(profile.max_batch_requests, sample_size)
         )
@@ -645,9 +517,6 @@ class BlackboxBacktestGate(_BlackboxGate):
             )
         if [record.extra["request_id"] for record in records] != [item.request_id for item in requests]:
             errors.append("no-persist backtest did not preserve one-to-one Request order")
-        batch_split_invariant = _direction_map(records) == _direction_map(alternate_records)
-        if not batch_split_invariant:
-            errors.append("no-persist backtest results changed with platform batch partitioning")
         if [record.extra["request_id"] for record in alternate_records] != [
             item.request_id for item in requests
         ]:
@@ -663,7 +532,6 @@ class BlackboxBacktestGate(_BlackboxGate):
             Evidence("subprocesses_started", budget.subprocesses_started),
             Evidence("max_subprocesses", budget.max_subprocesses),
             Evidence("total_deadline_sec", ctx.timeout_sec),
-            Evidence("batch_split_invariant", batch_split_invariant),
             Evidence("persist", False),
             Evidence("business_tables_written", False),
         ]
@@ -847,7 +715,27 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
                 environment_fingerprint=environment_fingerprint,
                 data_snapshot_id=passed_run.data_snapshot_id,
             )
-            db_before = _read_shadow_state(engine, cfg)
+            original_identity = replace(
+                cfg,
+                environment_fingerprint=environment_fingerprint,
+                data_snapshot_id=passed_run.data_snapshot_id,
+            )
+            # 身份尚不存在时先按 insert-only 语义创建 draft+paused，再走既有迁移。
+            # 对新方案这两步永远背靠背发生，中间的 draft 状态不被任何人观察；
+            # 身份已存在（revision 路径）时行为完全不变。
+            identity_created = False
+            try:
+                db_before = _read_shadow_state(engine, cfg)
+            except BlackboxLifecycleIdentityAbsent:
+                create_draft_identity(
+                    engine,
+                    cfg,
+                    environment_fingerprint=environment_fingerprint,
+                    data_snapshot_id=passed_run.data_snapshot_id,
+                    expected_harness_run_id=passed_run.harness_run_id,
+                )
+                identity_created = True
+                db_before = _read_shadow_state(engine, cfg)
             previous = LifecycleState(
                 cfg.status,
                 db_before.version_status,
@@ -866,11 +754,6 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
                     f"version status draft or validated, got {previous}"
                 )
             target = LifecycleState("paused", "shadow", "paused")
-            original_identity = replace(
-                cfg,
-                environment_fingerprint=environment_fingerprint,
-                data_snapshot_id=passed_run.data_snapshot_id,
-            )
             compensating = False
 
             def consume() -> None:
@@ -968,6 +851,7 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
             raise RuntimeError("shadow lifecycle completed without database state evidence")
         evidence = [
             Evidence("harness_run_id", passed_run.harness_run_id),
+            Evidence("identity_created", identity_created),
             Evidence("validated_scheme_version", validated_cfg.scheme_version),
             Evidence("shadow_scheme_version", registered_state.scheme_version),
             Evidence("registry_status", registered_state.registry_status),
@@ -1825,38 +1709,6 @@ def _call_name(node: ast.AST) -> str:
     return ""
 
 
-def _append_future_rows(data_dir: Path) -> dict[str, int]:
-    key_values = {
-        "daily_output.csv": ("date", None),
-        "weekly_output.csv": ("week_id", "999998"),
-        "monthly_output.csv": ("month_id", "999998"),
-    }
-    counts: dict[str, int] = {}
-    for filename, (key, future_value) in key_values.items():
-        path = data_dir / filename
-        path.chmod(0o644)
-        frame = pd.read_csv(path, dtype=str)
-        if frame.empty or key not in frame.columns:
-            raise ValueError(f"cannot build future-row probe for {filename}")
-        if filename == "daily_output.csv":
-            parsed_dates = pd.to_datetime(frame[key], errors="raise")
-            last_raw_date = str(frame[key].iloc[-1]).strip()
-            date_format = "%Y/%m/%d" if "/" in last_raw_date else "%Y-%m-%d"
-            if " " in last_raw_date:
-                time_text = last_raw_date.rsplit(" ", 1)[1]
-                date_format += " %H:%M:%S" if time_text.count(":") == 2 else " %H:%M"
-            future_value = (parsed_dates.iloc[-1] + pd.Timedelta(days=1)).strftime(date_format)
-        row = frame.iloc[-1].copy()
-        row[key] = future_value
-        for column in frame.columns:
-            if column != key:
-                row[column] = "9.999e99"
-        frame = pd.concat([frame, row.to_frame().T], ignore_index=True)
-        frame.to_csv(path, index=False, lineterminator="\n")
-        counts[filename] = 1
-    return counts
-
-
 def _comparison_requests(request: BlackboxRequest, data_dir: Path) -> list[BlackboxRequest]:
     cutoff_specs = (
         ("daily_output.csv", "date", "daily_cutoff_key"),
@@ -1946,9 +1798,9 @@ def _direction_map(records) -> dict[str, int]:
 DEFAULT_NO_PERSIST_SAMPLE_SIZE = 4
 """no-persist 回测的默认样本量。
 
-该 Gate 只验证「平台分批方式不改变结果」这一结构性不变量，其输入只有
-`_comparison_requests` 产出的两个模板。样本量只需足够构造一次真实的分批差异；
-重复执行确定性由 CompareGate 的 repeat_deterministic 独立覆盖。
+该 Gate 验证平台自己的切片与合并循环：跨批次合并后总数正确、两种分区下 request_id
+都与 Request 一一对应保序。其输入只有 `_comparison_requests` 产出的两个模板，
+样本量只需足够构造一次真实的分批差异。交付跨请求是否带状态属上游义务，平台不验。
 """
 
 
@@ -2043,14 +1895,12 @@ def _persisted_backtest_provenance_errors(
 def _verify_passed_all(engine, cfg: SchemeConfig) -> PassedAllRun:
     from sqlalchemy import text
 
-    required = {
-        "static",
-        "input",
-        "unit",
-        "dry-run",
-        "compare",
-        "backtest",
-    }
+    # 从唯一的序列定义派生，不再写第二份。写死过一次已经导致：自动段缩到四段后，
+    # 依赖本函数的 shadow-register / backtest --persist / activate 三条路径全部
+    # 因「missing=['backtest','dry-run']」而阻断。
+    from harness.registry import BLACKBOX_AUTO_SEQUENCE
+
+    required = set(BLACKBOX_AUTO_SEQUENCE)
     with engine.begin() as connection:
         row = connection.execute(
             text(

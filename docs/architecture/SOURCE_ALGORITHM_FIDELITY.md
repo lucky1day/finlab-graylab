@@ -12,7 +12,7 @@
 | 运行时 | 谁保证内部保真 | 平台可检查的证据 | 平台不得宣称 |
 |---|---|---|---|
 | Native V1 | 平台维护人员与原算法所有者共同负责 | core diff、source runner、original/current benchmark、方向和内部 score | 未核验内部字段时“算法完全一致” |
-| Blackbox V2 | 上游算法工程师负责 | 脚本/Metadata 摘要、CLI、确定性、predict/backtest 一致、分批/顺序一致、截止隔离和标准 Result | 已检查模型参数、特征、内部 score 或训练路径 |
+| Blackbox V2 | 上游算法工程师负责 | 脚本/Metadata 摘要、CLI 和标准 Result | 已检查模型参数、特征、内部 score 或训练路径；确定性、predict/backtest 一致、分批/顺序一致、截止隔离也不由平台验证，属上游交付契约义务 |
 
 Native V1 的 L0/L1/L2 分级仅用于政策清单中的存量维护；发现 L2 或形成新算法时，停止 Native 修改并创建独立 Blackbox V2 trial。Blackbox 上游应在交付前完成自身 source 对账，平台不反编译、不拆分也不改写交付脚本。
 

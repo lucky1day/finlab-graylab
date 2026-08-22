@@ -17,6 +17,7 @@ from shared.monthly_source_evidence import (
 from shared.source_runtime_database import (
     SourceRuntimeDatabaseConfig,
     assert_source_package_identity,
+    assert_source_interpreter_supports_package,
     assert_source_package_tree_safe,
     assert_source_runtime_payload_safe,
     install_source_runtime_database_config,
@@ -284,7 +285,13 @@ def _run_monthly_module(
         f"from {module} import run_monthly_pipeline\n"
         f"run_monthly_pipeline({predict_date!r}, dry_run=True)\n"
     )
-    command = [*_python_command(), "-c", script]
+    python_command = _python_command()
+    assert_source_interpreter_supports_package(
+        python_command,
+        source_root,
+        label="monthly 0629",
+    )
+    command = [*python_command, "-c", script]
     timeout_sec = source_timeout_seconds(
         "MONTHLY_SOURCE_TIMEOUT_SEC"
     )

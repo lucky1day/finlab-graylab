@@ -272,6 +272,32 @@ def _verify_passed_all(engine, cfg):
     return verify(engine, cfg)
 
 
+def create_draft_identity(
+    engine,
+    cfg: SchemeConfig,
+    *,
+    environment_fingerprint: str,
+    data_snapshot_id: str,
+    expected_harness_run_id: str,
+):
+    """在 insert-only 语义下创建 draft+paused 身份，返回创建后的生命周期状态。
+
+    调用方必须先确认身份确实不存在（`BlackboxLifecycleIdentityAbsent`）。创建前重读
+    canonical config 并逐字段比对身份，拒绝交付在 Gate 运行期间发生漂移。
+    """
+    pinned = _reload_pinned_canonical(cfg)
+    enriched = replace(
+        pinned,
+        environment_fingerprint=str(environment_fingerprint),
+        data_snapshot_id=str(data_snapshot_id),
+    )
+    return register_blackbox_draft_identity(
+        engine,
+        enriched,
+        expected_harness_run_id=expected_harness_run_id,
+    )
+
+
 def _reload_pinned_canonical(cfg: SchemeConfig) -> SchemeConfig:
     current = load_scheme_config(cfg.path / "config.yaml")
     initial_identity = _canonical_identity(cfg)

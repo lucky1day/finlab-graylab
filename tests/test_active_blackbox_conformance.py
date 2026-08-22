@@ -254,68 +254,6 @@ class ActiveBlackboxConformanceTests(unittest.TestCase):
                     )
                     self.assertIn(rows[0]["predicted_direction"], {"-1", "0", "1"})
 
-    def test_future_mutation_is_invariant_and_no_cache_files_are_created(self) -> None:
-        """严格 cutoff 后的四频值不会影响输出，独立进程也不留下缓存。"""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            workdir = Path(tmpdir)
-            fixture = self._write_data_bridge_fixture(workdir / "data")
-            request = self._request_for(fixture)
-            request_path = workdir / "request.json"
-            request_path.write_text(json.dumps(request), encoding="utf-8")
-            initial_files = self._relative_files(workdir)
-            baselines: dict[str, bytes] = {}
-
-            for scheme_id in V2_SCHEME_IDS:
-                with self.subTest(scheme_id=scheme_id):
-                    script = self._script_for(scheme_id)
-                    first_output = workdir / f"{scheme_id}-first.json"
-                    second_output = workdir / f"{scheme_id}-second.json"
-                    for output_path in (first_output, second_output):
-                        completed = self._run_cli(
-                            script,
-                            "predict",
-                            "--request",
-                            request_path,
-                            "--data-dir",
-                            fixture.data_dir,
-                            "--output",
-                            output_path,
-                            cwd=workdir,
-                        )
-                        self._assert_cli_success(completed)
-                    baselines[scheme_id] = first_output.read_bytes()
-                    self.assertEqual(
-                        baselines[scheme_id], second_output.read_bytes()
-                    )
-
-            changed = self._mutate_only_post_cutoff_values(fixture.data_dir, request)
-            self.assertTrue(changed)
-            for scheme_id in V2_SCHEME_IDS:
-                with self.subTest(scheme_id=f"{scheme_id}-mutated"):
-                    mutated_output = workdir / f"{scheme_id}-mutated.json"
-                    mutated = self._run_cli(
-                        self._script_for(scheme_id),
-                        "predict",
-                        "--request",
-                        request_path,
-                        "--data-dir",
-                        fixture.data_dir,
-                        "--output",
-                        mutated_output,
-                        cwd=workdir,
-                    )
-                    self._assert_cli_success(mutated)
-                    self.assertEqual(baselines[scheme_id], mutated_output.read_bytes())
-
-            expected_files = initial_files | {
-                f"{scheme_id}-{suffix}.json"
-                for scheme_id in V2_SCHEME_IDS
-                for suffix in ("first", "second", "mutated")
-            }
-            self.assertEqual(self._relative_files(workdir), expected_files)
-            self.assertFalse(any(workdir.rglob("*.pkl")))
-            self.assertFalse(any(workdir.rglob(".blackbox_model_cache")))
-
     def _script_for(self, scheme_id: str) -> Path:
         return PROJECT_ROOT / "schemes" / scheme_id / "delivery" / f"{scheme_id}.py"
 
@@ -553,15 +491,6 @@ class ActiveBlackboxConformanceTests(unittest.TestCase):
             + index * 0.015
             + math.cos((index + 1) * (column_index + 3) * 0.11) * 0.1
         )
-
-    @staticmethod
-    def _relative_files(root: Path) -> set[str]:
-        return {
-            path.relative_to(root).as_posix()
-            for path in root.rglob("*")
-            if path.is_file()
-        }
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -126,8 +126,10 @@ python -m harness activate \
   --authorize "<raw-one-time-token>"
 ```
 
-不得省略 `--scheme-version` 或 `--issued-by`，也不得用修改配置后的新版本号
-替代已通过 Gate 的 `validation_scheme_version`。paused 配置激活后因为只翻转
+`--scheme-version` 可以省略：签发时从同一份 `config.yaml` 用同一入口解析，与上面
+`VALIDATION_SCHEME_VERSION` 的算法完全一致；显式传入且不符会在签发这一刻失败。
+`--issued-by` 不得省略。仍不得用修改配置后的新版本号替代已通过 Gate 的
+`validation_scheme_version`。paused 配置激活后因为只翻转
 根级 `status`，`activated_scheme_version` 会变化；已 active 的 legacy 精确版本
 重批准时版本保持不变。
 

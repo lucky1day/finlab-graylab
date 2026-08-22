@@ -616,27 +616,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 _ensure_input_state(ctx)
             build.assert_not_called()
 
-    def test_future_row_probe_appends_parseable_daily_date_after_snapshot_max(self) -> None:
-        from harness.blackbox_v2.gates import _append_future_rows
-
-        frames = _snapshot_frames()
-        frames["daily_output.csv"]["date"] = pd.to_datetime(
-            frames["daily_output.csv"]["date"]
-        ).dt.strftime("%Y/%m/%d %H:%M")
-        with tempfile.TemporaryDirectory() as tmpdir:
-            data_dir = Path(tmpdir)
-            for filename, frame in frames.items():
-                frame.to_csv(data_dir / filename, index=False)
-
-            original_max = pd.to_datetime(frames["daily_output.csv"]["date"]).max()
-            counts = _append_future_rows(data_dir)
-            mutated = pd.read_csv(data_dir / "daily_output.csv")
-            mutated_dates = pd.to_datetime(mutated["date"], errors="raise")
-
-        self.assertEqual(counts["daily_output.csv"], 1)
-        self.assertGreater(mutated_dates.iloc[-1], original_max)
-        self.assertTrue(mutated_dates.is_monotonic_increasing)
-
     def test_no_persist_backtest_supports_explicit_certification_sizes_and_batch_invariance(self) -> None:
         from harness.blackbox_v2.gates import BlackboxBacktestGate, InputState
         from scheduler.blackbox_v2_runner import RuntimeProfile
@@ -731,7 +710,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 )
                 evidence = {item.key: item.value for item in result.evidence}
                 self.assertEqual(evidence["sample_size"], sample_size)
-                self.assertTrue(evidence["batch_split_invariant"])
                 self.assertLessEqual(
                     evidence["subprocesses_started"],
                     evidence["max_subprocesses"],
@@ -832,7 +810,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             self.assertEqual(batch_sizes[0], 100)
             self.assertLess(batch_sizes[1], DEFAULT_NO_PERSIST_SAMPLE_SIZE)
             self.assertGreaterEqual(evidence["max_subprocesses"], 3)
-            self.assertTrue(evidence["batch_split_invariant"])
 
     def test_backtest_sample_size_is_no_persist_only(self) -> None:
         from harness.cli import _build_parser
@@ -1233,7 +1210,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             BlackboxDryRunGate,
             BlackboxUnitGate,
             InputState,
-            _append_future_rows,
         )
         from scheduler.blackbox_v2_runner import RuntimeProfile
         from scheduler.discovery import load_scheme_config
@@ -1307,31 +1283,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     return_value=RuntimeProfile.for_tests(),
                 ):
                     results = [gate.run(ctx) for gate in gates]
-            def tamper_calendar(data_dir):
-                counts = _append_future_rows(data_dir)
-                calendar_path = data_dir / "api_wind_date.csv"
-                calendar_path.chmod(0o644)
-                calendar_path.write_text(
-                    "rdate,week_id\n2099-01-01,209901\n",
-                    encoding="utf-8",
-                )
-                return counts
-
-            with (
-                patch(
-                    "harness.blackbox_v2.gates._ensure_input_state",
-                    return_value=state,
-                ),
-                patch(
-                    "harness.blackbox_v2.gates._profile",
-                    return_value=RuntimeProfile.for_tests(),
-                ),
-                patch(
-                    "harness.blackbox_v2.gates._append_future_rows",
-                    side_effect=tamper_calendar,
-                ),
-            ):
-                tampered_compare = BlackboxCompareGate().run(ctx)
             unit_root = root / "reports" / "blackbox_v2" / "unit"
             self.assertTrue((unit_root / "request" / "invalid_request.json").is_file())
             self.assertFalse((unit_root / "invalid_request.json").exists())
@@ -1367,23 +1318,11 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 backtest_evidence["records"], DEFAULT_NO_PERSIST_SAMPLE_SIZE
             )
             self.assertFalse(backtest_evidence["persist"])
-            compare_evidence = {
-                item.key: item.value
-                for item in results[2].evidence
-            }
-            self.assertTrue(
-                compare_evidence["platform_input_hashes_unchanged"]
-            )
             self.assertFalse(
                 (root / "reports" / "blackbox_v2" / "runtime_views").exists()
             )
 
         self.assertTrue(all(result.passed for result in results), [result.errors for result in results])
-        self.assertFalse(tampered_compare.passed)
-        self.assertIn(
-            "platform input",
-            "\n".join(tampered_compare.errors).lower(),
-        )
 
     def test_persist_backtest_requires_signed_exact_authorization_and_verifies_deltas(self) -> None:
         from harness.authorization import issue_token
@@ -2131,6 +2070,99 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
         self.assertEqual(evidence["config_hash"], "f" * 64)
         self.assertEqual(evidence["manifest_hash"], "m" * 64)
         self.assertEqual(evidence["journal_phase"], "verified")
+
+    def _run_shadow_register(self, root, *, identity_absent: bool):
+        """跑一次 shadow-register，返回 (result, create_mock, register_mock)。
+
+        `identity_absent=True` 模拟身份尚未登记——首次读状态抛
+        BlackboxLifecycleIdentityAbsent，创建后再读则返回 draft+paused。
+        """
+        from harness.authorization import issue_token
+        from harness.blackbox_v2.gates import BlackboxShadowRegisterGate, PassedAllRun
+        from scheduler.discovery import load_scheme_config
+        from scheduler.repository import BlackboxLifecycleIdentityAbsent
+        from shared.blackbox_v2.intake import intake_delivery
+
+        scheme_dir = intake_delivery(_delivery(root / "incoming"), schemes_root=root / "schemes")
+        config = load_scheme_config(scheme_dir / "config.yaml")
+        token = issue_token(
+            "trial_10y",
+            "shadow_register",
+            "2026-07-16",
+            scheme_version=config.scheme_version,
+            harness_run_id="hr_passed",
+        )
+        ctx = GateContext(
+            scheme_id="trial_10y",
+            predict_date="2026-07-16",
+            project_root=root,
+            report_dir=root / "reports" / "shadow",
+            config=config,
+            authorization=token,
+            engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
+        )
+        passed = PassedAllRun(
+            harness_run_id="hr_passed",
+            report_uri=root / "reports" / "all",
+            data_snapshot_id="snapshot-test",
+        )
+
+        reads: list[int] = []
+
+        def read_state(_engine, current):
+            reads.append(1)
+            if identity_absent and len(reads) == 1:
+                raise BlackboxLifecycleIdentityAbsent("identity absent")
+            return SimpleNamespace(
+                version_status=current.version_status,
+                registry_status="paused",
+            )
+
+        with patch("harness.blackbox_v2.gates._verify_passed_all", return_value=passed):
+            with patch("harness.blackbox_v2.gates._environment_fingerprint", return_value="e" * 64):
+                with patch("harness.blackbox_v2.gates._read_shadow_state", side_effect=read_state):
+                    with patch("harness.blackbox_v2.gates.create_draft_identity") as create:
+                        with patch("harness.blackbox_v2.gates._register_shadow") as register:
+                            register.return_value = SimpleNamespace(
+                                scheme_version=config.scheme_version,
+                                version_status="shadow",
+                                registry_status="paused",
+                                runtime_type="blackbox_v2",
+                                data_snapshot_id="db-snapshot",
+                                environment_fingerprint="d" * 64,
+                                code_hash="c" * 64,
+                                config_hash="f" * 64,
+                                manifest_hash="m" * 64,
+                            )
+                            result = BlackboxShadowRegisterGate().run(ctx)
+        return result, create, register
+
+    def test_shadow_register_creates_the_identity_when_it_does_not_exist_yet(self) -> None:
+        """新方案不再需要单独一步 draft-register。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result, create, _ = self._run_shadow_register(Path(tmpdir), identity_absent=True)
+
+        self.assertTrue(result.passed, result.errors)
+        evidence = {item.key: item.value for item in result.evidence}
+        self.assertTrue(evidence["identity_created"])
+        self.assertEqual(evidence["version_status"], "shadow")
+        self.assertEqual(evidence["registry_status"], "paused")
+
+        create.assert_called_once()
+        kwargs = create.call_args.kwargs
+        self.assertEqual(kwargs["expected_harness_run_id"], "hr_passed")
+        self.assertEqual(kwargs["data_snapshot_id"], "snapshot-test")
+        self.assertEqual(kwargs["environment_fingerprint"], "e" * 64)
+
+    def test_shadow_register_does_not_create_when_the_identity_already_exists(self) -> None:
+        """revision 路径行为完全不变，不得触碰 insert-only 创建。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result, create, _ = self._run_shadow_register(Path(tmpdir), identity_absent=False)
+
+        self.assertTrue(result.passed, result.errors)
+        evidence = {item.key: item.value for item in result.evidence}
+        self.assertFalse(evidence["identity_created"])
+        create.assert_not_called()
 
     def test_shadow_register_blocks_every_pending_journal_before_authorization_or_database_use(self) -> None:
         from harness.authorization import issue_token, used_tokens_path

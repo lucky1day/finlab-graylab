@@ -17,6 +17,7 @@ from shared.daily_0629_source_evidence import (
 from shared.source_runtime_database import (
     SourceRuntimeDatabaseConfig,
     assert_source_package_identity,
+    assert_source_interpreter_supports_package,
     assert_source_package_tree_safe,
     assert_source_runtime_payload_safe,
     install_source_runtime_database_config,
@@ -379,7 +380,13 @@ def _run_source_command(
         or load_source_runtime_database_config()
     )
     env = source_subprocess_environment()
-    python = _python_command()[0]
+    python_command = _python_command()
+    assert_source_interpreter_supports_package(
+        python_command,
+        source_root,
+        label="daily 0629",
+    )
+    python = python_command[0]
     env["PYTHON_BIN"] = python
     env["DRY_RUN"] = "1"
     env["DAILY_N_JOBS"] = env.get("DAILY_N_JOBS", "1")

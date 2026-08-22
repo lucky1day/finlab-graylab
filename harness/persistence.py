@@ -10,6 +10,7 @@ from sqlalchemy import text
 
 from harness.context import GateContext
 from harness.result import GateResult, GateStatus
+from shared.service_instance import resolve_code_commit
 
 
 # Approved harness control-plane write boundary.
@@ -62,7 +63,7 @@ def persist_harness_run_start(
                     "started_at": _mysql_datetime(started_at),
                     "triggered_by": "harness",
                     "project_root": str(ctx.project_root),
-                    "git_commit": None,
+                    "git_commit": _release_commit(ctx),
                     "code_hash": getattr(cfg, "code_hash", None),
                     "config_hash": getattr(cfg, "config_hash", None),
                     "report_uri": str(ctx.report_dir),
@@ -134,6 +135,14 @@ def persist_harness_run_finish(
             )
 
     return _with_engine(ctx, operation)
+
+
+def _release_commit(ctx: GateContext) -> str | None:
+    """本次运行所属的 release commit；无法确定时返回 None。"""
+    try:
+        return resolve_code_commit(ctx.project_root)
+    except Exception:
+        return None
 
 
 def _with_engine(ctx: GateContext, operation: Callable[[object], None]) -> bool:

@@ -13,7 +13,7 @@ from harness.persistence import (
     persist_harness_run_finish,
     persist_harness_run_start,
 )
-from harness.registry import AUTO_SEQUENCE, gates_for_stage
+from harness.registry import auto_sequence_for_runtime, gates_for_stage
 from harness.report.writer import write_gate_result, write_onboard_report
 from harness.result import Evidence, GateResult, GateStatus, OnboardReport
 
@@ -47,7 +47,10 @@ def onboard(
             "canonical automatic sequence"
         )
     selected_gates = list(gates) if gates is not None else gates_for_stage(stage, ctx=ctx)
-    if check_only and [gate.name for gate in selected_gates] != AUTO_SEQUENCE:
+    expected_auto_sequence = auto_sequence_for_runtime(
+        getattr(ctx.config, "runtime_type", None)
+    )
+    if check_only and [gate.name for gate in selected_gates] != expected_auto_sequence:
         raise ValueError(
             "check-only canonical automatic gate sequence mismatch"
         )
