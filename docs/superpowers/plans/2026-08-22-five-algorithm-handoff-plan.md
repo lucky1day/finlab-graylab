@@ -234,7 +234,7 @@ do
   BFL_WEEKLY_ROOT="$BFL_HANDOFF_ROOT/$scheme/forecast_project"
   BFL_WEEKLY_PROJECT="$BFL_WEEKLY_ROOT/weekly_project"
   PYTHONPATH="$BFL_WEEKLY_PROJECT/src:$BFL_WEEKLY_PROJECT:$BFL_WEEKLY_ROOT" \
-    /Users/macstudio0/miniconda3/envs/forecast_env/bin/python \
+    /Users/macstudio0/miniconda3/envs/forecast_env/bin/python -B \
     -m weekly.run_weekly --help
 done
 ```
@@ -246,9 +246,9 @@ Expected: all three commands exit `0` and advertise `--frequencies` with `W1Y,W5
 Run:
 
 ```bash
-/Users/macstudio0/miniconda3/envs/forecast_env/bin/python \
+/Users/macstudio0/miniconda3/envs/forecast_env/bin/python -B \
   "$BFL_HANDOFF_ROOT/cgb_a4_fundseason_5y/delivery/cgb_a4_fundseason_5y.py" --version
-/Users/macstudio0/miniconda3/envs/forecast_env/bin/python \
+/Users/macstudio0/miniconda3/envs/forecast_env/bin/python -B \
   "$BFL_HANDOFF_ROOT/cgb_a4_fundseason_10y/delivery/cgb_a4_fundseason_10y.py" --version
 ```
 
