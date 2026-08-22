@@ -270,7 +270,7 @@ cgb_a4_fundseason_10y 1.0.0
 Run in the same shell session:
 
 ```bash
-COPYFILE_DISABLE=1 tar -czf "$BFL_HANDOFF_ARCHIVE" \
+COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata -czf "$BFL_HANDOFF_ARCHIVE" \
   -C "$BFL_HANDOFF_PARENT" bond_algorithms_5_92a93713656d
 ```
 
@@ -283,9 +283,24 @@ Run:
 ```bash
 tar -tzf "$BFL_HANDOFF_ARCHIVE" | sed -n '1,80p'
 tar -tzf "$BFL_HANDOFF_ARCHIVE" | rg '(^|/)source_evidence/'
+/Users/macstudio0/miniconda3/envs/forecast_env/bin/python -B - "$BFL_HANDOFF_ARCHIVE" <<'PY'
+import sys
+import tarfile
+
+with tarfile.open(sys.argv[1], "r:gz") as archive:
+    forbidden = [
+        (member.name, key)
+        for member in archive.getmembers()
+        for key in member.pax_headers
+        if "xattr" in key.lower() or "provenance" in key.lower()
+    ]
+if forbidden:
+    raise SystemExit(f"forbidden PAX metadata: {forbidden[:5]}")
+print("forbidden_pax_metadata=0")
+PY
 ```
 
-Expected: the first command shows the approved root and scheme paths. The second command exits `1` with no output because `source_evidence/` is absent from the archive.
+Expected: the first command shows the approved root and scheme paths. The second command exits `1` with no output because `source_evidence/` is absent from the archive. The Python audit prints `forbidden_pax_metadata=0`.
 
 - [ ] **Step 3: Record size and SHA-256**
 
