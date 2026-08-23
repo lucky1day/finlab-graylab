@@ -272,13 +272,20 @@ grep -nE "一次性|self_check|self-proof|_can_optimize|batch.*optimiz" \
 交付若实现了一次性计算，应能看到三个结构：整段只算一次的构建、按截止键从结果中提取每条
 Request、以及覆盖批内首/中/末的独立复算自证（自证结论写入 `stderr`）。
 
+只读代码检查不能替代上游性能证据。收包时还必须取得 delivery 目录之外的
+`{scheme_id}.performance.json`，按[上游强制性能自测](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md#64-强制性能自测与交接证据)
+核对测试环境、真实输入摘要、单条/100条/完整区间耗时、分批、峰值 RSS、首中末自证和
+`fallback_used=false`。缺报告、字段不全、测试机器强于参考资源却未限额复测，或任一项超过
+`predict 120秒 / 100条 600秒 / 完整区间 1800秒 / 峰值RSS 4GiB`，都在 Intake 前退回上游；
+不得先入库，再由平台维护者改写算法提速。
+
 判定规则：
 
 | 情况 | 处理 |
 |---|---|
 | 算法是 walk-forward 结构、已实现一次性计算 | 正常推进；阶段 6 预算按十几分钟安排 |
 | 算法是 walk-forward 结构、未实现 | **退回上游**。[上游契约](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md#6-读取输入并按截止键截断)已将其列为必须项 |
-| 算法不是 walk-forward 结构 | 上游必须在交付时显式声明，并给出预估条数与单次耗时；据此安排阶段 6 预算，不得不声明就交付 |
+| 算法不是 walk-forward 结构 | 上游必须显式声明并提供完整性能报告；仍须满足同一准入线，不因结构声明获得性能豁免 |
 
 条数可只读估算：同 `task_type` 的现役方案在 `t_backtest_predictions` 里的条数即同量级
 （当前 ECS 实测：`weekly_point` / `weekly_average` 各 72 条，`monthly` 16–17 条，
@@ -801,6 +808,7 @@ journal：它只回退到 previous safe state，保留原 journal，并新增 li
 - [ ] 三频 SHA 已对应到选定 generation，规范化 `api_wind_date.csv` SHA 和 `combined_snapshot_id` 已核对
 - [ ] `daily_cutoff_key -> weekly_cutoff_key` 与本次日历精确一致；`week_id` 未按 ISO 周或连续数值解释
 - [ ] `self_test_alignment=matched` 后才执行逐行算法对比；不一致已标记 `data_vintage_mismatch` 并同代重跑
+- [ ] delivery 目录外的性能报告已按上游第 6.4 节核验；单条、100条、乱序、完整区间、三轮耗时、峰值 RSS、首中末自证和 `fallback_used=false` 均达标
 - [ ] 已明确 Onboarding 验收同代不等于生产永久冻结；scheduled live 使用当天当前且通过校验的 DataBridge generation
 - [ ] Activation 前已完成原有 Gate、生产准备核验和具体方案专项授权；`shadow + paused` 未进入自然调度
 - [ ] Activation 后 Registry 与 exact version 均为 active，方案按 frequency 进入对应 launchd one-shot 候选；paused、draft 和其它 cadence 被排除

@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "five_y_factor_rule_online_v1",
+  "name": "FACTOR_RULE_ONLINE",
+  "owner": "liwei",
+  "description": "使用日频3Y、5Y、10Y国债收益率的固定曲线特征，756日滚动窗口按月重训LightGBM与XGBoost，融合期限水平和斜率因子、10日斜率动量规则及10笔因果可靠性控制形成最终方向。",
+  "algorithm_version": "1.0.0",
+  "target_tenor": "5Y",
+  "task_type": "T+1",
+  "horizon": 1,
+  "target_rule": "target_date_yield_vs_feature_date_yield"
+}
