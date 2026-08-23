@@ -361,6 +361,28 @@ def test_full_snapshot_validation_only_selects_due_execution_authority() -> None
     ) == (weekly,)
 
 
+def test_period_average_due_uses_task_bucket_anchor_not_frequency_shortcut() -> None:
+    from datetime import date, timedelta
+
+    rows = []
+    current = date(2024, 1, 1)
+    while current <= date(2024, 6, 30):
+        rows.append({"rdate": current.isoformat(), "trade_flag": "1"})
+        current += timedelta(days=1)
+    calendar = SimpleNamespace(period_calendar_rows=lambda: tuple(rows))
+
+    assert signal_gap_plan._is_frequency_due(
+        "quarterly",
+        predict_date="2024-03-29",
+        calendar=calendar,
+        task_type="quarterly_average",
+    )
+    assert not signal_gap_plan._is_frequency_due(
+        "quarterly",
+        predict_date="2024-03-28",
+        calendar=calendar,
+        task_type="quarterly_average",
+    )
 def test_weekly_due_is_saturday_even_when_friday_is_holiday() -> None:
     class Calendar:
         weekly_predict_dates = frozenset({"2026-08-17"})

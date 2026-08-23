@@ -72,6 +72,26 @@ def bucket_for_anchor(
     return matches[0]
 
 
+def period_anchor_dates(
+    task_type: str,
+    calendar_rows: Iterable[Mapping[str, object]],
+    *,
+    start_date: str | date | datetime | None = None,
+    end_date: str | date | datetime | None = None,
+) -> tuple[str, ...]:
+    """返回给定闭区间内的全部周期锚点。"""
+    start = _to_date(start_date).isoformat() if start_date is not None else None
+    end = _to_date(end_date).isoformat() if end_date is not None else None
+    if start is not None and end is not None and start > end:
+        raise ValueError("period-average anchor range start must not exceed end")
+    return tuple(
+        bucket.anchor_date
+        for bucket in build_period_buckets(task_type, calendar_rows)
+        if (start is None or bucket.anchor_date >= start)
+        and (end is None or bucket.anchor_date <= end)
+    )
+
+
 def target_pointer(feature_date: str | date | datetime) -> str:
     """周期任务目标日期指针固定为 feature_date 后一个自然日。"""
     return (_to_date(feature_date) + timedelta(days=1)).isoformat()

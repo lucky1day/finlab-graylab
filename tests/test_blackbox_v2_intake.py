@@ -16,6 +16,43 @@ _MISSING = object()
 
 
 class BlackboxV2IntakeTests(unittest.TestCase):
+    def test_period_average_intake_uses_one_daily_post_close_poll(self) -> None:
+        from shared.blackbox_v2.intake import intake_delivery
+
+        for task_type, target_rule in (
+            (
+                "monthly_average",
+                "target_month_average_yield_vs_feature_month_average_yield",
+            ),
+            (
+                "quarterly_average",
+                "target_quarter_average_yield_vs_feature_quarter_average_yield",
+            ),
+            (
+                "annual_average",
+                "target_year_average_yield_vs_feature_year_average_yield",
+            ),
+        ):
+            with self.subTest(task_type=task_type), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                delivery = _write_delivery(root / "incoming")
+                metadata_path = delivery / "trial_10y.json"
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                metadata.update(
+                    task_type=task_type,
+                    horizon=1,
+                    target_rule=target_rule,
+                )
+                metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+                scheme_dir = intake_delivery(
+                    delivery,
+                    schemes_root=root / "schemes",
+                )
+
+                config = (scheme_dir / "config.yaml").read_text(encoding="utf-8")
+                self.assertIn("cron: '0 18 * * 1-5'", config)
+
     def test_cli_intake_uses_project_schemes_directory(self) -> None:
         from harness.cli import main
 

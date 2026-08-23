@@ -19,6 +19,7 @@ from shared.scheme_owner_registry import (
     owner_registry_scheme_id,
     serialize_scheme_owner_document,
 )
+from shared.task_specs import PERIOD_AVERAGE_TASK_TYPES
 
 
 SCHEDULES = {
@@ -26,6 +27,9 @@ SCHEDULES = {
     "weekly": "30 11 * * 6",
     "monthly": "0 18 15 * *",
 }
+PERIOD_AVERAGE_SCHEDULE = "0 18 * * 1-5"
+
+
 def intake_delivery(
     delivery_dir: str | Path,
     *,
@@ -265,7 +269,11 @@ def _config_text(
     data_schema_version: str,
     platform_inputs: tuple[str, ...] = (),
 ) -> str:
-    cron = SCHEDULES[metadata.frequency]
+    cron = (
+        PERIOD_AVERAGE_SCHEDULE
+        if metadata.task_type in PERIOD_AVERAGE_TASK_TYPES
+        else SCHEDULES[metadata.frequency]
+    )
     platform_input_text = ""
     if platform_inputs:
         platform_input_text = "platform_inputs:\n" + "".join(

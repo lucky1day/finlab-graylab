@@ -149,6 +149,7 @@ def _validate_records(
                 horizon=horizon,
                 calendar=calendar,
                 expected_weekly_target_rule=config.get("target_rule") if frequency == "weekly" else None,
+                task_type=str(config.get("task_type") or ""),
             )
         )
         extra = record.extra or {}

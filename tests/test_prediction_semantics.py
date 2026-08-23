@@ -6,6 +6,44 @@ from shared.models import PredictionRecord
 
 
 class PredictionSemanticsTests(unittest.TestCase):
+    def test_period_average_semantics_accepts_anchor_day_signal(self) -> None:
+        from datetime import date, timedelta
+
+        from harness.gates.prediction_semantics import validate_live_record_semantics
+
+        rows = []
+        current = date(2024, 1, 1)
+        while current <= date(2024, 6, 30):
+            rows.append({"rdate": current.isoformat(), "trade_flag": "1"})
+            current += timedelta(days=1)
+
+        class PeriodCalendar:
+            def period_calendar_rows(self):
+                return tuple(rows)
+
+        record = PredictionRecord(
+            scheme_id="quarterly-demo",
+            target_tenor="10Y",
+            horizon=1,
+            predict_date="2024-03-29",
+            feature_date="2024-03-29",
+            target_date="2024-03-30",
+            predicted_direction=1,
+        )
+
+        errors = validate_live_record_semantics(
+            record,
+            expected_predict_date="2024-03-29",
+            prefix="record[0]",
+            require_phase=False,
+            frequency="quarterly",
+            horizon=1,
+            calendar=PeriodCalendar(),
+            task_type="quarterly_average",
+        )
+
+        self.assertEqual(errors, [])
+
     def test_monthly_semantics_accepts_source_trigger_day_context(self) -> None:
         from harness.gates.prediction_semantics import validate_live_record_semantics
         from shared.prediction_context import MONTHLY_TARGET_RULE

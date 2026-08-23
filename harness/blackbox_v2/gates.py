@@ -1413,15 +1413,13 @@ def _sanitize_final_input_state(state_path: Path) -> None:
 
 def _feature_date(metadata: BlackboxMetadata, predict_date: str, engine: Any) -> str:
     calendar = get_calendar(engine)
-    if metadata.frequency == "daily":
-        return calendar.previous_trading_day(predict_date)
-    if metadata.frequency == "weekly":
-        from shared.prediction_context import build_weekly_live_context
+    from shared.blackbox_v2.requests import resolve_live_context
 
-        return build_weekly_live_context(calendar, predict_date).feature_date
-    from shared.prediction_context import build_monthly_live_context
-
-    return build_monthly_live_context(calendar, predict_date).feature_date
+    return resolve_live_context(
+        metadata,
+        predict_date=predict_date,
+        calendar=calendar,
+    ).feature_date
 
 
 def _read_input_state(path: Path) -> InputState:

@@ -18,8 +18,10 @@ from shared.blackbox_v2.snapshot import CutoffKeys
 from shared.prediction_context import (
     build_daily_live_context,
     build_monthly_live_context,
+    build_period_average_live_context,
     build_weekly_live_context,
 )
+from shared.task_specs import PERIOD_AVERAGE_TASK_TYPES
 
 
 def build_live_request(
@@ -30,6 +32,41 @@ def build_live_request(
     cutoffs: CutoffKeys,
 ) -> BlackboxRequest:
     """按平台统一日期语义生成单次实盘 Request。"""
+    context = resolve_live_context(
+        metadata,
+        predict_date=predict_date,
+        calendar=calendar,
+    )
+    if (
+        metadata.task_type in PERIOD_AVERAGE_TASK_TYPES
+        and cutoffs.daily_cutoff_key != context.feature_date
+    ):
+        raise ValueError(
+            "period-average daily_cutoff_key must equal feature_date: "
+            f"{cutoffs.daily_cutoff_key} != {context.feature_date}"
+        )
+    return build_request(
+        scheme_id=metadata.scheme_id,
+        predict_date=predict_date,
+        feature_date=context.feature_date,
+        target_date=context.target_date,
+        cutoffs=cutoffs,
+    )
+
+
+def resolve_live_context(
+    metadata: BlackboxMetadata,
+    *,
+    predict_date: str,
+    calendar,
+):
+    """按显式 task type/frequency 解析唯一 live 日期上下文。"""
+    if metadata.task_type in PERIOD_AVERAGE_TASK_TYPES:
+        return build_period_average_live_context(
+            calendar,
+            predict_date,
+            task_type=metadata.task_type,
+        )
     if metadata.frequency == "daily":
         context = build_daily_live_context(calendar, predict_date, horizon=metadata.horizon)
     elif metadata.frequency == "weekly":
@@ -38,13 +75,7 @@ def build_live_request(
         context = build_monthly_live_context(calendar, predict_date)
     else:
         raise ValueError(f"unsupported Blackbox V2 frequency: {metadata.frequency}")
-    return build_request(
-        scheme_id=metadata.scheme_id,
-        predict_date=predict_date,
-        feature_date=context.feature_date,
-        target_date=context.target_date,
-        cutoffs=cutoffs,
-    )
+    return context
 
 
 def build_request(

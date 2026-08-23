@@ -26,6 +26,12 @@ from shared.prediction_context import (
     WEEKLY_AVERAGE_TARGET_RULE,
     WEEKLY_TARGET_RULE,
 )
+from shared.period_average_buckets import (
+    build_period_buckets,
+    complete_bucket_average,
+    target_pointer,
+)
+from shared.task_specs import PERIOD_AVERAGE_TASK_TYPES
 from shared.week_calendar_normalizer import normalize_week_calendar_rows
 
 
@@ -34,6 +40,10 @@ PLATFORM_ACTUAL_RULE_BY_TASK = {
     "weekly_point": WEEKLY_TARGET_RULE,
     "weekly_average": WEEKLY_AVERAGE_TARGET_RULE,
     "monthly": MONTHLY_TARGET_RULE,
+    **{
+        task_type: TASK_COMBINATIONS[task_type][1]
+        for task_type in PERIOD_AVERAGE_TASK_TYPES
+    },
 }
 
 
@@ -81,6 +91,12 @@ def build_historical_cases(
         candidates = _weekly_candidates(metadata, yield_rows, read_week_calendar_rows(engine))
     elif metadata.task_type == "monthly":
         candidates = _monthly_candidates(metadata, yield_rows, trade_calendar_rows, engine)
+    elif metadata.task_type in PERIOD_AVERAGE_TASK_TYPES:
+        candidates = _period_average_candidates(
+            metadata,
+            yield_rows,
+            trade_calendar_rows,
+        )
     else:
         raise ValueError(f"unsupported Blackbox historical task_type: {metadata.task_type}")
     if metadata.task_type == "monthly":
@@ -94,7 +110,8 @@ def build_historical_cases(
     eligible = [
         item
         for item in candidates
-        if item.predict_date >= predict_date_from and item.target_date < target_date_before
+        if item.predict_date >= predict_date_from
+        and _candidate_complete_date(item) < target_date_before
     ]
     eligible.sort(key=lambda item: (item.predict_date, item.target_date))
     if limit is not None and len(eligible) < limit:
@@ -371,6 +388,90 @@ def _monthly_candidates(
             )
         )
     return candidates
+
+
+def _period_average_candidates(
+    metadata: BlackboxMetadata,
+    yield_rows: list[dict],
+    calendar_rows: list[dict],
+) -> list[_Candidate]:
+    """按两个连续完整业务桶生成周期均值历史案例。"""
+    source_rows = [
+        row for row in yield_rows if str(row.get("tenor")) == metadata.target_tenor
+    ]
+    if not source_rows:
+        return []
+    source_dates = sorted(str(row["trade_date"])[:10] for row in source_rows)
+    source_start, source_end = source_dates[0], source_dates[-1]
+    buckets = build_period_buckets(metadata.task_type, calendar_rows)
+    candidates: list[_Candidate] = []
+    for feature_bucket, target_bucket in zip(buckets, buckets[1:]):
+        if (
+            feature_bucket.start_date < source_start
+            or target_bucket.anchor_date > source_end
+        ):
+            continue
+        feature_rows = [
+            row
+            for row in source_rows
+            if feature_bucket.start_date
+            <= str(row["trade_date"])[:10]
+            <= feature_bucket.end_date
+        ]
+        target_rows = [
+            row
+            for row in source_rows
+            if target_bucket.start_date
+            <= str(row["trade_date"])[:10]
+            <= target_bucket.end_date
+        ]
+        feature_yield = complete_bucket_average(feature_bucket, feature_rows)
+        target_yield = complete_bucket_average(target_bucket, target_rows)
+        direction = (
+            1
+            if target_yield > feature_yield
+            else -1 if target_yield < feature_yield else 0
+        )
+        target_date = target_pointer(feature_bucket.anchor_date)
+        candidates.append(
+            _Candidate(
+                predict_date=feature_bucket.anchor_date,
+                feature_date=feature_bucket.anchor_date,
+                target_date=target_date,
+                label=direction,
+                actual_extra={
+                    "actual_fact_key": [
+                        metadata.target_tenor,
+                        target_date,
+                        metadata.target_rule,
+                    ],
+                    "platform_actual_rule": metadata.target_rule,
+                    "feature_bucket": _bucket_evidence(feature_bucket),
+                    "target_bucket": _bucket_evidence(target_bucket),
+                    "feature_yield": feature_yield,
+                    "target_yield": target_yield,
+                    "actual_target_anchor": target_bucket.anchor_date,
+                },
+            )
+        )
+    return candidates
+
+
+def _bucket_evidence(bucket) -> dict[str, Any]:
+    return {
+        "label": bucket.label,
+        "start_date": bucket.start_date,
+        "end_date": bucket.end_date,
+        "anchor_date": bucket.anchor_date,
+        "sample_count": len(bucket.trading_days),
+    }
+
+
+def _candidate_complete_date(candidate: _Candidate) -> str:
+    return str(
+        candidate.actual_extra.get("actual_target_anchor")
+        or candidate.target_date
+    )[:10]
 
 
 def _unique_facts(items):

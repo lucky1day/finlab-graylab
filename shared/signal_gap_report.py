@@ -25,9 +25,12 @@ from shared.calendar_service import (
 from shared.prediction_context import (
     build_daily_live_context,
     build_monthly_live_context,
+    build_period_average_live_context,
     build_weekly_live_context,
     is_weekly_signal_date,
 )
+from shared.period_average_buckets import period_anchor_dates
+from shared.task_specs import PERIOD_AVERAGE_TASK_TYPES
 
 
 ACCEPTED_LIVE_PHASES = ("gray_live", "scheduled_live")
@@ -413,11 +416,22 @@ def _expected(
         resolved.append(target)
         if target.available_after is None or target.failure_category:
             continue
-        for predict_date in calendar.predict_dates(target.frequency, start_date, end_date):
+        predict_dates = (
+            calendar.period_predict_dates(target.task_type, start_date, end_date)
+            if target.task_type in PERIOD_AVERAGE_TASK_TYPES
+            else calendar.predict_dates(target.frequency, start_date, end_date)
+        )
+        for predict_date in predict_dates:
             if predict_date <= target.available_after:
                 continue
             try:
-                if target.frequency == "daily":
+                if target.task_type in PERIOD_AVERAGE_TASK_TYPES:
+                    context = build_period_average_live_context(
+                        calendar,
+                        predict_date,
+                        task_type=target.task_type,
+                    )
+                elif target.frequency == "daily":
                     context = build_daily_live_context(
                         calendar, predict_date, horizon=target.horizon
                     )
@@ -547,6 +561,10 @@ class _SnapshotCalendar:
             for row in snapshot["t_trade_calendar.csv"].to_dict("records")
         }
         self.calendar_set = frozenset(flags)
+        self._period_rows = tuple(
+            {"rdate": day, "trade_flag": flag}
+            for day, flag in sorted(flags.items())
+        )
         self.trading_days = tuple(
             sorted(
                 day for day, flag in flags.items() if is_trading_day_row(day, flag)
@@ -591,6 +609,22 @@ class _SnapshotCalendar:
 
     def week_id_to_last_trading_day(self, week_id: int) -> str:
         return self.week.week_id_to_last_trading_day(week_id)
+
+    def period_calendar_rows(self) -> tuple[dict[str, object], ...]:
+        return self._period_rows
+
+    def period_predict_dates(
+        self,
+        task_type: str,
+        start_date: str,
+        end_date: str,
+    ) -> tuple[str, ...]:
+        return period_anchor_dates(
+            task_type,
+            self._period_rows,
+            start_date=start_date,
+            end_date=end_date,
+        )
 
     def predict_dates(self, frequency: str, start_date: str, end_date: str) -> tuple[str, ...]:
         if frequency == "daily":

@@ -28,10 +28,13 @@ from shared.data_bridge.refresh import (
 from shared.prediction_context import (
     build_daily_live_context,
     build_monthly_live_context,
+    build_period_average_live_context,
     build_weekly_live_context,
     is_weekly_signal_date,
 )
 from shared.scheme_config_schema import SCHEME_ID_PATTERN
+from shared.period_average_buckets import period_anchor_dates
+from shared.task_specs import ALLOWED_FREQUENCIES, PERIOD_AVERAGE_TASK_TYPES
 
 
 PLAN_SCHEMA_VERSION = "single-date-active-live-gap-plan-v1"
@@ -655,7 +658,7 @@ def _select_execution_authority(
         if (
             item.status != "active"
             or item.runtime_type not in {"native_adapter", "blackbox_v2"}
-            or item.frequency not in {"daily", "weekly", "monthly"}
+            or item.frequency not in ALLOWED_FREQUENCIES
             or item.horizon < 1
             or not item.task_type.strip()
             or not item.target_tenors
@@ -944,6 +947,7 @@ class _SingleDateCalendar:
         trade_calendar_rows: Sequence[Mapping[str, Any]],
         week_calendar_rows: Sequence[Mapping[str, Any]],
     ) -> None:
+        self._period_rows = tuple(dict(row) for row in trade_calendar_rows)
         self._trading_days = tuple(
             sorted(
                 str(row["rdate"])[:10]
@@ -991,6 +995,9 @@ class _SingleDateCalendar:
     def week_id_to_last_trading_day(self, week_id: int) -> str:
         return self._week_calendar.week_id_to_last_trading_day(week_id)
 
+    def period_calendar_rows(self) -> tuple[dict[str, Any], ...]:
+        return self._period_rows
+
 
 def _read_calendar(connection: Any) -> _SingleDateCalendar:
     snapshot = read_calendar_snapshot_from_connection(connection)
@@ -1022,6 +1029,7 @@ def _is_due(
         target.frequency,
         predict_date=predict_date,
         calendar=calendar,
+        task_type=target.task_type,
     )
 
 
@@ -1030,7 +1038,18 @@ def _is_frequency_due(
     *,
     predict_date: str,
     calendar: Any,
+    task_type: str | None = None,
 ) -> bool:
+    if task_type in PERIOD_AVERAGE_TASK_TYPES:
+        try:
+            return predict_date in period_anchor_dates(
+                task_type,
+                calendar.period_calendar_rows(),
+                start_date=predict_date,
+                end_date=predict_date,
+            )
+        except ValueError as exc:
+            raise SignalGapPlanError("DATA_CONTRACT_INVALID", str(exc)) from exc
     if frequency == "daily":
         return calendar.is_trading_day(predict_date)
     if frequency == "weekly":
@@ -1059,6 +1078,7 @@ def _due_execution_authority(
             str(item.frequency),
             predict_date=predict_date,
             calendar=calendar,
+            task_type=str(getattr(item, "task_type", "") or ""),
         )
     )
 
@@ -1069,7 +1089,13 @@ def _expected_case(
     predict_date: str,
     calendar: _SingleDateCalendar,
 ) -> ExpectedSignalCase:
-    if target.frequency == "daily":
+    if target.task_type in PERIOD_AVERAGE_TASK_TYPES:
+        context = build_period_average_live_context(
+            calendar,
+            predict_date,
+            task_type=target.task_type,
+        )
+    elif target.frequency == "daily":
         context = build_daily_live_context(
             calendar,
             predict_date,

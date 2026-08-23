@@ -4,7 +4,13 @@ from datetime import date, datetime
 from typing import Any
 
 from shared.models import PredictionRecord
-from shared.prediction_context import build_daily_live_context, build_monthly_live_context, build_weekly_live_context
+from shared.prediction_context import (
+    build_daily_live_context,
+    build_monthly_live_context,
+    build_period_average_live_context,
+    build_weekly_live_context,
+)
+from shared.task_specs import PERIOD_AVERAGE_TASK_TYPES
 
 
 LIVE_PHASES = {"gray_live", "scheduled_live"}
@@ -20,6 +26,7 @@ def validate_live_record_semantics(
     horizon: int | None = None,
     calendar: Any | None = None,
     expected_weekly_target_rule: str | None = None,
+    task_type: str | None = None,
 ) -> list[str]:
     """校验 live/dry-run 预测记录的日期与 phase 语义。"""
     errors: list[str] = []
@@ -29,10 +36,11 @@ def validate_live_record_semantics(
     feature_date = _date_string(record.feature_date)
     if not feature_date:
         errors.append(f"{prefix}.feature_date is required")
-    elif frequency == "monthly":
+    elif frequency == "monthly" or task_type in PERIOD_AVERAGE_TASK_TYPES:
         if feature_date > expected_predict_date:
             errors.append(
-                f"{prefix}.feature_date must be on or before predict_date for monthly, "
+                f"{prefix}.feature_date must be on or before predict_date for "
+                f"monthly/period-average, "
                 f"got {feature_date} > {expected_predict_date}"
             )
     elif feature_date >= expected_predict_date:
@@ -61,6 +69,7 @@ def validate_live_record_semantics(
                 feature_date=feature_date,
                 target_date=target_date,
                 expected_weekly_target_rule=expected_weekly_target_rule,
+                task_type=task_type,
             )
         )
     return errors
@@ -77,10 +86,25 @@ def _validate_against_calendar_context(
     feature_date: str,
     target_date: str,
     expected_weekly_target_rule: str | None,
+    task_type: str | None,
 ) -> list[str]:
     errors: list[str] = []
     try:
-        if frequency == "daily":
+        if task_type in PERIOD_AVERAGE_TASK_TYPES:
+            expected = build_period_average_live_context(
+                calendar,
+                expected_predict_date,
+                task_type=task_type,
+            )
+            if feature_date and feature_date != expected.feature_date:
+                errors.append(
+                    f"{prefix}.feature_date expected {expected.feature_date}, got {feature_date}"
+                )
+            if target_date and target_date != expected.target_date:
+                errors.append(
+                    f"{prefix}.target_date expected {expected.target_date}, got {target_date}"
+                )
+        elif frequency == "daily":
             if not horizon:
                 return [f"{prefix}.horizon is required for daily date semantics"]
             expected = build_daily_live_context(calendar, expected_predict_date, horizon=int(horizon))

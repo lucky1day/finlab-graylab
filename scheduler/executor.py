@@ -41,7 +41,8 @@ from scheduler.repository import (
 )
 from shared.calendar_service import get_calendar
 from shared.blackbox_v2.contracts import BlackboxRequest, load_metadata
-from shared.blackbox_v2.requests import build_live_request
+from shared.blackbox_v2.requests import build_live_request, resolve_live_context
+from shared.task_specs import PERIOD_AVERAGE_TASK_TYPES
 from shared.blackbox_v2.snapshot import compose_blackbox_input_bundle
 from shared.input_artifacts import (
     EPHEMERAL_NATIVE_INPUT_ROOT_ENV,
@@ -495,16 +496,28 @@ def run_blackbox_scheme_subprocess(
                 expected_refresh_date=expected_refresh_date,
             )
         calendar = get_calendar(engine)
-        if metadata.frequency == "daily":
+        if metadata.task_type in PERIOD_AVERAGE_TASK_TYPES:
+            feature_date = resolve_live_context(
+                metadata,
+                predict_date=predict_date,
+                calendar=calendar,
+            ).feature_date
+        elif metadata.frequency == "daily":
             feature_date = build_daily_live_context(
                 calendar,
                 predict_date,
                 horizon=metadata.horizon,
             ).feature_date
         elif metadata.frequency == "weekly":
-            feature_date = build_weekly_live_context(calendar, predict_date).feature_date
+            feature_date = build_weekly_live_context(
+                calendar,
+                predict_date,
+            ).feature_date
         else:
-            feature_date = build_monthly_live_context(calendar, predict_date).feature_date
+            feature_date = build_monthly_live_context(
+                calendar,
+                predict_date,
+            ).feature_date
         cutoffs = resolve_blackbox_input_cutoffs(
             snapshot,
             feature_date=feature_date,

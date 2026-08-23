@@ -121,6 +121,13 @@ class CalendarService:
             f"no trading day found for week_id={wid} in api_wind_date/t_trade_calendar"
         )
 
+    def period_calendar_rows(self) -> tuple[dict[str, object], ...]:
+        """返回周期桶纯函数所需的完整日历快照。"""
+        return tuple(
+            {"rdate": rdate, "trade_flag": flag}
+            for rdate, flag in self._calendar_rows
+        )
+
     @cached_property
     def _calendar_rows(self) -> tuple[tuple[str, object], ...]:
         """一次载入并冻结整张工作日历。"""

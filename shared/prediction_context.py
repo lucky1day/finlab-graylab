@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
+from shared.period_average_buckets import bucket_for_anchor, target_pointer
+
 
 WEEKLY_TARGET_RULE = "next_week_last_trading_day_vs_current_week_last_trading_day"
 WEEKLY_AVERAGE_TARGET_RULE = "next_week_average_yield_vs_current_week_average_yield"
@@ -35,6 +37,14 @@ class MonthlyLiveContext:
     target_month_id: str
     target_date: str
     target_rule: str = MONTHLY_TARGET_RULE
+
+
+@dataclass(frozen=True)
+class PeriodAverageLiveContext:
+    """周期均值 live Request 的锚点与目标周期指针。"""
+
+    feature_date: str
+    target_date: str
 
 
 def build_daily_live_context(calendar: Any, predict_date: str, *, horizon: int) -> DailyLiveContext:
@@ -147,6 +157,25 @@ def build_monthly_live_context(calendar: Any, predict_date: str) -> MonthlyLiveC
         feature_month_id=trigger.strftime("%Y-%m"),
         target_month_id=target_anchor.strftime("%Y-%m"),
         target_date=target_date,
+    )
+
+
+def build_period_average_live_context(
+    calendar: Any,
+    predict_date: str,
+    *,
+    task_type: str,
+) -> PeriodAverageLiveContext:
+    """周期均值实盘语义：锚点日收盘发信号，目标日为后一自然日指针。"""
+    try:
+        rows = calendar.period_calendar_rows()
+    except AttributeError as exc:
+        raise ValueError("calendar does not expose period calendar rows") from exc
+    bucket = bucket_for_anchor(task_type, predict_date, rows)
+    feature_date = bucket.anchor_date
+    return PeriodAverageLiveContext(
+        feature_date=feature_date,
+        target_date=target_pointer(feature_date),
     )
 
 
