@@ -478,7 +478,12 @@ def _run_publish_with_retries(
     return result if result is not None else _refresh_failure("publish")
 
 
-def run_command(mode: Mode, *, refresh_date: str) -> tuple[int, dict[str, object]]:
+def run_command(
+    mode: Mode,
+    *,
+    refresh_date: str,
+    expected_feature_date: str | None = None,
+) -> tuple[int, dict[str, object]]:
     if (
         mode == "publish"
         and os.getenv(DATABRIDGE_PRODUCER_ENV)
@@ -505,7 +510,18 @@ def run_command(mode: Mode, *, refresh_date: str) -> tuple[int, dict[str, object
         }
     try:
         config = DataBridgeRefreshConfig.from_env()
-        expected_feature_date = expected_daily_date(refresh_date=refresh_date)
+        resolved_feature_date = (
+            str(expected_feature_date)
+            if expected_feature_date is not None
+            else expected_daily_date(refresh_date=refresh_date)
+        )
+        parsed_refresh_date = datetime.strptime(refresh_date, "%Y-%m-%d").date()
+        parsed_feature_date = datetime.strptime(
+            resolved_feature_date,
+            "%Y-%m-%d",
+        ).date()
+        if parsed_feature_date > parsed_refresh_date:
+            raise ValueError("expected feature date cannot exceed refresh date")
     except (DataBridgeRefreshError, DataBridgeValidationError) as exc:
         return _refresh_failure(mode, failure_category=_failure_category(exc))
     except (OSError, ValueError, SQLAlchemyError):
@@ -517,7 +533,7 @@ def run_command(mode: Mode, *, refresh_date: str) -> tuple[int, dict[str, object
             mode,
             refresh_date=refresh_date,
             config=config,
-            expected_feature_date=expected_feature_date,
+            expected_feature_date=resolved_feature_date,
         )
     try:
         with _publisher_lock(config) as acquired:
@@ -530,13 +546,13 @@ def run_command(mode: Mode, *, refresh_date: str) -> tuple[int, dict[str, object
             return _run_publish_with_retries(
                 refresh_date=refresh_date,
                 config=config,
-                expected_feature_date=expected_feature_date,
+                expected_feature_date=resolved_feature_date,
             )
     except _ReadyGateWriteError:
         _try_write_blocked_gate(
             config,
             refresh_date=refresh_date,
-            expected_feature_date=expected_feature_date,
+            expected_feature_date=resolved_feature_date,
             check_name="refresh_failed",
         )
         return 1, {

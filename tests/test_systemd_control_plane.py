@@ -352,7 +352,7 @@ class SystemdControlPlaneTests(unittest.TestCase):
             data_bridge,
         )
 
-        for cadence in ("daily", "weekly", "monthly"):
+        for cadence in ("daily", "weekly"):
             service = contents[
                 f"bond-factor-lab-prediction-{cadence}.service"
             ]
@@ -366,6 +366,18 @@ class SystemdControlPlaneTests(unittest.TestCase):
                 f"--cadence {cadence}",
                 service,
             )
+
+        monthly = contents["bond-factor-lab-prediction-monthly.service"]
+        self.assertIn(
+            "python scripts/run_close_predictions.py --control-plane systemd",
+            monthly,
+        )
+        self.assertIn(
+            "Environment=BFL_DATABRIDGE_PRODUCER=systemd-one-shot",
+            monthly,
+        )
+        self.assertIn("Environment=DATABRIDGE_REFRESH_START=18:00", monthly)
+        self.assertIn("Environment=DATABRIDGE_REFRESH_DEADLINE=18:55", monthly)
 
         self.assertIn(
             "python -m scheduler.actuals_runner",
@@ -383,7 +395,7 @@ class SystemdControlPlaneTests(unittest.TestCase):
                 "OnCalendar=Sat *-*-* 11:30:00 Asia/Shanghai",
             ),
             "bond-factor-lab-prediction-monthly.timer": (
-                "OnCalendar=*-*-15 18:00:00 Asia/Shanghai",
+                "OnCalendar=*-*-* 18:00:00 Asia/Shanghai",
             ),
             "bond-factor-lab-actuals.timer": (
                 "OnCalendar=*-*-* 08:30:00 Asia/Shanghai",

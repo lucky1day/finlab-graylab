@@ -36,6 +36,7 @@ from scheduler.repository import (
 from scheduler.v2_daily_gate import V2DailyGateBlocked, require_v2_daily_ready
 from shared.calendar_service import get_calendar
 from shared.prediction_context import is_weekly_signal_date
+from shared.prediction_context import build_monthly_live_context
 from shared.period_average_buckets import period_anchor_dates
 from shared.task_specs import PERIOD_AVERAGE_TASK_TYPES
 from shared.data_bridge.refresh import DataBridgeRefreshConfig
@@ -453,7 +454,7 @@ def _run_one_shot(
             data_bridge_dependents = [
                 cfg
                 for cfg in candidates
-                if normalized_cadence in {"daily", "period_average"}
+                if normalized_cadence in {"daily", "monthly", "period_average"}
                 and _is_data_bridge_dependent(cfg)
             ]
             data_bridge_dependent_ids = {
@@ -478,6 +479,11 @@ def _run_one_shot(
                     expected_daily_date = (
                         normalized_date
                         if normalized_cadence == "period_average"
+                        else build_monthly_live_context(
+                            calendar,
+                            normalized_date,
+                        ).feature_date
+                        if normalized_cadence == "monthly"
                         else str(calendar.previous_trading_day(normalized_date))[:10]
                     )
                 except Exception:  # noqa: BLE001 - preserve calendar isolation
