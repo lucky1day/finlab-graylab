@@ -4,6 +4,7 @@ import pytest
 
 from migrations.runner import (
     MigrationPreflightError,
+    _show_create_mentions_serving_pointer,
     validate_mysql_session_contract,
 )
 
@@ -48,3 +49,49 @@ def test_general_migration_rejects_unknown_identifier_mode() -> None:
         match="unsupported lower_case_table_names",
     ):
         validate_mysql_session_contract(_safe_facts("unknown"))
+
+
+class _ShowCreateResult:
+    def __init__(self, definition: str) -> None:
+        self._definition = definition
+
+    def mappings(self) -> _ShowCreateResult:
+        return self
+
+    def one(self) -> dict[str, str]:
+        return {"Create Procedure": self._definition}
+
+
+class _ShowCreateConnection:
+    def __init__(self, definition: str) -> None:
+        self._definition = definition
+        self.statement = ""
+
+    def execute(self, statement: object) -> _ShowCreateResult:
+        self.statement = str(statement)
+        return _ShowCreateResult(self._definition)
+
+
+def test_hidden_routine_definition_uses_show_create() -> None:
+    connection = _ShowCreateConnection(
+        "CREATE PROCEDURE `p` () SELECT 1"
+    )
+    assert not _show_create_mentions_serving_pointer(
+        connection,
+        object_type="PROCEDURE",
+        object_schema="bond_db",
+        object_name="p",
+    )
+    assert connection.statement == "SHOW CREATE PROCEDURE `bond_db`.`p`"
+
+
+def test_hidden_definition_detects_actual_pointer_dependency() -> None:
+    connection = _ShowCreateConnection(
+        "CREATE VIEW `v` AS SELECT * FROM t_scheme_serving_pointer"
+    )
+    assert _show_create_mentions_serving_pointer(
+        connection,
+        object_type="VIEW",
+        object_schema="bond_db",
+        object_name="v",
+    )

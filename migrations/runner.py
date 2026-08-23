@@ -5479,6 +5479,65 @@ def _normalize_serving_pointer_foreign_keys(
     }
 
 
+def _quote_mysql_identifier(value: object) -> str:
+    """引用来自 information_schema 的 MySQL 标识符。"""
+    return f"`{str(value).replace('`', '``')}`"
+
+
+def _show_create_mentions_serving_pointer(
+    connection: object,
+    *,
+    object_type: str,
+    object_schema: object,
+    object_name: object,
+) -> bool:
+    """在 I_S 隐藏定义时以 SHOW CREATE 完成依赖判定。"""
+    normalized_type = object_type.upper()
+    if normalized_type not in {
+        "VIEW",
+        "TRIGGER",
+        "PROCEDURE",
+        "FUNCTION",
+        "EVENT",
+    }:
+        raise MigrationPreflightError(
+            f"unsupported SHOW CREATE object type: {object_type!r}"
+        )
+    qualified_name = (
+        f"{_quote_mysql_identifier(object_schema)}."
+        f"{_quote_mysql_identifier(object_name)}"
+    )
+    try:
+        row = connection.execute(
+            text(f"SHOW CREATE {normalized_type} {qualified_name}")
+        ).mappings().one()
+    except BaseException as exc:
+        raise MigrationPreflightError(
+            "cannot inspect hidden definition before retiring "
+            "t_scheme_serving_pointer: "
+            f"{normalized_type.lower()} {object_schema}.{object_name}"
+        ) from exc
+    definition = "\n".join(str(value) for value in row.values()).lower()
+    return "t_scheme_serving_pointer" in definition
+
+
+def _serving_pointer_dependency_visible(
+    connection: object,
+    row: Mapping[str, object],
+    *,
+    object_type: str,
+) -> bool:
+    """保留显式匹配项，并消解 definition=NULL 的保守候选。"""
+    if not bool(row.get("definition_is_null")):
+        return True
+    return _show_create_mentions_serving_pointer(
+        connection,
+        object_type=object_type,
+        object_schema=row["object_schema"],
+        object_name=row["object_name"],
+    )
+
+
 def _read_serving_pointer_dependent_objects(
     connection: object,
 ) -> dict[str, tuple[str, ...]]:
@@ -5487,7 +5546,8 @@ def _read_serving_pointer_dependent_objects(
         text(
             """
             SELECT table_schema AS object_schema,
-                   table_name AS object_name
+                   table_name AS object_name,
+                   view_definition IS NULL AS definition_is_null
             FROM information_schema.views
             WHERE view_definition IS NULL
                OR LOWER(view_definition) LIKE '%t_scheme_serving_pointer%'
@@ -5499,7 +5559,8 @@ def _read_serving_pointer_dependent_objects(
         text(
             """
             SELECT trigger_schema AS object_schema,
-                   trigger_name AS object_name
+                   trigger_name AS object_name,
+                   action_statement IS NULL AS definition_is_null
             FROM information_schema.triggers
             WHERE (
                 event_object_schema = DATABASE()
@@ -5516,7 +5577,8 @@ def _read_serving_pointer_dependent_objects(
             """
             SELECT routine_schema AS object_schema,
                    routine_type AS routine_type,
-                   routine_name AS routine_name
+                   routine_name AS object_name,
+                   routine_definition IS NULL AS definition_is_null
             FROM information_schema.routines
             WHERE routine_definition IS NULL
                OR LOWER(routine_definition) LIKE '%t_scheme_serving_pointer%'
@@ -5528,7 +5590,8 @@ def _read_serving_pointer_dependent_objects(
         text(
             """
             SELECT event_schema AS object_schema,
-                   event_name AS object_name
+                   event_name AS object_name,
+                   event_definition IS NULL AS definition_is_null
             FROM information_schema.events
             WHERE event_definition IS NULL
                OR LOWER(event_definition) LIKE '%t_scheme_serving_pointer%'
@@ -5542,6 +5605,11 @@ def _read_serving_pointer_dependent_objects(
                 f"{str(row['object_schema']).lower()}."
                 f"{str(row['object_name']).lower()}"
                 for row in view_rows
+                if _serving_pointer_dependency_visible(
+                    connection,
+                    row,
+                    object_type="VIEW",
+                )
             )
         ),
         "triggers": tuple(
@@ -5549,14 +5617,24 @@ def _read_serving_pointer_dependent_objects(
                 f"{str(row['object_schema']).lower()}."
                 f"{str(row['object_name']).lower()}"
                 for row in trigger_rows
+                if _serving_pointer_dependency_visible(
+                    connection,
+                    row,
+                    object_type="TRIGGER",
+                )
             )
         ),
         "routines": tuple(
             sorted(
                 f"{str(row['object_schema']).lower()}."
                 f"{str(row['routine_type']).lower()}:"
-                f"{str(row['routine_name']).lower()}"
+                f"{str(row['object_name']).lower()}"
                 for row in routine_rows
+                if _serving_pointer_dependency_visible(
+                    connection,
+                    row,
+                    object_type=str(row["routine_type"]),
+                )
             )
         ),
         "events": tuple(
@@ -5564,6 +5642,11 @@ def _read_serving_pointer_dependent_objects(
                 f"{str(row['object_schema']).lower()}."
                 f"{str(row['object_name']).lower()}"
                 for row in event_rows
+                if _serving_pointer_dependency_visible(
+                    connection,
+                    row,
+                    object_type="EVENT",
+                )
             )
         ),
     }
