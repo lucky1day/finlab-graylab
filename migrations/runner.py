@@ -2000,8 +2000,15 @@ def read_legacy_016_baseline(
 
 def validate_mysql_session_contract(
     facts: Mapping[str, object],
+    *,
+    require_reviewed_constraint_namespace: bool = False,
 ) -> None:
-    """校验 migration 所需的 MySQL session 安全前提。"""
+    """校验 migration 所需的 MySQL session 安全前提。
+
+    只有 migration 017 的约束命名空间实现依赖
+    ``lower_case_table_names=2``；其余 migration 的 canonical 标识符均为
+    小写，可在 MySQL 支持的 0/1/2 三种模式下安全核验与执行。
+    """
     server_version = str(facts.get("server_version") or "").strip()
     version_comment = str(facts.get("version_comment") or "").strip()
     if "mariadb" in f"{server_version} {version_comment}".lower():
@@ -2053,14 +2060,26 @@ def validate_mysql_session_contract(
         )
     except (TypeError, ValueError):
         lower_case_table_names = -1
-    if lower_case_table_names != 2:
+    if lower_case_table_names not in {0, 1, 2}:
         raise MigrationPreflightError(
-            "migration requires lower_case_table_names=2 for the "
+            "migration found unsupported lower_case_table_names="
+            f"{lower_case_table_names}"
+        )
+    if (
+        require_reviewed_constraint_namespace
+        and lower_case_table_names != 2
+    ):
+        raise MigrationPreflightError(
+            "migration 017 requires lower_case_table_names=2 for the "
             "reviewed constraint namespace semantics"
         )
 
 
-def preflight_migration_session(connection: object) -> None:
+def preflight_migration_session(
+    connection: object,
+    *,
+    require_reviewed_constraint_namespace: bool = False,
+) -> None:
     """在任何 migration DDL 前校验连接级安全契约。"""
     if getattr(connection.dialect, "name", None) != "mysql":
         return
@@ -2076,7 +2095,12 @@ def preflight_migration_session(connection: object) -> None:
             """
         )
     ).mappings().one()
-    validate_mysql_session_contract(facts)
+    validate_mysql_session_contract(
+        facts,
+        require_reviewed_constraint_namespace=(
+            require_reviewed_constraint_namespace
+        ),
+    )
 
 
 def _canonical_check_clause(value: object) -> str:
@@ -6305,7 +6329,10 @@ def _execute_prepared_migration_files(
                     getattr(connection.dialect, "name", None)
                     == "mysql"
                 )
-                preflight_migration_session(connection)
+                preflight_migration_session(
+                    connection,
+                    require_reviewed_constraint_namespace=daily_ledger,
+                )
                 if daily_ledger and mysql_session:
                     preflight_daily_ledger_upgrade(connection)
                     connection.execute(
@@ -6346,7 +6373,10 @@ def _execute_prepared_migration_files(
         if daily_ledger and mysql_session and execution_started:
             try:
                 with engine.begin() as connection:
-                    preflight_migration_session(connection)
+                    preflight_migration_session(
+                        connection,
+                        require_reviewed_constraint_namespace=True,
+                    )
                     fingerprint = (
                         read_daily_ledger_schema_fingerprint(connection)
                     )
