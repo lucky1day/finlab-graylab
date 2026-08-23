@@ -14,6 +14,13 @@ MATRIX_PATH = PROJECT_ROOT / "deploy" / "scheme_deployment_matrix_v1.json"
 MAC3_TARGET = "mac3-production"
 ALIYUN_TARGET = "aliyun-gray"
 WEEKLY_1Y_CAUSAL_SCHEME_ID = "weekly_1y_causal_v1_31_0_standalone"
+M0_WEEKLY_AVG_SCHEME_IDS = (
+    "m0_weekly_avg_1y_v1",
+    "m0_weekly_avg_3y_v1",
+    "m0_weekly_avg_5y_v1",
+    "m0_weekly_avg_7y_v1",
+    "m0_weekly_avg_10y_v1",
+)
 MAC_ONLY_SCHEME_IDS = frozenset(
     {
         "daily_10y_lgbm_10y04_0629",
@@ -77,6 +84,12 @@ def test_weekly_1y_causal_is_deployed_to_both_targets() -> None:
         MAC3_TARGET,
         ALIYUN_TARGET,
     ]
+
+
+def test_m0_weekly_average_schemes_are_deployed_to_both_targets() -> None:
+    matrix = _matrix_schemes()
+    for scheme_id in M0_WEEKLY_AVG_SCHEME_IDS:
+        assert matrix[scheme_id] == [MAC3_TARGET, ALIYUN_TARGET], scheme_id
 
 
 def test_matrix_covers_every_discovered_scheme_exactly_once() -> None:
