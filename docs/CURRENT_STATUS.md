@@ -58,15 +58,8 @@
   one-shot 当前空闲。daily 保持工作日 07:03，weekly 保持既有触发，monthly 每日 18:00。
 - 2026-08-21 日频缺口终态为 `expected=48 / present=48 / actionable=0 / blocked=0`；2026-08-22 周频缺口
   终态为 `expected=21 / present=21 / actionable=0 / blocked=0`。
-- 前一轮新增 27 个唯一 insert-only `gray_live` 业务键，其中 19 条由 ECS 同 release 的既有
-  `scheduled_live` 核心结果精确复制，3 条 ECS 不存在的周均结果在 Mac3 受控计算，另 5 条在此前聚焦补缺
-  中完成；随后对 8 个近期 Blackbox 方案完成 `2026-06-01` target 边界重分区。Mac3 直接复用各自旧
-  canonical 回测结果，新增 188 条 insert-only `gray_live`，其中两个日频方案各 58 条、六个周频方案各
-  12 条；`t_scheme_predictions` 当前为 3281 条。迁移记录的方向、置信度、`feature_date`、`target_date`
-  和 actual/准确率事实与 Mac3 源回测逐条一致，未重新执行算法。
-- 8 个新 canonical backtest run 为 `227–234`，每个 run 的最大 `target_date` 均为 `2026-05-29`；旧 run
-  保持不可变且不再被 latest-success 规则选中。新 canonical 与 live 的 target 零重叠，受影响方案的回测
-  月份止于 2026-05、gray live 从 2026-06 开始，`2026-08` 只保留一条 live 月度展示。
+- 既有 active 方案的 `2026-06-01` target 边界已完成 canonical backtest / live 重分区；历史 run 与
+  insert-only live 记录保持不可变，当前 latest-success 与 live target 零重叠。
 - Mac3 当前有 73 个 active base scheme、77 个 active composite Registry。单一 Dashboard 快照 HTTP 200，
   77 行中 `present=69 / not_due=8 / missing=0`；重分区后 73/73 base DashboardGate、77/77 composite target
   全部通过。
@@ -80,9 +73,8 @@
   active，loopback 页面和 Dashboard 均 HTTP 200。
 - installed DataBridge、daily、weekly、monthly service 均不读取历史
   `/run/bond-factor-lab/manual-run.env`；monthly timer 每日 18:00 运行 close-period 到期判断。
-- ECS 同样完成上述 8 个方案的本地结果重分区：新增 188 条 insert-only `gray_live`；新 canonical
-  backtest run 为 `229–236`，最大 target 均为 `2026-05-29`，与 live target 零重叠。ECS 逐条保留自己的
-  源方向和准确率事实，不用 Mac3 结果覆盖；两端历史 snapshot 原有的 8 个方向差异继续保持。
+- ECS 既有 active 方案也已完成 canonical backtest / live 重分区；其结果保持本机输入与数据库 authority，
+  不用 Mac3 结果覆盖。
 - 本轮 15 个 M0 周期均值方案激活后，ECS active base/composite 从 `64/68` 增至 `79/83`。Dashboard
   payload 全局契约通过，15 个新 composite 均通过 DashboardGate；loopback HTML、JS、CSS、SVG、health 和
   Dashboard 为 HTTP 200。浏览器读回三类 M0 排行、owner、样本数和准确率正常，控制台无 warning/error。

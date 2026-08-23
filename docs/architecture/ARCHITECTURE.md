@@ -3,8 +3,8 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：平台开发和架构审计人员
-**最后核验日期**：2026-08-20
-**版本**：v1.4
+**最后核验日期**：2026-08-24
+**版本**：v1.5
 
 > 本文是**系统架构**（部署、DB schema、API 契约、数据流）。代码层面的分层、包依赖方向规则、运行时调用图与扩展模型见 [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md)（代码架构主蓝图）。
 > 预测日期与实盘阶段语义以 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) 为准。
@@ -26,7 +26,7 @@ Mac3 生产
 阿里云 ECS 独立灰度
 ├─ systemd + installed service/timer
 ├─ localhost FastAPI / frontend
-├─ DataBridge / 56 active base / Actuals one-shot
+├─ DataBridge / active Registry / Actuals one-shot
 └─ ECS loopback MySQL bond_db
 
 两端
