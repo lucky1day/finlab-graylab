@@ -8,9 +8,7 @@
 
 ## 当前队列
 
-当前部署迁移、双主机 R4 前端颜色 release 晋级、Native active completion 隔离 MySQL 三态及
-共享 repository 写入核心验收已经闭环，不再作为待办；Blackbox 入口本次由本地完整回归覆盖，不表述为
-已单独真库调用。剩余工作均为新的开发或未来生产项目：
+本页只保留尚未闭环的观察、诊断与未来生产项目：
 
 1. `five_y_factor_rule_online_v1` 与 `ten_y_factor_level_ensemble_v1` 已完成 ECS 技术 Gate、shadow、
    canonical backtest、activation、`gray_live` 和 DashboardGate，当前状态为 Onboarding Complete。等待
@@ -19,12 +17,9 @@
 2. 独立诊断 Mac3 2026-08-21 daily 的 17 个 `execution_failed`。该批次已结束且无残留 runner，
    本次 R4 发布未重跑、未补写、未修改其历史 run；诊断须先按失败原因分组和读取既有 run/log evidence，
    不得把前端发布成功外推为 daily 已恢复，也不得在没有新的业务写入授权时手工重跑。
-3. 前端颜色阶段已在 ECS 灰度与 Mac3 生产完成；后续前端优化继续按独立需求、独立验收和 ECS-first release 推进。
-   每个新方案各自接收独立的 Blackbox V2 两文件交付，分别走 Intake/Gate/ECS-only activation，
-   不把多个方案绑成一个提交、发布或回滚单元。
-4. 若未来决定把生产域名或 Writer 从 Mac3 切到 ECS，必须作为新的生产项目重新设计 Web、数据库
+3. 若未来决定把生产域名或 Writer 从 Mac3 切到 ECS，必须作为新的生产项目重新设计 Web、数据库
    authority、单 Writer、DNS/Nginx、切换窗口和回滚范围，不能从当前灰度或 immutable release 验收外推授权。
-5. 独立评估 systemd/launchd runner 的 CLI 日期入口；设计并取得生产授权后替换 ECS installed
+4. 独立评估 systemd/launchd runner 的 CLI 日期入口；设计并取得生产授权后替换 ECS installed
    DataBridge、daily、weekly、monthly 四个 unit，执行 `systemctl daemon-reload` 并读回现场状态。
    执行前只读确认 `/run/bond-factor-lab/manual-run.env` 不存在且相关 one-shot 任务 idle，不得从仓库
    模板变更外推现场状态或授权。
