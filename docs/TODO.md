@@ -10,11 +10,11 @@
 
 本页只保留尚未闭环的观察、诊断与未来生产项目：
 
-1. 月均、季均、年均三种 Blackbox V2 任务的基础建设尚待实施。本轮只建立统一任务规格、MID/CQ/SF
-   桶语义、通用周期 actual、单一收盘后 one-shot、现有 Dashboard API 和九列前端能力；不得提前 Intake
-   参考的 20 个 M0 方案，不应用 migration，不修改 ECS/Mac3 installed 调度，也不把平台 actual 与算法信号
-   混为一套计算。实施必须保持 `target_date` 直接计算，不增加业务桶 ID、季度/年度 cutoff key、三张 actual
-   表或三个调度器。
+1. 月均、季均、年均的代码基础已在 `codex/develop` 完成，但尚未晋级到 Mac3/ECS immutable release。
+   后续必须按环境分别执行只读 schema identity 核验、受控应用 migration 020、构建同一精确 archive、ECS
+   先晋级验证，再独立授权 installed close-period unit/timer；Mac3 如需晋级只能使用 ECS 已验证的同一 archive。
+   参考的 20 个 M0 方案仍未 Intake。不得跳过 migration 先部署会查询周期 actual 表的 Backend，也不得从
+   仓库模板或开发测试外推 installed 调度已生效。
 2. `five_y_factor_rule_online_v1` 与 `ten_y_factor_level_ensemble_v1` 已在 ECS、Mac3 分别完成技术 Gate、
    shadow、canonical backtest、activation、`gray_live` 和 DashboardGate，两端当前均为 Onboarding
    Complete。等待 2026-08-24 07:03 Asia/Shanghai 的首次真实 daily systemd/launchd 自然触发；触发后

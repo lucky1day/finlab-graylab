@@ -4,7 +4,7 @@
 
 **目标读者**：单人平台维护者和运维操作者
 
-**最后核验日期**：2026-08-10
+**最后核验日期**：2026-08-23
 
 本文只定义单个 Blackbox exact version 进入生产前必须满足的条件，不记录具体方案、历史 rollout、运行数量或一次性证据。操作步骤见[平台入库 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)，自然调度见[生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。
 
@@ -24,6 +24,10 @@
 6. activation 后 config、exact version 与全部 Registry target 均为 active；paused、draft、retired 或 cadence 不匹配的身份不得进入对应 one-shot runner。
 7. 激活后的 HTTP 验收只使用 `DashboardGate` 检查 `/api/factor-lab/dashboard` 当前业务可见性；Dashboard 响应不携带 exact version，不能替代 exact version、Gate 或生命周期证据。
 8. 自然生产观察必须由 installed plist、loaded state、日志、run、prediction、API/Dashboard 相互一致证明；仓库模板和测试不替代现场证据。
+9. `monthly_average`、`quarterly_average`、`annual_average` 方案进入目标环境前，必须先确认 migration 020
+   已由受控迁移入口应用且 closed-world schema 校验通过，再部署会读取周期 actual 表的 Backend。其自然运行
+   只允许复用 installed close-period 控制面；不得为三种任务分别增加 timer，或把仓库每日 18:00 模板当成
+   installed/loaded 证明。
 
 ## 生命周期异常
 

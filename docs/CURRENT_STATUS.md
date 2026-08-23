@@ -29,6 +29,18 @@
   `/Users/macstudio0/bond-factor-lab-runtime`，不再引用 Git 开发根。ECS 生产形态同样只运行 immutable
   release，不保留 Git checkout。
 
+## 周期均值基础建设候选
+
+- `codex/develop` 已完成 `monthly_average`、`quarterly_average`、`annual_average` 的平台代码基础：统一任务
+  规格、MID/CQ/SF 纯桶语义、Contract/Request/回测、通用周期 actual、close-period one-shot、现有
+  Dashboard/metrics 接入和九列前端。参考的 20 个 M0 方案没有被复制、执行或 Intake。
+- 当前 Mac3/ECS immutable `current` 仍是上节所列旧 release，不包含这组候选代码。migration 020 尚未应用，
+  仓库 close-period plist/unit 也未替换任何 installed 配置；因此不得把开发分支能力写成两端已经部署、
+  已调度或已产生月均/季均/年均信号。
+- 后续晋级顺序必须是：目标库只读 inspect 与受控应用 migration 020 → 从精确提交构建并验证 immutable
+  release → 分别核对并授权 installed close-period 控制面变更。具体方案 Intake、Gate、回测、activation、
+  gray live、DashboardGate 和自然观察是其后的独立入库项目。
+
 ## 调度与现场状态
 
 - ECS DataBridge、daily、weekly、monthly、Actuals 五个 timer 均已获授权并保持

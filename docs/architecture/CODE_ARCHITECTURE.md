@@ -151,8 +151,10 @@ launchd + plist 是真实生产调度控制面。任务是否挂载、触发时�
 `com.bond-factor-lab.scheduler` 模板；这不表示任何 installed plist 已被安装、停用、替换或
 物理删除。后续不得仅新增 Python job 或直调入口就宣称进入生产调度。
 
-当前目标入口由 launchd 的一次性 plist 触发：refresh、daily、weekly、monthly 和 actuals
-各自只有一个 writer。常驻 APScheduler 与 ledger/occurrence/epoch runtime 闭包均已从仓库移除；
+当前仓库目标入口由 launchd 的一次性 plist 触发：refresh、daily、weekly、close-period 和 actuals
+各自只有一个 writer。close-period 复用原 monthly plist，每日 18:00 先核验或按需刷新 DataBridge，再按
+明确 `task_type` 分派自然月 15 日的月中收和当日到期的 MID/CQ/SF 周期均值；普通日期 no-op。它不增加
+第二个 timer 或常驻控制面。常驻 APScheduler 与 ledger/occurrence/epoch runtime 闭包均已从仓库移除；
 历史 migration/数据库对象只作为审计和受控 recovery 证据，不能被加入新的或过渡生产路径。
 Backend 只提供查询与既有管理接口，不注册手动预测路由；daily-gray 与 v2-preflight 的 repo
 writer/template 已退役并移除。完整治理规则见[生产信号与调度治理](PRODUCTION_SCHEDULING_GOVERNANCE.md)。

@@ -301,8 +301,9 @@ DataBridge 为 Blackbox 日/周/月任务提供标准三频 artifact；每次自
 business/feature date 或关联摘要任一漂移时 fail-closed；结构完整的旧 current 也不能
 作为 `scheduled_live` fallback。
 
-生产时钟只可由 launchd + installed plist 触发。refresh、daily、weekly、monthly 与
-actuals 各有一个 writer；旧 preflight、scheduler restart、per-scheme cron、ledger/
+生产时钟只可由 launchd + installed plist 触发。refresh、daily、weekly、close-period 与
+actuals 各有一个 writer；close-period 复用原 monthly 控制面，不新增月均/季均/年均三个 timer。
+旧 preflight、scheduler restart、per-scheme cron、ledger/
 occurrence/epoch 都不能成为第二入口。具体时点、installed state 与观察证据以
 [生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)和带日期状态记录
 为准，不在本 SOP 中冻结方案数量或 release 队列。
@@ -313,7 +314,7 @@ occurrence/epoch 都不能成为第二入口。具体时点、installed state �
 
 ### 2.6 自然 launchd one-shot 候选
 
-自然 launchd one-shot 的候选集合只由严格发现后的生命周期与 cadence 决定：配置必须为 `status=active`，Blackbox 对应的 exact version 必须为 `version_status=active`，并且 `frequency` 与本次 runner 的 cadence 一致。`paused`、`draft` 或其它 cadence 不进入本批次；除此之外不再设置 release queue、`mode` 或 capability 筛选。
+自然 launchd one-shot 的候选集合只由严格发现后的生命周期与明确任务规格决定：配置必须为 `status=active`，Blackbox 对应的 exact version 必须为 `version_status=active`。daily/weekly 继续按各自 cadence 选择；close-period 在自然月 15 日只选择 `monthly`，在 MID/CQ/SF 锚点只选择到期的 `monthly_average/quarterly_average/annual_average`，不得仅凭 `frequency` 或 `horizon` 混选。`paused`、`draft` 或其它任务不进入本批次；除此之外不再设置 release queue、`mode` 或 capability 筛选。
 
 因此，ActivationGate 在原有 Gate、生产准备核验和专项授权下把配置与 exact version 原子建立为 active 后，该方案自然进入相同 cadence 的 launchd one-shot 候选集合；这不放宽激活前置条件，也不安装 plist、不改变 loaded state、不重启服务。
 
