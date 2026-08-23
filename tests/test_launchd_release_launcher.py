@@ -123,6 +123,23 @@ def test_launchd_templates_use_immutable_current_release() -> None:
         ), name
 
 
+def test_monthly_template_uses_explicit_refresh_window_arguments() -> None:
+    path = LAUNCHD_ROOT / "com.bond-factor-lab.monthly-predictions.plist"
+    with path.open("rb") as handle:
+        payload = plistlib.load(handle)
+
+    environment = payload["EnvironmentVariables"]
+    assert "DATABRIDGE_REFRESH_START" not in environment
+    assert "DATABRIDGE_REFRESH_DEADLINE" not in environment
+    arguments = payload["ProgramArguments"]
+    assert arguments[-4:] == [
+        "--refresh-start",
+        "18:00",
+        "--refresh-deadline",
+        "18:55",
+    ]
+
+
 def test_no_launchd_template_depends_on_git_worktree() -> None:
     log_paths: set[str] = set()
     for path in LAUNCHD_ROOT.glob("*.plist"):
@@ -420,6 +437,23 @@ def test_prepare_environment_merges_service_values_and_rejects_conflict(
 
     with pytest.raises(LaunchdReleaseError, match="service key"):
         prepare_exec_environment(release, {"BOND_DB_HOST": "wrong-host"})
+
+
+def test_prepare_environment_keeps_global_morning_refresh_window(
+    tmp_path: Path,
+) -> None:
+    release = _release(tmp_path)
+    _rewrite_service_environment(
+        release,
+        lambda value: value
+        + "DATABRIDGE_REFRESH_START=05:30\n"
+        + "DATABRIDGE_REFRESH_DEADLINE=06:45\n",
+    )
+
+    merged = prepare_exec_environment(release, {})
+
+    assert merged["DATABRIDGE_REFRESH_START"] == "05:30"
+    assert merged["DATABRIDGE_REFRESH_DEADLINE"] == "06:45"
 
 
 @pytest.mark.parametrize("name", ["PYTHONPATH", "PYTHONHOME"])

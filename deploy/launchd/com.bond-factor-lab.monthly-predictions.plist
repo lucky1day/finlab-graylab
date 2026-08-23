@@ -5,10 +5,10 @@
   <key>WorkingDirectory</key><string>/Users/macstudio0/bond-factor-lab-production/current</string>
   <key>ProgramArguments</key><array>
     <string>/usr/bin/python3</string><string>-I</string><string>scripts/run_launchd_release.py</string><string>--</string>
-    <string>/Users/macstudio0/miniconda3/bin/conda</string><string>run</string><string>--no-capture-output</string><string>-n</string><string>bond_factor_lab_service</string><string>python</string><string>scripts/run_close_predictions.py</string><string>--control-plane</string><string>launchd</string>
+    <string>/Users/macstudio0/miniconda3/bin/conda</string><string>run</string><string>--no-capture-output</string><string>-n</string><string>bond_factor_lab_service</string><string>python</string><string>scripts/run_close_predictions.py</string><string>--control-plane</string><string>launchd</string><string>--refresh-start</string><string>18:00</string><string>--refresh-deadline</string><string>18:55</string>
   </array>
   <key>EnvironmentVariables</key><dict>
-    <key>PYTHONNOUSERSITE</key><string>1</string><key>BFL_DEPLOYMENT_TARGET</key><string>mac3-production</string><key>BOND_ALGO_CONDA_ENV</key><string>forecast_env</string><key>BFL_SOURCE_DB_CONFIG_ROOT</key><string>/Users/macstudio0/.config/bond-factor-lab</string><key>BFL_SOURCE_DB_CONFIG_PATH</key><string>/Users/macstudio0/.config/bond-factor-lab/source-runtime-db.json</string><key>BFL_DATABRIDGE_PRODUCER</key><string>launchd-one-shot</string><key>DATABRIDGE_REFRESH_START</key><string>18:00</string><key>DATABRIDGE_REFRESH_DEADLINE</key><string>18:55</string>
+    <key>PYTHONNOUSERSITE</key><string>1</string><key>BFL_DEPLOYMENT_TARGET</key><string>mac3-production</string><key>BOND_ALGO_CONDA_ENV</key><string>forecast_env</string><key>BFL_SOURCE_DB_CONFIG_ROOT</key><string>/Users/macstudio0/.config/bond-factor-lab</string><key>BFL_SOURCE_DB_CONFIG_PATH</key><string>/Users/macstudio0/.config/bond-factor-lab/source-runtime-db.json</string><key>BFL_DATABRIDGE_PRODUCER</key><string>launchd-one-shot</string>
   </dict>
   <key>StartCalendarInterval</key><dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>0</integer></dict>
   <key>RunAtLoad</key><false/>

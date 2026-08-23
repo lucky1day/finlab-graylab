@@ -225,6 +225,53 @@ class SystemdControlPlaneTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(payload["status"], "ok")
 
+    def test_databridge_publish_accepts_explicit_job_refresh_window(
+        self,
+    ) -> None:
+        from scripts import refresh_data_bridge_current as entry
+
+        config = object()
+        with (
+            patch.dict(
+                os.environ,
+                {"BFL_DATABRIDGE_PRODUCER": "launchd-one-shot"},
+                clear=False,
+            ),
+            patch.object(
+                entry.DataBridgeRefreshConfig,
+                "from_env",
+                return_value=config,
+            ) as config_factory,
+            patch.object(
+                entry,
+                "expected_daily_date",
+                return_value="2026-08-14",
+            ),
+            patch.object(
+                entry,
+                "_publisher_lock",
+                return_value=nullcontext(True),
+            ),
+            patch.object(
+                entry,
+                "_run_publish_with_retries",
+                return_value=(0, {"status": "ok", "mode": "publish"}),
+            ),
+        ):
+            code, payload = entry.run_command(
+                "publish",
+                refresh_date="2026-08-17",
+                refresh_start="18:00",
+                refresh_deadline="18:55",
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["status"], "ok")
+        config_factory.assert_called_once_with(
+            refresh_start="18:00",
+            refresh_deadline="18:55",
+        )
+
     def test_databridge_publish_rejects_noncanonical_producers(self) -> None:
         from scripts import refresh_data_bridge_current as entry
 

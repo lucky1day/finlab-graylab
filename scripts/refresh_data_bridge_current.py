@@ -483,6 +483,8 @@ def run_command(
     *,
     refresh_date: str,
     expected_feature_date: str | None = None,
+    refresh_start: str | None = None,
+    refresh_deadline: str | None = None,
 ) -> tuple[int, dict[str, object]]:
     if (
         mode == "publish"
@@ -509,7 +511,10 @@ def run_command(
             "state": _check_only_state(current.state),
         }
     try:
-        config = DataBridgeRefreshConfig.from_env()
+        config = DataBridgeRefreshConfig.from_env(
+            refresh_start=refresh_start,
+            refresh_deadline=refresh_deadline,
+        )
         resolved_feature_date = (
             str(expected_feature_date)
             if expected_feature_date is not None

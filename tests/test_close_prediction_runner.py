@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from datetime import date, timedelta
 import os
 from pathlib import Path
@@ -7,6 +8,8 @@ import subprocess
 import sys
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+
+import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -144,12 +147,16 @@ def test_close_job_refreshes_once_then_runs_due_period_task() -> None:
             control_plane="launchd",
             predict_date="2024-03-29",
             algo_env="forecast_env",
+            refresh_start="18:00",
+            refresh_deadline="18:55",
         )
 
     refresh.assert_called_once_with(
         "publish",
         refresh_date="2024-03-29",
         expected_feature_date="2024-03-29",
+        refresh_start="18:00",
+        refresh_deadline="18:55",
     )
     run_prediction.assert_called_once_with(
         "period_average",
@@ -157,6 +164,31 @@ def test_close_job_refreshes_once_then_runs_due_period_task() -> None:
         algo_env="forecast_env",
     )
     assert result.outcome == "success"
+
+
+def test_close_job_rejects_partial_refresh_window_before_runtime_access() -> None:
+    from scripts import run_close_predictions as runner
+
+    with (
+        patch.object(runner, "discover_schemes") as discover,
+        pytest.raises(ValueError, match="requires both start and deadline"),
+    ):
+        runner.run_close_job(
+            control_plane="launchd",
+            predict_date="2024-03-29",
+            algo_env="forecast_env",
+            refresh_start="18:00",
+        )
+
+    discover.assert_not_called()
+
+
+@pytest.mark.parametrize("value", ["6:30", "24:00", "18:55:00", "bad"])
+def test_refresh_clock_requires_strict_hour_and_minute(value: str) -> None:
+    from scripts import run_close_predictions as runner
+
+    with pytest.raises(argparse.ArgumentTypeError):
+        runner._refresh_clock(value)
 
 
 def test_trading_day_15_refreshes_once_then_runs_monthly_and_period() -> None:

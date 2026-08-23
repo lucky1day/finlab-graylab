@@ -74,6 +74,20 @@ def _normalize_date(value: str) -> str:
     return date.fromisoformat(str(value)).isoformat()
 
 
+def _refresh_clock(value: str) -> str:
+    """校验显式 job 刷新窗口使用严格 HH:MM。"""
+    raw = str(value)
+    try:
+        parsed = datetime.strptime(raw, "%H:%M")
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "refresh window must use HH:MM"
+        ) from exc
+    if parsed.strftime("%H:%M") != raw:
+        raise argparse.ArgumentTypeError("refresh window must use HH:MM")
+    return raw
+
+
 def _runner_for_control_plane(control_plane: str) -> Callable[..., object]:
     if control_plane == "launchd":
         from scheduler.launchd_prediction_runner import run
@@ -90,9 +104,14 @@ def _is_current_ready(
     *,
     run_date: str,
     expected_feature_date: str,
+    refresh_start: str | None = None,
+    refresh_deadline: str | None = None,
 ) -> bool:
     """只读确认当日 ready 证据已覆盖期望 cutoff。"""
-    config = DataBridgeRefreshConfig.from_env()
+    config = DataBridgeRefreshConfig.from_env(
+        refresh_start=refresh_start,
+        refresh_deadline=refresh_deadline,
+    )
     try:
         require_v2_daily_ready(
             config,
@@ -109,8 +128,14 @@ def run_close_job(
     control_plane: str,
     predict_date: str,
     algo_env: str,
+    refresh_start: str | None = None,
+    refresh_deadline: str | None = None,
 ) -> CloseJobResult:
     """执行一次到期判断、单次刷新和顺序预测。"""
+    if (refresh_start is None) != (refresh_deadline is None):
+        raise ValueError(
+            "close prediction refresh window requires both start and deadline"
+        )
     normalized_date = _normalize_date(predict_date)
     try:
         control_plane_identity = CONTROL_PLANES[control_plane]
@@ -190,9 +215,18 @@ def run_close_job(
     refresh_status: str | None = None
     if refresh_required:
         assert expected_feature_date is not None
+        refresh_window = (
+            {}
+            if refresh_start is None
+            else {
+                "refresh_start": refresh_start,
+                "refresh_deadline": refresh_deadline,
+            }
+        )
         if _is_current_ready(
             run_date=normalized_date,
             expected_feature_date=expected_feature_date,
+            **refresh_window,
         ):
             refresh_status = "already_ready"
         else:
@@ -200,6 +234,7 @@ def run_close_job(
                 "publish",
                 refresh_date=normalized_date,
                 expected_feature_date=expected_feature_date,
+                **refresh_window,
             )
             refresh_status = str(refresh_payload.get("status") or "failed")
             if refresh_code != 0:
@@ -244,12 +279,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--control-plane", choices=sorted(CONTROL_PLANES), required=True)
     parser.add_argument("--predict-date", default=_today())
     parser.add_argument("--algo-env", default=os.getenv("BOND_ALGO_CONDA_ENV", "forecast_env"))
+    parser.add_argument("--refresh-start", type=_refresh_clock)
+    parser.add_argument("--refresh-deadline", type=_refresh_clock)
     args = parser.parse_args(argv)
     try:
         result = run_close_job(
             control_plane=args.control_plane,
             predict_date=args.predict_date,
             algo_env=args.algo_env,
+            refresh_start=args.refresh_start,
+            refresh_deadline=args.refresh_deadline,
         )
     except Exception:
         result = CloseJobResult(

@@ -164,7 +164,13 @@ class DataBridgeRefreshConfig:
     refresh_deadline: str = "06:55"
 
     @classmethod
-    def from_env(cls) -> "DataBridgeRefreshConfig":
+    def from_env(
+        cls,
+        *,
+        refresh_start: str | None = None,
+        refresh_deadline: str | None = None,
+    ) -> "DataBridgeRefreshConfig":
+        """读取主机配置，并允许调用方显式指定本次刷新窗口。"""
         project_root = Path(__file__).resolve().parents[2]
         config = cls(
             data_root=resolve_runtime_state_path(
@@ -186,8 +192,16 @@ class DataBridgeRefreshConfig:
             schema_path=project_root / "shared" / "blackbox_v2" / "data_bridge_v1_schema.json",
             daily_chunk_months=int(os.getenv("DATABRIDGE_DAILY_CHUNK_MONTHS", "3")),
             download_concurrency=int(os.getenv("DATABRIDGE_DOWNLOAD_CONCURRENCY", "4")),
-            refresh_start=os.getenv("DATABRIDGE_REFRESH_START", "06:30"),
-            refresh_deadline=os.getenv("DATABRIDGE_REFRESH_DEADLINE", "06:55"),
+            refresh_start=(
+                str(refresh_start)
+                if refresh_start is not None
+                else os.getenv("DATABRIDGE_REFRESH_START", "06:30")
+            ),
+            refresh_deadline=(
+                str(refresh_deadline)
+                if refresh_deadline is not None
+                else os.getenv("DATABRIDGE_REFRESH_DEADLINE", "06:55")
+            ),
         )
         if config.daily_chunk_months <= 0 or config.download_concurrency <= 0:
             raise ValueError("DataBridge chunk months and download concurrency must be positive")

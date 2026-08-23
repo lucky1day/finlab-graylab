@@ -118,6 +118,29 @@ def test_databridge_uses_unified_root_when_specific_roots_are_absent(
     assert config.runtime_root == (tmp_path / "data-bridge" / "refresh")
 
 
+def test_databridge_explicit_job_window_overrides_global_window(
+    tmp_path: Path,
+) -> None:
+    from shared.data_bridge.refresh import DataBridgeRefreshConfig
+
+    with patch.dict(
+        os.environ,
+        {
+            "BFL_RUNTIME_ROOT": str(tmp_path),
+            "DATABRIDGE_REFRESH_START": "05:30",
+            "DATABRIDGE_REFRESH_DEADLINE": "06:45",
+        },
+        clear=True,
+    ):
+        config = DataBridgeRefreshConfig.from_env(
+            refresh_start="18:00",
+            refresh_deadline="18:55",
+        )
+
+    assert config.refresh_start == "18:00"
+    assert config.refresh_deadline == "18:55"
+
+
 def test_runtime_consumers_share_the_unified_root(tmp_path: Path) -> None:
     from shared.blackbox_v2.lifecycle import lifecycle_root
     from shared.daily_0629_source_runner import (
