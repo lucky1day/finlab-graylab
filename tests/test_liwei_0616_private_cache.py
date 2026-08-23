@@ -438,7 +438,11 @@ def test_private_build_enables_independent_cold_output_comparison(
         CACHE_MUTATION_POLICY_PRIVATE_BUILD,
     )
     train = lambda baseline, ranges: {"baseline": baseline, "ranges": ranges}
-    full = lambda caches: (caches, caches)
+    full_calls = []
+
+    def full(caches):
+        full_calls.append(caches)
+        return {"caches": caches}
 
     compare_cold, compare_full = runtime_compare_gate_callbacks(
         train_phase_a=train,
@@ -451,7 +455,11 @@ def test_private_build_enables_independent_cold_output_comparison(
         "b", (("a", "z"),)
     )
     assert compare_full is not None
-    assert compare_full({"b": {}}) == ({"b": {}}, {"b": {}})
+    assert compare_full({"b": {}}) == (
+        {"caches": {"b": {}}},
+        {"caches": None},
+    )
+    assert full_calls == [{"b": {}}, None]
 
 
 def test_missing_current_rebuilds_instead_of_importing_v1_cache(

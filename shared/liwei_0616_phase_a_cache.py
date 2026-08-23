@@ -161,7 +161,7 @@ def runtime_compare_gate_callbacks(
             raise RuntimeError(
                 "private_build full output comparison is unavailable"
             )
-        return run_full_output(caches)
+        return run_full_output(caches), run_full_output(None)
 
     return (
         compare_cold,
