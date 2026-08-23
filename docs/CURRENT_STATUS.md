@@ -21,38 +21,42 @@
 
 ## 当前 release
 
-- Mac3 与 ECS `current` 均为 release `bbd7fe7dbf8f3ee7dc74b5d6dbae06af38d98b9d`。Mac3 `previous` 为
-  `59afc857c37eebb956adb200d9b1a05ed6a123f0`，ECS `previous` 为
-  `990fd4b96fcd7cfb9fad533179c645bac723b817`；两端使用同一份确定性 archive，SHA-256 为
-  `2957eb79038ad4db5bfe7b3a2ae12008741d960c740f6f52452b87d6d5b05137`。
+- ECS `current` 已晋级为 release `00558d175cdffd0d2aae4b51e1aea6e8adda8923`，`previous` 为
+  `bbd7fe7dbf8f3ee7dc74b5d6dbae06af38d98b9d`。该 release 由干净 Git 提交重复构建两次且字节一致，
+  archive SHA-256 为 `8f408ddb960ea514a45dc8cd9613a4e42515b922f1fc6a3f8015de2ddfeddc12`。
+- Mac3 本轮尚未晋级；最后已核验的 `current` 仍为
+  `bbd7fe7dbf8f3ee7dc74b5d6dbae06af38d98b9d`，`previous` 为
+  `59afc857c37eebb956adb200d9b1a05ed6a123f0`。后续只能使用上条已经 ECS 验证的同一 archive，不能从
+  新提交另建一份不同归档。
 - Mac3 生产应用从 `/Users/macstudio0/bond-factor-lab-production/current` 启动，运行状态位于
   `/Users/macstudio0/bond-factor-lab-runtime`，不再引用 Git 开发根。ECS 生产形态同样只运行 immutable
   release，不保留 Git checkout。
 
-## 周期均值基础建设候选
+## 周期均值基础建设部署状态
 
 - `codex/develop` 已完成 `monthly_average`、`quarterly_average`、`annual_average` 的平台代码基础：统一任务
   规格、MID/CQ/SF 纯桶语义、Contract/Request/回测、通用周期 actual、close-period one-shot、现有
   Dashboard/metrics 接入和九列前端。参考的 20 个 M0 方案没有被复制、执行或 Intake。
-- 当前 Mac3/ECS immutable `current` 仍是上节所列旧 release，不包含这组候选代码。migration 020 尚未应用，
-  仓库 close-period plist/unit 也未替换任何 installed 配置；因此不得把开发分支能力写成两端已经部署、
-  已调度或已产生月均/季均/年均信号。
-- 后续晋级顺序必须是：目标库只读 inspect 与受控应用 migration 020 → 从精确提交构建并验证 immutable
-  release → 分别核对并授权 installed close-period 控制面变更。具体方案 Intake、Gate、回测、activation、
-  gray live、DashboardGate 和自然观察是其后的独立入库项目。
+- ECS 已通过唯一受控 migration CLI 完成 018、019、020，历史均为 `APPLIED`；退役的
+  `t_scheme_serving_pointer` 已删除，`t_scheme_period_average_actuals` 已按闭世界目标形态创建。ECS Backend、
+  DataBridge/daily/monthly service 与 monthly timer 已从同一 immutable release 安装并读回一致。
+- ECS close-period timer 当前为 `enabled/active/waiting`，每天 18:00 运行到期判断；非到期日现场 one-shot
+  已验证为 `not_applicable / exit_code=0 / refresh_required=false`。线上 HTML/JS/CSS 摘要与 release 一致，
+  现有 56 个 active base scheme 的 DashboardGate 最终全部通过。
+- Mac3 的 migration 020、同一 archive 晋级和 installed monthly plist 切换尚未执行，因此不得把这组基础
+  能力写成双主机均已部署。参考的 20 个 M0 方案仍未 Intake，ECS 当前也尚未产生月均、季均、年均方案信号。
 
 ## 调度与现场状态
 
 - ECS DataBridge、daily、weekly、monthly、Actuals 五个 timer 均已获授权并保持
   `enabled/active/waiting`；任务是否成功仍由真实触发后的 service、run、prediction 和 Dashboard 证明。
-- ECS installed weekly service 已移除历史 `/run/bond-factor-lab/manual-run.env` 引用；DataBridge、daily、
-  monthly installed service 仍保留该旧可选引用，但该文件不存在，因此当前没有日期覆盖生效。替换 unit、
-  `daemon-reload` 或服务重启仍须独立授权。
+- ECS installed DataBridge、daily、weekly、monthly service 均不再读取历史
+  `/run/bond-factor-lab/manual-run.env`；monthly timer 已从每月 15 日改为每天 18:00 的 close-period 到期
+  判断入口，不新增第二调度控制面。
 - Mac3 2026-08-21 daily 的已知终态仍为 `partial`：25 个方案成功、17 个 `execution_failed`；当前无残留
   runner 或 running run。该历史批次尚未诊断闭环，也未获授权手工重跑。
-- Mac3 七个 installed plist 的只读 drift audit 为 `ok=true`；daily plist 保持工作日 07:03，当前 idle。
-  本轮没有替换或重载任何 plist/unit/timer；ECS daily 与 Mac3 daily 下一次自然触发均为
-  2026-08-24 07:03 Asia/Shanghai。
+- Mac3 七个 installed plist 的最后一次只读 drift audit 为 `ok=true`；daily plist 保持工作日 07:03。
+  本轮没有替换或重载 Mac3 plist；ECS 只替换并核验了上文列出的授权 unit/timer。
 
 ## 新方案入库状态
 

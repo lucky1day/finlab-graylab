@@ -10,11 +10,13 @@
 
 本页只保留尚未闭环的观察、诊断与未来生产项目：
 
-1. 月均、季均、年均的代码基础已在 `codex/develop` 完成，但尚未晋级到 Mac3/ECS immutable release。
-   后续必须按环境分别执行只读 schema identity 核验、受控应用 migration 020、构建同一精确 archive、ECS
-   先晋级验证，再独立授权 installed close-period unit/timer；Mac3 如需晋级只能使用 ECS 已验证的同一 archive。
-   参考的 20 个 M0 方案仍未 Intake。不得跳过 migration 先部署会查询周期 actual 表的 Backend，也不得从
-   仓库模板或开发测试外推 installed 调度已生效。
+1. 月均、季均、年均的平台基础已在 ECS 完成 migration 018–020、immutable release、installed
+   close-period systemd、线上静态资源和 56/56 active 方案 DashboardGate 核验。Mac3 仍须先只读取得精确
+   数据库身份，再受控应用 migration 020，并且只能晋级 ECS 已验证的 release
+   `00558d175cdffd0d2aae4b51e1aea6e8adda8923` 与 archive SHA-256
+   `8f408ddb960ea514a45dc8cd9613a4e42515b922f1fc6a3f8015de2ddfeddc12`；随后独立替换、加载并读回 monthly
+   plist。当前执行环境没有 Mac3 生产根或 SSH authority，不能猜测入口或把 ECS 结果外推为 Mac3 已完成。
+   参考的 20 个 M0 方案仍未 Intake。
 2. `five_y_factor_rule_online_v1` 与 `ten_y_factor_level_ensemble_v1` 已在 ECS、Mac3 分别完成技术 Gate、
    shadow、canonical backtest、activation、`gray_live` 和 DashboardGate，两端当前均为 Onboarding
    Complete。等待 2026-08-24 07:03 Asia/Shanghai 的首次真实 daily systemd/launchd 自然触发；触发后
@@ -26,10 +28,9 @@
    不得把前端发布成功外推为 daily 已恢复，也不得在没有新的业务写入授权时手工重跑。
 4. 若未来决定把生产域名或 Writer 从 Mac3 切到 ECS，必须作为新的生产项目重新设计 Web、数据库
    authority、单 Writer、DNS/Nginx、切换窗口和回滚范围，不能从当前灰度或 immutable release 验收外推授权。
-5. 独立评估 systemd/launchd runner 的 CLI 日期入口；设计并取得生产授权后替换 ECS installed
-   DataBridge、daily、weekly、monthly 四个 unit，执行 `systemctl daemon-reload` 并读回现场状态。
-   执行前只读确认 `/run/bond-factor-lab/manual-run.env` 不存在且相关 one-shot 任务 idle，不得从仓库
-   模板变更外推现场状态或授权。
+5. Mac3 周期均值基础晋级完成后，按独立入库项目处理参考的 20 个 M0 方案：逐方案 Intake、技术 Gate、
+   shadow、canonical backtest、activation、gray live、DashboardGate 和自然周期观察。基础调度存在不等于
+   任何方案已经入库或已经产生信号。
 
 ECS 继续独立灰度运行。Mac3 域名、Nginx、DNS、数据库 authority 和生产 Writer 均保持不变；是否
 未来切到 ECS 是新的生产项目，不是本轮双主机代码治理闭环的前提。
