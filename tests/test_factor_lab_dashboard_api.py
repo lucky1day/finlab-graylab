@@ -6,6 +6,8 @@ import json
 import re
 from typing import Any
 
+import pytest
+
 
 DASHBOARD_PATH = "/api/factor-lab/dashboard"
 
@@ -199,3 +201,24 @@ def test_dashboard_replaces_untrusted_request_id_before_logging(monkeypatch, cap
     assert re.fullmatch(r"[0-9a-f]{32}", headers["x-request-id"])
     assert injected not in caplog.text
     assert "forged-log-line" not in caplog.text
+
+
+def test_dashboard_detail_row_budget_boundary() -> None:
+    from backend.factor_lab_dashboard import (
+        DashboardDataError,
+        _validate_canonical_snapshot_budgets,
+    )
+
+    _validate_canonical_snapshot_budgets(
+        {"schemes": [], "snapshot_id": "budget-boundary"},
+        detail_rows=25_000,
+    )
+
+    with pytest.raises(
+        DashboardDataError,
+        match="dashboard detail rows exceed budget",
+    ):
+        _validate_canonical_snapshot_budgets(
+            {"schemes": [], "snapshot_id": "budget-boundary"},
+            detail_rows=25_001,
+        )

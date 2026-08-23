@@ -42,7 +42,7 @@ from backend.factor_lab_dashboard_semantics import (
 SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 MYSQL_SNAPSHOT_SQL = "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY"
 _DATETIME_TYPE = datetime
-MAX_DETAIL_ROWS = 20_000
+MAX_DETAIL_ROWS = 25_000
 MAX_RAW_JSON_BYTES = 1_500_000
 MAX_GZIP_JSON_BYTES = 100_000
 # These source-row caps are corruption/resource guards, not business pagination.
