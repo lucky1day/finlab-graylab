@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "m0_quarterly_avg_3y_v1",
+  "name": "M0",
+  "owner": "fengrl",
+  "description": "读取日频3年国债活跃券收盘收益率(TB3YWI0C)，用日历季分桶，桶均=桶内交易日算术平均、桶收=季内最后交易日收盘；gap=桶收−桶均，输出sign(gap)预测下一季平均收益率相对本桶的方向。零参数M0规则，不训练。",
+  "algorithm_version": "1.0.1",
+  "target_tenor": "3Y",
+  "task_type": "quarterly_average",
+  "horizon": 1,
+  "target_rule": "target_quarter_average_yield_vs_feature_quarter_average_yield"
+}
