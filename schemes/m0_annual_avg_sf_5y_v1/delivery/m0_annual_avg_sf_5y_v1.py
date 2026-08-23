@@ -127,7 +127,7 @@ def _validate_calendar_mapping(calendar: pd.DataFrame, req: dict) -> pd.Timestam
 def _require_calendar_coverage(calendar: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> None:
     if calendar["date"].iloc[0] > start or calendar["date"].iloc[-1] < end:
         raise ValueError(
-            f"权威日历未完整覆盖业务窗口 {start:%Y-%m-%d}..{end:%Y-%m-%d}"
+            f"权威日历未完整覆盖业务窗口 {start:%Y-%m-%d} 至 {end:%Y-%m-%d}"
         )
 
 
