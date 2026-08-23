@@ -11,15 +11,9 @@ from typing import Any
 
 from shared.scheme_config_schema import ALLOWED_TENORS, SCHEME_ID_PATTERN
 from shared.scheme_owner_registry import normalize_scheme_owner
+from shared.task_specs import TASK_COMBINATIONS
 
 
-TASK_COMBINATIONS = {
-    "T+1": (1, "target_date_yield_vs_feature_date_yield", "daily"),
-    "T+5": (5, "target_date_yield_vs_feature_date_yield", "daily"),
-    "weekly_point": (1, "target_week_end_yield_vs_feature_week_end_yield", "weekly"),
-    "weekly_average": (1, "target_week_average_yield_vs_feature_week_average_yield", "weekly"),
-    "monthly": (1, "target_month_observation_yield_vs_feature_month_observation_yield", "monthly"),
-}
 REQUIRED_METADATA_FIELDS = {
     "schema_version",
     "scheme_id",

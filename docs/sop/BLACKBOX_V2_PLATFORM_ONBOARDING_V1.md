@@ -124,6 +124,9 @@ owner 可幂等接受；相同 composite ID 与不同 owner 必须 fail-closed�
 | `weekly_point` | 1 | `target_week_end_yield_vs_feature_week_end_yield` |
 | `weekly_average` | 1 | `target_week_average_yield_vs_feature_week_average_yield` |
 | `monthly` | 1 | `target_month_observation_yield_vs_feature_month_observation_yield` |
+| `monthly_average` | 1 | `target_month_average_yield_vs_feature_month_average_yield` |
+| `quarterly_average` | 1 | `target_quarter_average_yield_vs_feature_quarter_average_yield` |
+| `annual_average` | 1 | `target_year_average_yield_vs_feature_year_average_yield` |
 
 字段数、名称或固定组合不一致时 Intake 必须失败，不得在平台配置中纠正上游 Metadata。
 

@@ -6,7 +6,7 @@
 
 **目标读者**：上游算法工程师
 
-**最后核验日期**：2026-08-13
+**最后核验日期**：2026-08-23
 
 本文是上游算法工程师唯一需要阅读的人类文档。完成开发只需要本文、随包提供的 `data_bridge_v1_schema.json` 和三份脱敏 sample；不需要再阅读仓库内其他文档。
 
@@ -408,8 +408,14 @@ Contract 1.0 只允许以下组合：
 | `weekly_point` | 1 | `target_week_end_yield_vs_feature_week_end_yield` | 下一周频点相对本周频点的收益率方向 |
 | `weekly_average` | 1 | `target_week_average_yield_vs_feature_week_average_yield` | 下一周平均收益率相对本周平均收益率的方向 |
 | `monthly` | 1 | `target_month_observation_yield_vs_feature_month_observation_yield` | 下一月观测相对本月观测的收益率方向 |
+| `monthly_average` | 1 | `target_month_average_yield_vs_feature_month_average_yield` | 下一 MID 月中桶平均收益率相对当前桶平均收益率的方向 |
+| `quarterly_average` | 1 | `target_quarter_average_yield_vs_feature_quarter_average_yield` | 下一自然季度平均收益率相对当前季度平均收益率的方向 |
+| `annual_average` | 1 | `target_year_average_yield_vs_feature_year_average_yield` | 下一春节年平均收益率相对当前春节年平均收益率的方向 |
 
-`horizon` 按任务频率计期：日频按后续交易日计数，周频按周频观测计数，月频按月频观测计数。必须整行选择任务组合，不得自由修改 `horizon` 或填写其他 `target_rule`。
+`horizon` 按任务业务步长计期：日频按后续交易日计数；周频按周频观测计数；月中收按月频观测计数；
+周均、MID 月均、自然季均和春节年均的 `horizon=1` 均表示下一个同类业务桶。不得把后三种任务写成
+`30/90/365`，也不得通过 `horizon` 推断任务类型、桶类型或目标日期。必须整行选择任务组合，不得自由修改
+`horizon` 或填写其他 `target_rule`。
 
 ### 4.2 填写 `{scheme_id}.json`
 

@@ -9,17 +9,20 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from shared.blackbox_v2.platform_input_registry import (
     normalize_platform_input_ids,
 )
+from shared.task_specs import (
+    ALLOWED_DATA_FREQUENCIES,
+    ALLOWED_FREQUENCIES,
+    ALLOWED_TASK_TYPES,
+)
 
 
 SCHEME_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 ALLOWED_TENORS = {"1Y", "3Y", "5Y", "7Y", "10Y"}
-ALLOWED_FREQUENCIES = {"daily", "weekly", "monthly"}
-ALLOWED_TASK_TYPES = {"T+1", "T+5", "weekly_point", "weekly_average", "monthly"}
 ALLOWED_STATUS = {"active", "paused"}
 ALLOWED_RUNTIME_TYPES = {"native_adapter", "blackbox_v2"}
 ALLOWED_INPUT_SOURCES = {"legacy_db", "data_bridge_current"}
 ALLOWED_VERSION_STATUS = {"draft", "validated", "shadow", "active", "paused", "retired"}
-TASK_TYPE_ERROR = "task_type must be one of T+1, T+5, weekly_point, weekly_average, monthly"
+TASK_TYPE_ERROR = "task_type must be one of " + ", ".join(sorted(ALLOWED_TASK_TYPES))
 
 
 def validate_config(raw: dict, dirname: str) -> list[str]:
@@ -66,7 +69,9 @@ def validate_config(raw: dict, dirname: str) -> list[str]:
 
     frequency = raw.get("frequency")
     if frequency not in ALLOWED_FREQUENCIES:
-        errors.append("frequency must be one of daily, weekly, monthly")
+        errors.append(
+            "frequency must be one of " + ", ".join(sorted(ALLOWED_FREQUENCIES))
+        )
 
     if raw.get("task_type") not in ALLOWED_TASK_TYPES:
         errors.append(TASK_TYPE_ERROR)
@@ -121,7 +126,7 @@ def validate_config(raw: dict, dirname: str) -> list[str]:
                         errors.append(f"input_spec.auxiliary_inputs[{idx}] must be a mapping")
                         continue
                     aux_frequency = item.get("frequency")
-                    if aux_frequency not in ALLOWED_FREQUENCIES:
+                    if aux_frequency not in ALLOWED_DATA_FREQUENCIES:
                         errors.append(
                             f"input_spec.auxiliary_inputs[{idx}].frequency must be one of daily, weekly, monthly"
                         )
@@ -148,7 +153,7 @@ def validate_config(raw: dict, dirname: str) -> list[str]:
                             f"input_spec.auxiliary_inputs[{idx}].required_columns must be a non-empty list of strings"
                         )
 
-    if frequency in {"weekly", "monthly"}:
+    if frequency in {"weekly", "monthly", "quarterly", "annual"}:
         target_rule = raw.get("target_rule")
         if not isinstance(target_rule, str) or not target_rule.strip():
             errors.append("target_rule is required for weekly/monthly schemes")
@@ -181,7 +186,7 @@ def validate_config(raw: dict, dirname: str) -> list[str]:
             if frequency == "weekly":
                 if backtest.get("predict_start_date") != "2025-01-01":
                     errors.append("backtest.predict_start_date must be 2025-01-01 for weekly backtests")
-            elif frequency in {"daily", "monthly"}:
+            elif frequency in {"daily", "monthly", "quarterly", "annual"}:
                 if backtest.get("start_date") != "2025-01-01":
                     errors.append("backtest.start_date must be 2025-01-01 for daily/monthly backtests")
 

@@ -7,6 +7,62 @@ from pathlib import Path
 
 
 class BlackboxV2MetadataContractTests(unittest.TestCase):
+    def test_period_average_metadata_uses_bucket_horizon_one(self) -> None:
+        cases = (
+            (
+                "monthly_average",
+                "target_month_average_yield_vs_feature_month_average_yield",
+                "monthly",
+            ),
+            (
+                "quarterly_average",
+                "target_quarter_average_yield_vs_feature_quarter_average_yield",
+                "quarterly",
+            ),
+            (
+                "annual_average",
+                "target_year_average_yield_vs_feature_year_average_yield",
+                "annual",
+            ),
+        )
+        for task_type, target_rule, frequency in cases:
+            with self.subTest(task_type=task_type):
+                payload = _metadata_payload()
+                payload.update(task_type=task_type, horizon=1, target_rule=target_rule)
+
+                metadata = _load_metadata(payload)
+
+                self.assertEqual(metadata.frequency, frequency)
+
+    def test_period_average_metadata_rejects_fixed_day_horizons(self) -> None:
+        for task_type, horizon, target_rule in (
+            (
+                "monthly_average",
+                30,
+                "target_month_average_yield_vs_feature_month_average_yield",
+            ),
+            (
+                "quarterly_average",
+                90,
+                "target_quarter_average_yield_vs_feature_quarter_average_yield",
+            ),
+            (
+                "annual_average",
+                365,
+                "target_year_average_yield_vs_feature_year_average_yield",
+            ),
+        ):
+            with self.subTest(task_type=task_type):
+                payload = _metadata_payload()
+                payload.update(
+                    task_type=task_type,
+                    horizon=horizon,
+                    target_rule=target_rule,
+                )
+
+                with self.assertRaisesRegex(ValueError, "fixed combination"):
+                    _load_metadata(payload)
+
     def test_owner_is_optional_for_immutable_historical_metadata(self) -> None:
         metadata = _load_metadata(_metadata_payload())
 
