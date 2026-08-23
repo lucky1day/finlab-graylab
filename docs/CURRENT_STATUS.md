@@ -24,10 +24,10 @@
 - ECS `current` 已晋级为 release `00558d175cdffd0d2aae4b51e1aea6e8adda8923`，`previous` 为
   `bbd7fe7dbf8f3ee7dc74b5d6dbae06af38d98b9d`。该 release 由干净 Git 提交重复构建两次且字节一致，
   archive SHA-256 为 `8f408ddb960ea514a45dc8cd9613a4e42515b922f1fc6a3f8015de2ddfeddc12`。
-- Mac3 本轮尚未晋级；最后已核验的 `current` 仍为
-  `bbd7fe7dbf8f3ee7dc74b5d6dbae06af38d98b9d`，`previous` 为
-  `59afc857c37eebb956adb200d9b1a05ed6a123f0`。后续只能使用上条已经 ECS 验证的同一 archive，不能从
-  新提交另建一份不同归档。
+- Mac3 已使用上条 ECS 原始 archive 完成原子晋级，`current` 为
+  `00558d175cdffd0d2aae4b51e1aea6e8adda8923`，`previous` 为
+  `bbd7fe7dbf8f3ee7dc74b5d6dbae06af38d98b9d`；archive、manifest 和安装后 source-tree SHA 均与 ECS
+  一致。Backend 已从新 current 运行并返回 `status=ok`。
 - Mac3 生产应用从 `/Users/macstudio0/bond-factor-lab-production/current` 启动，运行状态位于
   `/Users/macstudio0/bond-factor-lab-runtime`，不再引用 Git 开发根。ECS 生产形态同样只运行 immutable
   release，不保留 Git checkout。
@@ -36,15 +36,21 @@
 
 - `codex/develop` 已完成 `monthly_average`、`quarterly_average`、`annual_average` 的平台代码基础：统一任务
   规格、MID/CQ/SF 纯桶语义、Contract/Request/回测、通用周期 actual、close-period one-shot、现有
-  Dashboard/metrics 接入和九列前端。参考的 20 个 M0 方案没有被复制、执行或 Intake。
+  Dashboard/metrics 接入和九列前端。参考包中的周均五方案已在 ECS 完成入库；余下月均、季均、年均
+  15 个方案尚未 Intake。
 - ECS 已通过唯一受控 migration CLI 完成 018、019、020，历史均为 `APPLIED`；退役的
   `t_scheme_serving_pointer` 已删除，`t_scheme_period_average_actuals` 已按闭世界目标形态创建。ECS Backend、
   DataBridge/daily/monthly service 与 monthly timer 已从同一 immutable release 安装并读回一致。
 - ECS close-period timer 当前为 `enabled/active/waiting`，每天 18:00 运行到期判断；非到期日现场 one-shot
   已验证为 `not_applicable / exit_code=0 / refresh_required=false`。线上 HTML/JS/CSS 摘要与 release 一致，
   现有 56 个 active base scheme 的 DashboardGate 最终全部通过。
-- Mac3 的 migration 020、同一 archive 晋级和 installed monthly plist 切换尚未执行，因此不得把这组基础
-  能力写成双主机均已部署。参考的 20 个 M0 方案仍未 Intake，ECS 当前也尚未产生月均、季均、年均方案信号。
+- Mac3 已经由目标 immutable release 内的唯一受控迁移入口完成 018、019、020；001–020 全部精确
+  `APPLIED`，目标表定义正确，预测、三类既有 Actual、Registry 和 scheme version 计数前后不变。daily
+  18:00 close-period monthly plist 首次 probe 被 immutable launcher 在业务代码前拒绝：全局
+  `service.env` 的晨间 `05:30/06:45` 与 plist 的 `18:00/18:55` 同名环境变量冲突。probe 没有刷新
+  DataBridge、创建 run 或写业务表；monthly plist 已恢复到每月 15 日 18:00 的旧入口，七个 installed/loaded
+  plist 对旧稳定模板重新达到 `ok=true`。因此 Mac3 数据库和 release 主体已完成，但 daily close-period
+  尚未上线，不能宣称双主机调度闭环。
 
 ## 调度与现场状态
 
@@ -55,8 +61,10 @@
   判断入口，不新增第二调度控制面。
 - Mac3 2026-08-21 daily 的已知终态仍为 `partial`：25 个方案成功、17 个 `execution_failed`；当前无残留
   runner 或 running run。该历史批次尚未诊断闭环，也未获授权手工重跑。
-- Mac3 七个 installed plist 的最后一次只读 drift audit 为 `ok=true`；daily plist 保持工作日 07:03。
-  本轮没有替换或重载 Mac3 plist；ECS 只替换并核验了上文列出的授权 unit/timer。
+- Mac3 七个 installed plist 在 monthly 安全回滚后对旧稳定模板的 drift audit 为 `ok=true`；daily plist
+  保持工作日 07:03，monthly 暂时保持每月 15 日 18:00。修复提交
+  `9f1b2bf26898e68c58b06b10fbaef668cde73b4d` 已把 close-period 刷新窗口改为显式 job 参数，同时保留
+  launcher 对所有 service 环境冲突的拒绝；该提交尚未形成并晋级新的 ECS/Mac3 immutable release。
 
 ## 新方案入库状态
 

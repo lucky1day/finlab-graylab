@@ -212,10 +212,12 @@ operator、scheme、version、Harness run 和 operation hash。
 
 ## 其他未闭环队列
 
-1. Mac3 周期均值基础由已派发任务推进：只读取得数据库身份，受控应用 migration 020，并且只能晋级 ECS
-   已验证 release `00558d175cdffd0d2aae4b51e1aea6e8adda8923` 与 archive SHA-256
-   `8f408ddb960ea514a45dc8cd9613a4e42515b922f1fc6a3f8015de2ddfeddc12`，随后独立替换、加载并读回
-   monthly plist。当前任务不接管该派发工作。
+1. Mac3 已完成 018–020、指定 archive 晋级和 Backend 恢复，但 daily 18:00 close-period monthly plist
+   因全局晨间刷新窗口与 plist 同名环境变量冲突而安全回滚。修复提交
+   `9f1b2bf26898e68c58b06b10fbaef668cde73b4d` 使用显式 job 参数，不放宽 launcher；仍须从包含该修复的
+   精确 clean HEAD 构建确定性 archive，先在 ECS 晋级验证，再由 Mac3 使用同一 archive 替换 monthly plist，
+   完成非到期 probe、静态资源、HTTP、DashboardGate、文档和临时计划清理。Mac3 当前数据库、业务数据和
+   回滚后的七个 plist 均安全，不得在现场另建修复提交或推送临时提交 `a05c0b9`。
 2. `five_y_factor_rule_online_v1` 与 `ten_y_factor_level_ensemble_v1` 等待 2026-08-24 07:03
    Asia/Shanghai 的首次真实 daily 自然触发；不得 kickstart、覆盖日期或倒签信号。
 3. M0 周平均五方案及同期 ECS 周频方案等待 2026-08-29 11:30 的首次自然触发。
