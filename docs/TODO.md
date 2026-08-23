@@ -212,12 +212,14 @@ operator、scheme、version、Harness run 和 operation hash。
 
 ## 其他未闭环队列
 
-1. Mac3 已完成 018–020、指定 archive 晋级和 Backend 恢复，但 daily 18:00 close-period monthly plist
-   因全局晨间刷新窗口与 plist 同名环境变量冲突而安全回滚。修复提交
-   `9f1b2bf26898e68c58b06b10fbaef668cde73b4d` 使用显式 job 参数，不放宽 launcher；仍须从包含该修复的
-   精确 clean HEAD 构建确定性 archive，先在 ECS 晋级验证，再由 Mac3 使用同一 archive 替换 monthly plist，
-   完成非到期 probe、静态资源、HTTP、DashboardGate、文档和临时计划清理。Mac3 当前数据库、业务数据和
-   回滚后的七个 plist 均安全，不得在现场另建修复提交或推送临时提交 `a05c0b9`。
+1. Mac3 已完成 018–020、原指定 archive 晋级和 Backend 恢复，但 daily 18:00 close-period monthly plist
+   因全局晨间刷新窗口与 plist 同名环境变量冲突而安全回滚。修复 release
+   `2394711e1ac5f97b73af8ede4ded5163bb0a254e` 使用显式 job 参数且不放宽 launcher，archive SHA-256 为
+   `d52c1c56dc3fc5dee053d77c3d62c67e8b01665346126297485cdfa40c057c77`；已在 ECS 完成候选回归、原子
+   晋级、Backend/Dashboard HTTP 和非到期零副作用 probe。Mac3 只允许从 ECS 保存的同一 archive 晋级，
+   随后替换 monthly plist，完成非到期 probe、静态资源、HTTP、DashboardGate、文档和临时计划清理。
+   Mac3 当前数据库、业务数据和回滚后的七个 plist 均安全，不得现场另建修复提交或推送临时提交
+   `a05c0b9`。
 2. `five_y_factor_rule_online_v1` 与 `ten_y_factor_level_ensemble_v1` 等待 2026-08-24 07:03
    Asia/Shanghai 的首次真实 daily 自然触发；不得 kickstart、覆盖日期或倒签信号。
 3. M0 周平均五方案及同期 ECS 周频方案等待 2026-08-29 11:30 的首次自然触发。

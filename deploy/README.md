@@ -121,7 +121,7 @@ Mac Studio 当前生产调度的唯一控制面是 `launchd + installed plist`�
 | DataBridge refresh | `com.bond-factor-lab.data-bridge-refresh` | 每日 06:30 | `scripts/refresh_data_bridge_current.py --publish` |
 | 日频预测 | `com.bond-factor-lab.daily-predictions` | 工作日 07:03 | `scheduler.launchd_prediction_runner --cadence daily` |
 | 周频预测 | `com.bond-factor-lab.weekly-predictions` | 周六 11:30 | `scheduler.launchd_prediction_runner --cadence weekly` |
-| 月频预测 | `com.bond-factor-lab.monthly-predictions` | 自然月 15 日 18:00 | `scheduler.launchd_prediction_runner --cadence monthly` |
+| 月频/周期均值预测 | `com.bond-factor-lab.monthly-predictions` | 每日 18:00 到期判断 | `scripts/run_close_predictions.py --control-plane launchd --refresh-start 18:00 --refresh-deadline 18:55` |
 | Actuals | `com.bond-factor-lab.actuals` | 每日 08:30、19:00、23:45 | `scheduler.actuals_runner` |
 
 所有一次性模板使用 `bond_factor_lab_service`、绝对工作目录和独立 stdout/stderr 日志。
