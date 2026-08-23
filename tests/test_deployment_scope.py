@@ -21,6 +21,10 @@ M0_WEEKLY_AVG_SCHEME_IDS = (
     "m0_weekly_avg_7y_v1",
     "m0_weekly_avg_10y_v1",
 )
+DAILY_T1_TRIAL_SCHEME_IDS = (
+    "five_y_factor_rule_online_v1",
+    "ten_y_factor_level_ensemble_v1",
+)
 MAC_ONLY_SCHEME_IDS = frozenset(
     {
         "daily_10y_lgbm_10y04_0629",
@@ -89,6 +93,12 @@ def test_weekly_1y_causal_is_deployed_to_both_targets() -> None:
 def test_m0_weekly_average_schemes_are_deployed_to_both_targets() -> None:
     matrix = _matrix_schemes()
     for scheme_id in M0_WEEKLY_AVG_SCHEME_IDS:
+        assert matrix[scheme_id] == [MAC3_TARGET, ALIYUN_TARGET], scheme_id
+
+
+def test_daily_t1_trial_schemes_are_deployed_to_both_targets() -> None:
+    matrix = _matrix_schemes()
+    for scheme_id in DAILY_T1_TRIAL_SCHEME_IDS:
         assert matrix[scheme_id] == [MAC3_TARGET, ALIYUN_TARGET], scheme_id
 
 
