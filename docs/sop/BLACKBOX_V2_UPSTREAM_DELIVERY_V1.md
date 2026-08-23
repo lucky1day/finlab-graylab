@@ -666,6 +666,12 @@ Request 必须恰好包含以上七个字段：
 
 Contract 1.0 使用当前快照加截止键隔离后续行，不提供历史时点修订版本回放。这个回测口径可以验证同一当前快照下的 as-of 逻辑，不能宣称历史 vintage PIT。
 
+### 6.5 一次性结果供平台分区复用的条件
+
+平台可能把一次完整 batch 的结果按 `target_date` 分成 canonical backtest 和 `gray_live` 两段，以免对相同业务结果重复计算。上游不需要增加 Metadata 字段或第三个交付文件，但只有同时满足第 5 节的批次不变量、第 6.3 节的逐 Request 截止和本节的完整性能/自证证据时，平台才会把 batch Result 认定为可复用核心结果。
+
+一次性计算不得依赖晚于单条 Request cutoff 的固定 `source_end`、未来 test window、跨样本未来标签、全区间 selector/calibration 或上一条 Request 遗留的进程状态。批内首/中/末独立复算必须证明方向及算法内部 score/probability 等价；仅最终方向碰巧一致不够。平台分区只改变结果进入 backtest 或 gray-live 的持久化阶段，不改变 Request、算法、结果或截止语义。
+
 ---
 
 ## 7. 生成 Result

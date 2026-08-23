@@ -294,6 +294,8 @@ Request、以及覆盖批内首/中/末的独立复算自证（自证结论写�
 （当前 ECS 实测：`weekly_point` / `weekly_average` 各 72 条，`monthly` 16–17 条，
 `T+1` 中位 337 条，`T+5` 中位 333 条）。
 
+一次性计算通过不只用于缩短 backtest：如果同一冻结 batch 同时覆盖 `gray_target_start` 两侧，且每条结果已证明与独立 cutoff 计算等价，平台后续应直接复用这份核心结果完成历史/gray 分区，不再为 gray 区间逐日期重算。是否可复用由第 6.5 节的精确版本、输入身份、lineage 和 live-safe 条件决定；“一次运行很快”本身不是复用资格。
+
 ### 2.5 当前生产时序边界
 
 DataBridge 为 Blackbox 日/周/月任务提供标准三频 artifact；每次自然运行都必须使用
@@ -672,6 +674,29 @@ conda run --no-capture-output -n bond_factor_lab_service \
 
 同一 all-stage run 可以通过新的明确命令追加新 run；默认 API 通过 canonical latest-success 规则选择最后成功记录。不得直接更新旧 run 或手工删除 100 条历史记录来伪造完整回测。
 
+### 6.5 一次性批量结果复用快路径
+
+新方案的完整区间由等价一次性 batch 产出时，标准路径是“一次计算、一次冻结、按 `target_date` 分流”，而不是先完整写入 backtest、再逐日期重算 gray live。
+
+执行前必须冻结并读回：
+
+- exact scheme version、目标环境数据库身份和部署范围；
+- DataBridge generation、combined snapshot、业务摘要、平台日历摘要和 lineage；
+- `backtest_start_date`、`gray_target_start`、正式自然调度已发布的第一条 target（如有）和完整应有 Request 集；
+- batch Output 的行数、日期边界、业务键集合与内容摘要。
+
+只有 batch 每条 Result 都通过逐 Request cutoff、predict/backtest 等价、批内首/中/末独立复算，并且不使用晚于样本 `feature_date` 的固定 `source_end`、未来窗口或跨样本未来状态时，才允许复用。复用步骤固定为：
+
+1. 对 `target_date < gray_target_start` 的行创建新的 immutable canonical backtest run；
+2. 激活成功后，对 `target_date >= gray_target_start`、仍属于应补观察区且尚无 live 业务键的行，调用目标环境现有 `scheduler.repository` 写入入口，按方案组 insert-only 物化为 `gray_live`；
+3. 按任务日历从 `feature_date/target_date` 生成 live `predict_date`，不得复制 backtest 的 `predict_date=feature_date`；
+4. 只复用方向、置信度、`feature_date`、`target_date`、exact version 和必要算法 `extra`。数据库主键、源 `run_id`、Actuals、backtest metrics 和 Harness 历史一律不复制；
+5. backtest 与 live 分别保持原有事务边界。任一业务键已存在即拒绝整个授权组，禁止 update/upsert、先删后写或直接 SQL；任一步失败即停止，不用前端隐藏半完成状态。
+
+若当前 release 没有永久批量导入 CLI，可在明确授权下使用任务专属、可审查的一次性 operator 调用既有 repository；脚本不得实现第二套 SQL 或 repository，完成读回后立即删除且不得进入 release。命令本身绑定本次 scheme、版本、日期范围和目标数据库；无需另造 token、常驻同步器或跨主机 Writer。
+
+快路径完成后必须逐行核对源 batch 与目标两段的数量、方向、置信度、三个日期、version 和必要 extra；证明 backtest/live target 交集为空、自然月不重复、Actual 与准确率事实不变，并运行全部 active 方案 DashboardGate。旧 backtest run 保持 immutable audit，只由新 run 取得 canonical latest-success；不得物理删除。
+
 ## 7. 生产激活、灰度补齐与前端验收
 
 本节适用于取得具体方案 activation、live 或单日补缺授权后的生产动作。Shadow 完成不等于实盘；Activation 成功且 Registry 与 exact version 变为 active，表示方案进入业务可见状态，`deployed_at` 记录这一日期，同时按 frequency 自然进入对应 launchd one-shot 候选集合。Activation 不安装或加载 plist；生产调度是否已经挂载并自然执行，必须由对应 installed plist、`launchctl` loaded state 和任务日志证明，不能只由 active 或 `deployed_at` 推断。业务可见后不能继续把方案描述为仅有历史回测，也不能等待下一次 scheduler 后才补前端实盘段。
@@ -704,7 +729,7 @@ Activation 完成后、前端验收前，必须按时间顺序补齐从该方案
 - 周频：先枚举应有目标周末，再反推上一轮调度日；`predict_date` 可能位于 5 月；
 - 月频：按目标月观察点反推自然触发日；若合同规定自然 15 号，不能顺延为交易日。
 
-普通 `live` Gate 仍是 fresh-only：它只接受一次明确的 `gate live` 直接命令，并要求 DataBridge `refresh_date` 等于本次运行日。历史 gray 缺口只能按日期使用唯一运维入口；不得放宽普通 LiveGate、伪造 DataBridge freshness 或直接调用 repository 绕过命令边界。
+普通 `live` Gate 仍是 fresh-only：它只接受一次明确的 `gate live` 直接命令，并要求 DataBridge `refresh_date` 等于本次运行日。一般历史 gray 缺口按日期使用唯一运维入口；只有第 6.5 节已经冻结并证明等价的一次性 batch，才允许在相同专项授权下复用核心结果批量物化。两种路径都不得放宽普通 LiveGate、伪造 DataBridge freshness 或直接执行 SQL。
 
 ```bash
 conda run --no-capture-output -n bond_factor_lab_service \
@@ -832,6 +857,7 @@ journal：它只回退到 previous safe state，保留原 journal，并新增 li
 - [ ] 默认入库流程未执行 `activate` 或 `live`；如有专项授权，已转入独立生产灰度记录
 - [ ] 如执行持久化回测，授权已绑定实际起点和 `gray_target_start`，完整区间已分批计算并在单一事务中写入一个 immutable run
 - [ ] canonical backtest 全部满足 `target_date < gray_target_start`，与 live target 零重叠
+- [ ] 如交付使用等价一次性 batch，已冻结同一结果集并按 `target_date` 分流；gray 段复用核心结果、重新生成 live `predict_date`，没有逐日期重复计算
 - [ ] 激活即登记真实 `deployed_at`，并已补齐 `target_date >= gray_target_start` 的连续 `gray_live`
 - [ ] 激活后 `DashboardGate` 已通过，且 exact version 已由 lifecycle、Registry 与数据库证据独立确认
 - [ ] 前端单独展示部署时间；详情分隔文案为 `实盘预测目标区间`，有 scheduled target 时显示 `{scheduled_live.start_target_date}开始`，否则显示“待产生”；actual pending 继续显示“待验证”

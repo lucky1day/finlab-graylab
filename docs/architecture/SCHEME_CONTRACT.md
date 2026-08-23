@@ -126,6 +126,8 @@ draft -> validated -> shadow -> active -> paused -> retired
 - 具体 Blackbox 方案只有完成[生产晋级条件](../blackbox_v2/PRODUCTION_READINESS.md)核验并取得专项授权后，才可通过专用 Gate 进入 `active`、持久化回测或 live；该授权不得外推到其他方案。
 - Native V1 保持既有状态；维护操作不得借机改变 Registry、scheduler 或 API 可见性。
 
+等价一次性 batch 可以在同一冻结 exact version 和输入身份下只计算一次，再按 `target_date` 分成 immutable canonical backtest 与 insert-only `gray_live`。这只是结果复用，不合并两个生命周期或事务边界，也不允许复制数据库身份字段、覆盖 live 业务键或把不满足逐 Request cutoff 的 source-original batch 伪装为实盘。完整条件见[预测日期语义](PREDICTION_SEMANTICS.md#52-一次性批量结果的分区与复用)。
+
 ## 8. Harness 分派
 
 统一命令由 `runtime_type` 选择 Gate 实现：

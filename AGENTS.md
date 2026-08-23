@@ -20,6 +20,7 @@
 - 用户口头说根目录 `agent.md` 时，优先理解为根目录 `AGENTS.md`；本项目要求 `AGENTS.md` 与 `CLAUDE.md` 内容一致，更新根规范时两者要同步。
 - 分支操作、提交或暂存前必须先核对 `git status --short` 和相关分支列表，避免把未跟踪的新方案、`outputs/` 产物或其他草稿混入当前任务提交。
 - 默认执行方式为“主 agent 直接执行（inline-first）”：日常实现由主 agent 在当前会话完成。只有工作可安全拆成相互独立、可并行的子任务且预期能显著节省时间时，才使用 subagent；不得仅因任务复杂或可拆分就启用。该长期偏好只授权任务拆分与代码审查，不外推为生产切换、数据库写入、服务重启、破坏性操作、受保护分支发布或未决业务选择的授权。
+- 使用 subagent 时，只分派无共享写入冲突的独立工作流，并明确任务范围、相关文件、验收条件和不可触碰的边界。subagent 必须报告实际改动、验证结果与阻塞；主 agent 负责整合结果并对整体变更运行相关验证。
 - 提 PR 前先判断该问题能否在本机测试验证。本机可验证的，直接在 PR 中修复并附复现与验证证据；需要结合生产环境才能确认的（launchd 现场状态、生产 DataBridge、真实调度时钟、跨环境数据漂移等），不得夹带未经验证的代码改动，只提交「现象 / 问题点 / 造成的影响 / 推荐解决方案」四段式报告 PR，由能验证该环节的同事结合建议自行处理。判断依据是能否在本机跑出决定性证据，不是主观把握程度。
 - 当前未跟踪的 `outputs/` 属于临时分析/导出产物；除非用户明确要求，不要纳入文档、方案或修复提交。
 - 2026-08-17 会议决定：阿里云 ECS 暂时作为独立灰度实验室，不直接替换 Mac3 生产。Mac3 继续承载现有生产域名和生产服务；ECS 使用自己的本地 MySQL、DataBridge、算法调度、Actuals 与 localhost 前端，各自独立运行，不建立复制、双写、跨主机共享数据库或共享 DataBridge。ECS 每日任务写入本地数据库后，localhost 前端通过 API 展示最新数据；“每天更新前端”不是每日重新构建或部署静态前端。只有在独立观察期证明任务、数据、资源和前端稳定，并再次取得切换窗口授权后，才考虑把 Mac3 对应域名或生产 Writer 切到 ECS。
@@ -118,6 +119,8 @@ Blackbox V2 新方案只交付 `{scheme_id}.py + {scheme_id}.json`，并实现 C
 - `target_date` — 验证目标日，用于展示、去重、actual join 和月度统计归属
 
 `feature_date` 是唯一标准数据截止字段；`anchor_date` 只允许作为方案内部算法变量或审计 extra，前端和业务规则不得依赖它。实盘分为 `gray_live`（灰度实盘）和 `scheduled_live`（正式 scheduler 实盘）；日频实盘满足 `predict_date=T+1`、`feature_date=T`、`target_date=T+horizon`，周频实盘先由 `predict_date` 反推上一交易日 `feature_date` 再映射周，月频 source-backed 方案若声明自然 15 号触发则 `predict_date` 保留自然月 15 号、`feature_date/target_date` 分别取当前月/目标月 15 号及以前最近交易日。历史回测必须满足 `predict_date=feature_date=T`、`target_date=T+horizon`，但已有灰度观察区时必须按方案级 `target_date` 起点截断；当前 0629 月度三方案中 `target_date >= 2026-06-01` 均为灰度实盘，不得留在 latest backtest。原始算法 benchmark 里的 `T/date/predict_date` 表达 source T / 预测站位日，进入平台后必须对齐 DB 明细的 `feature_date`，不是对齐 live `predict_date`；跨灰度边界的样本必须先按 `target_date` 和 benchmark role 分流，同执行口径才可对实盘表断言数值一致，否则用 live-safe oracle 核验。完整规则见 [docs/architecture/PREDICTION_SEMANTICS.md](docs/architecture/PREDICTION_SEMANTICS.md)。
+
+后续方案如果以同一 exact version、同一冻结输入身份执行一次性批量回测，且交付已证明每条结果与该 Request 独立按 `feature_date` 截止计算完全等价，则核心原则是“只算一次、按 `target_date` 分区、复用核心结果”：`target_date < gray_target_start` 写入新的 immutable canonical backtest；`target_date >= gray_target_start` 且尚未由自然调度发布的应有点，只按受控 repository insert-only 物化为 `gray_live`。物化时保留 `feature_date`、`target_date`、方向、置信度、exact scheme version 和必要算法 `extra`，但必须按任务日历重新生成 live `predict_date`；不得复制数据库主键、源 `run_id`、Actuals、回测指标或 Harness 历史。任一业务键已存在即拒绝对应授权组，不得更新、覆盖或先删除再导入；历史 run 保持不可变，仅由新的 canonical run 取代其默认展示。若 batch 使用晚于样本 `feature_date` 的固定 `source_end`、未来 test window、全局 selector/calibration，或 exact version、输入 digest、lineage 任一不匹配，则禁止复用为 live，必须走 live-safe 计算。完整操作和验收规则见统一入库导航与预测语义文档。
 
 ## 方案入库流程（强约束 harness）
 

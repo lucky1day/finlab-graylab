@@ -4,7 +4,7 @@
 
 **目标读者**：平台入库、开发和审计人员
 
-**最后核验日期**：2026-08-10
+**最后核验日期**：2026-08-23
 
 Blackbox V2 是所有新算法、新方案 ID、新目标、新任务和替代版本的唯一入库运行时。场景判断从[方案入库导航](../onboarding/README.md)进入。
 
@@ -16,6 +16,7 @@ Blackbox V2 是所有新算法、新方案 ID、新目标、新任务和替代�
 | 平台 Intake、Gate、激活与恢复 | [平台入库 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md) |
 | 执行、输入和结果边界 | [平台架构](../architecture/BLACKBOX_V2_PLATFORM.md) |
 | 通用生产条件 | [生产晋级条件](PRODUCTION_READINESS.md) |
+| 一次性 batch 的历史/gray 分区复用 | [平台入库 SOP 6.5](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#65-一次性批量结果复用快路径) |
 | DataBridge 结构说明 | [DataBridge V1](data_bridge_v1/README.md) |
 | 当前平台状态 | [当前状态](../CURRENT_STATUS.md) |
 | 未关闭方案问题 | [全方案问题台账](../records/SCHEME_ISSUE_LEDGER.md) |

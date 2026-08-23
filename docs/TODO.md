@@ -62,6 +62,9 @@ gray-live target 分区已经互斥，本计划不重复处理。
 - 所有平台代码、方案 Intake 和文档更新都必须在 `codex/develop` 形成稳定 commit 并推送
   `origin/codex/develop`。ECS 只使用精确提交构建的 immutable release，不保留 Git checkout 或现场修改。
 - Gate、回测、激活、业务写入和服务操作按各自事务边界执行；技术 Gate 通过不外推为后续副作用授权。
+- 15 个方案若通过等价一次性 batch 的逐 Request cutoff、自证和性能验收，完整区间只计算一次；同一冻结
+  结果集按 `gray_target_start` 分流，历史段持久化 canonical backtest，gray 段在激活后复用核心结果
+  insert-only 物化。不得再为相同 gray 点逐日期重算；不满足 live-safe 等价时才退回单日 gap fill。
 
 ### 4. 阶段 A：冻结交付与身份矩阵
 
@@ -152,7 +155,10 @@ generation，或冻结后源文件发生变化。
 - [ ] Gate 绑定当前 exact version、选定 generation、combined snapshot 和正确 target tenor。
 - [ ] 一个方案失败只阻断该方案及本族后续副作用，不激活、不补 gray live。
 - [ ] 通过后执行独立 shadow，确认零业务写入和日期语义正常。
-- [ ] 执行持久化 canonical backtest；预测、Actual、指标和月度明细使用统一周期桶。
+- [ ] 对通过等价证明的方案执行一次完整区间 batch，冻结 exact version、generation/snapshot、lineage、
+      `gray_target_start`、Request 集和结果摘要；不为 backtest/gray 分别计算两遍。
+- [ ] 将 batch 中 `target_date < gray_target_start` 的历史段持久化为新的 immutable canonical
+      backtest；预测、Actual、指标和月度明细使用统一周期桶。
 - [ ] 核对 Request 数量、日期范围、方向分布、指标、lineage，并证明 backtest 与 gray live
       `target_date` 不重叠。
 
@@ -164,8 +170,11 @@ operator、scheme、version、Harness run 和 operation hash。
 - [ ] 原子建立 exact version active、composite Registry active 和 ECS 生命周期 `active/active`；
       immutable `config.yaml` 保持 `paused/draft` 初始声明。
 - [ ] 从 ECS 权威日历计算最近合法 MID、季度末和春节前锚点，不手填或猜测日期。
-- [ ] 用单日 gap fill 补 insert-only `gray_live`；已有键拒绝覆盖，不改历史预测、不伪装
-      `scheduled_live`。
+- [ ] 对已冻结且满足 live-safe 等价的一次性 batch，按任务日历重新生成 live `predict_date`，复用
+      gray 段核心结果并经 repository insert-only 物化；已有键整组拒绝，不复制主键、源 `run_id`、
+      Actuals、回测指标或 Harness 历史。
+- [ ] 只有方案无法证明一次性 batch 与逐点 live-safe 结果等价时，才按日期使用单日 gap fill 补
+      `gray_live`；不得不加区分地对 15 个方案重复计算。
 - [ ] 目标桶完整时更新 Actual；尚未结束时保留 pending，不误显示为零或错误方向。
 - [ ] 重跑 gap plan，要求 `present=1 / actionable=0`。
 

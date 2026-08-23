@@ -56,6 +56,12 @@
 - [源算法保真](../architecture/SOURCE_ALGORITHM_FIDELITY.md)
 - [Harness 架构](../architecture/HARNESS_ARCHITECTURE.md)
 
+## 一次性批量回测的最快正确路径
+
+后续新方案若能在同一 exact version 和同一冻结输入上一次产出完整区间，不要把历史段和灰度段分别重算。先确定方案级 `gray_target_start`，再对同一冻结 batch 结果按 `target_date` 分流：起点以前进入新的 immutable canonical backtest，起点及以后、尚未发布的应有点通过 repository insert-only 物化为 `gray_live`。历史行的 `predict_date=feature_date` 不能复制到 live，必须按任务日历重新生成 live 信号日；方向、置信度、`feature_date`、`target_date`、exact version 和必要算法 `extra` 保持不变。
+
+这条快路径只适用于已证明逐 Request 截止、predict/backtest 等价且没有未来上下文的一次性结果。固定未来 `source_end`、跨样本全局选择、版本或输入 lineage 不一致时必须停止复用，改走 live-safe 计算。两侧 target 必须零重叠；已有 live 键整组拒绝，不能覆盖或删除后重写；旧 backtest run 只保留审计、不再作为 canonical。字段白名单、持久化边界和完整验收见[预测日期语义 5.2](../architecture/PREDICTION_SEMANTICS.md#52-一次性批量结果的分区与复用)和[平台入库 SOP 6.5](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#65-一次性批量结果复用快路径)。
+
 ## Harness 当前工作流
 
 - `python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all` 按 `runtime_type` 执行技术 Gate：
