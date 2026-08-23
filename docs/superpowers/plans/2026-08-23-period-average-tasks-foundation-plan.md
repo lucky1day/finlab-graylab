@@ -6,6 +6,28 @@
 
 **实施分支：** `codex/develop`
 
+## 实施前删冗余复审
+
+2026-08-23 在进入代码实施前再次按“单维护者、最短稳定闭环”复审，结论如下：
+
+1. 不新增第二套任务规格。把现有任务组合常量整理为唯一共享权威，Contract、config、Intake、scheduler、
+   backend 和测试都从同一映射派生；只在现有模块依赖会形成循环时提取一个无副作用的常量模块。
+2. 不新增第三套 Python 预测 runner。Mac3 和 ECS 继续使用现有 launchd/systemd one-shot，只增加共同的
+   `period_average` 运行 cadence 和共享 due 判断；宿主仍各自只有一个薄控制面包装。
+3. 不新增月均、季均、年均三个 timer。每个宿主至多增加一个周期均值触发，单次进程同时处理当日所有
+   到期 task type。
+4. 不新增 backtest runner、Dashboard endpoint、payload 版本、方案总数接口、业务桶 ID 或季度/年度 cutoff。
+5. 不在 prediction 表复制桶起止和均值。prediction 继续保存标准三日期和算法结果；桶审计摘要只跟随 actual
+   事实保存一次。
+6. 不为三种任务分别建 actual 表。保留一张通用周期均值 actual 表是必要的最小新增：现有日频表表达
+   `T+1/T+5` 单点事实，周频表依赖 week ID，月频表表达月中单点事实，复用任一表都会混淆唯一键和业务语义。
+7. 不把同日收盘刷新嵌入算法 runner。DataBridge 仍是唯一输入生产者，预测 one-shot 只消费并校验 ready；
+   仓库调度模板复用现有 DataBridge service，并在独立触发后再运行周期预测。
+8. 不为参考 M0 方案写专用逻辑或测试；所有新增能力只按 task type、target rule 和 tenor 参数化。
+
+复审后，必要新增收敛为：一个共享任务规格、一个纯桶模块、一张 actual 表、一个 actual updater、一个现有
+one-shot cadence、一个宿主周期触发，以及现有 API/前端的三列扩展。
+
 ## 目标
 
 在不入库任何具体算法方案的前提下，为灰度实验室增加三种 Blackbox V2 任务能力：
@@ -131,10 +153,10 @@ Contract、Intake、config 校验、discovery、Request、actual selector、Dash
 不得复用 `t_scheme_monthly_actuals`，因为该表定义的是月中单点收益率，不是桶平均；也不得将季均、年均
 塞入日频或周频 actual 表。
 
-### 5. 一个收盘后周期任务入口
+### 5. 一个收盘后周期任务 cadence
 
-不为月均、季均、年均分别建立 Python runner 或三个长期 timer。新增一个周期任务 one-shot，每个交易日收盘
-数据就绪后运行，并用共享桶模块判断：
+不为月均、季均、年均分别建立 Python runner 或三个长期 timer。在现有 launchd/systemd one-shot 中增加共同的
+`period_average` cadence，每个交易日收盘数据就绪后运行，并用共享桶模块判断：
 
 - 当日为 MID 锚点时选择 `monthly_average`；
 - 当日为季度锚点时选择 `quarterly_average`；
@@ -169,7 +191,7 @@ DataBridge ready gate、insert-only 和逐方案故障隔离。
 | actual model 与构造 | `shared/models.py`、`shared/actual_facts.py`、新增 `scheduler/period_average_actuals_updater.py` |
 | 写库单点 | `scheduler/repository.py`、`scheduler/actuals_runner.py` |
 | 数据库闭包 | 新增下一号 `migrations/*.sql`、`migrations/release_manifest.json`、`migrations/runner.py` |
-| Mac3/ECS one-shot | `scheduler/launchd_prediction_runner.py`、`scheduler/systemd_prediction_runner.py`，共享同一 due 逻辑 |
+| Mac3/ECS one-shot | 扩展 `scheduler/launchd_prediction_runner.py`、`scheduler/systemd_prediction_runner.py`，不新增第三个 runner |
 | Harness 与缺口判断 | `harness/signal_gap_plan.py`、`shared/signal_gap_report.py` 及现有 Blackbox Gate 测试 |
 | Dashboard 后端 | `backend/factor_lab_dashboard_semantics.py`、`backend/factor_lab_dashboard.py`、`backend/services.py` |
 | Dashboard 前端 | `frontend/index.html`、`frontend/aifin-shell.js`、`frontend/aifin-shell.css` 及静态摘要 |
@@ -212,7 +234,7 @@ DataBridge ready gate、insert-only 和逐方案故障隔离。
 
 ### 阶段 4：自然调度基础能力
 
-1. 新增周期任务 one-shot 和显式 due 判断，不新增 Python 常驻调度器。
+1. 在现有 one-shot 增加 `period_average` cadence 和显式 due 判断，不新增 Python runner 或常驻调度器。
 2. 增加当天收盘 DataBridge ready 语义；旧快照、缺锚点日数据和日历覆盖不足必须阻断。
 3. 扩展 Mac3 launchd 与 ECS systemd 仓库模板和漂移审计期望，但不安装、不加载、不启动。
 4. 测试 MID、季度、春节年锚点只执行一次，非锚点返回 `not_applicable`，重复业务键 benign skip。
