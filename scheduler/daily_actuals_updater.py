@@ -24,6 +24,11 @@ ACTUAL_TASK_TYPES_BY_FREQUENCY: dict[str, tuple[str, ...]] = {
     "daily": ("T+1", "T+5"),
     "weekly": ("weekly_point", "weekly_average"),
     "monthly": ("monthly",),
+    "period_average": (
+        "monthly_average",
+        "quarterly_average",
+        "annual_average",
+    ),
 }
 _TENOR_ORDER = {tenor: index for index, tenor in enumerate(TENOR_TO_INDICATOR)}
 
@@ -31,13 +36,17 @@ _TENOR_ORDER = {tenor: index for index, tenor in enumerate(TENOR_TO_INDICATOR)}
 def configured_active_scheme_tenors(
     schemes_root=SCHEMES_ROOT,
     frequency: str | None = None,
+    task_types: Iterable[str] | None = None,
 ) -> list[str]:
     """读取本地 active 配置期限，仅用于 Registry 漂移诊断。"""
     selected: set[str] = set()
+    selected_task_types = set(task_types or ())
     for cfg in discover_schemes(schemes_root):
         if cfg.status != "active":
             continue
         if frequency and cfg.frequency != frequency:
+            continue
+        if selected_task_types and cfg.task_type not in selected_task_types:
             continue
         selected.update(normalize_tenor(tenor) for tenor in cfg.tenors)
     return sorted(selected)
@@ -59,12 +68,23 @@ def active_registry_tenors(
     task_types: Iterable[str],
 ) -> list[str]:
     """从 active Registry 查询 actual 需要覆盖的期限。"""
+    scope = active_registry_tenors_by_task_type(engine, task_types)
+    return _normalize_supported_tenors(
+        tenor for tenors in scope.values() for tenor in tenors
+    )
+
+
+def active_registry_tenors_by_task_type(
+    engine: Engine,
+    task_types: Iterable[str],
+) -> dict[str, list[str]]:
+    """从 active Registry 一次读取每个显式 task_type 的期限范围。"""
     selected_task_types = tuple(dict.fromkeys(str(value) for value in task_types))
     if not selected_task_types:
         raise ValueError("actual task_types cannot be empty")
     sql = text(
         """
-        SELECT DISTINCT target_tenor
+        SELECT DISTINCT task_type, target_tenor
         FROM t_scheme_registry
         WHERE status = 'active'
           AND task_type IN :task_types
@@ -74,8 +94,17 @@ def active_registry_tenors(
         rows = conn.execute(
             sql,
             {"task_types": selected_task_types},
-        ).scalars().all()
-    return _normalize_supported_tenors(rows)
+        ).mappings().all()
+    grouped: dict[str, list[str]] = {}
+    for task_type in selected_task_types:
+        selected = [
+            row["target_tenor"]
+            for row in rows
+            if str(row["task_type"]) == task_type
+        ]
+        if selected:
+            grouped[task_type] = _normalize_supported_tenors(selected)
+    return grouped
 
 
 def resolve_actual_tenors(
@@ -100,7 +129,8 @@ def resolve_actual_tenors(
                 normalize_tenor(tenor)
                 for tenor in configured_active_scheme_tenors(
                     schemes_root,
-                    frequency=frequency,
+                    frequency=(None if frequency == "period_average" else frequency),
+                    task_types=task_types,
                 )
             },
             key=lambda tenor: (

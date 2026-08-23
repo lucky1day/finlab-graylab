@@ -4343,6 +4343,11 @@ def _is_serving_pointer_retirement_migration(path: Path) -> bool:
     return path.name == SERVING_POINTER_RETIREMENT_MIGRATION_FILENAME
 
 
+def _is_period_average_actuals_migration(path: Path) -> bool:
+    """migration 020 只允许缺表或精确完整目标表。"""
+    return path.name == PERIOD_AVERAGE_ACTUALS_MIGRATION_FILENAME
+
+
 def _partial_apply_error(
     path: Path,
     *,
@@ -4393,6 +4398,176 @@ SERVING_POINTER_RETIREMENT_MIGRATION_SHA256 = (
     "c5713935b4c33c492cac54f8cf85725b"
     "2353fc33079129b762a7ce868785b002"
 )
+PERIOD_AVERAGE_ACTUALS_MIGRATION_FILENAME = (
+    "020_period_average_actuals.sql"
+)
+
+
+def _expected_period_average_actuals_schema() -> dict[str, object]:
+    """返回 migration 020 新表的精确闭世界定义。"""
+    return {
+        "table": {
+            "table_type": "base table",
+            "engine": "innodb",
+            "collation": "utf8mb4_0900_ai_ci",
+        },
+        "columns": {
+            "id": ("bigint", "no", None, "auto_increment"),
+            "tenor": ("varchar(64)", "no", None, ""),
+            "predict_date": ("date", "no", None, ""),
+            "feature_date": ("date", "no", None, ""),
+            "target_date": ("date", "no", None, ""),
+            "feature_yield": ("double", "no", None, ""),
+            "target_yield": ("double", "no", None, ""),
+            "actual_direction": ("tinyint", "no", None, ""),
+            "price_signal": ("varchar(8)", "no", None, ""),
+            "target_rule": ("varchar(128)", "no", None, ""),
+            "extra": ("json", "yes", None, ""),
+            "created_at": (
+                "datetime",
+                "no",
+                "current_timestamp",
+                "default_generated",
+            ),
+            "updated_at": (
+                "datetime",
+                "no",
+                "current_timestamp",
+                "default_generated on update current_timestamp",
+            ),
+        },
+        "indexes": {
+            "PRIMARY": {
+                "unique": True,
+                "columns": ("id",),
+                "sub_parts": (None,),
+            },
+            "uk_period_average_actual_predict_rule": {
+                "unique": True,
+                "columns": ("tenor", "predict_date", "target_rule"),
+                "sub_parts": (None, None, None),
+            },
+            "idx_period_average_actual_target": {
+                "unique": False,
+                "columns": ("tenor", "target_date", "target_rule"),
+                "sub_parts": (None, None, None),
+            },
+        },
+    }
+
+
+def _read_period_average_actuals_schema(
+    connection: object,
+) -> dict[str, object]:
+    """只读 migration 020 目标表定义；缺表是唯一允许的 source 状态。"""
+    table_row = connection.execute(
+        text(
+            """
+            SELECT table_type AS table_type,
+                   engine AS engine,
+                   table_collation AS table_collation
+            FROM information_schema.tables
+            WHERE table_schema = DATABASE()
+              AND table_name = 't_scheme_period_average_actuals'
+            """
+        )
+    ).mappings().one_or_none()
+    if table_row is None:
+        return {"exists": False}
+    column_rows = connection.execute(
+        text(
+            """
+            SELECT column_name AS column_name,
+                   column_type AS column_type,
+                   is_nullable AS is_nullable,
+                   column_default AS column_default,
+                   extra AS extra
+            FROM information_schema.columns
+            WHERE table_schema = DATABASE()
+              AND table_name = 't_scheme_period_average_actuals'
+            ORDER BY ordinal_position
+            """
+        )
+    ).mappings().all()
+    index_rows = connection.execute(
+        text(
+            """
+            SELECT index_name AS index_name,
+                   non_unique AS non_unique,
+                   seq_in_index AS seq_in_index,
+                   column_name AS column_name,
+                   sub_part AS sub_part
+            FROM information_schema.statistics
+            WHERE table_schema = DATABASE()
+              AND table_name = 't_scheme_period_average_actuals'
+            ORDER BY index_name, seq_in_index
+            """
+        )
+    ).mappings().all()
+    grouped: dict[str, list[Mapping[str, object]]] = {}
+    for row in index_rows:
+        grouped.setdefault(str(row["index_name"]), []).append(row)
+    return {
+        "exists": True,
+        "table": {
+            "table_type": str(table_row["table_type"]).lower(),
+            "engine": str(table_row.get("engine") or "").lower(),
+            "collation": str(table_row.get("table_collation") or "").lower(),
+        },
+        "columns": {
+            str(row["column_name"]).lower(): (
+                str(row["column_type"]).lower(),
+                str(row["is_nullable"]).lower(),
+                (
+                    None
+                    if row["column_default"] is None
+                    else str(row["column_default"]).lower()
+                ),
+                " ".join(str(row.get("extra") or "").lower().split()),
+            )
+            for row in column_rows
+        },
+        "indexes": {
+            name: {
+                "unique": int(rows[0]["non_unique"]) == 0,
+                "columns": tuple(
+                    str(row["column_name"]).lower()
+                    for row in sorted(
+                        rows,
+                        key=lambda item: int(item["seq_in_index"]),
+                    )
+                ),
+                "sub_parts": tuple(
+                    None if row.get("sub_part") is None else int(row["sub_part"])
+                    for row in sorted(
+                        rows,
+                        key=lambda item: int(item["seq_in_index"]),
+                    )
+                ),
+            }
+            for name, rows in grouped.items()
+        },
+    }
+
+
+def _validate_period_average_actuals_schema(
+    schema: Mapping[str, object],
+    *,
+    allow_missing: bool,
+) -> None:
+    """只接受缺表或 migration 020 完整终态，拒绝部分/漂移定义。"""
+    if schema == {"exists": False}:
+        if allow_missing:
+            return
+        raise MigrationPreflightError(
+            "t_scheme_period_average_actuals is missing after migration 020"
+        )
+    expected = {"exists": True, **_expected_period_average_actuals_schema()}
+    if dict(schema) != expected:
+        raise MigrationPreflightError(
+            "unexpected t_scheme_period_average_actuals definition: "
+            f"{dict(schema)}"
+        )
 
 
 def _expected_migration_history_schema() -> dict[str, object]:
@@ -6119,6 +6294,7 @@ def _execute_prepared_migration_files(
         serving_pointer_retirement = (
             _is_serving_pointer_retirement_migration(path)
         )
+        period_average_actuals = _is_period_average_actuals_migration(path)
         mysql_session = False
         execution_started = False
         ddl_attempted = False
@@ -6153,6 +6329,11 @@ def _execute_prepared_migration_files(
                             "serving-pointer source definition before "
                             "DROP TABLE"
                         )
+                if period_average_actuals and mysql_session:
+                    _validate_period_average_actuals_schema(
+                        _read_period_average_actuals_schema(connection),
+                        allow_missing=True,
+                    )
                 for statement in statements:
                     execution_started = True
                     if mysql_session and _is_ddl_statement(statement):
@@ -6216,6 +6397,16 @@ def _execute_prepared_migration_files(
                             "migration 019 did not remove "
                             "t_scheme_serving_pointer"
                         )
+            except BaseException as exc:
+                postcondition_error = exc
+        if period_average_actuals and mysql_session and execution_started:
+            try:
+                with engine.begin() as connection:
+                    preflight_migration_session(connection)
+                    _validate_period_average_actuals_schema(
+                        _read_period_average_actuals_schema(connection),
+                        allow_missing=False,
+                    )
             except BaseException as exc:
                 postcondition_error = exc
 

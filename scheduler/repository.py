@@ -20,7 +20,13 @@ from scheduler.discovery import SchemeConfig, load_scheme_config
 from shared.blackbox_v2.lifecycle import assert_lifecycle_clear, lifecycle_operation_lock
 from shared.db_config import DatabaseConfig
 from shared.input_artifacts import InputArtifact
-from shared.models import ActualRecord, MonthlyActualRecord, PredictionRecord, WeeklyActualRecord
+from shared.models import (
+    ActualRecord,
+    MonthlyActualRecord,
+    PeriodAverageActualRecord,
+    PredictionRecord,
+    WeeklyActualRecord,
+)
 from shared.one_shot_control_plane import SCHEDULED_ONE_SHOT_CONTROL_PLANES
 
 
@@ -3847,6 +3853,49 @@ def upsert_monthly_actuals(engine: Engine, records: Iterable[MonthlyActualRecord
                 updated_at = CURRENT_TIMESTAMP
             """
         )
+    with engine.begin() as conn:
+        conn.execute(sql, rows)
+    return len(rows)
+
+
+def upsert_period_average_actuals(
+    engine: Engine,
+    records: Iterable[PeriodAverageActualRecord],
+) -> int:
+    """UPSERT MID/CQ/SF 共用的周期均值实际方向记录。"""
+    rows = []
+    for record in records:
+        row = asdict(record)
+        row["extra"] = json.dumps(record.extra or {}, ensure_ascii=False)
+        rows.append(row)
+    if not rows:
+        return 0
+
+    json_value = ":extra" if engine.dialect.name == "sqlite" else "CAST(:extra AS JSON)"
+    duplicate = "" if engine.dialect.name == "sqlite" else """
+        ON DUPLICATE KEY UPDATE
+            feature_date = VALUES(feature_date),
+            target_date = VALUES(target_date),
+            feature_yield = VALUES(feature_yield),
+            target_yield = VALUES(target_yield),
+            actual_direction = VALUES(actual_direction),
+            price_signal = VALUES(price_signal),
+            extra = VALUES(extra),
+            updated_at = CURRENT_TIMESTAMP
+    """
+    sql = text(
+        f"""
+        INSERT INTO t_scheme_period_average_actuals
+            (tenor, predict_date, feature_date, target_date,
+             feature_yield, target_yield, actual_direction,
+             price_signal, target_rule, extra)
+        VALUES
+            (:tenor, :predict_date, :feature_date, :target_date,
+             :feature_yield, :target_yield, :actual_direction,
+             :price_signal, :target_rule, {json_value})
+        {duplicate}
+        """
+    )
     with engine.begin() as conn:
         conn.execute(sql, rows)
     return len(rows)

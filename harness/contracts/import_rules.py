@@ -76,6 +76,7 @@ LIVE_TABLE_NAMES = {
     "t_scheme_actuals",
     "t_scheme_weekly_actuals",
     "t_scheme_monthly_actuals",
+    "t_scheme_period_average_actuals",
 }
 BACKTEST_FORBIDDEN_IMPORTS = {"scheduler", "backend"}
 ROOT_BENCHMARK_ALLOWED_NAME_MARKERS = ("SOURCE_EVIDENCE", "SOURCE_ARCHIVE", "EXTERNAL_SOURCE", "AUDIT")

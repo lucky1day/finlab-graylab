@@ -95,6 +95,11 @@
       "version": 19,
       "filename": "019_retire_scheme_serving_pointer.sql",
       "sha256": "c5713935b4c33c492cac54f8cf85725b2353fc33079129b762a7ce868785b002"
+    },
+    {
+      "version": 20,
+      "filename": "020_period_average_actuals.sql",
+      "sha256": "247f422be4093fce02b5252d44e0c0494520c4a5d7d6b2dab3010cdd603de446"
     }
   ]
 }

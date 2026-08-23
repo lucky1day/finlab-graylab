@@ -68,3 +68,19 @@ class MonthlyActualRecord:
     price_signal: str
     target_rule: str
     extra: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class PeriodAverageActualRecord:
+    """MID/CQ/SF 周期均值实际方向记录。"""
+
+    tenor: str
+    predict_date: str
+    feature_date: str
+    target_date: str
+    feature_yield: float
+    target_yield: float
+    actual_direction: int
+    price_signal: str
+    target_rule: str
+    extra: dict[str, Any] | None = None

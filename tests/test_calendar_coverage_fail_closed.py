@@ -281,47 +281,58 @@ class ActualsRunnerCoverageTests(unittest.TestCase):
             _patch(
                 "scheduler.actuals_runner.update_monthly_actuals", return_value=0
             ),
+            _patch(
+                "scheduler.actuals_runner.update_period_average_actuals",
+                return_value=0,
+            ),
         )
 
     def test_uncovered_run_date_fails_closed_without_writing(self) -> None:
         from scheduler.actuals_runner import run_actuals_job
 
-        engine_p, calendar_p, daily_p, weekly_p, monthly_p = self._patches()
+        engine_p, calendar_p, daily_p, weekly_p, monthly_p, period_p = self._patches()
         with engine_p, calendar_p, daily_p as daily, weekly_p as weekly, (
             monthly_p
-        ) as monthly:
+        ) as monthly, period_p as period:
             with self.assertRaises(ValueError):
                 run_actuals_job(run_date=UNCOVERED)
             daily.assert_not_called()
             weekly.assert_not_called()
             monthly.assert_not_called()
+            period.assert_not_called()
 
     def test_covered_holiday_still_rolls_back_to_previous_trading_day(self) -> None:
         """真实节假日的既有语义不变——修复不得把节假日也一起挡掉。"""
         from scheduler.actuals_runner import run_actuals_job
 
-        engine_p, calendar_p, daily_p, weekly_p, monthly_p = self._patches()
+        engine_p, calendar_p, daily_p, weekly_p, monthly_p, period_p = self._patches()
         with engine_p, calendar_p, daily_p as daily, weekly_p as weekly, (
             monthly_p
-        ) as monthly:
+        ) as monthly, period_p as period:
             run_actuals_job(run_date=COVERED_HOLIDAY)
             self.assertEqual(daily.call_args.kwargs["end_date"], "2026-06-02")
             self.assertEqual(weekly.call_args.kwargs["end_date"], "2026-06-02")
             self.assertEqual(
                 monthly.call_args.kwargs["end_date"], COVERED_HOLIDAY
             )
+            self.assertEqual(
+                period.call_args.kwargs["end_date"], COVERED_HOLIDAY
+            )
 
     def test_covered_trading_day_uses_run_date(self) -> None:
         from scheduler.actuals_runner import run_actuals_job
 
-        engine_p, calendar_p, daily_p, weekly_p, monthly_p = self._patches()
+        engine_p, calendar_p, daily_p, weekly_p, monthly_p, period_p = self._patches()
         with engine_p, calendar_p, daily_p as daily, weekly_p as weekly, (
             monthly_p
-        ) as monthly:
+        ) as monthly, period_p as period:
             run_actuals_job(run_date=COVERED_TRADING)
             self.assertEqual(
                 daily.call_args.kwargs["end_date"], COVERED_TRADING
             )
             self.assertEqual(
                 monthly.call_args.kwargs["end_date"], COVERED_TRADING
+            )
+            self.assertEqual(
+                period.call_args.kwargs["end_date"], COVERED_TRADING
             )

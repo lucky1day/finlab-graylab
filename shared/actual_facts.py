@@ -10,13 +10,25 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Engine
 
 from shared.calendar_service import is_trading_day_row
-from shared.models import ActualRecord, MonthlyActualRecord, WeeklyActualRecord
+from shared.models import (
+    ActualRecord,
+    MonthlyActualRecord,
+    PeriodAverageActualRecord,
+    WeeklyActualRecord,
+)
+from shared.period_average_buckets import (
+    PeriodBucket,
+    build_period_buckets,
+    complete_bucket_average,
+    target_pointer,
+)
 from shared.prediction_context import (
     MONTHLY_TARGET_RULE,
     WEEKLY_AVERAGE_TARGET_RULE,
     WEEKLY_TARGET_RULE,
     next_calendar_week_id,
 )
+from shared.task_specs import PERIOD_AVERAGE_TASK_TYPES, TASK_COMBINATIONS
 from shared.tenor_mapping import TENOR_TO_INDICATOR, indicator_map_for_tenors, normalize_tenor
 from shared.week_calendar_normalizer import normalize_week_calendar_rows
 
@@ -379,6 +391,118 @@ def build_monthly_actual_records_from_rows(
                 )
             )
     return sorted(records, key=lambda item: (item.tenor, item.predict_date, item.target_date))
+
+
+def build_period_average_actual_records_from_rows(
+    rows: Iterable[dict],
+    calendar_rows: Iterable[dict],
+    *,
+    task_types: Iterable[str] = PERIOD_AVERAGE_TASK_TYPES,
+    start_date: str | date | datetime | None = None,
+    end_date: str | date | datetime | None = None,
+) -> list[PeriodAverageActualRecord]:
+    """按完整连续的 MID/CQ/SF 桶生成周期均值 actual。"""
+    selected_task_types = tuple(dict.fromkeys(str(item) for item in task_types))
+    unsupported = sorted(set(selected_task_types) - PERIOD_AVERAGE_TASK_TYPES)
+    if unsupported:
+        raise ValueError(
+            "unsupported period-average actual task_types: " + ", ".join(unsupported)
+        )
+    start = normalize_date(start_date)
+    end = normalize_date(end_date)
+    frozen_calendar = tuple(dict(item) for item in calendar_rows)
+    buckets_by_task = {
+        task_type: build_period_buckets(task_type, frozen_calendar)
+        for task_type in selected_task_types
+    }
+    grouped: dict[str, dict[str, float]] = defaultdict(dict)
+    for raw in rows:
+        trade_date = normalize_date(raw.get("trade_date"))
+        if trade_date is None:
+            raise ValueError("period-average source actual fact is missing trade_date")
+        tenor = str(raw["tenor"])
+        if trade_date in grouped[tenor]:
+            raise ValueError(
+                f"duplicate source actual fact: tenor={tenor}, trade_date={trade_date}"
+            )
+        grouped[tenor][trade_date] = _to_float(raw["close_yield"])
+
+    records: list[PeriodAverageActualRecord] = []
+    for tenor, by_date in grouped.items():
+        if not by_date:
+            continue
+        source_start, source_end = min(by_date), max(by_date)
+        for task_type in selected_task_types:
+            target_rule = TASK_COMBINATIONS[task_type][1]
+            buckets = buckets_by_task[task_type]
+            for feature_bucket, target_bucket in zip(buckets, buckets[1:]):
+                if feature_bucket.start_date < source_start:
+                    continue
+                if target_bucket.anchor_date > source_end:
+                    continue
+                prediction_target_date = target_pointer(feature_bucket.anchor_date)
+                if start and prediction_target_date < start:
+                    continue
+                if end and target_bucket.anchor_date > end:
+                    continue
+                feature_yield = complete_bucket_average(
+                    feature_bucket,
+                    _bucket_rows(feature_bucket, by_date),
+                )
+                target_yield = complete_bucket_average(
+                    target_bucket,
+                    _bucket_rows(target_bucket, by_date),
+                )
+                direction = _sign(target_yield - feature_yield)
+                records.append(
+                    PeriodAverageActualRecord(
+                        tenor=tenor,
+                        predict_date=feature_bucket.anchor_date,
+                        feature_date=feature_bucket.anchor_date,
+                        target_date=prediction_target_date,
+                        feature_yield=feature_yield,
+                        target_yield=target_yield,
+                        actual_direction=direction,
+                        price_signal=_price_signal(direction),
+                        target_rule=target_rule,
+                        extra={
+                            "direction_basis": "yield",
+                            "aggregation": "complete_trading_day_bucket_average",
+                            "feature_bucket": _period_bucket_evidence(feature_bucket),
+                            "target_bucket": _period_bucket_evidence(target_bucket),
+                            "yield_direction_1": "price_short",
+                            "yield_direction_minus_1": "price_long",
+                        },
+                    )
+                )
+    return sorted(
+        records,
+        key=lambda item: (item.tenor, item.predict_date, item.target_rule),
+    )
+
+
+def _bucket_rows(
+    bucket: PeriodBucket,
+    values: dict[str, float],
+) -> list[dict[str, object]]:
+    return [
+        {
+            "trade_date": trade_date,
+            "close_yield": values[trade_date],
+        }
+        for trade_date in bucket.trading_days
+        if trade_date in values
+    ]
+
+
+def _period_bucket_evidence(bucket: PeriodBucket) -> dict[str, object]:
+    return {
+        "label": bucket.label,
+        "start_date": bucket.start_date,
+        "end_date": bucket.end_date,
+        "anchor_date": bucket.anchor_date,
+        "sample_count": len(bucket.trading_days),
+    }
 
 
 def _week_id(value: object) -> int | None:

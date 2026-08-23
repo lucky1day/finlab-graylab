@@ -167,6 +167,10 @@ class TenorMappingTests(unittest.TestCase):
             ("weekly_point", "weekly_average"),
         )
         self.assertEqual(ACTUAL_TASK_TYPES_BY_FREQUENCY["monthly"], ("monthly",))
+        self.assertEqual(
+            ACTUAL_TASK_TYPES_BY_FREQUENCY["period_average"],
+            ("monthly_average", "quarterly_average", "annual_average"),
+        )
 
 
 def _registry_engine(rows: list[tuple[str, str, str, str]]):

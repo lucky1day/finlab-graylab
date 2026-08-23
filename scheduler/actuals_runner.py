@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 from scheduler.daily_actuals_updater import update_actuals
 from scheduler.monthly_actuals_updater import update_monthly_actuals
+from scheduler.period_average_actuals_updater import update_period_average_actuals
 from scheduler.repository import create_engine_from_env
 from scheduler.weekly_actuals_updater import update_weekly_actuals
 from shared.calendar_service import get_calendar
@@ -76,20 +77,24 @@ def run_actuals_job(
     daily_written = update_actuals(end_date=daily_weekly_end_date)
     weekly_written = update_weekly_actuals(end_date=daily_weekly_end_date)
     monthly_written = update_monthly_actuals(end_date=target_date)
+    period_average_written = update_period_average_actuals(end_date=target_date)
     logger.info(
         "Actuals refresh finished: date=%s daily_weekly_end_date=%s daily_records=%s "
-        "weekly_records=%s monthly_records=%s",
+        "weekly_records=%s monthly_records=%s period_average_records=%s",
         target_date,
         daily_weekly_end_date,
         daily_written,
         weekly_written,
         monthly_written,
+        period_average_written,
     )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """解析一次性 actuals runner 的命令行参数。"""
-    parser = argparse.ArgumentParser(description="Refresh daily, weekly, and monthly actuals.")
+    parser = argparse.ArgumentParser(
+        description="Refresh daily, weekly, monthly, and period-average actuals."
+    )
     parser.add_argument("--date", default=None, help="Run date in YYYY-MM-DD format")
     parser.add_argument(
         "--force",
