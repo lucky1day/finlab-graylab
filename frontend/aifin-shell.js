@@ -189,9 +189,9 @@
   var factorTaskColumns = [
     { id: "dailyT1", label: "T+1", taskType: "T+1", frequency: "daily", horizon: "T+1" },
     { id: "dailyT5", label: "T+5", taskType: "T+5", frequency: "daily", horizon: "T+5" },
-    { id: "weeklyPoint", label: "周度", taskType: "weekly_point", frequency: "weekly", horizon: "NEXT_WEEK_FRIDAY" },
+    { id: "weeklyPoint", label: "周收盘", taskType: "weekly_point", frequency: "weekly", horizon: "NEXT_WEEK_FRIDAY" },
     { id: "weeklyAverage", label: "周平均", taskType: "weekly_average", frequency: "weekly", horizon: "NEXT_WEEK_AVERAGE" },
-    { id: "monthly", label: "月度", taskType: "monthly", frequency: "monthly", horizon: "MONTHLY" }
+    { id: "monthly", label: "月中收", taskType: "monthly", frequency: "monthly", horizon: "MONTHLY" }
   ];
   var factorTrendMetrics = [
     { id: "overall", label: "整体准确率", color: "#15623f" },
@@ -2076,6 +2076,7 @@
   }
 
   function renderFactorLabDataStatus() {
+    renderFactorLabSchemeTotal();
     var status = document.getElementById("factorDataStatus");
     var text = document.getElementById("factorDataStatusText");
     if (!status || !text) return;
@@ -2099,13 +2100,45 @@
     status.setAttribute("title", factorLabApiError || text.textContent);
   }
 
+  function factorLabSchemeCountsAvailable(dataState) {
+    var state = dataState || {};
+    return Boolean(state.remoteLoaded && !state.remoteLoading && !state.apiError &&
+      state.dataMode !== "loading" && state.dataMode !== "error");
+  }
+
+  function currentFactorLabDataState() {
+    return {
+      remoteLoaded: factorLabRemoteLoaded,
+      remoteLoading: factorLabRemoteLoading,
+      apiError: factorLabApiError,
+      dataMode: factorLabDataMode
+    };
+  }
+
+  function factorLabSchemeTotalLabel(tasks, dataState) {
+    return "方案总数：" + (factorLabSchemeCountsAvailable(dataState)
+      ? countFactorLabRows(tasks).schemes
+      : "--");
+  }
+
+  function renderFactorLabSchemeTotal() {
+    var badge = document.getElementById("factorOverviewSchemeCount");
+    if (!badge) return;
+    badge.textContent = factorLabSchemeTotalLabel(
+      factorTaskSchemes,
+      currentFactorLabDataState()
+    );
+  }
+
   function renderTaskOverview() {
     var body = document.getElementById("factorTaskMatrixBody");
     var range = document.getElementById("factorOverviewRange");
     var metricBadge = document.getElementById("factorOverviewMetric");
     if (!body) return;
+    renderFactorLabSchemeTotal();
     if (range) range.textContent = factorLabState.startMonth + " 至 " + factorLabState.endMonth;
     if (metricBadge) metricBadge.textContent = "指标：" + getMetricLabel(factorLabState.rankMetric);
+    var schemeCountsAvailable = factorLabSchemeCountsAvailable(currentFactorLabDataState());
 
     var html = factorTargets.map(function (target) {
       var cells = factorTaskColumns.map(function (column) {
@@ -2121,9 +2154,10 @@
           : "";
         var selectedClass = key === factorLabState.selectedTaskKey ? " is-selected" : "";
         var value = formatPercent(metricValue);
+        var schemeCount = schemeCountsAvailable ? schemes.length : "--";
         return '<td><button type="button" class="factor-task-cell' + selectedClass + '" data-factor-task-key="' + escapeHtml(key) + '">' +
           '<span class="factor-task-top' + metricClass + '">' + value + '</span>' +
-          '<span class="factor-task-count">' + schemes.length + ' 个方案</span>' +
+          '<span class="factor-task-count">' + schemeCount + ' 个方案</span>' +
           '</button></td>';
       }).join("");
       return '<tr><td>' + escapeHtml(getTargetDisplayName(target)) + '</td>' + cells + '</tr>';
@@ -2326,9 +2360,8 @@
     Array.prototype.slice.call(document.querySelectorAll("[data-factor-rank-sort]")).forEach(function (button) {
       var metricId = button.getAttribute("data-factor-rank-sort");
       var active = metricId === factorLabState.rankMetric;
-      button.classList.toggle("is-active", active);
-      button.setAttribute("aria-sort", active ? factorLabState.rankDirection : "none");
-      button.setAttribute("data-sort-direction", active ? factorLabState.rankDirection.toUpperCase() : "");
+      var ariaDirection = factorLabState.rankDirection === "asc" ? "ascending" : "descending";
+      button.setAttribute("aria-sort", active ? ariaDirection : "none");
     });
     var srcSelect = document.getElementById("factorDataSource");
     if (srcSelect) srcSelect.value = factorLabState.dataSource;
@@ -2880,6 +2913,7 @@
     trendMonthLabelVisibleForTest: shouldShowTrendMonthLabel,
     renderSchemeRankingRowForTest: renderSchemeRankingRow,
     sortRankingSchemes: sortRankingSchemes,
+    factorLabSchemeTotalLabelForTest: factorLabSchemeTotalLabel,
     getTaskSchemesForTest: function () {
       return factorTaskSchemes;
     },

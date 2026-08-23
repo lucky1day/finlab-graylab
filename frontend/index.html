@@ -10,7 +10,7 @@
       html, body { margin: 0; min-height: 100%; background: #F8F7F2; color: #171A20; }
       .aifin-shell { min-height: 100vh; background: #F8F7F2; }
     </style>
-    <link rel="stylesheet" href="aifin-shell.css?v=1b1ad0d961c553c26bc2e3811be36f95b36b79656a98630337040ec8c0fccbc6">
+    <link rel="stylesheet" href="aifin-shell.css?v=5d9f6641030c80c42a61cafa8179adb62b2b1752b0221c5127ee16c0538946a2">
   </head>
   <body>
     <div id="aifin-shell" class="aifin-shell">
@@ -77,6 +77,7 @@
                   <h3>任务格子最优指标</h3>
                 </div>
                 <div class="factor-accuracy-meta" aria-label="区间汇总条件">
+                  <span class="factor-range-badge" id="factorOverviewSchemeCount">方案总数：--</span>
                   <span class="factor-range-badge" id="factorOverviewRange">2025-01 至 2025-05</span>
                   <span class="factor-range-badge" id="factorOverviewMetric">指标：整体准确率</span>
                 </div>
@@ -88,9 +89,9 @@
                       <th>Y标的</th>
                       <th>T+1</th>
                       <th>T+5</th>
-                      <th>周度</th>
+                      <th>周收盘</th>
                       <th>周平均</th>
-                      <th>月度</th>
+                      <th>月中收</th>
                     </tr>
                   </thead>
                   <tbody id="factorTaskMatrixBody"></tbody>
@@ -110,10 +111,10 @@
                     <tr>
                       <th>排名</th>
                       <th>方案</th>
-                      <th><button type="button" class="factor-ranking-sort is-active" data-factor-rank-sort="overall" data-sort-direction="DESC" aria-sort="descending">区间准确率</button></th>
-                      <th><button type="button" class="factor-ranking-sort" data-factor-rank-sort="samples" data-sort-direction="" aria-sort="none">样本数</button></th>
-                      <th><button type="button" class="factor-ranking-sort" data-factor-rank-sort="upPrecision" data-sort-direction="" aria-sort="none">上涨准确率</button></th>
-                      <th><button type="button" class="factor-ranking-sort" data-factor-rank-sort="downPrecision" data-sort-direction="" aria-sort="none">下跌准确率</button></th>
+                      <th><button type="button" class="factor-ranking-sort" data-factor-rank-sort="overall" aria-sort="descending">区间准确率</button></th>
+                      <th><button type="button" class="factor-ranking-sort" data-factor-rank-sort="samples" aria-sort="none">样本数</button></th>
+                      <th><button type="button" class="factor-ranking-sort" data-factor-rank-sort="upPrecision" aria-sort="none">上涨准确率</button></th>
+                      <th><button type="button" class="factor-ranking-sort" data-factor-rank-sort="downPrecision" aria-sort="none">下跌准确率</button></th>
                       <th>部署时间</th>
                       <th>来源</th>
                       <th>备注</th>
@@ -203,6 +204,6 @@
       </div>
       <div class="factor-remark-popover-body" id="factorRemarkBody"></div>
     </aside>
-    <script src="aifin-shell.js?v=27bc494239226b23ff465b7bb91477e3ec7bb8ccb00735998bbef7cb3f4582f9"></script>
+    <script src="aifin-shell.js?v=e1aa6f9e5934db762d2d4022a5fc3fb28b735bf7b5808c17daf85e698c46555b"></script>
   </body>
 </html>

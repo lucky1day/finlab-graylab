@@ -667,7 +667,6 @@ button {
 .factor-ranking-sort {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
   max-width: 100%;
   padding: 0;
   border: 0;
@@ -676,19 +675,6 @@ button {
   cursor: pointer;
   font: inherit;
   font-weight: 800;
-}
-
-.factor-ranking-sort::after {
-  min-width: 30px;
-  color: var(--text-tertiary);
-  font-size: 10px;
-  font-family: var(--font-mono);
-  font-weight: 700;
-  content: attr(data-sort-direction);
-}
-
-.factor-ranking-sort.is-active {
-  color: var(--accent);
 }
 
 .factor-ranking-sort:hover {
