@@ -135,33 +135,53 @@ def _month_start(value: pd.Timestamp) -> pd.Timestamp:
     return pd.Timestamp(value.year, value.month, 1)
 
 
-def _monthly_window(cutoff: pd.Timestamp, calendar: pd.DataFrame) -> tuple[pd.Timestamp, pd.Timestamp]:
+def _daily_trading_dates(
+    daily: pd.DataFrame,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> pd.Series:
+    return daily[(daily["date"] >= start) & (daily["date"] <= end)]["date"].reset_index(drop=True)
+
+
+def _monthly_window(
+    cutoff: pd.Timestamp,
+    calendar: pd.DataFrame,
+    daily: pd.DataFrame,
+) -> tuple[pd.Timestamp, pd.Timestamp]:
     label_month = _month_start(cutoff) if cutoff.day <= 15 else _month_start(cutoff) + pd.offsets.MonthBegin(1)
     start = label_month - pd.offsets.MonthBegin(1) + pd.Timedelta(days=15)
     end = label_month + pd.Timedelta(days=14)
     _require_calendar_coverage(calendar, start, end)
-    expected = calendar[(calendar["date"] >= start) & (calendar["date"] <= end)]["date"]
+    expected = _daily_trading_dates(daily, start, end)
     if expected.empty or expected.iloc[-1] != cutoff:
         raise ValueError("feature_date 必须是 MID 桶的最后交易日锚点")
     return start, end
 
 
-def _quarterly_window(cutoff: pd.Timestamp, calendar: pd.DataFrame) -> tuple[pd.Timestamp, pd.Timestamp]:
+def _quarterly_window(
+    cutoff: pd.Timestamp,
+    calendar: pd.DataFrame,
+    daily: pd.DataFrame,
+) -> tuple[pd.Timestamp, pd.Timestamp]:
     start_month = ((cutoff.month - 1) // 3) * 3 + 1
     start = pd.Timestamp(cutoff.year, start_month, 1)
     end = start + pd.offsets.QuarterEnd(startingMonth=3)
     _require_calendar_coverage(calendar, start, end)
-    expected = calendar[(calendar["date"] >= start) & (calendar["date"] <= end)]["date"]
+    expected = _daily_trading_dates(daily, start, end)
     if expected.empty or expected.iloc[-1] != cutoff:
         raise ValueError("feature_date 必须是自然季度桶的最后交易日锚点")
     return start, end
 
 
-def _spring_boundary(year: int, calendar: pd.DataFrame) -> tuple[pd.Timestamp, pd.Timestamp]:
+def _spring_boundary(
+    year: int,
+    calendar: pd.DataFrame,
+    daily: pd.DataFrame,
+) -> tuple[pd.Timestamp, pd.Timestamp]:
     start = pd.Timestamp(year, 1, 1)
     end = pd.Timestamp(year, 3, 15)
     _require_calendar_coverage(calendar, start, end)
-    days = calendar[(calendar["date"] >= start) & (calendar["date"] <= end)]["date"].reset_index(drop=True)
+    days = _daily_trading_dates(daily, start, end)
     if len(days) < 2:
         raise ValueError(f"春节日历窗口交易日不足: year={year}")
     gaps = days.diff().dt.days.iloc[1:]
@@ -175,40 +195,38 @@ def _spring_boundary(year: int, calendar: pd.DataFrame) -> tuple[pd.Timestamp, p
     return days.iloc[index - 1], days.iloc[index]
 
 
-def _annual_window(cutoff: pd.Timestamp, calendar: pd.DataFrame) -> tuple[pd.Timestamp, pd.Timestamp]:
-    previous_day, _next_day = _spring_boundary(cutoff.year, calendar)
+def _annual_window(
+    cutoff: pd.Timestamp,
+    calendar: pd.DataFrame,
+    daily: pd.DataFrame,
+) -> tuple[pd.Timestamp, pd.Timestamp]:
+    previous_day, _next_day = _spring_boundary(cutoff.year, calendar, daily)
     if previous_day != cutoff:
         raise ValueError("feature_date 必须是春节前年桶的最后交易日锚点")
-    _prior_previous, start = _spring_boundary(cutoff.year - 1, calendar)
+    _prior_previous, start = _spring_boundary(cutoff.year - 1, calendar, daily)
     return start, cutoff
 
 
-def _bucket_window(cutoff: pd.Timestamp, calendar: pd.DataFrame) -> tuple[pd.Timestamp, pd.Timestamp]:
+def _bucket_window(
+    cutoff: pd.Timestamp,
+    calendar: pd.DataFrame,
+    daily: pd.DataFrame,
+) -> tuple[pd.Timestamp, pd.Timestamp]:
     if BUCKET_KIND == "monthly":
-        return _monthly_window(cutoff, calendar)
+        return _monthly_window(cutoff, calendar, daily)
     if BUCKET_KIND == "quarterly":
-        return _quarterly_window(cutoff, calendar)
-    return _annual_window(cutoff, calendar)
+        return _quarterly_window(cutoff, calendar, daily)
+    return _annual_window(cutoff, calendar, daily)
 
 
 def _strict_bucket(
     daily: pd.DataFrame,
-    calendar: pd.DataFrame,
     start: pd.Timestamp,
     end: pd.Timestamp,
 ) -> pd.DataFrame:
-    expected_dates = list(
-        calendar[(calendar["date"] >= start) & (calendar["date"] <= end)]["date"]
-    )
-    if not expected_dates:
-        raise ValueError("业务桶没有权威交易日")
-    selected = daily[daily["date"].isin(set(expected_dates))].copy()
-    actual_dates = list(selected["date"])
-    if actual_dates != expected_dates:
-        expected = {value.strftime("%Y-%m-%d") for value in expected_dates}
-        actual = {value.strftime("%Y-%m-%d") for value in actual_dates}
-        missing = sorted(expected - actual)
-        raise ValueError(f"业务桶交易日不完整: missing={missing}")
+    selected = daily[(daily["date"] >= start) & (daily["date"] <= end)].copy()
+    if selected.empty:
+        raise ValueError("业务桶没有 DataBridge 日频交易日")
     raw = selected["raw_y"].astype("string").str.strip()
     if raw.eq("").any():
         raise ValueError("业务桶消费列存在空值")
@@ -223,8 +241,8 @@ def _strict_bucket(
 
 def _predict_one(daily: pd.DataFrame, calendar: pd.DataFrame, req: dict) -> int:
     cutoff = _validate_calendar_mapping(calendar, req)
-    start, end = _bucket_window(cutoff, calendar)
-    bucket = _strict_bucket(daily, calendar, start, end)
+    start, end = _bucket_window(cutoff, calendar, daily)
+    bucket = _strict_bucket(daily, start, end)
     # 保持原始交付的单组 groupby.agg 浮点路径，不改变 M0 方向语义。
     aggregate = bucket.groupby(
         np.zeros(len(bucket), dtype="int64"), sort=False
