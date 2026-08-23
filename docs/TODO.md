@@ -14,7 +14,8 @@
 
 参考收包 `blackbox-v2-20schemes-m0` 包含周均、月均、季均、年均四族共 20 个 Blackbox V2 方案。
 其中 `m0_weekly_avg_{1y,3y,5y,7y,10y}_v1` 五个周均方案已经在 ECS 完成 Intake、技术 Gate、
-shadow、持久化回测、activation、单日 `gray_live` 和 DashboardGate，本计划不重复处理。
+shadow、持久化回测、activation、`2026-06-01` 起连续 `gray_live` 和 DashboardGate；其 canonical 回测与
+gray-live target 分区已经互斥，本计划不重复处理。
 
 本轮只处理余下 15 个方案：
 
