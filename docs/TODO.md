@@ -212,19 +212,14 @@ operator、scheme、version、Harness run 和 operation hash。
 
 ## 其他未闭环队列
 
-1. Mac3 已完成 018–020、原指定 archive 晋级和 Backend 恢复，但 daily 18:00 close-period monthly plist
-   因全局晨间刷新窗口与 plist 同名环境变量冲突而安全回滚。修复 release
-   `2394711e1ac5f97b73af8ede4ded5163bb0a254e` 使用显式 job 参数且不放宽 launcher，archive SHA-256 为
-   `d52c1c56dc3fc5dee053d77c3d62c67e8b01665346126297485cdfa40c057c77`；已在 ECS 完成候选回归、原子
-   晋级、Backend/Dashboard HTTP 和非到期零副作用 probe。Mac3 只允许从 ECS 保存的同一 archive 晋级，
-   随后替换 monthly plist，完成非到期 probe、静态资源、HTTP、DashboardGate、文档和临时计划清理。
-   Mac3 当前数据库、业务数据和回滚后的七个 plist 均安全，不得现场另建修复提交或推送临时提交
-   `a05c0b9`。
-2. `five_y_factor_rule_online_v1` 与 `ten_y_factor_level_ensemble_v1` 等待 2026-08-24 07:03
+1. `five_y_factor_rule_online_v1` 与 `ten_y_factor_level_ensemble_v1` 等待 2026-08-24 07:03
    Asia/Shanghai 的首次真实 daily 自然触发；不得 kickstart、覆盖日期或倒签信号。
-3. M0 周平均五方案及同期 ECS 周频方案等待 2026-08-29 11:30 的首次自然触发。
-4. 独立诊断 Mac3 2026-08-21 daily 的 17 个 `execution_failed`；没有新业务写入授权时不得手工重跑。
-5. 未来若把生产域名或 Writer 从 Mac3 切到 ECS，必须作为新生产项目设计数据库 authority、单 Writer、
+2. M0 周平均五方案及同期 ECS 周频方案等待 2026-08-29 11:30 的首次自然触发。
+3. 将本次验证过的快速补缺方式固化为受控工具：同一 immutable release、方案版本、预测日期、输入业务摘要
+   和 lineage 全部匹配时，优先复用合格缓存或从 ECS 只读复制精确核心预测结果；目标 Writer 必须先停止，
+   Mac3 只经 repository insert-only 导入，已有键整组拒绝。不得复制数据库主键、`run_id`、Actuals、回测或
+   Harness 历史；源端不存在的业务键才重新计算。工具落地前不得临时放宽现有 launcher 或缓存校验。
+4. 未来若把生产域名或 Writer 从 Mac3 切到 ECS，必须作为新生产项目设计数据库 authority、单 Writer、
    DNS/Nginx、窗口和回滚，不能从灰度验收外推授权。
 
 ECS 继续独立灰度运行；Mac3 域名、Nginx、DNS、数据库 authority 和生产 Writer 保持不变。
