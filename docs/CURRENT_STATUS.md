@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验日期**：2026-08-23
+**最后核验日期**：2026-08-24
 
 本文只记录当前稳定事实。实时方案、run、prediction、DataBridge、API 和调度状态必须从各自权威数据源
 读取；待推进工作见[统一后续推进计划](TODO.md)，生产规则见
@@ -22,15 +22,19 @@
 
 ## 当前 immutable release
 
-- Mac3 与 ECS 的 `current` 均为
-  `71a31b0d14bb88d383ea2dc5b495cdc984001461`，`previous` 均为
+- Mac3 未参与本轮晋级，`current` 仍为
+  `71a31b0d14bb88d383ea2dc5b495cdc984001461`，`previous` 为
   `eca1f0fa9fb6eb8c0d0e1b933634d7940df7ba25`。
-- 当前 source archive SHA-256 为
-  `41917526cb2613bd3538dc9673099107c74cf8bcef795f624971a795fe218f17`，manifest SHA-256 为
-  `b57208ebdc5c653497bafa165e7c2ebf5fb8215851011a8c3543121e4d57dcd7`，安装后 source-tree SHA-256 为
-  `73897aaef6fb0ff68965280638001974ba22ec749fcd6bd91646b957e7b45be0`。
-- 该 release 包含 immutable Native 子进程数据库身份修复和 Liwei 私有缓存完整输出比较回调修复；完整测试为
-  `1142 passed + 500 subtests passed`，Liwei 聚焦测试为 `144 passed + 26 subtests passed`。
+- ECS `current` 为 M0 15 方案入库代码 release
+  `859610d09d46af096e3666594267c50297a36a80`，`previous` 为
+  `e07de5f9f158644d014021e09c3817190559b1b2`。source archive SHA-256 为
+  `27776a88184e1d7c4a2b86018cf47219d2b3bffe6c48ac74f0b11f0771def1ba`，manifest SHA-256 为
+  `e448bc65a8521f02dcdf969ea2d9e2e98a2ce3702e4d3f0e4d9debb3c3dbb244`，安装后 source-tree SHA-256 为
+  `65813baf71ae5862e61e58256e9dcdbafd82209882442539266f52d3dbee1c24`。两次独立构建字节一致。
+- 本轮公共修复只把周期均值历史完整性校验限制到调用方请求的回测区间；`2025-01-01` 以前的缺口不再误伤
+  本轮回测，区间内缺口仍 fail-closed。聚焦测试 `109 passed`；本机全量为 `1138 passed`，其余
+  `3 failed + 3 errors` 均因本机未安装 ECS 专用 `forecast_env_blackbox_v1`。ECS 冻结环境已由 15 个
+  exact scheme 的四段 Gate 全量通过补齐决定性验证。
 - Mac3 生产应用从 `/Users/macstudio0/bond-factor-lab-production/current` 启动，运行状态位于
   `/Users/macstudio0/bond-factor-lab-runtime`；ECS 从 `/opt/bond-factor-lab/current` 启动。两端运行时均不引用
   Git 工作区。
@@ -46,8 +50,7 @@
   晨间 `05:30/06:45`，immutable launcher 的冲突保护未放宽。
 - 非到期 probe 已验证 `not_applicable / exit_code=0 / refresh_required=false`，且 DataBridge、run、prediction
   和周期 Actual 均零副作用。
-- 参考包中的周均五方案已在 ECS 完成入库；余下月均、季均、年均 15 个方案仍未 Intake，继续由
-  [统一后续推进计划](TODO.md)管理，不属于本次 Mac3 基础晋级闭环。
+- 参考包中的周均五方案及本轮月均、季均、年均 15 个方案均已在 ECS 完成入库；Mac3 未挂载这 15 个方案。
 
 ## Mac3 调度与 Dashboard 终态
 
@@ -77,11 +80,14 @@
   active，loopback 页面和 Dashboard 均 HTTP 200。
 - installed DataBridge、daily、weekly、monthly service 均不读取历史
   `/run/bond-factor-lab/manual-run.env`；monthly timer 每日 18:00 运行 close-period 到期判断。
-- ECS 同样完成上述 8 个方案的本地结果重分区：新增 188 条 insert-only `gray_live`，
-  `t_scheme_predictions` 当前为 3259 条；新 canonical backtest run 为 `229–236`，最大 target 均为
-  `2026-05-29`，与 live target 零重叠。ECS 逐条保留自己的源方向和准确率事实，不用 Mac3 结果覆盖；
-  两端历史 snapshot 原有的 8 个方向差异继续保持。ECS 当前 64/64 base DashboardGate、68/68 composite
-  target 全部通过，loopback HTML/JS/CSS 与 Dashboard 均 HTTP 200。
+- ECS 同样完成上述 8 个方案的本地结果重分区：新增 188 条 insert-only `gray_live`；新 canonical
+  backtest run 为 `229–236`，最大 target 均为 `2026-05-29`，与 live target 零重叠。ECS 逐条保留自己的
+  源方向和准确率事实，不用 Mac3 结果覆盖；两端历史 snapshot 原有的 8 个方向差异继续保持。
+- 本轮 15 个 M0 周期均值方案激活后，ECS active base/composite 从 `64/68` 增至 `79/83`。Dashboard
+  payload 全局契约通过，15 个新 composite 均通过 DashboardGate；loopback HTML、JS、CSS、SVG、health 和
+  Dashboard 为 HTTP 200。浏览器读回三类 M0 排行、owner、样本数和准确率正常，控制台无 warning/error。
+- 本轮 activation 后尚未发生 08:30 Actuals 自然触发，`target_date >= 2026-06-01` 的通用周期 Actual 当前
+  为 0，按 pending 处理；未执行 Actuals one-shot，也未把缺失 Actual 显示为 0。
 
 ## 新方案入库状态
 
@@ -93,6 +99,43 @@
 - `five_y_factor_rule_online_v1` 与 `ten_y_factor_level_ensemble_v1` 已在 ECS、Mac3 分别完成 Blackbox
   技术 Gate、shadow、完整持久化回测、activation、单日 `gray_live` 和 DashboardGate；两端仍等待首次真实
   `scheduled_live` 自然触发，不能由 gray live 或人工运行预先宣称 Production Observed。
+
+### M0 月均、季均、年均 15 方案
+
+- 上游验收范围明确为 `feature_date >= 2025-01-01`。15 个修订后两文件 delivery 均为
+  `algorithm_version=1.0.1`；120 个范围内金标 Request 方向零差异，合同失败为 0，15 份性能报告均低于
+  `120s / 600s / 1800s / 4GiB` 且 `fallback_used=false`。更早的原始缺失值和错误锚点只保留为历史审计，
+  不作为本轮准入样本。
+- 15 个方案均完成 Intake、四段技术 Gate、shadow、canonical backtest、activation、合法 `gray_live` 和
+  DashboardGate，exact version 与 composite Registry 均为 active。共同绑定 DataBridge generation
+  `full-20260823-063324-33751cc9bcd9`、combined snapshot
+  `snapshot-2557d605845236cbeb21ea73` 和 `api-wind-date-v1` SHA-256
+  `b24d10fca383bdb9ad9806ec3ef3db01cb0bc163ea4e24eac8d613f4e5a96cdf`。
+- canonical backtest 均满足 `predict_date=feature_date`，且与 `target_date >= 2026-06-01` 的 live 区间
+  零重叠；月均每方案 16 行、季均每方案 4 行、年均每方案 1 行。gray-live 月均每方案 3/3，季均每方案
+  1/1，年均 0/0；20 个已到期业务键复核均为 `present=1 / actionable=0 / blocked=0`。
+
+| 方案 | exact version | latest passed all Gate | canonical backtest | gray-live | Dashboard |
+|---|---|---|---|---|---|
+| `m0_monthly_avg_mid_1y_v1` | `646080e1aadf` | `hr_20260823T170216Z_c8a1d9082020` | `237`，16 行，2025-01-15..2026-04-15 | 3/3，run 3695–3697 | passed |
+| `m0_monthly_avg_mid_3y_v1` | `0a6e8ba4a908` | `hr_20260823T170242Z_7056b0ebb75f` | `238`，16 行，2025-01-15..2026-04-15 | 3/3，run 3698–3700 | passed |
+| `m0_monthly_avg_mid_5y_v1` | `f7ab01ebeded` | `hr_20260823T170307Z_69c6369d76f0` | `239`，16 行，2025-01-15..2026-04-15 | 3/3，run 3701–3703 | passed |
+| `m0_monthly_avg_mid_7y_v1` | `00f29f7c44e8` | `hr_20260823T170333Z_71a12eaf0ccf` | `240`，16 行，2025-01-15..2026-04-15 | 3/3，run 3704–3706 | passed |
+| `m0_monthly_avg_mid_10y_v1` | `dad07dc48a4e` | `hr_20260823T170358Z_09fd26f73a31` | `241`，16 行，2025-01-15..2026-04-15 | 3/3，run 3707–3709 | passed |
+| `m0_quarterly_avg_1y_v1` | `ef9b4f1df701` | `hr_20260823T170423Z_7ecc14488c90` | `242`，4 行，2025-03-31..2025-12-31 | 1/1，run 3710 | passed |
+| `m0_quarterly_avg_3y_v1` | `cf139be9cbb4` | `hr_20260823T170448Z_0a336623c9f7` | `243`，4 行，2025-03-31..2025-12-31 | 1/1，run 3711 | passed |
+| `m0_quarterly_avg_5y_v1` | `51c5255e1173` | `hr_20260823T170513Z_5ac016dd0c52` | `244`，4 行，2025-03-31..2025-12-31 | 1/1，run 3712 | passed |
+| `m0_quarterly_avg_7y_v1` | `06da7eca6a5b` | `hr_20260823T170538Z_9dd977bd4487` | `245`，4 行，2025-03-31..2025-12-31 | 1/1，run 3713 | passed |
+| `m0_quarterly_avg_10y_v1` | `72bb3391683d` | `hr_20260823T170603Z_01e96c8bef98` | `246`，4 行，2025-03-31..2025-12-31 | 1/1，run 3714 | passed |
+| `m0_annual_avg_sf_1y_v1` | `5365fd103351` | `hr_20260823T170629Z_fd4dd49f7058` | `247`，1 行，2025-01-27 | 0/0，未到期 | passed |
+| `m0_annual_avg_sf_3y_v1` | `cd0d09ee4a05` | `hr_20260823T170653Z_cb5176b3ed19` | `248`，1 行，2025-01-27 | 0/0，未到期 | passed |
+| `m0_annual_avg_sf_5y_v1` | `614e0d6f7657` | `hr_20260823T170718Z_5c0d18e58b6e` | `249`，1 行，2025-01-27 | 0/0，未到期 | passed |
+| `m0_annual_avg_sf_7y_v1` | `982156ceecf6` | `hr_20260823T170743Z_dd1d4789538f` | `250`，1 行，2025-01-27 | 0/0，未到期 | passed |
+| `m0_annual_avg_sf_10y_v1` | `71bf770309df` | `hr_20260823T170808Z_75fa2a8c45c8` | `251`，1 行，2025-01-27 | 0/0，未到期 | passed |
+
+15 个方案现已达到 **Onboarding Complete**。它们仍等待真实 systemd 时钟首次生成 `scheduled_live` 后才能
+标记 **Production Observed**。权威日历给出的下一月均锚点为 2026-09-15、下一季均锚点为 2026-09-30；
+当前日历止于 2026-12-31，尚不能权威推导下一年均锚点。
 
 ## 当前治理边界
 
