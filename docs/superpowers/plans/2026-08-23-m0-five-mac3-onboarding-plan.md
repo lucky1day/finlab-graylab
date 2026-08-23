@@ -72,17 +72,26 @@
 
 **Files:**
 - Read: `scripts/build_source_release.py`
-- Output: `/Users/macstudio0/bond-factor-lab-runtime/source-releases/<commit>/`
+- Output: `/Users/macstudio0/bond-factor-lab-runtime/source-releases/${release_commit}/`
 
 - [ ] **Step 1: 在 clean HEAD 构建两次**
 
-  Run: `python scripts/build_source_release.py --project-root . --output-dir <release-dir>`，并在独立临时目录再次构建。
+  Run:
+
+  ```bash
+  release_commit="$(git rev-parse HEAD)"
+  python scripts/build_source_release.py --project-root . \
+    --output-dir "/Users/macstudio0/bond-factor-lab-runtime/source-releases/${release_commit}"
+  second_build_dir="$(mktemp -d)"
+  python scripts/build_source_release.py --project-root . \
+    --output-dir "${second_build_dir}"
+  ```
 
   Expected: 两份 archive SHA-256 相同，manifest commit 等于精确 HEAD。
 
 - [ ] **Step 2: 校验 archive 闭包**
 
-  Run: `tar -tzf <archive>`、`sha256sum <archive>` 和 manifest JSON 读回。
+  Run: 对 `${release_commit}.source.tar.gz` 执行 `tar -tzf`、`shasum -a 256` 和 manifest JSON 读回。
 
   Expected: 只含 Git source tree，不含 `.git`、secret、`outputs/`、reports 或 runtime artifact。
 
@@ -102,7 +111,7 @@
 
 - [ ] **Step 3: expected-current CAS 激活并只重启 Backend**
 
-  使用 `--activate --expected-current <observed-current>`；执行 `systemctl restart bond-factor-lab-backend.service`，不替换 unit/timer。
+  先以 `readlink -f /opt/bond-factor-lab/current` 取得 fresh expected-current，再使用 `--activate --expected-current "${ecs_current##*/}"`；执行 `systemctl restart bond-factor-lab-backend.service`，不替换 unit/timer。
 
 - [ ] **Step 4: ECS 后验**
 
@@ -128,7 +137,13 @@
   对五个 scheme 运行：
 
   ```bash
-  python -m harness onboard <scheme_id> --predict-date 2026-08-22 --stage all
+  for scheme_id in \
+    m0_weekly_avg_1y_v1 m0_weekly_avg_3y_v1 m0_weekly_avg_5y_v1 \
+    m0_weekly_avg_7y_v1 m0_weekly_avg_10y_v1; do
+    python -m harness onboard "${scheme_id}" \
+      --predict-date 2026-08-22 --stage all \
+      --algo-env forecast_env_blackbox_v1 --timeout-sec 1800 || break
+  done
   ```
 
   Expected: 每个 run 的 `static/input/unit/compare` 四 Gate 全部 passed，并持久化新的 Mac3 `harness_run_id`。
@@ -142,7 +157,9 @@
 - [ ] **Step 1: 逐方案 shadow register**
 
   ```bash
-  python -m harness gate shadow-register --scheme-id <scheme_id> --predict-date 2026-08-22 --operator codex-mac3-m0-five-onboarding-20260823
+  python -m harness gate shadow-register \
+    --scheme-id "${scheme_id}" --predict-date 2026-08-22 \
+    --operator codex-mac3-m0-five-onboarding-20260823
   ```
 
   Expected: exact version 为 shadow、composite Registry 为 paused，identity 首次创建。
@@ -150,7 +167,11 @@
 - [ ] **Step 2: 逐方案持久化完整回测**
 
   ```bash
-  python -m harness gate backtest --scheme-id <scheme_id> --predict-date 2026-08-22 --persist --backtest-start-date 2025-01-01 --operator codex-mac3-m0-five-onboarding-20260823
+  python -m harness gate backtest \
+    --scheme-id "${scheme_id}" --predict-date 2026-08-28 \
+    --persist --backtest-start-date 2025-01-01 \
+    --algo-env forecast_env_blackbox_v1 --timeout-sec 1800 \
+    --operator codex-mac3-m0-five-onboarding-20260823
   ```
 
   Expected: 每方案 84 条预测、20 个月指标，最大 target_date 早于 `2026-08-22`；五次事务各自成功。
@@ -164,12 +185,14 @@
 
 - [ ] **Step 1: expected-current CAS 和 Backend 重启**
 
-  使用 Mac3 observed current 激活已预安装 release，只执行 `launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.backend`；不替换 plist，不触发 Writer。
+  先从 `readlink -f /Users/macstudio0/bond-factor-lab-production/current` 取得 fresh expected-current，激活已预安装 release；只执行 `launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.backend`，不替换 plist，不触发 Writer。
 
 - [ ] **Step 2: 逐方案 activation**
 
   ```bash
-  python -m harness activate --scheme-id <scheme_id> --predict-date 2026-08-22 --operator codex-mac3-m0-five-onboarding-20260823
+  python -m harness activate --scheme-id "${scheme_id}" \
+    --predict-date activate \
+    --operator codex-mac3-m0-five-onboarding-20260823
   ```
 
   Expected: exact version、host lifecycle overlay、composite Registry 一致为 active。
@@ -177,7 +200,11 @@
 - [ ] **Step 3: 逐方案 insert-only gray gap fill**
 
   ```bash
-  python -m harness signal-gap-fill --scheme-id <scheme_id> --predict-date 2026-08-22
+  python -m harness signal-gap-plan \
+    --scheme-id "${scheme_id}" --predict-date 2026-08-22
+  python -m harness signal-gap-fill \
+    --scheme-id "${scheme_id}" --predict-date 2026-08-22 \
+    --timeout-sec 1800
   ```
 
   Expected: 每方案只写一条 `gray_live`，日期为 predict `2026-08-22` / feature `2026-08-21` / target `2026-08-28`；方向与同口径本机算法输出一致。
