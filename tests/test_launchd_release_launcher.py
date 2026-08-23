@@ -320,6 +320,14 @@ def test_service_environment_rejects_duplicate_reserved_or_missing_keys(
         load_service_environment(runtime)
 
     path.write_text(
+        original + "BFL_DATABASE_ENV_FILE=/outside/runtime/database.env\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+    with pytest.raises(LaunchdReleaseError, match="reserved keys"):
+        load_service_environment(runtime)
+
+    path.write_text(
         original.replace("BOND_ADMIN_TOKEN=local-admin-token\n", ""),
         encoding="utf-8",
     )
@@ -425,6 +433,7 @@ def test_prepare_environment_merges_service_values_and_rejects_conflict(
     tmp_path: Path,
 ) -> None:
     release = _release(tmp_path)
+    runtime = Path(load_release_environment(release)["BFL_RUNTIME_ROOT"])
 
     merged = prepare_exec_environment(
         release,
@@ -433,10 +442,19 @@ def test_prepare_environment_merges_service_values_and_rejects_conflict(
 
     assert merged["BOND_DB_PASSWORD"] == "database secret"
     assert merged["BOND_ADMIN_TOKEN"] == "local-admin-token"
+    assert merged["BFL_DATABASE_ENV_FILE"] == str(
+        runtime / "config" / "service.env"
+    )
     assert merged["AMBIENT_SAFE"] == "kept"
 
     with pytest.raises(LaunchdReleaseError, match="service key"):
         prepare_exec_environment(release, {"BOND_DB_HOST": "wrong-host"})
+
+    with pytest.raises(LaunchdReleaseError, match="ambient environment conflicts"):
+        prepare_exec_environment(
+            release,
+            {"BFL_DATABASE_ENV_FILE": "/outside/runtime/database.env"},
+        )
 
 
 def test_prepare_environment_keeps_global_morning_refresh_window(

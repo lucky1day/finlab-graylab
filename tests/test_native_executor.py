@@ -9,6 +9,58 @@ from unittest.mock import patch
 
 import pytest
 
+from scripts.run_launchd_release import prepare_exec_environment
+
+
+_RELEASE_COMMIT = "a" * 40
+
+
+def _trusted_release(tmp_path: Path) -> tuple[Path, Path]:
+    release = tmp_path / "deploy" / "releases" / _RELEASE_COMMIT
+    release.mkdir(parents=True)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(mode=0o700)
+    config = runtime / "config"
+    config.mkdir(mode=0o700)
+    service_environment = config / "service.env"
+    service_environment.write_text(
+        "\n".join(
+            (
+                "BOND_ADMIN_TOKEN=local-admin-token",
+                "BOND_DB_USER=bond_user",
+                "BOND_DB_PASSWORD=database-secret",
+                "BOND_DB_HOST=127.0.0.1",
+                "BOND_DB_PORT=3306",
+                "BOND_DB_NAME=bond_db",
+                "BOND_DB_CHARSET=utf8mb4",
+                "BOND_FACTOR_LAB_INSTANCE_NONCE=mac3-instance",
+                "DATABRIDGE_API_BASE_URL=https://example.invalid",
+                "DATABRIDGE_API_USERNAME=bridge_user",
+                "DATABRIDGE_API_PASSWORD=bridge-secret",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    service_environment.chmod(0o600)
+    native_cache = runtime / "cache" / "native" / _RELEASE_COMMIT
+    release_environment = release / ".bfl-release.env"
+    release_environment.write_text(
+        "\n".join(
+            (
+                f"BFL_RELEASE_COMMIT={_RELEASE_COMMIT}",
+                f"BFL_RUNTIME_ROOT={runtime}",
+                f"NUMBA_CACHE_DIR={native_cache / 'numba'}",
+                f"MPLCONFIGDIR={native_cache / 'matplotlib'}",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    release_environment.chmod(0o444)
+    release.chmod(0o555)
+    return release, runtime
+
 
 def test_ephemeral_native_runtime_sets_private_environment(
     tmp_path: Path,
@@ -153,6 +205,39 @@ def test_native_subprocess_environment_is_allowlisted() -> None:
     ]
     assert "BOND_DB_PASSWORD" not in captured
     assert "BOND_NATIVE_GENERATION_ID" not in captured
+
+
+def test_launchd_environment_passes_only_trusted_database_file_to_native(
+    tmp_path: Path,
+) -> None:
+    from scheduler.executor import run_scheme_subprocess
+
+    captured: dict[str, str] = {}
+
+    def fake_run(cmd, *, cwd, env, timeout):
+        captured.update(env)
+        return CompletedProcess(cmd, 0, "[]", "")
+
+    release, runtime = _trusted_release(tmp_path)
+    try:
+        parent = prepare_exec_environment(release, {})
+        with (
+            patch.dict(os.environ, parent, clear=True),
+            patch(
+                "scheduler.executor._run_process_group",
+                side_effect=fake_run,
+            ),
+        ):
+            run_scheme_subprocess("daily_demo", "2026-07-24")
+    finally:
+        release.chmod(0o755)
+
+    assert captured["BFL_DATABASE_ENV_FILE"] == str(
+        runtime / "config" / "service.env"
+    )
+    assert "BOND_DB_USER" not in captured
+    assert "BOND_DB_PASSWORD" not in captured
+    assert "BOND_DB_HOST" not in captured
 
 
 def test_v2_policy_timeout_is_a_hard_upper_bound() -> None:

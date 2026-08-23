@@ -444,6 +444,109 @@ class SourceRunnerDatabaseIsolationTests(unittest.TestCase):
                 original_hash,
             )
 
+    def test_all_source_runtimes_make_only_private_directories_writable(
+        self,
+    ) -> None:
+        from shared.daily_0629_source_evidence import (
+            source_package_tree_sha256 as daily_tree_sha256,
+        )
+        from shared.daily_0629_source_runner import (
+            _source_runtime as daily_runtime,
+        )
+        from shared.monthly_source_evidence import (
+            source_package_tree_sha256 as monthly_tree_sha256,
+        )
+        from shared.monthly_source_runner import (
+            _source_runtime as monthly_runtime,
+        )
+        from shared.source_runtime_database import (
+            SourceRuntimeDatabaseConfig,
+        )
+        from shared.weekly_average_lgbm_source_runner import (
+            _source_runtime as weekly_runtime,
+        )
+        from shared.weekly_average_source_evidence import (
+            source_package_tree_sha256 as weekly_tree_sha256,
+        )
+
+        runtimes = (
+            (daily_runtime, daily_tree_sha256),
+            (monthly_runtime, monthly_tree_sha256),
+            (weekly_runtime, weekly_tree_sha256),
+        )
+        for runtime, tree_sha256 in runtimes:
+            with (
+                self.subTest(runtime=runtime.__module__),
+                tempfile.TemporaryDirectory() as tmpdir,
+            ):
+                source_root = Path(tmpdir) / "source"
+                nested = source_root / "daily_project" / "nested"
+                nested.mkdir(parents=True)
+                original_config = source_root / "db_config.py"
+                _write_packaged_config(original_config)
+                (nested / "frozen.txt").write_bytes(b"frozen-source")
+                original_bytes = original_config.read_bytes()
+                original_hash = tree_sha256(source_root)
+                config = SourceRuntimeDatabaseConfig(
+                    user="source_reader",
+                    password="source-secret",
+                    host="127.0.0.1",
+                    port=43306,
+                    database="bfl_source_test",
+                    charset="utf8mb4",
+                    config_path=Path(tmpdir) / "source-db.json",
+                )
+                frozen_directories = (
+                    source_root,
+                    source_root / "daily_project",
+                    nested,
+                )
+                for directory in frozen_directories:
+                    directory.chmod(0o555)
+                try:
+                    with runtime(
+                        source_root,
+                        original_hash,
+                        database_config=config,
+                    ) as runtime_root:
+                        self.assertEqual(
+                            stat.S_IMODE(runtime_root.stat().st_mode),
+                            0o700,
+                        )
+                        self.assertEqual(
+                            stat.S_IMODE(
+                                (runtime_root / "daily_project").stat().st_mode
+                            ),
+                            0o700,
+                        )
+                        self.assertEqual(
+                            stat.S_IMODE(
+                                (
+                                    runtime_root
+                                    / "daily_project"
+                                    / "nested"
+                                ).stat().st_mode
+                            ),
+                            0o700,
+                        )
+                        (runtime_root / "daily_project" / "output").mkdir()
+                        self.assertEqual(
+                            stat.S_IMODE(
+                                (runtime_root / "db_config.py").stat().st_mode
+                            ),
+                            0o600,
+                        )
+                finally:
+                    for directory in reversed(frozen_directories):
+                        self.assertEqual(
+                            stat.S_IMODE(directory.stat().st_mode),
+                            0o555,
+                        )
+                        directory.chmod(0o755)
+
+                self.assertEqual(original_config.read_bytes(), original_bytes)
+                self.assertEqual(tree_sha256(source_root), original_hash)
+
     def test_monthly_and_weekly_runtime_reject_copied_package_drift(
         self,
     ) -> None:

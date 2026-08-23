@@ -27,6 +27,7 @@ _RELEASE_ENVIRONMENT_KEYS = frozenset(
 _RESERVED_SERVICE_ENVIRONMENT_KEYS = frozenset(
     {
         *_RELEASE_ENVIRONMENT_KEYS,
+        "BFL_DATABASE_ENV_FILE",
         "BFL_DATABRIDGE_PRODUCER",
         "BFL_DEPLOYMENT_TARGET",
         "BOND_DAILY_COORDINATOR_MODE",
@@ -187,9 +188,15 @@ def prepare_exec_environment(
     service_environment = load_service_environment(
         release_environment["BFL_RUNTIME_ROOT"]
     )
+    database_environment = (
+        Path(release_environment["BFL_RUNTIME_ROOT"])
+        / "config"
+        / "service.env"
+    )
     trusted = {
         **release_environment,
         **_CONTROL_ENVIRONMENT,
+        "BFL_DATABASE_ENV_FILE": str(database_environment),
     }
     for key, value in trusted.items():
         if key in environ and str(environ[key]) != value:
