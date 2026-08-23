@@ -21,16 +21,13 @@
 
 ## 当前 release
 
-- Mac3 `current` 为前端颜色 R4 `92a93713656d8534e68312f123676b5d2054d8a6`，`previous` 为 R2
-  `e692285d47e41c384dc915758abe0c51f9ac3aaf`。生产应用从
-  `/Users/macstudio0/bond-factor-lab-production/current` 启动，运行状态位于
-  `/Users/macstudio0/bond-factor-lab-runtime`，不再引用 Git 开发根。
-- ECS `current` 为日频 T+1 两方案 release `990fd4b96fcd7cfb9fad533179c645bac723b817`，`previous` 为
-  `59afc857c37eebb956adb200d9b1a05ed6a123f0`。archive SHA-256 为
-  `c2bcd2458d67c9938f19ba13a78005441d476a3e22d927c34ebe5342f5545705`，安装后 source tree SHA-256 为
-  `764443b5a1a16a8f7edc485fd9d28fd02840395f63a3ce9538022e6fb006a531`。
-- `codex/develop` 已包含提交 `ee80cf502e55e4342a0b8fe5d2dc1236660343eb` 的灰度前端展示改动，但该
-  提交尚未构建为 ECS release；当前 ECS 页面仍以现场 immutable `current` 为准。
+- Mac3 与 ECS `current` 均为 release `bbd7fe7dbf8f3ee7dc74b5d6dbae06af38d98b9d`。Mac3 `previous` 为
+  `59afc857c37eebb956adb200d9b1a05ed6a123f0`，ECS `previous` 为
+  `990fd4b96fcd7cfb9fad533179c645bac723b817`；两端使用同一份确定性 archive，SHA-256 为
+  `2957eb79038ad4db5bfe7b3a2ae12008741d960c740f6f52452b87d6d5b05137`。
+- Mac3 生产应用从 `/Users/macstudio0/bond-factor-lab-production/current` 启动，运行状态位于
+  `/Users/macstudio0/bond-factor-lab-runtime`，不再引用 Git 开发根。ECS 生产形态同样只运行 immutable
+  release，不保留 Git checkout。
 
 ## 调度与现场状态
 
@@ -41,6 +38,9 @@
   `daemon-reload` 或服务重启仍须独立授权。
 - Mac3 2026-08-21 daily 的已知终态仍为 `partial`：25 个方案成功、17 个 `execution_failed`；当前无残留
   runner 或 running run。该历史批次尚未诊断闭环，也未获授权手工重跑。
+- Mac3 七个 installed plist 的只读 drift audit 为 `ok=true`；daily plist 保持工作日 07:03，当前 idle。
+  本轮没有替换或重载任何 plist/unit/timer；ECS daily 与 Mac3 daily 下一次自然触发均为
+  2026-08-24 07:03 Asia/Shanghai。
 
 ## 新方案入库状态
 
@@ -49,13 +49,19 @@
 - `m0_weekly_avg_{1y,3y,5y,7y,10y}_v1` 已逐方案完成 Blackbox Intake、技术 Gate、shadow、持久化回测、
   activation、单日 `gray_live` 和 DashboardGate；五个 composite Registry 均为
   `active + weekly_average`，部署范围仅为 `aliyun-gray`。
-- `five_y_factor_rule_online_v1` 与 `ten_y_factor_level_ensemble_v1` 已逐方案完成技术 Gate、shadow、
-  canonical backtest、activation、单日 `gray_live` 和 DashboardGate；ECS 两个 composite Registry 均为
-  `active + daily + T+1`。仓库部署矩阵已扩展为 `mac3-production + aliyun-gray`，但这只建立 Mac3 候选
-  资格；Mac3 独立 Gate、Registry、回测、activation、gray live 与 Dashboard 尚未执行。ECS canonical
-  backtest 目标区间为 `2025-07-02..2026-08-20`，gray live 目标日为 `2026-08-21`，二者零重叠。
-- 上述方案在 ECS 的当前状态均为 Onboarding Complete。首次 `scheduled_live` 仍须等待 daily/weekly 真实时钟触发后
-  联合读回，不能由 timer waiting、gray live 或人工执行预先宣称 Production Observed。
+- `five_y_factor_rule_online_v1` 与 `ten_y_factor_level_ensemble_v1` 已在 ECS、Mac3 分别完成 Blackbox 四段
+  技术 Gate、shadow、完整持久化回测、activation、单日 `gray_live` 和 DashboardGate。
+  两个 composite Registry 分别为 `five_y_factor_rule_online_v1__h1__5Y` 与
+  `ten_y_factor_level_ensemble_v1__h1__10Y`，均为 `active + daily + T+1`；部署矩阵范围为
+  `mac3-production + aliyun-gray`。
+- exact version 分别为 5Y `55f0e753b18e`、10Y `997af2e57ad9`。两端每个 canonical backtest 均为
+  278 条结果和 14 个月度指标，目标区间 `2025-07-02..2026-08-20`。
+- 两端 gray live 均为 `predict=2026-08-21 / feature=2026-08-20 / target=2026-08-21`，5Y 方向为
+  `-1`、10Y 方向为 `0`；两端重复 gap plan 均为 `present=1 / actionable=0`，canonical backtest 与 live
+  target 零重叠。Dashboard、真实页面候选排行和月度详情均已读回，控制台无错误。
+- 以上日频两方案在两端均为 Onboarding Complete；上述 ECS 周频方案也保持 Onboarding Complete。
+  首次 `scheduled_live` 仍须等待各自真实时钟触发后联合读回，不能由 waiting、gray live 或人工执行
+  预先宣称 Production Observed。
 
 ## 当前治理边界
 
