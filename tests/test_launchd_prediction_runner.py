@@ -7,6 +7,7 @@ import tempfile
 import threading
 import unittest
 from contextlib import nullcontext
+from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -54,7 +55,203 @@ class _WeeklyCalendar:
         return True
 
 
+class _PeriodCalendar:
+    def __init__(self, start: str, end: str, closures: set[str] | None = None) -> None:
+        current = date.fromisoformat(start)
+        final = date.fromisoformat(end)
+        closed = closures or set()
+        self.rows = []
+        while current <= final:
+            self.rows.append(
+                {
+                    "rdate": current.isoformat(),
+                    "trade_flag": (
+                        "0" if current.isoformat() in closed else "1"
+                    ),
+                }
+            )
+            current += timedelta(days=1)
+
+    def covers(self, value: str) -> bool:
+        return self.rows[0]["rdate"] <= value <= self.rows[-1]["rdate"]
+
+    def is_trading_day(self, value: str) -> bool:
+        return date.fromisoformat(value).weekday() < 5
+
+    def period_calendar_rows(self):
+        return tuple(self.rows)
+
+
 class LaunchdPredictionRunnerTests(unittest.TestCase):
+    def test_period_average_uses_task_type_and_same_day_ready_gate(self) -> None:
+        from scheduler import launchd_prediction_runner as runner
+
+        quarterly = _blackbox_config(
+            "quarterly",
+            frequency="quarterly",
+            task_type="quarterly_average",
+        )
+        monthly = _blackbox_config(
+            "monthly_average",
+            frequency="monthly",
+            task_type="monthly_average",
+        )
+        engine = Mock()
+        calendar = _PeriodCalendar("2024-01-01", "2024-06-30")
+        data_bridge_config = object()
+        with (
+            patch.dict(
+                os.environ,
+                {"BFL_DEPLOYMENT_TARGET": "mac3-production"},
+                clear=False,
+            ),
+            patch.object(
+                runner.DataBridgeRefreshConfig,
+                "from_env",
+                return_value=data_bridge_config,
+            ),
+            patch.object(runner, "_runner_lock", return_value=nullcontext()),
+            patch.object(
+                runner,
+                "discover_schemes",
+                return_value=[quarterly, monthly],
+            ),
+            patch.object(runner, "create_engine_from_env", return_value=engine),
+            patch.object(runner, "get_calendar", return_value=calendar),
+            patch.object(
+                runner,
+                "_wait_for_v2_daily_ready",
+                return_value=None,
+            ) as ready,
+            patch.object(
+                runner,
+                "execute_scheme",
+                return_value=SimpleNamespace(
+                    scheme_id="quarterly",
+                    status="success",
+                    records_written=1,
+                    run_id=100,
+                ),
+            ) as execute,
+        ):
+            summary = runner.run(
+                "period_average",
+                predict_date="2024-03-29",
+                algo_env="forecast_env",
+            )
+
+        self.assertEqual(
+            [item["scheme_id"] for item in summary.executed],
+            ["quarterly"],
+        )
+        self.assertEqual((summary.outcome, summary.exit_code), ("success", 0))
+        ready.assert_called_once_with(
+            data_bridge_config,
+            run_date="2024-03-29",
+            expected_daily_date="2024-03-29",
+        )
+        execute.assert_called_once()
+
+    def test_period_calendar_failure_is_isolated_by_task_type(self) -> None:
+        from scheduler import launchd_prediction_runner as runner
+
+        monthly = _blackbox_config(
+            "monthly_average",
+            frequency="monthly",
+            task_type="monthly_average",
+        )
+        annual = _blackbox_config(
+            "annual_average",
+            frequency="annual",
+            task_type="annual_average",
+        )
+        engine = Mock()
+        calendar = _PeriodCalendar("2024-01-01", "2024-03-31")
+        with (
+            patch.dict(
+                os.environ,
+                {"BFL_DEPLOYMENT_TARGET": "mac3-production"},
+                clear=False,
+            ),
+            patch.object(
+                runner.DataBridgeRefreshConfig,
+                "from_env",
+                return_value=object(),
+            ),
+            patch.object(runner, "_runner_lock", return_value=nullcontext()),
+            patch.object(
+                runner,
+                "discover_schemes",
+                return_value=[monthly, annual],
+            ),
+            patch.object(runner, "create_engine_from_env", return_value=engine),
+            patch.object(runner, "get_calendar", return_value=calendar),
+            patch.object(runner, "_wait_for_v2_daily_ready", return_value=None),
+            patch.object(
+                runner,
+                "execute_scheme",
+                return_value=SimpleNamespace(
+                    scheme_id="monthly_average",
+                    status="success",
+                    records_written=1,
+                    run_id=101,
+                ),
+            ),
+        ):
+            summary = runner.run(
+                "period_average",
+                predict_date="2024-02-15",
+                algo_env="forecast_env",
+            )
+
+        self.assertEqual(
+            [item["scheme_id"] for item in summary.executed],
+            ["monthly_average"],
+        )
+        self.assertEqual(
+            summary.blocked,
+            [
+                {
+                    "scheme_id": "annual_average",
+                    "code": "period_calendar_invalid",
+                }
+            ],
+        )
+        self.assertEqual((summary.outcome, summary.exit_code), ("partial", 1))
+
+    def test_monthly_cadence_does_not_select_monthly_average(self) -> None:
+        from scheduler import launchd_prediction_runner as runner
+
+        cfg = _blackbox_config(
+            "monthly_average",
+            frequency="monthly",
+            task_type="monthly_average",
+        )
+        with (
+            patch.dict(
+                os.environ,
+                {"BFL_DEPLOYMENT_TARGET": "mac3-production"},
+                clear=False,
+            ),
+            patch.object(
+                runner.DataBridgeRefreshConfig,
+                "from_env",
+                return_value=object(),
+            ),
+            patch.object(runner, "_runner_lock", return_value=nullcontext()),
+            patch.object(runner, "discover_schemes", return_value=[cfg]),
+            patch.object(runner, "create_engine_from_env") as create_engine,
+        ):
+            summary = runner.run(
+                "monthly",
+                predict_date="2024-02-15",
+                algo_env="forecast_env",
+            )
+
+        self.assertEqual(summary.discovered, 0)
+        self.assertEqual((summary.outcome, summary.exit_code), ("success", 0))
+        create_engine.assert_not_called()
+
     def test_blackbox_completion_propagates_duplicate_skip(self) -> None:
         from scheduler import executor
 

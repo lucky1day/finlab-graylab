@@ -36,13 +36,15 @@ from scheduler.repository import (
 from scheduler.v2_daily_gate import V2DailyGateBlocked, require_v2_daily_ready
 from shared.calendar_service import get_calendar
 from shared.prediction_context import is_weekly_signal_date
+from shared.period_average_buckets import period_anchor_dates
+from shared.task_specs import PERIOD_AVERAGE_TASK_TYPES
 from shared.data_bridge.refresh import DataBridgeRefreshConfig
 from shared.liwei_0616_cache_contract import APPROVED_PHASE_A_CACHE_PUBLISHERS
 from shared.one_shot_control_plane import LAUNCHD_ONE_SHOT_CONTROL_PLANE
 
 
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
-VALID_CADENCES = frozenset({"daily", "weekly", "monthly"})
+VALID_CADENCES = frozenset({"daily", "weekly", "monthly", "period_average"})
 DATA_BRIDGE_READY_MAX_WAIT_SEC = 30 * 60
 DATA_BRIDGE_READY_POLL_INTERVAL_SEC = 30
 
@@ -158,12 +160,53 @@ def _cache_publishers_first(candidates: Sequence[object]) -> list[object]:
     return publishers + others
 
 
-def _is_daily_data_bridge_dependent(cfg: object) -> bool:
-    """仅识别日频 Blackbox V2 对 current DataBridge 的显式依赖。"""
+def _is_data_bridge_dependent(cfg: object) -> bool:
+    """识别 Blackbox V2 对 current DataBridge 的显式依赖。"""
     return (
         getattr(cfg, "runtime_type", None) == "blackbox_v2"
         and getattr(cfg, "input_source", None) == "data_bridge_current"
     )
+
+
+def _candidate_matches_cadence(cfg: object, cadence: str) -> bool:
+    """按显式 task_type 选择周期均值，其余 cadence 保持频率语义。"""
+    task_type = str(getattr(cfg, "task_type", "") or "")
+    if cadence == "period_average":
+        return task_type in PERIOD_AVERAGE_TASK_TYPES
+    return (
+        task_type not in PERIOD_AVERAGE_TASK_TYPES
+        and getattr(cfg, "frequency", None) == cadence
+    )
+
+
+def _period_due_task_types(
+    candidates: Sequence[object],
+    calendar: object,
+    predict_date: str,
+) -> tuple[frozenset[str], frozenset[str]]:
+    """返回到期任务及日历识别失败任务，避免一个任务拖累另两个任务。"""
+    due: set[str] = set()
+    invalid: set[str] = set()
+    task_types = sorted(
+        {
+            str(getattr(cfg, "task_type", "") or "")
+            for cfg in candidates
+        }
+    )
+    for task_type in task_types:
+        try:
+            anchors = period_anchor_dates(
+                task_type,
+                calendar.period_calendar_rows(),
+                start_date=predict_date,
+                end_date=predict_date,
+            )
+        except (AttributeError, ValueError):
+            invalid.add(task_type)
+            continue
+        if predict_date in anchors:
+            due.add(task_type)
+    return frozenset(due), frozenset(invalid)
 
 
 def _wait_for_v2_daily_ready(
@@ -341,7 +384,7 @@ def _run_one_shot(
             cfg
             for cfg in discovered
             if getattr(cfg, "status", None) == "active"
-            and getattr(cfg, "frequency", None) == normalized_cadence
+            and _candidate_matches_cadence(cfg, normalized_cadence)
         ]
         summary.discovered = len(candidates)
 
@@ -361,6 +404,31 @@ def _run_one_shot(
                 raise LaunchdPredictionConfigurationError(
                     "trade calendar does not cover predict_date"
                 )
+            if normalized_cadence == "period_average":
+                due_task_types, invalid_task_types = _period_due_task_types(
+                    candidates,
+                    calendar,
+                    normalized_date,
+                )
+                for cfg in candidates:
+                    task_type = str(getattr(cfg, "task_type", "") or "")
+                    if task_type in invalid_task_types:
+                        summary.blocked.append(
+                            _candidate_item(cfg, "period_calendar_invalid")
+                        )
+                candidates = [
+                    cfg
+                    for cfg in candidates
+                    if str(getattr(cfg, "task_type", "") or "")
+                    in due_task_types
+                ]
+                if not candidates:
+                    if summary.blocked:
+                        _finalize(summary, configuration_error=False)
+                    else:
+                        summary.outcome = "not_applicable"
+                        summary.exit_code = 0
+                    return summary
             # 本次调度是否适用于当前 cadence。周频除了自然周六，还要求这一周
             # 真的关闭了新的 feature 周——整周无交易日时，重复业务键虽会以
             # insert-only benign skip 收口，仍会产生误导性的 run date 并浪费
@@ -382,17 +450,17 @@ def _run_one_shot(
                 summary.exit_code = 0
                 return summary
 
-            daily_data_bridge_dependents = [
+            data_bridge_dependents = [
                 cfg
                 for cfg in candidates
-                if normalized_cadence == "daily"
-                and _is_daily_data_bridge_dependent(cfg)
+                if normalized_cadence in {"daily", "period_average"}
+                and _is_data_bridge_dependent(cfg)
             ]
-            daily_data_bridge_dependent_ids = {
-                id(cfg) for cfg in daily_data_bridge_dependents
+            data_bridge_dependent_ids = {
+                id(cfg) for cfg in data_bridge_dependents
             }
             for cfg in candidates:
-                if id(cfg) not in daily_data_bridge_dependent_ids:
+                if id(cfg) not in data_bridge_dependent_ids:
                     _execute_candidate(
                         summary,
                         cfg,
@@ -404,14 +472,16 @@ def _run_one_shot(
                         ),
                     )
 
-            if daily_data_bridge_dependents:
+            if data_bridge_dependents:
                 expected_daily_date: str | None = None
                 try:
-                    expected_daily_date = str(
-                        calendar.previous_trading_day(normalized_date)
-                    )[:10]
+                    expected_daily_date = (
+                        normalized_date
+                        if normalized_cadence == "period_average"
+                        else str(calendar.previous_trading_day(normalized_date))[:10]
+                    )
                 except Exception:  # noqa: BLE001 - preserve calendar isolation
-                    for cfg in daily_data_bridge_dependents:
+                    for cfg in data_bridge_dependents:
                         summary.blocked.append(
                             _candidate_item(cfg, "calendar_unavailable")
                         )
@@ -425,7 +495,7 @@ def _run_one_shot(
                         gate_code
                         == SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT
                     ):
-                        for cfg in daily_data_bridge_dependents:
+                        for cfg in data_bridge_dependents:
                             _execute_candidate(
                                 summary,
                                 cfg,
@@ -442,10 +512,10 @@ def _run_one_shot(
                                 ),
                             )
                     elif gate_code is not None:
-                        for cfg in daily_data_bridge_dependents:
+                        for cfg in data_bridge_dependents:
                             summary.blocked.append(_candidate_item(cfg, gate_code))
                     else:
-                        for cfg in daily_data_bridge_dependents:
+                        for cfg in data_bridge_dependents:
                             _execute_candidate(
                                 summary,
                                 cfg,
