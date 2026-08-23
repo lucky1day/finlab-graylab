@@ -672,6 +672,15 @@ def _read_live_actuals(
         FROM t_scheme_monthly_actuals
         WHERE tenor IN :target_tenors
           AND target_date >= :history_start_date
+        UNION ALL
+        SELECT 'period_average' AS actual_kind,
+               tenor AS target_tenor,
+               target_date,
+               target_rule,
+               actual_direction
+        FROM t_scheme_period_average_actuals
+        WHERE tenor IN :target_tenors
+          AND target_date >= :history_start_date
         LIMIT :dashboard_source_limit
         """
     ).bindparams(bindparam("target_tenors", expanding=True))
@@ -731,8 +740,18 @@ def _collapse_actual_rows(
         target_rule = _required_text(row.get("target_rule"), field="target_rule")
         grouped[(actual_kind, target_rule)].append(row)
 
-    duplicates_folded = {"daily": 0, "weekly": 0, "monthly": 0}
-    direction_conflicts = {"daily": 0, "weekly": 0, "monthly": 0}
+    duplicates_folded = {
+        "daily": 0,
+        "weekly": 0,
+        "monthly": 0,
+        "period_average": 0,
+    }
+    direction_conflicts = {
+        "daily": 0,
+        "weekly": 0,
+        "monthly": 0,
+        "period_average": 0,
+    }
     facts_by_selector: dict[
         tuple[str, str],
         dict[tuple[str, str, str], int | None],
@@ -805,10 +824,10 @@ def _log_actual_conflict(diagnostics: Mapping[str, Any]) -> None:
 
 
 def _actual_frequency(actual_kind: str) -> str:
-    """把内部 actual selector 收敛为安全的三类诊断标签。"""
+    """把内部 actual selector 收敛为安全的固定诊断标签。"""
     if actual_kind in {"daily_1d", "daily_5d"}:
         return "daily"
-    if actual_kind in {"weekly", "monthly"}:
+    if actual_kind in {"weekly", "monthly", "period_average"}:
         return actual_kind
     raise DashboardDataError(
         f"dashboard actual_kind is invalid: {actual_kind!r}"

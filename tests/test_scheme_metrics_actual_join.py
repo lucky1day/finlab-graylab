@@ -1,6 +1,6 @@
 """`/api/metrics` 对重复 actual 事实行的处理必须确定且 fail-closed。
 
-``t_scheme_weekly_actuals`` 与 ``t_scheme_monthly_actuals`` 的唯一键是
+``t_scheme_weekly_actuals``、``t_scheme_monthly_actuals`` 与周期均值 actual 表的唯一键是
 ``(tenor, predict_date, target_rule)``，而 join 键是
 ``(tenor, target_date, target_rule)``——两者不同，因此同一事实键可以合法地
 出现多行（月频当前库内即有 130 组）。
@@ -30,6 +30,7 @@ from shared.prediction_context import (  # noqa: E402
     MONTHLY_TARGET_RULE,
     WEEKLY_TARGET_RULE,
 )
+from shared.task_specs import TASK_COMBINATIONS  # noqa: E402
 
 TARGET_DATE = "2026-07-31"
 
@@ -93,6 +94,7 @@ def _engine(*, task_type: str, horizon: int):
         for name, direction_col in (
             ("t_scheme_weekly_actuals", "direction_weekly"),
             ("t_scheme_monthly_actuals", "direction_monthly"),
+            ("t_scheme_period_average_actuals", "actual_direction"),
         ):
             conn.execute(
                 text(
@@ -179,6 +181,44 @@ class MonthlyActualJoinTests(unittest.TestCase):
         with self.assertRaises(ValueError) as caught:
             self._metrics(1, -1)()
         self.assertIn("conflicting monthly actual directions", str(caught.exception))
+
+
+class PeriodAverageActualJoinTests(unittest.TestCase):
+    def _metrics(self, task_type: str, *directions):
+        engine = _engine(task_type=task_type, horizon=1)
+        self.addCleanup(engine.dispose)
+        _insert_actuals(
+            engine,
+            "t_scheme_period_average_actuals",
+            "actual_direction",
+            TASK_COMBINATIONS[task_type][1],
+            *directions,
+        )
+        return lambda: scheme_metrics(engine, "demo__h1__10Y")
+
+    def test_each_period_task_joins_its_own_target_rule(self) -> None:
+        for task_type in (
+            "monthly_average",
+            "quarterly_average",
+            "annual_average",
+        ):
+            with self.subTest(task_type=task_type):
+                result = self._metrics(task_type, -1)()
+                self.assertEqual(len(result["daily_rows"]), 1)
+                self.assertEqual(result["daily_rows"][0]["actual_direction"], -1)
+
+    def test_duplicate_same_direction_collapses(self) -> None:
+        result = self._metrics("quarterly_average", 1, 1)()
+        self.assertEqual(len(result["daily_rows"]), 1)
+        self.assertEqual(result["summary"]["samples"], 1)
+
+    def test_conflicting_directions_fail_closed(self) -> None:
+        with self.assertRaises(ValueError) as caught:
+            self._metrics("annual_average", 1, -1)()
+        self.assertIn(
+            "conflicting period_average actual directions",
+            str(caught.exception),
+        )
 
 
 if __name__ == "__main__":

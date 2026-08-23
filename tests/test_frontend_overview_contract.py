@@ -121,6 +121,9 @@ def test_task_labels_change_display_text_without_changing_contract_ids() -> None
     javascript = JAVASCRIPT_PATH.read_text(encoding="utf-8")
     assert "<th>周收盘</th>" in html
     assert "<th>月中收</th>" in html
+    assert "<th>月均</th>" in html
+    assert "<th>季均</th>" in html
+    assert "<th>年均</th>" in html
     assert (
         'label: "周收盘", taskType: "weekly_point", frequency: "weekly"'
         in javascript
@@ -130,6 +133,49 @@ def test_task_labels_change_display_text_without_changing_contract_ids() -> None
         in javascript
     )
     assert 'label: "周平均", taskType: "weekly_average"' in javascript
+    assert (
+        'label: "月均", taskType: "monthly_average", frequency: "monthly"'
+        in javascript
+    )
+    assert (
+        'label: "季均", taskType: "quarterly_average", frequency: "quarterly"'
+        in javascript
+    )
+    assert (
+        'label: "年均", taskType: "annual_average", frequency: "annual"'
+        in javascript
+    )
+
+
+def test_task_matrix_keeps_required_column_order_and_scroll_floor() -> None:
+    html = (FRONTEND / "index.html").read_text(encoding="utf-8")
+    stylesheet = (FRONTEND / "aifin-shell.css").read_text(encoding="utf-8")
+    task_head = html.split('class="factor-task-table"', 1)[1].split(
+        "</thead>", 1
+    )[0]
+    labels = [
+        "Y标的",
+        "T+1",
+        "T+5",
+        "周收盘",
+        "周平均",
+        "月中收",
+        "月均",
+        "季均",
+        "年均",
+    ]
+    assert [task_head.index(f"<th>{label}</th>") for label in labels] == sorted(
+        task_head.index(f"<th>{label}</th>") for label in labels
+    )
+    assert re.search(
+        r"\.factor-task-table\s*\{[^}]*min-width:\s*980px;",
+        stylesheet,
+    )
+    assert re.search(
+        r"\.factor-task-wrap,[^}]*overflow-x:\s*auto;",
+        stylesheet,
+        flags=re.DOTALL,
+    )
 
 
 def test_ranking_sort_has_no_visible_state_but_keeps_accessible_state() -> None:

@@ -14,6 +14,11 @@ from shared.prediction_context import (
     WEEKLY_AVERAGE_TARGET_RULE,
     WEEKLY_TARGET_RULE,
 )
+from shared.task_specs import (
+    ALLOWED_TASK_TYPES,
+    PERIOD_AVERAGE_TASK_TYPES,
+    TASK_COMBINATIONS,
+)
 
 
 DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v1"
@@ -26,7 +31,7 @@ ROW_FIELDS = (
     "predicted_direction",
     "actual_direction",
 )
-VALID_TASK_TYPES = {"T+1", "T+5", "weekly_point", "weekly_average", "monthly"}
+VALID_TASK_TYPES = set(ALLOWED_TASK_TYPES)
 WEEKLY_METRIC_TASK_TYPES = {"weekly_point", "weekly_average"}
 VALID_LIVE_PREDICTION_PHASES = {"gray_live", "scheduled_live"}
 VALID_SIGNAL_STATUSES = {"missing", "not_due", "present"}
@@ -37,6 +42,10 @@ LIVE_ACTUAL_SELECTORS = {
     "weekly_point": ("weekly", WEEKLY_TARGET_RULE),
     "weekly_average": ("weekly", WEEKLY_AVERAGE_TARGET_RULE),
     "monthly": ("monthly", MONTHLY_TARGET_RULE),
+    **{
+        task_type: ("period_average", TASK_COMBINATIONS[task_type][1])
+        for task_type in PERIOD_AVERAGE_TASK_TYPES
+    },
 }
 BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE = {
     "native_adapter": "framework_db_aligned",
@@ -53,7 +62,9 @@ BACKTEST_DATA_SOURCE_LABELS = {
     "runtime_default": "按方案运行时选择回测",
     "source_original_monthly_binary_runner": "月度0629原始二进制Runner回测",
 }
-_ACTUAL_CONFLICT_FREQUENCIES = frozenset({"daily", "weekly", "monthly"})
+_ACTUAL_CONFLICT_FREQUENCIES = frozenset(
+    {"daily", "weekly", "monthly", "period_average"}
+)
 _ACTUAL_CONFLICT_TENOR_PATTERN = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9._:+/-]{0,31}\Z",
     flags=re.ASCII,

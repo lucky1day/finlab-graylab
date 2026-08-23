@@ -191,7 +191,10 @@
     { id: "dailyT5", label: "T+5", taskType: "T+5", frequency: "daily", horizon: "T+5" },
     { id: "weeklyPoint", label: "周收盘", taskType: "weekly_point", frequency: "weekly", horizon: "NEXT_WEEK_FRIDAY" },
     { id: "weeklyAverage", label: "周平均", taskType: "weekly_average", frequency: "weekly", horizon: "NEXT_WEEK_AVERAGE" },
-    { id: "monthly", label: "月中收", taskType: "monthly", frequency: "monthly", horizon: "MONTHLY" }
+    { id: "monthly", label: "月中收", taskType: "monthly", frequency: "monthly", horizon: "MONTHLY" },
+    { id: "monthlyAverage", label: "月均", taskType: "monthly_average", frequency: "monthly", horizon: "NEXT_MID_BUCKET_AVERAGE" },
+    { id: "quarterlyAverage", label: "季均", taskType: "quarterly_average", frequency: "quarterly", horizon: "NEXT_CALENDAR_QUARTER_AVERAGE" },
+    { id: "annualAverage", label: "年均", taskType: "annual_average", frequency: "annual", horizon: "NEXT_SPRING_FESTIVAL_YEAR_AVERAGE" }
   ];
   var factorTrendMetrics = [
     { id: "overall", label: "整体准确率", color: "#15623f" },
@@ -686,7 +689,7 @@
     "latest_run_date",
     "rows"
   ];
-  var DASHBOARD_TASK_TYPES = ["T+1", "T+5", "weekly_point", "weekly_average", "monthly"];
+  var DASHBOARD_TASK_TYPES = ["T+1", "T+5", "weekly_point", "weekly_average", "monthly", "monthly_average", "quarterly_average", "annual_average"];
   var DASHBOARD_LIVE_PHASES = ["gray_live", "scheduled_live"];
   var DASHBOARD_SIGNAL_STATUSES = ["missing", "not_due", "present"];
   var DASHBOARD_SNAPSHOT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;

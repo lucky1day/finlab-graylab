@@ -4,7 +4,7 @@
 
 **目标读者**：平台开发、运维、审计和方案维护人员
 
-**最后核验日期**：2026-08-20
+**最后核验日期**：2026-08-23
 
 本文定义 Mac3 生产与 ECS 独立灰度的调度控制面。当前稳定事实查看[当前状态](../CURRENT_STATUS.md)；具体运行证据由 installed state、日志、run、prediction、Harness 和数据库审计保存，不在文档复制一次性计划。
 
@@ -27,12 +27,14 @@ installed 状态；在 Mac3 installed plist 完成独立切换前，现场仍可
 plist、`launchctl` 和进程 cwd 读回判定，不能提前切换或清理开发工作区。
 
 两个宿主控制面使用相同业务日历：DataBridge 06:30、daily 工作日 07:03、weekly 周六 11:30、
-monthly 自然月 15 日 18:00、Actuals 每日 08:30/19:00/23:45。Mac3 对应
+close-period 每日 18:00、Actuals 每日 08:30/19:00/23:45。close-period 复用原 monthly 控制面：
+自然月 15 日运行既有月中收任务，交易日又是 MID/CQ/SF 锚点时运行到期周期均值任务，普通日期直接 no-op。
+Mac3 对应
 `com.bond-factor-lab.*` LaunchAgent，ECS 对应 `bond-factor-lab-*.timer`。仓库模板只表达 desired
 state；当前 installed/loaded 状态以各自主机读回为准。
 
-daily、weekly、monthly one-shot runner 都先严格发现方案；其自然候选集合只由
-`status=active`、Blackbox exact `version_status=active` 与 `frequency` 匹配当前 cadence
+daily、weekly、close-period one-shot runner 都先严格发现方案；其自然候选集合只由
+`status=active`、Blackbox exact `version_status=active` 与明确 `task_type` 匹配当前 cadence
 决定。`paused`、`draft` 和其它 cadence 不进入本批次，不再另设 release queue、`mode` 或
 capability 准入。Blackbox Admission 代码与配置已经退役；历史身份变化只通过 Git、Harness
 run 和授权审计追溯，不再保留第二份当前权限矩阵。
@@ -82,6 +84,11 @@ DataBridge 必须由本机 MySQL 原子发布标准日/周/月 artifact，并继
 连续性、稳定轮次和 `feature_date` 截止验证。输入不新鲜、源表异常或两轮不稳定时必须
 fail-closed：不得发布半成品、不得回退旧 artifact、不得以旧数据制造“成功”信号。
 
+close-period 入口在任何预测前先校验 current ready 的 `feature_date` 是否精确覆盖当日所需锚点。若已覆盖，
+同一次已发布快照可供月中收和周期均值顺序复用；若未覆盖，入口只执行一次 DataBridge 收盘刷新并再次核验。
+刷新失败或截止不匹配时本批预测零执行。这个按需刷新属于原 monthly 控制面的前置动作，不新增周期均值 timer、
+常驻 scheduler 或第二个 DataBridge writer。
+
 ## 3. 生产操作授权
 
 installed plist/unit/timer 的替换或编辑、loaded state 的改变、服务停止或重启、激活、持久化回测、
@@ -90,7 +97,8 @@ installed 配置、loaded state、日志和 run/prediction 证据；再取得明
 代码通过不自动授予这些权限。本文不提供 `launchctl` 或 `systemctl` 的变更指令。
 
 自然调度的目标时点为：DataBridge refresh 约 06:30、daily predictions 约 07:03、weekly
-predictions 周六 11:30、monthly predictions 自然月 15 日 18:00；actuals 保留既有三个时点，
+predictions 周六 11:30、close-period 每日 18:00；其中月中收只在自然月 15 日执行，MID/CQ/SF
+周期均值只在各自锚点执行，其余日期 no-op。actuals 保留既有三个时点，
 但任何时点只能有一个 writer。目标时点是治理合同，不是已安装或已观察的现场结论。
 
 ## 4. 生命周期与停止条件

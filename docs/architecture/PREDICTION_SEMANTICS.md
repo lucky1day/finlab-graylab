@@ -266,7 +266,7 @@ target_date  = T + horizon
 
 ## 7. 前端展示规则
 
-前端任务格子由 `target_tenor + task_type` 定义。`task_type` 是业务任务类型，不是输入频率，也不是 `horizon` 的别名；固定取值为 `T+1`、`T+5`、`weekly_point`、`weekly_average`、`monthly`。`horizon` 继续用于 `target_date = feature_date + horizon` 和 actual join，`frequency` 继续用于输入与 actuals 类型判断；前端分列只能读取 registry/API 返回的 `task_type`。缺失或非法 `task_type` 必须 fail-closed，不允许根据 `frequency/horizon` 猜列。
+前端任务格子由 `target_tenor + task_type` 定义。`task_type` 是业务任务类型，不是输入频率，也不是 `horizon` 的别名；固定取值为 `T+1`、`T+5`、`weekly_point`、`weekly_average`、`monthly`、`monthly_average`、`quarterly_average`、`annual_average`。日频任务才按后续交易日步长解释 horizon；Blackbox V2 周均、MID 月均、自然季均和春节年均的 `horizon=1` 表示下一个同类业务桶。周期均值的 `target_date=feature_date+1` 个自然日只是定位下一桶的日期指针，不是一天后的预测目标，也不是目标桶完成日。actual join 必须使用 `target_tenor + target_date + target_rule`，前端分列只能读取 Registry/API 返回的 `task_type`；缺失或非法值必须 fail-closed，不允许根据 `frequency/horizon` 猜列、桶或目标日期。
 
 前端可以展示灰度实盘和正式实盘，但必须能区分 `prediction_phase`：
 
@@ -285,4 +285,4 @@ target_date  = T + horizon
 - 如果某个需要展示的方案/月度只有 `monthly_metrics` 汇总、没有预测明细行，前端必须 fail-closed，不能从月度汇总反推或回填指标。
 - 每日/周度验证明细中，只要预测方向为“平”（`predicted_direction=0` 或前端归一化后 `predicted="平"`），结果列统一展示 `-`，不展示 `✓` 或 `×`。这条展示规则独立于 `actual_direction` 和 `is_correct`，因为“平”不进入指标计算。
 - 待验证样本仍展示待验证符号；有方向预测才根据验证结果展示 `✓` 或 `×`。
-- 当 `t_scheme_actuals` 或 `t_scheme_weekly_actuals` 的源实际值水位尚未覆盖某个 `target_date` / `target_week_id` 时，该样本属于待验证；API 和前端应展示 `actual_direction = null` / 准确率 `--`，不得把它计为错误、缺数据修复项或前端刷新失败。运维排查必须先查源 actual 水位，再判断是否为后端 join 或前端计算问题；同一目标周内不同 tenor 的源水位可以不同，已覆盖的 tenor 应立即验证，未覆盖的 tenor 继续待验证。
+- 当日频、周频、月中收或周期均值 actual 的源实际值水位尚未覆盖对应 `target_date + target_rule` 时，该样本属于待验证；API 和前端应展示 `actual_direction = null` / 准确率 `--`，不得把它计为错误、缺数据修复项或前端刷新失败。运维排查必须先查对应 actual 水位，再判断是否为后端 join 或前端计算问题；同一目标周期内不同 tenor 的源水位可以不同，已覆盖的 tenor 应立即验证，未覆盖的 tenor 继续待验证。

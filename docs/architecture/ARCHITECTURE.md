@@ -195,7 +195,7 @@ CREATE TABLE t_scheme_predictions (
 
 隔离口径:
 
-- `target_tenor + task_type` 定义任务格子，例如 `5Y + T+1` 或 `5Y + weekly_average`；前端展示名通过 target label 和 `task_type` 映射为 `5Y国债活跃 · T+1`、`5Y国债活跃 · 周平均` 等。
+- `target_tenor + task_type` 定义任务格子，例如 `5Y + T+1`、`5Y + weekly_average` 或 `5Y + quarterly_average`；前端展示名通过 target label 和 `task_type` 映射为 `5Y国债活跃 · T+1`、`5Y国债活跃 · 周平均`、`5Y国债活跃 · 季均` 等。
 - `scheme_id` 定义具体方案实例，同一个任务格子下允许多个 `scheme_id` 并存排行。
 - 业务唯一键按 `(scheme_id, target_tenor, horizon, target_date)` 保证同一目标点只有一条当前实盘预测；`run_id` / `scheme_version` 负责追溯每次运行来源。
 - `feature_date` 是对外数据截止字段，`prediction_phase` 区分 `gray_live` 与 `scheduled_live`；旧 `extra.anchor_date` 只能作为审计副本，且必须等于 `feature_date`。
@@ -244,6 +244,14 @@ CREATE TABLE t_scheme_weekly_actuals (
 
 周频 actuals 写入前由 `scheduler.weekly_actuals_updater` 读取 `api_wind_date + t_trade_calendar` 构造周历；预测侧 `shared.calendar_service` 与 actuals updater 共享 `shared.week_calendar_normalizer`，只对源周历中“单个交易日提前跳到下一周、随后非交易日回落上一周”的孤立不连续行做只读归一化。归一化不修改源表，也不能替代 source core 的信号水位检查。
 
+### 3.3.1 月中收与周期均值 actual
+
+`t_scheme_monthly_actuals` 只保存月中单点事实。MID 月均、自然季均和春节年均统一保存到
+`t_scheme_period_average_actuals`，三种口径由 `target_rule` 隔离；不得把桶平均事实写入月中单点表。
+周期表使用 `(tenor, predict_date, target_rule)` 唯一键和 `(tenor, target_date, target_rule)` join 索引，
+`feature_yield/target_yield` 分别保存当前完整桶和下一完整桶的平均收益率。Dashboard 与 metrics 都按
+`target_tenor + target_date + target_rule` 读取实际方向，缺事实显示待验证，方向冲突 fail-closed。
+
 ### 3.4 t_scheme_registry
 
 ```sql
@@ -269,7 +277,7 @@ CREATE TABLE t_scheme_registry (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
-`t_scheme_registry` 是唯一方案注册表，一行就是前端/业务定义的一个方案。`scheme_id` 是唯一业务身份，统一格式为 `{base_scheme_id}__h{horizon}__{target_tenor}`，例如 `t5_daily__h5__10Y`；不再存在第二套 `(base_scheme_id, frequency, horizon, target_tenor)` 唯一键。`base_scheme_id` 是算法目录 / config / scheduler / backtest 存储使用的执行身份，例如 `t5_daily`；同一个 base 算法预测多个 Y 标的时，registry 拆成多行，但 scheduler 仍只按 `base_scheme_id` 挂载一个执行任务。`task_type` 是前端任务格子分列的唯一语义字段，固定取值为 `T+1`、`T+5`、`weekly_point`、`weekly_average`、`monthly`；字段缺失或非法时 API 必须 fail-closed，不得回退到 `frequency/horizon` 猜列。
+`t_scheme_registry` 是唯一方案注册表，一行就是前端/业务定义的一个方案。`scheme_id` 是唯一业务身份，统一格式为 `{base_scheme_id}__h{horizon}__{target_tenor}`，例如 `t5_daily__h5__10Y`；不再存在第二套 `(base_scheme_id, frequency, horizon, target_tenor)` 唯一键。`base_scheme_id` 是算法目录 / config / scheduler / backtest 存储使用的执行身份，例如 `t5_daily`；同一个 base 算法预测多个 Y 标的时，registry 拆成多行，但 scheduler 仍只按 `base_scheme_id` 挂载一个执行任务。`task_type` 是前端任务格子分列的唯一语义字段，固定取值为 `T+1`、`T+5`、`weekly_point`、`weekly_average`、`monthly`、`monthly_average`、`quarterly_average`、`annual_average`；字段缺失或非法时 API 必须 fail-closed，不得回退到 `frequency/horizon` 猜列。
 
 `active` 是唯一前端/业务可见和自动调度资格状态。`GET /api/schemes`、`GET /api/metrics/{scheme_id}`、`GET /api/backtests/factor-lab` 只返回 `status='active'` 的 registry composite `scheme_id`。`paused` 用于验证期管理，`archived` 用于保留审计历史；二者不进入当前前端矩阵，也不允许 scheduler 新写入对应 target。Backend 不提供手动预测接口。
 
@@ -370,7 +378,7 @@ entry_point: predict.run         # 入口函数
 
 周度方案示例使用 `cron: "30 11 * * 6"`，对齐旧实盘 weekly 首轮预测时间。
 
-`config.scheme_id` 是 base 执行身份，不是 `T+1/5Y` 这样的任务格子名称；任务格子由 `task_type + target_tenor` 决定，`horizon` 保留为目标日计算和 actual join 语义。前端/业务方案身份由 registry composite `scheme_id` 决定。`target_tenor` 是内部稳定 key，前端展示应使用 `t_target_registry.display_name` 或 API 返回的 `target_label`，当前数据库映射为 `1Y -> 1Y国债活跃`、`3Y -> 3Y国债活跃` 等。
+`config.scheme_id` 是 base 执行身份，不是 `T+1/5Y` 这样的任务格子名称；任务格子由 `task_type + target_tenor` 决定。`horizon` 只按该任务的明确业务步长解释，不能推断任务或日期；周期均值的 `target_date` 由桶锚点直接计算，actual join 还必须匹配 `target_rule`。前端/业务方案身份由 registry composite `scheme_id` 决定。`target_tenor` 是内部稳定 key，前端展示应使用 `t_target_registry.display_name` 或 API 返回的 `target_label`，当前数据库映射为 `1Y -> 1Y国债活跃`、`3Y -> 3Y国债活跃` 等。
 
 历史回测命名边界:
 

@@ -57,8 +57,11 @@
 - `weekly_point`
 - `weekly_average`
 - `monthly`
+- `monthly_average`
+- `quarterly_average`
+- `annual_average`
 
-Blackbox Contract 1.0 的对应 horizon 固定为 `1/5/1/1/1`。Native V1 的历史周/月 `6/30` 仅用于存量兼容，不得作为新方案模板。
+Blackbox Contract 1.0 的对应 horizon 固定为 `1/5/1/1/1/1/1/1`。周均、MID 月均、自然季均和春节年均的 `horizon=1` 都表示下一个同类业务桶；不得把周期均值改成 `30/90/365`，也不得通过 horizon 推断任务、桶边界或目标日期。Native V1 的历史周/月 `6/30` 仅用于存量兼容，不得作为新方案模板。
 
 ## 5. 日期语义
 

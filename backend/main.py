@@ -324,11 +324,11 @@ def _integer_metric(value: Any) -> int | None:
 
 
 def _actual_frequency_metrics(value: Any) -> dict[str, int | None]:
-    """仅允许三类固定 actual 频率进入结构化请求日志。"""
+    """仅允许固定 actual 事实类型进入结构化请求日志。"""
     source = value if isinstance(value, dict) else {}
     return {
         frequency: _integer_metric(source.get(frequency))
-        for frequency in ("daily", "weekly", "monthly")
+        for frequency in ("daily", "weekly", "monthly", "period_average")
     }
 
 

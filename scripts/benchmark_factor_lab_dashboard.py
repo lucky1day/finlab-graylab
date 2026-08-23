@@ -70,7 +70,16 @@ BACKTEST_FIELDS = {
     "latest_run_date",
     "rows",
 }
-TASK_TYPES = {"T+1", "T+5", "weekly_point", "weekly_average", "monthly"}
+TASK_TYPES = {
+    "T+1",
+    "T+5",
+    "weekly_point",
+    "weekly_average",
+    "monthly",
+    "monthly_average",
+    "quarterly_average",
+    "annual_average",
+}
 LIVE_PHASES = {"gray_live", "scheduled_live"}
 SIGNAL_STATUSES = {"missing", "not_due", "present"}
 MAX_SAFE_INTEGER = 9_007_199_254_740_991

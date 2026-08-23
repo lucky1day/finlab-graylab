@@ -22,7 +22,16 @@ from backend.factor_lab_dashboard_semantics import (
 from scheduler.discovery import discover_schemes
 from scheduler.repository import sync_scheme_registry
 from shared.metrics import direction_metric_block
-from shared.prediction_context import MONTHLY_TARGET_RULE, WEEKLY_AVERAGE_TARGET_RULE, WEEKLY_TARGET_RULE
+from shared.prediction_context import (
+    MONTHLY_TARGET_RULE,
+    WEEKLY_AVERAGE_TARGET_RULE,
+    WEEKLY_TARGET_RULE,
+)
+from shared.task_specs import (
+    ALLOWED_TASK_TYPES as SHARED_ALLOWED_TASK_TYPES,
+    PERIOD_AVERAGE_TASK_TYPES,
+    TASK_COMBINATIONS,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -36,10 +45,14 @@ DEFAULT_TARGET_LABELS = {
     "10Y": "10Y国债活跃",
 }
 DEFAULT_TARGET_ORDER = ["1Y", "3Y", "5Y", "7Y", "10Y"]
-ALLOWED_TASK_TYPES = {"T+1", "T+5", "weekly_point", "weekly_average", "monthly"}
+ALLOWED_TASK_TYPES = set(SHARED_ALLOWED_TASK_TYPES)
 WEEKLY_TASK_TARGET_RULES = {
     "weekly_point": WEEKLY_TARGET_RULE,
     "weekly_average": WEEKLY_AVERAGE_TARGET_RULE,
+}
+PERIOD_AVERAGE_TASK_TARGET_RULES = {
+    task_type: TASK_COMBINATIONS[task_type][1]
+    for task_type in PERIOD_AVERAGE_TASK_TYPES
 }
 def _iso(value: Any) -> str | None:
     if value is None:
@@ -554,6 +567,10 @@ def scheme_metrics(
     horizon = int(registry_row["horizon"])
     task_type = str(registry_row["task_type"])
     weekly_target_rule = WEEKLY_TASK_TARGET_RULES.get(task_type, WEEKLY_TARGET_RULE)
+    period_average_target_rule = PERIOD_AVERAGE_TASK_TARGET_RULES.get(
+        task_type,
+        TASK_COMBINATIONS["monthly_average"][1],
+    )
     target_labels = _target_labels(engine)
     filters = [
         "p.scheme_id = :base_scheme_id",
@@ -566,6 +583,7 @@ def scheme_metrics(
         "horizon": horizon,
         "weekly_target_rule": weekly_target_rule,
         "monthly_target_rule": MONTHLY_TARGET_RULE,
+        "period_average_target_rule": period_average_target_rule,
     }
 
     sql = text(
@@ -574,8 +592,10 @@ def scheme_metrics(
                p.predict_date, p.feature_date, p.target_date,
                p.prediction_phase, p.predicted_direction, p.confidence, p.model_version, p.extra,
                a.direction_1d, a.direction_5d, wa.direction_weekly, ma.direction_monthly,
+               pa.actual_direction AS period_average_direction,
                wa.direction_variants AS weekly_direction_variants,
-               ma.direction_variants AS monthly_direction_variants
+               ma.direction_variants AS monthly_direction_variants,
+               pa.direction_variants AS period_average_direction_variants
         FROM t_scheme_predictions p
         LEFT JOIN t_scheme_actuals a
           ON a.tenor = p.target_tenor
@@ -600,6 +620,16 @@ def scheme_metrics(
           ON ma.tenor = p.target_tenor
          AND ma.target_date = p.target_date
          AND ma.target_rule = :monthly_target_rule
+        LEFT JOIN (
+            SELECT tenor, target_date, target_rule,
+                   MIN(actual_direction) AS actual_direction,
+                   COUNT(DISTINCT actual_direction) AS direction_variants
+            FROM t_scheme_period_average_actuals
+            GROUP BY tenor, target_date, target_rule
+        ) pa
+          ON pa.tenor = p.target_tenor
+         AND pa.target_date = p.target_date
+         AND pa.target_rule = :period_average_target_rule
         WHERE {" AND ".join(filters)}
         ORDER BY p.predict_date, p.target_date, p.target_tenor
         """
@@ -648,6 +678,14 @@ def scheme_metrics(
                 target_tenor=target_tenor,
             )
             actual_direction = row["direction_monthly"]
+        elif task_type in PERIOD_AVERAGE_TASK_TARGET_RULES:
+            _require_single_actual_direction(
+                row["period_average_direction_variants"],
+                fact="period_average",
+                target_date=target_date,
+                target_tenor=target_tenor,
+            )
+            actual_direction = row["period_average_direction"]
         elif row["horizon"] == 1:
             actual_direction = row["direction_1d"]
         else:

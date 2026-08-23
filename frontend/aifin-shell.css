@@ -567,7 +567,7 @@ button {
 }
 
 .factor-task-table {
-  min-width: 780px;
+  min-width: 980px;
 }
 
 .factor-ranking-table {
@@ -588,7 +588,7 @@ button {
   height: 36px;
   color: var(--text-tertiary);
   background: var(--bg-subtle);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 800;
   text-align: center;
   white-space: nowrap;
@@ -596,16 +596,16 @@ button {
 
 .factor-task-table th:first-child,
 .factor-task-table td:first-child {
-  width: 156px;
+  width: 120px;
 }
 
 .factor-task-table td:first-child {
   color: var(--text);
-  font-size: 16px;
+  font-size: 14px;
   line-height: 1.35;
   font-weight: 840;
   text-align: center;
-  padding: 0 12px;
+  padding: 0 8px;
 }
 
 .factor-task-table td {
@@ -622,7 +622,7 @@ button {
   width: 100%;
   min-height: 76px;
   height: 76px;
-  padding: 10px 14px;
+  padding: 9px 6px;
   border: 0;
   background: transparent;
   color: var(--text);
@@ -640,14 +640,14 @@ button {
 
 .factor-task-top {
   color: var(--accent);
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 840;
   line-height: 1;
 }
 
 .factor-task-count {
   color: var(--text);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 760;
 }
 
