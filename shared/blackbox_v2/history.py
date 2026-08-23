@@ -96,6 +96,8 @@ def build_historical_cases(
             metadata,
             yield_rows,
             trade_calendar_rows,
+            predict_date_from=predict_date_from,
+            target_date_before=target_date_before,
         )
     else:
         raise ValueError(f"unsupported Blackbox historical task_type: {metadata.task_type}")
@@ -394,6 +396,9 @@ def _period_average_candidates(
     metadata: BlackboxMetadata,
     yield_rows: list[dict],
     calendar_rows: list[dict],
+    *,
+    predict_date_from: str | None = None,
+    target_date_before: str | None = None,
 ) -> list[_Candidate]:
     """按两个连续完整业务桶生成周期均值历史案例。"""
     source_rows = [
@@ -406,6 +411,14 @@ def _period_average_candidates(
     buckets = build_period_buckets(metadata.task_type, calendar_rows)
     candidates: list[_Candidate] = []
     for feature_bucket, target_bucket in zip(buckets, buckets[1:]):
+        if (
+            predict_date_from is not None
+            and feature_bucket.anchor_date < predict_date_from
+        ) or (
+            target_date_before is not None
+            and target_bucket.anchor_date >= target_date_before
+        ):
+            continue
         if (
             feature_bucket.start_date < source_start
             or target_bucket.anchor_date > source_end
