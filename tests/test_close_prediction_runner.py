@@ -2,8 +2,14 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 import os
+from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _config(scheme_id: str, task_type: str, frequency: str) -> SimpleNamespace:
@@ -52,6 +58,22 @@ def _summary(cadence: str, exit_code: int = 0):
             "outcome": "success" if exit_code == 0 else "partial",
         }
     )
+
+
+def test_deployed_script_entrypoint_resolves_project_packages() -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(PROJECT_ROOT / "scripts" / "run_close_predictions.py"),
+            "--help",
+        ],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_close_job_does_nothing_when_no_task_is_due() -> None:
