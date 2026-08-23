@@ -18,7 +18,7 @@
 
 - [ ] **Step 1: 写失败边界测试**
 
-  调用 `_validate_canonical_snapshot_budgets({"schemes": []}, detail_rows=25_000)` 并断言成功；调用同一函数传 `25_001` 并断言错误包含 `dashboard detail rows exceed budget`。
+  调用 `_validate_canonical_snapshot_budgets({"schemes": [], "snapshot_id": "budget-boundary"}, detail_rows=25_000)` 并断言成功；调用同一函数传 `25_001` 并断言错误包含 `dashboard detail rows exceed budget`。`snapshot_id` 只满足成功路径的既有日志字段，不改变测试目标。
 
 - [ ] **Step 2: 验证 RED**
 
