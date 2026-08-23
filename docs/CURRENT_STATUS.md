@@ -11,11 +11,11 @@
 - Mac3 继续承载生产域名、前端、数据库和 Writer；`launchd + installed plist` 是 Mac3 的自然生产调度控制面。
 - 双主机共用唯一 `codex/develop` source release 代码线，但允许按“ECS 先验证、Mac3 后晋级”分阶段
   发布；两端 `current` 不要求在灰度验证期始终相同，也不因此建立环境分支。
-- Mac3 与 ECS `current` 均已晋级为前端颜色 R4
-  `92a93713656d8534e68312f123676b5d2054d8a6`；Mac3 `previous` 为 R2
-  `e692285d47e41c384dc915758abe0c51f9ac3aaf`，ECS `previous` 为 R3
-  `08645a87852bbc307d3f6def22d7d457b1014bcb`。
-- 双主机使用的同一份 R4 archive SHA-256 为
+- Mac3 `current` 保持前端颜色 R4 `92a93713656d8534e68312f123676b5d2054d8a6`，`previous` 为 R2
+  `e692285d47e41c384dc915758abe0c51f9ac3aaf`。ECS 已按独立灰度实验室节奏继续晋级，当前
+  `current` 为日频 T+1 两方案 release `990fd4b96fcd7cfb9fad533179c645bac723b817`，`previous` 为
+  `59afc857c37eebb956adb200d9b1a05ed6a123f0`；两端 `current` 不同不构成环境分支。
+- Mac3 当前使用的 R4 archive SHA-256 为
   `e2f1c59c5e183940903de0d3eac39c9cd27e24a3b518ce28446a5d87db96ee37`，source digest 为
   `406b407c624f26137b0d7a84317dcb7cdee8a6d4fa20eccbf9fc7dec9c0bb2b4`，对应 tag
   `bfl-source-r4-frontend-colors-20260821`。
@@ -84,6 +84,14 @@
 - ECS `current` 已晋级到精确 source release `2b89046975ec11225394e9b00ef686aaf47a6986`，tag 为 `bfl-source-m0-weekly-average-5-20260823`，archive SHA-256 为 `4d147e6ef102f3cf74d29e57d338dacd92770b993083328a8db30fdc82ae5ca1`，`previous` 为 `0b248879c934b1251d523d946ccbf6e4df88d862`。候选五方案 check-only、候选 Backend、激活后 Backend、严格 discovery、数据库与 Dashboard 读回均通过。
 - ECS weekly systemd timer 保持 `enabled/active/waiting`，五个方案均已进入严格 active weekly 候选集合；下一次自然触发为 2026-08-29 11:30 Asia/Shanghai。当前完成状态是 Onboarding Complete；首次 `scheduled_live` 只能在该真实时钟触发后，由 service 日志、run、prediction 与 Dashboard 共同确认，不能由 timer waiting 预先宣称。
 - ECS installed weekly service 已与该 release 的仓库模板逐字节对齐，历史可选 `/run/bond-factor-lab/manual-run.env` 引用已移除；原 unit 备份为 `/etc/systemd/system/bond-factor-lab-prediction-weekly.service.pre-m0-20260823`。`systemd-analyze verify` 与 daemon-reload 后 timer 仍为 `enabled/active/waiting`，没有 kickstart 或倒签 `scheduled_live`。
+
+### 5Y / 10Y 日频 T+1 两方案
+
+- `five_y_factor_rule_online_v1` 与 `ten_y_factor_level_ensemble_v1` 已在 ECS 逐方案完成 Blackbox 四段技术 Gate、shadow identity、完整持久化回测、原子 activation、单日 gray gap fill 和 DashboardGate。两个 composite Registry 分别为 `five_y_factor_rule_online_v1__h1__5Y` 与 `ten_y_factor_level_ensemble_v1__h1__10Y`，均为 `active + daily + T+1`，部署范围仅为 `aliyun-gray`，不进入 Mac3 production。
+- 两个 exact version 分别为 5Y `55f0e753b18e`、10Y `997af2e57ad9`。canonical latest backtest run 分别为 `227`、`228`，均从上游声明的正式起点 `2025-07-01` 执行，落库 278 条结果和 14 个月度指标，目标区间为 `2025-07-02..2026-08-20`。
+- 两个 gray live 均为 `predict=2026-08-21 / feature=2026-08-20 / target=2026-08-21`；5Y 方向为 `-1`，10Y 方向为 `0`。重复 gap plan 均为 `present=1 / actionable=0`，canonical backtest 与 live target 零重叠；Dashboard 当前分别读到一条 live 和 278 条 backtest，两个 DashboardGate 均已通过。
+- ECS `current` 已晋级为精确 source release `990fd4b96fcd7cfb9fad533179c645bac723b817`，archive SHA-256 为 `c2bcd2458d67c9938f19ba13a78005441d476a3e22d927c34ebe5342f5545705`，安装后 source tree SHA-256 为 `764443b5a1a16a8f7edc485fd9d28fd02840395f63a3ce9538022e6fb006a531`。候选 check-only、候选 Backend、激活后 Backend、严格 discovery、数据库与 Dashboard 读回均通过。
+- ECS daily timer 保持 `enabled/active/waiting`，installed daily service 未替换、未 reload，也没有 kickstart；其工作目录继续指向 immutable `current`，下一次自然触发为 2026-08-24 07:03 Asia/Shanghai。两个方案当前均为 Onboarding Complete；首次 `scheduled_live` 仍须在真实时钟触发后由 service 日志、run、prediction 与 Dashboard 共同确认，不能由 timer waiting 预先宣称 Production Observed。
 
 ## 当前迁移完成边界
 
