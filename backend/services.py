@@ -8,11 +8,12 @@ from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import bindparam, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import SQLAlchemyError
 
 from backend.factor_lab_dashboard_semantics import (
     BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE,
+    apply_live_prediction_corrections,
     backtest_benchmark_label,
     backtest_data_source_label,
     choose_latest_backtest_runs,
@@ -386,9 +387,9 @@ def list_predictions(
     horizon = int(registry_row["horizon"])
     target_labels = _target_labels(engine)
     filters = [
-        "scheme_id = :base_scheme_id",
-        "target_tenor = :target_tenor",
-        "horizon = :horizon",
+        "p.scheme_id = :base_scheme_id",
+        "p.target_tenor = :target_tenor",
+        "p.horizon = :horizon",
     ]
     params: dict[str, Any] = {
         "base_scheme_id": base_scheme_id,
@@ -398,19 +399,23 @@ def list_predictions(
         "offset": max(offset, 0),
     }
     if start_date:
-        filters.append("predict_date >= :start_date")
+        filters.append("p.predict_date >= :start_date")
         params["start_date"] = start_date
     if end_date:
-        filters.append("predict_date <= :end_date")
+        filters.append("p.predict_date <= :end_date")
         params["end_date"] = end_date
     full_where = "WHERE " + " AND ".join(filters)
-    count_sql = text(f"SELECT COUNT(*) FROM t_scheme_predictions {full_where}")
+    count_sql = text(
+        f"SELECT COUNT(*) FROM t_scheme_predictions p {full_where}"
+    )
     data_sql = text(
         f"""
-        SELECT id, scheme_id, target_tenor, horizon, predict_date, feature_date, target_date,
+        SELECT id, scheme_version, scheme_id, target_tenor, horizon,
+               predict_date, feature_date, target_date,
                prediction_phase, predicted_direction, confidence, model_version, extra,
                created_at, updated_at
         FROM t_scheme_predictions
+        AS p
         {full_where}
         ORDER BY predict_date DESC, scheme_id, target_tenor
         LIMIT :limit OFFSET :offset
@@ -418,7 +423,10 @@ def list_predictions(
     )
     with engine.connect() as conn:
         total = conn.execute(count_sql, params).scalar_one()
-        rows = conn.execute(data_sql, params).mappings().all()
+        rows = _apply_prediction_corrections(
+            conn,
+            conn.execute(data_sql, params).mappings().all(),
+        )
     return {
         "total": total,
         "limit": params["limit"],
@@ -444,6 +452,34 @@ def list_predictions(
             for row in rows
         ],
     }
+
+
+def _apply_prediction_corrections(
+    connection: Connection,
+    prediction_rows: list[Any],
+) -> list[Any]:
+    prediction_ids = sorted({int(row["id"]) for row in prediction_rows})
+    if not prediction_ids:
+        return prediction_rows
+    statement = text(
+        """
+        SELECT prediction_id, scheme_id, target_tenor, horizon,
+               predict_date, feature_date, target_date,
+               scheme_version, prediction_phase,
+               original_direction, corrected_direction, operation_id
+        FROM t_scheme_prediction_corrections
+        WHERE prediction_id IN :prediction_ids
+        """
+    ).bindparams(bindparam("prediction_ids", expanding=True))
+    corrections = connection.execute(
+        statement,
+        {"prediction_ids": prediction_ids},
+    ).mappings().all()
+    corrected, _diagnostics = apply_live_prediction_corrections(
+        prediction_rows,
+        corrections,
+    )
+    return corrected
 
 
 def list_actuals(
@@ -635,7 +671,10 @@ def scheme_metrics(
         """
     )
     with engine.connect() as conn:
-        raw_rows = conn.execute(sql, params).mappings().all()
+        raw_rows = _apply_prediction_corrections(
+            conn,
+            conn.execute(sql, params).mappings().all(),
+        )
 
     display_until = _today_iso()
     raw_rows = choose_live_prediction_rows(

@@ -25,7 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from backend.services import scheme_metrics  # noqa: E402
+from backend.services import list_predictions, scheme_metrics  # noqa: E402
 from shared.prediction_context import (  # noqa: E402
     MONTHLY_TARGET_RULE,
     WEEKLY_TARGET_RULE,
@@ -74,16 +74,25 @@ def _engine(*, task_type: str, horizon: int):
                 " scheme_version TEXT, scheme_id TEXT, target_tenor TEXT, horizon INT,"
                 " predict_date TEXT, feature_date TEXT, target_date TEXT,"
                 " prediction_phase TEXT, predicted_direction INT, confidence REAL,"
-                " model_version TEXT, extra TEXT)"
+                " model_version TEXT, extra TEXT, created_at TEXT, updated_at TEXT)"
             )
         )
         conn.execute(
             text(
                 "INSERT INTO t_scheme_predictions VALUES (1,1,'v1','demo','10Y',"
                 f":horizon,'2026-07-25','2026-07-24','{TARGET_DATE}','scheduled_live',"
-                "1,0.6,'m1','{}')"
+                "1,0.6,'m1','{}','2026-07-25','2026-07-25')"
             ),
             {"horizon": horizon},
+        )
+        conn.execute(
+            text(
+                "CREATE TABLE t_scheme_prediction_corrections ("
+                "prediction_id INT, scheme_id TEXT, target_tenor TEXT, horizon INT,"
+                " predict_date TEXT, feature_date TEXT, target_date TEXT,"
+                " scheme_version TEXT, prediction_phase TEXT,"
+                " original_direction INT, corrected_direction INT, operation_id TEXT)"
+            )
         )
         conn.execute(
             text(
@@ -157,6 +166,73 @@ class WeeklyActualJoinTests(unittest.TestCase):
         with self.assertRaises(ValueError) as caught:
             self._metrics(1, -1)()
         self.assertIn("conflicting weekly actual directions", str(caught.exception))
+
+    def test_prediction_correction_changes_metrics_without_source_update(self) -> None:
+        engine = _engine(task_type="weekly_point", horizon=6)
+        self.addCleanup(engine.dispose)
+        _insert_actuals(
+            engine,
+            "t_scheme_weekly_actuals",
+            "direction_weekly",
+            WEEKLY_TARGET_RULE,
+            -1,
+        )
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_prediction_corrections VALUES
+                        (1, 'demo', '10Y', 6, '2026-07-25', '2026-07-24',
+                         :target_date, 'v1', 'scheduled_live',
+                         1, -1, 'correction-op-1')
+                    """
+                ),
+                {"target_date": TARGET_DATE},
+            )
+        result = scheme_metrics(engine, "demo__h1__10Y")
+        self.assertEqual(result["daily_rows"][0]["predicted_direction"], -1)
+        self.assertEqual(result["summary"]["correct"], 1)
+        with engine.connect() as connection:
+            self.assertEqual(
+                connection.execute(
+                    text(
+                        "SELECT predicted_direction "
+                        "FROM t_scheme_predictions WHERE id=1"
+                    )
+                ).scalar_one(),
+                1,
+            )
+
+    def test_prediction_list_applies_same_correction_overlay(self) -> None:
+        engine = _engine(task_type="weekly_point", horizon=6)
+        self.addCleanup(engine.dispose)
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_prediction_corrections VALUES
+                        (1, 'demo', '10Y', 6, '2026-07-25', '2026-07-24',
+                         :target_date, 'v1', 'scheduled_live',
+                         1, -1, 'correction-op-1')
+                    """
+                ),
+                {"target_date": TARGET_DATE},
+            )
+
+        result = list_predictions(engine, "demo__h1__10Y")
+
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["items"][0]["predicted_direction"], -1)
+        with engine.connect() as connection:
+            self.assertEqual(
+                connection.execute(
+                    text(
+                        "SELECT predicted_direction "
+                        "FROM t_scheme_predictions WHERE id=1"
+                    )
+                ).scalar_one(),
+                1,
+            )
 
 
 class MonthlyActualJoinTests(unittest.TestCase):

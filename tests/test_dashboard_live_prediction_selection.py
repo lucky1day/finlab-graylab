@@ -14,14 +14,20 @@ import sys
 import unittest
 from pathlib import Path
 
+from sqlalchemy import create_engine, text
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.factor_lab_dashboard_semantics import (  # noqa: E402
     DashboardDataError,
+    apply_live_prediction_corrections,
     choose_live_prediction_rows,
     registry_task_type_index,
+)
+from backend.factor_lab_dashboard import (  # noqa: E402
+    _read_live_prediction_corrections,
 )
 
 DISPLAY_UNTIL = "2026-08-11"
@@ -182,6 +188,137 @@ class RegistryTaskTypeIndexTests(unittest.TestCase):
     def test_missing_task_type_fails_closed(self) -> None:
         with self.assertRaises(DashboardDataError):
             registry_task_type_index([self._registry_row(task_type="")])
+
+
+class PredictionCorrectionTests(unittest.TestCase):
+    def _prediction(self) -> dict:
+        return {
+            "id": 41,
+            "scheme_id": SCHEME_ID,
+            "target_tenor": TENOR,
+            "horizon": 1,
+            "predict_date": "2026-08-22",
+            "feature_date": "2026-08-21",
+            "target_date": "2026-08-28",
+            "scheme_version": "v1",
+            "prediction_phase": "scheduled_live",
+            "predicted_direction": 1,
+            "extra": {},
+        }
+
+    def _correction(self, **overrides) -> dict:
+        row = {
+            "prediction_id": 41,
+            "scheme_id": SCHEME_ID,
+            "target_tenor": TENOR,
+            "horizon": 1,
+            "predict_date": "2026-08-22",
+            "feature_date": "2026-08-21",
+            "target_date": "2026-08-28",
+            "scheme_version": "v1",
+            "prediction_phase": "scheduled_live",
+            "original_direction": 1,
+            "corrected_direction": -1,
+            "operation_id": "live-correction-20260824",
+        }
+        row.update(overrides)
+        return row
+
+    def test_applies_to_copy_and_preserves_original_prediction(self) -> None:
+        source = self._prediction()
+        rows, diagnostics = apply_live_prediction_corrections(
+            [source],
+            [self._correction()],
+        )
+        self.assertEqual(source["predicted_direction"], 1)
+        self.assertEqual(rows[0]["predicted_direction"], -1)
+        self.assertEqual(
+            diagnostics,
+            {
+                "applied_count": 1,
+                "operation_ids": ["live-correction-20260824"],
+            },
+        )
+
+    def test_stale_original_direction_fails_closed(self) -> None:
+        with self.assertRaisesRegex(
+            DashboardDataError,
+            "source identity mismatch",
+        ):
+            apply_live_prediction_corrections(
+                [self._prediction()],
+                [self._correction(original_direction=0)],
+            )
+
+    def test_version_or_phase_drift_fails_closed(self) -> None:
+        for override in (
+            {"scheme_version": "v2"},
+            {"prediction_phase": "gray_live"},
+        ):
+            with self.subTest(override=override):
+                with self.assertRaisesRegex(
+                    DashboardDataError,
+                    "source identity mismatch",
+                ):
+                    apply_live_prediction_corrections(
+                        [self._prediction()],
+                        [self._correction(**override)],
+                    )
+
+    def test_unread_prediction_reference_fails_closed(self) -> None:
+        with self.assertRaisesRegex(
+            DashboardDataError,
+            "unread prediction",
+        ):
+            apply_live_prediction_corrections(
+                [self._prediction()],
+                [self._correction(prediction_id=99)],
+            )
+
+    def test_dashboard_query_reads_only_requested_corrections(self) -> None:
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        self.addCleanup(engine.dispose)
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    CREATE TABLE t_scheme_prediction_corrections (
+                        prediction_id INT, scheme_id TEXT, target_tenor TEXT,
+                        horizon INT, predict_date TEXT, feature_date TEXT,
+                        target_date TEXT, scheme_version TEXT,
+                        prediction_phase TEXT, original_direction INT,
+                        corrected_direction INT, operation_id TEXT
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_prediction_corrections VALUES
+                        (41, :scheme_id, '10Y', 1, '2026-08-22',
+                         '2026-08-21', '2026-08-28', 'v1', 'scheduled_live',
+                         1, -1, 'op-41'),
+                        (99, :scheme_id, '10Y', 1, '2026-08-22',
+                         '2026-08-21', '2026-08-28', 'v1', 'scheduled_live',
+                         1, 0, 'op-99')
+                    """
+                ),
+                {"scheme_id": SCHEME_ID},
+            )
+        with engine.connect() as connection:
+            corrections = _read_live_prediction_corrections(
+                connection,
+                [self._prediction()],
+            )
+
+        rows, diagnostics = apply_live_prediction_corrections(
+            [self._prediction()],
+            corrections,
+        )
+        self.assertEqual([row["prediction_id"] for row in corrections], [41])
+        self.assertEqual(rows[0]["predicted_direction"], -1)
+        self.assertEqual(diagnostics["operation_ids"], ["op-41"])
 
 
 if __name__ == "__main__":

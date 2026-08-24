@@ -349,7 +349,7 @@ manifest 校验、schema inspect、pending apply 与 `APPLYING` recovery 都在�
 `scripts/apply_migrations.py` 是唯一受控运维包装器：它负责受限 CLI 参数、环境连接
 与写目标身份围栏；scheduler、harness 和其他 scripts 不得复制 apply/recovery 行为。
 
-所有 CLI 写路径（普通 `--apply`、017/018/019 recovery）都必须在建 Engine 前提供
+所有 CLI 写路径（普通 `--apply`、017/018/019/021 recovery）都必须在建 Engine 前提供
 `--expected-database-name` 与 `--expected-server-uuid`，再以首次数据库语句
 `SELECT DATABASE(), @@server_uuid` 精确验证实际连接。`--inspect-applying-017` 与
 `--inspect-applying-018`、`--inspect-applying-019` 是只读模式，不要求这两个参数。UUID 只能来自 inspect JSON
@@ -382,7 +382,7 @@ manifest 校验、schema inspect、pending apply 与 `APPLYING` recovery 都在�
 | `backtests/{id}_reproduction.py` | L4 | 历史复现 | `run_<scheme>_reproduction` |
 | `backtests/repository.py` | L4 | 回测写库单点 | `t_backtest_*` 写入 |
 | `migrations/runner.py` | 运维库层 | 唯一 migration 行为实现；caller-supplied `Engine` | manifest、inspect、apply、recovery |
-| `scripts/apply_migrations.py` | 受控 operator CLI | 唯一 migration 运维包装器与写目标身份围栏 | `--apply`、inspect/recover 017/018/019 |
+| `scripts/apply_migrations.py` | 受控 operator CLI | 唯一 migration 运维包装器与写目标身份围栏 | `--apply`、inspect/recover 017/018/019/021 |
 | `tests/` | L4 | 单元/集成验证 | unittest |
 | `harness/` | L5 | Gate / 编排 / 审计 | `python -m harness`、`GateResult` |
 | `scripts/` | 工具 | 审计/对比/受控 admin | 一次性命令 |

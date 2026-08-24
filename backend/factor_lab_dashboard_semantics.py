@@ -288,6 +288,106 @@ def registry_task_type_index(
     return index
 
 
+def apply_live_prediction_corrections(
+    prediction_rows: Iterable[Mapping[str, Any]],
+    correction_rows: Iterable[Mapping[str, Any]],
+) -> tuple[list[Mapping[str, Any]], dict[str, Any]]:
+    """将 append-only 纠错覆盖到展示副本，原 Prediction 行保持不变。"""
+    predictions = list(prediction_rows)
+    prediction_index: dict[int, int] = {}
+    for offset, row in enumerate(predictions):
+        prediction_id = _required_json_integer(
+            row.get("id"),
+            field="prediction correction source id",
+            minimum=1,
+        )
+        if prediction_id in prediction_index:
+            raise DashboardDataError(
+                f"dashboard has duplicate prediction id: {prediction_id}"
+            )
+        prediction_index[prediction_id] = offset
+
+    corrected = list(predictions)
+    applied_ids: set[int] = set()
+    operation_ids: set[str] = set()
+    for correction in correction_rows:
+        prediction_id = _required_json_integer(
+            correction.get("prediction_id"),
+            field="prediction correction prediction_id",
+            minimum=1,
+        )
+        if prediction_id in applied_ids:
+            raise DashboardDataError(
+                f"duplicate prediction correction: prediction_id={prediction_id}"
+            )
+        offset = prediction_index.get(prediction_id)
+        if offset is None:
+            raise DashboardDataError(
+                "prediction correction references an unread prediction: "
+                f"prediction_id={prediction_id}"
+            )
+        source = corrected[offset]
+        identity_fields = (
+            "scheme_id",
+            "target_tenor",
+            "horizon",
+            "predict_date",
+            "feature_date",
+            "target_date",
+            "scheme_version",
+            "prediction_phase",
+        )
+        mismatches = {
+            field: {
+                "prediction": source.get(field),
+                "correction": correction.get(field),
+            }
+            for field in identity_fields
+            if str(source.get(field)) != str(correction.get(field))
+        }
+        original = correction.get("original_direction")
+        replacement = correction.get("corrected_direction")
+        if type(original) is not int or original not in {-1, 0, 1}:
+            raise DashboardDataError(
+                "prediction correction original_direction is invalid: "
+                f"{original!r}"
+            )
+        if type(replacement) is not int or replacement not in {-1, 0, 1}:
+            raise DashboardDataError(
+                "prediction correction corrected_direction is invalid: "
+                f"{replacement!r}"
+            )
+        if original == replacement:
+            raise DashboardDataError(
+                "prediction correction does not change direction: "
+                f"prediction_id={prediction_id}"
+            )
+        if source.get("predicted_direction") != original:
+            mismatches["predicted_direction"] = {
+                "prediction": source.get("predicted_direction"),
+                "correction": original,
+            }
+        if mismatches:
+            raise DashboardDataError(
+                "prediction correction source identity mismatch: "
+                f"prediction_id={prediction_id} mismatches={mismatches}"
+            )
+        operation_id = _required_text(
+            correction.get("operation_id"),
+            field="prediction correction operation_id",
+        )
+        replacement_row = dict(source)
+        replacement_row["predicted_direction"] = replacement
+        corrected[offset] = replacement_row
+        applied_ids.add(prediction_id)
+        operation_ids.add(operation_id)
+
+    return corrected, {
+        "applied_count": len(applied_ids),
+        "operation_ids": sorted(operation_ids),
+    }
+
+
 def choose_live_prediction_rows(
     rows: Iterable[Mapping[str, Any]],
     *,

@@ -100,6 +100,11 @@
       "version": 20,
       "filename": "020_period_average_actuals.sql",
       "sha256": "247f422be4093fce02b5252d44e0c0494520c4a5d7d6b2dab3010cdd603de446"
+    },
+    {
+      "version": 21,
+      "filename": "021_prediction_corrections.sql",
+      "sha256": "6f2eed2ed11ee345dc22437bad25be8bfafd792d2ea334c0b4bdbecbadfd1cfd"
     }
   ]
 }
