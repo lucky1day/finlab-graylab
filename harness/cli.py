@@ -300,7 +300,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
     activate_parser = subparsers.add_parser("activate")
     activate_parser.add_argument("--scheme-id", required=True)
-    activate_parser.add_argument("--predict-date", default="activate")
     activate_parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
     activate_parser.add_argument("--report-dir", type=Path, default=None)
     activate_parser.add_argument(
@@ -473,7 +472,7 @@ def _run_activate(args: argparse.Namespace) -> GateResult:
     )
     ctx = GateContext(
         scheme_id=args.scheme_id,
-        predict_date=args.predict_date,
+        predict_date="activate",
         project_root=project_root,
         report_dir=report_dir,
         config=config,

@@ -18,7 +18,7 @@ import pandas as pd
 from sqlalchemy import create_engine, text
 
 
-def issue_token(
+def build_operation(
     scheme_id: str,
     action: str,
     predict_date: str | None = None,
@@ -1361,7 +1361,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             config_path = scheme_dir / "config.yaml"
             original = config_path.read_text(encoding="utf-8")
             config = load_scheme_config(config_path)
-            token = issue_token(
+            token = build_operation(
                 config.scheme_id,
                 "shadow_register",
                 "2026-07-16",
@@ -1416,7 +1416,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             root = Path(tmpdir)
             scheme_dir = intake_delivery(_delivery(root / "incoming"), schemes_root=root / "schemes")
             config = load_scheme_config(scheme_dir / "config.yaml")
-            token = issue_token(
+            token = build_operation(
                 config.scheme_id,
                 "shadow_register",
                 "2026-07-16",
@@ -1460,7 +1460,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             scheme_dir = intake_delivery(_delivery(root / "incoming"), schemes_root=root / "schemes")
             config_path = scheme_dir / "config.yaml"
             config = load_scheme_config(config_path)
-            token = issue_token(
+            token = build_operation(
                 config.scheme_id,
                 "shadow_register",
                 "2026-07-16",
@@ -1537,7 +1537,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             config_path = scheme_dir / "config.yaml"
             config = load_scheme_config(config_path)
             original_version = config.scheme_version
-            token = issue_token(
+            token = build_operation(
                 config.scheme_id,
                 "shadow_register",
                 "2026-07-16",

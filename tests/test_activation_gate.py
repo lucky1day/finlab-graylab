@@ -17,7 +17,7 @@ from scheduler.discovery import load_scheme_config
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def issue_token(
+def build_operation(
     scheme_id: str,
     action: str,
     predict_date: str | None = None,
@@ -596,7 +596,7 @@ class NativeActivationValidationTests(unittest.TestCase):
             )
             try:
                 _seed_maintenance_run(engine, cfg.scheme_version)
-                token = issue_token(
+                token = build_operation(
                     cfg.scheme_id,
                     "activate",
                     scheme_version=cfg.scheme_version,
