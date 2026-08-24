@@ -1035,6 +1035,15 @@ def _is_due(
 
 def _case_is_in_platform_live_scope(case: ExpectedSignalCase) -> bool:
     """按任务的业务目标身份判断是否进入平台实盘区间。"""
+    if case.task_type == "quarterly_average":
+        pointer = date.fromisoformat(case.target_date)
+        live_start = date.fromisoformat(PLATFORM_LIVE_TARGET_START_DATE)
+        target_quarter = (pointer.year, (pointer.month - 1) // 3 + 1)
+        live_start_quarter = (
+            live_start.year,
+            (live_start.month - 1) // 3 + 1,
+        )
+        return target_quarter >= live_start_quarter
     if case.task_type != "monthly_average":
         return case.target_date >= PLATFORM_LIVE_TARGET_START_DATE
     pointer = date.fromisoformat(case.target_date)

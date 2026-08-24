@@ -130,6 +130,23 @@ def _monthly_average_case(
     )
 
 
+def _quarterly_average_case(
+    *, target_date: str = "2026-04-01"
+) -> signal_gap_plan.ExpectedSignalCase:
+    return signal_gap_plan.ExpectedSignalCase(
+        registry_scheme_id="quarterly_avg__h1__5Y",
+        base_scheme_id="quarterly_avg",
+        runtime_type="blackbox_v2",
+        frequency="quarterly",
+        task_type="quarterly_average",
+        target_tenor="5Y",
+        horizon=1,
+        predict_date="2026-03-31",
+        feature_date="2026-03-31",
+        target_date=target_date,
+    )
+
+
 def _observed(
     scheme_id: str = "demo_native",
     *,
@@ -408,10 +425,23 @@ def test_monthly_average_live_scope_uses_display_target_month() -> None:
     )
 
 
-def test_non_monthly_live_scope_keeps_raw_target_date_boundary() -> None:
+def test_quarterly_average_live_scope_uses_target_quarter_identity() -> None:
+    assert signal_gap_plan._case_is_in_platform_live_scope(
+        _quarterly_average_case(target_date="2026-04-01")
+    )
+
+
+def test_quarterly_average_live_scope_rejects_prior_quarter() -> None:
+    assert not signal_gap_plan._case_is_in_platform_live_scope(
+        _quarterly_average_case(target_date="2026-01-01")
+    )
+
+
+def test_ordinary_live_scope_keeps_raw_target_date_boundary() -> None:
     case = replace(
         _monthly_average_case(),
-        task_type="quarterly_average",
+        task_type="T+5",
+        frequency="daily",
     )
     assert not signal_gap_plan._case_is_in_platform_live_scope(case)
 
