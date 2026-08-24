@@ -281,9 +281,14 @@
 
   function targetDisplayMonth(targetDate, taskType) {
     var value = requireDashboardIsoDate(targetDate, "target_date");
-    return taskType === "monthly_average"
-      ? monthlyAverageTargetMonth(value)
-      : value.slice(0, 7);
+    if (taskType === "monthly_average") {
+      return monthlyAverageTargetMonth(value);
+    }
+    var targetMonth = value.slice(0, 7);
+    if (taskType === "quarterly_average") {
+      formatQuarterlyAverageTargetQuarter(targetMonth);
+    }
+    return targetMonth;
   }
 
   function formatMonthlyAveragePredictDate(predictDate) {
@@ -304,6 +309,25 @@
     return value.slice(0, 4) + "/" + value.slice(5, 7);
   }
 
+  function formatQuarterlyAveragePredictDate(predictDate) {
+    var value = requireDashboardIsoDate(
+      predictDate,
+      "quarterly_average predict_date"
+    );
+    return value.slice(5, 7) + "/" + value.slice(8, 10);
+  }
+
+  function formatQuarterlyAverageTargetQuarter(targetMonth) {
+    var value = String(targetMonth || "").trim();
+    var match = value.match(/^(\d{4})-(01|04|07|10)$/);
+    if (!match) {
+      throw dashboardDataError(
+        "quarterly_average quarter target month must use a quarter-start YYYY-MM"
+      );
+    }
+    return match[1] + "/Q" + String((Number(match[2]) - 1) / 3 + 1);
+  }
+
   function isWeeklyTask(task) {
     return task && (
       String(task.frequency || "").toLowerCase() === "weekly" ||
@@ -318,6 +342,16 @@
 
   function isMonthlyAverageTask(task) {
     return task && task.taskType === "monthly_average";
+  }
+
+  function isQuarterlyAverageTask(task) {
+    return task && task.taskType === "quarterly_average";
+  }
+
+  function formatFactorPeriodLabel(task, month) {
+    return isQuarterlyAverageTask(task)
+      ? formatQuarterlyAverageTargetQuarter(month)
+      : month;
   }
 
   function liveBacktestCutoffTargetDate(liveScheme) {
@@ -421,6 +455,10 @@
     var targetStart = candidates.length ? candidates[0].targetDate : "";
     if (targetStart && isMonthlyAverageTask(task)) {
       targetStart = targetDisplayMonth(targetStart, task.taskType);
+    } else if (targetStart && isQuarterlyAverageTask(task)) {
+      targetStart = formatQuarterlyAverageTargetQuarter(
+        targetDisplayMonth(targetStart, task.taskType)
+      );
     }
     return targetStart
       ? "实盘预测目标区间：" + targetStart + "开始"
@@ -2496,6 +2534,7 @@
     if (!host) return;
 
     updateFactorTrendToggles();
+    var task = getTaskByKey(factorLabState.selectedTaskKey);
     var rows = getVisibleFactorMonthRows();
     var metrics = factorTrendMetrics.filter(function (metric) {
       return factorLabState.chartMetrics[metric.id] !== false;
@@ -2535,7 +2574,7 @@
         svg += '<line class="factor-trend-tick" x1="' + x(index).toFixed(1) + '" y1="' + (height - bottom) + '" x2="' + x(index).toFixed(1) + '" y2="' + (height - bottom + 6) + '" stroke="rgba(93,101,111,0.3)"></line>';
         return;
       }
-      svg += '<text class="factor-trend-axis" x="' + x(index).toFixed(1) + '" y="' + (height - 14) + '" text-anchor="' + trendMonthLabelAnchor(index, rows.length) + '">' + escapeHtml(row.month) + '</text>';
+      svg += '<text class="factor-trend-axis" x="' + x(index).toFixed(1) + '" y="' + (height - 14) + '" text-anchor="' + trendMonthLabelAnchor(index, rows.length) + '">' + escapeHtml(formatFactorPeriodLabel(task, row.month)) + '</text>';
     });
     // 实盘分隔虚线（仅"全部"口径，找到第一个 live 月份）
     if (factorLabState.dataSource === "all") {
@@ -2550,7 +2589,12 @@
     }
     metrics.forEach(function (metric) {
       var points = rows.map(function (row, index) {
-        return [x(index), y(row[metric.id]), row[metric.id], row.month];
+        return [
+          x(index),
+          y(row[metric.id]),
+          row[metric.id],
+          formatFactorPeriodLabel(task, row.month)
+        ];
       });
       var path = points.map(function (point, index) {
         return (index === 0 ? "M" : "L") + point[0].toFixed(1) + " " + point[1].toFixed(1);
@@ -2573,6 +2617,15 @@
         note: "",
         emptyText: "当前月份暂无预测明细",
         buttonLabel: "打开月度平均预测明细"
+      };
+    }
+    if (isQuarterlyAverageTask(task)) {
+      return {
+        title: formatQuarterlyAverageTargetQuarter(month) + " 季度平均预测明细",
+        dateHeader: "目标季度",
+        note: "",
+        emptyText: "当前季度暂无预测明细",
+        buttonLabel: "打开季度平均预测明细"
       };
     }
     var weekly = isWeeklyTask(task);
@@ -2619,7 +2672,7 @@
       }
       prevSource = row._source || prevSource;
       html += '<tr>';
-      html += '<td>' + escapeHtml(row.month) + '</td>';
+      html += '<td>' + escapeHtml(formatFactorPeriodLabel(task, row.month)) + '</td>';
       html += '<td><strong>' + row.samples + '</strong></td>';
       html += '<td>' + escapeHtml(row.actualDist) + '</td>';
       html += '<td>' + escapeHtml(row.predictedDist) + '</td>';
@@ -2666,6 +2719,7 @@
     var task = getTaskByKey(factorLabState.selectedTaskKey);
     var scheme = getSelectedScheme();
     var isMonthlyAverage = isMonthlyAverageTask(task);
+    var isQuarterlyAverage = isQuarterlyAverageTask(task);
     var presentation = factorDetailPresentation(task, month);
     var dateHeader = document.getElementById("factorDailyDateHeader");
     var note = document.getElementById("factorCalendarNote");
@@ -2686,7 +2740,7 @@
         })
       : [];
     if (!rows.length) {
-      var emptyText = isMonthlyAverage
+      var emptyText = isMonthlyAverage || isQuarterlyAverage
         ? presentation.emptyText
         : "当前月份暂无每日明细";
       body.innerHTML = '<tr><td colspan="5" class="factor-empty-cell">' +
@@ -2702,6 +2756,9 @@
       if (isMonthlyAverage) {
         html += '<td class="mono">' + escapeHtml(formatMonthlyAveragePredictDate(row.predictDate)) + '</td>';
         html += '<td class="mono">' + escapeHtml(formatMonthlyAverageTargetMonth(row.targetMonth || month)) + '</td>';
+      } else if (isQuarterlyAverage) {
+        html += '<td class="mono">' + escapeHtml(formatQuarterlyAveragePredictDate(row.predictDate)) + '</td>';
+        html += '<td class="mono">' + escapeHtml(formatQuarterlyAverageTargetQuarter(row.targetMonth || month)) + '</td>';
       } else {
         html += dateCellHtml(row.predictDate, "--");
         html += dateCellHtml(row.targetDate, displayDay);
@@ -3000,6 +3057,9 @@
     targetDisplayMonth: targetDisplayMonth,
     formatMonthlyAveragePredictDate: formatMonthlyAveragePredictDate,
     formatMonthlyAverageTargetMonth: formatMonthlyAverageTargetMonth,
+    formatQuarterlyAveragePredictDate: formatQuarterlyAveragePredictDate,
+    formatQuarterlyAverageTargetQuarter: formatQuarterlyAverageTargetQuarter,
+    formatFactorPeriodLabelForTest: formatFactorPeriodLabel,
     factorDetailPresentationForTest: factorDetailPresentation,
     liveDividerTextForTest: liveDividerText,
     loadFactorLabData: loadFactorLabData,
