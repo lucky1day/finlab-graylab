@@ -233,10 +233,9 @@ class OnboardingPolicyTests(unittest.TestCase):
             _write_policy(project_root, legacy_ids=["existing_native"])
             _write_native_scheme(project_root, "new_native")
 
-            with (
-                patch("harness.gates.activate_gate.verify_authorization", return_value=(object(), [])),
-                patch("harness.gates.activate_gate._verify_gate_history") as verify_history,
-            ):
+            with patch(
+                "harness.gates.activate_gate._verify_gate_history"
+            ) as verify_history:
                 result = ActivationGate().run(_context(project_root, "new_native"))
 
         self.assertFalse(result.passed)
@@ -310,7 +309,7 @@ def _context(project_root: Path, scheme_id: str) -> GateContext:
         predict_date="2026-07-19",
         project_root=project_root,
         report_dir=project_root / "reports",
-        authorization="test-token",
+        operation="test-operation",
     )
 
 

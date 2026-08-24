@@ -130,53 +130,6 @@ def test_static_gate_run_leaves_release_tree_unchanged(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------
 
 
-def test_used_tokens_path_uses_runtime_root(tmp_path: Path) -> None:
-    from harness.authorization import used_tokens_path
-
-    runtime_root = tmp_path / "state"
-    project_root = tmp_path / "release"
-
-    with patch.dict(os.environ, _production_environ(runtime_root), clear=False):
-        resolved = used_tokens_path(project_root)
-
-    assert resolved.is_relative_to(runtime_root.resolve())
-    assert not resolved.is_relative_to(project_root)
-
-
-def test_used_tokens_path_fails_closed_without_runtime_root(
-    tmp_path: Path,
-) -> None:
-    from harness.authorization import used_tokens_path
-
-    project_root = tmp_path / "release"
-    project_root.mkdir()
-    before = _tree_digest(project_root)
-
-    environ = {"BFL_DEPLOYMENT_TARGET": "aliyun-gray"}
-    with patch.dict(os.environ, environ, clear=False):
-        os.environ.pop("BFL_RUNTIME_ROOT", None)
-        with pytest.raises(RuntimeError):
-            used_tokens_path(project_root)
-
-    assert _tree_digest(project_root) == before, "fail-closed 不得留下文件系统副作用"
-
-
-def test_used_tokens_path_preserves_development_default(tmp_path: Path) -> None:
-    from harness.authorization import used_tokens_path
-
-    project_root = tmp_path / "worktree"
-
-    environ = dict(os.environ)
-    environ.pop("BFL_DEPLOYMENT_TARGET", None)
-    environ.pop("BFL_RUNTIME_ROOT", None)
-    with patch.dict(os.environ, environ, clear=True):
-        resolved = used_tokens_path(project_root)
-
-    assert resolved == (
-        project_root / "reports" / "harness" / ".used_authorization_tokens.json"
-    )
-
-
 def test_backtest_baseline_uses_runtime_root(tmp_path: Path) -> None:
     from harness.gates.backtest_gate import backtest_baseline_path
 
@@ -267,35 +220,6 @@ def test_gate_report_dir_default_preserves_development_default(
     assert resolved.parent == expected_parent
     # 时间戳形如 20260822T004500Z
     assert re.fullmatch(r"\d{8}T\d{6}Z", resolved.name)
-
-
-# --------------------------------------------------------------------------
-# 授权重放保护必须跨 release 存活
-# --------------------------------------------------------------------------
-
-
-def test_authorization_replay_store_survives_release_change(
-    tmp_path: Path,
-) -> None:
-    """同一 runtime root 下，换 project_root 不得让已用 token 复活。"""
-    from harness.authorization import used_tokens_path
-
-    runtime_root = tmp_path / "state"
-    release_a = tmp_path / "releases" / "aaaa"
-    release_b = tmp_path / "releases" / "bbbb"
-
-    with patch.dict(os.environ, _production_environ(runtime_root), clear=False):
-        path_a = used_tokens_path(release_a)
-        path_b = used_tokens_path(release_b)
-
-    assert path_a == path_b, (
-        "授权重放存储随 release 变化会使一次性 token 在切换 release 后复活"
-    )
-
-
-# --------------------------------------------------------------------------
-# DataBridge provenance 必须从 runtime root 读取
-# --------------------------------------------------------------------------
 
 
 def test_data_bridge_provenance_reads_runtime_root(tmp_path: Path) -> None:

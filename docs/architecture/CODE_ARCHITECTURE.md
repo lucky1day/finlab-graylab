@@ -213,7 +213,7 @@ python -m harness onboard {scheme_id} --stage all
        ├─ CompareGate  → schemes/{id}/benchmarks original/current strict compare
        └─ BacktestGate → backtests/{id}_reproduction(--no-persist)
   Blackbox 首轮授权卡点：ShadowRegisterGate → version=shadow + registry=paused，不写业务表
-  Native 首次授权卡点：BacktestGate(--persist) / LiveGate(execute_scheme) / activate  ← 需 token，否则 BLOCKED
+  Native 直接操作卡点：BacktestGate(--persist) / LiveGate(execute_scheme) / activate  ← 需精确 operation scope，否则 BLOCKED
   激活后产品读模型验收：DashboardGate → GET /api/factor-lab/dashboard
 ```
 
@@ -235,14 +235,10 @@ static -> native-maintenance-admission -> input -> unit -> dry-run
 与 composite Registry IDs，不保存代码、config 或 version hash。maintenance 的 current exact
 `t_scheme_versions` 行必须为 `runtime_type='native_adapter'` 且 status 为 `draft|active`；expected
 Registry identity 可在预激活时统一为 `paused`，或在激活后统一为 `active`，但 draft version 配 active
-Registry 必须 fail-closed。只有 ActivationGate 可在严格 discovery、精确版本与一次性授权核验后原子
-建立 active 状态。缺少 prior snapshot 的 legacy admission 仍必须 fail-closed；唯一保留例外是
-`weekly_10y_d_overlay_0529` 已持久化的 canonical receipt。平台只读校验 maintenance 选定的唯一
-passed `all + compare` prior、缺 identity 的 StaticGate 和固定业务身份；writer 与 token action 已退役。
-receipt 仅存在于两张 Harness 控制面表、无当前 hash、不改历史，且只作
-`legacy_operator_attestation_v1` 身份来源。它不是通用命令或 waiver，不能自动生成、推断、激活或写业务表。
-该五段路径不运行当前 historical `compare/backtest`、不写业务表，且不适用于 Blackbox；其后
-activation 仍要核验当前精确 version、五个 Gate 与一次性 token。反之，current exact version 的
+Registry 必须 fail-closed。只有 ActivationGate 可在严格 discovery、精确版本与标准 Gate 核验后原子
+建立 active 状态。缺少、重复、损坏或不匹配的 prior snapshot 一律 fail-closed，不再保留方案级历史
+receipt。该五段路径不运行当前 historical `compare/backtest`、不写业务表，且不适用于 Blackbox；其后
+activation 仍要核验当前精确 version 与五个 Gate。反之，current exact version 的
 完整 `all` 通过时，ActivationGate 走互斥的 `full_initial_onboarding_v1`，不要求此 prior snapshot
 或五段路径。
 

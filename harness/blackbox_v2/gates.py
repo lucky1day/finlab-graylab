@@ -19,13 +19,11 @@ import pandas as pd
 
 from harness.blackbox_v2.draft_register import create_draft_identity
 from harness.context import GateContext
-from harness.authorization import (
+from harness.operation import (
     DEFAULT_BACKTEST_START_DATE,
-    authorization_token_hash,
-    mark_token_used,
-    used_tokens_path,
-    verify_authorization,
-    write_authorization_audit,
+    operation_scope_sha256,
+    verify_direct_operation,
+    write_operation_audit,
 )
 from backtests.blackbox_v2 import run_blackbox_historical_backtest
 from backtests.repository import persist_backtest_output_atomic, snapshot_backtest_scope_counts
@@ -557,18 +555,17 @@ class BlackboxBacktestGate(_BlackboxGate):
         try:
             cfg = _reload_pinned_blackbox_config(cfg, phase="persisted backtest preflight")
             passed_run = _verify_passed_all(engine, cfg)
-            auth, auth_errors = verify_authorization(
-                ctx.authorization,
+            operation, operation_errors = verify_direct_operation(
+                ctx.operation,
                 scheme_id=ctx.scheme_id,
                 action="backtest_persist",
                 predict_date=ctx.predict_date,
                 scheme_version=cfg.scheme_version,
                 harness_run_id=passed_run.harness_run_id,
                 backtest_start_date=ctx.backtest_start_date,
-                used_store_path=used_tokens_path(ctx.project_root),
             )
-            if auth is None or auth_errors:
-                return _blocked(self.name, started_at, auth_errors)
+            if operation is None or operation_errors:
+                return _blocked(self.name, started_at, operation_errors)
             state = _ensure_input_state(ctx)
             provenance = _data_bridge_provenance(ctx, state.snapshot)
             generation_id = str(provenance.get("generation_id", "")).strip()
@@ -635,8 +632,10 @@ class BlackboxBacktestGate(_BlackboxGate):
                 )
             cfg = _reload_pinned_blackbox_config(cfg, phase="persisted backtest commit")
             before = snapshot_backtest_scope_counts(engine, benchmark_id)
-            mark_token_used(auth, used_tokens_path(ctx.project_root))
-            audit_path = write_authorization_audit(auth, ctx.report_dir / "backtest_authorization")
+            audit_path = write_operation_audit(
+                operation,
+                ctx.report_dir / "backtest_operation",
+            )
             run_id = persist_backtest_output_atomic(engine, output, benchmark_id=benchmark_id)
             after = snapshot_backtest_scope_counts(engine, benchmark_id)
             deltas = diff_snapshots(before, after)
@@ -674,7 +673,7 @@ class BlackboxBacktestGate(_BlackboxGate):
             Evidence("protected_table_counts_before", before),
             Evidence("protected_table_counts_after", after),
             Evidence("protected_table_deltas", deltas),
-            Evidence("authorization_audit_path", str(audit_path)),
+            Evidence("operation_audit_path", str(audit_path)),
             Evidence("replay_semantics", CURRENT_SNAPSHOT_REPLAY),
         ]
         result = _finish(self.name, started_at, evidence, errors)
@@ -683,7 +682,7 @@ class BlackboxBacktestGate(_BlackboxGate):
 
 class BlackboxShadowRegisterGate(_BlackboxGate):
     name = "shadow-register"
-    requires_authorization = True
+    requires_operation = True
 
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
         cfg = _config(ctx)
@@ -697,17 +696,16 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
         registered_state = None
         try:
             passed_run = _verify_passed_all(engine, cfg)
-            auth, auth_errors = verify_authorization(
-                ctx.authorization,
+            operation, operation_errors = verify_direct_operation(
+                ctx.operation,
                 scheme_id=ctx.scheme_id,
                 action="shadow_register",
                 predict_date=ctx.predict_date,
                 scheme_version=cfg.scheme_version,
                 harness_run_id=passed_run.harness_run_id,
-                used_store_path=used_tokens_path(ctx.project_root),
             )
-            if auth is None or auth_errors:
-                return _blocked(self.name, started_at, auth_errors)
+            if operation is None or operation_errors:
+                return _blocked(self.name, started_at, operation_errors)
             environment_fingerprint = _environment_fingerprint(ctx.project_root)
             validated_cfg = replace(
                 cfg,
@@ -756,10 +754,12 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
             target = LifecycleState("paused", "shadow", "paused")
             compensating = False
 
-            def consume() -> None:
+            def write_audit() -> None:
                 nonlocal audit_path
-                mark_token_used(auth, used_tokens_path(ctx.project_root))
-                audit_path = write_authorization_audit(auth, ctx.report_dir / "shadow_authorization")
+                audit_path = write_operation_audit(
+                    operation,
+                    ctx.report_dir / "shadow_operation",
+                )
 
             def enriched_current():
                 current = load_scheme_config(config_path)
@@ -828,8 +828,8 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
                 previous=previous,
                 target=target,
                 compensation=previous,
-                token_hash=authorization_token_hash(auth),
-                consume_authorization=consume,
+                operation_scope_sha256=operation_scope_sha256(operation),
+                prepare_operation=write_audit,
                 apply_database=apply_database,
                 read_state=read_state,
             )
@@ -863,7 +863,7 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
             Evidence("config_hash", registered_state.config_hash),
             Evidence("manifest_hash", registered_state.manifest_hash),
             Evidence("business_tables_written", False),
-            Evidence("authorization_audit_path", str(audit_path)),
+            Evidence("operation_audit_path", str(audit_path)),
             Evidence("journal_path", str(journal_path)),
             Evidence("journal_phase", "verified"),
         ]
@@ -2088,7 +2088,7 @@ def _blocked(gate_name: str, started_at: str, errors: list[str]) -> GateResult:
         gate_name=gate_name,
         status=GateStatus.BLOCKED,
         passed=False,
-        evidence=[Evidence("authorization_required", True)],
+        evidence=[Evidence("operation_required", True)],
         errors=errors,
         started_at=started_at,
         finished_at=utc_now(),

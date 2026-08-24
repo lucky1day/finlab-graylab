@@ -3031,8 +3031,8 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
                     previous=lifecycle_state["value"],
                     target=paused,
                     compensation=lifecycle_state["value"],
-                    token_hash="a" * 64,
-                    consume_authorization=lambda: None,
+                    operation_scope_sha256="a" * 64,
+                    prepare_operation=lambda: None,
                     apply_database=lambda state: lifecycle_state.__setitem__("value", state),
                     read_state=lambda: lifecycle_state["value"],
                 )
@@ -3125,7 +3125,7 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
                 harness_run_id="hr_pending_reconcile",
                 previous=state,
                 target=LifecycleState("paused", "paused", "paused", "paused"),
-                token_hash="a" * 64,
+                operation_scope_sha256="a" * 64,
             ).transition("config_written")
             write_journal(root, pending)
 

@@ -58,7 +58,7 @@ class LifecycleJournal:
     previous: LifecycleState
     target: LifecycleState
     phase: str
-    token_hash: str
+    operation_scope_sha256: str
     error: str | None = None
     reconciliation_of: str | None = None
     reconciled_by: str | None = None
@@ -74,7 +74,7 @@ class LifecycleJournal:
         harness_run_id: str,
         previous: LifecycleState,
         target: LifecycleState,
-        token_hash: str,
+        operation_scope_sha256: str,
         reconciliation_of: str | None = None,
     ) -> "LifecycleJournal":
         return cls(
@@ -86,7 +86,7 @@ class LifecycleJournal:
             previous=previous,
             target=target,
             phase="prepared",
-            token_hash=token_hash,
+            operation_scope_sha256=operation_scope_sha256,
             reconciliation_of=reconciliation_of,
             phase_events=(LifecyclePhaseEvent("prepared", _utc_iso_timestamp()),),
         )
@@ -145,7 +145,9 @@ def load_journal(path: str | Path) -> LifecycleJournal:
         previous=LifecycleState(**raw["previous"]),
         target=LifecycleState(**raw["target"]),
         phase=str(raw["phase"]),
-        token_hash=str(raw["token_hash"]),
+        operation_scope_sha256=str(
+            raw.get("operation_scope_sha256") or raw["token_hash"]
+        ),
         error=str(raw["error"]) if raw.get("error") is not None else None,
         reconciliation_of=(
             str(raw["reconciliation_of"])
@@ -239,8 +241,8 @@ def perform_lifecycle_transition(
     previous: LifecycleState,
     target: LifecycleState,
     compensation: LifecycleState,
-    token_hash: str,
-    consume_authorization: Callable[[], None],
+    operation_scope_sha256: str,
+    prepare_operation: Callable[[], None],
     apply_database: Callable[[LifecycleState], None],
     read_state: Callable[[], LifecycleState],
 ) -> tuple[LifecycleState, Path]:
@@ -256,8 +258,8 @@ def perform_lifecycle_transition(
             previous=previous,
             target=target,
             compensation=compensation,
-            token_hash=token_hash,
-            consume_authorization=consume_authorization,
+            operation_scope_sha256=operation_scope_sha256,
+            prepare_operation=prepare_operation,
             apply_database=apply_database,
             read_state=read_state,
         )
@@ -274,8 +276,8 @@ def _perform_lifecycle_transition_unlocked(
     previous: LifecycleState,
     target: LifecycleState,
     compensation: LifecycleState,
-    token_hash: str,
-    consume_authorization: Callable[[], None],
+    operation_scope_sha256: str,
+    prepare_operation: Callable[[], None],
     apply_database: Callable[[LifecycleState], None],
     read_state: Callable[[], LifecycleState],
 ) -> tuple[LifecycleState, Path]:
@@ -293,13 +295,13 @@ def _perform_lifecycle_transition_unlocked(
         harness_run_id=harness_run_id,
         previous=previous,
         target=target,
-        token_hash=token_hash,
+        operation_scope_sha256=operation_scope_sha256,
     )
     journal_path = write_journal(project_root, journal)
     try:
-        consume_authorization()
+        prepare_operation()
     except BaseException as exc:
-        error = f"authorization consumption failed: {exc}"
+        error = f"operation audit preparation failed: {exc}"
         compensated = False
         try:
             failed = journal.transition("compensated", error=error)
@@ -379,7 +381,7 @@ def reconcile_journal(
     config_path: str | Path,
     apply_database: Callable[[LifecycleState], None],
     read_state: Callable[[], LifecycleState],
-    token_hash: str | None = None,
+    operation_scope_sha256: str | None = None,
 ) -> LifecycleState:
     """只回退到 previous 安全状态；绝不把中断操作继续推进到 active。"""
     path = Path(journal_path)
@@ -391,7 +393,7 @@ def reconcile_journal(
             config_path=config_path,
             apply_database=apply_database,
             read_state=read_state,
-            token_hash=token_hash,
+            operation_scope_sha256=operation_scope_sha256,
         )
 
 
@@ -401,7 +403,7 @@ def _reconcile_journal_unlocked(
     config_path: str | Path,
     apply_database: Callable[[LifecycleState], None],
     read_state: Callable[[], LifecycleState],
-    token_hash: str | None,
+    operation_scope_sha256: str | None,
 ) -> LifecycleState:
     journal = load_journal(path)
     project_root = _project_root_from_journal_path(path, journal.scheme_id)
@@ -419,7 +421,7 @@ def _reconcile_journal_unlocked(
         config_path=config_path,
         apply_database=apply_database,
         read_state=read_state,
-        token_hash=token_hash,
+        operation_scope_sha256=operation_scope_sha256,
     )
 
 
@@ -430,7 +432,7 @@ def _reconcile_with_linked_journal(
     config_path: str | Path,
     apply_database: Callable[[LifecycleState], None],
     read_state: Callable[[], LifecycleState],
-    token_hash: str | None,
+    operation_scope_sha256: str | None,
 ) -> LifecycleState:
     """以新 journal 对账 pending 操作，保留原 phase 及错误证据。"""
     actual_before = read_state()
@@ -441,7 +443,9 @@ def _reconcile_with_linked_journal(
         harness_run_id=original.harness_run_id,
         previous=actual_before,
         target=original.previous,
-        token_hash=token_hash or original.token_hash,
+        operation_scope_sha256=(
+            operation_scope_sha256 or original.operation_scope_sha256
+        ),
         reconciliation_of=original.operation_id,
     )
     project_root = _project_root_from_journal_path(original_path, original.scheme_id)

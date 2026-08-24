@@ -56,17 +56,9 @@ def gate_for_name(name: str, *, ctx: GateContext | None = None) -> Gate:
     if runtime_type == "blackbox_v2":
         from harness.blackbox_v2.gates import BLACKBOX_GATES
         from harness.blackbox_v2.activation import BlackboxLifecycleReconcileGate
-        from harness.blackbox_v2.draft_register import BlackboxDraftRegisterGate
-        from harness.blackbox_v2.lifecycle_bootstrap import (
-            BlackboxLifecycleBootstrapGate,
-        )
-        from harness.blackbox_v2.revision_activation import BlackboxRevisionActivateGate
         common_post_activation_gates = {
-            "draft-register": BlackboxDraftRegisterGate,
-            "revision-activate": BlackboxRevisionActivateGate,
             "live": LiveGate,
             "lifecycle-reconcile": BlackboxLifecycleReconcileGate,
-            "lifecycle-bootstrap": BlackboxLifecycleBootstrapGate,
         }
         if name in common_post_activation_gates:
             return common_post_activation_gates[name]()

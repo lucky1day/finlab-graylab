@@ -7,11 +7,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Mapping
 
-from harness.authorization import (
-    mark_token_used,
-    used_tokens_path,
-    verify_authorization,
-    write_authorization_audit,
+from harness.operation import (
+    verify_direct_operation,
+    write_operation_audit,
 )
 from harness.context import GateContext
 from harness.contracts.config_schema import validate_config
@@ -95,10 +93,10 @@ class NativeActivationLifecycle:
 
 
 class ActivationGate(Gate):
-    """Native 激活 gate：授权后执行 paused→active 或 active 精确版本重批准。"""
+    """Native 激活 gate：按直接操作执行 paused→active 或 active 精确版本重批准。"""
 
     name = "activate"
-    requires_authorization = True
+    requires_operation = True
 
     def run(self, ctx: GateContext) -> GateResult:
         config_path = ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml"
@@ -178,14 +176,13 @@ class ActivationGate(Gate):
 
         # 当前精确版本须有完整首次入库，或满足已准入 Native 修订的维护路径。
         validation_scheme_version = _compute_scheme_version(ctx)
-        auth, auth_errors = verify_authorization(
-            ctx.authorization,
+        operation, operation_errors = verify_direct_operation(
+            ctx.operation,
             scheme_id=ctx.scheme_id,
             action="activate",
             scheme_version=validation_scheme_version,
-            used_store_path=used_tokens_path(ctx.project_root),
         )
-        if auth is None or auth_errors:
+        if operation is None or operation_errors:
             finished_at = utc_now()
             return GateResult(
                 gate_name=self.name,
@@ -194,9 +191,9 @@ class ActivationGate(Gate):
                 evidence=[
                     Evidence("scheme_id", ctx.scheme_id),
                     Evidence("validation_scheme_version", validation_scheme_version),
-                    Evidence("authorization_required", True),
+                    Evidence("operation_required", True),
                 ],
-                errors=auth_errors,
+                errors=operation_errors,
                 started_at=started_at,
                 finished_at=finished_at,
             )
@@ -264,7 +261,7 @@ class ActivationGate(Gate):
                     Evidence("gate_history_verified", False),
                     Evidence("persisted_backtest_verified", False),
                     Evidence("registry_synced", False),
-                    Evidence("authorization_consumed", False),
+                    Evidence("operation_applied", False),
                 ],
                 errors=[],
                 started_at=started_at,
@@ -327,10 +324,8 @@ class ActivationGate(Gate):
             )
         assert backtest is not None
 
-        # 消费是首次授权副作用；锁内重检保证并发输家不会修改配置或 Registry。
-        mark_token_used(auth, used_tokens_path(ctx.project_root))
-        audit_dir = ctx.report_dir / "activation_authorization"
-        audit_path = write_authorization_audit(auth, audit_dir)
+        audit_dir = ctx.report_dir / "activation_operation"
+        audit_path = write_operation_audit(operation, audit_dir)
 
         previous_status = preflight.validation_config.status
         new_status = "active"
@@ -344,7 +339,7 @@ class ActivationGate(Gate):
             activated_scheme_version = _sync_registry_after_activation(
                 ctx,
                 preflight=preflight,
-                approved_by=auth.issued_by.strip(),
+                approved_by=operation.issued_by.strip(),
                 approved_at=datetime.now(timezone.utc),
             )
         except Exception as exc:
@@ -398,7 +393,7 @@ class ActivationGate(Gate):
                 Evidence("registry_synced", True),
                 *_validation_evidence(validation),
                 *_persisted_backtest_evidence(backtest),
-                Evidence("authorization_audit_path", str(audit_path)),
+                Evidence("operation_audit_path", str(audit_path)),
             ],
             errors=errors,
             started_at=started_at,

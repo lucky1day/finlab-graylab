@@ -105,7 +105,7 @@ predictions 周六 11:30、close-period 每日 18:00；其中月中收只在自�
 
 Activation 前必须完成对应 Gate、生产准备核验与一次性专项授权；Activation 本身不安装或加载 plist。首次 Native 技术入库使用 current exact version 的完整六段 `all`（`static → input → unit → dry-run → compare → backtest`）；同一存量身份维护只有在 prior `all` 已有匹配 `static.business_identity` 时才可使用五段 `native-maintenance`（`static → native-maintenance-admission → input → unit → dry-run`）。两条 profile 互斥，缺失或不一致时直接失败。
 
-`static.business_identity` 只包含 scheme/runtime/horizon/task/frequency/tenors/composite IDs，不含代码、config 或 version hash。maintenance 的 current exact version 必须为 native `draft|active`，Registry 必须统一 paused（预激活）或 active（激活后），draft version 配 active Registry 必须失败。唯一固定的 legacy identity receipt 只服务 `weekly_10y_d_overlay_0529` 的既有缺快照 prior，并仍须完整五段 maintenance 与独立 activation；它不能写业务表、启动调度或外推到其它身份。
+`static.business_identity` 只包含 scheme/runtime/horizon/task/frequency/tenors/composite IDs，不含代码、config 或 version hash。maintenance 的 current exact version 必须为 native `draft|active`，Registry 必须统一 paused（预激活）或 active（激活后），draft version 配 active Registry 必须失败。缺少标准 prior snapshot 时直接回到完整 `all`，不再读取方案级历史 receipt。
 
 技术 `all` 不访问 Backend。方案激活后唯一产品读模型检查为 `dashboard` Gate，它只读取
 `/api/factor-lab/dashboard` 并验证 active composite、信号和回测分区可见；dashboard payload

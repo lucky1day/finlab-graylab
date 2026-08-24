@@ -7,7 +7,7 @@
 
 本文是平台操作人员接收、技术验收和登记 Blackbox V2 方案的唯一操作 SOP。上游交付契约见 [BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)。精确版本、快照和运行结果由 Harness 控制面与本机 ignored reports 保存；当前状态和未关闭问题分别进入 [CURRENT_STATUS](../CURRENT_STATUS.md) 与 [全方案问题台账](../records/SCHEME_ISSUE_LEDGER.md)。文档分类和维护规则见 [Blackbox V2 文档管理](../blackbox_v2/README.md)。
 
-本文的通用入库流程止于 `shadow + paused`，不自动授予生产运行权限。仓库由一名维护者独立管理，因此 `activate`、回测落库和 `live` 使用直接副作用命令：命令本身是该次明确操作授权，不再生成密钥、签发 token 或复制 `--authorize`。这些命令仍只能在完成[生产准备清单](../blackbox_v2/PRODUCTION_READINESS.md)核验并决定具体方案范围后执行；不得把某个试验方案的操作外推为所有新方案的默认权限。具体生产灰度记录只写入平台试验台账。
+本文的通用入库流程止于 `shadow + paused`，不自动授予生产运行权限。仓库由一名维护者独立管理，因此 `activate`、回测落库和 `live` 使用直接副作用命令：命令本身表达该次明确操作意图，系统不生成密钥、token、nonce 或 replay store。这些命令仍只能在完成[生产准备清单](../blackbox_v2/PRODUCTION_READINESS.md)核验并决定具体方案范围后执行；不得把某个试验方案的操作外推为所有新方案的默认权限。具体生产灰度记录只写入平台试验台账。
 
 自然 `scheduled_live` 还受
 [生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)约束：只有
@@ -587,19 +587,14 @@ conda run --no-capture-output -n bond_factor_lab_service \
 
 该命令本身就是一次 shadow 操作授权。CLI 从 `config.yaml` 自动解析 exact version，Gate 自动选择
 current exact version 的 latest passed `all` run，并把 scheme、action、predict date、version、run 与
-operator 写入审计；不再存在密钥、`auth issue`、`--scheme-version`、`--harness-run-id` 或
-`--authorize` 的人工传递。operator 默认取 `BFL_OPERATOR_ID` 或 OS 用户，需要稳定展示名时增加
-`--operator {operator}`。内部 operation id 只用于一次性重放保护，操作者无需接触。
+operator 写入审计；不再存在密钥、token、nonce、有效期、replay store、`--scheme-version` 或
+`--harness-run-id` 的人工传递。operator 默认取 `BFL_OPERATOR_ID` 或 OS 用户，需要稳定展示名时增加
+`--operator {operator}`。
 
 证据里的 `identity_created` 表明本次是否执行了首次创建：新方案为 `true`，
 revision 路径为 `false`。
 
-### 5.3 独立的 draft-register（一般不需要）
-
-`gate draft-register` 仍作为独立命令保留，只做创建、不做迁移。正常入库流程**不需要**它——5.2 已经涵盖。仅在需要把创建与迁移分成两次
-受控操作时使用。
-
-### 5.4 登记后独立检查
+### 5.3 登记后独立检查
 
 | 检查面 | 通过条件 |
 |---|---|
@@ -637,7 +632,7 @@ revision 路径为 `false`。
 不再从报告抄写 `scheme_version + harness_run_id` 或签发 token。持久化命令必须显式写入实际
 `gray_target_start` 和回测起点；CLI 自动绑定 canonical exact version，Gate 自动选择 latest passed
 exact `all` run。`predict_date` 必须等于已登记的 `gray_target_start`，不是部署日期；任一日期非法、
-current config 已漂移、passed run 缺失、scope 不一致或内部 operation 已消费都必须 fail-closed。
+current config 已漂移、passed run 缺失或 scope 不一致都必须 fail-closed。
 
 ### 6.3 执行完整持久化回测
 

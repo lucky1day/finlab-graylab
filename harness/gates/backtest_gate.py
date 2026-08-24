@@ -6,11 +6,9 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from harness.authorization import (
-    mark_token_used,
-    used_tokens_path,
-    verify_authorization,
-    write_authorization_audit,
+from harness.operation import (
+    verify_direct_operation,
+    write_operation_audit,
 )
 from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
@@ -83,28 +81,29 @@ class BacktestGate(Gate):
                 from scheduler.discovery import load_scheme_config
 
                 cfg = load_scheme_config(config_path)
-                auth, auth_errors = verify_authorization(
-                    ctx.authorization,
+                operation, operation_errors = verify_direct_operation(
+                    ctx.operation,
                     scheme_id=ctx.scheme_id,
                     action="backtest_persist",
                     predict_date=ctx.predict_date,
                     scheme_version=cfg.scheme_version,
                     backtest_start_date=ctx.backtest_start_date,
-                    used_store_path=used_tokens_path(ctx.project_root),
                 )
-                if auth is None or auth_errors:
+                if operation is None or operation_errors:
                     finished_at = utc_now()
                     return GateResult(
                         gate_name=self.name,
                         status=GateStatus.BLOCKED,
                         passed=False,
                         evidence=[Evidence("runner", runner), Evidence("persisted", True)],
-                        errors=auth_errors,
+                        errors=operation_errors,
                         started_at=started_at,
                         finished_at=finished_at,
                     )
-                mark_token_used(auth, used_tokens_path(ctx.project_root))
-                audit_path = write_authorization_audit(auth, ctx.report_dir / "backtest_authorization")
+                audit_path = write_operation_audit(
+                    operation,
+                    ctx.report_dir / "backtest_operation",
+                )
                 current = run_backtest_runner(
                     runner,
                     ctx.project_root,
@@ -160,7 +159,7 @@ class BacktestGate(Gate):
                 Evidence("runner", runner),
                 Evidence("runner_args", runner_args),
                 Evidence("persisted", ctx.persist_backtest),
-                Evidence("authorization_audit_path", str(audit_path) if audit_path else None),
+                Evidence("operation_audit_path", str(audit_path) if audit_path else None),
                 Evidence("baseline_path", str(baseline_path)),
                 Evidence("baseline_bootstrapped", baseline_bootstrapped),
                 Evidence("protected_table_counts_before", before),

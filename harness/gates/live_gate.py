@@ -4,11 +4,9 @@ from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from harness.authorization import (
-    mark_token_used,
-    used_tokens_path,
-    verify_authorization,
-    write_authorization_audit,
+from harness.operation import (
+    verify_direct_operation,
+    write_operation_audit,
 )
 from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
@@ -28,8 +26,8 @@ from scheduler.repository import read_blackbox_execution_approval
 
 class LiveGate(Gate):
     name = "live"
-    requires_authorization = True
-    authorization_action = "live_write"
+    requires_operation = True
+    operation_action = "live_write"
     required_prediction_phase: str | None = None
     blackbox_snapshot_mode = "fresh"
     blackbox_only = False
@@ -58,10 +56,10 @@ class LiveGate(Gate):
                 [f"{self.name} gate only supports runtime_type=blackbox_v2"],
                 scheme_version=getattr(cfg, "scheme_version", None),
                 gate_name=self.name,
-                authorization_action=self.authorization_action,
+                operation_action=self.operation_action,
                 blackbox_snapshot_mode=self.blackbox_snapshot_mode,
             )
-        auth = None
+        operation = None
         passed_run = None
 
         engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
@@ -80,7 +78,7 @@ class LiveGate(Gate):
                 mode_errors,
                 scheme_version=getattr(cfg, "scheme_version", None),
                 gate_name=self.name,
-                authorization_action=self.authorization_action,
+                operation_action=self.operation_action,
                 blackbox_snapshot_mode=self.blackbox_snapshot_mode,
                 extra_evidence=mode_evidence,
             )
@@ -100,7 +98,7 @@ class LiveGate(Gate):
                     cfg=cfg,
                     failure=exc,
                     gate_name=self.name,
-                    authorization_action=self.authorization_action,
+                    operation_action=self.operation_action,
                     blackbox_snapshot_mode=self.blackbox_snapshot_mode,
                     extra_evidence=mode_evidence,
                 )
@@ -118,34 +116,32 @@ class LiveGate(Gate):
             if runtime_type == "blackbox_v2":
                 try:
                     passed_run = _verify_blackbox_passed_all(engine, cfg)
-                    auth, auth_errors = verify_authorization(
-                        ctx.authorization,
+                    operation, operation_errors = verify_direct_operation(
+                        ctx.operation,
                         scheme_id=ctx.scheme_id,
-                        action=self.authorization_action,
+                        action=self.operation_action,
                         predict_date=ctx.predict_date,
                         scheme_version=cfg.scheme_version,
                         harness_run_id=passed_run.harness_run_id,
-                        used_store_path=used_tokens_path(ctx.project_root),
                     )
-                    if not auth_errors:
+                    if not operation_errors:
                         approval = read_blackbox_execution_approval(engine, cfg)
-                        auth_errors = [] if approval.executable else [
+                        operation_errors = [] if approval.executable else [
                             "Blackbox live requires exact active production approval: "
                             f"{approval.reason}"
                         ]
                 except Exception as exc:  # noqa: BLE001
-                    auth_errors = [f"Blackbox live preflight failed: {exc}"]
+                    operation_errors = [f"Blackbox live preflight failed: {exc}"]
             else:
-                auth, auth_errors = verify_authorization(
-                    ctx.authorization,
+                operation, operation_errors = verify_direct_operation(
+                    ctx.operation,
                     scheme_id=ctx.scheme_id,
-                    action=self.authorization_action,
+                    action=self.operation_action,
                     predict_date=ctx.predict_date,
                     scheme_version=cfg.scheme_version,
-                    used_store_path=used_tokens_path(ctx.project_root),
                 )
-            if auth_errors:
-                errors.extend(auth_errors)
+            if operation_errors:
+                errors.extend(operation_errors)
             elif (
                 self.required_prediction_phase is not None
                 and ctx.prediction_phase != self.required_prediction_phase
@@ -168,8 +164,9 @@ class LiveGate(Gate):
                     )
                 else:
                     audit_dir = _audit_dir(ctx)
-                    mark_token_used(auth, used_tokens_path(ctx.project_root))
-                    audit_path = write_authorization_audit(auth, audit_dir)
+                    if operation is None:
+                        raise RuntimeError("direct operator command was not verified")
+                    audit_path = write_operation_audit(operation, audit_dir)
                     cfg_for_run = (
                         cfg
                         if getattr(cfg, "runtime_type", "native_adapter") == "blackbox_v2"
@@ -249,23 +246,23 @@ class LiveGate(Gate):
             status=status,
             passed=status == GateStatus.PASSED,
             evidence=[
-                Evidence("authorization_action", self.authorization_action),
+                Evidence("operation_action", self.operation_action),
                 Evidence("blackbox_snapshot_mode", self.blackbox_snapshot_mode),
                 *mode_evidence,
-                Evidence("authorized_scheme", ctx.scheme_id),
+                Evidence("operation_scheme", ctx.scheme_id),
                 Evidence("scheme_version", cfg.scheme_version if runtime_type == "blackbox_v2" else None),
                 Evidence(
                     "harness_run_id",
                     passed_run.harness_run_id if passed_run is not None else None,
                 ),
                 Evidence("prediction_phase", ctx.prediction_phase),
-                Evidence("authorization_audit_path", str(audit_path) if audit_path else None),
+                Evidence("operation_audit_path", str(audit_path) if audit_path else None),
                 Evidence("protected_table_counts_before", before),
                 Evidence("protected_table_counts_after", after),
                 Evidence("protected_table_deltas", protected_delta),
-                Evidence("authorized_scheme_counts_before", scheme_before),
-                Evidence("authorized_scheme_counts_after", scheme_after),
-                Evidence("authorized_scheme_table_deltas", scheme_delta),
+                Evidence("operation_scheme_counts_before", scheme_before),
+                Evidence("operation_scheme_counts_after", scheme_after),
+                Evidence("operation_scheme_table_deltas", scheme_delta),
                 Evidence(
                     "count_snapshot_stage",
                     count_snapshot_failure.stage if count_snapshot_failure is not None else None,
@@ -325,7 +322,7 @@ def _blocked_blackbox_live(
     *,
     scheme_version: str | None,
     gate_name: str = "live",
-    authorization_action: str = "live_write",
+    operation_action: str = "live_write",
     blackbox_snapshot_mode: str = "fresh",
     extra_evidence: list[Evidence] | None = None,
 ) -> GateResult:
@@ -334,7 +331,7 @@ def _blocked_blackbox_live(
         status=GateStatus.BLOCKED,
         passed=False,
         evidence=[
-            Evidence("authorization_action", authorization_action),
+            Evidence("operation_action", operation_action),
             Evidence("blackbox_snapshot_mode", blackbox_snapshot_mode),
             *(extra_evidence or []),
             Evidence("authorized_scheme", ctx.scheme_id),
@@ -346,7 +343,7 @@ def _blocked_blackbox_live(
             Evidence("protected_table_deltas", {}),
             Evidence("authorized_scheme_counts_before", {}),
             Evidence("authorized_scheme_counts_after", {}),
-            Evidence("authorized_scheme_table_deltas", {}),
+            Evidence("operation_scheme_table_deltas", {}),
             Evidence("run_result", None),
         ],
         errors=errors,
@@ -420,7 +417,7 @@ def _failed_blackbox_count_snapshot(
     cfg,
     failure: _BlackboxCountSnapshotError,
     gate_name: str = "live",
-    authorization_action: str = "live_write",
+    operation_action: str = "live_write",
     blackbox_snapshot_mode: str = "fresh",
     extra_evidence: list[Evidence] | None = None,
 ) -> GateResult:
@@ -429,20 +426,20 @@ def _failed_blackbox_count_snapshot(
         status=GateStatus.FAILED,
         passed=False,
         evidence=[
-            Evidence("authorization_action", authorization_action),
+            Evidence("operation_action", operation_action),
             Evidence("blackbox_snapshot_mode", blackbox_snapshot_mode),
             *(extra_evidence or []),
             Evidence("authorized_scheme", ctx.scheme_id),
             Evidence("scheme_version", cfg.scheme_version),
             Evidence("harness_run_id", None),
             Evidence("prediction_phase", ctx.prediction_phase),
-            Evidence("authorization_audit_path", None),
+            Evidence("operation_audit_path", None),
             Evidence("protected_table_counts_before", None),
             Evidence("protected_table_counts_after", None),
             Evidence("protected_table_deltas", None),
             Evidence("authorized_scheme_counts_before", None),
             Evidence("authorized_scheme_counts_after", None),
-            Evidence("authorized_scheme_table_deltas", None),
+            Evidence("operation_scheme_table_deltas", None),
             Evidence("count_snapshot_stage", failure.stage),
             Evidence("count_snapshot_error", str(failure)),
             Evidence("run_result", None),

@@ -78,7 +78,7 @@
 - 激活后的 HTTP 验收只使用 `DashboardGate`，只验证 `/api/factor-lab/dashboard` 当前业务可见性；Dashboard 响应不携带 exact version，不能用来证明版本身份。
 - 单日信号补缺使用 `python -m harness signal-gap-fill --predict-date YYYY-MM-DD`；需要限制为单个方案时增加 `--scheme-id {base_scheme_id}`。命令直接扫描并补齐真实缺口，不接收 token、operator、frozen plan、plan SHA 或日期范围。
 - Native 补缺按指定日期从当前权威数据库重建输入；Blackbox 使用冻结 DataBridge replay。整批算法必须先全部成功，才按 group insert-only 写入 `gray_live`；任一算法失败则 prediction 零提交，完成后只做一次最终权威 readback。
-- 所有人工副作用采用单维护者直接命令模型：命令本身就是本次操作授权，不生成密钥、不运行 `auth issue`、不复制 token、不传 `--authorize`。CLI 自动从 canonical config 绑定 exact version，Gate 自动选择 latest passed exact Harness run；日期、回测起点和 action 仍逐字绑定，审计记录非秘密 operator、内部 operation hash 和完整作用域。operator 默认取 `BFL_OPERATOR_ID` 或 OS 用户，仅在需要稳定审计名称时传 `--operator`。
+- 所有人工副作用采用单维护者直接命令模型：命令就是本次操作意图，不生成密钥、token、nonce、有效期或 replay store。CLI 自动从 canonical config 绑定 exact version，Gate 自动选择 latest passed exact Harness run；日期、回测起点和 action 仍逐字绑定，审计记录非秘密 operator、operation scope hash 和完整作用域。operator 默认取 `BFL_OPERATOR_ID` 或 OS 用户，仅在需要稳定审计名称时传 `--operator`。
 - Blackbox lifecycle 只要存在 pending journal 就阻断后续生命周期动作，不做隐式恢复。只有独立执行 `gate lifecycle-reconcile` 才可以恢复 previous safe state；原 journal 保持不变，并新增 linked reconciliation journal。
 
 ## 单维护者最快稳定路径

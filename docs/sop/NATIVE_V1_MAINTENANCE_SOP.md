@@ -81,7 +81,7 @@ python -m harness onboard {scheme_id} \
 static -> native-maintenance-admission -> input -> unit -> dry-run
 ```
 
-`native-maintenance-admission` 只读复核 prior `all + compare`、匹配的 prior `static.business_identity` 与当前 Registry identity；current exact `t_scheme_versions` 必须为 `native_adapter` 的 `draft|active` 行，expected Registry 必须全 paused（预激活）或全 active（激活后），且 draft+active fail-closed。整个阶段持久化 Harness 审计证据但不写业务表，故不得用 `--check-only`；任一 run-start、gate-result 或 run-finish 持久化失败时必须留下本地 `BLOCKED` 证据，且该 run 不可作为 activation 依据。只有 ActivationGate 才能原子建立 active。legacy admission 缺快照时一律 fail-closed，唯一保留的补证是 `weekly_10y_d_overlay_0529` 已持久化的 canonical receipt；平台只读校验其 prior、固定身份和 canonical 结构，writer 与旧 token action 已退役。它只让 Gate 记录 `legacy_operator_attestation_v1`，但不替代完整五段 maintenance；activation 仍要求一条已通过且完整持久化的五 Gate run 与独立直接命令。它不执行当前 historical `compare/backtest`，不是全局关闭 CompareGate：新身份、业务身份漂移或任何前提不满足时都必须回到 `all`。任一所选阶段 Gate 失败时，从该阶段的 static 重跑，不跳过失败项。
+`native-maintenance-admission` 只读复核 prior `all + compare`、匹配的 prior `static.business_identity` 与当前 Registry identity；current exact `t_scheme_versions` 必须为 `native_adapter` 的 `draft|active` 行，expected Registry 必须全 paused（预激活）或全 active（激活后），且 draft+active fail-closed。整个阶段持久化 Harness 审计证据但不写业务表，故不得用 `--check-only`；任一 run-start、gate-result 或 run-finish 持久化失败时必须留下本地 `BLOCKED` 证据，且该 run 不可作为 activation 依据。只有 ActivationGate 才能原子建立 active。prior snapshot 缺失、重复、损坏或不匹配时一律 fail-closed，不再读取方案级历史 receipt。它不执行当前 historical `compare/backtest`，不是全局关闭 CompareGate：新身份、业务身份漂移或任何前提不满足时都必须回到 `all`。任一所选阶段 Gate 失败时，从该阶段的 static 重跑，不跳过失败项。
 
 ## 5. 数据与结果核验
 
@@ -103,7 +103,7 @@ Native 激活授权必须绑定刚通过 `all` 或 `native-maintenance` 的
 `validation_scheme_version`，并记录非空 operator 身份。两条 profile 互斥：当前 exact version
 有 passed `all` 及 CompareGate 时，ActivationGate 使用 `full_initial_onboarding_v1`，不检查
 prior snapshot 或 maintenance；后续维护 profile 才须有 prior passed `all + compare`、匹配的 prior
-`static.business_identity`、当前五个 Gate、native `draft|active` exact version 与统一 paused/active 的精确 Registry identity。draft+active 必须失败，且只有 ActivationGate 能原子建立 active。缺 legacy snapshot 时 ActivationGate 仍 fail-closed；唯一固定 receipt 不构成激活或写库授权，它只让 `weekly_10y_d_overlay_0529` 的已通过、identity 缺字段 prior 作为 `legacy_operator_attestation_v1` 通过 maintenance admission。receipt 后仍要五段 Gate 与独立 activation 命令。用同一标准 discovery 入口只读
+`static.business_identity`、当前五个 Gate、native `draft|active` exact version 与统一 paused/active 的精确 Registry identity。draft+active 必须失败，且只有 ActivationGate 能原子建立 active。prior snapshot 缺失或不匹配时 ActivationGate 仍 fail-closed。用同一标准 discovery 入口只读
 计算当前精确版本；该值必须与最近一次 passed `t_harness_runs.scheme_version` 一致，ActivationGate
 会再次严格核验。随后显式执行：
 
@@ -124,7 +124,7 @@ daily-gray 清单；这些已退役控制面不能作为新版本发布单元。
 的精确 `validation_scheme_version`、Registry 状态和专项授权。只有匹配 prior
 `static.business_identity` 的已入库同一身份修订，其历史 source-benchmark 输入 vintage
 漂移才只作归档诊断，不能单独阻断 activation、gap repair、`gray_live`、`scheduled_live` 或
-API；缺 legacy snapshot 时仍按本 SOP 的 full-`all` 路径 fail-closed，除非固定 10Y scope 的专项 receipt 已成功写入并经 maintenance admission 读取。receipt 不授予写业务表或调度权。
+API；缺少标准 prior snapshot 时仍按本 SOP 的 full-`all` 路径 fail-closed。
 输入截止、统一周历、日期语义、L0/L1/L2、live-safe oracle 与授权边界不变。
 
 激活后，config、exact version 与 Registry target 均 active 的方案会按 cadence 自动进入
@@ -147,7 +147,7 @@ installed plist、loaded state、日志、run 与 prediction。任何
 
 - [ ] 身份仍在 Native 白名单且未改变。
 - [ ] 改动保持 L0/L1，没有 L2 算法升级。
-- [ ] 当前 exact version 的六个 `all` Gate 全部通过并使用 `full_initial_onboarding_v1`，或 maintenance profile 的五个 Gate、prior `all + compare`、匹配的 `static.business_identity`（仅固定 10Y 可由 canonical receipt 补证）与 Registry identity 全部通过；两者不得叠加要求。receipt 本身不构成 activation 或业务写入完成条件。
+- [ ] 当前 exact version 的六个 `all` Gate 全部通过并使用 `full_initial_onboarding_v1`，或 maintenance profile 的五个 Gate、prior `all + compare`、匹配的 `static.business_identity` 与 Registry identity 全部通过；两者不得叠加要求。
 - [ ] no-persist、重复和日期截止验证通过。
 - [ ] 授权写入只影响允许的当前方案记录。
 - [ ] Dashboard、scheduler 和 Registry 与预期一致；exact version 已由数据库权威证据独立确认。

@@ -163,8 +163,8 @@ def _with_engine(ctx: GateContext, operation: Callable[[object], None]) -> bool:
 def _ctx_scheme_version(ctx: GateContext) -> str | None:
     if ctx.config is not None and getattr(ctx.config, "scheme_version", None):
         return ctx.config.scheme_version
-    if ctx.authorization is not None and getattr(ctx.authorization, "scheme_version", None):
-        return ctx.authorization.scheme_version
+    if ctx.operation is not None and getattr(ctx.operation, "scheme_version", None):
+        return ctx.operation.scheme_version
     config_path = ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml"
     scheme_dir = config_path.parent
     if config_path.exists() and scheme_dir.exists():

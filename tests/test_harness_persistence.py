@@ -591,7 +591,7 @@ class HarnessPersistenceTests(unittest.TestCase):
                 GateContext(
                     **{
                         **base.__dict__,
-                        "authorization": "signed-token",
+                        "operation": "side-effect-operation",
                     }
                 ),
                 GateContext(

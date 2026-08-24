@@ -4,25 +4,26 @@ from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from harness.authorization import (
-    authorization_token_hash,
-    mark_token_used,
-    used_tokens_path,
-    verify_authorization,
-    write_authorization_audit,
+from harness.operation import (
+    operation_scope_sha256,
+    verify_direct_operation,
+    write_operation_audit,
 )
 from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
 from harness.result import Evidence, GateResult, GateStatus
 from scheduler.discovery import SchemeConfig, load_scheme_config
 from scheduler.repository import (
+    activate_blackbox_revision,
     apply_blackbox_lifecycle_state,
     read_blackbox_lifecycle_state,
+    read_blackbox_revision_activation_preflight,
 )
 from shared.blackbox_v2.lifecycle import (
     LifecycleOperationError,
     LifecycleState,
     assert_lifecycle_clear,
+    lifecycle_operation_lock,
     pending_journals,
     perform_lifecycle_transition,
     reconcile_journal,
@@ -30,38 +31,47 @@ from shared.blackbox_v2.lifecycle import (
 
 
 def activate_blackbox(ctx: GateContext) -> GateResult:
-    """执行直接操作授权、可补偿的 Blackbox 正式激活。"""
+    """使用唯一入口激活首次上线或同一业务身份修订。"""
     return guarded_result("activate", lambda started_at: _activate(ctx, started_at))
 
 
 def _activate(ctx: GateContext, started_at: str) -> GateResult:
     cfg = _config(ctx)
+    if cfg.status == "paused" and cfg.version_status == "shadow":
+        return _activate_initial(ctx, started_at, cfg)
+    if cfg.status == "active" and cfg.version_status == "active":
+        return _activate_revision(ctx, started_at, cfg)
+    return _blocked(
+        started_at,
+        [
+            "Blackbox activation requires paused+shadow for initial activation "
+            "or active+active for a revision: "
+            f"got={cfg.status}+{cfg.version_status}"
+        ],
+    )
+
+
+def _activate_initial(
+    ctx: GateContext,
+    started_at: str,
+    cfg: SchemeConfig,
+) -> GateResult:
     try:
         assert_lifecycle_clear(ctx.project_root, cfg.scheme_id)
     except RuntimeError as exc:
         return _blocked(started_at, [str(exc)])
-    errors: list[str] = []
-    if cfg.status != "paused" or cfg.version_status != "shadow":
-        errors.append(
-            "Blackbox activation requires config paused+shadow: "
-            f"got={cfg.status}+{cfg.version_status}"
-        )
-    if errors:
-        return _blocked(started_at, errors)
-
     engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
     audit_path: Path | None = None
     try:
         passed_run = _verify_passed_all(engine, cfg)
-        auth, errors = verify_authorization(
-            ctx.authorization,
+        operation, errors = verify_direct_operation(
+            ctx.operation,
             scheme_id=ctx.scheme_id,
             action="blackbox_activate",
             scheme_version=cfg.scheme_version,
             harness_run_id=passed_run.harness_run_id,
-            used_store_path=used_tokens_path(ctx.project_root),
         )
-        if auth is None or errors:
+        if operation is None or errors:
             return _blocked(started_at, errors)
         evidence_errors = _validate_execution_evidence(ctx, cfg, passed_run)
         db_state = read_blackbox_lifecycle_state(engine, cfg)
@@ -78,10 +88,12 @@ def _activate(ctx: GateContext, started_at: str) -> GateResult:
             data_snapshot_id=passed_run.data_snapshot_id,
         )
 
-        def consume() -> None:
+        def write_audit() -> None:
             nonlocal audit_path
-            mark_token_used(auth, used_tokens_path(ctx.project_root))
-            audit_path = write_authorization_audit(auth, ctx.report_dir / "activation_authorization")
+            audit_path = write_operation_audit(
+                operation,
+                ctx.report_dir / "activation_operation",
+            )
 
         def apply_database(state: LifecycleState) -> None:
             current = _reload_pinned_with_evidence(enriched_cfg, cfg.scheme_version)
@@ -91,7 +103,7 @@ def _activate(ctx: GateContext, started_at: str) -> GateResult:
                     current,
                     version_status="active",
                     registry_status="active",
-                    approved_by=auth.issued_by,
+                    approved_by=operation.issued_by,
                     approved_at=approved_at,
                 )
             else:
@@ -122,8 +134,8 @@ def _activate(ctx: GateContext, started_at: str) -> GateResult:
             previous=previous,
             target=target,
             compensation=previous,
-            token_hash=authorization_token_hash(auth),
-            consume_authorization=consume,
+            operation_scope_sha256=operation_scope_sha256(operation),
+            prepare_operation=write_audit,
             apply_database=apply_database,
             read_state=read_state,
         )
@@ -155,13 +167,14 @@ def _activate(ctx: GateContext, started_at: str) -> GateResult:
             Evidence("environment_fingerprint", passed_run.environment_fingerprint),
             Evidence("generation_id", passed_run.generation_id),
             Evidence("data_snapshot_id", passed_run.data_snapshot_id),
-            Evidence("approved_by", auth.issued_by),
+            Evidence("approved_by", operation.issued_by),
             Evidence("approved_at", approved_at.isoformat()),
             Evidence("config_status", "active"),
             Evidence("version_status", "active"),
             Evidence("registry_status", "active"),
             Evidence("journal_path", str(journal_path)),
-            Evidence("authorization_audit_path", str(audit_path)),
+            Evidence("operation_audit_path", str(audit_path)),
+            Evidence("activation_mode", "initial"),
         ],
         errors=[],
         started_at=started_at,
@@ -170,9 +183,113 @@ def _activate(ctx: GateContext, started_at: str) -> GateResult:
     )
 
 
+def _activate_revision(
+    ctx: GateContext,
+    started_at: str,
+    cfg: SchemeConfig,
+) -> GateResult:
+    """在同一入口内原子切换已上线 Blackbox 的同身份修订。"""
+    engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
+    try:
+        with lifecycle_operation_lock(ctx.project_root, cfg.scheme_id):
+            assert_lifecycle_clear(ctx.project_root, cfg.scheme_id)
+            pinned_cfg = _reload_pinned_canonical(cfg)
+            passed_run = _verify_passed_all(engine, pinned_cfg)
+            operation, errors = verify_direct_operation(
+                ctx.operation,
+                scheme_id=cfg.scheme_id,
+                action="blackbox_activate",
+                scheme_version=pinned_cfg.scheme_version,
+                harness_run_id=passed_run.harness_run_id,
+            )
+            if operation is None or errors:
+                return _blocked(started_at, errors)
+            evidence_errors = _validate_execution_evidence(ctx, pinned_cfg, passed_run)
+            if evidence_errors:
+                return _blocked(started_at, evidence_errors)
+            enriched_cfg = replace(
+                pinned_cfg,
+                environment_fingerprint=str(passed_run.environment_fingerprint),
+                data_snapshot_id=str(passed_run.data_snapshot_id),
+            )
+            preflight = read_blackbox_revision_activation_preflight(
+                engine,
+                enriched_cfg,
+            )
+
+            final_cfg = _reload_pinned_canonical(cfg)
+            assert_lifecycle_clear(ctx.project_root, cfg.scheme_id)
+            enriched_cfg = replace(
+                final_cfg,
+                environment_fingerprint=str(passed_run.environment_fingerprint),
+                data_snapshot_id=str(passed_run.data_snapshot_id),
+            )
+            audit_path = write_operation_audit(
+                operation,
+                ctx.report_dir / "activation_operation",
+            )
+            approved_at = datetime.now(timezone.utc)
+            state = activate_blackbox_revision(
+                engine,
+                enriched_cfg,
+                prior_scheme_version=preflight.prior_scheme_version,
+                pending_scheme_versions=preflight.pending_scheme_versions,
+                expected_harness_run_id=passed_run.harness_run_id,
+                approved_by=operation.issued_by,
+                approved_at=approved_at,
+            )
+    except ValueError as exc:
+        return _blocked(started_at, [str(exc)])
+    except Exception as exc:  # noqa: BLE001
+        return _failed(
+            started_at,
+            [f"Blackbox revision activation failed: {exc}"],
+            evidence=[
+                Evidence("business_tables_written", False),
+                Evidence("config_changed", False),
+            ],
+        )
+    finally:
+        if hasattr(engine, "dispose"):
+            engine.dispose()
+
+    return GateResult(
+        gate_name="activate",
+        status=GateStatus.PASSED,
+        passed=True,
+        evidence=[
+            Evidence("scheme_id", state.scheme_id),
+            Evidence("scheme_version", state.scheme_version),
+            Evidence("harness_run_id", passed_run.harness_run_id),
+            Evidence("prior_scheme_version", preflight.prior_scheme_version),
+            Evidence("retired_pending_versions", list(preflight.pending_scheme_versions)),
+            Evidence("version_status", state.version_status),
+            Evidence("registry_status", state.registry_status),
+            Evidence("registry_scheme_ids", list(state.registry_scheme_ids)),
+            Evidence("runtime_profile", passed_run.runtime_profile),
+            Evidence("environment_fingerprint", state.environment_fingerprint),
+            Evidence("generation_id", passed_run.generation_id),
+            Evidence("data_snapshot_id", state.data_snapshot_id),
+            Evidence("approved_by", state.approved_by),
+            Evidence(
+                "approved_at",
+                state.approved_at.isoformat() if state.approved_at is not None else None,
+            ),
+            Evidence("business_tables_written", False),
+            Evidence("config_changed", False),
+            Evidence("operation_audit_path", str(audit_path)),
+            Evidence("activation_mode", "revision"),
+        ],
+        errors=[],
+        started_at=started_at,
+        finished_at=utc_now(),
+        report_path=audit_path,
+    )
+
+
 class BlackboxLifecycleReconcileGate(Gate):
     name = "lifecycle-reconcile"
-    requires_authorization = True
+    requires_operation = True
 
     def run(self, ctx: GateContext) -> GateResult:
         return guarded_result(self.name, lambda started_at: self._run(ctx, started_at))
@@ -205,15 +322,14 @@ class BlackboxLifecycleReconcileGate(Gate):
                 gate_name=self.name,
             )
         cfg = current_cfg
-        auth, errors = verify_authorization(
-            ctx.authorization,
+        operation, errors = verify_direct_operation(
+            ctx.operation,
             scheme_id=cfg.scheme_id,
             action="blackbox_reconcile",
             scheme_version=cfg.scheme_version,
             harness_run_id=journal.harness_run_id,
-            used_store_path=used_tokens_path(ctx.project_root),
         )
-        if auth is None or errors:
+        if operation is None or errors:
             return _blocked(started_at, errors, gate_name=self.name)
         if "active" in {
             journal.previous.config_status,
@@ -265,14 +381,16 @@ class BlackboxLifecycleReconcileGate(Gate):
 
         try:
             actual_before = read_state()
-            mark_token_used(auth, used_tokens_path(ctx.project_root))
-            audit_path = write_authorization_audit(auth, ctx.report_dir / "reconcile_authorization")
+            audit_path = write_operation_audit(
+                operation,
+                ctx.report_dir / "reconcile_operation",
+            )
             restored = reconcile_journal(
                 path,
                 config_path=cfg.path / "config.yaml",
                 apply_database=apply_database,
                 read_state=read_state,
-                token_hash=authorization_token_hash(auth),
+                operation_scope_sha256=operation_scope_sha256(operation),
             )
             actual_after = read_state()
         except Exception as exc:  # noqa: BLE001
@@ -294,7 +412,7 @@ class BlackboxLifecycleReconcileGate(Gate):
                 Evidence("actual_state_before", asdict(actual_before)),
                 Evidence("actual_state_after", asdict(actual_after)),
                 Evidence("promoted", False),
-                Evidence("authorization_audit_path", str(audit_path)),
+                Evidence("operation_audit_path", str(audit_path)),
             ],
             errors=[],
             started_at=started_at,
@@ -356,6 +474,42 @@ def _reload_pinned_with_evidence(
     return current
 
 
+def _reload_pinned_canonical(cfg: SchemeConfig) -> SchemeConfig:
+    current = load_scheme_config(cfg.path / "config.yaml")
+    fields = (
+        "scheme_id",
+        "scheme_version",
+        "code_hash",
+        "config_hash",
+        "manifest_hash",
+        "runtime_type",
+        "status",
+        "version_status",
+        "algorithm_version",
+        "contract_version",
+        "runtime_profile",
+        "data_schema_version",
+        "input_source",
+        "platform_inputs",
+        "horizon",
+        "task_type",
+        "tenors",
+        "frequency",
+        "target_rule",
+    )
+    mismatches = [
+        f"{field}: initial={getattr(cfg, field)!r}, current={getattr(current, field)!r}"
+        for field in fields
+        if getattr(cfg, field) != getattr(current, field)
+    ]
+    if mismatches:
+        raise ValueError(
+            "Blackbox canonical delivery drift before activation: "
+            + "; ".join(mismatches)
+        )
+    return current
+
+
 def _config(ctx: GateContext) -> SchemeConfig:
     cfg = ctx.config or load_scheme_config(ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml")
     if cfg.runtime_type != "blackbox_v2":
@@ -386,7 +540,7 @@ def _blocked(started_at: str, errors: list[str], *, gate_name: str = "activate")
         gate_name=gate_name,
         status=GateStatus.BLOCKED,
         passed=False,
-        evidence=[Evidence("authorization_required", True)],
+        evidence=[Evidence("operation_required", True)],
         errors=errors,
         started_at=started_at,
         finished_at=utc_now(),

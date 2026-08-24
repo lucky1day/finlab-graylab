@@ -11,10 +11,10 @@ from getpass import getuser
 from pathlib import Path
 from typing import Any
 
-from harness.authorization import (
+from harness.operation import (
     DEFAULT_BACKTEST_START_DATE,
     EXACT_PREDICT_DATE_ACTIONS,
-    issue_token,
+    build_direct_operation,
 )
 from harness.context import GateContext
 from harness.gates.activate_gate import ActivationGate
@@ -102,16 +102,13 @@ def _gate_action(args: argparse.Namespace) -> str | None:
     if args.gate_name == "backtest":
         return "backtest_persist" if bool(getattr(args, "persist", False)) else None
     return {
-        "draft-register": "draft_register",
         "shadow-register": "shadow_register",
         "live": "live_write",
         "lifecycle-reconcile": "blackbox_reconcile",
-        "lifecycle-bootstrap": "blackbox_lifecycle_bootstrap",
-        "revision-activate": "blackbox_revision_activate",
     }.get(args.gate_name)
 
 
-def _direct_authorization(
+def _direct_operation(
     *,
     action: str | None,
     scheme_id: str,
@@ -119,11 +116,11 @@ def _direct_authorization(
     predict_date: str | None,
     operator: str | None,
     backtest_start_date: str | None = None,
-) -> str | None:
-    """为一次明确副作用命令自动构造内部操作授权。
+) -> object | None:
+    """把一次明确副作用命令转换为非秘密审计作用域。
 
-    操作者不再生成密钥、查询 Harness run、签发 token 或复制 ``--authorize``。Gate 会从
-    数据库选择当前 exact version 的 latest passed run，并把它绑定到最终审计对象。
+    Gate 从数据库选择当前 exact version 的 latest passed run，并把它绑定到最终审计对象；
+    该过程不生成或保存操作者凭据。
     """
     if action is None:
         return None
@@ -135,7 +132,7 @@ def _direct_authorization(
     scoped_predict_date = (
         predict_date if action in EXACT_PREDICT_DATE_ACTIONS else None
     )
-    return issue_token(
+    return build_direct_operation(
         scheme_id,
         action,
         scoped_predict_date,
@@ -254,8 +251,7 @@ def _build_parser() -> argparse.ArgumentParser:
     gate_subparsers = gate_parser.add_subparsers(dest="gate_name", required=True)
     for gate_name in (
         "static", "input", "unit", "dry-run", "compare", "backtest",
-        "dashboard", "draft-register", "shadow-register", "live",
-        "lifecycle-reconcile", "lifecycle-bootstrap", "revision-activate",
+        "dashboard", "shadow-register", "live", "lifecycle-reconcile",
     ):
         item = gate_subparsers.add_parser(gate_name)
         item.add_argument("--scheme-id", required=True)
@@ -371,9 +367,7 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
     if args.gate_name in {
         "input",
         "dry-run",
-        "draft-register",
         "shadow-register",
-        "revision-activate",
         "live",
     } and not args.predict_date:
         raise SystemExit(f"gate {args.gate_name} requires --predict-date")
@@ -395,7 +389,7 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
         algo_env=args.algo_env,
         engine_factory=create_engine_from_env,
         timeout_sec=args.timeout_sec,
-        authorization=_direct_authorization(
+        operation=_direct_operation(
             action=action,
             scheme_id=args.scheme_id,
             config=config,
@@ -483,7 +477,7 @@ def _run_activate(args: argparse.Namespace) -> GateResult:
         project_root=project_root,
         report_dir=report_dir,
         config=config,
-        authorization=_direct_authorization(
+        operation=_direct_operation(
             action=action,
             scheme_id=args.scheme_id,
             config=config,

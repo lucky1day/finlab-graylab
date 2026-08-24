@@ -278,7 +278,7 @@ def register_blackbox_draft_identity(
                 "manifest_hash": cfg.manifest_hash,
                 "git_commit": None,
                 "status": "draft",
-                "created_by": "harness.draft-register",
+                "created_by": "harness.shadow-register",
             }
             conn.execute(
                 text(
@@ -352,7 +352,7 @@ def register_blackbox_draft_identity(
                 "manifest_hash": cfg.manifest_hash,
                 "git_commit": None,
                 "status": "draft",
-                "created_by": "harness.draft-register",
+                "created_by": "harness.shadow-register",
                 "approved_by": None,
                 "approved_at": None,
             }
@@ -503,7 +503,7 @@ def sync_scheme_registry(engine: Engine, schemes: Iterable[SchemeConfig]) -> Non
                 # Registry 不存 exact version。若当前 active config 的 exact candidate
                 # 尚未登记、但同一业务身份已经存在，通用 discovery 若继续 upsert 会把
                 # 现有 active Registry 降为 paused。此处保留已上线身份，要求走
-                # revision-activate 的受控单事务切换。
+                # activate 的受控修订单事务切换。
                 continue
             version_row = None
             if getattr(cfg, "scheme_version", None):

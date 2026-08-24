@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from harness.operation import build_direct_operation
 from scheduler.discovery import load_scheme_config
 
 
@@ -1038,7 +1039,7 @@ class HarnessRuntimeGateTests(unittest.TestCase):
 
 
 class HarnessLiveGateTests(unittest.TestCase):
-    def test_live_gate_blocks_without_token_and_does_not_execute(self) -> None:
+    def test_live_gate_blocks_without_operation_and_does_not_execute(self) -> None:
         from harness.context import GateContext
         from harness.gates.live_gate import LiveGate
         from harness.result import GateStatus
@@ -1071,23 +1072,20 @@ class HarnessLiveGateTests(unittest.TestCase):
         evidence = _evidence_dict(result)
         self.assertEqual(evidence["protected_table_deltas"], {"api_wind_daily": 0, "t_scheme_predictions": 0, "t_scheme_run_log": 0})
 
-    def test_live_gate_blocks_scheme_mismatch_token(self) -> None:
-        from harness.authorization import issue_token
+    def test_live_gate_blocks_scheme_mismatch_operation(self) -> None:
         from harness.context import GateContext
         from harness.gates.live_gate import LiveGate
         from harness.result import GateStatus
 
-        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
-            os.environ,
-            {"HARNESS_AUTH_SECRET": "native-live-test-secret"},
-        ):
+        with tempfile.TemporaryDirectory() as tmpdir:
             project_root = Path(tmpdir)
             config_path = _write_minimal_scheme(project_root, scheme_id="demo_daily")
-            token = issue_token(
+            operation = build_direct_operation(
                 "other_daily",
                 "live_write",
                 "2026-06-08",
                 scheme_version=load_scheme_config(config_path / "config.yaml").scheme_version,
+                issued_by="test-operator",
             )
             engine = SimpleNamespace(dispose=lambda: None)
             with patch("harness.gates.live_gate.snapshot_table_counts", return_value={"t_scheme_predictions": 10, "t_scheme_run_log": 20}):
@@ -1099,7 +1097,7 @@ class HarnessLiveGateTests(unittest.TestCase):
                             project_root=project_root,
                             report_dir=project_root / "reports" / "harness" / "demo_daily",
                             engine_factory=lambda: engine,
-                            authorization=token,
+                            operation=operation,
                         )
                     )
 
@@ -1107,24 +1105,21 @@ class HarnessLiveGateTests(unittest.TestCase):
         self.assertFalse(execute.called)
         self.assertTrue(any("scheme_id mismatch" in error for error in result.errors), result.errors)
 
-    def test_live_gate_authorized_write_audits_and_consumes_token(self) -> None:
-        from harness.authorization import issue_token
+    def test_live_gate_direct_operation_writes_audit(self) -> None:
         from harness.context import GateContext
         from harness.gates.live_gate import LiveGate
         from harness.result import GateStatus
 
         run_result = SimpleNamespace(status="success", records_written=1, error_msg=None)
-        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
-            os.environ,
-            {"HARNESS_AUTH_SECRET": "native-live-test-secret"},
-        ):
+        with tempfile.TemporaryDirectory() as tmpdir:
             project_root = Path(tmpdir)
             config_path = _write_minimal_scheme(project_root, scheme_id="demo_daily")
-            token = issue_token(
+            operation = build_direct_operation(
                 "demo_daily",
                 "live_write",
                 "2026-06-08",
                 scheme_version=load_scheme_config(config_path / "config.yaml").scheme_version,
+                issued_by="test-operator",
             )
             engine = SimpleNamespace(dispose=lambda: None)
             snapshots = [
@@ -1145,24 +1140,12 @@ class HarnessLiveGateTests(unittest.TestCase):
                                 project_root=project_root,
                                 report_dir=project_root / "reports" / "harness" / "demo_daily",
                                 engine_factory=lambda: engine,
-                                authorization=token,
+                                operation=operation,
                                 prediction_phase="gray_live",
                             )
                         )
-            audit_path = _evidence_dict(first)["authorization_audit_path"]
+            audit_path = _evidence_dict(first)["operation_audit_path"]
             audit_exists = Path(audit_path).exists()
-
-            with patch("harness.gates.live_gate.snapshot_table_counts", return_value={"t_scheme_predictions": 11, "t_scheme_run_log": 21}):
-                second = LiveGate().run(
-                    GateContext(
-                        scheme_id="demo_daily",
-                        predict_date="2026-06-08",
-                        project_root=project_root,
-                        report_dir=project_root / "reports" / "harness" / "demo_daily",
-                        engine_factory=lambda: engine,
-                        authorization=token,
-                    )
-                )
 
         self.assertEqual(first.status, GateStatus.PASSED)
         self.assertEqual(execute.call_args.kwargs["prediction_phase"], "gray_live")
@@ -1173,30 +1156,25 @@ class HarnessLiveGateTests(unittest.TestCase):
             {"api_wind_daily": 0, "t_scheme_predictions": 1, "t_scheme_run_log": 1, "t_scheme_runs": 1},
         )
         self.assertEqual(
-            first_evidence["authorized_scheme_table_deltas"],
+            first_evidence["operation_scheme_table_deltas"],
             {"t_scheme_predictions": 1, "t_scheme_run_log": 1, "t_scheme_runs": 1},
         )
         self.assertTrue(audit_exists)
-        self.assertEqual(second.status, GateStatus.BLOCKED)
-        self.assertTrue(any("already used" in error for error in second.errors), second.errors)
 
     def test_live_gate_requires_explicit_prediction_phase(self) -> None:
-        from harness.authorization import issue_token
         from harness.context import GateContext
         from harness.gates.live_gate import LiveGate
         from harness.result import GateStatus
 
-        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
-            os.environ,
-            {"HARNESS_AUTH_SECRET": "native-live-test-secret"},
-        ):
+        with tempfile.TemporaryDirectory() as tmpdir:
             project_root = Path(tmpdir)
             config_path = _write_minimal_scheme(project_root, scheme_id="demo_daily")
-            token = issue_token(
+            operation = build_direct_operation(
                 "demo_daily",
                 "live_write",
                 "2026-06-08",
                 scheme_version=load_scheme_config(config_path / "config.yaml").scheme_version,
+                issued_by="test-operator",
             )
             engine = SimpleNamespace(dispose=lambda: None)
             with patch("harness.gates.live_gate.snapshot_table_counts", return_value={"t_scheme_predictions": 10, "t_scheme_run_log": 20}):
@@ -1209,7 +1187,7 @@ class HarnessLiveGateTests(unittest.TestCase):
                                 project_root=project_root,
                                 report_dir=project_root / "reports" / "harness" / "demo_daily",
                                 engine_factory=lambda: engine,
-                                authorization=token,
+                                operation=operation,
                             )
                         )
 

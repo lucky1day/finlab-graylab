@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from harness.authorization import DEFAULT_BACKTEST_START_DATE
+from harness.operation import DEFAULT_BACKTEST_START_DATE
 
 if TYPE_CHECKING:
     from scheduler.discovery import SchemeConfig
@@ -19,7 +19,7 @@ class GateContext:
     config: "SchemeConfig | None" = None
     algo_env: str = "forecast_env"
     engine_factory: Callable[[], Any] | None = None
-    authorization: Any | None = None
+    operation: Any | None = None
     prediction_phase: str | None = None
     persist_backtest: bool = False
     backtest_sample_size: int | None = None

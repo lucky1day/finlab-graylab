@@ -33,12 +33,12 @@ def onboard(
     )
     if check_only and (
         normalized_stage != "all"
-        or ctx.authorization is not None
+        or ctx.operation is not None
         or ctx.prediction_phase is not None
         or ctx.persist_backtest
     ):
         raise ValueError(
-            "check-only requires stage=all and forbids authorization, "
+            "check-only requires stage=all and forbids side-effect operation, "
             "prediction side-effect phases, and persisted backtest"
         )
     if check_only and gates is not None:
@@ -157,14 +157,14 @@ def onboard(
 
 
 def _run_gate(ctx: GateContext, gate: Gate) -> GateResult:
-    if getattr(gate, "requires_authorization", False) and not ctx.authorization:
+    if getattr(gate, "requires_operation", False) and not ctx.operation:
         now = utc_now()
         return GateResult(
             gate_name=gate.name,
             status=GateStatus.BLOCKED,
             passed=False,
-            evidence=[Evidence("authorization_required", True)],
-            errors=[f"{gate.name} requires authorization"],
+            evidence=[Evidence("operation_required", True)],
+            errors=[f"{gate.name} requires a direct operator command"],
             started_at=now,
             finished_at=now,
         )
