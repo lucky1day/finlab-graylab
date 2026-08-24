@@ -363,7 +363,7 @@ Provider 将 `rdate` 规范化为非空、唯一、严格升序的 `YYYY-MM-DD`�
 本次 Request 的 `weekly_cutoff_key`。日历按完整权威范围冻结，不按
 `feature_date` 截断；三频业务文件仍按各自 cutoff 使用。
 
-Harness/check-only、自然调度和历史 replay 均通过调用方只读 DB
+Harness、自然调度和历史 replay 均通过调用方只读 DB
 连接捕获权威 `api_wind_date`，并使用同一个 provider 规范化内容。
 来源类型和捕获时间只进入 `audit_manifest`，不参与内容身份；
 DataBridge generation 只绑定三频父快照，不再承载第二份 Native
@@ -467,37 +467,6 @@ static -> input -> unit -> compare
 它就属上游义务，不进平台 Gate。历史上这一条缺失，导致 CompareGate 一度用 10 次全量拟合
 重验上游已明文承诺的性质，单次 `all` 耗时 40 分钟。
 
-仅做技术入库准备、要求生产数据库零写入时，必须使用正式
-`--check-only` 编排：
-
-```bash
-conda run --no-capture-output -n bond_factor_lab_service \
-  python -m harness onboard {scheme_id} \
-    --predict-date YYYY-MM-DD \
-    --stage all \
-    --check-only \
-    --algo-env forecast_env_blackbox_v1 \
-    --timeout-sec 1800
-```
-
-`--check-only` 仍使用只读 Engine 构造平台日历、三个 cutoff 和
-Request，仍按固定四 Gate 顺序 fail-fast，并生成本地
-`harness_run_id`、逐 Gate JSON 与统一报告；但完全不调用 Harness
-控制面 run/gate 持久化，也不写任何业务表。统一报告必须同时写明：
-
-```text
-check_only=true
-control_plane_persisted=false
-business_tables_written=false
-persist_backtest=false
-```
-
-该模式只允许 `--stage all`，且与持久化 backtest、
-shadow、activate、gray/live 和真实 API 等任何副作用阶段不兼容；
-出现组合参数时必须 fail-closed。Backtest Gate 固定执行 100 条
-no-persist 验收，必须得到 `100/100` 且 `persist=false`。技术 `all`
-不访问 Backend；激活后的 HTTP 验收另行运行 `dashboard` Gate。
-
 ### 4.2 Gate 证据边界
 
 | Gate | 当前检查 | 当前没有证明 | 主要证据 |
@@ -518,7 +487,7 @@ Dashboard payload 不含 exact version，因此不能替代生命周期、Regist
 
 ### 4.3 自动段副作用
 
-普通 `--stage all`（没有 `--check-only`）可以写：
+`--stage all` 可以写：
 
 - `reports/harness/{scheme_id}/...`；
 - `t_harness_runs`、`t_harness_gate_results` 等控制面审计记录。
@@ -526,10 +495,6 @@ Dashboard payload 不含 exact version，因此不能替代生命周期、Regist
 它不得写 `t_scheme_runs`、`t_scheme_predictions`、`t_backtest_*` 业务记录、active Registry 或前端可见状态。
 
 Harness 控制面持久化采用 fail-closed。即使 `onboard_report.json` 为 `overall_passed=true`，仍必须确认 exact `harness_run_id` 和 Blackbox 四个 Gate 已存在于审计数据库，才能执行 shadow。
-
-`--check-only` 恰好相反：它不得尝试写
-`t_harness_runs`/`t_harness_gate_results`，本地通过报告也不能用于
-执行 shadow 或任何生产副作用。两种模式的报告不得混称。
 
 Result 解析器严格要求 JSON 的 `predicted_direction` 为整数 `-1/0/1`，拒绝字符串、布尔值和浮点数；CSV 继续按合同接受文本 token `-1/0/1`。
 
@@ -542,7 +507,7 @@ Result 解析器严格要求 JSON 的 `predicted_direction` 为整数 `-1/0/1`�
 从最新通过报告取得 `harness_run_id`、`scheme_version`、`predict_date`、四个 Gate 状态、snapshot ID 和三 SHA，并另外完成：
 
 1. 重新运行环境自检；
-2. 使用只读 SQL 确认 exact run 已写入审计 DB；`python -m harness report {scheme_id} --latest` 只读取本地最新报告，不能代替数据库核验；
+2. 使用只读 SQL 确认 exact run 已写入审计 DB；本地 JSON 报告不能代替数据库核验；
 3. 再次检查 base/composite Registry 冲突；
 4. 保存业务表和 active Registry 的前置计数；
 5. 确认本轮通用入库只允许 `shadow + paused`；生产灰度必须另有具体方案专项授权。
@@ -842,10 +807,9 @@ journal：它只回退到 previous safe state，保留原 journal，并新增 li
 - [ ] 任一 cadence 的完整性以当时 active Registry、run、prediction 和日志核验；不得冻结旧方案数量、release 队列或 coordinator/ledger 口径
 - [ ] Input 报告三 SHA 与选定 generation 完全一致
 - [ ] Blackbox 四个 Gate 通过，并理解各 Gate 没有证明什么；技术 `all` 未访问 Backend
-- [ ] 技术零写入批次使用 `--check-only`，报告四个零写字段正确，Backtest 为 `100/100 + persist=false`
-- [ ] 如准备 shadow（非 check-only），exact Harness run 和四个结果已进入审计 DB
-- [ ] 普通自动段只产生控制面审计，没有业务表新增；check-only 连控制面也未持久化
-- [ ] Shadow 直接命令已自动绑定 exact version/latest passed run，审计中记录 `direct_operator_command_v1` 与 operation hash
+- [ ] exact Harness run 和四个结果已进入审计 DB
+- [ ] 自动段只产生控制面审计，没有业务表新增
+- [ ] Shadow 直接命令已自动绑定 exact version/latest passed run，审计中记录 `direct_operator_command_v2` 与 operation hash
 - [ ] 登记后配置、版本、Registry 为 `shadow + paused`
 - [ ] 独立 DB、scheduler 和 API 检查证明 trial 未进入生产链路
 - [ ] 失败按恢复矩阵处理，没有把部分状态当成成功

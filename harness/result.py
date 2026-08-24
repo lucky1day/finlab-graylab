@@ -41,7 +41,4 @@ class OnboardReport:
     overall_passed: bool
     report_dir: Path
     harness_run_id: str | None = None
-    check_only: bool = False
     control_plane_persisted: bool = True
-    business_tables_written: bool = False
-    persist_backtest: bool = False

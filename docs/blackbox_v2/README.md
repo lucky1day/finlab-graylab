@@ -14,7 +14,7 @@ Blackbox V2 是所有新算法、新方案 ID、新目标、新任务和替代�
 |---|---|
 | 上游两文件交付与自验 | [上游交付 SOP](../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md) |
 | 平台 Intake、Gate、激活与恢复 | [平台入库 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md) |
-| 执行、输入和结果边界 | [平台架构](../architecture/BLACKBOX_V2_PLATFORM.md) |
+| 执行、输入和结果边界 | [代码架构](../architecture/CODE_ARCHITECTURE.md) |
 | 通用生产条件 | [生产晋级条件](PRODUCTION_READINESS.md) |
 | 一次性 batch 的历史/gray 分区复用 | [平台入库 SOP 6.5](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#65-一次性批量结果复用快路径) |
 | DataBridge 结构说明 | [DataBridge V1](data_bridge_v1/README.md) |

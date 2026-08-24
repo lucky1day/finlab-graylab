@@ -861,7 +861,6 @@ def test_live_reader_keeps_wrong_predict_date_on_expected_business_key() -> None
     assert plan["status"] == "BLOCKED"
     assert plan["actions"][0]["action"] == "BLOCKED_DATA_CONTRACT"
 
-
 @pytest.mark.parametrize(
     ("base_scheme_id", "configs", "failure_code"),
     [
@@ -1014,52 +1013,3 @@ def test_duplicate_or_drifted_live_result_blocks_data_contract(
 
     assert plan["status"] == "BLOCKED"
     assert plan["actions"][0]["action"] == "BLOCKED_DATA_CONTRACT"
-
-
-def test_cli_accepts_only_single_date_and_optional_single_base_scheme() -> None:
-    from harness.cli import _build_parser
-
-    parser = _build_parser()
-    args = parser.parse_args(
-        [
-            "signal-gap-plan",
-            "--predict-date",
-            "2026-08-10",
-            "--scheme-id",
-            "demo_native",
-        ]
-    )
-
-    assert args.predict_date == "2026-08-10"
-    assert args.scheme_id == "demo_native"
-    help_text = parser._subparsers._group_actions[0].choices[
-        "signal-gap-plan"
-    ].format_help()
-    assert "--predict-date" in help_text
-    assert "--scheme-id" in help_text
-    for removed in (
-        "--start",
-        "--as-of",
-        "--target-date-start",
-        "--target-date-end",
-        "--task-type",
-        "--base-scheme-id",
-    ):
-        assert removed not in help_text
-
-    with pytest.raises(SystemExit):
-        parser.parse_args(
-            [
-                "signal-gap-plan",
-                "--predict-date",
-                "2026-08-10",
-                "--scheme-id",
-                "demo_native",
-                "--scheme-id",
-                "other",
-            ]
-        )
-    with pytest.raises(SystemExit):
-        parser.parse_args(
-            ["signal-gap-plan", "--predict-date", "2026-8-10"]
-        )

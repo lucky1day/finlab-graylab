@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验日期**：2026-08-24
+**最后核验日期**：2026-08-25
 
 本文只记录当前稳定事实。实时方案、run、prediction、DataBridge、API 和调度状态必须从各自权威数据源
 读取；待推进工作见[统一后续推进计划](TODO.md)，生产规则见
@@ -22,18 +22,25 @@
 
 ## 当前 immutable release
 
-- ECS 与 Mac3 `current` 均为 exact release
-  `e93ea24518dbf26870473d9a201b310c38d5c5d2`，两端 `previous` 均为
-  `053d562fc40d7ecf5596f56f1beb00e4a3b58178`。
-- 两端使用同一份已验证 archive：source archive SHA-256 为
-  `a30deb7728b1a8881f4a75450b4c1e3d620378dcfc7d6d3ad043e6ac4e5cc286`，manifest 文件 SHA-256 为
-  `595690e934d937fbc032a8f998a9fbea586a215ed0f03f2dea69ec7b5719a5e5`，安装后 source-tree SHA-256 为
-  `07d07167cca6e2361fbcd8971481ea460f227dbcddb5cf7a57eb731366caa471`。
-- 该 release 汇总了周期均值历史范围修复、月均目标月/日期格式、季均目标季度及 Q2 live scope、年均目标年度及
-  2026 live scope。正式回归测试继续保留；一次性 archive、导出 JSON、候选目录和浏览器验收状态不进入工作树。
+- Mac3 在本轮仓库减负期间保持 `e93ea24518dbf26870473d9a201b310c38d5c5d2`，不提前同步中间清理版本。
+- ECS 可按 `codex/develop` 的已验证 immutable cleanup release 逐次先行晋级；尚未安装的工作区修改不视为
+  已部署。精确 commit、archive、manifest、source-tree 摘要和 previous 以目标机 `current`、release manifest
+  与部署记录为准，不在本文复制一份容易漂移的运行态清单。
 - Mac3 生产应用从 `/Users/macstudio0/bond-factor-lab-production/current` 启动，运行状态位于
   `/Users/macstudio0/bond-factor-lab-runtime`；ECS 从 `/opt/bond-factor-lab/current` 启动。两端运行时均不引用
   Git 工作区。
+
+## 单维护者减负
+
+- Harness 人工副作用已使用直接命令和精确 scope 审计，不再维护密钥、token、nonce、TTL 或 replay store。
+- Blackbox lifecycle 只保留 `shadow-register`、统一 `activate` 与唯一 `lifecycle-reconcile`；Native
+  maintenance 只接受标准 prior business identity snapshot，不保留方案级 receipt 例外。
+- 自动入库只运行一次正式 `onboard` 并持久化后续 lifecycle 所需证据；已删除不能用于 activation 的重复
+  `onboard --check-only`、独立 `signal-gap-plan` 和本地 `harness report` CLI。`signal-gap-fill` 内部仍先执行
+  同一只读 planner，任一 blocker 都在算法或 repository 写入前终止。
+- 生产 release identity 只来自 launcher 注入的 `BFL_RELEASE_COMMIT`；开发态 Harness 不再额外执行 Git
+  subprocess。immutable release 构建的 clean-HEAD、archive 与 manifest 校验保持不变。
+- 已完成设计稿、重复架构总册和拆分的 Native T0/验证手册已从当前工作树删除，通过 Git 历史追溯。
 
 ## 每日预测 Phase-A 后缀重算
 
@@ -43,8 +50,9 @@
 - 2026-08-24 专项回归确认普通修订只规划 7 个日期而非约 639 个历史日期，父代前缀、lineage、原子 publication
   与 full-cold cache/完整输出均保持一致。七个 Mac3 current generation 在生产 `forecast_env` 下与当前 spec
   全部兼容；未修改 Native source-backed 算法、输入口径、07:03 调度、数据库写入或生产控制面。
-- 用户已确认该性能问题按现有有界 suffix 能力闭环，并要求删除一次性专项测试代码。该结论表示缓存重算范围
-  已闭环，不把尚未取得的下一次自然 revision 批次耗时表述为已实测 SLA。
+- 用户已确认该性能问题按现有有界 suffix 能力闭环；一次性故障注入/迁移兼容测试已收敛为最小端到端合同，
+  保留 publisher/consumer、五交易日 suffix 与 full-cold 全 Cache 一致、失败不切指针、全输出逐字段一致和
+  非法 proof fail-closed。该结论不把尚未取得的下一次自然 revision 批次耗时表述为已实测 SLA。
 
 ## 周期均值基础建设
 
@@ -102,50 +110,15 @@
 
 ### M0 月均、季均、年均 15 方案
 
-- 上游验收范围明确为 `feature_date >= 2025-01-01`。15 个修订后两文件 delivery 均为
-  `algorithm_version=1.0.1`；120 个范围内金标 Request 方向零差异，合同失败为 0，15 份性能报告均低于
-  `120s / 600s / 1800s / 4GiB` 且 `fallback_used=false`。更早的原始缺失值和错误锚点只保留为历史审计，
-  不作为本轮准入样本。
-- 15 个方案均在 ECS 完成 Intake、四段技术 Gate、shadow、canonical backtest、activation、合法 `gray_live` 和
-  DashboardGate；同一 exact version 与 composite Registry 也已在 Mac3 active。共同绑定 DataBridge generation
-  `full-20260823-063324-33751cc9bcd9`、combined snapshot
-  `snapshot-2557d605845236cbeb21ea73` 和 `api-wind-date-v1` SHA-256
-  `b24d10fca383bdb9ad9806ec3ef3db01cb0bc163ea4e24eac8d613f4e5a96cdf`。
-- canonical backtest 均满足 `predict_date=feature_date`，且与 `target_date >= 2026-06-01` 的 live 区间
-  零重叠；月均每方案 16 行、季均每方案 4 行、年均每方案 1 行。gray-live 月均每方案 3/3，季均每方案
-  1/1，年均 0/0；20 个已到期业务键复核均为 `present=1 / actionable=0 / blocked=0`。
-
-| 方案 | exact version | latest passed all Gate | canonical backtest | gray-live | Dashboard |
-|---|---|---|---|---|---|
-| `m0_monthly_avg_mid_1y_v1` | `646080e1aadf` | `hr_20260823T170216Z_c8a1d9082020` | `237`，16 行，2025-01-15..2026-04-15 | 3/3，run 3695–3697 | passed |
-| `m0_monthly_avg_mid_3y_v1` | `0a6e8ba4a908` | `hr_20260823T170242Z_7056b0ebb75f` | `238`，16 行，2025-01-15..2026-04-15 | 3/3，run 3698–3700 | passed |
-| `m0_monthly_avg_mid_5y_v1` | `f7ab01ebeded` | `hr_20260823T170307Z_69c6369d76f0` | `239`，16 行，2025-01-15..2026-04-15 | 3/3，run 3701–3703 | passed |
-| `m0_monthly_avg_mid_7y_v1` | `00f29f7c44e8` | `hr_20260823T170333Z_71a12eaf0ccf` | `240`，16 行，2025-01-15..2026-04-15 | 3/3，run 3704–3706 | passed |
-| `m0_monthly_avg_mid_10y_v1` | `dad07dc48a4e` | `hr_20260823T170358Z_09fd26f73a31` | `241`，16 行，2025-01-15..2026-04-15 | 3/3，run 3707–3709 | passed |
-| `m0_quarterly_avg_1y_v1` | `ef9b4f1df701` | `hr_20260823T170423Z_7ecc14488c90` | `242`，4 行，2025-03-31..2025-12-31 | 1/1，run 3710 | passed |
-| `m0_quarterly_avg_3y_v1` | `cf139be9cbb4` | `hr_20260823T170448Z_0a336623c9f7` | `243`，4 行，2025-03-31..2025-12-31 | 1/1，run 3711 | passed |
-| `m0_quarterly_avg_5y_v1` | `51c5255e1173` | `hr_20260823T170513Z_5ac016dd0c52` | `244`，4 行，2025-03-31..2025-12-31 | 1/1，run 3712 | passed |
-| `m0_quarterly_avg_7y_v1` | `06da7eca6a5b` | `hr_20260823T170538Z_9dd977bd4487` | `245`，4 行，2025-03-31..2025-12-31 | 1/1，run 3713 | passed |
-| `m0_quarterly_avg_10y_v1` | `72bb3391683d` | `hr_20260823T170603Z_01e96c8bef98` | `246`，4 行，2025-03-31..2025-12-31 | 1/1，run 3714 | passed |
-| `m0_annual_avg_sf_1y_v1` | `5365fd103351` | `hr_20260823T170629Z_fd4dd49f7058` | `247`，1 行，2025-01-27 | 0/0，未到期 | passed |
-| `m0_annual_avg_sf_3y_v1` | `cd0d09ee4a05` | `hr_20260823T170653Z_cb5176b3ed19` | `248`，1 行，2025-01-27 | 0/0，未到期 | passed |
-| `m0_annual_avg_sf_5y_v1` | `614e0d6f7657` | `hr_20260823T170718Z_5c0d18e58b6e` | `249`，1 行，2025-01-27 | 0/0，未到期 | passed |
-| `m0_annual_avg_sf_7y_v1` | `982156ceecf6` | `hr_20260823T170743Z_dd1d4789538f` | `250`，1 行，2025-01-27 | 0/0，未到期 | passed |
-| `m0_annual_avg_sf_10y_v1` | `71bf770309df` | `hr_20260823T170808Z_75fa2a8c45c8` | `251`，1 行，2025-01-27 | 0/0，未到期 | passed |
-
-15 个方案现已达到 **Onboarding Complete**。Mac3 后续一次性同步闭环如下：
-
-- 年均目标年度 2026 五条 Prediction 由 ECS 只读导出，Mac3 经 repository insert-only 写入本地 run
-  `3680–3684`；Actual 仍为 `null`，不伪造未完成年度结果。
-- 月均目标月 2026/06 五条 Prediction 写入本地 run `3685–3689`；季均目标季度 2026/Q2 五条 Prediction
-  写入本地 run `3690–3694`。没有复制 ECS 数据库主键、`run_id`、Actual、回测或 Harness 历史。
-- Mac3 从本机权威日频数据生成 20 条到期周期 Actual，写前与 ECS 的 20 条参考记录逐字段一致；其中包括
-  季均 2026/Q2 五条和三组月均目标指针共 15 条。季均 2026/Q3 与年均 2026 继续 pending。
-- 最终两端 M0 live 均为 100 条且业务键和值零差异；公网月均有 20 条 live、5 条 pending，季均有 10 条
-  live、5 条 pending，年均有 5 条 live、5 条 pending。浏览器确认 2026/Q2 已验证、2026/Q3 待验证。
-
-它们仍等待真实宿主时钟首次生成 `scheduled_live` 后才能标记 **Production Observed**。权威日历给出的下一月均
-锚点为 2026-09-15、下一季均锚点为 2026-09-30；当前日历止于 2026-12-31，尚不能权威推导下一年均锚点。
+- 15 个方案均已完成上游范围内金标、性能、Intake、四段技术 Gate、shadow、canonical backtest、
+  activation、合法 gray-live 与 Dashboard 验收，并在两端保持相同业务键和值。
+- canonical backtest 与 `target_date >= 2026-06-01` 的 live 区间零重叠；已到期月均、季均 Prediction/Actual
+  已闭环，未到期季度和年度桶继续显示 pending，不伪造自然观察。
+- 跨主机补齐只复制同一 release/版本/日期/lineage 下源端已有的精确核心结果，由目标 repository
+  insert-only 写入；数据库主键、run、Actual、回测和 Harness 历史均未复制。
+- 具体 exact version、Harness run、backtest/run ID 与 DataBridge snapshot 属于已完成操作证据，只从 Git、
+  数据库和目标机 journal 追溯，不在当前状态文档维护第二份逐方案表。
+- 它们仍需 installed 宿主控制面在权威锚点自然产生 `scheduled_live` 后，才能标记 Production Observed。
 
 ## 当前治理边界
 

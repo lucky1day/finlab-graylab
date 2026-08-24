@@ -75,18 +75,12 @@ bond-factor-lab/
 CLI 标准入口:
 
 ```bash
-python -m harness onboard t1_daily \
-  --predict-date 2026-06-06 \
-  --stage static
+python -m harness gate static \
+  --scheme-id t1_daily
 
 python -m harness onboard t1_daily \
   --predict-date 2026-06-06 \
   --stage all
-
-python -m harness onboard t1_daily \
-  --predict-date 2026-06-06 \
-  --stage all \
-  --check-only
 
 python -m harness gate live \
   --scheme-id t1_daily \
@@ -96,9 +90,7 @@ python -m harness gate live \
 
 `--stage all` 按 `runtime_type` 分派：Blackbox V2 为四段 `static -> input -> unit -> compare`；Native V1 为六段 `static -> input -> unit -> dry-run -> compare -> backtest-no-persist`。任何一步失败都停止。首次 Native 技术入库必须保留 source benchmark/CompareGate 证据；Blackbox Compare 只做平台输入校验与一次冒烟 predict。技术 `all` 不访问 Backend；`dashboard`、`live`、持久化 backtest 和 `activate` 都不属于 `all`。
 
-`native-maintenance` 仅给已完成首次技术入库、且有可比较 prior snapshot 的同一 Native 业务身份使用，固定五段顺序为 `static -> native-maintenance-admission -> input -> unit -> dry-run`。`native-maintenance-admission` 必须只读证明不同的旧 Native active version 已有 passed `all` 和 passed `compare`，并从该 prior `all` 的 `static.business_identity` 读取与当前精确匹配的业务快照：`scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors 与 composite Registry IDs；不得比较或持久化代码/config/version hash 作为身份字段。current exact `t_scheme_versions` 行必须为 native `draft|active`；expected Registry identity 要么全 paused（预激活），要么全 active（激活后），且 draft version 配 active Registry 必须失败。只有 ActivationGate 才能原子翻转至 active。prior snapshot 缺失、重复、损坏或不匹配时一律阻断。ActivationGate 在这一路径复核 prior 前提与当前精确 version 的五个 Gate，并返回 `native_post_admission_revision_v1`；若当前 exact version 已有 passed `all`，则改走互斥的 `full_initial_onboarding_v1`，不要求 prior snapshot 或五段 Gate。这个 stage 不执行当前 historical `compare/backtest`，只持久化 Harness 审计证据且不写业务表，所以 `--check-only` 不可使用。Blackbox V2 不接受该 stage，仍走既有 `all`。
-
-`--check-only` 只允许 canonical `--stage all`，并按 runtime type 执行 Blackbox 四段或 Native 六段自动 Gate。它可通过只读 Engine 捕获日历和构造 Request，但控制面零持久化、业务表零写入；Backtest 固定 no-persist，并拒绝持久化、shadow/activate/live 或其它副作用上下文。Static 记录 provider，Input 建立组合输入身份，后续 Gate 共享该身份。
+`native-maintenance` 仅给已完成首次技术入库、且有可比较 prior snapshot 的同一 Native 业务身份使用，固定五段顺序为 `static -> native-maintenance-admission -> input -> unit -> dry-run`。`native-maintenance-admission` 必须只读证明不同的旧 Native active version 已有 passed `all` 和 passed `compare`，并从该 prior `all` 的 `static.business_identity` 读取与当前精确匹配的业务快照：`scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors 与 composite Registry IDs；不得比较或持久化代码/config/version hash 作为身份字段。current exact `t_scheme_versions` 行必须为 native `draft|active`；expected Registry identity 要么全 paused（预激活），要么全 active（激活后），且 draft version 配 active Registry 必须失败。只有 ActivationGate 才能原子翻转至 active。prior snapshot 缺失、重复、损坏或不匹配时一律阻断。ActivationGate 在这一路径复核 prior 前提与当前精确 version 的五个 Gate，并返回 `native_post_admission_revision_v1`；若当前 exact version 已有 passed `all`，则改走互斥的 `full_initial_onboarding_v1`，不要求 prior snapshot 或五段 Gate。这个 stage 不执行当前 historical `compare/backtest`，只持久化 Harness 审计证据且不写业务表。Blackbox V2 不接受该 stage，仍走既有 `all`。
 
 激活后的唯一 Harness HTTP 验收是 `python -m harness gate dashboard --scheme-id ...`。DashboardGate 只校验统一 dashboard 快照的当前业务可读性；由于 payload 不携带 exact version，该 Gate 不能证明某个 exact version 已上线。
 
@@ -117,7 +109,7 @@ python -m harness gate live \
 1. 上游按 Contract 1.0 交付一个 `.py` 和一个 `.json`。
 2. Intake 校验普通文件、八字段 Metadata、trial 身份和摘要，生成 `paused/draft` 平台配置。
 3. 平台确认 Runtime Profile、最新通过校验的 DataBridge generation、三频父快照、声明制品、组合输入身份和七字段 Request。
-4. 依次执行 `static -> input -> unit -> dry-run -> compare -> backtest`。
+4. 依次执行 `static -> input -> unit -> compare`。
 5. 独立查询证明预测、回测等业务表零写入。
 6. 通用入库授权只登记为 `shadow + paused`；生产准备通过的具体方案仍须取得独立专项授权，才能执行 ActivationGate、持久化回测或 LiveGate。
 
@@ -152,7 +144,7 @@ python -m harness gate live \
 - `t_shap`
 
 `api_wind_date` 仅由平台输入 provider 通过调用方只读连接捕获；
-Harness/check-only、自然调度和历史 replay 使用同一数据库捕获与规范化
+Harness、自然调度和历史 replay 使用同一数据库捕获与规范化
 路径。算法子进程、方案 adapter 和其它 Gate 不得直接查询该表。
 
 预测结果与终态审计的正式生产成功提交，只允许三个专用原子完成边界:

@@ -16,9 +16,7 @@
 |---|---|---|
 | 上游算法工程师 | 交付后续新增算法方案 | [Blackbox V2 上游交付 SOP](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)；算法侧只需要阅读这一份 |
 | 平台入库、运行和审计人员 | 接收、验收、激活并观察 Blackbox V2 方案 | [Blackbox V2 平台入库 SOP](BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md) |
-| Native V1 维护工程师 | 判断既有 Native 方案能否修改 | [Native V1 存量维护 T0](NATIVE_V1_MAINTENANCE_T0.md) |
-| Native V1 维护工程师 | 实施已经通过 T0 的维护 | [Native V1 存量维护 SOP](NATIVE_V1_MAINTENANCE_SOP.md) |
-| Native V1 验证工程师 | 验证既有 Native 方案修改 | [Native V1 修改后验证 SOP](NATIVE_V1_POST_CHANGE_TEST_SOP.md) |
+| Native V1 维护工程师 | 判断、实施和验证既有 Native 修复 | [Native V1 存量维护 SOP](NATIVE_V1_MAINTENANCE_SOP.md) |
 
 新算法、新方案 ID、新目标、新任务类型和替代版本一律使用 Blackbox V2。Native V1 文档只用于政策清单内既有方案的维护。
 
@@ -28,9 +26,7 @@
 |---|---|---|---|---|
 | [BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md) | `CURRENT` | `blackbox_v2` | 上游算法交付、运行和自验契约 | 是，上游算法唯一手册 |
 | [BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md](BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md) | `CURRENT` | `blackbox_v2` | 平台收包、Gate、登记、激活、专项生产灰度和前端验收 | 是，按文档权限边界执行 |
-| [NATIVE_V1_MAINTENANCE_T0.md](NATIVE_V1_MAINTENANCE_T0.md) | `LEGACY_MAINTENANCE` | `native_adapter` | Native 存量维护的身份与改动分级判断 | 仅限既有 Native 方案 |
 | [NATIVE_V1_MAINTENANCE_SOP.md](NATIVE_V1_MAINTENANCE_SOP.md) | `LEGACY_MAINTENANCE` | `native_adapter` | Native 存量方案维护流程 | 仅限既有 Native 方案 |
-| [NATIVE_V1_POST_CHANGE_TEST_SOP.md](NATIVE_V1_POST_CHANGE_TEST_SOP.md) | `LEGACY_MAINTENANCE` | `native_adapter` | Native 修改后的 Gate 与回归验证 | 仅限既有 Native 方案 |
 
 ## 3. 文档状态
 
@@ -43,7 +39,7 @@
 ## 4. 场景决策
 
 1. 新算法、新 ID、新 target、新 task type 或替代版本：上游读 Blackbox V2 上游交付 SOP，平台读 Blackbox V2 平台入库 SOP。上游两文件交付只证明交付可接收，不自行授予 activation 或现场生产操作；等价一次性 batch 的结果复用按平台 SOP 6.5 分区，不为历史段和 gray 段重复计算。
-2. 既有 Native V1 故障、数据口径或复现性修复：先执行 Native V1 存量维护 T0，通过后再进入维护和修改后验证 SOP。
+2. 既有 Native V1 故障、数据口径或复现性修复：使用唯一的 Native V1 存量维护 SOP。
 3. 从旧报告进入已删除路径：使用 Git 历史了解原始上下文，再从统一入库导航重新选择现行流程。
 4. 查询具体方案版本、运行结果或当前状态：查看状态文档或试验台账，不在通用 SOP 中查找。
 

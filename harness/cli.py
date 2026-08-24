@@ -157,8 +157,6 @@ def main(argv: list[str] | None = None) -> int:
         result = _run_activate(args)
         print(json.dumps(_jsonable(result), ensure_ascii=False, indent=2))
         return _exit_code_for_result(result)
-    if args.command == "report":
-        return _run_report(args)
     if args.command == "intake-blackbox":
         scheme_dir = intake_delivery(
             args.delivery_dir,
@@ -188,55 +186,6 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
-    if args.command == "signal-gap-plan":
-        try:
-            databridge_config = DataBridgeRefreshConfig.from_env()
-            engine = create_engine_from_env()
-            try:
-                plan = plan_signal_gaps(
-                    engine,
-                    predict_date=args.predict_date,
-                    base_scheme_id=args.scheme_id,
-                    databridge_config=databridge_config,
-                )
-            finally:
-                engine.dispose()
-        except SignalGapPlanError as exc:
-            print(
-                json.dumps(
-                    {
-                        "schema_version":
-                            "single-date-active-live-gap-plan-error-v1",
-                        "status": "BLOCKED",
-                        "failure_code": exc.code,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
-            return 2
-        except Exception:
-            print(
-                json.dumps(
-                    {
-                        "schema_version":
-                            "single-date-active-live-gap-plan-error-v1",
-                        "status": "ERROR",
-                        "failure_code":
-                            "SIGNAL_GAP_PLAN_INTERNAL_ERROR",
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
-            return 2
-        print(json.dumps(plan, ensure_ascii=False, indent=2))
-        return (
-            1
-            if plan.get("status") == "BLOCKED"
-            or int(plan.get("counts", {}).get("blocked", 0))
-            else 0
-        )
     if args.command == "signal-gap-fill":
         return _run_signal_gap_fill_command(args)
     parser.error("unsupported command")
@@ -290,13 +239,15 @@ def _build_parser() -> argparse.ArgumentParser:
     onboard_parser = subparsers.add_parser("onboard")
     onboard_parser.add_argument("scheme_id")
     onboard_parser.add_argument("--predict-date", required=True)
-    onboard_parser.add_argument("--stage", default="all")
+    onboard_parser.add_argument(
+        "--stage",
+        choices=("all", "native-maintenance"),
+        default="all",
+    )
     onboard_parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
     onboard_parser.add_argument("--report-dir", type=Path, default=None)
     onboard_parser.add_argument("--algo-env", default="forecast_env")
     onboard_parser.add_argument("--timeout-sec", type=int, default=600)
-    onboard_parser.add_argument("--prediction-phase", choices=("gray_live", "scheduled_live"), default=None)
-    onboard_parser.add_argument("--check-only", action="store_true")
 
     activate_parser = subparsers.add_parser("activate")
     activate_parser.add_argument("--scheme-id", required=True)
@@ -308,11 +259,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="non-secret audit identity; defaults to BFL_OPERATOR_ID or OS user",
     )
 
-    report_parser = subparsers.add_parser("report")
-    report_parser.add_argument("scheme_id")
-    report_parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
-    report_parser.add_argument("--latest", action="store_true")
-
     intake_parser = subparsers.add_parser("intake-blackbox")
     intake_parser.add_argument("--delivery-dir", type=Path, required=True)
     intake_parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
@@ -323,20 +269,6 @@ def _build_parser() -> argparse.ArgumentParser:
         action="append",
         default=None,
         dest="platform_input",
-    )
-
-    gap_parser = subparsers.add_parser("signal-gap-plan")
-    gap_parser.add_argument(
-        "--predict-date",
-        required=True,
-        type=_iso_date,
-    )
-    gap_parser.add_argument(
-        "--scheme-id",
-        action=_StoreOnce,
-        type=_base_scheme_id,
-        default=None,
-        help="restrict the plan to one exact active base scheme id",
     )
 
     fill_parser = subparsers.add_parser("signal-gap-fill")
@@ -421,14 +353,6 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
 
 
 def _run_onboard_command(args: argparse.Namespace) -> OnboardReport:
-    if args.check_only and (
-        args.stage.strip().lower() != "all"
-        or args.prediction_phase is not None
-    ):
-        raise SystemExit(
-            "--check-only requires --stage all and forbids prediction "
-            "side-effect phases"
-        )
     project_root = args.project_root.resolve()
     report_dir = args.report_dir or default_report_dir(project_root, args.scheme_id)
     config = _load_config_for_dispatch(project_root / "schemes" / args.scheme_id / "config.yaml")
@@ -440,15 +364,9 @@ def _run_onboard_command(args: argparse.Namespace) -> OnboardReport:
         config=config,
         algo_env=args.algo_env,
         timeout_sec=args.timeout_sec,
-        prediction_phase=getattr(args, "prediction_phase", None),
         engine_factory=create_engine_from_env,
-        check_only=bool(args.check_only),
     )
-    return run_onboard(
-        ctx,
-        stage=args.stage,
-        check_only=bool(args.check_only),
-    )
+    return run_onboard(ctx, stage=args.stage)
 
 
 def _load_config_for_dispatch(config_path: Path):
@@ -486,18 +404,6 @@ def _run_activate(args: argparse.Namespace) -> GateResult:
         engine_factory=create_engine_from_env,
     )
     return ActivationGate().run(ctx)
-
-
-def _run_report(args: argparse.Namespace) -> int:
-    if not args.latest:
-        raise SystemExit("report currently requires --latest")
-    base = args.project_root.resolve() / "reports" / "harness" / args.scheme_id
-    reports = sorted(base.glob("*/onboard_report.json"), key=lambda path: path.stat().st_mtime, reverse=True)
-    if not reports:
-        print(json.dumps({"error": f"no onboard report found for {args.scheme_id}"}, ensure_ascii=False, indent=2))
-        return 1
-    print(reports[0].read_text(encoding="utf-8"))
-    return 0
 
 
 def _exit_code_for_result(result: GateResult) -> int:

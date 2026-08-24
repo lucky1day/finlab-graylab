@@ -7,7 +7,23 @@
 
 本 SOP 只维护已登记的 Native V1 方案，不接受新增方案。新算法和替代版本使用 [Blackbox V2 平台 SOP](BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)。
 
-## 1. 接收维护任务
+## 1. 准入、分级与基线
+
+只有 `deploy/onboarding_policy_v1.json` 中已有的 `native_adapter` 身份可以进入本流程；
+`scheme_id`、target、task type、Registry composite 身份和 `input_source=legacy_db` 必须保持不变。
+不满足任一条件时停止维护，新增或替代算法改走 Blackbox V2。
+
+| 级别 | 范围 | 处理 |
+|---|---|---|
+| L0 | 平台 I/O、日期字段、extra、缓存、日志、执行预算和审计适配 | 允许 |
+| L1 | 原始 runner 已明确暴露的上下文参数恢复 | 有原始证据和逐项对比时允许 |
+| L2 | 特征、窗口、模型、阈值、投票、selector、fallback 或 score 映射 | 禁止，创建 Blackbox V2 trial |
+
+输入只能来自 `shared.input_artifacts`，实盘和回测只能经各自 repository 写库，Native
+`core/` 不得连接数据库、写文件或跨方案 import。`feature_date` 是唯一数据截止日；存量周/月
+`horizon=6/30` 只保留身份兼容，业务分列始终使用 `task_type`。
+
+开始前记录：
 
 记录：
 
@@ -81,7 +97,7 @@ python -m harness onboard {scheme_id} \
 static -> native-maintenance-admission -> input -> unit -> dry-run
 ```
 
-`native-maintenance-admission` 只读复核 prior `all + compare`、匹配的 prior `static.business_identity` 与当前 Registry identity；current exact `t_scheme_versions` 必须为 `native_adapter` 的 `draft|active` 行，expected Registry 必须全 paused（预激活）或全 active（激活后），且 draft+active fail-closed。整个阶段持久化 Harness 审计证据但不写业务表，故不得用 `--check-only`；任一 run-start、gate-result 或 run-finish 持久化失败时必须留下本地 `BLOCKED` 证据，且该 run 不可作为 activation 依据。只有 ActivationGate 才能原子建立 active。prior snapshot 缺失、重复、损坏或不匹配时一律 fail-closed，不再读取方案级历史 receipt。它不执行当前 historical `compare/backtest`，不是全局关闭 CompareGate：新身份、业务身份漂移或任何前提不满足时都必须回到 `all`。任一所选阶段 Gate 失败时，从该阶段的 static 重跑，不跳过失败项。
+`native-maintenance-admission` 只读复核 prior `all + compare`、匹配的 prior `static.business_identity` 与当前 Registry identity；current exact `t_scheme_versions` 必须为 `native_adapter` 的 `draft|active` 行，expected Registry 必须全 paused（预激活）或全 active（激活后），且 draft+active fail-closed。整个阶段持久化 Harness 审计证据但不写业务表；任一 run-start、gate-result 或 run-finish 持久化失败时必须留下本地 `BLOCKED` 证据，且该 run 不可作为 activation 依据。只有 ActivationGate 才能原子建立 active。prior snapshot 缺失、重复、损坏或不匹配时一律 fail-closed，不再读取方案级历史 receipt。它不执行当前 historical `compare/backtest`，不是全局关闭 CompareGate：新身份、业务身份漂移或任何前提不满足时都必须回到 `all`。任一所选阶段 Gate 失败时，从该阶段的 static 重跑，不跳过失败项。
 
 ## 5. 数据与结果核验
 

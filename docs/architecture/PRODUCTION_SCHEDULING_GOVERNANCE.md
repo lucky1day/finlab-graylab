@@ -62,8 +62,8 @@ DataBridge 在 Mac3 使用 `BFL_DATABRIDGE_PRODUCER=launchd-one-shot`，在 ECS 
 `gray_live`；两者不能互相伪装、覆盖或以日期标签替代 provenance。回测继续写入
 `t_backtest_*`，不与实盘预测混用。
 
-历史缺口可以先用 `signal-gap-plan` 只读检查；运维补齐只保留单日入口，并可选限定一个
-`base_scheme_id`：
+历史缺口只保留单日运维入口，并可选限定一个 `base_scheme_id`。命令内部先执行只读
+planner，任一 blocker 都会在算法或 repository 写入前终止：
 
 ```bash
 python -m harness signal-gap-fill --predict-date YYYY-MM-DD

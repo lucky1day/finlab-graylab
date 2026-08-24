@@ -25,21 +25,12 @@ def test_blackbox_sequence_drops_the_duplicated_gates() -> None:
     assert "backtest" not in BLACKBOX_AUTO_SEQUENCE
 
 
-def test_prefix_stages_follow_the_runtime_sequence() -> None:
-    assert sequence_for_stage("unit", runtime_type="blackbox_v2") == ["static", "input", "unit"]
-    assert sequence_for_stage("dry-run", runtime_type="native_adapter") == [
-        "static",
-        "input",
-        "unit",
-        "dry-run",
-    ]
-
-
-def test_stage_outside_the_runtime_sequence_is_rejected() -> None:
-    """Blackbox 不再把 dry-run / backtest 作为 onboard 阶段；它们仍是独立 gate 命令。"""
-    for stage in ("dry-run", "backtest"):
-        with pytest.raises(ValueError, match="unsupported onboard stage"):
-            sequence_for_stage(stage, runtime_type="blackbox_v2")
+def test_partial_onboard_stages_are_rejected_for_both_runtimes() -> None:
+    """定位问题使用独立 gate；onboard 只保留完整流程。"""
+    for runtime_type in ("blackbox_v2", "native_adapter"):
+        for stage in ("static", "input", "unit", "dry-run", "compare", "backtest"):
+            with pytest.raises(ValueError, match="unsupported onboard stage"):
+                sequence_for_stage(stage, runtime_type=runtime_type)
 
 
 def test_default_runtime_type_is_native_for_backward_compatibility() -> None:

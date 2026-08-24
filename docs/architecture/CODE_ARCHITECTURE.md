@@ -6,8 +6,8 @@
 **最后核验日期**：2026-08-21
 **定位**：本仓库的代码架构主蓝图，定义分层模型、包依赖方向、运行时调用图和扩展边界。
 **与既有文档的关系**:
-- [ARCHITECTURE.md](ARCHITECTURE.md) = **系统架构**（部署、DB schema、API 契约、数据流）。
-- 本文 = **代码架构**（包/模块/依赖方向/调用图/扩展点）。二者互补，不重叠。
+- 本文是代码和系统调用关系的唯一架构总图；DB schema 以 migrations 为准，API 以 Backend
+  路由与 dashboard 合同为准，部署控制面以生产调度治理为准。
 - [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) 边界总纲 → [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) 共享方案契约 → [onboarding/README.md](../onboarding/README.md) 统一入库导航。本文把它们统一到一张依赖图上。
 - [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md) 是 source-backed 方案的源算法保真总纲；它约束 L2 core 与 L4 backtest runner 不得借平台适配改变原始算法逻辑。
 

@@ -361,9 +361,8 @@ A：不能。Backend 不注册手动预测路由；历史缺口只能由运维�
 
 - `docs/README.md`
 - `docs/CURRENT_STATUS.md`
-- `docs/architecture/ARCHITECTURE.md`
 - `docs/architecture/PREDICTION_SEMANTICS.md`
 - `docs/architecture/HARNESS_ARCHITECTURE.md`
-- `docs/architecture/BLACKBOX_V2_PLATFORM.md`
+- `docs/architecture/CODE_ARCHITECTURE.md`
 
 若本文与上述 CURRENT 文档或机器契约冲突，应优先核对机器契约和 CURRENT 文档，并更新本手册。

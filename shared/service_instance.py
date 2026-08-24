@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
-from functools import lru_cache
 from pathlib import Path
 
 
@@ -15,29 +13,13 @@ RELEASE_COMMIT_ENV = "BFL_RELEASE_COMMIT"
 
 
 def resolve_code_commit(project_root: str | Path) -> str:
-    """返回 release 注入的 commit，开发环境才回退到 Git。"""
+    """返回 immutable launcher 注入的 release commit。"""
+    del project_root
     configured = str(os.getenv(RELEASE_COMMIT_ENV) or "").strip().lower()
     if configured:
         if not _GIT_COMMIT.fullmatch(configured):
             raise RuntimeError("BFL_RELEASE_COMMIT is invalid")
         return configured
-    if str(os.getenv(DEPLOYMENT_TARGET_ENV) or "").strip():
-        raise RuntimeError(
-            "production release requires BFL_RELEASE_COMMIT"
-        )
-    return _git_commit(Path(project_root).resolve())
-
-
-@lru_cache(maxsize=8)
-def _git_commit(project_root: Path) -> str:
-    completed = subprocess.run(
-        ["git", "-C", str(project_root), "rev-parse", "HEAD"],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=5,
-    )
-    commit = completed.stdout.strip().lower()
-    if completed.returncode != 0 or not _GIT_COMMIT.fullmatch(commit):
-        raise RuntimeError("service code commit is unavailable")
-    return commit
+    target = str(os.getenv(DEPLOYMENT_TARGET_ENV) or "").strip()
+    scope = "production release" if target else "runtime"
+    raise RuntimeError(f"{scope} requires BFL_RELEASE_COMMIT")

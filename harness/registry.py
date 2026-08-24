@@ -41,12 +41,9 @@ def sequence_for_stage(
     normalized = stage.strip().lower()
     if normalized == NATIVE_MAINTENANCE_STAGE:
         return list(NATIVE_MAINTENANCE_SEQUENCE)
-    sequence = auto_sequence_for_runtime(runtime_type)
-    if normalized == "all":
-        return sequence
-    if normalized not in sequence:
+    if normalized != "all":
         raise ValueError(f"unsupported onboard stage: {stage}")
-    return sequence[: sequence.index(normalized) + 1]
+    return auto_sequence_for_runtime(runtime_type)
 
 
 def gate_for_name(name: str, *, ctx: GateContext | None = None) -> Gate:

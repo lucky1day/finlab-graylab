@@ -40,14 +40,12 @@
 - 上游算法：[交付 SOP](../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)
 - 平台人员：[平台入库 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)
 - 生产准备：[生产准备清单](../blackbox_v2/PRODUCTION_READINESS.md)
-- 架构边界：[Blackbox V2 平台架构](../architecture/BLACKBOX_V2_PLATFORM.md)
+- 架构边界：[代码架构](../architecture/CODE_ARCHITECTURE.md)
 
 ### Native V1
 
 - 文档入口：[Native V1 存量维护](../native_v1/README.md)
-- 维护判断：[存量维护 T0](../sop/NATIVE_V1_MAINTENANCE_T0.md)
-- 维护实施：[存量维护 SOP](../sop/NATIVE_V1_MAINTENANCE_SOP.md)
-- 修改验证：[修改后验证 SOP](../sop/NATIVE_V1_POST_CHANGE_TEST_SOP.md)
+- 准入、改动分级、实施和验证：[存量维护 SOP](../sop/NATIVE_V1_MAINTENANCE_SOP.md)
 
 ### 共享规则
 
@@ -86,11 +84,11 @@
 新 Blackbox 方案进入 ECS 灰度实验室时，长期保留的最短链路为：
 
 1. `intake-blackbox` 收取两文件，并检查生成的 paused/draft canonical config；
-2. `onboard ... --stage all` 一次运行四个技术 Gate；只有需要证明零控制面写入时才用 `--check-only`，不能先跑 check-only 再把它当生产证据；
+2. `onboard ... --stage all` 一次运行四个技术 Gate并持久化可用于后续 lifecycle 的控制面证据；
 3. `gate shadow-register` 一条命令完成首次 draft identity 创建和 shadow/paused 登记；不再单独运行 `draft-register`；
 4. 明确 `gray_target_start` 后，运行一次完整持久化 backtest；
 5. `activate` 原子激活 exact version 与 composite Registry；
-6. 对激活日前应有的单日灰度信号运行 `signal-gap-plan`，只有 `actionable=1` 时才执行 `signal-gap-fill`；
+6. 对激活日前应有的单日灰度信号执行 `signal-gap-fill`；命令内部先完成只读 planner，存在 blocker 时零写入；
 7. 运行 `gate dashboard`，核验统一 Dashboard 读模型；最后只读核对 systemd timer 与下一次自然触发。
 
 为了稳定性，不把 shadow、回测和 activation 合并成一个跨事务“万能命令”：三者的数据库对象、失败恢复和重试语义不同。提速来自删除无效的人工签名往返、自动选择 exact version/run、删除重复 Gate，以及只对真实缺口补写；保留三道可独立验收的提交边界，能避免某一步失败后整条流程状态不明。

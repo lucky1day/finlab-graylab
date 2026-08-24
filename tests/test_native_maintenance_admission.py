@@ -638,23 +638,6 @@ class NativeMaintenanceStageRegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Blackbox"):
             gates_for_stage("native-maintenance", ctx=ctx)
 
-    def test_check_only_cli_rejects_native_maintenance_stage(self) -> None:
-        from harness.cli import main
-
-        with self.assertRaisesRegex(SystemExit, "check-only requires --stage all"):
-            main(
-                [
-                    "onboard",
-                    _SCHEME_ID,
-                    "--predict-date",
-                    "2026-08-04",
-                    "--stage",
-                    "native-maintenance",
-                    "--check-only",
-                ]
-            )
-
-
 def _config(**overrides: object) -> SimpleNamespace:
     values: dict[str, object] = {
         "scheme_id": _SCHEME_ID,

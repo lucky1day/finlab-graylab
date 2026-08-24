@@ -31,9 +31,7 @@ Native V1 只维护 `deploy/onboarding_policy_v1.json` 登记的存量方案。�
 
 | 文档 | 用途 |
 |---|---|
-| [存量维护 T0](../sop/NATIVE_V1_MAINTENANCE_T0.md) | 判断能否进入 Native 维护流程 |
-| [存量维护 SOP](../sop/NATIVE_V1_MAINTENANCE_SOP.md) | 执行修复和 Harness 验证 |
-| [修改后验证 SOP](../sop/NATIVE_V1_POST_CHANGE_TEST_SOP.md) | 验证运行、回测、API 和副作用 |
+| [存量维护 SOP](../sop/NATIVE_V1_MAINTENANCE_SOP.md) | 准入、改动分级、实施、验证和副作用核验的唯一流程 |
 | [Native V1 契约](SCHEME_CONTRACT.md) | `config + predict + core` 字段和代码边界 |
 
 冻结前新增方案流程已从工作树删除，可通过 Git 历史追溯；当前维护只使用上表入口。

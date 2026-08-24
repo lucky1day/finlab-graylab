@@ -26,4 +26,3 @@ class GateContext:
     backtest_start_date: str = DEFAULT_BACKTEST_START_DATE
     timeout_sec: int = 600
     api_base_url: str = "http://127.0.0.1:8100"
-    check_only: bool = False
