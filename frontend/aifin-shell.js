@@ -287,6 +287,8 @@
     var targetMonth = value.slice(0, 7);
     if (taskType === "quarterly_average") {
       formatQuarterlyAverageTargetQuarter(targetMonth);
+    } else if (taskType === "annual_average") {
+      formatAnnualAverageTargetYear(targetMonth);
     }
     return targetMonth;
   }
@@ -328,6 +330,25 @@
     return match[1] + "/Q" + String((Number(match[2]) - 1) / 3 + 1);
   }
 
+  function formatAnnualAveragePredictDate(predictDate) {
+    var value = requireDashboardIsoDate(
+      predictDate,
+      "annual_average predict_date"
+    );
+    return value.slice(5, 7) + "/" + value.slice(8, 10);
+  }
+
+  function formatAnnualAverageTargetYear(targetMonth) {
+    var value = String(targetMonth || "").trim();
+    var match = value.match(/^(\d{4})-(0[1-9]|1[0-2])$/);
+    if (!match) {
+      throw dashboardDataError(
+        "annual_average target year key must use YYYY-MM"
+      );
+    }
+    return match[1];
+  }
+
   function isWeeklyTask(task) {
     return task && (
       String(task.frequency || "").toLowerCase() === "weekly" ||
@@ -348,10 +369,18 @@
     return task && task.taskType === "quarterly_average";
   }
 
+  function isAnnualAverageTask(task) {
+    return task && task.taskType === "annual_average";
+  }
+
   function formatFactorPeriodLabel(task, month) {
-    return isQuarterlyAverageTask(task)
-      ? formatQuarterlyAverageTargetQuarter(month)
-      : month;
+    if (isQuarterlyAverageTask(task)) {
+      return formatQuarterlyAverageTargetQuarter(month);
+    }
+    if (isAnnualAverageTask(task)) {
+      return formatAnnualAverageTargetYear(month);
+    }
+    return month;
   }
 
   function liveBacktestCutoffTargetDate(liveScheme) {
@@ -457,6 +486,10 @@
       targetStart = targetDisplayMonth(targetStart, task.taskType);
     } else if (targetStart && isQuarterlyAverageTask(task)) {
       targetStart = formatQuarterlyAverageTargetQuarter(
+        targetDisplayMonth(targetStart, task.taskType)
+      );
+    } else if (targetStart && isAnnualAverageTask(task)) {
+      targetStart = formatAnnualAverageTargetYear(
         targetDisplayMonth(targetStart, task.taskType)
       );
     }
@@ -2628,6 +2661,15 @@
         buttonLabel: "打开季度平均预测明细"
       };
     }
+    if (isAnnualAverageTask(task)) {
+      return {
+        title: formatAnnualAverageTargetYear(month) + " 年度平均预测明细",
+        dateHeader: "目标年度",
+        note: "",
+        emptyText: "当前年度暂无预测明细",
+        buttonLabel: "打开年度平均预测明细"
+      };
+    }
     var weekly = isWeeklyTask(task);
     var weeklyAverage = isWeeklyAverageTask(task);
     return {
@@ -2720,6 +2762,7 @@
     var scheme = getSelectedScheme();
     var isMonthlyAverage = isMonthlyAverageTask(task);
     var isQuarterlyAverage = isQuarterlyAverageTask(task);
+    var isAnnualAverage = isAnnualAverageTask(task);
     var presentation = factorDetailPresentation(task, month);
     var dateHeader = document.getElementById("factorDailyDateHeader");
     var note = document.getElementById("factorCalendarNote");
@@ -2740,7 +2783,7 @@
         })
       : [];
     if (!rows.length) {
-      var emptyText = isMonthlyAverage || isQuarterlyAverage
+      var emptyText = isMonthlyAverage || isQuarterlyAverage || isAnnualAverage
         ? presentation.emptyText
         : "当前月份暂无每日明细";
       body.innerHTML = '<tr><td colspan="5" class="factor-empty-cell">' +
@@ -2759,6 +2802,9 @@
       } else if (isQuarterlyAverage) {
         html += '<td class="mono">' + escapeHtml(formatQuarterlyAveragePredictDate(row.predictDate)) + '</td>';
         html += '<td class="mono">' + escapeHtml(formatQuarterlyAverageTargetQuarter(row.targetMonth || month)) + '</td>';
+      } else if (isAnnualAverage) {
+        html += '<td class="mono">' + escapeHtml(formatAnnualAveragePredictDate(row.predictDate)) + '</td>';
+        html += '<td class="mono">' + escapeHtml(formatAnnualAverageTargetYear(row.targetMonth || month)) + '</td>';
       } else {
         html += dateCellHtml(row.predictDate, "--");
         html += dateCellHtml(row.targetDate, displayDay);
@@ -3059,6 +3105,8 @@
     formatMonthlyAverageTargetMonth: formatMonthlyAverageTargetMonth,
     formatQuarterlyAveragePredictDate: formatQuarterlyAveragePredictDate,
     formatQuarterlyAverageTargetQuarter: formatQuarterlyAverageTargetQuarter,
+    formatAnnualAveragePredictDate: formatAnnualAveragePredictDate,
+    formatAnnualAverageTargetYear: formatAnnualAverageTargetYear,
     formatFactorPeriodLabelForTest: formatFactorPeriodLabel,
     factorDetailPresentationForTest: factorDetailPresentation,
     liveDividerTextForTest: liveDividerText,
