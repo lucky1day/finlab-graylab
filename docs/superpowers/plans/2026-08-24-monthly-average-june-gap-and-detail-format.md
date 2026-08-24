@@ -214,7 +214,12 @@ html += '<td class="mono">' + escapeHtml(
 计算 `frontend/aifin-shell.js` SHA-256，并把 `frontend/index.html` 中对应 query 更新为新摘要。然后运行：
 
 ```bash
-pytest -q tests/test_monthly_average_frontend_target_month.py tests/test_frontend_*.py tests/test_factor_lab_dashboard.py tests/test_factor_lab_dashboard_v1.py
+pytest -q \
+  tests/test_monthly_average_frontend_target_month.py \
+  tests/test_frontend_*.py \
+  tests/test_dashboard_*.py \
+  tests/test_factor_lab_dashboard_api.py \
+  tests/test_period_average_dashboard.py
 ```
 
 Expected: 全部 PASS；视图模型仍保存 ISO 原始值，月均明细 formatter 返回 `06/15` 和 `2025/02`。
