@@ -286,6 +286,24 @@
       : value.slice(0, 7);
   }
 
+  function formatMonthlyAveragePredictDate(predictDate) {
+    var value = requireDashboardIsoDate(
+      predictDate,
+      "monthly_average predict_date"
+    );
+    return value.slice(5, 7) + "/" + value.slice(8, 10);
+  }
+
+  function formatMonthlyAverageTargetMonth(targetMonth) {
+    var value = String(targetMonth || "").trim();
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(value)) {
+      throw dashboardDataError(
+        "monthly_average target month must use YYYY-MM"
+      );
+    }
+    return value.slice(0, 4) + "/" + value.slice(5, 7);
+  }
+
   function isWeeklyTask(task) {
     return task && (
       String(task.frequency || "").toLowerCase() === "weekly" ||
@@ -2682,8 +2700,8 @@
       var result = renderDailyResult(row);
       html += '<tr>';
       if (isMonthlyAverage) {
-        html += '<td class="mono">' + escapeHtml(row.predictDate || "--") + '</td>';
-        html += '<td class="mono">' + escapeHtml(row.targetMonth || month) + '</td>';
+        html += '<td class="mono">' + escapeHtml(formatMonthlyAveragePredictDate(row.predictDate)) + '</td>';
+        html += '<td class="mono">' + escapeHtml(formatMonthlyAverageTargetMonth(row.targetMonth || month)) + '</td>';
       } else {
         html += dateCellHtml(row.predictDate, "--");
         html += dateCellHtml(row.targetDate, displayDay);
@@ -2980,6 +2998,8 @@
     getSchemeRemark: getSchemeRemark,
     monthlyAverageTargetMonth: monthlyAverageTargetMonth,
     targetDisplayMonth: targetDisplayMonth,
+    formatMonthlyAveragePredictDate: formatMonthlyAveragePredictDate,
+    formatMonthlyAverageTargetMonth: formatMonthlyAverageTargetMonth,
     factorDetailPresentationForTest: factorDetailPresentation,
     liveDividerTextForTest: liveDividerText,
     loadFactorLabData: loadFactorLabData,

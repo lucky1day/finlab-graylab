@@ -106,6 +106,33 @@ def test_monthly_average_target_month_rejects_invalid_dates(
     )
 
 
+def test_monthly_average_detail_formats_predict_date_and_target_month() -> None:
+    assert _call_hook(
+        "formatMonthlyAveragePredictDate", "2026-06-15"
+    ) == "06/15"
+    assert _call_hook(
+        "formatMonthlyAverageTargetMonth", "2025-02"
+    ) == "2025/02"
+
+
+@pytest.mark.parametrize("value", ["", "2026-6-15", "2026-02-30", None])
+def test_monthly_average_predict_date_format_rejects_invalid_values(
+    value: str | None,
+) -> None:
+    assert "ISO date" in _call_hook_error(
+        "formatMonthlyAveragePredictDate", value
+    )
+
+
+@pytest.mark.parametrize("value", ["", "2025-2", "2025-13", None])
+def test_monthly_average_target_month_format_rejects_invalid_values(
+    value: str | None,
+) -> None:
+    assert "target month" in _call_hook_error(
+        "formatMonthlyAverageTargetMonth", value
+    )
+
+
 def test_non_monthly_task_keeps_raw_target_month() -> None:
     assert _call_hook(
         "targetDisplayMonth", "2026-01-16", "quarterly_average"
@@ -273,3 +300,8 @@ def test_static_monthly_average_copy_has_no_daily_detail_label() -> None:
     assert "<th>预测明细</th>" in monthly_table_head
     assert "<th>每日明细</th>" not in monthly_table_head
     assert "查看' + escapeHtml(row.month) + '每日明细" not in javascript
+    assert "formatMonthlyAveragePredictDate(row.predictDate)" in javascript
+    assert (
+        "formatMonthlyAverageTargetMonth(row.targetMonth || month)"
+        in javascript
+    )
