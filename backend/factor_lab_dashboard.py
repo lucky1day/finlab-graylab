@@ -30,7 +30,6 @@ from backend.factor_lab_dashboard_semantics import (
     backtest_data_source_label,
     choose_latest_backtest_runs,
     choose_live_prediction_rows,
-    apply_live_prediction_corrections,
     registry_task_type_index,
     collapse_actual_facts_with_diagnostics,
     compact_detail_row,
@@ -115,10 +114,6 @@ def build_factor_lab_dashboard(
         registry_rows = _read_active_registry(connection)
         target_rows = _read_active_targets(connection)
         prediction_rows = _read_live_predictions(connection, registry_rows)
-        prediction_correction_rows = _read_live_prediction_corrections(
-            connection,
-            prediction_rows,
-        )
         actual_rows = _read_live_actuals(connection, registry_rows)
         backtest_run_rows = _read_backtest_runs(connection, registry_rows)
         selected_backtest_runs = choose_latest_backtest_runs(
@@ -164,14 +159,8 @@ def build_factor_lab_dashboard(
         actual_rows,
         active_actual_scopes=active_actual_scopes,
     )
-    corrected_prediction_rows, correction_diagnostics = (
-        apply_live_prediction_corrections(
-            prediction_rows,
-            prediction_correction_rows,
-        )
-    )
     canonical_predictions = choose_live_prediction_rows(
-        corrected_prediction_rows,
+        prediction_rows,
         display_until=display_until,
         task_type_by_scheme=registry_task_type_index(registry_rows),
     )
@@ -375,7 +364,6 @@ def build_factor_lab_dashboard(
             "history_live_rows_excluded_before_policy_start": (
                 history_live_rows_excluded
             ),
-            "live_prediction_corrections": correction_diagnostics,
             "weekly_coverage": weekly_coverage,
             **actual_diagnostics,
         },
@@ -622,7 +610,7 @@ def _read_live_predictions(
     where_clause = " OR ".join(filters) if filters else "1 = 0"
     statement = text(
         f"""
-        SELECT id, scheme_version, scheme_id, target_tenor, horizon, predict_date,
+        SELECT id, scheme_id, target_tenor, horizon, predict_date,
                feature_date, target_date, prediction_phase,
                predicted_direction, extra
         FROM t_scheme_predictions
@@ -636,33 +624,6 @@ def _read_live_predictions(
         statement,
         params,
         dataset="live_predictions",
-        cap=MAX_LIVE_PREDICTION_SOURCE_ROWS,
-    )
-
-
-def _read_live_prediction_corrections(
-    connection: Connection,
-    prediction_rows: list[Mapping[str, Any]],
-) -> list[Mapping[str, Any]]:
-    prediction_ids = sorted({int(row["id"]) for row in prediction_rows})
-    if not prediction_ids:
-        return []
-    statement = text(
-        """
-        SELECT prediction_id, scheme_id, target_tenor, horizon,
-               predict_date, feature_date, target_date,
-               scheme_version, prediction_phase,
-               original_direction, corrected_direction, operation_id
-        FROM t_scheme_prediction_corrections
-        WHERE prediction_id IN :prediction_ids
-        LIMIT :dashboard_source_limit
-        """
-    ).bindparams(bindparam("prediction_ids", expanding=True))
-    return _read_bounded_source_rows(
-        connection,
-        statement,
-        {"prediction_ids": prediction_ids},
-        dataset="live_prediction_corrections",
         cap=MAX_LIVE_PREDICTION_SOURCE_ROWS,
     )
 

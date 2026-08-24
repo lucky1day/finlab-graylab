@@ -169,8 +169,6 @@ scheduler 可以为了降低机器负载对同一业务 cron 下的 active 方�
 
 `t_scheme_predictions` 的业务键为 `scheme_id + target_tenor + horizon + target_date`；其中 `t_scheme_predictions.scheme_id` 保存 base scheme / 算法执行身份，不是 Registry composite `scheme_id`。所有 `gray_live` 与 `scheduled_live` 写入均为 insert-only。对普通 Native/Blackbox active completion，完整业务键集合均不存在时，全部记录以 plain INSERT 发布并以 `success` 收口；完整集合已存在时，本次 run 以 `skipped / prediction_keys_already_exist / records_written=0` 收口；仅部分键存在时整批以 `failed / records_written=0` 收口，缺失键也不得写入。任何事后数据或代码修订都不得更新、替换已发布预测。
 
-已发布 Prediction 经受控 live-safe 重放后若证明原发布值使用了错误输入，只允许追加一条与原 `prediction_id` 一对一绑定的 `t_scheme_prediction_corrections` 展示纠错。纠错写入必须在同一事务内锁定并复核原业务键、三个日期、原方向、phase、exact scheme version、active Registry、纠错证据和重复状态；任一不一致整批拒绝。2026-08-24 首批纠错还必须逐条命中 exact release 内校验和固定的 `ecs-mac3-alignment-20260824-v1` 八条审计清单，该清单明确保存已有 targeted replay 终端结果、Mac3 只读对照行以及“未生成 durable raw replay report”的证据限制；调用者自报或重新计算一组自洽字段不能扩大 scope。Dashboard 在同一只读快照中读取原 Prediction 与纠错，只修改内存中的展示副本并记录 applied count/operation identity；原 Prediction、run、日志和算法 `extra` 永久不变。纠错表不提供 update/delete/upsert，也不能用于补缺、改写 Actual、覆盖未完成验证的主机架构差异，或把另一主机历史值直接当作当前事实。
-
 普通 active completion 的 benign `skipped` 是算法已经执行、records 已返回并通过该方案写入前复核之后产生的 per-scheme publication outcome，不是 scheduler preflight skip；算法计算成本已经发生。one-shot batch 的 exit code `0` 只表示该批次没有 actionable failure：同一摘要可以同时包含首次发布的 `success` 与完整重复的 benign `skipped`，不能据此声称整个批次没有执行候选方案。
 
 Authorized gray-gap 使用更严格的例外语义：只要授权组内任一业务键已经存在，就必须拒绝整个 gray-gap 组并保持 `records_written=0`，未存在的键也不得写入；该结果不得转换为 benign `skipped`。

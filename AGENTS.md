@@ -163,7 +163,7 @@ python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
 
 - `migrations.runner` 是迁移行为的唯一实现：它只接收 caller-supplied `Engine`，负责 manifest、inspect、apply 与 `APPLYING` recovery；不得把环境变量、CLI 解析或运维授权逻辑放入该库层。
 - `scripts/apply_migrations.py` 是唯一受控运维包装器。生产/候选 schema 的 apply 与 recovery 只能经此 CLI，不得用 `mysql` 客户端直跑 migration SQL，也不得复制 runner 行为到 scheduler、harness 或其它脚本。
-- `--apply`、`--recover-applying-017 --apply`、`--recover-applying-018 --apply`、`--recover-applying-019 --apply`、`--recover-applying-021 --apply` 都必须同时显式提供 `--expected-database-name` 和 `--expected-server-uuid`；CLI 在创建 Engine 前校验参数，并在首个写库动作前精确比对 `DATABASE()` 与 `@@server_uuid`。inspect 是只读操作，不需要这两个参数。
+- `--apply`、`--recover-applying-017 --apply`、`--recover-applying-018 --apply`、`--recover-applying-019 --apply` 都必须同时显式提供 `--expected-database-name` 和 `--expected-server-uuid`；CLI 在创建 Engine 前校验参数，并在首个写库动作前精确比对 `DATABASE()` 与 `@@server_uuid`。inspect 是只读操作，不需要这两个参数。
 - operator 只能从只读 inspect JSON 或受控只读 identity query 取得 UUID；文档、脚本输出和提交中不得示例生产 UUID、DSN 或凭据。isolated MySQL 测试不等于已应用生产 migration；当前 apply/no-op 输出也尚未形成 durable signed operator report。
 
 ## 编码规范
