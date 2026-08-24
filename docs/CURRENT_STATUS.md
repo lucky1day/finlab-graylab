@@ -23,13 +23,12 @@
 ## 当前 immutable release
 
 - ECS 与 Mac3 `current` 均为 exact release
-  `053d562fc40d7ecf5596f56f1beb00e4a3b58178`。ECS `previous` 为
-  `86e9f32cda9d1cb573a14d202ed376c995e249f0`，Mac3 `previous` 为
-  `3adcc96f790c740e2052b3f6283704829d30f5d9`。
+  `e93ea24518dbf26870473d9a201b310c38d5c5d2`，两端 `previous` 均为
+  `053d562fc40d7ecf5596f56f1beb00e4a3b58178`。
 - 两端使用同一份已验证 archive：source archive SHA-256 为
-  `58dd3398d3e85cd3f91497eb4f4b5113749c010780b183c14b215e8ffea4dadf`，manifest 文件 SHA-256 为
-  `a50cc3d566f08d196db83b3048d9c62c33ea9b20c200d2154639eec28e68c569`，安装后 source-tree SHA-256 为
-  `1c01ed4b67c657a3eb456dad39b0ccd4d2b5c3ec00a560519e6f2f7fd43adf05`。
+  `a30deb7728b1a8881f4a75450b4c1e3d620378dcfc7d6d3ad043e6ac4e5cc286`，manifest 文件 SHA-256 为
+  `595690e934d937fbc032a8f998a9fbea586a215ed0f03f2dea69ec7b5719a5e5`，安装后 source-tree SHA-256 为
+  `07d07167cca6e2361fbcd8971481ea460f227dbcddb5cf7a57eb731366caa471`。
 - 该 release 汇总了周期均值历史范围修复、月均目标月/日期格式、季均目标季度及 Q2 live scope、年均目标年度及
   2026 live scope。正式回归测试继续保留；一次性 archive、导出 JSON、候选目录和浏览器验收状态不进入工作树。
 - Mac3 生产应用从 `/Users/macstudio0/bond-factor-lab-production/current` 启动，运行状态位于
