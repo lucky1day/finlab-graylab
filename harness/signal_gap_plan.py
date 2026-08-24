@@ -260,7 +260,7 @@ def read_signal_gap_snapshot(
                 }
             )
             continue
-        if case.target_date >= PLATFORM_LIVE_TARGET_START_DATE:
+        if _case_is_in_platform_live_scope(case):
             expected_cases.append(case)
 
     live_signals = _read_live_signals(
@@ -1031,6 +1031,18 @@ def _is_due(
         calendar=calendar,
         task_type=target.task_type,
     )
+
+
+def _case_is_in_platform_live_scope(case: ExpectedSignalCase) -> bool:
+    """按任务的业务目标身份判断是否进入平台实盘区间。"""
+    if case.task_type != "monthly_average":
+        return case.target_date >= PLATFORM_LIVE_TARGET_START_DATE
+    pointer = date.fromisoformat(case.target_date)
+    if pointer.month == 12:
+        target_month = f"{pointer.year + 1:04d}-01"
+    else:
+        target_month = f"{pointer.year:04d}-{pointer.month + 1:02d}"
+    return target_month >= PLATFORM_LIVE_TARGET_START_DATE[:7]
 
 
 def _is_frequency_due(

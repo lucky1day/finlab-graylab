@@ -113,6 +113,23 @@ def _case(
     )
 
 
+def _monthly_average_case(
+    *, target_date: str = "2026-05-16"
+) -> signal_gap_plan.ExpectedSignalCase:
+    return signal_gap_plan.ExpectedSignalCase(
+        registry_scheme_id="monthly_avg__h1__5Y",
+        base_scheme_id="monthly_avg",
+        runtime_type="blackbox_v2",
+        frequency="monthly",
+        task_type="monthly_average",
+        target_tenor="5Y",
+        horizon=1,
+        predict_date="2026-05-15",
+        feature_date="2026-05-15",
+        target_date=target_date,
+    )
+
+
 def _observed(
     scheme_id: str = "demo_native",
     *,
@@ -383,6 +400,22 @@ def test_period_average_due_uses_task_bucket_anchor_not_frequency_shortcut() -> 
         calendar=calendar,
         task_type="quarterly_average",
     )
+
+
+def test_monthly_average_live_scope_uses_display_target_month() -> None:
+    assert signal_gap_plan._case_is_in_platform_live_scope(
+        _monthly_average_case()
+    )
+
+
+def test_non_monthly_live_scope_keeps_raw_target_date_boundary() -> None:
+    case = replace(
+        _monthly_average_case(),
+        task_type="quarterly_average",
+    )
+    assert not signal_gap_plan._case_is_in_platform_live_scope(case)
+
+
 def test_weekly_due_is_saturday_even_when_friday_is_holiday() -> None:
     class Calendar:
         weekly_predict_dates = frozenset({"2026-08-17"})
