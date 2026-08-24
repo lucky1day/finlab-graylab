@@ -36,6 +36,17 @@
   `/Users/macstudio0/bond-factor-lab-runtime`；ECS 从 `/opt/bond-factor-lab/current` 启动。两端运行时均不引用
   Git 工作区。
 
+## 每日预测 Phase-A 后缀重算
+
+- Liwei Phase-A 已具备唯一的有界 suffix 决策：兼容 current generation 下的可定位 daily 历史修订使用
+  `suffix / proven_daily_input_revision`；同时存在有效辅助输入修订时使用
+  `suffix / combined_daily_effective_revision`，cutoff 从最早 daily 修订日前移五个交易日。
+- 2026-08-24 专项回归确认普通修订只规划 7 个日期而非约 639 个历史日期，父代前缀、lineage、原子 publication
+  与 full-cold cache/完整输出均保持一致。七个 Mac3 current generation 在生产 `forecast_env` 下与当前 spec
+  全部兼容；未修改 Native source-backed 算法、输入口径、07:03 调度、数据库写入或生产控制面。
+- 用户已确认该性能问题按现有有界 suffix 能力闭环，并要求删除一次性专项测试代码。该结论表示缓存重算范围
+  已闭环，不把尚未取得的下一次自然 revision 批次耗时表述为已实测 SLA。
+
 ## 周期均值基础建设
 
 - `monthly_average`、`quarterly_average`、`annual_average` 的平台基础已完成：统一任务规格、MID/CQ/SF
