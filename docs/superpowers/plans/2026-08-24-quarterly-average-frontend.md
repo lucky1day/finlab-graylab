@@ -322,7 +322,7 @@ Expected: 除最终 cache hash 测试外全部 PASS。
 - Modify: `frontend/index.html`
 - Test: `tests/test_quarterly_average_frontend.py`
 - Test: `tests/test_frontend_overview_contract.py`
-- Test: `tests/test_frontend_static.py`
+- Test: `tests/test_frontend_asset_versions.py`
 
 **Step 1: 用最终 JavaScript 内容计算 cache hash**
 
@@ -347,7 +347,7 @@ pytest -q \
   tests/test_quarterly_average_frontend.py \
   tests/test_monthly_average_frontend_target_month.py \
   tests/test_frontend_overview_contract.py \
-  tests/test_frontend_static.py
+  tests/test_frontend_asset_versions.py
 ```
 
 Expected: PASS。
