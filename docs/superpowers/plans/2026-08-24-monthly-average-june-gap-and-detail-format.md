@@ -1,5 +1,7 @@
 # Monthly Average June Gap and Detail Format Implementation Plan
 
+> **状态：已完成并完成跨主机闭环。** ECS 已补齐五条目标月 2026/06 Prediction；前端最终使用预测日 `MM/DD`、目标月 `YYYY/MM`。同一 exact release `053d562fc40d7ecf5596f56f1beb00e4a3b58178` 后续只晋级 Mac3 一次，Mac3 本地 run `3685–3689` 补齐相同五条 Prediction，并从本地权威日频数据生成到期 Actual。ECS 与公网 Mac3 的 M0 live 业务键和值最终零差异。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在 ECS 为五个月均方案补齐目标月 `2026-06` 的 `gray_live` 记录，并把月均预测明细中的预测日和目标月分别显示为 `MM/DD`、`YYYY/MM`。

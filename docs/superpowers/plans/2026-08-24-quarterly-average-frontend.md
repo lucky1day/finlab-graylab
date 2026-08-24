@@ -1,5 +1,7 @@
 # 季均前端目标季度展示 Implementation Plan
 
+> **状态：已完成。** 前端提交 `04d222c` 已随 exact release `053d562fc40d7ecf5596f56f1beb00e4a3b58178` 在 ECS 与 Mac3 生效；汇总、趋势和抽屉统一使用 `YYYY/Qn`，预测日使用 `MM/DD`。正式回归测试继续保留。
+
 > **For Codex:** REQUIRED SUB-SKILL: Use executing-plans to implement this plan task-by-task.
 
 **Goal:** 在不修改 API、数据库原始日期字段和内部月份索引的前提下，让季度均值任务的汇总表、趋势图和详情抽屉统一显示目标季度，并将预测日显示为 `MM/DD`。

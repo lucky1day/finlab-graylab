@@ -1,5 +1,7 @@
 # 季均 2026/Q2 缺口与 ECS 单次发布 Implementation Plan
 
+> **状态：已完成并完成跨主机闭环。** `86e9f32` 将 Q2 纳入 live scope，最终 exact release 为 `053d562fc40d7ecf5596f56f1beb00e4a3b58178`。ECS 与 Mac3 均有五条 2026/Q2 Prediction/Actual；Mac3 Prediction 使用本地 run `3690–3694`，Actual 从本地权威日频数据生成。公网显示 Q2 已验证、Q3 待验证，两端 M0 live 差异为 0。
+
 > **For Codex:** REQUIRED SUB-SKILL: Use executing-plans to implement this plan task-by-task.
 
 **Goal:** 让季度均值 `2026/Q2` 的 raw target pointer `2026-04-01` 进入平台受控 live gap 范围，补齐五个期限各一条预测，并与已存在的季度 Actual join；同时把已完成的季度前端修改和 gap-scope 修改通过同一个 immutable release 晋级 ECS。

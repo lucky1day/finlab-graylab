@@ -1,5 +1,7 @@
 # Period-Average Actuals History Scope Implementation Plan
 
+> **状态：已完成并在 Mac3 补齐现场数据。** 代码修复 `4f7cbd8` 已包含于 exact release `053d562fc40d7ecf5596f56f1beb00e4a3b58178`。后续跨主机核查发现 Mac3 缺少 20 条已到期周期 Actual；这些记录没有从 ECS 复制，而是从 Mac3 本地权威日频数据生成，写前与 ECS 参考逐字段 `20/20` 一致，再经唯一 repository 写入口落库。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 让自然 Actuals 刷新只计算 `target_date >= 2025-01-01` 的周期均值 Actuals，并在 ECS 补齐 2026/06、2026/07 五个期限共 10 条月均 Actual。

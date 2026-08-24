@@ -22,19 +22,16 @@
 
 ## 当前 immutable release
 
-- Mac3 未参与本轮晋级，`current` 仍为
-  `71a31b0d14bb88d383ea2dc5b495cdc984001461`，`previous` 为
-  `eca1f0fa9fb6eb8c0d0e1b933634d7940df7ba25`。
-- ECS `current` 为 M0 15 方案入库代码 release
-  `859610d09d46af096e3666594267c50297a36a80`，`previous` 为
-  `e07de5f9f158644d014021e09c3817190559b1b2`。source archive SHA-256 为
-  `27776a88184e1d7c4a2b86018cf47219d2b3bffe6c48ac74f0b11f0771def1ba`，manifest SHA-256 为
-  `e448bc65a8521f02dcdf969ea2d9e2e98a2ce3702e4d3f0e4d9debb3c3dbb244`，安装后 source-tree SHA-256 为
-  `65813baf71ae5862e61e58256e9dcdbafd82209882442539266f52d3dbee1c24`。两次独立构建字节一致。
-- 本轮公共修复只把周期均值历史完整性校验限制到调用方请求的回测区间；`2025-01-01` 以前的缺口不再误伤
-  本轮回测，区间内缺口仍 fail-closed。聚焦测试 `109 passed`；本机全量为 `1138 passed`，其余
-  `3 failed + 3 errors` 均因本机未安装 ECS 专用 `forecast_env_blackbox_v1`。ECS 冻结环境已由 15 个
-  exact scheme 的四段 Gate 全量通过补齐决定性验证。
+- ECS 与 Mac3 `current` 均为 exact release
+  `053d562fc40d7ecf5596f56f1beb00e4a3b58178`。ECS `previous` 为
+  `86e9f32cda9d1cb573a14d202ed376c995e249f0`，Mac3 `previous` 为
+  `3adcc96f790c740e2052b3f6283704829d30f5d9`。
+- 两端使用同一份已验证 archive：source archive SHA-256 为
+  `58dd3398d3e85cd3f91497eb4f4b5113749c010780b183c14b215e8ffea4dadf`，manifest 文件 SHA-256 为
+  `a50cc3d566f08d196db83b3048d9c62c33ea9b20c200d2154639eec28e68c569`，安装后 source-tree SHA-256 为
+  `1c01ed4b67c657a3eb456dad39b0ccd4d2b5c3ec00a560519e6f2f7fd43adf05`。
+- 该 release 汇总了周期均值历史范围修复、月均目标月/日期格式、季均目标季度及 Q2 live scope、年均目标年度及
+  2026 live scope。正式回归测试继续保留；一次性 archive、导出 JSON、候选目录和浏览器验收状态不进入工作树。
 - Mac3 生产应用从 `/Users/macstudio0/bond-factor-lab-production/current` 启动，运行状态位于
   `/Users/macstudio0/bond-factor-lab-runtime`；ECS 从 `/opt/bond-factor-lab/current` 启动。两端运行时均不引用
   Git 工作区。
@@ -50,7 +47,8 @@
   晨间 `05:30/06:45`，immutable launcher 的冲突保护未放宽。
 - 非到期 probe 已验证 `not_applicable / exit_code=0 / refresh_required=false`，且 DataBridge、run、prediction
   和周期 Actual 均零副作用。
-- 参考包中的周均五方案及本轮月均、季均、年均 15 个方案均已在 ECS 完成入库；Mac3 未挂载这 15 个方案。
+- 参考包中的周均五方案及本轮月均、季均、年均 15 个方案均已在 ECS 完成入库；15 个周期均值方案也已按同一
+  exact release 和部署矩阵在 Mac3 active，不建立环境分支或第二套算法代码。
 
 ## Mac3 调度与 Dashboard 终态
 
@@ -60,9 +58,9 @@
   终态为 `expected=21 / present=21 / actionable=0 / blocked=0`。
 - 既有 active 方案的 `2026-06-01` target 边界已完成 canonical backtest / live 重分区；历史 run 与
   insert-only live 记录保持不可变，当前 latest-success 与 live target 零重叠。
-- Mac3 当前有 73 个 active base scheme、77 个 active composite Registry。单一 Dashboard 快照 HTTP 200，
-  77 行中 `present=69 / not_due=8 / missing=0`；重分区后 73/73 base DashboardGate、77/77 composite target
-  全部通过。
+- Mac3 当前有 88 个 active base scheme、92 个 active composite Registry。公网 Dashboard 快照非 stale，
+  M0 live 记录为 100 条；与 ECS 按 base scheme、期限、horizon、三个日期组成的业务键逐条比较后，
+  `ECS_ONLY=0 / MAC3_ONLY=0 / VALUE_DIFF=0`。
 - Backend `/api/health` 正常；本机与公网
   `https://bond.finailab.cn/bond-factor-lab/` 页面和 Dashboard 均 HTTP 200，公网 HTML/JS/CSS 摘要与当前
   release 字节一致。
@@ -78,8 +76,8 @@
 - 本轮 15 个 M0 周期均值方案激活后，ECS active base/composite 从 `64/68` 增至 `79/83`。Dashboard
   payload 全局契约通过，15 个新 composite 均通过 DashboardGate；loopback HTML、JS、CSS、SVG、health 和
   Dashboard 为 HTTP 200。浏览器读回三类 M0 排行、owner、样本数和准确率正常，控制台无 warning/error。
-- 本轮 activation 后尚未发生 08:30 Actuals 自然触发，`target_date >= 2026-06-01` 的通用周期 Actual 当前
-  为 0，按 pending 处理；未执行 Actuals one-shot，也未把缺失 Actual 显示为 0。
+- ECS 已有的到期周期 Actual 保持本机 authority；未完成目标桶继续为 `null/pending`。人工 gap-fill 与
+  Actual 刷新只用于补齐已到期历史，不计作首次自然 `scheduled_live` 或 Production Observed。
 
 ## 新方案入库状态
 
@@ -98,8 +96,8 @@
   `algorithm_version=1.0.1`；120 个范围内金标 Request 方向零差异，合同失败为 0，15 份性能报告均低于
   `120s / 600s / 1800s / 4GiB` 且 `fallback_used=false`。更早的原始缺失值和错误锚点只保留为历史审计，
   不作为本轮准入样本。
-- 15 个方案均完成 Intake、四段技术 Gate、shadow、canonical backtest、activation、合法 `gray_live` 和
-  DashboardGate，exact version 与 composite Registry 均为 active。共同绑定 DataBridge generation
+- 15 个方案均在 ECS 完成 Intake、四段技术 Gate、shadow、canonical backtest、activation、合法 `gray_live` 和
+  DashboardGate；同一 exact version 与 composite Registry 也已在 Mac3 active。共同绑定 DataBridge generation
   `full-20260823-063324-33751cc9bcd9`、combined snapshot
   `snapshot-2557d605845236cbeb21ea73` 和 `api-wind-date-v1` SHA-256
   `b24d10fca383bdb9ad9806ec3ef3db01cb0bc163ea4e24eac8d613f4e5a96cdf`。
@@ -125,9 +123,19 @@
 | `m0_annual_avg_sf_7y_v1` | `982156ceecf6` | `hr_20260823T170743Z_dd1d4789538f` | `250`，1 行，2025-01-27 | 0/0，未到期 | passed |
 | `m0_annual_avg_sf_10y_v1` | `71bf770309df` | `hr_20260823T170808Z_75fa2a8c45c8` | `251`，1 行，2025-01-27 | 0/0，未到期 | passed |
 
-15 个方案现已达到 **Onboarding Complete**。它们仍等待真实 systemd 时钟首次生成 `scheduled_live` 后才能
-标记 **Production Observed**。权威日历给出的下一月均锚点为 2026-09-15、下一季均锚点为 2026-09-30；
-当前日历止于 2026-12-31，尚不能权威推导下一年均锚点。
+15 个方案现已达到 **Onboarding Complete**。Mac3 后续一次性同步闭环如下：
+
+- 年均目标年度 2026 五条 Prediction 由 ECS 只读导出，Mac3 经 repository insert-only 写入本地 run
+  `3680–3684`；Actual 仍为 `null`，不伪造未完成年度结果。
+- 月均目标月 2026/06 五条 Prediction 写入本地 run `3685–3689`；季均目标季度 2026/Q2 五条 Prediction
+  写入本地 run `3690–3694`。没有复制 ECS 数据库主键、`run_id`、Actual、回测或 Harness 历史。
+- Mac3 从本机权威日频数据生成 20 条到期周期 Actual，写前与 ECS 的 20 条参考记录逐字段一致；其中包括
+  季均 2026/Q2 五条和三组月均目标指针共 15 条。季均 2026/Q3 与年均 2026 继续 pending。
+- 最终两端 M0 live 均为 100 条且业务键和值零差异；公网月均有 20 条 live、5 条 pending，季均有 10 条
+  live、5 条 pending，年均有 5 条 live、5 条 pending。浏览器确认 2026/Q2 已验证、2026/Q3 待验证。
+
+它们仍等待真实宿主时钟首次生成 `scheduled_live` 后才能标记 **Production Observed**。权威日历给出的下一月均
+锚点为 2026-09-15、下一季均锚点为 2026-09-30；当前日历止于 2026-12-31，尚不能权威推导下一年均锚点。
 
 ## 当前治理边界
 

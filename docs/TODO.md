@@ -5,8 +5,9 @@
 **最后核验日期**：2026-08-24
 
 本文只保留尚未发生的后续事项。当前稳定事实见[当前状态](CURRENT_STATUS.md)，生产规则见
-[生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。M0 月均、季均、年均 15 个方案已达到
-Onboarding Complete，其一次性入库实施清单已从本文清理。
+[生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。M0 月均、季均、年均 15 个方案已在
+ECS 与 Mac3 达到 Onboarding Complete，已到期历史 Prediction/Actual 和公网展示均已闭环；一次性入库与同步
+清单已从本文清理。
 
 ## M0 周期均值自然观察
 
@@ -17,8 +18,8 @@ Onboarding Complete，其一次性入库实施清单已从本文清理。
    把对应方案标记为 Production Observed。
 3. ECS 当前权威交易日历止于 2026-12-31，尚不能权威推导下一年均 SF 锚点。日历自然扩展后重新计算，不按
    历史节假日或自然年猜测日期。
-4. 本轮 activation/gray-live 完成后，下一次自然 Actuals timer 为 2026-08-24 08:30 Asia/Shanghai。其后读回
-   已完成目标桶的周期 Actual；若仍缺失，再单独申请受控 Actuals one-shot。未完成目标桶继续显示 pending。
+4. 现有人工补缺与本地权威 Actual 刷新不计作自然观察。未完成目标桶继续显示 pending；只有 installed
+   systemd/launchd 在权威锚点自然触发并产生 `scheduled_live` 后，才更新 Production Observed 状态。
 
 ## 其他未闭环队列
 

@@ -1,5 +1,7 @@
 # 年均前端与目标年度 2026 缺口修复设计
 
+> **实施结果：已完成。** 目标年度展示和 2026 live scope 已进入 exact release `053d562fc40d7ecf5596f56f1beb00e4a3b58178`。ECS、Mac3 均有五条 2026 Prediction；年度未完成，Actual 继续为 `null/待验证`。本文中的“只晋级 ECS”描述保留为原设计阶段边界。
+
 ## 背景
 
 五个年均 M0 Blackbox V2 方案已经完成入库并在 ECS Registry 中处于 active，
