@@ -268,6 +268,24 @@
     return match ? match[1] + "-" + match[2] + "-" + match[3] : "";
   }
 
+  function monthlyAverageTargetMonth(targetDate) {
+    var value = requireDashboardIsoDate(targetDate, "monthly_average target_date");
+    var year = Number(value.slice(0, 4));
+    var month = Number(value.slice(5, 7)) + 1;
+    if (month === 13) {
+      year += 1;
+      month = 1;
+    }
+    return String(year).padStart(4, "0") + "-" + String(month).padStart(2, "0");
+  }
+
+  function targetDisplayMonth(targetDate, taskType) {
+    var value = requireDashboardIsoDate(targetDate, "target_date");
+    return taskType === "monthly_average"
+      ? monthlyAverageTargetMonth(value)
+      : value.slice(0, 7);
+  }
+
   function isWeeklyTask(task) {
     return task && (
       String(task.frequency || "").toLowerCase() === "weekly" ||
@@ -278,6 +296,10 @@
 
   function isWeeklyAverageTask(task) {
     return task && task.taskType === "weekly_average";
+  }
+
+  function isMonthlyAverageTask(task) {
+    return task && task.taskType === "monthly_average";
   }
 
   function liveBacktestCutoffTargetDate(liveScheme) {
@@ -346,7 +368,7 @@
     updateBacktestMonthRange(scheme);
   }
 
-  function liveDividerText(scheme) {
+  function liveDividerText(scheme, task) {
     var deploymentValue = scheme && (
       scheme.deploymentIsoDate ||
       scheme.deployedAt ||
@@ -379,6 +401,9 @@
       return 0;
     });
     var targetStart = candidates.length ? candidates[0].targetDate : "";
+    if (targetStart && isMonthlyAverageTask(task)) {
+      targetStart = targetDisplayMonth(targetStart, task.taskType);
+    }
     return targetStart
       ? "实盘预测目标区间：" + targetStart + "开始"
       : "实盘预测目标区间：待产生";
@@ -506,9 +531,9 @@
     return String((scheme && (scheme.display_name || scheme.name || scheme.scheme_name)) || "--");
   }
 
-  function detailGroupMonth(row, frequency, horizon) {
+  function detailGroupMonth(row, frequency, horizon, taskType) {
     var sourceDate = row.target_date || "";
-    return String(sourceDate).slice(0, 7);
+    return targetDisplayMonth(sourceDate, taskType);
   }
 
   function detailDisplayDay(row, frequency, horizon) {
@@ -528,11 +553,11 @@
     return '<td class="mono" title="' + escapeHtml(title) + '">' + escapeHtml(label) + '</td>';
   }
 
-  function dailyRowsByMonth(rows, frequency, horizon) {
+  function dailyRowsByMonth(rows, frequency, horizon, taskType) {
     var grouped = {};
     (rows || []).forEach(function (row) {
       if (!isFactorLabDisplayRow(row)) return;
-      var month = detailGroupMonth(row, frequency, horizon);
+      var month = detailGroupMonth(row, frequency, horizon, taskType);
       if (!month) return;
       if (!grouped[month]) grouped[month] = [];
       var predictedDirection = normalizeDirection(row.predicted_direction);
@@ -546,6 +571,7 @@
         predictDate: row.predict_date || "",
         featureDate: row.feature_date || "",
         targetDate: row.target_date || "",
+        targetMonth: month,
         predictionPhase: row.prediction_phase || "",
         runId: row.run_id || null,
         schemeVersion: row.scheme_version || "",
@@ -976,13 +1002,14 @@
     };
   }
 
-  function dashboardDetailRow(row) {
+  function dashboardDetailRow(row, taskType) {
     var actualDirection = row.actualDirection;
     return {
       day: String(row.targetDate).slice(5).replace("-", "/"),
       predictDate: row.predictDate,
       featureDate: row.featureDate,
       targetDate: row.targetDate,
+      targetMonth: targetDisplayMonth(row.targetDate, taskType),
       predictionPhase: row.predictionPhase || "",
       runId: null,
       schemeVersion: "",
@@ -997,14 +1024,24 @@
     };
   }
 
-  function groupDashboardDetails(rows) {
+  function groupDashboardDetails(rows, taskType) {
     var grouped = {};
     rows.forEach(function (row) {
-      var month = row.targetDate.slice(0, 7);
+      var month = targetDisplayMonth(row.targetDate, taskType);
       if (!grouped[month]) grouped[month] = [];
-      grouped[month].push(dashboardDetailRow(row));
+      grouped[month].push(dashboardDetailRow(row, taskType));
     });
     return grouped;
+  }
+
+  function requireNoMonthlyAverageSourceConflict(backtestGrouped, liveGrouped) {
+    Object.keys(backtestGrouped || {}).forEach(function (month) {
+      if (liveGrouped && liveGrouped[month]) {
+        throw dashboardDataError(
+          "monthly_average has conflicting backtest/live target month " + month
+        );
+      }
+    });
   }
 
   function dashboardMonthlyRows(grouped, source) {
@@ -1083,7 +1120,7 @@
       var backtestRows = scheme.backtest
         ? scheme.backtest.rows.filter(isFactorLabDisplayRow)
         : [];
-      var liveGrouped = groupDashboardDetails(liveRows);
+      var liveGrouped = groupDashboardDetails(liveRows, scheme.taskType);
       var livePredictDates = liveRows.map(function (row) { return row.predictDate; }).sort();
       var phaseRanges = deriveDashboardPhaseRanges(liveRows);
       var cutoffTargetDate = liveBacktestCutoffTargetDate({
@@ -1096,7 +1133,10 @@
         });
       }
 
-      var backtestGrouped = groupDashboardDetails(backtestRows);
+      var backtestGrouped = groupDashboardDetails(backtestRows, scheme.taskType);
+      if (scheme.taskType === "monthly_average") {
+        requireNoMonthlyAverageSourceConflict(backtestGrouped, liveGrouped);
+      }
       var dailyRowsByMonth = {};
       appendDashboardGroupedRows(dailyRowsByMonth, backtestGrouped);
       appendDashboardGroupedRows(dailyRowsByMonth, liveGrouped);
@@ -1120,6 +1160,7 @@
         id: scheme.schemeId,
         schemeId: scheme.schemeId,
         schemeName: scheme.baseSchemeId,
+        taskType: scheme.taskType,
         taskKey: taskKey,
         targetTenor: scheme.targetTenor,
         column: column.id,
@@ -1247,7 +1288,9 @@
       if (scheme.target_label) factorTargetLabels[targetTenor] = String(scheme.target_label);
       var taskKey = getTaskKey(targetTenor, column);
       if (!tasks[taskKey]) tasks[taskKey] = [];
-      var groupedDailyRows = dailyRowsByMonth(scheme.daily_rows || [], scheme.frequency, scheme.horizon);
+      var groupedDailyRows = dailyRowsByMonth(
+        scheme.daily_rows || [], scheme.frequency, scheme.horizon, scheme.task_type
+      );
       if ((!scheme.daily_rows || !scheme.daily_rows.length) && scheme.monthly_metrics && scheme.monthly_metrics.length) {
         throw new Error("backtest scheme " + (scheme.scheme_id || "") + " has monthly_metrics but no detail rows");
       }
@@ -1261,6 +1304,7 @@
         name: String(scheme.scheme_name || getSchemeDisplayName(scheme)),
         schemeId: scheme.scheme_id || "",
         schemeName: scheme.base_scheme_id || scheme.scheme_name || scheme.name || scheme.scheme_id || "",
+        taskType: scheme.task_type,
         benchmarkLabel: scheme.benchmark_label || scheme.benchmark_id || "",
         dataSourceLabel: scheme.data_source_label || scheme.data_source || "",
         status: normalizeBackendSchemeStatus(scheme.status),
@@ -1297,7 +1341,8 @@
       var groupedDailyRows = dailyRowsByMonth(
         visibleDailyRows,
         scheme.frequency,
-        scheme.horizon
+        scheme.horizon,
+        scheme.task_type
       );
       if ((!metrics.daily_rows || !metrics.daily_rows.length) && metrics.monthly_metrics && metrics.monthly_metrics.length) {
         throw new Error("live scheme " + (scheme.scheme_id || "") + " has monthly_metrics but no detail rows");
@@ -1326,6 +1371,7 @@
         schemeId: scheme.scheme_id,
         taskKey: taskKey,
         targetTenor: targetTenor,
+        taskType: scheme.task_type,
         column: column.id,
         name: scheme.name,
         status: normalizeBackendSchemeStatus(scheme.status),
@@ -1753,6 +1799,7 @@
             id: btScheme.schemeId || btScheme.id,
             schemeId: btScheme.schemeId || "",
             taskKey: taskKey,
+            taskType: btScheme.taskType,
             name: btScheme.name,
             status: btScheme.status,
             latestRun: btScheme.latestRun,
@@ -1790,12 +1837,12 @@
               (liveScheme.monthlyRows || []).forEach(function (lr) {
                 var lrCopy = {}; Object.keys(lr).forEach(function (k) { lrCopy[k] = lr[k]; });
                 lrCopy._source = "live";
-                if (btOnlyMonths[lr.month]) {
-                  // 同月既有回测也有实盘:保留回测行,追加实盘行（两行展示）
-                  mScheme.monthlyRows.push(lrCopy);
-                } else {
-                  mScheme.monthlyRows.push(lrCopy);
+                if (mScheme.taskType === "monthly_average" && btOnlyMonths[lr.month]) {
+                  throw new Error(
+                    "monthly_average has conflicting backtest/live target month " + lr.month
+                  );
                 }
+                mScheme.monthlyRows.push(lrCopy);
               });
               mScheme.monthlyRows.sort(function (a, b) { return (a.month || "").localeCompare(b.month || ""); });
               // daily 同理
@@ -1810,6 +1857,7 @@
                 mScheme.dailyRowsByMonth[m] = existingRows.concat(liveRows);
               });
               mScheme.liveSinceDate = liveScheme.liveSinceDate || "";
+              mScheme.taskType = liveScheme.taskType || mScheme.taskType;
               mScheme.liveMetricSinceDate = liveScheme.liveMetricSinceDate || liveScheme.liveSinceDate || "";
               mScheme.phaseRanges = liveScheme.phaseRanges || [];
               mScheme.latestRun = liveScheme.latestRun || mScheme.latestRun || "--";
@@ -1842,6 +1890,7 @@
               id: liveSchemaId,
               schemeId: liveSchemaId,
               taskKey: taskKey,
+              taskType: liveScheme.taskType,
               name: liveScheme.name,
               status: liveScheme.status,
               latestRun: liveScheme.latestRun,
@@ -2498,6 +2547,33 @@
     host.innerHTML = '<div class="factor-trend-scroll" role="region" aria-label="月度指标趋势横向滚动区域">' + svg + '</div>';
   }
 
+  function factorDetailPresentation(task, month) {
+    if (isMonthlyAverageTask(task)) {
+      return {
+        title: month + " 月度平均预测明细",
+        dateHeader: "目标月",
+        note: "",
+        emptyText: "当前月份暂无预测明细",
+        buttonLabel: "打开月度平均预测明细"
+      };
+    }
+    var weekly = isWeeklyTask(task);
+    var weeklyAverage = isWeeklyAverageTask(task);
+    return {
+      title: month + (weekly ? " 周度验证表" : " 每日验证表"),
+      dateHeader: weeklyAverage ? "目标周" : "目标日",
+      note: weekly
+        ? (
+            weeklyAverage
+              ? "表内可继续滚动查看该月全部周度预测；目标周按该周最后可验证交易日标记。"
+              : "表内可继续滚动查看该月全部周度预测；目标日为下周最后一个交易日。"
+          )
+        : "表内可继续滚动查看该月全部交易日的预测。",
+      emptyText: "当前月份暂无每日明细",
+      buttonLabel: "查看" + month + "每日明细"
+    };
+  }
+
   function renderFactorDetail() {
     var tbody = document.getElementById("factorMonthlyTableBody");
     var title = document.getElementById("factorDetailTitle");
@@ -2535,7 +2611,8 @@
       html += '<td class="' + getMetricClass(row.upRecall) + '">' + formatPercent(row.upRecall) + '</td>';
       html += '<td class="' + getMetricClass(row.downPrecision) + '">' + formatPercent(row.downPrecision) + '</td>';
       html += '<td class="' + getMetricClass(row.downRecall) + '">' + formatPercent(row.downRecall) + '</td>';
-      html += '<td><button type="button" class="factor-calendar-link" data-factor-calendar-month="' + escapeHtml(row.month) + '" aria-label="查看' + escapeHtml(row.month) + '每日明细">' + calendarIcon + '</button></td>';
+      var buttonLabel = factorDetailPresentation(task, row.month).buttonLabel;
+      html += '<td><button type="button" class="factor-calendar-link" data-factor-calendar-month="' + escapeHtml(row.month) + '" aria-label="' + escapeHtml(buttonLabel) + '">' + calendarIcon + '</button></td>';
       html += '</tr>';
     });
     if (!html) html = '<tr><td colspan="10" class="factor-empty-cell">当前方案暂无月度数据</td></tr>';
@@ -2570,20 +2647,17 @@
 
     var task = getTaskByKey(factorLabState.selectedTaskKey);
     var scheme = getSelectedScheme();
-    var isWeekly = isWeeklyTask(task);
-    var isWeeklyAverage = isWeeklyAverageTask(task);
+    var isMonthlyAverage = isMonthlyAverageTask(task);
+    var presentation = factorDetailPresentation(task, month);
     var dateHeader = document.getElementById("factorDailyDateHeader");
     var note = document.getElementById("factorCalendarNote");
-    title.textContent = month + (isWeekly ? " 周度验证表" : " 每日验证表");
+    title.textContent = presentation.title;
     meta.textContent = (scheme ? scheme.name : "--") + " · " + task.label;
-    if (dateHeader) dateHeader.textContent = isWeeklyAverage ? "目标周" : "目标日";
-    if (note) note.textContent = isWeekly
-      ? (
-          isWeeklyAverage
-            ? "表内可继续滚动查看该月全部周度预测；目标周按该周最后可验证交易日标记。"
-            : "表内可继续滚动查看该月全部周度预测；目标日为下周最后一个交易日。"
-        )
-      : "表内可继续滚动查看该月全部交易日的预测。";
+    if (dateHeader) dateHeader.textContent = presentation.dateHeader;
+    if (note) {
+      note.textContent = presentation.note;
+      note.hidden = !presentation.note;
+    }
 
     var html = "";
     var monthLabel = month.slice(5, 7);
@@ -2594,7 +2668,11 @@
         })
       : [];
     if (!rows.length) {
-      body.innerHTML = '<tr><td colspan="5" class="factor-empty-cell">当前月份暂无每日明细</td></tr>';
+      var emptyText = isMonthlyAverage
+        ? presentation.emptyText
+        : "当前月份暂无每日明细";
+      body.innerHTML = '<tr><td colspan="5" class="factor-empty-cell">' +
+        escapeHtml(emptyText) + '</td></tr>';
       return;
     }
     rows.forEach(function (row) {
@@ -2603,8 +2681,13 @@
       var displayDay = row.day.replace(/^\d{2}/, monthLabel);
       var result = renderDailyResult(row);
       html += '<tr>';
-      html += dateCellHtml(row.predictDate, "--");
-      html += dateCellHtml(row.targetDate, displayDay);
+      if (isMonthlyAverage) {
+        html += '<td class="mono">' + escapeHtml(row.predictDate || "--") + '</td>';
+        html += '<td class="mono">' + escapeHtml(row.targetMonth || month) + '</td>';
+      } else {
+        html += dateCellHtml(row.predictDate, "--");
+        html += dateCellHtml(row.targetDate, displayDay);
+      }
       html += '<td class="' + predictedClass + '">' + escapeHtml(row.predicted) + '</td>';
       html += '<td class="' + actualClass + '">' + escapeHtml(row.actual) + '</td>';
       html += '<td>' + result + '</td>';
@@ -2895,6 +2978,9 @@
     getSchemeDeploymentDate: getSchemeDeploymentDate,
     requireSchemeDeploymentDate: requireSchemeDeploymentDate,
     getSchemeRemark: getSchemeRemark,
+    monthlyAverageTargetMonth: monthlyAverageTargetMonth,
+    targetDisplayMonth: targetDisplayMonth,
+    factorDetailPresentationForTest: factorDetailPresentation,
     liveDividerTextForTest: liveDividerText,
     loadFactorLabData: loadFactorLabData,
     decodeDashboardPayload: decodeDashboardPayload,
