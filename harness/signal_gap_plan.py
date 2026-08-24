@@ -1044,6 +1044,10 @@ def _case_is_in_platform_live_scope(case: ExpectedSignalCase) -> bool:
             (live_start.month - 1) // 3 + 1,
         )
         return target_quarter >= live_start_quarter
+    if case.task_type == "annual_average":
+        pointer = date.fromisoformat(case.target_date)
+        live_start = date.fromisoformat(PLATFORM_LIVE_TARGET_START_DATE)
+        return pointer.year >= live_start.year
     if case.task_type != "monthly_average":
         return case.target_date >= PLATFORM_LIVE_TARGET_START_DATE
     pointer = date.fromisoformat(case.target_date)

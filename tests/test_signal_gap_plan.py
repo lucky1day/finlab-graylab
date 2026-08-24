@@ -147,6 +147,23 @@ def _quarterly_average_case(
     )
 
 
+def _annual_average_case(
+    *, target_date: str = "2026-02-14"
+) -> signal_gap_plan.ExpectedSignalCase:
+    return signal_gap_plan.ExpectedSignalCase(
+        registry_scheme_id="annual_avg__h1__5Y",
+        base_scheme_id="annual_avg",
+        runtime_type="blackbox_v2",
+        frequency="annual",
+        task_type="annual_average",
+        target_tenor="5Y",
+        horizon=1,
+        predict_date="2026-02-13",
+        feature_date="2026-02-13",
+        target_date=target_date,
+    )
+
+
 def _observed(
     scheme_id: str = "demo_native",
     *,
@@ -434,6 +451,18 @@ def test_quarterly_average_live_scope_uses_target_quarter_identity() -> None:
 def test_quarterly_average_live_scope_rejects_prior_quarter() -> None:
     assert not signal_gap_plan._case_is_in_platform_live_scope(
         _quarterly_average_case(target_date="2026-01-01")
+    )
+
+
+def test_annual_average_live_scope_uses_target_year_identity() -> None:
+    assert signal_gap_plan._case_is_in_platform_live_scope(
+        _annual_average_case(target_date="2026-02-14")
+    )
+
+
+def test_annual_average_live_scope_rejects_prior_target_year() -> None:
+    assert not signal_gap_plan._case_is_in_platform_live_scope(
+        _annual_average_case(target_date="2025-01-28")
     )
 
 
