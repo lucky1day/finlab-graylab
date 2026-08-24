@@ -16,6 +16,7 @@ from shared.calendar_service import get_calendar
 
 
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
+PERIOD_AVERAGE_ACTUALS_START_DATE = "2025-01-01"
 logger = logging.getLogger(__name__)
 
 
@@ -77,7 +78,10 @@ def run_actuals_job(
     daily_written = update_actuals(end_date=daily_weekly_end_date)
     weekly_written = update_weekly_actuals(end_date=daily_weekly_end_date)
     monthly_written = update_monthly_actuals(end_date=target_date)
-    period_average_written = update_period_average_actuals(end_date=target_date)
+    period_average_written = update_period_average_actuals(
+        start_date=PERIOD_AVERAGE_ACTUALS_START_DATE,
+        end_date=target_date,
+    )
     logger.info(
         "Actuals refresh finished: date=%s daily_weekly_end_date=%s daily_records=%s "
         "weekly_records=%s monthly_records=%s period_average_records=%s",

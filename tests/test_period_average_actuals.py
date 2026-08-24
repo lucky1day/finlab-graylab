@@ -100,6 +100,38 @@ def test_period_average_actual_fails_on_missing_or_duplicate_bucket_fact() -> No
         )
 
 
+def test_period_average_actual_ignores_missing_bucket_before_start_date() -> None:
+    calendar = _calendar_rows("2024-01-01", "2025-06-30")
+    complete = _yield_rows(calendar, lambda _day: 2.0)
+    rows = [item for item in complete if item["trade_date"] != "2024-02-01"]
+
+    records = build_period_average_actual_records_from_rows(
+        rows,
+        calendar,
+        task_types=("quarterly_average",),
+        start_date="2025-01-01",
+    )
+
+    assert [item.target_date for item in records] == [
+        "2025-01-01",
+        "2025-04-01",
+    ]
+
+
+def test_period_average_actual_rejects_missing_bucket_after_start_date() -> None:
+    calendar = _calendar_rows("2024-01-01", "2025-06-30")
+    complete = _yield_rows(calendar, lambda _day: 2.0)
+    rows = [item for item in complete if item["trade_date"] != "2025-02-03"]
+
+    with pytest.raises(ValueError, match="missing trading dates"):
+        build_period_average_actual_records_from_rows(
+            rows,
+            calendar,
+            task_types=("quarterly_average",),
+            start_date="2025-01-01",
+        )
+
+
 def test_period_average_repository_writes_one_generic_table() -> None:
     calendar = _calendar_rows("2024-01-01", "2024-03-31")
     records = build_period_average_actual_records_from_rows(

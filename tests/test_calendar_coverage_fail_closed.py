@@ -315,8 +315,9 @@ class ActualsRunnerCoverageTests(unittest.TestCase):
             self.assertEqual(
                 monthly.call_args.kwargs["end_date"], COVERED_HOLIDAY
             )
-            self.assertEqual(
-                period.call_args.kwargs["end_date"], COVERED_HOLIDAY
+            period.assert_called_once_with(
+                start_date="2025-01-01",
+                end_date=COVERED_HOLIDAY,
             )
 
     def test_covered_trading_day_uses_run_date(self) -> None:
@@ -333,6 +334,7 @@ class ActualsRunnerCoverageTests(unittest.TestCase):
             self.assertEqual(
                 monthly.call_args.kwargs["end_date"], COVERED_TRADING
             )
-            self.assertEqual(
-                period.call_args.kwargs["end_date"], COVERED_TRADING
+            period.assert_called_once_with(
+                start_date="2025-01-01",
+                end_date=COVERED_TRADING,
             )

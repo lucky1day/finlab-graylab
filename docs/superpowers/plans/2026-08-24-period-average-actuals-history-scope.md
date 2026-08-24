@@ -130,11 +130,14 @@ def test_period_average_actual_ignores_missing_bucket_before_start_date() -> Non
         start_date="2025-01-01",
     )
 
-    assert [item.target_date for item in records] == ["2025-04-01"]
+    assert [item.target_date for item in records] == [
+        "2025-01-01",
+        "2025-04-01",
+    ]
 ```
 
-该断言证明 2024 年缺口不影响 2025 年政策范围；第一条可完成的 2025 年季度 Actual
-使用 feature 桶锚点 `2025-03-31` 的下一自然日指针 `2025-04-01`。
+该断言证明不属于任何保留记录依赖桶的 2024 年缺口不会影响 2025 年政策范围；
+`start_date` 是包含边界，故保留原始目标指针 `2025-01-01` 与 `2025-04-01`。
 
 - [ ] **Step 2：增加范围内缺口回归测试**
 
