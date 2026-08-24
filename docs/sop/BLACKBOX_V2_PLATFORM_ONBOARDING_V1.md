@@ -475,7 +475,6 @@ static -> input -> unit -> compare
 | `input` | 三频 Schema、父/组合快照、平台注册制品、七字段 Request、三个截止键；如有上游自测则核对同代输入身份 | 当天 freshness、跨 generation 结果可比性 | 两类文件摘要、父/组合 ID、两个 manifest、Request、`self_test_alignment` |
 | `unit` | help 暴露两个模式；一个非法 Request 失败且无 Output | 所有非法组合均被覆盖 | help、非法输入、失败无 Output |
 | `compare` | 平台输入逐字节等于声明值；一次冒烟 predict 证明交付在平台喂进去的输入下产出合法 Result（原 dry-run 即此次调用） | 准确率、历史修订回放、跨 generation 逐行复现，以及**交付自身的性质**（重复执行确定性、predict/backtest 一致、截止隔离、跨请求无状态）——那些属上游义务 | PredictionRecord、组合 ID、结果路径 |
-| `backtest` | 100 条全部返回、no-persist、组合输入一致 | 大于 100 条单进程能力、效果门槛、算法内部是否使用[等价的一次性计算](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md#63-对每个-request-独立截断) | 请求/结果数量、组合 ID、persist=false |
 报告中的 `business_tables_written: false` 是声明性证据，不是数据库前后计数。激活后的
 `DashboardGate` 只验证 `/api/factor-lab/dashboard` 当前业务读模型；它不属于 `all`，且
 Dashboard payload 不含 exact version，因此不能替代生命周期、Registry 和数据库版本证据。
@@ -587,7 +586,7 @@ revision 路径为 `false`。
 - 生产授权前必须先在该方案的生命周期证据中登记 `gray_target_start`；`target_date >= gray_target_start` 全部属于实盘观察区。该起点必须来自方案级专项授权和证据，不得由算法 Metadata、部署日、历史批次默认值或操作当天自动推导；
 - Backtest Gate 的 `predict_date` 参数承担 target 日期 exclusive cutoff，生产持久化时必须传已批准的 `gray_target_start`，只选择 `target_date < gray_target_start` 的历史样本；不得把激活日、`deployed_at` 或操作当天直接当作回测 cutoff；
 - 最早样本是 `predict_date >= backtest_start_date` 的第一个合格站位日，起点本身不要求是交易日；
-- `--sample-size` 只用于自动段的 no-persist 稳定性测试，和 `--persist` 同时使用时拒绝执行；
+- Blackbox Backtest Gate 只接受明确的 `--persist`，不存在抽样认证或 `--sample-size`；
 - 平台先生成完整 HistoricalCase 序列，再按 Runtime Profile 拆成每批最多 100 条；单批上限不是完整回测总量上限；
 - 全部批次使用同一 scheme version、DataBridge generation、snapshot 和环境指纹，并共享一个总执行超时预算；
 - 当前历史运行是 `current snapshot as-of replay`，不提供历史 vintage PIT，不得写成历史时点原貌复现。

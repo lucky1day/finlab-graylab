@@ -19,10 +19,9 @@ from shared.scheme_config_loader import load_yaml_mapping
 
 
 AUTO_SEQUENCE = ["static", "input", "unit", "dry-run", "compare", "backtest"]
-# Blackbox 的 CompareGate 已经更强地覆盖了 dry-run 与 no-persist backtest 的全部断言：
-# 其 baseline 与 dry-run 是逐参数相同的同一次 predict；其 batch=100 vs batch=1 比 no-persist
-# backtest 的 100 vs 80 更严格。Native 的 CompareGate 是完全不同的 benchmark 对比实现，
-# 不覆盖这两段，因此 Native 序列保持不变。
+# Blackbox Compare 的一次 predict 与原 dry-run 参数相同；交付自身的确定性、批次与
+# predict/backtest 一致性由上游契约负责，平台不再重复抽样认证。Native Compare 是
+# source benchmark 对比，仍需配套 dry-run 和 no-persist backtest，因此其序列不变。
 BLACKBOX_AUTO_SEQUENCE = ["static", "input", "unit", "compare"]
 
 

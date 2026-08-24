@@ -66,7 +66,8 @@
   Blackbox V2 为四段 `static → input → unit → compare`；Native V1 为六段
   `static → input → unit → dry-run → compare → backtest`。该流程不访问 Backend。
   Blackbox 的 dry-run 已并入其 CompareGate——两者的 baseline 是同一次 predict。
-  `gate dry-run` 与 `gate backtest` 仍作为独立命令保留。
+  Blackbox 不再保留重复的独立 dry-run/no-persist backtest；其 `gate backtest`
+  只接受明确的 `--persist`。Native 仍保留独立 dry-run 和 no-persist backtest。
 - CompareGate 只做两件事：校验平台输入逐字节等于声明值，以及一次冒烟 predict 证明交付在
   平台喂进去的输入下能产出合法 Result。交付自身的性质——重复执行确定性、predict/backtest
   一致、截止隔离、跨请求无状态——由上游按其交付契约保证，平台不重验。批次切分与顺序的

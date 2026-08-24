@@ -3,7 +3,6 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
-import math
 import os
 import re
 import shutil
@@ -14,8 +13,6 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-
-import pandas as pd
 
 from harness.blackbox_v2.draft_register import create_draft_identity
 from harness.context import GateContext
@@ -358,33 +355,6 @@ class BlackboxUnitGate(_BlackboxGate):
         return _finish(self.name, started_at, evidence, errors)
 
 
-class BlackboxDryRunGate(_BlackboxGate):
-    name = "dry-run"
-
-    def _run(self, ctx: GateContext, started_at: str) -> GateResult:
-        cfg = _config(ctx)
-        metadata = _metadata(cfg)
-        state = _ensure_input_state(ctx)
-        with _open_runtime_input(ctx, state) as runtime_view:
-            record = run_blackbox_predict(
-                metadata=metadata,
-                script_path=_script(cfg),
-                request=state.request,
-                data_dir=runtime_view.data_dir,
-                profile=_profile(ctx),
-                **_runner_bundle_kwargs(runtime_view.bundle),
-            )
-        result_path = _gate_root(ctx) / "dry_run_prediction_record.json"
-        result_path.write_text(json.dumps(asdict(record), ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
-        evidence = [
-            *_bundle_evidence(_input_bundle(state)),
-            Evidence("prediction_record", asdict(record)),
-            Evidence("result_path", str(result_path)),
-            Evidence("business_tables_written", False),
-        ]
-        return _finish(self.name, started_at, evidence, [])
-
-
 class BlackboxCompareGate(_BlackboxGate):
     name = "compare"
 
@@ -432,108 +402,13 @@ class BlackboxBacktestGate(_BlackboxGate):
     name = "backtest"
 
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
-        if ctx.persist_backtest:
-            if ctx.backtest_sample_size is not None:
-                return _blocked(
-                    self.name,
-                    started_at,
-                    [
-                        "Blackbox persisted backtest does not accept --sample-size; "
-                        "use --backtest-start-date to define the complete interval"
-                    ],
-                )
-            return self._run_persist(ctx, started_at)
-        sample_size = (
-            DEFAULT_NO_PERSIST_SAMPLE_SIZE
-            if ctx.backtest_sample_size is None
-            else int(ctx.backtest_sample_size)
-        )
-        if sample_size < 1 or sample_size > 1000:
-            return _finish(
+        if not ctx.persist_backtest:
+            return _blocked(
                 self.name,
                 started_at,
-                [Evidence("sample_size", sample_size), Evidence("persist", False)],
-                [f"Blackbox no-persist sample_size must be between 1 and 1000: got {sample_size}"],
+                ["Blackbox backtest requires --persist"],
             )
-        cfg = _config(ctx)
-        metadata = _metadata(cfg)
-        state = _ensure_input_state(ctx)
-        bundle = _input_bundle(state)
-        profile = _profile(ctx)
-        # alternate 分区必须小于实际样本量，否则两种分区都是单批，
-        # 平台的切片与合并循环就没有在第二个 N 下被真正走过。
-        alternate_batch_size = _alternate_batch_size(
-            min(profile.max_batch_requests, sample_size)
-        )
-        max_subprocesses = (
-            math.ceil(sample_size / profile.max_batch_requests)
-            + math.ceil(sample_size / alternate_batch_size)
-        )
-        budget = BacktestExecutionBudget(
-            deadline_monotonic=time.monotonic() + ctx.timeout_sec,
-            max_subprocesses=max_subprocesses,
-        )
-        with _open_runtime_input(ctx, state) as runtime_view:
-            templates = _comparison_requests(
-                state.request,
-                runtime_view.data_dir,
-            )
-            requests = [
-                replace(
-                    templates[index % len(templates)],
-                    request_id=(
-                        f"{state.request.request_id}:batch:{index:04d}"
-                    ),
-                )
-                for index in range(sample_size)
-            ]
-            records = run_blackbox_backtest(
-                metadata=metadata,
-                script_path=_script(cfg),
-                requests=requests,
-                data_dir=runtime_view.data_dir,
-                profile=profile,
-                budget=budget,
-                **_runner_bundle_kwargs(runtime_view.bundle),
-            )
-            alternate_records = run_blackbox_backtest(
-                metadata=metadata,
-                script_path=_script(cfg),
-                requests=requests,
-                data_dir=runtime_view.data_dir,
-                profile=replace(
-                    profile,
-                    max_batch_requests=alternate_batch_size,
-                ),
-                budget=budget,
-                **_runner_bundle_kwargs(runtime_view.bundle),
-            )
-        errors: list[str] = []
-        if len(records) != sample_size:
-            errors.append(
-                f"{sample_size}-row no-persist backtest returned {len(records)} records"
-            )
-        if [record.extra["request_id"] for record in records] != [item.request_id for item in requests]:
-            errors.append("no-persist backtest did not preserve one-to-one Request order")
-        if [record.extra["request_id"] for record in alternate_records] != [
-            item.request_id for item in requests
-        ]:
-            errors.append("alternate batch partition did not preserve Request order")
-        evidence = [
-            *_bundle_evidence(bundle),
-            Evidence("requests", len(requests)),
-            Evidence("records", len(records)),
-            Evidence("sample_size", sample_size),
-            Evidence("distinct_cutoff_sets", len(templates)),
-            Evidence("primary_batch_size", profile.max_batch_requests),
-            Evidence("alternate_batch_size", alternate_batch_size),
-            Evidence("subprocesses_started", budget.subprocesses_started),
-            Evidence("max_subprocesses", budget.max_subprocesses),
-            Evidence("total_deadline_sec", ctx.timeout_sec),
-            Evidence("persist", False),
-            Evidence("business_tables_written", False),
-        ]
-        return _finish(self.name, started_at, evidence, errors)
+        return self._run_persist(ctx, started_at)
 
     def _run_persist(self, ctx: GateContext, started_at: str) -> GateResult:
         cfg = _config(ctx)
@@ -875,7 +750,6 @@ BLACKBOX_GATES: dict[str, type[Gate]] = {
     "static": BlackboxStaticGate,
     "input": BlackboxInputGate,
     "unit": BlackboxUnitGate,
-    "dry-run": BlackboxDryRunGate,
     "compare": BlackboxCompareGate,
     "backtest": BlackboxBacktestGate,
     "shadow-register": BlackboxShadowRegisterGate,
@@ -1705,107 +1579,6 @@ def _call_name(node: ast.AST) -> str:
         prefix = _call_name(node.value)
         return f"{prefix}.{node.attr}" if prefix else node.attr
     return ""
-
-
-def _comparison_requests(request: BlackboxRequest, data_dir: Path) -> list[BlackboxRequest]:
-    cutoff_specs = (
-        ("daily_output.csv", "date", "daily_cutoff_key"),
-        ("weekly_output.csv", "week_id", "weekly_cutoff_key"),
-        ("monthly_output.csv", "month_id", "monthly_cutoff_key"),
-    )
-    previous: dict[str, str] = {}
-    available: dict[str, list[str]] = {}
-    for filename, key_column, request_field in cutoff_specs:
-        frame = pd.read_csv(data_dir / filename, dtype=str, keep_default_na=False)
-        if filename == "daily_output.csv":
-            try:
-                values = pd.to_datetime(frame[key_column], errors="raise").dt.date.astype(str).tolist()
-            except (TypeError, ValueError) as exc:
-                raise ValueError("daily_output.csv contains an invalid date") from exc
-        else:
-            values = [str(value).strip().removesuffix(".0") for value in frame[key_column].tolist()]
-        current = str(getattr(request, request_field))
-        try:
-            current_index = values.index(current)
-        except ValueError as exc:
-            raise ValueError(f"Request {request_field}={current} is absent from {filename}") from exc
-        if current_index == 0:
-            raise ValueError(
-                f"CompareGate requires one earlier {key_column} before {current} in {filename}"
-            )
-        available[request_field] = values
-        previous[request_field] = values[current_index - 1]
-    calendar_path = data_dir / "api_wind_date.csv"
-    if calendar_path.is_file():
-        calendar = pd.read_csv(
-            calendar_path,
-            dtype=str,
-            keep_default_na=False,
-        )
-        if tuple(calendar.columns) != ("rdate", "week_id"):
-            raise ValueError(
-                "api_wind_date.csv must contain exactly rdate,week_id"
-            )
-        try:
-            calendar_dates = pd.to_datetime(
-                calendar["rdate"],
-                errors="raise",
-            ).dt.date.astype(str)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                "api_wind_date.csv contains an invalid rdate"
-            ) from exc
-        calendar_weeks = calendar["week_id"].map(
-            lambda value: str(value).strip().removesuffix(".0")
-        )
-        matched_weeks = set(
-            calendar_weeks[
-                calendar_dates == previous["daily_cutoff_key"]
-            ].tolist()
-        )
-        if len(matched_weeks) != 1:
-            raise ValueError(
-                "api_wind_date.csv must map the prior daily cutoff to "
-                "exactly one week_id"
-            )
-        calendar_week = matched_weeks.pop()
-        if calendar_week not in available["weekly_cutoff_key"]:
-            raise ValueError(
-                "api_wind_date.csv prior daily week_id is absent from "
-                "weekly_output.csv"
-            )
-        previous["weekly_cutoff_key"] = calendar_week
-    # feature_date 必须与回退后的 daily_cutoff 一起回退，否则 prior 请求不自洽：
-    # 真实请求恒有 feature_date == daily_cutoff_key（daily_cutoff = 快照中 <= feature_date
-    # 的最新交易日，而 feature_date 本身即交易日）。只回退 daily_cutoff 却保留原
-    # feature_date，会被做该自洽校验的方案（如 T+1 的 feature_date == daily_cutoff_key）
-    # 正确拒绝。
-    earlier = replace(
-        request,
-        request_id=f"{request.request_id}:prior-cutoffs",
-        feature_date=previous["daily_cutoff_key"],
-        **previous,
-    )
-    return [earlier, request]
-
-
-def _direction_map(records) -> dict[str, int]:
-    return {str(record.extra["request_id"]): int(record.predicted_direction) for record in records}
-
-
-DEFAULT_NO_PERSIST_SAMPLE_SIZE = 4
-"""no-persist 回测的默认样本量。
-
-该 Gate 验证平台自己的切片与合并循环：跨批次合并后总数正确、两种分区下 request_id
-都与 Request 一一对应保序。其输入只有 `_comparison_requests` 产出的两个模板，
-样本量只需足够构造一次真实的分批差异。交付跨请求是否带状态属上游义务，平台不验。
-"""
-
-
-def _alternate_batch_size(primary_batch_size: int) -> int:
-    if primary_batch_size <= 1:
-        raise ValueError("Blackbox batch invariance requires max_batch_requests greater than 1")
-    return min(primary_batch_size - 1, max(1, primary_batch_size * 4 // 5))
 
 
 def _persisted_backtest_delta_errors(

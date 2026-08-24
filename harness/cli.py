@@ -218,20 +218,33 @@ def _build_parser() -> argparse.ArgumentParser:
         item.add_argument("--report-dir", type=Path, default=None)
         item.add_argument("--algo-env", default="forecast_env")
         item.add_argument("--timeout-sec", type=int, default=600)
-        item.add_argument(
-            "--operator",
-            default=None,
-            help="non-secret audit identity; defaults to BFL_OPERATOR_ID or OS user",
-        )
+        if gate_name in {
+            "backtest",
+            "shadow-register",
+            "live",
+            "lifecycle-reconcile",
+        }:
+            item.add_argument(
+                "--operator",
+                default=None,
+                help=(
+                    "non-secret audit identity; defaults to "
+                    "BFL_OPERATOR_ID or OS user"
+                ),
+            )
         if gate_name == "dashboard":
             item.add_argument(
                 "--api-base-url",
                 default="http://127.0.0.1:8100",
             )
-        item.add_argument("--prediction-phase", choices=("gray_live", "scheduled_live"), default=None)
+        if gate_name == "live":
+            item.add_argument(
+                "--prediction-phase",
+                choices=("gray_live", "scheduled_live"),
+                required=True,
+            )
         if gate_name == "backtest":
             item.add_argument("--persist", action="store_true")
-            item.add_argument("--sample-size", type=int, default=None)
             item.add_argument(
                 "--backtest-start-date",
                 default=DEFAULT_BACKTEST_START_DATE,
@@ -330,11 +343,6 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
         ),
         prediction_phase=getattr(args, "prediction_phase", None),
         persist_backtest=bool(getattr(args, "persist", False)),
-        backtest_sample_size=(
-            int(args.sample_size)
-            if getattr(args, "sample_size", None) is not None
-            else None
-        ),
         backtest_start_date=backtest_start_date,
         api_base_url=getattr(
             args,

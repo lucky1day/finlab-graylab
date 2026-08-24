@@ -38,6 +38,9 @@
 - 自动入库只运行一次正式 `onboard` 并持久化后续 lifecycle 所需证据；已删除不能用于 activation 的重复
   `onboard --check-only`、独立 `signal-gap-plan` 和本地 `harness report` CLI。`signal-gap-fill` 内部仍先执行
   同一只读 planner，任一 blocker 都在算法或 repository 写入前终止。
+- Blackbox 自动入库只保留 `static -> input -> unit -> compare`；原 dry-run 已由同参数的 Compare 冒烟覆盖，
+  重复的抽样 no-persist backtest 与 `--sample-size` 已删除。Blackbox `gate backtest` 只接受明确的
+  `--persist`，Native dry-run/no-persist backtest 保持不变。
 - 生产 release identity 只来自 launcher 注入的 `BFL_RELEASE_COMMIT`；开发态 Harness 不再额外执行 Git
   subprocess。immutable release 构建的 clean-HEAD、archive 与 manifest 校验保持不变。
 - 已完成设计稿、重复架构总册和拆分的 Native T0/验证手册已从当前工作树删除，通过 Git 历史追溯。

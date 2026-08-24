@@ -173,13 +173,13 @@ Harness、自然调度和历史 replay 使用同一数据库捕获与规范化
 
 ## 6. 验收证据
 
-每次 Blackbox 新方案入库或 Native 存量维护，至少保留以下证据；运行时不适用的项目必须明确标为不适用及原因，不能静默省略：
+每次 Blackbox 新方案入库或 Native 存量维护，至少保留对应运行时的以下证据：
 
 - 静态检查结论: 目录、命名、接口、危险导入全部通过。
 - 输入 artifact 结论: 主输入 frequency、path、source、行列规模、日期/week 覆盖；如声明 `auxiliary_inputs`，同时保留每个辅助输入的 frequency、path、source、data_version、行列规模、覆盖范围和缺列结论。
-- dry-run 结论: JSON 输出、预测条数、关键字段、正式表行数不变。
+- 执行结论: Blackbox 保留 Compare 的单次冒烟 PredictionRecord、组合输入身份和正式表零写入；Native 保留 dry-run 的 JSON 输出、预测条数、关键字段和正式表行数不变。
 - 执行预算结论: Native 若配置 `schedule.timeout_sec`，记录实际耗时、配置值和是否仍在预算内；Blackbox 记录方案申请、Runtime Profile 的 predict/backtest 预算、实际耗时及任何独立 operation deadline，并证明最终 predict 预算取三层最小值。确认预算只影响 executor 等待，不改变算法输出。
-- 回测结论: `--no-persist` summary、样本总数、`metric_samples`、准确率、月度分布；预测为“平”的样本计入样本总数但不进入任何指标分母。
+- 回测结论: Native 保留 `--no-persist` summary、样本总数、`metric_samples`、准确率和月度分布；预测为“平”的样本计入样本总数但不进入任何指标分母。Blackbox 不做平台抽样认证；专项授权的完整持久化回测另行记录完整区间、批次、预算、输入身份和 repository 提交证据。
 - 算法保真结论: Native 首次技术入库记录 source 口径、L0/L1/L2 分级、原始 hash 和内部 benchmark；当前 exact version 若通过 full `all`，记录 `full_initial_onboarding_v1` 的六个 Gate。仅走 maintenance 时，另记录 prior `all + compare`、其匹配的 `static.business_identity` 业务快照、精确 Registry identity、`native-maintenance` 五个 Gate 与 live-safe oracle。历史 benchmark vintage 漂移只能标为归档诊断。Blackbox 记录上游脚本/Metadata hash 与冒烟 predict 的标准结果，不宣称平台已检查黑盒内部模型；确定性、分批/顺序一致性与未来行隔离由上游按交付契约保证，平台不重验也不据此背书。
 - 日期语义结论: 回测样本满足 `predict_date == feature_date` 且最早 `predict_date >= 2025-01-01`；实盘样本满足对应频率的发出规则；周频实盘必须由 `feature_date=previous_trading_day(predict_date)` 再映射 `feature_week_id`，输入使用 `end_week=feature_week_id/as_of_date=feature_date`；月度 source-backed 方案若声明自然 15 号触发，必须证明 `predict_date` 保留自然 15 号，`feature_date/target_date` 分别取对应月 15 号及以前最近交易日；前端/业务表达数据截止时只用 `feature_date`，不依赖 `anchor_date`。
 - 实盘阶段结论: 灰度实盘和正式实盘必须能区分为 `gray_live` / `scheduled_live`；灰度观察区按方案级 `target_date >= gray_target_start` 判定；月度回补必须按目标月枚举，不能按 `predict_date >= gray_start` 漏掉首个 target 月。
