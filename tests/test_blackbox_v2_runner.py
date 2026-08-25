@@ -19,6 +19,12 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             root = Path(tmpdir)
             data_dir = _write_data_dir(root)
             calendar_path = data_dir / "api_wind_date.csv"
+
+            with self.assertRaisesRegex(ValueError, "exactly"):
+                _validate_data_dir(
+                    data_dir,
+                    platform_input_ids=("api-wind-date-v1",),
+                )
             calendar_path.write_text(
                 "rdate,week_id\n2026-07-24,202629\n",
                 encoding="utf-8",
@@ -35,19 +41,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                 "x\n1\n",
                 encoding="utf-8",
             )
-            with self.assertRaisesRegex(ValueError, "exactly"):
-                _validate_data_dir(
-                    data_dir,
-                    platform_input_ids=("api-wind-date-v1",),
-                )
-
-
-    def test_runner_rejects_missing_declared_platform_input(self) -> None:
-        from scheduler.blackbox_v2_runner import _validate_data_dir
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            data_dir = _write_data_dir(Path(tmpdir))
-
             with self.assertRaisesRegex(ValueError, "exactly"):
                 _validate_data_dir(
                     data_dir,

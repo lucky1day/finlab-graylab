@@ -37,19 +37,6 @@ def _blackbox_config(
     )
 
 
-class _WeeklyCalendar:
-    """周频到期判定需要真实交易日；2026-08-01 是关闭了新 feature 周的周六。"""
-
-    def covers(self, value: str) -> bool:
-        return value == "2026-08-01"
-
-    def previous_trading_day(self, value: str) -> str:
-        return "2026-07-31"
-
-    def is_trading_day(self, value: str) -> bool:
-        return True
-
-
 class _PeriodCalendar:
     def __init__(self, start: str, end: str, closures: set[str] | None = None) -> None:
         current = date.fromisoformat(start)
