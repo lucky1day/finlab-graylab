@@ -622,43 +622,15 @@ journal：它只回退到 previous safe state，保留原 journal，并新增 li
 
 ## 9. 最终检查
 
-- [ ] 当前代码版本包含方案 A Contract、原子 Intake、StaticGate 与 DashboardGate 守护；未通过删字段或手工拼目录绕过
-- [ ] 两文件和 Metadata 通过 Intake，摘要已记录
-- [ ] 正式新交付含合法且职责独立的 `name`、`owner` 和 `description`；自验日历未进入两文件目录，Metadata 未声明 `platform_inputs`
-- [ ] 正式新交付的 Intake 配置未生成或新增 `display_name`；历史现存 override 仅按既有兼容范围保留，未被当作新名称入口
-- [ ] owner 已按 `{scheme_id}__h{horizon}__{target_tenor}` 原子登记到 `deploy/scheme_owner_v1.json`；同值幂等、异值冲突和失败无半写均已核对
-- [ ] 历史缺 owner Metadata 仅在 `deploy/blackbox_v2_legacy_metadata_v1.json` 的精确 ID + SHA-256 范围内兼容；清单外或字节变化未被误放行
-- [ ] base/composite 身份无冲突，配置为 `blackbox_v2 + paused + draft`
-- [ ] 需要平台周历的方案以 `--platform-input api-wind-date-v1` Intake，父快照仍严格三文件
-- [ ] 冻结环境自检与输入目录指纹自检通过
-- [ ] DataBridge generation 状态和三 SHA 已保存
-- [ ] 已取得上游自测的下载时间、三频/日历 SHA、行数、起止键和 Request；未要求上游编造 `generation_id`
-- [ ] 三频 SHA 已对应到选定 generation，规范化 `api_wind_date.csv` SHA 和 `combined_snapshot_id` 已核对
-- [ ] `daily_cutoff_key -> weekly_cutoff_key` 与本次日历精确一致；`week_id` 未按 ISO 周或连续数值解释
-- [ ] `self_test_alignment=matched` 后才执行逐行算法对比；不一致已标记 `data_vintage_mismatch` 并同代重跑
-- [ ] delivery 目录外的性能报告已按上游第 6.4 节核验；单条、100条、乱序、完整区间、三轮耗时、峰值 RSS、首中末自证和 `fallback_used=false` 均达标
-- [ ] 已明确 Onboarding 验收同代不等于生产永久冻结；scheduled live 使用当天当前且通过校验的 DataBridge generation
-- [ ] Activation 前已完成原有 Gate、生产准备核验和具体方案专项授权；`shadow + paused` 未进入自然调度
-- [ ] Activation 后 Registry 与 exact version 均为 active，方案按 frequency 进入对应 launchd one-shot 候选；paused、draft 和其它 cadence 被排除
-- [ ] Blackbox Admission 与 Backend 手动预测入口均不存在；active + exact active + active Registry + cadence 是唯一 launchd one-shot 候选规则
-- [ ] repo 状态或 active 候选未被当作已安装或已观察证据；installed plist、loaded state、日志和成功 run/prediction 已单独核验
-- [ ] 历史补缺只写 `gray_live`；只有合格自然时钟触发才写 `scheduled_live`，二者不得由日期标签互相倒签
-- [ ] 任一 cadence 的完整性以当时 active Registry、run、prediction 和日志核验；不得冻结旧方案数量、release 队列或 coordinator/ledger 口径
-- [ ] Input 报告三 SHA 与选定 generation 完全一致
-- [ ] Blackbox 四个 Gate 通过，并理解各 Gate 没有证明什么；技术 `all` 未访问 Backend
-- [ ] exact Harness run 和四个结果已进入审计 DB
-- [ ] 自动段只产生控制面审计，没有业务表新增
-- [ ] Shadow 直接命令已自动绑定 exact version/latest passed run，审计中记录 `direct_operator_command_v2` 与 operation hash
-- [ ] 登记后配置、版本、Registry 为 `shadow + paused`
-- [ ] 独立 DB、scheduler 和 API 检查证明 trial 未进入生产链路
-- [ ] 失败按恢复矩阵处理，没有把部分状态当成成功
-- [ ] 默认入库流程未执行 `activate` 或 `live`；如有专项授权，已转入独立生产灰度记录
-- [ ] 如执行持久化回测，授权已绑定实际起点和 `gray_target_start`，完整区间已分批计算并在单一事务中写入一个 immutable run
-- [ ] canonical backtest 全部满足 `target_date < gray_target_start`，与 live target 零重叠
-- [ ] 如交付使用等价一次性 batch，已冻结同一结果集并按 `target_date` 分流；gray 段复用核心结果、重新生成 live `predict_date`，没有逐日期重复计算
-- [ ] 激活即登记真实 `deployed_at`，并已补齐 `target_date >= gray_target_start` 的连续 `gray_live`
-- [ ] 激活后 `DashboardGate` 已通过，且 exact version 已由 lifecycle、Registry 与数据库证据独立确认
-- [ ] 前端单独展示部署时间；详情分隔文案为 `实盘预测目标区间`，有 scheduled target 时显示 `{scheduled_live.start_target_date}开始`，否则显示“待产生”；actual pending 继续显示“待验证”
-- [ ] 前端三个数据口径与 DB/API 一致，任务格子、短名称、来源、备注详情、样本数、分隔线和控制台均通过
+这里只核对不能由其它证据替代的终态；字段、输入、Gate、事务和恢复细项以本 SOP 对应章节的机器输出为准：
 
-具体方案的 generation、snapshot、Harness run、预测结果、数据库计数和当前状态只追加到平台入库规划文档，不回写本通用 SOP。
+- [ ] 两文件通过原子 Intake，正式 Metadata、owner、平台输入声明合法，候选保持 `blackbox_v2 + paused + draft`。
+- [ ] exact generation、combined snapshot、Request cutoff 与环境指纹一致；四段自动 Gate 已持久化且未写业务表。
+- [ ] 如执行 shadow，直接命令绑定 current exact version/latest passed run，读回为 `shadow + paused` 且未进入自然调度。
+- [ ] 如执行持久化回测或一次性 batch，授权、`gray_target_start`、canonical 分区、live 日期重建和零重叠均满足第 6 节。
+- [ ] Activation 使用独立专项授权；exact version、Registry、配置和 lifecycle journal 读回一致，不存在未处理 pending。
+- [ ] `gray_live`、`scheduled_live`、installed 控制面和自然观察证据没有互相冒充；repo 状态不作为部署或运行证据。
+- [ ] DashboardGate、数据库/API/前端口径通过；exact version 另由 lifecycle 与数据库权威回读证明。
+
+具体方案的 generation、snapshot、Harness run、预测结果和数据库计数保留在现有控制面；稳定摘要进入
+`CURRENT_STATUS.md`，未闭环事项进入 `TODO.md`，不为单次入库另建规划或交接文档。
