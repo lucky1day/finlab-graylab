@@ -403,19 +403,6 @@ def _current_native_candidate_error(
     return str(status), None
 
 
-def _read_prior_native_business_identity_snapshot_conn(
-    conn,
-    *,
-    harness_run_id: str,
-) -> tuple[dict[str, object] | None, str | None]:
-    """读取并严格解析已选既往 all run 的 StaticGate 身份快照。"""
-    state = _read_prior_native_static_identity_state_conn(
-        conn,
-        harness_run_id=harness_run_id,
-    )
-    return state.identity, state.error
-
-
 def _read_prior_native_static_identity_state_conn(
     conn,
     *,

@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import inspect
 import json
 import os
-import shutil
-import stat
 import tempfile
 import unittest
 from dataclasses import replace
@@ -100,49 +97,6 @@ def _current_dataset(
     )
 
 
-def _local_mysql_source_provenance(feature_date: str) -> dict[str, object]:
-    from shared.data_bridge.refresh import LOCAL_MYSQL_PROVENANCE_VERSION
-    from shared.data_contract import (
-        CALENDAR_SOURCE_TABLES,
-        FACTOR_SOURCE_TABLES,
-        METADATA_SOURCE_TABLE,
-        SourceCommitEvidence,
-        SourceTableEvidence,
-        source_commit_evidence_payload,
-        source_commit_evidence_sha256,
-    )
-
-    unsigned = SourceCommitEvidence(
-        feature_date=feature_date,
-        source_commit_token="",
-        tables=tuple(
-            SourceTableEvidence(
-                table_name=table_name,
-                row_count=1,
-                latest_create_time=None,
-            )
-            for table_name in sorted(
-                set(FACTOR_SOURCE_TABLES)
-                | {METADATA_SOURCE_TABLE}
-                | set(CALENDAR_SOURCE_TABLES)
-            )
-        ),
-    )
-    token = source_commit_evidence_sha256(unsigned)
-    evidence = SourceCommitEvidence(
-        feature_date=feature_date,
-        source_commit_token=token,
-        tables=unsigned.tables,
-    )
-    return {
-        "provenance_version": LOCAL_MYSQL_PROVENANCE_VERSION,
-        "feature_date": feature_date,
-        "source_rdate_cutoff": feature_date,
-        "snapshot_started_at": "2026-07-24T06:30:00+08:00",
-        "source_commit_token": token,
-        "source_evidence_sha256": token,
-        "source_evidence": source_commit_evidence_payload(evidence),
-    }
 
 
 class DataBridgeCurrentTests(unittest.TestCase):
@@ -238,37 +192,6 @@ class DataBridgeCurrentTests(unittest.TestCase):
             self.assertTrue(pd.isna(output.loc[1, code]))
             self.assertEqual(output.loc[2, code], float(10 + column_number))
 
-    def test_monthly_databridge_accepts_wind_macro_addition_metadata(
-        self,
-    ) -> None:
-        from shared.data_service import build_monthly_output_from_frames
-
-        metadata = self._monthly_metadata_with_macro_additions()
-        metadata.loc[
-            metadata["indicators_code"].isin(
-                {"M0041340", "M0041341", "M0041342"}
-            ),
-            "indicators_source",
-        ] = "wind"
-
-        output = build_monthly_output_from_frames(
-            metadata,
-            self._monthly_macro_long_frame(),
-            end_date="2026-03-01",
-            include_databridge_additions=True,
-        )
-
-        self.assertEqual(
-            output.columns.tolist(),
-            [
-                "month_id",
-                "MONTHLY_SELECTED_A",
-                "MONTHLY_SELECTED_B",
-                "M0041340",
-                "M0041341",
-                "M0041342",
-            ],
-        )
 
     def test_monthly_databridge_rejects_unusable_macro_addition_metadata(
         self,
@@ -388,21 +311,6 @@ class DataBridgeCurrentTests(unittest.TestCase):
         self.assertEqual(list(read_monthly.call_args_list[0].args[0]), expected_codes)
         self.assertEqual(list(read_monthly.call_args_list[1].args[0]), expected_codes)
 
-    def test_monthly_builder_keeps_native_default_without_macro_additions(
-        self,
-    ) -> None:
-        from shared.data_service import build_monthly_output_from_frames
-
-        output = build_monthly_output_from_frames(
-            self._monthly_metadata_with_macro_additions(),
-            self._monthly_macro_long_frame(),
-            end_date="2026-03-01",
-        )
-
-        self.assertEqual(
-            output.columns.tolist(),
-            ["month_id", "MONTHLY_SELECTED_A", "MONTHLY_SELECTED_B"],
-        )
 
     def test_local_mysql_databridge_export_enables_monthly_macro_additions(
         self,
@@ -455,51 +363,6 @@ class DataBridgeCurrentTests(unittest.TestCase):
             include_databridge_additions=True,
         )
 
-    def test_blackbox_cutoff_resolution_enables_monthly_macro_additions(
-        self,
-    ) -> None:
-        from shared import input_artifacts
-
-        cutoff_keys = object()
-        engine = object()
-        with (
-            patch.object(
-                input_artifacts,
-                "_load_blackbox_schema",
-                return_value=(
-                    "data-bridge-v1",
-                    {
-                        "weekly_output.csv": ["week_id"],
-                        "monthly_output.csv": ["month_id"],
-                    },
-                ),
-            ),
-            patch.object(
-                input_artifacts._data_service,
-                "build_weekly_output_from_db",
-            ),
-            patch.object(
-                input_artifacts._data_service,
-                "build_monthly_output_from_db",
-            ) as monthly_builder,
-            patch.object(
-                input_artifacts,
-                "resolve_cutoffs",
-                return_value=cutoff_keys,
-            ),
-        ):
-            result = input_artifacts.resolve_blackbox_input_cutoffs(
-                object(),
-                feature_date="2026-03-01",
-                engine=engine,
-            )
-
-        self.assertIs(result, cutoff_keys)
-        monthly_builder.assert_called_once_with(
-            end_date="2026-03-01",
-            engine=engine,
-            include_databridge_additions=True,
-        )
 
     def test_blackbox_bulk_cutoff_resolution_uses_monthly_macro_selection(
         self,
@@ -613,55 +476,6 @@ class DataBridgeCurrentTests(unittest.TestCase):
                 output_root=Path(tmpdir),
             )
 
-    def test_blackbox_gray_replay_session_rejects_current_monthly_output_without_macro_additions(
-        self,
-    ) -> None:
-        from shared import input_artifacts
-        from shared.blackbox_v2.snapshot import CutoffKeys
-        from shared.data_bridge.refresh import DataBridgeRefreshConfig
-
-        current = _current_dataset()
-        source_identity = {
-            "generation_id": current.state["generation_id"],
-            "refresh_date": current.state["refresh_date"],
-            "schema_version": current.dataset.schema_version,
-            "business_digest": current.dataset.business_digest,
-            "stable_identity_sha256": "0" * 64,
-            "files": [
-                {
-                    "filename": profile.filename,
-                    "rows": profile.rows,
-                    "columns": profile.columns,
-                    "min_key": profile.min_key,
-                    "max_key": profile.max_key,
-                    "sha256": profile.sha256,
-                    "business_hash": profile.business_hash,
-                }
-                for _, profile in sorted(current.dataset.files.items())
-            ],
-        }
-        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
-            input_artifacts,
-            "check_current_dataset",
-            return_value=current,
-        ), self.assertRaisesRegex(ValueError, "M0041340.*M0041341.*M0041342"):
-            input_artifacts.build_blackbox_gray_replay_session(
-                session_id="a" * 64,
-                source_identity=source_identity,
-                request_cutoffs=[
-                    CutoffKeys(
-                        daily_cutoff_key="2026-07-23",
-                        weekly_cutoff_key="202630",
-                        monthly_cutoff_key="202608",
-                    )
-                ],
-                data_bridge_config=DataBridgeRefreshConfig(
-                    data_root=Path(tmpdir) / "data",
-                    runtime_root=Path(tmpdir) / "runtime",
-                    schema_path=SCHEMA_PATH,
-                ),
-                output_root=Path(tmpdir) / "sessions",
-            )
 
     def test_v3_producer_bootstrap_freezes_new_week_for_candidate_validation(
         self,

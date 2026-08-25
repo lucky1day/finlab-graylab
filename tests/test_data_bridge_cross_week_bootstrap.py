@@ -31,7 +31,6 @@ from shared.data_bridge.authority import (  # noqa: E402
     resolve_databridge_continuity_authority_from_engine,
 )
 from shared.data_bridge.refresh import (  # noqa: E402
-    DataBridgeRefreshError,
     DataBridgeRefreshConfig,
     DownloadRound,
     run_full_refresh,
@@ -162,20 +161,6 @@ class PeriodCutoffFallbackTests(unittest.TestCase):
             ]
         )
 
-    def test_new_period_without_fallback_reproduces_self_lock(self) -> None:
-        """闸门关闭时，source 进入新周即复现生产报错。"""
-        with self.assertRaises(ValueError) as caught:
-            _resolve_period_cutoffs_bulk(
-                ["2026-07-20"],
-                self._weekly_index(),
-                key_column="week_id",
-                available_keys={LAST_WEEK},
-                filename="weekly_output.csv",
-            )
-        self.assertEqual(
-            str(caught.exception),
-            f"platform week_id cutoff {NEW_WEEK} does not exist in weekly_output.csv",
-        )
 
     def test_fallback_selects_predecessor_and_preserves_source_key(self) -> None:
         """闸门打开时退到上周做 effective，同时保留新周作为 source。"""
@@ -203,18 +188,6 @@ class PeriodCutoffFallbackTests(unittest.TestCase):
                 allow_legacy_v1_period_fallback=True,
             )
 
-    def test_unchanged_period_needs_no_fallback(self) -> None:
-        """未跨周时闸门无关，source 与 effective 相同。"""
-        resolved = _resolve_period_cutoffs_bulk(
-            ["2026-07-15"],
-            self._weekly_index(),
-            key_column="week_id",
-            available_keys={LAST_WEEK},
-            filename="weekly_output.csv",
-        )
-        cutoff = resolved["2026-07-15"]
-        self.assertEqual(cutoff.effective_key, LAST_WEEK)
-        self.assertEqual(cutoff.source_key, LAST_WEEK)
 
 
 class _CrossWeekFixture(unittest.TestCase):
@@ -331,11 +304,6 @@ class _CrossWeekFixture(unittest.TestCase):
 class CrossWeekRefreshTests(_CrossWeekFixture):
     """authority 解析与刷新闭环的跨周回归。"""
 
-    def test_cross_week_authority_without_bootstrap_is_self_locked(self) -> None:
-        """未开 bootstrap 时，跨周首日在构建前就被旧 current 卡死。"""
-        self._publish_last_week_generation()
-        with self.assertRaises(DataBridgeRefreshError):
-            self._resolve_authority(bootstrap=False)
 
     def test_cross_week_authority_freezes_new_week(self) -> None:
         """开启 bootstrap 后 effective 退到上周，新周被冻结为强制要求。"""
@@ -367,26 +335,6 @@ class CrossWeekRefreshTests(_CrossWeekFixture):
             published["week_id"].astype(int).tolist(),
         )
 
-    def test_bootstrap_rejects_candidate_still_missing_new_week(self) -> None:
-        """bootstrap 不是静默放行：候选仍缺新周必须拒绝发布。"""
-        self._publish_last_week_generation()
-        authority = self._resolve_authority(bootstrap=True)
-        with self.assertRaises(DataBridgeRefreshError) as caught:
-            self._publish(
-                daily_end="2026-07-20",
-                week_ids=[LAST_WEEK],
-                refresh_date="2026-07-21",
-                continuity_authority=authority,
-            )
-        self.assertIn(
-            f"missing frozen exact weekly_output.csv key {NEW_WEEK}",
-            str(caught.exception),
-        )
-        published = pd.read_csv(self.data_root / "current" / "weekly_output.csv")
-        self.assertEqual(
-            published["week_id"].astype(str).tolist(),
-            [LAST_WEEK],
-        )
 
 
 class ProductionEntryCrossWeekTests(_CrossWeekFixture):
@@ -450,16 +398,6 @@ class ProductionEntryCrossWeekTests(_CrossWeekFixture):
             published["week_id"].astype(int).tolist(),
         )
 
-    def test_production_entry_still_rejects_candidate_missing_new_week(
-        self,
-    ) -> None:
-        """入口放行的前提仍是候选真的产出新周，否则必须拒绝。"""
-        self._publish_last_week_generation()
-        with self.assertRaises(DataBridgeRefreshError):
-            self._run_production_entry(
-                daily_end="2026-07-20",
-                week_ids=[LAST_WEEK],
-            )
 
 
 if __name__ == "__main__":

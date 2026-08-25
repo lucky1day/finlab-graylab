@@ -4,14 +4,13 @@ import hashlib
 import json
 import logging
 import math
-import os
 import sys
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Mapping
+from typing import Callable, Iterable, Iterator, Mapping
 
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Connection, Engine, URL
@@ -2000,30 +1999,11 @@ def _require_rowcount(result: object, expected: int, operation: str) -> None:
         )
 
 
-def _as_datetime(value: object, field: str) -> datetime:
-    if isinstance(value, datetime):
-        return _utc_datetime6(value)
-    if isinstance(value, str):
-        try:
-            return _utc_datetime6(datetime.fromisoformat(value))
-        except ValueError as exc:
-            raise RuntimeError(f"invalid stored {field}: {value!r}") from exc
-    raise RuntimeError(f"invalid stored {field}: {value!r}")
-
-
 def _stored_text(row: Mapping[str, object], field: str) -> str:
     value = row.get(field)
     if value is None or not str(value).strip():
         raise RuntimeError(f"invalid stored {field}: {value!r}")
     return str(value)
-
-
-def _optional_stored_text(value: object) -> str | None:
-    return None if value is None else str(value)
-
-
-def _optional_int(value: object) -> int | None:
-    return None if value is None else int(value)
 
 
 def _stored_iso_date(row: Mapping[str, object], field: str) -> str:
@@ -2038,21 +2018,6 @@ def _stored_iso_date(row: Mapping[str, object], field: str) -> str:
         except ValueError as exc:
             raise RuntimeError(f"invalid stored {field}: {value!r}") from exc
     raise RuntimeError(f"invalid stored {field}: {value!r}")
-
-
-def _stored_json_mapping(
-    row: Mapping[str, object],
-    field: str,
-) -> Mapping[str, object]:
-    value = row.get(field)
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"invalid stored {field}: malformed JSON") from exc
-    if not isinstance(value, Mapping):
-        raise RuntimeError(f"invalid stored {field}: expected JSON object")
-    return dict(value)
 
 
 def create_scheme_run(

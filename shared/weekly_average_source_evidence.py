@@ -130,18 +130,6 @@ def is_point_backed_weekly_average_provenance(
     return any("source-backed point" in value or "point_runner" in value for value in values)
 
 
-def _required_relative_path(entry: dict[str, Any], key: str, batch_dir: Path, scheme_id: str) -> Path:
-    raw = str(entry.get(key) or "").strip()
-    if not raw:
-        raise RuntimeError(f"{scheme_id}: weekly average source evidence missing {key}")
-    path = (batch_dir / raw).resolve()
-    if batch_dir.resolve() not in path.parents:
-        raise RuntimeError(f"{scheme_id}: weekly average source evidence {key} must stay under {batch_dir}")
-    if not path.exists() or not path.is_file():
-        raise RuntimeError(f"{scheme_id}: weekly average source evidence file missing: {path}")
-    return path
-
-
 def _required_relative_dir(entry: dict[str, Any], key: str, batch_dir: Path, scheme_id: str) -> Path:
     raw = str(entry.get(key) or "").strip()
     if not raw:

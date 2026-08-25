@@ -310,21 +310,6 @@ def list_schemes(engine: Engine) -> list[dict[str, Any]]:
     ]
 
 
-def _scheme_meta_from_config(cfg: Any) -> dict[str, Any]:
-    return {
-        "scheme_id": cfg.scheme_id,
-        "base_scheme_id": cfg.scheme_id,
-        "name": cfg.name,
-        "description": cfg.description,
-        "horizon": cfg.horizon,
-        "task_type": cfg.task_type,
-        "frequency": cfg.frequency,
-        "schedule_cron": cfg.schedule.cron,
-        "schedule_timezone": cfg.schedule.timezone,
-        "status": cfg.status,
-    }
-
-
 def _backtest_scheme_meta(engine: Engine) -> dict[tuple[str, str], dict[str, Any]]:
     """只读获取回测矩阵所需方案元数据，不触发 registry 同步。"""
     sql = text(

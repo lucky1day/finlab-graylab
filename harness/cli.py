@@ -18,13 +18,6 @@ from harness.operation import (
 )
 from harness.context import GateContext
 from harness.gates.activate_gate import ActivationGate
-from harness.gates.backtest_gate import BacktestGate
-from harness.gates.compare_gate import CompareGate
-from harness.gates.dry_run_gate import DryRunGate
-from harness.gates.input_gate import InputGate
-from harness.gates.live_gate import LiveGate
-from harness.gates.static_gate import StaticGate
-from harness.gates.unit_gate import UnitGate
 from harness.orchestrator import onboard as run_onboard
 from harness.registry import gate_for_name
 from harness.result import GateResult, GateStatus, OnboardReport
@@ -606,13 +599,6 @@ def _exit_code_for_report(report: OnboardReport) -> int:
 
 def _timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
-
-def _read_json_file(path: Path) -> Any:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise SystemExit(f"invalid JSON file {path}: {exc}") from exc
 
 
 def _jsonable(value: Any) -> Any:
