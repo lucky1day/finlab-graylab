@@ -19,7 +19,7 @@
 | 平台入库和审计人员 | [方案入库统一入口](onboarding/README.md) |
 | 平台开发人员 | [架构与契约](architecture/README.md) |
 | 平台运维人员 | [运维文档](operations/README.md) |
-| 项目负责人 | [当前状态](CURRENT_STATUS.md)、[统一后续推进计划](TODO.md)和[未关闭问题台账](records/SCHEME_ISSUE_LEDGER.md) |
+| 项目负责人 | [当前状态](CURRENT_STATUS.md)和[统一后续推进计划](TODO.md) |
 
 ## 文档域
 
@@ -33,7 +33,6 @@
 | [Blackbox V2](blackbox_v2/README.md) | V2 专属数据、生产准备和证据边界 | 是 |
 | [Native V1](native_v1/README.md) | 存量方案维护 | 仅存量维护 |
 | [统一后续推进计划](TODO.md) | 当前未批准工作的顺序与停止条件 | 是 |
-| [问题记录](records/README.md) | 当前未关闭问题；历史证据由 Git 和控制面保存 | 否 |
 
 ## 状态规则
 
@@ -47,7 +46,7 @@
 ## 维护规则
 
 1. 每个包含 Markdown 的目录必须有 `README.md`，并登记本层文档和子目录。实施计划完成后从工作树删除，通过 Git 历史追溯。
-2. 当前稳定事实只写入 `CURRENT_STATUS.md`；未批准工作的排序只写入 `TODO.md`；具体方案问题统一写入 `records/SCHEME_ISSUE_LEDGER.md`，解决并验收后从当前台账删除。
+2. 当前稳定事实只写入 `CURRENT_STATUS.md`；所有未闭环工作和具体方案问题只写入 `TODO.md`，解决并验收后删除。
 3. 通用 SOP 不记录具体方案、generation、snapshot 或 Harness run。
 4. 历史记录不反向定义当前规则；已被现行入口完整替代的过期文档从工作树删除，通过 Git 历史追溯。
 5. 文档移动必须同步更新相对链接，并通过文档门禁测试。

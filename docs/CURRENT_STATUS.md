@@ -51,6 +51,7 @@
 - 生产 release identity 只来自 launcher 注入的 `BFL_RELEASE_COMMIT`；开发态 Harness 不再额外执行 Git
   subprocess。immutable release 构建的 clean-HEAD、archive 与 manifest 校验保持不变。
 - 已完成设计稿、重复架构总册和拆分的 Native T0/验证手册已从当前工作树删除，通过 Git 历史追溯。
+- 空的方案问题台账目录已删除；单维护者只在 `TODO.md` 维护未闭环工作和具体方案问题。
 
 ## 每日预测 Phase-A 后缀重算
 

@@ -5,7 +5,7 @@
 **目标读者**：平台入库、运行和审计人员
 **最后核验日期**：2026-08-13
 
-本文是平台操作人员接收、技术验收和登记 Blackbox V2 方案的唯一操作 SOP。上游交付契约见 [BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)。精确版本、快照和运行结果由 Harness 控制面与本机 ignored reports 保存；当前状态和未关闭问题分别进入 [CURRENT_STATUS](../CURRENT_STATUS.md) 与 [全方案问题台账](../records/SCHEME_ISSUE_LEDGER.md)。文档分类和维护规则见 [Blackbox V2 文档管理](../blackbox_v2/README.md)。
+本文是平台操作人员接收、技术验收和登记 Blackbox V2 方案的唯一操作 SOP。上游交付契约见 [BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)。精确版本、快照和运行结果由 Harness 控制面与本机 ignored reports 保存；当前状态和未闭环工作分别进入 [CURRENT_STATUS](../CURRENT_STATUS.md) 与 [TODO](../TODO.md)。文档分类和维护规则见 [Blackbox V2 文档管理](../blackbox_v2/README.md)。
 
 本文的通用入库流程止于 `shadow + paused`，不自动授予生产运行权限。仓库由一名维护者独立管理，因此 `activate`、回测落库和 `live` 使用直接副作用命令：命令本身表达该次明确操作意图，系统不生成密钥、token、nonce 或 replay store。这些命令仍只能在完成[生产准备清单](../blackbox_v2/PRODUCTION_READINESS.md)核验并决定具体方案范围后执行；不得把某个试验方案的操作外推为所有新方案的默认权限。具体生产灰度记录只写入平台试验台账。
 
