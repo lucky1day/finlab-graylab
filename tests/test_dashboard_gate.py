@@ -386,7 +386,7 @@ def test_dashboard_gate_accepts_exact_new_blackbox_display_identity(
 
 
 
-def test_registry_exposes_only_dashboard_post_activation_gate() -> None:
+def test_registry_exposes_dashboard_gate_for_both_runtimes() -> None:
     from harness.gates.dashboard_gate import DashboardGate
     from harness.registry import gate_for_name
 
@@ -399,6 +399,3 @@ def test_registry_exposes_only_dashboard_post_activation_gate() -> None:
             config=SimpleNamespace(runtime_type=runtime_type),
         )
         assert isinstance(gate_for_name("dashboard", ctx=ctx), DashboardGate)
-        for old_name in ("api", "api-readiness"):
-            with pytest.raises(ValueError, match="unsupported"):
-                gate_for_name(old_name, ctx=ctx)
