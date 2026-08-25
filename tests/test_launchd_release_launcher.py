@@ -311,18 +311,6 @@ def test_loader_rejects_insecure_runtime_root(tmp_path: Path) -> None:
         load_release_environment(release)
 
 
-def test_prepare_environment_rejects_ambient_release_override(
-    tmp_path: Path,
-) -> None:
-    release = _release(tmp_path)
-
-    with pytest.raises(LaunchdReleaseError, match="ambient environment conflicts"):
-        prepare_exec_environment(
-            release,
-            {"BFL_RELEASE_COMMIT": "b" * 40},
-        )
-
-
 def test_prepare_environment_merges_service_values_and_rejects_conflict(
     tmp_path: Path,
 ) -> None:
@@ -368,15 +356,24 @@ def test_prepare_environment_keeps_global_morning_refresh_window(
     assert merged["DATABRIDGE_REFRESH_DEADLINE"] == "06:45"
 
 
-@pytest.mark.parametrize("name", ["PYTHONPATH", "PYTHONHOME"])
-def test_prepare_environment_rejects_ambient_python_path_override(
+@pytest.mark.parametrize(
+    ("name", "value", "message"),
+    [
+        ("BFL_RELEASE_COMMIT", "b" * 40, "ambient environment conflicts"),
+        ("PYTHONPATH", "/outside/release", "ambient Python environment"),
+        ("PYTHONHOME", "/outside/release", "ambient Python environment"),
+    ],
+)
+def test_prepare_environment_rejects_ambient_control_overrides(
     tmp_path: Path,
     name: str,
+    value: str,
+    message: str,
 ) -> None:
     release = _release(tmp_path)
 
-    with pytest.raises(LaunchdReleaseError, match="ambient Python environment"):
-        prepare_exec_environment(release, {name: "/outside/release"})
+    with pytest.raises(LaunchdReleaseError, match=message):
+        prepare_exec_environment(release, {name: value})
 
 
 def test_main_executes_command_with_release_identity(tmp_path: Path) -> None:

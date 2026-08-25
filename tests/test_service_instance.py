@@ -20,17 +20,14 @@ def test_release_commit_environment_is_authoritative() -> None:
     assert resolved == release_commit
 
 
-def test_invalid_release_commit_is_rejected() -> None:
-    with patch.dict(
-        os.environ,
-        {"BFL_RELEASE_COMMIT": "not-a-commit"},
-        clear=True,
-    ):
-        with pytest.raises(RuntimeError, match="BFL_RELEASE_COMMIT"):
-            resolve_code_commit()
-
-
-def test_missing_release_commit_has_no_git_fallback() -> None:
-    with patch.dict(os.environ, {}, clear=True):
+@pytest.mark.parametrize(
+    "environment",
+    [{"BFL_RELEASE_COMMIT": "not-a-commit"}, {}],
+    ids=("invalid", "missing"),
+)
+def test_invalid_or_missing_release_commit_is_rejected(
+    environment: dict[str, str],
+) -> None:
+    with patch.dict(os.environ, environment, clear=True):
         with pytest.raises(RuntimeError, match="BFL_RELEASE_COMMIT"):
             resolve_code_commit()
