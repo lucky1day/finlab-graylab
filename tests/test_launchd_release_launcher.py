@@ -233,42 +233,30 @@ def test_service_environment_rejects_duplicate_reserved_or_missing_keys(
     path = runtime / "config" / "service.env"
     original = path.read_text(encoding="utf-8")
 
-    path.write_text(original + "BOND_DB_NAME=other\n", encoding="utf-8")
-    path.chmod(0o600)
-    with pytest.raises(LaunchdReleaseError, match="duplicate keys"):
-        load_service_environment(runtime)
-
-    path.write_text(original + "BFL_RELEASE_COMMIT=bad\n", encoding="utf-8")
-    path.chmod(0o600)
-    with pytest.raises(LaunchdReleaseError, match="reserved keys"):
-        load_service_environment(runtime)
-
-    path.write_text(
-        original + "BFL_DATABASE_ENV_FILE=/outside/runtime/database.env\n",
-        encoding="utf-8",
-    )
-    path.chmod(0o600)
-    with pytest.raises(LaunchdReleaseError, match="reserved keys"):
-        load_service_environment(runtime)
-
-    path.write_text(
-        original.replace("BOND_ADMIN_TOKEN=local-admin-token\n", ""),
-        encoding="utf-8",
-    )
-    path.chmod(0o600)
-    with pytest.raises(LaunchdReleaseError, match="missing required keys"):
-        load_service_environment(runtime)
-
-    path.write_text(
-        original.replace(
-            "BOND_ADMIN_TOKEN=local-admin-token",
-            "BOND_ADMIN_TOKEN='   '",
+    cases = (
+        (original + "BOND_DB_NAME=other\n", "duplicate keys"),
+        (original + "BFL_RELEASE_COMMIT=bad\n", "reserved keys"),
+        (
+            original + "BFL_DATABASE_ENV_FILE=/outside/runtime/database.env\n",
+            "reserved keys",
         ),
-        encoding="utf-8",
+        (
+            original.replace("BOND_ADMIN_TOKEN=local-admin-token\n", ""),
+            "missing required keys",
+        ),
+        (
+            original.replace(
+                "BOND_ADMIN_TOKEN=local-admin-token",
+                "BOND_ADMIN_TOKEN='   '",
+            ),
+            "BOND_ADMIN_TOKEN",
+        ),
     )
-    path.chmod(0o600)
-    with pytest.raises(LaunchdReleaseError, match="BOND_ADMIN_TOKEN"):
-        load_service_environment(runtime)
+    for content, message in cases:
+        path.write_text(content, encoding="utf-8")
+        path.chmod(0o600)
+        with pytest.raises(LaunchdReleaseError, match=message):
+            load_service_environment(runtime)
 
 def test_loader_rejects_missing_or_untrusted_release_environment(
     tmp_path: Path,
