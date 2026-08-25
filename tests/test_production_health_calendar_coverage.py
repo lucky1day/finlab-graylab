@@ -104,6 +104,3 @@ class EvaluateDailyHealthTests(unittest.TestCase):
         )
         self.assertNotIn("daily_predictions_missing", codes)
 
-
-if __name__ == "__main__":
-    unittest.main()

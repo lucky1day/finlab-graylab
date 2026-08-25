@@ -10,9 +10,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from shared.models import PredictionRecord
-
-
 def _blackbox_config(
     scheme_id: str,
     *,

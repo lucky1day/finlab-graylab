@@ -312,6 +312,3 @@ def _context(project_root: Path, scheme_id: str) -> GateContext:
         operation="test-operation",
     )
 
-
-if __name__ == "__main__":
-    unittest.main()

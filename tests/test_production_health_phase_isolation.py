@@ -165,6 +165,3 @@ class PhaseIsolationTests(unittest.TestCase):
         self.assertEqual(snapshot.predictions_count, 0)
         self.assertEqual(snapshot.gray_live_run_schemes, ())
 
-
-if __name__ == "__main__":
-    unittest.main()

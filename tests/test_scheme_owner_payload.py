@@ -46,6 +46,3 @@ class SchemeOwnerPayloadTests(unittest.TestCase):
         dto = _registry_dto(_row(), {"demo": "LW"})
         self.assertEqual(dto["owner"], "")
 
-
-if __name__ == "__main__":
-    unittest.main()

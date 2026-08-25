@@ -455,6 +455,3 @@ def _seed_successful_backtest(
                 [{"id": index + 1} for index in range(prediction_count)],
             )
 
-
-if __name__ == "__main__":
-    unittest.main()

@@ -220,6 +220,3 @@ class PeriodAverageActualJoinTests(unittest.TestCase):
             str(caught.exception),
         )
 
-
-if __name__ == "__main__":
-    unittest.main()

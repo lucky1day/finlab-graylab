@@ -423,6 +423,3 @@ def _write_native_scheme(root: Path) -> Path:
     )
     return scheme_dir
 
-
-if __name__ == "__main__":
-    unittest.main()

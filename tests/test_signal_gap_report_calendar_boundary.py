@@ -164,6 +164,3 @@ class CalendarBoundaryIsolationTests(unittest.TestCase):
             known_missing.predict_date,
         )
 
-
-if __name__ == "__main__":
-    unittest.main()

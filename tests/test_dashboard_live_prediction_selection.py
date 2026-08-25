@@ -183,6 +183,3 @@ class RegistryTaskTypeIndexTests(unittest.TestCase):
         with self.assertRaises(DashboardDataError):
             registry_task_type_index([self._registry_row(task_type="")])
 
-
-if __name__ == "__main__":
-    unittest.main()

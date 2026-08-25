@@ -306,6 +306,3 @@ class ProductionEntryCrossWeekTests(_CrossWeekFixture):
         )
 
 
-
-if __name__ == "__main__":
-    unittest.main()

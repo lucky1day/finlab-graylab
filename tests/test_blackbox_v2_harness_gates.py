@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import tempfile
 import unittest
@@ -537,7 +536,3 @@ def _snapshot_frames() -> dict[str, pd.DataFrame]:
             {"month_id": ["202605", "202606", "202607"], "monthly_factor": [0.0, 1.0, 2.0]}
         ),
     }
-
-
-if __name__ == "__main__":
-    unittest.main()

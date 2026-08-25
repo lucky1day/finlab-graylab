@@ -104,6 +104,3 @@ class FailureTaxonomyTests(unittest.TestCase):
         self.assertIn("error", payload)
         self.assertEqual(payload["status"], "failed")
 
-
-if __name__ == "__main__":
-    unittest.main()

@@ -220,6 +220,3 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
 
-
-if __name__ == "__main__":
-    unittest.main()

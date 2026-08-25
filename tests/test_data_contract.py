@@ -357,6 +357,3 @@ class DataContractAuditTests(unittest.TestCase):
                 cutoff_at=datetime(2026, 7, 24, 6, 30),
             )
 
-
-if __name__ == "__main__":
-    unittest.main()

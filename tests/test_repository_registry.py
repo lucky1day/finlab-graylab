@@ -1350,6 +1350,3 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertEqual(engine.store["prediction_rows"], [])
 
 
-
-if __name__ == "__main__":
-    unittest.main()

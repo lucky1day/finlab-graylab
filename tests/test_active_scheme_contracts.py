@@ -50,6 +50,3 @@ class ActiveSchemeContractTests(unittest.TestCase):
 
         self.assertEqual(load_legacy_metadata_hashes(PROJECT_ROOT), ownerless)
 
-
-if __name__ == "__main__":
-    unittest.main()

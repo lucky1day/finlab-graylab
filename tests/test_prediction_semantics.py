@@ -205,6 +205,3 @@ class _NonTradingMonthlyCalendar:
             "2025-03-15": "2025-03-14",
         }[day]
 
-
-if __name__ == "__main__":
-    unittest.main()

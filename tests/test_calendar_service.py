@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import json
 import unittest
-from pathlib import Path
 
-import pandas as pd
 from sqlalchemy import create_engine, text
 
 
@@ -193,7 +190,3 @@ class CalendarServiceTests(unittest.TestCase):
         self.assertEqual(calendar.week_id_to_last_trading_day(202625), "2026-07-03")
         self.assertEqual(calendar.week_id_to_last_trading_day(202626), "2026-07-10")
 
-
-
-if __name__ == "__main__":
-    unittest.main()

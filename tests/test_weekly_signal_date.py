@@ -96,8 +96,6 @@ class WeeklySignalDateTests(unittest.TestCase):
         self.assertEqual(due, ["2026-02-14"])
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class LaunchdWeeklySkipTests(unittest.TestCase):

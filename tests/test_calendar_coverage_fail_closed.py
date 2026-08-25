@@ -169,8 +169,6 @@ class LaunchdRunnerCoverageTests(unittest.TestCase):
         self.assertNotEqual(summary.outcome, "configuration_error")
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class MonthlyAnchorCoverageTests(unittest.TestCase):

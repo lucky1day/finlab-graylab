@@ -484,6 +484,3 @@ def _insert_registry_row_conn(conn, row: dict[str, object]) -> None:
         row,
     )
 
-
-if __name__ == "__main__":
-    unittest.main()

@@ -319,8 +319,6 @@ def _load_backtest_direction(direction: str | None):
         return load_backtest_results(path, [request])[0]
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 # --------------------------------------------------------------------------

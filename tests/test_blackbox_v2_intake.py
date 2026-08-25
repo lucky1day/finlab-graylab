@@ -282,6 +282,3 @@ def _write_owner_registry(root: Path, owners: dict[str, str]) -> None:
         encoding="utf-8",
     )
 
-
-if __name__ == "__main__":
-    unittest.main()

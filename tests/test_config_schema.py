@@ -299,6 +299,3 @@ class ConfigSchemaBacktestStartTests(unittest.TestCase):
 
         self.assertIn("target_rule is required for weekly/monthly schemes", errors)
 
-
-if __name__ == "__main__":
-    unittest.main()
