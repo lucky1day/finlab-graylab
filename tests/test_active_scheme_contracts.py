@@ -5,7 +5,8 @@ from pathlib import Path
 
 import yaml
 
-from scheduler.discovery import active_schemes
+from scheduler.discovery import active_schemes, discover_schemes
+from shared.blackbox_v2.legacy_metadata_policy import load_legacy_metadata_hashes
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +40,15 @@ class ActiveSchemeContractTests(unittest.TestCase):
                     self.assertEqual(config.contract_version, "1.0")
                 else:
                     self.assertTrue(config.entry_point)
+
+    def test_ownerless_blackbox_metadata_matches_legacy_policy(self) -> None:
+        ownerless = {
+            config.scheme_id: config.manifest_hash
+            for config in discover_schemes(SCHEMES_ROOT, strict=True)
+            if config.runtime_type == "blackbox_v2" and config.owner is None
+        }
+
+        self.assertEqual(load_legacy_metadata_hashes(PROJECT_ROOT), ownerless)
 
 
 if __name__ == "__main__":
