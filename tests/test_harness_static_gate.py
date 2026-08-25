@@ -505,17 +505,6 @@ def _fake_daily_semantics_calendar() -> SimpleNamespace:
     )
 
 
-def _fake_monthly_semantics_calendar() -> SimpleNamespace:
-    return SimpleNamespace(
-        is_trading_day=lambda day: day in {"2026-04-15", "2026-05-15"},
-        previous_trading_day=lambda day: {"2026-04-16": "2026-04-15", "2026-05-16": "2026-05-15"}[day],
-        next_trading_days=lambda day, count: {
-            "2026-04-14": ["2026-04-15"],
-            "2026-05-14": ["2026-05-15"],
-        }.get(day, [])[:count],
-    )
-
-
 def _write_minimal_scheme(project_root: Path, *, scheme_id: str, extra_config_lines: list[str] | None = None) -> Path:
     _write_policy(project_root, scheme_id)
     scheme_dir = project_root / "schemes" / scheme_id
@@ -572,31 +561,3 @@ def _write_policy(project_root: Path, scheme_id: str) -> None:
         encoding="utf-8",
     )
 
-
-def _write_monthly_scheme(project_root: Path, *, scheme_id: str) -> Path:
-    scheme_dir = project_root / "schemes" / scheme_id
-    scheme_dir.mkdir(parents=True)
-    (scheme_dir / "config.yaml").write_text(
-        "\n".join(
-            [
-                f"scheme_id: {scheme_id}",
-                'name: "Demo Monthly"',
-                'description: "Demo monthly scheme"',
-                "horizon: 30",
-                "task_type: monthly",
-                'tenors: ["10Y"]',
-                "frequency: monthly",
-                "target_rule: next_month_observation_yield_vs_feature_month_observation_yield",
-                "schedule:",
-                '  cron: "0 18 15 * *"',
-                '  timezone: "Asia/Shanghai"',
-                "entry_point: predict.run",
-                "status: paused",
-                "input_spec:",
-                "  data_version: shared_data_service_monthly.v1",
-                '  required_columns: ["month_id", "M0000001"]',
-            ]
-        ),
-        encoding="utf-8",
-    )
-    return scheme_dir
