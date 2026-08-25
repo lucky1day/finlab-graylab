@@ -594,12 +594,6 @@ class RegistrySyncTests(unittest.TestCase):
         self.assertEqual(state.data_snapshot_id, "snapshot-1")
 
 
-
-
-
-
-
-
     def test_trusted_native_activation_writes_exact_approval_and_target_registry_atomically(self) -> None:
         from scheduler.repository import apply_native_activation_state
 
@@ -640,9 +634,6 @@ class RegistrySyncTests(unittest.TestCase):
             {row["status"] for row in engine.store["registry_rows"]},
             {"active"},
         )
-
-
-
 
 
 class BlackboxExecutionApprovalRepositoryTests(unittest.TestCase):
@@ -694,8 +685,6 @@ class BlackboxExecutionApprovalRepositoryTests(unittest.TestCase):
         self.assertEqual(approval.registry_scheme_ids, ("demo_blackbox__h1__10Y",))
         with self.assertRaises(FrozenInstanceError):
             approval.reason = "mutated"
-
-
 
 
     def test_exact_approval_fails_closed_for_each_missing_or_mismatched_state(self) -> None:
@@ -807,7 +796,6 @@ class BlackboxExecutionApprovalRepositoryTests(unittest.TestCase):
                 self.assertEqual(approval.reason, expected_reason)
 
 
-
 class _Result:
     lastrowid = 101
 
@@ -881,7 +869,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertEqual(params["runtime_type"], "native_adapter")
 
 
-
     def test_active_native_completion_inserts_prediction_and_finishes_atomically(self) -> None:
         from scheduler.repository import complete_active_native_run
         from shared.models import PredictionRecord
@@ -929,15 +916,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertEqual(engine.store["run_row"]["records_written"], 1)
         self.assertEqual(len(engine.store["run_log_rows"]), 1)
         self.assertEqual(engine.store["run_log_rows"][0]["status"], "success")
-
-
-
-
-
-
-
-
-
 
 
     def test_blackbox_completion_locks_revalidates_and_commits_atomically(self) -> None:
@@ -1009,8 +987,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertLess(registry_index, run_index)
         self.assertLess(run_index, key_select_indexes[0])
         self.assertLess(key_select_indexes[-1], prediction_index)
-
-
 
 
     def test_blackbox_duplicate_completion_skips_without_mutating_prediction(
@@ -1230,15 +1206,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
                 self.assertEqual(engine.store["run_row"]["status"], "running")
                 self.assertIsNone(engine.store["run_row"]["records_written"])
                 self.assertEqual(engine.store["run_log_rows"], [])
-
-
-
-
-
-
-
-
-
 
 
     def test_blackbox_completion_rejects_pending_reconciliation_before_db_access(self) -> None:

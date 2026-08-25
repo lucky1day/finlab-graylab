@@ -139,8 +139,6 @@ def test_monthly_template_uses_explicit_refresh_window_arguments() -> None:
     ]
 
 
-
-
 def test_loader_accepts_exact_installed_release_environment(
     tmp_path: Path,
 ) -> None:

@@ -127,8 +127,6 @@ def _v3_period_bootstrap_inputs():
     return current, resolved, config
 
 
-
-
 class DataBridgeCurrentTests(unittest.TestCase):
     @staticmethod
     def _monthly_metadata_with_macro_additions() -> pd.DataFrame:

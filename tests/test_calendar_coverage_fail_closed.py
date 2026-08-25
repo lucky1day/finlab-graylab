@@ -151,8 +151,6 @@ class LaunchdRunnerCoverageTests(unittest.TestCase):
         self.assertNotEqual(summary.outcome, "configuration_error")
 
 
-
-
 class MonthlyAnchorCoverageTests(unittest.TestCase):
     """月频目标锚点必须落在声明的目标月内。
 

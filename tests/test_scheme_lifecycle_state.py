@@ -48,14 +48,6 @@ def test_state_is_ignored_when_scheme_version_changed(tmp_path: Path) -> None:
         assert read_lifecycle_state(tmp_path, "demo", "v2") is None
 
 
-
-
-
-
-
-
-
-
 def test_scheme_id_cannot_escape_the_lifecycle_root(tmp_path: Path) -> None:
     with patch.dict(os.environ, _runtime(tmp_path), clear=False):
         for bad in ("../escape", "nested/id", "", "  ", ".hidden"):
@@ -84,10 +76,6 @@ def test_production_target_without_runtime_root_fails_closed(tmp_path: Path) -> 
         assert read_lifecycle_state(tmp_path, "demo", "v1") is None
 
 
-
-
-
-
 # --------------------------------------------------------------------------
 # discovery 注入：覆盖层如何影响 load_scheme_config
 # --------------------------------------------------------------------------
@@ -96,8 +84,6 @@ def test_production_target_without_runtime_root_fails_closed(tmp_path: Path) -> 
 def _real_scheme() -> tuple[Path, str]:
     root = Path(__file__).resolve().parents[1]
     return root, "weekly_1y_causal_v1_31_0_standalone"
-
-
 
 
 def test_discovery_applies_overlay_for_matching_version(tmp_path: Path) -> None:
@@ -118,8 +104,6 @@ def test_discovery_applies_overlay_for_matching_version(tmp_path: Path) -> None:
 
     assert (effective.status, effective.version_status) == ("active", "active")
     assert effective.scheme_version == declared.scheme_version
-
-
 
 
 # --------------------------------------------------------------------------

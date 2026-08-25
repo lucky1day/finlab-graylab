@@ -34,9 +34,6 @@ def build_operation(
 class BlackboxV2HarnessGateTests(unittest.TestCase):
 
 
-
-
-
     def test_input_state_captures_declared_platform_input_in_read_only_transaction(self) -> None:
         from harness.blackbox_v2.gates import (
             _ensure_input_state,
@@ -284,13 +281,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 _ensure_input_state(ctx)
 
 
-
-
-
-
-
-
-
     def test_automatic_execution_gates_run_end_to_end_without_business_writes(self) -> None:
         from harness.blackbox_v2.gates import (
             BlackboxCompareGate,
@@ -452,7 +442,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             self.assertEqual(state, {"version": "draft", "registry": "paused"})
 
 
-
     def test_static_gate_accepts_exact_two_file_delivery(self) -> None:
         from harness.blackbox_v2.gates import BlackboxStaticGate
         from scheduler.discovery import load_scheme_config
@@ -465,16 +454,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             result = BlackboxStaticGate().run(_context(root, config))
 
         self.assertTrue(result.passed, result.errors)
-
-
-
-
-
-
-
-
-
-
 
 
 def _context(root: Path, config) -> GateContext:
@@ -519,8 +498,6 @@ def _delivery(path: Path, *, script: str = "import argparse\nimport json\n") -> 
         encoding="utf-8",
     )
     return path
-
-
 
 
 def _snapshot_frames() -> dict[str, pd.DataFrame]:

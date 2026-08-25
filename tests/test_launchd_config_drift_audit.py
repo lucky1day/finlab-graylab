@@ -28,8 +28,6 @@ def _write_plist(path: Path, payload: dict[str, object]) -> None:
         plistlib.dump(payload, handle)
 
 
-
-
 def _plist(
     label: str,
     *,
@@ -127,8 +125,6 @@ def _audit_payloads(
     )
 
 
-
-
 def test_data_bridge_template_requires_controlled_producer_identity() -> None:
     path = LAUNCHD_ROOT / "com.bond-factor-lab.data-bridge-refresh.plist"
     with path.open("rb") as handle:
@@ -145,24 +141,6 @@ def test_application_launchd_templates_bind_mac3_target() -> None:
         assert payload["EnvironmentVariables"]["BFL_DEPLOYMENT_TARGET"] == (
             "mac3-production"
         ), name
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 @pytest.mark.parametrize(
@@ -215,8 +193,6 @@ def test_ssh_tunnel_requires_real_local_key_and_user(
         "ProgramArguments[6]",
     ]
     assert result["ok"] is False
-
-
 
 
 def test_loaded_program_workdir_and_trigger_must_match_installed_plist(

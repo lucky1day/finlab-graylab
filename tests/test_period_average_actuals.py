@@ -95,10 +95,6 @@ def test_period_average_actual_fails_on_missing_or_duplicate_bucket_fact() -> No
         )
 
 
-
-
-
-
 def test_period_average_repository_writes_one_generic_table() -> None:
     calendar = _calendar_rows("2024-01-01", "2024-03-31")
     records = build_period_average_actual_records_from_rows(

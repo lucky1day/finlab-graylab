@@ -245,10 +245,6 @@ def _install(
     return SimpleNamespace(dispose=Mock()), readback_mock
 
 
-
-
-
-
 def test_multi_target_scheme_runs_once_and_commits_only_missing_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -290,10 +286,6 @@ def test_multi_target_scheme_runs_once_and_commits_only_missing_target(
     ]
     readback.assert_called_once()
     lock.release.assert_called_once()
-
-
-
-
 
 
 def test_any_algorithm_failure_commits_zero_predictions_and_fails_all_runs(
@@ -372,14 +364,6 @@ def test_commit_conflict_returns_completed_and_remaining_without_retry(
     assert repository.complete_gray_gap_run.call_count == 2
     repository.fail_scheme_run_atomic.assert_called_once()
     readback.assert_not_called()
-
-
-
-
-
-
-
-
 
 
 def test_blackbox_schemes_with_same_source_share_immutable_session(

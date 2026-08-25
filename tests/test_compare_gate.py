@@ -256,10 +256,6 @@ class CompareGateTest(unittest.TestCase):
                 )
 
 
-
-
-
-
     def test_required_internal_fields_missing_column_failed(self) -> None:
         ctx = _make_ctx(self.root)
         _write_benchmark_required_config(

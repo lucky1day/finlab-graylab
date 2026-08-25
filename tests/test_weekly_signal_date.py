@@ -86,8 +86,6 @@ class WeeklySignalDateTests(unittest.TestCase):
         self.assertEqual(due, ["2026-02-14"])
 
 
-
-
 class LaunchdWeeklySkipTests(unittest.TestCase):
     """非 signal 周六必须不执行，否则 UPSERT 会覆写首个周六的 predict_date。
 

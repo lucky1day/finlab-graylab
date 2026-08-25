@@ -292,8 +292,6 @@ def _load_backtest_direction(direction: str | None):
         return load_backtest_results(path, [request])[0]
 
 
-
-
 # --------------------------------------------------------------------------
 # predict 与 backtest 两条路径的 Request 序列化必须同源
 # --------------------------------------------------------------------------

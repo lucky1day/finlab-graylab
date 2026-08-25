@@ -313,8 +313,6 @@ def test_dashboard_gate_requires_each_config_composite_id_exactly_once(
     assert not result.passed
 
 
-
-
 def test_dashboard_gate_fails_missing_signal_and_preserves_failure_category(
     tmp_path: Path,
 ) -> None:
@@ -382,8 +380,6 @@ def test_dashboard_gate_accepts_exact_new_blackbox_display_identity(
     result = _run_gate(tmp_path, lambda _url, **_kwargs: (payload, 200))
 
     assert result.passed, result.errors
-
-
 
 
 def test_registry_exposes_dashboard_gate_for_both_runtimes() -> None:

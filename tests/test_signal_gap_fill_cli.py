@@ -145,10 +145,6 @@ def test_parser_accepts_date_and_optional_exact_base_scheme() -> None:
             )
 
 
-
-
-
-
 @pytest.mark.parametrize("scheme_id", [None, "demo_native"])
 def test_cli_plans_once_for_all_or_one_base_then_runs_coordinator(
     tmp_path: Path,
@@ -178,8 +174,6 @@ def test_cli_plans_once_for_all_or_one_base_then_runs_coordinator(
         timeout_sec=600,
     )
     assert not (tmp_path / "reports").exists()
-
-
 
 
 @pytest.mark.parametrize(
@@ -223,8 +217,6 @@ def test_blocked_plan_exits_without_coordinator(tmp_path: Path) -> None:
     assert payload["failure_code"] == "INPUT_AUTHORITY_BLOCKED"
     planner.assert_called_once()
     runner.assert_not_called()
-
-
 
 
 @pytest.mark.parametrize(

@@ -48,8 +48,6 @@ def _metadata(task_type: str, target_rule: str, frequency: str) -> BlackboxMetad
     )
 
 
-
-
 def test_monthly_average_live_request_uses_anchor_and_next_day_pointer() -> None:
     metadata = _metadata(
         "monthly_average",

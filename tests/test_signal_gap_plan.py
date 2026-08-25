@@ -111,12 +111,6 @@ def _case(
     )
 
 
-
-
-
-
-
-
 def _observed(
     scheme_id: str = "demo_native",
     *,
@@ -224,10 +218,6 @@ def _plan(
     return plan, engine, captured
 
 
-
-
-
-
 @pytest.mark.parametrize("phase", ["gray_live", "scheduled_live"])
 def test_valid_existing_live_signal_is_skip_present(
     monkeypatch: pytest.MonkeyPatch,
@@ -240,14 +230,6 @@ def test_valid_existing_live_signal_is_skip_present(
 
     assert plan["actions"][0]["action"] == "SKIP_PRESENT"
     assert plan["status"] == "READY"
-
-
-
-
-
-
-
-
 
 
 def test_period_average_due_uses_task_bucket_anchor_not_frequency_shortcut() -> None:
@@ -272,18 +254,6 @@ def test_period_average_due_uses_task_bucket_anchor_not_frequency_shortcut() -> 
         calendar=calendar,
         task_type="quarterly_average",
     )
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def test_weekly_due_is_saturday_even_when_friday_is_holiday() -> None:
@@ -342,37 +312,6 @@ class _MappingRows:
 
     def all(self) -> list[dict[str, Any]]:
         return self._rows
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def test_blackbox_gap_binds_v2_source_identity_and_single_cutoff(

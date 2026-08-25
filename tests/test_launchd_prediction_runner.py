@@ -369,7 +369,6 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         self.assertTrue(contender_entered.is_set())
 
 
-
     def test_one_shot_requires_matching_target_before_runtime_access(
         self,
     ) -> None:

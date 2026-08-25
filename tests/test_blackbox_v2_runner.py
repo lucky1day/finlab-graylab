@@ -48,11 +48,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                 )
 
 
-
-
-
-
-
     def test_predict_rejects_missing_calendar_daily_cutoff_before_process_start(
         self,
     ) -> None:
@@ -90,7 +85,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                 )
 
         popen.assert_not_called()
-
 
 
     def test_backtest_validates_every_calendar_request_before_process_start(
@@ -142,7 +136,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                 )
 
         popen.assert_not_called()
-
 
 
     def test_scheduled_blackbox_uses_fresh_temporary_current_snapshot(self) -> None:
@@ -305,7 +298,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         )
 
 
-
     def test_historical_replay_uses_as_of_snapshot_with_provenance(self) -> None:
         from scheduler.executor import run_blackbox_scheme_subprocess
         from shared.blackbox_v2.snapshot import (
@@ -401,9 +393,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         self.assertTrue(extra["backfilled_at"].endswith("+00:00"))
 
 
-
-
-
     def test_predict_converts_valid_result_to_prediction_record(self) -> None:
         from scheduler.blackbox_v2_runner import RuntimeProfile, run_blackbox_predict
 
@@ -497,13 +486,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         execute.assert_not_called()
 
 
-
-
-
-
-
-
-
     def test_backtest_splits_batches_and_preserves_order(self) -> None:
         from scheduler.blackbox_v2_runner import RuntimeProfile, run_blackbox_backtest
 
@@ -522,7 +504,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
 
         self.assertEqual(len(records), 205)
         self.assertEqual([record.extra["request_id"] for record in records], [item.request_id for item in requests])
-
 
 
     def test_gray_replay_batch_reuses_one_session_and_preserves_requests(
@@ -618,8 +599,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                 for record in records
             )
         )
-
-
 
 
 def _metadata() -> BlackboxMetadata:

@@ -45,7 +45,6 @@ class BlackboxV2IntakeTests(unittest.TestCase):
                 self.assertIn("cron: '0 18 * * 1-5'", config)
 
 
-
     def test_intake_preserves_delivery_bytes_and_generates_paused_config(self) -> None:
         from shared.blackbox_v2.intake import intake_delivery
 
@@ -137,10 +136,6 @@ class BlackboxV2IntakeTests(unittest.TestCase):
                 intake_delivery(delivery, schemes_root=root / "schemes")
 
             self.assertFalse((root / "schemes" / "trial_10y").exists())
-
-
-
-
 
 
     def test_cli_intake_writes_declared_platform_input(self) -> None:

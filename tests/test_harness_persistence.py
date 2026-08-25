@@ -128,9 +128,6 @@ class HarnessPersistenceTests(unittest.TestCase):
         self.assertTrue(engine.disposed)
 
 
-
-
-
     def test_regular_onboard_still_calls_control_plane_persistence(self) -> None:
         from harness.gates.base import Gate, utc_now
         from harness.orchestrator import onboard

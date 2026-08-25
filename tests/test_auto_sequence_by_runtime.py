@@ -42,8 +42,6 @@ def test_partial_onboard_stages_are_rejected_for_both_runtimes() -> None:
                 sequence_for_stage(stage, runtime_type=runtime_type)
 
 
-
-
 def test_native_maintenance_has_one_exact_sequence(tmp_path) -> None:
     expected = [
         "static",
@@ -80,8 +78,6 @@ def test_blackbox_rejects_native_maintenance(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="Blackbox"):
         gates_for_stage("native-maintenance", ctx=ctx)
-
-
 
 
 def test_blackbox_persist_cli_builds_exact_operation_scope(tmp_path) -> None:

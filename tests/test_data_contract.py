@@ -143,7 +143,6 @@ class DataContractAuditTests(unittest.TestCase):
         self.assertEqual(readiness.missing_requirements, ())
 
 
-
     def test_detects_feature_day_write_after_0630_but_not_earlier_row(
         self,
     ) -> None:

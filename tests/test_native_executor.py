@@ -137,8 +137,6 @@ def test_native_execution_rejects_invalid_runtime_controls() -> None:
         )
 
 
-
-
 def test_native_subprocess_environment_is_allowlisted() -> None:
     from scheduler.executor import run_scheme_subprocess
 

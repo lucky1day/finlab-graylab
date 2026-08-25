@@ -98,8 +98,6 @@ def test_same_clean_commit_builds_identical_release(tmp_path: Path) -> None:
     ).hexdigest()
 
 
-
-
 def test_build_rejects_dirty_repository(tmp_path: Path) -> None:
     repo = _make_source_repo(tmp_path)
     (repo / "AGENTS.md").write_text("dirty\n", encoding="utf-8")
@@ -185,8 +183,6 @@ def test_install_rejects_manifest_commit_not_bound_to_archive(
             expected_current=None,
             expected_archive_sha256=built.archive_sha256,
         )
-
-
 
 
 def test_install_rejects_tar_path_escape(tmp_path: Path) -> None:
@@ -337,8 +333,6 @@ def test_activate_rejects_current_compare_and_swap_mismatch(
     assert not runtime_root.exists()
 
 
-
-
 def test_activate_requires_a_preinstalled_release(tmp_path: Path) -> None:
     repo = _make_source_repo(tmp_path)
     built = build_source_release(repo, tmp_path / "out")
@@ -362,8 +356,6 @@ def test_activate_requires_a_preinstalled_release(tmp_path: Path) -> None:
         )
 
     assert (deploy_root / "current").resolve() == old_release.resolve()
-
-
 
 
 def test_tampered_read_only_preinstalled_release_is_rejected(

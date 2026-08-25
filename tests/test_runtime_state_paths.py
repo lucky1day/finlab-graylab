@@ -102,8 +102,6 @@ def test_runtime_relative_path_cannot_escape_root(
         )
 
 
-
-
 def test_runtime_consumers_share_the_unified_root(tmp_path: Path) -> None:
     from harness.cli import default_report_dir
     from shared.blackbox_v2.lifecycle import lifecycle_root

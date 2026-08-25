@@ -184,8 +184,6 @@ class PredictionsEndpointTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 404)
 
 
-
-
 class AdminRegistrySyncEndpointTests(unittest.TestCase):
     def test_admin_sync_runs_explicit_sync(self) -> None:
         with (

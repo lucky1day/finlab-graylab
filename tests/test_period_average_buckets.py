@@ -102,12 +102,6 @@ def test_spring_year_uses_unique_longest_trading_gap() -> None:
     assert target_pointer(bucket.anchor_date) == "2024-02-09"
 
 
-
-
-
-
-
-
 def test_bucket_average_requires_complete_unique_finite_observations() -> None:
     rows = _calendar("2024-05-01", "2024-06-30")
     bucket = bucket_for_anchor("monthly_average", "2024-06-14", rows)

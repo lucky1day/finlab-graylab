@@ -136,10 +136,6 @@ class HarnessStaticGateTests(unittest.TestCase):
         self.assertIn("cross_scheme_imports", _evidence_keys(result))
 
 
-
-
-
-
 class HarnessRuntimeGateTests(unittest.TestCase):
     def test_input_gate_uses_artifact_metadata_and_required_columns(self) -> None:
         from harness.context import GateContext
@@ -183,7 +179,6 @@ class HarnessRuntimeGateTests(unittest.TestCase):
         self.assertEqual(evidence["feature_date"], "2026-06-02")
         self.assertEqual(build.call_args.kwargs["scheme_id"], "demo_daily")
         self.assertEqual(build.call_args.kwargs["end_date"], "2026-06-02")
-
 
 
     def test_unit_gate_runs_scheme_selector_tests(self) -> None:
@@ -258,8 +253,6 @@ class HarnessRuntimeGateTests(unittest.TestCase):
         self.assertEqual(evidence["run_log_delta"], 0)
 
 
-
-
     def test_table_guard_diffs_snapshots(self) -> None:
         from harness.probes.table_guard import diff_snapshots
 
@@ -269,7 +262,6 @@ class HarnessRuntimeGateTests(unittest.TestCase):
         )
 
         self.assertEqual(diff, {"t_scheme_predictions": 0, "t_scheme_run_log": 2})
-
 
 
 class HarnessLiveGateTests(unittest.TestCase):
@@ -363,7 +355,6 @@ class HarnessLiveGateTests(unittest.TestCase):
             first_evidence["operation_scope_sha256"],
             operation_scope_sha256(operation),
         )
-
 
 
 class HarnessBacktestApiOrchestratorTests(unittest.TestCase):

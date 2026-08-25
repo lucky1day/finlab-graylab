@@ -77,14 +77,6 @@ def test_each_target_discovery_matches_its_matrix_entries() -> None:
         assert actual, f"{target} 过滤后不应为空"
 
 
-
-
-
-
-
-
-
-
 def test_matrix_covers_every_discovered_scheme_exactly_once() -> None:
     payload = json.loads(MATRIX_PATH.read_text(encoding="utf-8"))
     discovered_ids = {cfg.scheme_id for cfg in _discover(None)}
@@ -132,8 +124,6 @@ def test_incomplete_matrix_fails_closed(tmp_path: Path) -> None:
                 configs,
                 matrix_path=matrix_path,
             )
-
-
 
 
 def test_duplicate_or_unknown_matrix_targets_fail_closed(

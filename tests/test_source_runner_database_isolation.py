@@ -225,7 +225,6 @@ class SourceRunnerDatabaseIsolationTests(unittest.TestCase):
             self.assertNotIn(grant, str(caught.exception))
 
 
-
     def test_missing_dedicated_configuration_does_not_fall_back_to_service_database(
         self,
     ) -> None:
@@ -322,8 +321,6 @@ class SourceRunnerDatabaseIsolationTests(unittest.TestCase):
                 source_package_tree_sha256(source_root),
                 original_hash,
             )
-
-
 
 
     def test_source_subprocess_environment_drops_all_database_credentials(

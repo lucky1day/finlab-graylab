@@ -175,9 +175,6 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
         )
 
 
-
-
-
     def test_blackbox_version_tracks_each_canonical_input(self) -> None:
         from scheduler.discovery import load_scheme_config
 
@@ -210,11 +207,6 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
                     getattr(second, hash_field),
                 )
                 self.assertNotEqual(first.scheme_version, second.scheme_version)
-
-
-
-
-
 
 
     def test_blackbox_canonical_hash_is_stable_across_key_order(self) -> None:
