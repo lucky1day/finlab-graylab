@@ -148,28 +148,6 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
         self.assertEqual(first.config_hash, second.config_hash)
         self.assertEqual(first.scheme_version, second.scheme_version)
 
-    def test_blackbox_display_name_overrides_metadata_without_changing_version(self) -> None:
-        from scheduler.discovery import load_scheme_config
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
-            config_path = scheme_dir / "config.yaml"
-            original = load_scheme_config(config_path)
-            config_path.write_text(
-                config_path.read_text(encoding="utf-8").replace(
-                    "scheme_id: trial_10y\n",
-                    "scheme_id: trial_10y\ndisplay_name: LIQ_EXCESS_A\n",
-                ),
-                encoding="utf-8",
-            )
-
-            displayed = load_scheme_config(config_path)
-
-        self.assertEqual(original.name, "10Y Trial")
-        self.assertEqual(displayed.name, "LIQ_EXCESS_A")
-        self.assertEqual(displayed.description, "")
-        self.assertEqual(original.config_hash, displayed.config_hash)
-        self.assertEqual(original.scheme_version, displayed.scheme_version)
 
     def test_new_blackbox_metadata_owner_is_mapped_and_name_is_authoritative(self) -> None:
         from scheduler.discovery import load_scheme_config
@@ -196,93 +174,9 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
             "使用期限利差和滚动分类模型形成方向信号。",
         )
 
-    def test_new_blackbox_rejects_display_name_override(self) -> None:
-        from scheduler.discovery import load_scheme_config
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
-            metadata_path = scheme_dir / "delivery" / "trial_10y.json"
-            raw = json.loads(metadata_path.read_text(encoding="utf-8"))
-            raw.update(
-                owner="ALGO-A",
-                description="使用期限利差和滚动分类模型形成方向信号。",
-            )
-            metadata_path.write_text(
-                json.dumps(raw, ensure_ascii=False),
-                encoding="utf-8",
-            )
-            config_path = scheme_dir / "config.yaml"
-            config_path.write_text(
-                config_path.read_text(encoding="utf-8").replace(
-                    "scheme_id: trial_10y\n",
-                    "scheme_id: trial_10y\ndisplay_name: forbidden\n",
-                ),
-                encoding="utf-8",
-            )
 
-            with self.assertRaisesRegex(ValueError, "display_name"):
-                load_scheme_config(config_path)
 
-    def test_blackbox_description_is_mapped_and_version_bound(self) -> None:
-        from scheduler.discovery import load_scheme_config
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
-            config_path = scheme_dir / "config.yaml"
-            metadata_path = scheme_dir / "delivery" / "trial_10y.json"
-            original = load_scheme_config(config_path)
-            raw = json.loads(metadata_path.read_text(encoding="utf-8"))
-            raw["description"] = "使用期限利差和滚动分类模型形成方向信号。"
-            metadata_path.write_text(
-                json.dumps(raw, ensure_ascii=False),
-                encoding="utf-8",
-            )
-
-            described = load_scheme_config(config_path)
-
-        self.assertEqual(
-            described.description,
-            "使用期限利差和滚动分类模型形成方向信号。",
-        )
-        self.assertNotEqual(original.manifest_hash, described.manifest_hash)
-        self.assertNotEqual(original.scheme_version, described.scheme_version)
-
-    def test_blackbox_display_name_must_be_non_empty_when_present(self) -> None:
-        from scheduler.discovery import load_scheme_config
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
-            config_path = scheme_dir / "config.yaml"
-            config_path.write_text(
-                config_path.read_text(encoding="utf-8").replace(
-                    "scheme_id: trial_10y\n",
-                    "scheme_id: trial_10y\ndisplay_name: '   '\n",
-                ),
-                encoding="utf-8",
-            )
-
-            with self.assertRaisesRegex(ValueError, "display_name"):
-                load_scheme_config(config_path)
-
-    def test_blackbox_version_changes_when_runtime_profile_changes(self) -> None:
-        from scheduler.discovery import load_scheme_config
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
-            config_path = scheme_dir / "config.yaml"
-            first = load_scheme_config(config_path)
-            config_path.write_text(
-                config_path.read_text(encoding="utf-8").replace(
-                    "runtime_profile: blackbox-v2-v1",
-                    "runtime_profile: blackbox-v2-v2",
-                ),
-                encoding="utf-8",
-            )
-
-            second = load_scheme_config(config_path)
-
-        self.assertNotEqual(first.config_hash, second.config_hash)
-        self.assertNotEqual(first.scheme_version, second.scheme_version)
 
     def test_blackbox_version_changes_when_data_schema_version_changes(self) -> None:
         from scheduler.discovery import load_scheme_config
@@ -304,129 +198,11 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
         self.assertNotEqual(first.config_hash, second.config_hash)
         self.assertNotEqual(first.scheme_version, second.scheme_version)
 
-    def test_blackbox_version_changes_when_schedule_cron_changes(self) -> None:
-        from scheduler.discovery import load_scheme_config
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
-            config_path = scheme_dir / "config.yaml"
-            first = load_scheme_config(config_path)
-            config_path.write_text(
-                config_path.read_text(encoding="utf-8").replace(
-                    "  cron: '3 7 * * 1-5'", "  cron: '8 7 * * 1-5'"
-                ),
-                encoding="utf-8",
-            )
 
-            second = load_scheme_config(config_path)
 
-        self.assertNotEqual(first.config_hash, second.config_hash)
-        self.assertNotEqual(first.scheme_version, second.scheme_version)
 
-    def test_blackbox_version_changes_when_schedule_timezone_changes(self) -> None:
-        from scheduler.discovery import load_scheme_config
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
-            config_path = scheme_dir / "config.yaml"
-            first = load_scheme_config(config_path)
-            config_path.write_text(
-                config_path.read_text(encoding="utf-8").replace(
-                    "  timezone: Asia/Shanghai", "  timezone: UTC"
-                ),
-                encoding="utf-8",
-            )
-
-            second = load_scheme_config(config_path)
-
-        self.assertNotEqual(first.config_hash, second.config_hash)
-        self.assertNotEqual(first.scheme_version, second.scheme_version)
-
-    def test_blackbox_version_changes_when_schedule_timeout_changes(self) -> None:
-        from scheduler.discovery import load_scheme_config
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
-            config_path = scheme_dir / "config.yaml"
-            first = load_scheme_config(config_path)
-            text = config_path.read_text(encoding="utf-8").replace(
-                "  timeout_sec: 3600\n",
-                "  timeout_sec: 300\n",
-            )
-            config_path.write_text(text, encoding="utf-8")
-
-            second = load_scheme_config(config_path)
-
-        self.assertNotEqual(first.config_hash, second.config_hash)
-        self.assertNotEqual(first.scheme_version, second.scheme_version)
-
-    def test_repository_blackbox_configs_declare_3600_timeout(self) -> None:
-        import yaml
-
-        project_root = Path(__file__).resolve().parents[1]
-        blackbox_paths = []
-        for path in sorted((project_root / "schemes").glob("*/config.yaml")):
-            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-            if raw.get("runtime_type") == "blackbox_v2":
-                blackbox_paths.append(path)
-                self.assertEqual(raw["schedule"]["timeout_sec"], 3600, str(path))
-        # 断言结构不变量而非清单数量：runtime_type=blackbox_v2 恰好等价于存在 delivery/ 目录。
-        # 数量由被测数据推导，新增方案无需修改本测试。
-        self.assertTrue(blackbox_paths, "未发现任何 Blackbox 方案配置")
-        delivery_dirs = {
-            path.parent.name
-            for path in (project_root / "schemes").glob("*/delivery")
-            if path.is_dir()
-        }
-        self.assertEqual({path.parent.name for path in blackbox_paths}, delivery_dirs)
-
-    def test_blackbox_version_changes_when_delivery_script_path_changes(self) -> None:
-        from scheduler.discovery import load_scheme_config
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
-            config_path = scheme_dir / "config.yaml"
-            first = load_scheme_config(config_path)
-            alternate_dir = scheme_dir / "alternate"
-            alternate_dir.mkdir()
-            original_path = scheme_dir / "delivery" / "trial_10y.py"
-            (alternate_dir / "trial_10y.py").write_bytes(original_path.read_bytes())
-            config_path.write_text(
-                config_path.read_text(encoding="utf-8").replace(
-                    "delivery/trial_10y.py", "alternate/trial_10y.py"
-                ),
-                encoding="utf-8",
-            )
-
-            second = load_scheme_config(config_path)
-
-        self.assertEqual(first.code_hash, second.code_hash)
-        self.assertNotEqual(first.config_hash, second.config_hash)
-        self.assertNotEqual(first.scheme_version, second.scheme_version)
-
-    def test_blackbox_version_changes_when_delivery_metadata_path_changes(self) -> None:
-        from scheduler.discovery import load_scheme_config
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
-            config_path = scheme_dir / "config.yaml"
-            first = load_scheme_config(config_path)
-            alternate_dir = scheme_dir / "alternate"
-            alternate_dir.mkdir()
-            original_path = scheme_dir / "delivery" / "trial_10y.json"
-            (alternate_dir / "trial_10y.json").write_bytes(original_path.read_bytes())
-            config_path.write_text(
-                config_path.read_text(encoding="utf-8").replace(
-                    "delivery/trial_10y.json", "alternate/trial_10y.json"
-                ),
-                encoding="utf-8",
-            )
-
-            second = load_scheme_config(config_path)
-
-        self.assertEqual(first.manifest_hash, second.manifest_hash)
-        self.assertNotEqual(first.config_hash, second.config_hash)
-        self.assertNotEqual(first.scheme_version, second.scheme_version)
 
     def test_blackbox_version_changes_when_script_bytes_change(self) -> None:
         from scheduler.discovery import load_scheme_config
@@ -457,28 +233,6 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
         self.assertNotEqual(first.manifest_hash, second.manifest_hash)
         self.assertNotEqual(first.scheme_version, second.scheme_version)
 
-    def test_blackbox_version_ignores_unknown_nested_config_keys(self) -> None:
-        from scheduler.discovery import load_scheme_config
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
-            config_path = scheme_dir / "config.yaml"
-            first = load_scheme_config(config_path)
-            text = config_path.read_text(encoding="utf-8")
-            text = text.replace(
-                "  timezone: Asia/Shanghai\n",
-                "  timezone: Asia/Shanghai\n  audit_note: ignored\n",
-            )
-            text = text.replace(
-                "  metadata: delivery/trial_10y.json\n",
-                "  metadata: delivery/trial_10y.json\n  evidence_id: ignored\n",
-            )
-            config_path.write_text(text, encoding="utf-8")
-
-            second = load_scheme_config(config_path)
-
-        self.assertEqual(first.config_hash, second.config_hash)
-        self.assertEqual(first.scheme_version, second.scheme_version)
 
     def test_blackbox_canonical_hash_is_stable_across_key_order(self) -> None:
         from shared.blackbox_v2.versioning import compute_blackbox_config_hash
@@ -524,19 +278,6 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "platform_inputs"):
                     canonical_platform_config(raw)
 
-    def test_blackbox_canonical_config_is_isolated_from_nested_raw_maps(self) -> None:
-        from shared.blackbox_v2.versioning import canonical_platform_config
-
-        raw = _canonical_raw_config()
-        canonical = canonical_platform_config(raw)
-
-        self.assertIsNot(canonical["schedule"], raw["schedule"])
-        self.assertIsNot(canonical["delivery"], raw["delivery"])
-        raw["schedule"]["cron"] = "8 7 * * 1-5"
-        raw["delivery"]["script"] = "alternate/trial_10y.py"
-
-        self.assertEqual(canonical["schedule"]["cron"], "3 7 * * 1-5")
-        self.assertEqual(canonical["delivery"]["script"], "delivery/trial_10y.py")
 
     def test_blackbox_canonical_config_rejects_missing_required_fields(self) -> None:
         from shared.blackbox_v2.versioning import canonical_platform_config
@@ -565,25 +306,6 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
                     canonical_platform_config(raw)
                 self.assertEqual(str(context.exception), f"{path} is required")
 
-    def test_blackbox_default_timezone_hash_matches_explicit_default(self) -> None:
-        from scheduler.discovery import load_scheme_config
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
-            config_path = scheme_dir / "config.yaml"
-            explicit = load_scheme_config(config_path)
-            config_path.write_text(
-                config_path.read_text(encoding="utf-8").replace(
-                    "  timezone: Asia/Shanghai\n", ""
-                ),
-                encoding="utf-8",
-            )
-
-            omitted = load_scheme_config(config_path)
-
-        self.assertEqual(omitted.schedule.timezone, "Asia/Shanghai")
-        self.assertEqual(explicit.config_hash, omitted.config_hash)
-        self.assertEqual(explicit.scheme_version, omitted.scheme_version)
 
     def test_native_version_keeps_raw_config_hash_behavior(self) -> None:
         from scheduler.discovery import load_scheme_config

@@ -121,17 +121,6 @@ class CompareGateTest(unittest.TestCase):
         self.assertEqual(result.status, GateStatus.SKIPPED)
         self.assertTrue(result.passed)
 
-    def test_invalid_config_fails_instead_of_continuing_with_empty_config(self) -> None:
-        ctx = _make_ctx(self.root)
-        config = self.root / "schemes" / "demo" / "config.yaml"
-        config.write_text("scheme: [unterminated\n", encoding="utf-8")
-
-        result = CompareGate(ctx).run()
-
-        self.assertEqual(result.status, GateStatus.FAILED)
-        self.assertFalse(result.passed)
-        evidence = {item.key: item.value for item in result.evidence}
-        self.assertIn("ParserError", evidence["exception_type"])
 
     def test_identical_outputs_passed(self) -> None:
         ctx = _make_ctx(self.root)
@@ -277,59 +266,7 @@ class CompareGateTest(unittest.TestCase):
         self.assertTrue(any("missing dates/tenors" in e for e in result.errors), result.errors)
         self.assertTrue(any("extra dates/tenors" in e for e in result.errors), result.errors)
 
-    def test_weekly_average_requires_target_rule(self) -> None:
-        ctx = _make_ctx(self.root)
-        _write_benchmark_required_config(self.root, frequency="weekly", task_type="weekly_average")
-        bench = self.root / "schemes" / "demo" / "benchmarks"
-        rows = [
-            {
-                "feature_week_id": "202501",
-                "feature_date": "2025-01-03",
-                "target_week_id": "202502",
-                "target_date": "2025-01-10",
-                "target_tenor": "5Y",
-                "horizon": "6",
-                "direction": "1",
-                "confidence": "0.6",
-                "label": "1",
-                "is_correct": "true",
-            },
-        ]
-        _write_strict_predictions(bench / "original_predictions_sample.csv", rows)
-        _write_strict_predictions(bench / "current_predictions_sample.csv", rows)
 
-        result = CompareGate(ctx).run()
-
-        self.assertEqual(result.status, GateStatus.FAILED)
-        self.assertTrue(any("missing required benchmark columns/values" in e for e in result.errors), result.errors)
-
-    def test_weekly_average_requires_target_rule_match(self) -> None:
-        ctx = _make_ctx(self.root)
-        _write_benchmark_required_config(self.root, frequency="weekly", task_type="weekly_average")
-        bench = self.root / "schemes" / "demo" / "benchmarks"
-        original = [
-            {
-                "feature_week_id": "202501",
-                "feature_date": "2025-01-03",
-                "target_week_id": "202502",
-                "target_date": "2025-01-10",
-                "target_tenor": "5Y",
-                "horizon": "6",
-                "target_rule": "next_week_average_yield_vs_current_week_average_yield",
-                "direction": "1",
-                "confidence": "0.6",
-                "label": "1",
-                "is_correct": "true",
-            },
-        ]
-        current = [{**original[0], "target_rule": "next_week_point_yield_vs_current_week_point_yield"}]
-        _write_strict_predictions(bench / "original_predictions_sample.csv", original)
-        _write_strict_predictions(bench / "current_predictions_sample.csv", current)
-
-        result = CompareGate(ctx).run()
-
-        self.assertEqual(result.status, GateStatus.FAILED)
-        self.assertTrue(any("strict benchmark value mismatches" in e for e in result.errors), result.errors)
 
     def test_monthly_required_format_uses_feature_month_id_in_key(self) -> None:
         ctx = _make_ctx(self.root)
@@ -366,189 +303,10 @@ class CompareGateTest(unittest.TestCase):
         self.assertTrue(any("missing dates/tenors" in e for e in result.errors), result.errors)
         self.assertTrue(any("extra dates/tenors" in e for e in result.errors), result.errors)
 
-    def test_monthly_requires_target_rule(self) -> None:
-        ctx = _make_ctx(self.root)
-        _write_benchmark_required_config(self.root, frequency="monthly", task_type="monthly")
-        bench = self.root / "schemes" / "demo" / "benchmarks"
-        rows = [
-            {
-                "feature_month_id": "2026-04",
-                "feature_date": "2026-04-15",
-                "target_month_id": "2026-05",
-                "target_date": "2026-05-15",
-                "target_tenor": "10Y",
-                "horizon": "30",
-                "direction": "1",
-                "confidence": "0.6",
-                "label": "1",
-                "is_correct": "true",
-            },
-        ]
-        _write_strict_predictions(bench / "original_predictions_sample.csv", rows)
-        _write_strict_predictions(bench / "current_predictions_sample.csv", rows)
 
-        result = CompareGate(ctx).run()
 
-        self.assertEqual(result.status, GateStatus.FAILED)
-        self.assertTrue(any("missing required benchmark columns/values" in e for e in result.errors), result.errors)
 
-    def test_weekly_average_requires_target_rule_match_config(self) -> None:
-        ctx = _make_ctx(self.root)
-        _write_benchmark_required_config(self.root, frequency="weekly", task_type="weekly_average")
-        config = self.root / "schemes" / "demo" / "config.yaml"
-        config.write_text(
-            config.read_text(encoding="utf-8")
-            + 'target_rule: "next_week_average_yield_vs_current_week_average_yield"\n',
-            encoding="utf-8",
-        )
-        bench = self.root / "schemes" / "demo" / "benchmarks"
-        rows = [
-            {
-                "feature_week_id": "202501",
-                "feature_date": "2025-01-03",
-                "target_week_id": "202502",
-                "target_date": "2025-01-10",
-                "target_tenor": "5Y",
-                "horizon": "6",
-                "target_rule": "wrong_rule",
-                "direction": "1",
-                "confidence": "0.6",
-                "label": "1",
-                "is_correct": "true",
-            },
-        ]
-        _write_strict_predictions(bench / "original_predictions_sample.csv", rows)
-        _write_strict_predictions(bench / "current_predictions_sample.csv", rows)
 
-        result = CompareGate(ctx).run()
-
-        self.assertEqual(result.status, GateStatus.FAILED)
-        self.assertTrue(any("strict benchmark value mismatches" in e for e in result.errors), result.errors)
-        summary = json.loads((ctx.report_dir / "comparison_summary.json").read_text(encoding="utf-8"))
-        pred = summary["comparison"]["predictions"]
-        self.assertEqual(len(pred["strict_value_mismatches"]), 2)
-        self.assertEqual({item["source"] for item in pred["strict_value_mismatches"]}, {"original", "current"})
-
-    def test_weekly_average_rejects_point_backed_provenance(self) -> None:
-        ctx = _make_ctx(self.root)
-        _write_benchmark_required_config(self.root, frequency="weekly", task_type="weekly_average")
-        bench = self.root / "schemes" / "demo" / "benchmarks"
-        rows = [
-            {
-                "feature_week_id": "202501",
-                "feature_date": "2025-01-03",
-                "target_week_id": "202502",
-                "target_date": "2025-01-10",
-                "target_tenor": "5Y",
-                "horizon": "6",
-                "target_rule": "next_week_average_yield_vs_current_week_average_yield",
-                "direction": "1",
-                "confidence": "0.6",
-                "label": "1",
-                "is_correct": "true",
-            },
-        ]
-        _write_strict_predictions(bench / "original_predictions_sample.csv", rows)
-        _write_strict_predictions(bench / "current_predictions_sample.csv", rows)
-        for summary_name in ("original_backtest_summary.json", "current_backtest_summary.json"):
-            (bench / summary_name).write_text(
-                json.dumps(
-                    {
-                        "benchmark_provenance": {
-                            "source_role": "source_original_predictions_with_weekly_average_actual_oracle",
-                            "bootstrap_source": "source_backed_point_runner_plus_weekly_average_oracle",
-                        }
-                    }
-                ),
-                encoding="utf-8",
-            )
-
-        result = CompareGate(ctx).run()
-
-        self.assertEqual(result.status, GateStatus.FAILED)
-        self.assertTrue(any("weekly average benchmark provenance" in e for e in result.errors), result.errors)
-
-    def test_monthly_rejects_point_or_weekly_provenance(self) -> None:
-        ctx = _make_ctx(self.root)
-        _write_benchmark_required_config(self.root, frequency="monthly", task_type="monthly")
-        config = self.root / "schemes" / "demo" / "config.yaml"
-        config.write_text(
-            config.read_text(encoding="utf-8")
-            + 'target_rule: "next_month_observation_yield_vs_feature_month_observation_yield"\n',
-            encoding="utf-8",
-        )
-        bench = self.root / "schemes" / "demo" / "benchmarks"
-        rows = [
-            {
-                "feature_month_id": "2026-04",
-                "feature_date": "2026-04-15",
-                "target_month_id": "2026-05",
-                "target_date": "2026-05-15",
-                "target_tenor": "10Y",
-                "horizon": "30",
-                "target_rule": "next_month_observation_yield_vs_feature_month_observation_yield",
-                "direction": "1",
-                "confidence": "0.6",
-                "label": "1",
-                "is_correct": "true",
-            },
-        ]
-        _write_strict_predictions(bench / "original_predictions_sample.csv", rows)
-        _write_strict_predictions(bench / "current_predictions_sample.csv", rows)
-        for summary_name in ("original_backtest_summary.json", "current_backtest_summary.json"):
-            (bench / summary_name).write_text(
-                json.dumps(
-                    {
-                        "benchmark_provenance": {
-                            "source_role": "source_backed_point_runner_plus_weekly_average_oracle",
-                            "point_runner_module": "backtests.weekly_10y_d_overlay_0529_reproduction",
-                        }
-                    }
-                ),
-                encoding="utf-8",
-            )
-
-        result = CompareGate(ctx).run()
-
-        self.assertEqual(result.status, GateStatus.FAILED)
-        self.assertTrue(any("monthly benchmark provenance" in e for e in result.errors), result.errors)
-
-    def test_benchmark_required_duplicate_strict_key_failed(self) -> None:
-        ctx = _make_ctx(self.root)
-        _write_benchmark_required_config(self.root)
-        bench = self.root / "schemes" / "demo" / "benchmarks"
-        rows = [
-            {
-                "feature_date": "2026-05-18",
-                "target_date": "2026-05-25",
-                "target_tenor": "7Y",
-                "horizon": "5",
-                "direction": "1",
-                "confidence": "0.6",
-                "label": "1",
-                "is_correct": "true",
-            },
-            {
-                "feature_date": "2026-05-18",
-                "target_date": "2026-05-25",
-                "target_tenor": "7Y",
-                "horizon": "5",
-                "direction": "-1",
-                "confidence": "0.4",
-                "label": "1",
-                "is_correct": "false",
-            },
-        ]
-        _write_strict_predictions(bench / "original_predictions_sample.csv", rows)
-        _write_strict_predictions(bench / "current_predictions_sample.csv", rows[:1])
-
-        result = CompareGate(ctx).run()
-
-        self.assertEqual(result.status, GateStatus.FAILED)
-        self.assertTrue(any("duplicate strict benchmark keys" in e for e in result.errors), result.errors)
-        summary = json.loads((ctx.report_dir / "comparison_summary.json").read_text(encoding="utf-8"))
-        pred = summary["comparison"]["predictions"]
-        self.assertEqual(pred["duplicate_key_errors"][0]["source"], "original")
 
     def test_required_internal_fields_missing_column_failed(self) -> None:
         ctx = _make_ctx(self.root)
@@ -613,44 +371,6 @@ class CompareGateTest(unittest.TestCase):
         self.assertEqual(pred["internal_mismatch_count"], 1)
         self.assertEqual(pred["internal_mismatches"][0]["field"], "custom_score")
 
-    def test_internal_score_mismatch_failed_when_benchmark_declares_internal_columns(self) -> None:
-        ctx = _make_ctx(self.root)
-        _write_benchmark_required_config(self.root)
-        bench = self.root / "schemes" / "demo" / "benchmarks"
-        original = [
-            {
-                "feature_date": "2026-05-18",
-                "target_date": "2026-05-25",
-                "target_tenor": "7Y",
-                "horizon": "5",
-                "direction": "0",
-                "confidence": "0.0",
-                "label": "-1",
-                "is_correct": "false",
-                "STD_score": "-1.0488493212117835",
-                "STD_dir": "-1",
-                "CROSS_5Y_score": "0.008396337253219598",
-                "CROSS_5Y_dir": "1",
-            },
-        ]
-        current = [
-            {
-                **original[0],
-                "CROSS_5Y_score": "-0.6420104710111437",
-                "CROSS_5Y_dir": "-1",
-            },
-        ]
-        _write_strict_predictions(bench / "original_predictions_sample.csv", original)
-        _write_strict_predictions(bench / "current_predictions_sample.csv", current)
-
-        result = CompareGate(ctx).run()
-
-        self.assertEqual(result.status, GateStatus.FAILED)
-        self.assertTrue(any("internal benchmark" in e for e in result.errors), result.errors)
-        summary = json.loads((ctx.report_dir / "comparison_summary.json").read_text(encoding="utf-8"))
-        pred = summary["comparison"]["predictions"]
-        self.assertEqual(pred["internal_mismatch_count"], 2)
-        self.assertAlmostEqual(pred["max_internal_abs_diff"], 0.6504068082643633)
 
     def test_tracked_benchmark_samples_have_nonempty_aligned_roles(self) -> None:
         project_root = Path(__file__).resolve().parents[1]

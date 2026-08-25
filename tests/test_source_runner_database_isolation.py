@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import stat
-import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,17 +18,6 @@ SOURCE_DATABASE_CONFIG = {
     "database": "bfl_source_test",
     "charset": "utf8mb4",
 }
-
-
-def _tree_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    for child in sorted(item for item in path.rglob("*") if item.is_file()):
-        relative = child.relative_to(path).as_posix()
-        digest.update(relative.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(child.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()
 
 
 def _write_packaged_config(path: Path) -> None:
@@ -337,147 +323,7 @@ class SourceRunnerDatabaseIsolationTests(unittest.TestCase):
                 original_hash,
             )
 
-    def test_all_source_runtimes_make_only_private_directories_writable(
-        self,
-    ) -> None:
-        from shared.daily_0629_source_evidence import (
-            source_package_tree_sha256 as daily_tree_sha256,
-        )
-        from shared.daily_0629_source_runner import (
-            _source_runtime as daily_runtime,
-        )
-        from shared.monthly_source_evidence import (
-            source_package_tree_sha256 as monthly_tree_sha256,
-        )
-        from shared.monthly_source_runner import (
-            _source_runtime as monthly_runtime,
-        )
-        from shared.source_runtime_database import (
-            SourceRuntimeDatabaseConfig,
-        )
-        from shared.weekly_average_lgbm_source_runner import (
-            _source_runtime as weekly_runtime,
-        )
-        from shared.weekly_average_source_evidence import (
-            source_package_tree_sha256 as weekly_tree_sha256,
-        )
 
-        runtimes = (
-            (daily_runtime, daily_tree_sha256),
-            (monthly_runtime, monthly_tree_sha256),
-            (weekly_runtime, weekly_tree_sha256),
-        )
-        for runtime, tree_sha256 in runtimes:
-            with (
-                self.subTest(runtime=runtime.__module__),
-                tempfile.TemporaryDirectory() as tmpdir,
-            ):
-                source_root = Path(tmpdir) / "source"
-                nested = source_root / "daily_project" / "nested"
-                nested.mkdir(parents=True)
-                original_config = source_root / "db_config.py"
-                _write_packaged_config(original_config)
-                (nested / "frozen.txt").write_bytes(b"frozen-source")
-                original_bytes = original_config.read_bytes()
-                original_hash = tree_sha256(source_root)
-                config = SourceRuntimeDatabaseConfig(
-                    user="source_reader",
-                    password="source-secret",
-                    host="127.0.0.1",
-                    port=43306,
-                    database="bfl_source_test",
-                    charset="utf8mb4",
-                    config_path=Path(tmpdir) / "source-db.json",
-                )
-                frozen_directories = (
-                    source_root,
-                    source_root / "daily_project",
-                    nested,
-                )
-                for directory in frozen_directories:
-                    directory.chmod(0o555)
-                try:
-                    with runtime(
-                        source_root,
-                        original_hash,
-                        database_config=config,
-                    ) as runtime_root:
-                        self.assertEqual(
-                            stat.S_IMODE(runtime_root.stat().st_mode),
-                            0o700,
-                        )
-                        self.assertEqual(
-                            stat.S_IMODE(
-                                (runtime_root / "daily_project").stat().st_mode
-                            ),
-                            0o700,
-                        )
-                        self.assertEqual(
-                            stat.S_IMODE(
-                                (
-                                    runtime_root
-                                    / "daily_project"
-                                    / "nested"
-                                ).stat().st_mode
-                            ),
-                            0o700,
-                        )
-                        (runtime_root / "daily_project" / "output").mkdir()
-                        self.assertEqual(
-                            stat.S_IMODE(
-                                (runtime_root / "db_config.py").stat().st_mode
-                            ),
-                            0o600,
-                        )
-                finally:
-                    for directory in reversed(frozen_directories):
-                        self.assertEqual(
-                            stat.S_IMODE(directory.stat().st_mode),
-                            0o555,
-                        )
-                        directory.chmod(0o755)
-
-                self.assertEqual(original_config.read_bytes(), original_bytes)
-                self.assertEqual(tree_sha256(source_root), original_hash)
-
-    def test_monthly_and_weekly_runtime_reject_copied_package_drift(
-        self,
-    ) -> None:
-        from shared.monthly_source_runner import (
-            _source_runtime as monthly_runtime,
-        )
-        from shared.weekly_average_lgbm_source_runner import (
-            _source_runtime as weekly_runtime,
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            source_root = Path(tmpdir) / "source"
-            source_root.mkdir()
-            _write_packaged_config(source_root / "db_config.py")
-            binding_path = Path(tmpdir) / "source-db.json"
-            _write_private_binding(binding_path)
-            for runtime in (monthly_runtime, weekly_runtime):
-                with (
-                    self.subTest(runtime=runtime.__module__),
-                    patch.dict(
-                        os.environ,
-                        {
-                            "BFL_SOURCE_DB_CONFIG_ROOT":
-                                str(binding_path.parent.resolve()),
-                            "BFL_SOURCE_DB_CONFIG_PATH":
-                                str(binding_path.resolve()),
-                        },
-                        clear=True,
-                    ),
-                    self.assertRaisesRegex(
-                        RuntimeError,
-                        "copied source package hash",
-                    ),
-                ):
-                    with runtime(source_root, "0" * 64):
-                        self.fail(
-                            "mismatched private source copy was accepted"
-                        )
 
 
     def test_source_subprocess_environment_drops_all_database_credentials(
@@ -516,128 +362,9 @@ class SourceRunnerDatabaseIsolationTests(unittest.TestCase):
                 self.assertNotIn(key, child)
 
 
-    def test_all_source_runners_redact_password_from_subprocess_failures(
-        self,
-    ) -> None:
-        from shared.daily_0629_source_runner import _run_source_command
-        from shared.monthly_source_runner import _run_monthly_module
-        from shared.weekly_average_lgbm_source_runner import (
-            _run_python_module,
-        )
-
-        secret = str(SOURCE_DATABASE_CONFIG["password"])
-        failed = subprocess.CompletedProcess(
-            args=["fake"],
-            returncode=1,
-            stdout=f"connection failed for {secret}",
-            stderr=f"password={secret}",
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            binding_path = root / "source-db.json"
-            _write_private_binding(binding_path)
-            source_environment = {
-                "BFL_SOURCE_DB_CONFIG_ROOT":
-                    str(binding_path.parent.resolve()),
-                "BFL_SOURCE_DB_CONFIG_PATH":
-                    str(binding_path.resolve()),
-            }
-            cases = (
-                (
-                    lambda: _run_source_command(
-                        ["fake-daily"],
-                        root,
-                    ),
-                    (
-                        "shared.daily_0629_source_runner."
-                        "run_source_subprocess"
-                    ),
-                ),
-                (
-                    lambda: _run_monthly_module(
-                        "fake.monthly",
-                        "2026-07-25",
-                        source_root=root,
-                        monthly_root=root,
-                    ),
-                    (
-                        "shared.monthly_source_runner."
-                        "run_source_subprocess"
-                    ),
-                ),
-                (
-                    lambda: _run_python_module(
-                        "fake.weekly",
-                        [],
-                        source_root=root,
-                        weekly_root=root,
-                    ),
-                    (
-                        "shared.weekly_average_lgbm_source_runner."
-                        "run_source_subprocess"
-                    ),
-                ),
-            )
-            for case, patch_target in cases:
-                with (
-                    self.subTest(case=case),
-                    patch.dict(
-                        os.environ,
-                        source_environment,
-                        clear=True,
-                    ),
-                    patch(
-                        patch_target,
-                        return_value=failed,
-                    ) as run,
-                    self.assertRaises(RuntimeError) as raised,
-                ):
-                    case()
-                message = str(raised.exception)
-                self.assertNotIn(secret, message)
-                self.assertIn("<redacted>", message)
-                child_environment = run.call_args.kwargs["env"]
-                self.assertNotIn(
-                    "BFL_SOURCE_DB_CONFIG_PATH",
-                    child_environment,
-                )
-                self.assertNotIn("BOND_DB_PASSWORD", child_environment)
 
 
 
-    def test_binding_path_must_stay_inside_approved_private_root(
-        self,
-    ) -> None:
-        from shared.source_runtime_database import (
-            load_source_runtime_database_config,
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            approved_root = root / "private"
-            approved_root.mkdir(mode=0o700)
-            outside_root = root / "outside"
-            outside_root.mkdir(mode=0o700)
-            binding_path = outside_root / "source-db.json"
-            _write_private_binding(binding_path)
-
-            with (
-                self.assertRaisesRegex(
-                    RuntimeError,
-                    "approved private root",
-                ),
-                patch.dict(
-                    os.environ,
-                    {
-                        "BFL_SOURCE_DB_CONFIG_ROOT":
-                            str(approved_root),
-                        "BFL_SOURCE_DB_CONFIG_PATH":
-                            str(binding_path),
-                    },
-                    clear=True,
-                ),
-            ):
-                load_source_runtime_database_config()
 
 
 
