@@ -1,21 +1,15 @@
-"""方案归属映射的读取契约。
-
-归属是平台对方案的登记信息，不参与任何计算、gate 或 join。文件本身缺失或
-格式非法必须 fail-closed——否则「全部未登记」与「配置坏了」不可区分。
-"""
+"""方案归属映射的读取契约。"""
 
 from __future__ import annotations
 
 import json
-import tempfile
-import unittest
 from pathlib import Path
+
+import pytest
 
 from backend.factor_lab_dashboard import _registry_dto
 from backend.scheme_owner import SchemeOwnerError, load_scheme_owners
-from shared.scheme_owner_registry import (
-    owner_registry_scheme_id,
-)
+from shared.scheme_owner_registry import owner_registry_scheme_id
 
 
 def _write(root: Path, payload: object) -> None:
@@ -26,65 +20,62 @@ def _write(root: Path, payload: object) -> None:
     )
 
 
-class LoadSchemeOwnersTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name)
-        self.addCleanup(self._tmp.cleanup)
+def test_reads_composite_scheme_id_mapping(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        {
+            "schema_version": "scheme-owner-v1",
+            "owners": {"demo__h1__10Y": "LW"},
+        },
+    )
 
-    def test_reads_composite_scheme_id_mapping(self) -> None:
-        _write(
-            self.root,
-            {
-                "schema_version": "scheme-owner-v1",
-                "owners": {"demo__h1__10Y": "LW"},
-            },
-        )
-        self.assertEqual(
-            load_scheme_owners(self.root), {"demo__h1__10Y": "LW"}
-        )
+    assert load_scheme_owners(tmp_path) == {"demo__h1__10Y": "LW"}
 
-    def test_builds_canonical_composite_scheme_id(self) -> None:
-        self.assertEqual(
-            owner_registry_scheme_id("demo", 5, "10Y"),
-            "demo__h5__10Y",
-        )
 
-    def test_missing_file_fails_closed(self) -> None:
-        with self.assertRaises(SchemeOwnerError):
-            load_scheme_owners(self.root)
+def test_builds_canonical_composite_scheme_id() -> None:
+    assert owner_registry_scheme_id("demo", 5, "10Y") == "demo__h5__10Y"
 
-    def test_placeholder_owner_fails_closed(self) -> None:
-        _write(
-            self.root,
-            {
-                "schema_version": "scheme-owner-v1",
-                "owners": {"demo__h1__10Y": "unknown"},
-            },
-        )
-        with self.assertRaises(SchemeOwnerError):
-            load_scheme_owners(self.root)
 
-    def test_repository_file_is_loadable(self) -> None:
-        """仓库中的实际文件必须始终可读，否则 dashboard 会整体 fail-closed。"""
-        self.assertIsInstance(load_scheme_owners(), dict)
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        {
+            "schema_version": "scheme-owner-v1",
+            "owners": {"demo__h1__10Y": "unknown"},
+        },
+    ],
+    ids=("missing", "placeholder"),
+)
+def test_missing_or_placeholder_owner_fails_closed(
+    tmp_path: Path,
+    payload: object | None,
+) -> None:
+    if payload is not None:
+        _write(tmp_path, payload)
 
-    def test_dashboard_owner_lookup_uses_composite_scheme_id(self) -> None:
-        row = {
-            "scheme_id": "demo__h1__10Y",
-            "base_scheme_id": "demo",
-            "name": "Demo",
-            "description": "Demo scheme",
-            "horizon": 1,
-            "task_type": "T+1",
-            "frequency": "daily",
-            "target_tenor": "10Y",
-            "status": "active",
-            "deployed_at": "2026-01-01",
-        }
+    with pytest.raises(SchemeOwnerError):
+        load_scheme_owners(tmp_path)
 
-        self.assertEqual(
-            _registry_dto(row, {"demo__h1__10Y": "LW"})["owner"],
-            "LW",
-        )
-        self.assertEqual(_registry_dto(row, {"demo": "LW"})["owner"], "")
+
+def test_repository_file_is_loadable() -> None:
+    """仓库中的实际文件必须始终可读，否则 dashboard 会整体 fail-closed。"""
+    assert isinstance(load_scheme_owners(), dict)
+
+
+def test_dashboard_owner_lookup_uses_composite_scheme_id() -> None:
+    row = {
+        "scheme_id": "demo__h1__10Y",
+        "base_scheme_id": "demo",
+        "name": "Demo",
+        "description": "Demo scheme",
+        "horizon": 1,
+        "task_type": "T+1",
+        "frequency": "daily",
+        "target_tenor": "10Y",
+        "status": "active",
+        "deployed_at": "2026-01-01",
+    }
+
+    assert _registry_dto(row, {"demo__h1__10Y": "LW"})["owner"] == "LW"
+    assert _registry_dto(row, {"demo": "LW"})["owner"] == ""
