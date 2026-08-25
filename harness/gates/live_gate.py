@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
-from datetime import datetime, timezone
-from pathlib import Path
 
 from harness.operation import (
+    operation_scope_sha256,
     verify_direct_operation,
-    write_operation_audit,
 )
 from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
@@ -105,7 +103,6 @@ class LiveGate(Gate):
         else:
             before = snapshot_table_counts(engine, PROTECTED_TABLES)
             scheme_before = _safe_scheme_counts(engine, ctx.scheme_id)
-        audit_path: Path | None = None
         run_output = None
         errors: list[str] = []
         status = GateStatus.BLOCKED
@@ -163,10 +160,8 @@ class LiveGate(Gate):
                         f"got={cfg.status}+{cfg.version_status}"
                     )
                 else:
-                    audit_dir = _audit_dir(ctx)
                     if operation is None:
                         raise RuntimeError("direct operator command was not verified")
-                    audit_path = write_operation_audit(operation, audit_dir)
                     cfg_for_run = (
                         cfg
                         if getattr(cfg, "runtime_type", "native_adapter") == "blackbox_v2"
@@ -256,7 +251,11 @@ class LiveGate(Gate):
                     passed_run.harness_run_id if passed_run is not None else None,
                 ),
                 Evidence("prediction_phase", ctx.prediction_phase),
-                Evidence("operation_audit_path", str(audit_path) if audit_path else None),
+                Evidence("operator", operation.issued_by if operation else None),
+                Evidence(
+                    "operation_scope_sha256",
+                    operation_scope_sha256(operation) if operation else None,
+                ),
                 Evidence("protected_table_counts_before", before),
                 Evidence("protected_table_counts_after", after),
                 Evidence("protected_table_deltas", protected_delta),
@@ -276,7 +275,6 @@ class LiveGate(Gate):
             errors=errors,
             started_at=started_at,
             finished_at=finished_at,
-            report_path=audit_path,
         )
 
     def _mode_preflight(self, ctx: GateContext, cfg, engine) -> tuple[list[Evidence], list[str]]:
@@ -433,7 +431,6 @@ def _failed_blackbox_count_snapshot(
             Evidence("scheme_version", cfg.scheme_version),
             Evidence("harness_run_id", None),
             Evidence("prediction_phase", ctx.prediction_phase),
-            Evidence("operation_audit_path", None),
             Evidence("protected_table_counts_before", None),
             Evidence("protected_table_counts_after", None),
             Evidence("protected_table_deltas", None),
@@ -490,11 +487,6 @@ def _validate_blackbox_precommit_deltas(
     )
     if errors:
         raise RuntimeError("Blackbox LiveGate precommit validation failed: " + "; ".join(errors))
-
-
-def _audit_dir(ctx: GateContext) -> Path:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return ctx.report_dir / stamp
 
 
 def _run_result_payload(run_output) -> dict | None:

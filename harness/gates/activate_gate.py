@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Mapping
 
 from harness.operation import (
+    operation_scope_sha256,
     verify_direct_operation,
-    write_operation_audit,
 )
 from harness.context import GateContext
 from shared.scheme_config_schema import validate_config
@@ -324,9 +324,6 @@ class ActivationGate(Gate):
             )
         assert backtest is not None
 
-        audit_dir = ctx.report_dir / "activation_operation"
-        audit_path = write_operation_audit(operation, audit_dir)
-
         previous_status = preflight.validation_config.status
         new_status = "active"
         flipped = False
@@ -393,12 +390,12 @@ class ActivationGate(Gate):
                 Evidence("registry_synced", True),
                 *_validation_evidence(validation),
                 *_persisted_backtest_evidence(backtest),
-                Evidence("operation_audit_path", str(audit_path)),
+                Evidence("operator", operation.issued_by),
+                Evidence("operation_scope_sha256", operation_scope_sha256(operation)),
             ],
             errors=errors,
             started_at=started_at,
             finished_at=finished_at,
-            report_path=audit_path,
         )
 
 

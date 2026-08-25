@@ -19,7 +19,6 @@ from harness.operation import (
     DEFAULT_BACKTEST_START_DATE,
     operation_scope_sha256,
     verify_direct_operation,
-    write_operation_audit,
 )
 from backtests.blackbox_v2 import run_blackbox_historical_backtest
 from backtests.repository import persist_backtest_output_atomic, snapshot_backtest_scope_counts
@@ -426,7 +425,6 @@ class BlackboxBacktestGate(_BlackboxGate):
                 ],
             )
         engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
-        audit_path: Path | None = None
         try:
             cfg = _reload_pinned_blackbox_config(cfg, phase="persisted backtest preflight")
             passed_run = _verify_passed_all(engine, cfg)
@@ -507,10 +505,6 @@ class BlackboxBacktestGate(_BlackboxGate):
                 )
             cfg = _reload_pinned_blackbox_config(cfg, phase="persisted backtest commit")
             before = snapshot_backtest_scope_counts(engine, benchmark_id)
-            audit_path = write_operation_audit(
-                operation,
-                ctx.report_dir / "backtest_operation",
-            )
             run_id = persist_backtest_output_atomic(engine, output, benchmark_id=benchmark_id)
             after = snapshot_backtest_scope_counts(engine, benchmark_id)
             deltas = diff_snapshots(before, after)
@@ -548,11 +542,11 @@ class BlackboxBacktestGate(_BlackboxGate):
             Evidence("protected_table_counts_before", before),
             Evidence("protected_table_counts_after", after),
             Evidence("protected_table_deltas", deltas),
-            Evidence("operation_audit_path", str(audit_path)),
+            Evidence("operator", operation.issued_by),
+            Evidence("operation_scope_sha256", operation_scope_sha256(operation)),
             Evidence("replay_semantics", CURRENT_SNAPSHOT_REPLAY),
         ]
-        result = _finish(self.name, started_at, evidence, errors)
-        return replace(result, report_path=audit_path)
+        return _finish(self.name, started_at, evidence, errors)
 
 
 class BlackboxShadowRegisterGate(_BlackboxGate):
@@ -567,7 +561,6 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
             return _blocked(self.name, started_at, [str(exc)])
         engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
         config_path = cfg.path / "config.yaml"
-        audit_path: Path | None = None
         registered_state = None
         try:
             passed_run = _verify_passed_all(engine, cfg)
@@ -634,13 +627,6 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
                 )
             target = LifecycleState("paused", "shadow", "paused")
             compensating = False
-
-            def write_audit() -> None:
-                nonlocal audit_path
-                audit_path = write_operation_audit(
-                    operation,
-                    ctx.report_dir / "shadow_operation",
-                )
 
             def enriched_current():
                 current = load_scheme_config(config_path)
@@ -710,7 +696,6 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
                 target=target,
                 compensation=previous,
                 operation_scope_sha256=operation_scope_sha256(operation),
-                prepare_operation=write_audit,
                 apply_database=apply_database,
                 read_state=read_state,
             )
@@ -744,12 +729,12 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
             Evidence("config_hash", registered_state.config_hash),
             Evidence("manifest_hash", registered_state.manifest_hash),
             Evidence("business_tables_written", False),
-            Evidence("operation_audit_path", str(audit_path)),
+            Evidence("operator", operation.issued_by),
+            Evidence("operation_scope_sha256", operation_scope_sha256(operation)),
             Evidence("journal_path", str(journal_path)),
             Evidence("journal_phase", "verified"),
         ]
-        result = _finish(self.name, started_at, evidence, [])
-        return replace(result, report_path=audit_path)
+        return _finish(self.name, started_at, evidence, [])
 
 
 BLACKBOX_GATES: dict[str, type[Gate]] = {

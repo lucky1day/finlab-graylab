@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from harness.operation import build_direct_operation
+from harness.operation import build_direct_operation, operation_scope_sha256
 from scheduler.discovery import load_scheme_config
 
 
@@ -346,9 +346,6 @@ class HarnessLiveGateTests(unittest.TestCase):
                                 prediction_phase="gray_live",
                             )
                         )
-            audit_path = _evidence_dict(first)["operation_audit_path"]
-            audit_exists = Path(audit_path).exists()
-
         self.assertEqual(first.status, GateStatus.PASSED)
         self.assertEqual(execute.call_args.kwargs["prediction_phase"], "gray_live")
         first_evidence = _evidence_dict(first)
@@ -361,7 +358,11 @@ class HarnessLiveGateTests(unittest.TestCase):
             first_evidence["operation_scheme_table_deltas"],
             {"t_scheme_predictions": 1, "t_scheme_run_log": 1, "t_scheme_runs": 1},
         )
-        self.assertTrue(audit_exists)
+        self.assertEqual(first_evidence["operator"], "test-operator")
+        self.assertEqual(
+            first_evidence["operation_scope_sha256"],
+            operation_scope_sha256(operation),
+        )
 
 
 

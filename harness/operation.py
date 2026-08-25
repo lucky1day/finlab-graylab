@@ -2,12 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import tempfile
 from dataclasses import asdict, dataclass, replace
 from datetime import date
-from pathlib import Path
-from typing import Any
 
 
 DEFAULT_BACKTEST_START_DATE = "2025-01-01"
@@ -172,17 +168,6 @@ def operation_scope_sha256(operation: DirectOperation) -> str:
     ).hexdigest()
 
 
-def write_operation_audit(operation: DirectOperation, audit_dir: Path) -> Path:
-    """写入非秘密命令作用域审计。"""
-    audit_dir.mkdir(parents=True, exist_ok=True)
-    path = audit_dir / "operation.json"
-    payload: dict[str, Any] = asdict(operation)
-    payload["operation_mode"] = "direct_operator_command_v2"
-    payload["operation_scope_sha256"] = operation_scope_sha256(operation)
-    _atomic_write_json(path, payload)
-    return path
-
-
 def normalize_backtest_start_date(value: str | None) -> str:
     resolved = DEFAULT_BACKTEST_START_DATE if value is None else value
     return _normalize_iso_date("backtest_start_date", resolved)
@@ -208,17 +193,3 @@ def _require_text(value: object, field: str) -> str:
     if not isinstance(value, str) or not value.strip() or value != value.strip():
         raise ValueError(f"{field} must be a non-empty string")
     return value
-
-
-def _atomic_write_json(path: Path, payload: Any) -> None:
-    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)

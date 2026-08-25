@@ -1,18 +1,15 @@
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from harness.operation import (
     build_direct_operation,
     operation_scope_sha256,
     verify_direct_operation,
-    write_operation_audit,
 )
 
 
-def test_direct_operation_binds_latest_exact_harness_run(tmp_path) -> None:
+def test_direct_operation_binds_latest_exact_harness_run() -> None:
     operation = build_direct_operation(
         "trial_10y",
         "blackbox_activate",
@@ -31,13 +28,7 @@ def test_direct_operation_binds_latest_exact_harness_run(tmp_path) -> None:
     assert errors == []
     assert bound is not None
     assert bound.harness_run_id == "hr-passed"
-    path = write_operation_audit(bound, tmp_path)
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["operation_mode"] == "direct_operator_command_v2"
-    assert payload["operation_scope_sha256"] == operation_scope_sha256(bound)
-    assert "token" not in payload
-
-
+    assert len(operation_scope_sha256(bound)) == 64
 
 
 def test_direct_operation_requires_canonical_dates() -> None:

@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from harness.operation import (
+    operation_scope_sha256,
     verify_direct_operation,
-    write_operation_audit,
 )
 from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
@@ -71,7 +71,7 @@ class BacktestGate(Gate):
                 finished_at=finished_at,
             )
 
-        audit_path: Path | None = None
+        operation = None
         engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
         before: dict[str, int] = {}
         after: dict[str, int] = {}
@@ -100,10 +100,6 @@ class BacktestGate(Gate):
                         started_at=started_at,
                         finished_at=finished_at,
                     )
-                audit_path = write_operation_audit(
-                    operation,
-                    ctx.report_dir / "backtest_operation",
-                )
                 current = run_backtest_runner(
                     runner,
                     ctx.project_root,
@@ -159,7 +155,11 @@ class BacktestGate(Gate):
                 Evidence("runner", runner),
                 Evidence("runner_args", runner_args),
                 Evidence("persisted", ctx.persist_backtest),
-                Evidence("operation_audit_path", str(audit_path) if audit_path else None),
+                Evidence("operator", operation.issued_by if operation else None),
+                Evidence(
+                    "operation_scope_sha256",
+                    operation_scope_sha256(operation) if operation else None,
+                ),
                 Evidence("baseline_path", str(baseline_path)),
                 Evidence("baseline_bootstrapped", baseline_bootstrapped),
                 Evidence("protected_table_counts_before", before),
@@ -176,7 +176,6 @@ class BacktestGate(Gate):
             errors=errors,
             started_at=started_at,
             finished_at=finished_at,
-            report_path=audit_path,
         )
 
 

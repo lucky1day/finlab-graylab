@@ -242,7 +242,6 @@ def perform_lifecycle_transition(
     target: LifecycleState,
     compensation: LifecycleState,
     operation_scope_sha256: str,
-    prepare_operation: Callable[[], None],
     apply_database: Callable[[LifecycleState], None],
     read_state: Callable[[], LifecycleState],
 ) -> tuple[LifecycleState, Path]:
@@ -259,7 +258,6 @@ def perform_lifecycle_transition(
             target=target,
             compensation=compensation,
             operation_scope_sha256=operation_scope_sha256,
-            prepare_operation=prepare_operation,
             apply_database=apply_database,
             read_state=read_state,
         )
@@ -277,7 +275,6 @@ def _perform_lifecycle_transition_unlocked(
     target: LifecycleState,
     compensation: LifecycleState,
     operation_scope_sha256: str,
-    prepare_operation: Callable[[], None],
     apply_database: Callable[[LifecycleState], None],
     read_state: Callable[[], LifecycleState],
 ) -> tuple[LifecycleState, Path]:
@@ -298,23 +295,6 @@ def _perform_lifecycle_transition_unlocked(
         operation_scope_sha256=operation_scope_sha256,
     )
     journal_path = write_journal(project_root, journal)
-    try:
-        prepare_operation()
-    except BaseException as exc:
-        error = f"operation audit preparation failed: {exc}"
-        compensated = False
-        try:
-            failed = journal.transition("compensated", error=error)
-            write_journal(project_root, failed)
-            compensated = True
-        except BaseException as journal_exc:
-            error = f"{error}; journal finalization failed: {journal_exc}"
-        raise LifecycleOperationError(
-            f"lifecycle {action} failed: {error}",
-            journal_path=journal_path,
-            compensated=compensated,
-        ) from exc
-
     try:
         apply_lifecycle_state(
             project_root,

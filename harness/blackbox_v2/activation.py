@@ -7,7 +7,6 @@ from pathlib import Path
 from harness.operation import (
     operation_scope_sha256,
     verify_direct_operation,
-    write_operation_audit,
 )
 from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
@@ -61,7 +60,6 @@ def _activate_initial(
     except RuntimeError as exc:
         return _blocked(started_at, [str(exc)])
     engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
-    audit_path: Path | None = None
     try:
         passed_run = _verify_passed_all(engine, cfg)
         operation, errors = verify_direct_operation(
@@ -87,13 +85,6 @@ def _activate_initial(
             environment_fingerprint=passed_run.environment_fingerprint,
             data_snapshot_id=passed_run.data_snapshot_id,
         )
-
-        def write_audit() -> None:
-            nonlocal audit_path
-            audit_path = write_operation_audit(
-                operation,
-                ctx.report_dir / "activation_operation",
-            )
 
         def apply_database(state: LifecycleState) -> None:
             current = _reload_pinned_with_evidence(enriched_cfg, cfg.scheme_version)
@@ -135,7 +126,6 @@ def _activate_initial(
             target=target,
             compensation=previous,
             operation_scope_sha256=operation_scope_sha256(operation),
-            prepare_operation=write_audit,
             apply_database=apply_database,
             read_state=read_state,
         )
@@ -173,13 +163,13 @@ def _activate_initial(
             Evidence("version_status", "active"),
             Evidence("registry_status", "active"),
             Evidence("journal_path", str(journal_path)),
-            Evidence("operation_audit_path", str(audit_path)),
+            Evidence("operator", operation.issued_by),
+            Evidence("operation_scope_sha256", operation_scope_sha256(operation)),
             Evidence("activation_mode", "initial"),
         ],
         errors=[],
         started_at=started_at,
         finished_at=finished_at,
-        report_path=audit_path,
     )
 
 
@@ -223,10 +213,6 @@ def _activate_revision(
                 final_cfg,
                 environment_fingerprint=str(passed_run.environment_fingerprint),
                 data_snapshot_id=str(passed_run.data_snapshot_id),
-            )
-            audit_path = write_operation_audit(
-                operation,
-                ctx.report_dir / "activation_operation",
             )
             approved_at = datetime.now(timezone.utc)
             state = activate_blackbox_revision(
@@ -277,13 +263,13 @@ def _activate_revision(
             ),
             Evidence("business_tables_written", False),
             Evidence("config_changed", False),
-            Evidence("operation_audit_path", str(audit_path)),
+            Evidence("operator", operation.issued_by),
+            Evidence("operation_scope_sha256", operation_scope_sha256(operation)),
             Evidence("activation_mode", "revision"),
         ],
         errors=[],
         started_at=started_at,
         finished_at=utc_now(),
-        report_path=audit_path,
     )
 
 
@@ -343,7 +329,6 @@ class BlackboxLifecycleReconcileGate(Gate):
                 gate_name=self.name,
             )
         engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
-        audit_path: Path | None = None
         try:
             db_evidence = read_blackbox_lifecycle_state(engine, cfg)
         except Exception as exc:  # noqa: BLE001
@@ -381,10 +366,6 @@ class BlackboxLifecycleReconcileGate(Gate):
 
         try:
             actual_before = read_state()
-            audit_path = write_operation_audit(
-                operation,
-                ctx.report_dir / "reconcile_operation",
-            )
             restored = reconcile_journal(
                 path,
                 config_path=cfg.path / "config.yaml",
@@ -412,12 +393,12 @@ class BlackboxLifecycleReconcileGate(Gate):
                 Evidence("actual_state_before", asdict(actual_before)),
                 Evidence("actual_state_after", asdict(actual_after)),
                 Evidence("promoted", False),
-                Evidence("operation_audit_path", str(audit_path)),
+                Evidence("operator", operation.issued_by),
+                Evidence("operation_scope_sha256", operation_scope_sha256(operation)),
             ],
             errors=[],
             started_at=started_at,
             finished_at=utc_now(),
-            report_path=audit_path,
         )
 
 
