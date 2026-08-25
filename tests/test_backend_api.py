@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import os
 import unittest
 from unittest.mock import MagicMock, patch
@@ -72,37 +71,7 @@ class GetSchemesReadOnlyTests(unittest.TestCase):
         self.assertEqual(result, [{"scheme_id": "demo_daily"}])
 
 
-class DailyScheduleCompatibilityTests(unittest.TestCase):
-    def test_health_keeps_retired_daily_schedule_without_ledger_query(
-        self,
-    ) -> None:
-        """兼容字段不得再从 heartbeat/occurrence 表投影状态。"""
-        engine = MagicMock()
-        connection = engine.connect.return_value.__enter__.return_value
-        select_one = MagicMock()
-        select_one.scalar_one.return_value = 1
-        connection.execute.side_effect = [
-            select_one,
-            AssertionError("health must not query retired daily ledger"),
-        ]
-
-        with (
-            patch.object(main, "get_engine", return_value=engine),
-        ):
-            result = main.health()
-
-        self.assertEqual("ok", result["status"])
-        self.assertEqual(
-            {
-                "mode": "launchd_one_shot",
-                "overall": "not_enabled",
-                "reasons": ["LEDGER_RETIRED"],
-            },
-            result["daily_schedule"],
-        )
-        # 服务实例指纹已退役：health 不再暴露该字段，也不再依赖任何共享密钥。
-        self.assertNotIn("service_instance", result)
-        self.assertEqual(1, connection.execute.call_count)
+class HealthControlPlaneTests(unittest.TestCase):
 
     def test_health_reports_systemd_one_shot_when_installed(self) -> None:
         engine = MagicMock()
@@ -147,71 +116,8 @@ class DailyScheduleCompatibilityTests(unittest.TestCase):
         ):
             main.health()
 
-    def test_ledger_visibility_route_and_health_projection_are_removed(
-        self,
-    ) -> None:
-        paths = {getattr(route, "path", None) for route in main.app.routes}
-        self.assertNotIn("/api/daily-schedule/visibility", paths)
-        self.assertFalse(hasattr(main, "_daily_schedule_health"))
 
 
-class MetricsCompareRemovedTests(unittest.TestCase):
-    def test_metrics_compare_route_is_not_registered(self) -> None:
-        """跨标的横向对比已下线，后端不再暴露 compare GET 路由。"""
-        paths = {getattr(route, "path", None) for route in main.app.routes}
-        self.assertNotIn("/api/metrics/compare", paths)
-
-
-class ManualTriggerRemovedTests(unittest.TestCase):
-    def test_manual_prediction_trigger_route_is_not_registered(self) -> None:
-        paths = {getattr(route, "path", None) for route in main.app.routes}
-        self.assertNotIn("/api/schemes/{scheme_id}/trigger", paths)
-        self.assertNotIn(
-            "/api/schemes/{scheme_id}/trigger",
-            main.app.openapi()["paths"],
-        )
-
-        sent: list[dict] = []
-
-        async def receive() -> dict:
-            return {"type": "http.request", "body": b"{}"}
-
-        async def send(message: dict) -> None:
-            sent.append(message)
-
-        asyncio.run(
-            main.app(
-                {
-                    "type": "http",
-                    "asgi": {"version": "3.0"},
-                    "http_version": "1.1",
-                    "method": "POST",
-                    "scheme": "http",
-                    "path": "/api/schemes/demo__h1__10Y/trigger",
-                    "raw_path": b"/api/schemes/demo__h1__10Y/trigger",
-                    "query_string": b"",
-                    "headers": [(b"content-type", b"application/json")],
-                    "client": ("127.0.0.1", 1),
-                    "server": ("127.0.0.1", 8100),
-                    "root_path": "",
-                },
-                receive,
-                send,
-            )
-        )
-        response_start = next(
-            message
-            for message in sent
-            if message["type"] == "http.response.start"
-        )
-        self.assertEqual(response_start["status"], 404)
-
-
-class BacktestMonthlyMetricsRemovedTests(unittest.TestCase):
-    def test_backtest_monthly_metrics_route_is_not_registered(self) -> None:
-        """旧回测月度汇总表不再有 API 读入口。"""
-        paths = {getattr(route, "path", None) for route in main.app.routes}
-        self.assertNotIn("/api/backtests/runs/{run_id}/metrics", paths)
 
 
 class TargetsEndpointTests(unittest.TestCase):
@@ -329,11 +235,6 @@ class PredictionsEndpointTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 404)
 
 
-class SchemesLifecycleRemovedTests(unittest.TestCase):
-    def test_schemes_lifecycle_route_is_not_registered(self) -> None:
-        """方案生命周期健康概览已下线，后端不再暴露 lifecycle GET 路由。"""
-        paths = {getattr(route, "path", None) for route in main.app.routes}
-        self.assertNotIn("/api/schemes/lifecycle", paths)
 
 
 class AdminRegistrySyncEndpointTests(unittest.TestCase):

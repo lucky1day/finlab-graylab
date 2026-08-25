@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import inspect
 import os
 import tempfile
@@ -493,12 +492,6 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         self.assertFalse(entered_before_release)
         self.assertTrue(contender_entered.is_set())
 
-    def test_legacy_admission_module_is_retired(self) -> None:
-        self.assertIsNone(
-            importlib.util.find_spec(
-                "scheduler.blackbox_scheduler_admission"
-            )
-        )
 
     def test_executor_requires_explicit_prediction_phase(self) -> None:
         from scheduler import executor

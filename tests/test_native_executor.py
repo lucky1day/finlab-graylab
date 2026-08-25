@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import os
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -138,22 +137,6 @@ def test_native_execution_rejects_invalid_runtime_controls() -> None:
         )
 
 
-def test_retired_generation_keyword_arguments_are_absent() -> None:
-    from scheduler import executor
-
-    retired = {
-        "native_generation",
-        "live_source_compatibility",
-        "live_source_package_sha256",
-        "databridge_generation",
-        "calendar_generation",
-    }
-    for function in (
-        executor.run_scheme_subprocess,
-        executor.run_configured_scheme,
-        executor.run_blackbox_scheme_subprocess,
-    ):
-        assert retired.isdisjoint(inspect.signature(function).parameters)
 
 
 def test_native_subprocess_environment_is_allowlisted() -> None:

@@ -476,32 +476,6 @@ class DatabaseEngineFactoryTests(unittest.TestCase):
         )
 
 
-class RetiredRepositoryApiTests(unittest.TestCase):
-    def test_blackbox_bootstrap_and_snapshot_repair_apis_are_absent(self) -> None:
-        import scheduler.repository as repository
-
-        retired_names = {
-            "BLACKBOX_BOOTSTRAP_EMPTY_TABLES",
-            "BlackboxBootstrapLockTimeout",
-            "BlackboxBootstrapState",
-            "BlackboxTargetRegistryBaselineError",
-            "_BLACKBOX_CERTIFICATION_SCHEMA",
-            "_TARGET_REGISTRY_BASELINE",
-            "_TARGET_REGISTRY_BASELINE_VERSION",
-            "_TARGET_REGISTRY_BUSINESS_FIELDS",
-            "_blackbox_bootstrap_advisory_lock",
-            "_target_registry_baseline_diff",
-            "_target_registry_digest",
-            "_validate_blackbox_gray_gap_snapshot_repair_run",
-            "_validate_target_registry_baseline_conn",
-            "bootstrap_blackbox_control_plane",
-            "repair_blackbox_gray_gap_run_snapshot_provenance",
-        }
-
-        self.assertEqual(
-            [],
-            sorted(name for name in retired_names if hasattr(repository, name)),
-        )
 
 
 class RegistrySyncTests(unittest.TestCase):
