@@ -1,16 +1,4 @@
-"""单个 target 的日历边界不得让整份信号缺口报告不可用。
-
-`_expected` 逐 (target, predict_date) 构造预测上下文。日历尚未覆盖某个
-predict_date 的目标周或后续交易日时，平台当初同样产不出该信号——它不是缺口。
-
-此前该情形被升级成整份报告的 `SignalGapReportError`，而 dashboard
-（`backend/factor_lab_dashboard.py`）不做隔离，异常直穿到
-`backend/main.py` 的兜底 except，整个因子实验室页面变成 503——registry、
-指标、回测全部不可用，而不是只有 signal_status 这一列降级。
-
-对照：`harness/signal_gap_plan` 面对完全相同的异常是逐 target 记 blocker 并
-continue，两个模块对同一件事的失败模式本不该相反。
-"""
+"""单个 target 的日历边界不得让整份信号缺口报告不可用。"""
 
 from __future__ import annotations
 
@@ -83,11 +71,7 @@ class CalendarBoundaryIsolationTests(unittest.TestCase):
         self.assertEqual([c.key for c in alone], [c.key for c in near_only])
 
     def test_broken_target_is_flagged_not_silently_not_due(self) -> None:
-        """日历算不出上下文的 target 必须以 failure_category 可见。
-
-        静默跳过会让它在 latest_due_signal_statuses 里变成 not_due，
-        与"日历数据缺行"无法区分。
-        """
+        """日历算不出上下文的 target 必须以 failure_category 可见。"""
         far = _target("far", 5)
         cases, targets = _expected(
             [far], _BoundaryCalendar(), "2026-06-01", "2026-06-04"

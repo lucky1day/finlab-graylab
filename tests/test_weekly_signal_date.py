@@ -1,16 +1,4 @@
-"""整周无交易日时，后一个周六不是周频信号日。
-
-周频由自然周六触发。但长假整周无交易日时，相邻两个周六的
-``previous_trading_day`` 相同，会推导出同一 ``feature_date`` /
-``target_date``——而 ``t_scheme_predictions`` 的唯一键正是该业务键，一条预测
-只能存在一次。
-
-若把两个周六都算成到期：缺口报告里先到的那个永远匹配不到行，registry 在前端
-永久显示 missing 且任何补数都消不掉。
-
-真实日历实测：2026-02-14..2026-02-23 整段无交易日，两个周六 2026-02-14 与
-2026-02-21 都解析出 feature_date=2026-02-13 / target_date=2026-02-27。
-"""
+"""整周无交易日时，相邻周六不得生成重复周频业务键。"""
 
 from __future__ import annotations
 
@@ -87,14 +75,7 @@ class WeeklySignalDateTests(unittest.TestCase):
 
 
 class LaunchdWeeklySkipTests(unittest.TestCase):
-    """非 signal 周六必须不执行，否则 UPSERT 会覆写首个周六的 predict_date。
-
-    `t_scheme_predictions` 的 UPSERT 是
-    ``ON DUPLICATE KEY UPDATE ... predict_date = VALUES(predict_date)``，唯一键
-    是 ``(scheme_id, target_tenor, horizon, target_date)``。整周无交易日时两个
-    周六解析出同一业务键，若后一个也执行，保留行的 predict_date 会被改成
-    2026-02-21，而缺口报告仍按 2026-02-14 匹配，幽灵缺口依旧存在。
-    """
+    """非 signal 周六不得执行或覆写已有周频业务键。"""
 
     def _run(self, predict_date: str):
         from contextlib import nullcontext

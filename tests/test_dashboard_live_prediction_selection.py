@@ -1,12 +1,4 @@
-"""实盘 canonical 预测选择的周频判定回归测试。
-
-周频方案在同一 ``target_date`` 上可能存在多行预测（补发、重跑、灰度与正式
-实盘并存）。canonical 规则要求先取更新的 ``feature_date``，同 feature_date
-再取更早的 ``predict_date``；点位方案才按行 id 取最新一行。
-
-判定该走哪条规则的唯一依据是 active Registry 的 ``task_type``。预测行自身的
-``horizon`` 与 ``extra`` 都不参与该判定。
-"""
+"""实盘 canonical 预测只按 active Registry task_type 选择规则。"""
 
 from __future__ import annotations
 

@@ -1,12 +1,4 @@
-"""跨周首日 DataBridge 自锁的回归测试。
-
-生产故障形态：已发布 current 的最高周键停在上周，而 source 已进入新周。
-刷新入口在构建前用旧 current 解析 continuity authority，于是出现
-"必须先有新周数据才允许生成新周数据"的自锁。
-
-本文件只保留生产 `refresh_current` 入口的完整闭环：旧 current 只到上周，
-真实 authority 解析后，新候选必须发布出本周数据。
-"""
+"""跨周首日 DataBridge 从旧 current 发布包含本周数据的新 generation。"""
 
 from __future__ import annotations
 
@@ -242,11 +234,7 @@ class _CrossWeekFixture(unittest.TestCase):
         return engine
 
 class ProductionEntryCrossWeekTests(_CrossWeekFixture):
-    """驱动 launchd 生产入口 refresh_current 的跨周回归。
-
-    只使用两个版本都存在的公共签名，因此可以直接在修复前的代码上运行，
-    用来证明该回归确实复现了生产自锁，而不是只反映 API 变化。
-    """
+    """驱动 launchd 生产入口 refresh_current 的跨周回归。"""
 
     def _run_production_entry(self, *, daily_end: str, week_ids: list[str]):
         import scripts.refresh_data_bridge_current as entry

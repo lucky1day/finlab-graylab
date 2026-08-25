@@ -1,15 +1,4 @@
-"""weekly_10y_d_overlay_0529 跨年排序确定性回归测试。
-
-根因：week_id 202553 与 202601 都被 _legacy_segment_anchor_date 映射到
-model_date=2025-12-29。
-load_engineered_frame() 旧实现进入 create_label() 前只按单键 date（pandas 默认不稳定
-quicksort）排序；滚动输入窗口行数变化时，这对并列日期行的顺序会翻转，把 202553 的未来
-收益错接到 202602（label -1）而非 202601（label +1），与 Score 严格 week_id 时序冲突，
-触发 fail-closed guard。修复：按 ["date","week_id"] + kind="stable" 排序。
-
-实证：旧单键排序在 36/37/54-57 等窗口尺寸翻转（三个 numpy 版本一致），4 行极小输入不翻转，
-故回归测试须用会翻转的窗口尺寸；新排序在所有测试尺寸下恒定正确。
-"""
+"""weekly_10y_d_overlay_0529 跨年同锚点行保持 week_id 稳定顺序。"""
 from __future__ import annotations
 
 import pandas as pd
@@ -39,11 +28,7 @@ def _week_id_sequence() -> list[int]:
 
 
 def _make_weekly(window_size: int) -> pd.DataFrame:
-    """构造末端 202628、长度 window_size 的跨年周频输入。
-
-    202601 目标利率高于 202553（正确未来 -> +1），202602 低于 202553（翻转未来 -> -1），
-    故 202553 的 label_5d 直接暴露排序是否把未来收益接到了正确的下一周。
-    """
+    """构造能用 202553 标签暴露跨年排序漂移的周频输入。"""
     seq = [w for w in _week_id_sequence() if w <= 202628][-window_size:]
     assert {202552, 202553, 202601, 202602}.issubset(set(seq))
     rows = []

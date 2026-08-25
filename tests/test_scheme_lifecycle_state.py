@@ -76,11 +76,6 @@ def test_production_target_without_runtime_root_fails_closed(tmp_path: Path) -> 
         assert read_lifecycle_state(tmp_path, "demo", "v1") is None
 
 
-# --------------------------------------------------------------------------
-# discovery 注入：覆盖层如何影响 load_scheme_config
-# --------------------------------------------------------------------------
-
-
 def _real_scheme() -> tuple[Path, str]:
     root = Path(__file__).resolve().parents[1]
     return root, "weekly_1y_causal_v1_31_0_standalone"
@@ -104,11 +99,6 @@ def test_discovery_applies_overlay_for_matching_version(tmp_path: Path) -> None:
 
     assert (effective.status, effective.version_status) == ("active", "active")
     assert effective.scheme_version == declared.scheme_version
-
-
-# --------------------------------------------------------------------------
-# 核心验收：生命周期切换不得触碰 release 树
-# --------------------------------------------------------------------------
 
 
 def test_lifecycle_transition_leaves_config_yaml_byte_identical(tmp_path: Path) -> None:

@@ -1,14 +1,4 @@
-"""交易日判定必须排除调休补班的周末。
-
-`t_trade_calendar` 是工作日历（跟随国务院节假日安排）：调休补班的周六/周日
-`trade_flag` 同样为 `'1'`，但市场在这些日子无行情。平台的交易日必须定义为
-「工作日历 trade_flag='1' 且非周末」，且该定义在所有日历实现中保持一致。
-
-夹具取自真实的 2024-09（中秋调休）：
-    09-13 五 flag=1        09-14 六 flag=1  <- 调休补班
-    09-15 日 flag=0        09-16 一 flag=0  <- 中秋
-    09-17 二 flag=0        09-18 三 flag=1
-"""
+"""交易日判定在所有日历实现中排除调休补班周末。"""
 
 from __future__ import annotations
 
@@ -151,16 +141,7 @@ class ActualFactsCalendarTests(unittest.TestCase):
         self.assertEqual(calendar.week_id_to_last_trading_day(202437), "2024-09-20")
 
     def test_week_predict_date_follows_workday_calendar(self) -> None:
-        """predict_date 是审计字段，跟随工作日历，不得随交易日定义漂移。
-
-        它是 ``t_scheme_weekly_actuals`` 唯一键
-        ``(tenor, predict_date, target_rule)`` 的成分。actuals 任务每次全量重算
-        且只 upsert 不删除，一旦该字段漂移，旧行会残留并与新行在事实键
-        ``(tenor, target_date, target_rule)`` 上重复。
-        """
+        """predict_date 跟随工作日历，不随交易日定义漂移。"""
         calendar = build_week_calendar(_calendar_dicts())
-        # 202436 的最后工作日是调休周六 09-14，因此信号发出日仍是 09-15，
-        # 不因交易日改判为 09-13 而前移到 09-14。
         self.assertEqual(calendar.week_predict_date[202436], "2024-09-15")
-        # 普通周：最后工作日是周五 09-20，发出日为周六 09-21。
         self.assertEqual(calendar.week_predict_date[202437], "2024-09-21")

@@ -1,17 +1,4 @@
-"""`/api/metrics` 对重复 actual 事实行的处理必须确定且 fail-closed。
-
-``t_scheme_weekly_actuals``、``t_scheme_monthly_actuals`` 与周期均值 actual 表的唯一键是
-``(tenor, predict_date, target_rule)``，而 join 键是
-``(tenor, target_date, target_rule)``——两者不同，因此同一事实键可以合法地
-出现多行（月频当前库内即有 130 组）。
-
-扇出的明细行会被 ``choose_live_prediction_rows`` 按点位折叠，所以样本数不会
-翻倍；真正的问题是**方向冲突时保留哪一条不确定**——两行来自同一条预测，
-行 id 相同，比较分不出胜负，结果取决于数据库返回顺序。Dashboard 侧遇到同样
-情况会抛 ``DashboardDataError``，metrics 侧不应更宽松。
-
-日频表 ``t_scheme_actuals`` 的唯一键与 join 键相同，结构上不会重复。
-"""
+"""`/api/metrics` 对重复 actual 事实行确定折叠，方向冲突 fail-closed。"""
 
 from __future__ import annotations
 

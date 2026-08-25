@@ -1,12 +1,4 @@
-"""Dashboard 后端权威字段与原生前端声明不得漂移。
-
-同一份字段集只在两个无法共享运行时的边界声明：
-
-- `backend/factor_lab_dashboard_semantics.py` —— 权威定义
-- `frontend/aifin-shell.js` —— 浏览器端，无构建步骤，同样无法 import
-
-后端加字段时前端不会自动跟随；本测试只锁死这一个必要的跨运行时副本。
-"""
+"""Dashboard 后端权威字段与无构建前端的必要副本不得漂移。"""
 
 from __future__ import annotations
 

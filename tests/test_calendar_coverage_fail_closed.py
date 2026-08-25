@@ -1,13 +1,4 @@
-"""日历覆盖耗尽必须 fail-closed，不得伪装成节假日。
-
-`CalendarService.is_trading_day` 对日历未收录的日期返回 False，这是既定契约。
-但 launchd 预测入口据此把「日历没续期」与「今天是节假日」判成同一件事，
-返回 ``outcome='not_applicable'`` 且退出码 0——整批生产静默不产出，且与真实
-节假日无法区分。
-
-`t_trade_calendar` 需要人工逐年延长，因此覆盖耗尽是可预期的运维事件，必须
-以配置错误暴露，而不是静默成功。
-"""
+"""日历覆盖耗尽必须 fail-closed，不得伪装成节假日。"""
 
 from __future__ import annotations
 
@@ -152,12 +143,7 @@ class LaunchdRunnerCoverageTests(unittest.TestCase):
 
 
 class MonthlyAnchorCoverageTests(unittest.TestCase):
-    """月频目标锚点必须落在声明的目标月内。
-
-    日历在当前月 15 日仍覆盖、但下月锚点未覆盖时，`previous_trading_day`
-    会静默回退到日历末端，产出 `target_month_id` 与 `target_date` 不属同一月
-    的组合（例：target_month=2027-01 而 target_date=2026-12-31）。
-    """
+    """月频目标锚点必须落在声明且完整覆盖的目标月内。"""
 
     class _EndOfCalendar:
         """只覆盖到 2026-12-31 的日历替身。"""
@@ -213,13 +199,7 @@ class MonthlyAnchorCoverageTests(unittest.TestCase):
 
 
 class ActualsRunnerCoverageTests(unittest.TestCase):
-    """launchd actuals 入口同样不得把日历耗尽当成非交易日。
-
-    `run_actuals_job` 在非交易日会把 daily/weekly 的 end_date 回退到上一个交易
-    日。日历未覆盖时 `is_trading_day` 也返回 False，于是覆盖耗尽会伪装成节假
-    日：每天都用日历最后一个交易日重刷同一批 actuals，日志是 INFO、退出码 0，
-    运维看不出 actuals 早已停止推进。
-    """
+    """launchd actuals 入口不得把日历耗尽当成非交易日。"""
 
     def setUp(self) -> None:
         self.engine = create_engine("sqlite+pysqlite:///:memory:", future=True)

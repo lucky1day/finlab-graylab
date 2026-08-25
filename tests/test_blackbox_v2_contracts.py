@@ -280,18 +280,8 @@ def _load_backtest_direction(direction: str | None):
         return load_backtest_results(path, [request])[0]
 
 
-# --------------------------------------------------------------------------
-# predict 与 backtest 两条路径的 Request 序列化必须同源
-# --------------------------------------------------------------------------
-
-
 def test_request_csv_fields_match_the_dataclass_exactly() -> None:
-    """`write_request` 走 asdict 全字段，`write_requests` 走固定 REQUEST_FIELDS。
-
-    两者一旦不同源，交付在 predict 与 backtest 两条路径上会收到不同的输入，
-    从而合法地给出不同答案——那是平台的缺陷，不是算法的。此处用毫秒级断言钉死，
-    取代此前由 CompareGate 花 3 次全量拟合顺带覆盖的这一小片风险。
-    """
+    """单条和批量 Request 写出器必须共享精确字段契约。"""
     from dataclasses import fields
 
     from shared.blackbox_v2.contracts import REQUEST_FIELDS, BlackboxRequest

@@ -1,12 +1,4 @@
-"""日频健康检查必须以 scheduled_live 为健康权威，不得被 gray_live 补缺重写。
-
-`t_scheme_runs` 与 `t_scheme_predictions` 都保留 `prediction_phase`，但健康检查
-的三条查询都不按 phase 过滤。事后 gray_live 补缺会写入成功 run 与预测行，于是
-「正式调度当天曾失败」被覆盖成「全部成功」——恢复动作改写了原始事故的健康结论。
-
-正式调度健康与业务结果覆盖是两个不可互相替代的事实：前者回答「launchd 自然触发
-的批次是否按时完整成功」，后者回答「不论何种途径最终是否已有全部信号」。
-"""
+"""日频健康检查以 scheduled_live 为权威，不被 gray_live 补缺改写。"""
 
 from __future__ import annotations
 
