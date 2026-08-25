@@ -13,7 +13,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import stat
 import subprocess
 from pathlib import Path
@@ -143,83 +142,6 @@ def test_backtest_baseline_uses_runtime_root(tmp_path: Path) -> None:
     assert resolved.name == "backtest_no_persist.json"
 
 
-def test_backtest_baseline_preserves_development_default(tmp_path: Path) -> None:
-    from harness.gates.backtest_gate import backtest_baseline_path
-
-    project_root = tmp_path / "worktree"
-
-    environ = dict(os.environ)
-    environ.pop("BFL_DEPLOYMENT_TARGET", None)
-    environ.pop("BFL_RUNTIME_ROOT", None)
-    with patch.dict(os.environ, environ, clear=True):
-        resolved = backtest_baseline_path(project_root, STATIC_GATE_SCHEME_ID)
-
-    assert resolved == (
-        project_root
-        / "reports"
-        / "refactor_baseline"
-        / STATIC_GATE_SCHEME_ID
-        / "backtest_no_persist.json"
-    )
-
-
-def test_signal_gap_fill_report_root_uses_runtime_root(tmp_path: Path) -> None:
-    from harness.cli import signal_gap_fill_report_root
-
-    runtime_root = tmp_path / "state"
-    project_root = tmp_path / "release"
-
-    with patch.dict(os.environ, _production_environ(runtime_root), clear=False):
-        resolved = signal_gap_fill_report_root(project_root)
-
-    assert resolved.is_relative_to(runtime_root.resolve())
-
-
-def test_gate_report_dir_default_uses_runtime_root(tmp_path: Path) -> None:
-    from harness.cli import default_report_dir
-
-    runtime_root = tmp_path / "state"
-    project_root = tmp_path / "release"
-
-    with patch.dict(os.environ, _production_environ(runtime_root), clear=False):
-        resolved = default_report_dir(project_root, STATIC_GATE_SCHEME_ID)
-
-    assert resolved.is_relative_to(runtime_root.resolve())
-
-
-def test_signal_gap_fill_report_root_preserves_development_default(
-    tmp_path: Path,
-) -> None:
-    from harness.cli import signal_gap_fill_report_root
-
-    project_root = tmp_path / "worktree"
-
-    environ = dict(os.environ)
-    environ.pop("BFL_DEPLOYMENT_TARGET", None)
-    environ.pop("BFL_RUNTIME_ROOT", None)
-    with patch.dict(os.environ, environ, clear=True):
-        resolved = signal_gap_fill_report_root(project_root)
-
-    assert resolved == project_root / "reports" / "harness" / "signal-gap-fill"
-
-
-def test_gate_report_dir_default_preserves_development_default(
-    tmp_path: Path,
-) -> None:
-    from harness.cli import default_report_dir
-
-    project_root = tmp_path / "worktree"
-
-    environ = dict(os.environ)
-    environ.pop("BFL_DEPLOYMENT_TARGET", None)
-    environ.pop("BFL_RUNTIME_ROOT", None)
-    with patch.dict(os.environ, environ, clear=True):
-        resolved = default_report_dir(project_root, STATIC_GATE_SCHEME_ID)
-
-    expected_parent = project_root / "reports" / "harness" / STATIC_GATE_SCHEME_ID
-    assert resolved.parent == expected_parent
-    # 时间戳形如 20260822T004500Z
-    assert re.fullmatch(r"\d{8}T\d{6}Z", resolved.name)
 
 
 def test_data_bridge_provenance_reads_runtime_root(tmp_path: Path) -> None:

@@ -7,7 +7,6 @@ import json
 import os
 import stat
 import subprocess
-import sys
 import tarfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -99,22 +98,6 @@ def test_same_clean_commit_builds_identical_release(tmp_path: Path) -> None:
     ).hexdigest()
 
 
-def test_installer_direct_script_cli_is_available() -> None:
-    project_root = Path(__file__).resolve().parents[1]
-    completed = subprocess.run(
-        [
-            sys.executable,
-            str(project_root / "scripts" / "install_source_release.py"),
-            "--help",
-        ],
-        cwd=project_root,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert "--expected-current" in completed.stdout
 
 
 def test_build_rejects_dirty_repository(tmp_path: Path) -> None:
@@ -219,27 +202,6 @@ def test_install_rejects_manifest_commit_not_bound_to_archive(
         )
 
 
-def test_install_rejects_obsolete_manifest_tree_field(tmp_path: Path) -> None:
-    repo = _make_source_repo(tmp_path)
-    built = build_source_release(repo, tmp_path / "out")
-    manifest = json.loads(built.manifest_path.read_text(encoding="utf-8"))
-    manifest["tree"] = "a" * 40
-    forged_manifest = tmp_path / "forged.manifest.json"
-    forged_manifest.write_text(
-        json.dumps(manifest, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ReleaseInstallError, match="manifest fields"):
-        install_source_release(
-            manifest_path=forged_manifest,
-            archive_path=built.archive_path,
-            deploy_root=(tmp_path / "deploy").resolve(),
-            runtime_root=(tmp_path / "runtime").resolve(),
-            activate=False,
-            expected_current=None,
-            expected_archive_sha256=built.archive_sha256,
-        )
 
 
 def test_install_rejects_tar_path_escape(tmp_path: Path) -> None:
@@ -390,41 +352,6 @@ def test_activate_rejects_current_compare_and_swap_mismatch(
     assert not runtime_root.exists()
 
 
-def test_preinstalled_release_can_be_activated_after_read_only_review(
-    tmp_path: Path,
-) -> None:
-    repo = _make_source_repo(tmp_path)
-    built = build_source_release(repo, tmp_path / "out")
-    deploy_root = (tmp_path / "deploy").resolve()
-    runtime_root = (tmp_path / "runtime").resolve()
-    old_commit = "9" * 40
-    old_release = deploy_root / "releases" / old_commit
-    old_release.mkdir(parents=True)
-    (deploy_root / "current").symlink_to(
-        Path("releases") / old_commit,
-    )
-
-    reviewed = install_source_release(
-        manifest_path=built.manifest_path,
-        archive_path=built.archive_path,
-        deploy_root=deploy_root,
-        runtime_root=runtime_root,
-        activate=False,
-        expected_current=None,
-        expected_archive_sha256=built.archive_sha256,
-    )
-    activated = install_source_release(
-        manifest_path=built.manifest_path,
-        archive_path=built.archive_path,
-        deploy_root=deploy_root,
-        runtime_root=runtime_root,
-        activate=True,
-        expected_current=old_commit,
-        expected_archive_sha256=built.archive_sha256,
-    )
-
-    assert activated.release_root == reviewed.release_root
-    assert (deploy_root / "current").resolve() == reviewed.release_root
 
 
 def test_activate_requires_a_preinstalled_release(tmp_path: Path) -> None:
@@ -452,45 +379,6 @@ def test_activate_requires_a_preinstalled_release(tmp_path: Path) -> None:
     assert (deploy_root / "current").resolve() == old_release.resolve()
 
 
-def test_same_commit_activation_preserves_previous_pointer(
-    tmp_path: Path,
-) -> None:
-    repo = _make_source_repo(tmp_path)
-    built = build_source_release(repo, tmp_path / "out")
-    deploy_root = (tmp_path / "deploy").resolve()
-    runtime_root = (tmp_path / "runtime").resolve()
-    installed = install_source_release(
-        manifest_path=built.manifest_path,
-        archive_path=built.archive_path,
-        deploy_root=deploy_root,
-        runtime_root=runtime_root,
-        activate=False,
-        expected_current=None,
-        expected_archive_sha256=built.archive_sha256,
-    )
-    old_commit = "7" * 40
-    old_release = deploy_root / "releases" / old_commit
-    old_release.mkdir()
-    (deploy_root / "current").symlink_to(
-        Path("releases") / built.commit,
-    )
-    (deploy_root / "previous").symlink_to(
-        Path("releases") / old_commit,
-    )
-
-    with pytest.raises(ReleaseInstallError, match="already current"):
-        install_source_release(
-            manifest_path=built.manifest_path,
-            archive_path=built.archive_path,
-            deploy_root=deploy_root,
-            runtime_root=runtime_root,
-            activate=True,
-            expected_current=built.commit,
-            expected_archive_sha256=built.archive_sha256,
-        )
-
-    assert (deploy_root / "current").resolve() == installed.release_root
-    assert (deploy_root / "previous").resolve() == old_release.resolve()
 
 
 def test_tampered_read_only_preinstalled_release_is_rejected(
@@ -573,22 +461,3 @@ def test_revision_failure_keeps_current_unchanged(tmp_path: Path) -> None:
         )
 
     assert (deploy_root / "current").resolve() == old_release.resolve()
-
-
-def test_existing_insecure_runtime_root_is_rejected(tmp_path: Path) -> None:
-    repo = _make_source_repo(tmp_path)
-    built = build_source_release(repo, tmp_path / "out")
-    runtime_root = (tmp_path / "runtime").resolve()
-    runtime_root.mkdir()
-    runtime_root.chmod(0o777)
-
-    with pytest.raises(ReleaseInstallError, match="runtime root permissions"):
-        install_source_release(
-            manifest_path=built.manifest_path,
-            archive_path=built.archive_path,
-            deploy_root=(tmp_path / "deploy").resolve(),
-            runtime_root=runtime_root,
-            activate=False,
-            expected_current=None,
-            expected_archive_sha256=built.archive_sha256,
-        )

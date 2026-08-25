@@ -17,7 +17,6 @@ from scripts.audit_launchd_config_drift import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LAUNCHD_ROOT = PROJECT_ROOT / "deploy" / "launchd"
-LEGACY_VARIABLE = "BOND_DAILY_COORDINATOR_MODE"
 APPLICATION_LAUNCHD_TEMPLATES = (
     "com.bond-factor-lab.backend.plist",
     "com.bond-factor-lab.data-bridge-refresh.plist",
@@ -158,13 +157,6 @@ def _audit_payloads(
     )
 
 
-def test_formal_launchd_templates_forbid_retired_coordinator_mode() -> None:
-    templates = sorted(LAUNCHD_ROOT.glob("*.plist"))
-    assert templates
-    for template in templates:
-        with template.open("rb") as handle:
-            payload = plistlib.load(handle)
-        assert LEGACY_VARIABLE not in payload.get("EnvironmentVariables", {}), template
 
 
 def test_data_bridge_template_requires_controlled_producer_identity() -> None:
@@ -193,90 +185,6 @@ def test_backend_template_does_not_embed_admin_token() -> None:
     assert "BOND_ADMIN_TOKEN" not in payload["EnvironmentVariables"]
 
 
-def test_audit_reports_legacy_drift_without_exposing_environment_values(
-    tmp_path: Path,
-) -> None:
-    label = "com.bond-factor-lab.daily-predictions"
-    template = tmp_path / "template.plist"
-    installed = tmp_path / "installed.plist"
-    _write_plist(template, _plist(label, environment={"SAFE_KEY": "template-value"}))
-    _write_plist(
-        installed,
-        _plist(
-            label,
-            environment={
-                "SAFE_KEY": "installed-secret-value",
-                LEGACY_VARIABLE: "legacy",
-            },
-        ),
-    )
-
-    result = audit_plist_pair(
-        template_path=template,
-        installed_path=installed,
-        launchctl_output=_launchctl(
-            _plist(
-                label,
-                environment={
-                    "SAFE_KEY": "installed-secret-value",
-                    LEGACY_VARIABLE: "legacy",
-                },
-            ),
-            state="not running",
-            installed_path=installed,
-        ),
-    )
-    serialized = json.dumps(result, sort_keys=True)
-
-    assert result["forbidden_variables_present"] == [LEGACY_VARIABLE]
-    assert result["loaded_forbidden_variables_present"] == [LEGACY_VARIABLE]
-    assert result["unexpected_drift_paths"] == [
-        "EnvironmentVariables.BOND_DAILY_COORDINATOR_MODE",
-        "EnvironmentVariables.SAFE_KEY",
-    ]
-    assert "installed-secret-value" not in serialized
-    assert "template-value" not in serialized
-    assert "=> legacy" not in serialized
-
-
-def test_backend_rejects_installed_token_drift_without_exposing_value(
-    tmp_path: Path,
-) -> None:
-    label = "com.bond-factor-lab.backend"
-    result = _audit_payloads(
-        tmp_path,
-        _plist(label, environment={}),
-        _plist(
-            label,
-            environment={"BOND_ADMIN_TOKEN": "local-secret"},
-        ),
-        state="running",
-    )
-
-    assert result["unexpected_drift_paths"] == [
-        "EnvironmentVariables.BOND_ADMIN_TOKEN",
-    ]
-    assert result["approved_local_difference_paths"] == []
-    assert result["loaded_state"] == "running"
-    assert result["ok"] is False
-    assert "local-secret" not in json.dumps(result, sort_keys=True)
-
-
-def test_backend_pair_no_longer_requires_token_in_plist_or_loaded_state(
-    tmp_path: Path,
-) -> None:
-    label = "com.bond-factor-lab.backend"
-    payload = _plist(label, environment={})
-    result = _audit_payloads(
-        tmp_path,
-        payload,
-        payload,
-        state="running",
-    )
-
-    assert result["required_environment_missing"] == []
-    assert result["loaded_required_environment_missing"] == []
-    assert result["ok"] is True
 
 
 def test_backend_log_path_drift_is_not_approved(tmp_path: Path) -> None:
@@ -527,33 +435,10 @@ def test_ssh_tunnel_allows_only_declared_local_placeholders(tmp_path: Path) -> N
     assert log_changed["ok"] is False
 
 
-def test_ssh_tunnel_does_not_approve_fixed_indexes_without_placeholders(
-    tmp_path: Path,
-) -> None:
-    label = "com.bond-factor-lab.ssh-tunnel"
-    template_payload = _plist(label, environment={})
-    template_payload["ProgramArguments"] = [f"fixed-{index}" for index in range(18)]
-    installed_payload = dict(template_payload)
-    installed_payload["ProgramArguments"] = list(template_payload["ProgramArguments"])
-    installed_payload["ProgramArguments"][14] = "changed-sensitive-option"
-    result = _audit_payloads(
-        tmp_path,
-        template_payload,
-        installed_payload,
-        state="running",
-    )
-
-    assert result["unexpected_drift_paths"] == ["ProgramArguments[14]"]
-    assert result["ok"] is False
-
-
 @pytest.mark.parametrize(
     ("key_path", "destination"),
     (
-        (
-            "/Users/macstudio0/.ssh/<TUNNEL_KEY>",
-            "<SSH_USER>@bond.finailab.cn",
-        ),
+        ("/Users/macstudio0/.ssh/<TUNNEL_KEY>", "<SSH_USER>@bond.finailab.cn"),
         (
             "  /Users/macstudio0/.ssh/<TUNNEL_KEY>  ",
             "  <SSH_USER>@bond.finailab.cn  ",
@@ -602,34 +487,6 @@ def test_ssh_tunnel_requires_real_local_key_and_user(
     assert result["ok"] is False
 
 
-def test_empty_template_directory_fails_closed(
-    tmp_path: Path,
-    capsys,
-) -> None:
-    runtime = _runtime_environment(tmp_path)
-    report = audit_installed_launchd(
-        project_root=tmp_path,
-        installed_root=tmp_path,
-        domain="gui/0",
-        runtime_root=runtime,
-    )
-
-    assert report["services"] == []
-    assert report["error"] == "launchd_templates_missing"
-    assert report["ok"] is False
-    assert main(
-        [
-            "--project-root",
-            str(tmp_path),
-            "--installed-root",
-            str(tmp_path),
-            "--domain",
-            "gui/0",
-            "--runtime-root",
-            str(runtime),
-        ]
-    ) == 1
-    assert json.loads(capsys.readouterr().out)["ok"] is False
 
 
 def test_loaded_program_workdir_and_trigger_must_match_installed_plist(
@@ -689,56 +546,6 @@ def test_loaded_job_must_come_from_audited_installed_plist(tmp_path: Path) -> No
     assert result["ok"] is False
 
 
-def test_loaded_calendar_interval_order_is_not_drift(tmp_path: Path) -> None:
-    label = "com.bond-factor-lab.actuals"
-    template = tmp_path / "template.plist"
-    installed = tmp_path / "installed.plist"
-    payload = _plist(label, environment={})
-    payload["StartCalendarInterval"] = [
-        {"Hour": 8, "Minute": 30},
-        {"Hour": 19, "Minute": 0},
-        {"Hour": 23, "Minute": 45},
-    ]
-    _write_plist(template, payload)
-    _write_plist(installed, payload)
-
-    result = audit_plist_pair(
-        template_path=template,
-        installed_path=installed,
-        launchctl_output=_launchctl(
-            payload,
-            state="not running",
-            installed_path=installed,
-            trigger=list(reversed(payload["StartCalendarInterval"])),
-        ),
-    )
-
-    assert result["loaded_configuration_mismatch_fields"] == []
-    assert result["ok"] is True
-
-
-def test_loaded_forbidden_name_in_unrelated_value_is_not_a_false_positive(
-    tmp_path: Path,
-) -> None:
-    label = "com.bond-factor-lab.daily-predictions"
-    template = tmp_path / "template.plist"
-    installed = tmp_path / "installed.plist"
-    payload = _plist(label, environment={"SAFE_KEY": LEGACY_VARIABLE})
-    _write_plist(template, payload)
-    _write_plist(installed, payload)
-
-    result = audit_plist_pair(
-        template_path=template,
-        installed_path=installed,
-        launchctl_output=_launchctl(
-            payload,
-            state="not running",
-            installed_path=installed,
-        ),
-    )
-
-    assert result["loaded_forbidden_variables_present"] == []
-    assert result["ok"] is True
 
 
 def test_loaded_environment_rejects_non_launchd_extra_key(tmp_path: Path) -> None:

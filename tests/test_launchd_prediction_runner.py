@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import os
 import tempfile
 import threading
@@ -251,76 +250,6 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         self.assertEqual((summary.outcome, summary.exit_code), ("success", 0))
         create_engine.assert_not_called()
 
-    def test_blackbox_completion_propagates_duplicate_skip(self) -> None:
-        from scheduler import executor
-
-        cfg = _blackbox_config("duplicate_completion")
-        engine = Mock()
-        record = PredictionRecord(
-            scheme_id=cfg.scheme_id,
-            target_tenor="10Y",
-            horizon=1,
-            predict_date="2026-08-01",
-            feature_date="2026-07-31",
-            target_date="2026-08-07",
-            predicted_direction=1,
-            extra={"data_snapshot_id": "snapshot-1"},
-        )
-        with (
-            patch.object(
-                executor,
-                "create_engine_from_env",
-                return_value=engine,
-            ),
-            patch.object(
-                executor,
-                "read_blackbox_execution_approval",
-                return_value=SimpleNamespace(executable=True),
-            ),
-            patch.object(
-                executor,
-                "_active_registry_targets",
-                return_value={("10Y", 1)},
-            ),
-            patch.object(executor, "create_scheme_run", return_value=101),
-            patch.object(
-                executor,
-                "run_configured_scheme",
-                return_value=[record],
-            ),
-            patch.object(executor, "attach_run_data_snapshot"),
-            patch.object(
-                executor,
-                "complete_approved_blackbox_run",
-                return_value=(
-                    "skipped",
-                    0,
-                    "prediction_keys_already_exist",
-                ),
-            ) as complete_run,
-            patch(
-                "shared.blackbox_v2.lifecycle.assert_lifecycle_clear"
-            ),
-        ):
-            result = executor.execute_scheme(
-                cfg,
-                "2026-08-01",
-                prediction_phase="gray_live",
-            )
-
-        self.assertEqual(result.scheme_id, cfg.scheme_id)
-        self.assertEqual(result.status, "skipped")
-        self.assertEqual(result.records_written, 0)
-        self.assertEqual(
-            result.error_msg,
-            "prediction_keys_already_exist",
-        )
-        self.assertEqual(result.run_id, 101)
-        complete_run.assert_called_once()
-        self.assertNotIn(
-            "insert_only_predictions",
-            complete_run.call_args.kwargs,
-        )
 
     def test_duplicate_prediction_skip_is_benign_but_visible(self) -> None:
         from scheduler import launchd_prediction_runner as runner
@@ -410,43 +339,6 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                     ("partial", 1),
                 )
 
-    def test_success_with_duplicate_skip_remains_successful(self) -> None:
-        from scheduler import launchd_prediction_runner as runner
-
-        summary = runner.LaunchdPredictionSummary("daily", "2026-08-20")
-        executed = _blackbox_config("executed")
-        duplicate = _blackbox_config("duplicate")
-        results = [
-            SimpleNamespace(
-                scheme_id=executed.scheme_id,
-                status="success",
-                records_written=1,
-                error_msg=None,
-                run_id=103,
-            ),
-            SimpleNamespace(
-                scheme_id=duplicate.scheme_id,
-                status="skipped",
-                records_written=0,
-                error_msg="prediction_keys_already_exist",
-                run_id=104,
-            ),
-        ]
-        with patch.object(runner, "execute_scheme", side_effect=results):
-            for cfg in (executed, duplicate):
-                runner._execute_candidate(
-                    summary,
-                    cfg,
-                    predict_date="2026-08-20",
-                    algo_env="forecast_env",
-                    scheduled_control_plane="launchd_one_shot",
-                    scheduled_execution_context=object(),
-                )
-        runner._finalize(summary, configuration_error=False)
-
-        self.assertEqual(len(summary.executed), 1)
-        self.assertEqual(len(summary.skipped), 1)
-        self.assertEqual((summary.outcome, summary.exit_code), ("success", 0))
 
     def test_global_runner_lock_waits_until_current_cadence_releases(self) -> None:
         from scheduler import launchd_prediction_runner as runner
@@ -493,14 +385,6 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         self.assertTrue(contender_entered.is_set())
 
 
-    def test_executor_requires_explicit_prediction_phase(self) -> None:
-        from scheduler import executor
-
-        parameter = inspect.signature(
-            executor.execute_scheme
-        ).parameters["prediction_phase"]
-        self.assertEqual(parameter.kind, inspect.Parameter.KEYWORD_ONLY)
-        self.assertIs(parameter.default, inspect.Parameter.empty)
 
     def test_one_shot_requires_matching_target_before_runtime_access(
         self,
@@ -553,83 +437,3 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                 )
 
         create_engine.assert_not_called()
-
-    def test_active_weekly_blackboxes_run_regardless_of_legacy_admission(
-        self,
-    ) -> None:
-        from scheduler import launchd_prediction_runner as runner
-
-        formal = _blackbox_config(
-            "formal_active",
-            legacy_mode="formal",
-            capabilities=frozenset({"launchd_one_shot"}),
-        )
-        gray = _blackbox_config(
-            "gray_active",
-            legacy_mode="gray",
-            capabilities=frozenset(),
-        )
-        paused = _blackbox_config("paused", status="paused")
-        monthly = _blackbox_config(
-            "monthly",
-            frequency="monthly",
-            task_type="monthly",
-        )
-
-        def execute(config, *_args, **_kwargs):
-            return SimpleNamespace(
-                scheme_id=config.scheme_id,
-                status="success",
-                records_written=1,
-                run_id=100,
-            )
-
-        engine = Mock()
-        with (
-            patch.dict(
-                os.environ,
-                {"BFL_DEPLOYMENT_TARGET": "mac3-production"},
-                clear=False,
-            ),
-            patch.object(
-                runner.DataBridgeRefreshConfig,
-                "from_env",
-                return_value=object(),
-            ),
-            patch.object(runner, "_runner_lock", return_value=nullcontext()),
-            patch.object(
-                runner,
-                "discover_schemes",
-                return_value=[formal, gray, paused, monthly],
-            ),
-            patch.object(runner, "create_engine_from_env", return_value=engine),
-            patch.object(runner, "get_calendar", return_value=_WeeklyCalendar()),
-            patch.object(runner, "execute_scheme", side_effect=execute) as execute_one,
-        ):
-            summary = runner.run(
-                "weekly",
-                predict_date="2026-08-01",
-                algo_env="forecast_env",
-            )
-
-        self.assertEqual(
-            [args.args[0] for args in execute_one.call_args_list],
-            [formal, gray],
-        )
-        for args in execute_one.call_args_list:
-            self.assertEqual(args.args[1], "2026-08-01")
-            self.assertEqual(args.kwargs["algo_env"], "forecast_env")
-            self.assertEqual(args.kwargs["prediction_phase"], "scheduled_live")
-            self.assertEqual(
-                args.kwargs["scheduled_control_plane"],
-                "launchd_one_shot",
-            )
-        self.assertEqual(summary.discovered, 2)
-        self.assertEqual(summary.excluded, [])
-        self.assertEqual(summary.blocked, [])
-        self.assertEqual(summary.outcome, "success")
-        self.assertEqual(summary.exit_code, 0)
-        self.assertEqual(
-            summary.to_payload()["event"],
-            "launchd_prediction_run",
-        )

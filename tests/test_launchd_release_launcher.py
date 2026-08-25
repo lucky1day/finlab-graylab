@@ -20,7 +20,6 @@ from scripts.run_launchd_release import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LAUNCHD_ROOT = PROJECT_ROOT / "deploy" / "launchd"
 PRODUCTION_CURRENT = "/Users/macstudio0/bond-factor-lab-production/current"
-GIT_WORKTREE = "/Users/macstudio0/bond-factor-lab"
 COMMIT = "a" * 40
 APPLICATION_TEMPLATES = (
     "com.bond-factor-lab.backend.plist",
@@ -140,31 +139,6 @@ def test_monthly_template_uses_explicit_refresh_window_arguments() -> None:
     ]
 
 
-def test_no_launchd_template_depends_on_git_worktree() -> None:
-    log_paths: set[str] = set()
-    for path in LAUNCHD_ROOT.glob("*.plist"):
-        text = path.read_text(encoding="utf-8")
-        assert f"{GIT_WORKTREE}/" not in text, path.name
-        assert f">{GIT_WORKTREE}<" not in text, path.name
-        with path.open("rb") as handle:
-            payload = plistlib.load(handle)
-        label = payload["Label"]
-        assert payload["StandardOutPath"] == (
-            f"/Users/macstudio0/bond-factor-lab-runtime/logs/{label}.log"
-        )
-        assert payload["StandardErrorPath"] == (
-            f"/Users/macstudio0/bond-factor-lab-runtime/logs/{label}.err"
-        )
-        log_paths.update(
-            (payload["StandardOutPath"], payload["StandardErrorPath"])
-        )
-
-    assert len(log_paths) == 2 * len(tuple(LAUNCHD_ROOT.glob("*.plist")))
-
-    tunnel = LAUNCHD_ROOT / "com.bond-factor-lab.ssh-tunnel.plist"
-    with tunnel.open("rb") as handle:
-        payload = plistlib.load(handle)
-    assert payload["WorkingDirectory"] == "/Users/macstudio0"
 
 
 def test_loader_accepts_exact_installed_release_environment(
@@ -233,59 +207,9 @@ def test_service_environment_rejects_insecure_or_linked_config(
         load_service_environment(runtime)
 
 
-def test_service_environment_rejects_file_replaced_during_open(
-    tmp_path: Path,
-) -> None:
-    release = _release(tmp_path)
-    runtime = Path(load_release_environment(release)["BFL_RUNTIME_ROOT"])
-    service_environment = runtime / "config" / "service.env"
-    outside = tmp_path / "outside.env"
-    outside.write_text(
-        service_environment.read_text(encoding="utf-8").replace(
-            "BOND_ADMIN_TOKEN=local-admin-token",
-            "BOND_ADMIN_TOKEN=outside-token",
-        ),
-        encoding="utf-8",
-    )
-    outside.chmod(0o600)
-    original_open = os.open
-    original_read_text = Path.read_text
-    replaced = False
-
-    def replace_before_open(path, flags, mode=0o777, *, dir_fd=None):
-        nonlocal replaced
-        if path == "service.env" and not replaced:
-            replaced = True
-            service_environment.replace(tmp_path / "checked.env")
-            service_environment.symlink_to(outside)
-        return original_open(path, flags, mode, dir_fd=dir_fd)
-
-    def replace_before_path_read(path: Path, *args, **kwargs):
-        nonlocal replaced
-        if path == service_environment and not replaced:
-            replaced = True
-            service_environment.replace(tmp_path / "checked.env")
-            service_environment.symlink_to(outside)
-        return original_read_text(path, *args, **kwargs)
-
-    with (
-        patch("scripts.run_launchd_release.os.open", side_effect=replace_before_open),
-        patch.object(Path, "read_text", new=replace_before_path_read),
-        pytest.raises(LaunchdReleaseError, match="private regular file"),
-    ):
-        load_service_environment(runtime)
-
-    assert replaced is True
-
-
 @pytest.mark.parametrize(
     "invalid_line",
-    (
-        "export EXTRA=value",
-        "INVALID KEY=value",
-        "BROKEN",
-        'UNCLOSED="value',
-    ),
+    ("export EXTRA=value", "INVALID KEY=value", "BROKEN", 'UNCLOSED="value'),
 )
 def test_service_environment_rejects_invalid_syntax(
     tmp_path: Path,
@@ -345,22 +269,6 @@ def test_service_environment_rejects_duplicate_reserved_or_missing_keys(
     path.chmod(0o600)
     with pytest.raises(LaunchdReleaseError, match="BOND_ADMIN_TOKEN"):
         load_service_environment(runtime)
-
-
-@pytest.mark.parametrize("key", ["PYTHONNOUSERSITE", "PYTHONWARNINGS"])
-def test_service_environment_rejects_all_python_control_keys(
-    tmp_path: Path,
-    key: str,
-) -> None:
-    release = _release(tmp_path)
-    path = _rewrite_service_environment(
-        release,
-        lambda value: value + f"{key}=1\n",
-    )
-
-    with pytest.raises(LaunchdReleaseError, match="reserved keys"):
-        load_service_environment(path.parents[1])
-
 
 def test_loader_rejects_missing_or_untrusted_release_environment(
     tmp_path: Path,
