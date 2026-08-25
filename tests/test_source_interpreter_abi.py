@@ -73,22 +73,18 @@ def test_mismatched_abi_fails_closed(tmp_path: Path) -> None:
     assert "cannot be rebuilt" in message
 
 
-def test_unprobeable_interpreter_fails_closed(tmp_path: Path) -> None:
+def test_interpreter_probe_failures_fail_closed(tmp_path: Path) -> None:
     (tmp_path / "engine.cpython-313-darwin.so").touch()
-    with pytest.raises(RuntimeError, match="could not probe"):
-        assert_source_interpreter_supports_package(
-            ["/nonexistent/python"], tmp_path, label="t"
-        )
-
-
-def test_interpreter_that_errors_fails_closed(tmp_path: Path) -> None:
-    (tmp_path / "engine.cpython-313-darwin.so").touch()
-    with pytest.raises(RuntimeError, match="probe failed"):
-        assert_source_interpreter_supports_package(
-            [sys.executable, "-c", "raise SystemExit(3)", "--"],
-            tmp_path,
-            label="t",
-        )
+    for command, message in (
+        (["/nonexistent/python"], "could not probe"),
+        ([sys.executable, "-c", "raise SystemExit(3)", "--"], "probe failed"),
+    ):
+        with pytest.raises(RuntimeError, match=message):
+            assert_source_interpreter_supports_package(
+                command,
+                tmp_path,
+                label="t",
+            )
 
 
 # --------------------------------------------------------------------------
