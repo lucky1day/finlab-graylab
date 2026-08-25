@@ -319,8 +319,8 @@ class _AtomicEngine:
         return _AtomicBegin(self)
 
 
-def _native_atomic_engine(*, fail_stage: str | None = None) -> _AtomicEngine:
-    engine = _AtomicEngine(fail_stage=fail_stage)
+def _native_atomic_engine() -> _AtomicEngine:
+    engine = _AtomicEngine()
     engine.store["version_row"] = {
         "scheme_id": "native_daily",
         "scheme_version": "native-version-1",
@@ -397,8 +397,8 @@ def _native_config(
     )
 
 
-def _native_registry_row(**updates) -> dict:
-    row = {
+def _native_registry_row() -> dict:
+    return {
         "scheme_id": "native_daily__h1__5Y",
         "base_scheme_id": "native_daily",
         "runtime_type": "native_adapter",
@@ -408,8 +408,6 @@ def _native_registry_row(**updates) -> dict:
         "target_tenor": "5Y",
         "horizon": 1,
     }
-    row.update(updates)
-    return row
 
 
 def _call_for(store: dict, sql_fragment: str) -> tuple[str, object]:
@@ -420,6 +418,22 @@ def _set_canonical_path(cfg: SimpleNamespace, project_root: Path) -> SimpleNames
     cfg.path = project_root / "schemes" / cfg.scheme_id
     cfg.path.mkdir(parents=True)
     return cfg
+
+
+def _blackbox_live_record():
+    from shared.models import PredictionRecord
+
+    return PredictionRecord(
+        scheme_id="demo_blackbox",
+        target_tenor="10Y",
+        horizon=1,
+        predict_date="2026-07-20",
+        target_date="2026-07-21",
+        feature_date="2026-07-17",
+        prediction_phase="scheduled_live",
+        predicted_direction=1,
+    )
+
 
 class RegistrySyncTests(unittest.TestCase):
 
@@ -928,20 +942,10 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
 
     def test_blackbox_completion_locks_revalidates_and_commits_atomically(self) -> None:
         from scheduler.repository import complete_approved_blackbox_run
-        from shared.models import PredictionRecord
 
         engine = _AtomicEngine()
         engine.store["run_row"]["predict_date"] = date(2026, 7, 20)
-        record = PredictionRecord(
-            scheme_id="demo_blackbox",
-            target_tenor="10Y",
-            horizon=1,
-            predict_date="2026-07-20",
-            target_date="2026-07-21",
-            feature_date="2026-07-17",
-            prediction_phase="scheduled_live",
-            predicted_direction=1,
-        )
+        record = _blackbox_live_record()
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = _set_canonical_path(_blackbox_config(), Path(tmpdir))
             with patch("scheduler.repository.load_scheme_config", return_value=cfg):
@@ -1187,18 +1191,8 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
 
     def test_blackbox_success_completion_rolls_back_every_stage_failure(self) -> None:
         from scheduler.repository import complete_approved_blackbox_run
-        from shared.models import PredictionRecord
 
-        record = PredictionRecord(
-            scheme_id="demo_blackbox",
-            target_tenor="10Y",
-            horizon=1,
-            predict_date="2026-07-20",
-            target_date="2026-07-21",
-            feature_date="2026-07-17",
-            prediction_phase="scheduled_live",
-            predicted_direction=1,
-        )
+        record = _blackbox_live_record()
         cases = {
             "prediction": "injected prediction failure",
             "run": "injected run failure",
@@ -1250,19 +1244,9 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
     def test_blackbox_completion_rejects_pending_reconciliation_before_db_access(self) -> None:
         from scheduler.repository import complete_approved_blackbox_run
         from shared.blackbox_v2.lifecycle import LifecycleJournal, LifecycleState, write_journal
-        from shared.models import PredictionRecord
 
         engine = _CaptureEngine()
-        record = PredictionRecord(
-            scheme_id="demo_blackbox",
-            target_tenor="10Y",
-            horizon=1,
-            predict_date="2026-07-20",
-            target_date="2026-07-21",
-            feature_date="2026-07-17",
-            prediction_phase="scheduled_live",
-            predicted_direction=1,
-        )
+        record = _blackbox_live_record()
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             cfg = _set_canonical_path(_blackbox_config(), root)
@@ -1298,7 +1282,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
 
     def test_blackbox_completion_rejects_disk_scheme_version_drift_before_db_access(self) -> None:
         from scheduler.repository import complete_approved_blackbox_run
-        from shared.models import PredictionRecord
 
         drifted = _blackbox_config(scheme_version="drifted-version")
         engine = _CaptureEngine(
@@ -1312,16 +1295,7 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             },
             registry_rows=[],
         )
-        record = PredictionRecord(
-            scheme_id="demo_blackbox",
-            target_tenor="10Y",
-            horizon=1,
-            predict_date="2026-07-20",
-            target_date="2026-07-21",
-            feature_date="2026-07-17",
-            prediction_phase="scheduled_live",
-            predicted_direction=1,
-        )
+        record = _blackbox_live_record()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = _set_canonical_path(_blackbox_config(), Path(tmpdir))
@@ -1346,4 +1320,3 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
 
         self.assertEqual(engine.store["begin_count"], 0)
         self.assertEqual(engine.store["prediction_rows"], [])
-
