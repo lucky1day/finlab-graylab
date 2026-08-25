@@ -1,59 +1,14 @@
 from __future__ import annotations
 
-import json
 import re
-import subprocess
 from pathlib import Path
+
+from tests.frontend_test_support import call_frontend_hook as _call_hook
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = PROJECT_ROOT / "frontend"
 JAVASCRIPT_PATH = FRONTEND / "aifin-shell.js"
-
-_NODE_HARNESS = r"""
-const fs = require("fs");
-const vm = require("vm");
-
-const [shellPath, hookName, serializedArgs] = process.argv.slice(1);
-const document = {
-  visibilityState: "visible",
-  getElementById() { return null; },
-  querySelectorAll() { return []; },
-  querySelector() { return null; },
-  addEventListener() {}
-};
-const window = {
-  location: { pathname: "/", origin: "http://localhost" },
-  history: { pushState() {} },
-  addEventListener() {}
-};
-const context = vm.createContext({ document, window, console, Promise, Map, Set });
-
-vm.runInContext(fs.readFileSync(shellPath, "utf8"), context, { filename: shellPath });
-const hook = window.__factorLabTestHooks[hookName];
-if (typeof hook !== "function") throw new Error(`missing hook: ${hookName}`);
-process.stdout.write(JSON.stringify(hook(...JSON.parse(serializedArgs))));
-"""
-
-
-def _call_hook(hook_name: str, *args: object) -> object:
-    result = subprocess.run(
-        [
-            "node",
-            "-e",
-            _NODE_HARNESS,
-            str(JAVASCRIPT_PATH),
-            hook_name,
-            json.dumps(args, ensure_ascii=False),
-        ],
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    return json.loads(result.stdout)
-
 
 def test_scheme_total_badge_precedes_range_and_metric_badges() -> None:
     html = (FRONTEND / "index.html").read_text(encoding="utf-8")

@@ -250,335 +250,149 @@ class HarnessStaticGateTests(unittest.TestCase):
         self.assertTrue(result.passed, result.errors)
         self.assertFalse(marker.exists())
 
-    def test_active_backtest_runner_cannot_use_root_benchmarks_as_runtime_input(self) -> None:
+    def test_active_backtest_runner_separates_runtime_input_from_source_evidence(self) -> None:
         from harness.context import GateContext
         from harness.gates.static_gate import StaticGate
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            project_root = Path(tmpdir)
-            _write_minimal_scheme(
-                project_root,
-                scheme_id="demo_daily",
-                extra_config_lines=[
-                    "status: active",
-                    "backtest:",
-                    "  runner: backtests.demo_daily_reproduction",
-                    "  benchmark_required: true",
-                    "  benchmark_id: demo_benchmark",
-                    "  data_source: framework_db_aligned",
-                    '  start_date: "2025-01-01"',
+        cases = [
+            (
+                "root-benchmark-runtime",
+                [
+                    "from pathlib import Path",
+                    "from shared.input_artifacts import build_daily_input_artifact",
+                    'CANONICAL_CSV = Path("benchmarks/demo/daily_output.csv")',
+                    "def main():",
+                    "    build_daily_input_artifact",
+                    "    return CANONICAL_CSV",
                 ],
-            )
-            runner_path = project_root / "backtests" / "demo_daily_reproduction.py"
-            runner_path.parent.mkdir(parents=True)
-            runner_path.write_text(
-                "\n".join(
-                    [
-                        "from pathlib import Path",
-                        "from shared.input_artifacts import build_daily_input_artifact",
-                        'CANONICAL_CSV = Path("benchmarks/demo/daily_output.csv")',
-                        "def main():",
-                        "    build_daily_input_artifact",
-                        "    return CANONICAL_CSV",
-                    ]
+                False,
+                (
+                    "root benchmarks path is source-evidence only",
+                    "backtests/demo_daily_reproduction.py",
                 ),
-                encoding="utf-8",
-            )
-
-            result = StaticGate().run(
-                GateContext(
-                    scheme_id="demo_daily",
-                    predict_date="2026-06-08",
-                    project_root=project_root,
-                    report_dir=project_root / "reports",
-                )
-            )
-
-        self.assertFalse(result.passed)
-        self.assertTrue(any("root benchmarks path is source-evidence only" in item for item in result.errors), result.errors)
-        self.assertTrue(any("backtests/demo_daily_reproduction.py" in item for item in result.errors), result.errors)
-
-    def test_active_backtest_runner_allows_explicit_source_evidence_archive_path(self) -> None:
-        from harness.context import GateContext
-        from harness.gates.static_gate import StaticGate
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            project_root = Path(tmpdir)
-            _write_minimal_scheme(
-                project_root,
-                scheme_id="demo_daily",
-                extra_config_lines=[
-                    "status: active",
-                    "backtest:",
-                    "  runner: backtests.demo_daily_reproduction",
-                    "  benchmark_required: true",
-                    "  benchmark_id: demo_benchmark",
-                    "  data_source: framework_db_aligned",
-                    '  start_date: "2025-01-01"',
+            ),
+            (
+                "root-benchmark-source-evidence",
+                [
+                    "from pathlib import Path",
+                    "from shared.input_artifacts import build_daily_input_artifact",
+                    'SOURCE_EVIDENCE_CSV = Path("benchmarks/demo/daily_output.csv")',
+                    "def build_default_input():",
+                    "    return build_daily_input_artifact",
+                    "def read_source_evidence():",
+                    "    return SOURCE_EVIDENCE_CSV",
                 ],
-            )
-            runner_path = project_root / "backtests" / "demo_daily_reproduction.py"
-            runner_path.parent.mkdir(parents=True)
-            runner_path.write_text(
-                "\n".join(
-                    [
-                        "from pathlib import Path",
-                        "from shared.input_artifacts import build_daily_input_artifact",
-                        'SOURCE_EVIDENCE_CSV = Path("benchmarks/demo/daily_output.csv")',
-                        "def build_default_input():",
-                        "    return build_daily_input_artifact",
-                        "def read_source_evidence():",
-                        "    return SOURCE_EVIDENCE_CSV",
-                    ]
-                ),
-                encoding="utf-8",
-            )
-
-            result = StaticGate().run(
-                GateContext(
-                    scheme_id="demo_daily",
-                    predict_date="2026-06-08",
-                    project_root=project_root,
-                    report_dir=project_root / "reports",
-                )
-            )
-
-        self.assertTrue(result.passed, result.errors)
-
-    def test_active_backtest_runner_cannot_use_source_evidence_as_runtime_input(self) -> None:
-        from harness.context import GateContext
-        from harness.gates.static_gate import StaticGate
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            project_root = Path(tmpdir)
-            _write_minimal_scheme(
-                project_root,
-                scheme_id="demo_daily",
-                extra_config_lines=[
-                    "status: active",
-                    "backtest:",
-                    "  runner: backtests.demo_daily_reproduction",
-                    "  benchmark_required: true",
-                    "  benchmark_id: demo_benchmark",
-                    "  data_source: framework_db_aligned",
-                    '  start_date: "2025-01-01"',
+                True,
+                (),
+            ),
+            (
+                "archive-path-runtime",
+                [
+                    "from pathlib import Path",
+                    "from shared.input_artifacts import build_daily_input_artifact",
+                    'CANONICAL_CSV = Path("source_evidence/benchmark_batches/demo/daily_output.csv")',
+                    "def main():",
+                    "    build_daily_input_artifact",
+                    "    return CANONICAL_CSV",
                 ],
-            )
-            runner_path = project_root / "backtests" / "demo_daily_reproduction.py"
-            runner_path.parent.mkdir(parents=True)
-            runner_path.write_text(
-                "\n".join(
-                    [
-                        "from pathlib import Path",
-                        "from shared.input_artifacts import build_daily_input_artifact",
-                        'CANONICAL_CSV = Path("source_evidence/benchmark_batches/demo/daily_output.csv")',
-                        "def main():",
-                        "    build_daily_input_artifact",
-                        "    return CANONICAL_CSV",
-                    ]
-                ),
-                encoding="utf-8",
-            )
-
-            result = StaticGate().run(
-                GateContext(
-                    scheme_id="demo_daily",
-                    predict_date="2026-06-08",
-                    project_root=project_root,
-                    report_dir=project_root / "reports",
-                )
-            )
-
-        self.assertFalse(result.passed)
-        self.assertTrue(any("source_evidence path is source-evidence only" in item for item in result.errors), result.errors)
-
-    def test_active_backtest_runner_allows_explicit_source_evidence_named_path(self) -> None:
-        from harness.context import GateContext
-        from harness.gates.static_gate import StaticGate
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            project_root = Path(tmpdir)
-            _write_minimal_scheme(
-                project_root,
-                scheme_id="demo_daily",
-                extra_config_lines=[
-                    "status: active",
-                    "backtest:",
-                    "  runner: backtests.demo_daily_reproduction",
-                    "  benchmark_required: true",
-                    "  benchmark_id: demo_benchmark",
-                    "  data_source: framework_db_aligned",
-                    '  start_date: "2025-01-01"',
+                False,
+                ("source_evidence path is source-evidence only",),
+            ),
+            (
+                "archive-path-source-evidence",
+                [
+                    "from pathlib import Path",
+                    "from shared.input_artifacts import build_daily_input_artifact",
+                    'SOURCE_EVIDENCE_CSV = Path("source_evidence/benchmark_batches/demo/daily_output.csv")',
+                    "def build_default_input():",
+                    "    return build_daily_input_artifact",
+                    "def read_source_evidence():",
+                    "    return SOURCE_EVIDENCE_CSV",
                 ],
-            )
-            runner_path = project_root / "backtests" / "demo_daily_reproduction.py"
-            runner_path.parent.mkdir(parents=True)
-            runner_path.write_text(
-                "\n".join(
-                    [
-                        "from pathlib import Path",
-                        "from shared.input_artifacts import build_daily_input_artifact",
-                        'SOURCE_EVIDENCE_CSV = Path("source_evidence/benchmark_batches/demo/daily_output.csv")',
-                        "def build_default_input():",
-                        "    return build_daily_input_artifact",
-                        "def read_source_evidence():",
-                        "    return SOURCE_EVIDENCE_CSV",
-                    ]
-                ),
-                encoding="utf-8",
-            )
-
-            result = StaticGate().run(
-                GateContext(
-                    scheme_id="demo_daily",
-                    predict_date="2026-06-08",
-                    project_root=project_root,
-                    report_dir=project_root / "reports",
-                )
-            )
-
-        self.assertTrue(result.passed, result.errors)
-
-    def test_active_backtest_runner_cannot_use_source_evidence_helper_as_runtime_input(self) -> None:
-        from harness.context import GateContext
-        from harness.gates.static_gate import StaticGate
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            project_root = Path(tmpdir)
-            _write_minimal_scheme(
-                project_root,
-                scheme_id="demo_daily",
-                extra_config_lines=[
-                    "status: active",
-                    "backtest:",
-                    "  runner: backtests.demo_daily_reproduction",
-                    "  benchmark_required: true",
-                    "  benchmark_id: demo_benchmark",
-                    "  data_source: framework_db_aligned",
-                    '  start_date: "2025-01-01"',
+                True,
+                (),
+            ),
+            (
+                "archive-helper-runtime",
+                [
+                    "from shared.artifact_paths import benchmark_source_evidence_root",
+                    "from shared.input_artifacts import build_daily_input_artifact",
+                    'CANONICAL_CSV = benchmark_source_evidence_root("demo") / "daily_output.csv"',
+                    "def main():",
+                    "    build_daily_input_artifact",
+                    "    return CANONICAL_CSV",
                 ],
-            )
-            runner_path = project_root / "backtests" / "demo_daily_reproduction.py"
-            runner_path.parent.mkdir(parents=True)
-            runner_path.write_text(
-                "\n".join(
-                    [
-                        "from shared.artifact_paths import benchmark_source_evidence_root",
-                        "from shared.input_artifacts import build_daily_input_artifact",
-                        'CANONICAL_CSV = benchmark_source_evidence_root("demo") / "daily_output.csv"',
-                        "def main():",
-                        "    build_daily_input_artifact",
-                        "    return CANONICAL_CSV",
-                    ]
-                ),
-                encoding="utf-8",
-            )
-
-            result = StaticGate().run(
-                GateContext(
-                    scheme_id="demo_daily",
-                    predict_date="2026-06-08",
-                    project_root=project_root,
-                    report_dir=project_root / "reports",
-                )
-            )
-
-        self.assertFalse(result.passed)
-        self.assertTrue(any("source_evidence path is source-evidence only" in item for item in result.errors), result.errors)
-
-    def test_active_backtest_runner_allows_source_evidence_helper_with_explicit_name(self) -> None:
-        from harness.context import GateContext
-        from harness.gates.static_gate import StaticGate
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            project_root = Path(tmpdir)
-            _write_minimal_scheme(
-                project_root,
-                scheme_id="demo_daily",
-                extra_config_lines=[
-                    "status: active",
-                    "backtest:",
-                    "  runner: backtests.demo_daily_reproduction",
-                    "  benchmark_required: true",
-                    "  benchmark_id: demo_benchmark",
-                    "  data_source: framework_db_aligned",
-                    '  start_date: "2025-01-01"',
+                False,
+                ("source_evidence path is source-evidence only",),
+            ),
+            (
+                "archive-helper-source-evidence",
+                [
+                    "from shared.artifact_paths import benchmark_source_evidence_root",
+                    "from shared.input_artifacts import build_daily_input_artifact",
+                    'SOURCE_EVIDENCE_CSV = benchmark_source_evidence_root("demo") / "daily_output.csv"',
+                    "def build_default_input():",
+                    "    return build_daily_input_artifact",
+                    "def read_source_evidence():",
+                    "    return SOURCE_EVIDENCE_CSV",
                 ],
-            )
-            runner_path = project_root / "backtests" / "demo_daily_reproduction.py"
-            runner_path.parent.mkdir(parents=True)
-            runner_path.write_text(
-                "\n".join(
-                    [
-                        "from shared.artifact_paths import benchmark_source_evidence_root",
-                        "from shared.input_artifacts import build_daily_input_artifact",
-                        'SOURCE_EVIDENCE_CSV = benchmark_source_evidence_root("demo") / "daily_output.csv"',
-                        "def build_default_input():",
-                        "    return build_daily_input_artifact",
-                        "def read_source_evidence():",
-                        "    return SOURCE_EVIDENCE_CSV",
-                    ]
-                ),
-                encoding="utf-8",
-            )
-
-            result = StaticGate().run(
-                GateContext(
-                    scheme_id="demo_daily",
-                    predict_date="2026-06-08",
-                    project_root=project_root,
-                    report_dir=project_root / "reports",
-                )
-            )
-
-        self.assertTrue(result.passed, result.errors)
-
-    def test_active_backtest_runner_cannot_return_source_evidence_variable_from_default_path(self) -> None:
-        from harness.context import GateContext
-        from harness.gates.static_gate import StaticGate
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            project_root = Path(tmpdir)
-            _write_minimal_scheme(
-                project_root,
-                scheme_id="demo_daily",
-                extra_config_lines=[
-                    "status: active",
-                    "backtest:",
-                    "  runner: backtests.demo_daily_reproduction",
-                    "  benchmark_required: true",
-                    "  benchmark_id: demo_benchmark",
-                    "  data_source: framework_db_aligned",
-                    '  start_date: "2025-01-01"',
+                True,
+                (),
+            ),
+            (
+                "named-source-evidence-returned-as-runtime",
+                [
+                    "from pathlib import Path",
+                    "from shared.input_artifacts import build_daily_input_artifact",
+                    'SOURCE_EVIDENCE_CSV = Path("source_evidence/benchmark_batches/demo/daily_output.csv")',
+                    "def main():",
+                    "    build_daily_input_artifact",
+                    "    return SOURCE_EVIDENCE_CSV",
                 ],
-            )
-            runner_path = project_root / "backtests" / "demo_daily_reproduction.py"
-            runner_path.parent.mkdir(parents=True)
-            runner_path.write_text(
-                "\n".join(
-                    [
-                        "from pathlib import Path",
-                        "from shared.input_artifacts import build_daily_input_artifact",
-                        'SOURCE_EVIDENCE_CSV = Path("source_evidence/benchmark_batches/demo/daily_output.csv")',
-                        "def main():",
-                        "    build_daily_input_artifact",
-                        "    return SOURCE_EVIDENCE_CSV",
-                    ]
-                ),
-                encoding="utf-8",
-            )
+                False,
+                ("source_evidence path is source-evidence only",),
+            ),
+        ]
 
-            result = StaticGate().run(
-                GateContext(
+        for name, runner_lines, expected_passed, error_fragments in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                project_root = Path(tmpdir)
+                _write_minimal_scheme(
+                    project_root,
                     scheme_id="demo_daily",
-                    predict_date="2026-06-08",
-                    project_root=project_root,
-                    report_dir=project_root / "reports",
+                    extra_config_lines=[
+                        "status: active",
+                        "backtest:",
+                        "  runner: backtests.demo_daily_reproduction",
+                        "  benchmark_required: true",
+                        "  benchmark_id: demo_benchmark",
+                        "  data_source: framework_db_aligned",
+                        '  start_date: "2025-01-01"',
+                    ],
                 )
-            )
+                runner_path = (
+                    project_root / "backtests" / "demo_daily_reproduction.py"
+                )
+                runner_path.parent.mkdir(parents=True)
+                runner_path.write_text(
+                    "\n".join(runner_lines),
+                    encoding="utf-8",
+                )
+                result = StaticGate().run(
+                    GateContext(
+                        scheme_id="demo_daily",
+                        predict_date="2026-06-08",
+                        project_root=project_root,
+                        report_dir=project_root / "reports",
+                    )
+                )
 
-        self.assertFalse(result.passed)
-        self.assertTrue(any("source_evidence path is source-evidence only" in item for item in result.errors), result.errors)
+            self.assertEqual(result.passed, expected_passed, result.errors)
+            for fragment in error_fragments:
+                self.assertTrue(
+                    any(fragment in item for item in result.errors),
+                    result.errors,
+                )
 
 
 class HarnessRuntimeGateTests(unittest.TestCase):

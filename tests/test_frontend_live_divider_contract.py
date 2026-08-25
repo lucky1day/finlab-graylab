@@ -1,60 +1,12 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
-import subprocess
-
 import pytest
 
-
-_NODE_HARNESS = r"""
-const fs = require("fs");
-const vm = require("vm");
-
-const [shellPath, serializedScheme] = process.argv.slice(1);
-const document = {
-  visibilityState: "visible",
-  getElementById() { return null; },
-  querySelectorAll() { return []; },
-  querySelector() { return null; },
-  addEventListener() {}
-};
-const window = {
-  location: { pathname: "/", origin: "http://localhost" },
-  history: { pushState() {} },
-  addEventListener() {}
-};
-const context = vm.createContext({ document, window, console, Promise, Map, Set });
-
-vm.runInContext(fs.readFileSync(shellPath, "utf8"), context, { filename: shellPath });
-process.stdout.write(
-  window.__factorLabTestHooks.liveDividerTextForTest(JSON.parse(serializedScheme))
-);
-"""
+from tests.frontend_test_support import call_frontend_hook
 
 
 def _live_divider_text(scheme: dict[str, object]) -> str:
-    project_root = Path(__file__).resolve().parents[1]
-    result = subprocess.run(
-        [
-            "node",
-            "-e",
-            _NODE_HARNESS,
-            str(project_root / "frontend" / "aifin-shell.js"),
-            json.dumps(scheme),
-        ],
-        cwd=project_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, (
-        "Node divider harness failed:\n"
-        f"stdout:\n{result.stdout}\n"
-        f"stderr:\n{result.stderr}"
-    )
-    return result.stdout
+    return str(call_frontend_hook("liveDividerTextForTest", scheme))
 
 
 @pytest.mark.parametrize(
