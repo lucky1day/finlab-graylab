@@ -234,13 +234,13 @@ class OnboardingPolicyTests(unittest.TestCase):
             _write_native_scheme(project_root, "new_native")
 
             with patch(
-                "harness.gates.activate_gate._verify_gate_history"
-            ) as verify_history:
+                "harness.gates.activate_gate._resolve_native_activation_validation"
+            ) as resolve_validation:
                 result = ActivationGate().run(_context(project_root, "new_native"))
 
         self.assertFalse(result.passed)
         self.assertTrue(any("maintenance-only" in error for error in result.errors), result.errors)
-        verify_history.assert_not_called()
+        resolve_validation.assert_not_called()
 
 
 def _write_policy(project_root: Path, *, legacy_ids: list[str]) -> None:

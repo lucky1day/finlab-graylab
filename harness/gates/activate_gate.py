@@ -913,15 +913,6 @@ def _validate_native_activated_config(
     return target
 
 
-def _verify_gate_history(ctx: GateContext, scheme_version: str) -> list[str]:
-    """兼容旧调用：只认可当前精确版本的完整首次入库记录。"""
-    full_validation, full_errors, _ = _passed_full_all_validation(
-        ctx,
-        scheme_version,
-    )
-    return [] if full_validation is not None else full_errors
-
-
 def _resolve_native_activation_validation(
     ctx: GateContext,
     scheme_version: str,
