@@ -8,31 +8,14 @@ from unittest.mock import patch
 
 from sqlalchemy import create_engine, text
 
-from harness.operation import build_direct_operation
 from harness.context import GateContext
+from harness.operation import build_direct_operation
 from harness.result import GateStatus
 from scheduler.discovery import load_scheme_config
+from scheduler.repository import _expected_registry_identity
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-
-def build_operation(
-    scheme_id: str,
-    action: str,
-    predict_date: str | None = None,
-    *,
-    scheme_version: str,
-    issued_by: str = "test-operator",
-    **_ignored,
-):
-    return build_direct_operation(
-        scheme_id,
-        action,
-        predict_date,
-        scheme_version=scheme_version,
-        issued_by=issued_by,
-    )
 
 
 class NativeActivationValidationTests(unittest.TestCase):
@@ -81,14 +64,10 @@ class NativeActivationValidationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            engine, cfg, ctx, registry_ids = _maintenance_fixture(
-                root,
-                registry_status="paused",
-                current_version_status="draft",
-            )
+            engine, cfg, ctx, registry_ids = _maintenance_fixture(root)
             try:
                 _seed_maintenance_run(engine, cfg.scheme_version)
-                token = build_operation(
+                operation = build_direct_operation(
                     cfg.scheme_id,
                     "activate",
                     scheme_version=cfg.scheme_version,
@@ -101,7 +80,7 @@ class NativeActivationValidationTests(unittest.TestCase):
                     report_dir=ctx.report_dir,
                     config=cfg,
                     engine_factory=ctx.engine_factory,
-                    operation=token,
+                    operation=operation,
                 )
                 with (
                     patch(
@@ -138,33 +117,15 @@ class NativeActivationValidationTests(unittest.TestCase):
         )
 
 
-def _maintenance_fixture(
-    root: Path,
-    *,
-    include_prior: bool = True,
-    registry_status: str = "active",
-    current_version_status: str = "active",
-    config_status: str = "active",
-    backtest_prediction_count: int | None = 1,
-):
+def _maintenance_fixture(root: Path):
     _write_native_policy(root)
-    cfg = _write_native_scheme(root, status=config_status)
+    cfg = _write_native_scheme(root)
     engine = _activation_sqlite_engine(root)
     _, registry_ids = _expected_registry_identity(cfg)
-    _insert_active_registry_rows(engine, cfg, registry_status=registry_status)
-    _seed_current_candidate(
-        engine,
-        cfg,
-        status=current_version_status,
-    )
-    if include_prior:
-        _seed_prior_admission(engine, cfg)
-    if backtest_prediction_count is not None:
-        _seed_successful_backtest(
-            engine,
-            cfg.scheme_id,
-            prediction_count=backtest_prediction_count,
-        )
+    _insert_active_registry_rows(engine, cfg, registry_status="paused")
+    _seed_current_candidate(engine, cfg, status="draft")
+    _seed_prior_admission(engine, cfg)
+    _seed_successful_backtest(engine, cfg.scheme_id)
     ctx = GateContext(
         scheme_id=cfg.scheme_id,
         predict_date="2026-08-04",
@@ -192,15 +153,12 @@ def _write_native_policy(root: Path) -> None:
     )
 
 
-def _write_native_scheme(root: Path, *, status: str):
+def _write_native_scheme(root: Path):
     config_path = root / "schemes" / "t5_daily" / "config.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     source = (PROJECT_ROOT / "schemes" / "t5_daily" / "config.yaml").read_text(
         encoding="utf-8"
     )
-    if status not in {"active", "paused"}:
-        raise ValueError(f"unsupported fixture config status: {status}")
-    source = source.replace("\nstatus: active\n", f"\nstatus: {status}\n", 1)
     config_path.write_text(source, encoding="utf-8")
     return load_scheme_config(config_path)
 
@@ -273,12 +231,6 @@ def _activation_sqlite_engine(root: Path):
             )
         )
     return engine
-
-
-def _expected_registry_identity(cfg):
-    from scheduler.repository import _expected_registry_identity as repository_identity
-
-    return repository_identity(cfg)
 
 
 def _insert_active_registry_rows(engine, cfg, *, registry_status: str) -> None:
@@ -433,8 +385,6 @@ def _seed_maintenance_run(
 def _seed_successful_backtest(
     engine,
     scheme_id: str,
-    *,
-    prediction_count: int,
 ) -> None:
     with engine.begin() as conn:
         conn.execute(
@@ -446,11 +396,9 @@ def _seed_successful_backtest(
             ),
             {"scheme_id": scheme_id},
         )
-        if prediction_count:
-            conn.execute(
-                text(
-                    "INSERT INTO t_backtest_predictions (id, run_id) "
-                    "VALUES (:id, 101)"
-                ),
-                [{"id": index + 1} for index in range(prediction_count)],
+        conn.execute(
+            text(
+                "INSERT INTO t_backtest_predictions (id, run_id) "
+                "VALUES (1, 101)"
             )
+        )
