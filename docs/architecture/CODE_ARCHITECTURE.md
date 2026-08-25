@@ -132,7 +132,7 @@ StaticGate 覆盖不到的包级逆向依赖：
 | V2 | ✅ 已清零(S2) | 当时旧周频 10Y 方案 `core/weekly_data_service.py → shared.data_service`（含 `create_sqlalchemy_engine`） | core 连库 | §3.2 ✗ⁱ core 零 DB | S2：该文件已确认为死代码并删除（连同 `weekly_output_0529_columns.json` 与对应测试） |
 | V3 | ✅ 已清零(S1) | 当时旧周频 adapter 直接取 `shared.data_service.create_sqlalchemy_engine` 传给日历查询 | adapter 直接取引擎传给日历查询 | §3.1 过渡期容忍，目标消除 | S1 已让日历查询走 `calendar_service`；当前 active 周频 5Y/7Y adapter 不直接取 DB engine |
 | V4 | ✅ 已清零(S3) | `backtests/daily_0529_reproduction.py → shared.data_service.build_daily_output_from_db` | 回测绕过 `input_artifacts` 拼日频输入 | §3.3 输入单点 | S3：daily backtest runner 已改走 `build_daily_input_artifact` |
-| V5 | ✅ 已清零 | `shared/blackbox_v2/contracts.py → harness.contracts.config_schema` | L1 依赖 L5 | §3.1 `shared` 无上行依赖 | 纯 schema 实现下沉至 `shared.scheme_config_schema`；harness 兼容模块只做从 L1 向上 re-export |
+| V5 | ✅ 已清零 | `shared/blackbox_v2/contracts.py → harness.contracts.config_schema` | L1 依赖 L5 | §3.1 `shared` 无上行依赖 | schema 实现统一为 `shared.scheme_config_schema`，旧 Harness 重导出层已删除 |
 | V6 | ✅ 已清零 | `scheduler/discovery.py → harness.contracts.config_schema` | L3 依赖 L5 | §3.1 `scheduler` 不依赖 harness | `scheduler.discovery` 改为直接依赖 `shared.scheme_config_schema` |
 
 V5–V6 没有建立基线豁免；修复后 repo-wide gate 的全仓扫描为零违规。

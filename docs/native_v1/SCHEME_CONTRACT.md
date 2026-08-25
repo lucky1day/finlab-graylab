@@ -40,7 +40,7 @@ schemes/{scheme_id}/
 | `status` | `active` 或 `paused`；维护不得擅自改变业务状态 |
 | `input_spec` | 与 `shared.input_artifacts` 产出的 source、版本和必需列一致 |
 
-具体字段由 `harness/contracts/config_schema.py` 判定，文档不得替代机器校验。
+具体字段由 `shared/scheme_config_schema.py` 判定，文档不得替代机器校验。
 
 ## 3. predict.py
 

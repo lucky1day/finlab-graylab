@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness.contracts.config_schema import ALLOWED_RUNTIME_TYPES, SCHEME_ID_PATTERN
+from shared.scheme_config_schema import ALLOWED_RUNTIME_TYPES, SCHEME_ID_PATTERN
 
 
 POLICY_RELATIVE_PATH = Path("deploy/onboarding_policy_v1.json")

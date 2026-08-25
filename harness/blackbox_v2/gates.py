@@ -14,7 +14,6 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from harness.blackbox_v2.draft_register import create_draft_identity
 from harness.context import GateContext
 from harness.operation import (
     DEFAULT_BACKTEST_START_DATE,
@@ -39,6 +38,7 @@ from scheduler.blackbox_v2_runner import (
 )
 from scheduler.process_control import ProcessGroupTerminationError
 from scheduler.discovery import SchemeConfig, load_scheme_config
+from scheduler.repository import register_blackbox_draft_identity
 from scheduler.repository import BlackboxLifecycleIdentityAbsent
 from shared.blackbox_v2.contracts import (
     BlackboxMetadata,
@@ -600,11 +600,17 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
             try:
                 db_before = _read_shadow_state(engine, cfg)
             except BlackboxLifecycleIdentityAbsent:
-                create_draft_identity(
-                    engine,
+                pinned_cfg = _reload_pinned_blackbox_config(
                     cfg,
-                    environment_fingerprint=environment_fingerprint,
-                    data_snapshot_id=passed_run.data_snapshot_id,
+                    phase="draft registration",
+                )
+                register_blackbox_draft_identity(
+                    engine,
+                    replace(
+                        pinned_cfg,
+                        environment_fingerprint=environment_fingerprint,
+                        data_snapshot_id=passed_run.data_snapshot_id,
+                    ),
                     expected_harness_run_id=passed_run.harness_run_id,
                 )
                 identity_created = True

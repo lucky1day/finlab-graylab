@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from harness.context import GateContext
-from harness.contracts.config_schema import validate_config
+from shared.scheme_config_schema import validate_config
 from harness.contracts.onboarding_policy import validate_onboarding_policy
 from harness.contracts.import_rules import (
     CORE_DB_CALL_NAMES,

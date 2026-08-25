@@ -12,7 +12,7 @@ from harness.operation import (
     write_operation_audit,
 )
 from harness.context import GateContext
-from harness.contracts.config_schema import validate_config
+from shared.scheme_config_schema import validate_config
 from harness.contracts.onboarding_policy import validate_onboarding_policy
 from harness.gates.base import Gate, guarded_result, utc_now
 from harness.result import Evidence, GateResult, GateStatus

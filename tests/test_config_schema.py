@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from harness.contracts.config_schema import validate_config
+from shared.scheme_config_schema import validate_config
 
 
 def _base_config() -> dict:
