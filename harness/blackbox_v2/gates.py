@@ -315,42 +315,43 @@ class BlackboxUnitGate(_BlackboxGate):
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
         cfg = _config(ctx)
         state = _ensure_input_state(ctx)
-        root = _gate_root(ctx) / "unit"
-        request_dir = root / "request"
-        request_dir.mkdir(parents=True, exist_ok=True)
-        invalid_request = request_dir / "invalid_request.json"
-        invalid_request.write_text("{}\n", encoding="utf-8")
-        output_dir = root / "output"
-        if output_dir.exists():
-            shutil.rmtree(output_dir)
-        output_dir.mkdir()
-        output = output_dir / "invalid_output.json"
-        help_output = probe_blackbox_help(_script(cfg), profile=_profile(ctx))
-        rejected = False
-        with _open_runtime_input(ctx, state) as runtime_view:
-            try:
-                execute_blackbox_cli(
-                    script_path=_script(cfg),
-                    mode="predict",
-                    input_path=invalid_request,
-                    data_dir=runtime_view.data_dir,
-                    output_path=output,
-                    profile=_profile(ctx),
-                    platform_input_ids=runtime_view.bundle.platform_input_ids,
-                )
-            except BlackboxExecutionError:
-                rejected = True
-        errors: list[str] = []
-        if not rejected:
-            errors.append("script must reject an invalid Request with a non-zero exit")
-        if output.exists():
-            errors.append("failed execution must not leave an Output file")
-        evidence = [
-            *_bundle_evidence(_input_bundle(state)),
-            Evidence("help_exposes_modes", {"predict": "predict" in help_output, "backtest": "backtest" in help_output}),
-            Evidence("invalid_request_rejected", rejected),
-            Evidence("failed_output_absent", not output.exists()),
-        ]
+        with tempfile.TemporaryDirectory(
+            prefix="unit-", dir=_gate_root(ctx)
+        ) as tmpdir:
+            root = Path(tmpdir)
+            request_dir = root / "request"
+            request_dir.mkdir()
+            invalid_request = request_dir / "invalid_request.json"
+            invalid_request.write_text("{}\n", encoding="utf-8")
+            output_dir = root / "output"
+            output_dir.mkdir()
+            output = output_dir / "invalid_output.json"
+            help_output = probe_blackbox_help(_script(cfg), profile=_profile(ctx))
+            rejected = False
+            with _open_runtime_input(ctx, state) as runtime_view:
+                try:
+                    execute_blackbox_cli(
+                        script_path=_script(cfg),
+                        mode="predict",
+                        input_path=invalid_request,
+                        data_dir=runtime_view.data_dir,
+                        output_path=output,
+                        profile=_profile(ctx),
+                        platform_input_ids=runtime_view.bundle.platform_input_ids,
+                    )
+                except BlackboxExecutionError:
+                    rejected = True
+            errors: list[str] = []
+            if not rejected:
+                errors.append("script must reject an invalid Request with a non-zero exit")
+            if output.exists():
+                errors.append("failed execution must not leave an Output file")
+            evidence = [
+                *_bundle_evidence(_input_bundle(state)),
+                Evidence("help_exposes_modes", {"predict": "predict" in help_output, "backtest": "backtest" in help_output}),
+                Evidence("invalid_request_rejected", rejected),
+                Evidence("failed_output_absent", not output.exists()),
+            ]
         return _finish(self.name, started_at, evidence, errors)
 
 
@@ -382,17 +383,11 @@ class BlackboxCompareGate(_BlackboxGate):
                 **runtime_kwargs,
             )
 
-        # dry-run 段已并入本 Gate：baseline 与原 dry-run 是逐参数相同的同一次 predict，
-        # 因此在此原样产出其证据与结果文件，避免重复一次全量拟合。
-        prediction_record_path = _gate_root(ctx) / "dry_run_prediction_record.json"
-        prediction_record_path.write_text(
-            json.dumps(asdict(baseline), ensure_ascii=True, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        # dry-run 段已并入本 Gate：baseline 与原 dry-run 是逐参数相同的同一次 predict。
+        # 结果直接进入 Harness evidence，不再保存第二份本地 JSON。
         evidence = [
             *_bundle_evidence(bundle),
             Evidence("prediction_record", asdict(baseline)),
-            Evidence("result_path", str(prediction_record_path)),
             Evidence("business_tables_written", False),
         ]
         return _finish(self.name, started_at, evidence, [])
