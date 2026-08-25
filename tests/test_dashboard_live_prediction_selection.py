@@ -84,59 +84,29 @@ class WeeklyCanonicalSelectionTests(unittest.TestCase):
         self.assertEqual(len(selected), 1)
         return dict(selected[0])
 
-    def test_registry_weekly_point_selects_newest_feature_date(self) -> None:
-        """Registry 判为 weekly_point：取更新的 feature_date。"""
-        selected = self._selected(
-            _rows(horizon=1),
-            _index("weekly_point", horizon=1),
+    def test_registry_controls_selection_rule(self) -> None:
+        cases = (
+            ("weekly_point", 1, _index("weekly_point", horizon=1), None, 10),
+            ("weekly_average", 1, _index("weekly_average", horizon=1), None, 10),
+            ("legacy_weekly_horizon", 6, _index("weekly_point", horizon=6), None, 10),
+            ("daily_point", 1, _index("T+1", horizon=1), None, 20),
+            ("horizon_six_point", 6, _index("T+5", horizon=6), None, 20),
+            (
+                "row_extra_ignored",
+                1,
+                _index("T+1", horizon=1),
+                {"task_type": "weekly_point", "frequency": "weekly"},
+                20,
+            ),
+            ("outside_active_registry", 1, {}, None, 20),
         )
-        self.assertEqual(selected["id"], 10)
-        self.assertEqual(selected["feature_date"], "2026-07-24")
-
-    def test_registry_weekly_average_selects_newest_feature_date(self) -> None:
-        """weekly_average 与 weekly_point 适用同一 canonical 规则。"""
-        selected = self._selected(
-            _rows(horizon=1),
-            _index("weekly_average", horizon=1),
-        )
-        self.assertEqual(selected["id"], 10)
-
-    def test_legacy_weekly_horizon_still_selects_by_registry(self) -> None:
-        """存量 horizon=6 的周频方案同样由 Registry 判定。"""
-        selected = self._selected(
-            _rows(horizon=6),
-            _index("weekly_point", horizon=6),
-        )
-        self.assertEqual(selected["id"], 10)
-
-    def test_registry_point_task_type_keeps_latest_row_rule(self) -> None:
-        """Registry 判为点位：按最新行 id 选择。"""
-        selected = self._selected(
-            _rows(horizon=1),
-            _index("T+1", horizon=1),
-        )
-        self.assertEqual(selected["id"], 20)
-
-    def test_horizon_six_does_not_imply_weekly(self) -> None:
-        """horizon=6 不再隐式代表周频；Registry 判为点位即按点位处理。"""
-        selected = self._selected(
-            _rows(horizon=6),
-            _index("T+5", horizon=6),
-        )
-        self.assertEqual(selected["id"], 20)
-
-    def test_row_extra_hints_do_not_decide(self) -> None:
-        """预测行 extra 里的 task_type / frequency 不参与判定。"""
-        selected = self._selected(
-            _rows(horizon=1, extra={"task_type": "weekly_point", "frequency": "weekly"}),
-            _index("T+1", horizon=1),
-        )
-        self.assertEqual(selected["id"], 20)
-
-    def test_rows_outside_active_registry_use_point_rule(self) -> None:
-        """不在 active Registry 中的行不属于当前业务范围，按点位规则去重。"""
-        selected = self._selected(_rows(horizon=1), {})
-        self.assertEqual(selected["id"], 20)
+        for name, horizon, index, extra, expected_id in cases:
+            with self.subTest(case=name):
+                selected = self._selected(
+                    _rows(horizon=horizon, extra=extra),
+                    index,
+                )
+                self.assertEqual(selected["id"], expected_id)
 
     def test_selection_is_order_independent(self) -> None:
         """判据来自 Registry 且分组内恒定，结果不依赖输入顺序。"""
@@ -161,18 +131,21 @@ class RegistryTaskTypeIndexTests(unittest.TestCase):
         row.update(overrides)
         return row
 
-    def test_index_key_matches_prediction_row_shape(self) -> None:
-        index = registry_task_type_index([self._registry_row()])
-        self.assertEqual(index, {(SCHEME_ID, TENOR, 1): "weekly_point"})
+    def test_index_includes_only_active_rows(self) -> None:
+        cases = (
+            ("active", {}, {(SCHEME_ID, TENOR, 1): "weekly_point"}),
+            ("paused", {"status": "paused"}, {}),
+        )
+        for name, overrides, expected in cases:
+            with self.subTest(case=name):
+                self.assertEqual(
+                    registry_task_type_index([self._registry_row(**overrides)]),
+                    expected,
+                )
 
-    def test_non_active_registry_rows_are_excluded(self) -> None:
-        index = registry_task_type_index([self._registry_row(status="paused")])
-        self.assertEqual(index, {})
-
-    def test_invalid_horizon_fails_closed(self) -> None:
-        with self.assertRaises(DashboardDataError):
-            registry_task_type_index([self._registry_row(horizon="weekly")])
-
-    def test_missing_task_type_fails_closed(self) -> None:
-        with self.assertRaises(DashboardDataError):
-            registry_task_type_index([self._registry_row(task_type="")])
+    def test_invalid_registry_identity_fails_closed(self) -> None:
+        for field, value in (("horizon", "weekly"), ("task_type", "")):
+            with self.subTest(field=field), self.assertRaises(DashboardDataError):
+                registry_task_type_index(
+                    [self._registry_row(**{field: value})]
+                )
