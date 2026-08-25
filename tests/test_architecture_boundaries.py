@@ -8,13 +8,6 @@ from harness.contracts import import_rules
 
 
 class RepositoryArchitectureBoundaryTests(unittest.TestCase):
-
-    def test_repository_boundary_scanner_is_available(self) -> None:
-        self.assertTrue(
-            hasattr(import_rules, "repository_layer_import_violations"),
-            "repo-wide architecture gate must expose a repository scanner",
-        )
-
     def test_shared_and_scheduler_upward_imports_report_exact_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -100,52 +93,37 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
                 import_rules.repository_layer_import_violations(root),
             )
 
-    def test_harness_cannot_import_one_shot_admin_scripts(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            self._write(
-                root / "harness" / "bad.py",
-                "from scripts.refresh_data_bridge_current "
-                "import check_current\n",
-            )
+    def test_control_layers_cannot_import_one_shot_admin_scripts(self) -> None:
+        cases = (
+            (
+                "harness",
+                "from scripts.refresh_data_bridge_current import check_current\n",
+                "scripts.refresh_data_bridge_current",
+            ),
+            (
+                "scheduler",
+                "from scripts.apply_migrations import apply_migration_files\n",
+                "scripts.apply_migrations",
+            ),
+        )
+        for layer, source, imported_module in cases:
+            with self.subTest(layer=layer), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                self._write(root / layer / "bad.py", source)
 
-            actual = [
-                violation.format(root)
-                for violation
-                in import_rules.repository_layer_import_violations(root)
-            ]
+                actual = [
+                    violation.format(root)
+                    for violation
+                    in import_rules.repository_layer_import_violations(root)
+                ]
 
-            self.assertEqual(
-                [
-                    "harness/bad.py:1: forbidden layer import: "
-                    "harness -> "
-                    "scripts.refresh_data_bridge_current"
-                ],
-                actual,
-            )
-
-    def test_scheduler_cannot_import_one_shot_admin_scripts(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            self._write(
-                root / "scheduler" / "bad.py",
-                "from scripts.apply_migrations import "
-                "apply_migration_files\n",
-            )
-
-            actual = [
-                violation.format(root)
-                for violation
-                in import_rules.repository_layer_import_violations(root)
-            ]
-
-            self.assertEqual(
-                [
-                    "scheduler/bad.py:1: forbidden layer import: "
-                    "scheduler -> scripts.apply_migrations"
-                ],
-                actual,
-            )
+                self.assertEqual(
+                    [
+                        f"{layer}/bad.py:1: forbidden layer import: "
+                        f"{layer} -> {imported_module}"
+                    ],
+                    actual,
+                )
 
     def test_native_core_and_scheme_boundaries_remain_repo_wide(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
