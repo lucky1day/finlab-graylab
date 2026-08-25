@@ -8,7 +8,7 @@ from typing import Any, Callable
 import pytest
 
 from harness.context import GateContext
-from harness.probes.api_probe import ApiProbeError
+from harness.gates.dashboard_gate import ApiProbeError
 
 
 BASE_SCHEME_ID = "demo_daily"
