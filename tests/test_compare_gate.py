@@ -134,7 +134,6 @@ class CompareGateTest(unittest.TestCase):
         ctx = _make_ctx(self.root)
         result = CompareGate().run(ctx)
         self.assertEqual(result.status, GateStatus.SKIPPED)
-        self.assertTrue(result.passed)
 
 
     def test_identical_outputs_passed(self) -> None:
@@ -148,7 +147,6 @@ class CompareGateTest(unittest.TestCase):
         _write_predictions(bench / "current_predictions_sample.csv", rows)
         result = CompareGate().run(ctx)
         self.assertEqual(result.status, GateStatus.PASSED, result.errors)
-        self.assertTrue(result.passed)
 
     def test_direction_mismatch_failed(self) -> None:
         ctx = _make_ctx(self.root)

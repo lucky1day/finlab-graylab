@@ -23,13 +23,6 @@ AUTO_SEQUENCE = ["static", "input", "dry-run", "compare", "backtest"]
 BLACKBOX_AUTO_SEQUENCE = ["static", "input", "unit", "compare"]
 
 
-def auto_sequence_for_runtime(runtime_type: str | None) -> list[str]:
-    """返回该 runtime 的自动段序列。"""
-    if str(runtime_type or "").strip() == "blackbox_v2":
-        return list(BLACKBOX_AUTO_SEQUENCE)
-    return list(AUTO_SEQUENCE)
-
-
 def sequence_for_stage(
     stage: str,
     *,
@@ -40,7 +33,12 @@ def sequence_for_stage(
         return list(NATIVE_MAINTENANCE_SEQUENCE)
     if normalized != "all":
         raise ValueError(f"unsupported onboard stage: {stage}")
-    return auto_sequence_for_runtime(runtime_type)
+    sequence = (
+        BLACKBOX_AUTO_SEQUENCE
+        if str(runtime_type or "").strip() == "blackbox_v2"
+        else AUTO_SEQUENCE
+    )
+    return list(sequence)
 
 
 def gate_for_name(name: str, *, ctx: GateContext | None = None) -> Gate:
@@ -50,11 +48,8 @@ def gate_for_name(name: str, *, ctx: GateContext | None = None) -> Gate:
     if runtime_type == "blackbox_v2":
         from harness.blackbox_v2.gates import BLACKBOX_GATES
         from harness.blackbox_v2.activation import BlackboxLifecycleReconcileGate
-        common_post_activation_gates = {
-            "lifecycle-reconcile": BlackboxLifecycleReconcileGate,
-        }
-        if name in common_post_activation_gates:
-            return common_post_activation_gates[name]()
+        if name == "lifecycle-reconcile":
+            return BlackboxLifecycleReconcileGate()
         try:
             return BLACKBOX_GATES[name]()
         except KeyError as exc:

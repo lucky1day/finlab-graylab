@@ -41,5 +41,3 @@ class ActiveSchemeContractTests(unittest.TestCase):
                     self.assertTrue(config.delivery_script.is_file())
                     self.assertTrue(config.delivery_metadata.is_file())
                     self.assertEqual(config.contract_version, "1.0")
-                else:
-                    self.assertTrue(config.entry_point)

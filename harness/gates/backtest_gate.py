@@ -82,10 +82,11 @@ class BacktestGate(Gate):
                     runner_args=runner_args,
                 )
             else:
-                current = run_backtest_no_persist(
+                current = run_backtest_runner(
                     runner,
                     ctx.project_root,
                     ctx.timeout_sec,
+                    persist=False,
                     algo_env=ctx.algo_env,
                     runner_args=runner_args,
                 )
@@ -128,24 +129,6 @@ class BacktestGate(Gate):
             started_at=started_at,
             finished_at=finished_at,
         )
-
-
-def run_backtest_no_persist(
-    runner: str,
-    project_root: Path,
-    timeout_sec: int,
-    *,
-    algo_env: str = "forecast_env",
-    runner_args: list[str] | None = None,
-) -> dict[str, Any]:
-    return run_backtest_runner(
-        runner,
-        project_root,
-        timeout_sec,
-        persist=False,
-        algo_env=algo_env,
-        runner_args=runner_args,
-    )
 
 
 def run_backtest_runner(

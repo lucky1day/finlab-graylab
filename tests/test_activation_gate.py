@@ -98,7 +98,6 @@ class NativeActivationValidationTests(unittest.TestCase):
                 engine.dispose()
 
         self.assertEqual(result.status, GateStatus.PASSED)
-        self.assertTrue(result.passed)
         sync.assert_called_once()
         evidence = {item.key: item.value for item in result.evidence}
         self.assertEqual(

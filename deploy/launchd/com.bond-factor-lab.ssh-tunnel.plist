@@ -8,20 +8,8 @@
         供入口机 Nginx proxy_pass 使用。绑定到远端 127.0.0.1，确保公网
         无法直连裸后端，只有入口机本地 Nginx 能访问。
 
-  部署（本地 Mac）：
-    1) 把下面占位符替换为真实值：
-         <SSH_USER>     入口机 SSH 用户名
-         <TUNNEL_KEY>   本地用于连接入口机的私钥文件名（位于 ~/.ssh/）
-       建议：先用 `ssh -i ~/.ssh/<TUNNEL_KEY> <SSH_USER>@bond.finailab.cn` 手动
-             连一次，接受 host key 并确认免密登录可用。
-    2) 安装并加载：
-         cp deploy/launchd/com.bond-factor-lab.ssh-tunnel.plist \
-            ~/Library/LaunchAgents/
-         launchctl bootstrap gui/$(id -u) \
-            ~/Library/LaunchAgents/com.bond-factor-lab.ssh-tunnel.plist
-    3) 查看状态 / 日志：
-         launchctl print gui/$(id -u)/com.bond-factor-lab.ssh-tunnel
-         tail -f logs/com.bond-factor-lab.ssh-tunnel.err
+  本文件只定义期望配置。占位符替换、安装、加载和状态核验必须按
+  deploy/README.md 的独立授权边界执行，不能从模板存在推断现场变更权限。
 
   存活策略：
     - KeepAlive=true        ssh 进程退出后由 launchd 拉起（应对网络抖动/休眠）。

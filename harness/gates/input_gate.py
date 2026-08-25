@@ -34,8 +34,16 @@ class InputGate(Gate):
         try:
             calendar = get_calendar(engine)
             monthly_context = build_monthly_live_context(calendar, ctx.predict_date) if frequency == "monthly" else None
-            feature_date = monthly_context.feature_date if monthly_context is not None else _feature_date(ctx.predict_date, engine)
-            feature_week_id = None if monthly_context is not None else _feature_week_id(feature_date, engine)
+            feature_date = (
+                monthly_context.feature_date
+                if monthly_context is not None
+                else calendar.previous_trading_day(ctx.predict_date)
+            )
+            feature_week_id = (
+                None
+                if monthly_context is not None
+                else calendar.week_id_for_date(feature_date)
+            )
             artifact = self._build_artifact(
                 ctx,
                 frequency,
@@ -247,14 +255,6 @@ def _daily_window(predict_date: str) -> tuple[str, str]:
     end_date = predict_date
     start_date = (datetime.strptime(end_date, "%Y-%m-%d") - timedelta(days=8 * 365)).strftime("%Y-%m-%d")
     return start_date, end_date
-
-
-def _feature_date(predict_date: str, engine: Any) -> str:
-    return get_calendar(engine).previous_trading_day(predict_date)
-
-
-def _feature_week_id(feature_date: str, engine: Any) -> int | None:
-    return get_calendar(engine).week_id_for_date(feature_date)
 
 
 def get_calendar(engine: Any):

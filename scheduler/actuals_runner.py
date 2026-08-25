@@ -59,11 +59,10 @@ def _previous_trading_day(run_date: str) -> str:
 
 def run_actuals_job(
     run_date: str | date | None = None,
-    force: bool = False,
 ) -> None:
     """执行一次 actuals 刷新，并保持既有非交易日日期语义。"""
     target_date = _normalize_run_date(run_date)
-    if not force and not _is_trading_day(target_date):
+    if not _is_trading_day(target_date):
         daily_weekly_end_date = _previous_trading_day(target_date)
         logger.info(
             "Refresh daily/weekly actuals to previous trading day %s on non-trading day %s; "
@@ -100,11 +99,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         description="Refresh daily, weekly, monthly, and period-average actuals."
     )
     parser.add_argument("--date", default=None, help="Run date in YYYY-MM-DD format")
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Refresh daily and weekly actuals at --date on a non-trading day",
-    )
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
@@ -115,7 +109,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     try:
-        run_actuals_job(run_date=args.date, force=args.force)
+        run_actuals_job(run_date=args.date)
     except ValueError as exc:
         logger.error("Actuals runner argument or configuration error: %s", exc)
         return 2

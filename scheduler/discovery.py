@@ -47,7 +47,6 @@ class SchemeConfig:
     tenors: list[str]
     frequency: str
     schedule: SchemeSchedule
-    entry_point: str
     status: str
     path: Path
     code_hash: str
@@ -142,7 +141,6 @@ def _load_declared_scheme_config(config_path: Path) -> SchemeConfig:
             timezone=str(schedule_raw.get("timezone", "Asia/Shanghai")),
             timeout_sec=int(schedule_raw["timeout_sec"]) if schedule_raw.get("timeout_sec") is not None else None,
         ),
-        entry_point=str(raw.get("entry_point", "predict.run")),
         status=str(raw["status"]),
         path=scheme_dir,
         code_hash=code_hash,
@@ -203,7 +201,6 @@ def _load_blackbox_config(config_path: Path, raw: dict[str, Any], schedule_raw: 
             timezone=str(schedule_raw.get("timezone", "Asia/Shanghai")),
             timeout_sec=int(schedule_raw["timeout_sec"]) if schedule_raw.get("timeout_sec") is not None else None,
         ),
-        entry_point="blackbox_v2",
         status=str(raw["status"]),
         path=scheme_dir,
         code_hash=code_hash,

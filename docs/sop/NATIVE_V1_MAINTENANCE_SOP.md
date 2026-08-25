@@ -152,7 +152,7 @@ installed plist、loaded state、日志、run 与 prediction。任何
 - Registry 和版本状态；
 - `t_scheme_runs`、预测表和 run log；
 - `t_backtest_*`；
-- 对应 launchd policy、installed plist / loaded state 和任务日志；
+- 部署矩阵、仓库期望 plist、installed plist / loaded state 和任务日志；
 - 激活后 `DashboardGate` 对 `/api/factor-lab/dashboard` 的读回。Dashboard 不携带 exact version，版本身份仍由生命周期、Registry 和数据库权威回读证明。
 
 仅维护当前方案，不得改变其它方案记录。失败时保持或恢复原状态，保存审计证据，不手工删除历史版本。

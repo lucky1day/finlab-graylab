@@ -49,7 +49,6 @@ class NativeMaintenanceAdmissionTests(unittest.TestCase):
                 )
 
             self.assertEqual(result.status, GateStatus.PASSED)
-            self.assertTrue(result.passed)
             evidence = {item.key: item.value for item in result.evidence}
             self.assertEqual(
                 evidence["current_candidate_runtime_type"],
@@ -110,7 +109,6 @@ class NativeMaintenanceAdmissionTests(unittest.TestCase):
                         )
 
                     self.assertEqual(result.status, GateStatus.BLOCKED)
-                    self.assertFalse(result.passed)
                     self.assertTrue(
                         any(
                             "identity snapshot" in error.lower()
@@ -154,7 +152,6 @@ class NativeMaintenanceAdmissionTests(unittest.TestCase):
                             ).scalar_one()
 
                     self.assertEqual(result.status, GateStatus.BLOCKED)
-                    self.assertFalse(result.passed)
                     self.assertTrue(
                         any("registry" in error.lower() for error in result.errors),
                         result.errors,

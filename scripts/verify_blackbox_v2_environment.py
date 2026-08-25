@@ -22,13 +22,13 @@ DEPLOY_ROOT = PROJECT_ROOT / "deploy" / "blackbox_v2"
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Verify the frozen Blackbox V2 runtime environment.")
-    parser.add_argument("--profile", type=Path, default=DEPLOY_ROOT / "runtime_profile_v1.json")
-    parser.add_argument("--manifest", type=Path)
-    args = parser.parse_args()
+    parser.parse_args()
 
-    profile = json.loads(args.profile.read_text(encoding="utf-8"))
+    profile = json.loads(
+        (DEPLOY_ROOT / "runtime_profile_v1.json").read_text(encoding="utf-8")
+    )
     expected_platform = runtime_environment_platform()
-    manifest_path = args.manifest or environment_manifest_path(PROJECT_ROOT)
+    manifest_path = environment_manifest_path(PROJECT_ROOT)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     errors: list[str] = []
     env_name = str(profile["conda_env"])

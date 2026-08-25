@@ -5,10 +5,11 @@
 
 ## 双平台一次性控制面
 
-Mac Studio 继续使用 `launchd_one_shot`，阿里云 ECS 独立灰度使用
-`systemd_one_shot`。两者只承载一次性 Python 入口，共用同一套严格发现、
+Mac Studio 调度与刷新控制面继续使用 `launchd_one_shot`，阿里云 ECS 独立灰度使用
+`systemd_one_shot`。两者只承载一次性 Python 调度/刷新入口，共用同一套严格发现、
 DataBridge Gate、repository 写库和进程清理语义；不得同时恢复常驻 scheduler、
-APScheduler、ledger 或其它 Python 调度控制面。
+APScheduler、ledger 或其它 Python 调度控制面。Backend 是独立常驻只读服务，不拥有
+自然写入调度权。
 
 `deploy/systemd/*.service` 与 `deploy/systemd/*.timer` 是 Linux 的仓库期望模板。
 文件存在或被复制到 `/etc/systemd/system` 不代表 timer 已启用；现场状态必须用 `systemctl` 读回。

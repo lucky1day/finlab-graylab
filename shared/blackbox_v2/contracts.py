@@ -26,7 +26,6 @@ REQUIRED_METADATA_FIELDS = {
 }
 OPTIONAL_METADATA_FIELDS = {"description", "owner"}
 MAX_DESCRIPTION_LENGTH = 300
-OWNER_PLACEHOLDERS = frozenset({"--", "unknown", "待定"})
 REQUEST_FIELDS = (
     "request_id",
     "predict_date",
@@ -114,7 +113,6 @@ def load_metadata(path: str | Path) -> BlackboxMetadata:
         raise ValueError("horizon must be a positive integer")
     target_rule = _non_empty_string(raw, "target_rule")
     description = _optional_description(raw)
-    _validate_optional_owner(raw)
     expected_horizon, expected_rule, frequency = combination
     if (horizon, target_rule) != (expected_horizon, expected_rule):
         raise ValueError(
@@ -146,19 +144,6 @@ def _optional_description(raw: dict[str, Any]) -> str | None:
     if any(marker in description for marker in ("\n", "\r", "<", ">")):
         raise ValueError("description must be single-paragraph plain text")
     return description
-
-
-def _validate_optional_owner(raw: dict[str, Any]) -> None:
-    if "owner" not in raw:
-        return
-    value = raw["owner"]
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("owner must be a non-empty string")
-    owner = value.strip()
-    if any(marker in owner for marker in ("\n", "\r", "<", ">")):
-        raise ValueError("owner must be single-line plain text")
-    if owner.casefold() in OWNER_PLACEHOLDERS:
-        raise ValueError("owner must not use a placeholder value")
 
 
 def load_request(path: str | Path) -> BlackboxRequest:

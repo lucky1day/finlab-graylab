@@ -18,7 +18,7 @@
 f959777b7f251937b6364843a81d8eb696072ca7671b1306c368aa0f3cf735dc
 ```
 
-机器 Schema 不是永久完整表头。基线字段必须存在且相对顺序不变；DataBridge 可以在不改变 `data-bridge-v1` 的情况下增加业务列。本目录的 [`manifest.json`](manifest.json) 和样例不能覆盖机器 Schema，也不能把制作时点的列数提升为平台限制。
+机器 Schema 不是永久完整表头。基线字段必须存在且相对顺序不变；DataBridge 可以在不改变 `data-bridge-v1` 的情况下增加业务列。本目录的样例不能覆盖机器 Schema，也不能把制作时点的列数提升为平台限制。
 
 ## 三类文件
 

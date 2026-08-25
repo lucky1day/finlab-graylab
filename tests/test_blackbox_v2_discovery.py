@@ -27,7 +27,6 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
         self.assertEqual(config.task_type, "T+1")
         self.assertEqual(config.tenors, ["10Y"])
         self.assertEqual(config.frequency, "daily")
-        self.assertEqual(config.entry_point, "blackbox_v2")
         self.assertEqual(config.schedule.timeout_sec, 3600)
         self.assertEqual(config.platform_inputs, ())
         self.assertEqual(config.delivery_script, (scheme_dir / "delivery" / "trial_10y.py").resolve())

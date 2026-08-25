@@ -154,7 +154,10 @@ class HarnessRuntimeGateTests(unittest.TestCase):
             project_root = Path(tmpdir)
             _write_minimal_scheme(project_root, scheme_id="demo_daily")
             engine = SimpleNamespace(dispose=lambda: None)
-            with patch("harness.gates.input_gate.get_calendar", return_value=_fake_calendar()):
+            with patch(
+                "harness.gates.input_gate.get_calendar",
+                return_value=_fake_calendar(),
+            ) as calendar_factory:
                 with patch("harness.gates.input_gate.build_daily_input_artifact", return_value=artifact) as build:
                     result = InputGate().run(
                         GateContext(
@@ -173,6 +176,7 @@ class HarnessRuntimeGateTests(unittest.TestCase):
         self.assertEqual(evidence["missing_required_cols"], [])
         self.assertEqual(evidence["auxiliary_input_artifacts"], [])
         self.assertEqual(evidence["feature_date"], "2026-06-02")
+        calendar_factory.assert_called_once_with(engine)
         self.assertEqual(build.call_args.kwargs["scheme_id"], "demo_daily")
         self.assertEqual(build.call_args.kwargs["end_date"], "2026-06-02")
 
@@ -249,7 +253,10 @@ class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
                 {"t_scheme_predictions": 10, "t_scheme_run_log": 20, "t_backtest_runs": 3},
             ]
             with patch("harness.gates.backtest_gate.snapshot_table_counts", side_effect=snapshots):
-                with patch("harness.gates.backtest_gate.run_backtest_no_persist", return_value=current):
+                with patch(
+                    "harness.gates.backtest_gate.run_backtest_runner",
+                    return_value=current,
+                ) as run_backtest:
                     result = BacktestGate().run(
                         GateContext(
                             scheme_id="demo_daily",
@@ -259,6 +266,8 @@ class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
                             engine_factory=lambda: engine,
                         )
                     )
+
+        self.assertFalse(run_backtest.call_args.kwargs["persist"])
 
         self.assertTrue(result.passed, result.errors)
         evidence = _evidence_dict(result)
@@ -271,15 +280,12 @@ class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
         from harness.orchestrator import onboard
         from harness.result import Evidence, GateResult, GateStatus
 
-        calls: list[str] = []
-
         class FakeGate:
             def __init__(self, name: str, status: GateStatus) -> None:
                 self.name = name
                 self.status = status
 
             def run(self, ctx: GateContext) -> GateResult:
-                calls.append(self.name)
                 return GateResult(
                     gate_name=self.name,
                     status=self.status,
@@ -323,7 +329,6 @@ class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
                 )
 
         self.assertFalse(report.overall_passed)
-        self.assertEqual(calls, ["static", "input"])
         self.assertEqual([item.gate_name for item in report.results], ["static", "input"])
 
 

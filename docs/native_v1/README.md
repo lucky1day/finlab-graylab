@@ -3,7 +3,7 @@
 **文档状态**：`LEGACY_MAINTENANCE`
 **适用运行时**：`native_adapter`
 **目标读者**：维护现有原生方案的平台工程师
-Native V1 只维护 `deploy/onboarding_policy_v1.json` 登记的存量方案。本文档域不再定义任何新增方案流程；具体数量只在当前状态页维护。
+Native V1 只维护 `deploy/onboarding_policy_v1.json` 登记的存量方案。本文档域不再定义任何新增方案流程；登记范围从该机器清单读取，active 数量从现场 Registry 读取。
 
 ## 1. 允许的工作
 
