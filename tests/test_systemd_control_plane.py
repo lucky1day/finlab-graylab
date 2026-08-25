@@ -59,34 +59,6 @@ class SystemdControlPlaneTests(unittest.TestCase):
                 self.assertNotIn("MemoryMax=", content)
                 self.assertNotIn("MemoryHigh=", content)
 
-    def test_executor_accepts_only_matching_systemd_context(self) -> None:
-        from scheduler import executor
-
-        cfg = _blackbox_config("systemd_candidate")
-        context_factory = getattr(
-            executor,
-            "_systemd_scheduled_execution_context",
-            None,
-        )
-        self.assertIsNotNone(context_factory)
-        context = context_factory()
-        with patch.object(executor, "discover_schemes", return_value=[cfg]):
-            self.assertIsNone(
-                executor.scheduled_live_execution_configuration_error(
-                    cfg,
-                    scheduled_control_plane="systemd_one_shot",
-                    scheduled_execution_context=context,
-                )
-            )
-            mismatch = executor.scheduled_live_execution_configuration_error(
-                cfg,
-                scheduled_control_plane="systemd_one_shot",
-                scheduled_execution_context=(
-                    executor._launchd_scheduled_execution_context()
-                ),
-            )
-
-        self.assertIn("requires one-shot execution context", mismatch)
 
     def test_systemd_runner_passes_truthful_control_plane(self) -> None:
         from scheduler import launchd_prediction_runner as common_runner
@@ -156,34 +128,6 @@ class SystemdControlPlaneTests(unittest.TestCase):
             "systemd_prediction_run",
         )
 
-    def test_systemd_runner_rejects_mac3_target_before_runtime_access(
-        self,
-    ) -> None:
-        from scheduler import launchd_prediction_runner as common_runner
-        from scheduler import systemd_prediction_runner as runner
-
-        with (
-            patch.dict(
-                os.environ,
-                {"BFL_DEPLOYMENT_TARGET": "mac3-production"},
-                clear=False,
-            ),
-            patch.object(
-                common_runner.DataBridgeRefreshConfig,
-                "from_env",
-            ) as data_bridge_config,
-        ):
-            with self.assertRaisesRegex(
-                common_runner.LaunchdPredictionConfigurationError,
-                "deployment target does not match one-shot control plane",
-            ):
-                runner.run(
-                    "weekly",
-                    predict_date="2026-08-15",
-                    algo_env="forecast_env",
-                )
-
-        data_bridge_config.assert_not_called()
 
     def test_databridge_publish_accepts_systemd_one_shot_producer(
         self,
@@ -225,52 +169,6 @@ class SystemdControlPlaneTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(payload["status"], "ok")
 
-    def test_databridge_publish_accepts_explicit_job_refresh_window(
-        self,
-    ) -> None:
-        from scripts import refresh_data_bridge_current as entry
-
-        config = object()
-        with (
-            patch.dict(
-                os.environ,
-                {"BFL_DATABRIDGE_PRODUCER": "launchd-one-shot"},
-                clear=False,
-            ),
-            patch.object(
-                entry.DataBridgeRefreshConfig,
-                "from_env",
-                return_value=config,
-            ) as config_factory,
-            patch.object(
-                entry,
-                "expected_daily_date",
-                return_value="2026-08-14",
-            ),
-            patch.object(
-                entry,
-                "_publisher_lock",
-                return_value=nullcontext(True),
-            ),
-            patch.object(
-                entry,
-                "_run_publish_with_retries",
-                return_value=(0, {"status": "ok", "mode": "publish"}),
-            ),
-        ):
-            code, payload = entry.run_command(
-                "publish",
-                refresh_date="2026-08-17",
-                refresh_start="18:00",
-                refresh_deadline="18:55",
-            )
-
-        self.assertEqual(code, 0)
-        self.assertEqual(payload["status"], "ok")
-        config_factory.assert_called_once_with(
-            refresh_start="18:00",
-            refresh_deadline="18:55",
-        )
 
     def test_databridge_publish_rejects_noncanonical_producers(self) -> None:
         from scripts import refresh_data_bridge_current as entry

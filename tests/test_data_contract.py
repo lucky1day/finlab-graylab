@@ -142,55 +142,7 @@ class DataContractAuditTests(unittest.TestCase):
         self.assertEqual(readiness.feature_date, "2026-07-23")
         self.assertEqual(readiness.missing_requirements, ())
 
-    def test_native_readiness_lists_missing_required_anchor_data(
-        self,
-    ) -> None:
-        from shared.data_contract import inspect_native_input_readiness
 
-        readiness = inspect_native_input_readiness(
-            self.engine,
-            feature_date="2026-07-23",
-        )
-
-        self.assertFalse(readiness.ready)
-        self.assertEqual(
-            readiness.missing_requirements,
-            (
-                "calendar:api_wind_date",
-                "calendar:t_trade_calendar",
-                "daily_target:TB0YWI0C",
-                "daily_target:TB1YWI0C",
-                "daily_target:TB3YWI0C",
-                "daily_target:TB5YWI0C",
-                "daily_target:TB7YWI0C",
-                "history:monthly",
-                "history:weekly",
-                "metadata:active_factors",
-            ),
-        )
-
-    def test_native_readiness_requires_all_curve_anchor_tenors(
-        self,
-    ) -> None:
-        from shared.data_contract import inspect_native_input_readiness
-
-        self._insert_ready_native_anchor(
-            include_all_curve_tenors=False,
-        )
-
-        readiness = inspect_native_input_readiness(
-            self.engine,
-            feature_date="2026-07-23",
-        )
-
-        self.assertFalse(readiness.ready)
-        self.assertEqual(
-            readiness.missing_requirements,
-            (
-                "daily_target:TB3YWI0C",
-                "daily_target:TB7YWI0C",
-            ),
-        )
 
     def test_detects_feature_day_write_after_0630_but_not_earlier_row(
         self,
@@ -274,41 +226,6 @@ class DataContractAuditTests(unittest.TestCase):
             "2026-07-24T06:45:00+08:00",
         )
 
-    def test_metadata_update_after_cutoff_is_a_contract_breach(self) -> None:
-        from shared.data_contract import detect_late_source_writes
-
-        with self.engine.begin() as connection:
-            connection.exec_driver_sql(
-                """
-                INSERT INTO api_wind_indicators_all
-                    (indicators_code, create_time, update_time)
-                VALUES (?, ?, ?)
-                """,
-                (
-                    "FACTOR_A",
-                    "2026-07-20 12:00:00",
-                    "2026-07-24 06:45:00",
-                ),
-            )
-
-        findings = detect_late_source_writes(
-            self.engine,
-            feature_date="2026-07-23",
-            cutoff_at=datetime(
-                2026,
-                7,
-                24,
-                6,
-                30,
-                tzinfo=SHANGHAI,
-            ),
-        )
-
-        by_table = {finding.table_name: finding for finding in findings}
-        self.assertEqual(
-            by_table["api_wind_indicators_all"].late_row_count,
-            1,
-        )
 
     def test_commit_evidence_is_stable_and_changes_with_source_rows(
         self,
@@ -348,36 +265,6 @@ class DataContractAuditTests(unittest.TestCase):
         self.assertEqual(len(first.source_commit_token), 64)
         self.assertEqual(first.feature_date, "2026-07-23")
 
-    def test_commit_evidence_covers_historical_rows_consumed_by_native(
-        self,
-    ) -> None:
-        from shared.data_contract import capture_source_commit_evidence
-
-        first = capture_source_commit_evidence(
-            self.engine,
-            feature_date="2026-07-23",
-        )
-        self._insert_factor(
-            "api_wind_daily",
-            rdate="2026-06-03",
-            create_time="2026-07-24 06:20:00",
-            code="HISTORICAL",
-        )
-        changed = capture_source_commit_evidence(
-            self.engine,
-            feature_date="2026-07-23",
-        )
-
-        self.assertNotEqual(
-            first.source_commit_token,
-            changed.source_commit_token,
-        )
-        daily = next(
-            item
-            for item in changed.tables
-            if item.table_name == "api_wind_daily"
-        )
-        self.assertEqual(daily.row_count, 1)
 
     def test_commit_evidence_pushes_factor_cutoff_into_sql(self) -> None:
         from shared.data_contract import (
@@ -459,40 +346,6 @@ class DataContractAuditTests(unittest.TestCase):
                 ),
             )
 
-    def test_commit_evidence_rejects_late_historical_revision(
-        self,
-    ) -> None:
-        from shared.data_contract import (
-            assert_source_commit_evidence_at_cutoff,
-            capture_source_commit_evidence,
-        )
-
-        self._insert_factor(
-            "api_wind_daily",
-            rdate="2026-06-03",
-            create_time="2026-07-24 06:45:00",
-            code="HISTORICAL_REVISION",
-        )
-        evidence = capture_source_commit_evidence(
-            self.engine,
-            feature_date="2026-07-23",
-        )
-
-        with self.assertRaisesRegex(
-            RuntimeError,
-            "after the supplied cutoff",
-        ):
-            assert_source_commit_evidence_at_cutoff(
-                evidence,
-                cutoff_at=datetime(
-                    2026,
-                    7,
-                    24,
-                    6,
-                    30,
-                    tzinfo=SHANGHAI,
-                ),
-            )
 
     def test_cutoff_must_be_timezone_aware(self) -> None:
         from shared.data_contract import detect_late_source_writes

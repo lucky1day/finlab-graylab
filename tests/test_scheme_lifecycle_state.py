@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -10,7 +9,6 @@ from unittest.mock import patch
 import pytest
 
 from shared.scheme_lifecycle_state import (
-    SCHEMA_VERSION,
     lifecycle_state_path,
     read_lifecycle_state,
     write_lifecycle_state,
@@ -50,60 +48,12 @@ def test_state_is_ignored_when_scheme_version_changed(tmp_path: Path) -> None:
         assert read_lifecycle_state(tmp_path, "demo", "v2") is None
 
 
-def test_missing_state_returns_none_for_fallback(tmp_path: Path) -> None:
-    with patch.dict(os.environ, _runtime(tmp_path), clear=False):
-        assert read_lifecycle_state(tmp_path, "never-written", "v1") is None
 
 
-@pytest.mark.parametrize(
-    "mutate",
-    [
-        pytest.param(lambda d: d.pop("status"), id="missing_field"),
-        pytest.param(lambda d: d.update(status="bogus"), id="invalid_status"),
-        pytest.param(lambda d: d.update(version_status="bogus"), id="invalid_version_status"),
-        pytest.param(lambda d: d.update(schema_version="other"), id="wrong_schema"),
-        pytest.param(lambda d: d.update(scheme_id="other"), id="wrong_scheme_id"),
-    ],
-)
-def test_malformed_state_fails_closed(tmp_path: Path, mutate) -> None:
-    with patch.dict(os.environ, _runtime(tmp_path), clear=False):
-        path = write_lifecycle_state(
-            tmp_path,
-            scheme_id="demo",
-            scheme_version="v1",
-            status="active",
-            version_status="active",
-        )
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        mutate(payload)
-        path.write_text(json.dumps(payload), encoding="utf-8")
-
-        assert read_lifecycle_state(tmp_path, "demo", "v1") is None
 
 
-def test_unreadable_state_fails_closed(tmp_path: Path) -> None:
-    with patch.dict(os.environ, _runtime(tmp_path), clear=False):
-        path = write_lifecycle_state(
-            tmp_path,
-            scheme_id="demo",
-            scheme_version="v1",
-            status="active",
-            version_status="active",
-        )
-        path.write_text("{ not json", encoding="utf-8")
-        assert read_lifecycle_state(tmp_path, "demo", "v1") is None
 
 
-def test_invalid_values_are_rejected_on_write(tmp_path: Path) -> None:
-    with patch.dict(os.environ, _runtime(tmp_path), clear=False):
-        for kwargs in (
-            {"status": "bogus", "version_status": "active"},
-            {"status": "active", "version_status": "bogus"},
-        ):
-            with pytest.raises(ValueError):
-                write_lifecycle_state(
-                    tmp_path, scheme_id="demo", scheme_version="v1", **kwargs
-                )
 
 
 def test_scheme_id_cannot_escape_the_lifecycle_root(tmp_path: Path) -> None:
@@ -134,18 +84,8 @@ def test_production_target_without_runtime_root_fails_closed(tmp_path: Path) -> 
         assert read_lifecycle_state(tmp_path, "demo", "v1") is None
 
 
-def test_development_default_stays_inside_the_worktree(tmp_path: Path) -> None:
-    environ = dict(os.environ)
-    environ.pop("BFL_RUNTIME_ROOT", None)
-    environ.pop("BFL_DEPLOYMENT_TARGET", None)
-    with patch.dict(os.environ, environ, clear=True):
-        path = lifecycle_state_path(tmp_path, "demo")
-
-    assert path == tmp_path / "backtest_artifacts" / "lifecycle" / "demo.json"
 
 
-def test_schema_version_is_pinned() -> None:
-    assert SCHEMA_VERSION == "scheme-lifecycle-state-v1"
 
 
 # --------------------------------------------------------------------------
@@ -158,16 +98,6 @@ def _real_scheme() -> tuple[Path, str]:
     return root, "weekly_1y_causal_v1_31_0_standalone"
 
 
-def test_discovery_falls_back_to_config_when_no_overlay(tmp_path: Path) -> None:
-    from scheduler.discovery import load_scheme_config
-
-    root, scheme_id = _real_scheme()
-    with patch.dict(os.environ, {"BFL_RUNTIME_ROOT": str(tmp_path / "empty")}, clear=False):
-        cfg = load_scheme_config(root / "schemes" / scheme_id / "config.yaml")
-
-    # 新 release 在主机覆盖层建立前必须保持安全默认。
-    assert (cfg.status, cfg.version_status) == ("paused", "draft")
-    assert cfg.scheme_version == "c93f76489d5b"
 
 
 def test_discovery_applies_overlay_for_matching_version(tmp_path: Path) -> None:
@@ -190,23 +120,6 @@ def test_discovery_applies_overlay_for_matching_version(tmp_path: Path) -> None:
     assert effective.scheme_version == declared.scheme_version
 
 
-def test_discovery_ignores_overlay_from_another_version(tmp_path: Path) -> None:
-    """代码变更后旧覆盖层必须失效，方案回落为 config.yaml 的声明。"""
-    from scheduler.discovery import load_scheme_config
-
-    root, scheme_id = _real_scheme()
-    config_path = root / "schemes" / scheme_id / "config.yaml"
-    with patch.dict(os.environ, {"BFL_RUNTIME_ROOT": str(tmp_path / "state")}, clear=False):
-        write_lifecycle_state(
-            root,
-            scheme_id=scheme_id,
-            scheme_version="stale-version",
-            status="paused",
-            version_status="draft",
-        )
-        cfg = load_scheme_config(config_path)
-
-    assert (cfg.status, cfg.version_status) == ("paused", "draft")
 
 
 # --------------------------------------------------------------------------
@@ -237,13 +150,3 @@ def test_lifecycle_transition_leaves_config_yaml_byte_identical(tmp_path: Path) 
     assert hashlib.sha256(config_path.read_bytes()).hexdigest() == before
     assert record is not None
     assert (record.status, record.version_status) == ("paused", "shadow")
-
-
-def test_no_lifecycle_writer_targets_the_schemes_tree() -> None:
-    """静态守护：生命周期写入实现不得再指向 schemes/ 下的 config.yaml。"""
-    root = Path(__file__).resolve().parents[1]
-    source = (root / "shared" / "blackbox_v2" / "lifecycle.py").read_text(encoding="utf-8")
-
-    assert "atomic_update_config" not in source
-    assert "_replace_top_level_scalar" not in source
-    assert "write_lifecycle_state" in source

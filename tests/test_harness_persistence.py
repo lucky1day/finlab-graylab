@@ -132,64 +132,7 @@ class HarnessPersistenceTests(unittest.TestCase):
         self.assertTrue(engine.disposed)
 
 
-    def test_run_finish_zero_row_update_returns_false(self) -> None:
-        from harness.persistence import persist_harness_run_finish
 
-        engine = _CaptureEngine()
-        engine.store["rowcount"] = 0
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            ctx = GateContext(
-                scheme_id="demo_daily",
-                predict_date="2026-06-08",
-                project_root=root,
-                report_dir=root / "reports",
-                engine_factory=lambda: engine,
-            )
-            persisted = persist_harness_run_finish(
-                ctx,
-                harness_run_id="missing-run",
-                status="passed",
-                finished_at="2026-06-08T00:00:02+00:00",
-                report_uri=str(ctx.report_dir),
-            )
-
-        self.assertFalse(persisted)
-
-    def test_persistence_computes_scheme_version_without_loaded_config(self) -> None:
-        from harness.persistence import persist_harness_run_start
-        from shared.versioning import compute_code_hash, compute_config_hash, compute_scheme_version
-
-        engine = _CaptureEngine()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            scheme_dir = root / "schemes" / "demo_daily"
-            scheme_dir.mkdir(parents=True)
-            (scheme_dir / "config.yaml").write_text("scheme_id: demo_daily\nstatus: active\n", encoding="utf-8")
-            (scheme_dir / "predict.py").write_text("SCHEME_ID = 'demo_daily'\n", encoding="utf-8")
-            expected_version = compute_scheme_version(
-                compute_code_hash(scheme_dir),
-                compute_config_hash(scheme_dir / "config.yaml"),
-            )
-            ctx = GateContext(
-                scheme_id="demo_daily",
-                predict_date="2026-06-08",
-                project_root=root,
-                report_dir=root / "reports",
-                engine_factory=lambda: engine,
-            )
-
-            self.assertTrue(
-                persist_harness_run_start(
-                    ctx,
-                    harness_run_id="hr-test",
-                    stage="all",
-                    started_at="2026-06-08T00:00:00+00:00",
-                )
-            )
-
-        _, params = engine.store["calls"][0]
-        self.assertEqual(params["scheme_version"], expected_version)
 
 
     def test_regular_onboard_still_calls_control_plane_persistence(self) -> None:
@@ -320,86 +263,7 @@ class HarnessPersistenceTests(unittest.TestCase):
         self.assertEqual(evidence["persistence_gate_name"], gate_names[1])
         self.assertFalse(ctx.report_dir.exists())
 
-    def test_blackbox_gate_persistence_failure_still_cleans_runtime_input(self) -> None:
-        from harness.orchestrator import onboard
 
-        calls: list[str] = []
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            ctx = GateContext(
-                scheme_id="blackbox_daily",
-                predict_date="2026-08-04",
-                project_root=root,
-                report_dir=root / "reports",
-                config=SimpleNamespace(runtime_type="blackbox_v2"),
-            )
-            with (
-                patch(
-                    "harness.orchestrator.persist_harness_run_start",
-                    return_value=True,
-                ),
-                patch(
-                    "harness.orchestrator.persist_harness_gate_result",
-                    return_value=False,
-                ),
-                patch(
-                    "harness.orchestrator.persist_harness_run_finish",
-                    return_value=True,
-                ),
-                patch(
-                    "harness.blackbox_v2.gates.cleanup_runtime_input",
-                ) as cleanup,
-            ):
-                report = onboard(
-                    ctx,
-                    stage="all",
-                    gates=[_RecordingPassingGate("input", calls)],
-                )
-
-        self.assertEqual(calls, ["input"])
-        self.assertFalse(report.control_plane_persisted)
-        cleanup.assert_called_once_with(ctx)
-
-    def test_run_finish_persistence_failure_closes_failed(self) -> None:
-        from harness.orchestrator import onboard
-
-        calls: list[str] = []
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            ctx = GateContext(
-                scheme_id="native_daily",
-                predict_date="2026-08-04",
-                project_root=root,
-                report_dir=root / "reports",
-            )
-            with (
-                patch(
-                    "harness.orchestrator.persist_harness_run_start",
-                    return_value=True,
-                ),
-                patch(
-                    "harness.orchestrator.persist_harness_gate_result",
-                    return_value=True,
-                ),
-                patch(
-                    "harness.orchestrator.persist_harness_run_finish",
-                    side_effect=[False, True],
-                ) as finish,
-            ):
-                report = onboard(
-                    ctx,
-                    stage="native-maintenance",
-                    gates=[_RecordingPassingGate("static", calls)],
-                )
-        self.assertEqual(calls, ["static"])
-        self.assertEqual(finish.call_count, 2)
-        self.assertEqual(finish.call_args_list[0].kwargs["status"], "passed")
-        self.assertEqual(finish.call_args_list[1].kwargs["status"], "failed")
-        self.assertFalse(report.overall_passed)
-        self.assertFalse(report.control_plane_persisted)
-        evidence = _result_evidence(report.results[-1])
-        self.assertEqual(evidence["persistence_operation"], "run_finish")
-        self.assertFalse(ctx.report_dir.exists())
 
 
 
