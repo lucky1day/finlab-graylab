@@ -31,25 +31,14 @@ def _js_literal(name: str) -> set[str]:
     return set(json.loads(match.group(1)))
 
 
-def test_frontend_scheme_fields_match() -> None:
-    assert _js_literal("DASHBOARD_SCHEME_FIELDS") == set(semantics.SCHEME_FIELDS)
-
-
-def test_frontend_top_level_fields_match() -> None:
-    assert _js_literal("DASHBOARD_TOP_FIELDS") == set(semantics.TOP_LEVEL_FIELDS)
-
-
-def test_frontend_row_fields_match() -> None:
-    assert _js_literal("DASHBOARD_ROW_FIELDS") == set(semantics.ROW_FIELDS)
-
-
-def test_frontend_backtest_fields_match() -> None:
-    assert _js_literal("DASHBOARD_BACKTEST_FIELDS") == set(semantics.BACKTEST_FIELDS)
-
-
-def test_frontend_task_types_match() -> None:
-    assert _js_literal("DASHBOARD_TASK_TYPES") == set(semantics.VALID_TASK_TYPES)
-
-
-def test_frontend_signal_statuses_match() -> None:
-    assert _js_literal("DASHBOARD_SIGNAL_STATUSES") == set(semantics.VALID_SIGNAL_STATUSES)
+def test_frontend_dashboard_contract_matches_backend() -> None:
+    contracts = (
+        ("DASHBOARD_SCHEME_FIELDS", semantics.SCHEME_FIELDS),
+        ("DASHBOARD_TOP_FIELDS", semantics.TOP_LEVEL_FIELDS),
+        ("DASHBOARD_ROW_FIELDS", semantics.ROW_FIELDS),
+        ("DASHBOARD_BACKTEST_FIELDS", semantics.BACKTEST_FIELDS),
+        ("DASHBOARD_TASK_TYPES", semantics.VALID_TASK_TYPES),
+        ("DASHBOARD_SIGNAL_STATUSES", semantics.VALID_SIGNAL_STATUSES),
+    )
+    for javascript_name, backend_values in contracts:
+        assert _js_literal(javascript_name) == set(backend_values), javascript_name

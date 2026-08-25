@@ -51,17 +51,19 @@ def _calendar_dicts() -> list[dict]:
 class TradingDayRuleTests(unittest.TestCase):
     """唯一谓词：工作日历 trade_flag='1' 且非周末。"""
 
-    def test_weekday_workday_is_trading_day(self) -> None:
-        self.assertTrue(is_trading_day_row("2024-09-13", "1"))
-
-    def test_makeup_weekend_is_not_trading_day(self) -> None:
-        self.assertFalse(is_trading_day_row(MAKEUP_SATURDAY, "1"))
-
-    def test_weekday_holiday_is_not_trading_day(self) -> None:
-        self.assertFalse(is_trading_day_row("2024-09-16", "0"))
-
-    def test_plain_weekend_is_not_trading_day(self) -> None:
-        self.assertFalse(is_trading_day_row("2024-09-21", "0"))
+    def test_trading_day_predicate_matrix(self) -> None:
+        cases = (
+            ("weekday_workday", "2024-09-13", "1", True),
+            ("makeup_weekend", MAKEUP_SATURDAY, "1", False),
+            ("weekday_holiday", "2024-09-16", "0", False),
+            ("plain_weekend", "2024-09-21", "0", False),
+        )
+        for name, day, trade_flag, expected in cases:
+            with self.subTest(case=name):
+                self.assertEqual(
+                    is_trading_day_row(day, trade_flag),
+                    expected,
+                )
 
 
 class CalendarServiceTradingDayTests(unittest.TestCase):

@@ -56,26 +56,22 @@ class WeeklySignalDateTests(unittest.TestCase):
     def setUp(self) -> None:
         self.calendar = _StubCalendar(TRADING_DAYS)
 
-    def test_saturday_after_normal_week_is_signal_date(self) -> None:
-        """刚结束的一周有交易日：是信号日。"""
-        self.assertTrue(is_weekly_signal_date(self.calendar, "2026-02-14"))
-
-    def test_saturday_after_zero_trading_week_is_not_signal_date(self) -> None:
-        """整周无交易日：该周六不关闭新的 feature 周，不是信号日。"""
-        self.assertFalse(is_weekly_signal_date(self.calendar, "2026-02-21"))
-
-    def test_next_saturday_resumes_after_holiday(self) -> None:
-        """假期结束后的周六恢复为信号日。"""
-        self.assertTrue(is_weekly_signal_date(self.calendar, "2026-02-28"))
-
-    def test_non_saturday_is_never_signal_date(self) -> None:
-        for day in ("2026-02-13", "2026-02-16", "2026-02-27"):
-            with self.subTest(day=day):
-                self.assertFalse(is_weekly_signal_date(self.calendar, day))
-
-    def test_no_previous_trading_day_is_not_signal_date(self) -> None:
-        """日历起点之前没有交易日时 fail-safe 为非信号日，不抛异常。"""
-        self.assertFalse(is_weekly_signal_date(self.calendar, "2026-01-03"))
+    def test_weekly_signal_date_matrix(self) -> None:
+        cases = (
+            ("normal_week", "2026-02-14", True),
+            ("zero_trading_week", "2026-02-21", False),
+            ("post_holiday", "2026-02-28", True),
+            ("friday_before_holiday", "2026-02-13", False),
+            ("holiday_monday", "2026-02-16", False),
+            ("friday_after_holiday", "2026-02-27", False),
+            ("no_previous_trading_day", "2026-01-03", False),
+        )
+        for name, day, expected in cases:
+            with self.subTest(case=name):
+                self.assertEqual(
+                    is_weekly_signal_date(self.calendar, day),
+                    expected,
+                )
 
     def test_两个周六不再解析出同一业务键(self) -> None:
         """回归点：两个周六的 previous_trading_day 相同，只能有一个到期。"""
