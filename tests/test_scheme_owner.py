@@ -16,6 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from backend.factor_lab_dashboard import _registry_dto  # noqa: E402
 from backend.scheme_owner import SchemeOwnerError, load_scheme_owners  # noqa: E402
 from shared.scheme_owner_registry import (  # noqa: E402
     owner_registry_scheme_id,
@@ -54,16 +55,9 @@ class LoadSchemeOwnersTests(unittest.TestCase):
             "demo__h5__10Y",
         )
 
-
-
-
-
     def test_missing_file_fails_closed(self) -> None:
         with self.assertRaises(SchemeOwnerError):
             load_scheme_owners(self.root)
-
-
-
 
     def test_placeholder_owner_fails_closed(self) -> None:
         _write(
@@ -79,3 +73,23 @@ class LoadSchemeOwnersTests(unittest.TestCase):
     def test_repository_file_is_loadable(self) -> None:
         """仓库中的实际文件必须始终可读，否则 dashboard 会整体 fail-closed。"""
         self.assertIsInstance(load_scheme_owners(), dict)
+
+    def test_dashboard_owner_lookup_uses_composite_scheme_id(self) -> None:
+        row = {
+            "scheme_id": "demo__h1__10Y",
+            "base_scheme_id": "demo",
+            "name": "Demo",
+            "description": "Demo scheme",
+            "horizon": 1,
+            "task_type": "T+1",
+            "frequency": "daily",
+            "target_tenor": "10Y",
+            "status": "active",
+            "deployed_at": "2026-01-01",
+        }
+
+        self.assertEqual(
+            _registry_dto(row, {"demo__h1__10Y": "LW"})["owner"],
+            "LW",
+        )
+        self.assertEqual(_registry_dto(row, {"demo": "LW"})["owner"], "")
