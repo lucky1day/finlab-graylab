@@ -507,10 +507,7 @@ class DataBridgeCurrentTests(unittest.TestCase):
             )
 
 
-    def test_v3_producer_bootstrap_freezes_new_week_for_candidate_validation(
-        self,
-    ) -> None:
-        """跨周首日只允许 producer 用旧快照作连续性基线。"""
+    def test_only_v3_producer_enables_period_bootstrap(self) -> None:
         from shared import input_artifacts
         from shared.data_bridge import authority
 
@@ -534,48 +531,22 @@ class DataBridgeCurrentTests(unittest.TestCase):
                 connection=object(),
                 allow_producer_period_bootstrap=True,
             )
-
-        self.assertIsNotNone(result)
-        assert result is not None
-        self.assertEqual(result.weekly_cutoff_key, "202630")
-        self.assertEqual(result.required_weekly_key, "202631")
-        self.assertTrue(
-            resolve_cutoffs.call_args.kwargs[
-                "allow_legacy_v1_period_fallback"
-            ]
-        )
-
-    def test_v3_consumer_does_not_enable_producer_period_bootstrap(
-        self,
-    ) -> None:
-        """消费者继续严格拒绝缺少当前周键的 v3 current。"""
-        from shared import input_artifacts
-        from shared.data_bridge import authority
-
-        current, resolved, config = _v3_period_bootstrap_inputs()
-
-        with (
-            patch.object(
-                authority,
-                "check_current_dataset",
-                return_value=current,
-            ),
-            patch.object(
-                input_artifacts,
-                "_resolve_blackbox_input_cutoffs_with_source_keys_bulk_from_keys",
-                return_value={"2026-08-10": resolved},
-            ) as resolve_cutoffs,
-        ):
             authority.resolve_stable_databridge_current_authority(
                 config,
                 feature_dates=("2026-08-10",),
                 connection=object(),
             )
 
-        self.assertFalse(
-            resolve_cutoffs.call_args.kwargs[
-                "allow_legacy_v1_period_fallback"
-            ]
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.weekly_cutoff_key, "202630")
+        self.assertEqual(result.required_weekly_key, "202631")
+        self.assertEqual(
+            [
+                call.kwargs["allow_legacy_v1_period_fallback"]
+                for call in resolve_cutoffs.call_args_list
+            ],
+            [True, False],
         )
 
     def test_launchd_publisher_enables_producer_period_bootstrap(self) -> None:
