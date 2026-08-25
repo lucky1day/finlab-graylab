@@ -40,17 +40,17 @@ Dashboard 使用独立只读 Engine，连接超时为 `0.5s`、读超时为 `0.7
 `X-Dashboard-Warning`。`Server-Timing` 仅用于当前请求的 DB、canonical、serialization
 和 route 诊断，不能作为缓存或可用性真相。
 
-只读性能探针可使用：
+只读合同探针统一使用现有 Dashboard Gate：
 
 ```bash
-python scripts/benchmark_factor_lab_dashboard.py \
-  --url http://127.0.0.1:8100/api/factor-lab/dashboard \
-  --attempts 20 --timeout 5 \
-  --output-json /tmp/factor-lab-api-smoke.json
+python -m harness gate dashboard \
+  --scheme-id <base_scheme_id> \
+  --api-base-url http://127.0.0.1:8100
 ```
 
-探针每次都验证 JSON、单层 gzip、`Content-Length`、`no-store`、`Vary`、snapshot ID 和
-字节预算；它不接受任何 stale 响应。
+Gate 使用生产端唯一响应预算，验证 V1 JSON、active composite identity、signal 与 backtest 分区；它不接受
+非 200、超限、非法或缺失结果。gzip、`no-store` 与响应头由后端 API 合同测试保护，不再维护第二个 868 行的
+独立 benchmark 实现。
 
 历史 live 信号缺口使用独立的只读报告：
 

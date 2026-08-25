@@ -307,7 +307,7 @@ class HarnessLiveGateTests(unittest.TestCase):
         self.assertEqual(evidence["protected_table_deltas"], {"api_wind_daily": 0, "t_scheme_predictions": 0, "t_scheme_run_log": 0})
 
 
-    def test_live_gate_direct_operation_writes_audit(self) -> None:
+    def test_live_gate_records_direct_operation_evidence(self) -> None:
         from harness.context import GateContext
         from harness.gates.live_gate import LiveGate
         from harness.result import GateStatus
