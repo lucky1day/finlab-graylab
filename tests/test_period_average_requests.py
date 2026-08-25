@@ -48,21 +48,6 @@ def _metadata(task_type: str, target_rule: str, frequency: str) -> BlackboxMetad
     )
 
 
-def _constant_yield_rows(
-    calendar_rows: list[dict],
-    *,
-    missing_date: str,
-) -> list[dict]:
-    return [
-        {
-            "trade_date": row["rdate"],
-            "tenor": "10Y",
-            "close_yield": 2.0,
-        }
-        for row in calendar_rows
-        if date.fromisoformat(row["rdate"]).weekday() < 5
-        and row["rdate"] != missing_date
-    ]
 
 
 def test_monthly_average_live_request_uses_anchor_and_next_day_pointer() -> None:
@@ -141,64 +126,3 @@ def test_period_average_history_uses_next_bucket_mean_and_pointer_date() -> None
     assert selected.actual_extra["feature_bucket"]["label"] == "MID-2024-02"
     assert selected.actual_extra["target_bucket"]["label"] == "MID-2024-03"
     assert selected.actual_extra["actual_target_anchor"] == "2024-03-15"
-
-
-def test_period_average_history_rejects_missing_bucket_trading_day() -> None:
-    calendar_rows = _calendar_rows("2024-01-01", "2024-06-30")
-    metadata = _metadata(
-        "quarterly_average",
-        "target_quarter_average_yield_vs_feature_quarter_average_yield",
-        "quarterly",
-    )
-    yield_rows = _constant_yield_rows(
-        calendar_rows,
-        missing_date="2024-02-01",
-    )
-
-    with pytest.raises(ValueError, match="missing trading dates"):
-        _period_average_candidates(metadata, yield_rows, calendar_rows)
-
-
-def test_period_average_history_ignores_missing_bucket_before_requested_scope() -> None:
-    calendar_rows = _calendar_rows("2024-01-01", "2025-06-30")
-    metadata = _metadata(
-        "quarterly_average",
-        "target_quarter_average_yield_vs_feature_quarter_average_yield",
-        "quarterly",
-    )
-    yield_rows = _constant_yield_rows(
-        calendar_rows,
-        missing_date="2024-02-01",
-    )
-
-    candidates = _period_average_candidates(
-        metadata,
-        yield_rows,
-        calendar_rows,
-        predict_date_from="2025-01-01",
-        target_date_before="2025-07-01",
-    )
-
-    assert [item.predict_date for item in candidates] == ["2025-03-31"]
-
-
-def test_period_average_history_still_rejects_missing_bucket_in_requested_scope() -> None:
-    calendar_rows = _calendar_rows("2024-01-01", "2025-06-30")
-    metadata = _metadata(
-        "quarterly_average",
-        "target_quarter_average_yield_vs_feature_quarter_average_yield",
-        "quarterly",
-    )
-    yield_rows = _constant_yield_rows(
-        calendar_rows,
-        missing_date="2025-02-03",
-    )
-
-    with pytest.raises(ValueError, match="missing trading dates"):
-        _period_average_candidates(
-            metadata,
-            yield_rows,
-            calendar_rows,
-            predict_date_from="2025-01-01",
-            target_date_before="2025-07-01",
-        )

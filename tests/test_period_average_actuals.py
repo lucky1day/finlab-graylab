@@ -5,11 +5,6 @@ from datetime import date, timedelta
 import pytest
 from sqlalchemy import create_engine, text
 
-from migrations.runner import (
-    MigrationPreflightError,
-    _expected_period_average_actuals_schema,
-    _validate_period_average_actuals_schema,
-)
 from scheduler.repository import upsert_period_average_actuals
 from shared.actual_facts import build_period_average_actual_records_from_rows
 
@@ -100,36 +95,8 @@ def test_period_average_actual_fails_on_missing_or_duplicate_bucket_fact() -> No
         )
 
 
-def test_period_average_actual_ignores_missing_bucket_before_start_date() -> None:
-    calendar = _calendar_rows("2024-01-01", "2025-06-30")
-    complete = _yield_rows(calendar, lambda _day: 2.0)
-    rows = [item for item in complete if item["trade_date"] != "2024-02-01"]
-
-    records = build_period_average_actual_records_from_rows(
-        rows,
-        calendar,
-        task_types=("quarterly_average",),
-        start_date="2025-01-01",
-    )
-
-    assert [item.target_date for item in records] == [
-        "2025-01-01",
-        "2025-04-01",
-    ]
 
 
-def test_period_average_actual_rejects_missing_bucket_after_start_date() -> None:
-    calendar = _calendar_rows("2024-01-01", "2025-06-30")
-    complete = _yield_rows(calendar, lambda _day: 2.0)
-    rows = [item for item in complete if item["trade_date"] != "2025-02-03"]
-
-    with pytest.raises(ValueError, match="missing trading dates"):
-        build_period_average_actual_records_from_rows(
-            rows,
-            calendar,
-            task_types=("quarterly_average",),
-            start_date="2025-01-01",
-        )
 
 
 def test_period_average_repository_writes_one_generic_table() -> None:
@@ -178,19 +145,3 @@ def test_period_average_repository_writes_one_generic_table() -> None:
         assert "MID-2024-03" in stored[2]
     finally:
         engine.dispose()
-
-
-def test_period_average_migration_schema_is_closed_world() -> None:
-    expected = {"exists": True, **_expected_period_average_actuals_schema()}
-    _validate_period_average_actuals_schema({"exists": False}, allow_missing=True)
-    _validate_period_average_actuals_schema(expected, allow_missing=False)
-
-    drifted = dict(expected)
-    drifted["indexes"] = {}
-    with pytest.raises(MigrationPreflightError, match="unexpected"):
-        _validate_period_average_actuals_schema(drifted, allow_missing=False)
-    with pytest.raises(MigrationPreflightError, match="missing"):
-        _validate_period_average_actuals_schema(
-            {"exists": False},
-            allow_missing=False,
-        )

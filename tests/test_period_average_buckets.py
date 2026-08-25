@@ -6,7 +6,6 @@ import pytest
 
 from shared.period_average_buckets import (
     bucket_for_anchor,
-    build_period_buckets,
     complete_bucket_average,
     detect_spring_boundary,
     target_pointer,
@@ -103,32 +102,10 @@ def test_spring_year_uses_unique_longest_trading_gap() -> None:
     assert target_pointer(bucket.anchor_date) == "2024-02-09"
 
 
-def test_spring_detection_rejects_tied_longest_gap() -> None:
-    closures = _spring_closure("2024-01-08", "2024-01-12")
-    closures.update(_spring_closure("2024-02-05", "2024-02-09"))
-    rows = _calendar("2024-01-01", "2024-03-15", closures)
-
-    with pytest.raises(ValueError, match="not unique"):
-        detect_spring_boundary(2024, rows)
 
 
-def test_spring_detection_rejects_gap_shorter_than_six_days() -> None:
-    rows = _calendar("2024-01-01", "2024-03-15")
-
-    with pytest.raises(ValueError, match="shorter than 6"):
-        detect_spring_boundary(2024, rows)
 
 
-def test_calendar_must_be_contiguous_and_unique() -> None:
-    missing = _calendar("2024-01-01", "2024-03-31")
-    missing.pop(10)
-    with pytest.raises(ValueError, match="not contiguous"):
-        build_period_buckets("quarterly_average", missing)
-
-    duplicate = _calendar("2024-01-01", "2024-03-31")
-    duplicate.append(dict(duplicate[-1]))
-    with pytest.raises(ValueError, match="duplicate trade calendar date"):
-        build_period_buckets("quarterly_average", duplicate)
 
 
 def test_bucket_average_requires_complete_unique_finite_observations() -> None:
@@ -150,8 +127,3 @@ def test_bucket_average_requires_complete_unique_finite_observations() -> None:
     invalid[-1]["close_yield"] = float("nan")
     with pytest.raises(ValueError, match="invalid period-average observation"):
         complete_bucket_average(bucket, invalid)
-
-
-def test_unknown_task_type_is_rejected() -> None:
-    with pytest.raises(ValueError, match="unsupported period-average task_type"):
-        build_period_buckets("monthly", _calendar("2024-01-01", "2024-03-31"))

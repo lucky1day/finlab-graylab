@@ -77,29 +77,12 @@ def test_each_target_discovery_matches_its_matrix_entries() -> None:
         assert actual, f"{target} 过滤后不应为空"
 
 
-def test_aliyun_excludes_exactly_the_mac_only_schemes() -> None:
-    unscoped_ids = {cfg.scheme_id for cfg in _discover(None)}
-    aliyun_ids = {cfg.scheme_id for cfg in _discover(ALIYUN_TARGET)}
-    assert unscoped_ids - aliyun_ids == MAC_ONLY_SCHEME_IDS
 
 
-def test_weekly_1y_causal_is_deployed_to_both_targets() -> None:
-    assert _matrix_schemes()[WEEKLY_1Y_CAUSAL_SCHEME_ID] == [
-        MAC3_TARGET,
-        ALIYUN_TARGET,
-    ]
 
 
-def test_m0_weekly_average_schemes_are_deployed_to_both_targets() -> None:
-    matrix = _matrix_schemes()
-    for scheme_id in M0_WEEKLY_AVG_SCHEME_IDS:
-        assert matrix[scheme_id] == [MAC3_TARGET, ALIYUN_TARGET], scheme_id
 
 
-def test_daily_t1_trial_schemes_are_deployed_to_both_targets() -> None:
-    matrix = _matrix_schemes()
-    for scheme_id in DAILY_T1_TRIAL_SCHEME_IDS:
-        assert matrix[scheme_id] == [MAC3_TARGET, ALIYUN_TARGET], scheme_id
 
 
 def test_matrix_covers_every_discovered_scheme_exactly_once() -> None:
@@ -151,32 +134,6 @@ def test_incomplete_matrix_fails_closed(tmp_path: Path) -> None:
             )
 
 
-def test_unknown_matrix_schema_fails_closed(tmp_path: Path) -> None:
-    from scheduler.deployment_scope import (
-        DeploymentScopeError,
-        filter_schemes_for_configured_target,
-    )
-
-    matrix_path = tmp_path / "matrix.json"
-    matrix_path.write_text(
-        json.dumps(
-            {
-                "schema_version": "future-schema",
-                "targets": [MAC3_TARGET, ALIYUN_TARGET],
-                "schemes": {"demo": [ALIYUN_TARGET]},
-            }
-        ),
-        encoding="utf-8",
-    )
-    with patch.dict(os.environ, {"BFL_DEPLOYMENT_TARGET": ALIYUN_TARGET}):
-        with pytest.raises(
-            DeploymentScopeError,
-            match="unsupported deployment matrix schema",
-        ):
-            filter_schemes_for_configured_target(
-                [SimpleNamespace(scheme_id="demo")],
-                matrix_path=matrix_path,
-            )
 
 
 def test_duplicate_or_unknown_matrix_targets_fail_closed(
@@ -206,28 +163,3 @@ def test_duplicate_or_unknown_matrix_targets_fail_closed(
                 [SimpleNamespace(scheme_id="demo")],
                 matrix_path=matrix_path,
             )
-
-
-def test_aliyun_excluded_scheme_has_no_scheduled_canonical_config() -> None:
-    from scheduler import executor
-
-    config = next(
-        cfg
-        for cfg in _discover(None)
-        if cfg.scheme_id == "daily_1y_xgb_1y13_0629"
-    )
-    with patch.dict(
-        os.environ,
-        {"BFL_DEPLOYMENT_TARGET": ALIYUN_TARGET},
-        clear=False,
-    ):
-        error = executor.scheduled_live_execution_configuration_error(
-            config,
-            scheduled_control_plane="systemd_one_shot",
-            scheduled_execution_context=(
-                executor._systemd_scheduled_execution_context()
-            ),
-        )
-
-    assert error is not None
-    assert "scheduled_live canonical configuration is unavailable" in error

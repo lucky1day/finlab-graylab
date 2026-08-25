@@ -1943,13 +1943,6 @@ def _require_sha256(value: str, field: str) -> str:
     return normalized
 
 
-def _utc_datetime6(value: datetime | None) -> datetime:
-    effective = value or datetime.now(timezone.utc)
-    if effective.tzinfo is not None:
-        effective = effective.astimezone(timezone.utc).replace(tzinfo=None)
-    return effective
-
-
 def _dialect_name(conn: Connection) -> str:
     return str(getattr(getattr(conn, "dialect", None), "name", "mysql"))
 
@@ -1997,13 +1990,6 @@ def _require_rowcount(result: object, expected: int, operation: str) -> None:
         raise RuntimeError(
             f"{operation} affected {actual} rows, expected {expected}"
         )
-
-
-def _stored_text(row: Mapping[str, object], field: str) -> str:
-    value = row.get(field)
-    if value is None or not str(value).strip():
-        raise RuntimeError(f"invalid stored {field}: {value!r}")
-    return str(value)
 
 
 def _stored_iso_date(row: Mapping[str, object], field: str) -> str:

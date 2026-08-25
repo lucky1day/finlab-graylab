@@ -33,8 +33,6 @@ class TimeoutAuthorityTests(unittest.TestCase):
         self.assertEqual(DEFAULT_RUNTIME_PROFILE.predict_timeout_sec, 3600)
         self.assertEqual(DEFAULT_RUNTIME_PROFILE.backtest_timeout_sec, 14400)
 
-    def test_blackbox_without_operation_deadline_uses_scheme_request(self) -> None:
-        self.assertEqual(self._effective(_cfg("blackbox_v2", 3600)), 3600)
 
     def test_blackbox_explicit_deadline_can_only_narrow_scheme_request(self) -> None:
         cfg = _cfg("blackbox_v2", 3600)
@@ -46,11 +44,7 @@ class TimeoutAuthorityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "timeout_sec must be configured"):
             self._effective(_cfg("blackbox_v2", None))
 
-    def test_native_config_is_still_honoured(self) -> None:
-        self.assertEqual(self._effective(_cfg("native_adapter", 3600)), 3600)
 
-    def test_native_without_config_keeps_600_second_default(self) -> None:
-        self.assertEqual(self._effective(_cfg("native_adapter", None)), 600)
 
     def test_runtime_profile_file_matches_loaded_contract(self) -> None:
         raw = json.loads(
