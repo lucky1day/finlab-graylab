@@ -50,12 +50,9 @@
 - Liwei Phase-A 已具备唯一的有界 suffix 决策：兼容 current generation 下的可定位 daily 历史修订使用
   `suffix / proven_daily_input_revision`；同时存在有效辅助输入修订时使用
   `suffix / combined_daily_effective_revision`，cutoff 从最早 daily 修订日前移五个交易日。
-- 2026-08-24 专项回归确认普通修订只规划 7 个日期而非约 639 个历史日期，父代前缀、lineage、原子 publication
-  与 full-cold cache/完整输出均保持一致。七个 Mac3 current generation 在生产 `forecast_env` 下与当前 spec
-  全部兼容；未修改 Native source-backed 算法、输入口径、07:03 调度、数据库写入或生产控制面。
-- 用户已确认该性能问题按现有有界 suffix 能力闭环；一次性故障注入/迁移兼容测试已收敛为最小端到端合同，
-  保留 publisher/consumer、五交易日 suffix 与 full-cold 全 Cache 一致、失败不切指针、全输出逐字段一致和
-  非法 proof fail-closed。该结论不把尚未取得的下一次自然 revision 批次耗时表述为已实测 SLA。
+- 该性能问题已经完成专项验收；一次性 oracle、故障注入和迁移兼容 pytest 已删除。生产实现未修改 Native
+  source-backed 算法、输入口径、07:03 调度、数据库写入或生产控制面；下一次自然 revision 的真实耗时仍以
+  运行态证据为准。
 
 ## 周期均值基础建设
 
