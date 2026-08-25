@@ -67,7 +67,6 @@ def onboard(
                     harness_run_id=harness_run_id,
                     status="failed",
                     finished_at=utc_now(),
-                    report_uri=str(ctx.report_dir),
                 )
                 return report
             # SKIPPED 视为非阻塞（passed=True）；仅 FAILED/BLOCKED 立即停止。
@@ -82,7 +81,6 @@ def onboard(
             stage_requested=stage,
             results=results,
             overall_passed=bool(results) and all(item.passed for item in results),
-            report_dir=ctx.report_dir,
             harness_run_id=harness_run_id,
             control_plane_persisted=True,
         )
@@ -91,7 +89,6 @@ def onboard(
             harness_run_id=harness_run_id,
             status=_report_status(report),
             finished_at=utc_now(),
-            report_uri=str(ctx.report_dir),
         )
         if not finish_persisted:
             report = _persistence_failure_report(
@@ -106,7 +103,6 @@ def onboard(
                 harness_run_id=harness_run_id,
                 status="failed",
                 finished_at=utc_now(),
-                report_uri=str(ctx.report_dir),
             )
         return report
     finally:
@@ -168,7 +164,6 @@ def _persistence_failure_report(
         stage_requested=stage,
         results=[*results, failure],
         overall_passed=False,
-        report_dir=ctx.report_dir,
         harness_run_id=harness_run_id,
         control_plane_persisted=False,
     )

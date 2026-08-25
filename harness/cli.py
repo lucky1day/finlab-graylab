@@ -41,7 +41,7 @@ def default_report_dir(project_root: Path, scheme_id: str) -> Path:
     """Harness 报告目录默认值。
 
     报告是**主机级**运行状态，不属于 source release 内容；不可变 release 下写入源码树会
-    破坏 source tree digest。`--report-dir` 仍可显式覆盖。
+    破坏 source tree digest。
     """
     timestamp = _timestamp()
     return resolve_runtime_state_path(
@@ -196,7 +196,6 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         item.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
-        item.add_argument("--report-dir", type=Path, default=None)
         item.add_argument("--algo-env", default="forecast_env")
         item.add_argument("--timeout-sec", type=int, default=600)
         if gate_name in {
@@ -239,14 +238,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default="all",
     )
     onboard_parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
-    onboard_parser.add_argument("--report-dir", type=Path, default=None)
     onboard_parser.add_argument("--algo-env", default="forecast_env")
     onboard_parser.add_argument("--timeout-sec", type=int, default=600)
 
     activate_parser = subparsers.add_parser("activate")
     activate_parser.add_argument("--scheme-id", required=True)
     activate_parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
-    activate_parser.add_argument("--report-dir", type=Path, default=None)
     activate_parser.add_argument(
         "--operator",
         default=None,
@@ -297,7 +294,7 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
     } and not args.predict_date:
         raise SystemExit(f"gate {args.gate_name} requires --predict-date")
     project_root = args.project_root.resolve()
-    report_dir = args.report_dir or default_report_dir(project_root, args.scheme_id)
+    report_dir = default_report_dir(project_root, args.scheme_id)
     config = _load_config_for_dispatch(project_root / "schemes" / args.scheme_id / "config.yaml")
     action = _gate_action(args)
     backtest_start_date = getattr(
@@ -343,7 +340,7 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
 
 def _run_onboard_command(args: argparse.Namespace) -> OnboardReport:
     project_root = args.project_root.resolve()
-    report_dir = args.report_dir or default_report_dir(project_root, args.scheme_id)
+    report_dir = default_report_dir(project_root, args.scheme_id)
     config = _load_config_for_dispatch(project_root / "schemes" / args.scheme_id / "config.yaml")
     ctx = GateContext(
         scheme_id=args.scheme_id,
@@ -370,7 +367,7 @@ def _load_config_for_dispatch(config_path: Path):
 
 def _run_activate(args: argparse.Namespace) -> GateResult:
     project_root = args.project_root.resolve()
-    report_dir = args.report_dir or default_report_dir(project_root, args.scheme_id)
+    report_dir = default_report_dir(project_root, args.scheme_id)
     config = _load_config_for_dispatch(project_root / "schemes" / args.scheme_id / "config.yaml")
     action = (
         "blackbox_activate"

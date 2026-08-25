@@ -108,7 +108,6 @@ def persist_harness_run_finish(
     harness_run_id: str,
     status: str,
     finished_at: str,
-    report_uri: str | None,
 ) -> bool:
     """记录 harness run 结束；DB 不可用时返回 False，由编排层阻断。"""
 
@@ -117,8 +116,7 @@ def persist_harness_run_finish(
             """
             UPDATE t_harness_runs
             SET status = :status,
-                finished_at = :finished_at,
-                report_uri = :report_uri
+                finished_at = :finished_at
             WHERE harness_run_id = :harness_run_id
             """
         )
@@ -129,7 +127,6 @@ def persist_harness_run_finish(
                     "harness_run_id": harness_run_id,
                     "status": status,
                     "finished_at": _mysql_datetime(finished_at),
-                    "report_uri": report_uri,
                 },
             )
             if result.rowcount != 1:

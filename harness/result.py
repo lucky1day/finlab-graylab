@@ -37,6 +37,5 @@ class OnboardReport:
     stage_requested: str
     results: list[GateResult]
     overall_passed: bool
-    report_dir: Path
     harness_run_id: str | None = None
     control_plane_persisted: bool = True

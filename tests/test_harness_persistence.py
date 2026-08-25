@@ -106,7 +106,6 @@ class HarnessPersistenceTests(unittest.TestCase):
                     harness_run_id="hr-test",
                     status="passed",
                     finished_at="2026-06-08T00:00:02+00:00",
-                    report_uri=str(Path(tmpdir) / "reports"),
                 )
             )
 
@@ -121,10 +120,7 @@ class HarnessPersistenceTests(unittest.TestCase):
             str(Path(tmpdir) / "reports"),
         )
         self.assertNotIn("report_uri", engine.store["calls"][1][1])
-        self.assertEqual(
-            engine.store["calls"][2][1]["report_uri"],
-            str(Path(tmpdir) / "reports"),
-        )
+        self.assertNotIn("report_uri", engine.store["calls"][2][1])
         self.assertTrue(engine.disposed)
 
 
