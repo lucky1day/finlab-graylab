@@ -1554,8 +1554,8 @@ def _process_group_rss_bytes(pid: int) -> int:
     return total_kib * 1024
 
 
-def _bounded(value: str, limit: int = 4000) -> str:
+def _bounded(value: str) -> str:
     text = value.strip()
-    if len(text) <= limit:
+    if len(text) <= 4000:
         return text
-    return text[:limit] + "..."
+    return text[:4000] + "..."

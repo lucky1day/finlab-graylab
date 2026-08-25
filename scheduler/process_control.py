@@ -270,7 +270,6 @@ def _wait_for_process_group_exit(
     process_group_id: int,
     *,
     timeout: float,
-    poll_interval: float = 0.05,
 ) -> bool:
     deadline = time.monotonic() + max(0.0, float(timeout))
     while True:
@@ -280,7 +279,7 @@ def _wait_for_process_group_exit(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return False
-        time.sleep(min(max(0.001, poll_interval), remaining))
+        time.sleep(min(0.05, remaining))
 
 
 def _reap_process_leader(process: subprocess.Popen[str]) -> None:

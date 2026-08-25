@@ -4,8 +4,6 @@
 
 **目标读者**：单人平台维护者和运维操作者
 
-**最后核验日期**：2026-08-23
-
 本文只定义单个 Blackbox exact version 进入生产前必须满足的条件，不记录具体方案、历史 rollout、运行数量或一次性证据。操作步骤见[平台入库 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)，自然调度见[生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。
 
 ## 必须满足

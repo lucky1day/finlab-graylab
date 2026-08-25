@@ -1935,7 +1935,6 @@ def _finish_scheme_run_conn(
     records_returned: int | None = None,
     records_written: int | None = None,
     error_message: str | None = None,
-    finished_at: datetime | None = None,
     require_exact_run: bool = False,
 ) -> None:
     """在调用方事务中标记预测运行结束。"""
@@ -1943,7 +1942,7 @@ def _finish_scheme_run_conn(
         """
         UPDATE t_scheme_runs
         SET status = :status,
-            finished_at = COALESCE(:finished_at, CURRENT_TIMESTAMP),
+            finished_at = CURRENT_TIMESTAMP,
             records_returned = :records_returned,
             records_written = :records_written,
             error_message = :error_message
@@ -1958,7 +1957,6 @@ def _finish_scheme_run_conn(
             "records_returned": records_returned,
             "records_written": records_written,
             "error_message": error_message,
-            "finished_at": finished_at,
         },
     )
     if require_exact_run and int(getattr(result, "rowcount", 0) or 0) != 1:

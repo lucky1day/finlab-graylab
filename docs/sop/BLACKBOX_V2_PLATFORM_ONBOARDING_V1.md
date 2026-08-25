@@ -6,8 +6,6 @@
 
 **目标读者**：平台入库、运行和审计人员
 
-**最后核验日期**：2026-08-25
-
 本文只描述平台操作者必须执行的步骤。字段合同以
 [共享方案契约](../architecture/SCHEME_CONTRACT.md)为准，日期和批量复用以
 [预测日期语义](../architecture/PREDICTION_SEMANTICS.md)为准，生产操作授权以

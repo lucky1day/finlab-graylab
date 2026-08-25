@@ -3,8 +3,6 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：上游算法、Native 维护、Harness 和审计人员
-**最后核验日期**：2026-08-04
-
 本文定义 source-backed 算法的保真责任。Native V1 与 Blackbox V2 的可观察边界不同，不能使用同一套内部核验声明。
 
 ## 0. 运行时责任

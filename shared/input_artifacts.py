@@ -1199,7 +1199,6 @@ def _resolve_blackbox_input_cutoffs_bulk_from_keys(
     feature_dates: Iterable[str],
     connection: Any,
     schema_path: str | Path = BLACKBOX_SCHEMA_PATH,
-    allow_legacy_v1_period_fallback: bool = False,
 ) -> dict[str, CutoffKeys]:
     """使用已冻结 key 集合和 caller Connection 批量解析有效截止键。"""
     resolved = _resolve_blackbox_input_cutoffs_with_source_keys_bulk_from_keys(
@@ -1207,7 +1206,6 @@ def _resolve_blackbox_input_cutoffs_bulk_from_keys(
         feature_dates=feature_dates,
         connection=connection,
         schema_path=schema_path,
-        allow_legacy_v1_period_fallback=allow_legacy_v1_period_fallback,
     )
     return {
         feature_date: item.cutoff_keys

@@ -224,8 +224,8 @@ def _parse_json_object(output: str) -> dict[str, Any]:
     raise ValueError(f"backtest runner did not emit JSON object: {_tail(output)}")
 
 
-def _tail(output: str, limit: int = 4000) -> str:
-    return output[-limit:] if len(output) > limit else output
+def _tail(output: str) -> str:
+    return output[-4000:] if len(output) > 4000 else output
 
 
 def _row_count(payload: dict[str, Any]) -> int | None:

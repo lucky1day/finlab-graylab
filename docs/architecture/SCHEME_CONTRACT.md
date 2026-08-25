@@ -3,8 +3,6 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：平台开发、入库和审计人员
-**最后核验日期**：2026-07-26
-
 本文只定义两种运行时共享的身份、日期、结果、生命周期和分派边界。运行时专属契约分别由 [Native V1 存量契约](../native_v1/SCHEME_CONTRACT.md)和 [Blackbox V2 Contract 1.0](../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)定义。
 
 > 后续新增算法、新方案 ID、新目标、新任务和替代版本一律使用 `blackbox_v2`。Native V1 仅维护政策清单中的既有方案。
