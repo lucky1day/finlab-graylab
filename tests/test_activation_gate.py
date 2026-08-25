@@ -6,13 +6,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 from harness.context import GateContext
 from harness.operation import build_direct_operation
 from harness.result import GateStatus
 from scheduler.discovery import load_scheme_config
 from scheduler.repository import _expected_registry_identity
+from tests.harness_control_plane import create_harness_control_plane_engine
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -120,7 +121,7 @@ class NativeActivationValidationTests(unittest.TestCase):
 def _maintenance_fixture(root: Path):
     _write_native_policy(root)
     cfg = _write_native_scheme(root)
-    engine = _activation_sqlite_engine(root)
+    engine = create_harness_control_plane_engine(root / "activation-control.db")
     _, registry_ids = _expected_registry_identity(cfg)
     _insert_active_registry_rows(engine, cfg, registry_status="paused")
     _seed_current_candidate(engine, cfg, status="draft")
@@ -166,7 +167,7 @@ def _write_native_scheme(root: Path):
 def _full_all_fixture(
     root: Path,
 ) -> tuple[object, GateContext]:
-    engine = _activation_sqlite_engine(root)
+    engine = create_harness_control_plane_engine(root / "activation-control.db")
     config_path = root / "schemes" / "demo_daily" / "config.yaml"
     config_path.parent.mkdir(parents=True)
     config_path.write_text(
@@ -182,55 +183,6 @@ def _full_all_fixture(
         report_dir=root / "reports",
         engine_factory=lambda: engine,
     )
-
-
-def _activation_sqlite_engine(root: Path):
-    engine = create_engine(f"sqlite:///{root / 'activation-control.db'}")
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                "CREATE TABLE t_harness_runs ("
-                "harness_run_id TEXT, scheme_id TEXT, scheme_version TEXT, "
-                "stage TEXT, status TEXT, finished_at TEXT)"
-            )
-        )
-        conn.execute(
-            text(
-                "CREATE TABLE t_harness_gate_results ("
-                "harness_run_id TEXT, gate_name TEXT, status TEXT, summary_json TEXT)"
-            )
-        )
-        conn.execute(
-            text(
-                "CREATE TABLE t_scheme_versions ("
-                "scheme_id TEXT, scheme_version TEXT, runtime_type TEXT, status TEXT, "
-                "code_hash TEXT, config_hash TEXT, manifest_hash TEXT, "
-                "approved_by TEXT, approved_at TEXT)"
-            )
-        )
-        conn.execute(
-            text(
-                "CREATE TABLE t_scheme_registry ("
-                "scheme_id TEXT, base_scheme_id TEXT, name TEXT, description TEXT, "
-                "horizon INTEGER, task_type TEXT, runtime_type TEXT, tenors TEXT, "
-                "frequency TEXT, target_tenor TEXT, schedule_cron TEXT, "
-                "schedule_timezone TEXT, status TEXT, deployed_at TEXT)"
-            )
-        )
-        conn.execute(
-            text(
-                "CREATE TABLE t_backtest_runs ("
-                "id INTEGER PRIMARY KEY, benchmark_id TEXT, scheme_id TEXT, "
-                "data_source TEXT, status TEXT, updated_at TEXT)"
-            )
-        )
-        conn.execute(
-            text(
-                "CREATE TABLE t_backtest_predictions ("
-                "id INTEGER PRIMARY KEY, run_id INTEGER)"
-            )
-        )
-    return engine
 
 
 def _insert_active_registry_rows(engine, cfg, *, registry_status: str) -> None:

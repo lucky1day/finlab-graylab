@@ -6,10 +6,11 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 from harness.context import GateContext
 from harness.result import GateStatus
+from tests.harness_control_plane import create_harness_control_plane_engine
 
 
 _SCHEME_ID = "native_daily"
@@ -34,7 +35,7 @@ class NativeMaintenanceAdmissionTests(unittest.TestCase):
             NativeMaintenanceAdmissionGate,
         )
 
-        engine = _sqlite_engine()
+        engine = create_harness_control_plane_engine()
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
                 root = Path(tmpdir)
@@ -83,7 +84,7 @@ class NativeMaintenanceAdmissionTests(unittest.TestCase):
         )
         for case, static_summary_json, include_static_result in cases:
             with self.subTest(case=case):
-                engine = _sqlite_engine()
+                engine = create_harness_control_plane_engine()
                 try:
                     with tempfile.TemporaryDirectory() as tmpdir:
                         root = Path(tmpdir)
@@ -133,7 +134,7 @@ class NativeMaintenanceAdmissionTests(unittest.TestCase):
         )
         for case, mutation in cases:
             with self.subTest(case=case):
-                engine = _sqlite_engine()
+                engine = create_harness_control_plane_engine()
                 try:
                     with tempfile.TemporaryDirectory() as tmpdir:
                         root = Path(tmpdir)
@@ -197,104 +198,6 @@ def _write_policy(root: Path) -> None:
         ),
         encoding="utf-8",
     )
-
-
-def _sqlite_engine():
-    engine = create_engine("sqlite:///:memory:")
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                """
-                CREATE TABLE t_scheme_versions (
-                    scheme_id TEXT,
-                    scheme_version TEXT,
-                    runtime_type TEXT,
-                    status TEXT
-                )
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                CREATE TABLE t_harness_runs (
-                    harness_run_id TEXT,
-                    scheme_id TEXT,
-                    scheme_version TEXT,
-                    stage TEXT,
-                    status TEXT,
-                    started_at TEXT,
-                    finished_at TEXT,
-                    triggered_by TEXT,
-                    project_root TEXT,
-                    git_commit TEXT,
-                    code_hash TEXT,
-                    config_hash TEXT,
-                    report_uri TEXT
-                )
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                CREATE TABLE t_harness_gate_results (
-                    harness_run_id TEXT,
-                    gate_name TEXT,
-                    status TEXT,
-                    summary_json TEXT
-                )
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                CREATE TABLE t_scheme_registry (
-                    scheme_id TEXT,
-                    base_scheme_id TEXT,
-                    name TEXT,
-                    description TEXT,
-                    horizon INTEGER,
-                    task_type TEXT,
-                    runtime_type TEXT,
-                    tenors TEXT,
-                    frequency TEXT,
-                    target_tenor TEXT,
-                    schedule_cron TEXT,
-                    schedule_timezone TEXT,
-                    status TEXT,
-                    deployed_at TEXT
-                )
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                CREATE TABLE t_backtest_runs (
-                    id INTEGER PRIMARY KEY,
-                    scheme_id TEXT,
-                    benchmark_id TEXT,
-                    data_source TEXT,
-                    updated_at TEXT,
-                    status TEXT
-                )
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                CREATE TABLE t_backtest_predictions (
-                    id INTEGER PRIMARY KEY,
-                    run_id INTEGER,
-                    scheme_id TEXT
-                )
-                """
-            )
-        )
-    return engine
 
 
 def _seed_prior_admission(
