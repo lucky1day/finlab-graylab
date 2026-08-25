@@ -17,12 +17,12 @@ APScheduler、ledger 或其它 Python 调度控制面。
 Linux timer 全部声明 `Persistent=false`，停机或禁用期间不补跑。Backend 模板只监听
 `127.0.0.1:8100`，本目录不授权 Nginx、DNS、安全组或公网切流。
 
-仓库期望配置中的 ECS 自然 DataBridge、daily、weekly、monthly 四个 service 已不再加载共享
+ECS 自然 DataBridge、daily、weekly、monthly 四个 service 不得加载共享
 `/run/bond-factor-lab/manual-run.env`。这些 unit 的 `EnvironmentFile` 只允许先读取
 `/etc/bond-factor-lab/bond-factor-lab.env`，再读取当前 release 的 `.bfl-release.env`，仓库测试精确
 守护该合同。历史日期的手工补缺仍只允许执行
-`python -m harness signal-gap-fill --predict-date YYYY-MM-DD`；本阶段未改变 systemd/launchd runner 的
-CLI `--predict-date` 或内部 `run(..., predict_date=...)` 接口。
+`python -m harness signal-gap-fill --predict-date YYYY-MM-DD`；systemd/launchd runner 的显式
+`--predict-date` 只是一次性入口参数，不建立第二套补缺授权。
 
 ## 部署目标与方案矩阵
 
@@ -126,7 +126,7 @@ Mac Studio 当前生产调度的唯一控制面是 `launchd + installed plist`�
 
 所有一次性模板使用 `bond_factor_lab_service`、绝对工作目录和独立 stdout/stderr 日志。
 DataBridge 模板还声明 `BFL_DATABRIDGE_PRODUCER=launchd-one-shot`。模板中不保存 DSN、
-凭证或实例 nonce。
+凭证。
 
 所有 one-shot 仓库期望模板均不得声明 `BOND_DAILY_COORDINATOR_MODE`；该变量不授予调度权。
 修改任一 installed 或仓库 plist 都仍是独立生产操作，不由本次代码清理推断授权。

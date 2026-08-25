@@ -31,7 +31,6 @@ def _trusted_release(tmp_path: Path) -> tuple[Path, Path]:
                 "BOND_DB_PORT=3306",
                 "BOND_DB_NAME=bond_db",
                 "BOND_DB_CHARSET=utf8mb4",
-                "BOND_FACTOR_LAB_INSTANCE_NONCE=mac3-instance",
                 "DATABRIDGE_API_BASE_URL=https://example.invalid",
                 "DATABRIDGE_API_USERNAME=bridge_user",
                 "DATABRIDGE_API_PASSWORD=bridge-secret",
@@ -120,13 +119,6 @@ def test_native_execution_rejects_invalid_runtime_controls() -> None:
             ephemeral_native_runtime_root="relative/root",
             **common,
         )
-    with pytest.raises(ValueError, match="Blackbox"):
-        run_configured_scheme(
-            native,
-            "2026-07-24",
-            execution_token="blackbox-only",
-            **common,
-        )
     with pytest.raises(ValueError, match="native_adapter"):
         run_configured_scheme(
             blackbox,
@@ -162,7 +154,7 @@ def test_native_subprocess_environment_is_allowlisted() -> None:
         ),
         "BFL_DATABASE_ENV_FILE": "/etc/bond-factor-lab/bond-factor-lab.env",
         "BOND_DB_PASSWORD": "secret",
-        "BOND_NATIVE_GENERATION_ID": "retired-inherited-value",
+        "UNTRUSTED_PARENT_VALUE": "must-not-be-inherited",
     }
     with (
         patch.dict(os.environ, parent, clear=True),
@@ -184,7 +176,7 @@ def test_native_subprocess_environment_is_allowlisted() -> None:
         "BFL_DATABASE_ENV_FILE"
     ]
     assert "BOND_DB_PASSWORD" not in captured
-    assert "BOND_NATIVE_GENERATION_ID" not in captured
+    assert "UNTRUSTED_PARENT_VALUE" not in captured
 
 
 def test_launchd_environment_passes_only_trusted_database_file_to_native(

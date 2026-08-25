@@ -87,10 +87,6 @@ VALID_BLACKBOX_SNAPSHOT_MODES = {
     BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF,
 }
 TIMEOUT_OUTPUT_DRAIN_SEC = 1
-_SAFE_EXECUTION_TOKEN_CHARACTERS = frozenset(
-    "abcdefghijklmnopqrstuvwxyz"
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
-)
 logger = logging.getLogger(__name__)
 PLATFORM_CONFIGURATION_ERROR_PREFIX = "platform configuration error:"
 _SCHEDULED_EXECUTION_CONTEXTS = {
@@ -194,25 +190,6 @@ def _record_from_payload(item: dict) -> PredictionRecord:
         run_id=int(item["run_id"]) if item.get("run_id") is not None else None,
         scheme_version=str(item["scheme_version"]) if item.get("scheme_version") is not None else None,
     )
-
-
-def _validated_execution_token(
-    execution_token: str | None,
-) -> str | None:
-    """校验调度 attempt token，禁止作为任意环境变量载荷。"""
-    if execution_token is None:
-        return None
-    if (
-        not isinstance(execution_token, str)
-        or not execution_token
-        or len(execution_token) > 128
-        or any(
-            char not in _SAFE_EXECUTION_TOKEN_CHARACTERS
-            for char in execution_token
-        )
-    ):
-        raise ValueError("execution_token is unsafe")
-    return execution_token
 
 
 def run_scheme_subprocess(
@@ -358,7 +335,6 @@ def run_configured_scheme(
     blackbox_snapshot_mode: str = BLACKBOX_SNAPSHOT_MODE_FRESH,
     expected_generation_id: str | None = None,
     expected_refresh_date: str | None = None,
-    execution_token: str | None = None,
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
     process_start_guard: ProcessStartGuard | None = None,
@@ -367,9 +343,6 @@ def run_configured_scheme(
     """按显式 runtime_type 选择算法执行驱动。"""
     process_start_guard = require_process_start_guard(
         process_start_guard
-    )
-    validated_execution_token = _validated_execution_token(
-        execution_token
     )
     if blackbox_snapshot_mode not in VALID_BLACKBOX_SNAPSHOT_MODES:
         raise ValueError(f"unsupported Blackbox snapshot mode: {blackbox_snapshot_mode}")
@@ -387,10 +360,6 @@ def run_configured_scheme(
         if blackbox_snapshot_mode != BLACKBOX_SNAPSHOT_MODE_FRESH:
             raise ValueError(
                 "historical Blackbox snapshot mode is not valid for native_adapter"
-            )
-        if validated_execution_token is not None:
-            raise ValueError(
-                "execution_token is reserved for Blackbox execution"
             )
         if timeout_sec is None:
             raise ValueError(
@@ -426,10 +395,6 @@ def run_configured_scheme(
         if blackbox_snapshot_mode == BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF:
             blackbox_kwargs["expected_generation_id"] = expected_generation_id
             blackbox_kwargs["expected_refresh_date"] = expected_refresh_date
-        if validated_execution_token is not None:
-            blackbox_kwargs["execution_token"] = (
-                validated_execution_token
-            )
         if process_started is not None:
             blackbox_kwargs["process_started"] = process_started
         if process_fence is not None:
@@ -456,7 +421,6 @@ def run_blackbox_scheme_subprocess(
     snapshot_mode: str = BLACKBOX_SNAPSHOT_MODE_FRESH,
     expected_generation_id: str | None = None,
     expected_refresh_date: str | None = None,
-    execution_token: str | None = None,
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
     process_start_guard: ProcessStartGuard | None = None,
@@ -466,9 +430,6 @@ def run_blackbox_scheme_subprocess(
 
     process_start_guard = require_process_start_guard(
         process_start_guard
-    )
-    validated_execution_token = _validated_execution_token(
-        execution_token
     )
     if snapshot_mode not in VALID_BLACKBOX_SNAPSHOT_MODES:
         raise ValueError(f"unsupported Blackbox snapshot mode: {snapshot_mode}")
@@ -575,10 +536,6 @@ def run_blackbox_scheme_subprocess(
                         "input_audit_manifest":
                             trusted_bundle.audit_manifest,
                     }
-                )
-            if validated_execution_token is not None:
-                predict_kwargs["execution_token"] = (
-                    validated_execution_token
                 )
             if process_started is not None:
                 predict_kwargs["process_started"] = process_started

@@ -47,12 +47,7 @@ from shared.models import PredictionRecord
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _RUNTIME_PROFILE_PATH = _PROJECT_ROOT / "deploy" / "blackbox_v2" / "runtime_profile_v1.json"
 _SAFE_ENVIRONMENT_KEYS = frozenset({"LANG", "LC_ALL", "TZ"})
-_SCHEDULE_EXECUTION_TOKEN_ENV = "BOND_SCHEDULE_EXECUTION_TOKEN"
 _API_WIND_DATE_PLATFORM_INPUT_ID = "api-wind-date-v1"
-_SAFE_EXECUTION_TOKEN_CHARACTERS = frozenset(
-    "abcdefghijklmnopqrstuvwxyz"
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
-)
 _PROFILE_FIELDS = frozenset(
     {
         "profile_name",
@@ -330,7 +325,6 @@ def execute_blackbox_cli(
     platform_input_ids: Sequence[str] = (),
     profile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE,
     timeout_sec: float | None = None,
-    execution_token: str | None = None,
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
     process_start_guard: ProcessStartGuard | None = None,
@@ -414,7 +408,6 @@ def execute_blackbox_cli(
             profile,
             output.parent,
             python_executable=python_executable,
-            execution_token=execution_token,
         )
         profile_timeout = (
             profile.predict_timeout_sec if mode == "predict" else profile.backtest_timeout_sec
@@ -505,7 +498,6 @@ def run_blackbox_predict(
     input_audit_manifest: Mapping[str, Any] | None = None,
     profile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE,
     timeout_sec: float | None = None,
-    execution_token: str | None = None,
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
     process_start_guard: ProcessStartGuard | None = None,
@@ -540,8 +532,6 @@ def run_blackbox_predict(
         }
         if timeout_sec is not None:
             execute_kwargs["timeout_sec"] = timeout_sec
-        if execution_token is not None:
-            execute_kwargs["execution_token"] = execution_token
         if process_started is not None:
             execute_kwargs["process_started"] = process_started
         if process_fence is not None:
@@ -1280,11 +1270,7 @@ def _runtime_environment(
     writable_dir: Path,
     *,
     python_executable: str | Path | None = None,
-    execution_token: str | None = None,
 ) -> dict[str, str]:
-    validated_execution_token = _validated_execution_token(
-        execution_token
-    )
     allowed = set(profile.environment_allowlist)
     defaults = dict(profile.environment_defaults)
     unexpected_defaults = defaults.keys() - allowed
@@ -1298,11 +1284,6 @@ def _runtime_environment(
     for key in profile.environment_allowlist:
         if key in os.environ:
             env[key] = os.environ[key]
-    env.pop(_SCHEDULE_EXECUTION_TOKEN_ENV, None)
-    if validated_execution_token is not None:
-        env[_SCHEDULE_EXECUTION_TOKEN_ENV] = (
-            validated_execution_token
-        )
 
     executable = Path(python_executable or _python_command(profile)[0]).resolve(strict=True)
     run_dir = str(writable_dir)
@@ -1327,25 +1308,6 @@ def _runtime_environment(
         }
     )
     return env
-
-
-def _validated_execution_token(
-    execution_token: str | None,
-) -> str | None:
-    """校验显式调度 token，禁止从父环境隐式继承。"""
-    if execution_token is None:
-        return None
-    if (
-        not isinstance(execution_token, str)
-        or not execution_token
-        or len(execution_token) > 128
-        or any(
-            char not in _SAFE_EXECUTION_TOKEN_CHARACTERS
-            for char in execution_token
-        )
-    ):
-        raise ValueError("execution_token is unsafe")
-    return execution_token
 
 
 def _run_process(

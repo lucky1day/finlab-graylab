@@ -244,7 +244,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                 engine="engine",
                 algo_env="forecast_env_blackbox_v1",
                 timeout_sec=300,
-                execution_token="scheduled-token_123",
                 process_started=process_started,
                 process_start_guard=process_start_guard,
             )
@@ -255,10 +254,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         self.assertIs(
             predict.call_args.kwargs["process_started"],
             process_started,
-        )
-        self.assertEqual(
-            predict.call_args.kwargs["execution_token"],
-            "scheduled-token_123",
         )
         self.assertEqual(
             predict.call_args.kwargs["data_dir"],

@@ -56,7 +56,6 @@ def _release(tmp_path: Path) -> Path:
                 "BOND_DB_PORT=3306",
                 "BOND_DB_NAME=bond_db",
                 "BOND_DB_CHARSET=utf8mb4",
-                "BOND_FACTOR_LAB_INSTANCE_NONCE='mac3-instance'",
                 "DATABRIDGE_API_BASE_URL=https://example.invalid",
                 "DATABRIDGE_API_USERNAME=bridge_user",
                 "DATABRIDGE_API_PASSWORD='bridge$(literal)${HOME}`value`'",
@@ -163,27 +162,9 @@ def test_service_environment_loads_required_values_without_shell_expansion(
     values = load_service_environment(runtime)
 
     assert values["BOND_DB_PASSWORD"] == "database secret"
-    assert values["BOND_FACTOR_LAB_INSTANCE_NONCE"] == "mac3-instance"
     assert values["DATABRIDGE_API_PASSWORD"] == (
         "bridge$(literal)${HOME}`value`"
     )
-
-
-def test_legacy_admin_token_remains_an_accepted_optional_value(
-    tmp_path: Path,
-) -> None:
-    release = _release(tmp_path)
-    runtime = Path(load_release_environment(release)["BFL_RUNTIME_ROOT"])
-    _rewrite_service_environment(
-        release,
-        lambda value: value + "BOND_ADMIN_TOKEN=unused-legacy-token\n",
-    )
-
-    values = load_service_environment(runtime)
-    merged = prepare_exec_environment(release, {})
-
-    assert values["BOND_ADMIN_TOKEN"] == "unused-legacy-token"
-    assert merged["BOND_ADMIN_TOKEN"] == "unused-legacy-token"
 
 
 @pytest.mark.parametrize("mode", [0o000, 0o200, 0o640, 0o644])

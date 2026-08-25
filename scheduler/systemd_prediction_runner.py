@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from typing import Sequence
 
 from scheduler.executor import (
@@ -22,7 +21,6 @@ from shared.one_shot_control_plane import SYSTEMD_ONE_SHOT_CONTROL_PLANE
 from shared.task_specs import PREDICTION_CADENCES
 
 
-MANUAL_PREDICT_DATE_ENV = "BFL_SYSTEMD_PREDICT_DATE"
 _SYSTEMD_EVENT = "systemd_prediction_run"
 
 
@@ -55,7 +53,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--predict-date",
-        default=os.getenv(MANUAL_PREDICT_DATE_ENV) or _today(),
+        default=_today(),
     )
     parser.add_argument("--algo-env", default=DEFAULT_ALGO_ENV)
     args = parser.parse_args(argv)

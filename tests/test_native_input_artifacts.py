@@ -60,26 +60,6 @@ def test_ephemeral_input_root_is_private_and_must_be_absolute(
         )
 
 
-def test_blackbox_attempt_token_does_not_change_native_artifact_path(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from shared import input_artifacts
-
-    monkeypatch.delenv(
-        input_artifacts.EPHEMERAL_NATIVE_INPUT_ROOT_ENV,
-        raising=False,
-    )
-    monkeypatch.setenv("BOND_SCHEDULE_EXECUTION_TOKEN", "blackbox-attempt")
-    path = input_artifacts.input_artifact_path(
-        scheme_id="daily_demo",
-        frequency="daily",
-        predict_date="2026-07-24",
-        output_root=tmp_path,
-    )
-    assert path == tmp_path / "daily_demo" / "daily_output_2026-07-24.csv"
-
-
 def test_atomic_artifact_failure_preserves_previous_file(
     tmp_path: Path,
 ) -> None:
