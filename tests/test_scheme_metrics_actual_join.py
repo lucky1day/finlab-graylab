@@ -120,96 +120,72 @@ def _insert_actuals(engine, table: str, column: str, rule: str, *directions) -> 
         )
 
 
-class WeeklyActualJoinTests(unittest.TestCase):
-    def _metrics(self, *directions):
-        engine = _engine(task_type="weekly_point", horizon=6)
-        self.addCleanup(engine.dispose)
-        _insert_actuals(
-            engine,
-            "t_scheme_weekly_actuals",
-            "direction_weekly",
-            WEEKLY_TARGET_RULE,
-            *directions,
-        )
-        return lambda: scheme_metrics(engine, "demo__h1__10Y")
-
-    def test_single_fact_matches(self) -> None:
-        """对照组：无重复时行为不变。"""
-        result = self._metrics(-1)()
-        self.assertEqual(len(result["daily_rows"]), 1)
-        self.assertEqual(result["daily_rows"][0]["actual_direction"], -1)
-
-    def test_duplicate_same_direction_collapses(self) -> None:
-        """方向一致的重复行折叠为一条，不影响样本数。"""
-        result = self._metrics(1, 1)()
-        self.assertEqual(len(result["daily_rows"]), 1)
-        self.assertEqual(result["daily_rows"][0]["actual_direction"], 1)
-        self.assertEqual(result["summary"]["samples"], 1)
-
-    def test_conflicting_directions_fail_closed(self) -> None:
-        """方向冲突必须报错，不得静默取任意一条。"""
-        with self.assertRaises(ValueError) as caught:
-            self._metrics(1, -1)()
-        self.assertIn("conflicting weekly actual directions", str(caught.exception))
-
-
-class MonthlyActualJoinTests(unittest.TestCase):
-    def _metrics(self, *directions):
-        engine = _engine(task_type="monthly", horizon=30)
-        self.addCleanup(engine.dispose)
-        _insert_actuals(
-            engine,
-            "t_scheme_monthly_actuals",
-            "direction_monthly",
-            MONTHLY_TARGET_RULE,
-            *directions,
-        )
-        return lambda: scheme_metrics(engine, "demo__h1__10Y")
-
-    def test_duplicate_same_direction_collapses(self) -> None:
-        result = self._metrics(1, 1)()
-        self.assertEqual(len(result["daily_rows"]), 1)
-        self.assertEqual(result["daily_rows"][0]["actual_direction"], 1)
-
-    def test_conflicting_directions_fail_closed(self) -> None:
-        with self.assertRaises(ValueError) as caught:
-            self._metrics(1, -1)()
-        self.assertIn("conflicting monthly actual directions", str(caught.exception))
-
-
-class PeriodAverageActualJoinTests(unittest.TestCase):
-    def _metrics(self, task_type: str, *directions):
-        engine = _engine(task_type=task_type, horizon=1)
-        self.addCleanup(engine.dispose)
-        _insert_actuals(
-            engine,
+ACTUAL_JOIN_CASES = (
+    (
+        "weekly_point",
+        6,
+        "t_scheme_weekly_actuals",
+        "direction_weekly",
+        WEEKLY_TARGET_RULE,
+        "weekly",
+    ),
+    (
+        "monthly",
+        30,
+        "t_scheme_monthly_actuals",
+        "direction_monthly",
+        MONTHLY_TARGET_RULE,
+        "monthly",
+    ),
+    *(
+        (
+            task_type,
+            1,
             "t_scheme_period_average_actuals",
             "actual_direction",
             TASK_COMBINATIONS[task_type][1],
-            *directions,
+            "period_average",
         )
-        return lambda: scheme_metrics(engine, "demo__h1__10Y")
-
-    def test_each_period_task_joins_its_own_target_rule(self) -> None:
         for task_type in (
             "monthly_average",
             "quarterly_average",
             "annual_average",
-        ):
-            with self.subTest(task_type=task_type):
-                result = self._metrics(task_type, -1)()
+        )
+    ),
+)
+
+
+def _metrics(case, *directions):
+    task_type, horizon, table, column, rule, _label = case
+    engine = _engine(task_type=task_type, horizon=horizon)
+    try:
+        _insert_actuals(engine, table, column, rule, *directions)
+        return scheme_metrics(engine, "demo__h1__10Y")
+    finally:
+        engine.dispose()
+
+
+class ActualJoinTests(unittest.TestCase):
+    def test_single_fact_matches(self) -> None:
+        for case in ACTUAL_JOIN_CASES:
+            with self.subTest(task_type=case[0]):
+                result = _metrics(case, -1)
                 self.assertEqual(len(result["daily_rows"]), 1)
                 self.assertEqual(result["daily_rows"][0]["actual_direction"], -1)
 
     def test_duplicate_same_direction_collapses(self) -> None:
-        result = self._metrics("quarterly_average", 1, 1)()
-        self.assertEqual(len(result["daily_rows"]), 1)
-        self.assertEqual(result["summary"]["samples"], 1)
+        for case in ACTUAL_JOIN_CASES:
+            with self.subTest(task_type=case[0]):
+                result = _metrics(case, 1, 1)
+                self.assertEqual(len(result["daily_rows"]), 1)
+                self.assertEqual(result["daily_rows"][0]["actual_direction"], 1)
+                self.assertEqual(result["summary"]["samples"], 1)
 
     def test_conflicting_directions_fail_closed(self) -> None:
-        with self.assertRaises(ValueError) as caught:
-            self._metrics("annual_average", 1, -1)()
-        self.assertIn(
-            "conflicting period_average actual directions",
-            str(caught.exception),
-        )
+        for case in ACTUAL_JOIN_CASES:
+            with self.subTest(task_type=case[0]):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    f"conflicting {case[-1]} actual directions",
+                ):
+                    _metrics(case, 1, -1)
