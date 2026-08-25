@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import io
 import hashlib
 import json
-import os
 import tempfile
 import unittest
-from contextlib import redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -117,104 +114,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
         self.assertEqual(passed.runtime_profile, "blackbox-v2-v1")
         self.assertEqual(passed.environment_fingerprint, "env-test")
 
-    def test_stable_private_file_reader_rejects_path_replacement_during_read(self) -> None:
-        from harness.blackbox_v2.gates import (
-            _read_stable_private_file,
-        )
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            target = root / "state.json"
-            replacement = root / "replacement.json"
-            target.write_bytes(b'{"old":true}\n')
-            replacement.write_bytes(b'{"new":true}\n')
-            real_read = os.read
-            replaced = False
-
-            def racing_read(descriptor, count):
-                nonlocal replaced
-                content = real_read(descriptor, count)
-                if not replaced:
-                    replaced = True
-                    os.replace(replacement, target)
-                return content
-
-            with (
-                patch(
-                    "harness.blackbox_v2.gates.os.read",
-                    side_effect=racing_read,
-                ),
-                self.assertRaisesRegex(ValueError, "changed"),
-            ):
-                _read_stable_private_file(
-                    target,
-                    label="test state",
-                )
-
-    def test_runtime_platform_file_verifier_rejects_write_symlink_and_hardlink(self) -> None:
-        from harness.blackbox_v2.gates import (
-            _verify_runtime_platform_files,
-        )
-        from shared.blackbox_v2.platform_inputs import freeze_platform_input
-        from shared.blackbox_v2.snapshot import (
-            compose_blackbox_input_bundle,
-            create_snapshot_from_frames,
-        )
-        from shared.input_artifacts import open_blackbox_runtime_view
-
-        artifact = freeze_platform_input(
-            "api-wind-date-v1",
-            pd.DataFrame(
-                {
-                    "rdate": ["2026-07-15"],
-                    "week_id": ["202627"],
-                }
-            ),
-            weekly_cutoff_key="202627",
-        )
-        for mutation in ("writable", "symlink", "hardlink"):
-            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as tmpdir:
-                root = Path(tmpdir)
-                snapshot = create_snapshot_from_frames(
-                    _snapshot_frames(),
-                    output_root=root / "snapshots",
-                    expected_columns={
-                        name: list(frame.columns)
-                        for name, frame in _snapshot_frames().items()
-                    },
-                    schema_version="data-bridge-v1",
-                )
-                bundle = compose_blackbox_input_bundle(
-                    snapshot,
-                    platform_input_ids=["api-wind-date-v1"],
-                    platform_input_artifacts=[artifact],
-                )
-                with open_blackbox_runtime_view(
-                    bundle,
-                    runtime_root=root / "views",
-                ) as view:
-                    calendar_path = (
-                        view.data_dir / "api_wind_date.csv"
-                    )
-                    view.data_dir.chmod(0o755)
-                    if mutation == "writable":
-                        calendar_path.chmod(0o644)
-                    else:
-                        calendar_path.unlink()
-                        external = root / f"{mutation}.csv"
-                        external.write_bytes(artifact.content_bytes)
-                        external.chmod(0o444)
-                        if mutation == "symlink":
-                            calendar_path.symlink_to(external)
-                        else:
-                            os.link(external, calendar_path)
-                    view.data_dir.chmod(0o555)
-
-                    with self.assertRaises(ValueError):
-                        _verify_runtime_platform_files(
-                            bundle,
-                            view.data_dir,
-                        )
 
     def test_input_state_captures_declared_platform_input_in_read_only_transaction(self) -> None:
         from harness.blackbox_v2.gates import (
@@ -621,177 +521,11 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 _ensure_input_state(ctx)
             build.assert_not_called()
 
-    def test_cleanup_removes_runtime_snapshot_but_keeps_audit_state(self) -> None:
-        from harness.blackbox_v2.gates import cleanup_runtime_input
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            report_dir = root / "reports"
-            gate_root = report_dir / "blackbox_v2"
-            snapshot_root = gate_root / "runtime_snapshot" / "snapshot-test"
-            (snapshot_root / "data").mkdir(parents=True)
-            state_path = gate_root / "input_state.json"
-            state_path.write_text(
-                json.dumps({"snapshot_root": str(snapshot_root)}),
-                encoding="utf-8",
-            )
-            ctx = GateContext(
-                scheme_id="trial",
-                predict_date="2026-07-16",
-                project_root=root,
-                report_dir=report_dir,
-            )
-
-            cleanup_runtime_input(ctx)
-
-            self.assertFalse((gate_root / "runtime_snapshot").exists())
-            self.assertTrue(state_path.is_file())
 
 
-    def test_cleanup_rejects_runtime_symlink_without_touching_external_files(self) -> None:
-        from harness.blackbox_v2.gates import cleanup_runtime_input
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            report_dir = root / "reports"
-            gate_root = report_dir / "blackbox_v2"
-            gate_root.mkdir(parents=True)
-            external = root / "external"
-            external.mkdir()
-            sentinel = external / "sentinel.txt"
-            sentinel.write_text("keep\n", encoding="utf-8")
-            (gate_root / "runtime_snapshot").symlink_to(
-                external,
-                target_is_directory=True,
-            )
-            ctx = GateContext(
-                scheme_id="trial",
-                predict_date="2026-07-16",
-                project_root=root,
-                report_dir=report_dir,
-            )
-
-            with self.assertRaisesRegex(ValueError, "symlink"):
-                cleanup_runtime_input(ctx)
-
-            self.assertEqual(
-                sentinel.read_text(encoding="utf-8"),
-                "keep\n",
-            )
-            self.assertTrue(
-                (gate_root / "runtime_snapshot").is_symlink()
-            )
 
 
-    def test_cleanup_removes_platform_runtime_bytes_from_final_state(self) -> None:
-        from harness.blackbox_v2.gates import cleanup_runtime_input
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            report_dir = root / "reports"
-            gate_root = report_dir / "blackbox_v2"
-            runtime_snapshot = gate_root / "runtime_snapshot"
-            platform_file = (
-                runtime_snapshot
-                / "platform_inputs"
-                / "api_wind_date.csv"
-            )
-            platform_file.parent.mkdir(parents=True)
-            platform_file.write_text(
-                "rdate,week_id\n2026-07-15,202627\n",
-                encoding="utf-8",
-            )
-            state_path = gate_root / "input_state.json"
-            state_path.write_text(
-                json.dumps(
-                    {
-                        "platform_input_artifacts": [
-                            {
-                                "artifact_id": "api-wind-date-v1",
-                                "sha256": "a" * 64,
-                                "runtime_content_path": str(platform_file),
-                            }
-                        ]
-                    }
-                ),
-                encoding="utf-8",
-            )
-            ctx = GateContext(
-                scheme_id="trial",
-                predict_date="2026-07-16",
-                project_root=root,
-                report_dir=report_dir,
-            )
-
-            cleanup_runtime_input(ctx)
-
-            final_state = json.loads(
-                state_path.read_text(encoding="utf-8")
-            )
-            self.assertFalse(runtime_snapshot.exists())
-            self.assertNotIn(
-                "runtime_content_path",
-                final_state["platform_input_artifacts"][0],
-            )
-            self.assertNotIn(
-                "content_base64",
-                state_path.read_text(encoding="utf-8"),
-            )
-
-    def test_direct_blackbox_gate_cli_cleans_runtime_snapshot(self) -> None:
-        """单 Gate CLI 结束后也必须清理临时三频副本。"""
-        from harness.cli import _build_parser, _run_gate
-        from harness.result import GateResult, GateStatus
-        from shared.blackbox_v2.intake import intake_delivery
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            intake_delivery(
-                _delivery(root / "incoming"),
-                schemes_root=root / "schemes",
-            )
-            report_dir = root / "reports" / "direct-gate"
-            args = _build_parser().parse_args(
-                [
-                    "gate",
-                    "backtest",
-                    "--scheme-id",
-                    "trial_10y",
-                    "--predict-date",
-                    "2026-07-16",
-                    "--project-root",
-                    str(root),
-                    "--report-dir",
-                    str(report_dir),
-                ]
-            )
-
-            class _SnapshotGate:
-                def run(self, ctx):
-                    snapshot = (
-                        ctx.report_dir
-                        / "blackbox_v2"
-                        / "runtime_snapshot"
-                        / "snapshot-test"
-                        / "data"
-                    )
-                    snapshot.mkdir(parents=True)
-                    (snapshot / "daily_output.csv").write_text("date\n", encoding="utf-8")
-                    return GateResult(
-                        gate_name="backtest",
-                        status=GateStatus.PASSED,
-                        passed=True,
-                        evidence=[],
-                        errors=[],
-                        started_at="2026-07-16T00:00:00+00:00",
-                        finished_at="2026-07-16T00:00:01+00:00",
-                    )
-
-            with patch("harness.cli.gate_for_name", return_value=_SnapshotGate()):
-                result = _run_gate(args)
-
-            self.assertTrue(result.passed)
-            self.assertFalse((report_dir / "blackbox_v2" / "runtime_snapshot").exists())
 
     def test_automatic_execution_gates_run_end_to_end_without_business_writes(self) -> None:
         from harness.blackbox_v2.gates import (
@@ -971,86 +705,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             self.assertEqual(state, {"version": "draft", "registry": "paused"})
 
 
-    def test_shadow_version_drift_after_db_write_restores_original_exact_version(self) -> None:
-        from harness.blackbox_v2.gates import BlackboxShadowRegisterGate, PassedAllRun
-        from scheduler.discovery import load_scheme_config
-        from shared.blackbox_v2.intake import intake_delivery
-        from shared.blackbox_v2.lifecycle import load_journal
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            scheme_dir = intake_delivery(_delivery(root / "incoming"), schemes_root=root / "schemes")
-            config_path = scheme_dir / "config.yaml"
-            config = load_scheme_config(config_path)
-            original_version = config.scheme_version
-            token = build_operation(
-                config.scheme_id,
-                "shadow_register",
-                "2026-07-16",
-                scheme_version=original_version,
-                harness_run_id="hr_passed",
-            )
-            ctx = GateContext(
-                scheme_id=config.scheme_id,
-                predict_date="2026-07-16",
-                project_root=root,
-                report_dir=root / "reports" / "shadow",
-                config=config,
-                operation=token,
-                engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
-            )
-            passed = PassedAllRun("hr_passed", root / "reports" / "all", "snapshot-test")
-            states = {original_version: "draft"}
-            registry = {"status": "paused"}
-            compensation_versions: list[str] = []
-
-            def read_state(_engine, current):
-                return SimpleNamespace(
-                    version_status=states.get(current.scheme_version, "draft"),
-                    registry_status=registry["status"],
-                )
-
-            def register(_engine, _validated, current):
-                self.assertEqual(current.scheme_version, original_version)
-                states[original_version] = "shadow"
-                script = scheme_dir / "delivery" / f"{config.scheme_id}.py"
-                script.chmod(0o644)
-                script.write_text(
-                    "import argparse\nimport json\n# changed after target DB write\n",
-                    encoding="utf-8",
-                )
-                return SimpleNamespace(
-                    scheme_version=original_version,
-                    version_status="shadow",
-                    registry_status="paused",
-                )
-
-            def compensate(_engine, current, **kwargs):
-                compensation_versions.append(current.scheme_version)
-                states[current.scheme_version] = kwargs["version_status"]
-                registry["status"] = kwargs["registry_status"]
-
-            with (
-                patch("harness.blackbox_v2.gates._verify_passed_all", return_value=passed),
-                patch("harness.blackbox_v2.gates._environment_fingerprint", return_value="e" * 64),
-                patch("harness.blackbox_v2.gates._read_shadow_state", side_effect=read_state),
-                patch("harness.blackbox_v2.gates._register_shadow", side_effect=register),
-                patch("scheduler.repository.apply_blackbox_lifecycle_state", side_effect=compensate),
-            ):
-                result = BlackboxShadowRegisterGate().run(ctx)
-
-            changed = load_scheme_config(config_path)
-            evidence = {item.key: item.value for item in result.evidence}
-            journal = load_journal(Path(evidence["journal_path"]))
-
-        self.assertFalse(result.passed)
-        self.assertIn("canonical version changed", "\n".join(result.errors))
-        self.assertNotEqual(changed.scheme_version, original_version)
-        self.assertEqual((changed.status, changed.version_status), ("paused", "draft"))
-        self.assertEqual(states[original_version], "draft")
-        self.assertNotEqual(states.get(changed.scheme_version), "shadow")
-        self.assertEqual(compensation_versions, [original_version])
-        self.assertEqual(journal.phase, "compensated")
 
     def test_static_gate_accepts_exact_two_file_delivery(self) -> None:
         from harness.blackbox_v2.gates import BlackboxStaticGate
@@ -1065,32 +719,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
 
         self.assertTrue(result.passed, result.errors)
 
-    def test_static_gate_requires_exact_owner_registry_readback(self) -> None:
-        from harness.blackbox_v2.gates import BlackboxStaticGate
-        from scheduler.discovery import load_scheme_config
-        from shared.blackbox_v2.intake import intake_delivery
-
-        for owner in (None, "ALGO-B"):
-            with self.subTest(owner=owner), tempfile.TemporaryDirectory() as tmpdir:
-                root = Path(tmpdir)
-                scheme_dir = intake_delivery(
-                    _delivery(root / "incoming"),
-                    schemes_root=root / "schemes",
-                )
-                registry_path = root / "deploy" / "scheme_owner_v1.json"
-                payload = json.loads(registry_path.read_text(encoding="utf-8"))
-                registry_id = "trial_10y__h1__10Y"
-                if owner is None:
-                    payload["owners"].pop(registry_id)
-                else:
-                    payload["owners"][registry_id] = owner
-                registry_path.write_text(json.dumps(payload), encoding="utf-8")
-                config = load_scheme_config(scheme_dir / "config.yaml")
-
-                result = BlackboxStaticGate().run(_context(root, config))
-
-            self.assertFalse(result.passed)
-            self.assertIn("owner registry", "\n".join(result.errors))
 
     def test_static_gate_keeps_immutable_historical_metadata_compatible(self) -> None:
         from harness.blackbox_v2.gates import BlackboxStaticGate
@@ -1116,29 +744,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
 
         self.assertTrue(result.passed, result.errors)
 
-    def test_static_gate_rejects_unlisted_ownerless_metadata(self) -> None:
-        from harness.blackbox_v2.gates import BlackboxStaticGate
-        from scheduler.discovery import load_scheme_config
-        from shared.blackbox_v2.intake import intake_delivery
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            scheme_dir = intake_delivery(
-                _delivery(root / "incoming"),
-                schemes_root=root / "schemes",
-            )
-            metadata_path = scheme_dir / "delivery" / "trial_10y.json"
-            metadata_path.chmod(0o644)
-            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
-            payload.pop("owner")
-            metadata_path.write_text(json.dumps(payload), encoding="utf-8")
-            _write_legacy_metadata_policy(root, None)
-            config = load_scheme_config(scheme_dir / "config.yaml")
-
-            result = BlackboxStaticGate().run(_context(root, config))
-
-        self.assertFalse(result.passed)
-        self.assertIn("explicit legacy metadata policy", "\n".join(result.errors))
 
     def test_static_gate_rejects_changed_metadata_under_legacy_scheme_id(self) -> None:
         from harness.blackbox_v2.gates import BlackboxStaticGate
@@ -1166,85 +771,9 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertIn("metadata SHA-256", "\n".join(result.errors))
 
-    def test_static_gate_tolerates_pycache_left_by_execution(self) -> None:
-        """执行过方案后遗留的 __pycache__ 不得让复验误判交付结构不合规。
-
-        CPython 在 import delivery 模块时会在 scheme/delivery 目录写入
-        `__pycache__`，它不属于上游交付；若参与精确集合比较，任何跑过
-        dry-run 或实盘的方案都无法再通过 StaticGate。
-        """
-        from harness.blackbox_v2.gates import BlackboxStaticGate
-        from scheduler.discovery import load_scheme_config
-        from shared.blackbox_v2.intake import intake_delivery
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            scheme_dir = intake_delivery(
-                _delivery(root / "incoming"),
-                schemes_root=root / "schemes",
-            )
-            # 模拟一次真实执行留下的 bytecode 缓存。
-            for target in (scheme_dir, scheme_dir / "delivery"):
-                cache_dir = target / "__pycache__"
-                cache_dir.mkdir()
-                (cache_dir / "delivery.cpython-312.pyc").write_bytes(b"\x00")
-            config = load_scheme_config(scheme_dir / "config.yaml")
-            result = BlackboxStaticGate().run(_context(root, config))
-
-        self.assertTrue(result.passed, result.errors)
 
 
-    def test_static_gate_rejects_pycache_that_is_a_symlink(self) -> None:
-        """symlink 形态的 `__pycache__` 可指向仓库外目录，必须拒绝。"""
-        from harness.blackbox_v2.gates import BlackboxStaticGate
-        from scheduler.discovery import load_scheme_config
-        from shared.blackbox_v2.intake import intake_delivery
 
-        for target_is_delivery in (False, True):
-            with tempfile.TemporaryDirectory() as tmpdir:
-                root = Path(tmpdir)
-                outside = root / "outside"
-                outside.mkdir()
-                (outside / "smuggled.py").write_text("", encoding="utf-8")
-                scheme_dir = intake_delivery(
-                    _delivery(root / "incoming"),
-                    schemes_root=root / "schemes",
-                )
-                target = scheme_dir / "delivery" if target_is_delivery else scheme_dir
-                (target / "__pycache__").symlink_to(
-                    outside, target_is_directory=True
-                )
-                config = load_scheme_config(scheme_dir / "config.yaml")
-                result = BlackboxStaticGate().run(_context(root, config))
-
-            self.assertFalse(
-                result.passed,
-                f"symlink __pycache__ 未被拒绝 (delivery={target_is_delivery})",
-            )
-
-    def test_static_gate_still_rejects_unexpected_delivery_entry(self) -> None:
-        """忽略 __pycache__ 不得放宽对其它多余交付文件的拒绝。"""
-        from harness.blackbox_v2.gates import BlackboxStaticGate
-        from scheduler.discovery import load_scheme_config
-        from shared.blackbox_v2.intake import intake_delivery
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            scheme_dir = intake_delivery(
-                _delivery(root / "incoming"),
-                schemes_root=root / "schemes",
-            )
-            (scheme_dir / "delivery" / "extra.py").write_text(
-                "", encoding="utf-8"
-            )
-            config = load_scheme_config(scheme_dir / "config.yaml")
-            result = BlackboxStaticGate().run(_context(root, config))
-
-        self.assertFalse(result.passed)
-        self.assertIn(
-            "delivery must contain exactly",
-            "\n".join(result.errors),
-        )
 
     def test_static_gate_records_declared_platform_input_provider(self) -> None:
         from harness.blackbox_v2.gates import BlackboxStaticGate

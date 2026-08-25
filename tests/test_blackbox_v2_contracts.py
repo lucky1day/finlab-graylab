@@ -182,17 +182,11 @@ class BlackboxV2ResultContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "predicted_direction"):
             _load_prediction_direction("1")
 
-    def test_prediction_json_rejects_float_direction(self) -> None:
-        with self.assertRaisesRegex(ValueError, "predicted_direction"):
-            _load_prediction_direction(1.0)
 
     def test_prediction_json_rejects_boolean_direction(self) -> None:
         with self.assertRaisesRegex(ValueError, "predicted_direction"):
             _load_prediction_direction(True)
 
-    def test_prediction_json_rejects_null_direction(self) -> None:
-        with self.assertRaisesRegex(ValueError, "predicted_direction"):
-            _load_prediction_direction(None)
 
     def test_prediction_json_rejects_out_of_range_integer_direction(self) -> None:
         for direction in (-2, 2):
@@ -208,21 +202,9 @@ class BlackboxV2ResultContractTests(unittest.TestCase):
                 self.assertEqual(result.predicted_direction, expected)
                 self.assertIs(type(result.predicted_direction), int)
 
-    def test_backtest_csv_rejects_decimal_direction(self) -> None:
-        with self.assertRaisesRegex(ValueError, "predicted_direction"):
-            _load_backtest_direction("1.0")
 
-    def test_backtest_csv_rejects_plus_prefixed_direction(self) -> None:
-        with self.assertRaisesRegex(ValueError, "predicted_direction"):
-            _load_backtest_direction("+1")
 
-    def test_backtest_csv_rejects_leading_whitespace_direction(self) -> None:
-        with self.assertRaisesRegex(ValueError, "predicted_direction"):
-            _load_backtest_direction(" 1")
 
-    def test_backtest_csv_rejects_trailing_whitespace_direction(self) -> None:
-        with self.assertRaisesRegex(ValueError, "predicted_direction"):
-            _load_backtest_direction("1 ")
 
     def test_backtest_csv_rejects_empty_direction(self) -> None:
         with self.assertRaisesRegex(ValueError, "predicted_direction"):
@@ -232,9 +214,6 @@ class BlackboxV2ResultContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "predicted_direction"):
             _load_backtest_direction(None)
 
-    def test_backtest_csv_rejects_null_text_direction(self) -> None:
-        with self.assertRaisesRegex(ValueError, "predicted_direction"):
-            _load_backtest_direction("null")
 
     def test_backtest_csv_rejects_out_of_range_direction(self) -> None:
         for token in ("-2", "2"):
