@@ -91,14 +91,8 @@ class CompareGate(Gate):
 
     name = "compare"
 
-    def __init__(self, context: GateContext | None = None) -> None:
-        self._context = context
-
-    def run(self, ctx: GateContext | None = None) -> GateResult:
-        context = ctx if ctx is not None else self._context
-        if context is None:
-            raise ValueError("CompareGate.run requires a GateContext")
-        return guarded_result(self.name, lambda started_at: self._run(context, started_at))
+    def run(self, ctx: GateContext) -> GateResult:
+        return guarded_result(self.name, lambda started_at: self._run(ctx, started_at))
 
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
         bench_dir = ctx.project_root / "schemes" / ctx.scheme_id / "benchmarks"

@@ -117,7 +117,7 @@ class CompareGateTest(unittest.TestCase):
 
     def test_no_benchmark_skips(self) -> None:
         ctx = _make_ctx(self.root)
-        result = CompareGate(ctx).run()
+        result = CompareGate().run(ctx)
         self.assertEqual(result.status, GateStatus.SKIPPED)
         self.assertTrue(result.passed)
 
@@ -131,7 +131,7 @@ class CompareGateTest(unittest.TestCase):
         ]
         _write_predictions(bench / "original_predictions_sample.csv", rows)
         _write_predictions(bench / "current_predictions_sample.csv", rows)
-        result = CompareGate(ctx).run()
+        result = CompareGate().run(ctx)
         self.assertEqual(result.status, GateStatus.PASSED, result.errors)
         self.assertTrue(result.passed)
 
@@ -146,7 +146,7 @@ class CompareGateTest(unittest.TestCase):
         ]
         _write_predictions(bench / "original_predictions_sample.csv", original)
         _write_predictions(bench / "current_predictions_sample.csv", current)
-        result = CompareGate(ctx).run()
+        result = CompareGate().run(ctx)
         self.assertEqual(result.status, GateStatus.FAILED)
         self.assertTrue(any("direction_match_rate" in e for e in result.errors), result.errors)
 
@@ -169,7 +169,7 @@ class CompareGateTest(unittest.TestCase):
         _write_strict_predictions(bench / "original_predictions_sample.csv", rows)
         _write_strict_predictions(bench / "current_predictions_sample.csv", rows)
 
-        result = CompareGate(ctx).run()
+        result = CompareGate().run(ctx)
 
         self.assertEqual(result.status, GateStatus.FAILED)
         self.assertTrue(any("missing required benchmark columns/values" in e for e in result.errors), result.errors)
@@ -205,7 +205,7 @@ class CompareGateTest(unittest.TestCase):
         _write_strict_predictions(bench / "original_predictions_sample.csv", original)
         _write_strict_predictions(bench / "current_predictions_sample.csv", current)
 
-        result = CompareGate(ctx).run()
+        result = CompareGate().run(ctx)
 
         self.assertEqual(result.status, GateStatus.FAILED)
         self.assertTrue(any("missing dates/tenors" in e for e in result.errors), result.errors)
@@ -232,7 +232,7 @@ class CompareGateTest(unittest.TestCase):
         _write_strict_predictions(bench / "original_predictions_sample.csv", original)
         _write_strict_predictions(bench / "current_predictions_sample.csv", current)
 
-        result = CompareGate(ctx).run()
+        result = CompareGate().run(ctx)
 
         self.assertEqual(result.status, GateStatus.FAILED)
         self.assertTrue(any("missing dates/tenors" in e for e in result.errors), result.errors)
@@ -260,7 +260,7 @@ class CompareGateTest(unittest.TestCase):
         _write_strict_predictions(bench / "original_predictions_sample.csv", original)
         _write_strict_predictions(bench / "current_predictions_sample.csv", current)
 
-        result = CompareGate(ctx).run()
+        result = CompareGate().run(ctx)
 
         self.assertEqual(result.status, GateStatus.FAILED)
         self.assertTrue(any("missing dates/tenors" in e for e in result.errors), result.errors)
@@ -297,7 +297,7 @@ class CompareGateTest(unittest.TestCase):
         _write_strict_predictions(bench / "original_predictions_sample.csv", original)
         _write_strict_predictions(bench / "current_predictions_sample.csv", current)
 
-        result = CompareGate(ctx).run()
+        result = CompareGate().run(ctx)
 
         self.assertEqual(result.status, GateStatus.FAILED)
         self.assertTrue(any("missing dates/tenors" in e for e in result.errors), result.errors)
@@ -332,7 +332,7 @@ class CompareGateTest(unittest.TestCase):
         _write_strict_predictions(bench / "original_predictions_sample.csv", rows)
         _write_strict_predictions(bench / "current_predictions_sample.csv", rows)
 
-        result = CompareGate(ctx).run()
+        result = CompareGate().run(ctx)
 
         self.assertEqual(result.status, GateStatus.FAILED)
         self.assertTrue(any("missing required internal benchmark" in e for e in result.errors), result.errors)
@@ -362,7 +362,7 @@ class CompareGateTest(unittest.TestCase):
         _write_strict_predictions(bench / "original_predictions_sample.csv", original)
         _write_strict_predictions(bench / "current_predictions_sample.csv", current)
 
-        result = CompareGate(ctx).run()
+        result = CompareGate().run(ctx)
 
         self.assertEqual(result.status, GateStatus.FAILED)
         self.assertTrue(any("internal benchmark" in e for e in result.errors), result.errors)
@@ -429,6 +429,6 @@ class CompareGateTest(unittest.TestCase):
         (bench / "current_backtest_summary.json").write_text(
             json.dumps({"accuracy": 0.90}), encoding="utf-8"
         )
-        result = CompareGate(ctx).run()
+        result = CompareGate().run(ctx)
         self.assertEqual(result.status, GateStatus.FAILED)
         self.assertTrue(any("accuracy" in e for e in result.errors), result.errors)
