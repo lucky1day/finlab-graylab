@@ -120,6 +120,84 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_passed_all_accepts_directory_report_uri(self) -> None:
+        from harness.blackbox_v2.gates import _verify_passed_all
+        from harness.registry import BLACKBOX_AUTO_SEQUENCE
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.intake import intake_delivery
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            scheme_dir = intake_delivery(
+                _delivery(root / "incoming"),
+                schemes_root=root / "schemes",
+            )
+            config = load_scheme_config(scheme_dir / "config.yaml")
+            report_dir = root / "reports" / "all"
+            state_dir = report_dir / "blackbox_v2"
+            state_dir.mkdir(parents=True)
+            (state_dir / "input_state.json").write_text(
+                json.dumps(
+                    {
+                        "snapshot_id": "snapshot-parent",
+                        "combined_snapshot_id": "snapshot-combined",
+                        "generation_id": "generation-test",
+                        "runtime_profile": "blackbox-v2-v1",
+                        "environment_fingerprint": "env-test",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            engine = create_engine("sqlite:///:memory:")
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "CREATE TABLE t_harness_runs ("
+                        "harness_run_id TEXT, scheme_id TEXT, scheme_version TEXT, "
+                        "stage TEXT, status TEXT, finished_at TEXT, report_uri TEXT)"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE TABLE t_harness_gate_results ("
+                        "harness_run_id TEXT, gate_name TEXT, status TEXT)"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "INSERT INTO t_harness_runs VALUES ("
+                        "'hr-directory', :scheme_id, :scheme_version, "
+                        "'all', 'passed', '2026-08-10 12:00:00', :report_uri)"
+                    ),
+                    {
+                        "scheme_id": config.scheme_id,
+                        "scheme_version": config.scheme_version,
+                        "report_uri": str(report_dir),
+                    },
+                )
+                conn.execute(
+                    text(
+                        "INSERT INTO t_harness_gate_results VALUES ("
+                        "'hr-directory', :gate_name, 'passed')"
+                    ),
+                    [
+                        {"gate_name": gate_name}
+                        for gate_name in BLACKBOX_AUTO_SEQUENCE
+                    ],
+                )
+
+            try:
+                passed = _verify_passed_all(engine, config)
+            finally:
+                engine.dispose()
+
+        self.assertEqual(passed.harness_run_id, "hr-directory")
+        self.assertEqual(passed.report_uri, report_dir)
+        self.assertEqual(passed.data_snapshot_id, "snapshot-combined")
+        self.assertEqual(passed.generation_id, "generation-test")
+        self.assertEqual(passed.runtime_profile, "blackbox-v2-v1")
+        self.assertEqual(passed.environment_fingerprint, "env-test")
+
     def test_stable_private_file_reader_rejects_path_replacement_during_read(self) -> None:
         from harness.blackbox_v2.gates import (
             _read_stable_private_file,

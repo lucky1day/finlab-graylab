@@ -90,16 +90,15 @@ def _production_environ(runtime_root: Path) -> dict[str, str]:
 
 
 def test_static_gate_run_leaves_release_tree_unchanged(tmp_path: Path) -> None:
-    """在真实 release 树上执行 StaticGate 并写报告，release 树必须逐字节不变。
+    """在真实 release 树上执行 StaticGate，release 树必须逐字节不变。
 
-    覆盖范围：默认 report_dir 解析 + Gate 执行 + 报告落盘。不覆盖 dry-run/backtest 这类
+    覆盖范围：默认 report_dir 解析 + Gate 执行。不覆盖 dry-run/backtest 这类
     在子进程中执行算法的 Gate（它们需要数据库与算法环境），那部分由运维的 `-B` 合同和
     ECS 上「受控 harness 运行前后重算 digest」的现场验收兜底。
     """
     from harness.cli import default_report_dir
     from harness.context import GateContext
     from harness.gates.static_gate import StaticGate
-    from harness.report.writer import write_gate_result
 
     release_root = _release_tree(tmp_path)
     runtime_root = tmp_path / "state"
@@ -115,14 +114,15 @@ def test_static_gate_run_leaves_release_tree_unchanged(tmp_path: Path) -> None:
             config=None,
         )
         result = StaticGate().run(ctx)
-        report_path = write_gate_result(ctx, result)
 
     assert _tree_digest(release_root) == before, (
         "StaticGate 在生产形状下改变了 release 树；运行期状态必须落在 BFL_RUNTIME_ROOT 下"
     )
-    assert report_path.is_relative_to(runtime_root.resolve()), (
-        "Gate 报告未写入外置 runtime root"
+    assert result.gate_name == "static"
+    assert report_dir.is_relative_to(runtime_root.resolve()), (
+        "Harness 运行期目录未解析到外置 runtime root"
     )
+    assert not report_dir.exists(), "StaticGate 不应再生成通用本地 JSON 报告"
 
 
 # --------------------------------------------------------------------------

@@ -1325,15 +1325,29 @@ class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
                 project_root=project_root,
                 report_dir=project_root / "reports" / "harness" / "demo_daily",
             )
-            report = onboard(
-                ctx,
-                stage="all",
-                gates=[
-                    FakeGate("static", GateStatus.PASSED),
-                    FakeGate("input", GateStatus.FAILED),
-                    FakeGate("unit", GateStatus.PASSED),
-                ],
-            )
+            with (
+                patch(
+                    "harness.orchestrator.persist_harness_run_start",
+                    return_value=True,
+                ),
+                patch(
+                    "harness.orchestrator.persist_harness_gate_result",
+                    return_value=True,
+                ),
+                patch(
+                    "harness.orchestrator.persist_harness_run_finish",
+                    return_value=True,
+                ),
+            ):
+                report = onboard(
+                    ctx,
+                    stage="all",
+                    gates=[
+                        FakeGate("static", GateStatus.PASSED),
+                        FakeGate("input", GateStatus.FAILED),
+                        FakeGate("unit", GateStatus.PASSED),
+                    ],
+                )
 
         self.assertFalse(report.overall_passed)
         self.assertEqual(calls, ["static", "input"])

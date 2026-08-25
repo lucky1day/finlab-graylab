@@ -70,7 +70,7 @@ bond-factor-lab/
 | `harness.gates.backtest_gate` | 先跑 `--no-persist`，生成回测摘要和报告；历史排行样本统一要求 `predict_date >= 2025-01-01`，并对受保护表做前后快照 | 未授权不落 `t_backtest_*`；授权落库时也只能改 `t_backtest_*` |
 | `harness.gates.live_gate` | 受控单方案写库前的 readiness、dry-run、行数保护；必须显式传入 `prediction_phase=gray_live/scheduled_live` | 不批量执行所有 active 方案 |
 | `harness.gates.dashboard_gate` | 激活后对唯一产品读模型 `/api/factor-lab/dashboard` 执行一次受限 GET 并复用 Backend payload 校验 | 不属于 `all`；不证明 exact version，不写库 |
-| `harness.report` | 输出 JSON/Markdown 证据到 `reports/harness/{scheme_id}/` | 不改业务状态 |
+| `harness.persistence` | 把 run 状态与 Gate evidence/errors 持久化到两张 Harness 审计表 | 不写本地镜像报告、不改业务状态 |
 
 CLI 标准入口:
 

@@ -488,25 +488,25 @@ Dashboard payload 不含 exact version，因此不能替代生命周期、Regist
 
 `--stage all` 可以写：
 
-- `reports/harness/{scheme_id}/...`；
-- `t_harness_runs`、`t_harness_gate_results` 等控制面审计记录。
+- Gate 执行必需的临时输入和专项诊断产物；
+- `t_harness_runs`、`t_harness_gate_results` 控制面审计记录。
 
 它不得写 `t_scheme_runs`、`t_scheme_predictions`、`t_backtest_*` 业务记录、active Registry 或前端可见状态。
 
-Harness 控制面持久化采用 fail-closed。即使 `onboard_report.json` 为 `overall_passed=true`，仍必须确认 exact `harness_run_id` 和 Blackbox 四个 Gate 已存在于审计数据库，才能执行 shadow。
+Harness 控制面持久化采用 fail-closed，数据库是 run/Gate 审计的唯一耐久来源；不再写 `{gate}.json` 或 `onboard_report.json` 本地镜像。run-start、任一 Gate 或 run-finish 持久化失败都会阻断本次 Harness。执行 shadow 前必须确认 exact `harness_run_id` 和 Blackbox 四个 Gate 已存在于审计数据库。
 
 Result 解析器严格要求 JSON 的 `predicted_direction` 为整数 `-1/0/1`，拒绝字符串、布尔值和浮点数；CSV 继续按合同接受文本 token `-1/0/1`。
 
-临时原始 Request、Result 和 stderr 当前随运行目录清理，不承诺长期留存；持久审计以 Harness 报告、摘要和结构化记录为准。
+临时原始 Request、Result 和 stderr 当前随运行目录清理，不承诺长期留存；持久审计只以 `t_harness_runs` 和 `t_harness_gate_results.summary_json` 为准。Blackbox lineage 仍可通过 run 的目录型 `report_uri` 定位必要输入状态，该路径不是第二份 run/Gate 报告。
 
 ## 5. Shadow 登记
 
 ### 5.1 Shadow 前核验
 
-从最新通过报告取得 `harness_run_id`、`scheme_version`、`predict_date`、四个 Gate 状态、snapshot ID 和三 SHA，并另外完成：
+从最新通过的数据库审计记录取得 `harness_run_id`、`scheme_version`、`predict_date`、四个 Gate 状态、snapshot ID 和三 SHA，并另外完成：
 
 1. 重新运行环境自检；
-2. 使用只读 SQL 确认 exact run 已写入审计 DB；本地 JSON 报告不能代替数据库核验；
+2. 使用只读 SQL 确认 exact run 已写入审计 DB；
 3. 再次检查 base/composite Registry 冲突；
 4. 保存业务表和 active Registry 的前置计数；
 5. 确认本轮通用入库只允许 `shadow + paused`；生产灰度必须另有具体方案专项授权。

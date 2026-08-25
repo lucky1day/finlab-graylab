@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from harness.context import GateContext
@@ -14,8 +14,9 @@ class _CaptureConnection:
     def __init__(self, store: dict) -> None:
         self._store = store
 
-    def execute(self, sql, params=None) -> None:
+    def execute(self, sql, params=None):
         self._store.setdefault("calls", []).append((str(sql), params))
+        return SimpleNamespace(rowcount=self._store.get("rowcount", 1))
 
 
 class _CaptureBegin:
@@ -88,7 +89,7 @@ class HarnessPersistenceTests(unittest.TestCase):
                 errors=[],
                 started_at="2026-06-08T00:00:00+00:00",
                 finished_at="2026-06-08T00:00:01+00:00",
-                report_path=Path(tmpdir) / "reports" / "static.json",
+                report_path=Path(tmpdir) / "artifacts" / "comparison_diff.csv",
             )
 
             self.assertTrue(
@@ -106,7 +107,7 @@ class HarnessPersistenceTests(unittest.TestCase):
                     harness_run_id="hr-test",
                     status="passed",
                     finished_at="2026-06-08T00:00:02+00:00",
-                    report_uri=str(Path(tmpdir) / "reports" / "onboard_report.json"),
+                    report_uri=str(Path(tmpdir) / "reports"),
                 )
             )
 
@@ -116,9 +117,21 @@ class HarnessPersistenceTests(unittest.TestCase):
         self.assertNotIn("t_scheme_predictions", sql_text)
         self.assertNotIn("t_scheme_runs", sql_text)
         self.assertNotIn("t_backtest", sql_text)
+        self.assertEqual(
+            engine.store["calls"][0][1]["report_uri"],
+            str(Path(tmpdir) / "reports"),
+        )
+        self.assertEqual(
+            engine.store["calls"][1][1]["report_uri"],
+            str(Path(tmpdir) / "artifacts" / "comparison_diff.csv"),
+        )
+        self.assertEqual(
+            engine.store["calls"][2][1]["report_uri"],
+            str(Path(tmpdir) / "reports"),
+        )
         self.assertTrue(engine.disposed)
 
-    def test_persistence_failure_degrades_to_json_only(self) -> None:
+    def test_persistence_failure_returns_false(self) -> None:
         from harness.persistence import persist_harness_run_start
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -135,6 +148,30 @@ class HarnessPersistenceTests(unittest.TestCase):
                 harness_run_id="hr-test",
                 stage="all",
                 started_at="2026-06-08T00:00:00+00:00",
+            )
+
+        self.assertFalse(persisted)
+
+    def test_run_finish_zero_row_update_returns_false(self) -> None:
+        from harness.persistence import persist_harness_run_finish
+
+        engine = _CaptureEngine()
+        engine.store["rowcount"] = 0
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ctx = GateContext(
+                scheme_id="demo_daily",
+                predict_date="2026-06-08",
+                project_root=root,
+                report_dir=root / "reports",
+                engine_factory=lambda: engine,
+            )
+            persisted = persist_harness_run_finish(
+                ctx,
+                harness_run_id="missing-run",
+                status="passed",
+                finished_at="2026-06-08T00:00:02+00:00",
+                report_uri=str(ctx.report_dir),
             )
 
         self.assertFalse(persisted)
@@ -203,7 +240,21 @@ class HarnessPersistenceTests(unittest.TestCase):
                 project_root=Path(tmpdir),
                 report_dir=Path(tmpdir) / "reports",
             )
-            report = onboard(ctx, stage="all", gates=[PassingGate()])
+            with (
+                patch(
+                    "harness.orchestrator.persist_harness_run_start",
+                    return_value=True,
+                ),
+                patch(
+                    "harness.orchestrator.persist_harness_gate_result",
+                    return_value=True,
+                ),
+                patch(
+                    "harness.orchestrator.persist_harness_run_finish",
+                    return_value=True,
+                ),
+            ):
+                report = onboard(ctx, stage="all", gates=[PassingGate()])
 
         self.assertIsNotNone(report.harness_run_id)
         self.assertTrue(report.harness_run_id.startswith("hr_"))
@@ -275,10 +326,6 @@ class HarnessPersistenceTests(unittest.TestCase):
                     stage=" Native-Maintenance ",
                     gates=[_RecordingPassingGate("static", calls)],
                 )
-            disk_report = json.loads(
-                (ctx.report_dir / "onboard_report.json").read_text(encoding="utf-8")
-            )
-
         start.assert_called_once()
         gate.assert_not_called()
         finish.assert_not_called()
@@ -289,8 +336,7 @@ class HarnessPersistenceTests(unittest.TestCase):
         evidence = _result_evidence(report.results[0])
         self.assertEqual(evidence["persistence_operation"], "run_start")
         self.assertFalse(evidence["control_plane_persisted"])
-        self.assertFalse(disk_report["overall_passed"])
-        self.assertFalse(disk_report["control_plane_persisted"])
+        self.assertFalse(ctx.report_dir.exists())
 
     def test_native_maintenance_gate_persistence_failure_stops_and_closes_failed(self) -> None:
         from harness.orchestrator import onboard
@@ -324,10 +370,6 @@ class HarnessPersistenceTests(unittest.TestCase):
                     stage="native-maintenance",
                     gates=[_RecordingPassingGate(name, calls) for name in gate_names],
                 )
-            disk_report = json.loads(
-                (ctx.report_dir / "onboard_report.json").read_text(encoding="utf-8")
-            )
-
         self.assertEqual(calls, gate_names[:2])
         self.assertEqual(persist_gate.call_count, 2)
         finish.assert_called_once()
@@ -341,10 +383,49 @@ class HarnessPersistenceTests(unittest.TestCase):
         evidence = _result_evidence(report.results[-1])
         self.assertEqual(evidence["persistence_operation"], "gate_result")
         self.assertEqual(evidence["persistence_gate_name"], gate_names[1])
-        self.assertFalse(disk_report["overall_passed"])
-        self.assertFalse(disk_report["control_plane_persisted"])
+        self.assertFalse(ctx.report_dir.exists())
 
-    def test_native_maintenance_finish_persistence_failure_overwrites_local_report(self) -> None:
+    def test_blackbox_gate_persistence_failure_still_cleans_runtime_input(self) -> None:
+        from harness.orchestrator import onboard
+
+        calls: list[str] = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ctx = GateContext(
+                scheme_id="blackbox_daily",
+                predict_date="2026-08-04",
+                project_root=root,
+                report_dir=root / "reports",
+                config=SimpleNamespace(runtime_type="blackbox_v2"),
+            )
+            with (
+                patch(
+                    "harness.orchestrator.persist_harness_run_start",
+                    return_value=True,
+                ),
+                patch(
+                    "harness.orchestrator.persist_harness_gate_result",
+                    return_value=False,
+                ),
+                patch(
+                    "harness.orchestrator.persist_harness_run_finish",
+                    return_value=True,
+                ),
+                patch(
+                    "harness.blackbox_v2.gates.cleanup_runtime_input",
+                ) as cleanup,
+            ):
+                report = onboard(
+                    ctx,
+                    stage="all",
+                    gates=[_RecordingPassingGate("input", calls)],
+                )
+
+        self.assertEqual(calls, ["input"])
+        self.assertFalse(report.control_plane_persisted)
+        cleanup.assert_called_once_with(ctx)
+
+    def test_native_maintenance_finish_persistence_failure_blocks_without_local_report(self) -> None:
         from harness.orchestrator import onboard
 
         calls: list[str] = []
@@ -375,10 +456,6 @@ class HarnessPersistenceTests(unittest.TestCase):
                     stage="native-maintenance",
                     gates=[_RecordingPassingGate("static", calls)],
                 )
-            disk_report = json.loads(
-                (ctx.report_dir / "onboard_report.json").read_text(encoding="utf-8")
-            )
-
         self.assertEqual(calls, ["static"])
         self.assertEqual(finish.call_count, 2)
         self.assertEqual(finish.call_args_list[0].kwargs["status"], "passed")
@@ -387,8 +464,7 @@ class HarnessPersistenceTests(unittest.TestCase):
         self.assertFalse(report.control_plane_persisted)
         evidence = _result_evidence(report.results[-1])
         self.assertEqual(evidence["persistence_operation"], "run_finish")
-        self.assertFalse(disk_report["overall_passed"])
-        self.assertFalse(disk_report["control_plane_persisted"])
+        self.assertFalse(ctx.report_dir.exists())
 
     def test_native_maintenance_happy_path_persists_all_five_gate_records(self) -> None:
         from harness.gates.native_maintenance_admission_gate import (
@@ -428,10 +504,6 @@ class HarnessPersistenceTests(unittest.TestCase):
                         for name in NATIVE_MAINTENANCE_SEQUENCE
                     ],
                 )
-            disk_report = json.loads(
-                (ctx.report_dir / "onboard_report.json").read_text(encoding="utf-8")
-            )
-
         start.assert_called_once()
         self.assertEqual(
             start.call_args.kwargs["stage"],
@@ -447,10 +519,9 @@ class HarnessPersistenceTests(unittest.TestCase):
         self.assertEqual(finish.call_args.kwargs["status"], "passed")
         self.assertTrue(report.overall_passed)
         self.assertTrue(report.control_plane_persisted)
-        self.assertTrue(disk_report["overall_passed"])
-        self.assertTrue(disk_report["control_plane_persisted"])
+        self.assertFalse(ctx.report_dir.exists())
 
-    def test_ordinary_stage_retains_json_only_persistence_degradation(self) -> None:
+    def test_ordinary_stage_start_persistence_failure_blocks_before_gates(self) -> None:
         from harness.orchestrator import onboard
 
         calls: list[str] = []
@@ -481,15 +552,14 @@ class HarnessPersistenceTests(unittest.TestCase):
                     stage="all",
                     gates=[_RecordingPassingGate("static", calls)],
                 )
-            disk_report = json.loads(
-                (ctx.report_dir / "onboard_report.json").read_text(encoding="utf-8")
-            )
-
-        self.assertEqual(calls, ["static"])
-        self.assertTrue(report.overall_passed)
-        self.assertTrue(report.control_plane_persisted)
-        self.assertTrue(disk_report["overall_passed"])
-        self.assertTrue(disk_report["control_plane_persisted"])
+        self.assertEqual(calls, [])
+        self.assertFalse(report.overall_passed)
+        self.assertFalse(report.control_plane_persisted)
+        self.assertEqual(
+            [result.gate_name for result in report.results],
+            ["control-plane-persistence"],
+        )
+        self.assertFalse(ctx.report_dir.exists())
 
 if __name__ == "__main__":
     unittest.main()

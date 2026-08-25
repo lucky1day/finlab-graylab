@@ -30,7 +30,7 @@ def persist_harness_run_start(
     stage: str,
     started_at: str,
 ) -> bool:
-    """记录 harness run 开始；DB 不可用时返回 False，不阻断 gate。"""
+    """记录 harness run 开始；DB 不可用时返回 False，由编排层阻断。"""
 
     def operation(engine) -> None:
         cfg = ctx.config
@@ -74,7 +74,7 @@ def persist_harness_run_start(
 
 
 def persist_harness_gate_result(ctx: GateContext, harness_run_id: str, result: GateResult) -> bool:
-    """记录单个 gate 结果；DB 不可用时返回 False，不阻断 gate。"""
+    """记录单个 gate 结果；DB 不可用时返回 False，由编排层阻断。"""
 
     def operation(engine) -> None:
         sql = text(
@@ -111,7 +111,7 @@ def persist_harness_run_finish(
     finished_at: str,
     report_uri: str | None,
 ) -> bool:
-    """记录 harness run 结束；DB 不可用时返回 False，不阻断 gate。"""
+    """记录 harness run 结束；DB 不可用时返回 False，由编排层阻断。"""
 
     def operation(engine) -> None:
         sql = text(
@@ -124,7 +124,7 @@ def persist_harness_run_finish(
             """
         )
         with engine.begin() as conn:
-            conn.execute(
+            result = conn.execute(
                 sql,
                 {
                     "harness_run_id": harness_run_id,
@@ -133,6 +133,10 @@ def persist_harness_run_finish(
                     "report_uri": report_uri,
                 },
             )
+            if result.rowcount != 1:
+                raise RuntimeError(
+                    "harness run finish must update exactly one row"
+                )
 
     return _with_engine(ctx, operation)
 
