@@ -241,7 +241,7 @@ flowchart LR
 
 ```text
 Blackbox: static -> input -> unit -> compare
-Native:   static -> input -> unit -> dry-run -> compare -> backtest
+Native:   static -> input -> dry-run -> compare -> backtest
 ```
 
 自动段可以留下审计报告和控制面记录，但不得写正式预测表、正式回测结果表或 active 前端可见状态，也不访问 Backend。Blackbox Compare 只验证平台输入并执行一次冒烟 predict，不再重复 dry-run 或抽样 backtest；Native 保留 source-backed 方案需要的 dry-run、Compare 和 no-persist backtest。算法自身的确定性由上游按其交付契约保证，平台不重验。激活后的 HTTP 验收只使用 `DashboardGate`；它证明当前业务读模型可用，但 Dashboard 响应不携带 exact version，版本仍由生命周期、Registry 和数据库权威证据确认。

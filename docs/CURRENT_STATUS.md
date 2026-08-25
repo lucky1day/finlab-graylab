@@ -45,6 +45,7 @@
 - `signal-gap-fill` 的 planner/result 只输出到标准输出，不再创建时间戳报告目录或保存重复 plan JSON。
 - Blackbox UnitGate 的非法 Request/Output 只在临时目录中执行并于 Gate 结束清理；CompareGate 的预测记录
   只进入 Harness evidence，不再额外保存 `dry_run_prediction_record.json`。
+- Native UnitGate 已退役；它按 scheme_id 文本命中仓库测试，绝大多数方案没有命中，少数又误选平台测试。Native 正确性闭环保留 Static/Input/Dry-run/Compare/Backtest，Blackbox UnitGate 不变。
 - Blackbox 自动入库只保留 `static -> input -> unit -> compare`；原 dry-run 已由同参数的 Compare 冒烟覆盖，
   重复的抽样 no-persist backtest 与 `--sample-size` 已删除。Blackbox `gate backtest` 只接受明确的
   `--persist`，Native dry-run/no-persist backtest 保持不变。

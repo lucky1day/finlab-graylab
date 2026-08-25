@@ -19,7 +19,6 @@ def test_auto_sequence_is_exact_for_each_runtime() -> None:
         "native_adapter": [
             "static",
             "input",
-            "unit",
             "dry-run",
             "compare",
             "backtest",
@@ -43,7 +42,6 @@ def test_native_maintenance_has_one_exact_sequence(tmp_path) -> None:
         "static",
         "native-maintenance-admission",
         "input",
-        "unit",
         "dry-run",
     ]
     ctx = GateContext(

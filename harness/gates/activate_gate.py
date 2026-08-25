@@ -813,7 +813,7 @@ def _freeze_identity_value(value: object) -> object:
 
 
 REQUIRED_ACTIVATE_GATES = frozenset({
-    "static", "input", "unit", "dry-run", "compare", "backtest",
+    "static", "input", "dry-run", "compare", "backtest",
 })
 
 
@@ -1086,7 +1086,7 @@ def _passed_native_maintenance_validation(
     ctx: GateContext,
     scheme_version: str,
 ) -> tuple[str | None, list[str], bool]:
-    """读取维护阶段的当前版本五 Gate，不读取当前 compare/backtest 结果。"""
+    """读取维护阶段的当前版本 Gate，不读取当前 compare/backtest 结果。"""
     from sqlalchemy import text
 
     from harness.gates.native_maintenance_admission_gate import (
@@ -1168,7 +1168,7 @@ def _passed_native_maintenance_validation(
             None,
             [
                 "native-maintenance harness run must have the exact current "
-                "five passed gate rows: "
+                "passed gate rows: "
                 f"harness_run_id={run[0]}, row_count={len(gate_rows)}, "
                 f"duplicates={duplicates}, missing={missing}, extra={extra}, "
                 f"non_passed={non_passed}"

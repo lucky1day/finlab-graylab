@@ -208,8 +208,8 @@ python -m harness onboard {scheme_id} --stage all
   └─ harness.orchestrator.onboard(ctx, stage)            ← fail-fast + fail-closed
        ├─ StaticGate   → runtime-aware contracts（原生 AST / 黑盒两文件与 Metadata）
        ├─ InputGate    → shared.input_artifacts.build_*  (只读生成 artifact)
-       ├─ UnitGate     → unittest（tests/*{scheme_id}*）
-       ├─ DryRunGate   → scheduler.executor.run_scheme_subprocess + probes.table_guard(行数不变)
+       ├─ BlackboxUnitGate → 交付 help / 非法 Request / 失败无 Output（仅 Blackbox）
+       ├─ DryRunGate   → scheduler.executor.run_scheme_subprocess + probes.table_guard(仅 Native)
        ├─ CompareGate  → schemes/{id}/benchmarks original/current strict compare
        └─ BacktestGate → backtests/{id}_reproduction(--no-persist)
   Blackbox 首轮授权卡点：ShadowRegisterGate → version=shadow + registry=paused，不写业务表
@@ -221,14 +221,14 @@ python -m harness onboard {scheme_id} --stage all
 composite、信号与回测分区可见，但 dashboard payload 不携带 exact version，因此版本身份仍由
 生命周期和数据库权威回读证明。
 
-上图的 `all` 按 `runtime_type` 分派（Blackbox 四段、Native 六段），是所有首次技术入库的
+上图的 `all` 按 `runtime_type` 分派（Blackbox 四段、Native 五段），是所有首次技术入库的
 固定路径；Native 的 source benchmark/CompareGate 只在这里作为保真硬证据。Blackbox Compare
 只做平台输入校验与一次冒烟 predict——确定性与截止隔离属上游义务，平台不重验。已入库 Native
 修订仅在不同 prior Native version 的 passed `all + compare` 所属 StaticGate 已持久化
 `static.business_identity`，且该快照与当前身份精确匹配时，才可走：
 
 ```text
-static -> native-maintenance-admission -> input -> unit -> dry-run
+static -> native-maintenance-admission -> input -> dry-run
 ```
 
 快照只保存 `scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors
@@ -237,10 +237,10 @@ static -> native-maintenance-admission -> input -> unit -> dry-run
 Registry identity 可在预激活时统一为 `paused`，或在激活后统一为 `active`，但 draft version 配 active
 Registry 必须 fail-closed。只有 ActivationGate 可在严格 discovery、精确版本与标准 Gate 核验后原子
 建立 active 状态。缺少、重复、损坏或不匹配的 prior snapshot 一律 fail-closed，不再保留方案级历史
-receipt。该五段路径不运行当前 historical `compare/backtest`、不写业务表，且不适用于 Blackbox；其后
-activation 仍要核验当前精确 version 与五个 Gate。反之，current exact version 的
+receipt。该四段路径不运行当前 historical `compare/backtest`、不写业务表，且不适用于 Blackbox；其后
+activation 仍要核验当前精确 version 与四个 Gate。反之，current exact version 的
 完整 `all` 通过时，ActivationGate 走互斥的 `full_initial_onboarding_v1`，不要求此 prior snapshot
-或五段路径。
+或四段路径。
 
 详见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)。
 

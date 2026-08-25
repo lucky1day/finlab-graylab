@@ -63,8 +63,8 @@
 ## Harness 当前工作流
 
 - `python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all` 按 `runtime_type` 执行技术 Gate：
-  Blackbox V2 为四段 `static → input → unit → compare`；Native V1 为六段
-  `static → input → unit → dry-run → compare → backtest`。该流程不访问 Backend。
+  Blackbox V2 为四段 `static → input → unit → compare`；Native V1 为五段
+  `static → input → dry-run → compare → backtest`。该流程不访问 Backend。
   Blackbox 的 dry-run 已并入其 CompareGate——两者的 baseline 是同一次 predict。
   Blackbox 不再保留重复的独立 dry-run/no-persist backtest；其 `gate backtest`
   只接受明确的 `--persist`。Native 仍保留独立 dry-run 和 no-persist backtest。
@@ -73,7 +73,7 @@
   一致、截止隔离、跨请求无状态——由上游按其交付契约保证，平台不重验。批次切分与顺序的
   回填正确性由 `load_backtest_results` 在每一次 backtest 校验（行数相等、逐行回显
   Request 字段），强于只在入库时跑一次。
-- Native 同一业务身份维护固定执行五段：`static → native-maintenance-admission → input → unit → dry-run`。
+- Native 同一业务身份维护固定执行四段：`static → native-maintenance-admission → input → dry-run`。Native 不再按 scheme_id 文本扫描仓库测试；正确性闭环由 Static/Input/Dry-run/Compare/Backtest 承担。
 - 激活后的 HTTP 验收只使用 `DashboardGate`，只验证 `/api/factor-lab/dashboard` 当前业务可见性；Dashboard 响应不携带 exact version，不能用来证明版本身份。
 - 单日信号补缺使用 `python -m harness signal-gap-fill --predict-date YYYY-MM-DD`；需要限制为单个方案时增加 `--scheme-id {base_scheme_id}`。命令直接扫描并补齐真实缺口，不接收 token、operator、frozen plan、plan SHA 或日期范围。
 - Native 补缺按指定日期从当前权威数据库重建输入；Blackbox 使用冻结 DataBridge replay。整批算法必须先全部成功，才按 group insert-only 写入 `gray_live`；任一算法失败则 prediction 零提交，完成后只做一次最终权威 readback。

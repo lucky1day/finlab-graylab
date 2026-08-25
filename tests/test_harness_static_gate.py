@@ -181,35 +181,6 @@ class HarnessRuntimeGateTests(unittest.TestCase):
         self.assertEqual(build.call_args.kwargs["end_date"], "2026-06-02")
 
 
-    def test_unit_gate_runs_scheme_selector_tests(self) -> None:
-        from harness.context import GateContext
-        from harness.gates.unit_gate import UnitGate
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            project_root = Path(tmpdir)
-            _write_minimal_scheme(project_root, scheme_id="demo_daily")
-            tests_dir = project_root / "tests"
-            tests_dir.mkdir()
-            (tests_dir / "__init__.py").write_text("", encoding="utf-8")
-            (tests_dir / "test_demo_daily.py").write_text(
-                "import unittest\n\nclass DemoDailyTests(unittest.TestCase):\n    def test_ok(self):\n        self.assertTrue(True)\n",
-                encoding="utf-8",
-            )
-
-            result = UnitGate().run(
-                GateContext(
-                    scheme_id="demo_daily",
-                    predict_date="2026-06-08",
-                    project_root=project_root,
-                    report_dir=project_root / "reports",
-                )
-            )
-
-        self.assertTrue(result.passed, result.errors)
-        evidence = _evidence_dict(result)
-        self.assertEqual(evidence["tests_run"], 1)
-        self.assertEqual(evidence["test_modules"], ["tests.test_demo_daily"])
-
     def test_dry_run_gate_fails_when_common_extra_key_missing(self) -> None:
         from harness.context import GateContext
         from harness.gates.dry_run_gate import DryRunGate
@@ -445,7 +416,7 @@ class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
                     gates=[
                         FakeGate("static", GateStatus.PASSED),
                         FakeGate("input", GateStatus.FAILED),
-                        FakeGate("unit", GateStatus.PASSED),
+                        FakeGate("dry-run", GateStatus.PASSED),
                     ],
                 )
 
