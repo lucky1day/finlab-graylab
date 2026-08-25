@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import stat
+import sys
 import tarfile
 import tempfile
 import uuid
@@ -26,10 +27,13 @@ if __package__:
         SOURCE_ROOT_PREFIX,
     )
 else:
-    from build_source_release import (  # type: ignore[no-redef]
+    _project_root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(_project_root))
+    from scripts.build_source_release import (  # type: ignore[no-redef]
         MANIFEST_SCHEMA_VERSION,
         SOURCE_ROOT_PREFIX,
     )
+    del sys.path[0]
 
 
 _GIT_OBJECT = re.compile(r"^[0-9a-f]{40,64}$")

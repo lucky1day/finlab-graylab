@@ -7,6 +7,7 @@ import json
 import os
 import stat
 import subprocess
+import sys
 import tarfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -23,6 +24,22 @@ from scripts.install_source_release import (
     ReleaseInstallError,
     install_source_release,
 )
+
+
+def test_install_cli_starts_in_isolated_mode() -> None:
+    script = Path(__file__).resolve().parents[1] / "scripts" / (
+        "install_source_release.py"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-I", "-B", str(script), "--help"],
+        cwd="/",
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "--expected-archive-sha256" in completed.stdout
 
 
 @pytest.fixture(autouse=True)
