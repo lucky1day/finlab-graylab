@@ -128,6 +128,28 @@ def _v3_period_bootstrap_inputs():
 
 
 class DataBridgeCurrentTests(unittest.TestCase):
+    def test_v2_daily_gate_v1_keeps_stable_audit_shape(self) -> None:
+        from scheduler.v2_daily_gate import write_gate_record
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            record = write_gate_record(
+                SimpleNamespace(runtime_root=Path(tmpdir)),
+                run_date="2026-07-24",
+                status="ready",
+                checked_at="2026-07-24T06:50:01+08:00",
+                generation_id="full-20260724-065000-abcdef123456",
+                refresh_date="2026-07-24",
+                expected_daily_date="2026-07-23",
+                business_digest="digest",
+                checks=[{"name": "strict_current_read", "status": "passed"}],
+            )
+
+        self.assertEqual(record["schema_version"], "v2-scheduler-gate-v1")
+        self.assertEqual(
+            record["restart"],
+            {"requested": False, "verified": False},
+        )
+
     @staticmethod
     def _monthly_metadata_with_macro_additions() -> pd.DataFrame:
         rows: list[dict[str, object]] = [

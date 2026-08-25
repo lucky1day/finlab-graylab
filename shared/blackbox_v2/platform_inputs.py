@@ -181,9 +181,6 @@ def capture_platform_inputs_from_connection(
         return ()
     calendar_frames = read_calendar_snapshot_from_connection(connection)
     provenance = _provenance(
-        source_kind="harness_database",
-        generation_id=None,
-        manifest_sha256=None,
         captured_at=captured_at,
     )
     return tuple(
@@ -363,9 +360,6 @@ def _provider(artifact_id: str) -> PlatformInputProvider:
 
 def _provenance(
     *,
-    source_kind: str,
-    generation_id: str | None,
-    manifest_sha256: str | None,
     captured_at: str | None,
 ) -> dict[str, str | None]:
     capture_time = captured_at
@@ -378,9 +372,9 @@ def _provenance(
     if not isinstance(capture_time, str) or not capture_time.strip():
         raise ValueError("captured_at must be a non-empty string")
     return {
-        "source_kind": source_kind,
-        "generation_id": generation_id,
-        "manifest_sha256": manifest_sha256,
+        "source_kind": "harness_database",
+        "generation_id": None,
+        "manifest_sha256": None,
         "captured_at": capture_time,
     }
 

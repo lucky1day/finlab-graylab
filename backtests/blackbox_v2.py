@@ -40,7 +40,7 @@ def run_blackbox_historical_backtest(
     total_deadline_sec: int | None = None,
 ) -> RunOutput:
     """用原始交付脚本执行真实历史 Request，并转换为平台标准输出。"""
-    materialized = validate_historical_cases(cases, expected_count=len(cases))
+    materialized = validate_historical_cases(cases)
     if not materialized:
         raise ValueError("Blackbox historical backtest requires at least one case")
     delivery_kwargs = {

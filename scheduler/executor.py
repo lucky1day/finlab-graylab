@@ -1059,7 +1059,6 @@ def execute_scheme(
             predict_date=predict_date,
             scheme_version=scheme_version,
             runtime_type=runtime_type,
-            run_type="active",
             prediction_phase=prediction_phase,
             records_expected=len(active_targets),
             **creation_fence,

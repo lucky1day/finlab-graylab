@@ -996,7 +996,6 @@ def activate_blackbox_revision(
                 expected_tenors,
                 expected_registry_ids,
                 registry_rows,
-                expected_status="active",
             )
             if registry_error is not None:
                 raise RuntimeError(
@@ -1139,7 +1138,6 @@ def _read_blackbox_revision_activation_preflight_conn(
         expected_tenors,
         expected_registry_ids,
         registry_rows,
-        expected_status="active",
     )
     if registry_error is not None:
         raise ValueError(
@@ -1158,8 +1156,6 @@ def _blackbox_revision_registry_identity_error(
     expected_tenors: tuple[str, ...],
     expected_registry_ids: tuple[str, ...],
     registry_rows: list[Mapping[str, object]],
-    *,
-    expected_status: str,
 ) -> str | None:
     """补充 revision 需要锁定的 cadence 与单 target Registry 身份。"""
     error = _registry_identity_error(
@@ -1167,7 +1163,7 @@ def _blackbox_revision_registry_identity_error(
         expected_tenors,
         expected_registry_ids,
         registry_rows,
-        expected_status=expected_status,
+        expected_status="active",
     )
     if error is not None:
         return error
@@ -1745,10 +1741,8 @@ def _select_mapping_one_or_none(
     conn: Connection,
     sql: str,
     params: Mapping[str, object],
-    *,
-    for_update: bool,
 ) -> Mapping[str, object] | None:
-    lock = "" if not for_update or _dialect_name(conn) == "sqlite" else " FOR UPDATE"
+    lock = "" if _dialect_name(conn) == "sqlite" else " FOR UPDATE"
     return (
         conn.execute(text(sql + lock), dict(params))
         .mappings()
@@ -1760,7 +1754,6 @@ def _read_scheme_run_conn(
     conn: Connection,
     *,
     run_id: int,
-    for_update: bool,
 ) -> Mapping[str, object] | None:
     """读取普通 run；遗留 schedule linkage 不属于新的运行契约。"""
     return _select_mapping_one_or_none(
@@ -1774,15 +1767,14 @@ def _read_scheme_run_conn(
         WHERE run_id = :run_id
         """,
         {"run_id": int(run_id)},
-        for_update=for_update,
     )
 
 
-def _require_rowcount(result: object, expected: int, operation: str) -> None:
+def _require_rowcount(result: object, operation: str) -> None:
     actual = int(getattr(result, "rowcount", 0) or 0)
-    if actual != expected:
+    if actual != 1:
         raise RuntimeError(
-            f"{operation} affected {actual} rows, expected {expected}"
+            f"{operation} affected {actual} rows, expected 1"
         )
 
 
@@ -1807,12 +1799,7 @@ def create_scheme_run(
     predict_date: str,
     scheme_version: str | None = None,
     runtime_type: str = "native_adapter",
-    run_type: str = "active",
     prediction_phase: str | None = None,
-    status: str = "running",
-    harness_run_id: str | None = None,
-    input_artifact_id: str | None = None,
-    data_snapshot_id: str | None = None,
     records_expected: int | None = None,
     scheduled_control_plane: str | None = None,
 ) -> int:
@@ -1851,12 +1838,7 @@ def create_scheme_run(
             predict_date=predict_date,
             scheme_version=scheme_version,
             runtime_type=runtime_type,
-            run_type=run_type,
             prediction_phase=prediction_phase,
-            status=status,
-            harness_run_id=harness_run_id,
-            input_artifact_id=input_artifact_id,
-            data_snapshot_id=data_snapshot_id,
             records_expected=records_expected,
         )
 
@@ -1868,12 +1850,7 @@ def _create_scheme_run_conn(
     predict_date: str,
     scheme_version: str | None = None,
     runtime_type: str = "native_adapter",
-    run_type: str = "active",
     prediction_phase: str | None = None,
-    status: str = "running",
-    harness_run_id: str | None = None,
-    input_artifact_id: str | None = None,
-    data_snapshot_id: str | None = None,
     records_expected: int | None = None,
 ) -> int:
     """在调用方事务内创建不带遗留 schedule linkage 的运行。"""
@@ -1882,25 +1859,20 @@ def _create_scheme_run_conn(
             """
             INSERT INTO t_scheme_runs
                 (scheme_id, scheme_version, runtime_type, run_type,
-                 prediction_phase, predict_date, status, harness_run_id,
-                 input_artifact_id, data_snapshot_id, records_expected)
+                 prediction_phase, predict_date, status, records_expected)
             VALUES
                 (:scheme_id, :scheme_version, :runtime_type, :run_type,
-                 :prediction_phase, :predict_date, :status, :harness_run_id,
-                 :input_artifact_id, :data_snapshot_id, :records_expected)
+                 :prediction_phase, :predict_date, :status, :records_expected)
             """
         ),
         {
             "scheme_id": scheme_id,
             "scheme_version": scheme_version,
             "runtime_type": runtime_type,
-            "run_type": run_type,
+            "run_type": "active",
             "prediction_phase": prediction_phase,
             "predict_date": predict_date,
-            "status": status,
-            "harness_run_id": harness_run_id,
-            "input_artifact_id": input_artifact_id,
-            "data_snapshot_id": data_snapshot_id,
+            "status": "running",
             "records_expected": records_expected,
         },
     )
@@ -1935,7 +1907,6 @@ def _finish_scheme_run_conn(
     records_returned: int | None = None,
     records_written: int | None = None,
     error_message: str | None = None,
-    require_exact_run: bool = False,
 ) -> None:
     """在调用方事务中标记预测运行结束。"""
     sql = text(
@@ -1959,7 +1930,7 @@ def _finish_scheme_run_conn(
             "error_message": error_message,
         },
     )
-    if require_exact_run and int(getattr(result, "rowcount", 0) or 0) != 1:
+    if int(getattr(result, "rowcount", 0) or 0) != 1:
         raise RuntimeError(
             "scheme run update affected "
             f"{int(getattr(result, 'rowcount', 0) or 0)} rows for run_id={run_id}"
@@ -1999,7 +1970,6 @@ def _prediction_write_decision_conn(
                 "horizon": key[2],
                 "target_date": key[3],
             },
-            for_update=True,
         )
         (existing if row is not None else missing).append(key)
 
@@ -2049,7 +2019,6 @@ def complete_approved_blackbox_run(
         run = _read_scheme_run_conn(
             conn,
             run_id=int(run_id),
-            for_update=True,
         )
         expected_run_identity = {
             "scheme_id": cfg.scheme_id,
@@ -2161,7 +2130,6 @@ def complete_approved_blackbox_run(
             records_returned=records_returned,
             records_written=records_written,
             error_message=error_message,
-            require_exact_run=True,
         )
         _write_run_log_conn(
             conn,
@@ -2253,7 +2221,6 @@ def complete_active_native_run(
         run = _read_scheme_run_conn(
             conn,
             run_id=int(run_id),
-            for_update=True,
         )
         expected_run_identity = {
             "scheme_id": cfg.scheme_id,
@@ -2368,7 +2335,6 @@ def complete_active_native_run(
             records_returned=records_returned,
             records_written=records_written,
             error_message=error_message,
-            require_exact_run=True,
         )
         _write_run_log_conn(
             conn,
@@ -2443,7 +2409,6 @@ def complete_gray_gap_run(
         run = _read_scheme_run_conn(
             conn,
             run_id=int(run_id),
-            for_update=True,
         )
         _validate_gray_gap_run(
             cfg,
@@ -2504,7 +2469,7 @@ def complete_gray_gap_run(
                 "records_written": records_written,
             },
         )
-        _require_rowcount(finished, 1, "gray gap run finish")
+        _require_rowcount(finished, "gray gap run finish")
         _write_run_log_conn(
             conn,
             str(cfg.scheme_id),
@@ -2581,7 +2546,7 @@ def _bind_blackbox_gray_gap_snapshot_conn(
             "scheme_version": str(run["scheme_version"]),
         },
     )
-    _require_rowcount(result, 1, "Blackbox gray gap run data snapshot bind")
+    _require_rowcount(result, "Blackbox gray gap run data snapshot bind")
 
 
 def _blackbox_gray_gap_record_snapshot_id(
@@ -2680,7 +2645,8 @@ _GRAY_GAP_FIXED_ATOMIC_TARGETS = {
 }
 
 
-def _require_lower_sha256(value: object, field: str) -> str:
+def _require_lower_sha256(value: object) -> str:
+    field = "source_authority.manifest_sha256"
     if not isinstance(value, str):
         raise ValueError(f"{field} must be a lowercase SHA256 digest")
     normalized = _require_sha256(value, field)
@@ -2912,7 +2878,6 @@ def _normalize_gray_gap_source_authority(
     normalized = dict(source_authority)
     normalized["manifest_sha256"] = _require_lower_sha256(
         source_authority["manifest_sha256"],
-        "source_authority.manifest_sha256",
     )
     cutoff_date = _require_iso_date(
         source_authority["cutoff_date"],
@@ -3191,7 +3156,6 @@ def _assert_gray_gap_business_keys_absent(
                 "horizon": int(row["horizon"]),
                 "target_date": str(row["target_date"]),
             },
-            for_update=True,
         )
         if existing is not None:
             raise RuntimeError(
@@ -3218,7 +3182,6 @@ def fail_scheme_run_atomic(
         run = _read_scheme_run_conn(
             conn,
             run_id=int(run_id),
-            for_update=True,
         )
         identity_errors = []
         if run is None:
@@ -3252,7 +3215,6 @@ def fail_scheme_run_atomic(
             records_returned=records_returned,
             records_written=0,
             error_message=error_message,
-            require_exact_run=True,
         )
         _write_run_log_conn(
             conn,

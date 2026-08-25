@@ -37,7 +37,6 @@ def write_gate_record(
     expected_daily_date: str,
     business_digest: str | None,
     checks: Sequence[Mapping[str, object]],
-    restart: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """以原子替换写入当天 V2 Gate 审计凭证。"""
     if status not in {"checking", "ready", "blocked"}:
@@ -57,7 +56,7 @@ def write_gate_record(
         "expected_daily_date": normalized_expected_date,
         "business_digest": business_digest,
         "checks": [dict(item) for item in checks],
-        "restart": dict(restart or {}),
+        "restart": {"requested": False, "verified": False},
     }
     path = gate_record_path(config, normalized_run_date)
     path.parent.mkdir(parents=True, exist_ok=True)

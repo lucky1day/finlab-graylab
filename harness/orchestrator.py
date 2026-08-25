@@ -46,7 +46,7 @@ def onboard(
     try:
         results: list[GateResult] = []
         for gate in selected_gates:
-            result = _run_gate(ctx, gate)
+            result = gate.run(ctx)
             results.append(result)
             gate_result_persisted = persist_harness_gate_result(
                 ctx,
@@ -105,20 +105,6 @@ def onboard(
             from harness.blackbox_v2.gates import cleanup_runtime_input
 
             cleanup_runtime_input(ctx)
-
-
-def _run_gate(ctx: GateContext, gate: Gate) -> GateResult:
-    if getattr(gate, "requires_operation", False) and not ctx.operation:
-        now = utc_now()
-        return GateResult(
-            gate_name=gate.name,
-            status=GateStatus.BLOCKED,
-            evidence=[Evidence("operation_required", True)],
-            errors=[f"{gate.name} requires a direct operator command"],
-            started_at=now,
-            finished_at=now,
-        )
-    return gate.run(ctx)
 
 
 def _persistence_failure_report(

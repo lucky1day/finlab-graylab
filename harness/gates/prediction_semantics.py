@@ -19,7 +19,6 @@ def validate_live_record_semantics(
     *,
     expected_predict_date: str,
     prefix: str,
-    require_phase: bool,
     frequency: str | None = None,
     horizon: int | None = None,
     calendar: Any | None = None,
@@ -51,9 +50,7 @@ def validate_live_record_semantics(
         errors.append(f"{prefix}.target_date must be after feature_date, got {target_date} <= {feature_date}")
 
     phase = str(record.prediction_phase or "").strip()
-    if require_phase and phase not in LIVE_PREDICTION_PHASES:
-        errors.append(f"{prefix}.prediction_phase must be one of {sorted(LIVE_PREDICTION_PHASES)}, got {record.prediction_phase}")
-    elif phase and phase not in LIVE_PREDICTION_PHASES:
+    if phase and phase not in LIVE_PREDICTION_PHASES:
         errors.append(f"{prefix}.prediction_phase invalid: {record.prediction_phase}")
     if calendar is not None and frequency:
         errors.extend(

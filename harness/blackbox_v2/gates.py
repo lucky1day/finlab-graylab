@@ -397,7 +397,6 @@ class BlackboxBacktestGate(_BlackboxGate):
                 metadata,
                 state.snapshot,
                 engine,
-                limit=None,
                 target_date_before=ctx.predict_date,
                 predict_date_from=ctx.backtest_start_date,
             )
@@ -484,7 +483,6 @@ class BlackboxBacktestGate(_BlackboxGate):
 
 class BlackboxShadowRegisterGate(_BlackboxGate):
     name = "shadow-register"
-    requires_operation = True
 
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
         cfg = _config(ctx)

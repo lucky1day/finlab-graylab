@@ -102,7 +102,6 @@ class ActivationGate(Gate):
     """Native 激活 gate：按直接操作执行 paused→active 或 active 精确版本重批准。"""
 
     name = "activate"
-    requires_operation = True
 
     def run(self, ctx: GateContext) -> GateResult:
         config_path = ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml"

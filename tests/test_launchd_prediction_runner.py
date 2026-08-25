@@ -256,7 +256,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                 scheduled_control_plane="launchd_one_shot",
                 scheduled_execution_context=object(),
             )
-        runner._finalize(summary, configuration_error=False)
+        runner._finalize(summary)
 
         self.assertEqual(
             summary.skipped,
@@ -307,7 +307,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                         scheduled_control_plane="launchd_one_shot",
                         scheduled_execution_context=object(),
                     )
-                runner._finalize(summary, configuration_error=False)
+                runner._finalize(summary)
 
                 self.assertEqual(
                     summary.skipped,

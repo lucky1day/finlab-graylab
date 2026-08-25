@@ -523,7 +523,6 @@ def _create_runs(
                 predict_date=group.predict_date,
                 scheme_version=group.scheme_version,
                 runtime_type=group.runtime_type,
-                run_type="active",
                 prediction_phase="gray_live",
                 records_expected=len(group.missing_target_keys),
             )

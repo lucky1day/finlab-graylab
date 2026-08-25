@@ -72,16 +72,11 @@ def build_historical_cases(
     snapshot: BlackboxSnapshot,
     engine,
     *,
-    limit: int | None,
     target_date_before: str,
     predict_date_from: str = "2025-01-01",
 ) -> list[HistoricalCase]:
     """按平台日期与 actual 事实生成当前快照 as-of 历史 Request。"""
     _validate_metadata_contract(metadata)
-    if limit is not None and (
-        isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0
-    ):
-        raise ValueError("historical case limit must be a positive integer")
     target_date_before = _iso_date(target_date_before, "target_date_before")
     predict_date_from = _iso_date(predict_date_from, "predict_date_from")
     if target_date_before <= predict_date_from:
@@ -120,13 +115,7 @@ def build_historical_cases(
         and _candidate_complete_date(item) < target_date_before
     ]
     eligible.sort(key=lambda item: (item.predict_date, item.target_date))
-    if limit is not None and len(eligible) < limit:
-        raise ValueError(
-            f"historical backtest requires exactly {limit} unique cases before "
-            f"{target_date_before}, found {len(eligible)}"
-        )
-
-    selected = eligible if limit is None else eligible[-limit:]
+    selected = eligible
     if not selected:
         raise ValueError(
             "historical backtest requires at least one unique case in interval "
@@ -168,14 +157,12 @@ def build_historical_cases(
                 },
             )
         )
-    validate_historical_cases(cases, expected_count=len(selected))
+    validate_historical_cases(cases)
     return cases
 
 
-def validate_historical_cases(cases: Iterable[HistoricalCase], *, expected_count: int) -> list[HistoricalCase]:
+def validate_historical_cases(cases: Iterable[HistoricalCase]) -> list[HistoricalCase]:
     materialized = list(cases)
-    if len(materialized) != expected_count:
-        raise ValueError(f"historical case count must be exactly {expected_count}, got {len(materialized)}")
     fields = {
         "request_id": [item.request.request_id for item in materialized],
         "predict_date": [item.request.predict_date for item in materialized],

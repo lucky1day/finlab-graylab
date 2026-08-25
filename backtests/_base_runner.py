@@ -480,20 +480,17 @@ def persist_run_output(engine: Engine, output: RunOutput, *, benchmark_id: str) 
         data_source=output.data_source,
         start_date=output.start_date,
         end_date=output.end_date,
-        status="running",
         summary=output.summary,
         report_path=output.report_path,
         code_hash=output.summary.get("code_hash"),
         config_hash=output.summary.get("config_hash"),
         input_artifact_hash=output.summary.get("input_artifact_hash"),
-        run_mode="persist",
     )
     replace_backtest_predictions(engine, run_id, output.rows)
     output.summary["run_id"] = run_id
     update_backtest_run_summary(
         engine,
         run_id=run_id,
-        status="success",
         summary=output.summary,
         report_path=output.report_path,
     )

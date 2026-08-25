@@ -283,16 +283,14 @@ def resolved_import_names(
     return names
 
 
-def has_import(tree: ast.AST, module_name: str) -> bool:
+def has_shared_input_artifacts_import(tree: ast.AST) -> bool:
     for imported, _ in import_names(tree):
         normalized = imported.lstrip(".")
-        if normalized == module_name or normalized.startswith(f"{module_name}."):
+        if normalized == "shared.input_artifacts" or normalized.startswith(
+            "shared.input_artifacts."
+        ):
             return True
     return False
-
-
-def has_shared_input_artifacts_import(tree: ast.AST) -> bool:
-    return has_import(tree, "shared.input_artifacts")
 
 
 def dangerous_imports(path: Path, tree: ast.AST, modules: Iterable[str]) -> list[RuleViolation]:

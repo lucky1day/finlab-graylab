@@ -187,7 +187,6 @@ def _write_blocked_gate(
         expected_daily_date=expected_feature_date,
         business_digest=None,
         checks=[{"name": check_name, "status": "blocked"}],
-        restart={"requested": False, "verified": False},
     )
 
 
@@ -212,7 +211,6 @@ def _write_ready_gate(
             {"name": "local_mysql_refresh", "status": "passed"},
             {"name": "strict_current_read", "status": "passed"},
         ],
-        restart={"requested": False, "verified": False},
     )
 
 

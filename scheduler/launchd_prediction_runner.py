@@ -287,7 +287,7 @@ def _execute_candidate(
         summary.failed.append(_candidate_item(cfg, f"execution_{status}"))
 
 
-def _finalize(summary: LaunchdPredictionSummary, *, configuration_error: bool) -> None:
+def _finalize(summary: LaunchdPredictionSummary) -> None:
     for items in (
         summary.executed,
         summary.excluded,
@@ -301,10 +301,7 @@ def _finalize(summary: LaunchdPredictionSummary, *, configuration_error: bool) -
         item.get("code") != PREDICTION_KEYS_ALREADY_EXIST
         for item in summary.skipped
     )
-    if configuration_error:
-        summary.outcome = "configuration_error"
-        summary.exit_code = 2
-    elif (
+    if (
         summary.denied
         or summary.blocked
         or actionable_skips
@@ -389,7 +386,7 @@ def _run_one_shot(
 
         candidates = _cache_publishers_first(candidates)
         if not candidates:
-            _finalize(summary, configuration_error=False)
+            _finalize(summary)
             return summary
 
         engine = None
@@ -423,7 +420,7 @@ def _run_one_shot(
                 ]
                 if not candidates:
                     if summary.blocked:
-                        _finalize(summary, configuration_error=False)
+                        _finalize(summary)
                     else:
                         summary.outcome = "not_applicable"
                         summary.exit_code = 0
@@ -533,7 +530,7 @@ def _run_one_shot(
                                 ),
                             )
 
-            _finalize(summary, configuration_error=False)
+            _finalize(summary)
             return summary
         except LaunchdPredictionConfigurationError:
             raise

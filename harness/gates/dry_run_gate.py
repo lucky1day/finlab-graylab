@@ -137,7 +137,6 @@ def _validate_records(
                 record,
                 expected_predict_date=predict_date,
                 prefix=prefix,
-                require_phase=False,
                 frequency=frequency,
                 horizon=horizon,
                 calendar=calendar,

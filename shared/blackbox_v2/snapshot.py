@@ -361,7 +361,7 @@ def resolve_cutoffs(
     monthly_as_of: pd.DataFrame,
 ) -> CutoffKeys:
     """解析三频截止键；周/月键必须由平台权威 as-of 结果提供。"""
-    feature = _parse_iso_date(feature_date, "feature_date")
+    feature = _parse_iso_date(feature_date)
     daily = pd.read_csv(snapshot.data_dir / "daily_output.csv", dtype={"date": "string"})
     if "date" not in daily.columns:
         raise ValueError("daily_output.csv is missing date cutoff column")
@@ -554,8 +554,8 @@ def normalize_period_key(value: object, field: str) -> str:
     return text
 
 
-def _parse_iso_date(value: str, field: str) -> date:
+def _parse_iso_date(value: str) -> date:
     try:
         return date.fromisoformat(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"{field} must use YYYY-MM-DD") from exc
+        raise ValueError("feature_date must use YYYY-MM-DD") from exc

@@ -273,7 +273,6 @@ def _activate_revision(
 
 class BlackboxLifecycleReconcileGate(Gate):
     name = "lifecycle-reconcile"
-    requires_operation = True
 
     def run(self, ctx: GateContext) -> GateResult:
         return guarded_result(self.name, lambda started_at: self._run(ctx, started_at))

@@ -10,7 +10,6 @@ from harness.result import Evidence, GateResult, GateStatus
 
 class Gate(ABC):
     name: str
-    requires_operation: bool = False
 
     @abstractmethod
     def run(self, ctx: GateContext) -> GateResult:

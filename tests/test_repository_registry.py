@@ -714,11 +714,8 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             scheme_id="t1_daily",
             predict_date="2026-06-05",
             scheme_version="abc123",
-            run_type="active",
             prediction_phase="scheduled_live",
             scheduled_control_plane="launchd_one_shot",
-            input_artifact_id="artifact-1",
-            data_snapshot_id="snapshot-1",
         )
 
         self.assertEqual(run_id, 101)
@@ -731,8 +728,8 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertEqual(params["run_type"], "active")
         self.assertEqual(params["prediction_phase"], "scheduled_live")
         self.assertEqual(params["status"], "running")
-        self.assertEqual(params["input_artifact_id"], "artifact-1")
-        self.assertEqual(params["data_snapshot_id"], "snapshot-1")
+        self.assertNotIn("input_artifact_id", params)
+        self.assertNotIn("data_snapshot_id", params)
         self.assertEqual(params["runtime_type"], "native_adapter")
 
 

@@ -81,13 +81,11 @@ def run_monthly_0629_reproduction(
                 data_source=DATA_SOURCE,
                 start_date=min(row["predict_date"] for row in rows) if rows else min(dates),
                 end_date=max(row["target_date"] for row in rows) if rows else max(dates),
-                status="running",
                 summary=summary,
-                run_mode="persist",
             )
             written = replace_backtest_predictions(db_engine, run_id, rows)
             summary = {**summary, "backtest_run_id": run_id, "written_predictions": written}
-            update_backtest_run_summary(db_engine, run_id=run_id, status="success", summary=summary)
+            update_backtest_run_summary(db_engine, run_id=run_id, summary=summary)
             payload["backtest_run_id"] = run_id
             payload["summary"] = summary
         return clean_json(payload)

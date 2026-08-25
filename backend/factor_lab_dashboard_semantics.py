@@ -481,9 +481,7 @@ def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
         raise DashboardDataError("dashboard row_fields do not match ROW_FIELDS")
 
     _required_snapshot_id(payload.get("snapshot_id"))
-    _required_aware_iso_datetime(
-        payload.get("generated_at"), field="generated_at"
-    )
+    _required_aware_iso_datetime(payload.get("generated_at"))
     _required_payload_iso_date(
         payload.get("display_until"), field="display_until"
     )
@@ -528,7 +526,6 @@ def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
         horizon = _required_json_integer(
             scheme.get("horizon"),
             field=f"scheme[{scheme_index}] horizon",
-            minimum=1,
         )
         expected_scheme_id = f"{base_scheme_id}__h{horizon}__{target_tenor}"
         if scheme_id != expected_scheme_id:
@@ -829,7 +826,6 @@ def _required_json_integer(
     value: Any,
     *,
     field: str,
-    minimum: int | None = None,
 ) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
@@ -841,12 +837,13 @@ def _required_json_integer(
         result = int(value)
     if abs(result) > MAX_SAFE_JSON_INTEGER:
         raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
-    if minimum is not None and result < minimum:
+    if result < 1:
         raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
     return result
 
 
-def _required_aware_iso_datetime(value: Any, *, field: str) -> str:
+def _required_aware_iso_datetime(value: Any) -> str:
+    field = "generated_at"
     if not isinstance(value, str) or GENERATED_AT_PATTERN.fullmatch(value) is None:
         raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
     try:

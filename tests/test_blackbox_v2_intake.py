@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import io
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 
@@ -109,20 +111,23 @@ class BlackboxV2IntakeTests(unittest.TestCase):
             root = Path(tmpdir)
             delivery = _write_delivery(root / "incoming")
 
-            exit_code = main(
-                [
-                    "intake-blackbox",
-                    "--delivery-dir",
-                    str(delivery),
-                    "--project-root",
-                    str(root),
-                    "--platform-input",
-                    "api-wind-date-v1",
-                ]
-            )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "intake-blackbox",
+                        "--delivery-dir",
+                        str(delivery),
+                        "--project-root",
+                        str(root),
+                        "--platform-input",
+                        "api-wind-date-v1",
+                    ]
+                )
             config_path = root / "schemes" / "trial_10y" / "config.yaml"
             config_text = config_path.read_text(encoding="utf-8")
             config = load_scheme_config(config_path)
+            payload = json.loads(output.getvalue())
 
         self.assertEqual(exit_code, 0)
         self.assertIn(
@@ -130,6 +135,7 @@ class BlackboxV2IntakeTests(unittest.TestCase):
             config_text,
         )
         self.assertEqual(config.platform_inputs, ("api-wind-date-v1",))
+        self.assertEqual(payload["warnings"], [])
 
     def test_intake_rejects_invalid_platform_inputs(self) -> None:
         from shared.blackbox_v2.intake import intake_delivery

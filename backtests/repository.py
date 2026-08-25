@@ -65,13 +65,11 @@ def create_backtest_run(
     data_source: str,
     start_date: str,
     end_date: str,
-    status: str = "running",
     summary: dict[str, Any] | None = None,
     report_path: str | None = None,
     code_hash: str | None = None,
     config_hash: str | None = None,
     input_artifact_hash: str | None = None,
-    run_mode: str = "persist",
 ) -> int:
     """追加一次不可变历史复现 run，并返回 backtest_run_id。"""
     insert_sql = text(
@@ -99,13 +97,13 @@ def create_backtest_run(
         "data_source": data_source,
         "start_date": start_date,
         "end_date": end_date,
-        "status": status,
+        "status": "running",
         "summary": json_dumps(summary or {}),
         "report_path": report_path,
         "code_hash": code_hash,
         "config_hash": config_hash,
         "input_artifact_hash": input_artifact_hash,
-        "run_mode": run_mode,
+        "run_mode": "persist",
     }
     with engine.begin() as conn:
         result = conn.execute(insert_sql, params)
@@ -142,13 +140,11 @@ def persist_backtest_output_atomic(
             data_source=output.data_source,
             start_date=output.start_date,
             end_date=output.end_date,
-            status="running",
             summary=output.summary,
             report_path=output.report_path,
             code_hash=output.summary.get("code_hash"),
             config_hash=output.summary.get("config_hash"),
             input_artifact_hash=output.summary.get("input_artifact_hash"),
-            run_mode="persist",
         )
         inserted_predictions = _insert_backtest_predictions_connection(connection, run_id, rows)
         if inserted_predictions != len(rows):
@@ -167,7 +163,6 @@ def persist_backtest_output_atomic(
         _update_backtest_run_summary_connection(
             connection,
             run_id=run_id,
-            status="success",
             summary=summary,
             report_path=output.report_path,
         )
@@ -202,13 +197,11 @@ def _create_backtest_run_connection(
     data_source: str,
     start_date: str,
     end_date: str,
-    status: str,
     summary: dict[str, Any],
     report_path: str | None,
     code_hash: str | None,
     config_hash: str | None,
     input_artifact_hash: str | None,
-    run_mode: str,
 ) -> int:
     summary_expr = _json_expression(connection, "summary")
     result = connection.execute(
@@ -229,13 +222,13 @@ def _create_backtest_run_connection(
             "data_source": data_source,
             "start_date": start_date,
             "end_date": end_date,
-            "status": status,
+            "status": "running",
             "summary": json_dumps(summary),
             "report_path": report_path,
             "code_hash": code_hash,
             "config_hash": config_hash,
             "input_artifact_hash": input_artifact_hash,
-            "run_mode": run_mode,
+            "run_mode": "persist",
         },
     )
     run_id = getattr(result, "lastrowid", None)
@@ -311,7 +304,6 @@ def _update_backtest_run_summary_connection(
     connection: Connection,
     *,
     run_id: int,
-    status: str,
     summary: dict[str, Any],
     report_path: str | None,
 ) -> None:
@@ -327,7 +319,7 @@ def _update_backtest_run_summary_connection(
         ),
         {
             "run_id": run_id,
-            "status": status,
+            "status": "success",
             "summary": json_dumps(summary),
             "report_path": report_path,
         },
@@ -344,7 +336,6 @@ def update_backtest_run_summary(
     engine: Engine,
     *,
     run_id: int,
-    status: str,
     summary: dict[str, Any] | None = None,
     report_path: str | None = None,
 ) -> None:
@@ -364,7 +355,7 @@ def update_backtest_run_summary(
             sql,
             {
                 "run_id": run_id,
-                "status": status,
+                "status": "success",
                 "summary": json_dumps(summary or {}),
                 "report_path": report_path,
             },
