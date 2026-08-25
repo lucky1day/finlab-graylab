@@ -8,33 +8,23 @@ from fastapi import HTTPException, Response
 from backend import main
 
 
-def _clear_admin_token() -> None:
-    os.environ.pop("BOND_ADMIN_TOKEN", None)
-
-
 class RequireAdminTokenTests(unittest.TestCase):
     """直接调用 auth 依赖，覆盖缺失配置 / 缺失头 / 不匹配 / 匹配四种情形。"""
 
-    def test_missing_server_config_fails_closed(self) -> None:
-        # 未配置 BOND_ADMIN_TOKEN 时禁用写接口，避免本地直连/隧道误配暴露写库入口。
-        with patch.dict("os.environ", {}, clear=False):
-            _clear_admin_token()
-            with self.assertRaises(HTTPException) as ctx:
-                main.require_admin_token(x_admin_token=None)
-            self.assertEqual(ctx.exception.status_code, 503)
-
-
-    def test_missing_header_is_unauthorized(self) -> None:
-        with patch.dict("os.environ", {"BOND_ADMIN_TOKEN": "s3cret"}, clear=False):
-            with self.assertRaises(HTTPException) as ctx:
-                main.require_admin_token(x_admin_token=None)
-            self.assertEqual(ctx.exception.status_code, 401)
-
-    def test_wrong_token_is_forbidden(self) -> None:
-        with patch.dict("os.environ", {"BOND_ADMIN_TOKEN": "s3cret"}, clear=False):
-            with self.assertRaises(HTTPException) as ctx:
-                main.require_admin_token(x_admin_token="wrong")
-            self.assertEqual(ctx.exception.status_code, 403)
+    def test_invalid_admin_token_states_fail_closed(self) -> None:
+        for environ, header, status_code in (
+            ({}, None, 503),
+            ({"BOND_ADMIN_TOKEN": "s3cret"}, None, 401),
+            ({"BOND_ADMIN_TOKEN": "s3cret"}, "wrong", 403),
+        ):
+            with self.subTest(status_code=status_code), patch.dict(
+                os.environ,
+                environ,
+                clear=True,
+            ):
+                with self.assertRaises(HTTPException) as ctx:
+                    main.require_admin_token(x_admin_token=header)
+                self.assertEqual(ctx.exception.status_code, status_code)
 
     def test_correct_token_passes(self) -> None:
         with patch.dict("os.environ", {"BOND_ADMIN_TOKEN": "s3cret"}, clear=False):
@@ -113,10 +103,23 @@ class MetricsEndpointTests(unittest.TestCase):
         self.assertEqual(metrics_mock.call_args.args[:2], (engine, "demo_daily__h1__10Y"))
         self.assertEqual(result["scheme_id"], "demo_daily__h1__10Y")
 
-    def test_metrics_endpoint_rejects_tenor_query_semantics(self) -> None:
-        with self.assertRaises(HTTPException) as ctx:
-            main.api_metrics("demo_daily__h1__10Y", tenor="10Y")
-        self.assertEqual(ctx.exception.status_code, 400)
+    def test_endpoints_reject_tenor_query_semantics(self) -> None:
+        calls = {
+            "metrics": lambda: main.api_metrics(
+                "demo_daily__h1__10Y",
+                tenor="10Y",
+            ),
+            "predictions": lambda: main.api_predictions(
+                "demo_daily__h1__10Y",
+                response=Response(),
+                tenor="10Y",
+            ),
+        }
+        for endpoint, call in calls.items():
+            with self.subTest(endpoint=endpoint):
+                with self.assertRaises(HTTPException) as ctx:
+                    call()
+                self.assertEqual(ctx.exception.status_code, 400)
 
 
     def test_metrics_endpoint_rejects_malformed_month(self) -> None:
@@ -169,15 +172,6 @@ class PredictionsEndpointTests(unittest.TestCase):
             "uncached-db",
         )
 
-    def test_predictions_endpoint_rejects_tenor_query_semantics(self) -> None:
-        with self.assertRaises(HTTPException) as ctx:
-            main.api_predictions(
-                "demo_daily__h1__10Y",
-                response=Response(),
-                tenor="10Y",
-            )
-        self.assertEqual(ctx.exception.status_code, 400)
-
     def test_predictions_endpoint_maps_unknown_registry_scheme_to_404(self) -> None:
         with patch.object(main, "get_engine", return_value=object()), patch.object(
             main, "list_predictions", side_effect=LookupError("scheme not found: demo_daily")
@@ -222,22 +216,20 @@ class AuthDependencyWiredTests(unittest.TestCase):
 
 
 class CorsConfigTests(unittest.TestCase):
-    def test_default_cors_origins(self) -> None:
-        with patch.dict("os.environ", {}, clear=False):
-            os.environ.pop("BOND_CORS_ORIGINS", None)
-            self.assertEqual(
-                main._cors_origins(), ["http://localhost", "http://127.0.0.1"]
-            )
-
-    def test_cors_origins_from_env(self) -> None:
-        with patch.dict(
-            "os.environ",
-            {"BOND_CORS_ORIGINS": "https://a.example , https://b.example"},
-            clear=False,
+    def test_cors_origins_follow_environment(self) -> None:
+        for environ, expected in (
+            ({}, ["http://localhost", "http://127.0.0.1"]),
+            (
+                {"BOND_CORS_ORIGINS": "https://a.example , https://b.example"},
+                ["https://a.example", "https://b.example"],
+            ),
         ):
-            self.assertEqual(
-                main._cors_origins(), ["https://a.example", "https://b.example"]
-            )
+            with self.subTest(environ=environ), patch.dict(
+                os.environ,
+                environ,
+                clear=True,
+            ):
+                self.assertEqual(main._cors_origins(), expected)
 
 class DateParameterSemanticsTests(unittest.TestCase):
     """日期参数必须校验真实日历日期。"""
