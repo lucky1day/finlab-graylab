@@ -44,79 +44,68 @@ class PredictionSemanticsTests(unittest.TestCase):
 
         self.assertEqual(errors, [])
 
-    def test_monthly_semantics_accepts_source_trigger_day_context(self) -> None:
+    def test_monthly_semantics_keeps_natural_trigger_date(self) -> None:
         from harness.gates.prediction_semantics import validate_live_record_semantics
         from shared.prediction_context import MONTHLY_TARGET_RULE
 
-        calendar = _MonthlyCalendar()
-        record = PredictionRecord(
-            scheme_id="monthly_10y_rf_top5_0629",
-            target_tenor="10Y",
-            horizon=30,
-            predict_date="2026-04-15",
-            feature_date="2026-04-15",
-            target_date="2026-05-15",
-            predicted_direction=-1,
-            extra={
-                "frequency": "monthly",
-                "db_rdate": "2026-04-15",
-                "trigger_date": "2026-04-15",
-                "scheduled_trigger_date": "2026-04-15",
-                "input_cutoff_date": "2026-04-15",
-                "feature_month_id": "2026-04",
-                "target_month_id": "2026-05",
-                "target_rule": MONTHLY_TARGET_RULE,
-            },
+        cases = (
+            (
+                "trading_day",
+                _MonthlyCalendar(),
+                "2026-04-15",
+                "2026-04-15",
+                "2026-05-15",
+                -1,
+            ),
+            (
+                "non_trading_day",
+                _NonTradingMonthlyCalendar(),
+                "2025-02-15",
+                "2025-02-14",
+                "2025-03-14",
+                1,
+            ),
         )
+        for (
+            name,
+            calendar,
+            predict_date,
+            feature_date,
+            target_date,
+            direction,
+        ) in cases:
+            with self.subTest(case=name):
+                record = PredictionRecord(
+                    scheme_id="monthly_10y_rf_top5_0629",
+                    target_tenor="10Y",
+                    horizon=30,
+                    predict_date=predict_date,
+                    feature_date=feature_date,
+                    target_date=target_date,
+                    predicted_direction=direction,
+                    extra={
+                        "frequency": "monthly",
+                        "db_rdate": predict_date,
+                        "trigger_date": predict_date,
+                        "scheduled_trigger_date": predict_date,
+                        "input_cutoff_date": feature_date,
+                        "feature_month_id": feature_date[:7],
+                        "target_month_id": target_date[:7],
+                        "target_rule": MONTHLY_TARGET_RULE,
+                    },
+                )
 
-        errors = validate_live_record_semantics(
-            record,
-            expected_predict_date="2026-04-15",
-            prefix="record[0]",
-            require_phase=False,
-            frequency="monthly",
-            horizon=30,
-            calendar=calendar,
-        )
+                errors = validate_live_record_semantics(
+                    record,
+                    expected_predict_date=predict_date,
+                    prefix="record[0]",
+                    require_phase=False,
+                    frequency="monthly",
+                    horizon=30,
+                    calendar=calendar,
+                )
 
-        self.assertEqual(errors, [])
-
-    def test_monthly_semantics_keeps_natural_15th_predict_date_on_non_trading_day(self) -> None:
-        from harness.gates.prediction_semantics import validate_live_record_semantics
-        from shared.prediction_context import MONTHLY_TARGET_RULE
-
-        calendar = _NonTradingMonthlyCalendar()
-        record = PredictionRecord(
-            scheme_id="monthly_10y_rf_top5_0629",
-            target_tenor="10Y",
-            horizon=30,
-            predict_date="2025-02-15",
-            feature_date="2025-02-14",
-            target_date="2025-03-14",
-            predicted_direction=1,
-            extra={
-                "frequency": "monthly",
-                "db_rdate": "2025-02-15",
-                "trigger_date": "2025-02-15",
-                "scheduled_trigger_date": "2025-02-15",
-                "input_cutoff_date": "2025-02-14",
-                "feature_month_id": "2025-02",
-                "target_month_id": "2025-03",
-                "target_rule": MONTHLY_TARGET_RULE,
-            },
-        )
-
-        errors = validate_live_record_semantics(
-            record,
-            expected_predict_date="2025-02-15",
-            prefix="record[0]",
-            require_phase=False,
-            frequency="monthly",
-            horizon=30,
-            calendar=calendar,
-        )
-
-        self.assertEqual(errors, [])
+                self.assertEqual(errors, [])
 
     def test_weekly_average_target_rule_can_override_calendar_default_rule(self) -> None:
         from harness.gates.prediction_semantics import validate_live_record_semantics
