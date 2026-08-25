@@ -59,31 +59,19 @@ class FailureTaxonomyTests(unittest.TestCase):
             )
         return exit_code, payload, gate_writes
 
-    def test_each_failure_keeps_a_distinct_category(self) -> None:
+    def test_each_failure_keeps_category_gate_evidence_and_redaction(self) -> None:
         seen: set[str] = set()
         for exc, expected_category, expected_exit in CASES:
             with self.subTest(exception=type(exc).__name__):
-                exit_code, payload, _ = self._run(exc)
+                exit_code, payload, gate_writes = self._run(exc)
                 self.assertEqual(payload["failure_category"], expected_category)
                 self.assertEqual(exit_code, expected_exit)
-                seen.add(str(payload["failure_category"]))
-        self.assertEqual(len(seen), len(CASES), "类别不得互相折叠")
-
-    def test_gate_check_name_carries_the_category(self) -> None:
-        """gate 侧也要留下类别，否则外部只能看到 refresh_failed。"""
-        for exc, expected_category, _ in CASES:
-            with self.subTest(exception=type(exc).__name__):
-                _, _, gate_writes = self._run(exc)
                 self.assertEqual(gate_writes[-1], expected_category)
-
-    def test_original_message_never_leaves_the_process(self) -> None:
-        """分类恢复了因果，但绝不能顺带把原始异常文本带出去。"""
-        for exc, _, _ in CASES:
-            with self.subTest(exception=type(exc).__name__):
-                _, payload, gate_writes = self._run(exc)
                 blob = repr(payload) + repr(gate_writes)
                 self.assertNotIn("secret-dsn", blob)
                 self.assertNotIn("user:pw", blob)
+                seen.add(str(payload["failure_category"]))
+        self.assertEqual(len(seen), len(CASES), "类别不得互相折叠")
 
     def test_sqlalchemy_error_is_configuration_not_unexpected(self) -> None:
         exc = OperationalError("SELECT 1", {}, Exception("secret-dsn://user:pw@host"))
