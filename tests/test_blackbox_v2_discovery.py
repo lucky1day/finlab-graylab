@@ -178,60 +178,43 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
 
 
 
-    def test_blackbox_version_changes_when_data_schema_version_changes(self) -> None:
+    def test_blackbox_version_tracks_each_canonical_input(self) -> None:
         from scheduler.discovery import load_scheme_config
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
-            config_path = scheme_dir / "config.yaml"
-            first = load_scheme_config(config_path)
-            config_path.write_text(
-                config_path.read_text(encoding="utf-8").replace(
-                    "data_schema_version: data-bridge-v1",
-                    "data_schema_version: data-bridge-v2",
-                ),
-                encoding="utf-8",
-            )
+        for changed_input, hash_field in (
+            ("data_schema", "config_hash"),
+            ("script", "code_hash"),
+            ("metadata", "manifest_hash"),
+        ):
+            with self.subTest(changed_input=changed_input), tempfile.TemporaryDirectory() as tmpdir:
+                scheme_dir = _write_blackbox_scheme(Path(tmpdir))
+                config_path = scheme_dir / "config.yaml"
+                first = load_scheme_config(config_path)
+                if changed_input == "data_schema":
+                    config_path.write_text(
+                        config_path.read_text(encoding="utf-8").replace(
+                            "data_schema_version: data-bridge-v1",
+                            "data_schema_version: data-bridge-v2",
+                        ),
+                        encoding="utf-8",
+                    )
+                else:
+                    suffix = "py" if changed_input == "script" else "json"
+                    path = scheme_dir / "delivery" / f"trial_10y.{suffix}"
+                    path.write_bytes(path.read_bytes() + b"\n")
 
-            second = load_scheme_config(config_path)
+                second = load_scheme_config(config_path)
 
-        self.assertNotEqual(first.config_hash, second.config_hash)
-        self.assertNotEqual(first.scheme_version, second.scheme_version)
-
-
-
-
-
+                self.assertNotEqual(
+                    getattr(first, hash_field),
+                    getattr(second, hash_field),
+                )
+                self.assertNotEqual(first.scheme_version, second.scheme_version)
 
 
-    def test_blackbox_version_changes_when_script_bytes_change(self) -> None:
-        from scheduler.discovery import load_scheme_config
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
-            config_path = scheme_dir / "config.yaml"
-            first = load_scheme_config(config_path)
-            script_path = scheme_dir / "delivery" / "trial_10y.py"
-            script_path.write_bytes(script_path.read_bytes() + b"# changed\n")
 
-            second = load_scheme_config(config_path)
 
-        self.assertNotEqual(first.code_hash, second.code_hash)
-        self.assertNotEqual(first.scheme_version, second.scheme_version)
-
-    def test_blackbox_version_changes_when_metadata_bytes_change(self) -> None:
-        from scheduler.discovery import load_scheme_config
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
-            first = load_scheme_config(scheme_dir / "config.yaml")
-            metadata_path = scheme_dir / "delivery" / "trial_10y.json"
-            metadata_path.write_bytes(metadata_path.read_bytes() + b"\n")
-
-            second = load_scheme_config(scheme_dir / "config.yaml")
-
-        self.assertNotEqual(first.manifest_hash, second.manifest_hash)
-        self.assertNotEqual(first.scheme_version, second.scheme_version)
 
 
     def test_blackbox_canonical_hash_is_stable_across_key_order(self) -> None:
