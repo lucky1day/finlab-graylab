@@ -42,6 +42,7 @@
   baseline；状态、样本数和摘要只作为 Gate evidence 持久化，source benchmark/CompareGate 继续负责算法保真。
 - CompareGate 不再生成 `comparison_summary.json` 或 `comparison_diff.csv`；计数、missing/extra key、字段 mismatch
   和指标差异均直接进入 `t_harness_gate_results.summary_json`，不维护本地与数据库两份审计结果。
+- `signal-gap-fill` 的 planner/result 只输出到标准输出，不再创建时间戳报告目录或保存重复 plan JSON。
 - Blackbox 自动入库只保留 `static -> input -> unit -> compare`；原 dry-run 已由同参数的 Compare 冒烟覆盖，
   重复的抽样 no-persist backtest 与 `--sample-size` 已删除。Blackbox `gate backtest` 只接受明确的
   `--persist`，Native dry-run/no-persist backtest 保持不变。

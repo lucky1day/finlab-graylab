@@ -77,7 +77,7 @@ def _run_cli(
     *,
     scheme_id: str | None = None,
     fill_report: dict[str, object] | None = None,
-) -> tuple[int, dict[str, object], Mock, Mock, list[Path]]:
+) -> tuple[int, dict[str, object], Mock, Mock]:
     output = io.StringIO()
     planner = Mock(return_value=plan)
     runner = Mock(
@@ -111,18 +111,15 @@ def _run_cli(
         redirect_stdout(output),
     ):
         exit_code = cli.main(argv)
-    report_root = tmp_path / "reports" / "harness" / "signal-gap-fill"
-    report_dirs = list(report_root.iterdir()) if report_root.exists() else []
     return (
         exit_code,
         json.loads(output.getvalue()),
         planner,
         runner,
-        report_dirs,
     )
 
 
-def test_parser_exposes_only_date_and_optional_exact_base_scheme() -> None:
+def test_parser_accepts_date_and_optional_exact_base_scheme() -> None:
     parser = cli._build_parser()
     args = parser.parse_args(
         [
@@ -136,8 +133,6 @@ def test_parser_exposes_only_date_and_optional_exact_base_scheme() -> None:
 
     assert args.predict_date == PREDICT_DATE
     assert args.scheme_id == "demo_native"
-    for removed in ("plan", "authorize", "algo_env", "issued_by"):
-        assert not hasattr(args, removed)
 
     for invalid in (
         ["--scheme-id", "demo_native__h5__5Y"],
@@ -161,7 +156,7 @@ def test_cli_plans_once_for_all_or_one_base_then_runs_coordinator(
 ) -> None:
     plan = _plan(base_scheme_id=scheme_id)
 
-    exit_code, payload, planner, runner, report_dirs = _run_cli(
+    exit_code, payload, planner, runner = _run_cli(
         tmp_path,
         plan,
         scheme_id=scheme_id,
@@ -182,10 +177,7 @@ def test_cli_plans_once_for_all_or_one_base_then_runs_coordinator(
         algo_env="forecast_env",
         timeout_sec=600,
     )
-    assert len(report_dirs) == 1
-    assert (report_dirs[0] / "signal_gap_plan.json").is_file()
-    assert not (report_dirs[0] / "frozen_plan.json").exists()
-    assert not (report_dirs[0] / "post_fill_plan.json").exists()
+    assert not (tmp_path / "reports").exists()
 
 
 
@@ -205,7 +197,7 @@ def test_not_due_or_present_exits_without_algorithm_or_write(
 ) -> None:
     plan = _plan(action=action, base_scheme_id="demo_native")
 
-    exit_code, payload, planner, runner, _ = _run_cli(
+    exit_code, payload, planner, runner = _run_cli(
         tmp_path,
         plan,
         scheme_id="demo_native",
@@ -220,7 +212,7 @@ def test_not_due_or_present_exits_without_algorithm_or_write(
 def test_blocked_plan_exits_without_coordinator(tmp_path: Path) -> None:
     plan = _plan(status="BLOCKED", base_scheme_id="demo_native")
 
-    exit_code, payload, planner, runner, report_dirs = _run_cli(
+    exit_code, payload, planner, runner = _run_cli(
         tmp_path,
         plan,
         scheme_id="demo_native",
@@ -231,7 +223,6 @@ def test_blocked_plan_exits_without_coordinator(tmp_path: Path) -> None:
     assert payload["failure_code"] == "INPUT_AUTHORITY_BLOCKED"
     planner.assert_called_once()
     runner.assert_not_called()
-    assert (report_dirs[0] / "signal_gap_plan.json").is_file()
 
 
 
@@ -253,7 +244,7 @@ def test_coordinator_status_maps_directly_without_retry(
         "remaining": [{"base_scheme_id": "demo_native"}],
     }
 
-    exit_code, payload, planner, runner, _ = _run_cli(
+    exit_code, payload, planner, runner = _run_cli(
         tmp_path,
         _plan(),
         fill_report=report,

@@ -4,7 +4,6 @@ import argparse
 import json
 import os
 import re
-import tempfile
 from datetime import date, datetime, timezone
 from dataclasses import asdict, is_dataclass
 from getpass import getuser
@@ -36,7 +35,6 @@ from shared.data_bridge.refresh import DataBridgeRefreshConfig
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SIGNAL_GAP_FILL_REPORT_RELATIVE_PATH = "reports/harness/signal-gap-fill"
 
 
 def default_report_dir(project_root: Path, scheme_id: str) -> Path:
@@ -50,16 +48,6 @@ def default_report_dir(project_root: Path, scheme_id: str) -> Path:
         relative_path=f"reports/harness/{scheme_id}/{timestamp}",
         development_default=(
             Path(project_root) / "reports" / "harness" / scheme_id / timestamp
-        ),
-    )
-
-
-def signal_gap_fill_report_root(project_root: Path) -> Path:
-    """signal-gap-fill 报告根目录；语义同 `default_report_dir`。"""
-    return resolve_runtime_state_path(
-        relative_path=SIGNAL_GAP_FILL_REPORT_RELATIVE_PATH,
-        development_default=(
-            Path(project_root) / "reports" / "harness" / "signal-gap-fill"
         ),
     )
 
@@ -416,16 +404,6 @@ def _exit_code_for_result(result: GateResult) -> int:
 def _run_signal_gap_fill_command(args: argparse.Namespace) -> int:
     """规划并一次性补齐单个日期的 active 方案信号缺口。"""
     project_root = args.project_root.resolve()
-    report_root = signal_gap_fill_report_root(project_root)
-    try:
-        report_root.mkdir(parents=True)
-    except FileExistsError:
-        if not report_root.is_dir():
-            raise
-    report_dir = Path(
-        tempfile.mkdtemp(prefix=f"{_timestamp()}-", dir=report_root)
-    )
-    plan_path = report_dir / "signal_gap_plan.json"
     try:
         databridge_config = DataBridgeRefreshConfig.from_env()
         plan = _plan_signal_gap_date(
@@ -444,7 +422,6 @@ def _run_signal_gap_fill_command(args: argparse.Namespace) -> int:
                 "completed": [],
                 "remaining": [],
             },
-            report_dir=report_dir,
         )
         return 2
     except Exception:
@@ -458,10 +435,8 @@ def _run_signal_gap_fill_command(args: argparse.Namespace) -> int:
                 "completed": [],
                 "remaining": [],
             },
-            report_dir=report_dir,
         )
         return 2
-    _write_json_file(plan_path, plan)
 
     counts = plan.get("counts", {})
     if (
@@ -481,7 +456,6 @@ def _run_signal_gap_fill_command(args: argparse.Namespace) -> int:
                 "completed": [],
                 "remaining": [],
             },
-            report_dir=report_dir,
         )
         return 2
     if int(counts.get("actionable", 0)) == 0:
@@ -500,7 +474,6 @@ def _run_signal_gap_fill_command(args: argparse.Namespace) -> int:
                 "completed": [],
                 "remaining": [],
             },
-            report_dir=report_dir,
         )
         return 0
 
@@ -512,10 +485,7 @@ def _run_signal_gap_fill_command(args: argparse.Namespace) -> int:
         algo_env="forecast_env",
         timeout_sec=args.timeout_sec,
     )
-    _print_signal_gap_fill_result(
-        result,
-        report_dir=report_dir,
-    )
+    _print_signal_gap_fill_result(result)
     if result.get("status") == "BLOCKED":
         return 2
     return 0 if result.get("status") in {
@@ -543,22 +513,8 @@ def _plan_signal_gap_date(
         engine.dispose()
 
 
-def _print_signal_gap_fill_result(
-    report: Mapping[str, Any],
-    *,
-    report_dir: Path | None = None,
-) -> None:
-    payload = dict(report)
-    if report_dir is not None:
-        payload["report_dir"] = str(report_dir)
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
-
-
-def _write_json_file(path: Path, value: Any) -> None:
-    path.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+def _print_signal_gap_fill_result(report: Mapping[str, Any]) -> None:
+    print(json.dumps(dict(report), ensure_ascii=False, indent=2))
 
 
 def _iso_date(value: str) -> str:
