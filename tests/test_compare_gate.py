@@ -53,6 +53,21 @@ def _write_strict_predictions(path: Path, rows: list[dict[str, str]]) -> None:
             writer.writerow({"benchmark_role": "platform_current", **row})
 
 
+def _strict_row(**updates: str) -> dict[str, str]:
+    row = {
+        "feature_date": "2025-01-02",
+        "target_date": "2025-01-09",
+        "target_tenor": "5Y",
+        "horizon": "5",
+        "direction": "1",
+        "confidence": "0.6",
+        "label": "1",
+        "is_correct": "true",
+    }
+    row.update(updates)
+    return row
+
+
 def _write_benchmark_required_config(
     root: Path,
     scheme_id: str = "demo",
@@ -154,18 +169,7 @@ class CompareGateTest(unittest.TestCase):
         ctx = _make_ctx(self.root)
         _write_benchmark_required_config(self.root)
         bench = self.root / "schemes" / "demo" / "benchmarks"
-        rows = [
-            {
-                "feature_date": "2025-01-02",
-                "target_date": "",
-                "target_tenor": "5Y",
-                "horizon": "5",
-                "direction": "1",
-                "confidence": "0.6",
-                "label": "1",
-                "is_correct": "true",
-            },
-        ]
+        rows = [_strict_row(target_date="")]
         _write_strict_predictions(bench / "original_predictions_sample.csv", rows)
         _write_strict_predictions(bench / "current_predictions_sample.csv", rows)
 
@@ -174,134 +178,82 @@ class CompareGateTest(unittest.TestCase):
         self.assertEqual(result.status, GateStatus.FAILED)
         self.assertTrue(any("missing required benchmark columns/values" in e for e in result.errors), result.errors)
 
-    def test_benchmark_required_new_format_uses_target_date_in_key(self) -> None:
-        ctx = _make_ctx(self.root)
-        _write_benchmark_required_config(self.root)
-        bench = self.root / "schemes" / "demo" / "benchmarks"
-        original = [
-            {
-                "feature_date": "2025-01-02",
-                "target_date": "2025-01-09",
-                "target_tenor": "5Y",
-                "horizon": "5",
-                "direction": "1",
-                "confidence": "0.6",
-                "label": "1",
-                "is_correct": "true",
-            },
-        ]
-        current = [
-            {
-                "feature_date": "2025-01-02",
-                "target_date": "2025-01-10",
-                "target_tenor": "5Y",
-                "horizon": "5",
-                "direction": "1",
-                "confidence": "0.6",
-                "label": "1",
-                "is_correct": "true",
-            },
-        ]
-        _write_strict_predictions(bench / "original_predictions_sample.csv", original)
-        _write_strict_predictions(bench / "current_predictions_sample.csv", current)
-
-        result = CompareGate().run(ctx)
-
-        self.assertEqual(result.status, GateStatus.FAILED)
-        self.assertTrue(any("missing dates/tenors" in e for e in result.errors), result.errors)
-        self.assertTrue(any("extra dates/tenors" in e for e in result.errors), result.errors)
-
-    def test_benchmark_required_new_format_uses_benchmark_role_in_key(self) -> None:
-        ctx = _make_ctx(self.root)
-        _write_benchmark_required_config(self.root)
-        bench = self.root / "schemes" / "demo" / "benchmarks"
-        original = [
-            {
-                "feature_date": "2025-01-02",
-                "target_date": "2025-01-09",
-                "target_tenor": "5Y",
-                "horizon": "5",
-                "benchmark_role": "source-original",
-                "direction": "1",
-                "confidence": "0.6",
-                "label": "1",
-                "is_correct": "true",
-            },
-        ]
-        current = [{**original[0], "benchmark_role": "source-compatible-extension"}]
-        _write_strict_predictions(bench / "original_predictions_sample.csv", original)
-        _write_strict_predictions(bench / "current_predictions_sample.csv", current)
-
-        result = CompareGate().run(ctx)
-
-        self.assertEqual(result.status, GateStatus.FAILED)
-        self.assertTrue(any("missing dates/tenors" in e for e in result.errors), result.errors)
-        self.assertTrue(any("extra dates/tenors" in e for e in result.errors), result.errors)
-
-    def test_weekly_required_format_uses_feature_week_id_in_key(self) -> None:
-        ctx = _make_ctx(self.root)
-        _write_benchmark_required_config(self.root, frequency="weekly")
-        bench = self.root / "schemes" / "demo" / "benchmarks"
-        original = [
-            {
-                "feature_week_id": "202501",
-                "feature_date": "2025-01-03",
-                "target_week_id": "202502",
-                "target_date": "2025-01-10",
-                "target_tenor": "5Y",
-                "horizon": "6",
-                "direction": "1",
-                "confidence": "0.6",
-                "label": "1",
-                "is_correct": "true",
-            },
-        ]
-        current = [{**original[0], "feature_week_id": "202500"}]
-        _write_strict_predictions(bench / "original_predictions_sample.csv", original)
-        _write_strict_predictions(bench / "current_predictions_sample.csv", current)
-
-        result = CompareGate().run(ctx)
-
-        self.assertEqual(result.status, GateStatus.FAILED)
-        self.assertTrue(any("missing dates/tenors" in e for e in result.errors), result.errors)
-        self.assertTrue(any("extra dates/tenors" in e for e in result.errors), result.errors)
-
-
-
-    def test_monthly_required_format_uses_feature_month_id_in_key(self) -> None:
-        ctx = _make_ctx(self.root)
-        _write_benchmark_required_config(self.root, frequency="monthly", task_type="monthly")
-        config = self.root / "schemes" / "demo" / "config.yaml"
-        config.write_text(
-            config.read_text(encoding="utf-8")
-            + 'target_rule: "next_month_observation_yield_vs_feature_month_observation_yield"\n',
-            encoding="utf-8",
+    def test_required_format_identity_fields_are_part_of_key(self) -> None:
+        monthly_rule = (
+            "next_month_observation_yield_vs_feature_month_observation_yield"
         )
-        bench = self.root / "schemes" / "demo" / "benchmarks"
-        original = [
-            {
-                "feature_month_id": "2026-04",
-                "feature_date": "2026-04-15",
-                "target_month_id": "2026-05",
-                "target_date": "2026-05-15",
-                "target_tenor": "10Y",
-                "horizon": "30",
-                "target_rule": "next_month_observation_yield_vs_feature_month_observation_yield",
-                "direction": "1",
-                "confidence": "0.6",
-                "label": "1",
-                "is_correct": "true",
-            },
-        ]
-        current = [{**original[0], "feature_month_id": "2026-03"}]
-        _write_strict_predictions(bench / "original_predictions_sample.csv", original)
-        _write_strict_predictions(bench / "current_predictions_sample.csv", current)
+        cases = (
+            (
+                "target_date",
+                {},
+                _strict_row(),
+                {"target_date": "2025-01-10"},
+            ),
+            (
+                "benchmark_role",
+                {},
+                _strict_row(benchmark_role="source-original"),
+                {"benchmark_role": "source-compatible-extension"},
+            ),
+            (
+                "feature_week_id",
+                {"frequency": "weekly"},
+                _strict_row(
+                    feature_week_id="202501",
+                    feature_date="2025-01-03",
+                    target_week_id="202502",
+                    target_date="2025-01-10",
+                    horizon="6",
+                ),
+                {"feature_week_id": "202500"},
+            ),
+            (
+                "feature_month_id",
+                {"frequency": "monthly", "task_type": "monthly"},
+                _strict_row(
+                    feature_month_id="2026-04",
+                    feature_date="2026-04-15",
+                    target_month_id="2026-05",
+                    target_date="2026-05-15",
+                    target_tenor="10Y",
+                    horizon="30",
+                    target_rule=monthly_rule,
+                ),
+                {"feature_month_id": "2026-03"},
+            ),
+        )
+        for name, config_options, original_row, updates in cases:
+            with self.subTest(field=name):
+                ctx = _make_ctx(self.root)
+                _write_benchmark_required_config(self.root, **config_options)
+                if name == "feature_month_id":
+                    config = self.root / "schemes" / "demo" / "config.yaml"
+                    config.write_text(
+                        config.read_text(encoding="utf-8")
+                        + f'target_rule: "{monthly_rule}"\n',
+                        encoding="utf-8",
+                    )
+                bench = self.root / "schemes" / "demo" / "benchmarks"
+                _write_strict_predictions(
+                    bench / "original_predictions_sample.csv",
+                    [original_row],
+                )
+                _write_strict_predictions(
+                    bench / "current_predictions_sample.csv",
+                    [{**original_row, **updates}],
+                )
 
-        result = CompareGate().run(ctx)
+                result = CompareGate().run(ctx)
 
-        self.assertEqual(result.status, GateStatus.FAILED)
-        self.assertTrue(any("missing dates/tenors" in e for e in result.errors), result.errors)
-        self.assertTrue(any("extra dates/tenors" in e for e in result.errors), result.errors)
+                self.assertEqual(result.status, GateStatus.FAILED)
+                self.assertTrue(
+                    any("missing dates/tenors" in error for error in result.errors),
+                    result.errors,
+                )
+                self.assertTrue(
+                    any("extra dates/tenors" in error for error in result.errors),
+                    result.errors,
+                )
 
 
 
