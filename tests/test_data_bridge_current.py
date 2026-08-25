@@ -97,6 +97,36 @@ def _current_dataset(
     )
 
 
+def _v3_period_bootstrap_inputs():
+    from shared import input_artifacts
+    from shared.blackbox_v2.snapshot import CutoffKeys
+    from shared.data_bridge.refresh import DataBridgeRefreshConfig
+
+    current = _current_dataset()
+    state = dict(current.state)
+    state["publication_manifest_version"] = "data-bridge-current-v3"
+    current = replace(
+        current,
+        state=MappingProxyType(state),
+        publication_manifest={"manifest_version": "data-bridge-current-v3"},
+    )
+    resolved = input_artifacts._ResolvedBlackboxInputCutoffs(
+        cutoff_keys=CutoffKeys(
+            daily_cutoff_key="2026-08-07",
+            weekly_cutoff_key="202630",
+            monthly_cutoff_key="202608",
+        ),
+        source_weekly_cutoff_key="202631",
+        source_monthly_cutoff_key="202608",
+    )
+    config = DataBridgeRefreshConfig(
+        data_root=Path("/tmp/data"),
+        runtime_root=Path("/tmp/runtime"),
+        schema_path=SCHEMA_PATH,
+    )
+    return current, resolved, config
+
+
 
 
 class DataBridgeCurrentTests(unittest.TestCase):
@@ -482,32 +512,9 @@ class DataBridgeCurrentTests(unittest.TestCase):
     ) -> None:
         """跨周首日只允许 producer 用旧快照作连续性基线。"""
         from shared import input_artifacts
-        from shared.blackbox_v2.snapshot import CutoffKeys
         from shared.data_bridge import authority
-        from shared.data_bridge.refresh import DataBridgeRefreshConfig
 
-        current = _current_dataset()
-        state = dict(current.state)
-        state["publication_manifest_version"] = "data-bridge-current-v3"
-        current = replace(
-            current,
-            state=MappingProxyType(state),
-            publication_manifest={"manifest_version": "data-bridge-current-v3"},
-        )
-        resolved = input_artifacts._ResolvedBlackboxInputCutoffs(
-            cutoff_keys=CutoffKeys(
-                daily_cutoff_key="2026-08-07",
-                weekly_cutoff_key="202630",
-                monthly_cutoff_key="202608",
-            ),
-            source_weekly_cutoff_key="202631",
-            source_monthly_cutoff_key="202608",
-        )
-        config = DataBridgeRefreshConfig(
-            data_root=Path("/tmp/data"),
-            runtime_root=Path("/tmp/runtime"),
-            schema_path=SCHEMA_PATH,
-        )
+        current, resolved, config = _v3_period_bootstrap_inputs()
 
         with (
             patch.object(
@@ -543,32 +550,9 @@ class DataBridgeCurrentTests(unittest.TestCase):
     ) -> None:
         """消费者继续严格拒绝缺少当前周键的 v3 current。"""
         from shared import input_artifacts
-        from shared.blackbox_v2.snapshot import CutoffKeys
         from shared.data_bridge import authority
-        from shared.data_bridge.refresh import DataBridgeRefreshConfig
 
-        current = _current_dataset()
-        state = dict(current.state)
-        state["publication_manifest_version"] = "data-bridge-current-v3"
-        current = replace(
-            current,
-            state=MappingProxyType(state),
-            publication_manifest={"manifest_version": "data-bridge-current-v3"},
-        )
-        resolved = input_artifacts._ResolvedBlackboxInputCutoffs(
-            cutoff_keys=CutoffKeys(
-                daily_cutoff_key="2026-08-07",
-                weekly_cutoff_key="202630",
-                monthly_cutoff_key="202608",
-            ),
-            source_weekly_cutoff_key="202631",
-            source_monthly_cutoff_key="202608",
-        )
-        config = DataBridgeRefreshConfig(
-            data_root=Path("/tmp/data"),
-            runtime_root=Path("/tmp/runtime"),
-            schema_path=SCHEMA_PATH,
-        )
+        current, resolved, config = _v3_period_bootstrap_inputs()
 
         with (
             patch.object(
