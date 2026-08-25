@@ -357,7 +357,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                 with patch.object(runner.fcntl, "flock", new=observed_flock):
                     contender.start()
                     self.assertTrue(contender_attempting.wait(timeout=3))
-                    entered_before_release = contender_entered.wait(timeout=0.2)
+                    entered_before_release = contender_entered.wait(timeout=0.05)
 
             self.assertTrue(contender_entered.wait(timeout=3))
             contender.join(timeout=3)

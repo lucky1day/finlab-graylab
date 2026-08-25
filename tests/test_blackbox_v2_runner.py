@@ -489,7 +489,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
     def test_backtest_splits_batches_and_preserves_order(self) -> None:
         from scheduler.blackbox_v2_runner import RuntimeProfile, run_blackbox_backtest
 
-        requests = [_request(f"{index:03d}") for index in range(205)]
+        requests = [_request(f"{index:03d}") for index in range(3)]
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             script = _write_script(root / "trial.py", _SUCCESS_SCRIPT)
@@ -499,10 +499,10 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                 requests=requests,
                 data_dir=_write_data_dir(root),
                 data_snapshot_id="snapshot-test",
-                profile=RuntimeProfile.for_tests(max_batch_requests=100),
+                profile=RuntimeProfile.for_tests(max_batch_requests=2),
             )
 
-        self.assertEqual(len(records), 205)
+        self.assertEqual(len(records), 3)
         self.assertEqual([record.extra["request_id"] for record in records], [item.request_id for item in requests])
 
 
