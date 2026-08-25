@@ -113,9 +113,10 @@ export PYTHONDONTWRITEBYTECODE=1
 | 修改 Blackbox 平台适配后 | 输入 cutoff、runner、四段自动 Gate及独立副作用 Gate | `python -m pytest -q tests/test_data_bridge_current.py tests/test_blackbox_v2_runner.py tests/test_blackbox_v2_harness_gates.py` | 全部通过 |
 | 修改 Registry、API 或前端后 | active 方案可见性、actual join、Dashboard 基础状态与 Harness HTTP 验收 | `python -m pytest -q tests/test_repository_registry.py tests/test_backend_api.py tests/test_factor_lab_dashboard_api.py tests/test_dashboard_gate.py` | 全部通过 |
 | 修改 Native 存量适配后 | 当前数据库输入、执行器和 source isolation | `python -m pytest -q tests/test_native_input_artifacts.py tests/test_native_executor.py tests/test_source_runner_database_isolation.py` | 全部通过；不得修改 Native core 算法口径 |
-| 提交入库版本前 | 入库核心合同全集 | `python -m pytest -q` | 无失败；跳过项必须是已知的外部环境条件 |
 
-`tests/` 只保留跨方案复用的入库合同，不保存单次事故、迁移实施或生产 rollout 的永久回归。`harness onboard ... --stage all` 仍是方案入库 Gate，不由上述 pytest 代替；pytest 保护平台代码合同，Harness 验收精确方案版本和真实输入证据。
+按实际改动选择对应行，不为单个方案入库重复执行无关的全仓测试。`tests/` 只保留跨方案复用的长期合同，
+不保存单次事故、迁移实施或生产 rollout 的永久回归。`harness onboard ... --stage all` 验收精确方案版本和
+真实输入证据；pytest 只保护本次修改触及的平台代码边界，二者不重复承担同一职责。
 
 ## 版本与政策
 

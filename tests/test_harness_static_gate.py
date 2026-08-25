@@ -560,4 +560,3 @@ def _write_policy(project_root: Path, scheme_id: str) -> None:
         ),
         encoding="utf-8",
     )
-
