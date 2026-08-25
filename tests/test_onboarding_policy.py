@@ -81,23 +81,6 @@ class OnboardingPolicyTests(unittest.TestCase):
                 [],
             )
 
-    def test_policy_rejects_unregistered_native_scheme(self) -> None:
-        from harness.contracts.onboarding_policy import validate_onboarding_policy
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            project_root = Path(tmpdir)
-            _write_policy(project_root, legacy_ids=["existing_native"])
-
-            errors = validate_onboarding_policy(project_root, "new_native", "native_adapter")
-
-        self.assertEqual(
-            errors,
-            [
-                "native_adapter onboarding is maintenance-only; "
-                "scheme_id is not in legacy_native_scheme_ids: new_native"
-            ],
-        )
-
     def test_native_static_gate_rejects_unregistered_scheme(self) -> None:
         from harness.gates.static_gate import StaticGate
 

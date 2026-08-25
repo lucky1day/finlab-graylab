@@ -38,10 +38,10 @@ class NativeMaintenanceAdmissionTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
                 root = Path(tmpdir)
-                _write_policy(root, (_SCHEME_ID,))
+                _write_policy(root)
                 _insert_registry_row(engine, status="paused", deployed_at=None)
                 _seed_prior_admission(engine)
-                _seed_current_candidate(engine, status="draft")
+                _seed_current_candidate(engine)
 
                 result = NativeMaintenanceAdmissionGate().run(
                     _context(root, engine)
@@ -87,7 +87,7 @@ class NativeMaintenanceAdmissionTests(unittest.TestCase):
                 try:
                     with tempfile.TemporaryDirectory() as tmpdir:
                         root = Path(tmpdir)
-                        _write_policy(root, (_SCHEME_ID,))
+                        _write_policy(root)
                         _insert_registry_row(engine)
                         _seed_prior_admission(
                             engine,
@@ -137,7 +137,7 @@ class NativeMaintenanceAdmissionTests(unittest.TestCase):
                 try:
                     with tempfile.TemporaryDirectory() as tmpdir:
                         root = Path(tmpdir)
-                        _write_policy(root, (_SCHEME_ID,))
+                        _write_policy(root)
                         _insert_registry_row(engine)
                         _seed_prior_admission(engine)
                         with engine.begin() as conn:
@@ -163,33 +163,27 @@ class NativeMaintenanceAdmissionTests(unittest.TestCase):
                     engine.dispose()
 
 
-def _config(**overrides: object) -> SimpleNamespace:
-    values: dict[str, object] = {
-        "scheme_id": _SCHEME_ID,
-        "scheme_version": _CURRENT_VERSION,
-        "runtime_type": "native_adapter",
-        "status": "active",
-        "tenors": ["10Y"],
-        "horizon": 1,
-        "task_type": "T+1",
-        "frequency": "daily",
-    }
-    values.update(overrides)
-    return SimpleNamespace(**values)
-
-
-def _context(root: Path, engine, **config_overrides: object) -> GateContext:
+def _context(root: Path, engine) -> GateContext:
     return GateContext(
         scheme_id=_SCHEME_ID,
         predict_date="2026-08-04",
         project_root=root,
         report_dir=root / "reports",
-        config=_config(**config_overrides),
+        config=SimpleNamespace(
+            scheme_id=_SCHEME_ID,
+            scheme_version=_CURRENT_VERSION,
+            runtime_type="native_adapter",
+            status="active",
+            tenors=["10Y"],
+            horizon=1,
+            task_type="T+1",
+            frequency="daily",
+        ),
         engine_factory=lambda: engine,
     )
 
 
-def _write_policy(root: Path, scheme_ids: tuple[str, ...]) -> None:
+def _write_policy(root: Path) -> None:
     policy_path = root / "deploy" / "onboarding_policy_v1.json"
     policy_path.parent.mkdir(parents=True, exist_ok=True)
     policy_path.write_text(
@@ -198,7 +192,7 @@ def _write_policy(root: Path, scheme_ids: tuple[str, ...]) -> None:
                 "policy_version": "1.0",
                 "new_scheme_runtime_type": "blackbox_v2",
                 "native_v1_mode": "maintenance_only",
-                "legacy_native_scheme_ids": sorted(scheme_ids),
+                "legacy_native_scheme_ids": [_SCHEME_ID],
             }
         ),
         encoding="utf-8",
@@ -308,13 +302,9 @@ def _seed_prior_admission(
     *,
     scheme_version: str = "prior-v1",
     harness_run_id: str = "hr-prior",
-    stage: str = "all",
-    run_status: str = "passed",
-    compare_status: str = "passed",
     finished_at: str = "2026-08-01 10:00:00",
     static_summary_json: str | None = None,
     include_static_result: bool = True,
-    business_identity: dict[str, object] | None = None,
 ) -> None:
     with engine.begin() as conn:
         conn.execute(
@@ -334,15 +324,13 @@ def _seed_prior_admission(
                 INSERT INTO t_harness_runs
                     (harness_run_id, scheme_id, scheme_version, stage, status, finished_at)
                 VALUES
-                    (:harness_run_id, :scheme_id, :scheme_version, :stage, :status, :finished_at)
+                    (:harness_run_id, :scheme_id, :scheme_version, 'all', 'passed', :finished_at)
                 """
             ),
             {
                 "harness_run_id": harness_run_id,
                 "scheme_id": _SCHEME_ID,
                 "scheme_version": scheme_version,
-                "stage": stage,
-                "status": run_status,
                 "finished_at": finished_at,
             },
         )
@@ -352,34 +340,33 @@ def _seed_prior_admission(
                 INSERT INTO t_harness_gate_results
                     (harness_run_id, gate_name, status)
                 VALUES
-                    (:harness_run_id, 'compare', :status)
+                    (:harness_run_id, 'compare', 'passed')
                 """
             ),
-            {"harness_run_id": harness_run_id, "status": compare_status},
+            {"harness_run_id": harness_run_id},
         )
         if include_static_result:
-            _insert_static_gate_result_conn(
-                conn,
-                harness_run_id=harness_run_id,
-                summary_json=(
-                    _summary_json(
-                        _NATIVE_BUSINESS_IDENTITY
-                        if business_identity is None
-                        else business_identity
-                    )
-                    if static_summary_json is None
-                    else static_summary_json
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_harness_gate_results
+                        (harness_run_id, gate_name, status, summary_json)
+                    VALUES
+                        (:harness_run_id, 'static', 'passed', :summary_json)
+                    """
                 ),
+                {
+                    "harness_run_id": harness_run_id,
+                    "summary_json": (
+                        _summary_json(_NATIVE_BUSINESS_IDENTITY)
+                        if static_summary_json is None
+                        else static_summary_json
+                    ),
+                },
             )
 
 
-def _seed_current_candidate(
-    engine,
-    *,
-    scheme_version: str = _CURRENT_VERSION,
-    runtime_type: str = "native_adapter",
-    status: str = "draft",
-) -> None:
+def _seed_current_candidate(engine) -> None:
     with engine.begin() as conn:
         conn.execute(
             text(
@@ -387,38 +374,14 @@ def _seed_current_candidate(
                 INSERT INTO t_scheme_versions
                     (scheme_id, scheme_version, runtime_type, status)
                 VALUES
-                    (:scheme_id, :scheme_version, :runtime_type, :status)
+                    (:scheme_id, :scheme_version, 'native_adapter', 'draft')
                 """
             ),
             {
                 "scheme_id": _SCHEME_ID,
-                "scheme_version": scheme_version,
-                "runtime_type": runtime_type,
-                "status": status,
+                "scheme_version": _CURRENT_VERSION,
             },
         )
-
-
-def _insert_static_gate_result_conn(
-    conn,
-    *,
-    harness_run_id: str,
-    summary_json: str,
-) -> None:
-    conn.execute(
-        text(
-            """
-            INSERT INTO t_harness_gate_results
-                (harness_run_id, gate_name, status, summary_json)
-            VALUES
-                (:harness_run_id, 'static', 'passed', :summary_json)
-            """
-        ),
-        {
-            "harness_run_id": harness_run_id,
-            "summary_json": summary_json,
-        },
-    )
 
 
 def _summary_json(
@@ -440,7 +403,7 @@ def _summary_json(
     )
 
 
-def _registry_row(**overrides: object) -> dict[str, object]:
+def _insert_registry_row(engine, **overrides: object) -> None:
     row: dict[str, object] = {
         "scheme_id": _REGISTRY_SCHEME_ID,
         "base_scheme_id": _SCHEME_ID,
@@ -458,28 +421,20 @@ def _registry_row(**overrides: object) -> dict[str, object]:
         "deployed_at": "2026-08-01 10:00:00",
     }
     row.update(overrides)
-    return row
-
-
-def _insert_registry_row(engine, **overrides: object) -> None:
     with engine.begin() as conn:
-        _insert_registry_row_conn(conn, _registry_row(**overrides))
-
-
-def _insert_registry_row_conn(conn, row: dict[str, object]) -> None:
-    conn.execute(
-        text(
-            """
-            INSERT INTO t_scheme_registry (
-                scheme_id, base_scheme_id, name, description, horizon, task_type,
-                runtime_type, tenors, frequency, target_tenor, schedule_cron,
-                schedule_timezone, status, deployed_at
-            ) VALUES (
-                :scheme_id, :base_scheme_id, :name, :description, :horizon,
-                :task_type, :runtime_type, :tenors, :frequency, :target_tenor,
-                :schedule_cron, :schedule_timezone, :status, :deployed_at
-            )
-            """
-        ),
-        row,
-    )
+        conn.execute(
+            text(
+                """
+                INSERT INTO t_scheme_registry (
+                    scheme_id, base_scheme_id, name, description, horizon, task_type,
+                    runtime_type, tenors, frequency, target_tenor, schedule_cron,
+                    schedule_timezone, status, deployed_at
+                ) VALUES (
+                    :scheme_id, :base_scheme_id, :name, :description, :horizon,
+                    :task_type, :runtime_type, :tenors, :frequency, :target_tenor,
+                    :schedule_cron, :schedule_timezone, :status, :deployed_at
+                )
+                """
+            ),
+            row,
+        )

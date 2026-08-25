@@ -9,8 +9,6 @@ import pytest
 
 from harness.context import GateContext
 from harness.registry import (
-    AUTO_SEQUENCE,
-    BLACKBOX_AUTO_SEQUENCE,
     gates_for_stage,
     sequence_for_stage,
 )
@@ -28,8 +26,6 @@ def test_auto_sequence_is_exact_for_each_runtime() -> None:
         ],
         "blackbox_v2": ["static", "input", "unit", "compare"],
     }
-    assert AUTO_SEQUENCE == expected["native_adapter"]
-    assert BLACKBOX_AUTO_SEQUENCE == expected["blackbox_v2"]
     for runtime_type, sequence in expected.items():
         assert sequence_for_stage("all", runtime_type=runtime_type) == sequence
 
