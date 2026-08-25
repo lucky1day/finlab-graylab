@@ -38,6 +38,8 @@
 - 自动入库只运行一次正式 `onboard` 并持久化后续 lifecycle 所需证据；已删除不能用于 activation 的重复
   `onboard --check-only`、独立 `signal-gap-plan` 和本地 `harness report` CLI。`signal-gap-fill` 内部仍先执行
   同一只读 planner，任一 blocker 都在算法或 repository 写入前终止。
+- Native BacktestGate 仍执行完整 `--no-persist` 并核验受保护表零写入，但不再用首次输出自举本地 JSON
+  baseline；状态、样本数和摘要只作为 Gate evidence 持久化，source benchmark/CompareGate 继续负责算法保真。
 - Blackbox 自动入库只保留 `static -> input -> unit -> compare`；原 dry-run 已由同参数的 Compare 冒烟覆盖，
   重复的抽样 no-persist backtest 与 `--sample-size` 已删除。Blackbox `gate backtest` 只接受明确的
   `--persist`，Native dry-run/no-persist backtest 保持不变。

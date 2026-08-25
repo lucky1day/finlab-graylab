@@ -14,33 +14,8 @@ from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
 from harness.probes.table_guard import PROTECTED_TABLES, diff_snapshots, snapshot_table_counts
 from harness.result import Evidence, GateResult, GateStatus
-from shared.runtime_paths import resolve_runtime_state_path
 from shared.scheme_config_loader import load_yaml_mapping
 
-
-BACKTEST_BASELINE_FILENAME = "backtest_no_persist.json"
-
-
-def backtest_baseline_path(project_root: Path, scheme_id: str) -> Path:
-    """no-persist 回测基线路径。
-
-    基线是**主机级**运行状态，不属于 source release 内容；不可变 release 下写入源码树会
-    破坏 source tree digest。
-    """
-    relative = f"reports/refactor_baseline/{scheme_id}/{BACKTEST_BASELINE_FILENAME}"
-    return resolve_runtime_state_path(
-        relative_path=relative,
-        development_default=(
-            Path(project_root)
-            / "reports"
-            / "refactor_baseline"
-            / scheme_id
-            / BACKTEST_BASELINE_FILENAME
-        ),
-    )
-
-
-IGNORE_PATHS = frozenset({"$.elapsed_sec"})
 BACKTEST_WRITE_ALLOWED_TABLES = (
     "t_backtest_runs",
     "t_backtest_predictions",
@@ -121,27 +96,12 @@ class BacktestGate(Gate):
             if engine is not None and hasattr(engine, "dispose"):
                 engine.dispose()
 
-        baseline_path = backtest_baseline_path(ctx.project_root, ctx.scheme_id)
         errors: list[str] = []
-        diff_count: int | None = None
-        first_diffs: list[str] = []
-        baseline_bootstrapped = False
-        if not ctx.persist_backtest:
-            if not baseline_path.exists():
-                # 基线缺失：将本次 no-persist 输出写为新基线（自举），并判定通过。
-                baseline_path.parent.mkdir(parents=True, exist_ok=True)
-                baseline_path.write_text(
-                    json.dumps(current, ensure_ascii=False, indent=2, sort_keys=True),
-                    encoding="utf-8",
-                )
-                baseline_bootstrapped = True
-            else:
-                baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
-                diffs = compare_json(baseline, current, ignore_paths=IGNORE_PATHS)
-                diff_count = len(diffs)
-                first_diffs = diffs[:20]
-                if diffs:
-                    errors.append(f"backtest output differs from baseline: diff_count={len(diffs)}")
+        if current.get("status") != "success":
+            errors.append(
+                "backtest runner status must be success, "
+                f"got {current.get('status')!r}"
+            )
         table_deltas = diff_snapshots(before, after)
         errors.extend(_validate_backtest_table_deltas(table_deltas, persist=ctx.persist_backtest))
 
@@ -160,13 +120,9 @@ class BacktestGate(Gate):
                     "operation_scope_sha256",
                     operation_scope_sha256(operation) if operation else None,
                 ),
-                Evidence("baseline_path", str(baseline_path)),
-                Evidence("baseline_bootstrapped", baseline_bootstrapped),
                 Evidence("protected_table_counts_before", before),
                 Evidence("protected_table_counts_after", after),
                 Evidence("protected_table_deltas", table_deltas),
-                Evidence("diff_count", diff_count),
-                Evidence("first_diffs", first_diffs),
                 Evidence("status", current.get("status")),
                 Evidence("row_count", _row_count(current)),
                 Evidence("monthly_count", _monthly_count(current)),
@@ -241,38 +197,6 @@ def _validate_backtest_table_deltas(deltas: dict[str, int], *, persist: bool) ->
             mode = "persist" if persist else "no-persist"
             errors.append(f"{table} delta must remain 0 for backtest {mode}, got {delta}")
     return errors
-
-
-def compare_json(expected: Any, actual: Any, *, ignore_paths: frozenset[str] = IGNORE_PATHS) -> list[str]:
-    diffs: list[str] = []
-    _compare(expected, actual, "$", ignore_paths, diffs)
-    return diffs
-
-
-def _compare(expected: Any, actual: Any, path: str, ignore_paths: frozenset[str], diffs: list[str]) -> None:
-    if path in ignore_paths:
-        return
-    if isinstance(expected, dict) and isinstance(actual, dict):
-        for key in sorted(set(expected) | set(actual)):
-            child_path = f"{path}.{key}"
-            if child_path in ignore_paths:
-                continue
-            if key not in expected:
-                diffs.append(f"{child_path}: unexpected key")
-            elif key not in actual:
-                diffs.append(f"{child_path}: missing key")
-            else:
-                _compare(expected[key], actual[key], child_path, ignore_paths, diffs)
-        return
-    if isinstance(expected, list) and isinstance(actual, list):
-        if len(expected) != len(actual):
-            diffs.append(f"{path}: length {len(expected)} != {len(actual)}")
-            return
-        for index, (left, right) in enumerate(zip(expected, actual)):
-            _compare(left, right, f"{path}[{index}]", ignore_paths, diffs)
-        return
-    if expected != actual:
-        diffs.append(f"{path}: {expected!r} != {actual!r}")
 
 
 def _runner_from_config(config: dict[str, Any]) -> str | None:

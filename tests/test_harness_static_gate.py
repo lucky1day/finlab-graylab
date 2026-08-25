@@ -367,20 +367,18 @@ class HarnessLiveGateTests(unittest.TestCase):
 
 
 class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
-    def test_backtest_gate_compares_baseline_ignoring_elapsed_sec(self) -> None:
+    def test_backtest_gate_records_success_without_business_writes(self) -> None:
         from harness.context import GateContext
         from harness.gates.backtest_gate import BacktestGate
 
-        baseline = {
+        current = {
             "status": "success",
             "scheme_id": "demo_daily",
             "row_count": 2,
             "monthly_count": 1,
             "summary": {"by_tenor": {"10Y": {"samples": 2, "correct": 1}}},
-            "elapsed_sec": 1.0,
+            "elapsed_sec": 99.0,
         }
-        current = dict(baseline)
-        current["elapsed_sec"] = 99.0
         with tempfile.TemporaryDirectory() as tmpdir:
             project_root = Path(tmpdir)
             _write_minimal_scheme(project_root, scheme_id="demo_daily")
@@ -389,12 +387,6 @@ class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
                 config_path.read_text(encoding="utf-8")
                 + "\nbacktest:\n"
                 + "  runner: backtests.demo_daily_reproduction\n",
-                encoding="utf-8",
-            )
-            baseline_dir = project_root / "reports" / "refactor_baseline" / "demo_daily"
-            baseline_dir.mkdir(parents=True)
-            (baseline_dir / "backtest_no_persist.json").write_text(
-                json.dumps(baseline),
                 encoding="utf-8",
             )
             engine = SimpleNamespace(dispose=lambda: None)
@@ -416,7 +408,6 @@ class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
 
         self.assertTrue(result.passed, result.errors)
         evidence = _evidence_dict(result)
-        self.assertEqual(evidence["diff_count"], 0)
         self.assertEqual(evidence["row_count"], 2)
         self.assertEqual(evidence["monthly_count"], 1)
         self.assertEqual(evidence["protected_table_deltas"], {"t_backtest_runs": 0, "t_scheme_predictions": 0, "t_scheme_run_log": 0})
