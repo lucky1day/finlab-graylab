@@ -1,24 +1,2 @@
-[project]
-name = "bond-factor-lab"
-version = "0.1.0"
-description = "Bond factor live prediction lab."
-requires-python = ">=3.12"
-dependencies = []
-
-[project.optional-dependencies]
-service = [
-    "fastapi==0.136.3",
-    "PyMySQL==1.2.0",
-    "PyYAML==6.0.3",
-    "SQLAlchemy==2.0.50",
-    "uvicorn[standard]==0.48.0",
-]
-test = [
-    "pytest==9.1.1",
-]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
-[tool.setuptools.packages.find]
-include = ["shared*", "backend*", "scheduler*", "schemes*", "backtests*", "harness*"]

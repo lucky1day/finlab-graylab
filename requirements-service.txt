@@ -1,5 +1,4 @@
 # Service/API/scheduler runtime dependencies for conda env bond_factor_lab_service.
-# Generated after validating imports with PYTHONNOUSERSITE=1 on 2026-05-30.
 annotated-doc==0.0.4
 annotated-types==0.7.0
 anyio==4.13.0

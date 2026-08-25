@@ -36,8 +36,7 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 
-logs/*
-!logs/.gitkeep
+logs/
 *.log
 
 .venv/
