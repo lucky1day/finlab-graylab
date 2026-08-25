@@ -1251,47 +1251,6 @@ class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
         self.assertEqual(evidence["monthly_count"], 1)
         self.assertEqual(evidence["protected_table_deltas"], {"t_backtest_runs": 0, "t_scheme_predictions": 0, "t_scheme_run_log": 0})
 
-    def test_registry_all_excludes_live_and_orders_auto_gates(self) -> None:
-        from harness.registry import sequence_for_stage
-
-        self.assertEqual(
-            sequence_for_stage("all"),
-            ["static", "input", "unit", "dry-run", "compare", "backtest"],
-        )
-        self.assertNotIn("api", sequence_for_stage("all"))
-        self.assertNotIn("api-readiness", sequence_for_stage("all"))
-        self.assertNotIn("live", sequence_for_stage("all"))
-
-    def test_native_maintenance_stage_has_exact_pre_activation_sequence(self) -> None:
-        from harness.registry import sequence_for_stage
-
-        self.assertEqual(
-            sequence_for_stage("native-maintenance"),
-            [
-                "static",
-                "native-maintenance-admission",
-                "input",
-                "unit",
-                "dry-run",
-            ],
-        )
-        self.assertNotIn(
-            "api-readiness",
-            sequence_for_stage("native-maintenance"),
-        )
-
-    def test_activation_history_requires_exact_all_sequence_without_api_readiness(self) -> None:
-        from harness.gates.activate_gate import REQUIRED_ACTIVATE_GATES
-
-        self.assertEqual(
-            REQUIRED_ACTIVATE_GATES,
-            frozenset(
-                {"static", "input", "unit", "dry-run", "compare", "backtest"}
-            ),
-        )
-        self.assertNotIn("api-readiness", REQUIRED_ACTIVATE_GATES)
-        self.assertNotIn("api", REQUIRED_ACTIVATE_GATES)
-
     def test_orchestrator_fail_fast_stops_after_first_failure(self) -> None:
         from harness.context import GateContext
         from harness.orchestrator import onboard

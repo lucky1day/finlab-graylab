@@ -12,6 +12,7 @@ from harness.context import GateContext
 from harness.registry import (
     AUTO_SEQUENCE,
     BLACKBOX_AUTO_SEQUENCE,
+    gates_for_stage,
     sequence_for_stage,
 )
 
@@ -40,6 +41,50 @@ def test_partial_onboard_stages_are_rejected_for_both_runtimes() -> None:
 
 def test_default_runtime_type_is_native_for_backward_compatibility() -> None:
     assert sequence_for_stage("all") == AUTO_SEQUENCE
+
+
+def test_native_maintenance_has_one_exact_sequence(tmp_path) -> None:
+    expected = [
+        "static",
+        "native-maintenance-admission",
+        "input",
+        "unit",
+        "dry-run",
+    ]
+    ctx = GateContext(
+        scheme_id="native_daily",
+        predict_date="2026-08-25",
+        project_root=tmp_path,
+        report_dir=tmp_path / "reports",
+        config=SimpleNamespace(runtime_type="native_adapter"),
+    )
+
+    assert sequence_for_stage("native-maintenance") == expected
+    assert [
+        gate.name
+        for gate in gates_for_stage("native-maintenance", ctx=ctx)
+    ] == expected
+    with pytest.raises(ValueError, match="unsupported onboard stage"):
+        sequence_for_stage("native-maintenance-admission")
+
+
+def test_blackbox_rejects_native_maintenance(tmp_path) -> None:
+    ctx = GateContext(
+        scheme_id="blackbox_daily",
+        predict_date="2026-08-25",
+        project_root=tmp_path,
+        report_dir=tmp_path / "reports",
+        config=SimpleNamespace(runtime_type="blackbox_v2"),
+    )
+
+    with pytest.raises(ValueError, match="Blackbox"):
+        gates_for_stage("native-maintenance", ctx=ctx)
+
+
+def test_activation_gate_set_matches_native_all_sequence() -> None:
+    from harness.gates.activate_gate import REQUIRED_ACTIVATE_GATES
+
+    assert REQUIRED_ACTIVATE_GATES == frozenset(AUTO_SEQUENCE)
 
 
 def test_blackbox_has_no_standalone_dry_run_or_no_persist_backtest(tmp_path) -> None:

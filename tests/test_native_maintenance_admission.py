@@ -583,61 +583,6 @@ class NativeMaintenanceAdmissionTests(unittest.TestCase):
                     engine.dispose()
 
 
-class NativeMaintenanceStageRegistryTests(unittest.TestCase):
-    def test_stage_all_and_auto_sequence_exclude_api_readiness(self) -> None:
-        from harness.registry import AUTO_SEQUENCE, sequence_for_stage
-
-        expected = [
-            "static",
-            "input",
-            "unit",
-            "dry-run",
-            "compare",
-            "backtest",
-        ]
-        self.assertEqual(AUTO_SEQUENCE, expected)
-        self.assertEqual(sequence_for_stage("all"), expected)
-
-    def test_native_maintenance_stage_expands_only_to_its_five_gates(self) -> None:
-        from harness.registry import gates_for_stage, sequence_for_stage
-
-        expected = [
-            "static",
-            "native-maintenance-admission",
-            "input",
-            "unit",
-            "dry-run",
-        ]
-        ctx = GateContext(
-            scheme_id=_SCHEME_ID,
-            predict_date="2026-08-04",
-            project_root=Path("/tmp/native-maintenance"),
-            report_dir=Path("/tmp/native-maintenance/reports"),
-            config=_config(),
-        )
-
-        self.assertEqual(sequence_for_stage("native-maintenance"), expected)
-        self.assertEqual(
-            [gate.name for gate in gates_for_stage("native-maintenance", ctx=ctx)],
-            expected,
-        )
-        with self.assertRaisesRegex(ValueError, "unsupported onboard stage"):
-            sequence_for_stage("native-maintenance-admission")
-
-    def test_blackbox_dispatch_rejects_native_maintenance_stage(self) -> None:
-        from harness.registry import gates_for_stage
-
-        ctx = GateContext(
-            scheme_id="blackbox_daily",
-            predict_date="2026-08-04",
-            project_root=Path("/tmp/native-maintenance"),
-            report_dir=Path("/tmp/native-maintenance/reports"),
-            config=SimpleNamespace(runtime_type="blackbox_v2"),
-        )
-
-        with self.assertRaisesRegex(ValueError, "Blackbox"):
-            gates_for_stage("native-maintenance", ctx=ctx)
-
 def _config(**overrides: object) -> SimpleNamespace:
     values: dict[str, object] = {
         "scheme_id": _SCHEME_ID,
