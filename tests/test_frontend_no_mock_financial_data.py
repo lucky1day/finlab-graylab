@@ -28,20 +28,11 @@ def _source() -> str:
     return SHELL_JS.read_text(encoding="utf-8")
 
 
-def test_no_mock_row_identifiers_remain() -> None:
+def test_no_mock_financial_data_remains() -> None:
     source = _source()
     present = [name for name in MOCK_IDENTIFIERS if re.search(rf"\b{name}\b", source)]
     assert present == [], f"生产资产仍含模拟数据标识符: {present}"
-
-
-def test_no_mock_data_mode_branch_remains() -> None:
-    """dataMode 永远不会是 mock——该分支不可达，且是模拟数据的入口之一。"""
-    assert '"mock"' not in _source()
-
-
-def test_no_hardcoded_2025_sample_metrics() -> None:
-    """按形状识别残留样本：month + samples + actualDist 的对象字面量。"""
-    source = _source()
+    assert '"mock"' not in source
     assert not re.search(r'month:\s*"20\d\d-\d\d",\s*samples:', source)
 
 

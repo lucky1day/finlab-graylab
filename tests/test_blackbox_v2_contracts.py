@@ -63,18 +63,14 @@ class BlackboxV2MetadataContractTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "fixed combination"):
                     _load_metadata(payload)
 
-    def test_owner_is_optional_for_immutable_historical_metadata(self) -> None:
-        metadata = _load_metadata(_metadata_payload())
+    def test_owner_is_optional_and_normalized_when_present(self) -> None:
+        for raw_owner, expected in ((None, None), ("  ALGO-A  ", "ALGO-A")):
+            with self.subTest(owner=raw_owner):
+                payload = _metadata_payload()
+                if raw_owner is not None:
+                    payload["owner"] = raw_owner
 
-        self.assertIsNone(metadata.owner)
-
-    def test_owner_is_normalized_when_present(self) -> None:
-        payload = _metadata_payload()
-        payload["owner"] = "  ALGO-A  "
-
-        metadata = _load_metadata(payload)
-
-        self.assertEqual(metadata.owner, "ALGO-A")
+                self.assertEqual(_load_metadata(payload).owner, expected)
 
     def test_owner_rejects_ambiguous_or_placeholder_values(self) -> None:
         for owner in ("", "   ", "ALGO\nA", "<ALGO-A>", "--", "unknown", "UNKNOWN", "待定"):

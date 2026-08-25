@@ -16,18 +16,22 @@ from harness.registry import (
 )
 
 
-def test_native_sequence_is_unchanged() -> None:
-    """Native 的 CompareGate 是 benchmark 对比，与 Blackbox 无关，其序列不得改动。"""
-    assert AUTO_SEQUENCE == ["static", "input", "unit", "dry-run", "compare", "backtest"]
-    assert sequence_for_stage("all", runtime_type="native_adapter") == AUTO_SEQUENCE
-
-
-def test_blackbox_sequence_drops_the_duplicated_gates() -> None:
-    """dry-run 已并入 Compare；交付自身性质不由平台重复抽样认证。"""
-    assert BLACKBOX_AUTO_SEQUENCE == ["static", "input", "unit", "compare"]
-    assert sequence_for_stage("all", runtime_type="blackbox_v2") == BLACKBOX_AUTO_SEQUENCE
-    assert "dry-run" not in BLACKBOX_AUTO_SEQUENCE
-    assert "backtest" not in BLACKBOX_AUTO_SEQUENCE
+def test_auto_sequence_is_exact_for_each_runtime() -> None:
+    expected = {
+        "native_adapter": [
+            "static",
+            "input",
+            "unit",
+            "dry-run",
+            "compare",
+            "backtest",
+        ],
+        "blackbox_v2": ["static", "input", "unit", "compare"],
+    }
+    assert AUTO_SEQUENCE == expected["native_adapter"]
+    assert BLACKBOX_AUTO_SEQUENCE == expected["blackbox_v2"]
+    for runtime_type, sequence in expected.items():
+        assert sequence_for_stage("all", runtime_type=runtime_type) == sequence
 
 
 def test_partial_onboard_stages_are_rejected_for_both_runtimes() -> None:
