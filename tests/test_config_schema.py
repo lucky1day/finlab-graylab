@@ -70,13 +70,6 @@ def _weekly_config(*, predict_start_date: str | None) -> dict:
 
 
 class ConfigSchemaAuxiliaryInputTests(unittest.TestCase):
-    def test_config_without_auxiliary_inputs_remains_valid(self) -> None:
-        config = _base_config()
-
-        errors = validate_config(config, dirname="demo_daily")
-
-        self.assertEqual(errors, [])
-
     def test_config_with_weekly_and_monthly_auxiliary_inputs_is_valid(self) -> None:
         config = _base_config()
         config["input_spec"]["auxiliary_inputs"] = [

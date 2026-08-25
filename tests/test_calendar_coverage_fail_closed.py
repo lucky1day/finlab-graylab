@@ -60,11 +60,7 @@ class CalendarCoverageTests(unittest.TestCase):
         self.assertTrue(self.calendar.covers(COVERED_TRADING))
         self.assertTrue(self.calendar.covers(COVERED_HOLIDAY))
         self.assertFalse(self.calendar.covers(UNCOVERED))
-
-    def test_covers_is_independent_of_trade_flag(self) -> None:
-        """假期与周末仍在日历覆盖内；covers 只回答『日历知不知道这天』。"""
         self.assertFalse(self.calendar.is_trading_day(COVERED_HOLIDAY))
-        self.assertTrue(self.calendar.covers(COVERED_HOLIDAY))
 
     def test_is_trading_day_contract_unchanged(self) -> None:
         """既有契约不变：未收录日期仍返回 False。"""

@@ -32,18 +32,12 @@ def test_suffixes_are_collected_from_the_tree(tmp_path: Path) -> None:
     (tmp_path / "runtime_common.cpython-313-darwin.so").touch()
     (tmp_path / "pkg" / "engine.cpython-313-darwin.so").touch()
     (tmp_path / "pkg" / "other.cpython-311-x86_64-linux-gnu.so").touch()
+    (tmp_path / "pkg" / "libthing.so").touch()
 
     assert compiled_extension_suffixes(tmp_path) == {
         ".cpython-313-darwin.so",
         ".cpython-311-x86_64-linux-gnu.so",
     }
-
-
-def test_plain_so_without_abi_tag_is_not_treated_as_a_requirement(
-    tmp_path: Path,
-) -> None:
-    (tmp_path / "libthing.so").touch()
-    assert compiled_extension_suffixes(tmp_path) == set()
 
 
 def test_tree_without_compiled_modules_skips_the_probe(tmp_path: Path) -> None:
