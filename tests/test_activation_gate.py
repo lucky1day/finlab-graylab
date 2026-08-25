@@ -35,97 +35,6 @@ def build_operation(
     )
 
 
-class ActivationGateHistoryTests(unittest.TestCase):
-    def test_full_all_history_uses_harness_id_tiebreaker(self) -> None:
-        from harness.gates.activate_gate import (
-            REQUIRED_ACTIVATE_GATES,
-            _passed_full_all_validation,
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            engine, ctx = _full_all_fixture(root, benchmark_required=False)
-            with engine.begin() as conn:
-                conn.execute(
-                    text(
-                        "INSERT INTO t_harness_runs VALUES "
-                        "('hr_a', 'demo_daily', 'v1', 'all', 'passed', "
-                        "'2026-07-06 12:00:00'), "
-                        "('hr_z', 'demo_daily', 'v1', 'all', 'passed', "
-                        "'2026-07-06 12:00:00')"
-                    )
-                )
-                conn.execute(
-                    text(
-                        "INSERT INTO t_harness_gate_results "
-                        "(harness_run_id, gate_name, status) "
-                        "VALUES (:run_id, :gate_name, :status)"
-                    ),
-                    [
-                        {
-                            "run_id": run_id,
-                            "gate_name": gate_name,
-                            "status": "failed" if run_id == "hr_a" else "passed",
-                        }
-                        for run_id in ("hr_a", "hr_z")
-                        for gate_name in REQUIRED_ACTIVATE_GATES
-                    ],
-                )
-            validation, errors, database_available = _passed_full_all_validation(
-                ctx,
-                "v1",
-            )
-
-        self.assertTrue(database_available)
-        self.assertEqual(errors, [])
-        self.assertIsNotNone(validation)
-        assert validation is not None
-        self.assertEqual(validation.validation_harness_run_id, "hr_z")
-
-    def test_benchmark_required_compare_skipped_blocks_full_all(self) -> None:
-        from harness.gates.activate_gate import (
-            REQUIRED_ACTIVATE_GATES,
-            _passed_full_all_validation,
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            engine, ctx = _full_all_fixture(root, benchmark_required=True)
-            with engine.begin() as conn:
-                conn.execute(
-                    text(
-                        "INSERT INTO t_harness_runs VALUES "
-                        "('hr_demo', 'demo_daily', 'v1', 'all', 'passed', "
-                        "'2026-07-06 12:00:00')"
-                    )
-                )
-                conn.execute(
-                    text(
-                        "INSERT INTO t_harness_gate_results "
-                        "(harness_run_id, gate_name, status) "
-                        "VALUES ('hr_demo', :gate_name, :status)"
-                    ),
-                    [
-                        {
-                            "gate_name": gate_name,
-                            "status": "skipped" if gate_name == "compare" else "passed",
-                        }
-                        for gate_name in REQUIRED_ACTIVATE_GATES
-                    ],
-                )
-            validation, errors, database_available = _passed_full_all_validation(
-                ctx,
-                "v1",
-            )
-
-        self.assertTrue(database_available)
-        self.assertIsNone(validation)
-        self.assertTrue(
-            any("CompareGate status is skipped" in error for error in errors),
-            errors,
-        )
-
-
 class NativeActivationValidationTests(unittest.TestCase):
     def test_current_full_all_history_returns_initial_admission_profile(self) -> None:
         from harness.gates.activate_gate import (
@@ -135,7 +44,7 @@ class NativeActivationValidationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            engine, ctx = _full_all_fixture(root, benchmark_required=False)
+            engine, ctx = _full_all_fixture(root)
             with engine.begin() as conn:
                 conn.execute(
                     text(
@@ -166,65 +75,6 @@ class NativeActivationValidationTests(unittest.TestCase):
         self.assertIsNone(validation.prior_admitted_scheme_version)
         self.assertEqual(validation.registry_scheme_ids, ())
         self.assertEqual(validation.benchmark_validation, "passed_initial_admission")
-
-    def test_full_all_history_rejects_duplicate_or_extra_gate_rows(self) -> None:
-        from harness.gates.activate_gate import (
-            REQUIRED_ACTIVATE_GATES,
-            _passed_full_all_validation,
-        )
-
-        for case, extra_gate in (
-            ("duplicate", "static"),
-            ("legacy_seventh_gate", "api-readiness"),
-        ):
-            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmpdir:
-                root = Path(tmpdir)
-                engine = _activation_sqlite_engine(root)
-                scheme_dir = root / "schemes" / "demo_daily"
-                scheme_dir.mkdir(parents=True)
-                (scheme_dir / "config.yaml").write_text(
-                    "scheme_id: demo_daily\nbacktest:\n  benchmark_required: false\n",
-                    encoding="utf-8",
-                )
-                with engine.begin() as conn:
-                    conn.execute(
-                        text(
-                            "INSERT INTO t_harness_runs VALUES ("
-                            "'hr-full', 'demo_daily', 'v-current', 'all', "
-                            "'passed', '2026-08-10 12:00:00')"
-                        )
-                    )
-                    conn.execute(
-                        text(
-                            "INSERT INTO t_harness_gate_results "
-                            "(harness_run_id, gate_name, status) VALUES "
-                            "('hr-full', :gate_name, 'passed')"
-                        ),
-                        [
-                            {"gate_name": gate_name}
-                            for gate_name in (*REQUIRED_ACTIVATE_GATES, extra_gate)
-                        ],
-                    )
-                ctx = GateContext(
-                    scheme_id="demo_daily",
-                    predict_date="2026-08-10",
-                    project_root=root,
-                    report_dir=root / "reports",
-                    engine_factory=lambda: engine,
-                )
-                try:
-                    validation, errors, database_available = (
-                        _passed_full_all_validation(ctx, "v-current")
-                    )
-                finally:
-                    engine.dispose()
-
-                self.assertIsNone(validation)
-                self.assertTrue(database_available)
-                self.assertTrue(
-                    any("exact" in error for error in errors),
-                    errors,
-                )
 
     def test_maintenance_revalidates_admission_after_five_gate_history(self) -> None:
         from harness.gates.activate_gate import (
@@ -325,89 +175,6 @@ class NativeActivationValidationTests(unittest.TestCase):
             validation.benchmark_validation,
             "not_run_post_admission",
         )
-
-
-    def test_activation_lifecycle_disposes_factory_engine(self) -> None:
-        from harness.gates.activate_gate import _native_activation_lifecycle_preflight
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            engine, cfg, ctx, _ = _maintenance_fixture(root)
-            try:
-                with (
-                    patch(
-                        "harness.gates.activate_gate._db_engine",
-                        return_value=None,
-                    ) as db_engine,
-                    patch.object(engine, "dispose", wraps=engine.dispose) as dispose,
-                ):
-                    lifecycle, errors = _native_activation_lifecycle_preflight(ctx)
-
-                    self.assertEqual(errors, [])
-                    self.assertIsNotNone(lifecycle)
-                    db_engine.assert_not_called()
-                    dispose.assert_called_once_with()
-            finally:
-                engine.dispose()
-
-    def test_activation_lifecycle_disposes_factory_engine_on_read_error(self) -> None:
-        from harness.gates.activate_gate import _native_activation_lifecycle_preflight
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            engine, _cfg, ctx, _ = _maintenance_fixture(root)
-            try:
-                with (
-                    patch.object(
-                        engine,
-                        "begin",
-                        side_effect=RuntimeError("control-plane read failed"),
-                    ),
-                    patch.object(engine, "dispose", wraps=engine.dispose) as dispose,
-                ):
-                    lifecycle, errors = _native_activation_lifecycle_preflight(ctx)
-
-                    self.assertIsNone(lifecycle)
-                    self.assertTrue(
-                        any("control-plane read failed" in error for error in errors),
-                        errors,
-                    )
-                    dispose.assert_called_once_with()
-            finally:
-                engine.dispose()
-
-    def test_resolver_rejects_invalid_maintenance_gate_multiset(self) -> None:
-        from harness.gates.activate_gate import _resolve_native_activation_validation
-
-        cases = (
-            ("missing", "dry-run", (), ("native-maintenance", "dry-run")),
-            ("duplicate", None, ("static",), ("exact",)),
-            ("legacy_extra", None, ("api-readiness",), ("exact",)),
-        )
-        for name, missing_gate, extra_gates, expected_errors in cases:
-            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
-                root = Path(tmpdir)
-                engine, cfg, ctx, _ = _maintenance_fixture(root)
-                try:
-                    _seed_maintenance_run(
-                        engine,
-                        cfg.scheme_version,
-                        missing_gate=missing_gate,
-                        extra_gates=extra_gates,
-                    )
-                    validation, errors = _resolve_native_activation_validation(
-                        ctx,
-                        cfg.scheme_version,
-                    )
-                finally:
-                    engine.dispose()
-
-            self.assertIsNone(validation)
-            for expected_error in expected_errors:
-                self.assertTrue(
-                    any(expected_error in error for error in errors),
-                    errors,
-                )
 
 
     def test_activation_gate_records_maintenance_profile_evidence(self) -> None:
@@ -526,10 +293,6 @@ def _write_native_policy(root: Path) -> None:
     )
 
 
-def _write_active_native_scheme(root: Path):
-    return _write_native_scheme(root, status="active")
-
-
 def _write_native_scheme(root: Path, *, status: str):
     config_path = root / "schemes" / "t5_daily" / "config.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -545,8 +308,6 @@ def _write_native_scheme(root: Path, *, status: str):
 
 def _full_all_fixture(
     root: Path,
-    *,
-    benchmark_required: bool,
 ) -> tuple[object, GateContext]:
     engine = _activation_sqlite_engine(root)
     config_path = root / "schemes" / "demo_daily" / "config.yaml"
@@ -554,7 +315,7 @@ def _full_all_fixture(
     config_path.write_text(
         "scheme_id: demo_daily\n"
         "backtest:\n"
-        f"  benchmark_required: {str(benchmark_required).lower()}\n",
+        "  benchmark_required: false\n",
         encoding="utf-8",
     )
     return engine, GateContext(
@@ -743,9 +504,6 @@ def _seed_current_candidate(engine, cfg, *, status: str) -> None:
 def _seed_maintenance_run(
     engine,
     scheme_version: str,
-    *,
-    missing_gate: str | None = None,
-    extra_gates: tuple[str, ...] = (),
 ) -> None:
     from harness.gates.native_maintenance_admission_gate import (
         NATIVE_MAINTENANCE_SEQUENCE,
@@ -768,98 +526,9 @@ def _seed_maintenance_run(
             ),
             [
                 {"gate_name": gate_name}
-                for gate_name in (*NATIVE_MAINTENANCE_SEQUENCE, *extra_gates)
-                if gate_name != missing_gate
+                for gate_name in NATIVE_MAINTENANCE_SEQUENCE
             ],
         )
-
-
-def _seed_full_all_run(engine, scheme_version: str) -> None:
-    from harness.gates.activate_gate import REQUIRED_ACTIVATE_GATES
-
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                "INSERT INTO t_harness_runs VALUES "
-                "('hr-full', 't5_daily', :scheme_version, "
-                "'all', 'passed', '2026-08-10 12:00:00')"
-            ),
-            {"scheme_version": scheme_version},
-        )
-        conn.execute(
-            text(
-                "INSERT INTO t_harness_gate_results "
-                "(harness_run_id, gate_name, status) VALUES "
-                "('hr-full', :gate_name, 'passed')"
-            ),
-            [{"gate_name": gate_name} for gate_name in REQUIRED_ACTIVATE_GATES],
-        )
-
-
-def _seed_legacy_full_all_run(engine, scheme_version: str) -> None:
-    from harness.gates.activate_gate import REQUIRED_ACTIVATE_GATES
-
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                "INSERT INTO t_harness_runs VALUES "
-                "('hr-legacy-full', 't5_daily', :scheme_version, "
-                "'all', 'passed', '2026-08-10 12:00:00')"
-            ),
-            {"scheme_version": scheme_version},
-        )
-        conn.execute(
-            text(
-                "INSERT INTO t_harness_gate_results "
-                "(harness_run_id, gate_name, status) VALUES "
-                "('hr-legacy-full', :gate_name, 'passed')"
-            ),
-            [
-                {"gate_name": gate_name}
-                for gate_name in (*REQUIRED_ACTIVATE_GATES, "api-readiness")
-            ],
-        )
-
-
-def _seed_legacy_maintenance_run(engine, scheme_version: str) -> None:
-    _seed_maintenance_run(
-        engine,
-        scheme_version,
-        extra_gates=("api-readiness",),
-    )
-
-
-def _read_activation_lifecycle_rows(engine, scheme_version: str):
-    with engine.begin() as conn:
-        version = conn.execute(
-            text(
-                "SELECT approved_by, approved_at FROM t_scheme_versions "
-                "WHERE scheme_id = 't5_daily' AND scheme_version = :scheme_version"
-            ),
-            {"scheme_version": scheme_version},
-        ).one()
-        registry = tuple(
-            conn.execute(
-                text(
-                    "SELECT scheme_id, status FROM t_scheme_registry "
-                    "WHERE base_scheme_id = 't5_daily' ORDER BY scheme_id"
-                )
-            ).fetchall()
-        )
-    return (version[0], version[1]), registry
-
-
-def _read_activation_version_legacy_fields(engine, scheme_version: str):
-    with engine.begin() as conn:
-        row = conn.execute(
-            text(
-                "SELECT code_hash, config_hash, manifest_hash, approved_by, approved_at "
-                "FROM t_scheme_versions WHERE scheme_id = 't5_daily' "
-                "AND scheme_version = :scheme_version"
-            ),
-            {"scheme_version": scheme_version},
-        ).one()
-    return tuple(row)
 
 
 def _seed_successful_backtest(

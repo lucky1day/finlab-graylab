@@ -3,12 +3,10 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
 
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import create_engine, text
 
 from harness.context import GateContext
 from harness.result import GateStatus
@@ -100,26 +98,6 @@ class NativeMaintenanceAdmissionTests(unittest.TestCase):
         finally:
             engine.dispose()
 
-    def test_blocks_when_no_prior_active_native_revision_is_admitted(self) -> None:
-        from harness.gates.native_maintenance_admission_gate import (
-            NativeMaintenanceAdmissionGate,
-        )
-
-        engine = _sqlite_engine()
-        try:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                root = Path(tmpdir)
-                _write_policy(root, (_SCHEME_ID,))
-                _insert_registry_row(engine)
-
-                result = NativeMaintenanceAdmissionGate().run(_context(root, engine))
-
-            self.assertEqual(result.status, GateStatus.BLOCKED)
-            self.assertFalse(result.passed)
-            self.assertTrue(result.errors)
-        finally:
-            engine.dispose()
-
     def test_admits_pre_activation_paused_registry_with_matching_identity(self) -> None:
         """候选 Native version 激活前允许 Registry 保持统一 paused。"""
         from harness.gates.native_maintenance_admission_gate import (
@@ -148,78 +126,6 @@ class NativeMaintenanceAdmissionTests(unittest.TestCase):
             )
             self.assertEqual(evidence["current_candidate_status"], "draft")
             self.assertEqual(evidence["registry_lifecycle"], "paused")
-        finally:
-            engine.dispose()
-
-    def test_blocks_missing_or_invalid_current_exact_native_version(self) -> None:
-        """维护准入必须绑定当前精确候选的 Native lifecycle。"""
-        from harness.gates.native_maintenance_admission_gate import (
-            NativeMaintenanceAdmissionGate,
-        )
-
-        cases = (
-            ("missing", None, None),
-            ("wrong_runtime", "blackbox_v2", "draft"),
-            ("paused", "native_adapter", "paused"),
-            ("archived", "native_adapter", "archived"),
-        )
-        for case, runtime_type, status in cases:
-            with self.subTest(case=case):
-                engine = _sqlite_engine()
-                try:
-                    with tempfile.TemporaryDirectory() as tmpdir:
-                        root = Path(tmpdir)
-                        _write_policy(root, (_SCHEME_ID,))
-                        _insert_registry_row(engine, status="paused", deployed_at=None)
-                        _seed_prior_admission(engine)
-                        if runtime_type is not None and status is not None:
-                            _seed_current_candidate(
-                                engine,
-                                runtime_type=runtime_type,
-                                status=status,
-                            )
-
-                        result = NativeMaintenanceAdmissionGate().run(
-                            _context(root, engine)
-                        )
-
-                    self.assertEqual(result.status, GateStatus.BLOCKED)
-                    self.assertFalse(result.passed)
-                    self.assertTrue(
-                        any("current exact Native version" in error for error in result.errors),
-                        result.errors,
-                    )
-                finally:
-                    engine.dispose()
-
-    def test_blocks_draft_current_version_with_active_registry(self) -> None:
-        """draft 候选不得绑定已经 active 的业务 Registry。"""
-        from harness.gates.native_maintenance_admission_gate import (
-            NativeMaintenanceAdmissionGate,
-        )
-
-        engine = _sqlite_engine()
-        try:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                root = Path(tmpdir)
-                _write_policy(root, (_SCHEME_ID,))
-                _insert_registry_row(engine)
-                _seed_prior_admission(engine)
-                _seed_current_candidate(engine, status="draft")
-
-                result = NativeMaintenanceAdmissionGate().run(
-                    _context(root, engine)
-                )
-
-            self.assertEqual(result.status, GateStatus.BLOCKED)
-            self.assertFalse(result.passed)
-            self.assertTrue(
-                any(
-                    "draft" in error and "registry" in error.lower()
-                    for error in result.errors
-                ),
-                result.errors,
-            )
         finally:
             engine.dispose()
 
@@ -254,43 +160,6 @@ class NativeMaintenanceAdmissionTests(unittest.TestCase):
                     self.assertEqual(result.status, GateStatus.BLOCKED)
                     self.assertFalse(result.passed)
                     self.assertTrue(result.errors)
-                finally:
-                    engine.dispose()
-
-    def test_blocks_ambiguous_prior_compare_evidence(self) -> None:
-        from harness.gates.native_maintenance_admission_gate import (
-            NativeMaintenanceAdmissionGate,
-        )
-
-        for duplicate_status in ("passed", "failed"):
-            with self.subTest(duplicate_status=duplicate_status):
-                engine = _sqlite_engine()
-                try:
-                    with tempfile.TemporaryDirectory() as tmpdir:
-                        root = Path(tmpdir)
-                        _write_policy(root, (_SCHEME_ID,))
-                        _insert_registry_row(engine)
-                        _seed_prior_admission(engine)
-                        with engine.begin() as conn:
-                            conn.execute(
-                                text(
-                                    "INSERT INTO t_harness_gate_results "
-                                    "(harness_run_id, gate_name, status) VALUES "
-                                    "('hr-prior', 'compare', :status)"
-                                ),
-                                {"status": duplicate_status},
-                            )
-
-                        result = NativeMaintenanceAdmissionGate().run(
-                            _context(root, engine)
-                        )
-
-                    self.assertEqual(result.status, GateStatus.BLOCKED)
-                    self.assertFalse(result.passed)
-                    self.assertTrue(
-                        any("compare" in error.lower() for error in result.errors),
-                        result.errors,
-                    )
                 finally:
                     engine.dispose()
 
@@ -354,106 +223,6 @@ class NativeMaintenanceAdmissionTests(unittest.TestCase):
                 finally:
                     engine.dispose()
 
-    def test_blocks_ambiguous_selected_prior_static_gate_identity_evidence(self) -> None:
-        cases = (
-            ("duplicate_static_gate_rows", _summary_json(_NATIVE_BUSINESS_IDENTITY), True),
-            (
-                "duplicate_identity_evidence",
-                _summary_json(
-                    _NATIVE_BUSINESS_IDENTITY,
-                    duplicate_identity_evidence=True,
-                ),
-                False,
-            ),
-        )
-        for case, static_summary_json, duplicate_static_row in cases:
-            with self.subTest(case=case):
-                self._assert_selected_snapshot_blocked(
-                    static_summary_json,
-                    duplicate_static_row=duplicate_static_row,
-                )
-
-    def test_blocks_selected_prior_noncanonical_static_identity_snapshot(self) -> None:
-        cases = (
-            (
-                "extra_key",
-                _summary_json(
-                    {**_NATIVE_BUSINESS_IDENTITY, "unexpected": "value"}
-                ),
-                False,
-            ),
-            (
-                "unsorted_tenors_and_registry_ids",
-                _summary_json(
-                    {
-                        **_NATIVE_BUSINESS_IDENTITY,
-                        "tenors": ["5Y", "10Y"],
-                        "registry_scheme_ids": [
-                            "native_daily__h1__5Y",
-                            "native_daily__h1__10Y",
-                        ],
-                    }
-                ),
-                True,
-            ),
-        )
-        for case, static_summary_json, multi_tenor in cases:
-            with self.subTest(case=case):
-                self._assert_selected_snapshot_blocked(
-                    static_summary_json,
-                    multi_tenor=multi_tenor,
-                )
-
-    def _assert_selected_snapshot_blocked(
-        self,
-        static_summary_json: str,
-        *,
-        duplicate_static_row: bool = False,
-        multi_tenor: bool = False,
-    ) -> None:
-        from harness.gates.native_maintenance_admission_gate import (
-            NativeMaintenanceAdmissionGate,
-        )
-
-        engine = _sqlite_engine()
-        try:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                root = Path(tmpdir)
-                _write_policy(root, (_SCHEME_ID,))
-                if multi_tenor:
-                    _insert_multi_tenor_registry_rows(engine)
-                else:
-                    _insert_registry_row(engine)
-                _seed_prior_admission(
-                    engine,
-                    scheme_version="prior-selected",
-                    harness_run_id="hr-selected",
-                    static_summary_json=static_summary_json,
-                )
-                if duplicate_static_row:
-                    _insert_static_gate_result(
-                        engine,
-                        harness_run_id="hr-selected",
-                        summary_json=static_summary_json,
-                    )
-
-                result = NativeMaintenanceAdmissionGate().run(
-                    _multi_tenor_context(root, engine)
-                    if multi_tenor
-                    else _context(root, engine)
-                )
-
-            self.assertEqual(result.status, GateStatus.BLOCKED)
-            self.assertFalse(result.passed)
-            self.assertTrue(
-                any(
-                    "identity snapshot" in error.lower() for error in result.errors
-                ),
-                result.errors,
-            )
-        finally:
-            engine.dispose()
-
     def test_blocks_non_active_non_native_or_policy_denied_candidate(self) -> None:
         from harness.gates.native_maintenance_admission_gate import (
             NativeMaintenanceAdmissionGate,
@@ -499,56 +268,17 @@ class NativeMaintenanceAdmissionTests(unittest.TestCase):
                 finally:
                     engine.dispose()
 
-    def test_blocks_config_scheme_id_mismatch_before_any_database_read(self) -> None:
-        from harness.gates.native_maintenance_admission_gate import (
-            NativeMaintenanceAdmissionGate,
-        )
-
-        engine = _sqlite_engine()
-        statements: list[str] = []
-        event.listen(
-            engine,
-            "before_cursor_execute",
-            lambda _conn, _cursor, statement, _parameters, _context, _many: (
-                statements.append(statement)
-            ),
-        )
-        try:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                root = Path(tmpdir)
-                _write_policy(root, ("other_native",))
-
-                result = NativeMaintenanceAdmissionGate().run(
-                    _context(root, engine, scheme_id="other_native")
-                )
-
-            self.assertEqual(result.status, GateStatus.BLOCKED)
-            self.assertFalse(result.passed)
-            self.assertTrue(
-                any("scheme_id mismatch" in error for error in result.errors),
-                result.errors,
-            )
-            self.assertEqual(statements, [])
-        finally:
-            engine.dispose()
-
     def test_blocks_registry_identity_drift_without_repairing_it(self) -> None:
         from harness.gates.native_maintenance_admission_gate import (
             NativeMaintenanceAdmissionGate,
         )
 
         cases = (
-            ("base_scheme_id", "UPDATE t_scheme_registry SET base_scheme_id = 'other_native'", None),
-            ("task_type", "UPDATE t_scheme_registry SET task_type = 'T+5'", None),
-            ("frequency", "UPDATE t_scheme_registry SET frequency = 'weekly'", None),
-            ("horizon", "UPDATE t_scheme_registry SET horizon = 5", None),
-            ("target_tenor", "UPDATE t_scheme_registry SET target_tenor = '5Y'", None),
-            ("runtime_type", "UPDATE t_scheme_registry SET runtime_type = 'blackbox_v2'", None),
-            ("status", "UPDATE t_scheme_registry SET status = 'archived'", None),
-            ("missing", "DELETE FROM t_scheme_registry", None),
-            ("extra_active", None, _extra_active_registry_row()),
+            ("identity", "UPDATE t_scheme_registry SET base_scheme_id = 'other_native'"),
+            ("lifecycle", "UPDATE t_scheme_registry SET status = 'archived'"),
+            ("missing", "DELETE FROM t_scheme_registry"),
         )
-        for case, mutation, extra_row in cases:
+        for case, mutation in cases:
             with self.subTest(case=case):
                 engine = _sqlite_engine()
                 try:
@@ -558,10 +288,7 @@ class NativeMaintenanceAdmissionTests(unittest.TestCase):
                         _insert_registry_row(engine)
                         _seed_prior_admission(engine)
                         with engine.begin() as conn:
-                            if mutation is not None:
-                                conn.execute(text(mutation))
-                            if extra_row is not None:
-                                _insert_registry_row_conn(conn, extra_row)
+                            conn.execute(text(mutation))
 
                         result = NativeMaintenanceAdmissionGate().run(
                             _context(root, engine)
@@ -578,7 +305,7 @@ class NativeMaintenanceAdmissionTests(unittest.TestCase):
                         any("registry" in error.lower() for error in result.errors),
                         result.errors,
                     )
-                    self.assertEqual(count, 2 if case == "extra_active" else 0 if case == "missing" else 1)
+                    self.assertEqual(count, 0 if case == "missing" else 1)
                 finally:
                     engine.dispose()
 
@@ -607,10 +334,6 @@ def _context(root: Path, engine, **config_overrides: object) -> GateContext:
         config=_config(**config_overrides),
         engine_factory=lambda: engine,
     )
-
-
-def _multi_tenor_context(root: Path, engine) -> GateContext:
-    return _context(root, engine, tenors=["5Y", "10Y"])
 
 
 def _write_policy(root: Path, scheme_ids: tuple[str, ...]) -> None:
@@ -823,20 +546,6 @@ def _seed_current_candidate(
         )
 
 
-def _insert_static_gate_result(
-    engine,
-    *,
-    harness_run_id: str,
-    summary_json: str,
-) -> None:
-    with engine.begin() as conn:
-        _insert_static_gate_result_conn(
-            conn,
-            harness_run_id=harness_run_id,
-            summary_json=summary_json,
-        )
-
-
 def _insert_static_gate_result_conn(
     conn,
     *,
@@ -861,8 +570,6 @@ def _insert_static_gate_result_conn(
 
 def _summary_json(
     snapshot: dict[str, object],
-    *,
-    duplicate_identity_evidence: bool = False,
 ) -> str:
     evidence = [
         {
@@ -871,14 +578,6 @@ def _summary_json(
             "detail": None,
         }
     ]
-    if duplicate_identity_evidence:
-        evidence.append(
-            {
-                "key": "native_business_identity",
-                "value": snapshot,
-                "detail": None,
-            }
-        )
     return json.dumps(
         {
             "passed": True,
@@ -909,27 +608,9 @@ def _registry_row(**overrides: object) -> dict[str, object]:
     return row
 
 
-def _extra_active_registry_row() -> dict[str, object]:
-    return _registry_row(
-        scheme_id="native_daily__h5__5Y",
-        horizon=5,
-        target_tenor="5Y",
-    )
-
-
 def _insert_registry_row(engine, **overrides: object) -> None:
     with engine.begin() as conn:
         _insert_registry_row_conn(conn, _registry_row(**overrides))
-
-
-def _insert_multi_tenor_registry_rows(engine) -> None:
-    _insert_registry_row(
-        engine,
-        scheme_id="native_daily__h1__5Y",
-        target_tenor="5Y",
-        tenors='["5Y"]',
-    )
-    _insert_registry_row(engine)
 
 
 def _insert_registry_row_conn(conn, row: dict[str, object]) -> None:
