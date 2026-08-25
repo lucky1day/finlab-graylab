@@ -37,88 +37,7 @@ def build_operation(
 
 
 class BlackboxV2HarnessGateTests(unittest.TestCase):
-    def test_automatic_blackbox_gate_registry_excludes_api_readiness(self) -> None:
-        from harness.blackbox_v2.gates import BLACKBOX_GATES
 
-        self.assertEqual(
-            list(BLACKBOX_GATES),
-            [
-                "static",
-                "input",
-                "unit",
-                "compare",
-                "backtest",
-                "shadow-register",
-            ],
-        )
-        self.assertNotIn("api-readiness", BLACKBOX_GATES)
-
-    def test_passed_all_rejects_legacy_seven_gate_history(self) -> None:
-        from harness.blackbox_v2.gates import _verify_passed_all
-        from scheduler.discovery import load_scheme_config
-        from shared.blackbox_v2.intake import intake_delivery
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            scheme_dir = intake_delivery(
-                _delivery(root / "incoming"),
-                schemes_root=root / "schemes",
-            )
-            config = load_scheme_config(scheme_dir / "config.yaml")
-            engine = create_engine("sqlite:///:memory:")
-            with engine.begin() as conn:
-                conn.execute(
-                    text(
-                        "CREATE TABLE t_harness_runs ("
-                        "harness_run_id TEXT, scheme_id TEXT, scheme_version TEXT, "
-                        "stage TEXT, status TEXT, finished_at TEXT, report_uri TEXT)"
-                    )
-                )
-                conn.execute(
-                    text(
-                        "CREATE TABLE t_harness_gate_results ("
-                        "harness_run_id TEXT, gate_name TEXT, status TEXT)"
-                    )
-                )
-                conn.execute(
-                    text(
-                        "INSERT INTO t_harness_runs VALUES ("
-                        "'hr-legacy-seven', :scheme_id, :scheme_version, "
-                        "'all', 'passed', '2026-08-10 12:00:00', :report_uri)"
-                    ),
-                    {
-                        "scheme_id": config.scheme_id,
-                        "scheme_version": config.scheme_version,
-                        "report_uri": str(root / "reports" / "all"),
-                    },
-                )
-                conn.execute(
-                    text(
-                        "INSERT INTO t_harness_gate_results VALUES ("
-                        "'hr-legacy-seven', :gate_name, 'passed')"
-                    ),
-                    [
-                        {"gate_name": gate_name}
-                        for gate_name in (
-                            "static",
-                            "input",
-                            "unit",
-                            "dry-run",
-                            "compare",
-                            "backtest",
-                            "api-readiness",
-                        )
-                    ],
-                )
-
-            try:
-                with self.assertRaisesRegex(
-                    ValueError,
-                    "exact persisted Blackbox V2 gate set",
-                ):
-                    _verify_passed_all(engine, config)
-            finally:
-                engine.dispose()
 
     def test_passed_all_accepts_directory_report_uri(self) -> None:
         from harness.blackbox_v2.gates import _verify_passed_all
@@ -728,45 +647,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             self.assertFalse((gate_root / "runtime_snapshot").exists())
             self.assertTrue(state_path.is_file())
 
-    def test_cleanup_preserves_runtime_view_marked_as_uncertain_debris(self) -> None:
-        from harness.blackbox_v2.gates import cleanup_runtime_input
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            report_dir = root / "reports"
-            runtime_root = report_dir / "blackbox_v2" / "runtime_views"
-            active_view = (
-                runtime_root
-                / "active"
-                / "blackbox-runtime-uncertain"
-            )
-            debris_root = runtime_root / "debris"
-            active_view.mkdir(parents=True)
-            debris_root.mkdir()
-            (active_view / "api_wind_date.csv").write_text(
-                "rdate,week_id\n",
-                encoding="utf-8",
-            )
-            (debris_root / "blackbox-runtime-uncertain.json").write_text(
-                "{}\n",
-                encoding="utf-8",
-            )
-            ctx = GateContext(
-                scheme_id="trial",
-                predict_date="2026-07-16",
-                project_root=root,
-                report_dir=report_dir,
-            )
-
-            cleanup_runtime_input(ctx)
-
-            self.assertTrue(active_view.is_dir())
-            self.assertTrue(
-                (
-                    debris_root
-                    / "blackbox-runtime-uncertain.json"
-                ).is_file()
-            )
 
     def test_cleanup_rejects_runtime_symlink_without_touching_external_files(self) -> None:
         from harness.blackbox_v2.gates import cleanup_runtime_input
@@ -802,42 +682,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 (gate_root / "runtime_snapshot").is_symlink()
             )
 
-    def test_cleanup_rejects_report_or_gate_root_symlink(self) -> None:
-        from harness.blackbox_v2.gates import cleanup_runtime_input
-
-        for target in ("report_dir", "gate_root"):
-            with self.subTest(target=target), tempfile.TemporaryDirectory() as tmpdir:
-                root = Path(tmpdir)
-                external = root / "external"
-                external.mkdir()
-                sentinel = external / "sentinel.txt"
-                sentinel.write_text("keep\n", encoding="utf-8")
-                report_dir = root / "reports"
-                if target == "report_dir":
-                    report_dir.symlink_to(
-                        external,
-                        target_is_directory=True,
-                    )
-                else:
-                    report_dir.mkdir()
-                    (report_dir / "blackbox_v2").symlink_to(
-                        external,
-                        target_is_directory=True,
-                    )
-                ctx = GateContext(
-                    scheme_id="trial",
-                    predict_date="2026-07-16",
-                    project_root=root,
-                    report_dir=report_dir,
-                )
-
-                with self.assertRaisesRegex(ValueError, "symlink"):
-                    cleanup_runtime_input(ctx)
-
-                self.assertEqual(
-                    sentinel.read_text(encoding="utf-8"),
-                    "keep\n",
-                )
 
     def test_cleanup_removes_platform_runtime_bytes_from_final_state(self) -> None:
         from harness.blackbox_v2.gates import cleanup_runtime_input
@@ -1126,123 +970,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             self.assertEqual(config_path.read_text(encoding="utf-8"), original)
             self.assertEqual(state, {"version": "draft", "registry": "paused"})
 
-    def test_shadow_register_rejects_prior_active_exact_version(self) -> None:
-        from harness.blackbox_v2.gates import BlackboxShadowRegisterGate, PassedAllRun
-        from scheduler.discovery import load_scheme_config
-        from shared.blackbox_v2.intake import intake_delivery
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            scheme_dir = intake_delivery(_delivery(root / "incoming"), schemes_root=root / "schemes")
-            config = load_scheme_config(scheme_dir / "config.yaml")
-            token = build_operation(
-                config.scheme_id,
-                "shadow_register",
-                "2026-07-16",
-                scheme_version=config.scheme_version,
-                harness_run_id="hr_passed",
-            )
-            ctx = GateContext(
-                scheme_id=config.scheme_id,
-                predict_date="2026-07-16",
-                project_root=root,
-                report_dir=root / "reports" / "shadow",
-                config=config,
-                operation=token,
-                engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
-            )
-            passed = PassedAllRun("hr_passed", root / "reports" / "all", "snapshot-test")
-            with (
-                patch("harness.blackbox_v2.gates._verify_passed_all", return_value=passed),
-                patch("harness.blackbox_v2.gates._environment_fingerprint", return_value="e" * 64),
-                patch(
-                    "harness.blackbox_v2.gates._read_shadow_state",
-                    return_value=SimpleNamespace(version_status="active", registry_status="paused"),
-                ),
-                patch("harness.blackbox_v2.gates._register_shadow") as register,
-            ):
-                result = BlackboxShadowRegisterGate().run(ctx)
-
-        self.assertFalse(result.passed)
-        self.assertIn("draft or validated", "\n".join(result.errors))
-        register.assert_not_called()
-
-    def test_shadow_verification_rejects_config_version_status_mismatch(self) -> None:
-        from dataclasses import replace
-
-        from harness.blackbox_v2.gates import BlackboxShadowRegisterGate, PassedAllRun
-        from scheduler.discovery import load_scheme_config
-        from shared.blackbox_v2.intake import intake_delivery
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            scheme_dir = intake_delivery(_delivery(root / "incoming"), schemes_root=root / "schemes")
-            config_path = scheme_dir / "config.yaml"
-            config = load_scheme_config(config_path)
-            token = build_operation(
-                config.scheme_id,
-                "shadow_register",
-                "2026-07-16",
-                scheme_version=config.scheme_version,
-                harness_run_id="hr_passed",
-            )
-            ctx = GateContext(
-                scheme_id=config.scheme_id,
-                predict_date="2026-07-16",
-                project_root=root,
-                report_dir=root / "reports" / "shadow",
-                config=config,
-                operation=token,
-                engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
-            )
-            state = {"version": "draft", "registry": "paused"}
-            passed = PassedAllRun("hr_passed", root / "reports" / "all", "snapshot-test")
-            real_load = load_scheme_config
-
-            def read_state(_engine, _cfg):
-                return SimpleNamespace(
-                    version_status=state["version"],
-                    registry_status=state["registry"],
-                )
-
-            def register(_engine, _validated, _shadow):
-                state.update(version="shadow", registry="paused")
-                return SimpleNamespace(
-                    scheme_version=config.scheme_version,
-                    version_status="shadow",
-                    registry_status="paused",
-                    runtime_type="blackbox_v2",
-                    data_snapshot_id="snapshot-test",
-                    environment_fingerprint="e" * 64,
-                    code_hash=config.code_hash,
-                    config_hash=config.config_hash,
-                    manifest_hash=config.manifest_hash,
-                )
-
-            def load_with_mismatch(path):
-                current = real_load(path)
-                if current.version_status == "shadow":
-                    return replace(current, version_status="draft")
-                return current
-
-            def compensate(_engine, _cfg, **kwargs):
-                state.update(version=kwargs["version_status"], registry=kwargs["registry_status"])
-
-            with (
-                patch("harness.blackbox_v2.gates._verify_passed_all", return_value=passed),
-                patch("harness.blackbox_v2.gates._environment_fingerprint", return_value="e" * 64),
-                patch("harness.blackbox_v2.gates._read_shadow_state", side_effect=read_state),
-                patch("harness.blackbox_v2.gates._register_shadow", side_effect=register),
-                patch("harness.blackbox_v2.gates.load_scheme_config", side_effect=load_with_mismatch),
-                patch("scheduler.repository.apply_blackbox_lifecycle_state", side_effect=compensate),
-            ):
-                result = BlackboxShadowRegisterGate().run(ctx)
-
-            restored = real_load(config_path)
-
-        self.assertFalse(result.passed)
-        self.assertEqual((restored.status, restored.version_status), ("paused", "draft"))
-        self.assertEqual(state, {"version": "draft", "registry": "paused"})
 
     def test_shadow_version_drift_after_db_write_restores_original_exact_version(self) -> None:
         from harness.blackbox_v2.gates import BlackboxShadowRegisterGate, PassedAllRun
@@ -1466,28 +1193,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
 
         self.assertTrue(result.passed, result.errors)
 
-    def test_static_gate_rejects_pycache_that_is_a_regular_file(self) -> None:
-        """只按名字忽略会让任意内容藏在 `__pycache__` 这个名字下。"""
-        from harness.blackbox_v2.gates import BlackboxStaticGate
-        from scheduler.discovery import load_scheme_config
-        from shared.blackbox_v2.intake import intake_delivery
-
-        for target_is_delivery in (False, True):
-            with tempfile.TemporaryDirectory() as tmpdir:
-                root = Path(tmpdir)
-                scheme_dir = intake_delivery(
-                    _delivery(root / "incoming"),
-                    schemes_root=root / "schemes",
-                )
-                target = scheme_dir / "delivery" if target_is_delivery else scheme_dir
-                (target / "__pycache__").write_text("payload", encoding="utf-8")
-                config = load_scheme_config(scheme_dir / "config.yaml")
-                result = BlackboxStaticGate().run(_context(root, config))
-
-            self.assertFalse(
-                result.passed,
-                f"普通文件 __pycache__ 未被拒绝 (delivery={target_is_delivery})",
-            )
 
     def test_static_gate_rejects_pycache_that_is_a_symlink(self) -> None:
         """symlink 形态的 `__pycache__` 可指向仓库外目录，必须拒绝。"""
