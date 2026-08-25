@@ -607,7 +607,7 @@ def _not_due_action(
 
 
 def _discover_scheme_configs() -> tuple[Any, ...]:
-    return tuple(discover_schemes(strict=True))
+    return tuple(discover_schemes())
 
 
 def _select_execution_authority(

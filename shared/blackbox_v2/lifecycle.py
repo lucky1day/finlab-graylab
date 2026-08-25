@@ -26,6 +26,8 @@ _TRANSITIONS = {
     "compensated": frozenset(),
     "unresolved": frozenset(),
 }
+_LIFECYCLE_LOCK_TIMEOUT_SEC = 30.0
+_LIFECYCLE_LOCK_POLL_INTERVAL_SEC = 0.05
 
 
 @dataclass(frozen=True)
@@ -460,19 +462,12 @@ def _reconcile_with_linked_journal(
 def lifecycle_operation_lock(
     project_root: str | Path,
     scheme_id: str,
-    *,
-    timeout_sec: float = 30.0,
-    poll_interval_sec: float = 0.05,
 ):
-    if timeout_sec < 0:
-        raise ValueError("lifecycle lock timeout_sec must be non-negative")
-    if poll_interval_sec <= 0:
-        raise ValueError("lifecycle lock poll_interval_sec must be positive")
     root = lifecycle_root(project_root, scheme_id)
     root.mkdir(parents=True, exist_ok=True)
     lock_path = root / ".lock"
     with lock_path.open("a+b") as handle:
-        deadline = time.monotonic() + timeout_sec
+        deadline = time.monotonic() + _LIFECYCLE_LOCK_TIMEOUT_SEC
         acquired = False
         try:
             while True:
@@ -485,9 +480,12 @@ def lifecycle_operation_lock(
                     if remaining <= 0:
                         raise LifecycleLockTimeout(
                             "timed out waiting for Blackbox lifecycle lock: "
-                            f"scheme_id={scheme_id} timeout_sec={timeout_sec:g}"
+                            f"scheme_id={scheme_id} "
+                            f"timeout_sec={_LIFECYCLE_LOCK_TIMEOUT_SEC:g}"
                         ) from exc
-                    time.sleep(min(poll_interval_sec, remaining))
+                    time.sleep(
+                        min(_LIFECYCLE_LOCK_POLL_INTERVAL_SEC, remaining)
+                    )
             yield
         finally:
             if acquired:

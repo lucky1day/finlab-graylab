@@ -33,6 +33,7 @@ from shared.scheme_config_schema import ALLOWED_RUNTIME_TYPES, ALLOWED_VERSION_S
 PREDICTION_KEYS_ALREADY_EXIST = "prediction_keys_already_exist"
 PARTIAL_PREDICTION_KEY_CONFLICT = "partial_prediction_key_conflict"
 BLACKBOX_REGISTRY_STATUSES = {"active", "paused", "archived"}
+_BLACKBOX_LIFECYCLE_LOCK_TIMEOUT_SEC = 5.0
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -138,7 +139,6 @@ def register_blackbox_draft_identity(
     cfg: SchemeConfig,
     *,
     expected_harness_run_id: str,
-    lock_timeout_sec: float = 5.0,
 ) -> BlackboxLifecycleState:
     """在非空生产 Schema 中 insert-only 登记全新 Blackbox draft 身份。"""
     if getattr(cfg, "runtime_type", None) != "blackbox_v2":
@@ -173,7 +173,6 @@ def register_blackbox_draft_identity(
     with _blackbox_draft_register_advisory_lock(
         engine,
         scheme_id=cfg.scheme_id,
-        timeout_sec=lock_timeout_sec,
     ):
         with engine.begin() as conn:
             latest_run = (
@@ -421,22 +420,23 @@ def _blackbox_draft_register_advisory_lock(
     engine: Engine,
     *,
     scheme_id: str,
-    timeout_sec: float,
 ) -> Iterator[None]:
     """用 scheme-scoped MySQL advisory lock 消除首次 absent-row 竞争。"""
-    if timeout_sec < 0:
-        raise ValueError("draft register lock_timeout_sec must be non-negative")
     scheme_digest = hashlib.sha256(scheme_id.encode("utf-8")).hexdigest()[:32]
     lock_name = f"bfl:bbv2-draft:{scheme_digest}"
     with engine.connect() as lock_conn:
         acquired = lock_conn.execute(
             text("SELECT GET_LOCK(:lock_name, :timeout_sec)"),
-            {"lock_name": lock_name, "timeout_sec": float(timeout_sec)},
+            {
+                "lock_name": lock_name,
+                "timeout_sec": _BLACKBOX_LIFECYCLE_LOCK_TIMEOUT_SEC,
+            },
         ).scalar_one()
         if int(acquired or 0) != 1:
             raise BlackboxDraftRegisterLockTimeout(
                 "timed out waiting for Blackbox draft registration advisory lock: "
-                f"scheme_hash={scheme_digest} timeout_sec={timeout_sec:g}"
+                f"scheme_hash={scheme_digest} "
+                f"timeout_sec={_BLACKBOX_LIFECYCLE_LOCK_TIMEOUT_SEC:g}"
             )
         try:
             yield
@@ -767,7 +767,6 @@ def activate_blackbox_revision(
     expected_harness_run_id: str,
     approved_by: str,
     approved_at: datetime,
-    lock_timeout_sec: float = 5.0,
 ) -> BlackboxLifecycleState:
     """原子替换同一业务身份的唯一 active Blackbox exact version。"""
     _validate_blackbox_revision_candidate(cfg, require_evidence=True)
@@ -810,7 +809,6 @@ def activate_blackbox_revision(
     with _blackbox_draft_register_advisory_lock(
         engine,
         scheme_id=cfg.scheme_id,
-        timeout_sec=lock_timeout_sec,
     ):
         with engine.begin() as conn:
             lock_clause = " FOR UPDATE" if _dialect_name(conn) != "sqlite" else ""

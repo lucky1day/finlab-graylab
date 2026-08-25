@@ -371,7 +371,7 @@ def _run_one_shot(
     )
     with _runner_lock(data_bridge_config):
         try:
-            discovered = discover_schemes(strict=True)
+            discovered = discover_schemes()
         except Exception as exc:  # noqa: BLE001 - strict discovery is configuration
             raise LaunchdPredictionConfigurationError(
                 "strict scheme discovery failed"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -13,6 +14,16 @@ SCHEMES_ROOT = PROJECT_ROOT / "schemes"
 
 
 class ActiveSchemeContractTests(unittest.TestCase):
+    def test_invalid_config_fails_closed_instead_of_being_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schemes_root = Path(tmpdir)
+            config = schemes_root / "broken" / "config.yaml"
+            config.parent.mkdir()
+            config.write_text("scheme_id: broken\n", encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                discover_schemes(schemes_root)
+
     def test_all_active_scheme_configs_have_runnable_platform_contracts(self) -> None:
         configs = [
             config

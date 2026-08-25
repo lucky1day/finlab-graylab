@@ -493,7 +493,6 @@ def _strict_native_activation_preflight(
     config_path = ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml"
     configs = discover_schemes(
         schemes_root=ctx.project_root / "schemes",
-        strict=True,
     )
     target = next((cfg for cfg in configs if cfg.scheme_id == ctx.scheme_id), None)
     if target is None:
@@ -847,7 +846,6 @@ def _validate_native_activated_config(
         raise RuntimeError("activated config bytes do not match preflight expectation")
     configs = discover_schemes(
         schemes_root=ctx.project_root / "schemes",
-        strict=True,
     )
     target = next((cfg for cfg in configs if cfg.scheme_id == ctx.scheme_id), None)
     if target is None:

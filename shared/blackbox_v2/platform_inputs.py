@@ -173,16 +173,13 @@ def capture_platform_inputs_from_connection(
     *,
     connection: Connection,
     weekly_cutoff_key: object,
-    captured_at: str | None = None,
 ) -> tuple[FrozenPlatformInput, ...]:
     """从调用方只读事务捕获 Harness 所需的平台输入。"""
     artifact_ids = _normalize_selection(platform_input_ids)
     if not artifact_ids:
         return ()
     calendar_frames = read_calendar_snapshot_from_connection(connection)
-    provenance = _provenance(
-        captured_at=captured_at,
-    )
+    provenance = _provenance()
     return tuple(
         freeze_platform_input(
             artifact_id,
@@ -358,19 +355,12 @@ def _provider(artifact_id: str) -> PlatformInputProvider:
         ) from exc
 
 
-def _provenance(
-    *,
-    captured_at: str | None,
-) -> dict[str, str | None]:
-    capture_time = captured_at
-    if capture_time is None:
-        capture_time = (
-            datetime.now(timezone.utc)
-            .isoformat(timespec="microseconds")
-            .replace("+00:00", "Z")
-        )
-    if not isinstance(capture_time, str) or not capture_time.strip():
-        raise ValueError("captured_at must be a non-empty string")
+def _provenance() -> dict[str, str | None]:
+    capture_time = (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
     return {
         "source_kind": "harness_database",
         "generation_id": None,

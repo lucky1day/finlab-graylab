@@ -1035,14 +1035,12 @@ def capture_blackbox_platform_inputs_from_connection(
     *,
     connection,
     weekly_cutoff_key: object,
-    captured_at: str | None = None,
 ) -> tuple[_platform_inputs.FrozenPlatformInput, ...]:
     """从同一只读事务冻结 Blackbox 显式声明的平台输入。"""
     return _platform_inputs.capture_platform_inputs_from_connection(
         platform_input_ids,
         connection=connection,
         weekly_cutoff_key=weekly_cutoff_key,
-        captured_at=captured_at,
     )
 
 

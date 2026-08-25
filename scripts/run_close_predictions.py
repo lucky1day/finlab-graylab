@@ -146,7 +146,7 @@ def run_close_job(
     except DeploymentScopeError as exc:
         raise ValueError("deployment target does not match control plane") from exc
 
-    discovered = discover_schemes(strict=True)
+    discovered = discover_schemes()
     monthly_candidates = [
         cfg
         for cfg in discovered

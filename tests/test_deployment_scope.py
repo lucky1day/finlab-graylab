@@ -35,7 +35,7 @@ def _discover(target: str | None):
         os.environ.pop("BFL_DEPLOYMENT_TARGET", None)
         if target is not None:
             os.environ["BFL_DEPLOYMENT_TARGET"] = target
-        return discover_schemes(strict=True)
+        return discover_schemes()
 
 
 def _matrix_schemes() -> dict[str, list[str]]:

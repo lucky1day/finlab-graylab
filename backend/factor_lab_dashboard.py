@@ -96,15 +96,10 @@ def dashboard_read_connection(engine: Engine) -> Iterator[Connection]:
 
 def build_factor_lab_dashboard(
     engine: Engine,
-    *,
-    captured_at: datetime | None = None,
 ) -> dict[str, Any]:
     """在一个一致性事务内批量读取并构建因子实验室 live 快照。"""
     build_started_at = time.perf_counter()
-    captured = captured_at or datetime.now(SHANGHAI_TIMEZONE)
-    if not isinstance(captured, datetime) or captured.tzinfo is None:
-        raise DashboardDataError("dashboard captured_at must be timezone-aware")
-    captured = captured.astimezone(SHANGHAI_TIMEZONE)
+    captured = datetime.now(SHANGHAI_TIMEZONE)
     display_until = captured.date().isoformat()
 
     db_read_started_at = time.perf_counter()

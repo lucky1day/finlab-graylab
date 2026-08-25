@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -21,7 +20,6 @@ from shared.versioning import (
 )
 
 
-logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCHEMES_ROOT = PROJECT_ROOT / "schemes"
 
@@ -233,16 +231,11 @@ def _hash_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def discover_schemes(schemes_root: Path = SCHEMES_ROOT, strict: bool = False) -> list[SchemeConfig]:
+def discover_schemes(schemes_root: Path = SCHEMES_ROOT) -> list[SchemeConfig]:
     """扫描 schemes/ 下的方案配置。"""
     configs: list[SchemeConfig] = []
     for config_path in sorted(schemes_root.glob("*/config.yaml")):
         if config_path.parent.name.startswith("_"):
             continue
-        try:
-            configs.append(load_scheme_config(config_path))
-        except Exception:
-            if strict:
-                raise
-            logger.exception("Skip invalid scheme config: %s", config_path)
+        configs.append(load_scheme_config(config_path))
     return filter_schemes_for_configured_target(configs)
