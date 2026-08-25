@@ -105,6 +105,8 @@ def test_runtime_relative_path_cannot_escape_root(
 
 
 def test_runtime_consumers_share_the_unified_root(tmp_path: Path) -> None:
+    from harness.cli import default_report_dir
+    from harness.gates.backtest_gate import backtest_baseline_path
     from shared.blackbox_v2.lifecycle import lifecycle_root
     from shared.daily_0629_source_runner import (
         _source_cache_path as daily_source_cache_path,
@@ -137,6 +139,14 @@ def test_runtime_consumers_share_the_unified_root(tmp_path: Path) -> None:
             tmp_path / "source-release",
             "scheme-id",
         )
+        report_dir = default_report_dir(
+            tmp_path / "source-release",
+            "scheme-id",
+        )
+        baseline_path = backtest_baseline_path(
+            tmp_path / "source-release",
+            "scheme-id",
+        )
 
     assert daily_path is not None
     assert daily_path.is_relative_to(tmp_path / "cache" / "daily-0629")
@@ -147,6 +157,14 @@ def test_runtime_consumers_share_the_unified_root(tmp_path: Path) -> None:
         / "artifacts"
         / "blackbox-v2-lifecycle"
         / "scheme-id"
+    )
+    assert report_dir.is_relative_to(tmp_path / "reports" / "harness")
+    assert baseline_path == (
+        tmp_path
+        / "reports"
+        / "refactor_baseline"
+        / "scheme-id"
+        / "backtest_no_persist.json"
     )
 
 

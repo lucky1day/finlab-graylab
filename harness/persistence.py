@@ -144,7 +144,7 @@ def persist_harness_run_finish(
 def _release_commit(ctx: GateContext) -> str | None:
     """本次运行所属的 release commit；无法确定时返回 None。"""
     try:
-        return resolve_code_commit(ctx.project_root)
+        return resolve_code_commit()
     except Exception:
         return None
 
