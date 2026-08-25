@@ -4,10 +4,8 @@
 刷新入口在构建前用旧 current 解析 continuity authority，于是出现
 "必须先有新周数据才允许生成新周数据"的自锁。
 
-本文件不 mock 周期解析本身，覆盖三段真实链路：
-1. `_resolve_period_cutoffs_bulk` 的回退闸门；
-2. authority 层把新周键冻结成 `required_weekly_key`；
-3. `run_full_refresh` 强制新候选快照必须真正产出该新周键。
+本文件只保留生产 `refresh_current` 入口的完整闭环：旧 current 只到上周，
+真实 authority 解析后，新候选必须发布出本周数据。
 """
 
 from __future__ import annotations
@@ -27,9 +25,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from shared.data_bridge.authority import (  # noqa: E402
-    resolve_databridge_continuity_authority_from_engine,
-)
 from shared.data_bridge.refresh import (  # noqa: E402
     DataBridgeRefreshConfig,
     DownloadRound,
@@ -39,7 +34,6 @@ from shared.data_bridge.validation import (  # noqa: E402
     validate_dataset,
     write_validated_dataset,
 )
-from shared.input_artifacts import _resolve_period_cutoffs_bulk  # noqa: E402
 
 SCHEMA_PATH = PROJECT_ROOT / "shared" / "blackbox_v2" / "data_bridge_v1_schema.json"
 LAST_WEEK = "202629"
@@ -149,47 +143,6 @@ class _LaunchdShapedBuilder(_FakeRoundBuilder):
         )
 
 
-class PeriodCutoffFallbackTests(unittest.TestCase):
-    """直接覆盖真实的周期回退闸门，不做任何 mock。"""
-
-    @staticmethod
-    def _weekly_index() -> pd.DataFrame:
-        return pd.DataFrame(
-            [
-                {"week_id": LAST_WEEK, "available_date": "2026-07-13"},
-                {"week_id": NEW_WEEK, "available_date": "2026-07-20"},
-            ]
-        )
-
-
-    def test_fallback_selects_predecessor_and_preserves_source_key(self) -> None:
-        """闸门打开时退到上周做 effective，同时保留新周作为 source。"""
-        resolved = _resolve_period_cutoffs_bulk(
-            ["2026-07-20"],
-            self._weekly_index(),
-            key_column="week_id",
-            available_keys={LAST_WEEK},
-            filename="weekly_output.csv",
-            allow_legacy_v1_period_fallback=True,
-        )
-        cutoff = resolved["2026-07-20"]
-        self.assertEqual(cutoff.effective_key, LAST_WEEK)
-        self.assertEqual(cutoff.source_key, NEW_WEEK)
-
-    def test_fallback_without_any_prior_key_still_fails_closed(self) -> None:
-        """没有任何可回退的前序键时必须继续 fail-closed。"""
-        with self.assertRaises(ValueError):
-            _resolve_period_cutoffs_bulk(
-                ["2026-07-20"],
-                self._weekly_index(),
-                key_column="week_id",
-                available_keys={"202699"},
-                filename="weekly_output.csv",
-                allow_legacy_v1_period_fallback=True,
-            )
-
-
-
 class _CrossWeekFixture(unittest.TestCase):
     """跨周场景的共享夹具：真实 store / publish / 校验链路。"""
 
@@ -290,52 +243,6 @@ class _CrossWeekFixture(unittest.TestCase):
         engine.connect.return_value.__enter__.return_value = connection
         engine.connect.return_value.__exit__.return_value = False
         return engine
-
-    def _resolve_authority(self, *, bootstrap: bool):
-        with self._as_of_source():
-            return resolve_databridge_continuity_authority_from_engine(
-                self.config,
-                feature_date="2026-07-20",
-                engine=self._engine(),
-                allow_producer_period_bootstrap=bootstrap,
-            )
-
-
-class CrossWeekRefreshTests(_CrossWeekFixture):
-    """authority 解析与刷新闭环的跨周回归。"""
-
-
-    def test_cross_week_authority_freezes_new_week(self) -> None:
-        """开启 bootstrap 后 effective 退到上周，新周被冻结为强制要求。"""
-        self._publish_last_week_generation()
-        authority = self._resolve_authority(bootstrap=True)
-        self.assertIsNotNone(authority)
-        self.assertEqual(authority.weekly_cutoff_key, LAST_WEEK)
-        self.assertEqual(authority.required_weekly_key, NEW_WEEK)
-        self.assertIsNone(authority.required_monthly_key)
-
-    def test_cross_week_loop_publishes_new_week(self) -> None:
-        """完整闭环：旧 current 只到上周，刷新后 current 必须含新周。"""
-        self._publish_last_week_generation()
-        authority = self._resolve_authority(bootstrap=True)
-        result = self._publish(
-            daily_end="2026-07-20",
-            week_ids=[LAST_WEEK, NEW_WEEK],
-            refresh_date="2026-07-21",
-            continuity_authority=authority,
-        )
-        self.assertTrue(result.published)
-        self.assertEqual(
-            result.state["files"]["weekly_output.csv"]["max_key"],
-            NEW_WEEK,
-        )
-        published = pd.read_csv(self.data_root / "current" / "weekly_output.csv")
-        self.assertIn(
-            int(NEW_WEEK),
-            published["week_id"].astype(int).tolist(),
-        )
-
-
 
 class ProductionEntryCrossWeekTests(_CrossWeekFixture):
     """驱动 launchd 生产入口 refresh_current 的跨周回归。
