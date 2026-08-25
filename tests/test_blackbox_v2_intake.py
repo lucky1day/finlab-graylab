@@ -281,4 +281,3 @@ def _write_owner_registry(root: Path, owners: dict[str, str]) -> None:
         + "\n",
         encoding="utf-8",
     )
-

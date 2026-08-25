@@ -182,4 +182,3 @@ class RegistryTaskTypeIndexTests(unittest.TestCase):
     def test_missing_task_type_fails_closed(self) -> None:
         with self.assertRaises(DashboardDataError):
             registry_task_type_index([self._registry_row(task_type="")])
-

@@ -1296,8 +1296,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertEqual(engine.store["begin_count"], 0)
         self.assertEqual(engine.store["prediction_rows"], [])
 
-
-
     def test_blackbox_completion_rejects_disk_scheme_version_drift_before_db_access(self) -> None:
         from scheduler.repository import complete_approved_blackbox_run
         from shared.models import PredictionRecord
@@ -1348,5 +1346,4 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
 
         self.assertEqual(engine.store["begin_count"], 0)
         self.assertEqual(engine.store["prediction_rows"], [])
-
 

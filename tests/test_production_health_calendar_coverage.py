@@ -103,4 +103,3 @@ class EvaluateDailyHealthTests(unittest.TestCase):
             self._snapshot(is_trading_day=False, predictions_count=0)
         )
         self.assertNotIn("daily_predictions_missing", codes)
-

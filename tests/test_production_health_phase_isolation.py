@@ -164,4 +164,3 @@ class PhaseIsolationTests(unittest.TestCase):
         self.assertEqual(snapshot.successful_daily_run_schemes, ())
         self.assertEqual(snapshot.predictions_count, 0)
         self.assertEqual(snapshot.gray_live_run_schemes, ())
-

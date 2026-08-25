@@ -79,4 +79,3 @@ class LoadSchemeOwnersTests(unittest.TestCase):
     def test_repository_file_is_loadable(self) -> None:
         """仓库中的实际文件必须始终可读，否则 dashboard 会整体 fail-closed。"""
         self.assertIsInstance(load_scheme_owners(), dict)
-

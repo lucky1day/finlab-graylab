@@ -45,4 +45,3 @@ class SchemeOwnerPayloadTests(unittest.TestCase):
         """按 base_scheme_id 登记不生效——键必须是 composite scheme_id。"""
         dto = _registry_dto(_row(), {"demo": "LW"})
         self.assertEqual(dto["owner"], "")
-

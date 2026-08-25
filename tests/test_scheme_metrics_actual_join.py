@@ -219,4 +219,3 @@ class PeriodAverageActualJoinTests(unittest.TestCase):
             "conflicting period_average actual directions",
             str(caught.exception),
         )
-

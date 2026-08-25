@@ -360,10 +360,3 @@ class SourceRunnerDatabaseIsolationTests(unittest.TestCase):
                 or key in {"MYSQL_PWD", "DATABASE_URL"}
             ):
                 self.assertNotIn(key, child)
-
-
-
-
-
-
-

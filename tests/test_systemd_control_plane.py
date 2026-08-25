@@ -359,4 +359,3 @@ class SystemdControlPlaneTests(unittest.TestCase):
             )
             for schedule in schedules:
                 self.assertIn(schedule, content, name)
-

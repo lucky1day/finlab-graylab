@@ -189,4 +189,3 @@ class CalendarServiceTests(unittest.TestCase):
         self.assertEqual(calendar.week_id_for_date("2026-07-03"), 202625)
         self.assertEqual(calendar.week_id_to_last_trading_day(202625), "2026-07-03")
         self.assertEqual(calendar.week_id_to_last_trading_day(202626), "2026-07-10")
-

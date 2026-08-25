@@ -779,4 +779,3 @@ else:
             result["predicted_direction"] = 1
             writer.writerow(result)
 '''
-

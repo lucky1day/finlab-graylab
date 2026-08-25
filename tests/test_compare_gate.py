@@ -432,4 +432,3 @@ class CompareGateTest(unittest.TestCase):
         result = CompareGate(ctx).run()
         self.assertEqual(result.status, GateStatus.FAILED)
         self.assertTrue(any("accuracy" in e for e in result.errors), result.errors)
-

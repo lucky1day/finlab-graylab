@@ -204,4 +204,3 @@ class _NonTradingMonthlyCalendar:
             "2025-02-15": "2025-02-14",
             "2025-03-15": "2025-03-14",
         }[day]
-

@@ -304,5 +304,3 @@ class ProductionEntryCrossWeekTests(_CrossWeekFixture):
             int(NEW_WEEK),
             published["week_id"].astype(int).tolist(),
         )
-
-

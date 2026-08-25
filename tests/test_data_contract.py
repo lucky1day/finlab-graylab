@@ -356,4 +356,3 @@ class DataContractAuditTests(unittest.TestCase):
                 feature_date="2026-07-23",
                 cutoff_at=datetime(2026, 7, 24, 6, 30),
             )
-

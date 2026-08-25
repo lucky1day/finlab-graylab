@@ -103,4 +103,3 @@ class FailureTaxonomyTests(unittest.TestCase):
         _, payload, _ = self._run(DataBridgeRefreshError("boom"))
         self.assertIn("error", payload)
         self.assertEqual(payload["status"], "failed")
-

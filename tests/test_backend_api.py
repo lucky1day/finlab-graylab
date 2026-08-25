@@ -288,4 +288,3 @@ class DateParameterSemanticsTests(unittest.TestCase):
 
         self.assertEqual(actuals_mock.call_args.kwargs["start_date"], "2026-01-15")
         self.assertEqual(actuals_mock.call_args.kwargs["end_date"], "2026-02-28")
-

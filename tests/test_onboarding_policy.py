@@ -311,4 +311,3 @@ def _context(project_root: Path, scheme_id: str) -> GateContext:
         report_dir=project_root / "reports",
         operation="test-operation",
     )
-

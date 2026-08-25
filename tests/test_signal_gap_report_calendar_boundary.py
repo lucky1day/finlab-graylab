@@ -163,4 +163,3 @@ class CalendarBoundaryIsolationTests(unittest.TestCase):
             status.latest_missing_predict_date,
             known_missing.predict_date,
         )
-

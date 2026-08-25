@@ -168,4 +168,3 @@ class ActualFactsCalendarTests(unittest.TestCase):
         self.assertEqual(calendar.week_predict_date[202436], "2024-09-15")
         # 普通周：最后工作日是周五 09-20，发出日为周六 09-21。
         self.assertEqual(calendar.week_predict_date[202437], "2024-09-21")
-

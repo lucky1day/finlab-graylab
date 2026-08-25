@@ -241,4 +241,3 @@ def _write_scheme(root: Path, scheme_id: str, frequency: str, status: str, tenor
         ),
         encoding="utf-8",
     )
-

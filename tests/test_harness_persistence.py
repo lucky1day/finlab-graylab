@@ -262,7 +262,3 @@ class HarnessPersistenceTests(unittest.TestCase):
         self.assertEqual(evidence["persistence_operation"], "gate_result")
         self.assertEqual(evidence["persistence_gate_name"], gate_names[1])
         self.assertFalse(ctx.report_dir.exists())
-
-
-
-

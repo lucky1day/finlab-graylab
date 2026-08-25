@@ -372,7 +372,6 @@ def _write_blackbox_scheme(root: Path, *, horizon: int = 1) -> Path:
     )
     return scheme_dir
 
-
 def _canonical_raw_config() -> dict:
     return {
         "runtime_type": "blackbox_v2",
@@ -422,4 +421,3 @@ def _write_native_scheme(root: Path) -> Path:
         "def run(predict_date):\n    return []\n", encoding="utf-8"
     )
     return scheme_dir
-

@@ -298,4 +298,3 @@ class ConfigSchemaBacktestStartTests(unittest.TestCase):
         errors = validate_config(config, dirname="demo_monthly")
 
         self.assertIn("target_rule is required for weekly/monthly schemes", errors)
-
