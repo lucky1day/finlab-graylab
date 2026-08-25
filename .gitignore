@@ -20,9 +20,8 @@ data/data_bridge/current/
 # Local repository export tarballs.
 dist/
 
-# Generated comparison reports. Keep only lightweight documentation/manifest files.
-reports/**
-!reports/README.md
+# Generated comparison reports.
+reports/
 
 # Local investigation exports and scratch evidence.
 outputs/
@@ -31,6 +30,8 @@ __pycache__/
 *.py[cod]
 
 .DS_Store
+.claude/
+.worktrees/
 .codegraph/
 .pytest_cache/
 .ruff_cache/
