@@ -123,7 +123,7 @@ draft -> validated -> shadow -> active -> paused -> retired
 
 - 自动 Gate 通过只代表技术验证，不等于业务激活。
 - 通用入库流程默认只授予技术验收和 `shadow + paused` 登记权限，不自动授予生产运行权限。
-- 具体 Blackbox 方案只有完成[生产晋级条件](../blackbox_v2/PRODUCTION_READINESS.md)核验并取得专项授权后，才可通过专用 Gate 进入 `active`、持久化回测或 live；该授权不得外推到其他方案。
+- 具体 Blackbox 方案只有完成[生产晋级条件](../blackbox_v2/PRODUCTION_READINESS.md)核验并取得专项授权后，才可执行 activation、持久化回测或单日 `signal-gap-fill`；正式 `scheduled_live` 只由目标主机 one-shot 调度触发，任何授权不得外推到其他方案。
 - Native V1 保持既有状态；维护操作不得借机改变 Registry、scheduler 或 API 可见性。
 
 等价一次性 batch 可以在同一冻结 exact version 和输入身份下只计算一次，再按 `target_date` 分成 immutable canonical backtest 与 insert-only `gray_live`。这只是结果复用，不合并两个生命周期或事务边界，也不允许复制数据库身份字段、覆盖 live 业务键或把不满足逐 Request cutoff 的 source-original batch 伪装为实盘。完整条件见[预测日期语义](PREDICTION_SEMANTICS.md#52-一次性批量结果的分区与复用)。
@@ -142,7 +142,7 @@ Native ActivationGate 的两条 profile 互斥：当前 exact version 已通过�
 
 - Native：校验 adapter/core、输入 artifact 和 source fidelity。
 - Blackbox：校验两文件、CLI、三频快照和标准结果；确定性与截止隔离属上游交付契约义务，平台不重验。
-- persist、shadow、activate 或 live 都不包含在自动段中，必须通过各自精确的直接命令执行。
+- 持久化 backtest、shadow、activate、lifecycle reconcile 与单日 `signal-gap-fill` 都不包含在自动段中，必须走各自专用命令；`scheduled_live` 只由宿主 one-shot 触发。
 
 ## 9. 责任边界
 

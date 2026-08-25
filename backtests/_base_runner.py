@@ -26,20 +26,6 @@ RangeMapping = Mapping[str, Any]
 ArtifactBuilder = Callable[..., Any]
 
 
-@dataclass(frozen=True)
-class BacktestSpec:
-    """历史回测 runner 的可复用配置。"""
-
-    benchmark_id: str
-    scheme_id: str
-    canonical_csv: Path | None
-    target_columns: tuple[str, ...]
-    start_date: str
-    end_date: str
-    expected_report: dict[str, Any] | None = None
-    excluded_target_ranges: tuple[RangeMapping, ...] = ()
-
-
 @dataclass
 class RunOutput:
     scheme_id: str
@@ -69,7 +55,6 @@ def read_daily_csv(path: str | Path) -> pd.DataFrame:
 def build_db_aligned_daily(
     csv_df: pd.DataFrame | None = None,
     engine: Engine | None = None,
-    upstream_mode: bool = True,
     artifact_scheme_id: str = "daily_common",
     *,
     benchmark_id: str,
@@ -81,9 +66,7 @@ def build_db_aligned_daily(
     """生成完整 DB 版 daily_output，以及必要时按 source CSV 对齐后的版本。
 
     DB 输入统一经过 shared.input_artifacts 生成和读回，再喂给算法。
-    upstream_mode 保留为旧调用兼容参数，不参与分支。
     """
-    _ = upstream_mode
     if csv_df is None:
         original = read_daily_csv(canonical_csv) if canonical_csv is not None else None
     else:
@@ -128,7 +111,6 @@ def build_framework_db_aligned_daily(
     return build_db_aligned_daily(
         csv_df=csv_df,
         engine=engine,
-        upstream_mode=False,
         artifact_scheme_id="daily_framework",
         benchmark_id=benchmark_id,
         canonical_csv=canonical_csv,

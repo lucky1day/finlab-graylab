@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterable, Iterator, Mapping
+from typing import Iterable, Iterator, Mapping
 
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Connection, Engine, URL
@@ -18,7 +18,6 @@ from sqlalchemy.engine import Connection, Engine, URL
 from scheduler.discovery import SchemeConfig, load_scheme_config
 from shared.blackbox_v2.lifecycle import assert_lifecycle_clear, lifecycle_operation_lock
 from shared.db_config import DatabaseConfig
-from shared.input_artifacts import InputArtifact
 from shared.models import (
     ActualRecord,
     MonthlyActualRecord,
@@ -27,24 +26,13 @@ from shared.models import (
     WeeklyActualRecord,
 )
 from shared.one_shot_control_plane import SCHEDULED_ONE_SHOT_CONTROL_PLANES
+from shared.prediction_context import LIVE_PREDICTION_PHASES
+from shared.scheme_config_schema import ALLOWED_RUNTIME_TYPES, ALLOWED_VERSION_STATUS
 
 
-VALID_PREDICTION_PHASES = {"gray_live", "scheduled_live"}
 PREDICTION_KEYS_ALREADY_EXIST = "prediction_keys_already_exist"
 PARTIAL_PREDICTION_KEY_CONFLICT = "partial_prediction_key_conflict"
-VERSION_STATUSES = {"draft", "validated", "shadow", "active", "paused", "retired"}
 BLACKBOX_REGISTRY_STATUSES = {"active", "paused", "archived"}
-BLACKBOX_IMMUTABLE_VERSION_FIELDS = (
-    "runtime_type",
-    "algorithm_version",
-    "contract_version",
-    "runtime_profile",
-    "environment_fingerprint",
-    "data_snapshot_id",
-    "code_hash",
-    "config_hash",
-    "manifest_hash",
-)
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -485,144 +473,6 @@ def _normalize_registry_tenors(value: object) -> object:
     return value
 
 
-def sync_scheme_registry(engine: Engine, schemes: Iterable[SchemeConfig]) -> None:
-    """将配置文件中的方案元数据同步到 t_scheme_registry。"""
-    scheme_list = list(schemes)
-    if not scheme_list:
-        return
-    with engine.begin() as conn:
-        effective_statuses: dict[str, str] = {}
-        syncable_schemes: list[SchemeConfig] = []
-        for cfg in scheme_list:
-            runtime_type = getattr(cfg, "runtime_type", "native_adapter")
-            if (
-                runtime_type == "blackbox_v2"
-                and _blackbox_identity_requires_controlled_revision_conn(conn, cfg)
-            ):
-                # Registry 不存 exact version。若当前 active config 的 exact candidate
-                # 尚未登记、但同一业务身份已经存在，通用 discovery 若继续 upsert 会把
-                # 现有 active Registry 降为 paused。此处保留已上线身份，要求走
-                # activate 的受控修订单事务切换。
-                continue
-            version_row = None
-            if getattr(cfg, "scheme_version", None):
-                version_row = _upsert_discovered_scheme_version_conn(conn, cfg)
-            if runtime_type == "blackbox_v2":
-                approved = bool(
-                    version_row is not None
-                    and version_row.get("scheme_id") == cfg.scheme_id
-                    and version_row.get("scheme_version") == cfg.scheme_version
-                    and version_row.get("runtime_type") == "blackbox_v2"
-                    and version_row.get("status") == "active"
-                    and isinstance(version_row.get("approved_by"), str)
-                    and bool(str(version_row.get("approved_by")).strip())
-                    and isinstance(version_row.get("approved_at"), datetime)
-                )
-                effective_status = "active" if cfg.status == "active" and approved else "paused"
-            else:
-                effective_status = (
-                    "active"
-                    if _native_sync_can_grandfather_active(
-                        conn,
-                        cfg,
-                        version_row,
-                    )
-                    else "paused"
-                )
-            for target_tenor in cfg.tenors:
-                effective_statuses[
-                    registry_scheme_id(cfg.scheme_id, cfg.horizon, target_tenor)
-                ] = effective_status
-            syncable_schemes.append(cfg)
-        if syncable_schemes:
-            _sync_scheme_registry_conn(
-                conn,
-                syncable_schemes,
-                effective_statuses=effective_statuses,
-            )
-
-
-def _blackbox_identity_requires_controlled_revision_conn(
-    conn: Connection,
-    cfg: SchemeConfig,
-) -> bool:
-    """识别不能由 discovery 自动登记的 Blackbox 同身份修订。"""
-    if getattr(cfg, "runtime_type", None) != "blackbox_v2":
-        return False
-    scheme_version = getattr(cfg, "scheme_version", None)
-    if not isinstance(scheme_version, str) or not scheme_version.strip():
-        return False
-    if _read_scheme_version_conn(conn, cfg, for_update=True) is not None:
-        return False
-
-    version_rows = _read_scheme_version_rows_for_base_conn(
-        conn,
-        cfg.scheme_id,
-        for_update=True,
-    )
-    expected_tenors, expected_registry_ids = _expected_registry_identity(cfg)
-    del expected_tenors
-    placeholders = ", ".join(
-        f":registry_scheme_id_{index}"
-        for index, _ in enumerate(expected_registry_ids)
-    )
-    registry_params: dict[str, object] = {"base_scheme_id": cfg.scheme_id}
-    for index, registry_scheme_id_value in enumerate(expected_registry_ids):
-        registry_params[f"registry_scheme_id_{index}"] = registry_scheme_id_value
-    lock_clause = " FOR UPDATE" if _dialect_name(conn) != "sqlite" else ""
-    registry_rows = (
-        conn.execute(
-            text(
-                "SELECT scheme_id FROM t_scheme_registry "
-                "WHERE base_scheme_id = :base_scheme_id "
-                f"OR scheme_id IN ({placeholders}){lock_clause}"
-            ),
-            registry_params,
-        )
-        .mappings()
-        .all()
-    )
-    return bool(version_rows or registry_rows)
-
-
-def _native_sync_can_grandfather_active(
-    conn: Connection,
-    cfg: SchemeConfig,
-    version_row: Mapping[str, object] | None,
-) -> bool:
-    """仅在 pre-sync 精确版本和完整 Registry 均 active 时保留 Native active。"""
-    if (
-        cfg.status != "active"
-        or version_row is None
-        or version_row.get("scheme_id") != cfg.scheme_id
-        or version_row.get("scheme_version") != cfg.scheme_version
-        or version_row.get("runtime_type") != "native_adapter"
-        or version_row.get("status") != "active"
-    ):
-        return False
-    try:
-        expected_tenors, expected_registry_ids = _expected_registry_identity(cfg)
-        registry_rows = _read_scheme_registry_rows_conn(
-            conn,
-            cfg,
-            expected_registry_ids,
-            for_update=True,
-        )
-    except (TypeError, ValueError):
-        return False
-    return (
-        _registry_identity_error(
-            cfg,
-            expected_tenors,
-            expected_registry_ids,
-            registry_rows,
-            expected_status="active",
-            expected_runtime_type="native_adapter",
-        )
-        is None
-    )
-
-
 def _sync_scheme_registry_conn(
     conn: Connection,
     schemes: Iterable[SchemeConfig],
@@ -724,62 +574,6 @@ def _sync_scheme_registry_conn(
         )
 
 
-def upsert_scheme_version(engine: Engine, cfg: SchemeConfig) -> str:
-    """将发现到的方案版本写入 t_scheme_versions，保持幂等。"""
-    with engine.begin() as conn:
-        _upsert_discovered_scheme_version_conn(conn, cfg)
-    return cfg.scheme_version
-
-
-def _upsert_discovered_scheme_version_conn(
-    conn: Connection,
-    cfg: SchemeConfig,
-) -> Mapping[str, object] | None:
-    """锁定并同步发现版本；普通发现不得提升 Native/Blackbox 生命周期。"""
-    existing = _read_scheme_version_conn(conn, cfg, for_update=True)
-    runtime_type = getattr(cfg, "runtime_type", "native_adapter")
-    if existing is not None and (
-        runtime_type == "blackbox_v2" or existing.get("runtime_type") == "blackbox_v2"
-    ):
-        _raise_on_blackbox_version_metadata_conflict(existing, cfg)
-    if (
-        existing is not None
-        and runtime_type == "native_adapter"
-        and existing.get("runtime_type") != "native_adapter"
-    ):
-        raise ValueError(
-            "Native version runtime_type mismatch for "
-            f"{cfg.scheme_id}/{cfg.scheme_version}: "
-            f"stored={existing.get('runtime_type')!r}"
-        )
-    _upsert_scheme_version_conn(
-        conn,
-        cfg,
-        trusted_status=None,
-        approved_by=None,
-        approved_at=None,
-    )
-    return existing
-
-
-def _raise_on_blackbox_version_metadata_conflict(
-    existing: Mapping[str, object],
-    cfg: SchemeConfig,
-) -> None:
-    conflicts = []
-    for field in BLACKBOX_IMMUTABLE_VERSION_FIELDS:
-        stored = existing.get(field)
-        discovered = getattr(cfg, field, None)
-        if discovered is None or stored is None or stored == discovered:
-            continue
-        conflicts.append(f"{field}: stored={stored!r}, discovered={discovered!r}")
-    if conflicts:
-        raise ValueError(
-            f"immutable Blackbox version metadata mismatch for {cfg.scheme_id}/{cfg.scheme_version}: "
-            + "; ".join(conflicts)
-        )
-
-
 def _upsert_scheme_version_conn(
     conn: Connection,
     cfg: SchemeConfig,
@@ -789,7 +583,7 @@ def _upsert_scheme_version_conn(
     approved_at: datetime | None,
 ) -> str:
     """在调用方事务中写入精确版本；只有 trusted_status 可提升生命周期。"""
-    if trusted_status is not None and trusted_status not in VERSION_STATUSES:
+    if trusted_status is not None and trusted_status not in ALLOWED_VERSION_STATUS:
         raise ValueError(f"invalid trusted scheme version status: {trusted_status}")
     runtime_type = getattr(cfg, "runtime_type", "native_adapter")
     if trusted_status is not None:
@@ -797,7 +591,7 @@ def _upsert_scheme_version_conn(
     else:
         status = "draft"
     preserve_lifecycle = (
-        runtime_type in {"native_adapter", "blackbox_v2"}
+        runtime_type in ALLOWED_RUNTIME_TYPES
         and trusted_status is None
     )
     preserve_blackbox_evidence = (
@@ -1806,7 +1600,7 @@ def apply_blackbox_lifecycle_state(
     """在单一事务中可信更新 Blackbox 精确版本和 composite Registry。"""
     if getattr(cfg, "runtime_type", None) != "blackbox_v2":
         raise ValueError("trusted Blackbox lifecycle update requires runtime_type=blackbox_v2")
-    if version_status not in VERSION_STATUSES:
+    if version_status not in ALLOWED_VERSION_STATUS:
         raise ValueError(f"invalid trusted scheme version status: {version_status}")
     if registry_status not in BLACKBOX_REGISTRY_STATUSES:
         raise ValueError(f"invalid trusted Registry status: {registry_status}")
@@ -2025,11 +1819,11 @@ def create_scheme_run(
     """创建正常预测运行；自然写入只接受已安装的一次性控制面。"""
     if (
         prediction_phase is not None
-        and prediction_phase not in VALID_PREDICTION_PHASES
+        and prediction_phase not in LIVE_PREDICTION_PHASES
     ):
         raise ValueError(
             "prediction_phase must be one of "
-            f"{sorted(VALID_PREDICTION_PHASES)}, got {prediction_phase}"
+            f"{sorted(LIVE_PREDICTION_PHASES)}, got {prediction_phase}"
         )
     if (
         scheduled_control_plane is not None
@@ -2240,7 +2034,6 @@ def complete_approved_blackbox_run(
     records_returned: int,
     run_date: str,
     duration_sec: float,
-    precommit_validator: Callable[[Connection], None] | None = None,
 ) -> tuple[str, int, str | None]:
     """原子提交 Blackbox prediction、终态 run 与运行日志。"""
     normalized_run_date = _require_iso_date(run_date, "run_date")
@@ -2294,10 +2087,11 @@ def complete_approved_blackbox_run(
             )
         assert run is not None
         run_phase = run.get("prediction_phase")
-        if run_phase not in VALID_PREDICTION_PHASES:
+        if run_phase != "scheduled_live":
             raise RuntimeError(
                 "Blackbox completion running run identity revalidation failed: "
-                f"invalid prediction_phase={run_phase!r}"
+                "ordinary completion requires scheduled_live, got "
+                f"prediction_phase={run_phase!r}"
             )
         if records_returned != len(record_list):
             raise RuntimeError(
@@ -2380,8 +2174,6 @@ def complete_approved_blackbox_run(
             error_message,
             run_id,
         )
-        if status == "success" and precommit_validator is not None:
-            precommit_validator(conn)
         return status, records_written, error_message
 
 
@@ -2498,9 +2290,10 @@ def complete_active_native_run(
             )
         assert run is not None
         run_phase = run.get("prediction_phase")
-        if run_phase not in VALID_PREDICTION_PHASES:
+        if run_phase != "scheduled_live":
             raise RuntimeError(
-                "running run identity revalidation failed: invalid "
+                "running run identity revalidation failed: ordinary "
+                "completion requires scheduled_live, got "
                 f"prediction_phase={run_phase!r}"
             )
         if records_returned != len(record_list):
@@ -2929,13 +2722,12 @@ def _normalize_gray_gap_target_keys(
         getattr(cfg, "scheme_id", None),
         "cfg.scheme_id",
     )
-    scheme_version = _require_nonempty(
+    _require_nonempty(
         getattr(cfg, "scheme_version", None),
         "cfg.scheme_version",
     )
-    del scheme_version
     runtime_type = getattr(cfg, "runtime_type", None)
-    if runtime_type not in {"native_adapter", "blackbox_v2"}:
+    if runtime_type not in ALLOWED_RUNTIME_TYPES:
         raise ValueError(
             "gray gap config runtime_type must be native_adapter or "
             "blackbox_v2"
@@ -2947,11 +2739,10 @@ def _normalize_gray_gap_target_keys(
         getattr(cfg, "task_type", None),
         "cfg.task_type",
     )
-    cfg_frequency = _require_nonempty(
+    _require_nonempty(
         getattr(cfg, "frequency", None),
         "cfg.frequency",
     )
-    del cfg_frequency
     raw_tenors = getattr(cfg, "tenors", None)
     if not isinstance(raw_tenors, list) or not raw_tenors:
         raise ValueError("cfg.tenors must be a non-empty list")
@@ -3564,9 +3355,9 @@ def _prepare_run_prediction_rows(
                 f"{record.scheme_id}/{record.target_tenor}"
             )
         phase = record.prediction_phase or extra.get("prediction_phase")
-        if phase not in VALID_PREDICTION_PHASES:
+        if phase not in LIVE_PREDICTION_PHASES:
             raise ValueError(
-                f"prediction_phase must be one of {sorted(VALID_PREDICTION_PHASES)} "
+                f"prediction_phase must be one of {sorted(LIVE_PREDICTION_PHASES)} "
                 f"for prediction record {record.scheme_id}/{record.target_tenor}"
             )
         extra["feature_date"] = str(feature_date)
@@ -3610,61 +3401,6 @@ def _insert_run_predictions_conn(
     conn.execute(text(statement), rows)
     return len(rows)
 
-
-
-def upsert_input_artifact(engine: Engine, artifact: InputArtifact) -> str:
-    """UPSERT 输入产物指纹，返回稳定 artifact_id。"""
-    predict_date = artifact.metadata.get("predict_date")
-    if not predict_date:
-        raise ValueError("InputArtifact.metadata must include predict_date")
-
-    coverage = artifact.date_coverage or {}
-    if coverage.get("field") == "date":
-        min_date = coverage.get("start")
-        max_date = coverage.get("end")
-    else:
-        min_date = None
-        max_date = None
-
-    sql = text(
-        """
-        INSERT INTO t_input_artifacts
-            (artifact_id, scheme_id, scheme_version, predict_date, frequency,
-             data_version, artifact_uri, content_hash, schema_hash, source_watermark,
-             row_count, min_date, max_date)
-        VALUES
-            (:artifact_id, :scheme_id, :scheme_version, :predict_date, :frequency,
-             :data_version, :artifact_uri, :content_hash, :schema_hash, :source_watermark,
-             :row_count, :min_date, :max_date)
-        ON DUPLICATE KEY UPDATE
-            scheme_version = VALUES(scheme_version),
-            data_version = VALUES(data_version),
-            artifact_uri = VALUES(artifact_uri),
-            schema_hash = VALUES(schema_hash),
-            source_watermark = VALUES(source_watermark),
-            row_count = VALUES(row_count),
-            min_date = VALUES(min_date),
-            max_date = VALUES(max_date)
-        """
-    )
-    params = {
-        "artifact_id": artifact.artifact_id,
-        "scheme_id": artifact.scheme_id,
-        "scheme_version": artifact.metadata.get("scheme_version"),
-        "predict_date": str(predict_date),
-        "frequency": artifact.frequency,
-        "data_version": artifact.data_version,
-        "artifact_uri": str(artifact.path),
-        "content_hash": artifact.content_hash,
-        "schema_hash": artifact.schema_hash,
-        "source_watermark": artifact.source_watermark,
-        "row_count": artifact.row_count,
-        "min_date": min_date,
-        "max_date": max_date,
-    }
-    with engine.begin() as conn:
-        conn.execute(sql, params)
-    return artifact.artifact_id
 
 
 def upsert_actuals(engine: Engine, records: Iterable[ActualRecord]) -> int:

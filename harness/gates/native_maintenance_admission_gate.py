@@ -10,6 +10,7 @@ from harness.context import GateContext
 from harness.contracts.onboarding_policy import validate_onboarding_policy
 from harness.gates.base import Gate, utc_now
 from harness.result import Evidence, GateResult, GateStatus
+from shared.scheme_config_schema import ALLOWED_STATUS
 
 if TYPE_CHECKING:
     from scheduler.discovery import SchemeConfig
@@ -70,7 +71,6 @@ class NativeMaintenanceAdmissionGate(Gate):
             return GateResult(
                 gate_name=self.name,
                 status=GateStatus.BLOCKED,
-                passed=False,
                 evidence=[
                     Evidence("scheme_id", ctx.scheme_id),
                     Evidence("validation_profile", _VALIDATION_PROFILE),
@@ -104,7 +104,6 @@ class NativeMaintenanceAdmissionGate(Gate):
         return GateResult(
             gate_name=self.name,
             status=GateStatus.PASSED,
-            passed=True,
             evidence=evidence,
             errors=[],
             started_at=started_at,
@@ -245,7 +244,7 @@ def verify_native_maintenance_admission(
     assert prior_row is not None
     assert current_version_row is not None
     assert current_version_status is not None
-    assert registry_lifecycle in {"paused", "active"}
+    assert registry_lifecycle in ALLOWED_STATUS
     return (
         NativeMaintenanceAdmission(
             prior_admitted_scheme_version=str(prior_row["scheme_version"]),
@@ -624,7 +623,7 @@ def _uniform_registry_lifecycle(
     if len(statuses) != 1:
         return None
     status = next(iter(statuses))
-    return status if status in {"paused", "active"} else None
+    return status if status in ALLOWED_STATUS else None
 
 
 def _registry_frequency_error(

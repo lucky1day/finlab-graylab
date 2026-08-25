@@ -26,6 +26,7 @@ from shared.blackbox_v2.snapshot import (
     CutoffKeys,
     compose_blackbox_input_bundle,
     create_snapshot_from_frames,
+    normalize_period_key,
     resolve_cutoffs,
 )
 from shared.data_bridge.authority import (
@@ -672,7 +673,6 @@ def _read_blackbox_debris_marker(path: Path) -> dict[str, Any]:
 def build_blackbox_input_snapshot(
     *,
     snapshot_date: str,
-    engine=None,
     output_root: str | Path = BLACKBOX_SNAPSHOT_ROOT,
     schema_path: str | Path = BLACKBOX_SCHEMA_PATH,
     data_root: str | Path = DATA_BRIDGE_ROOT,
@@ -861,7 +861,7 @@ def _normalize_gray_replay_date(value: object, field: str) -> str:
 def _normalize_gray_replay_period(value: object, field: str) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{field} must be a six-digit platform key")
-    normalized = _normalize_period_key(value, field)
+    normalized = normalize_period_key(value, field)
     if normalized != value:
         raise ValueError(f"{field} must be a six-digit platform key")
     return normalized
@@ -1073,32 +1073,6 @@ def open_blackbox_input_snapshot(
     finally:
         _make_tree_writable(temporary)
         shutil.rmtree(temporary, ignore_errors=True)
-
-
-def read_blackbox_current_state(
-    *,
-    schema_path: str | Path = BLACKBOX_SCHEMA_PATH,
-    data_root: str | Path = DATA_BRIDGE_ROOT,
-    refresh_runtime_root: str | Path = DATA_BRIDGE_REFRESH_RUNTIME_ROOT,
-) -> dict[str, Any]:
-    """完整校验 DataBridge current 后返回灰度补齐所需发布状态。"""
-    current = check_current_dataset(
-        DataBridgeRefreshConfig(
-            data_root=Path(data_root),
-            runtime_root=Path(refresh_runtime_root),
-            schema_path=Path(schema_path),
-        )
-    )
-    return {
-        "generation_id": _required_current_state_text(
-            current.state,
-            "generation_id",
-        ),
-        "refresh_date": _required_current_state_text(
-            current.state,
-            "refresh_date",
-        ),
-    }
 
 
 def _load_current_data_bridge_dataset(
@@ -1382,7 +1356,7 @@ def _load_snapshot_cutoff_keys(snapshot: BlackboxSnapshot) -> dict[str, Any]:
                 raise ValueError("daily_output.csv date cutoff keys must be unique and ascending")
             loaded[key] = values
             continue
-        values = [_normalize_period_key(value, key) for value in frame[key].tolist()]
+        values = [normalize_period_key(value, key) for value in frame[key].tolist()]
         if values != sorted(set(values)):
             raise ValueError(f"{path.name} {key} cutoff keys must be unique and ascending")
         loaded[key] = set(values)
@@ -1404,7 +1378,7 @@ def _resolve_period_cutoffs_bulk(
     events = sorted(
         (
             _normalize_feature_date(value),
-            _normalize_period_key(key, key_column),
+            normalize_period_key(key, key_column),
         )
         for value, key in zip(index["available_date"], index[key_column])
     )
@@ -1446,17 +1420,6 @@ def _normalize_feature_date(value: object) -> str:
         return date.fromisoformat(str(value)).isoformat()
     except (TypeError, ValueError) as exc:
         raise ValueError("feature_date must use YYYY-MM-DD") from exc
-
-
-def _normalize_period_key(value: object, field: str) -> str:
-    if pd.isna(value):
-        raise ValueError(f"{field} must not be empty")
-    text = str(value).strip()
-    if text.endswith(".0"):
-        text = text[:-2]
-    if len(text) != 6 or not text.isdigit():
-        raise ValueError(f"{field} must be a six-digit platform key")
-    return text
 
 
 def input_artifact_path(

@@ -131,10 +131,9 @@ class DashboardGate(Gate):
         ]
         matched_rows: list[Mapping[str, Any]] = []
         new_blackbox_identity: dict[str, str] | None = None
-        if config.runtime_type == "blackbox_v2" and config.owner is not None:
+        if config.runtime_type == "blackbox_v2" and config.description:
             new_blackbox_identity = {
                 "name": config.name,
-                "owner": config.owner,
                 "description": config.description,
             }
             for field, value in new_blackbox_identity.items():
@@ -230,7 +229,6 @@ def _result(
     return GateResult(
         gate_name="dashboard",
         status=status,
-        passed=status == GateStatus.PASSED,
         evidence=[
             Evidence("endpoint", endpoint),
             Evidence("http_status", http_status),

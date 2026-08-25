@@ -401,7 +401,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                 data_bridge_config.assert_not_called()
                 create_engine.assert_not_called()
 
-    def test_gray_live_rejects_scheduled_control_plane_before_db_access(
+    def test_executor_rejects_gray_live_before_db_access(
         self,
     ) -> None:
         from scheduler import executor
@@ -410,7 +410,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         with patch.object(executor, "create_engine_from_env") as create_engine:
             with self.assertRaisesRegex(
                 ValueError,
-                "scheduled control plane requires scheduled_live",
+                "execute_scheme only supports scheduled_live",
             ):
                 executor.execute_scheme(
                     cfg,

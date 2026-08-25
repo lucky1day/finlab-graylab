@@ -67,7 +67,6 @@ class SchemeConfig:
     data_snapshot_id: str | None
     input_source: str = "legacy_db"
     platform_inputs: tuple[str, ...] = ()
-    owner: str | None = None
 
 
 def _require_mapping(value: Any, path: Path) -> dict[str, Any]:
@@ -182,11 +181,6 @@ def _load_blackbox_config(config_path: Path, raw: dict[str, Any], schedule_raw: 
         raise ValueError(f"{metadata_path}: scheme_id must match directory name")
     if script_path.name != f"{metadata.scheme_id}.py" or metadata_path.name != f"{metadata.scheme_id}.json":
         raise ValueError(f"{config_path}: delivery filenames must match scheme_id")
-    if metadata.owner is not None and "display_name" in raw:
-        raise ValueError(
-            f"{config_path}: display_name is forbidden for new Blackbox V2 deliveries"
-        )
-
     code_hash = _hash_file(script_path)
     config_hash = compute_blackbox_config_hash(raw)
     manifest_hash = _hash_file(metadata_path)
@@ -233,7 +227,6 @@ def _load_blackbox_config(config_path: Path, raw: dict[str, Any], schedule_raw: 
             if "platform_inputs" in raw
             else ()
         ),
-        owner=metadata.owner,
     )
 
 
@@ -256,8 +249,3 @@ def discover_schemes(schemes_root: Path = SCHEMES_ROOT, strict: bool = False) ->
                 raise
             logger.exception("Skip invalid scheme config: %s", config_path)
     return filter_schemes_for_configured_target(configs)
-
-
-def active_schemes(schemes_root: Path = SCHEMES_ROOT) -> list[SchemeConfig]:
-    """返回 active 状态方案。"""
-    return [cfg for cfg in discover_schemes(schemes_root) if cfg.status == "active"]

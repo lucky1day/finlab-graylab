@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from copy import deepcopy
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
@@ -27,8 +28,6 @@ class _MappingResult:
 
 
 class _CaptureConnection:
-    schema_capabilities = {"daily_schedule_ledger": False}
-
     def __init__(self, store: dict) -> None:
         self._store = store
 
@@ -335,7 +334,7 @@ def _native_atomic_engine() -> _AtomicEngine:
             "scheme_id": "native_daily",
             "scheme_version": "native-version-1",
             "runtime_type": "native_adapter",
-            "prediction_phase": "gray_live",
+            "prediction_phase": "scheduled_live",
         }
     )
     return engine
@@ -420,7 +419,7 @@ def _set_canonical_path(cfg: SimpleNamespace, project_root: Path) -> SimpleNames
     return cfg
 
 
-def _blackbox_live_record():
+def _blackbox_live_record(*, prediction_phase: str = "scheduled_live"):
     from shared.models import PredictionRecord
 
     return PredictionRecord(
@@ -430,142 +429,12 @@ def _blackbox_live_record():
         predict_date="2026-07-20",
         target_date="2026-07-21",
         feature_date="2026-07-17",
-        prediction_phase="scheduled_live",
+        prediction_phase=prediction_phase,
         predicted_direction=1,
     )
 
 
-class RegistrySyncTests(unittest.TestCase):
-
-
-    def test_registry_sync_writes_one_registry_row_per_target_tenor(self) -> None:
-        from scheduler.repository import sync_scheme_registry
-
-        engine = _CaptureEngine()
-        scheme = SimpleNamespace(
-            scheme_id="t5_daily",
-            name="T5 Daily",
-            description="multi tenor daily scheme",
-            horizon=5,
-            task_type="T+5",
-            tenors=["3Y", "5Y", "7Y", "10Y"],
-            frequency="daily",
-            schedule=SimpleNamespace(cron="3 7 * * 1-5", timezone="Asia/Shanghai"),
-            status="active",
-            scheme_version=None,
-            code_hash="c" * 64,
-            config_hash="f" * 64,
-            manifest_hash=None,
-        )
-
-        sync_scheme_registry(engine, [scheme])
-
-        sql, rows = _call_for(engine.store, "INSERT INTO t_scheme_registry")
-        self.assertNotIn("base_scheme_id, frequency, horizon, target_tenor", sql)
-        self.assertEqual(
-            [row["scheme_id"] for row in rows],
-            [
-                "t5_daily__h5__3Y",
-                "t5_daily__h5__5Y",
-                "t5_daily__h5__7Y",
-                "t5_daily__h5__10Y",
-            ],
-        )
-        self.assertEqual({row["base_scheme_id"] for row in rows}, {"t5_daily"})
-        self.assertEqual([row["target_tenor"] for row in rows], ["3Y", "5Y", "7Y", "10Y"])
-        self.assertEqual({row["task_type"] for row in rows}, {"T+5"})
-        self.assertEqual([row["tenors"] for row in rows], ['["3Y"]', '["5Y"]', '["7Y"]', '["10Y"]'])
-        self.assertEqual({row["runtime_type"] for row in rows}, {"native_adapter"})
-
-    def test_unknown_active_blackbox_sync_creates_draft_version_and_paused_registry(self) -> None:
-        from scheduler.repository import sync_scheme_registry
-
-        engine = _CaptureEngine()
-
-        sync_scheme_registry(engine, [_blackbox_config()])
-
-        _, version_params = _call_for(engine.store, "INSERT INTO t_scheme_versions")
-        _, registry_rows = _call_for(engine.store, "INSERT INTO t_scheme_registry")
-        self.assertEqual(version_params["status"], "draft")
-        self.assertEqual({row["status"] for row in registry_rows}, {"paused"})
-
-
-    def test_generic_sync_preserves_all_approval_bound_blackbox_evidence(self) -> None:
-        from scheduler.repository import sync_scheme_registry
-
-        approved_at = datetime(2026, 7, 20, 8, 30)
-        stored = {
-            "scheme_id": "demo_blackbox",
-            "scheme_version": "abc123def456",
-            "runtime_type": "blackbox_v2",
-            "algorithm_version": "1.2.3",
-            "contract_version": "1.0",
-            "runtime_profile": "blackbox-v2-v1",
-            "environment_fingerprint": "e" * 64,
-            "data_snapshot_id": "approved-snapshot",
-            "code_hash": "c" * 64,
-            "config_hash": "f" * 64,
-            "manifest_hash": "m" * 64,
-            "git_commit": "approved-commit",
-            "status": "active",
-            "approved_by": "release-owner",
-            "approved_at": approved_at,
-        }
-        engine = _CaptureEngine(version_row=dict(stored))
-        cfg = _blackbox_config()
-        cfg.environment_fingerprint = None
-        cfg.data_snapshot_id = None
-
-        sync_scheme_registry(engine, [cfg])
-
-        self.assertEqual(engine.store["version_row"], stored)
-        _, version_params = _call_for(engine.store, "INSERT INTO t_scheme_versions")
-        self.assertTrue(version_params["preserve_blackbox_evidence"])
-
-    def test_generic_sync_rejects_conflicting_immutable_blackbox_metadata(self) -> None:
-        from scheduler.repository import sync_scheme_registry
-
-        stored = {
-            "scheme_id": "demo_blackbox",
-            "scheme_version": "abc123def456",
-            "runtime_type": "blackbox_v2",
-            "algorithm_version": "1.2.3",
-            "contract_version": "1.0",
-            "runtime_profile": "blackbox-v2-v1",
-            "environment_fingerprint": "e" * 64,
-            "data_snapshot_id": "snapshot-1",
-            "code_hash": "c" * 64,
-            "config_hash": "f" * 64,
-            "manifest_hash": "m" * 64,
-            "git_commit": None,
-            "status": "active",
-            "approved_by": "release-owner",
-            "approved_at": datetime(2026, 7, 20, 8, 30),
-        }
-        conflicts = {
-            "runtime_type": "native_adapter",
-            "algorithm_version": "9.9.9",
-            "contract_version": "2.0",
-            "runtime_profile": "other-profile",
-            "environment_fingerprint": "x" * 64,
-            "data_snapshot_id": "other-snapshot",
-            "code_hash": "x" * 64,
-            "config_hash": "y" * 64,
-            "manifest_hash": "z" * 64,
-        }
-        for field, value in conflicts.items():
-            with self.subTest(field=field):
-                cfg = _blackbox_config()
-                setattr(cfg, field, value)
-                engine = _CaptureEngine(version_row=dict(stored))
-
-                with self.assertRaisesRegex(
-                    ValueError,
-                    rf"immutable Blackbox version metadata mismatch.*{field}",
-                ):
-                    sync_scheme_registry(engine, [cfg])
-
-                self.assertEqual(engine.store["version_row"], stored)
+class RegistryLifecycleTests(unittest.TestCase):
 
     def test_trusted_blackbox_lifecycle_atomically_writes_shadow_and_paused_registry(self) -> None:
         from scheduler.repository import apply_blackbox_lifecycle_state
@@ -801,8 +670,6 @@ class _Result:
 
 
 class _RunConnection:
-    schema_capabilities = {"daily_schedule_ledger": False}
-
     def __init__(self, store: dict) -> None:
         self._store = store
 
@@ -882,7 +749,7 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
                 predict_date="2026-07-20",
                 target_date="2026-07-21",
                 feature_date="2026-07-17",
-                prediction_phase="gray_live",
+                prediction_phase="scheduled_live",
                 predicted_direction=1,
                 confidence=0.8,
                 extra={"feature_date": "2026-07-17"},
@@ -910,12 +777,48 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertEqual(rows[0]["run_id"], 101)
         self.assertEqual(rows[0]["scheme_version"], "native-version-1")
         self.assertEqual(rows[0]["feature_date"], "2026-07-17")
-        self.assertEqual(rows[0]["prediction_phase"], "gray_live")
+        self.assertEqual(rows[0]["prediction_phase"], "scheduled_live")
         self.assertEqual(engine.store["prediction_rows"], rows)
         self.assertEqual(engine.store["run_row"]["status"], "success")
         self.assertEqual(engine.store["run_row"]["records_written"], 1)
         self.assertEqual(len(engine.store["run_log_rows"]), 1)
         self.assertEqual(engine.store["run_log_rows"][0]["status"], "success")
+
+    def test_active_native_completion_rejects_gray_live(self) -> None:
+        from scheduler.repository import complete_active_native_run
+        from shared.models import PredictionRecord
+
+        engine = _native_atomic_engine()
+        engine.store["run_row"]["prediction_phase"] = "gray_live"
+        record = PredictionRecord(
+            scheme_id="native_daily",
+            target_tenor="5Y",
+            horizon=1,
+            predict_date="2026-07-20",
+            target_date="2026-07-21",
+            feature_date="2026-07-17",
+            prediction_phase="gray_live",
+            predicted_direction=1,
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "ordinary completion requires scheduled_live",
+        ):
+            complete_active_native_run(
+                engine,
+                _native_config(),
+                run_id=101,
+                records=[record],
+                scheme_version="native-version-1",
+                records_returned=1,
+                run_date="2026-07-20",
+                duration_sec=2.5,
+            )
+
+        self.assertEqual(engine.store["prediction_rows"], [])
+        self.assertEqual(engine.store["run_row"]["status"], "running")
+        self.assertEqual(engine.store["run_log_rows"], [])
 
 
     def test_blackbox_completion_locks_revalidates_and_commits_atomically(self) -> None:
@@ -988,6 +891,39 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertLess(run_index, key_select_indexes[0])
         self.assertLess(key_select_indexes[-1], prediction_index)
 
+    def test_blackbox_completion_rejects_gray_live(self) -> None:
+        from scheduler.repository import complete_approved_blackbox_run
+
+        engine = _AtomicEngine()
+        engine.store["run_row"]["prediction_phase"] = "gray_live"
+        record = replace(
+            _blackbox_live_record(),
+            prediction_phase="gray_live",
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _set_canonical_path(_blackbox_config(), Path(tmpdir))
+            with (
+                patch("scheduler.repository.load_scheme_config", return_value=cfg),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "ordinary completion requires scheduled_live",
+                ),
+            ):
+                complete_approved_blackbox_run(
+                    engine,
+                    cfg,
+                    run_id=101,
+                    records=[record],
+                    scheme_version=cfg.scheme_version,
+                    records_returned=1,
+                    run_date="2026-07-20",
+                    duration_sec=2.5,
+                )
+
+        self.assertEqual(engine.store["prediction_rows"], [])
+        self.assertEqual(engine.store["run_row"]["status"], "running")
+        self.assertEqual(engine.store["run_log_rows"], [])
+
 
     def test_blackbox_duplicate_completion_skips_without_mutating_prediction(
         self,
@@ -1043,9 +979,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
                     records_returned=1,
                     run_date="2026-07-20",
                     duration_sec=1.0,
-                    precommit_validator=lambda _conn: self.fail(
-                        "validator must not run for skipped predictions"
-                    ),
                 )
 
         self.assertEqual(
@@ -1138,9 +1071,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
                     records_returned=2,
                     run_date="2026-07-20",
                     duration_sec=1.0,
-                    precommit_validator=lambda _conn: self.fail(
-                        "validator must not run for failed predictions"
-                    ),
                 )
 
         self.assertEqual((status, written), ("failed", 0))
@@ -1174,7 +1104,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             "run": "injected run failure",
             "run_missing": "run update affected 0 rows",
             "log": "injected log failure",
-            "live_gate_validation": "injected live_gate_validation failure",
         }
         for stage, expected_error in cases.items():
             with self.subTest(stage=stage), tempfile.TemporaryDirectory() as tmpdir:
@@ -1193,13 +1122,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
                         records_returned=1,
                         run_date="2026-07-20",
                         duration_sec=2.5,
-                        precommit_validator=(
-                            (lambda _conn: (_ for _ in ()).throw(
-                                RuntimeError("injected live_gate_validation failure")
-                            ))
-                            if stage == "live_gate_validation"
-                            else None
-                        ),
                     )
 
                 self.assertEqual(engine.store["prediction_rows"], [])

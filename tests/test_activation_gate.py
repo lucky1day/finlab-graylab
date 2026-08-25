@@ -241,7 +241,6 @@ def _seed_prior_admission(engine, cfg) -> None:
                 {
                     "key": NATIVE_BUSINESS_IDENTITY_EVIDENCE_KEY,
                     "value": identity,
-                    "detail": None,
                 }
             ],
             "errors": [],

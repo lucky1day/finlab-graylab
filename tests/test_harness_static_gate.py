@@ -7,10 +7,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from harness.operation import build_direct_operation, operation_scope_sha256
-from scheduler.discovery import load_scheme_config
-
-
 class HarnessStaticGateTests(unittest.TestCase):
     def test_native_static_gate_records_canonical_business_identity_snapshot(self) -> None:
         from harness.context import GateContext
@@ -224,99 +220,6 @@ class HarnessRuntimeGateTests(unittest.TestCase):
         self.assertEqual(evidence["run_log_delta"], 0)
 
 
-class HarnessLiveGateTests(unittest.TestCase):
-    def test_live_gate_blocks_without_operation_and_does_not_execute(self) -> None:
-        from harness.context import GateContext
-        from harness.gates.live_gate import LiveGate
-        from harness.result import GateStatus
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            project_root = Path(tmpdir)
-            _write_minimal_scheme(project_root, scheme_id="demo_daily")
-            engine = SimpleNamespace(dispose=lambda: None)
-            with patch(
-                "harness.gates.live_gate.snapshot_table_counts",
-                side_effect=[
-                    {"t_scheme_predictions": 10, "t_scheme_run_log": 20, "api_wind_daily": 30},
-                    {"t_scheme_predictions": 10, "t_scheme_run_log": 20, "api_wind_daily": 30},
-                ],
-            ):
-                with patch("harness.gates.live_gate.execute_scheme") as execute:
-                    result = LiveGate().run(
-                        GateContext(
-                            scheme_id="demo_daily",
-                            predict_date="2026-06-08",
-                            project_root=project_root,
-                            report_dir=project_root / "reports" / "harness" / "demo_daily",
-                            engine_factory=lambda: engine,
-                        )
-                    )
-
-        self.assertEqual(result.status, GateStatus.BLOCKED)
-        self.assertFalse(result.passed)
-        self.assertFalse(execute.called)
-        evidence = _evidence_dict(result)
-        self.assertEqual(evidence["protected_table_deltas"], {"api_wind_daily": 0, "t_scheme_predictions": 0, "t_scheme_run_log": 0})
-
-
-    def test_live_gate_records_direct_operation_evidence(self) -> None:
-        from harness.context import GateContext
-        from harness.gates.live_gate import LiveGate
-        from harness.result import GateStatus
-
-        run_result = SimpleNamespace(status="success", records_written=1, error_msg=None)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            project_root = Path(tmpdir)
-            config_path = _write_minimal_scheme(project_root, scheme_id="demo_daily")
-            operation = build_direct_operation(
-                "demo_daily",
-                "live_write",
-                "2026-06-08",
-                scheme_version=load_scheme_config(config_path / "config.yaml").scheme_version,
-                issued_by="test-operator",
-            )
-            engine = SimpleNamespace(dispose=lambda: None)
-            snapshots = [
-                {"t_scheme_predictions": 10, "t_scheme_run_log": 20, "t_scheme_runs": 5, "api_wind_daily": 30},
-                {"t_scheme_predictions": 11, "t_scheme_run_log": 21, "t_scheme_runs": 6, "api_wind_daily": 30},
-            ]
-            scheme_snapshots = [
-                {"t_scheme_predictions": 0, "t_scheme_run_log": 0, "t_scheme_runs": 0},
-                {"t_scheme_predictions": 1, "t_scheme_run_log": 1, "t_scheme_runs": 1},
-            ]
-            with patch("harness.gates.live_gate.snapshot_table_counts", side_effect=snapshots):
-                with patch("harness.gates.live_gate.snapshot_scheme_counts", side_effect=scheme_snapshots):
-                    with patch("harness.gates.live_gate.execute_scheme", return_value=run_result) as execute:
-                        first = LiveGate().run(
-                            GateContext(
-                                scheme_id="demo_daily",
-                                predict_date="2026-06-08",
-                                project_root=project_root,
-                                report_dir=project_root / "reports" / "harness" / "demo_daily",
-                                engine_factory=lambda: engine,
-                                operation=operation,
-                                prediction_phase="gray_live",
-                            )
-                        )
-        self.assertEqual(first.status, GateStatus.PASSED)
-        self.assertEqual(execute.call_args.kwargs["prediction_phase"], "gray_live")
-        first_evidence = _evidence_dict(first)
-        self.assertEqual(first_evidence["prediction_phase"], "gray_live")
-        self.assertEqual(
-            first_evidence["protected_table_deltas"],
-            {"api_wind_daily": 0, "t_scheme_predictions": 1, "t_scheme_run_log": 1, "t_scheme_runs": 1},
-        )
-        self.assertEqual(
-            first_evidence["operation_scheme_table_deltas"],
-            {"t_scheme_predictions": 1, "t_scheme_run_log": 1, "t_scheme_runs": 1},
-        )
-        self.assertEqual(first_evidence["operator"], "test-operator")
-        self.assertEqual(
-            first_evidence["operation_scope_sha256"],
-            operation_scope_sha256(operation),
-        )
-
-
 class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
     def test_backtest_gate_records_success_without_business_writes(self) -> None:
         from harness.context import GateContext
@@ -380,7 +283,6 @@ class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
                 return GateResult(
                     gate_name=self.name,
                     status=self.status,
-                    passed=self.status == GateStatus.PASSED,
                     evidence=[Evidence("called", self.name)],
                     errors=[] if self.status == GateStatus.PASSED else ["boom"],
                     started_at="2026-06-08T00:00:00+00:00",

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from shared.scheme_config_schema import ALLOWED_TENORS, SCHEME_ID_PATTERN
-from shared.scheme_owner_registry import normalize_scheme_owner
+from shared.models import DIRECTION_VALUES
 from shared.task_specs import TASK_COMBINATIONS
 
 
@@ -26,6 +26,7 @@ REQUIRED_METADATA_FIELDS = {
 }
 OPTIONAL_METADATA_FIELDS = {"description", "owner"}
 MAX_DESCRIPTION_LENGTH = 300
+OWNER_PLACEHOLDERS = frozenset({"--", "unknown", "待定"})
 REQUEST_FIELDS = (
     "request_id",
     "predict_date",
@@ -56,7 +57,6 @@ class BlackboxMetadata:
     target_rule: str
     frequency: str
     description: str | None = None
-    owner: str | None = None
 
 
 @dataclass(frozen=True)
@@ -114,7 +114,7 @@ def load_metadata(path: str | Path) -> BlackboxMetadata:
         raise ValueError("horizon must be a positive integer")
     target_rule = _non_empty_string(raw, "target_rule")
     description = _optional_description(raw)
-    owner = _optional_owner(raw)
+    _validate_optional_owner(raw)
     expected_horizon, expected_rule, frequency = combination
     if (horizon, target_rule) != (expected_horizon, expected_rule):
         raise ValueError(
@@ -132,7 +132,6 @@ def load_metadata(path: str | Path) -> BlackboxMetadata:
         target_rule=target_rule,
         frequency=frequency,
         description=description,
-        owner=owner,
     )
 
 
@@ -149,10 +148,17 @@ def _optional_description(raw: dict[str, Any]) -> str | None:
     return description
 
 
-def _optional_owner(raw: dict[str, Any]) -> str | None:
+def _validate_optional_owner(raw: dict[str, Any]) -> None:
     if "owner" not in raw:
-        return None
-    return normalize_scheme_owner(raw["owner"])
+        return
+    value = raw["owner"]
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("owner must be a non-empty string")
+    owner = value.strip()
+    if any(marker in owner for marker in ("\n", "\r", "<", ">")):
+        raise ValueError("owner must be single-line plain text")
+    if owner.casefold() in OWNER_PLACEHOLDERS:
+        raise ValueError("owner must not use a placeholder value")
 
 
 def load_request(path: str | Path) -> BlackboxRequest:
@@ -290,7 +296,7 @@ def _result_from_mapping(
 
 
 def _parse_json_direction(value: Any) -> int:
-    if type(value) is not int or value not in {-1, 0, 1}:
+    if type(value) is not int or value not in DIRECTION_VALUES:
         raise ValueError("predicted_direction must be integer -1, 0 or 1")
     return value
 

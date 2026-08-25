@@ -4,6 +4,9 @@ from dataclasses import dataclass
 from typing import Any
 
 
+DIRECTION_VALUES = frozenset({-1, 0, 1})
+
+
 @dataclass(frozen=True)
 class PredictionRecord:
     """统一预测记录，每个期限一条。"""

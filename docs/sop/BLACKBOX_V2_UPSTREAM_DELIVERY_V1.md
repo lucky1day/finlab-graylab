@@ -6,7 +6,7 @@
 
 **目标读者**：上游算法工程师
 
-**最后核验日期**：2026-08-23
+**最后核验日期**：2026-08-25
 
 本文是上游算法工程师唯一需要阅读的人类文档。完成开发只需要本文、随包提供的 `data_bridge_v1_schema.json` 和三份脱敏 sample；不需要再阅读仓库内其他文档。
 
@@ -16,14 +16,9 @@
 
 本文中的 `Blackbox V2` 是运行时代际，`schema_version=1.0` 是交付接口合同版本，`data-bridge-v1` 是三频数据 Schema；三者不能混作算法版本。
 
-> **方案 A 机器合同已生效（2026-08-13）**：正式新交付必须在
-> `{scheme_id}.json` 中同时提供 `name`、`owner` 和 `description`。其中
-> `owner` 表示前端“来源”列中的方案交付归属，不是 DataBridge 数据源。
-> 当前 Contract 已接受并校验 `owner`，Intake 会要求三项展示字段并按 composite
-> Registry ID 登记 owner；缺项、占位值或 owner 冲突均 fail-closed。平台还有少量
-> 历史方案使用 `config.yaml.display_name` 覆盖 Metadata `name`；
-> 这只属于既有不可变方案兼容，不是新交付接口。正式新包仍只在 Metadata 提供唯一
-> `name`，不另交“显示名”，新 Intake 也不会生成 `display_name`。
+正式新交付必须在 `{scheme_id}.json` 中提供唯一的 `name` 和 `description`；缺项或占位值均
+fail-closed。上游不得另交显示名或依赖平台补写这些字段。既有交付中的可选 `owner` 只为解析兼容，
+平台不登记、不展示，也不将其作为 Gate 条件；新交付应省略。
 
 ---
 
@@ -101,9 +96,8 @@ python -m harness intake-blackbox ... \
 
 ### 1.4 交付不授予平台控制面权限
 
-两文件交付、DataBridge 自验凭证和平台 Intake 接收只证明交付具备可被接收的资格，不构成平台控制面权限。它们不授予 activation、灰度写入或平台准入；不得把两文件交付当作平台审批。
-
-Metadata 和交付目录不得声明、携带或暗示仅由平台处理的运行或审批字段。交付方只提供本 SOP 规定的两文件和自验凭证；后续平台决策由平台专项流程独立处理。
+两文件和自验凭证只证明交付可被接收，不授予 activation、灰度写入或调度权限。Metadata 和交付目录
+不得携带平台运行、审批或授权字段。
 
 ---
 
@@ -177,14 +171,13 @@ Contract 1.0 只允许以下组合：
 
 ### 4.2 填写 `{scheme_id}.json`
 
-Metadata 必须是无 BOM 的 UTF-8 JSON。八个历史机器字段中已经包含 `name`；对所有正式新交付，必须另外提供 `owner` 和 `description`，三者共同构成前端展示信息：
+Metadata 必须是无 BOM 的 UTF-8 JSON。八个机器字段中已经包含 `name`；对所有正式新交付还必须提供 `description`，两者共同构成前端展示信息：
 
 ```json
 {
   "schema_version": "1.0",
   "scheme_id": "one_y_t5_liq_excess_a_w252_l7_v1",
   "name": "LIQ_EXCESS_A_W252_L7",
-  "owner": "ALGO-A",
   "description": "使用流动性指标和滚动窗口构建特征，通过分类模型判断未来5个交易日1Y国债收益率方向。",
   "algorithm_version": "1.0.0",
   "target_tenor": "1Y",
@@ -200,15 +193,11 @@ Metadata 必须是无 BOM 的 UTF-8 JSON。八个历史机器字段中已经包�
 - `scheme_id` 是算法执行身份；`name` 是当前任务格子内用于区分候选方案的简洁业务名称，两者不要混用。
 - `name` 不得重复 `target_tenor`、不得重复 `task_type` 或 `horizon`，也不得追加“方向预测”等已经由任务格子表达的说明。
 - `name` 和 `algorithm_version` 必须是非空字符串；`algorithm_version` 不强制使用特定版本格式。
-- `owner` 是前端“来源”列中的方案交付归属，可填写交付同事姓名缩写、姓名或稳定团队代码；它不是 DataBridge 数据源、`input_source`、算法依赖来源或审批人。
-- `owner` 去除首尾空白后必须仍为非空的单段纯文本，不得包含换行、HTML 或其他标记文本，也不得使用 `--`、`unknown`、`待定` 等占位值。
 - `description` 必须简述主要输入、窗口或规则、模型类型以及最终方向形成方式；平台不会根据脚本或名称代写算法逻辑。
 - `description` 必须是单段非空纯文本，最多 300 个字符，不得包含换行、HTML 或其他标记文本。
-- `name`、`owner` 和 `description` 职责不同，不得用方案名代替来源、用来源代替算法说明，或把任一字段留给平台推测。
-- 历史不可变交付可以缺少 `owner` 或 `description`，但平台只按显式清单中的精确 Metadata SHA-256 兼容；任何字节变化都必须走正式新交付规则。新包缺少三者任一项均不得进入平台 Gate，也没有 owner waiver。
-- 当前机器 Contract、Intake 和 Gate 已接受并守护 `owner`；若环境仍把它报告为 extra field，说明运行代码不在本文对应版本，必须停止并核对版本，不得删字段绕过。
+- `name` 和 `description` 职责不同，不得用方案名代替算法说明，或把任一字段留给平台推测。
 - `task_type`、`horizon` 和 `target_rule` 必须来自上一节的同一行。
-- 除本节规定的 `owner` 和 `description` 外，Metadata 不得增加 `platform_inputs`、`frequency`、输入路径、运行开关、可变阈值、特征列表或模型参数。
+- 除本节规定的 `description` 外，Metadata 不得增加 `platform_inputs`、`frequency`、输入路径、运行开关、可变阈值、特征列表或模型参数。
 
 ---
 
@@ -440,26 +429,19 @@ python {scheme_id}.py backtest \
   --output backtest.csv
 ```
 
-逐项完成：
+最低自验范围：
 
-| 验证项 | 操作 | 通过标准 |
-|---|---|---|
-| DataBridge 下载 | 分别下载日、周、月三份真实 CSV；依赖周历时同批下载 `api_wind_date.csv` | HTTP 成功，文件名固定，文件非空；无旧文件混用 |
-| Schema 校验 | 执行第 3.6 节校验命令，并检查算法消费字段 | 基线字段和相对顺序兼容，时间键合法；日历精确两列；不限制业务文件总列数 |
-| 周历与 Request | 用同批 `api_wind_date.csv` 映射每条 `daily_cutoff_key` | 恰好等于 Request 的 `weekly_cutoff_key`，且消费周频时该键存在 |
-| 自测输入凭证 | 保存下载时间、四文件摘要、行数、起止键和 Request | 平台能够把三频摘要匹配到一个 generation，并核对规范化日历摘要 |
-| 同代复现 | 在平台选定的 generation 与组合输入上复跑 | 输入身份一致后才比较结果；不一致标记 `data_vintage_mismatch` |
-| 交付物 | 检查文件数量、命名、包含 `name` 的 Metadata 历史八字段、另行必填的 `owner`、`description` 和任务组合 | 只有两个交付文件；方案名称、交付来源、算法说明、身份和任务组合合法；自验日历不进入交付目录 |
-| 命令与日志 | 执行 `--help`、`predict`、`backtest` 并分别捕获 stdout/stderr | 命令存在；成功运行 stdout 为空 |
-| 单点预测 | 使用一个合法 Request 执行 `predict` | 退出码 `0`，恰好一条五字段结果 |
-| 批量回测 | 使用至少两个不同截止键执行 `backtest` | 每个 Request 恰好一条结果，数量和顺序一致 |
-| 预测/回测一致 | 将同一个 Request 分别交给两个命令 | 五个业务字段完全一致 |
-| 后续行隔离 | 修改或追加实际消费文件中位于截止键之后的合法行 | 当前 Request 的五个业务字段不变 |
-| 分批与顺序 | 改变批次切分和 Request 顺序后运行并按 ID 对齐 | 每个 Request 的结果不变 |
-| 一次性计算等价（walk-forward 必须）| 同一批 Request 分别用 `backtest` 与逐条 `predict` 运行后按 ID 对齐 | 五个业务字段逐条完全一致；批内自证已实际执行并可从 `stderr` 追溯 |
-| 性能准入 | 按第 6.4 节执行单条、100条、乱序和完整区间三轮测试 | 全部耗时/RSS达标，每批自证通过且未 fallback；报告保存在 delivery 目录外 |
-| 重复执行 | 相同环境、数据和 Request 连续执行两次 | 五个业务字段完全一致 |
-| 失败处理 | 逐项构造第 8 节失败条件 | 非零退出，stderr 有错误，stdout 为空，不产生 Output |
+1. 三频真实数据和可选周历下载成功、无旧文件混用，并通过第 2–3 节 Schema、时间键和摘要检查；
+2. Metadata、两个文件名、任务组合和 `name/description` 全部合法，delivery 中没有第三个文件；
+3. `--help`、`predict` 和 `backtest` 均可执行；成功时 stdout 为空，Result 数量、字段和输入顺序一致；
+4. 同一 Request 在 predict/backtest、不同批次切分、乱序和重复执行下结果一致，截止键之后的合法行不
+   改变当前结果；
+5. 依赖周历时，逐条确认 `daily_cutoff_key` 唯一映射到 Request 的 `weekly_cutoff_key`；
+6. walk-forward 一次性计算按第 6.3 节完成每批首/中/末独立复算；性能按第 6.4 节覆盖单条、100 条、
+   乱序和完整区间，且 `fallback_used=false`；
+7. 第 8 节每类失败均返回非零、stderr 有错误、stdout 为空且不产生 Output；
+8. 保存输入摘要、Request、日期边界、逐次耗时和峰值 RSS；平台输入摘要不同时先标记
+   `data_vintage_mismatch`，在平台选定 generation 上重跑后再比较。
 
 准确率等算法效果门槛由当前方案的业务验收要求单独规定，不在本通用接口 SOP 中统一设定。
 
@@ -467,30 +449,15 @@ python {scheme_id}.py backtest \
 
 ## 10. 最终交付检查
 
-提交前逐项确认：
+提交前确认：
 
-- [ ] 只交付同名 `{scheme_id}.py + {scheme_id}.json`；
-- [ ] `.json` 的八个历史字段合法，且正式提供符合约束的 `name`、`owner` 和 `description`；
-- [ ] Metadata 未增加 `platform_inputs`；如需平台周历，已告知平台在 Intake 使用 `--platform-input api-wind-date-v1`；
-- [ ] 两文件、DataBridge 自验凭证和平台 Intake 接收仅确认交付可接收资格，不构成平台控制面权限；
-- [ ] Metadata 和交付目录未声明平台专属运行或审批字段，且未将两文件交付视为平台审批；
-- [ ] `name` 是任务格子内的简洁方案名，没有重复期限、任务或“方向预测”；
-- [ ] `owner` 是真实、稳定、非占位的交付同事标识或团队代码，未误填为 DataBridge 数据源、`input_source` 或审批人；
-- [ ] `description` 是不超过 300 字的单段纯文本算法说明，未用 `name` 或 `owner` 代替；
-- [ ] 平台 Intake 成功回读精确 composite registry ID；若运行环境仍拒绝 `owner`，已停止并核对平台代码版本，未删除字段绕过；
-- [ ] `predict` 和 `backtest` 使用同一算法逻辑；
-- [ ] 真实 DataBridge 数据下载和 Schema 校验已通过；
-- [ ] 如依赖周历，已从 DataBridge 专用接口同批下载 `api_wind_date.csv`，未使用内嵌、参考包或手工日历；
-- [ ] 已保存三频/日历 SHA256、行数、起止键和自测 Request，未自行编造 `generation_id`；
-- [ ] `daily_cutoff_key -> week_id` 与 Request 的 `weekly_cutoff_key` 精确一致，`week_id` 未按 ISO 周或连续数值处理；
-- [ ] 平台验收输入与自测输入同代；如摘要不同，已在平台选定 generation 上重跑，而不是把差异判成算法问题；
-- [ ] 每个 Request 按自己的截止键独立截断；如使用等价的一次性计算，批内自证、确定性抽样和失败回退三条均已实现；
-- [ ] 已完成第 6.4 节性能自测，单条、100条、乱序和完整区间均达标，三轮逐次结果和峰值 RSS 已写入 delivery 目录外的 `{scheme_id}.performance.json`；
-- [ ] 每个批次的首中末内部值自证均通过，`fallback_used=false`，未把平台入库当作算法性能调优阶段；
-- [ ] 单点、批量、分批、变序、重复执行和未来行隔离全部通过；
-- [ ] 成功时 stdout 为空，失败时不产生 Output；
-- [ ] 交付脚本和 Metadata 不含 DataBridge 地址、用户名、密码或下载逻辑；
-- [ ] 没有网络、数据库、额外代码、模型或数据依赖。
-- [ ] `api_wind_date.csv`（如用于自验）未进入正式两文件交付目录。
+- [ ] delivery 只有同名 `{scheme_id}.py + {scheme_id}.json`，Metadata 身份、任务组合和三个展示字段合法；
+- [ ] 没有 `platform_inputs`、平台审批字段、凭据、下载逻辑、网络/数据库访问或额外代码/模型/数据依赖；
+- [ ] 真实 DataBridge 输入通过校验并保存摘要；可选周历来自同批下载，但没有进入 delivery；
+- [ ] 每个 Request 按自身 cutoff 独立截断，predict/backtest、分批、变序、重复和未来行隔离自验通过；
+- [ ] walk-forward 批内自证和第 6.4 节性能准入全部通过，`performance.json` 位于 delivery 目录外；
+- [ ] Result、退出码、stdout/stderr 和失败无 Output 行为符合第 7–8 节；
+- [ ] 输入 vintage 不同的结果没有被宣称为算法差异；
+- [ ] 已明确两文件交付不授予平台 activation、写入或调度权限。
 
 全部完成后，只提交 `{scheme_id}.py` 和 `{scheme_id}.json`。

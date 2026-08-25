@@ -16,19 +16,11 @@ import pandas as pd
 
 from shared.blackbox_v2.platform_input_registry import PLATFORM_INPUT_REGISTRY
 from shared.blackbox_v2.platform_inputs import FrozenPlatformInput
-from shared.data_bridge.validation import validate_baseline_compatible_columns
-
-
-SNAPSHOT_FILENAMES = (
-    "daily_output.csv",
-    "weekly_output.csv",
-    "monthly_output.csv",
+from shared.data_bridge.validation import (
+    EXPECTED_FILENAMES as SNAPSHOT_FILENAMES,
+    TIME_KEY_BY_FILE,
+    validate_baseline_compatible_columns,
 )
-TIME_KEY_BY_FILE = {
-    "daily_output.csv": "date",
-    "weekly_output.csv": "week_id",
-    "monthly_output.csv": "month_id",
-}
 COMBINED_INPUT_IDENTITY_SCHEMA_VERSION = "blackbox-combined-input-v1"
 _COMBINED_IDENTITY_FIELDS = frozenset(
     {
@@ -425,7 +417,7 @@ def _validate_frame_content(filename: str, frame: pd.DataFrame) -> None:
     if key_column == "date":
         keys = [_normalize_daily_key(value) for value in frame[key_column].tolist()]
     else:
-        keys = [_normalize_period_key(value, key_column) for value in frame[key_column].tolist()]
+        keys = [normalize_period_key(value, key_column) for value in frame[key_column].tolist()]
     if len(keys) != len(set(keys)):
         raise ValueError(f"{filename} {key_column} must be unique")
     if any(left >= right for left, right in zip(keys, keys[1:])):
@@ -534,14 +526,14 @@ def _authoritative_cutoff(
 ) -> str:
     if key_column not in as_of.columns or as_of.empty:
         raise ValueError(f"platform as-of data has no {key_column}")
-    values = [_normalize_period_key(value, key_column) for value in as_of[key_column].tolist()]
+    values = [normalize_period_key(value, key_column) for value in as_of[key_column].tolist()]
     cutoff = values[-1]
 
     snapshot_frame = pd.read_csv(snapshot_path, dtype={key_column: "string"})
     if key_column not in snapshot_frame.columns:
         raise ValueError(f"{snapshot_path.name} is missing {key_column} cutoff column")
     available = {
-        _normalize_period_key(value, key_column)
+        normalize_period_key(value, key_column)
         for value in snapshot_frame[key_column].tolist()
     }
     if cutoff not in available:
@@ -551,7 +543,7 @@ def _authoritative_cutoff(
     return cutoff
 
 
-def _normalize_period_key(value: object, field: str) -> str:
+def normalize_period_key(value: object, field: str) -> str:
     if pd.isna(value):
         raise ValueError(f"{field} must not be empty")
     text = str(value).strip()

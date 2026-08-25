@@ -14,7 +14,6 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from pathlib import Path
 from typing import Iterator, Sequence
 from zoneinfo import ZoneInfo
 
@@ -38,14 +37,13 @@ from shared.calendar_service import get_calendar
 from shared.prediction_context import is_weekly_signal_date
 from shared.prediction_context import build_monthly_live_context
 from shared.period_average_buckets import period_anchor_dates
-from shared.task_specs import PERIOD_AVERAGE_TASK_TYPES
+from shared.task_specs import PERIOD_AVERAGE_TASK_TYPES, PREDICTION_CADENCES
 from shared.data_bridge.refresh import DataBridgeRefreshConfig
 from shared.liwei_0616_cache_contract import APPROVED_PHASE_A_CACHE_PUBLISHERS
 from shared.one_shot_control_plane import LAUNCHD_ONE_SHOT_CONTROL_PLANE
 
 
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
-VALID_CADENCES = frozenset({"daily", "weekly", "monthly", "period_average"})
 DATA_BRIDGE_READY_MAX_WAIT_SEC = 30 * 60
 DATA_BRIDGE_READY_POLL_INTERVAL_SEC = 30
 
@@ -99,7 +97,7 @@ def _today() -> str:
 
 def _normalize_cadence(value: str) -> str:
     cadence = str(value).strip().lower()
-    if cadence not in VALID_CADENCES:
+    if cadence not in PREDICTION_CADENCES:
         raise LaunchdPredictionConfigurationError("invalid cadence")
     return cadence
 
@@ -567,7 +565,11 @@ def _configuration_summary(
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI：只接受 cadence/date/env；错误始终为固定的结构化摘要。"""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cadence", required=True, choices=sorted(VALID_CADENCES))
+    parser.add_argument(
+        "--cadence",
+        required=True,
+        choices=sorted(PREDICTION_CADENCES),
+    )
     parser.add_argument("--predict-date", default=_today())
     parser.add_argument("--algo-env", default=DEFAULT_ALGO_ENV)
     args = parser.parse_args(argv)

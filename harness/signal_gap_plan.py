@@ -9,7 +9,6 @@ from sqlalchemy import bindparam, text
 
 from scheduler.discovery import discover_schemes
 from shared.actual_facts import build_week_calendar
-from shared.blackbox_v2.contracts import TASK_COMBINATIONS
 from shared.calendar_service import (
     is_trading_day_row,
     read_calendar_snapshot_from_connection,
@@ -26,15 +25,20 @@ from shared.data_bridge.refresh import (
     DataBridgeRefreshConfig,
 )
 from shared.prediction_context import (
+    LIVE_PREDICTION_PHASES,
     build_daily_live_context,
     build_monthly_live_context,
     build_period_average_live_context,
     build_weekly_live_context,
     is_weekly_signal_date,
 )
-from shared.scheme_config_schema import SCHEME_ID_PATTERN
+from shared.scheme_config_schema import ALLOWED_RUNTIME_TYPES, SCHEME_ID_PATTERN
 from shared.period_average_buckets import period_anchor_dates
-from shared.task_specs import ALLOWED_FREQUENCIES, PERIOD_AVERAGE_TASK_TYPES
+from shared.task_specs import (
+    ALLOWED_FREQUENCIES,
+    PERIOD_AVERAGE_TASK_TYPES,
+    TASK_COMBINATIONS,
+)
 
 
 PLAN_SCHEMA_VERSION = "single-date-active-live-gap-plan-v1"
@@ -657,7 +661,7 @@ def _select_execution_authority(
     for item in authority:
         if (
             item.status != "active"
-            or item.runtime_type not in {"native_adapter", "blackbox_v2"}
+            or item.runtime_type not in ALLOWED_RUNTIME_TYPES
             or item.frequency not in ALLOWED_FREQUENCIES
             or item.horizon < 1
             or not item.task_type.strip()
@@ -1227,7 +1231,7 @@ def _observation_contract_error(
     if (
         row.predict_date != item.predict_date
         or row.feature_date != item.feature_date
-        or row.phase not in {"gray_live", "scheduled_live"}
+        or row.phase not in LIVE_PREDICTION_PHASES
         or row.run_status != "success"
         or row.scheme_version != target.scheme_version
     ):
@@ -1241,7 +1245,7 @@ def _live_row_contract_error(
 ) -> str | None:
     errors: list[str] = []
     phase = str(row.get("prediction_phase") or "")
-    if phase not in {"gray_live", "scheduled_live"}:
+    if phase not in LIVE_PREDICTION_PHASES:
         errors.append("LIVE_PHASE_INVALID")
     if target is None:
         errors.append("LIVE_TARGET_NOT_ACTIVE")

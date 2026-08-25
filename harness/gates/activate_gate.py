@@ -12,7 +12,7 @@ from harness.operation import (
     verify_direct_operation,
 )
 from harness.context import GateContext
-from shared.scheme_config_schema import validate_config
+from shared.scheme_config_schema import ALLOWED_STATUS, validate_config
 from harness.contracts.onboarding_policy import validate_onboarding_policy
 from harness.gates.base import Gate, guarded_result, utc_now
 from harness.result import Evidence, GateResult, GateStatus
@@ -45,9 +45,7 @@ class NativeActivationPreflight:
 
     validation_config: "SchemeConfig"
     config_bytes: bytes
-    config_text: str
     expected_active_config_bytes: bytes
-    expected_active_config_text: str
     expected_active_config_hash: str
     expected_active_scheme_version: str
     code_hash: str
@@ -140,7 +138,6 @@ class ActivationGate(Gate):
             return GateResult(
                 gate_name=self.name,
                 status=GateStatus.FAILED,
-                passed=False,
                 evidence=[Evidence("config_path", str(config_path))],
                 errors=[f"config.yaml not found: {config_path}"],
                 started_at=started_at,
@@ -154,7 +151,6 @@ class ActivationGate(Gate):
             return GateResult(
                 gate_name=self.name,
                 status=GateStatus.FAILED,
-                passed=False,
                 evidence=[Evidence("config_errors", config_errors)],
                 errors=[f"config validation failed: {len(config_errors)} error(s)"],
                 started_at=started_at,
@@ -171,7 +167,6 @@ class ActivationGate(Gate):
             return GateResult(
                 gate_name=self.name,
                 status=GateStatus.FAILED,
-                passed=False,
                 evidence=[
                     Evidence("scheme_id", ctx.scheme_id),
                     Evidence("onboarding_policy_allowed", False),
@@ -195,7 +190,6 @@ class ActivationGate(Gate):
             return GateResult(
                 gate_name=self.name,
                 status=GateStatus.BLOCKED,
-                passed=False,
                 evidence=[
                     Evidence("scheme_id", ctx.scheme_id),
                     Evidence("validation_scheme_version", validation_scheme_version),
@@ -215,7 +209,6 @@ class ActivationGate(Gate):
             return GateResult(
                 gate_name=self.name,
                 status=GateStatus.FAILED,
-                passed=False,
                 evidence=[
                     Evidence("scheme_id", ctx.scheme_id),
                     Evidence("validation_scheme_version", validation_scheme_version),
@@ -234,7 +227,6 @@ class ActivationGate(Gate):
             return GateResult(
                 gate_name=self.name,
                 status=GateStatus.BLOCKED,
-                passed=False,
                 evidence=[
                     Evidence("scheme_id", ctx.scheme_id),
                     Evidence("validation_scheme_version", validation_scheme_version),
@@ -250,7 +242,6 @@ class ActivationGate(Gate):
             return GateResult(
                 gate_name=self.name,
                 status=GateStatus.PASSED,
-                passed=True,
                 evidence=[
                     Evidence("scheme_id", ctx.scheme_id),
                     Evidence("validation_scheme_version", validation_scheme_version),
@@ -284,7 +275,6 @@ class ActivationGate(Gate):
             return GateResult(
                 gate_name=self.name,
                 status=GateStatus.BLOCKED,
-                passed=False,
                 evidence=[
                     Evidence("scheme_id", ctx.scheme_id),
                     Evidence("validation_scheme_version", validation_scheme_version),
@@ -300,7 +290,6 @@ class ActivationGate(Gate):
             return GateResult(
                 gate_name=self.name,
                 status=GateStatus.BLOCKED,
-                passed=False,
                 evidence=[
                     Evidence("scheme_id", ctx.scheme_id),
                     Evidence("validation_scheme_version", validation_scheme_version),
@@ -319,7 +308,6 @@ class ActivationGate(Gate):
             return GateResult(
                 gate_name=self.name,
                 status=GateStatus.BLOCKED,
-                passed=False,
                 evidence=[
                     Evidence("scheme_id", ctx.scheme_id),
                     Evidence("validation_scheme_version", validation_scheme_version),
@@ -363,7 +351,6 @@ class ActivationGate(Gate):
             return GateResult(
                 gate_name=self.name,
                 status=GateStatus.FAILED,
-                passed=False,
                 evidence=[
                     Evidence("scheme_id", ctx.scheme_id),
                     Evidence("validation_scheme_version", validation_scheme_version),
@@ -384,7 +371,6 @@ class ActivationGate(Gate):
         return GateResult(
             gate_name=self.name,
             status=GateStatus.PASSED,
-            passed=True,
             evidence=[
                 Evidence("scheme_id", ctx.scheme_id),
                 Evidence("validation_scheme_version", validation_scheme_version),
@@ -411,7 +397,6 @@ def _blackbox_config_failure(started_at: str, config_path: Path, exc: Exception)
     return GateResult(
         gate_name="activate",
         status=GateStatus.FAILED,
-        passed=False,
         evidence=[
             Evidence("config_path", str(config_path)),
             Evidence("runtime_type", "blackbox_v2"),
@@ -442,7 +427,7 @@ def _set_status(config_path: Path, status: str) -> bool:
 
 def _replace_root_status(config_bytes: bytes, status: str) -> bytes:
     """纯函数：只替换唯一根级 status 值。"""
-    if status not in {"paused", "active"}:
+    if status not in ALLOWED_STATUS:
         raise ValueError(f"unsupported Native lifecycle status: {status}")
     try:
         text = config_bytes.decode("utf-8")
@@ -519,7 +504,7 @@ def _strict_native_activation_preflight(
             "validation config runtime_type is not native_adapter: "
             f"{getattr(target, 'runtime_type', None)}"
         )
-    if target.status not in {"paused", "active"}:
+    if target.status not in ALLOWED_STATUS:
         raise ValueError(
             "validation config status must be paused or active: "
             f"{target.status}"
@@ -531,7 +516,7 @@ def _strict_native_activation_preflight(
         )
     config_bytes = config_path.read_bytes()
     try:
-        config_text = config_bytes.decode("utf-8")
+        config_bytes.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ValueError("config.yaml must be valid UTF-8") from exc
     scheme_dir = config_path.parent
@@ -557,7 +542,6 @@ def _strict_native_activation_preflight(
         raise RuntimeError("root-level status does not match strict discovery")
 
     expected_active_bytes = _replace_root_status(config_bytes, "active")
-    expected_active_text = expected_active_bytes.decode("utf-8")
     expected_active_config_hash = hashlib.sha256(
         expected_active_bytes
     ).hexdigest()
@@ -568,9 +552,7 @@ def _strict_native_activation_preflight(
     return NativeActivationPreflight(
         validation_config=target,
         config_bytes=config_bytes,
-        config_text=config_text,
         expected_active_config_bytes=expected_active_bytes,
-        expected_active_config_text=expected_active_text,
         expected_active_config_hash=expected_active_config_hash,
         expected_active_scheme_version=expected_active_scheme_version,
         code_hash=actual_code_hash,
@@ -703,7 +685,7 @@ def _native_activation_lifecycle_preflight(
             f"registry_statuses={sorted(registry_statuses)}"
         )
 
-    if registry_status in {"active", "paused"}:
+    if registry_status in ALLOWED_STATUS:
         registry_errors = _native_activation_registry_errors(
             cfg,
             expected_tenors,

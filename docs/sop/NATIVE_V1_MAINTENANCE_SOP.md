@@ -113,7 +113,7 @@ static -> native-maintenance-admission -> input -> dry-run
 
 ## 6. 直接命令副作用
 
-自动段通过后，任何 persist、live 写库或状态切换仍须使用精确的独立副作用命令。命令本身是单维护者对本次操作的明确授权；不生成密钥、不签发 token、不复制 `--authorize`。操作前后独立查询：
+自动段通过后，任何 persist、单日 `signal-gap-fill` 或状态切换仍须使用精确的独立副作用命令；正式 `scheduled_live` 只由目标主机已安装的 one-shot 调度触发。命令本身是单维护者对本次操作的明确授权；不生成密钥、不签发 token、不复制 `--authorize`。操作前后独立查询：
 
 Native 激活授权必须绑定刚通过 `all` 或 `native-maintenance` 的
 `validation_scheme_version`，并记录非空 operator 身份。两条 profile 互斥：当前 exact version

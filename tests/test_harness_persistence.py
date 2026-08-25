@@ -52,7 +52,6 @@ class _RecordingPassingGate:
         return GateResult(
             gate_name=self.name,
             status=GateStatus.PASSED,
-            passed=True,
             evidence=[Evidence("gate_executed", self.name)],
             errors=[],
             started_at="2026-08-04T00:00:00+00:00",
@@ -84,7 +83,6 @@ class HarnessPersistenceTests(unittest.TestCase):
             result = GateResult(
                 gate_name="static",
                 status=GateStatus.PASSED,
-                passed=True,
                 evidence=[Evidence("checked", True)],
                 errors=[],
                 started_at="2026-06-08T00:00:00+00:00",
@@ -119,6 +117,13 @@ class HarnessPersistenceTests(unittest.TestCase):
             engine.store["calls"][0][1]["report_uri"],
             str(Path(tmpdir) / "reports"),
         )
+        for retired_field in (
+            "triggered_by",
+            "project_root",
+            "code_hash",
+            "config_hash",
+        ):
+            self.assertNotIn(retired_field, engine.store["calls"][0][1])
         self.assertNotIn("report_uri", engine.store["calls"][1][1])
         self.assertNotIn("report_uri", engine.store["calls"][2][1])
         self.assertTrue(engine.disposed)
@@ -136,7 +141,6 @@ class HarnessPersistenceTests(unittest.TestCase):
                 return GateResult(
                     gate_name=self.name,
                     status=GateStatus.PASSED,
-                    passed=True,
                     evidence=[],
                     errors=[],
                     started_at=now,

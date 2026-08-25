@@ -68,7 +68,6 @@ bond-factor-lab/
 | `harness.gates.compare_gate` | Native 执行 source benchmark；Blackbox 校验平台输入逐字节等于声明值并做一次冒烟 predict | 不用调参、改脚本或伪造结果；不重验交付自身的性质 |
 | `harness.gates.native_maintenance_admission_gate` | 只读核验 Native 先前 `all + compare` 准入证据、匹配的 prior `static.business_identity` 快照、current exact version 与当前 expected Registry identity | current version 只可为 native `draft|active`；Registry 必须统一 paused（预激活）或 active（激活后），draft+active fail-closed；不执行 compare/backtest、不写业务表 |
 | `harness.gates.backtest_gate` | 先跑 `--no-persist`，将回测摘要持久化为 Gate evidence；历史排行样本统一要求 `predict_date >= 2025-01-01`，并对受保护表做前后快照 | 不保存自举式本地 JSON baseline；未授权不落 `t_backtest_*`，授权落库时也只能改 `t_backtest_*` |
-| `harness.gates.live_gate` | 受控单方案写库前的 readiness、dry-run、行数保护；必须显式传入 `prediction_phase=gray_live/scheduled_live` | 不批量执行所有 active 方案 |
 | `harness.gates.dashboard_gate` | 激活后对唯一产品读模型 `/api/factor-lab/dashboard` 执行一次受限 GET 并复用 Backend payload 校验 | 不属于 `all`；不证明 exact version，不写库 |
 | `harness.persistence` | 把 run 状态与 Gate evidence/errors 持久化到两张 Harness 审计表 | 不写本地镜像报告、不改业务状态 |
 
@@ -82,13 +81,9 @@ python -m harness onboard t1_daily \
   --predict-date 2026-06-06 \
   --stage all
 
-python -m harness gate live \
-  --scheme-id t1_daily \
-  --predict-date 2026-06-06 \
-  --prediction-phase gray_live
 ```
 
-`--stage all` 按 `runtime_type` 分派：Blackbox V2 为四段 `static -> input -> unit -> compare`；Native V1 为五段 `static -> input -> dry-run -> compare -> backtest-no-persist`。任何一步失败都停止。Native 不再通过 scheme_id 文本命中仓库测试：这种选择既覆盖不了多数方案，又会误选平台测试；Static/Input/Dry-run/Compare/Backtest 已形成更精确的正确性闭环。首次 Native 技术入库必须保留 source benchmark/CompareGate 证据；Blackbox UnitGate 仍校验交付接口，Compare 只做平台输入校验与一次冒烟 predict。技术 `all` 不访问 Backend；`dashboard`、`live`、持久化 backtest 和 `activate` 都不属于 `all`。
+`--stage all` 按 `runtime_type` 分派：Blackbox V2 为四段 `static -> input -> unit -> compare`；Native V1 为五段 `static -> input -> dry-run -> compare -> backtest-no-persist`。任何一步失败都停止。Native 不再通过 scheme_id 文本命中仓库测试：这种选择既覆盖不了多数方案，又会误选平台测试；Static/Input/Dry-run/Compare/Backtest 已形成更精确的正确性闭环。首次 Native 技术入库必须保留 source benchmark/CompareGate 证据；Blackbox UnitGate 仍校验交付接口，Compare 只做平台输入校验与一次冒烟 predict。技术 `all` 不访问 Backend；`dashboard`、持久化 backtest 和 `activate` 都不属于 `all`。
 
 `native-maintenance` 仅给已完成首次技术入库、且有可比较 prior snapshot 的同一 Native 业务身份使用，固定四段顺序为 `static -> native-maintenance-admission -> input -> dry-run`。`native-maintenance-admission` 必须只读证明不同的旧 Native active version 已有 passed `all` 和 passed `compare`，并从该 prior `all` 的 `static.business_identity` 读取与当前精确匹配的业务快照：`scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors 与 composite Registry IDs；不得比较或持久化代码/config/version hash 作为身份字段。current exact `t_scheme_versions` 行必须为 native `draft|active`；expected Registry identity 要么全 paused（预激活），要么全 active（激活后），且 draft version 配 active Registry 必须失败。只有 ActivationGate 才能原子翻转至 active。prior snapshot 缺失、重复、损坏或不匹配时一律阻断。ActivationGate 在这一路径复核 prior 前提与当前精确 version 的四个 Gate，并返回 `native_post_admission_revision_v1`；若当前 exact version 已有 passed `all`，则改走互斥的 `full_initial_onboarding_v1`，不要求 prior snapshot 或四段 Gate。这个 stage 不执行当前 historical `compare/backtest`，只持久化 Harness 审计证据且不写业务表。Blackbox V2 不接受该 stage，仍走既有 `all`。
 
@@ -111,7 +106,7 @@ python -m harness gate live \
 3. 平台确认 Runtime Profile、最新通过校验的 DataBridge generation、三频父快照、声明制品、组合输入身份和七字段 Request。
 4. 依次执行 `static -> input -> unit -> compare`。
 5. 独立查询证明预测、回测等业务表零写入。
-6. 通用入库授权只登记为 `shadow + paused`；生产准备通过的具体方案仍须取得独立专项授权，才能执行 ActivationGate、持久化回测或 LiveGate。
+6. 通用入库授权只登记为 `shadow + paused`；生产准备通过的具体方案仍须取得独立专项授权，才能执行 ActivationGate、持久化回测或单日 `signal-gap-fill`。正式 `scheduled_live` 只由目标主机已安装的 one-shot 调度触发。
 
 具体操作以[Blackbox 平台入库 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)为准。
 
@@ -166,7 +161,7 @@ Harness、自然调度和历史 replay 使用同一数据库捕获与规范化
 - 方案 core 或 `predict.py` 直接执行 `INSERT/UPDATE/DELETE/ALTER/DROP`。
 - 为了让算法跑通而修改源数据表。
 - 用历史回测结果写入 `t_scheme_predictions`。
-- 旧的 broad `scheduler.executor` 全量 CLI 已退役；合法运行入口仅为 launchd one-shot runner、受控 Harness Gate 和单日 `signal-gap-fill`。不得新建等价批量入口。
+- 旧的 broad `scheduler.executor` 全量 CLI 已退役；合法运行入口仅为宿主 launchd/systemd one-shot runner、受控 Harness Gate 和单日 `signal-gap-fill`。不得新建等价批量入口。
 - 通过临时脚本绕过 `shared.input_artifacts` 生成算法输入。
 
 ---

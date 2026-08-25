@@ -1,13 +1,9 @@
 from __future__ import annotations
 
 from backtests.daily_0629_reproduction import main_for_scheme, run_daily_0629_reproduction
-from shared.input_artifacts import build_daily_input_artifact as _input_artifact_contract
 
 
 SCHEME_ID = "daily_1y_xgb_1y13_0629"
-_ = _input_artifact_contract
-
-
 def run_daily_1y_xgb_1y13_0629_reproduction(
     *,
     source_run_date=None,

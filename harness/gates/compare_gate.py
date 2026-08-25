@@ -117,7 +117,6 @@ class CompareGate(Gate):
                 return GateResult(
                     gate_name=self.name,
                     status=GateStatus.FAILED,
-                    passed=False,
                     evidence=[
                         Evidence("benchmark_required", True),
                         Evidence("reason", "benchmark_required=true but no benchmark files present"),
@@ -133,7 +132,6 @@ class CompareGate(Gate):
             return GateResult(
                 gate_name=self.name,
                 status=GateStatus.SKIPPED,
-                passed=True,
                 evidence=[
                     Evidence("skipped", True),
                     Evidence("reason", "no benchmark files present"),
@@ -255,7 +253,6 @@ class CompareGate(Gate):
         return GateResult(
             gate_name=self.name,
             status=status,
-            passed=status == GateStatus.PASSED,
             evidence=evidence,
             errors=errors,
             started_at=started_at,

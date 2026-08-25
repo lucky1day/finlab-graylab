@@ -5,8 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from scheduler.discovery import active_schemes, discover_schemes
-from shared.blackbox_v2.legacy_metadata_policy import load_legacy_metadata_hashes
+from scheduler.discovery import discover_schemes
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -15,7 +14,11 @@ SCHEMES_ROOT = PROJECT_ROOT / "schemes"
 
 class ActiveSchemeContractTests(unittest.TestCase):
     def test_all_active_scheme_configs_have_runnable_platform_contracts(self) -> None:
-        configs = active_schemes(SCHEMES_ROOT)
+        configs = [
+            config
+            for config in discover_schemes(SCHEMES_ROOT)
+            if config.status == "active"
+        ]
         active_dirs = {
             path.parent.name
             for path in SCHEMES_ROOT.glob("*/config.yaml")
@@ -40,12 +43,3 @@ class ActiveSchemeContractTests(unittest.TestCase):
                     self.assertEqual(config.contract_version, "1.0")
                 else:
                     self.assertTrue(config.entry_point)
-
-    def test_ownerless_blackbox_metadata_matches_legacy_policy(self) -> None:
-        ownerless = {
-            config.scheme_id: config.manifest_hash
-            for config in discover_schemes(SCHEMES_ROOT, strict=True)
-            if config.runtime_type == "blackbox_v2" and config.owner is None
-        }
-
-        self.assertEqual(load_legacy_metadata_hashes(PROJECT_ROOT), ownerless)

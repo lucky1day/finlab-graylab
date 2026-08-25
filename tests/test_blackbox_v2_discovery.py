@@ -20,7 +20,6 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
         self.assertEqual(config.version_status, "draft")
         self.assertEqual(config.name, "10Y Trial")
         self.assertEqual(config.description, "")
-        self.assertIsNone(config.owner)
         self.assertEqual(config.algorithm_version, "1.2.3")
         self.assertEqual(config.contract_version, "1.0")
         self.assertEqual(config.target_rule, "target_date_yield_vs_feature_date_yield")
@@ -149,7 +148,7 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
         self.assertEqual(first.scheme_version, second.scheme_version)
 
 
-    def test_new_blackbox_metadata_owner_is_mapped_and_name_is_authoritative(self) -> None:
+    def test_legacy_owner_is_ignored_and_name_is_authoritative(self) -> None:
         from scheduler.discovery import load_scheme_config
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -168,7 +167,6 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
             config = load_scheme_config(scheme_dir / "config.yaml")
 
         self.assertEqual(config.name, "10Y Trial")
-        self.assertEqual(config.owner, "ALGO-A")
         self.assertEqual(
             config.description,
             "使用期限利差和滚动分类模型形成方向信号。",

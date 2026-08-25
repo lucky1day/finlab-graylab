@@ -158,10 +158,6 @@ class _Calendar:
     last_date: date
     trading_days: tuple[date, ...]
 
-    @property
-    def trading_day_set(self) -> frozenset[date]:
-        return frozenset(self.trading_days)
-
 
 def _normalize_calendar(
     rows: Iterable[Mapping[str, object]],

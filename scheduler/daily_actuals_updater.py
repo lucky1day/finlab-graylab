@@ -14,7 +14,6 @@ from shared.actual_facts import (
     build_daily_actual_records_from_rows,
     read_yield_rows,
 )
-from shared.models import ActualRecord
 from shared.tenor_mapping import TENOR_TO_INDICATOR, indicator_map_for_tenors, normalize_tenor
 
 
@@ -232,17 +231,6 @@ def read_source_watermarks(
     }
 
 
-def build_actual_records(
-    engine: Engine,
-    start_date: str | date | datetime | None = None,
-    end_date: str | date | datetime | None = None,
-    tenors: Iterable[str] | None = None,
-) -> list[ActualRecord]:
-    """构建实际方向记录，方向为目标日相对前 1/5 个交易日的收益率变化。"""
-    rows = read_yield_rows(engine, tenors=tenors, end_date=end_date)
-    return build_daily_actual_records_from_rows(rows, start_date=start_date)
-
-
 def update_actuals(
     start_date: str | date | datetime | None = None,
     end_date: str | date | datetime | None = None,
@@ -258,7 +246,15 @@ def update_actuals(
         )
         if not selected_tenors:
             return 0
-        records = build_actual_records(engine, start_date=start_date, end_date=end_date, tenors=selected_tenors)
+        rows = read_yield_rows(
+            engine,
+            tenors=selected_tenors,
+            end_date=end_date,
+        )
+        records = build_daily_actual_records_from_rows(
+            rows,
+            start_date=start_date,
+        )
         written = upsert_actuals(engine, records)
         source_watermarks = read_source_watermarks(engine, tenors=selected_tenors, end_date=end_date)
         pruned = delete_actuals_after_source_watermark(
@@ -271,20 +267,3 @@ def update_actuals(
         return written
     finally:
         engine.dispose()
-
-
-def main() -> None:
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Refresh t_scheme_actuals from api_wind_daily.")
-    parser.add_argument("--start-date", default=None, help="Optional start date in YYYY-MM-DD format")
-    parser.add_argument("--end-date", default=None, help="Optional end date in YYYY-MM-DD format")
-    parser.add_argument("--tenor", action="append", help="Limit to one tenor")
-    args = parser.parse_args()
-
-    written = update_actuals(start_date=args.start_date, end_date=args.end_date, tenors=args.tenor)
-    print(f"actuals_written={written}")
-
-
-if __name__ == "__main__":
-    main()

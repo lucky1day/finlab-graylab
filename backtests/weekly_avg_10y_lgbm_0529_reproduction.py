@@ -8,13 +8,9 @@ from sqlalchemy.engine import Engine
 
 from backtests.repository import clean_json
 from backtests.weekly_avg_lgbm_0529_reproduction import run_weekly_avg_lgbm_0529_reproduction
-from shared.input_artifacts import build_weekly_input_artifact as _input_artifact_contract
 
 
 SCHEME_ID = "weekly_avg_10y_lgbm_0529"
-_ = _input_artifact_contract
-
-
 def run_weekly_avg_10y_lgbm_0529_reproduction(
     engine: Engine | None = None,
     persist: bool = True,

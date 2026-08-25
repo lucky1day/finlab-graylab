@@ -20,7 +20,7 @@
    确定性、顺序/分批一致性与未来数据隔离**不在平台验收范围内**——它们是交付代码自身的性质，
    由上游按 [上游交付契约](../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md) 保证；生产准备核验
    不得据此宣称平台已验证过这些性质。
-5. activation、持久化回测和 live 分别使用精确的直接副作用命令；命令本身是该次操作授权，系统自动绑定 scheme、exact version、latest passed run、日期/起点与非秘密 operator，不生成或复制密钥/token，也不得把一次命令外推到其它方案或操作。
+5. activation、持久化回测等直接副作用命令自动绑定 scheme、exact version、相关 Harness run、日期/起点与非秘密 operator；单日 `signal-gap-fill` 则以命令执行权表达本次补缺授权，由 planner 绑定当前 active identity、业务键和输入 authority，不接收 operator 或 DirectOperation scope。两类授权都不得外推到其它方案或操作，也不生成密钥/token。正式 `scheduled_live` 只由目标主机已安装的 one-shot 调度触发。
 6. activation 后 config、exact version 与全部 Registry target 均为 active；paused、draft、retired 或 cadence 不匹配的身份不得进入对应 one-shot runner。
 7. 激活后的 HTTP 验收只使用 `DashboardGate` 检查 `/api/factor-lab/dashboard` 当前业务可见性；Dashboard 响应不携带 exact version，不能替代 exact version、Gate 或生命周期证据。
 8. 自然生产观察必须由 installed plist、loaded state、日志、run、prediction、API/Dashboard 相互一致证明；仓库模板和测试不替代现场证据。

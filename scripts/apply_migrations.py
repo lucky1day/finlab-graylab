@@ -16,11 +16,6 @@ _sys.path.insert(0, str(PROJECT_ROOT))
 from migrations.runner import (
     MIGRATIONS_DIR,
     RELEASE_MIGRATION_MANIFEST_PATH,
-    MigrationHistoryError,
-    MigrationPartialApplyError,
-    MigrationPreflightError,
-    MigrationSQLParseError,
-    apply_migration_files,
     apply_pending_migration_files,
     inspect_applying_migration_017,
     inspect_applying_migration_018,
@@ -28,30 +23,9 @@ from migrations.runner import (
     recover_applying_migration_017,
     recover_applying_migration_018,
     recover_applying_migration_019,
-    split_sql_statements,
     validate_release_migration_manifest,
 )
 from scheduler.repository import create_engine_from_env
-
-
-__all__ = (
-    "MigrationHistoryError",
-    "MigrationPartialApplyError",
-    "MigrationPreflightError",
-    "MigrationSQLParseError",
-    "apply_migration_files",
-    "apply_pending_migration_files",
-    "inspect_applying_migration_017",
-    "inspect_applying_migration_018",
-    "inspect_applying_migration_019",
-    "main",
-    "recover_applying_migration_017",
-    "recover_applying_migration_018",
-    "recover_applying_migration_019",
-    "split_sql_statements",
-    "validate_release_migration_manifest",
-)
-
 
 def _parse_args(
     argv: _Iterable[str] | None = None,
@@ -235,7 +209,7 @@ def main(argv: _Iterable[str] | None = None) -> None:
     """执行显式选择的 migration apply / inspect / recovery 模式。"""
     args = _parse_args(argv)
     paths = sorted(MIGRATIONS_DIR.glob("*.sql"))
-    validate_release_migration_manifest(  # noqa: F405
+    validate_release_migration_manifest(
         paths,
         manifest_path=RELEASE_MIGRATION_MANIFEST_PATH,
     )
@@ -252,7 +226,7 @@ def main(argv: _Iterable[str] | None = None) -> None:
                 expected_server_uuid=args.expected_server_uuid,
             )
         if args.inspect_applying_017:
-            result = inspect_applying_migration_017(  # noqa: F405
+            result = inspect_applying_migration_017(
                 engine,
                 paths,
             )
@@ -264,7 +238,7 @@ def main(argv: _Iterable[str] | None = None) -> None:
                 )
             )
         elif args.recover_applying_017:
-            result = recover_applying_migration_017(  # noqa: F405
+            result = recover_applying_migration_017(
                 engine,
                 paths,
                 expected_state_digest=args.state_digest,
@@ -277,7 +251,7 @@ def main(argv: _Iterable[str] | None = None) -> None:
                 )
             )
         elif args.inspect_applying_018:
-            result = inspect_applying_migration_018(  # noqa: F405
+            result = inspect_applying_migration_018(
                 engine,
                 paths,
             )
@@ -289,7 +263,7 @@ def main(argv: _Iterable[str] | None = None) -> None:
                 )
             )
         elif args.recover_applying_018:
-            result = recover_applying_migration_018(  # noqa: F405
+            result = recover_applying_migration_018(
                 engine,
                 paths,
                 expected_state_digest=args.state_digest,
@@ -302,7 +276,7 @@ def main(argv: _Iterable[str] | None = None) -> None:
                 )
             )
         elif args.inspect_applying_019:
-            result = inspect_applying_migration_019(  # noqa: F405
+            result = inspect_applying_migration_019(
                 engine,
                 paths,
             )
@@ -314,7 +288,7 @@ def main(argv: _Iterable[str] | None = None) -> None:
                 )
             )
         elif args.recover_applying_019:
-            result = recover_applying_migration_019(  # noqa: F405
+            result = recover_applying_migration_019(
                 engine,
                 paths,
                 expected_state_digest=args.state_digest,
@@ -327,7 +301,7 @@ def main(argv: _Iterable[str] | None = None) -> None:
                 )
             )
         else:
-            apply_pending_migration_files(engine, paths)  # noqa: F405
+            apply_pending_migration_files(engine, paths)
     finally:
         engine.dispose()
 

@@ -4,7 +4,7 @@
 
 **目标读者**：平台开发、运维、审计和方案维护人员
 
-**最后核验日期**：2026-08-23
+**最后核验日期**：2026-08-25
 
 本文定义 Mac3 生产与 ECS 独立灰度的调度控制面。当前稳定事实查看[当前状态](../CURRENT_STATUS.md)；具体运行证据由 installed state、日志、run、prediction、Harness 和数据库审计保存，不在文档复制一次性计划。
 
@@ -39,22 +39,16 @@ daily、weekly、close-period one-shot runner 都先严格发现方案；其自�
 capability 准入。Blackbox Admission 代码与配置已经退役；历史身份变化只通过 Git、Harness
 run 和授权审计追溯，不再保留第二份当前权限矩阵。
 
-仓库已移除 `com.bond-factor-lab.scheduler` 的 `Disabled=true` legacy 模板和常驻
-`scheduler.main` 模块。actuals 的唯一 runner 为 `scheduler.actuals_runner`；Backend 不注册
-手动预测路由，也不存在可把手工请求写成第三种实盘阶段的 manual writer。
-已退役的 `daily-gray` 与 `v2-preflight` writer 及其仓库模板也已移除。已安装 disabled legacy
-plist 是否仍存在、何时物理删除，仍须只读核对与独立生产授权。
+平台只允许宿主控制面调用一次性 runner；不得恢复常驻 Python scheduler、manual writer 或其它能够拥有
+自然写入权的第二控制面。历史 installed 配置的物理清理仍须只读核对与独立生产授权。
 
 DataBridge 在 Mac3 使用 `BFL_DATABRIDGE_PRODUCER=launchd-one-shot`，在 ECS 使用
 `BFL_DATABRIDGE_PRODUCER=systemd-one-shot`；两者都是防误操作的准入标记，不是宿主控制面身份认证。
 仓库代码的同 UID 调用者属于受信任边界；不能由环境标记或 Python 内部
 调用单独证明 natural writer 身份，仍需 installed/loaded/log/run/prediction 现场证据。
 
-`ledger`、`occurrence` 和 `epoch` 不得新增、扩容、迁移或补建，也不得作为新的或过渡生产调度
-路径。相应的 repository/runtime/replay/policy 闭包已从仓库退役；017 历史 migration 与仍可能
-存在的数据库对象只保留为审计和受控 recovery 证据，任何物理归档或 DDL 仍须独立设计和授权。
-`BOND_DAILY_COORDINATOR_MODE` 不再被平台代码读取，算法子进程环境也不会转发它，仓库模板亦不再
-声明该变量。旧 installed 环境若仍携带它，只是惰性兼容配置，不授予任何调度权，也不构成现场状态结论。
+`ledger`、`occurrence` 和 `epoch` 不得新增、扩容、迁移或补建，也不得作为新的或过渡生产调度路径。
+历史 migration 与现存数据库对象只用于审计和受控 recovery；物理归档或 DDL 必须另行设计和授权。
 
 ## 2. 自然信号、历史修复与输入新鲜度
 
@@ -91,15 +85,10 @@ close-period 入口在任何预测前先校验 current ready 的 `feature_date` 
 
 ## 3. 生产操作授权
 
-installed plist/unit/timer 的替换或编辑、loaded state 的改变、服务停止或重启、激活、持久化回测、
-live 写入和历史补数均是独立操作。每项操作先做只读现场核验：比较 repo desired template、
+installed plist/unit/timer 的替换或编辑、loaded state 的改变、服务停止或重启、激活、持久化回测和
+单日历史补数均是独立操作。每项操作先做只读现场核验：比较 repo desired template、
 installed 配置、loaded state、日志和 run/prediction 证据；再取得明确授权。开发测试、仓库模板或
 代码通过不自动授予这些权限。本文不提供 `launchctl` 或 `systemctl` 的变更指令。
-
-自然调度的目标时点为：DataBridge refresh 约 06:30、daily predictions 约 07:03、weekly
-predictions 周六 11:30、close-period 每日 18:00；其中月中收只在自然月 15 日执行，MID/CQ/SF
-周期均值只在各自锚点执行，其余日期 no-op。actuals 保留既有三个时点，
-但任何时点只能有一个 writer。目标时点是治理合同，不是已安装或已观察的现场结论。
 
 ## 4. 生命周期与停止条件
 

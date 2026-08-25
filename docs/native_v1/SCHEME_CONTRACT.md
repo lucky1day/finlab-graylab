@@ -75,7 +75,7 @@ Adapter 只负责平台输入、日期上下文、算法调用和结果映射：
 
 `PredictionRecord`、三日期、`prediction_phase` 和 composite Registry 身份遵循[共享方案契约](../architecture/SCHEME_CONTRACT.md)与[预测语义](../architecture/PREDICTION_SEMANTICS.md)。
 
-只有 `scheduler.repository`、`backtests.repository` 和 actual updater 可以写库。自动 Gate 不得写预测、回测等业务表；任何 persist、live 或状态变化仍需受控授权。
+只有 `scheduler.repository`、`backtests.repository` 和 actual updater 可以写库。自动 Gate 不得写预测、回测等业务表；persist、单日 `signal-gap-fill` 或状态变化均需独立授权，正式 `scheduled_live` 只由目标主机 one-shot 调度触发。
 
 ## 6. 机器门禁
 

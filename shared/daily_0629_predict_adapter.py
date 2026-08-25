@@ -7,7 +7,7 @@ from shared.calendar_service import get_calendar
 from shared.daily_0629_source_evidence import DAILY_0629_SOURCE_ROLE, require_daily_0629_source_evidence
 from shared.daily_0629_source_runner import run_source_daily_live
 from shared.input_artifacts import build_daily_input_artifact, create_input_engine
-from shared.models import PredictionRecord
+from shared.models import DIRECTION_VALUES, PredictionRecord
 from shared.prediction_context import build_daily_live_context
 from shared.source_runtime_database import (
     load_source_runtime_database_config,
@@ -154,7 +154,7 @@ def _model_version_from_evidence(evidence: Any) -> str:
 def _direction_from_source(source: dict[str, Any]) -> int:
     for field in ("pred_label", "candidate_pred", "vote_pred", "model_pred"):
         parsed = _int_or_none(source.get(field))
-        if parsed in {-1, 0, 1}:
+        if parsed in DIRECTION_VALUES:
             return int(parsed)
     raise RuntimeError("daily 0629 source row missing final prediction direction")
 

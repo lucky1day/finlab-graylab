@@ -11,7 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from backtests.repository import clean_json
-from shared.prediction_context import WEEKLY_AVERAGE_TARGET_RULE, WEEKLY_TARGET_RULE, next_calendar_week_id
+from shared.prediction_context import WEEKLY_TARGET_RULE, next_calendar_week_id
 from shared.signal_policy import no_signal_as_flat
 from shared.tenor_mapping import TENOR_TO_INDICATOR
 

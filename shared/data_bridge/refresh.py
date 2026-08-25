@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Callable, Iterator, Mapping, Protocol
+from typing import Iterator, Mapping, Protocol
 from zoneinfo import ZoneInfo
 
 import pandas as pd

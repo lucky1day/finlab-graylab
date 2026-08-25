@@ -5,7 +5,7 @@ import json
 import os
 import re
 from datetime import date, datetime, timezone
-from dataclasses import asdict, is_dataclass
+from dataclasses import fields, is_dataclass
 from getpass import getuser
 from pathlib import Path
 from typing import Any
@@ -26,11 +26,10 @@ from harness.signal_gap_plan import (
     plan_signal_gaps,
 )
 from scheduler.discovery import load_scheme_config
-from scheduler.repository import create_engine_from_env
+from scheduler.repository import create_engine_from_env, registry_scheme_id
 from shared.blackbox_v2.contracts import load_metadata
 from shared.blackbox_v2.intake import intake_delivery
 from shared.runtime_paths import resolve_runtime_state_path
-from shared.scheme_owner_registry import owner_registry_scheme_id
 from shared.data_bridge.refresh import DataBridgeRefreshConfig
 
 
@@ -84,7 +83,6 @@ def _gate_action(args: argparse.Namespace) -> str | None:
         return "backtest_persist" if bool(getattr(args, "persist", False)) else None
     return {
         "shadow-register": "shadow_register",
-        "live": "live_write",
         "lifecycle-reconcile": "blackbox_reconcile",
     }.get(args.gate_name)
 
@@ -153,7 +151,7 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(
                 {
                     "scheme_id": scheme_dir.name,
-                    "registry_scheme_id": owner_registry_scheme_id(
+                    "registry_scheme_id": registry_scheme_id(
                         metadata.scheme_id,
                         metadata.horizon,
                         metadata.target_tenor,
@@ -181,7 +179,7 @@ def _build_parser() -> argparse.ArgumentParser:
     gate_subparsers = gate_parser.add_subparsers(dest="gate_name", required=True)
     for gate_name in (
         "static", "input", "unit", "dry-run", "compare", "backtest",
-        "dashboard", "shadow-register", "live", "lifecycle-reconcile",
+        "dashboard", "shadow-register", "lifecycle-reconcile",
     ):
         item = gate_subparsers.add_parser(gate_name)
         item.add_argument("--scheme-id", required=True)
@@ -201,7 +199,6 @@ def _build_parser() -> argparse.ArgumentParser:
         if gate_name in {
             "backtest",
             "shadow-register",
-            "live",
             "lifecycle-reconcile",
         }:
             item.add_argument(
@@ -216,12 +213,6 @@ def _build_parser() -> argparse.ArgumentParser:
             item.add_argument(
                 "--api-base-url",
                 default="http://127.0.0.1:8100",
-            )
-        if gate_name == "live":
-            item.add_argument(
-                "--prediction-phase",
-                choices=("gray_live", "scheduled_live"),
-                required=True,
             )
         if gate_name == "backtest":
             item.add_argument("--persist", action="store_true")
@@ -290,7 +281,6 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
         "input",
         "dry-run",
         "shadow-register",
-        "live",
     } and not args.predict_date:
         raise SystemExit(f"gate {args.gate_name} requires --predict-date")
     project_root = args.project_root.resolve()
@@ -319,7 +309,6 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
             operator=getattr(args, "operator", None),
             backtest_start_date=backtest_start_date,
         ),
-        prediction_phase=getattr(args, "prediction_phase", None),
         persist_backtest=bool(getattr(args, "persist", False)),
         backtest_start_date=backtest_start_date,
         api_base_url=getattr(
@@ -560,7 +549,16 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, GateStatus):
         return value.value
     if is_dataclass(value):
-        return {key: _jsonable(item) for key, item in asdict(value).items()}
+        payload = {
+            field.name: _jsonable(getattr(value, field.name))
+            for field in fields(value)
+        }
+        if isinstance(value, GateResult):
+            payload["passed"] = value.passed
+        elif isinstance(value, OnboardReport):
+            payload["overall_passed"] = value.overall_passed
+            payload["control_plane_persisted"] = value.control_plane_persisted
+        return payload
     if isinstance(value, dict):
         return {key: _jsonable(item) for key, item in value.items()}
     if isinstance(value, list):

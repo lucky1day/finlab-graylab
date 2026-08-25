@@ -3,17 +3,13 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：平台开发和代码审计人员
-**最后核验日期**：2026-08-21
+**最后核验日期**：2026-08-25
 **定位**：本仓库的代码架构主蓝图，定义分层模型、包依赖方向、运行时调用图和扩展边界。
 **与既有文档的关系**:
 - 本文是代码和系统调用关系的唯一架构总图；DB schema 以 migrations 为准，API 以 Backend
   路由与 dashboard 合同为准，部署控制面以生产调度治理为准。
 - [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) 边界总纲 → [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) 共享方案契约 → [onboarding/README.md](../onboarding/README.md) 统一入库导航。本文把它们统一到一张依赖图上。
 - [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md) 是 source-backed 方案的源算法保真总纲；它约束 L2 core 与 L4 backtest runner 不得借平台适配改变原始算法逻辑。
-
-> 本文同时记录设计约束与机器门禁的真实覆盖范围。历史 V1–V4 基于
-> 2026-06-08 扫描；2026-07-24 新增的 repo-wide AST 扫描检出并推动清零
-> V5–V6，当前扫描结果为零违规。
 
 ---
 
@@ -120,24 +116,10 @@ tests/         → 任意（验证需要）
 
 ---
 
-## 4. 现状依赖与违规
+## 4. 依赖合规证明
 
-初次扫描（2026-06-08）发现的 4 处违规已经处理；2026-07-24 首次用
-repo-wide gate 扫描全部生产层 Python 文件后，另发现 2 处此前 onboarding
-StaticGate 覆盖不到的包级逆向依赖：
-
-| # | 状态 | 违规边 | 位置 | 违反规则 | 处置（归属文档） |
-|---|------|--------|------|----------|------------------|
-| V1 | ✅ 已清零(S1) | 当时的旧周频 adapter 间跨方案 import `read_source_week_id_for_date` | 跨方案 import | §3.2 跨方案禁止 | S1：adapter 改用 `shared.calendar_service.week_id_for_date`；旧周频批次已退役，当前 active 周频 5Y/7Y 已按日历单点重新入库 |
-| V2 | ✅ 已清零(S2) | 当时旧周频 10Y 方案 `core/weekly_data_service.py → shared.data_service`（含 `create_sqlalchemy_engine`） | core 连库 | §3.2 ✗ⁱ core 零 DB | S2：该文件已确认为死代码并删除（连同 `weekly_output_0529_columns.json` 与对应测试） |
-| V3 | ✅ 已清零(S1) | 当时旧周频 adapter 直接取 `shared.data_service.create_sqlalchemy_engine` 传给日历查询 | adapter 直接取引擎传给日历查询 | §3.1 过渡期容忍，目标消除 | S1 已让日历查询走 `calendar_service`；当前 active 周频 5Y/7Y adapter 不直接取 DB engine |
-| V4 | ✅ 已清零(S3) | `backtests/daily_0529_reproduction.py → shared.data_service.build_daily_output_from_db` | 回测绕过 `input_artifacts` 拼日频输入 | §3.3 输入单点 | S3：daily backtest runner 已改走 `build_daily_input_artifact` |
-| V5 | ✅ 已清零 | `shared/blackbox_v2/contracts.py → harness.contracts.config_schema` | L1 依赖 L5 | §3.1 `shared` 无上行依赖 | schema 实现统一为 `shared.scheme_config_schema`，旧 Harness 重导出层已删除 |
-| V6 | ✅ 已清零 | `scheduler/discovery.py → harness.contracts.config_schema` | L3 依赖 L5 | §3.1 `scheduler` 不依赖 harness | `scheduler.discovery` 改为直接依赖 `shared.scheme_config_schema` |
-
-V5–V6 没有建立基线豁免；修复后 repo-wide gate 的全仓扫描为零违规。
-方案级输入、写库、Native core/predict 等细粒度约束仍由 onboarding StaticGate
-持续检查。
+依赖合规只以 onboarding StaticGate 与 repo-wide import gate 的当前扫描结果为准，不在架构文档维护
+已修复违规清单或历史扫描快照。门禁覆盖范围见 §9。
 
 ---
 
@@ -145,22 +127,13 @@ V5–V6 没有建立基线豁免；修复后 repo-wide gate 的全仓扫描为�
 
 ### 5.1 预测路径（自然调度 / 单日补缺）
 
-launchd + plist 是真实生产调度控制面。任务是否挂载、触发时点、环境、重启和日志
-均由 installed plist 与 `launchctl` 现场状态决定；常驻 `scheduler.main`/APScheduler 已从
-仓库删除，专用 runner 只作为对应 plist 的一次性子进程实现。仓库已移除 disabled
-`com.bond-factor-lab.scheduler` 模板；这不表示任何 installed plist 已被安装、停用、替换或
-物理删除。后续不得仅新增 Python job 或直调入口就宣称进入生产调度。
-
-当前仓库目标入口由 launchd 的一次性 plist 触发：refresh、daily、weekly、close-period 和 actuals
-各自只有一个 writer。close-period 复用原 monthly plist，每日 18:00 先核验或按需刷新 DataBridge，再按
-明确 `task_type` 分派自然月 15 日的月中收和当日到期的 MID/CQ/SF 周期均值；普通日期 no-op。它不增加
-第二个 timer 或常驻控制面。常驻 APScheduler 与 ledger/occurrence/epoch runtime 闭包均已从仓库移除；
-历史 migration/数据库对象只作为审计和受控 recovery 证据，不能被加入新的或过渡生产路径。
-Backend 只提供查询与既有管理接口，不注册手动预测路由；daily-gray 与 v2-preflight 的 repo
-writer/template 已退役并移除。完整治理规则见[生产信号与调度治理](PRODUCTION_SCHEDULING_GOVERNANCE.md)。
+宿主 launchd/systemd 是唯一调度控制面，仓库 runner 只是一次性执行器；refresh、daily、weekly、
+close-period 和 actuals 每个 cadence 只能有一个 writer。Backend 不提供手动预测入口，常驻 Python scheduler
+与 ledger 类控制面不得恢复。installed 状态、触发和失败恢复的完整规则见
+[生产信号与调度治理](PRODUCTION_SCHEDULING_GOVERNANCE.md)。
 
 ```text
-launchd installed plist（单一 cadence writer）
+宿主已安装 one-shot（launchd plist / systemd unit，单一 cadence writer）
   → discovery.py 按 runtime_type 发现 active SchemeConfig
   → shared.input_artifacts 校验 artifact freshness 与 feature cutoff
   → scheduler.executor.execute_scheme(cfg, predict_date, prediction_phase)
@@ -171,7 +144,7 @@ launchd installed plist（单一 cadence writer）
             → t_scheme_runs + t_scheme_predictions + run log
 ```
 
-历史 gap harness 只以 `gray_live` insert-only 修复；自然 launchd 触发才可以
+历史 gap harness 只以 `gray_live` insert-only 修复；宿主 one-shot 自然触发才可以
 写 `scheduled_live`。早期失败/跳过只写审计日志，不能伪装为成功完成。
 
 入口（单日历史补缺）：`python -m harness signal-gap-fill --predict-date YYYY-MM-DD
@@ -182,7 +155,7 @@ plan、日期范围、operator、HMAC token 或 plan SHA；任一算法失败时
 Native 从当前数据库按该日 `feature_date` 截止重建；Blackbox 严格重放计划绑定的冻结
 DataBridge authority。该入口不产生 `scheduled_live`，也不读取 Native 历史 generation。
 
-日期语义由 `shared.prediction_context` 和各频率 adapter 统一落地：日频实盘为 `predict_date=T+1, feature_date=T`；周频实盘先由 `predict_date` 反推上一交易日 `feature_date`，再映射 `feature_week_id`；月频 source-backed 方案若声明自然 15 号触发，则 `predict_date` 保留自然月 15 号，`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。`scheduler.executor` 在日频 live 写库前再次校验 `predict_date/feature_date/target_date`，防止源表水位不足时算法复用旧 feature/target 覆盖旧 target 明细。常驻 scheduler 的 startup catch-up 与 cron 路径已删除：服务启动不会按 cron 推断或补跑错过的预测任务，`scheduled_live` 只由对应的一次性 launchd 自然时钟写入。`shared.calendar_service` 和 `scheduler.weekly_actuals_updater` 共享 `shared.week_calendar_normalizer`，只对源周历孤立 forward jump 做只读归一化，确保预测 target 与 weekly actuals 使用同一周历事实。所有前端月份归属、actual join 和 gray/backtest 分流仍以 `target_date` 为事实键。
+日期语义由 `shared.prediction_context` 和各频率 adapter 统一落地：日频实盘为 `predict_date=T+1, feature_date=T`；周频实盘先由 `predict_date` 反推上一交易日 `feature_date`，再映射 `feature_week_id`；月频 source-backed 方案若声明自然 15 号触发，则 `predict_date` 保留自然月 15 号，`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。`scheduler.executor` 在日频 live 写库前再次校验 `predict_date/feature_date/target_date`，防止源表水位不足时算法复用旧 feature/target 覆盖旧 target 明细。常驻 scheduler 的 startup catch-up 与 cron 路径已删除：服务启动不会按 cron 推断或补跑错过的预测任务，`scheduled_live` 只由对应宿主 one-shot 自然时钟写入。`shared.calendar_service` 和 `scheduler.weekly_actuals_updater` 共享 `shared.week_calendar_normalizer`，只对源周历孤立 forward jump 做只读归一化，确保预测 target 与 weekly actuals 使用同一周历事实。所有前端月份归属、actual join 和 gray/backtest 分流仍以 `target_date` 为事实键。
 
 `schedule.timeout_sec` 是 L3 调度执行层的方案预算申请，不是算法输入；Native 用它控制
 `scheduler.executor` 等待子进程的最长时间。Blackbox predict 还受
@@ -190,16 +163,11 @@ DataBridge authority。该入口不产生 `scheduled_live`，也不读取 Native
 只形成第三个收紧约束；最终取三者最小值。任何 adapter/core 都不得根据运行预算改变窗口、
 特征、fallback 或输出。Native 版本变化的激活遵循
 Native SOP 的 Gate 与授权边界，不再存在需要维护的 frozen daily-gray policy。任何后续
-LaunchAgent 切换都必须先复核 installed plist、`launchctl` 状态和对应日志，不能笼统以
+宿主调度配置切换都必须先复核 installed plist/unit、控制面状态和对应日志，不能笼统以
 “重启 scheduler”代替控制面验收。
 
-日频、周频、月频 actuals 由独立
-`com.bond-factor-lab.actuals` LaunchAgent 启动
-`scheduler.actuals_runner` 一次性刷新；仓库不再保留常驻 scheduler 或 `--run-once actuals` CLI。
-当前生产节奏为
-`08:30/19:00/23:45`，其中夜间 `23:45` 用于承接上游 Wind 日频晚间导入；非交易日
-daily/weekly actuals 刷新到上一交易日，monthly actuals 仍刷新到自然 run date，以同时
-覆盖周末补刷和自然 15 号月度规则。常驻 APScheduler 不得再注册 `actuals:*` job。
+日频、周频、月频和周期均值 actuals 由宿主控制面调用 `scheduler.actuals_runner` 一次性刷新；具体
+触发时点只在生产调度治理文档维护。
 
 ### 5.2 入库 harness 路径（首次入库与 Native 后续维护）
 
@@ -213,7 +181,8 @@ python -m harness onboard {scheme_id} --stage all
        ├─ CompareGate  → schemes/{id}/benchmarks original/current strict compare
        └─ BacktestGate → backtests/{id}_reproduction(--no-persist)
   Blackbox 首轮授权卡点：ShadowRegisterGate → version=shadow + registry=paused，不写业务表
-  Native 直接操作卡点：BacktestGate(--persist) / LiveGate(execute_scheme) / activate  ← 需精确 operation scope，否则 BLOCKED
+  Native 直接操作卡点：BacktestGate(--persist) / activate  ← 需精确 DirectOperation scope，否则 BLOCKED
+  单日补缺入口：signal-gap-fill  ← planner 绑定 active identity、业务键与 input authority
   激活后产品读模型验收：DashboardGate → GET /api/factor-lab/dashboard
 ```
 
@@ -264,21 +233,17 @@ python -m backtests.{scheme_id}_reproduction [--no-persist]
        ├─ 每个请求直接以 dashboard 专用只读 Engine 建立当前视图
        ├─ 同一 connection / repeatable-read readonly transaction
        ├─ active registry + live predictions + scoped actuals + latest backtest 批量 SELECT
-       └─ canonical 选择 → compact V1 response → gzip/identity 表示
+       └─ canonical 选择 → compact V2 response → gzip/identity 表示
 
 数据库或构建失败时 route 直接返回 `503 dashboard_data_unavailable`；不保留进程内
 last-known-good 数据，也不对前端返回 stale 快照。
 
-本机兼容/回滚路径：
-前端 legacy fallback → backend.main GET /api/metrics/{scheme_id}
-  └─ backend.services.scheme_metrics(engine, ...)
-       └─ JOIN t_scheme_predictions × t_scheme_actuals|t_scheme_weekly_actuals → 月度准确率
 ```
 
-dashboard snapshot 是 L4 只读展示优化：不提供算法输入、不写库、不修改任何方案 core，
+dashboard snapshot 是 L4 唯一前端读模型：不提供算法输入、不写库、不修改任何方案 core，
 因此不改变 §3.3 的输入单点、写库单点、Native core 纯净和源算法保真四条不变量。
-公网正常路径只允许一个 dashboard GET；legacy 路由保留在本机用于 rollout 和回滚，
-是否公网放行由精确 Nginx 策略控制。
+Dashboard 是唯一业务读模型；失败时前端直接进入统一错误态并按既有节奏重试。不得恢复细粒度
+schemes、metrics 或 backtest 展示 API，也不得在浏览器中重建第二套聚合。
 
 指标查询路径必须保留两层分母语义：`samples` 是月度样本总数，包含预测为“平”的样本；`metric_samples` 是准确率、precision、recall 的真实分母，只包含预测为“涨/跌”的有方向样本。前端每日/周度验证表中预测为“平”的行只显示 `-`，不得显示 `×` 或 `✓`。
 
@@ -297,13 +262,13 @@ schemes/{id}/                     schemes/{id}/
                                       └── {id}.json
 ```
 
-发现与加载的约定锚点（全部已存在，无需改框架）：
+发现与加载的约定锚点：
 
 | 约定 | 机制 | 代码位置 |
 |------|------|----------|
 | 目录即方案 | `schemes/*/config.yaml` glob 扫描 | `scheduler/discovery.py::discover_schemes` |
 | `scheme_id==目录名` | 加载时强制校验 | `scheduler/discovery.py::load_scheme_config` |
-| 显式分派 | `runtime_type` 选择 Native import 或 Blackbox CLI | `scheduler/scheme_runner.py::run_configured_scheme` |
+| 显式分派 | `runtime_type` 选择 Native import 或 Blackbox CLI | `scheduler/executor.py::run_configured_scheme` |
 | Native 入口 | `importlib.import_module("schemes.{id}.predict").run` | `scheduler/scheme_runner.py::run_scheme` |
 | Blackbox 入口 | 隔离执行 delivery 脚本的 `predict/backtest` CLI | `shared/blackbox_v2/` 与 runner |
 | 统一输出 | `list[PredictionRecord]` → JSON | `scheduler/scheme_runner.py` |
@@ -317,7 +282,7 @@ schemes/{id}/                     schemes/{id}/
 
 | 关注点 | 现状 | 目标设计 |
 |--------|------|----------|
-| **DB 引擎生命周期** | 各 adapter/backtest 各自 `create_sqlalchemy_engine()` 再 `engine.dispose()` | 引擎工厂收敛：adapter 经 `calendar_service`/`input_artifacts` 间接用引擎，不再裸取（消除 V3） |
+| **DB 引擎生命周期** | 各 adapter/backtest 各自 `create_sqlalchemy_engine()` 再 `engine.dispose()` | adapter 经 `calendar_service`/`input_artifacts` 间接使用统一引擎工厂，不得裸取连接 |
 | **配置** | `shared/db_config.py` 读环境变量；`config.yaml` 方案级 | Native 契约与 Blackbox Runtime Profile 分开维护，共享身份由 `SCHEME_CONTRACT.md` 约束 |
 | **执行预算** | Native 使用 `config.yaml.schedule.timeout_sec`；Blackbox predict 取方案申请、Runtime Profile 上限和显式 operation deadline 的最小值，backtest 使用独立 Profile 预算 | operation deadline 只能缩短 Blackbox 方案/Profile 预算；所有预算仅控制子进程等待，不进入 L2 core 语义 |
 | **产物路径** | `shared/artifact_paths.py` 统一 `RUNTIME_INPUT_ROOT`；运行期 `backtest_artifacts/runtime_inputs/{scheme_id}/`，回测 `backtest_artifacts/backtests/{benchmark_id}/` | 维持；harness 报告 `reports/harness/{scheme_id}/{ts}/` |
@@ -369,19 +334,18 @@ manifest 校验、schema inspect、pending apply 与 `APPLYING` recovery 都在�
 | `scheduler/discovery.py` | L3 | 约定发现 + 契约加载 | `discover_schemes`、`load_scheme_config`、`SchemeConfig` |
 | `scheduler/scheme_runner.py` | L3 | 只读 dry-run（importlib 运行方案） | `run_scheme` |
 | `scheduler/executor.py` | L3 | conda 子进程执行 + 写库编排 | `execute_scheme`、`run_scheme_subprocess`、`SchemeRunResult` |
-| `scheduler/repository.py` | L3 | 写库单点；按 runtime/operation 原子提交 prediction + run + log | `create_scheme_run`、`complete_active_native_run`、`complete_approved_blackbox_run`、`complete_gray_gap_run`、`write_run_log`、`sync_scheme_registry`；`_insert_run_predictions_conn` 仅内部使用 |
-| `scheduler/launchd_prediction_runner.py` | L3 | launchd daily/weekly/monthly one-shot active 方案编排 | `run_prediction_job`、`main` |
-| `scheduler/{daily,weekly,monthly}_actuals_updater.py` | L3 | actuals 刷新 | `update_*_actuals` |
-| `scheduler/actuals_runner.py` | L3 | launchd one-shot actuals 刷新 | `run_actuals_job`、`main` |
-| `backend/main.py` `services.py` `db.py` | L4 | 只读 API + 静态前端 serve | `/api/*`、`scheme_metrics` |
-| `tests/isolated_mysql.py` | 测试支持 | migration 回归专用的隔离 MySQL 生命周期；不读取生产 env，不应用生产 migration | `isolated_replay_mysql`、`IsolatedReplayMySQL.create_replay_database` |
+| `scheduler/repository.py` | L3 | 写库单点；按 runtime/operation 原子提交 prediction + run + log | `create_scheme_run`、`complete_active_native_run`、`complete_approved_blackbox_run`、`complete_gray_gap_run`、`write_run_log`；`_insert_run_predictions_conn` 仅内部使用 |
+| `scheduler/{launchd,systemd}_prediction_runner.py` | L3 | 双平台 one-shot active 方案编排 | `run`、`main` |
+| `scheduler/{daily,weekly,monthly,period_average}_actuals_updater.py` | L3 | actuals 事实构建与写入 | `update_*_actuals` |
+| `scheduler/actuals_runner.py` | L3 | 双平台 one-shot actuals 唯一入口 | `run_actuals_job`、`main` |
+| `backend/main.py` `factor_lab_dashboard.py` `db.py` | L4 | 唯一 Dashboard 读模型 + 静态前端 serve | `/api/factor-lab/dashboard` |
 | `backtests/{id}_reproduction.py` | L4 | 历史复现 | `run_<scheme>_reproduction` |
 | `backtests/repository.py` | L4 | 回测写库单点 | `t_backtest_*` 写入 |
 | `migrations/runner.py` | 运维库层 | 唯一 migration 行为实现；caller-supplied `Engine` | manifest、inspect、apply、recovery |
 | `scripts/apply_migrations.py` | 受控 operator CLI | 唯一 migration 运维包装器与写目标身份围栏 | `--apply`、inspect/recover 017/018/019 |
 | `tests/` | L4 | 单元/集成验证 | unittest |
 | `harness/` | L5 | Gate / 编排 / 审计 | `python -m harness`、`GateResult` |
-| `scripts/` | 工具 | 审计/对比/受控 admin | 一次性命令 |
+| `scripts/` | 工具 | 审计、发布构建和受控运维 | 一次性命令 |
 
 ---
 
@@ -408,28 +372,4 @@ manifest 校验、schema inspect、pending apply 与 `APPLYING` recovery 都在�
 | 运行时入口（§6） | Native 校验 `SCHEME_ID + run`；Blackbox 校验两文件、Metadata 与 CLI |
 | 依赖只向下（§3.3） | repo-wide gate 扫描生产层 import；未列入 §3.1 的静态边 → FAIL |
 
-repo-wide gate 曾精确阻断 §4 的 V5–V6；依赖下沉后全仓扫描为零违规。
-后续任何同类逆向依赖都会直接令 CI 测试失败。
-
----
-
-## 10. 演进路线
-
-> 本节是方向；S0–S8 已完成，最新落地状态见 [CURRENT_STATUS.md](../CURRENT_STATUS.md)。
-
-```
-现状（onboarding harness 与 repo-wide gate 均已落地）
-  │
-  ① 数据层重构（已落地到 `shared.data_service` / `shared.input_artifacts` / `shared.calendar_service`）
-  │    新建 calendar_service → 消 V1/V3；周频去重收编 → 消 V2；backtest 统一输入 → 消 V4
-  ▼
-依赖图全合规（repo-wide CI gate 全绿）
-  │
-  ② harness/ 持续演进（见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)）
-  │    onboarding StaticGate（方案局部）+ repo-wide gate（全仓 import 图）
-  │    → 其余 Gate → 授权 → orchestrator/CLI
-  ▼
-强约束自动化入库（用户给方案 → harness 驱动改造-测试-验证-实盘）
-```
-
-> 本文为代码架构主蓝图。§4 的状态以 repo-wide gate 的实际扫描结果为准。
+任何不符合矩阵的逆向依赖都会直接令 CI 测试失败；不维护历史违规豁免。

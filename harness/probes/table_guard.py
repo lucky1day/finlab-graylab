@@ -28,31 +28,7 @@ DRY_RUN_GUARD_TABLES = (
     "t_backtest_monthly_metrics",
     "t_backtest_reproduction_checks",
 )
-PROTECTED_TABLES = (
-    "api_wind_date",
-    "api_wind_daily",
-    "api_wind_derivative_daily",
-    "api_wind_weekly",
-    "api_wind_derivative_weekly",
-    "api_wind_monthly",
-    "api_wind_derivative_monthly",
-    "api_wind_indicators_all",
-    "t_trade_calendar",
-    "t_pre_market_forecast",
-    "t_shap",
-    "t_scheme_runs",
-    "t_scheme_predictions",
-    "t_scheme_run_log",
-    "t_scheme_actuals",
-    "t_scheme_weekly_actuals",
-    "t_scheme_monthly_actuals",
-    "t_scheme_period_average_actuals",
-    "t_backtest_runs",
-    "t_backtest_predictions",
-    "t_backtest_monthly_metrics",
-    "t_backtest_reproduction_checks",
-)
-LIVE_WRITE_ALLOWED_TABLES = ("t_scheme_runs", "t_scheme_predictions", "t_scheme_run_log")
+PROTECTED_TABLES = DRY_RUN_GUARD_TABLES
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -87,38 +63,6 @@ def snapshot_table_counts_conn(conn, table_names: Iterable[str] = DRY_RUN_GUARD_
         value = conn.execute(text(f"SELECT COUNT(*) FROM `{table_name}`")).scalar_one()
         snapshot[str(table_name)] = int(value)
     return snapshot
-
-
-def snapshot_scheme_counts(engine, scheme_id: str) -> dict[str, int]:
-    """读取正式预测写库表中某 scheme 的行数快照。"""
-    with engine.connect() as conn:
-        return snapshot_scheme_counts_conn(conn, scheme_id)
-
-
-def snapshot_scheme_counts_conn(conn, scheme_id: str) -> dict[str, int]:
-    """在调用方事务中读取某 scheme 的正式写库计数。"""
-    from sqlalchemy import text
-
-    result: dict[str, int] = {}
-    result["t_scheme_predictions"] = int(
-        conn.execute(
-            text("SELECT COUNT(*) FROM t_scheme_predictions WHERE scheme_id = :scheme_id"),
-            {"scheme_id": scheme_id},
-        ).scalar_one()
-    )
-    result["t_scheme_runs"] = int(
-        conn.execute(
-            text("SELECT COUNT(*) FROM t_scheme_runs WHERE scheme_id = :scheme_id"),
-            {"scheme_id": scheme_id},
-        ).scalar_one()
-    )
-    result["t_scheme_run_log"] = int(
-        conn.execute(
-            text("SELECT COUNT(*) FROM t_scheme_run_log WHERE scheme_id = :scheme_id"),
-            {"scheme_id": scheme_id},
-        ).scalar_one()
-    )
-    return result
 
 
 def diff_snapshots(before: dict[str, int], after: dict[str, int]) -> dict[str, int]:

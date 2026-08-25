@@ -8,13 +8,12 @@ from sqlalchemy import create_engine, text
 
 
 class TenorMappingTests(unittest.TestCase):
-    def test_shared_mapping_is_single_source_for_actuals_updaters(self) -> None:
+    def test_shared_mapping_is_single_source_for_daily_actuals_updater(self) -> None:
         from shared.tenor_mapping import TENOR_TO_INDICATOR
-        from scheduler import daily_actuals_updater, weekly_actuals_updater
+        from scheduler import daily_actuals_updater
 
         self.assertEqual(TENOR_TO_INDICATOR["10Y"], "TB0YWI0C")
         self.assertIs(daily_actuals_updater.TENOR_TO_INDICATOR, TENOR_TO_INDICATOR)
-        self.assertIs(weekly_actuals_updater.TENOR_TO_INDICATOR, TENOR_TO_INDICATOR)
 
     def test_configured_active_scheme_tenors_are_diagnostic_only(self) -> None:
         from scheduler.daily_actuals_updater import configured_active_scheme_tenors

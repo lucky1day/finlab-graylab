@@ -467,17 +467,6 @@ def _context(root: Path, config) -> GateContext:
 
 
 def _delivery(path: Path, *, script: str = "import argparse\nimport json\n") -> Path:
-    registry_path = path.parent / "deploy" / "scheme_owner_v1.json"
-    if not registry_path.exists():
-        registry_path.parent.mkdir(parents=True)
-        registry_path.write_text(
-            json.dumps(
-                {"schema_version": "scheme-owner-v1", "owners": {}},
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
     path.mkdir(parents=True)
     (path / "trial_10y.py").write_text(script, encoding="utf-8")
     (path / "trial_10y.json").write_text(

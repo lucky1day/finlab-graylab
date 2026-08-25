@@ -83,30 +83,6 @@ def run_historical_prediction(**kwargs: Any) -> pd.DataFrame:
     return common.run_historical_prediction(_variant_spec(), **kwargs)
 
 
-def _run_monthly_batch_group(**kwargs: Any) -> list[dict[str, Any]]:
-    return common.run_monthly_batch_group(_variant_spec(), **kwargs)
-
-
-def _cache_path(
-    cache_dir: Path | None,
-    feature_date: str,
-    cache_key_parts: dict[str, Any],
-    *,
-    cache_mode: str,
-    window_end: str,
-    model_context_end: str,
-) -> Path | None:
-    return common.cache_path(
-        _variant_spec(),
-        cache_dir,
-        feature_date,
-        cache_key_parts,
-        cache_mode=cache_mode,
-        window_end=window_end,
-        model_context_end=model_context_end,
-    )
-
-
 def build_backtest_rows(detail: pd.DataFrame, **kwargs: Any) -> list[dict[str, Any]]:
     return common.build_backtest_rows(_variant_spec(), detail, **kwargs)
 

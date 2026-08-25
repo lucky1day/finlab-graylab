@@ -37,7 +37,6 @@ def guarded_result(gate_name: str, runner: Callable[[str], GateResult]) -> GateR
         return GateResult(
             gate_name=gate_name,
             status=GateStatus.FAILED,
-            passed=False,
             evidence=[Evidence("exception_type", type(exc).__name__)],
             errors=[str(exc)],
             started_at=started_at,

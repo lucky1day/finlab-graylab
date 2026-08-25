@@ -9,7 +9,7 @@ from harness.gates.prediction_semantics import validate_live_record_semantics
 from harness.probes.table_guard import DRY_RUN_GUARD_TABLES, diff_snapshots, snapshot_table_counts
 from harness.result import Evidence, GateResult, GateStatus
 from shared.calendar_service import get_calendar
-from shared.models import PredictionRecord
+from shared.models import DIRECTION_VALUES, PredictionRecord
 from shared.scheme_config_loader import load_yaml_mapping
 
 
@@ -80,7 +80,6 @@ class DryRunGate(Gate):
         return GateResult(
             gate_name=self.name,
             status=status,
-            passed=status == GateStatus.PASSED,
             evidence=[
                 Evidence("prediction_count", len(records)),
                 Evidence("table_counts_before", before),
@@ -131,7 +130,7 @@ def _validate_records(
             errors.append(f"{prefix}.horizon expected {horizon}, got {record.horizon}")
         if record.target_tenor not in tenors:
             errors.append(f"{prefix}.target_tenor {record.target_tenor} not in {tenors}")
-        if record.predicted_direction not in {-1, 0, 1}:
+        if record.predicted_direction not in DIRECTION_VALUES:
             errors.append(f"{prefix}.predicted_direction must be -1/0/1, got {record.predicted_direction}")
         errors.extend(
             validate_live_record_semantics(

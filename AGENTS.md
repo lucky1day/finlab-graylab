@@ -8,26 +8,21 @@
 
 ## 当前工作上下文（必须遵守）
 
-- 当前活动集成分支：`codex/develop`。本阶段日常修改只进入该分支；需要并行时可以使用短期 `codex/<task>` 分支，但不得创建 Mac3/ECS 两条长期环境分支。
-- `master` 已冻结在 `2b62a2e9ae7c661f4a7f1741b5ff6c351819a4ad`，作为本阶段开始前的备份点；未经用户新的明确授权，不得移动或推送 `master`。
-- Mac3 与 ECS 共用唯一 `codex/develop` source release 代码线。每个待晋级版本必须从一个精确集成提交构建成一份确定性 archive；ECS 先晋级验证，Mac3 后续如需晋级只能使用该份已验证 archive。分阶段晋级期间两端 `current` 可以不同，这不构成环境分支；两端只独立管理 Registry、数据库、调度启用、`current` 与回滚，不允许在 ECS 上保留 Git checkout、执行 `git pull` 或本地修改 release。
-- 已批准的长期发布治理目标是“单一代码线 + 不可变 release + 独立部署环境”：环境差异只放在 launchd/systemd、环境变量、部署矩阵和平台依赖清单中，不得进入长期环境分支或复制算法代码。生产 release 不携带 `.git`，代码提交身份必须来自已校验 release manifest/显式环境，不能在生产依赖 `git rev-parse`。迁移期 `master` 仍按上一条冻结；稳定后是否恢复为默认集成线须另行授权，发布备份由精确 SHA、tag、archive 校验和与部署记录表达。
-- Mac3 的开发 Git 工作区与生产 runtime 根必须分离；R2 已冻结为 `mac3-immutable-r2-20260820`，目标结构固定为 `/Users/macstudio0/bond-factor-lab-production/current -> releases/<release_id>`，运行状态与日志外置到 `/Users/macstudio0/bond-factor-lab-runtime`。2026-08-24 ECS 与 Mac3 已共同晋级到 exact release `e93ea24518dbf26870473d9a201b310c38d5c5d2`，两端 `previous` 均为 `053d562fc40d7ecf5596f56f1beb00e4a3b58178`。该 release archive SHA-256 为 `a30deb7728b1a8881f4a75450b4c1e3d620378dcfc7d6d3ad043e6ac4e5cc286`，manifest 文件 SHA-256 为 `595690e934d937fbc032a8f998a9fbea586a215ed0f03f2dea69ec7b5719a5e5`，安装后 source-tree SHA-256 为 `07d07167cca6e2361fbcd8971481ea460f227dbcddb5cf7a57eb731366caa471`。migration 001–020 已精确 `APPLIED`；Mac3 monthly plist 每日 18:00 触发并显式使用 `18:00/18:55`，七个 installed/loaded plist drift audit 为 `ok=true`。月均、季均、年均各五个 M0 Blackbox V2 方案已在两端 active；经一次性授权，Mac3 只通过 repository insert-only 导入 ECS 已有的 15 条月均/季均/年均缺口 Prediction，并从 Mac3 本地权威日频数据生成 20 条周期 Actual。两端 M0 live 业务键现为 `100/100` 且值差异为 0；ECS active base/composite 为 `79/83`，Mac3 为 `88/92`。五个 ECS systemd timer 与七个 Mac3 launchd plist 保持已安装状态；首次真实 `scheduled_live` 仍待时钟观察，不得由 gray-live 或人工 Actual 刷新冒充。launchd/systemd 只经 immutable launcher 加载精确 release 环境，现场 authority 仍是 installed plist/unit、控制面读回与 immutable `current`。
+- 根规范只保存长期约束。当前 release、主机状态、方案数量、数据库水位和自然调度观察必须从 [当前状态](docs/CURRENT_STATUS.md) 与现场权威控制面读取，不在本文维护副本。
+- 当前活动集成分支是 `codex/develop`；不得建立 Mac3/ECS 长期环境分支。`master` 受保护，只有用户明确确认后才能合并、移动或推送。
+- 发布坚持“单一代码线 + 不可变 release + 独立部署环境”：每个版本由精确提交生成确定性 archive，生产包不含 `.git`，身份来自已校验 manifest。环境差异只允许出现在部署配置、环境变量、部署矩阵和依赖清单；ECS 不保留 Git checkout 或现场修改 release。
+- 开发工作区与生产 runtime 必须分离；生产使用 `current -> releases/<release_id>`，状态和日志外置。ECS 先验证、Mac3 后晋级时可暂时指向不同 release，但 Mac3 只能使用同一份已验证 archive。
 - 跨 release 状态不得无条件共用：日志和部署记录可永久外置；DataBridge、缓存和输入 artifact 只有通过既有 manifest、lineage、business digest、input state 与 ready gate 才能复用；源码 symlink 回滚不等于数据库、Python 环境或运行期状态回滚。
-- 跨主机信号缺口优先复用同一已验证 immutable release 下的既有精确结果：必须先停止目标 Writer，只读核对源端与目标端的 release、数据库身份、方案版本、预测日期、feature/target 日期和唯一业务键，再由目标端 `scheduler.repository` insert-only 导入。只允许复制 `scheme_id`、`target_tenor`、`horizon`、三个日期、方向、置信度、`scheme_version` 和必要算法 `extra`；不得复制数据库主键、`run_id`、Actuals、回测或 Harness 历史，已有键整组拒绝，源端不存在的键才重新计算。这是显式授权的一次性补缺路径，不建立持续复制、双写或共享 Writer authority。后续缓存快路径只有在精确 release、方案版本、日期、输入 business digest 和 lineage 全匹配时才可直接复用；任一不匹配必须重算。
+- 跨主机补缺只允许在明确授权后复用同一已验证 release、方案版本、日期、输入摘要和 lineage 的精确结果；先停止目标 Writer，再由目标端 repository insert-only 导入。不得复制数据库主键、`run_id`、Actuals、回测或 Harness 历史，不得建立持续复制或双写；任一身份不匹配都必须重算。
 - 环境方案范围只由 `BFL_DEPLOYMENT_TARGET` 与 `deploy/scheme_deployment_matrix_v1.json` 表达；不得再通过为不同主机修改 canonical `config.yaml` 的 `status` 制造两个 `scheme_version`。
-- 经过验证的开发分支只有在用户明确确认后，才能合并或覆盖到 `master` 并推送远程；agent 不得自行决定发布到 `master` 或其它发布分支。
 - 用户口头说根目录 `agent.md` 时，优先理解为根目录 `AGENTS.md`；本项目要求 `AGENTS.md` 与 `CLAUDE.md` 内容一致，更新根规范时两者要同步。
-- 分支操作、提交或暂存前必须先核对 `git status --short` 和相关分支列表，避免把未跟踪的新方案、`outputs/` 产物或其他草稿混入当前任务提交。
+- 分支操作、提交或暂存前必须先核对工作区与相关分支；`outputs/`、未跟踪新方案和草稿未经明确要求不得纳入提交。
 - 默认执行方式为“主 agent 直接执行（inline-first）”：日常实现由主 agent 在当前会话完成。只有工作可安全拆成相互独立、可并行的子任务且预期能显著节省时间时，才使用 subagent；不得仅因任务复杂或可拆分就启用。该长期偏好只授权任务拆分与代码审查，不外推为生产切换、数据库写入、服务重启、破坏性操作、受保护分支发布或未决业务选择的授权。
 - 使用 subagent 时，只分派无共享写入冲突的独立工作流，并明确任务范围、相关文件、验收条件和不可触碰的边界。subagent 必须报告实际改动、验证结果与阻塞；主 agent 负责整合结果并对整体变更运行相关验证。
 - 提 PR 前先判断该问题能否在本机测试验证。本机可验证的，直接在 PR 中修复并附复现与验证证据；需要结合生产环境才能确认的（launchd 现场状态、生产 DataBridge、真实调度时钟、跨环境数据漂移等），不得夹带未经验证的代码改动，只提交「现象 / 问题点 / 造成的影响 / 推荐解决方案」四段式报告 PR，由能验证该环节的同事结合建议自行处理。判断依据是能否在本机跑出决定性证据，不是主观把握程度。
-- 当前未跟踪的 `outputs/` 属于临时分析/导出产物；除非用户明确要求，不要纳入文档、方案或修复提交。
-- 2026-08-17 会议决定：阿里云 ECS 暂时作为独立灰度实验室，不直接替换 Mac3 生产。Mac3 继续承载现有生产域名和生产服务；ECS 使用自己的本地 MySQL、DataBridge、算法调度、Actuals 与 localhost 前端，各自独立运行，不建立复制、双写、跨主机共享数据库或共享 DataBridge。ECS 每日任务写入本地数据库后，localhost 前端通过 API 展示最新数据；“每天更新前端”不是每日重新构建或部署静态前端。只有在独立观察期证明任务、数据、资源和前端稳定，并再次取得切换窗口授权后，才考虑把 Mac3 对应域名或生产 Writer 切到 ECS。
-- 2026-08-18 用户已在完整手工真写库验收后单独授权启动 ECS 自然灰度：DataBridge、daily、weekly、monthly、Actuals 五个 systemd timer 已 `enabled/active/waiting`。这只启动 ECS 独立灰度调度；灰度期不停止 Mac3、不修改生产域名/Nginx/DNS，也不把 ECS localhost 前端开放为生产公网入口。以后替换 installed unit/timer、改变触发、停用或重启服务仍是独立运维操作，必须先只读核对并取得明确授权。
+- ECS 是独立灰度实验室，不直接替换 Mac3 生产。两端使用各自的 MySQL、DataBridge、算法调度、Actuals 和前端，不建立复制、双写、跨主机共享数据库或共享 DataBridge。生产域名、Nginx、DNS 或 Writer 切换必须作为新的生产项目单独授权。
 - Mac3 继续以 launchd + plist 作为真实生产调度控制面：任务是否生产挂载、触发时间、进程环境、重启策略和日志位置以 installed plist 与 `launchctl` 现场状态为准。仓库 `deploy/launchd/*.plist` 是受版本控制的期望配置，但文件存在不等于已经安装或生效。ECS 独立灰度实验室只允许使用仓库 `deploy/systemd/` 的 one-shot service/timer，现场状态以 installed unit 与 `systemctl` 读回为准。
-- 常驻 `scheduler.main`/APScheduler 模块已删除；调度只能由 Mac3 launchd 或 ECS systemd timer 承载的一次性入口驱动，不得恢复第二 Python 控制面。后续新增或迁移调度必须先明确对应 plist/unit、触发、时区、错过触发和失败恢复语义。
-- 后续明确不采用 daily ledger、occurrence 或 epoch 作为生产或过渡调度方案：不得新增、扩容、迁移或补建 ledger policy、任务或表，也不得把任何新方案的 Intake、激活、灰度可见或定时调度绑定到 ledger 建设。仓库 runtime/config 闭包已退役；历史 migration 与现存数据库对象只保留为审计/恢复证据，任何物理归档或 DDL 仍须独立设计和授权，绝不得重建运行时闭包。
+- 调度只允许由 launchd/systemd 承载一次性入口，不得恢复常驻 Python 调度控制面，也不得新增或重建 ledger、occurrence、epoch 或 runtime/config 闭包。新增调度必须先明确触发、时区、错过触发和失败恢复语义。
 - 修改生产 plist 或执行 `launchctl bootstrap/bootout/kickstart`、替换 installed plist、重启服务都属于独立生产操作；开发验证不得顺带执行，必须先只读核对仓库模板、installed plist 与 loaded state，并取得用户明确授权。
 
 ## 技术栈
@@ -38,69 +33,29 @@
 - **部署**: Mac3 生产使用 launchd；阿里云 ECS 独立灰度实验室使用 systemd one-shot/timer
 - **环境**: 后端/调度使用 `bond_factor_lab_service`；Native 算法使用 `forecast_env`；Blackbox 执行环境由 `blackbox-v2-v1` Runtime Profile 唯一指定
 
-## 目录结构约定
+## 目标架构：统一到 Blackbox V2
 
-```
-bond-factor-lab/
-├── shared/            # L1 统一公共层：data_service(唯一DB导出) / input_artifacts(唯一输入入口)
-│                      #    / calendar_service(唯一日历) / models / db_config / artifact_paths
-├── schemes/           # L2 算法层（按 runtime_type 显式发现）
-│   ├── {native_id}/   # Native V1，仅维护政策清单中的存量方案
-│   │   ├── config.yaml
-│   │   ├── predict.py
-│   │   └── core/
-│   └── {blackbox_id}/ # Blackbox V2，所有后续新增方案
-│       ├── config.yaml
-│       └── delivery/{blackbox_id}.py + {blackbox_id}.json
-├── scheduler/         # L3 预测任务层：discovery / scheme_runner / executor / repository / *_actuals_updater
-├── backend/           # L4 FastAPI 后端 + 静态前端 serve
-├── backtests/         # L4 历史复现 runner（写 t_backtest_*，支持 --no-persist）
-├── tests/             # L4 单元/集成测试
-├── harness/           # L5 强约束 harness（横切）：gates / contracts / probes / operation / cli
-├── frontend/          # 原生 HTML/CSS/JS 因子实验室页面
-├── migrations/        # SQL 迁移脚本
-├── scripts/           # 审计/对比/受控 admin 脚本
-├── source_evidence/   # 外部来源证据归档（benchmark_batches/{benchmark_id}/）
-├── backtest_artifacts/ # 运行期输入与回测产物（gitignore）
-├── reports/           # 审计与 harness 报告（gitignore）
-├── deploy/            # launchd plist
-└── docs/              # 项目文档（入口 docs/README.md；只保留当前规范和必要设计文档）
-```
+- 长期目标是把仍在运行的 Native V1 存量方案逐批迁移为 Blackbox V2，最终只维护 Blackbox V2 Contract、Intake、Gate、执行与 lifecycle 一套入库范式。
+- 所有新算法、新方案、新目标、新任务和替代版本立即只允许 Blackbox V2；Native V1 在完成迁移前仅作存量维护，不再扩展身份或能力。
+- 迁移前先让 Blackbox 结果合同向后兼容地承载 Native 需要保留的 confidence 与必要审计字段；不得通过静默丢字段缩小“结果不变”的口径。
+- Native 迁移使用新的 Blackbox successor base ID，不原地修改 `runtime_type`，也不把平台 adapter 冒充 Blackbox。每批必须形成合法两文件交付，并证明输入截止、日期、结果字段、回测结果和性能与迁移前基线一致。
+- 迁移期间旧 Native 与新 Blackbox 的身份、Registry 切换、历史数据和回滚边界必须显式设计；不得双写、覆盖历史预测或让两个 Writer 同时拥有同一业务键。
+- 只有在等价验证、灰度观察、受控切换和回滚窗口闭环后，才能删除对应 Native adapter、source runner、回测 runner、专属 Gate 与测试；不得先删旧路径再验证新路径。
 
 ## 强约束分层边界（不可破坏的四条不变量）
 
 1. **输入单点**：算法输入只能经 `shared.input_artifacts` 产出；adapter / backtest runner 不得自拼 DB 输入。
 2. **写库单点**：只有 `scheduler.repository` / `backtests.repository` / `*_actuals_updater` 能写库；其余层零写库。
 3. **Native core 纯净**：Native V1 的 `schemes/*/core/`（非 legacy）零 DB、零写库、零跨方案 import；Blackbox 不向平台暴露 core。
-4. **源算法保真**：Native source-backed 存量方案不得修改原始算法逻辑；时间起点、窗口、回测分组键、每组 `source_end/current_start/current_end`、特征、对齐、模型参数、投票/fallback、内部 score 映射都必须按原始脚本复现。平台只做输入/输出/日期/落库适配；若方向或内部模型数值不一致，先查输入 artifact 和 source 口径，不得用调参或改算法贴结果。原始算法能导出的 `vote_score`、baseline `*_score`/`*_vs`、`*_dir`/`*_sign`、probability/confidence 等内部字段在首次技术入库时必须进入逐方案 benchmark 和 CompareGate；只做到最终方向一致不得宣称算法逻辑完全一致。若 source-original batch 的 `source_end` 或 test window 晚于样本 `feature_date`，该 batch 只能验收 source-original backtest，不能直接当作 gray/scheduled live 逐日内部数值真值；live 必须保持 `feature_date` 硬截止并用同口径 live-safe oracle 验收。跨灰度边界的 `original_predictions_sample.csv` 必须先判定每行 benchmark role；`TOTAL_BAD=0` 只表示 live 行结构、版本和 source-compatible scope 通过，不表示 live 内部数值可与固定 source batch benchmark 混称“完全一致”。Blackbox 的算法内部保真由上游负责，平台只验收接口与标准结果，不反编译或改写算法脚本。**平台的验证边界等于平台自己新增或修改的边界**：数据接入、写出与平台侧逻辑必须验证；重复执行确定性、predict/backtest 一致、截止隔离等交付代码自身的性质由上游按其交付契约保证，平台不重验。
+4. **源算法保真**：Native 存量只允许有证据的 L0 平台适配和 L1 source runner 上下文传递；L2 算法内部改动必须停止并创建独立 Blackbox V2 trial。source-original backtest 与 live-safe 真值必须分开验收，平台不得用调参贴结果。Blackbox 内部保真由上游负责，平台只验证自身接入与标准输出边界。
 
-Native source benchmark 与 CompareGate 是首次技术入库的硬证据，不是全局可关闭的检查。ActivationGate 只接受两条**互斥**路径：当前精确 version 已通过完整五段 `all` 时，使用 `full_initial_onboarding_v1`，只核验该 current `all` 的五个 Gate（含当前 Compare），不要求 `native-maintenance`、prior version 或 prior snapshot；只有未走 full-`all` 且仍在 Native 政策清单的同一业务身份修订，才可走 `native-maintenance`，此时除旧 Native version 的 passed `all + compare` 外，那个 prior `all` run 的 `static.business_identity` 必须已有与当前精确匹配的持久化快照。快照只含 `scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors 与 composite Registry IDs，绝不含代码、config 或 version hash；该路径执行 `static → native-maintenance-admission → input → dry-run`，并核验当前四个 Gate。Native UnitGate 已退役：按 `scheme_id` 文本命中仓库测试既不能稳定选择方案测试，也与 DryRun/Compare/Backtest 的正确性闭环重复；Blackbox UnitGate 仍保留交付接口校验。缺少、重复、损坏或不匹配的 prior snapshot 一律 fail-closed，不再保留方案级历史 receipt 例外。满足任一标准路径后，同一身份修订的历史 source-benchmark 输入 vintage 漂移只作归档诊断，不能单独阻断 activation、gap repair、`gray_live`、`scheduled_live` 或 API/前端读回；它不放宽输入截止、统一周历、日期语义、Registry、live-safe oracle 或 L0/L1/L2 限制，Blackbox CompareGate 也保持不变。
-
-`native-maintenance` 的当前精确候选必须已有对应的 `t_scheme_versions` 行，且 `runtime_type='native_adapter'`、`status in {'draft','active'}`。期望的 composite Registry identity 可在激活前统一为 `paused`，或在激活后统一为 `active`；`draft` version 配 `active` Registry 必须 fail-closed。ActivationGate 是唯一可在严格 discovery、精确版本与一次性授权核验后原子建立 active 状态的操作；维护 Gate 本身不改变 version 或 Registry 生命周期。
-
-Native source-backed 存量方案修复前必须做算法改动分级：L0 只允许平台 I/O、日期字段、extra、缓存、落库和审计适配；L1 是 source runner 明确暴露的上下文参数传递，必须逐项证明没有移动未 patch 的固定算法锚点；L2 是算法内部改动，默认禁止并 fail-closed。移动 IC screening cutoff、把 source 两段窗口改成单段窗口、把 target-date 月分组改成 feature 月或全局 `source_end`、改变特征列顺序、VT/selector/streak/fallback、内部 score 映射，都属于 L2；新算法或替代版本必须创建独立 Blackbox V2 trial。
+Native 首次入库必须保留 source benchmark 与 CompareGate；同一身份维护只允许走文档定义的互斥 full-`all` 或 `native-maintenance` 路径，任一身份快照、version、Registry 或 Gate 前提不满足都 fail-closed。Native 不运行按名称扫描测试的 UnitGate；Blackbox UnitGate 保留。
 
 完整依赖方向规则见 [docs/architecture/CODE_ARCHITECTURE.md](docs/architecture/CODE_ARCHITECTURE.md)；源算法保真规则见 [docs/architecture/SOURCE_ALGORITHM_FIDELITY.md](docs/architecture/SOURCE_ALGORITHM_FIDELITY.md)；边界总纲见 [docs/architecture/HARNESS_ARCHITECTURE.md](docs/architecture/HARNESS_ARCHITECTURE.md)。
 
 ## 方案接口规范
 
-运行接口由 `runtime_type` 显式分派，不得根据目录内容猜测。
-
-Native V1 存量方案在 `predict.py` 暴露：
-
-```python
-SCHEME_ID = "<scheme_id>"   # 必须 == 目录名 == config.scheme_id
-
-def run(predict_date: str) -> list[PredictionRecord]:
-    """
-    Args:
-        predict_date: 预测发出日期，格式 YYYY-MM-DD
-    Returns:
-        预测记录列表，每个 tenor 一条记录
-    """
-```
-
-Blackbox V2 新方案只交付 `{scheme_id}.py + {scheme_id}.json`，并实现 Contract 1.0 的 `predict/backtest` CLI。共享契约见 [docs/architecture/SCHEME_CONTRACT.md](docs/architecture/SCHEME_CONTRACT.md)，Native 专属契约见 [docs/native_v1/SCHEME_CONTRACT.md](docs/native_v1/SCHEME_CONTRACT.md)，Blackbox 上游契约见 [docs/sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md](docs/sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)。
+运行接口只按显式 `runtime_type` 分派，不得根据目录内容猜测。Native 存量接口、Blackbox V2 两文件交付和标准结果分别以 [共享契约](docs/architecture/SCHEME_CONTRACT.md)、[Native 契约](docs/native_v1/SCHEME_CONTRACT.md)和 [Blackbox 上游契约](docs/sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)为准，根规范不维护副本。
 
 ## 方案身份与 Registry
 
@@ -108,7 +63,7 @@ Blackbox V2 新方案只交付 `{scheme_id}.py + {scheme_id}.json`，并实现 C
 
 前端任务格子由 `target_tenor + task_type` 定义，不再由 `frequency/horizon` 隐式推断。`task_type` 固定取值为 `T+1`、`T+5`、`weekly_point`、`weekly_average`、`monthly`、`monthly_average`、`quarterly_average`、`annual_average`，并存储在 `t_scheme_registry.task_type`；API 返回缺失或非法值必须 fail-closed。Blackbox V2 周均和三种周期均值的 `horizon=1` 都是一个业务桶步长；周期均值的 `target_date` 是由桶锚点直接计算的日期指针，绝不得按一天或由 horizon 推断。
 
-前端、`/api/schemes`、`/api/metrics/{scheme_id}` 和 `/api/backtests/factor-lab` 只使用 `status='active'` 的 registry composite `scheme_id`，并依赖 registry `task_type` 分列；`/api/metrics/{base_scheme_id}?tenor=...` 不是合法调用。`paused` / `archived` registry 行只用于管理或审计，不进入当前前端/业务 API，不允许 trigger，也不允许 scheduler 新写入该 target。预测表、run 表和 backtest 表继续保存 base `scheme_id`，同时用 `target_tenor` 区分目标标的。
+前端与业务展示只读取 `/api/factor-lab/dashboard`；不得恢复 `/api/schemes`、`/api/metrics/{scheme_id}`、`/api/backtests/factor-lab` 或浏览器侧第二套聚合。`paused` / `archived` registry 行只用于管理或审计，不进入 Dashboard，不允许 trigger，也不允许 scheduler 新写入该 target。预测表、run 表和 backtest 表继续保存 base `scheme_id`，同时用 `target_tenor` 区分目标标的。
 
 ## 预测日期与实盘阶段语义
 
@@ -118,7 +73,7 @@ Blackbox V2 新方案只交付 `{scheme_id}.py + {scheme_id}.json`，并实现 C
 - `feature_date` — 数据截止日 / 预测站位日
 - `target_date` — 验证目标日，用于展示、去重、actual join 和月度统计归属
 
-`feature_date` 是唯一标准数据截止字段；`anchor_date` 只允许作为方案内部算法变量或审计 extra，前端和业务规则不得依赖它。实盘分为 `gray_live`（灰度实盘）和 `scheduled_live`（正式 scheduler 实盘）；日频实盘满足 `predict_date=T+1`、`feature_date=T`、`target_date=T+horizon`，周频实盘先由 `predict_date` 反推上一交易日 `feature_date` 再映射周，月频 source-backed 方案若声明自然 15 号触发则 `predict_date` 保留自然月 15 号、`feature_date/target_date` 分别取当前月/目标月 15 号及以前最近交易日。历史回测必须满足 `predict_date=feature_date=T`、`target_date=T+horizon`，但已有灰度观察区时必须按方案级 `target_date` 起点截断；当前 0629 月度三方案中 `target_date >= 2026-06-01` 均为灰度实盘，不得留在 latest backtest。原始算法 benchmark 里的 `T/date/predict_date` 表达 source T / 预测站位日，进入平台后必须对齐 DB 明细的 `feature_date`，不是对齐 live `predict_date`；跨灰度边界的样本必须先按 `target_date` 和 benchmark role 分流，同执行口径才可对实盘表断言数值一致，否则用 live-safe oracle 核验。完整规则见 [docs/architecture/PREDICTION_SEMANTICS.md](docs/architecture/PREDICTION_SEMANTICS.md)。
+`feature_date` 是唯一标准数据截止字段；`anchor_date` 只允许作为方案内部算法变量或审计 extra，前端和业务规则不得依赖它。实盘分为 `gray_live` 与 `scheduled_live`；日频、周频、月频和周期均值必须按统一日历与任务语义生成三个日期。历史回测按方案级 `target_date` 起点与 live 区间隔离；source benchmark 必须按 benchmark role 与 live-safe oracle 分开验收。完整规则见 [docs/architecture/PREDICTION_SEMANTICS.md](docs/architecture/PREDICTION_SEMANTICS.md)。
 
 后续方案如果以同一 exact version、同一冻结输入身份执行一次性批量回测，且交付已证明每条结果与该 Request 独立按 `feature_date` 截止计算完全等价，则核心原则是“只算一次、按 `target_date` 分区、复用核心结果”：`target_date < gray_target_start` 写入新的 immutable canonical backtest；`target_date >= gray_target_start` 且尚未由自然调度发布的应有点，只按受控 repository insert-only 物化为 `gray_live`。物化时保留 `feature_date`、`target_date`、方向、置信度、exact scheme version 和必要算法 `extra`，但必须按任务日历重新生成 live `predict_date`；不得复制数据库主键、源 `run_id`、Actuals、回测指标或 Harness 历史。任一业务键已存在即拒绝对应授权组，不得更新、覆盖或先删除再导入；历史 run 保持不可变，仅由新的 canonical run 取代其默认展示。若 batch 使用晚于样本 `feature_date` 的固定 `source_end`、未来 test window、全局 selector/calibration，或 exact version、输入 digest、lineage 任一不匹配，则禁止复用为 live，必须走 live-safe 计算。完整操作和验收规则见统一入库导航与预测语义文档。
 
@@ -144,27 +99,20 @@ python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
 # 副作用段不在 all 内，必须以精确独立命令执行且 fail-closed
 ```
 
-仓库和灰度实验室由单人维护，人工副作用采用直接命令模型：执行精确的 `gate ...`、`activate` 或 `signal-gap-fill` 命令就是本次操作意图，不生成密钥、token、nonce、有效期或 replay store。CLI 自动从 canonical config 绑定 exact version，Gate 自动选择 current exact version 的 latest passed Harness run；action、scheme、日期、回测起点、非秘密 operator 与 operation scope hash 仍完整审计，scope 漂移、run 缺失或 lifecycle pending 均 fail-closed。operator 默认取 `BFL_OPERATOR_ID` 或 OS 用户，可用 `--operator` 显式覆盖。这个简化不把技术 Gate 通过外推为生产操作许可；agent 在 ECS/Mac3 执行写库、激活、服务或调度变更前仍须获得用户对具体操作的明确授权。Blackbox V2 自动 Gate 不自动授予生产运行权限；具体方案完成生产准备核验后，shadow、持久化回测、activate、live/gap fill 仍按各自独立命令和事务边界执行，不得跨方案外推。Blackbox lifecycle 只保留 `shadow-register`、统一 `activate` 和唯一人工恢复入口 `lifecycle-reconcile`；不再提供独立 draft、bootstrap 或 revision activate 命令。平台操作见 [docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md](docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)，生产条件见 [docs/blackbox_v2/PRODUCTION_READINESS.md](docs/blackbox_v2/PRODUCTION_READINESS.md)。Native 存量维护见 [docs/sop/NATIVE_V1_MAINTENANCE_SOP.md](docs/sop/NATIVE_V1_MAINTENANCE_SOP.md)。Harness 边界见 [docs/architecture/HARNESS_ARCHITECTURE.md](docs/architecture/HARNESS_ARCHITECTURE.md)。
+人工副作用使用直接命令并绑定 canonical exact version、latest passed Harness run、operator 与 operation scope；scope 漂移或证据缺失一律 fail-closed。技术 Gate 不授予生产写库、激活、服务或调度权限，这些操作必须分别获得明确授权。详细流程见 [Blackbox 平台入库 SOP](docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)、[生产准备](docs/blackbox_v2/PRODUCTION_READINESS.md)、[Native 维护 SOP](docs/sop/NATIVE_V1_MAINTENANCE_SOP.md)和 [Harness 架构](docs/architecture/HARNESS_ARCHITECTURE.md)。
 
-## 数据库表
+## 数据库边界
 
-源数据表只读：`api_wind_date`、`api_wind_daily/weekly/monthly`(+derivative)、`api_wind_indicators_all`、`t_trade_calendar`。
-
-写库表：
-- `t_scheme_predictions` — 统一预测结果表；所有已发布 live 业务键永久 insert-only、禁止覆盖。仅普通 Native/Blackbox active completion 使用三态：完整重复记 benign `skipped`，部分重复整批失败；authorized gray-gap 任一键已存在即整组拒绝、`records_written=0`，不得转为 benign `skipped`。数据或代码修订不得覆盖历史预测
-- `t_scheme_actuals` / `t_scheme_weekly_actuals` / `t_scheme_monthly_actuals` — 实际方向表（日频 / 周频 / 月频）
-- `t_scheme_registry` — 方案注册表
-- `t_scheme_runs` — 结构化运行表（版本、阶段、输入 artifact 链接）
-- `t_scheme_run_log` — 运行日志表
-- `t_target_registry` — Y 标的注册与展示名
-- `t_backtest_*` — 历史复现结果（独立于实盘预测）
+- Wind、指标与交易日历源表只读；写入只能经过第二条分层不变量列出的 repository/updater。
+- 所有已发布 live 业务键永久 insert-only：完整重复可记 `skipped`，部分重复整批失败；授权 gap-fill 只要已有任一键就整组拒绝，任何修订都不得覆盖历史预测。
+- Registry、run、prediction、Actual 与 backtest 的表身份和字段合同以迁移、模型和架构文档为准，根规范不维护枚举副本。
 
 ## 数据库迁移操作边界
 
 - `migrations.runner` 是迁移行为的唯一实现：它只接收 caller-supplied `Engine`，负责 manifest、inspect、apply 与 `APPLYING` recovery；不得把环境变量、CLI 解析或运维授权逻辑放入该库层。
 - `scripts/apply_migrations.py` 是唯一受控运维包装器。生产/候选 schema 的 apply 与 recovery 只能经此 CLI，不得用 `mysql` 客户端直跑 migration SQL，也不得复制 runner 行为到 scheduler、harness 或其它脚本。
 - `--apply`、`--recover-applying-017 --apply`、`--recover-applying-018 --apply`、`--recover-applying-019 --apply` 都必须同时显式提供 `--expected-database-name` 和 `--expected-server-uuid`；CLI 在创建 Engine 前校验参数，并在首个写库动作前精确比对 `DATABASE()` 与 `@@server_uuid`。inspect 是只读操作，不需要这两个参数。
-- operator 只能从只读 inspect JSON 或受控只读 identity query 取得 UUID；文档、脚本输出和提交中不得示例生产 UUID、DSN 或凭据。isolated MySQL 测试不等于已应用生产 migration；当前 apply/no-op 输出也尚未形成 durable signed operator report。
+- operator 只能从只读 inspect JSON 或受控只读 identity query 取得 UUID；文档、脚本输出和提交中不得示例生产 UUID、DSN 或凭据。isolated MySQL 测试不等于已应用生产 migration。
 
 ## 编码规范
 
@@ -173,12 +121,3 @@ python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
 - 数据库字段: snake_case
 - API 路径: kebab-case
 - registry `scheme_id`(业务方案) / `base_scheme_id`(算法执行身份) / `benchmark_id`(基准批次) / `data_source`(数据口径) 命名分离
-
-## 关键设计决策
-
-1. 所有方案预测结果写入同一张 MySQL 表，通过 base `scheme_id + target_tenor + horizon + target_date` 隔离；前端业务身份由 registry composite `scheme_id` 表达。
-2. 准确率指标由后端实时计算（JOIN predictions 和 actuals 表）。
-3. 方案按显式 `runtime_type` 发现和分派；后续新增方案只允许 Blackbox V2，Native V1 仅维护政策清单中的存量身份。
-4. 前端构建为静态文件，由 FastAPI serve。
-5. 强约束分层 + 横切 harness：依赖只向下，副作用（写库/激活）须授权，StaticGate 机器守护依赖规则。
-6. 算法在 `forecast_env` 子进程运行，与服务环境依赖隔离（JSON stdout 解耦）。

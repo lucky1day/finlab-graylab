@@ -11,7 +11,6 @@ from shared.data_bridge.refresh import (
     LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION,
     DataBridgeCurrentInvalidError,
     DataBridgeCurrentMissingError,
-    DataBridgeCurrentReadError,
     DataBridgeContinuityAuthority,
     DataBridgeRefreshConfig,
     DataBridgeRefreshError,
@@ -52,9 +51,6 @@ _GRAY_REPLAY_SOURCE_FILE_FIELDS = frozenset(
         "business_hash",
     }
 )
-
-
-DataBridgeCurrentAuthorityError = DataBridgeCurrentReadError
 
 
 @dataclass(frozen=True, slots=True)

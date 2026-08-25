@@ -5,7 +5,6 @@ import json
 import sys
 import time
 from contextlib import redirect_stdout
-from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import pandas as pd

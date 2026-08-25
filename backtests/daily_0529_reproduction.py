@@ -12,13 +12,9 @@ import pandas as pd
 from sqlalchemy.engine import Engine
 
 from backtests._base_runner import (
-    BacktestSpec,
     RunOutput,
-    _float_or_none as _base_float_or_none,
     _frame_profile as _base_frame_profile,
     _int_or_none as _base_int_or_none,
-    _metric_month as _base_metric_month,
-    _normalize_scalar as _base_normalize_scalar,
     aggregate_rows as _base_aggregate_rows,
     apply_evaluation_exclusions as _base_apply_evaluation_exclusions,
     build_db_aligned_daily as _base_build_db_aligned_daily,
@@ -70,27 +66,6 @@ EXPECTED_T5_REPORT: dict[str, dict[str, Any]] = {
     "7Y": {"all": {"samples": 333, "correct": 218, "accuracy_pct": 65.5}, "sim_n": 117, "real_n": 203, "may_n": 13},
     "10Y": {"all": {"samples": 333, "correct": 211, "accuracy_pct": 63.4}, "sim_n": 117, "real_n": 203, "may_n": 13},
 }
-
-
-T1_DAILY_SPEC = BacktestSpec(
-    benchmark_id=BENCHMARK_ID,
-    scheme_id="t1_daily",
-    canonical_csv=None,
-    target_columns=TARGET_COLUMNS,
-    start_date=T1_BACKTEST_START,
-    end_date=T1_BACKTEST_END,
-    excluded_target_ranges=EVALUATION_EXCLUDED_TARGET_RANGES,
-)
-T5_DAILY_SPEC = BacktestSpec(
-    benchmark_id=BENCHMARK_ID,
-    scheme_id="t5_daily",
-    canonical_csv=None,
-    target_columns=TARGET_COLUMNS,
-    start_date=T5_BACKTEST_START,
-    end_date=T5_BACKTEST_END,
-    expected_report=EXPECTED_T5_REPORT,
-    excluded_target_ranges=EVALUATION_EXCLUDED_TARGET_RANGES,
-)
 
 
 def read_daily_csv(path: str | Path = SOURCE_EVIDENCE_DAILY_CSV) -> pd.DataFrame:
@@ -169,37 +144,19 @@ def build_daily0529_db_input_frame(
 def build_source_evidence_db_aligned_daily(
     csv_df: pd.DataFrame | None = None,
     engine: Engine | None = None,
-    upstream_mode: bool = True,
     artifact_scheme_id: str = "daily_common",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """生成完整 DB 版 daily_output 和按 source-evidence CSV 对齐后的版本。
 
-    历史复现的 DB 输入统一经过 shared.input_artifacts 生成和读回，
-    再喂给算法。upstream_mode 保留为旧调用兼容参数，不再绕过统一输入层。
+    历史复现的 DB 输入统一经过 shared.input_artifacts 生成和读回，再喂给算法。
     """
     return _base_build_db_aligned_daily(
         csv_df=csv_df,
         engine=engine,
-        upstream_mode=upstream_mode,
         artifact_scheme_id=artifact_scheme_id,
         benchmark_id=BENCHMARK_ID,
         canonical_csv=SOURCE_EVIDENCE_DAILY_CSV,
         artifact_builder=build_daily_input_artifact,
-    )
-
-
-def build_db_aligned_daily(
-    csv_df: pd.DataFrame | None = None,
-    engine: Engine | None = None,
-    upstream_mode: bool = True,
-    artifact_scheme_id: str = "daily_common",
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """兼容旧脚本入口；实际语义是显式 source-evidence 对齐。"""
-    return build_source_evidence_db_aligned_daily(
-        csv_df=csv_df,
-        engine=engine,
-        upstream_mode=upstream_mode,
-        artifact_scheme_id=artifact_scheme_id,
     )
 
 
@@ -212,13 +169,6 @@ def build_source_evidence_framework_db_aligned_daily(csv_df: pd.DataFrame | None
         canonical_csv=SOURCE_EVIDENCE_DAILY_CSV,
         artifact_builder=build_daily_input_artifact,
     )
-
-
-def build_framework_db_aligned_daily(csv_df: pd.DataFrame | None = None, engine: Engine | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """兼容旧脚本入口；实际语义是显式 source-evidence 对齐。"""
-    return build_source_evidence_framework_db_aligned_daily(csv_df=csv_df, engine=engine)
-
-
 def run_source_evidence_data_alignment_check(engine: Engine | None = None, persist: bool = True) -> dict[str, Any]:
     """对比 source-evidence CSV 与当前 DB 生成的 daily_output。"""
     own_engine = engine is None
@@ -228,7 +178,6 @@ def run_source_evidence_data_alignment_check(engine: Engine | None = None, persi
         upstream_full, upstream_aligned = build_source_evidence_db_aligned_daily(
             csv_df,
             engine=engine,
-            upstream_mode=True,
             artifact_scheme_id="daily_common",
         )
         framework_full, framework_aligned = build_source_evidence_framework_db_aligned_daily(csv_df, engine=engine)
@@ -278,13 +227,6 @@ def run_source_evidence_data_alignment_check(engine: Engine | None = None, persi
     finally:
         if own_engine:
             engine.dispose()
-
-
-def run_data_alignment_check(engine: Engine | None = None, persist: bool = True) -> dict[str, Any]:
-    """兼容旧脚本入口；实际语义是 source-evidence 数据对齐审计。"""
-    return run_source_evidence_data_alignment_check(engine=engine, persist=persist)
-
-
 def compare_daily_frames(csv_df: pd.DataFrame, db_full: pd.DataFrame, db_aligned: pd.DataFrame) -> dict[str, Any]:
     return _base_compare_daily_frames(csv_df, db_full, db_aligned, target_columns=TARGET_COLUMNS)
 
@@ -311,10 +253,6 @@ def evaluation_exclusion_summary(raw_count: int, included_count: int) -> dict[st
     )
 
 
-def _date_in_excluded_ranges(value: str) -> bool:
-    return any(item["start"] <= value <= item["end"] for item in EVALUATION_EXCLUDED_TARGET_RANGES)
-
-
 def run_t5_reproduction(
     engine: Engine | None = None,
     db_aligned: pd.DataFrame | None = None,
@@ -329,7 +267,6 @@ def run_t5_reproduction(
             _, db_aligned = build_source_evidence_db_aligned_daily(
                 csv_df,
                 engine=engine,
-                upstream_mode=True,
                 artifact_scheme_id="t5_daily",
             )
         else:
@@ -523,7 +460,6 @@ def run_t1_reproduction(
             _, db_aligned = build_source_evidence_db_aligned_daily(
                 csv_df,
                 engine=engine,
-                upstream_mode=True,
                 artifact_scheme_id="t1_daily",
             )
         else:
@@ -678,11 +614,6 @@ def build_monthly_metrics(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return _base_build_monthly_metrics(rows, benchmark_id=BENCHMARK_ID)
 
 
-def _metric_month(row: dict[str, Any]) -> str:
-    """返回历史回测月度指标归属月份。"""
-    return _base_metric_month(row)
-
-
 def metric_row(rows: list[dict[str, Any]], tenor: str, month: str) -> dict[str, Any]:
     return _base_metric_row(rows, tenor, month, benchmark_id=BENCHMARK_ID)
 
@@ -751,7 +682,10 @@ def run_daily_0529_reproduction(
     engine = create_sqlalchemy_engine()
     try:
         data_check = (
-            run_data_alignment_check(engine=engine, persist=persist)
+            run_source_evidence_data_alignment_check(
+                engine=engine,
+                persist=persist,
+            )
             if include_source_evidence
             else {"status": "skipped_source_evidence"}
         )
@@ -812,16 +746,8 @@ def infer_target_date(daily: pd.DataFrame, feature_date: str, horizon: int) -> s
     return _base_infer_target_date(daily, feature_date, horizon)
 
 
-def _normalize_scalar(value: Any) -> Any:
-    return _base_normalize_scalar(value)
-
-
 def _int_or_none(value: Any) -> int | None:
     return _base_int_or_none(value)
-
-
-def _float_or_none(value: Any) -> float | None:
-    return _base_float_or_none(value)
 
 
 def main(argv: list[str] | None = None) -> dict[str, Any]:

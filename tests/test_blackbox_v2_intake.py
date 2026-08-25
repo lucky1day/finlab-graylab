@@ -52,8 +52,6 @@ class BlackboxV2IntakeTests(unittest.TestCase):
             root = Path(tmpdir)
             delivery = _write_delivery(root / "incoming")
             schemes_root = root / "schemes"
-            registry_path = root / "deploy" / "scheme_owner_v1.json"
-            registry_path.chmod(0o600)
 
             scheme_dir = intake_delivery(delivery, schemes_root=schemes_root)
 
@@ -70,72 +68,37 @@ class BlackboxV2IntakeTests(unittest.TestCase):
             self.assertIn("timeout_sec: 3600", config)
             self.assertNotIn("platform_inputs:", config)
             self.assertNotIn("display_name:", config)
-            registry = json.loads(
-                (root / "deploy" / "scheme_owner_v1.json").read_text(
-                    encoding="utf-8"
-                )
-            )
-            self.assertEqual(
-                registry["owners"], {"trial_10y__h1__10Y": "ALGO-A"}
-            )
-            self.assertEqual(registry_path.stat().st_mode & 0o777, 0o600)
 
-    def test_intake_requires_owner_and_description_without_partial_write(self) -> None:
-        from shared.blackbox_v2.intake import intake_delivery
-
-        for missing_field in ("owner", "description"):
-            with self.subTest(missing_field=missing_field), tempfile.TemporaryDirectory() as tmpdir:
-                root = Path(tmpdir)
-                delivery = _write_delivery(root / "incoming")
-                metadata_path = delivery / "trial_10y.json"
-                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-                metadata.pop(missing_field)
-                metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
-                registry_path = root / "deploy" / "scheme_owner_v1.json"
-                original_registry = registry_path.read_bytes()
-
-                with self.assertRaisesRegex(ValueError, missing_field):
-                    intake_delivery(delivery, schemes_root=root / "schemes")
-
-                self.assertFalse((root / "schemes" / "trial_10y").exists())
-                self.assertEqual(registry_path.read_bytes(), original_registry)
-
-    def test_intake_rejects_conflicting_owner_without_writing_scheme(self) -> None:
-        from shared.blackbox_v2.intake import intake_delivery
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            _write_owner_registry(
-                root,
-                {"trial_10y__h1__10Y": "ALGO-B"},
-            )
-            original = (root / "deploy" / "scheme_owner_v1.json").read_bytes()
-
-            with self.assertRaisesRegex(ValueError, "owner.*conflict"):
-                intake_delivery(
-                    _write_delivery(root / "incoming"),
-                    schemes_root=root / "schemes",
-                )
-
-            self.assertFalse((root / "schemes" / "trial_10y").exists())
-            self.assertEqual(
-                (root / "deploy" / "scheme_owner_v1.json").read_bytes(),
-                original,
-            )
-
-    def test_intake_requires_existing_owner_registry(self) -> None:
+    def test_intake_requires_description_without_partial_write(self) -> None:
         from shared.blackbox_v2.intake import intake_delivery
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             delivery = _write_delivery(root / "incoming")
-            registry_path = root / "deploy" / "scheme_owner_v1.json"
-            registry_path.unlink()
+            metadata_path = delivery / "trial_10y.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata.pop("description")
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
-            with self.assertRaisesRegex(ValueError, "existing regular file"):
+            with self.assertRaisesRegex(ValueError, "description"):
                 intake_delivery(delivery, schemes_root=root / "schemes")
 
             self.assertFalse((root / "schemes" / "trial_10y").exists())
+
+    def test_intake_accepts_delivery_without_owner(self) -> None:
+        from shared.blackbox_v2.intake import intake_delivery
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            delivery = _write_delivery(root / "incoming")
+            metadata_path = delivery / "trial_10y.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata.pop("owner")
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+            scheme_dir = intake_delivery(delivery, schemes_root=root / "schemes")
+
+            self.assertTrue((scheme_dir / "delivery" / "trial_10y.json").is_file())
 
 
     def test_cli_intake_writes_declared_platform_input(self) -> None:
@@ -221,9 +184,6 @@ class BlackboxV2IntakeTests(unittest.TestCase):
 def _write_delivery(
     path: Path,
 ) -> Path:
-    registry_path = path.parent / "deploy" / "scheme_owner_v1.json"
-    if not registry_path.exists():
-        _write_owner_registry(path.parent, {})
     path.mkdir(parents=True)
     (path / "trial_10y.py").write_bytes(
         b"#!/usr/bin/env python\nprint('ok')\n"
@@ -245,16 +205,3 @@ def _write_delivery(
         encoding="utf-8",
     )
     return path
-
-
-def _write_owner_registry(root: Path, owners: dict[str, str]) -> None:
-    deploy = root / "deploy"
-    deploy.mkdir(parents=True, exist_ok=True)
-    (deploy / "scheme_owner_v1.json").write_text(
-        json.dumps(
-            {"schema_version": "scheme-owner-v1", "owners": owners},
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )

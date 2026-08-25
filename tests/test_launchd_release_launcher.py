@@ -50,7 +50,6 @@ def _release(tmp_path: Path) -> Path:
     service_environment.write_text(
         "\n".join(
             (
-                "BOND_ADMIN_TOKEN=local-admin-token",
                 "BOND_DB_USER=bond_user",
                 'BOND_DB_PASSWORD="database secret"',
                 "BOND_DB_HOST=127.0.0.1",
@@ -163,12 +162,28 @@ def test_service_environment_loads_required_values_without_shell_expansion(
 
     values = load_service_environment(runtime)
 
-    assert values["BOND_ADMIN_TOKEN"] == "local-admin-token"
     assert values["BOND_DB_PASSWORD"] == "database secret"
     assert values["BOND_FACTOR_LAB_INSTANCE_NONCE"] == "mac3-instance"
     assert values["DATABRIDGE_API_PASSWORD"] == (
         "bridge$(literal)${HOME}`value`"
     )
+
+
+def test_legacy_admin_token_remains_an_accepted_optional_value(
+    tmp_path: Path,
+) -> None:
+    release = _release(tmp_path)
+    runtime = Path(load_release_environment(release)["BFL_RUNTIME_ROOT"])
+    _rewrite_service_environment(
+        release,
+        lambda value: value + "BOND_ADMIN_TOKEN=unused-legacy-token\n",
+    )
+
+    values = load_service_environment(runtime)
+    merged = prepare_exec_environment(release, {})
+
+    assert values["BOND_ADMIN_TOKEN"] == "unused-legacy-token"
+    assert merged["BOND_ADMIN_TOKEN"] == "unused-legacy-token"
 
 
 @pytest.mark.parametrize("mode", [0o000, 0o200, 0o640, 0o644])
@@ -239,15 +254,15 @@ def test_service_environment_rejects_duplicate_reserved_or_missing_keys(
             "reserved keys",
         ),
         (
-            original.replace("BOND_ADMIN_TOKEN=local-admin-token\n", ""),
+            original.replace("BOND_DB_USER=bond_user\n", ""),
             "missing required keys",
         ),
         (
             original.replace(
-                "BOND_ADMIN_TOKEN=local-admin-token",
-                "BOND_ADMIN_TOKEN='   '",
+                "BOND_DB_USER=bond_user",
+                "BOND_DB_USER='   '",
             ),
-            "BOND_ADMIN_TOKEN",
+            "BOND_DB_USER",
         ),
     )
     for content, message in cases:
@@ -255,6 +270,7 @@ def test_service_environment_rejects_duplicate_reserved_or_missing_keys(
         path.chmod(0o600)
         with pytest.raises(LaunchdReleaseError, match=message):
             load_service_environment(runtime)
+
 
 def test_loader_rejects_missing_or_untrusted_release_environment(
     tmp_path: Path,
@@ -323,7 +339,6 @@ def test_prepare_environment_merges_service_values_and_rejects_conflict(
     )
 
     assert merged["BOND_DB_PASSWORD"] == "database secret"
-    assert merged["BOND_ADMIN_TOKEN"] == "local-admin-token"
     assert merged["BFL_DATABASE_ENV_FILE"] == str(
         runtime / "config" / "service.env"
     )

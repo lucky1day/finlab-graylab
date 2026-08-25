@@ -41,16 +41,12 @@ TASK_COMBINATIONS: dict[str, tuple[int, str, str]] = {
 PERIOD_AVERAGE_TASK_TYPES = frozenset(
     {"monthly_average", "quarterly_average", "annual_average"}
 )
+WEEKLY_TASK_TYPES = frozenset({"weekly_point", "weekly_average"})
+PREDICTION_CADENCES = frozenset(
+    {"daily", "weekly", "monthly", "period_average"}
+)
 ALLOWED_TASK_TYPES = frozenset(TASK_COMBINATIONS)
 ALLOWED_FREQUENCIES = frozenset(
     frequency for _horizon, _target_rule, frequency in TASK_COMBINATIONS.values()
 )
 ALLOWED_DATA_FREQUENCIES = frozenset({"daily", "weekly", "monthly"})
-
-
-def task_combination(task_type: str) -> tuple[int, str, str]:
-    """返回精确任务规格；未知任务直接失败。"""
-    try:
-        return TASK_COMBINATIONS[str(task_type)]
-    except KeyError as exc:
-        raise ValueError(f"unsupported task_type: {task_type}") from exc

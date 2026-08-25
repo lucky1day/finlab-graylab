@@ -12,7 +12,6 @@ from scheduler.executor import (
     _systemd_scheduled_execution_context,
 )
 from scheduler.launchd_prediction_runner import (
-    VALID_CADENCES,
     LaunchdPredictionConfigurationError,
     LaunchdPredictionSummary,
     _configuration_summary,
@@ -20,6 +19,7 @@ from scheduler.launchd_prediction_runner import (
     _today,
 )
 from shared.one_shot_control_plane import SYSTEMD_ONE_SHOT_CONTROL_PLANE
+from shared.task_specs import PREDICTION_CADENCES
 
 
 MANUAL_PREDICT_DATE_ENV = "BFL_SYSTEMD_PREDICT_DATE"
@@ -51,7 +51,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--cadence",
         required=True,
-        choices=sorted(VALID_CADENCES),
+        choices=sorted(PREDICTION_CADENCES),
     )
     parser.add_argument(
         "--predict-date",

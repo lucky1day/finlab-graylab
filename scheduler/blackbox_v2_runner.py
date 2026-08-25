@@ -18,12 +18,11 @@ from typing import Any, Callable, ContextManager, Mapping, Sequence
 
 from scheduler.process_control import (
     ProcessGroupTerminationError,
-    ProcessGroupTerminationResult,
     ProcessRegistrationCleanupError,
     ProcessStartGuard,
     capture_new_session_process_group,
     require_process_start_guard,
-    terminate_process_group,
+    terminate_process_group as _terminate_process_group,
 )
 from shared.blackbox_v2.contracts import (
     BlackboxMetadata,
@@ -1591,17 +1590,6 @@ def _process_group_rss_bytes(pid: int) -> int:
         if row_group == process_group:
             total_kib += rss_kib
     return total_kib * 1024
-
-
-def _terminate_process_group(
-    process: subprocess.Popen[str],
-    *,
-    process_group_id: int | None = None,
-) -> ProcessGroupTerminationResult:
-    return terminate_process_group(
-        process,
-        process_group_id=process_group_id,
-    )
 
 
 def _bounded(value: str, limit: int = 4000) -> str:

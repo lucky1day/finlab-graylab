@@ -35,7 +35,7 @@ def test_direct_operation_requires_canonical_dates() -> None:
     with pytest.raises(ValueError, match="canonical YYYY-MM-DD"):
         build_direct_operation(
             "trial_10y",
-            "live_write",
+            "backtest_persist",
             "2026-8-25",
             scheme_version="version-1",
             issued_by="operator",

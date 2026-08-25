@@ -126,22 +126,17 @@ Mac Studio 当前生产调度的唯一控制面是 `launchd + installed plist`�
 
 所有一次性模板使用 `bond_factor_lab_service`、绝对工作目录和独立 stdout/stderr 日志。
 DataBridge 模板还声明 `BFL_DATABRIDGE_PRODUCER=launchd-one-shot`。模板中不保存 DSN、
-凭证、admin token 或实例 nonce。
+凭证或实例 nonce。
 
-DataBridge 与 daily / weekly / monthly 四个 one-shot **仓库期望模板**均不声明
-`BOND_DAILY_COORDINATOR_MODE`。平台代码已经不再读取该旧变量，算法子进程使用显式 allowlist，
-不会转发它；backend 仓库模板也不再声明该变量。旧 installed 环境若仍携带它，只是惰性兼容配置，
-不授予调度权。修改任一
-installed 或仓库 plist 都仍是独立生产操作，不由本次代码清理推断授权。
+所有 one-shot 仓库期望模板均不得声明 `BOND_DAILY_COORDINATOR_MODE`；该变量不授予调度权。
+修改任一 installed 或仓库 plist 都仍是独立生产操作，不由本次代码清理推断授权。
 
 `BFL_DATABRIDGE_PRODUCER` 仅是防止普通 shell 误 publish 的操作准入标记，不是 launchd
 身份认证；它和仓库模板都不能单独证明某个进程由 launchd 启动。
 
-仓库已移除 `com.bond-factor-lab.scheduler` 的 disabled legacy 模板和常驻
-`scheduler.main` 模块。actuals 由独立的 `scheduler.actuals_runner` 负责；Backend 不注册
-手动预测路由。已退役的
-`daily-gray` 与 `v2-preflight` writer 及其仓库模板也已移除。任何已安装 disabled legacy
-plist 的物理删除仍是独立生产操作，不由仓库期望配置推断或执行。
+Actuals 只由 `scheduler.actuals_runner` 驱动；Backend 不提供手动预测或 HTTP 写入路由，
+也不得恢复常驻调度器或第二 Writer。已安装 legacy plist 的物理清理仍是独立生产操作，
+不由仓库期望配置推断或执行。
 
 ## 生产操作边界
 
@@ -170,8 +165,7 @@ PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
 
 审计固定禁止所有正式模板和 installed 环境出现
 `BOND_DAILY_COORDINATOR_MODE`，并要求 DataBridge 保留
-`BFL_DATABRIDGE_PRODUCER=launchd-one-shot`。Backend admin token 只存在于外置 `service.env`，不再作为
-plist 的批准差异；SSH 隧道模板明确标注且已验证的本机 key/user 是唯一批准的 plist 本机差异。
+`BFL_DATABRIDGE_PRODUCER=launchd-one-shot`。SSH 隧道模板明确标注且已验证的本机 key/user 是唯一批准的 plist 本机差异。
 `service.env` 在顶层只校验一次，报告只含变量名与错误类别；Backend/tunnel 必须处于 running，七个
 任务的日志路径必须与外置 runtime 模板精确一致。其余启动参数、工作目录、调度触发器和环境变量差异
 仍使脚本退出 `1`。脚本退出 `0` 只表示当前只读配置审计通过，不代表生产任务已自然运行成功，也不

@@ -358,7 +358,6 @@ def _perform_lifecycle_transition_unlocked(
 def reconcile_journal(
     journal_path: str | Path,
     *,
-    config_path: str | Path,
     apply_database: Callable[[LifecycleState], None],
     read_state: Callable[[], LifecycleState],
     operation_scope_sha256: str | None = None,
@@ -370,7 +369,6 @@ def reconcile_journal(
     with lifecycle_operation_lock(project_root, journal.scheme_id):
         return _reconcile_journal_unlocked(
             path,
-            config_path=config_path,
             apply_database=apply_database,
             read_state=read_state,
             operation_scope_sha256=operation_scope_sha256,
@@ -380,7 +378,6 @@ def reconcile_journal(
 def _reconcile_journal_unlocked(
     path: Path,
     *,
-    config_path: str | Path,
     apply_database: Callable[[LifecycleState], None],
     read_state: Callable[[], LifecycleState],
     operation_scope_sha256: str | None,
@@ -398,7 +395,6 @@ def _reconcile_journal_unlocked(
     return _reconcile_with_linked_journal(
         path,
         journal,
-        config_path=config_path,
         apply_database=apply_database,
         read_state=read_state,
         operation_scope_sha256=operation_scope_sha256,
@@ -409,7 +405,6 @@ def _reconcile_with_linked_journal(
     original_path: Path,
     original: LifecycleJournal,
     *,
-    config_path: str | Path,
     apply_database: Callable[[LifecycleState], None],
     read_state: Callable[[], LifecycleState],
     operation_scope_sha256: str | None,

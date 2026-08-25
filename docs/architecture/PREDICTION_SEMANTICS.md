@@ -203,7 +203,7 @@ target_date  = T + horizon
 
 当方案已有灰度实盘观察区时，历史回测 runner 必须按 `target_date < gray_target_start` 截断，避免同一 target 同时由 backtest 和 live 区间解释。日频、周频和月频都使用同一条 target 边界；月频仍按自然月 15 号的触发语义计算三日期，不能用 `predict_date` 替代 `target_date` 判断分区。
 
-`target_date` 是回测明细的必填事实字段。runner、`/api/backtests/factor-lab` 和前端月度聚合只能用 `target_date` 归属月份；如果 `t_backtest_predictions` 明细缺 `target_date`，必须 fail-closed。禁止用 `predict_date`、`feature_date`、月份字段或旧 `monthly_metrics` 表推断、替代或回填 `target_date`。
+`target_date` 是回测明细的必填事实字段。runner、Dashboard 和前端月度聚合只能用 `target_date` 归属月份；如果 `t_backtest_predictions` 明细缺 `target_date`，必须 fail-closed。禁止用 `predict_date`、`feature_date`、月份字段或旧 `monthly_metrics` 表推断、替代或回填 `target_date`。
 
 周频公共回测的无信号策略默认是 `skip`。只有明确声明 `no_signal_policy="flat"` 的方案，才能在 feature、target、日期和 label 上下文均有效，且整批 core 输出非空、`week_id` 全部合法、当前 feature key 单独缺少输出时生成平台平记录。该记录必须保留完整 `feature_week_id/target_week_id`、日期、artifact 和 `no_signal_to_flat_v1` 审计字段；core 整体空/非法输出、输入或日历异常不得被捕获补平。source-original/current benchmark 仍只包含原算法实际输出行，平台补平行只进入平台 backtest/live 明细；runner payload 的 `row_count` 表示平台明细总数，`benchmark_row_count` 表示过滤政策行后的 compact benchmark 数量。
 
@@ -279,13 +279,13 @@ backtest 与 live 仍是两个独立、可审计的持久化边界：每一侧�
 | `actual_dist` / `predicted_dist` | 全部可评价样本的实际/预测方向分布，包含 `flat` |
 | `metric_actual_dist` / `metric_predicted_dist` | 指标分母范围内的实际/预测方向分布，不包含预测为平的样本 |
 
-例如某月共有 8 条已验证预测，其中 1 条预测为平、3 条方向预测正确、4 条方向预测错误，则样本数展示为 `8`，整体准确率展示为 `3/7`，而不是 `3/8`。前端候选排行、月度详情、后端 live metrics、回测 runner 和 `/api/backtests/factor-lab` 必须遵守同一口径。
+例如某月共有 8 条已验证预测，其中 1 条预测为平、3 条方向预测正确、4 条方向预测错误，则样本数展示为 `8`，整体准确率展示为 `3/7`，而不是 `3/8`。前端候选排行、月度详情、Dashboard 和回测 runner 必须遵守同一口径。
 
 回测 summary 还必须单独报告 `policy_generated_flat_count` 及对应的缺失 feature key 清单。source-original/current benchmark 的生成与导出必须过滤 `signal_policy_applied=true` 的平台行，不能把业务输出规则生成的平记录声明为原始算法输出。
 
-历史回测前端指标的唯一事实源是 `t_backtest_predictions` 明细表。`/api/backtests/factor-lab` 必须从 latest run 的明细动态聚合 `monthly_metrics` 和 `summary`；如果 latest run 缺少明细或明细不可评价，接口必须 fail-closed。新代码不得新增、读取或写入独立的回测月度指标汇总表。
+历史回测前端指标的唯一事实源是 `t_backtest_predictions` 明细表。Dashboard 必须从 latest run 的明细动态聚合；如果 latest run 缺少明细或明细不可评价，构建必须 fail-closed。新代码不得新增、读取或写入独立的回测月度指标汇总表。
 
-前端展示指标的唯一事实源是 API 返回的预测明细行。前端必须按 `target_date` 把明细行归属到月份，再调用统一的明细指标计算逻辑生成月度表、候选排行、趋势图和汇总卡。API 返回的 `monthly_metrics` 只允许作为传输上下文、调试信息或后端对照信息，不得作为前端展示指标的计算来源。
+前端展示指标的唯一事实源是 Dashboard 返回的预测明细行。前端必须按 `target_date` 把明细行归属到月份，再调用统一的明细指标计算逻辑生成月度表、候选排行、趋势图和汇总卡。
 
 ## 7. 前端展示规则
 

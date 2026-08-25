@@ -33,22 +33,18 @@ def persist_harness_run_start(
     """记录 harness run 开始；DB 不可用时返回 False，由编排层阻断。"""
 
     def operation(engine) -> None:
-        cfg = ctx.config
         sql = text(
             """
             INSERT INTO t_harness_runs
                 (harness_run_id, scheme_id, scheme_version, stage, status, started_at,
-                 triggered_by, project_root, git_commit, code_hash, config_hash, report_uri)
+                 git_commit, report_uri)
             VALUES
                 (:harness_run_id, :scheme_id, :scheme_version, :stage, 'running', :started_at,
-                 :triggered_by, :project_root, :git_commit, :code_hash, :config_hash, :report_uri)
+                 :git_commit, :report_uri)
             ON DUPLICATE KEY UPDATE
                 stage = VALUES(stage),
                 status = VALUES(status),
                 started_at = VALUES(started_at),
-                project_root = VALUES(project_root),
-                code_hash = VALUES(code_hash),
-                config_hash = VALUES(config_hash),
                 report_uri = VALUES(report_uri)
             """
         )
@@ -61,11 +57,7 @@ def persist_harness_run_start(
                     "scheme_version": _ctx_scheme_version(ctx),
                     "stage": stage,
                     "started_at": _mysql_datetime(started_at),
-                    "triggered_by": "harness",
-                    "project_root": str(ctx.project_root),
                     "git_commit": _release_commit(),
-                    "code_hash": getattr(cfg, "code_hash", None),
-                    "config_hash": getattr(cfg, "config_hash", None),
                     "report_uri": str(ctx.report_dir),
                 },
             )
@@ -181,7 +173,7 @@ def _result_summary(result: GateResult) -> dict:
     return {
         "passed": result.passed,
         "evidence": [
-            {"key": item.key, "value": _jsonable(item.value), "detail": item.detail}
+            {"key": item.key, "value": _jsonable(item.value)}
             for item in result.evidence
         ],
         "errors": result.errors,

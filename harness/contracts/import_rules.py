@@ -597,10 +597,7 @@ def _tainted_source_return_violations(
             self.generic_visit(node)
             self.function_stack.pop()
 
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            self.function_stack.append(node.name)
-            self.generic_visit(node)
-            self.function_stack.pop()
+        visit_AsyncFunctionDef = visit_FunctionDef
 
         def visit_Return(self, node: ast.Return) -> None:
             source_kind = _tainted_external_source_kind(node.value, tainted_names)

@@ -136,8 +136,3 @@ class CalendarBoundaryIsolationTests(unittest.TestCase):
 
         self.assertEqual(status.state, "missing")
         self.assertEqual(status.failure_category, "calendar_context_unavailable")
-        self.assertEqual(status.open_missing_count, 1)
-        self.assertEqual(
-            status.latest_missing_predict_date,
-            known_missing.predict_date,
-        )

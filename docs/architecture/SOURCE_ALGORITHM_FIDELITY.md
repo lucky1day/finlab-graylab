@@ -72,7 +72,7 @@ Native source-backed 存量方案修复或复核时，所有改动必须先分�
 - **特征、VT 或内部 score 映射被替换**：5Y01/V31 中改变 `build_bond_features` 列顺序、`vt_mode=seasonal`、weekly last-trading-day ffill、`vs_full` score 映射或 baseline dir 映射，都会造成内部数值不一致。修复方式是按 source 构造顺序和 source pkl score 口径恢复。
 - **raw source batch 与 live-safe 混用**：把固定 `source_end=2026-06-10` 的 source batch 边界样本当成 live 逐日内部数值真值，会把正常口径差异误判为算法错误。修复方式是 historical/source-original 与 live-safe 分开验收。
 
-若出现方向一致但内部 `vote_score`、baseline `*_score/*_vs`、`*_dir/*_sign` 或 probability/confidence 不一致，不能先写“通过”。首次技术入库、或差异仍可能是 L0/L1/L2 当前算法问题时，必须先定位属于 L0 数据/导出差异、L1 上下文误传，还是 L2 算法内部误改；未完成分级和归因前，不得进入 backtest persist、live repair 或 activation。已有首次技术入库后已归因的历史输入 vintage 漂移除外：它只能在匹配 prior `static.business_identity` 的后续维护路径中归档，不能被重写为 current benchmark pass，也不是满足该身份前提的同一业务身份修订的独立阻断项。
+若出现方向一致但内部 `vote_score`、baseline `*_score/*_vs`、`*_dir/*_sign` 或 probability/confidence 不一致，不能先写“通过”。首次技术入库、或差异仍可能是 L0/L1/L2 当前算法问题时，必须先定位属于 L0 数据/导出差异、L1 上下文误传，还是 L2 算法内部误改；未完成分级和归因前，不得进入 backtest persist、`signal-gap-fill` 或 activation。已有首次技术入库后已归因的历史输入 vintage 漂移除外：它只能在匹配 prior `static.business_identity` 的后续维护路径中归档，不能被重写为 current benchmark pass，也不是满足该身份前提的同一业务身份修订的独立阻断项。
 
 ## 3. Source 口径分类
 

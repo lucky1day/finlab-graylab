@@ -216,15 +216,12 @@
   var factorLabRuntimeState = {
     loadSeq: 0,
     controller: null,
-    capability: "unknown",
     committedViewModel: null,
-    stale: false,
     consecutiveFailures: 0,
     nextRefreshAt: 0,
     refreshTimer: null,
     visibilityBound: false,
-    aggregateCache: new Map(),
-    committedAt: 0
+    aggregateCache: new Map()
   };
   window.__factorLabReady = null;
 
@@ -388,75 +385,20 @@
     var dailyRows = liveScheme && liveScheme.dailyRowsByMonth || {};
     Object.keys(dailyRows).forEach(function (month) {
       (dailyRows[month] || []).forEach(function (row) {
-        var targetDate = normalizeIsoDate(
-          row && (row.targetDate || row.target_date || "")
-        );
+        var targetDate = normalizeIsoDate(row && row.targetDate);
         if (targetDate) targetDates.push(targetDate);
       });
     });
     (liveScheme && liveScheme.phaseRanges || []).forEach(function (range) {
-      var targetDate = normalizeIsoDate(
-        range && (range.start_target_date || range.startTargetDate || "")
-      );
+      var targetDate = normalizeIsoDate(range && range.start_target_date);
       if (targetDate) targetDates.push(targetDate);
     });
     targetDates.sort();
     return targetDates.length ? targetDates[0] : "";
   }
 
-  function updateBacktestMonthRange(scheme) {
-    var months = (scheme.monthlyRows || []).filter(function (row) {
-      return row._source === "backtest" && row.month;
-    }).map(function (row) {
-      return row.month;
-    }).sort();
-    scheme.backtestStartMonth = months.length ? months[0] : "";
-    scheme.backtestEndMonth = months.length ? months[months.length - 1] : "";
-  }
-
-  function trimBacktestAtLiveStart(scheme, liveScheme) {
-    var cutoffTargetDate = liveBacktestCutoffTargetDate(liveScheme);
-    if (!cutoffTargetDate) return;
-    var dailyByMonth = scheme.dailyRowsByMonth || {};
-    Object.keys(dailyByMonth).forEach(function (month) {
-      dailyByMonth[month] = (dailyByMonth[month] || []).filter(function (row) {
-        if (row._source !== "backtest") return true;
-        var targetDate = normalizeIsoDate(
-          row && (row.targetDate || row.target_date || "")
-        );
-        return Boolean(targetDate) && targetDate < cutoffTargetDate;
-      });
-      if (!dailyByMonth[month].length) delete dailyByMonth[month];
-    });
-    var backtestRowsByMonth = {};
-    Object.keys(dailyByMonth).forEach(function (month) {
-      var backtestRows = (dailyByMonth[month] || []).filter(function (row) {
-        return row._source === "backtest";
-      });
-      if (backtestRows.length) backtestRowsByMonth[month] = backtestRows;
-    });
-    var backtestMonthlyRows = monthlyRowsFromGroupedDetails(backtestRowsByMonth).map(
-      function (row) {
-        row._source = "backtest";
-        return row;
-      }
-    );
-    scheme.monthlyRows = (scheme.monthlyRows || []).filter(function (row) {
-      return row._source !== "backtest";
-    }).concat(backtestMonthlyRows).sort(function (left, right) {
-      return String(left.month || "").localeCompare(String(right.month || ""));
-    });
-    updateBacktestMonthRange(scheme);
-  }
-
   function liveDividerText(scheme, task) {
-    var deploymentValue = scheme && (
-      scheme.deploymentIsoDate ||
-      scheme.deployedAt ||
-      scheme.deployed_at ||
-      scheme.deployment_date ||
-      scheme.deploymentDate
-    );
+    var deploymentValue = scheme && scheme.deploymentDate;
     var deploymentDate = normalizeIsoDate(
       String(deploymentValue || "").replace(/\//g, "-")
     );
@@ -465,8 +407,8 @@
     Object.keys(dailyRows).forEach(function (month) {
       (dailyRows[month] || []).forEach(function (row) {
         if (!row || row._source !== "live") return;
-        var predictDate = normalizeIsoDate(row.predictDate || row.predict_date);
-        var targetDate = normalizeIsoDate(row.targetDate || row.target_date);
+        var predictDate = normalizeIsoDate(row.predictDate);
+        var targetDate = normalizeIsoDate(row.targetDate);
         if (deploymentDate && predictDate > deploymentDate && targetDate) {
           candidates.push({ predictDate: predictDate, targetDate: targetDate });
         }
@@ -499,27 +441,18 @@
   }
 
   function getSchemeDeploymentDate(scheme) {
-    return formatDeploymentDate(
-      scheme && (
-        scheme.deploymentDate ||
-        scheme.deployedAt ||
-        scheme.deployed_at ||
-        scheme.deployment_date
-      )
-    );
+    return formatDeploymentDate(scheme && scheme.deploymentDate);
   }
 
   function requireSchemeDeploymentDate(scheme, context) {
     var value = getSchemeDeploymentDate(scheme);
     if (value) return value;
-    var id = scheme && (scheme.schemeId || scheme.scheme_id || scheme.id || scheme.base_scheme_id || scheme.name);
+    var id = scheme && (scheme.schemeId || scheme.name);
     throw new Error((context || "scheme") + " missing deployed_at for " + (id || "unknown"));
   }
 
   function getSchemeRemark(scheme) {
-    return String((scheme && (
-      scheme.remark || scheme.note || scheme.notes || scheme.description
-    )) || "").trim();
+    return String((scheme && scheme.remark) || "").trim();
   }
 
   function getTaskKey(target, column) {
@@ -530,26 +463,15 @@
     return factorTargetLabels[target] || target;
   }
 
-  function mergeTargetLabels(labels) {
-    Object.keys(labels || {}).forEach(function (target) {
-      if (labels[target]) factorTargetLabels[target] = String(labels[target]);
-    });
-  }
-
   function getTaskByKey(taskKey) {
     var parts = String(taskKey || "").split("|");
     var column = factorTaskColumns.filter(function (item) {
       return item.taskType === parts[1];
     })[0] || factorTaskColumns[0];
     return {
-      key: taskKey,
-      target: parts[0] || "3Y",
-      targetLabel: getTargetDisplayName(parts[0] || "3Y"),
       frequency: column.frequency,
-      horizon: column.horizon,
       taskType: column.taskType,
-      label: getTargetDisplayName(parts[0] || "3Y") + " · " + column.label,
-      columnLabel: column.label
+      label: getTargetDisplayName(parts[0] || "3Y") + " · " + column.label
     };
   }
 
@@ -616,20 +538,6 @@
     throw new Error(context + " requires metricSamples");
   }
 
-  function getSchemeDisplayName(scheme) {
-    return String((scheme && (scheme.display_name || scheme.name || scheme.scheme_name)) || "--");
-  }
-
-  function detailGroupMonth(row, frequency, horizon, taskType) {
-    var sourceDate = row.target_date || "";
-    return targetDisplayMonth(sourceDate, taskType);
-  }
-
-  function detailDisplayDay(row, frequency, horizon) {
-    var sourceDate = row.target_date || "";
-    return String(sourceDate).slice(5, 10).replace("-", "/");
-  }
-
   function shortDateLabel(value, fallback) {
     var normalized = normalizeIsoDate(value);
     if (normalized) return normalized.slice(5).replace("-", "/");
@@ -642,55 +550,17 @@
     return '<td class="mono" title="' + escapeHtml(title) + '">' + escapeHtml(label) + '</td>';
   }
 
-  function dailyRowsByMonth(rows, frequency, horizon, taskType) {
-    var grouped = {};
-    (rows || []).forEach(function (row) {
-      if (!isFactorLabDisplayRow(row)) return;
-      var month = detailGroupMonth(row, frequency, horizon, taskType);
-      if (!month) return;
-      if (!grouped[month]) grouped[month] = [];
-      var predictedDirection = normalizeDirection(row.predicted_direction);
-      var actualDirection = normalizeDirection(row.actual_direction);
-      var isCorrect = row.is_correct;
-      if (isCorrect === undefined || isCorrect === null) {
-        isCorrect = actualDirection === null || predictedDirection === null ? null : predictedDirection === actualDirection;
-      }
-      grouped[month].push({
-        day: detailDisplayDay(row, frequency, horizon),
-        predictDate: row.predict_date || "",
-        featureDate: row.feature_date || "",
-        targetDate: row.target_date || "",
-        targetMonth: month,
-        predictionPhase: row.prediction_phase || "",
-        runId: row.run_id || null,
-        schemeVersion: row.scheme_version || "",
-        inputArtifactHash: row.input_artifact_hash || "",
-        confidence: row.confidence === null || row.confidence === undefined ? null : Number(row.confidence),
-        predicted: directionText(predictedDirection),
-        actual: directionText(actualDirection),
-        predictedDirection: predictedDirection,
-        actualDirection: actualDirection,
-        correct: isCorrect === null ? null : Boolean(isCorrect)
-      });
-    });
-    return grouped;
-  }
-
   function isFactorLabDisplayRow(row) {
-    var predictDate = normalizeIsoDate(
-      row && (row.predictDate || row.predict_date || "")
-    );
+    var predictDate = normalizeIsoDate(row && row.predictDate);
     return Boolean(predictDate) &&
       predictDate >= FACTOR_LAB_HISTORY_START_DATE;
   }
 
-  function directionCounts(rows, key, metricOnly) {
+  function directionCounts(rows, key) {
     var counts = { up: 0, down: 0, flat: 0 };
     (rows || []).forEach(function (row) {
-      var predicted = normalizeDirection(row.predictedDirection);
       var value = normalizeDirection(row[key]);
       if (value === null) return;
-      if (metricOnly && predicted !== 1 && predicted !== -1) return;
       if (value === 1) counts.up += 1;
       else if (value === -1) counts.down += 1;
       else if (value === 0) counts.flat += 1;
@@ -700,20 +570,14 @@
 
   function metricRowFromSampleRows(month, rows) {
     var metric = metricFromSampleRows(rows);
-    var actualCounts = directionCounts(rows, "actualDirection", false);
-    var predictedCounts = directionCounts(rows, "predictedDirection", false);
-    var metricActualCounts = directionCounts(rows, "actualDirection", true);
-    var metricPredictedCounts = directionCounts(rows, "predictedDirection", true);
+    var actualCounts = directionCounts(rows, "actualDirection");
+    var predictedCounts = directionCounts(rows, "predictedDirection");
     return {
       month: month,
       samples: metric.samples,
       metricSamples: metric.metricSamples,
       actualDist: distText(actualCounts),
       predictedDist: distText(predictedCounts),
-      actualCounts: actualCounts,
-      predictedCounts: predictedCounts,
-      metricActualCounts: metricActualCounts,
-      metricPredictedCounts: metricPredictedCounts,
       overall: metric.overall,
       correct: metric.correct,
       upPrecision: metric.upPrecision,
@@ -738,27 +602,7 @@
     })[0] || null;
   }
 
-  function columnForScheme(scheme) {
-    var context = "scheme " + ((scheme && (scheme.scheme_id || scheme.base_scheme_id || scheme.name)) || "unknown");
-    var taskType = String((scheme && scheme.task_type) || "").trim();
-    if (!taskType) {
-      throw new Error(context + " missing task_type");
-    }
-    var column = columnForTaskType(taskType);
-    if (!column) {
-      throw new Error(context + " invalid task_type: " + taskType);
-    }
-    return column;
-  }
-
-  function normalizeBackendSchemeStatus(status) {
-    if (status === "active") return "active";
-    if (status === "paused") return "paused";
-    if (status === "archived") return "archived";
-    return status || "complete";
-  }
-
-  var DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v1";
+  var DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v2";
   var DASHBOARD_ROW_FIELDS = [
     "predict_date",
     "feature_date",
@@ -772,8 +616,6 @@
     "snapshot_id",
     "generated_at",
     "display_until",
-    "stale",
-    "snapshot_age_ms",
     "row_fields",
     "target_labels",
     "schemes"
@@ -790,7 +632,6 @@
     "target_label",
     "status",
     "deployed_at",
-    "owner",
     "signal_status",
     "signal_failure_category",
     "live_rows",
@@ -827,7 +668,7 @@
     if (actual.length !== required.length || actual.some(function (field, index) {
       return field !== required[index];
     })) {
-      throw dashboardDataError(context + " fields must match v1 exactly");
+      throw dashboardDataError(context + " fields must match v2 exactly");
     }
   }
 
@@ -967,16 +808,14 @@
         payload.row_fields.some(function (field, index) {
           return field !== DASHBOARD_ROW_FIELDS[index];
         }) || new Set(payload.row_fields).size !== payload.row_fields.length) {
-      throw dashboardDataError("row_fields must match v1 exactly");
+      throw dashboardDataError("row_fields must match v2 exactly");
     }
     var snapshotId = requireDashboardString(payload.snapshot_id, "snapshot_id", false);
     if (!DASHBOARD_SNAPSHOT_ID_PATTERN.test(snapshotId)) {
       throw dashboardDataError("snapshot_id must be canonical");
     }
-    var generatedAt = requireDashboardAwareDateTime(payload.generated_at, "generated_at");
-    var displayUntil = requireDashboardIsoDate(payload.display_until, "display_until");
-    if (typeof payload.stale !== "boolean") throw dashboardDataError("stale must be boolean");
-    var snapshotAgeMs = requireDashboardInteger(payload.snapshot_age_ms, "snapshot_age_ms", 0);
+    requireDashboardAwareDateTime(payload.generated_at, "generated_at");
+    requireDashboardIsoDate(payload.display_until, "display_until");
 
     if (!isDashboardObject(payload.target_labels)) {
       throw dashboardDataError("target_labels must be an object");
@@ -1013,6 +852,7 @@
       if (DASHBOARD_TASK_TYPES.indexOf(scheme.task_type) === -1) {
         throw dashboardDataError(context + ".task_type is invalid");
       }
+      requireDashboardString(scheme.frequency, context + ".frequency", false);
       if (scheme.status !== "active") throw dashboardDataError(context + ".status must be active");
       if (DASHBOARD_SIGNAL_STATUSES.indexOf(scheme.signal_status) === -1) {
         throw dashboardDataError(context + ".signal_status is invalid");
@@ -1037,16 +877,11 @@
       }
       var decodedScheme = {
         schemeId: schemeId,
-        baseSchemeId: baseSchemeId,
         name: requireDashboardString(scheme.name, context + ".name", false),
-        owner: requireDashboardString(scheme.owner, context + ".owner", true),
         description: scheme.description,
-        horizon: horizon,
         taskType: scheme.task_type,
-        frequency: requireDashboardString(scheme.frequency, context + ".frequency", false),
-        targetTenor: targetTenor,
-        targetLabel: targetLabel,
         status: scheme.status,
+        targetTenor: targetTenor,
         deployedAt: requireDashboardIsoDate(scheme.deployed_at, context + ".deployed_at"),
         signalStatus: scheme.signal_status,
         signalFailureCategory: signalFailureCategory,
@@ -1055,21 +890,21 @@
       };
       if (scheme.backtest !== null) {
         requireExactDashboardFields(scheme.backtest, DASHBOARD_BACKTEST_FIELDS, context + ".backtest");
+        requireDashboardString(
+          scheme.backtest.benchmark_id, context + ".backtest.benchmark_id", false
+        );
+        requireDashboardString(
+          scheme.backtest.data_source, context + ".backtest.data_source", false
+        );
+        requireDashboardIsoDate(
+          scheme.backtest.latest_run_date, context + ".backtest.latest_run_date"
+        );
         decodedScheme.backtest = {
-          benchmarkId: requireDashboardString(
-            scheme.backtest.benchmark_id, context + ".backtest.benchmark_id", false
-          ),
           benchmarkLabel: requireDashboardString(
             scheme.backtest.benchmark_label, context + ".backtest.benchmark_label", false
           ),
-          dataSource: requireDashboardString(
-            scheme.backtest.data_source, context + ".backtest.data_source", false
-          ),
           dataSourceLabel: requireDashboardString(
             scheme.backtest.data_source_label, context + ".backtest.data_source_label", false
-          ),
-          latestRunDate: requireDashboardIsoDate(
-            scheme.backtest.latest_run_date, context + ".backtest.latest_run_date"
           ),
           rows: decodeDashboardRows(
             scheme.backtest.rows, "backtest", context + ".backtest.rows"
@@ -1080,12 +915,7 @@
     });
 
     return {
-      schemaVersion: payload.schema_version,
       snapshotId: snapshotId,
-      generatedAt: generatedAt,
-      displayUntil: displayUntil,
-      stale: payload.stale,
-      snapshotAgeMs: snapshotAgeMs,
       targetLabels: targetLabels,
       schemes: schemes
     };
@@ -1157,39 +987,6 @@
     }).filter(Boolean);
   }
 
-  function factorLabVisiblePhaseRanges(phaseRanges, visibleDailyRows) {
-    var derivedByPhase = Object.create(null);
-    deriveDashboardPhaseRanges(
-      visibleDailyRows.map(function (row) {
-        return {
-          predictionPhase: row.prediction_phase || "",
-          predictDate: row.predict_date || "",
-          targetDate: row.target_date || ""
-        };
-      })
-    ).forEach(function (range) {
-      derivedByPhase[range.prediction_phase] = range;
-    });
-    (phaseRanges || []).forEach(function (range) {
-      var phase = String(range.prediction_phase || "");
-      var startPredictDate = normalizeIsoDate(range.start_predict_date);
-      var endPredictDate = normalizeIsoDate(range.end_predict_date);
-      if (DASHBOARD_LIVE_PHASES.indexOf(phase) === -1 ||
-          !startPredictDate ||
-          !endPredictDate ||
-          endPredictDate < FACTOR_LAB_HISTORY_START_DATE ||
-          derivedByPhase[phase]) {
-        return;
-      }
-      if (startPredictDate >= FACTOR_LAB_HISTORY_START_DATE) {
-        derivedByPhase[phase] = range;
-      }
-    });
-    return DASHBOARD_LIVE_PHASES.map(function (phase) {
-      return derivedByPhase[phase] || null;
-    }).filter(Boolean);
-  }
-
   function appendDashboardGroupedRows(destination, grouped) {
     Object.keys(grouped).sort().forEach(function (month) {
       if (!destination[month]) destination[month] = [];
@@ -1210,7 +1007,6 @@
         ? scheme.backtest.rows.filter(isFactorLabDisplayRow)
         : [];
       var liveGrouped = groupDashboardDetails(liveRows, scheme.taskType);
-      var livePredictDates = liveRows.map(function (row) { return row.predictDate; }).sort();
       var phaseRanges = deriveDashboardPhaseRanges(liveRows);
       var cutoffTargetDate = liveBacktestCutoffTargetDate({
         dailyRowsByMonth: liveGrouped,
@@ -1244,36 +1040,25 @@
         var sourceRank = { backtest: 0, live: 1 };
         return a.month.localeCompare(b.month) || sourceRank[a._source] - sourceRank[b._source];
       });
-      var backtestMonths = Object.keys(backtestGrouped).sort();
       tasks[taskKey].push({
         id: scheme.schemeId,
         schemeId: scheme.schemeId,
-        schemeName: scheme.baseSchemeId,
         taskType: scheme.taskType,
         taskKey: taskKey,
         targetTenor: scheme.targetTenor,
         column: column.id,
         name: scheme.name,
-        owner: scheme.owner || "",
         description: scheme.description,
         status: scheme.status,
         signalStatus: scheme.signalStatus,
         signalFailureCategory: scheme.signalFailureCategory,
-        latestRun: livePredictDates.length
-          ? livePredictDates[livePredictDates.length - 1].slice(5)
-          : (scheme.backtest ? scheme.backtest.latestRunDate.slice(5) : "--"),
         deploymentDate: formatDeploymentDate(scheme.deployedAt),
         remark: scheme.description,
         monthlyRows: monthlyRows,
         dailyRowsByMonth: dailyRowsByMonth,
-        liveSinceDate: livePredictDates.length ? livePredictDates[0] : "",
-        liveMetricSinceDate: livePredictDates.length ? livePredictDates[0] : "",
         phaseRanges: phaseRanges,
         benchmarkLabel: scheme.backtest ? scheme.backtest.benchmarkLabel : "",
-        dataSourceLabel: scheme.backtest ? scheme.backtest.dataSourceLabel : "",
-        backtestLatestRunDate: scheme.backtest ? scheme.backtest.latestRunDate : "",
-        backtestStartMonth: backtestMonths.length ? backtestMonths[0] : "",
-        backtestEndMonth: backtestMonths.length ? backtestMonths[backtestMonths.length - 1] : ""
+        dataSourceLabel: scheme.backtest ? scheme.backtest.dataSourceLabel : ""
       });
     });
     Object.keys(tasks).forEach(function (taskKey) {
@@ -1283,10 +1068,6 @@
     });
     return {
       snapshotId: decoded.snapshotId,
-      generatedAt: decoded.generatedAt,
-      displayUntil: decoded.displayUntil,
-      stale: decoded.stale,
-      snapshotAgeMs: decoded.snapshotAgeMs,
       targetLabels: decoded.targetLabels,
       tasks: tasks
     };
@@ -1315,42 +1096,6 @@
     });
   }
 
-  function hasPopulatedTasks(tasks) {
-    return Object.keys(tasks || {}).some(function (key) {
-      return (tasks[key] || []).length > 0;
-    });
-  }
-
-  function finishFactorLabDataLoad(tasks, mode, targetLabels) {
-    validateFactorLabTasksForCommit(tasks);
-    var nextTargetLabels = Object.assign(Object.create(null), factorDefaultTargetLabels);
-    Object.keys(targetLabels || {}).forEach(function (target) {
-      if (targetLabels[target]) nextTargetLabels[target] = String(targetLabels[target]);
-    });
-    factorTargetLabels = nextTargetLabels;
-    factorTaskSchemes = tasks;
-    factorLabRemoteLoaded = true;
-    factorLabRemoteLoading = false;
-    factorLabApiError = "";
-    factorLabDataMode = mode;
-    factorLabRuntimeState.aggregateCache.clear();
-    var availableTasks = Object.keys(factorTaskSchemes).filter(function (key) {
-      return factorTaskSchemes[key].length > 0;
-    });
-    if (
-      availableTasks.length &&
-      (!factorTaskSchemes[factorLabState.selectedTaskKey] || !factorTaskSchemes[factorLabState.selectedTaskKey].length)
-    ) {
-      factorLabState.selectedTaskKey = availableTasks[0];
-    }
-    syncFactorMonthRange();
-    var months = getFactorAvailableMonths();
-    if (months.length && !factorLabState.endMonthPinned) {
-      factorLabState.endMonth = months[months.length - 1];
-    }
-    renderFactorLab();
-  }
-
   function validateFactorLabTasksForCommit(tasks) {
     Object.keys(tasks || {}).forEach(function (taskKey) {
       (tasks[taskKey] || []).forEach(function (scheme) {
@@ -1365,116 +1110,6 @@
         }
       });
     });
-  }
-
-  function buildBacktestTaskSchemes(payload) {
-    mergeTargetLabels(payload.target_labels);
-    var tasks = initEmptyTaskSchemes();
-    (payload.schemes || []).forEach(function (scheme) {
-      var column = columnForScheme(scheme);
-      var targetTenor = scheme.target_tenor || "";
-      if (!targetTenor) return;
-      if (scheme.target_label) factorTargetLabels[targetTenor] = String(scheme.target_label);
-      var taskKey = getTaskKey(targetTenor, column);
-      if (!tasks[taskKey]) tasks[taskKey] = [];
-      var groupedDailyRows = dailyRowsByMonth(
-        scheme.daily_rows || [], scheme.frequency, scheme.horizon, scheme.task_type
-      );
-      if ((!scheme.daily_rows || !scheme.daily_rows.length) && scheme.monthly_metrics && scheme.monthly_metrics.length) {
-        throw new Error("backtest scheme " + (scheme.scheme_id || "") + " has monthly_metrics but no detail rows");
-      }
-      var monthlyRows = monthlyRowsFromGroupedDetails(groupedDailyRows);
-      var latestRun = scheme.latest_run && scheme.latest_run.date
-        ? scheme.latest_run.date.slice(5)
-        : (scheme.end_date ? scheme.end_date.slice(5) : "--");
-      tasks[taskKey].push({
-        id: scheme.id,
-        taskKey: taskKey,
-        name: String(scheme.scheme_name || getSchemeDisplayName(scheme)),
-        schemeId: scheme.scheme_id || "",
-        schemeName: scheme.base_scheme_id || scheme.scheme_name || scheme.name || scheme.scheme_id || "",
-        taskType: scheme.task_type,
-        benchmarkLabel: scheme.benchmark_label || scheme.benchmark_id || "",
-        dataSourceLabel: scheme.data_source_label || scheme.data_source || "",
-        status: normalizeBackendSchemeStatus(scheme.status),
-        latestRun: latestRun,
-        deploymentDate: requireSchemeDeploymentDate(scheme, "backtest scheme"),
-        remark: getSchemeRemark(scheme),
-        monthlyRows: monthlyRows,
-        dailyRowsByMonth: groupedDailyRows
-      });
-    });
-    return tasks;
-  }
-
-  function latestRunFromMetricRows(rows) {
-    var dates = (rows || []).map(function (row) {
-      return row.predict_date || row.predictDate || row.target_date || row.targetDate || "";
-    }).filter(Boolean).sort();
-    return dates.length ? String(dates[dates.length - 1]).slice(5) : "--";
-  }
-
-  function buildLiveTaskSchemes(payload, metricsByKey) {
-    if (payload && !Array.isArray(payload)) mergeTargetLabels(payload.target_labels);
-    var schemes = Array.isArray(payload) ? payload : (payload.schemes || []);
-    var tasks = initEmptyTaskSchemes();
-    schemes.forEach(function (scheme) {
-      var column = columnForScheme(scheme);
-      var targetTenor = scheme.target_tenor || "";
-      if (!targetTenor) return;
-      var metrics = metricsByKey[scheme.scheme_id] || {};
-      if (metrics.target_label) factorTargetLabels[targetTenor] = String(metrics.target_label);
-      var visibleDailyRows = (metrics.daily_rows || []).filter(
-        isFactorLabDisplayRow
-      );
-      var groupedDailyRows = dailyRowsByMonth(
-        visibleDailyRows,
-        scheme.frequency,
-        scheme.horizon,
-        scheme.task_type
-      );
-      if ((!metrics.daily_rows || !metrics.daily_rows.length) && metrics.monthly_metrics && metrics.monthly_metrics.length) {
-        throw new Error("live scheme " + (scheme.scheme_id || "") + " has monthly_metrics but no detail rows");
-      }
-      var monthlyRows = monthlyRowsFromGroupedDetails(groupedDailyRows);
-      var liveSinceDate = "";
-      var liveMetricSinceDate = "";
-      if (visibleDailyRows.length) {
-        var dates = visibleDailyRows.map(function (r) {
-          return r.predict_date || "";
-        }).filter(Boolean).sort();
-        liveSinceDate = dates[0] || "";
-        var metricDates = visibleDailyRows.map(function (r) {
-          return r.predict_date || r.target_date || "";
-        }).filter(Boolean).sort();
-        liveMetricSinceDate = metricDates[0] || liveSinceDate;
-      }
-      var phaseRanges = factorLabVisiblePhaseRanges(
-        metrics.phase_ranges || [],
-        visibleDailyRows
-      );
-      var taskKey = getTaskKey(targetTenor, column);
-      if (!tasks[taskKey]) tasks[taskKey] = [];
-      tasks[taskKey].push({
-        id: scheme.scheme_id,
-        schemeId: scheme.scheme_id,
-        taskKey: taskKey,
-        targetTenor: targetTenor,
-        taskType: scheme.task_type,
-        column: column.id,
-        name: scheme.name,
-        status: normalizeBackendSchemeStatus(scheme.status),
-        latestRun: latestRunFromMetricRows(visibleDailyRows),
-        deploymentDate: requireSchemeDeploymentDate(scheme, "live scheme"),
-        remark: getSchemeRemark(scheme),
-        monthlyRows: monthlyRows,
-        dailyRowsByMonth: groupedDailyRows,
-        liveSinceDate: liveSinceDate,
-        liveMetricSinceDate: liveMetricSinceDate,
-        phaseRanges: phaseRanges
-      });
-    });
-    return tasks;
   }
 
   function factorLabNow() {
@@ -1503,122 +1138,6 @@
     }, delayMs);
   }
 
-  function isDashboardUnsupported(error) {
-    if (!error || error.name !== "FactorLabHttpError") return false;
-    if (error.status === 404) return true;
-    return error.status === 501 && error.body && error.body.detail &&
-      error.body.detail.code === "dashboard_not_supported";
-  }
-
-  function wrapLegacyAttempt(promise) {
-    return promise.then(
-      function (value) { return { ok: true, value: value }; },
-      function (error) { return { ok: false, error: error }; }
-    );
-  }
-
-  function isFactorLabAbortError(error) {
-    return Boolean(error && error.name === "AbortError");
-  }
-
-  function createLegacyRequestGroup(parentSignal) {
-    var childController = window.AbortController ? new window.AbortController() : null;
-    var firstError = null;
-    var onParentAbort = function () {
-      if (childController && !childController.signal.aborted) {
-        childController.abort();
-      }
-    };
-    if (childController && parentSignal) {
-      if (parentSignal.aborted) onParentAbort();
-      else if (parentSignal.addEventListener) parentSignal.addEventListener("abort", onParentAbort);
-    }
-    return {
-      signal: childController ? childController.signal : parentSignal,
-      fail: function (error) {
-        if (isFactorLabAbortError(error) || firstError) return;
-        firstError = error;
-        if (childController && !childController.signal.aborted) childController.abort();
-      },
-      firstError: function () { return firstError; },
-      cleanup: function () {
-        if (childController && parentSignal && parentSignal.removeEventListener) {
-          parentSignal.removeEventListener("abort", onParentAbort);
-        }
-      }
-    };
-  }
-
-  function fetchLegacyFactorLabCandidate(signal, seq) {
-    var responses = Object.create(null);
-    var requestGroup = createLegacyRequestGroup(signal);
-    var groupSignal = requestGroup.signal;
-    var liveAttempt = wrapLegacyAttempt(
-      fetchJson("/api/schemes", { signal: groupSignal }).then(function (schemesPayload) {
-        var schemes = Array.isArray(schemesPayload)
-          ? schemesPayload
-          : ((schemesPayload && schemesPayload.schemes) || []);
-        var metricRequests = schemes.map(function (scheme) {
-          columnForScheme(scheme);
-          if (!scheme.scheme_id || !scheme.target_tenor) return Promise.resolve(null);
-          var metricsPath = "/api/metrics/" + encodeURIComponent(scheme.scheme_id);
-          return fetchJson(metricsPath, { signal: groupSignal }).then(function (metrics) {
-            return { path: metricsPath, payload: metrics };
-          });
-        });
-        return Promise.all(metricRequests).then(function (metrics) {
-          return { schemes: schemesPayload, metrics: metrics.filter(Boolean) };
-        });
-      }).catch(function (error) {
-        requestGroup.fail(error);
-        throw error;
-      })
-    );
-    var backtestAttempt = wrapLegacyAttempt(
-      fetchJson("/api/backtests/factor-lab", { signal: groupSignal }).catch(function (error) {
-        requestGroup.fail(error);
-        throw error;
-      })
-    );
-
-    var result = Promise.all([liveAttempt, backtestAttempt]).then(function (attempts) {
-      if (seq !== factorLabRuntimeState.loadSeq) return null;
-      var live = attempts[0];
-      var backtest = attempts[1];
-      if (requestGroup.firstError()) throw requestGroup.firstError();
-      if (live.ok) {
-        responses["/api/schemes"] = live.value.schemes;
-        live.value.metrics.forEach(function (metric) {
-          responses[metric.path] = metric.payload;
-        });
-      }
-      if (backtest.ok) responses["/api/backtests/factor-lab"] = backtest.value;
-      if (!live.ok && !backtest.ok) throw live.error || backtest.error;
-      if (!live.ok && isFailClosedDataError(live.error)) throw live.error;
-      if (!backtest.ok && isFailClosedDataError(backtest.error)) throw backtest.error;
-      var viewModel = buildLegacyFactorLabViewModelForTest(responses);
-      return {
-        tasks: viewModel.tasks,
-        targetLabels: viewModel.targetLabels,
-        snapshotId: "legacy-" + seq,
-        snapshotAgeMs: 0,
-        stale: false,
-        source: "legacy",
-        mode: viewModel.mode
-      };
-    });
-    return result.then(
-      function (candidate) {
-        requestGroup.cleanup();
-        return candidate;
-      },
-      function (error) {
-        requestGroup.cleanup();
-        throw error;
-      }
-    );
-  }
-
   function dashboardFactorLabCandidate(payload) {
     var decoded = decodeDashboardPayload(payload);
     var viewModel = buildFactorLabViewModel(decoded);
@@ -1626,10 +1145,7 @@
       tasks: viewModel.tasks,
       targetLabels: viewModel.targetLabels,
       snapshotId: viewModel.snapshotId,
-      snapshotAgeMs: viewModel.snapshotAgeMs,
-      stale: false,
-      source: "dashboard",
-      mode: "dashboard"
+      source: "dashboard"
     };
   }
 
@@ -1689,8 +1205,6 @@
       apiError: factorLabApiError,
       dataMode: factorLabDataMode,
       committed: factorLabRuntimeState.committedViewModel,
-      stale: factorLabRuntimeState.stale,
-      committedAt: factorLabRuntimeState.committedAt,
       aggregateCache: factorLabRuntimeState.aggregateCache,
       ui: cloneFactorLabUiState(),
       drawer: factorLabDrawerSelection
@@ -1704,10 +1218,8 @@
       factorLabRemoteLoaded = true;
       factorLabRemoteLoading = false;
       factorLabApiError = "";
-      factorLabDataMode = candidate.mode;
+      factorLabDataMode = candidate.source;
       factorLabRuntimeState.committedViewModel = candidate;
-      factorLabRuntimeState.stale = false;
-      factorLabRuntimeState.committedAt = factorLabNow();
       factorLabRuntimeState.aggregateCache = nextCache;
 
       var availableTasks = Object.keys(factorTaskSchemes).filter(function (key) {
@@ -1739,8 +1251,6 @@
       factorLabApiError = previous.apiError;
       factorLabDataMode = previous.dataMode;
       factorLabRuntimeState.committedViewModel = previous.committed;
-      factorLabRuntimeState.stale = previous.stale;
-      factorLabRuntimeState.committedAt = previous.committedAt;
       factorLabRuntimeState.aggregateCache = previous.aggregateCache;
       factorLabDrawerSelection = previous.drawer;
       restoreFactorLabUiState(previous.ui);
@@ -1760,7 +1270,6 @@
         seq: seq,
         snapshotId: candidate.snapshotId,
         committedAt: factorLabNow(),
-        stale: false,
         source: candidate.source,
         mode: candidate.source,
         schemeCount: rowCounts.schemes,
@@ -1781,8 +1290,6 @@
     factorTaskSchemes = initEmptyTaskSchemes();
     factorTargetLabels = Object.assign(Object.create(null), factorDefaultTargetLabels);
     factorLabRuntimeState.committedViewModel = null;
-    factorLabRuntimeState.stale = false;
-    factorLabRuntimeState.committedAt = 0;
     factorLabRuntimeState.aggregateCache = new Map();
     factorLabDataMode = "error";
     closeFactorCalendar();
@@ -1816,28 +1323,13 @@
     renderFactorLabDataStatus();
     var signal = controller ? controller.signal : null;
 
-    var candidatePromise;
-    if (factorLabRuntimeState.capability === "legacy") {
-      candidatePromise = fetchLegacyFactorLabCandidate(signal, seq);
-    } else {
-      candidatePromise = fetchJson("/api/factor-lab/dashboard", { signal: signal })
-        .then(function (payload) {
-          if (seq !== factorLabRuntimeState.loadSeq) return null;
-          var candidate = dashboardFactorLabCandidate(payload);
-          if (seq === factorLabRuntimeState.loadSeq) {
-            factorLabRuntimeState.capability = "dashboard";
-          }
-          return candidate;
-        })
-        .catch(function (error) {
-          if (seq !== factorLabRuntimeState.loadSeq) throw error;
-          if (factorLabRuntimeState.capability === "unknown" && isDashboardUnsupported(error)) {
-            factorLabRuntimeState.capability = "legacy";
-            return fetchLegacyFactorLabCandidate(signal, seq);
-          }
-          throw error;
-        });
-    }
+    var candidatePromise = fetchJson(
+      "/api/factor-lab/dashboard",
+      { signal: signal }
+    ).then(function (payload) {
+      if (seq !== factorLabRuntimeState.loadSeq) return null;
+      return dashboardFactorLabCandidate(payload);
+    });
 
     return candidatePromise.then(function (candidate) {
       if (seq !== factorLabRuntimeState.loadSeq || !candidate) return false;
@@ -1849,206 +1341,6 @@
       factorLabRuntimeState.controller = null;
       return failFactorLabDataLoad(error, seq);
     });
-  }
-
-  function isFailClosedDataError(error) {
-    var message = String((error && error.message) || error || "");
-    return message.indexOf("missing deployed_at") !== -1 ||
-      message.indexOf("task_type") !== -1 ||
-      message.indexOf("has monthly_metrics but no detail rows") !== -1 ||
-      message.indexOf("requires metric_") !== -1 ||
-      message.indexOf("requires metricSamples") !== -1;
-  }
-
-  function mergeFactorLabTasks(backtestTasks, liveTasks) {
-    // 同一方案(scheme_id)的回测和实盘合并为一条记录,月度行加 _source 标记
-    var merged = initEmptyTaskSchemes();
-
-    // 先走回测(做底盘),再合实盘
-    if (backtestTasks) {
-      Object.keys(backtestTasks).forEach(function (taskKey) {
-        if (!merged[taskKey]) merged[taskKey] = [];
-        (backtestTasks[taskKey] || []).forEach(function (btScheme) {
-          var btRows = (btScheme.monthlyRows || []).map(function (r) {
-            var row = {};
-            Object.keys(r).forEach(function (k) { row[k] = r[k]; });
-            row._source = "backtest";
-            return row;
-          });
-          var btDaily = {};
-          (btScheme.dailyRowsByMonth ? Object.keys(btScheme.dailyRowsByMonth) : []).forEach(function (m) {
-            btDaily[m] = (btScheme.dailyRowsByMonth[m] || []).map(function (dr) {
-              var d = {}; Object.keys(dr).forEach(function (k) { d[k] = dr[k]; });
-              d._source = "backtest";
-              return d;
-            });
-          });
-          var btMonths = btRows.map(function (r) { return r.month; }).sort();
-          merged[taskKey].push({
-            id: btScheme.schemeId || btScheme.id,
-            schemeId: btScheme.schemeId || "",
-            taskKey: taskKey,
-            taskType: btScheme.taskType,
-            name: btScheme.name,
-            status: btScheme.status,
-            latestRun: btScheme.latestRun,
-            deploymentDate: requireSchemeDeploymentDate(btScheme, "backtest scheme"),
-            remark: btScheme.remark || "",
-            monthlyRows: btRows,
-            dailyRowsByMonth: btDaily,
-            benchmarkLabel: btScheme.benchmarkLabel || "",
-            dataSourceLabel: btScheme.dataSourceLabel || "",
-            backtestStartMonth: btMonths.length ? btMonths[0] : "",
-            backtestEndMonth: btMonths.length ? btMonths[btMonths.length - 1] : "",
-            liveSinceDate: "",
-            liveMetricSinceDate: ""
-          });
-        });
-      });
-    }
-
-    // 合入实盘:同 scheme_id 的合并月度数据,否则追加新条目
-    if (liveTasks) {
-      Object.keys(liveTasks).forEach(function (taskKey) {
-        if (!merged[taskKey]) merged[taskKey] = [];
-        (liveTasks[taskKey] || []).forEach(function (liveScheme) {
-          var liveSchemaId = liveScheme.schemeId || liveScheme.id || "";
-          var matched = false;
-          for (var i = 0; i < merged[taskKey].length; i++) {
-            var mScheme = merged[taskKey][i];
-            if (mScheme.schemeId && mScheme.schemeId === liveSchemaId) {
-              // 同方案:实盘行覆盖回测，补足独有月份
-              trimBacktestAtLiveStart(mScheme, liveScheme);
-              var btOnlyMonths = {};
-              mScheme.monthlyRows.forEach(function (r) {
-                if (r._source === "backtest") btOnlyMonths[r.month] = r;
-              });
-              (liveScheme.monthlyRows || []).forEach(function (lr) {
-                var lrCopy = {}; Object.keys(lr).forEach(function (k) { lrCopy[k] = lr[k]; });
-                lrCopy._source = "live";
-                if (mScheme.taskType === "monthly_average" && btOnlyMonths[lr.month]) {
-                  throw new Error(
-                    "monthly_average has conflicting backtest/live target month " + lr.month
-                  );
-                }
-                mScheme.monthlyRows.push(lrCopy);
-              });
-              mScheme.monthlyRows.sort(function (a, b) { return (a.month || "").localeCompare(b.month || ""); });
-              // daily 同理
-              (liveScheme.dailyRowsByMonth ? Object.keys(liveScheme.dailyRowsByMonth) : []).forEach(function (m) {
-                if (!mScheme.dailyRowsByMonth) mScheme.dailyRowsByMonth = {};
-                var existingRows = mScheme.dailyRowsByMonth[m] || [];
-                var liveRows = (liveScheme.dailyRowsByMonth[m] || []).map(function (dr) {
-                  var d = {}; Object.keys(dr).forEach(function (k) { d[k] = dr[k]; });
-                  d._source = "live";
-                  return d;
-                });
-                mScheme.dailyRowsByMonth[m] = existingRows.concat(liveRows);
-              });
-              mScheme.liveSinceDate = liveScheme.liveSinceDate || "";
-              mScheme.taskType = liveScheme.taskType || mScheme.taskType;
-              mScheme.liveMetricSinceDate = liveScheme.liveMetricSinceDate || liveScheme.liveSinceDate || "";
-              mScheme.phaseRanges = liveScheme.phaseRanges || [];
-              mScheme.latestRun = liveScheme.latestRun || mScheme.latestRun || "--";
-              mScheme.deploymentDate = requireSchemeDeploymentDate(
-                { schemeId: liveSchemaId, deploymentDate: liveScheme.deploymentDate || mScheme.deploymentDate },
-                "merged scheme"
-              );
-              mScheme.remark = liveScheme.remark || mScheme.remark || "";
-              matched = true;
-              break;
-            }
-          }
-          if (!matched) {
-            // 仅有实盘,无回测
-            var lrOnlyRows = (liveScheme.monthlyRows || []).map(function (r) {
-              var row = {}; Object.keys(r).forEach(function (k) { row[k] = r[k]; });
-              row._source = "live";
-              return row;
-            });
-            var lrOnlyDaily = {};
-            Object.keys(liveScheme.dailyRowsByMonth || {}).forEach(function (month) {
-              lrOnlyDaily[month] = (liveScheme.dailyRowsByMonth[month] || []).map(function (dr) {
-                var dailyRow = {};
-                Object.keys(dr).forEach(function (key) { dailyRow[key] = dr[key]; });
-                dailyRow._source = "live";
-                return dailyRow;
-              });
-            });
-            merged[taskKey].push({
-              id: liveSchemaId,
-              schemeId: liveSchemaId,
-              taskKey: taskKey,
-              taskType: liveScheme.taskType,
-              name: liveScheme.name,
-              status: liveScheme.status,
-              latestRun: liveScheme.latestRun,
-              deploymentDate: requireSchemeDeploymentDate(liveScheme, "live scheme"),
-              remark: liveScheme.remark || "",
-              monthlyRows: lrOnlyRows,
-              dailyRowsByMonth: lrOnlyDaily,
-              liveSinceDate: liveScheme.liveSinceDate || "",
-              liveMetricSinceDate: liveScheme.liveMetricSinceDate || liveScheme.liveSinceDate || "",
-              phaseRanges: liveScheme.phaseRanges || [],
-              backtestStartMonth: "",
-              backtestEndMonth: ""
-            });
-          }
-        });
-      });
-    }
-
-    return merged;
-  }
-
-  function buildLegacyFactorLabViewModelForTest(responses) {
-    responses = responses || {};
-    var originalLabels = factorTargetLabels;
-    factorTargetLabels = Object.assign({}, originalLabels);
-    try {
-      var liveTasks = null;
-      var schemesPayload = responses["/api/schemes"];
-      if (schemesPayload) {
-        var schemes = Array.isArray(schemesPayload)
-          ? schemesPayload
-          : (schemesPayload.schemes || []);
-        var metricsByKey = {};
-        schemes.forEach(function (scheme) {
-          if (!scheme.scheme_id) return;
-          var metricsPath = "/api/metrics/" + encodeURIComponent(scheme.scheme_id);
-          if (responses[metricsPath]) metricsByKey[scheme.scheme_id] = responses[metricsPath];
-        });
-        liveTasks = buildLiveTaskSchemes(schemesPayload, metricsByKey);
-      }
-
-      var backtestTasks = null;
-      var backtestPayload = responses["/api/backtests/factor-lab"];
-      if (backtestPayload && backtestPayload.schemes && backtestPayload.schemes.length) {
-        backtestTasks = buildBacktestTaskSchemes(backtestPayload);
-      }
-      var hasLive = liveTasks && hasPopulatedTasks(liveTasks);
-      var hasBacktest = backtestTasks && hasPopulatedTasks(backtestTasks);
-      if (!hasLive && !hasBacktest) {
-        throw new Error("实时和回测接口均暂不可用");
-      }
-      return {
-        tasks: mergeFactorLabTasks(backtestTasks, liveTasks),
-        mode: hasLive && hasBacktest ? "merged" : (hasLive ? "live" : "backtest"),
-        targetLabels: Object.assign({}, factorTargetLabels)
-      };
-    } finally {
-      factorTargetLabels = originalLabels;
-    }
-  }
-
-  function loadLegacyFixtureForTest(responses) {
-    try {
-      var viewModel = buildLegacyFactorLabViewModelForTest(responses);
-      finishFactorLabDataLoad(viewModel.tasks, viewModel.mode, viewModel.targetLabels);
-      return true;
-    } catch (error) {
-      return failFactorLabDataLoad(error);
-    }
   }
 
   function startFactorLabAutoRefresh() {
@@ -2324,7 +1616,6 @@
       '<td class="' + getMetricClass(metric.upPrecision) + '">' + formatPercent(metric.upPrecision) + '</td>' +
       '<td class="' + getMetricClass(metric.downPrecision) + '">' + formatPercent(metric.downPrecision) + '</td>' +
       '<td class="mono">' + escapeHtml(deploymentDate) + '</td>' +
-      '<td class="mono">' + escapeHtml(scheme.owner || "--") + '</td>' +
       '<td class="factor-remark-cell">' + remarkControl + '</td>' +
       '</tr>';
   }
@@ -2412,7 +1703,7 @@
     if (title) title.textContent = task.label + " 候选方案排行";
 
     if (!schemes.length) {
-      body.innerHTML = '<tr><td colspan="9" class="factor-empty-cell">该任务格子下暂无方案</td></tr>';
+      body.innerHTML = '<tr><td colspan="8" class="factor-empty-cell">该任务格子下暂无方案</td></tr>';
       return;
     }
 
@@ -3057,94 +2348,6 @@
       closeFactorCalendar();
     }
   });
-
-  window.__factorLabTestHooks = {
-    aggregateScheme: aggregateScheme,
-    getFactorLabState: function () {
-      return {
-        apiError: factorLabApiError,
-        dataMode: factorLabDataMode,
-        endMonth: factorLabState.endMonth,
-        dataSource: factorLabState.dataSource,
-        selectedTaskKey: factorLabState.selectedTaskKey,
-        startMonth: factorLabState.startMonth
-      };
-    },
-    getFactorLabRuntimeStateForTest: function () {
-      return {
-        loadSeq: factorLabRuntimeState.loadSeq,
-        capability: factorLabRuntimeState.capability,
-        stale: factorLabRuntimeState.stale,
-        consecutiveFailures: factorLabRuntimeState.consecutiveFailures,
-        nextRefreshAt: factorLabRuntimeState.nextRefreshAt,
-        snapshotId: factorLabRuntimeState.committedViewModel
-          ? factorLabRuntimeState.committedViewModel.snapshotId
-          : null,
-        source: factorLabRuntimeState.committedViewModel
-          ? factorLabRuntimeState.committedViewModel.source
-          : null,
-        aggregateCacheSize: factorLabRuntimeState.aggregateCache.size,
-        hasController: Boolean(factorLabRuntimeState.controller),
-        drawerSelection: factorLabDrawerSelection
-      };
-    },
-    setFactorLabStateForTest: function (patch) {
-      Object.keys(patch || {}).forEach(function (key) {
-        if (Object.prototype.hasOwnProperty.call(factorLabState, key)) {
-          factorLabState[key] = patch[key];
-        }
-      });
-    },
-    getSelectedScheme: getSelectedScheme,
-    getSchemeDeploymentDate: getSchemeDeploymentDate,
-    requireSchemeDeploymentDate: requireSchemeDeploymentDate,
-    getSchemeRemark: getSchemeRemark,
-    monthlyAverageTargetMonth: monthlyAverageTargetMonth,
-    targetDisplayMonth: targetDisplayMonth,
-    formatMonthlyAveragePredictDate: formatMonthlyAveragePredictDate,
-    formatMonthlyAverageTargetMonth: formatMonthlyAverageTargetMonth,
-    formatQuarterlyAveragePredictDate: formatQuarterlyAveragePredictDate,
-    formatQuarterlyAverageTargetQuarter: formatQuarterlyAverageTargetQuarter,
-    formatAnnualAveragePredictDate: formatAnnualAveragePredictDate,
-    formatAnnualAverageTargetYear: formatAnnualAverageTargetYear,
-    formatFactorPeriodLabelForTest: formatFactorPeriodLabel,
-    factorDetailPresentationForTest: factorDetailPresentation,
-    liveDividerTextForTest: liveDividerText,
-    loadFactorLabData: loadFactorLabData,
-    decodeDashboardPayload: decodeDashboardPayload,
-    buildFactorLabViewModel: buildFactorLabViewModel,
-    buildLegacyFactorLabViewModelForTest: buildLegacyFactorLabViewModelForTest,
-    loadLegacyFixtureForTest: loadLegacyFixtureForTest,
-    apiUrlForTest: apiUrl,
-    normalizeRouteForTest: normalizeRoute,
-    routeUrlForTest: routeUrl,
-    getMetricClassForTest: getMetricClass,
-    getDirectionClassForTest: getDirectionClass,
-    renderDailyResultForTest: renderDailyResult,
-    renderFactorDailyRowsForTest: renderFactorDailyRows,
-    openFactorCalendarForTest: openFactorCalendar,
-    closeFactorCalendarForTest: closeFactorCalendar,
-    renderTaskOverviewForTest: renderTaskOverview,
-    renderFactorTrendChartForTest: renderFactorTrendChart,
-    trendChartLayoutForTest: buildTrendChartLayout,
-    trendMonthLabelVisibleForTest: shouldShowTrendMonthLabel,
-    renderSchemeRankingRowForTest: renderSchemeRankingRow,
-    sortRankingSchemes: sortRankingSchemes,
-    factorLabSchemeTotalLabelForTest: factorLabSchemeTotalLabel,
-    getTaskSchemesForTest: function () {
-      return factorTaskSchemes;
-    },
-    getFactorTargetLabelsForTest: function () {
-      return Object.assign({}, factorTargetLabels);
-    },
-    getTaskSchemeCountsForTest: function () {
-      var counts = {};
-      Object.keys(factorTaskSchemes || {}).forEach(function (key) {
-        counts[key] = (factorTaskSchemes[key] || []).length;
-      });
-      return counts;
-    }
-  };
 
   /* ─── Init ─── */
   setActiveRoute("/factor-lab", false);

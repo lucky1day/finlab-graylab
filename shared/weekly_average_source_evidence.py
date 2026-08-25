@@ -173,10 +173,6 @@ def _reject_weekly_point_references(scheme_id: str, *values: str) -> None:
             )
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def source_package_tree_sha256(path: Path) -> str:
     """计算周平均 source package 的内容与相对路径摘要。"""
     digest = hashlib.sha256()

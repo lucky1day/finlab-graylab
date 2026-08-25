@@ -36,6 +36,7 @@ from shared.input_artifacts import (
 )
 from shared.models import PredictionRecord
 from shared.runtime_paths import resolve_runtime_artifact_root
+from shared.scheme_config_schema import ALLOWED_RUNTIME_TYPES
 
 
 VINTAGE_DISCLAIMER = "current_snapshot_as_of_not_historical_vintage"
@@ -414,7 +415,7 @@ def _build_groups(plan: Mapping[str, Any]) -> tuple[_GapGroup, ...]:
             if len({str(row.get(field)) for row in ordered}) != 1:
                 raise ValueError(f"signal gap group {field} is not atomic")
         runtime_type = str(ordered[0].get("runtime_type") or "")
-        if runtime_type not in {"native_adapter", "blackbox_v2"}:
+        if runtime_type not in ALLOWED_RUNTIME_TYPES:
             raise ValueError("signal gap runtime_type is invalid")
         expected = tuple(_expected_target_key(row) for row in ordered)
         if len({_target_identity(row) for row in expected}) != len(expected):

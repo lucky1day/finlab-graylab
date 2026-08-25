@@ -2,15 +2,11 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine, URL
 
 from scheduler.repository import create_engine_from_env
 from shared.db_config import DatabaseConfig
-
-
-load_dotenv()
 
 # Dashboard 的 public upstream 预算是 3 秒；驱动 I/O 和单条 SELECT 都须
 # 在预算内 fail-closed，避免同步 snapshot owner 永久占住 single-flight。

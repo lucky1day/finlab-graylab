@@ -36,7 +36,6 @@ _RESERVED_SERVICE_ENVIRONMENT_KEYS = frozenset(
 )
 _REQUIRED_SERVICE_ENVIRONMENT_KEYS = frozenset(
     {
-        "BOND_ADMIN_TOKEN",
         "BOND_DB_CHARSET",
         "BOND_DB_HOST",
         "BOND_DB_NAME",
@@ -164,10 +163,6 @@ def load_service_environment(runtime_root: str | Path) -> dict[str, str]:
     if missing:
         raise LaunchdReleaseError(
             "service environment is missing required keys: " + ", ".join(missing)
-        )
-    if values["BOND_ADMIN_TOKEN"].strip() == "__SET_REAL_TOKEN__":
-        raise LaunchdReleaseError(
-            "service environment is missing required keys: BOND_ADMIN_TOKEN"
         )
     return values
 

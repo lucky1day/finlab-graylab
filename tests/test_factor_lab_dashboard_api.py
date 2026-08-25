@@ -14,13 +14,10 @@ DASHBOARD_PATH = "/api/factor-lab/dashboard"
 
 def _payload(snapshot_id: str) -> dict[str, Any]:
     return {
-        "schema_version": "factor-lab-dashboard-v1",
+        "schema_version": "factor-lab-dashboard-v2",
         "snapshot_id": snapshot_id,
         "generated_at": "2026-08-07T16:41:00+08:00",
         "display_until": "2026-08-07",
-        # 保留 v1 wire 兼容字段；route 不再产生 stale 值或 age header。
-        "stale": False,
-        "snapshot_age_ms": 0,
         "row_fields": [],
         "target_labels": {},
         "schemes": [],

@@ -294,7 +294,6 @@ def _summary_json(
         {
             "key": "native_business_identity",
             "value": snapshot,
-            "detail": None,
         }
     ]
     return json.dumps(

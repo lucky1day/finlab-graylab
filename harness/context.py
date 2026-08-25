@@ -20,7 +20,6 @@ class GateContext:
     algo_env: str = "forecast_env"
     engine_factory: Callable[[], Any] | None = None
     operation: Any | None = None
-    prediction_phase: str | None = None
     persist_backtest: bool = False
     backtest_start_date: str = DEFAULT_BACKTEST_START_DATE
     timeout_sec: int = 600

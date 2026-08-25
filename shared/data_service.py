@@ -1,19 +1,14 @@
 from __future__ import annotations
 
 import json
-import os
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
 import numpy as np
 import pandas as pd
 
+from shared.db_config import DatabaseConfig
 
-FORECAST_ROOT = Path(__file__).resolve().parent
-DAILY_OUTPUT_PATH = FORECAST_ROOT / "daily_project" / "data" / "daily" / "daily_output.csv"
-WEEKLY_OUTPUT_PATH = FORECAST_ROOT / "weekly_project" / "data" / "weekly" / "weekly_output0606.csv"
-MONTHLY_OUTPUT_PATH = FORECAST_ROOT / "monthly_project" / "data" / "monthly" / "monthly_output.csv"
 
 DAILY_TARGETS = ("TB1YWI0C", "TB5YWI0C", "TB0YWI0C")
 FREQUENCY_ALIASES = {
@@ -27,16 +22,6 @@ DATA_BRIDGE_V1_ADDITIVE_MONTHLY_CODES = (
     "M0041342",
 )
 DATA_BRIDGE_V1_RAW_INDICATORS_SOURCE = "raw"
-
-
-@dataclass(frozen=True)
-class DatabaseConfig:
-    user: str
-    password: str
-    host: str
-    port: int = 3306
-    database: str = "bond_db"
-    charset: str = "utf8mb4"
 
 
 def normalize_frequency(frequency: str) -> str:
@@ -262,40 +247,11 @@ def build_daily_output_from_frames(
     return result.reset_index()
 
 
-def _load_root_db_config() -> DatabaseConfig:
-    try:
-        from db_config import DB_CONFIG  # type: ignore
-    except Exception:
-        from shared.db_config import DatabaseConfig as EnvDatabaseConfig
-
-        env_config = EnvDatabaseConfig.from_env()
-        return DatabaseConfig(
-            user=env_config.user,
-            password=env_config.password,
-            host=env_config.host,
-            port=env_config.port,
-            database=env_config.database,
-            charset=env_config.charset,
-        )
-    data = dict(DB_CONFIG)
-    missing = [key for key in ("user", "password", "host", "database") if not str(data.get(key, "")).strip()]
-    if missing:
-        raise RuntimeError(f"database config missing required keys: {missing}")
-    return DatabaseConfig(
-        user=str(data.get("user")),
-        password=str(data.get("password")),
-        host=str(data.get("host")),
-        port=int(data.get("port", 3306)),
-        database=str(data.get("database")),
-        charset=str(data.get("charset", "utf8mb4")),
-    )
-
-
 def create_sqlalchemy_engine(db_config: Optional[DatabaseConfig] = None):
     from sqlalchemy import create_engine
     from sqlalchemy.engine import URL
 
-    cfg = db_config or _load_root_db_config()
+    cfg = db_config or DatabaseConfig.from_env()
     url = URL.create(
         drivername="mysql+pymysql",
         username=cfg.user,
@@ -792,13 +748,13 @@ def _save_output(df: pd.DataFrame, path: str | Path) -> Path:
     return output_path
 
 
-def save_daily_output(df: pd.DataFrame, path: str | Path | None = None) -> Path:
-    return _save_output(df, path or DAILY_OUTPUT_PATH)
+def save_daily_output(df: pd.DataFrame, path: str | Path) -> Path:
+    return _save_output(df, path)
 
 
-def save_weekly_output(df: pd.DataFrame, path: str | Path | None = None) -> Path:
-    return _save_output(df, path or WEEKLY_OUTPUT_PATH)
+def save_weekly_output(df: pd.DataFrame, path: str | Path) -> Path:
+    return _save_output(df, path)
 
 
-def save_monthly_output(df: pd.DataFrame, path: str | Path | None = None) -> Path:
-    return _save_output(df, path or MONTHLY_OUTPUT_PATH)
+def save_monthly_output(df: pd.DataFrame, path: str | Path) -> Path:
+    return _save_output(df, path)

@@ -148,7 +148,6 @@ def _activate_initial(
     return GateResult(
         gate_name="activate",
         status=GateStatus.PASSED,
-        passed=True,
         evidence=[
             Evidence("scheme_id", cfg.scheme_id),
             Evidence("scheme_version", cfg.scheme_version),
@@ -242,7 +241,6 @@ def _activate_revision(
     return GateResult(
         gate_name="activate",
         status=GateStatus.PASSED,
-        passed=True,
         evidence=[
             Evidence("scheme_id", state.scheme_id),
             Evidence("scheme_version", state.scheme_version),
@@ -368,7 +366,6 @@ class BlackboxLifecycleReconcileGate(Gate):
             actual_before = read_state()
             restored = reconcile_journal(
                 path,
-                config_path=cfg.path / "config.yaml",
                 apply_database=apply_database,
                 read_state=read_state,
                 operation_scope_sha256=operation_scope_sha256(operation),
@@ -386,7 +383,6 @@ class BlackboxLifecycleReconcileGate(Gate):
         return GateResult(
             gate_name=self.name,
             status=GateStatus.PASSED,
-            passed=True,
             evidence=[
                 Evidence("journal_path", str(path)),
                 Evidence("restored_state", restored.__dict__),
@@ -514,7 +510,6 @@ def _blocked(started_at: str, errors: list[str], *, gate_name: str = "activate")
     return GateResult(
         gate_name=gate_name,
         status=GateStatus.BLOCKED,
-        passed=False,
         evidence=[Evidence("operation_required", True)],
         errors=errors,
         started_at=started_at,
@@ -532,7 +527,6 @@ def _failed(
     return GateResult(
         gate_name=gate_name,
         status=GateStatus.FAILED,
-        passed=False,
         evidence=evidence or [],
         errors=errors,
         started_at=started_at,

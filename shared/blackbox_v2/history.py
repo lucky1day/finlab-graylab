@@ -13,7 +13,6 @@ from shared.actual_facts import (
     read_yield_rows,
 )
 from shared.blackbox_v2.contracts import (
-    TASK_COMBINATIONS,
     BlackboxMetadata,
     BlackboxRequest,
 )
@@ -21,6 +20,7 @@ from shared.blackbox_v2.requests import build_request
 from shared.blackbox_v2.snapshot import BlackboxSnapshot
 from shared.calendar_service import get_calendar, is_trading_day_row
 from shared.input_artifacts import resolve_blackbox_input_cutoffs_bulk
+from shared.models import DIRECTION_VALUES
 from shared.prediction_context import (
     MONTHLY_TARGET_RULE,
     WEEKLY_AVERAGE_TARGET_RULE,
@@ -31,7 +31,11 @@ from shared.period_average_buckets import (
     complete_bucket_average,
     target_pointer,
 )
-from shared.task_specs import PERIOD_AVERAGE_TASK_TYPES
+from shared.task_specs import (
+    PERIOD_AVERAGE_TASK_TYPES,
+    TASK_COMBINATIONS,
+    WEEKLY_TASK_TYPES,
+)
 from shared.week_calendar_normalizer import normalize_week_calendar_rows
 
 
@@ -87,7 +91,7 @@ def build_historical_cases(
     trade_calendar_rows = read_trade_calendar_rows(engine)
     if metadata.task_type in {"T+1", "T+5"}:
         candidates = _daily_candidates(metadata, yield_rows, trade_calendar_rows)
-    elif metadata.task_type in {"weekly_point", "weekly_average"}:
+    elif metadata.task_type in WEEKLY_TASK_TYPES:
         candidates = _weekly_candidates(metadata, yield_rows, read_week_calendar_rows(engine))
     elif metadata.task_type == "monthly":
         candidates = _monthly_candidates(metadata, yield_rows, trade_calendar_rows, engine)
@@ -128,7 +132,7 @@ def build_historical_cases(
             "historical backtest requires at least one unique case in interval "
             f"[{predict_date_from}, {target_date_before})"
         )
-    if metadata.task_type in {"weekly_point", "weekly_average"}:
+    if metadata.task_type in WEEKLY_TASK_TYPES:
         _validate_selected_weekly_candidates(selected)
     elif metadata.task_type in {"T+1", "T+5"}:
         _require_actual_source_coverage(
@@ -180,7 +184,7 @@ def validate_historical_cases(cases: Iterable[HistoricalCase], *, expected_count
     for field, values in fields.items():
         if len(values) != len(set(values)):
             raise ValueError(f"historical cases contain duplicate {field}")
-    if any(item.label not in {-1, 0, 1} for item in materialized):
+    if any(item.label not in DIRECTION_VALUES for item in materialized):
         raise ValueError("historical labels must be -1, 0 or 1")
     return materialized
 
@@ -497,7 +501,7 @@ def _unique_facts(items):
 
 
 def _direction(value: Any) -> int:
-    if type(value) is not int or value not in {-1, 0, 1}:
+    if type(value) is not int or value not in DIRECTION_VALUES:
         raise ValueError(f"invalid actual direction: {value!r}")
     return value
 

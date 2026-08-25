@@ -2,35 +2,29 @@
 # Bond Factor Lab 公网只读入口验收（无写操作）
 #
 # 用法：
-#   scripts/check_public_access.sh --mode rollout|final https://bond.finailab.cn
+#   scripts/check_public_access.sh https://bond.finailab.cn
 #
-# rollout 要求旧 schemes/metrics/backtest 与 dashboard 同时可达；final 要求旧
-# 展示 API 已收口。任一 TLS、curl、HTTP、header 或 JSON 校验失败均非零退出。
+# 任一 TLS、curl、HTTP、header 或 JSON 校验失败均非零退出。
 set -euo pipefail
 
 readonly USER_AGENT="bond-factor-lab-access-check/1.0"
 
 usage() {
-  printf 'Usage: %s --mode rollout|final https://bond.finailab.cn\n' "$0" >&2
+  printf 'Usage: %s https://bond.finailab.cn\n' "$0" >&2
 }
 
-if [[ "$#" -ne 3 || "$1" != "--mode" ]]; then
+if [[ "$#" -ne 1 ]]; then
   usage
   exit 2
 fi
 
-MODE="$2"
-BASE_ORIGIN="${3%/}"
-if [[ "$MODE" != "rollout" && "$MODE" != "final" ]]; then
-  usage
-  exit 2
-fi
+BASE_ORIGIN="${1%/}"
 if [[ "$BASE_ORIGIN" != "https://bond.finailab.cn" ]]; then
   printf 'BASE_URL must be exactly https://bond.finailab.cn\n' >&2
   exit 2
 fi
 
-readonly MODE BASE_ORIGIN
+readonly BASE_ORIGIN
 readonly HTTP_ORIGIN="http://bond.finailab.cn"
 readonly APP_URL="$BASE_ORIGIN/bond-factor-lab"
 readonly EXPECTED_REDIRECT_ROOT="$BASE_ORIGIN/bond-factor-lab/"
@@ -278,6 +272,21 @@ body_is_valid() {
 import gzip
 import json
 import sys
+
+DASHBOARD_TOP_FIELDS = {
+    "schema_version", "snapshot_id", "generated_at", "display_until",
+    "row_fields", "target_labels", "schemes",
+}
+DASHBOARD_SCHEME_FIELDS = {
+    "scheme_id", "base_scheme_id", "name", "description", "horizon",
+    "task_type", "frequency", "target_tenor", "target_label", "status",
+    "deployed_at", "signal_status", "signal_failure_category", "live_rows",
+    "backtest",
+}
+DASHBOARD_BACKTEST_FIELDS = {
+    "benchmark_id", "benchmark_label", "data_source", "data_source_label",
+    "latest_run_date", "rows",
+}
 from pathlib import Path
 
 kind, encoding, body_path, expected_token = sys.argv[1:]
@@ -307,7 +316,9 @@ if kind == "dashboard":
         raise SystemExit(1) from exc
     if not isinstance(payload, dict):
         raise SystemExit(1)
-    if payload.get("schema_version") != "factor-lab-dashboard-v1":
+    if payload.get("schema_version") != "factor-lab-dashboard-v2":
+        raise SystemExit(1)
+    if set(payload) != DASHBOARD_TOP_FIELDS:
         raise SystemExit(1)
     if payload.get("row_fields") != [
         "predict_date",
@@ -323,8 +334,16 @@ if kind == "dashboard":
         raise SystemExit(1)
     if any(
         not isinstance(scheme, dict)
+        or set(scheme) != DASHBOARD_SCHEME_FIELDS
         or not isinstance(scheme.get("scheme_id"), str)
         or not scheme["scheme_id"]
+        or (
+            scheme.get("backtest") is not None
+            and (
+                not isinstance(scheme["backtest"], dict)
+                or set(scheme["backtest"]) != DASHBOARD_BACKTEST_FIELDS
+            )
+        )
         for scheme in schemes
     ):
         raise SystemExit(1)
@@ -347,8 +366,7 @@ assert_body_valid() {
   fi
 }
 
-printf 'Bond Factor Lab public access check: mode=%s assets=page-advertised\n' \
-  "$MODE"
+printf 'Bond Factor Lab public access check: assets=page-advertised\n'
 
 # 固定域名 redirect；不跟随 Location。
 run_request http-redirect GET "$HTTP_ORIGIN/bond-factor-lab/" 301
@@ -386,7 +404,7 @@ run_request versioned-js GET \
 assert_last_content_encoding versioned-js-gzip gzip
 assert_last_vary_token versioned-js-vary Accept-Encoding
 assert_body_valid \
-  versioned-js-body text gzip "$LAST_BODY" 'factor-lab-dashboard-v1'
+  versioned-js-body text gzip "$LAST_BODY" 'factor-lab-dashboard-v2'
 run_request asset-icon GET "$APP_URL/assets/aifin-lab-icon.svg" 200
 run_request asset-logo GET "$APP_URL/assets/aifin-lab-logo.svg" 200
 
@@ -432,35 +450,6 @@ assert_last_not_gzip dashboard-get-gzip-q0-encoding
 assert_last_vary_token dashboard-get-gzip-q0-vary Accept-Encoding
 assert_body_valid dashboard-get-gzip-q0-json dashboard identity "$LAST_BODY"
 
-# 从 dashboard 严格取一个真实 composite scheme ID，供 rollout/final metrics 验收。
-SCHEME_ID_ENCODED=""
-if [[ -f "$CHECK_TMP_DIR/dashboard.json" ]] \
-    && SCHEME_ID_ENCODED="$(python3 - "$CHECK_TMP_DIR/dashboard.json" <<'PY'
-# DASHBOARD_SCHEME_EXTRACTOR_BEGIN
-import json
-import sys
-from urllib.parse import quote
-
-with open(sys.argv[1], encoding="utf-8") as handle:
-    payload = json.load(handle)
-if payload.get("schema_version") != "factor-lab-dashboard-v1":
-    raise SystemExit(1)
-schemes = payload.get("schemes")
-if not isinstance(schemes, list) or not schemes:
-    raise SystemExit(1)
-scheme_id = schemes[0].get("scheme_id")
-if not isinstance(scheme_id, str) or not scheme_id:
-    raise SystemExit(1)
-print(quote(scheme_id, safe=""))
-# DASHBOARD_SCHEME_EXTRACTOR_END
-PY
-)"; then
-  record_pass dashboard-scheme-id
-else
-  SCHEME_ID_ENCODED="invalid-probe-id"
-  record_failure dashboard-scheme-id " missing_scheme_id"
-fi
-
 # Default-deny、安全路径和编码绕过矩阵。
 run_request deny-docs GET "$APP_URL/docs" 403
 run_request deny-redoc GET "$APP_URL/redoc" 403
@@ -487,22 +476,6 @@ run_request deny-api-single-dot GET "$APP_URL/api/./health" 403
 run_request deny-double-encoded-slash GET "$APP_URL/api%252fhealth" 403
 run_request deny-trigger POST "$APP_URL/api/schemes/probe/trigger" 403
 run_request deny-admin POST "$APP_URL/api/admin/registry/sync" 403
-
-# rollout 与 final 的同一版本化模板发布矩阵。
-if [[ "$MODE" == "rollout" ]]; then
-  LEGACY_CODE=200
-else
-  LEGACY_CODE=403
-fi
-run_request legacy-schemes GET "$APP_URL/api/schemes" "$LEGACY_CODE"
-run_request legacy-metrics GET \
-  "$APP_URL/api/metrics/$SCHEME_ID_ENCODED" "$LEGACY_CODE"
-run_request legacy-backtest GET \
-  "$APP_URL/api/backtests/factor-lab" "$LEGACY_CODE" \
-  --header 'Accept-Encoding: gzip'
-if [[ "$MODE" == "rollout" ]]; then
-  assert_last_content_encoding legacy-backtest-gzip-encoding gzip
-fi
 
 printf 'Summary: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 if [[ "$FAIL" -ne 0 ]]; then

@@ -4,7 +4,7 @@
 
 **目标读者**：外部客户、业务负责人、合作方
 
-**最后核验日期**：2026-08-23
+**最后核验日期**：2026-08-25
 
 **文档定位**：只读说明手册，不是生产晋级 SOP，不包含交易建议或收益承诺。
 
@@ -152,139 +152,23 @@ target_date  = T + horizon
 月均使用上月 16 日至本月 15 日的 MID 桶，季均使用自然季度，年均使用春节后首个交易日至次年春节前
 最后一个交易日的春节年。
 
-## 5. 沙盒化说明
+## 5. 公网沙盒边界
 
-灰度实验室的“沙盒化”不是一句宣传语，而是由访问、数据、执行和写库边界共同构成。
+公网页面只提供展示所需的静态资源、只读 Dashboard 和健康检查；不开放预测触发、Registry 管理、原始预测或
+Actual 导出、回测运行明细和其它管理能力。前端采用客户端渲染，因此浏览器可以看到页面已经展示的数据；
+“只读沙盒”限制的是公网能力和数据范围，不是加密隐藏展示结果。
 
-### 5.1 访问沙盒：公网只读展示
-
-当灰度实验室通过公网路径开放时，目标访问路径为：
-
-```text
-https://bond.finailab.cn/bond-factor-lab/
-```
-
-公网入口采用默认拒绝策略，只放行渲染页面必需的最小集合：
-
-| 类型 | 允许内容 |
-|---|---|
-| 静态资源 | 页面、CSS、JS、图片等前端资源 |
-| 只读展示 API | `/api/factor-lab/dashboard` |
-| 健康检查 | `/api/health` |
-
-旧 `/api/schemes`、`/api/metrics/{registry_scheme_id}` 和
-`/api/backtests/factor-lab` 只在公网 rollout 兼容阶段临时放行；final 配置必须拒绝。
-FastAPI 本机仍保留这些路由用于 Harness 与回滚，但它们不属于最终公网白名单。
-
-公网入口不开放以下能力：
-
-- 触发预测。
-- 同步或管理 Registry。
-- 导出原始逐条预测。
-- 导出原始 actual 明细。
-- 读取回测 run 明细、diff 或数据检查接口。
-- 访问未列入展示白名单的其他路径。
-
-典型拒绝路径包括：
-
-| 类型 | 路径 |
-|---|---|
-| 管理接口 | `POST /api/admin/registry/sync` |
-| 原始预测导出 | `GET /api/predictions` |
-| 原始实际值导出 | `GET /api/actuals` |
-| 标的注册表导出 | `GET /api/targets` |
-| 回测运行明细 | `GET /api/backtests/runs*` |
-| 回测数据检查 | `GET /api/backtests/data-checks` |
-
-访问链路可以概括为：
-
-```mermaid
-flowchart LR
-    A["外部用户浏览器"] --> B["HTTPS 公网入口"]
-    B --> C["默认拒绝访问控制"]
-    C --> D["展示白名单"]
-    D --> E["本地 FastAPI 前端与只读展示 API"]
-    C -.拒绝.-> F["admin / 原始导出 / 未授权路径"]
-```
-
-需要客观说明的是：前端是客户端渲染，展示页面所需的 JSON 会被浏览器请求，因此用户可以在浏览器开发者工具中看到这些展示数据。当前只读沙盒的边界是“公网暴露面收敛到页面展示所需的最小只读集合”，不是对已展示结果本身做加密隐藏。
-
-### 5.2 数据沙盒：统一输入入口与只读快照
-
-算法不能随意拼接数据库输入。平台规定算法输入只能通过统一输入入口生成：
-
-- Native V1 存量方案通过统一输入 artifact 读取平台准备好的数据。
-- Blackbox V2 新方案通过 DataBridge 三频快照读取 `daily / weekly / monthly` 三类只读 CSV。
-
-Blackbox V2 的一次运行使用临时只读 Snapshot。平台在共享锁内复制同代三频文件，生成 `data_snapshot_id`，并把 `predict_date / feature_date / target_date` 及三频截止键作为 Request 交给算法。算法只需要读取快照和 Request，不直接访问业务数据库。
-
-这保证了两个关键边界：
-
-- 每次运行看到的是一份固定输入，不会在运行中被 current 数据替换。
-- 算法只能按 `feature_date` 及平台提供的截止键理解数据可见性，不能自行把未来数据纳入当前预测。
-
-### 5.3 执行沙盒：子进程与 Gate
-
-平台把算法执行与业务写库分开：
-
-```mermaid
-flowchart LR
-    A["方案交付"] --> B["统一输入 / 只读快照"]
-    B --> C["算法子进程"]
-    C --> D["标准 PredictionRecord / Result"]
-    D --> E["Harness 自动 Gate"]
-    E --> F["Blackbox 单次冒烟 / Native dry-run + no-persist"]
-    E --> G["明确命令后的受控写库边界"]
-```
-
-自动 Gate 按运行时分派：
-
-```text
-Blackbox: static -> input -> unit -> compare
-Native:   static -> input -> dry-run -> compare -> backtest
-```
-
-自动段可以留下审计报告和控制面记录，但不得写正式预测表、正式回测结果表或 active 前端可见状态，也不访问 Backend。Blackbox Compare 只验证平台输入并执行一次冒烟 predict，不再重复 dry-run 或抽样 backtest；Native 保留 source-backed 方案需要的 dry-run、Compare 和 no-persist backtest。算法自身的确定性由上游按其交付契约保证，平台不重验。激活后的 HTTP 验收只使用 `DashboardGate`；它证明当前业务读模型可用，但 Dashboard 响应不携带 exact version，版本仍由生命周期、Registry 和数据库权威证据确认。
-
-真正的业务写入只允许发生在受控边界：
-
-- scheduler 预测写库边界。
-- actuals updater 实际方向写库边界。
-- backtest repository 历史回测写库边界。
-- 明确授权的管理动作。
-
-### 5.4 当前沙盒与生产边界
-
-Blackbox V2 已具备受控的生产路径，包括严格 Result 校验、文件读取 allowlist、最小环境变量、专用 Activation/Live 门禁、回测持久化和显式 lifecycle reconciliation。任一 pending journal 都会阻断新的 lifecycle 动作，不存在其它命令前的隐式恢复；只有独立执行 `gate lifecycle-reconcile` 才可以回退 previous safe state，并保留原 journal、新建 linked reconciliation journal。人工副作用命令本身就是单维护者对该次精确操作的授权，不再生成或复制 HMAC token；自动 Gate 仍然只完成技术验收，不会自动写业务表或授予生产权限。
-
-单个方案只有完成生产准备核验并取得专项授权后，才可进入 `active`、持久化回测或 live。具体方案数量、频率覆盖和生产观察结论属于时点信息，统一查看[当前状态](../CURRENT_STATUS.md)，不在本手册冻结。
+算法输入、子进程执行、技术 Gate 与业务写库彼此隔离。技术验收不会自动激活方案、写正式预测或授予生产权限；
+持久化回测、activation 和单日 `signal-gap-fill` 均需独立授权，正式预测只由目标主机 one-shot 调度触发。平台内部实现见[代码架构](../architecture/CODE_ARCHITECTURE.md)、
+[统一入库导航](../onboarding/README.md)和[部署运行手册](../../deploy/README.md)。具体方案数量和运行结果只从
+[当前状态](../CURRENT_STATUS.md)与现场权威数据读取。
 
 ## 6. 生命周期与状态解释
 
-### 6.1 方案运行时
+页面只展示 `active` 方案；`paused`、`archived` 和内部运行时身份用于平台管理，不要求外部用户理解或记忆。
+页面通过中文展示名、任务格子和方案名称表达业务身份。
 
-平台支持两类运行时：
-
-| 运行时 | 定位 | 当前政策 |
-|---|---|---|
-| Native V1 | 存量方案维护 | 只维护政策清单中的既有方案 |
-| Blackbox V2 | 新增方案唯一入口 | 默认技术验收；生产运行须逐方案完成准备核验和专项授权 |
-
-Native V1 和 Blackbox V2 从标准预测记录开始共用 Registry、actual join、指标、API 和前端展示。运行时差异只存在于交付检查、输入准备和算法执行方式。
-
-### 6.2 Registry 状态
-
-前端只展示 `active` 的业务方案。`paused` 和 `archived` 只用于管理或审计，不进入当前前端矩阵，也不允许公网触发。
-
-业务方案 ID 使用 composite 形式，例如：
-
-```text
-{base_scheme_id}__h{horizon}__{target_tenor}
-```
-
-外部用户通常不需要记住这个 ID。页面会使用中文展示名、任务格子和方案名称帮助识别。
-
-### 6.3 常见状态不要混用
+### 6.1 常见状态不要混用
 
 | 表述 | 准确含义 |
 |---|---|

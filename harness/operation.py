@@ -10,7 +10,6 @@ DEFAULT_BACKTEST_START_DATE = "2025-01-01"
 SIDE_EFFECT_ACTIONS = frozenset(
     {
         "activate",
-        "live_write",
         "backtest_persist",
         "shadow_register",
         "blackbox_activate",
@@ -19,7 +18,6 @@ SIDE_EFFECT_ACTIONS = frozenset(
 )
 EXACT_PREDICT_DATE_ACTIONS = frozenset(
     {
-        "live_write",
         "backtest_persist",
         "shadow_register",
     }

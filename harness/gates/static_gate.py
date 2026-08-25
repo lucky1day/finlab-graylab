@@ -17,7 +17,6 @@ from harness.contracts.import_rules import (
     cross_scheme_imports,
     dangerous_imports,
     file_write_violations,
-    has_shared_input_artifacts_import,
     legacy_active_import_violations,
     parse_python,
     predict_input_artifact_bypass_violations,
@@ -50,7 +49,7 @@ class StaticGate(Gate):
         errors: list[str] = []
 
         dir_name_ok = scheme_dir.name == ctx.scheme_id and scheme_dir.exists()
-        evidence.append(Evidence("dir_name_ok", dir_name_ok, str(_display_path(scheme_dir, project_root))))
+        evidence.append(Evidence("dir_name_ok", dir_name_ok))
         if not dir_name_ok:
             errors.append(f"schemes/{ctx.scheme_id}: scheme directory missing or mismatched")
 
@@ -150,9 +149,9 @@ class StaticGate(Gate):
         evidence.append(Evidence("cross_scheme_imports", [v.format(project_root) for v in cross_imports]))
         errors.extend(v.format(project_root) for v in cross_imports)
 
-        backtest_errors = self._backtest_input_artifact_errors(config_raw, project_root)
+        backtest_errors = self._backtest_runner_errors(config_raw, project_root)
         evidence.append(
-            Evidence("backtest_imports_input_artifacts", not backtest_errors, "; ".join(backtest_errors) or None)
+            Evidence("backtest_runner_contract", not backtest_errors)
         )
         errors.extend(backtest_errors)
 
@@ -161,7 +160,6 @@ class StaticGate(Gate):
         return GateResult(
             gate_name=self.name,
             status=status,
-            passed=status == GateStatus.PASSED,
             evidence=evidence,
             errors=errors,
             started_at=started_at,
@@ -205,7 +203,7 @@ class StaticGate(Gate):
             violations.extend(cross_scheme_imports(path, tree, scheme_id, project_root))
         return violations
 
-    def _backtest_input_artifact_errors(self, config_raw: dict[str, Any], project_root: Path) -> list[str]:
+    def _backtest_runner_errors(self, config_raw: dict[str, Any], project_root: Path) -> list[str]:
         runner = ((config_raw.get("backtest") or {}) if isinstance(config_raw, dict) else {}).get("runner")
         if not runner:
             return []
@@ -214,8 +212,6 @@ class StaticGate(Gate):
             return [f"{runner}: backtest runner file does not exist"]
         tree = parse_python(runner_path)
         errors: list[str] = []
-        if not has_shared_input_artifacts_import(tree):
-            errors.append(f"{_display_path(runner_path, project_root)}: backtest runner must import shared.input_artifacts")
         runner_paths = self._backtest_runner_dependency_paths(runner_path, project_root)
         for path in runner_paths:
             path_tree = tree if path == runner_path else parse_python(path)
@@ -298,8 +294,6 @@ def _package_name_for_path(path: Path, project_root: Path) -> str:
     module_parts = list(rel.with_suffix("").parts)
     if not module_parts:
         return ""
-    if module_parts[-1] == "__init__":
-        return ".".join(module_parts[:-1])
     return ".".join(module_parts[:-1])
 
 

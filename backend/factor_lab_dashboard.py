@@ -18,8 +18,8 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Connection, Engine
 
 from shared.signal_gap_report import read_latest_due_signal_statuses
+from shared.task_specs import WEEKLY_TASK_TYPES
 
-from backend.scheme_owner import load_scheme_owners
 from backend.factor_lab_dashboard_semantics import (
     BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE,
     DASHBOARD_SCHEMA_VERSION,
@@ -41,7 +41,6 @@ from backend.factor_lab_dashboard_semantics import (
 
 SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 MYSQL_SNAPSHOT_SQL = "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY"
-_DATETIME_TYPE = datetime
 MAX_DETAIL_ROWS = 25_000
 MAX_RAW_JSON_BYTES = 1_500_000
 MAX_GZIP_JSON_BYTES = 100_000
@@ -53,7 +52,6 @@ MAX_LIVE_PREDICTION_SOURCE_ROWS = 20_000
 MAX_ACTUAL_SOURCE_ROWS = 80_000
 MAX_BACKTEST_RUN_SOURCE_ROWS = 100_000
 MAX_BACKTEST_DETAIL_SOURCE_ROWS = 20_000
-WEEKLY_TASK_TYPES = frozenset({"weekly_point", "weekly_average"})
 MAX_WEEKLY_COVERAGE_DIAGNOSTIC_DATES = 128
 logger = logging.getLogger(__name__)
 _DIAGNOSTICS_LIMIT = 8
@@ -104,7 +102,7 @@ def build_factor_lab_dashboard(
     """在一个一致性事务内批量读取并构建因子实验室 live 快照。"""
     build_started_at = time.perf_counter()
     captured = captured_at or datetime.now(SHANGHAI_TIMEZONE)
-    if not isinstance(captured, _DATETIME_TYPE) or captured.tzinfo is None:
+    if not isinstance(captured, datetime) or captured.tzinfo is None:
         raise DashboardDataError("dashboard captured_at must be timezone-aware")
     captured = captured.astimezone(SHANGHAI_TIMEZONE)
     display_until = captured.date().isoformat()
@@ -137,8 +135,7 @@ def build_factor_lab_dashboard(
     db_read_seconds = time.perf_counter() - db_read_started_at
 
     canonical_started_at = time.perf_counter()
-    scheme_owners = load_scheme_owners()
-    registry = [_registry_dto(row, scheme_owners) for row in registry_rows]
+    registry = [_registry_dto(row) for row in registry_rows]
     targets = [_target_dto(row) for row in target_rows]
     target_labels = {
         target["target_code"]: target["display_name"] for target in targets
@@ -326,8 +323,6 @@ def build_factor_lab_dashboard(
         "snapshot_id": uuid4().hex,
         "generated_at": captured.isoformat(timespec="seconds"),
         "display_until": display_until,
-        "stale": False,
-        "snapshot_age_ms": 0,
         "row_fields": list(ROW_FIELDS),
         "target_labels": target_labels,
         "schemes": schemes,
@@ -335,7 +330,7 @@ def build_factor_lab_dashboard(
     validate_dashboard_payload(payload)
     canonical_build_seconds = time.perf_counter() - canonical_started_at
     # 该校验覆盖 canonical builder 输出；route 继续负责 identity/gzip ASGI wire
-    # 表示。v1 的 stale/snapshot_age_ms 仅为兼容字段，不表示缓存状态。
+    # 表示。
     serialization_started_at = time.perf_counter()
     encoding = _validate_canonical_snapshot_budgets(
         payload,
@@ -836,7 +831,6 @@ def _actual_frequency(actual_kind: str) -> str:
 
 def _registry_dto(
     row: Mapping[str, Any],
-    owners: Mapping[str, str],
 ) -> dict[str, Any]:
     scheme_id = _required_text(row.get("scheme_id"), field="registry scheme_id")
     base_scheme_id = _required_text(
@@ -856,7 +850,6 @@ def _registry_dto(
         "scheme_id": scheme_id,
         "base_scheme_id": base_scheme_id,
         "name": _required_text(row.get("name"), field="registry name"),
-        "owner": str(owners.get(scheme_id) or ""),
         "description": str(row.get("description") or ""),
         "horizon": _required_int(row.get("horizon"), field="registry horizon"),
         "task_type": task_type,

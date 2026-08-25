@@ -9,13 +9,13 @@ Asia/Shanghai 业务日）之后开始，Native 从 Registry ``created_at`` 日�
 from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal, Sequence
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import bindparam, text
-from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.engine import Connection
 
 from shared.actual_facts import build_week_calendar
 from shared.calendar_service import (
@@ -23,6 +23,7 @@ from shared.calendar_service import (
     read_calendar_snapshot_from_connection,
 )
 from shared.prediction_context import (
+    LIVE_PREDICTION_PHASES,
     build_daily_live_context,
     build_monthly_live_context,
     build_period_average_live_context,
@@ -33,7 +34,6 @@ from shared.period_average_buckets import period_anchor_dates
 from shared.task_specs import PERIOD_AVERAGE_TASK_TYPES
 
 
-ACCEPTED_LIVE_PHASES = ("gray_live", "scheduled_live")
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 FailureCategory = Literal[
     "activation_unavailable",
@@ -105,13 +105,7 @@ class SignalCase:
 @dataclass(frozen=True, slots=True)
 class LatestDueSignalStatus:
     registry_scheme_id: str
-    base_scheme_id: str
-    target_tenor: str
-    horizon: int
     state: Literal["missing", "not_due", "present"]
-    predict_date: str | None
-    open_missing_count: int
-    latest_missing_predict_date: str | None
     failure_category: FailureCategory | None
 
 
@@ -123,24 +117,6 @@ class SignalGapReport:
     expected: tuple[SignalCase, ...]
     present: tuple[SignalCase, ...]
     missing: tuple[SignalCase, ...]
-
-
-def load_signal_gap_report(
-    engine: Engine,
-    *,
-    start_date: str,
-    end_date: str,
-) -> SignalGapReport:
-    """用单个 Repeatable Read、read-only 一致性快照读取报告。"""
-
-    start, end = _range(start_date, end_date)
-    with engine.connect() as connection:
-        connection.exec_driver_sql("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-        connection.exec_driver_sql("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
-        try:
-            return read_signal_gap_report(connection, start_date=start, end_date=end)
-        finally:
-            connection.rollback()
 
 
 def read_signal_gap_report(
@@ -201,7 +177,7 @@ def read_latest_due_signal_statuses(
 def latest_due_signal_statuses(
     report: SignalGapReport,
 ) -> tuple[LatestDueSignalStatus, ...]:
-    """每个 active Registry 一行，保留范围内所有未修复缺口计数。"""
+    """每个 active Registry 返回一条 Dashboard 信号状态。"""
 
     expected: dict[str, list[SignalCase]] = {}
     missing: dict[str, list[SignalCase]] = {}
@@ -218,29 +194,16 @@ def latest_due_signal_statuses(
             result.append(
                 LatestDueSignalStatus(
                     target.registry_scheme_id,
-                    target.base_scheme_id,
-                    target.target_tenor,
-                    target.horizon,
                     "missing",
-                    None,
-                    len(unresolved),
-                    unresolved[-1].predict_date if unresolved else None,
                     target.failure_category,
                 )
             )
         elif unresolved:
-            latest = due[-1]
             latest_missing = unresolved[-1]
             result.append(
                 LatestDueSignalStatus(
                     target.registry_scheme_id,
-                    target.base_scheme_id,
-                    target.target_tenor,
-                    target.horizon,
                     "missing",
-                    latest.predict_date,
-                    len(unresolved),
-                    latest_missing.predict_date,
                     latest_missing.failure_category,
                 )
             )
@@ -254,13 +217,7 @@ def latest_due_signal_statuses(
             result.append(
                 LatestDueSignalStatus(
                     target.registry_scheme_id,
-                    target.base_scheme_id,
-                    target.target_tenor,
-                    target.horizon,
                     state,
-                    latest.predict_date,
-                    0,
-                    None,
                     None,
                 )
             )
@@ -268,37 +225,11 @@ def latest_due_signal_statuses(
             result.append(
                 LatestDueSignalStatus(
                     target.registry_scheme_id,
-                    target.base_scheme_id,
-                    target.target_tenor,
-                    target.horizon,
                     "not_due",
-                    None,
-                    0,
-                    None,
                     None,
                 )
             )
     return tuple(sorted(result, key=lambda item: item.registry_scheme_id))
-
-
-def serialize_signal_gap_report(report: SignalGapReport) -> dict[str, object]:
-    """输出稳定、无原始异常文本的 JSON 结构。"""
-
-    return {
-        "schema_version": "signal-gap-report-v1",
-        "availability_semantics": "strictly_after_onboarding_calendar_date",
-        "start_date": report.start_date,
-        "end_date": report.end_date,
-        "summary": {
-            "expected": len(report.expected),
-            "present": len(report.present),
-            "missing": len(report.missing),
-        },
-        "expected": [asdict(item) for item in report.expected],
-        "present": [asdict(item) for item in report.present],
-        "missing": [asdict(item) for item in report.missing],
-        "latest_due": [asdict(item) for item in latest_due_signal_statuses(report)],
-    }
 
 
 def _targets(connection: Connection) -> tuple[SignalTarget, ...]:
@@ -397,7 +328,7 @@ def _live_rows(
             "base_ids": list(base_ids),
             "start_date": start_date,
             "end_date": end_date,
-            "phases": ACCEPTED_LIVE_PHASES,
+            "phases": tuple(sorted(LIVE_PREDICTION_PHASES)),
         },
     ).mappings().all()
     return tuple(dict(item) for item in rows)

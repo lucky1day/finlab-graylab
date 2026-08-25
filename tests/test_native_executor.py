@@ -25,7 +25,6 @@ def _trusted_release(tmp_path: Path) -> tuple[Path, Path]:
     service_environment.write_text(
         "\n".join(
             (
-                "BOND_ADMIN_TOKEN=local-admin-token",
                 "BOND_DB_USER=bond_user",
                 "BOND_DB_PASSWORD=database-secret",
                 "BOND_DB_HOST=127.0.0.1",

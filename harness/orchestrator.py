@@ -69,9 +69,6 @@ def onboard(
                     finished_at=utc_now(),
                 )
                 return report
-            # SKIPPED 视为非阻塞（passed=True）；仅 FAILED/BLOCKED 立即停止。
-            if result.status in (GateStatus.SKIPPED, GateStatus.PASSED):
-                continue
             if not result.passed:
                 break
 
@@ -80,9 +77,7 @@ def onboard(
             predict_date=ctx.predict_date,
             stage_requested=stage,
             results=results,
-            overall_passed=bool(results) and all(item.passed for item in results),
             harness_run_id=harness_run_id,
-            control_plane_persisted=True,
         )
         finish_persisted = persist_harness_run_finish(
             ctx,
@@ -118,7 +113,6 @@ def _run_gate(ctx: GateContext, gate: Gate) -> GateResult:
         return GateResult(
             gate_name=gate.name,
             status=GateStatus.BLOCKED,
-            passed=False,
             evidence=[Evidence("operation_required", True)],
             errors=[f"{gate.name} requires a direct operator command"],
             started_at=now,
@@ -149,7 +143,6 @@ def _persistence_failure_report(
     failure = GateResult(
         gate_name="control-plane-persistence",
         status=GateStatus.BLOCKED,
-        passed=False,
         evidence=evidence,
         errors=[
             "harness requires durable control-plane persistence; "
@@ -163,9 +156,7 @@ def _persistence_failure_report(
         predict_date=ctx.predict_date,
         stage_requested=stage,
         results=[*results, failure],
-        overall_passed=False,
         harness_run_id=harness_run_id,
-        control_plane_persisted=False,
     )
 
 

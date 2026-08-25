@@ -9,7 +9,9 @@ from datetime import date, datetime, timezone
 from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo
 
+from shared.models import DIRECTION_VALUES
 from shared.prediction_context import (
+    LIVE_PREDICTION_PHASES,
     MONTHLY_TARGET_RULE,
     WEEKLY_AVERAGE_TARGET_RULE,
     WEEKLY_TARGET_RULE,
@@ -17,11 +19,13 @@ from shared.prediction_context import (
 from shared.task_specs import (
     ALLOWED_TASK_TYPES,
     PERIOD_AVERAGE_TASK_TYPES,
+    PREDICTION_CADENCES,
     TASK_COMBINATIONS,
+    WEEKLY_TASK_TYPES,
 )
 
 
-DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v1"
+DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v2"
 FACTOR_LAB_HISTORY_START_DATE = "2025-01-01"
 ROW_FIELDS = (
     "predict_date",
@@ -32,8 +36,6 @@ ROW_FIELDS = (
     "actual_direction",
 )
 VALID_TASK_TYPES = set(ALLOWED_TASK_TYPES)
-WEEKLY_METRIC_TASK_TYPES = {"weekly_point", "weekly_average"}
-VALID_LIVE_PREDICTION_PHASES = {"gray_live", "scheduled_live"}
 VALID_SIGNAL_STATUSES = {"missing", "not_due", "present"}
 DAILY_TARGET_RULE = "target_date_yield_vs_feature_date_yield"
 LIVE_ACTUAL_SELECTORS = {
@@ -62,9 +64,6 @@ BACKTEST_DATA_SOURCE_LABELS = {
     "runtime_default": "按方案运行时选择回测",
     "source_original_monthly_binary_runner": "月度0629原始二进制Runner回测",
 }
-_ACTUAL_CONFLICT_FREQUENCIES = frozenset(
-    {"daily", "weekly", "monthly", "period_average"}
-)
 _ACTUAL_CONFLICT_TENOR_PATTERN = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9._:+/-]{0,31}\Z",
     flags=re.ASCII,
@@ -99,8 +98,6 @@ TOP_LEVEL_FIELDS = {
     "snapshot_id",
     "generated_at",
     "display_until",
-    "stale",
-    "snapshot_age_ms",
     "row_fields",
     "target_labels",
     "schemes",
@@ -109,7 +106,6 @@ SCHEME_FIELDS = {
     "scheme_id",
     "base_scheme_id",
     "name",
-    "owner",
     "description",
     "horizon",
     "task_type",
@@ -312,7 +308,7 @@ def choose_live_prediction_rows(
         )
         is_weekly = (
             task_type_by_scheme.get(_prediction_scheme_key(row))
-            in WEEKLY_METRIC_TASK_TYPES
+            in WEEKLY_TASK_TYPES
         )
         current = latest_by_point.get(key)
         if current is None or _is_better_prediction_for_point(
@@ -378,7 +374,7 @@ def collapse_actual_facts_with_diagnostics(
                                     )
                                 )
                             }
-                            if frequency in _ACTUAL_CONFLICT_FREQUENCIES
+                            if frequency in PREDICTION_CADENCES
                             else {}
                         ),
                     },
@@ -445,7 +441,7 @@ def compact_detail_row(row: Mapping[str, Any], *, source: str) -> list[Any]:
 
     prediction_phase = row.get("prediction_phase")
     if source == "live":
-        if prediction_phase not in VALID_LIVE_PREDICTION_PHASES:
+        if prediction_phase not in LIVE_PREDICTION_PHASES:
             raise DashboardDataError(
                 f"live prediction_phase is invalid: {prediction_phase!r}"
             )
@@ -469,7 +465,7 @@ def compact_detail_row(row: Mapping[str, Any], *, source: str) -> list[Any]:
 
 
 def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
-    """校验 dashboard v1 顶层合同、Registry 身份与明细行。"""
+    """校验 dashboard v2 顶层合同、Registry 身份与明细行。"""
     if not isinstance(payload, Mapping):
         raise DashboardDataError("dashboard payload must be an object")
     if payload.get("schema_version") != DASHBOARD_SCHEMA_VERSION:
@@ -490,15 +486,6 @@ def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
     )
     _required_payload_iso_date(
         payload.get("display_until"), field="display_until"
-    )
-    if type(payload.get("stale")) is not bool:
-        raise DashboardDataError(
-            f"dashboard stale is invalid: {payload.get('stale')!r}"
-        )
-    _required_json_integer(
-        payload.get("snapshot_age_ms"),
-        field="snapshot_age_ms",
-        minimum=0,
     )
     target_labels = payload.get("target_labels")
     if not isinstance(target_labels, Mapping):
@@ -919,7 +906,7 @@ def _direction(value: Any, *, allow_none: bool) -> int | None:
         and isinstance(value, (int, float))
         and math.isfinite(value)
         and float(value).is_integer()
-        and int(value) in {-1, 0, 1}
+        and int(value) in DIRECTION_VALUES
     ):
         return int(value)
     raise DashboardDataError(f"dashboard direction is invalid: {value!r}")

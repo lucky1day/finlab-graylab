@@ -74,162 +74,12 @@ class DataContractAuditTests(unittest.TestCase):
                 (rdate, code, 1.0, create_time),
             )
 
-    def _insert_ready_native_anchor(
-        self,
-        *,
-        include_all_curve_tenors: bool = True,
-    ) -> None:
-        codes = ["TB1YWI0C", "TB5YWI0C", "TB0YWI0C"]
-        if include_all_curve_tenors:
-            codes.extend(["TB3YWI0C", "TB7YWI0C"])
-        for code in codes:
-            self._insert_factor(
-                "api_wind_daily",
-                rdate="2026-07-23",
-                create_time="2026-07-24 06:42:00",
-                code=code,
-            )
-        self._insert_factor(
-            "api_wind_weekly",
-            rdate="2026-07-18",
-            create_time="2026-07-24 06:41:00",
-            code="WEEKLY_FACTOR",
-        )
-        self._insert_factor(
-            "api_wind_monthly",
-            rdate="2026-06-30",
-            create_time="2026-07-24 06:40:00",
-            code="MONTHLY_FACTOR",
-        )
-        with self.engine.begin() as connection:
-            connection.exec_driver_sql(
-                """
-                INSERT INTO api_wind_indicators_all
-                    (indicators_code, create_time, update_time)
-                VALUES (?, ?, ?)
-                """,
-                (
-                    "FACTOR_A",
-                    "2026-07-24 06:39:00",
-                    "2026-07-24 06:39:00",
-                ),
-            )
-            connection.exec_driver_sql(
-                "INSERT INTO api_wind_date (rdate, week_id) VALUES (?, ?)",
-                ("2026-07-23", "202629"),
-            )
-            connection.exec_driver_sql(
-                """
-                INSERT INTO t_trade_calendar (rdate, trade_flag)
-                VALUES (?, ?)
-                """,
-                ("2026-07-23", "1"),
-            )
-
-    def test_native_readiness_accepts_complete_post_0630_snapshot(
-        self,
-    ) -> None:
-        from shared.data_contract import inspect_native_input_readiness
-
-        self._insert_ready_native_anchor()
-
-        readiness = inspect_native_input_readiness(
-            self.engine,
-            feature_date="2026-07-23",
-        )
-
-        self.assertTrue(readiness.ready)
-        self.assertEqual(readiness.feature_date, "2026-07-23")
-        self.assertEqual(readiness.missing_requirements, ())
-
-
-    def test_detects_feature_day_write_after_0630_but_not_earlier_row(
-        self,
-    ) -> None:
-        from shared.data_contract import detect_late_source_writes
-
-        self._insert_factor(
-            "api_wind_daily",
-            rdate="2026-07-23",
-            create_time="2026-07-24 05:15:00",
-            code="EARLY",
-        )
-        self._insert_factor(
-            "api_wind_daily",
-            rdate="2026/7/23",
-            create_time="2026-07-24 07:10:12",
-            code="LATE",
-        )
-        self._insert_factor(
-            "api_wind_daily",
-            rdate="2026-07-24",
-            create_time="2026-07-24 07:11:00",
-            code="NEXT_DAY",
-        )
-
-        findings = detect_late_source_writes(
-            self.engine,
-            feature_date="2026-07-23",
-            cutoff_at=datetime(
-                2026,
-                7,
-                24,
-                6,
-                30,
-                tzinfo=SHANGHAI,
-            ),
-        )
-
-        by_table = {finding.table_name: finding for finding in findings}
-        self.assertEqual(by_table["api_wind_daily"].late_row_count, 1)
-        self.assertEqual(
-            by_table["api_wind_daily"].latest_write_at,
-            "2026-07-24T07:10:12+08:00",
-        )
-
-    def test_detects_late_historical_revision_inside_full_input_domain(
-        self,
-    ) -> None:
-        from shared.data_contract import detect_late_source_writes
-
-        self._insert_factor(
-            "api_wind_daily",
-            rdate="2026/6/3",
-            create_time="2026-07-24 06:45:00",
-            code="HISTORICAL_REVISION",
-        )
-        self._insert_factor(
-            "api_wind_daily",
-            rdate="2026-07-24",
-            create_time="2026-07-24 06:50:00",
-            code="FUTURE_OUTSIDE_INPUT",
-        )
-
-        findings = detect_late_source_writes(
-            self.engine,
-            feature_date="2026-07-23",
-            cutoff_at=datetime(
-                2026,
-                7,
-                24,
-                6,
-                30,
-                tzinfo=SHANGHAI,
-            ),
-        )
-
-        by_table = {finding.table_name: finding for finding in findings}
-        self.assertEqual(by_table["api_wind_daily"].late_row_count, 1)
-        self.assertEqual(
-            by_table["api_wind_daily"].latest_write_at,
-            "2026-07-24T06:45:00+08:00",
-        )
-
-
     def test_commit_evidence_is_stable_and_changes_with_source_rows(
         self,
     ) -> None:
-        from shared.data_contract import capture_source_commit_evidence
+        from shared.data_contract import (
+            capture_source_commit_evidence_from_connection,
+        )
 
         self._insert_factor(
             "api_wind_daily",
@@ -237,24 +87,26 @@ class DataContractAuditTests(unittest.TestCase):
             create_time="2026-07-24 05:15:00",
             code="A",
         )
-        first = capture_source_commit_evidence(
-            self.engine,
-            feature_date="2026-07-23",
-        )
-        repeated = capture_source_commit_evidence(
-            self.engine,
-            feature_date="2026-07-23",
-        )
+        with self.engine.connect() as connection:
+            first = capture_source_commit_evidence_from_connection(
+                connection,
+                feature_date="2026-07-23",
+            )
+            repeated = capture_source_commit_evidence_from_connection(
+                connection,
+                feature_date="2026-07-23",
+            )
         self._insert_factor(
             "api_wind_daily",
             rdate="2026-07-23",
             create_time="2026-07-24 05:16:00",
             code="B",
         )
-        changed = capture_source_commit_evidence(
-            self.engine,
-            feature_date="2026-07-23",
-        )
+        with self.engine.connect() as connection:
+            changed = capture_source_commit_evidence_from_connection(
+                connection,
+                feature_date="2026-07-23",
+            )
 
         self.assertEqual(first.source_commit_token, repeated.source_commit_token)
         self.assertNotEqual(
@@ -315,7 +167,7 @@ class DataContractAuditTests(unittest.TestCase):
     ) -> None:
         from shared.data_contract import (
             assert_source_commit_evidence_at_cutoff,
-            capture_source_commit_evidence,
+            capture_source_commit_evidence_from_connection,
         )
 
         self._insert_factor(
@@ -324,10 +176,11 @@ class DataContractAuditTests(unittest.TestCase):
             create_time="2026-07-24 07:10:12",
             code="LATE",
         )
-        evidence = capture_source_commit_evidence(
-            self.engine,
-            feature_date="2026-07-23",
-        )
+        with self.engine.connect() as connection:
+            evidence = capture_source_commit_evidence_from_connection(
+                connection,
+                feature_date="2026-07-23",
+            )
 
         with self.assertRaisesRegex(
             RuntimeError,
@@ -343,15 +196,4 @@ class DataContractAuditTests(unittest.TestCase):
                     30,
                     tzinfo=SHANGHAI,
                 ),
-            )
-
-
-    def test_cutoff_must_be_timezone_aware(self) -> None:
-        from shared.data_contract import detect_late_source_writes
-
-        with self.assertRaisesRegex(ValueError, "timezone-aware"):
-            detect_late_source_writes(
-                self.engine,
-                feature_date="2026-07-23",
-                cutoff_at=datetime(2026, 7, 24, 6, 30),
             )

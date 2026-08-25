@@ -418,7 +418,6 @@ def test_lifecycle_reconcile_only_restores_previous_state(tmp_path, phase) -> No
 
     restored = reconcile_journal(
         original_path,
-        config_path=tmp_path / "unused-config.yaml",
         apply_database=lambda value: state.__setitem__("value", value),
         read_state=lambda: state["value"],
         operation_scope_sha256="b" * 64,

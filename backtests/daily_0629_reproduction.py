@@ -22,7 +22,6 @@ from shared.daily_0629_predict_adapter import (
     _direction_from_source,
 )
 from shared.daily_0629_source_evidence import (
-    DAILY_0629_SOURCE_ROLE,
     PLATFORM_CURRENT_DAILY_0629_ROLE,
     require_daily_0629_source_evidence,
 )

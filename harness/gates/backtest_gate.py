@@ -39,7 +39,6 @@ class BacktestGate(Gate):
             return GateResult(
                 gate_name=self.name,
                 status=GateStatus.SKIPPED,
-                passed=True,
                 evidence=[Evidence("reason", "config.backtest.runner is not configured")],
                 errors=[],
                 started_at=started_at,
@@ -69,7 +68,6 @@ class BacktestGate(Gate):
                     return GateResult(
                         gate_name=self.name,
                         status=GateStatus.BLOCKED,
-                        passed=False,
                         evidence=[Evidence("runner", runner), Evidence("persisted", True)],
                         errors=operation_errors,
                         started_at=started_at,
@@ -110,7 +108,6 @@ class BacktestGate(Gate):
         return GateResult(
             gate_name=self.name,
             status=status,
-            passed=status == GateStatus.PASSED,
             evidence=[
                 Evidence("runner", runner),
                 Evidence("runner_args", runner_args),
@@ -120,8 +117,6 @@ class BacktestGate(Gate):
                     "operation_scope_sha256",
                     operation_scope_sha256(operation) if operation else None,
                 ),
-                Evidence("protected_table_counts_before", before),
-                Evidence("protected_table_counts_after", after),
                 Evidence("protected_table_deltas", table_deltas),
                 Evidence("status", current.get("status")),
                 Evidence("row_count", _row_count(current)),

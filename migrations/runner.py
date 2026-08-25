@@ -4394,7 +4394,6 @@ def _partial_apply_error(
     )
 
 
-MIGRATION_HISTORY_TABLE = "t_schema_migrations"
 MIGRATION_HISTORY_LOCK = "bond_factor_lab_schema_migrations"
 DAILY_LEDGER_RUNNER_GUARD = "daily-ledger-017-v1"
 DAILY_LEDGER_MIGRATION_VERSION = 17
@@ -4410,9 +4409,6 @@ SCHEDULE_RUN_STARTED_AT_MIGRATION_FILENAME = (
 SCHEDULE_RUN_STARTED_AT_MIGRATION_SHA256 = (
     "320cdf0877618330b8dbd52bb091e956"
     "987e916447cb41fc4f8d7a567b5b3ba1"
-)
-SCHEDULE_RUN_STARTED_AT_TARGET_DEFINITION = (
-    "datetime(6) NULL DEFAULT CURRENT_TIMESTAMP(6)"
 )
 SERVING_POINTER_RETIREMENT_MIGRATION_VERSION = 19
 SERVING_POINTER_RETIREMENT_MIGRATION_FILENAME = (
@@ -5048,56 +5044,6 @@ def _read_schedule_run_started_at_shape(
         )
     return _schedule_run_started_at_shape(
         dict(rows[0]) if rows else None
-    )
-
-
-def _schedule_run_started_at_definition(
-    shape: Mapping[str, object],
-) -> str:
-    """把归一化列形态渲染成运维可读的 DDL 片段。"""
-    if not shape.get("exists"):
-        return "<column is missing>"
-    nullable = (
-        "NULL"
-        if str(shape.get("is_nullable") or "") == "yes"
-        else "NOT NULL"
-    )
-    default = str(shape.get("column_default") or "").upper()
-    definition = f"{shape.get('column_type')} {nullable}"
-    if default:
-        definition = f"{definition} DEFAULT {default}"
-    return definition
-
-
-def preflight_schedule_run_started_at_nullable(
-    engine: object,
-) -> None:
-    """ledger 启动前只读确认 018 已应用，否则立即 fail-closed。
-
-    ledger claim 会显式写 ``t_scheme_runs.started_at = NULL``；017 形态下
-    该写入要到当天日批中段才失败，因此启动即拒绝。
-    """
-    with engine.connect() as connection:
-        shape = _read_schedule_run_started_at_shape(connection)
-        try:
-            complete = (
-                _classify_schedule_run_started_at_shape(shape)
-                == "COMPLETE"
-            )
-        except MigrationPreflightError:
-            complete = False
-        if complete:
-            return
-    raise MigrationPreflightError(
-        "t_scheme_runs.started_at is not migration "
-        f"{SCHEDULE_RUN_STARTED_AT_MIGRATION_VERSION} shape; the ledger "
-        "claim path writes started_at = NULL and would fail mid-run. "
-        f"current={_schedule_run_started_at_definition(shape)}; "
-        f"expected={SCHEDULE_RUN_STARTED_AT_TARGET_DEFINITION}; "
-        "apply it first with: python scripts/apply_migrations.py --apply "
-        "--expected-database-name <database-name> "
-        "--expected-server-uuid <server-uuid>; obtain the expected identity "
-        "from a controlled read-only inspect or identity query"
     )
 
 
@@ -6540,33 +6486,6 @@ def _execute_prepared_migration_files(
         print(f"applied {path.name}")
 
 
-def _apply_migration_files_without_history(
-    engine: object,
-    paths: Iterable[Path],
-) -> None:
-    """按文件名执行迁移，并对 MySQL 017 实施 fail-closed 门禁。
-
-    所有文件会先完整解析，避免较早 DDL 已隐式提交后才发现后续 SQL
-    无法拆分。每个 migration 使用其实际执行 session 做契约检查。
-    migration 017 一旦开始执行，无论 statement 成功或失败，都会再用
-    一个受检连接读取 schema definition postcondition。
-    """
-    prepared: list[tuple[Path, list[str]]] = []
-    for raw_path in sorted(paths, key=lambda candidate: candidate.name):
-        path = Path(raw_path)
-        try:
-            statements = split_sql_statements(
-                path.read_text(encoding="utf-8")
-            )
-        except MigrationSQLParseError as exc:
-            raise MigrationSQLParseError(
-                f"{path.name}: {exc}"
-            ) from exc
-        prepared.append((path, statements))
-
-    _execute_prepared_migration_files(engine, prepared)
-
-
 def apply_pending_migration_files(
     engine: object,
     paths: Iterable[Path],
@@ -6616,11 +6535,3 @@ def apply_pending_migration_files(
                 text("SELECT RELEASE_LOCK(:lock_name)"),
                 {"lock_name": MIGRATION_HISTORY_LOCK},
             )
-
-
-def apply_migration_files(
-    engine: object,
-    paths: Iterable[Path],
-) -> None:
-    """公开入口始终经过 checksum history，不能重放已应用迁移。"""
-    apply_pending_migration_files(engine, paths)

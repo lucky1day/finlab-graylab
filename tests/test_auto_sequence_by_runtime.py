@@ -86,7 +86,6 @@ def test_blackbox_persist_cli_builds_exact_operation_scope(tmp_path) -> None:
             return GateResult(
                 gate_name="backtest",
                 status=GateStatus.PASSED,
-                passed=True,
                 evidence=[],
                 errors=[],
                 started_at="2026-08-25T00:00:00+00:00",
@@ -122,26 +121,31 @@ def test_blackbox_persist_cli_builds_exact_operation_scope(tmp_path) -> None:
     assert result.passed
     ctx = captured["ctx"]
     assert ctx.persist_backtest is True
-    assert ctx.prediction_phase is None
     assert ctx.operation.action == "backtest_persist"
     assert ctx.operation.predict_date == "2026-08-25"
     assert ctx.operation.backtest_start_date == "2025-01-01"
 
 
-def test_live_cli_requires_prediction_phase() -> None:
-    from harness.cli import _build_parser
+def test_cli_json_keeps_derived_passed_field() -> None:
+    from harness.cli import _jsonable
+    from harness.result import GateResult, GateStatus, OnboardReport
 
-    parser = _build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["gate", "live", "--scheme-id", "trial"])
-    args = parser.parse_args(
-        [
-            "gate",
-            "live",
-            "--scheme-id",
-            "trial",
-            "--prediction-phase",
-            "gray_live",
-        ]
+    result = GateResult(
+        gate_name="input",
+        status=GateStatus.SKIPPED,
+        evidence=[],
+        errors=[],
+        started_at="2026-08-25T00:00:00+00:00",
+        finished_at="2026-08-25T00:00:01+00:00",
     )
-    assert args.prediction_phase == "gray_live"
+    report = OnboardReport(
+        scheme_id="trial",
+        predict_date="2026-08-25",
+        stage_requested="all",
+        results=[result],
+    )
+
+    assert _jsonable(result)["passed"] is True
+    assert _jsonable(report)["results"][0]["passed"] is True
+    assert _jsonable(report)["overall_passed"] is True
+    assert _jsonable(report)["control_plane_persisted"] is True

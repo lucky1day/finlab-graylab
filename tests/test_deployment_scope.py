@@ -13,18 +13,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MATRIX_PATH = PROJECT_ROOT / "deploy" / "scheme_deployment_matrix_v1.json"
 MAC3_TARGET = "mac3-production"
 ALIYUN_TARGET = "aliyun-gray"
-WEEKLY_1Y_CAUSAL_SCHEME_ID = "weekly_1y_causal_v1_31_0_standalone"
-M0_WEEKLY_AVG_SCHEME_IDS = (
-    "m0_weekly_avg_1y_v1",
-    "m0_weekly_avg_3y_v1",
-    "m0_weekly_avg_5y_v1",
-    "m0_weekly_avg_7y_v1",
-    "m0_weekly_avg_10y_v1",
-)
-DAILY_T1_TRIAL_SCHEME_IDS = (
-    "five_y_factor_rule_online_v1",
-    "ten_y_factor_level_ensemble_v1",
-)
 MAC_ONLY_SCHEME_IDS = frozenset(
     {
         "daily_10y_lgbm_10y04_0629",

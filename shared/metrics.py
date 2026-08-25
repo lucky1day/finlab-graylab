@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from shared.models import DIRECTION_VALUES
+
 
 def safe_div(numerator: int, denominator: int) -> float | None:
     """安全除法；分母为 0 时返回 None。"""
@@ -89,6 +91,6 @@ def _direction_or_none(value: Any) -> int | None:
         direction = int(value)
     except (TypeError, ValueError):
         return None
-    if direction not in (-1, 0, 1):
+    if direction not in DIRECTION_VALUES:
         return None
     return direction

@@ -22,12 +22,11 @@ from scheduler.blackbox_v2_runner import (
 from scheduler.discovery import SchemeConfig, discover_schemes
 from scheduler.process_control import (
     ProcessGroupTerminationError,
-    ProcessGroupTerminationResult,
     ProcessRegistrationCleanupError,
     ProcessStartGuard,
     capture_new_session_process_group,
     require_process_start_guard,
-    terminate_process_group,
+    terminate_process_group as _terminate_process_group,
 )
 from scheduler.repository import (
     attach_run_data_snapshot,
@@ -81,7 +80,6 @@ from shared.source_runtime_database import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ALGO_ENV = "forecast_env"
-VALID_PREDICTION_PHASES = {"gray_live", "scheduled_live"}
 BLACKBOX_SNAPSHOT_MODE_FRESH = "fresh"
 BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF = "historical_as_of_replay"
 VALID_BLACKBOX_SNAPSHOT_MODES = {
@@ -949,18 +947,6 @@ def _run_process_group(
     return completed
 
 
-def _terminate_process_group(
-    process: subprocess.Popen[str],
-    *,
-    process_group_id: int | None = None,
-) -> ProcessGroupTerminationResult:
-    """终止进程组并返回“整个组已消失”的明确证据。"""
-    return terminate_process_group(
-        process,
-        process_group_id=process_group_id,
-    )
-
-
 def _drain_timed_out_process_output(process: subprocess.Popen[str]) -> tuple[str, str]:
     """timeout 清理后短暂收集输出，避免子进程持管道导致无界等待。"""
     try:
@@ -998,7 +984,6 @@ def execute_scheme(
     scheduled_control_plane: str | None = None,
     scheduled_execution_context: object | None = None,
     scheduled_preflight_failure: str | None = None,
-    blackbox_precommit_validator: Callable[[object], None] | None = None,
     blackbox_snapshot_mode: str = BLACKBOX_SNAPSHOT_MODE_FRESH,
     blackbox_expected_generation_id: str | None = None,
     blackbox_expected_refresh_date: str | None = None,
@@ -1011,32 +996,26 @@ def execute_scheme(
     2. Native 要求 Registry active 且精确版本状态仅为 active
     3. Blackbox 要求 exact active 版本、批准人与 composite Registry 身份全部一致
     """
-    if prediction_phase not in VALID_PREDICTION_PHASES:
-        raise ValueError(f"prediction_phase must be one of {sorted(VALID_PREDICTION_PHASES)}, got {prediction_phase}")
-    if prediction_phase != "scheduled_live" and (
-        scheduled_control_plane is not None
-        or scheduled_execution_context is not None
-        or scheduled_preflight_failure is not None
-    ):
+    if prediction_phase != "scheduled_live":
         raise ValueError(
-            "scheduled control plane requires scheduled_live"
+            "execute_scheme only supports scheduled_live; "
+            "use signal-gap-fill for gray_live"
         )
-    if prediction_phase == "scheduled_live":
-        configuration_error = (
-            scheduled_live_execution_configuration_error(
-                cfg,
-                scheduled_control_plane=scheduled_control_plane,
-                scheduled_execution_context=scheduled_execution_context,
-            )
+    configuration_error = (
+        scheduled_live_execution_configuration_error(
+            cfg,
+            scheduled_control_plane=scheduled_control_plane,
+            scheduled_execution_context=scheduled_execution_context,
         )
-        if configuration_error is not None:
-            return SchemeRunResult(
-                cfg.scheme_id,
-                "failed",
-                0,
-                0.0,
-                configuration_error,
-            )
+    )
+    if configuration_error is not None:
+        return SchemeRunResult(
+            cfg.scheme_id,
+            "failed",
+            0,
+            0.0,
+            configuration_error,
+        )
     if scheduled_preflight_failure is not None:
         if (
             prediction_phase != "scheduled_live"
@@ -1184,7 +1163,6 @@ def execute_scheme(
                     records_returned=records_returned,
                     run_date=predict_date,
                     duration_sec=duration,
-                    precommit_validator=blackbox_precommit_validator,
                 )
             )
             return SchemeRunResult(

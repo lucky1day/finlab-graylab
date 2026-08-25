@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 from harness.context import GateContext
@@ -109,7 +108,6 @@ class InputGate(Gate):
         return GateResult(
             gate_name=self.name,
             status=status,
-            passed=status == GateStatus.PASSED,
             evidence=evidence,
             errors=errors,
             started_at=started_at,

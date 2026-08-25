@@ -103,7 +103,6 @@ def _scheme(target_tenor: str, *, signal_status: str) -> dict[str, Any]:
         "scheme_id": f"{BASE_SCHEME_ID}__h1__{target_tenor}",
         "base_scheme_id": BASE_SCHEME_ID,
         "name": "Demo Daily",
-        "owner": "",
         "description": "Dashboard gate fixture",
         "horizon": 1,
         "task_type": "T+1",
@@ -149,12 +148,10 @@ def _payload(
     ]
     schemes.sort(key=lambda row: row["scheme_id"])
     return {
-        "schema_version": "factor-lab-dashboard-v1",
+        "schema_version": "factor-lab-dashboard-v2",
         "snapshot_id": "dashboard-snapshot-1",
         "generated_at": "2026-08-10T12:00:00+08:00",
         "display_until": "2026-08-10",
-        "stale": False,
-        "snapshot_age_ms": 0,
         "row_fields": [
             "predict_date",
             "feature_date",
@@ -344,7 +341,7 @@ def test_dashboard_gate_requires_backtest_partition(tmp_path: Path) -> None:
     assert any("backtest" in error for error in result.errors)
 
 
-@pytest.mark.parametrize("field", ["name", "owner", "description"])
+@pytest.mark.parametrize("field", ["name", "description"])
 @pytest.mark.parametrize("mode", ["empty", "mismatch"])
 def test_dashboard_gate_requires_exact_new_blackbox_display_identity(
     tmp_path: Path,
@@ -355,7 +352,6 @@ def test_dashboard_gate_requires_exact_new_blackbox_display_identity(
     payload = _payload(tenors=("5Y",))
     payload["schemes"][0].update(
         name="Demo Blackbox",
-        owner="ALGO-A",
         description="Blackbox dashboard fixture",
     )
     payload["schemes"][0][field] = "" if mode == "empty" else "different"
@@ -373,7 +369,6 @@ def test_dashboard_gate_accepts_exact_new_blackbox_display_identity(
     payload = _payload(tenors=("5Y",))
     payload["schemes"][0].update(
         name="Demo Blackbox",
-        owner="ALGO-A",
         description="Blackbox dashboard fixture",
     )
 

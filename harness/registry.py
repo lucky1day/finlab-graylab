@@ -6,7 +6,6 @@ from harness.gates.compare_gate import CompareGate
 from harness.gates.dashboard_gate import DashboardGate
 from harness.gates.dry_run_gate import DryRunGate
 from harness.gates.input_gate import InputGate
-from harness.gates.live_gate import LiveGate
 from harness.gates.native_maintenance_admission_gate import (
     NATIVE_MAINTENANCE_SEQUENCE,
     NATIVE_MAINTENANCE_STAGE,
@@ -52,7 +51,6 @@ def gate_for_name(name: str, *, ctx: GateContext | None = None) -> Gate:
         from harness.blackbox_v2.gates import BLACKBOX_GATES
         from harness.blackbox_v2.activation import BlackboxLifecycleReconcileGate
         common_post_activation_gates = {
-            "live": LiveGate,
             "lifecycle-reconcile": BlackboxLifecycleReconcileGate,
         }
         if name in common_post_activation_gates:
@@ -70,7 +68,6 @@ def gate_for_name(name: str, *, ctx: GateContext | None = None) -> Gate:
         "dry-run": DryRunGate,
         "compare": CompareGate,
         "backtest": BacktestGate,
-        "live": LiveGate,
     }
     try:
         return gates[name]()
