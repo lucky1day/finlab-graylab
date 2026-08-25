@@ -272,14 +272,8 @@ Request 数，不在 Harness 中再次实现算法级性能测试。
 - active config 与 active exact version 才进入对应 cadence 的 one-shot 候选，任务选择使用
   `task_type`，不由 `frequency/horizon` 猜测；
 - Activation 不安装 plist/unit、不重启服务，也不能证明已经产生 `scheduled_live`；
-- 历史缺口只使用单日 `signal-gap-fill`，保持 insert-only，禁止 fallback、覆盖和自动重试。
-
-```bash
-python -m harness signal-gap-fill --predict-date YYYY-MM-DD
-python -m harness signal-gap-fill --predict-date YYYY-MM-DD --scheme-id <base_scheme_id>
-```
-
-命令不接收 token、外部 plan 或日期范围；`SKIP_NOT_DUE` 与 `SKIP_PRESENT` 是正常零写终态。
+- 历史缺口只使用单日 `signal-gap-fill`，保持 insert-only，禁止 fallback、覆盖和自动重试；唯一命令格式和
+  零写终态见[生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md#2-自然信号历史修复与输入新鲜度)。
 
 ## 3. 快照与 Request
 
