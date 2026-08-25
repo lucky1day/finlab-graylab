@@ -4,7 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from harness.context import GateContext
 
@@ -13,147 +13,35 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class SchemeConfigLoaderTests(unittest.TestCase):
-    def test_load_yaml_mapping_uses_pyyaml_for_nested_mapping_and_scalars(self) -> None:
+    def test_load_yaml_mapping_reads_nested_mapping_and_scalars(self) -> None:
         from shared.scheme_config_loader import load_yaml_mapping
 
-        expected = {
-            "scheme": {
-                "enabled": True,
-                "horizon": 5,
-                "name": "demo",
-                "tenors": ["5Y", "10Y"],
-            }
-        }
-        yaml_module = Mock()
-        yaml_module.safe_load.return_value = expected
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "config.yaml"
-            config_path.write_text("scheme: demo\n", encoding="utf-8")
-
-            with patch(
-                "shared.scheme_config_loader.importlib.import_module",
-                return_value=yaml_module,
-            ):
-                actual = load_yaml_mapping(config_path)
-
-        self.assertEqual(actual, expected)
-        yaml_module.safe_load.assert_called_once_with("scheme: demo\n")
-
-    def test_load_yaml_mapping_falls_back_without_pyyaml(self) -> None:
-        from shared.scheme_config_loader import load_yaml_mapping
-
-        text = "\n".join(
-            [
-                "scheme:",
-                "  enabled: true",
-                "  horizon: 5",
-                "  name: demo",
-                "  targets:",
-                "    - tenor: 5Y",
-                "      active: false",
-                "    - tenor: 10Y",
-                "      active: true",
-            ]
-        ) + "\n"
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "config.yaml"
-            config_path.write_text(text, encoding="utf-8")
-            missing_yaml = ModuleNotFoundError(
-                "No module named 'yaml'",
-                name="yaml",
+            config_path.write_text(
+                "scheme:\n  enabled: true\n  tenors: [5Y, 10Y]\n",
+                encoding="utf-8",
             )
-
-            with patch(
-                "shared.scheme_config_loader.importlib.import_module",
-                side_effect=missing_yaml,
-            ):
-                actual = load_yaml_mapping(config_path)
+            actual = load_yaml_mapping(config_path)
 
         self.assertEqual(
             actual,
             {
                 "scheme": {
                     "enabled": True,
-                    "horizon": 5,
-                    "name": "demo",
-                    "targets": [
-                        {"tenor": "5Y", "active": False},
-                        {"tenor": "10Y", "active": True},
-                    ],
+                    "tenors": ["5Y", "10Y"],
                 }
             },
         )
 
-    def test_load_yaml_mapping_propagates_pyyaml_dependency_import_error(self) -> None:
-        from shared.scheme_config_loader import load_yaml_mapping
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "config.yaml"
-            config_path.write_text("scheme_id: demo\n", encoding="utf-8")
-            dependency_error = ModuleNotFoundError(
-                "No module named '_yaml'",
-                name="_yaml",
-            )
-
-            with (
-                patch(
-                    "shared.scheme_config_loader.importlib.import_module",
-                    side_effect=dependency_error,
-                ),
-                self.assertRaises(ModuleNotFoundError) as caught,
-            ):
-                load_yaml_mapping(config_path)
-
-        self.assertIs(caught.exception, dependency_error)
-
-    def test_load_yaml_mapping_rejects_non_mapping_from_pyyaml(self) -> None:
-        from shared.scheme_config_loader import load_yaml_mapping
-
-        yaml_module = Mock()
-        yaml_module.safe_load.return_value = ["not", "a", "mapping"]
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "config.yaml"
-            config_path.write_text("- not\n- a\n- mapping\n", encoding="utf-8")
-
-            with (
-                patch(
-                    "shared.scheme_config_loader.importlib.import_module",
-                    return_value=yaml_module,
-                ),
-                self.assertRaisesRegex(ValueError, "must contain a YAML mapping"),
-            ):
-                load_yaml_mapping(config_path)
-
-    def test_load_yaml_mapping_rejects_non_mapping_without_pyyaml(self) -> None:
+    def test_load_yaml_mapping_rejects_non_mapping(self) -> None:
         from shared.scheme_config_loader import load_yaml_mapping
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "config.yaml"
             config_path.write_text("- not\n- a\n- mapping\n", encoding="utf-8")
-            missing_yaml = ModuleNotFoundError(
-                "No module named 'yaml'",
-                name="yaml",
-            )
 
-            with (
-                patch(
-                    "shared.scheme_config_loader.importlib.import_module",
-                    side_effect=missing_yaml,
-                ),
-                self.assertRaisesRegex(ValueError, "must contain a mapping"),
-            ):
-                load_yaml_mapping(config_path)
-
-    def test_load_yaml_mapping_propagates_invalid_yaml(self) -> None:
-        from shared.scheme_config_loader import load_yaml_mapping
-
-        import yaml
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "config.yaml"
-            config_path.write_text("scheme: [unterminated\n", encoding="utf-8")
-
-            with self.assertRaises(yaml.YAMLError):
+            with self.assertRaisesRegex(ValueError, "must contain a YAML mapping"):
                 load_yaml_mapping(config_path)
 
 
