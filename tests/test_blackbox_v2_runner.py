@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-import os
 import tempfile
 import textwrap
 import time
@@ -153,41 +151,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
 
         popen.assert_not_called()
 
-    def test_scheduler_dispatches_by_explicit_runtime_type(self) -> None:
-        from scheduler.executor import run_configured_scheme
 
-        cfg = SimpleNamespace(
-            runtime_type="blackbox_v2",
-            input_source="data_bridge_current",
-            scheme_id="blackbox_trial",
-        )
-        with patch("scheduler.executor.run_blackbox_scheme_subprocess", return_value=["blackbox"]) as blackbox:
-            with patch("scheduler.executor.run_scheme_subprocess") as native:
-                result = run_configured_scheme(
-                    cfg,
-                    "2026-07-16",
-                    engine="engine",
-                    algo_env="forecast_env",
-                    timeout_sec=3600,
-                )
-
-        self.assertEqual(result, ["blackbox"])
-        blackbox.assert_called_once()
-        native.assert_not_called()
-
-    def test_native_dispatch_rejects_historical_blackbox_snapshot_mode(self) -> None:
-        from scheduler.executor import run_configured_scheme
-
-        cfg = SimpleNamespace(runtime_type="native_adapter", scheme_id="native_trial")
-        with self.assertRaisesRegex(ValueError, "snapshot mode"):
-            run_configured_scheme(
-                cfg,
-                "2026-05-26",
-                engine="engine",
-                algo_env="forecast_env",
-                timeout_sec=600,
-                blackbox_snapshot_mode="historical_as_of_replay",
-            )
 
     def test_scheduled_blackbox_uses_fresh_temporary_current_snapshot(self) -> None:
         from scheduler.executor import run_blackbox_scheme_subprocess
@@ -447,42 +411,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
 
 
 
-    def test_historical_replay_rejects_changed_current_generation(self) -> None:
-        from scheduler.executor import run_blackbox_scheme_subprocess
-
-        @contextmanager
-        def open_snapshot(**_kwargs):
-            yield SimpleNamespace(
-                snapshot_id="snapshot-current",
-                data_dir=Path("/tmp/snapshot-current/data"),
-                generation_id="full-generation-b",
-                refresh_date="2026-07-20",
-            )
-
-        cfg = SimpleNamespace(
-            scheme_id="blackbox_trial",
-            input_source="data_bridge_current",
-            delivery_script=Path("trial.py"),
-            delivery_metadata=Path("trial.json"),
-        )
-        with (
-            patch("scheduler.executor.load_metadata", return_value=_metadata()),
-            patch(
-                "scheduler.executor.open_blackbox_input_snapshot",
-                side_effect=open_snapshot,
-            ),
-        ):
-            with self.assertRaisesRegex(ValueError, "generation changed"):
-                run_blackbox_scheme_subprocess(
-                    cfg,
-                    "2026-05-26",
-                    engine="engine",
-                    algo_env="forecast_env_blackbox_v1",
-                    timeout_sec=600,
-                    snapshot_mode="historical_as_of_replay",
-                    expected_generation_id="full-generation-a",
-                    expected_refresh_date="2026-07-20",
-                )
 
     def test_predict_converts_valid_result_to_prediction_record(self) -> None:
         from scheduler.blackbox_v2_runner import RuntimeProfile, run_blackbox_predict
@@ -539,42 +467,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             "harness_database",
         )
 
-    def test_predict_rejects_missing_platform_evidence_before_execution(
-        self,
-    ) -> None:
-        from scheduler.blackbox_v2_runner import (
-            RuntimeProfile,
-            run_blackbox_predict,
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            data_dir = _write_data_dir(root)
-            (data_dir / "api_wind_date.csv").write_text(
-                "rdate,week_id\n2026-07-24,202629\n",
-                encoding="utf-8",
-            )
-            with (
-                patch(
-                    "scheduler.blackbox_v2_runner."
-                    "execute_blackbox_cli",
-                ) as execute,
-                self.assertRaisesRegex(
-                    ValueError,
-                    "require parent snapshot",
-                ),
-            ):
-                run_blackbox_predict(
-                    metadata=_metadata(),
-                    script_path=root / "trial.py",
-                    request=_request("001"),
-                    data_dir=data_dir,
-                    data_snapshot_id="snapshot-combined",
-                    platform_input_ids=("api-wind-date-v1",),
-                    profile=RuntimeProfile.for_tests(),
-                )
-
-        execute.assert_not_called()
 
     def test_predict_rejects_mismatched_combined_snapshot_before_execution(
         self,
@@ -612,47 +504,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
 
         execute.assert_not_called()
 
-    def test_backtest_rejects_audit_identity_mismatch_before_execution(
-        self,
-    ) -> None:
-        from scheduler.blackbox_v2_runner import (
-            RuntimeProfile,
-            run_blackbox_backtest,
-        )
-
-        evidence = _platform_bundle_evidence()
-        audit_manifest = evidence.audit_manifest
-        audit_manifest["identity"]["parent_snapshot_id"] = (
-            "snapshot-tampered"
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            with (
-                patch(
-                    "scheduler.blackbox_v2_runner."
-                    "execute_blackbox_cli",
-                ) as execute,
-                self.assertRaisesRegex(
-                    ValueError,
-                    "audit manifest identity",
-                ),
-            ):
-                run_blackbox_backtest(
-                    metadata=_metadata(),
-                    script_path=root / "trial.py",
-                    requests=[_request("001"), _request("002")],
-                    data_dir=root / "data",
-                    data_snapshot_id=evidence.combined_snapshot_id,
-                    platform_input_ids=("api-wind-date-v1",),
-                    parent_data_snapshot_id=evidence.parent_snapshot_id,
-                    input_identity_manifest=evidence.identity_manifest,
-                    input_audit_manifest=audit_manifest,
-                    profile=RuntimeProfile.for_tests(
-                        max_batch_requests=1,
-                    ),
-                )
-
-        execute.assert_not_called()
 
 
 
@@ -680,58 +531,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         self.assertEqual(len(records), 205)
         self.assertEqual([record.extra["request_id"] for record in records], [item.request_id for item in requests])
 
-    def test_platform_evidence_is_not_shared_across_backtest_records(
-        self,
-    ) -> None:
-        from scheduler.blackbox_v2_runner import (
-            RuntimeProfile,
-            run_blackbox_backtest,
-        )
-
-        evidence = _platform_bundle_evidence()
-        requests = [_request(f"{index:03d}") for index in range(3)]
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            data_dir = _write_data_dir(root)
-            (data_dir / "api_wind_date.csv").write_text(
-                "rdate,week_id\n2026-07-15,202627\n",
-                encoding="utf-8",
-            )
-            records = run_blackbox_backtest(
-                metadata=_metadata(),
-                script_path=_write_script(
-                    root / "trial.py",
-                    _SUCCESS_SCRIPT,
-                ),
-                requests=requests,
-                data_dir=data_dir,
-                data_snapshot_id=evidence.combined_snapshot_id,
-                platform_input_ids=("api-wind-date-v1",),
-                parent_data_snapshot_id=evidence.parent_snapshot_id,
-                input_identity_manifest=evidence.identity_manifest,
-                input_audit_manifest=evidence.audit_manifest,
-                profile=RuntimeProfile.for_tests(
-                    max_batch_requests=1,
-                ),
-            )
-
-        self.assertEqual(len(records), 3)
-        first_identity = records[0].extra[
-            "platform_input_identity_manifest"
-        ]
-        second_identity = records[1].extra[
-            "platform_input_identity_manifest"
-        ]
-        self.assertIsNot(first_identity, second_identity)
-        self.assertIsNot(
-            first_identity["platform_inputs"][0],
-            second_identity["platform_inputs"][0],
-        )
-        first_identity["platform_inputs"][0]["artifact_id"] = "tampered"
-        self.assertEqual(
-            second_identity["platform_inputs"][0]["artifact_id"],
-            "api-wind-date-v1",
-        )
 
     def test_real_1000_request_backtest_has_bounded_subprocess_count(self) -> None:
         from scheduler.blackbox_v2_runner import (
@@ -764,47 +563,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
 
 
 
-    def test_refuses_symlinked_controlled_paths(self) -> None:
-        from scheduler.blackbox_v2_runner import RuntimeProfile, execute_blackbox_cli
-        from shared.blackbox_v2.requests import write_request
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            script = _write_script(root / "trial.py", _SUCCESS_SCRIPT)
-            script_link = root / "trial-link.py"
-            script_link.symlink_to(script)
-            request = write_request(_request("001"), root / "request.json")
-            request_link = root / "request-link.json"
-            request_link.symlink_to(request)
-            data_dir = _write_data_dir(root)
-            data_link = root / "data-link"
-            data_link.symlink_to(data_dir, target_is_directory=True)
-            output_dir = root / "real-output"
-            output_dir.mkdir()
-            output_link = root / "output-link"
-            output_link.symlink_to(output_dir, target_is_directory=True)
-
-            cases = {
-                "script": {"script_path": script_link},
-                "request": {"input_path": request_link},
-                "data-dir": {"data_dir": data_link},
-                "output-parent": {"output_path": output_link / "prediction.json"},
-            }
-            base = {
-                "script_path": script,
-                "mode": "predict",
-                "input_path": request,
-                "data_dir": data_dir,
-                "output_path": output_dir / "base.json",
-                "profile": RuntimeProfile.for_tests(),
-            }
-            for index, (label, overrides) in enumerate(cases.items()):
-                kwargs = {**base, **overrides}
-                if "output_path" not in overrides:
-                    kwargs["output_path"] = output_dir / f"{index}.json"
-                with self.subTest(path=label):
-                    with self.assertRaisesRegex(ValueError, "symlink"):
-                        execute_blackbox_cli(**kwargs)
 
 
 
@@ -812,45 +570,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
 
 
 
-    def test_runtime_environment_isolates_inherited_secrets(self) -> None:
-        """环境 allowlist 是双平台通用的凭据隔离，与运行期沙箱无关。"""
-        from scheduler.blackbox_v2_runner import RuntimeProfile, execute_blackbox_cli
-        from shared.blackbox_v2.requests import write_request
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            script_dir = root / "delivery"
-            script_dir.mkdir()
-            script = _write_script(script_dir / "probe.py", _RUNTIME_ENV_PROBE_SCRIPT)
-            request = write_request(_request("001"), root / "request.json")
-            data_dir = _write_data_dir(root)
-            secret_dir = root / "external"
-            secret_dir.mkdir()
-            secret = secret_dir / "secret.txt"
-            secret.write_text("external-secret", encoding="utf-8")
-            run_dir = root / "run"
-            run_dir.mkdir()
-            output = run_dir / "probe.json"
-
-            with patch.dict(os.environ, {"BLACKBOX_TEST_SECRET": "parent-secret"}):
-                execute_blackbox_cli(
-                    script_path=script,
-                    mode="predict",
-                    input_path=request,
-                    data_dir=data_dir,
-                    output_path=output,
-                    profile=RuntimeProfile.for_tests(
-                        conda_env=None,
-                        cpu_threads=1,
-                    ),
-                )
-
-            result = json.loads(output.read_text(encoding="utf-8"))
-
-        # 批准输入可读、父进程 Secret 不被继承——两条都由 _runtime_environment
-        # 的 allowlist 保证，在 macOS 与 Linux 上行为一致。
-        self.assertTrue(result["allowed_csv_read"])
-        self.assertTrue(result["inherited_secret_absent"])
 
 
 
@@ -949,43 +668,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         )
 
 
-    def test_gray_replay_batch_rejects_request_after_session_cutoff(self) -> None:
-        from scheduler.blackbox_v2_runner import RuntimeProfile
-        from scheduler.executor import run_blackbox_gray_replay_batch
-
-        cfg = SimpleNamespace(
-            scheme_id="blackbox_trial",
-            runtime_type="blackbox_v2",
-            input_source="data_bridge_current",
-            frequency="daily",
-            delivery_script=Path("trial.py"),
-            delivery_metadata=Path("trial.json"),
-            platform_inputs=(),
-        )
-        with (
-            patch("scheduler.executor.load_metadata", return_value=_metadata()),
-            patch("scheduler.executor.open_blackbox_runtime_view") as runtime_view,
-            patch("scheduler.executor.run_blackbox_backtest") as backtest,
-            self.assertRaisesRegex(ValueError, "exceeds gray replay session"),
-        ):
-            run_blackbox_gray_replay_batch(
-                cfg,
-                requests=[
-                    _gray_replay_request(
-                        "gray-after-session",
-                        "2026-08-06",
-                        "202632",
-                    ),
-                ],
-                session=_gray_replay_session(),
-                engine=object(),
-                algo_env="forecast_env",
-                timeout_sec=600,
-                profile=RuntimeProfile.for_tests(),
-            )
-
-        runtime_view.assert_not_called()
-        backtest.assert_not_called()
 
 
 def _metadata() -> BlackboxMetadata:

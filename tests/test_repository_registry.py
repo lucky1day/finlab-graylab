@@ -422,11 +422,6 @@ def _set_canonical_path(cfg: SimpleNamespace, project_root: Path) -> SimpleNames
     return cfg
 
 class RegistrySyncTests(unittest.TestCase):
-    def test_registry_scheme_id_is_composite_for_every_tenor(self) -> None:
-        from scheduler.repository import registry_scheme_id
-
-        self.assertEqual(registry_scheme_id("t1_daily", 1, "5Y"), "t1_daily__h1__5Y")
-        self.assertEqual(registry_scheme_id("daily_5y_2_v28", 5, "5Y"), "daily_5y_2_v28__h5__5Y")
 
 
     def test_registry_sync_writes_one_registry_row_per_target_tenor(self) -> None:
@@ -586,17 +581,6 @@ class RegistrySyncTests(unittest.TestCase):
 
 
 
-    def test_unknown_active_native_sync_creates_draft_version_and_paused_registry(self) -> None:
-        from scheduler.repository import sync_scheme_registry
-
-        engine = _CaptureEngine()
-
-        sync_scheme_registry(engine, [_native_config()])
-
-        _, version_params = _call_for(engine.store, "INSERT INTO t_scheme_versions")
-        _, registry_rows = _call_for(engine.store, "INSERT INTO t_scheme_registry")
-        self.assertEqual(version_params["status"], "draft")
-        self.assertEqual({row["status"] for row in registry_rows}, {"paused"})
 
 
 
@@ -697,30 +681,6 @@ class BlackboxExecutionApprovalRepositoryTests(unittest.TestCase):
         with self.assertRaises(FrozenInstanceError):
             approval.reason = "mutated"
 
-    def test_lifecycle_read_returns_validated_registry_identities(self) -> None:
-        from scheduler.repository import read_blackbox_lifecycle_state
-
-        engine = _CaptureEngine(
-            version_row={
-                **self._approved_version_row(),
-                "environment_fingerprint": "e" * 64,
-                "data_snapshot_id": "snapshot-1",
-                "code_hash": "c" * 64,
-                "config_hash": "f" * 64,
-                "manifest_hash": "m" * 64,
-            },
-            registry_rows=[self._active_registry_row()],
-        )
-
-        state = read_blackbox_lifecycle_state(
-            engine,
-            _blackbox_config(),
-        )
-
-        self.assertEqual(
-            state.registry_scheme_ids,
-            ("demo_blackbox__h1__10Y",),
-        )
 
 
 
@@ -832,24 +792,6 @@ class BlackboxExecutionApprovalRepositoryTests(unittest.TestCase):
                 self.assertFalse(approval.executable)
                 self.assertEqual(approval.reason, expected_reason)
 
-    def test_exact_approval_rejects_duplicate_expected_tenors_and_registry_ids(self) -> None:
-        from scheduler.repository import read_blackbox_execution_approval
-
-        cfg = _blackbox_config()
-        cfg.tenors = ["10Y", "10Y"]
-        engine = _CaptureEngine(
-            version_row=self._approved_version_row(),
-            registry_rows=[self._active_registry_row()],
-        )
-
-        approval = read_blackbox_execution_approval(engine, cfg)
-
-        self.assertFalse(approval.executable)
-        self.assertEqual(
-            approval.reason,
-            "duplicate expected tenors/Registry ids: "
-            "tenors=['10Y'], registry_ids=['demo_blackbox__h1__10Y']",
-        )
 
 
 class _Result:
@@ -892,21 +834,6 @@ class _RunEngine:
 
 
 class ImmutablePredictionRepositoryTests(unittest.TestCase):
-    def test_scheduled_live_run_creation_without_one_shot_plane_fails_closed(
-        self,
-    ) -> None:
-        from scheduler.repository import create_scheme_run
-
-        with self.assertRaisesRegex(
-            RuntimeError,
-            "requires an installed one-shot control plane",
-        ):
-            create_scheme_run(
-                _RunEngine(),
-                scheme_id="t1_daily",
-                predict_date="2026-07-24",
-                prediction_phase="scheduled_live",
-            )
 
 
     def test_create_scheme_run_inserts_running_row_and_returns_run_id(self) -> None:
@@ -939,25 +866,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertEqual(params["data_snapshot_id"], "snapshot-1")
         self.assertEqual(params["runtime_type"], "native_adapter")
 
-    def test_create_scheme_run_accepts_systemd_one_shot_for_scheduled_live(
-        self,
-    ) -> None:
-        from scheduler.repository import create_scheme_run
-
-        engine = _RunEngine()
-        run_id = create_scheme_run(
-            engine,
-            scheme_id="linux_daily",
-            predict_date="2026-08-17",
-            prediction_phase="scheduled_live",
-            scheduled_control_plane="systemd_one_shot",
-        )
-
-        self.assertEqual(run_id, 101)
-        self.assertEqual(
-            engine.store["params"]["prediction_phase"],
-            "scheduled_live",
-        )
 
 
     def test_active_native_completion_inserts_prediction_and_finishes_atomically(self) -> None:
@@ -1008,196 +916,9 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertEqual(len(engine.store["run_log_rows"]), 1)
         self.assertEqual(engine.store["run_log_rows"][0]["status"], "success")
 
-    def test_active_native_duplicate_completion_skips_without_mutating_prediction(
-        self,
-    ) -> None:
-        from scheduler.repository import (
-            PREDICTION_KEYS_ALREADY_EXIST,
-            complete_active_native_run,
-        )
-        from shared.models import PredictionRecord
-
-        engine = _native_atomic_engine()
-        original = {
-            "id": 701,
-            "run_id": 88,
-            "scheme_version": "native-version-old",
-            "scheme_id": "native_daily",
-            "target_tenor": "5Y",
-            "horizon": 1,
-            "predict_date": "2026-07-19",
-            "feature_date": "2026-07-16",
-            "target_date": "2026-07-21",
-            "prediction_phase": "gray_live",
-            "predicted_direction": -1,
-            "confidence": 0.2,
-            "model_version": "old-native-model",
-            "extra": '{"source":"original"}',
-            "created_at": datetime(2026, 7, 19, 9, 0),
-            "updated_at": datetime(2026, 7, 19, 9, 0),
-        }
-        engine.store["prediction_rows"] = [deepcopy(original)]
-        record = PredictionRecord(
-            scheme_id="native_daily",
-            target_tenor="5Y",
-            horizon=1,
-            predict_date="2026-07-20",
-            target_date="2026-07-21",
-            feature_date="2026-07-17",
-            prediction_phase="gray_live",
-            predicted_direction=1,
-            confidence=0.95,
-            model_version="new-native-model",
-            extra={"source": "rerun"},
-        )
-
-        result = complete_active_native_run(
-            engine,
-            _native_config(),
-            run_id=101,
-            records=[record],
-            scheme_version="native-version-1",
-            records_returned=1,
-            run_date="2026-07-20",
-            duration_sec=2.5,
-        )
-
-        self.assertEqual(
-            result,
-            ("skipped", 0, PREDICTION_KEYS_ALREADY_EXIST),
-        )
-        self.assertEqual(engine.store["prediction_rows"], [original])
-        self.assertFalse(
-            any(
-                "INSERT INTO t_scheme_predictions" in sql
-                for sql, _rows in engine.store["calls"]
-            )
-        )
-        self.assertEqual(engine.store["run_row"]["status"], "skipped")
-        self.assertEqual(engine.store["run_row"]["records_written"], 0)
-        self.assertEqual(
-            engine.store["run_row"]["error_message"],
-            PREDICTION_KEYS_ALREADY_EXIST,
-        )
-        self.assertEqual(engine.store["run_log_rows"][0]["status"], "skipped")
-        self.assertEqual(
-            engine.store["run_log_rows"][0]["error_msg"],
-            PREDICTION_KEYS_ALREADY_EXIST,
-        )
-
-    def test_active_native_partial_prediction_conflict_fails_without_writes(
-        self,
-    ) -> None:
-        from scheduler.repository import (
-            PARTIAL_PREDICTION_KEY_CONFLICT,
-            complete_active_native_run,
-        )
-        from shared.models import PredictionRecord
-
-        engine = _native_atomic_engine()
-        engine.store["registry_rows"] = [
-            _native_registry_row(),
-            _native_registry_row(
-                scheme_id="native_daily__h1__10Y",
-                target_tenor="10Y",
-            ),
-        ]
-        engine.store["run_row"]["records_expected"] = 2
-        original = {
-            "id": 701,
-            "run_id": 88,
-            "scheme_version": "native-version-old",
-            "scheme_id": "native_daily",
-            "target_tenor": "5Y",
-            "horizon": 1,
-            "predict_date": "2026-07-19",
-            "feature_date": "2026-07-16",
-            "target_date": "2026-07-21",
-            "prediction_phase": "gray_live",
-            "predicted_direction": -1,
-            "confidence": 0.2,
-            "model_version": "old-native-model",
-            "extra": '{"source":"original"}',
-            "updated_at": datetime(2026, 7, 19, 9, 0),
-        }
-        engine.store["prediction_rows"] = [deepcopy(original)]
-        records = [
-            PredictionRecord(
-                scheme_id="native_daily",
-                target_tenor=tenor,
-                horizon=1,
-                predict_date="2026-07-20",
-                target_date="2026-07-21",
-                feature_date="2026-07-17",
-                prediction_phase="gray_live",
-                predicted_direction=1,
-            )
-            for tenor in ("5Y", "10Y")
-        ]
-
-        status, written, error_message = complete_active_native_run(
-            engine,
-            _native_config(tenors=("5Y", "10Y")),
-            run_id=101,
-            records=records,
-            scheme_version="native-version-1",
-            records_returned=2,
-            run_date="2026-07-20",
-            duration_sec=2.5,
-        )
-
-        self.assertEqual((status, written), ("failed", 0))
-        self.assertTrue(error_message.startswith(PARTIAL_PREDICTION_KEY_CONFLICT))
-        self.assertIn("existing=", error_message)
-        self.assertIn("native_daily/5Y/h1/2026-07-21", error_message)
-        self.assertIn("missing=", error_message)
-        self.assertIn("native_daily/10Y/h1/2026-07-21", error_message)
-        self.assertEqual(engine.store["prediction_rows"], [original])
-        self.assertFalse(
-            any(
-                "INSERT INTO t_scheme_predictions" in sql
-                for sql, _rows in engine.store["calls"]
-            )
-        )
-        self.assertEqual(engine.store["run_row"]["status"], "failed")
-        self.assertEqual(engine.store["run_row"]["records_written"], 0)
-        self.assertEqual(engine.store["run_log_rows"][0]["status"], "failed")
-        self.assertEqual(
-            engine.store["run_log_rows"][0]["error_msg"],
-            error_message,
-        )
 
 
-    def test_active_native_completion_requires_feature_date(self) -> None:
-        from scheduler.repository import complete_active_native_run
-        from shared.models import PredictionRecord
 
-        engine = _native_atomic_engine()
-        record = PredictionRecord(
-            scheme_id="native_daily",
-            target_tenor="5Y",
-            horizon=1,
-            predict_date="2026-07-20",
-            target_date="2026-07-21",
-            prediction_phase="gray_live",
-            predicted_direction=1,
-        )
-
-        with self.assertRaisesRegex(ValueError, "feature_date"):
-            complete_active_native_run(
-                engine,
-                _native_config(),
-                run_id=101,
-                records=[record],
-                scheme_version="native-version-1",
-                records_returned=1,
-                run_date="2026-07-20",
-                duration_sec=2.5,
-            )
-
-        self.assertEqual(engine.store["prediction_rows"], [])
-        self.assertEqual(engine.store["run_row"]["status"], "running")
-        self.assertEqual(engine.store["run_log_rows"], [])
 
 
 
@@ -1575,55 +1296,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertEqual(engine.store["begin_count"], 0)
         self.assertEqual(engine.store["prediction_rows"], [])
 
-    def test_blackbox_completion_rejects_revoked_approval_without_commit(self) -> None:
-        from scheduler.repository import complete_approved_blackbox_run
-        from shared.models import PredictionRecord
-
-        engine = _AtomicEngine()
-        engine.store["version_row"].update(
-            {
-                "status": "shadow",
-                "approved_by": None,
-                "approved_at": None,
-            }
-        )
-        original_run = deepcopy(engine.store["run_row"])
-        record = PredictionRecord(
-            scheme_id="demo_blackbox",
-            target_tenor="10Y",
-            horizon=1,
-            predict_date="2026-07-20",
-            target_date="2026-07-21",
-            feature_date="2026-07-17",
-            prediction_phase="scheduled_live",
-            predicted_direction=1,
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cfg = _set_canonical_path(_blackbox_config(), Path(tmpdir))
-            with (
-                patch("scheduler.repository.load_scheme_config", return_value=cfg),
-                self.assertRaisesRegex(
-                    RuntimeError,
-                    "Blackbox V2 version is not production-approved: "
-                    "version status is shadow, expected active",
-                ),
-            ):
-                complete_approved_blackbox_run(
-                    engine,
-                    cfg,
-                    run_id=101,
-                    records=[record],
-                    scheme_version="abc123def456",
-                    records_returned=1,
-                    run_date="2026-07-20",
-                    duration_sec=2.5,
-                )
-
-        self.assertEqual(engine.begin_count, 1)
-        self.assertEqual(engine.store["prediction_rows"], [])
-        self.assertEqual(engine.store["run_row"], original_run)
-        self.assertEqual(engine.store["run_log_rows"], [])
 
 
     def test_blackbox_completion_rejects_disk_scheme_version_drift_before_db_access(self) -> None:

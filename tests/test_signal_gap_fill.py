@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import inspect
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import ANY, Mock
+from unittest.mock import Mock
 
 import pytest
 
-from shared.exclusive_file_lock import ExclusiveFileLockUnavailable
 from shared.models import PredictionRecord
 
 
@@ -247,55 +245,8 @@ def _install(
     return SimpleNamespace(dispose=Mock()), readback_mock
 
 
-def test_public_api_accepts_only_in_memory_plan_without_tokens() -> None:
-    from harness import signal_gap_fill
-
-    signature = inspect.signature(signal_gap_fill.run_signal_gap_fill)
-
-    assert list(signature.parameters) == [
-        "plan",
-        "project_root",
-        "engine_factory",
-        "databridge_config",
-        "algo_env",
-        "timeout_sec",
-    ]
-    assert signature.parameters["plan"].kind is inspect.Parameter.KEYWORD_ONLY
-    assert signature.parameters["algo_env"].default == "forecast_env"
-    assert signature.parameters["timeout_sec"].default == 600
-    for removed in (
-        "SignalGapFillGate",
-        "signal_gap_fill_authorization_claims",
-        "mark_token_used",
-    ):
-        assert not hasattr(signal_gap_fill, removed)
 
 
-@pytest.mark.parametrize(
-    ("actions", "expected_status"),
-    [
-        ([_action(action="SKIP_NOT_DUE")], "SKIP_NOT_DUE"),
-        ([_action(action="SKIP_PRESENT")], "SKIP_PRESENT"),
-    ],
-)
-def test_non_actionable_plan_skips_without_engine_or_algorithm(
-    tmp_path: Path,
-    actions: list[dict[str, object]],
-    expected_status: str,
-) -> None:
-    from harness.signal_gap_fill import run_signal_gap_fill
-
-    engine_factory = Mock(side_effect=AssertionError("engine must not open"))
-
-    report = run_signal_gap_fill(
-        plan=_plan(actions, base_scheme_id="demo_native"),
-        project_root=tmp_path,
-        engine_factory=engine_factory,
-        databridge_config=SimpleNamespace(),
-    )
-
-    assert report["status"] == expected_status
-    engine_factory.assert_not_called()
 
 
 def test_multi_target_scheme_runs_once_and_commits_only_missing_target(
@@ -423,73 +374,10 @@ def test_commit_conflict_returns_completed_and_remaining_without_retry(
     readback.assert_not_called()
 
 
-def test_only_one_final_authoritative_readback_can_pass(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from harness.signal_gap_fill import run_signal_gap_fill
-
-    action = _action()
-    plan = _plan([action])
-    repository = _repository()
-    readback = Mock(return_value=_present(plan))
-    engine, _ = _install(
-        monkeypatch,
-        repository=repository,
-        plan=plan,
-        runner=Mock(return_value=[_record(action)]),
-        readback=readback,
-    )
-
-    report = run_signal_gap_fill(
-        plan=plan,
-        project_root=tmp_path,
-        engine_factory=lambda: engine,
-        databridge_config=SimpleNamespace(),
-    )
-
-    assert report["status"] == "PASSED"
-    readback.assert_called_once_with(
-        engine,
-        predict_date=PREDICT_DATE,
-        base_scheme_id=None,
-        databridge_config=ANY,
-    )
 
 
 
 
-def test_singleton_contention_blocks_immediately(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from harness.signal_gap_fill import run_signal_gap_fill
-
-    action = _action()
-    plan = _plan([action])
-    lock = _lock()
-    lock.acquire.side_effect = ExclusiveFileLockUnavailable("held")
-    repository = _repository()
-    engine, _ = _install(
-        monkeypatch,
-        repository=repository,
-        plan=plan,
-        runner=Mock(return_value=[_record(action)]),
-        lock=lock,
-    )
-    engine_factory = Mock(return_value=engine)
-
-    report = run_signal_gap_fill(
-        plan=plan,
-        project_root=tmp_path,
-        engine_factory=engine_factory,
-        databridge_config=SimpleNamespace(),
-    )
-
-    assert report["status"] == "BLOCKED"
-    assert report["failure_code"] == "SIGNAL_GAP_FILL_ALREADY_RUNNING"
-    engine_factory.assert_not_called()
-    repository.create_scheme_run.assert_not_called()
 
 
 

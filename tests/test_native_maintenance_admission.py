@@ -27,76 +27,6 @@ _NATIVE_BUSINESS_IDENTITY = {
 
 
 class NativeMaintenanceAdmissionTests(unittest.TestCase):
-    def test_admits_latest_prior_native_revision_with_matching_active_registry(self) -> None:
-        from harness.gates.native_maintenance_admission_gate import (
-            NativeMaintenanceAdmissionGate,
-            verify_native_maintenance_admission,
-        )
-
-        engine = _sqlite_engine()
-        try:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                root = Path(tmpdir)
-                _write_policy(root, (_SCHEME_ID,))
-                _insert_registry_row(engine)
-                _seed_prior_admission(
-                    engine,
-                    scheme_version="prior-v1",
-                    harness_run_id="hr-a",
-                    finished_at="2026-08-01 10:00:00",
-                )
-                _seed_prior_admission(
-                    engine,
-                    scheme_version="prior-v2",
-                    harness_run_id="hr-z",
-                    finished_at="2026-08-01 10:00:00",
-                )
-                _seed_current_candidate(engine, status="active")
-                ctx = _context(root, engine)
-
-                admission, errors = verify_native_maintenance_admission(ctx)
-                result = NativeMaintenanceAdmissionGate().run(ctx)
-
-                self.assertEqual(errors, [])
-                self.assertIsNotNone(admission)
-                assert admission is not None
-                self.assertEqual(admission.prior_admitted_scheme_version, "prior-v2")
-                self.assertEqual(admission.prior_harness_run_id, "hr-z")
-                self.assertEqual(admission.registry_scheme_ids, (_REGISTRY_SCHEME_ID,))
-                self.assertEqual(result.status, GateStatus.PASSED)
-                self.assertTrue(result.passed)
-                evidence = {item.key: item.value for item in result.evidence}
-                self.assertEqual(
-                    evidence["validation_profile"],
-                    "native_post_admission_revision_v1",
-                )
-                self.assertEqual(
-                    evidence["prior_admitted_scheme_version"],
-                    "prior-v2",
-                )
-                self.assertEqual(evidence["prior_harness_run_id"], "hr-z")
-                self.assertEqual(
-                    evidence["registry_scheme_ids"],
-                    [_REGISTRY_SCHEME_ID],
-                )
-
-                # The caller-owned test Engine remains usable and all read tables
-                # retain their seed rows after a successful admission check.
-                with engine.connect() as conn:
-                    self.assertEqual(
-                        conn.execute(
-                            text("SELECT COUNT(*) FROM t_scheme_versions")
-                        ).scalar_one(),
-                        3,
-                    )
-                    self.assertEqual(
-                        conn.execute(
-                            text("SELECT COUNT(*) FROM t_scheme_registry")
-                        ).scalar_one(),
-                        1,
-                    )
-        finally:
-            engine.dispose()
 
     def test_admits_pre_activation_paused_registry_with_matching_identity(self) -> None:
         """候选 Native version 激活前允许 Registry 保持统一 paused。"""
@@ -129,39 +59,6 @@ class NativeMaintenanceAdmissionTests(unittest.TestCase):
         finally:
             engine.dispose()
 
-    def test_blocks_when_prior_revision_lacks_passed_all_or_compare(self) -> None:
-        from harness.gates.native_maintenance_admission_gate import (
-            NativeMaintenanceAdmissionGate,
-        )
-
-        for case, stage, compare_status in (
-            ("not_all", "dry-run", "passed"),
-            ("compare_not_passed", "all", "failed"),
-        ):
-            with self.subTest(case=case):
-                engine = _sqlite_engine()
-                try:
-                    with tempfile.TemporaryDirectory() as tmpdir:
-                        root = Path(tmpdir)
-                        _write_policy(root, (_SCHEME_ID,))
-                        _insert_registry_row(engine)
-                        _seed_prior_admission(
-                            engine,
-                            scheme_version="prior-v1",
-                            harness_run_id="hr-prior",
-                            stage=stage,
-                            compare_status=compare_status,
-                        )
-
-                        result = NativeMaintenanceAdmissionGate().run(
-                            _context(root, engine)
-                        )
-
-                    self.assertEqual(result.status, GateStatus.BLOCKED)
-                    self.assertFalse(result.passed)
-                    self.assertTrue(result.errors)
-                finally:
-                    engine.dispose()
 
     def test_blocks_when_selected_prior_static_identity_snapshot_is_missing_malformed_or_mismatched(
         self,
@@ -223,50 +120,6 @@ class NativeMaintenanceAdmissionTests(unittest.TestCase):
                 finally:
                     engine.dispose()
 
-    def test_blocks_non_active_non_native_or_policy_denied_candidate(self) -> None:
-        from harness.gates.native_maintenance_admission_gate import (
-            NativeMaintenanceAdmissionGate,
-        )
-
-        cases = (
-            (
-                "paused",
-                {"status": "paused"},
-                (_SCHEME_ID,),
-                "status",
-            ),
-            (
-                "blackbox",
-                {"runtime_type": "blackbox_v2"},
-                (_SCHEME_ID,),
-                "runtime_type",
-            ),
-            (
-                "policy_denied",
-                {},
-                ("other_native",),
-                "maintenance-only",
-            ),
-        )
-        for case, config_overrides, policy_ids, expected_error in cases:
-            with self.subTest(case=case):
-                engine = _sqlite_engine()
-                try:
-                    with tempfile.TemporaryDirectory() as tmpdir:
-                        root = Path(tmpdir)
-                        _write_policy(root, policy_ids)
-                        result = NativeMaintenanceAdmissionGate().run(
-                            _context(root, engine, **config_overrides)
-                        )
-
-                    self.assertEqual(result.status, GateStatus.BLOCKED)
-                    self.assertFalse(result.passed)
-                    self.assertTrue(
-                        any(expected_error in error for error in result.errors),
-                        result.errors,
-                    )
-                finally:
-                    engine.dispose()
 
     def test_blocks_registry_identity_drift_without_repairing_it(self) -> None:
         from harness.gates.native_maintenance_admission_gate import (

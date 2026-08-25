@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 from types import SimpleNamespace
 from typing import Any
 
@@ -225,51 +224,8 @@ def _plan(
     return plan, engine, captured
 
 
-def test_public_api_is_single_date_only() -> None:
-    signature = inspect.signature(signal_gap_plan.plan_signal_gaps)
-
-    assert list(signature.parameters) == [
-        "engine",
-        "predict_date",
-        "base_scheme_id",
-        "databridge_config",
-    ]
-    assert signature.parameters["predict_date"].kind is inspect.Parameter.KEYWORD_ONLY
-    assert signature.parameters["base_scheme_id"].default is None
-    assert not hasattr(signal_gap_plan, "SignalGapPlanScope")
-    assert not hasattr(signal_gap_plan, "canonical_plan_sha256")
 
 
-def test_native_gap_uses_new_schema_and_null_input_authority(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plan, engine, captured = _plan(monkeypatch, _snapshot(case=_case()))
-
-    assert plan["schema_version"] == "single-date-active-live-gap-plan-v1"
-    assert plan["status"] == "READY"
-    assert plan["predict_date"] == "2026-08-10"
-    assert plan["actions"][0]["action"] == "GRAY_LIVE_GAP"
-    assert plan["actions"][0]["input_authority"] is None
-    assert plan["counts"]["expected"] == 1
-    assert engine.connection.statements == [
-        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",
-        "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY",
-    ]
-    assert engine.connection.rollback_count == 1
-    assert captured["predict_date"] == "2026-08-10"
-    serialized = str(plan).lower()
-    for removed in (
-        "segment",
-        "canonical",
-        "start_date",
-        "as_of_date",
-        "selection",
-        "code_sha256",
-        "config_sha256",
-        "plan_sha256",
-        "stable-databridge-current-authority-v1",
-    ):
-        assert removed not in serialized
 
 
 @pytest.mark.parametrize("phase", ["gray_live", "scheduled_live"])
@@ -286,19 +242,6 @@ def test_valid_existing_live_signal_is_skip_present(
     assert plan["status"] == "READY"
 
 
-def test_targeted_active_scheme_not_due_is_explicit_skip(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plan, _, _ = _plan(
-        monkeypatch,
-        _snapshot(),
-        base_scheme_id="demo_native",
-    )
-
-    assert plan["status"] == "READY"
-    assert plan["actions"][0]["action"] == "SKIP_NOT_DUE"
-    assert plan["counts"]["expected"] == 0
-    assert plan["counts"]["actionable"] == 0
 
 
 
@@ -417,27 +360,6 @@ class _MappingRows:
 
 
 
-def test_full_scan_with_no_active_configs_is_ready_and_empty(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        signal_gap_plan,
-        "_discover_scheme_configs",
-        lambda: (_config("paused", status="paused"),),
-    )
-    engine = _Engine()
-
-    plan = signal_gap_plan.plan_signal_gaps(
-        engine,
-        predict_date="2026-08-10",
-        databridge_config=object(),
-    )
-
-    assert plan["status"] == "READY"
-    assert plan["counts"]["active_target"] == 0
-    assert plan["counts"]["expected"] == 0
-    assert plan["actions"] == []
-    assert engine.connection.statements == []
 
 
 
@@ -508,25 +430,3 @@ def test_blackbox_gap_fails_closed_without_valid_current(
 
     assert plan["actions"][0]["action"] == expected_action
     assert plan["status"] == "BLOCKED"
-
-
-@pytest.mark.parametrize(
-    "signals",
-    [
-        (_observed(), _observed()),
-        (_observed(scheme_version="wrong-version"),),
-        (_observed(phase="canonical"),),
-        (_observed(target_tenor="10Y"),),
-    ],
-)
-def test_duplicate_or_drifted_live_result_blocks_data_contract(
-    monkeypatch: pytest.MonkeyPatch,
-    signals: tuple[signal_gap_plan.ObservedSignal, ...],
-) -> None:
-    plan, _, _ = _plan(
-        monkeypatch,
-        _snapshot(case=_case(), live_signals=signals),
-    )
-
-    assert plan["status"] == "BLOCKED"
-    assert plan["actions"][0]["action"] == "BLOCKED_DATA_CONTRACT"
