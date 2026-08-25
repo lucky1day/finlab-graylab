@@ -109,291 +109,49 @@ Metadata 和交付目录不得声明、携带或暗示仅由平台处理的运�
 
 ## 2. 统一 DataBridge 数据
 
-### 2.1 数据来源为什么必须统一
+机器字段基线、三频文件、可选周历和 sample 用途统一见
+[DataBridge V1 数据契约](../blackbox_v2/data_bridge_v1/README.md)；机器真值是
+`shared/blackbox_v2/data_bridge_v1_schema.json`，本 SOP 不复制 Schema、列数或校验脚本。
 
-所有算法工程师使用同一个 DataBridge 导出接口和同一份 `data-bridge-v1` Schema。不得自行写 SQL、拼接其他数据源、复制另一套导出逻辑或手工修改三频文件来贴合算法结果。
+上游和平台必须使用同一 DataBridge generation 与相同规范化日历摘要。三频或日历任一摘要
+不同，结果差异先标记 `data_vintage_mismatch`；不得自行写 SQL、拼接数据源、修改 CSV、把
+`week_id` 当 ISO 周，或把下载逻辑写入交付脚本。正式运行只读取平台提供的只读 `--data-dir`。
 
-开发和生产的区别只有谁来准备数据：
+## 3. 准备自测输入
 
-- **开发和自验**：算法工程师在算法运行前，按第 3 节命令从 DataBridge 下载三份真实业务 CSV；依赖日期到周键映射的方案还必须在同一连续下载批次取得 `api_wind_date.csv`。
-- **平台运行**：平台准备同一代只读数据并通过 `--data-dir` 提供；算法脚本不得主动连接 DataBridge、网络或数据库。
-
-因此，下载是独立的开发准备动作，不能写进 `{scheme_id}.py` 的 `predict` 或 `backtest` 路径。
-
-### 2.2 三份 CSV
-
-DataBridge 固定提供三种文件名和时间键：
-
-| 文件 | 第一列时间键 | 时间键规则 |
-|---|---|---|
-| `daily_output.csv` | `date` | 可解析为日期，非空、唯一、升序 |
-| `weekly_output.csv` | `week_id` | 六位数字字符串，非空、唯一、升序 |
-| `monthly_output.csv` | `month_id` | 六位数字字符串，非空、唯一、升序 |
-
-这三份文件是 CSV，不是 `.xlsx` 工作簿；可以用 Excel 打开查看，但算法必须按 CSV 读取。周、月时间键必须按字符串读取；不得把 `week_id` 当作 ISO 周，也不得自行把 `week_id` 或 `month_id` 换算为日期。
-
-机器权威文件是 `data_bridge_v1_schema.json`。其当前 SHA-256 为：
-
-```text
-f959777b7f251937b6364843a81d8eb696072ca7671b1306c368aa0f3cf735dc
-```
-
-机器 Schema 中的字段列表是 `data-bridge-v1` 的最低兼容字段基线，不是永久完整表头。DataBridge 会随着新的指标接入而增加业务列，所以三份文件没有固定列数。兼容规则是：时间键始终位于第一列；基线字段必须继续存在且相对顺序不变；新增业务列允许出现，并参与当次数据摘要和快照身份。
-
-上游算法必须按字段名选择自己实际消费的列，启动时明确检查这些列是否存在，并忽略未使用的新增业务列。不得按列位置切片、假定最后一列、要求实际表头与 sample 完全相等，或因为出现未使用的新列而失败。基线字段被删除、改名或改变相对顺序，以及时间键变化，才是不兼容的 Schema 变更。
-
-### 2.3 每天如何更新
-
-平台每天使用统一 DataBridge 导出逻辑全量构建三频数据：日频按日期分段导出后合并，周频和月频导出完整周期数据。平台完成数据校验后，把同一批次的三份文件作为一个 generation 整体原子发布；算法运行只会看到该 generation 的只读副本，不会混用不同批次。
-
-新增指标会在后续导出中形成新增业务列，因此不同日期下载的数据列数可能不同。算法工程师本地下载用于开发验证；正式运行直接读取平台通过 `--data-dir` 提供的当次数据，不需要了解或实现平台内部刷新时间与检查流程。
-
-### 2.4 自测与平台验收必须同代
-
-“算法本地通过”和“平台部署通过”只有在输入身份一致时才可逐行比较。
-对需要 `api_wind_date.csv` 的方案，一次完整验收身份包括：
-
-```text
-generation_id
-refresh_date
-daily_output.csv SHA256
-weekly_output.csv SHA256
-monthly_output.csv SHA256
-api_wind_date.csv canonical SHA256
-combined_snapshot_id
-```
-
-普通 DataBridge CSV 下载响应不返回平台内部 `generation_id`。上游不得
-自行编造该字段；上游先保存四文件 SHA256、下载时间、行数和起止键，
-平台 Intake 时再把三频摘要对应到选定 generation，并补录
-`generation_id`、`refresh_date` 和 `combined_snapshot_id`。
-
-三频文件或日历任一摘要不同，双方输入就不是同一验收版本。此时结果
-差异只能先标记为 `data_vintage_mismatch`，不得直接判定算法错误。
-需要精确复现时，必须使用平台选定的同一 generation 和同一规范化日历
-重新自测。该规则只冻结一次验收对比；正式生产仍滚动使用当天最新且
-已封存的 generation。
-
----
-
-## 3. 从 DataBridge 下载自测数据
-
-### 3.1 配置地址和认证信息
-
-向 DataBridge 管理方取得 `/api/` 地址、用户名和密码。不要把真实密码写进本文、Git、交付包或算法代码。
-
-在准备下载的终端执行：
+从 DataBridge 管理方取得 `/api/` 地址和只读凭据，在同一连续批次下载三频文件；依赖周历的
+方案同时下载 `api_wind_date.csv`。凭据只放在当前 shell，不进入 Git、交付包、日志或聊天记录。
 
 ```bash
-export DATABRIDGE_API_BASE_URL="<DataBridge 管理方提供的 /api/ 地址>"
-export DATABRIDGE_API_USERNAME="<DataBridge 用户名>"
-printf "DataBridge password: "
-read -r -s DATABRIDGE_API_PASSWORD
-printf "\n"
-export DATABRIDGE_API_PASSWORD
-export DATABRIDGE_END_DATE="<YYYY-MM-DD 数据截止日>"
+export DATABRIDGE_API_BASE_URL="<DataBridge /api/ 地址>"
+export DATABRIDGE_API_USERNAME="<只读用户名>"
+read -r -s DATABRIDGE_API_PASSWORD && export DATABRIDGE_API_PASSWORD
+export DATABRIDGE_END_DATE="<YYYY-MM-DD>"
 mkdir -p sample_data
-```
 
-`DATABRIDGE_END_DATE` 应填写准备验证的数据截止日。回测需要更长历史时，日频开始日仍使用 `2010-01-01`；算法通过每条 Request 的截止键隔离未来数据。
-
-### 3.2 下载日频文件
-
-接口参数：`frequency=日`。
-
-```bash
-curl --fail-with-body --location --retry 3 \
-  --user "$DATABRIDGE_API_USERNAME:$DATABRIDGE_API_PASSWORD" \
-  --get "${DATABRIDGE_API_BASE_URL%/}/export/csv/" \
-  --data-urlencode "frequency=日" \
-  --data-urlencode "start_date=2010-01-01" \
-  --data-urlencode "end_date=$DATABRIDGE_END_DATE" \
+curl --fail-with-body --user "$DATABRIDGE_API_USERNAME:$DATABRIDGE_API_PASSWORD" \
+  --get "${DATABRIDGE_API_BASE_URL%/}/export/csv/" --data-urlencode "frequency=日" \
+  --data-urlencode "start_date=2010-01-01" --data-urlencode "end_date=$DATABRIDGE_END_DATE" \
   --output sample_data/daily_output.csv
-```
-
-### 3.3 下载周频文件
-
-接口参数：`frequency=周`。
-
-```bash
-curl --fail-with-body --location --retry 3 \
-  --user "$DATABRIDGE_API_USERNAME:$DATABRIDGE_API_PASSWORD" \
-  --get "${DATABRIDGE_API_BASE_URL%/}/export/csv/" \
-  --data-urlencode "frequency=周" \
+curl --fail-with-body --user "$DATABRIDGE_API_USERNAME:$DATABRIDGE_API_PASSWORD" \
+  --get "${DATABRIDGE_API_BASE_URL%/}/export/csv/" --data-urlencode "frequency=周" \
   --output sample_data/weekly_output.csv
-```
-
-### 3.4 下载月频文件
-
-接口参数：`frequency=月`。
-
-```bash
-curl --fail-with-body --location --retry 3 \
-  --user "$DATABRIDGE_API_USERNAME:$DATABRIDGE_API_PASSWORD" \
-  --get "${DATABRIDGE_API_BASE_URL%/}/export/csv/" \
-  --data-urlencode "frequency=月" \
+curl --fail-with-body --user "$DATABRIDGE_API_USERNAME:$DATABRIDGE_API_PASSWORD" \
+  --get "${DATABRIDGE_API_BASE_URL%/}/export/csv/" --data-urlencode "frequency=月" \
   --output sample_data/monthly_output.csv
-```
-
-### 3.5 下载 `api_wind_date.csv`
-
-依赖日期到平台周键映射的方案必须执行；不依赖周历的方案可以跳过：
-
-```bash
-curl --fail-with-body --location --retry 3 \
-  --user "$DATABRIDGE_API_USERNAME:$DATABRIDGE_API_PASSWORD" \
+# 仅依赖平台周历的方案执行：
+curl --fail-with-body --user "$DATABRIDGE_API_USERNAME:$DATABRIDGE_API_PASSWORD" \
   "${DATABRIDGE_API_BASE_URL%/}/export/tables/api_wind_date/csv/" \
   --output sample_data/api_wind_date.csv
-```
-
-周频、月频和日历不传日历日期参数，直接下载统一导出的完整数据。全部
-必需文件应在同一连续下载批次取得；任一命令出现非 2xx、空响应或非
-CSV 内容时，整批自测输入作废。不得把旧文件、sample、参考包日历或
-手工修改文件混入本批。
-
-下载结束后从当前 shell 清除密码：
-
-```bash
 unset DATABRIDGE_API_PASSWORD
 ```
 
-不要把包含真实密码的命令复制到聊天、工单或日志。正式交付的 `{scheme_id}.py`、`{scheme_id}.json` 以及算法输出中不得出现 DataBridge 地址、用户名、密码或下载逻辑。
+任一下载失败、为空或混入旧文件时整批作废。使用仓库 `shared.data_bridge.validation.validate_dataset`
+和当前机器 Schema 校验三频文件；周历必须精确为 `rdate,week_id`，日期唯一升序、周键为六位
+字符串。算法按字段名选择消费列，忽略未使用的新增业务列，不得修改表头绕过校验。
 
-### 3.6 校验下载结果
-
-确认 `data_bridge_v1_schema.json` 位于当前目录，并执行：
-
-```bash
-python - <<'PY'
-import csv
-import hashlib
-import json
-from pathlib import Path
-
-import pandas as pd
-
-
-root = Path("sample_data")
-schema = json.loads(
-    Path("data_bridge_v1_schema.json").read_text(encoding="utf-8")
-)
-keys = {
-    "daily_output.csv": "date",
-    "weekly_output.csv": "week_id",
-    "monthly_output.csv": "month_id",
-}
-
-for filename, key in keys.items():
-    path = root / filename
-    with path.open("r", encoding="utf-8-sig", newline="") as handle:
-        raw_header = next(csv.reader(handle), [])
-    if not raw_header:
-        raise ValueError(f"{filename} header is empty")
-    if len(raw_header) != len(set(raw_header)):
-        raise ValueError(f"{filename} contains duplicate columns")
-    frame = pd.read_csv(path, dtype="string", keep_default_na=False)
-    actual = list(frame.columns)
-    baseline = schema["files"][filename]["columns"]
-    if frame.empty:
-        raise ValueError(f"{filename} is empty")
-    if not actual or actual[0] != key:
-        raise ValueError(f"{filename} must start with {key}")
-    missing = [column for column in baseline if column not in actual]
-    if missing:
-        raise ValueError(f"{filename} missing baseline columns: {missing[:10]}")
-    positions = [actual.index(column) for column in baseline]
-    if positions != sorted(positions):
-        raise ValueError(f"{filename} baseline column order changed")
-    if frame[key].str.strip().eq("").any() or frame[key].duplicated().any():
-        raise ValueError(
-            f"{filename} {key} must be non-empty and unique"
-        )
-    print(
-        filename,
-        "OK",
-        f"rows={len(frame)}",
-        f"columns={len(frame.columns)}",
-        f"sha256={hashlib.sha256(path.read_bytes()).hexdigest()}",
-    )
-
-calendar_path = root / "api_wind_date.csv"
-if calendar_path.exists():
-    calendar = pd.read_csv(
-        calendar_path,
-        dtype="string",
-        keep_default_na=False,
-    )
-    if list(calendar.columns) != ["rdate", "week_id"]:
-        raise ValueError(
-            "api_wind_date.csv columns must be exactly rdate,week_id"
-        )
-    if calendar.empty:
-        raise ValueError("api_wind_date.csv is empty")
-    dates = calendar["rdate"].str.strip()
-    parsed_dates = pd.to_datetime(
-        dates,
-        format="%Y-%m-%d",
-        errors="raise",
-    )
-    if dates.eq("").any() or dates.duplicated().any():
-        raise ValueError(
-            "api_wind_date.csv rdate must be non-empty and unique"
-        )
-    if not parsed_dates.is_monotonic_increasing:
-        raise ValueError(
-            "api_wind_date.csv rdate must be strictly ascending"
-        )
-    week_ids = calendar["week_id"].str.strip()
-    if not week_ids.str.fullmatch(r"\d{6}").all():
-        raise ValueError(
-            "api_wind_date.csv week_id must be a six-digit string"
-        )
-    print(
-        "api_wind_date.csv",
-        "OK",
-        f"rows={len(calendar)}",
-        f"rdate={dates.iloc[0]}..{dates.iloc[-1]}",
-        f"week_id={week_ids.iloc[0]}..{week_ids.iloc[-1]}",
-        (
-            "sha256="
-            f"{hashlib.sha256(calendar_path.read_bytes()).hexdigest()}"
-        ),
-    )
-PY
-```
-
-输出中的 `columns` 是本次真实文件的实测值，不是验收常量，后续下载可能增加。算法还必须把自己实际消费的字段列成显式清单并逐项检查；未使用的新增业务列直接忽略。缺少基线字段、基线相对顺序变化、文件为空或时间键重复时，先重新下载；不得修改文件表头来绕过检查。
-
-`api_wind_date.csv.week_id` 是不透明的平台业务键，不是 ISO 周，也不
-保证数值连续。必须按字符串精确匹配，禁止 `week_id + 1`、按数值大小
-推导相邻周、从日期自行重算周号或用参考包内嵌日历覆盖。
-
-### 3.7 脱敏 sample 何时使用
-
-随包 sample 保留制作时点的 `data-bridge-v1` 基线表头，每份只有两行合成数据。真实 DataBridge 后续可能增加业务列，sample 不代表未来文件的永久完整表头。它们只适合：
-
-- 验证 CSV 能否读取；
-- 验证字段选择和 dtype；
-- 验证按截止键截断；
-- 验证 CLI、Result 和失败处理。
-
-sample 不来自生产，不得用于训练模型、效果回测、比较准确率，或推断真实数据的起止日期、分布和空值比例。DataBridge 恢复后，正式算法自验必须重新使用真实下载数据。
-
-### 3.8 保存自测输入凭证
-
-自测报告或交接记录必须保存以下事实：
-
-- 下载时间和声明的数据截止日；
-- 三频文件以及所需 `api_wind_date.csv` 的 SHA256、行数、首尾时间键；
-- 日历列名、最小/最大 `rdate`、首尾 `week_id`；
-- 自测 Request 的七字段原值；
-- `daily_cutoff_key` 在同批日历中映射出的 `week_id`；
-- 算法实际消费字段清单和自测结果摘要。
-
-这些内容是验收证据，不是方案交付文件。上游只需在交接材料中提供，
-不得把自测报告、数据、manifest 或日历放入正式两文件 delivery。
-
----
+交接材料只保存下载时间、声明截止日、各文件 SHA256/行数/首尾键、七字段 Request、日历映射、
+实际消费列和自测结果。数据、sample、manifest、自测报告与日历都不进入正式两文件 delivery。
 
 ## 4. 选择任务并填写 Metadata
 
@@ -555,42 +313,11 @@ calendar = pd.read_csv(
 
 ### 6.2 Request 字段
 
-单点 `request.json`：
-
-```json
-{
-  "request_id": "predict-20260718-001",
-  "predict_date": "2026-07-18",
-  "feature_date": "2026-07-17",
-  "target_date": "2026-07-24",
-  "daily_cutoff_key": "2026-07-17",
-  "weekly_cutoff_key": "202628",
-  "monthly_cutoff_key": "202607"
-}
-```
-
-批量 `requests.csv`：
-
-```csv
-request_id,predict_date,feature_date,target_date,daily_cutoff_key,weekly_cutoff_key,monthly_cutoff_key
-backtest-001,2026-07-17,2026-07-17,2026-07-24,2026-07-17,"202628","202607"
-backtest-002,2026-07-18,2026-07-17,2026-07-24,2026-07-17,"202628","202607"
-```
-
-Request 必须恰好包含以上七个字段：
-
-- `request_id` 必须是非空字符串，批内唯一。
-- 三个日期必须是规范 `YYYY-MM-DD`。
-- 日期必须满足 `feature_date <= predict_date <= target_date` 且 `feature_date < target_date`。
-- `daily_cutoff_key` 是规范 `YYYY-MM-DD`；周、月截止键是六位数字字符串。
-- 日期和截止键由平台生成，算法只校验和使用，不得修改、顺延、回退或重新推导。
-- 批量输入顺序就是输出顺序。任一行非法时必须全批失败，不能跳过后输出部分结果。
-
-需要 `api-wind-date-v1` 的方案还必须校验：同一 Request 的
-`daily_cutoff_key` 在本次 `api_wind_date.csv` 中恰好映射到一个
-`week_id`，且该值精确等于 `weekly_cutoff_key`；算法实际消费
-`weekly_output.csv` 时，该周键还必须存在于周频文件。映射不一致说明
-输入批次或 Request 口径不一致，必须整体失败，不得自行修正 Request。
+Request 固定为 `request_id`、`predict_date`、`feature_date`、`target_date` 和三个频率 cutoff 共七个
+字段；字段类型、日期关系、批内唯一性与输出顺序以
+[Blackbox Contract](../architecture/SCHEME_CONTRACT.md)为唯一机器语义。算法只能校验和使用平台给定值，
+不得修改、顺延、回退或重新推导。依赖周历的方案还必须证明 `daily_cutoff_key` 在本批
+`api_wind_date.csv` 中唯一映射到给定 `weekly_cutoff_key`，不一致时整批失败。
 
 ### 6.3 对每个 Request 独立截断
 
@@ -676,36 +403,10 @@ Contract 1.0 使用当前快照加截止键隔离后续行，不提供历史时�
 
 ## 7. 生成 Result
 
-单点 `prediction.json`：
-
-```json
-{
-  "request_id": "predict-20260718-001",
-  "predict_date": "2026-07-18",
-  "feature_date": "2026-07-17",
-  "target_date": "2026-07-24",
-  "predicted_direction": 1
-}
-```
-
-批量 `backtest.csv`：
-
-```csv
-request_id,predict_date,feature_date,target_date,predicted_direction
-backtest-001,2026-07-17,2026-07-17,2026-07-24,1
-backtest-002,2026-07-18,2026-07-17,2026-07-24,-1
-```
-
-- Result 必须恰好包含以上五个字段；三个截止键不写入 Result。
-- 每个 Request 恰好对应一条结果，四个 Request 字段必须原样回传。
-- 批量输出行数和顺序必须与输入一致。
-- JSON 中 `predicted_direction` 必须是整数；CSV 中必须是可解析的 `-1`、`0` 或 `1` 文本。
-- `1` 表示高于 `target_rule` 基准，`-1` 表示低于基准，`0` 表示算法给出的有效持平或中性方向。
-- 二分类算法可以只输出 `-1` 和 `1`；异常、缺数或低置信度不得转换为 `0`。
-
-平台按解析后的字段和值验收，不要求 JSON 键顺序、缩进、末尾换行或 CSV 换行符逐字节一致。
-
----
+Result 固定回传 `request_id`、三个标准日期和 `predicted_direction` 五个字段；每个 Request 恰好
+一行且保持输入顺序。`predicted_direction` 只允许 `-1/0/1`：JSON 使用整数，CSV 使用对应文本。
+三个 cutoff 不进入 Result，异常、缺数或低置信度不得伪装成 `0`。标准结果语义见
+[Blackbox Contract](../architecture/SCHEME_CONTRACT.md#6-标准结果)。
 
 ## 8. Output、日志、失败和确定性
 

@@ -251,90 +251,35 @@ generation。正式 `scheduled_live` 仍使用当天最新、完整校验且
 `generation_id + combined_snapshot_id`。不同 generation 的结果只能
 用于稳定性观察，不能宣称逐行复现。
 
-### 2.4 确认回测成本（一次性计算 vs 逐条重算）
+### 2.4 确认回测成本
 
-**收包阶段就要定这件事**，否则阶段 6 的持久化回测可能从十几分钟变成一夜。
+Intake 前必须核对 delivery 目录外的 `{scheme_id}.performance.json`，验收字段和资源上限以
+[上游强制性能自测](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md#64-强制性能自测与交接证据)为唯一规范。
+`predict 120秒 / 100条 600秒 / 完整区间 1800秒 / 峰值RSS 4GiB` 任一不满足即退回上游，
+平台不得通过改写算法或逐条重验上游性质来补救。
 
-持久化回测的耗时不由条数决定，由交付怎么实现 `backtest` 决定：
+walk-forward 交付必须一次构建完整区间、按 Request cutoff 取值，并用首/中/末独立复算自证；
+非 walk-forward 交付必须显式声明但仍遵守同一资源上限。平台只核对性能报告、实际批次数和总
+Request 数，不在 Harness 中再次实现算法级性能测试。
 
-```
-等价一次性计算   ≈ 1 次整体计算 + 3 次批内自证复算 = 4 次，与条数几乎无关
-逐条重算         N 次，N = Request 条数
-```
+### 2.5 生产时序与自然候选
 
-按当前实测口径（周频方案约 80 条 Request、单次全量计算约 4 分钟）：前者约 16 分钟，
-后者约 5.6 小时。
+生产时点、installed/loaded 控制面和 freshness 规则只由
+[生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)定义，本 SOP 不维护副本。
+平台入库只执行以下检查：
 
-**只读判定**（不跑算法、不写库）：
-
-```bash
-grep -nE "一次性|self_check|self-proof|_can_optimize|batch.*optimiz" \
-  schemes/{scheme_id}/delivery/{scheme_id}.py
-```
-
-交付若实现了一次性计算，应能看到三个结构：整段只算一次的构建、按截止键从结果中提取每条
-Request、以及覆盖批内首/中/末的独立复算自证（自证结论写入 `stderr`）。
-
-只读代码检查不能替代上游性能证据。收包时还必须取得 delivery 目录之外的
-`{scheme_id}.performance.json`，按[上游强制性能自测](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md#64-强制性能自测与交接证据)
-核对测试环境、真实输入摘要、单条/100条/完整区间耗时、分批、峰值 RSS、首中末自证和
-`fallback_used=false`。缺报告、字段不全、测试机器强于参考资源却未限额复测，或任一项超过
-`predict 120秒 / 100条 600秒 / 完整区间 1800秒 / 峰值RSS 4GiB`，都在 Intake 前退回上游；
-不得先入库，再由平台维护者改写算法提速。
-
-判定规则：
-
-| 情况 | 处理 |
-|---|---|
-| 算法是 walk-forward 结构、已实现一次性计算 | 正常推进；阶段 6 预算按十几分钟安排 |
-| 算法是 walk-forward 结构、未实现 | **退回上游**。[上游契约](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md#6-读取输入并按截止键截断)已将其列为必须项 |
-| 算法不是 walk-forward 结构 | 上游必须显式声明并提供完整性能报告；仍须满足同一准入线，不因结构声明获得性能豁免 |
-
-条数可只读估算：同 `task_type` 的现役方案在 `t_backtest_predictions` 里的条数即同量级
-（当前 ECS 实测：`weekly_point` / `weekly_average` 各 72 条，`monthly` 16–17 条，
-`T+1` 中位 337 条，`T+5` 中位 333 条）。
-
-一次性计算通过不只用于缩短 backtest：如果同一冻结 batch 同时覆盖 `gray_target_start` 两侧，且每条结果已证明与独立 cutoff 计算等价，平台后续应直接复用这份核心结果完成历史/gray 分区，不再为 gray 区间逐日期重算。是否可复用由第 6.5 节的精确版本、输入身份、lineage 和 live-safe 条件决定；“一次运行很快”本身不是复用资格。
-
-### 2.5 当前生产时序边界
-
-DataBridge 为 Blackbox 日/周/月任务提供标准三频 artifact；每次自然运行都必须使用
-当天新鲜、已验证且严格截止到 `feature_date` 的输入。generation、manifest、
-business/feature date 或关联摘要任一漂移时 fail-closed；结构完整的旧 current 也不能
-作为 `scheduled_live` fallback。
-
-生产时钟只可由 launchd + installed plist 触发。refresh、daily、weekly、close-period 与
-actuals 各有一个 writer；close-period 复用原 monthly 控制面，不新增月均/季均/年均三个 timer。
-旧 preflight、scheduler restart、per-scheme cron、ledger/
-occurrence/epoch 都不能成为第二入口。具体时点、installed state 与观察证据以
-[生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)和带日期状态记录
-为准，不在本 SOP 中冻结方案数量或 release 队列。
-
-历史 Onboarding 证据跨 generation 时必须明确标记数据版本变化，不能用当前生产结果
-反向覆盖旧验收。经授权的历史缺口只可 insert-only 写 `gray_live`；只有合格自然时钟
-触发才写 `scheduled_live`。
-
-### 2.6 自然 launchd one-shot 候选
-
-自然 launchd one-shot 的候选集合只由严格发现后的生命周期与明确任务规格决定：配置必须为 `status=active`，Blackbox 对应的 exact version 必须为 `version_status=active`。daily/weekly 继续按各自 cadence 选择；close-period 在自然月 15 日只选择 `monthly`，在 MID/CQ/SF 锚点只选择到期的 `monthly_average/quarterly_average/annual_average`，不得仅凭 `frequency` 或 `horizon` 混选。`paused`、`draft` 或其它任务不进入本批次；除此之外不再设置 release queue、`mode` 或 capability 筛选。
-
-因此，ActivationGate 在原有 Gate、生产准备核验和专项授权下把配置与 exact version 原子建立为 active 后，该方案自然进入相同 cadence 的 launchd one-shot 候选集合；这不放宽激活前置条件，也不安装 plist、不改变 loaded state、不重启服务。
-
-Blackbox Admission、`mode`、capability 身份矩阵和 Backend 手动预测入口已经退役。历史权限
-变化通过 Git、Harness run 与授权审计追溯，不保留第二份当前配置。是否已由自然时钟产生
-`scheduled_live`，仍须由 installed plist、loaded state、日志和成功 run/prediction 共同证明。
-
-历史缺口只通过单日运维入口补齐；可选限定一个 base scheme：
+- 自然运行使用当天最新且 `SEALED` 的 DataBridge generation，任一身份或截止漂移均 fail-closed；
+- active config 与 active exact version 才进入对应 cadence 的 one-shot 候选，任务选择使用
+  `task_type`，不由 `frequency/horizon` 猜测；
+- Activation 不安装 plist/unit、不重启服务，也不能证明已经产生 `scheduled_live`；
+- 历史缺口只使用单日 `signal-gap-fill`，保持 insert-only，禁止 fallback、覆盖和自动重试。
 
 ```bash
 python -m harness signal-gap-fill --predict-date YYYY-MM-DD
 python -m harness signal-gap-fill --predict-date YYYY-MM-DD --scheme-id <base_scheme_id>
 ```
 
-命令执行本身就是补数动作，不接收 operator、token、外部 plan、plan SHA 或日期范围。它在
-进程内生成 `single-date-active-live-gap-plan-v1`：不带 `--scheme-id` 时扫描当天全部 active
-due 方案，带参数时只检查该 active base scheme。`SKIP_NOT_DUE` 和 `SKIP_PRESENT` 都是正常
-零写终态；任一权威输入或算法失败时直接退出，不回退、不覆盖、不重试。
+命令不接收 token、外部 plan 或日期范围；`SKIP_NOT_DUE` 与 `SKIP_PRESENT` 是正常零写终态。
 
 ## 3. 快照与 Request
 
@@ -410,27 +355,10 @@ upstream_downloaded_at
 
 ### 3.2 Request
 
-平台根据 Metadata、统一日历和日期语义生成恰好七字段：
-
-```text
-request_id
-predict_date
-feature_date
-target_date
-daily_cutoff_key
-weekly_cutoff_key
-monthly_cutoff_key
-```
-
-必须满足：
-
-- 日期关系和字段类型通过机器契约；
-- 批量一至 100 行，全批次 `request_id` 唯一；
-- 日截止键是快照中不晚于 `feature_date` 的最后一个日频键；
-- 周/月截止键来自平台权威 as-of 口径，不按 ISO 周或年月直接推导；
-- 三个截止键都能在同一个运行快照中唯一定位。
-
-更大回测由平台切分成不超过 100 条的批次，合并时恢复原 Request 顺序，切分方式不得改变结果。
+Request 固定为 `request_id`、三个标准日期和三个频率 cutoff 共七个字段；批量上限 100、
+`request_id` 唯一、cutoff 必须能在同一运行快照中唯一定位。字段类型、日期关系、as-of 计算和
+批次合并顺序以 [Blackbox Contract](../architecture/SCHEME_CONTRACT.md) 与
+[预测日期语义](../architecture/PREDICTION_SEMANTICS.md)为唯一规范，本 SOP 不复制字段表。
 
 ## 4. 自动 Harness
 
@@ -458,14 +386,12 @@ static -> input -> unit -> compare
 
 | 性质 | 契约条款 | 平台是否重验 |
 |---|---|---|
-| 重复执行一致性 | 第 614 行（抽样确定性）、第 470 行 | 否 |
-| `predict` 与 `backtest` 结果一致 | 第 470 行 | 否 |
-| 不同批次大小/分区/顺序结果一致 | 第 470、472、581 行 | 否 |
-| 按截止键隔离未来数据 | 第 198、377、580 行 | 否 |
+| 重复执行一致性 | [上游 SOP 第 8–9 节](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md#8-output日志失败和确定性) | 否 |
+| `predict` 与 `backtest` 结果一致 | [上游 SOP 第 5 节](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md#5-实现同一个脚本的两个命令) | 否 |
+| 不同批次大小、分区和顺序结果一致 | [上游 SOP 第 5 节](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md#5-实现同一个脚本的两个命令) | 否 |
+| 按截止键隔离未来数据 | [上游 SOP 第 6.3 节](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md#63-对每个-request-独立截断) | 否 |
 
-新增任何 Gate 断言前必须先回答：**这条断言失败，是谁的代码错了？** 若答案是交付脚本，
-它就属上游义务，不进平台 Gate。历史上这一条缺失，导致 CompareGate 一度用 10 次全量拟合
-重验上游已明文承诺的性质，单次 `all` 耗时 40 分钟。
+新增 Gate 只覆盖平台代码责任；交付脚本自身性质由上游契约和自验负责，不进入平台重复回归。
 
 ### 4.2 Gate 证据边界
 
@@ -635,116 +561,36 @@ conda run --no-capture-output -n bond_factor_lab_service \
 
 ### 6.5 一次性批量结果复用快路径
 
-新方案的完整区间由等价一次性 batch 产出时，标准路径是“一次计算、一次冻结、按 `target_date` 分流”，而不是先完整写入 backtest、再逐日期重算 gray live。
+一次性 batch 的资格、`gray_target_start` 分区和日期重建规则只由
+[预测日期语义 5.2](../architecture/PREDICTION_SEMANTICS.md#52-一次性批量结果的分区与复用)定义。
+平台执行时只保留四条不变量：
 
-执行前必须冻结并读回：
-
-- exact scheme version、目标环境数据库身份和部署范围；
-- DataBridge generation、combined snapshot、业务摘要、平台日历摘要和 lineage；
-- `backtest_start_date`、`gray_target_start`、正式自然调度已发布的第一条 target（如有）和完整应有 Request 集；
-- batch Output 的行数、日期边界、业务键集合与内容摘要。
-
-只有 batch 每条 Result 都通过逐 Request cutoff、predict/backtest 等价、批内首/中/末独立复算，并且不使用晚于样本 `feature_date` 的固定 `source_end`、未来窗口或跨样本未来状态时，才允许复用。复用步骤固定为：
-
-1. 对 `target_date < gray_target_start` 的行创建新的 immutable canonical backtest run；
-2. 激活成功后，对 `target_date >= gray_target_start`、仍属于应补观察区且尚无 live 业务键的行，调用目标环境现有 `scheduler.repository` 写入入口，按方案组 insert-only 物化为 `gray_live`；
-3. 按任务日历从 `feature_date/target_date` 生成 live `predict_date`，不得复制 backtest 的 `predict_date=feature_date`；
-4. 只复用方向、置信度、`feature_date`、`target_date`、exact version 和必要算法 `extra`。数据库主键、源 `run_id`、Actuals、backtest metrics 和 Harness 历史一律不复制；
-5. backtest 与 live 分别保持原有事务边界。任一业务键已存在即拒绝整个授权组，禁止 update/upsert、先删后写或直接 SQL；任一步失败即停止，不用前端隐藏半完成状态。
-
-若当前 release 没有永久批量导入 CLI，可在明确授权下使用任务专属、可审查的一次性 operator 调用既有 repository；脚本不得实现第二套 SQL 或 repository，完成读回后立即删除且不得进入 release。命令本身绑定本次 scheme、版本、日期范围和目标数据库；无需另造 token、常驻同步器或跨主机 Writer。
-
-快路径完成后必须逐行核对源 batch 与目标两段的数量、方向、置信度、三个日期、version 和必要 extra；证明 backtest/live target 交集为空、自然月不重复、Actual 与准确率事实不变，并运行全部 active 方案 DashboardGate。旧 backtest run 保持 immutable audit，只由新 run 取得 canonical latest-success；不得物理删除。
+1. 先冻结 exact version、输入 identity/lineage、完整 Request 集和 Output 摘要；
+2. `target_date < gray_target_start` 进入新的 immutable canonical backtest，其余合格缺口才可
+   insert-only 物化为 `gray_live`；
+3. live `predict_date` 必须按任务日历重建，禁止复制数据库主键、run、Actual、指标或 Harness 历史；
+4. 已有任一业务键即整组拒绝，禁止 update/upsert、先删后写或第二套 SQL。
 
 ## 7. 生产激活、灰度补齐与前端验收
 
-本节适用于取得具体方案 activation、live 或单日补缺授权后的生产动作。Shadow 完成不等于实盘；Activation 成功且 Registry 与 exact version 变为 active，表示方案进入业务可见状态，`deployed_at` 记录这一日期，同时按 frequency 自然进入对应 launchd one-shot 候选集合。Activation 不安装或加载 plist；生产调度是否已经挂载并自然执行，必须由对应 installed plist、`launchctl` loaded state 和任务日志证明，不能只由 active 或 `deployed_at` 推断。业务可见后不能继续把方案描述为仅有历史回测，也不能等待下一次 scheduler 后才补前端实盘段。
+本阶段需要针对具体方案分别取得 activation、backtest/gray materialization 或单日补缺授权。
+日期分区、gray/scheduled 阶段和 actual join 以
+[预测日期语义](../architecture/PREDICTION_SEMANTICS.md)为准；自然调度证据以
+[生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)为准；展示口径以
+[灰度实验室说明手册](../product/GRAY_LAB_USER_MANUAL.md)为准。
 
-### 7.1 灰度起点、部署时间和正式调度起点
+平台最小闭环：
 
-三个边界必须分开记录：
+1. Activation 后读回 active exact version、全部 active composite Registry 和非空 `deployed_at`；
+2. canonical backtest 只能包含 `target_date < gray_target_start`，旧 run 保持不可变；
+3. 应补观察点按时间顺序经一次性 batch 快路径或单日 `signal-gap-fill` 写为 `gray_live`，不得直接 SQL；
+4. 运行 `DashboardGate`，核对 active identity、backtest/live 零重叠、三日期、phase ranges、pending
+   actual 和 Metadata/owner/description；前端不得用常量、覆盖或隐藏修饰错误数据；
+5. `Onboarding Complete` 要求 Activation、完整 backtest、gray 补齐和 Dashboard/前端均通过；
+   `Production Observed` 还必须由真实 one-shot 时钟产生至少一条成功 `scheduled_live`，并可从
+   installed/loaded state、日志、run 和 prediction 共同追溯。
 
-| 边界 | 判定源 | 业务用途 |
-|---|---|---|
-| `gray_target_start` | 方案生命周期专项授权 | 按 `target_date` 切分历史回测与实盘观察区 |
-| `deployed_at` | Activation 后 active composite Registry 的真实业务上线日期 | 前端“部署时间”和 Registry 生命周期审计 |
-| 正式调度起点 | 经 launchd 控制面自然触发并成功写入的第一条 `prediction_phase=scheduled_live` 的 `predict_date` | 区分灰度实盘和正式生产实盘 |
-
-强制语义：
-
-- 灰度实盘也属于实盘，使用 `prediction_phase=gray_live`；正式 scheduler 自然发出的实盘使用 `prediction_phase=scheduled_live`；
-- 历史回测只允许 `target_date < gray_target_start`，所有 `target_date >= gray_target_start` 的应有预测必须进入 `t_scheme_predictions`，不得进入 canonical latest backtest；
-- `deployed_at` 表示方案真正激活并进入业务可见状态的日期，active Registry 必须非空；它不证明定时任务已挂载，也不参与回测截断、灰度补齐范围、月份归属、actual join 或预测唯一键计算；
-- 方案可以在 `gray_target_start` 之后才部署，因此 gray live 的 `predict_date` 可以早于 `deployed_at`；这是按历史应发时点补齐观察序列，不是伪造部署时间；
-- 正式调度起点只能由 installed plist、`launchctl` loaded state、对应日志与成功 run/prediction 的自然触发证据共同证明，不能用 APScheduler 注册日志、Activation 时间、`deployed_at` 或第一条手工 gray live 代替。
-
-### 7.2 激活后强制补齐 gray live
-
-Activation 完成后、前端验收前，必须按时间顺序补齐从该方案 `gray_target_start` 到当前所有应有的实盘目标点。
-
-补齐必须先枚举 `target_date >= gray_target_start` 的目标点，再按平台日历反推 `feature_date` 和应发 `predict_date`，不能从部署日向后枚举：
-
-- 日频 T+N：`feature_date` 是 `target_date` 前第 N 个交易日，`predict_date` 是 `feature_date` 的下一交易日；必须由平台日历逐点计算，不能使用固定示例日期反推；
-- 周频：先枚举应有目标周末，再反推上一轮调度日；`predict_date` 可能位于 5 月；
-- 月频：按目标月观察点反推自然触发日；若合同规定自然 15 号，不能顺延为交易日。
-
-普通 `live` Gate 仍是 fresh-only：它只接受一次明确的 `gate live` 直接命令，并要求 DataBridge `refresh_date` 等于本次运行日。一般历史 gray 缺口按日期使用唯一运维入口；只有第 6.5 节已经冻结并证明等价的一次性 batch，才允许在相同专项授权下复用核心结果批量物化。两种路径都不得放宽普通 LiveGate、伪造 DataBridge freshness 或直接执行 SQL。
-
-```bash
-conda run --no-capture-output -n bond_factor_lab_service \
-  python -m harness signal-gap-fill \
-    --predict-date {historical_signal_date}
-
-conda run --no-capture-output -n bond_factor_lab_service \
-  python -m harness signal-gap-fill \
-    --predict-date {historical_signal_date} \
-    --scheme-id {base_scheme_id}
-```
-
-命令在进程内生成单日计划并冻结本次 Blackbox DataBridge authority；Native 从当前数据库按
-`feature_date` 截止在私有临时目录中重建。所有缺口算法必须先全部成功，任一算法失败则
-prediction 零提交；全部成功后才按 base scheme group insert-only 写入，并在所有 group 完成后
-只做一次同日期权威读回。Blackbox 使用 `historical_as_of_replay`，Request 的三个 cutoff key
-仍硬截止在该点的 `feature_date`；结果标记 `current_snapshot_as_of_not_historical_vintage`，只能
-解释为当前快照上的 live-safe as-of replay，不能宣称历史 vintage PIT。Blackbox prediction
-`extra` 继续持久化 snapshot、generation、refresh、三频 cutoff、replay semantics 和 backfill
-时间；Native 不保存临时 artifact/cache provenance。
-
-历史 gray 写入采用 insert-only，并依赖 `uk_scheme_tenor_target` 原子拒绝重复 target；不得进入 `ON DUPLICATE KEY UPDATE`。预检已存在、竞争事务冲突、算法失败、provenance 缺失或 Gate 表增量不是 run/prediction/log 精确各 `+1` 时，事务失败且不能覆盖首条预测。补齐产生的 run、prediction 和 run log 必须一一对应；任一点失败时冻结当前方案的后续补齐，不得把缺口留给前端隐藏。
-
-Activation 当天还必须为当前可运行点执行至少一次受控 `gray_live`，证明业务上线时刻已经进入实盘观察链路。后续只有对应 LaunchAgent 经真实时钟自然触发、并由 installed plist、`launchctl` 状态、日志和成功 run 共同证明的预测，才能标为 `scheduled_live`。
-
-### 7.3 API 与前端展示契约
-
-前端要求属于平台入库验收，不属于上游算法交付契约。当前和 final 公网主合同是
-`/api/factor-lab/dashboard`，平台必须以同一次 dashboard 一致性快照完成前端验收。
-旧 `/api/schemes`、`/api/backtests/factor-lab` 和
-`/api/metrics/{registry_scheme_id}` 只允许作为本机分项诊断或公网 rollout 兼容验证；
-final 公网配置会拒绝这些旧接口，不能用它们代替 dashboard 验收：
-
-激活后的 Harness HTTP 验收只运行 `DashboardGate`。它验证当前业务读模型，但 Dashboard
-payload 不含 exact version；版本身份必须由 lifecycle、Registry 与数据库 readback 独立证明。
-
-1. dashboard 中 active composite Registry 方案必须包含真实、非空的 `deployed_at`；前端候选排行的“部署时间”只能来自该字段，不得使用 hardcoded 日期、默认值或 scheme ID 特判。
-2. dashboard 中 canonical latest-success 回测明细必须全部满足 `target_date < gray_target_start`；前端不得靠裁剪或覆盖历史行来掩盖错误的回测落库。
-3. dashboard 必须返回全部 gray/scheduled live 明细、标准三日期、`prediction_phase` 和 `phase_ranges`；`phase_ranges` 至少能分别表达灰度实盘区间和正式调度起点。
-4. 前端详情的阶段分隔文案统一只表达正式实盘的目标日期起点。存在 `scheduled_live` 时显示 `▼ 实盘预测目标区间：{scheduled_live.start_target_date}开始`，日期取 `phase_ranges` 中 scheduled 行的 `start_target_date`；尚不存在 `scheduled_live` 时显示 `▼ 实盘预测目标区间：待产生`。不得使用 `predict_date`、`feature_date`、gray 端点或 `deployed_at` 替代该目标起点；“部署时间”继续单独显示 Registry 的 `deployed_at`。
-5. 回测和 live 统一按 `target_date` 归属月份。“全部”口径必须在第一条 live target 月前插入实盘分隔线；分隔线之前不得包含 `target_date >= gray_target_start` 的回测，之后不得遗漏应有的 gray live。
-6. 同一方案、同一 `target_date` 同时出现在 backtest 与 live 是数据分区失败，必须阻断上线；不得通过前端同月追加、覆盖、去重或隐藏其中一侧宣称验收通过。
-7. actual 尚未到达的 live target 显示“待验证”，计入展示样本数，但不进入准确率分母；不得人工补 actual，也不得把 pending 显示成预测错误。
-8. 任务格子只由 Registry 的 `target_tenor + task_type` 决定；候选名称必须使用 Metadata 的简短 `name`，不得重复任务说明、目标名称或公开内部 scheme version。
-9. 每个正式新激活方案的 `name`、`owner`、`description` 都必须非空并与 Metadata/owner registry readback 一致；前端“方案”“来源”“备注”分别展示这三个字段，不得相互代填、硬编码或把 DataBridge 数据源显示为 owner。历史方案只允许按既有兼容规则补录平台 owner registry，不能改写不可变交付文件。
-10. “仅回测”“仅实盘”“全部”三个口径必须与 DB/API 明细逐行一致；候选样本数、月度指标、每日明细、phase 标签和最新运行日期均可追溯。
-11. 浏览器强制刷新后候选数、方案名称、来源和备注详情正确，控制台错误为 0；如静态资源有变更，必须同步资源版本，不能把缓存页面当成通过证据。
-
-前端验收失败时先查 Registry、canonical backtest 和 live 明细的真实分区。禁止在前端增加日期常量或方案特判来修饰结果；平台数据修正必须走新的授权 run、正式 reconciliation 或受控 correction 流程。
-
-### 7.4 生产完成状态
-
-- **Onboarding Complete**：Activation、完整历史回测、从 `gray_target_start` 起的 gray live 补齐，以及 Dashboard 和前端验收均通过；它本身不授予生产控制面挂载或 `scheduled_live`。
-- **Production Observed**：在 Onboarding Complete 基础上，对应 LaunchAgent 经真实时钟自然产生至少一条成功 `prediction_phase=scheduled_live`，并能从 installed plist、`launchctl`、任务日志、run、prediction、Dashboard 和前端追溯。
-
-仅 active 但未补齐灰度实盘、前端仍混入灰度 target 的回测、缺 `deployed_at`，或没有 launchd 控制面挂载证据，都不得标记为 Onboarding Complete。
+Activation 只建立业务生命周期，不授予调度安装、服务重启或生产 Writer 权限。
 
 ## 8. 失败恢复
 
