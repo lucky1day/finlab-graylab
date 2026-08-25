@@ -767,6 +767,18 @@ def prepare_private_source_runtime_tree(path: Path) -> None:
         )
 
 
+def clear_macos_quarantine(path: Path) -> None:
+    """移除私有 source runtime 的 macOS quarantine 标记。"""
+    if sys.platform != "darwin":
+        return
+    subprocess.run(
+        ["xattr", "-dr", "com.apple.quarantine", str(path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+
+
 def assert_source_package_identity(
     source_package_path: Path,
     expected_sha256: str,

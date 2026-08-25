@@ -20,6 +20,7 @@ from shared.source_runtime_database import (
     assert_source_interpreter_supports_package,
     assert_source_package_tree_safe,
     assert_source_runtime_payload_safe,
+    clear_macos_quarantine,
     install_source_runtime_database_config,
     load_source_runtime_database_config,
     prepare_private_source_runtime_tree,
@@ -230,7 +231,7 @@ class _source_runtime:
             )
             shutil.copytree(self.source_package_path, self.source_root)
             prepare_private_source_runtime_tree(self.source_root)
-            _clear_quarantine(self.source_root)
+            clear_macos_quarantine(self.source_root)
             copied_sha256 = source_package_tree_sha256(
                 self.source_root
             )
@@ -342,14 +343,3 @@ def _read_prediction_rows(output_root: Path) -> list[dict[str, Any]]:
     if not rows:
         raise RuntimeError(f"monthly source runner produced no prediction rows under {output_root}")
     return rows
-
-
-def _clear_quarantine(path: Path) -> None:
-    if os.uname().sysname != "Darwin":
-        return
-    subprocess.run(
-        ["xattr", "-dr", "com.apple.quarantine", str(path)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
