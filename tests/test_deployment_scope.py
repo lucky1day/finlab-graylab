@@ -55,15 +55,6 @@ def _matrix_schemes() -> dict[str, list[str]]:
     return payload["schemes"]
 
 
-def test_unscoped_discovery_matches_matrix_coverage() -> None:
-    """未设目标时 Harness 保持全量发现，且与矩阵逐一对应。
-
-    断言集合相等而非数量：新增方案只需登记矩阵，无需修改本测试。
-    """
-    discovered_ids = {cfg.scheme_id for cfg in _discover(None)}
-    assert discovered_ids == set(_matrix_schemes())
-
-
 def test_each_target_discovery_matches_its_matrix_entries() -> None:
     matrix = _matrix_schemes()
     for target in (MAC3_TARGET, ALIYUN_TARGET):

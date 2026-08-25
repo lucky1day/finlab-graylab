@@ -123,41 +123,36 @@ def test_install_rejects_archive_checksum_mismatch(tmp_path: Path) -> None:
         )
 
 
-@pytest.mark.parametrize(
-    "runtime_root_value",
-    ["tmp_unsafe", "/", "//", "/."],
-    ids=["unsupported-characters", "root", "double-slash-root", "dot-root"],
-)
 def test_install_rejects_unsafe_runtime_root_before_side_effects(
     tmp_path: Path,
-    runtime_root_value: str,
 ) -> None:
     repo = _make_source_repo(tmp_path)
     built = build_source_release(repo, tmp_path / "out")
     deploy_root = (tmp_path / "deploy").resolve()
-    runtime_root = (
-        (tmp_path / "$USER" / "café").resolve()
-        if runtime_root_value == "tmp_unsafe"
-        else runtime_root_value
+    cases = (
+        ("unsupported_characters", (tmp_path / "$USER" / "café").resolve()),
+        ("root", "/"),
+        ("double_slash_root", "//"),
+        ("dot_root", "/."),
     )
+    for case, runtime_root in cases:
+        with pytest.raises(
+            ReleaseInstallError,
+            match="runtime root contains unsafe/unsupported characters",
+        ):
+            install_source_release(
+                manifest_path=built.manifest_path,
+                archive_path=built.archive_path,
+                deploy_root=deploy_root,
+                runtime_root=runtime_root,
+                activate=False,
+                expected_current=None,
+                expected_archive_sha256=built.archive_sha256,
+            )
 
-    with pytest.raises(
-        ReleaseInstallError,
-        match="runtime root contains unsafe/unsupported characters",
-    ):
-        install_source_release(
-            manifest_path=built.manifest_path,
-            archive_path=built.archive_path,
-            deploy_root=deploy_root,
-            runtime_root=runtime_root,
-            activate=False,
-            expected_current=None,
-            expected_archive_sha256=built.archive_sha256,
-        )
-
-    assert not deploy_root.exists()
-    if isinstance(runtime_root, Path):
-        assert not runtime_root.exists()
+        assert not deploy_root.exists(), case
+        if isinstance(runtime_root, Path):
+            assert not runtime_root.exists(), case
 
 
 def test_install_rejects_manifest_commit_not_bound_to_archive(
