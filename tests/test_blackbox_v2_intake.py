@@ -6,9 +6,6 @@ import unittest
 from pathlib import Path
 
 
-_MISSING = object()
-
-
 class BlackboxV2IntakeTests(unittest.TestCase):
     def test_period_average_intake_uses_one_daily_post_close_poll(self) -> None:
         from shared.blackbox_v2.intake import intake_delivery
@@ -176,40 +173,31 @@ class BlackboxV2IntakeTests(unittest.TestCase):
         )
         self.assertEqual(config.platform_inputs, ("api-wind-date-v1",))
 
-    def test_intake_rejects_duplicate_platform_input(self) -> None:
+    def test_intake_rejects_invalid_platform_inputs(self) -> None:
         from shared.blackbox_v2.intake import intake_delivery
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            delivery = _write_delivery(root / "incoming")
-
-            with self.assertRaisesRegex(ValueError, "duplicate"):
-                intake_delivery(
-                    delivery,
-                    schemes_root=root / "schemes",
-                    platform_inputs=[
-                        "api-wind-date-v1",
-                        "api-wind-date-v1",
-                    ],
-                )
-
-        self.assertFalse((root / "schemes" / "trial_10y").exists())
-
-
-    def test_intake_rejects_explicit_empty_or_unknown_platform_inputs(self) -> None:
-        from shared.blackbox_v2.intake import intake_delivery
-
-        for value in ([], ["unknown-input-v1"]):
+        cases = (
+            (["api-wind-date-v1", "api-wind-date-v1"], "duplicate"),
+            ([], None),
+            (["unknown-input-v1"], None),
+        )
+        for value, message in cases:
             with self.subTest(value=value), tempfile.TemporaryDirectory() as tmpdir:
                 root = Path(tmpdir)
                 delivery = _write_delivery(root / "incoming")
 
-                with self.assertRaises(ValueError):
+                error = (
+                    self.assertRaisesRegex(ValueError, message)
+                    if message is not None
+                    else self.assertRaises(ValueError)
+                )
+                with error:
                     intake_delivery(
                         delivery,
                         schemes_root=root / "schemes",
                         platform_inputs=value,
                     )
+                self.assertFalse((root / "schemes" / "trial_10y").exists())
 
     def test_intake_rejects_additional_delivery_file(self) -> None:
         from shared.blackbox_v2.intake import intake_delivery
@@ -237,33 +225,27 @@ class BlackboxV2IntakeTests(unittest.TestCase):
 
 def _write_delivery(
     path: Path,
-    *,
-    scheme_id: str = "trial_10y",
-    description: object = "使用期限利差和滚动分类模型形成方向信号。",
-    owner: object = "ALGO-A",
 ) -> Path:
     registry_path = path.parent / "deploy" / "scheme_owner_v1.json"
     if not registry_path.exists():
         _write_owner_registry(path.parent, {})
     path.mkdir(parents=True)
-    (path / f"{scheme_id}.py").write_bytes(
+    (path / "trial_10y.py").write_bytes(
         b"#!/usr/bin/env python\nprint('ok')\n"
     )
     metadata = {
         "schema_version": "1.0",
-        "scheme_id": scheme_id,
+        "scheme_id": "trial_10y",
         "name": "10Y Trial",
+        "owner": "ALGO-A",
+        "description": "使用期限利差和滚动分类模型形成方向信号。",
         "algorithm_version": "1.0.0",
         "target_tenor": "10Y",
         "task_type": "T+1",
         "horizon": 1,
         "target_rule": "target_date_yield_vs_feature_date_yield",
     }
-    if owner is not _MISSING:
-        metadata["owner"] = owner
-    if description is not _MISSING:
-        metadata["description"] = description
-    (path / f"{scheme_id}.json").write_text(
+    (path / "trial_10y.json").write_text(
         json.dumps(metadata, ensure_ascii=False),
         encoding="utf-8",
     )
