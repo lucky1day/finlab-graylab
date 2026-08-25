@@ -21,6 +21,13 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def create_default_engine():
+    """创建未由测试或调用方显式注入的 Harness 数据库 Engine。"""
+    from scheduler.repository import create_engine_from_env
+
+    return create_engine_from_env()
+
+
 def guarded_result(gate_name: str, runner: Callable[[str], GateResult]) -> GateResult:
     started_at = utc_now()
     try:

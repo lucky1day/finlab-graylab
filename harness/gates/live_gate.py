@@ -7,7 +7,7 @@ from harness.operation import (
     verify_direct_operation,
 )
 from harness.context import GateContext
-from harness.gates.base import Gate, guarded_result, utc_now
+from harness.gates.base import Gate, create_default_engine, guarded_result, utc_now
 from harness.gates.prediction_semantics import LIVE_PHASES
 from harness.probes.table_guard import (
     LIVE_WRITE_ALLOWED_TABLES,
@@ -46,7 +46,7 @@ class LiveGate(Gate):
         operation = None
         passed_run = None
 
-        engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
+        engine = ctx.engine_factory() if ctx.engine_factory is not None else create_default_engine()
         if runtime_type == "blackbox_v2":
             try:
                 before, scheme_before = _snapshot_blackbox_live_counts(
@@ -228,12 +228,6 @@ def execute_scheme(*args, **kwargs):
     from scheduler.executor import execute_scheme as executor_execute_scheme
 
     return executor_execute_scheme(*args, **kwargs)
-
-
-def _create_engine():
-    from scheduler.repository import create_engine_from_env
-
-    return create_engine_from_env()
 
 
 def _load_config_for_execution(ctx: GateContext):

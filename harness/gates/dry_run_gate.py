@@ -4,7 +4,7 @@ from dataclasses import asdict
 from typing import Any
 
 from harness.context import GateContext
-from harness.gates.base import Gate, guarded_result, utc_now
+from harness.gates.base import Gate, create_default_engine, guarded_result, utc_now
 from harness.gates.prediction_semantics import validate_live_record_semantics
 from harness.probes.table_guard import DRY_RUN_GUARD_TABLES, diff_snapshots, snapshot_table_counts
 from harness.result import Evidence, GateResult, GateStatus
@@ -39,7 +39,7 @@ class DryRunGate(Gate):
         config = load_yaml_mapping(
             ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml"
         )
-        engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
+        engine = ctx.engine_factory() if ctx.engine_factory is not None else create_default_engine()
         before: dict[str, int] = {}
         after: dict[str, int] = {}
         records: list[PredictionRecord] = []
@@ -107,12 +107,6 @@ def run_scheme_subprocess(scheme_id: str, predict_date: str, algo_env: str, time
         algo_env=algo_env,
         timeout_sec=timeout_sec,
     )
-
-
-def _create_engine():
-    from scheduler.repository import create_engine_from_env
-
-    return create_engine_from_env()
 
 
 def _validate_records(

@@ -12,7 +12,7 @@ from scheduler.discovery import SCHEMES_ROOT, discover_schemes
 from scheduler.repository import create_engine_from_env, delete_actuals_after_source_watermark, upsert_actuals
 from shared.actual_facts import (
     build_daily_actual_records_from_rows,
-    read_yield_rows as read_shared_yield_rows,
+    read_yield_rows,
 )
 from shared.models import ActualRecord
 from shared.tenor_mapping import TENOR_TO_INDICATOR, indicator_map_for_tenors, normalize_tenor
@@ -194,15 +194,6 @@ def _normalize_date(value: str | date | datetime | None) -> str | None:
     if isinstance(value, date):
         return value.isoformat()
     return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
-
-
-def read_yield_rows(
-    engine: Engine,
-    tenors: Iterable[str] | None = None,
-    end_date: str | date | datetime | None = None,
-) -> list[dict]:
-    """读取实际收益率序列。"""
-    return read_shared_yield_rows(engine, tenors=tenors, end_date=end_date)
 
 
 def read_source_watermarks(

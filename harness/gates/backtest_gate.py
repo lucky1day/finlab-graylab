@@ -11,7 +11,7 @@ from harness.operation import (
     verify_direct_operation,
 )
 from harness.context import GateContext
-from harness.gates.base import Gate, guarded_result, utc_now
+from harness.gates.base import Gate, create_default_engine, guarded_result, utc_now
 from harness.probes.table_guard import PROTECTED_TABLES, diff_snapshots, snapshot_table_counts
 from harness.result import Evidence, GateResult, GateStatus
 from shared.scheme_config_loader import load_yaml_mapping
@@ -47,7 +47,7 @@ class BacktestGate(Gate):
             )
 
         operation = None
-        engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
+        engine = ctx.engine_factory() if ctx.engine_factory is not None else create_default_engine()
         before: dict[str, int] = {}
         after: dict[str, int] = {}
         try:
@@ -180,12 +180,6 @@ def run_backtest_runner(
     if completed.returncode != 0:
         raise RuntimeError(_tail(output))
     return _parse_json_object(output)
-
-
-def _create_engine():
-    from scheduler.repository import create_engine_from_env
-
-    return create_engine_from_env()
 
 
 def _validate_backtest_table_deltas(deltas: dict[str, int], *, persist: bool) -> list[str]:

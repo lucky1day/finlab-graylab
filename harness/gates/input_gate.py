@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from harness.context import GateContext
-from harness.gates.base import Gate, guarded_result, utc_now
+from harness.gates.base import Gate, create_default_engine, guarded_result, utc_now
 from harness.result import Evidence, GateResult, GateStatus
 from shared.prediction_context import build_monthly_live_context
 from shared.scheme_config_loader import load_yaml_mapping
@@ -31,7 +31,7 @@ class InputGate(Gate):
         aux_specs = input_spec.get("auxiliary_inputs")
         auxiliary_inputs = aux_specs if isinstance(aux_specs, list) else []
 
-        engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
+        engine = ctx.engine_factory() if ctx.engine_factory is not None else create_default_engine()
         try:
             calendar = get_calendar(engine)
             monthly_context = build_monthly_live_context(calendar, ctx.predict_date) if frequency == "monthly" else None
@@ -263,12 +263,6 @@ def get_calendar(engine: Any):
     from shared.calendar_service import get_calendar as calendar_factory
 
     return calendar_factory(engine)
-
-
-def _create_engine():
-    from scheduler.repository import create_engine_from_env
-
-    return create_engine_from_env()
 
 
 def build_daily_input_artifact(**kwargs):

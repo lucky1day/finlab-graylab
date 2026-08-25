@@ -22,7 +22,7 @@ from harness.operation import (
 )
 from backtests.blackbox_v2 import run_blackbox_historical_backtest
 from backtests.repository import persist_backtest_output_atomic, snapshot_backtest_scope_counts
-from harness.gates.base import Gate, guarded_result, utc_now
+from harness.gates.base import Gate, create_default_engine, guarded_result, utc_now
 from harness.probes.table_guard import diff_snapshots
 from harness.result import Evidence, GateResult, GateStatus
 from scheduler.blackbox_v2_runner import (
@@ -419,7 +419,7 @@ class BlackboxBacktestGate(_BlackboxGate):
                     f"backtest_start_date={DEFAULT_BACKTEST_START_DATE}"
                 ],
             )
-        engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
+        engine = ctx.engine_factory() if ctx.engine_factory is not None else create_default_engine()
         try:
             cfg = _reload_pinned_blackbox_config(cfg, phase="persisted backtest preflight")
             passed_run = _verify_passed_all(engine, cfg)
@@ -554,7 +554,7 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
             assert_lifecycle_clear(ctx.project_root, cfg.scheme_id)
         except RuntimeError as exc:
             return _blocked(self.name, started_at, [str(exc)])
-        engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
+        engine = ctx.engine_factory() if ctx.engine_factory is not None else create_default_engine()
         config_path = cfg.path / "config.yaml"
         registered_state = None
         try:
@@ -925,7 +925,7 @@ def _ensure_input_state(ctx: GateContext, *, force: bool = False) -> InputState:
         )
     cfg = _config(ctx)
     metadata = _metadata(cfg)
-    engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
+    engine = ctx.engine_factory() if ctx.engine_factory is not None else create_default_engine()
     try:
         snapshot = build_blackbox_input_snapshot(
             snapshot_date=ctx.predict_date,
@@ -1375,12 +1375,6 @@ def _read_input_state(path: Path) -> InputState:
         request=request,
         bundle=bundle,
     )
-
-
-def _create_engine():
-    from scheduler.repository import create_engine_from_env
-
-    return create_engine_from_env()
 
 
 def _existing_gate_root(ctx: GateContext) -> Path | None:

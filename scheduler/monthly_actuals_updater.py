@@ -8,30 +8,10 @@ from sqlalchemy.engine import Engine
 from scheduler.daily_actuals_updater import read_yield_rows, resolve_actual_tenors
 from scheduler.repository import create_engine_from_env, upsert_monthly_actuals
 from shared.actual_facts import (
-    build_monthly_actual_records_from_rows as build_shared_monthly_actual_records_from_rows,
-    read_trade_calendar_rows,
+    build_monthly_actual_records_from_rows,
+    read_trade_calendar_rows as read_month_calendar,
 )
 from shared.models import MonthlyActualRecord
-
-
-def read_month_calendar(engine: Engine) -> list[dict]:
-    """读取交易日历。"""
-    return read_trade_calendar_rows(engine)
-
-
-def build_monthly_actual_records_from_rows(
-    rows: Iterable[dict],
-    calendar_rows: Iterable[dict],
-    start_date: str | date | datetime | None = None,
-    end_date: str | date | datetime | None = None,
-) -> list[MonthlyActualRecord]:
-    """按 feature 月 15 日与 target 月 15 日观测收益率生成月度实际方向。"""
-    return build_shared_monthly_actual_records_from_rows(
-        rows,
-        calendar_rows,
-        start_date=start_date,
-        end_date=end_date,
-    )
 
 
 def build_monthly_actual_records(

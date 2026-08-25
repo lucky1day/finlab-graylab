@@ -9,7 +9,7 @@ from harness.operation import (
     verify_direct_operation,
 )
 from harness.context import GateContext
-from harness.gates.base import Gate, guarded_result, utc_now
+from harness.gates.base import Gate, create_default_engine, guarded_result, utc_now
 from harness.result import Evidence, GateResult, GateStatus
 from scheduler.discovery import SchemeConfig, load_scheme_config
 from scheduler.repository import (
@@ -59,7 +59,7 @@ def _activate_initial(
         assert_lifecycle_clear(ctx.project_root, cfg.scheme_id)
     except RuntimeError as exc:
         return _blocked(started_at, [str(exc)])
-    engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
+    engine = ctx.engine_factory() if ctx.engine_factory is not None else create_default_engine()
     try:
         passed_run = _verify_passed_all(engine, cfg)
         operation, errors = verify_direct_operation(
@@ -179,7 +179,7 @@ def _activate_revision(
     cfg: SchemeConfig,
 ) -> GateResult:
     """在同一入口内原子切换已上线 Blackbox 的同身份修订。"""
-    engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
+    engine = ctx.engine_factory() if ctx.engine_factory is not None else create_default_engine()
     try:
         with lifecycle_operation_lock(ctx.project_root, cfg.scheme_id):
             assert_lifecycle_clear(ctx.project_root, cfg.scheme_id)
@@ -328,7 +328,7 @@ class BlackboxLifecycleReconcileGate(Gate):
                 ["reconciliation previous state is not a non-active safe state"],
                 gate_name=self.name,
             )
-        engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
+        engine = ctx.engine_factory() if ctx.engine_factory is not None else create_default_engine()
         try:
             db_evidence = read_blackbox_lifecycle_state(engine, cfg)
         except Exception as exc:  # noqa: BLE001
@@ -508,12 +508,6 @@ def _environment_fingerprint(project_root: Path) -> str:
     from harness.blackbox_v2.gates import _environment_fingerprint as fingerprint
 
     return fingerprint(project_root)
-
-
-def _create_engine():
-    from scheduler.repository import create_engine_from_env
-
-    return create_engine_from_env()
 
 
 def _blocked(started_at: str, errors: list[str], *, gate_name: str = "activate") -> GateResult:
