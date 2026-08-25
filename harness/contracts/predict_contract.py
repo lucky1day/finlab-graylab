@@ -15,7 +15,7 @@ from harness.contracts.import_rules import (
 )
 
 
-def validate_predict_module(predict_path: Path, scheme_id: str, project_root: Path) -> tuple[list[RuleViolation], dict[str, bool]]:
+def validate_predict_module(predict_path: Path, scheme_id: str) -> tuple[list[RuleViolation], dict[str, bool]]:
     """AST 校验 predict.py；不 import、不执行方案模块。"""
     tree = parse_python(predict_path)
     facts = {

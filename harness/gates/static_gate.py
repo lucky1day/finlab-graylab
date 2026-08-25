@@ -122,7 +122,7 @@ class StaticGate(Gate):
         predict_facts = {"scheme_id_const_ok": False, "run_signature_ok": False, "shared_input_imported": False}
         predict_violations: list[RuleViolation] = []
         if predict_path.exists():
-            predict_violations, predict_facts = validate_predict_module(predict_path, ctx.scheme_id, project_root)
+            predict_violations, predict_facts = validate_predict_module(predict_path, ctx.scheme_id)
             predict_tree = parse_python(predict_path)
             predict_violations.extend(
                 predict_import_whitelist_violations(predict_path, predict_tree, ctx.scheme_id)
@@ -136,7 +136,7 @@ class StaticGate(Gate):
         evidence.append(Evidence("predict_contract_violations", [v.format(project_root) for v in predict_violations]))
         errors.extend(v.format(project_root) for v in predict_violations)
 
-        core_violations = self._core_violations(scheme_dir, project_root)
+        core_violations = self._core_violations(scheme_dir)
         evidence.append(Evidence("dangerous_core_imports", [v.format(project_root) for v in core_violations["imports"]]))
         evidence.append(Evidence("core_db_calls", [v.format(project_root) for v in core_violations["calls"]]))
         evidence.append(Evidence("core_sql_write_literals", [v.format(project_root) for v in core_violations["sql_writes"]]))
@@ -168,7 +168,7 @@ class StaticGate(Gate):
             finished_at=finished_at,
         )
 
-    def _core_violations(self, scheme_dir: Path, project_root: Path) -> dict[str, list[RuleViolation]]:
+    def _core_violations(self, scheme_dir: Path) -> dict[str, list[RuleViolation]]:
         result: dict[str, list[RuleViolation]] = {
             "imports": [],
             "calls": [],

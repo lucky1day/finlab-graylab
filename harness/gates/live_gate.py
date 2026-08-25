@@ -25,10 +25,6 @@ from scheduler.repository import read_blackbox_execution_approval
 class LiveGate(Gate):
     name = "live"
     requires_operation = True
-    operation_action = "live_write"
-    required_prediction_phase: str | None = None
-    blackbox_snapshot_mode = "fresh"
-    blackbox_only = False
 
     def run(self, ctx: GateContext) -> GateResult:
         return guarded_result(self.name, lambda started_at: self._run(ctx, started_at))
@@ -47,39 +43,10 @@ class LiveGate(Gate):
             )
         cfg = _load_config_for_execution(ctx)
         runtime_type = getattr(cfg, "runtime_type", "native_adapter")
-        if self.blackbox_only and runtime_type != "blackbox_v2":
-            return _blocked_blackbox_live(
-                ctx,
-                started_at,
-                [f"{self.name} gate only supports runtime_type=blackbox_v2"],
-                scheme_version=getattr(cfg, "scheme_version", None),
-                gate_name=self.name,
-                operation_action=self.operation_action,
-                blackbox_snapshot_mode=self.blackbox_snapshot_mode,
-            )
         operation = None
         passed_run = None
 
         engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
-        try:
-            mode_evidence, mode_errors = self._mode_preflight(ctx, cfg, engine)
-        except Exception:
-            if engine is not None and hasattr(engine, "dispose"):
-                engine.dispose()
-            raise
-        if mode_errors:
-            if engine is not None and hasattr(engine, "dispose"):
-                engine.dispose()
-            return _blocked_blackbox_live(
-                ctx,
-                started_at,
-                mode_errors,
-                scheme_version=getattr(cfg, "scheme_version", None),
-                gate_name=self.name,
-                operation_action=self.operation_action,
-                blackbox_snapshot_mode=self.blackbox_snapshot_mode,
-                extra_evidence=mode_evidence,
-            )
         if runtime_type == "blackbox_v2":
             try:
                 before, scheme_before = _snapshot_blackbox_live_counts(
@@ -95,10 +62,6 @@ class LiveGate(Gate):
                     started_at,
                     cfg=cfg,
                     failure=exc,
-                    gate_name=self.name,
-                    operation_action=self.operation_action,
-                    blackbox_snapshot_mode=self.blackbox_snapshot_mode,
-                    extra_evidence=mode_evidence,
                 )
         else:
             before = snapshot_table_counts(engine, PROTECTED_TABLES)
@@ -116,7 +79,7 @@ class LiveGate(Gate):
                     operation, operation_errors = verify_direct_operation(
                         ctx.operation,
                         scheme_id=ctx.scheme_id,
-                        action=self.operation_action,
+                        action="live_write",
                         predict_date=ctx.predict_date,
                         scheme_version=cfg.scheme_version,
                         harness_run_id=passed_run.harness_run_id,
@@ -133,21 +96,12 @@ class LiveGate(Gate):
                 operation, operation_errors = verify_direct_operation(
                     ctx.operation,
                     scheme_id=ctx.scheme_id,
-                    action=self.operation_action,
+                    action="live_write",
                     predict_date=ctx.predict_date,
                     scheme_version=cfg.scheme_version,
                 )
             if operation_errors:
                 errors.extend(operation_errors)
-            elif (
-                self.required_prediction_phase is not None
-                and ctx.prediction_phase != self.required_prediction_phase
-            ):
-                errors.append(
-                    f"{self.name} gate requires "
-                    f"prediction_phase={self.required_prediction_phase}, "
-                    f"got {ctx.prediction_phase}"
-                )
             elif ctx.prediction_phase not in LIVE_PHASES:
                 errors.append(f"live gate requires explicit prediction_phase in {sorted(LIVE_PHASES)}, got {ctx.prediction_phase}")
             else:
@@ -172,9 +126,6 @@ class LiveGate(Gate):
                         "timeout_sec": ctx.timeout_sec,
                         "prediction_phase": ctx.prediction_phase,
                     }
-                    execute_kwargs.update(
-                        self._execution_mode_kwargs(ctx, cfg, mode_evidence)
-                    )
                     if runtime_type == "blackbox_v2":
                         execute_kwargs["blackbox_precommit_validator"] = (
                             lambda conn: _validate_blackbox_precommit_deltas(
@@ -184,10 +135,6 @@ class LiveGate(Gate):
                                 scheme_id=ctx.scheme_id,
                             )
                         )
-                        if self.blackbox_snapshot_mode != "fresh":
-                            execute_kwargs["blackbox_snapshot_mode"] = (
-                                self.blackbox_snapshot_mode
-                            )
                     run_output = execute_scheme(
                         cfg_for_run,
                         ctx.predict_date,
@@ -241,9 +188,8 @@ class LiveGate(Gate):
             status=status,
             passed=status == GateStatus.PASSED,
             evidence=[
-                Evidence("operation_action", self.operation_action),
-                Evidence("blackbox_snapshot_mode", self.blackbox_snapshot_mode),
-                *mode_evidence,
+                Evidence("operation_action", "live_write"),
+                Evidence("blackbox_snapshot_mode", "fresh"),
                 Evidence("operation_scheme", ctx.scheme_id),
                 Evidence("scheme_version", cfg.scheme_version if runtime_type == "blackbox_v2" else None),
                 Evidence(
@@ -277,17 +223,6 @@ class LiveGate(Gate):
             finished_at=finished_at,
         )
 
-    def _mode_preflight(self, ctx: GateContext, cfg, engine) -> tuple[list[Evidence], list[str]]:
-        return [], []
-
-    def _execution_mode_kwargs(
-        self,
-        ctx: GateContext,
-        cfg,
-        mode_evidence: list[Evidence],
-    ) -> dict:
-        return {}
-
 
 def execute_scheme(*args, **kwargs):
     from scheduler.executor import execute_scheme as executor_execute_scheme
@@ -311,43 +246,6 @@ def _verify_blackbox_passed_all(engine, cfg):
     from harness.blackbox_v2.gates import _verify_passed_all
 
     return _verify_passed_all(engine, cfg)
-
-
-def _blocked_blackbox_live(
-    ctx: GateContext,
-    started_at: str,
-    errors: list[str],
-    *,
-    scheme_version: str | None,
-    gate_name: str = "live",
-    operation_action: str = "live_write",
-    blackbox_snapshot_mode: str = "fresh",
-    extra_evidence: list[Evidence] | None = None,
-) -> GateResult:
-    return GateResult(
-        gate_name=gate_name,
-        status=GateStatus.BLOCKED,
-        passed=False,
-        evidence=[
-            Evidence("operation_action", operation_action),
-            Evidence("blackbox_snapshot_mode", blackbox_snapshot_mode),
-            *(extra_evidence or []),
-            Evidence("authorized_scheme", ctx.scheme_id),
-            Evidence("scheme_version", scheme_version),
-            Evidence("harness_run_id", None),
-            Evidence("prediction_phase", ctx.prediction_phase),
-            Evidence("protected_table_counts_before", {}),
-            Evidence("protected_table_counts_after", {}),
-            Evidence("protected_table_deltas", {}),
-            Evidence("authorized_scheme_counts_before", {}),
-            Evidence("authorized_scheme_counts_after", {}),
-            Evidence("operation_scheme_table_deltas", {}),
-            Evidence("run_result", None),
-        ],
-        errors=errors,
-        started_at=started_at,
-        finished_at=utc_now(),
-    )
 
 
 def _blackbox_lifecycle_error(ctx: GateContext) -> str | None:
@@ -414,19 +312,14 @@ def _failed_blackbox_count_snapshot(
     *,
     cfg,
     failure: _BlackboxCountSnapshotError,
-    gate_name: str = "live",
-    operation_action: str = "live_write",
-    blackbox_snapshot_mode: str = "fresh",
-    extra_evidence: list[Evidence] | None = None,
 ) -> GateResult:
     return GateResult(
-        gate_name=gate_name,
+        gate_name="live",
         status=GateStatus.FAILED,
         passed=False,
         evidence=[
-            Evidence("operation_action", operation_action),
-            Evidence("blackbox_snapshot_mode", blackbox_snapshot_mode),
-            *(extra_evidence or []),
+            Evidence("operation_action", "live_write"),
+            Evidence("blackbox_snapshot_mode", "fresh"),
             Evidence("authorized_scheme", ctx.scheme_id),
             Evidence("scheme_version", cfg.scheme_version),
             Evidence("harness_run_id", None),
