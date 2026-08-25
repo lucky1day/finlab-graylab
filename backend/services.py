@@ -37,14 +37,6 @@ from shared.task_specs import (
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_TARGET_LABELS = {
-    "1Y": "1Y国债活跃",
-    "3Y": "3Y国债活跃",
-    "5Y": "5Y国债活跃",
-    "7Y": "7Y国债活跃",
-    "10Y": "10Y国债活跃",
-}
-DEFAULT_TARGET_ORDER = ["1Y", "3Y", "5Y", "7Y", "10Y"]
 ALLOWED_TASK_TYPES = set(SHARED_ALLOWED_TASK_TYPES)
 WEEKLY_TASK_TARGET_RULES = {
     "weekly_point": WEEKLY_TARGET_RULE,
@@ -144,7 +136,7 @@ def _month_end(month: str | None) -> str | None:
 
 
 def _list_target_registry(engine: Engine) -> list[dict[str, Any]]:
-    """读取 Y 标的注册表；未迁移时返回默认国债活跃标的。"""
+    """读取 Y 标的注册表。"""
     sql = text(
         """
         SELECT target_code, display_name, asset_class, target_type,
@@ -153,30 +145,8 @@ def _list_target_registry(engine: Engine) -> list[dict[str, Any]]:
         ORDER BY sort_order, target_code
         """
     )
-    try:
-        with engine.connect() as conn:
-            rows = conn.execute(sql).mappings().all()
-    except SQLAlchemyError as exc:
-        message = str(exc)
-        if "t_target_registry" not in message and "1146" not in message:
-            raise
-        rows = []
-
-    if not rows:
-        return [
-            {
-                "target_code": code,
-                "display_name": DEFAULT_TARGET_LABELS[code],
-                "asset_class": "bond",
-                "target_type": "active_treasury",
-                "sort_order": index,
-                "status": "active",
-                "extra": {"legacy_tenor": code},
-                "created_at": None,
-                "updated_at": None,
-            }
-            for index, code in enumerate(DEFAULT_TARGET_ORDER, start=1)
-        ]
+    with engine.connect() as conn:
+        rows = conn.execute(sql).mappings().all()
 
     return [
         {
@@ -203,14 +173,12 @@ def _target_labels(engine: Engine) -> dict[str, str]:
 
 
 def _visible_targets(engine: Engine) -> set[str]:
-    labels = _target_labels(engine)
-    return set(labels) or set(DEFAULT_TARGET_ORDER)
+    return set(_target_labels(engine))
 
 
 def _target_label(target_tenor: str, labels: dict[str, str] | None = None) -> str:
     """返回前端展示用的 Y 标的名称。"""
-    labels = labels or DEFAULT_TARGET_LABELS
-    return labels.get(str(target_tenor), str(target_tenor))
+    return (labels or {}).get(str(target_tenor), str(target_tenor))
 
 
 def _backtest_benchmark_label(benchmark_id: str | None) -> str:

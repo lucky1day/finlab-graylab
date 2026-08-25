@@ -5,8 +5,6 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from fastapi import HTTPException, Response
-from sqlalchemy import create_engine
-
 from backend import main
 
 
@@ -103,26 +101,6 @@ class HealthControlPlaneTests(unittest.TestCase):
             ),
         ):
             main.health()
-
-
-
-
-
-class TargetsEndpointTests(unittest.TestCase):
-    def test_targets_endpoint_fallback_includes_1y_active_treasury(self) -> None:
-        """未迁移目标注册表时，API fallback 也应暴露 1Y 国债活跃。"""
-        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
-        with patch.object(main, "get_engine", return_value=engine):
-            result = main.api_targets()
-
-        self.assertEqual(
-            [item["target_code"] for item in result["targets"]],
-            ["1Y", "3Y", "5Y", "7Y", "10Y"],
-        )
-        self.assertEqual(result["target_labels"]["1Y"], "1Y国债活跃")
-        self.assertEqual(result["targets"][0]["extra"], {"legacy_tenor": "1Y"})
-
-
 class MetricsEndpointTests(unittest.TestCase):
     def test_metrics_endpoint_uses_registry_scheme_id_only(self) -> None:
         engine = object()

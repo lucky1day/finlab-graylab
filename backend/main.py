@@ -61,9 +61,6 @@ ADMIN_TOKEN_HEADER = "X-Admin-Token"
 INDEX_CACHE_CONTROL = "no-cache, must-revalidate"
 VERSIONED_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
 UNVERSIONED_ASSET_CACHE_CONTROL = "no-cache, must-revalidate"
-# Backward-compatible name for older tests/importers. Static serving now uses
-# the three explicit policies above.
-FRONTEND_CACHE_CONTROL = UNVERSIONED_ASSET_CACHE_CONTROL
 logger = logging.getLogger(__name__)
 _REQUEST_ID_PATTERN = re.compile(r"[!-~]{1,128}\Z", flags=re.ASCII)
 _DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -199,7 +196,7 @@ class NoCacheFrontendStaticFiles(StaticFiles):
 def _require_iso_date(value: str | None, *, field: str) -> str | None:
     """校验日期参数的形状与日历语义。
 
-    只做形状约束时 ``\d{2}`` 同样匹配 ``99``，也匹配 2 月的 ``31``；这类值会
+    只做形状约束时 ``\\d{2}`` 同样匹配 ``99``，也匹配 2 月的 ``31``；这类值会
     直接进入 SQL 日期比较，由 MySQL 被动承担最后的日期验证，而数据库异常又
     被呈现为 HTTP 500。形状与语义在此一并校验，使同一类输入错误只有一个
     响应通道。
