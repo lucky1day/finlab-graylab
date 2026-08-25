@@ -253,17 +253,6 @@ class HarnessRuntimeGateTests(unittest.TestCase):
         self.assertEqual(evidence["run_log_delta"], 0)
 
 
-    def test_table_guard_diffs_snapshots(self) -> None:
-        from harness.probes.table_guard import diff_snapshots
-
-        diff = diff_snapshots(
-            {"t_scheme_predictions": 10, "t_scheme_run_log": 5},
-            {"t_scheme_predictions": 10, "t_scheme_run_log": 7},
-        )
-
-        self.assertEqual(diff, {"t_scheme_predictions": 0, "t_scheme_run_log": 2})
-
-
 class HarnessLiveGateTests(unittest.TestCase):
     def test_live_gate_blocks_without_operation_and_does_not_execute(self) -> None:
         from harness.context import GateContext

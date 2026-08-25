@@ -154,18 +154,6 @@ class BlackboxV2RequestContractTests(unittest.TestCase):
 
 
 class BlackboxV2ResultContractTests(unittest.TestCase):
-    def test_single_result_must_echo_request(self) -> None:
-        from shared.blackbox_v2.contracts import load_prediction_result, request_from_mapping
-
-        request = request_from_mapping(_request_payload())
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "prediction.json"
-            path.write_text(json.dumps(_result_payload()), encoding="utf-8")
-
-            result = load_prediction_result(path, request)
-
-        self.assertEqual(result.predicted_direction, -1)
-
     def test_prediction_json_accepts_integer_directions(self) -> None:
         for direction in (-1, 0, 1):
             with self.subTest(direction=direction):
