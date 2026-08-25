@@ -29,25 +29,17 @@ class _ScriptParser(HTMLParser):
             self.stylesheets.append(attributes["href"] or "")
 
 
-def test_index_references_factor_lab_javascript_by_content_hash() -> None:
+def test_index_references_factor_lab_assets_by_content_hash() -> None:
     project_root = Path(__file__).resolve().parents[1]
     frontend_root = project_root / "frontend"
     parser = _ScriptParser()
     parser.feed((frontend_root / "index.html").read_text(encoding="utf-8"))
 
-    javascript_hash = hashlib.sha256(
-        (frontend_root / "aifin-shell.js").read_bytes()
-    ).hexdigest()
-    assert parser.scripts == [f"aifin-shell.js?v={javascript_hash}"]
-
-
-def test_index_references_factor_lab_stylesheet_by_content_hash() -> None:
-    project_root = Path(__file__).resolve().parents[1]
-    frontend_root = project_root / "frontend"
-    parser = _ScriptParser()
-    parser.feed((frontend_root / "index.html").read_text(encoding="utf-8"))
-
-    stylesheet_hash = hashlib.sha256(
-        (frontend_root / "aifin-shell.css").read_bytes()
-    ).hexdigest()
-    assert parser.stylesheets == [f"aifin-shell.css?v={stylesheet_hash}"]
+    for references, filename in (
+        (parser.scripts, "aifin-shell.js"),
+        (parser.stylesheets, "aifin-shell.css"),
+    ):
+        content_hash = hashlib.sha256(
+            (frontend_root / filename).read_bytes()
+        ).hexdigest()
+        assert references == [f"{filename}?v={content_hash}"]

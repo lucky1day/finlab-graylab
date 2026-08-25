@@ -98,8 +98,7 @@ class PhaseIsolationTests(unittest.TestCase):
 
         return [finding.code for finding in evaluate_daily_health(snapshot)]
 
-    def test_gray_backfill_does_not_mask_failed_scheduled_day(self) -> None:
-        """正式调度失败 + 事后 gray 补缺：健康结论必须仍然报缺。"""
+    def test_gray_backfill_is_visible_without_masking_failed_scheduled_day(self) -> None:
         snapshot = self._snapshot(
             runs=[
                 (1, "failed", "scheduled_live", None),
@@ -111,16 +110,6 @@ class PhaseIsolationTests(unittest.TestCase):
         self.assertEqual(snapshot.predictions_count, 0)
         self.assertEqual(snapshot.run_prediction_counts, ())
         self.assertIn("daily_predictions_missing", self._codes(snapshot))
-
-    def test_gray_backfill_stays_visible_in_snapshot(self) -> None:
-        """补缺不改变健康结论，但必须可见——否则运维无法判断业务是否已恢复。"""
-        snapshot = self._snapshot(
-            runs=[
-                (1, "failed", "scheduled_live", None),
-                (2, "success", "gray_live", 1),
-            ],
-            predictions=[(1, 2, "gray_live")],
-        )
         self.assertEqual(snapshot.gray_live_run_schemes, ("demo_daily",))
         self.assertEqual(snapshot.gray_live_predictions_count, 1)
 
