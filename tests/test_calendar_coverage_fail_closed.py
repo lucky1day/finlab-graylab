@@ -124,24 +124,16 @@ class LaunchdRunnerCoverageTests(unittest.TestCase):
         ):
             return runner.run(cadence, predict_date=predict_date), execute_one
 
-    def test_uncovered_date_fails_closed_for_daily(self) -> None:
+    def test_uncovered_date_fails_closed_for_daily_and_weekly(self) -> None:
         from scheduler.launchd_prediction_runner import (
             LaunchdPredictionConfigurationError,
         )
 
         calendar = _StubCalendar(covered={COVERED_TRADING}, trading={COVERED_TRADING})
-        with self.assertRaises(LaunchdPredictionConfigurationError):
-            self._run("daily", UNCOVERED, calendar)
-
-    def test_uncovered_date_fails_closed_for_weekly(self) -> None:
-        """周频原本连交易日判定都没有，覆盖耗尽时会静默用陈旧日期。"""
-        from scheduler.launchd_prediction_runner import (
-            LaunchdPredictionConfigurationError,
-        )
-
-        calendar = _StubCalendar(covered={COVERED_TRADING}, trading={COVERED_TRADING})
-        with self.assertRaises(LaunchdPredictionConfigurationError):
-            self._run("weekly", UNCOVERED, calendar)
+        for cadence in ("daily", "weekly"):
+            with self.subTest(cadence=cadence):
+                with self.assertRaises(LaunchdPredictionConfigurationError):
+                    self._run(cadence, UNCOVERED, calendar)
 
     def test_covered_holiday_still_reports_not_applicable(self) -> None:
         """真实节假日行为不变：not_applicable + 退出码 0。"""
