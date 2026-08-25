@@ -155,8 +155,6 @@ class CompareGate(Gate):
         original_rows = _read_predictions_csv(sample_path) if sample_path.exists() else []
         current_rows = _current_platform_predictions(ctx)
 
-        comparison: dict[str, Any] = {}
-
         if sample_path.exists():
             pred_diff = _compare_predictions(
                 original_rows,
@@ -168,7 +166,6 @@ class CompareGate(Gate):
                 expected_exact_values=expected_exact_values,
                 required_internal_fields=required_internal_fields,
             )
-            comparison["predictions"] = pred_diff
             evidence.append(Evidence("total_record_count_original", pred_diff["total_original"]))
             evidence.append(Evidence("total_record_count_current", pred_diff["total_current"]))
             evidence.append(Evidence("direction_match_rate", pred_diff["direction_match_rate"]))
@@ -185,6 +182,11 @@ class CompareGate(Gate):
             evidence.append(Evidence("strict_value_mismatch_count", len(pred_diff["strict_value_mismatches"])))
             evidence.append(Evidence("duplicate_key_error_count", len(pred_diff["duplicate_key_errors"])))
             evidence.append(Evidence("required_internal_error_count", len(pred_diff["required_internal_errors"])))
+            evidence.append(Evidence("validation_errors", pred_diff["validation_errors"]))
+            evidence.append(Evidence("strict_value_mismatches", pred_diff["strict_value_mismatches"]))
+            evidence.append(Evidence("duplicate_key_errors", pred_diff["duplicate_key_errors"]))
+            evidence.append(Evidence("required_internal_errors", pred_diff["required_internal_errors"]))
+            evidence.append(Evidence("internal_mismatches", pred_diff["internal_mismatches"]))
 
             if pred_diff["validation_errors"]:
                 errors.append(
@@ -240,29 +242,13 @@ class CompareGate(Gate):
             original_summary = json.loads(summary_path.read_text(encoding="utf-8"))
             current_summary = _current_backtest_summary(ctx)
             metric_diffs = _compare_metrics(original_summary, current_summary)
-            comparison["metrics"] = metric_diffs
             evidence.append(Evidence("metric_diff_count", len(metric_diffs)))
+            evidence.append(Evidence("metric_diffs", metric_diffs))
             for item in metric_diffs:
                 if item["abs_diff"] > METRIC_ACCURACY_ABS_DIFF:
                     errors.append(
                         f"metric {item['key']} abs_diff {item['abs_diff']:.6f} > {METRIC_ACCURACY_ABS_DIFF}"
                     )
-
-        # 写出对比产物
-        ctx.report_dir.mkdir(parents=True, exist_ok=True)
-        summary_out = ctx.report_dir / "comparison_summary.json"
-        summary_out.write_text(
-            json.dumps(
-                {"errors": errors, "comparison": comparison},
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        diff_out = ctx.report_dir / "comparison_diff.csv"
-        _write_diff_csv(diff_out, comparison)
-        evidence.append(Evidence("comparison_summary_path", str(summary_out)))
-        evidence.append(Evidence("comparison_diff_path", str(diff_out)))
 
         finished_at = utc_now()
         status = GateStatus.PASSED if not errors else GateStatus.FAILED
@@ -274,7 +260,6 @@ class CompareGate(Gate):
             errors=errors,
             started_at=started_at,
             finished_at=finished_at,
-            report_path=summary_out,
         )
 
 
@@ -781,54 +766,6 @@ def _flatten_numbers(obj: Any, prefix: str = "") -> dict[str, float]:
     elif isinstance(obj, (int, float)):
         out[prefix] = float(obj)
     return out
-
-
-def _write_diff_csv(path: Path, comparison: dict[str, Any]) -> None:
-    rows: list[dict[str, Any]] = []
-    predictions = comparison.get("predictions")
-    if isinstance(predictions, dict):
-        for item in predictions.get("per_key", []):
-            key = item.get("key", ["", ""])
-            rows.append(
-                {
-                    "section": "prediction",
-                    "key": "/".join(str(part) for part in key),
-                    "original": item.get("original_direction"),
-                    "current": item.get("current_direction"),
-                    "abs_diff": item.get("confidence_abs_diff"),
-                    "match": item.get("direction_match"),
-                }
-            )
-            for mismatch in item.get("internal_mismatches", []):
-                rows.append(
-                    {
-                        "section": "prediction_internal",
-                        "key": "/".join(str(part) for part in key) + f"/{mismatch.get('field')}",
-                        "original": mismatch.get("original"),
-                        "current": mismatch.get("current"),
-                        "abs_diff": mismatch.get("abs_diff"),
-                        "match": mismatch.get("match"),
-                    }
-                )
-    for item in comparison.get("metrics", []):
-        rows.append(
-            {
-                "section": "metric",
-                "key": item.get("key"),
-                "original": item.get("original"),
-                "current": item.get("current"),
-                "abs_diff": item.get("abs_diff"),
-                "match": item.get("abs_diff", 0) <= METRIC_ACCURACY_ABS_DIFF,
-            }
-        )
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=["section", "key", "original", "current", "abs_diff", "match"],
-        )
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
 
 
 def _current_platform_predictions(ctx: GateContext) -> list[dict[str, Any]]:

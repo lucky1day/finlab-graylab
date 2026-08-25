@@ -89,7 +89,6 @@ class HarnessPersistenceTests(unittest.TestCase):
                 errors=[],
                 started_at="2026-06-08T00:00:00+00:00",
                 finished_at="2026-06-08T00:00:01+00:00",
-                report_path=Path(tmpdir) / "artifacts" / "comparison_diff.csv",
             )
 
             self.assertTrue(
@@ -121,10 +120,7 @@ class HarnessPersistenceTests(unittest.TestCase):
             engine.store["calls"][0][1]["report_uri"],
             str(Path(tmpdir) / "reports"),
         )
-        self.assertEqual(
-            engine.store["calls"][1][1]["report_uri"],
-            str(Path(tmpdir) / "artifacts" / "comparison_diff.csv"),
-        )
+        self.assertNotIn("report_uri", engine.store["calls"][1][1])
         self.assertEqual(
             engine.store["calls"][2][1]["report_uri"],
             str(Path(tmpdir) / "reports"),

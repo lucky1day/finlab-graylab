@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
 from typing import Any
 
 
@@ -29,7 +28,6 @@ class GateResult:
     errors: list[str]
     started_at: str
     finished_at: str
-    report_path: Path | None = None
 
 
 @dataclass(frozen=True)

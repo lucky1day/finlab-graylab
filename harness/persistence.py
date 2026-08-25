@@ -80,10 +80,10 @@ def persist_harness_gate_result(ctx: GateContext, harness_run_id: str, result: G
         sql = text(
             """
             INSERT INTO t_harness_gate_results
-                (harness_run_id, gate_name, status, started_at, finished_at, summary_json, report_uri)
+                (harness_run_id, gate_name, status, started_at, finished_at, summary_json)
             VALUES
                 (:harness_run_id, :gate_name, :status, :started_at, :finished_at,
-                 CAST(:summary_json AS JSON), :report_uri)
+                 CAST(:summary_json AS JSON))
             """
         )
         with engine.begin() as conn:
@@ -96,7 +96,6 @@ def persist_harness_gate_result(ctx: GateContext, harness_run_id: str, result: G
                     "started_at": _mysql_datetime(result.started_at),
                     "finished_at": _mysql_datetime(result.finished_at),
                     "summary_json": json.dumps(_result_summary(result), ensure_ascii=False),
-                    "report_uri": str(result.report_path) if result.report_path is not None else None,
                 },
             )
 

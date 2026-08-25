@@ -366,10 +366,9 @@ class CompareGateTest(unittest.TestCase):
 
         self.assertEqual(result.status, GateStatus.FAILED)
         self.assertTrue(any("internal benchmark" in e for e in result.errors), result.errors)
-        summary = json.loads((ctx.report_dir / "comparison_summary.json").read_text(encoding="utf-8"))
-        pred = summary["comparison"]["predictions"]
-        self.assertEqual(pred["internal_mismatch_count"], 1)
-        self.assertEqual(pred["internal_mismatches"][0]["field"], "custom_score")
+        evidence = {item.key: item.value for item in result.evidence}
+        self.assertEqual(evidence["internal_mismatch_count"], 1)
+        self.assertEqual(evidence["internal_mismatches"][0]["field"], "custom_score")
 
 
     def test_tracked_benchmark_samples_have_nonempty_aligned_roles(self) -> None:

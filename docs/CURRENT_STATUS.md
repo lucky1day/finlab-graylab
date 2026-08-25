@@ -40,6 +40,8 @@
   同一只读 planner，任一 blocker 都在算法或 repository 写入前终止。
 - Native BacktestGate 仍执行完整 `--no-persist` 并核验受保护表零写入，但不再用首次输出自举本地 JSON
   baseline；状态、样本数和摘要只作为 Gate evidence 持久化，source benchmark/CompareGate 继续负责算法保真。
+- CompareGate 不再生成 `comparison_summary.json` 或 `comparison_diff.csv`；计数、missing/extra key、字段 mismatch
+  和指标差异均直接进入 `t_harness_gate_results.summary_json`，不维护本地与数据库两份审计结果。
 - Blackbox 自动入库只保留 `static -> input -> unit -> compare`；原 dry-run 已由同参数的 Compare 冒烟覆盖，
   重复的抽样 no-persist backtest 与 `--sample-size` 已删除。Blackbox `gate backtest` 只接受明确的
   `--persist`，Native dry-run/no-persist backtest 保持不变。
