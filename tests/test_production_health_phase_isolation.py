@@ -10,15 +10,9 @@
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 from sqlalchemy import create_engine, text
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 PREDICT_DATE = "2026-06-05"  # 周五，交易日
 FEATURE_DATE = "2026-06-04"

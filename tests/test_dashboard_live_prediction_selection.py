@@ -10,15 +10,9 @@
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from backend.factor_lab_dashboard_semantics import (  # noqa: E402
+from backend.factor_lab_dashboard_semantics import (
     DashboardDataError,
     choose_live_prediction_rows,
     registry_task_type_index,

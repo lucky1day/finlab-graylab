@@ -11,25 +11,19 @@
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from sqlalchemy.exc import OperationalError
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from shared.data_bridge.refresh import (  # noqa: E402
+from shared.data_bridge.refresh import (
     DataBridgeCurrentInvalidError,
     DataBridgeCurrentMissingError,
     DataBridgeCurrentReadError,
     DataBridgeRefreshError,
 )
-from shared.data_bridge.validation import DataBridgeValidationError  # noqa: E402
+from shared.data_bridge.validation import DataBridgeValidationError
 
 # (抛出的异常, 期望的 failure_category, 期望的退出码)
 CASES = [

@@ -15,15 +15,9 @@ continue，两个模块对同一件事的失败模式本不该相反。
 from __future__ import annotations
 
 from dataclasses import replace
-import sys
 import unittest
-from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from shared.signal_gap_report import (  # noqa: E402
+from shared.signal_gap_report import (
     SignalGapReport,
     SignalTarget,
     _expected,

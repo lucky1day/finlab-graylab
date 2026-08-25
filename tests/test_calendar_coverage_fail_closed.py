@@ -12,20 +12,14 @@
 from __future__ import annotations
 
 import os
-import sys
 import unittest
 from contextlib import nullcontext
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from sqlalchemy import create_engine, text
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from shared.calendar_service import get_calendar  # noqa: E402
+from shared.calendar_service import get_calendar
 
 # 覆盖 2026-06-01..2026-06-05（工作日）与随后的周末；之后无任何日历行。
 CALENDAR_ROWS = [

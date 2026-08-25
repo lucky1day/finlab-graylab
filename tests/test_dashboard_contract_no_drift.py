@@ -12,14 +12,11 @@ from __future__ import annotations
 
 import json
 import re
-import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
-from backend import factor_lab_dashboard_semantics as semantics  # noqa: E402
+from backend import factor_lab_dashboard_semantics as semantics
 
 SHELL_JS = PROJECT_ROOT / "frontend" / "aifin-shell.js"
 

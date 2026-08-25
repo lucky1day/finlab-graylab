@@ -12,15 +12,9 @@
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 from sqlalchemy import create_engine, text
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 # 覆盖 2026-06-01..2026-06-07；之后无任何日历行。
 CALENDAR_ROWS = [

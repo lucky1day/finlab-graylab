@@ -7,18 +7,13 @@
 from __future__ import annotations
 
 import json
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from backend.factor_lab_dashboard import _registry_dto  # noqa: E402
-from backend.scheme_owner import SchemeOwnerError, load_scheme_owners  # noqa: E402
-from shared.scheme_owner_registry import (  # noqa: E402
+from backend.factor_lab_dashboard import _registry_dto
+from backend.scheme_owner import SchemeOwnerError, load_scheme_owners
+from shared.scheme_owner_registry import (
     owner_registry_scheme_id,
 )
 

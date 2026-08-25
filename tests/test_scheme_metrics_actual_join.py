@@ -15,22 +15,16 @@
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 from sqlalchemy import create_engine, text
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from backend.services import scheme_metrics  # noqa: E402
-from shared.prediction_context import (  # noqa: E402
+from backend.services import scheme_metrics
+from shared.prediction_context import (
     MONTHLY_TARGET_RULE,
     WEEKLY_TARGET_RULE,
 )
-from shared.task_specs import TASK_COMBINATIONS  # noqa: E402
+from shared.task_specs import TASK_COMBINATIONS
 
 TARGET_DATE = "2026-07-31"
 

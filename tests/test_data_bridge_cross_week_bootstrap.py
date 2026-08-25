@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import json
-import sys
 import tempfile
 import unittest
 from contextlib import contextmanager
@@ -22,15 +21,13 @@ from unittest import mock
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
-from shared.data_bridge.refresh import (  # noqa: E402
+from shared.data_bridge.refresh import (
     DataBridgeRefreshConfig,
     DownloadRound,
     run_full_refresh,
 )
-from shared.data_bridge.validation import (  # noqa: E402
+from shared.data_bridge.validation import (
     validate_dataset,
     write_validated_dataset,
 )

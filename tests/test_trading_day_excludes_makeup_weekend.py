@@ -12,21 +12,15 @@
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 from sqlalchemy import create_engine, text
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from shared.actual_facts import (  # noqa: E402
+from shared.actual_facts import (
     build_month_calendar,
     build_week_calendar,
 )
-from shared.calendar_service import get_calendar, is_trading_day_row  # noqa: E402
+from shared.calendar_service import get_calendar, is_trading_day_row
 
 MAKEUP_SATURDAY = "2024-09-14"
 CALENDAR_ROWS = [

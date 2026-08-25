@@ -15,16 +15,10 @@
 from __future__ import annotations
 
 import os
-import sys
 import unittest
 from bisect import bisect_left
-from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from shared.prediction_context import is_weekly_signal_date  # noqa: E402
+from shared.prediction_context import is_weekly_signal_date
 
 # 2026 春节：02-14..02-23 无交易日；02-13(五) 与 02-24(二) 是交易日。
 TRADING_DAYS = [

@@ -172,10 +172,6 @@ def _target_labels(engine: Engine) -> dict[str, str]:
     }
 
 
-def _visible_targets(engine: Engine) -> set[str]:
-    return set(_target_labels(engine))
-
-
 def _target_label(target_tenor: str, labels: dict[str, str] | None = None) -> str:
     """返回前端展示用的 Y 标的名称。"""
     return (labels or {}).get(str(target_tenor), str(target_tenor))
@@ -819,7 +815,7 @@ def backtest_factor_lab_results(
     """返回前端方案矩阵可直接展示的最新历史回测结果。"""
     scheme_meta = _backtest_scheme_meta(engine)
     target_labels = _target_labels(engine)
-    visible_targets = _visible_targets(engine)
+    visible_targets = set(target_labels)
     run_sql = text(
         """
         SELECT id, benchmark_id, scheme_id, data_source, start_date, end_date,
