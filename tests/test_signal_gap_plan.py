@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import inspect
-from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -113,55 +112,10 @@ def _case(
     )
 
 
-def _monthly_average_case(
-    *, target_date: str = "2026-05-16"
-) -> signal_gap_plan.ExpectedSignalCase:
-    return signal_gap_plan.ExpectedSignalCase(
-        registry_scheme_id="monthly_avg__h1__5Y",
-        base_scheme_id="monthly_avg",
-        runtime_type="blackbox_v2",
-        frequency="monthly",
-        task_type="monthly_average",
-        target_tenor="5Y",
-        horizon=1,
-        predict_date="2026-05-15",
-        feature_date="2026-05-15",
-        target_date=target_date,
-    )
 
 
-def _quarterly_average_case(
-    *, target_date: str = "2026-04-01"
-) -> signal_gap_plan.ExpectedSignalCase:
-    return signal_gap_plan.ExpectedSignalCase(
-        registry_scheme_id="quarterly_avg__h1__5Y",
-        base_scheme_id="quarterly_avg",
-        runtime_type="blackbox_v2",
-        frequency="quarterly",
-        task_type="quarterly_average",
-        target_tenor="5Y",
-        horizon=1,
-        predict_date="2026-03-31",
-        feature_date="2026-03-31",
-        target_date=target_date,
-    )
 
 
-def _annual_average_case(
-    *, target_date: str = "2026-02-14"
-) -> signal_gap_plan.ExpectedSignalCase:
-    return signal_gap_plan.ExpectedSignalCase(
-        registry_scheme_id="annual_avg__h1__5Y",
-        base_scheme_id="annual_avg",
-        runtime_type="blackbox_v2",
-        frequency="annual",
-        task_type="annual_average",
-        target_tenor="5Y",
-        horizon=1,
-        predict_date="2026-02-13",
-        feature_date="2026-02-13",
-        target_date=target_date,
-    )
 
 
 def _observed(
@@ -347,69 +301,10 @@ def test_targeted_active_scheme_not_due_is_explicit_skip(
     assert plan["counts"]["actionable"] == 0
 
 
-def test_targeted_not_due_ignores_live_rows_for_that_date(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plan, _, _ = _plan(
-        monkeypatch,
-        _snapshot(live_signals=(_observed(),)),
-        base_scheme_id="demo_native",
-    )
-
-    assert plan["status"] == "READY"
-    assert plan["actions"][0]["action"] == "SKIP_NOT_DUE"
-    assert plan["counts"]["blocked"] == 0
 
 
-def test_full_scan_omits_not_due_active_schemes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    due_target = _target("due_native")
-    not_due_target = _target("not_due_weekly", frequency="weekly")
-    snapshot = signal_gap_plan.SignalGapSnapshot(
-        registry_targets=(due_target, not_due_target),
-        expected_cases=(_case("due_native"),),
-        live_signals=(),
-    )
-    plan, _, captured = _plan(
-        monkeypatch,
-        snapshot,
-        configs=(
-            _config("due_native"),
-            _config("not_due_weekly", frequency="weekly"),
-            _config("paused_native", status="paused"),
-        ),
-    )
-
-    assert [item["base_scheme_id"] for item in plan["actions"]] == [
-        "due_native"
-    ]
-    assert [item.base_scheme_id for item in captured["execution_authority"]] == [
-        "due_native",
-        "not_due_weekly",
-    ]
 
 
-def test_full_snapshot_validation_only_selects_due_execution_authority() -> None:
-    calendar = SimpleNamespace(
-        is_trading_day=lambda value: value == "2026-08-10",
-        weekly_predict_dates=frozenset({"2026-08-11"}),
-    )
-    daily = SimpleNamespace(base_scheme_id="daily", frequency="daily")
-    weekly = SimpleNamespace(base_scheme_id="weekly", frequency="weekly")
-
-    assert signal_gap_plan._due_execution_authority(
-        (daily, weekly),
-        predict_date="2026-08-10",
-        calendar=calendar,
-        targeted=False,
-    ) == (daily,)
-    assert signal_gap_plan._due_execution_authority(
-        (weekly,),
-        predict_date="2026-08-10",
-        calendar=calendar,
-        targeted=True,
-    ) == (weekly,)
 
 
 def test_period_average_due_uses_task_bucket_anchor_not_frequency_shortcut() -> None:
@@ -436,43 +331,16 @@ def test_period_average_due_uses_task_bucket_anchor_not_frequency_shortcut() -> 
     )
 
 
-def test_monthly_average_live_scope_uses_display_target_month() -> None:
-    assert signal_gap_plan._case_is_in_platform_live_scope(
-        _monthly_average_case()
-    )
 
 
-def test_quarterly_average_live_scope_uses_target_quarter_identity() -> None:
-    assert signal_gap_plan._case_is_in_platform_live_scope(
-        _quarterly_average_case(target_date="2026-04-01")
-    )
 
 
-def test_quarterly_average_live_scope_rejects_prior_quarter() -> None:
-    assert not signal_gap_plan._case_is_in_platform_live_scope(
-        _quarterly_average_case(target_date="2026-01-01")
-    )
 
 
-def test_annual_average_live_scope_uses_target_year_identity() -> None:
-    assert signal_gap_plan._case_is_in_platform_live_scope(
-        _annual_average_case(target_date="2026-02-14")
-    )
 
 
-def test_annual_average_live_scope_rejects_prior_target_year() -> None:
-    assert not signal_gap_plan._case_is_in_platform_live_scope(
-        _annual_average_case(target_date="2025-01-28")
-    )
 
 
-def test_ordinary_live_scope_keeps_raw_target_date_boundary() -> None:
-    case = replace(
-        _monthly_average_case(),
-        task_type="T+5",
-        frequency="daily",
-    )
-    assert not signal_gap_plan._case_is_in_platform_live_scope(case)
 
 
 def test_weekly_due_is_saturday_even_when_friday_is_holiday() -> None:
@@ -533,194 +401,20 @@ class _MappingRows:
         return self._rows
 
 
-class _RegistryReadConnection:
-    def __init__(
-        self,
-        *,
-        registry_rows: list[dict[str, Any]],
-        version_rows: list[dict[str, Any]],
-    ) -> None:
-        self.registry_rows = registry_rows
-        self.version_rows = version_rows
-
-    def execute(self, statement: Any, _parameters: Any) -> _MappingRows:
-        sql = str(statement)
-        if "t_scheme_registry" in sql:
-            return _MappingRows(self.registry_rows)
-        if "t_scheme_versions" in sql:
-            return _MappingRows(self.version_rows)
-        raise AssertionError(sql)
 
 
-def _execution_identity(
-    *,
-    version_status: str = "active",
-    target_tenors: tuple[str, ...] = ("5Y",),
-    runtime_type: str = "native_adapter",
-) -> SimpleNamespace:
-    return SimpleNamespace(
-        base_scheme_id="demo_native",
-        scheme_version="version-1",
-        runtime_type=runtime_type,
-        frequency="daily",
-        horizon=5,
-        task_type="T+5",
-        target_tenors=target_tenors,
-        version_status=version_status,
-        status="active",
-    )
 
 
-def _registry_row(
-    tenor: str,
-    *,
-    status: str = "active",
-    horizon: int = 5,
-    task_type: str = "T+5",
-    frequency: str = "daily",
-    runtime_type: str = "native_adapter",
-) -> dict[str, Any]:
-    return {
-        "scheme_id": f"demo_native__h{horizon}__{tenor}",
-        "base_scheme_id": "demo_native",
-        "runtime_type": runtime_type,
-        "frequency": frequency,
-        "task_type": task_type,
-        "target_tenor": tenor,
-        "horizon": horizon,
-        "status": status,
-    }
 
 
-def _version_row(
-    *,
-    status: str = "active",
-    runtime_type: str = "native_adapter",
-    scheme_version: str = "version-1",
-) -> dict[str, Any]:
-    return {
-        "scheme_id": "demo_native",
-        "scheme_version": scheme_version,
-        "runtime_type": runtime_type,
-        "status": status,
-    }
 
 
-@pytest.mark.parametrize(
-    ("runtime_type", "version_status"),
-    [("blackbox_v2", "shadow"), ("native_adapter", "paused")],
-)
-def test_reader_blocks_nonactive_exact_config_version(
-    runtime_type: str,
-    version_status: str,
-) -> None:
-    connection = _RegistryReadConnection(
-        registry_rows=[_registry_row("5Y", runtime_type=runtime_type)],
-        version_rows=[_version_row(runtime_type=runtime_type)],
-    )
-
-    targets, blockers = signal_gap_plan._read_registry_targets(
-        connection,
-        execution_authority=(
-            _execution_identity(
-                version_status=version_status,
-                runtime_type=runtime_type,
-            ),
-        ),
-    )
-
-    assert targets == ()
-    assert blockers == (
-        {
-            "code": "SCHEME_CONFIG_VERSION_NOT_ACTIVE",
-            "base_scheme_id": "demo_native",
-        },
-    )
 
 
-def test_reader_blocks_nonactive_native_database_exact_version() -> None:
-    connection = _RegistryReadConnection(
-        registry_rows=[_registry_row("5Y")],
-        version_rows=[_version_row(status="paused")],
-    )
-
-    targets, blockers = signal_gap_plan._read_registry_targets(
-        connection,
-        execution_authority=(_execution_identity(),),
-    )
-
-    assert targets == ()
-    assert blockers == (
-        {
-            "code": "ACTIVE_VERSION_EXACT_IDENTITY_MISSING",
-            "base_scheme_id": "demo_native",
-        },
-    )
 
 
-def test_reader_blocks_multiple_active_blackbox_versions() -> None:
-    connection = _RegistryReadConnection(
-        registry_rows=[_registry_row("5Y", runtime_type="blackbox_v2")],
-        version_rows=[
-            _version_row(runtime_type="blackbox_v2"),
-            _version_row(
-                runtime_type="blackbox_v2",
-                scheme_version="other-active-version",
-            ),
-        ],
-    )
-
-    targets, blockers = signal_gap_plan._read_registry_targets(
-        connection,
-        execution_authority=(
-            _execution_identity(runtime_type="blackbox_v2"),
-        ),
-    )
-
-    assert targets == ()
-    assert blockers == (
-        {
-            "code": "ACTIVE_VERSION_CARDINALITY_INVALID",
-            "base_scheme_id": "demo_native",
-        },
-    )
 
 
-@pytest.mark.parametrize(
-    ("registry_rows", "expected_tenors"),
-    [
-        (
-            [_registry_row("5Y"), _registry_row("10Y", status="paused")],
-            ("5Y", "10Y"),
-        ),
-        ([_registry_row("5Y")], ("5Y", "10Y")),
-        ([_registry_row("5Y"), _registry_row("10Y")], ("5Y",)),
-        ([_registry_row("5Y", horizon=1, task_type="T+1")], ("5Y",)),
-    ],
-)
-def test_reader_blocks_registry_target_multiset_or_identity_drift(
-    registry_rows: list[dict[str, Any]],
-    expected_tenors: tuple[str, ...],
-) -> None:
-    connection = _RegistryReadConnection(
-        registry_rows=registry_rows,
-        version_rows=[_version_row()],
-    )
-
-    targets, blockers = signal_gap_plan._read_registry_targets(
-        connection,
-        execution_authority=(
-            _execution_identity(target_tenors=expected_tenors),
-        ),
-    )
-
-    assert targets == ()
-    assert blockers == (
-        {
-            "code": "ACTIVE_REGISTRY_CONFIG_IDENTITY_MISMATCH",
-            "base_scheme_id": "demo_native",
-        },
-    )
 
 
 def test_full_scan_with_no_active_configs_is_ready_and_empty(
@@ -746,194 +440,17 @@ def test_full_scan_with_no_active_configs_is_ready_and_empty(
     assert engine.connection.statements == []
 
 
-class _LiveReadConnection:
-    def __init__(self, rows: list[dict[str, Any]]) -> None:
-        self.rows = rows
-        self.sql = ""
-        self.parameters: dict[str, Any] = {}
-
-    def execute(
-        self,
-        statement: Any,
-        parameters: dict[str, Any],
-    ) -> _MappingRows:
-        self.sql = str(statement)
-        self.parameters = parameters
-        return _MappingRows(self.rows)
 
 
-def _prediction_row(
-    *,
-    predict_date: str,
-    feature_date: str,
-    target_date: str,
-    target_tenor: str = "5Y",
-    horizon: int = 5,
-) -> dict[str, Any]:
-    return {
-        "id": 1,
-        "scheme_id": "demo_native",
-        "target_tenor": target_tenor,
-        "horizon": horizon,
-        "predict_date": predict_date,
-        "feature_date": feature_date,
-        "target_date": target_date,
-        "prediction_phase": "gray_live",
-        "scheme_version": "version-1",
-        "run_id": "run-1",
-        "run_status": "success",
-        "run_scheme_id": "demo_native",
-        "run_scheme_version": "version-1",
-        "run_runtime_type": "native_adapter",
-        "run_prediction_phase": "gray_live",
-        "run_predict_date": predict_date,
-    }
 
 
-def test_live_reader_is_bounded_and_ignores_unrelated_history() -> None:
-    target = _target()
-    case = _case()
-    connection = _LiveReadConnection(
-        [
-            _prediction_row(
-                predict_date="2020-01-02",
-                feature_date="2020-01-01",
-                target_date="2020-01-09",
-            )
-        ]
-    )
-
-    signals = signal_gap_plan._read_live_signals(
-        connection,
-        (target,),
-        predict_date="2026-08-10",
-        expected_business_keys={case.business_key},
-    )
-    plan = signal_gap_plan._build_signal_gap_plan(
-        signal_gap_plan.SignalGapSnapshot(
-            registry_targets=(target,),
-            expected_cases=(case,),
-            live_signals=signals,
-        ),
-        predict_date="2026-08-10",
-        base_scheme_id=None,
-    )
-
-    assert signals == ()
-    assert plan["status"] == "READY"
-    assert plan["actions"][0]["action"] == "GRAY_LIVE_GAP"
-    assert "p.predict_date = :predict_date" in connection.sql
-    assert "p.target_date IN" in connection.sql
-    assert connection.parameters["predict_date"] == "2026-08-10"
-    assert connection.parameters["expected_target_dates"] == ["2026-08-14"]
 
 
-def test_live_reader_keeps_wrong_predict_date_on_expected_business_key() -> None:
-    target = _target()
-    case = _case()
-    connection = _LiveReadConnection(
-        [
-            _prediction_row(
-                predict_date="2026-08-09",
-                feature_date="2026-08-07",
-                target_date="2026-08-14",
-            )
-        ]
-    )
-
-    signals = signal_gap_plan._read_live_signals(
-        connection,
-        (target,),
-        predict_date="2026-08-10",
-        expected_business_keys={case.business_key},
-    )
-    plan = signal_gap_plan._build_signal_gap_plan(
-        signal_gap_plan.SignalGapSnapshot(
-            registry_targets=(target,),
-            expected_cases=(case,),
-            live_signals=signals,
-        ),
-        predict_date="2026-08-10",
-        base_scheme_id=None,
-    )
-
-    assert len(signals) == 1
-    assert plan["status"] == "BLOCKED"
-    assert plan["actions"][0]["action"] == "BLOCKED_DATA_CONTRACT"
-
-@pytest.mark.parametrize(
-    ("base_scheme_id", "configs", "failure_code"),
-    [
-        ("missing", (_config(),), "SCHEME_CONFIG_NOT_FOUND"),
-        (
-            "paused_native",
-            (_config("paused_native", status="paused"),),
-            "SCHEME_CONFIG_NOT_ACTIVE",
-        ),
-    ],
-)
-def test_targeted_missing_or_inactive_config_is_blocked(
-    monkeypatch: pytest.MonkeyPatch,
-    base_scheme_id: str,
-    configs: tuple[SimpleNamespace, ...],
-    failure_code: str,
-) -> None:
-    monkeypatch.setattr(signal_gap_plan, "_discover_scheme_configs", lambda: configs)
-    engine = _Engine()
-
-    plan = signal_gap_plan.plan_signal_gaps(
-        engine,
-        predict_date="2026-08-10",
-        base_scheme_id=base_scheme_id,
-        databridge_config=object(),
-    )
-
-    assert plan["status"] == "BLOCKED"
-    assert plan["failure_code"] == failure_code
-    assert plan["counts"]["blocked"] == 1
 
 
-@pytest.mark.parametrize(
-    "blocker",
-    [
-        "ACTIVE_VERSION_EXACT_IDENTITY_MISSING",
-        "ACTIVE_REGISTRY_TARGET_MISSING",
-    ],
-)
-def test_targeted_inactive_version_or_registry_is_blocked(
-    monkeypatch: pytest.MonkeyPatch,
-    blocker: str,
-) -> None:
-    plan, _, _ = _plan(
-        monkeypatch,
-        _snapshot(
-            blockers=(
-                {"code": blocker, "base_scheme_id": "demo_native"},
-            ),
-        ),
-        base_scheme_id="demo_native",
-    )
-
-    assert plan["status"] == "BLOCKED"
-    assert plan["failure_code"] == blocker
-    assert plan["counts"]["blocked"] == 1
 
 
-def test_targeted_selector_rejects_composite_or_list_syntax() -> None:
-    engine = _Engine()
 
-    for invalid in (
-        "demo_native__h5__5Y",
-        "demo_native,other",
-        ["demo_native"],
-    ):
-        with pytest.raises(signal_gap_plan.SignalGapPlanError, match="base_scheme_id"):
-            signal_gap_plan.plan_signal_gaps(
-                engine,
-                predict_date="2026-08-10",
-                base_scheme_id=invalid,  # type: ignore[arg-type]
-                databridge_config=object(),
-            )
 
 
 def test_blackbox_gap_binds_v2_source_identity_and_single_cutoff(

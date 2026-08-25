@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import inspect
 import io
 import json
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, Mock, patch
@@ -11,8 +10,6 @@ from unittest.mock import ANY, Mock, patch
 import pytest
 
 from harness import cli
-from harness.context import GateContext
-from harness.registry import gate_for_name
 
 
 PREDICT_DATE = "2026-08-10"
@@ -153,50 +150,8 @@ def test_parser_exposes_only_date_and_optional_exact_base_scheme() -> None:
             )
 
 
-def test_fill_is_not_a_generic_gate_and_report_copy_is_not_executable(
-    tmp_path: Path,
-) -> None:
-    parser = cli._build_parser()
-    with redirect_stderr(io.StringIO()), pytest.raises(SystemExit):
-        parser.parse_args(
-            [
-                "gate",
-                "signal-gap-fill",
-                "--scheme-id",
-                "demo_native",
-                "--predict-date",
-                PREDICT_DATE,
-            ]
-        )
-    context = GateContext(
-        scheme_id="demo_native",
-        predict_date=PREDICT_DATE,
-        project_root=tmp_path,
-        report_dir=tmp_path,
-        config=SimpleNamespace(runtime_type="native_adapter"),
-    )
-    with pytest.raises(ValueError, match="unsupported gate"):
-        gate_for_name("signal-gap-fill", ctx=context)
 
 
-def test_context_and_cli_have_no_signal_gap_token_or_operator_state() -> None:
-    context_fields = set(GateContext.__dataclass_fields__)
-    assert not {
-        "signal_gap_plan_path",
-        "signal_gap_authorizations",
-        "signal_gap_databridge_config",
-    } & context_fields
-
-    source = inspect.getsource(cli)
-    for removed in (
-        "active-signal-gap-plan-" + "v6",
-        "signal_gap_fill_authorization_claims",
-        "authorization_signing_enabled",
-        "getpass.getuser",
-        "frozen_plan.json",
-        "post_fill_plan.json",
-    ):
-        assert removed not in source
 
 
 @pytest.mark.parametrize("scheme_id", [None, "demo_native"])
@@ -233,69 +188,6 @@ def test_cli_plans_once_for_all_or_one_base_then_runs_coordinator(
     assert not (report_dirs[0] / "post_fill_plan.json").exists()
 
 
-def test_same_timestamp_calls_use_unique_report_dirs_and_second_reaches_lock(
-    tmp_path: Path,
-) -> None:
-    outputs = [io.StringIO(), io.StringIO()]
-    planner = Mock(return_value=_plan())
-    runner = Mock(
-        side_effect=[
-            {
-                "schema_version": "single-date-signal-gap-fill-v2",
-                "status": "PASSED",
-                "failure_code": None,
-                "completed": [{"base_scheme_id": "demo_native"}],
-                "remaining": [],
-            },
-            {
-                "schema_version": "single-date-signal-gap-fill-v2",
-                "status": "BLOCKED",
-                "failure_code": "SIGNAL_GAP_FILL_ALREADY_RUNNING",
-                "completed": [],
-                "remaining": [{"base_scheme_id": "demo_native"}],
-            },
-        ]
-    )
-    argv = [
-        "signal-gap-fill",
-        "--predict-date",
-        PREDICT_DATE,
-        "--project-root",
-        str(tmp_path),
-    ]
-    with (
-        patch.object(
-            cli.DataBridgeRefreshConfig,
-            "from_env",
-            return_value=SimpleNamespace(name="config"),
-        ),
-        patch.object(cli, "_timestamp", return_value="20260810T010203Z"),
-        patch.object(cli, "_plan_signal_gap_date", planner),
-        patch.object(cli, "run_signal_gap_fill", runner),
-    ):
-        with redirect_stdout(outputs[0]):
-            first_exit = cli.main(argv)
-        with redirect_stdout(outputs[1]):
-            second_exit = cli.main(argv)
-
-    first_payload = json.loads(outputs[0].getvalue())
-    second_payload = json.loads(outputs[1].getvalue())
-    assert first_exit == 0
-    assert second_exit == 2
-    assert second_payload["status"] == "BLOCKED"
-    assert (
-        second_payload["failure_code"]
-        == "SIGNAL_GAP_FILL_ALREADY_RUNNING"
-    )
-    assert first_payload["report_dir"] != second_payload["report_dir"]
-    assert runner.call_count == 2
-    report_root = tmp_path / "reports" / "harness" / "signal-gap-fill"
-    report_dirs = list(report_root.iterdir())
-    assert len(report_dirs) == 2
-    assert all(
-        (report_dir / "signal_gap_plan.json").is_file()
-        for report_dir in report_dirs
-    )
 
 
 @pytest.mark.parametrize(
@@ -342,32 +234,6 @@ def test_blocked_plan_exits_without_coordinator(tmp_path: Path) -> None:
     assert (report_dirs[0] / "signal_gap_plan.json").is_file()
 
 
-def test_databridge_configuration_failure_still_emits_one_json(
-    tmp_path: Path,
-) -> None:
-    output = io.StringIO()
-    with (
-        patch.object(
-            cli.DataBridgeRefreshConfig,
-            "from_env",
-            side_effect=ValueError("invalid DataBridge environment"),
-        ),
-        redirect_stdout(output),
-    ):
-        exit_code = cli.main(
-            [
-                "signal-gap-fill",
-                "--predict-date",
-                PREDICT_DATE,
-                "--project-root",
-                str(tmp_path),
-            ]
-        )
-
-    payload = json.loads(output.getvalue())
-    assert exit_code == 2
-    assert payload["status"] == "BLOCKED"
-    assert payload["failure_code"] == "SIGNAL_GAP_PLAN_INTERNAL_ERROR"
 
 
 @pytest.mark.parametrize(

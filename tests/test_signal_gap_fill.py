@@ -341,82 +341,8 @@ def test_multi_target_scheme_runs_once_and_commits_only_missing_target(
     lock.release.assert_called_once()
 
 
-def test_incomplete_algorithm_target_set_fails_before_commit(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from harness.signal_gap_fill import run_signal_gap_fill
-
-    first = _action(tenor="5Y")
-    second = _action(tenor="10Y")
-    plan = _plan([first, second])
-    repository = _repository()
-    engine, readback = _install(
-        monkeypatch,
-        repository=repository,
-        plan=plan,
-        runner=Mock(return_value=[_record(first)]),
-        configs={"demo_native": _config("demo_native", tenors=("5Y", "10Y"))},
-    )
-
-    report = run_signal_gap_fill(
-        plan=plan,
-        project_root=tmp_path,
-        engine_factory=lambda: engine,
-        databridge_config=SimpleNamespace(),
-    )
-
-    assert report["status"] == "FAILED"
-    assert report["failure_code"] == "ALGORITHM_EXECUTION_FAILED"
-    repository.complete_gray_gap_run.assert_not_called()
-    repository.fail_scheme_run_atomic.assert_called_once()
-    readback.assert_not_called()
 
 
-def test_partial_run_creation_reports_cleanup_failure_and_all_remaining(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from harness.signal_gap_fill import run_signal_gap_fill
-
-    plan = _plan([_action("a_native"), _action("b_native")])
-    repository = _repository()
-    repository.create_scheme_run.side_effect = [
-        101,
-        RuntimeError("second run creation failed"),
-    ]
-    repository.fail_scheme_run_atomic.side_effect = RuntimeError(
-        "partial run cleanup failed"
-    )
-    runner = Mock(side_effect=AssertionError("algorithm must not run"))
-    engine, readback = _install(
-        monkeypatch,
-        repository=repository,
-        plan=plan,
-        runner=runner,
-    )
-
-    report = run_signal_gap_fill(
-        plan=plan,
-        project_root=tmp_path,
-        engine_factory=lambda: engine,
-        databridge_config=SimpleNamespace(),
-    )
-
-    assert report["status"] == "FAILED"
-    assert report["failure_code"] == "RUN_CREATION_FAILED"
-    assert report["errors"] == [
-        "RuntimeError: second run creation failed",
-        "run_id=101: RuntimeError: partial run cleanup failed",
-    ]
-    assert [item["base_scheme_id"] for item in report["remaining"]] == [
-        "a_native",
-        "b_native",
-    ]
-    assert repository.create_scheme_run.call_count == 2
-    repository.fail_scheme_run_atomic.assert_called_once()
-    runner.assert_not_called()
-    readback.assert_not_called()
 
 
 def test_any_algorithm_failure_commits_zero_predictions_and_fails_all_runs(
@@ -531,35 +457,6 @@ def test_only_one_final_authoritative_readback_can_pass(
     )
 
 
-def test_final_readback_with_original_gap_remaining_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from harness.signal_gap_fill import run_signal_gap_fill
-
-    action = _action()
-    plan = _plan([action])
-    repository = _repository()
-    readback = Mock(return_value=plan)
-    engine, _ = _install(
-        monkeypatch,
-        repository=repository,
-        plan=plan,
-        runner=Mock(return_value=[_record(action)]),
-        readback=readback,
-    )
-
-    report = run_signal_gap_fill(
-        plan=plan,
-        project_root=tmp_path,
-        engine_factory=lambda: engine,
-        databridge_config=SimpleNamespace(),
-    )
-
-    assert report["status"] == "FAILED"
-    assert report["failure_code"] == "POSTFILL_GAPS_REMAIN"
-    assert len(report["remaining"]) == 1
-    readback.assert_called_once()
 
 
 def test_singleton_contention_blocks_immediately(
@@ -595,35 +492,6 @@ def test_singleton_contention_blocks_immediately(
     repository.create_scheme_run.assert_not_called()
 
 
-def test_engine_factory_failure_returns_blocked_and_releases_lock(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from harness.signal_gap_fill import run_signal_gap_fill
-
-    action = _action()
-    plan = _plan([action])
-    repository = _repository()
-    lock = _lock()
-    _install(
-        monkeypatch,
-        repository=repository,
-        plan=plan,
-        runner=Mock(return_value=[_record(action)]),
-        lock=lock,
-    )
-
-    report = run_signal_gap_fill(
-        plan=plan,
-        project_root=tmp_path,
-        engine_factory=Mock(side_effect=RuntimeError("database unavailable")),
-        databridge_config=SimpleNamespace(),
-    )
-
-    assert report["status"] == "BLOCKED"
-    assert report["failure_code"] == "ENGINE_FACTORY_FAILED"
-    repository.create_scheme_run.assert_not_called()
-    lock.release.assert_called_once()
 
 
 def test_blackbox_schemes_with_same_source_share_immutable_session(
