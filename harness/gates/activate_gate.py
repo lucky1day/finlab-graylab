@@ -92,6 +92,14 @@ class NativeActivationLifecycle:
     registry_scheme_ids: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class NativeHarnessGateHistory:
+    """Native 激活读取到的 passed run 及其 Gate 行。"""
+
+    run_id: str
+    gate_rows: tuple[tuple[str, str], ...]
+
+
 class ActivationGate(Gate):
     """Native 激活 gate：按直接操作执行 paused→active 或 active 精确版本重批准。"""
 
@@ -963,8 +971,6 @@ def _passed_full_all_validation(
     scheme_version: str,
 ) -> tuple[NativeActivationValidation | None, list[str], bool]:
     """保留首次入库 ``all`` 路径的精确历史查询和 gate 语义。"""
-    from sqlalchemy import text
-
     config_path = ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml"
     raw_config = load_yaml_mapping(config_path) if config_path.exists() else {}
     backtest_config = (
@@ -973,64 +979,18 @@ def _passed_full_all_validation(
         else {}
     )
     benchmark_required = bool(backtest_config.get("benchmark_required"))
-    engine, owns_engine = _validation_history_engine(ctx)
-    if engine is None:
-        return None, ["cannot connect to database to verify gate history"], False
-    try:
-        with engine.begin() as conn:
-            run = conn.execute(
-                text(
-                    """
-                    SELECT harness_run_id, finished_at
-                    FROM t_harness_runs
-                    WHERE scheme_id = :scheme_id
-                      AND scheme_version = :scheme_version
-                      AND stage = 'all'
-                      AND status = 'passed'
-                    ORDER BY finished_at DESC, harness_run_id DESC
-                    LIMIT 1
-                    """
-                ),
-                {"scheme_id": ctx.scheme_id, "scheme_version": scheme_version},
-            ).one_or_none()
-            if run is None:
-                return (
-                    None,
-                    [
-                        f"no passed 'all' stage harness run found for {ctx.scheme_id} "
-                        f"version {scheme_version}; run 'python -m harness onboard "
-                        f"--scheme-id {ctx.scheme_id} --stage all' first"
-                    ],
-                    True,
-                )
-
-            rows = conn.execute(
-                text(
-                    """
-                    SELECT gate_name, status
-                    FROM t_harness_gate_results
-                    WHERE harness_run_id = :harness_run_id
-                    """
-                ),
-                {"harness_run_id": run[0]},
-            ).fetchall()
-    except Exception as exc:  # noqa: BLE001 - database errors block activation.
-        return (
-            None,
-            [f"cannot read database to verify gate history: {exc}"],
-            False,
-        )
-    finally:
-        if owns_engine and hasattr(engine, "dispose"):
-            engine.dispose()
-
-    gate_rows = [(str(row[0]), str(row[1])) for row in rows]
-    gate_names = [gate_name for gate_name, _status in gate_rows]
-    duplicates = sorted(
-        {gate_name for gate_name in gate_names if gate_names.count(gate_name) > 1}
+    history, history_errors, database_available = _read_passed_gate_history(
+        ctx,
+        scheme_version,
+        stage="all",
     )
-    missing = sorted(REQUIRED_ACTIVATE_GATES - set(gate_names))
-    extra = sorted(set(gate_names) - REQUIRED_ACTIVATE_GATES)
+    if history is None:
+        return None, history_errors, database_available
+    gate_rows = history.gate_rows
+    duplicates, missing, extra = _gate_name_differences(
+        gate_rows,
+        REQUIRED_ACTIVATE_GATES,
+    )
     if benchmark_required and ("compare", "skipped") in gate_rows:
         return (
             None,
@@ -1062,7 +1022,7 @@ def _passed_full_all_validation(
             [
                 "all-stage harness run must have the exact current gate multiset "
                 "with benchmark-policy statuses: "
-                f"harness_run_id={run[0]}, row_count={len(gate_rows)}, "
+                f"harness_run_id={history.run_id}, row_count={len(gate_rows)}, "
                 f"duplicates={duplicates}, missing={missing}, extra={extra}, "
                 f"invalid_statuses={invalid_statuses}"
             ],
@@ -1071,7 +1031,7 @@ def _passed_full_all_validation(
     return (
         NativeActivationValidation(
             validation_profile="full_initial_onboarding_v1",
-            validation_harness_run_id=str(run[0]),
+            validation_harness_run_id=history.run_id,
             validation_stage="all",
             prior_admitted_scheme_version=None,
             registry_scheme_ids=(),
@@ -1087,71 +1047,20 @@ def _passed_native_maintenance_validation(
     scheme_version: str,
 ) -> tuple[str | None, list[str], bool]:
     """读取维护阶段的当前版本 Gate，不读取当前 compare/backtest 结果。"""
-    from sqlalchemy import text
-
     from harness.gates.native_maintenance_admission_gate import (
         NATIVE_MAINTENANCE_SEQUENCE,
     )
 
-    engine, owns_engine = _validation_history_engine(ctx)
-    if engine is None:
-        return (
-            None,
-            ["cannot connect to database to verify native-maintenance gate history"],
-            False,
-        )
-    try:
-        with engine.begin() as conn:
-            run = conn.execute(
-                text(
-                    """
-                    SELECT harness_run_id, finished_at
-                    FROM t_harness_runs
-                    WHERE scheme_id = :scheme_id
-                      AND scheme_version = :scheme_version
-                      AND stage = 'native-maintenance'
-                      AND status = 'passed'
-                    ORDER BY finished_at DESC, harness_run_id DESC
-                    LIMIT 1
-                    """
-                ),
-                {"scheme_id": ctx.scheme_id, "scheme_version": scheme_version},
-            ).one_or_none()
-            if run is None:
-                return (
-                    None,
-                    [
-                        "no passed native-maintenance harness run found for "
-                        f"{ctx.scheme_id} version {scheme_version}"
-                    ],
-                    True,
-                )
-            rows = conn.execute(
-                text(
-                    "SELECT gate_name, status "
-                    "FROM t_harness_gate_results "
-                    "WHERE harness_run_id = :harness_run_id"
-                ),
-                {"harness_run_id": run[0]},
-            ).fetchall()
-    except Exception as exc:  # noqa: BLE001 - database errors block activation.
-        return (
-            None,
-            [f"cannot read database to verify native-maintenance gate history: {exc}"],
-            False,
-        )
-    finally:
-        if owns_engine and hasattr(engine, "dispose"):
-            engine.dispose()
-
     required = frozenset(NATIVE_MAINTENANCE_SEQUENCE)
-    gate_rows = [(str(row[0]), str(row[1])) for row in rows]
-    gate_names = [gate_name for gate_name, _status in gate_rows]
-    duplicates = sorted(
-        {gate_name for gate_name in gate_names if gate_names.count(gate_name) > 1}
+    history, history_errors, database_available = _read_passed_gate_history(
+        ctx,
+        scheme_version,
+        stage="native-maintenance",
     )
-    missing = sorted(required - set(gate_names))
-    extra = sorted(set(gate_names) - required)
+    if history is None:
+        return None, history_errors, database_available
+    gate_rows = history.gate_rows
+    duplicates, missing, extra = _gate_name_differences(gate_rows, required)
     non_passed = sorted(
         f"{gate_name}={status}"
         for gate_name, status in gate_rows
@@ -1169,13 +1078,97 @@ def _passed_native_maintenance_validation(
             [
                 "native-maintenance harness run must have the exact current "
                 "passed gate rows: "
-                f"harness_run_id={run[0]}, row_count={len(gate_rows)}, "
+                f"harness_run_id={history.run_id}, row_count={len(gate_rows)}, "
                 f"duplicates={duplicates}, missing={missing}, extra={extra}, "
                 f"non_passed={non_passed}"
             ],
             True,
         )
-    return str(run[0]), [], True
+    return history.run_id, [], True
+
+
+def _read_passed_gate_history(
+    ctx: GateContext,
+    scheme_version: str,
+    *,
+    stage: str,
+) -> tuple[NativeHarnessGateHistory | None, list[str], bool]:
+    """读取一个 Native stage 的 latest passed run 与 Gate 行。"""
+    from sqlalchemy import text
+
+    engine, owns_engine = _validation_history_engine(ctx)
+    if engine is None:
+        return None, ["cannot connect to database to verify gate history"], False
+    try:
+        with engine.begin() as conn:
+            run_id = conn.execute(
+                text(
+                    """
+                    SELECT harness_run_id
+                    FROM t_harness_runs
+                    WHERE scheme_id = :scheme_id
+                      AND scheme_version = :scheme_version
+                      AND stage = :stage
+                      AND status = 'passed'
+                    ORDER BY finished_at DESC, harness_run_id DESC
+                    LIMIT 1
+                    """
+                ),
+                {
+                    "scheme_id": ctx.scheme_id,
+                    "scheme_version": scheme_version,
+                    "stage": stage,
+                },
+            ).scalar_one_or_none()
+            if run_id is None:
+                return (
+                    None,
+                    [
+                        f"no passed {stage!r} harness run found for "
+                        f"{ctx.scheme_id} version {scheme_version}"
+                    ],
+                    True,
+                )
+            gate_rows = tuple(
+                (str(row[0]), str(row[1]))
+                for row in conn.execute(
+                    text(
+                        "SELECT gate_name, status "
+                        "FROM t_harness_gate_results "
+                        "WHERE harness_run_id = :harness_run_id"
+                    ),
+                    {"harness_run_id": run_id},
+                )
+            )
+    except Exception as exc:  # noqa: BLE001 - database errors block activation.
+        return None, [f"cannot read database to verify gate history: {exc}"], False
+    finally:
+        if owns_engine and hasattr(engine, "dispose"):
+            engine.dispose()
+
+    return (
+        NativeHarnessGateHistory(
+            run_id=str(run_id),
+            gate_rows=gate_rows,
+        ),
+        [],
+        True,
+    )
+
+
+def _gate_name_differences(
+    gate_rows: tuple[tuple[str, str], ...],
+    required: frozenset[str],
+) -> tuple[list[str], list[str], list[str]]:
+    gate_names = [gate_name for gate_name, _status in gate_rows]
+    duplicates = sorted(
+        {gate_name for gate_name in gate_names if gate_names.count(gate_name) > 1}
+    )
+    return (
+        duplicates,
+        sorted(required - set(gate_names)),
+        sorted(set(gate_names) - required),
+    )
 
 
 def _validation_history_engine(ctx: GateContext) -> tuple[object | None, bool]:
