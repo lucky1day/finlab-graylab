@@ -45,6 +45,30 @@ def _base_blackbox_config() -> dict:
     }
 
 
+def _weekly_config(*, predict_start_date: str | None) -> dict:
+    config = _base_config()
+    config.update(
+        scheme_id="demo_weekly",
+        frequency="weekly",
+        horizon=6,
+        task_type="weekly_point",
+        target_rule="next_week_last_trading_day_vs_current_week_last_trading_day",
+        input_spec={
+            "data_version": "shared_data_service_weekly.v1",
+            "required_columns": ["week_id", "TB5YWI3C"],
+            "weekly_variant": "unified",
+        },
+        backtest={
+            "runner": "backtests.demo_weekly",
+            "start_week": 200901,
+            "end_week": 202622,
+        },
+    )
+    if predict_start_date is not None:
+        config["backtest"]["predict_start_date"] = predict_start_date
+    return config
+
+
 class ConfigSchemaAuxiliaryInputTests(unittest.TestCase):
     def test_config_without_auxiliary_inputs_remains_valid(self) -> None:
         config = _base_config()
@@ -152,27 +176,21 @@ class ConfigSchemaScheduleTests(unittest.TestCase):
 
         self.assertIn("schedule.timeout_sec must be a positive integer when present", errors)
 
-    def test_blackbox_schedule_timeout_sec_is_positive_when_present(self) -> None:
-        config = _base_blackbox_config()
-        config["schedule"]["timeout_sec"] = 0
+    def test_blackbox_schedule_timeout_sec_is_required_and_positive(self) -> None:
+        for timeout_sec in (None, 0):
+            with self.subTest(timeout_sec=timeout_sec):
+                config = _base_blackbox_config()
+                if timeout_sec is None:
+                    del config["schedule"]["timeout_sec"]
+                else:
+                    config["schedule"]["timeout_sec"] = timeout_sec
 
-        errors = validate_config(config, dirname="demo_blackbox")
+                errors = validate_config(config, dirname="demo_blackbox")
 
-        self.assertIn(
-            "Blackbox V2 schedule.timeout_sec must be a positive integer",
-            errors,
-        )
-
-    def test_blackbox_schedule_timeout_sec_is_required(self) -> None:
-        config = _base_blackbox_config()
-        del config["schedule"]["timeout_sec"]
-
-        errors = validate_config(config, dirname="demo_blackbox")
-
-        self.assertIn(
-            "Blackbox V2 schedule.timeout_sec must be a positive integer",
-            errors,
-        )
+                self.assertIn(
+                    "Blackbox V2 schedule.timeout_sec must be a positive integer",
+                    errors,
+                )
 
 
 class ConfigSchemaBacktestStartTests(unittest.TestCase):
@@ -235,50 +253,21 @@ class ConfigSchemaBacktestStartTests(unittest.TestCase):
 
         self.assertIn("backtest.runner_args must not include --no-persist", errors)
 
-    def test_weekly_backtest_requires_predict_start_date_2025_01_01(self) -> None:
-        config = _base_config()
-        config["scheme_id"] = "demo_weekly"
-        config["frequency"] = "weekly"
-        config["horizon"] = 6
-        config["task_type"] = "weekly_point"
-        config["target_rule"] = "next_week_last_trading_day_vs_current_week_last_trading_day"
-        config["input_spec"] = {
-            "data_version": "shared_data_service_weekly.v1",
-            "required_columns": ["week_id", "TB5YWI3C"],
-            "weekly_variant": "unified",
-        }
-        config["backtest"] = {
-            "runner": "backtests.demo_weekly",
-            "start_week": 200901,
-            "end_week": 202622,
-        }
+    def test_weekly_backtest_predict_start_date_contract(self) -> None:
+        for predict_start_date, valid in ((None, False), ("2025-01-01", True)):
+            with self.subTest(predict_start_date=predict_start_date):
+                errors = validate_config(
+                    _weekly_config(predict_start_date=predict_start_date),
+                    dirname="demo_weekly",
+                )
 
-        errors = validate_config(config, dirname="demo_weekly")
-
-        self.assertIn("backtest.predict_start_date must be 2025-01-01 for weekly backtests", errors)
-
-    def test_weekly_backtest_predict_start_date_keeps_historical_start_week_valid(self) -> None:
-        config = _base_config()
-        config["scheme_id"] = "demo_weekly"
-        config["frequency"] = "weekly"
-        config["horizon"] = 6
-        config["task_type"] = "weekly_point"
-        config["target_rule"] = "next_week_last_trading_day_vs_current_week_last_trading_day"
-        config["input_spec"] = {
-            "data_version": "shared_data_service_weekly.v1",
-            "required_columns": ["week_id", "TB5YWI3C"],
-            "weekly_variant": "unified",
-        }
-        config["backtest"] = {
-            "runner": "backtests.demo_weekly",
-            "predict_start_date": "2025-01-01",
-            "start_week": 200901,
-            "end_week": 202622,
-        }
-
-        errors = validate_config(config, dirname="demo_weekly")
-
-        self.assertEqual(errors, [])
+                if valid:
+                    self.assertEqual(errors, [])
+                else:
+                    self.assertIn(
+                        "backtest.predict_start_date must be 2025-01-01 for weekly backtests",
+                        errors,
+                    )
 
     def test_monthly_scheme_requires_target_rule(self) -> None:
         config = _base_config()
