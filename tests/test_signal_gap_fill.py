@@ -18,6 +18,7 @@ TARGET_DATE = "2026-08-14"
 def _source_identity() -> dict[str, object]:
     files = []
     for filename, min_key, max_key, character in (
+        ("api_wind_date.csv", "2010-01-01", PREDICT_DATE, "f"),
         ("daily_output.csv", "2026-08-01", FEATURE_DATE, "a"),
         ("monthly_output.csv", "202607", "202608", "c"),
         ("weekly_output.csv", "202631", "202632", "b"),

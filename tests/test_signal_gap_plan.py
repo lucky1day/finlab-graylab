@@ -146,6 +146,7 @@ def _authority() -> databridge_authority.StableDataBridgeCurrentAuthority:
             business_hash=character * 64,
         )
         for filename, min_key, max_key, character in (
+            ("api_wind_date.csv", "2010-01-01", "2026-08-10", "d"),
             ("daily_output.csv", "2026-08-06", "2026-08-07", "a"),
             ("monthly_output.csv", "202607", "202608", "b"),
             ("weekly_output.csv", "202631", "202632", "c"),

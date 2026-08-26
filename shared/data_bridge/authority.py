@@ -25,6 +25,7 @@ from shared.data_bridge.validation import DataBridgeValidationError
 AUTHORITY_SCHEMA_VERSION = "stable-databridge-current-authority-v2"
 _GRAY_REPLAY_FILENAMES = frozenset(
     {
+        "api_wind_date.csv",
         "daily_output.csv",
         "weekly_output.csv",
         "monthly_output.csv",
@@ -213,7 +214,7 @@ def _canonical_gray_replay_key(
     filename: str,
     field: str,
 ) -> str:
-    if filename == "daily_output.csv":
+    if filename in {"api_wind_date.csv", "daily_output.csv"}:
         if not isinstance(value, str):
             raise ValueError(f"{field} must use YYYY-MM-DD")
         try:
