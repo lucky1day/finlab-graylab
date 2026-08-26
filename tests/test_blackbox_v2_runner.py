@@ -75,11 +75,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             return None
 
         process_start_guard = ProcessStartGuard()
-        data_bridge_config = SimpleNamespace(
-            data_root=Path("/srv/bond/data_bridge"),
-            runtime_root=Path("/srv/bond/data_bridge_runtime"),
-            schema_path=Path("/srv/bond/data_bridge_schema.json"),
-        )
         trusted_bundle = SimpleNamespace(
             combined_snapshot_id="snapshot-trusted",
             parent_snapshot_id="snapshot-parent-trusted",
@@ -98,10 +93,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
 
         with (
             patch("scheduler.executor.load_metadata", return_value=_metadata()),
-            patch(
-                "shared.data_bridge.refresh.DataBridgeRefreshConfig.from_env",
-                return_value=data_bridge_config,
-            ) as data_bridge_config_from_env,
             patch(
                 "scheduler.executor.get_ready_blackbox_snapshot",
                 return_value=snapshot,
@@ -139,12 +130,8 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             )
 
         self.assertEqual(result, ["record"])
-        data_bridge_config_from_env.assert_called_once_with()
         ready_snapshot.assert_called_once_with(
             snapshot_date="2026-07-16",
-            schema_path=Path("/srv/bond/data_bridge_schema.json"),
-            data_root=Path("/srv/bond/data_bridge"),
-            refresh_runtime_root=Path("/srv/bond/data_bridge_runtime"),
             require_fresh=True,
         )
         self.assertIs(

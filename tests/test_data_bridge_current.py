@@ -682,6 +682,10 @@ class DataBridgeCurrentTests(unittest.TestCase):
             ),
             patch.object(
                 refresh_script,
+                "invalidate_ready_blackbox_snapshot",
+            ) as invalidate_snapshot,
+            patch.object(
+                refresh_script,
                 "prepare_blackbox_generation_snapshot",
             ) as prepare_snapshot,
         ):
@@ -693,6 +697,7 @@ class DataBridgeCurrentTests(unittest.TestCase):
             )
 
         self.assertIs(actual, result)
+        invalidate_snapshot.assert_called_once_with()
         self.assertTrue(
             resolve_authority.call_args.kwargs[
                 "allow_producer_period_bootstrap"

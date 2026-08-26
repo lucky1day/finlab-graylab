@@ -4,7 +4,6 @@ import hashlib
 import json
 import tempfile
 import unittest
-from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -51,6 +50,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
         from shared.blackbox_v2.snapshot import SNAPSHOT_FILENAMES
         from shared.input_artifacts import (
             get_ready_blackbox_snapshot,
+            invalidate_ready_blackbox_snapshot,
             prepare_blackbox_generation_snapshot,
         )
 
@@ -90,20 +90,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             },
         }
 
-        class Store:
-            def __init__(self, **kwargs) -> None:
-                self.current_dir = Path(kwargs["data_root"]) / "current"
-
-            @contextmanager
-            def current_read(self, *, strict_read_only):
-                self.assert_true(strict_read_only)
-                yield state
-
-            @staticmethod
-            def assert_true(value):
-                if not value:
-                    raise AssertionError("strict read-only access required")
-
         dataset = SimpleNamespace(
             schema_version="data-bridge-v1",
             business_digest="b" * 64,
@@ -112,15 +98,9 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            data_root = root / "databridge"
-            current_dir = data_root / "current"
-            current_dir.mkdir(parents=True)
-            (current_dir / ".publication-manifest.json").write_text(
-                json.dumps(state, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
+            cache_root = root / "generation-cache"
+            cache_root.mkdir()
             with (
-                patch("shared.input_artifacts.DataBridgeStore", Store),
                 patch(
                     "shared.input_artifacts.check_current_dataset",
                     side_effect=AssertionError(
@@ -135,37 +115,65 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     ),
                 ),
             ):
-                prepared = prepare_blackbox_generation_snapshot(
-                    state=state,
-                    dataset=dataset,
-                    cache_root=root / "generation-cache",
-                )
-                ready = get_ready_blackbox_snapshot(
-                    snapshot_date="2026-07-15",
-                    data_root=data_root,
-                    cache_root=root / "generation-cache",
-                )
-
-                mismatched = dict(state)
-                mismatched["generation_id"] = "generation-other"
-                (current_dir / ".publication-manifest.json").write_text(
-                    json.dumps(mismatched, sort_keys=True) + "\n",
-                    encoding="utf-8",
-                )
                 with self.assertRaisesRegex(
                     ValueError,
-                    "state and publication manifest differ",
+                    "ready generation receipt is unavailable or invalid",
                 ):
                     get_ready_blackbox_snapshot(
                         snapshot_date="2026-07-15",
-                        data_root=data_root,
-                        cache_root=root / "generation-cache",
+                        cache_root=cache_root,
                     )
+                prepared = prepare_blackbox_generation_snapshot(
+                    state=state,
+                    dataset=dataset,
+                    cache_root=cache_root,
+                )
+                ready = get_ready_blackbox_snapshot(
+                    snapshot_date="2026-07-15",
+                    cache_root=cache_root,
+                )
+                invalidate_ready_blackbox_snapshot(cache_root=cache_root)
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "ready generation receipt is unavailable or invalid",
+                ):
+                    get_ready_blackbox_snapshot(
+                        snapshot_date="2026-07-15",
+                        cache_root=cache_root,
+                    )
+                restored = prepare_blackbox_generation_snapshot(
+                    state=state,
+                    dataset=dataset,
+                    cache_root=cache_root,
+                )
+                self.assertEqual(restored.snapshot_id, prepared.snapshot_id)
 
-                (current_dir / ".publication-manifest.json").write_text(
-                    json.dumps(state, sort_keys=True) + "\n",
+                ready_path = cache_root / "ready-generation.json"
+                ready_identity = json.loads(ready_path.read_text(encoding="utf-8"))
+                ready_identity["cache_schema_version"] = "retired-cache-version"
+                ready_path.chmod(0o644)
+                ready_path.write_text(
+                    json.dumps(
+                        ready_identity,
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n",
                     encoding="utf-8",
                 )
+                ready_path.chmod(0o444)
+                with self.assertRaisesRegex(ValueError, "contract mismatch"):
+                    get_ready_blackbox_snapshot(
+                        snapshot_date="2026-07-15",
+                        cache_root=cache_root,
+                    )
+                prepare_blackbox_generation_snapshot(
+                    state=state,
+                    dataset=dataset,
+                    cache_root=cache_root,
+                )
+
                 damaged = prepared.data_dir / "daily_output.csv"
                 damaged.chmod(0o644)
                 damaged.write_bytes(damaged.read_bytes() + b"\n")
@@ -176,8 +184,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 ):
                     get_ready_blackbox_snapshot(
                         snapshot_date="2026-07-15",
-                        data_root=data_root,
-                        cache_root=root / "generation-cache",
+                        cache_root=cache_root,
                     )
 
         self.assertEqual(prepared.snapshot_id, ready.snapshot_id)
@@ -212,12 +219,11 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 ),
             )
             bundle = compose_blackbox_input_bundle(snapshot)
-            csv_reads: list[str] = []
+            stable_reads: list[str] = []
             stable_read = input_artifacts._read_stable_regular_file
 
             def record_stable_read(path, label):
-                if Path(path).suffix == ".csv":
-                    csv_reads.append(Path(path).name)
+                stable_reads.append(Path(path).name)
                 return stable_read(path, label)
 
             path_read_bytes = Path.read_bytes
@@ -262,7 +268,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     ):
                         pass
 
-        self.assertEqual(csv_reads, [])
+        self.assertEqual(stable_reads, [])
 
     def test_runtime_view_accepts_databridge_timestamp_daily_keys(self) -> None:
         from shared.blackbox_v2.snapshot import (

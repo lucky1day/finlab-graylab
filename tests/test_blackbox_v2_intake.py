@@ -130,7 +130,10 @@ class BlackboxV2IntakeTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertNotIn("platform_inputs:", config_text)
         self.assertFalse(hasattr(config, "platform_inputs"))
-        self.assertEqual(payload["warnings"], [])
+        self.assertEqual(
+            set(payload),
+            {"scheme_id", "runtime_type", "scheme_dir"},
+        )
 
     def test_intake_rejects_additional_delivery_file(self) -> None:
         from shared.blackbox_v2.intake import intake_delivery

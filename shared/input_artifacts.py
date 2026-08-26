@@ -35,9 +35,7 @@ from shared.data_bridge.authority import (
     _normalize_blackbox_gray_replay_source_identity,
 )
 from shared.data_bridge.refresh import (
-    CURRENT_PUBLICATION_MANIFEST,
     DataBridgeRefreshConfig,
-    DataBridgeStore,
     check_current_dataset,
 )
 from shared.data_bridge.validation import ValidatedDataBridgeDataset
@@ -54,17 +52,9 @@ BLACKBOX_GRAY_REPLAY_SESSION_ROOT = (
     BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "gray_replay_sessions"
 )
 BLACKBOX_SCHEMA_PATH = Path(__file__).with_name("blackbox_v2") / "data_bridge_v1_schema.json"
-DATA_BRIDGE_ROOT = resolve_runtime_state_path(
-    relative_path="data-bridge/data",
-    development_default=(
-        Path(__file__).resolve().parents[1] / "data" / "data_bridge"
-    ),
-    override_env="DATABRIDGE_DATA_ROOT",
-)
-DATA_BRIDGE_REFRESH_RUNTIME_ROOT = resolve_runtime_state_path(
-    relative_path="data-bridge/refresh",
-    development_default=BACKTEST_ARTIFACT_ROOT / "data_bridge_refresh",
-    override_env="DATABRIDGE_RUNTIME_ROOT",
+BLACKBOX_SCHEMA_VERSION = "data-bridge-v1"
+BLACKBOX_SCHEMA_CONTRACT_SHA256 = (
+    "addf732eb35071f89493073d22f4bf6ef79a55d7ceaf554dd9cf2c41e4dc6db3"
 )
 DAILY_DATA_VERSION = "shared_data_service_daily.v1"
 WEEKLY_DATA_VERSION = "shared_data_service_weekly.v1"
@@ -237,15 +227,10 @@ def _materialize_blackbox_runtime_view(view: BlackboxRuntimeView) -> None:
     bundle = view.bundle
     destination = view.data_dir
     sealed_fingerprints = bundle.base_snapshot.sealed_file_fingerprints
-    if sealed_fingerprints is not None and set(sealed_fingerprints) != set(
-        SNAPSHOT_FILENAMES
-    ):
+    if sealed_fingerprints is None:
+        _validate_blackbox_snapshot(bundle.base_snapshot)
+    elif set(sealed_fingerprints) != set(SNAPSHOT_FILENAMES):
         raise ValueError("producer snapshot file seal is invalid")
-    _validate_blackbox_snapshot(
-        bundle.base_snapshot,
-        validate_csv_profiles=False,
-        validate_file_contents=sealed_fingerprints is None,
-    )
 
     for filename in SNAPSHOT_FILENAMES:
         source = bundle.base_snapshot.data_dir / filename
@@ -775,6 +760,7 @@ def prepare_blackbox_generation_snapshot(
         _validate_generation_dataset_identity(dataset, current_identity)
         cached = _read_generation_snapshot_cache(root, current_identity)
         if cached is not None:
+            _write_ready_generation_identity(root, current_identity)
             return cached
         _require_blackbox_databridge_monthly_additions(dataset.frames)
         schema_version, expected_columns = _load_blackbox_schema(schema_path)
@@ -811,58 +797,39 @@ def prepare_blackbox_generation_snapshot(
             _make_tree_writable(generation_root)
             shutil.rmtree(generation_root)
             raise
+        _write_ready_generation_identity(root, current_identity)
         return snapshot
+
+
+def invalidate_ready_blackbox_snapshot(
+    *,
+    cache_root: str | Path = BLACKBOX_GENERATION_SNAPSHOT_ROOT,
+) -> None:
+    """DataBridge publish 开始前撤销旧 ready 指针。"""
+    root = Path(cache_root)
+    root.mkdir(parents=True, exist_ok=True)
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("Blackbox generation snapshot cache must be a real directory")
+    with _generation_snapshot_cache_lock(root):
+        ready_path = root / "ready-generation.json"
+        if ready_path.is_symlink():
+            raise ValueError("Blackbox ready generation receipt must not be a symlink")
+        ready_path.unlink(missing_ok=True)
+        _fsync_directory(root)
 
 
 def get_ready_blackbox_snapshot(
     *,
     snapshot_date: str,
-    schema_path: str | Path = BLACKBOX_SCHEMA_PATH,
-    data_root: str | Path = DATA_BRIDGE_ROOT,
-    refresh_runtime_root: str | Path = DATA_BRIDGE_REFRESH_RUNTIME_ROOT,
     cache_root: str | Path = BLACKBOX_GENERATION_SNAPSHOT_ROOT,
     require_fresh: bool = False,
 ) -> BlackboxSnapshot:
-    """读取 producer 已准备好的不可变快照；缺失时不代建、不修复。"""
+    """读取 producer 已发布的不可变快照；缺失时不代建、不修复。"""
     root = Path(cache_root)
     if root.is_symlink() or not root.is_dir():
         raise ValueError("Blackbox ready snapshot root is unavailable")
-    with _generation_snapshot_cache_lock(root):
-        config = DataBridgeRefreshConfig(
-            data_root=Path(data_root),
-            runtime_root=Path(refresh_runtime_root),
-            schema_path=Path(schema_path),
-        )
-        store = DataBridgeStore(
-            data_root=config.data_root,
-            runtime_root=config.runtime_root,
-        )
-        with store.current_read(strict_read_only=True) as state:
-            current_identity = _generation_snapshot_identity(
-                state,
-                schema_path=Path(schema_path),
-            )
-            try:
-                _, manifest_raw = _read_stable_regular_file(
-                    store.current_dir / CURRENT_PUBLICATION_MANIFEST,
-                    "DataBridge current publication manifest",
-                )
-                publication = json.loads(manifest_raw.decode("utf-8"))
-            except (UnicodeError, json.JSONDecodeError) as exc:
-                raise ValueError(
-                    "DataBridge current publication manifest is invalid"
-                ) from exc
-            if (
-                not isinstance(publication, Mapping)
-                or _generation_snapshot_identity(
-                    publication,
-                    schema_path=Path(schema_path),
-                )
-                != current_identity
-            ):
-                raise ValueError(
-                    "DataBridge current state and publication manifest differ"
-                )
+    with _generation_snapshot_cache_lock(root, shared=True):
+        current_identity = _read_ready_generation_identity(root)
         snapshot = _read_generation_snapshot_cache(
             root,
             current_identity,
@@ -884,48 +851,23 @@ def _generation_snapshot_identity(
     *,
     schema_path: Path,
 ) -> dict[str, Any]:
-    required = (
-        "generation_id",
-        "refresh_date",
-        "business_digest",
-        "schema_version",
-    )
+    schema_contract_sha256 = hashlib.sha256(
+        schema_path.read_bytes()
+    ).hexdigest()
+    if schema_contract_sha256 != BLACKBOX_SCHEMA_CONTRACT_SHA256:
+        raise ValueError("Blackbox DataBridge schema contract does not match this release")
     identity: dict[str, Any] = {
         "cache_schema_version": BLACKBOX_GENERATION_SNAPSHOT_CACHE_VERSION,
-        "schema_contract_sha256": hashlib.sha256(
-            schema_path.read_bytes()
-        ).hexdigest(),
+        "schema_contract_sha256": schema_contract_sha256,
+        "generation_id": state.get("generation_id"),
+        "refresh_date": state.get("refresh_date"),
+        "business_digest": state.get("business_digest"),
+        "schema_version": state.get("schema_version"),
+        "files": json.loads(
+            json.dumps(state.get("files"), ensure_ascii=True, sort_keys=True)
+        ),
     }
-    for field in required:
-        value = state.get(field)
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(
-                f"DataBridge generation snapshot identity missing {field}"
-            )
-        identity[field] = value
-    raw_files = state.get("files")
-    if not isinstance(raw_files, Mapping) or set(raw_files) != set(
-        SNAPSHOT_FILENAMES
-    ):
-        raise ValueError("DataBridge generation snapshot file identity is invalid")
-    files: dict[str, Any] = {}
-    for filename in SNAPSHOT_FILENAMES:
-        raw = raw_files.get(filename)
-        if not isinstance(raw, Mapping):
-            raise ValueError(
-                f"DataBridge generation snapshot identity missing {filename}"
-            )
-        sha256 = raw.get("sha256")
-        if not isinstance(sha256, str) or not re.fullmatch(
-            r"[0-9a-f]{64}", sha256
-        ):
-            raise ValueError(
-                f"DataBridge generation snapshot identity has invalid {filename} hash"
-            )
-        files[filename] = json.loads(
-            json.dumps(dict(raw), ensure_ascii=True, sort_keys=True)
-        )
-    identity["files"] = files
+    _validate_generation_snapshot_identity(identity)
     return identity
 
 
@@ -996,7 +938,7 @@ def _snapshot_file_fingerprints(
 
 
 @contextmanager
-def _generation_snapshot_cache_lock(root: Path):
+def _generation_snapshot_cache_lock(root: Path, *, shared: bool = False):
     lock_path = root / "generation-cache.lock"
     descriptor = os.open(
         lock_path,
@@ -1017,7 +959,10 @@ def _generation_snapshot_cache_lock(root: Path):
                 "Blackbox generation snapshot lock must be owned by the current user"
             )
         os.fchmod(descriptor, 0o600)
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        fcntl.flock(
+            descriptor,
+            fcntl.LOCK_SH if shared else fcntl.LOCK_EX,
+        )
         yield
     finally:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
@@ -1039,7 +984,7 @@ def _read_generation_snapshot_cache(
             "Blackbox generation snapshot receipt",
         )
         receipt = json.loads(receipt_raw.decode("utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
         raise ValueError("Blackbox generation snapshot receipt is invalid") from exc
     if (
         not isinstance(receipt, dict)
@@ -1175,6 +1120,126 @@ def _write_generation_snapshot_cache(
         _fsync_directory(receipts)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _write_ready_generation_identity(
+    root: Path,
+    identity: Mapping[str, Any],
+) -> None:
+    payload = (
+        json.dumps(
+            dict(identity),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".ready-generation-",
+        dir=root,
+    )
+    temporary = Path(temporary_name)
+    ready_path = root / "ready-generation.json"
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.chmod(0o444)
+        os.replace(temporary, ready_path)
+        _fsync_directory(root)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _read_ready_generation_identity(root: Path) -> dict[str, Any]:
+    try:
+        _, raw = _read_stable_regular_file(
+            root / "ready-generation.json",
+            "Blackbox ready generation receipt",
+        )
+        identity = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            "Blackbox ready generation receipt is unavailable or invalid"
+        ) from exc
+    if not isinstance(identity, dict):
+        raise ValueError("Blackbox ready generation receipt is invalid")
+    canonical = (
+        json.dumps(
+            identity,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+    if raw != canonical:
+        raise ValueError("Blackbox ready generation receipt is invalid")
+    _validate_generation_snapshot_identity(identity)
+    return identity
+
+
+def _validate_generation_snapshot_identity(identity: Mapping[str, Any]) -> None:
+    expected_fields = {
+        "cache_schema_version",
+        "schema_contract_sha256",
+        "generation_id",
+        "refresh_date",
+        "business_digest",
+        "schema_version",
+        "files",
+    }
+    if set(identity) != expected_fields:
+        raise ValueError("Blackbox ready generation receipt fields are invalid")
+    if (
+        identity.get("cache_schema_version")
+        != BLACKBOX_GENERATION_SNAPSHOT_CACHE_VERSION
+        or identity.get("schema_contract_sha256")
+        != BLACKBOX_SCHEMA_CONTRACT_SHA256
+        or identity.get("schema_version") != BLACKBOX_SCHEMA_VERSION
+    ):
+        raise ValueError("Blackbox ready generation receipt contract mismatch")
+    generation_id = identity.get("generation_id")
+    refresh_date = identity.get("refresh_date")
+    business_digest = identity.get("business_digest")
+    if (
+        not isinstance(generation_id, str)
+        or not generation_id.strip()
+        or not isinstance(refresh_date, str)
+        or date.fromisoformat(refresh_date).isoformat() != refresh_date
+        or not _is_sha256(business_digest)
+    ):
+        raise ValueError("Blackbox ready generation identity is invalid")
+    files = identity.get("files")
+    if not isinstance(files, Mapping) or set(files) != set(SNAPSHOT_FILENAMES):
+        raise ValueError("Blackbox ready generation file identity is invalid")
+    expected_profile_fields = {
+        "sha256",
+        "business_hash",
+        "rows",
+        "columns",
+        "min_key",
+        "max_key",
+    }
+    for filename in SNAPSHOT_FILENAMES:
+        profile = files.get(filename)
+        if (
+            not isinstance(profile, Mapping)
+            or set(profile) != expected_profile_fields
+            or not _is_sha256(profile.get("sha256"))
+            or not _is_sha256(profile.get("business_hash"))
+            or type(profile.get("rows")) is not int
+            or int(profile["rows"]) < 0
+            or type(profile.get("columns")) is not int
+            or int(profile["columns"]) <= 0
+            or not isinstance(profile.get("min_key"), str)
+            or not isinstance(profile.get("max_key"), str)
+        ):
+            raise ValueError(
+                f"Blackbox ready generation file identity is invalid: {filename}"
+            )
 
 
 def _cached_snapshot_file_fingerprints(

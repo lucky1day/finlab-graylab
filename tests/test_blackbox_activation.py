@@ -170,6 +170,7 @@ def test_activate_dispatches_initial_and_revision_through_one_entry(tmp_path) ->
         project_root=tmp_path,
     )
     initial = SimpleNamespace(status="paused", version_status="draft")
+    retired_shadow = SimpleNamespace(status="paused", version_status="shadow")
     revision = SimpleNamespace(status="active", version_status="active")
     with (
         patch("harness.blackbox_v2.activation._config", return_value=initial),
@@ -189,6 +190,13 @@ def test_activate_dispatches_initial_and_revision_through_one_entry(tmp_path) ->
     ):
         assert activate_blackbox(ctx) == "revision-result"
         revision_call.assert_called_once()
+    with patch(
+        "harness.blackbox_v2.activation._config",
+        return_value=retired_shadow,
+    ):
+        result = activate_blackbox(ctx)
+        assert result.status == GateStatus.BLOCKED
+        assert "paused+draft" in result.errors[0]
 
 
 def test_initial_activation_registers_draft_identity_in_same_command(tmp_path) -> None:
@@ -242,7 +250,9 @@ def test_initial_activation_registers_draft_identity_in_same_command(tmp_path) -
             ),
         ),
         patch("harness.blackbox_v2.activation.assert_lifecycle_clear"),
-        patch("harness.blackbox_v2.activation._validate_canonical_delivery"),
+        patch(
+            "harness.blackbox_v2.activation._validate_canonical_delivery"
+        ) as validate_delivery,
         patch(
             "harness.blackbox_v2.activation._verify_passed_backtest",
             return_value=passed_backtest,
@@ -268,6 +278,7 @@ def test_initial_activation_registers_draft_identity_in_same_command(tmp_path) -
     assert result.status == GateStatus.PASSED
     assert {item.key: item.value for item in result.evidence}["identity_created"] is True
     register_identity.assert_called_once()
+    validate_delivery.assert_called_once_with(cfg)
 
 
 def test_revision_activation_uses_direct_operation_and_atomic_repository(tmp_path) -> None:
@@ -328,7 +339,9 @@ def test_revision_activation_uses_direct_operation_and_atomic_repository(tmp_pat
         ),
         patch("harness.blackbox_v2.activation.lifecycle_operation_lock", return_value=nullcontext()),
         patch("harness.blackbox_v2.activation.assert_lifecycle_clear"),
-        patch("harness.blackbox_v2.activation._validate_canonical_delivery"),
+        patch(
+            "harness.blackbox_v2.activation._validate_canonical_delivery"
+        ) as validate_delivery,
         patch("harness.blackbox_v2.activation._reload_pinned_canonical", return_value=cfg),
         patch(
             "harness.blackbox_v2.activation._verify_passed_backtest",
@@ -351,6 +364,7 @@ def test_revision_activation_uses_direct_operation_and_atomic_repository(tmp_pat
     assert evidence["activation_mode"] == "revision"
     assert evidence["prior_scheme_version"] == "version-1"
     activate_revision.assert_called_once()
+    validate_delivery.assert_called_once_with(cfg)
 
 
 def test_revision_repository_atomically_switches_versions() -> None:

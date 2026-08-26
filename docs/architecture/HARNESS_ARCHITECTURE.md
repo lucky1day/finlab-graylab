@@ -47,7 +47,7 @@ bond-factor-lab/
 └── docs/                   # 架构、SOP、测试、状态文档
 ```
 
-`harness/` 已实现 Gate 检查和流程编排，不承载业务算法、不定义新数据口径、不直接代替 scheduler 执行正式调度；`python -m harness onboard ...` 是标准机器入口。
+`harness/` 已实现 Native Gate 编排以及 Blackbox Intake、回测和激活入口，不承载业务算法、不定义新数据口径、不直接代替 scheduler 执行正式调度。`python -m harness onboard ...` 只用于 Native 存量流程。
 
 ---
 

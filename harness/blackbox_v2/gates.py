@@ -172,15 +172,12 @@ class BlackboxBacktestGate(_BlackboxGate):
                     "operation_scope_sha256": operation_scope_sha256(operation),
                 }
             )
-            if len(output.rows) != len(cases) or not output.monthly_metrics:
+            if not output.monthly_metrics:
                 raise ValueError(
-                    "Blackbox persisted backtest requires one Result per historical Request "
-                    "and non-empty monthly metrics: "
-                    f"requests={len(cases)}, records={len(output.rows)}, "
+                    "Blackbox persisted backtest requires non-empty monthly metrics: "
                     f"monthly_metrics={len(output.monthly_metrics)}"
-            )
+                )
             cfg = _reload_pinned_blackbox_config(cfg, phase="persisted backtest commit")
-            validate_canonical_blackbox_delivery(cfg)
             run_id = persist_backtest_output_atomic(engine, output, benchmark_id=benchmark_id)
         finally:
             if hasattr(engine, "dispose"):

@@ -26,8 +26,7 @@ from harness.signal_gap_plan import (
     plan_signal_gaps,
 )
 from scheduler.discovery import load_scheme_config
-from scheduler.repository import create_engine_from_env, registry_scheme_id
-from shared.blackbox_v2.contracts import load_metadata
+from scheduler.repository import create_engine_from_env
 from shared.blackbox_v2.intake import intake_delivery
 from shared.data_bridge.refresh import DataBridgeRefreshConfig
 
@@ -123,21 +122,12 @@ def main(argv: list[str] | None = None) -> int:
             args.delivery_dir,
             schemes_root=args.project_root.resolve() / "schemes",
         )
-        metadata = load_metadata(
-            scheme_dir / "delivery" / f"{scheme_dir.name}.json"
-        )
         print(
             json.dumps(
                 {
                     "scheme_id": scheme_dir.name,
-                    "registry_scheme_id": registry_scheme_id(
-                        metadata.scheme_id,
-                        metadata.horizon,
-                        metadata.target_tenor,
-                    ),
                     "runtime_type": "blackbox_v2",
                     "scheme_dir": str(scheme_dir),
-                    "warnings": [],
                 },
                 ensure_ascii=False,
                 indent=2,

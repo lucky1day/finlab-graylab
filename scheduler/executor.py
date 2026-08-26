@@ -52,7 +52,6 @@ from shared.input_artifacts import (
     resolve_blackbox_input_cutoffs,
     validate_blackbox_request_calendar,
 )
-from shared.data_bridge.refresh import DataBridgeRefreshConfig
 from shared.db_config import DATABASE_ENV_FILE_ENV
 from shared.models import PredictionRecord
 from shared.one_shot_control_plane import (
@@ -465,12 +464,8 @@ def run_blackbox_scheme_subprocess(
     if cfg.delivery_script is None or cfg.delivery_metadata is None:
         raise ValueError(f"Blackbox V2 delivery paths missing for {cfg.scheme_id}")
     require_fresh = snapshot_mode == BLACKBOX_SNAPSHOT_MODE_FRESH
-    data_bridge_config = DataBridgeRefreshConfig.from_env()
     snapshot = get_ready_blackbox_snapshot(
         snapshot_date=predict_date,
-        schema_path=data_bridge_config.schema_path,
-        data_root=data_bridge_config.data_root,
-        refresh_runtime_root=data_bridge_config.runtime_root,
         require_fresh=require_fresh,
     )
 

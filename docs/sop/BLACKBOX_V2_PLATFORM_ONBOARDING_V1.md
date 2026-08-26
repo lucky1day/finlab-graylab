@@ -14,7 +14,7 @@
 - 上游负责证明交付脚本可运行、算法确定性、逐 Request 截止隔离以及 predict/backtest 等价。
 - 平台不再运行 Blackbox `StaticGate`、冒烟 `CompareGate` 或独立 `shadow-register`。
 - 平台只验证自己拥有的边界：Intake、DataBridge 输入接入、批量 Result 合同、回测持久化和生产状态切换。
-- DataBridge generation 由 producer 独立发布并一次生成 ready snapshot。方案流程只读取现成 generation，不构建、修复或重新验证 DataBridge。
+- DataBridge generation 由 producer 独立发布并一次生成 ready snapshot。任何新 publish 开始前 producer 先撤销旧 ready 指针，完成后才原子发布新指针；方案流程只读取现成 generation，不构建、修复或重新验证 DataBridge。
 - 回测、激活、gray gap-fill 和调度变更仍是不同副作用；执行一个命令不授权其它动作。
 
 ## 2. Step 1：Intake（新 ID）

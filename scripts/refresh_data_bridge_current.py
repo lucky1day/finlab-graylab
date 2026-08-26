@@ -42,6 +42,7 @@ from shared.data_bridge.mysql_exporter import (  # noqa: E402
 from shared.data_bridge.validation import DataBridgeValidationError  # noqa: E402
 from shared.data_service import create_sqlalchemy_engine  # noqa: E402
 from shared.input_artifacts import (  # noqa: E402
+    invalidate_ready_blackbox_snapshot,
     prepare_blackbox_generation_snapshot,
 )
 from shared.one_shot_control_plane import (  # noqa: E402
@@ -112,6 +113,8 @@ def refresh_current(
     )
     engine = create_sqlalchemy_engine()
     try:
+        if publish:
+            invalidate_ready_blackbox_snapshot()
         continuity_authority = (
             resolve_databridge_continuity_authority_from_engine(
                 config,

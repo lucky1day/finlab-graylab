@@ -38,7 +38,7 @@ def activate_blackbox(ctx: GateContext) -> GateResult:
 
 def _activate(ctx: GateContext, started_at: str) -> GateResult:
     cfg = _config(ctx)
-    if cfg.status == "paused" and cfg.version_status in {"draft", "shadow"}:
+    if cfg.status == "paused" and cfg.version_status == "draft":
         return _activate_initial(ctx, started_at, cfg)
     if cfg.status == "active" and cfg.version_status == "active":
         return _activate_revision(ctx, started_at, cfg)
@@ -107,7 +107,6 @@ def _activate_initial(
 
         def apply_database(state: LifecycleState) -> None:
             current = _reload_pinned_with_evidence(enriched_cfg, cfg.scheme_version)
-            _validate_canonical_delivery(current)
             if state.version_status == "active":
                 apply_blackbox_lifecycle_state(
                     engine,
@@ -232,7 +231,6 @@ def _activate_revision(
             )
 
             final_cfg = _reload_pinned_canonical(cfg)
-            _validate_canonical_delivery(final_cfg)
             assert_lifecycle_clear(ctx.project_root, cfg.scheme_id)
             enriched_cfg = replace(
                 final_cfg,
@@ -447,12 +445,12 @@ def _validate_initial_state(cfg: SchemeConfig, db_state, passed_backtest) -> lis
     if db_state.scheme_id != cfg.scheme_id or db_state.scheme_version != cfg.scheme_version:
         errors.append("database lifecycle identity does not match current canonical version")
     if (
-        db_state.version_status not in {"draft", "shadow"}
+        db_state.version_status != "draft"
         or db_state.registry_status != "paused"
         or db_state.version_status != cfg.version_status
     ):
         errors.append(
-            "Blackbox activation requires matching paused draft/shadow state: "
+            "Blackbox activation requires matching paused draft state: "
             f"config={cfg.version_status}, "
             f"database={db_state.version_status}+{db_state.registry_status}"
         )

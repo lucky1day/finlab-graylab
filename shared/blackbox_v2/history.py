@@ -157,7 +157,6 @@ def build_historical_cases(
                 },
             )
         )
-    validate_historical_cases(cases)
     return cases
 
 
