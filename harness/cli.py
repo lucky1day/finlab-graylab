@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 import re
-from datetime import date, datetime, timezone
+from datetime import date
 from dataclasses import fields, is_dataclass
 from getpass import getuser
 from pathlib import Path
@@ -29,26 +29,10 @@ from scheduler.discovery import load_scheme_config
 from scheduler.repository import create_engine_from_env, registry_scheme_id
 from shared.blackbox_v2.contracts import load_metadata
 from shared.blackbox_v2.intake import intake_delivery
-from shared.runtime_paths import resolve_runtime_state_path
 from shared.data_bridge.refresh import DataBridgeRefreshConfig
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-
-def default_report_dir(project_root: Path, scheme_id: str) -> Path:
-    """Harness 报告目录默认值。
-
-    报告是**主机级**运行状态，不属于 source release 内容；不可变 release 下写入源码树会
-    破坏 source tree digest。
-    """
-    timestamp = _timestamp()
-    return resolve_runtime_state_path(
-        relative_path=f"reports/harness/{scheme_id}/{timestamp}",
-        development_default=(
-            Path(project_root) / "reports" / "harness" / scheme_id / timestamp
-        ),
-    )
 
 
 class _StoreOnce(argparse.Action):
@@ -178,7 +162,7 @@ def _build_parser() -> argparse.ArgumentParser:
     gate_parser = subparsers.add_parser("gate")
     gate_subparsers = gate_parser.add_subparsers(dest="gate_name", required=True)
     for gate_name in (
-        "static", "input", "unit", "dry-run", "compare", "backtest",
+        "static", "input", "dry-run", "compare", "backtest",
         "dashboard", "shadow-register", "lifecycle-reconcile",
     ):
         item = gate_subparsers.add_parser(gate_name)
@@ -189,7 +173,7 @@ def _build_parser() -> argparse.ArgumentParser:
                 "dashboard"
                 if gate_name == "dashboard"
                 else "static"
-                if gate_name in {"static", "unit", "compare", "backtest"}
+                if gate_name in {"static", "compare", "backtest"}
                 else None
             ),
         )
@@ -284,7 +268,6 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
     } and not args.predict_date:
         raise SystemExit(f"gate {args.gate_name} requires --predict-date")
     project_root = args.project_root.resolve()
-    report_dir = default_report_dir(project_root, args.scheme_id)
     config = _load_config_for_dispatch(project_root / "schemes" / args.scheme_id / "config.yaml")
     action = _gate_action(args)
     backtest_start_date = getattr(
@@ -296,7 +279,6 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
         scheme_id=args.scheme_id,
         predict_date=args.predict_date,
         project_root=project_root,
-        report_dir=report_dir,
         config=config,
         algo_env=args.algo_env,
         engine_factory=create_engine_from_env,
@@ -329,13 +311,11 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
 
 def _run_onboard_command(args: argparse.Namespace) -> OnboardReport:
     project_root = args.project_root.resolve()
-    report_dir = default_report_dir(project_root, args.scheme_id)
     config = _load_config_for_dispatch(project_root / "schemes" / args.scheme_id / "config.yaml")
     ctx = GateContext(
         scheme_id=args.scheme_id,
         predict_date=args.predict_date,
         project_root=project_root,
-        report_dir=report_dir,
         config=config,
         algo_env=args.algo_env,
         timeout_sec=args.timeout_sec,
@@ -356,7 +336,6 @@ def _load_config_for_dispatch(config_path: Path):
 
 def _run_activate(args: argparse.Namespace) -> GateResult:
     project_root = args.project_root.resolve()
-    report_dir = default_report_dir(project_root, args.scheme_id)
     config = _load_config_for_dispatch(project_root / "schemes" / args.scheme_id / "config.yaml")
     action = (
         "blackbox_activate"
@@ -367,7 +346,6 @@ def _run_activate(args: argparse.Namespace) -> GateResult:
         scheme_id=args.scheme_id,
         predict_date="activate",
         project_root=project_root,
-        report_dir=report_dir,
         config=config,
         operation=_direct_operation(
             action=action,
@@ -537,10 +515,6 @@ def _exit_code_for_report(report: OnboardReport) -> int:
     if any(result.status == GateStatus.BLOCKED for result in report.results):
         return 2
     return 0 if report.overall_passed else 1
-
-
-def _timestamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _jsonable(value: Any) -> Any:

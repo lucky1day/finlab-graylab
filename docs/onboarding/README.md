@@ -61,8 +61,10 @@
 ## Harness 当前工作流
 
 - `python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all` 按 `runtime_type` 执行技术 Gate：
-  Blackbox V2 为四段 `static → input → unit → compare`；Native V1 为五段
-  `static → input → dry-run → compare → backtest`。该流程不访问 Backend。
+  Blackbox V2 为三段 `static → input → compare`；Native V1 为四段
+  `static → dry-run → compare → backtest`。Native DryRunGate 同时核验该次真实执行的共享 builder
+  receipt 与实际主/辅助输入 artifact，包括来源、data version、截止、SHA-256、行数、必需列和从可信根逐级无 symlink 的路径；
+  不再由独立 InputGate 按另一套通用窗口重复构建。该流程不访问 Backend。
   Blackbox 的 dry-run 已并入其 CompareGate——两者的 baseline 是同一次 predict。
   Blackbox 不再保留重复的独立 dry-run/no-persist backtest；其 `gate backtest`
   只接受明确的 `--persist`。Native 仍保留独立 dry-run 和 no-persist backtest。
@@ -71,7 +73,7 @@
   一致、截止隔离、跨请求无状态——由上游按其交付契约保证，平台不重验。批次切分与顺序的
   回填正确性由 `load_backtest_results` 在每一次 backtest 校验（行数相等、逐行回显
   Request 字段），强于只在入库时跑一次。
-- Native 同一业务身份维护固定执行四段：`static → native-maintenance-admission → input → dry-run`。Native 不再按 scheme_id 文本扫描仓库测试；正确性闭环由 Static/Input/Dry-run/Compare/Backtest 承担。
+- Native 同一业务身份维护固定执行三段：`static → native-maintenance-admission → dry-run`。Native 不再按 scheme_id 文本扫描仓库测试；正确性闭环由 Static、Dry-run 的真实输入合同与执行结果、Compare、Backtest 承担。
 - 激活后的 HTTP 验收只使用 `DashboardGate`，只验证 `/api/factor-lab/dashboard` 当前业务可见性；Dashboard 响应不携带 exact version，不能用来证明版本身份。
 - 单日信号补缺使用 `python -m harness signal-gap-fill --predict-date YYYY-MM-DD`；需要限制为单个方案时增加 `--scheme-id {base_scheme_id}`。命令直接扫描并补齐真实缺口，不接收 token、operator、frozen plan、plan SHA 或日期范围。
 - Native 补缺按指定日期从当前权威数据库重建输入；Blackbox 使用冻结 DataBridge replay。整批算法必须先全部成功，才按 group insert-only 写入 `gray_live`；任一算法失败则 prediction 零提交，完成后只做一次最终权威 readback。
@@ -83,7 +85,7 @@
 新 Blackbox 方案进入 ECS 灰度实验室时，长期保留的最短链路为：
 
 1. `intake-blackbox` 收取两文件，并检查生成的 paused/draft canonical config；
-2. `onboard ... --stage all` 一次运行四个技术 Gate并持久化可用于后续 lifecycle 的控制面证据；
+2. `onboard ... --stage all` 一次运行三个技术 Gate，并以一次批量事务持久化可用于后续 lifecycle 的控制面证据；
 3. `gate shadow-register` 一条命令完成首次 draft identity 创建和 shadow/paused 登记；不再单独运行 `draft-register`；
 4. 明确 `gray_target_start` 后，运行一次完整持久化 backtest；
 5. `activate` 原子激活 exact version 与 composite Registry；
@@ -108,7 +110,7 @@ export PYTHONDONTWRITEBYTECODE=1
 |---|---|---|---|
 | 改动任意方案配置后 | active discovery、运行时身份和两文件入口 | `python -m pytest -q tests/test_active_scheme_contracts.py tests/test_config_schema.py tests/test_onboarding_policy.py` | 全部通过 |
 | 收到或修订 Blackbox V2 交付后 | 通用 Contract、Intake 与 discovery | `python -m pytest -q tests/test_blackbox_v2_contracts.py tests/test_blackbox_v2_intake.py tests/test_blackbox_v2_discovery.py` | 全部通过。具体交付只由本次 Intake/Gate 验收，不为已冻结交付永久复制专项 pytest；交付自身的截止隔离与跨批无状态属上游义务 |
-| 修改 Blackbox 平台适配后 | 输入 cutoff、runner、四段自动 Gate及独立副作用 Gate | `python -m pytest -q tests/test_data_bridge_current.py tests/test_blackbox_v2_runner.py tests/test_blackbox_v2_harness_gates.py` | 全部通过 |
+| 修改 Blackbox 平台适配后 | 输入 cutoff、runner、三段自动 Gate及独立副作用 Gate | `python -m pytest -q tests/test_data_bridge_current.py tests/test_blackbox_v2_runner.py tests/test_blackbox_v2_harness_gates.py` | 全部通过 |
 | 修改 Registry、API 或前端后 | active 方案可见性、actual join、Dashboard 基础状态与 Harness HTTP 验收 | `python -m pytest -q tests/test_repository_registry.py tests/test_backend_api.py tests/test_factor_lab_dashboard_api.py tests/test_dashboard_gate.py` | 全部通过 |
 | 修改 Native 存量适配后 | 当前数据库输入、执行器和 source isolation | `python -m pytest -q tests/test_native_input_artifacts.py tests/test_native_executor.py tests/test_source_runner_database_isolation.py` | 全部通过；不得修改 Native core 算法口径 |
 

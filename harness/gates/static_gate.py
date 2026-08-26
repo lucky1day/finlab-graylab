@@ -127,6 +127,7 @@ class StaticGate(Gate):
                 predict_import_whitelist_violations(predict_path, predict_tree, ctx.scheme_id)
             )
             predict_violations.extend(predict_input_artifact_bypass_violations(predict_path, predict_tree))
+            predict_violations.extend(file_write_violations(predict_path, predict_tree))
             predict_violations.extend(legacy_active_import_violations(predict_path, predict_tree))
         evidence.extend(Evidence(key, value) for key, value in predict_facts.items())
 

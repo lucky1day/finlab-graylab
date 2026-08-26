@@ -1,4 +1,4 @@
-"""`all` 自动段按 runtime_type 分开：Blackbox 精简，Native 保持不变。"""
+"""`all` 自动段按 runtime_type 分开，并避免重复构建 Native 输入。"""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import pytest
 
 from harness.context import GateContext
 from harness.registry import (
+    gate_for_name,
     gates_for_stage,
     sequence_for_stage,
 )
@@ -18,12 +19,11 @@ def test_auto_sequence_is_exact_for_each_runtime() -> None:
     expected = {
         "native_adapter": [
             "static",
-            "input",
             "dry-run",
             "compare",
             "backtest",
         ],
-        "blackbox_v2": ["static", "input", "unit", "compare"],
+        "blackbox_v2": ["static", "input", "compare"],
     }
     for runtime_type, sequence in expected.items():
         assert sequence_for_stage("all", runtime_type=runtime_type) == sequence
@@ -41,14 +41,12 @@ def test_native_maintenance_has_one_exact_sequence(tmp_path) -> None:
     expected = [
         "static",
         "native-maintenance-admission",
-        "input",
         "dry-run",
     ]
     ctx = GateContext(
         scheme_id="native_daily",
         predict_date="2026-08-25",
         project_root=tmp_path,
-        report_dir=tmp_path / "reports",
         config=SimpleNamespace(runtime_type="native_adapter"),
     )
 
@@ -61,12 +59,23 @@ def test_native_maintenance_has_one_exact_sequence(tmp_path) -> None:
         sequence_for_stage("native-maintenance-admission")
 
 
+def test_native_has_no_standalone_input_gate(tmp_path) -> None:
+    ctx = GateContext(
+        scheme_id="native_daily",
+        predict_date="2026-08-25",
+        project_root=tmp_path,
+        config=SimpleNamespace(runtime_type="native_adapter"),
+    )
+
+    with pytest.raises(ValueError, match="unsupported gate: input"):
+        gate_for_name("input", ctx=ctx)
+
+
 def test_blackbox_rejects_native_maintenance(tmp_path) -> None:
     ctx = GateContext(
         scheme_id="blackbox_daily",
         predict_date="2026-08-25",
         project_root=tmp_path,
-        report_dir=tmp_path / "reports",
         config=SimpleNamespace(runtime_type="blackbox_v2"),
     )
 

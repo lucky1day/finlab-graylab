@@ -52,6 +52,10 @@ class BlackboxSnapshot:
     schema_version: str
     generation_id: str | None = None
     refresh_date: str | None = None
+    business_digest: str | None = None
+    daily_cutoff_keys: tuple[str, ...] | None = None
+    weekly_cutoff_keys: tuple[str, ...] | None = None
+    monthly_cutoff_keys: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -350,6 +354,18 @@ def create_snapshot_from_frames(
         data_dir=destination / "data",
         manifest_path=manifest_path,
         schema_version=schema_version,
+        daily_cutoff_keys=tuple(
+            normalize_daily_key(value)
+            for value in frames["daily_output.csv"]["date"].tolist()
+        ),
+        weekly_cutoff_keys=tuple(
+            normalize_period_key(value, "week_id")
+            for value in frames["weekly_output.csv"]["week_id"].tolist()
+        ),
+        monthly_cutoff_keys=tuple(
+            normalize_period_key(value, "month_id")
+            for value in frames["monthly_output.csv"]["month_id"].tolist()
+        ),
     )
 
 
@@ -415,7 +431,7 @@ def _validate_frame_content(filename: str, frame: pd.DataFrame) -> None:
     if key_column not in frame.columns:
         raise ValueError(f"{filename} is missing {key_column}")
     if key_column == "date":
-        keys = [_normalize_daily_key(value) for value in frame[key_column].tolist()]
+        keys = [normalize_daily_key(value) for value in frame[key_column].tolist()]
     else:
         keys = [normalize_period_key(value, key_column) for value in frame[key_column].tolist()]
     if len(keys) != len(set(keys)):
@@ -444,7 +460,7 @@ def _validate_frame_content(filename: str, frame: pd.DataFrame) -> None:
             )
 
 
-def _normalize_daily_key(value: object) -> str:
+def normalize_daily_key(value: object) -> str:
     if pd.isna(value):
         raise ValueError("date must use YYYY-MM-DD and must not be empty")
     if isinstance(value, datetime):

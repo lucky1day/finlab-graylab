@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -29,7 +30,6 @@ class HarnessStaticGateTests(unittest.TestCase):
                     scheme_id="demo_daily",
                     predict_date="2026-06-08",
                     project_root=project_root,
-                    report_dir=project_root / "reports",
                 )
             )
 
@@ -67,7 +67,6 @@ class HarnessStaticGateTests(unittest.TestCase):
                         scheme_id=scheme_id,
                         predict_date="2026-06-08",
                         project_root=project_root,
-                        report_dir=project_root / "reports" / "harness" / "test",
                     )
                 )
 
@@ -87,7 +86,6 @@ class HarnessStaticGateTests(unittest.TestCase):
                     scheme_id="demo_daily",
                     predict_date="2026-06-08",
                     project_root=project_root,
-                    report_dir=project_root / "reports",
                 )
             )
 
@@ -122,7 +120,6 @@ class HarnessStaticGateTests(unittest.TestCase):
                     scheme_id="demo_daily",
                     predict_date="2026-06-08",
                     project_root=project_root,
-                    report_dir=project_root / "reports",
                 )
             )
 
@@ -131,55 +128,413 @@ class HarnessStaticGateTests(unittest.TestCase):
         self.assertTrue(any("predict.py" in item for item in result.errors), result.errors)
         self.assertIn("cross_scheme_imports", _evidence_keys(result))
 
+    def test_predict_direct_file_write_is_rejected(self) -> None:
+        from harness.context import GateContext
+        from harness.gates.static_gate import StaticGate
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            scheme_dir = _write_minimal_scheme(
+                project_root,
+                scheme_id="demo_daily",
+            )
+            predict_path = scheme_dir / "predict.py"
+            predict_path.write_text(
+                predict_path.read_text(encoding="utf-8")
+                + '\nPath("forged.csv").write_text("bad")\n',
+                encoding="utf-8",
+            )
+
+            result = StaticGate().run(
+                GateContext(
+                    scheme_id="demo_daily",
+                    predict_date="2026-06-08",
+                    project_root=project_root,
+                )
+            )
+
+        self.assertFalse(result.passed)
+        self.assertTrue(
+            any("file write call" in item for item in result.errors),
+            result.errors,
+        )
+
 
 class HarnessRuntimeGateTests(unittest.TestCase):
-    def test_input_gate_uses_artifact_metadata_and_required_columns(self) -> None:
+    def test_dry_run_gate_validates_actual_input_without_rebuilding(self) -> None:
         from harness.context import GateContext
-        from harness.gates.input_gate import InputGate
+        from harness.gates.dry_run_gate import DryRunGate
+        from shared.models import PredictionRecord
 
-        artifact = SimpleNamespace(
+        record = PredictionRecord(
             scheme_id="demo_daily",
-            frequency="daily",
-            path=Path("/tmp/daily_output.csv"),
-            dataframe=None,
-            source="shared_data_service_daily",
-            data_version="shared_data_service_daily.v1",
-            row_count=3,
-            column_count=2,
-            columns=["date", "TB0YWI0C"],
-            date_coverage={"field": "date", "start": "2026-06-01", "end": "2026-06-03"},
-            quality_flags={"missing_required_columns": []},
+            target_tenor="10Y",
+            horizon=1,
+            predict_date="2026-06-08",
+            target_date="2026-06-09",
+            predicted_direction=1,
+            feature_date="2026-06-07",
+            extra={
+                "input_artifact_path": "",
+                "input_artifact_source": "shared_data_service_daily",
+                "feature_date": "2026-06-07",
+            },
         )
         with tempfile.TemporaryDirectory() as tmpdir:
             project_root = Path(tmpdir)
             _write_minimal_scheme(project_root, scheme_id="demo_daily")
+            artifact_path = project_root / "daily_output.csv"
+            artifact_path.write_text(
+                "date,TB0YWI0C\n2026-06-07,1.8\n",
+                encoding="utf-8",
+            )
+            record.extra["input_artifact_path"] = str(artifact_path)
+            audit_receipt = _daily_audit_receipt(
+                artifact_path,
+                feature_date="2026-06-07",
+            )
             engine = SimpleNamespace(dispose=lambda: None)
-            with patch(
-                "harness.gates.input_gate.get_calendar",
-                return_value=_fake_calendar(),
-            ) as calendar_factory:
-                with patch("harness.gates.input_gate.build_daily_input_artifact", return_value=artifact) as build:
-                    result = InputGate().run(
-                        GateContext(
-                            scheme_id="demo_daily",
-                            predict_date="2026-06-03",
-                            project_root=project_root,
-                            report_dir=project_root / "reports",
-                            engine_factory=lambda: engine,
-                        )
+            with (
+                patch(
+                    "harness.gates.dry_run_gate.run_scheme_subprocess",
+                    return_value=[record],
+                ) as run_scheme,
+                patch(
+                    "harness.gates.dry_run_gate.input_artifact_path",
+                    return_value=artifact_path,
+                ),
+                patch(
+                    "harness.gates.dry_run_gate.get_calendar",
+                    return_value=_fake_daily_semantics_calendar(),
+                ),
+                patch(
+                    "harness.gates.dry_run_gate.snapshot_table_counts",
+                    side_effect=[
+                        {"t_scheme_predictions": 10, "t_scheme_run_log": 20},
+                        {"t_scheme_predictions": 10, "t_scheme_run_log": 20},
+                    ],
+                ),
+                patch(
+                    "harness.gates.dry_run_gate._load_input_audit_receipts",
+                    return_value={"daily": audit_receipt},
+                ),
+                patch(
+                    "harness.gates.dry_run_gate.DEFAULT_OUTPUT_ROOT",
+                    project_root,
+                ),
+            ):
+                result = DryRunGate().run(
+                    GateContext(
+                        scheme_id="demo_daily",
+                        predict_date="2026-06-08",
+                        project_root=project_root,
+                        engine_factory=lambda: engine,
+                    )
                 )
 
         self.assertTrue(result.passed, result.errors)
         evidence = _evidence_dict(result)
-        self.assertEqual(evidence["row_count"], 3)
-        self.assertEqual(evidence["date_coverage"], {"field": "date", "start": "2026-06-01", "end": "2026-06-03"})
-        self.assertEqual(evidence["missing_required_cols"], [])
-        self.assertEqual(evidence["auxiliary_input_artifacts"], [])
-        self.assertEqual(evidence["feature_date"], "2026-06-02")
-        calendar_factory.assert_called_once_with(engine)
-        self.assertEqual(build.call_args.kwargs["scheme_id"], "demo_daily")
-        self.assertEqual(build.call_args.kwargs["end_date"], "2026-06-02")
+        self.assertEqual(evidence["input_artifacts"][0]["frequency"], "daily")
+        self.assertEqual(evidence["input_artifacts"][0]["columns"], ["date", "TB0YWI0C"])
+        self.assertEqual(evidence["input_artifacts"][0]["missing_required_cols"], [])
+        self.assertEqual(evidence["input_artifacts"][0]["first_coverage_key"], "2026-06-07")
+        run_scheme.assert_called_once()
 
+    def test_dry_run_input_contract_rejects_missing_actual_columns(self) -> None:
+        from harness.gates.dry_run_gate import _validate_input_artifacts
+        from shared.models import PredictionRecord
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_path = Path(tmpdir) / "daily_output.csv"
+            artifact_path.write_text("date\n2026-06-07\n", encoding="utf-8")
+            record = PredictionRecord(
+                scheme_id="demo_daily",
+                target_tenor="10Y",
+                horizon=1,
+                predict_date="2026-06-08",
+                target_date="2026-06-09",
+                predicted_direction=1,
+                feature_date="2026-06-07",
+                extra={
+                    "input_artifact_path": str(artifact_path),
+                    "input_artifact_source": "shared_data_service_daily",
+                },
+            )
+            config = {
+                "frequency": "daily",
+                "input_spec": {
+                    "data_version": "shared_data_service_daily.v1",
+                    "required_columns": ["date", "TB0YWI0C"],
+                },
+            }
+            with patch(
+                "harness.gates.dry_run_gate.input_artifact_path",
+                return_value=artifact_path,
+            ):
+                errors, evidence = _validate_input_artifacts(
+                    [record],
+                    config,
+                    scheme_id="demo_daily",
+                    predict_date="2026-06-08",
+                    trusted_input_root=artifact_path.parent,
+                )
+
+        self.assertTrue(any("TB0YWI0C" in error for error in errors), errors)
+        self.assertEqual(evidence[0]["missing_required_cols"], ["TB0YWI0C"])
+
+    def test_dry_run_input_contract_requires_current_builder_receipt(self) -> None:
+        from harness.gates.dry_run_gate import _validate_input_artifacts
+        from shared.models import PredictionRecord
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_path = Path(tmpdir) / "daily_output.csv"
+            artifact_path.write_text(
+                "date,TB0YWI0C\n2026-06-07,1.8\n",
+                encoding="utf-8",
+            )
+            record = PredictionRecord(
+                scheme_id="demo_daily",
+                target_tenor="10Y",
+                horizon=1,
+                predict_date="2026-06-08",
+                target_date="2026-06-09",
+                predicted_direction=1,
+                feature_date="2026-06-07",
+                extra={
+                    "input_artifact_path": str(artifact_path),
+                    "input_artifact_source": "shared_data_service_daily",
+                },
+            )
+            config = {
+                "frequency": "daily",
+                "input_spec": {
+                    "data_version": "shared_data_service_daily.v1",
+                    "required_columns": ["date", "TB0YWI0C"],
+                },
+            }
+            with patch(
+                "harness.gates.dry_run_gate.input_artifact_path",
+                return_value=artifact_path,
+            ):
+                errors, _evidence = _validate_input_artifacts(
+                    [record],
+                    config,
+                    scheme_id="demo_daily",
+                    predict_date="2026-06-08",
+                    audit_receipts={},
+                    trusted_input_root=artifact_path.parent,
+                )
+
+        self.assertTrue(
+            any("not generated by the shared builder" in error for error in errors),
+            errors,
+        )
+
+    def test_dry_run_input_contract_rejects_symlink_artifact(self) -> None:
+        from harness.gates.dry_run_gate import _validate_input_artifacts
+        from shared.models import PredictionRecord
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "outside.csv"
+            target.write_text(
+                "date,TB0YWI0C\n2026-06-07,1.8\n",
+                encoding="utf-8",
+            )
+            artifact_path = root / "daily_output.csv"
+            artifact_path.symlink_to(target)
+            record = PredictionRecord(
+                scheme_id="demo_daily",
+                target_tenor="10Y",
+                horizon=1,
+                predict_date="2026-06-08",
+                target_date="2026-06-09",
+                predicted_direction=1,
+                feature_date="2026-06-07",
+                extra={
+                    "input_artifact_path": str(artifact_path),
+                    "input_artifact_source": "shared_data_service_daily",
+                },
+            )
+            config = {
+                "frequency": "daily",
+                "input_spec": {
+                    "data_version": "shared_data_service_daily.v1",
+                    "required_columns": ["date", "TB0YWI0C"],
+                },
+            }
+            with patch(
+                "harness.gates.dry_run_gate.input_artifact_path",
+                return_value=artifact_path,
+            ):
+                errors, _evidence = _validate_input_artifacts(
+                    [record],
+                    config,
+                    scheme_id="demo_daily",
+                    predict_date="2026-06-08",
+                    trusted_input_root=artifact_path.parent,
+                )
+
+        self.assertTrue(any("non-symlink" in error for error in errors), errors)
+
+    def test_dry_run_input_contract_rejects_symlink_ancestor(self) -> None:
+        from harness.gates.dry_run_gate import _controlled_input_file_details
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            trusted = root / "trusted"
+            outside = root / "outside"
+            trusted.mkdir()
+            outside.mkdir()
+            (trusted / "demo_daily").symlink_to(outside, target_is_directory=True)
+            artifact_path = trusted / "demo_daily" / "daily_output.csv"
+            artifact_path.write_text(
+                "date,TB0YWI0C\n2026-06-07,1.8\n",
+                encoding="utf-8",
+            )
+
+            details, error = _controlled_input_file_details(
+                artifact_path,
+                trusted_root=trusted,
+            )
+
+        self.assertIsNone(details)
+        self.assertIn("ancestor is unsafe", str(error))
+
+    def test_dry_run_input_contract_rejects_receipt_identity_and_future_cutoff(
+        self,
+    ) -> None:
+        from harness.gates.dry_run_gate import _validate_input_artifacts
+        from shared.models import PredictionRecord
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_path = Path(tmpdir) / "daily_output.csv"
+            artifact_path.write_text(
+                "date,TB0YWI0C\n2026-06-07,1.8\n",
+                encoding="utf-8",
+            )
+            receipt = _daily_audit_receipt(
+                artifact_path,
+                feature_date="2026-06-07",
+            )
+            receipt["data_version"] = "wrong.v1"
+            receipt["content_hash"] = "0" * 64
+            receipt["metadata"]["end_date"] = "2026-06-09"
+            receipt["date_coverage"]["end"] = "2026-06-09"
+            record = PredictionRecord(
+                scheme_id="demo_daily",
+                target_tenor="10Y",
+                horizon=1,
+                predict_date="2026-06-08",
+                target_date="2026-06-09",
+                predicted_direction=1,
+                feature_date="2026-06-07",
+                extra={
+                    "input_artifact_path": str(artifact_path),
+                    "input_artifact_source": "shared_data_service_daily",
+                },
+            )
+            config = {
+                "frequency": "daily",
+                "input_spec": {
+                    "data_version": "shared_data_service_daily.v1",
+                    "required_columns": ["date", "TB0YWI0C"],
+                },
+            }
+            with patch(
+                "harness.gates.dry_run_gate.input_artifact_path",
+                return_value=artifact_path,
+            ):
+                errors, _evidence = _validate_input_artifacts(
+                    [record],
+                    config,
+                    scheme_id="demo_daily",
+                    predict_date="2026-06-08",
+                    audit_receipts={"daily": receipt},
+                    trusted_input_root=artifact_path.parent,
+                )
+
+        self.assertTrue(any("data_version mismatch" in item for item in errors))
+        self.assertTrue(any("content_hash mismatch" in item for item in errors))
+        self.assertTrue(any("end_date mismatch" in item for item in errors))
+        self.assertTrue(any("exceeds feature_date" in item for item in errors))
+
+    def test_dry_run_input_contract_validates_auxiliary_artifacts(self) -> None:
+        from harness.gates.dry_run_gate import _validate_input_artifacts
+        from shared.models import PredictionRecord
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            paths = {
+                "daily": root / "daily.csv",
+                "weekly": root / "weekly.csv",
+                "monthly": root / "monthly.csv",
+            }
+            paths["daily"].write_text(
+                "date,TB0YWI0C\n2026-06-07,1.8\n",
+                encoding="utf-8",
+            )
+            paths["weekly"].write_text(
+                "week_id,S0114089\n202622,1.0\n",
+                encoding="utf-8",
+            )
+            paths["monthly"].write_text(
+                "month_id,M0000545\n202605,2.0\n",
+                encoding="utf-8",
+            )
+            record = PredictionRecord(
+                scheme_id="demo_daily",
+                target_tenor="10Y",
+                horizon=1,
+                predict_date="2026-06-08",
+                target_date="2026-06-09",
+                predicted_direction=1,
+                feature_date="2026-06-07",
+                extra={
+                    "input_artifact_path": str(paths["daily"]),
+                    "input_artifact_source": "shared_data_service_daily",
+                    "weekly_input_artifact_path": str(paths["weekly"]),
+                    "weekly_input_artifact_source": "shared_data_service_weekly",
+                    "monthly_input_artifact_path": str(paths["monthly"]),
+                    "monthly_input_artifact_source": "shared_data_service_monthly",
+                },
+            )
+            config = {
+                "frequency": "daily",
+                "input_spec": {
+                    "data_version": "shared_data_service_daily.v1",
+                    "required_columns": ["date", "TB0YWI0C"],
+                    "auxiliary_inputs": [
+                        {
+                            "frequency": "weekly",
+                            "data_version": "shared_data_service_weekly.v1",
+                            "required_columns": ["week_id", "S0114089"],
+                        },
+                        {
+                            "frequency": "monthly",
+                            "data_version": "shared_data_service_monthly.v1",
+                            "required_columns": ["month_id", "M0000545"],
+                        },
+                    ],
+                },
+            }
+            with patch(
+                "harness.gates.dry_run_gate.input_artifact_path",
+                side_effect=lambda **kwargs: paths[kwargs["frequency"]],
+            ):
+                errors, evidence = _validate_input_artifacts(
+                    [record],
+                    config,
+                    scheme_id="demo_daily",
+                    predict_date="2026-06-08",
+                    trusted_input_root=root,
+                )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            [item["frequency"] for item in evidence],
+            ["daily", "weekly", "monthly"],
+        )
 
     def test_dry_run_gate_fails_when_common_extra_key_missing(self) -> None:
         from harness.context import GateContext
@@ -213,7 +568,6 @@ class HarnessRuntimeGateTests(unittest.TestCase):
                                 scheme_id="demo_daily",
                                 predict_date="2026-06-08",
                                 project_root=project_root,
-                                report_dir=project_root / "reports",
                             )
                         )
 
@@ -262,7 +616,6 @@ class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
                             scheme_id="demo_daily",
                             predict_date="2026-06-08",
                             project_root=project_root,
-                            report_dir=project_root / "reports" / "harness" / "demo_daily",
                             engine_factory=lambda: engine,
                         )
                     )
@@ -302,7 +655,6 @@ class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
                 scheme_id="demo_daily",
                 predict_date="2026-06-08",
                 project_root=project_root,
-                report_dir=project_root / "reports" / "harness" / "demo_daily",
             )
             with (
                 patch(
@@ -310,11 +662,7 @@ class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
                     return_value=True,
                 ),
                 patch(
-                    "harness.orchestrator.persist_harness_gate_result",
-                    return_value=True,
-                ),
-                patch(
-                    "harness.orchestrator.persist_harness_run_finish",
+                    "harness.orchestrator.persist_harness_run_complete",
                     return_value=True,
                 ),
             ):
@@ -340,18 +688,40 @@ def _evidence_dict(result) -> dict:
     return {item.key: item.value for item in result.evidence}
 
 
-def _fake_calendar() -> SimpleNamespace:
-    return SimpleNamespace(
-        previous_trading_day=lambda _predict_date: "2026-06-02",
-        week_id_for_date=lambda _feature_date: 202622,
-    )
-
-
 def _fake_daily_semantics_calendar() -> SimpleNamespace:
     return SimpleNamespace(
         previous_trading_day=lambda _predict_date: "2026-06-07",
         nth_trading_day_after=lambda _feature_date, _horizon: "2026-06-09",
     )
+
+
+def _daily_audit_receipt(
+    artifact_path: Path,
+    *,
+    feature_date: str,
+) -> dict:
+    details = artifact_path.stat()
+    return {
+        "scheme_id": "demo_daily",
+        "frequency": "daily",
+        "path": str(artifact_path),
+        "source": "shared_data_service_daily",
+        "data_version": "shared_data_service_daily.v1",
+        "file_size": details.st_size,
+        "modified_ns": details.st_mtime_ns,
+        "content_hash": hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
+        "row_count": 1,
+        "columns": ["date", "TB0YWI0C"],
+        "date_coverage": {
+            "field": "date",
+            "start": feature_date,
+            "end": feature_date,
+        },
+        "metadata": {
+            "predict_date": "2026-06-08",
+            "end_date": feature_date,
+        },
+    }
 
 
 def _write_minimal_scheme(project_root: Path, *, scheme_id: str, extra_config_lines: list[str] | None = None) -> Path:

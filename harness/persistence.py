@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -37,15 +38,10 @@ def persist_harness_run_start(
             """
             INSERT INTO t_harness_runs
                 (harness_run_id, scheme_id, scheme_version, stage, status, started_at,
-                 git_commit, report_uri)
+                 git_commit)
             VALUES
                 (:harness_run_id, :scheme_id, :scheme_version, :stage, 'running', :started_at,
-                 :git_commit, :report_uri)
-            ON DUPLICATE KEY UPDATE
-                stage = VALUES(stage),
-                status = VALUES(status),
-                started_at = VALUES(started_at),
-                report_uri = VALUES(report_uri)
+                 :git_commit)
             """
         )
         with engine.begin() as conn:
@@ -58,18 +54,24 @@ def persist_harness_run_start(
                     "stage": stage,
                     "started_at": _mysql_datetime(started_at),
                     "git_commit": _release_commit(),
-                    "report_uri": str(ctx.report_dir),
                 },
             )
 
     return _with_engine(ctx, operation)
 
 
-def persist_harness_gate_result(ctx: GateContext, harness_run_id: str, result: GateResult) -> bool:
-    """记录单个 gate 结果；DB 不可用时返回 False，由编排层阻断。"""
+def persist_harness_run_complete(
+    ctx: GateContext,
+    *,
+    harness_run_id: str,
+    status: str,
+    finished_at: str,
+    results: list[GateResult],
+) -> bool:
+    """在一个事务中批量保存 Gate 结果并完成 Harness run。"""
 
     def operation(engine) -> None:
-        sql = text(
+        gate_sql = text(
             """
             INSERT INTO t_harness_gate_results
                 (harness_run_id, gate_name, status, started_at, finished_at, summary_json)
@@ -79,19 +81,52 @@ def persist_harness_gate_result(ctx: GateContext, harness_run_id: str, result: G
             """
         )
         with engine.begin() as conn:
-            conn.execute(
-                sql,
+            if results:
+                conn.execute(
+                    gate_sql,
+                    [
+                        {
+                            "harness_run_id": harness_run_id,
+                            "gate_name": result.gate_name,
+                            "status": result.status.value,
+                            "started_at": _mysql_datetime(result.started_at),
+                            "finished_at": _mysql_datetime(result.finished_at),
+                            "summary_json": json.dumps(
+                                _result_summary(result),
+                                ensure_ascii=False,
+                            ),
+                        }
+                        for result in results
+                    ],
+                )
+            update = conn.execute(
+                text(
+                    """
+                    UPDATE t_harness_runs
+                    SET status = :status,
+                        finished_at = :finished_at
+                    WHERE harness_run_id = :harness_run_id
+                    """
+                ),
                 {
                     "harness_run_id": harness_run_id,
-                    "gate_name": result.gate_name,
-                    "status": result.status.value,
-                    "started_at": _mysql_datetime(result.started_at),
-                    "finished_at": _mysql_datetime(result.finished_at),
-                    "summary_json": json.dumps(_result_summary(result), ensure_ascii=False),
+                    "status": status,
+                    "finished_at": _mysql_datetime(finished_at),
                 },
             )
+            if update.rowcount != 1:
+                raise RuntimeError(
+                    "harness run completion must update exactly one row"
+                )
 
-    return _with_engine(ctx, operation)
+    if _with_engine(ctx, operation):
+        return True
+    return _read_back_completed_run(
+        ctx,
+        harness_run_id=harness_run_id,
+        status=status,
+        results=results,
+    )
 
 
 def persist_harness_run_finish(
@@ -127,6 +162,74 @@ def persist_harness_run_finish(
                 )
 
     return _with_engine(ctx, operation)
+
+
+def _read_back_completed_run(
+    ctx: GateContext,
+    *,
+    harness_run_id: str,
+    status: str,
+    results: list[GateResult],
+) -> bool:
+    """commit ACK 不确定时用新连接核对精确最终状态。"""
+    expected = {
+        result.gate_name: {
+            "status": result.status.value,
+            "summary": _result_summary(result),
+        }
+        for result in results
+    }
+    if len(expected) != len(results):
+        return False
+
+    for _attempt in range(3):
+        state: dict[str, object] = {}
+
+        def operation(engine) -> None:
+            with engine.begin() as conn:
+                run_row = conn.execute(
+                    text(
+                        "SELECT status FROM t_harness_runs "
+                        "WHERE harness_run_id = :harness_run_id"
+                    ),
+                    {"harness_run_id": harness_run_id},
+                ).mappings().one_or_none()
+                gate_rows = conn.execute(
+                    text(
+                        "SELECT gate_name, status, summary_json "
+                        "FROM t_harness_gate_results "
+                        "WHERE harness_run_id = :harness_run_id"
+                    ),
+                    {"harness_run_id": harness_run_id},
+                ).mappings().all()
+            state["run_row"] = run_row
+            state["gate_rows"] = gate_rows
+
+        if not _with_engine(ctx, operation):
+            continue
+        run_row = state.get("run_row")
+        gate_rows = state.get("gate_rows")
+        if not isinstance(run_row, Mapping) or not isinstance(gate_rows, list):
+            continue
+        if str(run_row.get("status") or "") != status:
+            continue
+        actual: dict[str, dict[str, object]] = {}
+        duplicate = False
+        for row in gate_rows:
+            if not isinstance(row, Mapping):
+                duplicate = True
+                break
+            gate_name = str(row.get("gate_name") or "")
+            if not gate_name or gate_name in actual:
+                duplicate = True
+                break
+            actual[gate_name] = {
+                "status": str(row.get("status") or ""),
+                "summary": _decoded_json(row.get("summary_json")),
+            }
+        if not duplicate and actual == expected:
+            return True
+    return False
 
 
 def _release_commit() -> str | None:
@@ -185,10 +288,21 @@ def _jsonable(value):
         return str(value)
     if isinstance(value, GateStatus):
         return value.value
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [_jsonable(item) for item in value]
     if isinstance(value, dict):
         return {key: _jsonable(item) for key, item in value.items()}
+    return value
+
+
+def _decoded_json(value: object) -> object:
+    if isinstance(value, bytes):
+        value = value.decode("utf-8")
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
     return value
 
 

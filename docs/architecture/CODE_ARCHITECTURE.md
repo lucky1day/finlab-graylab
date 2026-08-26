@@ -174,9 +174,9 @@ Native SOP 的 Gate 与授权边界，不再存在需要维护的 frozen daily-g
 python -m harness onboard {scheme_id} --stage all
   └─ harness.orchestrator.onboard(ctx, stage)            ← fail-fast + fail-closed
        ├─ StaticGate   → runtime-aware contracts（原生 AST / 黑盒两文件与 Metadata）
-       ├─ InputGate    → shared.input_artifacts.build_*  (只读生成 artifact)
-       ├─ BlackboxUnitGate → 交付 help / 非法 Request / 失败无 Output（仅 Blackbox）
-       ├─ DryRunGate   → scheduler.executor.run_scheme_subprocess + probes.table_guard(仅 Native)
+       ├─ BlackboxInputGate → shared.input_artifacts generation-level snapshot（仅 Blackbox）
+       ├─ BlackboxCompareGate → 平台输入校验 / 一次有效冒烟 predict
+       ├─ DryRunGate   → Native 真实执行 + Harness-only builder receipt + 实际主/辅助输入合同 + table guard
        ├─ CompareGate  → schemes/{id}/benchmarks original/current strict compare
        └─ BacktestGate → backtests/{id}_reproduction(--no-persist)
   Blackbox 首轮授权卡点：ShadowRegisterGate → version=shadow + registry=paused，不写业务表
@@ -189,14 +189,14 @@ python -m harness onboard {scheme_id} --stage all
 composite、信号与回测分区可见，但 dashboard payload 不携带 exact version，因此版本身份仍由
 生命周期和数据库权威回读证明。
 
-上图的 `all` 按 `runtime_type` 分派（Blackbox 四段、Native 五段），是所有首次技术入库的
+上图的 `all` 按 `runtime_type` 分派（Blackbox 三段、Native 四段），是所有首次技术入库的
 固定路径；Native 的 source benchmark/CompareGate 只在这里作为保真硬证据。Blackbox Compare
-只做平台输入校验与一次冒烟 predict——确定性与截止隔离属上游义务，平台不重验。已入库 Native
+只做平台输入校验与一次有效冒烟 predict——失败行为、确定性与截止隔离属上游义务，平台不重验。已入库 Native
 修订仅在不同 prior Native version 的 passed `all + compare` 所属 StaticGate 已持久化
 `static.business_identity`，且该快照与当前身份精确匹配时，才可走：
 
 ```text
-static -> native-maintenance-admission -> input -> dry-run
+static -> native-maintenance-admission -> dry-run
 ```
 
 快照只保存 `scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors
@@ -205,10 +205,10 @@ static -> native-maintenance-admission -> input -> dry-run
 Registry identity 可在预激活时统一为 `paused`，或在激活后统一为 `active`，但 draft version 配 active
 Registry 必须 fail-closed。只有 ActivationGate 可在严格 discovery、精确版本与标准 Gate 核验后原子
 建立 active 状态。缺少、重复、损坏或不匹配的 prior snapshot 一律 fail-closed，不再保留方案级历史
-receipt。该四段路径不运行当前 historical `compare/backtest`、不写业务表，且不适用于 Blackbox；其后
-activation 仍要核验当前精确 version 与四个 Gate。反之，current exact version 的
+receipt。该三段路径不运行当前 historical `compare/backtest`、不写业务表，且不适用于 Blackbox；其后
+activation 仍要核验当前精确 version 与三个 Gate。反之，current exact version 的
 完整 `all` 通过时，ActivationGate 走互斥的 `full_initial_onboarding_v1`，不要求此 prior snapshot
-或四段路径。
+或三段路径。
 
 详见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)。
 
@@ -284,7 +284,7 @@ schemes/{id}/                     schemes/{id}/
 | **DB 引擎生命周期** | 各 adapter/backtest 各自 `create_sqlalchemy_engine()` 再 `engine.dispose()` | adapter 经 `calendar_service`/`input_artifacts` 间接使用统一引擎工厂，不得裸取连接 |
 | **配置** | `shared/db_config.py` 读环境变量；`config.yaml` 方案级 | Native 契约与 Blackbox Runtime Profile 分开维护，共享身份由 `SCHEME_CONTRACT.md` 约束 |
 | **执行预算** | Native 使用 `config.yaml.schedule.timeout_sec`；Blackbox predict 取方案申请、Runtime Profile 上限和显式 operation deadline 的最小值，backtest 使用独立 Profile 预算 | operation deadline 只能缩短 Blackbox 方案/Profile 预算；所有预算仅控制子进程等待，不进入 L2 core 语义 |
-| **产物路径** | `shared/artifact_paths.py` 统一 `RUNTIME_INPUT_ROOT`；运行期 `backtest_artifacts/runtime_inputs/{scheme_id}/`，回测 `backtest_artifacts/backtests/{benchmark_id}/` | 维持；harness 报告 `reports/harness/{scheme_id}/{ts}/` |
+| **产物路径** | `shared/artifact_paths.py` 统一 `RUNTIME_INPUT_ROOT`；运行期 `backtest_artifacts/runtime_inputs/{scheme_id}/`，回测 `backtest_artifacts/backtests/{benchmark_id}/` | 维持；Harness 只写控制面数据库摘要，不再创建方案级报告目录 |
 | **进程/依赖隔离** | Native `forecast_env`、Blackbox Runtime Profile、服务 `bond_factor_lab_service`；子进程 + JSON | Runtime Profile 是 Blackbox 环境、资源和权限的唯一配置源 |
 | **错误处理** | executor 捕获子进程失败写 `run_log(status=failed)` | harness Gate 失败安全（异常→`GateResult(FAILED)`），不抛穿 |
 | **命名标识符** | `scheme_id`(方案) / `benchmark_id`(基准批次) / `data_source`(口径) 三者分离 | 维持；StaticGate 校验命名规范子集 |

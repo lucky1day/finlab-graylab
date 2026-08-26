@@ -166,7 +166,6 @@ def _context(root: Path, engine) -> GateContext:
         scheme_id=_SCHEME_ID,
         predict_date="2026-08-04",
         project_root=root,
-        report_dir=root / "reports",
         config=SimpleNamespace(
             scheme_id=_SCHEME_ID,
             scheme_version=_CURRENT_VERSION,

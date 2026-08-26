@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -15,7 +15,6 @@ class GateContext:
     scheme_id: str
     predict_date: str
     project_root: Path
-    report_dir: Path
     config: "SchemeConfig | None" = None
     algo_env: str = "forecast_env"
     engine_factory: Callable[[], Any] | None = None
@@ -24,3 +23,8 @@ class GateContext:
     backtest_start_date: str = DEFAULT_BACKTEST_START_DATE
     timeout_sec: int = 600
     api_base_url: str = "http://127.0.0.1:8100"
+    runtime_state: dict[str, Any] = field(
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -26,20 +28,25 @@ from shared.blackbox_v2.snapshot import (
     CutoffKeys,
     compose_blackbox_input_bundle,
     create_snapshot_from_frames,
+    normalize_daily_key,
     normalize_period_key,
-    resolve_cutoffs,
 )
 from shared.data_bridge.authority import (
     _normalize_blackbox_gray_replay_source_identity,
 )
 from shared.data_bridge.refresh import (
     DataBridgeRefreshConfig,
+    DataBridgeStore,
     check_current_dataset,
 )
 from shared.runtime_paths import resolve_runtime_state_path
 
 DEFAULT_OUTPUT_ROOT = RUNTIME_INPUT_ROOT
 BLACKBOX_SNAPSHOT_ROOT = BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "snapshots"
+BLACKBOX_GENERATION_SNAPSHOT_ROOT = (
+    BLACKBOX_SNAPSHOT_ROOT / "generation_cache"
+)
+BLACKBOX_GENERATION_SNAPSHOT_CACHE_VERSION = "blackbox-generation-snapshot-v1"
 BLACKBOX_RUNTIME_SNAPSHOT_ROOT = BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "runtime_snapshots"
 BLACKBOX_RUNTIME_VIEW_ROOT = BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "runtime_views"
 BLACKBOX_GRAY_REPLAY_SESSION_ROOT = (
@@ -67,6 +74,7 @@ _FREQUENCY_FILE_PREFIXES = {
     "monthly": "monthly_output",
 }
 EPHEMERAL_NATIVE_INPUT_ROOT_ENV = "BOND_NATIVE_EPHEMERAL_INPUT_ROOT"
+NATIVE_INPUT_AUDIT_ROOT_ENV = "BFL_NATIVE_INPUT_AUDIT_ROOT"
 _BLACKBOX_RUNTIME_VIEW_PREFIX = "blackbox-runtime-"
 _BLACKBOX_DEBRIS_MARKER_SCHEMA = "blackbox-runtime-debris-v1"
 
@@ -136,6 +144,7 @@ class _StableSnapshotFile:
     path: Path
     fingerprint: tuple[int, int, int, int, int, int]
     sha256: str
+    content_bytes: bytes
 
 
 @contextmanager
@@ -227,42 +236,65 @@ def _materialize_blackbox_runtime_view(view: BlackboxRuntimeView) -> None:
     bundle = view.bundle
     destination = view.data_dir
     base_files, source_states = _validate_blackbox_snapshot(
-        bundle.base_snapshot
+        bundle.base_snapshot,
+        validate_csv_profiles=False,
+    )
+    _validate_cached_snapshot_cutoffs(
+        bundle.base_snapshot,
+        source_states,
     )
 
     for filename in SNAPSHOT_FILENAMES:
         source = bundle.base_snapshot.data_dir / filename
         target = destination / filename
         expected_sha256 = base_files[filename].get("sha256")
-        shutil.copyfile(source, target, follow_symlinks=False)
-        _require_regular_file(target, f"runtime view {filename}")
-        target_stat = target.stat()
+        source_state = source_states[filename]
+        _write_private_runtime_file(
+            target,
+            source_state.content_bytes,
+            expected_sha256=expected_sha256,
+            content_sha256=source_state.sha256,
+            label=f"runtime view {filename}",
+        )
+        target_stat = target.lstat()
         if target_stat.st_nlink != 1:
             raise ValueError(f"runtime view {filename} must not be a hardlink")
         if (
-            source_states[filename].fingerprint[0] == target_stat.st_dev
-            and source_states[filename].fingerprint[1] == target_stat.st_ino
+            source_state.fingerprint[0] == target_stat.st_dev
+            and source_state.fingerprint[1] == target_stat.st_ino
         ):
             raise ValueError(f"runtime view {filename} must be an independent file")
-        _verify_file_sha256(target, expected_sha256, filename)
-        after_state, _ = _read_stable_regular_file(
-            source,
-            f"parent snapshot {filename}",
-        )
-        if after_state != source_states[filename]:
+        try:
+            source_after = source.lstat()
+        except OSError as exc:
+            raise ValueError(
+                f"parent snapshot {filename} changed during materialization"
+            ) from exc
+        if (
+            stat.S_ISLNK(source_after.st_mode)
+            or not stat.S_ISREG(source_after.st_mode)
+            or _stat_fingerprint(source_after)
+            != source_state.fingerprint
+        ):
             raise ValueError(
                 f"parent snapshot {filename} changed during materialization"
             )
 
     for artifact in bundle.platform_input_artifacts:
         target = destination / artifact.filename
-        target.write_bytes(artifact.content_bytes)
-        _require_regular_file(target, f"runtime view {artifact.filename}")
-        if target.stat().st_nlink != 1:
+        _write_private_runtime_file(
+            target,
+            artifact.content_bytes,
+            expected_sha256=artifact.sha256,
+            content_sha256=hashlib.sha256(
+                artifact.content_bytes
+            ).hexdigest(),
+            label=f"runtime view {artifact.filename}",
+        )
+        if target.lstat().st_nlink != 1:
             raise ValueError(
                 f"runtime view {artifact.filename} must not be a hardlink"
             )
-        _verify_file_sha256(target, artifact.sha256, artifact.filename)
 
     actual_filenames = tuple(
         sorted(path.name for path in destination.iterdir())
@@ -307,7 +339,14 @@ def _validate_trusted_blackbox_input_bundle(
 
 def _validate_blackbox_snapshot(
     snapshot: BlackboxSnapshot,
+    *,
+    validate_csv_profiles: bool = True,
+    validate_file_contents: bool = True,
 ) -> tuple[dict[str, Any], dict[str, _StableSnapshotFile]]:
+    if validate_csv_profiles and not validate_file_contents:
+        raise ValueError(
+            "CSV profile validation requires snapshot content validation"
+        )
     root = snapshot.root_dir
     if (
         snapshot.data_dir != root / "data"
@@ -409,23 +448,33 @@ def _validate_blackbox_snapshot(
             ):
                 raise ValueError(f"{filename} manifest size_bytes is invalid")
 
-        state, raw = _read_stable_regular_file(
-            snapshot.data_dir / filename,
-            f"parent snapshot {filename}",
-        )
-        if state.sha256 != sha256:
-            raise ValueError(f"{filename} sha256 does not match manifest")
-        if (
-            identity_kind == "databridge"
-            and len(raw) != entry["size_bytes"]
-        ):
-            raise ValueError(f"{filename} size does not match manifest")
-        actual_columns, actual_rows = _csv_profile(raw, filename)
-        if actual_columns != columns:
-            raise ValueError(f"{filename} columns do not match manifest")
-        if actual_rows != row_count:
-            raise ValueError(f"{filename} row_count does not match manifest")
-        source_states[filename] = state
+        path = snapshot.data_dir / filename
+        if validate_file_contents:
+            state, raw = _read_stable_regular_file(
+                path,
+                f"parent snapshot {filename}",
+            )
+            if state.sha256 != sha256:
+                raise ValueError(f"{filename} sha256 does not match manifest")
+            if (
+                identity_kind == "databridge"
+                and len(raw) != entry["size_bytes"]
+            ):
+                raise ValueError(f"{filename} size does not match manifest")
+            if validate_csv_profiles:
+                actual_columns, actual_rows = _csv_profile(raw, filename)
+                if actual_columns != columns:
+                    raise ValueError(f"{filename} columns do not match manifest")
+                if actual_rows != row_count:
+                    raise ValueError(f"{filename} row_count does not match manifest")
+            source_states[filename] = state
+        else:
+            _require_regular_file(path, f"parent snapshot {filename}")
+            if (
+                identity_kind == "databridge"
+                and path.lstat().st_size != entry["size_bytes"]
+            ):
+                raise ValueError(f"{filename} size does not match manifest")
 
     identity = {
         "schema_version": schema_version,
@@ -488,6 +537,7 @@ def _read_stable_regular_file(
             path=path,
             fingerprint=fingerprint,
             sha256=hashlib.sha256(raw).hexdigest(),
+            content_bytes=raw,
         ),
         raw,
     )
@@ -538,19 +588,50 @@ def _require_regular_file(path: Path, label: str) -> None:
         raise ValueError(f"{label} must be a regular non-symlink file")
 
 
-def _verify_file_sha256(
+def _write_private_runtime_file(
     path: Path,
+    content: bytes,
+    *,
     expected_sha256: object,
-    filename: str,
+    content_sha256: object,
+    label: str,
 ) -> None:
+    """写入一次私有运行文件，不为写后摘要再次读取目标文件。"""
+    if not _is_sha256(expected_sha256):
+        raise ValueError(f"{label} expected sha256 is invalid")
+    if not _is_sha256(content_sha256) or content_sha256 != expected_sha256:
+        raise ValueError(f"{label} sha256 does not match manifest")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError as exc:
+        raise ValueError(f"{label} could not be created safely") from exc
+    try:
+        with os.fdopen(descriptor, "wb", closefd=False) as stream:
+            stream.write(content)
+            stream.flush()
+        state = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
     if (
-        not isinstance(expected_sha256, str)
-        or len(expected_sha256) != 64
+        not stat.S_ISREG(state.st_mode)
+        or state.st_nlink != 1
+        or state.st_size != len(content)
     ):
-        raise ValueError(f"{filename} manifest sha256 is invalid")
-    actual_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
-    if actual_sha256 != expected_sha256:
-        raise ValueError(f"{filename} sha256 does not match manifest")
+        raise ValueError(f"{label} write did not produce one complete regular file")
+    path_state = path.lstat()
+    if (
+        stat.S_ISLNK(path_state.st_mode)
+        or not stat.S_ISREG(path_state.st_mode)
+        or path_state.st_dev != state.st_dev
+        or path_state.st_ino != state.st_ino
+        or path_state.st_size != state.st_size
+    ):
+        raise ValueError(f"{label} changed while being written")
 
 
 def _finalize_blackbox_runtime_view(
@@ -702,6 +783,399 @@ def build_blackbox_input_snapshot(
         generation_id=generation_id,
         refresh_date=refresh_date,
     )
+
+
+def get_blackbox_generation_snapshot(
+    *,
+    snapshot_date: str,
+    schema_path: str | Path = BLACKBOX_SCHEMA_PATH,
+    data_root: str | Path = DATA_BRIDGE_ROOT,
+    refresh_runtime_root: str | Path = DATA_BRIDGE_REFRESH_RUNTIME_ROOT,
+    cache_root: str | Path = BLACKBOX_GENERATION_SNAPSHOT_ROOT,
+    require_fresh: bool = False,
+) -> BlackboxSnapshot:
+    """每个 DataBridge generation 只构建一次父快照。"""
+    root = Path(cache_root)
+    root.mkdir(parents=True, exist_ok=True)
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("Blackbox generation snapshot cache must be a real directory")
+    with _generation_snapshot_cache_lock(root):
+        config = DataBridgeRefreshConfig(
+            data_root=Path(data_root),
+            runtime_root=Path(refresh_runtime_root),
+            schema_path=Path(schema_path),
+        )
+        store = DataBridgeStore(
+            data_root=config.data_root,
+            runtime_root=config.runtime_root,
+        )
+        with store.current_read(strict_read_only=True) as state:
+            current_identity = _generation_snapshot_identity(
+                state,
+                schema_path=Path(schema_path),
+            )
+        cached = _read_generation_snapshot_cache(root, current_identity)
+        if cached is not None:
+            if require_fresh and cached.refresh_date != snapshot_date:
+                raise ValueError(
+                    "DataBridge refresh_date must match snapshot_date: "
+                    f"{cached.refresh_date} != {snapshot_date}"
+                )
+            return cached
+
+        current = check_current_dataset(
+            config,
+            required_refresh_date=snapshot_date if require_fresh else None,
+            strict_read_only=True,
+        )
+        current_identity = _generation_snapshot_identity(
+            current.state,
+            schema_path=Path(schema_path),
+        )
+        cached = _read_generation_snapshot_cache(root, current_identity)
+        if cached is not None:
+            return cached
+        _require_blackbox_databridge_monthly_additions(current.dataset.frames)
+        schema_version, expected_columns = _load_blackbox_schema(schema_path)
+        snapshot = create_snapshot_from_frames(
+            current.dataset.frames,
+            output_root=root / "snapshots",
+            expected_columns=expected_columns,
+            schema_version=schema_version,
+        )
+        snapshot = replace(
+            snapshot,
+            generation_id=str(current_identity["generation_id"]),
+            refresh_date=str(current_identity["refresh_date"]),
+            business_digest=str(current_identity["business_digest"]),
+        )
+        _write_generation_snapshot_cache(root, current_identity, snapshot)
+        return snapshot
+
+
+def _generation_snapshot_identity(
+    state: Mapping[str, Any],
+    *,
+    schema_path: Path,
+) -> dict[str, Any]:
+    required = (
+        "generation_id",
+        "refresh_date",
+        "business_digest",
+        "schema_version",
+    )
+    identity: dict[str, Any] = {
+        "cache_schema_version": BLACKBOX_GENERATION_SNAPSHOT_CACHE_VERSION,
+        "schema_contract_sha256": hashlib.sha256(
+            schema_path.read_bytes()
+        ).hexdigest(),
+    }
+    for field in required:
+        value = state.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f"DataBridge generation snapshot identity missing {field}"
+            )
+        identity[field] = value
+    raw_files = state.get("files")
+    if not isinstance(raw_files, Mapping) or set(raw_files) != set(
+        SNAPSHOT_FILENAMES
+    ):
+        raise ValueError("DataBridge generation snapshot file identity is invalid")
+    files: dict[str, Any] = {}
+    for filename in SNAPSHOT_FILENAMES:
+        raw = raw_files.get(filename)
+        if not isinstance(raw, Mapping):
+            raise ValueError(
+                f"DataBridge generation snapshot identity missing {filename}"
+            )
+        sha256 = raw.get("sha256")
+        if not isinstance(sha256, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", sha256
+        ):
+            raise ValueError(
+                f"DataBridge generation snapshot identity has invalid {filename} hash"
+            )
+        files[filename] = json.loads(
+            json.dumps(dict(raw), ensure_ascii=True, sort_keys=True)
+        )
+    identity["files"] = files
+    return identity
+
+
+def _generation_snapshot_cache_key(identity: Mapping[str, Any]) -> str:
+    payload = json.dumps(
+        dict(identity),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+@contextmanager
+def _generation_snapshot_cache_lock(root: Path):
+    lock_path = root / "generation-cache.lock"
+    descriptor = os.open(
+        lock_path,
+        os.O_RDWR
+        | os.O_CREAT
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError(
+                "Blackbox generation snapshot lock must be a private regular file"
+            )
+        if info.st_uid != os.getuid():
+            raise ValueError(
+                "Blackbox generation snapshot lock must be owned by the current user"
+            )
+        os.fchmod(descriptor, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def _read_generation_snapshot_cache(
+    root: Path,
+    identity: Mapping[str, Any],
+) -> BlackboxSnapshot | None:
+    receipt_path = root / "receipts" / (
+        _generation_snapshot_cache_key(identity) + ".json"
+    )
+    if not receipt_path.exists():
+        return None
+    try:
+        _, receipt_raw = _read_stable_regular_file(
+            receipt_path,
+            "Blackbox generation snapshot receipt",
+        )
+        receipt = json.loads(receipt_raw.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Blackbox generation snapshot receipt is invalid") from exc
+    if (
+        not isinstance(receipt, dict)
+        or set(receipt) != {"identity", "snapshot_id", "cutoff_keys"}
+        or receipt.get("identity") != dict(identity)
+        or not isinstance(receipt.get("snapshot_id"), str)
+        or re.fullmatch(
+            r"snapshot-[0-9a-f]{24}",
+            receipt["snapshot_id"],
+        )
+        is None
+    ):
+        raise ValueError("Blackbox generation snapshot receipt identity mismatch")
+    snapshots_root = (root / "snapshots").resolve(strict=True)
+    snapshot_root = snapshots_root / receipt["snapshot_id"]
+    if snapshot_root.parent.resolve(strict=True) != snapshots_root:
+        raise ValueError("Blackbox generation snapshot path is outside cache")
+    cached_cutoff_fields = _cached_snapshot_cutoff_fields(
+        receipt.get("cutoff_keys")
+    )
+    snapshot = BlackboxSnapshot(
+        snapshot_id=receipt["snapshot_id"],
+        root_dir=snapshot_root,
+        data_dir=snapshot_root / "data",
+        manifest_path=snapshot_root / "manifest.json",
+        schema_version=str(identity["schema_version"]),
+        generation_id=str(identity["generation_id"]),
+        refresh_date=str(identity["refresh_date"]),
+        business_digest=str(identity["business_digest"]),
+    )
+    snapshot_files, source_states = _validate_blackbox_snapshot(
+        snapshot,
+        validate_csv_profiles=False,
+        validate_file_contents=False,
+    )
+    if source_states:
+        raise ValueError(
+            "Blackbox generation snapshot metadata validation read file contents"
+        )
+    identity_files = identity["files"]
+    profile_mismatches = [
+        filename
+        for filename in SNAPSHOT_FILENAMES
+        if not isinstance(identity_files.get(filename), Mapping)
+        or identity_files[filename].get("sha256")
+        != snapshot_files[filename].get("sha256")
+        or identity_files[filename].get("rows")
+        != snapshot_files[filename].get("row_count")
+        or identity_files[filename].get("columns")
+        != snapshot_files[filename].get("columns")
+    ]
+    if profile_mismatches:
+        raise ValueError(
+            "Blackbox generation snapshot does not match DataBridge identity: "
+            f"{profile_mismatches}"
+        )
+    return replace(snapshot, **cached_cutoff_fields)
+
+
+def _write_generation_snapshot_cache(
+    root: Path,
+    identity: Mapping[str, Any],
+    snapshot: BlackboxSnapshot,
+) -> None:
+    receipts = root / "receipts"
+    receipts.mkdir(exist_ok=True)
+    receipt_path = receipts / (
+        _generation_snapshot_cache_key(identity) + ".json"
+    )
+    payload = (
+        json.dumps(
+            {
+                "identity": dict(identity),
+                "snapshot_id": snapshot.snapshot_id,
+                "cutoff_keys": {
+                    "date": list(snapshot.daily_cutoff_keys or ()),
+                    "week_id": list(snapshot.weekly_cutoff_keys or ()),
+                    "month_id": list(snapshot.monthly_cutoff_keys or ()),
+                },
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".generation-receipt-",
+        dir=receipts,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.chmod(0o444)
+        os.replace(temporary, receipt_path)
+        _fsync_directory(receipts)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _cached_snapshot_cutoff_fields(value: object) -> dict[str, tuple[str, ...]]:
+    if not isinstance(value, Mapping) or set(value) != {
+        "date",
+        "week_id",
+        "month_id",
+    }:
+        raise ValueError("Blackbox generation snapshot cutoff cache is invalid")
+    normalized: dict[str, tuple[str, ...]] = {}
+    for key in ("date", "week_id", "month_id"):
+        raw = value.get(key)
+        if not isinstance(raw, list) or not raw:
+            raise ValueError("Blackbox generation snapshot cutoff cache is invalid")
+        try:
+            if key == "date":
+                values = tuple(date.fromisoformat(str(item)).isoformat() for item in raw)
+            else:
+                values = tuple(normalize_period_key(item, key) for item in raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "Blackbox generation snapshot cutoff cache is invalid"
+            ) from exc
+        if list(values) != sorted(set(values)):
+            raise ValueError("Blackbox generation snapshot cutoff cache is invalid")
+        normalized[key] = values
+    return {
+        "daily_cutoff_keys": normalized["date"],
+        "weekly_cutoff_keys": normalized["week_id"],
+        "monthly_cutoff_keys": normalized["month_id"],
+    }
+
+
+def _validate_cached_snapshot_cutoffs(
+    snapshot: BlackboxSnapshot,
+    source_states: Mapping[str, _StableSnapshotFile],
+) -> None:
+    """使用本次 SHA 校验已读取的字节复核缓存 cutoff，不增加文件读取。"""
+    cached = (
+        snapshot.daily_cutoff_keys,
+        snapshot.weekly_cutoff_keys,
+        snapshot.monthly_cutoff_keys,
+    )
+    if all(value is None for value in cached):
+        return
+    if any(value is None for value in cached):
+        raise ValueError("Blackbox snapshot cutoff cache is incomplete")
+    expected = {
+        "daily_cutoff_keys": tuple(snapshot.daily_cutoff_keys or ()),
+        "weekly_cutoff_keys": tuple(snapshot.weekly_cutoff_keys or ()),
+        "monthly_cutoff_keys": tuple(snapshot.monthly_cutoff_keys or ()),
+    }
+    actual = _snapshot_cutoff_fields_from_verified_bytes(source_states)
+    if actual != expected:
+        raise ValueError(
+            "Blackbox snapshot cutoff cache does not match verified CSV content"
+        )
+
+
+def _snapshot_cutoff_fields_from_verified_bytes(
+    source_states: Mapping[str, _StableSnapshotFile],
+) -> dict[str, tuple[str, ...]]:
+    """只扫描已验证 CSV 的首列时间键，不解析其余宽表内容。"""
+    fields: dict[str, tuple[str, ...]] = {}
+    for filename, key_column, field_name in (
+        ("daily_output.csv", "date", "daily_cutoff_keys"),
+        ("weekly_output.csv", "week_id", "weekly_cutoff_keys"),
+        ("monthly_output.csv", "month_id", "monthly_cutoff_keys"),
+    ):
+        state = source_states.get(filename)
+        if state is None:
+            raise ValueError("Blackbox snapshot cutoff source is missing")
+        stream = io.BytesIO(state.content_bytes)
+        header = stream.readline().rstrip(b"\r\n").split(b",", 1)[0]
+        try:
+            header_text = header.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise ValueError(
+                f"{filename} cutoff header is not valid UTF-8"
+            ) from exc
+        if header_text != key_column:
+            raise ValueError(
+                f"{filename} first column must be {key_column}"
+            )
+        raw_values: list[str] = []
+        for line in stream:
+            stripped = line.rstrip(b"\r\n")
+            if not stripped:
+                raise ValueError(f"{filename} contains an empty CSV row")
+            raw_key = stripped.split(b",", 1)[0]
+            try:
+                raw_values.append(raw_key.decode("utf-8"))
+            except UnicodeDecodeError as exc:
+                raise ValueError(
+                    f"{filename} cutoff key is not valid UTF-8"
+                ) from exc
+        try:
+            if key_column == "date":
+                values = tuple(
+                    normalize_daily_key(value)
+                    for value in raw_values
+                )
+            else:
+                values = tuple(
+                    normalize_period_key(value, key_column)
+                    for value in raw_values
+                )
+        except ValueError as exc:
+            raise ValueError(
+                f"{filename} cutoff cache content is invalid"
+            ) from exc
+        if not values or list(values) != sorted(set(values)):
+            raise ValueError(
+                f"{filename} cutoff keys must be unique and ascending"
+            )
+        fields[field_name] = values
+    return fields
 
 
 def _require_blackbox_databridge_monthly_additions(
@@ -1152,11 +1626,31 @@ def resolve_blackbox_input_cutoffs(
             engine=engine,
             include_databridge_additions=True,
         )
-        return resolve_cutoffs(
-            snapshot,
-            feature_date,
-            weekly_as_of=weekly_as_of,
-            monthly_as_of=monthly_as_of,
+        snapshot_keys = _load_snapshot_cutoff_keys(snapshot)
+        normalized_feature_date = _normalize_feature_date(feature_date)
+        daily_position = bisect_right(
+            snapshot_keys["date"],
+            normalized_feature_date,
+        )
+        if daily_position == 0:
+            raise ValueError(
+                "daily snapshot has no row on or before "
+                f"{normalized_feature_date}"
+            )
+        return CutoffKeys(
+            daily_cutoff_key=snapshot_keys["date"][daily_position - 1],
+            weekly_cutoff_key=_cached_authoritative_cutoff(
+                weekly_as_of,
+                key_column="week_id",
+                available_keys=snapshot_keys["week_id"],
+                filename="weekly_output.csv",
+            ),
+            monthly_cutoff_key=_cached_authoritative_cutoff(
+                monthly_as_of,
+                key_column="month_id",
+                available_keys=snapshot_keys["month_id"],
+                filename="monthly_output.csv",
+            ),
         )
     finally:
         if own_engine:
@@ -1332,6 +1826,17 @@ def _resolve_blackbox_input_cutoffs_with_source_keys_bulk_from_keys(
 
 
 def _load_snapshot_cutoff_keys(snapshot: BlackboxSnapshot) -> dict[str, Any]:
+    cached = (
+        snapshot.daily_cutoff_keys,
+        snapshot.weekly_cutoff_keys,
+        snapshot.monthly_cutoff_keys,
+    )
+    if all(value is not None for value in cached):
+        return {
+            "date": list(snapshot.daily_cutoff_keys or ()),
+            "week_id": set(snapshot.weekly_cutoff_keys or ()),
+            "month_id": set(snapshot.monthly_cutoff_keys or ()),
+        }
     paths = {
         "date": snapshot.data_dir / "daily_output.csv",
         "week_id": snapshot.data_dir / "weekly_output.csv",
@@ -1357,6 +1862,23 @@ def _load_snapshot_cutoff_keys(snapshot: BlackboxSnapshot) -> dict[str, Any]:
             raise ValueError(f"{path.name} {key} cutoff keys must be unique and ascending")
         loaded[key] = set(values)
     return loaded
+
+
+def _cached_authoritative_cutoff(
+    as_of: pd.DataFrame,
+    *,
+    key_column: str,
+    available_keys: set[str],
+    filename: str,
+) -> str:
+    if key_column not in as_of.columns or as_of.empty:
+        raise ValueError(f"platform as-of data has no {key_column}")
+    cutoff = normalize_period_key(as_of[key_column].tolist()[-1], key_column)
+    if cutoff not in available_keys:
+        raise ValueError(
+            f"platform {key_column} cutoff {cutoff} does not exist in {filename}"
+        )
+    return cutoff
 
 
 def _resolve_period_cutoffs_bulk(
@@ -1469,7 +1991,7 @@ def build_daily_input_artifact(
     profile = _dataframe_profile(read_back, coverage_field="date", required_columns=("date",))
     content_hash = _file_sha256(path)
     schema_hash = _schema_hash(read_back)
-    return InputArtifact(
+    artifact = InputArtifact(
         scheme_id=scheme_id,
         frequency="daily",
         path=path,
@@ -1492,6 +2014,8 @@ def build_daily_input_artifact(
             "predict_date": predict_date,
         },
     )
+    _write_native_input_audit_receipt(artifact)
+    return artifact
 
 
 def build_weekly_input_artifact(
@@ -1529,7 +2053,7 @@ def build_weekly_input_artifact(
     profile = _dataframe_profile(read_back, coverage_field="week_id", required_columns=("week_id",))
     content_hash = _file_sha256(path)
     schema_hash = _schema_hash(read_back)
-    return InputArtifact(
+    artifact = InputArtifact(
         scheme_id=scheme_id,
         frequency="weekly",
         path=path,
@@ -1553,6 +2077,8 @@ def build_weekly_input_artifact(
             "predict_date": predict_date,
         },
     )
+    _write_native_input_audit_receipt(artifact)
+    return artifact
 
 
 def build_monthly_input_artifact(
@@ -1581,7 +2107,7 @@ def build_monthly_input_artifact(
     profile = _dataframe_profile(read_back, coverage_field="month_id", required_columns=("month_id",))
     content_hash = _file_sha256(path)
     schema_hash = _schema_hash(read_back)
-    return InputArtifact(
+    artifact = InputArtifact(
         scheme_id=scheme_id,
         frequency="monthly",
         path=path,
@@ -1604,6 +2130,75 @@ def build_monthly_input_artifact(
             "predict_date": predict_date,
         },
     )
+    _write_native_input_audit_receipt(artifact)
+    return artifact
+
+
+def _write_native_input_audit_receipt(artifact: InputArtifact) -> None:
+    """仅在 Harness dry-run 请求时记录本次真实 builder 的输入身份。"""
+    configured = str(os.environ.get(NATIVE_INPUT_AUDIT_ROOT_ENV) or "").strip()
+    if not configured:
+        return
+    root = Path(configured)
+    if not root.is_absolute():
+        raise ValueError(f"{NATIVE_INPUT_AUDIT_ROOT_ENV} must be absolute")
+    resolved_root = root.resolve(strict=True)
+    root_details = root.lstat()
+    if (
+        root.is_symlink()
+        or Path(os.path.abspath(root)) != resolved_root
+        or stat.S_ISLNK(root_details.st_mode)
+        or not stat.S_ISDIR(root_details.st_mode)
+        or root_details.st_uid != os.getuid()
+    ):
+        raise OSError("native input audit root is unsafe")
+
+    artifact_details = artifact.path.lstat()
+    if (
+        stat.S_ISLNK(artifact_details.st_mode)
+        or not stat.S_ISREG(artifact_details.st_mode)
+    ):
+        raise OSError("native input artifact is not a regular file")
+    payload = {
+        "scheme_id": artifact.scheme_id,
+        "frequency": artifact.frequency,
+        "path": str(artifact.path),
+        "source": artifact.source,
+        "data_version": artifact.data_version,
+        "content_hash": artifact.content_hash,
+        "schema_hash": artifact.schema_hash,
+        "row_count": artifact.row_count,
+        "column_count": artifact.column_count,
+        "columns": list(artifact.columns),
+        "date_coverage": dict(artifact.date_coverage),
+        "quality_flags": dict(artifact.quality_flags),
+        "metadata": dict(artifact.metadata),
+        "file_size": artifact_details.st_size,
+        "modified_ns": artifact_details.st_mtime_ns,
+    }
+    receipt_path = resolved_root / f"{artifact.frequency}.json"
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{artifact.frequency}.",
+        suffix=".tmp",
+        dir=resolved_root,
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = -1
+            json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, receipt_path)
+        _fsync_directory(resolved_root)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _atomic_save_output(save_output, frame: pd.DataFrame, path: Path) -> None:

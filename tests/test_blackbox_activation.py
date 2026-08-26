@@ -185,7 +185,6 @@ def test_activate_dispatches_initial_and_revision_through_one_entry(tmp_path) ->
         scheme_id="trial_10y",
         predict_date="activate",
         project_root=tmp_path,
-        report_dir=tmp_path / "reports",
     )
     initial = SimpleNamespace(status="paused", version_status="shadow")
     revision = SimpleNamespace(status="active", version_status="active")
@@ -252,7 +251,6 @@ def test_revision_activation_uses_direct_operation_and_atomic_repository(tmp_pat
         scheme_id=cfg.scheme_id,
         predict_date="activate",
         project_root=tmp_path,
-        report_dir=tmp_path / "reports",
         config=cfg,
         operation=operation,
         engine_factory=lambda: engine,

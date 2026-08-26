@@ -49,7 +49,7 @@
 3. **Native core 纯净**：Native V1 的 `schemes/*/core/`（非 legacy）零 DB、零写库、零跨方案 import；Blackbox 不向平台暴露 core。
 4. **源算法保真**：Native 存量只允许有证据的 L0 平台适配和 L1 source runner 上下文传递；L2 算法内部改动必须停止并创建独立 Blackbox V2 trial。source-original backtest 与 live-safe 真值必须分开验收，平台不得用调参贴结果。Blackbox 内部保真由上游负责，平台只验证自身接入与标准输出边界。
 
-Native 首次入库必须保留 source benchmark 与 CompareGate；同一身份维护只允许走文档定义的互斥 full-`all` 或 `native-maintenance` 路径，任一身份快照、version、Registry 或 Gate 前提不满足都 fail-closed。Native 不运行按名称扫描测试的 UnitGate；Blackbox UnitGate 保留。
+Native 首次入库必须保留 source benchmark 与 CompareGate；同一身份维护只允许走文档定义的互斥 full-`all` 或 `native-maintenance` 路径，任一身份快照、version、Registry 或 Gate 前提不满足都 fail-closed。Native 不运行按名称扫描测试的 UnitGate；Blackbox 不再单设 UnitGate，平台只保留一次有效 predict 冒烟，非法 Request 和失败无 Output 行为由上游交付契约负责。
 
 完整依赖方向规则见 [docs/architecture/CODE_ARCHITECTURE.md](docs/architecture/CODE_ARCHITECTURE.md)；源算法保真规则见 [docs/architecture/SOURCE_ALGORITHM_FIDELITY.md](docs/architecture/SOURCE_ALGORITHM_FIDELITY.md)；边界总纲见 [docs/architecture/HARNESS_ARCHITECTURE.md](docs/architecture/HARNESS_ARCHITECTURE.md)。
 
@@ -94,8 +94,8 @@ python -m harness intake-blackbox --delivery-dir <two-file-dir> --project-root .
 # 两种运行时共用的自动 Gate 编排
 python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
 # 自动段按 runtime_type 分派（fail-fast，退出码 0/1/2）：
-#   Blackbox V2：static → input → unit → compare
-#   Native V1  ：static → input → dry-run → compare → backtest
+#   Blackbox V2：static → input → compare
+#   Native V1  ：static → dry-run（含实际输入合同）→ compare → backtest
 # 副作用段不在 all 内，必须以精确独立命令执行且 fail-closed
 ```
 

@@ -179,6 +179,5 @@ def _context(project_root: Path, scheme_id: str) -> GateContext:
         scheme_id=scheme_id,
         predict_date="2026-07-19",
         project_root=project_root,
-        report_dir=project_root / "reports",
         operation="test-operation",
     )

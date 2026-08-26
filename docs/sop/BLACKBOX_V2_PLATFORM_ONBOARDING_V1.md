@@ -150,8 +150,12 @@ Input Gate 必须记录 DataBridge 父快照、声明的平台制品、父/组�
 digest、环境指纹、各文件摘要和 Request。平台注册输入由调用方只读数据库连接捕获；不得写入
 DataBridge generation，也不得形成 Native 二级 generation。
 
-运行视图必须是私有、只读、摘要复核后的普通文件。正常结束后清理；无法确认子进程终止时只允许进入
-受控 debris recovery，不得立即删除可能仍在读取的目录。报告中的临时绝对路径不能用于回放。
+generation 首次发布时完成三频 CSV 的完整解析、schema、摘要和 cutoff 校验；缓存命中只核验现有 receipt、
+manifest 内容身份和普通文件边界，不再为每个方案读取、哈希或扫描三频 CSV，也不新增第二套缓存协议。运行视图
+必须从本次 SHA 校验已经读取的同一份内存字节只扫描首列时间键，并与 receipt cutoff 精确比较。运行视图仍必须
+是私有、只读的普通文件，物化时源内容只读取一次，写入目标后不为摘要再次读取。
+正常结束后清理；无法确认子进程终止时只允许进入受控 debris recovery，不得立即删除可能仍在读取的目录。
+报告中的临时绝对路径不能用于回放。
 
 Request 恰好包含 `request_id`、三个标准日期和三个 cutoff。字段关系、as-of 计算、100 条批量上限和
 合并顺序以[共享方案契约](../architecture/SCHEME_CONTRACT.md)和
@@ -169,7 +173,7 @@ conda run --no-capture-output -n bond_factor_lab_service \
     --algo-env forecast_env_blackbox_v1
 ```
 
-固定顺序为 `static → input → unit → compare`。任一 Gate 失败即 fail-fast，不得进入 shadow。
+固定顺序为 `static → input → compare`。Compare 只执行平台输入校验与一次有效冒烟预测；非法 Request、退出码和失败无 Output 由上游交付契约负责，平台不重复认证。任一 Gate 失败即 fail-fast，不得进入 shadow。
 
 平台只验证自身边界：交付和 Metadata、输入捕获、Request/Result 合同、平台喂入内容及一次冒烟执行。
 重复执行确定性、predict/backtest 等价、跨批顺序一致和逐 Request 截止隔离由上游契约负责，平台不
@@ -180,16 +184,20 @@ conda run --no-capture-output -n bond_factor_lab_service \
 Gate 的精确职责见[Harness 架构](../architecture/HARNESS_ARCHITECTURE.md)。继续前必须确认：
 
 - current exact version 的 latest `all` run 为 `passed`；
-- `static/input/unit/compare` 四项均已持久化；
+- `static/input/compare` 三项均已持久化；
 - generation、combined snapshot、环境指纹和 Request 身份一致；
 - 没有写入 `t_scheme_runs`、prediction、backtest、active Registry 或前端状态。
 
-`all` 只允许写 Harness 审计表和临时诊断。数据库是 run/Gate 的耐久权威；任一持久化失败都阻断后续
+`all` 只允许写 Harness 审计表和短生命周期运行输入。数据库是 run/Gate 的耐久权威：开始时先写
+`running` 以 fail-early，Gate 结束后在一个事务中批量写结果并完成 run；commit ACK 不确定时用新连接精确读回 run 状态、Gate multiset 和 summary，任一无法确认的持久化失败都阻断后续
 副作用。Dashboard payload 不含 exact version，不能替代生命周期和数据库版本证据。
+
+三段 evidence profile 不兼容读取旧四段方案报告。升级前已通过四段 `all`、但尚需执行后续副作用的
+exact version，先用当前三段流程重跑一次；不得用旧 `report_uri` 或本地 `input_state.json` 补证。
 
 ## 5. Shadow 登记
 
-执行前重新核对 exact run、四 Gate、身份冲突和业务表前置状态，然后运行：
+执行前重新核对 exact run、三 Gate、身份冲突和业务表前置状态，然后运行：
 
 ```bash
 conda run --no-capture-output -n bond_factor_lab_service \
@@ -315,7 +323,7 @@ python -m harness gate lifecycle-reconcile --scheme-id {scheme_id}
 ## 9. 完成条件
 
 - [ ] 两文件 Intake、Metadata 和 canonical paused/draft 配置一致；
-- [ ] exact generation、combined snapshot、Request cutoff、环境指纹和四 Gate 证据一致；
+- [ ] exact generation、combined snapshot、Request cutoff、环境指纹和三 Gate 证据一致；
 - [ ] Shadow 后 Registry paused、业务表零增量且 active API/scheduler 不可见；
 - [ ] 如执行 backtest/批量复用，授权、`gray_target_start`、日期重建和零重叠均通过；
 - [ ] 如执行 activation/gray 写入，exact version、Registry、journal 和 insert-only readback 一致；

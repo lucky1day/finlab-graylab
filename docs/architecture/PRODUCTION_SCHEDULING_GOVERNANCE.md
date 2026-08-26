@@ -90,7 +90,7 @@ installed 配置、loaded state、日志和 run/prediction 证据；再取得明
 
 ## 4. 生命周期与停止条件
 
-Activation 前必须完成对应 Gate、生产准备核验与一次性专项授权；Activation 本身不安装或加载 plist。首次 Native 技术入库使用 current exact version 的完整五段 `all`（`static → input → dry-run → compare → backtest`）；同一存量身份维护只有在 prior `all` 已有匹配 `static.business_identity` 时才可使用四段 `native-maintenance`（`static → native-maintenance-admission → input → dry-run`）。两条 profile 互斥，缺失或不一致时直接失败。
+Activation 前必须完成对应 Gate、生产准备核验与一次性专项授权；Activation 本身不安装或加载 plist。首次 Native 技术入库使用 current exact version 的完整四段 `all`（`static → dry-run → compare → backtest`，DryRun 含真实输入合同）；同一存量身份维护只有在 prior `all` 已有匹配 `static.business_identity` 时才可使用三段 `native-maintenance`（`static → native-maintenance-admission → dry-run`）。两条 profile 互斥，缺失或不一致时直接失败。
 
 `static.business_identity` 只包含 scheme/runtime/horizon/task/frequency/tenors/composite IDs，不含代码、config 或 version hash。maintenance 的 current exact version 必须为 native `draft|active`，Registry 必须统一 paused（预激活）或 active（激活后），draft version 配 active Registry 必须失败。缺少标准 prior snapshot 时直接回到完整 `all`，不再读取方案级历史 receipt。
 

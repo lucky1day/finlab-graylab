@@ -801,7 +801,7 @@ def _freeze_identity_value(value: object) -> object:
 
 
 REQUIRED_ACTIVATE_GATES = frozenset({
-    "static", "input", "dry-run", "compare", "backtest",
+    "static", "dry-run", "compare", "backtest",
 })
 
 

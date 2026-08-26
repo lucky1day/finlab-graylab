@@ -95,6 +95,34 @@ def test_ephemeral_native_runtime_sets_private_environment(
     )
 
 
+def test_native_input_audit_root_is_passed_only_when_explicit(
+    tmp_path: Path,
+) -> None:
+    from scheduler.executor import run_scheme_subprocess
+    from shared.input_artifacts import NATIVE_INPUT_AUDIT_ROOT_ENV
+
+    captured: dict[str, str] = {}
+
+    def fake_run(cmd, *, cwd, env, timeout):
+        captured.update(env)
+        return CompletedProcess(cmd, 0, "[]", "")
+
+    audit_root = (tmp_path / "audit").resolve()
+    audit_root.mkdir(mode=0o700)
+    audit_root.chmod(0o700)
+    with patch(
+        "scheduler.executor._run_process_group",
+        side_effect=fake_run,
+    ):
+        run_scheme_subprocess(
+            "daily_demo",
+            "2026-07-24",
+            native_input_audit_root=audit_root,
+        )
+
+    assert captured[NATIVE_INPUT_AUDIT_ROOT_ENV] == str(audit_root)
+
+
 def test_native_execution_rejects_invalid_runtime_controls() -> None:
     from scheduler.executor import run_configured_scheme
 

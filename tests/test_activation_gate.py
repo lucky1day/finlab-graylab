@@ -78,7 +78,6 @@ class NativeActivationValidationTests(unittest.TestCase):
                     scheme_id=ctx.scheme_id,
                     predict_date=ctx.predict_date,
                     project_root=ctx.project_root,
-                    report_dir=ctx.report_dir,
                     config=cfg,
                     engine_factory=ctx.engine_factory,
                     operation=operation,
@@ -130,7 +129,6 @@ def _maintenance_fixture(root: Path):
         scheme_id=cfg.scheme_id,
         predict_date="2026-08-04",
         project_root=root,
-        report_dir=root / "reports",
         config=cfg,
         engine_factory=lambda: engine,
     )
@@ -179,7 +177,6 @@ def _full_all_fixture(
         scheme_id="demo_daily",
         predict_date="2026-07-06",
         project_root=root,
-        report_dir=root / "reports",
         engine_factory=lambda: engine,
     )
 

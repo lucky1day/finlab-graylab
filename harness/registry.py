@@ -5,7 +5,6 @@ from harness.gates.base import Gate
 from harness.gates.compare_gate import CompareGate
 from harness.gates.dashboard_gate import DashboardGate
 from harness.gates.dry_run_gate import DryRunGate
-from harness.gates.input_gate import InputGate
 from harness.gates.native_maintenance_admission_gate import (
     NATIVE_MAINTENANCE_SEQUENCE,
     NATIVE_MAINTENANCE_STAGE,
@@ -16,11 +15,11 @@ from harness.context import GateContext
 from shared.scheme_config_loader import load_yaml_mapping
 
 
-AUTO_SEQUENCE = ["static", "input", "dry-run", "compare", "backtest"]
+AUTO_SEQUENCE = ["static", "dry-run", "compare", "backtest"]
 # Blackbox Compare 的一次 predict 与原 dry-run 参数相同；交付自身的确定性、批次与
 # predict/backtest 一致性由上游契约负责，平台不再重复抽样认证。Native Compare 是
 # source benchmark 对比，因此仍保留 dry-run 和 no-persist backtest。
-BLACKBOX_AUTO_SEQUENCE = ["static", "input", "unit", "compare"]
+BLACKBOX_AUTO_SEQUENCE = ["static", "input", "compare"]
 
 
 def sequence_for_stage(
@@ -59,7 +58,6 @@ def gate_for_name(name: str, *, ctx: GateContext | None = None) -> Gate:
     gates = {
         "static": StaticGate,
         "native-maintenance-admission": NativeMaintenanceAdmissionGate,
-        "input": InputGate,
         "dry-run": DryRunGate,
         "compare": CompareGate,
         "backtest": BacktestGate,

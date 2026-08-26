@@ -45,6 +45,7 @@ from shared.task_specs import PERIOD_AVERAGE_TASK_TYPES
 from shared.blackbox_v2.snapshot import compose_blackbox_input_bundle
 from shared.input_artifacts import (
     EPHEMERAL_NATIVE_INPUT_ROOT_ENV,
+    NATIVE_INPUT_AUDIT_ROOT_ENV,
     capture_blackbox_platform_inputs_from_connection,
     BlackboxGrayReplaySession,
     open_blackbox_input_snapshot,
@@ -204,6 +205,7 @@ def run_scheme_subprocess(
     process_fence: Callable[[], None] | None = None,
     process_start_guard: ProcessStartGuard | None = None,
     ephemeral_native_runtime_root: str | Path | None = None,
+    native_input_audit_root: str | Path | None = None,
 ) -> list[PredictionRecord]:
     """通过 conda 子进程在算法环境中运行方案。"""
     process_start_guard = require_process_start_guard(
@@ -211,6 +213,9 @@ def run_scheme_subprocess(
     )
     normalized_ephemeral_root = _normalize_ephemeral_native_runtime_root(
         ephemeral_native_runtime_root
+    )
+    normalized_audit_root = _normalize_native_input_audit_root(
+        native_input_audit_root
     )
     env = _build_algorithm_environment()
     env.pop(SOURCE_RUNTIME_DATABASE_CONFIG_PATH_ENV, None)
@@ -226,6 +231,7 @@ def run_scheme_subprocess(
         )
     env.pop(CACHE_MUTATION_POLICY_ENV, None)
     env.pop(EPHEMERAL_NATIVE_INPUT_ROOT_ENV, None)
+    env.pop(NATIVE_INPUT_AUDIT_ROOT_ENV, None)
     if normalized_ephemeral_root is not None:
         env[EPHEMERAL_NATIVE_INPUT_ROOT_ENV] = str(
             normalized_ephemeral_root / "inputs"
@@ -236,6 +242,8 @@ def run_scheme_subprocess(
         env[CACHE_MUTATION_POLICY_ENV] = (
             CACHE_MUTATION_POLICY_PRIVATE_BUILD
         )
+    if normalized_audit_root is not None:
+        env[NATIVE_INPUT_AUDIT_ROOT_ENV] = str(normalized_audit_root)
     cmd = [
         "conda",
         "run",
@@ -310,6 +318,27 @@ def _normalize_ephemeral_native_runtime_root(
     if not path.is_absolute():
         raise ValueError("ephemeral_native_runtime_root must be absolute")
     return path
+
+
+def _normalize_native_input_audit_root(
+    value: str | Path | None,
+) -> Path | None:
+    if value is None:
+        return None
+    path = Path(value)
+    if not path.is_absolute():
+        raise ValueError("native_input_audit_root must be absolute")
+    resolved = path.resolve(strict=True)
+    details = path.lstat()
+    if (
+        path.is_symlink()
+        or resolved != path
+        or not stat.S_ISDIR(details.st_mode)
+        or details.st_uid != os.getuid()
+        or stat.S_IMODE(details.st_mode) != 0o700
+    ):
+        raise ValueError("native_input_audit_root must be a private owned directory")
+    return resolved
 
 
 def _build_algorithm_environment() -> dict[str, str]:

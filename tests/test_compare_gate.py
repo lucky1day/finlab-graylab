@@ -16,7 +16,6 @@ def _make_ctx(root: Path, scheme_id: str = "demo") -> GateContext:
         scheme_id=scheme_id,
         predict_date="static",
         project_root=root,
-        report_dir=root / "reports" / "out",
     )
 
 

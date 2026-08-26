@@ -270,51 +270,6 @@ class BlackboxExecutionError(RuntimeError):
     pass
 
 
-def probe_blackbox_help(
-    script_path: str | Path,
-    *,
-    profile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE,
-) -> str:
-    """验证交付脚本公开 predict 和 backtest 两种 CLI 模式。"""
-    _validate_runtime_profile(profile, source="runtime profile")
-    script = _resolve_controlled_path(script_path, label="script")
-    if not script.is_file() or script.suffix != ".py":
-        raise ValueError(f"Blackbox V2 script must be one regular .py file: {script}")
-    runtime = _python_runtime(profile)
-
-    with tempfile.TemporaryDirectory(prefix="blackbox-v2-help-") as tmpdir:
-        writable_dir = Path(tmpdir).resolve()
-        python_executable = str(runtime.executable)
-        command = [python_executable, str(script), "--help"]
-        command = _bootstrap_command(command, profile.max_run_dir_bytes)
-        completed = _run_process(
-            command,
-            cwd=writable_dir,
-            env=_runtime_environment(
-                profile,
-                writable_dir,
-                python_executable=python_executable,
-            ),
-            timeout=min(profile.predict_timeout_sec, 60),
-            memory_limit_bytes=profile.memory_limit_bytes,
-            max_capture_bytes=profile.max_log_bytes,
-            max_run_dir_bytes=profile.max_run_dir_bytes,
-            max_run_dir_entries=profile.max_run_dir_entries,
-        )
-
-    if completed.returncode != 0:
-        raise BlackboxExecutionError(
-            f"Blackbox V2 --help exited {completed.returncode}: {_bounded(completed.stderr)}"
-        )
-    help_text = "\n".join(part for part in (completed.stdout, completed.stderr) if part).strip()
-    missing = [mode for mode in ("predict", "backtest") if mode not in help_text]
-    if missing:
-        raise BlackboxExecutionError(
-            f"Blackbox V2 --help must expose predict and backtest; missing={missing}"
-        )
-    return help_text
-
-
 def execute_blackbox_cli(
     *,
     script_path: str | Path,

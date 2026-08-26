@@ -5,9 +5,7 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import stat
-import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
@@ -28,10 +26,7 @@ from harness.result import Evidence, GateResult, GateStatus
 from scheduler.blackbox_v2_runner import (
     BacktestExecutionBudget,
     DEFAULT_RUNTIME_PROFILE,
-    BlackboxExecutionError,
     RuntimeProfile,
-    execute_blackbox_cli,
-    probe_blackbox_help,
     run_blackbox_backtest,
     run_blackbox_predict,
 )
@@ -43,15 +38,12 @@ from shared.blackbox_v2.contracts import (
     BlackboxMetadata,
     BlackboxRequest,
     load_metadata,
-    load_request_bytes,
 )
 from shared.blackbox_v2.history import CURRENT_SNAPSHOT_REPLAY, build_historical_cases
 from shared.blackbox_v2.requests import (
     build_live_request,
     build_request,
-    write_request,
 )
-from shared.blackbox_v2.platform_inputs import FrozenPlatformInput
 from shared.blackbox_v2.snapshot import (
     BlackboxInputBundle,
     BlackboxSnapshot,
@@ -61,8 +53,8 @@ from shared.blackbox_v2.snapshot import (
 from shared.calendar_service import get_calendar
 from shared.data_bridge.refresh import DataBridgeRefreshConfig, DataBridgeStore
 from shared.input_artifacts import (
-    build_blackbox_input_snapshot,
     capture_blackbox_platform_inputs_from_connection,
+    get_blackbox_generation_snapshot,
     open_blackbox_runtime_view,
     resolve_blackbox_input_cutoffs,
 )
@@ -96,17 +88,12 @@ FORBIDDEN_QUALIFIED_CALLS = {"os.system", "os.popen", "os.spawnl", "os.spawnv"}
 ABSOLUTE_PATH_PATTERN = re.compile(r"^(?:/Users/|/home/|[A-Za-z]:[\\/])")
 # 只把被路径分隔符或字符串边界包围的完整 ".." 段判为穿越，避免误伤散文里的省略号。
 RELATIVE_TRAVERSAL_PATTERN = re.compile(r"(?:^|[/\\])\.\.(?:[/\\]|$)")
-INPUT_STATE_INITIALIZED_SEAL = (
-    b'{"schema_version":"blackbox-input-state-initialized-v1"}\n'
-)
-
-
 @dataclass(frozen=True)
 class InputState:
     snapshot: BlackboxSnapshot
-    request_path: Path
     request: BlackboxRequest
     bundle: BlackboxInputBundle | None = None
+    provenance: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -120,7 +107,6 @@ class _StablePrivateFile:
 @dataclass(frozen=True)
 class PassedAllRun:
     harness_run_id: str
-    report_uri: Path
     data_snapshot_id: str
     generation_id: str | None = None
     runtime_profile: str | None = None
@@ -239,6 +225,10 @@ class BlackboxInputGate(_BlackboxGate):
         }
         evidence = [
             *_bundle_evidence(bundle),
+            *(
+                Evidence(key, value)
+                for key, value in (state.provenance or {}).items()
+            ),
             Evidence("data_schema_version", state.snapshot.schema_version),
             Evidence("base_snapshot_files", base_snapshot_files),
             Evidence("platform_input_files", platform_files),
@@ -247,52 +237,6 @@ class BlackboxInputGate(_BlackboxGate):
             Evidence("request", asdict(state.request)),
         ]
         return _finish(self.name, started_at, evidence, [])
-
-
-class BlackboxUnitGate(_BlackboxGate):
-    name = "unit"
-
-    def _run(self, ctx: GateContext, started_at: str) -> GateResult:
-        cfg = _config(ctx)
-        state = _ensure_input_state(ctx)
-        with tempfile.TemporaryDirectory(
-            prefix="unit-", dir=_gate_root(ctx)
-        ) as tmpdir:
-            root = Path(tmpdir)
-            request_dir = root / "request"
-            request_dir.mkdir()
-            invalid_request = request_dir / "invalid_request.json"
-            invalid_request.write_text("{}\n", encoding="utf-8")
-            output_dir = root / "output"
-            output_dir.mkdir()
-            output = output_dir / "invalid_output.json"
-            help_output = probe_blackbox_help(_script(cfg), profile=_profile(ctx))
-            rejected = False
-            with _open_runtime_input(ctx, state) as runtime_view:
-                try:
-                    execute_blackbox_cli(
-                        script_path=_script(cfg),
-                        mode="predict",
-                        input_path=invalid_request,
-                        data_dir=runtime_view.data_dir,
-                        output_path=output,
-                        profile=_profile(ctx),
-                        platform_input_ids=runtime_view.bundle.platform_input_ids,
-                    )
-                except BlackboxExecutionError:
-                    rejected = True
-            errors: list[str] = []
-            if not rejected:
-                errors.append("script must reject an invalid Request with a non-zero exit")
-            if output.exists():
-                errors.append("failed execution must not leave an Output file")
-            evidence = [
-                *_bundle_evidence(_input_bundle(state)),
-                Evidence("help_exposes_modes", {"predict": "predict" in help_output, "backtest": "backtest" in help_output}),
-                Evidence("invalid_request_rejected", rejected),
-                Evidence("failed_output_absent", not output.exists()),
-            ]
-        return _finish(self.name, started_at, evidence, errors)
 
 
 class BlackboxCompareGate(_BlackboxGate):
@@ -671,7 +615,6 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
 BLACKBOX_GATES: dict[str, type[Gate]] = {
     "static": BlackboxStaticGate,
     "input": BlackboxInputGate,
-    "unit": BlackboxUnitGate,
     "compare": BlackboxCompareGate,
     "backtest": BlackboxBacktestGate,
     "shadow-register": BlackboxShadowRegisterGate,
@@ -715,56 +658,13 @@ def _input_bundle(state: InputState) -> BlackboxInputBundle:
 
 @contextmanager
 def _open_runtime_input(ctx: GateContext, state: InputState):
-    gate_root = _gate_root(ctx)
-    runtime_root = gate_root / "runtime_views"
-    runtime_root.mkdir(exist_ok=True)
-    _require_controlled_directory(
-        runtime_root,
-        controlled_parent=gate_root,
-        label="Blackbox runtime views",
-    )
-    try:
-        with open_blackbox_runtime_view(
-            _input_bundle(state),
-            runtime_root=runtime_root,
-        ) as runtime_view:
-            try:
-                yield runtime_view
-            except ProcessGroupTerminationError:
-                runtime_view.mark_termination_uncertain()
-                raise
-    finally:
-        _cleanup_empty_runtime_view_root(runtime_root)
-
-
-def _cleanup_empty_runtime_view_root(runtime_root: Path) -> None:
-    if not os.path.lexists(runtime_root):
-        return
-    runtime_info = runtime_root.lstat()
-    if (
-        stat.S_ISLNK(runtime_info.st_mode)
-        or not stat.S_ISDIR(runtime_info.st_mode)
-    ):
-        raise ValueError(
-            "Blackbox runtime views must be a real directory"
-        )
-    active = runtime_root / "active"
-    debris = runtime_root / "debris"
-    for path, label in (
-        (active, "Blackbox runtime active root"),
-        (debris, "Blackbox runtime debris root"),
-    ):
-        if os.path.lexists(path) and not _is_real_directory(path):
-            raise ValueError(f"{label} must not be a symlink")
-    if (
-        _is_real_directory(active)
-        and _is_real_directory(debris)
-        and not any(active.iterdir())
-        and not any(debris.iterdir())
-    ):
-        active.rmdir()
-        debris.rmdir()
-        runtime_root.rmdir()
+    del ctx
+    with open_blackbox_runtime_view(_input_bundle(state)) as runtime_view:
+        try:
+            yield runtime_view
+        except ProcessGroupTerminationError:
+            runtime_view.mark_termination_uncertain()
+            raise
 
 
 def _runner_bundle_kwargs(bundle: BlackboxInputBundle) -> dict[str, Any]:
@@ -823,49 +723,18 @@ def _verify_runtime_platform_files(
 
 
 def _ensure_input_state(ctx: GateContext, *, force: bool = False) -> InputState:
-    root = _gate_root(ctx)
-    state_path = root / "input_state.json"
-    seal_path = root / "input_state.initialized"
-    state_exists = os.path.lexists(state_path)
-    seal_exists = os.path.lexists(seal_path)
-    if not force and (state_exists or seal_exists):
-        if not state_exists or not seal_exists:
-            raise ValueError(
-                "Blackbox V2 input state was initialized but its canonical "
-                "state or initialization seal is missing"
-            )
-        _validate_input_state_seal(seal_path)
-        return _read_input_state(state_path)
-    if not force:
-        residual_entries = sorted(path.name for path in root.iterdir())
-        if residual_entries:
-            raise ValueError(
-                "Blackbox V2 fresh input state root contains residual "
-                f"artifacts: {residual_entries}"
-            )
-    if state_exists:
-        _require_regular_file(
-            state_path,
-            "Blackbox V2 input state",
-        )
-    if seal_exists:
-        _require_regular_file(
-            seal_path,
-            "Blackbox V2 input state initialization seal",
-        )
-    runtime_snapshot_root = root / "runtime_snapshot"
-    if os.path.lexists(runtime_snapshot_root):
-        _remove_harness_runtime_tree(
-            runtime_snapshot_root,
-            controlled_parent=root,
-        )
+    state_key = "blackbox_v2.input_state"
+    existing = ctx.runtime_state.get(state_key)
+    if not force and existing is not None:
+        if not isinstance(existing, InputState):
+            raise ValueError("Blackbox runtime input state is invalid")
+        return existing
     cfg = _config(ctx)
     metadata = _metadata(cfg)
     engine = ctx.engine_factory() if ctx.engine_factory is not None else create_default_engine()
     try:
-        snapshot = build_blackbox_input_snapshot(
+        snapshot = get_blackbox_generation_snapshot(
             snapshot_date=ctx.predict_date,
-            output_root=root / "runtime_snapshot",
             require_fresh=False,
         )
         calendar = get_calendar(engine)
@@ -920,70 +789,15 @@ def _ensure_input_state(ctx: GateContext, *, force: bool = False) -> InputState:
         platform_input_ids=platform_input_ids,
         platform_input_artifacts=platform_input_artifacts,
     )
-    runtime_platform_paths = _write_runtime_platform_inputs(
-        root,
-        bundle.platform_input_artifacts,
-    )
-    request_path = root / "request.json"
-    if os.path.lexists(request_path):
-        _require_regular_file(request_path, "Blackbox Request")
-        if request_path.lstat().st_nlink != 1:
-            raise ValueError(
-                "Blackbox Request must not be a hardlink"
-            )
-    request_path = write_request(request, request_path)
-    request_sha256 = _regular_file_sha256(
-        request_path,
-        label="Blackbox Request",
-    )
     provenance = _data_bridge_provenance(ctx, snapshot)
-    payload = {
-        "snapshot_id": snapshot.snapshot_id,
-        "snapshot_root": str(snapshot.root_dir),
-        "data_dir": str(snapshot.data_dir),
-        "manifest_path": str(snapshot.manifest_path),
-        "schema_version": snapshot.schema_version,
-        "request_path": str(request_path),
-        "combined_snapshot_id": bundle.combined_snapshot_id,
-        "parent_snapshot_id": bundle.parent_snapshot_id,
-        "platform_input_ids": list(bundle.platform_input_ids),
-        "platform_input_artifacts": [
-            {
-                **artifact.identity_manifest,
-                "runtime_content_path": str(
-                    runtime_platform_paths[artifact.artifact_id]
-                ),
-                "audit_provenance": dict(artifact.audit_provenance),
-            }
-            for artifact in bundle.platform_input_artifacts
-        ],
-        "identity_manifest": bundle.identity_manifest,
-        "audit_manifest": bundle.audit_manifest,
-        "request_sha256": request_sha256,
-        **provenance,
-    }
-    _atomic_write(state_path, json.dumps(payload, ensure_ascii=True, indent=2) + "\n")
-    _atomic_write(
-        seal_path,
-        INPUT_STATE_INITIALIZED_SEAL.decode("ascii"),
-    )
-    return InputState(
+    state = InputState(
         snapshot=snapshot,
-        request_path=request_path,
         request=request,
         bundle=bundle,
+        provenance=provenance,
     )
-
-
-def _validate_input_state_seal(seal_path: Path) -> None:
-    stable = _read_stable_private_file(
-        seal_path,
-        label="Blackbox V2 input state initialization seal",
-    )
-    if stable.content_bytes != INPUT_STATE_INITIALIZED_SEAL:
-        raise ValueError(
-            "Blackbox V2 initialized state seal is not canonical"
-        )
+    ctx.runtime_state[state_key] = state
+    return state
 
 
 def _data_bridge_provenance(ctx: GateContext, snapshot: BlackboxSnapshot) -> dict[str, str]:
@@ -1003,6 +817,21 @@ def _data_bridge_provenance(ctx: GateContext, snapshot: BlackboxSnapshot) -> dic
     missing = [key for key in required if not isinstance(state.get(key), str) or not state[key].strip()]
     if missing:
         raise ValueError(f"DataBridge provenance is missing fields: {missing}")
+    snapshot_identity = {
+        "generation_id": snapshot.generation_id,
+        "refresh_date": snapshot.refresh_date,
+        "business_digest": snapshot.business_digest,
+    }
+    identity_mismatches = [
+        key
+        for key, expected in snapshot_identity.items()
+        if not expected or state.get(key) != expected
+    ]
+    if identity_mismatches:
+        raise ValueError(
+            "DataBridge current identity changed after Harness snapshot: "
+            f"{identity_mismatches}"
+        )
     state_files = state.get("files")
     manifest_files = manifest.get("files")
     if not isinstance(state_files, dict) or not isinstance(manifest_files, dict):
@@ -1028,183 +857,8 @@ def _data_bridge_provenance(ctx: GateContext, snapshot: BlackboxSnapshot) -> dic
 
 
 def cleanup_runtime_input(ctx: GateContext) -> None:
-    """删除 Harness 临时输入副本，保留 input_state.json 审计记录。"""
-    root = _existing_gate_root(ctx)
-    if root is None:
-        return
-    runtime_snapshot = root / "runtime_snapshot"
-    if os.path.lexists(runtime_snapshot):
-        _remove_harness_runtime_tree(
-            runtime_snapshot,
-            controlled_parent=root,
-        )
-    runtime_views = root / "runtime_views"
-    if os.path.lexists(runtime_views):
-        _require_controlled_directory(
-            runtime_views,
-            controlled_parent=root,
-            label="Blackbox runtime views",
-        )
-    _cleanup_empty_runtime_view_root(runtime_views)
-    _sanitize_final_input_state(root / "input_state.json")
-
-
-def _remove_harness_runtime_tree(
-    runtime_root: Path,
-    *,
-    controlled_parent: Path,
-) -> None:
-    _require_controlled_directory(
-        runtime_root,
-        controlled_parent=controlled_parent,
-        label="Blackbox Harness runtime tree",
-    )
-    entries: list[Path] = []
-    for current_root, directories, files in os.walk(
-        runtime_root,
-        topdown=True,
-        followlinks=False,
-    ):
-        current = Path(current_root)
-        for name in (*directories, *files):
-            entry = current / name
-            info = entry.lstat()
-            if stat.S_ISLNK(info.st_mode):
-                raise ValueError(
-                    "Blackbox Harness runtime tree contains a symlink"
-                )
-            if not (
-                stat.S_ISDIR(info.st_mode)
-                or stat.S_ISREG(info.st_mode)
-            ):
-                raise ValueError(
-                    "Blackbox Harness runtime tree contains a special file"
-                )
-            entries.append(entry)
-    os.chmod(runtime_root, 0o755, follow_symlinks=False)
-    for entry in entries:
-        mode = entry.lstat().st_mode
-        os.chmod(
-            entry,
-            0o755 if stat.S_ISDIR(mode) else 0o644,
-            follow_symlinks=False,
-        )
-    shutil.rmtree(runtime_root)
-
-
-def _write_runtime_platform_inputs(
-    gate_root: Path,
-    artifacts: tuple[FrozenPlatformInput, ...],
-) -> dict[str, Path]:
-    if not artifacts:
-        return {}
-    runtime_snapshot = gate_root / "runtime_snapshot"
-    runtime_snapshot.mkdir(exist_ok=True)
-    _require_controlled_directory(
-        runtime_snapshot,
-        controlled_parent=gate_root,
-        label="Blackbox runtime snapshot",
-    )
-    platform_root = runtime_snapshot / "platform_inputs"
-    platform_root.mkdir()
-    _require_controlled_directory(
-        platform_root,
-        controlled_parent=runtime_snapshot,
-        label="Blackbox runtime platform inputs",
-    )
-    paths: dict[str, Path] = {}
-    for artifact in artifacts:
-        destination = platform_root / artifact.filename
-        with destination.open("xb") as stream:
-            stream.write(artifact.content_bytes)
-            stream.flush()
-            os.fsync(stream.fileno())
-        destination.chmod(0o444)
-        if (
-            _regular_file_sha256(
-                destination,
-                label=f"platform input {artifact.artifact_id}",
-            )
-            != artifact.sha256
-        ):
-            raise ValueError(
-                f"platform input {artifact.artifact_id} write mismatch"
-            )
-        paths[artifact.artifact_id] = destination
-    platform_root.chmod(0o555)
-    return paths
-
-
-def _read_runtime_platform_content(
-    state_path: Path,
-    raw_artifact: dict[str, Any],
-) -> bytes:
-    runtime_snapshot = state_path.parent / "runtime_snapshot"
-    _require_controlled_directory(
-        runtime_snapshot,
-        controlled_parent=state_path.parent,
-        label="Blackbox runtime snapshot",
-    )
-    platform_root = runtime_snapshot / "platform_inputs"
-    _require_controlled_directory(
-        platform_root,
-        controlled_parent=runtime_snapshot,
-        label="Blackbox runtime platform inputs",
-    )
-    runtime_path = Path(raw_artifact["runtime_content_path"])
-    filename = str(raw_artifact["filename"])
-    expected = (
-        platform_root / filename
-    )
-    if runtime_path != expected:
-        raise ValueError(
-            "platform input runtime path is outside controlled snapshot"
-        )
-    stable = _read_stable_private_file(
-        runtime_path,
-        label=f"platform input {raw_artifact.get('artifact_id')}",
-        require_read_only=True,
-    )
-    expected_size = raw_artifact.get("size_bytes")
-    expected_sha256 = raw_artifact.get("sha256")
-    if (
-        stable.size_bytes != expected_size
-        or stable.sha256 != expected_sha256
-    ):
-        raise ValueError("platform input runtime content mismatch")
-    return stable.content_bytes
-
-
-def _sanitize_final_input_state(state_path: Path) -> None:
-    if not os.path.lexists(state_path):
-        return
-    stable = _read_stable_private_file(
-        state_path,
-        label="Blackbox V2 input state",
-    )
-    raw = json.loads(stable.content_bytes.decode("utf-8"))
-    artifacts = raw.get("platform_input_artifacts", [])
-    if not isinstance(artifacts, list):
-        raise ValueError(
-            "Blackbox V2 input state platform artifacts are invalid"
-        )
-    sanitized: list[dict[str, Any]] = []
-    for item in artifacts:
-        if not isinstance(item, dict):
-            raise ValueError(
-                "Blackbox V2 input state platform artifact is invalid"
-            )
-        clean = dict(item)
-        clean.pop("content_base64", None)
-        clean.pop("runtime_content_path", None)
-        clean["runtime_content_removed"] = True
-        sanitized.append(clean)
-    raw["platform_input_artifacts"] = sanitized
-    raw["runtime_content_removed"] = True
-    _atomic_write(
-        state_path,
-        json.dumps(raw, ensure_ascii=True, indent=2) + "\n",
-    )
+    """清除本次命令的进程内 Blackbox 输入状态。"""
+    ctx.runtime_state.pop("blackbox_v2.input_state", None)
 
 
 def _feature_date(metadata: BlackboxMetadata, predict_date: str, engine: Any) -> str:
@@ -1216,184 +870,6 @@ def _feature_date(metadata: BlackboxMetadata, predict_date: str, engine: Any) ->
         predict_date=predict_date,
         calendar=calendar,
     ).feature_date
-
-
-def _read_input_state(path: Path) -> InputState:
-    stable_state = _read_stable_private_file(
-        path,
-        label="Blackbox V2 input state",
-    )
-    raw = json.loads(stable_state.content_bytes.decode("utf-8"))
-    generation_id = raw.get("generation_id")
-    refresh_date = raw.get("refresh_date")
-    if (
-        not isinstance(generation_id, str)
-        or not generation_id.strip()
-        or not isinstance(refresh_date, str)
-        or not refresh_date.strip()
-    ):
-        raise ValueError(
-            "Blackbox V2 input state snapshot provenance is invalid"
-        )
-    snapshot = BlackboxSnapshot(
-        snapshot_id=str(raw["snapshot_id"]),
-        root_dir=Path(raw["snapshot_root"]),
-        data_dir=Path(raw["data_dir"]),
-        manifest_path=Path(raw["manifest_path"]),
-        schema_version=str(raw["schema_version"]),
-        generation_id=generation_id,
-        refresh_date=refresh_date,
-    )
-    request_path = Path(raw["request_path"])
-    if not snapshot.manifest_path.is_file() or not snapshot.data_dir.is_dir() or not request_path.is_file():
-        raise ValueError(f"Blackbox V2 input state references missing artifacts: {path}")
-    expected_request_path = path.parent / "request.json"
-    if request_path != expected_request_path:
-        raise ValueError("Blackbox V2 Request path is outside the gate root")
-    request_sha256 = raw.get("request_sha256")
-    stable_request = _read_stable_private_file(
-        request_path,
-        label="Blackbox Request",
-    )
-    if (
-        not isinstance(request_sha256, str)
-        or stable_request.sha256 != request_sha256
-    ):
-        raise ValueError("Blackbox V2 Request SHA-256 mismatch")
-    request = load_request_bytes(
-        stable_request.content_bytes,
-        source="verified Blackbox Request",
-    )
-    raw_artifacts = raw.get("platform_input_artifacts", [])
-    if not isinstance(raw_artifacts, list):
-        raise ValueError("Blackbox V2 input state platform artifacts are invalid")
-    artifacts: list[FrozenPlatformInput] = []
-    for item in raw_artifacts:
-        if not isinstance(item, dict):
-            raise ValueError("Blackbox V2 input state platform artifact is invalid")
-        try:
-            artifacts.append(
-                FrozenPlatformInput(
-                    artifact_id=item["artifact_id"],
-                    provider_version=item["provider_version"],
-                    filename=item["filename"],
-                    columns=tuple(item["columns"]),
-                    content_bytes=_read_runtime_platform_content(
-                        path,
-                        item,
-                    ),
-                    sha256=item["sha256"],
-                    size_bytes=item["size_bytes"],
-                    row_count=item["row_count"],
-                    audit_provenance=item["audit_provenance"],
-                )
-            )
-        except (KeyError, OSError, TypeError, ValueError) as exc:
-            raise ValueError(
-                "Blackbox V2 input state platform artifact is invalid"
-            ) from exc
-    platform_input_ids = tuple(raw.get("platform_input_ids", ()))
-    bundle = compose_blackbox_input_bundle(
-        snapshot,
-        platform_input_ids=platform_input_ids,
-        platform_input_artifacts=artifacts,
-    )
-    if (
-        raw.get("combined_snapshot_id") != bundle.combined_snapshot_id
-        or raw.get("parent_snapshot_id") != bundle.parent_snapshot_id
-        or raw.get("identity_manifest") != bundle.identity_manifest
-        or raw.get("audit_manifest") != bundle.audit_manifest
-    ):
-        raise ValueError("Blackbox V2 input state bundle evidence mismatch")
-    return InputState(
-        snapshot=snapshot,
-        request_path=request_path,
-        request=request,
-        bundle=bundle,
-    )
-
-
-def _existing_gate_root(ctx: GateContext) -> Path | None:
-    report_dir = ctx.report_dir
-    if not os.path.lexists(report_dir):
-        return None
-    _require_real_directory(report_dir, "Harness report_dir")
-    root = report_dir / "blackbox_v2"
-    if not os.path.lexists(root):
-        return None
-    _require_controlled_directory(
-        root,
-        controlled_parent=report_dir,
-        label="Blackbox gate root",
-    )
-    return root
-
-
-def _gate_root(ctx: GateContext) -> Path:
-    report_dir = ctx.report_dir
-    report_dir.mkdir(parents=True, exist_ok=True)
-    _require_real_directory(report_dir, "Harness report_dir")
-    root = report_dir / "blackbox_v2"
-    root.mkdir(exist_ok=True)
-    _require_controlled_directory(
-        root,
-        controlled_parent=report_dir,
-        label="Blackbox gate root",
-    )
-    return root
-
-
-def _require_real_directory(path: Path, label: str) -> None:
-    try:
-        info = path.lstat()
-    except OSError as exc:
-        raise ValueError(f"{label} is unavailable") from exc
-    if stat.S_ISLNK(info.st_mode):
-        raise ValueError(f"{label} must not be a symlink")
-    if not stat.S_ISDIR(info.st_mode):
-        raise ValueError(f"{label} must be a directory")
-
-
-def _require_controlled_directory(
-    path: Path,
-    *,
-    controlled_parent: Path,
-    label: str,
-) -> None:
-    _require_real_directory(controlled_parent, f"{label} parent")
-    _require_real_directory(path, label)
-    try:
-        actual_parent = path.parent.resolve(strict=True)
-        expected_parent = controlled_parent.resolve(strict=True)
-    except OSError as exc:
-        raise ValueError(f"{label} boundary is unavailable") from exc
-    if actual_parent != expected_parent:
-        raise ValueError(f"{label} is outside the controlled boundary")
-
-
-def _is_real_directory(path: Path) -> bool:
-    try:
-        info = path.lstat()
-    except OSError:
-        return False
-    return stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(
-        info.st_mode
-    )
-
-
-def _require_regular_file(path: Path, label: str) -> None:
-    try:
-        info = path.lstat()
-    except OSError as exc:
-        raise ValueError(f"{label} is unavailable") from exc
-    if stat.S_ISLNK(info.st_mode):
-        raise ValueError(f"{label} must not be a symlink")
-    if not stat.S_ISREG(info.st_mode):
-        raise ValueError(f"{label} must be a regular file")
-
-
-def _regular_file_sha256(path: Path, *, label: str) -> str:
-    return _read_stable_private_file(path, label=label).sha256
 
 
 def _read_stable_private_file(
@@ -1582,7 +1058,7 @@ def _persisted_backtest_provenance_errors(
 def _verify_passed_all(engine, cfg: SchemeConfig) -> PassedAllRun:
     from sqlalchemy import text
 
-    # 从唯一的序列定义派生，不再写第二份。写死过一次已经导致：自动段缩到四段后，
+    # 从唯一的序列定义派生，不再写第二份。写死过一次已经导致：自动段缩短后，
     # 依赖本函数的 shadow-register / backtest --persist / activate 三条路径全部
     # 因「missing=['backtest','dry-run']」而阻断。
     from harness.registry import BLACKBOX_AUTO_SEQUENCE
@@ -1592,7 +1068,7 @@ def _verify_passed_all(engine, cfg: SchemeConfig) -> PassedAllRun:
         row = connection.execute(
             text(
                 """
-                SELECT harness_run_id, report_uri
+                SELECT harness_run_id
                 FROM t_harness_runs
                 WHERE scheme_id = :scheme_id
                   AND scheme_version = :scheme_version
@@ -1609,11 +1085,11 @@ def _verify_passed_all(engine, cfg: SchemeConfig) -> PassedAllRun:
                 f"no passed all-stage harness run for {cfg.scheme_id} version {cfg.scheme_version}"
             )
         gate_rows = [
-            (str(item[0]), str(item[1]))
+            (str(item[0]), str(item[1]), item[2])
             for item in connection.execute(
                 text(
                     """
-                    SELECT gate_name, status
+                    SELECT gate_name, status, summary_json
                     FROM t_harness_gate_results
                     WHERE harness_run_id = :harness_run_id
                     """
@@ -1621,13 +1097,13 @@ def _verify_passed_all(engine, cfg: SchemeConfig) -> PassedAllRun:
                 {"harness_run_id": row["harness_run_id"]},
             ).fetchall()
         ]
-    names = [name for name, _status in gate_rows]
+    names = [name for name, _status, _summary in gate_rows]
     duplicates = sorted({name for name in names if names.count(name) > 1})
     missing = sorted(required - set(names))
     extra = sorted(set(names) - required)
     non_passed = sorted(
         f"{name}={status}"
-        for name, status in gate_rows
+        for name, status, _summary in gate_rows
         if status != "passed"
     )
     if (
@@ -1642,28 +1118,60 @@ def _verify_passed_all(engine, cfg: SchemeConfig) -> PassedAllRun:
             f"row_count={len(gate_rows)}, duplicates={duplicates}, "
             f"missing={missing}, extra={extra}, non_passed={non_passed}"
         )
-    report_uri = Path(str(row["report_uri"]))
-    report_dir = report_uri.parent if report_uri.is_file() or report_uri.suffix == ".json" else report_uri
-    state_path = report_dir / "blackbox_v2" / "input_state.json"
-    if not state_path.is_file():
-        raise ValueError(f"passed all-stage run has no Blackbox V2 input state: {state_path}")
-    stable_state = _read_stable_private_file(
-        state_path,
-        label="passed all-stage Blackbox V2 input state",
+    input_summaries = [
+        summary for name, _status, summary in gate_rows if name == "input"
+    ]
+    if len(input_summaries) != 1:
+        raise ValueError("passed all-stage run has no unique input evidence")
+    evidence = _decode_harness_evidence(input_summaries[0])
+    required_evidence = (
+        "data_snapshot_id",
+        "generation_id",
+        "runtime_profile",
+        "environment_fingerprint",
     )
-    state = json.loads(stable_state.content_bytes.decode("utf-8"))
+    missing_evidence = [
+        key
+        for key in required_evidence
+        if not isinstance(evidence.get(key), str)
+        or not str(evidence[key]).strip()
+    ]
+    if missing_evidence:
+        raise ValueError(
+            "passed all-stage input evidence is incomplete: "
+            f"missing={missing_evidence}"
+        )
     return PassedAllRun(
         harness_run_id=str(row["harness_run_id"]),
-        report_uri=report_dir,
-        data_snapshot_id=str(
-            state.get("combined_snapshot_id", state["snapshot_id"])
-        ),
-        generation_id=(str(state["generation_id"]) if state.get("generation_id") else None),
-        runtime_profile=(str(state["runtime_profile"]) if state.get("runtime_profile") else None),
-        environment_fingerprint=(
-            str(state["environment_fingerprint"]) if state.get("environment_fingerprint") else None
-        ),
+        data_snapshot_id=str(evidence["data_snapshot_id"]),
+        generation_id=str(evidence["generation_id"]),
+        runtime_profile=str(evidence["runtime_profile"]),
+        environment_fingerprint=str(evidence["environment_fingerprint"]),
     )
+
+
+def _decode_harness_evidence(value: object) -> dict[str, object]:
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            value = value.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("Harness gate evidence is malformed") from exc
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Harness gate evidence is malformed") from exc
+    if not isinstance(value, dict) or not isinstance(value.get("evidence"), list):
+        raise ValueError("Harness gate evidence is malformed")
+    evidence: dict[str, object] = {}
+    for item in value["evidence"]:
+        if not isinstance(item, dict) or not isinstance(item.get("key"), str):
+            raise ValueError("Harness gate evidence is malformed")
+        key = item["key"]
+        if key in evidence or "value" not in item:
+            raise ValueError("Harness gate evidence is malformed")
+        evidence[key] = item["value"]
+    return evidence
 
 
 def _register_shadow(
@@ -1737,21 +1245,6 @@ def _environment_fingerprint(project_root: Path) -> str:
     if computed != fingerprint:
         raise ValueError("environment manifest fingerprint does not match explicit_packages")
     return fingerprint
-
-
-def _atomic_write(path: Path, text_value: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
-            handle.write(text_value)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
 
 
 def _finish(

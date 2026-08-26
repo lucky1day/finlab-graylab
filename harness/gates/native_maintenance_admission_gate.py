@@ -20,7 +20,6 @@ NATIVE_MAINTENANCE_STAGE = "native-maintenance"
 NATIVE_MAINTENANCE_SEQUENCE = (
     "static",
     "native-maintenance-admission",
-    "input",
     "dry-run",
 )
 _VALIDATION_PROFILE = "native_post_admission_revision_v1"

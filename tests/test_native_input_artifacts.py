@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -165,3 +166,45 @@ def test_all_native_builders_use_current_database(
     assert weekly_builder.call_args.kwargs["engine"] is engine
     assert monthly_builder.call_args.kwargs["engine"] is engine
     assert all("input_generation_id" not in item.metadata for item in artifacts)
+    assert list(tmp_path.rglob("*.json")) == []
+
+
+def test_native_builder_emits_harness_only_audit_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shared import input_artifacts
+
+    audit_root = tmp_path / "audit"
+    audit_root.mkdir(mode=0o700)
+    audit_root.chmod(0o700)
+    monkeypatch.setenv(
+        input_artifacts.NATIVE_INPUT_AUDIT_ROOT_ENV,
+        str(audit_root.resolve()),
+    )
+    frame = pd.DataFrame(
+        [{"date": "2026-07-23", "TB1YWI0C": 1.2}]
+    )
+    with patch.object(
+        input_artifacts._data_service,
+        "build_daily_output_from_db",
+        return_value=frame,
+    ):
+        artifact = input_artifacts.build_daily_input_artifact(
+            scheme_id="daily_demo",
+            predict_date="2026-07-24",
+            start_date="2026-07-23",
+            end_date="2026-07-23",
+            engine=object(),
+            output_root=tmp_path / "inputs",
+        )
+
+    receipt_path = audit_root / "daily.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt_path.stat().st_mode & 0o777 == 0o600
+    assert receipt["path"] == str(artifact.path)
+    assert receipt["source"] == artifact.source
+    assert receipt["data_version"] == artifact.data_version
+    assert receipt["content_hash"] == artifact.content_hash
+    assert receipt["date_coverage"]["end"] == "2026-07-23"
+    assert receipt["metadata"]["end_date"] == "2026-07-23"

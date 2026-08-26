@@ -7,7 +7,7 @@ from harness.gates.base import Gate, utc_now
 from harness.gates.native_maintenance_admission_gate import NATIVE_MAINTENANCE_STAGE
 from harness.persistence import (
     new_harness_run_id,
-    persist_harness_gate_result,
+    persist_harness_run_complete,
     persist_harness_run_finish,
     persist_harness_run_start,
 )
@@ -48,27 +48,6 @@ def onboard(
         for gate in selected_gates:
             result = gate.run(ctx)
             results.append(result)
-            gate_result_persisted = persist_harness_gate_result(
-                ctx,
-                harness_run_id,
-                result,
-            )
-            if not gate_result_persisted:
-                report = _persistence_failure_report(
-                    ctx,
-                    stage=stage,
-                    harness_run_id=harness_run_id,
-                    results=results,
-                    operation="gate_result",
-                    gate_name=result.gate_name,
-                )
-                persist_harness_run_finish(
-                    ctx,
-                    harness_run_id=harness_run_id,
-                    status="failed",
-                    finished_at=utc_now(),
-                )
-                return report
             if not result.passed:
                 break
 
@@ -79,19 +58,20 @@ def onboard(
             results=results,
             harness_run_id=harness_run_id,
         )
-        finish_persisted = persist_harness_run_finish(
+        complete_persisted = persist_harness_run_complete(
             ctx,
             harness_run_id=harness_run_id,
             status=_report_status(report),
             finished_at=utc_now(),
+            results=results,
         )
-        if not finish_persisted:
+        if not complete_persisted:
             report = _persistence_failure_report(
                 ctx,
                 stage=stage,
                 harness_run_id=harness_run_id,
                 results=results,
-                operation="run_finish",
+                operation="run_complete",
             )
             persist_harness_run_finish(
                 ctx,
@@ -114,7 +94,6 @@ def _persistence_failure_report(
     harness_run_id: str,
     results: list[GateResult],
     operation: str,
-    gate_name: str | None = None,
 ) -> OnboardReport:
     """返回控制面写入失败的 fail-closed 结果，不再保存本地 JSON。"""
     now = utc_now()
@@ -124,8 +103,6 @@ def _persistence_failure_report(
         Evidence("persistence_operation", operation),
         Evidence("harness_run_id", harness_run_id),
     ]
-    if gate_name is not None:
-        evidence.append(Evidence("persistence_gate_name", gate_name))
     failure = GateResult(
         gate_name="control-plane-persistence",
         status=GateStatus.BLOCKED,

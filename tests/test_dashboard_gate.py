@@ -170,7 +170,6 @@ def _context(project_root: Path) -> GateContext:
         scheme_id=BASE_SCHEME_ID,
         predict_date="dashboard",
         project_root=project_root,
-        report_dir=project_root / "reports",
         config=SimpleNamespace(
             runtime_type="native_adapter",
             status="stale-context-must-not-be-trusted",
@@ -386,7 +385,6 @@ def test_registry_exposes_dashboard_gate_for_both_runtimes() -> None:
             scheme_id=BASE_SCHEME_ID,
             predict_date="dashboard",
             project_root=Path("/tmp/dashboard-gate"),
-            report_dir=Path("/tmp/dashboard-gate/reports"),
             config=SimpleNamespace(runtime_type=runtime_type),
         )
         assert isinstance(gate_for_name("dashboard", ctx=ctx), DashboardGate)
