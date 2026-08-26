@@ -276,9 +276,8 @@ class BlackboxBacktestGate(_BlackboxGate):
 
     def _run_persist(self, ctx: GateContext, started_at: str) -> GateResult:
         cfg = _config(ctx)
-        metadata = _metadata(cfg)
         if (
-            metadata.frequency == "weekly"
+            cfg.frequency == "weekly"
             and ctx.backtest_start_date != DEFAULT_BACKTEST_START_DATE
         ):
             return _blocked(
@@ -305,7 +304,9 @@ class BlackboxBacktestGate(_BlackboxGate):
             if operation is None or operation_errors:
                 return _blocked(self.name, started_at, operation_errors)
             state = _ensure_input_state(ctx)
-            provenance = _data_bridge_provenance(ctx, state.snapshot)
+            provenance = state.provenance
+            if provenance is None:
+                raise ValueError("Blackbox input state has no DataBridge provenance")
             generation_id = str(provenance.get("generation_id", "")).strip()
             if not generation_id:
                 return _blocked(
@@ -390,7 +391,7 @@ class BlackboxBacktestGate(_BlackboxGate):
             Evidence("generation_id", generation_id),
             Evidence(
                 "data_snapshot_id",
-                _input_bundle(state).combined_snapshot_id,
+                bundle.combined_snapshot_id,
             ),
             Evidence("backtest_start_date", ctx.backtest_start_date),
             Evidence("target_date_before", ctx.predict_date),
