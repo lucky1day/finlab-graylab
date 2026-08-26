@@ -33,11 +33,12 @@
 ## 当前治理边界
 
 - config active、exact version active、Registry target active 且 cadence 匹配，是进入一次性 runner 的
-  唯一资格；自然运行写 `scheduled_live`，单日授权补缺只写 insert-only `gray_live`。
-- 后续新方案若使用逐 Request 截止等价的一次性 batch，统一只计算一次并冻结结果，再按方案级
-  `gray_target_start` 分流：历史段形成新的 immutable canonical backtest，gray 段复用核心结果并按
-  repository insert-only 物化；live `predict_date` 仍按任务日历重新生成。不能证明 live-safe 等价时回到
-  逐点计算，不得以性能理由放宽截止、版本、lineage 或唯一键安全门。
+  唯一资格；自然运行写 `scheduled_live`，单日或获批 target 区间补缺只写 insert-only `gray_live`。
+- 后续新方案的历史段由一次持久化 backtest batch 形成 immutable canonical backtest；激活后的连续 gray
+  缺口由一次 live-safe target 区间 batch 物化。区间不得早于平台 live 起点，一个方案只解析一次
+  DataBridge authority、建立一个 replay session 并启动一个算法 batch；任一既有业务键整组拒绝，全部
+  prediction 在一个 repository 事务中提交。不跨激活保存候选结果，也不以性能理由放宽 cutoff、版本、
+  lineage 或唯一键安全门。
 - 跨主机补缺优先复用同一 immutable release 下已存在的精确预测结果；源端必须只读，目标端 Writer 必须先
   停止，release、方案版本、日期和业务键必须完全匹配，已有键整组拒绝。源端不存在的键才允许受控计算。
 - 新方案只走 Blackbox V2 两文件 Intake；Native V1 只维护政策清单内存量身份。平台不反编译或改写

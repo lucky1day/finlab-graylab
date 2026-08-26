@@ -221,6 +221,25 @@ def test_target_range_uses_target_boundary_and_thirteen_weekly_requests() -> Non
     assert all(case.target_date != "2026-09-04" for case in cases)
 
 
+def test_target_range_rejects_dates_before_platform_live_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    discover = Mock(side_effect=AssertionError("discovery must not run"))
+    monkeypatch.setattr(signal_gap_plan, "_discover_scheme_configs", discover)
+
+    plan = signal_gap_plan.plan_signal_gap_target_range(
+        _Engine(),
+        target_date_from="2026-05-01",
+        target_date_before="2026-06-01",
+        base_scheme_id="demo_blackbox",
+        databridge_config=SimpleNamespace(),
+    )
+
+    assert plan["status"] == "BLOCKED"
+    assert plan["failure_code"] == "TARGET_RANGE_BEFORE_PLATFORM_LIVE_START"
+    discover.assert_not_called()
+
+
 def test_target_range_resolves_databridge_authority_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

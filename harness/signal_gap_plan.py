@@ -250,6 +250,13 @@ def plan_signal_gap_target_range(
             "TARGET_RANGE_SCHEME_REQUIRED",
             "target range requires one exact base scheme id",
         )
+    if normalized_from < PLATFORM_LIVE_TARGET_START_DATE:
+        return _blocked_range_plan(
+            target_date_from=normalized_from,
+            target_date_before=normalized_before,
+            base_scheme_id=normalized_base,
+            failure_code="TARGET_RANGE_BEFORE_PLATFORM_LIVE_START",
+        )
     configs = tuple(_discover_scheme_configs())
     authority, selection_error = _select_execution_authority(
         configs,
