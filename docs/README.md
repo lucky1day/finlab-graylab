@@ -7,6 +7,7 @@
 本文是仓库文档的唯一总入口。这里不复制运行 ID、单次实验或生产时点状态；当前稳定事实查看
 [当前状态](CURRENT_STATUS.md)，未批准工作的顺序和边界查看[统一后续推进计划](TODO.md)，生产调度当前规则查看
 [生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。
+所有新方案的平台入库只有三步：Blackbox 两文件 Intake、一次完整持久化回测和独立授权 activate。
 
 ## 按角色进入
 

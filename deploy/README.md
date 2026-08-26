@@ -80,7 +80,7 @@ systemd 候选模板读取该文件，使无 `.git` release 仍有稳定代码�
 单项覆盖时，DataBridge、artifact 和 source cache 才从 `BFL_RUNTIME_ROOT` 派生。设置了生产部署
 目标却缺少所需 release 环境时，代码 fail-closed。
 
-Blackbox Gate、activation、revision activation 和环境验证 CLI 通过同一个 selector 选择 frozen
+Blackbox 完整持久化回测、activation、revision activation 和环境验证 CLI 通过同一个 selector 选择 frozen
 manifest：Linux x86_64 使用 `linux-64`，Mac arm64 使用 `osx-arm64`，其它平台 fail-closed。
 
 这些是仓库候选能力，不表示任一 installed unit/plist 已替换。Mac3 仓库 launchd 模板使用

@@ -4,10 +4,13 @@ import json
 import os
 import tempfile
 import unittest
+from contextlib import contextmanager
 from dataclasses import replace
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -131,6 +134,116 @@ def _v3_period_bootstrap_inputs():
         schema_path=SCHEMA_PATH,
     )
     return current, resolved, config
+
+
+class _StaticDataBridgeRoundBuilder:
+    """用固定四文件数据驱动真实 refresh/publish 链路。"""
+
+    staging_root: Path
+    frames: dict[str, pd.DataFrame]
+
+    def __init__(self, *, engine=None, config=None) -> None:  # noqa: ARG002
+        self.calls = 0
+
+    def build(
+        self,
+        round_id: str,
+        *,
+        end_date: str,  # noqa: ARG002
+        expected_daily_date: str,
+        previous_keys=None,
+        continuity_cutoffs=None,
+    ):
+        from shared.data_bridge.refresh import DownloadRound
+        from shared.data_bridge.validation import (
+            validate_dataset,
+            write_validated_dataset,
+        )
+
+        self.calls += 1
+        dataset = validate_dataset(
+            self.frames,
+            schema_path=SCHEMA_PATH,
+            expected_daily_date=expected_daily_date,
+            previous_keys=previous_keys,
+            continuity_cutoffs=continuity_cutoffs,
+        )
+        directory = self.staging_root / f"{round_id}-{self.calls}"
+        directory.parent.mkdir(parents=True, exist_ok=True)
+        write_validated_dataset(dataset, directory)
+        return DownloadRound(
+            round_id=round_id,
+            directory=directory,
+            dataset=dataset,
+            digest=dataset.business_digest,
+        )
+
+
+def _bridge_frames(*, include_new_week: bool) -> dict[str, pd.DataFrame]:
+    daily_keys = ["2026-07-17"]
+    week_keys = ["202629"]
+    if include_new_week:
+        daily_keys.append("2026-07-20")
+        week_keys.append("202630")
+    return {
+        "daily_output.csv": _frame("daily_output.csv", daily_keys),
+        "weekly_output.csv": _frame("weekly_output.csv", week_keys),
+        "monthly_output.csv": _frame("monthly_output.csv", ["202607"]),
+        "api_wind_date.csv": pd.DataFrame(
+            {
+                "rdate": daily_keys,
+                "week_id": week_keys,
+            }
+        ),
+    }
+
+
+@contextmanager
+def _cross_week_cutoff_source():
+    """保留真实 cutoff 解析，仅替换数据库读取。"""
+    from shared import data_service
+
+    metadata = pd.DataFrame({"indicators_code": ["X0000001"]})
+    with (
+        patch.object(
+            data_service,
+            "read_factor_metadata_from_db",
+            return_value=metadata,
+        ),
+        patch.object(
+            data_service,
+            "select_monthly_factor_metadata",
+            return_value=metadata,
+        ),
+        patch.object(
+            data_service,
+            "read_weekly_long_from_db",
+            return_value=pd.DataFrame(),
+        ),
+        patch.object(
+            data_service,
+            "read_monthly_long_from_db",
+            return_value=pd.DataFrame(),
+        ),
+        patch.object(
+            data_service,
+            "build_weekly_cutoff_index_from_frames",
+            return_value=pd.DataFrame(
+                [
+                    {"week_id": "202629", "available_date": "2026-07-13"},
+                    {"week_id": "202630", "available_date": "2026-07-20"},
+                ]
+            ),
+        ),
+        patch.object(
+            data_service,
+            "build_monthly_cutoff_index_from_frames",
+            return_value=pd.DataFrame(
+                [{"month_id": "202607", "available_date": "2026-07-01"}]
+            ),
+        ),
+    ):
+        yield
 
 
 class DataBridgeCurrentTests(unittest.TestCase):
@@ -594,6 +707,205 @@ class DataBridgeCurrentTests(unittest.TestCase):
         ):
             input_artifacts._require_blackbox_databridge_monthly_additions(
                 _current_dataset().dataset.frames
+            )
+
+    def test_cross_week_producer_resolves_and_publishes_new_week(self) -> None:
+        """周一首刷必须贯通真实 cutoff、refresh 与四文件 publish。"""
+        from scripts import refresh_data_bridge_current as refresh_script
+        from shared.data_bridge import mysql_exporter
+        from shared.data_bridge.refresh import (
+            DataBridgeRefreshConfig,
+            run_full_refresh,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = DataBridgeRefreshConfig(
+                data_root=root / "data",
+                runtime_root=root / "runtime",
+                schema_path=SCHEMA_PATH,
+            )
+            config.data_root.mkdir()
+            config.runtime_root.mkdir()
+            config.data_root.chmod(0o700)
+            config.runtime_root.chmod(0o700)
+
+            _StaticDataBridgeRoundBuilder.staging_root = root / "old"
+            _StaticDataBridgeRoundBuilder.frames = _bridge_frames(
+                include_new_week=False
+            )
+            run_full_refresh(
+                config=config,
+                expected_daily_date="2026-07-17",
+                refresh_date="2026-07-18",
+                publish=True,
+                round_builder=_StaticDataBridgeRoundBuilder(),
+            )
+
+            _StaticDataBridgeRoundBuilder.staging_root = root / "new"
+            _StaticDataBridgeRoundBuilder.frames = _bridge_frames(
+                include_new_week=True
+            )
+            connection = MagicMock()
+            connection.exec_driver_sql.return_value = None
+            engine = MagicMock()
+            engine.connect.return_value.__enter__.return_value = connection
+            engine.connect.return_value.__exit__.return_value = False
+            with (
+                _cross_week_cutoff_source(),
+                patch.dict(
+                    os.environ,
+                    {
+                        refresh_script.LAUNCHD_PUBLISHER_ENV: (
+                            refresh_script.LAUNCHD_PUBLISHER_VALUE
+                        )
+                    },
+                ),
+                patch.object(
+                    refresh_script,
+                    "create_sqlalchemy_engine",
+                    return_value=engine,
+                ),
+                patch.object(
+                    refresh_script,
+                    "MySqlDataBridgeRoundBuilder",
+                    _StaticDataBridgeRoundBuilder,
+                ),
+                patch.object(
+                    mysql_exporter,
+                    "MySqlDataBridgeRoundBuilder",
+                    _StaticDataBridgeRoundBuilder,
+                ),
+                patch.object(
+                    refresh_script,
+                    "invalidate_ready_blackbox_snapshot",
+                ),
+                patch.object(
+                    refresh_script,
+                    "prepare_blackbox_generation_snapshot",
+                ),
+            ):
+                result = refresh_script.refresh_current(
+                    refresh_date="2026-07-21",
+                    expected_feature_date="2026-07-20",
+                    publish=True,
+                    config=config,
+                )
+
+            self.assertTrue(result.published)
+            self.assertEqual(
+                result.state["files"]["weekly_output.csv"]["max_key"],
+                "202630",
+            )
+            published = pd.read_csv(
+                config.data_root / "current" / "weekly_output.csv"
+            )
+            self.assertIn(202630, published["week_id"].tolist())
+
+    def test_legacy_three_file_current_upgrades_atomically(self) -> None:
+        """仍受支持的三文件 current 必须一次替换为完整四文件。"""
+        from shared.data_bridge.refresh import (
+            DataBridgeContinuityAuthority,
+            DataBridgeRefreshConfig,
+            DataBridgeStore,
+            _build_state,
+            _write_publication_manifest,
+            data_bridge_continuity_authority_sha256,
+            data_bridge_publication_identity_sha256,
+            run_full_refresh,
+        )
+        from shared.data_bridge.validation import (
+            validate_legacy_three_file_dataset,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = DataBridgeRefreshConfig(
+                data_root=root / "data",
+                runtime_root=root / "runtime",
+                schema_path=SCHEMA_PATH,
+            )
+            config.data_root.mkdir()
+            config.runtime_root.mkdir()
+            config.data_root.chmod(0o700)
+            config.runtime_root.chmod(0o700)
+            legacy_frames = {
+                name: frame
+                for name, frame in _bridge_frames(
+                    include_new_week=False
+                ).items()
+                if name != "api_wind_date.csv"
+            }
+            legacy = validate_legacy_three_file_dataset(
+                legacy_frames,
+                schema_path=SCHEMA_PATH,
+            )
+            store = DataBridgeStore(
+                data_root=config.data_root,
+                runtime_root=config.runtime_root,
+            )
+            store.current_dir.mkdir()
+            for filename, frame in legacy.frames.items():
+                frame.to_csv(store.current_dir / filename, index=False)
+            state = _build_state(
+                legacy,
+                "2026-07-18",
+                2,
+                refresh_started_at=(
+                    datetime.now(ZoneInfo("Asia/Shanghai"))
+                    - timedelta(seconds=1)
+                ),
+                duration_sec=1.0,
+            )
+            _write_publication_manifest(store.current_dir, state=state)
+            store.state_path.write_text(
+                json.dumps(state, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            publication_identity = data_bridge_publication_identity_sha256(
+                state
+            )
+            authority = DataBridgeContinuityAuthority(
+                generation_id=str(state["generation_id"]),
+                business_digest=legacy.business_digest,
+                publication_identity_sha256=publication_identity,
+                stable_identity_sha256=(
+                    data_bridge_continuity_authority_sha256(
+                        generation_id=str(state["generation_id"]),
+                        business_digest=legacy.business_digest,
+                        publication_identity_sha256=publication_identity,
+                        daily_cutoff_key="2026-07-17",
+                        weekly_cutoff_key="202629",
+                        monthly_cutoff_key="202607",
+                    )
+                ),
+                daily_cutoff_key="2026-07-17",
+                weekly_cutoff_key="202629",
+                monthly_cutoff_key="202607",
+            )
+            _StaticDataBridgeRoundBuilder.staging_root = root / "upgrade"
+            _StaticDataBridgeRoundBuilder.frames = _bridge_frames(
+                include_new_week=True
+            )
+            result = run_full_refresh(
+                config=config,
+                expected_daily_date="2026-07-20",
+                refresh_date="2026-07-21",
+                publish=True,
+                continuity_authority=authority,
+                round_builder=_StaticDataBridgeRoundBuilder(),
+            )
+
+            self.assertTrue(result.published)
+            self.assertEqual(
+                {path.name for path in store.current_dir.iterdir()},
+                {
+                    "daily_output.csv",
+                    "weekly_output.csv",
+                    "monthly_output.csv",
+                    "api_wind_date.csv",
+                    ".publication-manifest.json",
+                },
             )
 
 

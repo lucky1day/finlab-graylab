@@ -172,7 +172,7 @@ Actual 导出、回测运行明细和其它管理能力。前端采用客户端�
 |---|---|
 | `active` | 前端和业务 API 可见，可按当前规则参与展示或调度 |
 | `paused` | 暂停，不进入当前前端业务矩阵 |
-| `shadow` | 技术登记和审计状态，不等于生产上线 |
+| `draft` | 候选精确版本，不等于已激活或生产上线 |
 | `gray_live` | 灰度实盘观察记录，不等于正式 scheduler 自然发出 |
 | `scheduled_live` | 正式 scheduler 自然触发的实盘记录 |
 | `GRAY_LAB_READY` | 可安排灰度实验室内 no-persist 预测、回测和对照实验；不等于 `gray_live` |
@@ -198,7 +198,7 @@ Actual 导出、回测运行明细和其它管理能力。前端采用客户端�
 
 需要特别避免以下误读：
 
-- 不能把 Blackbox V2 的 shadow 验收写成已生产上线。
+- 不能把 Blackbox V2 Intake 或完整回测通过写成已激活或已生产上线。
 - 不能把 `GRAY_LAB_READY` 写成已经产生 `gray_live` 记录。
 - 不能把 `gray_live` 写成正式 scheduler 自然发出的 `scheduled_live`。
 - 不能把 Gate 通过写成算法一定有效或已完成生产晋级。

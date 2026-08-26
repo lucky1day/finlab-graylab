@@ -6,7 +6,8 @@
 
 - 后续新增算法、新方案 ID、新目标、新任务和替代版本只允许 Blackbox V2。
 - Native V1 只维护版本化政策清单中的既有身份。
-- Blackbox V2 自动 Gate 不自动授予生产权限；生产运行必须逐方案完成准备核验和专项授权。
+- Blackbox V2 固定只走“两文件 Intake → 一次完整持久化回测 → activate”；不进入 Native `onboard`，不额外运行 Static/Compare/冒烟/shadow。
+- 技术验证不自动授予生产权限；生产运行必须逐方案完成准备核验和专项授权。
 - 方案数量、Registry 状态和灰度结果按[当前状态](docs/CURRENT_STATUS.md)列出的权威来源现场读取；待验证项查看其中链接的推进计划。
 
 ## 文档入口
