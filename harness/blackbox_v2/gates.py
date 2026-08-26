@@ -31,6 +31,7 @@ from shared.blackbox_v2.contracts import BlackboxMetadata, load_metadata
 from shared.blackbox_v2.intake import (
     DATA_SCHEMA_VERSION,
     RUNTIME_PROFILE,
+    SCRIPT_VALIDATOR_POLICY_DIGEST,
     validate_delivery_script,
 )
 from shared.blackbox_v2.history import CURRENT_SNAPSHOT_REPLAY, build_historical_cases
@@ -164,6 +165,9 @@ class BlackboxBacktestGate(_BlackboxGate):
                     "code_hash": cfg.code_hash,
                     "config_hash": cfg.config_hash,
                     "manifest_hash": cfg.manifest_hash,
+                    "script_validator_policy_digest": (
+                        SCRIPT_VALIDATOR_POLICY_DIGEST
+                    ),
                     "input_artifact_hash": bundle.combined_snapshot_id,
                     "runtime_profile": cfg.runtime_profile,
                     "environment_fingerprint": environment_fingerprint,
@@ -243,6 +247,8 @@ def validate_canonical_blackbox_delivery(cfg: SchemeConfig) -> BlackboxMetadata:
         )
     if cfg.input_source != "data_bridge_current":
         raise ValueError("Blackbox input_source must be data_bridge_current")
+    if metadata.description is None:
+        raise ValueError("description is required for a Blackbox V2 delivery")
     return metadata
 
 
@@ -319,6 +325,8 @@ def verify_passed_blackbox_backtest(engine, cfg: SchemeConfig) -> PassedBacktest
         if (
             summary.get("scheme_version") != cfg.scheme_version
             or summary.get("manifest_hash") != cfg.manifest_hash
+            or summary.get("script_validator_policy_digest")
+            != SCRIPT_VALIDATOR_POLICY_DIGEST
         ):
             continue
         required = {

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 class BlackboxV2DiscoveryTests(unittest.TestCase):
@@ -204,6 +206,41 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
                     getattr(second, hash_field),
                 )
                 self.assertNotEqual(first.scheme_version, second.scheme_version)
+
+    def test_metadata_identity_and_hash_use_the_same_bytes(self) -> None:
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.contracts import load_metadata_bytes
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
+            metadata_path = scheme_dir / "delivery" / "trial_10y.json"
+            original_payload = metadata_path.read_bytes()
+            replacement = json.loads(original_payload)
+            replacement["algorithm_version"] = "2.0.0"
+            replacement_payload = json.dumps(replacement).encode("utf-8")
+
+            def replace_after_read(payload: bytes, *, source: str):
+                metadata_path.write_bytes(replacement_payload)
+                return load_metadata_bytes(payload, source=source)
+
+            with patch(
+                "shared.blackbox_v2.contracts.load_metadata_bytes",
+                side_effect=replace_after_read,
+            ):
+                first = load_scheme_config(scheme_dir / "config.yaml")
+
+            second = load_scheme_config(scheme_dir / "config.yaml")
+
+        self.assertEqual(first.algorithm_version, "1.2.3")
+        self.assertEqual(
+            first.manifest_hash,
+            hashlib.sha256(original_payload).hexdigest(),
+        )
+        self.assertEqual(second.algorithm_version, "2.0.0")
+        self.assertEqual(
+            second.manifest_hash,
+            hashlib.sha256(replacement_payload).hexdigest(),
+        )
 
 
     def test_blackbox_canonical_hash_is_stable_across_key_order(self) -> None:

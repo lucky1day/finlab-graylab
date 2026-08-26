@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -159,7 +160,7 @@ def _load_declared_scheme_config(config_path: Path) -> SchemeConfig:
 
 
 def _load_blackbox_config(config_path: Path, raw: dict[str, Any], schedule_raw: dict[str, Any]) -> SchemeConfig:
-    from shared.blackbox_v2.contracts import load_metadata
+    from shared.blackbox_v2.contracts import load_metadata_bytes
     from shared.blackbox_v2.intake import validate_canonical_layout
 
     scheme_dir = config_path.parent
@@ -182,14 +183,18 @@ def _load_blackbox_config(config_path: Path, raw: dict[str, Any], schedule_raw: 
         raise ValueError(f"{config_path}: delivery paths must stay inside scheme directory")
     if not script_path.is_file() or not metadata_path.is_file():
         raise ValueError(f"{config_path}: Blackbox V2 delivery files are missing")
-    metadata = load_metadata(metadata_path)
+    try:
+        metadata_payload = metadata_path.read_bytes()
+    except OSError as exc:
+        raise ValueError(f"{metadata_path}: cannot read metadata: {exc}") from exc
+    metadata = load_metadata_bytes(metadata_payload, source=str(metadata_path))
     if metadata.scheme_id != scheme_dir.name:
         raise ValueError(f"{metadata_path}: scheme_id must match directory name")
     if script_path.name != f"{metadata.scheme_id}.py" or metadata_path.name != f"{metadata.scheme_id}.json":
         raise ValueError(f"{config_path}: delivery filenames must match scheme_id")
     code_hash = _hash_file(script_path)
     config_hash = compute_blackbox_config_hash(raw)
-    manifest_hash = _hash_file(metadata_path)
+    manifest_hash = hashlib.sha256(metadata_payload).hexdigest()
     display_name = raw.get("display_name")
     resolved_name = (
         str(display_name).strip()

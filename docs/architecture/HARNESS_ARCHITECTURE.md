@@ -89,7 +89,7 @@ Native builder receipt 环境变量只由 DryRun 父进程显式注入，目录�
 receipt 为 `0600` 普通文件并在 Gate 返回前删除。StaticGate 同时拒绝 Native `predict.py` 直接写文件。
 
 Blackbox V2 不接受 `onboard`。Intake 定义交付结构、Metadata、固定 Profile/Schema 和平台安全静态
-边界；完整持久化回测执行前复验脚本安全边界，并验证平台批量调用与标准输出。activate 不重复运行 AST/Metadata 校验，只严格加载 canonical 当前身份并匹配 exact-version 成功回测证据。旧 Blackbox Harness `all` 证据不再是 backtest
+边界；完整持久化回测执行前复验脚本安全边界，并验证平台批量调用与标准输出。activate 不重复运行 AST/Metadata 校验，只严格加载 canonical 当前身份，并匹配 exact-version 与当前脚本校验策略摘要的成功回测证据。旧 Blackbox Harness `all` 证据不再是 backtest
 或 activation 的前置条件。
 
 Native 四段 evidence profile 和三段 `native-maintenance` 的既有准入、保真与身份规则保持不变；
@@ -99,7 +99,7 @@ Blackbox 不接受 `native-maintenance`。
 `signal-gap-fill --predict-date YYYY-MM-DD [--scheme-id BASE_SCHEME_ID]`，两者都不属于入库门禁。
 
 副作用命令绑定 canonical exact version、action、scheme、日期/回测起点和 operator，并保存 operation
-scope SHA-256。Blackbox activation 直接读取同 exact version 的成功持久化回测，不再绑定 Harness
+scope SHA-256。Blackbox activation 直接读取同 exact version、同当前脚本校验策略的成功持久化回测，不再绑定 Harness
 run。Blackbox lifecycle 只保留 `activate` 和异常恢复 `lifecycle-reconcile`；pending journal
 继续阻断新的生命周期操作。
 

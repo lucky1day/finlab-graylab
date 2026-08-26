@@ -8,9 +8,9 @@
 
 ## 必须满足
 
-1. 新 ID 的两文件 Intake 已通过；同 ID 修订的 canonical 两文件已在持久化回测前通过 Metadata、目录身份、Contract、Runtime Profile 和脚本安全边界校验。activation 严格加载 canonical 当前字节，并只接受同 exact version 的成功持久化回测证据。
+1. 新 ID 的两文件 Intake 已通过；同 ID 修订的 canonical 两文件已在持久化回测前通过 Metadata、目录身份、Contract、Runtime Profile 和脚本安全边界校验。activation 严格加载 canonical 当前字节，并只接受同 exact version、同当前脚本校验策略的成功持久化回测证据。
 2. 当前 exact version 已完成一次完整持久化回测，回测 durable summary 中的
-   version/code/config/manifest、Runtime Profile、环境指纹、generation 和 snapshot 精确一致。
+   version/code/config/manifest、脚本校验策略摘要、Runtime Profile、环境指纹、generation 和 snapshot 精确一致。校验策略变化后，旧回测不再能直接用于激活。
 3. DataBridge producer 独立完成四文件 generation 的 schema、freshness、cutoff、完整性校验和 ready Snapshot 构建；方案只读取已有 receipt 并使用对应只读版本，不触发构建、修复、哈希或 CSV 复核。私有运行视图只做 producer seal 核对、稳定复制和进程前后篡改检查。启用新版 receipt 的 release 后，目标环境必须先由该 release 完成一次 DataBridge publish 并写出 ready gate，旧 receipt 不自动升级；在此之前 Harness 与 scheduler 均 fail-closed。旧三文件 current 只允许由 producer 在 identity/manifest 校验后作为一次升级 continuity 基线，下一次原子发布必须恢复严格四文件；普通消费者仍拒绝三文件 current。
 4. canonical 两文件安全静态边界、回测运行后输入目录指纹复验、超时、环境 allowlist 和严格 `-1/0/1` Result 均通过。
    确定性、顺序/分批一致性与未来数据隔离**不在平台验收范围内**——它们是交付代码自身的性质，

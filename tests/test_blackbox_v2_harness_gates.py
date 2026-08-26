@@ -304,6 +304,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
         from sqlalchemy import create_engine, text
 
         from harness.blackbox_v2.gates import verify_passed_blackbox_backtest
+        from shared.blackbox_v2.intake import SCRIPT_VALIDATOR_POLICY_DIGEST
 
         engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
         summary = {
@@ -313,6 +314,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             "generation_id": "generation-test",
             "runtime_profile": "blackbox-v2-v1",
             "environment_fingerprint": "e" * 64,
+            "script_validator_policy_digest": SCRIPT_VALIDATOR_POLICY_DIGEST,
         }
         with engine.begin() as connection:
             connection.exec_driver_sql(
@@ -347,12 +349,30 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 manifest_hash="m" * 64,
             ),
         )
-        engine.dispose()
 
         self.assertEqual(passed.backtest_run_id, 1)
         self.assertEqual(passed.benchmark_id, "bbv2-test")
         self.assertEqual(passed.data_snapshot_id, "snapshot-test")
         self.assertEqual(passed.generation_id, "generation-test")
+
+        summary["script_validator_policy_digest"] = "old-policy"
+        with engine.begin() as connection:
+            connection.execute(
+                text("UPDATE t_backtest_runs SET summary = :summary WHERE id = 1"),
+                {"summary": json.dumps(summary)},
+            )
+        with self.assertRaisesRegex(ValueError, "no successful persisted"):
+            verify_passed_blackbox_backtest(
+                engine,
+                SimpleNamespace(
+                    scheme_id="trial_10y",
+                    scheme_version="version-test",
+                    code_hash="c" * 64,
+                    config_hash="f" * 64,
+                    manifest_hash="m" * 64,
+                ),
+            )
+        engine.dispose()
 
     def test_backtest_preflight_reuses_intake_safety_validation(self) -> None:
         from scheduler.discovery import load_scheme_config
@@ -372,6 +392,49 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "forbidden import requests"):
                 validate_canonical_blackbox_delivery(cfg)
+
+    def test_revision_backtest_requires_delivery_description(self) -> None:
+        from harness.blackbox_v2.gates import validate_canonical_blackbox_delivery
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.intake import intake_delivery
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            scheme_dir = intake_delivery(
+                _delivery(root / "incoming"),
+                schemes_root=root / "schemes",
+            )
+            metadata_path = scheme_dir / "delivery" / "trial_10y.json"
+            metadata_path.chmod(0o644)
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata.pop("description")
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+            cfg = load_scheme_config(scheme_dir / "config.yaml")
+
+            with self.assertRaisesRegex(ValueError, "description is required"):
+                validate_canonical_blackbox_delivery(cfg)
+
+    def test_summary_reuse_preserves_recursive_object_independence(self) -> None:
+        from backtests._base_runner import build_summary
+
+        rows = [
+            {
+                "scheme_id": "trial_10y",
+                "target_tenor": "10Y",
+                "horizon": 1,
+                "predict_date": "2026-07-15",
+                "label": 1,
+                "predicted_direction": 1,
+            }
+        ]
+
+        summary = build_summary(rows)
+        aggregate = summary["by_tenor"]["10Y"]
+        period_all = summary["periods_by_tenor"]["10Y"]["all"]
+
+        self.assertEqual(aggregate, period_all)
+        self.assertIsNot(aggregate, period_all)
+        self.assertIsNot(aggregate["actual_dist"], period_all["actual_dist"])
 
 def _delivery(path: Path, *, script: str = "import argparse\nimport json\n") -> Path:
     path.mkdir(parents=True)

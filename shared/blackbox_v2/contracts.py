@@ -82,9 +82,27 @@ def load_metadata(path: str | Path) -> BlackboxMetadata:
     """Strictly parse one Blackbox V2 metadata document."""
     metadata_path = Path(path)
     try:
-        raw = json.loads(metadata_path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys)
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        payload = metadata_path.read_bytes()
+    except OSError as exc:
         raise ValueError(f"invalid Blackbox V2 metadata {metadata_path}: {exc}") from exc
+    return load_metadata_bytes(payload, source=str(metadata_path))
+
+
+def load_metadata_bytes(
+    payload: bytes,
+    *,
+    source: str = "<bytes>",
+) -> BlackboxMetadata:
+    """从调用方已读取的同一份 bytes 严格解析 Metadata。"""
+    if not isinstance(payload, bytes):
+        raise ValueError("Blackbox V2 metadata payload must be bytes")
+    try:
+        raw = json.loads(
+            payload.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid Blackbox V2 metadata {source}: {exc}") from exc
     if not isinstance(raw, dict):
         raise ValueError("Blackbox V2 metadata must be a JSON object")
     allowed_fields = REQUIRED_METADATA_FIELDS | OPTIONAL_METADATA_FIELDS

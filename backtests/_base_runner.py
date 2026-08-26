@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
@@ -403,7 +404,7 @@ def build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     periods_by_tenor: dict[str, dict[str, Any]] = {}
     for tenor, items in sorted(by_tenor.items()):
         periods = period_summaries(items)
-        aggregate_by_tenor[tenor] = dict(periods["all"])
+        aggregate_by_tenor[tenor] = deepcopy(periods["all"])
         periods_by_tenor[tenor] = periods
     return {
         "by_tenor": aggregate_by_tenor,

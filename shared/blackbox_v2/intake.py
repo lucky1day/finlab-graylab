@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import os
 import re
 import shutil
@@ -37,6 +38,7 @@ FORBIDDEN_CALLS = {"eval", "exec", "compile", "__import__"}
 FORBIDDEN_QUALIFIED_CALLS = {"os.system", "os.popen", "os.spawnl", "os.spawnv"}
 ABSOLUTE_PATH_PATTERN = re.compile(r"^(?:/Users/|/home/|[A-Za-z]:[\\/])")
 RELATIVE_TRAVERSAL_PATTERN = re.compile(r"(?:^|[/\\])\.\.(?:[/\\]|$)")
+SCRIPT_VALIDATOR_POLICY_DIGEST = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 
 def intake_delivery(
