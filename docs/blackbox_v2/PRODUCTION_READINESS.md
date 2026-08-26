@@ -24,10 +24,10 @@
    已由受控迁移入口应用且 closed-world schema 校验通过，再部署会读取周期 actual 表的 Backend。其自然运行
    只允许复用 installed close-period 控制面；不得为三种任务分别增加 timer，或把仓库每日 18:00 模板当成
    installed/loaded 证明。
-10. 若完整区间使用等价一次性 batch，必须在计算前冻结 `gray_target_start`、exact version、输入身份、lineage
-    和应有 Request 集；通过逐 Request cutoff 与批内等价证据后，只计算一次并按 `target_date` 分流。历史段写
-    新 immutable canonical backtest，gray 段只通过 repository insert-only 物化并重新生成 live
-    `predict_date`；已有键整组拒绝，旧 run 保留审计。不能证明 live-safe 等价时不得复用。
+10. 历史回测与灰度实盘分别执行一次 batch。灰度 target 区间必须在计算前冻结 exact version、输入身份、
+    lineage 和完整 Request 集；通过逐 Request cutoff 与批内等价证据后，一个方案只建立一个 replay session
+    并启动一个算法 batch，再通过 repository 原子 insert-only 物化。已有键整组拒绝；不能证明 live-safe
+    等价时不得使用区间批量。
 
 ## 生命周期异常
 

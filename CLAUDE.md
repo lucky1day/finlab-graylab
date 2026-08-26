@@ -75,7 +75,7 @@ Native 首次入库必须保留 source benchmark 与 CompareGate；同一身份�
 
 `feature_date` 是唯一标准数据截止字段；`anchor_date` 只允许作为方案内部算法变量或审计 extra，前端和业务规则不得依赖它。实盘分为 `gray_live` 与 `scheduled_live`；日频、周频、月频和周期均值必须按统一日历与任务语义生成三个日期。历史回测按方案级 `target_date` 起点与 live 区间隔离；source benchmark 必须按 benchmark role 与 live-safe oracle 分开验收。完整规则见 [docs/architecture/PREDICTION_SEMANTICS.md](docs/architecture/PREDICTION_SEMANTICS.md)。
 
-后续方案如果以同一 exact version、同一冻结输入身份执行一次性批量回测，且交付已证明每条结果与该 Request 独立按 `feature_date` 截止计算完全等价，则核心原则是“只算一次、按 `target_date` 分区、复用核心结果”：`target_date < gray_target_start` 写入新的 immutable canonical backtest；`target_date >= gray_target_start` 且尚未由自然调度发布的应有点，只按受控 repository insert-only 物化为 `gray_live`。物化时保留 `feature_date`、`target_date`、方向、置信度、exact scheme version 和必要算法 `extra`，但必须按任务日历重新生成 live `predict_date`；不得复制数据库主键、源 `run_id`、Actuals、回测指标或 Harness 历史。任一业务键已存在即拒绝对应授权组，不得更新、覆盖或先删除再导入；历史 run 保持不可变，仅由新的 canonical run 取代其默认展示。若 batch 使用晚于样本 `feature_date` 的固定 `source_end`、未来 test window、全局 selector/calibration，或 exact version、输入 digest、lineage 任一不匹配，则禁止复用为 live，必须走 live-safe 计算。完整操作和验收规则见统一入库导航与预测语义文档。
+后续方案的历史回测与灰度实盘保持两个清晰批次：`target_date < gray_target_start` 由一次持久化历史回测写入新的 immutable canonical backtest；起点及以后、正式调度以前的应有点由一次 target 区间批量执行，按受控 repository insert-only 物化为 `gray_live`。灰度区间不得逐日期重复启动算法、重复解析 generation 或重建输入；平台必须按任务日历生成 live `predict_date`，并保留 `feature_date`、`target_date`、方向、置信度、exact scheme version 和必要算法 `extra`。两个批次严格绑定同一 exact version 和输入 lineage，但不为了少一次进程启动引入跨激活候选表、临时结果文件或新的生命周期状态。任一灰度业务键已存在即拒绝整个授权区间，不得更新、覆盖或先删除再导入；历史 run 保持不可变。若 batch 使用晚于样本 `feature_date` 的固定 `source_end`、未来 test window、全局 selector/calibration，或 exact version、输入 digest、lineage 任一不匹配，则禁止批量物化为 live，必须走逐点 live-safe 计算。完整操作和验收规则见统一入库导航与预测语义文档。
 
 ## 方案入库流程（强约束 harness）
 

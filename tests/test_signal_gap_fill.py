@@ -204,6 +204,12 @@ def _repository(*, commit_side_effect: object = 1) -> SimpleNamespace:
     return SimpleNamespace(
         create_scheme_run=Mock(side_effect=lambda *_a, **_k: next(run_ids)),
         complete_gray_gap_run=complete,
+        complete_gray_gap_runs_atomic=Mock(
+            side_effect=lambda _engine, items: {
+                int(item["run_id"]): len(item["records"])
+                for item in items
+            }
+        ),
         fail_scheme_run_atomic=Mock(),
     )
 
@@ -423,3 +429,110 @@ def test_blackbox_schemes_with_same_source_share_immutable_session(
     assert report["status"] == "PASSED", report["errors"]
     session_builder.assert_called_once()
     assert signal_gap_fill.run_blackbox_gray_replay_batch.call_count == 2
+
+
+def test_blackbox_target_range_runs_one_batch_and_commits_atomically(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from harness import signal_gap_fill
+
+    def range_action(predict_date: str, feature_date: str, target_date: str):
+        row = _action("demo_blackbox", runtime_type="blackbox_v2")
+        row.update(
+            registry_scheme_id="demo_blackbox__h1__5Y",
+            frequency="weekly",
+            task_type="weekly_point",
+            horizon=1,
+            predict_date=predict_date,
+            feature_date=feature_date,
+            target_date=target_date,
+            business_key=["demo_blackbox", "5Y", 1, target_date],
+        )
+        authority = dict(row["input_authority"])
+        authority["cutoff"] = {
+            **dict(authority["cutoff"]),
+            "feature_date": feature_date,
+            "daily_cutoff_key": feature_date,
+        }
+        row["input_authority"] = authority
+        return row
+
+    first = range_action("2026-05-30", "2026-05-29", "2026-06-05")
+    second = range_action("2026-06-06", "2026-06-05", "2026-06-12")
+    plan = _plan([first, second], base_scheme_id="demo_blackbox")
+    plan.update(
+        schema_version="target-range-active-live-gap-plan-v1",
+        predict_date=None,
+        target_date_from="2026-06-01",
+        target_date_before="2026-06-19",
+    )
+    cfg = _config("demo_blackbox", runtime_type="blackbox_v2")
+    cfg.frequency = "weekly"
+    cfg.task_type = "weekly_point"
+    cfg.horizon = 1
+    repository = _repository()
+    engine, readback = _install(
+        monkeypatch,
+        repository=repository,
+        plan=plan,
+        runner=Mock(side_effect=AssertionError("Native runner must not run")),
+        configs={"demo_blackbox": cfg},
+        readback=Mock(return_value=_present(plan)),
+    )
+    monkeypatch.setattr(
+        signal_gap_fill,
+        "build_blackbox_gray_replay_session",
+        Mock(return_value=SimpleNamespace(source_identity=_source_identity())),
+    )
+
+    def batch_runner(_cfg: SimpleNamespace, *, requests, **_kwargs):
+        records = []
+        by_target = {
+            str(row["target_date"]): row for row in (first, second)
+        }
+        for request in requests:
+            action = by_target[request.target_date]
+            records.append(
+                PredictionRecord(
+                    scheme_id="demo_blackbox",
+                    target_tenor="5Y",
+                    horizon=1,
+                    predict_date=request.predict_date,
+                    feature_date=request.feature_date,
+                    target_date=request.target_date,
+                    prediction_phase="gray_live",
+                    scheme_version="version-1",
+                    predicted_direction=1,
+                    extra={
+                        "request_id": request.request_id,
+                        "data_generation_id": action["input_authority"]["generation_id"],
+                        "source_refresh_date": action["input_authority"]["refresh_date"],
+                        "daily_cutoff_key": request.daily_cutoff_key,
+                        "weekly_cutoff_key": request.weekly_cutoff_key,
+                        "monthly_cutoff_key": request.monthly_cutoff_key,
+                        "data_snapshot_id": "snapshot-1",
+                    },
+                )
+            )
+        return records
+
+    monkeypatch.setattr(
+        signal_gap_fill,
+        "run_blackbox_gray_replay_batch",
+        Mock(side_effect=batch_runner),
+    )
+
+    report = signal_gap_fill.run_signal_gap_fill(
+        plan=plan,
+        project_root=tmp_path,
+        engine_factory=lambda: engine,
+        databridge_config=SimpleNamespace(),
+    )
+
+    assert report["status"] == "PASSED", report["errors"]
+    signal_gap_fill.run_blackbox_gray_replay_batch.assert_called_once()
+    repository.complete_gray_gap_run.assert_not_called()
+    repository.complete_gray_gap_runs_atomic.assert_called_once()
+    assert len(repository.complete_gray_gap_runs_atomic.call_args.args[1]) == 2
+    assert readback.call_count == 2

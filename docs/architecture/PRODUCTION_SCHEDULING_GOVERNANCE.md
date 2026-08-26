@@ -54,22 +54,18 @@ DataBridge 在 Mac3 使用 `BFL_DATABRIDGE_PRODUCER=launchd-one-shot`，在 ECS 
 `gray_live`；两者不能互相伪装、覆盖或以日期标签替代 provenance。回测继续写入
 `t_backtest_*`，不与实盘预测混用。
 
-历史缺口只保留单日运维入口，并可选限定一个 `base_scheme_id`。命令内部先执行只读
-planner，任一 blocker 都会在算法或 repository 写入前终止：
+历史缺口保留单日入口；单个 active Blackbox 周频方案还可以按 target 半开区间批量补齐。命令内部先执行只读 planner，任一 blocker 都会在算法或 repository 写入前终止：
 
 ```bash
 python -m harness signal-gap-fill --predict-date YYYY-MM-DD
 python -m harness signal-gap-fill --predict-date YYYY-MM-DD --scheme-id <base_scheme_id>
+python -m harness signal-gap-fill --scheme-id <base_scheme_id> --target-date-from YYYY-MM-DD --target-date-before YYYY-MM-DD
 ```
 
-该命令在进程内生成 `single-date-active-live-gap-plan-v1` 计划；不接收外部 plan、日期范围、
-operator、HMAC token 或 plan SHA。全量模式扫描当天所有应运行的 active 方案，单方案模式只检查
-指定的 active base scheme。`SKIP_NOT_DUE` 和 `SKIP_PRESENT` 都是正常无写入结果；只有真实
-`GRAY_LIVE_GAP` 才进入执行。Native 从当前数据库按指定日期推导的 `feature_date` 截止重建；
-Blackbox 严格重放该批次计划绑定的冻结 DataBridge authority。
+命令不接收外部 plan、operator、HMAC token 或 plan SHA。单日全量模式扫描当天所有应运行的 active 方案；区间模式只检查一个指定的 active Blackbox `weekly_point` base scheme。`SKIP_NOT_DUE` 和 `SKIP_PRESENT` 都是正常无写入结果；只有真实 `GRAY_LIVE_GAP` 才进入执行。Native 从当前数据库按指定日期推导的 `feature_date` 截止重建；Blackbox 严格重放该批次计划绑定的冻结 DataBridge authority。
 
 所有缺口算法必须先全部成功，任一算法失败则 prediction 零提交；算法全部成功后才按
-base scheme group 执行 insert-only `gray_live` 写入，并只做一次同日期最终权威读回。计划异常、
+base scheme group 执行 insert-only `gray_live` 写入。区间模式先复核全部业务键，再在一个事务中提交所有日期，最后逐日期权威读回。计划异常、
 Blackbox 权威输入缺失或执行失败均直接暴露；不回退旧版本、不覆盖、不自动重试。
 
 DataBridge 必须由本机 MySQL 原子发布标准日/周/月 artifact，并继续通过源表、schema、

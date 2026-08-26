@@ -147,12 +147,13 @@ close-period 和 actuals 每个 cadence 只能有一个 writer。Backend 不提�
 写 `scheduled_live`。早期失败/跳过只写审计日志，不能伪装为成功完成。
 
 入口（单日历史补缺）：`python -m harness signal-gap-fill --predict-date YYYY-MM-DD
-[--scheme-id <base_scheme_id>]` → 进程内生成 `single-date-active-live-gap-plan-v1` →
-跳过 `SKIP_NOT_DUE` / `SKIP_PRESENT` → 执行真实缺口 → 所有算法成功后按 base scheme group
-以 `gray_live` insert-only 写入 → 单次同日期权威读回。命令本身就是补数授权，不接收外部
-plan、日期范围、operator、HMAC token 或 plan SHA；任一算法失败时 prediction 零提交。
-Native 从当前数据库按该日 `feature_date` 截止重建；Blackbox 严格重放计划绑定的冻结
-DataBridge authority。该入口不产生 `scheduled_live`，也不读取 Native 历史 generation。
+[--scheme-id <base_scheme_id>]`。单个 active Blackbox 周频方案还可以使用
+`--scheme-id <base_scheme_id> --target-date-from YYYY-MM-DD --target-date-before YYYY-MM-DD`
+执行 target 半开区间。区间计划在一个只读快照中解析一次 DataBridge authority，按调度日分组审计 run，
+但同一方案只建立一个 replay session 和一个算法 batch；全部业务键预检通过后由 repository 在一个事务中
+insert-only 提交所有 `gray_live` prediction。命令本身就是补数授权，不接收外部 plan、operator、HMAC token
+或 plan SHA；任一算法或提交失败时 prediction 零提交。Native 仍只支持单日入口。两种入口都不产生
+`scheduled_live`，也不读取 Native 历史 generation。
 
 日期语义由 `shared.prediction_context` 和各频率 adapter 统一落地：日频实盘为 `predict_date=T+1, feature_date=T`；周频实盘先由 `predict_date` 反推上一交易日 `feature_date`，再映射 `feature_week_id`；月频 source-backed 方案若声明自然 15 号触发，则 `predict_date` 保留自然月 15 号，`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。`scheduler.executor` 在日频 live 写库前再次校验 `predict_date/feature_date/target_date`，防止源表水位不足时算法复用旧 feature/target 覆盖旧 target 明细。常驻 scheduler 的 startup catch-up 与 cron 路径已删除：服务启动不会按 cron 推断或补跑错过的预测任务，`scheduled_live` 只由对应宿主 one-shot 自然时钟写入。`shared.calendar_service` 和 `scheduler.weekly_actuals_updater` 共享 `shared.week_calendar_normalizer`，只对源周历孤立 forward jump 做只读归一化，确保预测 target 与 weekly actuals 使用同一周历事实。所有前端月份归属、actual join 和 gray/backtest 分流仍以 `target_date` 为事实键。
 

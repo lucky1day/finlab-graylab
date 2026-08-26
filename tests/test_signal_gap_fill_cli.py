@@ -145,6 +145,48 @@ def test_parser_accepts_date_and_optional_exact_base_scheme() -> None:
             )
 
 
+def test_parser_accepts_exact_target_range_and_rejects_mixed_scope() -> None:
+    parser = cli._build_parser()
+    args = parser.parse_args(
+        [
+            "signal-gap-fill",
+            "--target-date-from",
+            "2026-06-01",
+            "--target-date-before",
+            "2026-09-04",
+            "--scheme-id",
+            "demo_blackbox",
+        ]
+    )
+
+    assert args.predict_date is None
+    assert args.target_date_from == "2026-06-01"
+    assert args.target_date_before == "2026-09-04"
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "signal-gap-fill",
+                "--predict-date",
+                PREDICT_DATE,
+                "--target-date-from",
+                "2026-06-01",
+            ]
+        )
+
+
+def test_target_range_requires_before_and_exact_scheme(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit, match="target range requires"):
+        cli.main(
+            [
+                "signal-gap-fill",
+                "--target-date-from",
+                "2026-06-01",
+                "--project-root",
+                str(tmp_path),
+            ]
+        )
+
+
 @pytest.mark.parametrize("scheme_id", [None, "demo_native"])
 def test_cli_plans_once_for_all_or_one_base_then_runs_coordinator(
     tmp_path: Path,

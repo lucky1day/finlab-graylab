@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -167,6 +169,120 @@ def _authority() -> databridge_authority.StableDataBridgeCurrentAuthority:
         publication_identity_sha256="e" * 64,
         stable_identity_sha256="f" * 64,
     )
+
+
+def _range_calendar() -> signal_gap_plan._SingleDateCalendar:
+    start = date(2026, 5, 1)
+    stop = date(2026, 9, 11)
+    trade_rows = []
+    week_rows = []
+    current = start
+    while current <= stop:
+        value = current.isoformat()
+        flag = "1" if current.weekday() < 5 else "0"
+        week_id = current.isocalendar().year * 100 + current.isocalendar().week
+        trade_rows.append({"rdate": value, "trade_flag": flag})
+        week_rows.append(
+            {"rdate": value, "week_id": week_id, "trade_flag": flag}
+        )
+        current += timedelta(days=1)
+    return signal_gap_plan._SingleDateCalendar(
+        trade_calendar_rows=trade_rows,
+        week_calendar_rows=week_rows,
+    )
+
+
+def test_target_range_uses_target_boundary_and_thirteen_weekly_requests() -> None:
+    target = signal_gap_plan.RegistryTarget(
+        registry_scheme_id="demo_blackbox__h1__5Y",
+        base_scheme_id="demo_blackbox",
+        runtime_type="blackbox_v2",
+        frequency="weekly",
+        task_type="weekly_point",
+        target_tenor="5Y",
+        horizon=1,
+        scheme_version="version-1",
+    )
+
+    cases = signal_gap_plan._target_range_cases(
+        (target,),
+        calendar=_range_calendar(),
+        target_date_from="2026-06-01",
+        target_date_before="2026-09-04",
+    )
+
+    assert len(cases) == 13
+    assert cases[0].predict_date == "2026-05-30"
+    assert cases[0].feature_date == "2026-05-29"
+    assert cases[0].target_date == "2026-06-05"
+    assert cases[-1].predict_date == "2026-08-22"
+    assert cases[-1].feature_date == "2026-08-21"
+    assert cases[-1].target_date == "2026-08-28"
+    assert all(case.target_date != "2026-09-04" for case in cases)
+
+
+def test_target_range_resolves_databridge_authority_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _Engine()
+    identity = signal_gap_plan.DiscoveredSchemeIdentity(
+        base_scheme_id="demo_blackbox",
+        scheme_version="version-1",
+        runtime_type="blackbox_v2",
+        frequency="weekly",
+        horizon=1,
+        task_type="weekly_point",
+        target_tenors=("5Y",),
+        version_status="active",
+        status="active",
+    )
+    target = signal_gap_plan.RegistryTarget(
+        registry_scheme_id="demo_blackbox__h1__5Y",
+        base_scheme_id="demo_blackbox",
+        runtime_type="blackbox_v2",
+        frequency="weekly",
+        task_type="weekly_point",
+        target_tenor="5Y",
+        horizon=1,
+        scheme_version="version-1",
+    )
+    resolver = Mock(return_value=SimpleNamespace())
+    monkeypatch.setattr(signal_gap_plan, "_discover_scheme_configs", lambda: ())
+    monkeypatch.setattr(
+        signal_gap_plan,
+        "_select_execution_authority",
+        lambda *_args, **_kwargs: ((identity,), None),
+    )
+    monkeypatch.setattr(signal_gap_plan, "_read_calendar", lambda _conn: _range_calendar())
+    monkeypatch.setattr(
+        signal_gap_plan,
+        "_read_registry_targets",
+        lambda *_args, **_kwargs: ((target,), ()),
+    )
+    monkeypatch.setattr(signal_gap_plan, "_read_live_signals", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(
+        signal_gap_plan,
+        "resolve_stable_databridge_current_authority",
+        resolver,
+    )
+    monkeypatch.setattr(
+        signal_gap_plan,
+        "_blackbox_gap_action",
+        lambda *_args, **_kwargs: ("GRAY_LIVE_GAP", "LIVE_BUSINESS_KEY_MISSING", {}),
+    )
+
+    plan = signal_gap_plan.plan_signal_gap_target_range(
+        engine,
+        target_date_from="2026-06-01",
+        target_date_before="2026-09-04",
+        base_scheme_id="demo_blackbox",
+        databridge_config=SimpleNamespace(),
+    )
+
+    assert plan["status"] == "READY"
+    assert plan["counts"]["actionable"] == 13
+    resolver.assert_called_once()
+    assert len(resolver.call_args.kwargs["feature_dates"]) == 13
 
 
 def _snapshot(

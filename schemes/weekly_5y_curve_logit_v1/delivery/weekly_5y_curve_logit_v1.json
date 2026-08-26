@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "weekly_5y_curve_logit_v1",
+  "name": "CURVE_LOGIT_TOP96",
+  "owner": "lw",
+  "description": "冻结的日周双频曲线与技术指标 Top96，使用扩展窗口逻辑回归生成下一周周末收盘方向。",
+  "algorithm_version": "1.0.0",
+  "target_tenor": "5Y",
+  "task_type": "weekly_point",
+  "horizon": 1,
+  "target_rule": "target_week_end_yield_vs_feature_week_end_yield"
+}

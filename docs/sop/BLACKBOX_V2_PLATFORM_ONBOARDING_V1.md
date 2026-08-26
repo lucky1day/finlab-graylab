@@ -125,8 +125,10 @@ python -m harness gate lifecycle-reconcile --scheme-id {scheme_id}
 
 这些动作都不属于三步入库门禁：
 
-- 历史 live 缺口：取得独立授权后逐日执行
+- 单日历史 live 缺口：取得独立授权后执行
   `python -m harness signal-gap-fill --predict-date YYYY-MM-DD --scheme-id {scheme_id}`；
+- Blackbox 周频连续缺口：用 target 半开区间一次批量执行
+  `python -m harness signal-gap-fill --scheme-id {scheme_id} --target-date-from YYYY-MM-DD --target-date-before YYYY-MM-DD`。区间模式只接受一个 exact active `weekly_point` 身份；一个区间只解析一次 DataBridge authority、建立一个 replay session 并启动一个算法 batch；
 - 产品读模型检查：按需执行
   `python -m harness gate dashboard --scheme-id {scheme_id}`；
 - 调度安装、timer/plist 变更、服务重启、Writer 切换：必须另行授权。
@@ -134,20 +136,14 @@ python -m harness gate lifecycle-reconcile --scheme-id {scheme_id}
 Dashboard 只证明当前产品可见性，不证明 exact version。Production Observed 仍必须由真实
 launchd/systemd one-shot 时钟产生成功 `scheduled_live` 证据。
 
-## 6. 一次性批量结果复用
+## 6. 灰度区间批量物化
 
-如果上游已证明同一 frozen batch 的每条结果与独立 Request 按 `feature_date` 截止计算完全等价，
-可以只算一次后按 `target_date` 分区：
+历史回测与灰度实盘是两个独立批次和持久化边界：历史回测只处理
+`target_date < gray_target_start`；激活后，连续灰度缺口由 target 半开区间一次批量物化。这样每条灰度 Request 仍使用 live `predict_date` 与自己的 `feature_date` 截止，同时消除逐日期进程启动、generation 解析和运行视图准备。
 
-- `target_date < gray_target_start` 进入新的 immutable canonical backtest；
-- 起点及以后、尚未发布的应有点只通过 repository insert-only 物化为 `gray_live`；
-- live `predict_date` 必须按任务日历重建；
-- 不复制数据库主键、源 run、Actuals、指标或 Harness 历史；
-- 任一业务键已存在即整组拒绝。
+区间执行前冻结 exact version、DataBridge authority、输入 lineage 和完整 Request 集；任一业务键已存在即整组拒绝。全部算法结果成功后，repository 在一个事务中复核 active version、Registry、run、输入 provenance 和所有业务键，再写入全部 prediction 并完成各调度日 run。不得复制数据库主键、源 run、Actuals、指标或 Harness 历史，也不得建立跨激活候选表或临时结果目录。
 
-固定未来 `source_end`、未来 test window、跨样本 selector/calibration 或版本/输入 lineage 不一致时，
-禁止复用为 live，必须重算 live-safe 结果。完整规则以
-[预测日期语义 5.2](../architecture/PREDICTION_SEMANTICS.md#52-一次性批量结果的分区与复用)为准。
+固定未来 `source_end`、未来 test window、跨样本 selector/calibration 或版本/输入 lineage 不一致时，禁止批量物化为 live，必须重算逐点 live-safe 结果。完整规则以[预测日期语义 5.2](../architecture/PREDICTION_SEMANTICS.md#52-历史批次与灰度区间批次)为准。
 
 ## 7. 失败处理
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Literal, Mapping, Sequence
 
 from sqlalchemy import bindparam, text
@@ -42,6 +42,7 @@ from shared.task_specs import (
 
 
 PLAN_SCHEMA_VERSION = "single-date-active-live-gap-plan-v1"
+RANGE_PLAN_SCHEMA_VERSION = "target-range-active-live-gap-plan-v1"
 PLATFORM_LIVE_TARGET_START_DATE = "2026-06-01"
 NATIVE_TASK_COMBINATIONS = {
     "T+1": (1, "daily"),
@@ -218,6 +219,136 @@ def plan_signal_gaps(
             return _build_signal_gap_plan(
                 snapshot,
                 predict_date=normalized_date,
+                base_scheme_id=normalized_base,
+            )
+        finally:
+            connection.rollback()
+
+
+def plan_signal_gap_target_range(
+    engine: Any,
+    *,
+    target_date_from: str,
+    target_date_before: str,
+    base_scheme_id: str,
+    databridge_config: DataBridgeRefreshConfig,
+) -> dict[str, Any]:
+    """在一个只读快照中规划单个周频 Blackbox 的 target 日期区间。"""
+    normalized_from = _canonical_date(target_date_from, "target_date_from")
+    normalized_before = _canonical_date(
+        target_date_before,
+        "target_date_before",
+    )
+    if normalized_from >= normalized_before:
+        raise SignalGapPlanError(
+            "TARGET_RANGE_INVALID",
+            "target_date_from must be before target_date_before",
+        )
+    normalized_base = _normalize_base_scheme_id(base_scheme_id)
+    if normalized_base is None:
+        raise SignalGapPlanError(
+            "TARGET_RANGE_SCHEME_REQUIRED",
+            "target range requires one exact base scheme id",
+        )
+    configs = tuple(_discover_scheme_configs())
+    authority, selection_error = _select_execution_authority(
+        configs,
+        base_scheme_id=normalized_base,
+    )
+    if selection_error is not None:
+        return _blocked_range_plan(
+            target_date_from=normalized_from,
+            target_date_before=normalized_before,
+            base_scheme_id=normalized_base,
+            failure_code=selection_error,
+        )
+    if len(authority) != 1 or (
+        authority[0].runtime_type,
+        authority[0].frequency,
+        authority[0].task_type,
+    ) != ("blackbox_v2", "weekly", "weekly_point"):
+        return _blocked_range_plan(
+            target_date_from=normalized_from,
+            target_date_before=normalized_before,
+            base_scheme_id=normalized_base,
+            failure_code="TARGET_RANGE_CONTRACT_UNSUPPORTED",
+        )
+
+    with engine.connect() as connection:
+        connection.exec_driver_sql(
+            "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+        )
+        connection.exec_driver_sql(
+            "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY"
+        )
+        try:
+            calendar = _read_calendar(connection)
+            targets, blockers = _read_registry_targets(
+                connection,
+                execution_authority=authority,
+            )
+            if blockers:
+                return _blocked_range_plan(
+                    target_date_from=normalized_from,
+                    target_date_before=normalized_before,
+                    base_scheme_id=normalized_base,
+                    failure_code=str(blockers[0]["code"]),
+                    blockers=blockers,
+                )
+            cases = _target_range_cases(
+                targets,
+                calendar=calendar,
+                target_date_from=normalized_from,
+                target_date_before=normalized_before,
+            )
+            if not cases:
+                return _blocked_range_plan(
+                    target_date_from=normalized_from,
+                    target_date_before=normalized_before,
+                    base_scheme_id=normalized_base,
+                    failure_code="TARGET_RANGE_EMPTY",
+                )
+            expected_keys = {item.business_key for item in cases}
+            live_signals = _read_live_signals(
+                connection,
+                targets,
+                predict_date=cases[0].predict_date,
+                expected_business_keys=expected_keys,
+            )
+            observed = _index_observations(live_signals)
+            if any(observed.get(item.business_key) for item in cases):
+                return _blocked_range_plan(
+                    target_date_from=normalized_from,
+                    target_date_before=normalized_before,
+                    base_scheme_id=normalized_base,
+                    failure_code="TARGET_RANGE_BUSINESS_KEY_PRESENT",
+                )
+            try:
+                databridge_authority = resolve_stable_databridge_current_authority(
+                    databridge_config,
+                    feature_dates=tuple(
+                        sorted({item.feature_date for item in cases})
+                    ),
+                    connection=connection,
+                )
+                authority_error = None
+            except DataBridgeCurrentMissingError:
+                databridge_authority = None
+                authority_error = "MISSING"
+            except DataBridgeCurrentInvalidError:
+                databridge_authority = None
+                authority_error = "INVALID"
+            snapshot = SignalGapSnapshot(
+                registry_targets=targets,
+                expected_cases=cases,
+                live_signals=live_signals,
+                databridge_authority=databridge_authority,
+                databridge_authority_error=authority_error,
+            )
+            return _build_signal_gap_range_plan(
+                snapshot,
+                target_date_from=normalized_from,
+                target_date_before=normalized_before,
                 base_scheme_id=normalized_base,
             )
         finally:
@@ -442,6 +573,166 @@ def _build_signal_gap_plan(
             **action_counts,
         },
         "actions": actions,
+    }
+
+
+def _target_range_cases(
+    targets: Sequence[RegistryTarget],
+    *,
+    calendar: _SingleDateCalendar,
+    target_date_from: str,
+    target_date_before: str,
+) -> tuple[ExpectedSignalCase, ...]:
+    start = date.fromisoformat(target_date_from) - timedelta(days=14)
+    stop = date.fromisoformat(target_date_before)
+    cases: list[ExpectedSignalCase] = []
+    current = start
+    while current <= stop:
+        predict_date = current.isoformat()
+        if current.weekday() == 5 and is_weekly_signal_date(
+            calendar,
+            predict_date,
+        ):
+            for target in targets:
+                item = _expected_case(
+                    target,
+                    predict_date=predict_date,
+                    calendar=calendar,
+                )
+                if target_date_from <= item.target_date < target_date_before:
+                    cases.append(item)
+        current += timedelta(days=1)
+    ordered = tuple(
+        sorted(cases, key=lambda item: (item.predict_date, item.target_tenor))
+    )
+    keys = [item.business_key for item in ordered]
+    if len(keys) != len(set(keys)):
+        raise SignalGapPlanError(
+            "DUPLICATE_EXPECTED_BUSINESS_KEY",
+            "target range produced duplicate business keys",
+        )
+    return ordered
+
+
+def _build_signal_gap_range_plan(
+    snapshot: SignalGapSnapshot,
+    *,
+    target_date_from: str,
+    target_date_before: str,
+    base_scheme_id: str,
+) -> dict[str, Any]:
+    targets = {
+        target.registry_scheme_id: target
+        for target in snapshot.registry_targets
+    }
+    actions: list[dict[str, Any]] = []
+    for item in snapshot.expected_cases:
+        target = targets.get(item.registry_scheme_id)
+        if target is None:
+            raise SignalGapPlanError(
+                "EXPECTED_CASE_REGISTRY_DRIFT",
+                item.registry_scheme_id,
+            )
+        action, reason, input_authority = _blackbox_gap_action(
+            item,
+            snapshot=snapshot,
+        )
+        actions.append(
+            _action_row(
+                item,
+                target=target,
+                action=action,
+                reason=reason,
+                input_authority=input_authority,
+                business_key_present=False,
+            )
+        )
+    action_counts = {
+        action: sum(row["action"] == action for row in actions)
+        for action in VALID_ACTIONS
+    }
+    blocked = (
+        action_counts["BLOCKED_NO_GENERATION"]
+        + action_counts["BLOCKED_DATA_CONTRACT"]
+    )
+    failure_code = next(
+        (
+            str(row["reason"])
+            for row in actions
+            if row["action"].startswith("BLOCKED_")
+        ),
+        None,
+    )
+    return {
+        "schema_version": RANGE_PLAN_SCHEMA_VERSION,
+        "status": "BLOCKED" if blocked else "READY",
+        "failure_code": failure_code,
+        "predict_date": None,
+        "target_date_from": target_date_from,
+        "target_date_before": target_date_before,
+        "base_scheme_id": base_scheme_id,
+        "control_plane": {
+            "read_only": True,
+            "transaction_isolation": "REPEATABLE READ",
+            "consistent_snapshot": True,
+            "business_key_fields": [
+                "base_scheme_id",
+                "target_tenor",
+                "horizon",
+                "target_date",
+            ],
+            "blockers": [],
+        },
+        "counts": {
+            "active_target": len(snapshot.registry_targets),
+            "expected": len(snapshot.expected_cases),
+            "present": 0,
+            "actionable": action_counts["GRAY_LIVE_GAP"],
+            "blocked": blocked,
+            **action_counts,
+        },
+        "actions": actions,
+    }
+
+
+def _blocked_range_plan(
+    *,
+    target_date_from: str,
+    target_date_before: str,
+    base_scheme_id: str,
+    failure_code: str,
+    blockers: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    counts = {action: 0 for action in VALID_ACTIONS}
+    return {
+        "schema_version": RANGE_PLAN_SCHEMA_VERSION,
+        "status": "BLOCKED",
+        "failure_code": failure_code,
+        "predict_date": None,
+        "target_date_from": target_date_from,
+        "target_date_before": target_date_before,
+        "base_scheme_id": base_scheme_id,
+        "control_plane": {
+            "read_only": True,
+            "transaction_isolation": "REPEATABLE READ",
+            "consistent_snapshot": True,
+            "business_key_fields": [
+                "base_scheme_id",
+                "target_tenor",
+                "horizon",
+                "target_date",
+            ],
+            "blockers": [dict(item) for item in blockers],
+        },
+        "counts": {
+            "active_target": 0,
+            "expected": 0,
+            "present": 0,
+            "actionable": 0,
+            "blocked": 1,
+            **counts,
+        },
+        "actions": [],
     }
 
 

@@ -52,11 +52,11 @@
 - [源算法保真](../architecture/SOURCE_ALGORITHM_FIDELITY.md)
 - [Harness 架构](../architecture/HARNESS_ARCHITECTURE.md)
 
-## 一次性批量回测的最快正确路径
+## 历史与灰度的最快正确路径
 
-后续新方案若能在同一 exact version 和同一冻结输入上一次产出完整区间，不要把历史段和灰度段分别重算。先确定方案级 `gray_target_start`，再对同一冻结 batch 结果按 `target_date` 分流：起点以前进入新的 immutable canonical backtest，起点及以后、尚未发布的应有点通过 repository insert-only 物化为 `gray_live`。历史行的 `predict_date=feature_date` 不能复制到 live，必须按任务日历重新生成 live 信号日；方向、置信度、`feature_date`、`target_date`、exact version 和必要算法 `extra` 保持不变。
+先确定方案级 `gray_target_start`。`target_date` 在起点以前的样本由一次持久化历史回测写入 immutable canonical backtest；起点及以后、正式调度以前的应有点由一次 target 区间批量执行写为 `gray_live`。区间入口按任务日历生成 live `predict_date`，一个方案只建立一个 replay session、解析一次 DataBridge authority 并启动一个算法 batch，不再逐日期重复运行。
 
-这条快路径只适用于已证明逐 Request 截止、predict/backtest 等价且没有未来上下文的一次性结果。固定未来 `source_end`、跨样本全局选择、版本或输入 lineage 不一致时必须停止复用，改走 live-safe 计算。两侧 target 必须零重叠；已有 live 键整组拒绝，不能覆盖或删除后重写；旧 backtest run 只保留审计、不再作为 canonical。字段白名单、持久化边界和完整验收见[预测日期语义 5.2](../architecture/PREDICTION_SEMANTICS.md#52-一次性批量结果的分区与复用)和[平台入库 SOP 6.5](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#65-一次性批量结果复用快路径)。
+两个批次绑定同一 exact version 和输入 lineage，但不跨激活保存临时候选结果，也不增加候选表、报告文件或新的 lifecycle 状态。固定未来 `source_end`、跨样本全局选择、版本或输入 lineage 不一致时必须停止批量物化，改走逐点 live-safe 计算。两侧 target 必须零重叠；灰度区间已有任一 live 键时整组拒绝，不能覆盖或删除后重写。完整规则见[预测日期语义 5.2](../architecture/PREDICTION_SEMANTICS.md#52-历史批次与灰度区间批次)和[平台入库 SOP 6](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#6-灰度区间批量物化)。
 
 ## 当前工作流
 
@@ -84,7 +84,7 @@ Native V1 存量仍使用 `onboard --stage all` 的
 1. `intake-blackbox`；
 2. 明确历史/live 分界后，执行一次完整 `gate backtest --persist`；
 3. `activate`；
-4. 仅在确有历史缺口时执行 `signal-gap-fill`；
+4. 仅在确有历史缺口时，单日执行 `signal-gap-fill --predict-date`，或对 Blackbox 周频方案执行一次 `--target-date-from/--target-date-before` 区间批量；
 5. 如需产品验收，再运行可选的 `gate dashboard`。
 
 这里保留的三个边界分别拥有不同的事实：不可变交付、不可变回测、生产状态切换。删除的

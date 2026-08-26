@@ -10,7 +10,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from harness.signal_gap_plan import PLAN_SCHEMA_VERSION, plan_signal_gaps
+from harness.signal_gap_plan import (
+    PLAN_SCHEMA_VERSION,
+    RANGE_PLAN_SCHEMA_VERSION,
+    plan_signal_gaps,
+)
 from scheduler.discovery import load_scheme_config
 from scheduler.executor import (
     run_blackbox_gray_replay_batch,
@@ -250,6 +254,16 @@ def run_signal_gap_fill(
                 remaining=_remaining(groups),
             )
 
+        if normalized_plan["schema_version"] == RANGE_PLAN_SCHEMA_VERSION:
+            return _complete_range(
+                normalized_plan,
+                groups=groups,
+                executions=executions,
+                engine=engine,
+                repository=repository,
+                databridge_config=databridge_config,
+            )
+
         completed: list[dict[str, Any]] = []
         completed_ids: set[tuple[str, str]] = set()
         for index, item in enumerate(executions):
@@ -346,16 +360,120 @@ def run_signal_gap_fill(
             singleton_lock.release()
 
 
+def _complete_range(
+    plan: Mapping[str, Any],
+    *,
+    groups: Sequence[_GapGroup],
+    executions: Sequence[_Execution],
+    engine: Any,
+    repository: Any,
+    databridge_config: DataBridgeRefreshConfig,
+) -> dict[str, Any]:
+    payloads = []
+    for item in executions:
+        records = item.records or []
+        payloads.append(
+            {
+                "cfg": item.cfg,
+                "run_id": item.run_id,
+                "records": records,
+                "expected_target_keys": list(item.group.missing_target_keys),
+                "source_authority": item.group.source_authority,
+                "records_returned": len(records),
+                "run_date": item.group.predict_date,
+                "duration_sec": time.monotonic() - item.started,
+            }
+        )
+    try:
+        written_by_run = repository.complete_gray_gap_runs_atomic(
+            engine,
+            payloads,
+        )
+    except Exception as exc:  # noqa: BLE001
+        for item in executions:
+            item.error = exc
+        cleanup_errors = _fail_executions(
+            executions,
+            engine=engine,
+            repository=repository,
+            default_error="GRAY_GAP_RANGE_COMMIT_FAILED",
+        )
+        return _report(
+            "FAILED",
+            plan,
+            groups=groups,
+            failure_code="GRAY_GAP_RANGE_COMMIT_FAILED",
+            errors=[f"{type(exc).__name__}: {exc}", *cleanup_errors],
+            remaining=_remaining(groups),
+        )
+
+    completed = [
+        {
+            "base_scheme_id": item.group.base_scheme_id,
+            "predict_date": item.group.predict_date,
+            "run_id": item.run_id,
+            "records_written": int(written_by_run[item.run_id]),
+        }
+        for item in executions
+    ]
+    remaining: list[_GapGroup] = []
+    try:
+        for item in executions:
+            readback = plan_signal_gaps(
+                engine,
+                predict_date=item.group.predict_date,
+                base_scheme_id=item.group.base_scheme_id,
+                databridge_config=databridge_config,
+            )
+            if _remaining_groups_after_readback((item.group,), readback):
+                remaining.append(item.group)
+    except Exception as exc:  # noqa: BLE001
+        return _report(
+            "FAILED",
+            plan,
+            groups=groups,
+            failure_code="POSTFILL_READBACK_FAILED",
+            errors=[f"{type(exc).__name__}: {exc}"],
+            completed=completed,
+            remaining=_remaining(groups),
+        )
+    if remaining:
+        return _report(
+            "FAILED",
+            plan,
+            groups=groups,
+            failure_code="POSTFILL_GAPS_REMAIN",
+            completed=completed,
+            remaining=_remaining(remaining),
+        )
+    return _report(
+        "PASSED",
+        plan,
+        groups=groups,
+        failure_code=None,
+        completed=completed,
+    )
+
+
 def _normalize_plan(plan: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(plan, Mapping):
         raise TypeError("signal gap plan must be a mapping")
     normalized = dict(plan)
-    if normalized.get("schema_version") != PLAN_SCHEMA_VERSION:
+    schema_version = normalized.get("schema_version")
+    if schema_version not in {PLAN_SCHEMA_VERSION, RANGE_PLAN_SCHEMA_VERSION}:
         raise ValueError("signal gap plan schema is invalid")
     if normalized.get("status") not in {"READY", "BLOCKED"}:
         raise ValueError("signal gap plan status is invalid")
-    if not isinstance(normalized.get("predict_date"), str):
-        raise ValueError("signal gap plan predict_date is invalid")
+    if schema_version == PLAN_SCHEMA_VERSION:
+        if not isinstance(normalized.get("predict_date"), str):
+            raise ValueError("signal gap plan predict_date is invalid")
+    elif (
+        normalized.get("predict_date") is not None
+        or not isinstance(normalized.get("target_date_from"), str)
+        or not isinstance(normalized.get("target_date_before"), str)
+        or not isinstance(normalized.get("base_scheme_id"), str)
+    ):
+        raise ValueError("signal gap target range is invalid")
     if normalized.get("base_scheme_id") is not None and not isinstance(
         normalized.get("base_scheme_id"), str
     ):
@@ -396,7 +514,10 @@ def _build_groups(plan: Mapping[str, Any]) -> tuple[_GapGroup, ...]:
             str(row.get("base_scheme_id") or ""),
             str(row.get("predict_date") or ""),
         )
-        if not all(identity) or identity[1] != plan["predict_date"]:
+        if not all(identity) or (
+            plan["schema_version"] == PLAN_SCHEMA_VERSION
+            and identity[1] != plan["predict_date"]
+        ):
             raise ValueError("signal gap action group identity is invalid")
         grouped.setdefault(identity, []).append(row)
 
@@ -1100,6 +1221,7 @@ def _repository_module() -> Any:
     required = (
         "create_scheme_run",
         "complete_gray_gap_run",
+        "complete_gray_gap_runs_atomic",
         "fail_scheme_run_atomic",
     )
     missing = [name for name in required if not hasattr(repository, name)]
@@ -1120,8 +1242,12 @@ def _report(
     completed: Sequence[Mapping[str, Any]] = (),
     remaining: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
-    return {
-        "schema_version": "single-date-signal-gap-fill-v2",
+    report = {
+        "schema_version": (
+            "target-range-signal-gap-fill-v1"
+            if plan.get("schema_version") == RANGE_PLAN_SCHEMA_VERSION
+            else "single-date-signal-gap-fill-v2"
+        ),
         "status": status,
         "failure_code": failure_code,
         "predict_date": plan.get("predict_date"),
@@ -1131,3 +1257,11 @@ def _report(
         "completed": [dict(item) for item in completed],
         "remaining": [dict(item) for item in remaining],
     }
+    if plan.get("schema_version") == RANGE_PLAN_SCHEMA_VERSION:
+        report.update(
+            {
+                "target_date_from": plan.get("target_date_from"),
+                "target_date_before": plan.get("target_date_before"),
+            }
+        )
+    return report

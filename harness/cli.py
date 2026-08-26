@@ -23,6 +23,7 @@ from harness.result import GateResult, GateStatus, OnboardReport
 from harness.signal_gap_fill import run_signal_gap_fill
 from harness.signal_gap_plan import (
     SignalGapPlanError,
+    plan_signal_gap_target_range,
     plan_signal_gaps,
 )
 from scheduler.discovery import load_scheme_config
@@ -215,9 +216,17 @@ def _build_parser() -> argparse.ArgumentParser:
     intake_parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
 
     fill_parser = subparsers.add_parser("signal-gap-fill")
-    fill_parser.add_argument(
+    fill_scope = fill_parser.add_mutually_exclusive_group(required=True)
+    fill_scope.add_argument(
         "--predict-date",
-        required=True,
+        type=_iso_date,
+    )
+    fill_scope.add_argument(
+        "--target-date-from",
+        type=_iso_date,
+    )
+    fill_parser.add_argument(
+        "--target-date-before",
         type=_iso_date,
     )
     fill_parser.add_argument(
@@ -335,23 +344,56 @@ def _exit_code_for_result(result: GateResult) -> int:
 
 
 def _run_signal_gap_fill_command(args: argparse.Namespace) -> int:
-    """规划并一次性补齐单个日期的 active 方案信号缺口。"""
+    """规划并补齐单日或一个 Blackbox 周频 target 区间。"""
     project_root = args.project_root.resolve()
+    range_mode = args.target_date_from is not None
+    if range_mode:
+        if args.target_date_before is None or args.scheme_id is None:
+            raise SystemExit(
+                "target range requires --target-date-before and --scheme-id"
+            )
+        scope = {
+            "predict_date": None,
+            "target_date_from": args.target_date_from,
+            "target_date_before": args.target_date_before,
+            "base_scheme_id": args.scheme_id,
+        }
+    else:
+        if args.target_date_before is not None:
+            raise SystemExit(
+                "--target-date-before requires --target-date-from"
+            )
+        scope = {
+            "predict_date": args.predict_date,
+            "base_scheme_id": args.scheme_id,
+        }
+    report_schema = (
+        "target-range-signal-gap-fill-v1"
+        if range_mode
+        else "single-date-signal-gap-fill-v2"
+    )
     try:
         databridge_config = DataBridgeRefreshConfig.from_env()
-        plan = _plan_signal_gap_date(
-            args.predict_date,
-            args.scheme_id,
-            databridge_config=databridge_config,
-        )
+        if range_mode:
+            plan = _plan_signal_gap_range(
+                args.target_date_from,
+                args.target_date_before,
+                args.scheme_id,
+                databridge_config=databridge_config,
+            )
+        else:
+            plan = _plan_signal_gap_date(
+                args.predict_date,
+                args.scheme_id,
+                databridge_config=databridge_config,
+            )
     except SignalGapPlanError as exc:
         _print_signal_gap_fill_result(
             {
-                "schema_version": "single-date-signal-gap-fill-v2",
+                "schema_version": report_schema,
                 "status": "BLOCKED",
                 "failure_code": exc.code,
-                "predict_date": args.predict_date,
-                "base_scheme_id": args.scheme_id,
+                **scope,
                 "completed": [],
                 "remaining": [],
             },
@@ -360,11 +402,10 @@ def _run_signal_gap_fill_command(args: argparse.Namespace) -> int:
     except Exception:
         _print_signal_gap_fill_result(
             {
-                "schema_version": "single-date-signal-gap-fill-v2",
+                "schema_version": report_schema,
                 "status": "BLOCKED",
                 "failure_code": "SIGNAL_GAP_PLAN_INTERNAL_ERROR",
-                "predict_date": args.predict_date,
-                "base_scheme_id": args.scheme_id,
+                **scope,
                 "completed": [],
                 "remaining": [],
             },
@@ -378,14 +419,13 @@ def _run_signal_gap_fill_command(args: argparse.Namespace) -> int:
     ):
         _print_signal_gap_fill_result(
             {
-                "schema_version": "single-date-signal-gap-fill-v2",
+                "schema_version": report_schema,
                 "status": "BLOCKED",
                 "failure_code": str(
                     plan.get("failure_code")
                     or "SIGNAL_GAP_PLAN_BLOCKED"
                 ),
-                "predict_date": args.predict_date,
-                "base_scheme_id": args.scheme_id,
+                **scope,
                 "completed": [],
                 "remaining": [],
             },
@@ -399,11 +439,10 @@ def _run_signal_gap_fill_command(args: argparse.Namespace) -> int:
         )
         _print_signal_gap_fill_result(
             {
-                "schema_version": "single-date-signal-gap-fill-v2",
+                "schema_version": report_schema,
                 "status": skip_status,
                 "failure_code": None,
-                "predict_date": args.predict_date,
-                "base_scheme_id": args.scheme_id,
+                **scope,
                 "completed": [],
                 "remaining": [],
             },
@@ -439,6 +478,26 @@ def _plan_signal_gap_date(
         return plan_signal_gaps(
             engine,
             predict_date=predict_date,
+            base_scheme_id=base_scheme_id,
+            databridge_config=databridge_config,
+        )
+    finally:
+        engine.dispose()
+
+
+def _plan_signal_gap_range(
+    target_date_from: str,
+    target_date_before: str,
+    base_scheme_id: str,
+    *,
+    databridge_config: DataBridgeRefreshConfig,
+) -> dict[str, Any]:
+    engine = create_engine_from_env()
+    try:
+        return plan_signal_gap_target_range(
+            engine,
+            target_date_from=target_date_from,
+            target_date_before=target_date_before,
             base_scheme_id=base_scheme_id,
             databridge_config=databridge_config,
         )

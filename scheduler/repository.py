@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Iterable, Iterator, Mapping
+from typing import Any, Iterable, Iterator, Mapping, cast
 
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Connection, Engine, URL
@@ -2273,126 +2273,187 @@ def complete_gray_gap_run(
     run_date: str,
     duration_sec: float,
 ) -> int:
-    """原子提交一组 insert-only 的 ``gray_live`` 历史信号缺口。
+    """原子提交一个调度日的 ``gray_live`` 历史信号缺口。"""
+    written = complete_gray_gap_runs_atomic(
+        engine,
+        [
+            {
+                "cfg": cfg,
+                "run_id": run_id,
+                "records": list(records),
+                "expected_target_keys": expected_target_keys,
+                "source_authority": source_authority,
+                "records_returned": records_returned,
+                "run_date": run_date,
+                "duration_sec": duration_sec,
+            }
+        ],
+    )
+    return written[int(run_id)]
 
-    目标集合、活跃 Registry、输入 authority、prediction、run 成功状态与
-    成功日志在同一事务内复核或提交；任何一步失败都不保留部分结果。
-    """
-    normalized_targets = _normalize_gray_gap_target_keys(
-        cfg,
-        expected_target_keys,
-    )
-    record_list = list(records)
-    if records_returned != len(record_list):
-        raise RuntimeError(
-            "gray gap records_returned mismatch: "
-            f"returned={records_returned}, records={len(record_list)}"
-        )
-    normalized_run_date = _require_iso_date(run_date, "run_date")
-    normalized_duration = float(duration_sec)
-    if not math.isfinite(normalized_duration) or normalized_duration < 0:
-        raise ValueError("duration_sec must be a finite non-negative number")
-    execution_dates = _gray_gap_execution_dates(normalized_targets)
-    if normalized_run_date != execution_dates["predict_date"]:
-        raise ValueError(
-            "run_date must equal gray gap execution predict_date"
-        )
-    normalized_authority = _normalize_gray_gap_source_authority(
-        source_authority,
-        runtime_type=str(cfg.runtime_type),
-        feature_date=execution_dates["feature_date"],
-        predict_date=execution_dates["predict_date"],
-    )
-    _validate_gray_gap_records(
-        cfg,
-        records=record_list,
-        expected_targets=normalized_targets,
-    )
-    enriched_records = _enrich_gray_gap_records(
-        cfg,
-        records=record_list,
-        source_authority=normalized_authority,
-    )
-    blackbox_snapshot_id = _blackbox_gray_gap_snapshot_id(
-        cfg,
-        records=enriched_records,
-    )
 
-    with engine.begin() as conn:
-        run = _read_scheme_run_conn(
-            conn,
-            run_id=int(run_id),
-        )
-        _validate_gray_gap_run(
+def complete_gray_gap_runs_atomic(
+    engine: Engine,
+    items: Iterable[Mapping[str, object]],
+) -> dict[int, int]:
+    """在一个事务中提交多个调度日的 gray-live run 与 prediction。"""
+    prepared: list[dict[str, object]] = []
+    all_business_keys: set[tuple[object, ...]] = set()
+    for item in items:
+        cfg = cast(SchemeConfig, item["cfg"])
+        run_id = int(item["run_id"])
+        records = list(cast(Iterable[PredictionRecord], item["records"]))
+        records_returned = int(item["records_returned"])
+        expected_targets = _normalize_gray_gap_target_keys(
             cfg,
-            run_id=int(run_id),
-            run=run,
-            expected_count=len(normalized_targets),
+            list(
+                cast(
+                    Iterable[Mapping[str, object]],
+                    item["expected_target_keys"],
+                )
+            ),
+        )
+        if records_returned != len(records):
+            raise RuntimeError(
+                "gray gap records_returned mismatch: "
+                f"returned={records_returned}, records={len(records)}"
+            )
+        run_date = _require_iso_date(item["run_date"], "run_date")
+        duration_sec = float(item["duration_sec"])
+        if not math.isfinite(duration_sec) or duration_sec < 0:
+            raise ValueError("duration_sec must be a finite non-negative number")
+        execution_dates = _gray_gap_execution_dates(expected_targets)
+        if run_date != execution_dates["predict_date"]:
+            raise ValueError("run_date must equal gray gap execution predict_date")
+        normalized_authority = _normalize_gray_gap_source_authority(
+            cast(Mapping[str, object] | None, item.get("source_authority")),
+            runtime_type=str(cfg.runtime_type),
+            feature_date=execution_dates["feature_date"],
             predict_date=execution_dates["predict_date"],
         )
-        _validate_gray_gap_active_version(conn, cfg)
-        if blackbox_snapshot_id is not None:
-            _bind_blackbox_gray_gap_snapshot_conn(
-                conn,
-                run_id=int(run_id),
-                run=run,
-                data_snapshot_id=blackbox_snapshot_id,
-            )
-        _validate_gray_gap_active_registry(
-            conn,
+        _validate_gray_gap_records(
             cfg,
+            records=records,
+            expected_targets=expected_targets,
         )
-        _assert_gray_gap_business_keys_absent(
-            conn,
-            normalized_targets,
+        enriched_records = _enrich_gray_gap_records(
+            cfg,
+            records=records,
+            source_authority=normalized_authority,
         )
-        prediction_rows = _prepare_run_prediction_rows(
-            int(run_id),
-            enriched_records,
-            scheme_version=str(cfg.scheme_version),
+        snapshot_id = _blackbox_gray_gap_snapshot_id(
+            cfg,
+            records=enriched_records,
         )
-        records_written = _insert_run_predictions_conn(
-            conn,
-            prediction_rows,
-        )
-        if records_written != len(normalized_targets):
-            raise RuntimeError(
-                "gray gap records_written mismatch: "
-                f"expected={len(normalized_targets)}, "
-                f"written={records_written}"
+        for target in expected_targets:
+            key = (
+                target["base_scheme_id"],
+                target["target_tenor"],
+                target["horizon"],
+                target["target_date"],
             )
-        finished = conn.execute(
-            text(
-                """
-                UPDATE t_scheme_runs
-                SET status = 'success',
-                    finished_at = CURRENT_TIMESTAMP,
-                    records_returned = :records_returned,
-                    records_written = :records_written,
-                    error_message = NULL
-                WHERE run_id = :run_id
-                  AND status = 'running'
-                  AND run_type = 'active'
-                  AND prediction_phase = 'gray_live'
-                """
-            ),
+            if key in all_business_keys:
+                raise RuntimeError("gray gap range contains duplicate business keys")
+            all_business_keys.add(key)
+        prepared.append(
             {
-                "run_id": int(run_id),
+                "cfg": cfg,
+                "run_id": run_id,
                 "records_returned": records_returned,
-                "records_written": records_written,
-            },
+                "run_date": run_date,
+                "duration_sec": duration_sec,
+                "expected_targets": expected_targets,
+                "records": enriched_records,
+                "snapshot_id": snapshot_id,
+            }
         )
-        _require_rowcount(finished, "gray gap run finish")
-        _write_run_log_conn(
-            conn,
-            str(cfg.scheme_id),
-            normalized_run_date,
-            "success",
-            normalized_duration,
-            None,
-            int(run_id),
-        )
-        return records_written
+    if not prepared:
+        raise ValueError("gray gap atomic completion requires at least one run")
+    run_ids = [int(item["run_id"]) for item in prepared]
+    if len(run_ids) != len(set(run_ids)):
+        raise ValueError("gray gap atomic completion contains duplicate run ids")
+
+    written_by_run: dict[int, int] = {}
+    with engine.begin() as conn:
+        validated_configs: set[tuple[str, str]] = set()
+        all_targets: list[Mapping[str, object]] = []
+        for item in prepared:
+            cfg = cast(SchemeConfig, item["cfg"])
+            run_id = int(item["run_id"])
+            targets = cast(list[Mapping[str, object]], item["expected_targets"])
+            run = _read_scheme_run_conn(conn, run_id=run_id)
+            _validate_gray_gap_run(
+                cfg,
+                run_id=run_id,
+                run=run,
+                expected_count=len(targets),
+                predict_date=str(item["run_date"]),
+            )
+            config_identity = (str(cfg.scheme_id), str(cfg.scheme_version))
+            if config_identity not in validated_configs:
+                _validate_gray_gap_active_version(conn, cfg)
+                _validate_gray_gap_active_registry(conn, cfg)
+                validated_configs.add(config_identity)
+            snapshot_id = item["snapshot_id"]
+            if snapshot_id is not None:
+                _bind_blackbox_gray_gap_snapshot_conn(
+                    conn,
+                    run_id=run_id,
+                    run=run,
+                    data_snapshot_id=str(snapshot_id),
+                )
+            all_targets.extend(targets)
+
+        _assert_gray_gap_business_keys_absent(conn, all_targets)
+
+        for item in prepared:
+            cfg = cast(SchemeConfig, item["cfg"])
+            run_id = int(item["run_id"])
+            targets = cast(list[Mapping[str, object]], item["expected_targets"])
+            prediction_rows = _prepare_run_prediction_rows(
+                run_id,
+                cast(Iterable[PredictionRecord], item["records"]),
+                scheme_version=str(cfg.scheme_version),
+            )
+            records_written = _insert_run_predictions_conn(conn, prediction_rows)
+            if records_written != len(targets):
+                raise RuntimeError(
+                    "gray gap records_written mismatch: "
+                    f"expected={len(targets)}, written={records_written}"
+                )
+            finished = conn.execute(
+                text(
+                    """
+                    UPDATE t_scheme_runs
+                    SET status = 'success',
+                        finished_at = CURRENT_TIMESTAMP,
+                        records_returned = :records_returned,
+                        records_written = :records_written,
+                        error_message = NULL
+                    WHERE run_id = :run_id
+                      AND status = 'running'
+                      AND run_type = 'active'
+                      AND prediction_phase = 'gray_live'
+                    """
+                ),
+                {
+                    "run_id": run_id,
+                    "records_returned": int(item["records_returned"]),
+                    "records_written": records_written,
+                },
+            )
+            _require_rowcount(finished, "gray gap run finish")
+            _write_run_log_conn(
+                conn,
+                str(cfg.scheme_id),
+                str(item["run_date"]),
+                "success",
+                float(item["duration_sec"]),
+                None,
+                run_id,
+            )
+            written_by_run[run_id] = records_written
+    return written_by_run
 
 
 def _blackbox_gray_gap_snapshot_id(

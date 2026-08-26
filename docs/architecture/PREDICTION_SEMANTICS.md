@@ -228,28 +228,23 @@ target_date  = T + horizon
 
 上述周度单点例外只允许用于历史回测和 benchmark 复现。周度单点和周平均的灰度实盘、正式实盘 adapter 都必须严格遵守周频 T+1/T 规则：`feature_date=previous_trading_day(predict_date)`，输入 artifact 传 `end_week=feature_week_id`、`as_of_date=feature_date`，不得读取未来周或当前 DB 最新全量数据。
 
-### 5.2 一次性批量结果的分区与复用
+### 5.2 历史批次与灰度区间批次
 
-一次性批量计算是执行优化，不是第四种 prediction phase。新方案的完整历史区间如果由一次 batch 产出，平台应在计算前先冻结 exact scheme version、输入 generation/snapshot/business digest、lineage、`gray_target_start` 和应有 Request 集合；满足下列全部条件时，禁止为 gray 区间逐日期重复运行算法：
+批量计算是执行优化，不是第四种 prediction phase。平台先冻结 exact scheme version、输入 generation/snapshot/business digest、lineage、`gray_target_start` 和应有 Request 集合，再执行两个边界清晰的批次：
 
-1. 每条 batch Result 已通过交付合同的逐 Request 截止、批内首/中/末独立复算和 predict/backtest 等价证明；
-2. 每条输入只能看到其 `feature_date` 及以前的数据，且没有晚于样本的固定 `source_end`、未来 test window、全局 selector/calibration 或跨样本未来状态；
-3. 待复用行与目标环境的 exact scheme version、输入内容身份和 lineage 完全一致；跨主机结果还必须满足跨主机复制的更严格 release/版本/业务键核验；
-4. `target_date`、`feature_date`、目标期限、horizon 和方向等核心结果均合法、唯一且可逐行读回。
+| 分区 | 执行与去向 |
+|---|---|
+| `target_date < gray_target_start` | 一次持久化历史回测，写入新的 immutable canonical backtest run |
+| `target_date >= gray_target_start` 且早于正式调度 target | 激活后按 target 半开区间执行一次 live-safe batch，并由 repository insert-only 写为 `gray_live` |
+| 已有 `gray_live` 或 `scheduled_live` 业务键 | 整个授权区间拒绝，不运行算法、不覆盖、不删除后重写 |
 
-满足条件后只使用一份冻结结果集，并按方案级 `gray_target_start` 分流：
+灰度区间的每个 Request 必须使用权威任务日历生成自己的 live `predict_date`、`feature_date` 和 `target_date`，输入只能看到 `feature_date` 及以前的数据。一个方案的一个授权区间只解析一次 DataBridge authority、建立一个 replay session 并启动一个算法 batch；不得逐日期重复启动进程、读取 generation 或准备运行视图。
 
-| 分区 | 去向 | 处理 |
-|---|---|---|
-| `target_date < gray_target_start` | `t_backtest_*` | 写入一个新的 immutable canonical backtest run |
-| `target_date >= gray_target_start` 且对应应有点尚未发布 | `t_scheme_predictions` | 受控 repository insert-only 物化为 `gray_live` |
-| 已有 `gray_live` 或 `scheduled_live` 业务键 | 不写 | 整个授权组拒绝，不覆盖、不删除后重写 |
+历史与 gray/live 是两个独立、可审计的持久化边界。平台不为了省去历史与灰度之间的一次进程启动而增加跨激活候选表、临时结果文件、Harness 报告或新的生命周期状态。灰度批次全部 Result 合法后，repository 在一个事务中复核 active version、Registry、run、输入 provenance 和所有业务键，再写入全部 prediction 并完成各调度日 run；任一复核或写入失败都不得留下部分 prediction。
 
-复用的是算法核心结果，不是数据库行。允许携带 `scheme_id`、`target_tenor`、`horizon`、`feature_date`、`target_date`、`predicted_direction`、`confidence`、exact `scheme_version` 和必要算法 `extra`；禁止复制数据库主键、源 `run_id`、Actuals、backtest monthly metrics 或 Harness 历史。历史 batch 行原有的 `predict_date=feature_date` 不能直接写入 live：平台必须按该 task type 的权威日历生成应发信号日作为 live `predict_date`，同时保持 `feature_date`、`target_date` 和核心算法结果不变。
+批量物化只适用于已证明逐 Request 截止、批内首/中/末独立复算和 predict/backtest 等价，且没有晚于样本 `feature_date` 的固定 `source_end`、未来 test window、全局 selector/calibration 或跨样本未来状态的交付。任一前提不成立时必须改用逐点 live-safe 计算。
 
-backtest 与 live 仍是两个独立、可审计的持久化边界：每一侧分别原子提交，任一侧失败都必须停止后续步骤，且不得删除已经成功的 immutable 审计记录来伪造全局回滚。旧 canonical backtest run 保持不可变，只让新的正确分区 run 成为 latest-success；不得物理删除旧 run，也不得从 live 反向拼接 canonical backtest。
-
-最终验收必须证明：批量源结果与两侧目标行数量守恒；方向、置信度、`feature_date`、`target_date` 和 scheme version 零漂移；canonical backtest 全部早于 gray 起点；live 全部位于 gray 起点及以后；两侧 target 交集为空；每个自然月不因 phase 分区错误出现重复行；Actual、准确率事实和其它方案不变；全部 active 方案 DashboardGate 通过。任一前提或验收不成立时，不得为了提速强行复用，必须改用逐点 live-safe 结果。
+最终验收必须证明：canonical backtest 全部早于 gray 起点；live 全部位于 gray 起点及以后且早于正式调度 target；两侧 target 交集为空；方向、置信度、`feature_date`、`target_date` 和 scheme version 与 batch Result 零漂移；每个自然月不因 phase 分区错误出现重复行；Actual、准确率事实和其它方案不变；全部 active 方案 DashboardGate 通过。
 
 ## 6. 指标统计口径
 
