@@ -64,7 +64,7 @@ Blackbox V2 Contract 1.0 当前使用的 Python 和关键包版本：
 
 线程数是平台为常用数值计算库设置的上限，不代表独占或保证提供 8 个 CPU 核心。批量回测每批 Request 的数量要求见第 5 节。
 
-算法不得访问网络或数据库；该禁令在入库 StaticGate 静态强制（禁 socket/urllib/requests/sqlalchemy 等 import、禁 eval/exec/os.system、禁绝对路径与相对路径穿越字面量），违规交付一律拒收。需要的训练逻辑、模型结构和固定参数必须全部包含在单一 `.py` 文件中。
+算法不得访问网络或数据库；该禁令由 Intake 以及持久化回测、激活入口复用的两文件安全校验强制（禁 socket/urllib/requests/sqlalchemy 等 import、禁 eval/exec/os.system、禁绝对路径与相对路径穿越字面量），违规交付一律拒收。需要的训练逻辑、模型结构和固定参数必须全部包含在单一 `.py` 文件中。
 
 ### 1.3 明确最终只交付两个文件
 

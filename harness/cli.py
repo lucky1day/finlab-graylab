@@ -66,7 +66,6 @@ def _gate_action(args: argparse.Namespace) -> str | None:
     if args.gate_name == "backtest":
         return "backtest_persist" if bool(getattr(args, "persist", False)) else None
     return {
-        "shadow-register": "shadow_register",
         "lifecycle-reconcile": "blackbox_reconcile",
     }.get(args.gate_name)
 
@@ -82,7 +81,6 @@ def _direct_operation(
 ) -> object | None:
     """把一次明确副作用命令转换为非秘密审计作用域。
 
-    Gate 从数据库选择当前 exact version 的 latest passed run，并把它绑定到最终审计对象；
     该过程不生成或保存操作者凭据。
     """
     if action is None:
@@ -124,8 +122,6 @@ def main(argv: list[str] | None = None) -> int:
         scheme_dir = intake_delivery(
             args.delivery_dir,
             schemes_root=args.project_root.resolve() / "schemes",
-            runtime_profile=args.runtime_profile,
-            data_schema_version=args.data_schema_version,
         )
         metadata = load_metadata(
             scheme_dir / "delivery" / f"{scheme_dir.name}.json"
@@ -162,17 +158,18 @@ def _build_parser() -> argparse.ArgumentParser:
     gate_subparsers = gate_parser.add_subparsers(dest="gate_name", required=True)
     for gate_name in (
         "static", "dry-run", "compare", "backtest",
-        "dashboard", "shadow-register", "lifecycle-reconcile",
+        "dashboard", "lifecycle-reconcile",
     ):
         item = gate_subparsers.add_parser(gate_name)
         item.add_argument("--scheme-id", required=True)
         item.add_argument(
             "--predict-date",
+            required=gate_name == "backtest",
             default=(
                 "dashboard"
                 if gate_name == "dashboard"
                 else "static"
-                if gate_name in {"static", "compare", "backtest"}
+                if gate_name in {"static", "compare"}
                 else None
             ),
         )
@@ -181,7 +178,6 @@ def _build_parser() -> argparse.ArgumentParser:
         item.add_argument("--timeout-sec", type=int, default=600)
         if gate_name in {
             "backtest",
-            "shadow-register",
             "lifecycle-reconcile",
         }:
             item.add_argument(
@@ -227,8 +223,6 @@ def _build_parser() -> argparse.ArgumentParser:
     intake_parser = subparsers.add_parser("intake-blackbox")
     intake_parser.add_argument("--delivery-dir", type=Path, required=True)
     intake_parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
-    intake_parser.add_argument("--runtime-profile", default="blackbox-v2-v1")
-    intake_parser.add_argument("--data-schema-version", default="data-bridge-v1")
 
     fill_parser = subparsers.add_parser("signal-gap-fill")
     fill_parser.add_argument(
@@ -256,7 +250,6 @@ def _build_parser() -> argparse.ArgumentParser:
 def _run_gate(args: argparse.Namespace) -> GateResult:
     if args.gate_name in {
         "dry-run",
-        "shadow-register",
     } and not args.predict_date:
         raise SystemExit(f"gate {args.gate_name} requires --predict-date")
     project_root = args.project_root.resolve()
@@ -292,13 +285,7 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
         ),
     )
     gate = gate_for_name(args.gate_name, ctx=ctx)
-    try:
-        return gate.run(ctx)
-    finally:
-        if getattr(config, "runtime_type", "native_adapter") == "blackbox_v2":
-            from harness.blackbox_v2.gates import cleanup_runtime_input
-
-            cleanup_runtime_input(ctx)
+    return gate.run(ctx)
 
 
 def _run_onboard_command(args: argparse.Namespace) -> OnboardReport:

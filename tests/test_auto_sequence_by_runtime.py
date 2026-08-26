@@ -15,18 +15,15 @@ from harness.registry import (
 )
 
 
-def test_auto_sequence_is_exact_for_each_runtime() -> None:
-    expected = {
-        "native_adapter": [
-            "static",
-            "dry-run",
-            "compare",
-            "backtest",
-        ],
-        "blackbox_v2": ["static", "compare"],
-    }
-    for runtime_type, sequence in expected.items():
-        assert sequence_for_stage("all", runtime_type=runtime_type) == sequence
+def test_onboard_is_native_only() -> None:
+    assert sequence_for_stage("all", runtime_type="native_adapter") == [
+        "static",
+        "dry-run",
+        "compare",
+        "backtest",
+    ]
+    with pytest.raises(ValueError, match="has no onboard stage"):
+        sequence_for_stage("all", runtime_type="blackbox_v2")
 
 
 def test_partial_onboard_stages_are_rejected_for_both_runtimes() -> None:
@@ -123,7 +120,6 @@ def test_blackbox_persist_cli_builds_exact_operation_scope(tmp_path) -> None:
     with (
         patch("harness.cli._load_config_for_dispatch", return_value=config),
         patch("harness.cli.gate_for_name", return_value=CaptureGate()),
-        patch("harness.blackbox_v2.gates.cleanup_runtime_input"),
     ):
         result = _run_gate(args)
 

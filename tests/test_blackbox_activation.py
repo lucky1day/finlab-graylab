@@ -51,11 +51,6 @@ def _revision_fixture():
     )
     with engine.begin() as conn:
         conn.exec_driver_sql(
-            "CREATE TABLE t_harness_runs ("
-            "harness_run_id TEXT PRIMARY KEY, scheme_id TEXT, "
-            "scheme_version TEXT, stage TEXT, status TEXT, finished_at timestamp)"
-        )
-        conn.exec_driver_sql(
             "CREATE TABLE t_scheme_versions ("
             "scheme_id TEXT NOT NULL, scheme_version TEXT NOT NULL, "
             "runtime_type TEXT, algorithm_version TEXT, contract_version TEXT, "
@@ -71,17 +66,6 @@ def _revision_fixture():
             "description TEXT, horizon INTEGER, task_type TEXT, runtime_type TEXT, "
             "tenors TEXT, frequency TEXT, target_tenor TEXT, schedule_cron TEXT, "
             "schedule_timezone TEXT, status TEXT, deployed_at timestamp)"
-        )
-        conn.execute(
-            text(
-                "INSERT INTO t_harness_runs VALUES "
-                "('hr-candidate', :scheme_id, :version, 'all', 'passed', :finished)"
-            ),
-            {
-                "scheme_id": cfg.scheme_id,
-                "version": cfg.scheme_version,
-                "finished": datetime(2026, 8, 25, 1, 0),
-            },
         )
         conn.execute(
             text(
@@ -174,7 +158,6 @@ def _activate_revision_repository(engine, cfg):
         cfg,
         prior_scheme_version="version-1",
         pending_scheme_versions=("version-shadow",),
-        expected_harness_run_id="hr-candidate",
         approved_by="operator",
         approved_at=datetime(2026, 8, 25, 2, 0, tzinfo=timezone.utc),
     )
@@ -186,7 +169,7 @@ def test_activate_dispatches_initial_and_revision_through_one_entry(tmp_path) ->
         predict_date="activate",
         project_root=tmp_path,
     )
-    initial = SimpleNamespace(status="paused", version_status="shadow")
+    initial = SimpleNamespace(status="paused", version_status="draft")
     revision = SimpleNamespace(status="active", version_status="active")
     with (
         patch("harness.blackbox_v2.activation._config", return_value=initial),
@@ -208,6 +191,85 @@ def test_activate_dispatches_initial_and_revision_through_one_entry(tmp_path) ->
         revision_call.assert_called_once()
 
 
+def test_initial_activation_registers_draft_identity_in_same_command(tmp_path) -> None:
+    from scheduler.repository import BlackboxLifecycleIdentityAbsent
+
+    cfg = SimpleNamespace(
+        scheme_id="trial_10y",
+        scheme_version="version-1",
+        status="paused",
+        version_status="draft",
+        runtime_type="blackbox_v2",
+        runtime_profile="blackbox-v2-v1",
+        path=Path(tmp_path),
+    )
+    passed_backtest = SimpleNamespace(
+        backtest_run_id=42,
+        benchmark_id="bbv2-test",
+        runtime_profile="blackbox-v2-v1",
+        environment_fingerprint="e" * 64,
+        generation_id="generation-1",
+        data_snapshot_id="snapshot-1",
+    )
+    draft_state = SimpleNamespace(
+        scheme_id=cfg.scheme_id,
+        scheme_version=cfg.scheme_version,
+        version_status="draft",
+        registry_status="paused",
+        environment_fingerprint="e" * 64,
+        data_snapshot_id="snapshot-1",
+    )
+    operation = build_direct_operation(
+        cfg.scheme_id,
+        "blackbox_activate",
+        scheme_version=cfg.scheme_version,
+        issued_by="operator",
+    )
+    ctx = GateContext(
+        scheme_id=cfg.scheme_id,
+        predict_date="activate",
+        project_root=tmp_path,
+        config=cfg,
+        operation=operation,
+        engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
+    )
+
+    with (
+        patch(
+            "harness.blackbox_v2.activation.replace",
+            side_effect=lambda value, **updates: SimpleNamespace(
+                **{**vars(value), **updates}
+            ),
+        ),
+        patch("harness.blackbox_v2.activation.assert_lifecycle_clear"),
+        patch("harness.blackbox_v2.activation._validate_canonical_delivery"),
+        patch(
+            "harness.blackbox_v2.activation._verify_passed_backtest",
+            return_value=passed_backtest,
+        ),
+        patch(
+            "harness.blackbox_v2.activation._environment_fingerprint",
+            return_value="e" * 64,
+        ),
+        patch(
+            "harness.blackbox_v2.activation.read_blackbox_lifecycle_state",
+            side_effect=[BlackboxLifecycleIdentityAbsent(), draft_state],
+        ),
+        patch(
+            "harness.blackbox_v2.activation.register_blackbox_draft_identity"
+        ) as register_identity,
+        patch(
+            "harness.blackbox_v2.activation.perform_lifecycle_transition",
+            return_value=(SimpleNamespace(), tmp_path / "journal.json"),
+        ),
+    ):
+        result = activate_blackbox(ctx)
+
+    assert result.status == GateStatus.PASSED
+    assert {item.key: item.value for item in result.evidence}["identity_created"] is True
+    register_identity.assert_called_once()
+
+
 def test_revision_activation_uses_direct_operation_and_atomic_repository(tmp_path) -> None:
     cfg = SimpleNamespace(
         scheme_id="trial_10y",
@@ -218,8 +280,9 @@ def test_revision_activation_uses_direct_operation_and_atomic_repository(tmp_pat
         runtime_profile="blackbox-v2-v1",
         path=Path(tmp_path),
     )
-    passed_run = SimpleNamespace(
-        harness_run_id="hr-passed",
+    passed_backtest = SimpleNamespace(
+        backtest_run_id=42,
+        benchmark_id="bbv2-test",
         runtime_profile="blackbox-v2-v1",
         environment_fingerprint="e" * 64,
         generation_id="generation-1",
@@ -265,8 +328,12 @@ def test_revision_activation_uses_direct_operation_and_atomic_repository(tmp_pat
         ),
         patch("harness.blackbox_v2.activation.lifecycle_operation_lock", return_value=nullcontext()),
         patch("harness.blackbox_v2.activation.assert_lifecycle_clear"),
+        patch("harness.blackbox_v2.activation._validate_canonical_delivery"),
         patch("harness.blackbox_v2.activation._reload_pinned_canonical", return_value=cfg),
-        patch("harness.blackbox_v2.activation._verify_passed_all", return_value=passed_run),
+        patch(
+            "harness.blackbox_v2.activation._verify_passed_backtest",
+            return_value=passed_backtest,
+        ),
         patch("harness.blackbox_v2.activation._environment_fingerprint", return_value="e" * 64),
         patch(
             "harness.blackbox_v2.activation.read_blackbox_revision_activation_preflight",
@@ -344,42 +411,6 @@ def test_revision_repository_rolls_back_after_mid_transaction_failure() -> None:
         engine.dispose()
 
 
-def test_revision_repository_rejects_latest_run_drift_before_write() -> None:
-    engine, cfg = _revision_fixture()
-    try:
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    "INSERT INTO t_harness_runs VALUES "
-                    "('hr-newer', :scheme_id, :version, 'all', 'passed', :finished)"
-                ),
-                {
-                    "scheme_id": cfg.scheme_id,
-                    "version": cfg.scheme_version,
-                    "finished": datetime(2026, 8, 25, 3, 0),
-                },
-            )
-        with (
-            patch(
-                "scheduler.repository._blackbox_draft_register_advisory_lock",
-                return_value=nullcontext(),
-            ),
-            patch(
-                "scheduler.repository._upsert_scheme_version_conn"
-            ) as upsert,
-            pytest.raises(RuntimeError, match="latest passed all-stage harness run changed"),
-        ):
-            _activate_revision_repository(engine, cfg)
-
-        upsert.assert_not_called()
-        assert _revision_states(engine) == [
-            ("version-1", "active"),
-            ("version-shadow", "shadow"),
-        ]
-    finally:
-        engine.dispose()
-
-
 @pytest.mark.parametrize(
     "phase",
     ("prepared", "config_written", "db_committed", "unresolved"),
@@ -400,7 +431,7 @@ def test_lifecycle_reconcile_only_restores_previous_state(tmp_path, phase) -> No
         action="activate",
         scheme_id="trial_10y",
         scheme_version="version-2",
-        harness_run_id="hr-candidate",
+        evidence_run_id="backtest:42",
         previous=previous,
         target=active,
         operation_scope_sha256="a" * 64,

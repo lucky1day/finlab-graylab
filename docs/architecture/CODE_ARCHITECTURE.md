@@ -168,29 +168,27 @@ Native SOP 的 Gate 与授权边界，不再存在需要维护的 frozen daily-g
 日频、周频、月频和周期均值 actuals 由宿主控制面调用 `scheduler.actuals_runner` 一次性刷新；具体
 触发时点只在生产调度治理文档维护。
 
-### 5.2 入库 harness 路径（首次入库与 Native 后续维护）
+### 5.2 入库路径（首次入库与 Native 后续维护）
 
 ```
-python -m harness onboard {scheme_id} --stage all
-  └─ harness.orchestrator.onboard(ctx, stage)            ← fail-fast + fail-closed
-       ├─ StaticGate   → runtime-aware contracts（原生 AST / 黑盒两文件与 Metadata）
-       ├─ BlackboxCompareGate → 读取 producer-ready snapshot / 一次有效冒烟 predict
-       ├─ DryRunGate   → Native 真实执行 + Harness-only builder receipt + 实际主/辅助输入合同 + table guard
-       ├─ CompareGate  → schemes/{id}/benchmarks original/current strict compare
-       └─ BacktestGate → backtests/{id}_reproduction(--no-persist)
-  Blackbox 首轮授权卡点：ShadowRegisterGate → version=shadow + registry=paused，不写业务表
-  Native 直接操作卡点：BacktestGate(--persist) / activate  ← 需精确 DirectOperation scope，否则 BLOCKED
+Blackbox V2:
+  intake-blackbox          → 新 ID：两文件 + Metadata + 固定 Profile/Schema + 安全静态边界
+  gate backtest --persist  → 复用两文件校验 + producer-ready snapshot + 完整批量执行 + immutable backtest
+  activate                 → 复用两文件校验 + insert-only draft identity + 原子 active 切换
+
+Native V1:
+  onboard --stage all      → StaticGate + DryRunGate + CompareGate + BacktestGate(--no-persist)
+  onboard --stage native-maintenance → StaticGate + admission + DryRunGate
+
   单日补缺入口：signal-gap-fill  ← planner 绑定 active identity、业务键与 input authority
-  激活后产品读模型验收：DashboardGate → GET /api/factor-lab/dashboard
+  可选产品读模型检查：DashboardGate → GET /api/factor-lab/dashboard
 ```
 
-技术 `all` 不访问 Backend。激活后的唯一 HTTP 验收是 `DashboardGate`；它验证 active
+技术 `all` 只属于 Native 且不访问 Backend。`DashboardGate` 验证 active
 composite、信号与回测分区可见，但 dashboard payload 不携带 exact version，因此版本身份仍由
 生命周期和数据库权威回读证明。
 
-上图的 `all` 按 `runtime_type` 分派（Blackbox 两段、Native 四段），是所有首次技术入库的
-固定路径；Native 的 source benchmark/CompareGate 只在这里作为保真硬证据。Blackbox Compare
-只做平台输入校验与一次有效冒烟 predict——失败行为、确定性与截止隔离属上游义务，平台不重验。已入库 Native
+上图的 `all` 只是 Native 首次技术入库路径，source benchmark/CompareGate 在其中作为保真硬证据。Blackbox 由上游负责交付可运行性和内部性质，平台的完整持久化回测验证批量调用与标准输出。已入库 Native
 修订仅在不同 prior Native version 的 passed `all + compare` 所属 StaticGate 已持久化
 `static.business_identity`，且该快照与当前身份精确匹配时，才可走：
 

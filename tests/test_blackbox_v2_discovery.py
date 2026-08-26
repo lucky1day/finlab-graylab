@@ -79,6 +79,54 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "input_source"):
                 load_scheme_config(config_path)
 
+    def test_rejects_additional_blackbox_delivery_file(self) -> None:
+        from scheduler.discovery import load_scheme_config
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
+            (scheme_dir / "delivery" / "model.pkl").write_bytes(b"model")
+
+            with self.assertRaisesRegex(ValueError, "exactly two regular files"):
+                load_scheme_config(scheme_dir / "config.yaml")
+
+    def test_rejects_generated_python_cache_directory(self) -> None:
+        from scheduler.discovery import load_scheme_config
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
+            cache_dir = scheme_dir / "delivery" / "__pycache__"
+            cache_dir.mkdir()
+            (cache_dir / "trial_10y.cpython-312.pyc").write_bytes(b"cache")
+
+            with self.assertRaisesRegex(ValueError, "exactly two regular files"):
+                load_scheme_config(scheme_dir / "config.yaml")
+
+    def test_rejects_additional_blackbox_scheme_root_file(self) -> None:
+        from scheduler.discovery import load_scheme_config
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
+            (scheme_dir / "model.pkl").write_bytes(b"model")
+
+            with self.assertRaisesRegex(ValueError, "exactly config.yaml and delivery"):
+                load_scheme_config(scheme_dir / "config.yaml")
+
+    def test_rejects_symlinked_blackbox_delivery_directory(self) -> None:
+        from scheduler.discovery import load_scheme_config
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            scheme_dir = _write_blackbox_scheme(root)
+            real_delivery = root / "real-delivery"
+            (scheme_dir / "delivery").rename(real_delivery)
+            (scheme_dir / "delivery").symlink_to(
+                real_delivery,
+                target_is_directory=True,
+            )
+
+            with self.assertRaisesRegex(ValueError, "regular directory"):
+                load_scheme_config(scheme_dir / "config.yaml")
+
     def test_blackbox_version_ignores_lifecycle_fields(self) -> None:
         from scheduler.discovery import load_scheme_config
 

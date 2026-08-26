@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -23,8 +23,3 @@ class GateContext:
     backtest_start_date: str = DEFAULT_BACKTEST_START_DATE
     timeout_sec: int = 600
     api_base_url: str = "http://127.0.0.1:8100"
-    runtime_state: dict[str, Any] = field(
-        default_factory=dict,
-        repr=False,
-        compare=False,
-    )

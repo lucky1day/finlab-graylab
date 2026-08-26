@@ -121,19 +121,25 @@ draft -> validated -> shadow -> active -> paused -> retired
 
 ## 8. Harness 分派
 
-统一命令由 `runtime_type` 选择 Gate 实现：
+入库命令按运行时分离：
 
 ```bash
+# Native V1
 python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
+
+# Blackbox V2
+python -m harness intake-blackbox --delivery-dir <two-file-dir>
+python -m harness gate backtest --scheme-id {scheme_id} --predict-date YYYY-MM-DD --persist
+python -m harness activate --scheme-id {scheme_id}
 ```
 
-`all` 按 runtime type 分派：Blackbox V2 为 `static -> compare`，Native V1 为 `static -> dry-run -> compare -> backtest`；Native DryRunGate 同时核验真实执行生成的输入 artifact 合同。技术 `all` 不访问 Backend；Gate 证据的含义和副作用边界以[Harness 架构](HARNESS_ARCHITECTURE.md)为准。
+Native `all` 为 `static -> dry-run -> compare -> backtest`；DryRunGate 同时核验真实执行生成的输入 artifact 合同。Blackbox 不进入 `onboard`；Intake 定义静态平台边界，持久化回测与 activate 复用同一纯校验，完整持久化回测另负责真实批量执行和 Result 合同。
 
-Native ActivationGate 的两条 profile 互斥：当前 exact version 已通过完整 `all` 时，采用 `full_initial_onboarding_v1`，只复核当前四个 Gate（含 Compare）和本次直接 activation 命令，不要求 prior snapshot 或 `native-maintenance`。只有未走该 full-`all` profile 的已有 Native V1 修订，在 prior `all` 的 `static.business_identity` 已持久化且与当前业务身份精确匹配时，才可改走 `native-maintenance`：`static -> native-maintenance-admission -> dry-run`。快照只含 `scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors 和 composite Registry IDs，不含代码/config/version hash。maintenance profile 还要求 current exact `t_scheme_versions` 为 native `draft|active`、expected Registry 全 paused（预激活）或全 active（激活后）、draft+active fail-closed、prior Native version 的 passed `all + compare`、当前精确 version 的三段持久证据和独立 activation 命令；只有 ActivationGate 能原子建立 active。prior snapshot 缺失、重复、损坏或不匹配时一律 fail-closed。maintenance 不运行当前 historical `compare/backtest`，也不写业务表。满足任一标准 profile 的同一身份修订，其历史 source-benchmark 输入 vintage 漂移只归档，不单独阻断 activation、gap repair、`gray_live`、`scheduled_live` 或 Dashboard；新 Native 身份和 Blackbox V2 仍只能走 `all`。
+Native ActivationGate 的两条 profile 互斥：当前 exact version 已通过完整 `all` 时，采用 `full_initial_onboarding_v1`，只复核当前四个 Gate（含 Compare）和本次直接 activation 命令，不要求 prior snapshot 或 `native-maintenance`。只有未走该 full-`all` profile 的已有 Native V1 修订，在 prior `all` 的 `static.business_identity` 已持久化且与当前业务身份精确匹配时，才可改走 `native-maintenance`：`static -> native-maintenance-admission -> dry-run`。快照只含 `scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors 和 composite Registry IDs，不含代码/config/version hash。maintenance profile 还要求 current exact `t_scheme_versions` 为 native `draft|active`、expected Registry 全 paused（预激活）或全 active（激活后）、draft+active fail-closed、prior Native version 的 passed `all + compare`、当前精确 version 的三段持久证据和独立 activation 命令；只有 ActivationGate 能原子建立 active。prior snapshot 缺失、重复、损坏或不匹配时一律 fail-closed。maintenance 不运行当前 historical `compare/backtest`，也不写业务表。满足任一标准 profile 的同一身份修订，其历史 source-benchmark 输入 vintage 漂移只归档，不单独阻断 activation、gap repair、`gray_live`、`scheduled_live` 或 Dashboard；新 Native 身份仍只能走 Native `all`，Blackbox V2 走 Intake、完整持久化回测和 activate。
 
 - Native：校验 adapter/core、输入 artifact 和 source fidelity。
-- Blackbox：校验两文件、CLI、四文件快照和标准结果；确定性与截止隔离属上游交付契约义务，平台不重验。
-- 持久化 backtest、shadow、activate、lifecycle reconcile 与单日 `signal-gap-fill` 都不包含在自动段中，必须走各自专用命令；`scheduled_live` 只由宿主 one-shot 触发。
+- Blackbox：Intake、持久化 backtest 与 activate 复用同一两文件安全校验；backtest 另校验 CLI、四文件快照和标准结果；确定性与截止隔离属上游义务。
+- activate、lifecycle reconcile 与单日 `signal-gap-fill` 使用各自专用命令；不存在 Blackbox shadow 命令；`scheduled_live` 只由宿主 one-shot 触发。
 
 ## 9. 责任边界
 

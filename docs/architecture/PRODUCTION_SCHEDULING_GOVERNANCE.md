@@ -99,7 +99,7 @@ Activation 前必须完成对应 Gate、生产准备核验与一次性专项授�
 不携带 exact version，因此该 Gate 不能证明某个 exact version，版本身份仍由生命周期与数据库
 权威回读证明。
 
-Blackbox 任一 lifecycle journal 处于 pending 时，新的 shadow、activate 或 revision activate
+Blackbox 任一 lifecycle journal 处于 pending 时，新的 activate 或 revision activate
 必须直接阻断，不得在其它命令前隐式恢复。唯一恢复入口是独立执行
 `gate lifecycle-reconcile`：它只回退到原 journal 记录的 previous safe state，保留原 journal 不变，
 并新建与其关联的 reconciliation journal 记录全过程；失败继续保留 pending 证据。

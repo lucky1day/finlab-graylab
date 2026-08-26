@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from datetime import date
 
 
@@ -11,7 +11,6 @@ SIDE_EFFECT_ACTIONS = frozenset(
     {
         "activate",
         "backtest_persist",
-        "shadow_register",
         "blackbox_activate",
         "blackbox_reconcile",
     }
@@ -19,14 +18,6 @@ SIDE_EFFECT_ACTIONS = frozenset(
 EXACT_PREDICT_DATE_ACTIONS = frozenset(
     {
         "backtest_persist",
-        "shadow_register",
-    }
-)
-HARNESS_RUN_SCOPED_ACTIONS = frozenset(
-    {
-        "shadow_register",
-        "blackbox_activate",
-        "blackbox_reconcile",
     }
 )
 
@@ -40,7 +31,6 @@ class DirectOperation:
     predict_date: str | None
     issued_by: str
     scheme_version: str
-    harness_run_id: str | None = None
     backtest_start_date: str | None = None
 
 
@@ -84,10 +74,9 @@ def verify_direct_operation(
     action: str,
     scheme_version: str,
     predict_date: str | None = None,
-    harness_run_id: str | None = None,
     backtest_start_date: str | None = None,
 ) -> tuple[DirectOperation | None, list[str]]:
-    """校验命令作用域，并绑定 Gate 选出的 exact Harness run。"""
+    """校验命令作用域。"""
     if operation is None:
         return None, ["direct operator command is required"]
     if not isinstance(operation, DirectOperation):
@@ -106,22 +95,6 @@ def verify_direct_operation(
         errors.append(
             "scheme_version mismatch: "
             f"operation={operation.scheme_version}, ctx={scheme_version}"
-        )
-
-    bound_run_id = harness_run_id
-    if action in HARNESS_RUN_SCOPED_ACTIONS:
-        try:
-            bound_run_id = _require_text(harness_run_id, "expected harness_run_id")
-        except ValueError as exc:
-            errors.append(str(exc))
-    if (
-        operation.harness_run_id is not None
-        and bound_run_id is not None
-        and operation.harness_run_id != bound_run_id
-    ):
-        errors.append(
-            "harness_run_id mismatch: "
-            f"operation={operation.harness_run_id}, ctx={bound_run_id}"
         )
 
     if action in EXACT_PREDICT_DATE_ACTIONS:
@@ -151,7 +124,7 @@ def verify_direct_operation(
                 )
     if errors:
         return None, errors
-    return replace(operation, harness_run_id=bound_run_id), []
+    return operation, []
 
 
 def operation_scope_sha256(operation: DirectOperation) -> str:

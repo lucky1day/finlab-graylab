@@ -43,48 +43,42 @@ def onboard(
             results=[],
             operation="run_start",
         )
-    try:
-        results: list[GateResult] = []
-        for gate in selected_gates:
-            result = gate.run(ctx)
-            results.append(result)
-            if not result.passed:
-                break
+    results: list[GateResult] = []
+    for gate in selected_gates:
+        result = gate.run(ctx)
+        results.append(result)
+        if not result.passed:
+            break
 
-        report = OnboardReport(
-            scheme_id=ctx.scheme_id,
-            predict_date=ctx.predict_date,
-            stage_requested=stage,
-            results=results,
+    report = OnboardReport(
+        scheme_id=ctx.scheme_id,
+        predict_date=ctx.predict_date,
+        stage_requested=stage,
+        results=results,
+        harness_run_id=harness_run_id,
+    )
+    complete_persisted = persist_harness_run_complete(
+        ctx,
+        harness_run_id=harness_run_id,
+        status=_report_status(report),
+        finished_at=utc_now(),
+        results=results,
+    )
+    if not complete_persisted:
+        report = _persistence_failure_report(
+            ctx,
+            stage=stage,
             harness_run_id=harness_run_id,
+            results=results,
+            operation="run_complete",
         )
-        complete_persisted = persist_harness_run_complete(
+        persist_harness_run_finish(
             ctx,
             harness_run_id=harness_run_id,
-            status=_report_status(report),
+            status="failed",
             finished_at=utc_now(),
-            results=results,
         )
-        if not complete_persisted:
-            report = _persistence_failure_report(
-                ctx,
-                stage=stage,
-                harness_run_id=harness_run_id,
-                results=results,
-                operation="run_complete",
-            )
-            persist_harness_run_finish(
-                ctx,
-                harness_run_id=harness_run_id,
-                status="failed",
-                finished_at=utc_now(),
-            )
-        return report
-    finally:
-        if getattr(ctx.config, "runtime_type", "native_adapter") == "blackbox_v2":
-            from harness.blackbox_v2.gates import cleanup_runtime_input
-
-            cleanup_runtime_input(ctx)
+    return report
 
 
 def _persistence_failure_report(

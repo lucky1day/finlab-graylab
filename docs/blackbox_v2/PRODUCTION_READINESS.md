@@ -8,18 +8,15 @@
 
 ## 必须满足
 
-1. 两文件 Intake、Metadata、目录身份、Contract 和 Runtime Profile 全部通过。
-2. 当前 exact version 的 Harness `all` 全部通过：Blackbox V2 为两段
-   `static → compare`（Compare 只执行一次有效冒烟 predict；负向失败行为由上游交付契约
-   负责）。数据库 Gate 摘要中的 version、输入 snapshot、Request、cutoff 和结果身份精确一致；
-   Blackbox 不再写方案级 Harness 报告目录。
-   技术 `all` 不访问 Backend。
+1. 新 ID 的两文件 Intake 已通过；同 ID 修订的 canonical 两文件已在持久化回测与 activation 前通过同一 Metadata、目录身份、Contract 和 Runtime Profile 校验。
+2. 当前 exact version 已完成一次完整持久化回测，回测 durable summary 中的
+   version/code/config/manifest、Runtime Profile、环境指纹、generation 和 snapshot 精确一致。
 3. DataBridge producer 独立完成四文件 generation 的 schema、freshness、cutoff、完整性校验和 ready Snapshot 构建；方案只读取已有 receipt 并使用对应只读版本，不触发构建、修复、哈希或 CSV 复核。私有运行视图只做 producer seal 核对、稳定复制和进程前后篡改检查。启用新版 receipt 的 release 后，目标环境必须先由该 release 完成一次 DataBridge publish 并写出 ready gate，旧 receipt 不自动升级；在此之前 Harness 与 scheduler 均 fail-closed。旧三文件 current 只允许由 producer 在 identity/manifest 校验后作为一次升级 continuity 基线，下一次原子发布必须恢复严格四文件；普通消费者仍拒绝三文件 current。
-4. 入库 StaticGate、运行后输入目录指纹复验、超时、环境 allowlist 和严格 `-1/0/1` Result 均通过。
+4. canonical 两文件安全静态边界、回测运行后输入目录指纹复验、超时、环境 allowlist 和严格 `-1/0/1` Result 均通过。
    确定性、顺序/分批一致性与未来数据隔离**不在平台验收范围内**——它们是交付代码自身的性质，
    由上游按 [上游交付契约](../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md) 保证；生产准备核验
    不得据此宣称平台已验证过这些性质。
-5. activation、持久化回测等直接副作用命令自动绑定 scheme、exact version、相关 Harness run、日期/起点与非秘密 operator；单日 `signal-gap-fill` 则以命令执行权表达本次补缺授权，由 planner 绑定当前 active identity、业务键和输入 authority，不接收 operator 或 DirectOperation scope。两类授权都不得外推到其它方案或操作，也不生成密钥/token。正式 `scheduled_live` 只由目标主机已安装的 one-shot 调度触发。
+5. activation 和持久化回测绑定 scheme、exact version、日期/起点与 operator；activation 只读取匹配的成功回测，不绑定 Harness run。单日 `signal-gap-fill` 仍由 planner 绑定 active identity、业务键和输入 authority。
 6. activation 后 config、exact version 与全部 Registry target 均为 active；paused、draft、retired 或 cadence 不匹配的身份不得进入对应 one-shot runner。
 7. 激活后的 HTTP 验收只使用 `DashboardGate` 检查 `/api/factor-lab/dashboard` 当前业务可见性；Dashboard 响应不携带 exact version，不能替代 exact version、Gate 或生命周期证据。
 8. 自然生产观察必须由 installed plist、loaded state、日志、run、prediction、API/Dashboard 相互一致证明；仓库模板和测试不替代现场证据。
@@ -34,7 +31,7 @@
 
 ## 生命周期异常
 
-- 任一 pending lifecycle journal 都必须阻断新的 lifecycle 动作，不允许激活、shadow 或 revision 路径隐式恢复。
+- 任一 pending lifecycle journal 都必须阻断新的 lifecycle 动作，不允许激活或 revision 路径隐式恢复。
 - 只有独立执行 `gate lifecycle-reconcile` 命令才可以把身份恢复到 journal 记录的 previous safe state；原 journal 保持不变，并新增 linked reconciliation journal 记录恢复结果。
 
 ## 禁止替代

@@ -170,25 +170,6 @@ def persist_backtest_output_atomic(
     return run_id
 
 
-def snapshot_backtest_scope_counts(engine: Engine, benchmark_id: str) -> dict[str, int]:
-    """按 benchmark 身份独立读取三张 Blackbox 回测业务表。"""
-    tables = (
-        "t_backtest_runs",
-        "t_backtest_predictions",
-        "t_backtest_monthly_metrics",
-    )
-    with engine.connect() as connection:
-        return {
-            table: int(
-                connection.execute(
-                    text(f"SELECT COUNT(*) FROM {table} WHERE benchmark_id=:benchmark_id"),
-                    {"benchmark_id": benchmark_id},
-                ).scalar_one()
-            )
-            for table in tables
-        }
-
-
 def _create_backtest_run_connection(
     connection: Connection,
     *,

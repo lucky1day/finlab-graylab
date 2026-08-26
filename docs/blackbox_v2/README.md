@@ -21,7 +21,7 @@ Blackbox V2 是所有新算法、新方案 ID、新目标、新任务和替代�
 
 ## 证据边界
 
-- 精确 version、generation、snapshot、Harness run、Gate 结果和授权证据由控制面数据库及本机 ignored reports 保存，不提交到 `docs/`。
+- Blackbox 的精确 version、generation、snapshot、持久化回测、激活与授权证据，以及 Native 的 Harness run/Gate 证据，由控制面数据库及本机 ignored reports 保存，不提交到 `docs/`。
 - 已完成的单方案入库过程、截图、JSON 和时点审计不在工作树维护副本；需要追溯时使用 Git 历史和控制面记录。
 - `docs/CURRENT_STATUS.md` 只保存当前有效摘要，`docs/TODO.md` 只保存未闭环工作和方案问题。
 - 试验或历史记录不能改变机器契约、现行 SOP 或生产调度治理。

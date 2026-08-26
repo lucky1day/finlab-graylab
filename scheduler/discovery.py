@@ -158,8 +158,21 @@ def _load_declared_scheme_config(config_path: Path) -> SchemeConfig:
 
 def _load_blackbox_config(config_path: Path, raw: dict[str, Any], schedule_raw: dict[str, Any]) -> SchemeConfig:
     from shared.blackbox_v2.contracts import load_metadata
+    from shared.blackbox_v2.intake import validate_canonical_layout
 
     scheme_dir = config_path.parent
+    _scheme_path, canonical_config_path, canonical_delivery_dir = (
+        validate_canonical_layout(scheme_dir)
+    )
+    if canonical_config_path != config_path.resolve():
+        raise ValueError(f"{config_path}: config path is not canonical")
+    delivery_entries = sorted(canonical_delivery_dir.iterdir())
+    if len(delivery_entries) != 2 or any(
+        not item.is_file() or item.is_symlink() for item in delivery_entries
+    ):
+        raise ValueError(
+            f"{config_path}: Blackbox V2 delivery must contain exactly two regular files"
+        )
     delivery_raw = _require_mapping(raw.get("delivery", {}), config_path)
     script_path = (scheme_dir / str(delivery_raw["script"])).resolve()
     metadata_path = (scheme_dir / str(delivery_raw["metadata"])).resolve()

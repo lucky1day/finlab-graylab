@@ -1141,7 +1141,7 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
                 action="pause",
                 scheme_id=cfg.scheme_id,
                 scheme_version=cfg.scheme_version,
-                harness_run_id="hr_pending_reconcile",
+                evidence_run_id="backtest:42",
                 previous=state,
                 target=LifecycleState("paused", "paused", "paused", "paused"),
                 operation_scope_sha256="a" * 64,

@@ -56,7 +56,7 @@ class LifecycleJournal:
     action: str
     scheme_id: str
     scheme_version: str
-    harness_run_id: str
+    evidence_run_id: str
     previous: LifecycleState
     target: LifecycleState
     phase: str
@@ -73,7 +73,7 @@ class LifecycleJournal:
         action: str,
         scheme_id: str,
         scheme_version: str,
-        harness_run_id: str,
+        evidence_run_id: str,
         previous: LifecycleState,
         target: LifecycleState,
         operation_scope_sha256: str,
@@ -84,7 +84,7 @@ class LifecycleJournal:
             action=action,
             scheme_id=scheme_id,
             scheme_version=scheme_version,
-            harness_run_id=harness_run_id,
+            evidence_run_id=evidence_run_id,
             previous=previous,
             target=target,
             phase="prepared",
@@ -143,7 +143,9 @@ def load_journal(path: str | Path) -> LifecycleJournal:
         action=str(raw["action"]),
         scheme_id=str(raw["scheme_id"]),
         scheme_version=str(raw["scheme_version"]),
-        harness_run_id=str(raw["harness_run_id"]),
+        evidence_run_id=str(
+            raw.get("evidence_run_id") or raw["harness_run_id"]
+        ),
         previous=LifecycleState(**raw["previous"]),
         target=LifecycleState(**raw["target"]),
         phase=str(raw["phase"]),
@@ -192,7 +194,7 @@ def pending_journals(project_root: str | Path, scheme_id: str) -> list[tuple[Pat
             and candidate.phase == "verified"
             and candidate.reconciliation_of == journal.operation_id
             and candidate.scheme_version == journal.scheme_version
-            and candidate.harness_run_id == journal.harness_run_id
+            and candidate.evidence_run_id == journal.evidence_run_id
             and candidate.target == journal.previous
             for _, candidate in journals
         )
@@ -215,7 +217,7 @@ def apply_lifecycle_state(
     scheme_id: str,
     scheme_version: str,
     state: LifecycleState,
-    harness_run_id: str | None = None,
+    evidence_run_id: str | None = None,
 ) -> None:
     """把生效生命周期状态写入本机覆盖层。
 
@@ -228,7 +230,7 @@ def apply_lifecycle_state(
         scheme_version=scheme_version,
         status=state.config_status,
         version_status=str(state.config_version_status),
-        harness_run_id=harness_run_id,
+        evidence_run_id=evidence_run_id,
     )
 
 
@@ -239,7 +241,7 @@ def perform_lifecycle_transition(
     action: str,
     scheme_id: str,
     scheme_version: str,
-    harness_run_id: str,
+    evidence_run_id: str,
     previous: LifecycleState,
     target: LifecycleState,
     compensation: LifecycleState,
@@ -255,7 +257,7 @@ def perform_lifecycle_transition(
             action=action,
             scheme_id=scheme_id,
             scheme_version=scheme_version,
-            harness_run_id=harness_run_id,
+            evidence_run_id=evidence_run_id,
             previous=previous,
             target=target,
             compensation=compensation,
@@ -272,7 +274,7 @@ def _perform_lifecycle_transition_unlocked(
     action: str,
     scheme_id: str,
     scheme_version: str,
-    harness_run_id: str,
+    evidence_run_id: str,
     previous: LifecycleState,
     target: LifecycleState,
     compensation: LifecycleState,
@@ -291,7 +293,7 @@ def _perform_lifecycle_transition_unlocked(
         action=action,
         scheme_id=scheme_id,
         scheme_version=scheme_version,
-        harness_run_id=harness_run_id,
+        evidence_run_id=evidence_run_id,
         previous=previous,
         target=target,
         operation_scope_sha256=operation_scope_sha256,
@@ -303,7 +305,7 @@ def _perform_lifecycle_transition_unlocked(
             scheme_id=scheme_id,
             scheme_version=scheme_version,
             state=target,
-            harness_run_id=harness_run_id,
+            evidence_run_id=evidence_run_id,
         )
         next_journal = journal.transition("config_written")
         write_journal(project_root, next_journal)
@@ -327,7 +329,7 @@ def _perform_lifecycle_transition_unlocked(
                 scheme_id=scheme_id,
                 scheme_version=scheme_version,
                 state=compensation,
-                harness_run_id=harness_run_id,
+                evidence_run_id=evidence_run_id,
             )
         except BaseException as rollback_exc:
             compensation_errors.append(f"config compensation failed: {rollback_exc}")
@@ -417,7 +419,7 @@ def _reconcile_with_linked_journal(
         action="lifecycle_reconcile",
         scheme_id=original.scheme_id,
         scheme_version=original.scheme_version,
-        harness_run_id=original.harness_run_id,
+        evidence_run_id=original.evidence_run_id,
         previous=actual_before,
         target=original.previous,
         operation_scope_sha256=(

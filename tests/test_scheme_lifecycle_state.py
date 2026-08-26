@@ -27,7 +27,7 @@ def test_written_state_is_read_back_for_the_same_version(tmp_path: Path) -> None
             scheme_version="v1",
             status="active",
             version_status="active",
-            harness_run_id="hr_x",
+            evidence_run_id="backtest:42",
         )
         record = read_lifecycle_state(tmp_path, "demo", "v1")
 
@@ -117,7 +117,7 @@ def test_lifecycle_transition_leaves_config_yaml_byte_identical(tmp_path: Path) 
             scheme_id=scheme_id,
             scheme_version="v-under-test",
             state=LifecycleState("paused", "shadow", "paused"),
-            harness_run_id="hr_test",
+            evidence_run_id="backtest:42",
         )
         record = read_lifecycle_state(root, scheme_id, "v-under-test")
 

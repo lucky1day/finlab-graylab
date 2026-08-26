@@ -109,7 +109,7 @@ def write_lifecycle_state(
     scheme_version: str,
     status: str,
     version_status: str,
-    harness_run_id: str | None = None,
+    evidence_run_id: str | None = None,
 ) -> Path:
     """原子写入本机生命周期状态。取值非法一律拒绝。"""
     path = lifecycle_state_path(project_root, scheme_id)
@@ -118,7 +118,7 @@ def write_lifecycle_state(
         scheme_version=scheme_version,
         status=status,
         version_status=version_status,
-        harness_run_id=harness_run_id,
+        evidence_run_id=evidence_run_id,
     )
     _atomic_write_json(path, payload)
     return path
@@ -130,7 +130,7 @@ def _lifecycle_payload(
     scheme_version: str,
     status: str,
     version_status: str,
-    harness_run_id: str | None,
+    evidence_run_id: str | None,
 ) -> dict[str, str]:
     if status not in ALLOWED_STATUS:
         raise ValueError(f"unsupported lifecycle status: {status!r}")
@@ -144,8 +144,8 @@ def _lifecycle_payload(
         "version_status": version_status,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    if harness_run_id:
-        payload["harness_run_id"] = str(harness_run_id)
+    if evidence_run_id:
+        payload["evidence_run_id"] = str(evidence_run_id)
     return payload
 
 

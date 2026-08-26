@@ -137,8 +137,6 @@ def _set_mysql_session_utc_on_checkout(
 def register_blackbox_draft_identity(
     engine: Engine,
     cfg: SchemeConfig,
-    *,
-    expected_harness_run_id: str,
 ) -> BlackboxLifecycleState:
     """在非空生产 Schema 中 insert-only 登记全新 Blackbox draft 身份。"""
     if getattr(cfg, "runtime_type", None) != "blackbox_v2":
@@ -152,14 +150,6 @@ def register_blackbox_draft_identity(
         raise ValueError("Blackbox draft registration requires environment_fingerprint")
     if not str(getattr(cfg, "data_snapshot_id", "") or "").strip():
         raise ValueError("Blackbox draft registration requires data_snapshot_id")
-    if (
-        not isinstance(expected_harness_run_id, str)
-        or not expected_harness_run_id.strip()
-    ):
-        raise ValueError(
-            "Blackbox draft registration requires expected_harness_run_id"
-        )
-
     expected_tenors, expected_registry_ids = _expected_registry_identity(cfg)
     identity_ids = (cfg.scheme_id, *expected_registry_ids)
     identity_placeholders = ", ".join(
@@ -175,42 +165,6 @@ def register_blackbox_draft_identity(
         scheme_id=cfg.scheme_id,
     ):
         with engine.begin() as conn:
-            latest_run = (
-                conn.execute(
-                    text(
-                        """
-                        /* draft registration latest passed all-stage fence */
-                        SELECT harness_run_id
-                        FROM t_harness_runs
-                        WHERE scheme_id = :scheme_id
-                          AND scheme_version = :scheme_version
-                          AND stage = 'all'
-                          AND status = 'passed'
-                        ORDER BY finished_at DESC, harness_run_id DESC
-                        LIMIT 1
-                        FOR UPDATE
-                        """
-                    ),
-                    {
-                        "scheme_id": cfg.scheme_id,
-                        "scheme_version": cfg.scheme_version,
-                    },
-                )
-                .mappings()
-                .one_or_none()
-            )
-            actual_harness_run_id = (
-                str(latest_run["harness_run_id"])
-                if latest_run is not None
-                else None
-            )
-            if actual_harness_run_id != expected_harness_run_id:
-                raise RuntimeError(
-                    "latest passed all-stage harness run changed before draft "
-                    "registration: "
-                    f"expected={expected_harness_run_id}, "
-                    f"actual={actual_harness_run_id}"
-                )
             version_conflicts = (
                 conn.execute(
                     text(
@@ -264,7 +218,7 @@ def register_blackbox_draft_identity(
                 "manifest_hash": cfg.manifest_hash,
                 "git_commit": None,
                 "status": "draft",
-                "created_by": "harness.shadow-register",
+                "created_by": "harness.activate",
             }
             conn.execute(
                 text(
@@ -338,7 +292,7 @@ def register_blackbox_draft_identity(
                 "manifest_hash": cfg.manifest_hash,
                 "git_commit": None,
                 "status": "draft",
-                "created_by": "harness.shadow-register",
+                "created_by": "harness.activate",
                 "approved_by": None,
                 "approved_at": None,
             }
@@ -764,7 +718,6 @@ def activate_blackbox_revision(
     *,
     prior_scheme_version: str,
     pending_scheme_versions: tuple[str, ...],
-    expected_harness_run_id: str,
     approved_by: str,
     approved_at: datetime,
 ) -> BlackboxLifecycleState:
@@ -791,13 +744,6 @@ def activate_blackbox_revision(
         raise ValueError(
             "pending_scheme_versions must be unique and exclude candidate/prior"
         )
-    if (
-        not isinstance(expected_harness_run_id, str)
-        or not expected_harness_run_id.strip()
-    ):
-        raise ValueError(
-            "Blackbox revision activation requires expected_harness_run_id"
-        )
     if not isinstance(approved_by, str) or not approved_by.strip():
         raise ValueError("Blackbox revision activation requires non-empty approved_by")
     if not isinstance(approved_at, datetime):
@@ -812,37 +758,6 @@ def activate_blackbox_revision(
     ):
         with engine.begin() as conn:
             lock_clause = " FOR UPDATE" if _dialect_name(conn) != "sqlite" else ""
-            latest_run = (
-                conn.execute(
-                    text(
-                        "SELECT harness_run_id FROM t_harness_runs "
-                        "WHERE scheme_id = :scheme_id "
-                        "AND scheme_version = :scheme_version "
-                        "AND stage = 'all' AND status = 'passed' "
-                        "ORDER BY finished_at DESC, harness_run_id DESC "
-                        f"LIMIT 1{lock_clause}"
-                    ),
-                    {
-                        "scheme_id": cfg.scheme_id,
-                        "scheme_version": cfg.scheme_version,
-                    },
-                )
-                .mappings()
-                .one_or_none()
-            )
-            actual_harness_run_id = (
-                str(latest_run["harness_run_id"])
-                if latest_run is not None
-                else None
-            )
-            if actual_harness_run_id != expected_harness_run_id:
-                raise RuntimeError(
-                    "latest passed all-stage harness run changed before Blackbox "
-                    "revision activation: "
-                    f"expected={expected_harness_run_id}, "
-                    f"actual={actual_harness_run_id}"
-                )
-
             preflight = _read_blackbox_revision_activation_preflight_conn(
                 conn,
                 cfg,
@@ -1067,7 +982,7 @@ def _validate_blackbox_revision_candidate(
             value = getattr(cfg, field, None)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(
-                    "Blackbox revision activation requires passed all-stage "
+                    "Blackbox revision activation requires successful backtest "
                     f"{field}"
                 )
 

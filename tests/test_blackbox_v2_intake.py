@@ -143,6 +143,38 @@ class BlackboxV2IntakeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "exactly two regular files"):
                 intake_delivery(delivery, schemes_root=root / "schemes")
 
+    def test_intake_rejects_unsafe_script_before_writing_scheme(self) -> None:
+        from shared.blackbox_v2.intake import intake_delivery
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            delivery = _write_delivery(root / "incoming")
+            (delivery / "trial_10y.py").write_text(
+                "import requests\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "forbidden import requests"):
+                intake_delivery(delivery, schemes_root=root / "schemes")
+
+            self.assertFalse((root / "schemes" / "trial_10y").exists())
+
+    def test_canonical_validator_rejects_unsafe_revision(self) -> None:
+        from shared.blackbox_v2.intake import validate_delivery
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            delivery = _write_delivery(Path(tmpdir) / "delivery")
+            (delivery / "trial_10y.py").write_text(
+                "import requests\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "forbidden import requests"):
+                validate_delivery(
+                    delivery,
+                    expected_scheme_id="trial_10y",
+                )
+
     def test_intake_refuses_existing_scheme_id(self) -> None:
         from shared.blackbox_v2.intake import intake_delivery
 

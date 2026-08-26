@@ -9,7 +9,7 @@ from harness.operation import (
 )
 
 
-def test_direct_operation_binds_latest_exact_harness_run() -> None:
+def test_blackbox_activation_operation_needs_no_harness_run() -> None:
     operation = build_direct_operation(
         "trial_10y",
         "blackbox_activate",
@@ -22,12 +22,10 @@ def test_direct_operation_binds_latest_exact_harness_run() -> None:
         scheme_id="trial_10y",
         action="blackbox_activate",
         scheme_version="version-1",
-        harness_run_id="hr-passed",
     )
 
     assert errors == []
     assert bound is not None
-    assert bound.harness_run_id == "hr-passed"
     assert len(operation_scope_sha256(bound)) == 64
 
 

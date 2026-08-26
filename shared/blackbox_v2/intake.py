@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import os
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -15,32 +17,35 @@ SCHEDULES = {
     "monthly": "0 18 15 * *",
 }
 PERIOD_AVERAGE_SCHEDULE = "0 18 * * 1-5"
+RUNTIME_PROFILE = "blackbox-v2-v1"
+DATA_SCHEMA_VERSION = "data-bridge-v1"
+FORBIDDEN_IMPORT_ROOTS = {
+    "aiohttp",
+    "ftplib",
+    "http",
+    "mysql",
+    "pymysql",
+    "psycopg",
+    "requests",
+    "socket",
+    "sqlalchemy",
+    "sqlite3",
+    "subprocess",
+    "urllib",
+}
+FORBIDDEN_CALLS = {"eval", "exec", "compile", "__import__"}
+FORBIDDEN_QUALIFIED_CALLS = {"os.system", "os.popen", "os.spawnl", "os.spawnv"}
+ABSOLUTE_PATH_PATTERN = re.compile(r"^(?:/Users/|/home/|[A-Za-z]:[\\/])")
+RELATIVE_TRAVERSAL_PATTERN = re.compile(r"(?:^|[/\\])\.\.(?:[/\\]|$)")
 
 
 def intake_delivery(
     delivery_dir: str | Path,
     *,
     schemes_root: str | Path,
-    runtime_profile: str = "blackbox-v2-v1",
-    data_schema_version: str = "data-bridge-v1",
 ) -> Path:
     """Atomically preserve a two-file delivery and generate its platform-owned config."""
-    source = Path(delivery_dir).resolve()
-    if not source.is_dir():
-        raise ValueError(f"delivery directory does not exist: {source}")
-    entries = sorted(source.iterdir())
-    if len(entries) != 2 or any(not item.is_file() or item.is_symlink() for item in entries):
-        raise ValueError("Blackbox V2 delivery must contain exactly two regular files")
-    scripts = [item for item in entries if item.suffix == ".py"]
-    metadata_files = [item for item in entries if item.suffix == ".json"]
-    if len(scripts) != 1 or len(metadata_files) != 1:
-        raise ValueError("Blackbox V2 delivery must contain one .py and one .json")
-    metadata = load_metadata(metadata_files[0])
-    if metadata.description is None:
-        raise ValueError("description is required for a new Blackbox V2 Intake")
-    expected_names = {f"{metadata.scheme_id}.py", f"{metadata.scheme_id}.json"}
-    if {item.name for item in entries} != expected_names:
-        raise ValueError("delivery filenames must match metadata scheme_id")
+    metadata, script, metadata_file = validate_delivery(delivery_dir)
 
     destination_root = Path(schemes_root).resolve()
     destination = destination_root / metadata.scheme_id
@@ -56,17 +61,13 @@ def intake_delivery(
     try:
         staged_delivery = staging / "delivery"
         staged_delivery.mkdir()
-        shutil.copyfile(scripts[0], staged_delivery / scripts[0].name)
+        shutil.copyfile(script, staged_delivery / script.name)
         shutil.copyfile(
-            metadata_files[0],
-            staged_delivery / metadata_files[0].name,
+            metadata_file,
+            staged_delivery / metadata_file.name,
         )
         (staging / "config.yaml").write_text(
-            _config_text(
-                metadata,
-                runtime_profile=runtime_profile,
-                data_schema_version=data_schema_version,
-            ),
+            _config_text(metadata),
             encoding="utf-8",
         )
         for path in staged_delivery.iterdir():
@@ -78,11 +79,105 @@ def intake_delivery(
         raise
 
 
+def validate_delivery(
+    delivery_dir: str | Path,
+    *,
+    expected_scheme_id: str | None = None,
+) -> tuple[BlackboxMetadata, Path, Path]:
+    """校验 Blackbox canonical 两文件交付，不产生任何副作用。"""
+    source = Path(delivery_dir).resolve()
+    if not source.is_dir():
+        raise ValueError(f"delivery directory does not exist: {source}")
+    entries = sorted(source.iterdir())
+    if len(entries) != 2 or any(not item.is_file() or item.is_symlink() for item in entries):
+        raise ValueError("Blackbox V2 delivery must contain exactly two regular files")
+    scripts = [item for item in entries if item.suffix == ".py"]
+    metadata_files = [item for item in entries if item.suffix == ".json"]
+    if len(scripts) != 1 or len(metadata_files) != 1:
+        raise ValueError("Blackbox V2 delivery must contain one .py and one .json")
+    metadata = load_metadata(metadata_files[0])
+    if expected_scheme_id is not None and metadata.scheme_id != expected_scheme_id:
+        raise ValueError(
+            "delivery scheme_id does not match canonical scheme: "
+            f"expected={expected_scheme_id}, actual={metadata.scheme_id}"
+        )
+    if metadata.description is None:
+        raise ValueError("description is required for a new Blackbox V2 Intake")
+    expected_names = {f"{metadata.scheme_id}.py", f"{metadata.scheme_id}.json"}
+    if {item.name for item in entries} != expected_names:
+        raise ValueError("delivery filenames must match metadata scheme_id")
+    try:
+        tree = ast.parse(
+            scripts[0].read_text(encoding="utf-8"),
+            filename=str(scripts[0]),
+        )
+    except (OSError, UnicodeError, SyntaxError) as exc:
+        raise ValueError(f"delivery script syntax error: {exc}") from exc
+    violations = _script_violations(tree)
+    if violations:
+        raise ValueError("unsafe Blackbox V2 delivery script: " + "; ".join(violations))
+    return metadata, scripts[0], metadata_files[0]
+
+
+def validate_canonical_layout(
+    scheme_dir: str | Path,
+) -> tuple[Path, Path, Path]:
+    """校验 canonical 方案根目录仅包含 config 与真实 delivery 目录。"""
+    scheme = Path(scheme_dir)
+    if not scheme.is_dir() or scheme.is_symlink():
+        raise ValueError(f"Blackbox V2 scheme must be a regular directory: {scheme}")
+    entries = sorted(scheme.iterdir())
+    if {item.name for item in entries} != {"config.yaml", "delivery"}:
+        raise ValueError(
+            "Blackbox V2 scheme must contain exactly config.yaml and delivery"
+        )
+    config_path = scheme / "config.yaml"
+    delivery_dir = scheme / "delivery"
+    if not config_path.is_file() or config_path.is_symlink():
+        raise ValueError("Blackbox V2 config.yaml must be a regular file")
+    if not delivery_dir.is_dir() or delivery_dir.is_symlink():
+        raise ValueError("Blackbox V2 delivery must be a regular directory")
+    return scheme.resolve(), config_path.resolve(), delivery_dir.resolve()
+
+
+def _script_violations(tree: ast.AST) -> list[str]:
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".", 1)[0]
+                if root in FORBIDDEN_IMPORT_ROOTS:
+                    violations.append(f"line {node.lineno}: forbidden import {alias.name}")
+        elif isinstance(node, ast.ImportFrom):
+            root = (node.module or "").split(".", 1)[0]
+            if root in FORBIDDEN_IMPORT_ROOTS:
+                violations.append(f"line {node.lineno}: forbidden import {node.module}")
+        elif isinstance(node, ast.Call):
+            name = _call_name(node.func)
+            if name in FORBIDDEN_CALLS or name in FORBIDDEN_QUALIFIED_CALLS:
+                violations.append(f"line {node.lineno}: forbidden call {name}")
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            literal = node.value.strip()
+            if ABSOLUTE_PATH_PATTERN.match(literal):
+                violations.append(f"line {node.lineno}: hard-coded absolute path is forbidden")
+            if RELATIVE_TRAVERSAL_PATTERN.search(literal):
+                violations.append(
+                    f"line {node.lineno}: relative path traversal literal is forbidden"
+                )
+    return sorted(set(violations))
+
+
+def _call_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        prefix = _call_name(node.value)
+        return f"{prefix}.{node.attr}" if prefix else node.attr
+    return ""
+
+
 def _config_text(
     metadata: BlackboxMetadata,
-    *,
-    runtime_profile: str,
-    data_schema_version: str,
 ) -> str:
     cron = (
         PERIOD_AVERAGE_SCHEDULE
@@ -93,8 +188,8 @@ def _config_text(
         f"scheme_id: {metadata.scheme_id}\n"
         "runtime_type: blackbox_v2\n"
         "input_source: data_bridge_current\n"
-        f"runtime_profile: {runtime_profile}\n"
-        f"data_schema_version: {data_schema_version}\n"
+        f"runtime_profile: {RUNTIME_PROFILE}\n"
+        f"data_schema_version: {DATA_SCHEMA_VERSION}\n"
         "status: paused\n"
         "version_status: draft\n"
         "schedule:\n"
