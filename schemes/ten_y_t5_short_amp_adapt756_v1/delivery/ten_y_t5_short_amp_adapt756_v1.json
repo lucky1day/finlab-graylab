@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "ten_y_t5_short_amp_adapt756_v1",
+  "name": "SHORT_RATE_AMP_ADAPT756",
+  "owner": "lw",
+  "description": "使用日频1Y国债收益率的5日振幅反转信号，并根据最近756个已兑现T+5标签在线判断信号极性，输出10Y收益率二分类方向。",
+  "algorithm_version": "1.0.0",
+  "target_tenor": "10Y",
+  "task_type": "T+5",
+  "horizon": 5,
+  "target_rule": "target_date_yield_vs_feature_date_yield"
+}

@@ -84,7 +84,7 @@ Native V1 存量仍使用 `onboard --stage all` 的
 1. `intake-blackbox`；
 2. 明确历史/live 分界后，执行一次完整 `gate backtest --persist`；
 3. `activate`；
-4. 仅在确有历史缺口时，单日执行 `signal-gap-fill --predict-date`，或对 Blackbox 周频方案执行一次 `--target-date-from/--target-date-before` 区间批量；
+4. 仅在确有历史缺口时，单日执行 `signal-gap-fill --predict-date`，或对受支持的 Blackbox `weekly_point/h1`、日频 `T+5/h5` 方案执行一次 `--target-date-from/--target-date-before` 区间批量；
 5. 如需产品验收，再运行可选的 `gate dashboard`。
 
 这里保留的三个边界分别拥有不同的事实：不可变交付、不可变回测、生产状态切换。删除的

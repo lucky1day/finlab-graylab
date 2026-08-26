@@ -127,8 +127,8 @@ python -m harness gate lifecycle-reconcile --scheme-id {scheme_id}
 
 - 单日历史 live 缺口：取得独立授权后执行
   `python -m harness signal-gap-fill --predict-date YYYY-MM-DD --scheme-id {scheme_id}`；
-- Blackbox 周频连续缺口：用 target 半开区间一次批量执行
-  `python -m harness signal-gap-fill --scheme-id {scheme_id} --target-date-from YYYY-MM-DD --target-date-before YYYY-MM-DD`。区间模式只接受一个 exact active `weekly_point` 身份；一个区间只解析一次 DataBridge authority、建立一个 replay session 并启动一个算法 batch；
+- Blackbox 连续缺口：对 exact active `weekly_point/h1` 或日频 `T+5/h5` 身份，用 target 半开区间一次批量执行
+  `python -m harness signal-gap-fill --scheme-id {scheme_id} --target-date-from YYYY-MM-DD --target-date-before YYYY-MM-DD`。日频日期只从权威交易日历枚举；一个区间只解析一次 DataBridge authority、建立一个 replay session 并启动一个算法 batch；
 - 产品读模型检查：按需执行
   `python -m harness gate dashboard --scheme-id {scheme_id}`；
 - 调度安装、timer/plist 变更、服务重启、Writer 切换：必须另行授权。

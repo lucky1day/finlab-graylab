@@ -233,7 +233,7 @@ def plan_signal_gap_target_range(
     base_scheme_id: str,
     databridge_config: DataBridgeRefreshConfig,
 ) -> dict[str, Any]:
-    """在一个只读快照中规划单个周频 Blackbox 的 target 日期区间。"""
+    """在一个只读快照中规划单个受支持 Blackbox 的 target 日期区间。"""
     normalized_from = _canonical_date(target_date_from, "target_date_from")
     normalized_before = _canonical_date(
         target_date_before,
@@ -273,7 +273,11 @@ def plan_signal_gap_target_range(
         authority[0].runtime_type,
         authority[0].frequency,
         authority[0].task_type,
-    ) != ("blackbox_v2", "weekly", "weekly_point"):
+        authority[0].horizon,
+    ) not in {
+        ("blackbox_v2", "weekly", "weekly_point", 1),
+        ("blackbox_v2", "daily", "T+5", 5),
+    }:
         return _blocked_range_plan(
             target_date_from=normalized_from,
             target_date_before=normalized_before,
@@ -590,25 +594,54 @@ def _target_range_cases(
     target_date_from: str,
     target_date_before: str,
 ) -> tuple[ExpectedSignalCase, ...]:
-    start = date.fromisoformat(target_date_from) - timedelta(days=14)
-    stop = date.fromisoformat(target_date_before)
+    if not targets:
+        return ()
     cases: list[ExpectedSignalCase] = []
-    current = start
-    while current <= stop:
-        predict_date = current.isoformat()
-        if current.weekday() == 5 and is_weekly_signal_date(
-            calendar,
-            predict_date,
+    frequency = targets[0].frequency
+    if frequency == "daily":
+        if not calendar.covers(target_date_from) or not calendar.covers(
+            target_date_before
         ):
-            for target in targets:
-                item = _expected_case(
-                    target,
-                    predict_date=predict_date,
-                    calendar=calendar,
+            raise SignalGapPlanError(
+                "DATA_CONTRACT_INVALID",
+                "target range is outside trade calendar coverage",
+            )
+        trading_days = calendar.trading_days()
+        predict_dates_list: list[str] = []
+        for target_index, target_date in enumerate(trading_days):
+            if not target_date_from <= target_date < target_date_before:
+                continue
+            predict_index = target_index - targets[0].horizon + 1
+            if predict_index < 1:
+                raise SignalGapPlanError(
+                    "DATA_CONTRACT_INVALID",
+                    "trade calendar does not cover target range lookback",
                 )
-                if target_date_from <= item.target_date < target_date_before:
-                    cases.append(item)
-        current += timedelta(days=1)
+            predict_dates_list.append(trading_days[predict_index])
+        predict_dates = tuple(predict_dates_list)
+    else:
+        start = date.fromisoformat(target_date_from) - timedelta(days=14)
+        stop = date.fromisoformat(target_date_before)
+        weekly_dates: list[str] = []
+        current = start
+        while current <= stop:
+            predict_date = current.isoformat()
+            if current.weekday() == 5 and is_weekly_signal_date(
+                calendar,
+                predict_date,
+            ):
+                weekly_dates.append(predict_date)
+            current += timedelta(days=1)
+        predict_dates = tuple(weekly_dates)
+    for predict_date in predict_dates:
+        for target in targets:
+            item = _expected_case(
+                target,
+                predict_date=predict_date,
+                calendar=calendar,
+            )
+            if target_date_from <= item.target_date < target_date_before:
+                cases.append(item)
     ordered = tuple(
         sorted(cases, key=lambda item: (item.predict_date, item.target_tenor))
     )
@@ -1273,6 +1306,9 @@ class _SingleDateCalendar:
 
     def is_trading_day(self, value: str) -> bool:
         return str(value)[:10] in self._trading_day_set
+
+    def trading_days(self) -> tuple[str, ...]:
+        return self._trading_days
 
     def previous_trading_day(self, value: str) -> str:
         candidates = [day for day in self._trading_days if day < str(value)[:10]]

@@ -222,6 +222,46 @@ def test_target_range_uses_target_boundary_and_thirteen_weekly_requests() -> Non
     assert all(case.target_date != "2026-09-04" for case in cases)
 
 
+def test_daily_t5_target_range_uses_authoritative_trading_days() -> None:
+    target = signal_gap_plan.RegistryTarget(
+        registry_scheme_id="demo_blackbox__h5__10Y",
+        base_scheme_id="demo_blackbox",
+        runtime_type="blackbox_v2",
+        frequency="daily",
+        task_type="T+5",
+        target_tenor="10Y",
+        horizon=5,
+        scheme_version="version-1",
+    )
+
+    cases = signal_gap_plan._target_range_cases(
+        (target,),
+        calendar=_range_calendar(),
+        target_date_from="2026-06-01",
+        target_date_before="2026-09-04",
+    )
+
+    assert len(cases) == 69
+    assert cases[0].predict_date == "2026-05-26"
+    assert cases[0].feature_date == "2026-05-25"
+    assert cases[0].target_date == "2026-06-01"
+    assert cases[-1].predict_date == "2026-08-28"
+    assert cases[-1].feature_date == "2026-08-27"
+    assert cases[-1].target_date == "2026-09-03"
+    assert len({case.business_key for case in cases}) == len(cases)
+
+    with pytest.raises(
+        signal_gap_plan.SignalGapPlanError,
+        match="target range is outside trade calendar coverage",
+    ):
+        signal_gap_plan._target_range_cases(
+            (target,),
+            calendar=_range_calendar(),
+            target_date_from="2026-06-01",
+            target_date_before="2026-10-01",
+        )
+
+
 def test_target_range_rejects_dates_before_platform_live_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -241,29 +281,40 @@ def test_target_range_rejects_dates_before_platform_live_start(
     discover.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("frequency", "task_type", "horizon", "expected_count"),
+    [
+        ("weekly", "weekly_point", 1, 13),
+        ("daily", "T+5", 5, 69),
+    ],
+)
 def test_target_range_resolves_databridge_authority_once(
     monkeypatch: pytest.MonkeyPatch,
+    frequency: str,
+    task_type: str,
+    horizon: int,
+    expected_count: int,
 ) -> None:
     engine = _Engine()
     identity = signal_gap_plan.DiscoveredSchemeIdentity(
         base_scheme_id="demo_blackbox",
         scheme_version="version-1",
         runtime_type="blackbox_v2",
-        frequency="weekly",
-        horizon=1,
-        task_type="weekly_point",
-        target_tenors=("5Y",),
+        frequency=frequency,
+        horizon=horizon,
+        task_type=task_type,
+        target_tenors=("10Y",),
         version_status="active",
         status="active",
     )
     target = signal_gap_plan.RegistryTarget(
-        registry_scheme_id="demo_blackbox__h1__5Y",
+        registry_scheme_id=f"demo_blackbox__h{horizon}__10Y",
         base_scheme_id="demo_blackbox",
         runtime_type="blackbox_v2",
-        frequency="weekly",
-        task_type="weekly_point",
-        target_tenor="5Y",
-        horizon=1,
+        frequency=frequency,
+        task_type=task_type,
+        target_tenor="10Y",
+        horizon=horizon,
         scheme_version="version-1",
     )
     resolver = Mock(return_value=SimpleNamespace())
@@ -300,9 +351,9 @@ def test_target_range_resolves_databridge_authority_once(
     )
 
     assert plan["status"] == "READY"
-    assert plan["counts"]["actionable"] == 13
+    assert plan["counts"]["actionable"] == expected_count
     resolver.assert_called_once()
-    assert len(resolver.call_args.kwargs["feature_dates"]) == 13
+    assert len(resolver.call_args.kwargs["feature_dates"]) == expected_count
 
 
 def _snapshot(

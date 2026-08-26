@@ -432,23 +432,50 @@ def test_blackbox_schemes_with_same_source_share_immutable_session(
     assert signal_gap_fill.run_blackbox_gray_replay_batch.call_count == 2
 
 
+@pytest.mark.parametrize(
+    ("frequency", "task_type", "horizon", "dates"),
+    [
+        (
+            "weekly",
+            "weekly_point",
+            1,
+            (
+                ("2026-05-30", "2026-05-29", "2026-06-05"),
+                ("2026-06-06", "2026-06-05", "2026-06-12"),
+            ),
+        ),
+        (
+            "daily",
+            "T+5",
+            5,
+            (
+                ("2026-05-26", "2026-05-25", "2026-06-01"),
+                ("2026-05-27", "2026-05-26", "2026-06-02"),
+            ),
+        ),
+    ],
+)
 def test_blackbox_target_range_runs_one_batch_and_commits_atomically(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    frequency: str,
+    task_type: str,
+    horizon: int,
+    dates: tuple[tuple[str, str, str], tuple[str, str, str]],
 ) -> None:
     from harness import signal_gap_fill
 
     def range_action(predict_date: str, feature_date: str, target_date: str):
         row = _action("demo_blackbox", runtime_type="blackbox_v2")
         row.update(
-            registry_scheme_id="demo_blackbox__h1__5Y",
-            frequency="weekly",
-            task_type="weekly_point",
-            horizon=1,
+            registry_scheme_id=f"demo_blackbox__h{horizon}__5Y",
+            frequency=frequency,
+            task_type=task_type,
+            horizon=horizon,
             predict_date=predict_date,
             feature_date=feature_date,
             target_date=target_date,
-            business_key=["demo_blackbox", "5Y", 1, target_date],
+            business_key=["demo_blackbox", "5Y", horizon, target_date],
         )
         authority = dict(row["input_authority"])
         authority["cutoff"] = {
@@ -459,8 +486,8 @@ def test_blackbox_target_range_runs_one_batch_and_commits_atomically(
         row["input_authority"] = authority
         return row
 
-    first = range_action("2026-05-30", "2026-05-29", "2026-06-05")
-    second = range_action("2026-06-06", "2026-06-05", "2026-06-12")
+    first = range_action(*dates[0])
+    second = range_action(*dates[1])
     plan = _plan([first, second], base_scheme_id="demo_blackbox")
     plan.update(
         schema_version="target-range-active-live-gap-plan-v1",
@@ -469,9 +496,9 @@ def test_blackbox_target_range_runs_one_batch_and_commits_atomically(
         target_date_before="2026-06-19",
     )
     cfg = _config("demo_blackbox", runtime_type="blackbox_v2")
-    cfg.frequency = "weekly"
-    cfg.task_type = "weekly_point"
-    cfg.horizon = 1
+    cfg.frequency = frequency
+    cfg.task_type = task_type
+    cfg.horizon = horizon
     repository = _repository()
     engine, readback = _install(
         monkeypatch,
@@ -498,7 +525,7 @@ def test_blackbox_target_range_runs_one_batch_and_commits_atomically(
                 PredictionRecord(
                     scheme_id="demo_blackbox",
                     target_tenor="5Y",
-                    horizon=1,
+                    horizon=horizon,
                     predict_date=request.predict_date,
                     feature_date=request.feature_date,
                     target_date=request.target_date,

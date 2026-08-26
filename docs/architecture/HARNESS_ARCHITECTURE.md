@@ -96,7 +96,7 @@ Native 四段 evidence profile 和三段 `native-maintenance` 的既有准入、
 Blackbox 不接受 `native-maintenance`。
 
 `dashboard` 是激活后的可选只读产品检查；单日补缺仍使用
-`signal-gap-fill --predict-date YYYY-MM-DD [--scheme-id BASE_SCHEME_ID]`，或单个 active Blackbox 周频方案的 `signal-gap-fill --scheme-id BASE_SCHEME_ID --target-date-from YYYY-MM-DD --target-date-before YYYY-MM-DD`；两者都不属于入库门禁。区间模式只复用现有 planner、executor 和 repository，不引入新的 Harness 层。
+`signal-gap-fill --predict-date YYYY-MM-DD [--scheme-id BASE_SCHEME_ID]`，或单个 active Blackbox `weekly_point/h1`、日频 `T+5/h5` 方案的 `signal-gap-fill --scheme-id BASE_SCHEME_ID --target-date-from YYYY-MM-DD --target-date-before YYYY-MM-DD`；两者都不属于入库门禁。区间模式只复用现有 planner、executor 和 repository，不引入新的 Harness 层。
 
 副作用命令绑定 canonical exact version、action、scheme、日期/回测起点和 operator，并保存 operation
 scope SHA-256。Blackbox activation 直接读取同 exact version、同当前脚本校验策略的成功持久化回测，不再绑定 Harness

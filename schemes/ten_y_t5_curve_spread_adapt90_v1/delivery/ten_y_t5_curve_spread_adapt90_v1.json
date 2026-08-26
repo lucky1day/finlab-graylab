@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "ten_y_t5_curve_spread_adapt90_v1",
+  "name": "CURVE_SPREAD_ADAPT90",
+  "owner": "lw",
+  "description": "使用日频10Y与7Y国债收益率构造252日利差反转信号，并根据最近90个已兑现T+5标签在线判断信号极性，输出二分类方向。",
+  "algorithm_version": "1.0.0",
+  "target_tenor": "10Y",
+  "task_type": "T+5",
+  "horizon": 5,
+  "target_rule": "target_date_yield_vs_feature_date_yield"
+}

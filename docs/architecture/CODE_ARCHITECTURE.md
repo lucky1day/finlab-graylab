@@ -147,7 +147,7 @@ close-period 和 actuals 每个 cadence 只能有一个 writer。Backend 不提�
 写 `scheduled_live`。早期失败/跳过只写审计日志，不能伪装为成功完成。
 
 入口（单日历史补缺）：`python -m harness signal-gap-fill --predict-date YYYY-MM-DD
-[--scheme-id <base_scheme_id>]`。单个 active Blackbox 周频方案还可以使用
+[--scheme-id <base_scheme_id>]`。单个 active Blackbox `weekly_point/h1` 或日频 `T+5/h5` 方案还可以使用
 `--scheme-id <base_scheme_id> --target-date-from YYYY-MM-DD --target-date-before YYYY-MM-DD`
 执行 target 半开区间。区间计划在一个只读快照中解析一次 DataBridge authority，按调度日分组审计 run，
 但同一方案只建立一个 replay session 和一个算法 batch；全部业务键预检通过后由 repository 在一个事务中
