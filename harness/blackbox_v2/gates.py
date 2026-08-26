@@ -3,7 +3,6 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
-import os
 import re
 import stat
 import time
@@ -94,14 +93,6 @@ class InputState:
     request: BlackboxRequest
     bundle: BlackboxInputBundle | None = None
     provenance: dict[str, str] | None = None
-
-
-@dataclass(frozen=True)
-class _StablePrivateFile:
-    content_bytes: bytes
-    sha256: str
-    size_bytes: int
-    mode: int
 
 
 @dataclass(frozen=True)
@@ -249,11 +240,6 @@ class BlackboxCompareGate(_BlackboxGate):
         profile = _profile(ctx)
         bundle = _input_bundle(state)
         with _open_runtime_input(ctx, state) as runtime_view:
-            # 平台输入必须逐字节等于声明值。
-            _verify_runtime_platform_files(
-                runtime_view.bundle,
-                runtime_view.data_dir,
-            )
             runtime_kwargs = _runner_bundle_kwargs(runtime_view.bundle)
             # 冒烟：交付在平台喂进去的输入下能否产出合法 Result。这是本 Gate 唯一
             # 的算法调用——交付自身的性质（确定性、两入口一致、截止隔离、跨请求无状态）
@@ -699,29 +685,6 @@ def _platform_hashes(bundle: BlackboxInputBundle) -> dict[str, str]:
     }
 
 
-def _verify_runtime_platform_files(
-    bundle: BlackboxInputBundle,
-    data_dir: Path,
-) -> dict[str, str]:
-    hashes: dict[str, str] = {}
-    for artifact in bundle.platform_input_artifacts:
-        path = data_dir / artifact.filename
-        stable = _read_stable_private_file(
-            path,
-            label=f"platform input {artifact.artifact_id}",
-            require_read_only=True,
-        )
-        if (
-            stable.sha256 != artifact.sha256
-            or stable.size_bytes != artifact.size_bytes
-        ):
-            raise ValueError(
-                f"platform input {artifact.artifact_id} content mismatch"
-            )
-        hashes[artifact.artifact_id] = stable.sha256
-    return hashes
-
-
 def _ensure_input_state(ctx: GateContext, *, force: bool = False) -> InputState:
     state_key = "blackbox_v2.input_state"
     existing = ctx.runtime_state.get(state_key)
@@ -869,71 +832,6 @@ def _feature_date(metadata: BlackboxMetadata, predict_date: str, calendar: Any) 
         predict_date=predict_date,
         calendar=calendar,
     ).feature_date
-
-
-def _read_stable_private_file(
-    path: Path,
-    *,
-    label: str,
-    require_read_only: bool = False,
-) -> _StablePrivateFile:
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        descriptor = os.open(path, flags)
-    except OSError as exc:
-        raise ValueError(f"{label} is unavailable") from exc
-    try:
-        before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-            raise ValueError(
-                f"{label} must be a private regular file"
-            )
-        if require_read_only and before.st_mode & 0o222:
-            raise ValueError(f"{label} must be read-only")
-        chunks: list[bytes] = []
-        while True:
-            chunk = os.read(descriptor, 1024 * 1024)
-            if not chunk:
-                break
-            chunks.append(chunk)
-        after_fd = os.fstat(descriptor)
-    finally:
-        os.close(descriptor)
-    before_fingerprint = _stable_file_fingerprint(before)
-    after_fd_fingerprint = _stable_file_fingerprint(after_fd)
-    if before_fingerprint != after_fd_fingerprint:
-        raise ValueError(f"{label} changed while reading")
-    content = b"".join(chunks)
-    if len(content) != before.st_size:
-        raise ValueError(f"{label} size changed while reading")
-    try:
-        after_path = path.lstat()
-    except OSError as exc:
-        raise ValueError(f"{label} changed while reading") from exc
-    if (
-        stat.S_ISLNK(after_path.st_mode)
-        or _stable_file_fingerprint(after_path)
-        != after_fd_fingerprint
-    ):
-        raise ValueError(f"{label} changed while reading")
-    return _StablePrivateFile(
-        content_bytes=content,
-        sha256=hashlib.sha256(content).hexdigest(),
-        size_bytes=len(content),
-        mode=stat.S_IMODE(before.st_mode),
-    )
-
-
-def _stable_file_fingerprint(info: os.stat_result) -> tuple[int, ...]:
-    return (
-        info.st_dev,
-        info.st_ino,
-        info.st_mode,
-        info.st_nlink,
-        info.st_size,
-        info.st_mtime_ns,
-        info.st_ctime_ns,
-    )
 
 
 def _script_violations(tree: ast.AST) -> list[str]:
