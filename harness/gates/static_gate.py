@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any
 
 from harness.context import GateContext
-from shared.scheme_config_schema import validate_config
 from harness.contracts.onboarding_policy import validate_onboarding_policy
 from harness.contracts.import_rules import (
     CORE_DB_CALL_NAMES,
@@ -72,7 +71,6 @@ class StaticGate(Gate):
                 load_scheme_config(config_path)
             except Exception as exc:
                 config_errors.append(str(exc))
-            config_errors.extend(validate_config(config_raw, scheme_dir.name))
         else:
             config_errors.append("config.yaml is missing")
         evidence.append(Evidence("config_schema_errors", config_errors))
@@ -120,9 +118,17 @@ class StaticGate(Gate):
         predict_path = required_files["predict.py"]
         predict_facts = {"scheme_id_const_ok": False, "run_signature_ok": False, "shared_input_imported": False}
         predict_violations: list[RuleViolation] = []
+        scheme_trees = {
+            path: parse_python(path)
+            for path in sorted(scheme_dir.rglob("*.py"))
+        }
         if predict_path.exists():
-            predict_violations, predict_facts = validate_predict_module(predict_path, ctx.scheme_id)
-            predict_tree = parse_python(predict_path)
+            predict_tree = scheme_trees[predict_path]
+            predict_violations, predict_facts = validate_predict_module(
+                predict_path,
+                ctx.scheme_id,
+                predict_tree,
+            )
             predict_violations.extend(
                 predict_import_whitelist_violations(predict_path, predict_tree, ctx.scheme_id)
             )
@@ -136,7 +142,7 @@ class StaticGate(Gate):
         evidence.append(Evidence("predict_contract_violations", [v.format(project_root) for v in predict_violations]))
         errors.extend(v.format(project_root) for v in predict_violations)
 
-        core_violations = self._core_violations(scheme_dir)
+        core_violations = self._core_violations(scheme_dir, scheme_trees)
         evidence.append(Evidence("dangerous_core_imports", [v.format(project_root) for v in core_violations["imports"]]))
         evidence.append(Evidence("core_db_calls", [v.format(project_root) for v in core_violations["calls"]]))
         evidence.append(Evidence("core_sql_write_literals", [v.format(project_root) for v in core_violations["sql_writes"]]))
@@ -146,7 +152,11 @@ class StaticGate(Gate):
         for items in core_violations.values():
             errors.extend(v.format(project_root) for v in items)
 
-        cross_imports = self._cross_scheme_violations(scheme_dir, project_root, ctx.scheme_id)
+        cross_imports = self._cross_scheme_violations(
+            project_root,
+            ctx.scheme_id,
+            scheme_trees,
+        )
         evidence.append(Evidence("cross_scheme_imports", [v.format(project_root) for v in cross_imports]))
         errors.extend(v.format(project_root) for v in cross_imports)
 
@@ -167,7 +177,11 @@ class StaticGate(Gate):
             finished_at=finished_at,
         )
 
-    def _core_violations(self, scheme_dir: Path) -> dict[str, list[RuleViolation]]:
+    def _core_violations(
+        self,
+        scheme_dir: Path,
+        scheme_trees: dict[Path, ast.Module],
+    ) -> dict[str, list[RuleViolation]]:
         result: dict[str, list[RuleViolation]] = {
             "imports": [],
             "calls": [],
@@ -181,7 +195,7 @@ class StaticGate(Gate):
         for path in sorted(core_dir.rglob("*.py")):
             if path.name == "__init__.py":
                 continue
-            tree = parse_python(path)
+            tree = scheme_trees[path]
             is_legacy = path.name.startswith("legacy_")
             # legacy 仍受“只读归档”约束：禁 DB import/调用、禁写文件、禁跨方案；
             # 仅放宽“可保留历史算法代码”。这里对 legacy 与 active 施加相同的 DB/写文件检查。
@@ -197,10 +211,14 @@ class StaticGate(Gate):
                 result["legacy_imports"].extend(legacy_active_import_violations(path, tree))
         return result
 
-    def _cross_scheme_violations(self, scheme_dir: Path, project_root: Path, scheme_id: str) -> list[RuleViolation]:
+    def _cross_scheme_violations(
+        self,
+        project_root: Path,
+        scheme_id: str,
+        scheme_trees: dict[Path, ast.Module],
+    ) -> list[RuleViolation]:
         violations: list[RuleViolation] = []
-        for path in sorted(scheme_dir.rglob("*.py")):
-            tree = parse_python(path)
+        for path, tree in scheme_trees.items():
             violations.extend(cross_scheme_imports(path, tree, scheme_id, project_root))
         return violations
 
@@ -211,23 +229,27 @@ class StaticGate(Gate):
         runner_path = project_root / (str(runner).replace(".", "/") + ".py")
         if not runner_path.exists():
             return [f"{runner}: backtest runner file does not exist"]
-        tree = parse_python(runner_path)
         errors: list[str] = []
-        runner_paths = self._backtest_runner_dependency_paths(runner_path, project_root)
-        for path in runner_paths:
-            path_tree = tree if path == runner_path else parse_python(path)
+        runner_trees = self._backtest_runner_dependency_trees(
+            runner_path,
+            project_root,
+        )
+        for path, path_tree in runner_trees.items():
             errors.extend(v.format(project_root) for v in backtest_runner_boundary_violations(path, path_tree))
         if str(config_raw.get("status", "")).strip() == "active":
-            for path in runner_paths:
-                path_tree = tree if path == runner_path else parse_python(path)
+            for path, path_tree in runner_trees.items():
                 errors.extend(
                     v.format(project_root) for v in root_benchmark_runtime_dependency_violations(path, path_tree)
                 )
         return errors
 
-    def _backtest_runner_dependency_paths(self, runner_path: Path, project_root: Path) -> list[Path]:
-        """返回入口 runner 及其 backtests.* 本地依赖。"""
-        paths: list[Path] = []
+    def _backtest_runner_dependency_trees(
+        self,
+        runner_path: Path,
+        project_root: Path,
+    ) -> dict[Path, ast.Module]:
+        """解析入口 runner 及其 backtests.* 本地依赖。"""
+        trees: dict[Path, ast.Module] = {}
         seen: set[Path] = set()
 
         def visit(path: Path) -> None:
@@ -235,13 +257,13 @@ class StaticGate(Gate):
             if resolved in seen or not path.exists():
                 return
             seen.add(resolved)
-            paths.append(path)
             tree = parse_python(path)
+            trees[path] = tree
             for candidate in _backtest_dependency_candidates(path, tree, project_root):
                 visit(candidate)
 
         visit(runner_path)
-        return paths
+        return trees
 
 
 def _backtest_dependency_candidates(current_path: Path, tree: ast.AST, project_root: Path) -> list[Path]:

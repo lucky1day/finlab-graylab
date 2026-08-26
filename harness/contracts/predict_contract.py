@@ -10,14 +10,16 @@ from harness.contracts.import_rules import (
     call_violations,
     dangerous_imports,
     has_shared_input_artifacts_import,
-    parse_python,
     sql_write_literals,
 )
 
 
-def validate_predict_module(predict_path: Path, scheme_id: str) -> tuple[list[RuleViolation], dict[str, bool]]:
-    """AST 校验 predict.py；不 import、不执行方案模块。"""
-    tree = parse_python(predict_path)
+def validate_predict_module(
+    predict_path: Path,
+    scheme_id: str,
+    tree: ast.Module,
+) -> tuple[list[RuleViolation], dict[str, bool]]:
+    """使用已解析 AST 校验 predict.py；不 import、不执行方案模块。"""
     facts = {
         "scheme_id_const_ok": _scheme_id_const(tree, scheme_id),
         "run_signature_ok": _run_signature_ok(tree),
