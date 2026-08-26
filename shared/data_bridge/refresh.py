@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import csv
 import copy
 import fcntl
 import hashlib
-import io
 import json
 import os
 import re
@@ -13,25 +11,24 @@ import stat
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 from typing import Iterator, Mapping, Protocol
 from zoneinfo import ZoneInfo
 
-import pandas as pd
 from sqlalchemy.exc import SQLAlchemyError
 
 from shared.data_bridge.validation import (
     DataBridgeValidationError,
     EXPECTED_FILENAMES,
+    LEGACY_THREE_FILENAMES,
     ValidatedDataBridgeDataset,
     read_dataset_directory,
+    read_legacy_three_file_directory,
     validate_dataset,
-    validate_unique_csv_header,
-    write_validated_dataset,
+    validate_legacy_three_file_dataset,
 )
 from shared.data_contract import (
     CALENDAR_SOURCE_TABLES,
@@ -113,18 +110,6 @@ FAILED_ATTEMPT_ERROR_CATEGORIES = frozenset(
 )
 
 
-REQUIRED_SOURCE_TABLES = frozenset(
-    {
-        "api_wind_daily",
-        "api_wind_derivative_daily",
-        "api_wind_weekly",
-        "api_wind_derivative_weekly",
-        "api_wind_monthly",
-        "api_wind_derivative_monthly",
-    }
-)
-
-
 @dataclass(frozen=True)
 class DownloadRound:
     round_id: str
@@ -136,7 +121,7 @@ class DownloadRound:
 
 
 class DataBridgeRoundSource(Protocol):
-    """为一次刷新构造标准三频候选目录的可替换数据源。"""
+    """为一次刷新构造标准四文件候选目录的可替换数据源。"""
 
     def build(
         self,
@@ -156,8 +141,6 @@ class DataBridgeRefreshConfig:
     runtime_root: Path
     schema_path: Path
     daily_start_date: str = "2010-01-01"
-    daily_chunk_months: int = 3
-    download_concurrency: int = 4
     max_rounds: int = 3
     round_timeout_sec: int = 900
     refresh_start: str = "06:30"
@@ -190,8 +173,6 @@ class DataBridgeRefreshConfig:
                 override_env="DATABRIDGE_RUNTIME_ROOT",
             ),
             schema_path=project_root / "shared" / "blackbox_v2" / "data_bridge_v1_schema.json",
-            daily_chunk_months=int(os.getenv("DATABRIDGE_DAILY_CHUNK_MONTHS", "3")),
-            download_concurrency=int(os.getenv("DATABRIDGE_DOWNLOAD_CONCURRENCY", "4")),
             refresh_start=(
                 str(refresh_start)
                 if refresh_start is not None
@@ -203,10 +184,6 @@ class DataBridgeRefreshConfig:
                 else os.getenv("DATABRIDGE_REFRESH_DEADLINE", "06:55")
             ),
         )
-        if config.daily_chunk_months <= 0 or config.download_concurrency <= 0:
-            raise ValueError("DataBridge chunk months and download concurrency must be positive")
-        if config.download_concurrency > 4:
-            raise ValueError("DATABRIDGE_DOWNLOAD_CONCURRENCY must be at most 4")
         config._parse_clock(config.refresh_start, "DATABRIDGE_REFRESH_START")
         config._parse_clock(config.refresh_deadline, "DATABRIDGE_REFRESH_DEADLINE")
         return config
@@ -226,6 +203,7 @@ class DataBridgeRefreshConfig:
 @dataclass(frozen=True)
 class RefreshResult:
     state: Mapping[str, object]
+    dataset: ValidatedDataBridgeDataset
     published: bool
     rounds_completed: int
     duration_sec: float
@@ -258,6 +236,7 @@ class DataBridgeContinuityAuthority:
             "daily_output.csv": self.daily_cutoff_key,
             "weekly_output.csv": self.weekly_cutoff_key,
             "monthly_output.csv": self.monthly_cutoff_key,
+            "api_wind_date.csv": self.daily_cutoff_key,
         }
 
 
@@ -322,89 +301,6 @@ def _validate_optional_period_key(
         raise ValueError(f"{label} must be a six-digit platform key or None")
 
 
-class DataBridgeRoundBuilder:
-    def __init__(self, client, config: DataBridgeRefreshConfig) -> None:
-        self.client = client
-        self.config = config
-
-    def build(
-        self,
-        round_id: str,
-        *,
-        end_date: str,
-        expected_daily_date: str,
-        previous_keys: Mapping[str, set[str] | frozenset[str]] | None,
-        continuity_cutoffs: Mapping[str, object] | None = None,
-    ) -> DownloadRound:
-        started = time.monotonic()
-        ranges = quarter_ranges(
-            self.config.daily_start_date,
-            end_date,
-            months=self.config.daily_chunk_months,
-        )
-        with ThreadPoolExecutor(max_workers=self.config.download_concurrency) as executor:
-            payloads = list(
-                executor.map(
-                    lambda item: self.client.export_csv(
-                        "日",
-                        start_date=item[0],
-                        end_date=item[1],
-                        allow_empty=True,
-                    ),
-                    ranges,
-                )
-            )
-        daily = _merge_daily_payloads([payload for payload in payloads if payload is not None])
-        weekly = _read_csv(self.client.export_csv("周"), "weekly_output.csv")
-        monthly = _read_csv(self.client.export_csv("月"), "monthly_output.csv")
-        dataset = validate_dataset(
-            {
-                "daily_output.csv": daily,
-                "weekly_output.csv": weekly,
-                "monthly_output.csv": monthly,
-            },
-            schema_path=self.config.schema_path,
-            expected_daily_date=expected_daily_date,
-            previous_keys=previous_keys,
-            continuity_cutoffs=continuity_cutoffs,
-        )
-        elapsed = time.monotonic() - started
-        if elapsed > self.config.round_timeout_sec:
-            raise DataBridgeRefreshError(
-                f"DataBridge full round exceeded {self.config.round_timeout_sec}s: {elapsed:.1f}s"
-            )
-        staging_root = self.config.runtime_root / "staging"
-        staging_root.mkdir(parents=True, mode=0o700, exist_ok=True)
-        destination = staging_root / round_id
-        if destination.exists():
-            shutil.rmtree(destination)
-        write_validated_dataset(dataset, destination)
-        return DownloadRound(
-            round_id=round_id,
-            directory=destination,
-            dataset=dataset,
-            digest=dataset.business_digest,
-        )
-
-
-def quarter_ranges(start_date: str, end_date: str, *, months: int = 3) -> list[tuple[str, str]]:
-    if months <= 0:
-        raise ValueError("months must be positive")
-    start = date.fromisoformat(start_date)
-    end = date.fromisoformat(end_date)
-    if start > end:
-        raise ValueError("start_date must not be after end_date")
-    ranges: list[tuple[str, str]] = []
-    cursor = start
-    while cursor <= end:
-        month_index = cursor.year * 12 + cursor.month - 1 + months
-        next_start = date(month_index // 12, month_index % 12 + 1, 1)
-        chunk_end = min(end, next_start - timedelta(days=1))
-        ranges.append((cursor.isoformat(), chunk_end.isoformat()))
-        cursor = chunk_end + timedelta(days=1)
-    return ranges
-
-
 def select_stable_round(rounds: Iterator[DownloadRound], *, max_rounds: int = 3) -> DownloadRound:
     if max_rounds < 2:
         raise ValueError("max_rounds must be at least 2")
@@ -444,7 +340,6 @@ def _round_stability_identity(
 
 def run_full_refresh(
     *,
-    client=None,
     config: DataBridgeRefreshConfig,
     expected_daily_date: str,
     refresh_date: str,
@@ -473,18 +368,10 @@ def run_full_refresh(
             )
             _ensure_before_deadline(deadline_at)
             if round_builder is None:
-                if client is None:
-                    raise DataBridgeRefreshError(
-                        "DataBridge refresh requires a round source"
-                    )
-                _validate_source_tables(client.get_tables())
-                _ensure_source_ready(client, expected_daily_date)
-                builder: DataBridgeRoundSource = DataBridgeRoundBuilder(
-                    client,
-                    config,
+                raise DataBridgeRefreshError(
+                    "DataBridge refresh requires a round source"
                 )
-            else:
-                builder = round_builder
+            builder = round_builder
             previous_keys = (
                 {
                     filename: profile.keys
@@ -542,6 +429,7 @@ def run_full_refresh(
                 )
             return RefreshResult(
                 state=state,
+                dataset=selected.dataset,
                 published=publish,
                 rounds_completed=len(built_directories),
                 duration_sec=time.monotonic() - started,
@@ -573,20 +461,6 @@ def _ensure_before_deadline(deadline_at: datetime | None) -> None:
         raise DataBridgeRefreshError(f"DataBridge refresh deadline has passed: {deadline.isoformat()}")
 
 
-def _validate_source_tables(payload: Mapping[str, object]) -> None:
-    raw_tables = payload.get("tables")
-    if not isinstance(raw_tables, list):
-        raise DataBridgeRefreshError("DataBridge tables response is missing tables")
-    available = {
-        str(item.get("name"))
-        for item in raw_tables
-        if isinstance(item, dict) and item.get("status") == "ok"
-    }
-    missing = sorted(REQUIRED_SOURCE_TABLES - available)
-    if missing:
-        raise DataBridgeRefreshError(f"DataBridge required tables are unavailable: {missing}")
-
-
 def check_current_dataset(
     config: DataBridgeRefreshConfig,
     *,
@@ -596,6 +470,7 @@ def check_current_dataset(
     expected_business_digest: str | None = None,
     strict_read_only: bool = False,
     require_source_provenance: bool = False,
+    allow_legacy_three_file_current: bool = False,
 ) -> CurrentDataset:
     """在共享锁内验证 current 文件、状态及调用方拥有的发布身份。"""
     if require_source_provenance:
@@ -612,11 +487,14 @@ def check_current_dataset(
     with store.current_read(
         strict_read_only=strict_read_only,
     ) as state:
-        current = _validate_current_dataset_locked(
+        current = _validate_current_or_legacy_dataset_locked(
             store,
             state=state,
             schema_path=config.schema_path,
             expected_daily_date=expected_daily_date,
+            allow_legacy_three_file_current=(
+                allow_legacy_three_file_current
+            ),
         )
         dataset = current.dataset
         if require_source_provenance:
@@ -653,25 +531,6 @@ def check_current_dataset(
         return current
 
 
-def _ensure_source_ready(client, expected_daily_date: str) -> None:
-    payload = client.export_csv(
-        "日",
-        start_date=expected_daily_date,
-        end_date=expected_daily_date,
-    )
-    frame = _read_csv(payload, "daily_output.csv")
-    if "date" not in frame.columns:
-        raise DataBridgeRefreshError("DataBridge readiness export is missing date")
-    normalized = {
-        pd.to_datetime(str(value), errors="raise").date().isoformat()
-        for value in frame["date"].tolist()
-    }
-    if expected_daily_date not in normalized:
-        raise DataBridgeRefreshError(
-            f"DataBridge source is not ready for expected daily date {expected_daily_date}"
-        )
-
-
 def _load_previous_current_locked(
     store: "DataBridgeStore",
     schema_path: Path,
@@ -693,11 +552,70 @@ def _load_previous_current_locked(
             )
         return None
     with store.current_read() as state:
-        return _validate_current_dataset_locked(
+        return _validate_current_or_legacy_dataset_locked(
+            store,
+            state=state,
+            schema_path=schema_path,
+            allow_legacy_three_file_current=True,
+        )
+
+
+def _validate_current_or_legacy_dataset_locked(
+    store: "DataBridgeStore",
+    *,
+    state: Mapping[str, object],
+    schema_path: Path,
+    expected_daily_date: str | None = None,
+    allow_legacy_three_file_current: bool,
+) -> CurrentDataset:
+    entries = {path.name for path in store.current_dir.iterdir()}
+    if allow_legacy_three_file_current and entries == (
+        set(LEGACY_THREE_FILENAMES) | {CURRENT_PUBLICATION_MANIFEST}
+    ):
+        return _validate_legacy_three_file_current_locked(
             store,
             state=state,
             schema_path=schema_path,
         )
+    return _validate_current_dataset_locked(
+        store,
+        state=state,
+        schema_path=schema_path,
+        expected_daily_date=expected_daily_date,
+    )
+
+
+def _validate_legacy_three_file_current_locked(
+    store: "DataBridgeStore",
+    *,
+    state: Mapping[str, object],
+    schema_path: Path,
+) -> CurrentDataset:
+    """验证旧 current，仅为下一次原子发布保留三频 continuity。"""
+    marker = _read_publication_manifest(store.current_dir)
+    if marker != _publication_identity_from_state(state):
+        raise DataBridgeRefreshError(
+            "DataBridge legacy current publication identity does not match state"
+        )
+    dataset = validate_legacy_three_file_dataset(
+        read_legacy_three_file_directory(
+            store.current_dir,
+            allowed_sidecar_filenames=frozenset(
+                {CURRENT_PUBLICATION_MANIFEST}
+            ),
+        ),
+        schema_path=schema_path,
+    )
+    _validate_identity_against_dataset(
+        marker,
+        dataset=dataset,
+        expected_filenames=LEGACY_THREE_FILENAMES,
+    )
+    return CurrentDataset(
+        state=state,
+        dataset=dataset,
+        publication_manifest=marker,
+    )
 
 
 def _validate_current_dataset_locked(
@@ -881,7 +799,10 @@ def _validate_continuity_authority(
         raise DataBridgeRefreshError(
             "DataBridge continuity authority current identity drift"
         )
-    return cutoffs
+    return {
+        filename: cutoffs[filename]
+        for filename in current.dataset.files
+    }
 
 
 def _assert_frozen_exact_period_keys(
@@ -1581,6 +1502,7 @@ def _validate_identity_against_dataset(
     identity: Mapping[str, object],
     *,
     dataset: ValidatedDataBridgeDataset,
+    expected_filenames: tuple[str, ...] = EXPECTED_FILENAMES,
 ) -> None:
     manifest_version = identity.get("manifest_version")
     if manifest_version == LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION:
@@ -1630,7 +1552,7 @@ def _validate_identity_against_dataset(
         raise DataBridgeRefreshError(
             "DataBridge publication manifest files profile is missing"
         )
-    if set(files) != set(EXPECTED_FILENAMES):
+    if set(files) != set(expected_filenames):
         raise DataBridgeRefreshError(
             "DataBridge publication manifest files profile is incomplete"
         )
@@ -1655,71 +1577,43 @@ def _directory_publication_identity(
         return None
     try:
         identity = _read_publication_manifest(directory)
-        dataset = validate_dataset(
-            read_dataset_directory(
-                directory,
-                allowed_sidecar_filenames=frozenset(
-                    {CURRENT_PUBLICATION_MANIFEST}
-                ),
-            ),
-            schema_path=schema_path,
+        entries = {path.name for path in directory.iterdir()}
+        is_legacy_three = entries == (
+            set(LEGACY_THREE_FILENAMES)
+            | {CURRENT_PUBLICATION_MANIFEST}
         )
+        if is_legacy_three:
+            dataset = validate_legacy_three_file_dataset(
+                read_legacy_three_file_directory(
+                    directory,
+                    allowed_sidecar_filenames=frozenset(
+                        {CURRENT_PUBLICATION_MANIFEST}
+                    ),
+                ),
+                schema_path=schema_path,
+            )
+        else:
+            dataset = validate_dataset(
+                read_dataset_directory(
+                    directory,
+                    allowed_sidecar_filenames=frozenset(
+                        {CURRENT_PUBLICATION_MANIFEST}
+                    ),
+                ),
+                schema_path=schema_path,
+            )
         _validate_identity_against_dataset(
             identity,
             dataset=dataset,
+            expected_filenames=(
+                LEGACY_THREE_FILENAMES
+                if is_legacy_three
+                else EXPECTED_FILENAMES
+            ),
         )
         return identity
     except (DataBridgeRefreshError, OSError, ValueError):
         return None
-
-
-def _merge_daily_payloads(payloads: list[bytes]) -> pd.DataFrame:
-    if not payloads:
-        raise DataBridgeRefreshError("daily export produced no chunks")
-    frames = [_read_csv(payload, "daily_output.csv") for payload in payloads]
-    columns = list(frames[0].columns)
-    for frame in frames[1:]:
-        if list(frame.columns) != columns:
-            raise DataBridgeRefreshError("daily export chunk columns do not match")
-    combined = pd.concat(frames, ignore_index=True)
-    try:
-        normalized = pd.to_datetime(combined["date"], errors="raise").dt.date.astype(str)
-    except (KeyError, TypeError, ValueError) as exc:
-        raise DataBridgeRefreshError("daily export contains an invalid date") from exc
-    normalized_column = object()
-    combined[normalized_column] = normalized
-    for normalized_date, group in combined.groupby(normalized_column, sort=False):
-        if len(group) <= 1:
-            continue
-        values = group.drop(columns=["date", normalized_column])
-        if any(values[column].nunique(dropna=False) > 1 for column in values.columns):
-            raise DataBridgeRefreshError(
-                f"daily export has conflicting duplicate boundary row for {normalized_date}"
-            )
-    combined = combined.drop_duplicates(normalized_column, keep="last")
-    combined = combined.sort_values(normalized_column).drop(columns=normalized_column)
-    return combined.reset_index(drop=True)
-
-
-def _read_csv(payload: bytes, filename: str) -> pd.DataFrame:
-    try:
-        text = payload.decode("utf-8-sig")
-        header = next(csv.reader(io.StringIO(text)))
-        validate_unique_csv_header(filename, header)
-        frame = pd.read_csv(
-            io.StringIO(text),
-            dtype="string",
-            keep_default_na=False,
-        )
-    except StopIteration as exc:
-        raise DataBridgeRefreshError(f"{filename} header must not be empty") from exc
-    except DataBridgeValidationError as exc:
-        raise DataBridgeRefreshError(str(exc)) from exc
-    except (UnicodeError, csv.Error, pd.errors.ParserError) as exc:
-        raise DataBridgeRefreshError(f"{filename} is not a valid UTF-8 CSV") from exc
-    if frame.empty:
-        raise DataBridgeRefreshError(f"{filename} is empty")
-    return frame
 
 
 class DataBridgeStore:
@@ -2277,7 +2171,7 @@ def _validate_publish_candidate(path: Path) -> None:
     entries = list(path.iterdir())
     if {entry.name for entry in entries} != set(EXPECTED_FILENAMES):
         raise DataBridgeRefreshError(
-            "candidate directory does not contain exactly three data files"
+            "candidate directory does not contain exactly four data files"
         )
     for entry in entries:
         info = entry.lstat()

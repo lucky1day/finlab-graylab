@@ -35,46 +35,63 @@ def build_operation(
 
 class BlackboxV2HarnessGateTests(unittest.TestCase):
 
-    def test_platform_input_is_normalized_and_serialized_once(self) -> None:
-        from shared.blackbox_v2 import platform_inputs
-
-        source = pd.DataFrame(
-            {
-                "rdate": ["2026-07-14", "2026-07-15"],
-                "week_id": [202627, 202627],
-            }
+    def test_generation_snapshot_contains_standard_calendar_file(self) -> None:
+        from shared.blackbox_v2.snapshot import (
+            SNAPSHOT_FILENAMES,
+            create_snapshot_from_frames,
         )
-        normalize = platform_inputs._normalize_api_wind_date_content
-        with patch(
-            "shared.blackbox_v2.platform_inputs._normalize_api_wind_date_content",
-            wraps=normalize,
-        ) as normalize_once:
-            artifact = platform_inputs.freeze_platform_input(
-                "api-wind-date-v1",
-                source,
-                weekly_cutoff_key="202627",
+
+        frames = _snapshot_frames()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snapshot = create_snapshot_from_frames(
+                frames,
+                output_root=Path(tmpdir),
+                expected_columns={
+                    name: list(frame.columns)
+                    for name, frame in frames.items()
+                },
+                schema_version="data-bridge-v1",
             )
 
-        normalize_once.assert_called_once()
-        expected = (
-            b"rdate,week_id\n"
-            b"2026-07-14,202627\n"
-            b"2026-07-15,202627\n"
-        )
-        self.assertEqual(artifact.content_bytes, expected)
-        self.assertEqual(
-            artifact.sha256,
-            hashlib.sha256(expected).hexdigest(),
-        )
+            self.assertEqual(
+                set(path.name for path in snapshot.data_dir.iterdir()),
+                set(SNAPSHOT_FILENAMES),
+            )
+            self.assertEqual(
+                (snapshot.data_dir / "api_wind_date.csv").read_text(
+                    encoding="utf-8"
+                ),
+                "rdate,week_id\n"
+                "2026-07-14,202627\n"
+                "2026-07-15,202627\n"
+                "2026-07-16,202628\n",
+            )
 
-    def test_generation_snapshot_is_built_once_and_reused_across_schemes(self) -> None:
+    def test_producer_prepares_snapshot_and_schemes_only_read_receipt(self) -> None:
         from shared.blackbox_v2.snapshot import SNAPSHOT_FILENAMES
-        from shared import input_artifacts
-        from shared.input_artifacts import get_blackbox_generation_snapshot
+        from shared.input_artifacts import (
+            get_ready_blackbox_snapshot,
+            prepare_blackbox_generation_snapshot,
+        )
 
         frames = _snapshot_frames()
         for code in ("M0041340", "M0041341", "M0041342"):
             frames["monthly_output.csv"][code] = 0.0
+        profiles = {
+            name: SimpleNamespace(
+                sha256=hashlib.sha256(
+                    frame.to_csv(index=False, lineterminator="\n").encode(
+                        "utf-8"
+                    )
+                ).hexdigest(),
+                business_hash=(str(index + 1) * 64)[:64],
+                rows=len(frame),
+                columns=len(frame.columns),
+                min_key=str(frame.iloc[0, 0]),
+                max_key=str(frame.iloc[-1, 0]),
+            )
+            for index, (name, frame) in enumerate(frames.items())
+        }
         state = {
             "generation_id": "generation-shared",
             "refresh_date": "2026-07-15",
@@ -82,21 +99,20 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             "schema_version": "data-bridge-v1",
             "files": {
                 name: {
-                    "sha256": hashlib.sha256(
-                        frames[name]
-                        .to_csv(index=False, lineterminator="\n")
-                        .encode("utf-8")
-                    ).hexdigest(),
-                    "rows": len(frames[name]),
-                    "columns": list(frames[name].columns),
+                    "sha256": profiles[name].sha256,
+                    "business_hash": profiles[name].business_hash,
+                    "rows": profiles[name].rows,
+                    "columns": profiles[name].columns,
+                    "min_key": profiles[name].min_key,
+                    "max_key": profiles[name].max_key,
                 }
                 for name in SNAPSHOT_FILENAMES
             },
         }
 
         class Store:
-            def __init__(self, **_kwargs) -> None:
-                pass
+            def __init__(self, **kwargs) -> None:
+                self.current_dir = Path(kwargs["data_root"]) / "current"
 
             @contextmanager
             def current_read(self, *, strict_read_only):
@@ -108,17 +124,28 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 if not value:
                     raise AssertionError("strict read-only access required")
 
-        current = SimpleNamespace(
-            state=state,
-            dataset=SimpleNamespace(frames=frames),
+        dataset = SimpleNamespace(
+            schema_version="data-bridge-v1",
+            business_digest="b" * 64,
+            frames=frames,
+            files=profiles,
         )
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
+            data_root = root / "databridge"
+            current_dir = data_root / "current"
+            current_dir.mkdir(parents=True)
+            (current_dir / ".publication-manifest.json").write_text(
+                json.dumps(state, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
             with (
                 patch("shared.input_artifacts.DataBridgeStore", Store),
                 patch(
                     "shared.input_artifacts.check_current_dataset",
-                    return_value=current,
+                    side_effect=AssertionError(
+                        "ready snapshot path must not validate DataBridge current"
+                    ),
                 ) as check_current,
                 patch(
                     "shared.input_artifacts._load_blackbox_schema",
@@ -128,69 +155,56 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     ),
                 ),
             ):
-                first = get_blackbox_generation_snapshot(
-                    snapshot_date="2026-07-15",
+                prepared = prepare_blackbox_generation_snapshot(
+                    state=state,
+                    dataset=dataset,
                     cache_root=root / "generation-cache",
                 )
-                cached_csv_reads: list[Path] = []
-                stable_read = input_artifacts._read_stable_regular_file
-
-                def record_stable_read(path, label):
-                    if Path(path).suffix == ".csv":
-                        cached_csv_reads.append(Path(path))
-                    return stable_read(path, label)
-
-                with patch(
-                    "shared.input_artifacts._read_stable_regular_file",
-                    side_effect=record_stable_read,
-                ):
-                    second = get_blackbox_generation_snapshot(
-                        snapshot_date="2026-07-15",
-                        cache_root=root / "generation-cache",
-                    )
-                self.assertEqual(cached_csv_reads, [])
-                receipt_path = next(
-                    (root / "generation-cache" / "receipts").iterdir()
+                ready = get_ready_blackbox_snapshot(
+                    snapshot_date="2026-07-15",
+                    data_root=data_root,
+                    cache_root=root / "generation-cache",
                 )
-                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-                self.assertEqual(
-                    receipt["identity"]["cache_schema_version"],
-                    "blackbox-generation-snapshot-v1",
-                )
-                receipt["cutoff_keys"]["date"] = receipt["cutoff_keys"][
-                    "date"
-                ][:-1]
-                receipt_path.chmod(0o644)
-                receipt_path.write_text(
-                    json.dumps(receipt),
+
+                mismatched = dict(state)
+                mismatched["generation_id"] = "generation-other"
+                (current_dir / ".publication-manifest.json").write_text(
+                    json.dumps(mismatched, sort_keys=True) + "\n",
                     encoding="utf-8",
                 )
-                receipt_path.chmod(0o444)
-                tampered_cutoff_snapshot = get_blackbox_generation_snapshot(
-                    snapshot_date="2026-07-15",
-                    cache_root=root / "generation-cache",
-                )
-                from shared.blackbox_v2.snapshot import (
-                    compose_blackbox_input_bundle,
-                )
-
                 with self.assertRaisesRegex(
                     ValueError,
-                    "cutoff cache does not match verified CSV content",
+                    "state and publication manifest differ",
                 ):
-                    with input_artifacts.open_blackbox_runtime_view(
-                        compose_blackbox_input_bundle(
-                            tampered_cutoff_snapshot
-                        ),
-                        runtime_root=root / "runtime-views",
-                    ):
-                        self.fail("forged cutoff cache reached the algorithm view")
+                    get_ready_blackbox_snapshot(
+                        snapshot_date="2026-07-15",
+                        data_root=data_root,
+                        cache_root=root / "generation-cache",
+                    )
 
-        self.assertEqual(first.snapshot_id, second.snapshot_id)
-        self.assertEqual(first.generation_id, "generation-shared")
-        check_current.assert_called_once()
+                (current_dir / ".publication-manifest.json").write_text(
+                    json.dumps(state, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                damaged = prepared.data_dir / "daily_output.csv"
+                damaged.chmod(0o644)
+                damaged.write_bytes(damaged.read_bytes() + b"\n")
+                damaged.chmod(0o444)
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "no longer matches producer seal",
+                ):
+                    get_ready_blackbox_snapshot(
+                        snapshot_date="2026-07-15",
+                        data_root=data_root,
+                        cache_root=root / "generation-cache",
+                    )
 
-    def test_runtime_view_reads_each_generation_csv_once(self) -> None:
+        self.assertEqual(prepared.snapshot_id, ready.snapshot_id)
+        self.assertEqual(ready.generation_id, "generation-shared")
+        check_current.assert_not_called()
+
+    def test_runtime_view_does_not_rehash_or_parse_generation_csv(self) -> None:
         from shared import input_artifacts
         from shared.blackbox_v2.snapshot import (
             SNAPSHOT_FILENAMES,
@@ -210,6 +224,12 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 output_root=root / "snapshots",
                 expected_columns=expected_columns,
                 schema_version="data-bridge-v1",
+            )
+            snapshot = replace(
+                snapshot,
+                sealed_file_fingerprints=(
+                    input_artifacts._snapshot_file_fingerprints(snapshot)
+                ),
             )
             bundle = compose_blackbox_input_bundle(snapshot)
             csv_reads: list[str] = []
@@ -248,42 +268,21 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                         sorted(SNAPSHOT_FILENAMES),
                     )
 
-        self.assertEqual(sorted(csv_reads), sorted(SNAPSHOT_FILENAMES))
-
-    def test_runtime_view_rejects_generation_csv_changed_after_cache_hit(self) -> None:
-        from shared.blackbox_v2.snapshot import (
-            compose_blackbox_input_bundle,
-            create_snapshot_from_frames,
-        )
-        from shared.input_artifacts import open_blackbox_runtime_view
-
-        frames = _snapshot_frames()
-        expected_columns = {
-            name: list(frame.columns) for name, frame in frames.items()
-        }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            snapshot = create_snapshot_from_frames(
-                frames,
-                output_root=root / "snapshots",
-                expected_columns=expected_columns,
-                schema_version="data-bridge-v1",
-            )
-            bundle = compose_blackbox_input_bundle(snapshot)
-            daily_path = snapshot.data_dir / "daily_output.csv"
-            daily_path.chmod(0o644)
-            daily_path.write_bytes(daily_path.read_bytes() + b"\n")
-            daily_path.chmod(0o444)
-
-            with self.assertRaisesRegex(
-                ValueError,
-                "daily_output.csv sha256 does not match manifest",
-            ):
-                with open_blackbox_runtime_view(
-                    bundle,
-                    runtime_root=root / "runtime-views",
+                damaged = snapshot.data_dir / "daily_output.csv"
+                damaged.chmod(0o644)
+                damaged.write_bytes(damaged.read_bytes() + b"\n")
+                damaged.chmod(0o444)
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "source no longer matches producer seal",
                 ):
-                    self.fail("tampered generation CSV reached the algorithm view")
+                    with open_blackbox_runtime_view(
+                        bundle,
+                        runtime_root=root / "runtime-views",
+                    ):
+                        pass
+
+        self.assertEqual(csv_reads, [])
 
     def test_runtime_view_accepts_databridge_timestamp_daily_keys(self) -> None:
         from shared.blackbox_v2.snapshot import (
@@ -315,7 +314,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             ) as runtime_view:
                 self.assertTrue(runtime_view.data_dir.is_dir())
 
-    def test_passed_all_reads_input_identity_from_database_evidence(self) -> None:
+    def test_passed_all_reads_compare_identity_from_database_evidence(self) -> None:
         from sqlalchemy import text
 
         from harness.blackbox_v2.gates import _verify_passed_all
@@ -342,7 +341,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     "'passed', '2026-07-15 00:00:00')"
                 )
             )
-            for gate_name in ("static", "input", "compare"):
+            for gate_name in ("static", "compare"):
                 connection.execute(
                     text(
                         "INSERT INTO t_harness_gate_results VALUES "
@@ -351,7 +350,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     {
                         "run_id": "hr-test",
                         "gate_name": gate_name,
-                        "summary": summary if gate_name == "input" else "{}",
+                        "summary": summary if gate_name == "compare" else "{}",
                     },
                 )
 
@@ -369,7 +368,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
         self.assertEqual(passed.generation_id, "generation-test")
 
 
-    def test_input_state_captures_declared_platform_input_in_read_only_transaction(self) -> None:
+    def test_input_state_reuses_generation_calendar_without_database_capture(self) -> None:
         from harness.blackbox_v2.gates import (
             _ensure_input_state,
             cleanup_runtime_input,
@@ -377,7 +376,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
         from scheduler.discovery import load_scheme_config
         from shared.blackbox_v2.contracts import BlackboxRequest
         from shared.blackbox_v2.intake import intake_delivery
-        from shared.blackbox_v2.platform_inputs import freeze_platform_input
         from shared.blackbox_v2.snapshot import (
             CutoffKeys,
             create_snapshot_from_frames,
@@ -420,7 +418,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             scheme_dir = intake_delivery(
                 _delivery(root / "incoming"),
                 schemes_root=root / "schemes",
-                platform_inputs=["api-wind-date-v1"],
             )
             config = load_scheme_config(scheme_dir / "config.yaml")
             snapshot = replace(
@@ -446,17 +443,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 weekly_cutoff_key=cutoffs.weekly_cutoff_key,
                 monthly_cutoff_key=cutoffs.monthly_cutoff_key,
             )
-            artifact = freeze_platform_input(
-                "api-wind-date-v1",
-                pd.DataFrame(
-                    {
-                        "rdate": ["2026-07-14", "2026-07-15"],
-                        "week_id": ["202627", "202627"],
-                    }
-                ),
-                weekly_cutoff_key=cutoffs.weekly_cutoff_key,
-                audit_provenance={"source_kind": "harness_database"},
-            )
             engine = Engine()
             calendar = SimpleNamespace()
             ctx = GateContext(
@@ -468,7 +454,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             )
             with (
                 patch(
-                    "harness.blackbox_v2.gates.get_blackbox_generation_snapshot",
+                    "harness.blackbox_v2.gates.get_ready_blackbox_snapshot",
                     return_value=snapshot,
                 ) as generation_snapshot,
                 patch(
@@ -482,21 +468,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 patch(
                     "harness.blackbox_v2.gates.build_live_request",
                     return_value=request,
-                ),
-                patch(
-                    "harness.blackbox_v2.gates.capture_blackbox_platform_inputs_from_connection",
-                    return_value=(artifact,),
-                ) as capture,
-                patch(
-                    "harness.blackbox_v2.gates._data_bridge_provenance",
-                    return_value={
-                        "generation_id": "generation-test",
-                        "refresh_date": "2026-07-15",
-                        "refreshed_at": "2026-07-15T00:02:00+08:00",
-                        "business_digest": "digest",
-                        "runtime_profile": "blackbox-v2-v1",
-                        "environment_fingerprint": "e" * 64,
-                    },
                 ),
                 patch(
                     "harness.blackbox_v2.gates.get_calendar",
@@ -517,36 +488,16 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 "2026-07-15",
                 calendar,
             )
-            self.assertNotEqual(
+            self.assertEqual(
                 state.bundle.combined_snapshot_id,
                 snapshot.snapshot_id,
             )
-            self.assertEqual(
-                state.bundle.platform_input_ids,
-                ("api-wind-date-v1",),
-            )
-            capture.assert_called_once_with(
-                config.platform_inputs,
-                connection=engine.connection,
-                weekly_cutoff_key="202627",
-            )
-            self.assertEqual(
-                engine.connection.commands,
-                ["START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY"],
-            )
-            self.assertTrue(engine.connection.rolled_back)
+            self.assertEqual(engine.connection.commands, [])
+            self.assertFalse(engine.connection.rolled_back)
             self.assertTrue(engine.disposed)
             self.assertEqual(
-                state.bundle.audit_manifest["base_snapshot"][
-                    "generation_id"
-                ],
-                "generation-test",
-            )
-            self.assertEqual(
-                state.bundle.audit_manifest["base_snapshot"][
-                    "refresh_date"
-                ],
-                "2026-07-15",
+                state.bundle.expected_filenames,
+                tuple(_snapshot_frames()),
             )
             self.assertFalse((root / "reports").exists())
             self.assertIn("blackbox_v2.input_state", ctx.runtime_state)
@@ -563,7 +514,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
         from scheduler.discovery import load_scheme_config
         from shared.blackbox_v2.contracts import BlackboxRequest
         from shared.blackbox_v2.intake import intake_delivery
-        from shared.blackbox_v2.platform_inputs import freeze_platform_input
         from shared.blackbox_v2.snapshot import (
             compose_blackbox_input_bundle,
             create_snapshot_from_frames,
@@ -575,7 +525,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             scheme_dir = intake_delivery(
                 _delivery(root / "incoming", script=_SUCCESS_SCRIPT),
                 schemes_root=root / "schemes",
-                platform_inputs=["api-wind-date-v1"],
             )
             config = load_scheme_config(scheme_dir / "config.yaml")
             frames = _snapshot_frames()
@@ -594,22 +543,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 weekly_cutoff_key="202627",
                 monthly_cutoff_key="202606",
             )
-            calendar_artifact = freeze_platform_input(
-                "api-wind-date-v1",
-                pd.DataFrame(
-                    {
-                        "rdate": ["2026-07-13", "2026-07-14", "2026-07-15"],
-                        "week_id": ["202627", "202627", "202627"],
-                    }
-                ),
-                weekly_cutoff_key=request.weekly_cutoff_key,
-                audit_provenance={"source_kind": "harness_database"},
-            )
-            bundle = compose_blackbox_input_bundle(
-                snapshot,
-                platform_input_ids=config.platform_inputs,
-                platform_input_artifacts=[calendar_artifact],
-            )
+            bundle = compose_blackbox_input_bundle(snapshot)
             state = InputState(
                 snapshot=snapshot,
                 request=request,
@@ -621,6 +555,9 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 with patch(
                     "harness.blackbox_v2.gates._profile",
                     return_value=RuntimeProfile.for_tests(),
+                ), patch(
+                    "harness.blackbox_v2.gates._environment_fingerprint",
+                    return_value="e" * 64,
                 ):
                     results = [gate.run(ctx) for gate in gates]
             self.assertFalse((root / "reports").exists())
@@ -633,14 +570,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 self.assertEqual(
                     evidence["parent_data_snapshot_id"],
                     snapshot.snapshot_id,
-                )
-                self.assertEqual(
-                    evidence["platform_input_ids"],
-                    ["api-wind-date-v1"],
-                )
-                self.assertEqual(
-                    evidence["platform_input_hashes"],
-                    {"api-wind-date-v1": calendar_artifact.sha256},
                 )
             self.assertFalse(
                 (root / "reports" / "blackbox_v2" / "runtime_views").exists()
@@ -762,5 +691,11 @@ def _snapshot_frames() -> dict[str, pd.DataFrame]:
         ),
         "monthly_output.csv": pd.DataFrame(
             {"month_id": ["202605", "202606", "202607"], "monthly_factor": [0.0, 1.0, 2.0]}
+        ),
+        "api_wind_date.csv": pd.DataFrame(
+            {
+                "rdate": ["2026-07-14", "2026-07-15", "2026-07-16"],
+                "week_id": ["202627", "202627", "202628"],
+            }
         ),
     }

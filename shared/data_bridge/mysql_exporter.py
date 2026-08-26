@@ -1,4 +1,4 @@
-"""从本机 MySQL 一致性快照构造 DataBridge 三频 round。"""
+"""从本机 MySQL 一致性快照构造 DataBridge 四文件 round。"""
 
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ from shared.data_service import (
     build_monthly_output_from_db,
     build_weekly_output_from_db,
 )
+from shared.calendar_service import read_calendar_snapshot_from_connection
 
 
 LOCAL_MYSQL_REQUIRED_TABLES = tuple(
@@ -47,7 +48,7 @@ LOCAL_MYSQL_REQUIRED_TABLES = tuple(
 
 
 class MySqlDataBridgeRoundBuilder:
-    """在每轮单一 MySQL 只读一致性快照中生成全部三频输出。"""
+    """在每轮单一 MySQL 只读一致性快照中生成四份标准输入。"""
 
     def __init__(self, *, engine, config: DataBridgeRefreshConfig) -> None:
         self.engine = engine
@@ -97,6 +98,11 @@ class MySqlDataBridgeRoundBuilder:
                             end_date=expected_daily_date,
                             engine=connection,
                             include_databridge_additions=True,
+                        ),
+                        "api_wind_date.csv": (
+                            read_calendar_snapshot_from_connection(connection)[
+                                "api_wind_date.csv"
+                            ]
                         ),
                     }
                     evidence = capture_source_commit_evidence_from_connection(

@@ -46,11 +46,11 @@ from shared.blackbox_v2.snapshot import compose_blackbox_input_bundle
 from shared.input_artifacts import (
     EPHEMERAL_NATIVE_INPUT_ROOT_ENV,
     NATIVE_INPUT_AUDIT_ROOT_ENV,
-    capture_blackbox_platform_inputs_from_connection,
     BlackboxGrayReplaySession,
-    open_blackbox_input_snapshot,
+    get_ready_blackbox_snapshot,
     open_blackbox_runtime_view,
     resolve_blackbox_input_cutoffs,
+    validate_blackbox_request_calendar,
 )
 from shared.data_bridge.refresh import DataBridgeRefreshConfig
 from shared.db_config import DATABASE_ENV_FILE_ENV
@@ -466,7 +466,7 @@ def run_blackbox_scheme_subprocess(
         raise ValueError(f"Blackbox V2 delivery paths missing for {cfg.scheme_id}")
     require_fresh = snapshot_mode == BLACKBOX_SNAPSHOT_MODE_FRESH
     data_bridge_config = DataBridgeRefreshConfig.from_env()
-    snapshot_context = open_blackbox_input_snapshot(
+    snapshot = get_ready_blackbox_snapshot(
         snapshot_date=predict_date,
         schema_path=data_bridge_config.schema_path,
         data_root=data_bridge_config.data_root,
@@ -475,110 +475,79 @@ def run_blackbox_scheme_subprocess(
     )
 
     metadata = load_metadata(cfg.delivery_metadata)
-    with snapshot_context as snapshot:
-        if snapshot_mode == BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF:
-            _validate_historical_snapshot(
-                snapshot,
-                predict_date=predict_date,
-                expected_generation_id=expected_generation_id,
-                expected_refresh_date=expected_refresh_date,
-            )
-        calendar = get_calendar(engine)
-        if metadata.task_type in PERIOD_AVERAGE_TASK_TYPES:
-            feature_date = resolve_live_context(
-                metadata,
-                predict_date=predict_date,
-                calendar=calendar,
-            ).feature_date
-        elif metadata.frequency == "daily":
-            feature_date = build_daily_live_context(
-                calendar,
-                predict_date,
-                horizon=metadata.horizon,
-            ).feature_date
-        elif metadata.frequency == "weekly":
-            feature_date = build_weekly_live_context(
-                calendar,
-                predict_date,
-            ).feature_date
-        else:
-            feature_date = build_monthly_live_context(
-                calendar,
-                predict_date,
-            ).feature_date
-        cutoffs = resolve_blackbox_input_cutoffs(
+    if snapshot_mode == BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF:
+        _validate_historical_snapshot(
             snapshot,
-            feature_date=feature_date,
-            engine=engine,
+            predict_date=predict_date,
+            expected_generation_id=expected_generation_id,
+            expected_refresh_date=expected_refresh_date,
         )
-        request = build_live_request(
+    calendar = get_calendar(engine)
+    if metadata.task_type in PERIOD_AVERAGE_TASK_TYPES:
+        feature_date = resolve_live_context(
             metadata,
             predict_date=predict_date,
             calendar=calendar,
-            cutoffs=cutoffs,
-        )
-        platform_input_ids = tuple(
-            getattr(cfg, "platform_inputs", ()) or ()
-        )
-        if platform_input_ids:
-            platform_input_artifacts = (
-                _capture_blackbox_platform_inputs_from_engine(
-                    engine,
-                    platform_input_ids=platform_input_ids,
-                    weekly_cutoff_key=cutoffs.weekly_cutoff_key,
-                )
+        ).feature_date
+    elif metadata.frequency == "daily":
+        feature_date = build_daily_live_context(
+            calendar,
+            predict_date,
+            horizon=metadata.horizon,
+        ).feature_date
+    elif metadata.frequency == "weekly":
+        feature_date = build_weekly_live_context(
+            calendar,
+            predict_date,
+        ).feature_date
+    else:
+        feature_date = build_monthly_live_context(
+            calendar,
+            predict_date,
+        ).feature_date
+    cutoffs = resolve_blackbox_input_cutoffs(
+        snapshot,
+        feature_date=feature_date,
+        engine=engine,
+    )
+    request = build_live_request(
+        metadata,
+        predict_date=predict_date,
+        calendar=calendar,
+        cutoffs=cutoffs,
+    )
+    input_bundle = compose_blackbox_input_bundle(snapshot)
+    blackbox_env = DEFAULT_RUNTIME_PROFILE.conda_env if algo_env == DEFAULT_ALGO_ENV else algo_env
+    profile = replace(
+        DEFAULT_RUNTIME_PROFILE,
+        conda_env=blackbox_env,
+    )
+    with open_blackbox_runtime_view(input_bundle) as runtime_view:
+        trusted_bundle = runtime_view.bundle
+        predict_kwargs = {
+            "metadata": metadata,
+            "script_path": cfg.delivery_script,
+            "request": request,
+            "data_dir": runtime_view.data_dir,
+            "data_snapshot_id":
+                trusted_bundle.combined_snapshot_id,
+            "profile": profile,
+        }
+        if timeout_sec is not None:
+            predict_kwargs["timeout_sec"] = timeout_sec
+        if process_started is not None:
+            predict_kwargs["process_started"] = process_started
+        if process_fence is not None:
+            predict_kwargs["process_fence"] = process_fence
+        if process_start_guard is not None:
+            predict_kwargs["process_start_guard"] = (
+                process_start_guard
             )
-        else:
-            platform_input_artifacts = ()
-        input_bundle = compose_blackbox_input_bundle(
-            snapshot,
-            platform_input_ids=platform_input_ids,
-            platform_input_artifacts=platform_input_artifacts,
-        )
-        blackbox_env = DEFAULT_RUNTIME_PROFILE.conda_env if algo_env == DEFAULT_ALGO_ENV else algo_env
-        profile = replace(
-            DEFAULT_RUNTIME_PROFILE,
-            conda_env=blackbox_env,
-        )
-        with open_blackbox_runtime_view(input_bundle) as runtime_view:
-            trusted_bundle = runtime_view.bundle
-            predict_kwargs = {
-                "metadata": metadata,
-                "script_path": cfg.delivery_script,
-                "request": request,
-                "data_dir": runtime_view.data_dir,
-                "data_snapshot_id":
-                    trusted_bundle.combined_snapshot_id,
-                "platform_input_ids":
-                    trusted_bundle.platform_input_ids,
-                "profile": profile,
-            }
-            if timeout_sec is not None:
-                predict_kwargs["timeout_sec"] = timeout_sec
-            if trusted_bundle.platform_input_ids:
-                predict_kwargs.update(
-                    {
-                        "parent_data_snapshot_id":
-                            trusted_bundle.parent_snapshot_id,
-                        "input_identity_manifest":
-                            trusted_bundle.identity_manifest,
-                        "input_audit_manifest":
-                            trusted_bundle.audit_manifest,
-                    }
-                )
-            if process_started is not None:
-                predict_kwargs["process_started"] = process_started
-            if process_fence is not None:
-                predict_kwargs["process_fence"] = process_fence
-            if process_start_guard is not None:
-                predict_kwargs["process_start_guard"] = (
-                    process_start_guard
-                )
-            try:
-                record = run_blackbox_predict(**predict_kwargs)
-            except ProcessGroupTerminationError:
-                runtime_view.mark_termination_uncertain()
-                raise
+        try:
+            record = run_blackbox_predict(**predict_kwargs)
+        except ProcessGroupTerminationError:
+            runtime_view.mark_termination_uncertain()
+            raise
         if snapshot_mode == BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF:
             extra = dict(record.extra or {})
             extra.update(
@@ -653,20 +622,7 @@ def run_blackbox_gray_replay_batch(
             "Blackbox V2 metadata frequency does not match configured scheme"
         )
 
-    platform_input_ids = tuple(getattr(cfg, "platform_inputs", ()) or ())
-    if platform_input_ids:
-        platform_input_artifacts = _capture_blackbox_platform_inputs_from_engine(
-            engine,
-            platform_input_ids=platform_input_ids,
-            weekly_cutoff_key=session.max_cutoffs.weekly_cutoff_key,
-        )
-    else:
-        platform_input_artifacts = ()
-    input_bundle = compose_blackbox_input_bundle(
-        session.snapshot,
-        platform_input_ids=platform_input_ids,
-        platform_input_artifacts=platform_input_artifacts,
-    )
+    input_bundle = compose_blackbox_input_bundle(session.snapshot)
     blackbox_env = (
         profile.conda_env if algo_env == DEFAULT_ALGO_ENV else algo_env
     )
@@ -683,17 +639,8 @@ def run_blackbox_gray_replay_batch(
             "requests": batch_requests,
             "data_dir": runtime_view.data_dir,
             "data_snapshot_id": trusted_bundle.combined_snapshot_id,
-            "platform_input_ids": trusted_bundle.platform_input_ids,
             "profile": effective_profile,
         }
-        if trusted_bundle.platform_input_ids:
-            backtest_kwargs.update(
-                {
-                    "parent_data_snapshot_id": trusted_bundle.parent_snapshot_id,
-                    "input_identity_manifest": trusted_bundle.identity_manifest,
-                    "input_audit_manifest": trusted_bundle.audit_manifest,
-                }
-            )
         records = run_blackbox_backtest(**backtest_kwargs)
     records_by_request = _index_gray_replay_records(records, batch_requests)
     return [
@@ -719,6 +666,11 @@ def _validate_gray_replay_request_within_session(
         raise ValueError(
             "Request cutoff exceeds gray replay session maximum cutoff"
         )
+    validate_blackbox_request_calendar(
+        session.snapshot,
+        daily_cutoff_key=request.daily_cutoff_key,
+        weekly_cutoff_key=request.weekly_cutoff_key,
+    )
 
 
 def _index_gray_replay_records(
@@ -761,27 +713,6 @@ def _with_gray_replay_provenance(
         }
     )
     return replace(record, extra=extra)
-
-
-def _capture_blackbox_platform_inputs_from_engine(
-    engine,
-    *,
-    platform_input_ids: tuple[str, ...],
-    weekly_cutoff_key: str,
-):
-    """从显式只读一致性事务捕获非 scheduled 平台输入。"""
-    with engine.connect() as connection:
-        connection.exec_driver_sql(
-            "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY"
-        )
-        try:
-            return capture_blackbox_platform_inputs_from_connection(
-                platform_input_ids,
-                connection=connection,
-                weekly_cutoff_key=weekly_cutoff_key,
-            )
-        finally:
-            connection.rollback()
 
 
 def _validate_historical_snapshot(

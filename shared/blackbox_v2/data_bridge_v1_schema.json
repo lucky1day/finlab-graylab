@@ -1484,6 +1484,12 @@
         "S6623820",
         "T2627623"
       ]
+    },
+    "api_wind_date.csv": {
+      "columns": [
+        "rdate",
+        "week_id"
+      ]
     }
   }
 }

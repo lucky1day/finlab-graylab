@@ -58,6 +58,12 @@ def _current_dataset(
             "monthly_output.csv",
             ["202606", "202607", "202608"],
         ),
+        "api_wind_date.csv": pd.DataFrame(
+            {
+                "rdate": ["2026-07-22", "2026-07-23"],
+                "week_id": ["202630", "202630"],
+            }
+        ),
     }
     dataset = validate_dataset(
         frames,
@@ -128,6 +134,72 @@ def _v3_period_bootstrap_inputs():
 
 
 class DataBridgeCurrentTests(unittest.TestCase):
+    def test_calendar_future_tail_cannot_disappear(self) -> None:
+        from shared.data_bridge.validation import (
+            DataBridgeValidationError,
+            validate_dataset,
+        )
+
+        previous = validate_dataset(
+            {
+                "daily_output.csv": _frame(
+                    "daily_output.csv", ["2026-08-07"]
+                ),
+                "weekly_output.csv": _frame(
+                    "weekly_output.csv", ["202632"]
+                ),
+                "monthly_output.csv": _frame(
+                    "monthly_output.csv", ["202608"]
+                ),
+                "api_wind_date.csv": pd.DataFrame(
+                    {
+                        "rdate": [
+                            "2026-08-07",
+                            "2026-08-08",
+                            "2026-08-09",
+                        ],
+                        "week_id": ["202632", "202632", "202632"],
+                    }
+                ),
+            },
+            schema_path=SCHEMA_PATH,
+            expected_daily_date="2026-08-07",
+        )
+        candidate = {
+            "daily_output.csv": _frame(
+                "daily_output.csv", ["2026-08-07"]
+            ),
+            "weekly_output.csv": _frame(
+                "weekly_output.csv", ["202632"]
+            ),
+            "monthly_output.csv": _frame(
+                "monthly_output.csv", ["202608"]
+            ),
+            "api_wind_date.csv": pd.DataFrame(
+                {"rdate": ["2026-08-07"], "week_id": ["202632"]}
+            ),
+        }
+
+        with self.assertRaisesRegex(
+            DataBridgeValidationError,
+            "historical keys disappeared",
+        ):
+            validate_dataset(
+                candidate,
+                schema_path=SCHEMA_PATH,
+                expected_daily_date="2026-08-07",
+                previous_keys={
+                    filename: profile.keys
+                    for filename, profile in previous.files.items()
+                },
+                continuity_cutoffs={
+                    "daily_output.csv": "2026-08-07",
+                    "weekly_output.csv": "202632",
+                    "monthly_output.csv": "202608",
+                    "api_wind_date.csv": "2026-08-07",
+                },
+            )
+
     def test_v2_daily_gate_v1_keeps_stable_audit_shape(self) -> None:
         from scheduler.v2_daily_gate import write_gate_record
 
@@ -511,19 +583,17 @@ class DataBridgeCurrentTests(unittest.TestCase):
             },
         )
 
-    def test_blackbox_snapshot_rejects_current_monthly_output_without_macro_additions(
+    def test_producer_rejects_monthly_output_without_macro_additions(
         self,
     ) -> None:
         from shared import input_artifacts
 
-        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
-            input_artifacts,
-            "_load_current_data_bridge_dataset",
-            return_value=_current_dataset(),
-        ), self.assertRaisesRegex(ValueError, "M0041340.*M0041341.*M0041342"):
-            input_artifacts.build_blackbox_input_snapshot(
-                snapshot_date="2026-07-24",
-                output_root=Path(tmpdir),
+        with self.assertRaisesRegex(
+            ValueError,
+            "M0041340.*M0041341.*M0041342",
+        ):
+            input_artifacts._require_blackbox_databridge_monthly_additions(
+                _current_dataset().dataset.frames
             )
 
 
@@ -574,8 +644,16 @@ class DataBridgeCurrentTests(unittest.TestCase):
         from scripts import refresh_data_bridge_current as refresh_script
 
         engine = MagicMock()
-        config = SimpleNamespace()
-        result = object()
+        config = SimpleNamespace(
+            schema_path=Path("/tmp/schema.json"),
+            data_root=Path("/tmp/data"),
+            runtime_root=Path("/tmp/runtime"),
+        )
+        result = SimpleNamespace(
+            published=True,
+            state={"generation_id": "generation-test"},
+            dataset=object(),
+        )
         with (
             patch.dict(
                 os.environ,
@@ -602,6 +680,10 @@ class DataBridgeCurrentTests(unittest.TestCase):
                 "run_full_refresh",
                 return_value=result,
             ),
+            patch.object(
+                refresh_script,
+                "prepare_blackbox_generation_snapshot",
+            ) as prepare_snapshot,
         ):
             actual = refresh_script.refresh_current(
                 refresh_date="2026-08-11",
@@ -615,4 +697,9 @@ class DataBridgeCurrentTests(unittest.TestCase):
             resolve_authority.call_args.kwargs[
                 "allow_producer_period_bootstrap"
             ]
+        )
+        prepare_snapshot.assert_called_once_with(
+            state=result.state,
+            dataset=result.dataset,
+            schema_path=config.schema_path,
         )

@@ -4,7 +4,7 @@
 
 **目标读者**：上游算法和平台数据接入人员
 
-本目录提供 `data-bridge-v1` 的文档入口和三份脱敏结构样例。样例中的日期、周期键和业务值全部为合成值，不来自生产数据。
+本目录提供 `data-bridge-v1` 的文档入口和四份脱敏结构样例。样例中的日期、周期键和业务值全部为合成值，不来自生产数据。
 
 ## 权威来源
 
@@ -15,24 +15,25 @@
 当前 Schema SHA256：
 
 ```text
-f959777b7f251937b6364843a81d8eb696072ca7671b1306c368aa0f3cf735dc
+addf732eb35071f89493073d22f4bf6ef79a55d7ceaf554dd9cf2c41e4dc6db3
 ```
 
 机器 Schema 不是永久完整表头。基线字段必须存在且相对顺序不变；DataBridge 可以在不改变 `data-bridge-v1` 的情况下增加业务列。本目录的样例不能覆盖机器 Schema，也不能把制作时点的列数提升为平台限制。
 
-## 三类文件
+## 四份标准文件
 
 | 文件 | 第一列截止键 | 样例 |
 |---|---|---|
 | `daily_output.csv` | `date` | [daily_output.sample.csv](samples/daily_output.sample.csv) |
 | `weekly_output.csv` | `week_id` | [weekly_output.sample.csv](samples/weekly_output.sample.csv) |
 | `monthly_output.csv` | `month_id` | [monthly_output.sample.csv](samples/monthly_output.sample.csv) |
+| `api_wind_date.csv` | `rdate` | [api_wind_date.sample.csv](samples/api_wind_date.sample.csv) |
 
-三份样例保留制作时点的最低兼容字段基线，只提供两行合成数据。除截止键和前两个业务字段外，其余业务字段留空，用于展示空值、字符串周期键和宽表读取方式。真实 DataBridge 会随指标接入增加业务列，算法必须按字段名选列并忽略未使用的新增业务列。
+三份因子样例保留制作时点的最低兼容字段基线，只提供两行合成数据；日历样例固定为 `rdate,week_id`。真实 DataBridge 会随指标接入增加业务列，算法必须按字段名选列并忽略未使用的新增业务列。
 
-## 可选平台周历
+## 平台周历
 
-依赖日期到平台周键映射的算法还必须从 DataBridge 下载：
+DataBridge generation 固定提供：
 
 ```text
 api_wind_date.csv
@@ -48,15 +49,13 @@ api_wind_date.csv
 `YYYY-MM-DD`；`week_id` 是六位字符串形式的平台业务键。它不是 ISO
 周，也不保证数值连续，算法不得自行换算、加减或推导相邻周。
 
-`api_wind_date.csv` 是 `api-wind-date-v1` 平台输入制品，不属于上表
-三频父 Schema，也不改变 `data-bridge-v1` 的三文件 generation。
-上游可以把 DataBridge 下载文件用于本地自测，但正式 Blackbox
-delivery 仍然只能包含同名 `.py + .json`。平台运行时只有在 Intake
-显式声明 `--platform-input api-wind-date-v1` 后，才会在只读
-`--data-dir` 中提供规范化日历。
+`api_wind_date.csv` 是 DataBridge generation 的第四份标准文件。
+上游可以把四份文件用于本地自测，但正式 Blackbox delivery 仍然
+只能包含同名 `.py + .json`。平台运行时始终在只读 `--data-dir`
+提供日历；算法需要时读取，不需要时不读取。
 
-上游自测与平台验收必须使用同一三频 generation 和相同规范化日历
-摘要；三频或日历任一摘要不同，结果差异先标记
+上游自测与平台验收必须使用同一四文件 generation；三频或日历任一
+摘要不同，结果差异先标记
 `data_vintage_mismatch`，需要精确比较时必须在平台选定的同代输入上
 重跑。正式生产运行继续使用当天最新且已封存的 generation，不永久
 冻结自测数据版本。
@@ -76,11 +75,7 @@ delivery 仍然只能包含同名 `.py + .json`。平台运行时只有在 Intak
 - 不得把样例路径硬编码进上游脚本。
 - 不得从样例中的 `week_id` 或 `month_id` 自行推导平台 Request。
 
-平台运行时始终通过 `--data-dir` 提供只读三频 Snapshot；全量 current 的管理约定见 [`data/data_bridge/README.md`](../../../data/data_bridge/README.md)。
-
-需要周历的方案会在同一运行视图中额外看到只读
-`api_wind_date.csv`。算法不得访问 DataBridge、数据库、交付目录旁
-文件或内嵌日历作为运行时 fallback。
+平台运行时始终通过 `--data-dir` 提供同代只读四文件 Snapshot；全量 current 的管理约定见 [`data/data_bridge/README.md`](../../../data/data_bridge/README.md)。算法不得访问 DataBridge、数据库、交付目录旁文件或内嵌日历作为运行时 fallback。
 
 ## 读取示例
 

@@ -6,20 +6,28 @@ import json
 import tempfile
 import unittest
 from contextlib import contextmanager
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 from shared.data_bridge.refresh import (
+    DataBridgeContinuityAuthority,
     DataBridgeRefreshConfig,
+    DataBridgeStore,
     DownloadRound,
+    _build_state,
+    _write_publication_manifest,
+    data_bridge_continuity_authority_sha256,
+    data_bridge_publication_identity_sha256,
     run_full_refresh,
 )
 from shared.data_bridge.validation import (
+    validate_legacy_three_file_dataset,
     validate_dataset,
     write_validated_dataset,
 )
@@ -91,13 +99,23 @@ class _FakeRoundBuilder:
         continuity_cutoffs=None,
     ) -> DownloadRound:
         self.calls += 1
+        daily_keys = _daily_keys(self.daily_end)
         frames = {
             "daily_output.csv": _frame(
                 "daily_output.csv",
-                _daily_keys(self.daily_end),
+                daily_keys,
             ),
             "weekly_output.csv": _frame("weekly_output.csv", self.week_ids),
             "monthly_output.csv": _frame("monthly_output.csv", self.month_ids),
+            "api_wind_date.csv": pd.DataFrame(
+                {
+                    "rdate": daily_keys,
+                    "week_id": [
+                        LAST_WEEK if value <= "2026-07-19" else NEW_WEEK
+                        for value in daily_keys
+                    ],
+                }
+            ),
         }
         dataset = validate_dataset(
             frames,
@@ -183,6 +201,87 @@ class _CrossWeekFixture(unittest.TestCase):
             refresh_date="2026-07-18",
         )
 
+    def _install_legacy_three_file_current(self):
+        frames = {
+            "daily_output.csv": _frame(
+                "daily_output.csv",
+                _daily_keys("2026-07-17"),
+            ),
+            "weekly_output.csv": _frame(
+                "weekly_output.csv",
+                [LAST_WEEK],
+            ),
+            "monthly_output.csv": _frame(
+                "monthly_output.csv",
+                [MONTH],
+            ),
+        }
+        dataset = validate_legacy_three_file_dataset(
+            frames,
+            schema_path=SCHEMA_PATH,
+        )
+        store = DataBridgeStore(
+            data_root=self.data_root,
+            runtime_root=self.runtime_root,
+        )
+        store.current_dir.mkdir()
+        for filename, frame in dataset.frames.items():
+            frame.to_csv(store.current_dir / filename, index=False)
+        state = _build_state(
+            dataset,
+            "2026-07-18",
+            2,
+            refresh_started_at=datetime.now(ZoneInfo("Asia/Shanghai"))
+            - timedelta(seconds=1),
+            duration_sec=1.0,
+        )
+        _write_publication_manifest(store.current_dir, state=state)
+        store.state_path.write_text(
+            json.dumps(state, ensure_ascii=True, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        publication_identity = data_bridge_publication_identity_sha256(
+            state
+        )
+        stable_identity = data_bridge_continuity_authority_sha256(
+            generation_id=str(state["generation_id"]),
+            business_digest=dataset.business_digest,
+            publication_identity_sha256=publication_identity,
+            daily_cutoff_key="2026-07-17",
+            weekly_cutoff_key=LAST_WEEK,
+            monthly_cutoff_key=MONTH,
+        )
+        return DataBridgeContinuityAuthority(
+            generation_id=str(state["generation_id"]),
+            business_digest=dataset.business_digest,
+            publication_identity_sha256=publication_identity,
+            stable_identity_sha256=stable_identity,
+            daily_cutoff_key="2026-07-17",
+            weekly_cutoff_key=LAST_WEEK,
+            monthly_cutoff_key=MONTH,
+        )
+
+    def _assert_legacy_three_file_current_upgrades_atomically(self) -> None:
+        authority = self._install_legacy_three_file_current()
+        result = self._publish(
+            daily_end="2026-07-20",
+            week_ids=[LAST_WEEK, NEW_WEEK],
+            refresh_date="2026-07-21",
+            continuity_authority=authority,
+        )
+
+        self.assertTrue(result.published)
+        self.assertEqual(
+            {path.name for path in (self.data_root / "current").iterdir()},
+            {
+                "daily_output.csv",
+                "weekly_output.csv",
+                "monthly_output.csv",
+                "api_wind_date.csv",
+                ".publication-manifest.json",
+            },
+        )
+
     @contextmanager
     def _as_of_source(self):
         """让真实解析链路跑起来，只替换 DB 读取与索引构建。"""
@@ -236,6 +335,9 @@ class _CrossWeekFixture(unittest.TestCase):
 class ProductionEntryCrossWeekTests(_CrossWeekFixture):
     """驱动 launchd 生产入口 refresh_current 的跨周回归。"""
 
+    def test_legacy_three_file_current_upgrades_atomically(self) -> None:
+        self._assert_legacy_three_file_current_upgrades_atomically()
+
     def _run_production_entry(self, *, daily_end: str, week_ids: list[str]):
         import scripts.refresh_data_bridge_current as entry
 
@@ -263,6 +365,10 @@ class ProductionEntryCrossWeekTests(_CrossWeekFixture):
             mock.patch(
                 "shared.data_bridge.mysql_exporter.MySqlDataBridgeRoundBuilder",
                 _LaunchdShapedBuilder,
+            ),
+            mock.patch.object(
+                entry,
+                "prepare_blackbox_generation_snapshot",
             ),
         ):
             return entry.refresh_current(

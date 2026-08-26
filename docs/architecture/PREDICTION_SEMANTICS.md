@@ -56,10 +56,9 @@ Native V1 既有周频 `horizon=6` 和月频 `horizon=30` 是历史平台计日�
 给定的 Request、`weekly_output.csv` 中的有序实际键以及声明后的
 `api_wind_date.csv` 映射，不能依赖数值连续性。
 
-依赖周历的 Blackbox 上游自测和平台 Onboarding 验收必须绑定同一三频
-DataBridge generation 与相同规范化 `api_wind_date.csv` 内容。完整
-输入身份由 `generation_id + 三频 SHA256 + 日历 SHA256 +
-combined_snapshot_id` 表达。任一部分不同，结果差异先归类
+Blackbox 上游自测和平台 Onboarding 验收必须绑定同一 DataBridge
+四文件 generation。完整输入身份由 `generation_id + 四文件 SHA256 +
+data_snapshot_id` 表达。任一部分不同，结果差异先归类
 `data_vintage_mismatch`，必须同代重跑后才能归因算法。该验收约束不
 永久冻结生产；scheduled live 仍使用当天当前且通过校验的 DataBridge
 generation。平台注册日历由调用方只读数据库连接捕获，不再绑定第二份

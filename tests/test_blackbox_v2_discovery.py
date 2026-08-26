@@ -28,11 +28,10 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
         self.assertEqual(config.tenors, ["10Y"])
         self.assertEqual(config.frequency, "daily")
         self.assertEqual(config.schedule.timeout_sec, 3600)
-        self.assertEqual(config.platform_inputs, ())
         self.assertEqual(config.delivery_script, (scheme_dir / "delivery" / "trial_10y.py").resolve())
         self.assertEqual(config.delivery_metadata, (scheme_dir / "delivery" / "trial_10y.json").resolve())
 
-    def test_blackbox_platform_inputs_are_normalized_and_version_bound(self) -> None:
+    def test_legacy_platform_input_field_only_preserves_version_hash(self) -> None:
         from scheduler.discovery import load_scheme_config
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -51,58 +50,9 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
 
             declared = load_scheme_config(config_path)
 
-        self.assertEqual(
-            declared.platform_inputs,
-            ("api-wind-date-v1",),
-        )
+        self.assertFalse(hasattr(declared, "platform_inputs"))
         self.assertNotEqual(original.config_hash, declared.config_hash)
         self.assertNotEqual(original.scheme_version, declared.scheme_version)
-
-    def test_blackbox_rejects_invalid_explicit_platform_inputs(self) -> None:
-        from scheduler.discovery import load_scheme_config
-
-        replacements = (
-            "platform_inputs: []\n",
-            "platform_inputs:\n  - unknown-input-v1\n",
-            (
-                "platform_inputs:\n"
-                "  - api-wind-date-v1\n"
-                "  - api-wind-date-v1\n"
-            ),
-        )
-        for replacement in replacements:
-            with self.subTest(replacement=replacement), tempfile.TemporaryDirectory() as tmpdir:
-                scheme_dir = _write_blackbox_scheme(Path(tmpdir))
-                config_path = scheme_dir / "config.yaml"
-                config_path.write_text(
-                    config_path.read_text(encoding="utf-8").replace(
-                        "status: paused\n",
-                        replacement + "status: paused\n",
-                    ),
-                    encoding="utf-8",
-                )
-
-                with self.assertRaisesRegex(ValueError, "platform_inputs"):
-                    load_scheme_config(config_path)
-
-    def test_native_rejects_platform_inputs(self) -> None:
-        from scheduler.discovery import load_scheme_config
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scheme_dir = _write_native_scheme(Path(tmpdir))
-            config_path = scheme_dir / "config.yaml"
-            config_path.write_text(
-                config_path.read_text(encoding="utf-8").replace(
-                    "status: active\n",
-                    "platform_inputs:\n"
-                    "  - api-wind-date-v1\n"
-                    "status: active\n",
-                ),
-                encoding="utf-8",
-            )
-
-            with self.assertRaisesRegex(ValueError, "platform_inputs"):
-                load_scheme_config(config_path)
 
     def test_rejects_metadata_task_combination_not_in_contract(self) -> None:
         from scheduler.discovery import load_scheme_config
@@ -239,16 +189,16 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
             "7f90072e90291b9e89f80244e0779dc03ee496099e7b3015968fc422dccef072",
         )
 
-    def test_blackbox_canonical_config_rejects_invalid_platform_inputs(self) -> None:
+    def test_blackbox_canonical_config_keeps_legacy_platform_input_bytes(self) -> None:
         from shared.blackbox_v2.versioning import canonical_platform_config
 
-        for value in ([], ["unknown-input-v1"], ["api-wind-date-v1"] * 2):
-            with self.subTest(value=value):
-                raw = _canonical_raw_config()
-                raw["platform_inputs"] = value
+        raw = _canonical_raw_config()
+        raw["platform_inputs"] = ["api-wind-date-v1"]
 
-                with self.assertRaisesRegex(ValueError, "platform_inputs"):
-                    canonical_platform_config(raw)
+        self.assertEqual(
+            canonical_platform_config(raw)["platform_inputs"],
+            ["api-wind-date-v1"],
+        )
 
 
     def test_blackbox_canonical_config_rejects_missing_required_fields(self) -> None:

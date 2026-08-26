@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""刷新或检查平台统一 DataBridge 三频 current 文件。"""
+"""刷新或检查平台统一 DataBridge 四文件 current。"""
 
 from __future__ import annotations
 
@@ -41,6 +41,9 @@ from shared.data_bridge.mysql_exporter import (  # noqa: E402
 )
 from shared.data_bridge.validation import DataBridgeValidationError  # noqa: E402
 from shared.data_service import create_sqlalchemy_engine  # noqa: E402
+from shared.input_artifacts import (  # noqa: E402
+    prepare_blackbox_generation_snapshot,
+)
 from shared.one_shot_control_plane import (  # noqa: E402
     DATABRIDGE_LAUNCHD_PRODUCER,
     DATABRIDGE_ONE_SHOT_PRODUCERS,
@@ -134,9 +137,14 @@ def refresh_current(
         }
         if deadline_at is not None:
             refresh_kwargs["deadline_at"] = deadline_at
-        return run_full_refresh(
-            **refresh_kwargs,
-        )
+        result = run_full_refresh(**refresh_kwargs)
+        if result.published:
+            prepare_blackbox_generation_snapshot(
+                state=result.state,
+                dataset=result.dataset,
+                schema_path=config.schema_path,
+            )
+        return result
     finally:
         engine.dispose()
 
@@ -195,9 +203,8 @@ def _write_ready_gate(
     *,
     refresh_date: str,
     expected_feature_date: str,
-    current,
+    state: Mapping[str, object],
 ) -> None:
-    state = current.state
     write_gate_record(
         config,
         run_date=refresh_date,
@@ -209,7 +216,7 @@ def _write_ready_gate(
         business_digest=str(state["business_digest"]),
         checks=[
             {"name": "local_mysql_refresh", "status": "passed"},
-            {"name": "strict_current_read", "status": "passed"},
+            {"name": "generation_snapshot_ready", "status": "passed"},
         ],
     )
 
@@ -369,21 +376,12 @@ def _run_refresh_with_config(
             **refresh_kwargs,
         )
         if mode == "publish":
-            current = check_current_dataset(
-                config,
-                required_refresh_date=refresh_date,
-                expected_daily_date=expected_feature_date,
-                expected_generation_id=str(result.state["generation_id"]),
-                expected_business_digest=str(result.state["business_digest"]),
-                strict_read_only=True,
-                require_source_provenance=True,
-            )
             try:
                 _write_ready_gate(
                     config,
                     refresh_date=refresh_date,
                     expected_feature_date=expected_feature_date,
-                    current=current,
+                    state=result.state,
                 )
             except Exception as exc:
                 raise _ReadyGateWriteError(

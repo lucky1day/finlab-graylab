@@ -6,9 +6,6 @@ import re
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from shared.blackbox_v2.platform_input_registry import (
-    normalize_platform_input_ids,
-)
 from shared.task_specs import (
     ALLOWED_DATA_FREQUENCIES,
     ALLOWED_FREQUENCIES,
@@ -47,9 +44,6 @@ def validate_config(raw: dict, dirname: str) -> list[str]:
     if runtime_type == "blackbox_v2":
         errors.extend(_validate_blackbox_config(raw))
         return errors
-
-    if "platform_inputs" in raw:
-        errors.append("platform_inputs is only supported for Blackbox V2")
 
     for field in ("name", "description"):
         if not isinstance(raw.get(field), str) or not raw.get(field, "").strip():
@@ -211,12 +205,6 @@ def _validate_blackbox_config(raw: dict) -> list[str]:
         errors.append(
             "Blackbox V2 display_name must be a non-empty string when present"
         )
-    if "platform_inputs" in raw:
-        try:
-            normalize_platform_input_ids(raw["platform_inputs"])
-        except ValueError as exc:
-            errors.append(str(exc))
-
     schedule = raw.get("schedule")
     if not isinstance(schedule, dict):
         errors.append("schedule must be a mapping")

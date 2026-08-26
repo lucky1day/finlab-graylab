@@ -6,13 +6,13 @@
 
 **目标读者**：上游算法工程师
 
-本文是上游算法工程师唯一需要阅读的人类文档。完成开发只需要本文、随包提供的 `data_bridge_v1_schema.json` 和三份脱敏 sample；不需要再阅读仓库内其他文档。
+本文是上游算法工程师唯一需要阅读的人类文档。完成开发只需要本文、随包提供的 `data_bridge_v1_schema.json` 和四份脱敏 sample；不需要再阅读仓库内其他文档。
 
-本地开发、训练和效果验证优先使用从统一 DataBridge 下载的真实 DataBridge 数据。三份 sample 只在 DataBridge 暂时不可用时用于读取、选列、截止截断和接口烟雾测试，不能用于训练或效果回测。最终交付物仍然只有同名的 `{scheme_id}.py + {scheme_id}.json`。
+本地开发、训练和效果验证优先使用从统一 DataBridge 下载的真实 DataBridge 数据。四份 sample 只在 DataBridge 暂时不可用时用于读取、选列、截止截断和接口烟雾测试，不能用于训练或效果回测。最终交付物仍然只有同名的 `{scheme_id}.py + {scheme_id}.json`。
 
-若方案需要平台统一周历，上游必须按第 3 节从同一个 DataBridge 下载 `api_wind_date.csv` 做本地自验。它不是交付物：正式交付目录仍然只能包含同名 `.py + .json`；`api_wind_date.csv` 只允许作为上游自验材料，不得进入正式两文件交付目录。平台通过 Intake 参数声明和提供该制品，不从 Metadata 或上游目录取日历。
+`api_wind_date.csv` 是 DataBridge generation 固定提供的第四份文件，不是交付物；正式交付目录仍然只能包含同名 `.py + .json`。算法需要周历时读取，不需要时不读取。
 
-本文中的 `Blackbox V2` 是运行时代际，`schema_version=1.0` 是交付接口合同版本，`data-bridge-v1` 是三频数据 Schema；三者不能混作算法版本。
+本文中的 `Blackbox V2` 是运行时代际，`schema_version=1.0` 是交付接口合同版本，`data-bridge-v1` 是四文件数据 Schema；三者不能混作算法版本。
 
 正式新交付必须在 `{scheme_id}.json` 中提供唯一的 `name` 和 `description`；缺项或占位值均
 fail-closed。上游不得另交显示名或依赖平台补写这些字段。既有交付中的可选 `owner` 只为解析兼容，
@@ -29,12 +29,13 @@ fail-closed。上游不得另交显示名或依赖平台补写这些字段。既
 1. DataBridge 地址、用户名和密码；
 2. `data_bridge_v1_schema.json`；
 3. 合法的单点 `request.json` 和批量 `requests.csv` 样例；
-4. 离线兜底用的三份脱敏 sample：
+4. 离线兜底用的四份脱敏 sample：
 
 ```text
 samples/daily_output.sample.csv
 samples/weekly_output.sample.csv
 samples/monthly_output.sample.csv
+samples/api_wind_date.sample.csv
 ```
 
 Python、关键包和资源限制直接列在下一节。不得要求为单个方案临时增加私有包。
@@ -83,14 +84,7 @@ Blackbox V2 Contract 1.0 当前使用的 Python 和关键包版本：
 
 如算法需要训练，训练逻辑和固定参数必须包含在 `.py` 中，并且只能使用当前 Request 允许的数据。DataBridge 下载文件、机器 Schema 和脱敏 sample 是开发材料，不是算法方案交付物。
 
-需要周历的平台适配由平台操作人员在 Intake 时显式声明：
-
-```bash
-python -m harness intake-blackbox ... \
-  --platform-input api-wind-date-v1
-```
-
-上游不得在 Metadata 中增加 `platform_inputs`，也不得用随包日历代替平台提供的权威制品。
+Intake 不接收方案级输入声明。上游不得在 Metadata 中增加输入路径或平台控制字段，也不得用随包日历代替 DataBridge generation 中的权威文件。
 
 ### 1.4 交付不授予平台控制面权限
 
@@ -101,18 +95,17 @@ python -m harness intake-blackbox ... \
 
 ## 2. 统一 DataBridge 数据
 
-机器字段基线、三频文件、可选周历和 sample 用途统一见
+机器字段基线、四份标准文件和 sample 用途统一见
 [DataBridge V1 数据契约](../blackbox_v2/data_bridge_v1/README.md)；机器真值是
 `shared/blackbox_v2/data_bridge_v1_schema.json`，本 SOP 不复制 Schema、列数或校验脚本。
 
-上游和平台必须使用同一 DataBridge generation 与相同规范化日历摘要。三频或日历任一摘要
+上游和平台必须使用同一 DataBridge generation。四份文件任一摘要
 不同，结果差异先标记 `data_vintage_mismatch`；不得自行写 SQL、拼接数据源、修改 CSV、把
 `week_id` 当 ISO 周，或把下载逻辑写入交付脚本。正式运行只读取平台提供的只读 `--data-dir`。
 
 ## 3. 准备自测输入
 
-从 DataBridge 管理方取得 `/api/` 地址和只读凭据，在同一连续批次下载三频文件；依赖周历的
-方案同时下载 `api_wind_date.csv`。凭据只放在当前 shell，不进入 Git、交付包、日志或聊天记录。
+从 DataBridge 管理方取得 `/api/` 地址和只读凭据，在同一连续批次下载四份文件。凭据只放在当前 shell，不进入 Git、交付包、日志或聊天记录。
 
 ```bash
 export DATABRIDGE_API_BASE_URL="<DataBridge /api/ 地址>"
@@ -195,7 +188,7 @@ Metadata 必须是无 BOM 的 UTF-8 JSON。八个机器字段中已经包含 `na
 - `description` 必须是单段非空纯文本，最多 300 个字符，不得包含换行、HTML 或其他标记文本。
 - `name` 和 `description` 职责不同，不得用方案名代替算法说明，或把任一字段留给平台推测。
 - `task_type`、`horizon` 和 `target_rule` 必须来自上一节的同一行。
-- 除本节规定的 `description` 外，Metadata 不得增加 `platform_inputs`、`frequency`、输入路径、运行开关、可变阈值、特征列表或模型参数。
+- 除本节规定的 `description` 外，Metadata 不得增加输入路径、运行开关、可变阈值、特征列表或模型参数。
 
 ---
 
@@ -244,26 +237,20 @@ python {scheme_id}.py backtest \
 <data-dir>/daily_output.csv
 <data-dir>/weekly_output.csv
 <data-dir>/monthly_output.csv
-```
-
-- 同一次运行的三份文件属于同一份只读快照，运行期间不会被替换。
-- 平台始终提供三份文件；算法可以只读取当前方案实际需要的文件。
-- 不得因为未使用的文件存在而失败，也不要求主动解析未使用文件。
-- 三份文件的业务列只能是有限数值或空值。
-- 数据行数、列数、起止区间、业务值和空值都可以变化；算法必须按字段名选择实际消费列，并忽略未使用的新增列。
-- 不得假定固定行数、固定列数、固定终点或“文件最后一行就是当前 Request 截止点”。
-
-只有在平台为方案显式声明 `api-wind-date-v1` 时，同一 `--data-dir` 还会提供：
-
-```text
 <data-dir>/api_wind_date.csv
 ```
+
+- 同一次运行的四份文件属于同一份只读快照，运行期间不会被替换。
+- 平台始终提供四份文件；算法只读取当前方案实际需要的文件。
+- 不得因为未使用的文件存在而失败，也不要求主动解析未使用文件。
+- 三份因子文件的业务列只能是有限数值或空值。
+- 数据行数、列数、起止区间、业务值和空值都可以变化；算法必须按字段名选择实际消费列，并忽略未使用的新增列。
+- 不得假定固定行数、固定列数、固定终点或“文件最后一行就是当前 Request 截止点”。
 
 该文件固定为 `rdate,week_id` 两列；`rdate` 是升序、唯一的
 `YYYY-MM-DD`，`week_id` 是六位平台周键。算法可以用它按
 `weekly_cutoff_key` 查询平台周映射，但不得改写文件、连接数据库补全
-日历，或回退读取交付目录旁的同名文件。未声明该制品的方案仍只看到
-三频文件。
+日历，或回退读取交付目录旁的同名文件。
 
 `week_id` 只能作为不透明字符串键使用。算法不得将其解释为 ISO 周、
 不得假定连续、不得执行加减一，也不得保留内嵌日历、脚本同目录日历
@@ -429,7 +416,7 @@ python {scheme_id}.py backtest \
 
 最低自验范围：
 
-1. 三频真实数据和可选周历下载成功、无旧文件混用，并通过第 2–3 节 Schema、时间键和摘要检查；
+1. 四份真实数据下载成功、无旧文件混用，并通过第 2–3 节 Schema、时间键和摘要检查；
 2. Metadata、两个文件名、任务组合和 `name/description` 全部合法，delivery 中没有第三个文件；
 3. `--help`、`predict` 和 `backtest` 均可执行；成功时 stdout 为空，Result 数量、字段和输入顺序一致；
 4. 同一 Request 在 predict/backtest、不同批次切分、乱序和重复执行下结果一致，截止键之后的合法行不
@@ -450,8 +437,8 @@ python {scheme_id}.py backtest \
 提交前确认：
 
 - [ ] delivery 只有同名 `{scheme_id}.py + {scheme_id}.json`，Metadata 身份、任务组合和三个展示字段合法；
-- [ ] 没有 `platform_inputs`、平台审批字段、凭据、下载逻辑、网络/数据库访问或额外代码/模型/数据依赖；
-- [ ] 真实 DataBridge 输入通过校验并保存摘要；可选周历来自同批下载，但没有进入 delivery；
+- [ ] 没有平台输入声明、审批字段、凭据、下载逻辑、网络/数据库访问或额外代码/模型/数据依赖；
+- [ ] DataBridge 四文件输入通过校验并保存 generation 摘要，且没有进入 delivery；
 - [ ] 每个 Request 按自身 cutoff 独立截断，predict/backtest、分批、变序、重复和未来行隔离自验通过；
 - [ ] walk-forward 批内自证和第 6.4 节性能准入全部通过，`performance.json` 位于 delivery 目录外；
 - [ ] Result、退出码、stdout/stderr 和失败无 Output 行为符合第 7–8 节；

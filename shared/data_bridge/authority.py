@@ -396,6 +396,9 @@ def resolve_stable_databridge_current_authority(
         current = check_current_dataset(
             config,
             strict_read_only=True,
+            allow_legacy_three_file_current=(
+                allow_producer_period_bootstrap
+            ),
         )
     except (
         DataBridgeCurrentMissingError,
@@ -442,6 +445,12 @@ def resolve_stable_databridge_current_authority(
             current.dataset.files["monthly_output.csv"].keys
         ),
     }
+    calendar = current.dataset.frames.get("api_wind_date.csv")
+    if calendar is not None:
+        cutoff_keys["calendar_week_id_by_date"] = {
+            str(row.rdate): str(row.week_id)
+            for row in calendar.itertuples(index=False)
+        }
     publication_manifest = current.publication_manifest
     legacy_v1_period_fallback = (
         allow_legacy_v1_period_fallback

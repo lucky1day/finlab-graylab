@@ -46,14 +46,11 @@ from shared.blackbox_v2.requests import (
 from shared.blackbox_v2.snapshot import (
     BlackboxInputBundle,
     BlackboxSnapshot,
-    SNAPSHOT_FILENAMES,
     compose_blackbox_input_bundle,
 )
 from shared.calendar_service import get_calendar
-from shared.data_bridge.refresh import DataBridgeRefreshConfig, DataBridgeStore
 from shared.input_artifacts import (
-    capture_blackbox_platform_inputs_from_connection,
-    get_blackbox_generation_snapshot,
+    get_ready_blackbox_snapshot,
     open_blackbox_runtime_view,
     resolve_blackbox_input_cutoffs,
 )
@@ -92,7 +89,6 @@ class InputState:
     snapshot: BlackboxSnapshot
     request: BlackboxRequest
     bundle: BlackboxInputBundle | None = None
-    provenance: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -182,52 +178,8 @@ class BlackboxStaticGate(_BlackboxGate):
             Evidence("delivery_entries", sorted(delivery_entries)),
             Evidence("script_violations", violations),
             Evidence("metadata", asdict(metadata)),
-            Evidence("platform_inputs", list(cfg.platform_inputs)),
         ]
         return _finish(self.name, started_at, evidence, errors)
-
-
-class BlackboxInputGate(_BlackboxGate):
-    name = "input"
-
-    def _run(self, ctx: GateContext, started_at: str) -> GateResult:
-        state = _ensure_input_state(ctx, force=True)
-        manifest = json.loads(state.snapshot.manifest_path.read_text(encoding="utf-8"))
-        bundle = _input_bundle(state)
-        platform_files = {
-            artifact.filename: {
-                "artifact_id": artifact.artifact_id,
-                "provider_version": artifact.provider_version,
-                "row_count": artifact.row_count,
-                "column_count": len(artifact.columns),
-                "sha256": artifact.sha256,
-            }
-            for artifact in bundle.platform_input_artifacts
-        }
-        base_snapshot_files = {
-            name: {
-                "row_count": manifest["files"][name]["row_count"],
-                "column_count": len(
-                    manifest["files"][name]["columns"]
-                ),
-                "sha256": manifest["files"][name]["sha256"],
-            }
-            for name in SNAPSHOT_FILENAMES
-        }
-        evidence = [
-            *_bundle_evidence(bundle),
-            *(
-                Evidence(key, value)
-                for key, value in (state.provenance or {}).items()
-            ),
-            Evidence("data_schema_version", state.snapshot.schema_version),
-            Evidence("base_snapshot_files", base_snapshot_files),
-            Evidence("platform_input_files", platform_files),
-            Evidence("input_identity_manifest", bundle.identity_manifest),
-            Evidence("input_audit_manifest", bundle.audit_manifest),
-            Evidence("request", asdict(state.request)),
-        ]
-        return _finish(self.name, started_at, evidence, [])
 
 
 class BlackboxCompareGate(_BlackboxGate):
@@ -257,6 +209,13 @@ class BlackboxCompareGate(_BlackboxGate):
         # 结果直接进入 Harness evidence，不再保存第二份本地 JSON。
         evidence = [
             *_bundle_evidence(bundle),
+            Evidence("generation_id", state.snapshot.generation_id),
+            Evidence("runtime_profile", cfg.runtime_profile),
+            Evidence(
+                "environment_fingerprint",
+                _environment_fingerprint(ctx.project_root),
+            ),
+            Evidence("request", asdict(state.request)),
             Evidence("prediction_record", asdict(baseline)),
             Evidence("business_tables_written", False),
         ]
@@ -304,21 +263,17 @@ class BlackboxBacktestGate(_BlackboxGate):
             if operation is None or operation_errors:
                 return _blocked(self.name, started_at, operation_errors)
             state = _ensure_input_state(ctx)
-            provenance = state.provenance
-            if provenance is None:
-                raise ValueError("Blackbox input state has no DataBridge provenance")
-            generation_id = str(provenance.get("generation_id", "")).strip()
+            generation_id = str(state.snapshot.generation_id or "").strip()
             if not generation_id:
                 return _blocked(
                     self.name,
                     started_at,
                     ["Blackbox persisted backtest requires DataBridge generation_id evidence"],
                 )
-            provenance_errors = _persisted_backtest_provenance_errors(
+            provenance_errors = _persisted_backtest_identity_errors(
                 cfg,
                 passed_run,
                 state,
-                provenance,
                 environment_fingerprint=_environment_fingerprint(ctx.project_root),
             )
             if provenance_errors:
@@ -601,7 +556,6 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
 
 BLACKBOX_GATES: dict[str, type[Gate]] = {
     "static": BlackboxStaticGate,
-    "input": BlackboxInputGate,
     "compare": BlackboxCompareGate,
     "backtest": BlackboxBacktestGate,
     "shadow-register": BlackboxShadowRegisterGate,
@@ -655,49 +609,27 @@ def _open_runtime_input(ctx: GateContext, state: InputState):
 
 
 def _runner_bundle_kwargs(bundle: BlackboxInputBundle) -> dict[str, Any]:
-    kwargs: dict[str, Any] = {
-        "data_snapshot_id": bundle.combined_snapshot_id,
-        "platform_input_ids": bundle.platform_input_ids,
-    }
-    if bundle.platform_input_ids:
-        kwargs.update(
-            {
-                "parent_data_snapshot_id": bundle.parent_snapshot_id,
-                "input_identity_manifest": bundle.identity_manifest,
-                "input_audit_manifest": bundle.audit_manifest,
-            }
-        )
-    return kwargs
+    return {"data_snapshot_id": bundle.combined_snapshot_id}
 
 
 def _bundle_evidence(bundle: BlackboxInputBundle) -> list[Evidence]:
     return [
         Evidence("data_snapshot_id", bundle.combined_snapshot_id),
         Evidence("parent_data_snapshot_id", bundle.parent_snapshot_id),
-        Evidence("platform_input_ids", list(bundle.platform_input_ids)),
-        Evidence("platform_input_hashes", _platform_hashes(bundle)),
     ]
 
 
-def _platform_hashes(bundle: BlackboxInputBundle) -> dict[str, str]:
-    return {
-        artifact.artifact_id: artifact.sha256
-        for artifact in bundle.platform_input_artifacts
-    }
-
-
-def _ensure_input_state(ctx: GateContext, *, force: bool = False) -> InputState:
+def _ensure_input_state(ctx: GateContext) -> InputState:
     state_key = "blackbox_v2.input_state"
     existing = ctx.runtime_state.get(state_key)
-    if not force and existing is not None:
+    if existing is not None:
         if not isinstance(existing, InputState):
             raise ValueError("Blackbox runtime input state is invalid")
         return existing
-    cfg = _config(ctx)
-    metadata = _metadata(cfg)
+    metadata = _metadata(_config(ctx))
     engine = ctx.engine_factory() if ctx.engine_factory is not None else create_default_engine()
     try:
-        snapshot = get_blackbox_generation_snapshot(
+        snapshot = get_ready_blackbox_snapshot(
             snapshot_date=ctx.predict_date,
             require_fresh=False,
         )
@@ -727,97 +659,17 @@ def _ensure_input_state(ctx: GateContext, *, force: bool = False) -> InputState:
                 calendar=calendar,
                 cutoffs=cutoffs,
             )
-        platform_input_ids = tuple(cfg.platform_inputs)
-        if platform_input_ids:
-            with engine.connect() as connection:
-                connection.exec_driver_sql(
-                    "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY"
-                )
-                try:
-                    platform_input_artifacts = (
-                        capture_blackbox_platform_inputs_from_connection(
-                            platform_input_ids,
-                            connection=connection,
-                            weekly_cutoff_key=cutoffs.weekly_cutoff_key,
-                        )
-                    )
-                finally:
-                    connection.rollback()
-        else:
-            platform_input_artifacts = ()
     finally:
         if hasattr(engine, "dispose"):
             engine.dispose()
-    bundle = compose_blackbox_input_bundle(
-        snapshot,
-        platform_input_ids=platform_input_ids,
-        platform_input_artifacts=platform_input_artifacts,
-    )
-    provenance = _data_bridge_provenance(ctx, snapshot)
+    bundle = compose_blackbox_input_bundle(snapshot)
     state = InputState(
         snapshot=snapshot,
         request=request,
         bundle=bundle,
-        provenance=provenance,
     )
     ctx.runtime_state[state_key] = state
     return state
-
-
-def _data_bridge_provenance(ctx: GateContext, snapshot: BlackboxSnapshot) -> dict[str, str]:
-    # DataBridge state 由 refresh 生产者按 runtime root 解析；此处必须复用同一 canonical
-    # 入口，不得复制其 development_default。不可变 release 中 backtest_artifacts/ 不存在。
-    databridge_config = DataBridgeRefreshConfig.from_env()
-    state_path = DataBridgeStore(
-        data_root=databridge_config.data_root,
-        runtime_root=databridge_config.runtime_root,
-    ).state_path
-    try:
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-        manifest = json.loads(snapshot.manifest_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"Blackbox all-stage requires readable DataBridge provenance: {exc}") from exc
-    required = ("generation_id", "refresh_date", "refreshed_at", "business_digest")
-    missing = [key for key in required if not isinstance(state.get(key), str) or not state[key].strip()]
-    if missing:
-        raise ValueError(f"DataBridge provenance is missing fields: {missing}")
-    snapshot_identity = {
-        "generation_id": snapshot.generation_id,
-        "refresh_date": snapshot.refresh_date,
-        "business_digest": snapshot.business_digest,
-    }
-    identity_mismatches = [
-        key
-        for key, expected in snapshot_identity.items()
-        if not expected or state.get(key) != expected
-    ]
-    if identity_mismatches:
-        raise ValueError(
-            "DataBridge current identity changed after Harness snapshot: "
-            f"{identity_mismatches}"
-        )
-    state_files = state.get("files")
-    manifest_files = manifest.get("files")
-    if not isinstance(state_files, dict) or not isinstance(manifest_files, dict):
-        raise ValueError("DataBridge provenance file evidence is missing")
-    mismatches = [
-        name
-        for name in SNAPSHOT_FILENAMES
-        if not isinstance(state_files.get(name), dict)
-        or not isinstance(manifest_files.get(name), dict)
-        or state_files[name].get("sha256") != manifest_files[name].get("sha256")
-    ]
-    if mismatches:
-        raise ValueError(f"DataBridge generation does not match Harness snapshot: {mismatches}")
-    cfg = _config(ctx)
-    return {
-        "generation_id": str(state["generation_id"]),
-        "refresh_date": str(state["refresh_date"]),
-        "refreshed_at": str(state["refreshed_at"]),
-        "business_digest": str(state["business_digest"]),
-        "runtime_profile": str(cfg.runtime_profile),
-        "environment_fingerprint": _environment_fingerprint(ctx.project_root),
-    }
 
 
 def cleanup_runtime_input(ctx: GateContext) -> None:
@@ -907,11 +759,10 @@ def _reload_pinned_blackbox_config(cfg: SchemeConfig, *, phase: str) -> SchemeCo
     return current
 
 
-def _persisted_backtest_provenance_errors(
+def _persisted_backtest_identity_errors(
     cfg: SchemeConfig,
     passed_run: PassedAllRun,
     state: InputState,
-    provenance: dict[str, str],
     *,
     environment_fingerprint: str,
 ) -> list[str]:
@@ -923,7 +774,7 @@ def _persisted_backtest_provenance_errors(
     }
     current = {
         "data_snapshot_id": _input_bundle(state).combined_snapshot_id,
-        "generation_id": str(provenance.get("generation_id", "")).strip() or None,
+        "generation_id": str(state.snapshot.generation_id or "").strip() or None,
         "runtime_profile": cfg.runtime_profile,
         "environment_fingerprint": environment_fingerprint,
     }
@@ -937,18 +788,6 @@ def _persisted_backtest_provenance_errors(
         errors.append(
             "persisted backtest runtime_profile must match frozen profile: "
             f"current={cfg.runtime_profile}, frozen={DEFAULT_RUNTIME_PROFILE.name}"
-        )
-    provenance_profile = str(provenance.get("runtime_profile", "")).strip() or None
-    if provenance_profile != cfg.runtime_profile:
-        errors.append(
-            "persisted backtest runtime_profile provenance mismatch: "
-            f"DataBridge={provenance_profile}, config={cfg.runtime_profile}"
-        )
-    provenance_environment = str(provenance.get("environment_fingerprint", "")).strip() or None
-    if provenance_environment != environment_fingerprint:
-        errors.append(
-            "persisted backtest environment_fingerprint provenance mismatch: "
-            f"DataBridge={provenance_environment}, current={environment_fingerprint}"
         )
     return errors
 
@@ -1016,12 +855,12 @@ def _verify_passed_all(engine, cfg: SchemeConfig) -> PassedAllRun:
             f"row_count={len(gate_rows)}, duplicates={duplicates}, "
             f"missing={missing}, extra={extra}, non_passed={non_passed}"
         )
-    input_summaries = [
-        summary for name, _status, summary in gate_rows if name == "input"
+    compare_summaries = [
+        summary for name, _status, summary in gate_rows if name == "compare"
     ]
-    if len(input_summaries) != 1:
-        raise ValueError("passed all-stage run has no unique input evidence")
-    evidence = _decode_harness_evidence(input_summaries[0])
+    if len(compare_summaries) != 1:
+        raise ValueError("passed all-stage run has no unique compare evidence")
+    evidence = _decode_harness_evidence(compare_summaries[0])
     required_evidence = (
         "data_snapshot_id",
         "generation_id",
@@ -1036,7 +875,7 @@ def _verify_passed_all(engine, cfg: SchemeConfig) -> PassedAllRun:
     ]
     if missing_evidence:
         raise ValueError(
-            "passed all-stage input evidence is incomplete: "
+            "passed all-stage compare evidence is incomplete: "
             f"missing={missing_evidence}"
         )
     return PassedAllRun(

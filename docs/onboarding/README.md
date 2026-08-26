@@ -25,7 +25,7 @@
 | 机器标识 | `runtime_type: native_adapter` | `runtime_type: blackbox_v2` |
 | 管理定位 | 既有身份的存量维护 | 后续新增方案唯一入口 |
 | 上游形态 | 仓库内 `config + predict + core` | 一个 `.py` 和一个 `.json` |
-| 输入 | `shared.input_artifacts` 从当前权威 `bond_db` 按 `feature_date` 截止构建；source-backed 身份连接同一实例和数据库，只使用现有 SELECT-only 身份 | `data_bridge_current` 三频 Snapshot；自然运行使用当前 DataBridge generation，历史补缺严格绑定冻结 authority |
+| 输入 | `shared.input_artifacts` 从当前权威 `bond_db` 按 `feature_date` 截止构建；source-backed 身份连接同一实例和数据库，只使用现有 SELECT-only 身份 | `data_bridge_current` 四文件 Snapshot；自然运行使用当前 DataBridge generation，历史补缺严格绑定冻结 authority |
 | 执行 | import adapter 子进程 | 受控 CLI 子进程 |
 | 生产权限 | 保持既有方案的独立状态 | 每个方案必须单独完成生产准备和专项授权 |
 
@@ -61,7 +61,7 @@
 ## Harness 当前工作流
 
 - `python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all` 按 `runtime_type` 执行技术 Gate：
-  Blackbox V2 为三段 `static → input → compare`；Native V1 为四段
+  Blackbox V2 为两段 `static → compare`；Native V1 为四段
   `static → dry-run → compare → backtest`。Native DryRunGate 同时核验该次真实执行的共享 builder
   receipt 与实际主/辅助输入 artifact，包括来源、data version、截止、SHA-256、行数、必需列和从可信根逐级无 symlink 的路径；
   不再由独立 InputGate 按另一套通用窗口重复构建。该流程不访问 Backend。
@@ -110,7 +110,7 @@ export PYTHONDONTWRITEBYTECODE=1
 |---|---|---|---|
 | 改动任意方案配置后 | active discovery、运行时身份和两文件入口 | `python -m pytest -q tests/test_active_scheme_contracts.py tests/test_config_schema.py tests/test_onboarding_policy.py` | 全部通过 |
 | 收到或修订 Blackbox V2 交付后 | 通用 Contract、Intake 与 discovery | `python -m pytest -q tests/test_blackbox_v2_contracts.py tests/test_blackbox_v2_intake.py tests/test_blackbox_v2_discovery.py` | 全部通过。具体交付只由本次 Intake/Gate 验收，不为已冻结交付永久复制专项 pytest；交付自身的截止隔离与跨批无状态属上游义务 |
-| 修改 Blackbox 平台适配后 | 输入 cutoff、runner、三段自动 Gate及独立副作用 Gate | `python -m pytest -q tests/test_data_bridge_current.py tests/test_blackbox_v2_runner.py tests/test_blackbox_v2_harness_gates.py` | 全部通过 |
+| 修改 Blackbox 平台适配后 | 输入 cutoff、runner、两段自动 Gate及独立副作用 Gate | `python -m pytest -q tests/test_data_bridge_current.py tests/test_blackbox_v2_runner.py tests/test_blackbox_v2_harness_gates.py` | 全部通过 |
 | 修改 Registry、API 或前端后 | active 方案可见性、actual join、Dashboard 基础状态与 Harness HTTP 验收 | `python -m pytest -q tests/test_repository_registry.py tests/test_backend_api.py tests/test_factor_lab_dashboard_api.py tests/test_dashboard_gate.py` | 全部通过 |
 | 修改 Native 存量适配后 | 当前数据库输入、执行器和 source isolation | `python -m pytest -q tests/test_native_input_artifacts.py tests/test_native_executor.py tests/test_source_runner_database_isolation.py` | 全部通过；不得修改 Native core 算法口径 |
 

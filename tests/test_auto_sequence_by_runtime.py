@@ -23,7 +23,7 @@ def test_auto_sequence_is_exact_for_each_runtime() -> None:
             "compare",
             "backtest",
         ],
-        "blackbox_v2": ["static", "input", "compare"],
+        "blackbox_v2": ["static", "compare"],
     }
     for runtime_type, sequence in expected.items():
         assert sequence_for_stage("all", runtime_type=runtime_type) == sequence

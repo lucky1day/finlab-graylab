@@ -79,3 +79,45 @@ def test_safe_error_text_is_preserved() -> None:
 
     assert "error" in payload
     assert payload["status"] == "failed"
+
+
+def test_publish_ready_gate_does_not_revalidate_published_csv() -> None:
+    from scripts import refresh_data_bridge_current as script
+
+    result = SimpleNamespace(
+        published=True,
+        rounds_completed=2,
+        duration_sec=1.0,
+        state={
+            "generation_id": "generation-ready",
+            "refresh_date": "2026-08-11",
+            "business_digest": "b" * 64,
+        },
+    )
+    config = SimpleNamespace()
+    with (
+        patch.object(script, "_try_write_blocked_gate", return_value=True),
+        patch.object(script, "refresh_current", return_value=result),
+        patch.object(
+            script,
+            "check_current_dataset",
+            side_effect=AssertionError("published CSV must not be revalidated"),
+        ) as check_current,
+        patch.object(script, "_write_ready_gate") as write_ready,
+    ):
+        exit_code, payload = script._run_refresh_with_config(
+            "publish",
+            refresh_date="2026-08-11",
+            config=config,
+            expected_feature_date="2026-08-10",
+        )
+
+    assert exit_code == 0
+    assert payload["status"] == "ok"
+    check_current.assert_not_called()
+    write_ready.assert_called_once_with(
+        config,
+        refresh_date="2026-08-11",
+        expected_feature_date="2026-08-10",
+        state=result.state,
+    )

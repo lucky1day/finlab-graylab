@@ -19,7 +19,7 @@ AUTO_SEQUENCE = ["static", "dry-run", "compare", "backtest"]
 # Blackbox Compare 的一次 predict 与原 dry-run 参数相同；交付自身的确定性、批次与
 # predict/backtest 一致性由上游契约负责，平台不再重复抽样认证。Native Compare 是
 # source benchmark 对比，因此仍保留 dry-run 和 no-persist backtest。
-BLACKBOX_AUTO_SEQUENCE = ["static", "input", "compare"]
+BLACKBOX_AUTO_SEQUENCE = ["static", "compare"]
 
 
 def sequence_for_stage(

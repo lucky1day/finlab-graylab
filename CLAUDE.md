@@ -94,7 +94,7 @@ python -m harness intake-blackbox --delivery-dir <two-file-dir> --project-root .
 # 两种运行时共用的自动 Gate 编排
 python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
 # 自动段按 runtime_type 分派（fail-fast，退出码 0/1/2）：
-#   Blackbox V2：static → input → compare
+#   Blackbox V2：static → compare
 #   Native V1  ：static → dry-run（含实际输入合同）→ compare → backtest
 # 副作用段不在 all 内，必须以精确独立命令执行且 fail-closed
 ```

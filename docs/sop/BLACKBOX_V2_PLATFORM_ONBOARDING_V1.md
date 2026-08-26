@@ -28,7 +28,7 @@
 执行 Intake 前确认：
 
 - 没有符号链接、目录、模型、辅助模块或额外配置；
-- Metadata 提供合法的 `name` 和 `description`，且不含平台字段 `platform_inputs`；
+- Metadata 提供合法的 `name` 和 `description`，且不含平台输入或控制字段；
 - trial 的 base ID 和 composite Registry ID 未占用；
 - 同一算法已有 Native 实现时使用独立 trial ID，不覆盖既有身份；
 - 上游自测数据、性能报告和交接材料没有混入两文件目录。
@@ -41,18 +41,17 @@ shasum -a 256 <delivery-dir>/{scheme_id}.py <delivery-dir>/{scheme_id}.json
 
 ### 1.2 执行 Intake
 
-需要平台周历的方案执行：
+所有方案统一执行：
 
 ```bash
 python -m harness intake-blackbox \
   --delivery-dir <delivery-dir> \
   --project-root . \
   --runtime-profile blackbox-v2-v1 \
-  --data-schema-version data-bridge-v1 \
-  --platform-input api-wind-date-v1
+  --data-schema-version data-bridge-v1
 ```
 
-不需要平台注册输入时省略 `--platform-input`。Intake 成功后只应生成：
+Intake 不再接收方案级输入声明。成功后只应生成：
 
 ```text
 schemes/{scheme_id}/
@@ -74,8 +73,7 @@ status: paused
 version_status: draft
 ```
 
-声明周历时还必须有 `platform_inputs: [api-wind-date-v1]`。正式新交付的名称、说明、任务和
-期限只能来自 Metadata，生成配置不得新增 `display_name` 覆盖。Intake 必须原子保存交付并按
+正式新交付的名称、说明、任务和期限只能来自 Metadata，生成配置不得新增 `display_name` 覆盖。Intake 必须原子保存交付并按
 base `scheme_id` 拒绝覆盖既有目录，禁止手工拼目录。
 
 Metadata 字段、任务组合和文本约束不在本文维护副本，见
@@ -112,7 +110,7 @@ conda run --no-capture-output -n bond_factor_lab_service \
     --date <generation-refresh-date>
 ```
 
-结果必须为 `status=ok`，并记录 generation、refresh date、business digest、三频文件摘要和范围。
+结果必须为 `status=ok`，并记录 generation、refresh date、business digest、四份文件摘要和范围。
 该命令只读，不发布 artifact，也不授予自然调度权。
 
 - 技术 Onboarding 使用显式选定且完整校验通过的 generation；
@@ -128,9 +126,8 @@ Schema、允许新增列和 business digest 规则见
 
 ```text
 generation_id + refresh_date
-三频文件 SHA-256
-api_wind_date.csv canonical SHA-256（如声明）
-combined_snapshot_id
+四份标准文件 SHA-256
+data_snapshot_id
 Request 七字段与 cutoff 映射
 ```
 
@@ -146,14 +143,11 @@ Intake 目录外的 `{scheme_id}.performance.json` 必须满足
 
 ## 3. 快照与 Request
 
-Input Gate 必须记录 DataBridge 父快照、声明的平台制品、父/组合 snapshot ID、generation、business
-digest、环境指纹、各文件摘要和 Request。平台注册输入由调用方只读数据库连接捕获；不得写入
-DataBridge generation，也不得形成 Native 二级 generation。
+DataBridge producer 发布 generation 时，直接使用本次已经验证的内存数据构建一次 ready snapshot；不得重新读取或再次校验 current CSV。方案入库和调度只读取该 ready receipt，在 Compare 证据中记录 Snapshot ID、generation、business digest、环境指纹和 Request；缺失即阻断，不代建、不修复、不触发 DataBridge 验证。
 
-generation 首次发布时完成三频 CSV 的完整解析、schema、摘要和 cutoff 校验；缓存命中只核验现有 receipt、
-manifest 内容身份和普通文件边界，不再为每个方案读取、哈希或扫描三频 CSV，也不新增第二套缓存协议。运行视图
-必须从本次 SHA 校验已经读取的同一份内存字节只扫描首列时间键，并与 receipt cutoff 精确比较。运行视图仍必须
-是私有、只读的普通文件，物化时源内容只读取一次，写入目标后不为摘要再次读取。
+新版 receipt 不兼容沿用旧 receipt。release 切换后必须先由同一 release 完成一次 DataBridge publish 和 ready gate，再允许 Harness、回测或自然调度消费；不得在方案流程中补建或升级 receipt。
+
+运行视图仅把 producer 封存文件稳定复制为本次子进程私有的只读普通文件；不重复哈希、解析或扫描 CSV。运行结束前后仍校验私有文件未被替换或修改。
 正常结束后清理；无法确认子进程终止时只允许进入受控 debris recovery，不得立即删除可能仍在读取的目录。
 报告中的临时绝对路径不能用于回放。
 
@@ -173,7 +167,7 @@ conda run --no-capture-output -n bond_factor_lab_service \
     --algo-env forecast_env_blackbox_v1
 ```
 
-固定顺序为 `static → input → compare`。Compare 只执行平台输入校验与一次有效冒烟预测；非法 Request、退出码和失败无 Output 由上游交付契约负责，平台不重复认证。任一 Gate 失败即 fail-fast，不得进入 shadow。
+固定顺序为 `static → compare`。Compare 只绑定 producer-ready snapshot、Request 并执行一次有效冒烟预测；非法 Request、退出码和失败无 Output 由上游交付契约负责，平台不重复认证。任一 Gate 失败即 fail-fast，不得进入 shadow。
 
 平台只验证自身边界：交付和 Metadata、输入捕获、Request/Result 合同、平台喂入内容及一次冒烟执行。
 重复执行确定性、predict/backtest 等价、跨批顺序一致和逐 Request 截止隔离由上游契约负责，平台不
@@ -184,7 +178,7 @@ conda run --no-capture-output -n bond_factor_lab_service \
 Gate 的精确职责见[Harness 架构](../architecture/HARNESS_ARCHITECTURE.md)。继续前必须确认：
 
 - current exact version 的 latest `all` run 为 `passed`；
-- `static/input/compare` 三项均已持久化；
+- `static/compare` 两项均已持久化；
 - generation、combined snapshot、环境指纹和 Request 身份一致；
 - 没有写入 `t_scheme_runs`、prediction、backtest、active Registry 或前端状态。
 
@@ -192,12 +186,12 @@ Gate 的精确职责见[Harness 架构](../architecture/HARNESS_ARCHITECTURE.md)
 `running` 以 fail-early，Gate 结束后在一个事务中批量写结果并完成 run；commit ACK 不确定时用新连接精确读回 run 状态、Gate multiset 和 summary，任一无法确认的持久化失败都阻断后续
 副作用。Dashboard payload 不含 exact version，不能替代生命周期和数据库版本证据。
 
-三段 evidence profile 不兼容读取旧四段方案报告。升级前已通过四段 `all`、但尚需执行后续副作用的
-exact version，先用当前三段流程重跑一次；不得用旧 `report_uri` 或本地 `input_state.json` 补证。
+两段 evidence profile 不兼容读取旧流程报告。升级前已有旧 `all`、但尚需执行后续副作用的
+exact version，先用当前两段流程重跑一次；不得用旧 `report_uri` 或本地 `input_state.json` 补证。
 
 ## 5. Shadow 登记
 
-执行前重新核对 exact run、三 Gate、身份冲突和业务表前置状态，然后运行：
+执行前重新核对 exact run、两个 Gate、身份冲突和业务表前置状态，然后运行：
 
 ```bash
 conda run --no-capture-output -n bond_factor_lab_service \
@@ -323,7 +317,7 @@ python -m harness gate lifecycle-reconcile --scheme-id {scheme_id}
 ## 9. 完成条件
 
 - [ ] 两文件 Intake、Metadata 和 canonical paused/draft 配置一致；
-- [ ] exact generation、combined snapshot、Request cutoff、环境指纹和三 Gate 证据一致；
+- [ ] exact generation、combined snapshot、Request cutoff、环境指纹和两个 Gate 证据一致；
 - [ ] Shadow 后 Registry paused、业务表零增量且 active API/scheduler 不可见；
 - [ ] 如执行 backtest/批量复用，授权、`gray_target_start`、日期重建和零重叠均通过；
 - [ ] 如执行 activation/gray 写入，exact version、Registry、journal 和 insert-only readback 一致；

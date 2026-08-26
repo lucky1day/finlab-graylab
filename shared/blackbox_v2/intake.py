@@ -3,13 +3,9 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
-from collections.abc import Sequence
 from pathlib import Path
 
 from shared.blackbox_v2.contracts import BlackboxMetadata, load_metadata
-from shared.blackbox_v2.platform_input_registry import (
-    normalize_platform_input_ids,
-)
 from shared.task_specs import PERIOD_AVERAGE_TASK_TYPES
 
 
@@ -27,14 +23,8 @@ def intake_delivery(
     schemes_root: str | Path,
     runtime_profile: str = "blackbox-v2-v1",
     data_schema_version: str = "data-bridge-v1",
-    platform_inputs: Sequence[str] | None = None,
 ) -> Path:
     """Atomically preserve a two-file delivery and generate its platform-owned config."""
-    normalized_platform_inputs = (
-        ()
-        if platform_inputs is None
-        else normalize_platform_input_ids(platform_inputs)
-    )
     source = Path(delivery_dir).resolve()
     if not source.is_dir():
         raise ValueError(f"delivery directory does not exist: {source}")
@@ -76,7 +66,6 @@ def intake_delivery(
                 metadata,
                 runtime_profile=runtime_profile,
                 data_schema_version=data_schema_version,
-                platform_inputs=normalized_platform_inputs,
             ),
             encoding="utf-8",
         )
@@ -94,25 +83,18 @@ def _config_text(
     *,
     runtime_profile: str,
     data_schema_version: str,
-    platform_inputs: tuple[str, ...] = (),
 ) -> str:
     cron = (
         PERIOD_AVERAGE_SCHEDULE
         if metadata.task_type in PERIOD_AVERAGE_TASK_TYPES
         else SCHEDULES[metadata.frequency]
     )
-    platform_input_text = ""
-    if platform_inputs:
-        platform_input_text = "platform_inputs:\n" + "".join(
-            f"  - {artifact_id}\n" for artifact_id in platform_inputs
-        )
     return (
         f"scheme_id: {metadata.scheme_id}\n"
         "runtime_type: blackbox_v2\n"
         "input_source: data_bridge_current\n"
         f"runtime_profile: {runtime_profile}\n"
         f"data_schema_version: {data_schema_version}\n"
-        f"{platform_input_text}"
         "status: paused\n"
         "version_status: draft\n"
         "schedule:\n"

@@ -16,11 +16,14 @@ EXPECTED_FILENAMES = (
     "daily_output.csv",
     "weekly_output.csv",
     "monthly_output.csv",
+    "api_wind_date.csv",
 )
+LEGACY_THREE_FILENAMES = EXPECTED_FILENAMES[:3]
 TIME_KEY_BY_FILE = {
     "daily_output.csv": "date",
     "weekly_output.csv": "week_id",
     "monthly_output.csv": "month_id",
+    "api_wind_date.csv": "rdate",
 }
 
 
@@ -94,12 +97,46 @@ def validate_dataset(
     previous_keys: Mapping[str, set[str] | frozenset[str]] | None = None,
     continuity_cutoffs: Mapping[str, object] | None = None,
 ) -> ValidatedDataBridgeDataset:
+    return _validate_dataset(
+        frames,
+        schema_path=schema_path,
+        filenames=EXPECTED_FILENAMES,
+        expected_daily_date=expected_daily_date,
+        previous_keys=previous_keys,
+        continuity_cutoffs=continuity_cutoffs,
+    )
+
+
+def validate_legacy_three_file_dataset(
+    frames: Mapping[str, pd.DataFrame],
+    *,
+    schema_path: str | Path,
+) -> ValidatedDataBridgeDataset:
+    """仅用于把已验证的旧三文件 current 平滑升级为四文件 generation。"""
+    return _validate_dataset(
+        frames,
+        schema_path=schema_path,
+        filenames=LEGACY_THREE_FILENAMES,
+    )
+
+
+def _validate_dataset(
+    frames: Mapping[str, pd.DataFrame],
+    *,
+    schema_path: str | Path,
+    filenames: tuple[str, ...],
+    expected_daily_date: str | None = None,
+    previous_keys: Mapping[str, set[str] | frozenset[str]] | None = None,
+    continuity_cutoffs: Mapping[str, object] | None = None,
+) -> ValidatedDataBridgeDataset:
     schema = json.loads(Path(schema_path).read_text(encoding="utf-8"))
     expected_files = schema.get("files")
     if not isinstance(expected_files, dict) or set(expected_files) != set(EXPECTED_FILENAMES):
-        raise DataBridgeValidationError("DataBridge schema must define exactly three files")
-    if set(frames) != set(EXPECTED_FILENAMES):
-        raise DataBridgeValidationError("DataBridge dataset must contain exactly three files")
+        raise DataBridgeValidationError("DataBridge schema must define exactly four files")
+    if set(frames) != set(filenames):
+        raise DataBridgeValidationError(
+            f"DataBridge dataset must contain exactly {len(filenames)} files"
+        )
     normalized_continuity_cutoffs: dict[str, str] | None = None
     if continuity_cutoffs is not None:
         if previous_keys is None:
@@ -107,14 +144,14 @@ def validate_dataset(
                 "DataBridge continuity cutoffs require previous keys"
             )
         if (
-            set(continuity_cutoffs) != set(EXPECTED_FILENAMES)
-            or set(previous_keys) != set(EXPECTED_FILENAMES)
+            set(continuity_cutoffs) != set(previous_keys)
+            or not set(previous_keys).issubset(filenames)
         ):
             raise DataBridgeValidationError(
-                "DataBridge continuity cutoffs must define exactly three files"
+                "DataBridge continuity cutoffs must match the previous files"
             )
         normalized_continuity_cutoffs = {}
-        for filename in EXPECTED_FILENAMES:
+        for filename in continuity_cutoffs:
             cutoff = _normalize_key(
                 filename,
                 continuity_cutoffs[filename],
@@ -132,7 +169,7 @@ def validate_dataset(
     validated_frames: dict[str, pd.DataFrame] = {}
     profiles: dict[str, DataBridgeFileProfile] = {}
     dataset_hash = hashlib.sha256()
-    for filename in EXPECTED_FILENAMES:
+    for filename in filenames:
         frame = frames[filename].copy()
         columns = list(frame.columns)
         baseline_columns = list(expected_files[filename].get("columns", []))
@@ -170,7 +207,10 @@ def validate_dataset(
                 _normalize_key(filename, value)
                 for value in previous_keys[filename]
             }
-            if normalized_continuity_cutoffs is not None:
+            if (
+                normalized_continuity_cutoffs is not None
+                and filename != "api_wind_date.csv"
+            ):
                 cutoff = normalized_continuity_cutoffs[filename]
                 required_previous = {
                     key
@@ -193,6 +233,24 @@ def validate_dataset(
                     "daily_output.csv latest date "
                     f"{normalized_keys[-1]} is later than feature cutoff {expected}"
                 )
+        if filename == "api_wind_date.csv":
+            if columns != ["rdate", "week_id"]:
+                raise DataBridgeValidationError(
+                    "api_wind_date.csv columns must be exactly rdate,week_id"
+                )
+            if expected_daily_date:
+                expected = date.fromisoformat(expected_daily_date).isoformat()
+                if expected not in key_set:
+                    raise DataBridgeValidationError(
+                        "api_wind_date.csv does not cover expected daily date "
+                        f"{expected}"
+                    )
+            week_ids = [
+                _normalize_key("weekly_output.csv", value)
+                for value in frame["week_id"].tolist()
+            ]
+            frame["week_id"] = week_ids
+            frame["rdate"] = normalized_keys
 
         business_hash = hashlib.sha256("\n".join(canonical_rows).encode("utf-8")).hexdigest()
         rendered = frame.to_csv(index=False, lineterminator="\n").encode("utf-8")
@@ -237,9 +295,35 @@ def read_dataset_directory(
     *,
     allowed_sidecar_filenames: frozenset[str] = frozenset(),
 ) -> dict[str, pd.DataFrame]:
+    return _read_dataset_directory(
+        directory,
+        filenames=EXPECTED_FILENAMES,
+        allowed_sidecar_filenames=allowed_sidecar_filenames,
+    )
+
+
+def read_legacy_three_file_directory(
+    directory: str | Path,
+    *,
+    allowed_sidecar_filenames: frozenset[str] = frozenset(),
+) -> dict[str, pd.DataFrame]:
+    """读取旧三文件 current；只供一次性 generation 升级校验。"""
+    return _read_dataset_directory(
+        directory,
+        filenames=LEGACY_THREE_FILENAMES,
+        allowed_sidecar_filenames=allowed_sidecar_filenames,
+    )
+
+
+def _read_dataset_directory(
+    directory: str | Path,
+    *,
+    filenames: tuple[str, ...],
+    allowed_sidecar_filenames: frozenset[str],
+) -> dict[str, pd.DataFrame]:
     root = Path(directory)
     entries = {path.name for path in root.iterdir()} if root.is_dir() else set()
-    expected_entries = set(EXPECTED_FILENAMES) | set(
+    expected_entries = set(filenames) | set(
         allowed_sidecar_filenames
     )
     if entries != expected_entries:
@@ -248,7 +332,7 @@ def read_dataset_directory(
             f"{sorted(expected_entries)}"
         )
     frames: dict[str, pd.DataFrame] = {}
-    for filename in EXPECTED_FILENAMES:
+    for filename in filenames:
         path = root / filename
         try:
             with path.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -270,7 +354,7 @@ def _normalize_key(filename: str, value: object) -> str:
     if pd.isna(value) or not str(value).strip():
         raise DataBridgeValidationError(f"{TIME_KEY_BY_FILE[filename]} must not be empty")
     text = str(value).strip()
-    if filename == "daily_output.csv":
+    if filename in {"daily_output.csv", "api_wind_date.csv"}:
         try:
             parsed = pd.to_datetime(text, errors="raise")
         except (TypeError, ValueError) as exc:

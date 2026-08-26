@@ -7,9 +7,6 @@ from typing import Any
 from scheduler.deployment_scope import filter_schemes_for_configured_target
 from shared.blackbox_v2.versioning import compute_blackbox_config_hash
 from shared.scheme_lifecycle_state import read_lifecycle_state
-from shared.blackbox_v2.platform_input_registry import (
-    normalize_platform_input_ids,
-)
 from shared.scheme_config_loader import load_yaml_mapping
 from shared.scheme_config_schema import validate_config
 from shared.versioning import (
@@ -63,7 +60,6 @@ class SchemeConfig:
     environment_fingerprint: str | None
     data_snapshot_id: str | None
     input_source: str = "legacy_db"
-    platform_inputs: tuple[str, ...] = ()
 
 
 def _require_mapping(value: Any, path: Path) -> dict[str, Any]:
@@ -157,7 +153,6 @@ def _load_declared_scheme_config(config_path: Path) -> SchemeConfig:
         environment_fingerprint=None,
         data_snapshot_id=None,
         input_source=str(raw.get("input_source", "legacy_db")),
-        platform_inputs=(),
     )
 
 
@@ -217,11 +212,6 @@ def _load_blackbox_config(config_path: Path, raw: dict[str, Any], schedule_raw: 
         environment_fingerprint=None,
         data_snapshot_id=None,
         input_source=str(raw["input_source"]),
-        platform_inputs=(
-            normalize_platform_input_ids(raw["platform_inputs"])
-            if "platform_inputs" in raw
-            else ()
-        ),
     )
 
 

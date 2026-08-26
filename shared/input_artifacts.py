@@ -14,13 +14,13 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
 import pandas as pd
 
 from shared import data_service as _data_service
 from shared.artifact_paths import BACKTEST_ARTIFACT_ROOT, RUNTIME_INPUT_ROOT, safe_path_part
-from shared.blackbox_v2 import platform_inputs as _platform_inputs
 from shared.blackbox_v2.snapshot import (
     SNAPSHOT_FILENAMES,
     BlackboxInputBundle,
@@ -35,10 +35,12 @@ from shared.data_bridge.authority import (
     _normalize_blackbox_gray_replay_source_identity,
 )
 from shared.data_bridge.refresh import (
+    CURRENT_PUBLICATION_MANIFEST,
     DataBridgeRefreshConfig,
     DataBridgeStore,
     check_current_dataset,
 )
+from shared.data_bridge.validation import ValidatedDataBridgeDataset
 from shared.runtime_paths import resolve_runtime_state_path
 
 DEFAULT_OUTPUT_ROOT = RUNTIME_INPUT_ROOT
@@ -46,8 +48,7 @@ BLACKBOX_SNAPSHOT_ROOT = BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "snapshots"
 BLACKBOX_GENERATION_SNAPSHOT_ROOT = (
     BLACKBOX_SNAPSHOT_ROOT / "generation_cache"
 )
-BLACKBOX_GENERATION_SNAPSHOT_CACHE_VERSION = "blackbox-generation-snapshot-v1"
-BLACKBOX_RUNTIME_SNAPSHOT_ROOT = BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "runtime_snapshots"
+BLACKBOX_GENERATION_SNAPSHOT_CACHE_VERSION = "blackbox-generation-snapshot-v2"
 BLACKBOX_RUNTIME_VIEW_ROOT = BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "runtime_views"
 BLACKBOX_GRAY_REPLAY_SESSION_ROOT = (
     BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "gray_replay_sessions"
@@ -142,7 +143,7 @@ class BlackboxGrayReplaySession:
 @dataclass(frozen=True)
 class _StableSnapshotFile:
     path: Path
-    fingerprint: tuple[int, int, int, int, int, int]
+    fingerprint: tuple[int, ...]
     sha256: str
     content_bytes: bytes
 
@@ -235,33 +236,36 @@ def cleanup_blackbox_runtime_debris(
 def _materialize_blackbox_runtime_view(view: BlackboxRuntimeView) -> None:
     bundle = view.bundle
     destination = view.data_dir
-    base_files, source_states = _validate_blackbox_snapshot(
+    sealed_fingerprints = bundle.base_snapshot.sealed_file_fingerprints
+    if sealed_fingerprints is not None and set(sealed_fingerprints) != set(
+        SNAPSHOT_FILENAMES
+    ):
+        raise ValueError("producer snapshot file seal is invalid")
+    _validate_blackbox_snapshot(
         bundle.base_snapshot,
         validate_csv_profiles=False,
-    )
-    _validate_cached_snapshot_cutoffs(
-        bundle.base_snapshot,
-        source_states,
+        validate_file_contents=sealed_fingerprints is None,
     )
 
     for filename in SNAPSHOT_FILENAMES:
         source = bundle.base_snapshot.data_dir / filename
         target = destination / filename
-        expected_sha256 = base_files[filename].get("sha256")
-        source_state = source_states[filename]
-        _write_private_runtime_file(
+        source_fingerprint = _copy_ready_snapshot_file(
+            source,
             target,
-            source_state.content_bytes,
-            expected_sha256=expected_sha256,
-            content_sha256=source_state.sha256,
             label=f"runtime view {filename}",
+            expected_fingerprint=(
+                sealed_fingerprints[filename]
+                if sealed_fingerprints is not None
+                else None
+            ),
         )
         target_stat = target.lstat()
         if target_stat.st_nlink != 1:
             raise ValueError(f"runtime view {filename} must not be a hardlink")
         if (
-            source_state.fingerprint[0] == target_stat.st_dev
-            and source_state.fingerprint[1] == target_stat.st_ino
+            source_fingerprint[0] == target_stat.st_dev
+            and source_fingerprint[1] == target_stat.st_ino
         ):
             raise ValueError(f"runtime view {filename} must be an independent file")
         try:
@@ -274,26 +278,10 @@ def _materialize_blackbox_runtime_view(view: BlackboxRuntimeView) -> None:
             stat.S_ISLNK(source_after.st_mode)
             or not stat.S_ISREG(source_after.st_mode)
             or _stat_fingerprint(source_after)
-            != source_state.fingerprint
+            != source_fingerprint
         ):
             raise ValueError(
                 f"parent snapshot {filename} changed during materialization"
-            )
-
-    for artifact in bundle.platform_input_artifacts:
-        target = destination / artifact.filename
-        _write_private_runtime_file(
-            target,
-            artifact.content_bytes,
-            expected_sha256=artifact.sha256,
-            content_sha256=hashlib.sha256(
-                artifact.content_bytes
-            ).hexdigest(),
-            label=f"runtime view {artifact.filename}",
-        )
-        if target.lstat().st_nlink != 1:
-            raise ValueError(
-                f"runtime view {artifact.filename} must not be a hardlink"
             )
 
     actual_filenames = tuple(
@@ -308,6 +296,72 @@ def _materialize_blackbox_runtime_view(view: BlackboxRuntimeView) -> None:
     destination.chmod(0o555)
 
 
+def _copy_ready_snapshot_file(
+    source: Path,
+    target: Path,
+    *,
+    label: str,
+    expected_fingerprint: tuple[int, ...] | None,
+) -> tuple[int, ...]:
+    """稳定复制 producer 已封存的文件，不重复哈希或解析内容。"""
+    read_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    write_flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        source_descriptor = os.open(source, read_flags)
+    except OSError as exc:
+        raise ValueError(f"{label} source is unavailable") from exc
+    try:
+        source_before = os.fstat(source_descriptor)
+        if not stat.S_ISREG(source_before.st_mode):
+            raise ValueError(f"{label} source must be a regular file")
+        if (
+            expected_fingerprint is not None
+            and _stat_fingerprint(source_before) != expected_fingerprint
+        ):
+            raise ValueError(f"{label} source no longer matches producer seal")
+        try:
+            target_descriptor = os.open(target, write_flags, 0o600)
+        except OSError as exc:
+            raise ValueError(f"{label} could not be created safely") from exc
+        try:
+            while True:
+                chunk = os.read(source_descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(target_descriptor, view)
+                    view = view[written:]
+            target_state = os.fstat(target_descriptor)
+        finally:
+            os.close(target_descriptor)
+        source_after = os.fstat(source_descriptor)
+    finally:
+        os.close(source_descriptor)
+    source_fingerprint = _stat_fingerprint(source_after)
+    if _stat_fingerprint(source_before) != source_fingerprint:
+        raise ValueError(f"{label} source changed while being copied")
+    source_path_state = source.lstat()
+    if (
+        stat.S_ISLNK(source_path_state.st_mode)
+        or not stat.S_ISREG(source_path_state.st_mode)
+        or _stat_fingerprint(source_path_state) != source_fingerprint
+    ):
+        raise ValueError(f"{label} source changed while being copied")
+    if (
+        not stat.S_ISREG(target_state.st_mode)
+        or target_state.st_nlink != 1
+        or target_state.st_size != source_after.st_size
+    ):
+        raise ValueError(f"{label} copy is incomplete")
+    return source_fingerprint
+
+
 def _validate_trusted_blackbox_input_bundle(
     bundle: BlackboxInputBundle,
 ) -> BlackboxInputBundle:
@@ -315,16 +369,11 @@ def _validate_trusted_blackbox_input_bundle(
     try:
         trusted = compose_blackbox_input_bundle(
             bundle.base_snapshot,
-            platform_input_ids=bundle.platform_input_ids,
-            platform_input_artifacts=bundle.platform_input_artifacts,
         )
         matches = (
             bundle.combined_snapshot_id == trusted.combined_snapshot_id
             and bundle.parent_snapshot_id == trusted.parent_snapshot_id
-            and bundle.platform_input_ids == trusted.platform_input_ids
             and bundle.expected_filenames == trusted.expected_filenames
-            and bundle.identity_manifest == trusted.identity_manifest
-            and bundle.audit_manifest == trusted.audit_manifest
         )
     except (TypeError, ValueError) as exc:
         raise ValueError(
@@ -376,7 +425,7 @@ def _validate_blackbox_snapshot(
     if not isinstance(entries, dict) or set(entries) != set(
         SNAPSHOT_FILENAMES
     ):
-        raise ValueError("parent snapshot manifest files must be exactly three")
+        raise ValueError("parent snapshot manifest files must be exactly four")
 
     has_simple_identity = "data_snapshot_id" in manifest
     has_databridge_identity = "dataset_content_id" in manifest
@@ -408,7 +457,7 @@ def _validate_blackbox_snapshot(
     except OSError as exc:
         raise ValueError("parent snapshot data directory is unreadable") from exc
     if actual_filenames != set(SNAPSHOT_FILENAMES):
-        raise ValueError("parent snapshot data files must be exactly three")
+        raise ValueError("parent snapshot data files must be exactly four")
 
     for filename in SNAPSHOT_FILENAMES:
         entry = entries.get(filename)
@@ -543,11 +592,12 @@ def _read_stable_regular_file(
     )
 
 
-def _stat_fingerprint(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
+def _stat_fingerprint(value: os.stat_result) -> tuple[int, ...]:
     return (
         value.st_dev,
         value.st_ino,
         value.st_mode,
+        value.st_nlink,
         value.st_size,
         value.st_mtime_ns,
         value.st_ctime_ns,
@@ -586,52 +636,6 @@ def _require_regular_file(path: Path, label: str) -> None:
         raise ValueError(f"{label} is missing") from exc
     if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
         raise ValueError(f"{label} must be a regular non-symlink file")
-
-
-def _write_private_runtime_file(
-    path: Path,
-    content: bytes,
-    *,
-    expected_sha256: object,
-    content_sha256: object,
-    label: str,
-) -> None:
-    """写入一次私有运行文件，不为写后摘要再次读取目标文件。"""
-    if not _is_sha256(expected_sha256):
-        raise ValueError(f"{label} expected sha256 is invalid")
-    if not _is_sha256(content_sha256) or content_sha256 != expected_sha256:
-        raise ValueError(f"{label} sha256 does not match manifest")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    try:
-        descriptor = os.open(path, flags, 0o600)
-    except OSError as exc:
-        raise ValueError(f"{label} could not be created safely") from exc
-    try:
-        with os.fdopen(descriptor, "wb", closefd=False) as stream:
-            stream.write(content)
-            stream.flush()
-        state = os.fstat(descriptor)
-    finally:
-        os.close(descriptor)
-    if (
-        not stat.S_ISREG(state.st_mode)
-        or state.st_nlink != 1
-        or state.st_size != len(content)
-    ):
-        raise ValueError(f"{label} write did not produce one complete regular file")
-    path_state = path.lstat()
-    if (
-        stat.S_ISLNK(path_state.st_mode)
-        or not stat.S_ISREG(path_state.st_mode)
-        or path_state.st_dev != state.st_dev
-        or path_state.st_ino != state.st_ino
-        or path_state.st_size != state.st_size
-    ):
-        raise ValueError(f"{label} changed while being written")
 
 
 def _finalize_blackbox_runtime_view(
@@ -751,41 +755,66 @@ def _read_blackbox_debris_marker(path: Path) -> dict[str, Any]:
     return marker
 
 
-def build_blackbox_input_snapshot(
+def prepare_blackbox_generation_snapshot(
     *,
-    snapshot_date: str,
-    output_root: str | Path = BLACKBOX_SNAPSHOT_ROOT,
+    state: Mapping[str, Any],
+    dataset: ValidatedDataBridgeDataset,
     schema_path: str | Path = BLACKBOX_SCHEMA_PATH,
-    data_root: str | Path = DATA_BRIDGE_ROOT,
-    refresh_runtime_root: str | Path = DATA_BRIDGE_REFRESH_RUNTIME_ROOT,
-    require_fresh: bool = False,
+    cache_root: str | Path = BLACKBOX_GENERATION_SNAPSHOT_ROOT,
 ) -> BlackboxSnapshot:
-    """从平台当前三频文件生成一份内容寻址的 Blackbox V2 快照。"""
-    schema_version, expected_columns = _load_blackbox_schema(schema_path)
-    current = _load_current_data_bridge_dataset(
-        snapshot_date=snapshot_date,
-        schema_path=Path(schema_path),
-        data_root=Path(data_root),
-        refresh_runtime_root=Path(refresh_runtime_root),
-        require_fresh=require_fresh,
-    )
-    _require_blackbox_databridge_monthly_additions(current.dataset.frames)
-    snapshot = create_snapshot_from_frames(
-        current.dataset.frames,
-        output_root=Path(output_root),
-        expected_columns=expected_columns,
-        schema_version=schema_version,
-    )
-    generation_id = _required_current_state_text(current.state, "generation_id")
-    refresh_date = _required_current_state_text(current.state, "refresh_date")
-    return replace(
-        snapshot,
-        generation_id=generation_id,
-        refresh_date=refresh_date,
-    )
+    """由 DataBridge producer 用本次已验证结果构建一次只读快照。"""
+    root = Path(cache_root)
+    root.mkdir(parents=True, exist_ok=True)
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("Blackbox generation snapshot cache must be a real directory")
+    with _generation_snapshot_cache_lock(root):
+        current_identity = _generation_snapshot_identity(
+            state,
+            schema_path=Path(schema_path),
+        )
+        _validate_generation_dataset_identity(dataset, current_identity)
+        cached = _read_generation_snapshot_cache(root, current_identity)
+        if cached is not None:
+            return cached
+        _require_blackbox_databridge_monthly_additions(dataset.frames)
+        schema_version, expected_columns = _load_blackbox_schema(schema_path)
+        generation_root = (
+            root
+            / "snapshots"
+            / _generation_snapshot_cache_key(current_identity)
+        )
+        if generation_root.exists():
+            _make_tree_writable(generation_root)
+            shutil.rmtree(generation_root)
+        generation_root.mkdir(parents=True)
+        try:
+            snapshot = create_snapshot_from_frames(
+                dataset.frames,
+                output_root=generation_root,
+                expected_columns=expected_columns,
+                schema_version=schema_version,
+            )
+        except BaseException:
+            _make_tree_writable(generation_root)
+            shutil.rmtree(generation_root)
+            raise
+        snapshot = replace(
+            snapshot,
+            generation_id=str(current_identity["generation_id"]),
+            refresh_date=str(current_identity["refresh_date"]),
+            business_digest=str(current_identity["business_digest"]),
+            sealed_file_fingerprints=_snapshot_file_fingerprints(snapshot),
+        )
+        try:
+            _write_generation_snapshot_cache(root, current_identity, snapshot)
+        except BaseException:
+            _make_tree_writable(generation_root)
+            shutil.rmtree(generation_root)
+            raise
+        return snapshot
 
 
-def get_blackbox_generation_snapshot(
+def get_ready_blackbox_snapshot(
     *,
     snapshot_date: str,
     schema_path: str | Path = BLACKBOX_SCHEMA_PATH,
@@ -794,11 +823,10 @@ def get_blackbox_generation_snapshot(
     cache_root: str | Path = BLACKBOX_GENERATION_SNAPSHOT_ROOT,
     require_fresh: bool = False,
 ) -> BlackboxSnapshot:
-    """每个 DataBridge generation 只构建一次父快照。"""
+    """读取 producer 已准备好的不可变快照；缺失时不代建、不修复。"""
     root = Path(cache_root)
-    root.mkdir(parents=True, exist_ok=True)
     if root.is_symlink() or not root.is_dir():
-        raise ValueError("Blackbox generation snapshot cache must be a real directory")
+        raise ValueError("Blackbox ready snapshot root is unavailable")
     with _generation_snapshot_cache_lock(root):
         config = DataBridgeRefreshConfig(
             data_root=Path(data_root),
@@ -814,42 +842,40 @@ def get_blackbox_generation_snapshot(
                 state,
                 schema_path=Path(schema_path),
             )
-        cached = _read_generation_snapshot_cache(root, current_identity)
-        if cached is not None:
-            if require_fresh and cached.refresh_date != snapshot_date:
-                raise ValueError(
-                    "DataBridge refresh_date must match snapshot_date: "
-                    f"{cached.refresh_date} != {snapshot_date}"
+            try:
+                _, manifest_raw = _read_stable_regular_file(
+                    store.current_dir / CURRENT_PUBLICATION_MANIFEST,
+                    "DataBridge current publication manifest",
                 )
-            return cached
-
-        current = check_current_dataset(
-            config,
-            required_refresh_date=snapshot_date if require_fresh else None,
-            strict_read_only=True,
+                publication = json.loads(manifest_raw.decode("utf-8"))
+            except (UnicodeError, json.JSONDecodeError) as exc:
+                raise ValueError(
+                    "DataBridge current publication manifest is invalid"
+                ) from exc
+            if (
+                not isinstance(publication, Mapping)
+                or _generation_snapshot_identity(
+                    publication,
+                    schema_path=Path(schema_path),
+                )
+                != current_identity
+            ):
+                raise ValueError(
+                    "DataBridge current state and publication manifest differ"
+                )
+        snapshot = _read_generation_snapshot_cache(
+            root,
+            current_identity,
         )
-        current_identity = _generation_snapshot_identity(
-            current.state,
-            schema_path=Path(schema_path),
-        )
-        cached = _read_generation_snapshot_cache(root, current_identity)
-        if cached is not None:
-            return cached
-        _require_blackbox_databridge_monthly_additions(current.dataset.frames)
-        schema_version, expected_columns = _load_blackbox_schema(schema_path)
-        snapshot = create_snapshot_from_frames(
-            current.dataset.frames,
-            output_root=root / "snapshots",
-            expected_columns=expected_columns,
-            schema_version=schema_version,
-        )
-        snapshot = replace(
-            snapshot,
-            generation_id=str(current_identity["generation_id"]),
-            refresh_date=str(current_identity["refresh_date"]),
-            business_digest=str(current_identity["business_digest"]),
-        )
-        _write_generation_snapshot_cache(root, current_identity, snapshot)
+        if snapshot is None:
+            raise ValueError(
+                "DataBridge generation has no ready Blackbox snapshot"
+            )
+        if require_fresh and snapshot.refresh_date != snapshot_date:
+            raise ValueError(
+                "DataBridge refresh_date must match snapshot_date: "
+                f"{snapshot.refresh_date} != {snapshot_date}"
+            )
         return snapshot
 
 
@@ -913,6 +939,62 @@ def _generation_snapshot_cache_key(identity: Mapping[str, Any]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _validate_generation_dataset_identity(
+    dataset: ValidatedDataBridgeDataset,
+    identity: Mapping[str, Any],
+) -> None:
+    if (
+        dataset.schema_version != identity.get("schema_version")
+        or dataset.business_digest != identity.get("business_digest")
+    ):
+        raise ValueError(
+            "validated DataBridge dataset does not match published identity"
+        )
+    identity_files = identity.get("files")
+    if not isinstance(identity_files, Mapping):
+        raise ValueError("published DataBridge file identity is invalid")
+    mismatches = []
+    for filename in SNAPSHOT_FILENAMES:
+        profile = dataset.files.get(filename)
+        stored = identity_files.get(filename)
+        if (
+            profile is None
+            or not isinstance(stored, Mapping)
+            or stored.get("sha256") != profile.sha256
+            or stored.get("business_hash") != profile.business_hash
+            or stored.get("rows") != profile.rows
+            or stored.get("columns") != profile.columns
+            or stored.get("min_key") != profile.min_key
+            or stored.get("max_key") != profile.max_key
+        ):
+            mismatches.append(filename)
+    if mismatches:
+        raise ValueError(
+            "validated DataBridge files do not match published identity: "
+            f"{mismatches}"
+        )
+
+
+def _snapshot_file_fingerprints(
+    snapshot: BlackboxSnapshot,
+) -> Mapping[str, tuple[int, ...]]:
+    fingerprints: dict[str, tuple[int, ...]] = {}
+    for filename in SNAPSHOT_FILENAMES:
+        path = snapshot.data_dir / filename
+        info = path.lstat()
+        if (
+            stat.S_ISLNK(info.st_mode)
+            or not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) & 0o222
+        ):
+            raise ValueError(
+                f"producer snapshot file is not sealed: {filename}"
+            )
+        fingerprints[filename] = _stat_fingerprint(info)
+    return MappingProxyType(fingerprints)
+
+
 @contextmanager
 def _generation_snapshot_cache_lock(root: Path):
     lock_path = root / "generation-cache.lock"
@@ -961,7 +1043,13 @@ def _read_generation_snapshot_cache(
         raise ValueError("Blackbox generation snapshot receipt is invalid") from exc
     if (
         not isinstance(receipt, dict)
-        or set(receipt) != {"identity", "snapshot_id", "cutoff_keys"}
+        or set(receipt)
+        != {
+            "identity",
+            "snapshot_id",
+            "cutoff_keys",
+            "sealed_file_fingerprints",
+        }
         or receipt.get("identity") != dict(identity)
         or not isinstance(receipt.get("snapshot_id"), str)
         or re.fullmatch(
@@ -971,12 +1059,19 @@ def _read_generation_snapshot_cache(
         is None
     ):
         raise ValueError("Blackbox generation snapshot receipt identity mismatch")
-    snapshots_root = (root / "snapshots").resolve(strict=True)
+    snapshots_root = (
+        root
+        / "snapshots"
+        / _generation_snapshot_cache_key(identity)
+    ).resolve(strict=True)
     snapshot_root = snapshots_root / receipt["snapshot_id"]
     if snapshot_root.parent.resolve(strict=True) != snapshots_root:
         raise ValueError("Blackbox generation snapshot path is outside cache")
     cached_cutoff_fields = _cached_snapshot_cutoff_fields(
         receipt.get("cutoff_keys")
+    )
+    sealed_file_fingerprints = _cached_snapshot_file_fingerprints(
+        receipt.get("sealed_file_fingerprints")
     )
     snapshot = BlackboxSnapshot(
         snapshot_id=receipt["snapshot_id"],
@@ -987,6 +1082,7 @@ def _read_generation_snapshot_cache(
         generation_id=str(identity["generation_id"]),
         refresh_date=str(identity["refresh_date"]),
         business_digest=str(identity["business_digest"]),
+        sealed_file_fingerprints=sealed_file_fingerprints,
     )
     snapshot_files, source_states = _validate_blackbox_snapshot(
         snapshot,
@@ -996,6 +1092,11 @@ def _read_generation_snapshot_cache(
     if source_states:
         raise ValueError(
             "Blackbox generation snapshot metadata validation read file contents"
+        )
+    current_fingerprints = _snapshot_file_fingerprints(snapshot)
+    if dict(current_fingerprints) != dict(sealed_file_fingerprints):
+        raise ValueError(
+            "Blackbox generation snapshot no longer matches producer seal"
         )
     identity_files = identity["files"]
     profile_mismatches = [
@@ -1007,7 +1108,7 @@ def _read_generation_snapshot_cache(
         or identity_files[filename].get("rows")
         != snapshot_files[filename].get("row_count")
         or identity_files[filename].get("columns")
-        != snapshot_files[filename].get("columns")
+        != len(snapshot_files[filename].get("columns", ()))
     ]
     if profile_mismatches:
         raise ValueError(
@@ -1022,6 +1123,9 @@ def _write_generation_snapshot_cache(
     identity: Mapping[str, Any],
     snapshot: BlackboxSnapshot,
 ) -> None:
+    sealed_file_fingerprints = snapshot.sealed_file_fingerprints
+    if sealed_file_fingerprints is None:
+        raise ValueError("producer snapshot file seal is missing")
     receipts = root / "receipts"
     receipts.mkdir(exist_ok=True)
     receipt_path = receipts / (
@@ -1032,10 +1136,22 @@ def _write_generation_snapshot_cache(
             {
                 "identity": dict(identity),
                 "snapshot_id": snapshot.snapshot_id,
+                "sealed_file_fingerprints": {
+                    filename: list(fingerprint)
+                    for filename, fingerprint in sorted(
+                        sealed_file_fingerprints.items()
+                    )
+                },
                 "cutoff_keys": {
                     "date": list(snapshot.daily_cutoff_keys or ()),
                     "week_id": list(snapshot.weekly_cutoff_keys or ()),
                     "month_id": list(snapshot.monthly_cutoff_keys or ()),
+                    "calendar_week_ids_by_date": [
+                        list(item)
+                        for item in (
+                            snapshot.calendar_week_ids_by_date or {}
+                        ).items()
+                    ],
                 },
             },
             ensure_ascii=True,
@@ -1061,11 +1177,37 @@ def _write_generation_snapshot_cache(
         temporary.unlink(missing_ok=True)
 
 
+def _cached_snapshot_file_fingerprints(
+    value: object,
+) -> Mapping[str, tuple[int, ...]]:
+    if not isinstance(value, Mapping) or set(value) != set(
+        SNAPSHOT_FILENAMES
+    ):
+        raise ValueError("Blackbox generation snapshot file seal is invalid")
+    fingerprints: dict[str, tuple[int, ...]] = {}
+    for filename in SNAPSHOT_FILENAMES:
+        raw = value.get(filename)
+        if (
+            not isinstance(raw, list)
+            or len(raw) != 7
+            or any(
+                isinstance(item, bool) or not isinstance(item, int)
+                for item in raw
+            )
+        ):
+            raise ValueError(
+                "Blackbox generation snapshot file seal is invalid"
+            )
+        fingerprints[filename] = tuple(raw)
+    return MappingProxyType(fingerprints)
+
+
 def _cached_snapshot_cutoff_fields(value: object) -> dict[str, tuple[str, ...]]:
     if not isinstance(value, Mapping) or set(value) != {
         "date",
         "week_id",
         "month_id",
+        "calendar_week_ids_by_date",
     }:
         raise ValueError("Blackbox generation snapshot cutoff cache is invalid")
     normalized: dict[str, tuple[str, ...]] = {}
@@ -1085,97 +1227,32 @@ def _cached_snapshot_cutoff_fields(value: object) -> dict[str, tuple[str, ...]]:
         if list(values) != sorted(set(values)):
             raise ValueError("Blackbox generation snapshot cutoff cache is invalid")
         normalized[key] = values
+    raw_calendar = value.get("calendar_week_ids_by_date")
+    if not isinstance(raw_calendar, list) or not raw_calendar:
+        raise ValueError("Blackbox generation snapshot calendar cache is invalid")
+    try:
+        calendar = tuple(
+            (
+                date.fromisoformat(str(item[0])).isoformat(),
+                normalize_period_key(item[1], "week_id"),
+            )
+            for item in raw_calendar
+            if isinstance(item, list) and len(item) == 2
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "Blackbox generation snapshot calendar cache is invalid"
+        ) from exc
+    if len(calendar) != len(raw_calendar) or list(calendar) != sorted(
+        set(calendar)
+    ):
+        raise ValueError("Blackbox generation snapshot calendar cache is invalid")
     return {
         "daily_cutoff_keys": normalized["date"],
         "weekly_cutoff_keys": normalized["week_id"],
         "monthly_cutoff_keys": normalized["month_id"],
+        "calendar_week_ids_by_date": MappingProxyType(dict(calendar)),
     }
-
-
-def _validate_cached_snapshot_cutoffs(
-    snapshot: BlackboxSnapshot,
-    source_states: Mapping[str, _StableSnapshotFile],
-) -> None:
-    """使用本次 SHA 校验已读取的字节复核缓存 cutoff，不增加文件读取。"""
-    cached = (
-        snapshot.daily_cutoff_keys,
-        snapshot.weekly_cutoff_keys,
-        snapshot.monthly_cutoff_keys,
-    )
-    if all(value is None for value in cached):
-        return
-    if any(value is None for value in cached):
-        raise ValueError("Blackbox snapshot cutoff cache is incomplete")
-    expected = {
-        "daily_cutoff_keys": tuple(snapshot.daily_cutoff_keys or ()),
-        "weekly_cutoff_keys": tuple(snapshot.weekly_cutoff_keys or ()),
-        "monthly_cutoff_keys": tuple(snapshot.monthly_cutoff_keys or ()),
-    }
-    actual = _snapshot_cutoff_fields_from_verified_bytes(source_states)
-    if actual != expected:
-        raise ValueError(
-            "Blackbox snapshot cutoff cache does not match verified CSV content"
-        )
-
-
-def _snapshot_cutoff_fields_from_verified_bytes(
-    source_states: Mapping[str, _StableSnapshotFile],
-) -> dict[str, tuple[str, ...]]:
-    """只扫描已验证 CSV 的首列时间键，不解析其余宽表内容。"""
-    fields: dict[str, tuple[str, ...]] = {}
-    for filename, key_column, field_name in (
-        ("daily_output.csv", "date", "daily_cutoff_keys"),
-        ("weekly_output.csv", "week_id", "weekly_cutoff_keys"),
-        ("monthly_output.csv", "month_id", "monthly_cutoff_keys"),
-    ):
-        state = source_states.get(filename)
-        if state is None:
-            raise ValueError("Blackbox snapshot cutoff source is missing")
-        stream = io.BytesIO(state.content_bytes)
-        header = stream.readline().rstrip(b"\r\n").split(b",", 1)[0]
-        try:
-            header_text = header.decode("utf-8-sig")
-        except UnicodeDecodeError as exc:
-            raise ValueError(
-                f"{filename} cutoff header is not valid UTF-8"
-            ) from exc
-        if header_text != key_column:
-            raise ValueError(
-                f"{filename} first column must be {key_column}"
-            )
-        raw_values: list[str] = []
-        for line in stream:
-            stripped = line.rstrip(b"\r\n")
-            if not stripped:
-                raise ValueError(f"{filename} contains an empty CSV row")
-            raw_key = stripped.split(b",", 1)[0]
-            try:
-                raw_values.append(raw_key.decode("utf-8"))
-            except UnicodeDecodeError as exc:
-                raise ValueError(
-                    f"{filename} cutoff key is not valid UTF-8"
-                ) from exc
-        try:
-            if key_column == "date":
-                values = tuple(
-                    normalize_daily_key(value)
-                    for value in raw_values
-                )
-            else:
-                values = tuple(
-                    normalize_period_key(value, key_column)
-                    for value in raw_values
-                )
-        except ValueError as exc:
-            raise ValueError(
-                f"{filename} cutoff cache content is invalid"
-            ) from exc
-        if not values or list(values) != sorted(set(values)):
-            raise ValueError(
-                f"{filename} cutoff keys must be unique and ascending"
-            )
-        fields[field_name] = values
-    return fields
 
 
 def _require_blackbox_databridge_monthly_additions(
@@ -1204,7 +1281,7 @@ def build_blackbox_gray_replay_session(
     data_bridge_config: DataBridgeRefreshConfig,
     output_root: str | Path = BLACKBOX_GRAY_REPLAY_SESSION_ROOT,
 ) -> BlackboxGrayReplaySession:
-    """一次读取 current 后固化 gray replay 所有请求共用的三频父快照。"""
+    """一次读取 current 后固化 gray replay 所有请求共用的四文件快照。"""
     normalized_session_id = _normalize_gray_replay_session_id(session_id)
     normalized_source_identity = (
         _normalize_blackbox_gray_replay_source_identity(
@@ -1242,6 +1319,9 @@ def build_blackbox_gray_replay_session(
             filename="monthly_output.csv",
             cutoff=max_cutoffs.monthly_cutoff_key,
         ),
+        "api_wind_date.csv": current.dataset.frames[
+            "api_wind_date.csv"
+        ].copy(),
     }
     schema_version, expected_columns = _load_blackbox_schema(
         data_bridge_config.schema_path
@@ -1504,68 +1584,6 @@ def _write_gray_replay_session_manifest(
     return manifest_path
 
 
-def capture_blackbox_platform_inputs_from_connection(
-    platform_input_ids: Iterable[str],
-    *,
-    connection,
-    weekly_cutoff_key: object,
-) -> tuple[_platform_inputs.FrozenPlatformInput, ...]:
-    """从同一只读事务冻结 Blackbox 显式声明的平台输入。"""
-    return _platform_inputs.capture_platform_inputs_from_connection(
-        platform_input_ids,
-        connection=connection,
-        weekly_cutoff_key=weekly_cutoff_key,
-    )
-
-
-@contextmanager
-def open_blackbox_input_snapshot(
-    *,
-    snapshot_date: str,
-    schema_path: str | Path = BLACKBOX_SCHEMA_PATH,
-    data_root: str | Path = DATA_BRIDGE_ROOT,
-    refresh_runtime_root: str | Path = DATA_BRIDGE_REFRESH_RUNTIME_ROOT,
-    snapshot_runtime_root: str | Path = BLACKBOX_RUNTIME_SNAPSHOT_ROOT,
-    require_fresh: bool = False,
-):
-    """复制当前三频文件供一次算法运行使用，并在运行后删除副本。"""
-    runtime_root = Path(snapshot_runtime_root)
-    runtime_root.mkdir(parents=True, exist_ok=True)
-    temporary = Path(tempfile.mkdtemp(prefix="blackbox-input-", dir=runtime_root))
-    try:
-        snapshot = build_blackbox_input_snapshot(
-            snapshot_date=snapshot_date,
-            output_root=temporary,
-            schema_path=schema_path,
-            data_root=data_root,
-            refresh_runtime_root=refresh_runtime_root,
-            require_fresh=require_fresh,
-        )
-        yield snapshot
-    finally:
-        _make_tree_writable(temporary)
-        shutil.rmtree(temporary, ignore_errors=True)
-
-
-def _load_current_data_bridge_dataset(
-    *,
-    snapshot_date: str,
-    schema_path: Path,
-    data_root: Path,
-    refresh_runtime_root: Path,
-    require_fresh: bool,
-):
-    current = check_current_dataset(
-        DataBridgeRefreshConfig(
-            data_root=data_root,
-            runtime_root=refresh_runtime_root,
-            schema_path=schema_path,
-        ),
-        required_refresh_date=snapshot_date if require_fresh else None,
-    )
-    return current
-
-
 def _required_current_state_text(state: dict | Any, field: str) -> str:
     value = state.get(field) if hasattr(state, "get") else None
     if not isinstance(value, str) or not value.strip():
@@ -1637,14 +1655,21 @@ def resolve_blackbox_input_cutoffs(
                 "daily snapshot has no row on or before "
                 f"{normalized_feature_date}"
             )
-        return CutoffKeys(
-            daily_cutoff_key=snapshot_keys["date"][daily_position - 1],
-            weekly_cutoff_key=_cached_authoritative_cutoff(
+        daily_cutoff_key = snapshot_keys["date"][daily_position - 1]
+        weekly_cutoff_key = _cached_authoritative_cutoff(
                 weekly_as_of,
                 key_column="week_id",
                 available_keys=snapshot_keys["week_id"],
                 filename="weekly_output.csv",
-            ),
+            )
+        _require_snapshot_calendar_week_id(
+            snapshot_keys,
+            daily_cutoff_key=daily_cutoff_key,
+            weekly_cutoff_key=weekly_cutoff_key,
+        )
+        return CutoffKeys(
+            daily_cutoff_key=daily_cutoff_key,
+            weekly_cutoff_key=weekly_cutoff_key,
             monthly_cutoff_key=_cached_authoritative_cutoff(
                 monthly_as_of,
                 key_column="month_id",
@@ -1813,9 +1838,16 @@ def _resolve_blackbox_input_cutoffs_with_source_keys_bulk_from_keys(
             raise ValueError(f"daily snapshot has no row on or before {feature_date}")
         weekly = weekly_by_date[feature_date]
         monthly = monthly_by_date[feature_date]
+        daily_cutoff_key = daily_dates[daily_position - 1]
+        if "calendar_week_id_by_date" in snapshot_keys:
+            _require_snapshot_calendar_week_id(
+                snapshot_keys,
+                daily_cutoff_key=daily_cutoff_key,
+                weekly_cutoff_key=weekly.effective_key,
+            )
         resolved[feature_date] = _ResolvedBlackboxInputCutoffs(
             cutoff_keys=CutoffKeys(
-                daily_cutoff_key=daily_dates[daily_position - 1],
+                daily_cutoff_key=daily_cutoff_key,
                 weekly_cutoff_key=weekly.effective_key,
                 monthly_cutoff_key=monthly.effective_key,
             ),
@@ -1825,17 +1857,62 @@ def _resolve_blackbox_input_cutoffs_with_source_keys_bulk_from_keys(
     return resolved
 
 
+def _require_snapshot_calendar_week_id(
+    snapshot_keys: Mapping[str, Any],
+    *,
+    daily_cutoff_key: str,
+    weekly_cutoff_key: str,
+) -> None:
+    calendar = snapshot_keys.get("calendar_week_id_by_date")
+    if not isinstance(calendar, Mapping):
+        raise ValueError("snapshot calendar index is missing")
+    frozen_week_id = calendar.get(daily_cutoff_key)
+    if frozen_week_id != weekly_cutoff_key:
+        raise ValueError(
+            "Request weekly_cutoff_key does not match frozen calendar: "
+            f"{daily_cutoff_key} -> {frozen_week_id}, got {weekly_cutoff_key}"
+        )
+
+
+def validate_blackbox_request_calendar(
+    snapshot: BlackboxSnapshot,
+    *,
+    daily_cutoff_key: str,
+    weekly_cutoff_key: str,
+) -> None:
+    """以 generation 缓存索引校验 Request 周历映射。"""
+    calendar = snapshot.calendar_week_ids_by_date
+    if isinstance(calendar, Mapping):
+        frozen_week_id = calendar.get(daily_cutoff_key)
+        if frozen_week_id != weekly_cutoff_key:
+            raise ValueError(
+                "Request weekly_cutoff_key does not match frozen calendar: "
+                f"{daily_cutoff_key} -> {frozen_week_id}, "
+                f"got {weekly_cutoff_key}"
+            )
+        return
+    _require_snapshot_calendar_week_id(
+        _load_snapshot_cutoff_keys(snapshot),
+        daily_cutoff_key=daily_cutoff_key,
+        weekly_cutoff_key=weekly_cutoff_key,
+    )
+
+
 def _load_snapshot_cutoff_keys(snapshot: BlackboxSnapshot) -> dict[str, Any]:
     cached = (
         snapshot.daily_cutoff_keys,
         snapshot.weekly_cutoff_keys,
         snapshot.monthly_cutoff_keys,
+        snapshot.calendar_week_ids_by_date,
     )
     if all(value is not None for value in cached):
         return {
             "date": list(snapshot.daily_cutoff_keys or ()),
             "week_id": set(snapshot.weekly_cutoff_keys or ()),
             "month_id": set(snapshot.monthly_cutoff_keys or ()),
+            "calendar_week_id_by_date": dict(
+                snapshot.calendar_week_ids_by_date or {}
+            ),
         }
     paths = {
         "date": snapshot.data_dir / "daily_output.csv",
@@ -1861,6 +1938,30 @@ def _load_snapshot_cutoff_keys(snapshot: BlackboxSnapshot) -> dict[str, Any]:
         if values != sorted(set(values)):
             raise ValueError(f"{path.name} {key} cutoff keys must be unique and ascending")
         loaded[key] = set(values)
+    calendar_path = snapshot.data_dir / "api_wind_date.csv"
+    try:
+        calendar = pd.read_csv(
+            calendar_path,
+            usecols=["rdate", "week_id"],
+            dtype="string",
+            keep_default_na=False,
+        )
+    except ValueError as exc:
+        raise ValueError(
+            "api_wind_date.csv is missing calendar columns"
+        ) from exc
+    calendar_pairs = [
+        (
+            normalize_daily_key(row.rdate),
+            normalize_period_key(row.week_id, "week_id"),
+        )
+        for row in calendar.itertuples(index=False)
+    ]
+    if not calendar_pairs or calendar_pairs != sorted(set(calendar_pairs)):
+        raise ValueError(
+            "api_wind_date.csv calendar keys must be unique and ascending"
+        )
+    loaded["calendar_week_id_by_date"] = dict(calendar_pairs)
     return loaded
 
 

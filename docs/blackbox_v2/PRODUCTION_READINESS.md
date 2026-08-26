@@ -9,12 +9,12 @@
 ## 必须满足
 
 1. 两文件 Intake、Metadata、目录身份、Contract 和 Runtime Profile 全部通过。
-2. 当前 exact version 的 Harness `all` 全部通过：Blackbox V2 为三段
-   `static → input → compare`（Compare 只执行一次有效冒烟 predict；负向失败行为由上游交付契约
+2. 当前 exact version 的 Harness `all` 全部通过：Blackbox V2 为两段
+   `static → compare`（Compare 只执行一次有效冒烟 predict；负向失败行为由上游交付契约
    负责）。数据库 Gate 摘要中的 version、输入 snapshot、Request、cutoff 和结果身份精确一致；
    Blackbox 不再写方案级 Harness 报告目录。
    技术 `all` 不访问 Backend。
-3. DataBridge current snapshot 通过 schema、freshness、cutoff 和完整性校验；父快照按精确 generation 身份只构建、解析一次，后续方案只读现有 receipt 与 manifest 身份并复用不可变快照，不再为 cache hit 重读三频 CSV；私有运行视图物化时对源内容做唯一一次 SHA 校验，从同一份内存字节只扫描首列时间键来复核 receipt cutoff，且不在写后重读目标文件。平台注册输入仍由调用方只读数据库连接捕获，不存在 Native 二级 generation。
+3. DataBridge producer 独立完成四文件 generation 的 schema、freshness、cutoff、完整性校验和 ready Snapshot 构建；方案只读取已有 receipt 并使用对应只读版本，不触发构建、修复、哈希或 CSV 复核。私有运行视图只做 producer seal 核对、稳定复制和进程前后篡改检查。启用新版 receipt 的 release 后，目标环境必须先由该 release 完成一次 DataBridge publish 并写出 ready gate，旧 receipt 不自动升级；在此之前 Harness 与 scheduler 均 fail-closed。旧三文件 current 只允许由 producer 在 identity/manifest 校验后作为一次升级 continuity 基线，下一次原子发布必须恢复严格四文件；普通消费者仍拒绝三文件 current。
 4. 入库 StaticGate、运行后输入目录指纹复验、超时、环境 allowlist 和严格 `-1/0/1` Result 均通过。
    确定性、顺序/分批一致性与未来数据隔离**不在平台验收范围内**——它们是交付代码自身的性质，
    由上游按 [上游交付契约](../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md) 保证；生产准备核验

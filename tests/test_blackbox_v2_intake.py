@@ -103,7 +103,7 @@ class BlackboxV2IntakeTests(unittest.TestCase):
             self.assertTrue((scheme_dir / "delivery" / "trial_10y.json").is_file())
 
 
-    def test_cli_intake_writes_declared_platform_input(self) -> None:
+    def test_cli_intake_uses_fixed_databridge_inputs(self) -> None:
         from harness.cli import main
         from scheduler.discovery import load_scheme_config
 
@@ -120,8 +120,6 @@ class BlackboxV2IntakeTests(unittest.TestCase):
                         str(delivery),
                         "--project-root",
                         str(root),
-                        "--platform-input",
-                        "api-wind-date-v1",
                     ]
                 )
             config_path = root / "schemes" / "trial_10y" / "config.yaml"
@@ -130,38 +128,9 @@ class BlackboxV2IntakeTests(unittest.TestCase):
             payload = json.loads(output.getvalue())
 
         self.assertEqual(exit_code, 0)
-        self.assertIn(
-            "platform_inputs:\n  - api-wind-date-v1\n",
-            config_text,
-        )
-        self.assertEqual(config.platform_inputs, ("api-wind-date-v1",))
+        self.assertNotIn("platform_inputs:", config_text)
+        self.assertFalse(hasattr(config, "platform_inputs"))
         self.assertEqual(payload["warnings"], [])
-
-    def test_intake_rejects_invalid_platform_inputs(self) -> None:
-        from shared.blackbox_v2.intake import intake_delivery
-
-        cases = (
-            (["api-wind-date-v1", "api-wind-date-v1"], "duplicate"),
-            ([], None),
-            (["unknown-input-v1"], None),
-        )
-        for value, message in cases:
-            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmpdir:
-                root = Path(tmpdir)
-                delivery = _write_delivery(root / "incoming")
-
-                error = (
-                    self.assertRaisesRegex(ValueError, message)
-                    if message is not None
-                    else self.assertRaises(ValueError)
-                )
-                with error:
-                    intake_delivery(
-                        delivery,
-                        schemes_root=root / "schemes",
-                        platform_inputs=value,
-                    )
-                self.assertFalse((root / "schemes" / "trial_10y").exists())
 
     def test_intake_rejects_additional_delivery_file(self) -> None:
         from shared.blackbox_v2.intake import intake_delivery

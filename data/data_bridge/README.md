@@ -1,19 +1,20 @@
 # DataBridge Current Data
 
-平台将通过校验并达到连续两轮稳定的三频数据整体发布到 `current/`：
+平台将通过校验并达到连续两轮稳定的四份输入整体发布到 `current/`：
 
 ```text
 current/
 ├── daily_output.csv
 ├── weekly_output.csv
-└── monthly_output.csv
+├── monthly_output.csv
+└── api_wind_date.csv
 ```
 
-`current/` 是运行期目录，不进入 Git。算法不得硬编码该路径；Blackbox V2 由平台把三份文件复制到单次运行的只读 `--data-dir`。
+`current/` 是运行期目录，不进入 Git。算法不得硬编码该路径；Blackbox V2 由平台把四份文件复制到单次运行的只读 `--data-dir`，算法只读取自己需要的文件。
 
 平台只保留当前版本。刷新失败时继续保留上一份完整 current，历史修订轨迹由数据库承担。
 
-`data-bridge-v1` 不固定三份文件的总列数。机器 Schema 维护最低兼容字段基线；后续新增业务列允许进入 current，但时间键必须位于第一列，已有基线字段必须保留且相对顺序不变。全部实际列都会参与内容校验、摘要和 Blackbox V2 Snapshot identity。
+`data-bridge-v1` 不固定三份因子宽表的总列数。机器 Schema 维护最低兼容字段基线；`api_wind_date.csv` 固定为 `rdate,week_id`。全部四份文件都会参与 generation 内容校验、摘要和 Blackbox V2 Snapshot identity。
 
 版本化资产：
 

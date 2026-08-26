@@ -80,21 +80,8 @@ def run_blackbox_historical_backtest(
             {
                 "data_dir": Path(runtime_data_dir),
                 "data_snapshot_id": execution_snapshot_id,
-                "platform_input_ids":
-                    input_bundle.platform_input_ids,
             }
         )
-        if input_bundle.platform_input_ids:
-            delivery_kwargs.update(
-                {
-                    "parent_data_snapshot_id":
-                        input_bundle.parent_snapshot_id,
-                    "input_identity_manifest":
-                        input_bundle.identity_manifest,
-                    "input_audit_manifest":
-                        input_bundle.audit_manifest,
-                }
-            )
     records = run_delivery(**delivery_kwargs)
     if len(records) != len(materialized):
         raise ValueError(

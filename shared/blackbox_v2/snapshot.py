@@ -4,43 +4,21 @@ import hashlib
 import json
 import math
 import os
-import re
 import shutil
 import tempfile
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from types import MappingProxyType
+from typing import Mapping
 
 import pandas as pd
 
-from shared.blackbox_v2.platform_input_registry import PLATFORM_INPUT_REGISTRY
-from shared.blackbox_v2.platform_inputs import FrozenPlatformInput
 from shared.data_bridge.validation import (
     EXPECTED_FILENAMES as SNAPSHOT_FILENAMES,
     TIME_KEY_BY_FILE,
     validate_baseline_compatible_columns,
 )
-COMBINED_INPUT_IDENTITY_SCHEMA_VERSION = "blackbox-combined-input-v1"
-_COMBINED_IDENTITY_FIELDS = frozenset(
-    {
-        "identity_schema_version",
-        "parent_snapshot_id",
-        "platform_inputs",
-    }
-)
-_PLATFORM_INPUT_IDENTITY_FIELDS = frozenset(
-    {
-        "artifact_id",
-        "provider_version",
-        "filename",
-        "sha256",
-        "size_bytes",
-        "row_count",
-        "columns",
-    }
-)
-_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
@@ -56,36 +34,18 @@ class BlackboxSnapshot:
     daily_cutoff_keys: tuple[str, ...] | None = None
     weekly_cutoff_keys: tuple[str, ...] | None = None
     monthly_cutoff_keys: tuple[str, ...] | None = None
+    calendar_week_ids_by_date: Mapping[str, str] | None = None
+    sealed_file_fingerprints: Mapping[str, tuple[int, ...]] | None = None
 
 
 @dataclass(frozen=True)
 class BlackboxInputBundle:
-    """三频父快照与显式平台制品组成的一次执行输入身份。"""
+    """DataBridge generation 四文件组成的一次执行输入。"""
 
     combined_snapshot_id: str
     parent_snapshot_id: str
     base_snapshot: BlackboxSnapshot
-    platform_input_ids: tuple[str, ...]
-    platform_input_artifacts: tuple[FrozenPlatformInput, ...]
     expected_filenames: tuple[str, ...]
-    _identity_manifest_json: str
-    _audit_manifest_json: str
-
-    @property
-    def identity_manifest(self) -> dict[str, Any]:
-        """返回不会改变 bundle 内部身份的深防御性副本。"""
-        return _load_bundle_manifest(
-            self._identity_manifest_json,
-            "identity_manifest",
-        )
-
-    @property
-    def audit_manifest(self) -> dict[str, Any]:
-        """返回不会改变 bundle 内部审计证据的深防御性副本。"""
-        return _load_bundle_manifest(
-            self._audit_manifest_json,
-            "audit_manifest",
-        )
 
 
 @dataclass(frozen=True)
@@ -97,213 +57,16 @@ class CutoffKeys:
 
 def compose_blackbox_input_bundle(
     base_snapshot: BlackboxSnapshot,
-    *,
-    platform_input_ids: Iterable[str] | None = None,
-    platform_input_artifacts: Iterable[FrozenPlatformInput] = (),
 ) -> BlackboxInputBundle:
-    """校验并组合父快照与平台制品，不改写父快照。"""
+    """将已含四份标准文件的 generation 快照交给运行视图。"""
     if not isinstance(base_snapshot, BlackboxSnapshot):
         raise ValueError("base_snapshot must be a BlackboxSnapshot")
-
-    artifacts = tuple(platform_input_artifacts)
-    if any(
-        not isinstance(artifact, FrozenPlatformInput)
-        for artifact in artifacts
-    ):
-        raise ValueError(
-            "platform_input_artifacts must contain FrozenPlatformInput values"
-        )
-    artifact_ids = tuple(artifact.artifact_id for artifact in artifacts)
-    if artifact_ids:
-        normalized_artifact_ids = PLATFORM_INPUT_REGISTRY.normalize_ids(
-            artifact_ids
-        )
-    else:
-        normalized_artifact_ids = ()
-
-    if platform_input_ids is None:
-        normalized_requested_ids = normalized_artifact_ids
-    else:
-        requested_ids = tuple(platform_input_ids)
-        if requested_ids:
-            normalized_requested_ids = PLATFORM_INPUT_REGISTRY.normalize_ids(
-                requested_ids
-            )
-        else:
-            normalized_requested_ids = ()
-    if normalized_requested_ids != normalized_artifact_ids:
-        raise ValueError(
-            "platform_input_ids must match platform_input_artifacts"
-        )
-
-    artifacts_by_id = {
-        artifact.artifact_id: artifact
-        for artifact in artifacts
-    }
-    if len(artifacts_by_id) != len(artifacts):
-        raise ValueError("platform_input_artifacts contains duplicate IDs")
-    sorted_artifacts = tuple(
-        artifacts_by_id[artifact_id]
-        for artifact_id in normalized_requested_ids
-    )
-
-    expected_filenames = SNAPSHOT_FILENAMES + tuple(
-        artifact.filename for artifact in sorted_artifacts
-    )
-    if len(expected_filenames) != len(set(expected_filenames)):
-        raise ValueError(
-            "platform input filename conflicts with another runtime input"
-        )
-
-    identity = {
-        "identity_schema_version": COMBINED_INPUT_IDENTITY_SCHEMA_VERSION,
-        "parent_snapshot_id": base_snapshot.snapshot_id,
-        "platform_inputs": [
-            artifact.identity_manifest
-            for artifact in sorted_artifacts
-        ],
-    }
-    combined_snapshot_id = compute_blackbox_combined_snapshot_id(
-        identity
-    )
-
-    audit = {
-        "identity": identity,
-        "base_snapshot": {
-            "snapshot_id": base_snapshot.snapshot_id,
-            "schema_version": base_snapshot.schema_version,
-            "generation_id": base_snapshot.generation_id,
-            "refresh_date": base_snapshot.refresh_date,
-        },
-        "platform_inputs": [
-            artifact.audit_manifest
-            for artifact in sorted_artifacts
-        ],
-    }
     return BlackboxInputBundle(
-        combined_snapshot_id=combined_snapshot_id,
+        combined_snapshot_id=base_snapshot.snapshot_id,
         parent_snapshot_id=base_snapshot.snapshot_id,
         base_snapshot=base_snapshot,
-        platform_input_ids=normalized_requested_ids,
-        platform_input_artifacts=sorted_artifacts,
-        expected_filenames=expected_filenames,
-        _identity_manifest_json=_canonical_json(identity),
-        _audit_manifest_json=_canonical_json(audit),
+        expected_filenames=SNAPSHOT_FILENAMES,
     )
-
-
-def compute_blackbox_combined_snapshot_id(
-    identity_manifest: Mapping[str, Any],
-) -> str:
-    """严格校验组合身份 manifest，并以统一 canonical 规则计算 ID。"""
-    if not isinstance(identity_manifest, Mapping):
-        raise ValueError("combined input identity manifest must be an object")
-    identity = dict(identity_manifest)
-    if set(identity) != _COMBINED_IDENTITY_FIELDS:
-        raise ValueError(
-            "combined input identity manifest fields are invalid"
-        )
-    if (
-        identity["identity_schema_version"]
-        != COMBINED_INPUT_IDENTITY_SCHEMA_VERSION
-    ):
-        raise ValueError(
-            "combined input identity schema version is invalid"
-        )
-    parent_snapshot_id = identity["parent_snapshot_id"]
-    if (
-        not isinstance(parent_snapshot_id, str)
-        or not parent_snapshot_id
-    ):
-        raise ValueError(
-            "combined input identity parent_snapshot_id is invalid"
-        )
-    platform_inputs = identity["platform_inputs"]
-    if not isinstance(platform_inputs, list):
-        raise ValueError(
-            "combined input identity platform_inputs must be a list"
-        )
-
-    artifact_ids: list[str] = []
-    for raw_artifact in platform_inputs:
-        if not isinstance(raw_artifact, Mapping):
-            raise ValueError(
-                "combined input identity platform input must be an object"
-            )
-        artifact = dict(raw_artifact)
-        if set(artifact) != _PLATFORM_INPUT_IDENTITY_FIELDS:
-            raise ValueError(
-                "combined input identity platform input fields are invalid"
-            )
-        artifact_id = artifact["artifact_id"]
-        if not isinstance(artifact_id, str):
-            raise ValueError(
-                "combined input identity artifact_id is invalid"
-            )
-        spec = PLATFORM_INPUT_REGISTRY.get(artifact_id)
-        if artifact["provider_version"] != spec.provider_version:
-            raise ValueError(
-                "combined input identity provider_version mismatch"
-            )
-        if artifact["filename"] != spec.filename:
-            raise ValueError(
-                "combined input identity filename mismatch"
-            )
-        if artifact["columns"] != list(spec.columns):
-            raise ValueError(
-                "combined input identity columns mismatch"
-            )
-        if (
-            not isinstance(artifact["sha256"], str)
-            or not _SHA256_PATTERN.fullmatch(artifact["sha256"])
-        ):
-            raise ValueError(
-                "combined input identity sha256 is invalid"
-            )
-        for field in ("size_bytes", "row_count"):
-            value = artifact[field]
-            if (
-                isinstance(value, bool)
-                or not isinstance(value, int)
-                or value < 0
-            ):
-                raise ValueError(
-                    f"combined input identity {field} is invalid"
-                )
-        artifact_ids.append(artifact_id)
-
-    if artifact_ids:
-        normalized_ids = PLATFORM_INPUT_REGISTRY.normalize_ids(
-            tuple(artifact_ids)
-        )
-        if tuple(artifact_ids) != normalized_ids:
-            raise ValueError(
-                "combined input identity platform inputs must be sorted"
-            )
-        identity_bytes = _canonical_json(identity).encode("utf-8")
-        return (
-            f"snapshot-{hashlib.sha256(identity_bytes).hexdigest()[:24]}"
-        )
-    return parent_snapshot_id
-
-
-def _canonical_json(value: Mapping[str, Any]) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-
-
-def _load_bundle_manifest(raw: str, field: str) -> dict[str, Any]:
-    try:
-        value = json.loads(raw)
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"bundle {field} is invalid") from exc
-    if not isinstance(value, dict):
-        raise ValueError(f"bundle {field} must be an object")
-    return value
 
 
 def create_snapshot_from_frames(
@@ -313,7 +76,7 @@ def create_snapshot_from_frames(
     expected_columns: Mapping[str, list[str]],
     schema_version: str,
 ) -> BlackboxSnapshot:
-    """将数据桥三频结果固化为内容寻址、只读的数据快照。"""
+    """将 DataBridge 四文件固化为内容寻址、只读的数据快照。"""
     _validate_frame_set(frames, expected_columns)
     rendered = {
         filename: frames[filename].to_csv(index=False, lineterminator="\n").encode("utf-8")
@@ -365,6 +128,17 @@ def create_snapshot_from_frames(
         monthly_cutoff_keys=tuple(
             normalize_period_key(value, "month_id")
             for value in frames["monthly_output.csv"]["month_id"].tolist()
+        ),
+        calendar_week_ids_by_date=MappingProxyType(
+            {
+                normalize_daily_key(row.rdate): normalize_period_key(
+                    row.week_id,
+                    "week_id",
+                )
+                for row in frames["api_wind_date.csv"].itertuples(
+                    index=False
+                )
+            }
         ),
     )
 
@@ -430,7 +204,7 @@ def _validate_frame_content(filename: str, frame: pd.DataFrame) -> None:
     key_column = TIME_KEY_BY_FILE[filename]
     if key_column not in frame.columns:
         raise ValueError(f"{filename} is missing {key_column}")
-    if key_column == "date":
+    if key_column in {"date", "rdate"}:
         keys = [normalize_daily_key(value) for value in frame[key_column].tolist()]
     else:
         keys = [normalize_period_key(value, key_column) for value in frame[key_column].tolist()]

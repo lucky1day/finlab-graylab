@@ -466,7 +466,6 @@ def _reload_pinned_canonical(cfg: SchemeConfig) -> SchemeConfig:
         "runtime_profile",
         "data_schema_version",
         "input_source",
-        "platform_inputs",
         "horizon",
         "task_type",
         "tenors",

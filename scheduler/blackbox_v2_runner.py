@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import json
 import os
 import re
@@ -14,7 +13,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, ContextManager, Mapping, Sequence
+from typing import Any, Callable, ContextManager, Sequence
 
 from scheduler.process_control import (
     ProcessGroupTerminationError,
@@ -30,16 +29,10 @@ from shared.blackbox_v2.contracts import (
     BlackboxResult,
     load_backtest_results,
     load_prediction_result,
-    load_request,
-    load_requests,
-)
-from shared.blackbox_v2.platform_input_registry import (
-    PLATFORM_INPUT_REGISTRY,
 )
 from shared.blackbox_v2.requests import write_request, write_requests
 from shared.blackbox_v2.snapshot import (
     SNAPSHOT_FILENAMES,
-    compute_blackbox_combined_snapshot_id,
 )
 from shared.models import PredictionRecord
 
@@ -47,7 +40,6 @@ from shared.models import PredictionRecord
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _RUNTIME_PROFILE_PATH = _PROJECT_ROOT / "deploy" / "blackbox_v2" / "runtime_profile_v1.json"
 _SAFE_ENVIRONMENT_KEYS = frozenset({"LANG", "LC_ALL", "TZ"})
-_API_WIND_DATE_PLATFORM_INPUT_ID = "api-wind-date-v1"
 _PROFILE_FIELDS = frozenset(
     {
         "profile_name",
@@ -277,7 +269,6 @@ def execute_blackbox_cli(
     input_path: str | Path,
     data_dir: str | Path,
     output_path: str | Path,
-    platform_input_ids: Sequence[str] = (),
     profile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE,
     timeout_sec: float | None = None,
     process_started: Callable[[int, int], None] | None = None,
@@ -303,16 +294,8 @@ def execute_blackbox_cli(
         raise ValueError(f"Blackbox V2 script must be one regular .py file: {script}")
     if not input_file.is_file():
         raise ValueError(f"Blackbox V2 input must be one regular file: {input_file}")
-    normalized_platform_input_ids = _normalize_platform_input_ids(
-        platform_input_ids
-    )
-    expected_filenames = _expected_data_filenames(
-        normalized_platform_input_ids
-    )
-    initial_data_state = _validate_data_dir(
-        data,
-        platform_input_ids=normalized_platform_input_ids,
-    )
+    expected_filenames = SNAPSHOT_FILENAMES
+    initial_data_state = _validate_data_dir(data)
     if output.exists():
         raise ValueError(f"platform must provide a fresh output path: {output}")
     runtime = _python_runtime(profile)
@@ -328,10 +311,7 @@ def execute_blackbox_cli(
         ),
     )
     if (
-        _validate_data_dir(
-            data,
-            platform_input_ids=normalized_platform_input_ids,
-        )
+        _validate_data_dir(data)
         != initial_data_state
     ):
         raise ValueError(
@@ -339,12 +319,6 @@ def execute_blackbox_cli(
         )
 
     try:
-        _validate_api_wind_date_request_mappings(
-            mode=mode,
-            input_path=input_file,
-            data_dir=data,
-            platform_input_ids=normalized_platform_input_ids,
-        )
         input_flag = "--request" if mode == "predict" else "--requests"
         python_executable = str(runtime.executable)
         command = [
@@ -396,10 +370,7 @@ def execute_blackbox_cli(
         # data-dir，因此必须在子进程结束后证明输入未被改写；任何变化都视为
         # 本次执行不可信，直接失败并触发 run 目录清理。
         if (
-            _validate_data_dir(
-                data,
-                platform_input_ids=normalized_platform_input_ids,
-            )
+            _validate_data_dir(data)
             != initial_data_state
         ):
             raise BlackboxExecutionError(
@@ -447,10 +418,6 @@ def run_blackbox_predict(
     request: BlackboxRequest,
     data_dir: str | Path,
     data_snapshot_id: str,
-    platform_input_ids: Sequence[str] = (),
-    parent_data_snapshot_id: str | None = None,
-    input_identity_manifest: Mapping[str, Any] | None = None,
-    input_audit_manifest: Mapping[str, Any] | None = None,
     profile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE,
     timeout_sec: float | None = None,
     process_started: Callable[[int, int], None] | None = None,
@@ -459,18 +426,6 @@ def run_blackbox_predict(
 ) -> PredictionRecord:
     process_start_guard = require_process_start_guard(
         process_start_guard
-    )
-    (
-        normalized_platform_input_ids,
-        validated_parent_snapshot_id,
-        validated_identity_manifest,
-        validated_audit_manifest,
-    ) = _validate_platform_input_evidence(
-        data_snapshot_id=data_snapshot_id,
-        platform_input_ids=platform_input_ids,
-        parent_data_snapshot_id=parent_data_snapshot_id,
-        input_identity_manifest=input_identity_manifest,
-        input_audit_manifest=input_audit_manifest,
     )
     with tempfile.TemporaryDirectory(prefix="blackbox-v2-predict-") as tmpdir:
         root = Path(tmpdir)
@@ -483,7 +438,6 @@ def run_blackbox_predict(
             "data_dir": data_dir,
             "output_path": output_path,
             "profile": profile,
-            "platform_input_ids": normalized_platform_input_ids,
         }
         if timeout_sec is not None:
             execute_kwargs["timeout_sec"] = timeout_sec
@@ -502,10 +456,6 @@ def run_blackbox_predict(
         result,
         data_snapshot_id,
         profile,
-        platform_input_ids=normalized_platform_input_ids,
-        parent_data_snapshot_id=validated_parent_snapshot_id,
-        input_identity_manifest=validated_identity_manifest,
-        input_audit_manifest=validated_audit_manifest,
     )
 
 
@@ -516,25 +466,9 @@ def run_blackbox_backtest(
     requests: Sequence[BlackboxRequest],
     data_dir: str | Path,
     data_snapshot_id: str,
-    platform_input_ids: Sequence[str] = (),
-    parent_data_snapshot_id: str | None = None,
-    input_identity_manifest: Mapping[str, Any] | None = None,
-    input_audit_manifest: Mapping[str, Any] | None = None,
     profile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE,
     budget: BacktestExecutionBudget | None = None,
 ) -> list[PredictionRecord]:
-    (
-        normalized_platform_input_ids,
-        validated_parent_snapshot_id,
-        validated_identity_manifest,
-        validated_audit_manifest,
-    ) = _validate_platform_input_evidence(
-        data_snapshot_id=data_snapshot_id,
-        platform_input_ids=platform_input_ids,
-        parent_data_snapshot_id=parent_data_snapshot_id,
-        input_identity_manifest=input_identity_manifest,
-        input_audit_manifest=input_audit_manifest,
-    )
     if not requests:
         raise ValueError("Blackbox V2 backtest requires at least one Request")
     if profile.max_batch_requests <= 0:
@@ -559,7 +493,6 @@ def run_blackbox_backtest(
                     data_dir=data_dir,
                     output_path=output_path,
                     profile=profile,
-                    platform_input_ids=normalized_platform_input_ids,
                     timeout_sec=remaining_timeout,
                 )
             except BlackboxExecutionError as exc:
@@ -575,10 +508,6 @@ def run_blackbox_backtest(
                 result,
                 data_snapshot_id,
                 profile,
-                platform_input_ids=normalized_platform_input_ids,
-                parent_data_snapshot_id=validated_parent_snapshot_id,
-                input_identity_manifest=validated_identity_manifest,
-                input_audit_manifest=validated_audit_manifest,
             )
             for result in results
         )
@@ -590,11 +519,6 @@ def _to_prediction_record(
     result: BlackboxResult,
     data_snapshot_id: str,
     profile: RuntimeProfile,
-    *,
-    platform_input_ids: tuple[str, ...] = (),
-    parent_data_snapshot_id: str | None = None,
-    input_identity_manifest: Mapping[str, Any] | None = None,
-    input_audit_manifest: Mapping[str, Any] | None = None,
 ) -> PredictionRecord:
     extra: dict[str, Any] = {
         "runtime_type": "blackbox_v2",
@@ -605,25 +529,6 @@ def _to_prediction_record(
         "runtime_profile": profile.name,
         "data_snapshot_id": data_snapshot_id,
     }
-    if platform_input_ids:
-        extra.update(
-            {
-                "parent_data_snapshot_id": parent_data_snapshot_id,
-                "platform_input_ids": list(
-                    platform_input_ids
-                ),
-                "platform_input_identity_manifest":
-                    _copy_manifest(
-                        input_identity_manifest,
-                        "input_identity_manifest",
-                    ),
-                "platform_input_audit_manifest":
-                    _copy_manifest(
-                        input_audit_manifest,
-                        "input_audit_manifest",
-                    ),
-            }
-        )
     return PredictionRecord(
         scheme_id=metadata.scheme_id,
         target_tenor=metadata.target_tenor,
@@ -663,195 +568,8 @@ def _resolve_controlled_path(
         raise ValueError(f"Blackbox V2 {label} path does not exist: {absolute}") from exc
 
 
-def _normalize_platform_input_ids(
-    platform_input_ids: Sequence[str],
-) -> tuple[str, ...]:
-    if isinstance(platform_input_ids, (str, bytes)):
-        raise ValueError(
-            "platform_input_ids must be a sequence of registered IDs"
-        )
-    values = tuple(platform_input_ids)
-    if not values:
-        return ()
-    normalized = PLATFORM_INPUT_REGISTRY.normalize_ids(values)
-    if values != normalized:
-        raise ValueError(
-            "platform_input_ids must be unique and sorted"
-        )
-    return normalized
-
-
-def _expected_data_filenames(
-    platform_input_ids: Sequence[str],
-) -> tuple[str, ...]:
-    normalized = _normalize_platform_input_ids(platform_input_ids)
-    return SNAPSHOT_FILENAMES + tuple(
-        PLATFORM_INPUT_REGISTRY.get(artifact_id).filename
-        for artifact_id in normalized
-    )
-
-
-def _copy_manifest(
-    value: Mapping[str, Any],
-    field: str,
-) -> dict[str, Any]:
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{field} must be a mapping")
-    try:
-        copied = json.loads(
-            json.dumps(
-                dict(value),
-                ensure_ascii=True,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-        )
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{field} must be JSON serializable") from exc
-    if not isinstance(copied, dict):
-        raise ValueError(f"{field} must be an object")
-    return copied
-
-
-def _validate_platform_input_evidence(
-    *,
-    data_snapshot_id: str,
-    platform_input_ids: Sequence[str],
-    parent_data_snapshot_id: str | None,
-    input_identity_manifest: Mapping[str, Any] | None,
-    input_audit_manifest: Mapping[str, Any] | None,
-) -> tuple[
-    tuple[str, ...],
-    str | None,
-    dict[str, Any] | None,
-    dict[str, Any] | None,
-]:
-    normalized = _normalize_platform_input_ids(platform_input_ids)
-    if normalized:
-        if (
-            not isinstance(parent_data_snapshot_id, str)
-            or not parent_data_snapshot_id
-            or input_identity_manifest is None
-            or input_audit_manifest is None
-        ):
-            raise ValueError(
-                "declared platform inputs require parent snapshot and "
-                "identity/audit manifests"
-            )
-        identity = _copy_manifest(
-            input_identity_manifest,
-            "input_identity_manifest",
-        )
-        audit = _copy_manifest(
-            input_audit_manifest,
-            "input_audit_manifest",
-        )
-        expected_combined_snapshot_id = (
-            compute_blackbox_combined_snapshot_id(identity)
-        )
-        if expected_combined_snapshot_id != data_snapshot_id:
-            raise ValueError(
-                "combined snapshot ID does not match identity manifest"
-            )
-        if identity["parent_snapshot_id"] != parent_data_snapshot_id:
-            raise ValueError(
-                "identity manifest parent_snapshot_id does not match "
-                "runner evidence"
-            )
-        artifact_ids = tuple(
-            artifact["artifact_id"]
-            for artifact in identity["platform_inputs"]
-        )
-        if artifact_ids != normalized:
-            raise ValueError(
-                "identity manifest platform inputs do not match "
-                "runner declaration"
-            )
-        _validate_platform_input_audit_manifest(
-            audit,
-            identity_manifest=identity,
-            parent_snapshot_id=parent_data_snapshot_id,
-        )
-        return (
-            normalized,
-            parent_data_snapshot_id,
-            identity,
-            audit,
-        )
-    if any(
-        value is not None
-        for value in (
-            parent_data_snapshot_id,
-            input_identity_manifest,
-            input_audit_manifest,
-        )
-    ):
-        raise ValueError(
-            "platform input manifests require declared platform inputs"
-        )
-    return (), None, None, None
-
-
-def _validate_platform_input_audit_manifest(
-    audit_manifest: Mapping[str, Any],
-    *,
-    identity_manifest: Mapping[str, Any],
-    parent_snapshot_id: str,
-) -> None:
-    if set(audit_manifest) != {
-        "identity",
-        "base_snapshot",
-        "platform_inputs",
-    }:
-        raise ValueError("platform input audit manifest fields are invalid")
-    if audit_manifest["identity"] != identity_manifest:
-        raise ValueError(
-            "platform input audit manifest identity does not match "
-            "identity manifest"
-        )
-    base_snapshot = audit_manifest["base_snapshot"]
-    if (
-        not isinstance(base_snapshot, Mapping)
-        or set(base_snapshot)
-        != {
-            "snapshot_id",
-            "schema_version",
-            "generation_id",
-            "refresh_date",
-        }
-        or base_snapshot["snapshot_id"] != parent_snapshot_id
-    ):
-        raise ValueError(
-            "platform input audit manifest base snapshot is invalid"
-        )
-    audit_artifacts = audit_manifest["platform_inputs"]
-    identity_artifacts = identity_manifest["platform_inputs"]
-    if (
-        not isinstance(audit_artifacts, list)
-        or len(audit_artifacts) != len(identity_artifacts)
-    ):
-        raise ValueError(
-            "platform input audit manifest artifacts are invalid"
-        )
-    for audit_artifact, identity_artifact in zip(
-        audit_artifacts,
-        identity_artifacts,
-    ):
-        if (
-            not isinstance(audit_artifact, Mapping)
-            or set(audit_artifact) != {"identity", "provenance"}
-            or audit_artifact["identity"] != identity_artifact
-            or not isinstance(audit_artifact["provenance"], Mapping)
-        ):
-            raise ValueError(
-                "platform input audit manifest artifact is invalid"
-            )
-
-
 def _validate_data_dir(
     data_dir: Path,
-    *,
-    platform_input_ids: Sequence[str] = (),
 ) -> tuple[tuple[str, tuple[int, ...]], ...]:
     try:
         directory_before = data_dir.lstat()
@@ -864,7 +582,7 @@ def _validate_data_dir(
         or not stat.S_ISDIR(directory_before.st_mode)
     ):
         raise ValueError(f"Blackbox V2 data-dir must be one regular directory: {data_dir}")
-    expected_filenames = _expected_data_filenames(platform_input_ids)
+    expected_filenames = SNAPSHOT_FILENAMES
     entries = {path.name for path in data_dir.iterdir()}
     if entries != set(expected_filenames):
         raise ValueError(
@@ -919,90 +637,6 @@ def _validate_data_dir(
                 f"{data_dir / filename}"
             )
     return tuple(states)
-
-
-def _validate_api_wind_date_request_mappings(
-    *,
-    mode: str,
-    input_path: Path,
-    data_dir: Path,
-    platform_input_ids: Sequence[str],
-) -> None:
-    """在启动上游进程前校验每条 Request 的冻结周历映射。"""
-    if _API_WIND_DATE_PLATFORM_INPUT_ID not in platform_input_ids:
-        return
-
-    try:
-        requests = (
-            (load_request(input_path),)
-            if mode == "predict"
-            else tuple(load_requests(input_path))
-        )
-    except ValueError:
-        # UnitGate 要求上游脚本本身拒绝故意构造的非法 raw Request；
-        # 只有已通过 Contract 解析的 Request 才进入本平台周历映射校验。
-        return
-    calendar_filename = PLATFORM_INPUT_REGISTRY.get(
-        _API_WIND_DATE_PLATFORM_INPUT_ID
-    ).filename
-    calendar_path = data_dir / calendar_filename
-    week_ids_by_rdate = _load_api_wind_date_week_ids(calendar_path)
-    for request in requests:
-        week_ids = week_ids_by_rdate.get(request.daily_cutoff_key, ())
-        if len(week_ids) != 1:
-            raise ValueError(
-                "Blackbox V2 calendar mapping "
-                f"request_id={request.request_id} must contain exactly one row "
-                f"for daily_cutoff_key={request.daily_cutoff_key}; "
-                f"found={len(week_ids)}"
-            )
-        actual_week_id = week_ids[0]
-        if actual_week_id != request.weekly_cutoff_key:
-            raise ValueError(
-                "Blackbox V2 calendar mapping "
-                f"request_id={request.request_id} weekly_cutoff_key mismatch: "
-                f"daily_cutoff_key={request.daily_cutoff_key}, "
-                f"expected={request.weekly_cutoff_key}, got={actual_week_id}"
-            )
-
-
-def _load_api_wind_date_week_ids(
-    calendar_path: Path,
-) -> dict[str, list[str]]:
-    """从已冻结的 api_wind_date.csv 读取原样的规范化周历键。"""
-    expected_columns = ("rdate", "week_id")
-    week_ids_by_rdate: dict[str, list[str]] = {}
-    try:
-        with calendar_path.open("r", encoding="utf-8", newline="") as handle:
-            reader = csv.DictReader(handle)
-            if tuple(reader.fieldnames or ()) != expected_columns:
-                raise ValueError(
-                    "Blackbox V2 api_wind_date.csv columns must be "
-                    f"{list(expected_columns)}"
-                )
-            for row in reader:
-                if set(row) != set(expected_columns):
-                    raise ValueError(
-                        "Blackbox V2 api_wind_date.csv row fields are invalid"
-                    )
-                rdate = row["rdate"]
-                week_id = row["week_id"]
-                if (
-                    not isinstance(rdate, str)
-                    or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", rdate)
-                    or not isinstance(week_id, str)
-                    or not re.fullmatch(r"\d{6}", week_id)
-                ):
-                    raise ValueError(
-                        "Blackbox V2 api_wind_date.csv contains a "
-                        "non-canonical calendar row"
-                    )
-                week_ids_by_rdate.setdefault(rdate, []).append(week_id)
-    except (OSError, UnicodeError, csv.Error) as exc:
-        raise ValueError(
-            f"Blackbox V2 api_wind_date.csv is invalid: {calendar_path}: {exc}"
-        ) from exc
-    return week_ids_by_rdate
 
 
 def _data_path_fingerprint(value: os.stat_result) -> tuple[int, ...]:

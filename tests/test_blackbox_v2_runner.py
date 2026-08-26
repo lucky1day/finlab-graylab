@@ -12,29 +12,35 @@ from shared.blackbox_v2.contracts import BlackboxMetadata, BlackboxRequest
 
 
 class BlackboxV2RunnerTests(unittest.TestCase):
-    def test_runner_validates_exact_files_from_platform_input_ids(self) -> None:
+    def test_gray_replay_rejects_request_calendar_mismatch(self) -> None:
+        from scheduler.executor import (
+            _validate_gray_replay_request_within_session,
+        )
+
+        with self.assertRaisesRegex(ValueError, "frozen calendar"):
+            _validate_gray_replay_request_within_session(
+                _gray_replay_request(
+                    "gray-calendar-mismatch",
+                    "2026-07-24",
+                    "202631",
+                ),
+                _gray_replay_session(),
+            )
+
+    def test_runner_requires_exact_four_standard_files(self) -> None:
         from scheduler.blackbox_v2_runner import _validate_data_dir
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             data_dir = _write_data_dir(root)
-            calendar_path = data_dir / "api_wind_date.csv"
+            _validate_data_dir(data_dir)
 
-            with self.assertRaisesRegex(ValueError, "exactly"):
-                _validate_data_dir(
-                    data_dir,
-                    platform_input_ids=("api-wind-date-v1",),
-                )
-            calendar_path.write_text(
-                "rdate,week_id\n2026-07-24,202629\n",
-                encoding="utf-8",
-            )
-
+            (data_dir / "api_wind_date.csv").unlink()
             with self.assertRaisesRegex(ValueError, "exactly"):
                 _validate_data_dir(data_dir)
-            _validate_data_dir(
-                data_dir,
-                platform_input_ids=("api-wind-date-v1",),
+            (data_dir / "api_wind_date.csv").write_text(
+                "rdate,week_id\n2026-07-24,202629\n",
+                encoding="utf-8",
             )
 
             (data_dir / "unexpected.csv").write_text(
@@ -42,134 +48,21 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(ValueError, "exactly"):
-                _validate_data_dir(
-                    data_dir,
-                    platform_input_ids=("api-wind-date-v1",),
-                )
+                _validate_data_dir(data_dir)
 
 
-    def test_predict_rejects_missing_calendar_daily_cutoff_before_process_start(
-        self,
-    ) -> None:
-        from scheduler.blackbox_v2_runner import (
-            RuntimeProfile,
-            execute_blackbox_cli,
-        )
-        from shared.blackbox_v2.requests import write_request
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            data_dir = _write_data_dir(root)
-            (data_dir / "api_wind_date.csv").write_text(
-                "rdate,week_id\n2026-07-14,202627\n",
-                encoding="utf-8",
-            )
-            with (
-                patch(
-                    "scheduler.blackbox_v2_runner.subprocess.Popen",
-                    side_effect=AssertionError("child process started"),
-                ) as popen,
-                self.assertRaisesRegex(
-                    ValueError,
-                    "exactly one row.*daily_cutoff_key=2026-07-15",
-                ),
-            ):
-                execute_blackbox_cli(
-                    script_path=_write_script(root / "trial.py", _SUCCESS_SCRIPT),
-                    mode="predict",
-                    input_path=write_request(_request("missing"), root / "request.json"),
-                    data_dir=data_dir,
-                    output_path=root / "run" / "prediction.json",
-                    platform_input_ids=("api-wind-date-v1",),
-                    profile=RuntimeProfile.for_tests(),
-                )
-
-        popen.assert_not_called()
-
-
-    def test_backtest_validates_every_calendar_request_before_process_start(
-        self,
-    ) -> None:
-        from scheduler.blackbox_v2_runner import (
-            RuntimeProfile,
-            execute_blackbox_cli,
-        )
-        from shared.blackbox_v2.requests import write_requests
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            data_dir = _write_data_dir(root)
-            (data_dir / "api_wind_date.csv").write_text(
-                "rdate,week_id\n2026-07-15,202627\n2026-07-16,202628\n",
-                encoding="utf-8",
-            )
-            mismatched_second_request = BlackboxRequest(
-                request_id="second",
-                predict_date="2026-07-16",
-                feature_date="2026-07-16",
-                target_date="2026-07-17",
-                daily_cutoff_key="2026-07-16",
-                weekly_cutoff_key="202627",
-                monthly_cutoff_key="202606",
-            )
-            with (
-                patch(
-                    "scheduler.blackbox_v2_runner.subprocess.Popen",
-                    side_effect=AssertionError("child process started"),
-                ) as popen,
-                self.assertRaisesRegex(
-                    ValueError,
-                    "request_id=second.*weekly_cutoff_key mismatch",
-                ),
-            ):
-                execute_blackbox_cli(
-                    script_path=_write_script(root / "trial.py", _SUCCESS_SCRIPT),
-                    mode="backtest",
-                    input_path=write_requests(
-                        [_request("first"), mismatched_second_request],
-                        root / "requests.csv",
-                    ),
-                    data_dir=data_dir,
-                    output_path=root / "run" / "backtest.csv",
-                    platform_input_ids=("api-wind-date-v1",),
-                    profile=RuntimeProfile.for_tests(),
-                )
-
-        popen.assert_not_called()
-
-
-    def test_scheduled_blackbox_uses_fresh_temporary_current_snapshot(self) -> None:
+    def test_scheduled_blackbox_uses_ready_snapshot(self) -> None:
         from scheduler.executor import run_blackbox_scheme_subprocess
         from scheduler.process_control import ProcessStartGuard
         from shared.blackbox_v2.snapshot import BlackboxSnapshot, CutoffKeys
 
-        events: list[str] = []
-
-        @contextmanager
-        def open_snapshot(**kwargs):
-            self.assertEqual(kwargs["snapshot_date"], "2026-07-16")
-            self.assertTrue(kwargs["require_fresh"])
-            self.assertEqual(
-                kwargs["data_root"],
-                Path("/srv/bond/data_bridge"),
-            )
-            self.assertEqual(
-                kwargs["refresh_runtime_root"],
-                Path("/srv/bond/data_bridge_runtime"),
-            )
-            self.assertEqual(
-                kwargs["schema_path"],
-                Path("/srv/bond/data_bridge_schema.json"),
-            )
-            events.append("opened")
-            yield BlackboxSnapshot(
-                snapshot_id="snapshot-current",
-                root_dir=Path("/tmp/snapshot-current"),
-                data_dir=Path("/tmp/snapshot-current/data"),
-                manifest_path=Path("/tmp/snapshot-current/manifest.json"),
-                schema_version="data-bridge-v1",
-            )
-            events.append("closed")
+        snapshot = BlackboxSnapshot(
+            snapshot_id="snapshot-current",
+            root_dir=Path("/tmp/snapshot-current"),
+            data_dir=Path("/tmp/snapshot-current/data"),
+            manifest_path=Path("/tmp/snapshot-current/manifest.json"),
+            schema_version="data-bridge-v1",
+        )
 
         cfg = SimpleNamespace(
             scheme_id="blackbox_trial",
@@ -189,10 +82,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         )
         trusted_bundle = SimpleNamespace(
             combined_snapshot_id="snapshot-trusted",
-            platform_input_ids=("api-wind-date-v1",),
             parent_snapshot_id="snapshot-parent-trusted",
-            identity_manifest={"identity": "trusted"},
-            audit_manifest={"audit": "trusted"},
         )
 
         @contextmanager
@@ -213,9 +103,9 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                 return_value=data_bridge_config,
             ) as data_bridge_config_from_env,
             patch(
-                "scheduler.executor.open_blackbox_input_snapshot",
-                side_effect=open_snapshot,
-            ),
+                "scheduler.executor.get_ready_blackbox_snapshot",
+                return_value=snapshot,
+            ) as ready_snapshot,
             patch("scheduler.executor.get_calendar", return_value="calendar"),
             patch(
                 "scheduler.executor.build_daily_live_context",
@@ -250,7 +140,13 @@ class BlackboxV2RunnerTests(unittest.TestCase):
 
         self.assertEqual(result, ["record"])
         data_bridge_config_from_env.assert_called_once_with()
-        self.assertEqual(events, ["opened", "closed"])
+        ready_snapshot.assert_called_once_with(
+            snapshot_date="2026-07-16",
+            schema_path=Path("/srv/bond/data_bridge_schema.json"),
+            data_root=Path("/srv/bond/data_bridge"),
+            refresh_runtime_root=Path("/srv/bond/data_bridge_runtime"),
+            require_fresh=True,
+        )
         self.assertIs(
             predict.call_args.kwargs["process_started"],
             process_started,
@@ -263,22 +159,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             predict.call_args.kwargs["data_snapshot_id"],
             "snapshot-trusted",
         )
-        self.assertEqual(
-            predict.call_args.kwargs["platform_input_ids"],
-            ("api-wind-date-v1",),
-        )
-        self.assertEqual(
-            predict.call_args.kwargs["parent_data_snapshot_id"],
-            "snapshot-parent-trusted",
-        )
-        self.assertEqual(
-            predict.call_args.kwargs["input_identity_manifest"],
-            {"identity": "trusted"},
-        )
-        self.assertEqual(
-            predict.call_args.kwargs["input_audit_manifest"],
-            {"audit": "trusted"},
-        )
+        self.assertNotIn("platform_input_ids", predict.call_args.kwargs)
         self.assertEqual(
             predict.call_args.kwargs["profile"].predict_timeout_sec,
             3600,
@@ -301,21 +182,17 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         )
         from shared.models import PredictionRecord
 
-        @contextmanager
-        def open_snapshot(**kwargs):
-            self.assertEqual(kwargs["snapshot_date"], "2026-05-26")
-            self.assertFalse(kwargs["require_fresh"])
-            yield BlackboxSnapshot(
-                snapshot_id="snapshot-current",
-                root_dir=Path("/tmp/snapshot-current"),
-                data_dir=Path("/tmp/snapshot-current/data"),
-                manifest_path=Path(
-                    "/tmp/snapshot-current/manifest.json"
-                ),
-                schema_version="data-bridge-v1",
-                generation_id="full-20260720-test",
-                refresh_date="2026-07-20",
-            )
+        snapshot = BlackboxSnapshot(
+            snapshot_id="snapshot-current",
+            root_dir=Path("/tmp/snapshot-current"),
+            data_dir=Path("/tmp/snapshot-current/data"),
+            manifest_path=Path(
+                "/tmp/snapshot-current/manifest.json"
+            ),
+            schema_version="data-bridge-v1",
+            generation_id="full-20260720-test",
+            refresh_date="2026-07-20",
+        )
 
         @contextmanager
         def open_runtime_view(bundle):
@@ -342,7 +219,10 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         )
         with (
             patch("scheduler.executor.load_metadata", return_value=_metadata()),
-            patch("scheduler.executor.open_blackbox_input_snapshot", side_effect=open_snapshot),
+            patch(
+                "scheduler.executor.get_ready_blackbox_snapshot",
+                return_value=snapshot,
+            ),
             patch("scheduler.executor.get_calendar", return_value="calendar"),
             patch(
                 "scheduler.executor.build_daily_live_context",
@@ -391,25 +271,16 @@ class BlackboxV2RunnerTests(unittest.TestCase):
     def test_predict_converts_valid_result_to_prediction_record(self) -> None:
         from scheduler.blackbox_v2_runner import RuntimeProfile, run_blackbox_predict
 
-        evidence = _platform_bundle_evidence()
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             script = _write_script(root / "trial.py", _SUCCESS_SCRIPT)
             data_dir = _write_data_dir(root)
-            (data_dir / "api_wind_date.csv").write_text(
-                "rdate,week_id\n2026-07-15,202627\n",
-                encoding="utf-8",
-            )
             record = run_blackbox_predict(
                 metadata=_metadata(),
                 script_path=script,
                 request=_request("001"),
                 data_dir=data_dir,
-                data_snapshot_id=evidence.combined_snapshot_id,
-                platform_input_ids=("api-wind-date-v1",),
-                parent_data_snapshot_id=evidence.parent_snapshot_id,
-                input_identity_manifest=evidence.identity_manifest,
-                input_audit_manifest=evidence.audit_manifest,
+                data_snapshot_id="snapshot-test",
                 profile=RuntimeProfile.for_tests(),
             )
 
@@ -420,65 +291,8 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         self.assertEqual(record.extra["request_id"], "001")
         self.assertEqual(
             record.extra["data_snapshot_id"],
-            evidence.combined_snapshot_id,
+            "snapshot-test",
         )
-        self.assertEqual(
-            record.extra["parent_data_snapshot_id"],
-            evidence.parent_snapshot_id,
-        )
-        self.assertEqual(
-            record.extra["platform_input_ids"],
-            ["api-wind-date-v1"],
-        )
-        self.assertEqual(
-            record.extra["platform_input_identity_manifest"][
-                "platform_inputs"
-            ][0]["artifact_id"],
-            "api-wind-date-v1",
-        )
-        self.assertEqual(
-            record.extra["platform_input_audit_manifest"][
-                "platform_inputs"
-            ][0]["provenance"]["source_kind"],
-            "harness_database",
-        )
-
-
-    def test_predict_rejects_mismatched_combined_snapshot_before_execution(
-        self,
-    ) -> None:
-        from scheduler.blackbox_v2_runner import (
-            RuntimeProfile,
-            run_blackbox_predict,
-        )
-
-        evidence = _platform_bundle_evidence()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            with (
-                patch(
-                    "scheduler.blackbox_v2_runner."
-                    "execute_blackbox_cli",
-                ) as execute,
-                self.assertRaisesRegex(
-                    ValueError,
-                    "combined snapshot",
-                ),
-            ):
-                run_blackbox_predict(
-                    metadata=_metadata(),
-                    script_path=root / "trial.py",
-                    request=_request("001"),
-                    data_dir=root / "data",
-                    data_snapshot_id="snapshot-tampered",
-                    platform_input_ids=("api-wind-date-v1",),
-                    parent_data_snapshot_id=evidence.parent_snapshot_id,
-                    input_identity_manifest=evidence.identity_manifest,
-                    input_audit_manifest=evidence.audit_manifest,
-                    profile=RuntimeProfile.for_tests(),
-                )
-
-        execute.assert_not_called()
 
 
     def test_backtest_splits_batches_and_preserves_order(self) -> None:
@@ -520,7 +334,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             frequency="daily",
             delivery_script=Path("trial.py"),
             delivery_metadata=Path("trial.json"),
-            platform_inputs=(),
         )
         metadata = _metadata()
         raw_records = [
@@ -635,6 +448,13 @@ def _gray_replay_session():
         schema_version="data-bridge-v1",
         generation_id="gray-replay-generation-1",
         refresh_date="2026-08-06",
+        daily_cutoff_keys=("2026-07-24", "2026-07-31"),
+        weekly_cutoff_keys=("202630", "202631"),
+        monthly_cutoff_keys=("202607",),
+        calendar_week_ids_by_date={
+            "2026-07-24": "202630",
+            "2026-07-31": "202631",
+        },
     )
     return BlackboxGrayReplaySession(
         snapshot=snapshot,
@@ -666,53 +486,16 @@ def _write_data_dir(root: Path) -> Path:
     data_dir.mkdir(exist_ok=True)
     for name in ("daily_output.csv", "weekly_output.csv", "monthly_output.csv"):
         (data_dir / name).write_text("key,value\n1,1\n", encoding="utf-8")
+    (data_dir / "api_wind_date.csv").write_text(
+        "rdate,week_id\n2026-07-15,202627\n",
+        encoding="utf-8",
+    )
     return data_dir
 
 
 def _write_script(path: Path, source: str) -> Path:
     path.write_text(textwrap.dedent(source), encoding="utf-8")
     return path
-
-
-def _platform_bundle_evidence():
-    import pandas as pd
-
-    from shared.blackbox_v2.platform_inputs import (
-        freeze_platform_input,
-    )
-    from shared.blackbox_v2.snapshot import (
-        BlackboxSnapshot,
-        compose_blackbox_input_bundle,
-    )
-
-    parent_snapshot = BlackboxSnapshot(
-        snapshot_id="snapshot-parent",
-        root_dir=Path("/tmp/snapshot-parent"),
-        data_dir=Path("/tmp/snapshot-parent/data"),
-        manifest_path=Path("/tmp/snapshot-parent/manifest.json"),
-        schema_version="data-bridge-v1",
-    )
-    artifact = freeze_platform_input(
-        "api-wind-date-v1",
-        pd.DataFrame(
-            {
-                "rdate": ["2026-07-15"],
-                "week_id": ["202627"],
-            }
-        ),
-        weekly_cutoff_key="202627",
-        audit_provenance={
-            "source_kind": "harness_database",
-            "generation_id": None,
-            "manifest_sha256": None,
-            "captured_at": "2026-07-24T00:00:00+00:00",
-        },
-    )
-    return compose_blackbox_input_bundle(
-        parent_snapshot,
-        platform_input_ids=("api-wind-date-v1",),
-        platform_input_artifacts=(artifact,),
-    )
 
 
 _SUCCESS_SCRIPT = r'''

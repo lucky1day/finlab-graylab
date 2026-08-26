@@ -15,9 +15,8 @@
 |---|---|
 | Native V1 / Blackbox V2 | 平台运行时代际 |
 | `schema_version=1.0` | Blackbox 上游接口合同版本 |
-| `data-bridge-v1` | 三频 CSV 数据 Schema |
+| `data-bridge-v1` | 四文件 DataBridge Schema |
 | `blackbox-v2-v1` | Blackbox 隔离执行 Runtime Profile |
-| `api-wind-date-v1` | 版本化平台注册日历制品 ID |
 | `policy_version=1.0` | 新旧运行时入库政策清单版本 |
 
 ## 2. 显式运行类型
@@ -73,24 +72,19 @@ Blackbox 还由平台提供与三频快照真实存在的 `daily_cutoff`、`week
 
 完整规则以[预测日期与实盘语义](PREDICTION_SEMANTICS.md)为准。
 
-### 5.1 Blackbox 组合输入
+### 5.1 Blackbox 输入
 
 Blackbox 的输入契约是：
 
 ```text
-三频父快照 + 显式声明的平台制品
+DataBridge generation 四文件 + 平台 Request
 ```
 
-DataBridge 父快照继续只包含日、周、月三频 CSV；平台制品通过
-Blackbox `config.yaml.platform_inputs` 声明版本化 ID，不写入上游
-Metadata，也不成为 DataBridge 的第四个文件。当前注册的
-`api-wind-date-v1` 运行文件为 `api_wind_date.csv`。
-
-平台根据父快照身份和制品内容计算组合输入身份。没有平台注册制品
-时沿用父快照身份；有制品时，组合身份绑定父快照身份、provider
-版本、文件内容摘要和结构，来源 provenance 仅用于审计。算法只能
-读取平台为声明 ID 生成的精确只读运行视图，不得读取交付目录旁的
-同名文件或自行访问数据库。
+每个 DataBridge generation 固定包含 `daily_output.csv`、
+`weekly_output.csv`、`monthly_output.csv` 和 `api_wind_date.csv`。
+平台在 generation 生成时一次性校验、摘要并封存四份文件；每个方案
+看到相同的只读 `--data-dir` 结构，按需读取，不再声明或捕获方案级
+输入。算法不得读取交付目录旁的同名文件或自行访问数据库。
 
 ## 6. 标准结果
 
@@ -104,10 +98,9 @@ Metadata，也不成为 DataBridge 的第四个文件。当前注册的
 
 Blackbox 上游结果文件本身只包含 Contract 1.0 的五个字段；平台校验成功后结合 Metadata 和运行上下文完成转换。异常、缺数或低置信度不得伪装成方向 `0`。
 
-Blackbox `PredictionRecord.extra.data_snapshot_id` 使用组合输入身份；
-声明平台注册制品时还必须记录父快照身份、已排序
-`platform_inputs` 以及身份/审计 manifests，使内容身份和来源
-provenance 可分别追溯。
+Blackbox `PredictionRecord.extra.data_snapshot_id` 直接使用包含四份文件
+的 generation Snapshot identity；来源由 DataBridge generation manifest
+统一追溯，不再生成方案级组合身份或平台输入审计 manifest。
 
 从 `PredictionRecord` 开始，Registry、actual join、指标、落库、API 和前端不再区分运行时。
 
@@ -134,12 +127,12 @@ draft -> validated -> shadow -> active -> paused -> retired
 python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
 ```
 
-`all` 按 runtime type 分派：Blackbox V2 为 `static -> input -> compare`，Native V1 为 `static -> dry-run -> compare -> backtest`；Native DryRunGate 同时核验真实执行生成的输入 artifact 合同。技术 `all` 不访问 Backend；Gate 证据的含义和副作用边界以[Harness 架构](HARNESS_ARCHITECTURE.md)为准。
+`all` 按 runtime type 分派：Blackbox V2 为 `static -> compare`，Native V1 为 `static -> dry-run -> compare -> backtest`；Native DryRunGate 同时核验真实执行生成的输入 artifact 合同。技术 `all` 不访问 Backend；Gate 证据的含义和副作用边界以[Harness 架构](HARNESS_ARCHITECTURE.md)为准。
 
 Native ActivationGate 的两条 profile 互斥：当前 exact version 已通过完整 `all` 时，采用 `full_initial_onboarding_v1`，只复核当前四个 Gate（含 Compare）和本次直接 activation 命令，不要求 prior snapshot 或 `native-maintenance`。只有未走该 full-`all` profile 的已有 Native V1 修订，在 prior `all` 的 `static.business_identity` 已持久化且与当前业务身份精确匹配时，才可改走 `native-maintenance`：`static -> native-maintenance-admission -> dry-run`。快照只含 `scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors 和 composite Registry IDs，不含代码/config/version hash。maintenance profile 还要求 current exact `t_scheme_versions` 为 native `draft|active`、expected Registry 全 paused（预激活）或全 active（激活后）、draft+active fail-closed、prior Native version 的 passed `all + compare`、当前精确 version 的三段持久证据和独立 activation 命令；只有 ActivationGate 能原子建立 active。prior snapshot 缺失、重复、损坏或不匹配时一律 fail-closed。maintenance 不运行当前 historical `compare/backtest`，也不写业务表。满足任一标准 profile 的同一身份修订，其历史 source-benchmark 输入 vintage 漂移只归档，不单独阻断 activation、gap repair、`gray_live`、`scheduled_live` 或 Dashboard；新 Native 身份和 Blackbox V2 仍只能走 `all`。
 
 - Native：校验 adapter/core、输入 artifact 和 source fidelity。
-- Blackbox：校验两文件、CLI、三频快照和标准结果；确定性与截止隔离属上游交付契约义务，平台不重验。
+- Blackbox：校验两文件、CLI、四文件快照和标准结果；确定性与截止隔离属上游交付契约义务，平台不重验。
 - 持久化 backtest、shadow、activate、lifecycle reconcile 与单日 `signal-gap-fill` 都不包含在自动段中，必须走各自专用命令；`scheduled_live` 只由宿主 one-shot 触发。
 
 ## 9. 责任边界
@@ -147,7 +140,7 @@ Native ActivationGate 的两条 profile 互斥：当前 exact version 已通过�
 | 事项 | Native V1 | Blackbox V2 |
 |---|---|---|
 | 算法内部保真 | full-`all` profile 检查 core 和内部 benchmark；maintenance profile 保留 prior admission 的 `static.business_identity` 快照与 live-safe 证据；缺快照只能走 full `all` | 上游负责；平台不反编译或改写脚本 |
-| 输入 | `shared.input_artifacts` 注入 | 三频父快照 + 显式声明的平台制品 + 平台 Request |
+| 输入 | `shared.input_artifacts` 注入 | DataBridge generation 四文件 + 平台 Request |
 | 结果验收 | `PredictionRecord` 与 source evidence | Result 合同（确定性与截止隔离由上游保证） |
 | 新身份 | 禁止 | 唯一允许路径 |
 | 业务写入 | 受授权 repository | 默认禁止；生产准备通过并取得专项授权后由专用 Gate 执行 |

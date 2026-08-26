@@ -4,11 +4,6 @@ import hashlib
 import json
 from typing import Any, Mapping
 
-from shared.blackbox_v2.platform_input_registry import (
-    normalize_platform_input_ids,
-)
-
-
 REQUIRED_TOP_LEVEL_FIELDS = (
     "runtime_type",
     "input_source",
@@ -37,9 +32,9 @@ def canonical_platform_config(raw: Mapping[str, Any]) -> dict[str, Any]:
         "metadata": str(_required_value(delivery, "metadata", "delivery.metadata")),
     }
     if "platform_inputs" in raw:
-        canonical["platform_inputs"] = list(
-            normalize_platform_input_ids(raw["platform_inputs"])
-        )
+        # 存量配置仅保留在版本哈希中，避免本次平台减负让已激活 exact
+        # scheme_version 漂移；运行时和 Intake 已完全不读取该字段。
+        canonical["platform_inputs"] = raw["platform_inputs"]
     return canonical
 
 
