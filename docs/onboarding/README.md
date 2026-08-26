@@ -75,7 +75,7 @@ Native V1 存量仍使用 `onboard --stage all` 的
 `static → native-maintenance-admission → dry-run`。
 
 所有人工副作用命令绑定 canonical exact version、operator 与 operation scope。Blackbox 激活从
-`t_backtest_runs` 读取相同 version/code/config/manifest 的成功回测，并复核 Runtime Profile、环境指纹、generation 与 snapshot；它不再读取 Harness `all`。pending lifecycle journal 仍阻断新的生命周期动作，只能显式运行 `gate lifecycle-reconcile` 恢复 previous safe state。
+`t_backtest_runs` 读取相同 version/code/config/manifest 与当前脚本校验策略摘要的成功回测，并复核 Runtime Profile、环境指纹、generation 与 snapshot；它不再读取 Harness `all`。pending lifecycle journal 仍阻断新的生命周期动作，只能显式运行 `gate lifecycle-reconcile` 恢复 previous safe state。
 
 ## 单维护者最快稳定路径
 

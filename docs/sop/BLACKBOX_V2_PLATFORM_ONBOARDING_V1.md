@@ -83,7 +83,7 @@ python -m harness gate backtest \
 4. 按 Runtime Profile 分批调用交付的 backtest 入口；
 5. 逐行校验 Result 数量、顺序、Request 回显、日期、方向与输出合同；
 6. 在一个事务中写入一个 immutable success run、完整 prediction 明细和非空 monthly metrics；
-7. 在 durable summary 中保存 exact version、code/config/manifest、Runtime Profile、环境指纹、generation 和 snapshot。
+7. 在 durable summary 中保存 exact version、code/config/manifest、脚本校验策略摘要、Runtime Profile、环境指纹、generation 和 snapshot。
 
 它已经包含真实批量执行，因此平台不再提前额外运行一次 predict 冒烟。失败重试必须产生新的
 immutable run；不得更新、删除或补写旧 run。
