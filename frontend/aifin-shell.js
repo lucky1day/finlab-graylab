@@ -647,6 +647,7 @@
   ];
   var DASHBOARD_TASK_TYPES = ["T+1", "T+5", "weekly_point", "weekly_average", "monthly", "monthly_average", "quarterly_average", "annual_average"];
   var DASHBOARD_LIVE_PHASES = ["gray_live", "scheduled_live"];
+  var FACTOR_LAB_LIVE_TARGET_START_DATE = "2026-06-01";
   var DASHBOARD_SIGNAL_STATUSES = ["missing", "not_due", "present"];
   var DASHBOARD_SNAPSHOT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
   var DASHBOARD_GENERATED_AT_PATTERN = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$/;
@@ -815,7 +816,7 @@
       throw dashboardDataError("snapshot_id must be canonical");
     }
     requireDashboardAwareDateTime(payload.generated_at, "generated_at");
-    requireDashboardIsoDate(payload.display_until, "display_until");
+    var displayUntil = requireDashboardIsoDate(payload.display_until, "display_until");
 
     if (!isDashboardObject(payload.target_labels)) {
       throw dashboardDataError("target_labels must be an object");
@@ -916,6 +917,7 @@
 
     return {
       snapshotId: snapshotId,
+      displayUntil: displayUntil,
       targetLabels: targetLabels,
       schemes: schemes
     };
@@ -1068,6 +1070,7 @@
     });
     return {
       snapshotId: decoded.snapshotId,
+      displayUntil: decoded.displayUntil,
       targetLabels: decoded.targetLabels,
       tasks: tasks
     };
@@ -1145,6 +1148,7 @@
       tasks: viewModel.tasks,
       targetLabels: viewModel.targetLabels,
       snapshotId: viewModel.snapshotId,
+      displayUntil: viewModel.displayUntil,
       source: "dashboard"
     };
   }
@@ -1168,8 +1172,8 @@
     if (!selection) return false;
     var schemes = factorTaskSchemes[selection.taskKey] || [];
     return schemes.some(function (scheme) {
-      return scheme.id === selection.schemeId && scheme.dailyRowsByMonth &&
-        (scheme.dailyRowsByMonth[selection.month] || []).length > 0;
+      return scheme.id === selection.schemeId &&
+        factorDetailRowsForMonth(scheme, selection.month, factorLabState.dataSource).length > 0;
     });
   }
 
@@ -1377,6 +1381,15 @@
   function getVisibleRowsForScheme(scheme) {
     if (!scheme) return [];
     var src = factorLabState.dataSource;
+    if (src === "live") {
+      var grouped = {};
+      getVisibleRawDailyRowsForScheme(scheme).forEach(function (row) {
+        var targetDateMonth = row.targetDate.slice(0, 7);
+        if (!grouped[targetDateMonth]) grouped[targetDateMonth] = [];
+        grouped[targetDateMonth].push(row);
+      });
+      return dashboardMonthlyRows(grouped, "live");
+    }
     return scheme.monthlyRows.filter(function (row) {
       if (row.month < factorLabState.startMonth || row.month > factorLabState.endMonth) return false;
       if (src === "all") return true;
@@ -1384,14 +1397,52 @@
     });
   }
 
+  function isLiveStatisticsRow(row) {
+    var committed = factorLabRuntimeState.committedViewModel;
+    var displayUntil = committed && committed.displayUntil;
+    return Boolean(
+      row &&
+      row._source === "live" &&
+      DASHBOARD_LIVE_PHASES.indexOf(row.predictionPhase) !== -1 &&
+      displayUntil &&
+      row.targetDate >= FACTOR_LAB_LIVE_TARGET_START_DATE &&
+      row.targetDate <= displayUntil
+    );
+  }
+
+  function factorDetailRowsForMonth(scheme, month, source) {
+    if (!scheme || !scheme.dailyRowsByMonth) return [];
+    if (source !== "live") {
+      return (scheme.dailyRowsByMonth[month] || []).filter(function (row) {
+        return source === "all" || row._source === source;
+      });
+    }
+    var rows = [];
+    Object.keys(scheme.dailyRowsByMonth).forEach(function (displayMonth) {
+      (scheme.dailyRowsByMonth[displayMonth] || []).forEach(function (row) {
+        if (isLiveStatisticsRow(row) && row.targetDate.slice(0, 7) === month) {
+          rows.push(row);
+        }
+      });
+    });
+    return rows;
+  }
+
   function getVisibleRawDailyRowsForScheme(scheme) {
     if (!scheme || !scheme.dailyRowsByMonth) return [];
     var src = factorLabState.dataSource;
+    if (src === "live") {
+      var liveRows = [];
+      factorMonthRange(factorLabState.startMonth, factorLabState.endMonth).forEach(function (month) {
+        liveRows = liveRows.concat(factorDetailRowsForMonth(scheme, month, "live"));
+      });
+      return liveRows;
+    }
     var rows = [];
     Object.keys(scheme.dailyRowsByMonth).forEach(function (month) {
       if (month < factorLabState.startMonth || month > factorLabState.endMonth) return;
       (scheme.dailyRowsByMonth[month] || []).forEach(function (dr) {
-        if (src === "all" || dr._source === src) rows.push(dr);
+        if (src === "all" || (src === "backtest" && dr._source === "backtest")) rows.push(dr);
       });
     });
     return rows;
@@ -1739,6 +1790,13 @@
 
   function getFactorAvailableMonths() {
     var src = factorLabState.dataSource;
+    if (src === "live") {
+      var committed = factorLabRuntimeState.committedViewModel;
+      return factorMonthRange(
+        FACTOR_LAB_LIVE_TARGET_START_DATE.slice(0, 7),
+        committed && committed.displayUntil ? committed.displayUntil.slice(0, 7) : ""
+      );
+    }
     var months = [];
     Object.keys(factorTaskSchemes).forEach(function (key) {
       factorTaskSchemes[key].forEach(function (scheme) {
@@ -1749,6 +1807,25 @@
       });
     });
     return months.sort();
+  }
+
+  function factorMonthRange(startMonth, endMonth) {
+    if (!/^\d{4}-\d{2}$/.test(startMonth) || !/^\d{4}-\d{2}$/.test(endMonth) ||
+        endMonth < startMonth) return [];
+    var months = [];
+    var year = Number(startMonth.slice(0, 4));
+    var month = Number(startMonth.slice(5, 7));
+    var endYear = Number(endMonth.slice(0, 4));
+    var endMonthNumber = Number(endMonth.slice(5, 7));
+    while (year < endYear || (year === endYear && month <= endMonthNumber)) {
+      months.push(String(year).padStart(4, "0") + "-" + String(month).padStart(2, "0"));
+      month += 1;
+      if (month === 13) {
+        year += 1;
+        month = 1;
+      }
+    }
+    return months;
   }
 
   function syncFactorMonthRange() {
@@ -2068,11 +2145,7 @@
     var html = "";
     var monthLabel = month.slice(5, 7);
     var src = factorLabState.dataSource;
-    var rows = scheme && scheme.dailyRowsByMonth && scheme.dailyRowsByMonth[month]
-      ? scheme.dailyRowsByMonth[month].filter(function (r) {
-          return src === "all" || r._source === src;
-        })
-      : [];
+    var rows = factorDetailRowsForMonth(scheme, month, src);
     if (!rows.length) {
       var emptyText = isMonthlyAverage || isQuarterlyAverage || isAnnualAverage
         ? presentation.emptyText

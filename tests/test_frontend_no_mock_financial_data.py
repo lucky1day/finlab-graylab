@@ -34,9 +34,9 @@ def test_no_mock_financial_data_remains() -> None:
 def test_missing_detail_renders_empty_state() -> None:
     """缺失明细必须落到既有空态分支，而不是替代数据源。"""
     source = _source()
-    anchor = source.index("var rows = scheme && scheme.dailyRowsByMonth")
-    body = source[anchor : anchor + 500]
-    assert ": [];" in body, body[:300]
+    anchor = source.index("var rows = factorDetailRowsForMonth")
+    body = source[anchor : anchor + 700]
+    assert "if (!rows.length)" in body, body[:300]
     assert "当前月份暂无每日明细" in body
 
 
