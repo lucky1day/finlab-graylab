@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import csv
 import hashlib
-import io
 import math
 import numbers
 import re
@@ -80,11 +78,6 @@ class FrozenPlatformInput:
             raise ValueError(
                 "platform input row_count must be a non-negative int"
             )
-        _validate_canonical_csv(
-            self.content_bytes,
-            spec=spec,
-            row_count=self.row_count,
-        )
         if not isinstance(self.audit_provenance, Mapping):
             raise ValueError("audit_provenance must be a mapping")
         provenance = dict(self.audit_provenance)
@@ -131,7 +124,6 @@ class PlatformInputProvider:
 
     spec: PlatformInputSpec
     normalize_frame: Callable[[pd.DataFrame, PlatformInputSpec, object], pd.DataFrame]
-    normalize_content: Callable[[pd.DataFrame, PlatformInputSpec], pd.DataFrame]
     calendar_snapshot_filename: str
 
 
@@ -239,47 +231,6 @@ def _normalize_api_wind_date_content(
     )
 
 
-def _validate_canonical_csv(
-    content: bytes,
-    *,
-    spec: PlatformInputSpec,
-    row_count: int,
-) -> None:
-    try:
-        text = content.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ValueError("platform input CSV must use UTF-8") from exc
-    if "\r" in text or not text.endswith("\n"):
-        raise ValueError("platform input CSV must use LF and end with LF")
-    try:
-        rows = list(csv.reader(io.StringIO(text, newline=""), strict=True))
-    except csv.Error as exc:
-        raise ValueError("platform input content is not valid CSV") from exc
-    if not rows or rows[0] != list(spec.columns):
-        raise ValueError(
-            "platform input CSV header does not match registered columns"
-        )
-    data_rows = rows[1:]
-    if len(data_rows) != row_count:
-        raise ValueError(
-            "platform input row_count does not match canonical CSV rows"
-        )
-    if any(len(row) != len(spec.columns) for row in data_rows):
-        raise ValueError(
-            "platform input CSV data rows must match registered columns"
-        )
-    frame = pd.DataFrame(data_rows, columns=list(spec.columns))
-    normalized = _provider(spec.artifact_id).normalize_content(frame, spec)
-    canonical = normalized.to_csv(
-        index=False,
-        lineterminator="\n",
-    ).encode("utf-8")
-    if content != canonical:
-        raise ValueError(
-            "platform input content_bytes are not provider-canonical CSV"
-        )
-
-
 def _normalize_rdate(value: object) -> str:
     if pd.isna(value):
         raise ValueError("api_wind_date.csv rdate must not be empty")
@@ -374,7 +325,6 @@ PLATFORM_INPUT_PROVIDERS: Mapping[str, PlatformInputProvider] = MappingProxyType
         "api-wind-date-v1": PlatformInputProvider(
             spec=PLATFORM_INPUT_REGISTRY.get("api-wind-date-v1"),
             normalize_frame=_normalize_api_wind_date,
-            normalize_content=_normalize_api_wind_date_content,
             calendar_snapshot_filename="api_wind_date.csv",
         ),
     }

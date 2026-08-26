@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from harness.context import GateContext
 from harness.operation import build_direct_operation
@@ -34,6 +34,38 @@ def build_operation(
 
 
 class BlackboxV2HarnessGateTests(unittest.TestCase):
+
+    def test_platform_input_is_normalized_and_serialized_once(self) -> None:
+        from shared.blackbox_v2 import platform_inputs
+
+        source = pd.DataFrame(
+            {
+                "rdate": ["2026-07-14", "2026-07-15"],
+                "week_id": [202627, 202627],
+            }
+        )
+        normalize = platform_inputs._normalize_api_wind_date_content
+        with patch(
+            "shared.blackbox_v2.platform_inputs._normalize_api_wind_date_content",
+            wraps=normalize,
+        ) as normalize_once:
+            artifact = platform_inputs.freeze_platform_input(
+                "api-wind-date-v1",
+                source,
+                weekly_cutoff_key="202627",
+            )
+
+        normalize_once.assert_called_once()
+        expected = (
+            b"rdate,week_id\n"
+            b"2026-07-14,202627\n"
+            b"2026-07-15,202627\n"
+        )
+        self.assertEqual(artifact.content_bytes, expected)
+        self.assertEqual(
+            artifact.sha256,
+            hashlib.sha256(expected).hexdigest(),
+        )
 
     def test_generation_snapshot_is_built_once_and_reused_across_schemes(self) -> None:
         from shared.blackbox_v2.snapshot import SNAPSHOT_FILENAMES
@@ -426,6 +458,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 audit_provenance={"source_kind": "harness_database"},
             )
             engine = Engine()
+            calendar = SimpleNamespace()
             ctx = GateContext(
                 scheme_id=config.scheme_id,
                 predict_date="2026-07-15",
@@ -445,7 +478,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 patch(
                     "harness.blackbox_v2.gates._feature_date",
                     return_value="2026-07-15",
-                ),
+                ) as feature_date,
                 patch(
                     "harness.blackbox_v2.gates.build_live_request",
                     return_value=request,
@@ -465,7 +498,10 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                         "environment_fingerprint": "e" * 64,
                     },
                 ),
-                patch("harness.blackbox_v2.gates.get_calendar"),
+                patch(
+                    "harness.blackbox_v2.gates.get_calendar",
+                    return_value=calendar,
+                ) as get_calendar,
             ):
                 state = _ensure_input_state(ctx)
                 same_state = _ensure_input_state(ctx)
@@ -474,6 +510,12 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             generation_snapshot.assert_called_once_with(
                 snapshot_date="2026-07-15",
                 require_fresh=False,
+            )
+            get_calendar.assert_called_once_with(engine)
+            feature_date.assert_called_once_with(
+                ANY,
+                "2026-07-15",
+                calendar,
             )
             self.assertNotEqual(
                 state.bundle.combined_snapshot_id,

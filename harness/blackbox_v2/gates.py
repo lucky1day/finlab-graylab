@@ -741,7 +741,7 @@ def _ensure_input_state(ctx: GateContext, *, force: bool = False) -> InputState:
         feature_date = (
             str(calendar.previous_trading_day(ctx.predict_date))[:10]
             if ctx.persist_backtest
-            else _feature_date(metadata, ctx.predict_date, engine)
+            else _feature_date(metadata, ctx.predict_date, calendar)
         )
         cutoffs = resolve_blackbox_input_cutoffs(
             snapshot,
@@ -861,8 +861,7 @@ def cleanup_runtime_input(ctx: GateContext) -> None:
     ctx.runtime_state.pop("blackbox_v2.input_state", None)
 
 
-def _feature_date(metadata: BlackboxMetadata, predict_date: str, engine: Any) -> str:
-    calendar = get_calendar(engine)
+def _feature_date(metadata: BlackboxMetadata, predict_date: str, calendar: Any) -> str:
     from shared.blackbox_v2.requests import resolve_live_context
 
     return resolve_live_context(
