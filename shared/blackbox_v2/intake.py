@@ -106,17 +106,25 @@ def validate_delivery(
     expected_names = {f"{metadata.scheme_id}.py", f"{metadata.scheme_id}.json"}
     if {item.name for item in entries} != expected_names:
         raise ValueError("delivery filenames must match metadata scheme_id")
+    validate_delivery_script(scripts[0])
+    return metadata, scripts[0], metadata_files[0]
+
+
+def validate_delivery_script(script_path: str | Path) -> None:
+    """校验一份已定位的 Blackbox 交付脚本。"""
+    script = Path(script_path)
+    if not script.is_file() or script.is_symlink() or script.suffix != ".py":
+        raise ValueError("Blackbox V2 delivery script must be one regular .py file")
     try:
         tree = ast.parse(
-            scripts[0].read_text(encoding="utf-8"),
-            filename=str(scripts[0]),
+            script.read_text(encoding="utf-8"),
+            filename=str(script),
         )
     except (OSError, UnicodeError, SyntaxError) as exc:
         raise ValueError(f"delivery script syntax error: {exc}") from exc
     violations = _script_violations(tree)
     if violations:
         raise ValueError("unsafe Blackbox V2 delivery script: " + "; ".join(violations))
-    return metadata, scripts[0], metadata_files[0]
 
 
 def validate_canonical_layout(

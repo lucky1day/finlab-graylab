@@ -39,7 +39,11 @@ from scheduler.repository import (
     write_run_log,
 )
 from shared.calendar_service import get_calendar
-from shared.blackbox_v2.contracts import BlackboxRequest, load_metadata
+from shared.blackbox_v2.contracts import (
+    BlackboxMetadata,
+    BlackboxRequest,
+    load_metadata,
+)
 from shared.blackbox_v2.requests import build_live_request, resolve_live_context
 from shared.task_specs import PERIOD_AVERAGE_TASK_TYPES
 from shared.blackbox_v2.snapshot import compose_blackbox_input_bundle
@@ -469,7 +473,7 @@ def run_blackbox_scheme_subprocess(
         require_fresh=require_fresh,
     )
 
-    metadata = load_metadata(cfg.delivery_metadata)
+    metadata = _blackbox_metadata(cfg)
     if snapshot_mode == BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF:
         _validate_historical_snapshot(
             snapshot,
@@ -565,6 +569,15 @@ def run_blackbox_scheme_subprocess(
     return [record]
 
 
+def _blackbox_metadata(cfg: SchemeConfig) -> BlackboxMetadata:
+    metadata = getattr(cfg, "blackbox_metadata", None)
+    if isinstance(metadata, BlackboxMetadata):
+        return metadata
+    if cfg.delivery_metadata is None:
+        raise ValueError(f"Blackbox V2 metadata path missing for {cfg.scheme_id}")
+    return load_metadata(cfg.delivery_metadata)
+
+
 def run_blackbox_gray_replay_batch(
     cfg: SchemeConfig,
     *,
@@ -606,7 +619,7 @@ def run_blackbox_gray_replay_batch(
             raise TypeError("gray replay batch requests must be BlackboxRequest")
         _validate_gray_replay_request_within_session(request, session)
 
-    metadata = load_metadata(cfg.delivery_metadata)
+    metadata = _blackbox_metadata(cfg)
     if metadata.scheme_id != cfg.scheme_id:
         raise ValueError(
             "Blackbox V2 metadata scheme_id does not match configured scheme"

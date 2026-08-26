@@ -30,6 +30,8 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
         self.assertEqual(config.schedule.timeout_sec, 3600)
         self.assertEqual(config.delivery_script, (scheme_dir / "delivery" / "trial_10y.py").resolve())
         self.assertEqual(config.delivery_metadata, (scheme_dir / "delivery" / "trial_10y.json").resolve())
+        self.assertIsNotNone(config.blackbox_metadata)
+        self.assertEqual(config.blackbox_metadata.scheme_id, "trial_10y")
 
     def test_legacy_platform_input_field_only_preserves_version_hash(self) -> None:
         from scheduler.discovery import load_scheme_config

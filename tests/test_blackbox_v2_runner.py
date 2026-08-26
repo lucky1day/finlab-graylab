@@ -69,6 +69,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             input_source="data_bridge_current",
             delivery_script=Path("trial.py"),
             delivery_metadata=Path("trial.json"),
+            blackbox_metadata=_metadata(),
         )
 
         def process_started(_pid: int, _pgid: int) -> None:
@@ -92,7 +93,10 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             )
 
         with (
-            patch("scheduler.executor.load_metadata", return_value=_metadata()),
+            patch(
+                "scheduler.executor.load_metadata",
+                side_effect=AssertionError("cached metadata must be reused"),
+            ),
             patch(
                 "scheduler.executor.get_ready_blackbox_snapshot",
                 return_value=snapshot,

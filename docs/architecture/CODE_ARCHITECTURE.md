@@ -173,8 +173,8 @@ Native SOP 的 Gate 与授权边界，不再存在需要维护的 frozen daily-g
 ```
 Blackbox V2:
   intake-blackbox          → 新 ID：两文件 + Metadata + 固定 Profile/Schema + 安全静态边界
-  gate backtest --persist  → 复用两文件校验 + producer-ready snapshot + 完整批量执行 + immutable backtest
-  activate                 → 复用两文件校验 + insert-only draft identity + 原子 active 切换
+  gate backtest --persist  → 复验脚本安全边界 + producer-ready snapshot + 完整批量执行 + immutable backtest
+  activate                 → 匹配 canonical exact-version 回测证据 + insert-only draft identity + 原子 active 切换
 
 Native V1:
   onboard --stage all      → StaticGate + DryRunGate + CompareGate + BacktestGate(--no-persist)
@@ -270,7 +270,7 @@ schemes/{id}/                     schemes/{id}/
 | 统一输出 | `list[PredictionRecord]` → JSON | `scheduler/scheme_runner.py` |
 | 统一写库 | `create_scheme_run` 建立 running 审计行；最终写入按 runtime/operation 进入 `complete_active_native_run` / `complete_approved_blackbox_run` / `complete_gray_gap_run` 原子完成 API | `scheduler/executor.py` + `harness/signal_gap_fill.py` + `scheduler/repository.py` |
 
-因此“用户给新方案”的代码落点是 Blackbox Intake 原样保存两文件并生成平台配置，再由 harness 按运行时驱动 Gate。不得手工创建新的 Native `predict.py + core/` 目录；Native StaticGate 与 ActivationGate 会拒绝政策清单外身份。
+因此“用户给新方案”的代码落点是 Blackbox Intake 原样保存两文件并生成平台配置，再依次执行完整持久化回测和激活；Blackbox 不进入 Native Gate 编排。不得手工创建新的 Native `predict.py + core/` 目录；Native StaticGate 与 ActivationGate 会拒绝政策清单外身份。
 
 ---
 

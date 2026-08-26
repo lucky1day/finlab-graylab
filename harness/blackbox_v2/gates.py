@@ -27,12 +27,11 @@ from scheduler.blackbox_v2_runner import (
 )
 from scheduler.process_control import ProcessGroupTerminationError
 from scheduler.discovery import SchemeConfig, load_scheme_config
-from shared.blackbox_v2.contracts import BlackboxMetadata
+from shared.blackbox_v2.contracts import BlackboxMetadata, load_metadata
 from shared.blackbox_v2.intake import (
     DATA_SCHEMA_VERSION,
     RUNTIME_PROFILE,
-    validate_canonical_layout,
-    validate_delivery,
+    validate_delivery_script,
 )
 from shared.blackbox_v2.history import CURRENT_SNAPSHOT_REPLAY, build_historical_cases
 from shared.blackbox_v2.snapshot import (
@@ -225,20 +224,13 @@ def _config(ctx: GateContext) -> SchemeConfig:
 
 
 def validate_canonical_blackbox_delivery(cfg: SchemeConfig) -> BlackboxMetadata:
-    """复用 Intake 合同校验当前 canonical 交付，不建立额外 Gate。"""
-    scheme_path, config_path, delivery_dir = validate_canonical_layout(cfg.path)
-    if scheme_path != cfg.path.resolve():
-        raise ValueError("canonical scheme path does not match config")
-    if config_path != (cfg.path / "config.yaml").resolve():
-        raise ValueError("canonical config path does not match scheme")
-    metadata, script_path, metadata_path = validate_delivery(
-        delivery_dir,
-        expected_scheme_id=cfg.scheme_id,
-    )
-    if script_path != _script(cfg).resolve():
-        raise ValueError("canonical delivery script path does not match config")
-    if cfg.delivery_metadata is None or metadata_path != cfg.delivery_metadata.resolve():
-        raise ValueError("canonical delivery metadata path does not match config")
+    """复用已加载 canonical 身份，只补充 Intake 脚本安全校验。"""
+    validate_delivery_script(_script(cfg))
+    metadata = getattr(cfg, "blackbox_metadata", None)
+    if not isinstance(metadata, BlackboxMetadata):
+        if cfg.delivery_metadata is None:
+            raise ValueError("Blackbox V2 metadata path missing")
+        metadata = load_metadata(cfg.delivery_metadata)
     if cfg.runtime_profile != RUNTIME_PROFILE:
         raise ValueError(
             "Blackbox runtime_profile must match the platform contract: "

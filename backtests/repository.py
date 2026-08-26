@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 from datetime import date, datetime
-from typing import TYPE_CHECKING, Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable, Sequence
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection, Engine, URL
@@ -121,8 +121,8 @@ def persist_backtest_output_atomic(
     benchmark_id: str,
 ) -> int:
     """在单一事务中写入 Blackbox run、明细、月指标与成功摘要。"""
-    rows = list(output.rows)
-    metrics = list(output.monthly_metrics)
+    rows = output.rows
+    metrics = output.monthly_metrics
     if not rows:
         raise ValueError("atomic Blackbox backtest persistence requires prediction rows")
     if not metrics:
@@ -228,10 +228,9 @@ def _create_backtest_run_connection(
 def _insert_backtest_predictions_connection(
     connection: Connection,
     run_id: int,
-    rows: Iterable[dict[str, Any]],
+    rows: Sequence[dict[str, Any]],
 ) -> int:
-    materialized = list(rows)
-    if not materialized:
+    if not rows:
         return 0
     source_expr = _json_expression(connection, "source_row")
     extra_expr = _json_expression(connection, "extra")
@@ -248,18 +247,17 @@ def _insert_backtest_predictions_connection(
                  :confidence, {source_expr}, {extra_expr})
             """
         ),
-        [_prediction_params(run_id, row) for row in materialized],
+        [_prediction_params(run_id, row) for row in rows],
     )
-    return len(materialized)
+    return len(rows)
 
 
 def _insert_backtest_monthly_metrics_connection(
     connection: Connection,
     run_id: int,
-    rows: Iterable[dict[str, Any]],
+    rows: Sequence[dict[str, Any]],
 ) -> int:
-    materialized = list(rows)
-    if not materialized:
+    if not rows:
         return 0
     actual_expr = _json_expression(connection, "actual_dist")
     predicted_expr = _json_expression(connection, "predicted_dist")
@@ -276,9 +274,9 @@ def _insert_backtest_monthly_metrics_connection(
                  :down_precision, :down_recall, {actual_expr}, {predicted_expr})
             """
         ),
-        [_metric_params(run_id, row) for row in materialized],
+        [_metric_params(run_id, row) for row in rows],
     )
-    return len(materialized)
+    return len(rows)
 
 
 def _update_backtest_run_summary_connection(

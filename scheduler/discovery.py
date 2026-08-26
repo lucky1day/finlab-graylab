@@ -6,6 +6,7 @@ from typing import Any
 
 from scheduler.deployment_scope import filter_schemes_for_configured_target
 from shared.blackbox_v2.versioning import compute_blackbox_config_hash
+from shared.blackbox_v2.contracts import BlackboxMetadata
 from shared.scheme_lifecycle_state import read_lifecycle_state
 from shared.scheme_config_loader import load_yaml_mapping
 from shared.scheme_config_schema import validate_config
@@ -60,6 +61,7 @@ class SchemeConfig:
     environment_fingerprint: str | None
     data_snapshot_id: str | None
     input_source: str = "legacy_db"
+    blackbox_metadata: BlackboxMetadata | None = None
 
 
 def _require_mapping(value: Any, path: Path) -> dict[str, Any]:
@@ -225,6 +227,7 @@ def _load_blackbox_config(config_path: Path, raw: dict[str, Any], schedule_raw: 
         environment_fingerprint=None,
         data_snapshot_id=None,
         input_source=str(raw["input_source"]),
+        blackbox_metadata=metadata,
     )
 
 

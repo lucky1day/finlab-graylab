@@ -98,7 +98,7 @@ python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
 # Native all：static → dry-run（含实际输入合同）→ compare → backtest
 ```
 
-平台不再对 Blackbox 运行 `StaticGate`、冒烟 `CompareGate` 或 `shadow-register`：Intake 定义两文件、Metadata、固定 Profile/Schema 和安全静态边界；持久化回测与 activate 直接复用这一个纯校验，防止修订绕过或 evidence 后交付漂移，但不新增 Gate 或人工步骤。上游负责交付可运行性；平台的完整持久化回测同时验证真实批量执行和标准输出。首次 activate 在同一命令内 insert-only 建立 draft 身份并原子激活，不再要求操作者先做一次不可观察的 shadow 转换。人工副作用仍绑定 canonical exact version、operator 与 operation scope；Blackbox 激活只接受同 exact version 的成功持久化回测证据。技术验证不授予生产写库、激活、服务或调度权限。详细流程见 [Blackbox 平台入库 SOP](docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)、[生产准备](docs/blackbox_v2/PRODUCTION_READINESS.md)、[Native 维护 SOP](docs/sop/NATIVE_V1_MAINTENANCE_SOP.md)和 [Harness 架构](docs/architecture/HARNESS_ARCHITECTURE.md)。
+平台不再对 Blackbox 运行 `StaticGate`、冒烟 `CompareGate` 或 `shadow-register`：Intake 定义两文件、Metadata、固定 Profile/Schema 和安全静态边界；持久化回测在真实执行前复验脚本安全边界，activate 不再重复解析 AST 或 Metadata，而是严格加载 canonical 当前字节并只接受同 exact version 的成功持久化回测证据。上游负责交付可运行性；平台的完整持久化回测同时验证真实批量执行和标准输出。首次 activate 在同一命令内 insert-only 建立 draft 身份并原子激活，不再要求操作者先做一次不可观察的 shadow 转换。人工副作用仍绑定 canonical exact version、operator 与 operation scope。技术验证不授予生产写库、激活、服务或调度权限。详细流程见 [Blackbox 平台入库 SOP](docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)、[生产准备](docs/blackbox_v2/PRODUCTION_READINESS.md)、[Native 维护 SOP](docs/sop/NATIVE_V1_MAINTENANCE_SOP.md)和 [Harness 架构](docs/architecture/HARNESS_ARCHITECTURE.md)。
 
 ## 数据库边界
 

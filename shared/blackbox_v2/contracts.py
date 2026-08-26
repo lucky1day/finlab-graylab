@@ -188,10 +188,15 @@ def load_requests(path: str | Path) -> list[BlackboxRequest]:
         raise ValueError(f"invalid Request CSV {request_path}: {exc}") from exc
     if not requests:
         raise ValueError("Request batch must contain at least one row")
-    ids = [item.request_id for item in requests]
-    duplicates = sorted({value for value in ids if ids.count(value) > 1})
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for item in requests:
+        if item.request_id in seen:
+            duplicates.add(item.request_id)
+        else:
+            seen.add(item.request_id)
     if duplicates:
-        raise ValueError(f"duplicate request_id values: {duplicates}")
+        raise ValueError(f"duplicate request_id values: {sorted(duplicates)}")
     return requests
 
 

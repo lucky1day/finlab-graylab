@@ -399,9 +399,15 @@ def build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     by_tenor: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         by_tenor.setdefault(row["target_tenor"], []).append(row)
+    aggregate_by_tenor: dict[str, dict[str, Any]] = {}
+    periods_by_tenor: dict[str, dict[str, Any]] = {}
+    for tenor, items in sorted(by_tenor.items()):
+        periods = period_summaries(items)
+        aggregate_by_tenor[tenor] = dict(periods["all"])
+        periods_by_tenor[tenor] = periods
     return {
-        "by_tenor": {tenor: aggregate_rows(items) for tenor, items in sorted(by_tenor.items())},
-        "periods_by_tenor": {tenor: period_summaries(items) for tenor, items in sorted(by_tenor.items())},
+        "by_tenor": aggregate_by_tenor,
+        "periods_by_tenor": periods_by_tenor,
     }
 
 

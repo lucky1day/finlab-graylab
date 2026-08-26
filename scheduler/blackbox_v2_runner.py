@@ -310,14 +310,6 @@ def execute_blackbox_cli(
             ("runtime prefix", runtime.prefix),
         ),
     )
-    if (
-        _validate_data_dir(data)
-        != initial_data_state
-    ):
-        raise ValueError(
-            "Blackbox V2 data-dir changed before process start"
-        )
-
     try:
         input_flag = "--request" if mode == "predict" else "--requests"
         python_executable = str(runtime.executable)

@@ -63,10 +63,10 @@
 Blackbox V2 不再进入 `harness onboard`。上游负责证明交付脚本可运行，平台只保留三个会产生新事实的步骤：
 
 1. `intake-blackbox`：新 ID 原子接收两文件，完成 Metadata、固定 Runtime Profile/Data Schema、脚本语法与平台安全边界检查，生成 `paused/draft` canonical config；
-2. `gate backtest --persist`：先对当前 canonical 两文件复用同一纯校验，再选择已有 producer-ready DataBridge generation，执行完整历史 Request 批次并原子写入 immutable backtest。它同时证明平台批量调用、Result 回显、数量、日期和持久化合同，不再提前做一次重复 predict；
-3. `activate`：复验两文件未在回测后漂移，并只接受同 exact version 的成功持久化回测；首次激活在一个命令内 insert-only 建立 draft version/paused Registry 并原子切到 active。没有独立 `shadow-register`。
+2. `gate backtest --persist`：先对当前 canonical 脚本复验安全边界，再选择已有 producer-ready DataBridge generation，执行完整历史 Request 批次并原子写入 immutable backtest。它同时证明平台批量调用、Result 回显、数量、日期和持久化合同，不再提前做一次重复 predict；
+3. `activate`：严格加载 canonical 当前字节哈希，不重复扫描 AST/Metadata，并只接受同 exact version 的成功持久化回测；首次激活在一个命令内 insert-only 建立 draft version/paused Registry 并原子切到 active。没有独立 `shadow-register`。
 
-同 ID 修订不重复创建方案目录，也不伪造第二次 Intake；修订 canonical `.py/.json` 后重新执行第 2、3 步。任何第三文件、symlink、危险导入或固定 Profile/Schema 漂移都会在回测前或激活前直接拒绝。
+同 ID 修订不重复创建方案目录，也不伪造第二次 Intake；修订 canonical `.py/.json` 后重新执行第 2、3 步。任何第三文件、symlink、危险导入或固定 Profile/Schema 漂移都会在回测前直接拒绝；回测后的任何字节漂移都会因 exact-version evidence 不匹配而阻断激活。
 
 `gate dashboard` 是激活后的可选只读产品检查，不是入库门禁；`signal-gap-fill` 是独立授权的历史缺口操作，也不属于入库。
 

@@ -106,6 +106,10 @@ class ActivationGate(Gate):
     def run(self, ctx: GateContext) -> GateResult:
         config_path = ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml"
         cfg = ctx.config
+        if getattr(cfg, "runtime_type", None) == "blackbox_v2":
+            from harness.blackbox_v2.activation import activate_blackbox
+
+            return activate_blackbox(ctx)
         raw_runtime_type = None
         if config_path.is_file():
             try:
@@ -113,7 +117,7 @@ class ActivationGate(Gate):
                 raw_runtime_type = raw.get("runtime_type") if isinstance(raw, dict) else None
             except (OSError, UnicodeError, ValueError):
                 raw_runtime_type = getattr(cfg, "runtime_type", None)
-        if raw_runtime_type == "blackbox_v2" or getattr(cfg, "runtime_type", None) == "blackbox_v2":
+        if raw_runtime_type == "blackbox_v2":
             try:
                 from scheduler.discovery import load_scheme_config
 

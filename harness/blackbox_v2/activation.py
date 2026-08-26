@@ -61,10 +61,10 @@ def _activate_initial(
         assert_lifecycle_clear(ctx.project_root, cfg.scheme_id)
     except RuntimeError as exc:
         return _blocked(started_at, [str(exc)])
+    cfg = _reload_pinned_canonical(cfg)
     engine = ctx.engine_factory() if ctx.engine_factory is not None else create_default_engine()
     identity_created = False
     try:
-        _validate_canonical_delivery(cfg)
         passed_backtest = _verify_passed_backtest(engine, cfg)
         operation, errors = verify_direct_operation(
             ctx.operation,
@@ -88,9 +88,8 @@ def _activate_initial(
         except BlackboxLifecycleIdentityAbsent:
             if cfg.version_status != "draft":
                 raise
-            register_blackbox_draft_identity(engine, enriched_cfg)
+            db_state = register_blackbox_draft_identity(engine, enriched_cfg)
             identity_created = True
-            db_state = read_blackbox_lifecycle_state(engine, enriched_cfg)
 
         evidence_errors = _validate_initial_state(cfg, db_state, passed_backtest)
         if evidence_errors:
@@ -203,7 +202,6 @@ def _activate_revision(
         with lifecycle_operation_lock(ctx.project_root, cfg.scheme_id):
             assert_lifecycle_clear(ctx.project_root, cfg.scheme_id)
             pinned_cfg = _reload_pinned_canonical(cfg)
-            _validate_canonical_delivery(pinned_cfg)
             passed_backtest = _verify_passed_backtest(engine, pinned_cfg)
             operation, errors = verify_direct_operation(
                 ctx.operation,
@@ -529,12 +527,6 @@ def _verify_passed_backtest(engine, cfg):
     from harness.blackbox_v2.gates import verify_passed_blackbox_backtest as verify
 
     return verify(engine, cfg)
-
-
-def _validate_canonical_delivery(cfg: SchemeConfig):
-    from harness.blackbox_v2.gates import validate_canonical_blackbox_delivery
-
-    return validate_canonical_blackbox_delivery(cfg)
 
 
 def _environment_fingerprint(project_root: Path) -> str:

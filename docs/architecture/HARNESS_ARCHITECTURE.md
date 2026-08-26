@@ -89,7 +89,7 @@ Native builder receipt 环境变量只由 DryRun 父进程显式注入，目录�
 receipt 为 `0600` 普通文件并在 Gate 返回前删除。StaticGate 同时拒绝 Native `predict.py` 直接写文件。
 
 Blackbox V2 不接受 `onboard`。Intake 定义交付结构、Metadata、固定 Profile/Schema 和平台安全静态
-边界；完整持久化回测与 activate 直接复用同一纯校验，完整回测另验证平台批量调用与标准输出。旧 Blackbox Harness `all` 证据不再是 backtest
+边界；完整持久化回测执行前复验脚本安全边界，并验证平台批量调用与标准输出。activate 不重复运行 AST/Metadata 校验，只严格加载 canonical 当前身份并匹配 exact-version 成功回测证据。旧 Blackbox Harness `all` 证据不再是 backtest
 或 activation 的前置条件。
 
 Native 四段 evidence profile 和三段 `native-maintenance` 的既有准入、保真与身份规则保持不变；
@@ -181,7 +181,7 @@ adapter 和其它 Gate 不得直接查询该表。
 
 每次 Blackbox 新方案入库或 Native 存量维护，至少保留对应运行时的以下证据：
 
-- 静态检查结论: Blackbox 由 Intake 定义并在持久化回测与 activate 复验交付、Metadata、固定 Profile/Schema 和安全静态边界；Native 由 StaticGate 记录。
+- 静态检查结论: Blackbox 由 Intake 定义并在持久化回测前复验脚本安全边界；activate 只保存 canonical exact-version 与成功回测的匹配证据；Native 由 StaticGate 记录。
 - 输入 artifact 结论: Blackbox 在完整回测中保留 generation/snapshot；Native 在 DryRun 证据中保留实际 builder receipt，两者都不重复构建输入。
 - 执行结论: Blackbox 保留完整批量回测的 Result 回显、数量、日期与 repository 提交证据；Native 保留 dry-run 输出和正式表行数不变。
 - 执行预算结论: Native 若配置 `schedule.timeout_sec`，记录实际耗时、配置值和是否仍在预算内；Blackbox 记录方案申请、Runtime Profile 的 predict/backtest 预算、实际耗时及任何独立 operation deadline，并证明最终 predict 预算取三层最小值。确认预算只影响 executor 等待，不改变算法输出。

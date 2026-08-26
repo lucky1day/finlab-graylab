@@ -58,8 +58,7 @@ Intake 不读取 DataBridge、不运行算法、不写数据库业务表，也�
 
 同 ID 修订不创建第二个方案目录，也不重复执行会拒绝已有 ID 的 Intake。只修订 canonical
 `.py/.json` 与确有必要的平台 config，然后重新执行 Step 2、3；任何字节变化都会形成新的 exact
-version。回测和激活入口都会直接复用上述两文件安全校验，因此修订不能绕过两文件、symlink、危险
-导入/调用或固定 Profile/Schema 边界。
+version。回测入口会复验脚本安全边界；激活不重复解析 AST/Metadata，只严格加载 canonical 当前字节并匹配同 exact version 的成功持久化回测，因此 evidence 后的任何交付漂移仍会被拒绝。
 
 ## 3. Step 2：完整持久化回测
 
@@ -100,7 +99,7 @@ immutable run；不得更新、删除或补写旧 run。
 python -m harness activate --scheme-id {scheme_id}
 ```
 
-激活先复验 canonical 目录仍是同一安全两文件交付，再只接受与 canonical exact version 精确匹配的成功持久化回测：
+激活严格加载 canonical 当前两文件身份，不重复运行脚本安全扫描，只接受与当前 exact version 精确匹配的成功持久化回测：
 
 ```text
 scheme_version + code_hash + config_hash + manifest_hash
