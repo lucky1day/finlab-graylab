@@ -31,8 +31,8 @@
 
 ## 生命周期异常
 
-- 任一 pending lifecycle journal 都必须阻断新的 lifecycle 动作，不允许激活或 revision 路径隐式恢复。
-- 只有独立执行 `gate lifecycle-reconcile` 命令才可以把身份恢复到 journal 记录的 previous safe state；原 journal 保持不变，并新增 linked reconciliation journal 记录恢复结果。
+- Blackbox 当前生命周期只以本机数据库 exact version 与 composite Registry 为权威。
+- 首次激活和 revision 在单个数据库事务中提交；失败整体回滚，修复原因后重新执行 `activate`。
 
 ## 禁止替代
 

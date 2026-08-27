@@ -14,6 +14,7 @@ from harness.blackbox_v2.activation import activate_blackbox
 from harness.context import GateContext
 from harness.operation import build_direct_operation
 from harness.result import GateStatus
+from scheduler.repository import BlackboxLifecycleIdentityAbsent
 
 
 def test_activation_gate_reuses_loaded_blackbox_config(tmp_path) -> None:
@@ -188,45 +189,46 @@ def _activate_revision_repository(engine, cfg):
     )
 
 
-def test_activate_dispatches_initial_and_revision_through_one_entry(tmp_path) -> None:
-    ctx = GateContext(
-        scheme_id="trial_10y",
-        predict_date="activate",
-        project_root=tmp_path,
+def _initial_fixture():
+    engine, cfg = _revision_fixture()
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM t_scheme_registry"))
+        conn.execute(text("DELETE FROM t_scheme_versions"))
+    cfg.status = "paused"
+    cfg.version_status = "draft"
+    cfg.scheme_version = "version-1"
+    return engine, cfg
+
+
+def _sqlite_initial_registry_sync(conn, schemes, *, effective_statuses) -> None:
+    cfg = list(schemes)[0]
+    registry_id = f"{cfg.scheme_id}__h{cfg.horizon}__{cfg.tenors[0]}"
+    conn.execute(
+        text(
+            "INSERT INTO t_scheme_registry VALUES "
+            "(:registry_id, :scheme_id, :name, :description, :horizon, "
+            ":task_type, 'blackbox_v2', :tenors, :frequency, :target_tenor, "
+            ":cron, :timezone, :status, :deployed_at)"
+        ),
+        {
+            "registry_id": registry_id,
+            "scheme_id": cfg.scheme_id,
+            "name": cfg.name,
+            "description": cfg.description,
+            "horizon": cfg.horizon,
+            "task_type": cfg.task_type,
+            "tenors": '["10Y"]',
+            "frequency": cfg.frequency,
+            "target_tenor": cfg.tenors[0],
+            "cron": cfg.schedule.cron,
+            "timezone": cfg.schedule.timezone,
+            "status": effective_statuses[registry_id],
+            "deployed_at": datetime(2026, 8, 25, 2, 0),
+        },
     )
-    initial = SimpleNamespace(status="paused", version_status="draft")
-    retired_shadow = SimpleNamespace(status="paused", version_status="shadow")
-    revision = SimpleNamespace(status="active", version_status="active")
-    with (
-        patch("harness.blackbox_v2.activation._config", return_value=initial),
-        patch(
-            "harness.blackbox_v2.activation._activate_initial",
-            return_value="initial-result",
-        ) as initial_call,
-    ):
-        assert activate_blackbox(ctx) == "initial-result"
-        initial_call.assert_called_once()
-    with (
-        patch("harness.blackbox_v2.activation._config", return_value=revision),
-        patch(
-            "harness.blackbox_v2.activation._activate_revision",
-            return_value="revision-result",
-        ) as revision_call,
-    ):
-        assert activate_blackbox(ctx) == "revision-result"
-        revision_call.assert_called_once()
-    with patch(
-        "harness.blackbox_v2.activation._config",
-        return_value=retired_shadow,
-    ):
-        result = activate_blackbox(ctx)
-        assert result.status == GateStatus.BLOCKED
-        assert "paused+draft" in result.errors[0]
 
 
-def test_initial_activation_registers_draft_identity_in_same_command(tmp_path) -> None:
-    from scheduler.repository import BlackboxLifecycleIdentityAbsent
-
+def test_initial_activation_uses_one_atomic_repository_call(tmp_path) -> None:
     cfg = SimpleNamespace(
         scheme_id="trial_10y",
         scheme_version="version-1",
@@ -244,13 +246,16 @@ def test_initial_activation_registers_draft_identity_in_same_command(tmp_path) -
         generation_id="generation-1",
         data_snapshot_id="snapshot-1",
     )
-    draft_state = SimpleNamespace(
+    active_state = SimpleNamespace(
         scheme_id=cfg.scheme_id,
         scheme_version=cfg.scheme_version,
-        version_status="draft",
-        registry_status="paused",
+        version_status="active",
+        registry_status="active",
+        registry_scheme_ids=("trial_10y__h1__10Y",),
         environment_fingerprint="e" * 64,
         data_snapshot_id="snapshot-1",
+        approved_by="operator",
+        approved_at=None,
     )
     operation = build_direct_operation(
         cfg.scheme_id,
@@ -274,7 +279,6 @@ def test_initial_activation_registers_draft_identity_in_same_command(tmp_path) -
                 **{**vars(value), **updates}
             ),
         ),
-        patch("harness.blackbox_v2.activation.assert_lifecycle_clear"),
         patch(
             "harness.blackbox_v2.activation._reload_pinned_canonical",
             return_value=cfg,
@@ -292,19 +296,93 @@ def test_initial_activation_registers_draft_identity_in_same_command(tmp_path) -
             side_effect=BlackboxLifecycleIdentityAbsent(),
         ),
         patch(
-            "harness.blackbox_v2.activation.register_blackbox_draft_identity",
-            return_value=draft_state,
-        ) as register_identity,
-        patch(
-            "harness.blackbox_v2.activation.perform_lifecycle_transition",
-            return_value=(SimpleNamespace(), tmp_path / "journal.json"),
+            "harness.blackbox_v2.activation.read_blackbox_revision_activation_preflight",
+            side_effect=ValueError("no prior active identity"),
         ),
+        patch(
+            "harness.blackbox_v2.activation.activate_blackbox_initial",
+            return_value=active_state,
+        ) as activate_initial,
     ):
         result = activate_blackbox(ctx)
 
     assert result.status == GateStatus.PASSED
     assert {item.key: item.value for item in result.evidence}["identity_created"] is True
-    register_identity.assert_called_once()
+    activate_initial.assert_called_once()
+
+
+def test_existing_non_active_identity_is_not_promoted(tmp_path) -> None:
+    cfg = SimpleNamespace(
+        scheme_id="trial_10y",
+        scheme_version="version-1",
+        status="paused",
+        version_status="draft",
+        runtime_type="blackbox_v2",
+        runtime_profile="blackbox-v2-v1",
+        path=Path(tmp_path),
+    )
+    passed_backtest = SimpleNamespace(
+        backtest_run_id=42,
+        benchmark_id="bbv2-test",
+        runtime_profile="blackbox-v2-v1",
+        environment_fingerprint="e" * 64,
+        generation_id="generation-1",
+        data_snapshot_id="snapshot-1",
+    )
+    existing_state = SimpleNamespace(
+        version_status="draft",
+        registry_status="paused",
+    )
+    operation = build_direct_operation(
+        cfg.scheme_id,
+        "blackbox_activate",
+        scheme_version=cfg.scheme_version,
+        issued_by="operator",
+    )
+    ctx = GateContext(
+        scheme_id=cfg.scheme_id,
+        predict_date="activate",
+        project_root=tmp_path,
+        config=cfg,
+        operation=operation,
+        engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
+    )
+
+    with (
+        patch(
+            "harness.blackbox_v2.activation.replace",
+            side_effect=lambda value, **updates: SimpleNamespace(
+                **{**vars(value), **updates}
+            ),
+        ),
+        patch("harness.blackbox_v2.activation._reload_pinned_canonical", return_value=cfg),
+        patch(
+            "harness.blackbox_v2.activation._verify_passed_backtest",
+            return_value=passed_backtest,
+        ),
+        patch(
+            "harness.blackbox_v2.activation._environment_fingerprint",
+            return_value="e" * 64,
+        ),
+        patch(
+            "harness.blackbox_v2.activation.read_blackbox_revision_activation_preflight",
+            side_effect=ValueError("no prior active identity"),
+        ),
+        patch(
+            "harness.blackbox_v2.activation.read_blackbox_lifecycle_state",
+            return_value=existing_state,
+        ),
+        patch("harness.blackbox_v2.activation.activate_blackbox_initial") as activate_initial,
+        patch("harness.blackbox_v2.activation.activate_blackbox_revision") as activate_revision,
+    ):
+        result = activate_blackbox(ctx)
+
+    assert result.status == GateStatus.BLOCKED
+    assert result.errors == [
+        "existing non-active Blackbox identity cannot be promoted: got=draft+paused"
+    ]
+    activate_initial.assert_not_called()
+    activate_revision.assert_not_called()
 
 
 def test_revision_activation_uses_direct_operation_and_atomic_repository(tmp_path) -> None:
@@ -363,14 +441,16 @@ def test_revision_activation_uses_direct_operation_and_atomic_repository(tmp_pat
                 **{**vars(value), **updates}
             ),
         ),
-        patch("harness.blackbox_v2.activation.lifecycle_operation_lock", return_value=nullcontext()),
-        patch("harness.blackbox_v2.activation.assert_lifecycle_clear"),
         patch("harness.blackbox_v2.activation._reload_pinned_canonical", return_value=cfg),
         patch(
             "harness.blackbox_v2.activation._verify_passed_backtest",
             return_value=passed_backtest,
         ),
         patch("harness.blackbox_v2.activation._environment_fingerprint", return_value="e" * 64),
+        patch(
+            "harness.blackbox_v2.activation.read_blackbox_lifecycle_state",
+            side_effect=BlackboxLifecycleIdentityAbsent(),
+        ),
         patch(
             "harness.blackbox_v2.activation.read_blackbox_revision_activation_preflight",
             return_value=preflight,
@@ -394,7 +474,7 @@ def test_revision_repository_atomically_switches_versions() -> None:
     try:
         with (
             patch(
-                "scheduler.repository._blackbox_draft_register_advisory_lock",
+                "scheduler.repository._blackbox_activation_advisory_lock",
                 return_value=nullcontext(),
             ),
             patch(
@@ -418,6 +498,76 @@ def test_revision_repository_atomically_switches_versions() -> None:
         engine.dispose()
 
 
+def test_initial_repository_atomically_creates_active_identity() -> None:
+    from scheduler.repository import activate_blackbox_initial
+
+    engine, cfg = _initial_fixture()
+    try:
+        with (
+            patch(
+                "scheduler.repository._blackbox_activation_advisory_lock",
+                return_value=nullcontext(),
+            ),
+            patch(
+                "scheduler.repository._upsert_scheme_version_conn",
+                side_effect=_sqlite_revision_upsert,
+            ),
+            patch(
+                "scheduler.repository._sync_scheme_registry_conn",
+                side_effect=_sqlite_initial_registry_sync,
+            ),
+        ):
+            state = activate_blackbox_initial(
+                engine,
+                cfg,
+                approved_by="operator",
+                approved_at=datetime(2026, 8, 25, 2, 0, tzinfo=timezone.utc),
+            )
+
+        assert state.version_status == "active"
+        assert _revision_states(engine) == [("version-1", "active")]
+        with engine.begin() as conn:
+            assert conn.execute(
+                text("SELECT status FROM t_scheme_registry")
+            ).scalar_one() == "active"
+    finally:
+        engine.dispose()
+
+
+def test_initial_repository_rolls_back_if_registry_insert_fails() -> None:
+    from scheduler.repository import activate_blackbox_initial
+
+    engine, cfg = _initial_fixture()
+    try:
+        with (
+            patch(
+                "scheduler.repository._blackbox_activation_advisory_lock",
+                return_value=nullcontext(),
+            ),
+            patch(
+                "scheduler.repository._upsert_scheme_version_conn",
+                side_effect=_sqlite_revision_upsert,
+            ),
+            patch(
+                "scheduler.repository._sync_scheme_registry_conn",
+                side_effect=RuntimeError("injected registry failure"),
+            ),
+            pytest.raises(RuntimeError, match="injected registry failure"),
+        ):
+            activate_blackbox_initial(
+                engine,
+                cfg,
+                approved_by="operator",
+                approved_at=datetime(2026, 8, 25, 2, 0, tzinfo=timezone.utc),
+            )
+
+        assert _revision_states(engine) == []
+        with engine.begin() as conn:
+            assert conn.execute(text("SELECT COUNT(*) FROM t_scheme_registry")).scalar_one() == 0
+    finally:
+        engine.dispose()
+
+
 def test_revision_repository_rolls_back_after_mid_transaction_failure() -> None:
     engine, cfg = _revision_fixture()
 
@@ -428,7 +578,7 @@ def test_revision_repository_rolls_back_after_mid_transaction_failure() -> None:
     try:
         with (
             patch(
-                "scheduler.repository._blackbox_draft_register_advisory_lock",
+                "scheduler.repository._blackbox_activation_advisory_lock",
                 return_value=nullcontext(),
             ),
             patch(
@@ -445,58 +595,3 @@ def test_revision_repository_rolls_back_after_mid_transaction_failure() -> None:
         ]
     finally:
         engine.dispose()
-
-
-@pytest.mark.parametrize(
-    "phase",
-    ("prepared", "config_written", "db_committed", "unresolved"),
-)
-def test_lifecycle_reconcile_only_restores_previous_state(tmp_path, phase) -> None:
-    from shared.blackbox_v2.lifecycle import (
-        LifecycleJournal,
-        LifecycleState,
-        load_journal,
-        pending_journals,
-        reconcile_journal,
-        write_journal,
-    )
-
-    previous = LifecycleState("paused", "shadow", "paused")
-    active = LifecycleState("active", "active", "active")
-    journal = LifecycleJournal.prepare(
-        action="activate",
-        scheme_id="trial_10y",
-        scheme_version="version-2",
-        evidence_run_id="backtest:42",
-        previous=previous,
-        target=active,
-        operation_scope_sha256="a" * 64,
-    )
-    for next_phase in ("config_written", "db_committed"):
-        if phase in {next_phase, "db_committed", "unresolved"}:
-            journal = journal.transition(next_phase)
-    if phase == "unresolved":
-        journal = journal.transition("unresolved", error="injected")
-    original_path = write_journal(tmp_path, journal)
-    original_bytes = original_path.read_bytes()
-    state = {"value": active if phase != "prepared" else previous}
-
-    restored = reconcile_journal(
-        original_path,
-        apply_database=lambda value: state.__setitem__("value", value),
-        read_state=lambda: state["value"],
-        operation_scope_sha256="b" * 64,
-    )
-
-    assert restored == previous
-    assert state["value"] == previous
-    assert original_path.read_bytes() == original_bytes
-    linked = [
-        load_journal(path)
-        for path in original_path.parent.glob("*.json")
-        if path != original_path
-    ]
-    assert len(linked) == 1
-    assert linked[0].phase == "verified"
-    assert linked[0].target == previous
-    assert pending_journals(tmp_path, "trial_10y") == []

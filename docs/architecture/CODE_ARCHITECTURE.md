@@ -175,7 +175,7 @@ Native SOP 的 Gate 与授权边界，不再存在需要维护的 frozen daily-g
 Blackbox V2:
   intake-blackbox          → 新 ID：两文件 + Metadata + 固定 Profile/Schema + 安全静态边界
   gate backtest --persist  → 复验脚本安全边界 + producer-ready snapshot + 完整批量执行 + immutable backtest
-  activate                 → 匹配 canonical exact-version 回测证据 + insert-only draft identity + 原子 active 切换
+  activate                 → 匹配 canonical exact-version 回测证据 + 单事务 insert-only 建立 active identity
 
 Native V1:
   onboard --stage all      → StaticGate + DryRunGate + CompareGate + BacktestGate(--no-persist)

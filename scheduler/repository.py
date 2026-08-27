@@ -16,7 +16,6 @@ from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Connection, Engine, URL
 
 from scheduler.discovery import SchemeConfig, load_scheme_config
-from shared.blackbox_v2.lifecycle import assert_lifecycle_clear, lifecycle_operation_lock
 from shared.db_config import DatabaseConfig
 from shared.models import (
     ActualRecord,
@@ -37,8 +36,8 @@ _BLACKBOX_LIFECYCLE_LOCK_TIMEOUT_SEC = 5.0
 _LOGGER = logging.getLogger(__name__)
 
 
-class BlackboxDraftRegisterLockTimeout(RuntimeError):
-    """首次生产 draft 登记未能取得方案级互斥锁。"""
+class BlackboxActivationLockTimeout(RuntimeError):
+    """Blackbox 激活未能取得方案级互斥锁。"""
 
 
 class BlackboxLifecycleIdentityAbsent(RuntimeError):
@@ -134,243 +133,8 @@ def _set_mysql_session_utc_on_checkout(
         cursor.close()
 
 
-def register_blackbox_draft_identity(
-    engine: Engine,
-    cfg: SchemeConfig,
-) -> BlackboxLifecycleState:
-    """在非空生产 Schema 中 insert-only 登记全新 Blackbox draft 身份。"""
-    if getattr(cfg, "runtime_type", None) != "blackbox_v2":
-        raise ValueError("Blackbox draft registration requires runtime_type=blackbox_v2")
-    if cfg.status != "paused" or cfg.version_status != "draft":
-        raise ValueError(
-            "Blackbox draft registration requires config paused+draft: "
-            f"got={cfg.status}+{cfg.version_status}"
-        )
-    if not str(getattr(cfg, "environment_fingerprint", "") or "").strip():
-        raise ValueError("Blackbox draft registration requires environment_fingerprint")
-    if not str(getattr(cfg, "data_snapshot_id", "") or "").strip():
-        raise ValueError("Blackbox draft registration requires data_snapshot_id")
-    expected_tenors, expected_registry_ids = _expected_registry_identity(cfg)
-    identity_ids = (cfg.scheme_id, *expected_registry_ids)
-    identity_placeholders = ", ".join(
-        f":identity_id_{index}" for index, _ in enumerate(identity_ids)
-    )
-    identity_params = {
-        f"identity_id_{index}": identity_id
-        for index, identity_id in enumerate(identity_ids)
-    }
-
-    with _blackbox_draft_register_advisory_lock(
-        engine,
-        scheme_id=cfg.scheme_id,
-    ):
-        with engine.begin() as conn:
-            version_conflicts = (
-                conn.execute(
-                    text(
-                        f"""
-                        /* draft registration version identity conflicts */
-                        SELECT scheme_id, scheme_version, runtime_type, status
-                        FROM t_scheme_versions
-                        WHERE scheme_id IN ({identity_placeholders})
-                        FOR UPDATE
-                        """
-                    ),
-                    identity_params,
-                )
-                .mappings()
-                .all()
-            )
-            registry_conflicts = (
-                conn.execute(
-                    text(
-                        f"""
-                        /* draft registration Registry identity conflicts */
-                        SELECT scheme_id, base_scheme_id, runtime_type, status
-                        FROM t_scheme_registry
-                        WHERE scheme_id IN ({identity_placeholders})
-                           OR base_scheme_id IN ({identity_placeholders})
-                        FOR UPDATE
-                        """
-                    ),
-                    identity_params,
-                )
-                .mappings()
-                .all()
-            )
-            if version_conflicts or registry_conflicts:
-                raise ValueError(
-                    "Blackbox draft registration identity conflict: "
-                    f"versions={len(version_conflicts)}, registry={len(registry_conflicts)}"
-                )
-
-            version_params = {
-                "scheme_id": cfg.scheme_id,
-                "scheme_version": cfg.scheme_version,
-                "runtime_type": "blackbox_v2",
-                "algorithm_version": cfg.algorithm_version,
-                "contract_version": cfg.contract_version,
-                "runtime_profile": cfg.runtime_profile,
-                "environment_fingerprint": cfg.environment_fingerprint,
-                "data_snapshot_id": cfg.data_snapshot_id,
-                "code_hash": cfg.code_hash,
-                "config_hash": cfg.config_hash,
-                "manifest_hash": cfg.manifest_hash,
-                "git_commit": None,
-                "status": "draft",
-                "created_by": "harness.activate",
-            }
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO t_scheme_versions
-                        (scheme_id, scheme_version, runtime_type, algorithm_version,
-                         contract_version, runtime_profile, environment_fingerprint,
-                         data_snapshot_id, code_hash, config_hash, manifest_hash,
-                         git_commit, status, created_by, approved_by, approved_at)
-                    VALUES
-                        (:scheme_id, :scheme_version, :runtime_type, :algorithm_version,
-                         :contract_version, :runtime_profile, :environment_fingerprint,
-                         :data_snapshot_id, :code_hash, :config_hash, :manifest_hash,
-                         :git_commit, :status, :created_by, NULL, NULL)
-                    """
-                ),
-                version_params,
-            )
-            registry_rows = [
-                {
-                    "scheme_id": registry_id,
-                    "base_scheme_id": cfg.scheme_id,
-                    "name": cfg.name,
-                    "description": cfg.description,
-                    "horizon": cfg.horizon,
-                    "task_type": cfg.task_type,
-                    "runtime_type": "blackbox_v2",
-                    "tenors": json.dumps([target_tenor], ensure_ascii=False),
-                    "frequency": cfg.frequency,
-                    "target_tenor": target_tenor,
-                    "schedule_cron": cfg.schedule.cron,
-                    "schedule_timezone": cfg.schedule.timezone,
-                    "status": "paused",
-                    "deployed_at": None,
-                }
-                for target_tenor, registry_id in zip(
-                    expected_tenors,
-                    expected_registry_ids,
-                )
-            ]
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO t_scheme_registry
-                        (scheme_id, base_scheme_id, name, description, horizon,
-                         task_type, runtime_type, tenors, frequency, target_tenor,
-                         schedule_cron, schedule_timezone, status, deployed_at)
-                    VALUES
-                        (:scheme_id, :base_scheme_id, :name, :description, :horizon,
-                         :task_type, :runtime_type, CAST(:tenors AS JSON), :frequency,
-                         :target_tenor, :schedule_cron, :schedule_timezone, :status, NULL)
-                    """
-                ),
-                registry_rows,
-            )
-
-            version_row = _read_scheme_version_conn(conn, cfg, for_update=True)
-            if version_row is None:
-                raise RuntimeError("Blackbox draft registration version readback is missing")
-            expected_version = {
-                "scheme_id": cfg.scheme_id,
-                "scheme_version": cfg.scheme_version,
-                "runtime_type": "blackbox_v2",
-                "algorithm_version": cfg.algorithm_version,
-                "contract_version": cfg.contract_version,
-                "runtime_profile": cfg.runtime_profile,
-                "environment_fingerprint": cfg.environment_fingerprint,
-                "data_snapshot_id": cfg.data_snapshot_id,
-                "code_hash": cfg.code_hash,
-                "config_hash": cfg.config_hash,
-                "manifest_hash": cfg.manifest_hash,
-                "git_commit": None,
-                "status": "draft",
-                "created_by": "harness.activate",
-                "approved_by": None,
-                "approved_at": None,
-            }
-            version_mismatches = [
-                f"{field}: expected={expected!r}, got={version_row.get(field)!r}"
-                for field, expected in expected_version.items()
-                if version_row.get(field) != expected
-            ]
-            if version_mismatches:
-                raise RuntimeError(
-                    "Blackbox draft registration version readback mismatch: "
-                    + "; ".join(version_mismatches)
-                )
-            readback_registry = _read_scheme_registry_rows_conn(
-                conn,
-                cfg,
-                expected_registry_ids,
-                for_update=True,
-            )
-            registry_error = _registry_identity_error(
-                cfg,
-                expected_tenors,
-                expected_registry_ids,
-                readback_registry,
-                expected_status="paused",
-            )
-            if registry_error is not None:
-                raise RuntimeError(
-                    f"Blackbox draft registration Registry readback mismatch: {registry_error}"
-                )
-            registry_by_id = {
-                str(row["scheme_id"]): row
-                for row in readback_registry
-            }
-            registry_mismatches: list[str] = []
-            for expected_row in registry_rows:
-                actual_row = registry_by_id[expected_row["scheme_id"]]
-                expected_values = {
-                    **expected_row,
-                    "tenors": [expected_row["target_tenor"]],
-                }
-                actual_values = {
-                    **actual_row,
-                    "tenors": _normalize_registry_tenors(
-                        actual_row.get("tenors")
-                    ),
-                }
-                registry_mismatches.extend(
-                    f"{expected_row['scheme_id']}.{field}: "
-                    f"expected={expected!r}, got={actual_values.get(field)!r}"
-                    for field, expected in expected_values.items()
-                    if actual_values.get(field) != expected
-                )
-            if registry_mismatches:
-                raise RuntimeError(
-                    "Blackbox draft registration Registry readback mismatch: "
-                    + "; ".join(registry_mismatches)
-                )
-
-    return BlackboxLifecycleState(
-        scheme_id=str(version_row["scheme_id"]),
-        scheme_version=str(version_row["scheme_version"]),
-        runtime_type=str(version_row["runtime_type"]),
-        version_status=str(version_row["status"]),
-        registry_status="paused",
-        environment_fingerprint=str(version_row["environment_fingerprint"]),
-        data_snapshot_id=str(version_row["data_snapshot_id"]),
-        code_hash=str(version_row["code_hash"]),
-        config_hash=str(version_row["config_hash"]),
-        manifest_hash=str(version_row["manifest_hash"]),
-        approved_by=None,
-        approved_at=None,
-        registry_scheme_ids=expected_registry_ids,
-    )
-
-
 @contextmanager
-def _blackbox_draft_register_advisory_lock(
+def _blackbox_activation_advisory_lock(
     engine: Engine,
     *,
     scheme_id: str,
@@ -387,8 +151,8 @@ def _blackbox_draft_register_advisory_lock(
             },
         ).scalar_one()
         if int(acquired or 0) != 1:
-            raise BlackboxDraftRegisterLockTimeout(
-                "timed out waiting for Blackbox draft registration advisory lock: "
+            raise BlackboxActivationLockTimeout(
+                "timed out waiting for Blackbox activation advisory lock: "
                 f"scheme_hash={scheme_digest} "
                 f"timeout_sec={_BLACKBOX_LIFECYCLE_LOCK_TIMEOUT_SEC:g}"
             )
@@ -411,7 +175,7 @@ def _blackbox_draft_register_advisory_lock(
                     raise
                 if hasattr(active_error, "add_note"):
                     active_error.add_note(
-                        f"draft registration advisory lock release failed: {release_error}"
+                        f"activation advisory lock release failed: {release_error}"
                     )
 
 
@@ -698,6 +462,207 @@ def read_blackbox_execution_approval(engine: Engine, cfg: SchemeConfig) -> Black
         return _read_blackbox_execution_approval_conn(conn, cfg, for_update=False)
 
 
+def activate_blackbox_initial(
+    engine: Engine,
+    cfg: SchemeConfig,
+    *,
+    approved_by: str,
+    approved_at: datetime,
+) -> BlackboxLifecycleState:
+    """在一个事务中建立并激活全新 Blackbox version 与 Registry。"""
+    if getattr(cfg, "runtime_type", None) != "blackbox_v2":
+        raise ValueError("Blackbox initial activation requires runtime_type=blackbox_v2")
+    if not str(getattr(cfg, "environment_fingerprint", "") or "").strip():
+        raise ValueError("Blackbox initial activation requires environment_fingerprint")
+    if not str(getattr(cfg, "data_snapshot_id", "") or "").strip():
+        raise ValueError("Blackbox initial activation requires data_snapshot_id")
+    if not isinstance(approved_by, str) or not approved_by.strip():
+        raise ValueError("Blackbox initial activation requires non-empty approved_by")
+    if not isinstance(approved_at, datetime):
+        raise ValueError("Blackbox initial activation requires approved_at datetime")
+
+    normalized_approver = approved_by.strip()
+    mysql_approved_at = _mysql_utc_datetime(approved_at)
+    expected_tenors, expected_registry_ids = _expected_registry_identity(cfg)
+    identity_ids = (cfg.scheme_id, *expected_registry_ids)
+    placeholders = ", ".join(
+        f":identity_id_{index}" for index, _ in enumerate(identity_ids)
+    )
+    identity_params = {
+        f"identity_id_{index}": identity_id
+        for index, identity_id in enumerate(identity_ids)
+    }
+    with _blackbox_activation_advisory_lock(engine, scheme_id=cfg.scheme_id):
+        with engine.begin() as conn:
+            lock_clause = " FOR UPDATE" if _dialect_name(conn) != "sqlite" else ""
+            version_conflicts = conn.execute(
+                text(
+                    "SELECT scheme_id, scheme_version FROM t_scheme_versions "
+                    f"WHERE scheme_id IN ({placeholders}){lock_clause}"
+                ),
+                identity_params,
+            ).mappings().all()
+            registry_conflicts = conn.execute(
+                text(
+                    "SELECT scheme_id, base_scheme_id FROM t_scheme_registry "
+                    f"WHERE scheme_id IN ({placeholders}) "
+                    f"OR base_scheme_id IN ({placeholders}){lock_clause}"
+                ),
+                identity_params,
+            ).mappings().all()
+            if version_conflicts or registry_conflicts:
+                raise ValueError(
+                    "Blackbox initial activation identity conflict: "
+                    f"versions={len(version_conflicts)}, "
+                    f"registry={len(registry_conflicts)}"
+                )
+
+            _upsert_scheme_version_conn(
+                conn,
+                cfg,
+                trusted_status="active",
+                approved_by=normalized_approver,
+                approved_at=mysql_approved_at,
+            )
+            _sync_scheme_registry_conn(
+                conn,
+                [cfg],
+                effective_statuses={
+                    registry_id: "active" for registry_id in expected_registry_ids
+                },
+            )
+            approval = _read_blackbox_execution_approval_conn(
+                conn,
+                cfg,
+                for_update=True,
+            )
+            if not approval.executable:
+                raise RuntimeError(
+                    "Blackbox initial activation readback failed: "
+                    f"{approval.reason}"
+                )
+            version_row = _read_scheme_version_conn(conn, cfg, for_update=True)
+            if version_row is None:
+                raise RuntimeError("Blackbox initial activation version readback missing")
+
+    return BlackboxLifecycleState(
+        scheme_id=cfg.scheme_id,
+        scheme_version=cfg.scheme_version,
+        runtime_type="blackbox_v2",
+        version_status="active",
+        registry_status="active",
+        environment_fingerprint=str(cfg.environment_fingerprint),
+        data_snapshot_id=str(cfg.data_snapshot_id),
+        code_hash=cfg.code_hash,
+        config_hash=cfg.config_hash,
+        manifest_hash=cfg.manifest_hash,
+        approved_by=normalized_approver,
+        approved_at=mysql_approved_at,
+        registry_scheme_ids=expected_registry_ids,
+    )
+
+
+def resolve_database_lifecycle(
+    engine: Engine,
+    configs: Iterable[SchemeConfig],
+) -> tuple[SchemeConfig, ...]:
+    """一次读取数据库，把 Blackbox 配置解析为当前主机的生效状态。
+
+    Native 仍使用 immutable config 中的存量状态。Blackbox 的 config 状态只是
+    Intake 初始声明；是否可执行唯一由本机 exact version 与 composite Registry 决定。
+    """
+    resolved = tuple(configs)
+    blackbox = tuple(
+        cfg for cfg in resolved if getattr(cfg, "runtime_type", None) == "blackbox_v2"
+    )
+    if not blackbox:
+        return resolved
+
+    base_ids = tuple(dict.fromkeys(cfg.scheme_id for cfg in blackbox))
+    placeholders = ", ".join(f":base_id_{index}" for index, _ in enumerate(base_ids))
+    params = {
+        f"base_id_{index}": scheme_id
+        for index, scheme_id in enumerate(base_ids)
+    }
+    with engine.begin() as conn:
+        version_rows = conn.execute(
+            text(
+                "SELECT scheme_id, scheme_version, runtime_type, status, "
+                "approved_by, approved_at FROM t_scheme_versions "
+                f"WHERE scheme_id IN ({placeholders})"
+            ),
+            params,
+        ).mappings().all()
+        registry_rows = conn.execute(
+            text(
+                "SELECT scheme_id, base_scheme_id, name, description, horizon, "
+                "task_type, runtime_type, tenors, frequency, target_tenor, "
+                "schedule_cron, schedule_timezone, status, deployed_at "
+                "FROM t_scheme_registry "
+                f"WHERE base_scheme_id IN ({placeholders})"
+            ),
+            params,
+        ).mappings().all()
+
+    versions_by_identity = {
+        (str(row["scheme_id"]), str(row["scheme_version"])): dict(row)
+        for row in version_rows
+    }
+    registries_by_base: dict[str, list[Mapping[str, object]]] = {}
+    for row in registry_rows:
+        registries_by_base.setdefault(str(row["base_scheme_id"]), []).append(
+            dict(row)
+        )
+
+    effective: list[SchemeConfig] = []
+    for cfg in resolved:
+        if getattr(cfg, "runtime_type", None) != "blackbox_v2":
+            effective.append(cfg)
+            continue
+        version = versions_by_identity.get((cfg.scheme_id, cfg.scheme_version))
+        if version is None:
+            effective.append(replace(cfg, status="paused", version_status="draft"))
+            continue
+        version_status = str(version.get("status") or "")
+        if version_status != "active":
+            effective.append(
+                replace(cfg, status="paused", version_status=version_status or "draft")
+            )
+            continue
+        if version.get("runtime_type") != "blackbox_v2":
+            raise RuntimeError(
+                f"active exact version runtime_type mismatch for {cfg.scheme_id}"
+            )
+        if not isinstance(version.get("approved_by"), str) or not str(
+            version.get("approved_by")
+        ).strip() or not isinstance(version.get("approved_at"), datetime):
+            raise RuntimeError(
+                f"active exact version approval evidence is incomplete for {cfg.scheme_id}"
+            )
+        expected_tenors, expected_registry_ids = _expected_registry_identity(cfg)
+        expected_ids = set(expected_registry_ids)
+        rows = [
+            row
+            for row in registries_by_base.get(cfg.scheme_id, ())
+            if str(row.get("scheme_id")) in expected_ids
+            or str(row.get("status")) == "active"
+        ]
+        registry_error = _registry_identity_error(
+            cfg,
+            expected_tenors,
+            expected_registry_ids,
+            rows,
+            expected_status="active",
+        )
+        if registry_error is not None:
+            raise RuntimeError(
+                f"active Blackbox lifecycle is inconsistent for {cfg.scheme_id}: "
+                f"{registry_error}"
+            )
+        effective.append(replace(cfg, status="active", version_status="active"))
+    return tuple(effective)
+
+
 def read_blackbox_revision_activation_preflight(
     engine: Engine,
     cfg: SchemeConfig,
@@ -752,7 +717,7 @@ def activate_blackbox_revision(
     normalized_approver = approved_by.strip()
     mysql_approved_at = _mysql_utc_datetime(approved_at)
     expected_tenors, expected_registry_ids = _expected_registry_identity(cfg)
-    with _blackbox_draft_register_advisory_lock(
+    with _blackbox_activation_advisory_lock(
         engine,
         scheme_id=cfg.scheme_id,
     ):
@@ -966,13 +931,6 @@ def _validate_blackbox_revision_candidate(
     if getattr(cfg, "runtime_type", None) != "blackbox_v2":
         raise ValueError(
             "Blackbox revision activation requires runtime_type=blackbox_v2"
-        )
-    if getattr(cfg, "status", None) != "active" or getattr(
-        cfg, "version_status", None
-    ) != "active":
-        raise ValueError(
-            "Blackbox revision activation requires config active+active: "
-            f"got={getattr(cfg, 'status', None)}+{getattr(cfg, 'version_status', None)}"
         )
     scheme_version = getattr(cfg, "scheme_version", None)
     if not isinstance(scheme_version, str) or not scheme_version.strip():
@@ -1198,13 +1156,6 @@ def _read_blackbox_execution_approval_conn(
     if getattr(cfg, "runtime_type", None) != "blackbox_v2":
         return denied(
             f"config runtime_type is {getattr(cfg, 'runtime_type', None)}, expected blackbox_v2"
-        )
-    if getattr(cfg, "status", None) != "active":
-        return denied(f"config status is {getattr(cfg, 'status', None)}, expected active")
-    if getattr(cfg, "version_status", None) != "active":
-        return denied(
-            "config version_status is "
-            f"{getattr(cfg, 'version_status', None)}, expected active"
         )
     if not base_scheme_id:
         return denied("config scheme_id is empty")
@@ -1495,131 +1446,6 @@ def apply_native_activation_state(
                 f"trusted Native activation Registry readback mismatch: {registry_error}"
             )
     return scheme_version
-
-
-def apply_blackbox_lifecycle_state(
-    engine: Engine,
-    cfg: SchemeConfig,
-    *,
-    version_status: str,
-    registry_status: str,
-    approved_by: str | None = None,
-    approved_at: datetime | None = None,
-) -> BlackboxLifecycleState:
-    """在单一事务中可信更新 Blackbox 精确版本和 composite Registry。"""
-    if getattr(cfg, "runtime_type", None) != "blackbox_v2":
-        raise ValueError("trusted Blackbox lifecycle update requires runtime_type=blackbox_v2")
-    if version_status not in ALLOWED_VERSION_STATUS:
-        raise ValueError(f"invalid trusted scheme version status: {version_status}")
-    if registry_status not in BLACKBOX_REGISTRY_STATUSES:
-        raise ValueError(f"invalid trusted Registry status: {registry_status}")
-    if registry_status == "active" and version_status != "active":
-        raise ValueError("active Blackbox Registry requires active version status")
-    if approved_by is not None and (not isinstance(approved_by, str) or not approved_by.strip()):
-        raise ValueError("approved_by must be a non-empty string when provided")
-    if approved_at is not None and not isinstance(approved_at, datetime):
-        raise ValueError("approved_at must be datetime when provided")
-    if version_status == "active" and (approved_by is None or approved_at is None):
-        raise ValueError("active Blackbox version requires approved_by and approved_at")
-
-    mysql_approved_at = _mysql_utc_datetime(approved_at)
-    expected_tenors, expected_registry_ids = _expected_registry_identity(cfg)
-    effective_statuses = {
-        registry_id: registry_status for registry_id in expected_registry_ids
-    }
-    with engine.begin() as conn:
-        _upsert_scheme_version_conn(
-            conn,
-            cfg,
-            trusted_status=version_status,
-            approved_by=approved_by,
-            approved_at=mysql_approved_at,
-        )
-        _sync_scheme_registry_conn(
-            conn,
-            [cfg],
-            effective_statuses=effective_statuses,
-        )
-        version_row = _read_scheme_version_conn(conn, cfg, for_update=True)
-        if version_row is None:
-            raise RuntimeError(
-                f"trusted lifecycle version readback missing: {cfg.scheme_id}/{cfg.scheme_version}"
-            )
-        actual_version_values = dict(version_row)
-        stored_approved_at = actual_version_values.get("approved_at")
-        if isinstance(stored_approved_at, datetime):
-            actual_version_values["approved_at"] = _mysql_utc_datetime(stored_approved_at)
-        expected_version_values = {
-            "scheme_id": cfg.scheme_id,
-            "scheme_version": cfg.scheme_version,
-            "runtime_type": "blackbox_v2",
-            "algorithm_version": getattr(cfg, "algorithm_version", None),
-            "contract_version": getattr(cfg, "contract_version", None),
-            "runtime_profile": getattr(cfg, "runtime_profile", None),
-            "environment_fingerprint": getattr(cfg, "environment_fingerprint", None),
-            "data_snapshot_id": getattr(cfg, "data_snapshot_id", None),
-            "code_hash": cfg.code_hash,
-            "config_hash": cfg.config_hash,
-            "manifest_hash": cfg.manifest_hash,
-            "status": version_status,
-            "approved_by": approved_by,
-            "approved_at": mysql_approved_at,
-        }
-        mismatches = [
-            f"{field}: expected={expected!r}, got={actual_version_values.get(field)!r}"
-            for field, expected in expected_version_values.items()
-            if actual_version_values.get(field) != expected
-        ]
-        if mismatches:
-            raise RuntimeError("trusted lifecycle version readback mismatch: " + "; ".join(mismatches))
-        registry_rows = _read_scheme_registry_rows_conn(
-            conn,
-            cfg,
-            expected_registry_ids,
-            for_update=True,
-        )
-        registry_error = _registry_identity_error(
-            cfg,
-            expected_tenors,
-            expected_registry_ids,
-            registry_rows,
-            expected_status=registry_status,
-        )
-        if registry_error is not None:
-            raise RuntimeError(f"trusted lifecycle Registry readback mismatch: {registry_error}")
-
-    return BlackboxLifecycleState(
-        scheme_id=str(version_row["scheme_id"]),
-        scheme_version=str(version_row["scheme_version"]),
-        runtime_type=str(version_row["runtime_type"]),
-        version_status=str(version_row["status"]),
-        registry_status=registry_status,
-        environment_fingerprint=(
-            str(version_row["environment_fingerprint"])
-            if version_row.get("environment_fingerprint") is not None
-            else None
-        ),
-        data_snapshot_id=(
-            str(version_row["data_snapshot_id"])
-            if version_row.get("data_snapshot_id") is not None
-            else None
-        ),
-        code_hash=str(version_row["code_hash"]),
-        config_hash=(
-            str(version_row["config_hash"]) if version_row.get("config_hash") is not None else None
-        ),
-        manifest_hash=(
-            str(version_row["manifest_hash"]) if version_row.get("manifest_hash") is not None else None
-        ),
-        approved_by=(
-            str(version_row["approved_by"]) if version_row.get("approved_by") is not None else None
-        ),
-        approved_at=(
-            actual_version_values["approved_at"]
-            if isinstance(actual_version_values.get("approved_at"), datetime)
-            else None
-        ),
-    )
 
 
 def _mysql_utc_datetime(value: datetime | None) -> datetime | None:
@@ -2650,8 +2476,11 @@ def _normalize_gray_gap_target_keys(
             "expected_target_keys must be a non-empty list of mappings"
         )
     if (
-        getattr(cfg, "status", None) != "active"
-        or getattr(cfg, "version_status", None) != "active"
+        getattr(cfg, "runtime_type", None) != "blackbox_v2"
+        and (
+            getattr(cfg, "status", None) != "active"
+            or getattr(cfg, "version_status", None) != "active"
+        )
     ):
         raise RuntimeError(
             "gray gap config must be active with active version_status"
@@ -3225,7 +3054,6 @@ def _approved_blackbox_write_transaction(
             "Blackbox canonical config path is invalid for final write: "
             f"scheme_id={cfg.scheme_id} path={scheme_path}"
         )
-    project_root = scheme_path.parent.parent
     config_path = scheme_path / "config.yaml"
     exact_scheme_version = cfg.scheme_version
     record_list = list(records)
@@ -3242,27 +3070,20 @@ def _approved_blackbox_write_transaction(
             f"{exact_scheme_version}: {mismatched_record_versions}"
         )
 
-    with lifecycle_operation_lock(project_root, cfg.scheme_id):
-        assert_lifecycle_clear(project_root, cfg.scheme_id)
-        current_cfg = load_scheme_config(config_path)
-        if (
-            current_cfg.scheme_version != cfg.scheme_version
-            or current_cfg.status != "active"
-            or current_cfg.version_status != "active"
-        ):
+    current_cfg = load_scheme_config(config_path)
+    if current_cfg.scheme_version != cfg.scheme_version:
+        raise RuntimeError(
+            "Blackbox canonical config changed before final write: "
+            f"expected={cfg.scheme_version}, current={current_cfg.scheme_version}"
+        )
+    cfg = current_cfg
+    with engine.begin() as conn:
+        approval = _read_blackbox_execution_approval_conn(conn, cfg, for_update=True)
+        if not approval.executable:
             raise RuntimeError(
-                "Blackbox canonical config changed before final write: "
-                f"expected={cfg.scheme_version}/active/active, "
-                f"current={current_cfg.scheme_version}/{current_cfg.status}/{current_cfg.version_status}"
+                f"Blackbox V2 version is not production-approved: {approval.reason}"
             )
-        cfg = current_cfg
-        with engine.begin() as conn:
-            approval = _read_blackbox_execution_approval_conn(conn, cfg, for_update=True)
-            if not approval.executable:
-                raise RuntimeError(
-                    f"Blackbox V2 version is not production-approved: {approval.reason}"
-                )
-            yield conn, record_list, exact_scheme_version
+        yield conn, record_list, exact_scheme_version
 
 
 def _prepare_run_prediction_rows(

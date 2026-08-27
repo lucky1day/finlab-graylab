@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from datetime import date, datetime
 from typing import Iterable
@@ -8,7 +7,6 @@ from typing import Iterable
 from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Engine
 
-from scheduler.discovery import SCHEMES_ROOT, discover_schemes
 from scheduler.repository import create_engine_from_env, delete_actuals_after_source_watermark, upsert_actuals
 from shared.actual_facts import (
     build_daily_actual_records_from_rows,
@@ -30,25 +28,6 @@ ACTUAL_TASK_TYPES_BY_FREQUENCY: dict[str, tuple[str, ...]] = {
     ),
 }
 _TENOR_ORDER = {tenor: index for index, tenor in enumerate(TENOR_TO_INDICATOR)}
-
-
-def configured_active_scheme_tenors(
-    schemes_root=SCHEMES_ROOT,
-    frequency: str | None = None,
-    task_types: Iterable[str] | None = None,
-) -> list[str]:
-    """读取本地 active 配置期限，仅用于 Registry 漂移诊断。"""
-    selected: set[str] = set()
-    selected_task_types = set(task_types or ())
-    for cfg in discover_schemes(schemes_root):
-        if cfg.status != "active":
-            continue
-        if frequency and cfg.frequency != frequency:
-            continue
-        if selected_task_types and cfg.task_type not in selected_task_types:
-            continue
-        selected.update(normalize_tenor(tenor) for tenor in cfg.tenors)
-    return sorted(selected)
 
 
 def _normalize_supported_tenors(tenors: Iterable[object]) -> list[str]:
@@ -111,7 +90,6 @@ def resolve_actual_tenors(
     *,
     frequency: str,
     tenors: Iterable[str] | None = None,
-    schemes_root=SCHEMES_ROOT,
 ) -> list[str]:
     """解析 updater 期限范围；显式 override 之外以 Registry 为权威。"""
     if tenors is not None:
@@ -122,65 +100,10 @@ def resolve_actual_tenors(
         raise ValueError(f"unsupported actual frequency: {frequency}") from exc
 
     registry_tenors = active_registry_tenors(engine, task_types)
-    try:
-        configured_tenors = sorted(
-            {
-                normalize_tenor(tenor)
-                for tenor in configured_active_scheme_tenors(
-                    schemes_root,
-                    frequency=(None if frequency == "period_average" else frequency),
-                    task_types=task_types,
-                )
-            },
-            key=lambda tenor: (
-                _TENOR_ORDER.get(tenor, len(_TENOR_ORDER)),
-                tenor,
-            ),
-        )
-    except Exception as exc:
-        event = {
-            "event": "ACTUAL_TENOR_SCOPE_DIAGNOSTIC_FAILED",
-            "frequency": frequency,
-            "error_type": type(exc).__name__,
-        }
-        logger.warning(
-            "actual_tenor_scope_diagnostic_failed %s",
-            json.dumps(event, ensure_ascii=False, sort_keys=True),
-            extra={"actual_tenor_scope_event": event},
-        )
-        configured_tenors = None
-    registry_set = set(registry_tenors)
-    configured_set = set(configured_tenors or [])
-    if configured_tenors is not None and registry_set != configured_set:
-        event = {
-            "event": "ACTUAL_TENOR_SCOPE_DRIFT",
-            "frequency": frequency,
-            "registry_tenors": registry_tenors,
-            "configured_tenors": configured_tenors,
-            "missing_from_config": sorted(
-                registry_set - configured_set,
-                key=_TENOR_ORDER.__getitem__,
-            ),
-            "missing_from_registry": sorted(
-                configured_set - registry_set,
-                key=lambda tenor: _TENOR_ORDER.get(tenor, len(_TENOR_ORDER)),
-            ),
-        }
-        logger.warning(
-            "actual_tenor_scope_drift %s",
-            json.dumps(event, ensure_ascii=False, sort_keys=True),
-            extra={"actual_tenor_scope_event": event},
-        )
     if not registry_tenors:
-        event = {
-            "event": "ACTUAL_TENOR_SCOPE_EMPTY",
-            "frequency": frequency,
-            "registry_tenors": [],
-        }
         logger.warning(
-            "actual_tenor_scope_empty %s",
-            json.dumps(event, ensure_ascii=False, sort_keys=True),
-            extra={"actual_tenor_scope_event": event},
+            "actual_tenor_scope_empty frequency=%s",
+            frequency,
         )
     return registry_tenors
 

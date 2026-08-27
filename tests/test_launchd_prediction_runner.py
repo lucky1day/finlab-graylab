@@ -151,6 +151,11 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                 "create_engine_from_env",
                 return_value=engine,
             ) as create_engine,
+            patch.object(
+                runner,
+                "resolve_database_lifecycle",
+                return_value=(quarterly, monthly),
+            ),
             patch.object(runner, "get_calendar", return_value=calendar),
             patch.object(
                 runner,
@@ -225,6 +230,11 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                 return_value=[monthly, annual],
             ),
             patch.object(runner, "create_engine_from_env", return_value=engine),
+            patch.object(
+                runner,
+                "resolve_database_lifecycle",
+                return_value=(monthly, annual),
+            ),
             patch.object(runner, "get_calendar", return_value=calendar),
             patch.object(runner, "_wait_for_v2_daily_ready", return_value=None),
             patch.object(
@@ -281,6 +291,11 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
             patch.object(runner, "_runner_lock", return_value=nullcontext()),
             patch.object(runner, "discover_schemes", return_value=[cfg]),
             patch.object(runner, "create_engine_from_env") as create_engine,
+            patch.object(
+                runner,
+                "resolve_database_lifecycle",
+                return_value=(cfg,),
+            ),
         ):
             summary = runner.run(
                 "monthly",

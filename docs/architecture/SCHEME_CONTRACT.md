@@ -106,7 +106,7 @@ Blackbox `PredictionRecord.extra.data_snapshot_id` 直接使用包含四份文�
 
 ## 7. 生命周期
 
-Blackbox 不使用 `validated` 或 `shadow` 中间状态。Intake 生成 `paused/draft` canonical 身份；完整持久化回测只产生 immutable 证据，不改变生命周期；取得独立授权后，`activate` 在一个命令内建立 draft version/paused Registry 并原子切换为 `active/active`。
+Blackbox 不使用 `validated`、`shadow` 或数据库 draft 中间状态。Intake 只生成声明为 `paused/draft` 的 canonical 文件；完整持久化回测只产生 immutable 证据，不改变数据库生命周期；取得独立授权后，首次 `activate` 在一个数据库事务内 insert-only 直接建立 `active/active` 的 exact version 与 Registry。
 
 - 技术验证通过不等于业务激活、现场发布或生产调度授权。
 - 具体 Blackbox 方案只有完成[生产晋级条件](../blackbox_v2/PRODUCTION_READINESS.md)核验并取得对应独立授权后，才可执行持久化回测、activation 或单日 `signal-gap-fill`；正式 `scheduled_live` 只由目标主机 one-shot 调度触发，任何授权不得外推到其他方案。
@@ -134,7 +134,7 @@ Native ActivationGate 的两条 profile 互斥：当前 exact version 已通过�
 
 - Native：校验 adapter/core、输入 artifact 和 source fidelity。
 - Blackbox：Intake 和持久化 backtest 执行两文件安全校验；backtest 另校验 CLI、四文件快照和标准结果，并保存脚本校验策略摘要；activate 只匹配 canonical exact version 与当前校验策略的成功回测证据；确定性与截止隔离属上游义务。
-- activate、lifecycle reconcile 与单日 `signal-gap-fill` 使用各自专用命令；不存在 Blackbox shadow 命令；`scheduled_live` 只由宿主 one-shot 触发。
+- activate 与单日 `signal-gap-fill` 使用各自专用命令；不存在 Blackbox shadow、config overlay 或 lifecycle reconcile 命令；`scheduled_live` 只由宿主 one-shot 触发。
 
 ## 9. 责任边界
 

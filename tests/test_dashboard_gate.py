@@ -272,7 +272,7 @@ def _raise_budget_error() -> tuple[dict[str, Any], int]:
     ("status", "version_status"),
     [("paused", "active"), ("active", "draft")],
 )
-def test_dashboard_gate_requires_canonical_config_active_plus_active(
+def test_dashboard_gate_uses_dashboard_database_lifecycle_not_declared_status(
     tmp_path: Path,
     status: str,
     version_status: str,
@@ -292,9 +292,8 @@ def test_dashboard_gate_requires_canonical_config_active_plus_active(
 
     result = _run_gate(tmp_path, fetcher)
 
-    assert not result.passed
-    assert calls == 0
-    assert any("active+active" in error for error in result.errors)
+    assert result.passed
+    assert calls == 1
 
 
 def test_dashboard_gate_requires_each_config_composite_id_exactly_once(

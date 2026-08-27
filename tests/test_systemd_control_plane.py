@@ -94,6 +94,11 @@ class SystemdControlPlaneTests(unittest.TestCase):
             ),
             patch.object(
                 common_runner,
+                "resolve_database_lifecycle",
+                return_value=(cfg,),
+            ),
+            patch.object(
+                common_runner,
                 "get_calendar",
                 return_value=_CoveredCalendar(),
             ),

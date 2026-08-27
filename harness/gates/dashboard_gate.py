@@ -93,12 +93,6 @@ class DashboardGate(Gate):
         config = load_scheme_config(
             ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml"
         )
-        if config.status != "active" or config.version_status != "active":
-            raise ValueError(
-                "dashboard gate requires canonical config active+active: "
-                f"status={config.status!r}, "
-                f"version_status={config.version_status!r}"
-            )
 
         base_url = str(ctx.api_base_url).strip().rstrip("/")
         if not base_url:

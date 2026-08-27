@@ -106,6 +106,11 @@ class LaunchdRunnerCoverageTests(unittest.TestCase):
             patch.object(runner, "_runner_lock", return_value=nullcontext()),
             patch.object(runner, "discover_schemes", return_value=[config]),
             patch.object(runner, "create_engine_from_env", return_value=Mock()),
+            patch.object(
+                runner,
+                "resolve_database_lifecycle",
+                return_value=(config,),
+            ),
             patch.object(runner, "get_calendar", return_value=calendar),
             patch.object(runner, "execute_scheme") as execute_one,
         ):

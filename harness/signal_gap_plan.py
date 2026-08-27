@@ -297,6 +297,7 @@ def plan_signal_gap_target_range(
             targets, blockers = _read_registry_targets(
                 connection,
                 execution_authority=authority,
+                targeted=True,
             )
             if blockers:
                 return _blocked_range_plan(
@@ -385,6 +386,7 @@ def read_signal_gap_snapshot(
     registry_targets, blockers = _read_registry_targets(
         connection,
         execution_authority=due_authority,
+        targeted=base_scheme_id is not None,
     )
     expected_cases: list[ExpectedSignalCase] = []
     context_blockers: list[Mapping[str, Any]] = []
@@ -959,14 +961,18 @@ def _select_execution_authority(
         selected = by_base.get(base_scheme_id)
         if selected is None:
             return (), "SCHEME_CONFIG_NOT_FOUND"
-        if str(selected.status) != "active":
+        if (
+            str(selected.runtime_type) != "blackbox_v2"
+            and str(selected.status) != "active"
+        ):
             return (), "SCHEME_CONFIG_NOT_ACTIVE"
         selected_configs = (selected,)
     else:
         selected_configs = tuple(
             config
             for config in configs
-            if str(config.status) == "active"
+            if str(config.runtime_type) == "blackbox_v2"
+            or str(config.status) == "active"
         )
     authority = tuple(
         sorted(
@@ -991,8 +997,7 @@ def _select_execution_authority(
     )
     for item in authority:
         if (
-            item.status != "active"
-            or item.runtime_type not in ALLOWED_RUNTIME_TYPES
+            item.runtime_type not in ALLOWED_RUNTIME_TYPES
             or item.frequency not in ALLOWED_FREQUENCIES
             or item.horizon < 1
             or not item.task_type.strip()
@@ -1012,6 +1017,7 @@ def _read_registry_targets(
     connection: Any,
     *,
     execution_authority: Sequence[DiscoveredSchemeIdentity],
+    targeted: bool,
 ) -> tuple[tuple[RegistryTarget, ...], tuple[Mapping[str, Any], ...]]:
     if not execution_authority:
         return (), ()
@@ -1057,7 +1063,10 @@ def _read_registry_targets(
     targets: list[RegistryTarget] = []
     blockers: list[Mapping[str, Any]] = []
     for identity in execution_authority:
-        if identity.version_status != "active":
+        if (
+            identity.runtime_type != "blackbox_v2"
+            and identity.version_status != "active"
+        ):
             blockers.append(
                 {
                     "code": "SCHEME_CONFIG_VERSION_NOT_ACTIVE",
@@ -1071,12 +1080,13 @@ def _read_registry_targets(
             if str(row.get("status") or "") == "active"
         ]
         if identity.runtime_type == "blackbox_v2" and len(active_versions) != 1:
-            blockers.append(
-                {
-                    "code": "ACTIVE_VERSION_CARDINALITY_INVALID",
-                    "base_scheme_id": identity.base_scheme_id,
-                }
-            )
+            if targeted:
+                blockers.append(
+                    {
+                        "code": "ACTIVE_VERSION_CARDINALITY_INVALID",
+                        "base_scheme_id": identity.base_scheme_id,
+                    }
+                )
             continue
         exact_active_versions = [
             row
@@ -1084,12 +1094,13 @@ def _read_registry_targets(
             if str(row.get("scheme_version") or "") == identity.scheme_version
         ]
         if len(exact_active_versions) != 1:
-            blockers.append(
-                {
-                    "code": "ACTIVE_VERSION_EXACT_IDENTITY_MISSING",
-                    "base_scheme_id": identity.base_scheme_id,
-                }
-            )
+            if targeted or identity.runtime_type != "blackbox_v2":
+                blockers.append(
+                    {
+                        "code": "ACTIVE_VERSION_EXACT_IDENTITY_MISSING",
+                        "base_scheme_id": identity.base_scheme_id,
+                    }
+                )
             continue
         if str(exact_active_versions[0]["runtime_type"]) != identity.runtime_type:
             blockers.append(

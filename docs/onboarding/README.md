@@ -64,7 +64,7 @@ Blackbox V2 不再进入 `harness onboard`。上游负责证明交付脚本可�
 
 1. `intake-blackbox`：新 ID 原子接收两文件，完成 Metadata、固定 Runtime Profile/Data Schema、脚本语法与平台安全边界检查，生成 `paused/draft` canonical config；
 2. `gate backtest --persist`：先对当前 canonical 脚本复验安全边界，再选择已有 producer-ready DataBridge generation，执行完整历史 Request 批次并原子写入 immutable backtest。它同时证明平台批量调用、Result 回显、数量、日期和持久化合同，不再提前做一次重复 predict；
-3. `activate`：严格加载 canonical 当前字节哈希，不重复扫描 AST/Metadata，并只接受同 exact version、同当前脚本校验策略的成功持久化回测；首次激活在一个命令内 insert-only 建立 draft version/paused Registry 并原子切到 active。没有独立 `shadow-register`。
+3. `activate`：严格加载 canonical 当前字节哈希，不重复扫描 AST/Metadata，并只接受同 exact version、同当前脚本校验策略的成功持久化回测；首次激活在一个数据库事务内 insert-only 直接建立 active version 与 active Registry。没有独立 `shadow-register` 或 draft promotion。
 
 同 ID 修订不重复创建方案目录，也不伪造第二次 Intake；修订 canonical `.py/.json` 后重新执行第 2、3 步。任何第三文件、symlink、危险导入或固定 Profile/Schema 漂移都会在回测前直接拒绝；回测后的任何字节漂移都会因 exact-version evidence 不匹配而阻断激活。
 
@@ -75,7 +75,7 @@ Native V1 存量仍使用 `onboard --stage all` 的
 `static → native-maintenance-admission → dry-run`。
 
 所有人工副作用命令绑定 canonical exact version、operator 与 operation scope。Blackbox 激活从
-`t_backtest_runs` 读取相同 version/code/config/manifest 与当前脚本校验策略摘要的成功回测，并复核 Runtime Profile、环境指纹、generation 与 snapshot；它不再读取 Harness `all`。pending lifecycle journal 仍阻断新的生命周期动作，只能显式运行 `gate lifecycle-reconcile` 恢复 previous safe state。
+`t_backtest_runs` 读取相同 version/code/config/manifest 与当前脚本校验策略摘要的成功回测，并复核 Runtime Profile、环境指纹、generation 与 snapshot；它不再读取 Harness `all`。首次激活和 revision 都只在本机数据库事务中切换 exact version 与 Registry，不维护 config overlay 或 lifecycle journal。
 
 ## 单维护者最快稳定路径
 

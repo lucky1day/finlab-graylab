@@ -715,16 +715,12 @@ def _load_and_validate_configs(
             "scheme_id": str(getattr(cfg, "scheme_id", "")),
             "scheme_version": str(getattr(cfg, "scheme_version", "")),
             "runtime_type": str(getattr(cfg, "runtime_type", "")),
-            "status": str(getattr(cfg, "status", "")),
-            "version_status": str(getattr(cfg, "version_status", "")),
             "tenors": sorted(str(item) for item in getattr(cfg, "tenors", ())),
         }
         expected = {
             "scheme_id": group.base_scheme_id,
             "scheme_version": group.scheme_version,
             "runtime_type": group.runtime_type,
-            "status": "active",
-            "version_status": "active",
             "tenors": sorted(
                 str(row["target_tenor"])
                 for row in group.expected_target_keys

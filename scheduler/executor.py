@@ -1013,9 +1013,8 @@ def execute_scheme(
     """执行单个方案并写入预测表和运行日志。
 
     执行前校验：
-    1. config.yaml status == 'active'（本地配置）
-    2. Native 要求 Registry active 且精确版本状态仅为 active
-    3. Blackbox 要求 exact active 版本、批准人与 composite Registry 身份全部一致
+    1. Native 要求 config、Registry 与精确版本均 active
+    2. Blackbox 只以数据库 exact active 版本、批准人与 composite Registry 为准
     """
     if prediction_phase != "scheduled_live":
         raise ValueError(
@@ -1059,7 +1058,8 @@ def execute_scheme(
     if engine is None:
         engine = create_engine_from_env()
     started = time.monotonic()
-    if cfg.status != "active":
+    runtime_type = getattr(cfg, "runtime_type", "native_adapter")
+    if runtime_type != "blackbox_v2" and cfg.status != "active":
         duration = time.monotonic() - started
         write_run_log(engine, cfg.scheme_id, predict_date, "skipped", duration, f"status={cfg.status}")
         if owns_engine:
@@ -1067,32 +1067,7 @@ def execute_scheme(
         return SchemeRunResult(cfg.scheme_id, "skipped", 0, duration, f"status={cfg.status}")
 
     scheme_version = getattr(cfg, "scheme_version", None)
-    runtime_type = getattr(cfg, "runtime_type", "native_adapter")
     if runtime_type == "blackbox_v2":
-        config_version_status = getattr(cfg, "version_status", None)
-        if config_version_status != "active":
-            reason = (
-                "Blackbox V2 config version_status is "
-                f"{config_version_status}, expected active"
-            )
-            duration = time.monotonic() - started
-            write_run_log(engine, cfg.scheme_id, predict_date, "failed", duration, reason)
-            if owns_engine:
-                engine.dispose()
-            return SchemeRunResult(cfg.scheme_id, "failed", 0, duration, reason)
-        try:
-            from shared.blackbox_v2.lifecycle import assert_lifecycle_clear
-
-            cfg_path = getattr(cfg, "path", None)
-            project_root = Path(cfg_path).parents[1] if cfg_path is not None else Path(__file__).resolve().parents[1]
-            assert_lifecycle_clear(project_root, cfg.scheme_id)
-        except RuntimeError as exc:
-            reason = str(exc)
-            duration = time.monotonic() - started
-            write_run_log(engine, cfg.scheme_id, predict_date, "failed", duration, reason)
-            if owns_engine:
-                engine.dispose()
-            return SchemeRunResult(cfg.scheme_id, "failed", 0, duration, reason)
         approval = read_blackbox_execution_approval(engine, cfg)
         if not approval.executable:
             reason = f"Blackbox V2 version is not production-approved: {approval.reason}"
@@ -1354,16 +1329,16 @@ def _scheduled_config_matches_canonical(
     config: object,
     canonical: object,
 ) -> bool:
-    fields = (
+    fields = [
         "scheme_id",
         "scheme_version",
         "runtime_type",
         "frequency",
         "task_type",
         "horizon",
-        "status",
-        "version_status",
-    )
+    ]
+    if getattr(config, "runtime_type", None) != "blackbox_v2":
+        fields.extend(("status", "version_status"))
     return (
         all(
             getattr(config, field, None)

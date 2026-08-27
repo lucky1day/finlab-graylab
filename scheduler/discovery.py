@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from scheduler.deployment_scope import filter_schemes_for_configured_target
 from shared.blackbox_v2.versioning import compute_blackbox_config_hash
 from shared.blackbox_v2.contracts import BlackboxMetadata
-from shared.scheme_lifecycle_state import read_lifecycle_state
 from shared.scheme_config_loader import load_yaml_mapping
 from shared.scheme_config_schema import validate_config
 from shared.versioning import (
@@ -72,34 +71,8 @@ def _require_mapping(value: Any, path: Path) -> dict[str, Any]:
 
 
 def load_scheme_config(config_path: Path) -> SchemeConfig:
-    """读取单个方案配置，并叠加本机生命周期状态。"""
-    return _apply_lifecycle_overlay(
-        config_path,
-        _load_declared_scheme_config(config_path),
-    )
-
-
-def _apply_lifecycle_overlay(
-    config_path: Path,
-    config: SchemeConfig,
-) -> SchemeConfig:
-    """用本机生命周期状态覆盖 config.yaml 中的初始声明。
-
-    覆盖层与当前 `scheme_version` 精确绑定；缺失、不可读或版本不匹配时保留 config.yaml
-    的初始声明（新 intake 方案即 paused/draft），因此是 fail-closed 的。
-    """
-    record = read_lifecycle_state(
-        config_path.parent.parent.parent,
-        config.scheme_id,
-        config.scheme_version,
-    )
-    if record is None:
-        return config
-    return replace(
-        config,
-        status=record.status,
-        version_status=record.version_status,
-    )
+    """读取 immutable config.yaml 中声明的方案身份。"""
+    return _load_declared_scheme_config(config_path)
 
 
 def _load_declared_scheme_config(config_path: Path) -> SchemeConfig:

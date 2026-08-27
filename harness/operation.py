@@ -12,7 +12,6 @@ SIDE_EFFECT_ACTIONS = frozenset(
         "activate",
         "backtest_persist",
         "blackbox_activate",
-        "blackbox_reconcile",
     }
 )
 EXACT_PREDICT_DATE_ACTIONS = frozenset(

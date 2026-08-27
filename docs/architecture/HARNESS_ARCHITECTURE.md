@@ -100,8 +100,8 @@ Blackbox 不接受 `native-maintenance`。
 
 副作用命令绑定 canonical exact version、action、scheme、日期/回测起点和 operator，并保存 operation
 scope SHA-256。Blackbox activation 直接读取同 exact version、同当前脚本校验策略的成功持久化回测，不再绑定 Harness
-run。Blackbox lifecycle 只保留 `activate` 和异常恢复 `lifecycle-reconcile`；pending journal
-继续阻断新的生命周期操作。
+run。Blackbox 当前主机生命周期只由本机数据库的 exact version 与 composite Registry 表达；首次上线和
+同身份修订都由 `activate` 在单个数据库事务中完成，不再维护 config overlay、journal 或 reconcile 命令。
 
 `config.yaml.schedule.timeout_sec` 是 executor 层方案预算，harness config schema 对 Blackbox 要求该字段存在且为正整数。Blackbox predict 的最终预算取方案申请、版本化 Runtime Profile 平台上限和显式 operation deadline（如有）的最小值；deadline 只能收紧。Blackbox backtest 使用独立的 Profile 预算。任何运行预算都不能替代对应 runtime 的 Gate 证据，也不能作为放宽 source fidelity、日期语义或 protected table guard 的理由。
 

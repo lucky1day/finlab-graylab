@@ -103,7 +103,6 @@ def test_runtime_relative_path_cannot_escape_root(
 
 
 def test_runtime_consumers_share_the_unified_root(tmp_path: Path) -> None:
-    from shared.blackbox_v2.lifecycle import lifecycle_root
     from shared.daily_0629_source_runner import (
         _source_cache_path as daily_source_cache_path,
     )
@@ -131,21 +130,11 @@ def test_runtime_consumers_share_the_unified_root(tmp_path: Path) -> None:
             "database-id",
             input_token="input-token",
         )
-        journal_root = lifecycle_root(
-            tmp_path / "source-release",
-            "scheme-id",
-        )
 
     assert daily_path is not None
     assert daily_path.is_relative_to(tmp_path / "cache" / "daily-0629")
     assert monthly_path is not None
     assert monthly_path.is_relative_to(tmp_path / "cache" / "monthly")
-    assert journal_root == (
-        tmp_path
-        / "artifacts"
-        / "blackbox-v2-lifecycle"
-        / "scheme-id"
-    )
 
 
 def test_artifact_paths_use_unified_root_in_fresh_process(

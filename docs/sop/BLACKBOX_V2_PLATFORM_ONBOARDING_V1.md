@@ -109,17 +109,13 @@ scheme_version + code_hash + config_hash + manifest_hash
 
 首次激活在同一个命令内：
 
-1. insert-only 建立 draft version 与 paused composite Registry；
+1. 校验当前 canonical exact version 的完整持久化回测；
 2. 拒绝 base/composite 身份冲突；
-3. 通过 lifecycle journal 原子切换 config overlay、exact version 与全部 Registry 到 active；
-4. 写入审批人与时间并独立读回。
+3. 在一个数据库事务中建立 active exact version 与全部 active Registry；
+4. 写入审批人与时间并在同一事务中读回。
 
-因此不再要求操作者先执行一次没有算法运行、没有灰度流量的 `shadow-register`。若生命周期提交失败，
-命令补偿到 previous safe state；存在 pending journal 时后续激活继续阻断。恢复入口只有：
-
-```bash
-python -m harness gate lifecycle-reconcile --scheme-id {scheme_id}
-```
+因此不再要求操作者先执行一次没有算法运行、没有灰度流量的 `shadow-register`。事务任一步失败即整体回滚，
+不产生 draft 残留、配置覆盖层或补偿 journal。
 
 ## 5. 可选后续动作
 
@@ -155,7 +151,7 @@ launchd/systemd one-shot 时钟产生成功 `scheduled_live` 证据。
 | 回测失败 | 保留失败现场；修复后创建新的完整回测 run |
 | exact version/环境/输入证据不匹配 | 禁止激活，重新回测当前 exact version |
 | 身份冲突 | 禁止覆盖、删除或手工改 Registry |
-| lifecycle journal pending | 只允许显式 reconcile 回 previous safe state |
+| activation 事务失败 | 整体回滚；修复原因后重新执行 `activate` |
 | backtest/live 重叠 | 保留旧 run，创建新的正确 canonical run |
 | DataBridge 或日历失败 | 当前运行 fail-closed，不 fallback 到旧 generation |
 
@@ -164,7 +160,7 @@ launchd/systemd one-shot 时钟产生成功 `scheduled_live` 证据。
 - [ ] 新 ID 已由 Intake 原子保存两文件并生成 `paused/draft` config；同 ID 修订已通过相同 canonical 两文件校验；
 - [ ] 当前 exact version 有完整、成功、不可变的持久化回测；
 - [ ] 回测的 version/code/config/manifest、环境和 generation/snapshot 证据完整；
-- [ ] activate 后 exact version 与所有 composite Registry 均为 active，审批与 journal readback 一致；
+- [ ] activate 后 exact version 与所有 composite Registry 均为 active，审批与同一数据库事务的 readback 一致；
 - [ ] 如执行 gap-fill，日期重建、insert-only 和 backtest/live 零重叠通过；
 - [ ] 如需要 Dashboard 或自然调度验收，分别按其独立边界完成。
 

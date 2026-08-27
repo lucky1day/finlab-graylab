@@ -37,6 +37,7 @@ from scheduler.process_control import ProcessStartGuard
 from scheduler.repository import (
     PREDICTION_KEYS_ALREADY_EXIST,
     create_engine_from_env,
+    resolve_database_lifecycle,
 )
 from scheduler.v2_daily_gate import V2DailyGateBlocked, require_v2_daily_ready
 from shared.calendar_service import get_calendar
@@ -462,22 +463,30 @@ def _run_one_shot(
             raise LaunchdPredictionConfigurationError(
                 "strict scheme discovery failed"
             ) from exc
-        candidates = [
+        cadence_configs = [
             cfg
             for cfg in discovered
-            if getattr(cfg, "status", None) == "active"
-            and _candidate_matches_cadence(cfg, normalized_cadence)
+            if _candidate_matches_cadence(cfg, normalized_cadence)
         ]
-        summary.discovered = len(candidates)
-
-        candidates = _cache_publishers_first(candidates)
-        if not candidates:
+        if not cadence_configs:
             _finalize(summary)
             return summary
-
         engine = None
         try:
             engine = create_engine_from_env()
+            effective = resolve_database_lifecycle(engine, cadence_configs)
+            candidates = [
+                cfg
+                for cfg in effective
+                if getattr(cfg, "status", None) == "active"
+            ]
+            summary.discovered = len(candidates)
+
+            candidates = _cache_publishers_first(candidates)
+            if not candidates:
+                _finalize(summary)
+                return summary
+
             calendar = get_calendar(engine)
             if not calendar.covers(normalized_date):
                 # 日历需要人工逐年延长。覆盖耗尽时 is_trading_day 同样返回

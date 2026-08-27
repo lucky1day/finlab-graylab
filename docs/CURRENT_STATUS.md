@@ -32,8 +32,8 @@
 
 ## 当前治理边界
 
-- config active、exact version active、Registry target active 且 cadence 匹配，是进入一次性 runner 的
-  唯一资格；自然运行写 `scheduled_live`，单日或获批 target 区间补缺只写 insert-only `gray_live`。
+- Native config active；Blackbox 本机数据库 exact version active、Registry target active；再加 cadence 匹配，
+  才能进入一次性 runner。自然运行写 `scheduled_live`，单日或获批 target 区间补缺只写 insert-only `gray_live`。
 - 后续新方案的历史段由一次持久化 backtest batch 形成 immutable canonical backtest；激活后的连续 gray
   缺口由一次 live-safe target 区间 batch 物化。区间不得早于平台 live 起点，一个方案只解析一次
   DataBridge authority、核对 producer-ready receipt、物化一个私有运行视图并启动一个算法 batch；任一既有业务键整组拒绝，全部

@@ -41,9 +41,6 @@ def gate_for_name(name: str, *, ctx: GateContext | None = None) -> Gate:
     runtime_type = _runtime_type(ctx)
     if runtime_type == "blackbox_v2":
         from harness.blackbox_v2.gates import BLACKBOX_GATES
-        from harness.blackbox_v2.activation import BlackboxLifecycleReconcileGate
-        if name == "lifecycle-reconcile":
-            return BlackboxLifecycleReconcileGate()
         try:
             return BLACKBOX_GATES[name]()
         except KeyError as exc:

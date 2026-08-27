@@ -65,9 +65,7 @@ def _gate_action(args: argparse.Namespace) -> str | None:
     """把副作用 Gate 映射为内部精确审计 action。"""
     if args.gate_name == "backtest":
         return "backtest_persist" if bool(getattr(args, "persist", False)) else None
-    return {
-        "lifecycle-reconcile": "blackbox_reconcile",
-    }.get(args.gate_name)
+    return None
 
 
 def _direct_operation(
@@ -149,7 +147,7 @@ def _build_parser() -> argparse.ArgumentParser:
     gate_subparsers = gate_parser.add_subparsers(dest="gate_name", required=True)
     for gate_name in (
         "static", "dry-run", "compare", "backtest",
-        "dashboard", "lifecycle-reconcile",
+        "dashboard",
     ):
         item = gate_subparsers.add_parser(gate_name)
         item.add_argument("--scheme-id", required=True)
@@ -167,10 +165,7 @@ def _build_parser() -> argparse.ArgumentParser:
         item.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
         item.add_argument("--algo-env", default="forecast_env")
         item.add_argument("--timeout-sec", type=int, default=600)
-        if gate_name in {
-            "backtest",
-            "lifecycle-reconcile",
-        }:
+        if gate_name == "backtest":
             item.add_argument(
                 "--operator",
                 default=None,

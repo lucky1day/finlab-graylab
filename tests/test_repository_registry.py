@@ -435,34 +435,6 @@ def _blackbox_live_record(*, prediction_phase: str = "scheduled_live"):
 
 
 class RegistryLifecycleTests(unittest.TestCase):
-
-    def test_trusted_blackbox_lifecycle_atomically_writes_shadow_and_paused_registry(self) -> None:
-        from scheduler.repository import apply_blackbox_lifecycle_state
-
-        engine = _CaptureEngine()
-        cfg = _blackbox_config(status="paused", version_status="shadow")
-
-        state = apply_blackbox_lifecycle_state(
-            engine,
-            cfg,
-            version_status="shadow",
-            registry_status="paused",
-        )
-
-        self.assertEqual(engine.store["begin_count"], 1)
-        self.assertEqual(engine.store["version_row"]["status"], "shadow")
-        self.assertEqual(engine.store["version_row"]["environment_fingerprint"], "e" * 64)
-        self.assertEqual(engine.store["version_row"]["data_snapshot_id"], "snapshot-1")
-        self.assertEqual(engine.store["version_row"]["code_hash"], "c" * 64)
-        self.assertEqual(engine.store["version_row"]["config_hash"], "f" * 64)
-        self.assertEqual(engine.store["version_row"]["manifest_hash"], "m" * 64)
-        self.assertEqual({row["status"] for row in engine.store["registry_rows"]}, {"paused"})
-        self.assertEqual(state.version_status, "shadow")
-        self.assertEqual(state.registry_status, "paused")
-        self.assertEqual(state.environment_fingerprint, "e" * 64)
-        self.assertEqual(state.data_snapshot_id, "snapshot-1")
-
-
     def test_trusted_native_activation_writes_exact_approval_and_target_registry_atomically(self) -> None:
         from scheduler.repository import apply_native_activation_state
 
@@ -530,6 +502,50 @@ class BlackboxExecutionApprovalRepositoryTests(unittest.TestCase):
         }
         row.update(updates)
         return row
+
+    def test_database_lifecycle_resolves_declared_draft_from_one_snapshot(self) -> None:
+        from scheduler.repository import resolve_database_lifecycle
+
+        cfg = _blackbox_config(status="paused", version_status="draft")
+        engine = _CaptureEngine(
+            version_row=self._approved_version_row(),
+            registry_rows=[self._active_registry_row()],
+        )
+        with patch(
+            "scheduler.repository.replace",
+            side_effect=lambda value, **updates: SimpleNamespace(
+                **{**vars(value), **updates}
+            ),
+        ):
+            effective = resolve_database_lifecycle(engine, [cfg])
+
+        self.assertEqual(len(effective), 1)
+        self.assertEqual(
+            (effective[0].status, effective[0].version_status),
+            ("active", "active"),
+        )
+        self.assertEqual(engine.store["begin_count"], 1)
+
+    def test_database_lifecycle_does_not_trust_declared_active(self) -> None:
+        from scheduler.repository import resolve_database_lifecycle
+
+        cfg = _blackbox_config(status="active", version_status="active")
+        engine = _CaptureEngine(
+            version_row=self._approved_version_row(status="retired"),
+            registry_rows=[self._active_registry_row()],
+        )
+        with patch(
+            "scheduler.repository.replace",
+            side_effect=lambda value, **updates: SimpleNamespace(
+                **{**vars(value), **updates}
+            ),
+        ):
+            effective = resolve_database_lifecycle(engine, [cfg])
+
+        self.assertEqual(
+            (effective[0].status, effective[0].version_status),
+            ("paused", "retired"),
+        )
 
     def test_exact_approved_version_and_registry_identity_are_executable(self) -> None:
         from dataclasses import FrozenInstanceError
@@ -1126,45 +1142,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
                 self.assertIsNone(engine.store["run_row"]["records_written"])
                 self.assertEqual(engine.store["run_log_rows"], [])
 
-
-    def test_blackbox_completion_rejects_pending_reconciliation_before_db_access(self) -> None:
-        from scheduler.repository import complete_approved_blackbox_run
-        from shared.blackbox_v2.lifecycle import LifecycleJournal, LifecycleState, write_journal
-
-        engine = _CaptureEngine()
-        record = _blackbox_live_record()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            cfg = _set_canonical_path(_blackbox_config(), root)
-            state = LifecycleState("active", "active", "active", "active")
-            pending = LifecycleJournal.prepare(
-                action="pause",
-                scheme_id=cfg.scheme_id,
-                scheme_version=cfg.scheme_version,
-                evidence_run_id="backtest:42",
-                previous=state,
-                target=LifecycleState("paused", "paused", "paused", "paused"),
-                operation_scope_sha256="a" * 64,
-            ).transition("config_written")
-            write_journal(root, pending)
-
-            with (
-                patch("scheduler.repository.load_scheme_config", return_value=cfg),
-                self.assertRaisesRegex(RuntimeError, "lifecycle journal"),
-            ):
-                complete_approved_blackbox_run(
-                    engine,
-                    cfg,
-                    run_id=101,
-                    records=[record],
-                    scheme_version=cfg.scheme_version,
-                    records_returned=1,
-                    run_date="2026-07-20",
-                    duration_sec=2.5,
-                )
-
-        self.assertEqual(engine.store["begin_count"], 0)
-        self.assertEqual(engine.store["prediction_rows"], [])
 
     def test_blackbox_completion_rejects_disk_scheme_version_drift_before_db_access(self) -> None:
         from scheduler.repository import complete_approved_blackbox_run
