@@ -129,7 +129,10 @@ def read_signal_gap_report(
 
     start, end = _range(start_date, end_date)
     targets = _targets(connection)
-    calendar = _SnapshotCalendar(connection)
+    calendar = _SnapshotCalendar(
+        connection,
+        history_start_date=start,
+    )
     expected, targets = _expected(targets, calendar, start, end)
     predictions = _live_rows(
         connection,
@@ -343,38 +346,69 @@ def _expected(
     """返回预期 case 与（可能被标记为日历不可用的）target。"""
     result: list[SignalCase] = []
     resolved: list[SignalTarget] = []
+    predict_dates_by_cadence: dict[tuple[str, str], tuple[str, ...]] = {}
+    contexts: dict[tuple[str, str, int, str], object | None] = {}
     for target in targets:
         resolved.append(target)
         if target.available_after is None or target.failure_category:
             continue
-        predict_dates = (
-            calendar.period_predict_dates(target.task_type, start_date, end_date)
-            if target.task_type in PERIOD_AVERAGE_TASK_TYPES
-            else calendar.predict_dates(target.frequency, start_date, end_date)
+        cadence_key = (
+            "task_type",
+            target.task_type,
+        ) if target.task_type in PERIOD_AVERAGE_TASK_TYPES else (
+            "frequency",
+            target.frequency,
         )
+        predict_dates = predict_dates_by_cadence.get(cadence_key)
+        if predict_dates is None:
+            predict_dates = (
+                calendar.period_predict_dates(
+                    target.task_type,
+                    start_date,
+                    end_date,
+                )
+                if target.task_type in PERIOD_AVERAGE_TASK_TYPES
+                else calendar.predict_dates(
+                    target.frequency,
+                    start_date,
+                    end_date,
+                )
+            )
+            predict_dates_by_cadence[cadence_key] = predict_dates
         for predict_date in predict_dates:
             if predict_date <= target.available_after:
                 continue
-            try:
-                if target.task_type in PERIOD_AVERAGE_TASK_TYPES:
-                    context = build_period_average_live_context(
-                        calendar,
-                        predict_date,
-                        task_type=target.task_type,
-                    )
-                elif target.frequency == "daily":
-                    context = build_daily_live_context(
-                        calendar, predict_date, horizon=target.horizon
-                    )
-                elif target.frequency == "weekly":
-                    context = build_weekly_live_context(calendar, predict_date)
-                elif target.frequency == "monthly":
-                    context = build_monthly_live_context(calendar, predict_date)
-                else:
-                    raise SignalGapReportError("unsupported_signal_cadence")
-            except SignalGapReportError:
-                raise
-            except (KeyError, ValueError):
+            context_key = (
+                target.task_type,
+                target.frequency,
+                target.horizon,
+                predict_date,
+            )
+            if context_key not in contexts:
+                try:
+                    if target.task_type in PERIOD_AVERAGE_TASK_TYPES:
+                        context = build_period_average_live_context(
+                            calendar,
+                            predict_date,
+                            task_type=target.task_type,
+                        )
+                    elif target.frequency == "daily":
+                        context = build_daily_live_context(
+                            calendar, predict_date, horizon=target.horizon
+                        )
+                    elif target.frequency == "weekly":
+                        context = build_weekly_live_context(calendar, predict_date)
+                    elif target.frequency == "monthly":
+                        context = build_monthly_live_context(calendar, predict_date)
+                    else:
+                        raise SignalGapReportError("unsupported_signal_cadence")
+                except SignalGapReportError:
+                    raise
+                except (KeyError, ValueError):
+                    context = None
+                contexts[context_key] = context
+            context = contexts[context_key]
+            if context is None:
                 # 单个 target 的日历问题不得让整份报告不可用（dashboard 会因此
                 # 整页 503），但也不能静默降级成"未到期"——无法区分"日历还没
                 # 延长"与"周历数据缺行"。把该 target 标记为日历不可用后跳过，
@@ -485,8 +519,13 @@ def _version_matches(row: dict[str, Any], target: SignalTarget) -> bool:
 class _SnapshotCalendar:
     """同一连接快照内使用 shared calendar/context helpers 的最小适配器。"""
 
-    def __init__(self, connection: Connection) -> None:
-        snapshot = read_calendar_snapshot_from_connection(connection)
+    def __init__(self, connection: Connection, *, history_start_date: str) -> None:
+        history_start = date.fromisoformat(history_start_date)
+        calendar_start = date(history_start.year - 1, 1, 1).isoformat()
+        snapshot = read_calendar_snapshot_from_connection(
+            connection,
+            rdate_from=calendar_start,
+        )
         flags = {
             _date(row["rdate"]): str(row["trade_flag"]).strip()
             for row in snapshot["t_trade_calendar.csv"].to_dict("records")

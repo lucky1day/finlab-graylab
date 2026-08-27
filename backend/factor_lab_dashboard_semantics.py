@@ -638,7 +638,7 @@ def _validate_compact_rows(rows: Any, *, source: str, context: str) -> None:
     if not isinstance(rows, list):
         raise DashboardDataError(f"{context} must be a list")
     seen_points: set[str] = set()
-    sort_keys: list[tuple[str, str]] = []
+    previous_sort_key: tuple[str, str] | None = None
     for row_index, row in enumerate(rows):
         if not isinstance(row, list) or len(row) != len(ROW_FIELDS):
             width = len(row) if isinstance(row, list) else None
@@ -651,7 +651,6 @@ def _validate_compact_rows(rows: Any, *, source: str, context: str) -> None:
                 raise DashboardDataError(
                     f"{context}[{row_index}].{field} must be an ISO date string"
                 )
-            _required_iso_date(value, field=f"{context}[{row_index}].{field}")
         detail = dict(zip(ROW_FIELDS, row, strict=True))
         compact_detail_row(detail, source=source)
         target_date = str(detail["target_date"])
@@ -660,9 +659,10 @@ def _validate_compact_rows(rows: Any, *, source: str, context: str) -> None:
                 f"{context} has duplicate {source} prediction point: {target_date}"
             )
         seen_points.add(target_date)
-        sort_keys.append((target_date, str(detail["predict_date"])))
-    if sort_keys != sorted(sort_keys):
-        raise DashboardDataError(f"{context} is not canonically sorted")
+        sort_key = (target_date, str(detail["predict_date"]))
+        if previous_sort_key is not None and sort_key < previous_sort_key:
+            raise DashboardDataError(f"{context} is not canonically sorted")
+        previous_sort_key = sort_key
 
 
 def _validate_exact_fields(

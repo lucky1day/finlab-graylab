@@ -145,6 +145,28 @@ class CalendarServiceTests(unittest.TestCase):
             "2026-05-25",
         )
 
+    def test_calendar_snapshot_export_applies_optional_business_lower_bound(
+        self,
+    ) -> None:
+        from shared.calendar_service import (
+            read_calendar_snapshot_from_connection,
+        )
+
+        with self.engine.connect() as connection:
+            frames = read_calendar_snapshot_from_connection(
+                connection,
+                rdate_from="2026-06-01",
+            )
+
+        self.assertEqual(
+            frames["api_wind_date.csv"].iloc[0]["rdate"],
+            "2026-06-01",
+        )
+        self.assertEqual(
+            frames["t_trade_calendar.csv"].iloc[0]["rdate"],
+            "2026-06-01",
+        )
+
     def test_isolated_week_id_jump_is_normalized(self) -> None:
         from shared.calendar_service import get_calendar
 

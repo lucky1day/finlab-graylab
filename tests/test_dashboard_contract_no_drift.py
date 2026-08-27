@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import ast
+from datetime import date, datetime
 import json
 import re
 from pathlib import Path
+
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -57,3 +60,42 @@ def test_public_check_dashboard_contract_matches_backend() -> None:
     )
     for shell_name, backend_values in contracts:
         assert _public_check_literal(shell_name) == set(backend_values), shell_name
+
+
+def test_compact_row_validation_preserves_order_and_uniqueness_contract() -> None:
+    rows = [
+        ["2026-08-01", "2026-07-31", "2026-08-03", None, 1, -1],
+        ["2026-08-02", "2026-08-01", "2026-08-04", None, -1, 1],
+    ]
+
+    semantics._validate_compact_rows(rows, source="backtest", context="rows")
+
+    with pytest.raises(semantics.DashboardDataError, match="not canonically sorted"):
+        semantics._validate_compact_rows(
+            list(reversed(rows)),
+            source="backtest",
+            context="rows",
+        )
+    with pytest.raises(semantics.DashboardDataError, match="duplicate"):
+        semantics._validate_compact_rows(
+            [rows[0], list(rows[0])],
+            source="backtest",
+            context="rows",
+        )
+    invalid_date = list(rows[0])
+    invalid_date[0] = "2026-02-30"
+    with pytest.raises(semantics.DashboardDataError, match="predict_date"):
+        semantics._validate_compact_rows(
+            [invalid_date],
+            source="backtest",
+            context="rows",
+        )
+    for invalid_value in (date(2026, 8, 1), datetime(2026, 8, 1), None):
+        invalid_type = list(rows[0])
+        invalid_type[0] = invalid_value
+        with pytest.raises(semantics.DashboardDataError, match="predict_date"):
+            semantics._validate_compact_rows(
+                [invalid_type],
+                source="backtest",
+                context="rows",
+            )

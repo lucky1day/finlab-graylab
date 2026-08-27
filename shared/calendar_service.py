@@ -14,15 +14,20 @@ from shared.week_calendar_normalizer import normalize_week_calendar_rows
 
 def read_calendar_snapshot_from_connection(
     connection: Connection,
+    *,
+    rdate_from: str | date | datetime | None = None,
 ) -> Mapping[str, pd.DataFrame]:
-    """复用调用方事务导出两张日历表，避免拆分一致性快照。"""
+    """复用调用方事务导出两张日历表，可按业务下界减少读取。"""
+    lower_bound = _date_string(rdate_from) if rdate_from is not None else None
+    where_clause = "WHERE rdate >= :rdate_from" if lower_bound else ""
     queries = (
         (
             "api_wind_date.csv",
             text(
-                """
+                f"""
                 SELECT rdate, week_id
                 FROM api_wind_date
+                {where_clause}
                 ORDER BY rdate
                 """
             ),
@@ -31,9 +36,10 @@ def read_calendar_snapshot_from_connection(
         (
             "t_trade_calendar.csv",
             text(
-                """
+                f"""
                 SELECT rdate, trade_flag
                 FROM t_trade_calendar
+                {where_clause}
                 ORDER BY rdate
                 """
             ),
@@ -42,7 +48,10 @@ def read_calendar_snapshot_from_connection(
     )
     return {
         filename: pd.DataFrame(
-            connection.execute(statement).mappings().all(),
+            connection.execute(
+                statement,
+                {"rdate_from": lower_bound} if lower_bound else {},
+            ).mappings().all(),
             columns=list(columns),
         )
         for filename, statement, columns in queries

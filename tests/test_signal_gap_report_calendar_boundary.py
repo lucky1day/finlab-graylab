@@ -34,6 +34,25 @@ class _BoundaryCalendar:
         return later[n - 1]
 
 
+class _CountingBoundaryCalendar(_BoundaryCalendar):
+    def __init__(self) -> None:
+        self.predict_date_calls = 0
+        self.previous_trading_day_calls = 0
+        self.nth_trading_day_after_calls = 0
+
+    def predict_dates(self, frequency: str, start_date: str, end_date: str):
+        self.predict_date_calls += 1
+        return super().predict_dates(frequency, start_date, end_date)
+
+    def previous_trading_day(self, value: str) -> str:
+        self.previous_trading_day_calls += 1
+        return super().previous_trading_day(value)
+
+    def nth_trading_day_after(self, value: str, n: int) -> str:
+        self.nth_trading_day_after_calls += 1
+        return super().nth_trading_day_after(value, n)
+
+
 def _target(scheme_id: str, horizon: int) -> SignalTarget:
     return SignalTarget(
         registry_scheme_id=f"{scheme_id}__h{horizon}__10Y",
@@ -49,6 +68,24 @@ def _target(scheme_id: str, horizon: int) -> SignalTarget:
 
 
 class CalendarBoundaryIsolationTests(unittest.TestCase):
+    def test_same_cadence_and_horizon_reuse_calendar_work(self) -> None:
+        calendar = _CountingBoundaryCalendar()
+        first = _target("first", 1)
+        second = _target("second", 1)
+
+        cases, targets = _expected(
+            [first, second],
+            calendar,
+            "2026-06-01",
+            "2026-06-04",
+        )
+
+        self.assertEqual(len(cases), 6)
+        self.assertEqual([target.failure_category for target in targets], [None, None])
+        self.assertEqual(calendar.predict_date_calls, 1)
+        self.assertEqual(calendar.previous_trading_day_calls, 3)
+        self.assertEqual(calendar.nth_trading_day_after_calls, 3)
+
     def test_boundary_target_does_not_break_whole_report(self) -> None:
         """horizon=5 在日历末端算不出 target_date，不得影响 horizon=1。"""
         near = _target("near", 1)
