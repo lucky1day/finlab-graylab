@@ -140,6 +140,63 @@ def test_incremental_native_runtime_reuses_persistent_cache(
     )
 
 
+def test_incremental_policy_reaches_phase_a_build_decision(
+    tmp_path: Path,
+) -> None:
+    from shared import liwei_0616_phase_a_cache as cache_module
+    from shared.liwei_0616_cache_contract import (
+        CACHE_MUTATION_POLICY_ENV,
+        CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
+    )
+
+    spec = cache_module.PhaseACacheSpec(
+        cache_family="test_incremental_policy",
+        tenor="10Y",
+        publisher_consumer_id="publisher",
+        baselines=("baseline",),
+        baseline_configs={"baseline": {}},
+        source_ic_screen_start="2024-01-01",
+        horizon=5,
+        purge_gap=5,
+    )
+    captured: dict[str, object] = {}
+
+    def fake_prepare(**kwargs):
+        captured.update(kwargs)
+        return {}, {}
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                CACHE_MUTATION_POLICY_ENV: (
+                    CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
+                )
+            },
+            clear=False,
+        ),
+        patch.object(
+            cache_module,
+            "_prepare_under_family_lock",
+            side_effect=fake_prepare,
+        ),
+    ):
+        cache_module.prepare_phase_a_caches(
+            spec=spec,
+            daily_df=Mock(),
+            weekly_df=Mock(),
+            monthly_df=Mock(),
+            test_ranges=(("2026-08-26", "2026-08-26"),),
+            train_missing=Mock(),
+            cache_consumer_id="publisher",
+            cache_root=tmp_path,
+        )
+
+    assert captured["mutation_policy"] == (
+        CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
+    )
+
+
 def test_incremental_cache_policy_only_accepts_hit_or_one_tail_date() -> None:
     from shared.liwei_0616_cache_contract import (
         CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
