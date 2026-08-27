@@ -17,7 +17,6 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Connection, Engine
 
-from shared.signal_gap_report import read_latest_due_signal_statuses
 from shared.task_specs import WEEKLY_TASK_TYPES
 
 from backend.factor_lab_dashboard_semantics import (
@@ -119,14 +118,6 @@ def build_factor_lab_dashboard(
                 {int(row["id"]) for row in selected_backtest_runs.values()}
             ),
         )
-        signal_statuses = {
-            item.registry_scheme_id: item
-            for item in read_latest_due_signal_statuses(
-                connection,
-                start_date=FACTOR_LAB_HISTORY_START_DATE,
-                as_of_date=display_until,
-            )
-        }
     db_read_seconds = time.perf_counter() - db_read_started_at
 
     canonical_started_at = time.perf_counter()
@@ -197,12 +188,6 @@ def build_factor_lab_dashboard(
     backtest_row_count = 0
     history_backtest_rows_excluded = 0
     for scheme in registry:
-        signal_status = signal_statuses.get(scheme["scheme_id"])
-        if signal_status is None:
-            raise DashboardDataError(
-                "active registry scheme is missing signal status: "
-                f"scheme_id={scheme['scheme_id']}"
-            )
         selector = live_actual_selector(scheme["task_type"])
         live_rows: list[list[Any]] = []
         prediction_key = (
@@ -293,8 +278,6 @@ def build_factor_lab_dashboard(
             {
                 **scheme,
                 "target_label": target_labels[scheme["target_tenor"]],
-                "signal_status": signal_status.state,
-                "signal_failure_category": signal_status.failure_category,
                 "live_rows": live_rows,
                 "backtest": backtest,
             }

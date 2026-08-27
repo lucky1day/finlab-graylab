@@ -14,7 +14,7 @@ DASHBOARD_PATH = "/api/factor-lab/dashboard"
 
 def _payload(snapshot_id: str) -> dict[str, Any]:
     return {
-        "schema_version": "factor-lab-dashboard-v2",
+        "schema_version": "factor-lab-dashboard-v3",
         "snapshot_id": snapshot_id,
         "generated_at": "2026-08-07T16:41:00+08:00",
         "display_until": "2026-08-07",

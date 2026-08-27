@@ -280,7 +280,7 @@ DASHBOARD_TOP_FIELDS = {
 DASHBOARD_SCHEME_FIELDS = {
     "scheme_id", "base_scheme_id", "name", "description", "horizon",
     "task_type", "frequency", "target_tenor", "target_label", "status",
-    "deployed_at", "signal_status", "signal_failure_category", "live_rows",
+    "deployed_at", "live_rows",
     "backtest",
 }
 DASHBOARD_BACKTEST_FIELDS = {
@@ -316,7 +316,7 @@ if kind == "dashboard":
         raise SystemExit(1) from exc
     if not isinstance(payload, dict):
         raise SystemExit(1)
-    if payload.get("schema_version") != "factor-lab-dashboard-v2":
+    if payload.get("schema_version") != "factor-lab-dashboard-v3":
         raise SystemExit(1)
     if set(payload) != DASHBOARD_TOP_FIELDS:
         raise SystemExit(1)
@@ -404,7 +404,7 @@ run_request versioned-js GET \
 assert_last_content_encoding versioned-js-gzip gzip
 assert_last_vary_token versioned-js-vary Accept-Encoding
 assert_body_valid \
-  versioned-js-body text gzip "$LAST_BODY" 'factor-lab-dashboard-v2'
+  versioned-js-body text gzip "$LAST_BODY" 'factor-lab-dashboard-v3'
 run_request asset-icon GET "$APP_URL/assets/aifin-lab-icon.svg" 200
 run_request asset-logo GET "$APP_URL/assets/aifin-lab-logo.svg" 200
 

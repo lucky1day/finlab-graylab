@@ -98,7 +98,7 @@ def _write_blackbox_config(project_root: Path) -> None:
     )
 
 
-def _scheme(target_tenor: str, *, signal_status: str) -> dict[str, Any]:
+def _scheme(target_tenor: str, *, with_live: bool) -> dict[str, Any]:
     return {
         "scheme_id": f"{BASE_SCHEME_ID}__h1__{target_tenor}",
         "base_scheme_id": BASE_SCHEME_ID,
@@ -111,8 +111,6 @@ def _scheme(target_tenor: str, *, signal_status: str) -> dict[str, Any]:
         "target_label": f"{target_tenor} target",
         "status": "active",
         "deployed_at": "2026-08-01",
-        "signal_status": signal_status,
-        "signal_failure_category": None,
         "live_rows": (
             [
                 [
@@ -124,7 +122,7 @@ def _scheme(target_tenor: str, *, signal_status: str) -> dict[str, Any]:
                     None,
                 ]
             ]
-            if signal_status == "present"
+            if with_live
             else []
         ),
         "backtest": {
@@ -143,12 +141,12 @@ def _payload(
     tenors: tuple[str, ...] = ("5Y", "10Y"),
 ) -> dict[str, Any]:
     schemes = [
-        _scheme(tenor, signal_status="present" if index == 0 else "not_due")
+        _scheme(tenor, with_live=index == 0)
         for index, tenor in enumerate(tenors)
     ]
     schemes.sort(key=lambda row: row["scheme_id"])
     return {
-        "schema_version": "factor-lab-dashboard-v2",
+        "schema_version": "factor-lab-dashboard-v3",
         "snapshot_id": "dashboard-snapshot-1",
         "generated_at": "2026-08-10T12:00:00+08:00",
         "display_until": "2026-08-10",
@@ -191,7 +189,7 @@ def _evidence(result) -> dict[str, Any]:
     return {item.key: item.value for item in result.evidence}
 
 
-def test_dashboard_gate_accepts_present_not_due_pending_actual_and_empty_backtest_rows(
+def test_dashboard_gate_accepts_existing_and_empty_live_rows(
     tmp_path: Path,
 ) -> None:
     _write_config(tmp_path)
@@ -216,10 +214,8 @@ def test_dashboard_gate_accepts_present_not_due_pending_actual_and_empty_backtes
     evidence = _evidence(result)
     assert evidence["config_status"] == "active"
     assert evidence["config_version_status"] == "active"
-    assert evidence["signal_statuses"] == {
-        "demo_daily__h1__5Y": "present",
-        "demo_daily__h1__10Y": "not_due",
-    }
+    assert "signal_statuses" not in evidence
+    assert "signal_failure_categories" not in evidence
     assert set(evidence["backtest_registry_ids"]) == {
         "demo_daily__h1__5Y",
         "demo_daily__h1__10Y",
@@ -243,9 +239,9 @@ def test_dashboard_gate_accepts_present_not_due_pending_actual_and_empty_backtes
             lambda _payload: lambda _url, **_kwargs: (_raise_budget_error()),
         ),
         (
-            "shared_validation",
+            "v2_schema_rejected",
             lambda payload: lambda _url, **_kwargs: (
-                {**payload, "schema_version": "wrong"},
+                {**payload, "schema_version": "factor-lab-dashboard-v2"},
                 200,
             ),
         ),
@@ -308,24 +304,16 @@ def test_dashboard_gate_requires_each_config_composite_id_exactly_once(
     assert not result.passed
 
 
-def test_dashboard_gate_fails_missing_signal_and_preserves_failure_category(
+def test_dashboard_gate_accepts_active_scheme_with_empty_live_rows(
     tmp_path: Path,
 ) -> None:
     _write_config(tmp_path, tenors=("5Y",))
     payload = _payload(tenors=("5Y",))
-    payload["schemes"][0].update(
-        signal_status="missing",
-        signal_failure_category="upstream_timeout",
-        live_rows=[],
-    )
+    payload["schemes"][0]["live_rows"] = []
 
     result = _run_gate(tmp_path, lambda _url, **_kwargs: (payload, 200))
 
-    assert not result.passed
-    assert "upstream_timeout" in "\n".join(result.errors)
-    assert _evidence(result)["signal_failure_categories"] == {
-        "demo_daily__h1__5Y": "upstream_timeout"
-    }
+    assert result.passed, result.errors
 
 
 def test_dashboard_gate_requires_backtest_partition(tmp_path: Path) -> None:

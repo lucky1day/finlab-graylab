@@ -602,7 +602,7 @@
     })[0] || null;
   }
 
-  var DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v2";
+  var DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v3";
   var DASHBOARD_ROW_FIELDS = [
     "predict_date",
     "feature_date",
@@ -632,8 +632,6 @@
     "target_label",
     "status",
     "deployed_at",
-    "signal_status",
-    "signal_failure_category",
     "live_rows",
     "backtest"
   ];
@@ -648,7 +646,6 @@
   var DASHBOARD_TASK_TYPES = ["T+1", "T+5", "weekly_point", "weekly_average", "monthly", "monthly_average", "quarterly_average", "annual_average"];
   var DASHBOARD_LIVE_PHASES = ["gray_live", "scheduled_live"];
   var FACTOR_LAB_LIVE_TARGET_START_DATE = "2026-06-01";
-  var DASHBOARD_SIGNAL_STATUSES = ["missing", "not_due", "present"];
   var DASHBOARD_SNAPSHOT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
   var DASHBOARD_GENERATED_AT_PATTERN = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$/;
 
@@ -669,7 +666,7 @@
     if (actual.length !== required.length || actual.some(function (field, index) {
       return field !== required[index];
     })) {
-      throw dashboardDataError(context + " fields must match v2 exactly");
+      throw dashboardDataError(context + " fields must match v3 exactly");
     }
   }
 
@@ -809,7 +806,7 @@
         payload.row_fields.some(function (field, index) {
           return field !== DASHBOARD_ROW_FIELDS[index];
         }) || new Set(payload.row_fields).size !== payload.row_fields.length) {
-      throw dashboardDataError("row_fields must match v2 exactly");
+      throw dashboardDataError("row_fields must match v3 exactly");
     }
     var snapshotId = requireDashboardString(payload.snapshot_id, "snapshot_id", false);
     if (!DASHBOARD_SNAPSHOT_ID_PATTERN.test(snapshotId)) {
@@ -855,19 +852,6 @@
       }
       requireDashboardString(scheme.frequency, context + ".frequency", false);
       if (scheme.status !== "active") throw dashboardDataError(context + ".status must be active");
-      if (DASHBOARD_SIGNAL_STATUSES.indexOf(scheme.signal_status) === -1) {
-        throw dashboardDataError(context + ".signal_status is invalid");
-      }
-      var signalFailureCategory = scheme.signal_failure_category;
-      if (scheme.signal_status === "missing") {
-        signalFailureCategory = requireDashboardString(
-          signalFailureCategory, context + ".signal_failure_category", false
-        );
-      } else if (signalFailureCategory !== null) {
-        throw dashboardDataError(
-          context + ".signal_failure_category must be null when signal is available"
-        );
-      }
       var targetLabel = requireDashboardString(scheme.target_label, context + ".target_label", false);
       if (!Object.prototype.hasOwnProperty.call(targetLabels, targetTenor) ||
           targetLabels[targetTenor] !== targetLabel) {
@@ -884,8 +868,6 @@
         status: scheme.status,
         targetTenor: targetTenor,
         deployedAt: requireDashboardIsoDate(scheme.deployed_at, context + ".deployed_at"),
-        signalStatus: scheme.signal_status,
-        signalFailureCategory: signalFailureCategory,
         liveRows: decodeDashboardRows(scheme.live_rows, "live", context + ".live_rows"),
         backtest: null
       };
@@ -1052,8 +1034,6 @@
         name: scheme.name,
         description: scheme.description,
         status: scheme.status,
-        signalStatus: scheme.signalStatus,
-        signalFailureCategory: scheme.signalFailureCategory,
         deploymentDate: formatDeploymentDate(scheme.deployedAt),
         remark: scheme.description,
         monthlyRows: monthlyRows,

@@ -16,6 +16,7 @@ from backend import factor_lab_dashboard_semantics as semantics
 
 SHELL_JS = PROJECT_ROOT / "frontend" / "aifin-shell.js"
 PUBLIC_CHECK = PROJECT_ROOT / "scripts" / "check_public_access.sh"
+DASHBOARD_BUILDER = PROJECT_ROOT / "backend" / "factor_lab_dashboard.py"
 
 
 def _js_literal(name: str) -> set[str]:
@@ -46,7 +47,6 @@ def test_frontend_dashboard_contract_matches_backend() -> None:
         ("DASHBOARD_ROW_FIELDS", semantics.ROW_FIELDS),
         ("DASHBOARD_BACKTEST_FIELDS", semantics.BACKTEST_FIELDS),
         ("DASHBOARD_TASK_TYPES", semantics.VALID_TASK_TYPES),
-        ("DASHBOARD_SIGNAL_STATUSES", semantics.VALID_SIGNAL_STATUSES),
     )
     for javascript_name, backend_values in contracts:
         assert _js_literal(javascript_name) == set(backend_values), javascript_name
@@ -60,6 +60,33 @@ def test_public_check_dashboard_contract_matches_backend() -> None:
     )
     for shell_name, backend_values in contracts:
         assert _public_check_literal(shell_name) == set(backend_values), shell_name
+
+
+def test_dashboard_v3_removes_signal_state_from_all_public_contracts() -> None:
+    removed_fields = {"signal_status", "signal_failure_category"}
+    assert removed_fields.isdisjoint(semantics.SCHEME_FIELDS)
+    assert removed_fields.isdisjoint(_js_literal("DASHBOARD_SCHEME_FIELDS"))
+    assert removed_fields.isdisjoint(_public_check_literal("DASHBOARD_SCHEME_FIELDS"))
+
+    shell_text = SHELL_JS.read_text(encoding="utf-8")
+    public_check_text = PUBLIC_CHECK.read_text(encoding="utf-8")
+    assert "factor-lab-dashboard-v3" in shell_text
+    assert "factor-lab-dashboard-v2" not in shell_text
+    assert "factor-lab-dashboard-v3" in public_check_text
+    assert "factor-lab-dashboard-v2" not in public_check_text
+
+
+def test_dashboard_builder_queries_business_results_once_without_run_or_calendar() -> None:
+    source = DASHBOARD_BUILDER.read_text(encoding="utf-8")
+    lowered = source.casefold()
+
+    assert lowered.count("from t_scheme_predictions") == 1
+    for forbidden_table in (
+        "t_scheme_runs",
+        "api_wind_date",
+        "t_trade_calendar",
+    ):
+        assert forbidden_table not in lowered
 
 
 def test_compact_row_validation_preserves_order_and_uniqueness_contract() -> None:

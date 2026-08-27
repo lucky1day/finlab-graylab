@@ -178,12 +178,6 @@ class DashboardGate(Gate):
                         f"dashboard {registry_id} {field} mismatch: "
                         f"expected {expected!r}, got {row[field]!r}"
                     )
-            if row["signal_status"] == "missing":
-                errors.append(
-                    f"dashboard signal missing: scheme_id={registry_id} "
-                    "failure_category="
-                    f"{row['signal_failure_category']}"
-                )
             if row["backtest"] is None:
                 errors.append(
                     f"dashboard backtest partition missing: scheme_id={registry_id}"
@@ -233,21 +227,6 @@ def _result(
             Evidence(
                 "matched_registry_ids",
                 [str(row["scheme_id"]) for row in matched_rows],
-            ),
-            Evidence(
-                "signal_statuses",
-                {
-                    str(row["scheme_id"]): row["signal_status"]
-                    for row in matched_rows
-                },
-            ),
-            Evidence(
-                "signal_failure_categories",
-                {
-                    str(row["scheme_id"]): row["signal_failure_category"]
-                    for row in matched_rows
-                    if row["signal_status"] == "missing"
-                },
             ),
             Evidence(
                 "backtest_registry_ids",

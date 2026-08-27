@@ -25,7 +25,7 @@ from shared.task_specs import (
 )
 
 
-DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v2"
+DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v3"
 FACTOR_LAB_HISTORY_START_DATE = "2025-01-01"
 ROW_FIELDS = (
     "predict_date",
@@ -36,7 +36,6 @@ ROW_FIELDS = (
     "actual_direction",
 )
 VALID_TASK_TYPES = set(ALLOWED_TASK_TYPES)
-VALID_SIGNAL_STATUSES = {"missing", "not_due", "present"}
 DAILY_TARGET_RULE = "target_date_yield_vs_feature_date_yield"
 LIVE_ACTUAL_SELECTORS = {
     "T+1": ("daily_1d", DAILY_TARGET_RULE),
@@ -114,8 +113,6 @@ SCHEME_FIELDS = {
     "target_label",
     "status",
     "deployed_at",
-    "signal_status",
-    "signal_failure_category",
     "live_rows",
     "backtest",
 }
@@ -465,7 +462,7 @@ def compact_detail_row(row: Mapping[str, Any], *, source: str) -> list[Any]:
 
 
 def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
-    """校验 dashboard v2 顶层合同、Registry 身份与明细行。"""
+    """校验 dashboard v3 顶层合同、Registry 身份与明细行。"""
     if not isinstance(payload, Mapping):
         raise DashboardDataError("dashboard payload must be an object")
     if payload.get("schema_version") != DASHBOARD_SCHEMA_VERSION:
@@ -546,25 +543,6 @@ def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
         if scheme.get("status") != "active":
             raise DashboardDataError(
                 f"dashboard scheme[{scheme_index}] status must be active"
-            )
-        signal_status = scheme.get("signal_status")
-        if signal_status not in VALID_SIGNAL_STATUSES:
-            raise DashboardDataError(
-                f"dashboard scheme[{scheme_index}] has invalid signal_status: "
-                f"{signal_status!r}"
-            )
-        signal_failure_category = scheme.get("signal_failure_category")
-        if signal_status == "missing":
-            _required_string(
-                signal_failure_category,
-                field=(
-                    f"scheme[{scheme_index}] signal_failure_category"
-                ),
-            )
-        elif signal_failure_category is not None:
-            raise DashboardDataError(
-                f"dashboard scheme[{scheme_index}] signal_failure_category "
-                "must be null when signal is available"
             )
         _required_string(
             scheme.get("name"), field=f"scheme[{scheme_index}] name"

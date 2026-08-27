@@ -1,7 +1,7 @@
 # Bond Factor Lab 公网 Dashboard 读路径
 
 **文档状态**：`CURRENT`
-**适用版本**：dashboard schema `factor-lab-dashboard-v2`
+**适用版本**：dashboard schema `factor-lab-dashboard-v3`
 
 ## 当前合同
 
@@ -11,8 +11,8 @@ TTL、single-flight 或 last-known-good（LKG）快照。
 ```text
 浏览器 → Nginx 只读入口 → FastAPI dashboard route
        → dashboard 专用只读 SQLAlchemy Engine
-       → 当前 Registry / signal / actual / backtest 批量查询
-       → compact V2 JSON
+       → active Registry / prediction / Actual / backtest 批量查询
+       → compact V3 JSON
 ```
 
 - 数据库和 dashboard 构建成功：返回 `200` 当前数据。
@@ -25,10 +25,11 @@ Dashboard 使用独立只读 Engine，连接超时为 `0.5s`、读超时为 `0.7
 单条 MySQL 查询上限为 `500ms`；连接池开启 `pool_pre_ping`，并在 `300s` 回收连接，避免
 复用断开的长连接。
 
-一次请求内，信号状态计算按相同 cadence 和日期上下文复用日历规划结果。日历快照只读取
-Dashboard 历史窗口前一自然年起的数据，以保留年度任务的完整边界，同时避免每次扫描无关的
-早期历史。该复用仅存在于当前请求内，请求完成即释放；不得演变成跨请求 TTL、结果缓存或
-LKG。最终 compact payload 仍执行完整合同校验，Registry、预测、Actual 和回测查询口径不变。
+Dashboard 是数据库业务结果视图：active Registry 即使尚无 live prediction 也可带空
+`live_rows` 展示；有多少 prediction 就展示多少，不生成占位行，也不推导方案是否应当运行。
+读路径不读取 run、DataBridge 日期或交易日历，不计算 `missing`、`not_due`、`no_run` 等调度
+状态。调度缺口与运行失败由 scheduler、数据库 run、systemd/launchd 日志和受控 gap-fill 链路
+处理，不混入产品读模型。
 
 ## 响应与探针
 
@@ -50,8 +51,8 @@ python -m harness gate dashboard \
   --api-base-url http://127.0.0.1:8100
 ```
 
-Gate 使用生产端唯一响应预算，验证 V2 JSON、active composite identity、signal 与 backtest 分区；它不接受
-非 200、超限、非法或缺失结果。gzip、`no-store` 与响应头由后端 API 合同测试保护。历史信号检查与补齐不属于
+Gate 使用生产端唯一响应预算，验证 V3 JSON、active composite identity、展示身份、任务字段和 backtest 分区；
+空 `live_rows` 是合法结果。它不接受非 200、超限或非法结果。gzip、`no-store` 与响应头由后端 API 合同测试保护。历史信号检查与补齐不属于
 Dashboard 读路径，统一遵循[生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。
 
 ## 故障处理边界

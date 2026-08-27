@@ -57,6 +57,9 @@
   `previous` release 都不再读取 config overlay、lifecycle journal 或 reconcile 状态。两端当前 runtime root 内
   经授权的旧 lifecycle 文件已在无读取者、无打开文件和调度 idle 的条件下删除，不影响当前执行或
   `previous` 回滚；release archive 保留。
+- 当前代码线的 Dashboard 合同为 `factor-lab-dashboard-v3`：每次请求只读 active Registry、已有 prediction、
+  Actual 与 backtest。空 live 明细合法；Dashboard 不读取 run、DataBridge 日期或交易日历，也不判断调度缺口。
+  精确主机是否已晋级该合同仍以现场 `current` release 和 API payload 为准。
 - Mac3 production 与 ECS gray 的 installed plist/unit、服务状态、数据库写入、激活、补数和 DDL 都是
   独立操作，代码或文档提交不能外推为现场授权。
 - 未来把生产域名或 Writer 切到 ECS 是新的生产项目，不属于当前完成条件。

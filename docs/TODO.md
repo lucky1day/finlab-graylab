@@ -29,12 +29,19 @@
 3. 未来若把生产域名或 Writer 从 Mac3 切到 ECS，必须作为新生产项目设计数据库 authority、单 Writer、
    DNS/Nginx、窗口和回滚，不能从灰度验收外推授权。
 
-## P4 Native 迁移队列
+## 稳定观察与后续晋级
+
+1. Dashboard V3 先在 ECS 灰度观察；Mac3 继续运行当前稳定 release。确认 ECS 自然调度、Dashboard 与响应性能
+   无回退后，再单独决定是否将同一已验证 archive 晋级 Mac3，不从代码提交外推生产重启授权。
+2. Native 迁移近期暂停，最早在周末稳定窗口重新启动；窗口前只收集现场耗时和结果证据，不改方案身份、算法
+   或 Registry 所有权。
+
+## 周末 Native 迁移候选队列
 
 26 个 active Native 已按依赖关系分类。10 个 `liwei_0616_*` 方案依赖跨方案 Phase-A cache，继续保留 Native；
 只有上游能提供无需该持久共享 cache、可独立高效运行的 Blackbox V2 两文件 successor 时才重新评估。
 
-其余 16 个按共享代码和耦合关系迁移，顺序固定为：
+其余 16 个只在周末稳定窗口且收到合法 successor 交付后，按共享代码和耦合关系分批迁移，顺序固定为：
 
 1. monthly 0629 三方案；
 2. weekly average 0529 三方案；
@@ -47,13 +54,6 @@
 冒充 Blackbox。每批必须先冻结结果和性能基线，再完成 Intake、持久化回测、日期/结果/必要 extra 等价、性能不
 降低、双环境灰度、Registry 所有权切换与回滚窗口。只有该批闭环后才能删除该批专属 adapter、source/backtest
 runner、CompareGate 和测试；共享给未迁移 Native 的代码和测试不得提前删除。
-
-## ECS runtime root 外历史目录清理
-
-当前 ECS runtime root 是 `/var/lib/bond-factor-lab/state`，其中经授权的旧 lifecycle 目录已经删除。现场另有两处
-早期 bootstrap 留下的同名目录：`/var/lib/bond-factor-lab/lifecycle` 和
-`/var/lib/bond-factor-lab/artifacts/blackbox-v2-lifecycle`。当前与 `previous` release、installed unit 和环境文件
-均零引用，也没有打开文件；但它们不在既有四目录授权范围内，取得单独破坏性删除授权前保持原状。
 
 P2 真实零写入模拟已把完整 daily 墙钟降至约 12 分钟；P4 调度计划中的 discovery 与 lifecycle 解析仅为毫秒级，
 不是下一瓶颈。后续必须先用现场耗时证明算法执行中的明确收益，再修改代码；不为推测性收益增加缓存、模块、

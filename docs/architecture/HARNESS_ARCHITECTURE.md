@@ -65,7 +65,7 @@ bond-factor-lab/
 | `harness.gates.compare_gate` | Native 执行 source benchmark | 不用调参、改脚本或伪造结果 |
 | `harness.gates.native_maintenance_admission_gate` | 只读核验 Native 先前 `all + compare` 准入证据、匹配的 prior `static.business_identity` 快照、current exact version 与当前 expected Registry identity | current version 只可为 native `draft|active`；Registry 必须统一 paused（预激活）或 active（激活后），draft+active fail-closed；不执行 compare/backtest、不写业务表 |
 | `harness.gates.backtest_gate` | Native 运行 `--no-persist`；Blackbox 只接受明确 `--persist`，执行完整历史 Request 批次并原子保存 exact version/输入/环境证据 | 只能写 `t_backtest_*`；不额外跑 predict 冒烟 |
-| `harness.gates.dashboard_gate` | 激活后对唯一产品读模型 `/api/factor-lab/dashboard` 执行一次受限 GET 并复用 Backend payload 校验 | 不属于 `all`；不证明 exact version，不写库 |
+| `harness.gates.dashboard_gate` | 激活后对唯一产品读模型 `/api/factor-lab/dashboard` 执行一次受限 GET，校验 V3 合同、active composite、展示身份、任务字段和 backtest 分区 | 不属于 `all`；不判断调度缺口，不证明 exact version，不写库 |
 | `harness.persistence` | run 开始时 fail-early；Gate 完成后在一个事务中批量保存 evidence/errors 并完成 run；commit ACK 不确定时用新连接精确读回 run 状态、Gate multiset 和 summary | 不逐 Gate 开事务、不把未核对的 commit-unknown 当失败或成功、不写本地镜像报告、不改业务状态 |
 
 CLI 标准入口:
@@ -95,7 +95,7 @@ Blackbox V2 不接受 `onboard`。Intake 定义交付结构、Metadata、固定 
 Native 四段 evidence profile 和三段 `native-maintenance` 的既有准入、保真与身份规则保持不变；
 Blackbox 不接受 `native-maintenance`。
 
-`dashboard` 是激活后的可选只读产品检查；单日补缺仍使用
+`dashboard` 是激活后的可选只读产品检查；active 方案的空 live 明细合法，Gate 不读取 run 或日历重算调度状态。单日补缺仍使用
 `signal-gap-fill --predict-date YYYY-MM-DD [--scheme-id BASE_SCHEME_ID]`，或单个 active Blackbox `weekly_point/h1`、日频 `T+5/h5` 方案的 `signal-gap-fill --scheme-id BASE_SCHEME_ID --target-date-from YYYY-MM-DD --target-date-before YYYY-MM-DD`；两者都不属于入库门禁。区间模式只复用现有 planner、executor 和 repository，不引入新的 Harness 层。
 
 副作用命令绑定 canonical exact version、action、scheme、日期/回测起点和 operator，并保存 operation
