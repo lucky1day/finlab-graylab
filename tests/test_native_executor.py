@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from subprocess import CompletedProcess
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -95,6 +95,141 @@ def test_ephemeral_native_runtime_sets_private_environment(
     )
 
 
+def test_incremental_native_runtime_reuses_persistent_cache(
+    tmp_path: Path,
+) -> None:
+    from scheduler.executor import run_scheme_subprocess
+    from shared.input_artifacts import EPHEMERAL_NATIVE_INPUT_ROOT_ENV
+    from shared.liwei_0616_cache_contract import (
+        CACHE_MUTATION_POLICY_ENV,
+        CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
+    )
+
+    captured: dict[str, str] = {}
+
+    def fake_run(cmd, *, cwd, env, timeout):
+        captured.update(env)
+        return CompletedProcess(cmd, 0, "[]", "")
+
+    root = tmp_path.resolve()
+    persistent_cache = str(tmp_path / "persistent-cache")
+    with (
+        patch.dict(
+            os.environ,
+            {"LIWEI_0616_PHASE_A_CACHE_ROOT": persistent_cache},
+            clear=False,
+        ),
+        patch(
+            "scheduler.executor._run_process_group",
+            side_effect=fake_run,
+        ),
+    ):
+        run_scheme_subprocess(
+            "daily_demo",
+            "2026-07-24",
+            ephemeral_native_runtime_root=root,
+            native_cache_mutation_policy=(
+                CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
+            ),
+        )
+
+    assert captured[EPHEMERAL_NATIVE_INPUT_ROOT_ENV] == str(root / "inputs")
+    assert captured["LIWEI_0616_PHASE_A_CACHE_ROOT"] == persistent_cache
+    assert captured[CACHE_MUTATION_POLICY_ENV] == (
+        CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
+    )
+
+
+def test_incremental_cache_policy_only_accepts_hit_or_one_tail_date() -> None:
+    from shared.liwei_0616_cache_contract import (
+        CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
+    )
+    from shared.liwei_0616_phase_a_cache import (
+        _LoadedGeneration,
+        _validate_incremental_only_build,
+    )
+
+    current = _LoadedGeneration(
+        generation_id="generation-1",
+        path=Path("/cache/generation-1"),
+        manifest={},
+        manifest_sha256="a" * 64,
+        caches={
+            "baseline-a": {"test_dates": ["2026-08-25"]},
+            "baseline-b": {"test_dates": ["2026-08-25"]},
+        },
+    )
+    common = {
+        "mutation_policy": CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
+        "build_reason": "tail_append",
+        "current": current,
+    }
+    _validate_incremental_only_build(
+        **common,
+        build_mode="append",
+        planned_missing_dates={"baseline-a": [], "baseline-b": []},
+    )
+    _validate_incremental_only_build(
+        **common,
+        build_mode="append",
+        planned_missing_dates={
+            "baseline-a": ["2026-08-26"],
+            "baseline-b": ["2026-08-26"],
+        },
+    )
+    with pytest.raises(RuntimeError, match="build_mode=suffix"):
+        _validate_incremental_only_build(
+            **common,
+            build_mode="suffix",
+            planned_missing_dates={"baseline-a": ["2026-08-25"]},
+        )
+    with pytest.raises(RuntimeError, match="at most one"):
+        _validate_incremental_only_build(
+            **common,
+            build_mode="append",
+            planned_missing_dates={
+                "baseline-a": ["2026-08-26"],
+                "baseline-b": ["2026-08-27"],
+            },
+        )
+    with pytest.raises(RuntimeError, match="historical"):
+        _validate_incremental_only_build(
+            **common,
+            build_mode="append",
+            planned_missing_dates={"baseline-a": ["2026-08-25"]},
+        )
+
+
+def test_incremental_cache_policy_disables_runtime_comparison() -> None:
+    from shared.liwei_0616_cache_contract import (
+        CACHE_MUTATION_POLICY_ENV,
+        CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
+    )
+    from shared.liwei_0616_phase_a_cache import (
+        runtime_compare_gate_callbacks,
+    )
+
+    train = Mock()
+    full_output = Mock()
+    with patch.dict(
+        os.environ,
+        {
+            CACHE_MUTATION_POLICY_ENV: (
+                CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
+            )
+        },
+        clear=False,
+    ):
+        callbacks = runtime_compare_gate_callbacks(
+            train_phase_a=train,
+            run_full_output=full_output,
+        )
+
+    assert callbacks == (None, None)
+    train.assert_not_called()
+    full_output.assert_not_called()
+
+
 def test_native_input_audit_root_is_passed_only_when_explicit(
     tmp_path: Path,
 ) -> None:
@@ -152,6 +287,20 @@ def test_native_execution_rejects_invalid_runtime_controls() -> None:
             blackbox,
             "2026-07-24",
             ephemeral_native_runtime_root=Path("/private/native-gap"),
+            **common,
+        )
+    with pytest.raises(ValueError, match="cache mutation policy"):
+        run_configured_scheme(
+            native,
+            "2026-07-24",
+            native_cache_mutation_policy="full_rebuild",
+            **common,
+        )
+    with pytest.raises(ValueError, match="native_adapter"):
+        run_configured_scheme(
+            blackbox,
+            "2026-07-24",
+            native_cache_mutation_policy="incremental_only",
             **common,
         )
 
@@ -249,3 +398,34 @@ def test_v2_policy_timeout_is_a_hard_upper_bound() -> None:
         schedule=SimpleNamespace(timeout_sec=3600),
     )
     assert _effective_timeout_sec(cfg, 120) == 120
+
+
+def test_native_process_group_is_terminated_on_interruption() -> None:
+    from scheduler.executor import _run_process_group
+
+    process = SimpleNamespace(
+        pid=4321,
+        communicate=Mock(side_effect=KeyboardInterrupt()),
+        returncode=None,
+    )
+    termination = SimpleNamespace(confirmed_gone=True)
+    with (
+        patch("scheduler.executor.subprocess.Popen", return_value=process),
+        patch(
+            "scheduler.executor.capture_new_session_process_group",
+            return_value=4321,
+        ),
+        patch(
+            "scheduler.executor._terminate_process_group",
+            return_value=termination,
+        ) as terminate,
+        pytest.raises(KeyboardInterrupt),
+    ):
+        _run_process_group(
+            ["python", "scheme.py"],
+            cwd=Path("/tmp"),
+            env={},
+            timeout=600,
+        )
+
+    terminate.assert_called_once_with(process, process_group_id=4321)

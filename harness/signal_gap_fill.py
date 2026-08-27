@@ -4,8 +4,9 @@ import hashlib
 import json
 import os
 import tempfile
+import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -20,6 +21,7 @@ from scheduler.executor import (
     run_blackbox_gray_replay_batch,
     run_configured_scheme,
 )
+from scheduler.process_control import ProcessStartGuard
 from shared.blackbox_v2.contracts import BlackboxRequest
 from shared.blackbox_v2.requests import build_request
 from shared.blackbox_v2.snapshot import CutoffKeys
@@ -37,6 +39,10 @@ from shared.exclusive_file_lock import (
 from shared.input_artifacts import (
     BlackboxGrayReplaySession,
     build_blackbox_gray_replay_session,
+)
+from shared.liwei_0616_cache_contract import (
+    APPROVED_PHASE_A_CACHE_PUBLISHERS,
+    CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
 )
 from shared.models import PredictionRecord
 from shared.runtime_paths import resolve_runtime_artifact_root
@@ -84,6 +90,8 @@ class _Execution:
     started: float
     records: list[PredictionRecord] | None = None
     error: BaseException | None = None
+    settled: bool = False
+    committed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,54 +215,58 @@ def run_signal_gap_fill(
                 remaining=_remaining(groups),
             )
 
-        try:
-            _run_algorithms(
-                executions,
-                engine=engine,
-                algo_env=algo_env,
-                timeout_sec=timeout_sec,
-                data_bridge_config=databridge_config,
-            )
-        except Exception as exc:  # noqa: BLE001
-            failure_errors = _fail_executions(
-                executions,
-                engine=engine,
-                repository=repository,
-                default_error="ALGORITHM_COORDINATOR_FAILED",
-            )
-            return _report(
-                "FAILED",
-                normalized_plan,
-                groups=groups,
-                failure_code="ALGORITHM_COORDINATOR_FAILED",
-                errors=[f"{type(exc).__name__}: {exc}", *failure_errors],
-                remaining=_remaining(groups),
-            )
-        failed = [item for item in executions if item.error is not None]
-        if failed:
-            failure_errors = _fail_executions(
-                executions,
-                engine=engine,
-                repository=repository,
-                default_error="SIGNAL_GAP_FILL_BATCH_ABORTED",
-            )
-            return _report(
-                "FAILED",
-                normalized_plan,
-                groups=groups,
-                failure_code="ALGORITHM_EXECUTION_FAILED",
-                errors=[
-                    *(
-                        f"{item.group.base_scheme_id}: "
-                        f"{type(item.error).__name__}: {item.error}"
-                        for item in failed
-                    ),
-                    *failure_errors,
-                ],
-                remaining=_remaining(groups),
-            )
-
         if normalized_plan["schema_version"] == RANGE_PLAN_SCHEMA_VERSION:
+            try:
+                _run_range_algorithms(
+                    executions,
+                    engine=engine,
+                    algo_env=algo_env,
+                    timeout_sec=timeout_sec,
+                    data_bridge_config=databridge_config,
+                )
+            except Exception as exc:  # noqa: BLE001
+                failure_errors = _fail_executions(
+                    executions,
+                    engine=engine,
+                    repository=repository,
+                    default_error="ALGORITHM_COORDINATOR_FAILED",
+                )
+                return _report(
+                    "FAILED",
+                    normalized_plan,
+                    groups=groups,
+                    failure_code="ALGORITHM_COORDINATOR_FAILED",
+                    errors=[
+                        f"{type(exc).__name__}: {exc}",
+                        *failure_errors,
+                    ],
+                    remaining=_remaining(groups),
+                )
+            failed = [
+                item for item in executions if item.error is not None
+            ]
+            if failed:
+                failure_errors = _fail_executions(
+                    executions,
+                    engine=engine,
+                    repository=repository,
+                    default_error="SIGNAL_GAP_FILL_BATCH_ABORTED",
+                )
+                return _report(
+                    "FAILED",
+                    normalized_plan,
+                    groups=groups,
+                    failure_code="ALGORITHM_EXECUTION_FAILED",
+                    errors=[
+                        *(
+                            f"{item.group.base_scheme_id}: "
+                            f"{type(item.error).__name__}: {item.error}"
+                            for item in failed
+                        ),
+                        *failure_errors,
+                    ],
+                    remaining=_remaining(groups),
+                )
             return _complete_range(
                 normalized_plan,
                 groups=groups,
@@ -263,101 +275,204 @@ def run_signal_gap_fill(
                 repository=repository,
                 databridge_config=databridge_config,
             )
-
-        completed: list[dict[str, Any]] = []
-        completed_ids: set[tuple[str, str]] = set()
-        for index, item in enumerate(executions):
-            try:
-                records = item.records or []
-                written = repository.complete_gray_gap_run(
-                    engine,
-                    item.cfg,
-                    run_id=item.run_id,
-                    records=records,
-                    expected_target_keys=list(
-                        item.group.missing_target_keys
-                    ),
-                    source_authority=item.group.source_authority,
-                    records_returned=len(records),
-                    run_date=item.group.predict_date,
-                    duration_sec=time.monotonic() - item.started,
-                )
-            except Exception as exc:  # noqa: BLE001
-                item.error = exc
-                unfinished = executions[index:]
-                failure_errors = _fail_executions(
-                    unfinished,
-                    engine=engine,
-                    repository=repository,
-                    default_error="GRAY_GAP_COMMIT_FAILED",
-                )
-                remaining_groups = [
-                    group
-                    for group in groups
-                    if group.identity not in completed_ids
-                ]
-                return _report(
-                    "FAILED",
-                    normalized_plan,
-                    groups=groups,
-                    failure_code="GRAY_GAP_COMMIT_FAILED",
-                    errors=[
-                        f"{type(exc).__name__}: {exc}",
-                        *failure_errors,
-                    ],
-                    completed=completed,
-                    remaining=_remaining(remaining_groups),
-                )
-            completed.append(
-                {
-                    "base_scheme_id": item.group.base_scheme_id,
-                    "predict_date": item.group.predict_date,
-                    "run_id": item.run_id,
-                    "records_written": int(written),
-                }
-            )
-            completed_ids.add(item.group.identity)
-
         try:
-            readback = plan_signal_gaps(
-                engine,
-                predict_date=str(normalized_plan["predict_date"]),
-                base_scheme_id=normalized_plan.get("base_scheme_id"),
+            return _complete_single_date(
+                normalized_plan,
+                groups=groups,
+                executions=executions,
+                engine=engine,
+                repository=repository,
                 databridge_config=databridge_config,
+                algo_env=algo_env,
+                timeout_sec=timeout_sec,
             )
-        except Exception as exc:  # noqa: BLE001
-            return _report(
-                "FAILED",
-                normalized_plan,
-                groups=groups,
-                failure_code="POSTFILL_READBACK_FAILED",
-                errors=[f"{type(exc).__name__}: {exc}"],
-                completed=completed,
-                remaining=_remaining(groups),
+        except BaseException as exc:
+            cleanup_errors = _fail_executions(
+                executions,
+                engine=engine,
+                repository=repository,
+                default_error="ALGORITHM_COORDINATOR_FAILED",
             )
-        remaining_groups = _remaining_groups_after_readback(groups, readback)
-        if remaining_groups:
-            return _report(
-                "FAILED",
-                normalized_plan,
-                groups=groups,
-                failure_code="POSTFILL_GAPS_REMAIN",
-                completed=completed,
-                remaining=_remaining(remaining_groups),
-            )
-        return _report(
-            "PASSED",
-            normalized_plan,
-            groups=groups,
-            failure_code=None,
-            completed=completed,
-        )
+            for error in cleanup_errors:
+                exc.add_note(error)
+            raise
     finally:
         try:
             if engine is not None and hasattr(engine, "dispose"):
                 engine.dispose()
         finally:
             singleton_lock.release()
+
+
+def _complete_single_date(
+    plan: Mapping[str, Any],
+    *,
+    groups: Sequence[_GapGroup],
+    executions: Sequence[_Execution],
+    engine: Any,
+    repository: Any,
+    databridge_config: DataBridgeRefreshConfig,
+    algo_env: str,
+    timeout_sec: int,
+) -> dict[str, Any]:
+    completed: list[dict[str, Any]] = []
+    algorithm_errors: list[str] = []
+    commit_errors: list[str] = []
+
+    def settle(item: _Execution) -> None:
+        if item.error is not None:
+            algorithm_errors.append(
+                f"{item.group.base_scheme_id}: "
+                f"{type(item.error).__name__}: {item.error}"
+            )
+            algorithm_errors.extend(
+                _fail_executions(
+                    (item,),
+                    engine=engine,
+                    repository=repository,
+                    default_error="ALGORITHM_EXECUTION_FAILED",
+                )
+            )
+            return
+        records = item.records or []
+        try:
+            written = repository.complete_gray_gap_run(
+                engine,
+                item.cfg,
+                run_id=item.run_id,
+                records=records,
+                expected_target_keys=list(item.group.missing_target_keys),
+                source_authority=item.group.source_authority,
+                records_returned=len(records),
+                run_date=item.group.predict_date,
+                duration_sec=time.monotonic() - item.started,
+            )
+        except Exception as exc:  # noqa: BLE001
+            item.error = exc
+            commit_errors.append(
+                f"{item.group.base_scheme_id}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            commit_errors.extend(
+                _fail_executions(
+                    (item,),
+                    engine=engine,
+                    repository=repository,
+                    default_error="GRAY_GAP_COMMIT_FAILED",
+                )
+            )
+            return
+        item.settled = True
+        item.committed = True
+        completed.append(
+            {
+                "base_scheme_id": item.group.base_scheme_id,
+                "predict_date": item.group.predict_date,
+                "run_id": item.run_id,
+                "records_written": int(written),
+            }
+        )
+
+    try:
+        _run_single_date_algorithms(
+            executions,
+            engine=engine,
+            algo_env=algo_env,
+            timeout_sec=timeout_sec,
+            data_bridge_config=databridge_config,
+            settle=settle,
+        )
+    except Exception as exc:  # noqa: BLE001
+        cleanup_errors = _fail_executions(
+            executions,
+            engine=engine,
+            repository=repository,
+            default_error="ALGORITHM_COORDINATOR_FAILED",
+        )
+        return _report(
+            "FAILED",
+            plan,
+            groups=groups,
+            failure_code="ALGORITHM_COORDINATOR_FAILED",
+            errors=[f"{type(exc).__name__}: {exc}", *cleanup_errors],
+            completed=_sorted_completed(completed),
+            remaining=_remaining(
+                [item.group for item in executions if not item.committed]
+            ),
+        )
+
+    unsettled = [item for item in executions if not item.settled]
+    if unsettled:
+        algorithm_errors.extend(
+            _fail_executions(
+                unsettled,
+                engine=engine,
+                repository=repository,
+                default_error="ALGORITHM_EXECUTION_FAILED",
+            )
+        )
+
+    try:
+        readback = plan_signal_gaps(
+            engine,
+            predict_date=str(plan["predict_date"]),
+            base_scheme_id=plan.get("base_scheme_id"),
+            databridge_config=databridge_config,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _report(
+            "FAILED",
+            plan,
+            groups=groups,
+            failure_code="POSTFILL_READBACK_FAILED",
+            errors=[
+                *algorithm_errors,
+                *commit_errors,
+                f"{type(exc).__name__}: {exc}",
+            ],
+            completed=_sorted_completed(completed),
+            remaining=_remaining(
+                [item.group for item in executions if not item.committed]
+            ),
+        )
+    remaining_groups = _remaining_groups_after_readback(groups, readback)
+    if algorithm_errors:
+        failure_code = "ALGORITHM_EXECUTION_FAILED"
+    elif commit_errors:
+        failure_code = "GRAY_GAP_COMMIT_FAILED"
+    elif remaining_groups:
+        failure_code = "POSTFILL_GAPS_REMAIN"
+    else:
+        failure_code = None
+    if failure_code is not None:
+        return _report(
+            "FAILED",
+            plan,
+            groups=groups,
+            failure_code=failure_code,
+            errors=[*algorithm_errors, *commit_errors],
+            completed=_sorted_completed(completed),
+            remaining=_remaining(remaining_groups),
+        )
+    return _report(
+        "PASSED",
+        plan,
+        groups=groups,
+        failure_code=None,
+        completed=_sorted_completed(completed),
+    )
+
+
+def _sorted_completed(
+    completed: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    return sorted(
+        (dict(item) for item in completed),
+        key=lambda item: (
+            str(item["base_scheme_id"]),
+            str(item["predict_date"]),
+        ),
+    )
 
 
 def _complete_range(
@@ -416,6 +531,9 @@ def _complete_range(
         }
         for item in executions
     ]
+    for item in executions:
+        item.settled = True
+        item.committed = True
     remaining: list[_GapGroup] = []
     try:
         for item in executions:
@@ -655,20 +773,21 @@ def _create_runs(
                     started=time.monotonic(),
                 )
             )
-    except Exception as exc:
-        cleanup_errors.extend(
-            _fail_executions(
-                executions,
-                engine=engine,
-                repository=repository,
-                default_error=f"RUN_CREATION_ABORTED:{type(exc).__name__}",
-            )
+    except BaseException as exc:
+        failures = _fail_executions(
+            executions,
+            engine=engine,
+            repository=repository,
+            default_error=f"RUN_CREATION_ABORTED:{type(exc).__name__}",
         )
+        cleanup_errors.extend(failures)
+        for failure in failures:
+            exc.add_note(failure)
         raise
     return executions
 
 
-def _run_algorithms(
+def _run_range_algorithms(
     executions: Sequence[_Execution],
     *,
     engine: Any,
@@ -688,8 +807,31 @@ def _run_algorithms(
         timeout_sec=timeout_sec,
         data_bridge_config=data_bridge_config,
     )
-    if any(item.error is not None for item in blackbox):
-        return
+
+
+def _run_single_date_algorithms(
+    executions: Sequence[_Execution],
+    *,
+    engine: Any,
+    algo_env: str,
+    timeout_sec: int,
+    data_bridge_config: DataBridgeRefreshConfig,
+    settle: Callable[[_Execution], None],
+) -> None:
+    blackbox = [
+        item
+        for item in executions
+        if item.group.runtime_type == "blackbox_v2"
+    ]
+    _run_blackbox_gray_replay_batches(
+        blackbox,
+        engine=engine,
+        algo_env=algo_env,
+        timeout_sec=timeout_sec,
+        data_bridge_config=data_bridge_config,
+    )
+    for item in blackbox:
+        settle(item)
 
     native = [
         item
@@ -698,32 +840,106 @@ def _run_algorithms(
     ]
     if not native:
         return
-    with tempfile.TemporaryDirectory(prefix="bfl-native-gap-") as temporary:
-        os.chmod(temporary, 0o700)
-        root = Path(temporary).resolve(strict=True)
-        futures: dict[Future[list[PredictionRecord]], _Execution] = {}
-        with ThreadPoolExecutor(
-            max_workers=min(2, len(native)),
-            thread_name_prefix="signal-gap-native",
-        ) as pool:
-            for item in native:
-                scheme_root = root / item.group.base_scheme_id
-                scheme_root.mkdir(mode=0o700)
-                futures[
-                    pool.submit(
-                        _run_native_algorithm,
-                        item,
-                        engine=engine,
-                        algo_env=algo_env,
-                        timeout_sec=timeout_sec,
-                        ephemeral_native_runtime_root=scheme_root,
-                    )
-                ] = item
-            for future, item in futures.items():
-                try:
-                    item.records = future.result()
-                except Exception as exc:  # noqa: BLE001
-                    item.error = exc
+    publisher_ids = {
+        publisher_id
+        for _tenor, publisher_id in (
+            APPROVED_PHASE_A_CACHE_PUBLISHERS.values()
+        )
+    }
+    publishers = [
+        item
+        for item in native
+        if item.group.base_scheme_id in publisher_ids
+    ]
+    consumers = [
+        item
+        for item in native
+        if item.group.base_scheme_id not in publisher_ids
+    ]
+    cancellation_event = threading.Event()
+    process_start_guard = ProcessStartGuard()
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="bfl-native-gap-"
+        ) as temporary:
+            os.chmod(temporary, 0o700)
+            root = Path(temporary).resolve(strict=True)
+            _run_native_wave(
+                publishers,
+                root=root,
+                engine=engine,
+                algo_env=algo_env,
+                timeout_sec=timeout_sec,
+                cancellation_event=cancellation_event,
+                process_start_guard=process_start_guard,
+                settle=settle,
+            )
+            _run_native_wave(
+                consumers,
+                root=root,
+                engine=engine,
+                algo_env=algo_env,
+                timeout_sec=timeout_sec,
+                cancellation_event=cancellation_event,
+                process_start_guard=process_start_guard,
+                settle=settle,
+            )
+    except BaseException:
+        cancellation_event.set()
+        raise
+
+
+def _run_native_wave(
+    executions: Sequence[_Execution],
+    *,
+    root: Path,
+    engine: Any,
+    algo_env: str,
+    timeout_sec: int,
+    cancellation_event: threading.Event,
+    process_start_guard: ProcessStartGuard,
+    settle: Callable[[_Execution], None],
+) -> None:
+    if not executions:
+        return
+    pool = ThreadPoolExecutor(
+        max_workers=min(2, len(executions)),
+        thread_name_prefix="signal-gap-native",
+    )
+    futures: dict[Future[list[PredictionRecord]], _Execution] = {}
+    try:
+        for item in executions:
+            scheme_root = root / item.group.base_scheme_id
+            scheme_root.mkdir(mode=0o700)
+            futures[
+                pool.submit(
+                    _run_native_algorithm,
+                    item,
+                    engine=engine,
+                    algo_env=algo_env,
+                    timeout_sec=timeout_sec,
+                    ephemeral_native_runtime_root=scheme_root,
+                    cancellation_event=cancellation_event,
+                    process_start_guard=process_start_guard,
+                )
+            ] = item
+        for future in as_completed(futures):
+            item = futures[future]
+            try:
+                item.records = future.result()
+            except Exception as exc:  # noqa: BLE001
+                item.error = exc
+            settle(item)
+    except BaseException:
+        cancellation_event.set()
+        for future in futures:
+            future.cancel()
+        raise
+    finally:
+        pool.shutdown(
+            wait=True,
+            cancel_futures=cancellation_event.is_set(),
+        )
 
 
 def _run_native_algorithm(
@@ -733,6 +949,8 @@ def _run_native_algorithm(
     algo_env: str,
     timeout_sec: int,
     ephemeral_native_runtime_root: Path,
+    cancellation_event: threading.Event | None = None,
+    process_start_guard: ProcessStartGuard | None = None,
 ) -> list[PredictionRecord]:
     records = run_configured_scheme(
         item.cfg,
@@ -741,6 +959,11 @@ def _run_native_algorithm(
         algo_env=algo_env,
         timeout_sec=timeout_sec,
         ephemeral_native_runtime_root=ephemeral_native_runtime_root,
+        native_cache_mutation_policy=(
+            CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
+        ),
+        cancellation_event=cancellation_event,
+        process_start_guard=process_start_guard,
     )
     normalized = [
         replace(
@@ -767,8 +990,6 @@ def _run_blackbox_gray_replay_batches(
     data_bridge_config: DataBridgeRefreshConfig,
 ) -> None:
     batches = _build_blackbox_replay_batches(executions)
-    if any(item.error is not None for item in executions):
-        return
     by_source: dict[str, list[_BlackboxReplayBatch]] = {}
     for batch in batches:
         by_source.setdefault(_canonical_json(batch.source_identity), []).append(
@@ -792,9 +1013,11 @@ def _run_blackbox_gray_replay_batches(
             for batch in source_batches:
                 for item in batch.executions:
                     item.error = exc
-            return
+            continue
 
     for source_key in sorted(by_source):
+        if source_key not in sessions:
+            continue
         session = sessions[source_key]
         for batch in by_source[source_key]:
             try:
@@ -1092,6 +1315,8 @@ def _fail_executions(
 ) -> list[str]:
     failures: list[str] = []
     for item in executions:
+        if item.settled:
+            continue
         error = (
             f"{type(item.error).__name__}: {item.error}"
             if item.error is not None
@@ -1109,6 +1334,7 @@ def _fail_executions(
                 ),
                 error_message=error,
             )
+            item.settled = True
         except Exception as exc:  # noqa: BLE001
             failures.append(
                 f"run_id={item.run_id}: {type(exc).__name__}: {exc}"

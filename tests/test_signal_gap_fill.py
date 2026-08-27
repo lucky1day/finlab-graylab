@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -295,21 +296,29 @@ def test_multi_target_scheme_runs_once_and_commits_only_missing_target(
     lock.release.assert_called_once()
 
 
-def test_any_algorithm_failure_commits_zero_predictions_and_fails_all_runs(
+def test_native_scheme_commits_before_other_scheme_finishes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from harness.signal_gap_fill import run_signal_gap_fill
 
-    plan = _plan([_action("a_native"), _action("b_native")])
+    first = _action("a_native")
+    second = _action("b_native")
+    plan = _plan([first, second])
+    first_committed = Event()
 
     def execute(cfg: SimpleNamespace, _date: str, **_kwargs: object):
-        if cfg.scheme_id == "b_native":
-            raise RuntimeError("algorithm failed")
-        return [_record(_action(cfg.scheme_id))]
+        if cfg.scheme_id == "b_native" and not first_committed.wait(1):
+            raise RuntimeError("first scheme was not committed")
+        return [_record(first if cfg.scheme_id == "a_native" else second)]
 
-    repository = _repository()
-    engine, readback = _install(
+    def commit(_engine, cfg, **_kwargs):
+        if cfg.scheme_id == "a_native":
+            first_committed.set()
+        return 1
+
+    repository = _repository(commit_side_effect=commit)
+    engine, _ = _install(
         monkeypatch,
         repository=repository,
         plan=plan,
@@ -323,11 +332,57 @@ def test_any_algorithm_failure_commits_zero_predictions_and_fails_all_runs(
         databridge_config=SimpleNamespace(),
     )
 
+    assert report["status"] == "PASSED", report["errors"]
+    assert first_committed.is_set()
+    assert repository.complete_gray_gap_run.call_count == 2
+
+
+def test_algorithm_failure_keeps_successful_scheme_and_only_fails_remaining(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from harness.signal_gap_fill import run_signal_gap_fill
+
+    plan = _plan([_action("a_native"), _action("b_native")])
+
+    def execute(cfg: SimpleNamespace, _date: str, **_kwargs: object):
+        if cfg.scheme_id == "b_native":
+            raise RuntimeError("algorithm failed")
+        return [_record(_action(cfg.scheme_id))]
+
+    repository = _repository()
+    readback_plan = _plan(
+        [
+            _action("a_native", action="SKIP_PRESENT"),
+            _action("b_native"),
+        ]
+    )
+    engine, readback = _install(
+        monkeypatch,
+        repository=repository,
+        plan=plan,
+        runner=Mock(side_effect=execute),
+        readback=Mock(return_value=readback_plan),
+    )
+
+    report = run_signal_gap_fill(
+        plan=plan,
+        project_root=tmp_path,
+        engine_factory=lambda: engine,
+        databridge_config=SimpleNamespace(),
+    )
+
     assert report["status"] == "FAILED"
     assert report["failure_code"] == "ALGORITHM_EXECUTION_FAILED"
-    repository.complete_gray_gap_run.assert_not_called()
-    assert repository.fail_scheme_run_atomic.call_count == 2
-    readback.assert_not_called()
+    assert [item["base_scheme_id"] for item in report["completed"]] == [
+        "a_native"
+    ]
+    assert [item["base_scheme_id"] for item in report["remaining"]] == [
+        "b_native"
+    ]
+    repository.complete_gray_gap_run.assert_called_once()
+    repository.fail_scheme_run_atomic.assert_called_once()
+    readback.assert_called_once()
 
 
 def test_commit_conflict_returns_completed_and_remaining_without_retry(
@@ -343,14 +398,24 @@ def test_commit_conflict_returns_completed_and_remaining_without_retry(
     def execute(cfg: SimpleNamespace, _date: str, **_kwargs: object):
         return [_record(first if cfg.scheme_id == "a_native" else second)]
 
-    repository = _repository(
-        commit_side_effect=[1, RuntimeError("business key conflict")]
+    def commit(_engine, cfg, **_kwargs):
+        if cfg.scheme_id == "b_native":
+            raise RuntimeError("business key conflict")
+        return 1
+
+    repository = _repository(commit_side_effect=commit)
+    readback_plan = _plan(
+        [
+            _action("a_native", action="SKIP_PRESENT"),
+            _action("b_native"),
+        ]
     )
     engine, readback = _install(
         monkeypatch,
         repository=repository,
         plan=plan,
         runner=Mock(side_effect=execute),
+        readback=Mock(return_value=readback_plan),
     )
 
     report = run_signal_gap_fill(
@@ -370,7 +435,7 @@ def test_commit_conflict_returns_completed_and_remaining_without_retry(
     ]
     assert repository.complete_gray_gap_run.call_count == 2
     repository.fail_scheme_run_atomic.assert_called_once()
-    readback.assert_not_called()
+    readback.assert_called_once()
 
 
 def test_blackbox_schemes_with_same_source_share_immutable_session(
@@ -430,6 +495,210 @@ def test_blackbox_schemes_with_same_source_share_immutable_session(
     assert report["status"] == "PASSED", report["errors"]
     session_builder.assert_called_once()
     assert signal_gap_fill.run_blackbox_gray_replay_batch.call_count == 2
+
+
+def test_blackbox_failure_does_not_block_native_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from harness import signal_gap_fill
+
+    blackbox = _action("a_blackbox", runtime_type="blackbox_v2")
+    native = _action("b_native")
+    plan = _plan([blackbox, native])
+    readback_plan = _plan(
+        [blackbox, _action("b_native", action="SKIP_PRESENT")]
+    )
+    repository = _repository()
+    native_runner = Mock(return_value=[_record(native)])
+    engine, _ = _install(
+        monkeypatch,
+        repository=repository,
+        plan=plan,
+        runner=native_runner,
+        configs={
+            "a_blackbox": _config(
+                "a_blackbox", runtime_type="blackbox_v2"
+            ),
+            "b_native": _config("b_native"),
+        },
+        readback=Mock(return_value=readback_plan),
+    )
+    monkeypatch.setattr(
+        signal_gap_fill,
+        "build_blackbox_gray_replay_session",
+        Mock(return_value=SimpleNamespace(source_identity=_source_identity())),
+    )
+    monkeypatch.setattr(
+        signal_gap_fill,
+        "run_blackbox_gray_replay_batch",
+        Mock(side_effect=RuntimeError("blackbox failed")),
+    )
+
+    report = signal_gap_fill.run_signal_gap_fill(
+        plan=plan,
+        project_root=tmp_path,
+        engine_factory=lambda: engine,
+        databridge_config=SimpleNamespace(),
+    )
+
+    assert report["status"] == "FAILED"
+    assert report["failure_code"] == "ALGORITHM_EXECUTION_FAILED"
+    assert [item["base_scheme_id"] for item in report["completed"]] == [
+        "b_native"
+    ]
+    native_runner.assert_called_once()
+    repository.complete_gray_gap_run.assert_called_once()
+    repository.fail_scheme_run_atomic.assert_called_once()
+
+
+def test_native_publishers_finish_before_consumers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from harness.signal_gap_fill import run_signal_gap_fill
+    from shared.liwei_0616_cache_contract import (
+        CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
+    )
+
+    publisher_id = "liwei_0616_10y01_full_oos_k3_div_k10"
+    consumer_id = "liwei_0616_10y01_cons_say_k3_div_k10"
+    plan = _plan([_action(consumer_id), _action(publisher_id)])
+    execution_order: list[str] = []
+
+    def execute(cfg: SimpleNamespace, _date: str, **kwargs: object):
+        assert kwargs["native_cache_mutation_policy"] == (
+            CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
+        )
+        execution_order.append(cfg.scheme_id)
+        return [_record(_action(cfg.scheme_id))]
+
+    repository = _repository()
+    engine, _ = _install(
+        monkeypatch,
+        repository=repository,
+        plan=plan,
+        runner=Mock(side_effect=execute),
+    )
+
+    report = run_signal_gap_fill(
+        plan=plan,
+        project_root=tmp_path,
+        engine_factory=lambda: engine,
+        databridge_config=SimpleNamespace(),
+    )
+
+    assert report["status"] == "PASSED", report["errors"]
+    assert execution_order == [publisher_id, consumer_id]
+
+
+def test_native_interruption_closes_all_uncommitted_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from harness.signal_gap_fill import run_signal_gap_fill
+
+    plan = _plan([_action("a_native"), _action("b_native")])
+
+    def execute(cfg: SimpleNamespace, _date: str, **kwargs: object):
+        if cfg.scheme_id == "a_native":
+            raise KeyboardInterrupt
+        cancellation_event = kwargs["cancellation_event"]
+        cancellation_event.wait(timeout=1)
+        raise RuntimeError("cancelled")
+
+    repository = _repository()
+    lock = _lock()
+    engine, _ = _install(
+        monkeypatch,
+        repository=repository,
+        plan=plan,
+        runner=Mock(side_effect=execute),
+        lock=lock,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        run_signal_gap_fill(
+            plan=plan,
+            project_root=tmp_path,
+            engine_factory=lambda: engine,
+            databridge_config=SimpleNamespace(),
+        )
+
+    repository.complete_gray_gap_run.assert_not_called()
+    assert repository.fail_scheme_run_atomic.call_count == 2
+    engine.dispose.assert_called_once()
+    lock.release.assert_called_once()
+
+
+def test_run_creation_interruption_closes_already_created_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from harness.signal_gap_fill import run_signal_gap_fill
+
+    plan = _plan([_action("a_native"), _action("b_native")])
+    repository = _repository()
+    repository.create_scheme_run.side_effect = [101, KeyboardInterrupt()]
+    lock = _lock()
+    engine, _ = _install(
+        monkeypatch,
+        repository=repository,
+        plan=plan,
+        runner=Mock(side_effect=AssertionError("algorithm must not run")),
+        lock=lock,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        run_signal_gap_fill(
+            plan=plan,
+            project_root=tmp_path,
+            engine_factory=lambda: engine,
+            databridge_config=SimpleNamespace(),
+        )
+
+    repository.fail_scheme_run_atomic.assert_called_once()
+    assert repository.fail_scheme_run_atomic.call_args.kwargs["run_id"] == 101
+    engine.dispose.assert_called_once()
+    lock.release.assert_called_once()
+
+
+def test_readback_failure_reports_failed_scheme_as_remaining(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from harness.signal_gap_fill import run_signal_gap_fill
+
+    plan = _plan([_action("a_native"), _action("b_native")])
+
+    def execute(cfg: SimpleNamespace, _date: str, **_kwargs: object):
+        if cfg.scheme_id == "b_native":
+            raise RuntimeError("algorithm failed")
+        return [_record(_action("a_native"))]
+
+    repository = _repository()
+    engine, _ = _install(
+        monkeypatch,
+        repository=repository,
+        plan=plan,
+        runner=Mock(side_effect=execute),
+        readback=Mock(side_effect=RuntimeError("readback failed")),
+    )
+
+    report = run_signal_gap_fill(
+        plan=plan,
+        project_root=tmp_path,
+        engine_factory=lambda: engine,
+        databridge_config=SimpleNamespace(),
+    )
+
+    assert report["failure_code"] == "POSTFILL_READBACK_FAILED"
+    assert [item["base_scheme_id"] for item in report["completed"]] == [
+        "a_native"
+    ]
+    assert [item["base_scheme_id"] for item in report["remaining"]] == [
+        "b_native"
+    ]
 
 
 @pytest.mark.parametrize(

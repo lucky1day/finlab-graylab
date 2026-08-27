@@ -26,6 +26,7 @@ from shared.artifact_paths import BACKTEST_ARTIFACT_ROOT, safe_path_part
 from shared.liwei_0616_cache_contract import (
     APPROVED_PHASE_A_CACHE_PUBLISHERS,
     CACHE_MUTATION_POLICY_ENV,
+    CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
     CACHE_MUTATION_POLICY_PRIVATE_BUILD,
     GENERATION_ACCEPTANCE_SCHEMA_VERSION,
     PHASE_A_CACHE_ABI_VERSION,
@@ -238,6 +239,20 @@ def prepare_phase_a_caches(
             "choose either offline qualify_compare_gate evidence or "
             "runtime compare_full_output"
         )
+    if (
+        mutation_policy == CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
+        and any(
+            callback is not None
+            for callback in (
+                compare_cold,
+                qualify_compare_gate,
+                compare_full_output,
+            )
+        )
+    ):
+        raise ValueError(
+            "incremental_only does not allow runtime cache comparison"
+        )
     root = _cache_root(cache_root)
     if (
         mutation_policy == CACHE_MUTATION_POLICY_PRIVATE_BUILD
@@ -449,6 +464,56 @@ def _prepare_under_family_lock(
             if build_mode != "full":
                 cached = current.caches
 
+    planned_missing_dates: dict[str, list[str]] | None = None
+    if mutation_policy == CACHE_MUTATION_POLICY_INCREMENTAL_ONLY:
+        planned_missing_dates = {}
+        for baseline in spec.baselines:
+            requested_dates = requested_by_baseline[baseline]
+            previous = cached.get(baseline)
+            parent_cache = (
+                current.caches.get(baseline)
+                if current is not None
+                else None
+            )
+            cached_dates = (
+                set(previous["test_dates"])
+                if previous is not None
+                else set()
+            )
+            parent_dates = (
+                set(parent_cache["test_dates"])
+                if parent_cache is not None
+                else set()
+            )
+            desired_dates = sorted(parent_dates | set(requested_dates))
+            if build_mode == "full":
+                missing_dates = desired_dates
+            elif build_mode == "suffix":
+                if previous is None or suffix_start_date is None:
+                    raise RuntimeError(
+                        "suffix rebuild requires a previous cache and cutoff"
+                    )
+                missing_dates = [
+                    day
+                    for day in desired_dates
+                    if day >= suffix_start_date
+                ]
+            else:
+                missing_dates = [
+                    day
+                    for day in desired_dates
+                    if day not in cached_dates
+                ]
+            planned_missing_dates[baseline] = missing_dates
+
+        _validate_incremental_only_build(
+            mutation_policy=mutation_policy,
+            build_mode=build_mode,
+            build_reason=build_reason,
+            current=current,
+            planned_missing_dates=planned_missing_dates,
+        )
+
     caches: dict[str, dict[str, Any]] = {}
     baseline_audits: dict[str, dict[str, Any]] = {}
     acceptance_scopes: dict[str, dict[str, Any]] = {}
@@ -482,32 +547,42 @@ def _prepare_under_family_lock(
             if parent_cache is not None
             else set()
         )
-        desired_dates = sorted(
-            parent_dates | set(requested_dates)
-        )
+        desired_dates = sorted(parent_dates | set(requested_dates))
         if build_mode == "full":
-            missing_dates = desired_dates
+            missing_dates = (
+                planned_missing_dates[baseline]
+                if planned_missing_dates is not None
+                else desired_dates
+            )
             preserved = None
         elif build_mode == "suffix":
             if previous is None or suffix_start_date is None:
                 raise RuntimeError(
                     "suffix rebuild requires a previous cache and cutoff"
                 )
-            missing_dates = [
-                day
-                for day in desired_dates
-                if day >= suffix_start_date
-            ]
+            missing_dates = (
+                planned_missing_dates[baseline]
+                if planned_missing_dates is not None
+                else [
+                    day
+                    for day in desired_dates
+                    if day >= suffix_start_date
+                ]
+            )
             preserved = _phase_a_cache_before(
                 previous,
                 suffix_start_date,
             )
         else:
-            missing_dates = [
-                day
-                for day in desired_dates
-                if day not in cached_dates
-            ]
+            missing_dates = (
+                planned_missing_dates[baseline]
+                if planned_missing_dates is not None
+                else [
+                    day
+                    for day in desired_dates
+                    if day not in cached_dates
+                ]
+            )
             preserved = previous
         if missing_dates:
             needs_build = True
@@ -824,12 +899,58 @@ def _cache_mutation_policy() -> str | None:
     if configured is None:
         return None
     policy = configured.strip()
-    if policy != CACHE_MUTATION_POLICY_PRIVATE_BUILD:
+    if policy not in {
+        CACHE_MUTATION_POLICY_PRIVATE_BUILD,
+        CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
+    }:
         raise ValueError(
             f"{CACHE_MUTATION_POLICY_ENV} must be "
-            f"{CACHE_MUTATION_POLICY_PRIVATE_BUILD}"
+            f"{CACHE_MUTATION_POLICY_PRIVATE_BUILD} or "
+            f"{CACHE_MUTATION_POLICY_INCREMENTAL_ONLY}"
         )
     return policy
+
+
+def _validate_incremental_only_build(
+    *,
+    mutation_policy: str | None,
+    build_mode: str,
+    build_reason: str,
+    current: _LoadedGeneration | None,
+    planned_missing_dates: Mapping[str, list[str]],
+) -> None:
+    if mutation_policy != CACHE_MUTATION_POLICY_INCREMENTAL_ONLY:
+        return
+    if build_mode != "append":
+        raise RuntimeError(
+            "incremental_only requires an existing appendable cache: "
+            f"build_mode={build_mode}, reason={build_reason}"
+        )
+    all_missing_dates = sorted(
+        {
+            day
+            for dates in planned_missing_dates.values()
+            for day in dates
+        }
+    )
+    if len(all_missing_dates) > 1:
+        raise RuntimeError(
+            "incremental_only requires at most one missing tail date"
+        )
+    if not all_missing_dates:
+        return
+    if current is None:
+        raise RuntimeError(
+            "incremental_only requires a current generation"
+        )
+    current_watermark = max(
+        max(cache["test_dates"])
+        for cache in current.caches.values()
+    )
+    if all_missing_dates[0] <= current_watermark:
+        raise RuntimeError(
+            "incremental_only cannot rebuild a historical date"
+        )
 
 
 def _require_cache_sha256(value: object, field: str) -> str:

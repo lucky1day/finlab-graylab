@@ -6,6 +6,7 @@ import os
 import stat
 import subprocess
 import tempfile
+import threading
 import time
 from collections import Counter
 from contextlib import nullcontext
@@ -65,6 +66,7 @@ from shared.one_shot_control_plane import (
 )
 from shared.liwei_0616_cache_contract import (
     CACHE_MUTATION_POLICY_ENV,
+    CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
     CACHE_MUTATION_POLICY_PRIVATE_BUILD,
 )
 from shared.prediction_context import (
@@ -208,6 +210,8 @@ def run_scheme_subprocess(
     process_fence: Callable[[], None] | None = None,
     process_start_guard: ProcessStartGuard | None = None,
     ephemeral_native_runtime_root: str | Path | None = None,
+    native_cache_mutation_policy: str | None = None,
+    cancellation_event: threading.Event | None = None,
     native_input_audit_root: str | Path | None = None,
 ) -> list[PredictionRecord]:
     """通过 conda 子进程在算法环境中运行方案。"""
@@ -219,6 +223,9 @@ def run_scheme_subprocess(
     )
     normalized_audit_root = _normalize_native_input_audit_root(
         native_input_audit_root
+    )
+    normalized_cache_policy = _normalize_native_cache_mutation_policy(
+        native_cache_mutation_policy
     )
     env = _build_algorithm_environment()
     env.pop(SOURCE_RUNTIME_DATABASE_CONFIG_PATH_ENV, None)
@@ -239,6 +246,9 @@ def run_scheme_subprocess(
         env[EPHEMERAL_NATIVE_INPUT_ROOT_ENV] = str(
             normalized_ephemeral_root / "inputs"
         )
+    if normalized_cache_policy == CACHE_MUTATION_POLICY_INCREMENTAL_ONLY:
+        env[CACHE_MUTATION_POLICY_ENV] = normalized_cache_policy
+    elif normalized_ephemeral_root is not None:
         env["LIWEI_0616_PHASE_A_CACHE_ROOT"] = str(
             normalized_ephemeral_root / "phase-a-cache"
         )
@@ -272,6 +282,8 @@ def run_scheme_subprocess(
         process_kwargs["process_fence"] = process_fence
     if process_start_guard is not None:
         process_kwargs["process_start_guard"] = process_start_guard
+    if cancellation_event is not None:
+        process_kwargs["cancellation_event"] = cancellation_event
     source_database_context = (
         frozen_source_runtime_database_config(
             source_database_config
@@ -323,6 +335,15 @@ def _normalize_ephemeral_native_runtime_root(
     return path
 
 
+def _normalize_native_cache_mutation_policy(value: str | None) -> str | None:
+    if value is None:
+        return None
+    policy = str(value).strip()
+    if policy != CACHE_MUTATION_POLICY_INCREMENTAL_ONLY:
+        raise ValueError("unsupported Native cache mutation policy")
+    return policy
+
+
 def _normalize_native_input_audit_root(
     value: str | Path | None,
 ) -> Path | None:
@@ -371,6 +392,8 @@ def run_configured_scheme(
     process_fence: Callable[[], None] | None = None,
     process_start_guard: ProcessStartGuard | None = None,
     ephemeral_native_runtime_root: str | Path | None = None,
+    native_cache_mutation_policy: str | None = None,
+    cancellation_event: threading.Event | None = None,
 ) -> list[PredictionRecord]:
     """按显式 runtime_type 选择算法执行驱动。"""
     process_start_guard = require_process_start_guard(
@@ -382,8 +405,13 @@ def run_configured_scheme(
     normalized_ephemeral_root = _normalize_ephemeral_native_runtime_root(
         ephemeral_native_runtime_root
     )
+    normalized_cache_policy = _normalize_native_cache_mutation_policy(
+        native_cache_mutation_policy
+    )
     if runtime_type != "native_adapter" and (
         normalized_ephemeral_root is not None
+        or normalized_cache_policy is not None
+        or cancellation_event is not None
     ):
         raise ValueError(
             "Native execution contract is only valid for native_adapter"
@@ -402,6 +430,12 @@ def run_configured_scheme(
             native_kwargs["ephemeral_native_runtime_root"] = (
                 normalized_ephemeral_root
             )
+        if normalized_cache_policy is not None:
+            native_kwargs["native_cache_mutation_policy"] = (
+                normalized_cache_policy
+            )
+        if cancellation_event is not None:
+            native_kwargs["cancellation_event"] = cancellation_event
         if process_started is not None:
             native_kwargs["process_started"] = process_started
         if process_fence is not None:
@@ -776,6 +810,7 @@ def _run_process_group(
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
     process_start_guard: ContextManager[object] | None = None,
+    cancellation_event: threading.Event | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """启动独立进程组，timeout 时清理 conda wrapper 及其子进程。"""
     guard_context = (
@@ -787,6 +822,8 @@ def _run_process_group(
     unconfirmed_cleanup_error: ProcessRegistrationCleanupError | None = None
     try:
         with guard_context:
+            if cancellation_event is not None and cancellation_event.is_set():
+                raise RuntimeError("Native process start was cancelled")
             if process_fence is not None:
                 process_fence()
             process = subprocess.Popen(
@@ -805,6 +842,11 @@ def _run_process_group(
                 )
                 if process_started is not None:
                     process_started(process.pid, process_group_id)
+                if (
+                    cancellation_event is not None
+                    and cancellation_event.is_set()
+                ):
+                    raise RuntimeError("Native process was cancelled")
                 if process_fence is not None:
                     process_fence()
             except BaseException as registration_error:
@@ -847,20 +889,48 @@ def _run_process_group(
         )
     if process_group_id is None:
         raise AssertionError("process group was not captured")
+    deadline = time.monotonic() + timeout
     try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
+        while True:
+            if cancellation_event is not None and cancellation_event.is_set():
+                raise RuntimeError("Native process was cancelled")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            try:
+                stdout, stderr = process.communicate(
+                    timeout=min(0.25, remaining)
+                )
+                break
+            except subprocess.TimeoutExpired:
+                continue
+    except BaseException as exc:
         termination = _terminate_process_group(
             process,
             process_group_id=process_group_id,
         )
-        stdout, stderr = _drain_timed_out_process_output(process)
+        if isinstance(exc, subprocess.TimeoutExpired):
+            stdout, stderr = _drain_timed_out_process_output(process)
+            if not termination.confirmed_gone:
+                raise ProcessGroupTerminationError(
+                    termination=termination,
+                    context=f"Native process timed out after {timeout}s",
+                ) from exc
+            raise subprocess.TimeoutExpired(
+                cmd,
+                timeout,
+                output=stdout,
+                stderr=stderr,
+            ) from exc
         if not termination.confirmed_gone:
             raise ProcessGroupTerminationError(
                 termination=termination,
-                context=f"Native process timed out after {timeout}s",
+                context=(
+                    "Native process interrupted: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
             ) from exc
-        raise subprocess.TimeoutExpired(cmd, timeout, output=stdout, stderr=stderr) from exc
+        raise
     completed = subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
     if completed.returncode != 0:
         raise subprocess.CalledProcessError(
