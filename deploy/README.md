@@ -21,8 +21,9 @@ Linux timer 全部声明 `Persistent=false`，停机或禁用期间不补跑。B
 ECS 自然 DataBridge、daily、weekly、monthly 四个 service 不得加载共享
 `/run/bond-factor-lab/manual-run.env`。这些 unit 的 `EnvironmentFile` 只允许先读取
 `/etc/bond-factor-lab/bond-factor-lab.env`，再读取当前 release 的 `.bfl-release.env`，仓库测试精确
-守护该合同。历史日期的手工补缺仍只允许执行
-`python -m harness signal-gap-fill --predict-date YYYY-MM-DD`；systemd/launchd runner 的显式
+守护该合同。历史日期的手工补缺只允许走 `harness signal-gap-fill`：使用
+`--predict-date YYYY-MM-DD` 单日执行，或对受支持的 Blackbox `weekly_point/h1`、日频 `T+5/h5`
+使用 `--scheme-id/--target-date-from/--target-date-before` target 半开区间执行；systemd/launchd runner 的显式
 `--predict-date` 只是一次性入口参数，不建立第二套补缺授权。
 
 ## 部署目标与方案矩阵

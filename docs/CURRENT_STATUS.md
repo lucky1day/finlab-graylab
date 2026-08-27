@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验日期**：2026-08-26
+**最后核验日期**：2026-08-27
 
 本文只记录当前稳定事实。实时方案、run、prediction、DataBridge、API 和调度状态必须从各自权威数据源
 读取；待推进工作见[统一后续推进计划](TODO.md)，生产规则见
@@ -44,6 +44,10 @@
 - 新方案只走 Blackbox V2 两文件 Intake；Native V1 只维护政策清单内存量身份。平台不反编译或改写
   Blackbox 算法逻辑，只验证平台接入和标准输出边界。
 - Blackbox 入库只保留“Intake → 一次完整持久化回测 → activate”；DataBridge producer 独立发布 generation，方案不构建、修复或重验 generation。Blackbox 不进入 Native `onboard`，不运行 StaticGate、CompareGate、额外 predict 冒烟或 `shadow-register`。
+- Blackbox `weekly_point/h1` 与日频 `T+5/h5` 的 target 半开区间批量已经在 ECS 与 Mac3 验证；一个方案只启动
+  一个 batch，全部业务键由现有 repository 原子提交，下一自然调度 target 必须保留不占用。
+- Native 单日补缺复用自然调度的持久 Phase-A cache，并按 base scheme 独立提交。cache 只允许 hit 或单日
+  append；`suffix/full` 必须在训练前失败，持久化 cache 恢复属于独立操作，不能由补缺命令自动重训历史。
 - Mac3 production 与 ECS gray 的 installed plist/unit、服务状态、数据库写入、激活、补数和 DDL 都是
   独立操作，代码或文档提交不能外推为现场授权。
 - 未来把生产域名或 Writer 切到 ECS 是新的生产项目，不属于当前完成条件。

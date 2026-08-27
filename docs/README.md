@@ -33,6 +33,12 @@
 | [Native V1](native_v1/README.md) | 存量方案维护 | 仅存量维护 |
 | [统一后续推进计划](TODO.md) | 当前未批准工作的顺序与停止条件 | 是 |
 
+## 专项实施设计
+
+- [Native 当日单日补缺增量缓存优化设计](architecture/NATIVE_SINGLE_DAY_GAP_FILL_INCREMENTAL_CACHE.md)：
+  定义复用持久 Phase-A cache、publisher 单日追加、consumer 只读和 45 分钟性能验收边界。当前实现状态为
+  `IMPLEMENTED_AND_RELEASED`；本文只记录技术边界，生产补缺仍以 Harness 和现场授权为准。
+
 ## 状态规则
 
 | 状态 | 含义 |

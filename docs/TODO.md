@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验日期**：2026-08-25
+**最后核验日期**：2026-08-27
 
 本文只保留尚未发生的后续事项。当前稳定事实见[当前状态](CURRENT_STATUS.md)，生产规则见
 [生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。已完成事项通过 Git、Harness、数据库
@@ -26,11 +26,7 @@
    Asia/Shanghai 的首次真实 daily 自然触发结果；在 journal、run、`scheduled_live`、输入 generation 和
    Dashboard 证据完整前，不得标记 Production Observed，也不得 kickstart、覆盖日期或倒签信号。
 2. M0 周平均五方案及同期 ECS 周频方案等待 2026-08-29 11:30 的首次自然触发。
-3. 将已验证的快速补缺方式固化为受控工具：同一 immutable release、方案版本、预测日期、输入业务摘要和
-   lineage 全部匹配时，优先复用合格缓存或从 ECS 只读复制精确核心预测结果；目标 Writer 必须先停止，
-   Mac3 只经 repository insert-only 导入，已有键整组拒绝。不得复制数据库主键、`run_id`、Actuals、回测或
-   Harness 历史；源端不存在的业务键才重新计算。工具落地前不得临时放宽现有 launcher 或缓存校验。
-4. 未来若把生产域名或 Writer 从 Mac3 切到 ECS，必须作为新生产项目设计数据库 authority、单 Writer、
+3. 未来若把生产域名或 Writer 从 Mac3 切到 ECS，必须作为新生产项目设计数据库 authority、单 Writer、
    DNS/Nginx、窗口和回滚，不能从灰度验收外推授权。
 
 ## Native V1 收敛到 Blackbox V2
