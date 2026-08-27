@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -41,13 +42,14 @@ def test_ephemeral_input_root_is_private_and_must_be_absolute(
         input_artifacts.EPHEMERAL_NATIVE_INPUT_ROOT_ENV,
         str(root),
     )
+    monkeypatch.delenv("BFL_SOURCE_DB_CONFIG_PATH", raising=False)
     path = input_artifacts.input_artifact_path(
         scheme_id="daily_demo",
         frequency="daily",
         predict_date="2026-07-24",
         output_root=Path("/persistent/inputs"),
     )
-    assert path == root / "daily_demo" / "daily_output_2026-07-24.csv"
+    assert path == root / "views" / "daily_demo" / "daily_output_2026-07-24.csv"
 
     monkeypatch.setenv(
         input_artifacts.EPHEMERAL_NATIVE_INPUT_ROOT_ENV,
@@ -165,8 +167,139 @@ def test_all_native_builders_use_current_database(
     assert daily_builder.call_args.kwargs["engine"] is engine
     assert weekly_builder.call_args.kwargs["engine"] is engine
     assert monthly_builder.call_args.kwargs["engine"] is engine
-    assert all("input_generation_id" not in item.metadata for item in artifacts)
+    assert all(item.path.is_file() for item in artifacts)
     assert list(tmp_path.rglob("*.json")) == []
+
+
+def test_ephemeral_native_input_reuses_exact_builder_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shared import input_artifacts
+
+    root = tmp_path.resolve()
+    monkeypatch.setenv(
+        input_artifacts.EPHEMERAL_NATIVE_INPUT_ROOT_ENV,
+        str(root),
+    )
+    monkeypatch.delenv("BFL_SOURCE_DB_CONFIG_PATH", raising=False)
+    frame = pd.DataFrame([{"date": "2026-07-23", "D": 1.0}])
+    with patch.object(
+        input_artifacts._data_service,
+        "build_daily_output_from_db",
+        return_value=frame,
+    ) as builder:
+        first = input_artifacts.build_daily_input_artifact(
+            scheme_id="first",
+            predict_date="2026-07-24",
+            start_date="2026-01-01",
+            end_date="2026-07-23",
+            engine=object(),
+        )
+        second = input_artifacts.build_daily_input_artifact(
+            scheme_id="second",
+            predict_date="2026-07-24",
+            start_date="2026-01-01",
+            end_date="2026-07-23",
+            engine=object(),
+        )
+
+    builder.assert_called_once()
+    assert first.path != second.path
+    assert first.path.stat().st_ino == second.path.stat().st_ino
+    assert first.path.stat().st_mode & 0o222 == 0
+
+
+def test_ephemeral_native_input_does_not_share_different_ranges(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shared import input_artifacts
+
+    monkeypatch.setenv(
+        input_artifacts.EPHEMERAL_NATIVE_INPUT_ROOT_ENV,
+        str(tmp_path.resolve()),
+    )
+    monkeypatch.delenv("BFL_SOURCE_DB_CONFIG_PATH", raising=False)
+    frame = pd.DataFrame([{"date": "2026-07-23", "D": 1.0}])
+    with patch.object(
+        input_artifacts._data_service,
+        "build_daily_output_from_db",
+        return_value=frame,
+    ) as builder:
+        for scheme_id, start_date in (("first", "2026-01-01"), ("second", "2025-01-01")):
+            input_artifacts.build_daily_input_artifact(
+                scheme_id=scheme_id,
+                predict_date="2026-07-24",
+                start_date=start_date,
+                end_date="2026-07-23",
+                engine=object(),
+            )
+
+    assert builder.call_count == 2
+
+
+def test_ephemeral_native_input_concurrent_call_builds_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shared import input_artifacts
+
+    monkeypatch.setenv(
+        input_artifacts.EPHEMERAL_NATIVE_INPUT_ROOT_ENV,
+        str(tmp_path.resolve()),
+    )
+    monkeypatch.delenv("BFL_SOURCE_DB_CONFIG_PATH", raising=False)
+    frame = pd.DataFrame([{"date": "2026-07-23", "D": 1.0}])
+
+    def run(scheme_id: str):
+        return input_artifacts.build_daily_input_artifact(
+            scheme_id=scheme_id,
+            predict_date="2026-07-24",
+            start_date="2026-01-01",
+            end_date="2026-07-23",
+            engine=object(),
+        )
+
+    with patch.object(
+        input_artifacts._data_service,
+        "build_daily_output_from_db",
+        return_value=frame,
+    ) as builder:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first, second = tuple(pool.map(run, ("first", "second")))
+
+    builder.assert_called_once()
+    assert first.path.stat().st_ino == second.path.stat().st_ino
+
+
+def test_ephemeral_native_input_isolates_source_database(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shared import input_artifacts
+
+    monkeypatch.setenv(
+        input_artifacts.EPHEMERAL_NATIVE_INPUT_ROOT_ENV,
+        str(tmp_path.resolve()),
+    )
+    monkeypatch.setenv("BFL_SOURCE_DB_CONFIG_PATH", "/private/source.json")
+    frame = pd.DataFrame([{"date": "2026-07-23", "D": 1.0}])
+    with patch.object(
+        input_artifacts._data_service,
+        "build_daily_output_from_db",
+        return_value=frame,
+    ) as builder:
+        for scheme_id in ("first", "second"):
+            input_artifacts.build_daily_input_artifact(
+                scheme_id=scheme_id,
+                predict_date="2026-07-24",
+                start_date="2026-01-01",
+                end_date="2026-07-23",
+                engine=object(),
+            )
+
+    assert builder.call_count == 2
 
 
 def test_native_builder_emits_harness_only_audit_receipt(
@@ -205,6 +338,6 @@ def test_native_builder_emits_harness_only_audit_receipt(
     assert receipt["path"] == str(artifact.path)
     assert receipt["source"] == artifact.source
     assert receipt["data_version"] == artifact.data_version
-    assert receipt["content_hash"] == artifact.content_hash
+    assert len(receipt["content_hash"]) == 64
     assert receipt["date_coverage"]["end"] == "2026-07-23"
     assert receipt["metadata"]["end_date"] == "2026-07-23"

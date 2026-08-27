@@ -15,6 +15,7 @@ from harness.gates.base import Gate, create_default_engine, guarded_result, utc_
 from harness.gates.prediction_semantics import validate_live_record_semantics
 from harness.probes.table_guard import DRY_RUN_GUARD_TABLES, diff_snapshots, snapshot_table_counts
 from harness.result import Evidence, GateResult, GateStatus
+from shared.artifact_paths import safe_path_part
 from shared.calendar_service import get_calendar
 from shared.input_artifacts import (
     DAILY_DATA_VERSION,
@@ -84,6 +85,8 @@ class DryRunGate(Gate):
             ) as audit_name:
                 audit_root = Path(audit_name).resolve(strict=True)
                 os.chmod(audit_root, 0o700)
+                input_root = audit_root / "inputs"
+                phase_a_cache_root = audit_root / "phase-a-cache"
                 try:
                     records = run_scheme_subprocess(
                         ctx.scheme_id,
@@ -91,30 +94,33 @@ class DryRunGate(Gate):
                         algo_env=ctx.algo_env,
                         timeout_sec=ctx.timeout_sec,
                         input_audit_root=audit_root,
+                        input_root=input_root,
+                        phase_a_cache_root=phase_a_cache_root,
                     )
                     audit_receipts = _load_input_audit_receipts(audit_root)
                 except Exception as exc:
                     errors.append(str(exc))
                 finally:
                     after = snapshot_table_counts(engine, DRY_RUN_GUARD_TABLES)
-            errors.extend(
-                _validate_records(
+                errors.extend(
+                    _validate_records(
+                        records,
+                        config,
+                        ctx.scheme_id,
+                        predict_date=ctx.predict_date,
+                        calendar=get_calendar(engine),
+                    )
+                )
+                artifact_errors, input_artifacts = _validate_input_artifacts(
                     records,
                     config,
-                    ctx.scheme_id,
+                    scheme_id=ctx.scheme_id,
                     predict_date=ctx.predict_date,
-                    calendar=get_calendar(engine),
+                    audit_receipts=audit_receipts,
+                    trusted_input_root=input_root,
+                    ephemeral_job_input=True,
                 )
-            )
-            artifact_errors, input_artifacts = _validate_input_artifacts(
-                records,
-                config,
-                scheme_id=ctx.scheme_id,
-                predict_date=ctx.predict_date,
-                audit_receipts=audit_receipts,
-                trusted_input_root=DEFAULT_OUTPUT_ROOT,
-            )
-            errors.extend(artifact_errors)
+                errors.extend(artifact_errors)
         finally:
             if engine is not None and hasattr(engine, "dispose"):
                 engine.dispose()
@@ -152,9 +158,14 @@ def run_scheme_subprocess(
     algo_env: str,
     timeout_sec: int,
     input_audit_root: Path,
+    input_root: Path,
+    phase_a_cache_root: Path,
 ) -> list[PredictionRecord]:
     """懒加载 scheduler.executor.run_scheme_subprocess，保持 DryRunGate 使用既有执行路径。"""
     from scheduler.executor import run_scheme_subprocess as executor_run_scheme_subprocess
+    from shared.liwei_0616_cache_contract import (
+        CACHE_MUTATION_POLICY_PRIVATE_BUILD,
+    )
 
     return executor_run_scheme_subprocess(
         scheme_id,
@@ -162,6 +173,9 @@ def run_scheme_subprocess(
         algo_env=algo_env,
         timeout_sec=timeout_sec,
         native_input_audit_root=input_audit_root,
+        ephemeral_native_runtime_root=input_root,
+        native_cache_mutation_policy=CACHE_MUTATION_POLICY_PRIVATE_BUILD,
+        native_phase_a_cache_root=phase_a_cache_root,
     )
 
 
@@ -235,6 +249,7 @@ def _validate_input_artifacts(
     predict_date: str,
     audit_receipts: dict[str, dict[str, Any]] | None = None,
     trusted_input_root: Path = DEFAULT_OUTPUT_ROOT,
+    ephemeral_job_input: bool = False,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     """核验 dry-run 实际生成的输入文件，不再另跑一次 InputGate。"""
     if not records:
@@ -313,10 +328,17 @@ def _validate_input_artifacts(
             )
 
         actual_path = Path(next(iter(paths)))
-        expected_path = input_artifact_path(
-            scheme_id=scheme_id,
-            frequency=frequency,
-            predict_date=predict_date,
+        expected_path = (
+            trusted_input_root
+            / "views"
+            / safe_path_part(scheme_id)
+            / f"{frequency}_output_{predict_date}.csv"
+            if ephemeral_job_input
+            else input_artifact_path(
+                scheme_id=scheme_id,
+                frequency=frequency,
+                predict_date=predict_date,
+            )
         )
         actual_absolute = Path(os.path.abspath(actual_path))
         expected_absolute = Path(os.path.abspath(expected_path))

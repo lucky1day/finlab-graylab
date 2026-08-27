@@ -11,11 +11,11 @@ import stat
 import tempfile
 from bisect import bisect_right
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 import pandas as pd
 
@@ -34,10 +34,7 @@ from shared.blackbox_v2.snapshot import (
 from shared.data_bridge.authority import (
     _normalize_blackbox_gray_replay_source_identity,
 )
-from shared.data_bridge.refresh import (
-    DataBridgeRefreshConfig,
-    check_current_dataset,
-)
+from shared.data_bridge.refresh import DataBridgeRefreshConfig
 from shared.data_bridge.validation import ValidatedDataBridgeDataset
 from shared.runtime_paths import resolve_runtime_state_path
 
@@ -48,9 +45,6 @@ BLACKBOX_GENERATION_SNAPSHOT_ROOT = (
 )
 BLACKBOX_GENERATION_SNAPSHOT_CACHE_VERSION = "blackbox-generation-snapshot-v2"
 BLACKBOX_RUNTIME_VIEW_ROOT = BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "runtime_views"
-BLACKBOX_GRAY_REPLAY_SESSION_ROOT = (
-    BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "gray_replay_sessions"
-)
 BLACKBOX_SCHEMA_PATH = Path(__file__).with_name("blackbox_v2") / "data_bridge_v1_schema.json"
 BLACKBOX_SCHEMA_VERSION = "data-bridge-v1"
 BLACKBOX_SCHEMA_CONTRACT_SHA256 = (
@@ -88,18 +82,7 @@ class InputArtifact:
     path: Path
     dataframe: pd.DataFrame
     source: str
-    generated_at: str
     data_version: str
-    artifact_id: str
-    content_hash: str
-    schema_hash: str
-    source_watermark: str | None
-    row_count: int
-    column_count: int
-    columns: list[str]
-    date_coverage: dict[str, Any]
-    quality_flags: dict[str, Any]
-    metadata: dict[str, Any]
 
 
 @dataclass
@@ -117,17 +100,6 @@ class BlackboxRuntimeView:
         if self._closed:
             raise RuntimeError("runtime view is already closed")
         self._termination_uncertain = True
-
-
-@dataclass(frozen=True)
-class BlackboxGrayReplaySession:
-    """单个 gray replay 作业共享的不可变 DataBridge 父快照。"""
-
-    snapshot: BlackboxSnapshot
-    manifest_path: Path
-    manifest_sha256: str
-    source_identity: dict[str, Any]
-    max_cutoffs: CutoffKeys
 
 
 @dataclass(frozen=True)
@@ -823,6 +795,7 @@ def get_ready_blackbox_snapshot(
     snapshot_date: str,
     cache_root: str | Path = BLACKBOX_GENERATION_SNAPSHOT_ROOT,
     require_fresh: bool = False,
+    expected_source_identity: Mapping[str, Any] | None = None,
 ) -> BlackboxSnapshot:
     """读取 producer 已发布的不可变快照；缺失时不代建、不修复。"""
     root = Path(cache_root)
@@ -830,6 +803,11 @@ def get_ready_blackbox_snapshot(
         raise ValueError("Blackbox ready snapshot root is unavailable")
     with _generation_snapshot_cache_lock(root, shared=True):
         current_identity = _read_ready_generation_identity(root)
+        if expected_source_identity is not None:
+            _validate_ready_snapshot_source_identity(
+                current_identity,
+                expected_source_identity,
+            )
         snapshot = _read_generation_snapshot_cache(
             root,
             current_identity,
@@ -844,6 +822,44 @@ def get_ready_blackbox_snapshot(
                 f"{snapshot.refresh_date} != {snapshot_date}"
             )
         return snapshot
+
+
+def _validate_ready_snapshot_source_identity(
+    ready_identity: Mapping[str, Any],
+    expected_source_identity: Mapping[str, Any],
+) -> None:
+    """只比较 producer receipt，不重新读取或哈希四份 CSV。"""
+    expected = _normalize_blackbox_gray_replay_source_identity(
+        expected_source_identity
+    )
+    raw_files = ready_identity.get("files")
+    if not isinstance(raw_files, Mapping):
+        raise ValueError("DataBridge ready file identity is invalid")
+    ready = {
+        "generation_id": ready_identity.get("generation_id"),
+        "refresh_date": ready_identity.get("refresh_date"),
+        "schema_version": ready_identity.get("schema_version"),
+        "business_digest": ready_identity.get("business_digest"),
+        "files": [
+            {"filename": filename, **dict(raw_files[filename])}
+            for filename in sorted(raw_files)
+            if isinstance(raw_files.get(filename), Mapping)
+        ],
+    }
+    comparable_expected = {
+        key: expected[key]
+        for key in (
+            "generation_id",
+            "refresh_date",
+            "schema_version",
+            "business_digest",
+            "files",
+        )
+    }
+    if ready != comparable_expected:
+        raise ValueError(
+            "DataBridge ready snapshot does not match planned authority"
+        )
 
 
 def _generation_snapshot_identity(
@@ -1338,324 +1354,6 @@ def _require_blackbox_databridge_monthly_additions(
         )
 
 
-def build_blackbox_gray_replay_session(
-    *,
-    session_id: str,
-    source_identity: Mapping[str, Any],
-    request_cutoffs: Iterable[CutoffKeys],
-    data_bridge_config: DataBridgeRefreshConfig,
-    output_root: str | Path = BLACKBOX_GRAY_REPLAY_SESSION_ROOT,
-) -> BlackboxGrayReplaySession:
-    """一次读取 current 后固化 gray replay 所有请求共用的四文件快照。"""
-    normalized_session_id = _normalize_gray_replay_session_id(session_id)
-    normalized_source_identity = (
-        _normalize_blackbox_gray_replay_source_identity(
-            source_identity
-        )
-    )
-    normalized_cutoffs = _normalize_gray_replay_cutoffs(request_cutoffs)
-    current = check_current_dataset(
-        data_bridge_config,
-        strict_read_only=True,
-    )
-    _validate_gray_replay_current_identity(
-        current,
-        normalized_source_identity,
-    )
-    _require_blackbox_databridge_monthly_additions(current.dataset.frames)
-
-    max_cutoffs = _gray_replay_max_cutoffs(
-        current.dataset.frames,
-        normalized_cutoffs,
-    )
-    clipped_frames = {
-        "daily_output.csv": _clip_gray_replay_frame(
-            current.dataset.frames["daily_output.csv"],
-            filename="daily_output.csv",
-            cutoff=max_cutoffs.daily_cutoff_key,
-        ),
-        "weekly_output.csv": _clip_gray_replay_frame(
-            current.dataset.frames["weekly_output.csv"],
-            filename="weekly_output.csv",
-            cutoff=max_cutoffs.weekly_cutoff_key,
-        ),
-        "monthly_output.csv": _clip_gray_replay_frame(
-            current.dataset.frames["monthly_output.csv"],
-            filename="monthly_output.csv",
-            cutoff=max_cutoffs.monthly_cutoff_key,
-        ),
-        "api_wind_date.csv": current.dataset.frames[
-            "api_wind_date.csv"
-        ].copy(),
-    }
-    schema_version, expected_columns = _load_blackbox_schema(
-        data_bridge_config.schema_path
-    )
-    session_root = Path(output_root) / normalized_session_id
-    snapshot = create_snapshot_from_frames(
-        clipped_frames,
-        output_root=session_root,
-        expected_columns=expected_columns,
-        schema_version=schema_version,
-    )
-    snapshot = replace(
-        snapshot,
-        generation_id=normalized_source_identity["generation_id"],
-        refresh_date=normalized_source_identity["refresh_date"],
-    )
-    manifest = {
-        "manifest_version": "blackbox-gray-replay-session-v1",
-        "session_id": normalized_session_id,
-        "parent_snapshot_id": snapshot.snapshot_id,
-        "parent_snapshot_manifest_sha256": _file_sha256(
-            snapshot.manifest_path
-        ),
-        "source_identity": normalized_source_identity,
-        "max_cutoffs": asdict(max_cutoffs),
-    }
-    manifest_path = _write_gray_replay_session_manifest(
-        session_root,
-        manifest,
-    )
-    return BlackboxGrayReplaySession(
-        snapshot=snapshot,
-        manifest_path=manifest_path,
-        manifest_sha256=_file_sha256(manifest_path),
-        source_identity=json.loads(
-            json.dumps(
-                normalized_source_identity,
-                ensure_ascii=True,
-                sort_keys=True,
-                separators=(",", ":"),
-                allow_nan=False,
-            )
-        ),
-        max_cutoffs=max_cutoffs,
-    )
-
-
-def _normalize_gray_replay_session_id(value: object) -> str:
-    if not isinstance(value, str) or not _is_sha256(value):
-        raise ValueError("gray replay session_id must be a lower-case SHA-256")
-    return value
-
-
-def _normalize_gray_replay_cutoffs(
-    request_cutoffs: Iterable[CutoffKeys],
-) -> tuple[CutoffKeys, ...]:
-    normalized: list[CutoffKeys] = []
-    for item in request_cutoffs:
-        if not isinstance(item, CutoffKeys):
-            raise ValueError("gray replay request_cutoffs must contain CutoffKeys")
-        normalized.append(
-            CutoffKeys(
-                daily_cutoff_key=_normalize_gray_replay_date(
-                    item.daily_cutoff_key,
-                    "gray replay daily cutoff",
-                ),
-                weekly_cutoff_key=_normalize_gray_replay_period(
-                    item.weekly_cutoff_key,
-                    "gray replay weekly cutoff",
-                ),
-                monthly_cutoff_key=_normalize_gray_replay_period(
-                    item.monthly_cutoff_key,
-                    "gray replay monthly cutoff",
-                ),
-            )
-        )
-    if not normalized:
-        raise ValueError("gray replay request_cutoffs must not be empty")
-    return tuple(normalized)
-
-
-def _normalize_gray_replay_date(value: object, field: str) -> str:
-    if not isinstance(value, str):
-        raise ValueError(f"{field} must use YYYY-MM-DD")
-    normalized = _normalize_feature_date(value)
-    if normalized != value:
-        raise ValueError(f"{field} must use YYYY-MM-DD")
-    return normalized
-
-
-def _normalize_gray_replay_period(value: object, field: str) -> str:
-    if not isinstance(value, str):
-        raise ValueError(f"{field} must be a six-digit platform key")
-    normalized = normalize_period_key(value, field)
-    if normalized != value:
-        raise ValueError(f"{field} must be a six-digit platform key")
-    return normalized
-
-
-def _validate_gray_replay_current_identity(
-    current: Any,
-    source_identity: Mapping[str, Any],
-) -> None:
-    current_identity = {
-        "generation_id": _required_current_state_text(
-            current.state,
-            "generation_id",
-        ),
-        "refresh_date": _normalize_gray_replay_date(
-            _required_current_state_text(current.state, "refresh_date"),
-            "DataBridge current refresh_date",
-        ),
-        "schema_version": current.dataset.schema_version,
-        "business_digest": current.dataset.business_digest,
-        "files": [
-            {
-                "filename": profile.filename,
-                "rows": profile.rows,
-                "columns": profile.columns,
-                "min_key": profile.min_key,
-                "max_key": profile.max_key,
-                "sha256": profile.sha256,
-                "business_hash": profile.business_hash,
-            }
-            for _, profile in sorted(current.dataset.files.items())
-        ],
-    }
-    if any(
-        source_identity[field] != current_identity[field]
-        for field in current_identity
-    ):
-        raise ValueError(
-            "gray replay source identity does not match current DataBridge"
-        )
-
-
-def _gray_replay_max_cutoffs(
-    frames: Mapping[str, pd.DataFrame],
-    request_cutoffs: Iterable[CutoffKeys],
-) -> CutoffKeys:
-    cutoffs = tuple(request_cutoffs)
-    return CutoffKeys(
-        daily_cutoff_key=_gray_replay_max_cutoff(
-            frames["daily_output.csv"],
-            filename="daily_output.csv",
-            requested=[item.daily_cutoff_key for item in cutoffs],
-        ),
-        weekly_cutoff_key=_gray_replay_max_cutoff(
-            frames["weekly_output.csv"],
-            filename="weekly_output.csv",
-            requested=[item.weekly_cutoff_key for item in cutoffs],
-        ),
-        monthly_cutoff_key=_gray_replay_max_cutoff(
-            frames["monthly_output.csv"],
-            filename="monthly_output.csv",
-            requested=[item.monthly_cutoff_key for item in cutoffs],
-        ),
-    )
-
-
-def _gray_replay_max_cutoff(
-    frame: pd.DataFrame,
-    *,
-    filename: str,
-    requested: Iterable[str],
-) -> str:
-    keys = _gray_replay_frame_keys(frame, filename=filename)
-    positions = {key: index for index, key in enumerate(keys)}
-    requested_keys = tuple(requested)
-    for cutoff in requested_keys:
-        if cutoff not in positions:
-            raise ValueError(
-                f"gray replay cutoff {cutoff} is absent from {filename}"
-            )
-    return max(requested_keys, key=positions.__getitem__)
-
-
-def _clip_gray_replay_frame(
-    frame: pd.DataFrame,
-    *,
-    filename: str,
-    cutoff: str,
-) -> pd.DataFrame:
-    keys = _gray_replay_frame_keys(frame, filename=filename)
-    try:
-        position = keys.index(cutoff)
-    except ValueError as exc:
-        raise ValueError(
-            f"gray replay cutoff {cutoff} is absent from {filename}"
-        ) from exc
-    return frame.iloc[: position + 1].copy().reset_index(drop=True)
-
-
-def _gray_replay_frame_keys(
-    frame: pd.DataFrame,
-    *,
-    filename: str,
-) -> list[str]:
-    if filename == "daily_output.csv":
-        column = "date"
-        normalizer = _normalize_gray_replay_date
-    elif filename == "weekly_output.csv":
-        column = "week_id"
-        normalizer = _normalize_gray_replay_period
-    elif filename == "monthly_output.csv":
-        column = "month_id"
-        normalizer = _normalize_gray_replay_period
-    else:
-        raise ValueError(f"unsupported gray replay filename: {filename}")
-    if column not in frame.columns:
-        raise ValueError(f"{filename} is missing {column} cutoff column")
-    keys = [
-        normalizer(value, f"{filename}.{column}")
-        for value in frame[column].tolist()
-    ]
-    if keys != sorted(set(keys)):
-        raise ValueError(
-            f"{filename} gray replay cutoff keys must be unique and ascending"
-        )
-    return keys
-
-
-def _write_gray_replay_session_manifest(
-    session_root: Path,
-    manifest: Mapping[str, Any],
-) -> Path:
-    session_root.mkdir(parents=True, exist_ok=True)
-    if not session_root.is_dir():
-        raise ValueError("gray replay session root must be a directory")
-    rendered = (
-        json.dumps(
-            manifest,
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        )
-        + "\n"
-    ).encode("utf-8")
-    manifest_path = session_root / "manifest.json"
-    if manifest_path.exists():
-        if not manifest_path.is_file() or manifest_path.read_bytes() != rendered:
-            raise ValueError("gray replay session manifest does not match")
-    else:
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=".gray-replay-manifest-",
-            dir=session_root,
-        )
-        temporary_path = Path(temporary_name)
-        try:
-            with os.fdopen(descriptor, "wb") as handle:
-                handle.write(rendered)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary_path, manifest_path)
-        finally:
-            if temporary_path.exists():
-                temporary_path.unlink()
-    manifest_path.chmod(0o444)
-    return manifest_path
-
-
-def _required_current_state_text(state: dict | Any, field: str) -> str:
-    value = state.get(field) if hasattr(state, "get") else None
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"DataBridge current state {field} must be non-empty")
-    return value
-
-
 def _make_tree_writable(root: Path) -> None:
     try:
         root_mode = root.lstat().st_mode
@@ -2127,7 +1825,7 @@ def input_artifact_path(
             raise ValueError(
                 f"{EPHEMERAL_NATIVE_INPUT_ROOT_ENV} must be absolute"
             )
-        return root / safe_scheme_id / filename
+        return root / "views" / safe_scheme_id / filename
     return Path(output_root) / safe_scheme_id / filename
 
 
@@ -2147,40 +1845,40 @@ def build_daily_input_artifact(
         predict_date=predict_date,
         output_root=output_root,
     )
-    df = _data_service.build_daily_output_from_db(
-        start_date=start_date,
-        end_date=end_date,
-        engine=engine,
+    metadata = {
+        "start_date": start_date,
+        "end_date": end_date,
+        "predict_date": predict_date,
+    }
+    read_back = _build_or_reuse_native_csv(
+        scheme_id=scheme_id,
+        frequency="daily",
+        predict_date=predict_date,
+        data_version=DAILY_DATA_VERSION,
+        metadata=metadata,
+        view_path=path,
+        build=lambda: _data_service.build_daily_output_from_db(
+            start_date=start_date,
+            end_date=end_date,
+            engine=engine,
+        ),
+        save=_data_service.save_daily_output,
+        read=_read_daily_output_csv,
     )
-    _atomic_save_output(_data_service.save_daily_output, df, path)
-    read_back = _read_daily_output_csv(path)
-    profile = _dataframe_profile(read_back, coverage_field="date", required_columns=("date",))
-    content_hash = _file_sha256(path)
-    schema_hash = _schema_hash(read_back)
     artifact = InputArtifact(
         scheme_id=scheme_id,
         frequency="daily",
         path=path,
         dataframe=read_back,
         source="shared_data_service_daily",
-        generated_at=_utc_now(),
         data_version=DAILY_DATA_VERSION,
-        artifact_id=_artifact_id(scheme_id, predict_date, content_hash),
-        content_hash=content_hash,
-        schema_hash=schema_hash,
-        source_watermark=_source_watermark(profile),
-        row_count=profile["row_count"],
-        column_count=profile["column_count"],
-        columns=profile["columns"],
-        date_coverage=profile["date_coverage"],
-        quality_flags=profile["quality_flags"],
-        metadata={
-            "start_date": start_date,
-            "end_date": end_date,
-            "predict_date": predict_date,
-        },
     )
-    _write_native_input_audit_receipt(artifact)
+    _write_native_input_audit_receipt(
+        artifact,
+        metadata=metadata,
+        coverage_field="date",
+        required_columns=("date",),
+    )
     return artifact
 
 
@@ -2202,48 +1900,44 @@ def build_weekly_input_artifact(
         predict_date=predict_date,
         output_root=output_root,
     )
-    df = _data_service.build_weekly_output_from_db(
-        schema_columns=schema_columns,
-        start_week=start_week,
-        end_week=end_week,
-        as_of_date=as_of_date,
-        engine=engine,
+    metadata = {
+        "schema_columns": list(schema_columns) if schema_columns is not None else None,
+        "start_week": start_week,
+        "end_week": end_week,
+        "as_of_date": as_of_date,
+        "predict_date": predict_date,
+    }
+    read_back = _build_or_reuse_native_csv(
+        scheme_id=scheme_id,
+        frequency="weekly",
+        predict_date=predict_date,
+        data_version=WEEKLY_DATA_VERSION,
+        metadata=metadata,
+        view_path=path,
+        build=lambda: _data_service.build_weekly_output_from_db(
+            schema_columns=schema_columns,
+            start_week=start_week,
+            end_week=end_week,
+            as_of_date=as_of_date,
+            engine=engine,
+        ),
+        save=_data_service.save_weekly_output,
+        read=_read_weekly_output_csv,
     )
-    _atomic_save_output(_data_service.save_weekly_output, df, path)
-    read_back = pd.read_csv(path)
-    if "week_id" in read_back.columns:
-        read_back["week_id"] = pd.to_numeric(read_back["week_id"], errors="coerce").astype("Int64")
-    for col in read_back.columns:
-        if col != "week_id":
-            read_back[col] = pd.to_numeric(read_back[col], errors="coerce")
-    profile = _dataframe_profile(read_back, coverage_field="week_id", required_columns=("week_id",))
-    content_hash = _file_sha256(path)
-    schema_hash = _schema_hash(read_back)
     artifact = InputArtifact(
         scheme_id=scheme_id,
         frequency="weekly",
         path=path,
         dataframe=read_back,
         source="shared_data_service_weekly",
-        generated_at=_utc_now(),
         data_version=WEEKLY_DATA_VERSION,
-        artifact_id=_artifact_id(scheme_id, predict_date, content_hash),
-        content_hash=content_hash,
-        schema_hash=schema_hash,
-        source_watermark=_source_watermark(profile),
-        row_count=profile["row_count"],
-        column_count=profile["column_count"],
-        columns=profile["columns"],
-        date_coverage=profile["date_coverage"],
-        quality_flags=profile["quality_flags"],
-        metadata={
-            "start_week": start_week,
-            "end_week": end_week,
-            "as_of_date": as_of_date,
-            "predict_date": predict_date,
-        },
     )
-    _write_native_input_audit_receipt(artifact)
+    _write_native_input_audit_receipt(
+        artifact,
+        metadata=metadata,
+        coverage_field="week_id",
+        required_columns=("week_id",),
+    )
     return artifact
 
 
@@ -2263,48 +1957,132 @@ def build_monthly_input_artifact(
         predict_date=predict_date,
         output_root=output_root,
     )
-    df = _data_service.build_monthly_output_from_db(
-        start_date=start_date,
-        end_date=end_date,
-        engine=engine,
+    metadata = {
+        "start_date": start_date,
+        "end_date": end_date,
+        "predict_date": predict_date,
+    }
+    read_back = _build_or_reuse_native_csv(
+        scheme_id=scheme_id,
+        frequency="monthly",
+        predict_date=predict_date,
+        data_version=MONTHLY_DATA_VERSION,
+        metadata=metadata,
+        view_path=path,
+        build=lambda: _data_service.build_monthly_output_from_db(
+            start_date=start_date,
+            end_date=end_date,
+            engine=engine,
+        ),
+        save=_data_service.save_monthly_output,
+        read=_read_monthly_output_csv,
     )
-    _atomic_save_output(_data_service.save_monthly_output, df, path)
-    read_back = _read_monthly_output_csv(path)
-    profile = _dataframe_profile(read_back, coverage_field="month_id", required_columns=("month_id",))
-    content_hash = _file_sha256(path)
-    schema_hash = _schema_hash(read_back)
     artifact = InputArtifact(
         scheme_id=scheme_id,
         frequency="monthly",
         path=path,
         dataframe=read_back,
         source="shared_data_service_monthly",
-        generated_at=_utc_now(),
         data_version=MONTHLY_DATA_VERSION,
-        artifact_id=_artifact_id(scheme_id, predict_date, content_hash),
-        content_hash=content_hash,
-        schema_hash=schema_hash,
-        source_watermark=_source_watermark(profile),
-        row_count=profile["row_count"],
-        column_count=profile["column_count"],
-        columns=profile["columns"],
-        date_coverage=profile["date_coverage"],
-        quality_flags=profile["quality_flags"],
-        metadata={
-            "start_date": start_date,
-            "end_date": end_date,
-            "predict_date": predict_date,
-        },
     )
-    _write_native_input_audit_receipt(artifact)
+    _write_native_input_audit_receipt(
+        artifact,
+        metadata=metadata,
+        coverage_field="month_id",
+        required_columns=("month_id",),
+    )
     return artifact
 
 
-def _write_native_input_audit_receipt(artifact: InputArtifact) -> None:
+def _build_or_reuse_native_csv(
+    *,
+    scheme_id: str,
+    frequency: str,
+    predict_date: str,
+    data_version: str,
+    metadata: Mapping[str, Any],
+    view_path: Path,
+    build: Callable[[], pd.DataFrame],
+    save: Callable[[pd.DataFrame, str | Path], None],
+    read: Callable[[str | Path], pd.DataFrame],
+) -> pd.DataFrame:
+    """同一临时作业内按完整 builder 参数复用只读 CSV。"""
+    configured = str(os.environ.get(EPHEMERAL_NATIVE_INPUT_ROOT_ENV) or "").strip()
+    if not configured:
+        frame = build()
+        _atomic_save_output(save, frame, view_path)
+        return read(view_path)
+
+    root = Path(configured)
+    if not root.is_absolute():
+        raise ValueError(f"{EPHEMERAL_NATIVE_INPUT_ROOT_ENV} must be absolute")
+    root.mkdir(parents=True, exist_ok=True)
+    source_scope = (
+        f"isolated:{scheme_id}"
+        if str(os.environ.get("BFL_SOURCE_DB_CONFIG_PATH") or "").strip()
+        else "service-db"
+    )
+    identity_payload = {
+        "frequency": frequency,
+        "predict_date": predict_date,
+        "data_version": data_version,
+        "source_scope": source_scope,
+        "metadata": dict(metadata),
+    }
+    identity = hashlib.sha256(
+        json.dumps(
+            identity_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    objects = root / "objects"
+    locks = root / "locks"
+    objects.mkdir(mode=0o700, parents=True, exist_ok=True)
+    locks.mkdir(mode=0o700, parents=True, exist_ok=True)
+    object_path = objects / f"{identity}.csv"
+    lock_path = locks / f"{identity}.lock"
+    with lock_path.open("a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            if not object_path.exists():
+                frame = build()
+                _atomic_save_output(save, frame, object_path)
+                object_path.chmod(0o444)
+            _link_native_input_view(object_path, view_path)
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    return read(view_path)
+
+
+def _link_native_input_view(object_path: Path, view_path: Path) -> None:
+    """为单方案建立同一只读 inode 的路径，不复制输入内容。"""
+    view_path.parent.mkdir(parents=True, exist_ok=True)
+    if view_path.exists():
+        if os.path.samefile(object_path, view_path):
+            return
+        raise OSError(f"native input view already exists: {view_path}")
+    os.link(object_path, view_path)
+
+
+def _write_native_input_audit_receipt(
+    artifact: InputArtifact,
+    *,
+    metadata: Mapping[str, Any],
+    coverage_field: str,
+    required_columns: tuple[str, ...],
+) -> None:
     """仅在 Harness dry-run 请求时记录本次真实 builder 的输入身份。"""
     configured = str(os.environ.get(NATIVE_INPUT_AUDIT_ROOT_ENV) or "").strip()
     if not configured:
         return
+    profile = _dataframe_profile(
+        artifact.dataframe,
+        coverage_field=coverage_field,
+        required_columns=required_columns,
+    )
+    content_hash = _file_sha256(artifact.path)
     root = Path(configured)
     if not root.is_absolute():
         raise ValueError(f"{NATIVE_INPUT_AUDIT_ROOT_ENV} must be absolute")
@@ -2331,14 +2109,14 @@ def _write_native_input_audit_receipt(artifact: InputArtifact) -> None:
         "path": str(artifact.path),
         "source": artifact.source,
         "data_version": artifact.data_version,
-        "content_hash": artifact.content_hash,
-        "schema_hash": artifact.schema_hash,
-        "row_count": artifact.row_count,
-        "column_count": artifact.column_count,
-        "columns": list(artifact.columns),
-        "date_coverage": dict(artifact.date_coverage),
-        "quality_flags": dict(artifact.quality_flags),
-        "metadata": dict(artifact.metadata),
+        "content_hash": content_hash,
+        "schema_hash": _schema_hash(artifact.dataframe),
+        "row_count": profile["row_count"],
+        "column_count": profile["column_count"],
+        "columns": list(profile["columns"]),
+        "date_coverage": dict(profile["date_coverage"]),
+        "quality_flags": dict(profile["quality_flags"]),
+        "metadata": dict(metadata),
         "file_size": artifact_details.st_size,
         "modified_ns": artifact_details.st_mtime_ns,
     }
@@ -2503,6 +2281,18 @@ def _read_daily_output_csv(path: str | Path) -> pd.DataFrame:
     df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
     for col in df.columns:
         if col != "date":
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+def _read_weekly_output_csv(path: str | Path) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    if "week_id" in df.columns:
+        df["week_id"] = pd.to_numeric(
+            df["week_id"], errors="coerce"
+        ).astype("Int64")
+    for col in df.columns:
+        if col != "week_id":
             df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import tempfile
@@ -37,8 +36,7 @@ from shared.exclusive_file_lock import (
     ExclusiveFileLockUnavailable,
 )
 from shared.input_artifacts import (
-    BlackboxGrayReplaySession,
-    build_blackbox_gray_replay_session,
+    get_ready_blackbox_snapshot,
 )
 from shared.liwei_0616_cache_contract import (
     APPROVED_PHASE_A_CACHE_PUBLISHERS,
@@ -97,7 +95,6 @@ class _Execution:
 @dataclass(frozen=True, slots=True)
 class _BlackboxReplayBatch:
     source_identity: dict[str, Any]
-    session_id: str
     cfg: Any
     executions: tuple[_Execution, ...]
     requests: tuple[BlackboxRequest, ...]
@@ -219,10 +216,8 @@ def run_signal_gap_fill(
             try:
                 _run_range_algorithms(
                     executions,
-                    engine=engine,
                     algo_env=algo_env,
                     timeout_sec=timeout_sec,
-                    data_bridge_config=databridge_config,
                 )
             except Exception as exc:  # noqa: BLE001
                 failure_errors = _fail_executions(
@@ -379,7 +374,6 @@ def _complete_single_date(
             engine=engine,
             algo_env=algo_env,
             timeout_sec=timeout_sec,
-            data_bridge_config=databridge_config,
             settle=settle,
         )
     except Exception as exc:  # noqa: BLE001
@@ -790,10 +784,8 @@ def _create_runs(
 def _run_range_algorithms(
     executions: Sequence[_Execution],
     *,
-    engine: Any,
     algo_env: str,
     timeout_sec: int,
-    data_bridge_config: DataBridgeRefreshConfig,
 ) -> None:
     blackbox = [
         item
@@ -802,10 +794,8 @@ def _run_range_algorithms(
     ]
     _run_blackbox_gray_replay_batches(
         blackbox,
-        engine=engine,
         algo_env=algo_env,
         timeout_sec=timeout_sec,
-        data_bridge_config=data_bridge_config,
     )
 
 
@@ -815,7 +805,6 @@ def _run_single_date_algorithms(
     engine: Any,
     algo_env: str,
     timeout_sec: int,
-    data_bridge_config: DataBridgeRefreshConfig,
     settle: Callable[[_Execution], None],
 ) -> None:
     blackbox = [
@@ -825,10 +814,8 @@ def _run_single_date_algorithms(
     ]
     _run_blackbox_gray_replay_batches(
         blackbox,
-        engine=engine,
         algo_env=algo_env,
         timeout_sec=timeout_sec,
-        data_bridge_config=data_bridge_config,
     )
     for item in blackbox:
         settle(item)
@@ -909,8 +896,6 @@ def _run_native_wave(
     futures: dict[Future[list[PredictionRecord]], _Execution] = {}
     try:
         for item in executions:
-            scheme_root = root / item.group.base_scheme_id
-            scheme_root.mkdir(mode=0o700)
             futures[
                 pool.submit(
                     _run_native_algorithm,
@@ -918,7 +903,7 @@ def _run_native_wave(
                     engine=engine,
                     algo_env=algo_env,
                     timeout_sec=timeout_sec,
-                    ephemeral_native_runtime_root=scheme_root,
+                    ephemeral_native_runtime_root=root,
                     cancellation_event=cancellation_event,
                     process_start_guard=process_start_guard,
                 )
@@ -984,10 +969,8 @@ def _run_native_algorithm(
 def _run_blackbox_gray_replay_batches(
     executions: Sequence[_Execution],
     *,
-    engine: Any,
     algo_env: str,
     timeout_sec: int,
-    data_bridge_config: DataBridgeRefreshConfig,
 ) -> None:
     batches = _build_blackbox_replay_batches(executions)
     by_source: dict[str, list[_BlackboxReplayBatch]] = {}
@@ -995,19 +978,14 @@ def _run_blackbox_gray_replay_batches(
         by_source.setdefault(_canonical_json(batch.source_identity), []).append(
             batch
         )
-    sessions: dict[str, BlackboxGrayReplaySession] = {}
+    snapshots: dict[str, Any] = {}
     for source_key in sorted(by_source):
         source_batches = by_source[source_key]
         try:
-            sessions[source_key] = build_blackbox_gray_replay_session(
-                session_id=source_batches[0].session_id,
-                source_identity=source_batches[0].source_identity,
-                request_cutoffs=tuple(
-                    cutoff
-                    for batch in source_batches
-                    for cutoff in _cutoffs_for_requests(batch.requests)
-                ),
-                data_bridge_config=data_bridge_config,
+            source_identity = source_batches[0].source_identity
+            snapshots[source_key] = get_ready_blackbox_snapshot(
+                snapshot_date=str(source_identity["refresh_date"]),
+                expected_source_identity=source_identity,
             )
         except Exception as exc:  # noqa: BLE001
             for batch in source_batches:
@@ -1016,16 +994,15 @@ def _run_blackbox_gray_replay_batches(
             continue
 
     for source_key in sorted(by_source):
-        if source_key not in sessions:
+        if source_key not in snapshots:
             continue
-        session = sessions[source_key]
+        snapshot = snapshots[source_key]
         for batch in by_source[source_key]:
             try:
                 records = run_blackbox_gray_replay_batch(
                     batch.cfg,
                     requests=batch.requests,
-                    session=session,
-                    engine=engine,
+                    snapshot=snapshot,
                     algo_env=algo_env,
                     timeout_sec=timeout_sec,
                 )
@@ -1070,10 +1047,6 @@ def _build_blackbox_replay_batches(
     result: list[_BlackboxReplayBatch] = []
     for source_key in sorted(sources):
         source_identity, entries = sources[source_key]
-        session_id = _blackbox_replay_session_id(
-            source_identity,
-            [request for _, request in entries],
-        )
         by_config: dict[str, list[tuple[_Execution, BlackboxRequest]]] = {}
         for item, request in entries:
             by_config.setdefault(item.group.base_scheme_id, []).append(
@@ -1084,7 +1057,6 @@ def _build_blackbox_replay_batches(
             result.append(
                 _BlackboxReplayBatch(
                     source_identity=source_identity,
-                    session_id=session_id,
                     cfg=batch_entries[0][0].cfg,
                     executions=tuple(item for item, _ in batch_entries),
                     requests=tuple(request for _, request in batch_entries),
@@ -1158,17 +1130,23 @@ def _validate_blackbox_record(
 ) -> None:
     authority = group.input_authority or {}
     cutoff = authority.get("cutoff") or {}
-    extra = dict(record.extra or {})
-    expected = {
+    request = _blackbox_request(group, authority)
+    if (record.extra or {}).get("request_id") != request.request_id:
+        raise ValueError("Blackbox replay record request identity is invalid")
+    expected_identity = {
         "data_generation_id": authority.get("generation_id"),
         "source_refresh_date": authority.get("refresh_date"),
-        "daily_cutoff_key": cutoff.get("daily_cutoff_key"),
-        "weekly_cutoff_key": cutoff.get("weekly_cutoff_key"),
-        "monthly_cutoff_key": cutoff.get("monthly_cutoff_key"),
+        "daily_cutoff_key": request.daily_cutoff_key,
+        "weekly_cutoff_key": request.weekly_cutoff_key,
+        "monthly_cutoff_key": request.monthly_cutoff_key,
     }
-    if any(extra.get(field) != value for field, value in expected.items()):
-        raise ValueError("Blackbox replay record provenance is invalid")
-    if extra["daily_cutoff_key"] != record.feature_date:
+    record_extra = record.extra or {}
+    if any(
+        record_extra.get(key) != value
+        for key, value in expected_identity.items()
+    ):
+        raise ValueError("Blackbox replay input identity is invalid")
+    if cutoff.get("daily_cutoff_key") != record.feature_date:
         raise ValueError("Blackbox replay daily cutoff must equal feature_date")
 
 
@@ -1239,41 +1217,6 @@ def _blackbox_request(
             weekly_cutoff_key=str(cutoff["weekly_cutoff_key"]),
             monthly_cutoff_key=str(cutoff["monthly_cutoff_key"]),
         ),
-    )
-
-
-def _blackbox_replay_session_id(
-    source_identity: Mapping[str, Any],
-    requests: Sequence[BlackboxRequest],
-) -> str:
-    payload = _canonical_json(
-        {
-            "source_identity": source_identity,
-            "cutoff_signatures": sorted(
-                {
-                    (
-                        request.daily_cutoff_key,
-                        request.weekly_cutoff_key,
-                        request.monthly_cutoff_key,
-                    )
-                    for request in requests
-                }
-            ),
-        }
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _cutoffs_for_requests(
-    requests: Sequence[BlackboxRequest],
-) -> tuple[CutoffKeys, ...]:
-    return tuple(
-        CutoffKeys(
-            daily_cutoff_key=request.daily_cutoff_key,
-            weekly_cutoff_key=request.weekly_cutoff_key,
-            monthly_cutoff_key=request.monthly_cutoff_key,
-        )
-        for request in requests
     )
 
 

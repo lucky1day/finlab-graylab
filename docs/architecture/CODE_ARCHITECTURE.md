@@ -149,8 +149,8 @@ close-period 和 actuals 每个 cadence 只能有一个 writer。Backend 不提�
 入口（单日历史补缺）：`python -m harness signal-gap-fill --predict-date YYYY-MM-DD
 [--scheme-id <base_scheme_id>]`。单个 active Blackbox `weekly_point/h1` 或日频 `T+5/h5` 方案还可以使用
 `--scheme-id <base_scheme_id> --target-date-from YYYY-MM-DD --target-date-before YYYY-MM-DD`
-执行 target 半开区间。区间计划在一个只读快照中解析一次 DataBridge authority，按调度日分组审计 run，
-但同一方案只建立一个 replay session 和一个算法 batch；全部业务键预检通过后由 repository 在一个事务中
+执行 target 半开区间。区间计划在一个只读快照中解析一次 DataBridge authority，按调度日分组 run，
+但同一方案只核对一次 producer-ready receipt、物化一个私有运行视图并启动一个算法 batch；全部业务键预检通过后由 repository 在一个事务中
 insert-only 提交所有 `gray_live` prediction。命令本身就是补数授权，不接收外部 plan、operator、HMAC token
 或 plan SHA；任一算法或提交失败时 prediction 零提交。Native 仍只支持单日入口。两种入口都不产生
 `scheduled_live`，也不读取 Native 历史 generation。
@@ -282,7 +282,7 @@ schemes/{id}/                     schemes/{id}/
 | **DB 引擎生命周期** | 各 adapter/backtest 各自 `create_sqlalchemy_engine()` 再 `engine.dispose()` | adapter 经 `calendar_service`/`input_artifacts` 间接使用统一引擎工厂，不得裸取连接 |
 | **配置** | `shared/db_config.py` 读环境变量；`config.yaml` 方案级 | Native 契约与 Blackbox Runtime Profile 分开维护，共享身份由 `SCHEME_CONTRACT.md` 约束 |
 | **执行预算** | Native 使用 `config.yaml.schedule.timeout_sec`；Blackbox predict 取方案申请、Runtime Profile 上限和显式 operation deadline 的最小值，backtest 使用独立 Profile 预算 | operation deadline 只能缩短 Blackbox 方案/Profile 预算；所有预算仅控制子进程等待，不进入 L2 core 语义 |
-| **产物路径** | `shared/artifact_paths.py` 统一 `RUNTIME_INPUT_ROOT`；运行期 `backtest_artifacts/runtime_inputs/{scheme_id}/`，回测 `backtest_artifacts/backtests/{benchmark_id}/` | 维持；Harness 只写控制面数据库摘要，不再创建方案级报告目录 |
+| **产物路径** | Native scheduled/gap-fill/DryRun 输入使用作业级临时根并在结束后清理；Phase-A cache 与 DataBridge ready snapshot 保持各自受控持久根；回测使用 `backtest_artifacts/backtests/{benchmark_id}/` | 不再积累 `runtime_inputs` 或灰度二次快照目录；Harness 不创建方案级报告目录 |
 | **进程/依赖隔离** | Native `forecast_env`、Blackbox Runtime Profile、服务 `bond_factor_lab_service`；子进程 + JSON | Runtime Profile 是 Blackbox 环境、资源和权限的唯一配置源 |
 | **错误处理** | executor 捕获子进程失败写 `run_log(status=failed)` | harness Gate 失败安全（异常→`GateResult(FAILED)`），不抛穿 |
 | **命名标识符** | `scheme_id`(方案) / `benchmark_id`(基准批次) / `data_source`(口径) 三者分离 | 维持；StaticGate 校验命名规范子集 |

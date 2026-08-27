@@ -29,28 +29,15 @@
 3. 未来若把生产域名或 Writer 从 Mac3 切到 ECS，必须作为新生产项目设计数据库 authority、单 Writer、
    DNS/Nginx、窗口和回滚，不能从灰度验收外推授权。
 
-## Native V1 收敛到 Blackbox V2
+## Native P2 与后续迁移边界
 
-当前盘点为 26 个 Native base（日频 17、周频 6、月频 3）。由于 Blackbox 两文件合同是单 target，
-`t1_daily` / `t5_daily` 必须从两个多 target base 拆为六个 successor，因此最终不少于 30 个新的 Blackbox
-base。迁移使用新 successor ID，不在同一 ID 下原地改 `runtime_type`。
+Native→Blackbox 迁移当前暂停。本轮先完成 Native P2 的双环境发布、固定日期结果对照和下一次自然 daily
+one-shot 性能验收；只有自然运行证明完整链路不超过 25 分钟、同参数 Liwei 输入构建降为日/周/月各一次、
+无 Phase-A 重训且没有持久临时输入残留，P2 才可关闭。
 
-1. 冻结 Native V1 能力面：只修复政策清单内存量方案；所有新算法、新身份、新目标、新任务和替代版本只走
-   Blackbox V2 两文件 Intake。
-2. 先扩展向后兼容的 Blackbox Result 合同，使其能够承载必须保留的 `confidence` 与必要算法审计字段；同步建立
-   一次性跨运行时等价检查。Blackbox 完整回测只验证平台批量调用和合法输出，不能替代 Native oracle 对比。
-3. 按执行族迁移：三个 weekly-point 规则 → 两个 V28 → `t1_daily` / `t5_daily` 的六个单 target successor →
-   九个 source-package 方案（周均、月度、日度）→ 十个 Liwei cache 方案。source-package 必须先提取真实 read-set；
-   Liwei 必须最后解决无跨批状态与缓存性能等价。
-4. 每批先冻结 exact version、DataBridge generation、日历、输入 cutoff、日期、完整结果字段、canonical backtest、
-   业务身份和耗时基线，再形成独立两文件交付。相同输入下逐行结果、全历史回测、请求拆分/顺序独立性和多次
-   运行耗时中位数都不得退化。
-5. successor 先 paused/draft；等价证据和 Blackbox 完整回测通过后，在单独授权窗口停止对应 Writer，原子化暂停
-   Native Registry 并激活 successor。禁止双写、覆盖历史预测或让两个 Writer 同时服务同一业务键；旧 immutable
-   release 与身份映射必须保留用于回滚。
-6. 只有一批自然观察稳定且回滚窗口闭环后，才删除该批对应的 Native adapter、source runner、回测 runner、
-   专属 Gate 和测试。全部批次完成后，再统一删除 Native discovery、subprocess、maintenance lifecycle、政策
-   清单及文档分支，最终只保留 Blackbox V2 一套入库范式；历史 benchmark/evidence 与可执行代码分开归档。
+Liwei 迁移仅在上游提供不依赖跨方案持久 cache、可独立高效运行的 Blackbox V2 两文件交付后重新评估。
+恢复迁移前必须另立计划，重新冻结结果与性能基线；本轮不扩展 Blackbox Result/模型制品合同，不创建 successor，
+也不删除任何仍服务 active Native 的 adapter、source runner、CompareGate、maintenance admission 或 Phase-A cache。
 
 ECS 继续独立灰度运行；Mac3 域名、Nginx、DNS、数据库 authority 和生产 Writer 保持不变。
 

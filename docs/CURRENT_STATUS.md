@@ -36,7 +36,7 @@
   唯一资格；自然运行写 `scheduled_live`，单日或获批 target 区间补缺只写 insert-only `gray_live`。
 - 后续新方案的历史段由一次持久化 backtest batch 形成 immutable canonical backtest；激活后的连续 gray
   缺口由一次 live-safe target 区间 batch 物化。区间不得早于平台 live 起点，一个方案只解析一次
-  DataBridge authority、建立一个 replay session 并启动一个算法 batch；任一既有业务键整组拒绝，全部
+  DataBridge authority、核对 producer-ready receipt、物化一个私有运行视图并启动一个算法 batch；任一既有业务键整组拒绝，全部
   prediction 在一个 repository 事务中提交。不跨激活保存候选结果，也不以性能理由放宽 cutoff、版本、
   lineage 或唯一键安全门。
 - 跨主机补缺优先复用同一 immutable release 下已存在的精确预测结果；源端必须只读，目标端 Writer 必须先

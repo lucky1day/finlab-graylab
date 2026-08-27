@@ -110,6 +110,25 @@ static -> native-maintenance-admission -> dry-run
 
 ## 6. 直接命令副作用
 
+### 6.1 运行期输入与 Phase-A cache
+
+scheduled one-shot 与单日 gap-fill 使用作业级临时输入根目录。同一作业内，只有 frequency、运行日、
+起止日期/周、as-of、schema columns、data version 和数据库源类型全部一致的 builder 调用才复用同一只读
+CSV；每个方案通过自己的只读硬链接路径读取。作业成功、失败或中断后都删除该目录，不向
+`backtest_artifacts/runtime_inputs` 累积日常输入。DryRun 的输入和 builder receipt 同样只在该次 Gate 的
+临时目录中存在，合同验证完成即清理。
+
+单日补缺与自然 one-shot 的 Liwei Phase-A cache 继续使用调度环境的持久化根，不随临时输入切换到
+private cache；这两条路径只允许现有 generation `hit` 或安全追加一个尾部日期。`full`、`suffix`、无
+current 或多日缺失必须在训练前失败，持久 cache 修复另作受控操作。DryRun 则显式使用 Gate 临时目录内
+的私有 Phase-A cache 和 `private_build`，不读取或改写生产 cache。每个 cadence 先执行已批准 publisher、
+再执行其余 Native，两阶段各最多两个 worker；consumer 不发布 cache。单方案成功即独立提交，失败不
+回滚已完成方案；重试依赖 insert-only 业务键只规划剩余方案。中断时使用现有 process-control 终止已启动
+进程组并关闭未完成 run，不新增任务表、报告或审计字段。
+
+以上规则只优化平台 I/O 与编排，不允许改变训练窗口、模型、方向、confidence、三个业务日期、scheme
+version 或算法必要 extra。
+
 自动段通过后，任何 persist、单日 `signal-gap-fill` 或状态切换仍须使用精确的独立副作用命令；正式 `scheduled_live` 只由目标主机已安装的 one-shot 调度触发。命令本身是单维护者对本次操作的明确授权；不生成密钥、不签发 token、不复制 `--authorize`。操作前后独立查询：
 
 Native 激活授权必须绑定刚通过 `all` 或 `native-maintenance` 的

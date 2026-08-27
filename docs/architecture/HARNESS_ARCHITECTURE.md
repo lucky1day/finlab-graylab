@@ -185,7 +185,7 @@ adapter 和其它 Gate 不得直接查询该表。
 - 输入 artifact 结论: Blackbox 在完整回测中保留 generation/snapshot；Native 在 DryRun 证据中保留实际 builder receipt，两者都不重复构建输入。
 - 执行结论: Blackbox 保留完整批量回测的 Result 回显、数量、日期与 repository 提交证据；Native 保留 dry-run 输出和正式表行数不变。
 - 执行预算结论: Native 若配置 `schedule.timeout_sec`，记录实际耗时、配置值和是否仍在预算内；Blackbox 记录方案申请、Runtime Profile 的 predict/backtest 预算、实际耗时及任何独立 operation deadline，并证明最终 predict 预算取三层最小值。确认预算只影响 executor 等待，不改变算法输出。
-- 回测结论: Native 保留 `--no-persist` summary；Blackbox 必须保留完整区间、批次、预算、exact version/输入/环境和原子持久化证据。
+- 回测结论: Native 保留 `--no-persist` summary；Blackbox 必须保留完整区间、单次子进程、总预算、exact version/输入/环境和原子持久化证据。
 - 算法保真结论: Native 保留 source benchmark 与 full/maintenance profile；Blackbox 记录上游脚本/Metadata hash，不宣称平台已重验黑盒内部性质。
 - 日期语义结论: 回测样本满足 `predict_date == feature_date` 且最早 `predict_date >= 2025-01-01`；实盘样本满足对应频率的发出规则；周频实盘必须由 `feature_date=previous_trading_day(predict_date)` 再映射 `feature_week_id`，输入使用 `end_week=feature_week_id/as_of_date=feature_date`；月度 source-backed 方案若声明自然 15 号触发，必须证明 `predict_date` 保留自然 15 号，`feature_date/target_date` 分别取对应月 15 号及以前最近交易日；前端/业务表达数据截止时只用 `feature_date`，不依赖 `anchor_date`。
 - 实盘阶段结论: 灰度实盘和正式实盘必须能区分为 `gray_live` / `scheduled_live`；灰度观察区按方案级 `target_date >= gray_target_start` 判定；月度回补必须按目标月枚举，不能按 `predict_date >= gray_start` 漏掉首个 target 月。

@@ -80,7 +80,7 @@ python -m harness gate backtest \
 1. 复验当前 canonical 目录仍是安全的精确两文件交付；
 2. 读取已有 producer-ready generation receipt；
 3. 构造完整 HistoricalCase；
-4. 按 Runtime Profile 分批调用交付的 backtest 入口；
+4. 把完整 HistoricalCase 写成一份 Request CSV，按 Runtime Profile 只调用一次交付的 backtest 入口；
 5. 逐行校验 Result 数量、顺序、Request 回显、日期、方向与输出合同；
 6. 在一个事务中写入一个 immutable success run、完整 prediction 明细和非空 monthly metrics；
 7. 在 durable summary 中保存 exact version、code/config/manifest、脚本校验策略摘要、Runtime Profile、环境指纹、generation 和 snapshot。
@@ -128,7 +128,7 @@ python -m harness gate lifecycle-reconcile --scheme-id {scheme_id}
 - 单日历史 live 缺口：取得独立授权后执行
   `python -m harness signal-gap-fill --predict-date YYYY-MM-DD --scheme-id {scheme_id}`；
 - Blackbox 连续缺口：对 exact active `weekly_point/h1` 或日频 `T+5/h5` 身份，用 target 半开区间一次批量执行
-  `python -m harness signal-gap-fill --scheme-id {scheme_id} --target-date-from YYYY-MM-DD --target-date-before YYYY-MM-DD`。日频日期只从权威交易日历枚举；一个区间只解析一次 DataBridge authority、建立一个 replay session 并启动一个算法 batch；
+  `python -m harness signal-gap-fill --scheme-id {scheme_id} --target-date-from YYYY-MM-DD --target-date-before YYYY-MM-DD`。日频日期只从权威交易日历枚举；一个区间只解析一次 DataBridge authority，读取一次 producer-ready snapshot receipt、为该方案物化一次私有运行视图并启动一个算法 batch；
 - 产品读模型检查：按需执行
   `python -m harness gate dashboard --scheme-id {scheme_id}`；
 - 调度安装、timer/plist 变更、服务重启、Writer 切换：必须另行授权。

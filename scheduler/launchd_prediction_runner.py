@@ -10,10 +10,15 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import os
+import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from pathlib import Path
 from typing import Iterator, Sequence
 from zoneinfo import ZoneInfo
 
@@ -28,6 +33,7 @@ from scheduler.executor import (
     _launchd_scheduled_execution_context,
     execute_scheme,
 )
+from scheduler.process_control import ProcessStartGuard
 from scheduler.repository import (
     PREDICTION_KEYS_ALREADY_EXIST,
     create_engine_from_env,
@@ -40,6 +46,9 @@ from shared.period_average_buckets import period_anchor_dates
 from shared.task_specs import PERIOD_AVERAGE_TASK_TYPES, PREDICTION_CADENCES
 from shared.data_bridge.refresh import DataBridgeRefreshConfig
 from shared.liwei_0616_cache_contract import APPROVED_PHASE_A_CACHE_PUBLISHERS
+from shared.liwei_0616_cache_contract import (
+    CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
+)
 from shared.one_shot_control_plane import LAUNCHD_ONE_SHOT_CONTROL_PLANE
 
 
@@ -238,6 +247,11 @@ def _execute_candidate(
     scheduled_control_plane: str,
     scheduled_execution_context: object,
     scheduled_preflight_failure: str | None = None,
+    engine=None,
+    canonical_config_trusted: bool = False,
+    ephemeral_native_runtime_root: Path | None = None,
+    cancellation_event: threading.Event | None = None,
+    process_start_guard: ProcessStartGuard | None = None,
 ) -> None:
     """执行一个候选并将稳定结果归入当前 one-shot 摘要。"""
     try:
@@ -247,6 +261,21 @@ def _execute_candidate(
             "scheduled_control_plane": scheduled_control_plane,
             "scheduled_execution_context": scheduled_execution_context,
         }
+        if engine is not None:
+            execute_kwargs["engine"] = engine
+        if canonical_config_trusted:
+            execute_kwargs["canonical_config_trusted"] = True
+        if ephemeral_native_runtime_root is not None:
+            execute_kwargs["ephemeral_native_runtime_root"] = (
+                ephemeral_native_runtime_root
+            )
+            execute_kwargs["native_cache_mutation_policy"] = (
+                CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
+            )
+        if cancellation_event is not None:
+            execute_kwargs["cancellation_event"] = cancellation_event
+        if process_start_guard is not None:
+            execute_kwargs["process_start_guard"] = process_start_guard
         if scheduled_preflight_failure is not None:
             execute_kwargs["scheduled_preflight_failure"] = (
                 scheduled_preflight_failure
@@ -285,6 +314,63 @@ def _execute_candidate(
         summary.skipped.append(_candidate_item(cfg, code))
     else:
         summary.failed.append(_candidate_item(cfg, f"execution_{status}"))
+
+
+def _execute_native_wave(
+    summary: LaunchdPredictionSummary,
+    candidates: Sequence[object],
+    *,
+    predict_date: str,
+    algo_env: str,
+    scheduled_control_plane: str,
+    scheduled_execution_context: object,
+    engine,
+    input_root: Path,
+    cancellation_event: threading.Event,
+    process_start_guard: ProcessStartGuard,
+) -> None:
+    """最多两个 worker 执行一批 Native，并在主线程合并结果。"""
+    if not candidates:
+        return
+
+    def execute(cfg: object) -> LaunchdPredictionSummary:
+        local = LaunchdPredictionSummary(summary.cadence, summary.predict_date)
+        _execute_candidate(
+            local,
+            cfg,
+            predict_date=predict_date,
+            algo_env=algo_env,
+            scheduled_control_plane=scheduled_control_plane,
+            scheduled_execution_context=scheduled_execution_context,
+            engine=engine,
+            canonical_config_trusted=True,
+            ephemeral_native_runtime_root=input_root,
+            cancellation_event=cancellation_event,
+            process_start_guard=process_start_guard,
+        )
+        return local
+
+    pool = ThreadPoolExecutor(
+        max_workers=min(2, len(candidates)),
+        thread_name_prefix="native-one-shot",
+    )
+    futures = {pool.submit(execute, cfg): cfg for cfg in candidates}
+    try:
+        for future in as_completed(futures):
+            local = future.result()
+            summary.executed.extend(local.executed)
+            summary.skipped.extend(local.skipped)
+            summary.failed.extend(local.failed)
+    except BaseException:
+        cancellation_event.set()
+        for future in futures:
+            future.cancel()
+        raise
+    finally:
+        pool.shutdown(
+            wait=True,
+            cancel_futures=cancellation_event.is_set(),
+        )
 
 
 def _finalize(summary: LaunchdPredictionSummary) -> None:
@@ -455,8 +541,74 @@ def _run_one_shot(
             data_bridge_dependent_ids = {
                 id(cfg) for cfg in data_bridge_dependents
             }
+            native_candidates = [
+                cfg
+                for cfg in candidates
+                if getattr(cfg, "runtime_type", "native_adapter")
+                == "native_adapter"
+            ]
+            publisher_ids = {
+                publisher_id
+                for _tenor, publisher_id in (
+                    APPROVED_PHASE_A_CACHE_PUBLISHERS.values()
+                )
+            }
+            native_publishers = [
+                cfg
+                for cfg in native_candidates
+                if str(getattr(cfg, "scheme_id", "")) in publisher_ids
+            ]
+            native_consumers = [
+                cfg
+                for cfg in native_candidates
+                if str(getattr(cfg, "scheme_id", "")) not in publisher_ids
+            ]
+            if native_candidates:
+                cancellation_event = threading.Event()
+                process_start_guard = ProcessStartGuard()
+                try:
+                    with tempfile.TemporaryDirectory(
+                        prefix="bfl-native-one-shot-"
+                    ) as temporary:
+                        os.chmod(temporary, 0o700)
+                        input_root = Path(temporary).resolve(strict=True)
+                        _execute_native_wave(
+                            summary,
+                            native_publishers,
+                            predict_date=normalized_date,
+                            algo_env=algo_env,
+                            scheduled_control_plane=scheduled_control_plane,
+                            scheduled_execution_context=(
+                                scheduled_execution_context
+                            ),
+                            engine=engine,
+                            input_root=input_root,
+                            cancellation_event=cancellation_event,
+                            process_start_guard=process_start_guard,
+                        )
+                        _execute_native_wave(
+                            summary,
+                            native_consumers,
+                            predict_date=normalized_date,
+                            algo_env=algo_env,
+                            scheduled_control_plane=scheduled_control_plane,
+                            scheduled_execution_context=(
+                                scheduled_execution_context
+                            ),
+                            engine=engine,
+                            input_root=input_root,
+                            cancellation_event=cancellation_event,
+                            process_start_guard=process_start_guard,
+                        )
+                except BaseException:
+                    cancellation_event.set()
+                    raise
+
             for cfg in candidates:
-                if id(cfg) not in data_bridge_dependent_ids:
+                if (
+                    id(cfg) not in data_bridge_dependent_ids
+                    and cfg not in native_candidates
+                ):
                     _execute_candidate(
                         summary,
                         cfg,
@@ -466,6 +618,8 @@ def _run_one_shot(
                         scheduled_execution_context=(
                             scheduled_execution_context
                         ),
+                        engine=engine,
+                        canonical_config_trusted=True,
                     )
 
             if data_bridge_dependents:
@@ -511,6 +665,8 @@ def _run_one_shot(
                                 scheduled_preflight_failure=(
                                     SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT
                                 ),
+                                engine=engine,
+                                canonical_config_trusted=True,
                             )
                     elif gate_code is not None:
                         for cfg in data_bridge_dependents:
@@ -528,6 +684,8 @@ def _run_one_shot(
                                 scheduled_execution_context=(
                                     scheduled_execution_context
                                 ),
+                                engine=engine,
+                                canonical_config_trusted=True,
                             )
 
             _finalize(summary)

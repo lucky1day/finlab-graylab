@@ -124,7 +124,7 @@ def blackbox_gray_replay_source_identity(
 def _normalize_blackbox_gray_replay_source_identity(
     source_identity: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """供 authority serializer 与 replay session 共用的字段校验。"""
+    """供 authority serializer 与 gray replay 执行共用的字段校验。"""
     if not isinstance(source_identity, Mapping):
         raise ValueError("gray replay source identity must be an object")
     raw = dict(source_identity)

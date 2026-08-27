@@ -65,6 +65,54 @@ class _PeriodCalendar:
 
 
 class LaunchdPredictionRunnerTests(unittest.TestCase):
+    def test_native_wave_uses_at_most_two_workers(self) -> None:
+        from scheduler import launchd_prediction_runner as runner
+        from scheduler.process_control import ProcessStartGuard
+
+        summary = runner.LaunchdPredictionSummary("daily", "2026-08-20")
+        candidates = [
+            SimpleNamespace(scheme_id=f"native-{index}")
+            for index in range(4)
+        ]
+        lock = threading.Lock()
+        barrier = threading.Barrier(2)
+        active = 0
+        maximum = 0
+
+        def execute(local_summary, cfg, **_kwargs):
+            nonlocal active, maximum
+            with lock:
+                active += 1
+                maximum = max(maximum, active)
+            barrier.wait(timeout=2)
+            local_summary.executed.append(
+                {"scheme_id": cfg.scheme_id, "status": "success"}
+            )
+            with lock:
+                active -= 1
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(
+                runner,
+                "_execute_candidate",
+                side_effect=execute,
+            ):
+                runner._execute_native_wave(
+                    summary,
+                    candidates,
+                    predict_date="2026-08-20",
+                    algo_env="forecast_env",
+                    scheduled_control_plane="launchd_one_shot",
+                    scheduled_execution_context=object(),
+                    engine=object(),
+                    input_root=Path(tmpdir),
+                    cancellation_event=threading.Event(),
+                    process_start_guard=ProcessStartGuard(),
+                )
+
+        self.assertEqual(maximum, 2)
+        self.assertEqual(len(summary.executed), 4)
+
     def test_period_average_uses_task_type_and_same_day_ready_gate(self) -> None:
         from scheduler import launchd_prediction_runner as runner
 
@@ -97,8 +145,12 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                 runner,
                 "discover_schemes",
                 return_value=[quarterly, monthly],
-            ),
-            patch.object(runner, "create_engine_from_env", return_value=engine),
+            ) as discover,
+            patch.object(
+                runner,
+                "create_engine_from_env",
+                return_value=engine,
+            ) as create_engine,
             patch.object(runner, "get_calendar", return_value=calendar),
             patch.object(
                 runner,
@@ -133,6 +185,12 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
             expected_daily_date="2024-03-29",
         )
         execute.assert_called_once()
+        discover.assert_called_once()
+        create_engine.assert_called_once()
+        self.assertIs(execute.call_args.kwargs["engine"], engine)
+        self.assertTrue(
+            execute.call_args.kwargs["canonical_config_trusted"]
+        )
 
     def test_period_calendar_failure_is_isolated_by_task_type(self) -> None:
         from scheduler import launchd_prediction_runner as runner

@@ -50,7 +50,6 @@ _PROFILE_FIELDS = frozenset(
         "memory_limit_bytes",
         "predict_timeout_sec",
         "backtest_timeout_sec",
-        "max_batch_requests",
         "max_output_bytes",
         "max_log_bytes",
         "max_run_dir_bytes",
@@ -63,29 +62,6 @@ _PROFILE_FIELDS = frozenset(
 )
 
 
-@dataclass
-class BacktestExecutionBudget:
-    """跨分批调用共享的总 deadline 与子进程数量预算。"""
-
-    deadline_monotonic: float
-    max_subprocesses: int
-    subprocesses_started: int = 0
-
-    def claim_subprocess(self) -> float:
-        if self.max_subprocesses <= 0:
-            raise ValueError("backtest max_subprocesses must be positive")
-        remaining = self.deadline_monotonic - time.monotonic()
-        if remaining <= 0:
-            raise BlackboxExecutionError("Blackbox V2 backtest total deadline exceeded")
-        if self.subprocesses_started >= self.max_subprocesses:
-            raise BlackboxExecutionError(
-                "Blackbox V2 backtest subprocess limit exceeded: "
-                f"limit={self.max_subprocesses}"
-            )
-        self.subprocesses_started += 1
-        return remaining
-
-
 @dataclass(frozen=True)
 class RuntimeProfile:
     name: str
@@ -96,7 +72,6 @@ class RuntimeProfile:
     memory_limit_bytes: int
     predict_timeout_sec: int
     backtest_timeout_sec: int
-    max_batch_requests: int
     max_output_bytes: int
     max_log_bytes: int
     max_run_dir_bytes: int
@@ -145,7 +120,6 @@ def _load_runtime_profile(path: str | Path) -> RuntimeProfile:
         "memory_limit_bytes",
         "predict_timeout_sec",
         "backtest_timeout_sec",
-        "max_batch_requests",
         "max_output_bytes",
         "max_log_bytes",
         "max_run_dir_bytes",
@@ -191,7 +165,6 @@ def _load_runtime_profile(path: str | Path) -> RuntimeProfile:
         memory_limit_bytes=raw["memory_limit_bytes"],
         predict_timeout_sec=raw["predict_timeout_sec"],
         backtest_timeout_sec=raw["backtest_timeout_sec"],
-        max_batch_requests=raw["max_batch_requests"],
         max_output_bytes=raw["max_output_bytes"],
         max_log_bytes=raw["max_log_bytes"],
         max_run_dir_bytes=raw["max_run_dir_bytes"],
@@ -211,7 +184,6 @@ def _validate_runtime_profile(profile: RuntimeProfile, *, source: str) -> None:
         "memory_limit_bytes",
         "predict_timeout_sec",
         "backtest_timeout_sec",
-        "max_batch_requests",
         "max_output_bytes",
         "max_log_bytes",
         "max_run_dir_bytes",
@@ -459,51 +431,36 @@ def run_blackbox_backtest(
     data_dir: str | Path,
     data_snapshot_id: str,
     profile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE,
-    budget: BacktestExecutionBudget | None = None,
 ) -> list[PredictionRecord]:
     if not requests:
         raise ValueError("Blackbox V2 backtest requires at least one Request")
-    if profile.max_batch_requests <= 0:
-        raise ValueError("max_batch_requests must be positive")
     request_ids = [request.request_id for request in requests]
     if len(request_ids) != len(set(request_ids)):
         raise ValueError("Blackbox V2 backtest Request ids must be unique")
 
-    records: list[PredictionRecord] = []
-    for batch_index, start in enumerate(range(0, len(requests), profile.max_batch_requests)):
-        batch = list(requests[start : start + profile.max_batch_requests])
-        with tempfile.TemporaryDirectory(prefix=f"blackbox-v2-backtest-{batch_index:04d}-") as tmpdir:
-            root = Path(tmpdir)
-            requests_path = write_requests(batch, root / "requests.csv")
-            output_path = root / "output" / "backtest.csv"
-            remaining_timeout = budget.claim_subprocess() if budget is not None else None
-            try:
-                execute_blackbox_cli(
-                    script_path=script_path,
-                    mode="backtest",
-                    input_path=requests_path,
-                    data_dir=data_dir,
-                    output_path=output_path,
-                    profile=profile,
-                    timeout_sec=remaining_timeout,
-                )
-            except BlackboxExecutionError as exc:
-                if budget is not None and time.monotonic() >= budget.deadline_monotonic:
-                    raise BlackboxExecutionError(
-                        f"Blackbox V2 backtest total deadline exceeded: {exc}"
-                    ) from exc
-                raise
-            results = load_backtest_results(output_path, batch)
-        records.extend(
-            _to_prediction_record(
-                metadata,
-                result,
-                data_snapshot_id,
-                profile,
-            )
-            for result in results
+    batch = list(requests)
+    with tempfile.TemporaryDirectory(prefix="blackbox-v2-backtest-") as tmpdir:
+        root = Path(tmpdir)
+        requests_path = write_requests(batch, root / "requests.csv")
+        output_path = root / "output" / "backtest.csv"
+        execute_blackbox_cli(
+            script_path=script_path,
+            mode="backtest",
+            input_path=requests_path,
+            data_dir=data_dir,
+            output_path=output_path,
+            profile=profile,
         )
-    return records
+        results = load_backtest_results(output_path, batch)
+    return [
+        _to_prediction_record(
+            metadata,
+            result,
+            data_snapshot_id,
+            profile,
+        )
+        for result in results
+    ]
 
 
 def _to_prediction_record(

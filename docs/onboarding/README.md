@@ -54,7 +54,7 @@
 
 ## 历史与灰度的最快正确路径
 
-先确定方案级 `gray_target_start`。`target_date` 在起点以前的样本由一次持久化历史回测写入 immutable canonical backtest；起点及以后、正式调度以前的应有点由一次 target 区间批量执行写为 `gray_live`。区间入口按任务日历生成 live `predict_date`，一个方案只建立一个 replay session、解析一次 DataBridge authority 并启动一个算法 batch，不再逐日期重复运行。
+先确定方案级 `gray_target_start`。`target_date` 在起点以前的样本由一次持久化历史回测写入 immutable canonical backtest；起点及以后、正式调度以前的应有点由一次 target 区间批量执行写为 `gray_live`。区间入口按任务日历生成 live `predict_date`，一个方案只解析一次 DataBridge authority、核对一次 producer-ready receipt、物化一个私有运行视图并启动一个算法 batch，不再逐日期重复运行或重写输入快照。
 
 两个批次绑定同一 exact version 和输入 lineage，但不跨激活保存临时候选结果，也不增加候选表、报告文件或新的 lifecycle 状态。固定未来 `source_end`、跨样本全局选择、版本或输入 lineage 不一致时必须停止批量物化，改走逐点 live-safe 计算。两侧 target 必须零重叠；灰度区间已有任一 live 键时整组拒绝，不能覆盖或删除后重写。完整规则见[预测日期语义 5.2](../architecture/PREDICTION_SEMANTICS.md#52-历史批次与灰度区间批次)和[平台入库 SOP 6](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#6-灰度区间批量物化)。
 

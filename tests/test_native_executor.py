@@ -59,15 +59,12 @@ def _trusted_release(tmp_path: Path) -> tuple[Path, Path]:
     return release, runtime
 
 
-def test_ephemeral_native_runtime_sets_private_environment(
+def test_ephemeral_native_runtime_only_sets_shared_input_environment(
     tmp_path: Path,
 ) -> None:
     from scheduler.executor import run_scheme_subprocess
     from shared.input_artifacts import EPHEMERAL_NATIVE_INPUT_ROOT_ENV
-    from shared.liwei_0616_cache_contract import (
-        CACHE_MUTATION_POLICY_ENV,
-        CACHE_MUTATION_POLICY_PRIVATE_BUILD,
-    )
+    from shared.liwei_0616_cache_contract import CACHE_MUTATION_POLICY_ENV
 
     captured: dict[str, str] = {}
 
@@ -86,13 +83,9 @@ def test_ephemeral_native_runtime_sets_private_environment(
             ephemeral_native_runtime_root=root,
         )
 
-    assert captured[EPHEMERAL_NATIVE_INPUT_ROOT_ENV] == str(root / "inputs")
-    assert captured["LIWEI_0616_PHASE_A_CACHE_ROOT"] == str(
-        root / "phase-a-cache"
-    )
-    assert captured[CACHE_MUTATION_POLICY_ENV] == (
-        CACHE_MUTATION_POLICY_PRIVATE_BUILD
-    )
+    assert captured[EPHEMERAL_NATIVE_INPUT_ROOT_ENV] == str(root)
+    assert "LIWEI_0616_PHASE_A_CACHE_ROOT" not in captured
+    assert CACHE_MUTATION_POLICY_ENV not in captured
 
 
 def test_incremental_native_runtime_reuses_persistent_cache(
@@ -133,11 +126,61 @@ def test_incremental_native_runtime_reuses_persistent_cache(
             ),
         )
 
-    assert captured[EPHEMERAL_NATIVE_INPUT_ROOT_ENV] == str(root / "inputs")
+    assert captured[EPHEMERAL_NATIVE_INPUT_ROOT_ENV] == str(root)
     assert captured["LIWEI_0616_PHASE_A_CACHE_ROOT"] == persistent_cache
     assert captured[CACHE_MUTATION_POLICY_ENV] == (
         CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
     )
+
+
+def test_private_native_runtime_uses_explicit_cache_root(
+    tmp_path: Path,
+) -> None:
+    from scheduler.executor import run_scheme_subprocess
+    from shared.liwei_0616_cache_contract import (
+        CACHE_MUTATION_POLICY_ENV,
+        CACHE_MUTATION_POLICY_PRIVATE_BUILD,
+    )
+
+    captured: dict[str, str] = {}
+
+    def fake_run(cmd, *, cwd, env, timeout):
+        captured.update(env)
+        return CompletedProcess(cmd, 0, "[]", "")
+
+    persistent_cache = tmp_path / "persistent-cache"
+    persistent_cache.mkdir()
+    persistent_current = persistent_cache / "current.json"
+    persistent_current.write_text("persistent", encoding="utf-8")
+    private_cache = tmp_path / "dry-run" / "phase-a-cache"
+    with (
+        patch.dict(
+            os.environ,
+            {"LIWEI_0616_PHASE_A_CACHE_ROOT": str(persistent_cache)},
+            clear=False,
+        ),
+        patch(
+            "scheduler.executor._run_process_group",
+            side_effect=fake_run,
+        ),
+    ):
+        run_scheme_subprocess(
+            "daily_demo",
+            "2026-07-24",
+            ephemeral_native_runtime_root=tmp_path.resolve(),
+            native_cache_mutation_policy=(
+                CACHE_MUTATION_POLICY_PRIVATE_BUILD
+            ),
+            native_phase_a_cache_root=private_cache.resolve(),
+        )
+
+    assert captured["LIWEI_0616_PHASE_A_CACHE_ROOT"] == str(
+        private_cache.resolve()
+    )
+    assert captured[CACHE_MUTATION_POLICY_ENV] == (
+        CACHE_MUTATION_POLICY_PRIVATE_BUILD
+    )
+    assert persistent_current.read_text(encoding="utf-8") == "persistent"
 
 
 def test_incremental_policy_reaches_phase_a_build_decision(

@@ -3,10 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import time
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from harness.context import GateContext
@@ -20,7 +19,6 @@ from backtests.repository import persist_backtest_output_atomic
 from harness.gates.base import Gate, create_default_engine, guarded_result, utc_now
 from harness.result import Evidence, GateResult, GateStatus
 from scheduler.blackbox_v2_runner import (
-    BacktestExecutionBudget,
     DEFAULT_RUNTIME_PROFILE,
     RuntimeProfile,
     run_blackbox_backtest,
@@ -131,13 +129,12 @@ class BlackboxBacktestGate(_BlackboxGate):
                 predict_date_from=ctx.backtest_start_date,
             )
             profile = _profile(ctx)
-            batch_sizes = [
-                min(profile.max_batch_requests, len(cases) - start)
-                for start in range(0, len(cases), profile.max_batch_requests)
-            ]
-            budget = BacktestExecutionBudget(
-                deadline_monotonic=time.monotonic() + ctx.timeout_sec,
-                max_subprocesses=len(batch_sizes),
+            execution_profile = replace(
+                profile,
+                backtest_timeout_sec=min(
+                    profile.backtest_timeout_sec,
+                    ctx.timeout_sec,
+                ),
             )
             benchmark_id = f"bbv2-{cfg.scheme_id}-{uuid.uuid4().hex}"
             bundle = compose_blackbox_input_bundle(snapshot)
@@ -154,8 +151,7 @@ class BlackboxBacktestGate(_BlackboxGate):
                     generation_id=generation_id,
                     benchmark_id=benchmark_id,
                     run_delivery=run_blackbox_backtest,
-                    profile=profile,
-                    budget=budget,
+                    profile=execution_profile,
                     backtest_start_date=ctx.backtest_start_date,
                     target_date_before=ctx.predict_date,
                     total_deadline_sec=ctx.timeout_sec,
@@ -201,11 +197,7 @@ class BlackboxBacktestGate(_BlackboxGate):
             Evidence("requests", len(cases)),
             Evidence("records", len(output.rows)),
             Evidence("monthly_metrics", len(output.monthly_metrics)),
-            Evidence("max_batch_requests", profile.max_batch_requests),
-            Evidence("batch_count", len(batch_sizes)),
-            Evidence("batch_sizes", batch_sizes),
-            Evidence("subprocesses_started", budget.subprocesses_started),
-            Evidence("max_subprocesses", budget.max_subprocesses),
+            Evidence("subprocesses_started", 1),
             Evidence("total_deadline_sec", ctx.timeout_sec),
             Evidence("operator", operation.issued_by),
             Evidence("environment_fingerprint", environment_fingerprint),

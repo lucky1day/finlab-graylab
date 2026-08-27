@@ -189,20 +189,36 @@ class HarnessRuntimeGateTests(unittest.TestCase):
                 encoding="utf-8",
             )
             record.extra["input_artifact_path"] = str(artifact_path)
-            audit_receipt = _daily_audit_receipt(
-                artifact_path,
-                feature_date="2026-06-07",
-            )
             engine = SimpleNamespace(dispose=lambda: None)
+
+            def run_native(*_args, input_root: Path, **_kwargs):
+                generated = (
+                    input_root
+                    / "views"
+                    / "demo_daily"
+                    / "daily_output_2026-06-08.csv"
+                )
+                generated.parent.mkdir(parents=True)
+                generated.write_text(
+                    "date,TB0YWI0C\n2026-06-07,1.8\n",
+                    encoding="utf-8",
+                )
+                record.extra["input_artifact_path"] = str(generated)
+                return [record]
+
+            def read_receipts(_root: Path):
+                return {
+                    "daily": _daily_audit_receipt(
+                        Path(record.extra["input_artifact_path"]),
+                        feature_date="2026-06-07",
+                    )
+                }
+
             with (
                 patch(
                     "harness.gates.dry_run_gate.run_scheme_subprocess",
-                    return_value=[record],
+                    side_effect=run_native,
                 ) as run_scheme,
-                patch(
-                    "harness.gates.dry_run_gate.input_artifact_path",
-                    return_value=artifact_path,
-                ),
                 patch(
                     "harness.gates.dry_run_gate.get_calendar",
                     return_value=_fake_daily_semantics_calendar(),
@@ -216,11 +232,7 @@ class HarnessRuntimeGateTests(unittest.TestCase):
                 ),
                 patch(
                     "harness.gates.dry_run_gate._load_input_audit_receipts",
-                    return_value={"daily": audit_receipt},
-                ),
-                patch(
-                    "harness.gates.dry_run_gate.DEFAULT_OUTPUT_ROOT",
-                    project_root,
+                    side_effect=read_receipts,
                 ),
             ):
                 result = DryRunGate().run(

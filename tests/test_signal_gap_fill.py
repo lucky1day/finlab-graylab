@@ -438,7 +438,7 @@ def test_commit_conflict_returns_completed_and_remaining_without_retry(
     readback.assert_called_once()
 
 
-def test_blackbox_schemes_with_same_source_share_immutable_session(
+def test_blackbox_schemes_with_same_source_share_ready_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -458,8 +458,8 @@ def test_blackbox_schemes_with_same_source_share_immutable_session(
             "b_blackbox": _config("b_blackbox", runtime_type="blackbox_v2"),
         },
     )
-    session = SimpleNamespace(source_identity=_source_identity())
-    session_builder = Mock(return_value=session)
+    snapshot = SimpleNamespace()
+    snapshot_reader = Mock(return_value=snapshot)
 
     def batch_runner(cfg: SimpleNamespace, *, requests, **_kwargs):
         action = first if cfg.scheme_id == "a_blackbox" else second
@@ -476,8 +476,8 @@ def test_blackbox_schemes_with_same_source_share_immutable_session(
 
     monkeypatch.setattr(
         signal_gap_fill,
-        "build_blackbox_gray_replay_session",
-        session_builder,
+        "get_ready_blackbox_snapshot",
+        snapshot_reader,
     )
     monkeypatch.setattr(
         signal_gap_fill,
@@ -493,7 +493,7 @@ def test_blackbox_schemes_with_same_source_share_immutable_session(
     )
 
     assert report["status"] == "PASSED", report["errors"]
-    session_builder.assert_called_once()
+    snapshot_reader.assert_called_once()
     assert signal_gap_fill.run_blackbox_gray_replay_batch.call_count == 2
 
 
@@ -526,8 +526,8 @@ def test_blackbox_failure_does_not_block_native_success(
     )
     monkeypatch.setattr(
         signal_gap_fill,
-        "build_blackbox_gray_replay_session",
-        Mock(return_value=SimpleNamespace(source_identity=_source_identity())),
+        "get_ready_blackbox_snapshot",
+        Mock(return_value=SimpleNamespace()),
     )
     monkeypatch.setattr(
         signal_gap_fill,
@@ -779,8 +779,8 @@ def test_blackbox_target_range_runs_one_batch_and_commits_atomically(
     )
     monkeypatch.setattr(
         signal_gap_fill,
-        "build_blackbox_gray_replay_session",
-        Mock(return_value=SimpleNamespace(source_identity=_source_identity())),
+        "get_ready_blackbox_snapshot",
+        Mock(return_value=SimpleNamespace()),
     )
 
     def batch_runner(_cfg: SimpleNamespace, *, requests, **_kwargs):

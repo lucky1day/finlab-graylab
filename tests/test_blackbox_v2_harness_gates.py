@@ -102,12 +102,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             cache_root.mkdir()
             with (
                 patch(
-                    "shared.input_artifacts.check_current_dataset",
-                    side_effect=AssertionError(
-                        "ready snapshot path must not validate DataBridge current"
-                    ),
-                ) as check_current,
-                patch(
                     "shared.input_artifacts._load_blackbox_schema",
                     return_value=(
                         "data-bridge-v1",
@@ -132,6 +126,35 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     snapshot_date="2026-07-15",
                     cache_root=cache_root,
                 )
+                expected_source_identity = {
+                    "generation_id": state["generation_id"],
+                    "refresh_date": state["refresh_date"],
+                    "schema_version": state["schema_version"],
+                    "business_digest": state["business_digest"],
+                    "stable_identity_sha256": "a" * 64,
+                    "files": [
+                        {"filename": name, **state["files"][name]}
+                        for name in sorted(SNAPSHOT_FILENAMES)
+                    ],
+                }
+                matched = get_ready_blackbox_snapshot(
+                    snapshot_date="2026-07-15",
+                    cache_root=cache_root,
+                    expected_source_identity=expected_source_identity,
+                )
+                self.assertEqual(matched.snapshot_id, ready.snapshot_id)
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "does not match planned authority",
+                ):
+                    get_ready_blackbox_snapshot(
+                        snapshot_date="2026-07-15",
+                        cache_root=cache_root,
+                        expected_source_identity={
+                            **expected_source_identity,
+                            "generation_id": "different-generation",
+                        },
+                    )
                 invalidate_ready_blackbox_snapshot(cache_root=cache_root)
                 with self.assertRaisesRegex(
                     ValueError,
@@ -189,7 +212,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
 
         self.assertEqual(prepared.snapshot_id, ready.snapshot_id)
         self.assertEqual(ready.generation_id, "generation-shared")
-        check_current.assert_not_called()
 
     def test_runtime_view_does_not_rehash_or_parse_generation_csv(self) -> None:
         from shared import input_artifacts

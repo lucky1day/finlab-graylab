@@ -51,12 +51,12 @@ from shared.blackbox_v2.snapshot import compose_blackbox_input_bundle
 from shared.input_artifacts import (
     EPHEMERAL_NATIVE_INPUT_ROOT_ENV,
     NATIVE_INPUT_AUDIT_ROOT_ENV,
-    BlackboxGrayReplaySession,
     get_ready_blackbox_snapshot,
     open_blackbox_runtime_view,
     resolve_blackbox_input_cutoffs,
     validate_blackbox_request_calendar,
 )
+from shared.blackbox_v2.snapshot import BlackboxSnapshot
 from shared.db_config import DATABASE_ENV_FILE_ENV
 from shared.models import PredictionRecord
 from shared.one_shot_control_plane import (
@@ -211,6 +211,7 @@ def run_scheme_subprocess(
     process_start_guard: ProcessStartGuard | None = None,
     ephemeral_native_runtime_root: str | Path | None = None,
     native_cache_mutation_policy: str | None = None,
+    native_phase_a_cache_root: str | Path | None = None,
     cancellation_event: threading.Event | None = None,
     native_input_audit_root: str | Path | None = None,
 ) -> list[PredictionRecord]:
@@ -227,6 +228,21 @@ def run_scheme_subprocess(
     normalized_cache_policy = _normalize_native_cache_mutation_policy(
         native_cache_mutation_policy
     )
+    normalized_phase_a_cache_root = _normalize_native_phase_a_cache_root(
+        native_phase_a_cache_root
+    )
+    if normalized_phase_a_cache_root is not None and (
+        normalized_cache_policy != CACHE_MUTATION_POLICY_PRIVATE_BUILD
+    ):
+        raise ValueError(
+            "native_phase_a_cache_root requires private_build policy"
+        )
+    if normalized_cache_policy == CACHE_MUTATION_POLICY_PRIVATE_BUILD and (
+        normalized_phase_a_cache_root is None
+    ):
+        raise ValueError(
+            "private_build policy requires native_phase_a_cache_root"
+        )
     env = _build_algorithm_environment()
     env.pop(SOURCE_RUNTIME_DATABASE_CONFIG_PATH_ENV, None)
     env.pop(SOURCE_RUNTIME_DATABASE_CONFIG_ROOT_ENV, None)
@@ -243,17 +259,12 @@ def run_scheme_subprocess(
     env.pop(EPHEMERAL_NATIVE_INPUT_ROOT_ENV, None)
     env.pop(NATIVE_INPUT_AUDIT_ROOT_ENV, None)
     if normalized_ephemeral_root is not None:
-        env[EPHEMERAL_NATIVE_INPUT_ROOT_ENV] = str(
-            normalized_ephemeral_root / "inputs"
-        )
-    if normalized_cache_policy == CACHE_MUTATION_POLICY_INCREMENTAL_ONLY:
+        env[EPHEMERAL_NATIVE_INPUT_ROOT_ENV] = str(normalized_ephemeral_root)
+    if normalized_cache_policy is not None:
         env[CACHE_MUTATION_POLICY_ENV] = normalized_cache_policy
-    elif normalized_ephemeral_root is not None:
+    if normalized_phase_a_cache_root is not None:
         env["LIWEI_0616_PHASE_A_CACHE_ROOT"] = str(
-            normalized_ephemeral_root / "phase-a-cache"
-        )
-        env[CACHE_MUTATION_POLICY_ENV] = (
-            CACHE_MUTATION_POLICY_PRIVATE_BUILD
+            normalized_phase_a_cache_root
         )
     if normalized_audit_root is not None:
         env[NATIVE_INPUT_AUDIT_ROOT_ENV] = str(normalized_audit_root)
@@ -339,9 +350,23 @@ def _normalize_native_cache_mutation_policy(value: str | None) -> str | None:
     if value is None:
         return None
     policy = str(value).strip()
-    if policy != CACHE_MUTATION_POLICY_INCREMENTAL_ONLY:
+    if policy not in {
+        CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
+        CACHE_MUTATION_POLICY_PRIVATE_BUILD,
+    }:
         raise ValueError("unsupported Native cache mutation policy")
     return policy
+
+
+def _normalize_native_phase_a_cache_root(
+    value: str | Path | None,
+) -> Path | None:
+    if value is None:
+        return None
+    path = Path(value)
+    if not path.is_absolute():
+        raise ValueError("native_phase_a_cache_root must be absolute")
+    return path
 
 
 def _normalize_native_input_audit_root(
@@ -616,15 +641,14 @@ def run_blackbox_gray_replay_batch(
     cfg: SchemeConfig,
     *,
     requests: Sequence[BlackboxRequest],
-    session: BlackboxGrayReplaySession,
-    engine: Any,
+    snapshot: BlackboxSnapshot,
     algo_env: str,
     timeout_sec: int,
     profile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE,
 ) -> list[PredictionRecord]:
-    """在一个冻结 DataBridge gray replay session 内执行同一 Blackbox 方案。"""
-    if not isinstance(session, BlackboxGrayReplaySession):
-        raise TypeError("session must be a BlackboxGrayReplaySession")
+    """直接使用 producer-ready sealed snapshot 执行一个灰度批次。"""
+    if not isinstance(snapshot, BlackboxSnapshot):
+        raise TypeError("snapshot must be a BlackboxSnapshot")
     if getattr(cfg, "runtime_type", None) != "blackbox_v2":
         raise ValueError("gray replay batch requires runtime_type=blackbox_v2")
     if getattr(cfg, "input_source", None) != "data_bridge_current":
@@ -651,7 +675,7 @@ def run_blackbox_gray_replay_batch(
     for request in batch_requests:
         if not isinstance(request, BlackboxRequest):
             raise TypeError("gray replay batch requests must be BlackboxRequest")
-        _validate_gray_replay_request_within_session(request, session)
+        _validate_gray_replay_request_within_snapshot(request, snapshot)
 
     metadata = _blackbox_metadata(cfg)
     if metadata.scheme_id != cfg.scheme_id:
@@ -664,14 +688,17 @@ def run_blackbox_gray_replay_batch(
             "Blackbox V2 metadata frequency does not match configured scheme"
         )
 
-    input_bundle = compose_blackbox_input_bundle(session.snapshot)
+    input_bundle = compose_blackbox_input_bundle(snapshot)
     blackbox_env = (
         profile.conda_env if algo_env == DEFAULT_ALGO_ENV else algo_env
     )
     effective_profile = replace(
         profile,
         conda_env=blackbox_env,
-        backtest_timeout_sec=timeout_sec,
+        backtest_timeout_sec=min(
+            profile.backtest_timeout_sec,
+            timeout_sec,
+        ),
     )
     with open_blackbox_runtime_view(input_bundle) as runtime_view:
         trusted_bundle = runtime_view.bundle
@@ -686,30 +713,47 @@ def run_blackbox_gray_replay_batch(
         records = run_blackbox_backtest(**backtest_kwargs)
     records_by_request = _index_gray_replay_records(records, batch_requests)
     return [
-        _with_gray_replay_provenance(
+        _with_gray_request_identity(
             records_by_request[request.request_id],
             request=request,
-            session=session,
-            parent_data_snapshot_id=trusted_bundle.parent_snapshot_id,
+            snapshot=snapshot,
         )
         for request in batch_requests
     ]
 
 
-def _validate_gray_replay_request_within_session(
+def _with_gray_request_identity(
+    record: PredictionRecord,
+    *,
     request: BlackboxRequest,
-    session: BlackboxGrayReplaySession,
+    snapshot: BlackboxSnapshot,
+) -> PredictionRecord:
+    """保留逐 Request 计算所需的稳定输入身份。"""
+    extra = dict(record.extra or {})
+    extra.update(
+        {
+            "data_generation_id": snapshot.generation_id,
+            "source_refresh_date": snapshot.refresh_date,
+            "daily_cutoff_key": request.daily_cutoff_key,
+            "weekly_cutoff_key": request.weekly_cutoff_key,
+            "monthly_cutoff_key": request.monthly_cutoff_key,
+        }
+    )
+    return replace(record, extra=extra)
+
+
+def _validate_gray_replay_request_within_snapshot(
+    request: BlackboxRequest,
+    snapshot: BlackboxSnapshot,
 ) -> None:
     if (
-        request.daily_cutoff_key > session.max_cutoffs.daily_cutoff_key
-        or request.weekly_cutoff_key > session.max_cutoffs.weekly_cutoff_key
-        or request.monthly_cutoff_key > session.max_cutoffs.monthly_cutoff_key
+        request.daily_cutoff_key not in (snapshot.daily_cutoff_keys or ())
+        or request.weekly_cutoff_key not in (snapshot.weekly_cutoff_keys or ())
+        or request.monthly_cutoff_key not in (snapshot.monthly_cutoff_keys or ())
     ):
-        raise ValueError(
-            "Request cutoff exceeds gray replay session maximum cutoff"
-        )
+        raise ValueError("Request cutoff is absent from producer-ready snapshot")
     validate_blackbox_request_calendar(
-        session.snapshot,
+        snapshot,
         daily_cutoff_key=request.daily_cutoff_key,
         weekly_cutoff_key=request.weekly_cutoff_key,
     )
@@ -731,30 +775,6 @@ def _index_gray_replay_records(
     if set(indexed) != expected_ids:
         raise ValueError("gray replay batch returned missing request_id")
     return indexed
-
-
-def _with_gray_replay_provenance(
-    record: PredictionRecord,
-    *,
-    request: BlackboxRequest,
-    session: BlackboxGrayReplaySession,
-    parent_data_snapshot_id: str,
-) -> PredictionRecord:
-    extra = dict(record.extra or {})
-    extra.update(
-        {
-            "replay_semantics": "current_snapshot_as_of_not_historical_vintage",
-            "gray_replay_session_id": session.manifest_path.parent.name,
-            "gray_replay_manifest_sha256": session.manifest_sha256,
-            "parent_data_snapshot_id": parent_data_snapshot_id,
-            "data_generation_id": session.snapshot.generation_id,
-            "source_refresh_date": session.snapshot.refresh_date,
-            "daily_cutoff_key": request.daily_cutoff_key,
-            "weekly_cutoff_key": request.weekly_cutoff_key,
-            "monthly_cutoff_key": request.monthly_cutoff_key,
-        }
-    )
-    return replace(record, extra=extra)
 
 
 def _validate_historical_snapshot(
@@ -983,6 +1003,12 @@ def execute_scheme(
     blackbox_expected_generation_id: str | None = None,
     blackbox_expected_refresh_date: str | None = None,
     blackbox_record_validator: Callable[[list[PredictionRecord]], None] | None = None,
+    engine=None,
+    canonical_config_trusted: bool = False,
+    ephemeral_native_runtime_root: str | Path | None = None,
+    native_cache_mutation_policy: str | None = None,
+    cancellation_event: threading.Event | None = None,
+    process_start_guard: ProcessStartGuard | None = None,
 ) -> SchemeRunResult:
     """执行单个方案并写入预测表和运行日志。
 
@@ -1001,6 +1027,7 @@ def execute_scheme(
             cfg,
             scheduled_control_plane=scheduled_control_plane,
             scheduled_execution_context=scheduled_execution_context,
+            canonical_config_trusted=canonical_config_trusted,
         )
     )
     if configuration_error is not None:
@@ -1028,12 +1055,15 @@ def execute_scheme(
             != SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT
         ):
             raise ValueError("unsupported scheduled_preflight_failure")
-    engine = create_engine_from_env()
+    owns_engine = engine is None
+    if engine is None:
+        engine = create_engine_from_env()
     started = time.monotonic()
     if cfg.status != "active":
         duration = time.monotonic() - started
         write_run_log(engine, cfg.scheme_id, predict_date, "skipped", duration, f"status={cfg.status}")
-        engine.dispose()
+        if owns_engine:
+            engine.dispose()
         return SchemeRunResult(cfg.scheme_id, "skipped", 0, duration, f"status={cfg.status}")
 
     scheme_version = getattr(cfg, "scheme_version", None)
@@ -1047,7 +1077,8 @@ def execute_scheme(
             )
             duration = time.monotonic() - started
             write_run_log(engine, cfg.scheme_id, predict_date, "failed", duration, reason)
-            engine.dispose()
+            if owns_engine:
+                engine.dispose()
             return SchemeRunResult(cfg.scheme_id, "failed", 0, duration, reason)
         try:
             from shared.blackbox_v2.lifecycle import assert_lifecycle_clear
@@ -1059,21 +1090,24 @@ def execute_scheme(
             reason = str(exc)
             duration = time.monotonic() - started
             write_run_log(engine, cfg.scheme_id, predict_date, "failed", duration, reason)
-            engine.dispose()
+            if owns_engine:
+                engine.dispose()
             return SchemeRunResult(cfg.scheme_id, "failed", 0, duration, reason)
         approval = read_blackbox_execution_approval(engine, cfg)
         if not approval.executable:
             reason = f"Blackbox V2 version is not production-approved: {approval.reason}"
             duration = time.monotonic() - started
             write_run_log(engine, cfg.scheme_id, predict_date, "failed", duration, reason)
-            engine.dispose()
+            if owns_engine:
+                engine.dispose()
             return SchemeRunResult(cfg.scheme_id, "failed", 0, duration, reason)
     else:
         ok, reason = _verify_scheme_activation(engine, cfg.scheme_id, scheme_version)
         if not ok:
             duration = time.monotonic() - started
             write_run_log(engine, cfg.scheme_id, predict_date, "skipped", duration, reason)
-            engine.dispose()
+            if owns_engine:
+                engine.dispose()
             return SchemeRunResult(cfg.scheme_id, "skipped", 0, duration, reason)
     active_targets = _active_registry_targets(engine, cfg.scheme_id)
 
@@ -1114,6 +1148,19 @@ def execute_scheme(
             "algo_env": algo_env,
             "timeout_sec": effective_timeout_sec,
         }
+        if runtime_type == "native_adapter":
+            if ephemeral_native_runtime_root is not None:
+                run_kwargs["ephemeral_native_runtime_root"] = (
+                    ephemeral_native_runtime_root
+                )
+            if native_cache_mutation_policy is not None:
+                run_kwargs["native_cache_mutation_policy"] = (
+                    native_cache_mutation_policy
+                )
+            if cancellation_event is not None:
+                run_kwargs["cancellation_event"] = cancellation_event
+            if process_start_guard is not None:
+                run_kwargs["process_start_guard"] = process_start_guard
         if blackbox_snapshot_mode != BLACKBOX_SNAPSHOT_MODE_FRESH:
             run_kwargs["blackbox_snapshot_mode"] = blackbox_snapshot_mode
             run_kwargs["expected_generation_id"] = blackbox_expected_generation_id
@@ -1135,6 +1182,14 @@ def execute_scheme(
                 run_id=run_id,
                 data_snapshot_id=next(iter(snapshot_ids)),
             )
+        if runtime_type == "native_adapter":
+            records = [
+                replace(
+                    record,
+                    extra=_strip_native_input_provenance(record.extra),
+                )
+                for record in records
+            ]
         records = _normalize_live_records(records, prediction_phase=prediction_phase)
         _validate_live_record_dates(records, cfg=cfg, predict_date=predict_date, engine=engine)
         _validate_records_against_active_registry(records, cfg=cfg, active_targets=active_targets)
@@ -1223,7 +1278,8 @@ def execute_scheme(
                 error_msg = _append_audit_error(error_msg, "write_run_log", audit_exc)
         return SchemeRunResult(cfg.scheme_id, "failed", records_written, duration, error_msg, run_id)
     finally:
-        engine.dispose()
+        if owns_engine:
+            engine.dispose()
 
 
 def scheduled_live_execution_configuration_error(
@@ -1231,19 +1287,29 @@ def scheduled_live_execution_configuration_error(
     *,
     scheduled_control_plane: str | None,
     scheduled_execution_context: object | None = None,
+    canonical_config_trusted: bool = False,
 ) -> str | None:
     """在任何数据库或子进程副作用前校验低层 scheduled_live 入口。"""
-    canonical_error = _scheduled_live_canonical_configuration_error(
-        cfg
-    )
-    if canonical_error is not None:
-        return canonical_error
-
     if _is_scheduled_execution_context(
         scheduled_control_plane,
         scheduled_execution_context,
     ):
+        if canonical_config_trusted:
+            return None
+        canonical_error = _scheduled_live_canonical_configuration_error(
+            cfg
+        )
+        if canonical_error is not None:
+            return canonical_error
         return None
+    if canonical_config_trusted:
+        return (
+            f"{PLATFORM_CONFIGURATION_ERROR_PREFIX} trusted canonical "
+            f"configuration requires one-shot context: scheme_id={cfg.scheme_id}"
+        )
+    canonical_error = _scheduled_live_canonical_configuration_error(cfg)
+    if canonical_error is not None:
+        return canonical_error
     return (
         f"{PLATFORM_CONFIGURATION_ERROR_PREFIX} "
         "scheduled_live requires one-shot execution context: "
@@ -1377,6 +1443,33 @@ def _normalize_live_records(records: list[PredictionRecord], *, prediction_phase
             )
         )
     return normalized
+
+
+_NATIVE_INPUT_PROVENANCE_FIELDS = frozenset(
+    {
+        "input_artifact_path",
+        "input_artifact_source",
+        "input_artifact_data_version",
+        "input_artifact_watermark",
+    }
+)
+_NATIVE_INPUT_PROVENANCE_PREFIXES = (
+    "daily_input_artifact_",
+    "weekly_input_artifact_",
+    "monthly_input_artifact_",
+)
+
+
+def _strip_native_input_provenance(
+    extra: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """预测结果不保存一次性输入路径及其重复描述。"""
+    return {
+        key: value
+        for key, value in dict(extra or {}).items()
+        if key not in _NATIVE_INPUT_PROVENANCE_FIELDS
+        and not key.startswith(_NATIVE_INPUT_PROVENANCE_PREFIXES)
+    }
 
 
 def _active_registry_targets(engine, scheme_id: str) -> set[tuple[str, int]]:

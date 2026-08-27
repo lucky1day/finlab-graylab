@@ -33,7 +33,6 @@ def run_blackbox_historical_backtest(
     benchmark_id: str,
     run_delivery: Callable[..., Sequence[Any]],
     profile: Any,
-    budget: Any | None = None,
     backtest_start_date: str | None = None,
     target_date_before: str | None = None,
     total_deadline_sec: int | None = None,
@@ -47,7 +46,6 @@ def run_blackbox_historical_backtest(
         "script_path": script_path,
         "requests": [case.request for case in materialized],
         "profile": profile,
-        "budget": budget,
     }
     if input_bundle is None:
         if runtime_data_dir is not None:
@@ -175,17 +173,7 @@ def run_blackbox_historical_backtest(
             "actual_target_date_max": max(
                 case.request.target_date for case in materialized
             ),
-            "batch_count": (
-                len(materialized) + profile.max_batch_requests - 1
-            ) // profile.max_batch_requests,
-            "batch_sizes": [
-                min(profile.max_batch_requests, len(materialized) - start)
-                for start in range(0, len(materialized), profile.max_batch_requests)
-            ],
-            "max_batch_requests": profile.max_batch_requests,
             "total_deadline_sec": total_deadline_sec,
-            "max_subprocesses": getattr(budget, "max_subprocesses", None),
-            "subprocesses_started": getattr(budget, "subprocesses_started", None),
             "replay_semantics": CURRENT_SNAPSHOT_REPLAY,
         }
     )

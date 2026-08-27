@@ -14,17 +14,17 @@ from shared.blackbox_v2.contracts import BlackboxMetadata, BlackboxRequest
 class BlackboxV2RunnerTests(unittest.TestCase):
     def test_gray_replay_rejects_request_calendar_mismatch(self) -> None:
         from scheduler.executor import (
-            _validate_gray_replay_request_within_session,
+            _validate_gray_replay_request_within_snapshot,
         )
 
         with self.assertRaisesRegex(ValueError, "frozen calendar"):
-            _validate_gray_replay_request_within_session(
+            _validate_gray_replay_request_within_snapshot(
                 _gray_replay_request(
                     "gray-calendar-mismatch",
                     "2026-07-24",
                     "202631",
                 ),
-                _gray_replay_session(),
+                _gray_replay_snapshot(),
             )
 
     def test_runner_requires_exact_four_standard_files(self) -> None:
@@ -286,34 +286,40 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         )
 
 
-    def test_backtest_splits_batches_and_preserves_order(self) -> None:
-        from scheduler.blackbox_v2_runner import RuntimeProfile, run_blackbox_backtest
+    def test_backtest_runs_all_requests_once_and_preserves_order(self) -> None:
+        from scheduler import blackbox_v2_runner as runner
 
         requests = [_request(f"{index:03d}") for index in range(3)]
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             script = _write_script(root / "trial.py", _SUCCESS_SCRIPT)
-            records = run_blackbox_backtest(
-                metadata=_metadata(),
-                script_path=script,
-                requests=requests,
-                data_dir=_write_data_dir(root),
-                data_snapshot_id="snapshot-test",
-                profile=RuntimeProfile.for_tests(max_batch_requests=2),
-            )
+            with patch.object(
+                runner,
+                "execute_blackbox_cli",
+                wraps=runner.execute_blackbox_cli,
+            ) as execute_cli:
+                records = runner.run_blackbox_backtest(
+                    metadata=_metadata(),
+                    script_path=script,
+                    requests=requests,
+                    data_dir=_write_data_dir(root),
+                    data_snapshot_id="snapshot-test",
+                    profile=runner.RuntimeProfile.for_tests(),
+                )
 
         self.assertEqual(len(records), 3)
+        execute_cli.assert_called_once()
         self.assertEqual([record.extra["request_id"] for record in records], [item.request_id for item in requests])
 
 
-    def test_gray_replay_batch_reuses_one_session_and_preserves_requests(
+    def test_gray_replay_batch_uses_one_ready_snapshot_and_preserves_requests(
         self,
     ) -> None:
         from scheduler.blackbox_v2_runner import RuntimeProfile
         from scheduler.executor import run_blackbox_gray_replay_batch
         from shared.models import PredictionRecord
 
-        session = _gray_replay_session()
+        snapshot = _gray_replay_snapshot()
         requests = [
             _gray_replay_request("gray-001", "2026-07-24", "202630"),
             _gray_replay_request("gray-002", "2026-07-31", "202631"),
@@ -362,8 +368,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             records = run_blackbox_gray_replay_batch(
                 cfg,
                 requests=requests,
-                session=session,
-                engine=object(),
+                snapshot=snapshot,
                 algo_env="forecast_env",
                 timeout_sec=600,
                 profile=RuntimeProfile.for_tests(),
@@ -386,18 +391,31 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             ],
         )
         self.assertTrue(
-            all(
-                record.extra["gray_replay_session_id"] == "a" * 64
-                for record in records
-            )
+            all("gray_replay_session_id" not in record.extra for record in records)
         )
-        self.assertTrue(
-            all(
-                record.extra["parent_data_snapshot_id"]
-                == session.snapshot.snapshot_id
-                for record in records
+        for request, record in zip(requests, records, strict=True):
+            self.assertEqual(
+                record.extra["data_generation_id"],
+                snapshot.generation_id,
             )
-        )
+            self.assertEqual(
+                record.extra["source_refresh_date"],
+                snapshot.refresh_date,
+            )
+            self.assertEqual(
+                record.extra["daily_cutoff_key"],
+                request.daily_cutoff_key,
+            )
+            self.assertEqual(
+                record.extra["weekly_cutoff_key"],
+                request.weekly_cutoff_key,
+            )
+            self.assertEqual(
+                record.extra["monthly_cutoff_key"],
+                request.monthly_cutoff_key,
+            )
+            self.assertNotIn("gray_replay_manifest_sha256", record.extra)
+            self.assertNotIn("parent_data_snapshot_id", record.extra)
 
 
 def _metadata() -> BlackboxMetadata:
@@ -426,12 +444,10 @@ def _request(request_id: str) -> BlackboxRequest:
     )
 
 
-def _gray_replay_session():
-    from shared.blackbox_v2.snapshot import BlackboxSnapshot, CutoffKeys
-    from shared.input_artifacts import BlackboxGrayReplaySession
+def _gray_replay_snapshot():
+    from shared.blackbox_v2.snapshot import BlackboxSnapshot
 
-    session_id = "a" * 64
-    snapshot = BlackboxSnapshot(
+    return BlackboxSnapshot(
         snapshot_id="snapshot-gray-parent",
         root_dir=Path("/tmp/gray-replay-parent"),
         data_dir=Path("/tmp/gray-replay-parent/data"),
@@ -446,13 +462,6 @@ def _gray_replay_session():
             "2026-07-24": "202630",
             "2026-07-31": "202631",
         },
-    )
-    return BlackboxGrayReplaySession(
-        snapshot=snapshot,
-        manifest_path=Path("/tmp") / session_id / "manifest.json",
-        manifest_sha256="b" * 64,
-        source_identity={},
-        max_cutoffs=CutoffKeys("2026-07-31", "202631", "202607"),
     )
 
 
