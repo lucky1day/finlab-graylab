@@ -48,11 +48,12 @@
 降低、双环境灰度、Registry 所有权切换与回滚窗口。只有该批闭环后才能删除该批专属 adapter、source/backtest
 runner、CompareGate 和测试；共享给未迁移 Native 的代码和测试不得提前删除。
 
-## 旧 lifecycle 文件清理
+## ECS runtime root 外历史目录清理
 
-当前与 `previous` release 已确认不读取 config overlay 或 Blackbox lifecycle journal；两端旧 runtime lifecycle
-目录无打开文件、活跃进程或新写入。待取得精确目录的破坏性删除授权后清理。删除不会影响当前与 `previous`
-回滚，但会移除更早 pre-P3 release 直接使用旧 lifecycle 状态的能力；旧 release archive 本身不删除。
+当前 ECS runtime root 是 `/var/lib/bond-factor-lab/state`，其中经授权的旧 lifecycle 目录已经删除。现场另有两处
+早期 bootstrap 留下的同名目录：`/var/lib/bond-factor-lab/lifecycle` 和
+`/var/lib/bond-factor-lab/artifacts/blackbox-v2-lifecycle`。当前与 `previous` release、installed unit 和环境文件
+均零引用，也没有打开文件；但它们不在既有四目录授权范围内，取得单独破坏性删除授权前保持原状。
 
 P2 真实零写入模拟已把完整 daily 墙钟降至约 12 分钟；P4 调度计划中的 discovery 与 lifecycle 解析仅为毫秒级，
 不是下一瓶颈。后续必须先用现场耗时证明算法执行中的明确收益，再修改代码；不为推测性收益增加缓存、模块、

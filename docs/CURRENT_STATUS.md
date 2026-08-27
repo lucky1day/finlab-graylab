@@ -54,8 +54,9 @@
 - Blackbox 完整历史回测对一个方案只启动一个算法进程；灰度区间直接核对 producer-ready receipt，并为每个
   方案只建立一次临时私有 runtime view。平台不再裁剪、重写或永久保存 gray replay session。
 - Blackbox lifecycle 以本机数据库中的 exact version 与 composite Registry 为唯一运行权威；当前代码和
-  `previous` release 都不再读取 config overlay、lifecycle journal 或 reconcile 状态。两端旧 runtime lifecycle
-  文件仅为更早 release 的回滚遗留，未获破坏性授权前继续原地保留，不参与当前执行。
+  `previous` release 都不再读取 config overlay、lifecycle journal 或 reconcile 状态。两端当前 runtime root 内
+  经授权的旧 lifecycle 文件已在无读取者、无打开文件和调度 idle 的条件下删除，不影响当前执行或
+  `previous` 回滚；release archive 保留。
 - Mac3 production 与 ECS gray 的 installed plist/unit、服务状态、数据库写入、激活、补数和 DDL 都是
   独立操作，代码或文档提交不能外推为现场授权。
 - 未来把生产域名或 Writer 切到 ECS 是新的生产项目，不属于当前完成条件。
