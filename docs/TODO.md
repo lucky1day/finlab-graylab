@@ -29,13 +29,10 @@
 3. 未来若把生产域名或 Writer 从 Mac3 切到 ECS，必须作为新生产项目设计数据库 authority、单 Writer、
    DNS/Nginx、窗口和回滚，不能从灰度验收外推授权。
 
-## Native P2 与后续迁移边界
+## Native 后续迁移边界
 
-Native→Blackbox 迁移当前暂停。本轮先完成 Native P2 的双环境发布、固定日期结果对照和下一次自然 daily
-one-shot 性能验收；只有自然运行证明完整链路不超过 25 分钟、同参数 Liwei 输入构建降为日/周/月各一次、
-无 Phase-A 重训且没有持久临时输入残留，P2 才可关闭。
-
-Liwei 迁移仅在上游提供不依赖跨方案持久 cache、可独立高效运行的 Blackbox V2 两文件交付后重新评估。
+Native P2 已完成，不再作为待办保留。Native→Blackbox 迁移继续暂停；Liwei 仅在上游提供不依赖跨方案
+持久 cache、可独立高效运行的 Blackbox V2 两文件交付后重新评估。
 恢复迁移前必须另立计划，重新冻结结果与性能基线；本轮不扩展 Blackbox Result/模型制品合同，不创建 successor，
 也不删除任何仍服务 active Native 的 adapter、source runner、CompareGate、maintenance admission 或 Phase-A cache。
 

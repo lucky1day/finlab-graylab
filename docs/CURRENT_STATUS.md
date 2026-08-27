@@ -48,6 +48,11 @@
   一个 batch，全部业务键由现有 repository 原子提交，下一自然调度 target 必须保留不占用。
 - Native 单日补缺复用自然调度的持久 Phase-A cache，并按 base scheme 独立提交。cache 只允许 hit 或单日
   append；`suffix/full` 必须在训练前失败，持久化 cache 恢复属于独立操作，不能由补缺命令自动重训历史。
+- Native daily/weekly/monthly one-shot 与单日补缺使用作业级临时输入：同一精确 builder identity 只构建
+  一次，各方案读取只读硬链接；publisher 与其余 Native 分两阶段、每阶段最多两个 worker。one-shot 只做
+  一次 discovery 并共享一个 Engine，作业结束不保留日常 `runtime_inputs`。
+- Blackbox 完整历史回测对一个方案只启动一个算法进程；灰度区间直接核对 producer-ready receipt，并为每个
+  方案只建立一次临时私有 runtime view。平台不再裁剪、重写或永久保存 gray replay session。
 - Mac3 production 与 ECS gray 的 installed plist/unit、服务状态、数据库写入、激活、补数和 DDL 都是
   独立操作，代码或文档提交不能外推为现场授权。
 - 未来把生产域名或 Writer 切到 ECS 是新的生产项目，不属于当前完成条件。
