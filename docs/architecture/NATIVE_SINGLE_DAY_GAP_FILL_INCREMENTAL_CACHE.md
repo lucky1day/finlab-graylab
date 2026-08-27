@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**实现状态**：`IMPLEMENTED_LOCAL`（尚未发布生产 release）
+**实现状态**：`IMPLEMENTED_AND_RELEASED`
 
 **适用场景**：权威输入已就绪，需要补齐一个 `predict_date` 下尚未写入的 active 方案预测
 
@@ -212,3 +212,26 @@ Dashboard 或 repository 实现。
 
 相关总纲：[代码架构](CODE_ARCHITECTURE.md)、[Harness 架构](HARNESS_ARCHITECTURE.md)、
 [预测日期与实盘阶段语义](PREDICTION_SEMANTICS.md)。
+
+## 12. 生产验证
+
+2026-08-27 已使用同一不可变 archive 将 release
+`260ebc010af123118a55f03631bc38dea1afd656` 发布至 ECS 与 Mac3；archive SHA-256 为
+`f4929f05f56b7f603197a4d9330fbc447aa3ab142c7450c3dd727e9a1c57b829`。发布过程未修改调度配置，
+未重启 backend 或其他服务。
+
+Mac3 对 `predict_date=2026-08-27` 的真实补缺验证结果：
+
+- 首次执行中 34 个不依赖本次 Phase-A 修复的方案已经独立提交；失败未回滚成功方案。
+- 重试只规划剩余 10 个 Liwei 方案，证明断点续跑没有再次执行已完成方案。
+- 现有 cache 正确识别为历史输入修订导致的 `suffix`，并在训练前 fail-closed；单日 gap-fill
+  没有自动完整重训或降级为私有 cache。
+- 持久化 cache 通过独立受控操作仅运行 7 个既有 publisher，最多两个 worker；修复后 watermark
+  为 `2026-08-26`。随后 10 个 Liwei 方案全部命中已发布 generation，补缺阶段没有再次训练
+  Phase-A，约 8 分钟完成。
+- 最终权威读回为 44 个方案、48 条 `gray_live` prediction；方向和日期字段完整，重复业务键为 0，
+  `running` run 为 0。Dashboard API 的 48 条 live 明细与数据库逐行一致，公网 Factor Lab 页面正常显示
+  `数据已就绪` 和 92 个方案。
+
+本次验证达到 10 个 Liwei 方案 35 分钟内、全部 active 方案 45 分钟内的目标，因此不继续增加共享输入、
+第二层 cache 或额外审计机制。
