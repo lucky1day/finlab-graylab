@@ -4,12 +4,16 @@
 
 **目标读者**：上游算法和平台数据接入人员
 
-本目录提供 `data-bridge-v1` 的文档入口、两份 Request 样例和四份脱敏结构样例。样例中的日期、周期键和业务值全部为合成值，不来自生产数据。
+本目录提供 `data-bridge-v1` 的文档入口、算法合同样例和四份脱敏结构样例。样例中的日期、周期键和业务值全部为合成值，不来自生产数据。
 
-Request 样例：
+算法合同样例：
 
+- [metadata.sample.json](samples/metadata.sample.json)
 - [request.sample.json](samples/request.sample.json)
 - [requests.sample.csv](samples/requests.sample.csv)
+- [prediction.sample.json](samples/prediction.sample.json)
+- [backtest.sample.csv](samples/backtest.sample.csv)
+- [performance.sample.json](samples/performance.sample.json)
 
 ## 权威来源
 

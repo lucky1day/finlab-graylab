@@ -1,0 +1,7 @@
+{
+  "request_id": "example_t1_v1:2026-01-06:2026-01-05:2026-01-06",
+  "predict_date": "2026-01-06",
+  "feature_date": "2026-01-05",
+  "target_date": "2026-01-06",
+  "predicted_direction": 1
+}

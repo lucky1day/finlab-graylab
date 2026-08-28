@@ -1,0 +1,34 @@
+{
+  "scheme_id": "sample_t1_direction_v1",
+  "algorithm_version": "1.0.0",
+  "tested_at": "2026-01-09T12:00:00+08:00",
+  "runtime": {
+    "python": "3.13.12",
+    "cpu": "4 vCPU",
+    "memory_gib": 14
+  },
+  "input_sha256": {
+    "daily_output.csv": "replace-with-real-sha256",
+    "weekly_output.csv": "replace-with-real-sha256",
+    "monthly_output.csv": "replace-with-real-sha256",
+    "api_wind_date.csv": "replace-with-real-sha256"
+  },
+  "requests": {
+    "ordered_100": 100,
+    "shuffled_100": 100,
+    "full_interval": 333,
+    "target_date_from": "2025-01-02",
+    "target_date_before": "2026-06-01"
+  },
+  "duration_sec": {
+    "predict": [1.2, 1.1, 1.1],
+    "ordered_100": [80.1, 79.8, 80.0],
+    "shuffled_100": [80.0, 80.2, 79.9],
+    "full_interval": [240.1, 239.8, 240.0]
+  },
+  "peak_rss_bytes": 1073741824,
+  "batch_self_check": {
+    "request_ids": ["first-request-id", "middle-request-id", "last-request-id"],
+    "fallback_used": false
+  }
+}

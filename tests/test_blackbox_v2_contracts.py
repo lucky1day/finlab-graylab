@@ -319,3 +319,71 @@ def test_both_request_writers_round_trip_to_the_same_values(tmp_path) -> None:
         batched = next(iter(csv.DictReader(handle)))
 
     assert {field: single[field] for field in REQUEST_FIELDS} == dict(batched)
+
+
+def test_upstream_delivery_samples_match_the_machine_contract() -> None:
+    """上游包内样例必须可由当前机器合同直接解析。"""
+    import pandas as pd
+
+    from shared.blackbox_v2.contracts import (
+        load_backtest_results,
+        load_metadata,
+        load_prediction_result,
+        load_request,
+        load_requests,
+    )
+    from shared.data_bridge.validation import validate_dataset
+
+    samples = (
+        Path(__file__).resolve().parents[1]
+        / "docs"
+        / "blackbox_v2"
+        / "data_bridge_v1"
+        / "samples"
+    )
+    metadata = load_metadata(samples / "metadata.sample.json")
+    request = load_request(samples / "request.sample.json")
+    requests = load_requests(samples / "requests.sample.csv")
+    prediction = load_prediction_result(
+        samples / "prediction.sample.json",
+        request,
+    )
+    results = load_backtest_results(
+        samples / "backtest.sample.csv",
+        requests,
+    )
+    performance = json.loads(
+        (samples / "performance.sample.json").read_text(encoding="utf-8")
+    )
+    data_files = (
+        "daily_output.csv",
+        "weekly_output.csv",
+        "monthly_output.csv",
+        "api_wind_date.csv",
+    )
+    dataset = validate_dataset(
+        {
+            filename: pd.read_csv(
+                samples / filename.replace(".csv", ".sample.csv"),
+                dtype="string",
+            )
+            for filename in data_files
+        },
+        schema_path=(
+            Path(__file__).resolve().parents[1]
+            / "shared"
+            / "blackbox_v2"
+            / "data_bridge_v1_schema.json"
+        ),
+        expected_daily_date="2026-01-07",
+    )
+
+    assert metadata.owner == "lw"
+    assert requests[0] == request
+    assert prediction.request_id == request.request_id
+    assert [result.request_id for result in results] == [
+        item.request_id for item in requests
+    ]
+    assert performance["scheme_id"] == metadata.scheme_id
+    assert performance["batch_self_check"]["fallback_used"] is False
+    assert dataset.files["daily_output.csv"].rows == 4

@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "sample_t1_direction_v1",
+  "name": "SAMPLE_T1_DIRECTION",
+  "owner": "lw",
+  "description": "使用冻结日频市场特征和固定滚动窗口训练分类模型，预测下一个交易日国债收益率方向。",
+  "algorithm_version": "1.0.0",
+  "target_tenor": "10Y",
+  "task_type": "T+1",
+  "horizon": 1,
+  "target_rule": "target_date_yield_vs_feature_date_yield"
+}
