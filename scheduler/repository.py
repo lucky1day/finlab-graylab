@@ -1354,6 +1354,58 @@ def _registry_identity_error(
     return None
 
 
+def active_native_identity_error(
+    engine: Engine,
+    cfg: SchemeConfig,
+) -> str | None:
+    """只读核验 scheduled Native 的精确版本与完整 Registry 身份。"""
+    if getattr(cfg, "runtime_type", None) != "native_adapter":
+        return "config runtime_type is not native_adapter"
+    if getattr(cfg, "status", None) != "active":
+        return f"config status is {getattr(cfg, 'status', None)}, expected active"
+    exact_scheme_version = getattr(cfg, "scheme_version", None)
+    if (
+        not isinstance(exact_scheme_version, str)
+        or not exact_scheme_version.strip()
+    ):
+        return "config scheme_version is empty"
+    try:
+        expected_tenors, expected_registry_ids = (
+            _expected_registry_identity(cfg)
+        )
+        with engine.begin() as conn:
+            version_row = _read_scheme_version_conn(
+                conn,
+                cfg,
+                for_update=False,
+            )
+            if (
+                version_row is None
+                or version_row.get("scheme_id") != cfg.scheme_id
+                or version_row.get("scheme_version")
+                != exact_scheme_version
+                or version_row.get("runtime_type") != "native_adapter"
+                or version_row.get("status") != "active"
+            ):
+                return "exact active Native version identity mismatch"
+            registry_rows = _read_scheme_registry_rows_conn(
+                conn,
+                cfg,
+                expected_registry_ids,
+                for_update=False,
+            )
+            return _registry_identity_error(
+                cfg,
+                expected_tenors,
+                expected_registry_ids,
+                registry_rows,
+                expected_status="active",
+                expected_runtime_type="native_adapter",
+            )
+    except (TypeError, ValueError) as exc:
+        return str(exc)
+
+
 def apply_native_activation_state(
     engine: Engine,
     cfg: SchemeConfig,

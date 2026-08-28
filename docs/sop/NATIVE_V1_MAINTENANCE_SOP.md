@@ -119,9 +119,11 @@ CSV；每个方案通过自己的只读硬链接路径读取。作业成功、�
 临时目录中存在，合同验证完成即清理。
 
 单日补缺与自然 one-shot 的 Liwei Phase-A cache 继续使用调度环境的持久化根，不随临时输入切换到
-private cache；这两条路径只允许现有 generation `hit` 或安全追加一个尾部日期。`full`、`suffix`、无
-current 或多日缺失必须在训练前失败，持久 cache 修复另作受控操作。DryRun 则显式使用 Gate 临时目录内
-的私有 Phase-A cache 和 `private_build`，不读取或改写生产 cache。每个 cadence 先执行已批准 publisher、
+private cache。单日 `signal-gap-fill` 只允许现有 generation `hit` 或安全追加一个尾部日期；`suffix/full`、
+无 current 或多日缺失必须在训练前失败。自然 daily one-shot 的已批准 publisher 还可以处理 cache 已证明的
+日频或有效辅助输入 suffix 修订，但去重后的重算范围最多为 32 个交易日期；未知原因、无法映射的周/月修订、
+schema/spec/baseline/proof/lineage 漂移和 `full` 一律在训练前失败。DryRun 则显式使用 Gate 临时目录内的
+私有 Phase-A cache 和 `private_build`，不读取或改写生产 cache。每个 cadence 先执行已批准 publisher、
 再执行其余 Native，两阶段各最多两个 worker；consumer 不发布 cache。单方案成功即独立提交，失败不
 回滚已完成方案；重试依赖 insert-only 业务键只规划剩余方案。中断时使用现有 process-control 终止已启动
 进程组并关闭未完成 run，不新增任务表、报告或审计字段。

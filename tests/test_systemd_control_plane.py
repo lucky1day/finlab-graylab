@@ -44,6 +44,21 @@ class _CoveredCalendar:
 
 
 class SystemdControlPlaneTests(unittest.TestCase):
+    def test_systemd_runner_forwards_requested_scheme_ids(self) -> None:
+        from scheduler import systemd_prediction_runner as runner
+
+        with patch.object(runner, "_run_one_shot") as run_one_shot:
+            runner.run(
+                "daily",
+                predict_date="2026-08-28",
+                scheme_ids=["scheme-a", "scheme-b"],
+            )
+
+        self.assertEqual(
+            run_one_shot.call_args.kwargs["scheme_ids"],
+            ["scheme-a", "scheme-b"],
+        )
+
     def test_systemd_one_shots_have_total_runtime_limits(self) -> None:
         systemd_dir = (
             Path(__file__).resolve().parents[1] / "deploy" / "systemd"

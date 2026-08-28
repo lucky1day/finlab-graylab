@@ -32,6 +32,7 @@ from scheduler.executor import (
     SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT,
     _launchd_scheduled_execution_context,
     execute_scheme,
+    _scheduled_scheme_identity_error,
 )
 from scheduler.process_control import ProcessStartGuard
 from scheduler.repository import (
@@ -49,6 +50,7 @@ from shared.data_bridge.refresh import DataBridgeRefreshConfig
 from shared.liwei_0616_cache_contract import APPROVED_PHASE_A_CACHE_PUBLISHERS
 from shared.liwei_0616_cache_contract import (
     CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
+    CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE,
 )
 from shared.one_shot_control_plane import LAUNCHD_ONE_SHOT_CONTROL_PLANE
 
@@ -117,6 +119,17 @@ def _normalize_predict_date(value: str) -> str:
         return date.fromisoformat(str(value)).isoformat()
     except (TypeError, ValueError) as exc:
         raise LaunchdPredictionConfigurationError("invalid predict_date") from exc
+
+
+def _normalize_requested_scheme_ids(
+    values: Sequence[str] | None,
+) -> frozenset[str]:
+    if values is None:
+        return frozenset()
+    normalized = frozenset(str(value).strip() for value in values)
+    if not normalized or "" in normalized:
+        raise LaunchdPredictionConfigurationError("invalid scheme_id")
+    return normalized
 
 
 @contextmanager
@@ -253,6 +266,9 @@ def _execute_candidate(
     ephemeral_native_runtime_root: Path | None = None,
     cancellation_event: threading.Event | None = None,
     process_start_guard: ProcessStartGuard | None = None,
+    native_cache_mutation_policy: str = (
+        CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
+    ),
 ) -> None:
     """执行一个候选并将稳定结果归入当前 one-shot 摘要。"""
     try:
@@ -271,7 +287,7 @@ def _execute_candidate(
                 ephemeral_native_runtime_root
             )
             execute_kwargs["native_cache_mutation_policy"] = (
-                CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
+                native_cache_mutation_policy
             )
         if cancellation_event is not None:
             execute_kwargs["cancellation_event"] = cancellation_event
@@ -329,6 +345,9 @@ def _execute_native_wave(
     input_root: Path,
     cancellation_event: threading.Event,
     process_start_guard: ProcessStartGuard,
+    native_cache_mutation_policy: str = (
+        CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
+    ),
 ) -> None:
     """最多两个 worker 执行一批 Native，并在主线程合并结果。"""
     if not candidates:
@@ -348,6 +367,7 @@ def _execute_native_wave(
             ephemeral_native_runtime_root=input_root,
             cancellation_event=cancellation_event,
             process_start_guard=process_start_guard,
+            native_cache_mutation_policy=native_cache_mutation_policy,
         )
         return local
 
@@ -406,6 +426,7 @@ def run(
     *,
     predict_date: str,
     algo_env: str = DEFAULT_ALGO_ENV,
+    scheme_ids: Sequence[str] | None = None,
 ) -> LaunchdPredictionSummary:
     """执行一次指定 cadence 的 launchd scheduled_live 批次。"""
     return _run_one_shot(
@@ -417,6 +438,7 @@ def run(
             _launchd_scheduled_execution_context()
         ),
         event="launchd_prediction_run",
+        scheme_ids=scheme_ids,
     )
 
 
@@ -428,10 +450,12 @@ def _run_one_shot(
     scheduled_control_plane: str,
     scheduled_execution_context: object,
     event: str,
+    scheme_ids: Sequence[str] | None = None,
 ) -> LaunchdPredictionSummary:
     """执行一次指定 cadence 的受控 scheduled_live 批次。"""
     normalized_cadence = _normalize_cadence(cadence)
     normalized_date = _normalize_predict_date(predict_date)
+    requested_scheme_ids = _normalize_requested_scheme_ids(scheme_ids)
     if normalized_cadence == "monthly" and date.fromisoformat(normalized_date).day != 15:
         raise LaunchdPredictionConfigurationError(
             "monthly one-shot must run on natural month day 15"
@@ -463,11 +487,28 @@ def _run_one_shot(
             raise LaunchdPredictionConfigurationError(
                 "strict scheme discovery failed"
             ) from exc
+        discovered_by_id = {
+            str(getattr(cfg, "scheme_id", "")): cfg
+            for cfg in discovered
+        }
+        missing_requested = requested_scheme_ids - set(discovered_by_id)
+        if missing_requested:
+            raise LaunchdPredictionConfigurationError(
+                "requested scheme IDs are not available in this deployment"
+            )
         cadence_configs = [
             cfg
             for cfg in discovered
             if _candidate_matches_cadence(cfg, normalized_cadence)
         ]
+        wrong_cadence = requested_scheme_ids - {
+            str(getattr(cfg, "scheme_id", ""))
+            for cfg in cadence_configs
+        }
+        if wrong_cadence:
+            raise LaunchdPredictionConfigurationError(
+                "requested scheme IDs do not match cadence"
+            )
         if not cadence_configs:
             _finalize(summary)
             return summary
@@ -480,6 +521,28 @@ def _run_one_shot(
                 for cfg in effective
                 if getattr(cfg, "status", None) == "active"
             ]
+            if requested_scheme_ids:
+                active_by_id = {
+                    str(getattr(cfg, "scheme_id", "")): cfg
+                    for cfg in candidates
+                }
+                unavailable = requested_scheme_ids - set(active_by_id)
+                if unavailable:
+                    raise LaunchdPredictionConfigurationError(
+                        "requested scheme IDs are not active"
+                    )
+                candidates = [
+                    active_by_id[scheme_id]
+                    for scheme_id in sorted(requested_scheme_ids)
+                ]
+                if any(
+                    _scheduled_scheme_identity_error(engine, cfg)
+                    is not None
+                    for cfg in candidates
+                ):
+                    raise LaunchdPredictionConfigurationError(
+                        "requested scheme identity is not executable"
+                    )
             summary.discovered = len(candidates)
 
             candidates = _cache_publishers_first(candidates)
@@ -594,6 +657,11 @@ def _run_one_shot(
                             input_root=input_root,
                             cancellation_event=cancellation_event,
                             process_start_guard=process_start_guard,
+                            native_cache_mutation_policy=(
+                                CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE
+                                if normalized_cadence == "daily"
+                                else CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
+                            ),
                         )
                         _execute_native_wave(
                             summary,
@@ -608,6 +676,9 @@ def _run_one_shot(
                             input_root=input_root,
                             cancellation_event=cancellation_event,
                             process_start_guard=process_start_guard,
+                            native_cache_mutation_policy=(
+                                CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
+                            ),
                         )
                 except BaseException:
                     cancellation_event.set()
@@ -736,12 +807,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--predict-date", default=_today())
     parser.add_argument("--algo-env", default=DEFAULT_ALGO_ENV)
+    parser.add_argument("--scheme-id", action="append", dest="scheme_ids")
     args = parser.parse_args(argv)
     try:
         summary = run(
             args.cadence,
             predict_date=args.predict_date,
             algo_env=args.algo_env,
+            scheme_ids=args.scheme_ids,
         )
     except LaunchdPredictionConfigurationError:
         summary = _configuration_summary(args.cadence, args.predict_date)

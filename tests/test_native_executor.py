@@ -183,13 +183,17 @@ def test_private_native_runtime_uses_explicit_cache_root(
     assert persistent_current.read_text(encoding="utf-8") == "persistent"
 
 
-def test_incremental_policy_reaches_phase_a_build_decision(
+@pytest.mark.parametrize(
+    "policy",
+    ["incremental_only", "scheduled_bounded_reconcile"],
+)
+def test_scheduled_policy_reaches_phase_a_build_decision(
     tmp_path: Path,
+    policy: str,
 ) -> None:
     from shared import liwei_0616_phase_a_cache as cache_module
     from shared.liwei_0616_cache_contract import (
         CACHE_MUTATION_POLICY_ENV,
-        CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
     )
 
     spec = cache_module.PhaseACacheSpec(
@@ -212,9 +216,7 @@ def test_incremental_policy_reaches_phase_a_build_decision(
         patch.dict(
             os.environ,
             {
-                CACHE_MUTATION_POLICY_ENV: (
-                    CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
-                )
+                CACHE_MUTATION_POLICY_ENV: policy
             },
             clear=False,
         ),
@@ -235,9 +237,7 @@ def test_incremental_policy_reaches_phase_a_build_decision(
             cache_root=tmp_path,
         )
 
-    assert captured["mutation_policy"] == (
-        CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
-    )
+    assert captured["mutation_policy"] == policy
 
 
 def test_incremental_cache_policy_only_accepts_hit_or_one_tail_date() -> None:
@@ -246,7 +246,7 @@ def test_incremental_cache_policy_only_accepts_hit_or_one_tail_date() -> None:
     )
     from shared.liwei_0616_phase_a_cache import (
         _LoadedGeneration,
-        _validate_incremental_only_build,
+        _validate_scheduled_cache_build,
     )
 
     current = _LoadedGeneration(
@@ -264,12 +264,12 @@ def test_incremental_cache_policy_only_accepts_hit_or_one_tail_date() -> None:
         "build_reason": "tail_append",
         "current": current,
     }
-    _validate_incremental_only_build(
+    _validate_scheduled_cache_build(
         **common,
         build_mode="append",
         planned_missing_dates={"baseline-a": [], "baseline-b": []},
     )
-    _validate_incremental_only_build(
+    _validate_scheduled_cache_build(
         **common,
         build_mode="append",
         planned_missing_dates={
@@ -278,13 +278,13 @@ def test_incremental_cache_policy_only_accepts_hit_or_one_tail_date() -> None:
         },
     )
     with pytest.raises(RuntimeError, match="build_mode=suffix"):
-        _validate_incremental_only_build(
+        _validate_scheduled_cache_build(
             **common,
             build_mode="suffix",
             planned_missing_dates={"baseline-a": ["2026-08-25"]},
         )
     with pytest.raises(RuntimeError, match="at most one"):
-        _validate_incremental_only_build(
+        _validate_scheduled_cache_build(
             **common,
             build_mode="append",
             planned_missing_dates={
@@ -293,41 +293,173 @@ def test_incremental_cache_policy_only_accepts_hit_or_one_tail_date() -> None:
             },
         )
     with pytest.raises(RuntimeError, match="historical"):
-        _validate_incremental_only_build(
+        _validate_scheduled_cache_build(
             **common,
             build_mode="append",
             planned_missing_dates={"baseline-a": ["2026-08-25"]},
         )
 
 
-def test_incremental_cache_policy_disables_runtime_comparison() -> None:
+def test_scheduled_cache_policy_accepts_only_bounded_proven_suffix() -> None:
+    from shared.liwei_0616_cache_contract import (
+        CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE,
+    )
+    from shared.liwei_0616_phase_a_cache import (
+        _LoadedGeneration,
+        _validate_scheduled_cache_build,
+    )
+
+    current = _LoadedGeneration(
+        generation_id="generation-1",
+        path=Path("/cache/generation-1"),
+        manifest={},
+        manifest_sha256="a" * 64,
+        caches={"baseline-a": {"test_dates": ["2026-07-25"]}},
+    )
+    common = {
+        "mutation_policy": (
+            CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE
+        ),
+        "current": current,
+    }
+    for reason in (
+        "proven_daily_input_revision",
+        "combined_daily_effective_revision",
+        "effective_auxiliary_revision",
+    ):
+        _validate_scheduled_cache_build(
+            **common,
+            build_mode="suffix",
+            build_reason=reason,
+            planned_missing_dates={
+                "baseline-a": [
+                    f"2026-08-{day:02d}" for day in range(1, 25)
+                ]
+            },
+        )
+
+    with pytest.raises(RuntimeError, match="rejects suffix reason"):
+        _validate_scheduled_cache_build(
+            **common,
+            build_mode="suffix",
+            build_reason="weekly_input_revision_unmappable",
+            planned_missing_dates={"baseline-a": ["2026-08-01"]},
+        )
+    with pytest.raises(RuntimeError, match="exceeds 32 dates"):
+        _validate_scheduled_cache_build(
+            **common,
+            build_mode="suffix",
+            build_reason="proven_daily_input_revision",
+            planned_missing_dates={
+                "baseline-a": [f"2026-08-{day:02d}" for day in range(1, 34)]
+            },
+        )
+    with pytest.raises(RuntimeError, match="build_mode=full"):
+        _validate_scheduled_cache_build(
+            **common,
+            build_mode="full",
+            build_reason="spec_changed",
+            planned_missing_dates={"baseline-a": ["2026-08-01"]},
+        )
+
+
+def test_called_process_error_uses_bounded_stderr_reason() -> None:
+    import subprocess
+
+    from scheduler.executor import _execution_error_message
+
+    exc = subprocess.CalledProcessError(
+        1,
+        ["secret-command", "--token", "secret"],
+        output="ignored stdout\n",
+        stderr=(
+            "traceback\n"
+            "incremental_only requires build_mode=suffix, "
+            "reason=proven_daily_input_revision\x00\n"
+        ),
+    )
+
+    message = _execution_error_message(exc)
+
+    assert message == (
+        "cache policy blocked: policy=incremental_only, "
+        "build_mode=suffix, reason=proven_daily_input_revision"
+    )
+    assert "secret-command" not in message
+
+
+@pytest.mark.parametrize("stream", ["stderr", "stdout"])
+def test_called_process_error_does_not_persist_unrecognized_output(
+    stream: str,
+) -> None:
+    import subprocess
+
+    from scheduler.executor import _execution_error_message
+
+    payload = (
+        "DATABASE_URL=mysql://writer:s3cr3t@db/bond "
+        "password=hunter2 token=secret-token"
+    )
+    kwargs = {"output": "", "stderr": ""}
+    kwargs["stderr" if stream == "stderr" else "output"] = payload
+    exc = subprocess.CalledProcessError(7, ["algorithm"], **kwargs)
+
+    message = _execution_error_message(exc)
+
+    assert message == "algorithm process exited with status 7"
+    assert "s3cr3t" not in message
+    assert "hunter2" not in message
+    assert "secret-token" not in message
+
+
+def test_called_process_error_rejects_unknown_cache_reason() -> None:
+    import subprocess
+
+    from scheduler.executor import _execution_error_message
+
+    exc = subprocess.CalledProcessError(
+        9,
+        ["algorithm"],
+        stderr=(
+            "scheduled_bounded_reconcile requires build_mode=suffix, "
+            "reason=secret_token"
+        ),
+    )
+
+    assert _execution_error_message(exc) == (
+        "algorithm process exited with status 9"
+    )
+
+
+def test_scheduled_cache_policies_disable_runtime_comparison() -> None:
     from shared.liwei_0616_cache_contract import (
         CACHE_MUTATION_POLICY_ENV,
         CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
+        CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE,
     )
     from shared.liwei_0616_phase_a_cache import (
         runtime_compare_gate_callbacks,
     )
 
-    train = Mock()
-    full_output = Mock()
-    with patch.dict(
-        os.environ,
-        {
-            CACHE_MUTATION_POLICY_ENV: (
-                CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
-            )
-        },
-        clear=False,
+    for policy in (
+        CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
+        CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE,
     ):
-        callbacks = runtime_compare_gate_callbacks(
-            train_phase_a=train,
-            run_full_output=full_output,
-        )
+        train = Mock()
+        full_output = Mock()
+        with patch.dict(
+            os.environ,
+            {CACHE_MUTATION_POLICY_ENV: policy},
+            clear=False,
+        ):
+            callbacks = runtime_compare_gate_callbacks(
+                train_phase_a=train,
+                run_full_output=full_output,
+            )
 
-    assert callbacks == (None, None)
-    train.assert_not_called()
-    full_output.assert_not_called()
+        assert callbacks == (None, None)
+        train.assert_not_called()
+        full_output.assert_not_called()
 
 
 def test_native_input_audit_root_is_passed_only_when_explicit(

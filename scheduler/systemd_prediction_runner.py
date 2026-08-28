@@ -29,6 +29,7 @@ def run(
     *,
     predict_date: str,
     algo_env: str = DEFAULT_ALGO_ENV,
+    scheme_ids: Sequence[str] | None = None,
 ) -> LaunchdPredictionSummary:
     """执行一次由 systemd capability 约束的 scheduled_live 批次。"""
     return _run_one_shot(
@@ -40,6 +41,7 @@ def run(
             _systemd_scheduled_execution_context()
         ),
         event=_SYSTEMD_EVENT,
+        scheme_ids=scheme_ids,
     )
 
 
@@ -56,12 +58,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=_today(),
     )
     parser.add_argument("--algo-env", default=DEFAULT_ALGO_ENV)
+    parser.add_argument("--scheme-id", action="append", dest="scheme_ids")
     args = parser.parse_args(argv)
     try:
         summary = run(
             args.cadence,
             predict_date=args.predict_date,
             algo_env=args.algo_env,
+            scheme_ids=args.scheme_ids,
         )
     except LaunchdPredictionConfigurationError:
         summary = _configuration_summary(

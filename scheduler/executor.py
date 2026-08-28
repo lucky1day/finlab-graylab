@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import stat
 import subprocess
 import tempfile
@@ -31,6 +32,7 @@ from scheduler.process_control import (
 )
 from scheduler.repository import (
     attach_run_data_snapshot,
+    active_native_identity_error,
     complete_active_native_run,
     complete_approved_blackbox_run,
     create_scheme_run,
@@ -68,6 +70,7 @@ from shared.liwei_0616_cache_contract import (
     CACHE_MUTATION_POLICY_ENV,
     CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
     CACHE_MUTATION_POLICY_PRIVATE_BUILD,
+    CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE,
 )
 from shared.prediction_context import (
     build_daily_live_context,
@@ -101,6 +104,37 @@ _SCHEDULED_EXECUTION_CONTEXTS = {
 }
 SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT = (
     "data_bridge_ready_timeout"
+)
+_CACHE_POLICY_ERROR_PATTERN = re.compile(
+    r"\b(incremental_only|scheduled_bounded_reconcile)\b"
+    r"[^\r\n]{0,512}?\bbuild_mode="
+    r"(full|append|suffix|qualification|migration_rebind)\b"
+    r",\s*reason=([a-z][a-z0-9_]{0,127})\b"
+)
+_SAFE_CACHE_BUILD_REASONS = frozenset(
+    {
+        "append_only",
+        "baseline_set_changed",
+        "cache_complete",
+        "combined_daily_effective_revision",
+        "current_generation_invalid",
+        "date_to_week_history_changed",
+        "effective_auxiliary_append",
+        "effective_auxiliary_projection_missing_current",
+        "effective_auxiliary_projection_missing_from_parent",
+        "effective_auxiliary_projection_unknown",
+        "effective_auxiliary_proof_changed",
+        "effective_auxiliary_revision",
+        "effective_auxiliary_revision_unknown",
+        "input_revision",
+        "monthly_input_append_unmappable",
+        "monthly_input_revision_unmappable",
+        "no_current_generation",
+        "proven_daily_input_revision",
+        "spec_changed",
+        "weekly_input_append_unmappable",
+        "weekly_input_revision_unmappable",
+    }
 )
 
 _ALGORITHM_ENVIRONMENT_ALLOWLIST = frozenset(
@@ -353,6 +387,7 @@ def _normalize_native_cache_mutation_policy(value: str | None) -> str | None:
     if policy not in {
         CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
         CACHE_MUTATION_POLICY_PRIVATE_BUILD,
+        CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE,
     }:
         raise ValueError("unsupported Native cache mutation policy")
     return policy
@@ -989,6 +1024,23 @@ def _timeout_payload_to_text(value: str | bytes | None) -> str:
     return value
 
 
+def _execution_error_message(exc: Exception) -> str:
+    """返回可写入现有 run 错误列的有界子进程原因。"""
+    if not isinstance(exc, subprocess.CalledProcessError):
+        return str(exc)
+    for payload in (exc.stderr, exc.stdout):
+        text_value = _timeout_payload_to_text(payload)
+        match = _CACHE_POLICY_ERROR_PATTERN.search(text_value)
+        if match is not None:
+            policy, build_mode, reason = match.groups()
+            if reason in _SAFE_CACHE_BUILD_REASONS:
+                return (
+                    "cache policy blocked: "
+                    f"policy={policy}, build_mode={build_mode}, reason={reason}"
+                )
+    return f"algorithm process exited with status {exc.returncode}"
+
+
 def execute_scheme(
     cfg: SchemeConfig,
     predict_date: str,
@@ -1225,7 +1277,7 @@ def execute_scheme(
             )
     except Exception as exc:
         duration = time.monotonic() - started
-        error_msg = str(exc)
+        error_msg = _execution_error_message(exc)
         if run_id is not None:
             try:
                 records_written = 0
@@ -1251,10 +1303,34 @@ def execute_scheme(
             except Exception as audit_exc:
                 logger.exception("failed to write run log for failed scheme run_id=%s", run_id)
                 error_msg = _append_audit_error(error_msg, "write_run_log", audit_exc)
-        return SchemeRunResult(cfg.scheme_id, "failed", records_written, duration, error_msg, run_id)
+        return SchemeRunResult(
+            cfg.scheme_id,
+            "failed",
+            records_written,
+            duration,
+            error_msg,
+            run_id,
+        )
     finally:
         if owns_engine:
             engine.dispose()
+
+
+def _scheduled_scheme_identity_error(engine, cfg: SchemeConfig) -> str | None:
+    """只读验证定向 scheduled one-shot 的当前执行身份。"""
+    runtime_type = getattr(cfg, "runtime_type", "native_adapter")
+    if getattr(cfg, "status", None) != "active":
+        return f"status={getattr(cfg, 'status', None)}"
+    if runtime_type == "blackbox_v2":
+        approval = read_blackbox_execution_approval(engine, cfg)
+        if not approval.executable:
+            return (
+                "Blackbox V2 version is not production-approved: "
+                f"{approval.reason}"
+            )
+    else:
+        return active_native_identity_error(engine, cfg)
+    return None
 
 
 def scheduled_live_execution_configuration_error(

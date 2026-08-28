@@ -24,7 +24,9 @@ ECS 自然 DataBridge、daily、weekly、monthly 四个 service 不得加载共�
 守护该合同。历史日期的手工补缺只允许走 `harness signal-gap-fill`：使用
 `--predict-date YYYY-MM-DD` 单日执行，或对受支持的 Blackbox `weekly_point/h1`、日频 `T+5/h5`
 使用 `--scheme-id/--target-date-from/--target-date-before` target 半开区间执行；systemd/launchd runner 的显式
-`--predict-date` 只是一次性入口参数，不建立第二套补缺授权。
+`--predict-date` 只是一次性入口参数，不建立第二套补缺授权。当天 natural one-shot 部分失败后的受控
+`scheduled_live` 重试可以重复传入 `--scheme-id` 精确缩小候选集合；无该参数的 installed timer 行为不变，
+该过滤也不绕过 deployment、active cadence、Registry、exact version、日历、输入或 insert-only 控制。
 
 ## 部署目标与方案矩阵
 

@@ -37,6 +37,20 @@ def _blackbox_config(
     )
 
 
+def _native_config(scheme_id: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        scheme_id=scheme_id,
+        scheme_version=f"{scheme_id}-version",
+        frequency="daily",
+        status="active",
+        runtime_type="native_adapter",
+        version_status="active",
+        task_type="T+1",
+        horizon=1,
+        tenors=["10Y"],
+    )
+
+
 class _PeriodCalendar:
     def __init__(self, start: str, end: str, closures: set[str] | None = None) -> None:
         current = date.fromisoformat(start)
@@ -112,6 +126,236 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
 
         self.assertEqual(maximum, 2)
         self.assertEqual(len(summary.executed), 4)
+
+    def test_native_wave_passes_explicit_cache_policy(self) -> None:
+        from scheduler import launchd_prediction_runner as runner
+        from scheduler.process_control import ProcessStartGuard
+
+        summary = runner.LaunchdPredictionSummary("daily", "2026-08-28")
+        captured = []
+
+        def execute(_summary, _cfg, **kwargs):
+            captured.append(kwargs["native_cache_mutation_policy"])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(runner, "_execute_candidate", side_effect=execute):
+                runner._execute_native_wave(
+                    summary,
+                    [SimpleNamespace(scheme_id="publisher")],
+                    predict_date="2026-08-28",
+                    algo_env="forecast_env",
+                    scheduled_control_plane="launchd_one_shot",
+                    scheduled_execution_context=object(),
+                    engine=object(),
+                    input_root=Path(tmpdir),
+                    cancellation_event=threading.Event(),
+                    process_start_guard=ProcessStartGuard(),
+                    native_cache_mutation_policy=(
+                        "scheduled_bounded_reconcile"
+                    ),
+                )
+
+        self.assertEqual(captured, ["scheduled_bounded_reconcile"])
+
+    def test_daily_one_shot_reconciles_publishers_only(self) -> None:
+        from scheduler import launchd_prediction_runner as runner
+
+        publisher = _native_config(
+            "liwei_0616_10y01_full_oos_k3_div_k10"
+        )
+        consumer = _native_config(
+            "liwei_0616_10y01_cons_say_k3_div_k10"
+        )
+        engine = Mock()
+        calendar = _PeriodCalendar("2026-08-01", "2026-08-31")
+        with (
+            patch.dict(
+                os.environ,
+                {"BFL_DEPLOYMENT_TARGET": "mac3-production"},
+                clear=False,
+            ),
+            patch.object(
+                runner.DataBridgeRefreshConfig,
+                "from_env",
+                return_value=object(),
+            ),
+            patch.object(runner, "_runner_lock", return_value=nullcontext()),
+            patch.object(
+                runner,
+                "discover_schemes",
+                return_value=[consumer, publisher],
+            ),
+            patch.object(runner, "create_engine_from_env", return_value=engine),
+            patch.object(
+                runner,
+                "resolve_database_lifecycle",
+                return_value=(consumer, publisher),
+            ),
+            patch.object(runner, "get_calendar", return_value=calendar),
+            patch.object(runner, "_execute_native_wave") as execute_wave,
+        ):
+            runner.run("daily", predict_date="2026-08-28")
+
+        self.assertEqual(execute_wave.call_count, 2)
+        publisher_call, consumer_call = execute_wave.call_args_list
+        self.assertEqual(
+            publisher_call.kwargs["native_cache_mutation_policy"],
+            "scheduled_bounded_reconcile",
+        )
+        self.assertEqual(
+            consumer_call.kwargs["native_cache_mutation_policy"],
+            "incremental_only",
+        )
+        self.assertEqual(publisher_call.args[1], [publisher])
+        self.assertEqual(consumer_call.args[1], [consumer])
+
+    def test_requested_scheme_filter_runs_only_exact_active_set(self) -> None:
+        from scheduler import launchd_prediction_runner as runner
+
+        selected = _blackbox_config("selected")
+        ignored = _blackbox_config("ignored")
+        engine = Mock()
+        calendar = _PeriodCalendar("2026-08-01", "2026-08-31")
+        with (
+            patch.dict(
+                os.environ,
+                {"BFL_DEPLOYMENT_TARGET": "mac3-production"},
+                clear=False,
+            ),
+            patch.object(
+                runner.DataBridgeRefreshConfig,
+                "from_env",
+                return_value=object(),
+            ),
+            patch.object(runner, "_runner_lock", return_value=nullcontext()),
+            patch.object(
+                runner,
+                "discover_schemes",
+                return_value=[selected, ignored],
+            ),
+            patch.object(runner, "create_engine_from_env", return_value=engine),
+            patch.object(
+                runner,
+                "resolve_database_lifecycle",
+                return_value=(selected, ignored),
+            ),
+            patch.object(runner, "get_calendar", return_value=calendar),
+            patch.object(runner, "is_weekly_signal_date", return_value=True),
+            patch.object(
+                runner,
+                "_scheduled_scheme_identity_error",
+                return_value=None,
+            ) as identity,
+            patch.object(
+                runner,
+                "execute_scheme",
+                return_value=SimpleNamespace(
+                    scheme_id="selected",
+                    status="success",
+                    records_written=1,
+                    run_id=100,
+                ),
+            ) as execute,
+        ):
+            summary = runner.run(
+                "weekly",
+                predict_date="2026-08-15",
+                scheme_ids=["selected", "selected"],
+            )
+
+        self.assertEqual(summary.discovered, 1)
+        self.assertEqual(
+            [item["scheme_id"] for item in summary.executed],
+            ["selected"],
+        )
+        identity.assert_called_once_with(engine, selected)
+        execute.assert_called_once()
+
+    def test_requested_scheme_filter_rejects_unknown_before_execution(self) -> None:
+        from scheduler import launchd_prediction_runner as runner
+
+        with (
+            patch.dict(
+                os.environ,
+                {"BFL_DEPLOYMENT_TARGET": "mac3-production"},
+                clear=False,
+            ),
+            patch.object(
+                runner.DataBridgeRefreshConfig,
+                "from_env",
+                return_value=object(),
+            ),
+            patch.object(runner, "_runner_lock", return_value=nullcontext()),
+            patch.object(runner, "discover_schemes", return_value=[]),
+            patch.object(runner, "create_engine_from_env") as create_engine,
+        ):
+            with self.assertRaisesRegex(
+                runner.LaunchdPredictionConfigurationError,
+                "not available",
+            ):
+                runner.run(
+                    "daily",
+                    predict_date="2026-08-28",
+                    scheme_ids=["unknown"],
+                )
+
+        create_engine.assert_not_called()
+
+    def test_requested_scheme_identity_failure_blocks_entire_batch(self) -> None:
+        from scheduler import launchd_prediction_runner as runner
+
+        valid = _native_config("valid-native")
+        drifted = _native_config("drifted-native")
+        engine = Mock()
+
+        def identity_error(_engine, cfg):
+            return (
+                "registry task_type mismatch"
+                if cfg.scheme_id == "drifted-native"
+                else None
+            )
+
+        with (
+            patch.dict(
+                os.environ,
+                {"BFL_DEPLOYMENT_TARGET": "mac3-production"},
+                clear=False,
+            ),
+            patch.object(
+                runner.DataBridgeRefreshConfig,
+                "from_env",
+                return_value=object(),
+            ),
+            patch.object(runner, "_runner_lock", return_value=nullcontext()),
+            patch.object(
+                runner,
+                "discover_schemes",
+                return_value=[valid, drifted],
+            ),
+            patch.object(runner, "create_engine_from_env", return_value=engine),
+            patch.object(
+                runner,
+                "resolve_database_lifecycle",
+                return_value=(valid, drifted),
+            ),
+            patch.object(
+                runner,
+                "_scheduled_scheme_identity_error",
+                side_effect=identity_error,
+            ),
+            patch.object(runner, "_execute_native_wave") as execute_wave,
+        ):
+            with self.assertRaisesRegex(
+                runner.LaunchdPredictionConfigurationError,
+                "identity is not executable",
+            ):
+                runner.run(
+                    "daily",
+                    predict_date="2026-08-28",
+                    scheme_ids=["valid-native", "drifted-native"],
+                )
+
+        execute_wave.assert_not_called()
 
     def test_period_average_uses_task_type_and_same_day_ready_gate(self) -> None:
         from scheduler import launchd_prediction_runner as runner

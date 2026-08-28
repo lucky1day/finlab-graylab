@@ -64,9 +64,17 @@ python -m harness signal-gap-fill --scheme-id <base_scheme_id> --target-date-fro
 
 命令不接收外部 plan、operator、HMAC token 或 plan SHA。单日全量模式扫描当天所有应运行的 active 方案；区间模式只检查一个指定的 active Blackbox `weekly_point/h1` 或日频 `T+5/h5` base scheme，并按同一权威交易日历枚举日期。`SKIP_NOT_DUE` 和 `SKIP_PRESENT` 都是正常无写入结果；只有真实 `GRAY_LIVE_GAP` 才进入执行。Native 从当前数据库按指定日期推导的 `feature_date` 截止重建；Blackbox 严格重放该批次计划绑定的冻结 DataBridge authority。
 
-所有缺口算法必须先全部成功，任一算法失败则 prediction 零提交；算法全部成功后才按
-base scheme group 执行 insert-only `gray_live` 写入。区间模式先复核全部业务键，再在一个事务中提交所有日期，最后逐日期权威读回。计划异常、
-Blackbox 权威输入缺失或执行失败均直接暴露；不回退旧版本、不覆盖、不自动重试。
+单日模式按 base scheme 独立执行和提交；一个方案失败不回滚其它已经成功的方案，重试由既有 immutable
+业务键自然缩小到剩余缺口。单方案多 target 与区间模式仍保持组内原子性：区间模式先复核全部业务键，
+再在一个事务中提交该方案的所有日期，最后逐日期权威读回。计划异常、Blackbox 权威输入缺失或执行失败
+均直接暴露；不回退旧版本、不覆盖、不自动重试。
+
+自然 daily one-shot 的 Liwei Phase-A publisher 可以在既有校验证明影响范围时，对最多 32 个交易日期做
+bounded suffix reconcile；consumer 只读发布后的 generation。`full`、未知修订、无法映射的周/月修订或
+cache 身份漂移必须在训练前失败。人工 `signal-gap-fill` 仍只允许 cache hit 或追加一个尾部日期。当天自然
+运行部分失败后的受控重试可以向现有 launchd/systemd runner 重复传入 `--scheme-id <base_scheme_id>`，但
+该参数只缩小 active cadence 候选，不能绕过 deployment、Registry、exact version、日历、输入或 insert-only
+检查，也不能把历史日期重标为 `scheduled_live`。
 
 DataBridge 必须由本机 MySQL 原子发布标准日/周/月 artifact，并继续通过源表、schema、
 连续性、稳定轮次和 `feature_date` 截止验证。输入不新鲜、源表异常或两轮不稳定时必须

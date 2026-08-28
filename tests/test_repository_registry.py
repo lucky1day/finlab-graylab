@@ -720,6 +720,21 @@ class _RunEngine:
 
 class ImmutablePredictionRepositoryTests(unittest.TestCase):
 
+    def test_active_native_identity_requires_exact_registry_contract(self) -> None:
+        from scheduler.repository import active_native_identity_error
+
+        engine = _native_atomic_engine()
+        self.assertIsNone(
+            active_native_identity_error(engine, _native_config())
+        )
+
+        engine.store["registry_rows"][0]["task_type"] = "T+5"
+
+        self.assertIn(
+            "task_type",
+            active_native_identity_error(engine, _native_config()),
+        )
+
 
     def test_create_scheme_run_inserts_running_row_and_returns_run_id(self) -> None:
         from scheduler.repository import create_scheme_run

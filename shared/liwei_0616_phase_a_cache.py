@@ -28,6 +28,7 @@ from shared.liwei_0616_cache_contract import (
     CACHE_MUTATION_POLICY_ENV,
     CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
     CACHE_MUTATION_POLICY_PRIVATE_BUILD,
+    CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE,
     GENERATION_ACCEPTANCE_SCHEMA_VERSION,
     PHASE_A_CACHE_ABI_VERSION,
     validate_generation_acceptance_record,
@@ -58,6 +59,14 @@ DEFAULT_CACHE_ROOT = resolve_runtime_state_path(
 CACHE_GENERATION_RETENTION = 3
 MAX_CACHE_FAMILY_BYTES = 512 * 1024 * 1024
 GLOBAL_MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024
+MAX_SCHEDULED_SUFFIX_DATES = 32
+SCHEDULED_SUFFIX_BUILD_REASONS = frozenset(
+    {
+        "proven_daily_input_revision",
+        "combined_daily_effective_revision",
+        "effective_auxiliary_revision",
+    }
+)
 COMPARE_GATE_EVIDENCE_VERSION = "phase-a-compare-gate-evidence-v2"
 FULL_COMPARE_QUALIFICATION_VERSION = (
     "liwei-0616-full-output-compare-qualification-v1"
@@ -240,7 +249,11 @@ def prepare_phase_a_caches(
             "runtime compare_full_output"
         )
     if (
-        mutation_policy == CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
+        mutation_policy
+        in {
+            CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
+            CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE,
+        }
         and any(
             callback is not None
             for callback in (
@@ -251,7 +264,7 @@ def prepare_phase_a_caches(
         )
     ):
         raise ValueError(
-            "incremental_only does not allow runtime cache comparison"
+            "scheduled cache mutation does not allow runtime cache comparison"
         )
     root = _cache_root(cache_root)
     if (
@@ -468,7 +481,10 @@ def _prepare_under_family_lock(
                 cached = current.caches
 
     planned_missing_dates: dict[str, list[str]] | None = None
-    if mutation_policy == CACHE_MUTATION_POLICY_INCREMENTAL_ONLY:
+    if mutation_policy in {
+        CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
+        CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE,
+    }:
         planned_missing_dates = {}
         for baseline in spec.baselines:
             requested_dates = requested_by_baseline[baseline]
@@ -509,7 +525,7 @@ def _prepare_under_family_lock(
                 ]
             planned_missing_dates[baseline] = missing_dates
 
-        _validate_incremental_only_build(
+        _validate_scheduled_cache_build(
             mutation_policy=mutation_policy,
             build_mode=build_mode,
             build_reason=build_reason,
@@ -905,16 +921,18 @@ def _cache_mutation_policy() -> str | None:
     if policy not in {
         CACHE_MUTATION_POLICY_PRIVATE_BUILD,
         CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
+        CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE,
     }:
         raise ValueError(
             f"{CACHE_MUTATION_POLICY_ENV} must be "
             f"{CACHE_MUTATION_POLICY_PRIVATE_BUILD} or "
-            f"{CACHE_MUTATION_POLICY_INCREMENTAL_ONLY}"
+            f"{CACHE_MUTATION_POLICY_INCREMENTAL_ONLY}, or "
+            f"{CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE}"
         )
     return policy
 
 
-def _validate_incremental_only_build(
+def _validate_scheduled_cache_build(
     *,
     mutation_policy: str | None,
     build_mode: str,
@@ -922,13 +940,11 @@ def _validate_incremental_only_build(
     current: _LoadedGeneration | None,
     planned_missing_dates: Mapping[str, list[str]],
 ) -> None:
-    if mutation_policy != CACHE_MUTATION_POLICY_INCREMENTAL_ONLY:
+    if mutation_policy not in {
+        CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
+        CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE,
+    }:
         return
-    if build_mode != "append":
-        raise RuntimeError(
-            "incremental_only requires an existing appendable cache: "
-            f"build_mode={build_mode}, reason={build_reason}"
-        )
     all_missing_dates = sorted(
         {
             day
@@ -936,15 +952,44 @@ def _validate_incremental_only_build(
             for day in dates
         }
     )
+    if (
+        mutation_policy
+        == CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE
+        and build_mode == "suffix"
+    ):
+        if current is None:
+            raise RuntimeError(
+                "scheduled_bounded_reconcile requires a current generation"
+            )
+        if build_reason not in SCHEDULED_SUFFIX_BUILD_REASONS:
+            raise RuntimeError(
+                "scheduled_bounded_reconcile rejects suffix reason: "
+                f"{build_reason}"
+            )
+        if not all_missing_dates:
+            raise RuntimeError(
+                "scheduled_bounded_reconcile requires a non-empty suffix"
+            )
+        if len(all_missing_dates) > MAX_SCHEDULED_SUFFIX_DATES:
+            raise RuntimeError(
+                "scheduled_bounded_reconcile suffix exceeds "
+                f"{MAX_SCHEDULED_SUFFIX_DATES} dates"
+            )
+        return
+    if build_mode != "append":
+        raise RuntimeError(
+            f"{mutation_policy} requires an existing appendable cache: "
+            f"build_mode={build_mode}, reason={build_reason}"
+        )
     if len(all_missing_dates) > 1:
         raise RuntimeError(
-            "incremental_only requires at most one missing tail date"
+            f"{mutation_policy} requires at most one missing tail date"
         )
     if not all_missing_dates:
         return
     if current is None:
         raise RuntimeError(
-            "incremental_only requires a current generation"
+            f"{mutation_policy} requires a current generation"
         )
     current_watermark = max(
         max(cache["test_dates"])
@@ -952,7 +997,7 @@ def _validate_incremental_only_build(
     )
     if all_missing_dates[0] <= current_watermark:
         raise RuntimeError(
-            "incremental_only cannot rebuild a historical date"
+            f"{mutation_policy} cannot rebuild a historical date"
         )
 
 
