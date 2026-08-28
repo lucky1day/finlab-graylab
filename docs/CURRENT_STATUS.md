@@ -64,8 +64,9 @@
 - `t_scheme_registry.owner` 是方案来源的唯一展示权威；新 Blackbox Intake 必须提供合法 owner，历史缺少
   Metadata owner 的方案保留数据库权威值。Dashboard 读到缺失、占位或非法 owner 时整体 fail-closed，
   前端不使用仓库映射或空值兜底。
-- ECS 已完成 Migration 021 与 Dashboard V4 灰度验收；Mac3 production 仍运行原稳定 Dashboard V2，尚未执行
-  owner migration、release 切换或 backend 重启。精确主机合同仍以现场 `current` release 和 API payload 为准。
+- ECS 与 Mac3 均已完成 Migration 021 与 Dashboard V4 验收；Mac3 公网同样使用月度 Summary 首屏、按需
+  Detail 和 Registry owner 来源列。两端仍使用各自独立数据库，精确主机合同以现场 `current` release 和
+  API payload 为准。
 - Mac3 production 与 ECS gray 的 installed plist/unit、服务状态、数据库写入、激活、补数和 DDL 都是
   独立操作，代码或文档提交不能外推为现场授权。
 - 未来把生产域名或 Writer 切到 ECS 是新的生产项目，不属于当前完成条件。

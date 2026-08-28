@@ -28,13 +28,13 @@
 2. M0 周平均五方案及同期 ECS 周频方案等待 2026-08-29 11:30 的首次自然触发。
 3. 未来若把生产域名或 Writer 从 Mac3 切到 ECS，必须作为新生产项目设计数据库 authority、单 Writer、
    DNS/Nginx、窗口和回滚，不能从灰度验收外推授权。
+4. `weekly_10y_lgbm_point_v1` 的 Mac3 历史 Registry description 为空，而 canonical config 已有正式描述；
+   prediction、owner、backtest 和前端可见性正常，但该方案 DashboardGate 会因展示身份不一致失败。后续仅能
+   通过受控 repository Registry sync 修复，不得直写 SQL，也不得借 Dashboard 发布顺带改写。
 
 ## 稳定观察与后续晋级
 
-1. Dashboard V4 与 Registry owner authority 已在 ECS 灰度验收；Mac3 继续运行当前稳定 Dashboard V2。
-   Mac3 晋级必须另行授权，并复用 ECS 已验证的同一 archive，重新执行 Registry 映射预检、Migration 021、
-   受控切换、仅 backend 重启及公网视觉/性能验收；不得从本次代码或文档提交外推生产操作授权。
-2. Native 迁移近期暂停，最早在周末稳定窗口重新启动；窗口前只收集现场耗时和结果证据，不改方案身份、算法
+1. Native 迁移近期暂停，最早在周末稳定窗口重新启动；窗口前只收集现场耗时和结果证据，不改方案身份、算法
    或 Registry 所有权。
 
 ## 周末 Native 迁移候选队列
