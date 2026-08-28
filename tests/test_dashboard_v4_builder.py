@@ -92,14 +92,24 @@ def _engine():
         connection.execute(
             text(
                 """INSERT INTO t_backtest_predictions VALUES
-                (7,'5Y',1,'2026-01-02','2025-12-31','2026-01-05',1,1)"""
+                (7,'5Y',1,'2026-01-02','2025-12-31','2026-01-05',1,1),
+                (7,'5Y',1,'2026-06-02','2026-06-01','2026-06-04',-1,-1)"""
             )
         )
     return engine
 
 
 def test_v4_summary_aggregates_rows_and_reads_owner() -> None:
-    payload = build_factor_lab_dashboard(_engine())
+    engine = _engine()
+    statements: list[str] = []
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def _capture_statement(
+        _connection, _cursor, statement, _parameters, _context, _many
+    ) -> None:
+        statements.append(" ".join(statement.split()))
+
+    payload = build_factor_lab_dashboard(engine)
 
     validate_dashboard_payload(payload)
     assert payload["schema_version"] == "factor-lab-dashboard-v4"
@@ -121,6 +131,9 @@ def test_v4_summary_aggregates_rows_and_reads_owner() -> None:
             "rows": 1,
         }
     ]
+    assert sum(
+        "FROM t_scheme_predictions" in sql for sql in statements
+    ) == 1
 
 
 def test_v4_detail_reads_only_requested_active_scheme_month_and_source() -> None:
@@ -176,10 +189,17 @@ def test_v4_detail_pushes_month_and_source_into_database_queries() -> None:
 
     assert payload is not None
     assert payload["rows"] == []
-    assert not any("FROM t_scheme_predictions" in sql for sql in statements)
+    assert not any(
+        "SELECT id, scheme_id" in sql and "FROM t_scheme_predictions" in sql
+        for sql in statements
+    )
     assert not any("FROM t_scheme_actuals" in sql for sql in statements)
     detail_sql = next(
         sql for sql in statements if "FROM t_backtest_predictions" in sql
     )
     assert "target_date >= ?" in detail_sql
     assert "target_date < ?" in detail_sql
+    assert any(
+        "SELECT MIN(target_date) FROM t_scheme_predictions" in sql
+        for sql in statements
+    )

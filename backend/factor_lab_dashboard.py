@@ -175,6 +175,16 @@ def _build_dashboard_representation(
             if detail_source in {None, "all", "backtest"}
             else []
         )
+        detail_live_cutoff = (
+            _read_earliest_live_target_date(
+                connection,
+                registry_row=registry_rows[0],
+                display_until=display_until,
+            )
+            if registry_scheme_id is not None
+            and detail_source in {"all", "backtest"}
+            else None
+        )
         selected_backtest_runs = choose_latest_backtest_runs(
             backtest_run_rows,
             registry_rows,
@@ -340,14 +350,19 @@ def _build_dashboard_representation(
 
         live_details.sort(key=_detail_mapping_sort_key)
         backtest_details.sort(key=_detail_mapping_sort_key)
-        cutoff_target_date = (
-            min(
-                _iso_date(row.get("target_date"), field="live target_date")
-                for row in live_details
+        cutoff_target_date = detail_live_cutoff
+        if registry_scheme_id is None:
+            cutoff_target_date = (
+                min(
+                    _iso_date(
+                        row.get("target_date"),
+                        field="live target_date",
+                    )
+                    for row in live_details
+                )
+                if live_details
+                else None
             )
-            if live_details
-            else None
-        )
         if cutoff_target_date is not None:
             backtest_details = [
                 row
@@ -795,6 +810,40 @@ def _read_live_predictions(
         params,
         dataset="live_predictions",
         cap=MAX_LIVE_PREDICTION_SOURCE_ROWS,
+    )
+
+
+def _read_earliest_live_target_date(
+    connection: Connection,
+    *,
+    registry_row: Mapping[str, Any],
+    display_until: str,
+) -> str | None:
+    """读取 exact scheme 在产品窗口内的全局最早 live target。"""
+    value = connection.execute(
+        text(
+            """
+            SELECT MIN(target_date)
+            FROM t_scheme_predictions
+            WHERE scheme_id = :base_scheme_id
+              AND target_tenor = :target_tenor
+              AND horizon = :horizon
+              AND predict_date >= :history_start_date
+              AND predict_date <= :display_until
+            """
+        ),
+        {
+            "base_scheme_id": registry_row["base_scheme_id"],
+            "target_tenor": registry_row["target_tenor"],
+            "horizon": registry_row["horizon"],
+            "history_start_date": FACTOR_LAB_HISTORY_START_DATE,
+            "display_until": display_until,
+        },
+    ).scalar_one()
+    return (
+        None
+        if value is None
+        else _iso_date(value, field="earliest live target_date")
     )
 
 

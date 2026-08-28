@@ -11,8 +11,10 @@ import pytest
 from migrations.runner import (
     MIGRATIONS_DIR,
     MigrationPreflightError,
+    _registry_owner_authority,
     _show_create_mentions_serving_pointer,
     _validate_registry_owner_schema,
+    build_applying_021_inspection,
     validate_release_migration_manifest,
     validate_mysql_session_contract,
 )
@@ -209,3 +211,100 @@ def test_registry_owner_sql_is_reentrant_and_checks_both_identity_directions() -
         "SET @bfl_registry_owner_add_sql_021"
     )
     assert "BINARY registry.`owner` <> BINARY authority.`owner`" in sql
+
+
+def _applying_021_fixture():
+    manifest = validate_release_migration_manifest(
+        sorted(MIGRATIONS_DIR.glob("[0-9][0-9][0-9]_*.sql"))
+    )
+    target = manifest[-1]
+    authority = _registry_owner_authority(target)
+    history = [
+        {
+            "version": migration.version,
+            "filename": migration.path.name,
+            "sha256": migration.sha256,
+            "state": "APPLYING" if migration.version == 21 else "APPLIED",
+            "baseline_bootstrap": 0,
+        }
+        for migration in manifest
+    ]
+    identity = {
+        "database_name": "isolated_test",
+        "server_uuid": "00000000-0000-0000-0000-000000000001",
+    }
+    return manifest, history, identity, authority
+
+
+def test_applying_021_inspection_classifies_partial_complete_and_conflict() -> None:
+    manifest, history, identity, authority = _applying_021_fixture()
+    rows = [
+        {"scheme_id": scheme_id, "owner": None}
+        for scheme_id in sorted(authority)
+    ]
+    partial = build_applying_021_inspection(
+        manifest=manifest,
+        history=history,
+        database_identity=identity,
+        registry_state={"schema": {"exists": False}, "rows": rows},
+    )
+    assert partial["classification"] == "COMPATIBLE_PARTIAL"
+
+    complete_rows = [
+        {"scheme_id": scheme_id, "owner": authority[scheme_id]}
+        for scheme_id in sorted(authority)
+    ]
+    complete = build_applying_021_inspection(
+        manifest=manifest,
+        history=history,
+        database_identity=identity,
+        registry_state={
+            "schema": {
+                "exists": True,
+                "column": ("varchar(64)", "no", None, ""),
+                "invalid_count": 0,
+            },
+            "rows": complete_rows,
+        },
+    )
+    assert complete["classification"] == "COMPLETE"
+    assert complete["state_digest"] != partial["state_digest"]
+
+    complete_rows[0]["owner"] = "conflict"
+    unsafe = build_applying_021_inspection(
+        manifest=manifest,
+        history=history,
+        database_identity=identity,
+        registry_state={
+            "schema": {
+                "exists": True,
+                "column": ("varchar(64)", "yes", None, ""),
+                "invalid_count": 0,
+            },
+            "rows": complete_rows,
+        },
+    )
+    assert unsafe["classification"] == "UNSAFE"
+    assert "conflicts" in str(unsafe["reason"])
+
+
+def test_migration_cli_requires_fenced_021_recovery() -> None:
+    from scripts.apply_migrations import _parse_args
+
+    inspect = _parse_args(["--inspect-applying-021"])
+    assert inspect.inspect_applying_021 is True
+    recover = _parse_args(
+        [
+            "--recover-applying-021",
+            "--apply",
+            "--state-digest",
+            "0" * 64,
+            "--expected-database-name",
+            "isolated_test",
+            "--expected-server-uuid",
+            "00000000-0000-0000-0000-000000000001",
+        ]
+    )
+    assert recover.recover_applying_021 is True
+    with pytest.raises(SystemExit):
+        _parse_args(["--recover-applying-021", "--apply"])

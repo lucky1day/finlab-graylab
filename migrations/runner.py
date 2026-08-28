@@ -4426,7 +4426,12 @@ SERVING_POINTER_RETIREMENT_MIGRATION_SHA256 = (
 PERIOD_AVERAGE_ACTUALS_MIGRATION_FILENAME = (
     "020_period_average_actuals.sql"
 )
+REGISTRY_OWNER_MIGRATION_VERSION = 21
 REGISTRY_OWNER_MIGRATION_FILENAME = "021_registry_owner.sql"
+REGISTRY_OWNER_MIGRATION_SHA256 = (
+    "d9c3332d0e923a0220f68d5ca7c70567"
+    "6b3e9a5e0fd4f4579c0d08e1b2f6667f"
+)
 
 
 def _read_registry_owner_schema(connection: object) -> dict[str, object]:
@@ -4509,6 +4514,239 @@ def _validate_registry_owner_schema(
             "unexpected t_scheme_registry.owner definition or values: "
             f"{dict(schema)}"
         )
+
+
+def _registry_owner_authority(
+    migration: PreparedMigration,
+) -> dict[str, str]:
+    """从已校验的 021 SQL 读取一次性 owner authority。"""
+    insert_statement = next(
+        (
+            statement
+            for statement in migration.statements
+            if statement.lstrip().startswith(
+                "INSERT INTO `_bfl_registry_owner_021`"
+            )
+        ),
+        None,
+    )
+    if insert_statement is None:
+        raise MigrationHistoryError(
+            "migration 021 owner authority statement is missing"
+        )
+    rows = re.findall(
+        r"\('([^']+)',\s*'([^']+)'\)",
+        insert_statement,
+    )
+    authority = dict(rows)
+    if len(rows) != 96 or len(authority) != 96:
+        raise MigrationHistoryError(
+            "migration 021 owner authority must contain 96 unique rows"
+        )
+    return authority
+
+
+def _read_registry_owner_recovery_state(
+    connection: object,
+) -> dict[str, object]:
+    """读取 021 可恢复性所需的精确 schema 与 Registry owner。"""
+    schema = _read_registry_owner_schema(connection)
+    owner_exists = bool(schema.get("exists"))
+    owner_expression = "owner" if owner_exists else "NULL AS owner"
+    rows = connection.execute(
+        text(
+            f"""
+            SELECT scheme_id, {owner_expression}
+            FROM t_scheme_registry
+            ORDER BY scheme_id
+            """
+        )
+    ).mappings().all()
+    return {
+        "schema": dict(schema),
+        "rows": [
+            {
+                "scheme_id": str(row["scheme_id"]),
+                "owner": (
+                    None if row.get("owner") is None else str(row["owner"])
+                ),
+            }
+            for row in rows
+        ],
+    }
+
+
+def _classify_registry_owner_recovery_state(
+    state: Mapping[str, object],
+    *,
+    authority: Mapping[str, str],
+) -> str:
+    """只接受 021 的缺列、nullable partial 或完整终态。"""
+    schema = state.get("schema")
+    rows = state.get("rows")
+    if not isinstance(schema, Mapping) or not isinstance(rows, list):
+        raise MigrationPreflightError(
+            "migration 021 recovery state is malformed"
+        )
+    _validate_registry_owner_schema(schema, allow_missing=True)
+    observed: dict[str, object] = {}
+    for raw_row in rows:
+        if not isinstance(raw_row, Mapping):
+            raise MigrationPreflightError(
+                "migration 021 Registry state row is malformed"
+            )
+        scheme_id = str(raw_row.get("scheme_id") or "")
+        if not scheme_id or scheme_id in observed:
+            raise MigrationPreflightError(
+                "migration 021 Registry state has an invalid identity"
+            )
+        observed[scheme_id] = raw_row.get("owner")
+    if set(observed) != set(authority):
+        raise MigrationPreflightError(
+            "migration 021 Registry identity set does not match authority"
+        )
+    for scheme_id, owner in observed.items():
+        if owner is not None and owner != authority[scheme_id]:
+            raise MigrationPreflightError(
+                "migration 021 Registry owner conflicts with authority"
+            )
+
+    target_schema = {
+        "exists": True,
+        "column": ("varchar(64)", "no", None, ""),
+        "invalid_count": 0,
+    }
+    if dict(schema) == target_schema:
+        if any(observed[key] != authority[key] for key in authority):
+            raise MigrationPreflightError(
+                "migration 021 complete schema has incomplete owner values"
+            )
+        return "COMPLETE"
+    return "COMPATIBLE_PARTIAL"
+
+
+def _validate_applying_021_history(
+    manifest: Iterable[PreparedMigration],
+    history: Iterable[Mapping[str, object]],
+) -> PreparedMigration:
+    """只接受 001..020 APPLIED + 021 APPLYING 的精确连续历史。"""
+    migrations = [
+        migration
+        for migration in manifest
+        if migration.version <= REGISTRY_OWNER_MIGRATION_VERSION
+    ]
+    expected_versions = list(range(1, REGISTRY_OWNER_MIGRATION_VERSION + 1))
+    if [migration.version for migration in migrations] != expected_versions:
+        raise MigrationHistoryError(
+            "APPLYING recovery requires contiguous migration files 001..021"
+        )
+    target = migrations[-1]
+    if (
+        target.path.name != REGISTRY_OWNER_MIGRATION_FILENAME
+        or target.sha256 != REGISTRY_OWNER_MIGRATION_SHA256
+    ):
+        raise MigrationHistoryError(
+            "migration 021 recovery identity/checksum is not reviewed"
+        )
+    rows = sorted(history, key=lambda row: int(row["version"]))
+    if [int(row["version"]) for row in rows] != expected_versions:
+        raise MigrationHistoryError(
+            "APPLYING recovery history must be the exact 001..021 prefix"
+        )
+    by_version = {item.version: item for item in migrations}
+    for row in rows:
+        version = int(row["version"])
+        migration = by_version[version]
+        if (
+            str(row.get("filename") or "") != migration.path.name
+            or str(row.get("sha256") or "").lower() != migration.sha256
+        ):
+            raise MigrationHistoryError(
+                f"migration history identity drift for {version:03d}"
+            )
+        expected_state = (
+            "APPLYING"
+            if version == REGISTRY_OWNER_MIGRATION_VERSION
+            else "APPLIED"
+        )
+        if str(row.get("state") or "").upper() != expected_state:
+            raise MigrationHistoryError(
+                "only migration 021 may be APPLYING"
+            )
+    bootstrap_flags = [
+        int(row.get("baseline_bootstrap") or 0) for row in rows
+    ]
+    if tuple(bootstrap_flags) not in {
+        tuple([0] * REGISTRY_OWNER_MIGRATION_VERSION),
+        tuple([1] * 16 + [0] * 5),
+    }:
+        raise MigrationHistoryError(
+            "migration 021 APPLYING history has an invalid bootstrap pattern"
+        )
+    return target
+
+
+def build_applying_021_inspection(
+    *,
+    manifest: Iterable[PreparedMigration],
+    history: Iterable[Mapping[str, object]],
+    database_identity: Mapping[str, object],
+    registry_state: Mapping[str, object],
+) -> dict[str, object]:
+    """构造只读 APPLYING 021 状态及 canonical digest。"""
+    migrations = list(manifest)
+    history_rows = sorted(
+        (dict(row) for row in history),
+        key=lambda row: int(row["version"]),
+    )
+    canonical_state = {
+        "database_identity": dict(database_identity),
+        "manifest": [
+            {
+                "version": migration.version,
+                "filename": migration.path.name,
+                "sha256": migration.sha256,
+            }
+            for migration in migrations
+            if migration.version <= REGISTRY_OWNER_MIGRATION_VERSION
+        ],
+        "history": history_rows,
+        "registry_state": dict(registry_state),
+    }
+    digest = _applying_017_state_digest(canonical_state)
+    classification = "UNSAFE"
+    reason: str | None = None
+    migration_identity: dict[str, object] | None = None
+    try:
+        if not str(database_identity.get("database_name") or "").strip():
+            raise MigrationHistoryError("database name is required")
+        if not str(database_identity.get("server_uuid") or "").strip():
+            raise MigrationHistoryError("MySQL server UUID is required")
+        target = _validate_applying_021_history(migrations, history_rows)
+        migration_identity = {
+            "version": target.version,
+            "filename": target.path.name,
+            "sha256": target.sha256,
+        }
+        classification = _classify_registry_owner_recovery_state(
+            registry_state,
+            authority=_registry_owner_authority(target),
+        )
+    except (
+        KeyError,
+        MigrationHistoryError,
+        MigrationPreflightError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        reason = str(exc)
+    return {
+        "classification": classification,
+        "state_digest": digest,
+        "database_identity": dict(database_identity),
+        "migration": migration_identity,
+        "reason": reason,
+    }
 
 
 def _expected_period_average_actuals_schema() -> dict[str, object]:
@@ -6247,6 +6485,181 @@ def recover_applying_migration_019(
         }
 
 
+def _unsafe_applying_021_inspection(
+    *,
+    manifest: Iterable[PreparedMigration],
+    database_identity: Mapping[str, object],
+    reason: BaseException,
+) -> dict[str, object]:
+    canonical_state = {
+        "database_identity": dict(database_identity),
+        "manifest": [
+            {
+                "version": migration.version,
+                "filename": migration.path.name,
+                "sha256": migration.sha256,
+            }
+            for migration in manifest
+            if migration.version <= REGISTRY_OWNER_MIGRATION_VERSION
+        ],
+        "inspection_error": {
+            "type": type(reason).__name__,
+            "message": str(reason),
+        },
+    }
+    return {
+        "classification": "UNSAFE",
+        "state_digest": _applying_017_state_digest(canonical_state),
+        "database_identity": dict(database_identity),
+        "migration": None,
+        "reason": str(reason),
+    }
+
+
+def _read_applying_021_inspection(
+    connection: object,
+    manifest: list[PreparedMigration],
+) -> dict[str, object]:
+    """在 owner lock 内读取一次 canonical APPLYING 021 状态。"""
+    identity_row = connection.execute(
+        text(
+            """
+            SELECT DATABASE() AS database_name,
+                   @@server_uuid AS server_uuid
+            """
+        )
+    ).mappings().one()
+    database_identity = {
+        "database_name": str(identity_row["database_name"] or ""),
+        "server_uuid": str(identity_row["server_uuid"] or ""),
+    }
+    try:
+        if not _migration_history_table_exists(connection):
+            raise MigrationHistoryError(
+                "migration history table does not exist"
+            )
+        _validate_migration_history_schema(
+            _read_migration_history_schema(connection)
+        )
+        return build_applying_021_inspection(
+            manifest=manifest,
+            history=_read_migration_history(connection),
+            database_identity=database_identity,
+            registry_state=_read_registry_owner_recovery_state(connection),
+        )
+    except (
+        AssertionError,
+        KeyError,
+        MigrationHistoryError,
+        MigrationPreflightError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        return _unsafe_applying_021_inspection(
+            manifest=manifest,
+            database_identity=database_identity,
+            reason=exc,
+        )
+
+
+def inspect_applying_migration_021(
+    engine: object,
+    paths: Iterable[Path],
+) -> dict[str, object]:
+    """连接 live DB，以 SELECT + named lock 检查 021，不执行 DDL/DML。"""
+    manifest = validate_release_migration_manifest(paths)
+    with _migration_owner_connection(engine) as owner_connection:
+        return _read_applying_021_inspection(owner_connection, manifest)
+
+
+def _registry_owner_recovery_target(
+    manifest: Iterable[PreparedMigration],
+) -> PreparedMigration:
+    candidates = [
+        migration
+        for migration in manifest
+        if migration.version == REGISTRY_OWNER_MIGRATION_VERSION
+    ]
+    if len(candidates) != 1:
+        raise MigrationHistoryError(
+            "recovery requires exactly one migration 021 file"
+        )
+    target = candidates[0]
+    if (
+        target.path.name != REGISTRY_OWNER_MIGRATION_FILENAME
+        or target.sha256 != REGISTRY_OWNER_MIGRATION_SHA256
+    ):
+        raise MigrationHistoryError(
+            "recovery target is not the reviewed migration 021"
+        )
+    return target
+
+
+def recover_applying_migration_021(
+    engine: object,
+    paths: Iterable[Path],
+    *,
+    expected_state_digest: str,
+) -> dict[str, object]:
+    """以 inspect digest 为 fence 恢复唯一受支持的 APPLYING 021。"""
+    if re.fullmatch(r"[0-9a-f]{64}", expected_state_digest) is None:
+        raise MigrationHistoryError(
+            "expected state digest must be 64 lowercase hex characters"
+        )
+    manifest = validate_release_migration_manifest(paths)
+    target = _registry_owner_recovery_target(manifest)
+    with _migration_owner_connection(engine) as owner_connection:
+        initial = _read_applying_021_inspection(owner_connection, manifest)
+        observed_digest = str(initial.get("state_digest") or "")
+        if not hmac.compare_digest(observed_digest, expected_state_digest):
+            raise MigrationHistoryError(
+                "APPLYING 021 state digest changed; run a new read-only "
+                "inspection before recovery"
+            )
+        classification = str(initial.get("classification") or "")
+        if classification == "UNSAFE":
+            raise MigrationHistoryError(
+                "APPLYING 021 recovery refused unsafe state: "
+                f"{initial.get('reason')}"
+            )
+        if classification == "COMPATIBLE_PARTIAL":
+            rollback = getattr(owner_connection, "rollback", None)
+            if callable(rollback):
+                rollback()
+            _execute_prepared_migration_files(
+                engine,
+                [(target.path, target.statements)],
+            )
+            if callable(rollback):
+                rollback()
+            completed = _read_applying_021_inspection(
+                owner_connection,
+                manifest,
+            )
+            if completed.get("classification") != "COMPLETE":
+                raise MigrationPartialApplyError(
+                    "migration 021 replay did not reach COMPLETE; "
+                    "history remains APPLYING. "
+                    f"inspection={completed}"
+                )
+        elif classification != "COMPLETE":
+            raise MigrationHistoryError(
+                "unknown APPLYING 021 inspection classification: "
+                f"{classification!r}"
+            )
+        _mark_migration_applied(engine, target)
+        return {
+            "recovery_outcome": "APPLIED",
+            "initial_classification": classification,
+            "initial_state_digest": observed_digest,
+            "migration": {
+                "version": target.version,
+                "filename": target.path.name,
+                "sha256": target.sha256,
+            },
+        }
+
+
 def _legacy_domain_table_count(connection: object) -> int:
     required = sorted(expected_legacy_016_baseline()["tables"])
     table_sql = ",".join(f"'{name}'" for name in required)
@@ -6628,6 +7041,15 @@ def apply_pending_migration_files(
             )
             pending = select_pending_migrations(manifest, history)
             for migration in pending:
+                if _is_registry_owner_migration(migration.path):
+                    with engine.connect() as preflight_connection:
+                        preflight_migration_session(preflight_connection)
+                        _classify_registry_owner_recovery_state(
+                            _read_registry_owner_recovery_state(
+                                preflight_connection
+                            ),
+                            authority=_registry_owner_authority(migration),
+                        )
                 _mark_migration_applying(engine, migration)
                 _execute_prepared_migration_files(
                     engine,

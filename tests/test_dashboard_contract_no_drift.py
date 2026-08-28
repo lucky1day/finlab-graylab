@@ -79,11 +79,12 @@ def test_dashboard_v4_removes_signal_state_from_all_public_contracts() -> None:
     assert "factor-lab-dashboard-v3" not in public_check_text
 
 
-def test_dashboard_builder_queries_business_results_once_without_run_or_calendar() -> None:
+def test_dashboard_builder_has_only_summary_and_detail_prediction_queries() -> None:
     source = DASHBOARD_BUILDER.read_text(encoding="utf-8")
     lowered = source.casefold()
 
-    assert lowered.count("from t_scheme_predictions") == 1
+    assert lowered.count("from t_scheme_predictions") == 2
+    assert "select min(target_date)" in lowered
     for forbidden_table in (
         "t_scheme_runs",
         "api_wind_date",
