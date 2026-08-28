@@ -28,9 +28,6 @@
 2. M0 周平均五方案及同期 ECS 周频方案等待 2026-08-29 11:30 的首次自然触发。
 3. 未来若把生产域名或 Writer 从 Mac3 切到 ECS，必须作为新生产项目设计数据库 authority、单 Writer、
    DNS/Nginx、窗口和回滚，不能从灰度验收外推授权。
-4. `weekly_10y_lgbm_point_v1` 的 Mac3 历史 Registry description 为空，而 canonical config 已有正式描述；
-   prediction、owner、backtest 和前端可见性正常，但该方案 DashboardGate 会因展示身份不一致失败。后续仅能
-   通过受控 repository Registry sync 修复，不得直写 SQL，也不得借 Dashboard 发布顺带改写。
 
 ## 稳定观察与后续晋级
 
