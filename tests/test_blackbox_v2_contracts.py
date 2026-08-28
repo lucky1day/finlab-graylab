@@ -7,6 +7,32 @@ from pathlib import Path
 
 
 class BlackboxV2MetadataContractTests(unittest.TestCase):
+    def test_owner_is_optional_for_historical_parse_but_validated_when_present(
+        self,
+    ) -> None:
+        historical = _load_metadata(_metadata_payload())
+        self.assertIsNone(historical.owner)
+
+        payload = _metadata_payload()
+        payload["owner"] = "ALGO-A"
+        self.assertEqual(_load_metadata(payload).owner, "ALGO-A")
+
+        for invalid_owner in (
+            "",
+            " owner",
+            "owner ",
+            "--",
+            "Unknown",
+            "待定",
+            "owner\nteam",
+            "<owner>",
+            "x" * 65,
+        ):
+            with self.subTest(owner=invalid_owner):
+                payload["owner"] = invalid_owner
+                with self.assertRaisesRegex(ValueError, "owner"):
+                    _load_metadata(payload)
+
     def test_period_average_metadata_uses_bucket_horizon_one(self) -> None:
         cases = (
             (

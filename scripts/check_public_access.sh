@@ -274,19 +274,26 @@ import json
 import sys
 
 DASHBOARD_TOP_FIELDS = {
-    "schema_version", "snapshot_id", "generated_at", "display_until",
-    "row_fields", "target_labels", "schemes",
+    "schema_version", "representation", "snapshot_id", "generated_at",
+    "display_until", "monthly_row_fields", "target_labels", "schemes",
 }
 DASHBOARD_SCHEME_FIELDS = {
-    "scheme_id", "base_scheme_id", "name", "description", "horizon",
+    "scheme_id", "base_scheme_id", "name", "owner", "description", "horizon",
     "task_type", "frequency", "target_tenor", "target_label", "status",
-    "deployed_at", "live_rows",
-    "backtest",
+    "deployed_at", "phase_ranges", "monthly_rows", "backtest",
 }
 DASHBOARD_BACKTEST_FIELDS = {
     "benchmark_id", "benchmark_label", "data_source", "data_source_label",
-    "latest_run_date", "rows",
+    "latest_run_date",
 }
+DASHBOARD_DETAIL_TOP_FIELDS = {
+    "schema_version", "representation", "snapshot_id", "generated_at",
+    "display_until", "scheme_id", "month", "source", "row_fields", "rows",
+}
+DASHBOARD_DETAIL_ROW_FIELDS = [
+    "source", "predict_date", "feature_date", "target_date",
+    "prediction_phase", "predicted_direction", "actual_direction",
+]
 from pathlib import Path
 
 kind, encoding, body_path, expected_token = sys.argv[1:]
@@ -309,24 +316,39 @@ try:
 except UnicodeDecodeError as exc:
     raise SystemExit(1) from exc
 
-if kind == "dashboard":
+if kind in {"dashboard", "dashboard-detail"}:
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
         raise SystemExit(1) from exc
     if not isinstance(payload, dict):
         raise SystemExit(1)
-    if payload.get("schema_version") != "factor-lab-dashboard-v3":
+    if payload.get("schema_version") != "factor-lab-dashboard-v4":
+        raise SystemExit(1)
+    if kind == "dashboard-detail":
+        if payload.get("representation") != "detail":
+            raise SystemExit(1)
+        if set(payload) != DASHBOARD_DETAIL_TOP_FIELDS:
+            raise SystemExit(1)
+        if payload.get("row_fields") != DASHBOARD_DETAIL_ROW_FIELDS:
+            raise SystemExit(1)
+        rows = payload.get("rows")
+        if not isinstance(rows, list) or any(
+            not isinstance(row, list)
+            or len(row) != len(DASHBOARD_DETAIL_ROW_FIELDS)
+            for row in rows
+        ):
+            raise SystemExit(1)
+        raise SystemExit(0)
+    if payload.get("representation") != "summary":
         raise SystemExit(1)
     if set(payload) != DASHBOARD_TOP_FIELDS:
         raise SystemExit(1)
-    if payload.get("row_fields") != [
-        "predict_date",
-        "feature_date",
-        "target_date",
-        "prediction_phase",
-        "predicted_direction",
-        "actual_direction",
+    if payload.get("monthly_row_fields") != [
+        "month", "source", "samples", "metric_samples", "correct",
+        "predicted_up", "predicted_down", "predicted_flat", "actual_up",
+        "actual_down", "actual_flat", "up_true_positive",
+        "down_true_positive",
     ]:
         raise SystemExit(1)
     schemes = payload.get("schemes")
@@ -404,7 +426,7 @@ run_request versioned-js GET \
 assert_last_content_encoding versioned-js-gzip gzip
 assert_last_vary_token versioned-js-vary Accept-Encoding
 assert_body_valid \
-  versioned-js-body text gzip "$LAST_BODY" 'factor-lab-dashboard-v3'
+  versioned-js-body text gzip "$LAST_BODY" 'factor-lab-dashboard-v4'
 run_request asset-icon GET "$APP_URL/assets/aifin-lab-icon.svg" 200
 run_request asset-logo GET "$APP_URL/assets/aifin-lab-logo.svg" 200
 
@@ -441,6 +463,33 @@ if [[ "$LAST_REQUEST_SUCCEEDED" -eq 1 ]] \
   cp "$LAST_BODY" "$CHECK_TMP_DIR/dashboard.json"
 else
   record_failure dashboard-get-identity-json " body_validation=failed"
+fi
+
+DETAIL_SELECTOR="$(python3 - "$CHECK_TMP_DIR/dashboard.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+for scheme in payload.get("schemes", []):
+    rows = scheme.get("monthly_rows") or []
+    if rows:
+        print(f"{scheme['scheme_id']}\t{rows[0][0]}\t{rows[0][1]}")
+        break
+else:
+    raise SystemExit(1)
+PY
+)" || DETAIL_SELECTOR=""
+if [[ -n "$DETAIL_SELECTOR" ]]; then
+  IFS=$'\t' read -r DETAIL_SCHEME DETAIL_MONTH DETAIL_SOURCE <<< "$DETAIL_SELECTOR"
+  run_request dashboard-detail GET \
+    "$APP_URL/api/factor-lab/dashboard?scheme-id=$DETAIL_SCHEME&month=$DETAIL_MONTH&source=$DETAIL_SOURCE" 200 \
+    --header 'Accept-Encoding: gzip'
+  assert_last_content_encoding dashboard-detail-encoding gzip
+  assert_last_vary_token dashboard-detail-vary Accept-Encoding
+  assert_body_valid dashboard-detail-json dashboard-detail gzip "$LAST_BODY"
+else
+  record_failure dashboard-detail-selector " monthly_rows=empty"
 fi
 
 run_request dashboard-get-gzip-q0 GET \

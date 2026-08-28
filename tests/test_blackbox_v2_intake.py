@@ -87,7 +87,7 @@ class BlackboxV2IntakeTests(unittest.TestCase):
 
             self.assertFalse((root / "schemes" / "trial_10y").exists())
 
-    def test_intake_accepts_delivery_without_owner(self) -> None:
+    def test_intake_requires_owner_without_partial_write(self) -> None:
         from shared.blackbox_v2.intake import intake_delivery
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -98,9 +98,10 @@ class BlackboxV2IntakeTests(unittest.TestCase):
             metadata.pop("owner")
             metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
-            scheme_dir = intake_delivery(delivery, schemes_root=root / "schemes")
+            with self.assertRaisesRegex(ValueError, "owner"):
+                intake_delivery(delivery, schemes_root=root / "schemes")
 
-            self.assertTrue((scheme_dir / "delivery" / "trial_10y.json").is_file())
+            self.assertFalse((root / "schemes" / "trial_10y").exists())
 
 
     def test_cli_intake_uses_fixed_databridge_inputs(self) -> None:

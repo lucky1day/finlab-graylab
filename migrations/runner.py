@@ -4372,6 +4372,11 @@ def _is_period_average_actuals_migration(path: Path) -> bool:
     return path.name == PERIOD_AVERAGE_ACTUALS_MIGRATION_FILENAME
 
 
+def _is_registry_owner_migration(path: Path) -> bool:
+    """migration 021 只允许 owner 缺失或精确完整终态。"""
+    return path.name == REGISTRY_OWNER_MIGRATION_FILENAME
+
+
 def _partial_apply_error(
     path: Path,
     *,
@@ -4421,6 +4426,89 @@ SERVING_POINTER_RETIREMENT_MIGRATION_SHA256 = (
 PERIOD_AVERAGE_ACTUALS_MIGRATION_FILENAME = (
     "020_period_average_actuals.sql"
 )
+REGISTRY_OWNER_MIGRATION_FILENAME = "021_registry_owner.sql"
+
+
+def _read_registry_owner_schema(connection: object) -> dict[str, object]:
+    """只读 Registry owner 列定义和最终值合同。"""
+    row = connection.execute(
+        text(
+            """
+            SELECT column_type AS column_type,
+                   is_nullable AS is_nullable,
+                   column_default AS column_default,
+                   extra AS extra
+            FROM information_schema.columns
+            WHERE table_schema = DATABASE()
+              AND table_name = 't_scheme_registry'
+              AND column_name = 'owner'
+            """
+        )
+    ).mappings().one_or_none()
+    if row is None:
+        return {"exists": False}
+    invalid_count = int(
+        connection.execute(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM t_scheme_registry
+                WHERE owner IS NOT NULL
+                  AND (
+                      owner = ''
+                      OR owner <> TRIM(owner)
+                      OR LOWER(owner) IN ('--', 'unknown', '待定')
+                      OR owner REGEXP '[<>[:cntrl:]]'
+                  )
+                """
+            )
+        ).scalar_one()
+    )
+    return {
+        "exists": True,
+        "column": (
+            str(row["column_type"]).lower(),
+            str(row["is_nullable"]).lower(),
+            (
+                None
+                if row["column_default"] is None
+                else str(row["column_default"]).lower()
+            ),
+            " ".join(str(row.get("extra") or "").lower().split()),
+        ),
+        "invalid_count": invalid_count,
+    }
+
+
+def _validate_registry_owner_schema(
+    schema: Mapping[str, object],
+    *,
+    allow_missing: bool,
+) -> None:
+    """只接受缺列或 owner 非空且符合值合同的完整终态。"""
+    if schema == {"exists": False}:
+        if allow_missing:
+            return
+        raise MigrationPreflightError(
+            "t_scheme_registry.owner is missing after migration 021"
+        )
+    compatible_partial = {
+        "exists": True,
+        "column": ("varchar(64)", "yes", None, ""),
+        "invalid_count": 0,
+    }
+    if allow_missing and dict(schema) == compatible_partial:
+        return
+    expected = {
+        "exists": True,
+        "column": ("varchar(64)", "no", None, ""),
+        "invalid_count": 0,
+    }
+    if dict(schema) != expected:
+        raise MigrationPreflightError(
+            "unexpected t_scheme_registry.owner definition or values: "
+            f"{dict(schema)}"
+        )
 
 
 def _expected_period_average_actuals_schema() -> dict[str, object]:
@@ -6348,6 +6436,7 @@ def _execute_prepared_migration_files(
             _is_serving_pointer_retirement_migration(path)
         )
         period_average_actuals = _is_period_average_actuals_migration(path)
+        registry_owner = _is_registry_owner_migration(path)
         mysql_session = False
         execution_started = False
         ddl_attempted = False
@@ -6388,6 +6477,11 @@ def _execute_prepared_migration_files(
                 if period_average_actuals and mysql_session:
                     _validate_period_average_actuals_schema(
                         _read_period_average_actuals_schema(connection),
+                        allow_missing=True,
+                    )
+                if registry_owner and mysql_session:
+                    _validate_registry_owner_schema(
+                        _read_registry_owner_schema(connection),
                         allow_missing=True,
                     )
                 for statement in statements:
@@ -6464,6 +6558,16 @@ def _execute_prepared_migration_files(
                     preflight_migration_session(connection)
                     _validate_period_average_actuals_schema(
                         _read_period_average_actuals_schema(connection),
+                        allow_missing=False,
+                    )
+            except BaseException as exc:
+                postcondition_error = exc
+        if registry_owner and mysql_session and execution_started:
+            try:
+                with engine.begin() as connection:
+                    preflight_migration_session(connection)
+                    _validate_registry_owner_schema(
+                        _read_registry_owner_schema(connection),
                         allow_missing=False,
                     )
             except BaseException as exc:

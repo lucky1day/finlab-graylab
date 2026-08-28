@@ -34,7 +34,7 @@ def test_no_mock_financial_data_remains() -> None:
 def test_missing_detail_renders_empty_state() -> None:
     """缺失明细必须落到既有空态分支，而不是替代数据源。"""
     source = _source()
-    anchor = source.index("var rows = factorDetailRowsForMonth")
+    anchor = source.index("var rows = detailState.rows || []")
     body = source[anchor : anchor + 700]
     assert "if (!rows.length)" in body, body[:300]
     assert "当前月份暂无每日明细" in body
@@ -43,6 +43,6 @@ def test_missing_detail_renders_empty_state() -> None:
 def test_dashboard_is_the_only_frontend_data_source() -> None:
     """浏览器不得恢复旧多接口聚合回退路径。"""
     source = _source()
-    assert re.findall(r'fetchJson\(\s*"([^"]+)"', source) == [
+    assert set(re.findall(r'fetchJson\(\s*"([^"]+)"', source)) == {
         "/api/factor-lab/dashboard"
-    ]
+    }

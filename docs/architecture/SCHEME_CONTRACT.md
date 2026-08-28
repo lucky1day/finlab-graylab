@@ -41,6 +41,11 @@
 
 同一算法的 Native 与 Blackbox 实现必须使用不同 base ID；替代试验不得覆盖既有 Native 身份或历史结果。
 
+`t_scheme_registry.owner` 是方案来源的唯一运行和展示权威，必须为合法非空值。新 Blackbox 从两文件
+Metadata 登记 owner；已有 Metadata 缺失 owner 的历史 Blackbox 与 Native 只保留数据库既有值，不改写
+canonical 文件或算法版本。Dashboard 不读取仓库映射、配置兜底或占位值；Registry owner 缺失或非法时
+整个产品读模型 fail-closed。
+
 ## 4. 任务类型与期限
 
 平台任务格子只由 `target_tenor + task_type` 决定，不得由 `frequency/horizon` 猜测。

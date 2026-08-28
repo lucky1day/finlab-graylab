@@ -14,9 +14,10 @@
 
 本文中的 `Blackbox V2` 是运行时代际，`schema_version=1.0` 是交付接口合同版本，`data-bridge-v1` 是四文件数据 Schema；三者不能混作算法版本。
 
-正式新交付必须在 `{scheme_id}.json` 中提供唯一的 `name` 和 `description`；缺项或占位值均
-fail-closed。上游不得另交显示名或依赖平台补写这些字段。既有交付中的可选 `owner` 只为解析兼容，
-平台不登记、不展示，也不将其作为 Gate 条件；新交付应省略。
+正式新交付必须在 `{scheme_id}.json` 中提供唯一的 `name`、`owner` 和 `description`；缺项或占位值均
+fail-closed。`owner` 是页面“来源”字段，必须是不超过 64 字符、无首尾空白、换行、控制字符或 HTML
+边界字符的明确文本，禁止 `--`、`unknown`、`待定` 等占位值。上游不得另交显示字段或依赖平台补写；
+平台 Intake 原样保存 Metadata，并在注册时把 owner 写入 Registry。
 
 ---
 

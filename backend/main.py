@@ -24,10 +24,12 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from backend.db import get_dashboard_engine, get_engine
 from backend.factor_lab_dashboard import (
     build_factor_lab_dashboard,
+    build_factor_lab_dashboard_detail,
     dashboard_build_diagnostics,
     encode_canonical_snapshot,
+    record_dashboard_encoding,
 )
-from backend.http_compression import QAwareGZipMiddleware
+from backend.http_compression import QAwareGZipMiddleware, accepts_gzip
 from shared.one_shot_control_plane import (
     LAUNCHD_ONE_SHOT_CONTROL_PLANE,
     require_scheduled_one_shot_control_plane,
@@ -43,6 +45,11 @@ logger = logging.getLogger(__name__)
 _REQUEST_ID_PATTERN = re.compile(r"[!-~]{1,128}\Z", flags=re.ASCII)
 _DASHBOARD_ERROR_UNAVAILABLE = "dashboard_data_unavailable"
 _DASHBOARD_QUERY_ERROR = "dashboard_query_not_allowed"
+_DASHBOARD_SCHEME_NOT_FOUND = "dashboard_scheme_not_found"
+_DASHBOARD_SCHEME_ID_PATTERN = re.compile(
+    r"^[a-z][a-z0-9_]*__h[1-9][0-9]*__(?:1Y|3Y|5Y|7Y|10Y)$"
+)
+_DASHBOARD_MONTH_PATTERN = re.compile(r"^\d{4}-(?:0[1-9]|1[0-2])$")
 
 
 class _FrontendAssetReferenceParser(HTMLParser):
@@ -370,7 +377,9 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
     """构造 GET/HEAD 共用的精确 dashboard 表示。"""
     route_started_at = time.perf_counter()
     request_id = _request_id(request)
-    if request.scope.get("query_string", b""):
+    try:
+        detail_query = _dashboard_detail_query(request)
+    except ValueError:
         return _dashboard_error_response(
             request_id=request_id,
             error_code=_DASHBOARD_QUERY_ERROR,
@@ -379,9 +388,22 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
         )
 
     try:
-        response_payload = build_factor_lab_dashboard(get_dashboard_engine())
+        engine = get_dashboard_engine()
+        response_payload = (
+            build_factor_lab_dashboard(engine)
+            if detail_query is None
+            else build_factor_lab_dashboard_detail(engine, **detail_query)
+        )
+        if response_payload is None:
+            return _dashboard_error_response(
+                request_id=request_id,
+                error_code=_DASHBOARD_SCHEME_NOT_FOUND,
+                status_code=404,
+                route_started_at=route_started_at,
+            )
         serialization_started_at = time.perf_counter()
         encoding = encode_canonical_snapshot(response_payload)
+        record_dashboard_encoding(str(response_payload["snapshot_id"]), encoding)
         response_serialization_seconds = (
             time.perf_counter() - serialization_started_at
         )
@@ -456,11 +478,47 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
             "error_code": None,
         }
     )
+    use_gzip = accepts_gzip(request.headers.get("accept-encoding"))
+    body = encoding.gzip_body if use_gzip else encoding.raw_body
+    if use_gzip:
+        headers["Content-Encoding"] = "gzip"
     return Response(
-        content=encoding.raw_body,
+        content=body,
         media_type="application/json",
         headers=headers,
     )
+
+
+def _dashboard_detail_query(request: Request) -> dict[str, str] | None:
+    """严格解析同一路径的 V4 detail 三参数模式。"""
+    raw_query = request.scope.get("query_string", b"")
+    if not raw_query:
+        return None
+    try:
+        pairs = parse_qsl(
+            raw_query.decode("ascii"),
+            keep_blank_values=True,
+            strict_parsing=True,
+        )
+    except (UnicodeError, ValueError) as exc:
+        raise ValueError("invalid dashboard detail query") from exc
+    if len(pairs) != 3 or {key for key, _ in pairs} != {
+        "scheme-id",
+        "month",
+        "source",
+    }:
+        raise ValueError("invalid dashboard detail query")
+    values = dict(pairs)
+    scheme_id = values["scheme-id"]
+    month = values["month"]
+    source = values["source"]
+    if (
+        _DASHBOARD_SCHEME_ID_PATTERN.fullmatch(scheme_id) is None
+        or _DASHBOARD_MONTH_PATTERN.fullmatch(month) is None
+        or source not in {"all", "backtest", "live"}
+    ):
+        raise ValueError("invalid dashboard detail query")
+    return {"scheme_id": scheme_id, "month": month, "source": source}
 
 
 @app.get("/api/factor-lab/dashboard")

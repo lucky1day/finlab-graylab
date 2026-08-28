@@ -315,6 +315,11 @@ manifest 校验、schema inspect、pending apply 与 `APPLYING` recovery 都在�
 `--inspect-applying-018`、`--inspect-applying-019` 是只读模式，不要求这两个参数。UUID 只能来自 inspect JSON
 或受控只读 identity query；不得在仓库或运行手册中记录生产 UUID、DSN 或凭据。
 
+Migration 021 把 `t_scheme_registry.owner` 收敛为 `VARCHAR(64) NOT NULL`。它的临时 96 行 authority 只服务
+历史回填：DDL 前必须证明数据库 Registry 与 authority 双向闭集，已有非空 owner 与 authority 冲突时拒绝；
+迁移完成后运行时不保留第二份 owner 映射。该加列为向前兼容变更，旧 release 可忽略，但任何新 Registry
+写入都必须提供或保留合法 owner。
+
 ---
 
 ## 8. 模块清单
@@ -337,7 +342,7 @@ manifest 校验、schema inspect、pending apply 与 `APPLYING` recovery 都在�
 | `scheduler/{launchd,systemd}_prediction_runner.py` | L3 | 双平台 one-shot active 方案编排 | `run`、`main` |
 | `scheduler/{daily,weekly,monthly,period_average}_actuals_updater.py` | L3 | actuals 事实构建与写入 | `update_*_actuals` |
 | `scheduler/actuals_runner.py` | L3 | 双平台 one-shot actuals 唯一入口 | `run_actuals_job`、`main` |
-| `backend/main.py` `factor_lab_dashboard.py` `db.py` | L4 | 唯一 Dashboard 读模型 + 静态前端 serve | `/api/factor-lab/dashboard` |
+| `backend/main.py` `factor_lab_dashboard.py` `db.py` | L4 | 唯一 Dashboard 读模型 + 静态前端 serve；同一路径提供 V4 月度 summary 与单方案按月 detail | `/api/factor-lab/dashboard` |
 | `backtests/{id}_reproduction.py` | L4 | 历史复现 | `run_<scheme>_reproduction` |
 | `backtests/repository.py` | L4 | 回测写库单点 | `t_backtest_*` 写入 |
 | `migrations/runner.py` | 运维库层 | 唯一 migration 行为实现；caller-supplied `Engine` | manifest、inspect、apply、recovery |

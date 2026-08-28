@@ -9,7 +9,11 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from shared.scheme_config_schema import ALLOWED_TENORS, SCHEME_ID_PATTERN
+from shared.scheme_config_schema import (
+    ALLOWED_TENORS,
+    SCHEME_ID_PATTERN,
+    normalize_scheme_owner,
+)
 from shared.models import DIRECTION_VALUES
 from shared.task_specs import TASK_COMBINATIONS
 
@@ -56,6 +60,7 @@ class BlackboxMetadata:
     target_rule: str
     frequency: str
     description: str | None = None
+    owner: str | None = None
 
 
 @dataclass(frozen=True)
@@ -131,6 +136,11 @@ def load_metadata_bytes(
         raise ValueError("horizon must be a positive integer")
     target_rule = _non_empty_string(raw, "target_rule")
     description = _optional_description(raw)
+    owner = (
+        normalize_scheme_owner(raw["owner"])
+        if "owner" in raw
+        else None
+    )
     expected_horizon, expected_rule, frequency = combination
     if (horizon, target_rule) != (expected_horizon, expected_rule):
         raise ValueError(
@@ -148,6 +158,7 @@ def load_metadata_bytes(
         target_rule=target_rule,
         frequency=frequency,
         description=description,
+        owner=owner,
     )
 
 

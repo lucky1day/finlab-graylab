@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+from collections import Counter
+import hashlib
+import json
+from pathlib import Path
+import re
+
 import pytest
 
 from migrations.runner import (
+    MIGRATIONS_DIR,
     MigrationPreflightError,
     _show_create_mentions_serving_pointer,
+    _validate_registry_owner_schema,
+    validate_release_migration_manifest,
     validate_mysql_session_contract,
 )
 
@@ -95,3 +104,108 @@ def test_hidden_definition_detects_actual_pointer_dependency() -> None:
         object_schema="bond_db",
         object_name="v",
     )
+
+
+def test_registry_owner_migration_matches_all_current_composite_ids() -> None:
+    from scheduler.discovery import load_scheme_config
+    from scheduler.repository import registry_scheme_id
+
+    sql = (MIGRATIONS_DIR / "021_registry_owner.sql").read_text(
+        encoding="utf-8"
+    )
+    values_sql = sql.split("INSERT INTO `_bfl_registry_owner_021`", 1)[1]
+    values_sql = values_sql.split(";", 1)[0]
+    rows = re.findall(r"\('([^']+)', '([^']+)'\)", values_sql)
+    owners = dict(rows)
+    assert len(rows) == len(owners) == 96
+    reviewed_authority_digest = hashlib.sha256(
+        json.dumps(
+            rows,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    assert reviewed_authority_digest == (
+        "a60ed52cd321a3a3495c80ff35128c9295da88f77a3afbfb15046adb9806ada4"
+    )
+    assert Counter(owners.values()) == {
+        "rl": 28,
+        "wg": 6,
+        "liwei": 2,
+        "lw": 39,
+        "fengrl": 20,
+        "CWG": 1,
+    }
+
+    current_ids = set()
+    for config_path in sorted(Path("schemes").glob("*/config.yaml")):
+        cfg = load_scheme_config(config_path)
+        current_ids.update(
+            registry_scheme_id(cfg.scheme_id, cfg.horizon, tenor)
+            for tenor in cfg.tenors
+        )
+    assert set(owners) == current_ids
+    assert owners["weekly_5y_curve_logit_v1__h1__5Y"] == "lw"
+    assert owners["weekly_10y_hetero_vote_v1__h1__10Y"] == "lw"
+    assert owners["ten_y_t5_curve_spread_adapt90_v1__h5__10Y"] == "lw"
+    assert owners["ten_y_t5_short_amp_adapt756_v1__h5__10Y"] == "lw"
+
+
+def test_registry_owner_schema_accepts_only_missing_source_or_exact_target() -> None:
+    _validate_registry_owner_schema({"exists": False}, allow_missing=True)
+    _validate_registry_owner_schema(
+        {
+            "exists": True,
+            "column": ("varchar(64)", "yes", None, ""),
+            "invalid_count": 0,
+        },
+        allow_missing=True,
+    )
+    target = {
+        "exists": True,
+        "column": ("varchar(64)", "no", None, ""),
+        "invalid_count": 0,
+    }
+    _validate_registry_owner_schema(target, allow_missing=False)
+
+    with pytest.raises(MigrationPreflightError, match="missing"):
+        _validate_registry_owner_schema(
+            {"exists": False},
+            allow_missing=False,
+        )
+    with pytest.raises(MigrationPreflightError, match="unexpected"):
+        _validate_registry_owner_schema(
+            {**target, "invalid_count": 1},
+            allow_missing=False,
+        )
+
+
+def test_release_manifest_includes_registry_owner_checksum() -> None:
+    manifest = validate_release_migration_manifest(
+        sorted(MIGRATIONS_DIR.glob("[0-9][0-9][0-9]_*.sql"))
+    )
+    assert manifest[-1].version == 21
+    assert manifest[-1].path.name == "021_registry_owner.sql"
+
+
+def test_registry_owner_sql_is_reentrant_and_checks_both_identity_directions() -> None:
+    sql = (MIGRATIONS_DIR / "021_registry_owner.sql").read_text(
+        encoding="utf-8"
+    )
+    assert "FROM information_schema.columns" in sql
+    assert "PREPARE bfl_registry_owner_add_021" in sql
+    assert (
+        "FROM `t_scheme_registry` AS registry\n"
+        "LEFT JOIN `_bfl_registry_owner_021` AS authority"
+    ) in sql
+    assert (
+        "FROM `_bfl_registry_owner_021` AS authority\n"
+        "LEFT JOIN `t_scheme_registry` AS registry"
+    ) in sql
+    assert sql.index("FROM `t_scheme_registry` AS registry") < sql.index(
+        "SET @bfl_registry_owner_add_sql_021"
+    )
+    assert sql.index("FROM `_bfl_registry_owner_021` AS authority") < sql.index(
+        "SET @bfl_registry_owner_add_sql_021"
+    )
+    assert "BINARY registry.`owner` <> BINARY authority.`owner`" in sql

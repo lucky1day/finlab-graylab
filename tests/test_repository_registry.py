@@ -356,6 +356,7 @@ def _blackbox_config(
         tenors=list(tenors),
         frequency="daily",
         schedule=SimpleNamespace(cron="3 7 * * 1-5", timezone="Asia/Shanghai"),
+        owner="ALGO-A",
         status=status,
         scheme_version=scheme_version,
         code_hash="c" * 64,
@@ -400,6 +401,7 @@ def _native_registry_row() -> dict:
     return {
         "scheme_id": "native_daily__h1__5Y",
         "base_scheme_id": "native_daily",
+        "owner": "legacy-native-owner",
         "runtime_type": "native_adapter",
         "status": "active",
         "frequency": "daily",
@@ -435,10 +437,86 @@ def _blackbox_live_record(*, prediction_phase: str = "scheduled_live"):
 
 
 class RegistryLifecycleTests(unittest.TestCase):
+    def test_registry_owner_is_read_once_and_blackbox_metadata_can_update_it(
+        self,
+    ) -> None:
+        from scheduler.repository import _sync_scheme_registry_conn
+
+        cfg = _blackbox_config()
+        cfg.owner = "NEW-OWNER"
+        store = {
+            "registry_rows": [
+                {
+                    "scheme_id": "demo_blackbox__h1__10Y",
+                    "base_scheme_id": "demo_blackbox",
+                    "runtime_type": "blackbox_v2",
+                    "status": "active",
+                    "task_type": "T+1",
+                    "target_tenor": "10Y",
+                    "horizon": 1,
+                    "owner": "OLD-OWNER",
+                }
+            ]
+        }
+        _sync_scheme_registry_conn(
+            _CaptureConnection(store),
+            [cfg],
+            effective_statuses={"demo_blackbox__h1__10Y": "active"},
+        )
+
+        self.assertEqual(store["registry_rows"][0]["owner"], "NEW-OWNER")
+        owner_reads = [
+            sql
+            for sql, _params in store["calls"]
+            if "SELECT scheme_id, owner FROM t_scheme_registry" in sql
+        ]
+        self.assertEqual(len(owner_reads), 1)
+
+    def test_registry_preserves_database_owner_when_metadata_has_none(self) -> None:
+        from scheduler.repository import _sync_scheme_registry_conn
+
+        cfg = _blackbox_config()
+        cfg.owner = None
+        store = {
+            "registry_rows": [
+                {
+                    "scheme_id": "demo_blackbox__h1__10Y",
+                    "base_scheme_id": "demo_blackbox",
+                    "runtime_type": "blackbox_v2",
+                    "status": "active",
+                    "task_type": "T+1",
+                    "target_tenor": "10Y",
+                    "horizon": 1,
+                    "owner": "HISTORICAL-OWNER",
+                }
+            ]
+        }
+
+        _sync_scheme_registry_conn(
+            _CaptureConnection(store),
+            [cfg],
+            effective_statuses={"demo_blackbox__h1__10Y": "active"},
+        )
+
+        self.assertEqual(
+            store["registry_rows"][0]["owner"],
+            "HISTORICAL-OWNER",
+        )
+
+    def test_native_without_backfilled_registry_owner_fails_closed(self) -> None:
+        from scheduler.repository import _sync_scheme_registry_conn
+
+        with self.assertRaisesRegex(ValueError, "Registry owner is required"):
+            _sync_scheme_registry_conn(
+                _CaptureConnection({"registry_rows": []}),
+                [_native_config()],
+                effective_statuses={"native_daily__h1__5Y": "active"},
+            )
+
     def test_trusted_native_activation_writes_exact_approval_and_target_registry_atomically(self) -> None:
         from scheduler.repository import apply_native_activation_state
 
-        engine = _CaptureEngine()
+        engine = _CaptureEngine(registry_rows=[_native_registry_row()])
         approved_at = datetime(
             2026,
             7,
@@ -474,6 +552,10 @@ class RegistryLifecycleTests(unittest.TestCase):
         self.assertEqual(
             {row["status"] for row in engine.store["registry_rows"]},
             {"active"},
+        )
+        self.assertEqual(
+            {row["owner"] for row in engine.store["registry_rows"]},
+            {"legacy-native-owner"},
         )
 
 

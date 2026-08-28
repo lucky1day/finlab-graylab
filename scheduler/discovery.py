@@ -62,6 +62,7 @@ class SchemeConfig:
     data_snapshot_id: str | None
     input_source: str = "legacy_db"
     blackbox_metadata: BlackboxMetadata | None = None
+    owner: str | None = None
 
 
 def _require_mapping(value: Any, path: Path) -> dict[str, Any]:
@@ -206,6 +207,7 @@ def _load_blackbox_config(config_path: Path, raw: dict[str, Any], schedule_raw: 
         data_snapshot_id=None,
         input_source=str(raw["input_source"]),
         blackbox_metadata=metadata,
+        owner=metadata.owner,
     )
 
 

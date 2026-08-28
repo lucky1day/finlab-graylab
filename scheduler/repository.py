@@ -26,7 +26,11 @@ from shared.models import (
 )
 from shared.one_shot_control_plane import SCHEDULED_ONE_SHOT_CONTROL_PLANES
 from shared.prediction_context import LIVE_PREDICTION_PHASES
-from shared.scheme_config_schema import ALLOWED_RUNTIME_TYPES, ALLOWED_VERSION_STATUS
+from shared.scheme_config_schema import (
+    ALLOWED_RUNTIME_TYPES,
+    ALLOWED_VERSION_STATUS,
+    normalize_scheme_owner,
+)
 
 
 PREDICTION_KEYS_ALREADY_EXIST = "prediction_keys_already_exist"
@@ -202,10 +206,10 @@ def _sync_scheme_registry_conn(
     sql = text(
         """
         INSERT INTO t_scheme_registry
-            (scheme_id, base_scheme_id, name, description, horizon, task_type, runtime_type, tenors, frequency, target_tenor,
+            (scheme_id, base_scheme_id, name, owner, description, horizon, task_type, runtime_type, tenors, frequency, target_tenor,
              schedule_cron, schedule_timezone, status, deployed_at)
         VALUES
-            (:scheme_id, :base_scheme_id, :name, :description, :horizon, :task_type, :runtime_type, CAST(:tenors AS JSON), :frequency,
+            (:scheme_id, :base_scheme_id, :name, :owner, :description, :horizon, :task_type, :runtime_type, CAST(:tenors AS JSON), :frequency,
              :target_tenor, :schedule_cron, :schedule_timezone, :status,
              IF(:status = 'active', CURRENT_DATE, NULL))
         ON DUPLICATE KEY UPDATE
@@ -214,6 +218,7 @@ def _sync_scheme_registry_conn(
                     base_scheme_id <=> VALUES(base_scheme_id)
                     AND
                     name <=> VALUES(name)
+                    AND owner <=> VALUES(owner)
                     AND description <=> VALUES(description)
                     AND horizon <=> VALUES(horizon)
                     AND task_type <=> VALUES(task_type)
@@ -230,6 +235,7 @@ def _sync_scheme_registry_conn(
             ),
             base_scheme_id = VALUES(base_scheme_id),
             name = VALUES(name),
+            owner = VALUES(owner),
             description = VALUES(description),
             horizon = VALUES(horizon),
             task_type = VALUES(task_type),
@@ -243,7 +249,7 @@ def _sync_scheme_registry_conn(
             deployed_at = IF(deployed_at IS NULL AND VALUES(status) = 'active', CURRENT_DATE, deployed_at)
         """
     )
-    rows = []
+    row_specs: list[tuple[SchemeConfig, str, str]] = []
     registry_ids_by_base: dict[str, list[str]] = {}
     for cfg in scheme_list:
         registry_ids: list[str] = []
@@ -251,26 +257,76 @@ def _sync_scheme_registry_conn(
             row_scheme_id = registry_scheme_id(cfg.scheme_id, cfg.horizon, target_tenor)
             effective_status = effective_statuses[row_scheme_id]
             registry_ids.append(row_scheme_id)
-            rows.append(
-                {
-                    "scheme_id": row_scheme_id,
-                    "base_scheme_id": cfg.scheme_id,
-                    "name": cfg.name,
-                    "description": cfg.description,
-                    "horizon": cfg.horizon,
-                    "task_type": cfg.task_type,
-                    "runtime_type": getattr(cfg, "runtime_type", "native_adapter"),
-                    "tenors": json.dumps([target_tenor], ensure_ascii=False),
-                    "frequency": cfg.frequency,
-                    "target_tenor": target_tenor,
-                    "schedule_cron": cfg.schedule.cron,
-                    "schedule_timezone": cfg.schedule.timezone,
-                    "status": effective_status,
-                }
-            )
+            row_specs.append((cfg, target_tenor, effective_status))
         registry_ids_by_base[cfg.scheme_id] = registry_ids
-    if not rows:
+    if not row_specs:
         return
+
+    expected_registry_ids = [
+        registry_scheme_id(cfg.scheme_id, cfg.horizon, target_tenor)
+        for cfg, target_tenor, _effective_status in row_specs
+    ]
+    owner_placeholders = ", ".join(
+        f":owner_scheme_id_{index}"
+        for index, _scheme_id in enumerate(expected_registry_ids)
+    )
+    owner_params = {
+        f"owner_scheme_id_{index}": scheme_id
+        for index, scheme_id in enumerate(expected_registry_ids)
+    }
+    lock_clause = "" if _dialect_name(conn) == "sqlite" else " FOR UPDATE"
+    existing_owner_rows = conn.execute(
+        text(
+            "SELECT scheme_id, owner FROM t_scheme_registry "
+            f"WHERE scheme_id IN ({owner_placeholders}){lock_clause}"
+        ),
+        owner_params,
+    ).mappings().all()
+    existing_owners = {
+        str(row["scheme_id"]): row.get("owner")
+        for row in existing_owner_rows
+    }
+
+    rows = []
+    for cfg, target_tenor, effective_status in row_specs:
+        row_scheme_id = registry_scheme_id(
+            cfg.scheme_id,
+            cfg.horizon,
+            target_tenor,
+        )
+        declared_owner = getattr(cfg, "owner", None)
+        if declared_owner is not None:
+            owner = normalize_scheme_owner(declared_owner)
+        else:
+            try:
+                owner = normalize_scheme_owner(existing_owners.get(row_scheme_id))
+            except ValueError as exc:
+                raise ValueError(
+                    "Registry owner is required when canonical scheme metadata "
+                    f"does not declare one: {row_scheme_id}"
+                ) from exc
+        rows.append(
+            {
+                "scheme_id": row_scheme_id,
+                "base_scheme_id": cfg.scheme_id,
+                "name": cfg.name,
+                "owner": owner,
+                "description": cfg.description,
+                "horizon": cfg.horizon,
+                "task_type": cfg.task_type,
+                "runtime_type": getattr(
+                    cfg,
+                    "runtime_type",
+                    "native_adapter",
+                ),
+                "tenors": json.dumps([target_tenor], ensure_ascii=False),
+                "frequency": cfg.frequency,
+                "target_tenor": target_tenor,
+                "schedule_cron": cfg.schedule.cron,
+                "schedule_timezone": cfg.schedule.timezone,
+                "status": effective_status,
+            }
+        )
     conn.execute(sql, rows)
     for base_scheme_id, registry_ids in registry_ids_by_base.items():
         placeholders = ", ".join(f":scheme_id_{index}" for index, _ in enumerate(registry_ids))

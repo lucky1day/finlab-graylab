@@ -105,6 +105,8 @@ def validate_delivery(
         )
     if metadata.description is None:
         raise ValueError("description is required for a new Blackbox V2 Intake")
+    if metadata.owner is None:
+        raise ValueError("owner is required for a new Blackbox V2 Intake")
     expected_names = {f"{metadata.scheme_id}.py", f"{metadata.scheme_id}.json"}
     if {item.name for item in entries} != expected_names:
         raise ValueError("delivery filenames must match metadata scheme_id")

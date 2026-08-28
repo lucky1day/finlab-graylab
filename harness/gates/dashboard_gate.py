@@ -130,6 +130,9 @@ class DashboardGate(Gate):
                 "name": config.name,
                 "description": config.description,
             }
+            config_owner = getattr(config, "owner", None)
+            if config_owner is not None:
+                new_blackbox_identity["owner"] = config_owner
             for field, value in new_blackbox_identity.items():
                 if not value.strip():
                     errors.append(

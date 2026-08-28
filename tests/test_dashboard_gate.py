@@ -103,6 +103,7 @@ def _scheme(target_tenor: str, *, with_live: bool) -> dict[str, Any]:
         "scheme_id": f"{BASE_SCHEME_ID}__h1__{target_tenor}",
         "base_scheme_id": BASE_SCHEME_ID,
         "name": "Demo Daily",
+        "owner": "ALGO-A",
         "description": "Dashboard gate fixture",
         "horizon": 1,
         "task_type": "T+1",
@@ -111,27 +112,25 @@ def _scheme(target_tenor: str, *, with_live: bool) -> dict[str, Any]:
         "target_label": f"{target_tenor} target",
         "status": "active",
         "deployed_at": "2026-08-01",
-        "live_rows": (
-            [
-                [
-                    "2026-08-10",
-                    "2026-08-07",
-                    "2026-08-11",
-                    "scheduled_live",
-                    1,
-                    None,
-                ]
-            ]
+        "phase_ranges": (
+            [{
+                "prediction_phase": "scheduled_live",
+                "start_predict_date": "2026-08-10",
+                "end_predict_date": "2026-08-10",
+                "start_target_date": "2026-08-11",
+                "end_target_date": "2026-08-11",
+                "rows": 1,
+            }]
             if with_live
             else []
         ),
+        "monthly_rows": [],
         "backtest": {
             "benchmark_id": "benchmark-1",
             "benchmark_label": "Benchmark 1",
             "data_source": "framework_db_aligned",
             "data_source_label": "Current DB aligned",
             "latest_run_date": "2026-07-31",
-            "rows": [],
         },
     }
 
@@ -146,17 +145,25 @@ def _payload(
     ]
     schemes.sort(key=lambda row: row["scheme_id"])
     return {
-        "schema_version": "factor-lab-dashboard-v3",
+        "schema_version": "factor-lab-dashboard-v4",
+        "representation": "summary",
         "snapshot_id": "dashboard-snapshot-1",
         "generated_at": "2026-08-10T12:00:00+08:00",
         "display_until": "2026-08-10",
-        "row_fields": [
-            "predict_date",
-            "feature_date",
-            "target_date",
-            "prediction_phase",
-            "predicted_direction",
-            "actual_direction",
+        "monthly_row_fields": [
+            "month",
+            "source",
+            "samples",
+            "metric_samples",
+            "correct",
+            "predicted_up",
+            "predicted_down",
+            "predicted_flat",
+            "actual_up",
+            "actual_down",
+            "actual_flat",
+            "up_true_positive",
+            "down_true_positive",
         ],
         "target_labels": {tenor: f"{tenor} target" for tenor in tenors},
         "schemes": schemes,
@@ -189,7 +196,7 @@ def _evidence(result) -> dict[str, Any]:
     return {item.key: item.value for item in result.evidence}
 
 
-def test_dashboard_gate_accepts_existing_and_empty_live_rows(
+def test_dashboard_gate_accepts_existing_and_empty_live_months(
     tmp_path: Path,
 ) -> None:
     _write_config(tmp_path)
@@ -304,12 +311,12 @@ def test_dashboard_gate_requires_each_config_composite_id_exactly_once(
     assert not result.passed
 
 
-def test_dashboard_gate_accepts_active_scheme_with_empty_live_rows(
+def test_dashboard_gate_accepts_active_scheme_with_empty_live_months(
     tmp_path: Path,
 ) -> None:
     _write_config(tmp_path, tenors=("5Y",))
     payload = _payload(tenors=("5Y",))
-    payload["schemes"][0]["live_rows"] = []
+    payload["schemes"][0]["phase_ranges"] = []
 
     result = _run_gate(tmp_path, lambda _url, **_kwargs: (payload, 200))
 

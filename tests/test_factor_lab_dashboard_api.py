@@ -14,11 +14,12 @@ DASHBOARD_PATH = "/api/factor-lab/dashboard"
 
 def _payload(snapshot_id: str) -> dict[str, Any]:
     return {
-        "schema_version": "factor-lab-dashboard-v3",
+        "schema_version": "factor-lab-dashboard-v4",
+        "representation": "summary",
         "snapshot_id": snapshot_id,
         "generated_at": "2026-08-07T16:41:00+08:00",
         "display_until": "2026-08-07",
-        "row_fields": [],
+        "monthly_row_fields": [],
         "target_labels": {},
         "schemes": [],
     }
@@ -145,6 +146,56 @@ def test_dashboard_rejects_query_before_reading_database(monkeypatch) -> None:
     assert json.loads(body) == {"error_code": "dashboard_query_not_allowed"}
     assert calls == 0
     assert headers["cache-control"] == "no-store"
+
+
+def test_dashboard_accepts_only_exact_detail_query(monkeypatch) -> None:
+    from backend import main
+
+    calls: list[dict[str, str]] = []
+    detail = {
+        "schema_version": "factor-lab-dashboard-v4",
+        "representation": "detail",
+        "snapshot_id": "detail-1",
+        "generated_at": "2026-08-07T16:41:00+08:00",
+        "display_until": "2026-08-07",
+        "scheme_id": "demo__h1__5Y",
+        "month": "2026-08",
+        "source": "all",
+        "row_fields": [],
+        "rows": [],
+    }
+
+    def build(_engine: object, **kwargs: str):
+        calls.append(kwargs)
+        return detail
+
+    monkeypatch.setattr(main, "get_dashboard_engine", object)
+    monkeypatch.setattr(main, "build_factor_lab_dashboard_detail", build)
+    status, _, body, _ = _request(
+        main.app,
+        query_string=(
+            b"scheme-id=demo__h1__5Y&month=2026-08&source=all"
+        ),
+        headers=[(b"accept-encoding", b"identity")],
+    )
+
+    assert status == 200
+    assert json.loads(body)["representation"] == "detail"
+    assert calls == [
+        {
+            "scheme_id": "demo__h1__5Y",
+            "month": "2026-08",
+            "source": "all",
+        }
+    ]
+
+    for invalid in (
+        b"scheme-id=demo__h1__5Y&month=2026-08",
+        b"scheme-id=demo__h1__5Y&month=2026-08&source=all&extra=1",
+        b"scheme-id=demo__h1__5Y&scheme-id=demo__h1__5Y&month=2026-08&source=all",
+    ):
+        invalid_status, _, _, _ = _request(main.app, query_string=invalid)
+        assert invalid_status == 400
 
 
 def test_dashboard_gzip_and_identity_are_one_representation(monkeypatch) -> None:

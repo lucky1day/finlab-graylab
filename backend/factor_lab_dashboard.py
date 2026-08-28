@@ -4,7 +4,7 @@ import gzip
 import json
 import logging
 import time
-from collections import Counter, OrderedDict, defaultdict
+from collections import OrderedDict, defaultdict
 from copy import deepcopy
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -17,13 +17,14 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Connection, Engine
 
-from shared.task_specs import WEEKLY_TASK_TYPES
+from shared.scheme_config_schema import normalize_scheme_owner
 
 from backend.factor_lab_dashboard_semantics import (
     BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE,
     DASHBOARD_SCHEMA_VERSION,
+    DETAIL_ROW_FIELDS,
     FACTOR_LAB_HISTORY_START_DATE,
-    ROW_FIELDS,
+    MONTHLY_ROW_FIELDS,
     DashboardDataError,
     backtest_benchmark_label,
     backtest_data_source_label,
@@ -51,7 +52,6 @@ MAX_LIVE_PREDICTION_SOURCE_ROWS = 20_000
 MAX_ACTUAL_SOURCE_ROWS = 80_000
 MAX_BACKTEST_RUN_SOURCE_ROWS = 100_000
 MAX_BACKTEST_DETAIL_SOURCE_ROWS = 20_000
-MAX_WEEKLY_COVERAGE_DIAGNOSTIC_DATES = 128
 logger = logging.getLogger(__name__)
 _DIAGNOSTICS_LIMIT = 8
 _diagnostics_lock = Lock()
@@ -96,18 +96,85 @@ def dashboard_read_connection(engine: Engine) -> Iterator[Connection]:
 def build_factor_lab_dashboard(
     engine: Engine,
 ) -> dict[str, Any]:
-    """在一个一致性事务内批量读取并构建因子实验室 live 快照。"""
+    """在一个一致性事务内构建不含逐日明细的 V4 首屏。"""
+    return _build_dashboard_representation(engine)
+
+
+def build_factor_lab_dashboard_detail(
+    engine: Engine,
+    *,
+    scheme_id: str,
+    month: str,
+    source: str,
+) -> dict[str, Any] | None:
+    """按 active composite scheme、月份和来源构建 V4 明细。"""
+    if source not in {"all", "backtest", "live"}:
+        raise ValueError("dashboard detail source is invalid")
+    if not isinstance(month, str) or len(month) != 7:
+        raise ValueError("dashboard detail month is invalid")
+    return _build_dashboard_representation(
+        engine,
+        registry_scheme_id=scheme_id,
+        detail_month=month,
+        detail_source=source,
+    )
+
+
+def _build_dashboard_representation(
+    engine: Engine,
+    *,
+    registry_scheme_id: str | None = None,
+    detail_month: str | None = None,
+    detail_source: str | None = None,
+) -> dict[str, Any] | None:
     build_started_at = time.perf_counter()
     captured = datetime.now(SHANGHAI_TIMEZONE)
     display_until = captured.date().isoformat()
 
     db_read_started_at = time.perf_counter()
     with dashboard_read_connection(engine) as connection:
-        registry_rows = _read_active_registry(connection)
-        target_rows = _read_active_targets(connection)
-        prediction_rows = _read_live_predictions(connection, registry_rows)
-        actual_rows = _read_live_actuals(connection, registry_rows)
-        backtest_run_rows = _read_backtest_runs(connection, registry_rows)
+        registry_rows = _read_active_registry(
+            connection,
+            registry_scheme_id=registry_scheme_id,
+        )
+        if registry_scheme_id is not None and not registry_rows:
+            return None
+        detail_date_range = (
+            _detail_target_date_range(
+                detail_month,
+                task_type=str(registry_rows[0]["task_type"]),
+            )
+            if registry_scheme_id is not None
+            else None
+        )
+        target_rows = (
+            _read_active_targets(connection)
+            if registry_scheme_id is None
+            else []
+        )
+        prediction_rows = (
+            _read_live_predictions(
+                connection,
+                registry_rows,
+                target_date_range=detail_date_range,
+            )
+            if detail_source in {None, "all", "live"}
+            else []
+        )
+        actual_rows = (
+            _read_live_actuals(
+                connection,
+                registry_rows,
+                target_date_range=detail_date_range,
+            )
+            if detail_source in {None, "all", "live"}
+            else []
+        )
+        backtest_run_rows = (
+            _read_backtest_runs(connection, registry_rows)
+            if detail_source in {None, "all", "backtest"}
+            else []
+        )
         selected_backtest_runs = choose_latest_backtest_runs(
             backtest_run_rows,
             registry_rows,
@@ -117,6 +184,7 @@ def build_factor_lab_dashboard(
             selected_run_ids=sorted(
                 {int(row["id"]) for row in selected_backtest_runs.values()}
             ),
+            target_date_range=detail_date_range,
         )
     db_read_seconds = time.perf_counter() - db_read_started_at
 
@@ -126,13 +194,14 @@ def build_factor_lab_dashboard(
     target_labels = {
         target["target_code"]: target["display_name"] for target in targets
     }
-    for scheme in registry:
-        if scheme["target_tenor"] not in target_labels:
-            raise DashboardDataError(
-                "active registry target is missing from active target registry: "
-                f"scheme_id={scheme['scheme_id']} "
-                f"target_tenor={scheme['target_tenor']}"
-            )
+    if registry_scheme_id is None:
+        for scheme in registry:
+            if scheme["target_tenor"] not in target_labels:
+                raise DashboardDataError(
+                    "active registry target is missing from active target registry: "
+                    f"scheme_id={scheme['scheme_id']} "
+                    f"target_tenor={scheme['target_tenor']}"
+                )
 
     active_actual_scopes = {
         (scheme["target_tenor"], *live_actual_selector(scheme["task_type"]))
@@ -189,7 +258,7 @@ def build_factor_lab_dashboard(
     history_backtest_rows_excluded = 0
     for scheme in registry:
         selector = live_actual_selector(scheme["task_type"])
-        live_rows: list[list[Any]] = []
+        live_details: list[dict[str, Any]] = []
         prediction_key = (
             scheme["base_scheme_id"],
             scheme["target_tenor"],
@@ -208,11 +277,12 @@ def build_factor_lab_dashboard(
             )
             detail = dict(prediction)
             detail["actual_direction"] = actual_direction
-            live_rows.append(compact_detail_row(detail, source="live"))
+            live_details.append(detail)
             live_row_count += 1
 
         selected_run = selected_backtest_runs.get(scheme["scheme_id"])
         backtest = None
+        backtest_details: list[dict[str, Any]] = []
         if selected_run is not None:
             run_id = _required_int(
                 selected_run.get("id"), field="selected backtest run id"
@@ -221,13 +291,12 @@ def build_factor_lab_dashboard(
                 (run_id, scheme["target_tenor"]),
                 [],
             )
-            if not selected_details:
+            if not selected_details and registry_scheme_id is None:
                 raise DashboardDataError(
                     f"base_scheme_id={scheme['base_scheme_id']} "
                     f"target_tenor={scheme['target_tenor']} has no detail "
                     f"for selected backtest run_id={run_id}"
                 )
-            compact_backtest_rows: list[list[Any]] = []
             for detail_row in selected_details:
                 detail_horizon = _required_int(
                     detail_row.get("horizon"), field="backtest detail horizon"
@@ -248,11 +317,8 @@ def build_factor_lab_dashboard(
                 detail = dict(detail_row)
                 detail["prediction_phase"] = None
                 detail["actual_direction"] = detail.get("label")
-                compact_backtest_rows.append(
-                    compact_detail_row(detail, source="backtest")
-                )
+                backtest_details.append(detail)
                 backtest_row_count += 1
-            compact_backtest_rows.sort(key=_compact_row_sort_key)
             benchmark_id = _required_text(
                 selected_run.get("benchmark_id"),
                 field="selected backtest benchmark_id",
@@ -270,74 +336,118 @@ def build_factor_lab_dashboard(
                     selected_run.get("end_date"),
                     field="selected backtest end_date",
                 ),
-                "rows": compact_backtest_rows,
             }
 
-        live_rows.sort(key=_compact_row_sort_key)
+        live_details.sort(key=_detail_mapping_sort_key)
+        backtest_details.sort(key=_detail_mapping_sort_key)
+        cutoff_target_date = (
+            min(
+                _iso_date(row.get("target_date"), field="live target_date")
+                for row in live_details
+            )
+            if live_details
+            else None
+        )
+        if cutoff_target_date is not None:
+            backtest_details = [
+                row
+                for row in backtest_details
+                if _iso_date(
+                    row.get("target_date"), field="backtest target_date"
+                )
+                < cutoff_target_date
+            ]
+
+        if registry_scheme_id is not None:
+            rows: list[list[Any]] = []
+            if detail_source in {"all", "backtest"}:
+                rows.extend(
+                    compact_detail_row(row, source="backtest")
+                    for row in backtest_details
+                    if _display_month(row, scheme["task_type"]) == detail_month
+                )
+            if detail_source in {"all", "live"}:
+                rows.extend(
+                    compact_detail_row(row, source="live")
+                    for row in live_details
+                    if _display_month(row, scheme["task_type"]) == detail_month
+                )
+            rows.sort(key=_compact_row_sort_key)
+            payload = {
+                "schema_version": DASHBOARD_SCHEMA_VERSION,
+                "representation": "detail",
+                "snapshot_id": uuid4().hex,
+                "generated_at": captured.isoformat(timespec="seconds"),
+                "display_until": display_until,
+                "scheme_id": scheme["scheme_id"],
+                "month": detail_month,
+                "source": detail_source,
+                "row_fields": list(DETAIL_ROW_FIELDS),
+                "rows": rows,
+            }
+            validate_dashboard_payload(payload)
+            _record_build_diagnostics(
+                payload["snapshot_id"],
+                {
+                    "snapshot_id": payload["snapshot_id"],
+                    "representation": "detail",
+                    "db_read_seconds": db_read_seconds,
+                    "canonical_build_seconds": (
+                        time.perf_counter() - canonical_started_at
+                    ),
+                    "build_seconds": time.perf_counter() - build_started_at,
+                    "scheme_count": 1,
+                    "detail_row_count": len(rows),
+                    **actual_diagnostics,
+                },
+            )
+            return payload
+
         schemes.append(
             {
                 **scheme,
                 "target_label": target_labels[scheme["target_tenor"]],
-                "live_rows": live_rows,
+                "phase_ranges": _phase_ranges(live_details),
+                "monthly_rows": _monthly_rows(
+                    backtest_details=backtest_details,
+                    live_details=live_details,
+                    task_type=scheme["task_type"],
+                ),
                 "backtest": backtest,
             }
         )
 
     schemes.sort(key=lambda item: item["scheme_id"])
-    weekly_coverage = _weekly_coverage_diagnostics(schemes)
-    if weekly_coverage["drifts"]:
-        event = {
-            "event": "factor_lab_weekly_coverage_drift",
-            "drift_count": len(weekly_coverage["drifts"]),
-            "drifts": weekly_coverage["drifts"],
-        }
-        logger.warning(
-            "factor_lab_weekly_coverage_drift %s",
-            json.dumps(event, ensure_ascii=False, sort_keys=True),
-            extra={"dashboard_event": event},
-        )
     payload = {
         "schema_version": DASHBOARD_SCHEMA_VERSION,
+        "representation": "summary",
         "snapshot_id": uuid4().hex,
         "generated_at": captured.isoformat(timespec="seconds"),
         "display_until": display_until,
-        "row_fields": list(ROW_FIELDS),
+        "monthly_row_fields": list(MONTHLY_ROW_FIELDS),
         "target_labels": target_labels,
         "schemes": schemes,
     }
     validate_dashboard_payload(payload)
     canonical_build_seconds = time.perf_counter() - canonical_started_at
-    # 该校验覆盖 canonical builder 输出；route 继续负责 identity/gzip ASGI wire
-    # 表示。
-    serialization_started_at = time.perf_counter()
-    encoding = _validate_canonical_snapshot_budgets(
-        payload,
-        detail_rows=live_row_count + backtest_row_count,
-    )
-    canonical_serialization_seconds = (
-        time.perf_counter() - serialization_started_at
-    )
     _record_build_diagnostics(
         payload["snapshot_id"],
         {
             "snapshot_id": payload["snapshot_id"],
             "db_read_seconds": db_read_seconds,
             "canonical_build_seconds": canonical_build_seconds,
-            "canonical_serialization_seconds": canonical_serialization_seconds,
             "build_seconds": time.perf_counter() - build_started_at,
+            "representation": "summary",
             "scheme_count": len(schemes),
             "live_row_count": live_row_count,
             "backtest_row_count": backtest_row_count,
             "detail_row_count": live_row_count + backtest_row_count,
-            "raw_bytes": encoding.raw_size,
-            "gzip_bytes": encoding.gzip_size,
             "history_backtest_rows_excluded_before_policy_start": (
                 history_backtest_rows_excluded
             ),
             "history_live_rows_excluded_before_policy_start": (
                 history_live_rows_excluded
             ),
-            "weekly_coverage": weekly_coverage,
             **actual_diagnostics,
         },
     )
@@ -351,100 +461,150 @@ def dashboard_build_diagnostics(snapshot_id: str) -> dict[str, Any] | None:
         return None if diagnostics is None else deepcopy(diagnostics)
 
 
-def _weekly_coverage_diagnostics(
-    schemes: list[Mapping[str, Any]],
-) -> dict[str, Any]:
-    """返回当前周度格子的信号、有效样本与日期覆盖诊断。"""
-    candidates: dict[str, dict[str, Any]] = {}
-    target_dates_by_scheme: dict[str, set[str]] = {}
-    groups: dict[tuple[str, str], list[str]] = defaultdict(list)
+def record_dashboard_encoding(
+    snapshot_id: str,
+    encoding: SnapshotEncoding,
+) -> None:
+    """把 route 唯一一次编码的字节数并入已有诊断。"""
+    with _diagnostics_lock:
+        diagnostics = _diagnostics_by_snapshot_id.get(snapshot_id)
+        if diagnostics is None:
+            return
+        diagnostics["raw_bytes"] = encoding.raw_size
+        diagnostics["gzip_bytes"] = encoding.gzip_size
 
-    for scheme in schemes:
-        task_type = str(scheme.get("task_type") or "")
-        if task_type not in WEEKLY_TASK_TYPES:
+
+def _phase_ranges(rows: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    ranges: list[dict[str, Any]] = []
+    for phase in ("gray_live", "scheduled_live"):
+        phase_rows = [row for row in rows if row.get("prediction_phase") == phase]
+        if not phase_rows:
             continue
-        scheme_id = _required_text(
-            scheme.get("scheme_id"),
-            field="weekly coverage scheme_id",
+        predict_dates = sorted(
+            _iso_date(row.get("predict_date"), field="live predict_date")
+            for row in phase_rows
         )
-        target_tenor = _required_text(
-            scheme.get("target_tenor"),
-            field="weekly coverage target_tenor",
+        target_dates = sorted(
+            _iso_date(row.get("target_date"), field="live target_date")
+            for row in phase_rows
         )
-        backtest = scheme.get("backtest")
-        backtest_rows = (
-            list(backtest.get("rows") or [])
-            if isinstance(backtest, Mapping)
-            else []
+        ranges.append(
+            {
+                "prediction_phase": phase,
+                "start_predict_date": predict_dates[0],
+                "end_predict_date": predict_dates[-1],
+                "start_target_date": target_dates[0],
+                "end_target_date": target_dates[-1],
+                "rows": len(phase_rows),
+            }
         )
-        live_rows = list(scheme.get("live_rows") or [])
-        rows = [*backtest_rows, *live_rows]
-        target_dates = [
-            _iso_date(row[2], field="weekly coverage target_date")
+    return ranges
+
+
+def _monthly_rows(
+    *,
+    backtest_details: list[Mapping[str, Any]],
+    live_details: list[Mapping[str, Any]],
+    task_type: str,
+) -> list[list[Any]]:
+    grouped: dict[tuple[str, str], list[Mapping[str, Any]]] = defaultdict(list)
+    for source, rows in (
+        ("backtest", backtest_details),
+        ("live", live_details),
+    ):
+        for row in rows:
+            if row.get("actual_direction") is None:
+                continue
+            grouped[(_display_month(row, task_type), source)].append(row)
+
+    result: list[list[Any]] = []
+    source_rank = {"backtest": 0, "live": 1}
+    for (month, source), rows in sorted(
+        grouped.items(),
+        key=lambda item: (item[0][0], source_rank[item[0][1]]),
+    ):
+        predicted = [
+            _direction_value(row.get("predicted_direction"), field="predicted_direction")
             for row in rows
         ]
-        target_date_set = set(target_dates)
-        target_date_counts = Counter(target_dates)
-        duplicates = sorted(
-            target_date
-            for target_date, count in target_date_counts.items()
-            if count > 1
+        actual = [
+            _direction_value(row.get("actual_direction"), field="actual_direction")
+            for row in rows
+        ]
+        metric_indexes = [
+            index for index, direction in enumerate(predicted) if direction in {-1, 1}
+        ]
+        result.append(
+            [
+                month,
+                source,
+                len(rows),
+                len(metric_indexes),
+                sum(predicted[index] == actual[index] for index in metric_indexes),
+                predicted.count(1),
+                predicted.count(-1),
+                predicted.count(0),
+                actual.count(1),
+                actual.count(-1),
+                actual.count(0),
+                sum(predicted[index] == actual[index] == 1 for index in metric_indexes),
+                sum(predicted[index] == actual[index] == -1 for index in metric_indexes),
+            ]
         )
-        candidates[scheme_id] = {
-            "task_type": task_type,
-            "target_tenor": target_tenor,
-            "signal_count": len(rows),
-            "valid_sample_count": sum(
-                1 for row in rows if row[5] is not None
-            ),
-            "duplicate_target_dates": duplicates[
-                :MAX_WEEKLY_COVERAGE_DIAGNOSTIC_DATES
-            ],
-        }
-        target_dates_by_scheme[scheme_id] = target_date_set
-        groups[(target_tenor, task_type)].append(scheme_id)
+    return result
 
-    drifts: list[dict[str, Any]] = []
-    for (target_tenor, task_type), scheme_ids in sorted(groups.items()):
-        reference_size = max(
-            len(target_dates_by_scheme[scheme_id])
-            for scheme_id in scheme_ids
-        )
-        reference_scheme_id = min(
-            scheme_id
-            for scheme_id in scheme_ids
-            if len(target_dates_by_scheme[scheme_id]) == reference_size
-        )
-        reference_dates = target_dates_by_scheme[reference_scheme_id]
-        for scheme_id in sorted(scheme_ids):
-            dates = target_dates_by_scheme[scheme_id]
-            missing = sorted(reference_dates - dates)
-            extra = sorted(dates - reference_dates)
-            duplicates = candidates[scheme_id]["duplicate_target_dates"]
-            if not missing and not extra and not duplicates:
-                continue
-            drifts.append(
-                {
-                    "target_tenor": target_tenor,
-                    "task_type": task_type,
-                    "reference_scheme_id": reference_scheme_id,
-                    "scheme_id": scheme_id,
-                    "missing_target_date_count": len(missing),
-                    "missing_target_dates": missing[
-                        :MAX_WEEKLY_COVERAGE_DIAGNOSTIC_DATES
-                    ],
-                    "extra_target_date_count": len(extra),
-                    "extra_target_dates": extra[
-                        :MAX_WEEKLY_COVERAGE_DIAGNOSTIC_DATES
-                    ],
-                    "duplicate_target_dates": duplicates,
-                }
-            )
-    return {
-        "policy_start_date": FACTOR_LAB_HISTORY_START_DATE,
-        "candidates": candidates,
-        "drifts": drifts,
-    }
+
+def _display_month(row: Mapping[str, Any], task_type: str) -> str:
+    target_date = date.fromisoformat(
+        _iso_date(row.get("target_date"), field="target_date")
+    )
+    if task_type != "monthly_average":
+        return target_date.strftime("%Y-%m")
+    year = target_date.year + (1 if target_date.month == 12 else 0)
+    month = 1 if target_date.month == 12 else target_date.month + 1
+    return f"{year:04d}-{month:02d}"
+
+
+def _detail_target_date_range(
+    display_month: str | None,
+    *,
+    task_type: str,
+) -> tuple[str, str]:
+    """把展示月份收敛为底层 target_date 半开区间。"""
+    if display_month is None:
+        raise ValueError("dashboard detail month is required")
+    try:
+        display_start = date.fromisoformat(f"{display_month}-01")
+    except ValueError as exc:
+        raise ValueError("dashboard detail month is invalid") from exc
+    if display_start.strftime("%Y-%m") != display_month:
+        raise ValueError("dashboard detail month is invalid")
+
+    target_start = (
+        _shift_month(display_start, -1)
+        if task_type == "monthly_average"
+        else display_start
+    )
+    return target_start.isoformat(), _shift_month(target_start, 1).isoformat()
+
+
+def _shift_month(value: date, offset: int) -> date:
+    month_index = value.year * 12 + value.month - 1 + offset
+    return date(month_index // 12, month_index % 12 + 1, 1)
+
+
+def _direction_value(value: Any, *, field: str) -> int:
+    if isinstance(value, bool):
+        raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
+    try:
+        result = int(value)
+    except (TypeError, ValueError) as exc:
+        raise DashboardDataError(
+            f"dashboard {field} is invalid: {value!r}"
+        ) from exc
+    if result not in {-1, 0, 1} or result != value:
+        raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
+    return result
 
 
 def _record_build_diagnostics(
@@ -459,21 +619,33 @@ def _record_build_diagnostics(
             _diagnostics_by_snapshot_id.popitem(last=False)
 
 
-def _read_active_registry(connection: Connection) -> list[Mapping[str, Any]]:
+def _read_active_registry(
+    connection: Connection,
+    *,
+    registry_scheme_id: str | None = None,
+) -> list[Mapping[str, Any]]:
+    scheme_filter = (
+        " AND scheme_id = :registry_scheme_id"
+        if registry_scheme_id is not None
+        else ""
+    )
     statement = text(
-        """
-        SELECT scheme_id, base_scheme_id, runtime_type, name, description, horizon,
-               task_type, frequency, target_tenor, status, deployed_at
+        f"""
+        SELECT scheme_id, base_scheme_id, runtime_type, name, owner, description,
+               horizon, task_type, frequency, target_tenor, status, deployed_at
         FROM t_scheme_registry
-        WHERE status = :active_status
+        WHERE status = :active_status{scheme_filter}
         ORDER BY target_tenor, task_type, scheme_id
         LIMIT :dashboard_source_limit
         """
     )
+    params = {"active_status": "active"}
+    if registry_scheme_id is not None:
+        params["registry_scheme_id"] = registry_scheme_id
     return _read_bounded_source_rows(
         connection,
         statement,
-        {"active_status": "active"},
+        params,
         dataset="active_registry",
         cap=MAX_REGISTRY_SOURCE_ROWS,
     )
@@ -520,22 +692,35 @@ def _read_backtest_details(
     connection: Connection,
     *,
     selected_run_ids: list[int],
+    target_date_range: tuple[str, str] | None = None,
 ) -> list[Mapping[str, Any]]:
     if not selected_run_ids:
         return []
+    date_filter = (
+        " AND target_date >= :target_date_from"
+        " AND target_date < :target_date_before"
+        if target_date_range is not None
+        else ""
+    )
     statement = text(
-        """
+        f"""
         SELECT run_id, target_tenor, horizon, predict_date, feature_date,
                target_date, label, predicted_direction
         FROM t_backtest_predictions
         WHERE run_id IN :run_ids
+          {date_filter}
         LIMIT :dashboard_source_limit
         """
     ).bindparams(bindparam("run_ids", expanding=True))
+    params: dict[str, Any] = {"run_ids": selected_run_ids}
+    if target_date_range is not None:
+        params["target_date_from"], params["target_date_before"] = (
+            target_date_range
+        )
     return _read_bounded_source_rows(
         connection,
         statement,
-        {"run_ids": selected_run_ids},
+        params,
         dataset="selected_backtest_details",
         cap=MAX_BACKTEST_DETAIL_SOURCE_ROWS,
     )
@@ -564,6 +749,8 @@ def _read_active_targets(connection: Connection) -> list[Mapping[str, Any]]:
 def _read_live_predictions(
     connection: Connection,
     registry_rows: list[Mapping[str, Any]],
+    *,
+    target_date_range: tuple[str, str] | None = None,
 ) -> list[Mapping[str, Any]]:
     pairs = sorted(
         {
@@ -581,13 +768,23 @@ def _read_live_predictions(
         params[f"base_scheme_id_{index}"] = base_scheme_id
         params[f"target_tenor_{index}"] = target_tenor
     where_clause = " OR ".join(filters) if filters else "1 = 0"
+    date_filter = (
+        " AND target_date >= :target_date_from"
+        " AND target_date < :target_date_before"
+        if target_date_range is not None
+        else ""
+    )
+    if target_date_range is not None:
+        params["target_date_from"], params["target_date_before"] = (
+            target_date_range
+        )
     statement = text(
         f"""
         SELECT id, scheme_id, target_tenor, horizon, predict_date,
                feature_date, target_date, prediction_phase,
                predicted_direction, extra
         FROM t_scheme_predictions
-        WHERE {where_clause}
+        WHERE ({where_clause}){date_filter}
         ORDER BY target_date, predict_date, id
         LIMIT :dashboard_source_limit
         """
@@ -604,12 +801,26 @@ def _read_live_predictions(
 def _read_live_actuals(
     connection: Connection,
     registry_rows: list[Mapping[str, Any]],
+    *,
+    target_date_range: tuple[str, str] | None = None,
 ) -> list[Mapping[str, Any]]:
     target_tenors = sorted({str(row["target_tenor"]) for row in registry_rows})
     if not target_tenors:
         return []
+    daily_date_filter = (
+        " AND trade_date >= :target_date_from"
+        " AND trade_date < :target_date_before"
+        if target_date_range is not None
+        else ""
+    )
+    target_date_filter = (
+        " AND target_date >= :target_date_from"
+        " AND target_date < :target_date_before"
+        if target_date_range is not None
+        else ""
+    )
     statement = text(
-        """
+        f"""
         SELECT 'daily_1d' AS actual_kind,
                tenor AS target_tenor,
                trade_date AS target_date,
@@ -618,6 +829,7 @@ def _read_live_actuals(
         FROM t_scheme_actuals
         WHERE tenor IN :target_tenors
           AND trade_date >= :history_start_date
+          {daily_date_filter}
         UNION ALL
         SELECT 'daily_5d' AS actual_kind,
                tenor AS target_tenor,
@@ -627,6 +839,7 @@ def _read_live_actuals(
         FROM t_scheme_actuals
         WHERE tenor IN :target_tenors
           AND trade_date >= :history_start_date
+          {daily_date_filter}
         UNION ALL
         SELECT 'weekly' AS actual_kind,
                tenor AS target_tenor,
@@ -636,6 +849,7 @@ def _read_live_actuals(
         FROM t_scheme_weekly_actuals
         WHERE tenor IN :target_tenors
           AND target_date >= :history_start_date
+          {target_date_filter}
         UNION ALL
         SELECT 'monthly' AS actual_kind,
                tenor AS target_tenor,
@@ -645,6 +859,7 @@ def _read_live_actuals(
         FROM t_scheme_monthly_actuals
         WHERE tenor IN :target_tenors
           AND target_date >= :history_start_date
+          {target_date_filter}
         UNION ALL
         SELECT 'period_average' AS actual_kind,
                tenor AS target_tenor,
@@ -654,16 +869,22 @@ def _read_live_actuals(
         FROM t_scheme_period_average_actuals
         WHERE tenor IN :target_tenors
           AND target_date >= :history_start_date
+          {target_date_filter}
         LIMIT :dashboard_source_limit
         """
     ).bindparams(bindparam("target_tenors", expanding=True))
+    params: dict[str, Any] = {
+        "target_tenors": target_tenors,
+        "history_start_date": FACTOR_LAB_HISTORY_START_DATE,
+    }
+    if target_date_range is not None:
+        params["target_date_from"], params["target_date_before"] = (
+            target_date_range
+        )
     return _read_bounded_source_rows(
         connection,
         statement,
-        {
-            "target_tenors": target_tenors,
-            "history_start_date": FACTOR_LAB_HISTORY_START_DATE,
-        },
+        params,
         dataset="live_actuals",
         cap=MAX_ACTUAL_SOURCE_ROWS,
     )
@@ -828,6 +1049,7 @@ def _registry_dto(
         "scheme_id": scheme_id,
         "base_scheme_id": base_scheme_id,
         "name": _required_text(row.get("name"), field="registry name"),
+        "owner": _required_owner(row.get("owner")),
         "description": str(row.get("description") or ""),
         "horizon": _required_int(row.get("horizon"), field="registry horizon"),
         "task_type": task_type,
@@ -856,8 +1078,19 @@ def _target_dto(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _compact_row_sort_key(row: list[Any]) -> tuple[str, str]:
-    return str(row[2]), str(row[0])
+def _detail_mapping_sort_key(row: Mapping[str, Any]) -> tuple[str, str]:
+    return (
+        _iso_date(row.get("target_date"), field="detail target_date"),
+        _iso_date(row.get("predict_date"), field="detail predict_date"),
+    )
+
+
+def _compact_row_sort_key(row: list[Any]) -> tuple[int, str, str]:
+    return (
+        {"backtest": 0, "live": 1}[str(row[0])],
+        str(row[3]),
+        str(row[1]),
+    )
 
 
 def encode_canonical_snapshot(payload: Mapping[str, Any]) -> SnapshotEncoding:
@@ -893,12 +1126,11 @@ def _validate_canonical_snapshot_budgets(
     detail_rows: int | None = None,
 ) -> SnapshotEncoding:
     if detail_rows is None:
-        detail_rows = 0
-        for scheme in payload["schemes"]:
-            detail_rows += len(scheme["live_rows"])
-            backtest = scheme["backtest"]
-            if backtest is not None:
-                detail_rows += len(backtest["rows"])
+        detail_rows = (
+            len(payload.get("rows", []))
+            if payload.get("representation") == "detail"
+            else 0
+        )
     if detail_rows > MAX_DETAIL_ROWS:
         raise DashboardDataError(
             "dashboard detail rows exceed budget: "
@@ -935,6 +1167,15 @@ def _required_text(value: Any, *, field: str) -> str:
     if not result:
         raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
     return result
+
+
+def _required_owner(value: Any) -> str:
+    try:
+        return normalize_scheme_owner(value)
+    except ValueError as exc:
+        raise DashboardDataError(
+            f"dashboard registry owner is invalid: {value!r}"
+        ) from exc
 
 
 def _required_int(value: Any, *, field: str) -> int:

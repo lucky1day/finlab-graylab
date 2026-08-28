@@ -10,6 +10,7 @@ from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo
 
 from shared.models import DIRECTION_VALUES
+from shared.scheme_config_schema import normalize_scheme_owner
 from shared.prediction_context import (
     LIVE_PREDICTION_PHASES,
     MONTHLY_TARGET_RULE,
@@ -25,9 +26,10 @@ from shared.task_specs import (
 )
 
 
-DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v3"
+DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v4"
 FACTOR_LAB_HISTORY_START_DATE = "2025-01-01"
-ROW_FIELDS = (
+DETAIL_ROW_FIELDS = (
+    "source",
     "predict_date",
     "feature_date",
     "target_date",
@@ -35,6 +37,23 @@ ROW_FIELDS = (
     "predicted_direction",
     "actual_direction",
 )
+MONTHLY_ROW_FIELDS = (
+    "month",
+    "source",
+    "samples",
+    "metric_samples",
+    "correct",
+    "predicted_up",
+    "predicted_down",
+    "predicted_flat",
+    "actual_up",
+    "actual_down",
+    "actual_flat",
+    "up_true_positive",
+    "down_true_positive",
+)
+# 旧名称只供低层明细工具使用；公开 V4 合同使用 DETAIL_ROW_FIELDS。
+ROW_FIELDS = DETAIL_ROW_FIELDS
 VALID_TASK_TYPES = set(ALLOWED_TASK_TYPES)
 DAILY_TARGET_RULE = "target_date_yield_vs_feature_date_yield"
 LIVE_ACTUAL_SELECTORS = {
@@ -94,17 +113,31 @@ STRUCTURED_BOUNDARY_CODEPOINTS = frozenset(
 )
 TOP_LEVEL_FIELDS = {
     "schema_version",
+    "representation",
     "snapshot_id",
     "generated_at",
     "display_until",
-    "row_fields",
+    "monthly_row_fields",
     "target_labels",
     "schemes",
+}
+DETAIL_TOP_LEVEL_FIELDS = {
+    "schema_version",
+    "representation",
+    "snapshot_id",
+    "generated_at",
+    "display_until",
+    "scheme_id",
+    "month",
+    "source",
+    "row_fields",
+    "rows",
 }
 SCHEME_FIELDS = {
     "scheme_id",
     "base_scheme_id",
     "name",
+    "owner",
     "description",
     "horizon",
     "task_type",
@@ -113,7 +146,8 @@ SCHEME_FIELDS = {
     "target_label",
     "status",
     "deployed_at",
-    "live_rows",
+    "phase_ranges",
+    "monthly_rows",
     "backtest",
 }
 BACKTEST_FIELDS = {
@@ -122,6 +156,13 @@ BACKTEST_FIELDS = {
     "data_source",
     "data_source_label",
     "latest_run_date",
+}
+PHASE_RANGE_FIELDS = {
+    "prediction_phase",
+    "start_predict_date",
+    "end_predict_date",
+    "start_target_date",
+    "end_target_date",
     "rows",
 }
 
@@ -432,7 +473,7 @@ def _safe_actual_locator_date(value: str) -> str:
 
 
 def compact_detail_row(row: Mapping[str, Any], *, source: str) -> list[Any]:
-    """把展示明细编码为固定六列数组。"""
+    """把按需展示明细编码为 V4 固定七列数组。"""
     if source not in {"live", "backtest"}:
         raise DashboardDataError(f"unknown dashboard detail source: {source}")
 
@@ -452,6 +493,7 @@ def compact_detail_row(row: Mapping[str, Any], *, source: str) -> list[Any]:
         allow_none=source == "live",
     )
     return [
+        source,
         _required_iso_date(row.get("predict_date"), field="predict_date"),
         _required_iso_date(row.get("feature_date"), field="feature_date"),
         _required_iso_date(row.get("target_date"), field="target_date"),
@@ -462,20 +504,28 @@ def compact_detail_row(row: Mapping[str, Any], *, source: str) -> list[Any]:
 
 
 def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
-    """校验 dashboard v3 顶层合同、Registry 身份与明细行。"""
+    """校验 Dashboard V4 summary 或 detail 的精确公开合同。"""
     if not isinstance(payload, Mapping):
         raise DashboardDataError("dashboard payload must be an object")
     if payload.get("schema_version") != DASHBOARD_SCHEMA_VERSION:
         raise DashboardDataError(
             f"dashboard schema_version must be {DASHBOARD_SCHEMA_VERSION!r}"
         )
+    representation = payload.get("representation")
+    if representation == "detail":
+        _validate_detail_payload(payload)
+        return
+    if representation != "summary":
+        raise DashboardDataError("dashboard representation is invalid")
     _validate_exact_fields(
         payload,
         expected=TOP_LEVEL_FIELDS,
         context="dashboard payload",
     )
-    if payload.get("row_fields") != list(ROW_FIELDS):
-        raise DashboardDataError("dashboard row_fields do not match ROW_FIELDS")
+    if payload.get("monthly_row_fields") != list(MONTHLY_ROW_FIELDS):
+        raise DashboardDataError(
+            "dashboard monthly_row_fields do not match MONTHLY_ROW_FIELDS"
+        )
 
     _required_snapshot_id(payload.get("snapshot_id"))
     _required_aware_iso_datetime(payload.get("generated_at"))
@@ -547,6 +597,9 @@ def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
         _required_string(
             scheme.get("name"), field=f"scheme[{scheme_index}] name"
         )
+        _required_owner(
+            scheme.get("owner"), field=f"scheme[{scheme_index}] owner"
+        )
         description = scheme.get("description")
         if not isinstance(description, str):
             raise DashboardDataError(
@@ -571,10 +624,13 @@ def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
                 f"target_tenor={target_tenor!r} "
                 f"target_label={target_label!r}"
             )
-        _validate_compact_rows(
-            scheme.get("live_rows"),
-            source="live",
-            context=f"dashboard scheme[{scheme_index}].live_rows",
+        _validate_phase_ranges(
+            scheme.get("phase_ranges"),
+            context=f"dashboard scheme[{scheme_index}].phase_ranges",
+        )
+        _validate_monthly_rows(
+            scheme.get("monthly_rows"),
+            context=f"dashboard scheme[{scheme_index}].monthly_rows",
         )
 
         backtest = scheme["backtest"]
@@ -603,41 +659,146 @@ def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
             backtest.get("latest_run_date"),
             field=f"scheme[{scheme_index}].backtest.latest_run_date",
         )
-        _validate_compact_rows(
-            backtest.get("rows"),
-            source="backtest",
-            context=f"dashboard scheme[{scheme_index}].backtest.rows",
-        )
     if ordered_scheme_ids != sorted(ordered_scheme_ids):
         raise DashboardDataError("dashboard schemes are not sorted by scheme_id")
 
 
-def _validate_compact_rows(rows: Any, *, source: str, context: str) -> None:
+def _validate_detail_payload(payload: Mapping[str, Any]) -> None:
+    _validate_exact_fields(
+        payload,
+        expected=DETAIL_TOP_LEVEL_FIELDS,
+        context="dashboard detail payload",
+    )
+    if payload.get("row_fields") != list(DETAIL_ROW_FIELDS):
+        raise DashboardDataError(
+            "dashboard detail row_fields do not match DETAIL_ROW_FIELDS"
+        )
+    _required_snapshot_id(payload.get("snapshot_id"))
+    _required_aware_iso_datetime(payload.get("generated_at"))
+    _required_payload_iso_date(payload.get("display_until"), field="display_until")
+    _required_string(payload.get("scheme_id"), field="detail scheme_id")
+    _required_month(payload.get("month"), field="detail month")
+    source = payload.get("source")
+    if source not in {"all", "backtest", "live"}:
+        raise DashboardDataError("dashboard detail source is invalid")
+    _validate_compact_rows(
+        payload.get("rows"),
+        source=None if source == "all" else str(source),
+        context="dashboard detail rows",
+    )
+
+
+def _validate_phase_ranges(value: Any, *, context: str) -> None:
+    if not isinstance(value, list):
+        raise DashboardDataError(f"{context} must be a list")
+    seen: set[str] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            raise DashboardDataError(f"{context}[{index}] must be an object")
+        _validate_exact_fields(
+            item,
+            expected=PHASE_RANGE_FIELDS,
+            context=f"{context}[{index}]",
+        )
+        phase = item.get("prediction_phase")
+        if phase not in LIVE_PREDICTION_PHASES or phase in seen:
+            raise DashboardDataError(f"{context}[{index}] phase is invalid")
+        seen.add(str(phase))
+        for field in (
+            "start_predict_date",
+            "end_predict_date",
+            "start_target_date",
+            "end_target_date",
+        ):
+            _required_payload_iso_date(item.get(field), field=f"{context}[{index}].{field}")
+        _required_nonnegative_integer(item.get("rows"), field=f"{context}[{index}].rows")
+
+
+def _validate_monthly_rows(value: Any, *, context: str) -> None:
+    if not isinstance(value, list):
+        raise DashboardDataError(f"{context} must be a list")
+    previous: tuple[str, int] | None = None
+    seen: set[tuple[str, str]] = set()
+    source_rank = {"backtest": 0, "live": 1}
+    for index, row in enumerate(value):
+        if not isinstance(row, list) or len(row) != len(MONTHLY_ROW_FIELDS):
+            raise DashboardDataError(f"{context}[{index}] has invalid row width")
+        detail = dict(zip(MONTHLY_ROW_FIELDS, row, strict=True))
+        month = _required_month(detail["month"], field=f"{context}[{index}].month")
+        source = detail["source"]
+        if source not in source_rank:
+            raise DashboardDataError(f"{context}[{index}].source is invalid")
+        key = (month, str(source))
+        if key in seen:
+            raise DashboardDataError(f"{context} has duplicate month/source")
+        seen.add(key)
+        sort_key = (month, source_rank[str(source)])
+        if previous is not None and sort_key < previous:
+            raise DashboardDataError(f"{context} is not canonically sorted")
+        previous = sort_key
+        counts = {
+            field: _required_nonnegative_integer(
+                detail[field], field=f"{context}[{index}].{field}"
+            )
+            for field in MONTHLY_ROW_FIELDS[2:]
+        }
+        if counts["metric_samples"] > counts["samples"]:
+            raise DashboardDataError(f"{context}[{index}] counts are inconsistent")
+        if counts["correct"] > counts["metric_samples"]:
+            raise DashboardDataError(f"{context}[{index}] counts are inconsistent")
+        if (
+            counts["predicted_up"]
+            + counts["predicted_down"]
+            + counts["predicted_flat"]
+            != counts["samples"]
+            or counts["actual_up"]
+            + counts["actual_down"]
+            + counts["actual_flat"]
+            != counts["samples"]
+        ):
+            raise DashboardDataError(f"{context}[{index}] distributions are inconsistent")
+
+
+def _validate_compact_rows(
+    rows: Any,
+    *,
+    source: str | None,
+    context: str,
+) -> None:
     if not isinstance(rows, list):
         raise DashboardDataError(f"{context} must be a list")
-    seen_points: set[str] = set()
-    previous_sort_key: tuple[str, str] | None = None
+    seen_points: set[tuple[str, str]] = set()
+    previous_sort_key: tuple[int, str, str] | None = None
+    source_rank = {"backtest": 0, "live": 1}
     for row_index, row in enumerate(rows):
-        if not isinstance(row, list) or len(row) != len(ROW_FIELDS):
+        if not isinstance(row, list) or len(row) != len(DETAIL_ROW_FIELDS):
             width = len(row) if isinstance(row, list) else None
             raise DashboardDataError(
                 f"{context}[{row_index}] has invalid row width: {width}"
             )
-        for field_index, field in enumerate(ROW_FIELDS[:3]):
+        row_source = row[0]
+        if row_source not in source_rank or (source is not None and row_source != source):
+            raise DashboardDataError(f"{context}[{row_index}].source is invalid")
+        for field_index, field in enumerate(DETAIL_ROW_FIELDS[1:4], start=1):
             value = row[field_index]
             if not isinstance(value, str) or not value:
                 raise DashboardDataError(
                     f"{context}[{row_index}].{field} must be an ISO date string"
                 )
-        detail = dict(zip(ROW_FIELDS, row, strict=True))
-        compact_detail_row(detail, source=source)
+        detail = dict(zip(DETAIL_ROW_FIELDS, row, strict=True))
+        compact_detail_row(detail, source=str(row_source))
         target_date = str(detail["target_date"])
-        if target_date in seen_points:
+        point = (str(row_source), target_date)
+        if point in seen_points:
             raise DashboardDataError(
-                f"{context} has duplicate {source} prediction point: {target_date}"
+                f"{context} has duplicate {row_source} prediction point: {target_date}"
             )
-        seen_points.add(target_date)
-        sort_key = (target_date, str(detail["predict_date"]))
+        seen_points.add(point)
+        sort_key = (
+            source_rank[str(row_source)],
+            target_date,
+            str(detail["predict_date"]),
+        )
         if previous_sort_key is not None and sort_key < previous_sort_key:
             raise DashboardDataError(f"{context} is not canonically sorted")
         previous_sort_key = sort_key
@@ -781,6 +942,29 @@ def _required_string(value: Any, *, field: str) -> str:
         or _is_structured_boundary_character(value[0])
         or _is_structured_boundary_character(value[-1])
     ):
+        raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
+    return value
+
+
+def _required_owner(value: Any, *, field: str) -> str:
+    try:
+        owner = normalize_scheme_owner(value)
+    except ValueError as exc:
+        raise DashboardDataError(
+            f"dashboard {field} is invalid: {value!r}"
+        ) from exc
+    _required_string(owner, field=field)
+    return owner
+
+
+def _required_month(value: Any, *, field: str) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", value) is None:
+        raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
+    return value
+
+
+def _required_nonnegative_integer(value: Any, *, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
     return value
 

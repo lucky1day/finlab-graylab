@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -20,6 +21,28 @@ ALLOWED_RUNTIME_TYPES = {"native_adapter", "blackbox_v2"}
 ALLOWED_INPUT_SOURCES = {"legacy_db", "data_bridge_current"}
 ALLOWED_VERSION_STATUS = {"draft", "validated", "shadow", "active", "paused", "retired"}
 TASK_TYPE_ERROR = "task_type must be one of " + ", ".join(sorted(ALLOWED_TASK_TYPES))
+MAX_OWNER_LENGTH = 64
+FORBIDDEN_OWNER_PLACEHOLDERS = frozenset({"--", "unknown", "待定"})
+
+
+def normalize_scheme_owner(value: object) -> str:
+    """校验并返回 Registry/Metadata 共用的方案来源值。"""
+    if not isinstance(value, str) or not value:
+        raise ValueError("owner must be a non-empty string")
+    if value != value.strip():
+        raise ValueError("owner must not contain surrounding whitespace")
+    if len(value) > MAX_OWNER_LENGTH:
+        raise ValueError(
+            f"owner must not exceed {MAX_OWNER_LENGTH} characters"
+        )
+    if value.casefold() in FORBIDDEN_OWNER_PLACEHOLDERS:
+        raise ValueError("owner must not use a placeholder value")
+    if any(
+        marker in value
+        for marker in ("\n", "\r", "<", ">")
+    ) or any(unicodedata.category(char).startswith("C") for char in value):
+        raise ValueError("owner must be single-line plain text")
+    return value
 
 
 def validate_config(raw: dict, dirname: str) -> list[str]:

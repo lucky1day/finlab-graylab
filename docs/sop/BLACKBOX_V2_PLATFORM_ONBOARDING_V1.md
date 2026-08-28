@@ -37,7 +37,7 @@ python -m harness intake-blackbox \
 Intake 一次完成：
 
 - 两文件、文件名、Metadata 与 `scheme_id` 合同；
-- `name`、`description`、任务和期限字段；
+- `name`、`owner`、`description`、任务和期限字段；
 - 固定 Runtime Profile 与 Data Schema；
 - 脚本语法和平台安全静态边界（危险导入/调用、绝对路径与路径穿越）；
 - 原子保存原始交付字节；
@@ -55,6 +55,11 @@ schemes/{scheme_id}/
 ```
 
 Intake 不读取 DataBridge、不运行算法、不写数据库业务表，也不激活 Registry。
+
+新交付的 Metadata 必须显式包含合法 owner。Intake 不把 owner 复制进 `config.yaml`；首次注册及后续同步
+从 Metadata 写入 `t_scheme_registry.owner`。历史 canonical Metadata 为保持 exact version 可以缺少 owner，
+但此时只能保留数据库已有的合法 owner；数据库缺失时必须拒绝注册或同步。Dashboard 只读取 Registry，
+不在请求期回读 Metadata 或仓库映射。
 
 同 ID 修订不创建第二个方案目录，也不重复执行会拒绝已有 ID 的 Intake。只修订 canonical
 `.py/.json` 与确有必要的平台 config，然后重新执行 Step 2、3；任何字节变化都会形成新的 exact
