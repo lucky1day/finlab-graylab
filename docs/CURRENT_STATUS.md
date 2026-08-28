@@ -58,9 +58,14 @@
   `previous` release 都不再读取 config overlay、lifecycle journal 或 reconcile 状态。两端当前 runtime root 内
   经授权的旧 lifecycle 文件已在无读取者、无打开文件和调度 idle 的条件下删除，不影响当前执行或
   `previous` 回滚；release archive 保留。
-- 当前代码线的 Dashboard 合同为 `factor-lab-dashboard-v3`：每次请求只读 active Registry、已有 prediction、
-  Actual 与 backtest。空 live 明细合法；Dashboard 不读取 run、DataBridge 日期或交易日历，也不判断调度缺口。
-  精确主机是否已晋级该合同仍以现场 `current` release 和 API payload 为准。
+- 当前代码线的 Dashboard 合同为 `factor-lab-dashboard-v4`：无查询参数时只返回 active Registry、owner、
+  backtest 展示元数据、live phase range 与月度汇总；单方案单月逐日明细只在严格的 detail 请求中按需读取。
+  Dashboard 不读取 run、DataBridge 日期或交易日历，也不判断调度缺口，不增加缓存或第二条 API 路径。
+- `t_scheme_registry.owner` 是方案来源的唯一展示权威；新 Blackbox Intake 必须提供合法 owner，历史缺少
+  Metadata owner 的方案保留数据库权威值。Dashboard 读到缺失、占位或非法 owner 时整体 fail-closed，
+  前端不使用仓库映射或空值兜底。
+- ECS 已完成 Migration 021 与 Dashboard V4 灰度验收；Mac3 production 仍运行原稳定 Dashboard V2，尚未执行
+  owner migration、release 切换或 backend 重启。精确主机合同仍以现场 `current` release 和 API payload 为准。
 - Mac3 production 与 ECS gray 的 installed plist/unit、服务状态、数据库写入、激活、补数和 DDL 都是
   独立操作，代码或文档提交不能外推为现场授权。
 - 未来把生产域名或 Writer 切到 ECS 是新的生产项目，不属于当前完成条件。

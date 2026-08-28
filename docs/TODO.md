@@ -31,8 +31,9 @@
 
 ## 稳定观察与后续晋级
 
-1. Dashboard V3 先在 ECS 灰度观察；Mac3 继续运行当前稳定 release。确认 ECS 自然调度、Dashboard 与响应性能
-   无回退后，再单独决定是否将同一已验证 archive 晋级 Mac3，不从代码提交外推生产重启授权。
+1. Dashboard V4 与 Registry owner authority 已在 ECS 灰度验收；Mac3 继续运行当前稳定 Dashboard V2。
+   Mac3 晋级必须另行授权，并复用 ECS 已验证的同一 archive，重新执行 Registry 映射预检、Migration 021、
+   受控切换、仅 backend 重启及公网视觉/性能验收；不得从本次代码或文档提交外推生产操作授权。
 2. Native 迁移近期暂停，最早在周末稳定窗口重新启动；窗口前只收集现场耗时和结果证据，不改方案身份、算法
    或 Registry 所有权。
 
