@@ -6,7 +6,8 @@
 
 **目标读者**：上游算法工程师
 
-本文是上游算法工程师唯一需要阅读的人类文档。完成开发只需要本文、随包提供的 `data_bridge_v1_schema.json` 和四份脱敏 sample；不需要再阅读仓库内其他文档。
+本文是上游算法工程师唯一需要阅读的人类文档。完成开发只需要本文、随包提供的
+`data_bridge_v1_schema.json`、Request 样例和四份脱敏 DataBridge sample；不需要再阅读仓库内其他文档。
 
 本地开发、训练和效果验证优先使用从统一 DataBridge 下载的真实 DataBridge 数据。四份 sample 只在 DataBridge 暂时不可用时用于读取、选列、截止截断和接口烟雾测试，不能用于训练或效果回测。最终交付物仍然只有同名的 `{scheme_id}.py + {scheme_id}.json`。
 
@@ -29,7 +30,7 @@ fail-closed。`owner` 是页面“来源”字段，必须是不超过 64 字符
 
 1. DataBridge 地址、用户名和密码；
 2. `data_bridge_v1_schema.json`；
-3. 合法的单点 `request.json` 和批量 `requests.csv` 样例；
+3. 合法的单点 `samples/request.sample.json` 和批量 `samples/requests.sample.csv` 样例；
 4. 离线兜底用的四份脱敏 sample：
 
 ```text
@@ -163,13 +164,15 @@ Contract 1.0 只允许以下组合：
 
 ### 4.2 填写 `{scheme_id}.json`
 
-Metadata 必须是无 BOM 的 UTF-8 JSON。八个机器字段中已经包含 `name`；对所有正式新交付还必须提供 `description`，两者共同构成前端展示信息：
+Metadata 必须是无 BOM 的 UTF-8 JSON。所有正式新交付都必须提供 `name`、`owner` 和
+`description`，三者共同构成前端展示信息：
 
 ```json
 {
   "schema_version": "1.0",
   "scheme_id": "one_y_t5_liq_excess_a_w252_l7_v1",
   "name": "LIQ_EXCESS_A_W252_L7",
+  "owner": "lw",
   "description": "使用流动性指标和滚动窗口构建特征，通过分类模型判断未来5个交易日1Y国债收益率方向。",
   "algorithm_version": "1.0.0",
   "target_tenor": "1Y",
@@ -184,12 +187,13 @@ Metadata 必须是无 BOM 的 UTF-8 JSON。八个机器字段中已经包含 `na
 - `scheme_id` 和 `target_tenor` 必须满足第 1 节约束。
 - `scheme_id` 是算法执行身份；`name` 是当前任务格子内用于区分候选方案的简洁业务名称，两者不要混用。
 - `name` 不得重复 `target_tenor`、不得重复 `task_type` 或 `horizon`，也不得追加“方向预测”等已经由任务格子表达的说明。
-- `name` 和 `algorithm_version` 必须是非空字符串；`algorithm_version` 不强制使用特定版本格式。
+- `name`、`owner` 和 `algorithm_version` 必须是非空字符串；`algorithm_version` 不强制使用特定版本格式。
+- `owner` 必须满足本文开头的来源字段约束；它只表达方案来源，不得承载运行环境或审批信息。
 - `description` 必须简述主要输入、窗口或规则、模型类型以及最终方向形成方式；平台不会根据脚本或名称代写算法逻辑。
 - `description` 必须是单段非空纯文本，最多 300 个字符，不得包含换行、HTML 或其他标记文本。
 - `name` 和 `description` 职责不同，不得用方案名代替算法说明，或把任一字段留给平台推测。
 - `task_type`、`horizon` 和 `target_rule` 必须来自上一节的同一行。
-- 除本节规定的 `description` 外，Metadata 不得增加输入路径、运行开关、可变阈值、特征列表或模型参数。
+- 除本节规定的 `owner` 和 `description` 外，Metadata 不得增加输入路径、运行开关、可变阈值、特征列表或模型参数。
 
 ---
 
@@ -210,11 +214,13 @@ python {scheme_id}.py backtest \
 ```
 
 - `predict` 读取一个 Request，输出一条预测结果。
-- `backtest` 读取一批 Request，每个 Request 输出一条结果；Contract 1.0 每批为一至 100 条。
+- `backtest` 读取一批 Request，每个 Request 输出一条结果；每次调用至少包含一条，平台可以把完整历史区间一次传入。
 - 两个命令必须复用相同的数据处理、算法逻辑和方向映射。
 - 单个 Request 的结果不得因批次大小、批次切分或输入顺序改变。
 
-这里的单批上限不是完整回测总量上限。完整历史区间可以超过 100 条；平台会在同一 scheme version、DataBridge snapshot 和 generation 下，把完整 Request 序列拆成多个不超过 100 条的批次并多次调用 `backtest`。上游脚本只处理当前收到的批次，不得保存跨批状态，也不得要求把完整区间一次性传入。任一 Request 在不同批次大小、分区边界或输入顺序下都必须得到相同结果。
+平台对一个方案的完整历史回测只启动一个算法进程，并把该区间的完整 Request 序列写入同一份
+`requests.csv`。上游脚本必须处理当前收到的全部 Request，不得假定最多 100 条，也不得保存跨调用状态。
+任一 Request 在完整区间、100 条子集、不同分区边界或输入顺序下都必须得到相同结果。
 
 脚本只使用冻结运行环境和 Request，只从 `--data-dir` 读取业务数据，只向 `--output` 写业务结果。脚本不得：
 
@@ -340,7 +346,7 @@ Request 固定为 `request_id`、`predict_date`、`feature_date`、`target_date`
 1. 单条 `predict`；
 2. 一个按时间升序的 100 条 `backtest` 批次；正式区间不足 100 条时使用全部合格 Request；
 3. 一个乱序 100 条批次，证明输入顺序不改变逐条结果；
-4. 从正式回测起点到拟议 `gray_target_start` 的完整区间，并按每批最多 100 条真实切分；
+4. 从正式回测起点到拟议 `gray_target_start` 的完整区间，并在一次 `backtest` 调用中完成；
 5. 每批首条、中间一条和末条的独立截断复算，内部方向、score/probability 和最终方向全部一致；
 6. 同一批次至少重复三次，记录每次墙钟时间、退出码、输出行数和峰值 RSS。
 
@@ -418,12 +424,12 @@ python {scheme_id}.py backtest \
 最低自验范围：
 
 1. 四份真实数据下载成功、无旧文件混用，并通过第 2–3 节 Schema、时间键和摘要检查；
-2. Metadata、两个文件名、任务组合和 `name/description` 全部合法，delivery 中没有第三个文件；
+2. Metadata、两个文件名、任务组合和 `name/owner/description` 全部合法，delivery 中没有第三个文件；
 3. `--help`、`predict` 和 `backtest` 均可执行；成功时 stdout 为空，Result 数量、字段和输入顺序一致；
 4. 同一 Request 在 predict/backtest、不同批次切分、乱序和重复执行下结果一致，截止键之后的合法行不
    改变当前结果；
 5. 依赖周历时，逐条确认 `daily_cutoff_key` 唯一映射到 Request 的 `weekly_cutoff_key`；
-6. walk-forward 一次性计算按第 6.3 节完成每批首/中/末独立复算；性能按第 6.4 节覆盖单条、100 条、
+6. walk-forward 一次性计算按第 6.3 节完成每次调用首/中/末独立复算；性能按第 6.4 节覆盖单条、100 条、
    乱序和完整区间，且 `fallback_used=false`；
 7. 第 8 节每类失败均返回非零、stderr 有错误、stdout 为空且不产生 Output；
 8. 保存输入摘要、Request、日期边界、逐次耗时和峰值 RSS；平台输入摘要不同时先标记
