@@ -64,6 +64,7 @@ class BlackboxV2IntakeTests(unittest.TestCase):
             self.assertEqual(metadata.read_bytes(), (delivery / "trial_10y.json").read_bytes())
             self.assertIn("runtime_type: blackbox_v2", config)
             self.assertIn("input_source: data_bridge_current", config)
+            self.assertIn("factor_input_mode: algorithm_managed", config)
             self.assertIn("status: paused", config)
             self.assertIn("version_status: draft", config)
             self.assertIn("cron: '3 7 * * 1-5'", config)

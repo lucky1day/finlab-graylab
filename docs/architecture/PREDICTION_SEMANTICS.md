@@ -57,7 +57,7 @@ Native V1 既有周频 `horizon=6` 和月频 `horizon=30` 是历史平台计日�
 `api_wind_date.csv` 映射，不能依赖数值连续性。
 
 Blackbox 上游自测和平台 Onboarding 验收必须绑定同一 DataBridge
-四文件 generation。完整输入身份由 `generation_id + 四文件 SHA256 +
+五文件 generation。完整输入身份由 `generation_id + 五文件 SHA256 +
 data_snapshot_id` 表达。任一部分不同，结果差异先归类
 `data_vintage_mismatch`，必须同代重跑后才能归因算法。该验收约束不
 永久冻结生产；scheduled live 仍使用当天当前且通过校验的 DataBridge
@@ -238,7 +238,7 @@ target_date  = T + horizon
 | `target_date >= gray_target_start` 且早于正式调度 target | 激活后按 target 半开区间执行一次 live-safe batch，并由 repository insert-only 写为 `gray_live` |
 | 已有 `gray_live` 或 `scheduled_live` 业务键 | 整个授权区间拒绝，不运行算法、不覆盖、不删除后重写 |
 
-灰度区间的每个 Request 必须使用权威任务日历生成自己的 live `predict_date`、`feature_date` 和 `target_date`，输入只能看到 `feature_date` 及以前的数据。一个方案的一个授权区间只解析一次 DataBridge authority，并把它与 producer-ready snapshot receipt 的 generation、refresh date、business digest 和四文件身份精确比对；随后只物化一次私有运行视图并启动一个算法 batch。不得逐日期重复启动进程、读取/裁剪 CSV、重写快照或准备运行视图。
+灰度区间的每个 Request 必须使用权威任务日历生成自己的 live `predict_date`、`feature_date` 和 `target_date`，输入只能看到 `feature_date` 及以前的数据。一个方案的一个授权区间只解析一次 DataBridge authority，并把它与 producer-ready snapshot receipt 的 generation、refresh date、business digest 和对应输入文件身份精确比对；随后只物化一次私有运行视图并启动一个算法 batch。不得逐日期重复启动进程、读取/裁剪 CSV、重写快照或准备运行视图。
 
 历史与 gray/live 是两个独立、可审计的持久化边界。平台不为了省去历史与灰度之间的一次进程启动而增加跨激活候选表、临时结果文件、Harness 报告或新的生命周期状态。灰度批次全部 Result 合法后，repository 在一个事务中复核 active version、Registry、run、输入 provenance 和所有业务键，再写入全部 prediction 并完成各调度日 run；任一复核或写入失败都不得留下部分 prediction。
 

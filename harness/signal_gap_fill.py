@@ -971,9 +971,16 @@ def _run_blackbox_gray_replay_batches(
     batches = _build_blackbox_replay_batches(executions)
     by_source: dict[str, list[_BlackboxReplayBatch]] = {}
     for batch in batches:
-        by_source.setdefault(_canonical_json(batch.source_identity), []).append(
-            batch
+        source_key = _canonical_json(
+            {
+                "source_identity": batch.source_identity,
+                "factor_input_mode": (
+                    getattr(batch.cfg, "factor_input_mode", None)
+                    or "legacy_v1"
+                ),
+            }
         )
+        by_source.setdefault(source_key, []).append(batch)
     snapshots: dict[str, Any] = {}
     for source_key in sorted(by_source):
         source_batches = by_source[source_key]
@@ -982,6 +989,14 @@ def _run_blackbox_gray_replay_batches(
             snapshots[source_key] = get_ready_blackbox_snapshot(
                 snapshot_date=str(source_identity["refresh_date"]),
                 expected_source_identity=source_identity,
+                factor_input_mode=(
+                    getattr(
+                        source_batches[0].cfg,
+                        "factor_input_mode",
+                        None,
+                    )
+                    or "legacy_v1"
+                ),
             )
         except Exception as exc:  # noqa: BLE001
             for batch in source_batches:

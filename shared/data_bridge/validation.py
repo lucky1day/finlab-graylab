@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -17,14 +18,22 @@ EXPECTED_FILENAMES = (
     "weekly_output.csv",
     "monthly_output.csv",
     "api_wind_date.csv",
+    "factor_catalog.csv",
 )
-LEGACY_THREE_FILENAMES = EXPECTED_FILENAMES[:3]
+LEGACY_FOUR_FILENAMES = EXPECTED_FILENAMES[:4]
 TIME_KEY_BY_FILE = {
     "daily_output.csv": "date",
     "weekly_output.csv": "week_id",
     "monthly_output.csv": "month_id",
     "api_wind_date.csv": "rdate",
 }
+FACTOR_CATALOG_COLUMNS = (
+    "indicators_code",
+    "frequency",
+    "factor_version",
+)
+FACTOR_CATALOG_FREQUENCIES = ("daily", "weekly", "monthly")
+FACTOR_VERSION_PATTERN = re.compile(r"^V(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$")
 
 
 class DataBridgeValidationError(ValueError):
@@ -107,16 +116,18 @@ def validate_dataset(
     )
 
 
-def validate_legacy_three_file_dataset(
+def validate_legacy_four_file_dataset(
     frames: Mapping[str, pd.DataFrame],
     *,
     schema_path: str | Path,
+    expected_daily_date: str | None = None,
 ) -> ValidatedDataBridgeDataset:
-    """仅用于把已验证的旧三文件 current 平滑升级为四文件 generation。"""
+    """验证升级前四文件 current；仅供过渡读取和 continuity。"""
     return _validate_dataset(
         frames,
         schema_path=schema_path,
-        filenames=LEGACY_THREE_FILENAMES,
+        filenames=LEGACY_FOUR_FILENAMES,
+        expected_daily_date=expected_daily_date,
     )
 
 
@@ -132,7 +143,7 @@ def _validate_dataset(
     schema = json.loads(Path(schema_path).read_text(encoding="utf-8"))
     expected_files = schema.get("files")
     if not isinstance(expected_files, dict) or set(expected_files) != set(EXPECTED_FILENAMES):
-        raise DataBridgeValidationError("DataBridge schema must define exactly four files")
+        raise DataBridgeValidationError("DataBridge schema must define exactly five files")
     if set(frames) != set(filenames):
         raise DataBridgeValidationError(
             f"DataBridge dataset must contain exactly {len(filenames)} files"
@@ -173,6 +184,30 @@ def _validate_dataset(
         frame = frames[filename].copy()
         columns = list(frame.columns)
         baseline_columns = list(expected_files[filename].get("columns", []))
+        if filename == "factor_catalog.csv":
+            profile, normalized = _validate_factor_catalog_file(
+                frame,
+                baseline_columns=baseline_columns,
+            )
+            rendered = normalized.to_csv(
+                index=False,
+                lineterminator="\n",
+            ).encode("utf-8")
+            dataset_hash.update(filename.encode("ascii"))
+            dataset_hash.update("\0".join(columns).encode("utf-8"))
+            dataset_hash.update(bytes.fromhex(profile.business_hash))
+            validated_frames[filename] = normalized
+            profiles[filename] = DataBridgeFileProfile(
+                filename=filename,
+                rows=profile.rows,
+                columns=profile.columns,
+                min_key=profile.min_key,
+                max_key=profile.max_key,
+                sha256=hashlib.sha256(rendered).hexdigest(),
+                business_hash=profile.business_hash,
+                keys=profile.keys,
+            )
+            continue
         validate_baseline_compatible_columns(
             filename,
             columns,
@@ -270,12 +305,113 @@ def _validate_dataset(
             keys=key_set,
         )
 
+    if "factor_catalog.csv" in frames:
+        _validate_factor_catalog_matches_outputs(validated_frames)
+
     return ValidatedDataBridgeDataset(
         schema_version=str(schema.get("schema_version", "")),
         frames=validated_frames,
         files=profiles,
         business_digest=dataset_hash.hexdigest(),
     )
+
+
+def _validate_factor_catalog_file(
+    frame: pd.DataFrame,
+    *,
+    baseline_columns: list[str],
+) -> tuple[DataBridgeFileProfile, pd.DataFrame]:
+    filename = "factor_catalog.csv"
+    columns = list(frame.columns)
+    if baseline_columns != list(FACTOR_CATALOG_COLUMNS):
+        raise DataBridgeValidationError(
+            "factor_catalog.csv schema columns are invalid"
+        )
+    validate_unique_csv_header(filename, columns)
+    if columns != list(FACTOR_CATALOG_COLUMNS):
+        raise DataBridgeValidationError(
+            "factor_catalog.csv columns must be exactly "
+            "indicators_code,frequency,factor_version"
+        )
+    if frame.empty:
+        raise DataBridgeValidationError("factor_catalog.csv must not be empty")
+    normalized = frame.copy()
+    for column in FACTOR_CATALOG_COLUMNS:
+        values = normalized[column]
+        if values.isna().any():
+            raise DataBridgeValidationError(
+                f"factor_catalog.csv {column} must not be null"
+            )
+        texts = values.astype(str)
+        if any(not value or value != value.strip() for value in texts):
+            raise DataBridgeValidationError(
+                f"factor_catalog.csv {column} must be non-empty without whitespace"
+            )
+        normalized[column] = texts
+    codes = normalized["indicators_code"].tolist()
+    if len(codes) != len(set(codes)):
+        raise DataBridgeValidationError(
+            "factor_catalog.csv indicators_code must be globally unique"
+        )
+    frequencies = normalized["frequency"].tolist()
+    if any(value not in FACTOR_CATALOG_FREQUENCIES for value in frequencies):
+        raise DataBridgeValidationError(
+            "factor_catalog.csv frequency is invalid"
+        )
+    versions = normalized["factor_version"].tolist()
+    if any(FACTOR_VERSION_PATTERN.fullmatch(value) is None for value in versions):
+        raise DataBridgeValidationError(
+            "factor_catalog.csv factor_version is invalid"
+        )
+    canonical_rows = [
+        "\x1f".join(row)
+        for row in normalized.loc[:, FACTOR_CATALOG_COLUMNS].itertuples(
+            index=False,
+            name=None,
+        )
+    ]
+    business_hash = hashlib.sha256(
+        "\n".join(canonical_rows).encode("utf-8")
+    ).hexdigest()
+    return (
+        DataBridgeFileProfile(
+            filename=filename,
+            rows=len(normalized),
+            columns=len(columns),
+            min_key=codes[0],
+            max_key=codes[-1],
+            sha256="",
+            business_hash=business_hash,
+            keys=frozenset(codes),
+        ),
+        normalized,
+    )
+
+
+def _validate_factor_catalog_matches_outputs(
+    frames: Mapping[str, pd.DataFrame],
+) -> None:
+    catalog = frames["factor_catalog.csv"]
+    expected: list[tuple[str, str]] = []
+    for frequency, filename in (
+        ("daily", "daily_output.csv"),
+        ("weekly", "weekly_output.csv"),
+        ("monthly", "monthly_output.csv"),
+    ):
+        expected.extend(
+            (str(column), frequency)
+            for column in frames[filename].columns[1:]
+        )
+    actual = list(
+        catalog[["indicators_code", "frequency"]].itertuples(
+            index=False,
+            name=None,
+        )
+    )
+    if actual != expected:
+        raise DataBridgeValidationError(
+            "factor_catalog.csv rows must exactly match output columns and order"
+        )
 
 
 def write_validated_dataset(dataset: ValidatedDataBridgeDataset, directory: str | Path) -> Path:
@@ -302,15 +438,15 @@ def read_dataset_directory(
     )
 
 
-def read_legacy_three_file_directory(
+def read_legacy_four_file_directory(
     directory: str | Path,
     *,
     allowed_sidecar_filenames: frozenset[str] = frozenset(),
 ) -> dict[str, pd.DataFrame]:
-    """读取旧三文件 current；只供一次性 generation 升级校验。"""
+    """读取升级前四文件 current；只供过渡兼容与 continuity。"""
     return _read_dataset_directory(
         directory,
-        filenames=LEGACY_THREE_FILENAMES,
+        filenames=LEGACY_FOUR_FILENAMES,
         allowed_sidecar_filenames=allowed_sidecar_filenames,
     )
 

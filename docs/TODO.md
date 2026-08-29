@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验日期**：2026-08-28
+**最后核验日期**：2026-08-29
 
 本文只保留尚未发生的后续事项。当前稳定事实见[当前状态](CURRENT_STATUS.md)，生产规则见
 [生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。已完成事项通过 Git、Harness、数据库
@@ -33,6 +33,10 @@
 
 1. Native 迁移近期暂停，最早在周末稳定窗口重新启动；窗口前只收集现场耗时和结果证据，不改方案身份、算法
    或 Registry 所有权。
+2. 因子版本目录与存量方案 V1 输入保护已经完成本地候选实现、全量测试和独立审查，详见
+   [因子版本目录与存量方案输入保护设计](architecture/FACTOR_VERSIONED_INPUT_DRAFT.md)。该文档状态为
+   `LOCAL_CANDIDATE`；Mac3 与 ECS 已完成 nullable 字段和存量 `V1.0` 回填，旧 release dry-run 证明四文件
+   零漂移。下一步是外部 Metadata Writer 显式写入版本后收紧非空约束；在此之前不发布五文件 generation。
 
 ## 周末 Native 迁移候选队列
 

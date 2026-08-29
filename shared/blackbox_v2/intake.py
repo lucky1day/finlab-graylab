@@ -200,6 +200,7 @@ def _config_text(
         f"scheme_id: {metadata.scheme_id}\n"
         "runtime_type: blackbox_v2\n"
         "input_source: data_bridge_current\n"
+        "factor_input_mode: algorithm_managed\n"
         f"runtime_profile: {RUNTIME_PROFILE}\n"
         f"data_schema_version: {DATA_SCHEMA_VERSION}\n"
         "status: paused\n"

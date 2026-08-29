@@ -29,8 +29,12 @@ _GRAY_REPLAY_FILENAMES = frozenset(
         "daily_output.csv",
         "weekly_output.csv",
         "monthly_output.csv",
+        "factor_catalog.csv",
     }
 )
+_GRAY_REPLAY_LEGACY_FILENAMES = _GRAY_REPLAY_FILENAMES - {
+    "factor_catalog.csv"
+}
 _GRAY_REPLAY_SOURCE_IDENTITY_FIELDS = frozenset(
     {
         "generation_id",
@@ -181,7 +185,7 @@ def _normalize_blackbox_gray_replay_source_identity(
             filename=filename,
             field=f"source_identity.{filename}.max_key",
         )
-        if min_key > max_key:
+        if filename != "factor_catalog.csv" and min_key > max_key:
             raise ValueError("gray replay source identity files are invalid")
         normalized_files.append(
             {
@@ -194,10 +198,14 @@ def _normalize_blackbox_gray_replay_source_identity(
                 "business_hash": file_identity["business_hash"],
             }
         )
-    if tuple(item["filename"] for item in normalized_files) != tuple(
-        sorted(_GRAY_REPLAY_FILENAMES)
-    ):
-        raise ValueError("gray replay source identity files must be sorted")
+    filenames = tuple(item["filename"] for item in normalized_files)
+    if filenames not in {
+        tuple(sorted(_GRAY_REPLAY_FILENAMES)),
+        tuple(sorted(_GRAY_REPLAY_LEGACY_FILENAMES)),
+    }:
+        raise ValueError(
+            "gray replay source identity files must be sorted and complete"
+        )
     return {
         "generation_id": generation_id,
         "refresh_date": refresh_date,
@@ -224,6 +232,10 @@ def _canonical_gray_replay_key(
         if normalized != value:
             raise ValueError(f"{field} must use YYYY-MM-DD")
         return normalized
+    if filename == "factor_catalog.csv":
+        if not isinstance(value, str) or not value or value != value.strip():
+            raise ValueError(f"{field} must be a non-empty factor code")
+        return value
     if not isinstance(value, str) or len(value) != 6 or not value.isdigit():
         raise ValueError(f"{field} must be a six-digit platform key")
     return value
@@ -397,9 +409,6 @@ def resolve_stable_databridge_current_authority(
         current = check_current_dataset(
             config,
             strict_read_only=True,
-            allow_legacy_three_file_current=(
-                allow_producer_period_bootstrap
-            ),
         )
     except (
         DataBridgeCurrentMissingError,

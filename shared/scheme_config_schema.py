@@ -214,6 +214,12 @@ def _validate_blackbox_config(raw: dict) -> list[str]:
     errors: list[str] = []
     if raw.get("input_source") != "data_bridge_current":
         errors.append("Blackbox V2 input_source must be data_bridge_current")
+    factor_input_mode = raw.get("factor_input_mode", "legacy_v1")
+    if factor_input_mode not in {"legacy_v1", "algorithm_managed"}:
+        errors.append(
+            "Blackbox V2 factor_input_mode must be legacy_v1 or "
+            "algorithm_managed"
+        )
     for field in ("runtime_profile", "data_schema_version"):
         if not isinstance(raw.get(field), str) or not raw.get(field, "").strip():
             errors.append(f"{field} must be a non-empty string")

@@ -27,7 +27,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                 _gray_replay_snapshot(),
             )
 
-    def test_runner_requires_exact_four_standard_files(self) -> None:
+    def test_runner_requires_standard_five_or_legacy_four_files(self) -> None:
         from scheduler.blackbox_v2_runner import _validate_data_dir
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -36,7 +36,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             _validate_data_dir(data_dir)
 
             (data_dir / "api_wind_date.csv").unlink()
-            with self.assertRaisesRegex(ValueError, "exactly"):
+            with self.assertRaisesRegex(ValueError, "standard five or legacy four"):
                 _validate_data_dir(data_dir)
             (data_dir / "api_wind_date.csv").write_text(
                 "rdate,week_id\n2026-07-24,202629\n",
@@ -47,7 +47,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                 "x\n1\n",
                 encoding="utf-8",
             )
-            with self.assertRaisesRegex(ValueError, "exactly"):
+            with self.assertRaisesRegex(ValueError, "standard five or legacy four"):
                 _validate_data_dir(data_dir)
 
 
@@ -137,6 +137,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         ready_snapshot.assert_called_once_with(
             snapshot_date="2026-07-16",
             require_fresh=True,
+            factor_input_mode="legacy_v1",
         )
         self.assertIs(
             predict.call_args.kwargs["process_started"],

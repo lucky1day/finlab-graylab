@@ -61,6 +61,7 @@ class SchemeConfig:
     environment_fingerprint: str | None
     data_snapshot_id: str | None
     input_source: str = "legacy_db"
+    factor_input_mode: str | None = None
     blackbox_metadata: BlackboxMetadata | None = None
     owner: str | None = None
 
@@ -130,6 +131,7 @@ def _load_declared_scheme_config(config_path: Path) -> SchemeConfig:
         environment_fingerprint=None,
         data_snapshot_id=None,
         input_source=str(raw.get("input_source", "legacy_db")),
+        factor_input_mode=None,
     )
 
 
@@ -206,6 +208,7 @@ def _load_blackbox_config(config_path: Path, raw: dict[str, Any], schedule_raw: 
         environment_fingerprint=None,
         data_snapshot_id=None,
         input_source=str(raw["input_source"]),
+        factor_input_mode=str(raw.get("factor_input_mode", "legacy_v1")),
         blackbox_metadata=metadata,
         owner=metadata.owner,
     )

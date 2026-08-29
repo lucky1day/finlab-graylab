@@ -324,12 +324,28 @@ def build_daily_output_from_db(
     end_date: Optional[str] = None,
     tenor_filter: Optional[set[str]] = None,
     engine=None,
+    metadata: pd.DataFrame | None = None,
+    schema_columns: list[str] | None = None,
 ) -> pd.DataFrame:
     own_engine = engine is None
     engine = engine or create_sqlalchemy_engine()
     try:
-        metadata = read_factor_metadata_from_db(engine)
-        selected = select_factor_metadata(metadata, "daily", tenor_filter=tenor_filter)
+        source_metadata = (
+            metadata
+            if metadata is not None
+            else read_factor_metadata_from_db(engine)
+        )
+        selected = select_factor_metadata(
+            source_metadata,
+            "daily",
+            tenor_filter=tenor_filter,
+        )
+        if schema_columns is not None:
+            selected = _metadata_for_schema_columns(
+                selected,
+                schema_columns,
+                key_column="date",
+            )
         codes = selected["indicators_code"].astype(str).str.strip().tolist()
         raw = read_daily_long_from_db(
             codes,
@@ -343,7 +359,18 @@ def build_daily_output_from_db(
             engine,
             end_date=end_date,
         )
-        return build_daily_output_from_frames(selected, raw, derivative, start_date=start_date, end_date=end_date)
+        result = build_daily_output_from_frames(
+            selected,
+            raw,
+            derivative,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        return (
+            result.loc[:, schema_columns]
+            if schema_columns is not None
+            else result
+        )
     finally:
         if own_engine:
             engine.dispose()
@@ -508,13 +535,19 @@ def build_weekly_output_from_db(
     end_week: Optional[int] = None,
     as_of_date: Optional[str] = None,
     engine=None,
+    metadata: pd.DataFrame | None = None,
+    preserve_metadata_lags: bool = False,
 ) -> pd.DataFrame:
     own_engine = engine is None
     engine = engine or create_sqlalchemy_engine()
     try:
         if schema_columns is None:
-            metadata = read_factor_metadata_from_db(engine)
-            selected = select_factor_metadata(metadata, "weekly")
+            source_metadata = (
+                metadata
+                if metadata is not None
+                else read_factor_metadata_from_db(engine)
+            )
+            selected = select_factor_metadata(source_metadata, "weekly")
             codes = selected["indicators_code"].astype(str).str.strip().tolist()
             raw = read_weekly_long_from_db(
                 codes,
@@ -538,6 +571,18 @@ def build_weekly_output_from_db(
             )
 
         schema = list(schema_columns)
+        selected = None
+        if preserve_metadata_lags:
+            source_metadata = (
+                metadata
+                if metadata is not None
+                else read_factor_metadata_from_db(engine)
+            )
+            selected = _metadata_for_schema_columns(
+                select_factor_metadata(source_metadata, "weekly"),
+                schema,
+                key_column="week_id",
+            )
         codes = schema[1:]
         raw = read_weekly_long_from_db(
             codes,
@@ -551,6 +596,15 @@ def build_weekly_output_from_db(
             engine,
             end_date=as_of_date,
         )
+        if selected is not None:
+            return build_weekly_output_from_metadata(
+                selected,
+                raw,
+                derivative,
+                start_week=start_week,
+                end_week=end_week,
+                as_of_date=as_of_date,
+            )
         return build_weekly_output_from_frames(
             schema,
             raw,
@@ -705,15 +759,27 @@ def build_monthly_output_from_db(
     end_date: Optional[str] = None,
     engine=None,
     include_databridge_additions: bool = False,
+    metadata: pd.DataFrame | None = None,
+    schema_columns: list[str] | None = None,
 ) -> pd.DataFrame:
     own_engine = engine is None
     engine = engine or create_sqlalchemy_engine()
     try:
-        metadata = read_factor_metadata_from_db(engine)
+        source_metadata = (
+            metadata
+            if metadata is not None
+            else read_factor_metadata_from_db(engine)
+        )
         selected = select_monthly_factor_metadata(
-            metadata,
+            source_metadata,
             include_databridge_additions=include_databridge_additions,
         )
+        if schema_columns is not None:
+            selected = _metadata_for_schema_columns(
+                selected,
+                schema_columns,
+                key_column="month_id",
+            )
         codes = selected["indicators_code"].astype(str).str.strip().tolist()
         raw = read_monthly_long_from_db(
             codes,
@@ -728,17 +794,40 @@ def build_monthly_output_from_db(
             include_month_id=True,
             end_date=end_date,
         )
-        return build_monthly_output_from_frames(
-            metadata,
+        result = build_monthly_output_from_frames(
+            selected,
             raw,
             derivative,
             start_date=start_date,
             end_date=end_date,
             include_databridge_additions=include_databridge_additions,
         )
+        return (
+            result.loc[:, schema_columns]
+            if schema_columns is not None
+            else result
+        )
     finally:
         if own_engine:
             engine.dispose()
+
+
+def _metadata_for_schema_columns(
+    metadata: pd.DataFrame,
+    schema_columns: list[str],
+    *,
+    key_column: str,
+) -> pd.DataFrame:
+    if not schema_columns or schema_columns[0] != key_column:
+        raise ValueError(f"schema_columns must start with {key_column}")
+    factor_columns = schema_columns[1:]
+    if len(factor_columns) != len(set(factor_columns)):
+        raise ValueError("schema_columns contains duplicate factor codes")
+    by_code = metadata.set_index("indicators_code", drop=False)
+    missing = [code for code in factor_columns if code not in by_code.index]
+    if missing:
+        raise ValueError(f"schema_columns contains unknown factors: {missing[:10]}")
+    return by_code.loc[factor_columns].reset_index(drop=True)
 
 
 def _save_output(df: pd.DataFrame, path: str | Path) -> Path:

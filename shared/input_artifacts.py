@@ -36,6 +36,7 @@ from shared.data_bridge.authority import (
 )
 from shared.data_bridge.refresh import DataBridgeRefreshConfig
 from shared.data_bridge.validation import ValidatedDataBridgeDataset
+from shared.data_bridge.validation import LEGACY_FOUR_FILENAMES
 from shared.runtime_paths import resolve_runtime_state_path
 
 DEFAULT_OUTPUT_ROOT = RUNTIME_INPUT_ROOT
@@ -43,11 +44,17 @@ BLACKBOX_SNAPSHOT_ROOT = BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "snapshots"
 BLACKBOX_GENERATION_SNAPSHOT_ROOT = (
     BLACKBOX_SNAPSHOT_ROOT / "generation_cache"
 )
-BLACKBOX_GENERATION_SNAPSHOT_CACHE_VERSION = "blackbox-generation-snapshot-v2"
+BLACKBOX_GENERATION_SNAPSHOT_CACHE_VERSION = "blackbox-generation-snapshot-v3"
+LEGACY_BLACKBOX_GENERATION_SNAPSHOT_CACHE_VERSION = (
+    "blackbox-generation-snapshot-v2"
+)
 BLACKBOX_RUNTIME_VIEW_ROOT = BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "runtime_views"
 BLACKBOX_SCHEMA_PATH = Path(__file__).with_name("blackbox_v2") / "data_bridge_v1_schema.json"
 BLACKBOX_SCHEMA_VERSION = "data-bridge-v1"
 BLACKBOX_SCHEMA_CONTRACT_SHA256 = (
+    "130c1acbb1cd13d49155334d3bba57f43896bf26d1ec7983c188eb93a7d0cf28"
+)
+LEGACY_BLACKBOX_SCHEMA_CONTRACT_SHA256 = (
     "addf732eb35071f89493073d22f4bf6ef79a55d7ceaf554dd9cf2c41e4dc6db3"
 )
 DAILY_DATA_VERSION = "shared_data_service_daily.v1"
@@ -201,10 +208,10 @@ def _materialize_blackbox_runtime_view(view: BlackboxRuntimeView) -> None:
     sealed_fingerprints = bundle.base_snapshot.sealed_file_fingerprints
     if sealed_fingerprints is None:
         _validate_blackbox_snapshot(bundle.base_snapshot)
-    elif set(sealed_fingerprints) != set(SNAPSHOT_FILENAMES):
+    elif not set(bundle.expected_filenames).issubset(sealed_fingerprints):
         raise ValueError("producer snapshot file seal is invalid")
 
-    for filename in SNAPSHOT_FILENAMES:
+    for filename in bundle.expected_filenames:
         source = bundle.base_snapshot.data_dir / filename
         target = destination / filename
         source_fingerprint = _copy_ready_snapshot_file(
@@ -324,8 +331,15 @@ def _validate_trusted_blackbox_input_bundle(
 ) -> BlackboxInputBundle:
     """从受信字段重算 bundle，拒绝 replace/手工构造的派生字段。"""
     try:
+        if bundle.expected_filenames == LEGACY_FOUR_FILENAMES:
+            factor_input_mode = "legacy_v1"
+        elif bundle.expected_filenames == SNAPSHOT_FILENAMES:
+            factor_input_mode = "algorithm_managed"
+        else:
+            raise ValueError("input bundle file set is invalid")
         trusted = compose_blackbox_input_bundle(
             bundle.base_snapshot,
+            factor_input_mode=factor_input_mode,
         )
         matches = (
             bundle.combined_snapshot_id == trusted.combined_snapshot_id
@@ -379,10 +393,13 @@ def _validate_blackbox_snapshot(
     ):
         raise ValueError("parent snapshot schema_version mismatch")
     entries = manifest.get("files")
-    if not isinstance(entries, dict) or set(entries) != set(
-        SNAPSHOT_FILENAMES
-    ):
-        raise ValueError("parent snapshot manifest files must be exactly four")
+    allowed_file_sets = {
+        frozenset(SNAPSHOT_FILENAMES),
+        frozenset(LEGACY_FOUR_FILENAMES),
+    }
+    if not isinstance(entries, dict) or frozenset(entries) not in allowed_file_sets:
+        raise ValueError("parent snapshot manifest files are invalid")
+    snapshot_filenames = tuple(entries)
 
     has_simple_identity = "data_snapshot_id" in manifest
     has_databridge_identity = "dataset_content_id" in manifest
@@ -413,10 +430,10 @@ def _validate_blackbox_snapshot(
         }
     except OSError as exc:
         raise ValueError("parent snapshot data directory is unreadable") from exc
-    if actual_filenames != set(SNAPSHOT_FILENAMES):
-        raise ValueError("parent snapshot data files must be exactly four")
+    if actual_filenames != set(snapshot_filenames):
+        raise ValueError("parent snapshot data files do not match manifest")
 
-    for filename in SNAPSHOT_FILENAMES:
+    for filename in snapshot_filenames:
         entry = entries.get(filename)
         if not isinstance(entry, dict) or set(entry) != entry_fields:
             raise ValueError(
@@ -730,8 +747,17 @@ def prepare_blackbox_generation_snapshot(
             schema_path=Path(schema_path),
         )
         _validate_generation_dataset_identity(dataset, current_identity)
-        cached = _read_generation_snapshot_cache(root, current_identity)
+        cached = _read_generation_snapshot_cache(
+            root,
+            current_identity,
+            factor_input_mode="algorithm_managed",
+        )
         if cached is not None:
+            _read_generation_snapshot_cache(
+                root,
+                current_identity,
+                factor_input_mode="legacy_v1",
+            )
             _write_ready_generation_identity(root, current_identity)
             return cached
         _require_blackbox_databridge_monthly_additions(dataset.frames)
@@ -752,19 +778,27 @@ def prepare_blackbox_generation_snapshot(
                 expected_columns=expected_columns,
                 schema_version=schema_version,
             )
-        except BaseException:
-            _make_tree_writable(generation_root)
-            shutil.rmtree(generation_root)
-            raise
-        snapshot = replace(
-            snapshot,
-            generation_id=str(current_identity["generation_id"]),
-            refresh_date=str(current_identity["refresh_date"]),
-            business_digest=str(current_identity["business_digest"]),
-            sealed_file_fingerprints=_snapshot_file_fingerprints(snapshot),
-        )
-        try:
-            _write_generation_snapshot_cache(root, current_identity, snapshot)
+            snapshot = replace(
+                snapshot,
+                generation_id=str(current_identity["generation_id"]),
+                refresh_date=str(current_identity["refresh_date"]),
+                business_digest=str(current_identity["business_digest"]),
+                sealed_file_fingerprints=_snapshot_file_fingerprints(snapshot),
+            )
+            legacy_snapshot = _build_legacy_blackbox_snapshot(
+                snapshot,
+                dataset=dataset,
+                generation_root=generation_root,
+                expected_columns=expected_columns,
+                schema_version=schema_version,
+                current_identity=current_identity,
+            )
+            _write_generation_snapshot_cache(
+                root,
+                current_identity,
+                snapshot,
+                legacy_snapshot,
+            )
         except BaseException:
             _make_tree_writable(generation_root)
             shutil.rmtree(generation_root)
@@ -796,6 +830,7 @@ def get_ready_blackbox_snapshot(
     cache_root: str | Path = BLACKBOX_GENERATION_SNAPSHOT_ROOT,
     require_fresh: bool = False,
     expected_source_identity: Mapping[str, Any] | None = None,
+    factor_input_mode: str = "legacy_v1",
 ) -> BlackboxSnapshot:
     """读取 producer 已发布的不可变快照；缺失时不代建、不修复。"""
     root = Path(cache_root)
@@ -811,6 +846,7 @@ def get_ready_blackbox_snapshot(
         snapshot = _read_generation_snapshot_cache(
             root,
             current_identity,
+            factor_input_mode=factor_input_mode,
         )
         if snapshot is None:
             raise ValueError(
@@ -824,11 +860,58 @@ def get_ready_blackbox_snapshot(
         return snapshot
 
 
+def _build_legacy_blackbox_snapshot(
+    full_snapshot: BlackboxSnapshot,
+    *,
+    dataset: ValidatedDataBridgeDataset,
+    generation_root: Path,
+    expected_columns: Mapping[str, list[str]],
+    schema_version: str,
+    current_identity: Mapping[str, Any],
+) -> BlackboxSnapshot:
+    """全 V1 时复用完整快照；出现新版本后只构建一次四文件视图。"""
+    catalog = dataset.frames["factor_catalog.csv"]
+    wide_files = LEGACY_FOUR_FILENAMES[:3]
+    can_reuse_full = (
+        set(catalog["factor_version"]) == {"V1.0"}
+        and all(
+            list(dataset.frames[filename].columns)
+            == expected_columns[filename]
+            for filename in wide_files
+        )
+    )
+    if can_reuse_full:
+        return full_snapshot
+    legacy_frames = {
+        filename: (
+            dataset.frames[filename].loc[
+                :, expected_columns[filename]
+            ].copy()
+            if filename in wide_files
+            else dataset.frames[filename].copy()
+        )
+        for filename in LEGACY_FOUR_FILENAMES
+    }
+    legacy = create_snapshot_from_frames(
+        legacy_frames,
+        output_root=generation_root,
+        expected_columns=expected_columns,
+        schema_version=schema_version,
+    )
+    return replace(
+        legacy,
+        generation_id=str(current_identity["generation_id"]),
+        refresh_date=str(current_identity["refresh_date"]),
+        business_digest=str(current_identity["business_digest"]),
+        sealed_file_fingerprints=_snapshot_file_fingerprints(legacy),
+    )
+
+
 def _validate_ready_snapshot_source_identity(
     ready_identity: Mapping[str, Any],
     expected_source_identity: Mapping[str, Any],
 ) -> None:
-    """只比较 producer receipt，不重新读取或哈希四份 CSV。"""
+    """只比较 producer receipt，不重新读取或哈希输入 CSV。"""
     expected = _normalize_blackbox_gray_replay_source_identity(
         expected_source_identity
     )
@@ -937,7 +1020,15 @@ def _snapshot_file_fingerprints(
     snapshot: BlackboxSnapshot,
 ) -> Mapping[str, tuple[int, ...]]:
     fingerprints: dict[str, tuple[int, ...]] = {}
-    for filename in SNAPSHOT_FILENAMES:
+    filenames = tuple(
+        sorted(path.name for path in snapshot.data_dir.iterdir())
+    )
+    if frozenset(filenames) not in {
+        frozenset(SNAPSHOT_FILENAMES),
+        frozenset(LEGACY_FOUR_FILENAMES),
+    }:
+        raise ValueError("producer snapshot file set is invalid")
+    for filename in filenames:
         path = snapshot.data_dir / filename
         info = path.lstat()
         if (
@@ -988,6 +1079,8 @@ def _generation_snapshot_cache_lock(root: Path, *, shared: bool = False):
 def _read_generation_snapshot_cache(
     root: Path,
     identity: Mapping[str, Any],
+    *,
+    factor_input_mode: str,
 ) -> BlackboxSnapshot | None:
     receipt_path = root / "receipts" / (
         _generation_snapshot_cache_key(identity) + ".json"
@@ -1002,22 +1095,74 @@ def _read_generation_snapshot_cache(
         receipt = json.loads(receipt_raw.decode("utf-8"))
     except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
         raise ValueError("Blackbox generation snapshot receipt is invalid") from exc
+    if not isinstance(receipt, dict):
+        raise ValueError("Blackbox generation snapshot receipt identity mismatch")
+    legacy_receipt = set(receipt) == {
+        "identity",
+        "snapshot_id",
+        "cutoff_keys",
+        "sealed_file_fingerprints",
+    }
+    current_receipt = set(receipt) == {
+        "identity",
+        "snapshot_id",
+        "legacy_snapshot_id",
+        "cutoff_keys",
+        "sealed_file_fingerprints",
+        "legacy_sealed_file_fingerprints",
+    }
     if (
-        not isinstance(receipt, dict)
-        or set(receipt)
-        != {
-            "identity",
-            "snapshot_id",
-            "cutoff_keys",
-            "sealed_file_fingerprints",
-        }
+        not (legacy_receipt or current_receipt)
         or receipt.get("identity") != dict(identity)
-        or not isinstance(receipt.get("snapshot_id"), str)
-        or re.fullmatch(
-            r"snapshot-[0-9a-f]{24}",
-            receipt["snapshot_id"],
+    ):
+        raise ValueError("Blackbox generation snapshot receipt identity mismatch")
+    identity_contract = (
+        identity.get("cache_schema_version"),
+        identity.get("schema_contract_sha256"),
+    )
+    if (
+        legacy_receipt
+        and identity_contract
+        != (
+            LEGACY_BLACKBOX_GENERATION_SNAPSHOT_CACHE_VERSION,
+            LEGACY_BLACKBOX_SCHEMA_CONTRACT_SHA256,
         )
-        is None
+    ) or (
+        current_receipt
+        and identity_contract
+        != (
+            BLACKBOX_GENERATION_SNAPSHOT_CACHE_VERSION,
+            BLACKBOX_SCHEMA_CONTRACT_SHA256,
+        )
+    ):
+        raise ValueError(
+            "Blackbox generation snapshot receipt contract mismatch"
+        )
+    if factor_input_mode == "algorithm_managed":
+        if legacy_receipt:
+            raise ValueError(
+                "algorithm-managed input requires a five-file generation"
+            )
+        snapshot_id = receipt.get("snapshot_id")
+        sealed_value = receipt.get("sealed_file_fingerprints")
+        expected_filenames = SNAPSHOT_FILENAMES
+    elif factor_input_mode == "legacy_v1":
+        snapshot_id = (
+            receipt.get("legacy_snapshot_id")
+            if current_receipt
+            else receipt.get("snapshot_id")
+        )
+        sealed_value = (
+            receipt.get("legacy_sealed_file_fingerprints")
+            if current_receipt
+            else receipt.get("sealed_file_fingerprints")
+        )
+        expected_filenames = LEGACY_FOUR_FILENAMES
+    else:
+        raise ValueError(f"unsupported factor_input_mode: {factor_input_mode}")
+    if (
+        not isinstance(snapshot_id, str)
+        or re.fullmatch(r"snapshot-[0-9a-f]{24}", snapshot_id) is None
     ):
         raise ValueError("Blackbox generation snapshot receipt identity mismatch")
     snapshots_root = (
@@ -1025,17 +1170,22 @@ def _read_generation_snapshot_cache(
         / "snapshots"
         / _generation_snapshot_cache_key(identity)
     ).resolve(strict=True)
-    snapshot_root = snapshots_root / receipt["snapshot_id"]
+    snapshot_root = snapshots_root / snapshot_id
     if snapshot_root.parent.resolve(strict=True) != snapshots_root:
         raise ValueError("Blackbox generation snapshot path is outside cache")
     cached_cutoff_fields = _cached_snapshot_cutoff_fields(
         receipt.get("cutoff_keys")
     )
     sealed_file_fingerprints = _cached_snapshot_file_fingerprints(
-        receipt.get("sealed_file_fingerprints")
+        sealed_value,
+        allowed_filenames=(
+            (SNAPSHOT_FILENAMES,)
+            if factor_input_mode == "algorithm_managed"
+            else (SNAPSHOT_FILENAMES, LEGACY_FOUR_FILENAMES)
+        ),
     )
     snapshot = BlackboxSnapshot(
-        snapshot_id=receipt["snapshot_id"],
+        snapshot_id=snapshot_id,
         root_dir=snapshot_root,
         data_dir=snapshot_root / "data",
         manifest_path=snapshot_root / "manifest.json",
@@ -1060,17 +1210,35 @@ def _read_generation_snapshot_cache(
             "Blackbox generation snapshot no longer matches producer seal"
         )
     identity_files = identity["files"]
-    profile_mismatches = [
-        filename
-        for filename in SNAPSHOT_FILENAMES
-        if not isinstance(identity_files.get(filename), Mapping)
-        or identity_files[filename].get("sha256")
-        != snapshot_files[filename].get("sha256")
-        or identity_files[filename].get("rows")
-        != snapshot_files[filename].get("row_count")
-        or identity_files[filename].get("columns")
-        != len(snapshot_files[filename].get("columns", ()))
-    ]
+    snapshot_filenames = tuple(snapshot_files)
+    if not set(expected_filenames).issubset(snapshot_filenames):
+        raise ValueError("Blackbox generation snapshot input mode mismatch")
+    if factor_input_mode == "legacy_v1":
+        _, frozen_columns = _load_blackbox_schema(BLACKBOX_SCHEMA_PATH)
+        changed_columns = [
+            filename
+            for filename in LEGACY_FOUR_FILENAMES
+            if snapshot_files[filename].get("columns")
+            != frozen_columns[filename]
+        ]
+        if changed_columns:
+            raise ValueError(
+                "legacy Blackbox snapshot does not match frozen V1 columns: "
+                f"{changed_columns}"
+            )
+    profile_mismatches = []
+    if snapshot_id == receipt.get("snapshot_id"):
+        profile_mismatches = [
+            filename
+            for filename in snapshot_filenames
+            if not isinstance(identity_files.get(filename), Mapping)
+            or identity_files[filename].get("sha256")
+            != snapshot_files[filename].get("sha256")
+            or identity_files[filename].get("rows")
+            != snapshot_files[filename].get("row_count")
+            or identity_files[filename].get("columns")
+            != len(snapshot_files[filename].get("columns", ()))
+        ]
     if profile_mismatches:
         raise ValueError(
             "Blackbox generation snapshot does not match DataBridge identity: "
@@ -1083,10 +1251,14 @@ def _write_generation_snapshot_cache(
     root: Path,
     identity: Mapping[str, Any],
     snapshot: BlackboxSnapshot,
+    legacy_snapshot: BlackboxSnapshot,
 ) -> None:
     sealed_file_fingerprints = snapshot.sealed_file_fingerprints
     if sealed_file_fingerprints is None:
         raise ValueError("producer snapshot file seal is missing")
+    legacy_sealed_file_fingerprints = legacy_snapshot.sealed_file_fingerprints
+    if legacy_sealed_file_fingerprints is None:
+        raise ValueError("legacy snapshot file seal is missing")
     receipts = root / "receipts"
     receipts.mkdir(exist_ok=True)
     receipt_path = receipts / (
@@ -1097,10 +1269,17 @@ def _write_generation_snapshot_cache(
             {
                 "identity": dict(identity),
                 "snapshot_id": snapshot.snapshot_id,
+                "legacy_snapshot_id": legacy_snapshot.snapshot_id,
                 "sealed_file_fingerprints": {
                     filename: list(fingerprint)
                     for filename, fingerprint in sorted(
                         sealed_file_fingerprints.items()
+                    )
+                },
+                "legacy_sealed_file_fingerprints": {
+                    filename: list(fingerprint)
+                    for filename, fingerprint in sorted(
+                        legacy_sealed_file_fingerprints.items()
                     )
                 },
                 "cutoff_keys": {
@@ -1209,11 +1388,20 @@ def _validate_generation_snapshot_identity(identity: Mapping[str, Any]) -> None:
     }
     if set(identity) != expected_fields:
         raise ValueError("Blackbox ready generation receipt fields are invalid")
+    cache_contract = (
+        identity.get("cache_schema_version"),
+        identity.get("schema_contract_sha256"),
+    )
+    current_contract = (
+        BLACKBOX_GENERATION_SNAPSHOT_CACHE_VERSION,
+        BLACKBOX_SCHEMA_CONTRACT_SHA256,
+    )
+    legacy_contract = (
+        LEGACY_BLACKBOX_GENERATION_SNAPSHOT_CACHE_VERSION,
+        LEGACY_BLACKBOX_SCHEMA_CONTRACT_SHA256,
+    )
     if (
-        identity.get("cache_schema_version")
-        != BLACKBOX_GENERATION_SNAPSHOT_CACHE_VERSION
-        or identity.get("schema_contract_sha256")
-        != BLACKBOX_SCHEMA_CONTRACT_SHA256
+        cache_contract not in {current_contract, legacy_contract}
         or identity.get("schema_version") != BLACKBOX_SCHEMA_VERSION
     ):
         raise ValueError("Blackbox ready generation receipt contract mismatch")
@@ -1229,7 +1417,12 @@ def _validate_generation_snapshot_identity(identity: Mapping[str, Any]) -> None:
     ):
         raise ValueError("Blackbox ready generation identity is invalid")
     files = identity.get("files")
-    if not isinstance(files, Mapping) or set(files) != set(SNAPSHOT_FILENAMES):
+    expected_filenames = (
+        SNAPSHOT_FILENAMES
+        if cache_contract == current_contract
+        else LEGACY_FOUR_FILENAMES
+    )
+    if not isinstance(files, Mapping) or set(files) != set(expected_filenames):
         raise ValueError("Blackbox ready generation file identity is invalid")
     expected_profile_fields = {
         "sha256",
@@ -1239,7 +1432,7 @@ def _validate_generation_snapshot_identity(identity: Mapping[str, Any]) -> None:
         "min_key",
         "max_key",
     }
-    for filename in SNAPSHOT_FILENAMES:
+    for filename in expected_filenames:
         profile = files.get(filename)
         if (
             not isinstance(profile, Mapping)
@@ -1260,13 +1453,14 @@ def _validate_generation_snapshot_identity(identity: Mapping[str, Any]) -> None:
 
 def _cached_snapshot_file_fingerprints(
     value: object,
+    *,
+    allowed_filenames: tuple[tuple[str, ...], ...],
 ) -> Mapping[str, tuple[int, ...]]:
-    if not isinstance(value, Mapping) or set(value) != set(
-        SNAPSHOT_FILENAMES
-    ):
+    allowed_sets = {frozenset(item) for item in allowed_filenames}
+    if not isinstance(value, Mapping) or frozenset(value) not in allowed_sets:
         raise ValueError("Blackbox generation snapshot file seal is invalid")
     fingerprints: dict[str, tuple[int, ...]] = {}
-    for filename in SNAPSHOT_FILENAMES:
+    for filename in value:
         raw = value.get(filename)
         if (
             not isinstance(raw, list)
@@ -1839,6 +2033,7 @@ def build_daily_input_artifact(
     output_root: str | Path = DEFAULT_OUTPUT_ROOT,
 ) -> InputArtifact:
     """通过日频 data_service 生成输入 CSV，再读回给算法。"""
+    schema_columns = _legacy_native_schema_columns("daily_output.csv")
     path = input_artifact_path(
         scheme_id=scheme_id,
         frequency="daily",
@@ -1849,6 +2044,7 @@ def build_daily_input_artifact(
         "start_date": start_date,
         "end_date": end_date,
         "predict_date": predict_date,
+        "schema_columns": schema_columns,
     }
     read_back = _build_or_reuse_native_csv(
         scheme_id=scheme_id,
@@ -1861,6 +2057,7 @@ def build_daily_input_artifact(
             start_date=start_date,
             end_date=end_date,
             engine=engine,
+            schema_columns=schema_columns,
         ),
         save=_data_service.save_daily_output,
         read=_read_daily_output_csv,
@@ -1894,6 +2091,11 @@ def build_weekly_input_artifact(
     output_root: str | Path = DEFAULT_OUTPUT_ROOT,
 ) -> InputArtifact:
     """生成周频输入 CSV，再读回给算法。"""
+    effective_schema_columns = (
+        list(schema_columns)
+        if schema_columns is not None
+        else _legacy_native_schema_columns("weekly_output.csv")
+    )
     path = input_artifact_path(
         scheme_id=scheme_id,
         frequency="weekly",
@@ -1901,7 +2103,7 @@ def build_weekly_input_artifact(
         output_root=output_root,
     )
     metadata = {
-        "schema_columns": list(schema_columns) if schema_columns is not None else None,
+        "schema_columns": effective_schema_columns,
         "start_week": start_week,
         "end_week": end_week,
         "as_of_date": as_of_date,
@@ -1915,11 +2117,12 @@ def build_weekly_input_artifact(
         metadata=metadata,
         view_path=path,
         build=lambda: _data_service.build_weekly_output_from_db(
-            schema_columns=schema_columns,
+            schema_columns=effective_schema_columns,
             start_week=start_week,
             end_week=end_week,
             as_of_date=as_of_date,
             engine=engine,
+            preserve_metadata_lags=schema_columns is None,
         ),
         save=_data_service.save_weekly_output,
         read=_read_weekly_output_csv,
@@ -1951,6 +2154,7 @@ def build_monthly_input_artifact(
     output_root: str | Path = DEFAULT_OUTPUT_ROOT,
 ) -> InputArtifact:
     """通过月频 data_service 生成输入 CSV，再读回给算法。"""
+    schema_columns = _legacy_native_schema_columns("monthly_output.csv")
     path = input_artifact_path(
         scheme_id=scheme_id,
         frequency="monthly",
@@ -1961,6 +2165,7 @@ def build_monthly_input_artifact(
         "start_date": start_date,
         "end_date": end_date,
         "predict_date": predict_date,
+        "schema_columns": schema_columns,
     }
     read_back = _build_or_reuse_native_csv(
         scheme_id=scheme_id,
@@ -1973,6 +2178,7 @@ def build_monthly_input_artifact(
             start_date=start_date,
             end_date=end_date,
             engine=engine,
+            schema_columns=schema_columns,
         ),
         save=_data_service.save_monthly_output,
         read=_read_monthly_output_csv,
@@ -1992,6 +2198,19 @@ def build_monthly_input_artifact(
         required_columns=("month_id",),
     )
     return artifact
+
+
+def _legacy_native_schema_columns(filename: str) -> list[str]:
+    _, columns = _load_blackbox_schema(BLACKBOX_SCHEMA_PATH)
+    selected = list(columns[filename])
+    if filename == "monthly_output.csv":
+        additions = set(_data_service.DATA_BRIDGE_V1_ADDITIVE_MONTHLY_CODES)
+        selected = [
+            column
+            for column in selected
+            if column == "month_id" or column not in additions
+        ]
+    return selected
 
 
 def _build_or_reuse_native_csv(
@@ -2344,6 +2563,12 @@ def _load_blackbox_schema(path: str | Path) -> tuple[str, dict[str, list[str]]]:
         raise ValueError("weekly_output.csv schema must start with week_id")
     if columns["monthly_output.csv"][0] != "month_id":
         raise ValueError("monthly_output.csv schema must start with month_id")
+    if columns["factor_catalog.csv"] != [
+        "indicators_code",
+        "frequency",
+        "factor_version",
+    ]:
+        raise ValueError("factor_catalog.csv schema columns are invalid")
     return schema_version, columns
 
 

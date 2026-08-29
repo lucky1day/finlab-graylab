@@ -57,6 +57,11 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
         frames = _snapshot_frames()
         for code in ("M0041340", "M0041341", "M0041342"):
             frames["monthly_output.csv"][code] = 0.0
+            frames["factor_catalog.csv"].loc[len(frames["factor_catalog.csv"])] = {
+                "indicators_code": code,
+                "frequency": "monthly",
+                "factor_version": "V1.0",
+            }
         profiles = {
             name: SimpleNamespace(
                 sha256=hashlib.sha256(
@@ -240,7 +245,10 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     input_artifacts._snapshot_file_fingerprints(snapshot)
                 ),
             )
-            bundle = compose_blackbox_input_bundle(snapshot)
+            bundle = compose_blackbox_input_bundle(
+                snapshot,
+                factor_input_mode="algorithm_managed",
+            )
             stable_reads: list[str] = []
             stable_read = input_artifacts._read_stable_regular_file
 
@@ -496,6 +504,17 @@ def _snapshot_frames() -> dict[str, pd.DataFrame]:
             {
                 "rdate": ["2026-07-14", "2026-07-15", "2026-07-16"],
                 "week_id": ["202627", "202627", "202628"],
+            }
+        ),
+        "factor_catalog.csv": pd.DataFrame(
+            {
+                "indicators_code": [
+                    "daily_factor",
+                    "weekly_factor",
+                    "monthly_factor",
+                ],
+                "frequency": ["daily", "weekly", "monthly"],
+                "factor_version": ["V1.0", "V1.0", "V1.0"],
             }
         ),
     }

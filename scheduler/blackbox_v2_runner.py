@@ -34,6 +34,7 @@ from shared.blackbox_v2.requests import write_request, write_requests
 from shared.blackbox_v2.snapshot import (
     SNAPSHOT_FILENAMES,
 )
+from shared.data_bridge.validation import LEGACY_FOUR_FILENAMES
 from shared.models import PredictionRecord
 
 
@@ -266,8 +267,8 @@ def execute_blackbox_cli(
         raise ValueError(f"Blackbox V2 script must be one regular .py file: {script}")
     if not input_file.is_file():
         raise ValueError(f"Blackbox V2 input must be one regular file: {input_file}")
-    expected_filenames = SNAPSHOT_FILENAMES
     initial_data_state = _validate_data_dir(data)
+    expected_filenames = tuple(filename for filename, _ in initial_data_state)
     if output.exists():
         raise ValueError(f"platform must provide a fresh output path: {output}")
     runtime = _python_runtime(profile)
@@ -531,13 +532,20 @@ def _validate_data_dir(
         or not stat.S_ISDIR(directory_before.st_mode)
     ):
         raise ValueError(f"Blackbox V2 data-dir must be one regular directory: {data_dir}")
-    expected_filenames = SNAPSHOT_FILENAMES
     entries = {path.name for path in data_dir.iterdir()}
-    if entries != set(expected_filenames):
+    allowed_file_sets = {
+        frozenset(SNAPSHOT_FILENAMES),
+        frozenset(LEGACY_FOUR_FILENAMES),
+    }
+    if frozenset(entries) not in allowed_file_sets:
         raise ValueError(
-            "Blackbox V2 data-dir files must be exactly "
-            f"{list(expected_filenames)}"
+            "Blackbox V2 data-dir files must be the standard five or legacy four"
         )
+    expected_filenames = tuple(
+        filename
+        for filename in SNAPSHOT_FILENAMES
+        if filename in entries
+    )
     states: list[tuple[str, tuple[int, ...]]] = []
     for filename in expected_filenames:
         path = data_dir / filename

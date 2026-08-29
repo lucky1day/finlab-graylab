@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""刷新或检查平台统一 DataBridge 四文件 current。"""
+"""刷新或检查平台统一 DataBridge 五文件 current。"""
 
 from __future__ import annotations
 

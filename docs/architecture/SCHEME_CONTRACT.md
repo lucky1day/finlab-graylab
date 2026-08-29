@@ -15,7 +15,7 @@
 |---|---|
 | Native V1 / Blackbox V2 | 平台运行时代际 |
 | `schema_version=1.0` | Blackbox 上游接口合同版本 |
-| `data-bridge-v1` | 四文件 DataBridge Schema |
+| `data-bridge-v1` | 五文件 DataBridge Schema |
 | `blackbox-v2-v1` | Blackbox 隔离执行 Runtime Profile |
 | `policy_version=1.0` | 新旧运行时入库政策清单版本 |
 
@@ -82,14 +82,17 @@ Blackbox 还由平台提供与三频快照真实存在的 `daily_cutoff`、`week
 Blackbox 的输入契约是：
 
 ```text
-DataBridge generation 四文件 + 平台 Request
+DataBridge generation 五文件 + 平台 Request
 ```
 
 每个 DataBridge generation 固定包含 `daily_output.csv`、
-`weekly_output.csv`、`monthly_output.csv` 和 `api_wind_date.csv`。
-平台在 generation 生成时一次性校验、摘要并封存四份文件；每个方案
+`weekly_output.csv`、`monthly_output.csv`、`api_wind_date.csv` 和
+`factor_catalog.csv`。平台在 generation 生成时一次性校验、摘要并封存五份文件；新版方案
 看到相同的只读 `--data-dir` 结构，按需读取，不再声明或捕获方案级
 输入。算法不得读取交付目录旁的同名文件或自行访问数据库。
+
+升级前已有 Blackbox config 缺少 `factor_input_mode` 时仅按内部 `legacy_v1` 读取冻结四文件；新版
+Intake 固定写入 `algorithm_managed` 并读取完整五文件。该兼容不修改历史 canonical 字节或 exact version。
 
 ## 6. 标准结果
 
@@ -103,7 +106,7 @@ DataBridge generation 四文件 + 平台 Request
 
 Blackbox 上游结果文件本身只包含 Contract 1.0 的五个字段；平台校验成功后结合 Metadata 和运行上下文完成转换。异常、缺数或低置信度不得伪装成方向 `0`。
 
-Blackbox `PredictionRecord.extra.data_snapshot_id` 直接使用包含四份文件
+Blackbox `PredictionRecord.extra.data_snapshot_id` 直接使用包含本方案输入文件
 的 generation Snapshot identity；来源由 DataBridge generation manifest
 统一追溯，不再生成方案级组合身份或平台输入审计 manifest。
 
@@ -138,7 +141,7 @@ Native `all` 为 `static -> dry-run -> compare -> backtest`；DryRunGate 同时�
 Native ActivationGate 的两条 profile 互斥：当前 exact version 已通过完整 `all` 时，采用 `full_initial_onboarding_v1`，只复核当前四个 Gate（含 Compare）和本次直接 activation 命令，不要求 prior snapshot 或 `native-maintenance`。只有未走该 full-`all` profile 的已有 Native V1 修订，在 prior `all` 的 `static.business_identity` 已持久化且与当前业务身份精确匹配时，才可改走 `native-maintenance`：`static -> native-maintenance-admission -> dry-run`。快照只含 `scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors 和 composite Registry IDs，不含代码/config/version hash。maintenance profile 还要求 current exact `t_scheme_versions` 为 native `draft|active`、expected Registry 全 paused（预激活）或全 active（激活后）、draft+active fail-closed、prior Native version 的 passed `all + compare`、当前精确 version 的三段持久证据和独立 activation 命令；只有 ActivationGate 能原子建立 active。prior snapshot 缺失、重复、损坏或不匹配时一律 fail-closed。maintenance 不运行当前 historical `compare/backtest`，也不写业务表。满足任一标准 profile 的同一身份修订，其历史 source-benchmark 输入 vintage 漂移只归档，不单独阻断 activation、gap repair、`gray_live`、`scheduled_live` 或 Dashboard；新 Native 身份仍只能走 Native `all`，Blackbox V2 走 Intake、完整持久化回测和 activate。
 
 - Native：校验 adapter/core、输入 artifact 和 source fidelity。
-- Blackbox：Intake 和持久化 backtest 执行两文件安全校验；backtest 另校验 CLI、四文件快照和标准结果，并保存脚本校验策略摘要；activate 只匹配 canonical exact version 与当前校验策略的成功回测证据；确定性与截止隔离属上游义务。
+- Blackbox：Intake 和持久化 backtest 执行两文件安全校验；backtest 另校验 CLI、五文件快照和标准结果，并保存脚本校验策略摘要；activate 只匹配 canonical exact version 与当前校验策略的成功回测证据；确定性与截止隔离属上游义务。
 - activate 与单日 `signal-gap-fill` 使用各自专用命令；不存在 Blackbox shadow、config overlay 或 lifecycle reconcile 命令；`scheduled_live` 只由宿主 one-shot 触发。
 
 ## 9. 责任边界
@@ -146,7 +149,7 @@ Native ActivationGate 的两条 profile 互斥：当前 exact version 已通过�
 | 事项 | Native V1 | Blackbox V2 |
 |---|---|---|
 | 算法内部保真 | full-`all` profile 检查 core 和内部 benchmark；maintenance profile 保留 prior admission 的 `static.business_identity` 快照与 live-safe 证据；缺快照只能走 full `all` | 上游负责；平台不反编译或改写脚本 |
-| 输入 | `shared.input_artifacts` 注入 | DataBridge generation 四文件 + 平台 Request |
+| 输入 | `shared.input_artifacts` 注入 | DataBridge generation 五文件 + 平台 Request |
 | 结果验收 | `PredictionRecord` 与 source evidence | Result 合同（确定性与截止隔离由上游保证） |
 | 新身份 | 禁止 | 唯一允许路径 |
 | 业务写入 | 受授权 repository | 默认禁止；生产准备通过并取得专项授权后由专用 Gate 执行 |

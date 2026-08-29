@@ -4,7 +4,7 @@
 
 **目标读者**：上游算法和平台数据接入人员
 
-本目录提供 `data-bridge-v1` 的文档入口、算法合同样例和四份脱敏结构样例。样例中的日期、周期键和业务值全部为合成值，不来自生产数据。
+本目录提供 `data-bridge-v1` 的文档入口、算法合同样例和五份脱敏结构样例。样例中的日期、周期键和业务值全部为合成值，不来自生产数据。
 
 算法合同样例：
 
@@ -24,12 +24,12 @@
 当前 Schema SHA256：
 
 ```text
-addf732eb35071f89493073d22f4bf6ef79a55d7ceaf554dd9cf2c41e4dc6db3
+130c1acbb1cd13d49155334d3bba57f43896bf26d1ec7983c188eb93a7d0cf28
 ```
 
 机器 Schema 不是永久完整表头。基线字段必须存在且相对顺序不变；DataBridge 可以在不改变 `data-bridge-v1` 的情况下增加业务列。本目录的样例不能覆盖机器 Schema，也不能把制作时点的列数提升为平台限制。
 
-## 四份标准文件
+## 五份标准文件
 
 | 文件 | 第一列截止键 | 样例 |
 |---|---|---|
@@ -37,6 +37,7 @@ addf732eb35071f89493073d22f4bf6ef79a55d7ceaf554dd9cf2c41e4dc6db3
 | `weekly_output.csv` | `week_id` | [weekly_output.sample.csv](samples/weekly_output.sample.csv) |
 | `monthly_output.csv` | `month_id` | [monthly_output.sample.csv](samples/monthly_output.sample.csv) |
 | `api_wind_date.csv` | `rdate` | [api_wind_date.sample.csv](samples/api_wind_date.sample.csv) |
+| `factor_catalog.csv` | 不适用 | [factor_catalog.sample.csv](samples/factor_catalog.sample.csv) |
 
 三份因子样例保留制作时点的最低兼容字段基线，只提供两行合成数据；日历样例固定为 `rdate,week_id`。真实 DataBridge 会随指标接入增加业务列，算法必须按字段名选列并忽略未使用的新增业务列。
 
@@ -58,12 +59,12 @@ api_wind_date.csv
 `YYYY-MM-DD`；`week_id` 是六位字符串形式的平台业务键。它不是 ISO
 周，也不保证数值连续，算法不得自行换算、加减或推导相邻周。
 
-`api_wind_date.csv` 是 DataBridge generation 的第四份标准文件。
-上游可以把四份文件用于本地自测，但正式 Blackbox delivery 仍然
+`api_wind_date.csv` 是平台周历；`factor_catalog.csv` 按宽表实际列顺序提供
+`indicators_code,frequency,factor_version`。上游可以把五份文件用于本地自测，但正式 Blackbox delivery 仍然
 只能包含同名 `.py + .json`。平台运行时始终在只读 `--data-dir`
 提供日历；算法需要时读取，不需要时不读取。
 
-上游自测与平台验收必须使用同一四文件 generation；三频或日历任一
+上游自测与平台验收必须使用同一五文件 generation；任一文件
 摘要不同，结果差异先标记
 `data_vintage_mismatch`，需要精确比较时必须在平台选定的同代输入上
 重跑。正式生产运行继续使用当天最新且已封存的 generation，不永久
@@ -84,7 +85,7 @@ api_wind_date.csv
 - 不得把样例路径硬编码进上游脚本。
 - 不得从样例中的 `week_id` 或 `month_id` 自行推导平台 Request。
 
-平台运行时始终通过 `--data-dir` 提供同代只读四文件 Snapshot；全量 current 的管理约定见 [`data/data_bridge/README.md`](../../../data/data_bridge/README.md)。算法不得访问 DataBridge、数据库、交付目录旁文件或内嵌日历作为运行时 fallback。
+平台运行时始终通过 `--data-dir` 提供同代只读五文件 Snapshot；全量 current 的管理约定见 [`data/data_bridge/README.md`](../../../data/data_bridge/README.md)。算法不得访问 DataBridge、数据库、交付目录旁文件或内嵌日历作为运行时 fallback。
 
 ## 读取示例
 
@@ -103,6 +104,17 @@ calendar = pd.read_csv(
     data_dir / "api_wind_date.csv",
     dtype={"rdate": "string", "week_id": "string"},
 )
+catalog = pd.read_csv(data_dir / "factor_catalog.csv", dtype="string")
+
+daily_columns = catalog.loc[
+    (catalog["frequency"] == "daily")
+    & catalog["factor_version"].isin(["V1.0"]),
+    "indicators_code",
+].tolist()
+missing = [column for column in daily_columns if column not in daily.columns]
+if missing:
+    raise ValueError(f"missing daily factor columns: {missing[:10]}")
+daily_features = daily.loc[:, daily_columns]
 ```
 
 算法的完整读取和逐 Request 截止规则以[上游交付 SOP](../../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)为准。

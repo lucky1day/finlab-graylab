@@ -24,10 +24,11 @@ samples/
   weekly_output.sample.csv
   monthly_output.sample.csv
   api_wind_date.sample.csv
+  factor_catalog.sample.csv
 ```
 
-四份 DataBridge sample 只有少量合成数据，只用于检查读取、选列、截止截断和命令行接口，不能用于
-训练、效果回测或性能验收。正式自测必须使用同一份真实 DataBridge 四文件数据。
+五份 DataBridge sample 只有少量合成数据，只用于检查读取、选列、截止截断和命令行接口，不能用于
+训练、效果回测或性能验收。正式自测必须使用同一份真实 DataBridge 五文件数据。
 
 本文中的 `Blackbox V2` 是运行时代际，`schema_version=1.0` 是接口合同版本，
 `data-bridge-v1` 是输入 Schema；三者都不是上游算法版本。
@@ -134,7 +135,7 @@ os.system os.popen os.spawnl os.spawnv
 - 只读取平台传入的 `--request/--requests` 和只读 `--data-dir`。
 - 只向平台给出的 `--output` 写业务结果；日志只写 `stderr`，`stdout` 保持为空。
 
-## 4. DataBridge 四文件输入
+## 4. DataBridge 五文件输入
 
 每次调用的 `--data-dir` 都包含同一份只读数据快照：
 
@@ -143,6 +144,7 @@ daily_output.csv
 weekly_output.csv
 monthly_output.csv
 api_wind_date.csv
+factor_catalog.csv
 ```
 
 算法只读取实际需要的文件；不需要的文件可以完全不解析，但不能因为它们存在而失败。
@@ -153,17 +155,35 @@ api_wind_date.csv
 | `weekly_output.csv` | `week_id` | 六位字符串，不得按 ISO 周解释或加减 |
 | `monthly_output.csv` | `month_id` | 六位字符串 |
 | `api_wind_date.csv` | `rdate` | 精确两列 `rdate,week_id`，用于平台日期到周键的映射 |
+| `factor_catalog.csv` | 无时间键 | 精确三列 `indicators_code,frequency,factor_version`，用于算法选择版本及字段 |
 
 `data_bridge_v1_schema.json` 为最低兼容字段基线。真实文件必须满足：
 
-- 四个文件均存在、非空，表头没有重复字段。
-- 第一列分别为 `date/week_id/month_id/rdate`。
+- 五个文件均存在、非空，表头没有重复字段。
+- 三份因子宽表第一列分别为 `date/week_id/month_id`；日历第一列为 `rdate`。
 - Schema 中每个基线字段都存在，且相对顺序不变；真实数据可以增加业务列。
 - 三份因子文件的时间键唯一；其余业务值只能是有限数值或空值。
 - `api_wind_date.csv` 只能有 `rdate,week_id` 两列；`rdate` 唯一，`week_id` 为六位字符串。
+- `factor_catalog.csv` 的 code 全局唯一，行顺序与 daily、weekly、monthly 三张宽表的实际因子列顺序完全一致。
 - 算法按字段名选择实际消费列，忽略未使用的新增业务列，不依赖固定行数、列数或数据终点。
 
-上游和平台只有使用同一份四文件数据才能逐值比较结果。四份文件任一 SHA-256 不同，必须先按
+算法无需手写上千个字段名。需要按版本取因子时，先读取一次 catalog，再按 `frequency + factor_version`
+取得列名，并检查所有列都存在于对应宽表。算法可以选择一个、多个或部分版本；具体选择由算法自己负责。
+
+```python
+catalog = pd.read_csv(data_dir / "factor_catalog.csv", dtype="string")
+columns = catalog.loc[
+    (catalog["frequency"] == "daily")
+    & catalog["factor_version"].isin(["V1.0", "V2.0"]),
+    "indicators_code",
+].tolist()
+missing = [column for column in columns if column not in daily.columns]
+if missing:
+    raise ValueError(f"missing factor columns: {missing[:10]}")
+features = daily.loc[:, columns]
+```
+
+上游和平台只有使用同一份五文件数据才能逐值比较结果。五份文件任一 SHA-256 不同，必须先按
 输入版本不同处理，不能直接认定为算法差异。
 
 ## 5. Request
@@ -276,7 +296,7 @@ predicted_direction
 
 ## 8. 交付前自测
 
-使用冻结运行环境和同一份真实 DataBridge 四文件数据，至少完成：
+使用冻结运行环境和同一份真实 DataBridge 五文件数据，至少完成：
 
 1. 单条 `predict` 连续运行三次。
 2. 时间升序的 100 条 `backtest` 连续运行三次；正式区间不足 100 条时使用全部 Request。
@@ -296,7 +316,7 @@ predicted_direction
 | 单个算法子进程峰值 RSS | 4 GiB |
 
 在两文件目录外提供 `{scheme_id}.performance.json`，可复制
-`samples/performance.sample.json` 后替换为真实值。必须记录方案身份、测试环境、四文件 SHA-256、
+`samples/performance.sample.json` 后替换为真实值。必须记录方案身份、测试环境、五文件 SHA-256、
 Request 数与日期边界、三次实际耗时、峰值 RSS、首中末自证样本和 `fallback_used=false`。不得使用
 脱敏 sample 代替真实输入做性能证明。
 
@@ -305,7 +325,7 @@ Request 数与日期边界、三次实际耗时、峰值 RSS、首中末自证�
 - [ ] 两文件目录只有同名 `.py + .json`。
 - [ ] Metadata 十个字段、身份、任务组合和展示信息全部合法。
 - [ ] 脚本没有网络、数据库、子进程、额外代码或硬编码路径依赖。
-- [ ] 四文件按字段名读取，每条 Request 按自身 cutoff 截断。
+- [ ] 五文件按字段名读取；因子版本从 catalog 选择；每条 Request 按自身 cutoff 截断。
 - [ ] `predict/backtest`、子集、乱序、重复和未来行隔离结果一致。
 - [ ] Result 字段、顺序、类型、原子 Output 和失败无 Output 符合第 7 节。
 - [ ] 完整区间只启动一个算法进程并满足性能准入。

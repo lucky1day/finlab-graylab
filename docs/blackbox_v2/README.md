@@ -30,12 +30,12 @@ Blackbox V2 是所有新算法、新方案 ID、新目标、新任务和替代�
 
 | 内容 | 仓库位置 | Git 管理 |
 |---|---|---|
-| 最低兼容字段基线 | `shared/blackbox_v2/data_bridge_v1_schema.json` | 是 |
+| 五文件合同与存量列基线 | `shared/blackbox_v2/data_bridge_v1_schema.json` | 是 |
 | 脱敏结构样例 | `docs/blackbox_v2/data_bridge_v1/samples/` | 是 |
 | 当前全量三频数据 | `data/data_bridge/current/` | 否 |
 | 刷新、快照和 Harness 运行产物 | `backtest_artifacts/`、`reports/` | 否 |
 
-删除、改名或重排 DataBridge 基线字段时必须创建新的 `data_schema_version`；新增未消费业务列保持兼容，不冻结当前全量列数。
+删除、改名或重排 DataBridge 基线字段时必须创建新的 `data_schema_version`；新版本因子可以作为新增业务列进入完整 generation，但已发布版本的成员集合不得改变。
 
 ## 维护规则
 

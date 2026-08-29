@@ -565,6 +565,7 @@ def run_blackbox_scheme_subprocess(
     snapshot = get_ready_blackbox_snapshot(
         snapshot_date=predict_date,
         require_fresh=require_fresh,
+        factor_input_mode=getattr(cfg, "factor_input_mode", None) or "legacy_v1",
     )
 
     metadata = _blackbox_metadata(cfg)
@@ -609,7 +610,10 @@ def run_blackbox_scheme_subprocess(
         calendar=calendar,
         cutoffs=cutoffs,
     )
-    input_bundle = compose_blackbox_input_bundle(snapshot)
+    input_bundle = compose_blackbox_input_bundle(
+        snapshot,
+        factor_input_mode=getattr(cfg, "factor_input_mode", None) or "legacy_v1",
+    )
     blackbox_env = DEFAULT_RUNTIME_PROFILE.conda_env if algo_env == DEFAULT_ALGO_ENV else algo_env
     profile = replace(
         DEFAULT_RUNTIME_PROFILE,
@@ -723,7 +727,10 @@ def run_blackbox_gray_replay_batch(
             "Blackbox V2 metadata frequency does not match configured scheme"
         )
 
-    input_bundle = compose_blackbox_input_bundle(snapshot)
+    input_bundle = compose_blackbox_input_bundle(
+        snapshot,
+        factor_input_mode=getattr(cfg, "factor_input_mode", None) or "legacy_v1",
+    )
     blackbox_env = (
         profile.conda_env if algo_env == DEFAULT_ALGO_ENV else algo_env
     )

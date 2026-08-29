@@ -41,6 +41,29 @@ def _frame(filename: str, keys: list[str]) -> pd.DataFrame:
     )
 
 
+def _with_factor_catalog(
+    frames: dict[str, pd.DataFrame],
+) -> dict[str, pd.DataFrame]:
+    rows = []
+    for frequency, filename in (
+        ("daily", "daily_output.csv"),
+        ("weekly", "weekly_output.csv"),
+        ("monthly", "monthly_output.csv"),
+    ):
+        rows.extend(
+            {
+                "indicators_code": column,
+                "frequency": frequency,
+                "factor_version": "V1.0",
+            }
+            for column in frames[filename].columns[1:]
+        )
+    return {
+        **frames,
+        "factor_catalog.csv": pd.DataFrame(rows),
+    }
+
+
 def _current_dataset(
     *,
     upstream_generation_id: str = "full-20260724-065000-abcdef123456",
@@ -48,7 +71,7 @@ def _current_dataset(
     from shared.data_bridge.refresh import CurrentDataset
     from shared.data_bridge.validation import validate_dataset
 
-    frames = {
+    frames = _with_factor_catalog({
         "daily_output.csv": _frame(
             "daily_output.csv",
             ["2026-07-22", "2026-07-23"],
@@ -67,7 +90,7 @@ def _current_dataset(
                 "week_id": ["202630", "202630"],
             }
         ),
-    }
+    })
     dataset = validate_dataset(
         frames,
         schema_path=SCHEMA_PATH,
@@ -137,7 +160,7 @@ def _v3_period_bootstrap_inputs():
 
 
 class _StaticDataBridgeRoundBuilder:
-    """用固定四文件数据驱动真实 refresh/publish 链路。"""
+    """用固定五文件数据驱动真实 refresh/publish 链路。"""
 
     staging_root: Path
     frames: dict[str, pd.DataFrame]
@@ -185,7 +208,7 @@ def _bridge_frames(*, include_new_week: bool) -> dict[str, pd.DataFrame]:
     if include_new_week:
         daily_keys.append("2026-07-20")
         week_keys.append("202630")
-    return {
+    return _with_factor_catalog({
         "daily_output.csv": _frame("daily_output.csv", daily_keys),
         "weekly_output.csv": _frame("weekly_output.csv", week_keys),
         "monthly_output.csv": _frame("monthly_output.csv", ["202607"]),
@@ -195,7 +218,7 @@ def _bridge_frames(*, include_new_week: bool) -> dict[str, pd.DataFrame]:
                 "week_id": week_keys,
             }
         ),
-    }
+    })
 
 
 @contextmanager
@@ -254,7 +277,7 @@ class DataBridgeCurrentTests(unittest.TestCase):
         )
 
         previous = validate_dataset(
-            {
+            _with_factor_catalog({
                 "daily_output.csv": _frame(
                     "daily_output.csv", ["2026-08-07"]
                 ),
@@ -274,11 +297,11 @@ class DataBridgeCurrentTests(unittest.TestCase):
                         "week_id": ["202632", "202632", "202632"],
                     }
                 ),
-            },
+            }),
             schema_path=SCHEMA_PATH,
             expected_daily_date="2026-08-07",
         )
-        candidate = {
+        candidate = _with_factor_catalog({
             "daily_output.csv": _frame(
                 "daily_output.csv", ["2026-08-07"]
             ),
@@ -291,7 +314,7 @@ class DataBridgeCurrentTests(unittest.TestCase):
             "api_wind_date.csv": pd.DataFrame(
                 {"rdate": ["2026-08-07"], "week_id": ["202632"]}
             ),
-        }
+        })
 
         with self.assertRaisesRegex(
             DataBridgeValidationError,
@@ -304,6 +327,7 @@ class DataBridgeCurrentTests(unittest.TestCase):
                 previous_keys={
                     filename: profile.keys
                     for filename, profile in previous.files.items()
+                    if filename != "factor_catalog.csv"
                 },
                 continuity_cutoffs={
                     "daily_output.csv": "2026-08-07",
@@ -559,14 +583,36 @@ class DataBridgeCurrentTests(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory() as tmpdir,
-            patch.object(mysql_exporter, "build_daily_output_from_db"),
-            patch.object(mysql_exporter, "build_weekly_output_from_db"),
-            patch.object(mysql_exporter, "build_monthly_output_from_db") as monthly_builder,
+            patch.object(
+                mysql_exporter,
+                "read_factor_metadata_from_db",
+                return_value=pd.DataFrame(
+                    {
+                        "indicators_code": ["D", "W", "M"],
+                        "factor_version": ["V1.0", "V1.0", "V1.0"],
+                    }
+                ),
+            ) as metadata_reader,
+            patch.object(
+                mysql_exporter,
+                "build_daily_output_from_db",
+                return_value=pd.DataFrame(columns=["date", "D"]),
+            ),
+            patch.object(
+                mysql_exporter,
+                "build_weekly_output_from_db",
+                return_value=pd.DataFrame(columns=["week_id", "W"]),
+            ),
+            patch.object(
+                mysql_exporter,
+                "build_monthly_output_from_db",
+                return_value=pd.DataFrame(columns=["month_id", "M"]),
+            ) as monthly_builder,
             patch.object(
                 mysql_exporter,
                 "capture_source_commit_evidence_from_connection",
                 return_value=object(),
-            ),
+            ) as evidence_reader,
             patch.object(mysql_exporter, "assert_source_commit_evidence_at_cutoff"),
             patch.object(
                 mysql_exporter,
@@ -591,11 +637,26 @@ class DataBridgeCurrentTests(unittest.TestCase):
                 previous_keys=None,
             )
 
-        monthly_builder.assert_called_once_with(
-            start_date="2025-01-01",
-            end_date="2026-03-01",
-            engine=connection,
-            include_databridge_additions=True,
+        monthly_builder.assert_called_once()
+        monthly_kwargs = dict(monthly_builder.call_args.kwargs)
+        shared_metadata = monthly_kwargs.pop("metadata")
+        self.assertEqual(
+            monthly_kwargs,
+            {
+                "start_date": "2025-01-01",
+                "end_date": "2026-03-01",
+                "engine": connection,
+                "include_databridge_additions": True,
+            },
+        )
+        self.assertEqual(
+            shared_metadata["indicators_code"].tolist(),
+            ["D", "W", "M"],
+        )
+        metadata_reader.assert_called_once_with(connection)
+        self.assertIs(
+            evidence_reader.call_args.kwargs["metadata"],
+            shared_metadata,
         )
 
 
@@ -701,16 +762,25 @@ class DataBridgeCurrentTests(unittest.TestCase):
     ) -> None:
         from shared import input_artifacts
 
+        frames = _current_dataset().dataset.frames
+        frames = {name: frame.copy() for name, frame in frames.items()}
+        missing = {"M0041340", "M0041341", "M0041342"}
+        frames["monthly_output.csv"] = frames["monthly_output.csv"].drop(
+            columns=sorted(missing)
+        )
+        frames["factor_catalog.csv"] = frames["factor_catalog.csv"][
+            ~frames["factor_catalog.csv"]["indicators_code"].isin(missing)
+        ]
         with self.assertRaisesRegex(
             ValueError,
             "M0041340.*M0041341.*M0041342",
         ):
             input_artifacts._require_blackbox_databridge_monthly_additions(
-                _current_dataset().dataset.frames
+                frames
             )
 
     def test_cross_week_producer_resolves_and_publishes_new_week(self) -> None:
-        """周一首刷必须贯通真实 cutoff、refresh 与四文件 publish。"""
+        """周一首刷必须贯通真实 cutoff、refresh 与五文件 publish。"""
         from scripts import refresh_data_bridge_current as refresh_script
         from shared.data_bridge import mysql_exporter
         from shared.data_bridge.refresh import (
@@ -802,8 +872,8 @@ class DataBridgeCurrentTests(unittest.TestCase):
             )
             self.assertIn(202630, published["week_id"].tolist())
 
-    def test_legacy_three_file_current_upgrades_atomically(self) -> None:
-        """仍受支持的三文件 current 必须一次替换为完整四文件。"""
+    def test_legacy_four_file_current_upgrades_atomically(self) -> None:
+        """升级前四文件 current 必须一次替换为完整五文件。"""
         from shared.data_bridge.refresh import (
             DataBridgeContinuityAuthority,
             DataBridgeRefreshConfig,
@@ -815,7 +885,7 @@ class DataBridgeCurrentTests(unittest.TestCase):
             run_full_refresh,
         )
         from shared.data_bridge.validation import (
-            validate_legacy_three_file_dataset,
+            validate_legacy_four_file_dataset,
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -834,9 +904,9 @@ class DataBridgeCurrentTests(unittest.TestCase):
                 for name, frame in _bridge_frames(
                     include_new_week=False
                 ).items()
-                if name != "api_wind_date.csv"
+                if name != "factor_catalog.csv"
             }
-            legacy = validate_legacy_three_file_dataset(
+            legacy = validate_legacy_four_file_dataset(
                 legacy_frames,
                 schema_path=SCHEMA_PATH,
             )
@@ -904,6 +974,7 @@ class DataBridgeCurrentTests(unittest.TestCase):
                     "weekly_output.csv",
                     "monthly_output.csv",
                     "api_wind_date.csv",
+                    "factor_catalog.csv",
                     ".publication-manifest.json",
                 },
             )

@@ -358,8 +358,9 @@ def test_upstream_delivery_samples_match_the_machine_contract() -> None:
     data_files = (
         "daily_output.csv",
         "weekly_output.csv",
-        "monthly_output.csv",
-        "api_wind_date.csv",
+            "monthly_output.csv",
+            "api_wind_date.csv",
+            "factor_catalog.csv",
     )
     dataset = validate_dataset(
         {

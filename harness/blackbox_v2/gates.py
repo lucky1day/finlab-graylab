@@ -104,6 +104,9 @@ class BlackboxBacktestGate(_BlackboxGate):
             snapshot = get_ready_blackbox_snapshot(
                 snapshot_date=ctx.predict_date,
                 require_fresh=False,
+                factor_input_mode=(
+                    getattr(cfg, "factor_input_mode", None) or "legacy_v1"
+                ),
             )
             generation_id = str(snapshot.generation_id or "").strip()
             if not generation_id:
@@ -137,7 +140,12 @@ class BlackboxBacktestGate(_BlackboxGate):
                 ),
             )
             benchmark_id = f"bbv2-{cfg.scheme_id}-{uuid.uuid4().hex}"
-            bundle = compose_blackbox_input_bundle(snapshot)
+            bundle = compose_blackbox_input_bundle(
+                snapshot,
+                factor_input_mode=(
+                    getattr(cfg, "factor_input_mode", None) or "legacy_v1"
+                ),
+            )
             environment_fingerprint = _environment_fingerprint(ctx.project_root)
             with _open_runtime_input(bundle) as runtime_view:
                 output = run_blackbox_historical_backtest(

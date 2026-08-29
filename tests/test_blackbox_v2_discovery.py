@@ -277,6 +277,25 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
             "7f90072e90291b9e89f80244e0779dc03ee496099e7b3015968fc422dccef072",
         )
 
+    def test_blackbox_factor_input_mode_changes_canonical_hash(self) -> None:
+        from shared.blackbox_v2.versioning import compute_blackbox_config_hash
+
+        legacy = _canonical_raw_config()
+        explicit_legacy = {**legacy, "factor_input_mode": "legacy_v1"}
+        algorithm_managed = {
+            **legacy,
+            "factor_input_mode": "algorithm_managed",
+        }
+
+        self.assertNotEqual(
+            compute_blackbox_config_hash(legacy),
+            compute_blackbox_config_hash(explicit_legacy),
+        )
+        self.assertNotEqual(
+            compute_blackbox_config_hash(explicit_legacy),
+            compute_blackbox_config_hash(algorithm_managed),
+        )
+
     def test_blackbox_canonical_config_keeps_legacy_platform_input_bytes(self) -> None:
         from shared.blackbox_v2.versioning import canonical_platform_config
 

@@ -1340,6 +1340,8 @@
         "S6949751",
         "S6949777",
         "S6955340",
+        "TB3YWI1C",
+        "TB7YWI1C",
         "SH001702",
         "SH001703",
         "SH004702",
@@ -1482,13 +1484,23 @@
         "S6425150",
         "S6425151",
         "S6623820",
-        "T2627623"
+        "T2627623",
+        "M0041340",
+        "M0041341",
+        "M0041342"
       ]
     },
     "api_wind_date.csv": {
       "columns": [
         "rdate",
         "week_id"
+      ]
+    },
+    "factor_catalog.csv": {
+      "columns": [
+        "indicators_code",
+        "frequency",
+        "factor_version"
       ]
     }
   }

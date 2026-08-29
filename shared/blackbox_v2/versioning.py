@@ -19,6 +19,8 @@ def canonical_platform_config(raw: Mapping[str, Any]) -> dict[str, Any]:
         field: str(_required_value(raw, field, field))
         for field in REQUIRED_TOP_LEVEL_FIELDS
     }
+    if "factor_input_mode" in raw:
+        canonical["factor_input_mode"] = str(raw["factor_input_mode"])
     schedule = _required_mapping(raw, "schedule")
     delivery = _required_mapping(raw, "delivery")
     timeout_sec = schedule.get("timeout_sec")

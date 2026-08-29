@@ -13,10 +13,10 @@ Harness 不是新的预测算法，也不是新的数据口径。Harness 的职�
 
 核心边界:
 
-- `shared.input_artifacts` 是所有算法输入的唯一平台入口：Native V1 由它构建 DB artifact，Blackbox V2 由它提供 DataBridge 同代四文件 Snapshot。
+- `shared.input_artifacts` 是所有算法输入的唯一平台入口：Native V1 由它构建 DB artifact，Blackbox V2 由它提供 DataBridge 同代五文件 Snapshot；存量 Blackbox 只获得冻结四文件视图。
 - `shared.calendar_service` 与 `scheduler.weekly_actuals_updater` 必须共享同一周历事实；源周历孤立 forward jump 只允许通过公共只读 normalizer 处理，不能在方案 adapter、core 或临时脚本里各自修正。
 - Native V1 的 `core/` 和 `predict.py` 继续遵守纯算法与 adapter 边界；清单外 Native 身份必须在 StaticGate 和 ActivationGate fail-closed。
-- Blackbox V2 的 delivery 两文件保持上游原始字节，平台不重写算法；脚本只读 DataBridge 四文件精确临时视图，通过 CLI 输出标准 Result。
+- Blackbox V2 的 delivery 两文件保持上游原始字节，平台不重写算法；新版脚本只读 DataBridge 五文件精确临时视图，通过 CLI 输出标准 Result。
 - Native source-backed 的 source benchmark/CompareGate 是首次技术入库的保真证据；Blackbox 内部保真由上游负责，平台只验证接口与标准结果。**平台的验证边界等于平台自己新增或修改的边界**：数据接入、写出与平台侧逻辑必须验证；交付代码自身的性质（重复执行确定性、predict/backtest 一致、截止隔离、跨请求无状态）由上游按其交付契约保证，平台不重验。
 - ActivationGate 的 Native profile 互斥：current exact version 的完整四段 `all` 通过时使用 `full_initial_onboarding_v1`，只要求当前四个 Gate（含 Compare；DryRun 已含真实输入合同），不要求 maintenance/prior snapshot；只有 prior `all` 的 `static.business_identity` 已持久化且与当前身份精确匹配的修订才使用三段 `native-maintenance`。该快照只含业务字段，不含代码/config/version hash。maintenance 的 current exact `t_scheme_versions` 行必须是 `native_adapter` 且 status 为 `draft|active`；expected Registry identity 可在预激活时统一为 `paused`，或在激活后统一为 `active`，但 draft version 配 active Registry 必须 fail-closed。ActivationGate 是唯一原子建立 active 状态的操作。prior snapshot 缺失、重复、损坏或不匹配时一律 fail-closed，不保留方案级例外。满足标准路径后，历史 source-benchmark 输入 vintage 漂移才只作归档诊断，不是 activation、历史补数、`gray_live`、`scheduled_live` 或 dashboard 的独立 blocker。
 - `scheduler.scheme_runner` 是只读 dry-run 边界，只输出 JSON，不写库。
@@ -150,6 +150,7 @@ run。Blackbox 当前主机生命周期只由本机数据库的 exact version �
 
 `api_wind_date` 仅由 DataBridge exporter 在每个 generation 的同一只读
 一致性事务中捕获一次，并作为固定第四文件 `api_wind_date.csv` 发布。
+同一事务读取一次 `api_wind_indicators_all`，生成第五文件 `factor_catalog.csv`。
 Harness、自然调度和历史 replay 只消费该 generation；算法子进程、方案
 adapter 和其它 Gate 不得直接查询该表。
 

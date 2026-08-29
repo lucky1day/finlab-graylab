@@ -16,6 +16,10 @@ import pandas as pd
 
 from shared.data_bridge.validation import (
     EXPECTED_FILENAMES as SNAPSHOT_FILENAMES,
+    FACTOR_CATALOG_COLUMNS,
+    FACTOR_CATALOG_FREQUENCIES,
+    FACTOR_VERSION_PATTERN,
+    LEGACY_FOUR_FILENAMES,
     TIME_KEY_BY_FILE,
     validate_baseline_compatible_columns,
 )
@@ -40,7 +44,7 @@ class BlackboxSnapshot:
 
 @dataclass(frozen=True)
 class BlackboxInputBundle:
-    """DataBridge generation 四文件组成的一次执行输入。"""
+    """DataBridge generation 标准文件组成的一次执行输入。"""
 
     combined_snapshot_id: str
     parent_snapshot_id: str
@@ -57,15 +61,23 @@ class CutoffKeys:
 
 def compose_blackbox_input_bundle(
     base_snapshot: BlackboxSnapshot,
+    *,
+    factor_input_mode: str = "legacy_v1",
 ) -> BlackboxInputBundle:
-    """将已含四份标准文件的 generation 快照交给运行视图。"""
+    """将已含标准文件的 generation 快照交给运行视图。"""
     if not isinstance(base_snapshot, BlackboxSnapshot):
         raise ValueError("base_snapshot must be a BlackboxSnapshot")
+    if factor_input_mode == "legacy_v1":
+        expected_filenames = LEGACY_FOUR_FILENAMES
+    elif factor_input_mode == "algorithm_managed":
+        expected_filenames = SNAPSHOT_FILENAMES
+    else:
+        raise ValueError(f"unsupported factor_input_mode: {factor_input_mode}")
     return BlackboxInputBundle(
         combined_snapshot_id=base_snapshot.snapshot_id,
         parent_snapshot_id=base_snapshot.snapshot_id,
         base_snapshot=base_snapshot,
-        expected_filenames=SNAPSHOT_FILENAMES,
+        expected_filenames=expected_filenames,
     )
 
 
@@ -76,11 +88,12 @@ def create_snapshot_from_frames(
     expected_columns: Mapping[str, list[str]],
     schema_version: str,
 ) -> BlackboxSnapshot:
-    """将 DataBridge 四文件固化为内容寻址、只读的数据快照。"""
+    """将 DataBridge 标准文件固化为内容寻址、只读的数据快照。"""
     _validate_frame_set(frames, expected_columns)
+    filenames = tuple(frames)
     rendered = {
         filename: frames[filename].to_csv(index=False, lineterminator="\n").encode("utf-8")
-        for filename in SNAPSHOT_FILENAMES
+        for filename in filenames
     }
     file_entries = {
         filename: {
@@ -88,7 +101,7 @@ def create_snapshot_from_frames(
             "row_count": int(len(frames[filename])),
             "columns": list(frames[filename].columns),
         }
-        for filename in SNAPSHOT_FILENAMES
+        for filename in filenames
     }
     identity = {
         "schema_version": schema_version,
@@ -182,22 +195,60 @@ def _validate_frame_set(
     frames: Mapping[str, pd.DataFrame],
     expected_columns: Mapping[str, list[str]],
 ) -> None:
-    expected_files = set(SNAPSHOT_FILENAMES)
-    if set(frames) != expected_files:
-        raise ValueError(f"snapshot files must be exactly {sorted(expected_files)}")
-    if set(expected_columns) != expected_files:
-        raise ValueError(f"schema files must be exactly {sorted(expected_files)}")
-    for filename in SNAPSHOT_FILENAMES:
+    actual_files = set(frames)
+    allowed_file_sets = {
+        frozenset(SNAPSHOT_FILENAMES),
+        frozenset(LEGACY_FOUR_FILENAMES),
+    }
+    if frozenset(actual_files) not in allowed_file_sets:
+        raise ValueError("snapshot files must be the standard five or legacy four")
+    if not actual_files.issubset(expected_columns):
+        raise ValueError("snapshot schema does not define every input file")
+    for filename in frames:
         frame = frames[filename]
         if frame.empty:
             raise ValueError(f"{filename} must not be empty")
         actual = list(frame.columns)
+        if filename == "factor_catalog.csv":
+            if actual != list(expected_columns[filename]):
+                raise ValueError("factor_catalog.csv columns are invalid")
+            _validate_catalog_frame(frame)
+            continue
         validate_baseline_compatible_columns(
             filename,
             actual,
             list(expected_columns[filename]),
         )
         _validate_frame_content(filename, frame)
+
+
+def _validate_catalog_frame(frame: pd.DataFrame) -> None:
+    if list(frame.columns) != list(FACTOR_CATALOG_COLUMNS):
+        raise ValueError("factor_catalog.csv columns are invalid")
+    if frame.empty:
+        raise ValueError("factor_catalog.csv must not be empty")
+    normalized: dict[str, list[str]] = {}
+    for column in FACTOR_CATALOG_COLUMNS:
+        values = frame[column]
+        if values.isna().any():
+            raise ValueError(f"factor_catalog.csv {column} must not be null")
+        texts = values.astype(str).tolist()
+        if any(not value or value != value.strip() for value in texts):
+            raise ValueError(f"factor_catalog.csv {column} is invalid")
+        normalized[column] = texts
+    codes = normalized["indicators_code"]
+    if len(codes) != len(set(codes)):
+        raise ValueError("factor_catalog.csv indicators_code must be unique")
+    if any(
+        value not in FACTOR_CATALOG_FREQUENCIES
+        for value in normalized["frequency"]
+    ):
+        raise ValueError("factor_catalog.csv frequency is invalid")
+    if any(
+        FACTOR_VERSION_PATTERN.fullmatch(value) is None
+        for value in normalized["factor_version"]
+    ):
+        raise ValueError("factor_catalog.csv factor_version is invalid")
 
 
 def _validate_frame_content(filename: str, frame: pd.DataFrame) -> None:
@@ -260,7 +311,7 @@ def _write_snapshot(
     try:
         data_dir = staging / "data"
         data_dir.mkdir()
-        for filename in SNAPSHOT_FILENAMES:
+        for filename in rendered:
             path = data_dir / filename
             path.write_bytes(rendered[filename])
             path.chmod(0o444)
@@ -302,8 +353,8 @@ def _verify_existing_snapshot(
 
 def _make_snapshot_read_only(destination: Path) -> None:
     data_dir = destination / "data"
-    for filename in SNAPSHOT_FILENAMES:
-        (data_dir / filename).chmod(0o444)
+    for path in data_dir.iterdir():
+        path.chmod(0o444)
     (destination / "manifest.json").chmod(0o444)
     data_dir.chmod(0o555)
     destination.chmod(0o555)

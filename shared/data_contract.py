@@ -12,6 +12,8 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
+import pandas as pd
+
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 FACTOR_SOURCE_TABLES = (
     "api_wind_daily",
@@ -52,6 +54,7 @@ def capture_source_commit_evidence_from_connection(
     connection: Connection,
     *,
     feature_date: str,
+    metadata: pd.DataFrame | None = None,
 ) -> SourceCommitEvidence:
     """在调用方现有事务/一致性快照中采集同一份源水位证据。"""
     normalized_feature_date = _canonical_date(feature_date)
@@ -83,25 +86,39 @@ def capture_source_commit_evidence_from_connection(
                 latest_create_time=latest_create_time,
             )
         )
-    metadata = connection.execute(
-        text(
-            f"""
-            SELECT COUNT(*) AS row_count,
-                   MAX(create_time) AS latest_create_time,
-                   MAX(update_time) AS latest_update_time
-            FROM {METADATA_SOURCE_TABLE}
-            """
-        )
-    ).mappings().one()
+    if metadata is None:
+        metadata_record = connection.execute(
+            text(
+                f"""
+                SELECT COUNT(*) AS row_count,
+                       MAX(create_time) AS latest_create_time,
+                       MAX(update_time) AS latest_update_time
+                FROM {METADATA_SOURCE_TABLE}
+                """
+            )
+        ).mappings().one()
+    else:
+        required = {"create_time", "update_time"}
+        missing = required - set(metadata.columns)
+        if missing:
+            raise ValueError(
+                "preloaded factor metadata is missing source evidence "
+                f"columns: {sorted(missing)}"
+            )
+        metadata_record = {
+            "row_count": len(metadata),
+            "latest_create_time": _dataframe_max(metadata["create_time"]),
+            "latest_update_time": _dataframe_max(metadata["update_time"]),
+        }
     evidence.append(
         SourceTableEvidence(
             table_name=METADATA_SOURCE_TABLE,
-            row_count=int(metadata["row_count"]),
+            row_count=int(metadata_record["row_count"]),
             latest_create_time=_naive_timestamp_text(
-                metadata["latest_create_time"]
+                metadata_record["latest_create_time"]
             ),
             latest_update_time=_naive_timestamp_text(
-                metadata["latest_update_time"]
+                metadata_record["latest_update_time"]
             ),
         )
     )
@@ -142,6 +159,13 @@ def capture_source_commit_evidence_from_connection(
         ),
         tables=evidence_record.tables,
     )
+
+
+def _dataframe_max(series: pd.Series) -> object | None:
+    values = series.dropna()
+    if values.empty:
+        return None
+    return values.max()
 
 
 def source_commit_evidence_payload(

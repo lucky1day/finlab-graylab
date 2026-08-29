@@ -23,12 +23,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from shared.data_bridge.validation import (
     DataBridgeValidationError,
     EXPECTED_FILENAMES,
-    LEGACY_THREE_FILENAMES,
+    LEGACY_FOUR_FILENAMES,
     ValidatedDataBridgeDataset,
     read_dataset_directory,
-    read_legacy_three_file_directory,
+    read_legacy_four_file_directory,
     validate_dataset,
-    validate_legacy_three_file_dataset,
+    validate_legacy_four_file_dataset,
 )
 from shared.data_contract import (
     CALENDAR_SOURCE_TABLES,
@@ -121,7 +121,7 @@ class DownloadRound:
 
 
 class DataBridgeRoundSource(Protocol):
-    """为一次刷新构造标准四文件候选目录的可替换数据源。"""
+    """为一次刷新构造标准五文件候选目录的可替换数据源。"""
 
     def build(
         self,
@@ -374,9 +374,9 @@ def run_full_refresh(
             builder = round_builder
             previous_keys = (
                 {
-                    filename: profile.keys
-                    for filename, profile
-                    in previous_current.dataset.files.items()
+                    filename: previous_current.dataset.files[filename].keys
+                    for filename in LEGACY_FOUR_FILENAMES
+                    if filename in previous_current.dataset.files
                 }
                 if previous_current is not None
                 else None
@@ -402,6 +402,10 @@ def run_full_refresh(
                 max_rounds=config.max_rounds,
             )
             assert selected.dataset is not None
+            _assert_factor_catalog_continuity(
+                previous_current,
+                selected.dataset,
+            )
             _assert_frozen_exact_period_keys(
                 selected.dataset,
                 continuity_authority=continuity_authority,
@@ -470,7 +474,6 @@ def check_current_dataset(
     expected_business_digest: str | None = None,
     strict_read_only: bool = False,
     require_source_provenance: bool = False,
-    allow_legacy_three_file_current: bool = False,
 ) -> CurrentDataset:
     """在共享锁内验证 current 文件、状态及调用方拥有的发布身份。"""
     if require_source_provenance:
@@ -492,9 +495,6 @@ def check_current_dataset(
             state=state,
             schema_path=config.schema_path,
             expected_daily_date=expected_daily_date,
-            allow_legacy_three_file_current=(
-                allow_legacy_three_file_current
-            ),
         )
         dataset = current.dataset
         if require_source_provenance:
@@ -556,7 +556,6 @@ def _load_previous_current_locked(
             store,
             state=state,
             schema_path=schema_path,
-            allow_legacy_three_file_current=True,
         )
 
 
@@ -566,16 +565,16 @@ def _validate_current_or_legacy_dataset_locked(
     state: Mapping[str, object],
     schema_path: Path,
     expected_daily_date: str | None = None,
-    allow_legacy_three_file_current: bool,
 ) -> CurrentDataset:
     entries = {path.name for path in store.current_dir.iterdir()}
-    if allow_legacy_three_file_current and entries == (
-        set(LEGACY_THREE_FILENAMES) | {CURRENT_PUBLICATION_MANIFEST}
+    if entries == (
+        set(LEGACY_FOUR_FILENAMES) | {CURRENT_PUBLICATION_MANIFEST}
     ):
-        return _validate_legacy_three_file_current_locked(
+        return _validate_legacy_four_file_current_locked(
             store,
             state=state,
             schema_path=schema_path,
+            expected_daily_date=expected_daily_date,
         )
     return _validate_current_dataset_locked(
         store,
@@ -585,31 +584,33 @@ def _validate_current_or_legacy_dataset_locked(
     )
 
 
-def _validate_legacy_three_file_current_locked(
+def _validate_legacy_four_file_current_locked(
     store: "DataBridgeStore",
     *,
     state: Mapping[str, object],
     schema_path: Path,
+    expected_daily_date: str | None,
 ) -> CurrentDataset:
-    """验证旧 current，仅为下一次原子发布保留三频 continuity。"""
+    """验证升级前四文件 current，供兼容 release 和 producer 使用。"""
     marker = _read_publication_manifest(store.current_dir)
     if marker != _publication_identity_from_state(state):
         raise DataBridgeRefreshError(
-            "DataBridge legacy current publication identity does not match state"
+            "DataBridge legacy four-file current identity does not match state"
         )
-    dataset = validate_legacy_three_file_dataset(
-        read_legacy_three_file_directory(
+    dataset = validate_legacy_four_file_dataset(
+        read_legacy_four_file_directory(
             store.current_dir,
             allowed_sidecar_filenames=frozenset(
                 {CURRENT_PUBLICATION_MANIFEST}
             ),
         ),
         schema_path=schema_path,
+        expected_daily_date=expected_daily_date,
     )
     _validate_identity_against_dataset(
         marker,
         dataset=dataset,
-        expected_filenames=LEGACY_THREE_FILENAMES,
+        expected_filenames=LEGACY_FOUR_FILENAMES,
     )
     return CurrentDataset(
         state=state,
@@ -801,7 +802,7 @@ def _validate_continuity_authority(
         )
     return {
         filename: cutoffs[filename]
-        for filename in current.dataset.files
+        for filename in LEGACY_FOUR_FILENAMES
     }
 
 
@@ -830,6 +831,81 @@ def _assert_frozen_exact_period_keys(
             raise DataBridgeRefreshError(
                 "DataBridge selected candidate is missing frozen exact "
                 f"{filename} key {required_key}"
+            )
+
+
+def _assert_factor_catalog_continuity(
+    previous: CurrentDataset | None,
+    candidate: ValidatedDataBridgeDataset,
+) -> None:
+    """已发布版本成员封版；四文件 current 仅作为首次五文件基线。"""
+    if previous is None:
+        return
+    if "factor_catalog.csv" not in previous.dataset.frames:
+        candidate_catalog = candidate.frames.get("factor_catalog.csv")
+        if candidate_catalog is None:
+            raise DataBridgeRefreshError(
+                "DataBridge candidate factor catalog is missing"
+            )
+        if set(candidate_catalog["factor_version"]) != {"V1.0"}:
+            raise DataBridgeRefreshError(
+                "first five-file generation must freeze only V1.0 factors"
+            )
+        changed_files = [
+            filename
+            for filename in LEGACY_FOUR_FILENAMES[:3]
+            if list(previous.dataset.frames[filename].columns)
+            != list(candidate.frames[filename].columns)
+        ]
+        if changed_files:
+            raise DataBridgeRefreshError(
+                "first five-file generation must preserve legacy factor columns: "
+                f"{changed_files}"
+            )
+        return
+    previous_catalog = previous.dataset.frames["factor_catalog.csv"]
+    candidate_catalog = candidate.frames.get("factor_catalog.csv")
+    if candidate_catalog is None:
+        raise DataBridgeRefreshError(
+            "DataBridge candidate factor catalog is missing"
+        )
+    previous_versions = dict(
+        previous_catalog[["indicators_code", "factor_version"]].itertuples(
+            index=False,
+            name=None,
+        )
+    )
+    candidate_versions = dict(
+        candidate_catalog[["indicators_code", "factor_version"]].itertuples(
+            index=False,
+            name=None,
+        )
+    )
+    changed = sorted(
+        code
+        for code, version in previous_versions.items()
+        if candidate_versions.get(code) != version
+    )
+    if changed:
+        raise DataBridgeRefreshError(
+            "published factor_version assignments changed: "
+            f"{changed[:10]}"
+        )
+    for version in sorted(set(previous_versions.values())):
+        previous_codes = {
+            code
+            for code, assigned in previous_versions.items()
+            if assigned == version
+        }
+        candidate_codes = {
+            code
+            for code, assigned in candidate_versions.items()
+            if assigned == version
+        }
+        if previous_codes != candidate_codes:
+            raise DataBridgeRefreshError(
+                "published factor version membership changed: "
+                f"{version}"
             )
 
 
@@ -1578,13 +1654,13 @@ def _directory_publication_identity(
     try:
         identity = _read_publication_manifest(directory)
         entries = {path.name for path in directory.iterdir()}
-        is_legacy_three = entries == (
-            set(LEGACY_THREE_FILENAMES)
+        is_legacy_four = entries == (
+            set(LEGACY_FOUR_FILENAMES)
             | {CURRENT_PUBLICATION_MANIFEST}
         )
-        if is_legacy_three:
-            dataset = validate_legacy_three_file_dataset(
-                read_legacy_three_file_directory(
+        if is_legacy_four:
+            dataset = validate_legacy_four_file_dataset(
+                read_legacy_four_file_directory(
                     directory,
                     allowed_sidecar_filenames=frozenset(
                         {CURRENT_PUBLICATION_MANIFEST}
@@ -1606,8 +1682,8 @@ def _directory_publication_identity(
             identity,
             dataset=dataset,
             expected_filenames=(
-                LEGACY_THREE_FILENAMES
-                if is_legacy_three
+                LEGACY_FOUR_FILENAMES
+                if is_legacy_four
                 else EXPECTED_FILENAMES
             ),
         )
@@ -1902,10 +1978,21 @@ class DataBridgeStore:
                 and not os.path.lexists(marker_path)
             ):
                 try:
-                    legacy_dataset = validate_dataset(
-                        read_dataset_directory(self.current_dir),
-                        schema_path=Path(schema_path),
-                    )
+                    entries = {
+                        path.name for path in self.current_dir.iterdir()
+                    }
+                    if entries == set(LEGACY_FOUR_FILENAMES):
+                        legacy_dataset = validate_legacy_four_file_dataset(
+                            read_legacy_four_file_directory(
+                                self.current_dir
+                            ),
+                            schema_path=Path(schema_path),
+                        )
+                    else:
+                        legacy_dataset = validate_dataset(
+                            read_dataset_directory(self.current_dir),
+                            schema_path=Path(schema_path),
+                        )
                 except (OSError, ValueError):
                     legacy_dataset = None
                 if legacy_dataset is not None:
@@ -2171,7 +2258,7 @@ def _validate_publish_candidate(path: Path) -> None:
     entries = list(path.iterdir())
     if {entry.name for entry in entries} != set(EXPECTED_FILENAMES):
         raise DataBridgeRefreshError(
-            "candidate directory does not contain exactly four data files"
+            "candidate directory does not contain exactly five data files"
         )
     for entry in entries:
         info = entry.lstat()
