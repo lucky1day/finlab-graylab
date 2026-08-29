@@ -36,9 +36,10 @@
 2. 因子版本目录与存量方案 V1 输入保护已经完成本地候选实现、全量测试和独立审查，详见
    [因子版本目录与存量方案输入保护设计](architecture/FACTOR_VERSIONED_INPUT_DRAFT.md)。该文档状态为
    `LOCAL_CANDIDATE`；Mac3 与 ECS 已完成 nullable 字段和存量 `V1.0` 回填，旧 release dry-run 证明四文件
-   零漂移。源表 CRUD 属于独立项目，不是本任务前置条件；ECS 已完成第一份兼容 release 验证，但 DataBridge
-   current 仍保持四文件。必须等待下一份有真实内容的兼容 release 晋级，使 ECS 的 current/previous 都具备
-   V1 输入保护后，才可另行授权首个五文件 generation；不得用纯文档或空变更制造第二份 release。
+   零漂移。源表 CRUD 属于独立项目，不是本任务前置条件；ECS 与 Mac3 均已完成第一份兼容 release 验证，但
+   DataBridge current 仍保持四文件。必须等待下一份有真实内容的兼容 release 晋级，使各自主机的
+   current/previous 都具备 V1 输入保护后，才可另行授权首个五文件 generation；不得用纯文档或空变更制造
+   第二份 release。
 
 ## 周末 Native 迁移候选队列
 
