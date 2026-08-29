@@ -36,7 +36,8 @@
 2. 因子版本目录与存量方案 V1 输入保护已经完成本地候选实现、全量测试和独立审查，详见
    [因子版本目录与存量方案输入保护设计](architecture/FACTOR_VERSIONED_INPUT_DRAFT.md)。该文档状态为
    `LOCAL_CANDIDATE`；Mac3 与 ECS 已完成 nullable 字段和存量 `V1.0` 回填，旧 release dry-run 证明四文件
-   零漂移。下一步是外部 Metadata Writer 显式写入版本后收紧非空约束；在此之前不发布五文件 generation。
+   零漂移。源表 CRUD 属于独立项目，不是本任务前置条件；下一步是 ECS 兼容 release 验证，暂不发布五文件
+   generation。
 
 ## 周末 Native 迁移候选队列
 

@@ -5,8 +5,8 @@
 **最后更新日期**：2026-08-29
 
 **当前阶段**：本地候选代码、永久测试、全量测试、独立审查和 V4 上游交付包候选均已完成。Mac3 与 ECS
-源表已增加 nullable 字段并将全部存量成员回填为 `V1.0`，旧 release dry-run 已证明原四文件零漂移。外部
-Metadata Writer 尚未支持显式版本，因此 `NOT NULL` 约束、五文件 producer 和 release 晋级均未执行。
+源表已增加 nullable 字段并将全部存量成员回填为 `V1.0`，旧 release dry-run 已证明原四文件零漂移。源表写入
+属于独立项目，本项目不接管其 CRUD；五文件 producer 和 release 晋级尚未执行。
 
 ## 1. 目标与原则
 
@@ -90,14 +90,14 @@ DataBridge 文件合同、snapshot、Blackbox runtime、Native 输入或方案�
 由源数据所有者在只读源表 `api_wind_indicators_all` 增加：
 
 ```sql
-factor_version VARCHAR(16) NOT NULL
+factor_version VARCHAR(16) NULL DEFAULT NULL
 ```
 
 固定规则：
 
-- 无默认值，新因子登记必须显式提供；
+- 无业务默认值；任何准备进入 DataBridge 的因子必须先显式登记版本；
 - 格式严格为大小写敏感的 `V<major>.<minor>`，例如 `V1.0`、`V2.0`；
-- 禁止空值、首尾空白、控制字符和非规范格式；
+- DataBridge 消费时禁止空值、首尾空白、控制字符和非规范格式；
 - 当前全部存量行一次性回填为 `V1.0`；
 - 任一因子首次登记 `factor_version` 后永久不可修改，不以是否已经进入 DataBridge catalog 为前提；
 - 本方案不管理因子计算公式、数据源口径或 frequency 的修改，也不为这些变化增加连续性控制或测试；它们由因子
@@ -105,19 +105,18 @@ factor_version VARCHAR(16) NOT NULL
 - 本阶段假定因子启用状态保持不变，不设计停用、重新启用、依赖分析或版本迁移流程。若实际输出成员意外变化，
   只由既有 catalog 成员集合一致性检查统一拒绝，不增加专用控制。
 
-该表属于平台只读源数据边界。本仓库不新增应用 Migration 022，不经 `migrations.runner` 修改该表。未来真实
-执行时，字段增加、回填和写入端适配由源数据所有者在独立授权下完成；平台只做只读预检和消费。
+该表属于平台只读源数据边界。本仓库不新增应用 Migration 022，也不管理另一个项目的 CRUD。数据库列允许
+nullable 是两个项目之间的明确解耦：本项目在构建 generation 前要求所消费的 Metadata 零空值且格式合法，
+否则 fail-closed；不通过数据库默认值、trigger 或外部项目改造替本项目补版本。
 
 ### 3.2 首次回填顺序
 
-未来获批执行时，源数据所有者按以下顺序操作：
+首次初始化按以下顺序操作：
 
-1. 暂停该 Metadata 表的新增或修改；
-2. 增加 nullable `factor_version`；
-3. 将冻结时全部现有行回填为 `V1.0`，且不得顺带修改 `create_time`、`update_time` 或其他字段；
-4. 校验零空值、零非法值、零重复 `indicators_code`；`indicators_code` 必须全表唯一，不能只在 frequency 内唯一；
-5. 将列收敛为 `NOT NULL`、无默认值并增加格式约束；
-6. 先更新新增因子的写入流程，再恢复 Metadata 写入。
+1. 增加 nullable、无默认值的 `factor_version`；
+2. 将冻结时全部现有行回填为 `V1.0`，且不得顺带修改 `create_time`、`update_time` 或其他字段；
+3. 校验零空值、零非法值、零重复 `indicators_code`；`indicators_code` 必须全表唯一，不能只在 frequency 内唯一；
+4. 后续新因子在进入 DataBridge 前由数据维护方设置版本；本项目不关心其使用哪个录入工具。
 
 平台代码不得包含生产 UUID、DSN、凭据或一次性 owner 映射。
 
@@ -126,7 +125,7 @@ factor_version VARCHAR(16) NOT NULL
 字段增加和回填完成后，只使用旧 release 做只读或零写入验证：
 
 1. `factor_version` 字段存在，全部存量行精确为 `V1.0`；
-2. 字段为 `NOT NULL` 且无默认值，非法版本不能写入；
+2. 当前存量成员零空值，候选 producer 对缺失或非法版本在生成 staging 前 fail-closed；
 3. `indicators_code`、frequency、status 和其他 Metadata 字段未被修改；
 4. `create_time`、`update_time` 的集合及最大值不变，避免无业务变化的回填污染现有 source evidence；
 5. 旧 producer 在相同数据库快照和 cutoff 下构建的四份 CSV 与字段增加前逐字节一致；
@@ -444,16 +443,15 @@ V2 列。不得为制造 previous 指针而发布空变更，必须等待下一�
 3. **当前机器 Schema 尚不是完整 V1 冻结集**：只读对照显示 daily 基线与当前输出一致，但 weekly 还有 2 个、
    monthly 还有 3 个已批准输出列未进入机器基线。第二阶段必须先把首次冻结的真实表头完整写入 Schema，不能直接
    把当前旧 Schema 当作 legacy V1 列表。
-4. **单因子版本归属永久不可变**：数据库格式约束只能证明值合法，不能证明值不可修改；源数据写入方必须禁止
-   更新既有 code 的 factor_version，producer 还必须通过 catalog continuity 拒绝已发布 code 的 factor_version
-   变化。计算公式、数据源口径和 frequency 的修改不属于本方案治理范围。
+4. **单因子版本归属永久不可变**：这是源数据事实；producer 通过 catalog continuity 拒绝已发布 code 的
+   factor_version 变化。计算公式、数据源口径和 frequency 的修改不属于本方案治理范围。
 5. **版本首次正式发布即封版**：封版成员是首次正式 generation 的 catalog 实际可用成员集合。后续不得向相同
    版本增加、删除或移动 code；新因子必须进入 V2.1、V3.0 等新版本。Metadata 中未进入首次 catalog 的 V1.0 code
    也不能在以后加入已封版 V1.0。
 6. **回滚 release 也必须理解 V1 保护**：只有 current 具备 legacy 视图不够；开放 V2 前，previous 也必须具备
    相同保护，否则回滚会改变存量方案输入。
-7. **外部 Metadata Writer 是独立前置条件**：本仓库没有 `api_wind_indicators_all` 写入口。任何使用位置值 INSERT、
-   未提供列名或未提供 factor_version 的外部 Writer 都必须先更新，不能只改数据库字段。
+7. **源表写入项目不属于本方案**：本仓库只消费 `api_wind_indicators_all`，不需要其他项目源码，也不改造其
+   CRUD。未设置合法版本的因子不能进入 DataBridge generation；由数据维护方先补齐后再刷新即可。
 
 ## 13. 已收敛的最小工程方案
 
@@ -535,7 +533,7 @@ DataBridge producer 自己在一个一致性事务内只读取一次 Metadata，
 
 首个真实 V2.0、V2.1 或以后版本进入目标环境前，必须同时满足：
 
-1. 源表字段、全量 V1.0 回填和外部 Writer 已完成，非法或缺失版本无法写入；
+1. 源表字段和全量 V1.0 回填已完成，候选 producer 对非法或缺失版本 fail-closed；
 2. 首个五文件 generation 已封版 V1 实际成员集合，catalog 与三份宽表精确一致；
 3. 目标环境 current 和实际 previous release 都理解五文件并提供 frozen legacy V1；
 4. 全部存量 Blackbox 与 Native 固定运行结果零漂移；
@@ -554,8 +552,8 @@ DataBridge producer 自己在一个一致性事务内只读取一次 Metadata，
 2. 第一阶段旧 release 四文件零漂移验收（已完成）；
 3. 五文件、共享 legacy V1 和 Intake mode 本地候选代码（已完成）；
 4. 本地全量验证与独立审查（已完成）；
-5. 外部 Metadata Writer 显式提供 `factor_version`，随后收紧源表非空与格式约束；
-6. 提交、推送并发布 ECS 兼容 release；
+5. 候选提交和推送（已完成）；
+6. 发布 ECS 兼容 release；
 7. 满足双 release 回滚前提后，另行授权首个五文件 producer；
 8. ECS 新版本因子验收完成后，再单独决定 Mac3 晋级。
 
