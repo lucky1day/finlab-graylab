@@ -6,7 +6,7 @@
 
 **当前阶段**：本地候选代码、永久测试、全量测试、独立审查和 V4 上游交付包候选均已完成。Mac3 与 ECS
 源表已增加 nullable 字段并将全部存量成员回填为 `V1.0`，旧 release dry-run 已证明原四文件零漂移。源表写入
-属于独立项目，本项目不接管其 CRUD；五文件 producer 和 release 晋级尚未执行。
+属于独立项目，本项目不接管其 CRUD；ECS 已完成第一份兼容 release 验证，五文件 producer 尚未执行。
 
 ## 1. 目标与原则
 
@@ -553,7 +553,7 @@ DataBridge producer 自己在一个一致性事务内只读取一次 Metadata，
 3. 五文件、共享 legacy V1 和 Intake mode 本地候选代码（已完成）；
 4. 本地全量验证与独立审查（已完成）；
 5. 候选提交和推送（已完成）；
-6. 发布 ECS 兼容 release；
+6. 发布 ECS 第一份兼容 release（已完成，current 仍为四文件）；
 7. 满足双 release 回滚前提后，另行授权首个五文件 producer；
 8. ECS 新版本因子验收完成后，再单独决定 Mac3 晋级。
 
