@@ -5128,13 +5128,21 @@ def _read_migration_history(
 
 
 @contextmanager
-def _migration_owner_connection(engine: object):
+def _migration_owner_connection(
+    engine: object,
+    *,
+    require_mysql: bool = True,
+):
     """持有进程无关的 MySQL migration owner lock。"""
     with engine.connect() as connection:
-        if getattr(connection.dialect, "name", None) != "mysql":
+        is_mysql = getattr(connection.dialect, "name", None) == "mysql"
+        if not is_mysql and require_mysql:
             raise MigrationHistoryError(
                 "APPLYING migration inspection/recovery requires MySQL"
             )
+        if not is_mysql:
+            yield connection
+            return
         preflight_migration_session(connection)
         acquired = int(
             connection.execute(
@@ -5147,13 +5155,25 @@ def _migration_owner_connection(engine: object):
             raise MigrationHistoryError(
                 "could not acquire migration owner lock"
             )
+        body_error: BaseException | None = None
         try:
             yield connection
+        except BaseException as exc:
+            body_error = exc
+            raise
         finally:
-            connection.execute(
-                text("SELECT RELEASE_LOCK(:lock_name)"),
-                {"lock_name": MIGRATION_HISTORY_LOCK},
-            )
+            try:
+                connection.execute(
+                    text("SELECT RELEASE_LOCK(:lock_name)"),
+                    {"lock_name": MIGRATION_HISTORY_LOCK},
+                )
+            except BaseException as release_error:
+                if body_error is None:
+                    raise
+                body_error.add_note(
+                    "migration owner lock release failed: "
+                    f"{type(release_error).__name__}: {release_error}"
+                )
 
 
 def _unsafe_applying_017_inspection(
@@ -7009,7 +7029,10 @@ def apply_pending_migration_files(
 ) -> None:
     """持有 MySQL owner lock，以 checksum history 只执行 pending 后缀。"""
     manifest = validate_release_migration_manifest(paths)
-    with engine.connect() as owner_connection:
+    with _migration_owner_connection(
+        engine,
+        require_mysql=False,
+    ) as owner_connection:
         if getattr(owner_connection.dialect, "name", None) != "mysql":
             _execute_prepared_migration_files(
                 engine,
@@ -7019,45 +7042,25 @@ def apply_pending_migration_files(
                 ],
             )
             return
-        preflight_migration_session(owner_connection)
-        acquired = int(
-            owner_connection.execute(
-                text(
-                    "SELECT GET_LOCK(:lock_name, 5)"
-                ),
-                {"lock_name": MIGRATION_HISTORY_LOCK},
-            ).scalar_one()
-            or 0
+        history = _load_or_bootstrap_migration_history(
+            engine,
+            owner_connection,
+            manifest,
         )
-        if acquired != 1:
-            raise MigrationHistoryError(
-                "could not acquire migration owner lock"
-            )
-        try:
-            history = _load_or_bootstrap_migration_history(
+        pending = select_pending_migrations(manifest, history)
+        for migration in pending:
+            if _is_registry_owner_migration(migration.path):
+                with engine.connect() as preflight_connection:
+                    preflight_migration_session(preflight_connection)
+                    _classify_registry_owner_recovery_state(
+                        _read_registry_owner_recovery_state(
+                            preflight_connection
+                        ),
+                        authority=_registry_owner_authority(migration),
+                    )
+            _mark_migration_applying(engine, migration)
+            _execute_prepared_migration_files(
                 engine,
-                owner_connection,
-                manifest,
+                [(migration.path, migration.statements)],
             )
-            pending = select_pending_migrations(manifest, history)
-            for migration in pending:
-                if _is_registry_owner_migration(migration.path):
-                    with engine.connect() as preflight_connection:
-                        preflight_migration_session(preflight_connection)
-                        _classify_registry_owner_recovery_state(
-                            _read_registry_owner_recovery_state(
-                                preflight_connection
-                            ),
-                            authority=_registry_owner_authority(migration),
-                        )
-                _mark_migration_applying(engine, migration)
-                _execute_prepared_migration_files(
-                    engine,
-                    [(migration.path, migration.statements)],
-                )
-                _mark_migration_applied(engine, migration)
-        finally:
-            owner_connection.execute(
-                text("SELECT RELEASE_LOCK(:lock_name)"),
-                {"lock_name": MIGRATION_HISTORY_LOCK},
-            )
+            _mark_migration_applied(engine, migration)

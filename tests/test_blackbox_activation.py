@@ -17,6 +17,33 @@ from harness.result import GateStatus
 from scheduler.repository import BlackboxLifecycleIdentityAbsent
 
 
+@pytest.fixture(autouse=True)
+def _sqlite_datetime_codecs():
+    adapter_key = (datetime, sqlite3.PrepareProtocol)
+    converter_key = "TIMESTAMP"
+    previous_adapter = sqlite3.adapters.get(adapter_key)
+    previous_converter = sqlite3.converters.get(converter_key)
+    sqlite3.register_adapter(
+        datetime,
+        lambda value: value.isoformat(sep=" "),
+    )
+    sqlite3.register_converter(
+        "timestamp",
+        lambda value: datetime.fromisoformat(value.decode("utf-8")),
+    )
+    try:
+        yield
+    finally:
+        if previous_adapter is None:
+            sqlite3.adapters.pop(adapter_key, None)
+        else:
+            sqlite3.adapters[adapter_key] = previous_adapter
+        if previous_converter is None:
+            sqlite3.converters.pop(converter_key, None)
+        else:
+            sqlite3.converters[converter_key] = previous_converter
+
+
 def test_activation_gate_reuses_loaded_blackbox_config(tmp_path) -> None:
     from harness.gates.activate_gate import ActivationGate
 

@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import nullcontext
 import hashlib
 import json
 from pathlib import Path
 import re
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
 from migrations.runner import (
     MIGRATIONS_DIR,
     MigrationPreflightError,
+    _migration_owner_connection,
     _registry_owner_authority,
     _show_create_mentions_serving_pointer,
     _validate_registry_owner_schema,
@@ -18,6 +22,141 @@ from migrations.runner import (
     validate_release_migration_manifest,
     validate_mysql_session_contract,
 )
+
+
+class _LockResult:
+    def __init__(self, value: int) -> None:
+        self._value = value
+
+    def scalar_one(self) -> int:
+        return self._value
+
+
+class _LockConnection:
+    def __init__(
+        self,
+        *,
+        dialect_name: str = "mysql",
+        acquired: int = 1,
+        release_error: BaseException | None = None,
+    ) -> None:
+        self.dialect = SimpleNamespace(name=dialect_name)
+        self.acquired = acquired
+        self.release_error = release_error
+        self.statements: list[str] = []
+
+    def execute(self, statement: object, parameters=None) -> _LockResult:
+        sql = str(statement)
+        self.statements.append(sql)
+        if "GET_LOCK" in sql:
+            return _LockResult(self.acquired)
+        if "RELEASE_LOCK" in sql and self.release_error is not None:
+            raise self.release_error
+        return _LockResult(1)
+
+
+class _LockEngine:
+    def __init__(self, connection: _LockConnection) -> None:
+        self.connection = connection
+
+    def connect(self):
+        return nullcontext(self.connection)
+
+
+def test_migration_owner_lock_acquire_failure_does_not_release() -> None:
+    connection = _LockConnection(acquired=0)
+    with (
+        patch("migrations.runner.preflight_migration_session"),
+        pytest.raises(
+            MigrationPreflightError,
+            match="could not acquire migration owner lock",
+        ),
+    ):
+        with _migration_owner_connection(_LockEngine(connection)):
+            pytest.fail("lock body must not run")
+
+    assert sum("GET_LOCK" in sql for sql in connection.statements) == 1
+    assert all("RELEASE_LOCK" not in sql for sql in connection.statements)
+
+
+def test_migration_owner_lock_releases_after_success() -> None:
+    connection = _LockConnection()
+    with patch("migrations.runner.preflight_migration_session"):
+        with _migration_owner_connection(_LockEngine(connection)):
+            pass
+
+    assert sum("GET_LOCK" in sql for sql in connection.statements) == 1
+    assert sum("RELEASE_LOCK" in sql for sql in connection.statements) == 1
+
+
+def test_migration_owner_connection_allows_non_mysql_apply_without_lock() -> None:
+    connection = _LockConnection(dialect_name="sqlite")
+    with patch("migrations.runner.preflight_migration_session") as preflight:
+        with _migration_owner_connection(
+            _LockEngine(connection),
+            require_mysql=False,
+        ) as yielded:
+            assert yielded is connection
+
+    preflight.assert_not_called()
+    assert connection.statements == []
+
+
+def test_migration_owner_connection_rejects_non_mysql_by_default() -> None:
+    connection = _LockConnection(dialect_name="sqlite")
+    with pytest.raises(
+        MigrationPreflightError,
+        match="inspection/recovery requires MySQL",
+    ):
+        with _migration_owner_connection(_LockEngine(connection)):
+            pytest.fail("non-MySQL inspection body must not run")
+
+    assert connection.statements == []
+
+
+def test_migration_owner_lock_preserves_body_failure() -> None:
+    connection = _LockConnection()
+    body_error = RuntimeError("migration body failed")
+    with (
+        patch("migrations.runner.preflight_migration_session"),
+        pytest.raises(RuntimeError, match="migration body failed") as raised,
+    ):
+        with _migration_owner_connection(_LockEngine(connection)):
+            raise body_error
+
+    assert raised.value is body_error
+    assert sum("RELEASE_LOCK" in sql for sql in connection.statements) == 1
+
+
+def test_migration_owner_lock_reports_release_failure_after_success() -> None:
+    release_error = RuntimeError("release failed")
+    connection = _LockConnection(release_error=release_error)
+    with (
+        patch("migrations.runner.preflight_migration_session"),
+        pytest.raises(RuntimeError, match="release failed") as raised,
+    ):
+        with _migration_owner_connection(_LockEngine(connection)):
+            pass
+
+    assert raised.value is release_error
+
+
+def test_migration_owner_lock_preserves_body_failure_when_release_fails() -> None:
+    body_error = RuntimeError("migration body failed")
+    connection = _LockConnection(
+        release_error=RuntimeError("release failed"),
+    )
+    with (
+        patch("migrations.runner.preflight_migration_session"),
+        pytest.raises(RuntimeError, match="migration body failed") as raised,
+    ):
+        with _migration_owner_connection(_LockEngine(connection)):
+            raise body_error
+
+    assert raised.value is body_error
+    assert raised.value.__notes__ == [
+        "migration owner lock release failed: RuntimeError: release failed"
+    ]
 
 
 def _safe_facts(lower_case_table_names: object) -> dict[str, object]:
