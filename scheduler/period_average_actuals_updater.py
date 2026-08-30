@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Iterable
 
+from sqlalchemy.engine import Engine
+
 from scheduler.daily_actuals_updater import (
     active_registry_tenors_by_task_type,
     resolve_actual_tenors,
@@ -20,13 +22,16 @@ def update_period_average_actuals(
     start_date: str | date | datetime | None = None,
     end_date: str | date | datetime | None = None,
     tenors: Iterable[str] | None = None,
+    *,
+    engine: Engine | None = None,
 ) -> int:
-    """刷新单一周期均值 actual 表，不修改既有三类 actual。"""
-    engine = create_engine_from_env()
+    """刷新周期均值 actual；注入 Engine 时由调用方管理生命周期。"""
+    owns_engine = engine is None
+    target_engine = engine if engine is not None else create_engine_from_env()
     try:
         if tenors is not None:
             selected_tenors = resolve_actual_tenors(
-                engine,
+                target_engine,
                 frequency="period_average",
                 tenors=tenors,
             )
@@ -36,7 +41,7 @@ def update_period_average_actuals(
             }
         else:
             scope = active_registry_tenors_by_task_type(
-                engine,
+                target_engine,
                 PERIOD_AVERAGE_TASK_TYPES,
             )
         if not scope:
@@ -44,8 +49,12 @@ def update_period_average_actuals(
         selected_tenors = sorted(
             {tenor for task_tenors in scope.values() for tenor in task_tenors}
         )
-        rows = read_yield_rows(engine, tenors=selected_tenors, end_date=end_date)
-        calendar_rows = read_trade_calendar_rows(engine)
+        rows = read_yield_rows(
+            target_engine,
+            tenors=selected_tenors,
+            end_date=end_date,
+        )
+        calendar_rows = read_trade_calendar_rows(target_engine)
         records = []
         for task_type, task_tenors in scope.items():
             records.extend(
@@ -57,6 +66,7 @@ def update_period_average_actuals(
                     end_date=end_date,
                 )
             )
-        return upsert_period_average_actuals(engine, records)
+        return upsert_period_average_actuals(target_engine, records)
     finally:
-        engine.dispose()
+        if owns_engine:
+            target_engine.dispose()

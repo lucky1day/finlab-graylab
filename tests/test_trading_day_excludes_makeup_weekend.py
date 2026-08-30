@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+import random
 import unittest
 
 from sqlalchemy import create_engine, text
@@ -145,3 +147,48 @@ class ActualFactsCalendarTests(unittest.TestCase):
         calendar = build_week_calendar(_calendar_dicts())
         self.assertEqual(calendar.week_predict_date[202436], "2024-09-15")
         self.assertEqual(calendar.week_predict_date[202437], "2024-09-21")
+
+    def test_indexed_calendar_lookups_match_linear_reference(self) -> None:
+        generator = random.Random(20260830)
+        first = date(2024, 1, 1)
+        calendar_rows = []
+        for offset in range(180):
+            current = first + timedelta(days=offset)
+            calendar_rows.append(
+                {
+                    "rdate": current.isoformat(),
+                    "week_id": f"2024{offset // 7 + 1:02d}",
+                    "trade_flag": (
+                        "1"
+                        if current.weekday() < 5 and generator.random() > 0.2
+                        else "0"
+                    ),
+                }
+            )
+
+        week_calendar = build_week_calendar(calendar_rows)
+        month_calendar = build_month_calendar(calendar_rows)
+        trading_days = list(month_calendar.trading_days)
+        for offset in range(-2, 183):
+            value = (first + timedelta(days=offset)).isoformat()
+            for count in (-1, 0, 1, 5, 500):
+                expected_next = [
+                    day for day in week_calendar.trading_days if day > value
+                ][:count]
+                self.assertEqual(
+                    week_calendar.next_trading_days(value, count),
+                    expected_next,
+                )
+            self.assertEqual(
+                month_calendar.is_trading_day(value),
+                value in trading_days,
+            )
+            candidates = [day for day in trading_days if day < value]
+            if candidates:
+                self.assertEqual(
+                    month_calendar.previous_trading_day(value),
+                    candidates[-1],
+                )
+            else:
+                with self.assertRaisesRegex(ValueError, "no previous"):
+                    month_calendar.previous_trading_day(value)

@@ -8,10 +8,14 @@ import pytest
 
 from scheduler import daily_actuals_updater
 from scheduler import monthly_actuals_updater
+from scheduler import period_average_actuals_updater
 from scheduler import weekly_actuals_updater
 
 
-def test_daily_updater_passes_scope_and_cutoff_to_shared_builder() -> None:
+@pytest.mark.parametrize("injected", [False, True])
+def test_daily_updater_passes_scope_and_cutoff_to_shared_builder(
+    injected: bool,
+) -> None:
     engine = MagicMock()
     rows = [{"tenor": "5Y"}]
     records = [object()]
@@ -22,7 +26,7 @@ def test_daily_updater_passes_scope_and_cutoff_to_shared_builder() -> None:
             daily_actuals_updater,
             "create_engine_from_env",
             return_value=engine,
-        ),
+        ) as create,
         patch.object(
             daily_actuals_updater,
             "resolve_actual_tenors",
@@ -58,6 +62,7 @@ def test_daily_updater_passes_scope_and_cutoff_to_shared_builder() -> None:
             start_date="2026-08-01",
             end_date="2026-08-25",
             tenors=["5Y"],
+            engine=engine if injected else None,
         )
 
     assert written == 1
@@ -79,7 +84,12 @@ def test_daily_updater_passes_scope_and_cutoff_to_shared_builder() -> None:
         watermarks,
         end_date="2026-08-25",
     )
-    engine.dispose.assert_called_once_with()
+    if injected:
+        create.assert_not_called()
+        engine.dispose.assert_not_called()
+    else:
+        create.assert_called_once_with()
+        engine.dispose.assert_called_once_with()
 
 
 @pytest.mark.parametrize(
@@ -101,12 +111,14 @@ def test_daily_updater_passes_scope_and_cutoff_to_shared_builder() -> None:
         ),
     ),
 )
+@pytest.mark.parametrize("injected", [False, True])
 def test_period_updater_passes_scope_calendar_and_records(
     module,
     frequency: str,
     calendar_reader: str,
     builder: str,
     writer: str,
+    injected: bool,
 ) -> None:
     engine = MagicMock()
     rows = [{"tenor": "5Y"}]
@@ -114,7 +126,11 @@ def test_period_updater_passes_scope_calendar_and_records(
     records = [object()]
 
     with (
-        patch.object(module, "create_engine_from_env", return_value=engine),
+        patch.object(
+            module,
+            "create_engine_from_env",
+            return_value=engine,
+        ) as create,
         patch.object(
             module,
             "resolve_actual_tenors",
@@ -133,6 +149,7 @@ def test_period_updater_passes_scope_calendar_and_records(
             start_date="2026-08-01",
             end_date="2026-08-25",
             tenors=["5Y"],
+            engine=engine if injected else None,
         )
 
     assert written == 1
@@ -154,4 +171,130 @@ def test_period_updater_passes_scope_calendar_and_records(
         end_date="2026-08-25",
     )
     write.assert_called_once_with(engine, records)
-    engine.dispose.assert_called_once_with()
+    if injected:
+        create.assert_not_called()
+        engine.dispose.assert_not_called()
+    else:
+        create.assert_called_once_with()
+        engine.dispose.assert_called_once_with()
+
+
+@pytest.mark.parametrize("injected", [False, True])
+def test_period_average_updater_passes_nonempty_scope(
+    injected: bool,
+) -> None:
+    engine = MagicMock()
+    rows = [{"tenor": "5Y"}]
+    calendar_rows = [{"rdate": "2026-08-25"}]
+    records = [object()]
+    with (
+        patch.object(
+            period_average_actuals_updater,
+            "create_engine_from_env",
+            return_value=engine,
+        ) as create,
+        patch.object(
+            period_average_actuals_updater,
+            "active_registry_tenors_by_task_type",
+            return_value={"monthly_average": ["5Y"]},
+        ) as scope,
+        patch.object(
+            period_average_actuals_updater,
+            "read_yield_rows",
+            return_value=rows,
+        ) as read_rows,
+        patch.object(
+            period_average_actuals_updater,
+            "read_trade_calendar_rows",
+            return_value=calendar_rows,
+        ) as read_calendar,
+        patch.object(
+            period_average_actuals_updater,
+            "build_shared_records",
+            return_value=records,
+        ) as build,
+        patch.object(
+            period_average_actuals_updater,
+            "upsert_period_average_actuals",
+            return_value=1,
+        ) as write,
+    ):
+        assert period_average_actuals_updater.update_period_average_actuals(
+            start_date="2026-01-01",
+            end_date="2026-08-25",
+            engine=engine if injected else None,
+        ) == 1
+
+    scope.assert_called_once()
+    read_rows.assert_called_once_with(
+        engine,
+        tenors=["5Y"],
+        end_date="2026-08-25",
+    )
+    read_calendar.assert_called_once_with(engine)
+    build.assert_called_once_with(
+        rows,
+        calendar_rows,
+        task_types=("monthly_average",),
+        start_date="2026-01-01",
+        end_date="2026-08-25",
+    )
+    write.assert_called_once_with(engine, records)
+    if injected:
+        create.assert_not_called()
+        engine.dispose.assert_not_called()
+    else:
+        create.assert_called_once_with()
+        engine.dispose.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    ("module", "function_name", "failing_dependency"),
+    (
+        (daily_actuals_updater, "update_actuals", "resolve_actual_tenors"),
+        (
+            weekly_actuals_updater,
+            "update_weekly_actuals",
+            "resolve_actual_tenors",
+        ),
+        (
+            monthly_actuals_updater,
+            "update_monthly_actuals",
+            "resolve_actual_tenors",
+        ),
+        (
+            period_average_actuals_updater,
+            "update_period_average_actuals",
+            "active_registry_tenors_by_task_type",
+        ),
+    ),
+)
+@pytest.mark.parametrize("injected", [False, True])
+def test_updater_exception_preserves_engine_ownership(
+    module,
+    function_name: str,
+    failing_dependency: str,
+    injected: bool,
+) -> None:
+    engine = MagicMock()
+    with (
+        patch.object(
+            module,
+            "create_engine_from_env",
+            return_value=engine,
+        ) as create,
+        patch.object(
+            module,
+            failing_dependency,
+            side_effect=RuntimeError("injected failure"),
+        ),
+        pytest.raises(RuntimeError, match="injected failure"),
+    ):
+        module.__dict__[function_name](engine=engine if injected else None)
+
+    if injected:
+        create.assert_not_called()
+        engine.dispose.assert_not_called()
+    else:
+        create.assert_called_once_with()
+        engine.dispose.assert_called_once_with()

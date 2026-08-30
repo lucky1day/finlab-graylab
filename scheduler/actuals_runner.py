@@ -12,7 +12,7 @@ from scheduler.monthly_actuals_updater import update_monthly_actuals
 from scheduler.period_average_actuals_updater import update_period_average_actuals
 from scheduler.repository import create_engine_from_env
 from scheduler.weekly_actuals_updater import update_weekly_actuals
-from shared.calendar_service import get_calendar
+from shared.calendar_service import CalendarService, get_calendar
 
 
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -32,29 +32,20 @@ def _normalize_run_date(value: str | date | None) -> str:
     return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
 
 
-def _is_trading_day(run_date: str) -> bool:
+def _is_trading_day(calendar: CalendarService, run_date: str) -> bool:
     """判定是否交易日；日历未收录该日期时以配置错误 fail-closed。
 
     `t_trade_calendar` 需要人工逐年延长。覆盖耗尽时 `is_trading_day` 同样返回
     False，若不先区分，本入口会把「日历没续期」当成节假日，每天用日历最后一个
     交易日重刷同一批 actuals 并以退出码 0 结束，运维看不出 actuals 已停止推进。
     """
-    engine = create_engine_from_env()
-    try:
-        calendar = get_calendar(engine=engine)
-        if not calendar.covers(run_date):
-            raise ValueError(f"trade calendar does not cover run date {run_date}")
-        return calendar.is_trading_day(run_date)
-    finally:
-        engine.dispose()
+    if not calendar.covers(run_date):
+        raise ValueError(f"trade calendar does not cover run date {run_date}")
+    return calendar.is_trading_day(run_date)
 
 
-def _previous_trading_day(run_date: str) -> str:
-    engine = create_engine_from_env()
-    try:
-        return get_calendar(engine=engine).previous_trading_day(run_date)
-    finally:
-        engine.dispose()
+def _previous_trading_day(calendar: CalendarService, run_date: str) -> str:
+    return calendar.previous_trading_day(run_date)
 
 
 def run_actuals_job(
@@ -62,35 +53,53 @@ def run_actuals_job(
 ) -> None:
     """执行一次 actuals 刷新，并保持既有非交易日日期语义。"""
     target_date = _normalize_run_date(run_date)
-    if not _is_trading_day(target_date):
-        daily_weekly_end_date = _previous_trading_day(target_date)
-        logger.info(
-            "Refresh daily/weekly actuals to previous trading day %s on non-trading day %s; "
-            "monthly actuals still refresh to %s",
-            daily_weekly_end_date,
-            target_date,
-            target_date,
-        )
-    else:
-        daily_weekly_end_date = target_date
+    engine = create_engine_from_env()
+    try:
+        calendar = get_calendar(engine=engine)
+        if not _is_trading_day(calendar, target_date):
+            daily_weekly_end_date = _previous_trading_day(
+                calendar,
+                target_date,
+            )
+            logger.info(
+                "Refresh daily/weekly actuals to previous trading day %s on non-trading day %s; "
+                "monthly actuals still refresh to %s",
+                daily_weekly_end_date,
+                target_date,
+                target_date,
+            )
+        else:
+            daily_weekly_end_date = target_date
 
-    daily_written = update_actuals(end_date=daily_weekly_end_date)
-    weekly_written = update_weekly_actuals(end_date=daily_weekly_end_date)
-    monthly_written = update_monthly_actuals(end_date=target_date)
-    period_average_written = update_period_average_actuals(
-        start_date=PERIOD_AVERAGE_ACTUALS_START_DATE,
-        end_date=target_date,
-    )
-    logger.info(
-        "Actuals refresh finished: date=%s daily_weekly_end_date=%s daily_records=%s "
-        "weekly_records=%s monthly_records=%s period_average_records=%s",
-        target_date,
-        daily_weekly_end_date,
-        daily_written,
-        weekly_written,
-        monthly_written,
-        period_average_written,
-    )
+        daily_written = update_actuals(
+            end_date=daily_weekly_end_date,
+            engine=engine,
+        )
+        weekly_written = update_weekly_actuals(
+            end_date=daily_weekly_end_date,
+            engine=engine,
+        )
+        monthly_written = update_monthly_actuals(
+            end_date=target_date,
+            engine=engine,
+        )
+        period_average_written = update_period_average_actuals(
+            start_date=PERIOD_AVERAGE_ACTUALS_START_DATE,
+            end_date=target_date,
+            engine=engine,
+        )
+        logger.info(
+            "Actuals refresh finished: date=%s daily_weekly_end_date=%s daily_records=%s "
+            "weekly_records=%s monthly_records=%s period_average_records=%s",
+            target_date,
+            daily_weekly_end_date,
+            daily_written,
+            weekly_written,
+            monthly_written,
+            period_average_written,
+        )
+    finally:
+        engine.dispose()
 
 
 def main(argv: Sequence[str] | None = None) -> int:

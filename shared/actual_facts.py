@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Iterable
@@ -163,7 +164,12 @@ class WeekCalendar:
 
     def next_trading_days(self, value: str | date | datetime, count: int) -> list[str]:
         normalized = normalize_date(value)
-        return [] if normalized is None else [day for day in self.trading_days if day > normalized][:count]
+        if normalized is None:
+            return []
+        start = bisect_right(self.trading_days, normalized)
+        if count >= 0:
+            return list(self.trading_days[start : start + count])
+        return list(self.trading_days[start:])[:count]
 
 
 def build_week_calendar(rows: Iterable[dict]) -> WeekCalendar:
@@ -304,16 +310,31 @@ def build_weekly_actual_records_from_rows(
 @dataclass(frozen=True)
 class MonthCalendar:
     trading_days: tuple[str, ...]
+    trading_day_lookup: frozenset[str] = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "trading_day_lookup",
+            frozenset(self.trading_days),
+        )
 
     def is_trading_day(self, value: str | date | datetime) -> bool:
-        return normalize_date(value) in set(self.trading_days)
+        return normalize_date(value) in self.trading_day_lookup
 
     def previous_trading_day(self, value: str | date | datetime) -> str:
         normalized = normalize_date(value)
-        candidates = [day for day in self.trading_days if normalized is not None and day < normalized]
-        if not candidates:
+        index = 0 if normalized is None else bisect_left(
+            self.trading_days,
+            normalized,
+        )
+        if index == 0:
             raise ValueError(f"no previous trading day before {normalized}")
-        return candidates[-1]
+        return self.trading_days[index - 1]
 
     def last_trading_day_on_or_before(self, value: date) -> str:
         return value.isoformat() if self.is_trading_day(value) else self.previous_trading_day(value)

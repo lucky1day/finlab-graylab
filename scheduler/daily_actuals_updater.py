@@ -158,19 +158,22 @@ def update_actuals(
     start_date: str | date | datetime | None = None,
     end_date: str | date | datetime | None = None,
     tenors: Iterable[str] | None = None,
+    *,
+    engine: Engine | None = None,
 ) -> int:
-    """从行情表刷新 t_scheme_actuals。"""
-    engine = create_engine_from_env()
+    """从行情表刷新 t_scheme_actuals；注入 Engine 时由调用方管理生命周期。"""
+    owns_engine = engine is None
+    target_engine = engine if engine is not None else create_engine_from_env()
     try:
         selected_tenors = resolve_actual_tenors(
-            engine,
+            target_engine,
             frequency="daily",
             tenors=tenors,
         )
         if not selected_tenors:
             return 0
         rows = read_yield_rows(
-            engine,
+            target_engine,
             tenors=selected_tenors,
             end_date=end_date,
         )
@@ -178,10 +181,14 @@ def update_actuals(
             rows,
             start_date=start_date,
         )
-        written = upsert_actuals(engine, records)
-        source_watermarks = read_source_watermarks(engine, tenors=selected_tenors, end_date=end_date)
+        written = upsert_actuals(target_engine, records)
+        source_watermarks = read_source_watermarks(
+            target_engine,
+            tenors=selected_tenors,
+            end_date=end_date,
+        )
         pruned = delete_actuals_after_source_watermark(
-            engine,
+            target_engine,
             source_watermarks,
             end_date=_normalize_date(end_date),
         )
@@ -189,4 +196,5 @@ def update_actuals(
             logger.warning("Pruned stale daily actuals beyond source watermark: records=%s", pruned)
         return written
     finally:
-        engine.dispose()
+        if owns_engine:
+            target_engine.dispose()
