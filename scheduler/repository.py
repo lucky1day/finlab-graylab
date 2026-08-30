@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping, cast
+from typing import Any, Iterable, Iterator, Mapping, Sequence, cast
 
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Connection, Engine, URL
@@ -1839,6 +1839,96 @@ def _prediction_write_decision_conn(
     )
 
 
+def _validate_running_run_identity(
+    run: Mapping[str, object] | None,
+    *,
+    expected_identity: Mapping[str, object],
+    error_prefix: str,
+) -> str:
+    """纯校验 running run 身份，并返回其 scheduled_live phase。"""
+    errors = []
+    if run is None:
+        errors.append("run missing")
+    else:
+        for field, expected_value in expected_identity.items():
+            actual_value = run.get(field)
+            if field == "predict_date":
+                actual_value = _stored_iso_date(run, field)
+            if field == "records_expected" and actual_value is not None:
+                try:
+                    actual_value = int(actual_value)
+                except (TypeError, ValueError):
+                    pass
+            if actual_value != expected_value:
+                errors.append(
+                    f"{field}: expected={expected_value!r}, "
+                    f"got={actual_value!r}"
+                )
+    if errors:
+        raise RuntimeError(f"{error_prefix}: " + "; ".join(errors))
+    assert run is not None
+    run_phase = str(run.get("prediction_phase") or "")
+    if run_phase != "scheduled_live":
+        raise RuntimeError(
+            f"{error_prefix}: ordinary completion requires scheduled_live, "
+            f"got prediction_phase={run.get('prediction_phase')!r}"
+        )
+    return run_phase
+
+
+def _validate_completion_records(
+    records: Sequence[PredictionRecord],
+    *,
+    records_returned: int,
+    expected_targets: set[tuple[str, int]],
+    scheme_id: str,
+    scheme_version: str,
+    predict_date: str,
+    prediction_phase: str,
+    runtime_label: str,
+) -> None:
+    """纯校验 completion records 的计数、业务身份与目标集合。"""
+    if records_returned != len(records):
+        raise RuntimeError(
+            f"{runtime_label} completion records_returned mismatch: "
+            f"returned={records_returned}, records={len(records)}"
+        )
+    returned_targets = Counter(
+        (str(record.target_tenor), int(record.horizon))
+        for record in records
+    )
+    duplicate_targets = sorted(
+        (target_tenor, horizon, count)
+        for (target_tenor, horizon), count in returned_targets.items()
+        if count != 1
+    )
+    errors = []
+    if set(returned_targets) != expected_targets or duplicate_targets:
+        errors.append(
+            "target set does not match active Registry: "
+            f"expected={sorted(expected_targets)}, "
+            f"returned={sorted(returned_targets)}, "
+            f"duplicates={duplicate_targets}"
+        )
+    for record in records:
+        if record.scheme_id != scheme_id:
+            errors.append(f"record scheme_id={record.scheme_id!r}")
+        if record.scheme_version not in (None, scheme_version):
+            errors.append(f"record scheme_version={record.scheme_version!r}")
+        if str(record.predict_date) != predict_date:
+            errors.append(f"record predict_date={record.predict_date!r}")
+        record_phase = record.prediction_phase or (
+            record.extra or {}
+        ).get("prediction_phase")
+        if record_phase != prediction_phase:
+            errors.append(f"record prediction_phase={record_phase!r}")
+    if errors:
+        raise RuntimeError(
+            f"{runtime_label} completion records revalidation failed: "
+            + "; ".join(errors)
+        )
+
+
 def complete_approved_blackbox_run(
     engine: Engine,
     cfg: SchemeConfig,
@@ -1876,82 +1966,23 @@ def complete_approved_blackbox_run(
             "status": "running",
             "records_expected": len(expected_targets),
         }
-        run_identity_errors = []
-        if run is None:
-            run_identity_errors.append("run missing")
-        else:
-            for field, expected_value in expected_run_identity.items():
-                actual_value = run.get(field)
-                if field == "predict_date":
-                    actual_value = _stored_iso_date(run, field)
-                if field == "records_expected" and actual_value is not None:
-                    try:
-                        actual_value = int(actual_value)
-                    except (TypeError, ValueError):
-                        pass
-                if actual_value != expected_value:
-                    run_identity_errors.append(
-                        f"{field}: expected={expected_value!r}, "
-                        f"got={actual_value!r}"
-                    )
-        if run_identity_errors:
-            raise RuntimeError(
-                "Blackbox completion running run identity revalidation failed: "
-                + "; ".join(run_identity_errors)
-            )
-        assert run is not None
-        run_phase = run.get("prediction_phase")
-        if run_phase != "scheduled_live":
-            raise RuntimeError(
-                "Blackbox completion running run identity revalidation failed: "
-                "ordinary completion requires scheduled_live, got "
-                f"prediction_phase={run_phase!r}"
-            )
-        if records_returned != len(record_list):
-            raise RuntimeError(
-                "Blackbox completion records_returned mismatch: "
-                f"returned={records_returned}, records={len(record_list)}"
-            )
-        returned_targets = Counter(
-            (str(record.target_tenor), int(record.horizon))
-            for record in record_list
+        run_phase = _validate_running_run_identity(
+            run,
+            expected_identity=expected_run_identity,
+            error_prefix=(
+                "Blackbox completion running run identity revalidation failed"
+            ),
         )
-        duplicate_targets = sorted(
-            (target_tenor, horizon, count)
-            for (target_tenor, horizon), count in returned_targets.items()
-            if count != 1
+        _validate_completion_records(
+            record_list,
+            records_returned=records_returned,
+            expected_targets=expected_targets,
+            scheme_id=cfg.scheme_id,
+            scheme_version=exact_scheme_version,
+            predict_date=normalized_run_date,
+            prediction_phase=run_phase,
+            runtime_label="Blackbox",
         )
-        record_errors = []
-        if set(returned_targets) != expected_targets or duplicate_targets:
-            record_errors.append(
-                "target set does not match active Registry: "
-                f"expected={sorted(expected_targets)}, "
-                f"returned={sorted(returned_targets)}, "
-                f"duplicates={duplicate_targets}"
-            )
-        for record in record_list:
-            if record.scheme_id != cfg.scheme_id:
-                record_errors.append(f"record scheme_id={record.scheme_id!r}")
-            if record.scheme_version not in (None, exact_scheme_version):
-                record_errors.append(
-                    f"record scheme_version={record.scheme_version!r}"
-                )
-            if str(record.predict_date) != normalized_run_date:
-                record_errors.append(
-                    f"record predict_date={record.predict_date!r}"
-                )
-            record_phase = record.prediction_phase or (
-                record.extra or {}
-            ).get("prediction_phase")
-            if record_phase != run_phase:
-                record_errors.append(
-                    f"record prediction_phase={record_phase!r}"
-                )
-        if record_errors:
-            raise RuntimeError(
-                "Blackbox completion records revalidation failed: "
-                + "; ".join(record_errors)
-            )
         prediction_rows = _prepare_run_prediction_rows(
             int(run_id),
             record_list,
@@ -2078,83 +2109,21 @@ def complete_active_native_run(
             "status": "running",
             "records_expected": len(expected_targets),
         }
-        run_identity_errors = []
-        if run is None:
-            run_identity_errors.append("run missing")
-        else:
-            for field, expected_value in expected_run_identity.items():
-                actual_value = run.get(field)
-                if field == "predict_date":
-                    actual_value = _stored_iso_date(run, field)
-                if field == "records_expected" and actual_value is not None:
-                    try:
-                        actual_value = int(actual_value)
-                    except (TypeError, ValueError):
-                        pass
-                if actual_value != expected_value:
-                    run_identity_errors.append(
-                        f"{field}: expected={expected_value!r}, got={actual_value!r}"
-                    )
-        if run_identity_errors:
-            raise RuntimeError(
-                "running run identity revalidation failed: "
-                + "; ".join(run_identity_errors)
-            )
-        assert run is not None
-        run_phase = run.get("prediction_phase")
-        if run_phase != "scheduled_live":
-            raise RuntimeError(
-                "running run identity revalidation failed: ordinary "
-                "completion requires scheduled_live, got "
-                f"prediction_phase={run_phase!r}"
-            )
-        if records_returned != len(record_list):
-            raise RuntimeError(
-                "Native completion records_returned mismatch: "
-                f"returned={records_returned}, records={len(record_list)}"
-            )
-        returned_targets = Counter(
-            (str(record.target_tenor), int(record.horizon))
-            for record in record_list
+        run_phase = _validate_running_run_identity(
+            run,
+            expected_identity=expected_run_identity,
+            error_prefix="running run identity revalidation failed",
         )
-        duplicate_targets = sorted(
-            (target_tenor, horizon, count)
-            for (target_tenor, horizon), count in returned_targets.items()
-            if count != 1
+        _validate_completion_records(
+            record_list,
+            records_returned=records_returned,
+            expected_targets=expected_targets,
+            scheme_id=cfg.scheme_id,
+            scheme_version=exact_scheme_version,
+            predict_date=normalized_run_date,
+            prediction_phase=run_phase,
+            runtime_label="Native",
         )
-        record_errors = []
-        if set(returned_targets) != expected_targets or duplicate_targets:
-            record_errors.append(
-                "target set does not match active Registry: "
-                f"expected={sorted(expected_targets)}, "
-                f"returned={sorted(returned_targets)}, "
-                f"duplicates={duplicate_targets}"
-            )
-        for record in record_list:
-            if record.scheme_id != cfg.scheme_id:
-                record_errors.append(
-                    f"record scheme_id={record.scheme_id!r}"
-                )
-            if record.scheme_version not in (None, exact_scheme_version):
-                record_errors.append(
-                    f"record scheme_version={record.scheme_version!r}"
-                )
-            if str(record.predict_date) != normalized_run_date:
-                record_errors.append(
-                    f"record predict_date={record.predict_date!r}"
-                )
-            record_phase = record.prediction_phase or (
-                record.extra or {}
-            ).get("prediction_phase")
-            if record_phase != run_phase:
-                record_errors.append(
-                    f"record prediction_phase={record_phase!r}"
-                )
-        if record_errors:
-            raise RuntimeError(
-                "Native completion records revalidation failed: "
-                + "; ".join(record_errors)
-            )
 
         prediction_rows = _prepare_run_prediction_rows(
             int(run_id),

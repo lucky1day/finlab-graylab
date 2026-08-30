@@ -82,7 +82,8 @@ class LaunchdWeeklySkipTests(unittest.TestCase):
         from types import SimpleNamespace
         from unittest.mock import Mock, patch
 
-        from scheduler import launchd_prediction_runner as runner
+        from scheduler import launchd_prediction_runner as launchd_runner
+        from scheduler import one_shot_prediction_runner as runner
 
         config = SimpleNamespace(
             scheme_id="weekly_demo",
@@ -119,7 +120,10 @@ class LaunchdWeeklySkipTests(unittest.TestCase):
             patch.object(runner, "get_calendar", return_value=calendar),
             patch.object(runner, "execute_scheme") as execute_one,
         ):
-            return runner.run("weekly", predict_date=predict_date), execute_one
+            return (
+                launchd_runner.run("weekly", predict_date=predict_date),
+                execute_one,
+            )
 
     def test_signal_saturday_executes(self) -> None:
         summary, execute_one = self._run("2026-02-14")

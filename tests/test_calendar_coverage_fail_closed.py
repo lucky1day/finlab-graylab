@@ -91,7 +91,8 @@ class _StubCalendar:
 
 class LaunchdRunnerCoverageTests(unittest.TestCase):
     def _run(self, cadence: str, predict_date: str, calendar: _StubCalendar):
-        from scheduler import launchd_prediction_runner as runner
+        from scheduler import launchd_prediction_runner as launchd_runner
+        from scheduler import one_shot_prediction_runner as runner
 
         config = _config("demo", "daily" if cadence == "daily" else cadence)
         with (
@@ -114,7 +115,10 @@ class LaunchdRunnerCoverageTests(unittest.TestCase):
             patch.object(runner, "get_calendar", return_value=calendar),
             patch.object(runner, "execute_scheme") as execute_one,
         ):
-            return runner.run(cadence, predict_date=predict_date), execute_one
+            return (
+                launchd_runner.run(cadence, predict_date=predict_date),
+                execute_one,
+            )
 
     def test_uncovered_date_fails_closed_for_daily_and_weekly(self) -> None:
         from scheduler.launchd_prediction_runner import (

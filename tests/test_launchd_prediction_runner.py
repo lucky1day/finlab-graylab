@@ -10,6 +10,21 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+
+def _run_one_shot(runner, cadence: str, **kwargs):
+    from scheduler.executor import _launchd_scheduled_execution_context
+    from shared.one_shot_control_plane import LAUNCHD_ONE_SHOT_CONTROL_PLANE
+
+    return runner.run_one_shot(
+        cadence,
+        scheduled_control_plane=LAUNCHD_ONE_SHOT_CONTROL_PLANE,
+        scheduled_execution_context=_launchd_scheduled_execution_context(),
+        event="launchd_prediction_run",
+        algo_env=kwargs.pop("algo_env", "forecast_env"),
+        **kwargs,
+    )
+
+
 def _blackbox_config(
     scheme_id: str,
     *,
@@ -79,11 +94,36 @@ class _PeriodCalendar:
 
 
 class LaunchdPredictionRunnerTests(unittest.TestCase):
+    def test_candidate_partition_preserves_wave_order_and_boundaries(self) -> None:
+        from scheduler import one_shot_prediction_runner as runner
+
+        publisher = _native_config(
+            "liwei_0616_10y01_full_oos_k3_div_k10"
+        )
+        consumer = _native_config("native-consumer")
+        direct = _blackbox_config("direct", frequency="daily", task_type="T+1")
+        direct.input_source = "isolated_artifact"
+        dependent = _blackbox_config(
+            "dependent",
+            frequency="daily",
+            task_type="T+1",
+        )
+
+        partitions = runner._partition_candidates(
+            [consumer, direct, dependent, publisher],
+            cadence="daily",
+        )
+
+        self.assertEqual(partitions.native_publishers, (publisher,))
+        self.assertEqual(partitions.native_consumers, (consumer,))
+        self.assertEqual(partitions.direct, (direct,))
+        self.assertEqual(partitions.data_bridge_dependents, (dependent,))
+
     def test_native_wave_uses_at_most_two_workers(self) -> None:
-        from scheduler import launchd_prediction_runner as runner
+        from scheduler import one_shot_prediction_runner as runner
         from scheduler.process_control import ProcessStartGuard
 
-        summary = runner.LaunchdPredictionSummary("daily", "2026-08-20")
+        summary = runner.OneShotPredictionSummary("daily", "2026-08-20")
         candidates = [
             SimpleNamespace(scheme_id=f"native-{index}")
             for index in range(4)
@@ -128,10 +168,10 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         self.assertEqual(len(summary.executed), 4)
 
     def test_native_wave_passes_explicit_cache_policy(self) -> None:
-        from scheduler import launchd_prediction_runner as runner
+        from scheduler import one_shot_prediction_runner as runner
         from scheduler.process_control import ProcessStartGuard
 
-        summary = runner.LaunchdPredictionSummary("daily", "2026-08-28")
+        summary = runner.OneShotPredictionSummary("daily", "2026-08-28")
         captured = []
 
         def execute(_summary, _cfg, **kwargs):
@@ -158,7 +198,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         self.assertEqual(captured, ["scheduled_bounded_reconcile"])
 
     def test_daily_one_shot_reconciles_publishers_only(self) -> None:
-        from scheduler import launchd_prediction_runner as runner
+        from scheduler import one_shot_prediction_runner as runner
 
         publisher = _native_config(
             "liwei_0616_10y01_full_oos_k3_div_k10"
@@ -194,7 +234,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
             patch.object(runner, "get_calendar", return_value=calendar),
             patch.object(runner, "_execute_native_wave") as execute_wave,
         ):
-            runner.run("daily", predict_date="2026-08-28")
+            _run_one_shot(runner, "daily", predict_date="2026-08-28")
 
         self.assertEqual(execute_wave.call_count, 2)
         publisher_call, consumer_call = execute_wave.call_args_list
@@ -210,7 +250,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         self.assertEqual(consumer_call.args[1], [consumer])
 
     def test_requested_scheme_filter_runs_only_exact_active_set(self) -> None:
-        from scheduler import launchd_prediction_runner as runner
+        from scheduler import one_shot_prediction_runner as runner
 
         selected = _blackbox_config("selected")
         ignored = _blackbox_config("ignored")
@@ -257,7 +297,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                 ),
             ) as execute,
         ):
-            summary = runner.run(
+            summary = _run_one_shot(runner,
                 "weekly",
                 predict_date="2026-08-15",
                 scheme_ids=["selected", "selected"],
@@ -272,7 +312,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         execute.assert_called_once()
 
     def test_requested_scheme_filter_rejects_unknown_before_execution(self) -> None:
-        from scheduler import launchd_prediction_runner as runner
+        from scheduler import one_shot_prediction_runner as runner
 
         with (
             patch.dict(
@@ -290,10 +330,10 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
             patch.object(runner, "create_engine_from_env") as create_engine,
         ):
             with self.assertRaisesRegex(
-                runner.LaunchdPredictionConfigurationError,
+                runner.OneShotPredictionConfigurationError,
                 "not available",
             ):
-                runner.run(
+                _run_one_shot(runner,
                     "daily",
                     predict_date="2026-08-28",
                     scheme_ids=["unknown"],
@@ -302,7 +342,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         create_engine.assert_not_called()
 
     def test_requested_scheme_identity_failure_blocks_entire_batch(self) -> None:
-        from scheduler import launchd_prediction_runner as runner
+        from scheduler import one_shot_prediction_runner as runner
 
         valid = _native_config("valid-native")
         drifted = _native_config("drifted-native")
@@ -346,10 +386,10 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
             patch.object(runner, "_execute_native_wave") as execute_wave,
         ):
             with self.assertRaisesRegex(
-                runner.LaunchdPredictionConfigurationError,
+                runner.OneShotPredictionConfigurationError,
                 "identity is not executable",
             ):
-                runner.run(
+                _run_one_shot(runner,
                     "daily",
                     predict_date="2026-08-28",
                     scheme_ids=["valid-native", "drifted-native"],
@@ -358,7 +398,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         execute_wave.assert_not_called()
 
     def test_period_average_uses_task_type_and_same_day_ready_gate(self) -> None:
-        from scheduler import launchd_prediction_runner as runner
+        from scheduler import one_shot_prediction_runner as runner
 
         quarterly = _blackbox_config(
             "quarterly",
@@ -417,7 +457,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                 ),
             ) as execute,
         ):
-            summary = runner.run(
+            summary = _run_one_shot(runner,
                 "period_average",
                 predict_date="2024-03-29",
                 algo_env="forecast_env",
@@ -442,7 +482,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         )
 
     def test_period_calendar_failure_is_isolated_by_task_type(self) -> None:
-        from scheduler import launchd_prediction_runner as runner
+        from scheduler import one_shot_prediction_runner as runner
 
         monthly = _blackbox_config(
             "monthly_average",
@@ -492,7 +532,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                 ),
             ),
         ):
-            summary = runner.run(
+            summary = _run_one_shot(runner,
                 "period_average",
                 predict_date="2024-02-15",
                 algo_env="forecast_env",
@@ -514,7 +554,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         self.assertEqual((summary.outcome, summary.exit_code), ("partial", 1))
 
     def test_monthly_cadence_does_not_select_monthly_average(self) -> None:
-        from scheduler import launchd_prediction_runner as runner
+        from scheduler import one_shot_prediction_runner as runner
 
         cfg = _blackbox_config(
             "monthly_average",
@@ -541,7 +581,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                 return_value=(cfg,),
             ),
         ):
-            summary = runner.run(
+            summary = _run_one_shot(runner,
                 "monthly",
                 predict_date="2024-02-15",
                 algo_env="forecast_env",
@@ -553,9 +593,9 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
 
 
     def test_duplicate_prediction_skip_is_benign_but_visible(self) -> None:
-        from scheduler import launchd_prediction_runner as runner
+        from scheduler import one_shot_prediction_runner as runner
 
-        summary = runner.LaunchdPredictionSummary("daily", "2026-08-20")
+        summary = runner.OneShotPredictionSummary("daily", "2026-08-20")
         cfg = _blackbox_config("duplicate")
         result = SimpleNamespace(
             scheme_id=cfg.scheme_id,
@@ -587,7 +627,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         self.assertEqual((summary.outcome, summary.exit_code), ("success", 0))
 
     def test_other_prediction_skips_remain_partial(self) -> None:
-        from scheduler import launchd_prediction_runner as runner
+        from scheduler import one_shot_prediction_runner as runner
 
         cases = (
             (
@@ -599,7 +639,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         )
         for error_msg, expected_code in cases:
             with self.subTest(error_msg=error_msg):
-                summary = runner.LaunchdPredictionSummary(
+                summary = runner.OneShotPredictionSummary(
                     "daily",
                     "2026-08-20",
                 )
@@ -642,7 +682,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
 
 
     def test_global_runner_lock_waits_until_current_cadence_releases(self) -> None:
-        from scheduler import launchd_prediction_runner as runner
+        from scheduler import one_shot_prediction_runner as runner
 
         contender_attempting = threading.Event()
         contender_entered = threading.Event()
@@ -689,7 +729,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
     def test_one_shot_requires_matching_target_before_runtime_access(
         self,
     ) -> None:
-        from scheduler import launchd_prediction_runner as runner
+        from scheduler import one_shot_prediction_runner as runner
 
         cases = ({}, {"BFL_DEPLOYMENT_TARGET": "aliyun-gray"})
         for environment in cases:
@@ -706,10 +746,10 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                 ) as create_engine,
             ):
                 with self.assertRaisesRegex(
-                    runner.LaunchdPredictionConfigurationError,
+                    runner.OneShotPredictionConfigurationError,
                     "deployment target does not match one-shot control plane",
                 ):
-                    runner.run(
+                    _run_one_shot(runner,
                         "weekly",
                         predict_date="2026-08-01",
                         algo_env="forecast_env",

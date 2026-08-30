@@ -10,12 +10,12 @@ from scheduler.executor import (
     DEFAULT_ALGO_ENV,
     _systemd_scheduled_execution_context,
 )
-from scheduler.launchd_prediction_runner import (
-    LaunchdPredictionConfigurationError,
-    LaunchdPredictionSummary,
-    _configuration_summary,
-    _run_one_shot,
-    _today,
+from scheduler.one_shot_prediction_runner import (
+    OneShotPredictionConfigurationError,
+    OneShotPredictionSummary,
+    configuration_summary,
+    run_one_shot,
+    today,
 )
 from shared.one_shot_control_plane import SYSTEMD_ONE_SHOT_CONTROL_PLANE
 from shared.task_specs import PREDICTION_CADENCES
@@ -30,9 +30,9 @@ def run(
     predict_date: str,
     algo_env: str = DEFAULT_ALGO_ENV,
     scheme_ids: Sequence[str] | None = None,
-) -> LaunchdPredictionSummary:
+) -> OneShotPredictionSummary:
     """执行一次由 systemd capability 约束的 scheduled_live 批次。"""
-    return _run_one_shot(
+    return run_one_shot(
         cadence,
         predict_date=predict_date,
         algo_env=algo_env,
@@ -55,7 +55,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--predict-date",
-        default=_today(),
+        default=today(),
     )
     parser.add_argument("--algo-env", default=DEFAULT_ALGO_ENV)
     parser.add_argument("--scheme-id", action="append", dest="scheme_ids")
@@ -67,14 +67,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             algo_env=args.algo_env,
             scheme_ids=args.scheme_ids,
         )
-    except LaunchdPredictionConfigurationError:
-        summary = _configuration_summary(
+    except OneShotPredictionConfigurationError:
+        summary = configuration_summary(
             args.cadence,
             args.predict_date,
             event=_SYSTEMD_EVENT,
         )
     except Exception:  # noqa: BLE001 - 不向 systemd 日志序列化底层异常
-        summary = _configuration_summary(
+        summary = configuration_summary(
             args.cadence,
             args.predict_date,
             event=_SYSTEMD_EVENT,

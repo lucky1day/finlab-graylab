@@ -47,7 +47,7 @@ class SystemdControlPlaneTests(unittest.TestCase):
     def test_systemd_runner_forwards_requested_scheme_ids(self) -> None:
         from scheduler import systemd_prediction_runner as runner
 
-        with patch.object(runner, "_run_one_shot") as run_one_shot:
+        with patch.object(runner, "run_one_shot") as run_one_shot:
             runner.run(
                 "daily",
                 predict_date="2026-08-28",
@@ -76,7 +76,7 @@ class SystemdControlPlaneTests(unittest.TestCase):
 
 
     def test_systemd_runner_passes_truthful_control_plane(self) -> None:
-        from scheduler import launchd_prediction_runner as common_runner
+        from scheduler import one_shot_prediction_runner as common_runner
         from scheduler import systemd_prediction_runner as runner
 
         cfg = _blackbox_config("systemd_candidate")

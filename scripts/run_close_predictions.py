@@ -22,9 +22,9 @@ from scheduler.deployment_scope import (
     require_deployment_target_for_control_plane,
 )
 from scheduler.discovery import discover_schemes
-from scheduler.launchd_prediction_runner import (
-    _candidate_matches_cadence,
-    _period_due_task_types,
+from scheduler.one_shot_prediction_runner import (
+    candidate_matches_cadence,
+    period_due_task_types,
 )
 from scheduler.repository import create_engine_from_env
 from scheduler.v2_daily_gate import V2DailyGateBlocked, require_v2_daily_ready
@@ -151,13 +151,13 @@ def run_close_job(
         cfg
         for cfg in discovered
         if getattr(cfg, "status", None) == "active"
-        and _candidate_matches_cadence(cfg, "monthly")
+        and candidate_matches_cadence(cfg, "monthly")
     ]
     period_candidates = [
         cfg
         for cfg in discovered
         if getattr(cfg, "status", None) == "active"
-        and _candidate_matches_cadence(cfg, "period_average")
+        and candidate_matches_cadence(cfg, "period_average")
     ]
     monthly_due = date.fromisoformat(normalized_date).day == 15 and bool(
         monthly_candidates
@@ -168,7 +168,7 @@ def run_close_job(
         calendar = get_calendar(engine)
         if not calendar.covers(normalized_date):
             raise ValueError("trade calendar does not cover predict_date")
-        due_period_types, invalid_period_types = _period_due_task_types(
+        due_period_types, invalid_period_types = period_due_task_types(
             period_candidates,
             calendar,
             normalized_date,
