@@ -7,15 +7,35 @@ import hmac
 import json
 from pathlib import Path
 import re
-from typing import Iterable, Mapping
+from typing import Callable, Iterable, Mapping
 
 from sqlalchemy import text
+
+from migrations.recovery_orchestration import RecoveryOrchestrationSpec
+from migrations.recovery_versions import (
+    SPEC_017,
+    SPEC_018,
+    SPEC_019,
+    SPEC_021,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS_DIR = PROJECT_ROOT / "migrations"
 RELEASE_MIGRATION_MANIFEST_PATH = MIGRATIONS_DIR / "release_manifest.json"
 RELEASE_MIGRATION_MANIFEST_SCHEMA_VERSION = 1
+DAILY_LEDGER_MIGRATION_VERSION = SPEC_017.version
+DAILY_LEDGER_MIGRATION_FILENAME = SPEC_017.filename
+DAILY_LEDGER_MIGRATION_SHA256 = SPEC_017.sha256
+SCHEDULE_RUN_STARTED_AT_MIGRATION_VERSION = SPEC_018.version
+SCHEDULE_RUN_STARTED_AT_MIGRATION_FILENAME = SPEC_018.filename
+SCHEDULE_RUN_STARTED_AT_MIGRATION_SHA256 = SPEC_018.sha256
+SERVING_POINTER_RETIREMENT_MIGRATION_VERSION = SPEC_019.version
+SERVING_POINTER_RETIREMENT_MIGRATION_FILENAME = SPEC_019.filename
+SERVING_POINTER_RETIREMENT_MIGRATION_SHA256 = SPEC_019.sha256
+REGISTRY_OWNER_MIGRATION_VERSION = SPEC_021.version
+REGISTRY_OWNER_MIGRATION_FILENAME = SPEC_021.filename
+REGISTRY_OWNER_MIGRATION_SHA256 = SPEC_021.sha256
 
 
 class MigrationSQLParseError(ValueError):
@@ -4401,36 +4421,8 @@ def _partial_apply_error(
 
 MIGRATION_HISTORY_LOCK = "bond_factor_lab_schema_migrations"
 DAILY_LEDGER_RUNNER_GUARD = "daily-ledger-017-v1"
-DAILY_LEDGER_MIGRATION_VERSION = 17
-DAILY_LEDGER_MIGRATION_FILENAME = "017_daily_schedule_ledger.sql"
-DAILY_LEDGER_MIGRATION_SHA256 = (
-    "a405ba82a857fc36252256c91fa9719e5"
-    "7b63007830bd9acf734f5f8e0c743fb"
-)
-SCHEDULE_RUN_STARTED_AT_MIGRATION_VERSION = 18
-SCHEDULE_RUN_STARTED_AT_MIGRATION_FILENAME = (
-    "018_schedule_run_started_at_nullable.sql"
-)
-SCHEDULE_RUN_STARTED_AT_MIGRATION_SHA256 = (
-    "320cdf0877618330b8dbd52bb091e956"
-    "987e916447cb41fc4f8d7a567b5b3ba1"
-)
-SERVING_POINTER_RETIREMENT_MIGRATION_VERSION = 19
-SERVING_POINTER_RETIREMENT_MIGRATION_FILENAME = (
-    "019_retire_scheme_serving_pointer.sql"
-)
-SERVING_POINTER_RETIREMENT_MIGRATION_SHA256 = (
-    "c5713935b4c33c492cac54f8cf85725b"
-    "2353fc33079129b762a7ce868785b002"
-)
 PERIOD_AVERAGE_ACTUALS_MIGRATION_FILENAME = (
     "020_period_average_actuals.sql"
-)
-REGISTRY_OWNER_MIGRATION_VERSION = 21
-REGISTRY_OWNER_MIGRATION_FILENAME = "021_registry_owner.sql"
-REGISTRY_OWNER_MIGRATION_SHA256 = (
-    "d9c3332d0e923a0220f68d5ca7c70567"
-    "6b3e9a5e0fd4f4579c0d08e1b2f6667f"
 )
 
 
@@ -5256,77 +5248,66 @@ def _read_applying_017_inspection(
         )
 
 
-def inspect_applying_migration_017(
+RecoveryInspectionReader = Callable[
+    [object, list[PreparedMigration]],
+    dict[str, object],
+]
+
+
+def _inspect_applying_migration(
     engine: object,
     paths: Iterable[Path],
+    *,
+    read_inspection: RecoveryInspectionReader,
 ) -> dict[str, object]:
-    """连接 live DB，以 SELECT + named lock 检查，不执行 DDL/DML。"""
+    """在唯一 owner lock 内执行版本级只读检查。"""
     manifest = validate_release_migration_manifest(paths)
     with _migration_owner_connection(engine) as owner_connection:
-        return _read_applying_017_inspection(
-            owner_connection,
-            manifest,
-        )
+        return read_inspection(owner_connection, manifest)
 
 
-def _daily_ledger_recovery_target(
+def _recovery_target(
     manifest: Iterable[PreparedMigration],
+    spec: RecoveryOrchestrationSpec,
 ) -> PreparedMigration:
-    """从受校验 manifest 中取得唯一允许恢复的 migration 017。"""
+    """从受校验 manifest 中取得唯一受审恢复目标。"""
     candidates = [
         migration
         for migration in manifest
-        if migration.version == DAILY_LEDGER_MIGRATION_VERSION
+        if migration.version == spec.version
     ]
     if len(candidates) != 1:
-        raise MigrationHistoryError(
-            "recovery requires exactly one migration 017 file"
-        )
+        raise MigrationHistoryError(spec.target_count_error)
     target = candidates[0]
-    if (
-        target.path.name != DAILY_LEDGER_MIGRATION_FILENAME
-        or target.sha256 != DAILY_LEDGER_MIGRATION_SHA256
-    ):
-        raise MigrationHistoryError(
-            "recovery target is not the reviewed migration 017"
-        )
+    if target.path.name != spec.filename or target.sha256 != spec.sha256:
+        raise MigrationHistoryError(spec.target_identity_error)
     return target
 
 
-def recover_applying_migration_017(
+def _recover_applying_migration(
     engine: object,
     paths: Iterable[Path],
     *,
     expected_state_digest: str,
+    spec: RecoveryOrchestrationSpec,
+    read_inspection: RecoveryInspectionReader,
 ) -> dict[str, object]:
-    """以 inspect digest 为 fence 恢复唯一受支持的 APPLYING 017。"""
+    """执行共享 digest fence、重放和 history 收口骨架。"""
     if re.fullmatch(r"[0-9a-f]{64}", expected_state_digest) is None:
         raise MigrationHistoryError(
             "expected state digest must be 64 lowercase hex characters"
         )
     manifest = validate_release_migration_manifest(paths)
-    target = _daily_ledger_recovery_target(manifest)
+    target = _recovery_target(manifest, spec)
     with _migration_owner_connection(engine) as owner_connection:
-        initial = _read_applying_017_inspection(
-            owner_connection,
-            manifest,
-        )
+        initial = read_inspection(owner_connection, manifest)
         observed_digest = str(initial.get("state_digest") or "")
-        if not hmac.compare_digest(
-            observed_digest,
-            expected_state_digest,
-        ):
-            raise MigrationHistoryError(
-                "APPLYING 017 state digest changed; run a new read-only "
-                "inspection before recovery"
-            )
-        classification = str(
-            initial.get("classification") or ""
-        )
+        if not hmac.compare_digest(observed_digest, expected_state_digest):
+            raise MigrationHistoryError(spec.digest_changed_error)
+        classification = str(initial.get("classification") or "")
         if classification == "UNSAFE":
             raise MigrationHistoryError(
-                "APPLYING 017 recovery refused unsafe state: "
-                f"{initial.get('reason')}"
+                spec.unsafe_error_prefix + str(initial.get("reason"))
             )
         if classification == "COMPATIBLE_PARTIAL":
             rollback = getattr(owner_connection, "rollback", None)
@@ -5338,20 +5319,14 @@ def recover_applying_migration_017(
             )
             if callable(rollback):
                 rollback()
-            completed = _read_applying_017_inspection(
-                owner_connection,
-                manifest,
-            )
+            completed = read_inspection(owner_connection, manifest)
             if completed.get("classification") != "COMPLETE":
                 raise MigrationPartialApplyError(
-                    "migration 017 replay did not reach COMPLETE; "
-                    "history remains APPLYING. "
-                    f"inspection={completed}"
+                    spec.partial_error_prefix + f"inspection={completed}"
                 )
         elif classification != "COMPLETE":
             raise MigrationHistoryError(
-                "unknown APPLYING 017 inspection classification: "
-                f"{classification!r}"
+                spec.unknown_classification_prefix + repr(classification)
             )
         _mark_migration_applied(engine, target)
         return {
@@ -5364,6 +5339,34 @@ def recover_applying_migration_017(
                 "sha256": target.sha256,
             },
         }
+
+
+def inspect_applying_migration_017(
+    engine: object,
+    paths: Iterable[Path],
+) -> dict[str, object]:
+    """连接 live DB，以 SELECT + named lock 检查，不执行 DDL/DML。"""
+    return _inspect_applying_migration(
+        engine,
+        paths,
+        read_inspection=_read_applying_017_inspection,
+    )
+
+
+def recover_applying_migration_017(
+    engine: object,
+    paths: Iterable[Path],
+    *,
+    expected_state_digest: str,
+) -> dict[str, object]:
+    """以 inspect digest 为 fence 恢复唯一受支持的 APPLYING 017。"""
+    return _recover_applying_migration(
+        engine,
+        paths,
+        expected_state_digest=expected_state_digest,
+        spec=SPEC_017,
+        read_inspection=_read_applying_017_inspection,
+    )
 
 
 def _read_schedule_run_started_at_shape(
@@ -5478,36 +5481,11 @@ def inspect_applying_migration_018(
     paths: Iterable[Path],
 ) -> dict[str, object]:
     """连接 live DB，以 SELECT + named lock 检查 018，不执行 DDL/DML。"""
-    manifest = validate_release_migration_manifest(paths)
-    with _migration_owner_connection(engine) as owner_connection:
-        return _read_applying_018_inspection(
-            owner_connection,
-            manifest,
-        )
-
-
-def _schedule_run_started_at_recovery_target(
-    manifest: Iterable[PreparedMigration],
-) -> PreparedMigration:
-    candidates = [
-        migration
-        for migration in manifest
-        if migration.version
-        == SCHEDULE_RUN_STARTED_AT_MIGRATION_VERSION
-    ]
-    if len(candidates) != 1:
-        raise MigrationHistoryError(
-            "recovery requires exactly one migration 018 file"
-        )
-    target = candidates[0]
-    if (
-        target.path.name != SCHEDULE_RUN_STARTED_AT_MIGRATION_FILENAME
-        or target.sha256 != SCHEDULE_RUN_STARTED_AT_MIGRATION_SHA256
-    ):
-        raise MigrationHistoryError(
-            "recovery target is not the reviewed migration 018"
-        )
-    return target
+    return _inspect_applying_migration(
+        engine,
+        paths,
+        read_inspection=_read_applying_018_inspection,
+    )
 
 
 def recover_applying_migration_018(
@@ -5517,68 +5495,13 @@ def recover_applying_migration_018(
     expected_state_digest: str,
 ) -> dict[str, object]:
     """以 inspect digest 为 fence 恢复唯一受支持的 APPLYING 018。"""
-    if re.fullmatch(r"[0-9a-f]{64}", expected_state_digest) is None:
-        raise MigrationHistoryError(
-            "expected state digest must be 64 lowercase hex characters"
-        )
-    manifest = validate_release_migration_manifest(paths)
-    target = _schedule_run_started_at_recovery_target(manifest)
-    with _migration_owner_connection(engine) as owner_connection:
-        initial = _read_applying_018_inspection(
-            owner_connection,
-            manifest,
-        )
-        observed_digest = str(initial.get("state_digest") or "")
-        if not hmac.compare_digest(
-            observed_digest,
-            expected_state_digest,
-        ):
-            raise MigrationHistoryError(
-                "APPLYING 018 state digest changed; run a new read-only "
-                "inspection before recovery"
-            )
-        classification = str(initial.get("classification") or "")
-        if classification == "UNSAFE":
-            raise MigrationHistoryError(
-                "APPLYING 018 recovery refused unsafe state: "
-                f"{initial.get('reason')}"
-            )
-        if classification == "COMPATIBLE_PARTIAL":
-            rollback = getattr(owner_connection, "rollback", None)
-            if callable(rollback):
-                rollback()
-            _execute_prepared_migration_files(
-                engine,
-                [(target.path, target.statements)],
-            )
-            if callable(rollback):
-                rollback()
-            completed = _read_applying_018_inspection(
-                owner_connection,
-                manifest,
-            )
-            if completed.get("classification") != "COMPLETE":
-                raise MigrationPartialApplyError(
-                    "migration 018 replay did not reach COMPLETE; "
-                    "history remains APPLYING. "
-                    f"inspection={completed}"
-                )
-        elif classification != "COMPLETE":
-            raise MigrationHistoryError(
-                "unknown APPLYING 018 inspection classification: "
-                f"{classification!r}"
-            )
-        _mark_migration_applied(engine, target)
-        return {
-            "recovery_outcome": "APPLIED",
-            "initial_classification": classification,
-            "initial_state_digest": observed_digest,
-            "migration": {
-                "version": target.version,
-                "filename": target.path.name,
-                "sha256": target.sha256,
-            },
-        }
+    return _recover_applying_migration(
+        engine,
+        paths,
+        expected_state_digest=expected_state_digest,
+        spec=SPEC_018,
+        read_inspection=_read_applying_018_inspection,
+    )
 
 
 def _expected_serving_pointer_retirement_state() -> dict[str, object]:
@@ -6412,32 +6335,11 @@ def inspect_applying_migration_019(
     paths: Iterable[Path],
 ) -> dict[str, object]:
     """连接 live DB，以 SELECT + named lock 检查 019，不执行 DDL/DML。"""
-    manifest = validate_release_migration_manifest(paths)
-    with _migration_owner_connection(engine) as owner_connection:
-        return _read_applying_019_inspection(owner_connection, manifest)
-
-
-def _serving_pointer_retirement_recovery_target(
-    manifest: Iterable[PreparedMigration],
-) -> PreparedMigration:
-    candidates = [
-        migration
-        for migration in manifest
-        if migration.version == SERVING_POINTER_RETIREMENT_MIGRATION_VERSION
-    ]
-    if len(candidates) != 1:
-        raise MigrationHistoryError(
-            "recovery requires exactly one migration 019 file"
-        )
-    target = candidates[0]
-    if (
-        target.path.name != SERVING_POINTER_RETIREMENT_MIGRATION_FILENAME
-        or target.sha256 != SERVING_POINTER_RETIREMENT_MIGRATION_SHA256
-    ):
-        raise MigrationHistoryError(
-            "recovery target is not the reviewed migration 019"
-        )
-    return target
+    return _inspect_applying_migration(
+        engine,
+        paths,
+        read_inspection=_read_applying_019_inspection,
+    )
 
 
 def recover_applying_migration_019(
@@ -6447,62 +6349,13 @@ def recover_applying_migration_019(
     expected_state_digest: str,
 ) -> dict[str, object]:
     """以 inspect digest 为 fence 恢复唯一受支持的 APPLYING 019。"""
-    if re.fullmatch(r"[0-9a-f]{64}", expected_state_digest) is None:
-        raise MigrationHistoryError(
-            "expected state digest must be 64 lowercase hex characters"
-        )
-    manifest = validate_release_migration_manifest(paths)
-    target = _serving_pointer_retirement_recovery_target(manifest)
-    with _migration_owner_connection(engine) as owner_connection:
-        initial = _read_applying_019_inspection(owner_connection, manifest)
-        observed_digest = str(initial.get("state_digest") or "")
-        if not hmac.compare_digest(observed_digest, expected_state_digest):
-            raise MigrationHistoryError(
-                "APPLYING 019 state digest changed; run a new read-only "
-                "inspection before recovery"
-            )
-        classification = str(initial.get("classification") or "")
-        if classification == "UNSAFE":
-            raise MigrationHistoryError(
-                "APPLYING 019 recovery refused unsafe state: "
-                f"{initial.get('reason')}"
-            )
-        if classification == "COMPATIBLE_PARTIAL":
-            rollback = getattr(owner_connection, "rollback", None)
-            if callable(rollback):
-                rollback()
-            _execute_prepared_migration_files(
-                engine,
-                [(target.path, target.statements)],
-            )
-            if callable(rollback):
-                rollback()
-            completed = _read_applying_019_inspection(
-                owner_connection,
-                manifest,
-            )
-            if completed.get("classification") != "COMPLETE":
-                raise MigrationPartialApplyError(
-                    "migration 019 replay did not reach COMPLETE; "
-                    "history remains APPLYING. "
-                    f"inspection={completed}"
-                )
-        elif classification != "COMPLETE":
-            raise MigrationHistoryError(
-                "unknown APPLYING 019 inspection classification: "
-                f"{classification!r}"
-            )
-        _mark_migration_applied(engine, target)
-        return {
-            "recovery_outcome": "APPLIED",
-            "initial_classification": classification,
-            "initial_state_digest": observed_digest,
-            "migration": {
-                "version": target.version,
-                "filename": target.path.name,
-                "sha256": target.sha256,
-            },
-        }
+    return _recover_applying_migration(
+        engine,
+        paths,
+        expected_state_digest=expected_state_digest,
+        spec=SPEC_019,
+        read_inspection=_read_applying_019_inspection,
+    )
 
 
 def _unsafe_applying_021_inspection(
@@ -6587,32 +6440,11 @@ def inspect_applying_migration_021(
     paths: Iterable[Path],
 ) -> dict[str, object]:
     """连接 live DB，以 SELECT + named lock 检查 021，不执行 DDL/DML。"""
-    manifest = validate_release_migration_manifest(paths)
-    with _migration_owner_connection(engine) as owner_connection:
-        return _read_applying_021_inspection(owner_connection, manifest)
-
-
-def _registry_owner_recovery_target(
-    manifest: Iterable[PreparedMigration],
-) -> PreparedMigration:
-    candidates = [
-        migration
-        for migration in manifest
-        if migration.version == REGISTRY_OWNER_MIGRATION_VERSION
-    ]
-    if len(candidates) != 1:
-        raise MigrationHistoryError(
-            "recovery requires exactly one migration 021 file"
-        )
-    target = candidates[0]
-    if (
-        target.path.name != REGISTRY_OWNER_MIGRATION_FILENAME
-        or target.sha256 != REGISTRY_OWNER_MIGRATION_SHA256
-    ):
-        raise MigrationHistoryError(
-            "recovery target is not the reviewed migration 021"
-        )
-    return target
+    return _inspect_applying_migration(
+        engine,
+        paths,
+        read_inspection=_read_applying_021_inspection,
+    )
 
 
 def recover_applying_migration_021(
@@ -6622,62 +6454,13 @@ def recover_applying_migration_021(
     expected_state_digest: str,
 ) -> dict[str, object]:
     """以 inspect digest 为 fence 恢复唯一受支持的 APPLYING 021。"""
-    if re.fullmatch(r"[0-9a-f]{64}", expected_state_digest) is None:
-        raise MigrationHistoryError(
-            "expected state digest must be 64 lowercase hex characters"
-        )
-    manifest = validate_release_migration_manifest(paths)
-    target = _registry_owner_recovery_target(manifest)
-    with _migration_owner_connection(engine) as owner_connection:
-        initial = _read_applying_021_inspection(owner_connection, manifest)
-        observed_digest = str(initial.get("state_digest") or "")
-        if not hmac.compare_digest(observed_digest, expected_state_digest):
-            raise MigrationHistoryError(
-                "APPLYING 021 state digest changed; run a new read-only "
-                "inspection before recovery"
-            )
-        classification = str(initial.get("classification") or "")
-        if classification == "UNSAFE":
-            raise MigrationHistoryError(
-                "APPLYING 021 recovery refused unsafe state: "
-                f"{initial.get('reason')}"
-            )
-        if classification == "COMPATIBLE_PARTIAL":
-            rollback = getattr(owner_connection, "rollback", None)
-            if callable(rollback):
-                rollback()
-            _execute_prepared_migration_files(
-                engine,
-                [(target.path, target.statements)],
-            )
-            if callable(rollback):
-                rollback()
-            completed = _read_applying_021_inspection(
-                owner_connection,
-                manifest,
-            )
-            if completed.get("classification") != "COMPLETE":
-                raise MigrationPartialApplyError(
-                    "migration 021 replay did not reach COMPLETE; "
-                    "history remains APPLYING. "
-                    f"inspection={completed}"
-                )
-        elif classification != "COMPLETE":
-            raise MigrationHistoryError(
-                "unknown APPLYING 021 inspection classification: "
-                f"{classification!r}"
-            )
-        _mark_migration_applied(engine, target)
-        return {
-            "recovery_outcome": "APPLIED",
-            "initial_classification": classification,
-            "initial_state_digest": observed_digest,
-            "migration": {
-                "version": target.version,
-                "filename": target.path.name,
-                "sha256": target.sha256,
-            },
-        }
+    return _recover_applying_migration(
+        engine,
+        paths,
+        expected_state_digest=expected_state_digest,
+        spec=SPEC_021,
+        read_inspection=_read_applying_021_inspection,
+    )
 
 
 def _legacy_domain_table_count(connection: object) -> int:

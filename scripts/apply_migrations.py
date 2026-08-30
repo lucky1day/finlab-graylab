@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse as _argparse
+from dataclasses import dataclass as _dataclass
 import json as _json
 from pathlib import Path as _Path
 import re as _re
@@ -29,6 +30,119 @@ from migrations.runner import (
 )
 from scheduler.repository import create_engine_from_env
 
+
+@_dataclass(frozen=True, slots=True)
+class _MigrationMode:
+    """单个 CLI migration 模式的声明式合同。"""
+
+    option: str
+    dest: str
+    action: str
+    help: str
+    handler_name: str
+
+
+_MIGRATION_MODES = (
+    _MigrationMode(
+        option="--inspect-applying-017",
+        dest="inspect_applying_017",
+        action="inspect",
+        help=(
+            "connect to the live DB and classify an interrupted migration "
+            "017 using SELECT plus a named advisory lock only; no DDL/DML"
+        ),
+        handler_name="inspect_applying_migration_017",
+    ),
+    _MigrationMode(
+        option="--recover-applying-017",
+        dest="recover_applying_017",
+        action="recover",
+        help=(
+            "recover migration 017 using --apply and the exact digest "
+            "from a prior read-only inspection"
+        ),
+        handler_name="recover_applying_migration_017",
+    ),
+    _MigrationMode(
+        option="--inspect-applying-018",
+        dest="inspect_applying_018",
+        action="inspect",
+        help=(
+            "connect to the live DB and classify an interrupted migration "
+            "018 using SELECT plus a named advisory lock only; no DDL/DML"
+        ),
+        handler_name="inspect_applying_migration_018",
+    ),
+    _MigrationMode(
+        option="--recover-applying-018",
+        dest="recover_applying_018",
+        action="recover",
+        help=(
+            "recover migration 018 using --apply and the exact digest "
+            "from a prior read-only inspection"
+        ),
+        handler_name="recover_applying_migration_018",
+    ),
+    _MigrationMode(
+        option="--inspect-applying-019",
+        dest="inspect_applying_019",
+        action="inspect",
+        help=(
+            "connect to the live DB and classify an interrupted migration "
+            "019 using SELECT plus a named advisory lock only; no DDL/DML"
+        ),
+        handler_name="inspect_applying_migration_019",
+    ),
+    _MigrationMode(
+        option="--recover-applying-019",
+        dest="recover_applying_019",
+        action="recover",
+        help=(
+            "recover migration 019 using --apply and the exact digest "
+            "from a prior read-only inspection"
+        ),
+        handler_name="recover_applying_migration_019",
+    ),
+    _MigrationMode(
+        option="--inspect-applying-021",
+        dest="inspect_applying_021",
+        action="inspect",
+        help=(
+            "connect to the live DB and classify an interrupted migration "
+            "021 using SELECT plus a named advisory lock only; no DDL/DML"
+        ),
+        handler_name="inspect_applying_migration_021",
+    ),
+    _MigrationMode(
+        option="--recover-applying-021",
+        dest="recover_applying_021",
+        action="recover",
+        help=(
+            "recover migration 021 using --apply and the exact digest "
+            "from a prior read-only inspection"
+        ),
+        handler_name="recover_applying_migration_021",
+    ),
+)
+
+
+def _selected_mode(args: _argparse.Namespace) -> _MigrationMode | None:
+    """返回 argparse 已选的唯一版本模式。"""
+    return next(
+        (
+            mode
+            for mode in _MIGRATION_MODES
+            if getattr(args, mode.dest)
+        ),
+        None,
+    )
+
+
+def _mode_handler(mode: _MigrationMode):
+    """延迟解析 handler，保留既有模块级 patch 边界。"""
+    return globals()[mode.handler_name]
+
+
 def _parse_args(
     argv: _Iterable[str] | None = None,
 ) -> _argparse.Namespace:
@@ -40,70 +154,13 @@ def _parse_args(
         )
     )
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument(
-        "--inspect-applying-017",
-        action="store_true",
-        help=(
-            "connect to the live DB and classify an interrupted migration "
-            "017 using SELECT plus a named advisory lock only; no DDL/DML"
-        ),
-    )
-    mode.add_argument(
-        "--recover-applying-017",
-        action="store_true",
-        help=(
-            "recover migration 017 using --apply and the exact digest "
-            "from a prior read-only inspection"
-        ),
-    )
-    mode.add_argument(
-        "--inspect-applying-018",
-        action="store_true",
-        help=(
-            "connect to the live DB and classify an interrupted migration "
-            "018 using SELECT plus a named advisory lock only; no DDL/DML"
-        ),
-    )
-    mode.add_argument(
-        "--recover-applying-018",
-        action="store_true",
-        help=(
-            "recover migration 018 using --apply and the exact digest "
-            "from a prior read-only inspection"
-        ),
-    )
-    mode.add_argument(
-        "--inspect-applying-019",
-        action="store_true",
-        help=(
-            "connect to the live DB and classify an interrupted migration "
-            "019 using SELECT plus a named advisory lock only; no DDL/DML"
-        ),
-    )
-    mode.add_argument(
-        "--recover-applying-019",
-        action="store_true",
-        help=(
-            "recover migration 019 using --apply and the exact digest "
-            "from a prior read-only inspection"
-        ),
-    )
-    mode.add_argument(
-        "--inspect-applying-021",
-        action="store_true",
-        help=(
-            "connect to the live DB and classify an interrupted migration "
-            "021 using SELECT plus a named advisory lock only; no DDL/DML"
-        ),
-    )
-    mode.add_argument(
-        "--recover-applying-021",
-        action="store_true",
-        help=(
-            "recover migration 021 using --apply and the exact digest "
-            "from a prior read-only inspection"
-        ),
-    )
+    for migration_mode in _MIGRATION_MODES:
+        mode.add_argument(
+            migration_mode.option,
+            dest=migration_mode.dest,
+            action="store_true",
+            help=migration_mode.help,
+        )
     parser.add_argument(
         "--apply",
         action="store_true",
@@ -122,62 +179,15 @@ def _parse_args(
         help="exact lowercase canonical @@server_uuid required by writes",
     )
     args = parser.parse_args(argv)
-    if args.inspect_applying_017:
+    selected_mode = _selected_mode(args)
+    if selected_mode is not None and selected_mode.action == "inspect":
         if args.apply or args.state_digest:
             parser.error(
                 "read-only inspection does not accept --apply or "
                 "--state-digest"
             )
         return args
-    elif args.recover_applying_017:
-        if not args.apply or not args.state_digest:
-            parser.error(
-                "recovery requires both --apply and --state-digest"
-            )
-        if _re.fullmatch(r"[0-9a-f]{64}", args.state_digest) is None:
-            parser.error(
-                "--state-digest must be 64 lowercase hex characters"
-            )
-    elif args.inspect_applying_018:
-        if args.apply or args.state_digest:
-            parser.error(
-                "read-only inspection does not accept --apply or "
-                "--state-digest"
-            )
-        return args
-    elif args.recover_applying_018:
-        if not args.apply or not args.state_digest:
-            parser.error(
-                "recovery requires both --apply and --state-digest"
-            )
-        if _re.fullmatch(r"[0-9a-f]{64}", args.state_digest) is None:
-            parser.error(
-                "--state-digest must be 64 lowercase hex characters"
-            )
-    elif args.inspect_applying_019:
-        if args.apply or args.state_digest:
-            parser.error(
-                "read-only inspection does not accept --apply or "
-                "--state-digest"
-            )
-        return args
-    elif args.recover_applying_019:
-        if not args.apply or not args.state_digest:
-            parser.error(
-                "recovery requires both --apply and --state-digest"
-            )
-        if _re.fullmatch(r"[0-9a-f]{64}", args.state_digest) is None:
-            parser.error(
-                "--state-digest must be 64 lowercase hex characters"
-            )
-    elif args.inspect_applying_021:
-        if args.apply or args.state_digest:
-            parser.error(
-                "read-only inspection does not accept --apply or "
-                "--state-digest"
-            )
-        return args
-    elif args.recover_applying_021:
+    if selected_mode is not None and selected_mode.action == "recover":
         if not args.apply or not args.state_digest:
             parser.error(
                 "recovery requires both --apply and --state-digest"
@@ -249,116 +259,32 @@ def main(argv: _Iterable[str] | None = None) -> None:
     )
     engine = create_engine_from_env()
     try:
-        if not (
-            args.inspect_applying_017
-            or args.inspect_applying_018
-            or args.inspect_applying_019
-            or args.inspect_applying_021
-        ):
+        selected_mode = _selected_mode(args)
+        if selected_mode is None or selected_mode.action != "inspect":
             _assert_write_database_identity(
                 engine,
                 expected_database_name=args.expected_database_name,
                 expected_server_uuid=args.expected_server_uuid,
             )
-        if args.inspect_applying_017:
-            result = inspect_applying_migration_017(
-                engine,
-                paths,
-            )
-            print(
-                _json.dumps(
-                    result,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
-            )
-        elif args.recover_applying_017:
-            result = recover_applying_migration_017(
-                engine,
-                paths,
-                expected_state_digest=args.state_digest,
-            )
-            print(
-                _json.dumps(
-                    result,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
-            )
-        elif args.inspect_applying_018:
-            result = inspect_applying_migration_018(
-                engine,
-                paths,
-            )
-            print(
-                _json.dumps(
-                    result,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
-            )
-        elif args.recover_applying_018:
-            result = recover_applying_migration_018(
-                engine,
-                paths,
-                expected_state_digest=args.state_digest,
-            )
-            print(
-                _json.dumps(
-                    result,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
-            )
-        elif args.inspect_applying_019:
-            result = inspect_applying_migration_019(
-                engine,
-                paths,
-            )
-            print(
-                _json.dumps(
-                    result,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
-            )
-        elif args.recover_applying_019:
-            result = recover_applying_migration_019(
-                engine,
-                paths,
-                expected_state_digest=args.state_digest,
-            )
-            print(
-                _json.dumps(
-                    result,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
-            )
-        elif args.inspect_applying_021:
-            result = inspect_applying_migration_021(engine, paths)
-            print(
-                _json.dumps(
-                    result,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
-            )
-        elif args.recover_applying_021:
-            result = recover_applying_migration_021(
-                engine,
-                paths,
-                expected_state_digest=args.state_digest,
-            )
-            print(
-                _json.dumps(
-                    result,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
-            )
-        else:
+        if selected_mode is None:
             apply_pending_migration_files(engine, paths)
+        else:
+            handler = _mode_handler(selected_mode)
+            if selected_mode.action == "inspect":
+                result = handler(engine, paths)
+            else:
+                result = handler(
+                    engine,
+                    paths,
+                    expected_state_digest=args.state_digest,
+                )
+            print(
+                _json.dumps(
+                    result,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
     finally:
         engine.dispose()
 
