@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -317,7 +318,7 @@ def test_target_range_resolves_databridge_authority_once(
         horizon=horizon,
         scheme_version="version-1",
     )
-    resolver = Mock(return_value=SimpleNamespace())
+    resolver = Mock(return_value=_authority())
     monkeypatch.setattr(signal_gap_plan, "_discover_scheme_configs", lambda: ())
     monkeypatch.setattr(
         signal_gap_plan,
@@ -528,6 +529,177 @@ def test_blackbox_gap_binds_v2_source_identity_and_single_cutoff(
     assert "authority_schema_version" not in input_authority
     assert "publication_identity_sha256" not in input_authority
     assert "cutoffs" not in input_authority
+
+
+def test_range_plan_indexes_cutoffs_and_source_identity_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _target("demo_blackbox", runtime_type="blackbox_v2")
+    first = _case("demo_blackbox", runtime_type="blackbox_v2")
+    second = replace(
+        first,
+        predict_date="2026-08-11",
+        feature_date="2026-08-10",
+        target_date="2026-08-17",
+    )
+    authority = replace(
+        _authority(),
+        cutoffs=(
+            *_authority().cutoffs,
+            databridge_authority.StableDataBridgeCutoff(
+                feature_date="2026-08-10",
+                daily_cutoff_key="2026-08-10",
+                weekly_cutoff_key="202633",
+                monthly_cutoff_key="202608",
+            ),
+        ),
+    )
+    source_identity = Mock(
+        wraps=signal_gap_plan.blackbox_gray_replay_source_identity
+    )
+    monkeypatch.setattr(
+        signal_gap_plan,
+        "blackbox_gray_replay_source_identity",
+        source_identity,
+    )
+
+    plan = signal_gap_plan._build_signal_gap_range_plan(
+        _snapshot(
+            target=target,
+            case=first,
+            authority=authority,
+        ).__class__(
+            registry_targets=(target,),
+            expected_cases=(first, second),
+            live_signals=(),
+            databridge_authority=authority,
+        ),
+        target_date_from="2026-08-14",
+        target_date_before="2026-08-18",
+        base_scheme_id="demo_blackbox",
+    )
+
+    assert plan["status"] == "READY"
+    assert [
+        row["input_authority"]["cutoff"]["feature_date"]
+        for row in plan["actions"]
+    ] == ["2026-08-07", "2026-08-10"]
+    source_identity.assert_called_once_with(authority)
+
+
+def test_duplicate_cutoff_still_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _target("demo_blackbox", runtime_type="blackbox_v2")
+    case = _case("demo_blackbox", runtime_type="blackbox_v2")
+    authority = replace(
+        _authority(),
+        cutoffs=(*_authority().cutoffs, _authority().cutoffs[0]),
+    )
+    plan, _, _ = _plan(
+        monkeypatch,
+        _snapshot(target=target, case=case, authority=authority),
+        configs=(_config("demo_blackbox", runtime_type="blackbox_v2"),),
+    )
+
+    assert plan["status"] == "BLOCKED"
+    assert plan["actions"][0]["reason"] == "DATABRIDGE_CUTOFF_INVALID"
+
+
+def test_range_readback_uses_one_snapshot_and_pinpoints_tampered_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _target("demo_blackbox", runtime_type="blackbox_v2")
+    first = _case("demo_blackbox", runtime_type="blackbox_v2")
+    second = replace(
+        first,
+        predict_date="2026-08-11",
+        feature_date="2026-08-10",
+        target_date="2026-08-17",
+    )
+    actions = [
+        signal_gap_plan._action_row(
+            case,
+            target=target,
+            action="GRAY_LIVE_GAP",
+            reason="LIVE_BUSINESS_KEY_MISSING",
+            input_authority=None,
+            business_key_present=False,
+        )
+        for case in (first, second)
+    ]
+    live_rows = (
+        _observed("demo_blackbox"),
+        replace(
+            _observed("demo_blackbox"),
+            predict_date=second.predict_date,
+            feature_date="2026-08-09",
+            target_date=second.target_date,
+        ),
+    )
+    reader = Mock(return_value=live_rows)
+    monkeypatch.setattr(
+        signal_gap_plan,
+        "_read_live_signals_for_scope",
+        reader,
+    )
+    engine = _Engine()
+
+    readback = signal_gap_plan.verify_signal_gap_fill_readback(
+        engine,
+        actions=actions,
+    )
+
+    assert reader.call_count == 1
+    assert engine.connection.statements == [
+        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",
+        "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY",
+    ]
+    assert engine.connection.rollback_count == 1
+    assert [row["action"] for row in readback["actions"]] == [
+        "SKIP_PRESENT",
+        "BLOCKED_DATA_CONTRACT",
+    ]
+    assert readback["actions"][1]["business_key"] == list(
+        second.business_key
+    )
+
+
+def test_range_readback_blocks_unexpected_row_selected_by_target_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _target("demo_blackbox", runtime_type="blackbox_v2")
+    case = _case("demo_blackbox", runtime_type="blackbox_v2")
+    action = signal_gap_plan._action_row(
+        case,
+        target=target,
+        action="GRAY_LIVE_GAP",
+        reason="LIVE_BUSINESS_KEY_MISSING",
+        input_authority=None,
+        business_key_present=False,
+    )
+    valid = _observed("demo_blackbox")
+    unexpected = replace(
+        valid,
+        target_tenor="10Y",
+        predict_date="2026-08-11",
+    )
+    monkeypatch.setattr(
+        signal_gap_plan,
+        "_read_live_signals_for_scope",
+        Mock(return_value=(valid, unexpected)),
+    )
+
+    readback = signal_gap_plan.verify_signal_gap_fill_readback(
+        _Engine(),
+        actions=[action],
+    )
+
+    assert readback["status"] == "BLOCKED"
+    assert readback["actions"][0]["action"] == "BLOCKED_DATA_CONTRACT"
+    assert readback["actions"][0]["reason"] == (
+        "OBSERVED_SIGNAL_TARGET_DRIFT"
+    )
 
 
 @pytest.mark.parametrize(

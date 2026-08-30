@@ -32,7 +32,7 @@ from shared.blackbox_v2.snapshot import (
     normalize_period_key,
 )
 from shared.data_bridge.authority import (
-    _normalize_blackbox_gray_replay_source_identity,
+    normalize_blackbox_gray_replay_source_identity,
 )
 from shared.data_bridge.refresh import DataBridgeRefreshConfig
 from shared.data_bridge.validation import ValidatedDataBridgeDataset
@@ -912,7 +912,7 @@ def _validate_ready_snapshot_source_identity(
     expected_source_identity: Mapping[str, Any],
 ) -> None:
     """只比较 producer receipt，不重新读取或哈希输入 CSV。"""
-    expected = _normalize_blackbox_gray_replay_source_identity(
+    expected = normalize_blackbox_gray_replay_source_identity(
         expected_source_identity
     )
     raw_files = ready_identity.get("files")

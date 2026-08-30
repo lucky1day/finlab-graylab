@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import date, timedelta
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
@@ -250,6 +251,12 @@ def _install(
         lambda: lock or _lock(),
     )
     monkeypatch.setattr(signal_gap_fill, "plan_signal_gaps", readback_mock)
+    monkeypatch.setattr(
+        signal_gap_fill,
+        "verify_signal_gap_fill_readback",
+        readback_mock,
+        raising=False,
+    )
     return SimpleNamespace(dispose=Mock()), readback_mock
 
 
@@ -484,7 +491,6 @@ def test_blackbox_schemes_with_same_source_share_ready_snapshot(
         "run_blackbox_gray_replay_batch",
         Mock(side_effect=batch_runner),
     )
-
     report = signal_gap_fill.run_signal_gap_fill(
         plan=plan,
         project_root=tmp_path,
@@ -819,6 +825,12 @@ def test_blackbox_target_range_runs_one_batch_and_commits_atomically(
         "run_blackbox_gray_replay_batch",
         Mock(side_effect=batch_runner),
     )
+    config_loader = Mock(return_value=cfg)
+    monkeypatch.setattr(
+        signal_gap_fill,
+        "load_scheme_config",
+        config_loader,
+    )
 
     report = signal_gap_fill.run_signal_gap_fill(
         plan=plan,
@@ -832,4 +844,82 @@ def test_blackbox_target_range_runs_one_batch_and_commits_atomically(
     repository.complete_gray_gap_run.assert_not_called()
     repository.complete_gray_gap_runs_atomic.assert_called_once()
     assert len(repository.complete_gray_gap_runs_atomic.call_args.args[1]) == 2
-    assert readback.call_count == 2
+    config_loader.assert_called_once_with(
+        tmp_path / "schemes" / "demo_blackbox" / "config.yaml"
+    )
+    readback.assert_called_once_with(
+        engine,
+        actions=plan["actions"],
+    )
+
+
+def test_target_range_loads_frozen_scheme_identity_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from harness import signal_gap_fill
+
+    start = date.fromisoformat("2026-06-01")
+    actions = []
+    for offset in range(69):
+        predict_date = (start + timedelta(days=offset)).isoformat()
+        feature_date = (start + timedelta(days=offset + 1)).isoformat()
+        target_date = (start + timedelta(days=offset + 6)).isoformat()
+        row = _action("demo_blackbox", runtime_type="blackbox_v2")
+        row.update(
+            predict_date=predict_date,
+            feature_date=feature_date,
+            target_date=target_date,
+            business_key=["demo_blackbox", "5Y", 5, target_date],
+        )
+        authority = dict(row["input_authority"])
+        authority["cutoff"] = {
+            **dict(authority["cutoff"]),
+            "feature_date": feature_date,
+            "daily_cutoff_key": feature_date,
+        }
+        row["input_authority"] = authority
+        actions.append(row)
+    plan = _plan(actions, base_scheme_id="demo_blackbox")
+    plan.update(
+        schema_version="target-range-active-live-gap-plan-v1",
+        predict_date=None,
+        target_date_from="2026-06-01",
+        target_date_before="2026-09-01",
+    )
+    groups = signal_gap_fill._build_groups(plan)
+    loader = Mock(
+        return_value=_config("demo_blackbox", runtime_type="blackbox_v2")
+    )
+    monkeypatch.setattr(signal_gap_fill, "load_scheme_config", loader)
+
+    configs = signal_gap_fill._load_and_validate_configs(
+        groups,
+        project_root=tmp_path,
+    )
+
+    assert len(groups) == 69
+    assert len(configs) == 69
+    loader.assert_called_once_with(
+        tmp_path / "schemes" / "demo_blackbox" / "config.yaml"
+    )
+
+
+def test_single_date_readback_remains_fail_closed_on_blocked_plan() -> None:
+    from harness import signal_gap_fill
+
+    plan = _plan([_action("demo_native")])
+    groups = signal_gap_fill._build_groups(plan)
+    blocked_readback = _present(plan)
+    blocked_readback["status"] = "BLOCKED"
+    blocked_readback["failure_code"] = "OBSERVED_SIGNAL_TARGET_DRIFT"
+
+    assert signal_gap_fill._remaining_groups_after_readback(
+        groups,
+        blocked_readback,
+    ) == list(groups)
+    assert signal_gap_fill._remaining_groups_after_readback(
+        groups,
+        blocked_readback,
+        allow_blocked_actions=True,
+    ) == []

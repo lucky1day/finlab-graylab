@@ -206,6 +206,7 @@ def test_cli_plans_once_for_all_or_one_base_then_runs_coordinator(
         PREDICT_DATE,
         scheme_id,
         databridge_config=ANY,
+        project_root=tmp_path.resolve(),
     )
     runner.assert_called_once_with(
         plan=plan,
@@ -216,6 +217,61 @@ def test_cli_plans_once_for_all_or_one_base_then_runs_coordinator(
         timeout_sec=600,
     )
     assert not (tmp_path / "reports").exists()
+
+
+def test_target_range_planner_receives_resolved_project_root(
+    tmp_path: Path,
+) -> None:
+    plan = _plan(base_scheme_id="demo_blackbox")
+    plan.update(
+        schema_version="target-range-active-live-gap-plan-v1",
+        predict_date=None,
+        target_date_from="2026-06-01",
+        target_date_before="2026-09-04",
+    )
+    planner = Mock(return_value=plan)
+    runner = Mock(
+        return_value={
+            "schema_version": "target-range-signal-gap-fill-v1",
+            "status": "PASSED",
+            "failure_code": None,
+            "completed": [],
+            "remaining": [],
+        }
+    )
+    output = io.StringIO()
+    with (
+        patch.object(
+            cli.DataBridgeRefreshConfig,
+            "from_env",
+            return_value=SimpleNamespace(),
+        ),
+        patch.object(cli, "_plan_signal_gap_range", planner),
+        patch.object(cli, "run_signal_gap_fill", runner),
+        redirect_stdout(output),
+    ):
+        exit_code = cli.main(
+            [
+                "signal-gap-fill",
+                "--target-date-from",
+                "2026-06-01",
+                "--target-date-before",
+                "2026-09-04",
+                "--scheme-id",
+                "demo_blackbox",
+                "--project-root",
+                str(tmp_path),
+            ]
+        )
+
+    assert exit_code == 0
+    planner.assert_called_once_with(
+        "2026-06-01",
+        "2026-09-04",
+        "demo_blackbox",
+        databridge_config=ANY,
+        project_root=tmp_path.resolve(),
+    )
 
 
 @pytest.mark.parametrize(

@@ -1798,11 +1798,11 @@ class DataBridgeStore:
             )
             handle = _open_strict_read_lock(self.lock_path)
         else:
-            _ensure_private_directory(
+            ensure_private_directory(
                 self.data_root,
                 label="DataBridge data root",
             )
-            _ensure_private_directory(
+            ensure_private_directory(
                 self.runtime_root,
                 label="DataBridge runtime root",
             )
@@ -1903,11 +1903,11 @@ class DataBridgeStore:
 
     def cleanup_crash_debris(self) -> tuple[str, ...]:
         """在外层 occurrence owner 下清理未发布 ``.current-next-*``。"""
-        _ensure_private_directory(
+        ensure_private_directory(
             self.data_root,
             label="DataBridge data root",
         )
-        _ensure_private_directory(
+        ensure_private_directory(
             self.runtime_root,
             label="DataBridge runtime root",
         )
@@ -2236,7 +2236,7 @@ def _read_strict_current_state(path: Path) -> dict[str, object]:
     return state
 
 
-def _ensure_private_directory(path: Path, *, label: str) -> None:
+def ensure_private_directory(path: Path, *, label: str) -> None:
     """只创建新私有根；既有非私有根必须由部署迁移显式修复。"""
     path.mkdir(parents=True, mode=0o700, exist_ok=True)
     _require_private_directory(path, label=label)

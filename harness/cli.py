@@ -375,12 +375,14 @@ def _run_signal_gap_fill_command(args: argparse.Namespace) -> int:
                 args.target_date_before,
                 args.scheme_id,
                 databridge_config=databridge_config,
+                project_root=project_root,
             )
         else:
             plan = _plan_signal_gap_date(
                 args.predict_date,
                 args.scheme_id,
                 databridge_config=databridge_config,
+                project_root=project_root,
             )
     except SignalGapPlanError as exc:
         _print_signal_gap_fill_result(
@@ -467,6 +469,7 @@ def _plan_signal_gap_date(
     base_scheme_id: str | None,
     *,
     databridge_config: DataBridgeRefreshConfig,
+    project_root: Path,
 ) -> dict[str, Any]:
     engine = create_engine_from_env()
     try:
@@ -475,6 +478,7 @@ def _plan_signal_gap_date(
             predict_date=predict_date,
             base_scheme_id=base_scheme_id,
             databridge_config=databridge_config,
+            project_root=project_root,
         )
     finally:
         engine.dispose()
@@ -486,6 +490,7 @@ def _plan_signal_gap_range(
     base_scheme_id: str,
     *,
     databridge_config: DataBridgeRefreshConfig,
+    project_root: Path,
 ) -> dict[str, Any]:
     engine = create_engine_from_env()
     try:
@@ -495,6 +500,7 @@ def _plan_signal_gap_range(
             target_date_before=target_date_before,
             base_scheme_id=base_scheme_id,
             databridge_config=databridge_config,
+            project_root=project_root,
         )
     finally:
         engine.dispose()

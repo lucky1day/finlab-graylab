@@ -102,7 +102,7 @@ def blackbox_gray_replay_source_identity(
         )
     if authority.authority_schema_version != AUTHORITY_SCHEMA_VERSION:
         raise ValueError("gray replay authority must use current authority v2")
-    return _normalize_blackbox_gray_replay_source_identity(
+    return normalize_blackbox_gray_replay_source_identity(
         {
             "generation_id": authority.generation_id,
             "refresh_date": authority.refresh_date,
@@ -125,7 +125,7 @@ def blackbox_gray_replay_source_identity(
     )
 
 
-def _normalize_blackbox_gray_replay_source_identity(
+def normalize_blackbox_gray_replay_source_identity(
     source_identity: Mapping[str, Any],
 ) -> dict[str, Any]:
     """供 authority serializer 与 gray replay 执行共用的字段校验。"""

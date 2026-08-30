@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
 
 from sqlalchemy import bindparam, text
@@ -161,17 +162,32 @@ class SignalGapSnapshot:
     databridge_authority_error: Literal["MISSING", "INVALID"] | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _BlackboxGapAuthorityIndex:
+    cutoffs_by_feature_date: Mapping[
+        str,
+        tuple[StableDataBridgeCutoff, ...],
+    ]
+    source_identity: Mapping[str, Any] | None
+    source_identity_invalid: bool
+
+
 def plan_signal_gaps(
     engine: Any,
     *,
     predict_date: str,
     base_scheme_id: str | None = None,
     databridge_config: DataBridgeRefreshConfig,
+    project_root: Path | None = None,
 ) -> dict[str, Any]:
     """在单个只读 consistent snapshot 中规划单日 active live 缺口。"""
     normalized_date = _canonical_date(predict_date, "predict_date")
     normalized_base = _normalize_base_scheme_id(base_scheme_id)
-    configs = tuple(_discover_scheme_configs())
+    configs = tuple(
+        _discover_scheme_configs()
+        if project_root is None
+        else _discover_scheme_configs(project_root)
+    )
     authority, selection_error = _select_execution_authority(
         configs,
         base_scheme_id=normalized_base,
@@ -232,6 +248,7 @@ def plan_signal_gap_target_range(
     target_date_before: str,
     base_scheme_id: str,
     databridge_config: DataBridgeRefreshConfig,
+    project_root: Path | None = None,
 ) -> dict[str, Any]:
     """在一个只读快照中规划单个受支持 Blackbox 的 target 日期区间。"""
     normalized_from = _canonical_date(target_date_from, "target_date_from")
@@ -257,7 +274,11 @@ def plan_signal_gap_target_range(
             base_scheme_id=normalized_base,
             failure_code="TARGET_RANGE_BEFORE_PLATFORM_LIVE_START",
         )
-    configs = tuple(_discover_scheme_configs())
+    configs = tuple(
+        _discover_scheme_configs()
+        if project_root is None
+        else _discover_scheme_configs(project_root)
+    )
     authority, selection_error = _select_execution_authority(
         configs,
         base_scheme_id=normalized_base,
@@ -365,6 +386,137 @@ def plan_signal_gap_target_range(
             )
         finally:
             connection.rollback()
+
+
+def verify_signal_gap_fill_readback(
+    engine: Any,
+    *,
+    actions: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """在一次只读快照中校验 range gap-fill 的全部业务键。"""
+    targets: dict[str, RegistryTarget] = {}
+    cases: list[ExpectedSignalCase] = []
+    seen_business_keys: set[tuple[str, str, int, str]] = set()
+    for raw in actions:
+        if not isinstance(raw, Mapping):
+            raise SignalGapPlanError(
+                "POSTFILL_READBACK_SCOPE_INVALID",
+                "action must be a mapping",
+            )
+        target = RegistryTarget(
+            registry_scheme_id=str(raw["registry_scheme_id"]),
+            base_scheme_id=str(raw["base_scheme_id"]),
+            runtime_type=str(raw["runtime_type"]),
+            frequency=str(raw["frequency"]),
+            task_type=str(raw["task_type"]),
+            target_tenor=str(raw["target_tenor"]),
+            horizon=int(raw["horizon"]),
+            scheme_version=str(raw["scheme_version"]),
+        )
+        _validate_registry_target(target)
+        prior = targets.get(target.registry_scheme_id)
+        if prior is not None and prior != target:
+            raise SignalGapPlanError(
+                "POSTFILL_READBACK_SCOPE_INVALID",
+                target.registry_scheme_id,
+            )
+        targets[target.registry_scheme_id] = target
+        case = ExpectedSignalCase(
+            registry_scheme_id=target.registry_scheme_id,
+            base_scheme_id=target.base_scheme_id,
+            runtime_type=target.runtime_type,
+            frequency=target.frequency,
+            task_type=target.task_type,
+            target_tenor=target.target_tenor,
+            horizon=target.horizon,
+            predict_date=_canonical_date(raw["predict_date"], "predict_date"),
+            feature_date=_canonical_date(raw["feature_date"], "feature_date"),
+            target_date=_canonical_date(raw["target_date"], "target_date"),
+        )
+        if list(case.business_key) != list(raw.get("business_key") or ()):
+            raise SignalGapPlanError(
+                "POSTFILL_READBACK_SCOPE_INVALID",
+                target.registry_scheme_id,
+            )
+        if case.business_key in seen_business_keys:
+            raise SignalGapPlanError(
+                "DUPLICATE_EXPECTED_BUSINESS_KEY",
+                target.registry_scheme_id,
+            )
+        seen_business_keys.add(case.business_key)
+        cases.append(case)
+
+    ordered_cases = tuple(sorted(cases, key=_case_sort_key))
+    with engine.connect() as connection:
+        connection.exec_driver_sql(
+            "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+        )
+        connection.exec_driver_sql(
+            "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY"
+        )
+        try:
+            live_signals = _read_live_signals_for_scope(
+                connection,
+                tuple(targets.values()),
+                predict_dates=tuple(
+                    item.predict_date for item in ordered_cases
+                ),
+                expected_business_keys=seen_business_keys,
+            )
+        finally:
+            connection.rollback()
+
+    observed = _index_observations(live_signals)
+    unexpected_scopes = {
+        (row.base_scheme_id, row.predict_date)
+        for row in live_signals
+        if row.business_key not in seen_business_keys
+    }
+    unexpected_target_scopes = {
+        (row.base_scheme_id, row.target_date)
+        for row in live_signals
+        if row.business_key not in seen_business_keys
+    }
+    readback_actions: list[dict[str, Any]] = []
+    for item in ordered_cases:
+        target = targets[item.registry_scheme_id]
+        rows = observed.get(item.business_key, ())
+        if (
+            (item.base_scheme_id, item.predict_date) in unexpected_scopes
+            or (item.base_scheme_id, item.target_date)
+            in unexpected_target_scopes
+        ):
+            action: Action = "BLOCKED_DATA_CONTRACT"
+            reason = "OBSERVED_SIGNAL_TARGET_DRIFT"
+        elif len(rows) > 1:
+            action = "BLOCKED_DATA_CONTRACT"
+            reason = "DUPLICATE_OBSERVED_BUSINESS_KEY"
+        elif len(rows) == 1:
+            reason = _observation_contract_error(item, target, rows[0])
+            action = "SKIP_PRESENT" if reason is None else "BLOCKED_DATA_CONTRACT"
+            reason = reason or "VALID_LIVE_RESULT_PRESENT"
+        else:
+            action = "GRAY_LIVE_GAP"
+            reason = "LIVE_BUSINESS_KEY_MISSING"
+        readback_actions.append(
+            _action_row(
+                item,
+                target=target,
+                action=action,
+                reason=reason,
+                input_authority=None,
+                business_key_present=bool(rows),
+            )
+        )
+    blocked = any(
+        row["action"] == "BLOCKED_DATA_CONTRACT"
+        for row in readback_actions
+    )
+    return {
+        "schema_version": PLAN_SCHEMA_VERSION,
+        "status": "BLOCKED" if blocked else "READY",
+        "actions": readback_actions,
+    }
 
 
 def read_signal_gap_snapshot(
@@ -477,6 +629,7 @@ def _build_signal_gap_plan(
         else snapshot.live_signals
     )
     observed = _index_observations(scoped_live_signals)
+    blackbox_authority_index = _index_blackbox_gap_authority(snapshot)
     unexpected = tuple(
         row
         for row in scoped_live_signals
@@ -517,6 +670,7 @@ def _build_signal_gap_plan(
             action, reason, input_authority = _blackbox_gap_action(
                 item,
                 snapshot=snapshot,
+                authority_index=blackbox_authority_index,
             )
         actions.append(
             _action_row(
@@ -668,6 +822,7 @@ def _build_signal_gap_range_plan(
         for target in snapshot.registry_targets
     }
     actions: list[dict[str, Any]] = []
+    blackbox_authority_index = _index_blackbox_gap_authority(snapshot)
     for item in snapshot.expected_cases:
         target = targets.get(item.registry_scheme_id)
         if target is None:
@@ -678,6 +833,7 @@ def _build_signal_gap_range_plan(
         action, reason, input_authority = _blackbox_gap_action(
             item,
             snapshot=snapshot,
+            authority_index=blackbox_authority_index,
         )
         actions.append(
             _action_row(
@@ -782,6 +938,7 @@ def _blackbox_gap_action(
     item: ExpectedSignalCase,
     *,
     snapshot: SignalGapSnapshot,
+    authority_index: _BlackboxGapAuthorityIndex | None = None,
 ) -> tuple[Action, str, Mapping[str, Any] | None]:
     if snapshot.databridge_authority_error == "MISSING":
         return (
@@ -802,10 +959,10 @@ def _blackbox_gap_action(
             "DATABRIDGE_CURRENT_MISSING",
             None,
         )
-    matching_cutoffs = tuple(
-        cutoff
-        for cutoff in authority.cutoffs
-        if cutoff.feature_date == item.feature_date
+    index = authority_index or _index_blackbox_gap_authority(snapshot)
+    matching_cutoffs = index.cutoffs_by_feature_date.get(
+        item.feature_date,
+        (),
     )
     if len(matching_cutoffs) != 1:
         return (
@@ -813,9 +970,7 @@ def _blackbox_gap_action(
             "DATABRIDGE_CUTOFF_INVALID",
             None,
         )
-    try:
-        source_identity = blackbox_gray_replay_source_identity(authority)
-    except ValueError:
+    if index.source_identity_invalid or index.source_identity is None:
         return (
             "BLOCKED_DATA_CONTRACT",
             "DATABRIDGE_SOURCE_IDENTITY_INVALID",
@@ -826,9 +981,35 @@ def _blackbox_gap_action(
         "GRAY_LIVE_GAP",
         "LIVE_BUSINESS_KEY_MISSING",
         {
-            **source_identity,
+            **index.source_identity,
             "cutoff": _cutoff_payload(cutoff),
         },
+    )
+
+
+def _index_blackbox_gap_authority(
+    snapshot: SignalGapSnapshot,
+) -> _BlackboxGapAuthorityIndex:
+    authority = snapshot.databridge_authority
+    if authority is None:
+        return _BlackboxGapAuthorityIndex({}, None, False)
+    grouped: dict[str, list[StableDataBridgeCutoff]] = {}
+    for cutoff in authority.cutoffs:
+        grouped.setdefault(cutoff.feature_date, []).append(cutoff)
+    try:
+        source_identity = blackbox_gray_replay_source_identity(authority)
+    except ValueError:
+        source_identity = None
+        invalid = True
+    else:
+        invalid = False
+    return _BlackboxGapAuthorityIndex(
+        {
+            feature_date: tuple(cutoffs)
+            for feature_date, cutoffs in grouped.items()
+        },
+        source_identity,
+        invalid,
     )
 
 
@@ -939,8 +1120,10 @@ def _not_due_action(
     }
 
 
-def _discover_scheme_configs() -> tuple[Any, ...]:
-    return tuple(discover_schemes())
+def _discover_scheme_configs(project_root: Path | None = None) -> tuple[Any, ...]:
+    if project_root is None:
+        return tuple(discover_schemes())
+    return tuple(discover_schemes(Path(project_root).resolve() / "schemes"))
 
 
 def _select_execution_authority(
@@ -1198,9 +1381,30 @@ def _read_live_signals(
     predict_date: str,
     expected_business_keys: set[tuple[str, str, int, str]],
 ) -> tuple[ObservedSignal, ...]:
+    return _read_live_signals_for_scope(
+        connection,
+        targets,
+        predict_dates=(predict_date,),
+        expected_business_keys=expected_business_keys,
+    )
+
+
+def _read_live_signals_for_scope(
+    connection: Any,
+    targets: Sequence[RegistryTarget],
+    *,
+    predict_dates: Sequence[str],
+    expected_business_keys: set[tuple[str, str, int, str]],
+) -> tuple[ObservedSignal, ...]:
     if not targets:
         return ()
     base_ids = sorted({target.base_scheme_id for target in targets})
+    normalized_predict_dates = sorted(set(predict_dates))
+    if not normalized_predict_dates:
+        raise SignalGapPlanError(
+            "DATA_CONTRACT_INVALID",
+            "live signal scope requires predict dates",
+        )
     expected_target_dates = sorted(
         {business_key[3] for business_key in expected_business_keys}
     )
@@ -1224,17 +1428,20 @@ def _read_live_signals(
         LEFT JOIN t_scheme_runs r ON r.run_id = p.run_id
         WHERE p.scheme_id IN :base_scheme_ids
           AND (
-              p.predict_date = :predict_date
+              p.predict_date IN :predict_dates
               {target_date_clause}
           )
         ORDER BY p.scheme_id, p.target_tenor, p.horizon,
                  p.target_date, p.predict_date, p.id
         """
     )
-    bind_parameters = [bindparam("base_scheme_ids", expanding=True)]
+    bind_parameters = [
+        bindparam("base_scheme_ids", expanding=True),
+        bindparam("predict_dates", expanding=True),
+    ]
     parameters: dict[str, Any] = {
         "base_scheme_ids": base_ids,
-        "predict_date": predict_date,
+        "predict_dates": normalized_predict_dates,
     }
     if expected_target_dates:
         bind_parameters.append(
@@ -1263,7 +1470,7 @@ def _read_live_signals(
         row_predict_date = str(row["predict_date"])[:10]
         if (
             business_key not in expected_business_keys
-            and row_predict_date != predict_date
+            and row_predict_date not in normalized_predict_dates
         ):
             continue
         target = target_by_identity.get(business_key[:3])

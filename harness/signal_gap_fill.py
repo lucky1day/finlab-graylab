@@ -14,6 +14,7 @@ from harness.signal_gap_plan import (
     PLAN_SCHEMA_VERSION,
     RANGE_PLAN_SCHEMA_VERSION,
     plan_signal_gaps,
+    verify_signal_gap_fill_readback,
 )
 from scheduler.discovery import load_scheme_config
 from scheduler.executor import (
@@ -25,11 +26,11 @@ from shared.blackbox_v2.contracts import BlackboxRequest
 from shared.blackbox_v2.requests import build_request
 from shared.blackbox_v2.snapshot import CutoffKeys
 from shared.data_bridge.authority import (
-    _normalize_blackbox_gray_replay_source_identity,
+    normalize_blackbox_gray_replay_source_identity,
 )
 from shared.data_bridge.refresh import (
     DataBridgeRefreshConfig,
-    _ensure_private_directory,
+    ensure_private_directory,
 )
 from shared.exclusive_file_lock import (
     ExclusiveFileLock,
@@ -268,7 +269,6 @@ def run_signal_gap_fill(
                 executions=executions,
                 engine=engine,
                 repository=repository,
-                databridge_config=databridge_config,
             )
         try:
             return _complete_single_date(
@@ -476,7 +476,6 @@ def _complete_range(
     executions: Sequence[_Execution],
     engine: Any,
     repository: Any,
-    databridge_config: DataBridgeRefreshConfig,
 ) -> dict[str, Any]:
     payloads = []
     for item in executions:
@@ -528,17 +527,16 @@ def _complete_range(
     for item in executions:
         item.settled = True
         item.committed = True
-    remaining: list[_GapGroup] = []
     try:
-        for item in executions:
-            readback = plan_signal_gaps(
-                engine,
-                predict_date=item.group.predict_date,
-                base_scheme_id=item.group.base_scheme_id,
-                databridge_config=databridge_config,
-            )
-            if _remaining_groups_after_readback((item.group,), readback):
-                remaining.append(item.group)
+        readback = verify_signal_gap_fill_readback(
+            engine,
+            actions=plan["actions"],
+        )
+        remaining = _remaining_groups_after_readback(
+            groups,
+            readback,
+            allow_blocked_actions=True,
+        )
     except Exception as exc:  # noqa: BLE001
         return _report(
             "FAILED",
@@ -704,13 +702,17 @@ def _load_and_validate_configs(
     project_root: Path,
 ) -> dict[tuple[str, str], Any]:
     configs: dict[tuple[str, str], Any] = {}
+    configs_by_base: dict[str, Any] = {}
     for group in groups:
-        cfg = load_scheme_config(
-            project_root
-            / "schemes"
-            / group.base_scheme_id
-            / "config.yaml"
-        )
+        cfg = configs_by_base.get(group.base_scheme_id)
+        if cfg is None:
+            cfg = load_scheme_config(
+                project_root
+                / "schemes"
+                / group.base_scheme_id
+                / "config.yaml"
+            )
+            configs_by_base[group.base_scheme_id] = cfg
         actual = {
             "scheme_id": str(getattr(cfg, "scheme_id", "")),
             "scheme_version": str(getattr(cfg, "scheme_version", "")),
@@ -1172,7 +1174,7 @@ def _normalize_blackbox_action_authority(
     cutoff = authority.get("cutoff")
     if not isinstance(cutoff, Mapping):
         raise ValueError("Blackbox input authority cutoff is missing")
-    source = _normalize_blackbox_gray_replay_source_identity(
+    source = normalize_blackbox_gray_replay_source_identity(
         {key: value for key, value in authority.items() if key != "cutoff"}
     )
     expected_cutoff_fields = {
@@ -1299,10 +1301,17 @@ def _fail_executions(
 def _remaining_groups_after_readback(
     groups: Sequence[_GapGroup],
     readback: Mapping[str, Any],
+    *,
+    allow_blocked_actions: bool = False,
 ) -> list[_GapGroup]:
+    accepted_statuses = (
+        {"READY", "BLOCKED"}
+        if allow_blocked_actions
+        else {"READY"}
+    )
     if (
         readback.get("schema_version") != PLAN_SCHEMA_VERSION
-        or readback.get("status") != "READY"
+        or readback.get("status") not in accepted_statuses
         or not isinstance(readback.get("actions"), list)
     ):
         return list(groups)
@@ -1391,7 +1400,7 @@ def _canonical_json(value: Any) -> str:
 
 def _signal_gap_fill_singleton_lock() -> ExclusiveFileLock:
     lock_root = resolve_runtime_artifact_root() / "signal-gap-fill-locks"
-    _ensure_private_directory(lock_root, label="signal-gap-fill lock root")
+    ensure_private_directory(lock_root, label="signal-gap-fill lock root")
     return ExclusiveFileLock(lock_root / "signal-gap-fill.lock")
 
 
