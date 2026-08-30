@@ -43,6 +43,10 @@ VERSIONED_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
 UNVERSIONED_ASSET_CACHE_CONTROL = "no-cache, must-revalidate"
 logger = logging.getLogger(__name__)
 _REQUEST_ID_PATTERN = re.compile(r"[!-~]{1,128}\Z", flags=re.ASCII)
+_EXCEPTION_CLASS_PATTERN = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]{0,127}\Z",
+    flags=re.ASCII,
+)
 _DASHBOARD_ERROR_UNAVAILABLE = "dashboard_data_unavailable"
 _DASHBOARD_QUERY_ERROR = "dashboard_query_not_allowed"
 _DASHBOARD_SCHEME_NOT_FOUND = "dashboard_scheme_not_found"
@@ -213,6 +217,16 @@ def _request_id(request: Request) -> str:
     return uuid4().hex
 
 
+def _safe_exception_class(exc: BaseException) -> str:
+    """只允许受控 Python 类名进入 Dashboard 失败日志。"""
+    candidate = type(exc).__name__
+    return (
+        candidate
+        if _EXCEPTION_CLASS_PATTERN.fullmatch(candidate)
+        else "Exception"
+    )
+
+
 def _safe_build_diagnostics(snapshot_id: str) -> dict[str, Any]:
     try:
         return dict(dashboard_build_diagnostics(snapshot_id) or {})
@@ -326,6 +340,8 @@ def _dashboard_error_response(
     error_code: str,
     status_code: int,
     route_started_at: float,
+    failure_stage: str | None = None,
+    exception_class: str | None = None,
 ) -> Response:
     encoding_started_at = time.perf_counter()
     raw_body = json.dumps(
@@ -344,27 +360,30 @@ def _dashboard_error_response(
             route_seconds=route_seconds,
         ),
     )
-    _log_dashboard_request(
-        {
-            "request_id": request_id,
-            "snapshot_id": "unavailable",
-            "dashboard_db_ms": None,
-            "dashboard_canonical_ms": None,
-            "dashboard_serialization_ms": None,
-            "request_json_encoding_ms": round(
-                response_encoding_seconds * 1_000,
-                3,
-            ),
-            "request_route_ms": round(route_seconds * 1_000, 3),
-            "scheme_count": None,
-            "live_row_count": None,
-            "backtest_row_count": None,
-            "response_raw_bytes": len(raw_body),
-            "response_budget_gzip_bytes": None,
-            "status": status_code,
-            "error_code": error_code,
-        }
-    )
+    event = {
+        "request_id": request_id,
+        "snapshot_id": "unavailable",
+        "dashboard_db_ms": None,
+        "dashboard_canonical_ms": None,
+        "dashboard_serialization_ms": None,
+        "request_json_encoding_ms": round(
+            response_encoding_seconds * 1_000,
+            3,
+        ),
+        "request_route_ms": round(route_seconds * 1_000, 3),
+        "scheme_count": None,
+        "live_row_count": None,
+        "backtest_row_count": None,
+        "response_raw_bytes": len(raw_body),
+        "response_budget_gzip_bytes": None,
+        "status": status_code,
+        "error_code": error_code,
+    }
+    if failure_stage is not None:
+        event["failure_stage"] = failure_stage
+    if exception_class is not None:
+        event["exception_class"] = exception_class
+    _log_dashboard_request(event)
     return Response(
         content=raw_body,
         status_code=status_code,
@@ -387,8 +406,10 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
             route_started_at=route_started_at,
         )
 
+    failure_stage = "dashboard_engine"
     try:
         engine = get_dashboard_engine()
+        failure_stage = "dashboard_build"
         response_payload = (
             build_factor_lab_dashboard(engine)
             if detail_query is None
@@ -401,18 +422,21 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
                 status_code=404,
                 route_started_at=route_started_at,
             )
+        failure_stage = "dashboard_encoding"
         serialization_started_at = time.perf_counter()
         encoding = encode_canonical_snapshot(response_payload)
         record_dashboard_encoding(str(response_payload["snapshot_id"]), encoding)
         response_serialization_seconds = (
             time.perf_counter() - serialization_started_at
         )
-    except Exception:  # noqa: BLE001 - 公开接口只能返回稳定可恢复状态
+    except Exception as exc:  # noqa: BLE001 - 公开接口只能返回稳定可恢复状态
         return _dashboard_error_response(
             request_id=request_id,
             error_code=_DASHBOARD_ERROR_UNAVAILABLE,
             status_code=503,
             route_started_at=route_started_at,
+            failure_stage=failure_stage,
+            exception_class=_safe_exception_class(exc),
         )
 
     snapshot_id = str(response_payload["snapshot_id"])

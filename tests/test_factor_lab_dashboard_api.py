@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import gzip
 import json
+import random
 import re
 from typing import Any
 
@@ -251,22 +253,64 @@ def test_dashboard_replaces_untrusted_request_id_before_logging(monkeypatch, cap
     assert "forged-log-line" not in caplog.text
 
 
-def test_dashboard_detail_row_budget_boundary() -> None:
-    from backend.factor_lab_dashboard import (
-        DashboardDataError,
-        _validate_canonical_snapshot_budgets,
+@pytest.mark.parametrize("budget", ("raw", "gzip"))
+def test_dashboard_route_enforces_real_encoding_budgets(
+    monkeypatch,
+    caplog,
+    budget: str,
+) -> None:
+    from backend import main
+    from backend.factor_lab_dashboard import MAX_RAW_JSON_BYTES
+
+    payload = _payload(f"oversized-{budget}")
+    payload["padding"] = (
+        "x" * (MAX_RAW_JSON_BYTES + 1)
+        if budget == "raw"
+        else base64.b64encode(
+            random.Random(0).randbytes(200_000)
+        ).decode("ascii")
+    )
+    monkeypatch.setattr(main, "get_dashboard_engine", object)
+    monkeypatch.setattr(
+        main,
+        "build_factor_lab_dashboard",
+        lambda _engine: payload,
     )
 
-    _validate_canonical_snapshot_budgets(
-        {"schemes": [], "snapshot_id": "budget-boundary"},
-        detail_rows=25_000,
-    )
+    with caplog.at_level("INFO", logger="backend.main"):
+        status, _, body, _ = _request(main.app)
 
-    with pytest.raises(
-        DashboardDataError,
-        match="dashboard detail rows exceed budget",
-    ):
-        _validate_canonical_snapshot_budgets(
-            {"schemes": [], "snapshot_id": "budget-boundary"},
-            detail_rows=25_001,
-        )
+    assert status == 503
+    assert json.loads(body) == {"error_code": "dashboard_data_unavailable"}
+    event = caplog.records[-1].dashboard_event
+    assert event["failure_stage"] == "dashboard_encoding"
+    assert event["exception_class"] == "DashboardDataError"
+
+
+def test_dashboard_503_logs_only_safe_failure_diagnostics(
+    monkeypatch,
+    caplog,
+) -> None:
+    from backend import main
+
+    class DatabaseSecretError(RuntimeError):
+        pass
+
+    secret = "mysql://user:password@host/db SELECT private_column"
+
+    def fail(_engine: object) -> dict[str, Any]:
+        raise DatabaseSecretError(secret)
+
+    monkeypatch.setattr(main, "get_dashboard_engine", object)
+    monkeypatch.setattr(main, "build_factor_lab_dashboard", fail)
+
+    with caplog.at_level("INFO", logger="backend.main"):
+        status, _, body, _ = _request(main.app)
+
+    assert status == 503
+    assert json.loads(body) == {"error_code": "dashboard_data_unavailable"}
+    event = caplog.records[-1].dashboard_event
+    assert event["failure_stage"] == "dashboard_build"
+    assert event["exception_class"] == "DatabaseSecretError"
+    assert secret not in caplog.text
+    assert "private_column" not in caplog.text

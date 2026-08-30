@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import create_engine, event, text
 
 from backend.factor_lab_dashboard import (
+    MAX_ACTUAL_SOURCE_ROWS,
+    DashboardDataError,
+    _read_live_actuals,
     build_factor_lab_dashboard,
     build_factor_lab_dashboard_detail,
 )
-from backend.factor_lab_dashboard_semantics import validate_dashboard_payload
+from backend.factor_lab_dashboard_semantics import (
+    live_actual_selector,
+    validate_dashboard_payload,
+)
 
 
 def _engine():
@@ -203,3 +210,141 @@ def test_v4_detail_pushes_month_and_source_into_database_queries() -> None:
         "SELECT MIN(target_date) FROM t_scheme_predictions" in sql
         for sql in statements
     )
+
+
+def test_live_actual_query_reads_exact_scopes_for_all_task_types() -> None:
+    engine = _engine()
+    task_scopes = (
+        ("T+1", "1Y"),
+        ("T+5", "3Y"),
+        ("weekly_point", "5Y"),
+        ("weekly_average", "7Y"),
+        ("monthly", "10Y"),
+        ("monthly_average", "1Y"),
+        ("quarterly_average", "3Y"),
+        ("annual_average", "5Y"),
+    )
+    registry_rows = [
+        {"task_type": task_type, "target_tenor": tenor}
+        for task_type, tenor in task_scopes
+    ]
+    selectors = {
+        task_type: live_actual_selector(task_type)
+        for task_type, _tenor in task_scopes
+    }
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM t_scheme_actuals"))
+        connection.execute(
+            text(
+                """INSERT INTO t_scheme_actuals VALUES
+                ('1Y','2026-06-03',1,1),
+                ('3Y','2026-06-03',-1,-1)"""
+            )
+        )
+        connection.execute(text("DELETE FROM t_scheme_weekly_actuals"))
+        connection.execute(
+            text(
+                """INSERT INTO t_scheme_weekly_actuals VALUES
+                ('5Y','2026-06-05',:point_rule,1),
+                ('7Y','2026-06-05',:average_rule,-1),
+                ('5Y','2026-06-05',:average_rule,0),
+                ('7Y','2026-06-05',:point_rule,0)"""
+            ),
+            {
+                "point_rule": selectors["weekly_point"][1],
+                "average_rule": selectors["weekly_average"][1],
+            },
+        )
+        connection.execute(text("DELETE FROM t_scheme_monthly_actuals"))
+        connection.execute(
+            text(
+                """INSERT INTO t_scheme_monthly_actuals VALUES
+                ('10Y','2026-06-30',:monthly_rule,1)"""
+            ),
+            {"monthly_rule": selectors["monthly"][1]},
+        )
+        connection.execute(text("DELETE FROM t_scheme_period_average_actuals"))
+        connection.execute(
+            text(
+                """INSERT INTO t_scheme_period_average_actuals VALUES
+                ('1Y','2026-06-30',:monthly_average_rule,1),
+                ('3Y','2026-06-30',:quarterly_average_rule,-1),
+                ('5Y','2026-06-30',:annual_average_rule,0),
+                ('1Y','2026-06-30',:quarterly_average_rule,0),
+                ('3Y','2026-06-30',:annual_average_rule,0)"""
+            ),
+            {
+                "monthly_average_rule": selectors["monthly_average"][1],
+                "quarterly_average_rule": selectors["quarterly_average"][1],
+                "annual_average_rule": selectors["annual_average"][1],
+            },
+        )
+
+        rows = _read_live_actuals(connection, registry_rows)
+
+    assert {
+        (
+            str(row["target_tenor"]),
+            str(row["actual_kind"]),
+            str(row["target_rule"]),
+        )
+        for row in rows
+    } == {
+        (tenor, *selectors[task_type])
+        for task_type, tenor in task_scopes
+    }
+    assert len(rows) == len(task_scopes)
+
+
+def test_unrelated_actual_history_does_not_consume_active_scope_budget() -> None:
+    engine = _engine()
+    point_rule = live_actual_selector("weekly_point")[1]
+    unrelated_rows = [
+        ("5Y", "2026-06-06", "unused_weekly_rule", 1)
+    ] * (MAX_ACTUAL_SOURCE_ROWS + 1)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """UPDATE t_scheme_registry
+                SET task_type = 'weekly_point', frequency = 'weekly'"""
+            )
+        )
+        connection.execute(
+            text(
+                """INSERT INTO t_scheme_weekly_actuals VALUES
+                ('5Y','2026-06-06',:point_rule,1)"""
+            ),
+            {"point_rule": point_rule},
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO t_scheme_weekly_actuals VALUES (?, ?, ?, ?)",
+            unrelated_rows,
+        )
+        selected_rows = _read_live_actuals(
+            connection,
+            [{"task_type": "weekly_point", "target_tenor": "5Y"}],
+        )
+
+    payload = build_factor_lab_dashboard(engine)
+
+    validate_dashboard_payload(payload)
+    assert len(selected_rows) == 1
+    assert selected_rows[0]["target_rule"] == point_rule
+
+
+def test_related_actual_history_still_fails_closed_at_source_budget() -> None:
+    engine = _engine()
+    related_rows = [
+        ("5Y", "2026-06-03", 1, 1)
+    ] * MAX_ACTUAL_SOURCE_ROWS
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "INSERT INTO t_scheme_actuals VALUES (?, ?, ?, ?)",
+            related_rows,
+        )
+
+    with pytest.raises(
+        DashboardDataError,
+        match="dataset=live_actuals limit=80000",
+    ):
+        build_factor_lab_dashboard(engine)

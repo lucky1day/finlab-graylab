@@ -41,7 +41,6 @@ from backend.factor_lab_dashboard_semantics import (
 
 SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 MYSQL_SNAPSHOT_SQL = "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY"
-MAX_DETAIL_ROWS = 25_000
 MAX_RAW_JSON_BYTES = 1_500_000
 MAX_GZIP_JSON_BYTES = 100_000
 # These source-row caps are corruption/resource guards, not business pagination.
@@ -52,6 +51,94 @@ MAX_LIVE_PREDICTION_SOURCE_ROWS = 20_000
 MAX_ACTUAL_SOURCE_ROWS = 80_000
 MAX_BACKTEST_RUN_SOURCE_ROWS = 100_000
 MAX_BACKTEST_DETAIL_SOURCE_ROWS = 20_000
+_ACTUAL_SOURCE_KIND_ORDER = (
+    "daily_1d",
+    "daily_5d",
+    "weekly",
+    "monthly",
+    "period_average",
+)
+_ACTUAL_SOURCE_FRAGMENTS = {
+    "daily_1d": """
+        SELECT 'daily_1d' AS actual_kind,
+               tenor AS target_tenor,
+               trade_date AS target_date,
+               'target_date_yield_vs_feature_date_yield' AS target_rule,
+               direction_1d AS actual_direction
+        FROM t_scheme_actuals
+        WHERE tenor IN :daily_1d_tenors
+          AND trade_date >= :history_start_date
+    """,
+    "daily_5d": """
+        SELECT 'daily_5d' AS actual_kind,
+               tenor AS target_tenor,
+               trade_date AS target_date,
+               'target_date_yield_vs_feature_date_yield' AS target_rule,
+               direction_5d AS actual_direction
+        FROM t_scheme_actuals
+        WHERE tenor IN :daily_5d_tenors
+          AND trade_date >= :history_start_date
+    """,
+    "weekly": """
+        SELECT 'weekly' AS actual_kind,
+               tenor AS target_tenor,
+               target_date,
+               target_rule,
+               direction_weekly AS actual_direction
+        FROM t_scheme_weekly_actuals
+        WHERE (tenor, target_rule) IN :weekly_scopes
+          AND target_date >= :history_start_date
+    """,
+    "monthly": """
+        SELECT 'monthly' AS actual_kind,
+               tenor AS target_tenor,
+               target_date,
+               target_rule,
+               direction_monthly AS actual_direction
+        FROM t_scheme_monthly_actuals
+        WHERE (tenor, target_rule) IN :monthly_scopes
+          AND target_date >= :history_start_date
+    """,
+    "period_average": """
+        SELECT 'period_average' AS actual_kind,
+               tenor AS target_tenor,
+               target_date,
+               target_rule,
+               actual_direction
+        FROM t_scheme_period_average_actuals
+        WHERE (tenor, target_rule) IN :period_average_scopes
+          AND target_date >= :history_start_date
+    """,
+}
+_ACTUAL_SOURCE_SCOPE_PARAMS = {
+    "daily_1d": "daily_1d_tenors",
+    "daily_5d": "daily_5d_tenors",
+    "weekly": "weekly_scopes",
+    "monthly": "monthly_scopes",
+    "period_average": "period_average_scopes",
+}
+_ACTUAL_SOURCE_DATE_FILTERS = {
+    "daily_1d": (
+        " AND trade_date >= :target_date_from"
+        " AND trade_date < :target_date_before"
+    ),
+    "daily_5d": (
+        " AND trade_date >= :target_date_from"
+        " AND trade_date < :target_date_before"
+    ),
+    "weekly": (
+        " AND target_date >= :target_date_from"
+        " AND target_date < :target_date_before"
+    ),
+    "monthly": (
+        " AND target_date >= :target_date_from"
+        " AND target_date < :target_date_before"
+    ),
+    "period_average": (
+        " AND target_date >= :target_date_from"
+        " AND target_date < :target_date_before"
+    ),
+}
 logger = logging.getLogger(__name__)
 _DIAGNOSTICS_LIMIT = 8
 _diagnostics_lock = Lock()
@@ -853,79 +940,46 @@ def _read_live_actuals(
     *,
     target_date_range: tuple[str, str] | None = None,
 ) -> list[Mapping[str, Any]]:
-    target_tenors = sorted({str(row["target_tenor"]) for row in registry_rows})
-    if not target_tenors:
+    active_scopes = sorted(
+        {
+            (
+                str(row["target_tenor"]),
+                *live_actual_selector(row.get("task_type")),
+            )
+            for row in registry_rows
+        }
+    )
+    if not active_scopes:
         return []
-    daily_date_filter = (
-        " AND trade_date >= :target_date_from"
-        " AND trade_date < :target_date_before"
-        if target_date_range is not None
-        else ""
-    )
-    target_date_filter = (
-        " AND target_date >= :target_date_from"
-        " AND target_date < :target_date_before"
-        if target_date_range is not None
-        else ""
-    )
-    statement = text(
-        f"""
-        SELECT 'daily_1d' AS actual_kind,
-               tenor AS target_tenor,
-               trade_date AS target_date,
-               'target_date_yield_vs_feature_date_yield' AS target_rule,
-               direction_1d AS actual_direction
-        FROM t_scheme_actuals
-        WHERE tenor IN :target_tenors
-          AND trade_date >= :history_start_date
-          {daily_date_filter}
-        UNION ALL
-        SELECT 'daily_5d' AS actual_kind,
-               tenor AS target_tenor,
-               trade_date AS target_date,
-               'target_date_yield_vs_feature_date_yield' AS target_rule,
-               direction_5d AS actual_direction
-        FROM t_scheme_actuals
-        WHERE tenor IN :target_tenors
-          AND trade_date >= :history_start_date
-          {daily_date_filter}
-        UNION ALL
-        SELECT 'weekly' AS actual_kind,
-               tenor AS target_tenor,
-               target_date,
-               target_rule,
-               direction_weekly AS actual_direction
-        FROM t_scheme_weekly_actuals
-        WHERE tenor IN :target_tenors
-          AND target_date >= :history_start_date
-          {target_date_filter}
-        UNION ALL
-        SELECT 'monthly' AS actual_kind,
-               tenor AS target_tenor,
-               target_date,
-               target_rule,
-               direction_monthly AS actual_direction
-        FROM t_scheme_monthly_actuals
-        WHERE tenor IN :target_tenors
-          AND target_date >= :history_start_date
-          {target_date_filter}
-        UNION ALL
-        SELECT 'period_average' AS actual_kind,
-               tenor AS target_tenor,
-               target_date,
-               target_rule,
-               actual_direction
-        FROM t_scheme_period_average_actuals
-        WHERE tenor IN :target_tenors
-          AND target_date >= :history_start_date
-          {target_date_filter}
-        LIMIT :dashboard_source_limit
-        """
-    ).bindparams(bindparam("target_tenors", expanding=True))
+    scopes_by_kind: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for target_tenor, actual_kind, target_rule in active_scopes:
+        scopes_by_kind[actual_kind].append((target_tenor, target_rule))
+
+    fragments: list[str] = []
+    expanding_params = []
     params: dict[str, Any] = {
-        "target_tenors": target_tenors,
         "history_start_date": FACTOR_LAB_HISTORY_START_DATE,
     }
+    for actual_kind in _ACTUAL_SOURCE_KIND_ORDER:
+        scopes = scopes_by_kind.get(actual_kind)
+        if not scopes:
+            continue
+        fragment = _ACTUAL_SOURCE_FRAGMENTS[actual_kind]
+        if target_date_range is not None:
+            fragment += _ACTUAL_SOURCE_DATE_FILTERS[actual_kind]
+        fragments.append(fragment)
+        param_name = _ACTUAL_SOURCE_SCOPE_PARAMS[actual_kind]
+        expanding_params.append(bindparam(param_name, expanding=True))
+        params[param_name] = (
+            sorted({target_tenor for target_tenor, _rule in scopes})
+            if actual_kind in {"daily_1d", "daily_5d"}
+            else scopes
+        )
+
+    statement = text(
+        "\nUNION ALL\n".join(fragments)
+        + "\nLIMIT :dashboard_source_limit"
+    ).bindparams(*expanding_params)
     if target_date_range is not None:
         params["target_date_from"], params["target_date_before"] = (
             target_date_range
@@ -1167,34 +1221,6 @@ def encode_canonical_snapshot(payload: Mapping[str, Any]) -> SnapshotEncoding:
         raw_size=len(raw_body),
         gzip_size=len(gzip_body),
     )
-
-
-def _validate_canonical_snapshot_budgets(
-    payload: Mapping[str, Any],
-    *,
-    detail_rows: int | None = None,
-) -> SnapshotEncoding:
-    if detail_rows is None:
-        detail_rows = (
-            len(payload.get("rows", []))
-            if payload.get("representation") == "detail"
-            else 0
-        )
-    if detail_rows > MAX_DETAIL_ROWS:
-        raise DashboardDataError(
-            "dashboard detail rows exceed budget: "
-            f"rows={detail_rows} limit={MAX_DETAIL_ROWS}"
-        )
-
-    encoding = encode_canonical_snapshot(payload)
-    logger.info(
-        "Built factor lab dashboard snapshot_id=%s detail_rows=%s raw_bytes=%s gzip_bytes=%s",
-        payload["snapshot_id"],
-        detail_rows,
-        encoding.raw_size,
-        encoding.gzip_size,
-    )
-    return encoding
 
 
 def _json_object(value: Any) -> dict[str, Any]:
