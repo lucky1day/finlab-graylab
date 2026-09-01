@@ -6,6 +6,7 @@ from sqlalchemy import create_engine, event, text
 from backend.factor_lab_dashboard import (
     MAX_ACTUAL_SOURCE_ROWS,
     DashboardDataError,
+    _phase_ranges,
     _read_live_actuals,
     build_factor_lab_dashboard,
     build_factor_lab_dashboard_detail,
@@ -141,6 +142,55 @@ def test_v4_summary_aggregates_rows_and_reads_owner() -> None:
     assert sum(
         "FROM t_scheme_predictions" in sql for sql in statements
     ) == 1
+
+
+def test_phase_ranges_use_date_extrema_and_stable_phase_order() -> None:
+    rows = [
+        {
+            "prediction_phase": "scheduled_live",
+            "predict_date": "2026-06-05",
+            "target_date": "2026-06-09",
+        },
+        {
+            "prediction_phase": "gray_live",
+            "predict_date": "2026-05-03",
+            "target_date": "2026-05-07",
+        },
+        {
+            "prediction_phase": "scheduled_live",
+            "predict_date": "2026-06-02",
+            "target_date": "2026-06-04",
+        },
+        {
+            "prediction_phase": "ignored",
+            "predict_date": "not-a-date",
+            "target_date": "not-a-date",
+        },
+        {
+            "prediction_phase": "gray_live",
+            "predict_date": "2026-05-01",
+            "target_date": "2026-05-08",
+        },
+    ]
+
+    assert _phase_ranges(rows) == [
+        {
+            "prediction_phase": "gray_live",
+            "start_predict_date": "2026-05-01",
+            "end_predict_date": "2026-05-03",
+            "start_target_date": "2026-05-07",
+            "end_target_date": "2026-05-08",
+            "rows": 2,
+        },
+        {
+            "prediction_phase": "scheduled_live",
+            "start_predict_date": "2026-06-02",
+            "end_predict_date": "2026-06-05",
+            "start_target_date": "2026-06-04",
+            "end_target_date": "2026-06-09",
+            "rows": 2,
+        },
+    ]
 
 
 def test_v4_detail_reads_only_requested_active_scheme_month_and_source() -> None:

@@ -582,21 +582,21 @@ def _phase_ranges(rows: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
         phase_rows = [row for row in rows if row.get("prediction_phase") == phase]
         if not phase_rows:
             continue
-        predict_dates = sorted(
+        predict_dates = [
             _iso_date(row.get("predict_date"), field="live predict_date")
             for row in phase_rows
-        )
-        target_dates = sorted(
+        ]
+        target_dates = [
             _iso_date(row.get("target_date"), field="live target_date")
             for row in phase_rows
-        )
+        ]
         ranges.append(
             {
                 "prediction_phase": phase,
-                "start_predict_date": predict_dates[0],
-                "end_predict_date": predict_dates[-1],
-                "start_target_date": target_dates[0],
-                "end_target_date": target_dates[-1],
+                "start_predict_date": min(predict_dates),
+                "end_predict_date": max(predict_dates),
+                "start_target_date": min(target_dates),
+                "end_target_date": max(target_dates),
                 "rows": len(phase_rows),
             }
         )
