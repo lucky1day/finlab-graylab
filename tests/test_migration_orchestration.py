@@ -4,7 +4,10 @@ from contextlib import nullcontext
 from dataclasses import FrozenInstanceError
 import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import ANY, Mock, patch
 
@@ -24,6 +27,53 @@ from scripts import apply_migrations
 
 
 EXPECTED_SERVER_UUID = "12345678-1234-1234-1234-123456789abc"
+
+
+def test_cli_mode_table_is_complete_and_unique() -> None:
+    modes = apply_migrations._MIGRATION_MODES
+    assert [mode.option for mode in modes] == [
+        "--inspect-applying-017",
+        "--recover-applying-017",
+        "--inspect-applying-018",
+        "--recover-applying-018",
+        "--inspect-applying-019",
+        "--recover-applying-019",
+        "--inspect-applying-021",
+        "--recover-applying-021",
+    ]
+    assert len({mode.option for mode in modes}) == len(modes)
+    assert len({mode.dest for mode in modes}) == len(modes)
+    assert len({mode.handler_name for mode in modes}) == len(modes)
+    for mode in modes:
+        version = mode.option.rsplit("-", 1)[1]
+        assert mode.dest == mode.option.removeprefix("--").replace("-", "_")
+        assert mode.action in {"inspect", "recover"}
+        assert mode.handler_name == (
+            f"{mode.action}_applying_migration_{version}"
+        )
+
+
+def test_cli_help_matches_reviewed_fixture() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            str(project_root / "scripts" / "apply_migrations.py"),
+            "--help",
+        ],
+        cwd=project_root,
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "COLUMNS": "80"},
+    )
+    expected = (
+        project_root / "tests" / "fixtures" / "apply_migrations_help.txt"
+    ).read_text(encoding="utf-8")
+
+    assert completed.stdout == expected
+    assert completed.stderr == ""
 
 
 @pytest.mark.parametrize("spec", RECOVERY_SPECS)
@@ -75,6 +125,7 @@ def test_complete_recovery_marks_history_without_replay(spec) -> None:
         }
     )
     owner = Mock()
+    owner.execute.return_value.scalar_one.return_value = 1
     with (
         patch(
             "migrations.runner.validate_release_migration_manifest",
@@ -96,7 +147,7 @@ def test_complete_recovery_marks_history_without_replay(spec) -> None:
         )
 
     replay.assert_not_called()
-    mark_applied.assert_called_once_with(ANY, target)
+    mark_applied.assert_called_once_with(owner, target)
     assert result == {
         "recovery_outcome": "APPLIED",
         "initial_classification": "COMPLETE",
@@ -131,6 +182,7 @@ def test_partial_recovery_requires_complete_readback_before_marking(spec) -> Non
         ]
     )
     owner = Mock()
+    owner.execute.return_value.scalar_one.return_value = 1
     with (
         patch(
             "migrations.runner.validate_release_migration_manifest",
@@ -158,6 +210,7 @@ def test_partial_recovery_requires_complete_readback_before_marking(spec) -> Non
     replay.assert_called_once_with(
         ANY,
         [(target.path, target.statements)],
+        owner_connection=owner,
     )
     assert owner.rollback.call_count == 2
     mark_applied.assert_not_called()

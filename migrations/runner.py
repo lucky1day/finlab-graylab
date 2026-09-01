@@ -5119,6 +5119,23 @@ def _read_migration_history(
     )
 
 
+def _assert_migration_owner_lock_held(connection: object) -> None:
+    """确认 migration named lock 仍由当前 owner connection 持有。"""
+    owned = int(
+        connection.execute(
+            text(
+                "SELECT IS_USED_LOCK(:lock_name) = CONNECTION_ID()"
+            ),
+            {"lock_name": MIGRATION_HISTORY_LOCK},
+        ).scalar_one()
+        or 0
+    )
+    if owned != 1:
+        raise MigrationHistoryError(
+            "migration owner lock ownership check failed"
+        )
+
+
 @contextmanager
 def _migration_owner_connection(
     engine: object,
@@ -5149,16 +5166,24 @@ def _migration_owner_connection(
             )
         body_error: BaseException | None = None
         try:
+            _assert_migration_owner_lock_held(connection)
             yield connection
         except BaseException as exc:
             body_error = exc
             raise
         finally:
             try:
-                connection.execute(
-                    text("SELECT RELEASE_LOCK(:lock_name)"),
-                    {"lock_name": MIGRATION_HISTORY_LOCK},
+                released = int(
+                    connection.execute(
+                        text("SELECT RELEASE_LOCK(:lock_name)"),
+                        {"lock_name": MIGRATION_HISTORY_LOCK},
+                    ).scalar_one()
+                    or 0
                 )
+                if released != 1:
+                    raise MigrationHistoryError(
+                        "migration owner lock release failed"
+                    )
             except BaseException as release_error:
                 if body_error is None:
                     raise
@@ -5313,12 +5338,15 @@ def _recover_applying_migration(
             rollback = getattr(owner_connection, "rollback", None)
             if callable(rollback):
                 rollback()
+            _assert_migration_owner_lock_held(owner_connection)
             _execute_prepared_migration_files(
                 engine,
                 [(target.path, target.statements)],
+                owner_connection=owner_connection,
             )
             if callable(rollback):
                 rollback()
+            _assert_migration_owner_lock_held(owner_connection)
             completed = read_inspection(owner_connection, manifest)
             if completed.get("classification") != "COMPLETE":
                 raise MigrationPartialApplyError(
@@ -5328,7 +5356,8 @@ def _recover_applying_migration(
             raise MigrationHistoryError(
                 spec.unknown_classification_prefix + repr(classification)
             )
-        _mark_migration_applied(engine, target)
+        _assert_migration_owner_lock_held(owner_connection)
+        _mark_migration_applied(owner_connection, target)
         return {
             "recovery_outcome": "APPLIED",
             "initial_classification": classification,
@@ -6482,7 +6511,7 @@ def _legacy_domain_table_count(connection: object) -> int:
 
 
 def _bootstrap_legacy_migration_history(
-    engine: object,
+    owner_connection: object,
     manifest: list[PreparedMigration],
 ) -> list[Mapping[str, object]]:
     baseline = [
@@ -6494,10 +6523,15 @@ def _bootstrap_legacy_migration_history(
         raise MigrationHistoryError(
             "legacy baseline bootstrap requires exact migrations 001..016"
         )
-    with engine.begin() as connection:
-        preflight_migration_session(connection)
+    rollback = getattr(owner_connection, "rollback", None)
+    commit = getattr(owner_connection, "commit", None)
+    if callable(rollback):
+        rollback()
+    try:
+        preflight_migration_session(owner_connection)
         for migration in baseline:
-            connection.execute(
+            _assert_migration_owner_lock_held(owner_connection)
+            owner_connection.execute(
                 text(
                     """
                     INSERT INTO t_schema_migrations (
@@ -6525,6 +6559,12 @@ def _bootstrap_legacy_migration_history(
                     "sha256": migration.sha256,
                 },
             )
+        if callable(commit):
+            commit()
+    except BaseException:
+        if callable(rollback):
+            rollback()
+        raise
     return [
         {
             "version": migration.version,
@@ -6538,7 +6578,6 @@ def _bootstrap_legacy_migration_history(
 
 
 def _load_or_bootstrap_migration_history(
-    engine: object,
     owner_connection: object,
     manifest: list[PreparedMigration],
 ) -> list[Mapping[str, object]]:
@@ -6560,7 +6599,10 @@ def _load_or_bootstrap_migration_history(
             _validate_migration_history_schema(
                 _read_migration_history_schema(owner_connection)
             )
-        return _bootstrap_legacy_migration_history(engine, manifest)
+        return _bootstrap_legacy_migration_history(
+            owner_connection,
+            manifest,
+        )
 
     if not history_exists:
         _create_migration_history_table(owner_connection)
@@ -6571,12 +6613,17 @@ def _load_or_bootstrap_migration_history(
 
 
 def _mark_migration_applying(
-    engine: object,
+    owner_connection: object,
     migration: PreparedMigration,
 ) -> None:
-    with engine.begin() as connection:
-        preflight_migration_session(connection)
-        connection.execute(
+    rollback = getattr(owner_connection, "rollback", None)
+    commit = getattr(owner_connection, "commit", None)
+    if callable(rollback):
+        rollback()
+    try:
+        _assert_migration_owner_lock_held(owner_connection)
+        preflight_migration_session(owner_connection)
+        owner_connection.execute(
             text(
                 """
                 INSERT INTO t_schema_migrations (
@@ -6604,15 +6651,26 @@ def _mark_migration_applying(
                 "sha256": migration.sha256,
             },
         )
+        if callable(commit):
+            commit()
+    except BaseException:
+        if callable(rollback):
+            rollback()
+        raise
 
 
 def _mark_migration_applied(
-    engine: object,
+    owner_connection: object,
     migration: PreparedMigration,
 ) -> None:
-    with engine.begin() as connection:
-        preflight_migration_session(connection)
-        result = connection.execute(
+    rollback = getattr(owner_connection, "rollback", None)
+    commit = getattr(owner_connection, "commit", None)
+    if callable(rollback):
+        rollback()
+    try:
+        _assert_migration_owner_lock_held(owner_connection)
+        preflight_migration_session(owner_connection)
+        result = owner_connection.execute(
             text(
                 """
                 UPDATE t_schema_migrations
@@ -6635,11 +6693,44 @@ def _mark_migration_applied(
                 "migration APPLYING completion fence rejected: "
                 f"{migration.path.name}"
             )
+        if callable(commit):
+            commit()
+    except BaseException:
+        if callable(rollback):
+            rollback()
+        raise
+
+
+@contextmanager
+def _migration_execution_connection(
+    engine: object,
+    owner_connection: object | None,
+):
+    """为 migration 执行提供持锁 owner 或原有独立事务连接。"""
+    if owner_connection is None:
+        with engine.begin() as connection:
+            yield connection
+        return
+    rollback = getattr(owner_connection, "rollback", None)
+    commit = getattr(owner_connection, "commit", None)
+    if callable(rollback):
+        rollback()
+    _assert_migration_owner_lock_held(owner_connection)
+    try:
+        yield owner_connection
+        if callable(commit):
+            commit()
+    except BaseException:
+        if callable(rollback):
+            rollback()
+        raise
 
 
 def _execute_prepared_migration_files(
     engine: object,
     prepared: Iterable[tuple[Path, Iterable[str]]],
+    *,
+    owner_connection: object | None = None,
 ) -> None:
     """执行已解析文件；只由 history runner 或 parser 测试入口调用。"""
     for path, raw_statements in prepared:
@@ -6658,7 +6749,10 @@ def _execute_prepared_migration_files(
         ddl_attempted = False
         execution_error: BaseException | None = None
         try:
-            with engine.begin() as connection:
+            with _migration_execution_connection(
+                engine,
+                owner_connection,
+            ) as connection:
                 mysql_session = (
                     getattr(connection.dialect, "name", None)
                     == "mysql"
@@ -6701,6 +6795,8 @@ def _execute_prepared_migration_files(
                         allow_missing=True,
                     )
                 for statement in statements:
+                    if owner_connection is not None:
+                        _assert_migration_owner_lock_held(connection)
                     execution_started = True
                     if mysql_session and _is_ddl_statement(statement):
                         ddl_attempted = True
@@ -6711,7 +6807,10 @@ def _execute_prepared_migration_files(
         postcondition_error: BaseException | None = None
         if daily_ledger and mysql_session and execution_started:
             try:
-                with engine.begin() as connection:
+                with _migration_execution_connection(
+                    engine,
+                    owner_connection,
+                ) as connection:
                     preflight_migration_session(
                         connection,
                         require_reviewed_constraint_namespace=True,
@@ -6731,7 +6830,10 @@ def _execute_prepared_migration_files(
             and execution_started
         ):
             try:
-                with engine.begin() as connection:
+                with _migration_execution_connection(
+                    engine,
+                    owner_connection,
+                ) as connection:
                     preflight_migration_session(connection)
                     classification = (
                         _classify_schedule_run_started_at_shape(
@@ -6752,7 +6854,10 @@ def _execute_prepared_migration_files(
             and execution_started
         ):
             try:
-                with engine.begin() as connection:
+                with _migration_execution_connection(
+                    engine,
+                    owner_connection,
+                ) as connection:
                     preflight_migration_session(connection)
                     classification = (
                         _classify_serving_pointer_retirement_state(
@@ -6770,7 +6875,10 @@ def _execute_prepared_migration_files(
                 postcondition_error = exc
         if period_average_actuals and mysql_session and execution_started:
             try:
-                with engine.begin() as connection:
+                with _migration_execution_connection(
+                    engine,
+                    owner_connection,
+                ) as connection:
                     preflight_migration_session(connection)
                     _validate_period_average_actuals_schema(
                         _read_period_average_actuals_schema(connection),
@@ -6780,7 +6888,10 @@ def _execute_prepared_migration_files(
                 postcondition_error = exc
         if registry_owner and mysql_session and execution_started:
             try:
-                with engine.begin() as connection:
+                with _migration_execution_connection(
+                    engine,
+                    owner_connection,
+                ) as connection:
                     preflight_migration_session(connection)
                     _validate_registry_owner_schema(
                         _read_registry_owner_schema(connection),
@@ -6826,24 +6937,30 @@ def apply_pending_migration_files(
             )
             return
         history = _load_or_bootstrap_migration_history(
-            engine,
             owner_connection,
             manifest,
         )
         pending = select_pending_migrations(manifest, history)
         for migration in pending:
             if _is_registry_owner_migration(migration.path):
-                with engine.connect() as preflight_connection:
-                    preflight_migration_session(preflight_connection)
-                    _classify_registry_owner_recovery_state(
-                        _read_registry_owner_recovery_state(
-                            preflight_connection
-                        ),
-                        authority=_registry_owner_authority(migration),
-                    )
-            _mark_migration_applying(engine, migration)
+                rollback = getattr(owner_connection, "rollback", None)
+                if callable(rollback):
+                    rollback()
+                _assert_migration_owner_lock_held(owner_connection)
+                preflight_migration_session(owner_connection)
+                _classify_registry_owner_recovery_state(
+                    _read_registry_owner_recovery_state(
+                        owner_connection
+                    ),
+                    authority=_registry_owner_authority(migration),
+                )
+            _assert_migration_owner_lock_held(owner_connection)
+            _mark_migration_applying(owner_connection, migration)
+            _assert_migration_owner_lock_held(owner_connection)
             _execute_prepared_migration_files(
                 engine,
                 [(migration.path, migration.statements)],
+                owner_connection=owner_connection,
             )
-            _mark_migration_applied(engine, migration)
+            _assert_migration_owner_lock_held(owner_connection)
+            _mark_migration_applied(owner_connection, migration)

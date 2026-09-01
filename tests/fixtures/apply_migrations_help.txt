@@ -1,0 +1,48 @@
+usage: apply_migrations.py [-h]
+                           [--inspect-applying-017 | --recover-applying-017 | --inspect-applying-018 | --recover-applying-018 | --inspect-applying-019 | --recover-applying-019 | --inspect-applying-021 | --recover-applying-021]
+                           [--apply] [--state-digest STATE_DIGEST]
+                           [--expected-database-name EXPECTED_DATABASE_NAME]
+                           [--expected-server-uuid EXPECTED_SERVER_UUID]
+
+Apply or inspect Bond Factor Lab schema migrations. Write paths require
+explicit --apply authorization.
+
+options:
+  -h, --help            show this help message and exit
+  --inspect-applying-017
+                        connect to the live DB and classify an interrupted
+                        migration 017 using SELECT plus a named advisory lock
+                        only; no DDL/DML
+  --recover-applying-017
+                        recover migration 017 using --apply and the exact
+                        digest from a prior read-only inspection
+  --inspect-applying-018
+                        connect to the live DB and classify an interrupted
+                        migration 018 using SELECT plus a named advisory lock
+                        only; no DDL/DML
+  --recover-applying-018
+                        recover migration 018 using --apply and the exact
+                        digest from a prior read-only inspection
+  --inspect-applying-019
+                        connect to the live DB and classify an interrupted
+                        migration 019 using SELECT plus a named advisory lock
+                        only; no DDL/DML
+  --recover-applying-019
+                        recover migration 019 using --apply and the exact
+                        digest from a prior read-only inspection
+  --inspect-applying-021
+                        connect to the live DB and classify an interrupted
+                        migration 021 using SELECT plus a named advisory lock
+                        only; no DDL/DML
+  --recover-applying-021
+                        recover migration 021 using --apply and the exact
+                        digest from a prior read-only inspection
+  --apply               explicitly authorize a database-changing mode
+  --state-digest STATE_DIGEST
+                        canonical 64-hex digest required by recovery
+  --expected-database-name EXPECTED_DATABASE_NAME
+                        exact DATABASE() value required by database-changing
+                        modes
+  --expected-server-uuid EXPECTED_SERVER_UUID
+                        exact lowercase canonical @@server_uuid required by
+                        writes

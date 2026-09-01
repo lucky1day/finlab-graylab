@@ -14,6 +14,7 @@ import pytest
 from migrations.runner import (
     MIGRATIONS_DIR,
     MigrationPreflightError,
+    _execute_prepared_migration_files,
     _migration_owner_connection,
     _registry_owner_authority,
     _show_create_mentions_serving_pointer,
@@ -38,10 +39,14 @@ class _LockConnection:
         *,
         dialect_name: str = "mysql",
         acquired: int = 1,
+        owned: int | None = 1,
+        released: int | None = 1,
         release_error: BaseException | None = None,
     ) -> None:
         self.dialect = SimpleNamespace(name=dialect_name)
         self.acquired = acquired
+        self.owned = owned
+        self.released = released
         self.release_error = release_error
         self.statements: list[str] = []
 
@@ -50,8 +55,15 @@ class _LockConnection:
         self.statements.append(sql)
         if "GET_LOCK" in sql:
             return _LockResult(self.acquired)
+        if "IS_USED_LOCK" in sql:
+            return _LockResult(self.owned)
+        if "LOSE_OWNER_FOR_TEST" in sql:
+            self.owned = 0
+            return _LockResult(1)
         if "RELEASE_LOCK" in sql and self.release_error is not None:
             raise self.release_error
+        if "RELEASE_LOCK" in sql:
+            return _LockResult(self.released)
         return _LockResult(1)
 
 
@@ -86,6 +98,25 @@ def test_migration_owner_lock_releases_after_success() -> None:
             pass
 
     assert sum("GET_LOCK" in sql for sql in connection.statements) == 1
+    assert sum("RELEASE_LOCK" in sql for sql in connection.statements) == 1
+
+
+@pytest.mark.parametrize("owned", [0, None])
+def test_migration_owner_lock_rejects_lost_ownership(
+    owned: int | None,
+) -> None:
+    connection = _LockConnection(owned=owned)
+    with (
+        patch("migrations.runner.preflight_migration_session"),
+        pytest.raises(
+            MigrationPreflightError,
+            match="migration owner lock ownership check failed",
+        ),
+    ):
+        with _migration_owner_connection(_LockEngine(connection)):
+            pytest.fail("lock body must not run after ownership loss")
+
+    assert sum("IS_USED_LOCK" in sql for sql in connection.statements) == 1
     assert sum("RELEASE_LOCK" in sql for sql in connection.statements) == 1
 
 
@@ -139,6 +170,71 @@ def test_migration_owner_lock_reports_release_failure_after_success() -> None:
             pass
 
     assert raised.value is release_error
+
+
+@pytest.mark.parametrize("released", [0, None])
+def test_migration_owner_lock_rejects_non_owner_release_result(
+    released: int | None,
+) -> None:
+    connection = _LockConnection(released=released)
+    with (
+        patch("migrations.runner.preflight_migration_session"),
+        pytest.raises(
+            MigrationPreflightError,
+            match="migration owner lock release failed",
+        ),
+    ):
+        with _migration_owner_connection(_LockEngine(connection)):
+            pass
+
+
+def test_migration_owner_lock_preserves_body_when_release_result_fails() -> None:
+    body_error = RuntimeError("migration body failed")
+    connection = _LockConnection(released=0)
+    with (
+        patch("migrations.runner.preflight_migration_session"),
+        pytest.raises(RuntimeError, match="migration body failed") as raised,
+    ):
+        with _migration_owner_connection(_LockEngine(connection)):
+            raise body_error
+
+    assert raised.value is body_error
+    assert raised.value.__notes__ == [
+        "migration owner lock release failed: MigrationHistoryError: "
+        "migration owner lock release failed"
+    ]
+
+
+def test_migration_executor_stops_before_next_statement_after_owner_loss() -> None:
+    connection = _LockConnection()
+    with (
+        patch("migrations.runner.preflight_migration_session"),
+        pytest.raises(
+            MigrationPreflightError,
+            match="migration owner lock ownership check failed",
+        ),
+    ):
+        _execute_prepared_migration_files(
+            object(),
+            [
+                (
+                    Path("999_owner_loss_test.sql"),
+                    (
+                        "SELECT 'LOSE_OWNER_FOR_TEST'",
+                        "CREATE TABLE forbidden_after_owner_loss (id INT)",
+                    ),
+                )
+            ],
+            owner_connection=connection,
+        )
+
+    assert any(
+        "LOSE_OWNER_FOR_TEST" in sql for sql in connection.statements
+    )
+    assert all(
+        "forbidden_after_owner_loss" not in sql
+        for sql in connection.statements
+    )
 
 
 def test_migration_owner_lock_preserves_body_failure_when_release_fails() -> None:
