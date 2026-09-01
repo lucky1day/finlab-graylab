@@ -861,15 +861,20 @@ def _read_live_predictions(
         }
     )
     params: dict[str, Any] = {}
-    filters: list[str] = []
+    scope_placeholders: list[str] = []
     for index, (base_scheme_id, target_tenor) in enumerate(pairs):
-        filters.append(
-            f"(scheme_id = :base_scheme_id_{index} "
-            f"AND target_tenor = :target_tenor_{index})"
+        scope_placeholders.append(
+            f"(:base_scheme_id_{index}, :target_tenor_{index})"
         )
         params[f"base_scheme_id_{index}"] = base_scheme_id
         params[f"target_tenor_{index}"] = target_tenor
-    where_clause = " OR ".join(filters) if filters else "1 = 0"
+    where_clause = (
+        "(scheme_id, target_tenor) IN ("
+        + ", ".join(scope_placeholders)
+        + ")"
+        if scope_placeholders
+        else "1 = 0"
+    )
     date_filter = (
         " AND target_date >= :target_date_from"
         " AND target_date < :target_date_before"
@@ -886,7 +891,7 @@ def _read_live_predictions(
                feature_date, target_date, prediction_phase,
                predicted_direction, extra
         FROM t_scheme_predictions
-        WHERE ({where_clause}){date_filter}
+        WHERE {where_clause}{date_filter}
         ORDER BY target_date, predict_date, id
         LIMIT :dashboard_source_limit
         """

@@ -8,6 +8,7 @@ from backend.factor_lab_dashboard import (
     DashboardDataError,
     _phase_ranges,
     _read_live_actuals,
+    _read_live_predictions,
     build_factor_lab_dashboard,
     build_factor_lab_dashboard_detail,
 )
@@ -191,6 +192,43 @@ def test_phase_ranges_use_date_extrema_and_stable_phase_order() -> None:
             "rows": 2,
         },
     ]
+
+
+def test_live_prediction_query_uses_one_tuple_scope_predicate() -> None:
+    engine = _engine()
+    statements: list[str] = []
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def _capture_statement(
+        _connection, _cursor, statement, _parameters, _context, _many
+    ) -> None:
+        statements.append(" ".join(statement.split()))
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """INSERT INTO t_scheme_predictions VALUES
+                (2,'another_daily','10Y',1,'2026-06-01','2026-05-29',
+                 '2026-06-02','scheduled_live',-1,'{}')"""
+            )
+        )
+        rows = _read_live_predictions(
+            connection,
+            [
+                {"base_scheme_id": "demo_daily", "target_tenor": "5Y"},
+                {"base_scheme_id": "another_daily", "target_tenor": "10Y"},
+            ],
+        )
+
+    query = next(
+        sql
+        for sql in statements
+        if "SELECT id, scheme_id" in sql
+        and "FROM t_scheme_predictions" in sql
+    )
+    assert "WHERE (scheme_id, target_tenor) IN ((?, ?), (?, ?))" in query
+    assert " OR " not in query
+    assert [int(row["id"]) for row in rows] == [2, 1]
 
 
 def test_v4_detail_reads_only_requested_active_scheme_month_and_source() -> None:
