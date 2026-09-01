@@ -1077,7 +1077,7 @@ def _process_group_rss_bytes(pid: int) -> int:
     try:
         process_group = os.getpgid(pid)
         completed = subprocess.run(
-            ["/bin/ps", "-axo", "pgid=,rss="],
+            ["/bin/ps", "-o", "pgid=,rss=", "-g", str(process_group)],
             check=True,
             capture_output=True,
             text=True,

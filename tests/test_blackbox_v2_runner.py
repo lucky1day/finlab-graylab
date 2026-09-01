@@ -12,6 +12,46 @@ from shared.blackbox_v2.contracts import BlackboxMetadata, BlackboxRequest
 
 
 class BlackboxV2RunnerTests(unittest.TestCase):
+    def test_process_group_rss_queries_only_the_target_group(self) -> None:
+        from scheduler import blackbox_v2_runner as runner
+
+        completed = SimpleNamespace(
+            stdout="77 100\n77 200\n78 500\ninvalid\n"
+        )
+        with (
+            patch.object(runner.os, "getpgid", return_value=77),
+            patch.object(
+                runner.subprocess,
+                "run",
+                return_value=completed,
+            ) as run,
+        ):
+            rss_bytes = runner._process_group_rss_bytes(1234)
+
+        self.assertEqual(rss_bytes, 300 * 1024)
+        run.assert_called_once_with(
+            ["/bin/ps", "-o", "pgid=,rss=", "-g", "77"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+            env={"LANG": "C", "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+        )
+
+    def test_process_group_rss_remains_fail_closed_on_probe_failure(self) -> None:
+        from scheduler import blackbox_v2_runner as runner
+
+        with (
+            patch.object(runner.os, "getpgid", return_value=77),
+            patch.object(
+                runner.subprocess,
+                "run",
+                side_effect=runner.subprocess.SubprocessError("probe failed"),
+            ) as run,
+        ):
+            self.assertEqual(runner._process_group_rss_bytes(1234), 0)
+        run.assert_called_once()
+
     def test_gray_replay_rejects_request_calendar_mismatch(self) -> None:
         from scheduler.executor import (
             _validate_gray_replay_request_within_snapshot,
