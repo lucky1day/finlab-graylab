@@ -236,7 +236,8 @@ def choose_latest_backtest_runs(
         runtime_by_base[base_scheme_id] = runtime_type
 
     latest_by_benchmark_scope: dict[
-        tuple[str, str, str], Mapping[str, Any]
+        tuple[str, str, str],
+        tuple[Mapping[str, Any], tuple[datetime, int]],
     ] = {}
     for row in run_rows:
         if row.get("status") != "success":
@@ -259,13 +260,20 @@ def choose_latest_backtest_runs(
             base_scheme_id,
             data_source,
         )
+        rank = _backtest_run_rank(row)
         current = latest_by_benchmark_scope.get(key)
-        if current is None or _backtest_run_rank(row) > _backtest_run_rank(current):
-            latest_by_benchmark_scope[key] = row
+        if current is None or rank > current[1]:
+            latest_by_benchmark_scope[key] = (row, rank)
 
-    candidates_by_base: dict[str, list[Mapping[str, Any]]] = {}
-    for row in latest_by_benchmark_scope.values():
-        candidates_by_base.setdefault(str(row["scheme_id"]), []).append(row)
+    latest_by_base: dict[
+        str,
+        tuple[Mapping[str, Any], tuple[datetime, int]],
+    ] = {}
+    for row, rank in latest_by_benchmark_scope.values():
+        base_scheme_id = str(row["scheme_id"])
+        current = latest_by_base.get(base_scheme_id)
+        if current is None or rank > current[1]:
+            latest_by_base[base_scheme_id] = (row, rank)
 
     selected: dict[str, Mapping[str, Any]] = {}
     for row in registry:
@@ -276,9 +284,9 @@ def choose_latest_backtest_runs(
         base_scheme_id = _required_text(
             row.get("base_scheme_id"), field="registry base_scheme_id"
         )
-        candidates = candidates_by_base.get(base_scheme_id, [])
-        if candidates:
-            selected[scheme_id] = max(candidates, key=_backtest_run_rank)
+        latest = latest_by_base.get(base_scheme_id)
+        if latest is not None:
+            selected[scheme_id] = latest[0]
     return selected
 
 
