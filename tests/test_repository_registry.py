@@ -161,6 +161,45 @@ class _AtomicConnection(_CaptureConnection):
                 "SELECT scheme_id, target_tenor, horizon, target_date "
                 "FROM t_scheme_predictions"
             )
+            and "WHERE (scheme_id, target_tenor, horizon, target_date) IN ("
+            in compact_sql
+        ):
+            self._store.setdefault("calls", []).append((sql_text, rows))
+            requested = {
+                (
+                    rows[f"scheme_id_{index}"],
+                    rows[f"target_tenor_{index}"],
+                    int(rows[f"horizon_{index}"]),
+                    str(rows[f"target_date_{index}"]),
+                )
+                for index in range(
+                    sum(key.startswith("scheme_id_") for key in rows)
+                )
+            }
+            if "prediction_lock_rows" in self._store:
+                return _MappingResult(self._store["prediction_lock_rows"])
+            prediction_rows = [
+                {
+                    "scheme_id": row["scheme_id"],
+                    "target_tenor": row["target_tenor"],
+                    "horizon": row["horizon"],
+                    "target_date": row["target_date"],
+                }
+                for row in self._store.get("prediction_rows", [])
+                if (
+                    row["scheme_id"],
+                    row["target_tenor"],
+                    int(row["horizon"]),
+                    str(row["target_date"]),
+                )
+                in requested
+            ]
+            return _MappingResult(prediction_rows)
+        if (
+            compact_sql.startswith(
+                "SELECT scheme_id, target_tenor, horizon, target_date "
+                "FROM t_scheme_predictions"
+            )
             and "WHERE scheme_id = :scheme_id" in compact_sql
             and "AND target_tenor = :target_tenor" in compact_sql
             and "AND horizon = :horizon" in compact_sql
@@ -801,6 +840,139 @@ class _RunEngine:
 
 
 class ImmutablePredictionRepositoryTests(unittest.TestCase):
+
+    def test_prediction_business_keys_use_one_locked_set_query(self) -> None:
+        from scheduler.repository import _prediction_write_decision_conn
+
+        for size in (1, 2, 30, 100):
+            with self.subTest(size=size):
+                engine = _AtomicEngine()
+                rows = [
+                    {
+                        "scheme_id": "batch_scheme",
+                        "target_tenor": f"T{index:03d}",
+                        "horizon": 1,
+                        "target_date": "2026-07-21",
+                    }
+                    for index in range(size)
+                ]
+                with engine.begin() as conn:
+                    result = _prediction_write_decision_conn(conn, rows)
+
+                self.assertEqual(result, ("success", size, None))
+                key_calls = [
+                    (sql, params)
+                    for sql, params in engine.store["calls"]
+                    if "FROM t_scheme_predictions" in sql
+                ]
+                self.assertEqual(len(key_calls), 1)
+                self.assertIn(
+                    "WHERE (scheme_id, target_tenor, horizon, target_date) IN (",
+                    " ".join(key_calls[0][0].split()),
+                )
+                self.assertIn("FOR UPDATE", key_calls[0][0])
+
+    def test_prediction_business_key_batch_preserves_conflict_semantics(self) -> None:
+        from scheduler.repository import (
+            PARTIAL_PREDICTION_KEY_CONFLICT,
+            PREDICTION_KEYS_ALREADY_EXIST,
+            _prediction_write_decision_conn,
+        )
+
+        rows = [
+            {
+                "scheme_id": "batch_scheme",
+                "target_tenor": tenor,
+                "horizon": 1,
+                "target_date": "2026-07-21",
+            }
+            for tenor in ("5Y", "10Y")
+        ]
+        cases = (
+            ((), ("success", 2, None)),
+            (("5Y", "10Y"), ("skipped", 0, PREDICTION_KEYS_ALREADY_EXIST)),
+        )
+        for existing_tenors, expected in cases:
+            with self.subTest(existing_tenors=existing_tenors):
+                engine = _AtomicEngine()
+                engine.store["prediction_rows"] = [
+                    dict(row)
+                    for row in rows
+                    if row["target_tenor"] in existing_tenors
+                ]
+                with engine.begin() as conn:
+                    self.assertEqual(
+                        _prediction_write_decision_conn(conn, rows),
+                        expected,
+                    )
+
+        engine = _AtomicEngine()
+        engine.store["prediction_rows"] = [dict(rows[1])]
+        with engine.begin() as conn:
+            status, written, error = _prediction_write_decision_conn(conn, rows)
+        self.assertEqual((status, written), ("failed", 0))
+        self.assertEqual(
+            error,
+            f"{PARTIAL_PREDICTION_KEY_CONFLICT}: "
+            "existing=[batch_scheme/10Y/h1/2026-07-21]; "
+            "missing=[batch_scheme/5Y/h1/2026-07-21]",
+        )
+
+    def test_prediction_business_key_batch_rejects_bad_readback(self) -> None:
+        from scheduler.repository import _lock_existing_prediction_business_keys
+
+        requested = (("batch_scheme", "5Y", 1, "2026-07-21"),)
+        bad_rows = (
+            [{}],
+            [
+                {
+                    "scheme_id": "other_scheme",
+                    "target_tenor": "5Y",
+                    "horizon": 1,
+                    "target_date": "2026-07-21",
+                }
+            ],
+            [
+                {
+                    "scheme_id": "batch_scheme",
+                    "target_tenor": "5Y",
+                    "horizon": 1,
+                    "target_date": "2026-07-21",
+                },
+                {
+                    "scheme_id": "batch_scheme",
+                    "target_tenor": "5Y",
+                    "horizon": 1,
+                    "target_date": "2026-07-21",
+                },
+            ],
+        )
+        for returned_rows in bad_rows:
+            with self.subTest(returned_rows=returned_rows):
+                engine = _AtomicEngine()
+                engine.store["prediction_lock_rows"] = returned_rows
+                with engine.begin() as conn, self.assertRaisesRegex(
+                    RuntimeError,
+                    "prediction business-key lock readback",
+                ):
+                    _lock_existing_prediction_business_keys(conn, requested)
+
+    def test_prediction_business_key_batch_rejects_duplicate_input(self) -> None:
+        from scheduler.repository import _lock_existing_prediction_business_keys
+
+        key = ("batch_scheme", "5Y", 1, "2026-07-21")
+        engine = _AtomicEngine()
+        with engine.begin() as conn, self.assertRaisesRegex(
+            RuntimeError,
+            "prediction business-key lock input contains duplicate keys",
+        ):
+            _lock_existing_prediction_business_keys(conn, (key, key))
+        self.assertFalse(
+            any(
+                "FROM t_scheme_predictions" in sql
+                for sql, _params in engine.store.get("calls", [])
+            )
+        )
 
     def test_active_native_identity_requires_exact_registry_contract(self) -> None:
         from scheduler.repository import active_native_identity_error

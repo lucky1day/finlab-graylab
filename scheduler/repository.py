@@ -35,6 +35,7 @@ from shared.scheme_config_schema import (
 
 PREDICTION_KEYS_ALREADY_EXIST = "prediction_keys_already_exist"
 PARTIAL_PREDICTION_KEY_CONFLICT = "partial_prediction_key_conflict"
+_PredictionBusinessKey = tuple[str, str, int, str]
 BLACKBOX_REGISTRY_STATUSES = {"active", "paused", "archived"}
 _BLACKBOX_LIFECYCLE_LOCK_TIMEOUT_SEC = 5.0
 _LOGGER = logging.getLogger(__name__)
@@ -1639,6 +1640,77 @@ def _stored_iso_date(row: Mapping[str, object], field: str) -> str:
     raise RuntimeError(f"invalid stored {field}: {value!r}")
 
 
+def _lock_existing_prediction_business_keys(
+    conn: Connection,
+    keys: Sequence[_PredictionBusinessKey],
+) -> frozenset[_PredictionBusinessKey]:
+    """用一次锁定查询读取已存在的预测业务键。"""
+    unique_keys = tuple(dict.fromkeys(keys))
+    if len(unique_keys) != len(keys):
+        raise RuntimeError(
+            "prediction business-key lock input contains duplicate keys"
+        )
+    if not unique_keys:
+        return frozenset()
+
+    placeholders = []
+    params: dict[str, object] = {}
+    for index, key in enumerate(unique_keys):
+        placeholders.append(
+            f"(:scheme_id_{index}, :target_tenor_{index}, "
+            f":horizon_{index}, :target_date_{index})"
+        )
+        params.update(
+            {
+                f"scheme_id_{index}": key[0],
+                f"target_tenor_{index}": key[1],
+                f"horizon_{index}": key[2],
+                f"target_date_{index}": key[3],
+            }
+        )
+    lock = "" if _dialect_name(conn) == "sqlite" else " FOR UPDATE"
+    rows = (
+        conn.execute(
+            text(
+                "SELECT scheme_id, target_tenor, horizon, target_date "
+                "FROM t_scheme_predictions "
+                "WHERE (scheme_id, target_tenor, horizon, target_date) IN ("
+                + ", ".join(placeholders)
+                + ")"
+                + lock
+            ),
+            params,
+        )
+        .mappings()
+        .all()
+    )
+
+    requested = frozenset(unique_keys)
+    existing: set[_PredictionBusinessKey] = set()
+    for row in rows:
+        try:
+            key = (
+                str(row["scheme_id"]),
+                str(row["target_tenor"]),
+                int(row["horizon"]),
+                _stored_iso_date(row, "target_date"),
+            )
+        except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+            raise RuntimeError(
+                "prediction business-key lock readback is malformed"
+            ) from exc
+        if key not in requested:
+            raise RuntimeError(
+                "prediction business-key lock readback returned an unexpected key"
+            )
+        if key in existing:
+            raise RuntimeError(
+                "prediction business-key lock readback returned a duplicate key"
+            )
+        existing.add(key)
+    return frozenset(existing)
+
+
 def create_scheme_run(
     engine: Engine,
     *,
@@ -1798,27 +1870,9 @@ def _prediction_write_decision_conn(
         )
         for row in prediction_rows
     )
-    existing = []
-    missing = []
-    for key in keys:
-        row = _select_mapping_one_or_none(
-            conn,
-            """
-            SELECT scheme_id, target_tenor, horizon, target_date
-            FROM t_scheme_predictions
-            WHERE scheme_id = :scheme_id
-              AND target_tenor = :target_tenor
-              AND horizon = :horizon
-              AND target_date = :target_date
-            """,
-            {
-                "scheme_id": key[0],
-                "target_tenor": key[1],
-                "horizon": key[2],
-                "target_date": key[3],
-            },
-        )
-        (existing if row is not None else missing).append(key)
+    existing_keys = _lock_existing_prediction_business_keys(conn, keys)
+    existing = [key for key in keys if key in existing_keys]
+    missing = [key for key in keys if key not in existing_keys]
 
     if not existing:
         return "success", len(keys), None
@@ -3011,7 +3065,7 @@ def _assert_gray_gap_business_keys_absent(
     conn: Connection,
     expected_targets: list[Mapping[str, object]],
 ) -> None:
-    for row in sorted(
+    sorted_rows = sorted(
         expected_targets,
         key=lambda item: (
             str(item["base_scheme_id"]),
@@ -3019,25 +3073,19 @@ def _assert_gray_gap_business_keys_absent(
             int(item["horizon"]),
             str(item["target_date"]),
         ),
-    ):
-        existing = _select_mapping_one_or_none(
-            conn,
-            """
-            SELECT id, run_id
-            FROM t_scheme_predictions
-            WHERE scheme_id = :scheme_id
-              AND target_tenor = :target_tenor
-              AND horizon = :horizon
-              AND target_date = :target_date
-            """,
-            {
-                "scheme_id": str(row["base_scheme_id"]),
-                "target_tenor": str(row["target_tenor"]),
-                "horizon": int(row["horizon"]),
-                "target_date": str(row["target_date"]),
-            },
+    )
+    keys = tuple(
+        (
+            str(row["base_scheme_id"]),
+            str(row["target_tenor"]),
+            int(row["horizon"]),
+            str(row["target_date"]),
         )
-        if existing is not None:
+        for row in sorted_rows
+    )
+    existing = _lock_existing_prediction_business_keys(conn, keys)
+    for row, key in zip(sorted_rows, keys):
+        if key in existing:
             raise RuntimeError(
                 "gray gap business key already exists; entire group "
                 "rejected: "
