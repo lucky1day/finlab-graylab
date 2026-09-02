@@ -423,8 +423,8 @@ def test_release_manifest_includes_registry_owner_checksum() -> None:
     )
     registry_owner = next(item for item in manifest if item.version == 21)
     assert registry_owner.path.name == "021_registry_owner.sql"
-    assert manifest[-1].version == 22
-    assert manifest[-1].path.name == "022_authentication.sql"
+    assert manifest[-1].version == 23
+    assert manifest[-1].path.name == "023_auth_user_profiles.sql"
 
 
 def test_registry_owner_sql_is_reentrant_and_checks_both_identity_directions() -> None:

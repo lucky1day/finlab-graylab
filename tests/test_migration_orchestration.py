@@ -42,6 +42,8 @@ def test_cli_mode_table_is_complete_and_unique() -> None:
         "--recover-applying-021",
         "--inspect-applying-022",
         "--recover-applying-022",
+        "--inspect-applying-023",
+        "--recover-applying-023",
     ]
     assert len({mode.option for mode in modes}) == len(modes)
     assert len({mode.dest for mode in modes}) == len(modes)

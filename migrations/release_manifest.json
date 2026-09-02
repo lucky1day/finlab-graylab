@@ -110,6 +110,11 @@
       "version": 22,
       "filename": "022_authentication.sql",
       "sha256": "c3981f525d296bf2d5103d53651cc7f4f12374ed93cdcb9276f726bc38b03292"
+    },
+    {
+      "version": 23,
+      "filename": "023_auth_user_profiles.sql",
+      "sha256": "393cb5266407f231292389c00e8ecbadea1ad652e137405dd2eeb5cf633d55ec"
     }
   ]
 }

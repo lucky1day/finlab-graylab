@@ -27,10 +27,14 @@ def _user(
     *,
     role: str = "admin",
     must_change_password: bool = False,
+    full_name: str | None = None,
+    organization_name: str | None = None,
 ) -> AuthUser:
     return AuthUser(
         id=1,
         username="admin",
+        full_name=full_name,
+        organization_name=organization_name,
         password_hash="not-public",
         role=role,
         status="active",
@@ -79,6 +83,8 @@ def test_login_cookie_and_public_shape_are_exact(monkeypatch) -> None:
         "user": {
             "id": 1,
             "username": "admin",
+            "full_name": None,
+            "organization_name": None,
             "role": "admin",
             "status": "active",
             "is_protected_admin": True,
@@ -194,17 +200,64 @@ def test_dashboard_get_and_head_require_session(monkeypatch) -> None:
     assert head_response.status_code == 401
 
 
-def test_must_change_password_cannot_read_dashboard(monkeypatch) -> None:
+def test_legacy_must_change_password_flag_no_longer_blocks_dashboard(
+    monkeypatch,
+) -> None:
     service = Mock()
     service.authenticate.return_value = _user(must_change_password=True)
-    with patch("backend.auth.routes._service", return_value=service):
+    with (
+        patch("backend.auth.routes._service", return_value=service),
+        patch(
+            "backend.main._factor_lab_dashboard_response",
+            return_value={"status": "ok"},
+        ),
+    ):
         response = _request(
             "GET",
             "/api/factor-lab/dashboard",
             headers={"Cookie": "__Host-bfl-session=opaque-token"},
         )
-    assert response.status_code == 403
-    assert response.json() == {"error_code": "password_change_required"}
+    assert response.status_code == 200
+
+
+def test_user_and_admin_profile_update_contracts() -> None:
+    service = Mock()
+    service.update_own_profile.return_value = _user(
+        full_name="张三",
+        organization_name="示例机构",
+    )
+    service.update_user_profile.return_value = _user(
+        full_name="李四",
+        organization_name=None,
+    )
+    cookie = {"Cookie": "__Host-bfl-session=opaque-token"}
+    with patch("backend.auth.routes._service", return_value=service):
+        own = _request(
+            "POST",
+            "/api/auth/update-profile",
+            headers={**_headers(), **cookie},
+            json={
+                "full_name": "张三",
+                "organization_name": "示例机构",
+            },
+        )
+        managed = _request(
+            "POST",
+            "/api/admin/users/update-profile",
+            headers={**_headers(), **cookie},
+            json={
+                "user_id": 2,
+                "full_name": "李四",
+                "organization_name": None,
+            },
+        )
+    assert own.status_code == 200
+    assert own.json()["user"]["full_name"] == "张三"
+    assert own.json()["user"]["organization_name"] == "示例机构"
+    assert managed.status_code == 200
+    assert managed.json()["user"]["full_name"] == "李四"
+    service.update_own_profile.assert_called_once()
+    service.update_user_profile.assert_called_once()
 
 
 def test_me_and_admin_forbidden_contract(monkeypatch) -> None:
@@ -239,6 +292,7 @@ def test_ordinary_user_is_forbidden_from_every_admin_api() -> None:
     service.change_role.side_effect = forbidden
     service.reset_password.side_effect = forbidden
     service.change_status.side_effect = forbidden
+    service.update_user_profile.side_effect = forbidden
     requests = (
         ("GET", "/api/admin/users", None),
         (
@@ -269,6 +323,15 @@ def test_ordinary_user_is_forbidden_from_every_admin_api() -> None:
             "POST",
             "/api/admin/users/change-status",
             {"user_id": 2, "status": "disabled"},
+        ),
+        (
+            "POST",
+            "/api/admin/users/update-profile",
+            {
+                "user_id": 2,
+                "full_name": "张三",
+                "organization_name": "示例机构",
+            },
         ),
     )
     with patch("backend.auth.routes._service", return_value=service):

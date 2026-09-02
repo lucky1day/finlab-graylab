@@ -12,7 +12,6 @@
   var shell = document.getElementById("aifin-shell");
   var loadingView = document.getElementById("authLoading");
   var loginView = document.getElementById("authLogin");
-  var forcedView = document.getElementById("authForcedPassword");
   var usersView = document.getElementById("authUsersView");
   var factorView = document.querySelector('[data-view="factor-lab"]');
 
@@ -31,13 +30,13 @@
     var messages = {
       invalid_credentials: "用户名或密码错误",
       invalid_current_password: "当前密码错误",
-      invalid_password: "密码需为 6–128 位，并包含大写字母、小写字母和数字",
+      invalid_password: "密码不得少于6位，其中至少包含大写字母、小写字母和数字",
+      invalid_profile: "用户姓名或机构名称超出允许长度",
       invalid_username: "用户名格式不正确",
       username_taken: "该用户名已被使用",
       protected_admin: "受保护初始管理员不允许执行此操作",
       cannot_modify_self: "管理员不能对自己的角色、状态或密码执行此操作",
       last_active_admin: "必须保留至少一个正常状态的管理员",
-      password_change_required: "请先完成强制改密",
       forbidden: "没有权限执行此操作",
       user_not_found: "用户不存在"
     };
@@ -95,9 +94,6 @@
       emitError(dialog.querySelector(".auth-error"), "");
       dialog.close();
     });
-    var forcedForm = document.getElementById("authForcedPasswordForm");
-    forcedForm.reset();
-    emitError(forcedForm.querySelector(".auth-error"), "");
     document.getElementById("authResetPasswordTarget").textContent = "";
   }
 
@@ -109,7 +105,6 @@
     authGate.hidden = false;
     loadingView.hidden = view !== loadingView;
     loginView.hidden = view !== loginView;
-    forcedView.hidden = view !== forcedView;
     closeAccountMenu(false);
   }
 
@@ -127,26 +122,9 @@
     }, 0);
   }
 
-  function showForcedPassword() {
-    showGate(forcedView);
-    var form = document.getElementById("authForcedPasswordForm");
-    if (form) {
-      form.reset();
-      emitError(form.querySelector(".auth-error"), "");
-      window.setTimeout(function () {
-        var field = form.elements.currentPassword;
-        if (field) field.focus();
-      }, 0);
-    }
-  }
-
   function showAuthenticated(user, expiresAt) {
     state.user = user;
     state.expiresAt = expiresAt || "";
-    if (user.must_change_password) {
-      showForcedPassword();
-      return;
-    }
     authGate.hidden = true;
     shell.hidden = false;
     shell.setAttribute("aria-hidden", "false");
@@ -245,6 +223,8 @@
       var row = document.createElement("tr");
       [
         user.username,
+        user.full_name || "—",
+        user.organization_name || "—",
         user.role === "admin" ? "管理员" : "普通用户",
         user.status === "active" ? "正常" : "已停用",
         formatCreatedAt(user.created_at)
@@ -255,6 +235,7 @@
       });
       var actions = document.createElement("td");
       actions.className = "auth-user-actions";
+      actions.appendChild(actionButton("编辑资料", "profile", user.id, false));
       actions.appendChild(actionButton("改用户名", "username", user.id, user.is_protected_admin));
       actions.appendChild(actionButton(user.role === "admin" ? "设为普通用户" : "设为管理员", "role", user.id, user.is_protected_admin));
       actions.appendChild(actionButton("重置密码", "password", user.id, user.is_protected_admin || user.id === state.user.id));
@@ -286,6 +267,20 @@
     });
   }
 
+  function openProfileDialog(user, mode) {
+    var dialog = document.getElementById("authProfileDialog");
+    var form = document.getElementById("authProfileForm");
+    form.reset();
+    form.dataset.profileMode = mode;
+    form.elements.userId.value = mode === "admin" ? String(user.id) : "";
+    form.elements.fullName.value = user.full_name || "";
+    form.elements.organizationName.value = user.organization_name || "";
+    document.getElementById("authProfileTitle").textContent =
+      mode === "admin" ? "编辑“" + user.username + "”的资料" : "个人资料";
+    emitError(form.querySelector(".auth-error"), "");
+    dialog.showModal();
+  }
+
   document.getElementById("authLoginForm").addEventListener("submit", function (event) {
     event.preventDefault();
     var form = event.currentTarget;
@@ -310,11 +305,6 @@
     });
   });
 
-  document.getElementById("authForcedPasswordForm").addEventListener("submit", function (event) {
-    event.preventDefault();
-    submitPasswordForm(event.currentTarget).catch(function () {});
-  });
-
   document.getElementById("authChangePasswordForm").addEventListener("submit", function (event) {
     event.preventDefault();
     submitPasswordForm(event.currentTarget).catch(function () {});
@@ -333,6 +323,11 @@
   document.getElementById("authAccountButton").addEventListener("click", function () {
     if (state.accountMenuOpen) closeAccountMenu(false);
     else openAccountMenu();
+  });
+
+  document.getElementById("authProfileButton").addEventListener("click", function () {
+    closeAccountMenu(false);
+    if (state.user) openProfileDialog(state.user, "self");
   });
 
   document.getElementById("authChangePasswordButton").addEventListener("click", function () {
@@ -367,6 +362,8 @@
       method: "POST",
       body: {
         username: form.elements.username.value,
+        full_name: form.elements.fullName.value || null,
+        organization_name: form.elements.organizationName.value || null,
         initial_password: form.elements.initialPassword.value,
         role: form.elements.role.value
       }
@@ -386,7 +383,9 @@
     var user = findUser(userId);
     if (!user) return;
     var action = button.dataset.userAction;
-    if (action === "username") {
+    if (action === "profile") {
+      openProfileDialog(user, "admin");
+    } else if (action === "username") {
       var username = window.prompt("输入新的用户名", user.username);
       if (username && username !== user.username) {
         updateUser("/api/admin/users/change-username", { user_id: userId, username: username });
@@ -424,6 +423,34 @@
       form.reset();
       form.closest("dialog").close();
       loadUsers();
+    }).catch(function (error) {
+      emitError(form.querySelector(".auth-error"), errorMessage(error.errorCode));
+    });
+  });
+
+  document.getElementById("authProfileForm").addEventListener("submit", function (event) {
+    event.preventDefault();
+    var form = event.currentTarget;
+    var adminMode = form.dataset.profileMode === "admin";
+    var body = {
+      full_name: form.elements.fullName.value || null,
+      organization_name: form.elements.organizationName.value || null
+    };
+    if (adminMode) body.user_id = Number(form.elements.userId.value);
+    apiRequest(
+      adminMode ? "/api/admin/users/update-profile" : "/api/auth/update-profile",
+      { method: "POST", body: body }
+    ).then(function (payload) {
+      if (adminMode) {
+        if (state.user && payload.user.id === state.user.id) {
+          state.user = payload.user;
+        }
+        loadUsers();
+      } else {
+        state.user = payload.user;
+      }
+      form.reset();
+      form.closest("dialog").close();
     }).catch(function (error) {
       emitError(form.querySelector(".auth-error"), errorMessage(error.errorCode));
     });

@@ -53,7 +53,7 @@ def test_login_markup_supports_password_managers_and_exact_account_menu() -> Non
     assert parser.inputs["authPassword"]["autocomplete"] == (
         "current-password"
     )
-    assert parser.account_menu_items == ["修改密码", "退出登录"]
+    assert parser.account_menu_items == ["个人资料", "修改密码", "退出登录"]
     assert 'id="authUsersNav"' in INDEX
     assert 'id="authUsersNav" type="button" hidden' in INDEX
 
@@ -97,18 +97,26 @@ def test_logout_and_401_clear_dashboard_state() -> None:
     )
 
 
-def test_forced_password_and_admin_requests_use_fixed_api_paths() -> None:
+def test_profile_password_help_and_admin_requests_use_fixed_api_paths() -> None:
     for path in (
         "/api/auth/login",
         "/api/auth/logout",
         "/api/auth/me",
         "/api/auth/change-password",
+        "/api/auth/update-profile",
         "/api/admin/users",
         "/api/admin/users/change-username",
         "/api/admin/users/change-role",
         "/api/admin/users/reset-password",
         "/api/admin/users/change-status",
+        "/api/admin/users/update-profile",
     ):
         assert path in AUTH_JS
-    assert "if (user.must_change_password)" in AUTH_JS
+    assert "authForcedPassword" not in INDEX
+    assert "if (user.must_change_password)" not in AUTH_JS
+    assert "密码不得少于6位，其中至少包含大写字母、小写字母和数字" in INDEX
+    assert 'name="fullName"' in INDEX
+    assert 'name="organizationName"' in INDEX
+    assert "user.full_name" in AUTH_JS
+    assert "user.organization_name" in AUTH_JS
     assert 'user.role !== "admin"' in AUTH_JS

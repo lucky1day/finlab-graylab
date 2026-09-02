@@ -29,18 +29,6 @@
           <button id="authLoginSubmit" class="auth-primary" type="submit">登录</button>
         </form>
       </section>
-      <section id="authForcedPassword" class="auth-card" hidden>
-        <img src="assets/aifin-lab-logo.svg" alt="Bond Factor Lab">
-        <h1>首次登录，请修改密码</h1>
-        <p class="auth-help">新密码需为 6–128 位，并包含 ASCII 大写字母、小写字母和数字。</p>
-        <form id="authForcedPasswordForm" autocomplete="off">
-          <label>当前密码<input name="currentPassword" type="password" autocomplete="current-password" required maxlength="128"></label>
-          <label>新密码<input name="newPassword" type="password" autocomplete="new-password" required maxlength="128"></label>
-          <label>确认新密码<input name="confirmPassword" type="password" autocomplete="new-password" required maxlength="128"></label>
-          <p class="auth-error" role="alert" hidden></p>
-          <button class="auth-primary" type="submit">修改密码并退出</button>
-        </form>
-      </section>
     </div>
 
     <div id="aifin-shell" class="aifin-shell" hidden aria-hidden="true">
@@ -60,6 +48,7 @@
           <div class="account-control">
             <button id="authAccountButton" class="account-button" type="button" aria-haspopup="menu" aria-expanded="false"><span id="authAccountName"></span><span aria-hidden="true">▾</span></button>
             <div id="authAccountMenu" class="account-menu" role="menu" hidden>
+              <button id="authProfileButton" type="button" role="menuitem">个人资料</button>
               <button id="authChangePasswordButton" type="button" role="menuitem">修改密码</button>
               <button id="authLogoutButton" type="button" role="menuitem">退出登录</button>
             </div>
@@ -246,7 +235,7 @@
           <p id="authUsersError" class="auth-error" role="alert" hidden></p>
           <div class="auth-users-table-wrap">
             <table class="auth-users-table">
-              <thead><tr><th>用户名</th><th>角色</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+              <thead><tr><th>用户名</th><th>用户姓名</th><th>机构名称</th><th>角色</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
               <tbody id="authUsersBody"></tbody>
             </table>
           </div>
@@ -257,6 +246,7 @@
     <dialog id="authChangePasswordDialog" class="auth-dialog">
       <form id="authChangePasswordForm" method="dialog" autocomplete="off">
         <h2>修改密码</h2>
+        <p class="auth-help">密码不得少于6位，其中至少包含大写字母、小写字母和数字</p>
         <label>当前密码<input name="currentPassword" type="password" autocomplete="current-password" required maxlength="128"></label>
         <label>新密码<input name="newPassword" type="password" autocomplete="new-password" required maxlength="128"></label>
         <label>确认新密码<input name="confirmPassword" type="password" autocomplete="new-password" required maxlength="128"></label>
@@ -268,7 +258,10 @@
       <form id="authCreateUserForm" method="dialog" autocomplete="off">
         <h2>创建用户</h2>
         <label>用户名<input name="username" type="text" autocomplete="off" required maxlength="32"></label>
+        <label>用户姓名（选填）<input name="fullName" type="text" autocomplete="name" maxlength="100"></label>
+        <label>机构名称（选填）<input name="organizationName" type="text" autocomplete="organization" maxlength="200"></label>
         <label>初始密码<input name="initialPassword" type="password" autocomplete="new-password" required maxlength="128"></label>
+        <p class="auth-help">密码不得少于6位，其中至少包含大写字母、小写字母和数字</p>
         <label>角色<select name="role"><option value="user">普通用户</option><option value="admin">管理员</option></select></label>
         <p class="auth-error" role="alert" hidden></p>
         <div class="auth-dialog-actions"><button type="button" data-dialog-close>取消</button><button class="auth-primary" type="submit">创建</button></div>
@@ -280,8 +273,19 @@
         <p id="authResetPasswordTarget" class="auth-help"></p>
         <input name="userId" type="hidden">
         <label>临时密码<input name="newPassword" type="password" autocomplete="new-password" required maxlength="128"></label>
+        <p class="auth-help">密码不得少于6位，其中至少包含大写字母、小写字母和数字</p>
         <p class="auth-error" role="alert" hidden></p>
         <div class="auth-dialog-actions"><button type="button" data-dialog-close>取消</button><button class="auth-primary" type="submit">确认重置</button></div>
+      </form>
+    </dialog>
+    <dialog id="authProfileDialog" class="auth-dialog">
+      <form id="authProfileForm" method="dialog" autocomplete="on">
+        <h2 id="authProfileTitle">个人资料</h2>
+        <input name="userId" type="hidden">
+        <label>用户姓名（选填）<input name="fullName" type="text" autocomplete="name" maxlength="100"></label>
+        <label>机构名称（选填）<input name="organizationName" type="text" autocomplete="organization" maxlength="200"></label>
+        <p class="auth-error" role="alert" hidden></p>
+        <div class="auth-dialog-actions"><button type="button" data-dialog-close>取消</button><button class="auth-primary" type="submit">保存</button></div>
       </form>
     </dialog>
     <aside class="factor-remark-popover" id="factorRemarkPopover" role="dialog" aria-modal="false" aria-hidden="true" aria-labelledby="factorRemarkTitle" hidden>
@@ -292,6 +296,6 @@
       <div class="factor-remark-popover-body" id="factorRemarkBody"></div>
     </aside>
     <script src="aifin-shell.js?v=5437e66344455b02f89034bdab5b57b9c15e2c3b154f735b0c34b789317620cd"></script>
-    <script src="auth-shell.js?v=adabb44b06db5e148f9a3bfb226cc521cc99fca34935591fa581f2b331d0ae92"></script>
+    <script src="auth-shell.js?v=4c4cec9f15d448f3a261515ed03cb0946edf1e8dd1c8c45b4abfb62d24644c76"></script>
   </body>
 </html>

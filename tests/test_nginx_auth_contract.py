@@ -20,17 +20,19 @@ def test_auth_locations_are_exact_and_state_changes_are_body_limited() -> None:
         "/bond-factor-lab/api/auth/login",
         "/bond-factor-lab/api/auth/logout",
         "/bond-factor-lab/api/auth/change-password",
+        "/bond-factor-lab/api/auth/update-profile",
         "/bond-factor-lab/api/admin/users",
         "/bond-factor-lab/api/admin/users/change-username",
         "/bond-factor-lab/api/admin/users/change-role",
         "/bond-factor-lab/api/admin/users/reset-password",
         "/bond-factor-lab/api/admin/users/change-status",
+        "/bond-factor-lab/api/admin/users/update-profile",
     )
     for path in exact_paths:
         assert f"location = {path} {{" in SITE
     assert "zone=bond_factor_auth_login:10m rate=10r/m" in SITE
     assert "limit_req zone=bond_factor_auth_login burst=5 nodelay;" in SITE
-    assert SITE.count("client_max_body_size 8k;") == 8
+    assert SITE.count("client_max_body_size 8k;") == 10
     assert "location ~ ^/bond-factor-lab/api(?:/|$)" in SITE
 
 

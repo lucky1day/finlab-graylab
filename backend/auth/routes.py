@@ -48,10 +48,17 @@ class ChangePasswordRequest(_StrictModel):
     new_password: str
 
 
+class UpdateProfileRequest(_StrictModel):
+    full_name: str | None = Field(default=None, max_length=100)
+    organization_name: str | None = Field(default=None, max_length=200)
+
+
 class CreateUserRequest(_StrictModel):
     username: str
     initial_password: str
     role: Literal["admin", "user"]
+    full_name: str | None = Field(default=None, max_length=100)
+    organization_name: str | None = Field(default=None, max_length=200)
 
 
 class ChangeUsernameRequest(_StrictModel):
@@ -72,6 +79,10 @@ class ResetPasswordRequest(_StrictModel):
 class ChangeStatusRequest(_StrictModel):
     user_id: int = Field(gt=0)
     status: Literal["active", "disabled"]
+
+
+class AdminUpdateProfileRequest(UpdateProfileRequest):
+    user_id: int = Field(gt=0)
 
 
 def _request_id(request: Request) -> str:
@@ -209,8 +220,6 @@ def require_authenticated_user(
 def require_dashboard_user(
     user: Annotated[AuthUser, Depends(require_authenticated_user)],
 ) -> AuthUser:
-    if user.must_change_password:
-        raise AuthError("password_change_required", 403)
     return user
 
 
@@ -279,6 +288,24 @@ def change_password(
     return response
 
 
+@router.post(
+    "/api/auth/update-profile",
+    dependencies=[Depends(require_safe_json_request)],
+)
+def update_profile(
+    payload: UpdateProfileRequest,
+    request: Request,
+    token: Annotated[str | None, Depends(_token)],
+) -> dict:
+    user = _service().update_own_profile(
+        token,
+        full_name=payload.full_name,
+        organization_name=payload.organization_name,
+        request_id=_request_id(request),
+    )
+    return {"user": user.public_dict()}
+
+
 @router.get("/api/admin/users")
 def users(token: Annotated[str | None, Depends(_token)]) -> dict:
     return {
@@ -302,6 +329,8 @@ def create_user(
         username=payload.username,
         initial_password=payload.initial_password,
         role=payload.role,
+        full_name=payload.full_name,
+        organization_name=payload.organization_name,
         request_id=_request_id(request),
     )
     return {"user": user.public_dict()}
@@ -374,6 +403,25 @@ def change_status(
         token,
         user_id=payload.user_id,
         status=payload.status,
+        request_id=_request_id(request),
+    )
+    return {"user": user.public_dict()}
+
+
+@router.post(
+    "/api/admin/users/update-profile",
+    dependencies=[Depends(require_safe_json_request)],
+)
+def admin_update_profile(
+    payload: AdminUpdateProfileRequest,
+    request: Request,
+    token: Annotated[str | None, Depends(_token)],
+) -> dict:
+    user = _service().update_user_profile(
+        token,
+        user_id=payload.user_id,
+        full_name=payload.full_name,
+        organization_name=payload.organization_name,
         request_id=_request_id(request),
     )
     return {"user": user.public_dict()}

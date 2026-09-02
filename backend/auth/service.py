@@ -21,6 +21,8 @@ from backend.auth.security import (
 
 
 SESSION_LIFETIME = timedelta(hours=12)
+FULL_NAME_MAX_LENGTH = 100
+ORGANIZATION_NAME_MAX_LENGTH = 200
 
 
 class AuthError(RuntimeError):
@@ -66,6 +68,17 @@ def _session_token_hash(token: str | None) -> bytes:
         return digest_session_token(token)
     except (UnicodeError, ValueError):
         raise AuthError("not_authenticated", 401) from None
+
+
+def _profile_value(value: str | None, *, max_length: int) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if len(normalized) > max_length:
+        raise AuthError("invalid_profile", 400)
+    return normalized
 
 
 class AuthService:
@@ -200,8 +213,6 @@ class AuthService:
 
     def _require_admin(self, token: str | None) -> AuthUser:
         user = self.authenticate(token)
-        if user.must_change_password:
-            raise AuthError("password_change_required", 403)
         if user.role != "admin":
             raise AuthError("forbidden", 403)
         return user
@@ -211,8 +222,6 @@ class AuthService:
         if session is None:
             raise AuthError("not_authenticated", 401)
         actor, _expires_at = session
-        if actor.must_change_password:
-            raise AuthError("password_change_required", 403)
         if actor.role != "admin":
             raise AuthError("forbidden", 403)
         return actor
@@ -225,11 +234,21 @@ class AuthService:
         initial_password: str,
         role: str,
         request_id: str,
+        full_name: str | None = None,
+        organization_name: str | None = None,
     ) -> AuthUser:
         token_hash = _session_token_hash(token)
         self._require_admin(token)
         normalized = normalize_username(username)
         password_hash = hash_password(initial_password)
+        normalized_full_name = _profile_value(
+            full_name,
+            max_length=FULL_NAME_MAX_LENGTH,
+        )
+        normalized_organization = _profile_value(
+            organization_name,
+            max_length=ORGANIZATION_NAME_MAX_LENGTH,
+        )
         if role not in {"admin", "user"}:
             raise AuthError("invalid_role", 400)
         now = self._now()
@@ -243,6 +262,8 @@ class AuthService:
                     username=normalized,
                     password_hash=password_hash,
                     role=role,
+                    full_name=normalized_full_name,
+                    organization_name=normalized_organization,
                     actor_user_id=actor.id,
                     now=now,
                 )
@@ -276,6 +297,109 @@ class AuthService:
             operation="username",
             value=normalized,
         )
+
+    def update_own_profile(
+        self,
+        token: str | None,
+        *,
+        full_name: str | None,
+        organization_name: str | None,
+        request_id: str,
+    ) -> AuthUser:
+        token_hash = _session_token_hash(token)
+        normalized_full_name = _profile_value(
+            full_name,
+            max_length=FULL_NAME_MAX_LENGTH,
+        )
+        normalized_organization = _profile_value(
+            organization_name,
+            max_length=ORGANIZATION_NAME_MAX_LENGTH,
+        )
+        now = self._now()
+        with self._engine.begin() as connection:
+            session = repository.lock_session_user(connection, token_hash, now)
+            if session is None:
+                raise AuthError("not_authenticated", 401)
+            user, _expires_at = session
+            return self._update_profile_locked(
+                connection,
+                actor=user,
+                target=user,
+                full_name=normalized_full_name,
+                organization_name=normalized_organization,
+                request_id=request_id,
+            )
+
+    def update_user_profile(
+        self,
+        token: str | None,
+        *,
+        user_id: int,
+        full_name: str | None,
+        organization_name: str | None,
+        request_id: str,
+    ) -> AuthUser:
+        token_hash = _session_token_hash(token)
+        normalized_full_name = _profile_value(
+            full_name,
+            max_length=FULL_NAME_MAX_LENGTH,
+        )
+        normalized_organization = _profile_value(
+            organization_name,
+            max_length=ORGANIZATION_NAME_MAX_LENGTH,
+        )
+        now = self._now()
+        with self._engine.begin() as connection:
+            actor = self._lock_admin(connection, token_hash, now)
+            target = repository.lock_user_by_id(connection, user_id)
+            if target is None:
+                raise AuthError("user_not_found", 404)
+            return self._update_profile_locked(
+                connection,
+                actor=actor,
+                target=target,
+                full_name=normalized_full_name,
+                organization_name=normalized_organization,
+                request_id=request_id,
+            )
+
+    @staticmethod
+    def _update_profile_locked(
+        connection: Any,
+        *,
+        actor: AuthUser,
+        target: AuthUser,
+        full_name: str | None,
+        organization_name: str | None,
+        request_id: str,
+    ) -> AuthUser:
+        before = {
+            "full_name": target.full_name,
+            "organization_name": target.organization_name,
+        }
+        after = {
+            "full_name": full_name,
+            "organization_name": organization_name,
+        }
+        if before == after:
+            return target
+        repository.update_profile(
+            connection,
+            user_id=target.id,
+            full_name=full_name,
+            organization_name=organization_name,
+        )
+        repository.insert_audit(
+            connection,
+            event_type="user_profile_changed",
+            actor_user_id=actor.id,
+            target_user_id=target.id,
+            request_id=request_id,
+            detail={"before": before, "after": after},
+        )
+        updated = repository.lock_user_by_id(connection, target.id)
+        assert updated is not None
+        return updated
 
     def change_role(
         self,
@@ -406,7 +530,7 @@ class AuthService:
                 connection,
                 user_id=target.id,
                 password_hash=password_hash,
-                must_change_password=True,
+                must_change_password=False,
                 now=now,
             )
             repository.revoke_all_sessions(connection, target.id, now)

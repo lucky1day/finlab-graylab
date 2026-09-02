@@ -22,12 +22,16 @@ class AuthUser:
     failed_login_count: int
     login_not_before: datetime | None
     created_at: datetime
+    full_name: str | None = None
+    organization_name: str | None = None
 
     def public_dict(self) -> dict[str, Any]:
         """返回不含密码与限速内部状态的固定公开对象。"""
         return {
             "id": self.id,
             "username": self.username,
+            "full_name": self.full_name,
+            "organization_name": self.organization_name,
             "role": self.role,
             "status": self.status,
             "is_protected_admin": self.is_protected_admin,
@@ -40,6 +44,14 @@ def _user(row: Mapping[str, Any]) -> AuthUser:
     return AuthUser(
         id=int(row["id"]),
         username=str(row["username"]),
+        full_name=(
+            None if row["full_name"] is None else str(row["full_name"])
+        ),
+        organization_name=(
+            None
+            if row["organization_name"] is None
+            else str(row["organization_name"])
+        ),
         password_hash=str(row["password_hash"]),
         role=str(row["role"]),
         status=str(row["status"]),
@@ -52,7 +64,8 @@ def _user(row: Mapping[str, Any]) -> AuthUser:
 
 
 _USER_COLUMNS = """
-    id, username, password_hash, role, status, is_protected_admin,
+    id, username, full_name, organization_name, password_hash,
+    role, status, is_protected_admin,
     must_change_password, failed_login_count, login_not_before, created_at
 """
 
@@ -87,7 +100,8 @@ def lock_session_user(
     row = connection.execute(
         text(
             f"""
-            SELECT u.id, u.username, u.password_hash, u.role, u.status,
+            SELECT u.id, u.username, u.full_name, u.organization_name,
+                   u.password_hash, u.role, u.status,
                    u.is_protected_admin, u.must_change_password,
                    u.failed_login_count, u.login_not_before, u.created_at,
                    s.expires_at AS session_expires_at
@@ -250,6 +264,8 @@ def create_user(
     username: str,
     password_hash: str,
     role: str,
+    full_name: str | None,
+    organization_name: str | None,
     actor_user_id: int,
     now: datetime,
 ) -> int:
@@ -257,12 +273,14 @@ def create_user(
         text(
             """
             INSERT INTO t_auth_users (
-                username, password_hash, role, status,
+                username, full_name, organization_name,
+                password_hash, role, status,
                 is_protected_admin, must_change_password,
                 password_changed_at, created_by
             ) VALUES (
-                :username, :password_hash, :role, 'active',
-                0, 1, :now, :actor_user_id
+                :username, :full_name, :organization_name,
+                :password_hash, :role, 'active',
+                0, 0, :now, :actor_user_id
             )
             """
         ),
@@ -270,6 +288,8 @@ def create_user(
             "username": username,
             "password_hash": password_hash,
             "role": role,
+            "full_name": full_name,
+            "organization_name": organization_name,
             "now": now,
             "actor_user_id": actor_user_id,
         },
@@ -310,6 +330,30 @@ def update_username(connection: Any, user_id: int, username: str) -> None:
     connection.execute(
         text("UPDATE t_auth_users SET username = :username WHERE id = :user_id"),
         {"username": username, "user_id": user_id},
+    )
+
+
+def update_profile(
+    connection: Any,
+    *,
+    user_id: int,
+    full_name: str | None,
+    organization_name: str | None,
+) -> None:
+    connection.execute(
+        text(
+            """
+            UPDATE t_auth_users
+            SET full_name = :full_name,
+                organization_name = :organization_name
+            WHERE id = :user_id
+            """
+        ),
+        {
+            "user_id": user_id,
+            "full_name": full_name,
+            "organization_name": organization_name,
+        },
     )
 
 
@@ -365,7 +409,7 @@ def initialize_protected_admin(
                 password_changed_at, created_by
             ) VALUES (
                 'admin', :password_hash, 'admin', 'active',
-                1, 1, UTC_TIMESTAMP(6), NULL
+                1, 0, UTC_TIMESTAMP(6), NULL
             )
             """
         ),
@@ -385,7 +429,7 @@ def reset_protected_admin_password(
             """
             UPDATE t_auth_users
             SET password_hash = :password_hash,
-                must_change_password = 1,
+                must_change_password = 0,
                 password_changed_at = UTC_TIMESTAMP(6),
                 failed_login_count = 0,
                 login_not_before = NULL

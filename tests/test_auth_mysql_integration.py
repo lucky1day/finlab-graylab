@@ -14,11 +14,17 @@ from backend.auth import repository
 from backend.auth.security import hash_password, verify_password
 from backend.auth.service import AuthError, AuthService
 from migrations.auth_022 import classify_auth_schema, read_auth_schema
+from migrations.auth_profile_023 import (
+    classify_auth_profile_schema,
+    read_auth_profile_schema,
+)
 from migrations.runner import split_sql_statements
 from migrations.runner import (
     MIGRATIONS_DIR,
     inspect_applying_migration_022,
+    inspect_applying_migration_023,
     recover_applying_migration_022,
+    recover_applying_migration_023,
     validate_release_migration_manifest,
 )
 from scripts import manage_auth_admin
@@ -107,9 +113,13 @@ def test_auth_schema_fresh_partial_complete_and_drift_on_mysql8() -> None:
                     """
                 )
             )
-            manifest = validate_release_migration_manifest(
-                sorted(MIGRATIONS_DIR.glob("*.sql"))
-            )
+            manifest = [
+                migration
+                for migration in validate_release_migration_manifest(
+                    sorted(MIGRATIONS_DIR.glob("*.sql"))
+                )
+                if migration.version <= 22
+            ]
             for migration in manifest:
                 state = "APPLYING" if migration.version == 22 else "APPLIED"
                 connection.execute(
@@ -175,6 +185,57 @@ def test_auth_schema_fresh_partial_complete_and_drift_on_mysql8() -> None:
             assert classify_auth_schema(read_auth_schema(connection)) == (
                 "UNSAFE"
             )
+            connection.execute(
+                text(
+                    "ALTER TABLE t_auth_users "
+                    "MODIFY username VARCHAR(32) CHARACTER SET ascii "
+                    "COLLATE ascii_bin NOT NULL"
+                )
+            )
+            assert classify_auth_schema(read_auth_schema(connection)) == (
+                "COMPLETE"
+            )
+            profile_target = next(
+                migration
+                for migration in validate_release_migration_manifest(
+                    sorted(MIGRATIONS_DIR.glob("*.sql"))
+                )
+                if migration.version == 23
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO t_schema_migrations (
+                        version, filename, sha256, state,
+                        baseline_bootstrap, started_at, applied_at
+                    ) VALUES (
+                        23, :filename, :sha256, 'APPLYING', 0,
+                        UTC_TIMESTAMP(6), NULL
+                    )
+                    """
+                ),
+                {
+                    "filename": profile_target.path.name,
+                    "sha256": profile_target.sha256,
+                },
+            )
+            profile_statements = split_sql_statements(
+                profile_target.path.read_text(encoding="utf-8")
+            )
+            for statement in profile_statements[:4]:
+                connection.execute(text(statement))
+        profile_inspection = inspect_applying_migration_023(target, paths)
+        assert profile_inspection["classification"] == "COMPATIBLE_PARTIAL"
+        profile_recovery = recover_applying_migration_023(
+            target,
+            paths,
+            expected_state_digest=str(profile_inspection["state_digest"]),
+        )
+        assert profile_recovery["recovery_outcome"] == "APPLIED"
+        with target.connect() as connection:
+            assert classify_auth_profile_schema(
+                read_auth_profile_schema(connection)
+            ) == "COMPLETE"
     finally:
         target.dispose()
         with admin.connect() as connection:
@@ -189,6 +250,9 @@ def test_auth_service_sessions_throttle_and_admin_lifecycle_on_mysql8() -> None:
     clock = [datetime(2026, 9, 2, 0, 0, 0)]
     service = AuthService(engine, now=lambda: clock[0])
     with engine.begin() as connection:
+        assert classify_auth_profile_schema(
+            read_auth_profile_schema(connection)
+        ) == "COMPLETE"
         connection.execute(text("DELETE FROM t_auth_audit_logs"))
         connection.execute(text("DELETE FROM t_auth_sessions"))
         connection.execute(
@@ -261,9 +325,13 @@ def test_auth_service_sessions_throttle_and_admin_lifecycle_on_mysql8() -> None:
         username="Second.Admin",
         initial_password="Second123",
         role="admin",
+        full_name="  李四  ",
+        organization_name="示例机构",
         request_id="request-create",
     )
     assert created.username == "second.admin"
+    assert created.full_name == "李四"
+    assert created.organization_name == "示例机构"
     with pytest.raises(AuthError, match="protected_admin"):
         service.change_username(
             admin.token,
@@ -272,6 +340,25 @@ def test_auth_service_sessions_throttle_and_admin_lifecycle_on_mysql8() -> None:
             request_id="request-protected",
         )
     before = service.login("second.admin", "Second123")
+    profiled = service.update_user_profile(
+        admin.token,
+        user_id=created.id,
+        full_name="王五",
+        organization_name=" 新机构 ",
+        request_id="request-admin-profile",
+    )
+    assert profiled.full_name == "王五"
+    assert profiled.organization_name == "新机构"
+    assert service.authenticate(before.token).id == created.id
+    self_profiled = service.update_own_profile(
+        before.token,
+        full_name="",
+        organization_name=None,
+        request_id="request-self-profile",
+    )
+    assert self_profiled.full_name is None
+    assert self_profiled.organization_name is None
+    assert service.authenticate(before.token).id == created.id
     with engine.connect() as connection:
         audit_count_before = int(
             connection.execute(
@@ -501,5 +588,5 @@ def test_offline_admin_cli_initialize_and_reset_on_mysql8(
             )
         ).one()
     assert verify_password(str(password_hash), "Reset456")
-    assert bool(must_change)
+    assert not bool(must_change)
     engine.dispose()
