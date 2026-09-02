@@ -236,6 +236,36 @@ def test_auth_schema_fresh_partial_complete_and_drift_on_mysql8() -> None:
             assert classify_auth_profile_schema(
                 read_auth_profile_schema(connection)
             ) == "COMPLETE"
+            connection.execute(
+                text(
+                    "ALTER TABLE t_auth_users MODIFY COLUMN "
+                    "full_name VARCHAR(100) NULL AFTER updated_at"
+                )
+            )
+            connection.execute(
+                text(
+                    "ALTER TABLE t_auth_users MODIFY COLUMN "
+                    "organization_name VARCHAR(200) NULL AFTER full_name"
+                )
+            )
+            assert classify_auth_profile_schema(
+                read_auth_profile_schema(connection)
+            ) == "UNSAFE"
+            connection.execute(
+                text(
+                    "ALTER TABLE t_auth_users MODIFY COLUMN "
+                    "full_name VARCHAR(100) NULL AFTER username"
+                )
+            )
+            connection.execute(
+                text(
+                    "ALTER TABLE t_auth_users MODIFY COLUMN "
+                    "organization_name VARCHAR(200) NULL AFTER full_name"
+                )
+            )
+            assert classify_auth_profile_schema(
+                read_auth_profile_schema(connection)
+            ) == "COMPLETE"
     finally:
         target.dispose()
         with admin.connect() as connection:

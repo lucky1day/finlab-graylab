@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from migrations.auth_profile_023 import classify_auth_profile_schema
+from migrations.auth_profile_023 import (
+    BASE_USER_COLUMN_ORDER,
+    classify_auth_profile_schema,
+)
 
 
 def _schema(
@@ -15,7 +18,7 @@ def _schema(
         columns["full_name"] = full_name
     if organization_name is not None:
         columns["organization_name"] = organization_name
-    order = tuple(
+    profile_order = tuple(
         name
         for name in ("full_name", "organization_name")
         if name in columns
@@ -23,7 +26,11 @@ def _schema(
     return {
         "base_schema_classification": "COMPLETE",
         "profile_columns": columns,
-        "profile_column_order": order,
+        "user_column_order": (
+            BASE_USER_COLUMN_ORDER[:2]
+            + profile_order
+            + BASE_USER_COLUMN_ORDER[2:]
+        ),
         "must_change_password_default": default,
         "forced_password_user_count": forced_count,
     }
@@ -67,8 +74,9 @@ def test_profile_schema_rejects_base_column_order_and_definition_drift() -> None
         organization_name=ORGANIZATION_NAME,
         default="0",
     )
-    order_drift["profile_column_order"] = (
-        "organization_name", "full_name"
+    order_drift["user_column_order"] = (
+        BASE_USER_COLUMN_ORDER
+        + ("full_name", "organization_name")
     )
     type_drift = _schema(full_name=("varchar(99)",) + FULL_NAME[1:])
     for drift in (base_drift, order_drift, type_drift):

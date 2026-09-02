@@ -404,7 +404,7 @@
       var dialog = document.getElementById("authResetPasswordDialog");
       dialog.querySelector("form").reset();
       dialog.querySelector('[name="userId"]').value = String(userId);
-      document.getElementById("authResetPasswordTarget").textContent = "为用户“" + user.username + "”设置临时密码；其全部会话将被撤销。";
+      document.getElementById("authResetPasswordTarget").textContent = "为用户“" + user.username + "”设置新密码；其全部会话将被撤销。";
       emitError(dialog.querySelector(".auth-error"), "");
       dialog.showModal();
     }

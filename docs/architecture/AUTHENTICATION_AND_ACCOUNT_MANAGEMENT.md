@@ -320,7 +320,7 @@ must_change_password = false
 - 特殊字符可以使用，但不强制要求；
 - 不要求周期性改密；
 - 支持复制粘贴和密码管理器；
-- 密码、密码哈希和临时密码不得进入日志、审计 `detail`、API 响应或应用管理的浏览器存储。
+- 密码、密码哈希和新密码不得进入日志、审计 `detail`、API 响应或应用管理的浏览器存储。
 
 Argon2id 参数不得低于 OWASP 当前建议的最低安全基线，并在目标运行环境上验证登录延迟与资源占用。参考：
 [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)。
@@ -376,7 +376,7 @@ __Host-bfl-session=<opaque-token>; Secure; HttpOnly; SameSite=Strict; Path=/
 | `POST` | `/api/admin/users` | 创建用户 |
 | `POST` | `/api/admin/users/change-username` | 修改登录用户名 |
 | `POST` | `/api/admin/users/change-role` | 修改用户角色 |
-| `POST` | `/api/admin/users/reset-password` | 设置临时密码 |
+| `POST` | `/api/admin/users/reset-password` | 重置密码 |
 | `POST` | `/api/admin/users/change-status` | 停用或恢复用户 |
 | `POST` | `/api/admin/users/update-profile` | 修改用户的可选姓名和机构名称 |
 
