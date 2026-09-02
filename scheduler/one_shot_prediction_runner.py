@@ -338,11 +338,12 @@ def _execute_native_wave(
     input_root: Path,
     cancellation_event: threading.Event,
     process_start_guard: ProcessStartGuard,
+    worker_limit: int = 2,
     native_cache_mutation_policy: str = (
         CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
     ),
 ) -> None:
-    """最多两个 worker 执行一批 Native，并在主线程合并结果。"""
+    """按内部 worker 上限执行一批 Native，并在主线程合并结果。"""
     if not candidates:
         return
 
@@ -365,7 +366,7 @@ def _execute_native_wave(
         return local
 
     pool = ThreadPoolExecutor(
-        max_workers=min(2, len(candidates)),
+        max_workers=min(worker_limit, len(candidates)),
         thread_name_prefix="native-one-shot",
     )
     futures = {pool.submit(execute, cfg): cfg for cfg in candidates}
@@ -764,6 +765,7 @@ def run_one_shot(
                             input_root=input_root,
                             cancellation_event=cancellation_event,
                             process_start_guard=process_start_guard,
+                            worker_limit=1,
                             native_cache_mutation_policy=(
                                 CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE
                                 if normalized_cadence == "daily"
@@ -783,6 +785,7 @@ def run_one_shot(
                             input_root=input_root,
                             cancellation_event=cancellation_event,
                             process_start_guard=process_start_guard,
+                            worker_limit=2,
                             native_cache_mutation_policy=(
                                 CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
                             ),

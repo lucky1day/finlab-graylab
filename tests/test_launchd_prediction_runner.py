@@ -248,6 +248,8 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         )
         self.assertEqual(publisher_call.args[1], [publisher])
         self.assertEqual(consumer_call.args[1], [consumer])
+        self.assertEqual(publisher_call.kwargs["worker_limit"], 1)
+        self.assertEqual(consumer_call.kwargs["worker_limit"], 2)
 
     def test_requested_scheme_filter_runs_only_exact_active_set(self) -> None:
         from scheduler import one_shot_prediction_runner as runner
