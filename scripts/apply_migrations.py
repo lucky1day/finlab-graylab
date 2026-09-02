@@ -22,10 +22,12 @@ from migrations.runner import (
     inspect_applying_migration_018,
     inspect_applying_migration_019,
     inspect_applying_migration_021,
+    inspect_applying_migration_022,
     recover_applying_migration_017,
     recover_applying_migration_018,
     recover_applying_migration_019,
     recover_applying_migration_021,
+    recover_applying_migration_022,
     validate_release_migration_manifest,
 )
 from scheduler.repository import create_engine_from_env
@@ -123,6 +125,26 @@ _MIGRATION_MODES = (
         ),
         handler_name="recover_applying_migration_021",
     ),
+    _MigrationMode(
+        option="--inspect-applying-022",
+        dest="inspect_applying_022",
+        action="inspect",
+        help=(
+            "connect to the live DB and classify an interrupted migration "
+            "022 using SELECT plus a named advisory lock only; no DDL/DML"
+        ),
+        handler_name="inspect_applying_migration_022",
+    ),
+    _MigrationMode(
+        option="--recover-applying-022",
+        dest="recover_applying_022",
+        action="recover",
+        help=(
+            "recover migration 022 using --apply and the exact digest "
+            "from a prior read-only inspection"
+        ),
+        handler_name="recover_applying_migration_022",
+    ),
 )
 
 
@@ -200,7 +222,7 @@ def _parse_args(
         parser.error(
             "--state-digest is only valid with "
             "--recover-applying-017, --recover-applying-018 or "
-            "--recover-applying-019/021"
+            "--recover-applying-019/021/022"
         )
     elif not args.apply:
         parser.error("--apply is required to change the database")

@@ -421,8 +421,10 @@ def test_release_manifest_includes_registry_owner_checksum() -> None:
     manifest = validate_release_migration_manifest(
         sorted(MIGRATIONS_DIR.glob("[0-9][0-9][0-9]_*.sql"))
     )
-    assert manifest[-1].version == 21
-    assert manifest[-1].path.name == "021_registry_owner.sql"
+    registry_owner = next(item for item in manifest if item.version == 21)
+    assert registry_owner.path.name == "021_registry_owner.sql"
+    assert manifest[-1].version == 22
+    assert manifest[-1].path.name == "022_authentication.sql"
 
 
 def test_registry_owner_sql_is_reentrant_and_checks_both_identity_directions() -> None:
@@ -449,8 +451,13 @@ def test_registry_owner_sql_is_reentrant_and_checks_both_identity_directions() -
 
 
 def _applying_021_fixture():
-    manifest = validate_release_migration_manifest(
+    release_manifest = validate_release_migration_manifest(
         sorted(MIGRATIONS_DIR.glob("[0-9][0-9][0-9]_*.sql"))
+    )
+    manifest = tuple(
+        migration
+        for migration in release_manifest
+        if migration.version <= 21
     )
     target = manifest[-1]
     authority = _registry_owner_authority(target)

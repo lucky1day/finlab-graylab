@@ -45,7 +45,7 @@
 ## 强约束分层边界（不可破坏的四条不变量）
 
 1. **输入单点**：算法输入只能经 `shared.input_artifacts` 产出；adapter / backtest runner 不得自拼 DB 输入。
-2. **写库单点**：只有 `scheduler.repository` / `backtests.repository` / `*_actuals_updater` 能写库；其余层零写库。
+2. **写库单点**：只有 `scheduler.repository` / `backtests.repository` / `*_actuals_updater` / `backend.auth.repository` 能写库；认证仓储只允许写认证三张表，其余层零写库。
 3. **Native core 纯净**：Native V1 的 `schemes/*/core/`（非 legacy）零 DB、零写库、零跨方案 import；Blackbox 不向平台暴露 core。
 4. **源算法保真**：Native 存量只允许有证据的 L0 平台适配和 L1 source runner 上下文传递；L2 算法内部改动必须停止并创建独立 Blackbox V2 trial。source-original backtest 与 live-safe 真值必须分开验收，平台不得用调参贴结果。Blackbox 内部保真由上游负责，平台只验证自身接入与标准输出边界。
 

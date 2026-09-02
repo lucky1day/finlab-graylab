@@ -1,2 +1,3 @@
 # Test tooling layered onto the existing bond_factor_lab_service environment.
+httpx==0.28.1
 pytest==9.1.1

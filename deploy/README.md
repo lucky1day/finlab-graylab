@@ -142,6 +142,19 @@ Actuals 只由 `scheduler.actuals_runner` 驱动；Backend 不提供手动预测
 也不得恢复常驻调度器或第二 Writer。已安装 legacy plist 的物理清理仍是独立生产操作，
 不由仓库期望配置推断或执行。
 
+## Backend 认证外置配置
+
+认证启用后，Backend 外置配置必须提供与部署目标精确匹配的
+`BFL_AUTH_TRUSTED_ORIGIN`：ECS `aliyun-gray` 只能使用
+`http://localhost:18110`，Mac3 `mac3-production` 只能使用
+`https://bond.finailab.cn`。缺失、交叉或其它 Origin 均使所有状态变更请求 fail-closed。
+该变量不得写入 release 内 `.bfl-release.env`，也不得改变任何 one-shot unit/plist。
+
+受保护初始管理员只通过 `scripts/manage_auth_admin.py` 初始化或离线重置；密码只从部署目标固定的
+owner-only secret 文件读取，命令行、环境变量、日志和安装记录均不得承载密码。ECS 与 Mac3
+独立初始化，不复制用户、会话、哈希或审计数据。详细合同见
+[登录与账户管理](../docs/architecture/AUTHENTICATION_AND_ACCOUNT_MANAGEMENT.md)。
+
 ## 生产操作边界
 
 替换 installed plist/unit/timer、修改 loaded state、启动、停止或重载服务均为独立操作。操作

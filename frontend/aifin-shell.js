@@ -204,6 +204,7 @@
   var FACTOR_LAB_HEALTHY_REFRESH_MS = 60000;
   var FACTOR_LAB_RETRY_DELAYS_MS = [1000, 2000, 5000, 10000, 30000];
   var factorLabRuntimeState = {
+    authenticated: false,
     loadSeq: 0,
     controller: null,
     committedViewModel: null,
@@ -1049,6 +1050,9 @@
     if (options && options.signal) requestOptions.signal = options.signal;
     return fetch(requestUrl, requestOptions).then(function (response) {
       if (response.ok) return response.json();
+      if (response.status === 401 && window.CustomEvent) {
+        window.dispatchEvent(new CustomEvent("bfl:auth-required"));
+      }
       var bodyPromise = typeof response.json === "function"
         ? response.json().catch(function () { return null; })
         : Promise.resolve(null);
@@ -1088,7 +1092,7 @@
 
   function scheduleFactorLabRefresh(delayMs) {
     clearFactorLabRefreshTimer();
-    if (!window.setTimeout || document.visibilityState === "hidden") return;
+    if (!factorLabRuntimeState.authenticated || !window.setTimeout || document.visibilityState === "hidden") return;
     factorLabRuntimeState.nextRefreshAt = factorLabNow() + delayMs;
     factorLabRuntimeState.refreshTimer = window.setTimeout(function () {
       factorLabRuntimeState.refreshTimer = null;
@@ -1278,7 +1282,7 @@
 
   function loadFactorLabData(options) {
     var force = options && options.force === true;
-    if (!window.fetch) return Promise.resolve(false);
+    if (!factorLabRuntimeState.authenticated || !window.fetch) return Promise.resolve(false);
     if (!force && (factorLabRemoteLoaded || factorLabRemoteLoading)) {
       return Promise.resolve(false);
     }
@@ -1331,6 +1335,59 @@
       }
     });
   }
+
+  function startAuthenticatedFactorLab() {
+    if (factorLabRuntimeState.authenticated) return;
+    factorLabRuntimeState.authenticated = true;
+    setActiveRoute("/factor-lab", false);
+    startFactorLabAutoRefresh();
+    loadFactorLabData({ force: true });
+  }
+
+  function clearAuthenticatedFactorLab() {
+    factorLabRuntimeState.authenticated = false;
+    clearFactorLabRefreshTimer();
+    factorLabRuntimeState.loadSeq += 1;
+    factorLabRuntimeState.detailSeq += 1;
+    if (factorLabRuntimeState.controller &&
+        typeof factorLabRuntimeState.controller.abort === "function") {
+      factorLabRuntimeState.controller.abort("authentication-ended");
+    }
+    if (factorLabRuntimeState.detailController &&
+        typeof factorLabRuntimeState.detailController.abort === "function") {
+      factorLabRuntimeState.detailController.abort("authentication-ended");
+    }
+    factorLabRuntimeState.controller = null;
+    factorLabRuntimeState.detailController = null;
+    factorLabRuntimeState.committedViewModel = null;
+    factorLabRuntimeState.aggregateCache = new Map();
+    factorLabRuntimeState.detailCache = new Map();
+    factorTaskSchemes = initEmptyTaskSchemes();
+    factorTargetLabels = Object.assign(Object.create(null), factorDefaultTargetLabels);
+    factorLabRemoteLoaded = false;
+    factorLabRemoteLoading = false;
+    factorLabApiError = "";
+    factorLabDataMode = "loading";
+    factorLabDrawerSelection = null;
+    window.__factorLabReady = null;
+    closeFactorRemark(false);
+    closeFactorCalendar();
+    [
+      "factorTaskMatrixBody",
+      "factorSchemeRankingBody",
+      "factorMonthlyTableBody",
+      "factorDailyTableBody",
+      "factorTrendChart"
+    ].forEach(function (id) {
+      var element = document.getElementById(id);
+      if (element) element.textContent = "";
+    });
+  }
+
+  window.BondFactorLabDashboard = Object.freeze({
+    start: startAuthenticatedFactorLab,
+    stop: clearAuthenticatedFactorLab
+  });
 
   function getSchemesForTask(taskKey) {
     var schemes = factorTaskSchemes[taskKey] || [];
@@ -2381,6 +2438,5 @@
   });
 
   /* ─── Init ─── */
-  setActiveRoute("/factor-lab", false);
-  startFactorLabAutoRefresh();
+  clearAuthenticatedFactorLab();
 })();

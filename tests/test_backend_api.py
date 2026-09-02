@@ -7,10 +7,10 @@ from unittest.mock import MagicMock, patch
 from backend import main
 
 
-class ReadOnlyApiBoundaryTests(unittest.TestCase):
-    """Backend API 只能暴露读取路由。"""
+class ApiBoundaryTests(unittest.TestCase):
+    """Backend API 只暴露已审查的 Dashboard 与认证路由。"""
 
-    def test_api_routes_are_read_only_and_admin_sync_is_absent(self) -> None:
+    def test_api_routes_match_reviewed_contract(self) -> None:
         actual: dict[str, set[str]] = {}
         for route in main.app.routes:
             path = getattr(route, "path", "")
@@ -19,6 +19,15 @@ class ReadOnlyApiBoundaryTests(unittest.TestCase):
         self.assertEqual(
             actual,
             {
+                "/api/auth/login": {"POST"},
+                "/api/auth/logout": {"POST"},
+                "/api/auth/me": {"GET"},
+                "/api/auth/change-password": {"POST"},
+                "/api/admin/users": {"GET", "POST"},
+                "/api/admin/users/change-username": {"POST"},
+                "/api/admin/users/change-role": {"POST"},
+                "/api/admin/users/reset-password": {"POST"},
+                "/api/admin/users/change-status": {"POST"},
                 "/api/health": {"GET"},
                 "/api/factor-lab/dashboard": {"GET", "HEAD"},
             },
@@ -26,6 +35,15 @@ class ReadOnlyApiBoundaryTests(unittest.TestCase):
         self.assertEqual(
             {getattr(route, "path", "") for route in main.app.routes},
             {
+                "/api/auth/login",
+                "/api/auth/logout",
+                "/api/auth/me",
+                "/api/auth/change-password",
+                "/api/admin/users",
+                "/api/admin/users/change-username",
+                "/api/admin/users/change-role",
+                "/api/admin/users/reset-password",
+                "/api/admin/users/change-status",
                 "/api/health",
                 "/api/factor-lab/dashboard",
                 "",

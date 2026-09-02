@@ -10,20 +10,60 @@
       html, body { margin: 0; min-height: 100%; background: #F8F7F2; color: #171A20; }
       .aifin-shell { min-height: 100vh; background: #F8F7F2; }
     </style>
-    <link rel="stylesheet" href="aifin-shell.css?v=8004389c557cbedbdae98d8bfb4a045abc4e04ccce53228ae7d395005bb0992e">
+    <link rel="stylesheet" href="aifin-shell.css?v=8a3c6fd1b3228e906cf4670e80e7e066a6fb89c778afb10c55bc1b4038793e40">
   </head>
   <body>
-    <div id="aifin-shell" class="aifin-shell">
+    <div id="authGate" class="auth-gate" aria-live="polite">
+      <section id="authLoading" class="auth-card auth-loading-state">
+        <img src="assets/aifin-lab-logo.svg" alt="Bond Factor Lab">
+        <p>正在验证登录状态…</p>
+      </section>
+      <section id="authLogin" class="auth-card" hidden>
+        <img src="assets/aifin-lab-logo.svg" alt="Bond Factor Lab">
+        <h1>登录因子实验室</h1>
+        <p class="auth-help">账号由管理员创建；如需重置密码，请联系管理员。</p>
+        <form id="authLoginForm" autocomplete="on">
+          <label>用户名<input id="authUsername" name="username" type="text" autocomplete="username" required maxlength="32"></label>
+          <label>密码<span class="auth-password-field"><input id="authPassword" name="password" type="password" autocomplete="current-password" required maxlength="128"><button type="button" data-password-toggle="authPassword" aria-label="显示密码">显示</button></span></label>
+          <p id="authLoginError" class="auth-error" role="alert" hidden></p>
+          <button id="authLoginSubmit" class="auth-primary" type="submit">登录</button>
+        </form>
+      </section>
+      <section id="authForcedPassword" class="auth-card" hidden>
+        <img src="assets/aifin-lab-logo.svg" alt="Bond Factor Lab">
+        <h1>首次登录，请修改密码</h1>
+        <p class="auth-help">新密码需为 6–128 位，并包含 ASCII 大写字母、小写字母和数字。</p>
+        <form id="authForcedPasswordForm" autocomplete="off">
+          <label>当前密码<input name="currentPassword" type="password" autocomplete="current-password" required maxlength="128"></label>
+          <label>新密码<input name="newPassword" type="password" autocomplete="new-password" required maxlength="128"></label>
+          <label>确认新密码<input name="confirmPassword" type="password" autocomplete="new-password" required maxlength="128"></label>
+          <p class="auth-error" role="alert" hidden></p>
+          <button class="auth-primary" type="submit">修改密码并退出</button>
+        </form>
+      </section>
+    </div>
+
+    <div id="aifin-shell" class="aifin-shell" hidden aria-hidden="true">
       <header class="aifin-topbar">
         <button class="brand-button" type="button" data-route="/">
           <img src="assets/aifin-lab-logo.svg" alt="Bond Factor Lab">
         </button>
         <nav class="main-nav" aria-label="主导航">
-          <button type="button" class="is-active" data-route="/factor-lab">因子实验室</button>
+          <button id="factorLabNav" type="button" class="is-active" data-route="/factor-lab">因子实验室</button>
+          <button id="authUsersNav" type="button" hidden>用户管理</button>
         </nav>
-        <div id="factorDataStatus" class="status-strip is-loading" aria-label="数据状态" role="status" aria-live="polite">
-          <span class="status-dot"></span>
-          <span id="factorDataStatusText">Loading</span>
+        <div class="topbar-actions">
+          <div id="factorDataStatus" class="status-strip is-loading" aria-label="数据状态" role="status" aria-live="polite">
+            <span class="status-dot"></span>
+            <span id="factorDataStatusText">Loading</span>
+          </div>
+          <div class="account-control">
+            <button id="authAccountButton" class="account-button" type="button" aria-haspopup="menu" aria-expanded="false"><span id="authAccountName"></span><span aria-hidden="true">▾</span></button>
+            <div id="authAccountMenu" class="account-menu" role="menu" hidden>
+              <button id="authChangePasswordButton" type="button" role="menuitem">修改密码</button>
+              <button id="authLogoutButton" type="button" role="menuitem">退出登录</button>
+            </div>
+          </div>
         </div>
       </header>
 
@@ -198,8 +238,52 @@
             </aside>
           </div>
         </section>
+        <section id="authUsersView" class="auth-users-view" hidden aria-labelledby="authUsersTitle">
+          <div class="auth-users-head">
+            <div><h2 id="authUsersTitle">用户管理</h2><p>创建、停用和维护独立站点账户。</p></div>
+            <button id="authCreateUserButton" class="auth-primary" type="button">创建用户</button>
+          </div>
+          <p id="authUsersError" class="auth-error" role="alert" hidden></p>
+          <div class="auth-users-table-wrap">
+            <table class="auth-users-table">
+              <thead><tr><th>用户名</th><th>角色</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+              <tbody id="authUsersBody"></tbody>
+            </table>
+          </div>
+        </section>
       </main>
     </div>
+
+    <dialog id="authChangePasswordDialog" class="auth-dialog">
+      <form id="authChangePasswordForm" method="dialog" autocomplete="off">
+        <h2>修改密码</h2>
+        <label>当前密码<input name="currentPassword" type="password" autocomplete="current-password" required maxlength="128"></label>
+        <label>新密码<input name="newPassword" type="password" autocomplete="new-password" required maxlength="128"></label>
+        <label>确认新密码<input name="confirmPassword" type="password" autocomplete="new-password" required maxlength="128"></label>
+        <p class="auth-error" role="alert" hidden></p>
+        <div class="auth-dialog-actions"><button type="button" data-dialog-close>取消</button><button class="auth-primary" type="submit">确认修改</button></div>
+      </form>
+    </dialog>
+    <dialog id="authCreateUserDialog" class="auth-dialog">
+      <form id="authCreateUserForm" method="dialog" autocomplete="off">
+        <h2>创建用户</h2>
+        <label>用户名<input name="username" type="text" autocomplete="off" required maxlength="32"></label>
+        <label>初始密码<input name="initialPassword" type="password" autocomplete="new-password" required maxlength="128"></label>
+        <label>角色<select name="role"><option value="user">普通用户</option><option value="admin">管理员</option></select></label>
+        <p class="auth-error" role="alert" hidden></p>
+        <div class="auth-dialog-actions"><button type="button" data-dialog-close>取消</button><button class="auth-primary" type="submit">创建</button></div>
+      </form>
+    </dialog>
+    <dialog id="authResetPasswordDialog" class="auth-dialog">
+      <form id="authResetPasswordForm" method="dialog" autocomplete="off">
+        <h2>重置密码</h2>
+        <p id="authResetPasswordTarget" class="auth-help"></p>
+        <input name="userId" type="hidden">
+        <label>临时密码<input name="newPassword" type="password" autocomplete="new-password" required maxlength="128"></label>
+        <p class="auth-error" role="alert" hidden></p>
+        <div class="auth-dialog-actions"><button type="button" data-dialog-close>取消</button><button class="auth-primary" type="submit">确认重置</button></div>
+      </form>
+    </dialog>
     <aside class="factor-remark-popover" id="factorRemarkPopover" role="dialog" aria-modal="false" aria-hidden="true" aria-labelledby="factorRemarkTitle" hidden>
       <div class="factor-remark-popover-head">
         <strong id="factorRemarkTitle">方案备注</strong>
@@ -207,6 +291,7 @@
       </div>
       <div class="factor-remark-popover-body" id="factorRemarkBody"></div>
     </aside>
-    <script src="aifin-shell.js?v=ee8b0300023514e84dd438965255dd57b07c2c173c6df30ad9050b71e2d231d4"></script>
+    <script src="aifin-shell.js?v=5437e66344455b02f89034bdab5b57b9c15e2c3b154f735b0c34b789317620cd"></script>
+    <script src="auth-shell.js?v=e236455a7e027cbd0fe4b74724686290f60eee2492faf74bb86fecdcc476b994"></script>
   </body>
 </html>

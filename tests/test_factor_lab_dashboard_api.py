@@ -14,6 +14,18 @@ import pytest
 DASHBOARD_PATH = "/api/factor-lab/dashboard"
 
 
+@pytest.fixture(autouse=True)
+def _authenticated_dashboard_request():
+    """既有表示层测试绕过新增鉴权，专注验证 Dashboard 合同。"""
+    from backend import main
+
+    main.app.dependency_overrides[main.require_dashboard_user] = lambda: object()
+    try:
+        yield
+    finally:
+        main.app.dependency_overrides.pop(main.require_dashboard_user, None)
+
+
 def _payload(snapshot_id: str) -> dict[str, Any]:
     return {
         "schema_version": "factor-lab-dashboard-v4",

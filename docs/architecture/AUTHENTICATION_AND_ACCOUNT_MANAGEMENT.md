@@ -1,6 +1,6 @@
 # 登录与账户管理设计
 
-**文档状态**：`APPROVED_DESIGN`
+**文档状态**：`CURRENT`
 
 **最后更新日期**：2026-09-02
 
@@ -240,8 +240,9 @@ must_change_password = true
 
 ## 6. 数据库设计
 
-认证表位于各环境现有的 `bond_db`。建议新增 Migration 022，并通过既有 `migrations.runner` 和
-`scripts/apply_migrations.py` 管理 schema；本文不授权在任何现场数据库执行 migration。
+认证表位于各环境现有的 `bond_db`。Migration 022 只通过既有 `migrations.runner` 和
+`scripts/apply_migrations.py` 管理 schema；当前阶段只授权按本文门槛在 ECS 独立数据库执行，Mac3 必须等待
+用户明确确认 ECS 验收通过。
 
 ### 6.1 `t_auth_users`
 
@@ -445,7 +446,8 @@ Migration 只创建 schema，不写入默认用户名或密码。提供一次性
 11. 管理员变更均有不可修改的审计记录。
 12. Dashboard 数据合同、排序、统计和日期语义不因认证接入发生变化。
 13. 第一阶段只在 ECS 独立认证数据中验收，不修改或同步 Mac3 账户数据。
-14. ECS 灰度 Nginx 继续拒绝未列出的页面、API、方法和路径变体，Backend 的 loopback 端口不直接暴露公网。
+14. ECS 不安装或开放 Nginx；Backend 只监听 loopback，并由 FastAPI 路由拒绝未列出的 API 方法，验收只经 SSH
+    localhost 转发访问。
 15. 本地单元、API、前端、migration、Nginx 合同和完整回归测试全部通过后，才可请求 ECS 现场 migration、
     release 激活和服务操作授权。
 16. 同一用户可以在多个浏览器同时登录，且每条会话都在创建 12 小时后绝对过期。

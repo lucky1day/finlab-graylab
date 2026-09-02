@@ -105,6 +105,11 @@
       "version": 21,
       "filename": "021_registry_owner.sql",
       "sha256": "d9c3332d0e923a0220f68d5ca7c705676b3e9a5e0fd4f4579c0d08e1b2f6667f"
+    },
+    {
+      "version": 22,
+      "filename": "022_authentication.sql",
+      "sha256": "c3981f525d296bf2d5103d53651cc7f4f12374ed93cdcb9276f726bc38b03292"
     }
   ]
 }

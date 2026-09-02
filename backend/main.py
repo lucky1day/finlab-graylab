@@ -13,15 +13,27 @@ from urllib.parse import parse_qsl, urlsplit
 from uuid import uuid4
 
 from fastapi import (
+    Depends,
     FastAPI,
     Request,
     Response,
 )
 from fastapi.staticfiles import StaticFiles
+from fastapi.exceptions import RequestValidationError
 from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from backend.db import get_dashboard_engine, get_engine
+from backend.auth.routes import (
+    auth_error_response,
+    policy_error_response,
+    require_dashboard_user,
+    router as auth_router,
+    validation_error_response,
+    unhandled_error_response,
+)
+from backend.auth.security import PasswordPolicyError, UsernamePolicyError
+from backend.auth.service import AuthError
 from backend.factor_lab_dashboard import (
     build_factor_lab_dashboard,
     build_factor_lab_dashboard_detail,
@@ -188,6 +200,37 @@ app = FastAPI(
     openapi_url=None,
 )
 app.add_middleware(QAwareGZipMiddleware)
+app.add_exception_handler(AuthError, auth_error_response)
+app.add_exception_handler(PasswordPolicyError, policy_error_response)
+app.add_exception_handler(UsernamePolicyError, policy_error_response)
+app.add_exception_handler(RequestValidationError, validation_error_response)
+app.add_exception_handler(Exception, unhandled_error_response)
+app.include_router(auth_router)
+
+
+@app.middleware("http")
+async def security_response_headers(request: Request, call_next):
+    """为 HTML、认证和 Dashboard 统一补充浏览器安全响应头。"""
+    response = await call_next(request)
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; script-src 'self'; style-src 'self' "
+        "'unsafe-inline'; img-src 'self'; connect-src 'self'; "
+        "object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    )
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = (
+        "camera=(), microphone=(), geolocation=(), payment=()"
+    )
+    if (
+        request.url.path.startswith("/api/auth/")
+        or request.url.path.startswith("/api/admin/")
+        or request.url.path == "/api/factor-lab/dashboard"
+        or response.headers.get("content-type", "").startswith("text/html")
+    ):
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/api/health")
@@ -546,12 +589,18 @@ def _dashboard_detail_query(request: Request) -> dict[str, str] | None:
 
 
 @app.get("/api/factor-lab/dashboard")
-def api_factor_lab_dashboard(request: Request) -> Response:
+def api_factor_lab_dashboard(
+    request: Request,
+    _user=Depends(require_dashboard_user),
+) -> Response:
     return _factor_lab_dashboard_response(request)
 
 
 @app.head("/api/factor-lab/dashboard")
-def api_factor_lab_dashboard_head(request: Request) -> Response:
+def api_factor_lab_dashboard_head(
+    request: Request,
+    _user=Depends(require_dashboard_user),
+) -> Response:
     return _factor_lab_dashboard_response(request)
 
 

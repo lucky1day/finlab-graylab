@@ -35,11 +35,15 @@ def test_index_references_factor_lab_assets_by_content_hash() -> None:
     parser = _ScriptParser()
     parser.feed((frontend_root / "index.html").read_text(encoding="utf-8"))
 
-    for references, filename in (
-        (parser.scripts, "aifin-shell.js"),
-        (parser.stylesheets, "aifin-shell.css"),
-    ):
+    expected = {
+        "aifin-shell.js": parser.scripts[0],
+        "auth-shell.js": parser.scripts[1],
+        "aifin-shell.css": parser.stylesheets[0],
+    }
+    assert len(parser.scripts) == 2
+    assert len(parser.stylesheets) == 1
+    for filename, reference in expected.items():
         content_hash = hashlib.sha256(
             (frontend_root / filename).read_bytes()
         ).hexdigest()
-        assert references == [f"{filename}?v={content_hash}"]
+        assert reference == f"{filename}?v={content_hash}"
