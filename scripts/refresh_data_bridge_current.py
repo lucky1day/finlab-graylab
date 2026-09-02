@@ -25,10 +25,14 @@ from scheduler.v2_daily_gate import write_gate_record  # noqa: E402
 from shared.calendar_service import get_calendar  # noqa: E402
 from shared.data_bridge.refresh import (  # noqa: E402
     DataBridgeRefreshConfig,
+    DataBridgeContinuityIdentityError,
     DataBridgeCurrentInvalidError,
     DataBridgeCurrentMissingError,
     DataBridgeCurrentReadError,
+    DataBridgeNonRetryableRefreshError,
+    DataBridgeRecoveryIdentityError,
     DataBridgeRefreshError,
+    DataBridgeStoreLockError,
     FAILED_ATTEMPT_ERROR_CATEGORIES,
     check_current_dataset,
     run_full_refresh,
@@ -54,8 +58,8 @@ Mode = Literal["dry-run", "publish", "check-only"]
 DATABRIDGE_PRODUCER_ENV = "BFL_DATABRIDGE_PRODUCER"
 LAUNCHD_PUBLISHER_ENV = DATABRIDGE_PRODUCER_ENV
 LAUNCHD_PUBLISHER_VALUE = DATABRIDGE_LAUNCHD_PRODUCER
-PUBLISH_REFRESH_MAX_ATTEMPTS = 3
-PUBLISH_REFRESH_RETRY_DELAY_SEC = 30
+PUBLISH_REFRESH_INITIAL_RETRY_DELAY_SEC = 30
+PUBLISH_REFRESH_MAX_RETRY_DELAY_SEC = 120
 _CHECK_ONLY_STATE_FIELDS = (
     "schema_version",
     "generation_id",
@@ -311,6 +315,12 @@ _FAILURE_CATEGORIES: tuple[tuple[type[BaseException], str], ...] = (
     (DataBridgeCurrentMissingError, "current_dataset_missing"),
     (DataBridgeCurrentInvalidError, "current_dataset_invalid"),
     (DataBridgeCurrentReadError, "current_dataset_read_failed"),
+    (
+        DataBridgeContinuityIdentityError,
+        "continuity_identity_invalid",
+    ),
+    (DataBridgeRecoveryIdentityError, "current_dataset_invalid"),
+    (DataBridgeStoreLockError, "store_lock_conflict"),
     (DataBridgeRefreshError, "refresh_failed"),
     (DataBridgeValidationError, "validation_failed"),
 )
@@ -324,6 +334,14 @@ def _failure_category(exc: BaseException) -> str:
     if isinstance(exc, (OSError, ValueError, SQLAlchemyError)):
         return "configuration_error"
     return "unexpected_error"
+
+
+def _is_retryable_refresh_error(exc: BaseException) -> bool:
+    """只允许 refresh/validation 瞬时失败进入同进程重试。"""
+    return isinstance(
+        exc,
+        (DataBridgeRefreshError, DataBridgeValidationError),
+    ) and not isinstance(exc, DataBridgeNonRetryableRefreshError)
 
 
 def _configuration_error(mode: Mode) -> tuple[int, dict[str, object]]:
@@ -412,6 +430,7 @@ def _run_refresh_with_config(
             "mode": mode,
             "failure_category": category,
             "error": "local MySQL DataBridge refresh or validation failed",
+            "retryable": _is_retryable_refresh_error(exc),
         }
     except (OSError, ValueError, SQLAlchemyError) as exc:
         category = _failure_category(exc)
@@ -448,9 +467,21 @@ def _run_publish_with_retries(
     """在同一发布进程内，于已有 refresh deadline 前有限重试。"""
     deadline_at = _refresh_deadline_at(config, refresh_date=refresh_date)
     result: tuple[int, dict[str, object]] | None = None
-    for attempt in range(PUBLISH_REFRESH_MAX_ATTEMPTS):
+    attempt_count = 0
+    retry_delay_sec = PUBLISH_REFRESH_INITIAL_RETRY_DELAY_SEC
+    while True:
         if _now() >= deadline_at:
-            return result if result is not None else _refresh_failure("publish")
+            terminal = (
+                result
+                if result is not None
+                else _refresh_failure("publish")
+            )
+            return _with_retry_metadata(
+                terminal,
+                attempt_count=attempt_count,
+                retryable=result is not None,
+                deadline_reached=True,
+            )
         result = _run_refresh_with_config(
             "publish",
             refresh_date=refresh_date,
@@ -458,21 +489,50 @@ def _run_publish_with_retries(
             expected_feature_date=expected_feature_date,
             deadline_at=deadline_at,
         )
+        attempt_count += 1
         exit_code, payload = result
-        if (
-            exit_code != 1
-            or payload.get("error")
-            != "local MySQL DataBridge refresh or validation failed"
-            or attempt + 1 == PUBLISH_REFRESH_MAX_ATTEMPTS
-        ):
-            return result
+        retryable = (
+            exit_code == 1
+            and payload.get("retryable") is True
+        )
+        if not retryable:
+            return _with_retry_metadata(
+                result,
+                attempt_count=attempt_count,
+                retryable=False,
+                deadline_reached=False,
+            )
 
         remaining_sec = (deadline_at - _now()).total_seconds()
         if remaining_sec <= 0:
-            return result
-        time.sleep(min(PUBLISH_REFRESH_RETRY_DELAY_SEC, remaining_sec))
+            return _with_retry_metadata(
+                result,
+                attempt_count=attempt_count,
+                retryable=True,
+                deadline_reached=True,
+            )
+        time.sleep(min(retry_delay_sec, remaining_sec))
+        retry_delay_sec = min(
+            retry_delay_sec * 2,
+            PUBLISH_REFRESH_MAX_RETRY_DELAY_SEC,
+        )
 
-    return result if result is not None else _refresh_failure("publish")
+
+def _with_retry_metadata(
+    result: tuple[int, dict[str, object]],
+    *,
+    attempt_count: int,
+    retryable: bool,
+    deadline_reached: bool,
+) -> tuple[int, dict[str, object]]:
+    """向安全 CLI payload 添加有界重试摘要。"""
+    exit_code, payload = result
+    return exit_code, {
+        **payload,
+        "attempt_count": attempt_count,
+        "retryable": retryable,
+        "deadline_reached": deadline_reached,
+    }
 
 
 def run_command(

@@ -44,7 +44,17 @@ class DataBridgeRefreshError(RuntimeError):
     """A full refresh could not produce a stable valid dataset."""
 
 
-class DataBridgeCurrentReadError(DataBridgeRefreshError):
+class DataBridgeNonRetryableRefreshError(DataBridgeRefreshError):
+    """重试不能改变结果的 refresh 控制面失败。"""
+
+
+class DataBridgeContinuityIdentityError(
+    DataBridgeNonRetryableRefreshError
+):
+    """current 与冻结 continuity authority 身份不一致。"""
+
+
+class DataBridgeCurrentReadError(DataBridgeNonRetryableRefreshError):
     """严格只读 current 检查失败。"""
 
 
@@ -54,6 +64,16 @@ class DataBridgeCurrentMissingError(DataBridgeCurrentReadError):
 
 class DataBridgeCurrentInvalidError(DataBridgeCurrentReadError):
     """严格只读 current 的目录、状态或内容无效。"""
+
+
+class DataBridgeStoreLockError(DataBridgeNonRetryableRefreshError):
+    """DataBridge store owner lock 无法取得或升级。"""
+
+
+class DataBridgeRecoveryIdentityError(
+    DataBridgeNonRetryableRefreshError
+):
+    """current/previous 与已发布 state 身份无法恢复一致。"""
 
 
 CURRENT_PUBLICATION_MANIFEST = ".publication-manifest.json"
@@ -144,7 +164,7 @@ class DataBridgeRefreshConfig:
     max_rounds: int = 3
     round_timeout_sec: int = 900
     refresh_start: str = "06:30"
-    refresh_deadline: str = "06:55"
+    refresh_deadline: str = "07:00"
 
     @classmethod
     def from_env(
@@ -181,7 +201,7 @@ class DataBridgeRefreshConfig:
             refresh_deadline=(
                 str(refresh_deadline)
                 if refresh_deadline is not None
-                else os.getenv("DATABRIDGE_REFRESH_DEADLINE", "06:55")
+                else os.getenv("DATABRIDGE_REFRESH_DEADLINE", "07:00")
             ),
         )
         config._parse_clock(config.refresh_start, "DATABRIDGE_REFRESH_START")
@@ -427,9 +447,11 @@ def run_full_refresh(
                 expected_daily_date=expected_daily_date,
             )
             if publish:
+                _ensure_before_deadline(deadline_at)
                 state = store.publish(
                     selected.directory,
                     state,
+                    deadline_at=deadline_at,
                 )
             return RefreshResult(
                 state=state,
@@ -683,20 +705,20 @@ def _validate_continuity_authority(
 ) -> Mapping[str, object] | None:
     if current is None:
         if continuity_authority is not None:
-            raise DataBridgeRefreshError(
+            raise DataBridgeContinuityIdentityError(
                 "DataBridge continuity authority current drift: "
                 "expected current is missing"
             )
         return None
     if continuity_authority is None:
-        raise DataBridgeRefreshError(
+        raise DataBridgeContinuityIdentityError(
             "DataBridge continuity authority is missing for existing current"
         )
     if not isinstance(
         continuity_authority,
         DataBridgeContinuityAuthority,
     ):
-        raise DataBridgeRefreshError(
+        raise DataBridgeContinuityIdentityError(
             "DataBridge continuity authority is invalid"
         )
     expected_generation_id = getattr(
@@ -747,7 +769,7 @@ def _validate_continuity_authority(
         or re.fullmatch(r"[0-9a-f]{64}", stable_identity) is None
         or not isinstance(cutoffs, Mapping)
     ):
-        raise DataBridgeRefreshError(
+        raise DataBridgeContinuityIdentityError(
             "DataBridge continuity authority is invalid"
         )
     try:
@@ -760,7 +782,7 @@ def _validate_continuity_authority(
             label="DataBridge continuity authority required_monthly_key",
         )
     except ValueError as exc:
-        raise DataBridgeRefreshError(
+        raise DataBridgeContinuityIdentityError(
             "DataBridge continuity authority is invalid"
         ) from exc
     recalculated_stable_identity = (
@@ -784,7 +806,7 @@ def _validate_continuity_authority(
         )
     )
     if stable_identity != recalculated_stable_identity:
-        raise DataBridgeRefreshError(
+        raise DataBridgeContinuityIdentityError(
             "DataBridge continuity authority stable digest mismatch"
         )
     actual_publication_identity = (
@@ -797,7 +819,7 @@ def _validate_continuity_authority(
         or actual_publication_identity
         != expected_publication_identity
     ):
-        raise DataBridgeRefreshError(
+        raise DataBridgeContinuityIdentityError(
             "DataBridge continuity authority current identity drift"
         )
     return {
@@ -1773,7 +1795,7 @@ class DataBridgeStore:
         )
         if depth:
             if exclusive and not held_exclusive:
-                raise DataBridgeRefreshError(
+                raise DataBridgeStoreLockError(
                     "cannot upgrade an active shared DataBridge lock"
                 )
             self._thread_lock_state.depth = depth + 1
@@ -1814,7 +1836,7 @@ class DataBridgeStore:
             try:
                 fcntl.flock(handle.fileno(), operation)
             except BlockingIOError as exc:
-                raise DataBridgeRefreshError(
+                raise DataBridgeStoreLockError(
                     "DataBridge refresh is busy in another process"
                 ) from exc
             self._thread_lock_state.depth = 1
@@ -1831,6 +1853,7 @@ class DataBridgeStore:
         candidate_dir: str | Path,
         state: dict[str, object],
         *,
+        deadline_at: datetime | None = None,
         fail_after_backup: bool = False,
     ) -> dict[str, object]:
         candidate = Path(candidate_dir)
@@ -1867,15 +1890,21 @@ class DataBridgeStore:
                 if self.state_path.is_file()
                 else None
             )
+            current_backed_up = False
+            candidate_activated = False
             state_replaced = False
             try:
+                _ensure_before_deadline(deadline_at)
                 if self.previous_dir.exists():
                     shutil.rmtree(self.previous_dir)
                 if had_current:
                     os.replace(self.current_dir, self.previous_dir)
+                    current_backed_up = True
                 if fail_after_backup:
                     raise RuntimeError("injected publication failure")
+                _ensure_before_deadline(deadline_at)
                 os.replace(next_dir, self.current_dir)
+                candidate_activated = True
                 published_state["published_at"] = (
                     _shanghai_now().isoformat(
                         timespec="seconds"
@@ -1888,9 +1917,9 @@ class DataBridgeStore:
                 if self.previous_dir.exists():
                     shutil.rmtree(self.previous_dir)
             except BaseException:
-                if self.current_dir.exists():
+                if candidate_activated and self.current_dir.exists():
                     shutil.rmtree(self.current_dir)
-                if self.previous_dir.exists():
+                if current_backed_up and self.previous_dir.exists():
                     os.replace(self.previous_dir, self.current_dir)
                 if next_dir.exists():
                     shutil.rmtree(next_dir)
@@ -2024,14 +2053,14 @@ class DataBridgeStore:
                         shutil.rmtree(self.current_dir)
                     os.replace(self.previous_dir, self.current_dir)
                 else:
-                    raise DataBridgeRefreshError(
+                    raise DataBridgeRecoveryIdentityError(
                         "cannot recover DataBridge current/previous against published state"
                     )
             elif self.current_dir.exists() and (
                 state_identity is None
                 or current_identity != state_identity
             ):
-                raise DataBridgeRefreshError(
+                raise DataBridgeRecoveryIdentityError(
                     "DataBridge current publication identity drifted from "
                     "state"
                 )

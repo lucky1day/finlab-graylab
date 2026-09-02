@@ -872,6 +872,152 @@ class DataBridgeCurrentTests(unittest.TestCase):
             )
             self.assertIn(202630, published["week_id"].tolist())
 
+    def test_refresh_rechecks_deadline_at_publication_commit(self) -> None:
+        """candidate copy/fsync 期间越过 deadline 时不得切换 current。"""
+        from shared.data_bridge import refresh as refresh_module
+        from shared.data_bridge.refresh import (
+            DataBridgeRefreshConfig,
+            DataBridgeRefreshError,
+            run_full_refresh,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = DataBridgeRefreshConfig(
+                data_root=root / "data",
+                runtime_root=root / "runtime",
+                schema_path=SCHEMA_PATH,
+            )
+            config.data_root.mkdir()
+            config.runtime_root.mkdir()
+            config.data_root.chmod(0o700)
+            config.runtime_root.chmod(0o700)
+            _StaticDataBridgeRoundBuilder.staging_root = root / "staging"
+            _StaticDataBridgeRoundBuilder.frames = _bridge_frames(
+                include_new_week=True
+            )
+            checks = 0
+
+            def deadline_fence(_deadline) -> None:
+                nonlocal checks
+                checks += 1
+                if checks == 8:
+                    raise DataBridgeRefreshError(
+                        "DataBridge refresh deadline has passed"
+                    )
+
+            with (
+                patch.object(
+                    refresh_module,
+                    "_ensure_before_deadline",
+                    side_effect=deadline_fence,
+                ),
+                self.assertRaisesRegex(
+                    DataBridgeRefreshError,
+                    "deadline has passed",
+                ),
+            ):
+                run_full_refresh(
+                    config=config,
+                    expected_daily_date="2026-07-20",
+                    refresh_date="2026-07-21",
+                    publish=True,
+                    deadline_at=datetime(
+                        2026,
+                        7,
+                        21,
+                        7,
+                        0,
+                        tzinfo=ZoneInfo("Asia/Shanghai"),
+                    ),
+                    round_builder=_StaticDataBridgeRoundBuilder(),
+                )
+
+            self.assertEqual(checks, 8)
+            self.assertFalse((config.data_root / "current").exists())
+
+    def test_first_publication_fence_preserves_existing_current(self) -> None:
+        """copy/fsync 后首个 fence 失败不得删除最后成功 generation。"""
+        from shared.data_bridge import refresh as refresh_module
+        from shared.data_bridge.refresh import (
+            DataBridgeRefreshError,
+            DataBridgeStore,
+            _build_state,
+        )
+        from shared.data_bridge.validation import validate_dataset
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data_root = root / "data"
+            runtime_root = root / "runtime"
+            data_root.mkdir(mode=0o700)
+            runtime_root.mkdir(mode=0o700)
+            store = DataBridgeStore(
+                data_root=data_root,
+                runtime_root=runtime_root,
+            )
+            frames = _bridge_frames(include_new_week=False)
+            dataset = validate_dataset(frames, schema_path=SCHEMA_PATH)
+
+            def candidate(name: str) -> Path:
+                directory = root / name
+                directory.mkdir()
+                for filename, frame in frames.items():
+                    frame.to_csv(directory / filename, index=False)
+                return directory
+
+            initial_state = _build_state(
+                dataset,
+                "2026-07-20",
+                2,
+                refresh_started_at=datetime.now(
+                    ZoneInfo("Asia/Shanghai")
+                ),
+                duration_sec=1.0,
+            )
+            store.publish(candidate("initial"), initial_state)
+            current_before = {
+                path.name: path.read_bytes()
+                for path in store.current_dir.iterdir()
+            }
+            state_before = store.state_path.read_bytes()
+
+            with (
+                patch.object(
+                    refresh_module,
+                    "_ensure_before_deadline",
+                    side_effect=DataBridgeRefreshError(
+                        "DataBridge refresh deadline has passed"
+                    ),
+                ),
+                self.assertRaisesRegex(
+                    DataBridgeRefreshError,
+                    "deadline has passed",
+                ),
+            ):
+                store.publish(
+                    candidate("next"),
+                    initial_state,
+                    deadline_at=datetime(
+                        2026,
+                        7,
+                        21,
+                        7,
+                        0,
+                        tzinfo=ZoneInfo("Asia/Shanghai"),
+                    ),
+                )
+
+            self.assertEqual(
+                {
+                    path.name: path.read_bytes()
+                    for path in store.current_dir.iterdir()
+                },
+                current_before,
+            )
+            self.assertEqual(store.state_path.read_bytes(), state_before)
+            self.assertFalse(store.previous_dir.exists())
+
     def test_legacy_four_file_current_upgrades_atomically(self) -> None:
         """升级前四文件 current 必须一次替换为完整五文件。"""
         from shared.data_bridge.refresh import (

@@ -6,6 +6,8 @@ from subprocess import CompletedProcess
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from scripts.run_launchd_release import prepare_exec_environment
@@ -361,6 +363,299 @@ def test_scheduled_cache_policy_accepts_only_bounded_proven_suffix() -> None:
             build_reason="spec_changed",
             planned_missing_dates={"baseline-a": ["2026-08-01"]},
         )
+
+
+def test_suffix_rebuild_includes_new_requested_dates_before_cutoff() -> None:
+    from shared.liwei_0616_phase_a_cache import (
+        _planned_cache_missing_dates,
+    )
+
+    missing = _planned_cache_missing_dates(
+        build_mode="suffix",
+        requested_dates=[
+            "2025-09-01",
+            "2025-09-02",
+            "2026-09-01",
+        ],
+        cached_dates={"2026-08-22", "2026-08-25"},
+        parent_dates={"2026-08-22", "2026-08-25"},
+        suffix_start_date="2026-08-24",
+    )
+
+    assert missing == [
+        "2025-09-01",
+        "2025-09-02",
+        "2026-08-25",
+        "2026-09-01",
+    ]
+
+
+def test_scheduled_policy_accepts_bounded_requested_coverage_expansion() -> None:
+    from shared.liwei_0616_cache_contract import (
+        CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE,
+    )
+    from shared.liwei_0616_phase_a_cache import (
+        _LoadedGeneration,
+        _validate_scheduled_cache_build,
+    )
+
+    current = _LoadedGeneration(
+        generation_id="generation-1",
+        path=Path("/cache/generation-1"),
+        manifest={},
+        manifest_sha256="a" * 64,
+        caches={"baseline-a": {"test_dates": ["2026-08-31"]}},
+    )
+    coverage_dates = [
+        "2025-09-01",
+        "2025-09-02",
+        "2025-09-03",
+    ]
+
+    _validate_scheduled_cache_build(
+        mutation_policy=(
+            CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE
+        ),
+        build_mode="append",
+        build_reason="cache_complete",
+        current=current,
+        planned_missing_dates={"baseline-a": coverage_dates},
+        requested_expansion_dates={"baseline-a": coverage_dates},
+    )
+
+
+def test_scheduled_policy_rejects_unrequested_historical_expansion() -> None:
+    from shared.liwei_0616_cache_contract import (
+        CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE,
+    )
+    from shared.liwei_0616_phase_a_cache import (
+        _LoadedGeneration,
+        _validate_scheduled_cache_build,
+    )
+
+    current = _LoadedGeneration(
+        generation_id="generation-1",
+        path=Path("/cache/generation-1"),
+        manifest={},
+        manifest_sha256="a" * 64,
+        caches={"baseline-a": {"test_dates": ["2026-08-31"]}},
+    )
+
+    with pytest.raises(RuntimeError, match="requested coverage"):
+        _validate_scheduled_cache_build(
+            mutation_policy=(
+                CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE
+            ),
+            build_mode="append",
+            build_reason="cache_complete",
+            current=current,
+            planned_missing_dates={
+                "baseline-a": ["2025-09-01", "2025-09-02"]
+            },
+            requested_expansion_dates={
+                "baseline-a": ["2025-09-01"]
+            },
+        )
+
+
+def test_scheduled_policy_rejects_cross_baseline_coverage_substitution() -> None:
+    from shared.liwei_0616_cache_contract import (
+        CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE,
+    )
+    from shared.liwei_0616_phase_a_cache import (
+        _LoadedGeneration,
+        _validate_scheduled_cache_build,
+    )
+
+    current = _LoadedGeneration(
+        generation_id="generation-1",
+        path=Path("/cache/generation-1"),
+        manifest={},
+        manifest_sha256="a" * 64,
+        caches={
+            "baseline-a": {"test_dates": ["2026-08-31"]},
+            "baseline-b": {"test_dates": ["2026-08-31"]},
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="requested coverage"):
+        _validate_scheduled_cache_build(
+            mutation_policy=(
+                CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE
+            ),
+            build_mode="append",
+            build_reason="cache_complete",
+            current=current,
+            planned_missing_dates={
+                "baseline-a": ["2025-09-01"],
+                "baseline-b": [],
+            },
+            requested_expansion_dates={
+                "baseline-a": [],
+                "baseline-b": ["2025-09-01"],
+            },
+        )
+
+
+def test_scheduled_policy_limits_requested_coverage_expansion() -> None:
+    from shared.liwei_0616_cache_contract import (
+        CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE,
+    )
+    from shared.liwei_0616_phase_a_cache import (
+        _LoadedGeneration,
+        _validate_scheduled_cache_build,
+    )
+
+    current = _LoadedGeneration(
+        generation_id="generation-1",
+        path=Path("/cache/generation-1"),
+        manifest={},
+        manifest_sha256="a" * 64,
+        caches={"baseline-a": {"test_dates": ["2026-08-31"]}},
+    )
+    coverage_dates = [f"2025-09-{day:02d}" for day in range(1, 34)]
+
+    with pytest.raises(RuntimeError, match="exceeds 32 dates"):
+        _validate_scheduled_cache_build(
+            mutation_policy=(
+                CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE
+            ),
+            build_mode="append",
+            build_reason="cache_complete",
+            current=current,
+            planned_missing_dates={"baseline-a": coverage_dates},
+            requested_expansion_dates={"baseline-a": coverage_dates},
+        )
+
+
+def test_candidate_cache_must_cover_every_requested_date() -> None:
+    from shared.liwei_0616_phase_a_cache import (
+        _require_requested_cache_coverage,
+    )
+
+    with pytest.raises(RuntimeError, match="requested dates"):
+        _require_requested_cache_coverage(
+            baseline="baseline-a",
+            requested_dates=["2025-09-01", "2025-09-02"],
+            cache={"test_dates": ["2025-09-01"]},
+        )
+
+
+def test_suffix_requested_expansion_survives_consumer_lineage_reload(
+    tmp_path: Path,
+) -> None:
+    from shared import liwei_0616_phase_a_cache as cache_module
+    from shared.liwei_0616_cache_contract import (
+        CACHE_MUTATION_POLICY_ENV,
+        CACHE_MUTATION_POLICY_PRIVATE_BUILD,
+        CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE,
+    )
+
+    spec = cache_module.PhaseACacheSpec(
+        cache_family="test_month_boundary_lineage",
+        tenor="7Y",
+        publisher_consumer_id="publisher",
+        baselines=("baseline",),
+        baseline_configs={"baseline": {"close": "close"}},
+        source_ic_screen_start="2024-01-01",
+        horizon=1,
+        purge_gap=1,
+        daily_dependency_lookback_rows=1,
+        daily_dependency_proof=(
+            cache_module.DAILY_REVISION_SUFFIX_PROOF_V1
+        ),
+    )
+    original_daily = pd.DataFrame(
+        {
+            "date": [
+                "2025-09-01",
+                "2026-08-25",
+                "2026-08-28",
+                "2026-08-31",
+            ],
+            "close": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
+    revised_daily = original_daily.copy()
+    revised_daily.loc[
+        revised_daily["date"] == "2026-08-31",
+        "close",
+    ] = 4.5
+    weekly = pd.DataFrame({"week_id": [202635], "value": [1.0]})
+    monthly = pd.DataFrame({"month_id": ["2026-08"], "value": [1.0]})
+
+    def train(_baseline, ranges):
+        dates = [start for start, end in ranges if start == end]
+        return {
+            "test_dates": dates,
+            "results": [
+                {
+                    "config": {"model": "fixed"},
+                    "preds": np.ones(len(dates), dtype=np.int32),
+                    "probs": np.full(len(dates), 0.75),
+                }
+            ],
+        }
+
+    common = {
+        "spec": spec,
+        "weekly_df": weekly,
+        "monthly_df": monthly,
+        "train_missing": train,
+        "cache_root": tmp_path.resolve(),
+    }
+    with patch.dict(
+        os.environ,
+        {CACHE_MUTATION_POLICY_ENV: CACHE_MUTATION_POLICY_PRIVATE_BUILD},
+        clear=False,
+    ):
+        cache_module.prepare_phase_a_caches(
+            **common,
+            daily_df=original_daily,
+            test_ranges=(
+                ("2026-08-25", "2026-08-25"),
+                ("2026-08-31", "2026-08-31"),
+            ),
+            cache_consumer_id="publisher",
+        )
+
+    expanded_ranges = (
+        ("2025-09-01", "2025-09-01"),
+        ("2026-08-25", "2026-08-25"),
+        ("2026-08-31", "2026-08-31"),
+    )
+    with patch.dict(
+        os.environ,
+        {
+            CACHE_MUTATION_POLICY_ENV: (
+                CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE
+            )
+        },
+        clear=False,
+    ):
+        published, publish_audit = cache_module.prepare_phase_a_caches(
+            **common,
+            daily_df=revised_daily,
+            test_ranges=expanded_ranges,
+            cache_consumer_id="publisher",
+        )
+        reloaded, consumer_audit = cache_module.prepare_phase_a_caches(
+            **common,
+            daily_df=revised_daily,
+            test_ranges=expanded_ranges,
+            cache_consumer_id="consumer",
+        )
+
+    assert publish_audit["build_mode"] == "suffix"
+    assert published["baseline"]["test_dates"] == [
+        "2025-09-01",
+        "2026-08-25",
+        "2026-08-31",
+    ]
+    assert reloaded["baseline"]["test_dates"] == (
+        published["baseline"]["test_dates"]
+    )
+    assert consumer_audit["build_reason"] == "consumer_validated_hit"
 
 
 def test_called_process_error_uses_bounded_stderr_reason() -> None:

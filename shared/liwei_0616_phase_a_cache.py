@@ -481,11 +481,13 @@ def _prepare_under_family_lock(
                 cached = current.caches
 
     planned_missing_dates: dict[str, list[str]] | None = None
+    requested_expansion_dates: dict[str, list[str]] | None = None
     if mutation_policy in {
         CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
         CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE,
     }:
         planned_missing_dates = {}
+        requested_expansion_dates = {}
         for baseline in spec.baselines:
             requested_dates = requested_by_baseline[baseline]
             previous = cached.get(baseline)
@@ -504,26 +506,17 @@ def _prepare_under_family_lock(
                 if parent_cache is not None
                 else set()
             )
-            desired_dates = sorted(parent_dates | set(requested_dates))
-            if build_mode == "full":
-                missing_dates = desired_dates
-            elif build_mode == "suffix":
-                if previous is None or suffix_start_date is None:
-                    raise RuntimeError(
-                        "suffix rebuild requires a previous cache and cutoff"
-                    )
-                missing_dates = [
-                    day
-                    for day in desired_dates
-                    if day >= suffix_start_date
-                ]
-            else:
-                missing_dates = [
-                    day
-                    for day in desired_dates
-                    if day not in cached_dates
-                ]
+            missing_dates = _planned_cache_missing_dates(
+                build_mode=build_mode,
+                requested_dates=requested_dates,
+                cached_dates=cached_dates,
+                parent_dates=parent_dates,
+                suffix_start_date=suffix_start_date,
+            )
             planned_missing_dates[baseline] = missing_dates
+            requested_expansion_dates[baseline] = sorted(
+                set(requested_dates) - parent_dates
+            )
 
         _validate_scheduled_cache_build(
             mutation_policy=mutation_policy,
@@ -531,6 +524,7 @@ def _prepare_under_family_lock(
             build_reason=build_reason,
             current=current,
             planned_missing_dates=planned_missing_dates,
+            requested_expansion_dates=requested_expansion_dates,
         )
 
     caches: dict[str, dict[str, Any]] = {}
@@ -566,42 +560,29 @@ def _prepare_under_family_lock(
             if parent_cache is not None
             else set()
         )
-        desired_dates = sorted(parent_dates | set(requested_dates))
-        if build_mode == "full":
-            missing_dates = (
-                planned_missing_dates[baseline]
-                if planned_missing_dates is not None
-                else desired_dates
+        missing_dates = (
+            planned_missing_dates[baseline]
+            if planned_missing_dates is not None
+            else _planned_cache_missing_dates(
+                build_mode=build_mode,
+                requested_dates=requested_dates,
+                cached_dates=cached_dates,
+                parent_dates=parent_dates,
+                suffix_start_date=suffix_start_date,
             )
+        )
+        if build_mode == "full":
             preserved = None
         elif build_mode == "suffix":
             if previous is None or suffix_start_date is None:
                 raise RuntimeError(
                     "suffix rebuild requires a previous cache and cutoff"
                 )
-            missing_dates = (
-                planned_missing_dates[baseline]
-                if planned_missing_dates is not None
-                else [
-                    day
-                    for day in desired_dates
-                    if day >= suffix_start_date
-                ]
-            )
             preserved = _phase_a_cache_before(
                 previous,
                 suffix_start_date,
             )
         else:
-            missing_dates = (
-                planned_missing_dates[baseline]
-                if planned_missing_dates is not None
-                else [
-                    day
-                    for day in desired_dates
-                    if day not in cached_dates
-                ]
-            )
             preserved = previous
         if missing_dates:
             needs_build = True
@@ -630,6 +611,11 @@ def _prepare_under_family_lock(
             raise RuntimeError(
                 "cache generation coverage cannot shrink below its parent"
             )
+        _require_requested_cache_coverage(
+            baseline=baseline,
+            requested_dates=requested_dates,
+            cache=merged,
+        )
         caches[baseline] = merged
         acceptance_scopes[baseline] = _generation_acceptance_scope(
             parent_cache=parent_cache,
@@ -939,6 +925,7 @@ def _validate_scheduled_cache_build(
     build_reason: str,
     current: _LoadedGeneration | None,
     planned_missing_dates: Mapping[str, list[str]],
+    requested_expansion_dates: Mapping[str, list[str]] | None = None,
 ) -> None:
     if mutation_policy not in {
         CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
@@ -976,6 +963,37 @@ def _validate_scheduled_cache_build(
                 f"{MAX_SCHEDULED_SUFFIX_DATES} dates"
             )
         return
+    if (
+        mutation_policy
+        == CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE
+        and build_mode == "append"
+    ):
+        if not all_missing_dates:
+            return
+        if current is None:
+            raise RuntimeError(
+                "scheduled_bounded_reconcile requires a current generation"
+            )
+        baselines = set(planned_missing_dates) | set(
+            requested_expansion_dates or {}
+        )
+        if any(
+            sorted(planned_missing_dates.get(baseline, ()))
+            != sorted(
+                (requested_expansion_dates or {}).get(baseline, ())
+            )
+            for baseline in baselines
+        ):
+            raise RuntimeError(
+                "scheduled_bounded_reconcile append requires exact "
+                "requested coverage expansion"
+            )
+        if len(all_missing_dates) > MAX_SCHEDULED_SUFFIX_DATES:
+            raise RuntimeError(
+                "scheduled_bounded_reconcile requested coverage exceeds "
+                f"{MAX_SCHEDULED_SUFFIX_DATES} dates"
+            )
+        return
     if build_mode != "append":
         raise RuntimeError(
             f"{mutation_policy} requires an existing appendable cache: "
@@ -998,6 +1016,47 @@ def _validate_scheduled_cache_build(
     if all_missing_dates[0] <= current_watermark:
         raise RuntimeError(
             f"{mutation_policy} cannot rebuild a historical date"
+        )
+
+
+def _planned_cache_missing_dates(
+    *,
+    build_mode: str,
+    requested_dates: list[str],
+    cached_dates: set[str],
+    parent_dates: set[str],
+    suffix_start_date: str | None,
+) -> list[str]:
+    """规划精确训练日期，并补齐父 generation 尚未覆盖的请求窗口。"""
+    requested = set(requested_dates)
+    desired = parent_dates | requested
+    if build_mode == "full":
+        return sorted(desired)
+    if build_mode == "suffix":
+        if suffix_start_date is None:
+            raise RuntimeError(
+                "suffix rebuild requires a previous cache and cutoff"
+            )
+        requested_expansion = requested - parent_dates
+        return sorted(
+            day
+            for day in desired
+            if day >= suffix_start_date or day in requested_expansion
+        )
+    return sorted(day for day in desired if day not in cached_dates)
+
+
+def _require_requested_cache_coverage(
+    *,
+    baseline: str,
+    requested_dates: list[str],
+    cache: Mapping[str, Any],
+) -> None:
+    """在 generation publication 前拒绝不完整的请求日期覆盖。"""
+    available = set(cache.get("test_dates", ()))
+    if not set(requested_dates).issubset(available):
+        raise RuntimeError(
+            f"baseline {baseline} cache does not cover all requested dates"
         )
 
 
@@ -3013,11 +3072,17 @@ def _verify_generation_acceptance_lineage(
                 raise ValueError(
                     "cache generation suffix input diff is incomplete"
                 )
+            parent_date_set = set(parent_dates)
             affected_dates = [
-                day for day in candidate_dates if day >= suffix_start
+                day
+                for day in candidate_dates
+                if day >= suffix_start or day not in parent_date_set
             ]
+            affected_date_set = set(affected_dates)
             preserved_dates = [
-                day for day in parent_dates if day < suffix_start
+                day
+                for day in parent_dates
+                if day not in affected_date_set
             ]
         else:
             affected_dates = [
