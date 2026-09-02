@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="300" height="72" viewBox="0 0 300 72" role="img" aria-labelledby="aifin-lab-logo-title">
-  <title id="aifin-lab-logo-title">AIFin Lab QuantFlow</title>
+  <title id="aifin-lab-logo-title">Bond Factor Lab</title>
   <defs>
     <linearGradient id="aifin-logo-heat" x1="10" y1="54" x2="96" y2="4" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#c91d21"/>
@@ -37,8 +37,8 @@
     </g>
   </g>
   <g font-family="Avenir Next, PingFang SC, Microsoft YaHei, Arial, Helvetica, sans-serif">
-    <text x="174" y="31" fill="#171A20" font-size="20" font-weight="800">AIFin Lab</text>
-    <text x="174" y="53" fill="#9A6A13" font-size="15" font-weight="700" letter-spacing=".7">QuantFlow</text>
+    <text x="174" y="31" fill="#171A20" font-size="20" font-weight="800">Bond Factor</text>
+    <text x="174" y="53" fill="#9A6A13" font-size="15" font-weight="700" letter-spacing=".7">Lab</text>
     <path d="M174 39h73" stroke="#C8963E" stroke-width="1.5" stroke-linecap="round" opacity=".82"/>
   </g>
 </svg>

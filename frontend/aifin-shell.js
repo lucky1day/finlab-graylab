@@ -3,8 +3,6 @@
 
   var routeToView = {
     "/": "factor-lab",
-    "/quantflow": "factor-lab",
-    "/quantflow/": "factor-lab",
     "/factor-lab": "factor-lab"
   };
   var PUBLIC_BASE_PATH = "/bond-factor-lab";
@@ -62,13 +60,6 @@
     var trimmed = pathname.replace(/\/+$/, "");
     if (routeToView[trimmed]) {
       return trimmed;
-    }
-
-    if (trimmed.indexOf("/quantflow") === 0) {
-      var inner = trimmed.replace(/^\/quantflow/, "") || "/";
-      if (routeToView[inner]) {
-        return inner;
-      }
     }
 
     return "/";

@@ -1,6 +1,6 @@
 # Bond Factor Lab 实盘测试系统
 
-国债因子实验室实盘测试平台。Mac3 承载生产，ECS 作为独立灰度实验室；前端由 FastAPI serve，并嵌入 panda_quantflow 的 AIFin Lab Shell。
+独立的国债因子实验室实盘测试平台。Mac3 承载生产，ECS 作为独立灰度实验室；前端由本项目的 FastAPI 直接提供。
 
 ## 当前政策
 

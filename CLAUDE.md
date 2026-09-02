@@ -4,7 +4,7 @@
 
 ## 项目定位
 
-独立的国债因子实盘测试平台，前端通过 iframe 嵌入 panda_quantflow 的 AIFin Lab Shell。
+独立的国债因子实盘测试平台，前端由本项目的 FastAPI 直接提供，不依赖或嵌入其它前端系统。
 
 ## 当前工作上下文（必须遵守）
 
@@ -28,7 +28,7 @@
 ## 技术栈
 
 - **后端**: Python 3.12 + FastAPI + SQLAlchemy
-- **前端**: 原生 HTML/CSS/JS（从 panda_quantflow 提取的因子实验室页面）
+- **前端**: 本项目独立维护的原生 HTML/CSS/JS，无构建步骤
 - **数据库**: MySQL 8.0 (bond_db)
 - **部署**: Mac3 生产使用 launchd；阿里云 ECS 独立灰度实验室使用 systemd one-shot/timer
 - **环境**: 后端/调度使用 `bond_factor_lab_service`；Native 算法使用 `forecast_env`；Blackbox 执行环境由 `blackbox-v2-v1` Runtime Profile 唯一指定
