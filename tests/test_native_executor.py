@@ -927,6 +927,29 @@ def test_v2_policy_timeout_is_a_hard_upper_bound() -> None:
     assert _effective_timeout_sec(cfg, 120) == 120
 
 
+@pytest.mark.parametrize(
+    ("configured_timeout", "operation_timeout", "expected_timeout"),
+    [
+        (None, 900, 900),
+        (600, 900, 600),
+        (3600, 900, 3600),
+    ],
+)
+def test_native_operation_timeout_is_only_the_unconfigured_fallback(
+    configured_timeout: int | None,
+    operation_timeout: int,
+    expected_timeout: int,
+) -> None:
+    from scheduler.executor import _effective_timeout_sec
+
+    cfg = SimpleNamespace(
+        scheme_id="native_publisher",
+        runtime_type="native_adapter",
+        schedule=SimpleNamespace(timeout_sec=configured_timeout),
+    )
+    assert _effective_timeout_sec(cfg, operation_timeout) == expected_timeout
+
+
 def test_native_process_group_is_terminated_on_interruption() -> None:
     from scheduler.executor import _run_process_group
 

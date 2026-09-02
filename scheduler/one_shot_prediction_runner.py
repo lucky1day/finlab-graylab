@@ -51,7 +51,7 @@ from shared.liwei_0616_cache_contract import (
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
 DATA_BRIDGE_READY_MAX_WAIT_SEC = 30 * 60
 DATA_BRIDGE_READY_POLL_INTERVAL_SEC = 30
-PHASE_A_PUBLISHER_TIMEOUT_SEC = 15 * 60
+PHASE_A_PUBLISHER_DEFAULT_TIMEOUT_SEC = 15 * 60
 
 
 class OneShotPredictionConfigurationError(RuntimeError):
@@ -772,7 +772,9 @@ def run_one_shot(
                             cancellation_event=cancellation_event,
                             process_start_guard=process_start_guard,
                             worker_limit=1,
-                            timeout_sec=PHASE_A_PUBLISHER_TIMEOUT_SEC,
+                            timeout_sec=(
+                                PHASE_A_PUBLISHER_DEFAULT_TIMEOUT_SEC
+                            ),
                             native_cache_mutation_policy=(
                                 CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE
                                 if normalized_cadence == "daily"

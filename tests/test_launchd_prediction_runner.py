@@ -224,10 +224,12 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                     },
                 )
                 worker.start()
-                self.assertTrue(first_started.wait(timeout=2))
-                self.assertFalse(second_started.wait(timeout=0.1))
-                release_first.set()
-                worker.join(timeout=2)
+                try:
+                    self.assertTrue(first_started.wait(timeout=2))
+                    self.assertFalse(second_started.wait(timeout=0.1))
+                finally:
+                    release_first.set()
+                    worker.join(timeout=2)
 
         self.assertFalse(worker.is_alive())
         self.assertEqual(maximum, 1)
@@ -286,12 +288,14 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                 algo_env="forecast_env",
                 scheduled_control_plane="launchd_one_shot",
                 scheduled_execution_context=object(),
-                timeout_sec=runner.PHASE_A_PUBLISHER_TIMEOUT_SEC,
+                timeout_sec=(
+                    runner.PHASE_A_PUBLISHER_DEFAULT_TIMEOUT_SEC
+                ),
             )
 
         self.assertEqual(
             execute.call_args.kwargs["timeout_sec"],
-            runner.PHASE_A_PUBLISHER_TIMEOUT_SEC,
+            runner.PHASE_A_PUBLISHER_DEFAULT_TIMEOUT_SEC,
         )
 
     def test_daily_one_shot_reconciles_publishers_only(self) -> None:
@@ -349,7 +353,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         self.assertEqual(consumer_call.kwargs["worker_limit"], 2)
         self.assertEqual(
             publisher_call.kwargs["timeout_sec"],
-            runner.PHASE_A_PUBLISHER_TIMEOUT_SEC,
+            runner.PHASE_A_PUBLISHER_DEFAULT_TIMEOUT_SEC,
         )
         self.assertIsNone(consumer_call.kwargs["timeout_sec"])
 
