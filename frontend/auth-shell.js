@@ -95,6 +95,9 @@
       emitError(dialog.querySelector(".auth-error"), "");
       dialog.close();
     });
+    var forcedForm = document.getElementById("authForcedPasswordForm");
+    forcedForm.reset();
+    emitError(forcedForm.querySelector(".auth-error"), "");
     document.getElementById("authResetPasswordTarget").textContent = "";
   }
 

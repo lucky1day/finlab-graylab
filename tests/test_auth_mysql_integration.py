@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
+import threading
 from urllib.parse import urlsplit, urlunsplit
 
 import pytest
 from sqlalchemy import create_engine, text
 
 from backend.auth import repository
-from backend.auth.security import hash_password
+from backend.auth.security import hash_password, verify_password
 from backend.auth.service import AuthError, AuthService
 from migrations.auth_022 import classify_auth_schema, read_auth_schema
 from migrations.runner import split_sql_statements
@@ -19,6 +21,7 @@ from migrations.runner import (
     recover_applying_migration_022,
     validate_release_migration_manifest,
 )
+from scripts import manage_auth_admin
 
 
 MYSQL_URL = os.getenv("BFL_TEST_AUTH_MYSQL_URL")
@@ -351,4 +354,152 @@ def test_auth_service_sessions_throttle_and_admin_lifecycle_on_mysql8() -> None:
         )
     assert "Changed456" not in audit_payload
     assert "Second123" not in audit_payload
+    engine.dispose()
+
+
+def test_concurrent_admin_disable_cannot_remove_every_active_admin(
+    monkeypatch,
+) -> None:
+    assert MYSQL_URL is not None
+    engine = _engine(MYSQL_URL)
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM t_auth_audit_logs"))
+        connection.execute(text("DELETE FROM t_auth_sessions"))
+        connection.execute(
+            text(
+                "UPDATE t_auth_users SET created_by = NULL, disabled_by = NULL"
+            )
+        )
+        connection.execute(text("DELETE FROM t_auth_users"))
+        for username in ("admin.one", "admin.two"):
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO t_auth_users (
+                        username, password_hash, role, status,
+                        is_protected_admin, must_change_password,
+                        password_changed_at
+                    ) VALUES (
+                        :username, :password_hash, 'admin', 'active',
+                        0, 0, UTC_TIMESTAMP(6)
+                    )
+                    """
+                ),
+                {
+                    "username": username,
+                    "password_hash": hash_password("Admin123"),
+                },
+            )
+    service = AuthService(engine)
+    first = service.login("admin.one", "Admin123")
+    second = service.login("admin.two", "Admin123")
+    barrier = threading.Barrier(2)
+    thread_state = threading.local()
+    original = repository.lock_user_by_id
+
+    def synchronized_target_lock(connection, user_id):
+        if not getattr(thread_state, "synchronized", False):
+            thread_state.synchronized = True
+            barrier.wait(timeout=5)
+        return original(connection, user_id)
+
+    monkeypatch.setattr(
+        repository, "lock_user_by_id", synchronized_target_lock
+    )
+
+    def disable(token: str, user_id: int, request_id: str):
+        try:
+            return service.change_status(
+                token,
+                user_id=user_id,
+                status="disabled",
+                request_id=request_id,
+            )
+        except Exception as exc:
+            return exc
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = (
+            executor.submit(
+                disable, first.token, second.user.id, "concurrent-one"
+            ),
+            executor.submit(
+                disable, second.token, first.user.id, "concurrent-two"
+            ),
+        )
+        outcomes = [future.result(timeout=10) for future in futures]
+    with engine.connect() as connection:
+        active_admins = int(
+            connection.execute(
+                text(
+                    "SELECT COUNT(*) FROM t_auth_users "
+                    "WHERE role='admin' AND status='active'"
+                )
+            ).scalar_one()
+        )
+    assert active_admins == 1
+    assert any(not isinstance(outcome, Exception) for outcome in outcomes)
+    engine.dispose()
+
+
+def test_offline_admin_cli_initialize_and_reset_on_mysql8(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    assert MYSQL_URL is not None
+    engine = _engine(MYSQL_URL)
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM t_auth_audit_logs"))
+        connection.execute(text("DELETE FROM t_auth_sessions"))
+        connection.execute(
+            text(
+                "UPDATE t_auth_users SET created_by = NULL, disabled_by = NULL"
+            )
+        )
+        connection.execute(text("DELETE FROM t_auth_users"))
+        database_name, server_uuid = connection.execute(
+            text("SELECT DATABASE(), @@server_uuid")
+        ).one()
+    secret = tmp_path / "auth-bootstrap-password"
+    secret.write_text("Initial123", encoding="utf-8")
+    secret.chmod(0o600)
+    monkeypatch.setattr(manage_auth_admin, "_secret_path", lambda: secret)
+    monkeypatch.setattr(
+        manage_auth_admin, "create_engine_from_env", lambda: engine
+    )
+    identity_args = [
+        "--expected-database-name",
+        str(database_name),
+        "--expected-server-uuid",
+        str(server_uuid),
+    ]
+    assert manage_auth_admin.main(["--initialize", *identity_args]) == 0
+    initialize_output = capsys.readouterr()
+    assert initialize_output.err == ""
+    assert '"status": "ok"' in initialize_output.out
+    assert "Initial123" not in initialize_output.out
+
+    service = AuthService(engine)
+    existing_session = service.login("admin", "Initial123")
+    secret.write_text("Reset456", encoding="utf-8")
+    secret.chmod(0o600)
+    assert manage_auth_admin.main(
+        ["--reset-protected-admin", *identity_args]
+    ) == 0
+    reset_output = capsys.readouterr()
+    assert reset_output.err == ""
+    assert '"status": "ok"' in reset_output.out
+    assert "Reset456" not in reset_output.out
+    with pytest.raises(AuthError, match="not_authenticated"):
+        service.authenticate(existing_session.token)
+    with engine.connect() as connection:
+        password_hash, must_change = connection.execute(
+            text(
+                "SELECT password_hash, must_change_password "
+                "FROM t_auth_users WHERE username='admin'"
+            )
+        ).one()
+    assert verify_password(str(password_hash), "Reset456")
+    assert bool(must_change)
     engine.dispose()
