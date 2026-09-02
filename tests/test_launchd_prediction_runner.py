@@ -167,6 +167,72 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         self.assertEqual(maximum, 2)
         self.assertEqual(len(summary.executed), 4)
 
+    def test_native_wave_honors_single_worker_limit(self) -> None:
+        from scheduler import one_shot_prediction_runner as runner
+        from scheduler.process_control import ProcessStartGuard
+
+        summary = runner.OneShotPredictionSummary("daily", "2026-09-02")
+        candidates = [
+            SimpleNamespace(scheme_id=f"publisher-{index}")
+            for index in range(2)
+        ]
+        lock = threading.Lock()
+        first_started = threading.Event()
+        release_first = threading.Event()
+        second_started = threading.Event()
+        active = 0
+        maximum = 0
+        calls = 0
+
+        def execute(local_summary, cfg, **_kwargs):
+            nonlocal active, maximum, calls
+            with lock:
+                calls += 1
+                call_number = calls
+                active += 1
+                maximum = max(maximum, active)
+            if call_number == 1:
+                first_started.set()
+                release_first.wait(timeout=2)
+            else:
+                second_started.set()
+            local_summary.executed.append(
+                {"scheme_id": cfg.scheme_id, "status": "success"}
+            )
+            with lock:
+                active -= 1
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(
+                runner,
+                "_execute_candidate",
+                side_effect=execute,
+            ):
+                worker = threading.Thread(
+                    target=runner._execute_native_wave,
+                    args=(summary, candidates),
+                    kwargs={
+                        "predict_date": "2026-09-02",
+                        "algo_env": "forecast_env",
+                        "scheduled_control_plane": "launchd_one_shot",
+                        "scheduled_execution_context": object(),
+                        "engine": object(),
+                        "input_root": Path(tmpdir),
+                        "cancellation_event": threading.Event(),
+                        "process_start_guard": ProcessStartGuard(),
+                        "worker_limit": 1,
+                    },
+                )
+                worker.start()
+                self.assertTrue(first_started.wait(timeout=2))
+                self.assertFalse(second_started.wait(timeout=0.1))
+                release_first.set()
+                worker.join(timeout=2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(maximum, 1)
+        self.assertEqual(len(summary.executed), 2)
+
     def test_native_wave_passes_explicit_cache_policy(self) -> None:
         from scheduler import one_shot_prediction_runner as runner
         from scheduler.process_control import ProcessStartGuard
@@ -196,6 +262,37 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                 )
 
         self.assertEqual(captured, ["scheduled_bounded_reconcile"])
+
+    def test_execute_candidate_passes_explicit_timeout(self) -> None:
+        from scheduler import one_shot_prediction_runner as runner
+
+        summary = runner.OneShotPredictionSummary("daily", "2026-09-02")
+        cfg = _native_config("publisher")
+        result = SimpleNamespace(
+            scheme_id=cfg.scheme_id,
+            status="success",
+            records_written=1,
+            run_id=101,
+        )
+        with patch.object(
+            runner,
+            "execute_scheme",
+            return_value=result,
+        ) as execute:
+            runner._execute_candidate(
+                summary,
+                cfg,
+                predict_date="2026-09-02",
+                algo_env="forecast_env",
+                scheduled_control_plane="launchd_one_shot",
+                scheduled_execution_context=object(),
+                timeout_sec=runner.PHASE_A_PUBLISHER_TIMEOUT_SEC,
+            )
+
+        self.assertEqual(
+            execute.call_args.kwargs["timeout_sec"],
+            runner.PHASE_A_PUBLISHER_TIMEOUT_SEC,
+        )
 
     def test_daily_one_shot_reconciles_publishers_only(self) -> None:
         from scheduler import one_shot_prediction_runner as runner
@@ -250,6 +347,11 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         self.assertEqual(consumer_call.args[1], [consumer])
         self.assertEqual(publisher_call.kwargs["worker_limit"], 1)
         self.assertEqual(consumer_call.kwargs["worker_limit"], 2)
+        self.assertEqual(
+            publisher_call.kwargs["timeout_sec"],
+            runner.PHASE_A_PUBLISHER_TIMEOUT_SEC,
+        )
+        self.assertIsNone(consumer_call.kwargs["timeout_sec"])
 
     def test_requested_scheme_filter_runs_only_exact_active_set(self) -> None:
         from scheduler import one_shot_prediction_runner as runner

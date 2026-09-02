@@ -51,6 +51,7 @@ from shared.liwei_0616_cache_contract import (
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
 DATA_BRIDGE_READY_MAX_WAIT_SEC = 30 * 60
 DATA_BRIDGE_READY_POLL_INTERVAL_SEC = 30
+PHASE_A_PUBLISHER_TIMEOUT_SEC = 15 * 60
 
 
 class OneShotPredictionConfigurationError(RuntimeError):
@@ -259,6 +260,7 @@ def _execute_candidate(
     ephemeral_native_runtime_root: Path | None = None,
     cancellation_event: threading.Event | None = None,
     process_start_guard: ProcessStartGuard | None = None,
+    timeout_sec: int | None = None,
     native_cache_mutation_policy: str = (
         CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
     ),
@@ -286,6 +288,8 @@ def _execute_candidate(
             execute_kwargs["cancellation_event"] = cancellation_event
         if process_start_guard is not None:
             execute_kwargs["process_start_guard"] = process_start_guard
+        if timeout_sec is not None:
+            execute_kwargs["timeout_sec"] = timeout_sec
         if scheduled_preflight_failure is not None:
             execute_kwargs["scheduled_preflight_failure"] = (
                 scheduled_preflight_failure
@@ -339,6 +343,7 @@ def _execute_native_wave(
     cancellation_event: threading.Event,
     process_start_guard: ProcessStartGuard,
     worker_limit: int = 2,
+    timeout_sec: int | None = None,
     native_cache_mutation_policy: str = (
         CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
     ),
@@ -361,6 +366,7 @@ def _execute_native_wave(
             ephemeral_native_runtime_root=input_root,
             cancellation_event=cancellation_event,
             process_start_guard=process_start_guard,
+            timeout_sec=timeout_sec,
             native_cache_mutation_policy=native_cache_mutation_policy,
         )
         return local
@@ -766,6 +772,7 @@ def run_one_shot(
                             cancellation_event=cancellation_event,
                             process_start_guard=process_start_guard,
                             worker_limit=1,
+                            timeout_sec=PHASE_A_PUBLISHER_TIMEOUT_SEC,
                             native_cache_mutation_policy=(
                                 CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE
                                 if normalized_cadence == "daily"
@@ -786,6 +793,7 @@ def run_one_shot(
                             cancellation_event=cancellation_event,
                             process_start_guard=process_start_guard,
                             worker_limit=2,
+                            timeout_sec=None,
                             native_cache_mutation_policy=(
                                 CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
                             ),
