@@ -100,6 +100,25 @@ EXPECTED_FOREIGN_KEYS = {
     ),
 }
 
+EXPECTED_CONSTRAINTS = {
+    "t_auth_users": {
+        "PRIMARY": "PRIMARY KEY",
+        "uk_auth_users_username": "UNIQUE",
+        "fk_auth_users_created_by": "FOREIGN KEY",
+        "fk_auth_users_disabled_by": "FOREIGN KEY",
+    },
+    "t_auth_sessions": {
+        "PRIMARY": "PRIMARY KEY",
+        "uk_auth_sessions_token_hash": "UNIQUE",
+        "fk_auth_sessions_user": "FOREIGN KEY",
+    },
+    "t_auth_audit_logs": {
+        "PRIMARY": "PRIMARY KEY",
+        "fk_auth_audit_actor": "FOREIGN KEY",
+        "fk_auth_audit_target": "FOREIGN KEY",
+    },
+}
+
 
 def read_auth_schema(connection: Any) -> dict[str, object]:
     """读取 022 三张表完整且稳定的 information_schema 指纹。"""
@@ -223,6 +242,26 @@ def read_auth_schema(connection: Any) -> dict[str, object]:
         )
         for row in fk_rows
     }
+    constraint_rows = connection.execute(
+        text(
+            """
+            SELECT table_name AS table_name,
+                   constraint_name AS constraint_name,
+                   constraint_type AS constraint_type
+            FROM information_schema.table_constraints
+            WHERE constraint_schema = DATABASE()
+              AND table_name IN (
+                  't_auth_users','t_auth_sessions','t_auth_audit_logs'
+              )
+            ORDER BY table_name, constraint_name
+            """
+        )
+    ).mappings().all()
+    constraints: dict[str, dict[str, str]] = {}
+    for row in constraint_rows:
+        constraints.setdefault(str(row["table_name"]), {})[
+            str(row["constraint_name"])
+        ] = str(row["constraint_type"])
     return {
         "tables": tables,
         "columns": columns,
@@ -230,6 +269,7 @@ def read_auth_schema(connection: Any) -> dict[str, object]:
         "indexes": indexes,
         "invalid_index_metadata": invalid_index_metadata,
         "foreign_keys": foreign_keys,
+        "constraints": constraints,
     }
 
 
@@ -241,11 +281,12 @@ def classify_auth_schema(schema: Mapping[str, object]) -> str:
     indexes = schema.get("indexes")
     invalid_index_metadata = schema.get("invalid_index_metadata")
     foreign_keys = schema.get("foreign_keys")
+    constraints = schema.get("constraints")
     if not all(
         isinstance(value, Mapping)
         for value in (
             tables, columns, column_order, indexes,
-            invalid_index_metadata, foreign_keys,
+            invalid_index_metadata, foreign_keys, constraints,
         )
     ):
         return "UNSAFE"
@@ -268,6 +309,8 @@ def classify_auth_schema(schema: Mapping[str, object]) -> str:
         if indexes.get(table_name) != EXPECTED_INDEXES[table_name]:
             return "UNSAFE"
         if invalid_index_metadata.get(table_name):
+            return "UNSAFE"
+        if constraints.get(table_name) != EXPECTED_CONSTRAINTS[table_name]:
             return "UNSAFE"
     if dict(foreign_keys) != expected_fks:
         return "UNSAFE"

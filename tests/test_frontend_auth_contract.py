@@ -89,6 +89,12 @@ def test_logout_and_401_clear_dashboard_state() -> None:
     assert "factorLabRuntimeState.detailCache = new Map();" in DASHBOARD_JS
     assert 'controller.abort("authentication-ended")' in DASHBOARD_JS
     assert 'detailController.abort("authentication-ended")' in DASHBOARD_JS
+    assert "function clearAuthDialogs()" in AUTH_JS
+    assert 'document.querySelectorAll(".auth-dialog[open]")' in AUTH_JS
+    assert "dialog.close();" in AUTH_JS
+    assert AUTH_JS.index("clearAuthDialogs();") < AUTH_JS.index(
+        "shell.hidden = true;"
+    )
 
 
 def test_forced_password_and_admin_requests_use_fixed_api_paths() -> None:

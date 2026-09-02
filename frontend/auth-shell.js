@@ -88,8 +88,19 @@
     }
   }
 
+  function clearAuthDialogs() {
+    document.querySelectorAll(".auth-dialog[open]").forEach(function (dialog) {
+      var form = dialog.querySelector("form");
+      if (form) form.reset();
+      emitError(dialog.querySelector(".auth-error"), "");
+      dialog.close();
+    });
+    document.getElementById("authResetPasswordTarget").textContent = "";
+  }
+
   function showGate(view) {
     stopDashboard();
+    clearAuthDialogs();
     shell.hidden = true;
     shell.setAttribute("aria-hidden", "true");
     authGate.hidden = false;

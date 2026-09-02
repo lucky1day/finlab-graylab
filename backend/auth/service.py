@@ -59,6 +59,15 @@ def _cooldown(failure_count: int) -> timedelta | None:
     return None
 
 
+def _session_token_hash(token: str | None) -> bytes:
+    if not token:
+        raise AuthError("not_authenticated", 401)
+    try:
+        return digest_session_token(token)
+    except (UnicodeError, ValueError):
+        raise AuthError("not_authenticated", 401) from None
+
+
 class AuthService:
     """认证事务与账户生命周期的唯一业务入口。"""
 
@@ -124,12 +133,7 @@ class AuthService:
         return self.current_session(token).user
 
     def current_session(self, token: str | None) -> SessionResult:
-        if not token:
-            raise AuthError("not_authenticated", 401)
-        try:
-            token_hash = digest_session_token(token)
-        except (UnicodeError, ValueError):
-            raise AuthError("not_authenticated", 401) from None
+        token_hash = _session_token_hash(token)
         with self._engine.begin() as connection:
             session = repository.lock_session_user(
                 connection, token_hash, self._now()
@@ -153,10 +157,8 @@ class AuthService:
         current_password: str,
         new_password: str,
         request_id: str,
-    ) -> None:
-        if not token:
-            raise AuthError("not_authenticated", 401)
-        token_hash = digest_session_token(token)
+    ) -> bool:
+        token_hash = _session_token_hash(token)
         now = self._now()
         with self._engine.begin() as connection:
             session = repository.lock_session_user(connection, token_hash, now)
@@ -166,6 +168,8 @@ class AuthService:
             if not verify_password(user.password_hash, current_password):
                 raise AuthError("invalid_current_password", 400)
             validate_password(new_password)
+            if new_password == current_password:
+                return False
             repository.update_password(
                 connection,
                 user_id=user.id,
@@ -182,14 +186,14 @@ class AuthService:
                 request_id=request_id,
                 detail={},
             )
+            return True
 
     def list_users(self, token: str | None) -> list[AuthUser]:
-        if not token:
-            raise AuthError("not_authenticated", 401)
+        token_hash = _session_token_hash(token)
         with self._engine.begin() as connection:
             self._lock_admin(
                 connection,
-                digest_session_token(token),
+                token_hash,
                 self._now(),
             )
             return repository.list_users(connection)
@@ -222,8 +226,7 @@ class AuthService:
         role: str,
         request_id: str,
     ) -> AuthUser:
-        if not token:
-            raise AuthError("not_authenticated", 401)
+        token_hash = _session_token_hash(token)
         self._require_admin(token)
         normalized = normalize_username(username)
         password_hash = hash_password(initial_password)
@@ -233,7 +236,7 @@ class AuthService:
         try:
             with self._engine.begin() as connection:
                 actor = self._lock_admin(
-                    connection, digest_session_token(token), now
+                    connection, token_hash, now
                 )
                 user_id = repository.create_user(
                     connection,
@@ -319,9 +322,7 @@ class AuthService:
         operation: str,
         value: str,
     ) -> AuthUser:
-        if not token:
-            raise AuthError("not_authenticated", 401)
-        token_hash = digest_session_token(token)
+        token_hash = _session_token_hash(token)
         now = self._now()
         try:
             with self._engine.begin() as connection:
@@ -384,14 +385,13 @@ class AuthService:
         new_password: str,
         request_id: str,
     ) -> AuthUser:
-        if not token:
-            raise AuthError("not_authenticated", 401)
+        token_hash = _session_token_hash(token)
         self._require_admin(token)
         password_hash = hash_password(new_password)
         now = self._now()
         with self._engine.begin() as connection:
             actor = self._lock_admin(
-                connection, digest_session_token(token), now
+                connection, token_hash, now
             )
             target = repository.lock_user_by_id(connection, user_id)
             if target is None:
@@ -400,6 +400,8 @@ class AuthService:
                 raise AuthError("cannot_modify_self", 409)
             if target.is_protected_admin:
                 raise AuthError("protected_admin", 409)
+            if verify_password(target.password_hash, new_password):
+                return target
             repository.update_password(
                 connection,
                 user_id=target.id,

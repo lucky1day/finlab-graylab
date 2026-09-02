@@ -265,7 +265,7 @@ def change_password(
     request: Request,
     token: Annotated[str | None, Depends(_token)],
 ) -> JSONResponse:
-    _service().change_password(
+    password_changed = _service().change_password(
         token,
         payload.current_password,
         payload.new_password,
@@ -274,7 +274,8 @@ def change_password(
     response = JSONResponse(
         {"status": "ok"}, headers={"Cache-Control": "no-store"}
     )
-    _clear_session_cookie(response)
+    if password_changed:
+        _clear_session_cookie(response)
     return response
 
 

@@ -155,6 +155,11 @@ owner-only secret 文件读取，命令行、环境变量、日志和安装记�
 独立初始化，不复制用户、会话、哈希或审计数据。详细合同见
 [登录与账户管理](../docs/architecture/AUTHENTICATION_AND_ACCOUNT_MANAGEMENT.md)。
 
+Mac3 认证回滚使用
+`deploy/nginx/bond-factor-lab-lockdown.conf` 作为完整 replacement site；它不得与正常
+site 同时启用，并对 `/bond-factor-lab` 及其全部子路径统一返回 503，未知路径仍返回
+403。该文件只用于预安装和 `nginx -t`，是否切换仍需独立生产故障处置授权。
+
 ## 生产操作边界
 
 替换 installed plist/unit/timer、修改 loaded state、启动、停止或重载服务均为独立操作。操作

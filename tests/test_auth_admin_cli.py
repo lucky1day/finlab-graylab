@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from argparse import Namespace
 
 import pytest
 
@@ -63,3 +64,51 @@ def test_secret_path_is_fixed_by_deployment_target(monkeypatch) -> None:
     monkeypatch.setenv("BFL_DEPLOYMENT_TARGET", "unknown")
     with pytest.raises(RuntimeError, match="unsupported"):
         manage_auth_admin._secret_path()
+
+
+def test_main_suppresses_database_errors_and_secret_material(
+    monkeypatch,
+    capsys,
+) -> None:
+    plaintext = "Secret123"
+    password_hash = "$argon2id$v=19$m=19456,t=2,p=1$private"
+    database_error = (
+        "INSERT INTO t_auth_users password_hash="
+        + password_hash
+        + " mysql://user:password@host/bond_db "
+        + plaintext
+    )
+    monkeypatch.setattr(
+        manage_auth_admin,
+        "_parse_args",
+        lambda _argv: Namespace(
+            initialize=True,
+            reset_protected_admin=False,
+            expected_database_name="bond_db",
+            expected_server_uuid=UUID,
+        ),
+    )
+    monkeypatch.setattr(manage_auth_admin, "_secret_path", lambda: object())
+    monkeypatch.setattr(
+        manage_auth_admin, "_read_secret", lambda _path: plaintext
+    )
+    monkeypatch.setattr(
+        manage_auth_admin, "hash_password", lambda _value: password_hash
+    )
+
+    def fail_engine():
+        raise RuntimeError(database_error)
+
+    monkeypatch.setattr(
+        manage_auth_admin, "create_engine_from_env", fail_engine
+    )
+    assert manage_auth_admin.main([]) == 1
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out == (
+        '{"error_code": "auth_admin_operation_failed", '
+        '"status": "error"}\n'
+    )
+    for secret in (plaintext, password_hash, database_error, "mysql://"):
+        assert secret not in captured.out
+        assert secret not in captured.err

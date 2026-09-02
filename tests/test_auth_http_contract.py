@@ -130,6 +130,42 @@ def test_state_change_request_guards_fail_closed(monkeypatch) -> None:
     assert wrong_type.json() == {"error_code": "invalid_content_type"}
 
 
+def test_state_change_body_limit_and_configured_origin_are_fail_closed(
+    monkeypatch,
+) -> None:
+    prefix = b'{"username":"admin","password":"Secret123","padding":"'
+    exact_body = prefix + b"x" * (8 * 1024 - len(prefix) - 2) + b'"}'
+    assert len(exact_body) == 8 * 1024
+    exact = _request(
+        "POST",
+        "/api/auth/login",
+        headers=_headers(),
+        content=exact_body,
+    )
+    oversized = _request(
+        "POST",
+        "/api/auth/login",
+        headers=_headers(),
+        content=exact_body + b" ",
+    )
+    assert exact.status_code == 422
+    assert exact.json() == {"error_code": "invalid_request"}
+    assert oversized.status_code == 413
+    assert oversized.json() == {"error_code": "request_body_too_large"}
+
+    monkeypatch.setenv(
+        "BFL_AUTH_TRUSTED_ORIGIN", "https://unexpected.example"
+    )
+    drifted = _request(
+        "POST",
+        "/api/auth/login",
+        headers=_headers(),
+        json={"username": "admin", "password": "Secret123"},
+    )
+    assert drifted.status_code == 403
+    assert drifted.json() == {"error_code": "invalid_origin"}
+
+
 def test_validation_failure_does_not_echo_password(monkeypatch) -> None:
     secret = "NeverEchoThis123"
     response = _request(
@@ -192,6 +228,66 @@ def test_me_and_admin_forbidden_contract(monkeypatch) -> None:
     assert me.json()["user"]["role"] == "user"
     assert users.status_code == 403
     assert users.json() == {"error_code": "forbidden"}
+
+
+def test_ordinary_user_is_forbidden_from_every_admin_api() -> None:
+    service = Mock()
+    forbidden = AuthError("forbidden", 403)
+    service.list_users.side_effect = forbidden
+    service.create_user.side_effect = forbidden
+    service.change_username.side_effect = forbidden
+    service.change_role.side_effect = forbidden
+    service.reset_password.side_effect = forbidden
+    service.change_status.side_effect = forbidden
+    requests = (
+        ("GET", "/api/admin/users", None),
+        (
+            "POST",
+            "/api/admin/users",
+            {
+                "username": "new.user",
+                "initial_password": "Secret123",
+                "role": "user",
+            },
+        ),
+        (
+            "POST",
+            "/api/admin/users/change-username",
+            {"user_id": 2, "username": "renamed.user"},
+        ),
+        (
+            "POST",
+            "/api/admin/users/change-role",
+            {"user_id": 2, "role": "admin"},
+        ),
+        (
+            "POST",
+            "/api/admin/users/reset-password",
+            {"user_id": 2, "new_password": "Secret123"},
+        ),
+        (
+            "POST",
+            "/api/admin/users/change-status",
+            {"user_id": 2, "status": "disabled"},
+        ),
+    )
+    with patch("backend.auth.routes._service", return_value=service):
+        for method, path, payload in requests:
+            response = _request(
+                method,
+                path,
+                headers=(
+                    {
+                        **_headers(),
+                        "Cookie": "__Host-bfl-session=user-token",
+                    }
+                    if payload is not None
+                    else {"Cookie": "__Host-bfl-session=user-token"}
+                ),
+                **({"json": payload} if payload is not None else {}),
+            )
+            assert response.status_code == 403
+            assert response.json() == {"error_code": "forbidden"}
 
 
 def test_security_headers_apply_to_html_and_api() -> None:

@@ -202,46 +202,59 @@ def _auth_admin_lock(connection):
             )
 
 
-def main(argv: Iterable[str] | None = None) -> None:
+def main(argv: Iterable[str] | None = None) -> int:
     args = _parse_args(argv)
-    password_hash = hash_password(_read_secret(_secret_path()))
-    engine = create_engine_from_env()
     try:
-        with engine.connect() as connection:
-            _assert_database_identity(
-                connection,
-                expected_database_name=args.expected_database_name,
-                expected_server_uuid=args.expected_server_uuid,
-            )
-            with _auth_admin_lock(connection):
-                with connection.begin():
-                    _assert_database_identity(
-                        connection,
-                        expected_database_name=args.expected_database_name,
-                        expected_server_uuid=args.expected_server_uuid,
-                    )
-                    user_id = (
-                        _initialize(connection, password_hash)
-                        if args.initialize
-                        else _reset(connection, password_hash)
-                    )
+        password_hash = hash_password(_read_secret(_secret_path()))
+        engine = create_engine_from_env()
+        try:
+            with engine.connect() as connection:
+                _assert_database_identity(
+                    connection,
+                    expected_database_name=args.expected_database_name,
+                    expected_server_uuid=args.expected_server_uuid,
+                )
+                with _auth_admin_lock(connection):
+                    with connection.begin():
+                        _assert_database_identity(
+                            connection,
+                            expected_database_name=args.expected_database_name,
+                            expected_server_uuid=args.expected_server_uuid,
+                        )
+                        user_id = (
+                            _initialize(connection, password_hash)
+                            if args.initialize
+                            else _reset(connection, password_hash)
+                        )
+        finally:
+            engine.dispose()
+    except Exception:
         print(
             json.dumps(
                 {
-                    "operation": (
-                        "initialize"
-                        if args.initialize
-                        else "reset_protected_admin"
-                    ),
-                    "status": "ok",
-                    "user_id": user_id,
+                    "error_code": "auth_admin_operation_failed",
+                    "status": "error",
                 },
                 sort_keys=True,
             )
         )
-    finally:
-        engine.dispose()
+        return 1
+    print(
+        json.dumps(
+            {
+                "operation": (
+                    "initialize"
+                    if args.initialize
+                    else "reset_protected_admin"
+                ),
+                "status": "ok",
+                "user_id": user_id,
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

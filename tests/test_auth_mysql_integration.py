@@ -147,6 +147,23 @@ def test_auth_schema_fresh_partial_complete_and_drift_on_mysql8() -> None:
             )
             connection.execute(
                 text(
+                    "ALTER TABLE t_auth_users ADD CONSTRAINT "
+                    "ck_auth_unexpected CHECK (failed_login_count < 100)"
+                )
+            )
+            assert classify_auth_schema(read_auth_schema(connection)) == (
+                "UNSAFE"
+            )
+            connection.execute(
+                text(
+                    "ALTER TABLE t_auth_users DROP CHECK ck_auth_unexpected"
+                )
+            )
+            assert classify_auth_schema(read_auth_schema(connection)) == (
+                "COMPLETE"
+            )
+            connection.execute(
+                text(
                     "ALTER TABLE t_auth_users "
                     "MODIFY username VARCHAR(31) CHARACTER SET ascii "
                     "COLLATE ascii_bin NOT NULL"
@@ -197,13 +214,42 @@ def test_auth_service_sessions_throttle_and_admin_lifecycle_on_mysql8() -> None:
     with pytest.raises(AuthError, match="invalid_credentials"):
         service.login("admin", "Admin123")
     clock[0] += timedelta(seconds=61)
+    with pytest.raises(AuthError, match="invalid_credentials"):
+        service.login("admin", "Wrong123")
+    with engine.connect() as connection:
+        failure_count, not_before = connection.execute(
+            text(
+                "SELECT failed_login_count, login_not_before "
+                "FROM t_auth_users WHERE username='admin'"
+            )
+        ).one()
+    assert int(failure_count) == 6
+    assert not_before == clock[0] + timedelta(minutes=5)
+    clock[0] += timedelta(minutes=5, seconds=1)
+    with pytest.raises(AuthError, match="invalid_credentials"):
+        service.login("admin", "Wrong123")
+    with engine.connect() as connection:
+        failure_count, not_before = connection.execute(
+            text(
+                "SELECT failed_login_count, login_not_before "
+                "FROM t_auth_users WHERE username='admin'"
+            )
+        ).one()
+    assert int(failure_count) == 7
+    assert not_before == clock[0] + timedelta(minutes=15)
+    clock[0] += timedelta(minutes=15, seconds=1)
     first = service.login("admin", "Admin123")
     second = service.login("admin", "Admin123")
     assert first.token != second.token
+    service.logout(first.token)
+    with pytest.raises(AuthError, match="not_authenticated"):
+        service.authenticate(first.token)
+    assert service.authenticate(second.token).id == second.user.id
+    third = service.login("admin", "Admin123")
     service.change_password(
-        first.token, "Admin123", "Changed456", "request-change"
+        second.token, "Admin123", "Changed456", "request-change"
     )
-    for token in (first.token, second.token):
+    for token in (second.token, third.token):
         with pytest.raises(AuthError, match="not_authenticated"):
             service.authenticate(token)
     admin = service.login("admin", "Changed456")
@@ -223,6 +269,33 @@ def test_auth_service_sessions_throttle_and_admin_lifecycle_on_mysql8() -> None:
             request_id="request-protected",
         )
     before = service.login("second.admin", "Second123")
+    with engine.connect() as connection:
+        audit_count_before = int(
+            connection.execute(
+                text("SELECT COUNT(*) FROM t_auth_audit_logs")
+            ).scalar_one()
+        )
+    unchanged_password = service.reset_password(
+        admin.token,
+        user_id=created.id,
+        new_password="Second123",
+        request_id="request-idempotent-password-reset",
+    )
+    assert unchanged_password.id == created.id
+    assert service.authenticate(before.token).id == created.id
+    assert service.change_password(
+        admin.token,
+        "Changed456",
+        "Changed456",
+        "request-idempotent-self-password",
+    ) is False
+    assert service.authenticate(admin.token).id == admin.user.id
+    with engine.connect() as connection:
+        assert int(
+            connection.execute(
+                text("SELECT COUNT(*) FROM t_auth_audit_logs")
+            ).scalar_one()
+        ) == audit_count_before
     unchanged = service.change_role(
         admin.token,
         user_id=created.id,
@@ -231,6 +304,44 @@ def test_auth_service_sessions_throttle_and_admin_lifecycle_on_mysql8() -> None:
     )
     assert unchanged.role == "admin"
     assert service.authenticate(before.token).id == created.id
+    renamed = service.change_username(
+        admin.token,
+        user_id=created.id,
+        username="Second.Renamed",
+        request_id="request-rename",
+    )
+    assert renamed.username == "second.renamed"
+    with pytest.raises(AuthError, match="not_authenticated"):
+        service.authenticate(before.token)
+    target_session = service.login("second.renamed", "Second123")
+    changed_role = service.change_role(
+        admin.token,
+        user_id=created.id,
+        role="user",
+        request_id="request-role",
+    )
+    assert changed_role.role == "user"
+    with pytest.raises(AuthError, match="not_authenticated"):
+        service.authenticate(target_session.token)
+    target_session = service.login("second.renamed", "Second123")
+    disabled = service.change_status(
+        admin.token,
+        user_id=created.id,
+        status="disabled",
+        request_id="request-disable",
+    )
+    assert disabled.status == "disabled"
+    with pytest.raises(AuthError, match="not_authenticated"):
+        service.authenticate(target_session.token)
+    restored = service.change_status(
+        admin.token,
+        user_id=created.id,
+        status="active",
+        request_id="request-restore",
+    )
+    assert restored.status == "active"
+    with pytest.raises(AuthError, match="not_authenticated"):
+        service.authenticate(target_session.token)
     with engine.connect() as connection:
         audit_payload = " ".join(
             str(row[0])
