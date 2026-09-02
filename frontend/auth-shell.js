@@ -219,20 +219,47 @@
   function renderUsers() {
     var body = document.getElementById("authUsersBody");
     body.textContent = "";
+    document.getElementById("authUsersCount").textContent = state.users.length + " 个账户";
     state.users.forEach(function (user) {
       var row = document.createElement("tr");
-      [
-        user.username,
-        user.full_name || "—",
-        user.organization_name || "—",
-        user.role === "admin" ? "管理员" : "普通用户",
-        user.status === "active" ? "正常" : "已停用",
-        formatCreatedAt(user.created_at)
-      ].forEach(function (value) {
-        var cell = document.createElement("td");
-        cell.textContent = value;
-        row.appendChild(cell);
+      var identity = document.createElement("td");
+      var identityInner = document.createElement("div");
+      identityInner.className = "auth-user-identity";
+      var avatar = document.createElement("span");
+      avatar.className = "auth-user-avatar";
+      avatar.textContent = user.username.slice(0, 1).toUpperCase();
+      var username = document.createElement("strong");
+      username.textContent = user.username;
+      identityInner.appendChild(avatar);
+      identityInner.appendChild(username);
+      identity.appendChild(identityInner);
+      row.appendChild(identity);
+
+      [user.full_name, user.organization_name].forEach(function (value) {
+        var profileCell = document.createElement("td");
+        profileCell.className = value ? "auth-user-profile-value" : "auth-user-profile-value is-empty";
+        profileCell.textContent = value || "未填写";
+        row.appendChild(profileCell);
       });
+
+      var roleCell = document.createElement("td");
+      var roleBadge = document.createElement("span");
+      roleBadge.className = "auth-user-badge " + (user.role === "admin" ? "is-admin" : "is-user");
+      roleBadge.textContent = user.role === "admin" ? "管理员" : "普通用户";
+      roleCell.appendChild(roleBadge);
+      row.appendChild(roleCell);
+
+      var statusCell = document.createElement("td");
+      var statusBadge = document.createElement("span");
+      statusBadge.className = "auth-user-status " + (user.status === "active" ? "is-active" : "is-disabled");
+      statusBadge.textContent = user.status === "active" ? "正常" : "已停用";
+      statusCell.appendChild(statusBadge);
+      row.appendChild(statusCell);
+
+      var createdCell = document.createElement("td");
+      createdCell.className = "auth-user-created";
+      createdCell.textContent = formatCreatedAt(user.created_at);
+      row.appendChild(createdCell);
       var actions = document.createElement("td");
       actions.className = "auth-user-actions";
       actions.appendChild(actionButton("编辑资料", "profile", user.id, false));
