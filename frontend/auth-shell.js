@@ -179,6 +179,7 @@
     }).then(function () {
       form.reset();
       var dialog = form.closest("dialog");
+      if (dialog) delete dialog.returnFocusButton;
       if (dialog && dialog.open) dialog.close();
       showLogin("密码已修改，请使用新密码重新登录");
     }).catch(function (error) {
@@ -517,6 +518,7 @@
     closeAccountMenu(false);
     var dialog = document.getElementById("authChangePasswordDialog");
     dialog.querySelector("form").reset();
+    delete dialog.returnFocusButton;
     showDialog(dialog);
   });
 
