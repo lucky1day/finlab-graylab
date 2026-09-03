@@ -406,7 +406,10 @@ def _build_dashboard_representation(
                     history_backtest_rows_excluded += 1
                     continue
                 detail = dict(detail_row)
-                detail["actual_direction"] = detail.get("label")
+                detail["actual_direction"] = _direction_value(
+                    detail_row.get("label"),
+                    field="backtest detail label",
+                )
                 backtest_details.append(detail)
             benchmark_id = _required_text(
                 selected_run.get("benchmark_id"),

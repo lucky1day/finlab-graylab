@@ -427,6 +427,31 @@ def test_prediction_table_history_without_actual_remains_readable_as_backtest() 
     validate_dashboard_payload(payload)
 
 
+def test_physical_backtest_without_label_fails_closed_in_every_representation() -> None:
+    builders = (
+        build_factor_lab_dashboard,
+        lambda engine: build_factor_lab_dashboard_detail(
+            engine,
+            scheme_id="demo_daily__h1__5Y",
+            month="2026-01",
+            source="backtest",
+        ),
+    )
+    for builder in builders:
+        engine = _engine()
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """UPDATE t_backtest_predictions
+                    SET label = NULL
+                    WHERE run_id = 7 AND target_date = '2026-01-05'"""
+                )
+            )
+
+        with pytest.raises(DashboardDataError, match="backtest detail label"):
+            builder(engine)
+
+
 def test_overlap_diagnostics_are_counts_only() -> None:
     engine = _engine()
     with engine.begin() as connection:
