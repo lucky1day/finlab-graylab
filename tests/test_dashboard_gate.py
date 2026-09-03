@@ -112,19 +112,11 @@ def _scheme(target_tenor: str, *, with_live: bool) -> dict[str, Any]:
         "target_label": f"{target_tenor} target",
         "status": "active",
         "deployed_at": "2026-08-01",
-        "phase_ranges": (
-            [{
-                "prediction_phase": "scheduled_live",
-                "start_predict_date": "2026-08-10",
-                "end_predict_date": "2026-08-10",
-                "start_target_date": "2026-08-11",
-                "end_target_date": "2026-08-11",
-                "rows": 1,
-            }]
+        "monthly_rows": (
+            [["2026-08", "live", 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0]]
             if with_live
             else []
         ),
-        "monthly_rows": [],
         "backtest": {
             "benchmark_id": "benchmark-1",
             "benchmark_label": "Benchmark 1",
@@ -145,11 +137,12 @@ def _payload(
     ]
     schemes.sort(key=lambda row: row["scheme_id"])
     return {
-        "schema_version": "factor-lab-dashboard-v4",
+        "schema_version": "factor-lab-dashboard-v5",
         "representation": "summary",
         "snapshot_id": "dashboard-snapshot-1",
         "generated_at": "2026-08-10T12:00:00+08:00",
         "display_until": "2026-08-10",
+        "live_target_start_date": "2026-06-01",
         "monthly_row_fields": [
             "month",
             "source",
@@ -316,7 +309,7 @@ def test_dashboard_gate_accepts_active_scheme_with_empty_live_months(
 ) -> None:
     _write_config(tmp_path, tenors=("5Y",))
     payload = _payload(tenors=("5Y",))
-    payload["schemes"][0]["phase_ranges"] = []
+    payload["schemes"][0]["monthly_rows"] = []
 
     result = _run_gate(tmp_path, lambda _url, **_kwargs: (payload, 200))
 

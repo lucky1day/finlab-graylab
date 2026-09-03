@@ -12,7 +12,6 @@ from zoneinfo import ZoneInfo
 from shared.models import DIRECTION_VALUES
 from shared.scheme_config_schema import normalize_scheme_owner
 from shared.prediction_context import (
-    LIVE_PREDICTION_PHASES,
     MONTHLY_TARGET_RULE,
     WEEKLY_AVERAGE_TARGET_RULE,
     WEEKLY_TARGET_RULE,
@@ -26,14 +25,14 @@ from shared.task_specs import (
 )
 
 
-DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v4"
+DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v5"
 FACTOR_LAB_HISTORY_START_DATE = "2025-01-01"
+FACTOR_LAB_LIVE_TARGET_START_DATE = date(2026, 6, 1)
 DETAIL_ROW_FIELDS = (
     "source",
     "predict_date",
     "feature_date",
     "target_date",
-    "prediction_phase",
     "predicted_direction",
     "actual_direction",
 )
@@ -52,7 +51,7 @@ MONTHLY_ROW_FIELDS = (
     "up_true_positive",
     "down_true_positive",
 )
-# 旧名称只供低层明细工具使用；公开 V4 合同使用 DETAIL_ROW_FIELDS。
+# 旧名称只供低层明细工具使用；公开 V5 合同使用 DETAIL_ROW_FIELDS。
 ROW_FIELDS = DETAIL_ROW_FIELDS
 VALID_TASK_TYPES = set(ALLOWED_TASK_TYPES)
 DAILY_TARGET_RULE = "target_date_yield_vs_feature_date_yield"
@@ -117,6 +116,7 @@ TOP_LEVEL_FIELDS = {
     "snapshot_id",
     "generated_at",
     "display_until",
+    "live_target_start_date",
     "monthly_row_fields",
     "target_labels",
     "schemes",
@@ -127,6 +127,7 @@ DETAIL_TOP_LEVEL_FIELDS = {
     "snapshot_id",
     "generated_at",
     "display_until",
+    "live_target_start_date",
     "scheme_id",
     "month",
     "source",
@@ -146,7 +147,6 @@ SCHEME_FIELDS = {
     "target_label",
     "status",
     "deployed_at",
-    "phase_ranges",
     "monthly_rows",
     "backtest",
 }
@@ -156,14 +156,6 @@ BACKTEST_FIELDS = {
     "data_source",
     "data_source_label",
     "latest_run_date",
-}
-PHASE_RANGE_FIELDS = {
-    "prediction_phase",
-    "start_predict_date",
-    "end_predict_date",
-    "start_target_date",
-    "end_target_date",
-    "rows",
 }
 
 
@@ -183,6 +175,16 @@ class DashboardDataError(RuntimeError):
 def is_factor_lab_history_visible(predict_date: str) -> bool:
     """判断信号是否位于当前因子实验室展示窗口。"""
     return predict_date >= FACTOR_LAB_HISTORY_START_DATE
+
+
+def dashboard_result_source(target_date: Any) -> str:
+    """只按目标日期返回公开的回测/实盘业务口径。"""
+    value = _required_iso_date(target_date, field="target_date")
+    return (
+        "live"
+        if date.fromisoformat(value) >= FACTOR_LAB_LIVE_TARGET_START_DATE
+        else "backtest"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -481,20 +483,9 @@ def _safe_actual_locator_date(value: str) -> str:
 
 
 def compact_detail_row(row: Mapping[str, Any], *, source: str) -> list[Any]:
-    """把按需展示明细编码为 V4 固定七列数组。"""
+    """把按需展示明细编码为 V5 固定六列数组。"""
     if source not in {"live", "backtest"}:
         raise DashboardDataError(f"unknown dashboard detail source: {source}")
-
-    prediction_phase = row.get("prediction_phase")
-    if source == "live":
-        if prediction_phase not in LIVE_PREDICTION_PHASES:
-            raise DashboardDataError(
-                f"live prediction_phase is invalid: {prediction_phase!r}"
-            )
-    elif prediction_phase is not None:
-        raise DashboardDataError(
-            f"backtest prediction_phase must be None: {prediction_phase!r}"
-        )
 
     actual_direction = _direction(
         row.get("actual_direction"),
@@ -505,14 +496,13 @@ def compact_detail_row(row: Mapping[str, Any], *, source: str) -> list[Any]:
         _required_iso_date(row.get("predict_date"), field="predict_date"),
         _required_iso_date(row.get("feature_date"), field="feature_date"),
         _required_iso_date(row.get("target_date"), field="target_date"),
-        prediction_phase,
         _direction(row.get("predicted_direction"), allow_none=False),
         actual_direction,
     ]
 
 
 def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
-    """校验 Dashboard V4 summary 或 detail 的精确公开合同。"""
+    """校验 Dashboard V5 summary 或 detail 的精确公开合同。"""
     if not isinstance(payload, Mapping):
         raise DashboardDataError("dashboard payload must be an object")
     if payload.get("schema_version") != DASHBOARD_SCHEMA_VERSION:
@@ -534,6 +524,7 @@ def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
         raise DashboardDataError(
             "dashboard monthly_row_fields do not match MONTHLY_ROW_FIELDS"
         )
+    _validate_live_target_start_date(payload)
 
     _required_snapshot_id(payload.get("snapshot_id"))
     _required_aware_iso_datetime(payload.get("generated_at"))
@@ -632,12 +623,9 @@ def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
                 f"target_tenor={target_tenor!r} "
                 f"target_label={target_label!r}"
             )
-        _validate_phase_ranges(
-            scheme.get("phase_ranges"),
-            context=f"dashboard scheme[{scheme_index}].phase_ranges",
-        )
         _validate_monthly_rows(
             scheme.get("monthly_rows"),
+            task_type=str(task_type),
             context=f"dashboard scheme[{scheme_index}].monthly_rows",
         )
 
@@ -684,6 +672,7 @@ def _validate_detail_payload(payload: Mapping[str, Any]) -> None:
     _required_snapshot_id(payload.get("snapshot_id"))
     _required_aware_iso_datetime(payload.get("generated_at"))
     _required_payload_iso_date(payload.get("display_until"), field="display_until")
+    _validate_live_target_start_date(payload)
     _required_string(payload.get("scheme_id"), field="detail scheme_id")
     _required_month(payload.get("month"), field="detail month")
     source = payload.get("source")
@@ -696,38 +685,34 @@ def _validate_detail_payload(payload: Mapping[str, Any]) -> None:
     )
 
 
-def _validate_phase_ranges(value: Any, *, context: str) -> None:
-    if not isinstance(value, list):
-        raise DashboardDataError(f"{context} must be a list")
-    seen: set[str] = set()
-    for index, item in enumerate(value):
-        if not isinstance(item, Mapping):
-            raise DashboardDataError(f"{context}[{index}] must be an object")
-        _validate_exact_fields(
-            item,
-            expected=PHASE_RANGE_FIELDS,
-            context=f"{context}[{index}]",
-        )
-        phase = item.get("prediction_phase")
-        if phase not in LIVE_PREDICTION_PHASES or phase in seen:
-            raise DashboardDataError(f"{context}[{index}] phase is invalid")
-        seen.add(str(phase))
-        for field in (
-            "start_predict_date",
-            "end_predict_date",
-            "start_target_date",
-            "end_target_date",
-        ):
-            _required_payload_iso_date(item.get(field), field=f"{context}[{index}].{field}")
-        _required_nonnegative_integer(item.get("rows"), field=f"{context}[{index}].rows")
+def _validate_live_target_start_date(payload: Mapping[str, Any]) -> None:
+    value = _required_payload_iso_date(
+        payload.get("live_target_start_date"),
+        field="live_target_start_date",
+    )
+    if value != FACTOR_LAB_LIVE_TARGET_START_DATE.isoformat():
+        raise DashboardDataError("dashboard live_target_start_date is invalid")
 
 
-def _validate_monthly_rows(value: Any, *, context: str) -> None:
+def _validate_monthly_rows(
+    value: Any,
+    *,
+    task_type: str,
+    context: str,
+) -> None:
     if not isinstance(value, list):
         raise DashboardDataError(f"{context} must be a list")
     previous: tuple[str, int] | None = None
     seen: set[tuple[str, str]] = set()
     source_rank = {"backtest": 0, "live": 1}
+    live_start = FACTOR_LAB_LIVE_TARGET_START_DATE
+    if task_type == "monthly_average":
+        live_start = date(
+            live_start.year + (1 if live_start.month == 12 else 0),
+            1 if live_start.month == 12 else live_start.month + 1,
+            1,
+        )
+    live_start_month = live_start.strftime("%Y-%m")
     for index, row in enumerate(value):
         if not isinstance(row, list) or len(row) != len(MONTHLY_ROW_FIELDS):
             raise DashboardDataError(f"{context}[{index}] has invalid row width")
@@ -736,6 +721,11 @@ def _validate_monthly_rows(value: Any, *, context: str) -> None:
         source = detail["source"]
         if source not in source_rank:
             raise DashboardDataError(f"{context}[{index}].source is invalid")
+        expected_source = "live" if month >= live_start_month else "backtest"
+        if source != expected_source:
+            raise DashboardDataError(
+                f"{context}[{index}].source does not match target_date policy"
+            )
         key = (month, str(source))
         if key in seen:
             raise DashboardDataError(f"{context} has duplicate month/source")
@@ -794,6 +784,10 @@ def _validate_compact_rows(
                     f"{context}[{row_index}].{field} must be an ISO date string"
                 )
         detail = dict(zip(DETAIL_ROW_FIELDS, row, strict=True))
+        if row_source != dashboard_result_source(detail["target_date"]):
+            raise DashboardDataError(
+                f"{context}[{row_index}].source does not match target_date policy"
+            )
         compact_detail_row(detail, source=str(row_source))
         target_date = str(detail["target_date"])
         point = (str(row_source), target_date)

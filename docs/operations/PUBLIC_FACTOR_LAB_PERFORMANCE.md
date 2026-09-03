@@ -1,7 +1,7 @@
 # Bond Factor Lab 公网 Dashboard 读路径
 
 **文档状态**：`CURRENT`
-**适用版本**：dashboard schema `factor-lab-dashboard-v4`
+**适用版本**：dashboard schema `factor-lab-dashboard-v5`
 
 ## 当前合同
 
@@ -12,7 +12,7 @@ TTL、single-flight 或 last-known-good（LKG）快照。
 浏览器 → Nginx 只读入口 → FastAPI dashboard route
        → dashboard 专用只读 SQLAlchemy Engine
        → active Registry / prediction / Actual / backtest 批量查询
-       → V4 月度 summary；月历按需查询单方案 detail
+       → V5 月度 summary；月历按需查询单方案 detail
 ```
 
 - 数据库和 dashboard 构建成功：返回 `200` 当前数据。
@@ -32,10 +32,11 @@ prediction 就聚合什么 prediction，不生成占位行，也不推导方案�
 状态。调度缺口与运行失败由 scheduler、数据库 run、systemd/launchd 日志和受控 gap-fill 链路
 处理，不混入产品读模型。
 
-## V4 两种严格表示
+## V5 两种严格表示
 
 无查询参数的 `GET /api/factor-lab/dashboard` 返回 `representation=summary`。每个方案只包含身份、owner、
-回测展示元数据、live 阶段范围和按 `month + source` 的计数，不携带逐日 live 或 backtest 明细。前端直接用
+回测展示元数据和按 `month + source` 的计数，不携带逐日 live 或 backtest 明细。`source` 是仅由固定
+`target_date=2026-06-01` 分界产生的业务结果类型，不是物理表来源；公开合同不返回 prediction phase。前端直接用
 这些计数计算准确率、precision/recall 和方向分布，首屏不发 Detail 请求。
 
 点击月历后，同一路径携带且只携带以下三个参数：
@@ -71,7 +72,7 @@ python -m harness gate dashboard \
   --api-base-url http://127.0.0.1:8100
 ```
 
-Gate 使用生产端唯一响应预算，验证 V4 summary、active composite identity、展示身份（含 owner）、任务字段和 backtest 分区；
+Gate 使用生产端唯一响应预算，验证 V5 summary、active composite identity、展示身份（含 owner）、任务字段和 backtest 分区；
 没有 live 月度计数是合法结果。它不接受非 200、超限或非法结果。gzip、`no-store` 与响应头由后端 API 合同测试保护。历史信号检查与补齐不属于
 Dashboard 读路径，统一遵循[生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。
 

@@ -344,7 +344,7 @@ Migration 021 把 `t_scheme_registry.owner` 收敛为 `VARCHAR(64) NOT NULL`。�
 | `scheduler/{launchd,systemd}_prediction_runner.py` | L3 | 双平台 one-shot active 方案编排 | `run`、`main` |
 | `scheduler/{daily,weekly,monthly,period_average}_actuals_updater.py` | L3 | actuals 事实构建与写入 | `update_*_actuals` |
 | `scheduler/actuals_runner.py` | L3 | 双平台 one-shot actuals 唯一入口 | `run_actuals_job`、`main` |
-| `backend/main.py` `factor_lab_dashboard.py` `db.py` | L4 | 唯一 Dashboard 读模型 + 静态前端 serve；同一路径提供 V4 月度 summary 与单方案按月 detail | `/api/factor-lab/dashboard` |
+| `backend/main.py` `factor_lab_dashboard.py` `db.py` | L4 | 唯一 Dashboard 读模型 + 静态前端 serve；同一路径提供 V5 月度 summary 与单方案按月 detail | `/api/factor-lab/dashboard` |
 | `backtests/{id}_reproduction.py` | L4 | 历史复现 | `run_<scheme>_reproduction` |
 | `backtests/repository.py` | L4 | 回测写库单点 | `t_backtest_*` 写入 |
 | `migrations/runner.py` | 运维库层 | 唯一 migration 行为实现；caller-supplied `Engine` | manifest、inspect、apply、recovery |

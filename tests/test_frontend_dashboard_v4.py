@@ -1,4 +1,4 @@
-"""Dashboard V4 前端首屏与按需明细合同回归。"""
+"""Dashboard V5 前端首屏与按需明细合同回归。"""
 
 from pathlib import Path
 
@@ -8,10 +8,11 @@ SHELL_JS = PROJECT_ROOT / "frontend" / "aifin-shell.js"
 INDEX_HTML = PROJECT_ROOT / "frontend" / "index.html"
 
 
-def test_frontend_accepts_only_v4_summary_and_requires_owner() -> None:
+def test_frontend_accepts_only_v5_summary_and_requires_owner() -> None:
     source = SHELL_JS.read_text(encoding="utf-8")
 
-    assert 'DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v4"' in source
+    assert 'DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v5"' in source
+    assert "factor-lab-dashboard-v4" not in source
     assert "factor-lab-dashboard-v3" not in source
     assert 'payload.representation !== "summary"' in source
     assert '"owner",' in source

@@ -28,11 +28,12 @@ def _authenticated_dashboard_request():
 
 def _payload(snapshot_id: str) -> dict[str, Any]:
     return {
-        "schema_version": "factor-lab-dashboard-v4",
+        "schema_version": "factor-lab-dashboard-v5",
         "representation": "summary",
         "snapshot_id": snapshot_id,
         "generated_at": "2026-08-07T16:41:00+08:00",
         "display_until": "2026-08-07",
+        "live_target_start_date": "2026-06-01",
         "monthly_row_fields": [],
         "target_labels": {},
         "schemes": [],
@@ -167,11 +168,12 @@ def test_dashboard_accepts_only_exact_detail_query(monkeypatch) -> None:
 
     calls: list[dict[str, str]] = []
     detail = {
-        "schema_version": "factor-lab-dashboard-v4",
+        "schema_version": "factor-lab-dashboard-v5",
         "representation": "detail",
         "snapshot_id": "detail-1",
         "generated_at": "2026-08-07T16:41:00+08:00",
         "display_until": "2026-08-07",
+        "live_target_start_date": "2026-06-01",
         "scheme_id": "demo__h1__5Y",
         "month": "2026-08",
         "source": "all",

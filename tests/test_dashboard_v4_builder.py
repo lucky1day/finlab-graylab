@@ -1,18 +1,23 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 import pytest
 from sqlalchemy import create_engine, event, text
 
 from backend.factor_lab_dashboard import (
     MAX_ACTUAL_SOURCE_ROWS,
     DashboardDataError,
-    _phase_ranges,
+    _canonical_result_details,
+    _monthly_rows,
     _read_live_actuals,
     _read_live_predictions,
     build_factor_lab_dashboard,
     build_factor_lab_dashboard_detail,
+    dashboard_build_diagnostics,
 )
 from backend.factor_lab_dashboard_semantics import (
+    dashboard_result_source,
     live_actual_selector,
     validate_dashboard_payload,
 )
@@ -108,7 +113,7 @@ def _engine():
     return engine
 
 
-def test_v4_summary_aggregates_rows_and_reads_owner() -> None:
+def test_v5_summary_aggregates_rows_and_reads_owner() -> None:
     engine = _engine()
     statements: list[str] = []
 
@@ -121,77 +126,165 @@ def test_v4_summary_aggregates_rows_and_reads_owner() -> None:
     payload = build_factor_lab_dashboard(engine)
 
     validate_dashboard_payload(payload)
-    assert payload["schema_version"] == "factor-lab-dashboard-v4"
+    assert payload["schema_version"] == "factor-lab-dashboard-v5"
     assert payload["representation"] == "summary"
+    assert payload["live_target_start_date"] == "2026-06-01"
     scheme = payload["schemes"][0]
     assert scheme["owner"] == "lw"
     assert "live_rows" not in scheme
     assert scheme["monthly_rows"] == [
         ["2026-01", "backtest", 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0],
-        ["2026-06", "live", 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0],
+        ["2026-06", "live", 2, 2, 2, 1, 1, 0, 1, 1, 0, 1, 1],
     ]
-    assert scheme["phase_ranges"] == [
-        {
-            "prediction_phase": "scheduled_live",
-            "start_predict_date": "2026-06-02",
-            "end_predict_date": "2026-06-02",
-            "start_target_date": "2026-06-03",
-            "end_target_date": "2026-06-03",
-            "rows": 1,
-        }
-    ]
+    assert "phase_ranges" not in scheme
     assert sum(
         "FROM t_scheme_predictions" in sql for sql in statements
     ) == 1
 
 
-def test_phase_ranges_use_date_extrema_and_stable_phase_order() -> None:
-    rows = [
-        {
-            "prediction_phase": "scheduled_live",
-            "predict_date": "2026-06-05",
-            "target_date": "2026-06-09",
-        },
-        {
-            "prediction_phase": "gray_live",
-            "predict_date": "2026-05-03",
-            "target_date": "2026-05-07",
-        },
-        {
-            "prediction_phase": "scheduled_live",
-            "predict_date": "2026-06-02",
-            "target_date": "2026-06-04",
-        },
-        {
-            "prediction_phase": "ignored",
-            "predict_date": "not-a-date",
-            "target_date": "not-a-date",
-        },
-        {
-            "prediction_phase": "gray_live",
-            "predict_date": "2026-05-01",
-            "target_date": "2026-05-08",
-        },
-    ]
+def test_v5_summary_validator_rejects_monthly_source_outside_policy() -> None:
+    payload = build_factor_lab_dashboard(_engine())
+    payload["schemes"][0]["monthly_rows"][0][1] = "live"
 
-    assert _phase_ranges(rows) == [
-        {
-            "prediction_phase": "gray_live",
-            "start_predict_date": "2026-05-01",
-            "end_predict_date": "2026-05-03",
-            "start_target_date": "2026-05-07",
-            "end_target_date": "2026-05-08",
-            "rows": 2,
-        },
-        {
-            "prediction_phase": "scheduled_live",
-            "start_predict_date": "2026-06-02",
-            "end_predict_date": "2026-06-05",
-            "start_target_date": "2026-06-04",
-            "end_target_date": "2026-06-09",
-            "rows": 2,
-        },
-    ]
+    with pytest.raises(DashboardDataError, match="target_date policy"):
+        validate_dashboard_payload(payload)
+
+
+@pytest.mark.parametrize(
+    ("target_date", "expected"),
+    (("2026-05-31", "backtest"), ("2026-06-01", "live")),
+)
+def test_result_source_uses_only_fixed_target_date_boundary(
+    target_date: str,
+    expected: str,
+) -> None:
+    assert dashboard_result_source(target_date) == expected
+
+
+def test_cross_source_overlap_uses_date_specific_authority() -> None:
+    before_backtest = {
+        "target_date": "2026-05-31",
+        "predict_date": "2026-06-02",
+        "predicted_direction": -1,
+    }
+    before_live = {**before_backtest, "predicted_direction": 1}
+    after_backtest = {
+        "target_date": "2026-06-01",
+        "predict_date": "2026-05-29",
+        "predicted_direction": -1,
+    }
+    after_live = {**after_backtest, "predicted_direction": 1}
+
+    canonical = _canonical_result_details(
+        backtest_details=[before_backtest, after_backtest],
+        live_details=[before_live, after_live],
+    )
+
+    assert canonical.backtest_details == [before_backtest]
+    assert canonical.live_details == [after_live]
+    assert canonical.overlap_rows == 2
+    assert canonical.direction_conflicts == 2
+
+
+def test_duplicate_canonical_key_in_one_physical_source_fails_closed() -> None:
+    duplicate = {
+        "target_date": "2026-06-01",
+        "predict_date": "2026-05-29",
+        "predicted_direction": 1,
+    }
+    with pytest.raises(DashboardDataError, match="duplicate target_date"):
+        _canonical_result_details(
+            backtest_details=[duplicate, dict(duplicate)],
+            live_details=[],
+        )
+
+
+@pytest.mark.parametrize(
+    ("task_type", "expected_months"),
+    (
+        ("T+1", ["2026-05", "2026-06"]),
+        ("T+5", ["2026-05", "2026-06"]),
+        ("weekly_point", ["2026-05", "2026-06"]),
+        ("weekly_average", ["2026-05", "2026-06"]),
+        ("monthly", ["2026-05", "2026-06"]),
+        ("monthly_average", ["2026-06", "2026-07"]),
+        ("quarterly_average", ["2026-05", "2026-06"]),
+        ("annual_average", ["2026-05", "2026-06"]),
+    ),
+)
+def test_fixed_result_type_applies_to_every_task_type(
+    task_type: str,
+    expected_months: list[str],
+) -> None:
+    canonical = _canonical_result_details(
+        backtest_details=[
+            {
+                "target_date": "2026-05-31",
+                "predict_date": "2026-06-02",
+                "predicted_direction": 1,
+                "actual_direction": 1,
+            },
+            {
+                "target_date": "2026-06-01",
+                "predict_date": "2026-05-29",
+                "predicted_direction": -1,
+                "actual_direction": -1,
+            },
+        ],
+        live_details=[],
+    )
+
+    rows = _monthly_rows(
+        backtest_details=canonical.backtest_details,
+        live_details=canonical.live_details,
+        task_type=task_type,
+    )
+
+    assert [row[0] for row in rows] == expected_months
+    assert [row[1] for row in rows] == ["backtest", "live"]
+
+
+def test_full_action_vote0546_fixed_date_fixture() -> None:
+    rows = []
+    for index in range(72):
+        rows.append(
+            {
+                "target_date": (date(2026, 1, 1) + timedelta(days=index)).isoformat(),
+                "predict_date": "2026-01-01",
+                "predicted_direction": 1,
+                "actual_direction": 1 if index < 48 else -1,
+            }
+        )
+    for index in range(13):
+        rows.append(
+            {
+                "target_date": (date(2026, 6, 1) + timedelta(days=index)).isoformat(),
+                "predict_date": "2026-05-29",
+                "predicted_direction": 1,
+                "actual_direction": 1 if index < 9 else -1,
+            }
+        )
+
+    canonical = _canonical_result_details(
+        backtest_details=rows,
+        live_details=[],
+    )
+    monthly = _monthly_rows(
+        backtest_details=canonical.backtest_details,
+        live_details=canonical.live_details,
+        task_type="weekly_point",
+    )
+    totals = {
+        source: (
+            sum(row[2] for row in monthly if row[1] == source),
+            sum(row[4] for row in monthly if row[1] == source),
+        )
+        for source in ("backtest", "live")
+    }
+
+    assert totals == {"backtest": (72, 48), "live": (13, 9)}
+    assert sum(samples for samples, _correct in totals.values()) == 85
+    assert sum(correct for _samples, correct in totals.values()) == 57
 
 
 def test_live_prediction_query_uses_one_tuple_scope_predicate() -> None:
@@ -231,7 +324,7 @@ def test_live_prediction_query_uses_one_tuple_scope_predicate() -> None:
     assert [int(row["id"]) for row in rows] == [2, 1]
 
 
-def test_v4_detail_reads_only_requested_active_scheme_month_and_source() -> None:
+def test_v5_detail_reads_requested_active_scheme_month_and_source() -> None:
     engine = _engine()
     payload = build_factor_lab_dashboard_detail(
         engine,
@@ -243,16 +336,24 @@ def test_v4_detail_reads_only_requested_active_scheme_month_and_source() -> None
     assert payload is not None
     validate_dashboard_payload(payload)
     assert payload["representation"] == "detail"
+    assert payload["live_target_start_date"] == "2026-06-01"
     assert payload["rows"] == [
         [
             "live",
             "2026-06-02",
             "2026-06-01",
             "2026-06-03",
-            "scheduled_live",
             1,
             1,
-        ]
+        ],
+        [
+            "live",
+            "2026-06-02",
+            "2026-06-01",
+            "2026-06-04",
+            -1,
+            -1,
+        ],
     ]
     assert (
         build_factor_lab_dashboard_detail(
@@ -265,7 +366,62 @@ def test_v4_detail_reads_only_requested_active_scheme_month_and_source() -> None
     )
 
 
-def test_v4_detail_pushes_month_and_source_into_database_queries() -> None:
+def test_v5_detail_result_type_partitions_are_disjoint_and_additive() -> None:
+    engine = _engine()
+    payloads = {
+        source: build_factor_lab_dashboard_detail(
+            engine,
+            scheme_id="demo_daily__h1__5Y",
+            month="2026-06",
+            source=source,
+        )
+        for source in ("all", "backtest", "live")
+    }
+
+    assert all(payload is not None for payload in payloads.values())
+    all_rows = payloads["all"]["rows"]
+    backtest_rows = payloads["backtest"]["rows"]
+    live_rows = payloads["live"]["rows"]
+    assert backtest_rows == []
+    assert all_rows == live_rows
+    assert len(all_rows) == len(backtest_rows) + len(live_rows)
+    assert len({(row[0], row[3]) for row in all_rows}) == len(all_rows)
+
+
+def test_v5_detail_validator_rejects_source_outside_target_date_policy() -> None:
+    payload = build_factor_lab_dashboard_detail(
+        _engine(),
+        scheme_id="demo_daily__h1__5Y",
+        month="2026-06",
+        source="all",
+    )
+    assert payload is not None
+    payload["rows"][0][0] = "backtest"
+
+    with pytest.raises(DashboardDataError, match="target_date policy"):
+        validate_dashboard_payload(payload)
+
+
+def test_overlap_diagnostics_are_counts_only() -> None:
+    engine = _engine()
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """INSERT INTO t_backtest_predictions VALUES
+                (7,'5Y',1,'2026-06-02','2026-06-01','2026-06-03',1,-1)"""
+            )
+        )
+
+    payload = build_factor_lab_dashboard(engine)
+    diagnostics = dashboard_build_diagnostics(payload["snapshot_id"])
+
+    assert diagnostics is not None
+    assert diagnostics["cross_source_overlap_rows"] == 1
+    assert diagnostics["cross_source_direction_conflicts"] == 1
+    assert not any("target_date" in key for key in diagnostics)
+
+
+def test_v5_detail_reads_both_physical_sources_for_result_type_filter() -> None:
     engine = _engine()
     statements: list[str] = []
 
@@ -284,20 +440,27 @@ def test_v4_detail_pushes_month_and_source_into_database_queries() -> None:
 
     assert payload is not None
     assert payload["rows"] == []
-    assert not any(
+    prediction_sql = next(
+        sql
+        for sql in statements
+        if "SELECT id, scheme_id" in sql and "FROM t_scheme_predictions" in sql
+    )
+    assert "target_date >= ?" in prediction_sql
+    assert "target_date < ?" in prediction_sql
+    assert any(
+        "FROM t_scheme_actuals" in sql
+        for sql in statements
+    )
+    assert any(
         "SELECT id, scheme_id" in sql and "FROM t_scheme_predictions" in sql
         for sql in statements
     )
-    assert not any("FROM t_scheme_actuals" in sql for sql in statements)
     detail_sql = next(
         sql for sql in statements if "FROM t_backtest_predictions" in sql
     )
     assert "target_date >= ?" in detail_sql
     assert "target_date < ?" in detail_sql
-    assert any(
-        "SELECT MIN(target_date) FROM t_scheme_predictions" in sql
-        for sql in statements
-    )
+    assert not any("SELECT MIN(target_date)" in sql for sql in statements)
 
 
 def test_live_actual_query_reads_exact_scopes_for_all_task_types() -> None:

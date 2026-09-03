@@ -48,7 +48,6 @@ def test_frontend_dashboard_contract_matches_backend() -> None:
         ("DASHBOARD_DETAIL_ROW_FIELDS", semantics.DETAIL_ROW_FIELDS),
         ("DASHBOARD_MONTHLY_ROW_FIELDS", semantics.MONTHLY_ROW_FIELDS),
         ("DASHBOARD_BACKTEST_FIELDS", semantics.BACKTEST_FIELDS),
-        ("DASHBOARD_PHASE_RANGE_FIELDS", semantics.PHASE_RANGE_FIELDS),
         ("DASHBOARD_TASK_TYPES", semantics.VALID_TASK_TYPES),
     )
     for javascript_name, backend_values in contracts:
@@ -65,17 +64,24 @@ def test_public_check_dashboard_contract_matches_backend() -> None:
         assert _public_check_literal(shell_name) == set(backend_values), shell_name
 
 
-def test_dashboard_v4_removes_signal_state_from_all_public_contracts() -> None:
-    removed_fields = {"signal_status", "signal_failure_category"}
+def test_dashboard_v5_removes_internal_state_from_all_public_contracts() -> None:
+    removed_fields = {
+        "signal_status",
+        "signal_failure_category",
+        "phase_ranges",
+        "prediction_phase",
+    }
     assert removed_fields.isdisjoint(semantics.SCHEME_FIELDS)
     assert removed_fields.isdisjoint(_js_literal("DASHBOARD_SCHEME_FIELDS"))
     assert removed_fields.isdisjoint(_public_check_literal("DASHBOARD_SCHEME_FIELDS"))
 
     shell_text = SHELL_JS.read_text(encoding="utf-8")
     public_check_text = PUBLIC_CHECK.read_text(encoding="utf-8")
-    assert "factor-lab-dashboard-v4" in shell_text
+    assert "factor-lab-dashboard-v5" in shell_text
+    assert "factor-lab-dashboard-v4" not in shell_text
     assert "factor-lab-dashboard-v3" not in shell_text
-    assert "factor-lab-dashboard-v4" in public_check_text
+    assert "factor-lab-dashboard-v5" in public_check_text
+    assert "factor-lab-dashboard-v4" not in public_check_text
     assert "factor-lab-dashboard-v3" not in public_check_text
 
 
@@ -83,8 +89,8 @@ def test_dashboard_builder_has_only_summary_and_detail_prediction_queries() -> N
     source = DASHBOARD_BUILDER.read_text(encoding="utf-8")
     lowered = source.casefold()
 
-    assert lowered.count("from t_scheme_predictions") == 2
-    assert "select min(target_date)" in lowered
+    assert lowered.count("from t_scheme_predictions") == 1
+    assert "select min(target_date)" not in lowered
     for forbidden_table in (
         "t_scheme_runs",
         "api_wind_date",
@@ -95,8 +101,8 @@ def test_dashboard_builder_has_only_summary_and_detail_prediction_queries() -> N
 
 def test_compact_row_validation_preserves_order_and_uniqueness_contract() -> None:
     rows = [
-        ["backtest", "2026-08-01", "2026-07-31", "2026-08-03", None, 1, -1],
-        ["backtest", "2026-08-02", "2026-08-01", "2026-08-04", None, -1, 1],
+        ["backtest", "2026-05-01", "2026-04-30", "2026-05-04", 1, -1],
+        ["backtest", "2026-05-02", "2026-05-01", "2026-05-05", -1, 1],
     ]
 
     semantics._validate_compact_rows(rows, source="backtest", context="rows")

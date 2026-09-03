@@ -275,12 +275,13 @@ import sys
 
 DASHBOARD_TOP_FIELDS = {
     "schema_version", "representation", "snapshot_id", "generated_at",
-    "display_until", "monthly_row_fields", "target_labels", "schemes",
+    "display_until", "live_target_start_date", "monthly_row_fields",
+    "target_labels", "schemes",
 }
 DASHBOARD_SCHEME_FIELDS = {
     "scheme_id", "base_scheme_id", "name", "owner", "description", "horizon",
     "task_type", "frequency", "target_tenor", "target_label", "status",
-    "deployed_at", "phase_ranges", "monthly_rows", "backtest",
+    "deployed_at", "monthly_rows", "backtest",
 }
 DASHBOARD_BACKTEST_FIELDS = {
     "benchmark_id", "benchmark_label", "data_source", "data_source_label",
@@ -288,11 +289,12 @@ DASHBOARD_BACKTEST_FIELDS = {
 }
 DASHBOARD_DETAIL_TOP_FIELDS = {
     "schema_version", "representation", "snapshot_id", "generated_at",
-    "display_until", "scheme_id", "month", "source", "row_fields", "rows",
+    "display_until", "live_target_start_date", "scheme_id", "month", "source",
+    "row_fields", "rows",
 }
 DASHBOARD_DETAIL_ROW_FIELDS = [
     "source", "predict_date", "feature_date", "target_date",
-    "prediction_phase", "predicted_direction", "actual_direction",
+    "predicted_direction", "actual_direction",
 ]
 from pathlib import Path
 
@@ -323,7 +325,7 @@ if kind in {"dashboard", "dashboard-detail"}:
         raise SystemExit(1) from exc
     if not isinstance(payload, dict):
         raise SystemExit(1)
-    if payload.get("schema_version") != "factor-lab-dashboard-v4":
+    if payload.get("schema_version") != "factor-lab-dashboard-v5":
         raise SystemExit(1)
     if kind == "dashboard-detail":
         if payload.get("representation") != "detail":
@@ -426,7 +428,7 @@ run_request versioned-js GET \
 assert_last_content_encoding versioned-js-gzip gzip
 assert_last_vary_token versioned-js-vary Accept-Encoding
 assert_body_valid \
-  versioned-js-body text gzip "$LAST_BODY" 'factor-lab-dashboard-v4'
+  versioned-js-body text gzip "$LAST_BODY" 'factor-lab-dashboard-v5'
 run_request asset-icon GET "$APP_URL/assets/aifin-lab-icon.svg" 200
 run_request asset-logo GET "$APP_URL/assets/aifin-lab-logo.svg" 200
 

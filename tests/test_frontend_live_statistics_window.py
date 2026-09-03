@@ -17,7 +17,7 @@ def _section(source: str, start: str, end: str) -> str:
 
 def test_live_statistics_uses_summary_monthly_rows() -> None:
     source = _source()
-    assert 'var FACTOR_LAB_LIVE_TARGET_START_DATE = "2026-06-01";' in source
+    assert "FACTOR_LAB_LIVE_TARGET_START_DATE" not in source
     visible_rows = _section(
         source,
         "function getVisibleRowsForScheme(scheme)",
@@ -35,7 +35,9 @@ def test_live_month_range_comes_from_target_dates_not_existing_rows() -> None:
         "function decodeDashboardDetailPayload",
     )
     assert 'var displayUntil = requireDashboardIsoDate(payload.display_until' in decoder
+    assert "payload.live_target_start_date" in decoder
     assert "displayUntil: displayUntil" in decoder
+    assert "liveTargetStartDate: liveTargetStartDate" in decoder
 
     available_months = _section(
         source,
@@ -43,7 +45,8 @@ def test_live_month_range_comes_from_target_dates_not_existing_rows() -> None:
         "function factorMonthRange",
     )
     assert 'if (src === "live")' in available_months
-    assert "FACTOR_LAB_LIVE_TARGET_START_DATE.slice(0, 7)" in available_months
+    assert "dashboardLiveDisplayStartMonth(" in available_months
+    assert "task.taskType" in available_months
     assert "committed.displayUntil.slice(0, 7)" in available_months
 
 

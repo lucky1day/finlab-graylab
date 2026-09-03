@@ -283,12 +283,17 @@ target_date  = T + horizon
 
 前端任务格子由 `target_tenor + task_type` 定义。`task_type` 是业务任务类型，不是输入频率，也不是 `horizon` 的别名；固定取值为 `T+1`、`T+5`、`weekly_point`、`weekly_average`、`monthly`、`monthly_average`、`quarterly_average`、`annual_average`。日频任务才按后续交易日步长解释 horizon；Blackbox V2 周均、MID 月均、自然季均和春节年均的 `horizon=1` 表示下一个同类业务桶。周期均值的 `target_date=feature_date+1` 个自然日只是定位下一桶的日期指针，不是一天后的预测目标，也不是目标桶完成日。actual join 必须使用 `target_tenor + target_date + target_rule`，前端分列只能读取 Registry/API 返回的 `task_type`；缺失或非法值必须 fail-closed，不允许根据 `frequency/horizon` 猜列、桶或目标日期。
 
-前端可以展示灰度实盘和正式实盘，但必须能区分 `prediction_phase`：
+Dashboard V5 的公开结果类型只按 `target_date` 分类：
 
-- `gray_live`：灰度实盘观察。
-- `scheduled_live`：正式实盘。
+- `target_date < 2026-06-01`：`backtest` / 回测。
+- `target_date >= 2026-06-01`：`live` / 实盘。
 
-前端与业务不读取 `anchor_date`。需要展示预测站位或数据截止时，统一显示 `feature_date`。月度行、明细归属、actual join 和去重仍统一按 `target_date`。
+公开 API 和前端不使用物理表来源、`predict_date` 或 `prediction_phase` 判断结果类型，也不返回灰度/正式
+实盘阶段。`gray_live` 与 `scheduled_live` 继续作为 scheduler、gap-fill 和历史记录的内部写入来源，
+不改变其 insert-only 与运行审计语义。同一 canonical 业务键跨回测表和预测表重复时，分界前优先选中回测
+run，分界后优先选中预测表；首选来源缺失时使用另一来源，且每个业务键只进入统计一次。
+
+前端与业务不读取 `anchor_date`。需要展示预测站位或数据截止时，统一显示 `feature_date`。月度行、明细归属、actual join、结果分类和去重均统一按 `target_date`。
 
 前端展示的部署时间只能来自 active `t_scheme_registry.deployed_at`。`deployed_at` 的业务语义是该注册业务方案激活并进入业务可见状态的日期，不是定时任务已生产挂载的证据；缺失时说明 registry 数据不完整，后端 API 和前端都必须 fail-closed。生产调度挂载必须另由对应 installed plist、`launchctl` loaded state 和任务日志共同证明。禁止 hardcode 默认部署日、scheme_id override 或在前端用灰度起点/正式实盘起点替代部署时间。
 

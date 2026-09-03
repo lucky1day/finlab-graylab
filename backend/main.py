@@ -523,6 +523,12 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
             "backtest_row_count": _integer_metric(
                 build_diagnostics.get("backtest_row_count")
             ),
+            "cross_source_overlap_rows": _integer_metric(
+                build_diagnostics.get("cross_source_overlap_rows")
+            ),
+            "cross_source_direction_conflicts": _integer_metric(
+                build_diagnostics.get("cross_source_direction_conflicts")
+            ),
             "actual_same_direction_duplicates_folded": (
                 _actual_frequency_metrics(
                     build_diagnostics.get(
@@ -557,7 +563,7 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
 
 
 def _dashboard_detail_query(request: Request) -> dict[str, str] | None:
-    """严格解析同一路径的 V4 detail 三参数模式。"""
+    """严格解析同一路径的 V5 detail 三参数模式。"""
     raw_query = request.scope.get("query_string", b"")
     if not raw_query:
         return None
