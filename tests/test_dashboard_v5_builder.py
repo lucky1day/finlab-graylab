@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
-
 import pytest
 from sqlalchemy import create_engine, event, text
 
@@ -202,53 +200,6 @@ def test_fixed_result_type_applies_to_every_task_type(
 
     assert [row[0] for row in rows] == expected_months
     assert [row[1] for row in rows] == ["backtest", "live"]
-
-
-def test_full_action_vote0546_fixed_date_fixture() -> None:
-    rows = []
-    for index in range(72):
-        rows.append(
-            {
-                "target_date": (date(2026, 1, 1) + timedelta(days=index)).isoformat(),
-                "predict_date": "2026-01-01",
-                "predicted_direction": 1,
-                "actual_direction": 1 if index < 48 else -1,
-            }
-        )
-    for index in range(13):
-        rows.append(
-            {
-                "target_date": (date(2026, 6, 1) + timedelta(days=index)).isoformat(),
-                "predict_date": "2026-05-29",
-                "predicted_direction": 1,
-                "actual_direction": 1 if index < 9 else -1,
-            }
-        )
-
-    backtest_details = [
-        row for row in rows
-        if dashboard_result_source(row["target_date"]) == "backtest"
-    ]
-    live_details = [
-        row for row in rows
-        if dashboard_result_source(row["target_date"]) == "live"
-    ]
-    monthly = _monthly_rows(
-        backtest_details=backtest_details,
-        live_details=live_details,
-        task_type="weekly_point",
-    )
-    totals = {
-        source: (
-            sum(row[2] for row in monthly if row[1] == source),
-            sum(row[4] for row in monthly if row[1] == source),
-        )
-        for source in ("backtest", "live")
-    }
-
-    assert totals == {"backtest": (72, 48), "live": (13, 9)}
-    assert sum(samples for samples, _correct in totals.values()) == 85
-    assert sum(correct for _samples, correct in totals.values()) == 57
 
 
 def test_live_prediction_query_uses_one_tuple_scope_predicate() -> None:

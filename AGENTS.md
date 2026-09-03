@@ -120,3 +120,10 @@ python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
 - 数据库字段: snake_case
 - API 路径: kebab-case
 - registry `scheme_id`(业务方案) / `base_scheme_id`(算法执行身份) / `benchmark_id`(基准批次) / `data_source`(数据口径) 命名分离
+
+## 测试代码保留原则
+
+- 长期测试只保留公共合同、数据不变量、安全边界、事务原子性、迁移恢复和调度控制面等跨版本防线。
+- 针对单次故障、具体实现调用次数、源码字符串位置、一次性视觉或现场数据的测试，只用于当前开发验收；问题闭环后删除，不沉淀为永久回归。
+- 同一行为优先由最高层、最稳定的合同测试覆盖；不得同时保留源码扫描、内部 helper、HTTP 和端到端四套重复断言。
+- 上游算法内部行为由交付方负责；平台测试只验证 Blackbox/Native 合同与标准输出边界，不为单个方案长期复制算法内部测试。
