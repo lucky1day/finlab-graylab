@@ -144,4 +144,10 @@ def test_user_management_uses_one_edit_dialog_without_initial_avatars() -> None:
     assert 'dialog.addEventListener("cancel"' in AUTH_JS
     assert 'input.type = "password"' in AUTH_JS
     assert 'button.textContent = "显示"' in AUTH_JS
-    assert "firstField.focus();" in AUTH_JS
+    show_dialog = AUTH_JS[
+        AUTH_JS.index("function showDialog(dialog)") :
+        AUTH_JS.index("function closeDialog(dialog)")
+    ]
+    assert "dialog.showModal();" in show_dialog
+    assert 'firstField = dialog.querySelector(' in show_dialog
+    assert "firstField.focus();" in show_dialog

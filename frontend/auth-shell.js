@@ -286,6 +286,12 @@
       button.setAttribute("aria-label", "显示密码");
     });
     dialog.showModal();
+    window.requestAnimationFrame(function () {
+      var firstField = dialog.querySelector(
+        'input:not([type="hidden"]):not(:disabled), select:not(:disabled)'
+      );
+      if (firstField) firstField.focus();
+    });
   }
 
   function closeDialog(dialog) {
@@ -308,12 +314,6 @@
     document.getElementById("authProfileTitle").textContent = "个人资料";
     emitError(form.querySelector(".auth-error"), "");
     showDialog(dialog);
-    window.requestAnimationFrame(function () {
-      var firstField = form.querySelector(
-        'input:not([type="hidden"]):not(:disabled), select:not(:disabled)'
-      );
-      if (firstField) firstField.focus();
-    });
   }
 
   function setEditControl(form, name, disabled) {
