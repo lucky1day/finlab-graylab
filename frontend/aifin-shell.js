@@ -688,7 +688,7 @@
         row[4], rowContext + ".predicted_direction", false
       );
       var actualDirection = requireDashboardDirection(
-        row[5], rowContext + ".actual_direction", source === "live"
+        row[5], rowContext + ".actual_direction", true
       );
       var pointKey = source + "\u0000" + targetDate;
       if (seenPoints[pointKey]) {

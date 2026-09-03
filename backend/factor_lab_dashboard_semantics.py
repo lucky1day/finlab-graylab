@@ -489,7 +489,7 @@ def compact_detail_row(row: Mapping[str, Any], *, source: str) -> list[Any]:
 
     actual_direction = _direction(
         row.get("actual_direction"),
-        allow_none=source == "live",
+        allow_none=True,
     )
     return [
         source,

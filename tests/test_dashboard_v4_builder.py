@@ -402,6 +402,31 @@ def test_v5_detail_validator_rejects_source_outside_target_date_policy() -> None
         validate_dashboard_payload(payload)
 
 
+def test_prediction_table_history_without_actual_remains_readable_as_backtest() -> None:
+    engine = _engine()
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """INSERT INTO t_scheme_predictions VALUES
+                (3,'demo_daily','5Y',1,'2026-05-28','2026-05-27',
+                 '2026-05-29','gray_live',-1,'{}')"""
+            )
+        )
+
+    payload = build_factor_lab_dashboard_detail(
+        engine,
+        scheme_id="demo_daily__h1__5Y",
+        month="2026-05",
+        source="backtest",
+    )
+
+    assert payload is not None
+    assert payload["rows"] == [
+        ["backtest", "2026-05-28", "2026-05-27", "2026-05-29", -1, None]
+    ]
+    validate_dashboard_payload(payload)
+
+
 def test_overlap_diagnostics_are_counts_only() -> None:
     engine = _engine()
     with engine.begin() as connection:
