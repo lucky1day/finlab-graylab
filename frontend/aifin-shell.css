@@ -740,9 +740,13 @@ button {
   transition: color 150ms ease, opacity 150ms ease;
 }
 
-.auth-user-actions button:hover:not(:disabled),
+.auth-user-actions button:hover:not(:disabled) {
+  color: #0b815e;
+}
+
 .auth-user-actions button:focus-visible {
-  outline: none;
+  outline: 2px solid rgba(21, 92, 62, 0.42);
+  outline-offset: 2px;
   color: #0b815e;
 }
 

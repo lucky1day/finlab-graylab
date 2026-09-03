@@ -95,6 +95,7 @@
       if (form) form.reset();
       emitError(dialog.querySelector(".auth-error"), "");
       dialog.close();
+      delete dialog.returnFocusButton;
     });
   }
 
@@ -167,6 +168,8 @@
       return Promise.reject(new Error("password_confirmation_mismatch"));
     }
     emitError(errorHost, "");
+    var saveState = beginDialogSave(form, "修改中…");
+    if (!saveState) return Promise.resolve();
     return apiRequest("/api/auth/change-password", {
       method: "POST",
       body: {
@@ -182,6 +185,8 @@
       if (error.message === "password_confirmation_mismatch") throw error;
       emitError(errorHost, errorMessage(error.errorCode));
       throw error;
+    }).finally(function () {
+      endDialogSave(saveState);
     });
   }
 
@@ -352,11 +357,46 @@
 
   function closeDialog(dialog) {
     if (!dialog || !dialog.open || dialog.classList.contains("is-closing")) return;
+    var returnFocusButton = dialog.returnFocusButton;
     dialog.classList.add("is-closing");
     window.setTimeout(function () {
       if (dialog.open) dialog.close();
       dialog.classList.remove("is-closing");
+      delete dialog.returnFocusButton;
+      if (returnFocusButton && document.body.contains(returnFocusButton)) {
+        returnFocusButton.focus();
+      }
     }, 150);
+  }
+
+  function beginDialogSave(form, pendingLabel) {
+    var dialog = form.closest("dialog");
+    if (!dialog || dialog.dataset.saving === "true") return null;
+    var submit = form.querySelector('[type="submit"]');
+    var saveState = {
+      dialog: dialog,
+      submit: submit,
+      originalLabel: submit.textContent
+    };
+    dialog.dataset.saving = "true";
+    dialog.setAttribute("aria-busy", "true");
+    submit.disabled = true;
+    submit.textContent = pendingLabel;
+    dialog.querySelectorAll("[data-dialog-close]").forEach(function (button) {
+      button.disabled = true;
+    });
+    return saveState;
+  }
+
+  function endDialogSave(saveState) {
+    var dialog = saveState.dialog;
+    saveState.submit.disabled = false;
+    saveState.submit.textContent = saveState.originalLabel;
+    delete dialog.dataset.saving;
+    dialog.removeAttribute("aria-busy");
+    dialog.querySelectorAll("[data-dialog-close]").forEach(function (button) {
+      button.disabled = false;
+    });
   }
 
   function openProfileDialog(user) {
@@ -404,11 +444,12 @@
     showDialog(dialog);
   }
 
-  function openUserPasswordDialog(user) {
+  function openUserPasswordDialog(user, returnFocusButton) {
     if (state.user && user.id === state.user.id) {
       var ownDialog = document.getElementById("authChangePasswordDialog");
       ownDialog.querySelector("form").reset();
       emitError(ownDialog.querySelector(".auth-error"), "");
+      ownDialog.returnFocusButton = returnFocusButton;
       showDialog(ownDialog);
       return;
     }
@@ -419,6 +460,7 @@
     document.getElementById("authResetPasswordTitle").textContent =
       "重置密码 · " + user.username;
     emitError(form.querySelector(".auth-error"), "");
+    dialog.returnFocusButton = returnFocusButton;
     showDialog(dialog);
   }
 
@@ -538,16 +580,10 @@
     var form = event.currentTarget;
     var userId = Number(form.elements.userId.value);
     var original = findUser(userId);
-    var submit = form.querySelector('[type="submit"]');
     var dialog = form.closest("dialog");
     emitError(form.querySelector(".auth-error"), "");
-    submit.disabled = true;
-    submit.textContent = "保存中…";
-    dialog.dataset.saving = "true";
-    dialog.setAttribute("aria-busy", "true");
-    dialog.querySelectorAll("[data-dialog-close]").forEach(function (button) {
-      button.disabled = true;
-    });
+    var saveState = beginDialogSave(form, "保存中…");
+    if (!saveState) return;
     apiRequest("/api/admin/users/edit", {
       method: "POST",
       body: {
@@ -576,20 +612,15 @@
     }).catch(function (error) {
       emitError(form.querySelector(".auth-error"), errorMessage(error.errorCode));
     }).finally(function () {
-      submit.disabled = false;
-      submit.textContent = "保存修改";
-      delete dialog.dataset.saving;
-      dialog.removeAttribute("aria-busy");
-      dialog.querySelectorAll("[data-dialog-close]").forEach(function (button) {
-        button.disabled = false;
-      });
+      endDialogSave(saveState);
     });
   });
 
   document.getElementById("authUserPasswordAction").addEventListener("click", function () {
     var user = findUser(state.userMoreMenuId);
+    var returnFocusButton = state.userMoreMenuButton;
     closeUserMoreMenu(false);
-    if (user) openUserPasswordDialog(user);
+    if (user) openUserPasswordDialog(user, returnFocusButton);
   });
 
   document.getElementById("authResetPasswordForm").addEventListener("submit", function (event) {
@@ -602,10 +633,13 @@
       return;
     }
     emitError(errorHost, "");
+    var saveState = beginDialogSave(form, "重置中…");
+    if (!saveState) return;
+    var userId = Number(form.elements.userId.value);
     apiRequest("/api/admin/users/reset-password", {
       method: "POST",
       body: {
-        user_id: Number(form.elements.userId.value),
+        user_id: userId,
         new_password: newPassword
       }
     }).then(function () {
@@ -614,6 +648,8 @@
       return loadUsers();
     }).catch(function (error) {
       emitError(errorHost, errorMessage(error.errorCode));
+    }).finally(function () {
+      endDialogSave(saveState);
     });
   });
 

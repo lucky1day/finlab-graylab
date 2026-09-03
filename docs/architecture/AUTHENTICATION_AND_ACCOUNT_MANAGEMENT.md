@@ -382,7 +382,7 @@ __Host-bfl-session=<opaque-token>; Secure; HttpOnly; SameSite=Strict; Path=/
 | `POST` | `/api/admin/users/reset-password` | 重置密码 |
 | `POST` | `/api/admin/users/change-status` | 停用或恢复用户 |
 | `POST` | `/api/admin/users/update-profile` | 修改用户的可选姓名和机构名称 |
-| `POST` | `/api/admin/users/edit` | 在一个事务中编辑用户资料、权限、状态及可选新密码 |
+| `POST` | `/api/admin/users/edit` | 在一个事务中编辑用户资料、权限和状态；不接收密码 |
 
 管理员 API 每次都必须在后端验证当前会话与 `admin` 角色。前端隐藏入口不能替代授权检查。
 

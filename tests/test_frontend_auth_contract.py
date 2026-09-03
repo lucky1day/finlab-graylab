@@ -165,6 +165,18 @@ def test_user_management_separates_profile_edit_and_password_actions() -> None:
     assert 'dialog.addEventListener("cancel"' in AUTH_JS
     assert 'input.type = "password"' in AUTH_JS
     assert 'button.textContent = "显示"' in AUTH_JS
+    reset_handler = AUTH_JS[
+        AUTH_JS.index(
+            'document.getElementById("authResetPasswordForm").addEventListener'
+        ) :
+        AUTH_JS.index(
+            'document.getElementById("authProfileForm").addEventListener'
+        )
+    ]
+    assert 'beginDialogSave(form, "重置中…")' in reset_handler
+    assert "if (!saveState) return;" in reset_handler
+    assert "endDialogSave(saveState);" in reset_handler
+    assert "var userId = Number(form.elements.userId.value);" in reset_handler
     show_dialog = AUTH_JS[
         AUTH_JS.index("function showDialog(dialog)") :
         AUTH_JS.index("function closeDialog(dialog)")
