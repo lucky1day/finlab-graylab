@@ -124,6 +124,7 @@ def test_user_management_uses_one_edit_dialog_without_initial_avatars() -> None:
     assert "window.prompt" not in AUTH_JS
     assert "window.confirm" not in AUTH_JS
     assert 'id="authUserEditDialog"' in INDEX
+    assert 'aria-labelledby="authUserEditTitle"' in INDEX
     assert 'id="authUserEditForm"' in INDEX
     for field in (
         'name="username"',
@@ -138,3 +139,9 @@ def test_user_management_uses_one_edit_dialog_without_initial_avatars() -> None:
     assert 'actionButton("编辑资料"' not in AUTH_JS
     assert 'actionButton("改用户名"' not in AUTH_JS
     assert 'actionButton("重置密码"' not in AUTH_JS
+    assert 'dialog.dataset.saving = "true"' in AUTH_JS
+    assert 'dialog.dataset.saving !== "true"' in AUTH_JS
+    assert 'dialog.addEventListener("cancel"' in AUTH_JS
+    assert 'input.type = "password"' in AUTH_JS
+    assert 'button.textContent = "显示"' in AUTH_JS
+    assert "firstField.focus();" in AUTH_JS

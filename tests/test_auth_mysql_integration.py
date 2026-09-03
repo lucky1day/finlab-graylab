@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from backend.auth import repository
+from backend.auth.repository import AuthUser
 from backend.auth.security import hash_password, verify_password
 from backend.auth.service import AuthError, AuthService
 from migrations.auth_022 import classify_auth_schema, read_auth_schema
@@ -274,7 +275,9 @@ def test_auth_schema_fresh_partial_complete_and_drift_on_mysql8() -> None:
         admin.dispose()
 
 
-def test_auth_service_sessions_throttle_and_admin_lifecycle_on_mysql8() -> None:
+def test_auth_service_sessions_throttle_and_admin_lifecycle_on_mysql8(
+    monkeypatch,
+) -> None:
     assert MYSQL_URL is not None
     engine = _engine(MYSQL_URL)
     clock = [datetime(2026, 9, 2, 0, 0, 0)]
@@ -462,6 +465,140 @@ def test_auth_service_sessions_throttle_and_admin_lifecycle_on_mysql8() -> None:
     assert restored.status == "active"
     with pytest.raises(AuthError, match="not_authenticated"):
         service.authenticate(target_session.token)
+    target_session = service.login("second.renamed", "Second123")
+    edited = service.edit_user(
+        admin.token,
+        user_id=created.id,
+        username="Second.Edited",
+        full_name=" 编辑用户 ",
+        organization_name=" 实验机构 ",
+        role="admin",
+        status="active",
+        new_password="Edited789",
+        request_id="request-edit-combined",
+    )
+    assert edited.username == "second.edited"
+    assert edited.full_name == "编辑用户"
+    assert edited.organization_name == "实验机构"
+    assert edited.role == "admin"
+    with pytest.raises(AuthError, match="not_authenticated"):
+        service.authenticate(target_session.token)
+    target_session = service.login("second.edited", "Edited789")
+
+    with engine.connect() as connection:
+        audit_count_before_noop = int(
+            connection.execute(
+                text("SELECT COUNT(*) FROM t_auth_audit_logs")
+            ).scalar_one()
+        )
+    unchanged_edit = service.edit_user(
+        admin.token,
+        user_id=created.id,
+        username="second.edited",
+        full_name="编辑用户",
+        organization_name="实验机构",
+        role="admin",
+        status="active",
+        new_password="Edited789",
+        request_id="request-edit-noop",
+    )
+    assert unchanged_edit.username == "second.edited"
+    assert service.authenticate(target_session.token).id == created.id
+    with engine.connect() as connection:
+        assert int(
+            connection.execute(
+                text("SELECT COUNT(*) FROM t_auth_audit_logs")
+            ).scalar_one()
+        ) == audit_count_before_noop
+
+    profile_only = service.edit_user(
+        admin.token,
+        user_id=created.id,
+        username="second.edited",
+        full_name="新姓名",
+        organization_name="实验机构",
+        role="admin",
+        status="active",
+        new_password=None,
+        request_id="request-edit-profile-only",
+    )
+    assert profile_only.full_name == "新姓名"
+    assert service.authenticate(target_session.token).id == created.id
+
+    with pytest.raises(AuthError, match="username_taken"):
+        service.edit_user(
+            admin.token,
+            user_id=created.id,
+            username="admin",
+            full_name="不应写入",
+            organization_name="不应写入",
+            role="user",
+            status="disabled",
+            new_password="Rollback123",
+            request_id="request-edit-rollback",
+        )
+    with engine.connect() as connection:
+        rolled_back = connection.execute(
+            text(
+                "SELECT username, full_name, organization_name, role, status "
+                "FROM t_auth_users WHERE id=:user_id"
+            ),
+            {"user_id": created.id},
+        ).one()
+    assert tuple(rolled_back) == (
+        "second.edited",
+        "新姓名",
+        "实验机构",
+        "admin",
+        "active",
+    )
+    assert service.authenticate(target_session.token).id == created.id
+
+    def fail_audit(*_args, **_kwargs):
+        raise RuntimeError("forced audit failure")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(repository, "insert_audit", fail_audit)
+        with pytest.raises(RuntimeError, match="forced audit failure"):
+            service.edit_user(
+                admin.token,
+                user_id=created.id,
+                username="second.rollback",
+                full_name="回滚姓名",
+                organization_name="回滚机构",
+                role="user",
+                status="disabled",
+                new_password="Rollback456",
+                request_id="request-edit-audit-rollback",
+            )
+    with engine.connect() as connection:
+        after_audit_rollback = connection.execute(
+            text(
+                "SELECT username, full_name, organization_name, role, status "
+                "FROM t_auth_users WHERE id=:user_id"
+            ),
+            {"user_id": created.id},
+        ).one()
+    assert tuple(after_audit_rollback) == (
+        "second.edited",
+        "新姓名",
+        "实验机构",
+        "admin",
+        "active",
+    )
+    assert service.authenticate(target_session.token).id == created.id
+    with pytest.raises(AuthError, match="cannot_modify_self"):
+        service.edit_user(
+            target_session.token,
+            user_id=created.id,
+            username="second.edited",
+            full_name="新姓名",
+            organization_name="实验机构",
+            role="admin",
+            status="active",
+            new_password="SelfReset123",
+            request_id="request-edit-self",
+        )
     with engine.connect() as connection:
         audit_payload = " ".join(
             str(row[0])
@@ -471,6 +608,10 @@ def test_auth_service_sessions_throttle_and_admin_lifecycle_on_mysql8() -> None:
         )
     assert "Changed456" not in audit_payload
     assert "Second123" not in audit_payload
+    assert "Edited789" not in audit_payload
+    assert "Rollback123" not in audit_payload
+    assert "Rollback456" not in audit_payload
+    assert "SelfReset123" not in audit_payload
     engine.dispose()
 
 
@@ -524,12 +665,17 @@ def test_concurrent_admin_disable_cannot_remove_every_active_admin(
         repository, "lock_user_by_id", synchronized_target_lock
     )
 
-    def disable(token: str, user_id: int, request_id: str):
+    def disable(token: str, target: AuthUser, request_id: str):
         try:
-            return service.change_status(
+            return service.edit_user(
                 token,
-                user_id=user_id,
+                user_id=target.id,
+                username=target.username,
+                full_name=target.full_name,
+                organization_name=target.organization_name,
+                role=target.role,
                 status="disabled",
+                new_password=None,
                 request_id=request_id,
             )
         except Exception as exc:
@@ -538,10 +684,10 @@ def test_concurrent_admin_disable_cannot_remove_every_active_admin(
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = (
             executor.submit(
-                disable, first.token, second.user.id, "concurrent-one"
+                disable, first.token, second.user, "concurrent-one"
             ),
             executor.submit(
-                disable, second.token, first.user.id, "concurrent-two"
+                disable, second.token, first.user, "concurrent-two"
             ),
         )
         outcomes = [future.result(timeout=10) for future in futures]

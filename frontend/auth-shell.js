@@ -279,6 +279,12 @@
 
   function showDialog(dialog) {
     dialog.classList.remove("is-closing");
+    dialog.querySelectorAll("[data-password-toggle]").forEach(function (button) {
+      var input = document.getElementById(button.dataset.passwordToggle);
+      if (input) input.type = "password";
+      button.textContent = "显示";
+      button.setAttribute("aria-label", "显示密码");
+    });
     dialog.showModal();
   }
 
@@ -302,6 +308,12 @@
     document.getElementById("authProfileTitle").textContent = "个人资料";
     emitError(form.querySelector(".auth-error"), "");
     showDialog(dialog);
+    window.requestAnimationFrame(function () {
+      var firstField = form.querySelector(
+        'input:not([type="hidden"]):not(:disabled), select:not(:disabled)'
+      );
+      if (firstField) firstField.focus();
+    });
   }
 
   function setEditControl(form, name, disabled) {
@@ -447,9 +459,15 @@
     var userId = Number(form.elements.userId.value);
     var original = findUser(userId);
     var submit = form.querySelector('[type="submit"]');
+    var dialog = form.closest("dialog");
     emitError(form.querySelector(".auth-error"), "");
     submit.disabled = true;
     submit.textContent = "保存中…";
+    dialog.dataset.saving = "true";
+    dialog.setAttribute("aria-busy", "true");
+    dialog.querySelectorAll("[data-dialog-close]").forEach(function (button) {
+      button.disabled = true;
+    });
     apiRequest("/api/admin/users/edit", {
       method: "POST",
       body: {
@@ -467,7 +485,7 @@
         && original.username !== payload.user.username
       );
       form.reset();
-      closeDialog(form.closest("dialog"));
+      closeDialog(dialog);
       if (selfSessionRevoked) {
         window.setTimeout(function () {
           showLogin("账户信息已更新，请重新登录");
@@ -481,6 +499,11 @@
     }).finally(function () {
       submit.disabled = false;
       submit.textContent = "保存修改";
+      delete dialog.dataset.saving;
+      dialog.removeAttribute("aria-busy");
+      dialog.querySelectorAll("[data-dialog-close]").forEach(function (button) {
+        button.disabled = false;
+      });
     });
   });
 
@@ -502,7 +525,14 @@
 
   document.querySelectorAll("[data-dialog-close]").forEach(function (button) {
     button.addEventListener("click", function () {
-      closeDialog(button.closest("dialog"));
+      var dialog = button.closest("dialog");
+      if (dialog.dataset.saving !== "true") closeDialog(dialog);
+    });
+  });
+
+  document.querySelectorAll(".auth-dialog").forEach(function (dialog) {
+    dialog.addEventListener("cancel", function (event) {
+      if (dialog.dataset.saving === "true") event.preventDefault();
     });
   });
 
