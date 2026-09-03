@@ -595,6 +595,8 @@
         status: form.elements.status.value
       }
     }).then(function (payload) {
+      endDialogSave(saveState);
+      saveState = null;
       var selfSessionRevoked = Boolean(
         original && state.user && original.id === state.user.id
         && original.username !== payload.user.username
@@ -608,11 +610,12 @@
         return null;
       }
       if (state.user && payload.user.id === state.user.id) state.user = payload.user;
-      return loadUsers();
+      loadUsers();
+      return null;
     }).catch(function (error) {
       emitError(form.querySelector(".auth-error"), errorMessage(error.errorCode));
     }).finally(function () {
-      endDialogSave(saveState);
+      if (saveState) endDialogSave(saveState);
     });
   });
 
@@ -643,13 +646,15 @@
         new_password: newPassword
       }
     }).then(function () {
+      endDialogSave(saveState);
+      saveState = null;
       form.reset();
       closeDialog(form.closest("dialog"));
-      return loadUsers();
+      loadUsers();
     }).catch(function (error) {
       emitError(errorHost, errorMessage(error.errorCode));
     }).finally(function () {
-      endDialogSave(saveState);
+      if (saveState) endDialogSave(saveState);
     });
   });
 
@@ -678,7 +683,12 @@
 
   document.querySelectorAll(".auth-dialog").forEach(function (dialog) {
     dialog.addEventListener("cancel", function (event) {
-      if (dialog.dataset.saving === "true") event.preventDefault();
+      if (dialog.dataset.saving === "true") {
+        event.preventDefault();
+      } else if (dialog.returnFocusButton) {
+        event.preventDefault();
+        closeDialog(dialog);
+      }
     });
   });
 

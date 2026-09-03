@@ -177,6 +177,24 @@ def test_user_management_separates_profile_edit_and_password_actions() -> None:
     assert "if (!saveState) return;" in reset_handler
     assert "endDialogSave(saveState);" in reset_handler
     assert "var userId = Number(form.elements.userId.value);" in reset_handler
+    assert reset_handler.index("endDialogSave(saveState);") < (
+        reset_handler.index("loadUsers();")
+    )
+    assert "saveState = null;" in reset_handler
+    assert "if (saveState) endDialogSave(saveState);" in reset_handler
+    assert "else if (dialog.returnFocusButton)" in AUTH_JS
+    edit_handler = AUTH_JS[
+        AUTH_JS.index(
+            'document.getElementById("authUserEditForm").addEventListener'
+        ) :
+        AUTH_JS.index(
+            'document.getElementById("authUserPasswordAction").addEventListener'
+        )
+    ]
+    assert edit_handler.index("endDialogSave(saveState);") < (
+        edit_handler.index("loadUsers();")
+    )
+    assert "saveState = null;" in edit_handler
     show_dialog = AUTH_JS[
         AUTH_JS.index("function showDialog(dialog)") :
         AUTH_JS.index("function closeDialog(dialog)")
