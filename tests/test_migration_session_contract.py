@@ -343,7 +343,7 @@ def test_hidden_definition_detects_actual_pointer_dependency() -> None:
     )
 
 
-def test_registry_owner_migration_matches_all_current_composite_ids() -> None:
+def test_registry_owner_migration_remains_valid_for_current_schemes() -> None:
     from scheduler.discovery import load_scheme_config
     from scheduler.repository import registry_scheme_id
 
@@ -374,14 +374,18 @@ def test_registry_owner_migration_matches_all_current_composite_ids() -> None:
         "CWG": 1,
     }
 
-    current_ids = set()
+    current_configs = {}
     for config_path in sorted(Path("schemes").glob("*/config.yaml")):
         cfg = load_scheme_config(config_path)
-        current_ids.update(
-            registry_scheme_id(cfg.scheme_id, cfg.horizon, tenor)
-            for tenor in cfg.tenors
-        )
-    assert set(owners) == current_ids
+        for tenor in cfg.tenors:
+            current_configs[
+                registry_scheme_id(cfg.scheme_id, cfg.horizon, tenor)
+            ] = cfg
+    assert set(owners) <= set(current_configs)
+    for registry_id in set(current_configs) - set(owners):
+        cfg = current_configs[registry_id]
+        assert cfg.runtime_type == "blackbox_v2"
+        assert cfg.owner
     assert owners["weekly_5y_curve_logit_v1__h1__5Y"] == "lw"
     assert owners["weekly_10y_hetero_vote_v1__h1__10Y"] == "lw"
     assert owners["ten_y_t5_curve_spread_adapt90_v1__h5__10Y"] == "lw"

@@ -88,6 +88,7 @@
     "wavg_5y_gapflip_v5": ["mac3-production", "aliyun-gray"],
     "wavg_7y_gapflip_v5": ["mac3-production", "aliyun-gray"],
     "weekly_10y_d_overlay_0529": ["mac3-production", "aliyun-gray"],
+    "weekly_10y_full_action_vote0546_v3": ["mac3-production", "aliyun-gray"],
     "weekly_10y_hetero_vote_v1": ["mac3-production", "aliyun-gray"],
     "weekly_10y_lgbm_point_v1": ["mac3-production", "aliyun-gray"],
     "weekly_1y_causal_v1_31_0_standalone": ["mac3-production", "aliyun-gray"],
