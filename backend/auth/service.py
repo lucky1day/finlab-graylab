@@ -556,7 +556,6 @@ class AuthService:
         organization_name: str | None,
         role: str,
         status: str,
-        new_password: str | None,
         request_id: str,
     ) -> AuthUser:
         """在一个事务中原子保存管理员用户编辑表单。"""
@@ -575,9 +574,6 @@ class AuthService:
             raise AuthError("invalid_role", 400)
         if status not in {"active", "disabled"}:
             raise AuthError("invalid_status", 400)
-        password_hash = (
-            None if new_password is None else hash_password(new_password)
-        )
         now = self._now()
         try:
             with self._engine.begin() as connection:
@@ -598,16 +594,11 @@ class AuthService:
                 profile_changed = profile_before != profile_after
                 role_changed = role != target.role
                 status_changed = status != target.status
-                password_changed = (
-                    new_password is not None
-                    and not verify_password(target.password_hash, new_password)
-                )
                 restricted_change = any(
                     (
                         username_changed,
                         role_changed,
                         status_changed,
-                        password_changed,
                     )
                 )
 
@@ -616,7 +607,6 @@ class AuthService:
                 if actor.id == target.id and (
                     (role_changed and role == "user")
                     or (status_changed and status == "disabled")
-                    or password_changed
                 ):
                     raise AuthError("cannot_modify_self", 409)
                 removes_active_admin = (
@@ -688,23 +678,6 @@ class AuthService:
                         target_user_id=target.id,
                         request_id=request_id,
                         detail={"before": target.status, "after": status},
-                    )
-                if password_changed:
-                    assert password_hash is not None
-                    repository.update_password(
-                        connection,
-                        user_id=target.id,
-                        password_hash=password_hash,
-                        must_change_password=False,
-                        now=now,
-                    )
-                    repository.insert_audit(
-                        connection,
-                        event_type="password_reset",
-                        actor_user_id=actor.id,
-                        target_user_id=target.id,
-                        request_id=request_id,
-                        detail={},
                     )
                 if restricted_change:
                     repository.revoke_all_sessions(connection, target.id, now)

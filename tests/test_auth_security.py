@@ -112,7 +112,6 @@ def test_session_token_is_256_bit_and_only_digest_is_persistable() -> None:
             organization_name=None,
             role="user",
             status="active",
-            new_password=None,
             request_id="request",
         ),
     ),

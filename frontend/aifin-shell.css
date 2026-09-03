@@ -380,50 +380,80 @@ button {
 }
 
 .auth-user-edit-dialog {
-  width: min(680px, calc(100vw - 32px));
+  width: min(700px, calc(100vw - 24px));
+  height: 100vh;
+  height: 100dvh;
+  max-height: 100vh;
+  max-height: 100dvh;
+  margin: 0 0 0 auto;
+  overflow: hidden;
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 0;
+  border-radius: 0;
+}
+
+.auth-user-edit-dialog[open] {
+  animation: auth-drawer-in 220ms cubic-bezier(0.22, 0.8, 0.28, 1) both;
+}
+
+.auth-user-edit-dialog.is-closing {
+  animation: auth-drawer-out 150ms ease-in both;
+}
+
+@keyframes auth-drawer-in {
+  from { opacity: 0.82; transform: translateX(32px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes auth-drawer-out {
+  from { opacity: 1; transform: translateX(0); }
+  to { opacity: 0.78; transform: translateX(24px); }
+}
+
+.auth-user-edit-dialog form {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  padding: 0;
+  overflow-y: auto;
+}
+
+.auth-user-edit-dialog .auth-dialog-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 25px 34px 22px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 254, 250, 0.97);
+  backdrop-filter: blur(10px);
 }
 
 .auth-edit-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
+  flex: 1 0 auto;
+  align-content: start;
+  gap: 19px;
+  padding: 34px 42px 28px;
 }
 
-.auth-edit-wide {
-  grid-column: 1 / -1;
+.auth-user-edit-dialog .auth-edit-grid label {
+  grid-template-columns: 122px minmax(0, 1fr);
+  align-items: center;
+  gap: 18px;
+  font-size: 14px;
+  text-align: right;
 }
 
-.auth-edit-password {
-  display: grid;
-  grid-template-columns: minmax(180px, 0.75fr) minmax(240px, 1.25fr);
-  gap: 8px 22px;
-  padding: 18px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: #f8f6ef;
-}
-
-.auth-edit-password h3 {
-  margin: 1px 0 4px;
-  font-family: var(--font-heading);
-  font-size: 15px;
-}
-
-.auth-edit-password > div p {
-  margin: 0;
-  color: var(--text-tertiary);
-  font-size: 12px;
-  line-height: 1.55;
-}
-
-.auth-edit-password > .auth-help {
-  grid-column: 2;
-  margin: -1px 0 0;
-  font-size: 11px;
+.auth-user-edit-dialog .auth-edit-grid input,
+.auth-user-edit-dialog .auth-edit-grid select {
+  height: 48px;
+  border-radius: 6px;
+  font-size: 14px;
 }
 
 .auth-edit-notice {
-  margin: 0;
+  margin: 0 42px 26px 182px;
   padding: 10px 12px;
   border-left: 3px solid rgba(184, 134, 46, 0.72);
   border-radius: 0 6px 6px 0;
@@ -431,6 +461,21 @@ button {
   background: rgba(184, 134, 46, 0.075);
   font-size: 12px;
   line-height: 1.55;
+}
+
+.auth-user-edit-dialog .auth-error {
+  margin: 0 42px 18px 182px;
+}
+
+.auth-user-edit-dialog .auth-dialog-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin: 0;
+  padding: 17px 34px;
+  border-top: 1px solid var(--line);
+  background: rgba(255, 254, 250, 0.97);
+  backdrop-filter: blur(10px);
 }
 
 .auth-dialog label.is-disabled {
@@ -674,38 +719,103 @@ button {
 }
 
 .auth-user-actions {
-  width: 76px;
+  width: 138px;
+}
+
+.auth-user-action-group {
+  display: flex;
+  align-items: center;
+  gap: 16px;
 }
 
 .auth-user-actions button {
-  min-height: 29px;
-  padding: 4px 9px;
-  border: 1px solid var(--border-strong);
-  border-radius: 5px;
-  color: var(--text-secondary);
-  background: #fff;
+  min-height: 30px;
+  padding: 3px 0;
+  border: 0;
+  color: var(--accent);
+  background: transparent;
   cursor: pointer;
-  transition: border-color 160ms ease, color 160ms ease, background 160ms ease;
+  font-size: 13px;
+  font-weight: 650;
+  transition: color 150ms ease, opacity 150ms ease;
 }
 
 .auth-user-actions button:hover:not(:disabled),
 .auth-user-actions button:focus-visible {
-  border-color: rgba(21, 92, 62, 0.34);
   outline: none;
-  color: var(--accent);
-  background: rgba(21, 92, 62, 0.045);
+  color: #0b815e;
 }
 
 .auth-user-actions button[data-user-action="edit"] {
-  min-width: 58px;
-  color: var(--accent);
-  border-color: rgba(21, 92, 62, 0.22);
-  background: rgba(21, 92, 62, 0.035);
+  min-width: 28px;
+}
+
+.auth-user-more-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.auth-user-more-button span {
+  width: 7px;
+  height: 7px;
+  margin-top: -3px;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 150ms ease;
+}
+
+.auth-user-more-button[aria-expanded="true"] span {
+  margin-top: 3px;
+  transform: rotate(225deg);
 }
 
 .auth-user-actions button:disabled {
   cursor: not-allowed;
   opacity: 0.32;
+}
+
+.auth-user-more-menu {
+  position: fixed;
+  z-index: 420;
+  min-width: 108px;
+  padding: 6px;
+  border: 1px solid rgba(23, 26, 32, 0.10);
+  border-radius: 8px;
+  opacity: 0;
+  background: #fff;
+  box-shadow: 0 14px 34px rgba(23, 26, 32, 0.16);
+  pointer-events: none;
+  transform: translateY(-5px) scale(0.98);
+  transform-origin: top right;
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.auth-user-more-menu.is-open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+}
+
+.auth-user-more-menu button {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 15px;
+  border: 0;
+  border-radius: 5px;
+  color: #34383e;
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+  text-align: left;
+}
+
+.auth-user-more-menu button:hover,
+.auth-user-more-menu button:focus-visible {
+  outline: none;
+  color: var(--accent);
+  background: rgba(21, 92, 62, 0.055);
 }
 
 .main-nav button:focus-visible,
@@ -1979,17 +2089,36 @@ button {
     padding: 28px 22px 30px;
   }
 
+  .auth-user-edit-dialog {
+    width: 100vw;
+  }
+
   .auth-user-edit-dialog form {
-    padding: 22px 18px;
+    padding: 0;
   }
 
-  .auth-edit-grid,
-  .auth-edit-password {
+  .auth-user-edit-dialog .auth-dialog-head {
+    padding: 21px 20px 18px;
+  }
+
+  .auth-edit-grid {
+    padding: 25px 20px 22px;
+  }
+
+  .auth-user-edit-dialog .auth-edit-grid label {
     grid-template-columns: 1fr;
+    gap: 7px;
+    text-align: left;
   }
 
-  .auth-edit-password > .auth-help {
-    grid-column: 1;
+  .auth-edit-notice,
+  .auth-user-edit-dialog .auth-error {
+    margin-right: 20px;
+    margin-left: 20px;
+  }
+
+  .auth-user-edit-dialog .auth-dialog-actions {
+    padding: 15px 20px;
   }
 
   .auth-users-view {

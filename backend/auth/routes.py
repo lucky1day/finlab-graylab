@@ -90,7 +90,6 @@ class EditUserRequest(UpdateProfileRequest):
     username: str
     role: Literal["admin", "user"]
     status: Literal["active", "disabled"]
-    new_password: str | None = Field(default=None, max_length=128)
 
 
 def _request_id(request: Request) -> str:
@@ -453,7 +452,6 @@ def edit_user(
         organization_name=payload.organization_name,
         role=payload.role,
         status=payload.status,
-        new_password=payload.new_password,
         request_id=_request_id(request),
     )
     return {"user": user.public_dict()}

@@ -5,6 +5,8 @@
     user: null,
     expiresAt: "",
     accountMenuOpen: false,
+    userMoreMenuId: null,
+    userMoreMenuButton: null,
     users: []
   };
 
@@ -105,6 +107,7 @@
     loadingView.hidden = view !== loadingView;
     loginView.hidden = view !== loginView;
     closeAccountMenu(false);
+    closeUserMoreMenu(false);
   }
 
   function showLogin(message) {
@@ -134,6 +137,7 @@
 
   function showFactorLab() {
     if (!state.user) return;
+    closeUserMoreMenu(false);
     usersView.hidden = true;
     factorView.hidden = false;
     document.getElementById("factorDataStatus").hidden = false;
@@ -215,7 +219,47 @@
     return button;
   }
 
+  function closeUserMoreMenu(returnFocus) {
+    var menu = document.getElementById("authUserMoreMenu");
+    var button = state.userMoreMenuButton;
+    menu.hidden = true;
+    menu.classList.remove("is-open");
+    if (button) button.setAttribute("aria-expanded", "false");
+    state.userMoreMenuId = null;
+    state.userMoreMenuButton = null;
+    if (returnFocus && button && document.body.contains(button)) button.focus();
+  }
+
+  function openUserMoreMenu(button, userId) {
+    var menu = document.getElementById("authUserMoreMenu");
+    closeUserMoreMenu(false);
+    state.userMoreMenuId = userId;
+    state.userMoreMenuButton = button;
+    button.setAttribute("aria-expanded", "true");
+    menu.hidden = false;
+    var rect = button.getBoundingClientRect();
+    var menuWidth = menu.offsetWidth;
+    var menuHeight = menu.offsetHeight;
+    var left = Math.min(
+      window.innerWidth - menuWidth - 12,
+      Math.max(12, rect.right - menuWidth)
+    );
+    var top = rect.bottom + 8;
+    if (top + menuHeight > window.innerHeight - 12) {
+      top = Math.max(12, rect.top - menuHeight - 8);
+    }
+    menu.style.left = Math.round(left) + "px";
+    menu.style.top = Math.round(top) + "px";
+    window.requestAnimationFrame(function () {
+      if (state.userMoreMenuButton !== button) return;
+      menu.classList.add("is-open");
+      var first = menu.querySelector('[role="menuitem"]');
+      if (first) first.focus();
+    });
+  }
+
   function renderUsers() {
+    closeUserMoreMenu(false);
     var body = document.getElementById("authUsersBody");
     body.textContent = "";
     document.getElementById("authUsersCount").textContent = state.users.length + " 个账户";
@@ -257,7 +301,19 @@
       row.appendChild(createdCell);
       var actions = document.createElement("td");
       actions.className = "auth-user-actions";
-      actions.appendChild(actionButton("编辑", "edit", user.id, false));
+      var actionGroup = document.createElement("div");
+      actionGroup.className = "auth-user-action-group";
+      actionGroup.appendChild(actionButton("编辑", "edit", user.id, false));
+      var moreButton = document.createElement("button");
+      moreButton.type = "button";
+      moreButton.className = "auth-user-more-button";
+      moreButton.dataset.userMore = String(user.id);
+      moreButton.setAttribute("aria-haspopup", "menu");
+      moreButton.setAttribute("aria-expanded", "false");
+      moreButton.setAttribute("aria-controls", "authUserMoreMenu");
+      moreButton.innerHTML = "更多<span aria-hidden=\"true\"></span>";
+      actionGroup.appendChild(moreButton);
+      actions.appendChild(actionGroup);
       row.appendChild(actions);
       body.appendChild(row);
     });
@@ -336,15 +392,32 @@
     setEditControl(form, "username", protectedAccount);
     setEditControl(form, "role", protectedAccount || ownAccount);
     setEditControl(form, "status", protectedAccount || ownAccount);
-    setEditControl(form, "newPassword", protectedAccount || ownAccount);
     document.getElementById("authUserEditTitle").textContent = "编辑用户 · " + user.username;
     document.getElementById("authUserEditSubtitle").textContent =
-      "在同一张表单中维护账户资料与权限。";
+      "维护账户资料与访问权限。";
     document.getElementById("authUserEditNotice").textContent = protectedAccount
       ? "受保护管理员仅允许修改用户姓名和机构名称。"
       : ownAccount
-        ? "当前账户不能修改自己的角色、状态或重置密码。"
-        : "修改用户名、角色、状态或密码后，该用户需要重新登录。";
+        ? "当前账户不能修改自己的角色或状态。"
+        : "修改用户名、角色或状态后，该用户需要重新登录。";
+    emitError(form.querySelector(".auth-error"), "");
+    showDialog(dialog);
+  }
+
+  function openUserPasswordDialog(user) {
+    if (state.user && user.id === state.user.id) {
+      var ownDialog = document.getElementById("authChangePasswordDialog");
+      ownDialog.querySelector("form").reset();
+      emitError(ownDialog.querySelector(".auth-error"), "");
+      showDialog(ownDialog);
+      return;
+    }
+    var dialog = document.getElementById("authResetPasswordDialog");
+    var form = document.getElementById("authResetPasswordForm");
+    form.reset();
+    form.elements.userId.value = String(user.id);
+    document.getElementById("authResetPasswordTitle").textContent =
+      "重置密码 · " + user.username;
     emitError(form.querySelector(".auth-error"), "");
     showDialog(dialog);
   }
@@ -445,6 +518,13 @@
   });
 
   document.getElementById("authUsersBody").addEventListener("click", function (event) {
+    var moreButton = event.target.closest("[data-user-more]");
+    if (moreButton) {
+      var moreUserId = Number(moreButton.dataset.userMore);
+      if (state.userMoreMenuId === moreUserId) closeUserMoreMenu(true);
+      else openUserMoreMenu(moreButton, moreUserId);
+      return;
+    }
     var button = event.target.closest("[data-user-action]");
     if (!button || button.disabled) return;
     var userId = Number(button.dataset.userId);
@@ -476,8 +556,7 @@
         full_name: form.elements.fullName.value || null,
         organization_name: form.elements.organizationName.value || null,
         role: form.elements.role.value,
-        status: form.elements.status.value,
-        new_password: form.elements.newPassword.value || null
+        status: form.elements.status.value
       }
     }).then(function (payload) {
       var selfSessionRevoked = Boolean(
@@ -504,6 +583,37 @@
       dialog.querySelectorAll("[data-dialog-close]").forEach(function (button) {
         button.disabled = false;
       });
+    });
+  });
+
+  document.getElementById("authUserPasswordAction").addEventListener("click", function () {
+    var user = findUser(state.userMoreMenuId);
+    closeUserMoreMenu(false);
+    if (user) openUserPasswordDialog(user);
+  });
+
+  document.getElementById("authResetPasswordForm").addEventListener("submit", function (event) {
+    event.preventDefault();
+    var form = event.currentTarget;
+    var newPassword = form.elements.newPassword.value;
+    var errorHost = form.querySelector(".auth-error");
+    if (newPassword !== form.elements.confirmPassword.value) {
+      emitError(errorHost, "两次输入的新密码不一致");
+      return;
+    }
+    emitError(errorHost, "");
+    apiRequest("/api/admin/users/reset-password", {
+      method: "POST",
+      body: {
+        user_id: Number(form.elements.userId.value),
+        new_password: newPassword
+      }
+    }).then(function () {
+      form.reset();
+      closeDialog(form.closest("dialog"));
+      return loadUsers();
+    }).catch(function (error) {
+      emitError(errorHost, errorMessage(error.errorCode));
     });
   });
 
@@ -542,13 +652,27 @@
     if (state.accountMenuOpen && !menu.contains(event.target) && !button.contains(event.target)) {
       closeAccountMenu(false);
     }
+    var userMenu = document.getElementById("authUserMoreMenu");
+    if (
+      state.userMoreMenuId !== null
+      && !userMenu.contains(event.target)
+      && (!state.userMoreMenuButton || !state.userMoreMenuButton.contains(event.target))
+    ) {
+      closeUserMoreMenu(false);
+    }
   });
 
   window.addEventListener("keydown", function (event) {
     if (event.key === "Escape" && state.accountMenuOpen) {
       closeAccountMenu(true);
     }
+    if (event.key === "Escape" && state.userMoreMenuId !== null) {
+      closeUserMoreMenu(true);
+    }
   });
+
+  window.addEventListener("resize", function () { closeUserMoreMenu(false); });
+  window.addEventListener("scroll", function () { closeUserMoreMenu(false); }, true);
 
   window.addEventListener("bfl:auth-required", function () {
     showLogin();

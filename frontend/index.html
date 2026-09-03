@@ -10,7 +10,7 @@
       html, body { margin: 0; min-height: 100%; background: #F8F7F2; color: #171A20; }
       .aifin-shell { min-height: 100vh; background: #F8F7F2; }
     </style>
-    <link rel="stylesheet" href="aifin-shell.css?v=e40968c6969f8979033221b8639275d2df89270957c2858f4c888d7ff8737388">
+    <link rel="stylesheet" href="aifin-shell.css?v=d6032a7fe344f7ae4ef750be95879d336c9b83f71b271eb0a1c4b111057aac7b">
   </head>
   <body>
     <div id="authGate" class="auth-gate" aria-live="polite">
@@ -241,6 +241,9 @@
               <tbody id="authUsersBody"></tbody>
             </table>
           </div>
+          <div id="authUserMoreMenu" class="auth-user-more-menu" role="menu" hidden>
+            <button id="authUserPasswordAction" type="button" role="menuitem">密码</button>
+          </div>
         </section>
       </main>
     </div>
@@ -279,18 +282,24 @@
         <div class="auth-edit-grid">
           <label>用户名<input name="username" type="text" autocomplete="off" required maxlength="32"></label>
           <label>用户姓名（选填）<input name="fullName" type="text" autocomplete="name" maxlength="100"></label>
-          <label class="auth-edit-wide">机构名称（选填）<input name="organizationName" type="text" autocomplete="organization" maxlength="200"></label>
+          <label>机构名称（选填）<input name="organizationName" type="text" autocomplete="organization" maxlength="200"></label>
           <label>角色<select name="role"><option value="user">普通用户</option><option value="admin">管理员</option></select></label>
           <label>账号状态<select name="status"><option value="active">正常</option><option value="disabled">已停用</option></select></label>
         </div>
-        <section class="auth-edit-password" aria-labelledby="authEditPasswordTitle">
-          <div><h3 id="authEditPasswordTitle">重置密码</h3><p>无需修改时请留空；填写后会撤销该用户的全部登录会话。</p></div>
-          <label>新密码（选填）<span class="auth-password-field"><input id="authEditNewPassword" name="newPassword" type="password" autocomplete="new-password" maxlength="128"><button type="button" data-password-toggle="authEditNewPassword" aria-label="显示密码">显示</button></span></label>
-          <p class="auth-help">密码不得少于6位，其中至少包含大写字母、小写字母和数字</p>
-        </section>
         <p id="authUserEditNotice" class="auth-edit-notice"></p>
         <p class="auth-error" role="alert" hidden></p>
         <div class="auth-dialog-actions"><button type="button" data-dialog-close>取消</button><button class="auth-primary" type="submit">保存修改</button></div>
+      </form>
+    </dialog>
+    <dialog id="authResetPasswordDialog" class="auth-dialog" aria-labelledby="authResetPasswordTitle">
+      <form id="authResetPasswordForm" method="dialog" autocomplete="off">
+        <h2 id="authResetPasswordTitle">重置密码</h2>
+        <input name="userId" type="hidden">
+        <p class="auth-help">密码不得少于6位，其中至少包含大写字母、小写字母和数字</p>
+        <label>新密码<input name="newPassword" type="password" autocomplete="new-password" required maxlength="128"></label>
+        <label>确认新密码<input name="confirmPassword" type="password" autocomplete="new-password" required maxlength="128"></label>
+        <p class="auth-error" role="alert" hidden></p>
+        <div class="auth-dialog-actions"><button type="button" data-dialog-close>取消</button><button class="auth-primary" type="submit">确认重置</button></div>
       </form>
     </dialog>
     <dialog id="authProfileDialog" class="auth-dialog">
@@ -311,6 +320,6 @@
       <div class="factor-remark-popover-body" id="factorRemarkBody"></div>
     </aside>
     <script src="aifin-shell.js?v=5437e66344455b02f89034bdab5b57b9c15e2c3b154f735b0c34b789317620cd"></script>
-    <script src="auth-shell.js?v=b872e58bc650d67346545beae5950db704ea713d461245baa9b05c8e333ca484"></script>
+    <script src="auth-shell.js?v=84f799bfb04bf319e7748f95294372baffb744764e79c9f5b4ec31ef4630ab01"></script>
   </body>
 </html>

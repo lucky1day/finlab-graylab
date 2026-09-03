@@ -273,7 +273,6 @@ def test_admin_edit_user_contract_is_one_strict_request() -> None:
         "organization_name": "示例机构",
         "role": "user",
         "status": "active",
-        "new_password": None,
     }
     with patch("backend.auth.routes._service", return_value=service):
         response = _request(
@@ -296,9 +295,20 @@ def test_admin_edit_user_contract_is_one_strict_request() -> None:
         organization_name="示例机构",
         role="user",
         status="active",
-        new_password=None,
         request_id="request-edit-user",
     )
+
+    with patch("backend.auth.routes._service", return_value=service):
+        combined = _request(
+            "POST",
+            "/api/admin/users/edit",
+            headers={
+                **_headers(),
+                "Cookie": "__Host-bfl-session=opaque-token",
+            },
+            json={**payload, "new_password": "NotAllowed123"},
+        )
+    assert combined.status_code == 422
 
 
 def test_me_and_admin_forbidden_contract(monkeypatch) -> None:
@@ -385,7 +395,6 @@ def test_ordinary_user_is_forbidden_from_every_admin_api() -> None:
                 "organization_name": None,
                 "role": "user",
                 "status": "active",
-                "new_password": None,
             },
         ),
     )

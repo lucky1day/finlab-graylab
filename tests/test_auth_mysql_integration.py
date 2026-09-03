@@ -474,7 +474,6 @@ def test_auth_service_sessions_throttle_and_admin_lifecycle_on_mysql8(
         organization_name=" 实验机构 ",
         role="admin",
         status="active",
-        new_password="Edited789",
         request_id="request-edit-combined",
     )
     assert edited.username == "second.edited"
@@ -483,6 +482,15 @@ def test_auth_service_sessions_throttle_and_admin_lifecycle_on_mysql8(
     assert edited.role == "admin"
     with pytest.raises(AuthError, match="not_authenticated"):
         service.authenticate(target_session.token)
+    pre_reset_session = service.login("second.edited", "Second123")
+    service.reset_password(
+        admin.token,
+        user_id=created.id,
+        new_password="Edited789",
+        request_id="request-reset-separate",
+    )
+    with pytest.raises(AuthError, match="not_authenticated"):
+        service.authenticate(pre_reset_session.token)
     target_session = service.login("second.edited", "Edited789")
 
     with engine.connect() as connection:
@@ -499,7 +507,6 @@ def test_auth_service_sessions_throttle_and_admin_lifecycle_on_mysql8(
         organization_name="实验机构",
         role="admin",
         status="active",
-        new_password="Edited789",
         request_id="request-edit-noop",
     )
     assert unchanged_edit.username == "second.edited"
@@ -519,7 +526,6 @@ def test_auth_service_sessions_throttle_and_admin_lifecycle_on_mysql8(
         organization_name="实验机构",
         role="admin",
         status="active",
-        new_password=None,
         request_id="request-edit-profile-only",
     )
     assert profile_only.full_name == "新姓名"
@@ -534,7 +540,6 @@ def test_auth_service_sessions_throttle_and_admin_lifecycle_on_mysql8(
             organization_name="不应写入",
             role="user",
             status="disabled",
-            new_password="Rollback123",
             request_id="request-edit-rollback",
         )
     with engine.connect() as connection:
@@ -568,7 +573,6 @@ def test_auth_service_sessions_throttle_and_admin_lifecycle_on_mysql8(
                 organization_name="回滚机构",
                 role="user",
                 status="disabled",
-                new_password="Rollback456",
                 request_id="request-edit-audit-rollback",
             )
     with engine.connect() as connection:
@@ -588,16 +592,11 @@ def test_auth_service_sessions_throttle_and_admin_lifecycle_on_mysql8(
     )
     assert service.authenticate(target_session.token).id == created.id
     with pytest.raises(AuthError, match="cannot_modify_self"):
-        service.edit_user(
+        service.reset_password(
             target_session.token,
             user_id=created.id,
-            username="second.edited",
-            full_name="新姓名",
-            organization_name="实验机构",
-            role="admin",
-            status="active",
             new_password="SelfReset123",
-            request_id="request-edit-self",
+            request_id="request-reset-self",
         )
     with engine.connect() as connection:
         audit_payload = " ".join(
@@ -675,7 +674,6 @@ def test_concurrent_admin_disable_cannot_remove_every_active_admin(
                 organization_name=target.organization_name,
                 role=target.role,
                 status="disabled",
-                new_password=None,
                 request_id=request_id,
             )
         except Exception as exc:

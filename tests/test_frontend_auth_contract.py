@@ -46,14 +46,19 @@ class _AuthMarkupParser(HTMLParser):
             self._menu_button = False
 
 
-def test_login_markup_supports_password_managers_and_exact_account_menu() -> None:
+def test_login_markup_supports_password_managers_and_exact_menus() -> None:
     parser = _AuthMarkupParser()
     parser.feed(INDEX)
     assert parser.inputs["authUsername"]["autocomplete"] == "username"
     assert parser.inputs["authPassword"]["autocomplete"] == (
         "current-password"
     )
-    assert parser.account_menu_items == ["个人资料", "修改密码", "退出登录"]
+    assert parser.account_menu_items == [
+        "个人资料",
+        "修改密码",
+        "退出登录",
+        "密码",
+    ]
     assert 'id="authUsersNav"' in INDEX
     assert 'id="authUsersNav" type="button" hidden' in INDEX
 
@@ -106,6 +111,7 @@ def test_profile_password_help_and_admin_requests_use_fixed_api_paths() -> None:
         "/api/auth/update-profile",
         "/api/admin/users",
         "/api/admin/users/edit",
+        "/api/admin/users/reset-password",
     ):
         assert path in AUTH_JS
     assert "authForcedPassword" not in INDEX
@@ -118,7 +124,7 @@ def test_profile_password_help_and_admin_requests_use_fixed_api_paths() -> None:
     assert 'user.role !== "admin"' in AUTH_JS
 
 
-def test_user_management_uses_one_edit_dialog_without_initial_avatars() -> None:
+def test_user_management_separates_profile_edit_and_password_actions() -> None:
     assert "安全会话 · 仅限授权账户" not in INDEX
     assert "auth-user-avatar" not in AUTH_JS
     assert "window.prompt" not in AUTH_JS
@@ -126,16 +132,31 @@ def test_user_management_uses_one_edit_dialog_without_initial_avatars() -> None:
     assert 'id="authUserEditDialog"' in INDEX
     assert 'aria-labelledby="authUserEditTitle"' in INDEX
     assert 'id="authUserEditForm"' in INDEX
+    edit_dialog = INDEX[
+        INDEX.index('id="authUserEditDialog"') :
+        INDEX.index('id="authResetPasswordDialog"')
+    ]
     for field in (
         'name="username"',
         'name="fullName"',
         'name="organizationName"',
         'name="role"',
         'name="status"',
-        'name="newPassword"',
     ):
-        assert field in INDEX
+        assert field in edit_dialog
+    assert 'name="newPassword"' not in edit_dialog
+    assert 'id="authResetPasswordDialog"' in INDEX
+    assert 'id="authResetPasswordForm"' in INDEX
     assert 'actionButton("编辑", "edit", user.id, false)' in AUTH_JS
+    assert 'moreButton.innerHTML = "更多' in AUTH_JS
+    assert 'id="authUserMoreMenu"' in INDEX
+    assert '>密码</button>' in INDEX
+    more_menu = INDEX[
+        INDEX.index('id="authUserMoreMenu"') :
+        INDEX.index('id="authUserPasswordAction"') + 100
+    ]
+    for unsupported_action in ("详情", "删除", "冻结", "代理人"):
+        assert unsupported_action not in more_menu
     assert 'actionButton("编辑资料"' not in AUTH_JS
     assert 'actionButton("改用户名"' not in AUTH_JS
     assert 'actionButton("重置密码"' not in AUTH_JS
