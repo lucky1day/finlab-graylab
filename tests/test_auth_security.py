@@ -104,6 +104,17 @@ def test_session_token_is_256_bit_and_only_digest_is_persistable() -> None:
         lambda service: service.reset_password(
             "é", user_id=1, new_password="Secret123", request_id="request"
         ),
+        lambda service: service.edit_user(
+            "é",
+            user_id=1,
+            username="valid.user",
+            full_name=None,
+            organization_name=None,
+            role="user",
+            status="active",
+            new_password=None,
+            request_id="request",
+        ),
     ),
 )
 def test_malformed_non_ascii_session_token_is_unauthenticated(operation) -> None:

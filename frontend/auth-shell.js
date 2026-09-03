@@ -94,7 +94,6 @@
       emitError(dialog.querySelector(".auth-error"), "");
       dialog.close();
     });
-    document.getElementById("authResetPasswordTarget").textContent = "";
   }
 
   function showGate(view) {
@@ -225,12 +224,8 @@
       var identity = document.createElement("td");
       var identityInner = document.createElement("div");
       identityInner.className = "auth-user-identity";
-      var avatar = document.createElement("span");
-      avatar.className = "auth-user-avatar";
-      avatar.textContent = user.username.slice(0, 1).toUpperCase();
       var username = document.createElement("strong");
       username.textContent = user.username;
-      identityInner.appendChild(avatar);
       identityInner.appendChild(username);
       identity.appendChild(identityInner);
       row.appendChild(identity);
@@ -262,11 +257,7 @@
       row.appendChild(createdCell);
       var actions = document.createElement("td");
       actions.className = "auth-user-actions";
-      actions.appendChild(actionButton("编辑资料", "profile", user.id, false));
-      actions.appendChild(actionButton("改用户名", "username", user.id, user.is_protected_admin));
-      actions.appendChild(actionButton(user.role === "admin" ? "设为普通用户" : "设为管理员", "role", user.id, user.is_protected_admin));
-      actions.appendChild(actionButton("重置密码", "password", user.id, user.is_protected_admin || user.id === state.user.id));
-      actions.appendChild(actionButton(user.status === "active" ? "停用" : "恢复", "status", user.id, user.is_protected_admin || user.id === state.user.id));
+      actions.appendChild(actionButton("编辑", "edit", user.id, false));
       row.appendChild(actions);
       body.appendChild(row);
     });
@@ -286,26 +277,64 @@
     return state.users.filter(function (user) { return user.id === userId; })[0] || null;
   }
 
-  function updateUser(path, body) {
-    return apiRequest(path, { method: "POST", body: body }).then(function () {
-      return loadUsers();
-    }).catch(function (error) {
-      emitError(document.getElementById("authUsersError"), errorMessage(error.errorCode));
-    });
+  function showDialog(dialog) {
+    dialog.classList.remove("is-closing");
+    dialog.showModal();
   }
 
-  function openProfileDialog(user, mode) {
+  function closeDialog(dialog) {
+    if (!dialog || !dialog.open || dialog.classList.contains("is-closing")) return;
+    dialog.classList.add("is-closing");
+    window.setTimeout(function () {
+      if (dialog.open) dialog.close();
+      dialog.classList.remove("is-closing");
+    }, 150);
+  }
+
+  function openProfileDialog(user) {
     var dialog = document.getElementById("authProfileDialog");
     var form = document.getElementById("authProfileForm");
     form.reset();
-    form.dataset.profileMode = mode;
-    form.elements.userId.value = mode === "admin" ? String(user.id) : "";
+    form.dataset.profileMode = "self";
+    form.elements.userId.value = "";
     form.elements.fullName.value = user.full_name || "";
     form.elements.organizationName.value = user.organization_name || "";
-    document.getElementById("authProfileTitle").textContent =
-      mode === "admin" ? "编辑“" + user.username + "”的资料" : "个人资料";
+    document.getElementById("authProfileTitle").textContent = "个人资料";
     emitError(form.querySelector(".auth-error"), "");
-    dialog.showModal();
+    showDialog(dialog);
+  }
+
+  function setEditControl(form, name, disabled) {
+    form.elements[name].disabled = Boolean(disabled);
+    form.elements[name].closest("label").classList.toggle("is-disabled", Boolean(disabled));
+  }
+
+  function openUserEditDialog(user) {
+    var dialog = document.getElementById("authUserEditDialog");
+    var form = document.getElementById("authUserEditForm");
+    var protectedAccount = Boolean(user.is_protected_admin);
+    var ownAccount = Boolean(state.user && user.id === state.user.id);
+    form.reset();
+    form.elements.userId.value = String(user.id);
+    form.elements.username.value = user.username;
+    form.elements.fullName.value = user.full_name || "";
+    form.elements.organizationName.value = user.organization_name || "";
+    form.elements.role.value = user.role;
+    form.elements.status.value = user.status;
+    setEditControl(form, "username", protectedAccount);
+    setEditControl(form, "role", protectedAccount || ownAccount);
+    setEditControl(form, "status", protectedAccount || ownAccount);
+    setEditControl(form, "newPassword", protectedAccount || ownAccount);
+    document.getElementById("authUserEditTitle").textContent = "编辑用户 · " + user.username;
+    document.getElementById("authUserEditSubtitle").textContent =
+      "在同一张表单中维护账户资料与权限。";
+    document.getElementById("authUserEditNotice").textContent = protectedAccount
+      ? "受保护管理员仅允许修改用户姓名和机构名称。"
+      : ownAccount
+        ? "当前账户不能修改自己的角色、状态或重置密码。"
+        : "修改用户名、角色、状态或密码后，该用户需要重新登录。";
+    emitError(form.querySelector(".auth-error"), "");
+    showDialog(dialog);
   }
 
   document.getElementById("authLoginForm").addEventListener("submit", function (event) {
@@ -354,14 +383,14 @@
 
   document.getElementById("authProfileButton").addEventListener("click", function () {
     closeAccountMenu(false);
-    if (state.user) openProfileDialog(state.user, "self");
+    if (state.user) openProfileDialog(state.user);
   });
 
   document.getElementById("authChangePasswordButton").addEventListener("click", function () {
     closeAccountMenu(false);
     var dialog = document.getElementById("authChangePasswordDialog");
     dialog.querySelector("form").reset();
-    dialog.showModal();
+    showDialog(dialog);
   });
 
   document.getElementById("authLogoutButton").addEventListener("click", function () {
@@ -379,7 +408,7 @@
     var dialog = document.getElementById("authCreateUserDialog");
     dialog.querySelector("form").reset();
     emitError(dialog.querySelector(".auth-error"), "");
-    dialog.showModal();
+    showDialog(dialog);
   });
 
   document.getElementById("authCreateUserForm").addEventListener("submit", function (event) {
@@ -409,75 +438,63 @@
     var userId = Number(button.dataset.userId);
     var user = findUser(userId);
     if (!user) return;
-    var action = button.dataset.userAction;
-    if (action === "profile") {
-      openProfileDialog(user, "admin");
-    } else if (action === "username") {
-      var username = window.prompt("输入新的用户名", user.username);
-      if (username && username !== user.username) {
-        updateUser("/api/admin/users/change-username", { user_id: userId, username: username });
-      }
-    } else if (action === "role") {
-      var role = user.role === "admin" ? "user" : "admin";
-      if (window.confirm("确认将“" + user.username + "”调整为" + (role === "admin" ? "管理员" : "普通用户") + "？该用户的全部会话将被撤销。")) {
-        updateUser("/api/admin/users/change-role", { user_id: userId, role: role });
-      }
-    } else if (action === "status") {
-      var status = user.status === "active" ? "disabled" : "active";
-      if (window.confirm("确认" + (status === "disabled" ? "停用" : "恢复") + "用户“" + user.username + "”？")) {
-        updateUser("/api/admin/users/change-status", { user_id: userId, status: status });
-      }
-    } else if (action === "password") {
-      var dialog = document.getElementById("authResetPasswordDialog");
-      dialog.querySelector("form").reset();
-      dialog.querySelector('[name="userId"]').value = String(userId);
-      document.getElementById("authResetPasswordTarget").textContent = "为用户“" + user.username + "”设置新密码；其全部会话将被撤销。";
-      emitError(dialog.querySelector(".auth-error"), "");
-      dialog.showModal();
-    }
+    if (button.dataset.userAction === "edit") openUserEditDialog(user);
   });
 
-  document.getElementById("authResetPasswordForm").addEventListener("submit", function (event) {
+  document.getElementById("authUserEditForm").addEventListener("submit", function (event) {
     event.preventDefault();
     var form = event.currentTarget;
-    apiRequest("/api/admin/users/reset-password", {
+    var userId = Number(form.elements.userId.value);
+    var original = findUser(userId);
+    var submit = form.querySelector('[type="submit"]');
+    emitError(form.querySelector(".auth-error"), "");
+    submit.disabled = true;
+    submit.textContent = "保存中…";
+    apiRequest("/api/admin/users/edit", {
       method: "POST",
       body: {
-        user_id: Number(form.elements.userId.value),
-        new_password: form.elements.newPassword.value
+        user_id: userId,
+        username: form.elements.username.value,
+        full_name: form.elements.fullName.value || null,
+        organization_name: form.elements.organizationName.value || null,
+        role: form.elements.role.value,
+        status: form.elements.status.value,
+        new_password: form.elements.newPassword.value || null
       }
-    }).then(function () {
+    }).then(function (payload) {
+      var selfSessionRevoked = Boolean(
+        original && state.user && original.id === state.user.id
+        && original.username !== payload.user.username
+      );
       form.reset();
-      form.closest("dialog").close();
-      loadUsers();
+      closeDialog(form.closest("dialog"));
+      if (selfSessionRevoked) {
+        window.setTimeout(function () {
+          showLogin("账户信息已更新，请重新登录");
+        }, 150);
+        return null;
+      }
+      if (state.user && payload.user.id === state.user.id) state.user = payload.user;
+      return loadUsers();
     }).catch(function (error) {
       emitError(form.querySelector(".auth-error"), errorMessage(error.errorCode));
+    }).finally(function () {
+      submit.disabled = false;
+      submit.textContent = "保存修改";
     });
   });
 
   document.getElementById("authProfileForm").addEventListener("submit", function (event) {
     event.preventDefault();
     var form = event.currentTarget;
-    var adminMode = form.dataset.profileMode === "admin";
     var body = {
       full_name: form.elements.fullName.value || null,
       organization_name: form.elements.organizationName.value || null
     };
-    if (adminMode) body.user_id = Number(form.elements.userId.value);
-    apiRequest(
-      adminMode ? "/api/admin/users/update-profile" : "/api/auth/update-profile",
-      { method: "POST", body: body }
-    ).then(function (payload) {
-      if (adminMode) {
-        if (state.user && payload.user.id === state.user.id) {
-          state.user = payload.user;
-        }
-        loadUsers();
-      } else {
-        state.user = payload.user;
-      }
+    apiRequest("/api/auth/update-profile", { method: "POST", body: body }).then(function (payload) {
+      state.user = payload.user;
       form.reset();
-      form.closest("dialog").close();
+      closeDialog(form.closest("dialog"));
     }).catch(function (error) {
       emitError(form.querySelector(".auth-error"), errorMessage(error.errorCode));
     });
@@ -485,7 +502,7 @@
 
   document.querySelectorAll("[data-dialog-close]").forEach(function (button) {
     button.addEventListener("click", function () {
-      button.closest("dialog").close();
+      closeDialog(button.closest("dialog"));
     });
   });
 

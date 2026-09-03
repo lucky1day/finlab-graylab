@@ -105,11 +105,7 @@ def test_profile_password_help_and_admin_requests_use_fixed_api_paths() -> None:
         "/api/auth/change-password",
         "/api/auth/update-profile",
         "/api/admin/users",
-        "/api/admin/users/change-username",
-        "/api/admin/users/change-role",
-        "/api/admin/users/reset-password",
-        "/api/admin/users/change-status",
-        "/api/admin/users/update-profile",
+        "/api/admin/users/edit",
     ):
         assert path in AUTH_JS
     assert "authForcedPassword" not in INDEX
@@ -120,3 +116,25 @@ def test_profile_password_help_and_admin_requests_use_fixed_api_paths() -> None:
     assert "user.full_name" in AUTH_JS
     assert "user.organization_name" in AUTH_JS
     assert 'user.role !== "admin"' in AUTH_JS
+
+
+def test_user_management_uses_one_edit_dialog_without_initial_avatars() -> None:
+    assert "安全会话 · 仅限授权账户" not in INDEX
+    assert "auth-user-avatar" not in AUTH_JS
+    assert "window.prompt" not in AUTH_JS
+    assert "window.confirm" not in AUTH_JS
+    assert 'id="authUserEditDialog"' in INDEX
+    assert 'id="authUserEditForm"' in INDEX
+    for field in (
+        'name="username"',
+        'name="fullName"',
+        'name="organizationName"',
+        'name="role"',
+        'name="status"',
+        'name="newPassword"',
+    ):
+        assert field in INDEX
+    assert 'actionButton("编辑", "edit", user.id, false)' in AUTH_JS
+    assert 'actionButton("编辑资料"' not in AUTH_JS
+    assert 'actionButton("改用户名"' not in AUTH_JS
+    assert 'actionButton("重置密码"' not in AUTH_JS

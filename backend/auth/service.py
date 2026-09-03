@@ -545,3 +545,172 @@ class AuthService:
             updated = repository.lock_user_by_id(connection, target.id)
             assert updated is not None
             return updated
+
+    def edit_user(
+        self,
+        token: str | None,
+        *,
+        user_id: int,
+        username: str,
+        full_name: str | None,
+        organization_name: str | None,
+        role: str,
+        status: str,
+        new_password: str | None,
+        request_id: str,
+    ) -> AuthUser:
+        """在一个事务中原子保存管理员用户编辑表单。"""
+        token_hash = _session_token_hash(token)
+        self._require_admin(token)
+        normalized_username = normalize_username(username)
+        normalized_full_name = _profile_value(
+            full_name,
+            max_length=FULL_NAME_MAX_LENGTH,
+        )
+        normalized_organization = _profile_value(
+            organization_name,
+            max_length=ORGANIZATION_NAME_MAX_LENGTH,
+        )
+        if role not in {"admin", "user"}:
+            raise AuthError("invalid_role", 400)
+        if status not in {"active", "disabled"}:
+            raise AuthError("invalid_status", 400)
+        password_hash = (
+            None if new_password is None else hash_password(new_password)
+        )
+        now = self._now()
+        try:
+            with self._engine.begin() as connection:
+                actor = self._lock_admin(connection, token_hash, now)
+                target = repository.lock_user_by_id(connection, user_id)
+                if target is None:
+                    raise AuthError("user_not_found", 404)
+
+                username_changed = normalized_username != target.username
+                profile_before = {
+                    "full_name": target.full_name,
+                    "organization_name": target.organization_name,
+                }
+                profile_after = {
+                    "full_name": normalized_full_name,
+                    "organization_name": normalized_organization,
+                }
+                profile_changed = profile_before != profile_after
+                role_changed = role != target.role
+                status_changed = status != target.status
+                password_changed = (
+                    new_password is not None
+                    and not verify_password(target.password_hash, new_password)
+                )
+                restricted_change = any(
+                    (
+                        username_changed,
+                        role_changed,
+                        status_changed,
+                        password_changed,
+                    )
+                )
+
+                if target.is_protected_admin and restricted_change:
+                    raise AuthError("protected_admin", 409)
+                if actor.id == target.id and (
+                    (role_changed and role == "user")
+                    or (status_changed and status == "disabled")
+                    or password_changed
+                ):
+                    raise AuthError("cannot_modify_self", 409)
+                removes_active_admin = (
+                    target.role == "admin"
+                    and target.status == "active"
+                    and (role == "user" or status == "disabled")
+                )
+                if (
+                    removes_active_admin
+                    and len(repository.lock_active_admin_ids(connection)) <= 1
+                ):
+                    raise AuthError("last_active_admin", 409)
+
+                if username_changed:
+                    repository.update_username(
+                        connection, target.id, normalized_username
+                    )
+                    repository.insert_audit(
+                        connection,
+                        event_type="user_username_changed",
+                        actor_user_id=actor.id,
+                        target_user_id=target.id,
+                        request_id=request_id,
+                        detail={
+                            "before": target.username,
+                            "after": normalized_username,
+                        },
+                    )
+                if profile_changed:
+                    repository.update_profile(
+                        connection,
+                        user_id=target.id,
+                        full_name=normalized_full_name,
+                        organization_name=normalized_organization,
+                    )
+                    repository.insert_audit(
+                        connection,
+                        event_type="user_profile_changed",
+                        actor_user_id=actor.id,
+                        target_user_id=target.id,
+                        request_id=request_id,
+                        detail={
+                            "before": profile_before,
+                            "after": profile_after,
+                        },
+                    )
+                if role_changed:
+                    repository.update_role(connection, target.id, role)
+                    repository.insert_audit(
+                        connection,
+                        event_type="user_role_changed",
+                        actor_user_id=actor.id,
+                        target_user_id=target.id,
+                        request_id=request_id,
+                        detail={"before": target.role, "after": role},
+                    )
+                if status_changed:
+                    repository.update_status(
+                        connection,
+                        user_id=target.id,
+                        status=status,
+                        actor_user_id=actor.id,
+                        now=now,
+                    )
+                    repository.insert_audit(
+                        connection,
+                        event_type="user_status_changed",
+                        actor_user_id=actor.id,
+                        target_user_id=target.id,
+                        request_id=request_id,
+                        detail={"before": target.status, "after": status},
+                    )
+                if password_changed:
+                    assert password_hash is not None
+                    repository.update_password(
+                        connection,
+                        user_id=target.id,
+                        password_hash=password_hash,
+                        must_change_password=False,
+                        now=now,
+                    )
+                    repository.insert_audit(
+                        connection,
+                        event_type="password_reset",
+                        actor_user_id=actor.id,
+                        target_user_id=target.id,
+                        request_id=request_id,
+                        detail={},
+                    )
+                if restricted_change:
+                    repository.revoke_all_sessions(connection, target.id, now)
+
+                updated = repository.lock_user_by_id(connection, target.id)
+                assert updated is not None
+                return updated
+        except IntegrityError as exc:
+            raise AuthError("username_taken", 409) from exc

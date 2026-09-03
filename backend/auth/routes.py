@@ -85,6 +85,14 @@ class AdminUpdateProfileRequest(UpdateProfileRequest):
     user_id: int = Field(gt=0)
 
 
+class EditUserRequest(UpdateProfileRequest):
+    user_id: int = Field(gt=0)
+    username: str
+    role: Literal["admin", "user"]
+    status: Literal["active", "disabled"]
+    new_password: str | None = Field(default=None, max_length=128)
+
+
 def _request_id(request: Request) -> str:
     candidate = request.headers.get("x-request-id")
     if candidate is not None and _REQUEST_ID_PATTERN.fullmatch(candidate):
@@ -422,6 +430,30 @@ def admin_update_profile(
         user_id=payload.user_id,
         full_name=payload.full_name,
         organization_name=payload.organization_name,
+        request_id=_request_id(request),
+    )
+    return {"user": user.public_dict()}
+
+
+@router.post(
+    "/api/admin/users/edit",
+    dependencies=[Depends(require_safe_json_request)],
+)
+def edit_user(
+    payload: EditUserRequest,
+    request: Request,
+    token: Annotated[str | None, Depends(_token)],
+) -> dict:
+    """在一个事务中保存管理员用户编辑表单。"""
+    user = _service().edit_user(
+        token,
+        user_id=payload.user_id,
+        username=payload.username,
+        full_name=payload.full_name,
+        organization_name=payload.organization_name,
+        role=payload.role,
+        status=payload.status,
+        new_password=payload.new_password,
         request_id=_request_id(request),
     )
     return {"user": user.public_dict()}

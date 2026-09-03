@@ -260,6 +260,47 @@ def test_user_and_admin_profile_update_contracts() -> None:
     service.update_user_profile.assert_called_once()
 
 
+def test_admin_edit_user_contract_is_one_strict_request() -> None:
+    service = Mock()
+    service.edit_user.return_value = _user(
+        full_name="张三",
+        organization_name="示例机构",
+    )
+    payload = {
+        "user_id": 2,
+        "username": "edited.user",
+        "full_name": "张三",
+        "organization_name": "示例机构",
+        "role": "user",
+        "status": "active",
+        "new_password": None,
+    }
+    with patch("backend.auth.routes._service", return_value=service):
+        response = _request(
+            "POST",
+            "/api/admin/users/edit",
+            headers={
+                **_headers(),
+                "Cookie": "__Host-bfl-session=opaque-token",
+                "X-Request-ID": "request-edit-user",
+            },
+            json=payload,
+        )
+    assert response.status_code == 200
+    assert response.json()["user"]["full_name"] == "张三"
+    service.edit_user.assert_called_once_with(
+        "opaque-token",
+        user_id=2,
+        username="edited.user",
+        full_name="张三",
+        organization_name="示例机构",
+        role="user",
+        status="active",
+        new_password=None,
+        request_id="request-edit-user",
+    )
+
+
 def test_me_and_admin_forbidden_contract(monkeypatch) -> None:
     service = Mock()
     service.current_session.return_value = SessionResult(
@@ -293,6 +334,7 @@ def test_ordinary_user_is_forbidden_from_every_admin_api() -> None:
     service.reset_password.side_effect = forbidden
     service.change_status.side_effect = forbidden
     service.update_user_profile.side_effect = forbidden
+    service.edit_user.side_effect = forbidden
     requests = (
         ("GET", "/api/admin/users", None),
         (
@@ -331,6 +373,19 @@ def test_ordinary_user_is_forbidden_from_every_admin_api() -> None:
                 "user_id": 2,
                 "full_name": "张三",
                 "organization_name": "示例机构",
+            },
+        ),
+        (
+            "POST",
+            "/api/admin/users/edit",
+            {
+                "user_id": 2,
+                "username": "renamed.user",
+                "full_name": None,
+                "organization_name": None,
+                "role": "user",
+                "status": "active",
+                "new_password": None,
             },
         ),
     )
