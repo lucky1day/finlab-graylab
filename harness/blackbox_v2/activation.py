@@ -69,6 +69,20 @@ def _activate(ctx: GateContext, started_at: str) -> GateResult:
                 state = activate_blackbox_initial(
                     engine,
                     enriched_cfg,
+                    backtest_run_id=passed_backtest.backtest_run_id,
+                    backtest_benchmark_id=passed_backtest.benchmark_id,
+                    backtest_data_snapshot_id=passed_backtest.data_snapshot_id,
+                    backtest_generation_id=passed_backtest.generation_id,
+                    backtest_runtime_profile=passed_backtest.runtime_profile,
+                    backtest_environment_fingerprint=(
+                        passed_backtest.environment_fingerprint
+                    ),
+                    backtest_code_hash=passed_backtest.code_hash,
+                    backtest_config_hash=passed_backtest.config_hash,
+                    backtest_manifest_hash=passed_backtest.manifest_hash,
+                    backtest_validator_policy_digest=(
+                        passed_backtest.script_validator_policy_digest
+                    ),
                     approved_by=operation.issued_by,
                     approved_at=approved_at,
                 )
@@ -139,7 +153,7 @@ def _activate(ctx: GateContext, started_at: str) -> GateResult:
             Evidence("version_status", state.version_status),
             Evidence("registry_status", state.registry_status),
             Evidence("registry_scheme_ids", list(state.registry_scheme_ids)),
-            Evidence("business_tables_written", False),
+            Evidence("business_tables_written", activation_mode == "initial"),
             Evidence("config_changed", False),
             Evidence("operator", operation.issued_by),
             Evidence("operation_scope_sha256", operation_scope_sha256(operation)),

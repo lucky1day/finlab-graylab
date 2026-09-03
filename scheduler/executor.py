@@ -1477,7 +1477,7 @@ def _effective_timeout_sec(
 
 
 def _normalize_live_records(records: list[PredictionRecord], *, prediction_phase: str) -> list[PredictionRecord]:
-    """补齐平台级 feature_date / prediction_phase，一处统一控制灰度和正式实盘语义。"""
+    """补齐 feature_date；phase 只保留在 run/record 运行语义中。"""
     normalized: list[PredictionRecord] = []
     for record in records:
         extra = dict(record.extra or {})
@@ -1491,7 +1491,7 @@ def _normalize_live_records(records: list[PredictionRecord], *, prediction_phase
                 f"does not equal feature_date={feature_date}"
             )
         extra["feature_date"] = str(feature_date)
-        extra["prediction_phase"] = prediction_phase
+        extra.pop("prediction_phase", None)
         normalized.append(
             replace(
                 record,

@@ -19,11 +19,16 @@ from migrations.recovery_versions import (
     SPEC_021,
     SPEC_022,
     SPEC_023,
+    SPEC_024,
 )
 from migrations.auth_022 import classify_auth_schema, read_auth_schema
 from migrations.auth_profile_023 import (
     classify_auth_profile_schema,
     read_auth_profile_schema,
+)
+from migrations.scheme_prediction_fact_024 import (
+    classify_scheme_prediction_fact_state,
+    read_scheme_prediction_fact_state,
 )
 
 
@@ -49,6 +54,9 @@ AUTH_MIGRATION_SHA256 = SPEC_022.sha256
 AUTH_PROFILE_MIGRATION_VERSION = SPEC_023.version
 AUTH_PROFILE_MIGRATION_FILENAME = SPEC_023.filename
 AUTH_PROFILE_MIGRATION_SHA256 = SPEC_023.sha256
+SCHEME_PREDICTION_FACT_MIGRATION_VERSION = SPEC_024.version
+SCHEME_PREDICTION_FACT_MIGRATION_FILENAME = SPEC_024.filename
+SCHEME_PREDICTION_FACT_MIGRATION_SHA256 = SPEC_024.sha256
 
 
 class MigrationSQLParseError(ValueError):
@@ -4420,6 +4428,11 @@ def _is_auth_profile_migration(path: Path) -> bool:
     return path.name == AUTH_PROFILE_MIGRATION_FILENAME
 
 
+def _is_scheme_prediction_fact_migration(path: Path) -> bool:
+    """migration 024 只允许旧事实表或精确可恢复中间态。"""
+    return path.name == SCHEME_PREDICTION_FACT_MIGRATION_FILENAME
+
+
 def _partial_apply_error(
     path: Path,
     *,
@@ -6943,6 +6956,199 @@ def recover_applying_migration_023(
     )
 
 
+def _validate_applying_024_history(
+    manifest: Iterable[PreparedMigration],
+    history: Iterable[Mapping[str, object]],
+) -> PreparedMigration:
+    """只接受 001..023 APPLIED + 024 APPLYING 的精确连续历史。"""
+    migrations = [
+        migration
+        for migration in manifest
+        if migration.version <= SCHEME_PREDICTION_FACT_MIGRATION_VERSION
+    ]
+    expected_versions = list(
+        range(1, SCHEME_PREDICTION_FACT_MIGRATION_VERSION + 1)
+    )
+    if [migration.version for migration in migrations] != expected_versions:
+        raise MigrationHistoryError(
+            "APPLYING recovery requires contiguous migration files 001..024"
+        )
+    target = migrations[-1]
+    if (
+        target.path.name != SCHEME_PREDICTION_FACT_MIGRATION_FILENAME
+        or target.sha256 != SCHEME_PREDICTION_FACT_MIGRATION_SHA256
+    ):
+        raise MigrationHistoryError(
+            "migration 024 recovery identity/checksum is not reviewed"
+        )
+    rows = sorted(history, key=lambda row: int(row["version"]))
+    if [int(row["version"]) for row in rows] != expected_versions:
+        raise MigrationHistoryError(
+            "APPLYING recovery history must be the exact 001..024 prefix"
+        )
+    by_version = {migration.version: migration for migration in migrations}
+    for row in rows:
+        version = int(row["version"])
+        migration = by_version[version]
+        if (
+            str(row.get("filename") or "") != migration.path.name
+            or str(row.get("sha256") or "").lower() != migration.sha256
+        ):
+            raise MigrationHistoryError(
+                f"migration history identity drift for {version:03d}"
+            )
+        expected_state = "APPLYING" if version == 24 else "APPLIED"
+        if str(row.get("state") or "").upper() != expected_state:
+            raise MigrationHistoryError("only migration 024 may be APPLYING")
+    bootstrap_flags = tuple(
+        int(row.get("baseline_bootstrap") or 0) for row in rows
+    )
+    if bootstrap_flags not in {
+        tuple([0] * 24),
+        tuple([1] * 16 + [0] * 8),
+    }:
+        raise MigrationHistoryError(
+            "migration 024 APPLYING history has an invalid bootstrap pattern"
+        )
+    return target
+
+
+def build_applying_024_inspection(
+    *,
+    manifest: Iterable[PreparedMigration],
+    history: Iterable[Mapping[str, object]],
+    database_identity: Mapping[str, object],
+    fact_state: Mapping[str, object],
+) -> dict[str, object]:
+    """构造单一产品事实源 migration 状态与 canonical digest。"""
+    migrations = list(manifest)
+    history_rows = sorted(
+        (dict(row) for row in history),
+        key=lambda row: int(row["version"]),
+    )
+    canonical_state = {
+        "database_identity": dict(database_identity),
+        "manifest": [
+            {
+                "version": migration.version,
+                "filename": migration.path.name,
+                "sha256": migration.sha256,
+            }
+            for migration in migrations
+            if migration.version <= SCHEME_PREDICTION_FACT_MIGRATION_VERSION
+        ],
+        "history": history_rows,
+        "scheme_prediction_fact_state": dict(fact_state),
+    }
+    classification = "UNSAFE"
+    reason: str | None = None
+    migration_identity: dict[str, object] | None = None
+    try:
+        if not str(database_identity.get("database_name") or "").strip():
+            raise MigrationHistoryError("database name is required")
+        if not str(database_identity.get("server_uuid") or "").strip():
+            raise MigrationHistoryError("MySQL server UUID is required")
+        target = _validate_applying_024_history(migrations, history_rows)
+        migration_identity = {
+            "version": target.version,
+            "filename": target.path.name,
+            "sha256": target.sha256,
+        }
+        classification = classify_scheme_prediction_fact_state(fact_state)
+        if classification == "UNSAFE":
+            reason = "scheme prediction fact schema/data drift"
+    except (KeyError, MigrationHistoryError, TypeError, ValueError) as exc:
+        reason = str(exc)
+    return {
+        "classification": classification,
+        "state_digest": _applying_017_state_digest(canonical_state),
+        "database_identity": dict(database_identity),
+        "migration": migration_identity,
+        "reason": reason,
+    }
+
+
+def _read_applying_024_inspection(
+    connection: object,
+    manifest: list[PreparedMigration],
+) -> dict[str, object]:
+    """在 owner lock 内读取一次 canonical APPLYING 024 状态。"""
+    identity_row = connection.execute(
+        text(
+            "SELECT DATABASE() AS database_name, "
+            "@@server_uuid AS server_uuid"
+        )
+    ).mappings().one()
+    database_identity = {
+        "database_name": str(identity_row["database_name"] or ""),
+        "server_uuid": str(identity_row["server_uuid"] or ""),
+    }
+    try:
+        if not _migration_history_table_exists(connection):
+            raise MigrationHistoryError(
+                "migration history table does not exist"
+            )
+        _validate_migration_history_schema(
+            _read_migration_history_schema(connection)
+        )
+        return build_applying_024_inspection(
+            manifest=manifest,
+            history=_read_migration_history(connection),
+            database_identity=database_identity,
+            fact_state=read_scheme_prediction_fact_state(connection),
+        )
+    except (
+        AssertionError,
+        KeyError,
+        MigrationHistoryError,
+        MigrationPreflightError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        canonical_state = {
+            "database_identity": database_identity,
+            "inspection_error": {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            },
+        }
+        return {
+            "classification": "UNSAFE",
+            "state_digest": _applying_017_state_digest(canonical_state),
+            "database_identity": database_identity,
+            "migration": None,
+            "reason": str(exc),
+        }
+
+
+def inspect_applying_migration_024(
+    engine: object,
+    paths: Iterable[Path],
+) -> dict[str, object]:
+    """连接 live DB，以 SELECT + named lock 检查 024。"""
+    return _inspect_applying_migration(
+        engine,
+        paths,
+        read_inspection=_read_applying_024_inspection,
+    )
+
+
+def recover_applying_migration_024(
+    engine: object,
+    paths: Iterable[Path],
+    *,
+    expected_state_digest: str,
+) -> dict[str, object]:
+    """以 inspect digest 为 fence 恢复唯一受支持的 APPLYING 024。"""
+    return _recover_applying_migration(
+        engine,
+        paths,
+        expected_state_digest=expected_state_digest,
+        spec=SPEC_024,
+        read_inspection=_read_applying_024_inspection,
+    )
+
+
 def _legacy_domain_table_count(connection: object) -> int:
     required = sorted(expected_legacy_016_baseline()["tables"])
     table_sql = ",".join(f"'{name}'" for name in required)
@@ -7197,6 +7403,9 @@ def _execute_prepared_migration_files(
         registry_owner = _is_registry_owner_migration(path)
         auth_migration = _is_auth_migration(path)
         auth_profile_migration = _is_auth_profile_migration(path)
+        scheme_prediction_fact_migration = (
+            _is_scheme_prediction_fact_migration(path)
+        )
         mysql_session = False
         execution_started = False
         ddl_attempted = False
@@ -7263,6 +7472,18 @@ def _execute_prepared_migration_files(
                             "migration 023 found authentication profile "
                             "schema drift"
                         )
+                if scheme_prediction_fact_migration and mysql_session:
+                    classification = classify_scheme_prediction_fact_state(
+                        read_scheme_prediction_fact_state(connection)
+                    )
+                    if classification == "UNSAFE":
+                        raise MigrationPreflightError(
+                            "migration 024 found scheme prediction fact drift"
+                        )
+                    # 024 的 ALTER TABLE 由 PREPARE/EXECUTE 动态执行。预检之后
+                    # 任一语句失败都可能发生在 MySQL 已隐式提交 DDL 之后，因此
+                    # 必须按 partial-apply 报告并进入受控 inspect/recovery。
+                    ddl_attempted = True
                 for statement in statements:
                     if owner_connection is not None:
                         _assert_migration_owner_lock_held(connection)
@@ -7396,6 +7617,25 @@ def _execute_prepared_migration_files(
                     ):
                         raise MigrationPreflightError(
                             "migration 023 did not reach complete schema"
+                        )
+            except BaseException as exc:
+                postcondition_error = exc
+        if (
+            scheme_prediction_fact_migration
+            and mysql_session
+            and execution_started
+        ):
+            try:
+                with _migration_execution_connection(
+                    engine,
+                    owner_connection,
+                ) as connection:
+                    preflight_migration_session(connection)
+                    state = read_scheme_prediction_fact_state(connection)
+                    if classify_scheme_prediction_fact_state(state) != "COMPLETE":
+                        raise MigrationPreflightError(
+                            "migration 024 did not reach complete scheme "
+                            "prediction fact state"
                         )
             except BaseException as exc:
                 postcondition_error = exc

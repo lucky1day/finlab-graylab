@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验日期**：2026-08-29
+**最后核验日期**：2026-09-04
 
 本文只记录当前稳定事实。实时方案、run、prediction、DataBridge、API 和调度状态必须从各自权威数据源
 读取；待推进工作见[统一后续推进计划](TODO.md)，生产规则见
@@ -34,8 +34,9 @@
 
 - Native config active；Blackbox 本机数据库 exact version active、Registry target active；再加 cadence 匹配，
   才能进入一次性 runner。自然运行写 `scheduled_live`，单日或获批 target 区间补缺只写 insert-only `gray_live`。
-- 后续新方案的历史段由一次持久化 backtest batch 形成 immutable canonical backtest；激活后的连续 gray
-  缺口由一次 live-safe target 区间 batch 物化。区间不得早于平台 live 起点，一个方案只解析一次
+- 后续新方案的历史段由一次持久化 backtest batch 形成 immutable canonical backtest；首次 Blackbox
+  `activate` 在激活 exact version 与 composite Registry 的同一事务中，将该回测逐点 insert-only 发布到
+  `t_scheme_predictions`。激活后的连续 gray 缺口由一次 live-safe target 区间 batch 物化。区间不得早于平台 live 起点，一个方案只解析一次
   DataBridge authority、核对 producer-ready receipt、物化一个私有运行视图并启动一个算法 batch；任一既有业务键整组拒绝，全部
   prediction 在一个 repository 事务中提交。不跨激活保存候选结果，也不以性能理由放宽 cutoff、版本、
   lineage 或唯一键安全门。
@@ -58,15 +59,19 @@
   `previous` release 都不再读取 config overlay、lifecycle journal 或 reconcile 状态。两端当前 runtime root 内
   经授权的旧 lifecycle 文件已在无读取者、无打开文件和调度 idle 的条件下删除，不影响当前执行或
   `previous` 回滚；release archive 保留。
-- 当前代码线的 Dashboard 合同为 `factor-lab-dashboard-v4`：无查询参数时只返回 active Registry、owner、
-  backtest 展示元数据、live phase range 与月度汇总；单方案单月逐日明细只在严格的 detail 请求中按需读取。
-  Dashboard 不读取 run、DataBridge 日期或交易日历，也不判断调度缺口，不增加缓存或第二条 API 路径。
+- 当前代码线的 Dashboard 合同为 `factor-lab-dashboard-v5`。`t_backtest_runs` 与
+  `t_backtest_predictions` 只保存不可变回测证据；`t_scheme_predictions` 是唯一产品逐点事实源。Dashboard
+  只从产品事实表计算 Summary/Detail，回测元数据可读取 `t_backtest_runs`，但不得用回测明细参与产品逐点选择。
+  `backtest/live` 只由 `target_date < 2026-06-01` 或不小于该日期推导；`gray_live/scheduled_live` 仅属于
+  `t_scheme_runs` 运行审计，不进入产品事实或公开 API。无查询参数时返回月度 Summary，单方案单月逐日明细只在
+  严格 detail 请求中按需读取；Dashboard 不判断调度缺口，不增加第二条 API 路径。
 - `t_scheme_registry.owner` 是方案来源的唯一展示权威；新 Blackbox Intake 必须提供合法 owner，历史缺少
   Metadata owner 的方案保留数据库权威值。Dashboard 读到缺失、占位或非法 owner 时整体 fail-closed，
   前端不使用仓库映射或空值兜底。
-- ECS 与 Mac3 均已完成 Migration 021 与 Dashboard V4 验收；Mac3 公网同样使用月度 Summary 首屏、按需
-  Detail 和 Registry owner 来源列。两端仍使用各自独立数据库，精确主机合同以现场 `current` release 和
-  API payload 为准。
+- 数据库 Migration 024 把既有 canonical 回测结果一次性发布到 `t_scheme_predictions`，增加互斥的
+  `run_id/backtest_run_id` lineage，删除事实行的 phase 与 `updated_at`。回测发布行保留 immutable
+  `backtest_actual_direction`，用于周末等没有 Actual 日期的历史目标；live 行该字段必须为空并继续关联 Actual。
+  两端仍使用各自独立数据库，精确主机合同以现场 `current` release、migration history 和 API payload 为准。
 - `api_wind_indicators_all.factor_version` 已在两端源表完成存量 `V1.0` 初始化。两端第一份兼容 release
   均能读取既有四文件 current，并能在不发布的 dry-run 中构造同一 1474 行 factor catalog；正式 current
   仍保持四文件。首个五文件 generation 只能在各自主机 current/previous 都具备 frozen legacy V1 保护后开放。

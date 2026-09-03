@@ -523,6 +523,16 @@ def activate_blackbox_initial(
     engine: Engine,
     cfg: SchemeConfig,
     *,
+    backtest_run_id: int,
+    backtest_benchmark_id: str,
+    backtest_data_snapshot_id: str,
+    backtest_generation_id: str,
+    backtest_runtime_profile: str,
+    backtest_environment_fingerprint: str,
+    backtest_code_hash: str,
+    backtest_config_hash: str,
+    backtest_manifest_hash: str,
+    backtest_validator_policy_digest: str,
     approved_by: str,
     approved_at: datetime,
 ) -> BlackboxLifecycleState:
@@ -537,6 +547,8 @@ def activate_blackbox_initial(
         raise ValueError("Blackbox initial activation requires non-empty approved_by")
     if not isinstance(approved_at, datetime):
         raise ValueError("Blackbox initial activation requires approved_at datetime")
+    if isinstance(backtest_run_id, bool) or not isinstance(backtest_run_id, int) or backtest_run_id <= 0:
+        raise ValueError("Blackbox initial activation requires positive backtest_run_id")
 
     normalized_approver = approved_by.strip()
     mysql_approved_at = _mysql_utc_datetime(approved_at)
@@ -574,6 +586,42 @@ def activate_blackbox_initial(
                     f"registry={len(registry_conflicts)}"
                 )
 
+            fact_rows = _prepare_blackbox_backtest_fact_rows_conn(
+                conn,
+                cfg,
+                backtest_run_id=backtest_run_id,
+                backtest_benchmark_id=backtest_benchmark_id,
+                backtest_data_snapshot_id=backtest_data_snapshot_id,
+                backtest_generation_id=backtest_generation_id,
+                backtest_runtime_profile=backtest_runtime_profile,
+                backtest_environment_fingerprint=(
+                    backtest_environment_fingerprint
+                ),
+                backtest_code_hash=backtest_code_hash,
+                backtest_config_hash=backtest_config_hash,
+                backtest_manifest_hash=backtest_manifest_hash,
+                backtest_validator_policy_digest=(
+                    backtest_validator_policy_digest
+                ),
+            )
+            existing_fact_count = int(
+                conn.execute(
+                    text(
+                        "SELECT COUNT(*) FROM t_scheme_predictions "
+                        "WHERE scheme_id = :scheme_id"
+                    ),
+                    {"scheme_id": cfg.scheme_id},
+                ).scalar_one()
+            )
+            if existing_fact_count:
+                raise ValueError(
+                    "Blackbox initial activation found pre-existing product facts: "
+                    f"scheme_id={cfg.scheme_id} count={existing_fact_count}"
+                )
+            inserted_facts = _insert_run_predictions_conn(conn, fact_rows)
+            if inserted_facts != len(fact_rows):
+                raise RuntimeError("Blackbox initial activation fact insert count mismatch")
+
             _upsert_scheme_version_conn(
                 conn,
                 cfg,
@@ -601,6 +649,22 @@ def activate_blackbox_initial(
             version_row = _read_scheme_version_conn(conn, cfg, for_update=True)
             if version_row is None:
                 raise RuntimeError("Blackbox initial activation version readback missing")
+            published_count = int(
+                conn.execute(
+                    text(
+                        "SELECT COUNT(*) FROM t_scheme_predictions "
+                        "WHERE scheme_id = :scheme_id "
+                        "AND run_id IS NULL "
+                        "AND backtest_run_id = :backtest_run_id"
+                    ),
+                    {
+                        "scheme_id": cfg.scheme_id,
+                        "backtest_run_id": backtest_run_id,
+                    },
+                ).scalar_one()
+            )
+            if published_count != len(fact_rows):
+                raise RuntimeError("Blackbox initial activation fact readback mismatch")
 
     return BlackboxLifecycleState(
         scheme_id=cfg.scheme_id,
@@ -3241,7 +3305,7 @@ def _prepare_run_prediction_rows(
                 f"for prediction record {record.scheme_id}/{record.target_tenor}"
             )
         extra["feature_date"] = str(feature_date)
-        extra["prediction_phase"] = str(phase)
+        extra.pop("prediction_phase", None)
         row["run_id"] = record.run_id if record.run_id is not None else run_id
         if int(row["run_id"]) != int(run_id):
             raise RuntimeError(
@@ -3253,27 +3317,179 @@ def _prepare_run_prediction_rows(
             if record.scheme_version is not None
             else scheme_version
         )
+        row["backtest_run_id"] = None
+        row["backtest_actual_direction"] = None
+        if not str(row["scheme_version"] or "").strip():
+            raise ValueError(
+                "scheme_version is required for live prediction record "
+                f"{record.scheme_id}/{record.target_tenor}"
+            )
         row["feature_date"] = str(feature_date)
-        row["prediction_phase"] = str(phase)
+        row.pop("prediction_phase", None)
         row["extra"] = json.dumps(extra, ensure_ascii=False)
         rows.append(row)
     return rows
+
+
+def _prepare_blackbox_backtest_fact_rows_conn(
+    conn: Connection,
+    cfg: SchemeConfig,
+    *,
+    backtest_run_id: int,
+    backtest_benchmark_id: str,
+    backtest_data_snapshot_id: str,
+    backtest_generation_id: str,
+    backtest_runtime_profile: str,
+    backtest_environment_fingerprint: str,
+    backtest_code_hash: str,
+    backtest_config_hash: str,
+    backtest_manifest_hash: str,
+    backtest_validator_policy_digest: str,
+) -> list[dict[str, object]]:
+    """锁定并把首次激活的 exact-version 回测转换为产品事实 rows。"""
+    lock_clause = " FOR UPDATE" if _dialect_name(conn) != "sqlite" else ""
+    run = conn.execute(
+        text(
+            "SELECT id, benchmark_id, scheme_id, data_source, status, run_mode, "
+            "code_hash, config_hash, input_artifact_hash, summary "
+            "FROM t_backtest_runs WHERE id = :backtest_run_id"
+            + lock_clause
+        ),
+        {"backtest_run_id": backtest_run_id},
+    ).mappings().one_or_none()
+    if run is None:
+        raise ValueError("Blackbox activation backtest run does not exist")
+    summary = _json_mapping(run.get("summary"))
+    expected = {
+        "scheme_id": cfg.scheme_id,
+        "data_source": "blackbox_v2_current_snapshot_as_of",
+        "status": "success",
+        "run_mode": "persist",
+        "benchmark_id": backtest_benchmark_id,
+        "code_hash": backtest_code_hash,
+        "config_hash": backtest_config_hash,
+        "input_artifact_hash": backtest_data_snapshot_id,
+        "scheme_version": cfg.scheme_version,
+        "manifest_hash": backtest_manifest_hash,
+        "script_validator_policy_digest": backtest_validator_policy_digest,
+        "data_snapshot_id": backtest_data_snapshot_id,
+        "generation_id": backtest_generation_id,
+        "runtime_profile": backtest_runtime_profile,
+        "environment_fingerprint": backtest_environment_fingerprint,
+    }
+    actual = {
+        "scheme_id": str(run.get("scheme_id") or ""),
+        "data_source": str(run.get("data_source") or ""),
+        "status": str(run.get("status") or ""),
+        "run_mode": str(run.get("run_mode") or ""),
+        "benchmark_id": str(run.get("benchmark_id") or ""),
+        "code_hash": str(run.get("code_hash") or ""),
+        "config_hash": str(run.get("config_hash") or ""),
+        "input_artifact_hash": str(run.get("input_artifact_hash") or ""),
+        "scheme_version": str(summary.get("scheme_version") or ""),
+        "manifest_hash": str(summary.get("manifest_hash") or ""),
+        "script_validator_policy_digest": str(
+            summary.get("script_validator_policy_digest") or ""
+        ),
+        "data_snapshot_id": str(summary.get("data_snapshot_id") or ""),
+        "generation_id": str(summary.get("generation_id") or ""),
+        "runtime_profile": str(summary.get("runtime_profile") or ""),
+        "environment_fingerprint": str(
+            summary.get("environment_fingerprint") or ""
+        ),
+    }
+    if actual != expected:
+        raise ValueError(
+            "Blackbox activation backtest identity mismatch: "
+            f"expected={expected!r} actual={actual!r}"
+        )
+    source_rows = conn.execute(
+        text(
+            "SELECT scheme_id, target_tenor, horizon, predict_date, feature_date, "
+            "target_date, label, predicted_direction, confidence, extra "
+            "FROM t_backtest_predictions "
+            "WHERE run_id = :backtest_run_id "
+            "ORDER BY target_tenor, horizon, target_date, predict_date, id"
+        ),
+        {"backtest_run_id": backtest_run_id},
+    ).mappings().all()
+    if not source_rows:
+        raise ValueError("Blackbox activation backtest contains no predictions")
+    expected_tenors = set(str(value) for value in cfg.tenors)
+    rows: list[dict[str, object]] = []
+    seen: set[_PredictionBusinessKey] = set()
+    for source in source_rows:
+        if str(source.get("scheme_id") or "") != cfg.scheme_id:
+            raise ValueError("Blackbox activation backtest scheme identity mismatch")
+        tenor = str(source.get("target_tenor") or "")
+        horizon = int(source.get("horizon") or 0)
+        predict_date = source.get("predict_date")
+        feature_date = source.get("feature_date")
+        target_date = source.get("target_date")
+        direction = source.get("predicted_direction")
+        actual_direction = source.get("label")
+        if tenor not in expected_tenors or horizon != int(cfg.horizon):
+            raise ValueError("Blackbox activation backtest target scope mismatch")
+        if predict_date is None or feature_date is None or target_date is None:
+            raise ValueError("Blackbox activation backtest date lineage is incomplete")
+        if direction not in {-1, 0, 1}:
+            raise ValueError("Blackbox activation backtest direction is invalid")
+        if actual_direction not in {-1, 0, 1}:
+            raise ValueError("Blackbox activation backtest actual direction is invalid")
+        key = (cfg.scheme_id, tenor, horizon, str(target_date))
+        if key in seen:
+            raise ValueError("Blackbox activation backtest has duplicate business key")
+        seen.add(key)
+        extra = _json_mapping(source.get("extra"))
+        extra.pop("prediction_phase", None)
+        rows.append(
+            {
+                "run_id": None,
+                "backtest_run_id": backtest_run_id,
+                "scheme_version": cfg.scheme_version,
+                "scheme_id": cfg.scheme_id,
+                "target_tenor": tenor,
+                "horizon": horizon,
+                "predict_date": str(predict_date),
+                "feature_date": str(feature_date),
+                "target_date": str(target_date),
+                "predicted_direction": int(direction),
+                "backtest_actual_direction": int(actual_direction),
+                "confidence": source.get("confidence"),
+                "model_version": cfg.scheme_version,
+                "extra": json.dumps(extra, ensure_ascii=False),
+            }
+        )
+    return rows
+
+
+def _json_mapping(value: object) -> dict[str, object]:
+    """把 MySQL JSON 或 SQLite 文本收敛为对象。"""
+    if value is None:
+        return {}
+    if isinstance(value, Mapping):
+        return dict(value)
+    if isinstance(value, str):
+        loaded = json.loads(value)
+        if isinstance(loaded, Mapping):
+            return dict(loaded)
+    raise ValueError("JSON value must be an object")
 
 
 def _insert_run_predictions_conn(
     conn: Connection,
     prediction_rows: Iterable[Mapping[str, object]],
 ) -> int:
-    """在调用方事务中以 plain INSERT 写入已验证的 prediction rows。"""
+    """在调用方事务中用唯一产品事实 INSERT 写入已验证 rows。"""
     sqlite = _dialect_name(conn) == "sqlite"
     extra_expression = ":extra" if sqlite else "CAST(:extra AS JSON)"
     statement = """
         INSERT INTO t_scheme_predictions
-            (run_id, scheme_version, scheme_id, target_tenor, horizon, predict_date, feature_date, target_date,
-             prediction_phase, predicted_direction, confidence, model_version, extra)
+            (run_id, backtest_run_id, scheme_version, scheme_id, target_tenor, horizon, predict_date, feature_date, target_date,
+             predicted_direction, backtest_actual_direction, confidence, model_version, extra)
         VALUES
-            (:run_id, :scheme_version, :scheme_id, :target_tenor, :horizon, :predict_date, :feature_date, :target_date,
-             :prediction_phase, :predicted_direction, :confidence, :model_version, {extra_expression})
+            (:run_id, :backtest_run_id, :scheme_version, :scheme_id, :target_tenor, :horizon, :predict_date, :feature_date, :target_date,
+             :predicted_direction, :backtest_actual_direction, :confidence, :model_version, {extra_expression})
         """.format(extra_expression=extra_expression)
     rows = list(prediction_rows)
     if not rows:

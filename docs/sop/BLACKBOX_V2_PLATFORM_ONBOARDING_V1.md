@@ -114,6 +114,11 @@ scheme_version + code_hash + config_hash + manifest_hash
 
 首次激活在同一个命令内：
 
+- 锁定并复核唯一成功的 exact-version 持久化回测；
+- insert-only 发布缺失的 `t_scheme_predictions` 产品事实，`backtest_run_id` 指向证据 run；
+- 原子激活 exact version 与所有 composite Registry；
+- 锁内读回事实与 lifecycle 后一次提交，任一步失败整体回滚。
+
 1. 校验当前 canonical exact version 的完整持久化回测；
 2. 拒绝 base/composite 身份冲突；
 3. 在一个数据库事务中建立 active exact version 与全部 active Registry；
@@ -165,7 +170,7 @@ launchd/systemd one-shot 时钟产生成功 `scheduled_live` 证据。
 - [ ] 新 ID 已由 Intake 原子保存两文件并生成 `paused/draft` config；同 ID 修订已通过相同 canonical 两文件校验；
 - [ ] 当前 exact version 有完整、成功、不可变的持久化回测；
 - [ ] 回测的 version/code/config/manifest、环境和 generation/snapshot 证据完整；
-- [ ] activate 后 exact version 与所有 composite Registry 均为 active，审批与同一数据库事务的 readback 一致；
+- [ ] 首次 activate 后回测产品事实、exact version 与所有 composite Registry 同事务提交并完成锁内 readback；revision activation 未重写历史事实；
 - [ ] 如执行 gap-fill，日期重建、insert-only 和 backtest/live 零重叠通过；
 - [ ] 如需要 Dashboard 或自然调度验收，分别按其独立边界完成。
 

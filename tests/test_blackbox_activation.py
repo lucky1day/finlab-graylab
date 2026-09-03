@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 import sqlite3
 from types import SimpleNamespace
@@ -21,8 +21,10 @@ from scheduler.repository import BlackboxLifecycleIdentityAbsent
 def _sqlite_datetime_codecs():
     adapter_key = (datetime, sqlite3.PrepareProtocol)
     converter_key = "TIMESTAMP"
+    date_converter_key = "DATE"
     previous_adapter = sqlite3.adapters.get(adapter_key)
     previous_converter = sqlite3.converters.get(converter_key)
+    previous_date_converter = sqlite3.converters.get(date_converter_key)
     sqlite3.register_adapter(
         datetime,
         lambda value: value.isoformat(sep=" "),
@@ -30,6 +32,10 @@ def _sqlite_datetime_codecs():
     sqlite3.register_converter(
         "timestamp",
         lambda value: datetime.fromisoformat(value.decode("utf-8")),
+    )
+    sqlite3.register_converter(
+        "date",
+        lambda value: date.fromisoformat(value.decode("utf-8")),
     )
     try:
         yield
@@ -42,6 +48,10 @@ def _sqlite_datetime_codecs():
             sqlite3.converters.pop(converter_key, None)
         else:
             sqlite3.converters[converter_key] = previous_converter
+        if previous_date_converter is None:
+            sqlite3.converters.pop(date_converter_key, None)
+        else:
+            sqlite3.converters[date_converter_key] = previous_date_converter
 
 
 def test_activation_gate_reuses_loaded_blackbox_config(tmp_path) -> None:
@@ -119,6 +129,29 @@ def _revision_fixture():
             "description TEXT, horizon INTEGER, task_type TEXT, runtime_type TEXT, "
             "tenors TEXT, frequency TEXT, target_tenor TEXT, schedule_cron TEXT, "
             "schedule_timezone TEXT, status TEXT, deployed_at timestamp)"
+        )
+        conn.exec_driver_sql(
+            "CREATE TABLE t_backtest_runs ("
+            "id INTEGER PRIMARY KEY, benchmark_id TEXT, scheme_id TEXT, "
+            "data_source TEXT, status TEXT, run_mode TEXT, code_hash TEXT, "
+            "config_hash TEXT, input_artifact_hash TEXT, summary TEXT)"
+        )
+        conn.exec_driver_sql(
+            "CREATE TABLE t_backtest_predictions ("
+            "id INTEGER PRIMARY KEY, run_id INTEGER, scheme_id TEXT, "
+            "target_tenor TEXT, "
+            "horizon INTEGER, predict_date DATE, feature_date DATE, "
+            "target_date DATE, label INTEGER, predicted_direction INTEGER, confidence REAL, "
+            "extra TEXT)"
+        )
+        conn.exec_driver_sql(
+            "CREATE TABLE t_scheme_predictions ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER, "
+            "backtest_run_id INTEGER, scheme_version TEXT, scheme_id TEXT, "
+            "target_tenor TEXT, horizon INTEGER, predict_date DATE, "
+            "feature_date DATE, target_date DATE, predicted_direction INTEGER, "
+            "backtest_actual_direction INTEGER, confidence REAL, "
+            "model_version TEXT, extra TEXT)"
         )
         conn.execute(
             text(
@@ -224,7 +257,53 @@ def _initial_fixture():
     cfg.status = "paused"
     cfg.version_status = "draft"
     cfg.scheme_version = "version-1"
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO t_backtest_runs VALUES "
+                "(42, 'bbv2-test', :scheme_id, "
+                "'blackbox_v2_current_snapshot_as_of', 'success', 'persist', "
+                ":code_hash, :config_hash, 'snapshot-1', :summary)"
+            ),
+            {
+                "scheme_id": cfg.scheme_id,
+                "code_hash": cfg.code_hash,
+                "config_hash": cfg.config_hash,
+                "summary": (
+                    '{"scheme_version":"version-1",'
+                    '"manifest_hash":"' + cfg.manifest_hash + '",'
+                    '"script_validator_policy_digest":"validator-digest",'
+                    '"data_snapshot_id":"snapshot-1",'
+                    '"generation_id":"generation-1",'
+                    '"runtime_profile":"blackbox-v2-v1",'
+                    '"environment_fingerprint":"' + ("e" * 64) + '"}'
+                ),
+            },
+        )
+        conn.execute(
+            text(
+                "INSERT INTO t_backtest_predictions VALUES "
+                "(1, 42, :scheme_id, '10Y', 1, '2026-08-24', '2026-08-21', "
+                "'2026-08-25', 1, 1, 0.8, '{}')"
+            ),
+            {"scheme_id": cfg.scheme_id},
+        )
     return engine, cfg
+
+
+def _initial_backtest_evidence(cfg) -> dict[str, object]:
+    return {
+        "backtest_run_id": 42,
+        "backtest_benchmark_id": "bbv2-test",
+        "backtest_data_snapshot_id": "snapshot-1",
+        "backtest_generation_id": "generation-1",
+        "backtest_runtime_profile": "blackbox-v2-v1",
+        "backtest_environment_fingerprint": "e" * 64,
+        "backtest_code_hash": cfg.code_hash,
+        "backtest_config_hash": cfg.config_hash,
+        "backtest_manifest_hash": cfg.manifest_hash,
+        "backtest_validator_policy_digest": "validator-digest",
+    }
 
 
 def _sqlite_initial_registry_sync(conn, schemes, *, effective_statuses) -> None:
@@ -272,6 +351,10 @@ def test_initial_activation_uses_one_atomic_repository_call(tmp_path) -> None:
         environment_fingerprint="e" * 64,
         generation_id="generation-1",
         data_snapshot_id="snapshot-1",
+        code_hash="c" * 64,
+        config_hash="f" * 64,
+        manifest_hash="m" * 64,
+        script_validator_policy_digest="validator-digest",
     )
     active_state = SimpleNamespace(
         scheme_id=cfg.scheme_id,
@@ -547,6 +630,7 @@ def test_initial_repository_atomically_creates_active_identity() -> None:
             state = activate_blackbox_initial(
                 engine,
                 cfg,
+                **_initial_backtest_evidence(cfg),
                 approved_by="operator",
                 approved_at=datetime(2026, 8, 25, 2, 0, tzinfo=timezone.utc),
             )
@@ -557,6 +641,9 @@ def test_initial_repository_atomically_creates_active_identity() -> None:
             assert conn.execute(
                 text("SELECT status FROM t_scheme_registry")
             ).scalar_one() == "active"
+            assert conn.execute(
+                text("SELECT COUNT(*) FROM t_scheme_predictions")
+            ).scalar_one() == 1
     finally:
         engine.dispose()
 
@@ -584,6 +671,7 @@ def test_initial_repository_rolls_back_if_registry_insert_fails() -> None:
             activate_blackbox_initial(
                 engine,
                 cfg,
+                **_initial_backtest_evidence(cfg),
                 approved_by="operator",
                 approved_at=datetime(2026, 8, 25, 2, 0, tzinfo=timezone.utc),
             )
@@ -591,6 +679,55 @@ def test_initial_repository_rolls_back_if_registry_insert_fails() -> None:
         assert _revision_states(engine) == []
         with engine.begin() as conn:
             assert conn.execute(text("SELECT COUNT(*) FROM t_scheme_registry")).scalar_one() == 0
+            assert conn.execute(text("SELECT COUNT(*) FROM t_scheme_predictions")).scalar_one() == 0
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("tamper_sql", "message"),
+    [
+        (
+            "UPDATE t_backtest_runs SET input_artifact_hash = 'changed'",
+            "backtest identity mismatch",
+        ),
+        (
+            "UPDATE t_backtest_predictions SET scheme_id = 'other'",
+            "scheme identity mismatch",
+        ),
+    ],
+)
+def test_initial_repository_revalidates_locked_backtest_evidence(
+    tamper_sql: str,
+    message: str,
+) -> None:
+    from scheduler.repository import activate_blackbox_initial
+
+    engine, cfg = _initial_fixture()
+    try:
+        with engine.begin() as conn:
+            conn.exec_driver_sql(tamper_sql)
+        with (
+            patch(
+                "scheduler.repository._blackbox_activation_advisory_lock",
+                return_value=nullcontext(),
+            ),
+            pytest.raises(ValueError, match=message),
+        ):
+            activate_blackbox_initial(
+                engine,
+                cfg,
+                **_initial_backtest_evidence(cfg),
+                approved_by="operator",
+                approved_at=datetime(
+                    2026, 8, 25, 2, 0, tzinfo=timezone.utc
+                ),
+            )
+
+        with engine.begin() as conn:
+            assert conn.execute(
+                text("SELECT COUNT(*) FROM t_scheme_predictions")
+            ).scalar_one() == 0
     finally:
         engine.dispose()
 

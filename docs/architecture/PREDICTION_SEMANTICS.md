@@ -66,9 +66,9 @@ Native generation。
 
 ## 2. 三种运行口径
 
-| 口径 | `prediction_phase` | `predict_date` | `feature_date` | `target_date` | 写库位置 |
+| 口径 | run `prediction_phase` | `predict_date` | `feature_date` | `target_date` | 写库位置 |
 |------|--------------------|----------------|----------------|---------------|----------|
-| 历史回测 | 不写入实盘 phase | `T` | `T` | `T + horizon` | `t_backtest_*` |
+| 历史回测 | 不写入 run phase | `T` | `T` | `T + horizon` | 证据写 `t_backtest_*`；首次激活发布到 `t_scheme_predictions` |
 | 灰度实盘 | `gray_live` | `T + 1` | `T` | `T + horizon` | `t_scheme_predictions` |
 | 正式实盘 | `scheduled_live` | `T + 1` | `T` | `T + horizon` | `t_scheme_predictions` |
 
@@ -88,10 +88,7 @@ Native generation。
 
 benchmark 逐样本核验必须以 `feature_date + target_date + target_tenor + horizon + benchmark_role` 为主键；周频方案还必须包含或可唯一映射 `feature_week_id`，月频方案还必须包含或可唯一映射 `feature_month_id + target_month_id`。`benchmark_role` 表示该行所属的可比较执行口径（如 source-original 历史段或 source-compatible extension），不是 original/current 文件来源；文件来源应由 `original_backtest_summary.json` / `current_backtest_summary.json` 的 provenance 表达。`predict_date` 只用于校验信号发出时点：历史回测要求 `predict_date == feature_date`，灰度/正式实盘要求 `predict_date` 是站在 `feature_date` 后按调度规则应发出的日期。
 
-如果原始 benchmark 的某条样本 `target_date` 已进入灰度/实盘观察区，例如 T 在 5 月末而 target 落到 6 月，则这条样本不能强行要求出现在 `t_backtest_predictions`。核验时必须按 `target_date` 分流：
-
-- `target_date < 灰度实盘起点`：与 `t_backtest_predictions.feature_date` 对齐核验。
-- `target_date >= 灰度实盘起点`：先判定 benchmark row 与 live row 是否同一执行口径。同口径时才与 `t_scheme_predictions.feature_date` 对齐核验，并同时校验 `prediction_phase`；若 source-original batch 使用晚于样本 `feature_date` 的固定 `source_end`、later test window、selector/streak 状态或同批未来样本，则该 row 只能作为 source evidence，live 必须另用 `feature_date` 硬截止的 live-safe oracle 验收。
+回测证据保留完整 Request 批次；首次激活只把不存在的业务键发布为产品事实。后续自然 Writer 已存在的同一业务键永久优先，回测发布不得覆盖。公开的回测/实盘分类只看 `target_date=2026-06-01` 分界，不反向改变回测执行口径或 run phase。
 
 这条规则优先于旧文件列名。旧 benchmark CSV 即使列名仍叫 `predict_date`，也只能解释为 source T / 平台 `feature_date`；新增 benchmark 文件应显式写 `feature_date` 或 `source_t`，避免把原始算法站位日误读为平台信号发出日。
 
@@ -142,7 +139,7 @@ predict_date = 2026-05-28  # 历史回测中 predict_date=feature_date
 
 灰度补齐必须满足：
 
-1. 灰度记录必须标识为 `prediction_phase = gray_live`。
+1. 灰度 run 必须标识为 `prediction_phase = gray_live`；产品事实行不重复保存 phase。
 2. 记录的 `predict_date` 仍是应当发出信号的调度日，日频通常为 `T + 1`。
 3. `feature_date` 必须是 `T`，所有输入 artifact、辅助输入映射和模型训练窗口都不得越过 `feature_date`。
 4. 当前数据库在事后补齐时可能已经拥有 `T+1` 或更晚的数据；补齐逻辑必须显式按 `feature_date` 约束输入，不能只依赖当前 DB 最新状态。
@@ -150,7 +147,7 @@ predict_date = 2026-05-28  # 历史回测中 predict_date=feature_date
 
 ## 4. 正式实盘规则
 
-正式实盘记录必须标识为 `prediction_phase = scheduled_live`。正式实盘起点来自方案激活并由 scheduler 自然成功发出的第一条记录，不能由灰度 target 起点反推。
+正式实盘 run 必须标识为 `prediction_phase = scheduled_live`；产品事实行不重复保存 phase。正式实盘起点来自方案激活并由 scheduler 自然成功发出的第一条记录，不能由灰度 target 起点反推。
 
 正式实盘同样只能使用 `feature_date = T` 及以前可见的数据。日频工作日早盘预测的典型形态是：
 
@@ -164,7 +161,7 @@ scheduler 可以为了降低机器负载对同一业务 cron 下的 active 方�
 
 日频正式实盘由 `scheduler.executor` 在写库前做统一日期语义校验：记录中的 `predict_date` 必须等于本次 run 日期，`feature_date` 必须等于 `previous_trading_day(predict_date)`，`target_date` 必须等于该 `feature_date` 后第 `horizon` 个交易日。若算法因为源表水位不足而复用旧 `feature_date` 或旧 `target_date`，必须 fail-closed，不得写入 `t_scheme_predictions`；前端显示的“待验证”不能通过人工补写旧预测解决。
 
-`t_scheme_predictions` 的业务键为 `scheme_id + target_tenor + horizon + target_date`；其中 `t_scheme_predictions.scheme_id` 保存 base scheme / 算法执行身份，不是 Registry composite `scheme_id`。所有 `gray_live` 与 `scheduled_live` 写入均为 insert-only。对普通 Native/Blackbox active completion，完整业务键集合均不存在时，全部记录以 plain INSERT 发布并以 `success` 收口；完整集合已存在时，本次 run 以 `skipped / prediction_keys_already_exist / records_written=0` 收口；仅部分键存在时整批以 `failed / records_written=0` 收口，缺失键也不得写入。任何事后数据或代码修订都不得更新、替换已发布预测。
+`t_scheme_predictions` 的业务键为 `scheme_id + target_tenor + horizon + target_date`；其中 `scheme_id` 保存 base scheme / 算法执行身份，不是 Registry composite `scheme_id`。它是 Dashboard 唯一产品事实源：live/补缺事实引用 `run_id`，首次回测发布事实引用 `backtest_run_id`，两者严格互斥。run phase 只保存在 `t_scheme_runs`。所有写入均为 insert-only；完整业务键集合已存在时保持原有 skipped 语义，部分重复整批失败，任何事后修订不得更新或替换已发布预测。
 
 普通 active completion 的 benign `skipped` 是算法已经执行、records 已返回并通过该方案写入前复核之后产生的 per-scheme publication outcome，不是 scheduler preflight skip；算法计算成本已经发生。one-shot batch 的 exit code `0` 只表示该批次没有 actionable failure：同一摘要可以同时包含首次发布的 `success` 与完整重复的 benign `skipped`，不能据此声称整个批次没有执行候选方案。
 
@@ -196,7 +193,7 @@ feature_date = T
 target_date  = T + horizon
 ```
 
-回测结果只写 `t_backtest_*`，不得读取或复制 `t_scheme_predictions` 中的灰度/正式实盘记录来拼历史结果。参与前端历史排行的样本统一要求 `predict_date >= 2025-01-01`；历史回测中 `predict_date=feature_date=T`，所以 runner 的输出起点判定必须落在 `feature_date` / source T 上，不得用 `target_date >= 2025-01-01` 反推保留样本。这是输出样本起点，不是训练起点。训练、筛因子、模型 warmup 和定期更新可使用更早历史数据，但每个预测点的输入和标签可见性都必须严格停在对应 `feature_date`。
+回测执行只写 immutable `t_backtest_*` 证据，不读取产品事实拼历史结果。首次 Blackbox `activate` 才在同一激活事务中把已批准 exact-version 回测的缺失业务键发布到 `t_scheme_predictions`；revision 回测和 activation 不重写历史产品事实。参与前端历史排行的样本统一要求 `predict_date >= 2025-01-01`；这是输出样本起点，不是训练起点。
 
 当方案已有灰度实盘观察区时，历史回测 runner 必须按 `target_date < gray_target_start` 截断，避免同一 target 同时由 backtest 和 live 区间解释。日频、周频和月频都使用同一条 target 边界；月频仍按自然月 15 号的触发语义计算三日期，不能用 `predict_date` 替代 `target_date` 判断分区。
 
@@ -275,7 +272,7 @@ target_date  = T + horizon
 
 回测 summary 还必须单独报告 `policy_generated_flat_count` 及对应的缺失 feature key 清单。source-original/current benchmark 的生成与导出必须过滤 `signal_policy_applied=true` 的平台行，不能把业务输出规则生成的平记录声明为原始算法输出。
 
-历史回测前端指标的唯一事实源是 `t_backtest_predictions` 明细表。Dashboard 必须从 latest run 的明细动态聚合；如果 latest run 缺少明细或明细不可评价，构建必须 fail-closed。新代码不得新增、读取或写入独立的回测月度指标汇总表。
+历史回测证据的唯一明细源是 `t_backtest_predictions`；产品前端指标的唯一逐点源是 `t_scheme_predictions`。回测发布行以 `backtest_run_id` 追溯证据，并保存 immutable `backtest_actual_direction`；live 行该字段必须为空并关联 Actual 权威表。Dashboard 不得读取回测明细参与逐点选择。
 
 前端展示指标的唯一事实源是 Dashboard 返回的预测明细行。前端必须按 `target_date` 把明细行归属到月份，再调用统一的明细指标计算逻辑生成月度表、候选排行、趋势图和汇总卡。
 
@@ -288,10 +285,9 @@ Dashboard V5 的公开结果类型只按 `target_date` 分类：
 - `target_date < 2026-06-01`：`backtest` / 回测。
 - `target_date >= 2026-06-01`：`live` / 实盘。
 
-公开 API 和前端不使用物理表来源、`predict_date` 或 `prediction_phase` 判断结果类型，也不返回灰度/正式
-实盘阶段。`gray_live` 与 `scheduled_live` 继续作为 scheduler、gap-fill 和历史记录的内部写入来源，
-不改变其 insert-only 与运行审计语义。同一 canonical 业务键跨回测表和预测表重复时，分界前优先选中回测
-run，分界后优先选中预测表；首选来源缺失时使用另一来源，且每个业务键只进入统计一次。
+公开 API 和前端不使用物理来源、`predict_date` 或 run `prediction_phase` 判断结果类型，也不返回灰度/正式
+实盘阶段。`gray_live` 与 `scheduled_live` 只保留在 scheduler/gap-fill run 审计中。Dashboard 逐点只读取
+`t_scheme_predictions`，不存在跨表 preferred/fallback 或第二套去重逻辑。
 
 前端与业务不读取 `anchor_date`。需要展示预测站位或数据截止时，统一显示 `feature_date`。月度行、明细归属、actual join、结果分类和去重均统一按 `target_date`。
 

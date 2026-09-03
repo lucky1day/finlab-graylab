@@ -1417,7 +1417,7 @@ def _read_live_signals_for_scope(
         f"""
         SELECT p.id, p.scheme_id, p.target_tenor, p.horizon,
                p.predict_date, p.feature_date, p.target_date,
-               p.prediction_phase, p.scheme_version, p.run_id,
+               r.prediction_phase, p.scheme_version, p.run_id,
                r.status AS run_status,
                r.scheme_id AS run_scheme_id,
                r.scheme_version AS run_scheme_version,

@@ -8,13 +8,11 @@ from sqlalchemy import create_engine, event, text
 from backend.factor_lab_dashboard import (
     MAX_ACTUAL_SOURCE_ROWS,
     DashboardDataError,
-    _canonical_result_details,
     _monthly_rows,
     _read_live_actuals,
-    _read_live_predictions,
+    _read_product_predictions,
     build_factor_lab_dashboard,
     build_factor_lab_dashboard_detail,
-    dashboard_build_diagnostics,
 )
 from backend.factor_lab_dashboard_semantics import (
     dashboard_result_source,
@@ -39,7 +37,8 @@ def _engine():
         """CREATE TABLE t_scheme_predictions (
             id INTEGER, scheme_id TEXT, target_tenor TEXT, horizon INTEGER,
             predict_date DATE, feature_date DATE, target_date DATE,
-            prediction_phase TEXT, predicted_direction INTEGER, extra TEXT
+            predicted_direction INTEGER, backtest_actual_direction INTEGER,
+            extra TEXT
         )""",
         """CREATE TABLE t_scheme_actuals (
             tenor TEXT, trade_date DATE, direction_1d INTEGER,
@@ -61,11 +60,6 @@ def _engine():
             id INTEGER, benchmark_id TEXT, scheme_id TEXT, data_source TEXT,
             start_date DATE, end_date DATE, status TEXT,
             created_at DATETIME, updated_at DATETIME
-        )""",
-        """CREATE TABLE t_backtest_predictions (
-            run_id INTEGER, target_tenor TEXT, horizon INTEGER,
-            predict_date DATE, feature_date DATE, target_date DATE,
-            label INTEGER, predicted_direction INTEGER
         )""",
     ]
     with engine.begin() as connection:
@@ -89,7 +83,11 @@ def _engine():
             text(
                 """INSERT INTO t_scheme_predictions VALUES
                 (1,'demo_daily','5Y',1,'2026-06-02','2026-06-01',
-                 '2026-06-03','scheduled_live',1,'{}')"""
+                 '2026-06-03',1,NULL,'{}'),
+                (2,'demo_daily','5Y',1,'2026-01-02','2025-12-31',
+                 '2026-01-05',1,1,'{}'),
+                (3,'demo_daily','5Y',1,'2026-06-02','2026-06-01',
+                 '2026-06-04',-1,-1,'{}')"""
             )
         )
         connection.execute(
@@ -103,13 +101,8 @@ def _engine():
                  '2026-05-29 10:00:00','2026-05-29 10:00:00')"""
             )
         )
-        connection.execute(
-            text(
-                """INSERT INTO t_backtest_predictions VALUES
-                (7,'5Y',1,'2026-01-02','2025-12-31','2026-01-05',1,1),
-                (7,'5Y',1,'2026-06-02','2026-06-01','2026-06-04',-1,-1)"""
-            )
-        )
+        connection.execute(text("INSERT INTO t_scheme_actuals VALUES ('5Y','2026-01-05',1,1)"))
+        connection.execute(text("INSERT INTO t_scheme_actuals VALUES ('5Y','2026-06-04',-1,-1)"))
     return engine
 
 
@@ -161,44 +154,6 @@ def test_result_source_uses_only_fixed_target_date_boundary(
     assert dashboard_result_source(target_date) == expected
 
 
-def test_cross_source_overlap_uses_date_specific_authority() -> None:
-    before_backtest = {
-        "target_date": "2026-05-31",
-        "predict_date": "2026-06-02",
-        "predicted_direction": -1,
-    }
-    before_live = {**before_backtest, "predicted_direction": 1}
-    after_backtest = {
-        "target_date": "2026-06-01",
-        "predict_date": "2026-05-29",
-        "predicted_direction": -1,
-    }
-    after_live = {**after_backtest, "predicted_direction": 1}
-
-    canonical = _canonical_result_details(
-        backtest_details=[before_backtest, after_backtest],
-        live_details=[before_live, after_live],
-    )
-
-    assert canonical.backtest_details == [before_backtest]
-    assert canonical.live_details == [after_live]
-    assert canonical.overlap_rows == 2
-    assert canonical.direction_conflicts == 2
-
-
-def test_duplicate_canonical_key_in_one_physical_source_fails_closed() -> None:
-    duplicate = {
-        "target_date": "2026-06-01",
-        "predict_date": "2026-05-29",
-        "predicted_direction": 1,
-    }
-    with pytest.raises(DashboardDataError, match="duplicate target_date"):
-        _canonical_result_details(
-            backtest_details=[duplicate, dict(duplicate)],
-            live_details=[],
-        )
-
-
 @pytest.mark.parametrize(
     ("task_type", "expected_months"),
     (
@@ -216,8 +171,7 @@ def test_fixed_result_type_applies_to_every_task_type(
     task_type: str,
     expected_months: list[str],
 ) -> None:
-    canonical = _canonical_result_details(
-        backtest_details=[
+    details = [
             {
                 "target_date": "2026-05-31",
                 "predict_date": "2026-06-02",
@@ -230,13 +184,19 @@ def test_fixed_result_type_applies_to_every_task_type(
                 "predicted_direction": -1,
                 "actual_direction": -1,
             },
-        ],
-        live_details=[],
-    )
+        ]
+    backtest_details = [
+        row for row in details
+        if dashboard_result_source(row["target_date"]) == "backtest"
+    ]
+    live_details = [
+        row for row in details
+        if dashboard_result_source(row["target_date"]) == "live"
+    ]
 
     rows = _monthly_rows(
-        backtest_details=canonical.backtest_details,
-        live_details=canonical.live_details,
+        backtest_details=backtest_details,
+        live_details=live_details,
         task_type=task_type,
     )
 
@@ -265,13 +225,17 @@ def test_full_action_vote0546_fixed_date_fixture() -> None:
             }
         )
 
-    canonical = _canonical_result_details(
-        backtest_details=rows,
-        live_details=[],
-    )
+    backtest_details = [
+        row for row in rows
+        if dashboard_result_source(row["target_date"]) == "backtest"
+    ]
+    live_details = [
+        row for row in rows
+        if dashboard_result_source(row["target_date"]) == "live"
+    ]
     monthly = _monthly_rows(
-        backtest_details=canonical.backtest_details,
-        live_details=canonical.live_details,
+        backtest_details=backtest_details,
+        live_details=live_details,
         task_type="weekly_point",
     )
     totals = {
@@ -302,10 +266,10 @@ def test_live_prediction_query_uses_one_tuple_scope_predicate() -> None:
             text(
                 """INSERT INTO t_scheme_predictions VALUES
                 (2,'another_daily','10Y',1,'2026-06-01','2026-05-29',
-                 '2026-06-02','scheduled_live',-1,'{}')"""
+                 '2026-06-02',-1,NULL,'{}')"""
             )
         )
-        rows = _read_live_predictions(
+        rows = _read_product_predictions(
             connection,
             [
                 {"base_scheme_id": "demo_daily", "target_tenor": "5Y"},
@@ -321,7 +285,7 @@ def test_live_prediction_query_uses_one_tuple_scope_predicate() -> None:
     )
     assert "WHERE (scheme_id, target_tenor) IN ((?, ?), (?, ?))" in query
     assert " OR " not in query
-    assert [int(row["id"]) for row in rows] == [2, 1]
+    assert [int(row["id"]) for row in rows] == [2, 2, 1, 3]
 
 
 def test_v5_detail_reads_requested_active_scheme_month_and_source() -> None:
@@ -409,7 +373,7 @@ def test_prediction_table_history_without_actual_remains_readable_as_backtest() 
             text(
                 """INSERT INTO t_scheme_predictions VALUES
                 (3,'demo_daily','5Y',1,'2026-05-28','2026-05-27',
-                 '2026-05-29','gray_live',-1,'{}')"""
+                 '2026-05-29',-1,NULL,'{}')"""
             )
         )
 
@@ -427,51 +391,7 @@ def test_prediction_table_history_without_actual_remains_readable_as_backtest() 
     validate_dashboard_payload(payload)
 
 
-def test_physical_backtest_without_label_fails_closed_in_every_representation() -> None:
-    builders = (
-        build_factor_lab_dashboard,
-        lambda engine: build_factor_lab_dashboard_detail(
-            engine,
-            scheme_id="demo_daily__h1__5Y",
-            month="2026-01",
-            source="backtest",
-        ),
-    )
-    for builder in builders:
-        engine = _engine()
-        with engine.begin() as connection:
-            connection.execute(
-                text(
-                    """UPDATE t_backtest_predictions
-                    SET label = NULL
-                    WHERE run_id = 7 AND target_date = '2026-01-05'"""
-                )
-            )
-
-        with pytest.raises(DashboardDataError, match="backtest detail label"):
-            builder(engine)
-
-
-def test_overlap_diagnostics_are_counts_only() -> None:
-    engine = _engine()
-    with engine.begin() as connection:
-        connection.execute(
-            text(
-                """INSERT INTO t_backtest_predictions VALUES
-                (7,'5Y',1,'2026-06-02','2026-06-01','2026-06-03',1,-1)"""
-            )
-        )
-
-    payload = build_factor_lab_dashboard(engine)
-    diagnostics = dashboard_build_diagnostics(payload["snapshot_id"])
-
-    assert diagnostics is not None
-    assert diagnostics["cross_source_overlap_rows"] == 1
-    assert diagnostics["cross_source_direction_conflicts"] == 1
-    assert not any("target_date" in key for key in diagnostics)
-
-
-def test_v5_detail_reads_both_physical_sources_for_result_type_filter() -> None:
+def test_v5_detail_reads_only_product_fact_source_for_result_type_filter() -> None:
     engine = _engine()
     statements: list[str] = []
 
@@ -505,11 +425,7 @@ def test_v5_detail_reads_both_physical_sources_for_result_type_filter() -> None:
         "SELECT id, scheme_id" in sql and "FROM t_scheme_predictions" in sql
         for sql in statements
     )
-    detail_sql = next(
-        sql for sql in statements if "FROM t_backtest_predictions" in sql
-    )
-    assert "target_date >= ?" in detail_sql
-    assert "target_date < ?" in detail_sql
+    assert not any("FROM t_backtest_predictions" in sql for sql in statements)
     assert not any("SELECT MIN(target_date)" in sql for sql in statements)
 
 

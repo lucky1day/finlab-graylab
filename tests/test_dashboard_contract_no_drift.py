@@ -93,6 +93,7 @@ def test_dashboard_builder_has_only_summary_and_detail_prediction_queries() -> N
     assert "select min(target_date)" not in lowered
     for forbidden_table in (
         "t_scheme_runs",
+        "t_backtest_predictions",
         "api_wind_date",
         "t_trade_calendar",
     ):

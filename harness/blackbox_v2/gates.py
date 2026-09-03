@@ -51,6 +51,10 @@ class PassedBacktestRun:
     generation_id: str
     runtime_profile: str
     environment_fingerprint: str
+    code_hash: str
+    config_hash: str
+    manifest_hash: str
+    script_validator_policy_digest: str
 
 
 class _BlackboxGate(Gate):
@@ -356,6 +360,10 @@ def verify_passed_blackbox_backtest(engine, cfg: SchemeConfig) -> PassedBacktest
             generation_id=str(required["generation_id"]),
             runtime_profile=str(required["runtime_profile"]),
             environment_fingerprint=str(required["environment_fingerprint"]),
+            code_hash=cfg.code_hash,
+            config_hash=cfg.config_hash,
+            manifest_hash=cfg.manifest_hash,
+            script_validator_policy_digest=SCRIPT_VALIDATOR_POLICY_DIGEST,
         )
     raise ValueError(
         f"no successful persisted Blackbox backtest for {cfg.scheme_id} "

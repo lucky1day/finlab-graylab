@@ -13,6 +13,7 @@ import pytest
 
 from migrations.runner import (
     MIGRATIONS_DIR,
+    MigrationPartialApplyError,
     MigrationPreflightError,
     _execute_prepared_migration_files,
     _migration_owner_connection,
@@ -72,6 +73,9 @@ class _LockEngine:
         self.connection = connection
 
     def connect(self):
+        return nullcontext(self.connection)
+
+    def begin(self):
         return nullcontext(self.connection)
 
 
@@ -235,6 +239,40 @@ def test_migration_executor_stops_before_next_statement_after_owner_loss() -> No
         "forbidden_after_owner_loss" not in sql
         for sql in connection.statements
     )
+
+
+def test_migration_024_dynamic_ddl_failure_is_reported_as_partial() -> None:
+    class FailingConnection(_LockConnection):
+        def execute(self, statement: object, parameters=None):
+            if "FAIL_AFTER_DYNAMIC_DDL" in str(statement):
+                raise RuntimeError("injected dynamic DDL failure")
+            return super().execute(statement, parameters)
+
+    connection = FailingConnection()
+    with (
+        patch("migrations.runner.preflight_migration_session"),
+        patch(
+            "migrations.runner.read_scheme_prediction_fact_state",
+            return_value={},
+        ),
+        patch(
+            "migrations.runner.classify_scheme_prediction_fact_state",
+            return_value="COMPATIBLE_PARTIAL",
+        ),
+        pytest.raises(
+            MigrationPartialApplyError,
+            match="may be partially applied",
+        ),
+    ):
+        _execute_prepared_migration_files(
+            _LockEngine(connection),
+            [
+                (
+                    Path("024_scheme_prediction_fact_source.sql"),
+                    ("SELECT 'FAIL_AFTER_DYNAMIC_DDL'",),
+                )
+            ],
+        )
 
 
 def test_migration_owner_lock_preserves_body_failure_when_release_fails() -> None:
@@ -427,8 +465,8 @@ def test_release_manifest_includes_registry_owner_checksum() -> None:
     )
     registry_owner = next(item for item in manifest if item.version == 21)
     assert registry_owner.path.name == "021_registry_owner.sql"
-    assert manifest[-1].version == 23
-    assert manifest[-1].path.name == "023_auth_user_profiles.sql"
+    assert manifest[-1].version == 24
+    assert manifest[-1].path.name == "024_scheme_prediction_fact_source.sql"
 
 
 def test_registry_owner_sql_is_reentrant_and_checks_both_identity_directions() -> None:

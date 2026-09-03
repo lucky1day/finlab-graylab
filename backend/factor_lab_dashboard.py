@@ -49,10 +49,9 @@ MAX_GZIP_JSON_BYTES = 100_000
 # Every query reads at most cap + 1 rows and fails instead of truncating.
 MAX_REGISTRY_SOURCE_ROWS = 1_000
 MAX_TARGET_SOURCE_ROWS = 1_000
-MAX_LIVE_PREDICTION_SOURCE_ROWS = 20_000
+MAX_PRODUCT_PREDICTION_SOURCE_ROWS = 100_000
 MAX_ACTUAL_SOURCE_ROWS = 80_000
 MAX_BACKTEST_RUN_SOURCE_ROWS = 100_000
-MAX_BACKTEST_DETAIL_SOURCE_ROWS = 20_000
 _ACTUAL_SOURCE_KIND_ORDER = (
     "daily_1d",
     "daily_5d",
@@ -157,16 +156,6 @@ class SnapshotEncoding:
     gzip_size: int
 
 
-@dataclass(frozen=True, slots=True)
-class CanonicalResultDetails:
-    """单方案按固定日期口径去重后的公开结果。"""
-
-    backtest_details: list[Mapping[str, Any]]
-    live_details: list[Mapping[str, Any]]
-    overlap_rows: int
-    direction_conflicts: int
-
-
 @contextmanager
 def dashboard_read_connection(engine: Engine) -> Iterator[Connection]:
     """返回一次 dashboard 构建独占的同一只读一致性连接。"""
@@ -251,7 +240,7 @@ def _build_dashboard_representation(
             if registry_scheme_id is None
             else []
         )
-        prediction_rows = _read_live_predictions(
+        prediction_rows = _read_product_predictions(
             connection,
             registry_rows,
             target_date_range=detail_date_range,
@@ -268,13 +257,6 @@ def _build_dashboard_representation(
         selected_backtest_runs = choose_latest_backtest_runs(
             backtest_run_rows,
             registry_rows,
-        )
-        backtest_detail_rows = _read_backtest_details(
-            connection,
-            selected_run_ids=sorted(
-                {int(row["id"]) for row in selected_backtest_runs.values()}
-            ),
-            target_date_range=detail_date_range,
         )
     db_read_seconds = time.perf_counter() - db_read_started_at
 
@@ -306,7 +288,7 @@ def _build_dashboard_representation(
         display_until=display_until,
         task_type_by_scheme=registry_task_type_index(registry_rows),
     )
-    history_live_rows_excluded = 0
+    history_prediction_rows_excluded = 0
     predictions_by_scheme: dict[tuple[str, str, int], list[Mapping[str, Any]]] = (
         defaultdict(list)
     )
@@ -316,7 +298,7 @@ def _build_dashboard_representation(
             field="prediction predict_date",
         )
         if not is_factor_lab_history_visible(predict_date):
-            history_live_rows_excluded += 1
+            history_prediction_rows_excluded += 1
             continue
         predictions_by_scheme[
             (
@@ -328,36 +310,22 @@ def _build_dashboard_representation(
             )
         ].append(row)
 
-    backtest_details_by_scope: dict[
-        tuple[int, str], list[Mapping[str, Any]]
-    ] = defaultdict(list)
-    for row in backtest_detail_rows:
-        backtest_details_by_scope[
-            (
-                _required_int(row.get("run_id"), field="backtest detail run_id"),
-                _required_text(
-                    row.get("target_tenor"),
-                    field="backtest detail target_tenor",
-                ),
-            )
-        ].append(row)
-
     schemes: list[dict[str, Any]] = []
     live_row_count = 0
     backtest_row_count = 0
-    cross_source_overlap_rows = 0
-    cross_source_direction_conflicts = 0
-    history_backtest_rows_excluded = 0
     for scheme in registry:
         selector = live_actual_selector(scheme["task_type"])
-        live_details: list[dict[str, Any]] = []
+        details_by_source: dict[str, list[dict[str, Any]]] = {
+            "backtest": [],
+            "live": [],
+        }
         prediction_key = (
             scheme["base_scheme_id"],
             scheme["target_tenor"],
             scheme["horizon"],
         )
         for prediction in predictions_by_scheme.get(prediction_key, []):
-            actual_direction = actual_facts.get(selector, {}).get(
+            joined_actual_direction = actual_facts.get(selector, {}).get(
                 (
                     scheme["target_tenor"],
                     _iso_date(
@@ -368,49 +336,22 @@ def _build_dashboard_representation(
                 )
             )
             detail = dict(prediction)
-            detail["actual_direction"] = actual_direction
-            live_details.append(detail)
+            published_actual = prediction.get("backtest_actual_direction")
+            detail["actual_direction"] = (
+                _direction_value(
+                    published_actual,
+                    field="backtest_actual_direction",
+                )
+                if published_actual is not None
+                else joined_actual_direction
+            )
+            details_by_source[
+                dashboard_result_source(detail.get("target_date"))
+            ].append(detail)
 
         selected_run = selected_backtest_runs.get(scheme["scheme_id"])
         backtest = None
-        backtest_details: list[dict[str, Any]] = []
         if selected_run is not None:
-            run_id = _required_int(
-                selected_run.get("id"), field="selected backtest run id"
-            )
-            selected_details = backtest_details_by_scope.get(
-                (run_id, scheme["target_tenor"]),
-                [],
-            )
-            if not selected_details and registry_scheme_id is None:
-                raise DashboardDataError(
-                    f"base_scheme_id={scheme['base_scheme_id']} "
-                    f"target_tenor={scheme['target_tenor']} has no detail "
-                    f"for selected backtest run_id={run_id}"
-                )
-            for detail_row in selected_details:
-                detail_horizon = _required_int(
-                    detail_row.get("horizon"), field="backtest detail horizon"
-                )
-                if detail_horizon != scheme["horizon"]:
-                    raise DashboardDataError(
-                        "backtest detail horizon does not match Registry scheme "
-                        f"{scheme['scheme_id']}: "
-                        f"detail={detail_horizon} registry={scheme['horizon']}"
-                    )
-                predict_date = _iso_date(
-                    detail_row.get("predict_date"),
-                    field="backtest detail predict_date",
-                )
-                if not is_factor_lab_history_visible(predict_date):
-                    history_backtest_rows_excluded += 1
-                    continue
-                detail = dict(detail_row)
-                detail["actual_direction"] = _direction_value(
-                    detail_row.get("label"),
-                    field="backtest detail label",
-                )
-                backtest_details.append(detail)
             benchmark_id = _required_text(
                 selected_run.get("benchmark_id"),
                 field="selected backtest benchmark_id",
@@ -430,16 +371,10 @@ def _build_dashboard_representation(
                 ),
             }
 
-        canonical = _canonical_result_details(
-            backtest_details=backtest_details,
-            live_details=live_details,
-        )
-        backtest_details = canonical.backtest_details
-        live_details = canonical.live_details
+        backtest_details = details_by_source["backtest"]
+        live_details = details_by_source["live"]
         backtest_row_count += len(backtest_details)
         live_row_count += len(live_details)
-        cross_source_overlap_rows += canonical.overlap_rows
-        cross_source_direction_conflicts += canonical.direction_conflicts
 
         if registry_scheme_id is not None:
             rows: list[list[Any]] = []
@@ -484,10 +419,6 @@ def _build_dashboard_representation(
                     "build_seconds": time.perf_counter() - build_started_at,
                     "scheme_count": 1,
                     "detail_row_count": len(rows),
-                    "cross_source_overlap_rows": cross_source_overlap_rows,
-                    "cross_source_direction_conflicts": (
-                        cross_source_direction_conflicts
-                    ),
                     **actual_diagnostics,
                 },
             )
@@ -534,15 +465,8 @@ def _build_dashboard_representation(
             "live_row_count": live_row_count,
             "backtest_row_count": backtest_row_count,
             "detail_row_count": live_row_count + backtest_row_count,
-            "history_backtest_rows_excluded_before_policy_start": (
-                history_backtest_rows_excluded
-            ),
-            "history_live_rows_excluded_before_policy_start": (
-                history_live_rows_excluded
-            ),
-            "cross_source_overlap_rows": cross_source_overlap_rows,
-            "cross_source_direction_conflicts": (
-                cross_source_direction_conflicts
+            "history_prediction_rows_excluded_before_policy_start": (
+                history_prediction_rows_excluded
             ),
             **actual_diagnostics,
         },
@@ -568,83 +492,6 @@ def record_dashboard_encoding(
             return
         diagnostics["raw_bytes"] = encoding.raw_size
         diagnostics["gzip_bytes"] = encoding.gzip_size
-
-
-def _canonical_result_details(
-    *,
-    backtest_details: list[Mapping[str, Any]],
-    live_details: list[Mapping[str, Any]],
-) -> CanonicalResultDetails:
-    """按 target_date 分类，并用日期区间权威规则折叠跨表重复。"""
-    backtest_by_target = _index_result_points(
-        backtest_details,
-        physical_source="backtest",
-    )
-    live_by_target = _index_result_points(
-        live_details,
-        physical_source="live",
-    )
-    targets = sorted(set(backtest_by_target) | set(live_by_target))
-    canonical: dict[str, list[Mapping[str, Any]]] = {
-        "backtest": [],
-        "live": [],
-    }
-    overlap_rows = 0
-    direction_conflicts = 0
-    for target_date in targets:
-        backtest_row = backtest_by_target.get(target_date)
-        live_row = live_by_target.get(target_date)
-        if backtest_row is not None and live_row is not None:
-            overlap_rows += 1
-            if _direction_value(
-                backtest_row.get("predicted_direction"),
-                field="backtest predicted_direction",
-            ) != _direction_value(
-                live_row.get("predicted_direction"),
-                field="live predicted_direction",
-            ):
-                direction_conflicts += 1
-
-        result_source = dashboard_result_source(target_date)
-        preferred = (
-            live_row if result_source == "live" else backtest_row
-        )
-        fallback = (
-            backtest_row if result_source == "live" else live_row
-        )
-        selected = preferred if preferred is not None else fallback
-        if selected is None:  # pragma: no cover - targets 来自两个索引的并集
-            raise DashboardDataError("canonical result point is missing")
-        canonical[result_source].append(selected)
-
-    for rows in canonical.values():
-        rows.sort(key=_detail_mapping_sort_key)
-    return CanonicalResultDetails(
-        backtest_details=canonical["backtest"],
-        live_details=canonical["live"],
-        overlap_rows=overlap_rows,
-        direction_conflicts=direction_conflicts,
-    )
-
-
-def _index_result_points(
-    rows: list[Mapping[str, Any]],
-    *,
-    physical_source: str,
-) -> dict[str, Mapping[str, Any]]:
-    indexed: dict[str, Mapping[str, Any]] = {}
-    for row in rows:
-        target_date = _iso_date(
-            row.get("target_date"),
-            field=f"{physical_source} target_date",
-        )
-        if target_date in indexed:
-            raise DashboardDataError(
-                "dashboard physical source has duplicate target_date: "
-                f"source={physical_source} target_date={target_date}"
-            )
-        indexed[target_date] = row
-    return indexed
 
 
 def _monthly_rows(
@@ -834,44 +681,6 @@ def _read_backtest_runs(
     )
 
 
-def _read_backtest_details(
-    connection: Connection,
-    *,
-    selected_run_ids: list[int],
-    target_date_range: tuple[str, str] | None = None,
-) -> list[Mapping[str, Any]]:
-    if not selected_run_ids:
-        return []
-    date_filter = (
-        " AND target_date >= :target_date_from"
-        " AND target_date < :target_date_before"
-        if target_date_range is not None
-        else ""
-    )
-    statement = text(
-        f"""
-        SELECT run_id, target_tenor, horizon, predict_date, feature_date,
-               target_date, label, predicted_direction
-        FROM t_backtest_predictions
-        WHERE run_id IN :run_ids
-          {date_filter}
-        LIMIT :dashboard_source_limit
-        """
-    ).bindparams(bindparam("run_ids", expanding=True))
-    params: dict[str, Any] = {"run_ids": selected_run_ids}
-    if target_date_range is not None:
-        params["target_date_from"], params["target_date_before"] = (
-            target_date_range
-        )
-    return _read_bounded_source_rows(
-        connection,
-        statement,
-        params,
-        dataset="selected_backtest_details",
-        cap=MAX_BACKTEST_DETAIL_SOURCE_ROWS,
-    )
-
-
 def _read_active_targets(connection: Connection) -> list[Mapping[str, Any]]:
     statement = text(
         """
@@ -892,7 +701,7 @@ def _read_active_targets(connection: Connection) -> list[Mapping[str, Any]]:
     )
 
 
-def _read_live_predictions(
+def _read_product_predictions(
     connection: Connection,
     registry_rows: list[Mapping[str, Any]],
     *,
@@ -932,7 +741,8 @@ def _read_live_predictions(
     statement = text(
         f"""
         SELECT id, scheme_id, target_tenor, horizon, predict_date,
-               feature_date, target_date, predicted_direction, extra
+               feature_date, target_date, predicted_direction,
+               backtest_actual_direction, extra
         FROM t_scheme_predictions
         WHERE {where_clause}{date_filter}
         ORDER BY target_date, predict_date, id
@@ -943,8 +753,8 @@ def _read_live_predictions(
         connection,
         statement,
         params,
-        dataset="live_predictions",
-        cap=MAX_LIVE_PREDICTION_SOURCE_ROWS,
+        dataset="product_predictions",
+        cap=MAX_PRODUCT_PREDICTION_SOURCE_ROWS,
     )
 
 

@@ -115,6 +115,11 @@
       "version": 23,
       "filename": "023_auth_user_profiles.sql",
       "sha256": "393cb5266407f231292389c00e8ecbadea1ad652e137405dd2eeb5cf633d55ec"
+    },
+    {
+      "version": 24,
+      "filename": "024_scheme_prediction_fact_source.sql",
+      "sha256": "a0888734c06859e8c9354b1f55dea991382c71b0247327de80372a72912098db"
     }
   ]
 }

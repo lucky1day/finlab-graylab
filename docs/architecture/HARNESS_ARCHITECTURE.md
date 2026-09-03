@@ -172,7 +172,7 @@ adapter 和其它 Gate 不得直接查询该表。
 
 - 方案 core 或 `predict.py` 直接执行 `INSERT/UPDATE/DELETE/ALTER/DROP`。
 - 为了让算法跑通而修改源数据表。
-- 用历史回测结果写入 `t_scheme_predictions`。
+- 绕过首次 Blackbox activation 事务或 repository，直接把历史回测结果写入 `t_scheme_predictions`。
 - 旧的 broad `scheduler.executor` 全量 CLI 已退役；合法运行入口仅为宿主 launchd/systemd one-shot runner、受控 Harness Gate 和单日 `signal-gap-fill`。不得新建等价批量入口。
 - 通过临时脚本绕过 `shared.input_artifacts` 生成算法输入。
 
