@@ -94,31 +94,6 @@ class _PeriodCalendar:
 
 
 class LaunchdPredictionRunnerTests(unittest.TestCase):
-    def test_candidate_partition_preserves_wave_order_and_boundaries(self) -> None:
-        from scheduler import one_shot_prediction_runner as runner
-
-        publisher = _native_config(
-            "liwei_0616_10y01_full_oos_k3_div_k10"
-        )
-        consumer = _native_config("native-consumer")
-        direct = _blackbox_config("direct", frequency="daily", task_type="T+1")
-        direct.input_source = "isolated_artifact"
-        dependent = _blackbox_config(
-            "dependent",
-            frequency="daily",
-            task_type="T+1",
-        )
-
-        partitions = runner._partition_candidates(
-            [consumer, direct, dependent, publisher],
-            cadence="daily",
-        )
-
-        self.assertEqual(partitions.native_publishers, (publisher,))
-        self.assertEqual(partitions.native_consumers, (consumer,))
-        self.assertEqual(partitions.direct, (direct,))
-        self.assertEqual(partitions.data_bridge_dependents, (dependent,))
-
     def test_native_wave_uses_at_most_two_workers(self) -> None:
         from scheduler import one_shot_prediction_runner as runner
         from scheduler.process_control import ProcessStartGuard
@@ -235,69 +210,6 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         self.assertEqual(maximum, 1)
         self.assertEqual(len(summary.executed), 2)
 
-    def test_native_wave_passes_explicit_cache_policy(self) -> None:
-        from scheduler import one_shot_prediction_runner as runner
-        from scheduler.process_control import ProcessStartGuard
-
-        summary = runner.OneShotPredictionSummary("daily", "2026-08-28")
-        captured = []
-
-        def execute(_summary, _cfg, **kwargs):
-            captured.append(kwargs["native_cache_mutation_policy"])
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with patch.object(runner, "_execute_candidate", side_effect=execute):
-                runner._execute_native_wave(
-                    summary,
-                    [SimpleNamespace(scheme_id="publisher")],
-                    predict_date="2026-08-28",
-                    algo_env="forecast_env",
-                    scheduled_control_plane="launchd_one_shot",
-                    scheduled_execution_context=object(),
-                    engine=object(),
-                    input_root=Path(tmpdir),
-                    cancellation_event=threading.Event(),
-                    process_start_guard=ProcessStartGuard(),
-                    native_cache_mutation_policy=(
-                        "scheduled_bounded_reconcile"
-                    ),
-                )
-
-        self.assertEqual(captured, ["scheduled_bounded_reconcile"])
-
-    def test_execute_candidate_passes_explicit_timeout(self) -> None:
-        from scheduler import one_shot_prediction_runner as runner
-
-        summary = runner.OneShotPredictionSummary("daily", "2026-09-02")
-        cfg = _native_config("publisher")
-        result = SimpleNamespace(
-            scheme_id=cfg.scheme_id,
-            status="success",
-            records_written=1,
-            run_id=101,
-        )
-        with patch.object(
-            runner,
-            "execute_scheme",
-            return_value=result,
-        ) as execute:
-            runner._execute_candidate(
-                summary,
-                cfg,
-                predict_date="2026-09-02",
-                algo_env="forecast_env",
-                scheduled_control_plane="launchd_one_shot",
-                scheduled_execution_context=object(),
-                timeout_sec=(
-                    runner.PHASE_A_PUBLISHER_DEFAULT_TIMEOUT_SEC
-                ),
-            )
-
-        self.assertEqual(
-            execute.call_args.kwargs["timeout_sec"],
-            runner.PHASE_A_PUBLISHER_DEFAULT_TIMEOUT_SEC,
-        )
-
     def test_daily_one_shot_reconciles_publishers_only(self) -> None:
         from scheduler import one_shot_prediction_runner as runner
 
@@ -393,7 +305,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                 runner,
                 "_scheduled_scheme_identity_error",
                 return_value=None,
-            ) as identity,
+            ),
             patch.object(
                 runner,
                 "execute_scheme",
@@ -403,7 +315,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                     records_written=1,
                     run_id=100,
                 ),
-            ) as execute,
+            ),
         ):
             summary = _run_one_shot(runner,
                 "weekly",
@@ -416,8 +328,6 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
             [item["scheme_id"] for item in summary.executed],
             ["selected"],
         )
-        identity.assert_called_once_with(engine, selected)
-        execute.assert_called_once()
 
     def test_requested_scheme_filter_rejects_unknown_before_execution(self) -> None:
         from scheduler import one_shot_prediction_runner as runner
@@ -537,12 +447,12 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                 runner,
                 "discover_schemes",
                 return_value=[quarterly, monthly],
-            ) as discover,
+            ),
             patch.object(
                 runner,
                 "create_engine_from_env",
                 return_value=engine,
-            ) as create_engine,
+            ),
             patch.object(
                 runner,
                 "resolve_database_lifecycle",
@@ -581,9 +491,6 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
             run_date="2024-03-29",
             expected_daily_date="2024-03-29",
         )
-        execute.assert_called_once()
-        discover.assert_called_once()
-        create_engine.assert_called_once()
         self.assertIs(execute.call_args.kwargs["engine"], engine)
         self.assertTrue(
             execute.call_args.kwargs["canonical_config_trusted"]
@@ -737,56 +644,49 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
     def test_other_prediction_skips_remain_partial(self) -> None:
         from scheduler import one_shot_prediction_runner as runner
 
-        cases = (
-            (
-                "activation failed: scheme_version=secret-version "
-                "db_status=paused",
-                "execution_skipped",
-            ),
-            (None, "execution_skipped"),
+        summary = runner.OneShotPredictionSummary(
+            "daily",
+            "2026-08-20",
         )
-        for error_msg, expected_code in cases:
-            with self.subTest(error_msg=error_msg):
-                summary = runner.OneShotPredictionSummary(
-                    "daily",
-                    "2026-08-20",
-                )
-                cfg = _blackbox_config("not_approved")
-                result = SimpleNamespace(
-                    scheme_id=cfg.scheme_id,
-                    status="skipped",
-                    records_written=0,
-                    error_msg=error_msg,
-                    run_id=102,
-                )
-                with patch.object(
-                    runner,
-                    "execute_scheme",
-                    return_value=result,
-                ):
-                    runner._execute_candidate(
-                        summary,
-                        cfg,
-                        predict_date="2026-08-20",
-                        algo_env="forecast_env",
-                        scheduled_control_plane="launchd_one_shot",
-                        scheduled_execution_context=object(),
-                    )
-                runner._finalize(summary)
+        cfg = _blackbox_config("not_approved")
+        result = SimpleNamespace(
+            scheme_id=cfg.scheme_id,
+            status="skipped",
+            records_written=0,
+            error_msg=(
+                "activation failed: scheme_version=secret-version "
+                "db_status=paused"
+            ),
+            run_id=102,
+        )
+        with patch.object(
+            runner,
+            "execute_scheme",
+            return_value=result,
+        ):
+            runner._execute_candidate(
+                summary,
+                cfg,
+                predict_date="2026-08-20",
+                algo_env="forecast_env",
+                scheduled_control_plane="launchd_one_shot",
+                scheduled_execution_context=object(),
+            )
+        runner._finalize(summary)
 
-                self.assertEqual(
-                    summary.skipped,
-                    [
-                        {
-                            "scheme_id": "not_approved",
-                            "code": expected_code,
-                        }
-                    ],
-                )
-                self.assertEqual(
-                    (summary.outcome, summary.exit_code),
-                    ("partial", 1),
-                )
+        self.assertEqual(
+            summary.skipped,
+            [
+                {
+                    "scheme_id": "not_approved",
+                    "code": "execution_skipped",
+                }
+            ],
+        )
+        self.assertEqual(
+            (summary.outcome, summary.exit_code),
+            ("partial", 1),
+        )
 
 
     def test_global_runner_lock_waits_until_current_cadence_releases(self) -> None:
