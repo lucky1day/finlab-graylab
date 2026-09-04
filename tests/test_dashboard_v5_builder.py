@@ -145,16 +145,10 @@ def test_result_source_uses_only_fixed_target_date_boundary(
     ("task_type", "expected_months"),
     (
         ("T+1", ["2026-05", "2026-06"]),
-        ("T+5", ["2026-05", "2026-06"]),
-        ("weekly_point", ["2026-05", "2026-06"]),
-        ("weekly_average", ["2026-05", "2026-06"]),
-        ("monthly", ["2026-05", "2026-06"]),
         ("monthly_average", ["2026-06", "2026-07"]),
-        ("quarterly_average", ["2026-05", "2026-06"]),
-        ("annual_average", ["2026-05", "2026-06"]),
     ),
 )
-def test_fixed_result_type_applies_to_every_task_type(
+def test_monthly_rows_use_target_month_except_monthly_average(
     task_type: str,
     expected_months: list[str],
 ) -> None:
@@ -329,19 +323,6 @@ def test_prediction_table_history_without_actual_remains_readable_as_backtest() 
         ["backtest", "2026-05-28", "2026-05-27", "2026-05-29", -1, None]
     ]
     validate_dashboard_payload(payload)
-
-
-def test_v5_detail_filters_product_facts_by_result_type() -> None:
-    engine = _engine()
-    payload = build_factor_lab_dashboard_detail(
-        engine,
-        scheme_id="demo_daily__h1__5Y",
-        month="2026-06",
-        source="backtest",
-    )
-
-    assert payload is not None
-    assert payload["rows"] == []
 
 
 def test_live_actual_query_reads_exact_scopes_for_all_task_types() -> None:

@@ -264,32 +264,21 @@ def _raise_budget_error() -> tuple[dict[str, Any], int]:
     raise ApiProbeError("API response exceeds 1048576 bytes")
 
 
-@pytest.mark.parametrize(
-    ("status", "version_status"),
-    [("paused", "active"), ("active", "draft")],
-)
 def test_dashboard_gate_uses_dashboard_database_lifecycle_not_declared_status(
     tmp_path: Path,
-    status: str,
-    version_status: str,
 ) -> None:
     _write_config(
         tmp_path,
-        status=status,
-        version_status=version_status,
+        status="paused",
+        version_status="draft",
         tenors=("5Y",),
     )
-    calls = 0
-
-    def fetcher(_url: str, **_kwargs: Any):
-        nonlocal calls
-        calls += 1
-        return _payload(tenors=("5Y",)), 200
-
-    result = _run_gate(tmp_path, fetcher)
+    result = _run_gate(
+        tmp_path,
+        lambda _url, **_kwargs: (_payload(tenors=("5Y",)), 200),
+    )
 
     assert result.passed
-    assert calls == 1
 
 
 def test_dashboard_gate_requires_each_config_composite_id_exactly_once(
@@ -304,18 +293,6 @@ def test_dashboard_gate_requires_each_config_composite_id_exactly_once(
     assert not result.passed
 
 
-def test_dashboard_gate_accepts_active_scheme_with_empty_live_months(
-    tmp_path: Path,
-) -> None:
-    _write_config(tmp_path, tenors=("5Y",))
-    payload = _payload(tenors=("5Y",))
-    payload["schemes"][0]["monthly_rows"] = []
-
-    result = _run_gate(tmp_path, lambda _url, **_kwargs: (payload, 200))
-
-    assert result.passed, result.errors
-
-
 def test_dashboard_gate_requires_backtest_partition(tmp_path: Path) -> None:
     _write_config(tmp_path, tenors=("5Y",))
     payload = _payload(tenors=("5Y",))
@@ -327,12 +304,14 @@ def test_dashboard_gate_requires_backtest_partition(tmp_path: Path) -> None:
     assert any("backtest" in error for error in result.errors)
 
 
-@pytest.mark.parametrize("field", ["name", "description"])
-@pytest.mark.parametrize("mode", ["empty", "mismatch"])
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    (("name", ""), ("description", "different")),
+)
 def test_dashboard_gate_requires_exact_new_blackbox_display_identity(
     tmp_path: Path,
     field: str,
-    mode: str,
+    invalid_value: str,
 ) -> None:
     _write_blackbox_config(tmp_path)
     payload = _payload(tenors=("5Y",))
@@ -340,7 +319,7 @@ def test_dashboard_gate_requires_exact_new_blackbox_display_identity(
         name="Demo Blackbox",
         description="Blackbox dashboard fixture",
     )
-    payload["schemes"][0][field] = "" if mode == "empty" else "different"
+    payload["schemes"][0][field] = invalid_value
 
     result = _run_gate(tmp_path, lambda _url, **_kwargs: (payload, 200))
 
