@@ -135,3 +135,34 @@ Dashboard 结构化请求事件写入生产 Uvicorn error logger；Nginx timing 
 
 数据库或构建失败时不得为了恢复页面而写库、覆盖预测、重启 Writer 或复制另一主机数据库。
 应用、入口网络和隧道变更必须使用各自独立的回滚步骤。
+
+## 2026-09-04 生产执行记录
+
+本次变更已完成阶段 A 至阶段 C，生产应用 release 为
+`b736d3b21b1c57455cf36d1cdcaa22b00fdda455`，上一 release
+`617113ed0b2e3c059d5b8a4d1390f453938966f5` 继续由 `previous` 指针保留。
+源码归档 SHA-256 为
+`8f240e6b97d612df460f53f3419f35bca578c3eaa9f0ca1a0b01a7d101fddb4d`。
+
+已执行的生产控制面变更如下：
+
+- Mac3 installed tunnel plist 改为固定 ECS IPv4、strict host key、15 秒乘 2 次保活、10 秒连接超时；
+- Clash 运行态切到 `rule`，ECS `/32` 使用 `DIRECT` 并加入 TUN route exclusion；
+- ECS sshd 使用 30 秒乘 3 次 client alive，并保留 TCP keepalive；
+- ECS Nginx 部署带 ISO 时间、request ID、upstream status 的 timing log，Dashboard read timeout 为五秒；
+- Mac3 Backend 和前端切换到上述不可变 release；
+- Wi-Fi DNS 从含不可达 IPv6 resolver 的 DHCP 结果改为 `223.5.5.5`、`119.29.29.29`，
+  原状态可用 `sudo networksetup -setdnsservers Wi-Fi Empty` 恢复。
+
+受控向生产 tunnel 发送一次 `SIGTERM` 后，launchd 在首次检查前恢复服务；`runs=2` 中第二次启动
+即本次故障注入。恢复后连续观察超过 15 分钟，13 个固定 IP + TLS/SNI 公网 health 样本全部为
+200，端到端为 63–153 毫秒，PID 与启动次数未变化，tunnel stderr 未新增字节，ECS 18100 始终
+只有一个 sshd listener。22:38 以后 Nginx error log 没有新事件。
+
+全量测试结果为 627 passed、4 skipped、194 subtests passed。当前生产 release 直接构建
+Dashboard 三次为 364–384 毫秒，97 个方案，gzip 后约 22.8 KB。Wi-Fi DNS 变更后的首次解析为
+约 240 毫秒，后续十次探针的 DNS 耗时为 1.6–2.0 毫秒，原 5–9 秒 IPv6 resolver 回退长尾消失。
+
+阶段 D 使用当前 Codex 任务的后台心跳覆盖 2026-09-04 23:45 Actuals 窗口和下一个周频预测
+窗口。关闭前必须补齐两个窗口的数据库水位、launchd 退出状态、Dashboard 构建结果、公网 health、
+Nginx error 和 tunnel 重连证据；未覆盖两个自然窗口前，本记录不把长期观察标记为完成。
