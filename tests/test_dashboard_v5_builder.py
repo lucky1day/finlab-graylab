@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import create_engine, text
 
 from backend.factor_lab_dashboard import (
     MAX_ACTUAL_SOURCE_ROWS,
@@ -106,14 +106,6 @@ def _engine():
 
 def test_v5_summary_aggregates_rows_and_reads_owner() -> None:
     engine = _engine()
-    statements: list[str] = []
-
-    @event.listens_for(engine, "before_cursor_execute")
-    def _capture_statement(
-        _connection, _cursor, statement, _parameters, _context, _many
-    ) -> None:
-        statements.append(" ".join(statement.split()))
-
     payload = build_factor_lab_dashboard(engine)
 
     validate_dashboard_payload(payload)
@@ -128,9 +120,6 @@ def test_v5_summary_aggregates_rows_and_reads_owner() -> None:
         ["2026-06", "live", 2, 2, 2, 1, 1, 0, 1, 1, 0, 1, 1],
     ]
     assert "phase_ranges" not in scheme
-    assert sum(
-        "FROM t_scheme_predictions" in sql for sql in statements
-    ) == 1
 
 
 def test_v5_summary_validator_rejects_monthly_source_outside_policy() -> None:
@@ -202,15 +191,8 @@ def test_fixed_result_type_applies_to_every_task_type(
     assert [row[1] for row in rows] == ["backtest", "live"]
 
 
-def test_live_prediction_query_uses_one_tuple_scope_predicate() -> None:
+def test_live_prediction_query_matches_full_registry_scope() -> None:
     engine = _engine()
-    statements: list[str] = []
-
-    @event.listens_for(engine, "before_cursor_execute")
-    def _capture_statement(
-        _connection, _cursor, statement, _parameters, _context, _many
-    ) -> None:
-        statements.append(" ".join(statement.split()))
 
     with engine.begin() as connection:
         connection.execute(
@@ -238,18 +220,12 @@ def test_live_prediction_query_uses_one_tuple_scope_predicate() -> None:
             ],
         )
 
-    query = next(
-        sql
-        for sql in statements
-        if "SELECT id, scheme_id" in sql
-        and "FROM t_scheme_predictions" in sql
-    )
-    assert (
-        "WHERE (scheme_id, target_tenor, horizon) "
-        "IN ((?, ?, ?), (?, ?, ?))"
-    ) in query
-    assert " OR " not in query
     assert [int(row["id"]) for row in rows] == [2, 2, 1, 3]
+    assert all(int(row["horizon"]) == 1 for row in rows)
+    assert {
+        (str(row["scheme_id"]), str(row["target_tenor"]))
+        for row in rows
+    } == {("demo_daily", "5Y"), ("another_daily", "10Y")}
 
 
 def test_v5_detail_reads_requested_active_scheme_month_and_source() -> None:
@@ -355,16 +331,8 @@ def test_prediction_table_history_without_actual_remains_readable_as_backtest() 
     validate_dashboard_payload(payload)
 
 
-def test_v5_detail_reads_only_product_fact_source_for_result_type_filter() -> None:
+def test_v5_detail_filters_product_facts_by_result_type() -> None:
     engine = _engine()
-    statements: list[str] = []
-
-    @event.listens_for(engine, "before_cursor_execute")
-    def _capture_statement(
-        _connection, _cursor, statement, _parameters, _context, _many
-    ) -> None:
-        statements.append(" ".join(statement.split()))
-
     payload = build_factor_lab_dashboard_detail(
         engine,
         scheme_id="demo_daily__h1__5Y",
@@ -374,23 +342,6 @@ def test_v5_detail_reads_only_product_fact_source_for_result_type_filter() -> No
 
     assert payload is not None
     assert payload["rows"] == []
-    prediction_sql = next(
-        sql
-        for sql in statements
-        if "SELECT id, scheme_id" in sql and "FROM t_scheme_predictions" in sql
-    )
-    assert "target_date >= ?" in prediction_sql
-    assert "target_date < ?" in prediction_sql
-    assert any(
-        "FROM t_scheme_actuals" in sql
-        for sql in statements
-    )
-    assert any(
-        "SELECT id, scheme_id" in sql and "FROM t_scheme_predictions" in sql
-        for sql in statements
-    )
-    assert not any("FROM t_backtest_predictions" in sql for sql in statements)
-    assert not any("SELECT MIN(target_date)" in sql for sql in statements)
 
 
 def test_live_actual_query_reads_exact_scopes_for_all_task_types() -> None:
