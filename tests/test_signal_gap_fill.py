@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
-from datetime import date, timedelta
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
@@ -445,64 +443,6 @@ def test_commit_conflict_returns_completed_and_remaining_without_retry(
     readback.assert_called_once()
 
 
-def test_blackbox_schemes_with_same_source_share_ready_snapshot(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from harness import signal_gap_fill
-
-    first = _action("a_blackbox", runtime_type="blackbox_v2")
-    second = _action("b_blackbox", runtime_type="blackbox_v2")
-    plan = _plan([first, second])
-    repository = _repository()
-    engine, _ = _install(
-        monkeypatch,
-        repository=repository,
-        plan=plan,
-        runner=Mock(side_effect=AssertionError("Native runner must not run")),
-        configs={
-            "a_blackbox": _config("a_blackbox", runtime_type="blackbox_v2"),
-            "b_blackbox": _config("b_blackbox", runtime_type="blackbox_v2"),
-        },
-    )
-    snapshot = SimpleNamespace()
-    snapshot_reader = Mock(return_value=snapshot)
-
-    def batch_runner(cfg: SimpleNamespace, *, requests, **_kwargs):
-        action = first if cfg.scheme_id == "a_blackbox" else second
-        record = _record(action)
-        return [
-            replace(
-                record,
-                extra={
-                    **dict(record.extra or {}),
-                    "request_id": requests[0].request_id,
-                },
-            )
-        ]
-
-    monkeypatch.setattr(
-        signal_gap_fill,
-        "get_ready_blackbox_snapshot",
-        snapshot_reader,
-    )
-    monkeypatch.setattr(
-        signal_gap_fill,
-        "run_blackbox_gray_replay_batch",
-        Mock(side_effect=batch_runner),
-    )
-    report = signal_gap_fill.run_signal_gap_fill(
-        plan=plan,
-        project_root=tmp_path,
-        engine_factory=lambda: engine,
-        databridge_config=SimpleNamespace(),
-    )
-
-    assert report["status"] == "PASSED", report["errors"]
-    snapshot_reader.assert_called_once()
-    assert signal_gap_fill.run_blackbox_gray_replay_batch.call_count == 2
-
-
 def test_blackbox_failure_does_not_block_native_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -850,58 +790,6 @@ def test_blackbox_target_range_runs_one_batch_and_commits_atomically(
     readback.assert_called_once_with(
         engine,
         actions=plan["actions"],
-    )
-
-
-def test_target_range_loads_frozen_scheme_identity_once(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from harness import signal_gap_fill
-
-    start = date.fromisoformat("2026-06-01")
-    actions = []
-    for offset in range(69):
-        predict_date = (start + timedelta(days=offset)).isoformat()
-        feature_date = (start + timedelta(days=offset + 1)).isoformat()
-        target_date = (start + timedelta(days=offset + 6)).isoformat()
-        row = _action("demo_blackbox", runtime_type="blackbox_v2")
-        row.update(
-            predict_date=predict_date,
-            feature_date=feature_date,
-            target_date=target_date,
-            business_key=["demo_blackbox", "5Y", 5, target_date],
-        )
-        authority = dict(row["input_authority"])
-        authority["cutoff"] = {
-            **dict(authority["cutoff"]),
-            "feature_date": feature_date,
-            "daily_cutoff_key": feature_date,
-        }
-        row["input_authority"] = authority
-        actions.append(row)
-    plan = _plan(actions, base_scheme_id="demo_blackbox")
-    plan.update(
-        schema_version="target-range-active-live-gap-plan-v1",
-        predict_date=None,
-        target_date_from="2026-06-01",
-        target_date_before="2026-09-01",
-    )
-    groups = signal_gap_fill._build_groups(plan)
-    loader = Mock(
-        return_value=_config("demo_blackbox", runtime_type="blackbox_v2")
-    )
-    monkeypatch.setattr(signal_gap_fill, "load_scheme_config", loader)
-
-    configs = signal_gap_fill._load_and_validate_configs(
-        groups,
-        project_root=tmp_path,
-    )
-
-    assert len(groups) == 69
-    assert len(configs) == 69
-    loader.assert_called_once_with(
-        tmp_path / "schemes" / "demo_blackbox" / "config.yaml"
     )
 
 

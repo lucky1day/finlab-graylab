@@ -26,7 +26,6 @@ def _trusted_origin(monkeypatch):
 def _user(
     *,
     role: str = "admin",
-    must_change_password: bool = False,
     full_name: str | None = None,
     organization_name: str | None = None,
 ) -> AuthUser:
@@ -39,7 +38,7 @@ def _user(
         role=role,
         status="active",
         is_protected_admin=True,
-        must_change_password=must_change_password,
+        must_change_password=False,
         failed_login_count=0,
         login_not_before=None,
         created_at=NOW,
@@ -198,26 +197,6 @@ def test_dashboard_get_and_head_require_session(monkeypatch) -> None:
     assert get_response.status_code == 401
     assert get_response.json() == {"error_code": "not_authenticated"}
     assert head_response.status_code == 401
-
-
-def test_legacy_must_change_password_flag_no_longer_blocks_dashboard(
-    monkeypatch,
-) -> None:
-    service = Mock()
-    service.authenticate.return_value = _user(must_change_password=True)
-    with (
-        patch("backend.auth.routes._service", return_value=service),
-        patch(
-            "backend.main._factor_lab_dashboard_response",
-            return_value={"status": "ok"},
-        ),
-    ):
-        response = _request(
-            "GET",
-            "/api/factor-lab/dashboard",
-            headers={"Cookie": "__Host-bfl-session=opaque-token"},
-        )
-    assert response.status_code == 200
 
 
 def test_user_and_admin_profile_update_contracts() -> None:

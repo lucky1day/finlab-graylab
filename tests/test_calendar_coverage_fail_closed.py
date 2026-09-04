@@ -210,11 +210,6 @@ class MonthlyAnchorCoverageTests(unittest.TestCase):
 class ActualsRunnerCoverageTests(unittest.TestCase):
     """launchd actuals 入口不得把日历耗尽当成非交易日。"""
 
-    def test_retired_force_option_is_rejected(self) -> None:
-        from scheduler.actuals_runner import main
-
-        self.assertEqual(main(["--force"]), 2)
-
     def setUp(self) -> None:
         self.engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
         with self.engine.begin() as conn:

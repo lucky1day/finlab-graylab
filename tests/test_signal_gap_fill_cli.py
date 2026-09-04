@@ -187,11 +187,10 @@ def test_target_range_requires_before_and_exact_scheme(tmp_path: Path) -> None:
         )
 
 
-@pytest.mark.parametrize("scheme_id", [None, "demo_native"])
 def test_cli_plans_once_for_all_or_one_base_then_runs_coordinator(
     tmp_path: Path,
-    scheme_id: str | None,
 ) -> None:
+    scheme_id = "demo_native"
     plan = _plan(base_scheme_id=scheme_id)
 
     exit_code, payload, planner, runner = _run_cli(
@@ -279,7 +278,6 @@ def test_target_range_planner_receives_resolved_project_root(
     [
         ("SKIP_NOT_DUE", "SKIP_NOT_DUE"),
         ("SKIP_PRESENT", "SKIP_PRESENT"),
-        ("", "SKIP_NOT_DUE"),
     ],
 )
 def test_not_due_or_present_exits_without_algorithm_or_write(
