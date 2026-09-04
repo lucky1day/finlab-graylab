@@ -215,8 +215,6 @@ def _load_blackbox_config(config_path: Path, raw: dict[str, Any], schedule_raw: 
 
 
 def _hash_file(path: Path) -> str:
-    import hashlib
-
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from copy import deepcopy
 from typing import Any, Mapping
 
 from sqlalchemy import text
@@ -48,8 +47,7 @@ EXPECTED_PROFILE_COLUMNS: dict[str, tuple[object, ...]] = {
 
 def read_auth_profile_schema(connection: Any) -> dict[str, object]:
     """读取 023 用户资料列与取消强制改密的精确状态。"""
-    snapshot = read_auth_schema(connection)
-    base_snapshot = deepcopy(snapshot)
+    base_snapshot = read_auth_schema(connection)
     columns = base_snapshot.get("columns", {})
     column_order = base_snapshot.get("column_order", {})
     user_columns = columns.get("t_auth_users", {})

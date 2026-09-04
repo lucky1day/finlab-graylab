@@ -5261,23 +5261,26 @@ def _unsafe_applying_017_inspection(
     }
 
 
+def _read_database_identity(connection: object) -> dict[str, str]:
+    """读取当前迁移连接的数据库名与 MySQL 实例身份。"""
+    identity_row = connection.execute(
+        text(
+            "SELECT DATABASE() AS database_name, "
+            "@@server_uuid AS server_uuid"
+        )
+    ).mappings().one()
+    return {
+        "database_name": str(identity_row["database_name"] or ""),
+        "server_uuid": str(identity_row["server_uuid"] or ""),
+    }
+
+
 def _read_applying_017_inspection(
     connection: object,
     manifest: list[PreparedMigration],
 ) -> dict[str, object]:
     """在 owner lock 内读取一次 canonical APPLYING 017 状态。"""
-    identity_row = connection.execute(
-        text(
-            """
-            SELECT DATABASE() AS database_name,
-                   @@server_uuid AS server_uuid
-            """
-        )
-    ).mappings().one()
-    database_identity = {
-        "database_name": str(identity_row["database_name"] or ""),
-        "server_uuid": str(identity_row["server_uuid"] or ""),
-    }
+    database_identity = _read_database_identity(connection)
     try:
         if not _migration_history_table_exists(connection):
             raise MigrationHistoryError(
@@ -5498,18 +5501,7 @@ def _read_applying_018_inspection(
     manifest: list[PreparedMigration],
 ) -> dict[str, object]:
     """在 owner lock 内读取一次 canonical APPLYING 018 状态。"""
-    identity_row = connection.execute(
-        text(
-            """
-            SELECT DATABASE() AS database_name,
-                   @@server_uuid AS server_uuid
-            """
-        )
-    ).mappings().one()
-    database_identity = {
-        "database_name": str(identity_row["database_name"] or ""),
-        "server_uuid": str(identity_row["server_uuid"] or ""),
-    }
+    database_identity = _read_database_identity(connection)
     try:
         if not _migration_history_table_exists(connection):
             raise MigrationHistoryError(
@@ -6354,18 +6346,7 @@ def _read_applying_019_inspection(
     manifest: list[PreparedMigration],
 ) -> dict[str, object]:
     """在 owner lock 内读取一次 canonical APPLYING 019 状态。"""
-    identity_row = connection.execute(
-        text(
-            """
-            SELECT DATABASE() AS database_name,
-                   @@server_uuid AS server_uuid
-            """
-        )
-    ).mappings().one()
-    database_identity = {
-        "database_name": str(identity_row["database_name"] or ""),
-        "server_uuid": str(identity_row["server_uuid"] or ""),
-    }
+    database_identity = _read_database_identity(connection)
     try:
         if not _migration_history_table_exists(connection):
             raise MigrationHistoryError(
@@ -6459,18 +6440,7 @@ def _read_applying_021_inspection(
     manifest: list[PreparedMigration],
 ) -> dict[str, object]:
     """在 owner lock 内读取一次 canonical APPLYING 021 状态。"""
-    identity_row = connection.execute(
-        text(
-            """
-            SELECT DATABASE() AS database_name,
-                   @@server_uuid AS server_uuid
-            """
-        )
-    ).mappings().one()
-    database_identity = {
-        "database_name": str(identity_row["database_name"] or ""),
-        "server_uuid": str(identity_row["server_uuid"] or ""),
-    }
+    database_identity = _read_database_identity(connection)
     try:
         if not _migration_history_table_exists(connection):
             raise MigrationHistoryError(
@@ -6675,16 +6645,7 @@ def _read_applying_022_inspection(
     manifest: list[PreparedMigration],
 ) -> dict[str, object]:
     """在 owner lock 内读取一次 canonical APPLYING 022 状态。"""
-    identity_row = connection.execute(
-        text(
-            "SELECT DATABASE() AS database_name, "
-            "@@server_uuid AS server_uuid"
-        )
-    ).mappings().one()
-    database_identity = {
-        "database_name": str(identity_row["database_name"] or ""),
-        "server_uuid": str(identity_row["server_uuid"] or ""),
-    }
+    database_identity = _read_database_identity(connection)
     try:
         if not _migration_history_table_exists(connection):
             raise MigrationHistoryError(
@@ -6889,16 +6850,7 @@ def _read_applying_023_inspection(
     manifest: list[PreparedMigration],
 ) -> dict[str, object]:
     """在 owner lock 内读取一次 canonical APPLYING 023 状态。"""
-    identity_row = connection.execute(
-        text(
-            "SELECT DATABASE() AS database_name, "
-            "@@server_uuid AS server_uuid"
-        )
-    ).mappings().one()
-    database_identity = {
-        "database_name": str(identity_row["database_name"] or ""),
-        "server_uuid": str(identity_row["server_uuid"] or ""),
-    }
+    database_identity = _read_database_identity(connection)
     try:
         if not _migration_history_table_exists(connection):
             raise MigrationHistoryError(
@@ -7073,16 +7025,7 @@ def _read_applying_024_inspection(
     manifest: list[PreparedMigration],
 ) -> dict[str, object]:
     """在 owner lock 内读取一次 canonical APPLYING 024 状态。"""
-    identity_row = connection.execute(
-        text(
-            "SELECT DATABASE() AS database_name, "
-            "@@server_uuid AS server_uuid"
-        )
-    ).mappings().one()
-    database_identity = {
-        "database_name": str(identity_row["database_name"] or ""),
-        "server_uuid": str(identity_row["server_uuid"] or ""),
-    }
+    database_identity = _read_database_identity(connection)
     try:
         if not _migration_history_table_exists(connection):
             raise MigrationHistoryError(

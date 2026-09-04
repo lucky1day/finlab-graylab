@@ -177,14 +177,6 @@ def _now() -> datetime:
     return datetime.now(ZoneInfo("Asia/Shanghai"))
 
 
-def _refresh_deadline_at(
-    config: DataBridgeRefreshConfig,
-    *,
-    refresh_date: str,
-) -> datetime:
-    return config.deadline_at(refresh_date)
-
-
 def _write_blocked_gate(
     config: DataBridgeRefreshConfig,
     *,
@@ -465,7 +457,7 @@ def _run_publish_with_retries(
     expected_feature_date: str,
 ) -> tuple[int, dict[str, object]]:
     """在同一发布进程内，于已有 refresh deadline 前有限重试。"""
-    deadline_at = _refresh_deadline_at(config, refresh_date=refresh_date)
+    deadline_at = config.deadline_at(refresh_date)
     result: tuple[int, dict[str, object]] | None = None
     attempt_count = 0
     retry_delay_sec = PUBLISH_REFRESH_INITIAL_RETRY_DELAY_SEC

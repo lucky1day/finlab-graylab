@@ -1010,13 +1010,6 @@ def _target_dto(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _detail_mapping_sort_key(row: Mapping[str, Any]) -> tuple[str, str]:
-    return (
-        _iso_date(row.get("target_date"), field="detail target_date"),
-        _iso_date(row.get("predict_date"), field="detail predict_date"),
-    )
-
-
 def _compact_row_sort_key(row: list[Any]) -> tuple[int, str, str]:
     return (
         {"backtest": 0, "live": 1}[str(row[0])],

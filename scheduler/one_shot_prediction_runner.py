@@ -157,25 +157,6 @@ def _is_persisted_preflight_failure(result: object, expected_error: str) -> bool
     )
 
 
-def _cache_publishers_first(candidates: Sequence[object]) -> list[object]:
-    """稳定地让当前批次的 Liwei cache publisher 先于其 consumer 执行。"""
-    publisher_ids = {
-        publisher_id
-        for _tenor, publisher_id in APPROVED_PHASE_A_CACHE_PUBLISHERS.values()
-    }
-    publishers = [
-        cfg
-        for cfg in candidates
-        if str(getattr(cfg, "scheme_id", "")) in publisher_ids
-    ]
-    others = [
-        cfg
-        for cfg in candidates
-        if str(getattr(cfg, "scheme_id", "")) not in publisher_ids
-    ]
-    return publishers + others
-
-
 def _is_data_bridge_dependent(cfg: object) -> bool:
     """识别 Blackbox V2 对 current DataBridge 的显式依赖。"""
     return (
@@ -496,7 +477,7 @@ def _load_active_candidates(
             raise OneShotPredictionConfigurationError(
                 "requested scheme identity is not executable"
             )
-    return _cache_publishers_first(candidates)
+    return candidates
 
 
 def _filter_due_candidates(

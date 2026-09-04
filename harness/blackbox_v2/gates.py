@@ -1,38 +1,37 @@
 from __future__ import annotations
 
-import hashlib
 import json
-import re
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from backtests.blackbox_v2 import run_blackbox_historical_backtest
+from backtests.repository import persist_backtest_output_atomic
 from harness.context import GateContext
+from harness.gates.base import Gate, create_default_engine, guarded_result, utc_now
 from harness.operation import (
     DEFAULT_BACKTEST_START_DATE,
     operation_scope_sha256,
     verify_direct_operation,
 )
-from backtests.blackbox_v2 import run_blackbox_historical_backtest
-from backtests.repository import persist_backtest_output_atomic
-from harness.gates.base import Gate, create_default_engine, guarded_result, utc_now
 from harness.result import Evidence, GateResult, GateStatus
 from scheduler.blackbox_v2_runner import (
     DEFAULT_RUNTIME_PROFILE,
     RuntimeProfile,
     run_blackbox_backtest,
 )
-from scheduler.process_control import ProcessGroupTerminationError
 from scheduler.discovery import SchemeConfig, load_scheme_config
+from scheduler.process_control import ProcessGroupTerminationError
 from shared.blackbox_v2.contracts import BlackboxMetadata, load_metadata
+from shared.blackbox_v2.environment_manifest import load_environment_fingerprint
+from shared.blackbox_v2.history import CURRENT_SNAPSHOT_REPLAY, build_historical_cases
 from shared.blackbox_v2.intake import (
     DATA_SCHEMA_VERSION,
     RUNTIME_PROFILE,
     SCRIPT_VALIDATOR_POLICY_DIGEST,
     validate_delivery_script,
 )
-from shared.blackbox_v2.history import CURRENT_SNAPSHOT_REPLAY, build_historical_cases
 from shared.blackbox_v2.snapshot import (
     BlackboxInputBundle,
     compose_blackbox_input_bundle,
@@ -388,37 +387,10 @@ def _decode_json_object(value: object, label: str) -> dict[str, object]:
 
 
 def _environment_fingerprint(project_root: Path) -> str:
-    from shared.blackbox_v2.environment_manifest import (
-        environment_manifest_path,
-        runtime_environment_platform,
+    return load_environment_fingerprint(
+        project_root,
+        expected_runtime_profile=DEFAULT_RUNTIME_PROFILE.name,
     )
-
-    expected_platform = runtime_environment_platform()
-    path = environment_manifest_path(project_root)
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"invalid Blackbox V2 environment manifest {path}: {exc}") from exc
-    fingerprint = raw.get("environment_fingerprint") if isinstance(raw, dict) else None
-    if not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
-        raise ValueError("environment manifest must contain a SHA-256 environment_fingerprint")
-    payload = raw.get("explicit_packages")
-    if not isinstance(payload, list):
-        raise ValueError("environment manifest must contain explicit_packages")
-    if raw.get("runtime_profile") != DEFAULT_RUNTIME_PROFILE.name:
-        raise ValueError(
-            "environment manifest runtime_profile must match frozen Blackbox runtime profile"
-        )
-    if raw.get("platform") != expected_platform:
-        raise ValueError(
-            "environment manifest platform must match runtime platform"
-        )
-    computed = hashlib.sha256(
-        json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-    if computed != fingerprint:
-        raise ValueError("environment manifest fingerprint does not match explicit_packages")
-    return fingerprint
 
 
 def _finish(

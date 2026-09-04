@@ -15,25 +15,17 @@ from backtests._base_runner import (
     RunOutput,
     _frame_profile as _base_frame_profile,
     _int_or_none as _base_int_or_none,
-    aggregate_rows as _base_aggregate_rows,
     apply_evaluation_exclusions as _base_apply_evaluation_exclusions,
     build_db_aligned_daily as _base_build_db_aligned_daily,
     build_framework_db_aligned_daily as _base_build_framework_db_aligned_daily,
-    build_monthly_metrics as _base_build_monthly_metrics,
-    build_summary as _base_build_summary,
     compare_daily_frames as _base_compare_daily_frames,
     compare_generated_frames,
     compare_prediction_rows as _base_compare_prediction_rows,
-    direction_dist as _base_direction_dist,
     evaluation_exclusion_summary as _base_evaluation_exclusion_summary,
     exclude_daily_rows_for_evaluation_week as _base_exclude_daily_rows_for_evaluation_week,
-    infer_target_date as _base_infer_target_date,
     make_run_output as _base_make_run_output,
-    metric_row as _base_metric_row,
-    period_summaries as _base_period_summaries,
     persist_run_output as _base_persist_run_output,
     read_daily_csv as _base_read_daily_csv,
-    safe_div as _base_safe_div,
 )
 from backtests.repository import (
     clean_json,
@@ -610,26 +602,6 @@ def make_run_output(
     )
 
 
-def build_monthly_metrics(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return _base_build_monthly_metrics(rows, benchmark_id=BENCHMARK_ID)
-
-
-def metric_row(rows: list[dict[str, Any]], tenor: str, month: str) -> dict[str, Any]:
-    return _base_metric_row(rows, tenor, month, benchmark_id=BENCHMARK_ID)
-
-
-def build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    return _base_build_summary(rows)
-
-
-def aggregate_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    return _base_aggregate_rows(rows)
-
-
-def period_summaries(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    return _base_period_summaries(rows)
-
-
 def compare_t5_expected_report(periods_by_tenor: dict[str, Any]) -> dict[str, Any]:
     results: dict[str, Any] = {}
     for tenor, expected in EXPECTED_T5_REPORT.items():
@@ -732,18 +704,6 @@ def run_daily_0529_reproduction(
 
 def _frame_profile(df: pd.DataFrame) -> dict[str, Any]:
     return _base_frame_profile(df)
-
-
-def direction_dist(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
-    return _base_direction_dist(rows, key)
-
-
-def safe_div(num: int, den: int) -> float | None:
-    return _base_safe_div(num, den)
-
-
-def infer_target_date(daily: pd.DataFrame, feature_date: str, horizon: int) -> str | None:
-    return _base_infer_target_date(daily, feature_date, horizon)
 
 
 def _int_or_none(value: Any) -> int | None:

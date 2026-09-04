@@ -51,8 +51,6 @@ MONTHLY_ROW_FIELDS = (
     "up_true_positive",
     "down_true_positive",
 )
-# 旧名称只供低层明细工具使用；公开 V5 合同使用 DETAIL_ROW_FIELDS。
-ROW_FIELDS = DETAIL_ROW_FIELDS
 VALID_TASK_TYPES = set(ALLOWED_TASK_TYPES)
 DAILY_TARGET_RULE = "target_date_yield_vs_feature_date_yield"
 LIVE_ACTUAL_SELECTORS = {

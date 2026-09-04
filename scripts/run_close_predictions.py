@@ -184,7 +184,6 @@ def run_close_job(
                 cadences=(),
             )
         expected_dates: set[str] = set()
-        refresh_required = False
         if monthly_due and any(
             getattr(cfg, "runtime_type", None) == "blackbox_v2"
             and getattr(cfg, "input_source", None) == "data_bridge_current"
@@ -193,7 +192,6 @@ def run_close_job(
             expected_dates.add(
                 build_monthly_live_context(calendar, normalized_date).feature_date
             )
-            refresh_required = True
         due_period_candidates = [
             cfg
             for cfg in period_candidates
@@ -205,10 +203,10 @@ def run_close_job(
             for cfg in due_period_candidates
         ):
             expected_dates.add(normalized_date)
-            refresh_required = True
         if len(expected_dates) > 1:
             raise ValueError("close cadences require conflicting DataBridge cutoffs")
         expected_feature_date = next(iter(expected_dates), None)
+        refresh_required = bool(expected_dates)
     finally:
         engine.dispose()
 
