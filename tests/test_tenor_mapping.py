@@ -6,35 +6,13 @@ from sqlalchemy import create_engine, text
 
 
 class TenorMappingTests(unittest.TestCase):
-    def test_shared_mapping_is_single_source_for_daily_actuals_updater(self) -> None:
-        from shared.tenor_mapping import TENOR_TO_INDICATOR
-        from scheduler import daily_actuals_updater
+    def test_tenor_mapping_normalizes_product_tenor(self) -> None:
+        from shared.tenor_mapping import indicator_map_for_tenors
 
-        self.assertEqual(TENOR_TO_INDICATOR["10Y"], "TB0YWI0C")
-        self.assertIs(daily_actuals_updater.TENOR_TO_INDICATOR, TENOR_TO_INDICATOR)
-
-    def test_active_registry_tenors_selects_only_active_requested_task_types(self) -> None:
-        from scheduler.daily_actuals_updater import active_registry_tenors
-
-        engine = _registry_engine(
-            [
-                ("monthly-1y", "active", "monthly", "1Y"),
-                ("monthly-3y", "active", "monthly", "3Y"),
-                ("monthly-5y", "active", "monthly", "5Y"),
-                ("monthly-7y", "active", "monthly", "7Y"),
-                ("monthly-10y", "active", "monthly", "10Y"),
-                ("paused-monthly", "paused", "monthly", "30Y"),
-                ("archived-monthly", "archived", "monthly", "2Y"),
-                ("active-daily", "active", "T+1", "30Y"),
-            ]
+        self.assertEqual(
+            indicator_map_for_tenors(["10y"]),
+            {"TB0YWI0C": "10Y"},
         )
-        try:
-            self.assertEqual(
-                active_registry_tenors(engine, ("monthly",)),
-                ["1Y", "3Y", "5Y", "7Y", "10Y"],
-            )
-        finally:
-            engine.dispose()
 
     def test_registry_scope_is_the_only_runtime_authority(self) -> None:
         from scheduler.daily_actuals_updater import resolve_actual_tenors
@@ -46,6 +24,9 @@ class TenorMappingTests(unittest.TestCase):
                 ("monthly-5y", "active", "monthly", "5Y"),
                 ("monthly-7y", "active", "monthly", "7Y"),
                 ("monthly-10y", "active", "monthly", "10Y"),
+                ("paused-monthly", "paused", "monthly", "30Y"),
+                ("archived-monthly", "archived", "monthly", "2Y"),
+                ("active-daily", "active", "T+1", "30Y"),
             ]
         )
         try:
