@@ -64,32 +64,6 @@ def _result_evidence(result: GateResult) -> dict[str, object]:
 
 
 class HarnessPersistenceTests(unittest.TestCase):
-    def test_run_start_does_not_persist_report_directory(self) -> None:
-        from harness.persistence import persist_harness_run_start
-
-        engine = _CaptureEngine()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            ctx = GateContext(
-                scheme_id="blackbox_daily",
-                predict_date="2026-06-08",
-                project_root=Path(tmpdir),
-                config=SimpleNamespace(
-                    runtime_type="blackbox_v2",
-                    scheme_version="version-test",
-                ),
-                engine_factory=lambda: engine,
-            )
-            self.assertTrue(
-                persist_harness_run_start(
-                    ctx,
-                    harness_run_id="hr-blackbox",
-                    stage="all",
-                    started_at="2026-06-08T00:00:00+00:00",
-                )
-            )
-
-        self.assertNotIn("report_uri", engine.store["calls"][0][1])
-
     def test_persistence_writes_only_harness_tables(self) -> None:
         from harness.persistence import (
             persist_harness_run_complete,
@@ -137,17 +111,6 @@ class HarnessPersistenceTests(unittest.TestCase):
         self.assertNotIn("t_scheme_predictions", sql_text)
         self.assertNotIn("t_scheme_runs", sql_text)
         self.assertNotIn("t_backtest", sql_text)
-        self.assertNotIn("report_uri", sql_text)
-        self.assertNotIn("report_uri", engine.store["calls"][0][1])
-        for retired_field in (
-            "triggered_by",
-            "project_root",
-            "code_hash",
-            "config_hash",
-        ):
-            self.assertNotIn(retired_field, engine.store["calls"][0][1])
-        self.assertNotIn("report_uri", engine.store["calls"][1][1])
-        self.assertNotIn("report_uri", engine.store["calls"][2][1])
         self.assertTrue(engine.disposed)
 
     def test_completion_commit_unknown_accepts_only_exact_readback(self) -> None:

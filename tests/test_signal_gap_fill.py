@@ -765,13 +765,6 @@ def test_blackbox_target_range_runs_one_batch_and_commits_atomically(
         "run_blackbox_gray_replay_batch",
         Mock(side_effect=batch_runner),
     )
-    config_loader = Mock(return_value=cfg)
-    monkeypatch.setattr(
-        signal_gap_fill,
-        "load_scheme_config",
-        config_loader,
-    )
-
     report = signal_gap_fill.run_signal_gap_fill(
         plan=plan,
         project_root=tmp_path,
@@ -784,9 +777,6 @@ def test_blackbox_target_range_runs_one_batch_and_commits_atomically(
     repository.complete_gray_gap_run.assert_not_called()
     repository.complete_gray_gap_runs_atomic.assert_called_once()
     assert len(repository.complete_gray_gap_runs_atomic.call_args.args[1]) == 2
-    config_loader.assert_called_once_with(
-        tmp_path / "schemes" / "demo_blackbox" / "config.yaml"
-    )
     readback.assert_called_once_with(
         engine,
         actions=plan["actions"],

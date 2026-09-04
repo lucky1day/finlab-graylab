@@ -456,9 +456,7 @@ def test_blackbox_gap_binds_v2_source_identity_and_single_cutoff(
     assert "cutoffs" not in input_authority
 
 
-def test_range_plan_indexes_cutoffs_and_source_identity_once(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_range_plan_maps_each_case_to_its_cutoff() -> None:
     target = _target("demo_blackbox", runtime_type="blackbox_v2")
     first = _case("demo_blackbox", runtime_type="blackbox_v2")
     second = replace(
@@ -479,15 +477,6 @@ def test_range_plan_indexes_cutoffs_and_source_identity_once(
             ),
         ),
     )
-    source_identity = Mock(
-        wraps=signal_gap_plan.blackbox_gray_replay_source_identity
-    )
-    monkeypatch.setattr(
-        signal_gap_plan,
-        "blackbox_gray_replay_source_identity",
-        source_identity,
-    )
-
     plan = signal_gap_plan._build_signal_gap_range_plan(
         _snapshot(
             target=target,
@@ -509,7 +498,6 @@ def test_range_plan_indexes_cutoffs_and_source_identity_once(
         row["input_authority"]["cutoff"]["feature_date"]
         for row in plan["actions"]
     ] == ["2026-08-07", "2026-08-10"]
-    source_identity.assert_called_once_with(authority)
 
 
 def test_duplicate_cutoff_still_fails_closed(

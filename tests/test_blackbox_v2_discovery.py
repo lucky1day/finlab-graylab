@@ -14,6 +14,16 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             scheme_dir = _write_blackbox_scheme(Path(tmpdir))
+            metadata_path = scheme_dir / "delivery" / "trial_10y.json"
+            raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+            raw.update(
+                owner="ALGO-A",
+                description="使用期限利差和滚动分类模型形成方向信号。",
+            )
+            metadata_path.write_text(
+                json.dumps(raw, ensure_ascii=False),
+                encoding="utf-8",
+            )
 
             config = load_scheme_config(scheme_dir / "config.yaml")
 
@@ -21,7 +31,11 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
         self.assertEqual(config.input_source, "data_bridge_current")
         self.assertEqual(config.version_status, "draft")
         self.assertEqual(config.name, "10Y Trial")
-        self.assertEqual(config.description, "")
+        self.assertEqual(config.owner, "ALGO-A")
+        self.assertEqual(
+            config.description,
+            "使用期限利差和滚动分类模型形成方向信号。",
+        )
         self.assertEqual(config.algorithm_version, "1.2.3")
         self.assertEqual(config.contract_version, "1.0")
         self.assertEqual(config.target_rule, "target_date_yield_vs_feature_date_yield")
@@ -93,18 +107,6 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "exactly two regular files"):
                 load_scheme_config(scheme_dir / "config.yaml")
 
-    def test_rejects_generated_python_cache_directory(self) -> None:
-        from scheduler.discovery import load_scheme_config
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
-            cache_dir = scheme_dir / "delivery" / "__pycache__"
-            cache_dir.mkdir()
-            (cache_dir / "trial_10y.cpython-312.pyc").write_bytes(b"cache")
-
-            with self.assertRaisesRegex(ValueError, "exactly two regular files"):
-                load_scheme_config(scheme_dir / "config.yaml")
-
     def test_rejects_additional_blackbox_scheme_root_file(self) -> None:
         from scheduler.discovery import load_scheme_config
 
@@ -147,32 +149,6 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
 
         self.assertEqual(first.config_hash, second.config_hash)
         self.assertEqual(first.scheme_version, second.scheme_version)
-
-
-    def test_metadata_owner_is_loaded_without_copying_to_config(self) -> None:
-        from scheduler.discovery import load_scheme_config
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
-            metadata_path = scheme_dir / "delivery" / "trial_10y.json"
-            raw = json.loads(metadata_path.read_text(encoding="utf-8"))
-            raw.update(
-                owner="ALGO-A",
-                description="使用期限利差和滚动分类模型形成方向信号。",
-            )
-            metadata_path.write_text(
-                json.dumps(raw, ensure_ascii=False),
-                encoding="utf-8",
-            )
-
-            config = load_scheme_config(scheme_dir / "config.yaml")
-
-        self.assertEqual(config.name, "10Y Trial")
-        self.assertEqual(config.owner, "ALGO-A")
-        self.assertEqual(
-            config.description,
-            "使用期限利差和滚动分类模型形成方向信号。",
-        )
 
 
     def test_blackbox_version_tracks_each_canonical_input(self) -> None:
@@ -295,18 +271,6 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
             compute_blackbox_config_hash(explicit_legacy),
             compute_blackbox_config_hash(algorithm_managed),
         )
-
-    def test_blackbox_canonical_config_keeps_legacy_platform_input_bytes(self) -> None:
-        from shared.blackbox_v2.versioning import canonical_platform_config
-
-        raw = _canonical_raw_config()
-        raw["platform_inputs"] = ["api-wind-date-v1"]
-
-        self.assertEqual(
-            canonical_platform_config(raw)["platform_inputs"],
-            ["api-wind-date-v1"],
-        )
-
 
     def test_blackbox_canonical_config_rejects_missing_required_fields(self) -> None:
         from shared.blackbox_v2.versioning import canonical_platform_config

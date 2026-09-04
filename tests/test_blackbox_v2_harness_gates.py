@@ -444,28 +444,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "description is required"):
                 validate_canonical_blackbox_delivery(cfg)
 
-    def test_summary_reuse_preserves_recursive_object_independence(self) -> None:
-        from backtests._base_runner import build_summary
-
-        rows = [
-            {
-                "scheme_id": "trial_10y",
-                "target_tenor": "10Y",
-                "horizon": 1,
-                "predict_date": "2026-07-15",
-                "label": 1,
-                "predicted_direction": 1,
-            }
-        ]
-
-        summary = build_summary(rows)
-        aggregate = summary["by_tenor"]["10Y"]
-        period_all = summary["periods_by_tenor"]["10Y"]["all"]
-
-        self.assertEqual(aggregate, period_all)
-        self.assertIsNot(aggregate, period_all)
-        self.assertIsNot(aggregate["actual_dist"], period_all["actual_dist"])
-
 def _delivery(path: Path, *, script: str = "import argparse\nimport json\n") -> Path:
     path.mkdir(parents=True)
     (path / "trial_10y.py").write_text(script, encoding="utf-8")

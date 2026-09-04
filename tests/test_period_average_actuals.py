@@ -93,6 +93,14 @@ def test_period_average_actual_fails_on_missing_or_duplicate_bucket_fact() -> No
             calendar,
             task_types=("quarterly_average",),
         )
+    invalid = [dict(item) for item in complete]
+    invalid[-1]["close_yield"] = float("nan")
+    with pytest.raises(ValueError, match="invalid period-average observation"):
+        build_period_average_actual_records_from_rows(
+            invalid,
+            calendar,
+            task_types=("quarterly_average",),
+        )
 
 
 def test_period_average_repository_writes_one_generic_table() -> None:

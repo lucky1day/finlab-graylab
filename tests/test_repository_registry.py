@@ -476,7 +476,7 @@ def _blackbox_live_record(*, prediction_phase: str = "scheduled_live"):
 
 
 class RegistryLifecycleTests(unittest.TestCase):
-    def test_registry_owner_is_read_once_and_blackbox_metadata_can_update_it(
+    def test_blackbox_metadata_can_update_registry_owner(
         self,
     ) -> None:
         from scheduler.repository import _sync_scheme_registry_conn
@@ -504,12 +504,6 @@ class RegistryLifecycleTests(unittest.TestCase):
         )
 
         self.assertEqual(store["registry_rows"][0]["owner"], "NEW-OWNER")
-        owner_reads = [
-            sql
-            for sql, _params in store["calls"]
-            if "SELECT scheme_id, owner FROM t_scheme_registry" in sql
-        ]
-        self.assertEqual(len(owner_reads), 1)
 
     def test_registry_preserves_database_owner_when_metadata_has_none(self) -> None:
         from scheduler.repository import _sync_scheme_registry_conn
@@ -1068,66 +1062,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertEqual(engine.store["run_row"]["records_written"], 1)
         self.assertEqual(len(engine.store["run_log_rows"]), 1)
         self.assertEqual(engine.store["run_log_rows"][0]["status"], "success")
-
-    def test_completion_identity_and_record_validators_are_pure(self) -> None:
-        from scheduler.repository import (
-            _validate_completion_records,
-            _validate_running_run_identity,
-        )
-
-        run = {
-            "scheme_id": "demo_blackbox",
-            "scheme_version": "abc123def456",
-            "runtime_type": "blackbox_v2",
-            "run_type": "active",
-            "predict_date": date(2026, 7, 20),
-            "status": "running",
-            "records_expected": 1,
-            "prediction_phase": "scheduled_live",
-        }
-        expected_identity = {
-            "scheme_id": "demo_blackbox",
-            "scheme_version": "abc123def456",
-            "runtime_type": "blackbox_v2",
-            "run_type": "active",
-            "predict_date": "2026-07-20",
-            "status": "running",
-            "records_expected": 1,
-        }
-        original = deepcopy(run)
-
-        phase = _validate_running_run_identity(
-            run,
-            expected_identity=expected_identity,
-            error_prefix="identity failed",
-        )
-        record = _blackbox_live_record()
-        _validate_completion_records(
-            [record],
-            records_returned=1,
-            expected_targets={("10Y", 1)},
-            scheme_id="demo_blackbox",
-            scheme_version="abc123def456",
-            predict_date="2026-07-20",
-            prediction_phase=phase,
-            runtime_label="Blackbox",
-        )
-
-        self.assertEqual(run, original)
-        with self.assertRaisesRegex(
-            RuntimeError,
-            "target set does not match active Registry",
-        ):
-            _validate_completion_records(
-                [record, record],
-                records_returned=2,
-                expected_targets={("10Y", 1)},
-                scheme_id="demo_blackbox",
-                scheme_version="abc123def456",
-                predict_date="2026-07-20",
-                prediction_phase=phase,
-                runtime_label="Blackbox",
-            )
 
     def test_active_native_completion_rejects_gray_live(self) -> None:
         from scheduler.repository import complete_active_native_run

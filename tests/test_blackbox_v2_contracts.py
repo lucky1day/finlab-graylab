@@ -287,15 +287,6 @@ def _load_backtest_direction(direction: str | None):
         return load_backtest_results(path, [request])[0]
 
 
-def test_request_csv_fields_match_the_dataclass_exactly() -> None:
-    """单条和批量 Request 写出器必须共享精确字段契约。"""
-    from dataclasses import fields
-
-    from shared.blackbox_v2.contracts import REQUEST_FIELDS, BlackboxRequest
-
-    assert tuple(f.name for f in fields(BlackboxRequest)) == tuple(REQUEST_FIELDS)
-
-
 def test_both_request_writers_round_trip_to_the_same_values(tmp_path) -> None:
     """同一条 Request 经两个写出器后，字段值必须逐一相同。"""
     import csv

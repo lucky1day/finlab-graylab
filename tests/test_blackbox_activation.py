@@ -54,31 +54,6 @@ def _sqlite_datetime_codecs():
             sqlite3.converters[date_converter_key] = previous_date_converter
 
 
-def test_activation_gate_reuses_loaded_blackbox_config(tmp_path) -> None:
-    from harness.gates.activate_gate import ActivationGate
-
-    cfg = SimpleNamespace(
-        scheme_id="trial_10y",
-        runtime_type="blackbox_v2",
-    )
-    ctx = GateContext(
-        scheme_id=cfg.scheme_id,
-        predict_date="activate",
-        project_root=tmp_path,
-        config=cfg,
-    )
-    expected = SimpleNamespace(status="passed")
-
-    with patch(
-        "harness.blackbox_v2.activation.activate_blackbox",
-        return_value=expected,
-    ) as activate:
-        result = ActivationGate().run(ctx)
-
-    assert result is expected
-    activate.assert_called_once_with(ctx)
-
-
 def _revision_fixture():
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",

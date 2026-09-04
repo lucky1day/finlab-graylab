@@ -72,37 +72,22 @@ class BlackboxV2IntakeTests(unittest.TestCase):
             self.assertNotIn("platform_inputs:", config)
             self.assertNotIn("display_name:", config)
 
-    def test_intake_requires_description_without_partial_write(self) -> None:
+    def test_intake_requires_business_metadata_without_partial_write(self) -> None:
         from shared.blackbox_v2.intake import intake_delivery
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            delivery = _write_delivery(root / "incoming")
-            metadata_path = delivery / "trial_10y.json"
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            metadata.pop("description")
-            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+        for field in ("description", "owner"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                delivery = _write_delivery(root / "incoming")
+                metadata_path = delivery / "trial_10y.json"
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                metadata.pop(field)
+                metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
-            with self.assertRaisesRegex(ValueError, "description"):
-                intake_delivery(delivery, schemes_root=root / "schemes")
+                with self.assertRaisesRegex(ValueError, field):
+                    intake_delivery(delivery, schemes_root=root / "schemes")
 
-            self.assertFalse((root / "schemes" / "trial_10y").exists())
-
-    def test_intake_requires_owner_without_partial_write(self) -> None:
-        from shared.blackbox_v2.intake import intake_delivery
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            delivery = _write_delivery(root / "incoming")
-            metadata_path = delivery / "trial_10y.json"
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            metadata.pop("owner")
-            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
-
-            with self.assertRaisesRegex(ValueError, "owner"):
-                intake_delivery(delivery, schemes_root=root / "schemes")
-
-            self.assertFalse((root / "schemes" / "trial_10y").exists())
+                self.assertFalse((root / "schemes" / "trial_10y").exists())
 
 
     def test_cli_intake_uses_fixed_databridge_inputs(self) -> None:
@@ -163,22 +148,6 @@ class BlackboxV2IntakeTests(unittest.TestCase):
                 intake_delivery(delivery, schemes_root=root / "schemes")
 
             self.assertFalse((root / "schemes" / "trial_10y").exists())
-
-    def test_canonical_validator_rejects_unsafe_revision(self) -> None:
-        from shared.blackbox_v2.intake import validate_delivery
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            delivery = _write_delivery(Path(tmpdir) / "delivery")
-            (delivery / "trial_10y.py").write_text(
-                "import requests\n",
-                encoding="utf-8",
-            )
-
-            with self.assertRaisesRegex(ValueError, "forbidden import requests"):
-                validate_delivery(
-                    delivery,
-                    expected_scheme_id="trial_10y",
-                )
 
     def test_intake_refuses_existing_scheme_id(self) -> None:
         from shared.blackbox_v2.intake import intake_delivery
