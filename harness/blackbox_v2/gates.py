@@ -296,11 +296,29 @@ def _reload_pinned_blackbox_config(cfg: SchemeConfig, *, phase: str) -> SchemeCo
     return current
 
 
-def verify_passed_blackbox_backtest(engine, cfg: SchemeConfig) -> PassedBacktestRun:
+def verify_passed_blackbox_backtest(
+    engine,
+    cfg: SchemeConfig,
+    *,
+    backtest_run_id: int | None = None,
+) -> PassedBacktestRun:
     """读取与 canonical exact version 精确匹配的最近一次成功回测。"""
     from sqlalchemy import text
 
     with engine.connect() as connection:
+        run_id_clause = (
+            " AND id = :backtest_run_id"
+            if backtest_run_id is not None
+            else ""
+        )
+        params = {
+            "scheme_id": cfg.scheme_id,
+            "data_source": "blackbox_v2_current_snapshot_as_of",
+            "code_hash": cfg.code_hash,
+            "config_hash": cfg.config_hash,
+        }
+        if backtest_run_id is not None:
+            params["backtest_run_id"] = int(backtest_run_id)
         rows = connection.execute(
             text(
                 """
@@ -312,15 +330,11 @@ def verify_passed_blackbox_backtest(engine, cfg: SchemeConfig) -> PassedBacktest
                   AND run_mode = 'persist'
                   AND code_hash = :code_hash
                   AND config_hash = :config_hash
-                ORDER BY updated_at DESC, id DESC
                 """
+                + run_id_clause
+                + " ORDER BY updated_at DESC, id DESC"
             ),
-            {
-                "scheme_id": cfg.scheme_id,
-                "data_source": "blackbox_v2_current_snapshot_as_of",
-                "code_hash": cfg.code_hash,
-                "config_hash": cfg.config_hash,
-            },
+            params,
         ).mappings().all()
 
     for row in rows:

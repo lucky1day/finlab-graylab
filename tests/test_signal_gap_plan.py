@@ -263,6 +263,35 @@ def test_daily_t5_target_range_uses_authoritative_trading_days() -> None:
         )
 
 
+def test_daily_t1_target_range_uses_authoritative_trading_days() -> None:
+    target = signal_gap_plan.RegistryTarget(
+        registry_scheme_id="demo_blackbox__h1__5Y",
+        base_scheme_id="demo_blackbox",
+        runtime_type="blackbox_v2",
+        frequency="daily",
+        task_type="T+1",
+        target_tenor="5Y",
+        horizon=1,
+        scheme_version="version-1",
+    )
+
+    cases = signal_gap_plan._target_range_cases(
+        (target,),
+        calendar=_range_calendar(),
+        target_date_from="2026-06-01",
+        target_date_before="2026-09-04",
+    )
+
+    assert len(cases) == 69
+    assert cases[0].predict_date == "2026-06-01"
+    assert cases[0].feature_date == "2026-05-29"
+    assert cases[0].target_date == "2026-06-01"
+    assert cases[-1].predict_date == "2026-09-03"
+    assert cases[-1].feature_date == "2026-09-02"
+    assert cases[-1].target_date == "2026-09-03"
+    assert len({case.business_key for case in cases}) == len(cases)
+
+
 def test_target_range_rejects_dates_before_platform_live_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

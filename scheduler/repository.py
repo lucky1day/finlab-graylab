@@ -10,12 +10,13 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Iterable, Iterator, Mapping, Sequence, cast
+from typing import Callable, Iterable, Iterator, Mapping, Sequence, cast
 
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Connection, Engine, URL
 
 from scheduler.discovery import SchemeConfig, load_scheme_config
+from shared.blackbox_v2.contracts import REQUEST_FIELDS, request_from_mapping
 from shared.db_config import DatabaseConfig
 from shared.models import (
     ActualRecord,
@@ -31,6 +32,7 @@ from shared.scheme_config_schema import (
     ALLOWED_VERSION_STATUS,
     normalize_scheme_owner,
 )
+from shared.task_specs import TASK_COMBINATIONS
 
 
 PREDICTION_KEYS_ALREADY_EXIST = "prediction_keys_already_exist"
@@ -38,6 +40,14 @@ PARTIAL_PREDICTION_KEY_CONFLICT = "partial_prediction_key_conflict"
 _PredictionBusinessKey = tuple[str, str, int, str]
 BLACKBOX_REGISTRY_STATUSES = {"active", "paused", "archived"}
 _BLACKBOX_LIFECYCLE_LOCK_TIMEOUT_SEC = 5.0
+_NATIVE_SUCCESSOR_REQUIRED_SCHEMA_VERSION = 24
+_NATIVE_SUCCESSOR_LIVE_TARGET_START_DATE = "2026-06-01"
+_NATIVE_SUCCESSOR_REQUEST_IDENTITY_FIELDS = (
+    "request_id",
+    "predict_date",
+    "feature_date",
+    "target_date",
+)
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -90,6 +100,35 @@ class BlackboxRevisionActivationPreflight:
     prior_scheme_version: str
     pending_scheme_versions: tuple[str, ...]
     registry_scheme_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class NativeSuccessorTarget:
+    """一次 Native 到 Blackbox 迁移中的单个业务格子。"""
+
+    old_base_scheme_id: str
+    new_base_scheme_id: str
+    task_type: str
+    target_tenor: str
+    target_rule: str | None
+    old_horizon: int
+    new_horizon: int
+
+
+@dataclass(frozen=True)
+class NativeSuccessorBacktestEvidence:
+    """successor 持久化回测的精确身份。"""
+
+    backtest_run_id: int
+    benchmark_id: str
+    data_snapshot_id: str
+    generation_id: str
+    runtime_profile: str
+    environment_fingerprint: str
+    code_hash: str
+    config_hash: str
+    manifest_hash: str
+    validator_policy_digest: str
 
 
 def registry_scheme_id(base_scheme_id: str, horizon: int, target_tenor: str) -> str:
@@ -3345,9 +3384,15 @@ def _prepare_blackbox_backtest_fact_rows_conn(
     backtest_config_hash: str,
     backtest_manifest_hash: str,
     backtest_validator_policy_digest: str,
+    for_update: bool = True,
+    require_source_request: bool = False,
 ) -> list[dict[str, object]]:
     """锁定并把首次激活的 exact-version 回测转换为产品事实 rows。"""
-    lock_clause = " FOR UPDATE" if _dialect_name(conn) != "sqlite" else ""
+    lock_clause = (
+        " FOR UPDATE"
+        if for_update and _dialect_name(conn) != "sqlite"
+        else ""
+    )
     run = conn.execute(
         text(
             "SELECT id, benchmark_id, scheme_id, data_source, status, run_mode, "
@@ -3403,13 +3448,17 @@ def _prepare_blackbox_backtest_fact_rows_conn(
             "Blackbox activation backtest identity mismatch: "
             f"expected={expected!r} actual={actual!r}"
         )
+    source_request_column = ", source_row" if require_source_request else ""
     source_rows = conn.execute(
         text(
             "SELECT scheme_id, target_tenor, horizon, predict_date, feature_date, "
-            "target_date, label, predicted_direction, confidence, extra "
+            "target_date, label, predicted_direction, confidence, extra"
+            + source_request_column
+            + " "
             "FROM t_backtest_predictions "
             "WHERE run_id = :backtest_run_id "
             "ORDER BY target_tenor, horizon, target_date, predict_date, id"
+            + lock_clause
         ),
         {"backtest_run_id": backtest_run_id},
     ).mappings().all()
@@ -3442,24 +3491,45 @@ def _prepare_blackbox_backtest_fact_rows_conn(
         seen.add(key)
         extra = _json_mapping(source.get("extra"))
         extra.pop("prediction_phase", None)
-        rows.append(
-            {
-                "run_id": None,
-                "backtest_run_id": backtest_run_id,
-                "scheme_version": cfg.scheme_version,
-                "scheme_id": cfg.scheme_id,
-                "target_tenor": tenor,
-                "horizon": horizon,
-                "predict_date": str(predict_date),
-                "feature_date": str(feature_date),
-                "target_date": str(target_date),
-                "predicted_direction": int(direction),
-                "backtest_actual_direction": int(actual_direction),
-                "confidence": source.get("confidence"),
-                "model_version": cfg.scheme_version,
-                "extra": json.dumps(extra, ensure_ascii=False),
-            }
-        )
+        row: dict[str, object] = {
+            "run_id": None,
+            "backtest_run_id": backtest_run_id,
+            "scheme_version": cfg.scheme_version,
+            "scheme_id": cfg.scheme_id,
+            "target_tenor": tenor,
+            "horizon": horizon,
+            "predict_date": str(predict_date),
+            "feature_date": str(feature_date),
+            "target_date": str(target_date),
+            "predicted_direction": int(direction),
+            "backtest_actual_direction": int(actual_direction),
+            "confidence": source.get("confidence"),
+            "model_version": cfg.scheme_version,
+            "extra": json.dumps(extra, ensure_ascii=False),
+        }
+        if require_source_request:
+            raw_source_row = _json_mapping(source.get("source_row"))
+            if set(raw_source_row) != {*REQUEST_FIELDS, "actual"}:
+                raise ValueError(
+                    "Blackbox activation backtest source_row fields are invalid"
+                )
+            source_request = request_from_mapping(
+                {field: raw_source_row.get(field) for field in REQUEST_FIELDS}
+            )
+            expected_request_id = (
+                f"{cfg.scheme_id}:{predict_date}:{feature_date}:{target_date}"
+            )
+            if (
+                source_request.request_id != expected_request_id
+                or source_request.predict_date != str(predict_date)
+                or source_request.feature_date != str(feature_date)
+                or source_request.target_date != str(target_date)
+            ):
+                raise ValueError(
+                    "Blackbox activation backtest source_row Request identity mismatch"
+                )
+            row["_source_request"] = asdict(source_request)
+        rows.append(row)
     return rows
 
 
@@ -3491,11 +3561,1738 @@ def _insert_run_predictions_conn(
             (:run_id, :backtest_run_id, :scheme_version, :scheme_id, :target_tenor, :horizon, :predict_date, :feature_date, :target_date,
              :predicted_direction, :backtest_actual_direction, :confidence, :model_version, {extra_expression})
         """.format(extra_expression=extra_expression)
-    rows = list(prediction_rows)
+    rows = [
+        {key: value for key, value in row.items() if key != "_source_request"}
+        for row in prediction_rows
+    ]
     if not rows:
         return 0
     conn.execute(text(statement), rows)
     return len(rows)
+
+
+def canonical_native_successor_plan(plan: Mapping[str, object]) -> str:
+    """把迁移计划编码为稳定 JSON，供人工授权绑定。"""
+    normalized = json.loads(json.dumps(plan, ensure_ascii=True, default=str))
+    control_plane = normalized.get("control_plane")
+    if isinstance(control_plane, dict):
+        control_plane.pop("captured_at", None)
+        control_plane.pop("_capture_sha256", None)
+    return json.dumps(
+        normalized,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def native_successor_plan_sha256(plan: Mapping[str, object]) -> str:
+    """计算规范迁移计划摘要。"""
+    return hashlib.sha256(
+        canonical_native_successor_plan(plan).encode("utf-8")
+    ).hexdigest()
+
+
+@contextmanager
+def _native_successor_advisory_locks(
+    engine: Engine,
+    *,
+    scheme_ids: Sequence[str],
+) -> Iterator[None]:
+    """按稳定顺序持有一次跨 base 迁移涉及的全部 MySQL 互斥锁。"""
+    normalized = tuple(sorted(set(scheme_ids)))
+    if not normalized:
+        raise ValueError("Native successor migration requires scheme identities")
+    if engine.dialect.name == "sqlite":
+        yield
+        return
+    lock_names = ["bfl:native-successor:global"] + [
+        "bfl:native-successor:"
+        + hashlib.sha256(scheme_id.encode("utf-8")).hexdigest()[:32]
+        for scheme_id in normalized
+    ]
+    with engine.connect() as lock_conn:
+        acquired: list[str] = []
+        try:
+            for lock_name in lock_names:
+                value = lock_conn.execute(
+                    text("SELECT GET_LOCK(:lock_name, :timeout_sec)"),
+                    {
+                        "lock_name": lock_name,
+                        "timeout_sec": _BLACKBOX_LIFECYCLE_LOCK_TIMEOUT_SEC,
+                    },
+                ).scalar_one()
+                if int(value or 0) != 1:
+                    raise BlackboxActivationLockTimeout(
+                        "timed out waiting for Native successor migration lock: "
+                        f"lock_name={lock_name}"
+                    )
+                acquired.append(lock_name)
+            yield
+        finally:
+            active_error = sys.exc_info()[1]
+            release_errors: list[str] = []
+            for lock_name in reversed(acquired):
+                try:
+                    released = lock_conn.execute(
+                        text("SELECT RELEASE_LOCK(:lock_name)"),
+                        {"lock_name": lock_name},
+                    ).scalar_one()
+                    if int(released or 0) != 1:
+                        release_errors.append(lock_name)
+                except BaseException:  # noqa: BLE001
+                    release_errors.append(lock_name)
+            if release_errors:
+                message = (
+                    "failed to release Native successor migration locks: "
+                    + ",".join(release_errors)
+                )
+                if active_error is None:
+                    raise RuntimeError(message)
+                if hasattr(active_error, "add_note"):
+                    active_error.add_note(message)
+
+
+def read_native_successor_migration_plan(
+    engine: Engine,
+    *,
+    wave: str,
+    targets: Sequence[NativeSuccessorTarget],
+    old_configs: Mapping[str, SchemeConfig],
+    new_configs: Mapping[str, SchemeConfig],
+    backtests: Mapping[str, NativeSuccessorBacktestEvidence],
+    equivalence_evidence: Mapping[str, object],
+    control_plane_evidence: Mapping[str, object],
+    expected_database_name: str | None = None,
+    expected_server_uuid: str | None = None,
+    expected_action: str | None = None,
+) -> dict[str, object]:
+    """只读生成当前权威状态下的 Native successor 迁移计划。"""
+    if engine.dialect.name == "mysql":
+        with engine.connect() as conn:
+            conn.exec_driver_sql(
+                "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+            )
+            conn.exec_driver_sql(
+                "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY"
+            )
+            try:
+                return _native_successor_migration_plan_conn(
+                    conn,
+                    wave=wave,
+                    targets=targets,
+                    old_configs=old_configs,
+                    new_configs=new_configs,
+                    backtests=backtests,
+                    equivalence_evidence=equivalence_evidence,
+                    control_plane_evidence=control_plane_evidence,
+                    expected_database_name=expected_database_name,
+                    expected_server_uuid=expected_server_uuid,
+                    expected_action=expected_action,
+                    for_update=False,
+                )
+            finally:
+                conn.rollback()
+    with engine.begin() as conn:
+        return _native_successor_migration_plan_conn(
+            conn,
+            wave=wave,
+            targets=targets,
+            old_configs=old_configs,
+            new_configs=new_configs,
+            backtests=backtests,
+            equivalence_evidence=equivalence_evidence,
+            control_plane_evidence=control_plane_evidence,
+            expected_database_name=expected_database_name,
+            expected_server_uuid=expected_server_uuid,
+            expected_action=expected_action,
+            for_update=False,
+        )
+
+
+def apply_native_successor_migration(
+    engine: Engine,
+    *,
+    wave: str,
+    action: str,
+    expected_plan_sha256: str,
+    approved_by: str,
+    approved_at: datetime,
+    targets: Sequence[NativeSuccessorTarget],
+    old_configs: Mapping[str, SchemeConfig],
+    new_configs: Mapping[str, SchemeConfig],
+    backtests: Mapping[str, NativeSuccessorBacktestEvidence],
+    equivalence_evidence: Mapping[str, object],
+    control_plane_evidence_reader: Callable[[], Mapping[str, object]],
+    expected_database_name: str | None = None,
+    expected_server_uuid: str | None = None,
+) -> dict[str, object]:
+    """按预检摘要在一个事务中执行跨 base 切换或回滚。"""
+    if action not in {"cutover", "rollback"}:
+        raise ValueError("Native successor migration action must be cutover or rollback")
+    if not isinstance(expected_plan_sha256, str) or len(expected_plan_sha256) != 64:
+        raise ValueError("expected_plan_sha256 must be a SHA-256 hex digest")
+    try:
+        int(expected_plan_sha256, 16)
+    except ValueError as exc:
+        raise ValueError("expected_plan_sha256 must be a SHA-256 hex digest") from exc
+    operator = _require_nonempty(approved_by, "approved_by")
+    if operator != approved_by:
+        raise ValueError("approved_by must not contain surrounding whitespace")
+    if not isinstance(approved_at, datetime):
+        raise ValueError("approved_at must be datetime")
+    all_ids = tuple(old_configs) + tuple(new_configs)
+    with _native_successor_advisory_locks(engine, scheme_ids=all_ids):
+        with engine.begin() as conn:
+            control_plane_evidence = control_plane_evidence_reader()
+            if not isinstance(control_plane_evidence, Mapping):
+                raise RuntimeError("controlled control-plane recapture is invalid")
+            plan = _native_successor_migration_plan_conn(
+                conn,
+                wave=wave,
+                targets=targets,
+                old_configs=old_configs,
+                new_configs=new_configs,
+                backtests=backtests,
+                equivalence_evidence=equivalence_evidence,
+                control_plane_evidence=control_plane_evidence,
+                expected_database_name=expected_database_name,
+                expected_server_uuid=expected_server_uuid,
+                expected_action=action,
+                for_update=True,
+            )
+            actual_sha256 = native_successor_plan_sha256(plan)
+            if actual_sha256 != expected_plan_sha256.lower():
+                raise RuntimeError(
+                    "Native successor migration plan changed before commit: "
+                    f"expected={expected_plan_sha256.lower()} actual={actual_sha256}"
+                )
+            mysql_approved_at = _mysql_utc_datetime(approved_at)
+            if action == "cutover":
+                _cutover_native_successors_conn(
+                    conn,
+                    targets=targets,
+                    old_configs=old_configs,
+                    new_configs=new_configs,
+                    backtests=backtests,
+                    approved_by=operator,
+                    approved_at=cast(datetime, mysql_approved_at),
+                )
+            else:
+                _rollback_native_successors_conn(
+                    conn,
+                    targets=targets,
+                    old_configs=old_configs,
+                    new_configs=new_configs,
+                    approved_by=operator,
+                    approved_at=cast(datetime, mysql_approved_at),
+                )
+            _assert_native_successor_post_state_conn(
+                conn,
+                targets=targets,
+                old_configs=old_configs,
+                new_configs=new_configs,
+                action=action,
+            )
+            if _read_native_migration_fact_summaries_conn(
+                conn,
+                scheme_ids=sorted(old_configs),
+                for_update=True,
+            ) != plan["old_fact_summaries"]:
+                raise RuntimeError("Native historical facts changed during migration")
+            if _read_unaffected_active_registry_summary_conn(
+                conn,
+                excluded_base_ids=all_ids,
+                for_update=True,
+            ) != plan["unaffected_active_registry"]:
+                raise RuntimeError(
+                    "unaffected active Registry set changed during migration"
+                )
+    return {
+        "schema_version": "native-successor-migration-result-v1",
+        "wave": wave,
+        "action": action,
+        "approved_by": operator,
+        "plan_sha256": expected_plan_sha256.lower(),
+        "old_base_scheme_ids": sorted(old_configs),
+        "new_base_scheme_ids": sorted(new_configs),
+    }
+
+
+def _native_successor_migration_plan_conn(
+    conn: Connection,
+    *,
+    wave: str,
+    targets: Sequence[NativeSuccessorTarget],
+    old_configs: Mapping[str, SchemeConfig],
+    new_configs: Mapping[str, SchemeConfig],
+    backtests: Mapping[str, NativeSuccessorBacktestEvidence],
+    equivalence_evidence: Mapping[str, object],
+    control_plane_evidence: Mapping[str, object],
+    expected_database_name: str | None,
+    expected_server_uuid: str | None,
+    expected_action: str | None,
+    for_update: bool,
+) -> dict[str, object]:
+    wave = _require_nonempty(wave, "wave")
+    if not isinstance(control_plane_evidence, Mapping) or not control_plane_evidence:
+        raise ValueError(
+            "verified control-plane evidence is required for migration planning"
+        )
+    ordered_targets = tuple(
+        sorted(targets, key=lambda item: (
+            item.old_base_scheme_id,
+            item.task_type,
+            item.target_tenor,
+            item.new_base_scheme_id,
+        ))
+    )
+    if not ordered_targets or len(ordered_targets) != len(set(ordered_targets)):
+        raise ValueError("migration targets must be non-empty and unique")
+    old_ids = sorted({item.old_base_scheme_id for item in ordered_targets})
+    new_ids = sorted({item.new_base_scheme_id for item in ordered_targets})
+    if set(old_ids) != set(old_configs) or set(new_ids) != set(new_configs):
+        raise ValueError("migration config identities do not match target mapping")
+    if set(new_ids) != set(backtests) or set(old_ids).intersection(new_ids):
+        raise ValueError("migration backtest identities are incomplete or overlap Native")
+    control_databridge = control_plane_evidence.get("databridge")
+    if not isinstance(control_databridge, Mapping):
+        raise ValueError("migration control-plane DataBridge evidence is incomplete")
+    control_generation_id = str(
+        control_databridge.get("generation_id") or ""
+    ).strip()
+    control_data_snapshot_id = str(
+        control_databridge.get("data_snapshot_id") or ""
+    ).strip()
+    if not control_generation_id or not control_data_snapshot_id:
+        raise ValueError("migration control-plane DataBridge identity is incomplete")
+    for scheme_id, cfg in old_configs.items():
+        if cfg.scheme_id != scheme_id or cfg.runtime_type != "native_adapter":
+            raise ValueError(f"invalid Native config identity: {scheme_id}")
+    for scheme_id, cfg in new_configs.items():
+        if cfg.scheme_id != scheme_id or cfg.runtime_type != "blackbox_v2":
+            raise ValueError(f"invalid Blackbox successor config identity: {scheme_id}")
+    _validate_native_successor_target_configs(
+        ordered_targets,
+        old_configs=old_configs,
+        new_configs=new_configs,
+    )
+    all_ids = tuple(old_ids + new_ids)
+    placeholders = ", ".join(f":scheme_id_{index}" for index, _ in enumerate(all_ids))
+    params = {f"scheme_id_{index}": value for index, value in enumerate(all_ids)}
+    lock_clause = " FOR UPDATE" if for_update and _dialect_name(conn) != "sqlite" else ""
+    if _dialect_name(conn) == "mysql":
+        expected_database = _require_nonempty(
+            expected_database_name,
+            "expected_database_name",
+        )
+        expected_uuid = _require_nonempty(
+            expected_server_uuid,
+            "expected_server_uuid",
+        )
+        raw_database_identity = dict(
+            conn.execute(
+                text(
+                    "SELECT DATABASE() AS database_name, "
+                    "@@server_uuid AS server_uuid"
+                )
+            ).mappings().one()
+        )
+        if not raw_database_identity.get(
+            "database_name"
+        ) or not raw_database_identity.get(
+            "server_uuid"
+        ):
+            raise RuntimeError("migration database identity is incomplete")
+        if (
+            raw_database_identity["database_name"] != expected_database
+            or raw_database_identity["server_uuid"] != expected_uuid
+        ):
+            raise RuntimeError("migration database identity mismatch")
+        database_identity = {
+            "database_identity_sha256": hashlib.sha256(
+                canonical_native_successor_plan(
+                    {
+                        "database_name": raw_database_identity["database_name"],
+                        "server_uuid": raw_database_identity["server_uuid"],
+                    }
+                ).encode("utf-8")
+            ).hexdigest()
+        }
+    else:
+        database_identity = {
+            "database_identity_sha256": hashlib.sha256(
+                b"isolated-test:sqlite"
+            ).hexdigest(),
+        }
+    migration_rows = conn.execute(
+        text(
+            "SELECT version, state FROM t_schema_migrations "
+            f"ORDER BY version{lock_clause}"
+        )
+    ).mappings().all()
+    applying_versions = [
+        int(row["version"])
+        for row in migration_rows
+        if row.get("state") != "APPLIED"
+    ]
+    current_migration_version = (
+        max(int(row["version"]) for row in migration_rows)
+        if migration_rows
+        else None
+    )
+    if applying_versions or (
+        current_migration_version != _NATIVE_SUCCESSOR_REQUIRED_SCHEMA_VERSION
+    ):
+        raise RuntimeError(
+            "Native successor migration requires fully applied schema migration 024: "
+            f"current={current_migration_version} applying={applying_versions}"
+        )
+    database_identity["schema_migration_version"] = current_migration_version
+    version_rows = conn.execute(
+        text(
+            "SELECT scheme_id, scheme_version, runtime_type, status, code_hash, "
+            "config_hash, manifest_hash, environment_fingerprint, data_snapshot_id "
+            f"FROM t_scheme_versions WHERE scheme_id IN ({placeholders}) "
+            f"ORDER BY scheme_id, scheme_version{lock_clause}"
+        ),
+        params,
+    ).mappings().all()
+    registry_rows = conn.execute(
+        text(
+            "SELECT scheme_id, base_scheme_id, name, owner, description, horizon, "
+            "task_type, runtime_type, tenors, frequency, target_tenor, "
+            "schedule_cron, schedule_timezone, status, deployed_at "
+            f"FROM t_scheme_registry WHERE base_scheme_id IN ({placeholders}) "
+            f"ORDER BY base_scheme_id, scheme_id{lock_clause}"
+        ),
+        params,
+    ).mappings().all()
+    running = conn.execute(
+        text(
+            "SELECT scheme_id, run_id FROM t_scheme_runs "
+            f"WHERE scheme_id IN ({placeholders}) AND status = 'running' "
+            f"ORDER BY scheme_id, run_id{lock_clause}"
+        ),
+        params,
+    ).mappings().all()
+    if running:
+        raise RuntimeError("Native successor migration requires zero running scheme runs")
+
+    old_fact_summaries = _read_native_migration_fact_summaries_conn(
+        conn,
+        scheme_ids=old_ids,
+        for_update=for_update,
+    )
+    unaffected_active_registry = _read_unaffected_active_registry_summary_conn(
+        conn,
+        excluded_base_ids=all_ids,
+        for_update=for_update,
+    )
+
+    exact_versions: dict[str, Mapping[str, object] | None] = {}
+    for scheme_id, cfg in {**old_configs, **new_configs}.items():
+        matches = [
+            row for row in version_rows
+            if row.get("scheme_id") == scheme_id
+            and row.get("scheme_version") == cfg.scheme_version
+        ]
+        if len(matches) > 1:
+            raise RuntimeError(f"duplicate exact version rows: {scheme_id}")
+        exact_versions[scheme_id] = matches[0] if matches else None
+    for scheme_id, cfg in old_configs.items():
+        row = exact_versions[scheme_id]
+        if row is None:
+            raise RuntimeError(f"Native exact version row is missing: {scheme_id}")
+        _assert_migration_version_identity(cfg, row)
+    for scheme_id, cfg in new_configs.items():
+        row = exact_versions[scheme_id]
+        if row is not None:
+            _assert_migration_version_identity(cfg, row)
+    for scheme_id in all_ids:
+        other_active = [
+            row for row in version_rows
+            if row.get("scheme_id") == scheme_id
+            and row.get("scheme_version")
+            != ({**old_configs, **new_configs}[scheme_id]).scheme_version
+            and row.get("status") == "active"
+        ]
+        if other_active:
+            raise RuntimeError(
+                f"unexpected active exact version exists for migration base: {scheme_id}"
+            )
+    old_registry = [row for row in registry_rows if row.get("base_scheme_id") in old_ids]
+    new_registry = [row for row in registry_rows if row.get("base_scheme_id") in new_ids]
+    inferred_action = _infer_native_successor_action(
+        ordered_targets,
+        old_configs=old_configs,
+        new_configs=new_configs,
+        exact_versions=exact_versions,
+        old_registry=old_registry,
+        new_registry=new_registry,
+    )
+    if expected_action is not None and inferred_action != expected_action:
+        raise RuntimeError(
+            "Native successor migration state does not permit requested action: "
+            f"requested={expected_action} current={inferred_action}"
+        )
+    first_cutover = inferred_action == "cutover" and all(
+        exact_versions[scheme_id] is None for scheme_id in new_ids
+    )
+    if first_cutover:
+        mismatched_backtests = sorted(
+            scheme_id
+            for scheme_id, evidence in backtests.items()
+            if evidence.generation_id != control_generation_id
+            or evidence.data_snapshot_id != control_data_snapshot_id
+        )
+        if mismatched_backtests:
+            raise RuntimeError(
+                "successor backtest DataBridge identity differs from current "
+                "control plane: " + ",".join(mismatched_backtests)
+            )
+
+    backtest_plans: list[dict[str, object]] = []
+    successor_fact_rows: dict[str, list[dict[str, object]]] = {}
+    for scheme_id in new_ids:
+        cfg = new_configs[scheme_id]
+        evidence = backtests[scheme_id]
+        rows = _prepare_blackbox_backtest_fact_rows_conn(
+            conn,
+            cfg,
+            backtest_run_id=evidence.backtest_run_id,
+            backtest_benchmark_id=evidence.benchmark_id,
+            backtest_data_snapshot_id=evidence.data_snapshot_id,
+            backtest_generation_id=evidence.generation_id,
+            backtest_runtime_profile=evidence.runtime_profile,
+            backtest_environment_fingerprint=evidence.environment_fingerprint,
+            backtest_code_hash=evidence.code_hash,
+            backtest_config_hash=evidence.config_hash,
+            backtest_manifest_hash=evidence.manifest_hash,
+            backtest_validator_policy_digest=evidence.validator_policy_digest,
+            for_update=for_update,
+            require_source_request=True,
+        )
+        _assert_native_successor_backtest_boundary(rows)
+        successor_fact_rows[scheme_id] = rows
+        backtest_plans.append(
+            {
+                "scheme_id": scheme_id,
+                "scheme_version": cfg.scheme_version,
+                "backtest_run_id": evidence.backtest_run_id,
+                "benchmark_id": evidence.benchmark_id,
+                "generation_id": evidence.generation_id,
+                "data_snapshot_id": evidence.data_snapshot_id,
+                "runtime_profile": evidence.runtime_profile,
+                "environment_fingerprint": evidence.environment_fingerprint,
+                "code_hash": evidence.code_hash,
+                "config_hash": evidence.config_hash,
+                "manifest_hash": evidence.manifest_hash,
+                "validator_policy_digest": evidence.validator_policy_digest,
+                "fact_count": len(rows),
+                "fact_sha256": _native_successor_fact_rows_sha256(rows),
+            }
+        )
+    normalized_equivalence = _validate_native_successor_equivalence_evidence(
+        equivalence_evidence,
+        wave=wave,
+        targets=ordered_targets,
+        old_configs=old_configs,
+        new_configs=new_configs,
+        backtests=backtests,
+        successor_fact_rows=successor_fact_rows,
+        control_plane_evidence=control_plane_evidence,
+        require_current_databridge=first_cutover,
+    )
+    grid_coverage = _validate_native_successor_historical_grid_coverage_conn(
+        conn,
+        targets=ordered_targets,
+        successor_fact_rows=successor_fact_rows,
+        for_update=for_update,
+    )
+    return {
+        "schema_version": "native-successor-migration-plan-v1",
+        "wave": wave,
+        "action": inferred_action,
+        "targets": [asdict(item) for item in ordered_targets],
+        "old_versions": [
+            _migration_version_plan(old_configs[scheme_id], exact_versions[scheme_id])
+            for scheme_id in old_ids
+        ],
+        "new_versions": [
+            _migration_version_plan(new_configs[scheme_id], exact_versions[scheme_id])
+            for scheme_id in new_ids
+        ],
+        "old_registry": [_migration_registry_plan(row) for row in old_registry],
+        "new_registry": [_migration_registry_plan(row) for row in new_registry],
+        "old_fact_summaries": old_fact_summaries,
+        "unaffected_active_registry": unaffected_active_registry,
+        "backtests": backtest_plans,
+        "equivalence": normalized_equivalence,
+        "grid_coverage": grid_coverage,
+        "control_plane": dict(control_plane_evidence),
+        "database": database_identity,
+        "running_runs": [],
+    }
+
+
+def _validate_native_successor_equivalence_evidence(
+    evidence: Mapping[str, object],
+    *,
+    wave: str,
+    targets: Sequence[NativeSuccessorTarget],
+    old_configs: Mapping[str, SchemeConfig],
+    new_configs: Mapping[str, SchemeConfig],
+    backtests: Mapping[str, NativeSuccessorBacktestEvidence],
+    successor_fact_rows: Mapping[str, Sequence[Mapping[str, object]]],
+    control_plane_evidence: Mapping[str, object],
+    require_current_databridge: bool,
+) -> dict[str, object]:
+    """校验同输入 Native/successor 五字段零差异的临时迁移凭据。"""
+    top_fields = {
+        "schema_version",
+        "wave",
+        "producer",
+        "generation_id",
+        "data_snapshot_id",
+        "data_files_sha256",
+        "runtime_environment_fingerprint",
+        "targets",
+    }
+    if not isinstance(evidence, Mapping) or set(evidence) != top_fields:
+        raise RuntimeError("Native successor equivalence evidence fields are invalid")
+    if (
+        evidence.get("schema_version")
+        != "native-successor-equivalence-v1"
+        or evidence.get("wave") != wave
+    ):
+        raise RuntimeError("Native successor equivalence evidence identity mismatch")
+    producer = evidence.get("producer")
+    release = control_plane_evidence.get("release")
+    if not isinstance(producer, Mapping) or set(producer) != {
+        "tool",
+        "tool_version",
+        "comparator_source_sha256",
+        "generated_at",
+    }:
+        raise RuntimeError("equivalence evidence producer is invalid")
+    if not isinstance(release, Mapping) or (
+        producer.get("tool") != "native-successor-controlled-comparator"
+        or producer.get("tool_version") != "1"
+        or producer.get("comparator_source_sha256")
+        != release.get("comparator_source_sha256")
+        or not str(producer.get("generated_at") or "").strip()
+    ):
+        raise RuntimeError("equivalence evidence producer identity mismatch")
+    generation_id = _require_nonempty(
+        str(evidence.get("generation_id") or ""),
+        "equivalence generation_id",
+    )
+    data_snapshot_id = _require_nonempty(
+        str(evidence.get("data_snapshot_id") or ""),
+        "equivalence data_snapshot_id",
+    )
+    runtime_fingerprint = _require_sha256(
+        str(evidence.get("runtime_environment_fingerprint") or ""),
+        "equivalence runtime_environment_fingerprint",
+    )
+    file_hashes = evidence.get("data_files_sha256")
+    required_files = {
+        "daily_output.csv",
+        "weekly_output.csv",
+        "monthly_output.csv",
+        "api_wind_date.csv",
+        "factor_catalog.csv",
+    }
+    if not isinstance(file_hashes, Mapping) or set(file_hashes) != required_files:
+        raise RuntimeError("equivalence evidence must bind all five DataBridge files")
+    normalized_files = {
+        filename: _require_sha256(
+            str(file_hashes.get(filename) or ""),
+            f"equivalence {filename}",
+        )
+        for filename in sorted(required_files)
+    }
+    raw_targets = evidence.get("targets")
+    if not isinstance(raw_targets, list):
+        raise RuntimeError("equivalence evidence targets must be a list")
+    target_fields = {
+        "old_base_scheme_id",
+        "new_base_scheme_id",
+        "task_type",
+        "target_tenor",
+        "old_horizon",
+        "new_horizon",
+        "old_code_hash",
+        "new_code_hash",
+        "native_runtime_environment_fingerprint",
+        "request_artifact_sha256",
+        "request_sha256",
+        "request_count",
+        "native_result_sha256",
+        "successor_result_sha256",
+        "request_id_mismatch_count",
+        "predict_date_mismatch_count",
+        "feature_date_mismatch_count",
+        "target_date_mismatch_count",
+        "direction_mismatch_count",
+    }
+    by_identity: dict[tuple[str, str, str], Mapping[str, object]] = {}
+    for item in raw_targets:
+        if not isinstance(item, Mapping) or set(item) != target_fields:
+            raise RuntimeError("equivalence target fields are invalid")
+        identity = (
+            str(item.get("old_base_scheme_id") or ""),
+            str(item.get("new_base_scheme_id") or ""),
+            str(item.get("target_tenor") or ""),
+        )
+        if identity in by_identity:
+            raise RuntimeError("equivalence evidence contains duplicate targets")
+        by_identity[identity] = item
+    expected_identities = {
+        (
+            target.old_base_scheme_id,
+            target.new_base_scheme_id,
+            target.target_tenor,
+        )
+        for target in targets
+    }
+    if set(by_identity) != expected_identities:
+        raise RuntimeError("equivalence evidence target coverage mismatch")
+
+    normalized_targets: list[dict[str, object]] = []
+    native_runtime = control_plane_evidence.get("native_runtime")
+    if not isinstance(native_runtime, Mapping):
+        raise RuntimeError("control plane Native runtime evidence is missing")
+    current_native_runtime_fingerprint = _require_sha256(
+        str(native_runtime.get("environment_fingerprint") or ""),
+        "control plane Native runtime environment_fingerprint",
+    )
+    mismatch_fields = (
+        "request_id_mismatch_count",
+        "predict_date_mismatch_count",
+        "feature_date_mismatch_count",
+        "target_date_mismatch_count",
+        "direction_mismatch_count",
+    )
+    for target in targets:
+        identity = (
+            target.old_base_scheme_id,
+            target.new_base_scheme_id,
+            target.target_tenor,
+        )
+        item = by_identity[identity]
+        expected_identity = {
+            "old_base_scheme_id": target.old_base_scheme_id,
+            "new_base_scheme_id": target.new_base_scheme_id,
+            "task_type": target.task_type,
+            "target_tenor": target.target_tenor,
+            "old_horizon": target.old_horizon,
+            "new_horizon": target.new_horizon,
+            "old_code_hash": old_configs[target.old_base_scheme_id].code_hash,
+            "new_code_hash": new_configs[target.new_base_scheme_id].code_hash,
+        }
+        if any(item.get(key) != value for key, value in expected_identity.items()):
+            raise RuntimeError("equivalence target identity or code hash mismatch")
+        request_count = item.get("request_count")
+        if (
+            isinstance(request_count, bool)
+            or not isinstance(request_count, int)
+            or request_count <= 0
+        ):
+            raise RuntimeError("equivalence request_count must be positive")
+        rows = sorted(
+            (
+                row
+                for row in successor_fact_rows[target.new_base_scheme_id]
+                if row.get("target_tenor") == target.target_tenor
+                and int(row.get("horizon") or 0) == target.new_horizon
+            ),
+            key=lambda row: (
+                str(row.get("target_date")),
+                str(row.get("predict_date")),
+                str(row.get("feature_date")),
+            ),
+        )
+        request_projection = [
+            {
+                "request_id": (
+                    f"{target.new_base_scheme_id}:{row.get('predict_date')}:"
+                    f"{row.get('feature_date')}:{row.get('target_date')}"
+                ),
+                "predict_date": str(row.get("predict_date")),
+                "feature_date": str(row.get("feature_date")),
+                "target_date": str(row.get("target_date")),
+            }
+            for row in rows
+        ]
+        full_request_projection: list[dict[str, object]] = []
+        for request, row in zip(request_projection, rows, strict=True):
+            source_request = row.get("_source_request")
+            if not isinstance(source_request, Mapping) or set(
+                source_request
+            ) != set(REQUEST_FIELDS):
+                raise RuntimeError(
+                    "persisted backtest source_row lacks the complete Request"
+                )
+            normalized_source_request = {
+                field: str(source_request.get(field)) for field in REQUEST_FIELDS
+            }
+            if any(
+                normalized_source_request[field] != request[field]
+                for field in _NATIVE_SUCCESSOR_REQUEST_IDENTITY_FIELDS
+            ):
+                raise RuntimeError(
+                    "persisted backtest source_row differs from fact identity"
+                )
+            full_request_projection.append(normalized_source_request)
+        result_projection = [
+            {
+                **request,
+                "predicted_direction": int(row.get("predicted_direction")),
+            }
+            for request, row in zip(request_projection, rows, strict=True)
+        ]
+        expected_request_sha256 = hashlib.sha256(
+            canonical_native_successor_plan(
+                {"requests": request_projection}
+            ).encode("utf-8")
+        ).hexdigest()
+        expected_request_artifact_sha256 = hashlib.sha256(
+            canonical_native_successor_plan(
+                {"requests": full_request_projection}
+            ).encode("utf-8")
+        ).hexdigest()
+        expected_result_sha256 = hashlib.sha256(
+            canonical_native_successor_plan(
+                {"results": result_projection}
+            ).encode("utf-8")
+        ).hexdigest()
+        if request_count != len(rows):
+            raise RuntimeError(
+                "equivalence request_count differs from persisted backtest facts"
+            )
+        if any(
+            type(item.get(field)) is not int or item.get(field) != 0
+            for field in mismatch_fields
+        ):
+            raise RuntimeError("Native/successor equivalence mismatch count is non-zero")
+        request_sha256 = _require_sha256(
+            str(item.get("request_sha256") or ""),
+            "equivalence request_sha256",
+        )
+        request_artifact_sha256 = _require_sha256(
+            str(item.get("request_artifact_sha256") or ""),
+            "equivalence request_artifact_sha256",
+        )
+        native_result_sha256 = _require_sha256(
+            str(item.get("native_result_sha256") or ""),
+            "equivalence native_result_sha256",
+        )
+        successor_result_sha256 = _require_sha256(
+            str(item.get("successor_result_sha256") or ""),
+            "equivalence successor_result_sha256",
+        )
+        if request_sha256 != expected_request_sha256:
+            raise RuntimeError(
+                "equivalence Request digest differs from persisted backtest facts"
+            )
+        if request_artifact_sha256 != expected_request_artifact_sha256:
+            raise RuntimeError(
+                "equivalence complete Request digest differs from persisted "
+                "backtest source_row"
+            )
+        if (
+            native_result_sha256 != successor_result_sha256
+            or successor_result_sha256 != expected_result_sha256
+        ):
+            raise RuntimeError(
+                "Native/successor standardized result digests differ from "
+                "persisted backtest facts"
+            )
+        native_runtime_fingerprint = _require_sha256(
+            str(item.get("native_runtime_environment_fingerprint") or ""),
+            "equivalence native_runtime_environment_fingerprint",
+        )
+        if native_runtime_fingerprint != current_native_runtime_fingerprint:
+            raise RuntimeError(
+                "equivalence Native runtime differs from current control plane"
+            )
+        normalized_targets.append(
+            {
+                **expected_identity,
+                "native_runtime_environment_fingerprint": (
+                    native_runtime_fingerprint
+                ),
+                "request_sha256": request_sha256,
+                "request_artifact_sha256": request_artifact_sha256,
+                "request_count": request_count,
+                "native_result_sha256": native_result_sha256,
+                "successor_result_sha256": successor_result_sha256,
+                **{field: 0 for field in mismatch_fields},
+            }
+        )
+
+    if any(
+        backtest.generation_id != generation_id
+        or backtest.data_snapshot_id != data_snapshot_id
+        or backtest.environment_fingerprint != runtime_fingerprint
+        for backtest in backtests.values()
+    ):
+        raise RuntimeError("equivalence evidence differs from persisted backtest identity")
+    if any(
+        config.environment_fingerprint != runtime_fingerprint
+        for config in new_configs.values()
+    ):
+        raise RuntimeError("equivalence evidence differs from successor runtime")
+    if require_current_databridge:
+        current = control_plane_evidence.get("databridge")
+        if not isinstance(current, Mapping) or (
+            current.get("generation_id") != generation_id
+            or current.get("data_snapshot_id") != data_snapshot_id
+            or current.get("files") != normalized_files
+        ):
+            raise RuntimeError(
+                "first cutover equivalence evidence differs from current DataBridge"
+            )
+    return {
+        "schema_version": "native-successor-equivalence-v1",
+        "wave": wave,
+        "producer": dict(producer),
+        "generation_id": generation_id,
+        "data_snapshot_id": data_snapshot_id,
+        "data_files_sha256": normalized_files,
+        "runtime_environment_fingerprint": runtime_fingerprint,
+        "targets": sorted(
+            normalized_targets,
+            key=lambda item: (
+                str(item["old_base_scheme_id"]),
+                str(item["new_base_scheme_id"]),
+                str(item["target_tenor"]),
+            ),
+        ),
+    }
+
+
+def _validate_native_successor_target_configs(
+    targets: Sequence[NativeSuccessorTarget],
+    *,
+    old_configs: Mapping[str, SchemeConfig],
+    new_configs: Mapping[str, SchemeConfig],
+) -> None:
+    for target in targets:
+        old = old_configs[target.old_base_scheme_id]
+        new = new_configs[target.new_base_scheme_id]
+        try:
+            canonical_horizon, canonical_target_rule, canonical_frequency = (
+                TASK_COMBINATIONS[target.task_type]
+            )
+        except KeyError as exc:
+            raise ValueError(
+                f"unsupported migration task_type: {target.task_type}"
+            ) from exc
+        expected_old = (
+            old.task_type,
+            target.target_tenor,
+            old.target_rule,
+            int(old.horizon),
+            old.frequency,
+        )
+        declared_old = (
+            target.task_type,
+            target.target_tenor,
+            target.target_rule,
+            target.old_horizon,
+            canonical_frequency,
+        )
+        expected_new = (
+            new.task_type,
+            target.target_tenor,
+            new.target_rule,
+            int(new.horizon),
+            new.frequency,
+        )
+        declared_new = (
+            target.task_type,
+            target.target_tenor,
+            canonical_target_rule,
+            target.new_horizon,
+            canonical_frequency,
+        )
+        if declared_old != expected_old or target.target_tenor not in old.tenors:
+            raise ValueError(f"Native target mapping does not match config: {target}")
+        if (
+            declared_new != expected_new
+            or target.new_horizon != canonical_horizon
+            or tuple(new.tenors) != (target.target_tenor,)
+        ):
+            raise ValueError(f"successor target mapping does not match config: {target}")
+    for old_id, cfg in old_configs.items():
+        mapped = {
+            target.target_tenor for target in targets
+            if target.old_base_scheme_id == old_id
+        }
+        if mapped != set(cfg.tenors):
+            raise ValueError(f"wave does not cover every Native target: {old_id}")
+
+
+def _infer_native_successor_action(
+    targets: Sequence[NativeSuccessorTarget],
+    *,
+    old_configs: Mapping[str, SchemeConfig],
+    new_configs: Mapping[str, SchemeConfig],
+    exact_versions: Mapping[str, Mapping[str, object] | None],
+    old_registry: Sequence[Mapping[str, object]],
+    new_registry: Sequence[Mapping[str, object]],
+) -> str:
+    expected_old = {
+        registry_scheme_id(item.old_base_scheme_id, item.old_horizon, item.target_tenor)
+        for item in targets
+    }
+    expected_new = {
+        registry_scheme_id(item.new_base_scheme_id, item.new_horizon, item.target_tenor)
+        for item in targets
+    }
+    old_by_id = {str(row.get("scheme_id")): row for row in old_registry}
+    new_by_id = {str(row.get("scheme_id")): row for row in new_registry}
+    if set(old_by_id) != expected_old or set(new_by_id).difference(expected_new):
+        raise RuntimeError("Registry target coverage differs from migration mapping")
+    for target in targets:
+        old_id = registry_scheme_id(
+            target.old_base_scheme_id,
+            target.old_horizon,
+            target.target_tenor,
+        )
+        old_row = old_by_id[old_id]
+        old_cfg = old_configs[target.old_base_scheme_id]
+        if (
+            old_row.get("base_scheme_id") != target.old_base_scheme_id
+            or old_row.get("runtime_type") != "native_adapter"
+            or old_row.get("task_type") != target.task_type
+            or old_row.get("target_tenor") != target.target_tenor
+            or int(old_row.get("horizon") or 0) != target.old_horizon
+            or _normalize_registry_tenors(old_row.get("tenors"))
+            != [target.target_tenor]
+            or old_row.get("frequency") != old_cfg.frequency
+            or old_row.get("schedule_cron") != old_cfg.schedule.cron
+            or old_row.get("schedule_timezone") != old_cfg.schedule.timezone
+        ):
+            raise RuntimeError(f"Native Registry identity mismatch: {old_id}")
+        new_id = registry_scheme_id(
+            target.new_base_scheme_id,
+            target.new_horizon,
+            target.target_tenor,
+        )
+        new_row = new_by_id.get(new_id)
+        if new_row is not None and (
+            new_row.get("base_scheme_id") != target.new_base_scheme_id
+            or new_row.get("runtime_type") != "blackbox_v2"
+            or new_row.get("task_type") != target.task_type
+            or new_row.get("target_tenor") != target.target_tenor
+            or int(new_row.get("horizon") or 0) != target.new_horizon
+            or _normalize_registry_tenors(new_row.get("tenors"))
+            != [target.target_tenor]
+            or new_row.get("frequency") != old_row.get("frequency")
+            or new_row.get("schedule_cron") != old_row.get("schedule_cron")
+            or new_row.get("schedule_timezone")
+            != old_row.get("schedule_timezone")
+        ):
+            raise RuntimeError(f"successor Registry identity mismatch: {new_id}")
+    old_active = all(
+        exact_versions[scheme_id] is not None
+        and exact_versions[scheme_id].get("runtime_type") == "native_adapter"
+        and exact_versions[scheme_id].get("status") == "active"
+        for scheme_id in old_configs
+    ) and all(row.get("status") == "active" for row in old_by_id.values())
+    old_retired = all(
+        exact_versions[scheme_id] is not None
+        and exact_versions[scheme_id].get("runtime_type") == "native_adapter"
+        and exact_versions[scheme_id].get("status") == "retired"
+        for scheme_id in old_configs
+    ) and all(row.get("status") == "archived" for row in old_by_id.values())
+    new_versions_absent = all(
+        exact_versions[scheme_id] is None for scheme_id in new_configs
+    )
+    new_versions_retired = all(
+        exact_versions[scheme_id] is not None
+        and (
+            exact_versions[scheme_id].get("runtime_type") == "blackbox_v2"
+            and exact_versions[scheme_id].get("status") == "retired"
+        )
+        for scheme_id in new_configs
+    )
+    new_registry_absent = not new_by_id
+    new_registry_archived = set(new_by_id) == expected_new and all(
+        row.get("status") == "archived" for row in new_by_id.values()
+    )
+    new_cutover_ready = (
+        new_versions_absent and new_registry_absent
+    ) or (
+        new_versions_retired and new_registry_archived
+    )
+    new_active = set(new_by_id) == expected_new and all(
+        exact_versions[scheme_id] is not None
+        and exact_versions[scheme_id].get("runtime_type") == "blackbox_v2"
+        and exact_versions[scheme_id].get("status") == "active"
+        for scheme_id in new_configs
+    ) and all(row.get("status") == "active" for row in new_by_id.values())
+    if old_active and new_cutover_ready:
+        return "cutover"
+    if old_retired and new_active:
+        return "rollback"
+    raise RuntimeError("Native/successor lifecycle state is mixed or unsupported")
+
+
+def _assert_migration_version_identity(
+    cfg: SchemeConfig,
+    row: Mapping[str, object],
+) -> None:
+    expected = {
+        "scheme_id": cfg.scheme_id,
+        "scheme_version": cfg.scheme_version,
+        "runtime_type": cfg.runtime_type,
+        "code_hash": cfg.code_hash,
+        "config_hash": cfg.config_hash,
+        "manifest_hash": cfg.manifest_hash,
+    }
+    mismatches = [
+        f"{field}: expected={value!r}, actual={row.get(field)!r}"
+        for field, value in expected.items()
+        if row.get(field) != value
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "migration exact version identity mismatch for "
+            f"{cfg.scheme_id}: " + "; ".join(mismatches)
+        )
+
+
+def _migration_version_plan(
+    cfg: SchemeConfig,
+    row: Mapping[str, object] | None,
+) -> dict[str, object]:
+    return {
+        "scheme_id": cfg.scheme_id,
+        "scheme_version": cfg.scheme_version,
+        "runtime_type": cfg.runtime_type,
+        "status": str(row.get("status")) if row is not None else "absent",
+        "code_hash": cfg.code_hash,
+        "config_hash": cfg.config_hash,
+        "manifest_hash": cfg.manifest_hash,
+        "database_code_hash": str(row.get("code_hash")) if row is not None else None,
+        "database_config_hash": str(row.get("config_hash")) if row is not None else None,
+        "database_manifest_hash": str(row.get("manifest_hash")) if row is not None else None,
+    }
+
+
+def _migration_registry_plan(row: Mapping[str, object]) -> dict[str, object]:
+    return {
+        key: row.get(key)
+        for key in (
+            "scheme_id",
+            "base_scheme_id",
+            "name",
+            "owner",
+            "description",
+            "horizon",
+            "task_type",
+            "runtime_type",
+            "tenors",
+            "frequency",
+            "target_tenor",
+            "schedule_cron",
+            "schedule_timezone",
+            "status",
+            "deployed_at",
+        )
+    }
+
+
+def _read_native_migration_fact_summaries_conn(
+    conn: Connection,
+    *,
+    scheme_ids: Sequence[str],
+    for_update: bool,
+) -> list[dict[str, object]]:
+    summaries: list[dict[str, object]] = []
+    for scheme_id in sorted(scheme_ids):
+        if for_update and _dialect_name(conn) != "sqlite":
+            for table, identity_column in (
+                ("t_scheme_predictions", "id"),
+                ("t_scheme_runs", "run_id"),
+                ("t_backtest_runs", "id"),
+                ("t_backtest_predictions", "id"),
+            ):
+                conn.execute(
+                    text(
+                        f"SELECT {identity_column} FROM {table} "
+                        "WHERE scheme_id = :scheme_id "
+                        f"ORDER BY {identity_column} FOR UPDATE"
+                    ),
+                    {"scheme_id": scheme_id},
+                ).all()
+        prediction = conn.execute(
+            text(
+                "SELECT COUNT(*) AS row_count, MIN(target_date) AS min_target_date, "
+                "MAX(target_date) AS max_target_date, "
+                "SUM(CASE WHEN predicted_direction = -1 THEN 1 ELSE 0 END) AS down_count, "
+                "SUM(CASE WHEN predicted_direction = 0 THEN 1 ELSE 0 END) AS flat_count, "
+                "SUM(CASE WHEN predicted_direction = 1 THEN 1 ELSE 0 END) AS up_count "
+                "FROM t_scheme_predictions WHERE scheme_id = :scheme_id"
+            ),
+            {"scheme_id": scheme_id},
+        ).mappings().one()
+        runs = conn.execute(
+            text(
+                "SELECT COUNT(*) AS row_count, MIN(predict_date) AS min_predict_date, "
+                "MAX(predict_date) AS max_predict_date, "
+                "SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count, "
+                "SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count "
+                "FROM t_scheme_runs WHERE scheme_id = :scheme_id"
+            ),
+            {"scheme_id": scheme_id},
+        ).mappings().one()
+        backtest_runs = conn.execute(
+            text(
+                "SELECT COUNT(*) AS row_count FROM t_backtest_runs "
+                "WHERE scheme_id = :scheme_id"
+            ),
+            {"scheme_id": scheme_id},
+        ).mappings().one()
+        backtest_predictions = conn.execute(
+            text(
+                "SELECT COUNT(*) AS row_count, MIN(target_date) AS min_target_date, "
+                "MAX(target_date) AS max_target_date, "
+                "SUM(CASE WHEN predicted_direction = -1 THEN 1 ELSE 0 END) AS down_count, "
+                "SUM(CASE WHEN predicted_direction = 0 THEN 1 ELSE 0 END) AS flat_count, "
+                "SUM(CASE WHEN predicted_direction = 1 THEN 1 ELSE 0 END) AS up_count "
+                "FROM t_backtest_predictions WHERE scheme_id = :scheme_id"
+            ),
+            {"scheme_id": scheme_id},
+        ).mappings().one()
+        summaries.append(
+            {
+                "scheme_id": scheme_id,
+                "predictions": _normalize_migration_summary(prediction),
+                "runs": _normalize_migration_summary(runs),
+                "backtest_runs": _normalize_migration_summary(backtest_runs),
+                "backtest_predictions": _normalize_migration_summary(
+                    backtest_predictions
+                ),
+            }
+        )
+    return summaries
+
+
+def _normalize_migration_summary(
+    summary: Mapping[str, object],
+) -> dict[str, object]:
+    normalized: dict[str, object] = {}
+    for key, value in summary.items():
+        if key.endswith("_count") or key == "row_count":
+            normalized[key] = int(value or 0)
+        elif key.endswith("_date"):
+            normalized[key] = str(value) if value is not None else None
+        else:
+            normalized[key] = value
+    return normalized
+
+
+def _read_unaffected_active_registry_summary_conn(
+    conn: Connection,
+    *,
+    excluded_base_ids: Sequence[str],
+    for_update: bool,
+) -> dict[str, object]:
+    placeholders = ", ".join(
+        f":excluded_base_id_{index}"
+        for index, _ in enumerate(excluded_base_ids)
+    )
+    params = {
+        f"excluded_base_id_{index}": value
+        for index, value in enumerate(excluded_base_ids)
+    }
+    lock_clause = (
+        " FOR UPDATE"
+        if for_update and _dialect_name(conn) != "sqlite"
+        else ""
+    )
+    rows = conn.execute(
+        text(
+            "SELECT scheme_id FROM t_scheme_registry WHERE status = 'active' "
+            f"AND base_scheme_id NOT IN ({placeholders}) ORDER BY scheme_id"
+            + lock_clause
+        ),
+        params,
+    ).scalars().all()
+    ids = [str(value) for value in rows]
+    return {
+        "count": len(ids),
+        "scheme_ids_sha256": hashlib.sha256(
+            canonical_native_successor_plan({"scheme_ids": ids}).encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def _native_successor_fact_rows_sha256(rows: Sequence[Mapping[str, object]]) -> str:
+    normalized = []
+    for source in rows:
+        row = {
+            "run_id": source.get("run_id"),
+            "backtest_run_id": source.get("backtest_run_id"),
+            "scheme_version": source.get("scheme_version"),
+            "scheme_id": source.get("scheme_id"),
+            "target_tenor": source.get("target_tenor"),
+            "horizon": int(source.get("horizon") or 0),
+            "predict_date": str(source.get("predict_date")),
+            "feature_date": str(source.get("feature_date")),
+            "target_date": str(source.get("target_date")),
+            "predicted_direction": source.get("predicted_direction"),
+            "backtest_actual_direction": source.get("backtest_actual_direction"),
+            "confidence": (
+                float(source["confidence"])
+                if source.get("confidence") is not None
+                else None
+            ),
+            "model_version": source.get("model_version"),
+            "extra": _json_mapping(source.get("extra")),
+        }
+        normalized.append(row)
+    return hashlib.sha256(
+        json.dumps(
+            normalized,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _assert_native_successor_backtest_boundary(
+    rows: Sequence[Mapping[str, object]],
+) -> None:
+    crossing = sorted(
+        {
+            str(row.get("target_date"))
+            for row in rows
+            if str(row.get("target_date"))
+            >= _NATIVE_SUCCESSOR_LIVE_TARGET_START_DATE
+        }
+    )
+    if crossing:
+        raise RuntimeError(
+            "successor historical backtest crosses gray-live target boundary: "
+            f"first={crossing[0]} boundary={_NATIVE_SUCCESSOR_LIVE_TARGET_START_DATE}"
+        )
+
+
+def _validate_native_successor_historical_grid_coverage_conn(
+    conn: Connection,
+    *,
+    targets: Sequence[NativeSuccessorTarget],
+    successor_fact_rows: Mapping[str, Sequence[Mapping[str, object]]],
+    for_update: bool,
+) -> list[dict[str, object]]:
+    lock_clause = (
+        " FOR UPDATE"
+        if for_update and _dialect_name(conn) != "sqlite"
+        else ""
+    )
+    result: list[dict[str, object]] = []
+    for target in targets:
+        old_rows = conn.execute(
+            text(
+                "SELECT predict_date, feature_date, target_date "
+                "FROM t_scheme_predictions "
+                "WHERE scheme_id = :scheme_id "
+                "AND target_tenor = :target_tenor AND horizon = :horizon "
+                "AND backtest_run_id IS NOT NULL "
+                "AND target_date < :live_target_start "
+                "ORDER BY target_date, predict_date, feature_date"
+                + lock_clause
+            ),
+            {
+                "scheme_id": target.old_base_scheme_id,
+                "target_tenor": target.target_tenor,
+                "horizon": target.old_horizon,
+                "live_target_start": _NATIVE_SUCCESSOR_LIVE_TARGET_START_DATE,
+            },
+        ).mappings().all()
+        old_dates = [
+            (
+                str(row.get("predict_date")),
+                str(row.get("feature_date")),
+                str(row.get("target_date")),
+            )
+            for row in old_rows
+        ]
+        new_dates = sorted(
+            (
+                str(row.get("predict_date")),
+                str(row.get("feature_date")),
+                str(row.get("target_date")),
+            )
+            for row in successor_fact_rows[target.new_base_scheme_id]
+            if row.get("target_tenor") == target.target_tenor
+            and int(row.get("horizon") or 0) == target.new_horizon
+        )
+        old_dates = sorted(old_dates)
+        if not old_dates or len(old_dates) != len(set(old_dates)):
+            raise RuntimeError(
+                "Native historical grid is empty or contains duplicate dates: "
+                f"{target.old_base_scheme_id}/{target.target_tenor}"
+            )
+        if len(new_dates) != len(set(new_dates)) or old_dates != new_dates:
+            raise RuntimeError(
+                "Native/successor historical date coverage differs: "
+                f"{target.old_base_scheme_id}->{target.new_base_scheme_id}/"
+                f"{target.target_tenor} old={len(old_dates)} new={len(new_dates)}"
+            )
+        result.append(
+            {
+                "old_base_scheme_id": target.old_base_scheme_id,
+                "new_base_scheme_id": target.new_base_scheme_id,
+                "target_tenor": target.target_tenor,
+                "old_horizon": target.old_horizon,
+                "new_horizon": target.new_horizon,
+                "date_count": len(old_dates),
+                "date_identity_sha256": hashlib.sha256(
+                    canonical_native_successor_plan(
+                        {"dates": old_dates}
+                    ).encode("utf-8")
+                ).hexdigest(),
+            }
+        )
+    return result
+
+
+def _cutover_native_successors_conn(
+    conn: Connection,
+    *,
+    targets: Sequence[NativeSuccessorTarget],
+    old_configs: Mapping[str, SchemeConfig],
+    new_configs: Mapping[str, SchemeConfig],
+    backtests: Mapping[str, NativeSuccessorBacktestEvidence],
+    approved_by: str,
+    approved_at: datetime,
+) -> None:
+    old_registry_rows = _migration_registry_rows_by_id_conn(conn, targets, old=True)
+    for scheme_id in sorted(new_configs):
+        cfg = new_configs[scheme_id]
+        evidence = backtests[scheme_id]
+        rows = _prepare_blackbox_backtest_fact_rows_conn(
+            conn,
+            cfg,
+            backtest_run_id=evidence.backtest_run_id,
+            backtest_benchmark_id=evidence.benchmark_id,
+            backtest_data_snapshot_id=evidence.data_snapshot_id,
+            backtest_generation_id=evidence.generation_id,
+            backtest_runtime_profile=evidence.runtime_profile,
+            backtest_environment_fingerprint=evidence.environment_fingerprint,
+            backtest_code_hash=evidence.code_hash,
+            backtest_config_hash=evidence.config_hash,
+            backtest_manifest_hash=evidence.manifest_hash,
+            backtest_validator_policy_digest=evidence.validator_policy_digest,
+            require_source_request=True,
+        )
+        _assert_native_successor_backtest_boundary(rows)
+        _publish_or_reuse_successor_facts_conn(conn, cfg, rows)
+        _upsert_scheme_version_conn(
+            conn,
+            cfg,
+            trusted_status="active",
+            approved_by=approved_by,
+            approved_at=approved_at,
+        )
+    for target in sorted(targets, key=lambda item: item.new_base_scheme_id):
+        old_id = registry_scheme_id(
+            target.old_base_scheme_id,
+            target.old_horizon,
+            target.target_tenor,
+        )
+        _upsert_successor_registry_from_old_conn(
+            conn,
+            target=target,
+            old_row=old_registry_rows[old_id],
+        )
+    _update_migration_registry_status_conn(conn, targets, old=True, status="archived")
+    _update_migration_version_status_conn(
+        conn,
+        old_configs,
+        from_status="active",
+        to_status="retired",
+        runtime_type="native_adapter",
+        approved_by=approved_by,
+        approved_at=approved_at,
+    )
+
+
+def _rollback_native_successors_conn(
+    conn: Connection,
+    *,
+    targets: Sequence[NativeSuccessorTarget],
+    old_configs: Mapping[str, SchemeConfig],
+    new_configs: Mapping[str, SchemeConfig],
+    approved_by: str,
+    approved_at: datetime,
+) -> None:
+    _update_migration_registry_status_conn(conn, targets, old=False, status="archived")
+    _update_migration_version_status_conn(
+        conn,
+        new_configs,
+        from_status="active",
+        to_status="retired",
+        runtime_type="blackbox_v2",
+        approved_by=approved_by,
+        approved_at=approved_at,
+    )
+    _update_migration_version_status_conn(
+        conn,
+        old_configs,
+        from_status="retired",
+        to_status="active",
+        runtime_type="native_adapter",
+        approved_by=approved_by,
+        approved_at=approved_at,
+    )
+    _update_migration_registry_status_conn(conn, targets, old=True, status="active")
+
+
+def _migration_registry_rows_by_id_conn(
+    conn: Connection,
+    targets: Sequence[NativeSuccessorTarget],
+    *,
+    old: bool,
+) -> dict[str, Mapping[str, object]]:
+    ids = [
+        registry_scheme_id(
+            target.old_base_scheme_id if old else target.new_base_scheme_id,
+            target.old_horizon if old else target.new_horizon,
+            target.target_tenor,
+        )
+        for target in targets
+    ]
+    placeholders = ", ".join(f":registry_id_{index}" for index, _ in enumerate(ids))
+    params = {f"registry_id_{index}": value for index, value in enumerate(ids)}
+    lock_clause = " FOR UPDATE" if _dialect_name(conn) != "sqlite" else ""
+    rows = conn.execute(
+        text(
+            "SELECT scheme_id, base_scheme_id, name, owner, description, horizon, "
+            "task_type, runtime_type, tenors, frequency, target_tenor, "
+            "schedule_cron, schedule_timezone, status, deployed_at "
+            f"FROM t_scheme_registry WHERE scheme_id IN ({placeholders})"
+            f"{lock_clause}"
+        ),
+        params,
+    ).mappings().all()
+    result = {str(row["scheme_id"]): row for row in rows}
+    if set(result) != set(ids):
+        raise RuntimeError("migration Registry rows changed inside transaction")
+    return result
+
+
+def _upsert_successor_registry_from_old_conn(
+    conn: Connection,
+    *,
+    target: NativeSuccessorTarget,
+    old_row: Mapping[str, object],
+) -> None:
+    new_id = registry_scheme_id(
+        target.new_base_scheme_id,
+        target.new_horizon,
+        target.target_tenor,
+    )
+    params = {
+        "scheme_id": new_id,
+        "base_scheme_id": target.new_base_scheme_id,
+        "name": old_row.get("name"),
+        "owner": old_row.get("owner"),
+        "description": old_row.get("description"),
+        "horizon": target.new_horizon,
+        "task_type": target.task_type,
+        "runtime_type": "blackbox_v2",
+        "tenors": json.dumps([target.target_tenor], ensure_ascii=False),
+        "frequency": old_row.get("frequency"),
+        "target_tenor": target.target_tenor,
+        "schedule_cron": old_row.get("schedule_cron"),
+        "schedule_timezone": old_row.get("schedule_timezone"),
+    }
+    if _dialect_name(conn) == "sqlite":
+        statement = """
+            INSERT INTO t_scheme_registry
+                (scheme_id, base_scheme_id, name, owner, description, horizon,
+                 task_type, runtime_type, tenors, frequency, target_tenor,
+                 schedule_cron, schedule_timezone, status, deployed_at)
+            VALUES
+                (:scheme_id, :base_scheme_id, :name, :owner, :description, :horizon,
+                 :task_type, :runtime_type, :tenors, :frequency, :target_tenor,
+                 :schedule_cron, :schedule_timezone, 'active', CURRENT_DATE)
+            ON CONFLICT(scheme_id) DO UPDATE SET
+                base_scheme_id=excluded.base_scheme_id, name=excluded.name,
+                owner=excluded.owner, description=excluded.description,
+                horizon=excluded.horizon, task_type=excluded.task_type,
+                runtime_type=excluded.runtime_type, tenors=excluded.tenors,
+                frequency=excluded.frequency, target_tenor=excluded.target_tenor,
+                schedule_cron=excluded.schedule_cron,
+                schedule_timezone=excluded.schedule_timezone, status='active'
+        """
+    else:
+        statement = """
+            INSERT INTO t_scheme_registry
+                (scheme_id, base_scheme_id, name, owner, description, horizon,
+                 task_type, runtime_type, tenors, frequency, target_tenor,
+                 schedule_cron, schedule_timezone, status, deployed_at)
+            VALUES
+                (:scheme_id, :base_scheme_id, :name, :owner, :description, :horizon,
+                 :task_type, :runtime_type, CAST(:tenors AS JSON), :frequency,
+                 :target_tenor, :schedule_cron, :schedule_timezone, 'active', CURRENT_DATE)
+            ON DUPLICATE KEY UPDATE
+                base_scheme_id=VALUES(base_scheme_id), name=VALUES(name),
+                owner=VALUES(owner), description=VALUES(description),
+                horizon=VALUES(horizon), task_type=VALUES(task_type),
+                runtime_type=VALUES(runtime_type), tenors=VALUES(tenors),
+                frequency=VALUES(frequency), target_tenor=VALUES(target_tenor),
+                schedule_cron=VALUES(schedule_cron),
+                schedule_timezone=VALUES(schedule_timezone), status='active'
+        """
+    conn.execute(text(statement), params)
+
+
+def _update_migration_registry_status_conn(
+    conn: Connection,
+    targets: Sequence[NativeSuccessorTarget],
+    *,
+    old: bool,
+    status: str,
+) -> None:
+    ids = [
+        registry_scheme_id(
+            target.old_base_scheme_id if old else target.new_base_scheme_id,
+            target.old_horizon if old else target.new_horizon,
+            target.target_tenor,
+        )
+        for target in targets
+    ]
+    placeholders = ", ".join(f":registry_id_{index}" for index, _ in enumerate(ids))
+    params: dict[str, object] = {
+        f"registry_id_{index}": value for index, value in enumerate(ids)
+    }
+    params["status"] = status
+    result = conn.execute(
+        text(
+            f"UPDATE t_scheme_registry SET status = :status "
+            f"WHERE scheme_id IN ({placeholders})"
+        ),
+        params,
+    )
+    if result.rowcount != len(ids):
+        raise RuntimeError(
+            "migration Registry update count mismatch: "
+            f"expected={len(ids)} actual={result.rowcount}"
+        )
+
+
+def _update_migration_version_status_conn(
+    conn: Connection,
+    configs: Mapping[str, SchemeConfig],
+    *,
+    from_status: str,
+    to_status: str,
+    runtime_type: str,
+    approved_by: str,
+    approved_at: datetime,
+) -> None:
+    for scheme_id in sorted(configs):
+        cfg = configs[scheme_id]
+        result = conn.execute(
+            text(
+                "UPDATE t_scheme_versions SET status = :to_status, "
+                "approved_by = :approved_by, approved_at = :approved_at "
+                "WHERE scheme_id = :scheme_id AND scheme_version = :scheme_version "
+                "AND runtime_type = :runtime_type AND status = :from_status"
+            ),
+            {
+                "to_status": to_status,
+                "approved_by": approved_by,
+                "approved_at": approved_at,
+                "scheme_id": scheme_id,
+                "scheme_version": cfg.scheme_version,
+                "runtime_type": runtime_type,
+                "from_status": from_status,
+            },
+        )
+        if result.rowcount != 1:
+            raise RuntimeError(
+                "migration exact version update count mismatch: "
+                f"{scheme_id}/{cfg.scheme_version} rowcount={result.rowcount}"
+            )
+
+
+def _publish_or_reuse_successor_facts_conn(
+    conn: Connection,
+    cfg: SchemeConfig,
+    expected_rows: Sequence[Mapping[str, object]],
+) -> None:
+    lock_clause = " FOR UPDATE" if _dialect_name(conn) != "sqlite" else ""
+    existing = conn.execute(
+        text(
+            "SELECT run_id, backtest_run_id, scheme_version, scheme_id, "
+            "target_tenor, horizon, predict_date, feature_date, target_date, "
+            "predicted_direction, backtest_actual_direction, confidence, "
+            "model_version, extra FROM t_scheme_predictions "
+            "WHERE scheme_id = :scheme_id AND backtest_run_id IS NOT NULL "
+            "ORDER BY target_tenor, horizon, target_date, predict_date"
+            + lock_clause
+        ),
+        {"scheme_id": cfg.scheme_id},
+    ).mappings().all()
+    if not existing:
+        inserted = _insert_run_predictions_conn(conn, expected_rows)
+        if inserted != len(expected_rows):
+            raise RuntimeError("successor backtest fact insert count mismatch")
+        return
+    if _native_successor_fact_rows_sha256(existing) != _native_successor_fact_rows_sha256(
+        expected_rows
+    ):
+        raise RuntimeError(
+            "existing successor backtest facts differ from exact persisted backtest"
+        )
+
+
+def _assert_native_successor_post_state_conn(
+    conn: Connection,
+    *,
+    targets: Sequence[NativeSuccessorTarget],
+    old_configs: Mapping[str, SchemeConfig],
+    new_configs: Mapping[str, SchemeConfig],
+    action: str,
+) -> None:
+    expected_old_version = "retired" if action == "cutover" else "active"
+    expected_new_version = "active" if action == "cutover" else "retired"
+    expected_old_registry = "archived" if action == "cutover" else "active"
+    expected_new_registry = "active" if action == "cutover" else "archived"
+    for configs, expected_status in (
+        (old_configs, expected_old_version),
+        (new_configs, expected_new_version),
+    ):
+        for scheme_id, cfg in configs.items():
+            status = conn.execute(
+                text(
+                    "SELECT status FROM t_scheme_versions WHERE scheme_id = :scheme_id "
+                    "AND scheme_version = :scheme_version"
+                ),
+                {"scheme_id": scheme_id, "scheme_version": cfg.scheme_version},
+            ).scalar_one_or_none()
+            if status != expected_status:
+                raise RuntimeError(f"migration version readback mismatch: {scheme_id}")
+    for old, expected_status in (
+        (True, expected_old_registry),
+        (False, expected_new_registry),
+    ):
+        rows = _migration_registry_rows_by_id_conn(conn, targets, old=old)
+        if any(row.get("status") != expected_status for row in rows.values()):
+            raise RuntimeError("migration Registry readback status mismatch")
 
 
 

@@ -661,6 +661,15 @@ def test_readback_failure_reports_failed_scheme_as_remaining(
         ),
         (
             "daily",
+            "T+1",
+            1,
+            (
+                ("2026-06-01", "2026-05-29", "2026-06-01"),
+                ("2026-06-02", "2026-06-01", "2026-06-02"),
+            ),
+        ),
+        (
+            "daily",
             "T+5",
             5,
             (

@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验日期**：2026-09-04
+**最后核验日期**：2026-09-05
 
 本文只记录当前稳定事实。实时方案、run、prediction、DataBridge、API 和调度状态必须从各自权威数据源
 读取；待推进工作见[统一后续推进计划](TODO.md)，生产规则见
@@ -45,7 +45,8 @@
 - 新方案只走 Blackbox V2 两文件 Intake；Native V1 只维护政策清单内存量身份。平台不反编译或改写
   Blackbox 算法逻辑，只验证平台接入和标准输出边界。
 - Blackbox 入库只保留“Intake → 一次完整持久化回测 → activate”；DataBridge producer 独立发布 generation，方案不构建、修复或重验 generation。Blackbox 不进入 Native `onboard`，不运行 StaticGate、CompareGate、额外 predict 冒烟或 `shadow-register`。
-- Blackbox `weekly_point/h1` 与日频 `T+5/h5` 的 target 半开区间批量已经在 ECS 与 Mac3 验证；一个方案只启动
+- Blackbox `weekly_point/h1` 与日频 `T+5/h5` 的 target 半开区间批量已经在 ECS 与 Mac3 验证；日频
+  `T+1/h1` 的同类能力已完成本地候选实现与回归，尚未做现场验证。一个方案只启动
   一个 batch，全部业务键由现有 repository 原子提交，下一自然调度 target 必须保留不占用。
 - Native 单日补缺复用自然调度的持久 Phase-A cache，并按 base scheme 独立提交。人工补缺只允许 hit 或
   单日 append；自然 daily one-shot 的已批准 publisher 可处理已证明且不超过 32 个交易日期的 suffix，
@@ -72,9 +73,10 @@
   `run_id/backtest_run_id` lineage，删除事实行的 phase 与 `updated_at`。回测发布行保留 immutable
   `backtest_actual_direction`，用于周末等没有 Actual 日期的历史目标；live 行该字段必须为空并继续关联 Actual。
   两端仍使用各自独立数据库，精确主机合同以现场 `current` release、migration history 和 API payload 为准。
-- `api_wind_indicators_all.factor_version` 已在两端源表完成存量 `V1.0` 初始化。两端第一份兼容 release
-  均能读取既有四文件 current，并能在不发布的 dry-run 中构造同一 1474 行 factor catalog；正式 current
-  仍保持四文件。首个五文件 generation 只能在各自主机 current/previous 都具备 frozen legacy V1 保护后开放。
+- `api_wind_indicators_all.factor_version` 已在两端源表完成存量 `V1.0` 初始化。ECS 当前已发布五文件
+  generation `full-20260904-063337-1b4dcb093f0b`，其中 factor catalog 为 1474 行；精确文件摘要、ready
+  receipt 与 current/previous 兼容性仍必须从 ECS 现场权威读回。Mac3 的 current generation 不从 ECS 状态
+  推断，生产操作前独立核验。
 - Mac3 production 与 ECS gray 的 installed plist/unit、服务状态、数据库写入、激活、补数和 DDL 都是
   独立操作，代码或文档提交不能外推为现场授权。
 - 未来把生产域名或 Writer 切到 ECS 是新的生产项目，不属于当前完成条件。

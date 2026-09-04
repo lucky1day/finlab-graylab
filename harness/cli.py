@@ -26,6 +26,13 @@ from harness.signal_gap_plan import (
     plan_signal_gap_target_range,
     plan_signal_gaps,
 )
+from harness.native_successor_migration import (
+    build_native_successor_preflight,
+    execute_native_successor_migration,
+    load_native_successor_waves,
+    select_native_successor_wave,
+    write_native_successor_equivalence_receipt,
+)
 from scheduler.discovery import load_scheme_config
 from scheduler.repository import create_engine_from_env
 from shared.blackbox_v2.intake import intake_delivery
@@ -135,6 +142,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "signal-gap-fill":
         return _run_signal_gap_fill_command(args)
+    if args.command == "migrate-native-successor":
+        result = _run_native_successor_migration_command(args)
+        print(
+            json.dumps(
+                result,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        return 0
     parser.error("unsupported command")
     return 1
 
@@ -238,7 +256,79 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     fill_parser.add_argument("--timeout-sec", type=int, default=600)
 
+    migration_parser = subparsers.add_parser("migrate-native-successor")
+    migration_actions = migration_parser.add_subparsers(
+        dest="migration_action",
+        required=True,
+    )
+    comparison = migration_actions.add_parser("prepare-equivalence")
+    comparison.add_argument("--wave", required=True)
+    comparison.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
+    comparison.add_argument("--comparison-bundle", type=Path, required=True)
+    comparison.add_argument(
+        "--old-scheme-id",
+        default=None,
+        help="required only by waves declared with switch_mode=per_scheme",
+    )
+    for action in ("preflight", "cutover", "rollback"):
+        item = migration_actions.add_parser(action)
+        item.add_argument("--wave", required=True)
+        item.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
+        item.add_argument(
+            "--old-scheme-id",
+            default=None,
+            help="required only by waves declared with switch_mode=per_scheme",
+        )
+        item.add_argument("--expected-database-name", required=True)
+        item.add_argument("--expected-server-uuid", required=True)
+        if action != "preflight":
+            item.add_argument("--expected-plan-sha256", required=True)
+            item.add_argument("--approved-by", required=True)
+
     return parser
+
+
+def _run_native_successor_migration_command(
+    args: argparse.Namespace,
+) -> dict[str, object]:
+    """执行临时跨 base 迁移命令；所有写入都委托给 repository。"""
+    project_root = args.project_root.resolve()
+    waves = load_native_successor_waves(
+        project_root / "deploy" / "native_to_blackbox_migration_v1.json"
+    )
+    wave = select_native_successor_wave(
+        waves,
+        args.wave,
+        old_scheme_id=args.old_scheme_id,
+    )
+    if args.migration_action == "prepare-equivalence":
+        return write_native_successor_equivalence_receipt(
+            project_root=project_root,
+            wave=wave,
+            comparison_bundle_path=args.comparison_bundle,
+        )
+    engine = create_engine_from_env()
+    try:
+        if args.migration_action == "preflight":
+            return build_native_successor_preflight(
+                engine,
+                project_root=project_root,
+                wave=wave,
+                expected_database_name=args.expected_database_name,
+                expected_server_uuid=args.expected_server_uuid,
+            )
+        return execute_native_successor_migration(
+            engine,
+            project_root=project_root,
+            wave=wave,
+            action=args.migration_action,
+            expected_plan_sha256=args.expected_plan_sha256,
+            approved_by=args.approved_by,
+            expected_database_name=args.expected_database_name,
+            expected_server_uuid=args.expected_server_uuid,
+        )
+    finally:
+        engine.dispose()
 
 
 def _run_gate(args: argparse.Namespace) -> GateResult:

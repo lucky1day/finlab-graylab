@@ -297,6 +297,7 @@ def plan_signal_gap_target_range(
         authority[0].horizon,
     ) not in {
         ("blackbox_v2", "weekly", "weekly_point", 1),
+        ("blackbox_v2", "daily", "T+1", 1),
         ("blackbox_v2", "daily", "T+5", 5),
     }:
         return _blocked_range_plan(

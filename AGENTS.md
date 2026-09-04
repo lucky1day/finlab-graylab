@@ -37,7 +37,7 @@
 
 - 长期目标是把仍在运行的 Native V1 存量方案逐批迁移为 Blackbox V2，最终只维护 Blackbox V2 Contract、Intake、Gate、执行与 lifecycle 一套入库范式。
 - 所有新算法、新方案、新目标、新任务和替代版本立即只允许 Blackbox V2；Native V1 在完成迁移前仅作存量维护，不再扩展身份或能力。
-- 迁移前先让 Blackbox 结果合同向后兼容地承载 Native 需要保留的 confidence 与必要审计字段；不得通过静默丢字段缩小“结果不变”的口径。
+- Native successor 继续遵守 Blackbox V2 的精确五字段 Result 合同；迁移等价只比较同一冻结输入下的 Request、`predict_date`、`feature_date`、`target_date` 与 `predicted_direction`。Native 的 confidence、vote score、阈值等只可作为迁移期临时诊断，不进入长期合同或数据库。
 - Native 迁移使用新的 Blackbox successor base ID，不原地修改 `runtime_type`，也不把平台 adapter 冒充 Blackbox。每批必须形成合法两文件交付，并证明输入截止、日期、结果字段、回测结果和性能与迁移前基线一致。
 - 迁移期间旧 Native 与新 Blackbox 的身份、Registry 切换、历史数据和回滚边界必须显式设计；不得双写、覆盖历史预测或让两个 Writer 同时拥有同一业务键。
 - 只有在等价验证、灰度观察、受控切换和回滚窗口闭环后，才能删除对应 Native adapter、source runner、回测 runner、专属 Gate 与测试；不得先删旧路径再验证新路径。

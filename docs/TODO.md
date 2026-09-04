@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验日期**：2026-09-04
+**最后核验日期**：2026-09-05
 
 本文只保留尚未发生的后续事项。当前稳定事实见[当前状态](CURRENT_STATUS.md)，生产规则见
 [生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。已完成事项通过 Git、Harness、数据库
@@ -29,42 +29,20 @@
 3. 未来若把生产域名或 Writer 从 Mac3 切到 ECS，必须作为新生产项目设计数据库 authority、单 Writer、
    DNS/Nginx、窗口和回滚，不能从灰度验收外推授权。
 
-## 稳定观察与后续晋级
+## Native V1 全量迁移
 
-1. Native 迁移近期暂停，最早在周末稳定窗口重新启动；窗口前只收集现场耗时和结果证据，不改方案身份、算法
-   或 Registry 所有权。
-2. 因子版本目录与存量方案 V1 输入保护已经完成本地候选实现、全量测试和独立审查，详见
-   [因子版本目录与存量方案输入保护设计](architecture/FACTOR_VERSIONED_INPUT_DRAFT.md)。该文档状态为
-   `LOCAL_CANDIDATE`；Mac3 与 ECS 已完成 nullable 字段和存量 `V1.0` 回填，旧 release dry-run 证明四文件
-   零漂移。源表 CRUD 属于独立项目，不是本任务前置条件；ECS 与 Mac3 均已完成第一份兼容 release 验证，但
-   DataBridge current 仍保持四文件。必须等待下一份有真实内容的兼容 release 晋级，使各自主机的
-   current/previous 都具备 V1 输入保护后，才可另行授权首个五文件 generation；不得用纯文档或空变更制造
-   第二份 release。
+26 个 Native base / 30 个业务 target 已进入按 wave 迁移到全新 Blackbox V2 successor 的执行阶段，权威身份
+映射、批次顺序、验收、回滚、停止条件和清理边界见
+[Native V1 全量迁移至 Blackbox V2](architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md)。首夜本地候选已完成
+原子迁移工具、日频 `T+1` gray target 区间能力及 6 个 T1/T5、3 个 weekly point successor；它们尚未形成
+ECS 当前 generation 的完整持久化 backtest 与受控 comparator receipt，因此不得执行 ECS activation、Registry
+切换、业务写库或 systemd 操作。
 
-## 周末 Native 迁移候选队列
-
-26 个 active Native 已按依赖关系分类。10 个 `liwei_0616_*` 方案依赖跨方案 Phase-A cache，继续保留 Native；
-只有上游能提供无需该持久共享 cache、可独立高效运行的 Blackbox V2 两文件 successor 时才重新评估。
-
-其余 16 个只在周末稳定窗口且收到合法 successor 交付后，按共享代码和耦合关系分批迁移，顺序固定为：
-
-1. monthly 0629 三方案；
-2. weekly average 0529 三方案；
-3. daily 0629 三方案；
-4. V28 两方案；
-5. weekly point 0529 三方案；
-6. 相互依赖的 `t1_daily + t5_daily` 两方案。
-
-每批开始条件是上游交付使用新 successor base ID 的合法两文件方案；平台不得从 Native 源码自行包装、改写或
-冒充 Blackbox。每批必须先冻结结果和性能基线，再完成 Intake、持久化回测、日期/结果/必要 extra 等价、性能不
-降低、双环境灰度、Registry 所有权切换与回滚窗口。只有该批闭环后才能删除该批专属 adapter、source/backtest
-runner、CompareGate 和测试；共享给未迁移 Native 的代码和测试不得提前删除。
-
-P2 真实零写入模拟已把完整 daily 墙钟降至约 12 分钟；P4 调度计划中的 discovery 与 lifecycle 解析仅为毫秒级，
-不是下一瓶颈。后续必须先用现场耗时证明算法执行中的明确收益，再修改代码；不为推测性收益增加缓存、模块、
-审计字段或第二套控制面。
-
-ECS 继续独立灰度运行；Mac3 域名、Nginx、DNS、数据库 authority 和生产 Writer 保持不变。
+V28 的 W2 与 Liwei 的 W3A-W3D 均已在冻结五文件和真实 Request 下触发性能硬停止条件，失败交付未保留，
+现有 Native 保持不变。daily/monthly 0629 与 weekly average 0529 共 9 个编译主体方案在可读源码到位前保持
+`BLOCKED_SOURCE`，禁止用 adapter、Darwin `.so` 或反推结果冒充 Blackbox 交付。因而 26 个 Native 的全量
+退役当前尚不能闭环。ECS 继续作为独立灰度实验室；现场 SSH 只读重采集、持久化回测、受控 receipt、Mac3
+晋级、launchd 操作与 confidence DDL 都仍是后续门槛，最终 Native 清理和 migration 025 不能提前执行。
 
 ## 统一停止条件
 

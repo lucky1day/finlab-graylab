@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "t1_daily_10y_bbv2",
+  "name": "0529原始T1-LGBM滚动基准 · 10Y Blackbox V2",
+  "description": "t1_daily 10Y successor；保留 Native 0529 T+1 的滚动 LightGBM、冷启动、阈值与七信号投票语义，仅将输入输出改为 Blackbox V2 Request 和五文件 DataBridge 合同。",
+  "algorithm_version": "1.0.0",
+  "target_tenor": "10Y",
+  "task_type": "T+1",
+  "horizon": 1,
+  "target_rule": "target_date_yield_vs_feature_date_yield",
+  "owner": "rl"
+}
