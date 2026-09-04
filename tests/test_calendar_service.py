@@ -63,6 +63,22 @@ class CalendarServiceTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.engine.dispose()
 
+    def test_trading_day_rule_excludes_makeup_weekends(self) -> None:
+        from shared.calendar_service import is_trading_day_row
+
+        cases = (
+            ("2024-09-13", "1", True),
+            ("2024-09-14", "1", False),
+            ("2024-09-16", "0", False),
+            ("2024-09-21", "0", False),
+        )
+        for day, trade_flag, expected in cases:
+            with self.subTest(day=day):
+                self.assertEqual(
+                    is_trading_day_row(day, trade_flag),
+                    expected,
+                )
+
     def test_nth_trading_day_after_uses_trade_calendar(self) -> None:
         from shared.calendar_service import get_calendar
 
