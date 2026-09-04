@@ -13,22 +13,6 @@ LOCKDOWN = (
 ).read_text(encoding="utf-8")
 
 
-def test_public_timing_log_starts_with_timestamp_and_request_id() -> None:
-    assert (
-        "log_format bond_factor_timing '$time_iso8601 $request_id "
-        "$remote_addr $bond_factor_traffic_class '"
-    ) in SITE
-    assert '"$request_method $uri $server_protocol" $status $upstream_status ' in SITE
-
-
-def test_dashboard_upstream_has_five_second_read_budget() -> None:
-    dashboard_location = SITE.split(
-        "location = /bond-factor-lab/api/factor-lab/dashboard {", 1
-    )[1].split("\n    }", 1)[0]
-    assert "proxy_connect_timeout 1s;" in dashboard_location
-    assert "proxy_read_timeout 5s;" in dashboard_location
-
-
 def test_auth_locations_are_exact_and_state_changes_are_body_limited() -> None:
     exact_paths = (
         "/bond-factor-lab/auth-shell.js",

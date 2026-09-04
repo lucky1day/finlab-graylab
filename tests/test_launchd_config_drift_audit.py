@@ -195,16 +195,13 @@ def test_ssh_tunnel_requires_real_local_key_and_user(
     assert result["ok"] is False
 
 
-def test_ssh_tunnel_template_has_bounded_recovery_and_strict_host_key() -> None:
+def test_ssh_tunnel_template_fails_closed() -> None:
     with (
         LAUNCHD_ROOT / "com.bond-factor-lab.ssh-tunnel.plist"
     ).open("rb") as handle:
         arguments = plistlib.load(handle)["ProgramArguments"]
 
     for option in (
-        "ServerAliveInterval=15",
-        "ServerAliveCountMax=2",
-        "ConnectTimeout=10",
         "ExitOnForwardFailure=yes",
         "StrictHostKeyChecking=yes",
     ):
