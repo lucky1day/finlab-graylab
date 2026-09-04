@@ -1,6 +1,6 @@
 # Bond Factor Lab — 项目规范
 
-> 本文是项目根规范（`CLAUDE.md` 与 `AGENTS.md` 内容一致）。架构细节以 `docs/` 为准，入口见 [docs/README.md](docs/README.md)。
+> `AGENTS.md` 是项目根规范的唯一来源；`CLAUDE.md` 只负责引导读取本文件。架构细节以 `docs/` 为准，入口见 [docs/README.md](docs/README.md)。
 
 ## 项目定位
 
@@ -15,7 +15,7 @@
 - 跨 release 状态不得无条件共用：日志和部署记录可永久外置；DataBridge、缓存和输入 artifact 只有通过既有 manifest、lineage、business digest、input state 与 ready gate 才能复用；源码 symlink 回滚不等于数据库、Python 环境或运行期状态回滚。
 - 跨主机补缺只允许在明确授权后复用同一已验证 release、方案版本、日期、输入摘要和 lineage 的精确结果；先停止目标 Writer，再由目标端 repository insert-only 导入。不得复制数据库主键、`run_id`、Actuals、回测或 Harness 历史，不得建立持续复制或双写；任一身份不匹配都必须重算。
 - 环境方案范围只由 `BFL_DEPLOYMENT_TARGET` 与 `deploy/scheme_deployment_matrix_v1.json` 表达；不得再通过为不同主机修改 canonical `config.yaml` 的 `status` 制造两个 `scheme_version`。
-- 用户口头说根目录 `agent.md` 时，优先理解为根目录 `AGENTS.md`；本项目要求 `AGENTS.md` 与 `CLAUDE.md` 内容一致，更新根规范时两者要同步。
+- 用户口头说根目录 `agent.md` 时，优先理解为根目录 `AGENTS.md`；更新根规范只修改 `AGENTS.md`，不得在 `CLAUDE.md` 复制规范正文。
 - 分支操作、提交或暂存前必须先核对工作区与相关分支；`outputs/`、未跟踪新方案和草稿未经明确要求不得纳入提交。
 - 默认执行方式为“主 agent 直接执行（inline-first）”：日常实现由主 agent 在当前会话完成。只有工作可安全拆成相互独立、可并行的子任务且预期能显著节省时间时，才使用 subagent；不得仅因任务复杂或可拆分就启用。该长期偏好只授权任务拆分与代码审查，不外推为生产切换、数据库写入、服务重启、破坏性操作、受保护分支发布或未决业务选择的授权。
 - 使用 subagent 时，只分派无共享写入冲突的独立工作流，并明确任务范围、相关文件、验收条件和不可触碰的边界。subagent 必须报告实际改动、验证结果与阻塞；主 agent 负责整合结果并对整体变更运行相关验证。
