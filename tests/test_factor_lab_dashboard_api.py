@@ -255,7 +255,7 @@ def test_dashboard_replaces_untrusted_request_id_before_logging(monkeypatch, cap
     )
     injected = "bad-request-id\nforged-log-line"
 
-    with caplog.at_level("INFO", logger="backend.main"):
+    with caplog.at_level("INFO", logger="uvicorn.error"):
         status, headers, _, _ = _request(
             main.app,
             headers=[(b"x-request-id", injected.encode("latin-1"))],
@@ -291,7 +291,7 @@ def test_dashboard_route_enforces_real_encoding_budgets(
         lambda _engine: payload,
     )
 
-    with caplog.at_level("INFO", logger="backend.main"):
+    with caplog.at_level("INFO", logger="uvicorn.error"):
         status, _, body, _ = _request(main.app)
 
     assert status == 503
@@ -318,7 +318,7 @@ def test_dashboard_503_logs_only_safe_failure_diagnostics(
     monkeypatch.setattr(main, "get_dashboard_engine", object)
     monkeypatch.setattr(main, "build_factor_lab_dashboard", fail)
 
-    with caplog.at_level("INFO", logger="backend.main"):
+    with caplog.at_level("INFO", logger="uvicorn.error"):
         status, _, body, _ = _request(main.app)
 
     assert status == 503

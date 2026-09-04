@@ -53,7 +53,7 @@ FRONTEND_ROOT = PROJECT_ROOT / "frontend"
 INDEX_CACHE_CONTROL = "no-cache, must-revalidate"
 VERSIONED_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
 UNVERSIONED_ASSET_CACHE_CONTROL = "no-cache, must-revalidate"
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn.error")
 _REQUEST_ID_PATTERN = re.compile(r"[!-~]{1,128}\Z", flags=re.ASCII)
 _EXCEPTION_CLASS_PATTERN = re.compile(
     r"[A-Za-z_][A-Za-z0-9_]{0,127}\Z",

@@ -146,10 +146,10 @@ def test_application_launchd_templates_bind_mac3_target() -> None:
 @pytest.mark.parametrize(
     ("key_path", "destination"),
     (
-        ("/Users/macstudio0/.ssh/<TUNNEL_KEY>", "<SSH_USER>@bond.finailab.cn"),
+        ("/Users/macstudio0/.ssh/<TUNNEL_KEY>", "<SSH_USER>@101.132.143.185"),
         (
             "  /Users/macstudio0/.ssh/<TUNNEL_KEY>  ",
-            "  <SSH_USER>@bond.finailab.cn  ",
+            "  <SSH_USER>@101.132.143.185  ",
         ),
         ("/does/not/exist", "not-a-host"),
     ),
@@ -168,7 +168,7 @@ def test_ssh_tunnel_requires_real_local_key_and_user(
         "/Users/macstudio0/.ssh/<TUNNEL_KEY>",
         "-R",
         "127.0.0.1:18100:127.0.0.1:8100",
-        "<SSH_USER>@bond.finailab.cn",
+        "<SSH_USER>@101.132.143.185",
     ]
     installed_payload = dict(template_payload)
     installed_payload["ProgramArguments"] = list(
@@ -193,6 +193,22 @@ def test_ssh_tunnel_requires_real_local_key_and_user(
         "ProgramArguments[6]",
     ]
     assert result["ok"] is False
+
+
+def test_ssh_tunnel_template_has_bounded_recovery_and_strict_host_key() -> None:
+    with (
+        LAUNCHD_ROOT / "com.bond-factor-lab.ssh-tunnel.plist"
+    ).open("rb") as handle:
+        arguments = plistlib.load(handle)["ProgramArguments"]
+
+    for option in (
+        "ServerAliveInterval=15",
+        "ServerAliveCountMax=2",
+        "ConnectTimeout=10",
+        "ExitOnForwardFailure=yes",
+        "StrictHostKeyChecking=yes",
+    ):
+        assert option in arguments
 
 
 def test_loaded_program_workdir_and_trigger_must_match_installed_plist(

@@ -38,10 +38,10 @@ DEFAULT_RUNTIME_ROOT = Path("/Users/macstudio0/bond-factor-lab-runtime")
 
 SSH_TUNNEL_LOCAL_ARGUMENT_PLACEHOLDERS = {
     "/Users/macstudio0/.ssh/<TUNNEL_KEY>",
-    "<SSH_USER>@bond.finailab.cn",
+    "<SSH_USER>@101.132.143.185",
 }
 SSH_TUNNEL_KEY_PLACEHOLDER = "/Users/macstudio0/.ssh/<TUNNEL_KEY>"
-SSH_TUNNEL_REMOTE = re.compile(r"^[^@<>\s]+@bond\.finailab\.cn$")
+SSH_TUNNEL_REMOTE = re.compile(r"^[^@<>\s]+@101\.132\.143\.185$")
 ALWAYS_RUNNING_LABELS = frozenset(
     {BACKEND_LABEL, "com.bond-factor-lab.ssh-tunnel"}
 )

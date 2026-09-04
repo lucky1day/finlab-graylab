@@ -217,14 +217,24 @@ def test_live_prediction_query_uses_one_tuple_scope_predicate() -> None:
             text(
                 """INSERT INTO t_scheme_predictions VALUES
                 (2,'another_daily','10Y',1,'2026-06-01','2026-05-29',
-                 '2026-06-02',-1,NULL,'{}')"""
+                 '2026-06-02',-1,NULL,'{}'),
+                (4,'demo_daily','5Y',5,'2026-06-02','2026-06-01',
+                 '2026-06-09',-1,NULL,'{}')"""
             )
         )
         rows = _read_product_predictions(
             connection,
             [
-                {"base_scheme_id": "demo_daily", "target_tenor": "5Y"},
-                {"base_scheme_id": "another_daily", "target_tenor": "10Y"},
+                {
+                    "base_scheme_id": "demo_daily",
+                    "target_tenor": "5Y",
+                    "horizon": 1,
+                },
+                {
+                    "base_scheme_id": "another_daily",
+                    "target_tenor": "10Y",
+                    "horizon": 1,
+                },
             ],
         )
 
@@ -234,7 +244,10 @@ def test_live_prediction_query_uses_one_tuple_scope_predicate() -> None:
         if "SELECT id, scheme_id" in sql
         and "FROM t_scheme_predictions" in sql
     )
-    assert "WHERE (scheme_id, target_tenor) IN ((?, ?), (?, ?))" in query
+    assert (
+        "WHERE (scheme_id, target_tenor, horizon) "
+        "IN ((?, ?, ?), (?, ?, ?))"
+    ) in query
     assert " OR " not in query
     assert [int(row["id"]) for row in rows] == [2, 2, 1, 3]
 

@@ -8,12 +8,12 @@ from sqlalchemy.engine import Engine, URL
 from scheduler.repository import create_engine_from_env
 from shared.db_config import DatabaseConfig
 
-# Dashboard 的 public upstream 预算是 3 秒；驱动 I/O 和单条 SELECT 都须
+# Dashboard 的 public upstream 预算是 5 秒；驱动 I/O 和单条 SELECT 都须
 # 在预算内 fail-closed，避免同步 snapshot owner 永久占住 single-flight。
 _DASHBOARD_DB_CONNECT_TIMEOUT_SECONDS = 0.5
-_DASHBOARD_DB_READ_TIMEOUT_SECONDS = 0.75
+_DASHBOARD_DB_READ_TIMEOUT_SECONDS = 2.0
 _DASHBOARD_DB_WRITE_TIMEOUT_SECONDS = 0.5
-_DASHBOARD_DB_MAX_EXECUTION_TIME_MS = 500
+_DASHBOARD_DB_MAX_EXECUTION_TIME_MS = 1000
 _DASHBOARD_DB_POOL_RECYCLE_SECONDS = 300
 
 

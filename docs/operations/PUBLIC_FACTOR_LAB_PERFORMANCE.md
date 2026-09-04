@@ -18,11 +18,11 @@ TTL、single-flight 或 last-known-good（LKG）快照。
 - 数据库和 dashboard 构建成功：返回 `200` 当前数据。
 - 数据库连接、查询或构建失败：返回 `503`，正文仅为
   `{"error_code":"dashboard_data_unavailable"}`。
-- 前端收到失败后清空已提交的数据并显示“数据不可用”；不得继续显示旧数据、旧时间或
-  “数据已过期”。
+- 前端首次读取失败时显示“数据不可用”。已有成功快照后的刷新失败保留完整已提交视图，明确
+  显示最近成功 `generated_at` 并标为 `stale`；不得把 stale 描述成当前最新数据。
 
-Dashboard 使用独立只读 Engine，连接超时为 `0.5s`、读超时为 `0.75s`、写超时为 `0.5s`，
-单条 MySQL 查询上限为 `500ms`；连接池开启 `pool_pre_ping`，并在 `300s` 回收连接，避免
+Dashboard 使用独立只读 Engine，连接超时为 `0.5s`、读超时为 `2s`、写超时为 `0.5s`，
+单条 MySQL 查询上限为 `1000ms`；连接池开启 `pool_pre_ping`，并在 `300s` 回收连接，避免
 复用断开的长连接。
 
 Dashboard 是数据库业务结果视图：active Registry 即使尚无 live prediction 也会出现在 summary；有什么
@@ -81,3 +81,6 @@ Dashboard 读路径，统一遵循[生产信号与调度治理](../architecture/
 收到 `503 dashboard_data_unavailable` 时，先检查数据库可用性和当前 route 的安全日志；
 不要用旧 dashboard 数据掩盖故障，也不要为诊断擅自重启服务、修改 installed plist、执行
 `launchctl` 或写生产数据库。这些操作均需要独立授权。
+
+浏览器 stale 状态只保留当前会话已成功取得的完整快照并醒目标注时间，不改变上述服务端边界。
+刷新周期、重试和公网三点探针见[公网刷新与链路可靠性](PUBLIC_FACTOR_LAB_REFRESH_RELIABILITY.md)。

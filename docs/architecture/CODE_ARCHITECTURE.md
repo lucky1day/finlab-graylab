@@ -232,14 +232,15 @@ python -m backtests.{scheme_id}_reproduction [--no-persist]
        ├─ active registry + live predictions + scoped actuals + latest backtest 批量 SELECT
        └─ canonical 选择 → compact V3 response → gzip/identity 表示
 
-数据库或构建失败时 route 直接返回 `503 dashboard_data_unavailable`；不保留进程内
-last-known-good 数据，也不对前端返回 stale 快照。
+数据库或构建失败时 route 直接返回 `503 dashboard_data_unavailable`；后端不保留进程内
+last-known-good 数据，也不返回 stale 快照。浏览器若已经提交过成功快照，则在刷新失败时保留该
+完整视图并明确标为 `stale`；首次读取失败仍进入不可用状态。
 
 ```
 
 dashboard snapshot 是 L4 唯一前端读模型：不提供算法输入、不写库、不修改任何方案 core，
 因此不改变 §3.3 的输入单点、写库单点、Native core 纯净和源算法保真四条不变量。
-Dashboard 是唯一业务读模型；失败时前端直接进入统一错误态并按既有节奏重试。不得恢复细粒度
+Dashboard 是唯一业务读模型；失败时前端按当前是否存在成功快照进入 stale 或不可用状态。不得恢复细粒度
 schemes、metrics 或 backtest 展示 API，也不得在浏览器中重建第二套聚合。
 Dashboard 不读取 run、DataBridge 日期或交易日历，也不推导调度是否到期或缺失；这些结论只由
 scheduler、run、宿主调度日志和受控 gap-fill 链路处理。

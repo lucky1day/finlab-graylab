@@ -707,22 +707,27 @@ def _read_product_predictions(
     *,
     target_date_range: tuple[str, str] | None = None,
 ) -> list[Mapping[str, Any]]:
-    pairs = sorted(
+    scopes = sorted(
         {
-            (str(row["base_scheme_id"]), str(row["target_tenor"]))
+            (
+                str(row["base_scheme_id"]),
+                str(row["target_tenor"]),
+                int(row["horizon"]),
+            )
             for row in registry_rows
         }
     )
     params: dict[str, Any] = {}
     scope_placeholders: list[str] = []
-    for index, (base_scheme_id, target_tenor) in enumerate(pairs):
+    for index, (base_scheme_id, target_tenor, horizon) in enumerate(scopes):
         scope_placeholders.append(
-            f"(:base_scheme_id_{index}, :target_tenor_{index})"
+            f"(:base_scheme_id_{index}, :target_tenor_{index}, :horizon_{index})"
         )
         params[f"base_scheme_id_{index}"] = base_scheme_id
         params[f"target_tenor_{index}"] = target_tenor
+        params[f"horizon_{index}"] = horizon
     where_clause = (
-        "(scheme_id, target_tenor) IN ("
+        "(scheme_id, target_tenor, horizon) IN ("
         + ", ".join(scope_placeholders)
         + ")"
         if scope_placeholders
@@ -742,7 +747,7 @@ def _read_product_predictions(
         f"""
         SELECT id, scheme_id, target_tenor, horizon, predict_date,
                feature_date, target_date, predicted_direction,
-               backtest_actual_direction, extra
+               backtest_actual_direction
         FROM t_scheme_predictions
         WHERE {where_clause}{date_filter}
         ORDER BY target_date, predict_date, id

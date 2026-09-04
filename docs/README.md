@@ -30,6 +30,7 @@
 | [登录与账户管理](architecture/AUTHENTICATION_AND_ACCOUNT_MANAGEMENT.md) | 登录、会话、账户和管理员安全合同 | 是 |
 | [产品手册](product/GRAY_LAB_USER_MANUAL.md) | 当前用户手册 | 是 |
 | [公网性能验收](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md) | Dashboard 性能和故障处理边界 | 是 |
+| [公网刷新与链路可靠性](operations/PUBLIC_FACTOR_LAB_REFRESH_RELIABILITY.md) | Dashboard 刷新、降级和三点探针 | 是 |
 | [Blackbox V2](blackbox_v2/README.md) | V2 专属数据、生产准备和证据边界 | 是 |
 | [Native V1](native_v1/README.md) | 存量方案维护 | 仅存量维护 |
 | [统一后续推进计划](TODO.md) | 当前未批准工作的顺序与停止条件 | 是 |

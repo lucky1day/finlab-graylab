@@ -13,9 +13,11 @@
 
   存活策略：
     - KeepAlive=true        ssh 进程退出后由 launchd 拉起（应对网络抖动/休眠）。
-    - ServerAliveInterval   30s 无响应探测一次，连续 3 次失败即断开退出，
+    - ServerAliveInterval   15s 无响应探测一次，连续 2 次失败即断开退出，
       ServerAliveCountMax   交给 launchd 重连，避免“僵尸隧道”占着端口不转发。
+    - ConnectTimeout        连接阶段最多等待 10s，避免失效网络路径长期占住进程。
     - ExitOnForwardFailure  远端端口转发建立失败立即退出重试，不静默挂起。
+    - StrictHostKeyChecking 必须使用预先核验并写入 known_hosts 的主机密钥。
     - ThrottleInterval=10   防止异常时每秒疯狂重启。
   ===========================================================================
 -->
@@ -33,20 +35,22 @@
     <string>-N</string>
     <string>-T</string>
     <string>-o</string>
-    <string>ServerAliveInterval=30</string>
+    <string>ServerAliveInterval=15</string>
     <string>-o</string>
-    <string>ServerAliveCountMax=3</string>
+    <string>ServerAliveCountMax=2</string>
+    <string>-o</string>
+    <string>ConnectTimeout=10</string>
     <string>-o</string>
     <string>ExitOnForwardFailure=yes</string>
     <string>-o</string>
-    <string>StrictHostKeyChecking=accept-new</string>
+    <string>StrictHostKeyChecking=yes</string>
     <string>-o</string>
     <string>IdentitiesOnly=yes</string>
     <string>-i</string>
     <string>/Users/macstudio0/.ssh/&lt;TUNNEL_KEY&gt;</string>
     <string>-R</string>
     <string>127.0.0.1:18100:127.0.0.1:8100</string>
-    <string>&lt;SSH_USER&gt;@bond.finailab.cn</string>
+    <string>&lt;SSH_USER&gt;@101.132.143.185</string>
   </array>
 
   <key>RunAtLoad</key>

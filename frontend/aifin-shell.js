@@ -201,8 +201,8 @@
   var factorLabApiError = "";
   var factorLabDataMode = "loading";
   var factorLabDrawerSelection = null;
-  var FACTOR_LAB_HEALTHY_REFRESH_MS = 60000;
-  var FACTOR_LAB_RETRY_DELAYS_MS = [1000, 2000, 5000, 10000, 30000];
+  var FACTOR_LAB_HEALTHY_REFRESH_MS = 300000;
+  var FACTOR_LAB_RETRY_DELAYS_MS = [10000, 30000, 60000, 300000];
   var factorLabRuntimeState = {
     authenticated: false,
     loadSeq: 0,
@@ -215,7 +215,10 @@
     aggregateCache: new Map(),
     detailCache: new Map(),
     detailSeq: 0,
-    detailController: null
+    detailController: null,
+    lastAttemptAt: 0,
+    lastSuccessfulAt: 0,
+    lastSuccessfulGeneratedAt: ""
   };
   window.__factorLabReady = null;
 
@@ -252,6 +255,11 @@
     var slashMatch = text.match(/^(\d{4})\/(\d{2})\/(\d{2})/);
     if (slashMatch) return slashMatch[1] + "/" + slashMatch[2] + "/" + slashMatch[3];
     return text;
+  }
+
+  function formatFactorLabGeneratedAt(value) {
+    var text = String(value || "");
+    return text.length >= 16 ? text.slice(0, 16).replace("T", " ") : "最近成功时间未知";
   }
 
   function normalizeIsoDate(value) {
@@ -823,7 +831,9 @@
     if (!DASHBOARD_SNAPSHOT_ID_PATTERN.test(snapshotId)) {
       throw dashboardDataError("snapshot_id must be canonical");
     }
-    requireDashboardAwareDateTime(payload.generated_at, "generated_at");
+    var generatedAt = requireDashboardAwareDateTime(
+      payload.generated_at, "generated_at"
+    );
     var displayUntil = requireDashboardIsoDate(payload.display_until, "display_until");
     var liveTargetStartDate = requireDashboardIsoDate(
       payload.live_target_start_date, "live_target_start_date"
@@ -917,6 +927,7 @@
 
     return {
       snapshotId: snapshotId,
+      generatedAt: generatedAt,
       displayUntil: displayUntil,
       liveTargetStartDate: liveTargetStartDate,
       targetLabels: targetLabels,
@@ -1087,6 +1098,7 @@
       tasks: viewModel.tasks,
       targetLabels: viewModel.targetLabels,
       snapshotId: viewModel.snapshotId,
+      generatedAt: decoded.generatedAt,
       displayUntil: viewModel.displayUntil,
       liveTargetStartDate: viewModel.liveTargetStartDate,
       source: "dashboard"
@@ -1157,6 +1169,8 @@
       committed: factorLabRuntimeState.committedViewModel,
       aggregateCache: factorLabRuntimeState.aggregateCache,
       detailCache: factorLabRuntimeState.detailCache,
+      lastSuccessfulAt: factorLabRuntimeState.lastSuccessfulAt,
+      lastSuccessfulGeneratedAt: factorLabRuntimeState.lastSuccessfulGeneratedAt,
       ui: cloneFactorLabUiState(),
       drawer: factorLabDrawerSelection
     };
@@ -1166,10 +1180,12 @@
       factorLabRemoteLoaded = true;
       factorLabRemoteLoading = false;
       factorLabApiError = "";
-      factorLabDataMode = candidate.source;
+      factorLabDataMode = "fresh";
       factorLabRuntimeState.committedViewModel = candidate;
       factorLabRuntimeState.aggregateCache = new Map();
       factorLabRuntimeState.detailCache = new Map();
+      factorLabRuntimeState.lastSuccessfulAt = factorLabNow();
+      factorLabRuntimeState.lastSuccessfulGeneratedAt = candidate.generatedAt;
 
       var availableTasks = Object.keys(factorTaskSchemes).filter(function (key) {
         return factorTaskSchemes[key].length > 0;
@@ -1202,6 +1218,8 @@
       factorLabRuntimeState.committedViewModel = previous.committed;
       factorLabRuntimeState.aggregateCache = previous.aggregateCache;
       factorLabRuntimeState.detailCache = previous.detailCache;
+      factorLabRuntimeState.lastSuccessfulAt = previous.lastSuccessfulAt;
+      factorLabRuntimeState.lastSuccessfulGeneratedAt = previous.lastSuccessfulGeneratedAt;
       factorLabDrawerSelection = previous.drawer;
       restoreFactorLabUiState(previous.ui);
       throw error;
@@ -1237,20 +1255,24 @@
     factorLabRemoteLoading = false;
     factorLabRuntimeState.controller = null;
     factorLabRuntimeState.consecutiveFailures += 1;
-    factorTaskSchemes = initEmptyTaskSchemes();
-    factorTargetLabels = Object.assign(Object.create(null), factorDefaultTargetLabels);
-    factorLabRuntimeState.committedViewModel = null;
-    factorLabRuntimeState.aggregateCache = new Map();
-    factorLabRuntimeState.detailCache = new Map();
-    factorLabRuntimeState.detailSeq += 1;
-    if (factorLabRuntimeState.detailController &&
-        typeof factorLabRuntimeState.detailController.abort === "function") {
-      factorLabRuntimeState.detailController.abort("summary-failed");
+    if (factorLabRuntimeState.committedViewModel) {
+      factorLabDataMode = "stale";
+      renderFactorLabDataStatus();
+    } else {
+      factorTaskSchemes = initEmptyTaskSchemes();
+      factorTargetLabels = Object.assign(Object.create(null), factorDefaultTargetLabels);
+      factorLabRuntimeState.aggregateCache = new Map();
+      factorLabRuntimeState.detailCache = new Map();
+      factorLabRuntimeState.detailSeq += 1;
+      if (factorLabRuntimeState.detailController &&
+          typeof factorLabRuntimeState.detailController.abort === "function") {
+        factorLabRuntimeState.detailController.abort("summary-failed");
+      }
+      factorLabRuntimeState.detailController = null;
+      factorLabDataMode = "error";
+      closeFactorCalendar();
+      renderFactorLab();
     }
-    factorLabRuntimeState.detailController = null;
-    factorLabDataMode = "error";
-    closeFactorCalendar();
-    renderFactorLab();
     var delayIndex = Math.min(
       factorLabRuntimeState.consecutiveFailures - 1,
       FACTOR_LAB_RETRY_DELAYS_MS.length - 1
@@ -1262,21 +1284,34 @@
   function loadFactorLabData(options) {
     var force = options && options.force === true;
     if (!factorLabRuntimeState.authenticated || !window.fetch) return Promise.resolve(false);
-    if (!force && (factorLabRemoteLoaded || factorLabRemoteLoading)) {
+    if (factorLabRemoteLoading) return Promise.resolve(false);
+    if (!force && factorLabRemoteLoaded) {
+      if (factorLabRuntimeState.refreshTimer === null &&
+          factorLabRuntimeState.committedViewModel &&
+          document.visibilityState !== "hidden" && getActiveView() === "factor-lab") {
+        var snapshotAge = factorLabNow() - factorLabRuntimeState.lastSuccessfulAt;
+        scheduleFactorLabRefresh(Math.max(
+          0, FACTOR_LAB_HEALTHY_REFRESH_MS - snapshotAge
+        ));
+      }
       return Promise.resolve(false);
     }
 
     clearFactorLabRefreshTimer();
     var seq = factorLabRuntimeState.loadSeq + 1;
     factorLabRuntimeState.loadSeq = seq;
-    window.__factorLabReady = null;
+    if (!factorLabRuntimeState.committedViewModel) window.__factorLabReady = null;
     if (factorLabRuntimeState.controller &&
         typeof factorLabRuntimeState.controller.abort === "function") {
       factorLabRuntimeState.controller.abort("superseded");
     }
     var controller = window.AbortController ? new window.AbortController() : null;
     factorLabRuntimeState.controller = controller;
+    factorLabRuntimeState.lastAttemptAt = factorLabNow();
     factorLabRemoteLoading = true;
+    factorLabDataMode = factorLabRuntimeState.committedViewModel
+      ? "refreshing"
+      : "loading";
     renderFactorLabDataStatus();
     var signal = controller ? controller.signal : null;
 
@@ -1310,7 +1345,17 @@
         return;
       }
       if (getActiveView() === "factor-lab" && !factorLabRemoteLoading) {
-        loadFactorLabData({ force: true });
+        var snapshotAge = factorLabRuntimeState.lastSuccessfulAt
+          ? factorLabNow() - factorLabRuntimeState.lastSuccessfulAt
+          : FACTOR_LAB_HEALTHY_REFRESH_MS;
+        if (factorLabRuntimeState.consecutiveFailures > 0 ||
+            snapshotAge >= FACTOR_LAB_HEALTHY_REFRESH_MS) {
+          loadFactorLabData({ force: true });
+        } else {
+          scheduleFactorLabRefresh(
+            FACTOR_LAB_HEALTHY_REFRESH_MS - snapshotAge
+          );
+        }
       }
     });
   }
@@ -1341,6 +1386,9 @@
     factorLabRuntimeState.committedViewModel = null;
     factorLabRuntimeState.aggregateCache = new Map();
     factorLabRuntimeState.detailCache = new Map();
+    factorLabRuntimeState.lastAttemptAt = 0;
+    factorLabRuntimeState.lastSuccessfulAt = 0;
+    factorLabRuntimeState.lastSuccessfulGeneratedAt = "";
     factorTaskSchemes = initEmptyTaskSchemes();
     factorTargetLabels = Object.assign(Object.create(null), factorDefaultTargetLabels);
     factorLabRemoteLoaded = false;
@@ -1475,12 +1523,17 @@
     var status = document.getElementById("factorDataStatus");
     var text = document.getElementById("factorDataStatusText");
     if (!status || !text) return;
-    ["is-loading", "is-fresh", "is-error"].forEach(function (className) {
+    ["is-loading", "is-fresh", "is-stale", "is-error"].forEach(function (className) {
       status.classList.remove(className);
     });
     if (factorLabRemoteLoading) {
       status.classList.add("is-loading");
       text.textContent = "数据刷新中";
+    } else if (factorLabApiError && factorLabRuntimeState.committedViewModel) {
+      status.classList.add("is-stale");
+      text.textContent = "刷新失败，显示 " + formatFactorLabGeneratedAt(
+        factorLabRuntimeState.lastSuccessfulGeneratedAt
+      ) + " 数据";
     } else if (factorLabApiError) {
       status.classList.add("is-error");
       text.textContent = "数据不可用";
@@ -1492,13 +1545,19 @@
       text.textContent = "Loading";
     }
     status.setAttribute("data-data-state", factorLabDataMode);
-    status.setAttribute("title", factorLabApiError || text.textContent);
+    status.setAttribute(
+      "title",
+      factorLabApiError && factorLabRuntimeState.committedViewModel
+        ? text.textContent + "；" + factorLabApiError
+        : factorLabApiError || text.textContent
+    );
   }
 
   function factorLabSchemeCountsAvailable(dataState) {
     var state = dataState || {};
-    return Boolean(state.remoteLoaded && !state.remoteLoading && !state.apiError &&
-      state.dataMode !== "loading" && state.dataMode !== "error");
+    return Boolean(state.hasCommitted ||
+      (state.remoteLoaded && !state.remoteLoading && !state.apiError &&
+        state.dataMode !== "loading" && state.dataMode !== "error"));
   }
 
   function currentFactorLabDataState() {
@@ -1506,7 +1565,8 @@
       remoteLoaded: factorLabRemoteLoaded,
       remoteLoading: factorLabRemoteLoading,
       apiError: factorLabApiError,
-      dataMode: factorLabDataMode
+      dataMode: factorLabDataMode,
+      hasCommitted: Boolean(factorLabRuntimeState.committedViewModel)
     };
   }
 
