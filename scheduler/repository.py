@@ -4009,7 +4009,11 @@ def _native_successor_migration_plan_conn(
         row = exact_versions[scheme_id]
         if row is not None:
             _assert_migration_version_identity(cfg, row)
-    for scheme_id in all_ids:
+    # Native V1 历史入库并未维护“同 base 唯一 active version”不变量；现场可能
+    # 保留多个旧 active 行。迁移只切换仓库当前 config 对应的 exact version，
+    # 因而不能改写或用这些历史行阻断 predecessor。successor 则必须继续满足
+    # 唯一 active version，避免新运行时出现第二个可执行身份。
+    for scheme_id in new_ids:
         other_active = [
             row for row in version_rows
             if row.get("scheme_id") == scheme_id

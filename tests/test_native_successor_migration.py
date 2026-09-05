@@ -1254,6 +1254,69 @@ def test_stale_plan_hash_and_mid_transaction_failure_leave_state_unchanged() -> 
         ).scalar_one() == 1
 
 
+def test_cutover_preserves_historical_active_native_version_rows() -> None:
+    engine, old, new, target, evidence = _fixture()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO t_scheme_versions "
+                "(scheme_id, scheme_version, runtime_type, code_hash, config_hash, "
+                "manifest_hash, status) VALUES "
+                "(:scheme_id, 'historical-native-v0', 'native_adapter', "
+                "'old-code', 'old-config', NULL, 'active')"
+            ),
+            {"scheme_id": old.scheme_id},
+        )
+    inputs = _inputs(old, new, target, evidence)
+    plan = read_native_successor_migration_plan(engine, **inputs)
+    with patch(
+        "scheduler.repository._upsert_scheme_version_conn",
+        side_effect=_sqlite_upsert,
+    ):
+        apply_native_successor_migration(
+            engine,
+            action="cutover",
+            expected_plan_sha256=native_successor_plan_sha256(plan),
+            approved_by="operator-a",
+            approved_at=datetime(2026, 9, 5, tzinfo=timezone.utc),
+            **_apply_inputs(inputs),
+        )
+    with engine.begin() as conn:
+        statuses = dict(
+            conn.execute(
+                text(
+                    "SELECT scheme_version, status FROM t_scheme_versions "
+                    "WHERE scheme_id = :scheme_id"
+                ),
+                {"scheme_id": old.scheme_id},
+            ).all()
+        )
+    assert statuses == {
+        "historical-native-v0": "active",
+        old.scheme_version: "retired",
+    }
+
+
+def test_preflight_rejects_other_active_successor_version() -> None:
+    engine, old, new, target, evidence = _fixture()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO t_scheme_versions "
+                "(scheme_id, scheme_version, runtime_type, code_hash, config_hash, "
+                "manifest_hash, status) VALUES "
+                "(:scheme_id, 'other-bb-version', 'blackbox_v2', "
+                "'other-code', 'other-config', 'other-manifest', 'active')"
+            ),
+            {"scheme_id": new.scheme_id},
+        )
+    with pytest.raises(RuntimeError, match="unexpected active exact version"):
+        read_native_successor_migration_plan(
+            engine,
+            **_inputs(old, new, target, evidence),
+        )
+
+
 def test_registry_schedule_drift_blocks_cutover() -> None:
     engine, old, new, target, evidence = _fixture()
     inputs = _inputs(old, new, target, evidence)
