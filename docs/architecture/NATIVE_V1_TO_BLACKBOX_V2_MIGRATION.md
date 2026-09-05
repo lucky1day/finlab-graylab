@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W1-W2_CODE_AND_OFFLINE_EVIDENCE_READY; W3_BLOCKED_PERFORMANCE; W4_MAC3_BINARY_BUNDLE_ACCEPTED; ECS_READ_ONLY_RECAPTURED`
+**执行状态**：`W1_ECS_BACKTEST_READY; W2_ECS_BLOCKED_PERFORMANCE; W3_BLOCKED_PERFORMANCE; W4_MAC3_BINARY_BUNDLE_ACCEPTED`
 
 **基线日期**：2026-09-05 Asia/Shanghai
 
@@ -217,7 +217,7 @@ canonical config 固定。Request 区间和代码 hash 在测试
 | W1B | `weekly_5y_direct_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `59909549fee682c61a90c1394672f40b7204f67e35f692b04577cc49498a19c8` | ECS_0905_FULL_COMPARATOR_PASSED |
 | W1B | `weekly_7y_cross_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `fb2baa38fa8b614737f0c2f87bff90626e2d8d268e5375362bf863554096e680` | ECS_0905_FULL_COMPARATOR_PASSED |
 | W1B | `weekly_10y_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `e52e221a0046e8623107359b4fe3c2f7643e422b3ed9068c0cf317e9cdeafeed` | ECS_0905_FULL_COMPARATOR_PASSED |
-| W2 | 两个 `daily_*_v28_bbv2` | 完整五文件；V28 daily/weekly/monthly 因子与真实 T+5 grid | feature 2025-01-02..2026-05-22；各 333 条 | 5Y `bb1323ae7dfdf7eb2c31d52a676bfef6593ee65ed3d326126d424bfbe2ef7986`；7Y `caad2438c5fa6ad627689e24aa4eff2f0a02062efa6790b375e73e94c05118a2` | TARGET_ENV_CONFORMANCE_PASSED |
+| W2 | 两个 `daily_*_v28_bbv2` | 完整五文件；V28 daily/weekly/monthly 因子与真实 T+5 grid | feature 2025-01-02..2026-05-22；各 333 条 | 5Y `bb1323ae7dfdf7eb2c31d52a676bfef6593ee65ed3d326126d424bfbe2ef7986`；7Y `caad2438c5fa6ad627689e24aa4eff2f0a02062efa6790b375e73e94c05118a2` | ECS_BLOCKED_PERFORMANCE |
 | W3A | 两个 5Y cache-family successor | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2026-08-28 | 未生成 | BLOCKED_PERFORMANCE |
 | W3B | 三个 10Y cache-family successor | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2026-08-28 | 未生成 | BLOCKED_PERFORMANCE |
 | W3C-D | 五个 `liwei_0616_*_bbv2` | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2026-08-28 | 未生成 | BLOCKED_PERFORMANCE |
@@ -281,7 +281,13 @@ delivery 的进程峰值均为 7 个 OS thread、无子进程。predict/backtest
 等价身份的一部分。W2 已在 ECS 当前 generation `full-20260905-063321-21c5c7188fa5` 上经正式
 `forecast_env_blackbox_v1` executor 完成 2×333 条全量比较，五类 mismatch 均为 0；canonical receipt
 SHA-256 为 `c9eaf7bbc4c5f5c648cac9d7e6e3bdf472e6cf4d4af9f5542501cfd5a541a9fa`，comparator source SHA-256 与
-W1 相同。尚未执行持久化回测、现场 preflight 或切换。
+W1 相同。尚无成功的持久化回测，也未执行现场 preflight 或切换。
+
+2026-09-06 在 ECS 4-vCPU 主机上使用预安装 immutable release 和正式 `forecast_env_blackbox_v1` executor
+执行 5Y 完整持久化回测时，于 1800 秒硬超时终止；算法仍在正常逐月计算，未生成完整 Output，repository 未写入
+任何 W2 backtest run/fact，7Y 因原子 wave fail-fast 未启动。ECS 增加第五 worker 会超卖 CPU，不能作为满足
+门槛的可靠修复。因此 W2 两个 old Native 保留 `aliyun-gray` 部署范围，W2 不进入 cutover；后续必须提供降低
+总计算量但不改变 grid、seed、cutoff 与窗口语义的实现，或更换满足既定门槛的 ECS 计算规格。
 
 W3A 在冻结 generation `full-20260901-063115-5636b51dacf6` 上使用
 `feature_date=2026-08-28` 做了决定性性能试验。输入规模为 daily 3908×774、weekly
