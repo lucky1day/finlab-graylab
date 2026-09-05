@@ -715,6 +715,40 @@ def _comparator_source_sha256() -> str:
         "schemes/t5_daily/latest_prediction.py": _sha256_file(
             project_root / "schemes" / "t5_daily" / "latest_prediction.py"
         ),
+        "schemes/daily_5y_2_v28/inference.py": _sha256_file(
+            project_root / "schemes" / "daily_5y_2_v28" / "inference.py"
+        ),
+        "schemes/daily_5y_2_v28/core/v28_common.py": _sha256_file(
+            project_root
+            / "schemes"
+            / "daily_5y_2_v28"
+            / "core"
+            / "v28_common.py"
+        ),
+        "schemes/daily_5y_2_v28/core/data_alignment.py": _sha256_file(
+            project_root
+            / "schemes"
+            / "daily_5y_2_v28"
+            / "core"
+            / "data_alignment.py"
+        ),
+        "schemes/daily_7y_1_v28/inference.py": _sha256_file(
+            project_root / "schemes" / "daily_7y_1_v28" / "inference.py"
+        ),
+        "schemes/daily_7y_1_v28/core/v28_common.py": _sha256_file(
+            project_root
+            / "schemes"
+            / "daily_7y_1_v28"
+            / "core"
+            / "v28_common.py"
+        ),
+        "schemes/daily_7y_1_v28/core/data_alignment.py": _sha256_file(
+            project_root
+            / "schemes"
+            / "daily_7y_1_v28"
+            / "core"
+            / "data_alignment.py"
+        ),
     }
     return _json_sha256(sources)
 

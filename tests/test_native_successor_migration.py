@@ -14,6 +14,7 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from harness.native_successor_migration import (
+    _comparator_source_sha256,
     _validate_cutover_deployment_matrix,
     _validate_successor_execution_evidence,
     build_native_successor_equivalence_receipt,
@@ -22,7 +23,10 @@ from harness.native_successor_migration import (
     validate_control_plane_evidence,
 )
 from harness.native_successor_comparator_runner import (
+    V28_ADDITIVE_MONTHLY_COLUMNS,
     _exclusive_upper_bound_after_feature,
+    _run_v28,
+    main as comparator_main,
 )
 from scheduler.discovery import load_scheme_config
 from scheduler.repository import (
@@ -87,6 +91,265 @@ def test_t5_comparator_converts_feature_cutoff_to_exclusive_upper_bound() -> Non
         _exclusive_upper_bound_after_feature(daily, "2025-01-25")
     with pytest.raises(ValueError, match="one row after feature_date"):
         _exclusive_upper_bound_after_feature(daily, "2025-02-05")
+
+
+@pytest.mark.parametrize(
+    ("old_scheme_id", "new_scheme_id", "target_tenor"),
+    (
+        ("daily_5y_2_v28", "daily_5y_2_v28_bbv2", "5Y"),
+        ("daily_7y_1_v28", "daily_7y_1_v28_bbv2", "7Y"),
+    ),
+)
+def test_w2_comparator_routes_to_dedicated_v28_runner(
+    tmp_path: Path,
+    old_scheme_id: str,
+    new_scheme_id: str,
+    target_tenor: str,
+) -> None:
+    request = _full_request(new_scheme_id)
+    requests_path = tmp_path / "requests.csv"
+    with requests_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=tuple(request))
+        writer.writeheader()
+        writer.writerow(request)
+    output = tmp_path / "result.csv"
+    result = [
+        {
+            key: request[key]
+            for key in ("request_id", "predict_date", "feature_date", "target_date")
+        }
+        | {"predicted_direction": 1}
+    ]
+    with (
+        patch(
+            "harness.native_successor_comparator_runner._run_v28",
+            return_value=result,
+        ) as run_v28,
+        patch(
+            "harness.native_successor_comparator_runner._run_daily",
+            side_effect=AssertionError("W2 must not use the t5_daily comparator"),
+        ),
+    ):
+        assert comparator_main(
+            [
+                "--old-scheme-id",
+                old_scheme_id,
+                "--new-scheme-id",
+                new_scheme_id,
+                "--target-tenor",
+                target_tenor,
+                "--requests",
+                str(requests_path),
+                "--data-dir",
+                str(tmp_path),
+                "--output",
+                str(output),
+            ]
+        ) == 0
+    run_v28.assert_called_once_with(
+        [request], data_dir=tmp_path, old_scheme_id=old_scheme_id
+    )
+    assert pd.read_csv(output)["request_id"].tolist() == [request["request_id"]]
+
+
+def test_w2_comparator_rejects_unapproved_identity(tmp_path: Path) -> None:
+    output = tmp_path / "result.csv"
+    with pytest.raises(ValueError, match="approved W1/W2 targets"):
+        comparator_main(
+            [
+                "--old-scheme-id",
+                "daily_5y_2_v28",
+                "--new-scheme-id",
+                "t5_daily_5y_bbv2",
+                "--target-tenor",
+                "5Y",
+                "--requests",
+                str(tmp_path / "missing.csv"),
+                "--data-dir",
+                str(tmp_path),
+                "--output",
+                str(output),
+            ]
+        )
+    assert not output.exists()
+
+
+def test_v28_comparator_batches_by_month_cutoff_and_preserves_request_order(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "generation"
+    data_dir.mkdir()
+    pd.DataFrame(
+        {
+            "date": [
+                "2026-04-30",
+                "2026-05-04",
+                "2026-05-11",
+                "2026-06-01",
+                "2026-07-01",
+            ],
+            "factor": [1.0, 2.0, 3.0, 4.0, 5.0],
+        }
+    ).to_csv(data_dir / "daily_output.csv", index=False)
+    pd.DataFrame(
+        {
+            "week_id": [202617, 202618, 202619, 202622, 202627],
+            "factor": range(5),
+        }
+    ).to_csv(data_dir / "weekly_output.csv", index=False)
+    pd.DataFrame(
+        {
+            "month_id": [202504, 202605, 202606, 202607],
+            "factor": range(4),
+            "M0041340": range(4),
+            "M0041341": range(4),
+            "M0041342": range(4),
+        }
+    ).to_csv(data_dir / "monthly_output.csv", index=False)
+    pd.DataFrame(
+        {
+            "rdate": [
+                "2026-04-30",
+                "2026-05-04",
+                "2026-05-11",
+                "2026-06-01",
+                "2026-07-01",
+            ],
+            "week_id": [202617, 202618, 202619, 202622, 202627],
+        }
+    ).to_csv(data_dir / "api_wind_date.csv", index=False)
+    pd.DataFrame(
+        {
+            "indicators_code": ["factor"],
+            "frequency": ["daily"],
+            "factor_version": ["v1"],
+        }
+    ).to_csv(data_dir / "factor_catalog.csv", index=False)
+    june = {
+        "request_id": "daily_5y_2_v28_bbv2:2026-06-02:2026-06-01:2026-06-08",
+        "predict_date": "2026-06-02",
+        "feature_date": "2026-06-01",
+        "target_date": "2026-06-08",
+        "daily_cutoff_key": "2026-06-01",
+        "weekly_cutoff_key": "202622",
+        "monthly_cutoff_key": "202606",
+    }
+    may = {
+        "request_id": "daily_5y_2_v28_bbv2:2026-05-05:2026-05-04:2026-05-12",
+        "predict_date": "2026-05-05",
+        "feature_date": "2026-05-04",
+        "target_date": "2026-05-12",
+        "daily_cutoff_key": "2026-05-04",
+        "weekly_cutoff_key": "202618",
+        "monthly_cutoff_key": "202605",
+    }
+    may_late = {
+        "request_id": "daily_5y_2_v28_bbv2:2026-05-12:2026-05-11:2026-05-19",
+        "predict_date": "2026-05-12",
+        "feature_date": "2026-05-11",
+        "target_date": "2026-05-19",
+        "daily_cutoff_key": "2026-05-11",
+        "weekly_cutoff_key": "202619",
+        "monthly_cutoff_key": "202605",
+    }
+    calls: list[dict[str, object]] = []
+
+    def fake_window(**kwargs) -> pd.DataFrame:
+        calls.append(kwargs)
+        end = str(kwargs["window_end"])
+        if end == "2026-06-01":
+            return pd.DataFrame(
+                {"anchor_date": [end], "prediction": [1]}
+            )
+        return pd.DataFrame(
+            {
+                "anchor_date": ["2026-05-04", "2026-05-11"],
+                "prediction": [-1, 0],
+            }
+        )
+
+    with patch(
+        "schemes.daily_5y_2_v28.inference.run_v28_for_feature_window",
+        side_effect=fake_window,
+    ):
+        rows = _run_v28(
+            [june, may_late, may],
+            data_dir=data_dir,
+            old_scheme_id="daily_5y_2_v28",
+        )
+    assert [row["request_id"] for row in rows] == [
+        june["request_id"],
+        may_late["request_id"],
+        may["request_id"],
+    ]
+    assert [row["predicted_direction"] for row in rows] == [1, 0, -1]
+    assert len(calls) == 2
+    assert [call["window_start"] for call in calls] == [
+        "2026-05-01",
+        "2026-06-01",
+    ]
+    assert [call["window_end"] for call in calls] == [
+        "2026-05-11",
+        "2026-06-01",
+    ]
+    for call, expected_daily, expected_weekly, expected_monthly in (
+        (calls[0], "2026-05-11", 202619, 202605),
+        (calls[1], "2026-06-01", 202622, 202606),
+    ):
+        assert call["daily_df"]["date"].max() == pd.Timestamp(expected_daily)
+        assert int(call["weekly_df"]["week_id"].max()) == expected_weekly
+        assert int(call["monthly_df"]["month_id"].max()) == expected_monthly
+        assert max(call["date_to_week"]) == expected_daily
+        assert not V28_ADDITIVE_MONTHLY_COLUMNS.intersection(
+            call["monthly_df"].columns
+        )
+        assert call["require_labels"] is False
+        assert call["n_workers"] == 8
+    bad_request = {**june, "weekly_cutoff_key": "202621"}
+    requests_path = tmp_path / "bad-requests.csv"
+    with requests_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=tuple(bad_request))
+        writer.writeheader()
+        writer.writerow(bad_request)
+    output = tmp_path / "bad-result.csv"
+    with pytest.raises(ValueError, match="cutoff is absent or inconsistent"):
+        comparator_main(
+            [
+                "--old-scheme-id",
+                "daily_5y_2_v28",
+                "--new-scheme-id",
+                "daily_5y_2_v28_bbv2",
+                "--target-tenor",
+                "5Y",
+                "--requests",
+                str(requests_path),
+                "--data-dir",
+                str(data_dir),
+                "--output",
+                str(output),
+            ]
+        )
+    assert not output.exists()
+
+
+def test_receipt_source_closure_includes_w2_v28_native_execution_files() -> None:
+    with patch(
+        "harness.native_successor_migration._sha256_file",
+        return_value="a" * 64,
+    ) as sha256_file:
+        assert len(_comparator_source_sha256()) == 64
+    paths = {
+        str(call.args[0].relative_to(PROJECT_ROOT))
+        for call in sha256_file.call_args_list
+    }
+    assert {
+        "schemes/daily_5y_2_v28/inference.py",
+        "schemes/daily_5y_2_v28/core/v28_common.py",
+        "schemes/daily_5y_2_v28/core/data_alignment.py",
+        "schemes/daily_7y_1_v28/inference.py",
+        "schemes/daily_7y_1_v28/core/v28_common.py",
+        "schemes/daily_7y_1_v28/core/data_alignment.py",
+    } <= paths
 
 
 def test_controlled_comparator_builds_zero_difference_receipt(

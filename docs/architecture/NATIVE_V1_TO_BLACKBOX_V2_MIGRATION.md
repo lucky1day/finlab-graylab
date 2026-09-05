@@ -26,6 +26,11 @@
 - 现有 Blackbox 的 `legacy_v1` 输入模式不属于本项目，不随 Native 清理删除；
 - ECS 是独立灰度实验室，Mac3 是独立生产环境；验证结果可复用同一 immutable archive，但数据库事实不可复制。
 
+2026-09-06 用户明确决定本项目不等待日/周/月自然调度次数，以真实 installed unit/plist 环境的人工 one-shot
+模拟替代原 5/3/2 次自然观察。该决定接受了“不能证明跨日历触发连续稳定性”的剩余风险；替代证据必须同时
+覆盖精确调度命令与环境、唯一 writer、真实 `scheduled_live` run、journal、业务键、Dashboard、next trigger
+和一次完整 rollback/re-cutover 演练，不能用直接调用算法脚本代替控制面模拟。
+
 ## 2. 权威身份映射
 
 迁移工具只接受仓库内静态映射 `deploy/native_to_blackbox_migration_v1.json`。映射保存旧 Native 配置中的
@@ -80,7 +85,7 @@ W3A 和 W3B 各自作为不可拆分 cache-family wave。W3C、W3D 在各自 wav
 - commit：`20e98934e9d5399e3d509f486a8a650d95ad7639`
 - 开始状态：clean worktree
 - 迁移前回归：`585 passed, 4 skipped, 194 subtests passed`
-- 当前候选回归：`644 passed, 5 skipped, 4 warnings, 194 subtests passed`
+- 当前候选回归：`650 passed, 5 skipped, 4 warnings, 194 subtests passed`
 - 原子迁移 isolated MySQL 8 验证：`1 passed`；随机测试 schema 清理后残留数为 0
 - Native inventory：26 base / 30 target
 - Blackbox inventory：67 active base；其中 66 个仍使用 `legacy_v1`，不属于本项目
@@ -212,7 +217,7 @@ canonical config 固定。Request 区间和代码 hash 在测试
 | W1B | `weekly_5y_direct_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `59909549fee682c61a90c1394672f40b7204f67e35f692b04577cc49498a19c8` | ECS_0905_FULL_COMPARATOR_PASSED |
 | W1B | `weekly_7y_cross_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `fb2baa38fa8b614737f0c2f87bff90626e2d8d268e5375362bf863554096e680` | ECS_0905_FULL_COMPARATOR_PASSED |
 | W1B | `weekly_10y_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `e52e221a0046e8623107359b4fe3c2f7643e422b3ed9068c0cf317e9cdeafeed` | ECS_0905_FULL_COMPARATOR_PASSED |
-| W2 | 两个 `daily_*_v28_bbv2` | 完整五文件；V28 daily/weekly/monthly 因子与真实 T+5 grid | feature 2025-01-02..2026-05-22；各 333 条 | 5Y `d50a3c7020844f2331f33f6e24f71dd2019401ca165e908e35119bf32ba64f04`；7Y `570c6dc2d4c2624abffa6c06bef3e19ef60e447d9e9bb9e7503199f24877c717` | OFFLINE_CONFORMANCE_PASSED |
+| W2 | 两个 `daily_*_v28_bbv2` | 完整五文件；V28 daily/weekly/monthly 因子与真实 T+5 grid | feature 2025-01-02..2026-05-22；各 333 条 | 5Y `bb1323ae7dfdf7eb2c31d52a676bfef6593ee65ed3d326126d424bfbe2ef7986`；7Y `caad2438c5fa6ad627689e24aa4eff2f0a02062efa6790b375e73e94c05118a2` | TARGET_ENV_CONFORMANCE_PASSED |
 | W3A | 两个 5Y cache-family successor | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2026-08-28 | 未生成 | BLOCKED_PERFORMANCE |
 | W3B | 三个 10Y cache-family successor | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2026-08-28 | 未生成 | BLOCKED_PERFORMANCE |
 | W3C-D | 五个 `liwei_0616_*_bbv2` | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2026-08-28 | 未生成 | BLOCKED_PERFORMANCE |
@@ -251,17 +256,27 @@ W1A 六方案先完成 600 条固定样本同输入 Native 对照，方向差异
 旧 Native helper 的 `predict_date` 参数却是开区间上界。比较器现在只把 feature 后首个交易日作为旧 helper 的
 内部独占上界，并继续要求 Native 实际 feature 精确等于 Request；节假日跨段单测及 4×333 条正式比较均通过。
 
-W2 在冻结 generation `full-20260901-063115-5636b51dacf6` 的完整五文件上完成两份自包含 delivery。
-原 V28 core 与频率对齐逻辑内联；`multiprocessing.Pool` 已移除，改为 7-worker 有序线程池，连同主线程最多
-8 个 OS thread，每个 LightGBM `n_jobs=1`，Numba `cache=False`，无子进程。predict/backtest 共用
-`generate_results`，继续按月初到当前 batch cutoff 执行原 test-window，并按 Request 截断三频输入。
+W2 在冻结 generation `full-20260901-063115-5636b51dacf6` 的完整五文件和目标 `forecast_env` 上完成两份
+自包含 delivery。原 V28 core 与频率对齐逻辑内联；`multiprocessing.Pool` 已移除，改为 4-worker 有序线程池，
+每个 LightGBM `n_jobs=1`，Numba `cache=False`，并显式把 BLAS/OpenMP/VECLIB/Numba 线程设为 1。实测两个
+delivery 的进程峰值均为 7 个 OS thread、无子进程。predict/backtest 共用 `generate_results`，继续按月初到
+当前 batch cutoff 执行原 test-window，并按 Request 截断三频输入。
 
-两个方案首/中/末独立单点的 Request ID、三个日期和方向与 Native 均零差异：5Y 方向为 `-1/-1/0`，耗时
-`6/31/14s`；7Y 为 `-1/-1/1`，耗时 `5/23/11s`。100 条连续三次输出字节稳定；最终 7-worker 复跑为
-5Y 234 秒、7Y 146 秒。完整正式 333 条均为单 CLI、单算法 batch：5Y 766.99 秒、峰值 RSS
-2,897,543,168 bytes；7Y 488.30 秒、峰值 RSS 2,642,313,216 bytes。额外字段、缺少 cutoff、重复 ID、
-数据不足和缺失五文件共十组负向测试均非零退出、stdout 为空且不生成 Output。两个 delivery 已通过本地
-Intake；尚未使用 ECS 当前 generation 形成 comparator receipt，也未执行持久化回测或现场切换。
+两个方案首/中/末独立单点与冻结 Native 基线逐字节一致：5Y 方向为 `-1/-1/0`，耗时 `6/38/16s`；7Y 为
+`-1/-1/1`，耗时 `6/27/13s`。目标环境 100 条单 CLI 为 5Y 242 秒、7Y 175 秒；完整正式 333 条单 CLI 为
+5Y 963 秒、峰值 RSS 2,722,912 KiB、Output SHA-256
+`d6fce015cd4fcdd33cbd3354b07f0151d86a0d517fbe8d3204f122a23defba23`，7Y 589 秒、峰值 RSS
+2,673,312 KiB、Output SHA-256 `47a6f9b8037a271f34ffa5406d37f629d55736196329a9607fe65c56d8dd3b6b`。
+全部运行 stdout 为空，Result 精确五字段且顺序与 Request 一致。向任一 LightGBM config 注入异常时，整个 batch
+非零失败、stderr 保留根因且不生成 Output；不再允许部分 grid 静默失败。额外字段、缺少 cutoff、重复 ID、
+数据不足和缺失五文件等负向测试同样 fail-closed。两个 delivery 已通过本地 Intake；metadata SHA-256 分别为
+5Y `4224283519ed1d0af5095a3f9532846d451cede313f9e1e723b7d28d15e9cb71`、7Y
+`4e4ccfbaa52b48b4674e6b979955ed72504308aee27e6f3634003107f1d5a4d6`。
+
+一次使用非目标 `bond_factor_lab_service` 解释器的 5Y 333 条诊断运行与 `forecast_env` 结果存在 8/333 行方向
+差异，因此该结果明确不计入验收，也不能跨环境复用。此证据再次证明 runtime environment fingerprint 是迁移
+等价身份的一部分。W2 尚未使用 ECS 当前 generation 形成 canonical comparator receipt，也未执行持久化回测
+或现场切换。
 
 W3A 在冻结 generation `full-20260901-063115-5636b51dacf6` 上使用
 `feature_date=2026-08-28` 做了决定性性能试验。输入规模为 daily 3908×774、weekly

@@ -23,6 +23,8 @@ os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMBA_NUM_THREADS"] = "1"
 
 import numpy as np
 import pandas as pd
@@ -1045,7 +1047,7 @@ def _init_worker(df_len, feat, labels, close, fallback, test_idx,
               seeds=seeds or [42, 314])
 
 
-def run_config(config: dict) -> dict | None:
+def run_config(config: dict) -> dict:
     """Train one LGBM config across all test days.  Runs inside worker pool.
 
     V25: Multi-seed LGBM — trains with multiple seeds, averages probabilities.
@@ -1125,8 +1127,8 @@ def run_config(config: dict) -> dict | None:
             threshold = choose_threshold(cal_probs_first, labels[cal_idx])
             preds[i] = 1 if prob >= threshold else -1
         return {"config": config, "preds": preds, "probs": probs}
-    except Exception:
-        return None
+    except Exception as exc:
+        raise RuntimeError(f"V28 LightGBM config failed: {config!r}") from exc
 
 
 # ============================================================================
@@ -1357,6 +1359,8 @@ def run_prediction(cfg: dict) -> np.ndarray | pd.DataFrame:
     os.environ["OMP_NUM_THREADS"] = "1"
     os.environ["OPENBLAS_NUM_THREADS"] = "1"
     os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+    os.environ["NUMBA_NUM_THREADS"] = "1"
 
     import lightgbm as lgb
 
@@ -1373,7 +1377,7 @@ def run_prediction(cfg: dict) -> np.ndarray | pd.DataFrame:
     min_acc_val = cfg.get("min_acc", 0.45)
     ic_top_self = cfg.get("ic_top_self", 50)
     ic_top_mf = cfg.get("ic_top_mf", 30)
-    n_workers = cfg.get("n_workers", 10)
+    n_workers = cfg.get("n_workers", 4)
     horizon = cfg.get("horizon", HORIZON)
     purge_gap = cfg.get("purge_gap", PURGE_GAP)
     # V25 new parameters
@@ -1488,16 +1492,14 @@ def run_prediction(cfg: dict) -> np.ndarray | pd.DataFrame:
     t1 = time.time()
     print(f"\n  Phase A: Training {len(lgbm_grid)} LGBM configs "
           f"with {n_workers} workers ({len(seeds)} seeds)...")
-    worker_count = min(7, max(1, int(n_workers)))
+    worker_count = min(4, max(1, int(n_workers)))
     if worker_count == 1:
-        mapped = map(run_config, lgbm_grid)
-        results = [result for result in mapped if result is not None]
+        results = list(map(run_config, lgbm_grid))
     else:
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            mapped = executor.map(run_config, lgbm_grid)
-            results = [result for result in mapped if result is not None]
-    if not results:
-        raise RuntimeError("all LGBM configs failed")
+            results = list(executor.map(run_config, lgbm_grid))
+    if len(results) != len(lgbm_grid):
+        raise RuntimeError("V28 LightGBM grid result coverage mismatch")
     print(f"  Done: {len(results)} configs in "
           f"{(time.time() - t1) / 60:.1f} min")
 
@@ -2019,7 +2021,7 @@ def generate_results(
                 require_labels=False,
                 emit_report=False,
                 return_details=True,
-                n_workers=7,
+                n_workers=4,
             ))
         if not isinstance(details, pd.DataFrame) or details.empty:
             raise ContractError(f"algorithm returned no rows for {month}")
