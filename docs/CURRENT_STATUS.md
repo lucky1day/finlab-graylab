@@ -74,7 +74,7 @@
   `backtest_actual_direction`，用于周末等没有 Actual 日期的历史目标；live 行该字段必须为空并继续关联 Actual。
   两端仍使用各自独立数据库，精确主机合同以现场 `current` release、migration history 和 API payload 为准。
 - `api_wind_indicators_all.factor_version` 已在两端源表完成存量 `V1.0` 初始化。ECS 当前已发布五文件
-  generation `full-20260904-063337-1b4dcb093f0b`，其中 factor catalog 为 1474 行；精确文件摘要、ready
+  generation `full-20260905-063321-21c5c7188fa5`，其中 factor catalog 为 1474 行；精确文件摘要、ready
   receipt 与 current/previous 兼容性仍必须从 ECS 现场权威读回。Mac3 的 current generation 不从 ECS 状态
   推断，生产操作前独立核验。
 - Mac3 production 与 ECS gray 的 installed plist/unit、服务状态、数据库写入、激活、补数和 DDL 都是

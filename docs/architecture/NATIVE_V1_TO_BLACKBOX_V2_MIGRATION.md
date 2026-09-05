@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W1_CODE_AND_OFFLINE_EVIDENCE_READY; W2-W3_BLOCKED_PERFORMANCE; W4_BLOCKED_SOURCE; ECS_BLOCKED_RECAPTURE`
+**执行状态**：`W1_CODE_AND_OFFLINE_EVIDENCE_READY; W2-W3_BLOCKED_PERFORMANCE; W4_BLOCKED_SOURCE; ECS_READ_ONLY_RECAPTURED`
 
 **基线日期**：2026-09-05 Asia/Shanghai
 
@@ -182,6 +182,14 @@ apply 在事务内重新采集、重新推导并复验。receipt 缺失、抽样
 自引用；其内容由 comparator 源码 SHA、当前 release source-tree/archive、receipt 文件 SHA 和 plan SHA 共同
 冻结。当前 W1 只有本地离线比较证据，尚未形成可授权的完整 receipt，
 因此不能执行 ECS cutover。
+
+2026-09-05 已使用 ECS 专用 SSH 身份完成一次新的只读现场复核：`current` 仍指向 release
+`617113ed0b2e3c059d5b8a4d1390f453938966f5`；数据库为 `bond_db`、migration 024、running scheme run 为 0；
+Backend 为 active/running，DataBridge、daily、weekly、monthly 与 Actuals timer 均为 active/waiting。当前
+DataBridge generation 为 `full-20260905-063321-21c5c7188fa5`，business digest 为
+`21c5c7188fa597f6fa7b7e457ae777e2b578fd8a8410919a40ec54ef7ac69a4d`，factor catalog 为 1474 行。
+因此“无法读取 ECS”不再是阻塞；但该复核只解除连接和现场读取问题，不替代 successor 完整 receipt、持久化
+回测、部署矩阵变更、timer fence 或 cutover 独立授权。
 
 ## 4. Successor 交付证据台账
 
@@ -435,5 +443,5 @@ successor 在 ECS paused 技术验证通过；Mac3 30 个 target 完成切换与
 Native run；Native 可执行路径与临时迁移工具已删除；全量、架构、isolated MySQL 和 migration recovery 测试
 通过；025 已删除两个 confidence 列；Dashboard、Actuals、其他 Blackbox 和调度控制面无非计划变化。
 
-当前全局状态仍为 `IN_PROGRESS`。W4 缺少可读源码以及 ECS 基线无法在当前主机重新读取，是已知阻塞，不能用
-adapter 包装、二进制复制、旧水位或文档声明冒充闭环。
+当前全局状态仍为 `IN_PROGRESS`。ECS 基线已经重新只读核验；剩余硬阻塞是 W2/W3 未满足性能门槛，以及 W4
+缺少与锁定生产身份匹配的可读算法主体。不能用 adapter 包装、二进制复制、旧水位或文档声明冒充闭环。
