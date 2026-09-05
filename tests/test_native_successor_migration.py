@@ -784,6 +784,13 @@ def _fixture():
             "generation_id": evidence.generation_id,
             "runtime_profile": evidence.runtime_profile,
             "environment_fingerprint": evidence.environment_fingerprint,
+            "request_count": 1,
+            "backtest_start_date": "2025-01-01",
+            "target_date_before": "2026-06-01",
+            "actual_predict_date_min": "2026-05-22",
+            "actual_predict_date_max": "2026-05-22",
+            "actual_target_date_min": "2026-05-29",
+            "actual_target_date_max": "2026-05-29",
         }
         conn.execute(
             text(
@@ -1472,6 +1479,16 @@ def test_preflight_rejects_backtest_rows_in_gray_live_range() -> None:
             ),
             {"source_row": json.dumps(full_request | {"actual": {}})},
         )
+        raw = conn.execute(
+            text("SELECT summary FROM t_backtest_runs WHERE id = 42")
+        ).scalar_one()
+        summary = json.loads(raw)
+        summary["actual_target_date_min"] = "2026-06-01"
+        summary["actual_target_date_max"] = "2026-06-01"
+        conn.execute(
+            text("UPDATE t_backtest_runs SET summary = :summary WHERE id = 42"),
+            {"summary": json.dumps(summary)},
+        )
     with pytest.raises(RuntimeError, match="crosses gray-live target boundary"):
         read_native_successor_migration_plan(
             engine,
@@ -1479,7 +1496,7 @@ def test_preflight_rejects_backtest_rows_in_gray_live_range() -> None:
         )
 
 
-def test_preflight_rejects_historical_grid_date_drift() -> None:
+def test_preflight_records_historical_grid_date_drift() -> None:
     engine, old, new, target, evidence = _fixture()
     full_request = _full_request(target.new_base_scheme_id) | {
         "request_id": (
@@ -1518,8 +1535,32 @@ def test_preflight_rejects_historical_grid_date_drift() -> None:
     ).hexdigest()
     item["native_result_sha256"] = result_sha256
     item["successor_result_sha256"] = result_sha256
-    with pytest.raises(RuntimeError, match="historical date coverage differs"):
+    plan = read_native_successor_migration_plan(engine, **inputs)
+    coverage = plan["grid_coverage"][0]
+    assert coverage["old_base_scheme_id"] == old.scheme_id
+    assert coverage["new_base_scheme_id"] == new.scheme_id
+    assert coverage["old_date_count"] == 1
+    assert coverage["new_date_count"] == 1
+    assert coverage["old_date_identity_sha256"] != coverage[
+        "new_date_identity_sha256"
+    ]
+    assert coverage["data_vintage_drift"] is True
+
+
+def test_preflight_rejects_truncated_successor_backtest_summary() -> None:
+    engine, old, new, target, evidence = _fixture()
+    with engine.begin() as conn:
+        raw = conn.execute(
+            text("SELECT summary FROM t_backtest_runs WHERE id = 42")
+        ).scalar_one()
+        summary = json.loads(raw)
+        summary["request_count"] = 2
+        conn.execute(
+            text("UPDATE t_backtest_runs SET summary = :summary WHERE id = 42"),
+            {"summary": json.dumps(summary)},
+        )
+    with pytest.raises(ValueError, match="backtest coverage summary mismatch"):
         read_native_successor_migration_plan(
             engine,
-            **inputs,
+            **_inputs(old, new, target, evidence),
         )

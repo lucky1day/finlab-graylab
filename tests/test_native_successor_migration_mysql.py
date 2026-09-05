@@ -328,6 +328,13 @@ def _seed(engine, old, new, evidence) -> None:
         "generation_id": evidence.generation_id,
         "runtime_profile": evidence.runtime_profile,
         "environment_fingerprint": evidence.environment_fingerprint,
+        "request_count": 1,
+        "backtest_start_date": "2025-01-01",
+        "target_date_before": "2026-06-01",
+        "actual_predict_date_min": "2026-05-22",
+        "actual_predict_date_max": "2026-05-22",
+        "actual_target_date_min": "2026-05-29",
+        "actual_target_date_max": "2026-05-29",
     }
     with engine.begin() as connection:
         connection.execute(

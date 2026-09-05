@@ -41,6 +41,7 @@ _PredictionBusinessKey = tuple[str, str, int, str]
 BLACKBOX_REGISTRY_STATUSES = {"active", "paused", "archived"}
 _BLACKBOX_LIFECYCLE_LOCK_TIMEOUT_SEC = 5.0
 _NATIVE_SUCCESSOR_REQUIRED_SCHEMA_VERSION = 24
+_NATIVE_SUCCESSOR_BACKTEST_START_DATE = "2025-01-01"
 _NATIVE_SUCCESSOR_LIVE_TARGET_START_DATE = "2026-06-01"
 _NATIVE_SUCCESSOR_REQUEST_IDENTITY_FIELDS = (
     "request_id",
@@ -3464,6 +3465,40 @@ def _prepare_blackbox_backtest_fact_rows_conn(
     ).mappings().all()
     if not source_rows:
         raise ValueError("Blackbox activation backtest contains no predictions")
+    if require_source_request:
+        predict_dates = [str(row.get("predict_date")) for row in source_rows]
+        target_dates = [str(row.get("target_date")) for row in source_rows]
+        expected_coverage = {
+            "backtest_start_date": _NATIVE_SUCCESSOR_BACKTEST_START_DATE,
+            "target_date_before": _NATIVE_SUCCESSOR_LIVE_TARGET_START_DATE,
+            "request_count": len(source_rows),
+            "actual_predict_date_min": min(predict_dates),
+            "actual_predict_date_max": max(predict_dates),
+            "actual_target_date_min": min(target_dates),
+            "actual_target_date_max": max(target_dates),
+        }
+        actual_coverage = {
+            "backtest_start_date": str(summary.get("backtest_start_date") or ""),
+            "target_date_before": str(summary.get("target_date_before") or ""),
+            "request_count": summary.get("request_count"),
+            "actual_predict_date_min": str(
+                summary.get("actual_predict_date_min") or ""
+            ),
+            "actual_predict_date_max": str(
+                summary.get("actual_predict_date_max") or ""
+            ),
+            "actual_target_date_min": str(
+                summary.get("actual_target_date_min") or ""
+            ),
+            "actual_target_date_max": str(
+                summary.get("actual_target_date_max") or ""
+            ),
+        }
+        if actual_coverage != expected_coverage:
+            raise ValueError(
+                "Native successor backtest coverage summary mismatch: "
+                f"expected={expected_coverage!r} actual={actual_coverage!r}"
+            )
     expected_tenors = set(str(value) for value in cfg.tenors)
     rows: list[dict[str, object]] = []
     seen: set[_PredictionBusinessKey] = set()
@@ -4947,12 +4982,21 @@ def _validate_native_successor_historical_grid_coverage_conn(
                 "Native historical grid is empty or contains duplicate dates: "
                 f"{target.old_base_scheme_id}/{target.target_tenor}"
             )
-        if len(new_dates) != len(set(new_dates)) or old_dates != new_dates:
+        if not new_dates or len(new_dates) != len(set(new_dates)):
             raise RuntimeError(
-                "Native/successor historical date coverage differs: "
-                f"{target.old_base_scheme_id}->{target.new_base_scheme_id}/"
-                f"{target.target_tenor} old={len(old_dates)} new={len(new_dates)}"
+                "successor historical grid is empty or contains duplicate dates: "
+                f"{target.new_base_scheme_id}/{target.target_tenor}"
             )
+        old_digest = hashlib.sha256(
+            canonical_native_successor_plan(
+                {"dates": old_dates}
+            ).encode("utf-8")
+        ).hexdigest()
+        new_digest = hashlib.sha256(
+            canonical_native_successor_plan(
+                {"dates": new_dates}
+            ).encode("utf-8")
+        ).hexdigest()
         result.append(
             {
                 "old_base_scheme_id": target.old_base_scheme_id,
@@ -4960,12 +5004,11 @@ def _validate_native_successor_historical_grid_coverage_conn(
                 "target_tenor": target.target_tenor,
                 "old_horizon": target.old_horizon,
                 "new_horizon": target.new_horizon,
-                "date_count": len(old_dates),
-                "date_identity_sha256": hashlib.sha256(
-                    canonical_native_successor_plan(
-                        {"dates": old_dates}
-                    ).encode("utf-8")
-                ).hexdigest(),
+                "old_date_count": len(old_dates),
+                "new_date_count": len(new_dates),
+                "old_date_identity_sha256": old_digest,
+                "new_date_identity_sha256": new_digest,
+                "data_vintage_drift": old_digest != new_digest,
             }
         )
     return result

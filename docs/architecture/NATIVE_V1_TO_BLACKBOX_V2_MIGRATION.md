@@ -174,7 +174,10 @@ cutover/rollback 均由命令直接读取目标机 `current` symlink、install r
 snapshot、installed unit/plist、loaded/进程状态和 Dashboard；人工 JSON 不能替代现场采集。cutover/rollback
 在取得 old/new advisory lock 并开启事务后再次现场采集，并重读全部数据库权威条件。数据库必须严格处于
 完整 `APPLIED` 的 migration 024；successor 回测 generation、data snapshot、runtime profile 和当前平台 frozen
-environment fingerprint 必须全部一致，且待发布历史回测的 `target_date` 必须严格小于 `2026-06-01`。
+environment fingerprint 必须全部一致，且待发布历史回测的 `target_date` 必须严格小于 `2026-06-01`。旧 Native
+已发布历史与当前 generation 的日期 grid 分别要求非空且无重复；两侧日期数量与摘要必须进入 plan SHA，并以
+`data_vintage_drift` 显式记录，但不得因交易日历或历史数据修订而要求 successor 复制旧错误日期。迁移等价仍只
+能在当前冻结 generation 的同一完整 Request 集上通过，三个日期与方向必须逐行零差异。
 
 同输入零差异证据使用随 immutable release 发布的临时 receipt：整批 wave 为
 `deploy/native_successor_equivalence/<wave>.json`，逐方案 wave 为
@@ -407,7 +410,8 @@ operator 明确撤销旧候选证据并形成新的 clean commit，不能静默�
 cutover 单事务必须：
 
 1. 按稳定顺序取得 old/new advisory lock 和 Registry/version/fact 行锁；
-2. 验证 old/new 业务格子覆盖精确相等；
+2. 验证 old/new 的 task type、target tenor、target rule 业务格子覆盖精确相等，并把跨数据 vintage 的历史日期
+   grid 数量、摘要和 drift 标记纳入计划；
 3. 验证 successor exact version 的成功持久化回测及 evidence；
 4. insert-only 发布或验证复用同 exact version 的 successor backtest facts；
 5. 激活 successor version/Registry，archive old Registry，retire old exact version；
