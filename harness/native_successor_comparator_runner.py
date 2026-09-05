@@ -152,14 +152,33 @@ def _run_daily(
 
     module = TENOR_MODULES[target_tenor]
     for request in requests:
+        native_predict_date = _exclusive_upper_bound_after_feature(
+            daily,
+            request["feature_date"],
+        )
         result = predict_latest_for_module(
             module,
             daily,
-            request["predict_date"],
+            native_predict_date,
             n_jobs=8,
         )
         rows.append(_result(request, result.feature_date, result.vote_pred))
     return rows
+
+
+def _exclusive_upper_bound_after_feature(
+    daily: pd.DataFrame,
+    feature_date: str,
+) -> str:
+    """把 Request 的闭区间 feature cutoff 转为旧 T+5 core 的开区间上界。"""
+    feature = pd.Timestamp(feature_date)
+    dates = daily["date"]
+    if not dates.eq(feature).any():
+        raise ValueError("Request feature_date is absent from daily input")
+    later = dates.loc[dates.gt(feature)]
+    if later.empty:
+        raise ValueError("Native T+5 comparison requires one row after feature_date")
+    return later.iloc[0].date().isoformat()
 
 
 def _run_weekly(

@@ -78,7 +78,7 @@
     {
       "wave": "W4A",
       "cadence": "daily",
-      "ecs_mode": "paused_technical_validation",
+      "ecs_mode": "not_deployed_mac3_only",
       "targets": [
         {"old_base_scheme_id": "daily_1y_xgb_1y13_0629", "new_base_scheme_id": "daily_1y_xgb_1y13_0629_bbv2", "task_type": "T+1", "target_tenor": "1Y", "target_rule": null, "old_horizon": 1, "new_horizon": 1},
         {"old_base_scheme_id": "daily_5y_lgbm_5y10_0629", "new_base_scheme_id": "daily_5y_lgbm_5y10_0629_bbv2", "task_type": "T+1", "target_tenor": "5Y", "target_rule": null, "old_horizon": 1, "new_horizon": 1},
@@ -88,7 +88,7 @@
     {
       "wave": "W4B",
       "cadence": "weekly",
-      "ecs_mode": "paused_technical_validation",
+      "ecs_mode": "not_deployed_mac3_only",
       "targets": [
         {"old_base_scheme_id": "weekly_avg_1y_lgbm_0529", "new_base_scheme_id": "weekly_avg_1y_lgbm_0529_bbv2", "task_type": "weekly_average", "target_tenor": "1Y", "target_rule": "next_week_average_yield_vs_current_week_average_yield", "old_horizon": 6, "new_horizon": 1},
         {"old_base_scheme_id": "weekly_avg_5y_lgbm_0529", "new_base_scheme_id": "weekly_avg_5y_lgbm_0529_bbv2", "task_type": "weekly_average", "target_tenor": "5Y", "target_rule": "next_week_average_yield_vs_current_week_average_yield", "old_horizon": 6, "new_horizon": 1},
@@ -98,7 +98,7 @@
     {
       "wave": "W4C",
       "cadence": "monthly",
-      "ecs_mode": "paused_technical_validation",
+      "ecs_mode": "not_deployed_mac3_only",
       "targets": [
         {"old_base_scheme_id": "monthly_1y_rf_top30_0629", "new_base_scheme_id": "monthly_1y_rf_top30_0629_bbv2", "task_type": "monthly", "target_tenor": "1Y", "target_rule": "next_month_observation_yield_vs_feature_month_observation_yield", "old_horizon": 30, "new_horizon": 1},
         {"old_base_scheme_id": "monthly_5y_knn_top20_0629", "new_base_scheme_id": "monthly_5y_knn_top20_0629_bbv2", "task_type": "monthly", "target_tenor": "5Y", "target_rule": "next_month_observation_yield_vs_feature_month_observation_yield", "old_horizon": 30, "new_horizon": 1},

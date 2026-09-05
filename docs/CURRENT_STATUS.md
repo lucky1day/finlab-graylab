@@ -44,6 +44,9 @@
   停止，release、方案版本、日期和业务键必须完全匹配，已有键整组拒绝。源端不存在的键才允许受控计算。
 - 新方案只走 Blackbox V2 两文件 Intake；Native V1 只维护政策清单内存量身份。平台不反编译或改写
   Blackbox 算法逻辑，只验证平台接入和标准输出边界。
+- 仅 Native→Blackbox 迁移映射中锁定的 W4 九个 Mac3 加密方案允许使用 manifest-bound Mac3-only binary
+  bundle；该例外不进入 ECS、不开放给新方案，全部 `.so` payload 必须纳入 exact version hash closure，且
+  仍须遵守五文件输入、五字段输出、无数据库/网络/包外路径/持久状态的边界。
 - Blackbox 入库只保留“Intake → 一次完整持久化回测 → activate”；DataBridge producer 独立发布 generation，方案不构建、修复或重验 generation。Blackbox 不进入 Native `onboard`，不运行 StaticGate、CompareGate、额外 predict 冒烟或 `shadow-register`。
 - Blackbox `weekly_point/h1` 与日频 `T+5/h5` 的 target 半开区间批量已经在 ECS 与 Mac3 验证；日频
   `T+1/h1` 的同类能力已完成本地候选实现与回归，尚未做现场验证。一个方案只启动

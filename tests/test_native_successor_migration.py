@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from unittest.mock import MagicMock
 
+import pandas as pd
 import pytest
 from sqlalchemy import create_engine, text
 
@@ -19,6 +20,9 @@ from harness.native_successor_migration import (
     load_native_successor_waves,
     select_native_successor_wave,
     validate_control_plane_evidence,
+)
+from harness.native_successor_comparator_runner import (
+    _exclusive_upper_bound_after_feature,
 )
 from scheduler.discovery import load_scheme_config
 from scheduler.repository import (
@@ -56,7 +60,7 @@ def test_locked_mapping_contains_26_to_30_identities() -> None:
     assert len({target.new_base_scheme_id for target in targets}) == 30
     assert len(targets) == 30
     assert waves["W1A"].ecs_mode == "active"
-    assert waves["W4A"].ecs_mode == "paused_technical_validation"
+    assert waves["W4A"].ecs_mode == "not_deployed_mac3_only"
     with pytest.raises(ValueError, match="requires --old-scheme-id"):
         select_native_successor_wave(waves, "W3C")
     selected = select_native_successor_wave(
@@ -65,6 +69,24 @@ def test_locked_mapping_contains_26_to_30_identities() -> None:
         old_scheme_id="liwei_0616_5y_auc_static_all_k3_div_k10",
     )
     assert len(selected.targets) == 1
+
+
+def test_t5_comparator_converts_feature_cutoff_to_exclusive_upper_bound() -> None:
+    daily = pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                ["2025-01-23", "2025-01-24", "2025-02-05"]
+            )
+        }
+    )
+
+    assert _exclusive_upper_bound_after_feature(daily, "2025-01-24") == (
+        "2025-02-05"
+    )
+    with pytest.raises(ValueError, match="absent from daily input"):
+        _exclusive_upper_bound_after_feature(daily, "2025-01-25")
+    with pytest.raises(ValueError, match="one row after feature_date"):
+        _exclusive_upper_bound_after_feature(daily, "2025-02-05")
 
 
 def test_controlled_comparator_builds_zero_difference_receipt(

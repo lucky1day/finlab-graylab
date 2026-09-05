@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "daily_5y_2_v28_bbv2",
+  "name": "V28日频5Y方案2 · Blackbox V2",
+  "description": "daily_5y_2_v28 successor；保留 V28 月度 test-window、滚动 LightGBM ensemble、policy/term-premium/butterfly signals 与 Request cutoff，仅将执行边界改为自包含 Blackbox V2。",
+  "algorithm_version": "1.0.0",
+  "target_tenor": "5Y",
+  "task_type": "T+5",
+  "horizon": 5,
+  "target_rule": "target_date_yield_vs_feature_date_yield",
+  "owner": "liwei"
+}

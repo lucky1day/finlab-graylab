@@ -28,7 +28,7 @@ from shared.blackbox_v2.environment_manifest import load_environment_fingerprint
 
 
 MAPPING_SCHEMA_VERSION = "native-to-blackbox-migration-v1"
-MAPPING_SHA256 = "a9c80cde4f3b676aadc2fc1f1073986da123857293539bfb3c04d6cb89359d7a"
+MAPPING_SHA256 = "370706acf55d436f4e420cd7be54d1c3254b2e3d5caa2c80d8beb4e6322c2045"
 _WAVE_FIELDS = {
     "wave",
     "cadence",
@@ -145,7 +145,7 @@ def load_native_successor_waves(path: Path) -> Mapping[str, NativeSuccessorWave]
         ecs_mode = _choice(
             raw_wave["ecs_mode"],
             "ecs_mode",
-            {"active", "paused_technical_validation"},
+            {"active", "not_deployed_mac3_only"},
         )
         raw_targets = raw_wave["targets"]
         if not isinstance(raw_targets, list) or not raw_targets:
@@ -903,7 +903,7 @@ def validate_control_plane_evidence(
         and wave.ecs_mode != "active"
     ):
         raise ValueError(
-            "paused technical-validation waves cannot perform an ECS lifecycle cutover"
+            "Mac3-only waves cannot perform an ECS lifecycle cutover"
         )
     release = raw.get("release")
     if not isinstance(release, Mapping) or set(release) != {

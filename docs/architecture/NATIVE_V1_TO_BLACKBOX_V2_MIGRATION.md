@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W1_CODE_AND_OFFLINE_EVIDENCE_READY; W2-W3_BLOCKED_PERFORMANCE; W4_BLOCKED_SOURCE; ECS_READ_ONLY_RECAPTURED`
+**执行状态**：`W1-W2_CODE_AND_OFFLINE_EVIDENCE_READY; W3_BLOCKED_PERFORMANCE; W4_MAC3_BINARY_BUNDLE_ACCEPTED; ECS_READ_ONLY_RECAPTURED`
 
 **基线日期**：2026-09-05 Asia/Shanghai
 
@@ -12,7 +12,8 @@
 
 本项目把 26 个 Native V1 base scheme 替换为 30 个新的 Blackbox V2 successor，使 Scheduler、回测、
 生命周期、调度和最终清理只保留 Blackbox V2 一条可执行主路径。迁移不是修改旧身份的 `runtime_type`，而是
-建立新身份、验证同输入结果、原子转移业务格子所有权、观察自然运行，最后删除没有调用者的 Native 路径。
+建立新身份、验证同输入结果、原子转移业务格子所有权、通过真实 unit/plist 环境的人工 one-shot 验证控制面，
+最后删除没有调用者的 Native 路径；不再等待跨日、跨周或跨月的自然触发观察次数。
 
 长期不变量如下：
 
@@ -32,7 +33,7 @@
 `target_rule`、frequency 和 horizon。切换覆盖匹配键固定为 `task_type + target_tenor + target_rule`；
 Native 周/月的历史 horizon `6/30` 不与 Blackbox 的 `1` 直接比较。
 该临时映射的锁定文件 SHA-256 为
-`a9c80cde4f3b676aadc2fc1f1073986da123857293539bfb3c04d6cb89359d7a`；任何字节变化都必须先更新本计划并重新审查。
+`370706acf55d436f4e420cd7be54d1c3254b2e3d5caa2c80d8beb4e6322c2045`；任何字节变化都必须先更新本计划并重新审查。
 
 | Wave | Native base | Native target | Successor base | Blackbox task/horizon | ECS 目标状态 | Mac3 目标状态 |
 |---|---|---:|---|---|---|---|
@@ -57,18 +58,19 @@ Native 周/月的历史 horizon `6/30` 不与 Blackbox 的 `1` 直接比较。
 | W3C | `liwei_0616_5y_ic_yearly_all_k3_div_k10` | 5Y | `liwei_0616_5y_ic_yearly_all_k3_div_k10_bbv2` | T+5 / 5 | active | active |
 | W3D | `liwei_0616_7y01_cons_say_k3_div_k10` | 7Y | `liwei_0616_7y01_cons_say_k3_div_k10_bbv2` | T+5 / 5 | active | active |
 | W3D | `liwei_0616_7y03_cons_all_k3_div_k8` | 7Y | `liwei_0616_7y03_cons_all_k3_div_k8_bbv2` | T+5 / 5 | active | active |
-| W4A | `daily_1y_xgb_1y13_0629` | 1Y | `daily_1y_xgb_1y13_0629_bbv2` | T+1 / 1 | paused | active |
-| W4A | `daily_5y_lgbm_5y10_0629` | 5Y | `daily_5y_lgbm_5y10_0629_bbv2` | T+1 / 1 | paused | active |
-| W4A | `daily_10y_lgbm_10y04_0629` | 10Y | `daily_10y_lgbm_10y04_0629_bbv2` | T+1 / 1 | paused | active |
-| W4B | `weekly_avg_1y_lgbm_0529` | 1Y | `weekly_avg_1y_lgbm_0529_bbv2` | weekly_average / 1 | paused | active |
-| W4B | `weekly_avg_5y_lgbm_0529` | 5Y | `weekly_avg_5y_lgbm_0529_bbv2` | weekly_average / 1 | paused | active |
-| W4B | `weekly_avg_10y_lgbm_0529` | 10Y | `weekly_avg_10y_lgbm_0529_bbv2` | weekly_average / 1 | paused | active |
-| W4C | `monthly_1y_rf_top30_0629` | 1Y | `monthly_1y_rf_top30_0629_bbv2` | monthly / 1 | paused | active |
-| W4C | `monthly_5y_knn_top20_0629` | 5Y | `monthly_5y_knn_top20_0629_bbv2` | monthly / 1 | paused | active |
-| W4C | `monthly_10y_rf_top5_0629` | 10Y | `monthly_10y_rf_top5_0629_bbv2` | monthly / 1 | paused | active |
+| W4A | `daily_1y_xgb_1y13_0629` | 1Y | `daily_1y_xgb_1y13_0629_bbv2` | T+1 / 1 | not_deployed | active |
+| W4A | `daily_5y_lgbm_5y10_0629` | 5Y | `daily_5y_lgbm_5y10_0629_bbv2` | T+1 / 1 | not_deployed | active |
+| W4A | `daily_10y_lgbm_10y04_0629` | 10Y | `daily_10y_lgbm_10y04_0629_bbv2` | T+1 / 1 | not_deployed | active |
+| W4B | `weekly_avg_1y_lgbm_0529` | 1Y | `weekly_avg_1y_lgbm_0529_bbv2` | weekly_average / 1 | not_deployed | active |
+| W4B | `weekly_avg_5y_lgbm_0529` | 5Y | `weekly_avg_5y_lgbm_0529_bbv2` | weekly_average / 1 | not_deployed | active |
+| W4B | `weekly_avg_10y_lgbm_0529` | 10Y | `weekly_avg_10y_lgbm_0529_bbv2` | weekly_average / 1 | not_deployed | active |
+| W4C | `monthly_1y_rf_top30_0629` | 1Y | `monthly_1y_rf_top30_0629_bbv2` | monthly / 1 | not_deployed | active |
+| W4C | `monthly_5y_knn_top20_0629` | 5Y | `monthly_5y_knn_top20_0629_bbv2` | monthly / 1 | not_deployed | active |
+| W4C | `monthly_10y_rf_top5_0629` | 10Y | `monthly_10y_rf_top5_0629_bbv2` | monthly / 1 | not_deployed | active |
 
 W3A 和 W3B 各自作为不可拆分 cache-family wave。W3C、W3D 在各自 wave 内允许逐方案切换，但必须先证明
-其余 active 方案不再依赖被切方案的 publisher。W4A/W4B/W4C 在可读源码到位前不得开始算法转换。
+其余 active 方案不再依赖被切方案的 publisher。W4A/W4B/W4C 不进入 ECS；它们只在 17 个可读源码 Native
+完成 ECS 验证并以同一 immutable archive 晋级 Mac3 后，作为 Mac3-only binary bundle 单独推进。
 
 ## 3. 冻结基线
 
@@ -91,16 +93,20 @@ W3A 和 W3B 各自作为不可拆分 cache-family wave。W3C、W3D 在各自 wav
 - runtime：`/opt/bond-factor-lab/current`
 - current release：`617113ed0b2e3c059d5b8a4d1390f453938966f5`
 - migration：024
-- DataBridge generation：`full-20260904-063337-1b4dcb093f0b`
+- DataBridge generation：`full-20260905-063321-21c5c7188fa5`
+- DataBridge business digest：`21c5c7188fa597f6fa7b7e457ae777e2b578fd8a8410919a40ec54ef7ac69a4d`
 - DataBridge：五文件，factor catalog 1474 行
 - Registry：17 个 active Native base / 21 个 active Native target；9 个 paused Native target；67 个 active Blackbox base
 - systemd：DataBridge、daily、weekly、monthly、Actuals timer 与 Backend 正常
 - scheme run：零 running
 
-当前执行主机无法用现有非交互 SSH key 重新读取 ECS（`Permission denied (publickey)`）。因此五文件逐文件
-SHA-256、business digest、数据库名/server UUID、installed unit/next trigger、30 个旧 target 的逐表水位和
-Dashboard 响应摘要必须保持 `BLOCKED_RECAPTURE`，不得用旧摘要生成可执行 cutover plan。该阻塞不妨碍首夜
-本地候选编码，但阻止所有 ECS cutover。
+2026-09-05 已使用 ECS 专用 SSH 身份完成新的非交互只读复核。当前 generation 的五文件 SHA-256 为：
+`api_wind_date.csv=fc42e4b6a59edcaf81ded827f82ea639a2a17a81d1763f23aa3bb386d153a4b2`、
+`daily_output.csv=8e98c84d577304b69c432abfd3bf7438133add3af542b69534d3365949a9f223`、
+`factor_catalog.csv=bb5ee17f097369ed4498744b604d51597e4814c9e31887e90aad62c2b2bd8965`、
+`monthly_output.csv=1ee62d0939ec73350db5b01d98343557cc11ef0a48497c93f4d31f4ba655ed27`、
+`weekly_output.csv=d51c65df76ab816b1d777ac7fd7377aac7d62b93b12ce30ebc4c5da26b0685bb`。
+这只解除 SSH 和 generation 再采集阻塞；正式 cutover 仍须从待部署 immutable release 重新执行完整 preflight。
 
 ### 3.3 Mac3 本机数据库只读水位
 
@@ -201,51 +207,71 @@ canonical config 固定。Request 区间和代码 hash 在测试
 
 | Wave | Successor 集合 | 输入字段摘要 | Request 区间 | script SHA-256 | 状态 |
 |---|---|---|---|---|---|
-| W1A | `t1_daily_{5y,10y}_bbv2` | daily date + 1Y/5Y/10Y；其余四文件做合同校验 | feature 2026-03-09..2026-07-31；100 条 | `126667bf95e24aeab77771d96d73cd8e43c66c39db26fd61b0ba8109d9bdc78d` | OFFLINE_CONFORMANCE_PASSED |
-| W1A | `t5_daily_{3y,5y,7y,10y}_bbv2` | daily date + 1Y/3Y/5Y/7Y/10Y；其余四文件做合同校验 | feature 2026-03-09..2026-07-31；100 条 | `126667bf95e24aeab77771d96d73cd8e43c66c39db26fd61b0ba8109d9bdc78d` | OFFLINE_CONFORMANCE_PASSED |
-| W1B | `weekly_5y_direct_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2024-09-27..2026-08-28；100 条 | `59909549fee682c61a90c1394672f40b7204f67e35f692b04577cc49498a19c8` | OFFLINE_CONFORMANCE_PASSED |
-| W1B | `weekly_7y_cross_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2024-09-27..2026-08-28；100 条 | `fb2baa38fa8b614737f0c2f87bff90626e2d8d268e5375362bf863554096e680` | OFFLINE_CONFORMANCE_PASSED |
-| W1B | `weekly_10y_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2024-09-27..2026-08-28；100 条 | `e52e221a0046e8623107359b4fe3c2f7643e422b3ed9068c0cf317e9cdeafeed` | OFFLINE_CONFORMANCE_PASSED |
-| W2 | 两个 `daily_*_v28_bbv2` | 完整五文件与真实 T+5 grid | 2026-01 首月 20 条下界 | 失败交付已删除 | BLOCKED_PERFORMANCE |
+| W1A | `t1_daily_{5y,10y}_bbv2` | daily date + 1Y/5Y/10Y；其余四文件做合同校验 | feature 2025-01-02..2026-05-28；各 337 条 | `126667bf95e24aeab77771d96d73cd8e43c66c39db26fd61b0ba8109d9bdc78d` | ECS_0905_FULL_COMPARATOR_PASSED |
+| W1A | `t5_daily_{3y,5y,7y,10y}_bbv2` | daily date + 1Y/3Y/5Y/7Y/10Y；其余四文件做合同校验 | feature 2025-01-02..2026-05-22；各 333 条 | `126667bf95e24aeab77771d96d73cd8e43c66c39db26fd61b0ba8109d9bdc78d` | ECS_0905_FULL_COMPARATOR_PASSED |
+| W1B | `weekly_5y_direct_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `59909549fee682c61a90c1394672f40b7204f67e35f692b04577cc49498a19c8` | ECS_0905_FULL_COMPARATOR_PASSED |
+| W1B | `weekly_7y_cross_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `fb2baa38fa8b614737f0c2f87bff90626e2d8d268e5375362bf863554096e680` | ECS_0905_FULL_COMPARATOR_PASSED |
+| W1B | `weekly_10y_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `e52e221a0046e8623107359b4fe3c2f7643e422b3ed9068c0cf317e9cdeafeed` | ECS_0905_FULL_COMPARATOR_PASSED |
+| W2 | 两个 `daily_*_v28_bbv2` | 完整五文件；V28 daily/weekly/monthly 因子与真实 T+5 grid | feature 2025-01-02..2026-05-22；各 333 条 | 5Y `d50a3c7020844f2331f33f6e24f71dd2019401ca165e908e35119bf32ba64f04`；7Y `570c6dc2d4c2624abffa6c06bef3e19ef60e447d9e9bb9e7503199f24877c717` | OFFLINE_CONFORMANCE_PASSED |
 | W3A | 两个 5Y cache-family successor | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2026-08-28 | 未生成 | BLOCKED_PERFORMANCE |
 | W3B | 三个 10Y cache-family successor | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2026-08-28 | 未生成 | BLOCKED_PERFORMANCE |
 | W3C-D | 五个 `liwei_0616_*_bbv2` | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2026-08-28 | 未生成 | BLOCKED_PERFORMANCE |
-| W4A-C | 九个编译主体 successor | 待可读源码确认 | 无 | 无 | BLOCKED_SOURCE |
+| W4A-C | 九个编译主体 successor | DataBridge 五文件 + Request；加密 payload 进入 manifest closure | 待 Mac3 冻结 | 待生成 | MAC3_BINARY_BUNDLE_PLANNED |
 
 每个 successor 的详细 conformance 输出属于一次性执行证据，不把大体积 Request/Output 或算法诊断内容提交
 到代码线。文档只保留 exact script/config/metadata hash、输入摘要、结果摘要、性能和结论。
 
-W1A/W1B 的本地冻结 generation 为 `full-20260901-063115-5636b51dacf6`，`data_snapshot_id` 为
-`snapshot-fa1dd87bc3fec6173801d1ce`。T1 Request SHA-256 为
-`3b47312da70aa747552e7fe30557bc7317a1fc973a0be57a52aa96884b77afba`，T5 为
-`71c6fc2743bdede8ef4b1a9c7386da8097c4a8e5ea222d352cbbcd575e0e05ad`，weekly point 为
-`2b7cd08b` 开头、`7dc0` 结尾的已读回摘要；在形成 ECS Gate 证据前必须重新输出并保存完整摘要，截断值不可
-用于授权。
+W1A/W1B 已从 ECS 当前数据库只读生成完整正式区间 Request，并在复制出的同一 ECS generation
+`full-20260905-063321-21c5c7188fa5`、`snapshot-f42540ebc533428ca6c869e2` 上完成受控双环境 comparator。
+W1A 共 2×337 + 4×333 = 2006 条，W1B 共 3×72 = 216 条；九个 target 的 Request ID、三个日期和方向
+mismatch 均为 0。临时 W1A/W1B receipt SHA-256 分别为
+`cf80f6805e99ff7ab00a00832db20e4b85cc17366c0d7049c45f83599d6ad55e` 和
+`efe8d15204b842d620633a7252cd13b094a0104865baa499ba213ed160949a48`。它们只证明当前候选与 0905 输入的完整
+等价，不提交到代码线，也不替代待部署 release 上的持久化 backtest、canonical receipt 与现场 preflight。
+九个完整七字段 Request artifact SHA-256 为：
 
-W1A 六方案共完成 600 条同输入 Native 对照，方向差异为 0；六方案的 100 条 batch 连续三次、升降序、乱序、
+- `t1_daily_5y_bbv2=d3f59f2d7100f4236d053433b75b6b805da870390e6a72dd53c754048286afc7`
+- `t1_daily_10y_bbv2=543f5bf8e56ecf983ffb58599874355c583c0e1735f0df70c7a9da4afff94146`
+- `t5_daily_3y_bbv2=89ea6b954ef8ba37e8bc4f8236d4e6ced0133bbc08eee285f38ae53611b3a2e4`
+- `t5_daily_5y_bbv2=31ab83bd89c35baa3c1d1ab20bc959bfaf4d99ddf57a3651b2ab1974b458d1a4`
+- `t5_daily_7y_bbv2=2f2a7b9aef608995ae95109da394c664824b9e76b3d29e058b6a6445ab743a0d`
+- `t5_daily_10y_bbv2=f5d17b7922a584e0f18b98a6ca6611034e16c8ca63c2d93c2f20d01023f812bf`
+- `weekly_5y_direct_0529_bbv2=d95bae52cd56caea73fdec3064cb751f429369a3116f3c0cd7f5b84f549201cc`
+- `weekly_7y_cross_d_overlay_0529_bbv2=2b3bee8859a42ea28516fda1b90b3f5a0bf4fdffd129069d7dee3f8ac0731d92`
+- `weekly_10y_d_overlay_0529_bbv2=f41136ac974a4502c198ae510f7c3aea16d8616d5f9cf88b17c032e2899989e6`
+
+W1A 六方案先完成 600 条固定样本同输入 Native 对照，方向差异为 0；六方案的 100 条 batch 连续三次、升降序、乱序、
 子集、首中末单点、未来数据追加隔离、非法输入失败无 Output 均通过。100 条耗时为 2.42–6.65 秒，峰值 RSS
 约 281–375 MiB。W1B 三方案各 100 条方向差异为 0，同一组合同验收通过；5Y/7Y batch 约 0.16 秒，10Y
-三次为 22.107/21.931/21.898 秒，最大单点 19.664 秒。以上只构成本地离线候选：尚未使用 ECS 0904 generation，
-也未跑完整正式区间或持久化回测。9 个交付均额外通过 101 条 Request 的读取合同测试，批量入口不存在 100 条
-人工上限；100 条只是本阶段固定性能样本。
+三次为 22.107/21.931/21.898 秒，最大单点 19.664 秒。此后又完成上述 ECS 0905 generation 的完整正式区间
+双环境比较；仍未执行持久化回测或生产切换。9 个交付均额外通过 101 条 Request 的读取合同测试，批量入口
+不存在 100 条人工上限；100 条只是固定性能样本。
 
-受控 comparator 的双环境执行链已在上述本地 generation 上用 `t1_daily_5y_bbv2` 单条真实 Request 做 smoke：
-`forecast_env` 中的旧 Native core runner 与 frozen Blackbox profile 中的 canonical successor CLI 产生字节一致的
-五字段 CSV。该 smoke 只验证 comparator 执行链，不替代完整正式 Request receipt，也不授予 cutover。
+完整比较首次暴露并修正了 T+5 comparator 的截止边界：Blackbox Request 的 `feature_date` 是闭区间 cutoff，
+旧 Native helper 的 `predict_date` 参数却是开区间上界。比较器现在只把 feature 后首个交易日作为旧 helper 的
+内部独占上界，并继续要求 Native 实际 feature 精确等于 Request；节假日跨段单测及 4×333 条正式比较均通过。
 
-W2 在同一冻结 generation 的完整五文件上，使用交易日序列生成真实 T+5 Request，
-五文件 SHA-256 均与 `ready-generation.json` 一致。5Y 即使使用允许上限的 LightGBM
-`n_jobs=8`，首月 20 条在 256 秒仍未完成；7Y 同条件首月 20 条 Phase A 实测约 252 秒。
-两者 100 条都必然超过 600 秒硬门槛，因此未继续 100×3、正式全区间和 Native 逐行结果验收。
-两个失败 successor 及临时测试已删除，matrix 与现有 Native 未修改。
+W2 在冻结 generation `full-20260901-063115-5636b51dacf6` 的完整五文件上完成两份自包含 delivery。
+原 V28 core 与频率对齐逻辑内联；`multiprocessing.Pool` 已移除，改为 7-worker 有序线程池，连同主线程最多
+8 个 OS thread，每个 LightGBM `n_jobs=1`，Numba `cache=False`，无子进程。predict/backtest 共用
+`generate_results`，继续按月初到当前 batch cutoff 执行原 test-window，并按 Request 截断三频输入。
 
-W3A 在冻结 generation `full-20260901-063115-5636b51dacf6`上使用
+两个方案首/中/末独立单点的 Request ID、三个日期和方向与 Native 均零差异：5Y 方向为 `-1/-1/0`，耗时
+`6/31/14s`；7Y 为 `-1/-1/1`，耗时 `5/23/11s`。100 条连续三次输出字节稳定；最终 7-worker 复跑为
+5Y 234 秒、7Y 146 秒。完整正式 333 条均为单 CLI、单算法 batch：5Y 766.99 秒、峰值 RSS
+2,897,543,168 bytes；7Y 488.30 秒、峰值 RSS 2,642,313,216 bytes。额外字段、缺少 cutoff、重复 ID、
+数据不足和缺失五文件共十组负向测试均非零退出、stdout 为空且不生成 Output。两个 delivery 已通过本地
+Intake；尚未使用 ECS 当前 generation 形成 comparator receipt，也未执行持久化回测或现场切换。
+
+W3A 在冻结 generation `full-20260901-063115-5636b51dacf6` 上使用
 `feature_date=2026-08-28` 做了决定性性能试验。输入规模为 daily 3908×774、weekly
-853×577、monthly 199×126。完全关闭 Phase-A 持久 cache 且 `n_workers=1` 时，约 125 秒仍停留在
-第一个 baseline 的 `LGBMClassifier.fit`；改为最多 8 个进程内线程、每个 LightGBM `n_jobs=1`、无子进程
-和持久 cache 时，约 122 秒仍未完成第一个 baseline grid。因此已触发单条 predict 120 秒硬停止条件，
-未创建 successor，未修改 Native。W3A 保持 Native，除非算法方能在不恢复跨方案持久状态、不缩减冻结
-grid、不放宽 cutoff 的前提下提供满足性能门槛的独立实现。
+853×577、monthly 199×126，PIT 下界有 41 个有效测试行；三个 baseline 各需 265 个 config × 2 seeds。
+完全关闭 Phase-A 持久 cache，使用最多 8 个进程内 worker、每个 LightGBM `n_jobs=1`、无子进程时，
+`real 121.45s / user 469.44s / sys 31.85s`，峰值 RSS 790,052,864 bytes，仍停留在第一个 `STD`
+baseline 的 `LGBMClassifier.fit`，`DIV` 与 `ACCWT` 尚未开始且没有结果输出。因此已触发单条 predict 120 秒
+硬停止条件；未创建 successor，未修改 Native。另一个 full-OOS 方案有 644 个有效测试行，约为该下界的
+15.7 倍，不再继续无效消耗。W3A 保持 Native，除非算法方能在不恢复跨方案持久状态、不缩减冻结 grid、
+不放宽 cutoff 的前提下提供满足性能门槛的独立实现。
 
 W3B 在同一冻结 generation 上选择计算下界 `liwei_0616_10y01_cons_say_k3_div_k10`
 做可行性预检。Request 为 `feature_date=2026-08-28`，只使用 2025-08 与 2026-08 两个较短 PIT
@@ -264,23 +290,24 @@ baseline，累计 user 507.72 秒、sys 24.94 秒，峰值 RSS 713,015,296 bytes
 
 ## 5. 阶段与状态机
 
-每个 wave 只能按下列顺序前进：
+每个 wave 只能按下列顺序前进。W1-W3 的 delivery 是严格两文件；W4 的 `DELIVERY_INTAKE` 是本计划锁定的
+Mac3-only binary-bundle Intake，不能解释为普通 Blackbox 两文件 Intake：
 
 ```text
-SOURCE_READY
-  -> TWO_FILE_INTAKE
+DELIVERY_READY
+  -> DELIVERY_INTAKE
   -> CONFORMANCE_PASSED
   -> PERSISTED_BACKTEST_PASSED
   -> PREFLIGHT_FROZEN
   -> CUTOVER_COMMITTED
   -> GRAY_RANGE_COMMITTED
-  -> NATURAL_OBSERVING
+  -> CONTROL_PLANE_SIMULATION_PASSED
   -> ROLLBACK_WINDOW_CLOSED
   -> NATIVE_CLEANUP_ELIGIBLE
 ```
 
 缺少任一前置状态时后续状态不可写入。失败只允许回到当前 wave 的安全前态，不能跳过、补记或用人工结果冒充
-自然观察。
+真实 unit/plist 环境的人工 one-shot 控制面验证。
 
 ### 5.1 Phase 1：本地候选
 
@@ -302,10 +329,20 @@ V28 删除 `multiprocessing.Pool`，predict/backtest 共用按 Request cutoff �
 
 若去除持久 cache 后不满足性能标准，保持 Native 并停止该方案迁移，不得恢复跨方案状态或读取未来窗口。
 
-### 5.3 Phase 3：编译主体方案
+### 5.3 Phase 3：Mac3-only 编译主体方案
 
-W4 的开始条件是取得可读源码，且源码可只读五文件、无数据库/网络/外部路径/旁路模型/子进程/macOS `.so`
-依赖。ECS 只进行 paused 技术验证，不授予自然 writer。源码未到位时，全量 26 个 Native 退役保持明确阻塞。
+W4 九个方案不进入 ECS，也不再以取得可读源码为开始条件。17 个可读源码 Native 完成 ECS 验证并晋级 Mac3
+后，W4 才在 Mac3 形成唯一获准的 Blackbox binary bundle 例外：`scheme.py + metadata.json + payload/`。
+payload 只允许包含锁定的 CPython 3.13 macOS ARM64 `.so` 及其包内运行依赖；全部文件名、大小和 SHA-256
+进入 canonical manifest 与 exact version hash closure。bundle 固定 Mac3 Runtime Profile，只能读取平台提供的
+DataBridge 五文件与 Request，必须输出精确五字段，不得访问源数据库、网络、包外路径或持久状态。平台增加的
+能力必须是通用 manifest/intake/executor 边界，不允许恢复九个方案各自的 Scheduler 分支，也不得把 binary
+bundle 例外开放给新方案。
+
+W4 的 `runtime_type` 仍为 `blackbox_v2`，Scheduler 继续执行 manifest 中的 `scheme.py` 标准 CLI，不新增
+binary 专属执行分支。Intake 只为静态映射中的九个 successor 接受 `payload-manifest.json`，并要求固定
+`blackbox-v2-mac3-cpython313-arm64-v1` profile；exact version 同时哈希 script、metadata、payload manifest 和
+每个 payload 字节。ABI、架构或任一 payload hash 不匹配必须在启动算法前 fail-closed，不能退回 Native adapter。
 
 ### 5.4 Phase 4：ECS cutover
 
@@ -337,8 +374,9 @@ operator 明确撤销旧候选证据并形成新的 clean commit，不能静默�
 
 每批顺序固定：在候选树生成受控 receipt 并更新 deployment matrix → 形成 clean commit 和 deterministic archive →
 把该 archive 安装为目标机 current → fence cadence timer 并等待 one-shot 退出 → 从 current release 重做 preflight →
-使用其 plan SHA 单事务切换 → 单 batch gray 区间 → 恢复 timer → 验证唯一 writer/Dashboard/next trigger → 完成
-自然观察。preflight 之前的安装只部署代码，不授予 Registry 或业务事实写入权。
+使用其 plan SHA 单事务切换 → 单 batch gray 区间 → 恢复 timer → 通过真实 systemd one-shot 的人工触发验证
+唯一 writer、journal、Dashboard 与 next trigger。preflight 之前的安装只部署代码，不授予 Registry 或业务
+事实写入权。
 
 cutover 单事务必须：
 
@@ -352,21 +390,27 @@ cutover 单事务必须：
 gray 区间从 `target_date >= 2026-06-01` 到下一个自然目标前，单 successor 只启动一个 batch，每条 Request
 独立 cutoff；任一业务键已存在则整组拒绝，一次 repository 事务提交。失败立即反向 cutover，不开放 timer。
 
-自然观察门槛为日频连续 5 次、周频连续 3 次、月频连续 2 次；任一次失败立即停止该 wave 并重新计数。
+不等待日频、周频或月频的自然触发次数。每个 cadence 至少人工触发一次真实 installed systemd one-shot；其
+命令、WorkingDirectory、EnvironmentFiles、运行用户和 Runtime Profile 必须与 timer 触发完全相同。service
+成功退出、唯一 `scheduled_live` run、业务键唯一、old 无新 run、Dashboard 与 journal 相互证明同一次执行，
+才可关闭该 wave 的模拟验证；任一失败立即 rollback。
 
 ### 5.5 Rollback
 
 rollback 顺序固定：fence timer → 确认无进程和 running run → 单事务 archive/pause successor、恢复 old
-version/Registry → 保留 successor facts → current 切回已核验 previous release → 恢复 timer → 验证 old 恢复
-自然运行且 successor 不再新增 run。
+version/Registry → 保留 successor facts → current 切回已核验 previous release → 恢复 timer → 人工触发同一
+installed one-shot，验证 old 恢复运行且 successor 不再新增 run。
 
 同 exact version 允许重新切换，但必须复用已经发布的完全相同事实；禁止重复插入、覆盖或更换版本规避冲突。
 
 ### 5.6 Phase 5：Mac3 晋级
 
-Mac3 只使用 ECS 已验证的同一 immutable archive，独立重做 release、launchd、数据库、DataBridge、backtest、
-cutover 和 rollback preflight。不得复制 ECS 的主键、run、prediction、backtest、Actual 或 Registry 行。只有
-Mac3 的 30 个 target 全部完成对应自然观察，才允许最终删除 Native 可执行路径。
+Mac3 对 W1-W3 只使用 ECS 已验证的同一 immutable archive，独立重做 release、launchd、数据库、DataBridge、
+backtest、cutover 和 rollback preflight，不得复制 ECS 的主键、run、prediction、backtest、Actual 或 Registry
+行。Mac3 使用 installed plist 的精确 ProgramArguments、WorkingDirectory、EnvironmentVariables、运行用户和
+Runtime Profile 人工触发一次 one-shot，不等待自然日历。W4 随后形成新的 Mac3-only binary-bundle archive，
+该 archive 不需要也不得在 ECS 运行。30 个 target 全部完成对应控制面模拟验证后，才允许最终删除 Native
+可执行路径。
 
 ## 6. 测试与验收
 
@@ -379,7 +423,8 @@ Mac3 的 30 个 target 全部完成对应自然观察，才允许最终删除 Na
 - cutoff 后追加未来数据，原 Request 不变；
 - 非法字段、重复 ID、缺少 cutoff、数据不足、非法方向均非零退出、stderr 明确、stdout 为空、无 Output；
 - Result 顶层字段精确等于五字段；
-- 不 import 平台代码，不访问 DB/网络/额外代码/持久状态，不启动子进程。
+- W1-W3 不 import 平台代码，不访问 DB/网络/额外代码/持久状态，不启动子进程；W4 只允许读取 manifest 内
+  已锁定的 binary payload，其他边界相同。
 
 ### 6.2 同输入等价
 
@@ -400,8 +445,8 @@ old/new code hash + runtime environment fingerprint`。Request 数量/顺序/ID�
 ### 6.4 数据库与控制面
 
 切换前后核对 old/new Registry/version/hash、持久化 backtest evidence、旧事实 count/date/direction 摘要、
-successor 唯一键、`run_id/backtest_run_id` XOR、gray/backtest 区间、Actual 水位、其他 active 集合、自然 run、
-Dashboard 和 timer/journal。任何非计划变化都使 wave 失败。
+successor 唯一键、`run_id/backtest_run_id` XOR、gray/backtest 区间、Actual 水位、其他 active 集合、人工触发的
+真实 one-shot run、Dashboard 和 timer/journal。任何非计划变化都使 wave 失败。
 
 临时迁移事务已在本机回环 MySQL 8 的随机高熵隔离 schema 中通过：真实覆盖 `GET_LOCK`、
 `FOR UPDATE`、`CAST(... AS JSON)`、`ON DUPLICATE KEY UPDATE`、MySQL affected-row 语义、
@@ -416,7 +461,8 @@ Dashboard 和 timer/journal。任何非计划变化都使 wave 失败。
 
 - 无法证明同 generation、同 Request 或同 runtime fingerprint；
 - 任一日期或方向不一致；
-- successor 需要数据库、网络、额外代码、持久 cache、跨方案 import 或子进程；
+- successor 需要数据库、网络、持久 cache、跨方案 import 或子进程；W1-W3 需要额外代码，或 W4 读取 manifest
+  hash closure 之外的代码；
 - exact version、Registry、matrix、release manifest、DataBridge authority 不一致；
 - 存在 running run、第二 writer 或 timer 无法 fence；
 - 需要覆盖、删除或修改旧业务事实；
@@ -426,7 +472,7 @@ Dashboard 和 timer/journal。任何非计划变化都使 wave 失败。
 
 ## 8. 最终清理与 Migration 025
 
-只有 26 个 Native 在对应环境完成切换、自然观察和回滚窗口后，才删除 Native scheme/core/config、25 个专属
+只有 26 个 Native 在对应环境完成切换、真实 one-shot 控制面模拟和回滚窗口后，才删除 Native scheme/core/config、25 个专属
 回测 runner、adapter/source runner/DB 注入/ABI、Liwei cache wave、Native scheduler subprocess/artifact/gray
 分支、Native Gate/onboard/policy、专属测试、`docs/native_v1/` 入口，以及本项目的临时 cutover CLI 和映射。
 
@@ -438,10 +484,12 @@ confidence。得到独立生产授权并验证可恢复快照后，新增并只�
 
 ## 9. 完成定义
 
-必须同时满足：30 个 successor 全部通过合同/等价/性能；ECS 21 个原 active target 被接管；9 个 Mac3-only
-successor 在 ECS paused 技术验证通过；Mac3 30 个 target 完成切换与自然观察；old Registry 全 archived 且无新
+必须同时满足：W1-W3 的 21 个 successor target 全部通过合同/等价/性能并在 ECS 接管；同一 archive 晋级
+Mac3；W4 九个 Mac3-only binary-bundle successor 通过 manifest/ABI/合同/等价/性能；Mac3 30 个 target 完成
+切换与真实 launchd one-shot 模拟；old Registry 全 archived 且无新
 Native run；Native 可执行路径与临时迁移工具已删除；全量、架构、isolated MySQL 和 migration recovery 测试
 通过；025 已删除两个 confidence 列；Dashboard、Actuals、其他 Blackbox 和调度控制面无非计划变化。
 
-当前全局状态仍为 `IN_PROGRESS`。ECS 基线已经重新只读核验；剩余硬阻塞是 W2/W3 未满足性能门槛，以及 W4
-缺少与锁定生产身份匹配的可读算法主体。不能用 adapter 包装、二进制复制、旧水位或文档声明冒充闭环。
+当前全局状态仍为 `IN_PROGRESS`。ECS 基线已经重新只读核验；当前硬阻塞是 W3 未满足性能门槛。W4 的
+Mac3-only binary-bundle 架构已经获得确认，但必须等 W1-W3 晋级 Mac3 后实施；不能用旧 adapter、未纳入
+manifest 的二进制、旧水位或文档声明冒充闭环。
