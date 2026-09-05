@@ -257,9 +257,9 @@ W1A 六方案先完成 600 条固定样本同输入 Native 对照，方向差异
 内部独占上界，并继续要求 Native 实际 feature 精确等于 Request；节假日跨段单测及 4×333 条正式比较均通过。
 
 W2 在冻结 generation `full-20260901-063115-5636b51dacf6` 的完整五文件上，用 `forecast_env` 完成两份
-自包含 delivery；其 conda explicit package set 与冻结的 `forecast_env_blackbox_v1` 完全一致（SHA-256 均为
-`cb18e8074fbf620ca808ecbbe82a1095009b911b41ac05271c234c07d56e4844`），但尚未冒充正式 Blackbox executor
-现场验收。原 V28 core 与频率对齐逻辑内联；`multiprocessing.Pool` 已移除，改为 4-worker 有序线程池，
+自包含 delivery；去除只含环境路径的 header 后，其 `conda list --explicit` package URL rows 与冻结的
+`forecast_env_blackbox_v1` 逐字节一致，但尚未冒充正式 Blackbox executor 现场验收。原 V28 core 与频率
+对齐逻辑内联；`multiprocessing.Pool` 已移除，改为 4-worker 有序线程池，
 每个 LightGBM `n_jobs=1`，Numba `cache=False`，并显式把 BLAS/OpenMP/VECLIB/Numba 线程设为 1。实测两个
 delivery 的进程峰值均为 7 个 OS thread、无子进程。predict/backtest 共用 `generate_results`，继续按月初到
 当前 batch cutoff 执行原 test-window，并按 Request 截断三频输入。
