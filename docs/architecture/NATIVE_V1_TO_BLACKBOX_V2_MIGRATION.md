@@ -191,8 +191,8 @@ Native/Blackbox 结果摘要必须相等并与该完整事实集一致，五类 
 apply 在事务内重新采集、重新推导并复验。receipt 缺失、抽样数量、手工摘要、旧 comparator 源码
 或任一 identity 不匹配均 fail-closed。receipt 不保存包含自身的 Git commit，避免 tracked receipt 的不可满足
 自引用；其内容由 comparator 源码 SHA、当前 release source-tree/archive、receipt 文件 SHA 和 plan SHA 共同
-冻结。当前 W1 只有本地离线比较证据，尚未形成可授权的完整 receipt，
-因此不能执行 ECS cutover。
+冻结。当前候选已生成 W1A/W1B/W2 三份完整 canonical receipt，但它们尚未随新的 immutable release
+部署至 ECS，也尚未通过现场 preflight、持久化回测与切换事务，因此仍不能执行 ECS cutover。
 
 2026-09-05 已使用 ECS 专用 SSH 身份完成一次新的只读现场复核：`current` 仍指向 release
 `617113ed0b2e3c059d5b8a4d1390f453938966f5`；数据库为 `bond_db`、migration 024、running scheme run 为 0；
@@ -229,10 +229,11 @@ canonical config 固定。Request 区间和代码 hash 在测试
 W1A/W1B 已从 ECS 当前数据库只读生成完整正式区间 Request，并在复制出的同一 ECS generation
 `full-20260905-063321-21c5c7188fa5`、`snapshot-f42540ebc533428ca6c869e2` 上完成受控双环境 comparator。
 W1A 共 2×337 + 4×333 = 2006 条，W1B 共 3×72 = 216 条；九个 target 的 Request ID、三个日期和方向
-mismatch 均为 0。临时 W1A/W1B receipt SHA-256 分别为
-`cf80f6805e99ff7ab00a00832db20e4b85cc17366c0d7049c45f83599d6ad55e` 和
-`efe8d15204b842d620633a7252cd13b094a0104865baa499ba213ed160949a48`。它们只证明当前候选与 0905 输入的完整
-等价，不提交到代码线，也不替代待部署 release 上的持久化 backtest、canonical receipt 与现场 preflight。
+mismatch 均为 0。最终 comparator 源码下的 canonical W1A/W1B receipt SHA-256 分别为
+`203b1678e9f1cd672a7dc2854dbc21d59b231718f6fd1df3e4903b1ce3513f21` 和
+`819e5e2fc16db98c5682bb7cd54f2a4f6abbc62e8c28a0dbc42ceb76fb4bcb83`，共同绑定 comparator source SHA-256
+`d0f3659e0ba7b41831a2b733e4e7e99f235a3cbf26c84f4f03631b4bd1d3c07f`。它们将随下一份 immutable release
+发布，但不替代该 release 上的持久化 backtest 与现场 preflight。
 九个完整七字段 Request artifact SHA-256 为：
 
 - `t1_daily_5y_bbv2=d3f59f2d7100f4236d053433b75b6b805da870390e6a72dd53c754048286afc7`
@@ -277,8 +278,10 @@ delivery 的进程峰值均为 7 个 OS thread、无子进程。predict/backtest
 
 一次使用非目标 `bond_factor_lab_service` 解释器的 5Y 333 条诊断运行与 `forecast_env` 结果存在 8/333 行方向
 差异，因此该结果明确不计入验收，也不能跨环境复用。此证据再次证明 runtime environment fingerprint 是迁移
-等价身份的一部分。W2 尚未使用 ECS 当前 generation 形成 canonical comparator receipt，也未执行持久化回测
-或现场切换。
+等价身份的一部分。W2 已在 ECS 当前 generation `full-20260905-063321-21c5c7188fa5` 上经正式
+`forecast_env_blackbox_v1` executor 完成 2×333 条全量比较，五类 mismatch 均为 0；canonical receipt
+SHA-256 为 `c9eaf7bbc4c5f5c648cac9d7e6e3bdf472e6cf4d4af9f5542501cfd5a541a9fa`，comparator source SHA-256 与
+W1 相同。尚未执行持久化回测、现场 preflight 或切换。
 
 W3A 在冻结 generation `full-20260901-063115-5636b51dacf6` 上使用
 `feature_date=2026-08-28` 做了决定性性能试验。输入规模为 daily 3908×774、weekly
