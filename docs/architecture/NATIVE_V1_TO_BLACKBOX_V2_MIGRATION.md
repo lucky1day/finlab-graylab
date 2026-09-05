@@ -256,14 +256,16 @@ W1A 六方案先完成 600 条固定样本同输入 Native 对照，方向差异
 旧 Native helper 的 `predict_date` 参数却是开区间上界。比较器现在只把 feature 后首个交易日作为旧 helper 的
 内部独占上界，并继续要求 Native 实际 feature 精确等于 Request；节假日跨段单测及 4×333 条正式比较均通过。
 
-W2 在冻结 generation `full-20260901-063115-5636b51dacf6` 的完整五文件和目标 `forecast_env` 上完成两份
-自包含 delivery。原 V28 core 与频率对齐逻辑内联；`multiprocessing.Pool` 已移除，改为 4-worker 有序线程池，
+W2 在冻结 generation `full-20260901-063115-5636b51dacf6` 的完整五文件上，用 `forecast_env` 完成两份
+自包含 delivery；其 conda explicit package set 与冻结的 `forecast_env_blackbox_v1` 完全一致（SHA-256 均为
+`cb18e8074fbf620ca808ecbbe82a1095009b911b41ac05271c234c07d56e4844`），但尚未冒充正式 Blackbox executor
+现场验收。原 V28 core 与频率对齐逻辑内联；`multiprocessing.Pool` 已移除，改为 4-worker 有序线程池，
 每个 LightGBM `n_jobs=1`，Numba `cache=False`，并显式把 BLAS/OpenMP/VECLIB/Numba 线程设为 1。实测两个
 delivery 的进程峰值均为 7 个 OS thread、无子进程。predict/backtest 共用 `generate_results`，继续按月初到
 当前 batch cutoff 执行原 test-window，并按 Request 截断三频输入。
 
 两个方案首/中/末独立单点与冻结 Native 基线逐字节一致：5Y 方向为 `-1/-1/0`，耗时 `6/38/16s`；7Y 为
-`-1/-1/1`，耗时 `6/27/13s`。目标环境 100 条单 CLI 为 5Y 242 秒、7Y 175 秒；完整正式 333 条单 CLI 为
+`-1/-1/1`，耗时 `6/27/13s`。该冻结包集合环境的 100 条单 CLI 为 5Y 242 秒、7Y 175 秒；完整正式 333 条单 CLI 为
 5Y 963 秒、峰值 RSS 2,722,912 KiB、Output SHA-256
 `d6fce015cd4fcdd33cbd3354b07f0151d86a0d517fbe8d3204f122a23defba23`，7Y 589 秒、峰值 RSS
 2,673,312 KiB、Output SHA-256 `47a6f9b8037a271f34ffa5406d37f629d55736196329a9607fe65c56d8dd3b6b`。
