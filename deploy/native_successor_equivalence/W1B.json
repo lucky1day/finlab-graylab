@@ -1,27 +1,27 @@
 {
   "data_files_sha256": {
     "api_wind_date.csv": "fc42e4b6a59edcaf81ded827f82ea639a2a17a81d1763f23aa3bb386d153a4b2",
-    "daily_output.csv": "8e98c84d577304b69c432abfd3bf7438133add3af542b69534d3365949a9f223",
+    "daily_output.csv": "299072052199dab831f29b4b3d4293581bfe6def6b719387276819b5562ac92c",
     "factor_catalog.csv": "bb5ee17f097369ed4498744b604d51597e4814c9e31887e90aad62c2b2bd8965",
-    "monthly_output.csv": "1ee62d0939ec73350db5b01d98343557cc11ef0a48497c93f4d31f4ba655ed27",
-    "weekly_output.csv": "d51c65df76ab816b1d777ac7fd7377aac7d62b93b12ce30ebc4c5da26b0685bb"
+    "monthly_output.csv": "a5f64009810f19799e38e39707040f2f7d540d9069ea40958e5df05cf45cac8e",
+    "weekly_output.csv": "bc5805456b6f496d1642799604468a191f86134b9aeb3b952af6e44f7fcf7854"
   },
-  "data_snapshot_id": "snapshot-f42540ebc533428ca6c869e2",
-  "generation_id": "full-20260905-063321-21c5c7188fa5",
+  "data_snapshot_id": "snapshot-4a525546f74e5f3d003ce07f",
+  "generation_id": "full-20260906-063526-3baeb4277bae",
   "producer": {
     "comparator_source_sha256": "d0f3659e0ba7b41831a2b733e4e7e99f235a3cbf26c84f4f03631b4bd1d3c07f",
-    "generated_at": "2026-09-05T21:13:20.550966+00:00",
+    "generated_at": "2026-09-05T23:14:19.501307+00:00",
     "tool": "native-successor-controlled-comparator",
     "tool_version": "1"
   },
-  "runtime_environment_fingerprint": "720ad40ab77cd6c7156ff35a80cf3604ac3a6153425ed235a4e3158b0631f8bd",
+  "runtime_environment_fingerprint": "b37b78e89aeb65600edb909d7e98dcfbf69429edb4f3232526331021570ec565",
   "schema_version": "native-successor-equivalence-v1",
   "targets": [
     {
       "direction_mismatch_count": 0,
       "feature_date_mismatch_count": 0,
       "native_result_sha256": "34861de4ac497ac10153f13e59003c2269f13280bc0388662f17adc9fb3805ad",
-      "native_runtime_environment_fingerprint": "f4076d15ddc29a6125eeb4102b6e218405a9d52dd6493f97c72847575c5663b5",
+      "native_runtime_environment_fingerprint": "20114cd4df38f988ecf190cd90b03e961155d67662ba5ad862f5919fc3be0f00",
       "new_base_scheme_id": "weekly_10y_d_overlay_0529_bbv2",
       "new_code_hash": "e52e221a0046e8623107359b4fe3c2f7643e422b3ed9068c0cf317e9cdeafeed",
       "new_horizon": 1,
@@ -42,7 +42,7 @@
       "direction_mismatch_count": 0,
       "feature_date_mismatch_count": 0,
       "native_result_sha256": "4b1c1627dbdd8b28beeb593303f6be6e4c6f01d2803a0ecc8705e69789fbaecc",
-      "native_runtime_environment_fingerprint": "f4076d15ddc29a6125eeb4102b6e218405a9d52dd6493f97c72847575c5663b5",
+      "native_runtime_environment_fingerprint": "20114cd4df38f988ecf190cd90b03e961155d67662ba5ad862f5919fc3be0f00",
       "new_base_scheme_id": "weekly_5y_direct_0529_bbv2",
       "new_code_hash": "59909549fee682c61a90c1394672f40b7204f67e35f692b04577cc49498a19c8",
       "new_horizon": 1,
@@ -63,7 +63,7 @@
       "direction_mismatch_count": 0,
       "feature_date_mismatch_count": 0,
       "native_result_sha256": "9383d9a96a9d0820e1a9777d2d96d0c202df0eb873f36cc03e164cb05bbbcbc3",
-      "native_runtime_environment_fingerprint": "f4076d15ddc29a6125eeb4102b6e218405a9d52dd6493f97c72847575c5663b5",
+      "native_runtime_environment_fingerprint": "20114cd4df38f988ecf190cd90b03e961155d67662ba5ad862f5919fc3be0f00",
       "new_base_scheme_id": "weekly_7y_cross_d_overlay_0529_bbv2",
       "new_code_hash": "fb2baa38fa8b614737f0c2f87bff90626e2d8d268e5375362bf863554096e680",
       "new_horizon": 1,
