@@ -132,6 +132,8 @@ def test_blackbox_persist_cli_builds_exact_operation_scope(tmp_path) -> None:
 
 
 def test_cli_json_keeps_derived_passed_field() -> None:
+    from datetime import date
+
     from harness.cli import _jsonable
     from harness.result import GateResult, GateStatus, OnboardReport
 
@@ -154,3 +156,6 @@ def test_cli_json_keeps_derived_passed_field() -> None:
     assert _jsonable(report)["results"][0]["passed"] is True
     assert _jsonable(report)["overall_passed"] is True
     assert _jsonable(report)["control_plane_persisted"] is True
+    assert _jsonable({"deployed_at": date(2026, 9, 6)}) == {
+        "deployed_at": "2026-09-06"
+    }

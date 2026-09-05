@@ -146,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         result = _run_native_successor_migration_command(args)
         print(
             json.dumps(
-                result,
+                _jsonable(result),
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),
@@ -639,6 +639,8 @@ def _exit_code_for_report(report: OnboardReport) -> int:
 def _jsonable(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
+    if isinstance(value, date):
+        return value.isoformat()
     if isinstance(value, GateStatus):
         return value.value
     if is_dataclass(value):
