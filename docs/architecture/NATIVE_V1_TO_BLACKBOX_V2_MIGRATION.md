@@ -321,8 +321,14 @@ Request 明确列出的日期训练 LightGBM 和生成预测，同时保留原�
 
 W2 的剩余耗时不是调度或文件缓存：333 条正式区间包含 17 个月，5Y/7Y 在保留 265 个 config 和 3/2 个 seed
 时分别需要训练约 264,735/176,490 个 LightGBM 模型。ECS 是两个物理核心、每核两个超线程；4-worker 已是
-实测最优，2/3/5-worker 均更慢。5Y 的 100 条当前仍需 619.41 秒、峰值 RSS 约 894 MiB，超过 600 秒硬门槛
-19.41 秒，因此 W2 继续 fail-closed；不得生成新 receipt、持久化回测或 cutover。
+实测最优，2/3/5-worker 均更慢。最终代码 hash 的 ECS 复测中，5Y 的 100 条需 618.85 秒、峰值 RSS
+910,740 KiB，超过 600 秒硬门槛 18.85 秒；7Y 的 100 条为 371.24 秒、峰值 RSS 918,856 KiB，已通过该项。
+W2 作为同一 wave 继续 fail-closed；不得生成新 receipt、持久化回测或 cutover。
+
+另行验证了按 `window + split_pct + min_child_samples` 把 265 个配置绑定到同一 worker、提高线程内 Dataset
+cache 命中率的候选。相同 2025-01 月份 18 条 Request 下，5Y 输出逐字段一致且 RSS 从约 806 MiB 降至
+约 598 MiB，但 wall time 从 93.86 秒增加到 95.97 秒；19 个粗粒度配置组的尾部负载不均抵消了 Dataset
+构造收益。该负优化已完整撤销，不进入当前候选。
 
 独立审查曾发现首版优化把信号选择锚点随 `requested_dates` 一起缩到了子集首日，存在稀疏 Request 改变
 月初选信号基准的风险。当前实现已将两者分离：LightGBM 仍只训练 Request 日期，但信号选择继续使用旧路径
