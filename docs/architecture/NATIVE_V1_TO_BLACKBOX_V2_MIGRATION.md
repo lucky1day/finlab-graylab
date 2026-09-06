@@ -8,6 +8,8 @@
 
 **基线 Git 提交**：`20e98934e9d5399e3d509f486a8a650d95ad7639`
 
+**W2 算法候选提交**：`f947426d969d6c3e3879e707f7a0564345788d9a`
+
 ## 1. 目标与非目标
 
 本项目把 26 个 Native V1 base scheme 替换为 30 个新的 Blackbox V2 successor，使 Scheduler、回测、
@@ -85,7 +87,7 @@ W3A 和 W3B 各自作为不可拆分 cache-family wave。W3C、W3D 在各自 wav
 - commit：`20e98934e9d5399e3d509f486a8a650d95ad7639`
 - 开始状态：clean worktree
 - 迁移前回归：`585 passed, 4 skipped, 194 subtests passed`
-- 当前候选回归：`650 passed, 5 skipped, 4 warnings, 194 subtests passed`
+- 当前候选回归：`654 passed, 5 skipped, 5 warnings, 194 subtests passed`
 - 原子迁移 isolated MySQL 8 验证：`1 passed`；随机测试 schema 清理后残留数为 0
 - Native inventory：26 base / 30 target
 - Blackbox inventory：67 active base；其中 66 个仍使用 `legacy_v1`，不属于本项目
@@ -194,8 +196,11 @@ Native/Blackbox 结果摘要必须相等并与该完整事实集一致，五类 
 apply 在事务内重新采集、重新推导并复验。receipt 缺失、抽样数量、手工摘要、旧 comparator 源码
 或任一 identity 不匹配均 fail-closed。receipt 不保存包含自身的 Git commit，避免 tracked receipt 的不可满足
 自引用；其内容由 comparator 源码 SHA、当前 release source-tree/archive、receipt 文件 SHA 和 plan SHA 共同
-冻结。当前候选已生成 W1A/W1B/W2 三份完整 canonical receipt，但它们尚未随新的 immutable release
-部署至 ECS，也尚未通过现场 preflight、持久化回测与切换事务，因此仍不能执行 ECS cutover。
+冻结。当前候选的 W1A/W1B canonical receipt 仍与各自 exact code 一致，但尚未随新的 immutable release
+部署至 ECS，也尚未通过现场 preflight、持久化回测与切换事务，因此仍不能执行 ECS cutover。W2 只保留
+2026-09-05 旧 exact code 的历史 receipt；提交 `f947426d969d6c3e3879e707f7a0564345788d9a` 已改变
+successor script hash，该 receipt 已 superseded，只作审计，禁止用于 f947 preflight/cutover。f947 因 ECS
+性能失败没有生成 canonical W2 receipt，也不得推进持久化回测或 cutover。
 
 2026-09-05 已使用 ECS 专用 SSH 身份完成一次新的只读现场复核：`current` 仍指向 release
 `617113ed0b2e3c059d5b8a4d1390f453938966f5`；数据库为 `bond_db`、migration 024、running scheme run 为 0；
@@ -220,7 +225,7 @@ canonical config 固定。Request 区间和代码 hash 在测试
 | W1B | `weekly_5y_direct_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `59909549fee682c61a90c1394672f40b7204f67e35f692b04577cc49498a19c8` | ECS_0905_FULL_COMPARATOR_PASSED |
 | W1B | `weekly_7y_cross_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `fb2baa38fa8b614737f0c2f87bff90626e2d8d268e5375362bf863554096e680` | ECS_0905_FULL_COMPARATOR_PASSED |
 | W1B | `weekly_10y_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `e52e221a0046e8623107359b4fe3c2f7643e422b3ed9068c0cf317e9cdeafeed` | ECS_0905_FULL_COMPARATOR_PASSED |
-| W2 | 两个 `daily_*_v28_bbv2` | 完整五文件；V28 daily/weekly/monthly 因子与真实 T+5 grid | feature 2025-01-02..2026-05-22；各 333 条 | 5Y `bb1323ae7dfdf7eb2c31d52a676bfef6593ee65ed3d326126d424bfbe2ef7986`；7Y `caad2438c5fa6ad627689e24aa4eff2f0a02062efa6790b375e73e94c05118a2` | ECS_BLOCKED_PERFORMANCE |
+| W2 | 两个 `daily_*_v28_bbv2` | 完整五文件；V28 daily/weekly/monthly 因子与真实 T+5 grid | feature 2025-01-02..2026-05-22；各 333 条 | 5Y `11059c610e802bd6a00d0ef6bd506be662fe932eb9d285a15ec3bd84817d94c0`；7Y `1d3c5b3748ba53c55c2a491ed28e83d7624bfae1d8171ad42aa9e6ae0a6ab761` | ECS_BLOCKED_PERFORMANCE_NO_CURRENT_RECEIPT |
 | W3A | 两个 5Y cache-family successor | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2026-08-28 | 未生成 | BLOCKED_PERFORMANCE |
 | W3B | 三个 10Y cache-family successor | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2026-08-28 | 未生成 | BLOCKED_PERFORMANCE |
 | W3C-D | 五个 `liwei_0616_*_bbv2` | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2026-08-28 | 未生成 | BLOCKED_PERFORMANCE |
@@ -281,16 +286,35 @@ delivery 的进程峰值均为 7 个 OS thread、无子进程。predict/backtest
 
 一次使用非目标 `bond_factor_lab_service` 解释器的 5Y 333 条诊断运行与 `forecast_env` 结果存在 8/333 行方向
 差异，因此该结果明确不计入验收，也不能跨环境复用。此证据再次证明 runtime environment fingerprint 是迁移
-等价身份的一部分。W2 已在 ECS 当前 generation `full-20260905-063321-21c5c7188fa5` 上经正式
-`forecast_env_blackbox_v1` executor 完成 2×333 条全量比较，五类 mismatch 均为 0；canonical receipt
+等价身份的一部分。W2 的旧 exact code 曾在 ECS generation `full-20260905-063321-21c5c7188fa5` 上经正式
+`forecast_env_blackbox_v1` executor 完成 2×333 条全量比较，五类 mismatch 均为 0；其历史 receipt
 SHA-256 为 `c9eaf7bbc4c5f5c648cac9d7e6e3bdf472e6cf4d4af9f5542501cfd5a541a9fa`，comparator source SHA-256 与
-W1 相同。尚无成功的持久化回测，也未执行现场 preflight 或切换。
+W1 相同。该 receipt 绑定的 5Y/7Y script SHA 分别为
+`bb1323ae7dfdf7eb2c31d52a676bfef6593ee65ed3d326126d424bfbe2ef7986` 和
+`caad2438c5fa6ad627689e24aa4eff2f0a02062efa6790b375e73e94c05118a2`；f947 已改变 exact code，因此该
+receipt 现为 `superseded/historical-only`，不得用于当前 preflight/cutover。尚无成功的持久化回测，也未执行
+现场切换。
 
 2026-09-06 在 ECS 4-vCPU 主机上使用预安装 immutable release 和正式 `forecast_env_blackbox_v1` executor
 执行 5Y 完整持久化回测时，于 1800 秒硬超时终止；算法仍在正常逐月计算，未生成完整 Output，repository 未写入
 任何 W2 backtest run/fact，7Y 因原子 wave fail-fast 未启动。ECS 增加第五 worker 会超卖 CPU，不能作为满足
 门槛的可靠修复。因此 W2 两个 old Native 保留 `aliyun-gray` 部署范围，W2 不进入 cutover；后续必须提供降低
 总计算量但不改变 grid、seed、cutoff 与窗口语义的实现，或更换满足既定门槛的 ECS 计算规格。
+
+同日继续在提交 `f947426d969d6c3e3879e707f7a0564345788d9a` 上完成 Dataset 复用优化：冻结 Request 的本机
+333 条输出与旧结果逐字节一致，5Y/7Y 分别为 630.99/407.91 秒，峰值 RSS 分别约 2.86/2.71 GiB；完整回归为
+`654 passed, 5 skipped, 5 warnings, 194 subtests passed`，独立审查无 Critical/Important/Minor 发现。ECS 使用 generation
+`full-20260906-063526-3baeb4277bae` 运行受控 W2 comparator 时，Native 参考完成后，5Y successor 再次在
+1800 秒硬超时，最大 RSS 986,048 KiB；没有 successor Output、receipt、backtest 或数据库写入，7Y 未启动。
+随后测试的月份级 8×1、2×2、共享 Dataset、训练索引预计算和 LightGBM 2×2 线程组合，要么没有稳定净收益，
+要么在 ECS 触发 `SIGBUS`；全部实验改动均已撤销，未降低性能门槛。
+
+一次 Native 性能对照暴露 `cache=True` 的 Numba 编译会在 immutable release 源目录写入 `.nbc/.nbi`，使
+3162 release 的 source digest 被 preflight 正确拒绝。现场先切到已核验 f947，把受污染目录移动到独立
+quarantine，再从原始、SHA-256 已核验的 3162 archive 重新预安装并激活。恢复后 preflight 已通过 release
+完整性校验，只按预期拒绝 `old_still_deployed=['daily_5y_2_v28','daily_7y_1_v28']`；六个项目控制面 active，
+没有遗留算法进程或部分 Output。后续禁止再从 immutable release 直接运行会触发源码旁 Numba cache 的 Native
+诊断；此类比较必须在私有可写副本中执行。
 
 W3A 在冻结 generation `full-20260901-063115-5636b51dacf6` 上使用
 `feature_date=2026-08-28` 做了决定性性能试验。输入规模为 daily 3908×774、weekly

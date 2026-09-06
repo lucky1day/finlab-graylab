@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验日期**：2026-09-05
+**最后核验日期**：2026-09-06
 
 本文只保留尚未发生的后续事项。当前稳定事实见[当前状态](CURRENT_STATUS.md)，生产规则见
 [生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。已完成事项通过 Git、Harness、数据库
@@ -38,11 +38,13 @@
 ECS 当前 generation 的完整持久化 backtest 与受控 comparator receipt，因此不得执行 ECS activation、Registry
 切换、业务写库或 systemd 操作。
 
-V28 的 W2 与 Liwei 的 W3A-W3D 均已在冻结五文件和真实 Request 下触发性能硬停止条件，失败交付未保留，
-现有 Native 保持不变。daily/monthly 0629 与 weekly average 0529 共 9 个编译主体方案在可读源码到位前保持
-`BLOCKED_SOURCE`，禁止用 adapter、Darwin `.so` 或反推结果冒充 Blackbox 交付。因而 26 个 Native 的全量
-退役当前尚不能闭环。ECS 继续作为独立灰度实验室；现场 SSH 只读重采集、持久化回测、受控 receipt、Mac3
-晋级、launchd 操作与 confidence DDL 都仍是后续门槛，最终 Native 清理和 migration 025 不能提前执行。
+V28 的 W2 与 Liwei 的 W3A-W3D 均已在冻结五文件和真实 Request 下触发性能硬停止条件，现有 Native 保持
+不变。W2 已有两文件候选和方向零差异证据，但 ECS 4-vCPU 现场仍不能满足完整区间 1800 秒门槛；W3A-W3D
+连单条 predict 的 120 秒门槛都未通过。daily/monthly 0629 与 weekly average 0529 共 9 个编译主体方案已按
+用户决定进入 manifest-bound Mac3-only binary bundle 例外，不再等待可读源码，也不进入 ECS；它们必须在前
+17 个可读源码 Native 完成 ECS 验证并以同一 immutable archive 晋级 Mac3 后再推进。因此当前先决阻塞是
+W2/W3 的独立算法性能或 ECS 计算规格，不是 SSH、W4 源码或接入合同。Mac3 晋级、launchd 操作与 confidence
+DDL 仍是后续独立门槛，最终 Native 清理和 migration 025 不能提前执行。
 
 ## 统一停止条件
 
