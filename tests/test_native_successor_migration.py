@@ -15,6 +15,7 @@ from sqlalchemy import create_engine, text
 
 from harness.native_successor_migration import (
     _comparator_source_sha256,
+    _execute_controlled_comparison,
     _validate_cutover_deployment_matrix,
     _validate_successor_execution_evidence,
     build_native_successor_equivalence_receipt,
@@ -555,6 +556,68 @@ def test_controlled_comparator_rejects_direction_difference(tmp_path: Path) -> N
             wave=wave,
             comparison_bundle_path=bundle_path,
         )
+
+
+def test_controlled_comparator_keeps_successor_performance_gate_separate(
+    tmp_path: Path,
+) -> None:
+    requests_path = tmp_path / "requests.csv"
+    requests_path.write_text("request_id\nrequest-1\n", encoding="utf-8")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    result_fields = (
+        "request_id,predict_date,feature_date,target_date,"
+        "predicted_direction\n"
+    )
+    result_row = "request-1,2026-09-04,2026-09-04,2026-09-11,1\n"
+
+    def run_native(command: list[str], **kwargs: object) -> SimpleNamespace:
+        output = Path(command[command.index("--output") + 1])
+        output.write_text(result_fields + result_row, encoding="utf-8")
+        assert kwargs["timeout"] == 3600
+        return SimpleNamespace(returncode=0, stderr="")
+
+    def run_successor(**kwargs: object) -> None:
+        output = Path(kwargs["output_path"])
+        output.parent.mkdir()
+        output.write_text(
+            result_fields + result_row,
+            encoding="utf-8",
+        )
+        assert kwargs["timeout_sec"] == 1800
+
+    target = NativeSuccessorTarget(
+        old_base_scheme_id="old",
+        new_base_scheme_id="new",
+        task_type="T+5",
+        target_tenor="5Y",
+        target_rule=None,
+        old_horizon=5,
+        new_horizon=5,
+    )
+    with (
+        patch(
+            "harness.native_successor_migration._conda_executable",
+            return_value=Path("/opt/conda/bin/conda"),
+        ),
+        patch(
+            "harness.native_successor_migration.subprocess.run",
+            side_effect=run_native,
+        ),
+        patch(
+            "scheduler.blackbox_v2_runner.execute_blackbox_cli",
+            side_effect=run_successor,
+        ),
+    ):
+        native_rows, successor_rows = _execute_controlled_comparison(
+            project_root=tmp_path,
+            target=target,
+            new_config=SimpleNamespace(delivery_script=tmp_path / "predict.py"),
+            requests_path=requests_path,
+            data_dir=data_dir,
+        )
+
+    assert native_rows == successor_rows
 
 
 def test_cutover_matrix_requires_old_removed_and_successor_added(

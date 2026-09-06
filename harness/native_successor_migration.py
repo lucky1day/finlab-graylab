@@ -106,6 +106,8 @@ _STANDARD_RESULT_FIELDS = (
     "target_date",
     "predicted_direction",
 )
+_NATIVE_COMPARISON_TIMEOUT_SEC = 3600
+_SUCCESSOR_COMPARISON_TIMEOUT_SEC = 1800
 
 
 @dataclass(frozen=True)
@@ -631,7 +633,7 @@ def _execute_controlled_comparison(
             check=False,
             capture_output=True,
             text=True,
-            timeout=1800,
+            timeout=_NATIVE_COMPARISON_TIMEOUT_SEC,
         )
         if completed.returncode != 0:
             stderr = (completed.stderr or "")[-2000:]
@@ -648,7 +650,7 @@ def _execute_controlled_comparison(
             data_dir=data_dir,
             output_path=successor_output,
             profile=DEFAULT_RUNTIME_PROFILE,
-            timeout_sec=1800,
+            timeout_sec=_SUCCESSOR_COMPARISON_TIMEOUT_SEC,
         )
         return (
             _load_standard_result_rows(native_output, label="Native"),
