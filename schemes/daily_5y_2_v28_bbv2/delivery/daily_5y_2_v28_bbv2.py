@@ -1101,26 +1101,25 @@ def run_config(config: dict) -> dict:
             prob_seeds = []
             cal_probs_first = None
             for seed in seeds:
-                lr = config.get("learning_rate", 0.03)
                 n_est = config.get("n_estimators", 140)
-                model = lgb.LGBMClassifier(
-                    objective="binary", metric="binary_logloss",
-                    num_leaves=config["num_leaves"], learning_rate=lr,
-                    n_estimators=n_est,
-                    min_child_samples=config["min_child_samples"],
-                    reg_alpha=config["reg_alpha"],
-                    reg_lambda=config["reg_lambda"],
-                    subsample=0.85, colsample_bytree=0.90,
-                    n_jobs=1, verbosity=-1, random_state=seed,
-                    force_col_wise=True)
-                model.fit(feat[fit_idx], fit_y,
-                          sample_weight=sample_w,
-                          eval_set=[(feat[cal_idx], cal_y)],
-                          callbacks=[lgb.early_stopping(20, verbose=False)])
-                p = float(model.predict_proba(feat[[idx]])[:, 1][0])
+                params = _lgbm_train_params(config, seed)
+                train_set = lgb.Dataset(
+                    feat[fit_idx], label=fit_y, weight=sample_w)
+                valid_set = lgb.Dataset(
+                    feat[cal_idx], label=cal_y, reference=train_set)
+                model = lgb.train(
+                    params,
+                    train_set,
+                    num_boost_round=n_est,
+                    valid_sets=[valid_set],
+                    callbacks=[lgb.early_stopping(20, verbose=False)],
+                )
+                p = float(model.predict(
+                    feat[[idx]], num_iteration=model.best_iteration)[0])
                 prob_seeds.append(p)
                 if cal_probs_first is None:
-                    cal_probs_first = model.predict_proba(feat[cal_idx])[:, 1]
+                    cal_probs_first = model.predict(
+                        feat[cal_idx], num_iteration=model.best_iteration)
 
             prob = float(np.mean(prob_seeds))
             probs[i] = prob
@@ -1129,6 +1128,31 @@ def run_config(config: dict) -> dict:
         return {"config": config, "preds": preds, "probs": probs}
     except Exception as exc:
         raise RuntimeError(f"V28 LightGBM config failed: {config!r}") from exc
+
+
+def _lgbm_train_params(config: dict, seed: int) -> dict[str, Any]:
+    """返回与 ``LGBMClassifier`` 原路径完全一致的训练参数。"""
+    return {
+        "boosting_type": "gbdt",
+        "colsample_bytree": 0.90,
+        "learning_rate": config.get("learning_rate", 0.03),
+        "max_depth": -1,
+        "min_child_samples": config["min_child_samples"],
+        "min_child_weight": 0.001,
+        "min_split_gain": 0.0,
+        "num_leaves": config["num_leaves"],
+        "random_state": seed,
+        "reg_alpha": config["reg_alpha"],
+        "reg_lambda": config["reg_lambda"],
+        "subsample": 0.85,
+        "subsample_for_bin": 200000,
+        "subsample_freq": 0,
+        "metric": ["binary_logloss"],
+        "verbosity": -1,
+        "force_col_wise": True,
+        "objective": "binary",
+        "num_threads": 1,
+    }
 
 
 # ============================================================================
