@@ -39,11 +39,13 @@ ECS 当前 generation 的完整持久化 backtest 与受控 comparator receipt�
 切换、业务写库或 systemd 操作。
 
 V28 的 W2 与 Liwei 的 W3A-W3D 均已在冻结五文件和真实 Request 下触发性能硬停止条件，现有 Native 保持
-不变。W2 已有两文件候选和方向零差异证据，但 ECS 4-vCPU 现场仍不能满足完整区间 1800 秒门槛；W3A-W3D
-连单条 predict 的 120 秒门槛都未通过。daily/monthly 0629 与 weekly average 0529 共 9 个编译主体方案已按
+不变。W2 已有两文件候选和方向零差异证据；单条 ECS predict 经只计算请求日期优化后，5Y/7Y 已分别降至
+13.56/11.97 秒，但 5Y 的 100 条 ECS backtest 仍为 619.41 秒，尚未满足 600 秒门槛。W3A-W3D 的重复计算已
+定位为多个 baseline 重训相同 Phase-A grid，尚未完成进程内去重和当前月两阶段训练，因此仍未通过 120 秒
+单条门槛。daily/monthly 0629 与 weekly average 0529 共 9 个编译主体方案已按
 用户决定进入 manifest-bound Mac3-only binary bundle 例外，不再等待可读源码，也不进入 ECS；它们必须在前
 17 个可读源码 Native 完成 ECS 验证并以同一 immutable archive 晋级 Mac3 后再推进。因此当前先决阻塞是
-W2/W3 的独立算法性能或 ECS 计算规格，不是 SSH、W4 源码或接入合同。Mac3 晋级、launchd 操作与 confidence
+W2/W3 的独立算法性能，不是 SSH、W4 源码或接入合同。Mac3 晋级、launchd 操作与 confidence
 DDL 仍是后续独立门槛，最终 Native 清理和 migration 025 不能提前执行。
 
 ## 统一停止条件

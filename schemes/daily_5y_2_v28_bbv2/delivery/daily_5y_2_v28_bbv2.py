@@ -1381,6 +1381,64 @@ def _prediction_detail_frame(
     )
 
 
+def prepare_prediction_inputs(cfg: dict) -> dict[str, Any]:
+    """构建与 Request 截止无关、可在同一批次内安全复用的只读矩阵。"""
+    if "daily_df" not in cfg:
+        raise ValueError(
+            "daily_df is required; build inputs through shared.input_artifacts "
+            "before calling core"
+        )
+    df = _normalize_daily_frame(cfg["daily_df"])
+    weekly_raw = _normalize_aux_frame(cfg.get("weekly_df"), "week_id")
+    monthly_raw = _normalize_aux_frame(cfg.get("monthly_df"), "month_id")
+    data_cutoff = cfg.get("data_cutoff")
+    if data_cutoff:
+        df = df[df["date"] < pd.Timestamp(data_cutoff)].reset_index(drop=True)
+    wk_df, mo_df = prepare_model_frames(
+        df,
+        weekly_raw,
+        monthly_raw,
+        df["date"],
+        cfg.get("date_to_week"),
+    )
+
+    close_col = cfg["close"]
+    labels = make_labels(df, close_col, horizon=cfg.get("horizon", HORIZON))
+    labels_h1 = make_labels(df, close_col, horizon=1)
+    close = df[close_col].values.astype(np.float64)
+    fallback = build_fallback_signal(df, close_col)
+
+    bond_f = build_bond_features(df, close_col, cfg["aux_pairs"])
+    mf_f, mf_feat_cat = build_mf_features(df)
+    wkmo_f = build_wkmo_features(wk_df, mo_df)
+    for column in wkmo_f.columns:
+        mf_feat_cat[column] = "weekly" if column.startswith("wk_") else "monthly"
+    self_cols = list(bond_f.columns)
+    mf_cols = list(mf_f.columns) + list(wkmo_f.columns)
+    feat_all = pd.concat([bond_f, mf_f, wkmo_f], axis=1).values.astype(
+        np.float64
+    )
+
+    sig_df = build_all_signals(df, COL_MAP, cfg["tenor"])
+    sig_names = list(sig_df.columns)
+    return {
+        "df": df,
+        "weekly_column_count": len(wk_df.columns),
+        "monthly_column_count": len(mo_df.columns),
+        "labels": labels,
+        "labels_h1": labels_h1,
+        "close": close,
+        "fallback": fallback,
+        "feat_all": feat_all,
+        "n_self": len(self_cols),
+        "mf_feat_cat": mf_feat_cat,
+        "mf_cols": mf_cols,
+        "sig_names": sig_names,
+        "sig_matrix": sig_df.values.astype(np.int32),
+        "cat_indices": classify_signals(sig_names, cfg["tenor"]),
+    }
+
+
 def run_prediction(cfg: dict) -> np.ndarray | pd.DataFrame:
     """Run a single fixed-config prediction.
 
@@ -1406,8 +1464,6 @@ def run_prediction(cfg: dict) -> np.ndarray | pd.DataFrame:
     import lightgbm as lgb
 
     tenor = cfg["tenor"]
-    close_col = cfg["close"]
-    aux_pairs = cfg["aux_pairs"]
     K = cfg.get("K", 7)
     combo_name = cfg.get("combo_name", "bf_core5")
     combo_template = cfg.get("combo_template", {"butterfly": 3, "term_prem": 2})
@@ -1428,49 +1484,28 @@ def run_prediction(cfg: dict) -> np.ndarray | pd.DataFrame:
     ens_mode = cfg.get("ens_mode", "standard")  # "standard"/"diverse"/"accwt"
     test_start = pd.Timestamp(cfg.get("test_start", "2024-07-01"))
     test_end = pd.Timestamp(cfg.get("test_end", "2026-04-30"))
-    data_cutoff = cfg.get("data_cutoff", "2026-05-01" if "daily_df" not in cfg else None)
     require_labels = bool(cfg.get("require_labels", True))
     emit_report = bool(cfg.get("emit_report", True))
 
     t0 = time.time()
 
-    # -- Load data --
+    # -- Load or reuse read-only batch matrices --
     print(f"  Loading data...")
-    if "daily_df" not in cfg:
-        raise ValueError("daily_df is required; build inputs through shared.input_artifacts before calling core")
-    df = _normalize_daily_frame(cfg["daily_df"])
-    weekly_raw = _normalize_aux_frame(cfg.get("weekly_df"), "week_id")
-    monthly_raw = _normalize_aux_frame(cfg.get("monthly_df"), "month_id")
-    if data_cutoff:
-        df = df[df["date"] < pd.Timestamp(data_cutoff)].reset_index(drop=True)
-    wk_df, mo_df = prepare_model_frames(
-        df,
-        weekly_raw,
-        monthly_raw,
-        df["date"],
-        cfg.get("date_to_week"),
-    )
-    print(f"  Daily: {len(df)}, Weekly cols: {len(wk_df.columns)}, "
-          f"Monthly cols: {len(mo_df.columns)}")
-
-    # -- Labels --
-    labels = make_labels(df, close_col, horizon=horizon)
-    labels_h1 = make_labels(df, close_col, horizon=1)
-    close = df[close_col].values.astype(np.float64)
-    fallback = build_fallback_signal(df, close_col)
+    prepared = cfg.get("prepared_inputs") or prepare_prediction_inputs(cfg)
+    df = prepared["df"]
+    labels = prepared["labels"]
+    labels_h1 = prepared["labels_h1"]
+    close = prepared["close"]
+    fallback = prepared["fallback"]
+    feat_all = prepared["feat_all"]
+    n_self = prepared["n_self"]
+    mf_feat_cat = prepared["mf_feat_cat"]
+    mf_cols = prepared["mf_cols"]
+    print(f"  Daily: {len(df)}, Weekly cols: {prepared['weekly_column_count']}, "
+          f"Monthly cols: {prepared['monthly_column_count']}")
 
     # -- Features + IC screening --
-    print(f"  Building features...")
-    bond_f = build_bond_features(df, close_col, aux_pairs)
-    mf_f, mf_feat_cat = build_mf_features(df)
-    wkmo_f = build_wkmo_features(wk_df, mo_df)
-    for c in wkmo_f.columns:
-        mf_feat_cat[c] = "weekly" if c.startswith("wk_") else "monthly"
-    self_cols = list(bond_f.columns)
-    mf_cols = list(mf_f.columns) + list(wkmo_f.columns)
-    n_self = len(self_cols)
-    feat_df = pd.concat([bond_f, mf_f, wkmo_f], axis=1)
-    feat_all = feat_df.values.astype(np.float64)
+    print(f"  Using prepared features...")
     print(f"  Self features: {n_self}, MF features: {len(mf_cols)}, "
           f"Total: {feat_all.shape[1]}")
 
@@ -1498,6 +1533,15 @@ def run_prediction(cfg: dict) -> np.ndarray | pd.DataFrame:
     test_mask = (df["date"] >= ts_s).values & (df["date"] <= ts_e).values & ~np.isnan(close)
     if require_labels:
         test_mask = test_mask & ~np.isnan(labels)
+    signal_selection_idx = np.flatnonzero(test_mask)
+    requested_dates = cfg.get("requested_dates")
+    if requested_dates is not None:
+        requested_months = {str(item)[:7] for item in requested_dates}
+        if len(requested_months) != 1:
+            raise ValueError("requested_dates must belong to one calendar month")
+        test_mask = test_mask & df["date"].dt.strftime("%Y-%m-%d").isin(
+            requested_dates
+        ).to_numpy()
     test_idx = np.flatnonzero(test_mask)
     if len(test_idx) == 0:
         raise ValueError(f"no test samples between {ts_s.date()} and {ts_e.date()}")
@@ -1546,16 +1590,19 @@ def run_prediction(cfg: dict) -> np.ndarray | pd.DataFrame:
 
     # -- Phase B: Signals --
     print(f"\n  Phase B: Computing signals...")
-    sig_df = build_all_signals(df, COL_MAP, tenor)
-    sig_names = list(sig_df.columns)
-    sig_matrix = sig_df.values.astype(np.int32)
-    cat_indices = classify_signals(sig_names, tenor)
+    sig_names = prepared["sig_names"]
+    sig_matrix = prepared["sig_matrix"]
+    cat_indices = prepared["cat_indices"]
     print(f"  Signals: {len(sig_names)}, "
           f"Categories: {list(cat_indices.keys())}")
 
     # Signal accuracy (H=1)
-    sa = np.full((len(test_idx), len(sig_names)), np.nan, dtype=np.float32)
-    for i, idx in enumerate(test_idx):
+    selection_sa = np.full(
+        (len(signal_selection_idx), len(sig_names)),
+        np.nan,
+        dtype=np.float32,
+    )
+    for i, idx in enumerate(signal_selection_idx):
         cands = np.flatnonzero(
             (np.arange(len(df)) < idx - 1)
             & np.isin(labels_h1, [-1.0, 1.0])
@@ -1565,7 +1612,9 @@ def run_prediction(cfg: dict) -> np.ndarray | pd.DataFrame:
         if len(cands) < 40:
             continue
         # Vectorised accuracy: (sig == label) mean over candidates
-        sa[i] = (sig_matrix[cands] == labels_h1[cands][:, None]).mean(
+        selection_sa[i] = (
+            sig_matrix[cands] == labels_h1[cands][:, None]
+        ).mean(
             axis=0).astype(np.float32)
 
     # -- Phase C: Build ensemble + apply signals (V25) --
@@ -1628,6 +1677,11 @@ def run_prediction(cfg: dict) -> np.ndarray | pd.DataFrame:
         periods = test_dates.to_period("Q"); lb = 120
     else:  # yearly
         periods = test_dates.to_period("Q"); lb = 250
+    selection_dates = pd.to_datetime(df["date"].values[signal_selection_idx])
+    if rebal == "monthly":
+        selection_periods = selection_dates.to_period("M")
+    else:
+        selection_periods = selection_dates.to_period("Q")
 
     spd: list = [None] * len(test_idx)
     spd_sa: list = [None] * len(test_idx)
@@ -1636,11 +1690,15 @@ def run_prediction(cfg: dict) -> np.ndarray | pd.DataFrame:
         pi = np.where(pm)[0]
         if len(pi) == 0:
             continue
-        before = np.where(periods < period)[0]
+        selection_pi = np.where(selection_periods == period)[0]
+        before = np.where(selection_periods < period)[0]
         if len(before) > lb:
             before = before[-lb:]
-        avg_sa = (np.nanmean(sa[before], axis=0)
-                  if len(before) >= 5 else sa[pi[0]])
+        avg_sa = (
+            np.nanmean(selection_sa[before], axis=0)
+            if len(before) >= 5
+            else selection_sa[selection_pi[0]]
+        )
         if np.all(np.isnan(avg_sa)):
             continue
         sel = select_combo_signals(avg_sa, cat_indices,
@@ -2032,36 +2090,35 @@ def generate_results(
     grouped: dict[str, list[dict[str, str]]] = {}
     for request in requests:
         grouped.setdefault(request["feature_date"][:7], []).append(request)
+    feature_end = max(item["feature_date"] for item in requests)
+    weekly_end = max(item["weekly_cutoff_key"] for item in requests)
+    monthly_end = max(item["monthly_cutoff_key"] for item in requests)
+    daily_input = daily.loc[daily["date"] <= pd.Timestamp(feature_end)].copy()
+    weekly_input = weekly.loc[weekly["week_id"].astype(str) <= weekly_end].copy()
+    monthly_input = monthly.loc[monthly["month_id"].astype(str) <= monthly_end].copy()
+    calendar_input = calendar.loc[calendar["rdate"] <= pd.Timestamp(feature_end)]
+    date_to_week = dict(zip(
+        calendar_input["rdate"].dt.strftime("%Y-%m-%d"),
+        calendar_input["week_id"].astype(str),
+    ))
+    prepared_inputs = prepare_prediction_inputs(model_config(
+        daily_df=daily_input,
+        weekly_df=weekly_input,
+        monthly_df=monthly_input,
+        date_to_week=date_to_week,
+    ))
     predictions: dict[str, int] = {}
     for month, batch in sorted(grouped.items()):
         feature_end = max(item["feature_date"] for item in batch)
-        weekly_end = max(item["weekly_cutoff_key"] for item in batch)
-        monthly_end = max(item["monthly_cutoff_key"] for item in batch)
-        daily_input = daily.loc[daily["date"] <= pd.Timestamp(feature_end)].copy()
-        weekly_input = weekly.loc[
-            weekly["week_id"].astype(str) <= weekly_end
-        ].copy()
-        monthly_input = monthly.loc[
-            monthly["month_id"].astype(str) <= monthly_end
-        ].copy()
-        calendar_input = calendar.loc[
-            calendar["rdate"] <= pd.Timestamp(feature_end)
-        ]
-        date_to_week = dict(zip(
-            calendar_input["rdate"].dt.strftime("%Y-%m-%d"),
-            calendar_input["week_id"].astype(str),
-        ))
         with redirect_stdout(sys.stderr):
             details = run_prediction(model_config(
-                daily_df=daily_input,
-                weekly_df=weekly_input,
-                monthly_df=monthly_input,
-                date_to_week=date_to_week,
                 test_start=f"{month}-01",
                 test_end=feature_end,
                 require_labels=False,
                 emit_report=False,
                 return_details=True,
+                requested_dates=[item["feature_date"] for item in batch],
+                prepared_inputs=prepared_inputs,
                 n_workers=4,
             ))
         if not isinstance(details, pd.DataFrame) or details.empty:

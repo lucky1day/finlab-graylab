@@ -8,7 +8,7 @@
 
 **基线 Git 提交**：`20e98934e9d5399e3d509f486a8a650d95ad7639`
 
-**W2 算法候选提交**：`f947426d969d6c3e3879e707f7a0564345788d9a`
+**W2 前一算法候选提交**：`f947426d969d6c3e3879e707f7a0564345788d9a`
 
 ## 1. 目标与非目标
 
@@ -225,7 +225,7 @@ canonical config 固定。Request 区间和代码 hash 在测试
 | W1B | `weekly_5y_direct_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `59909549fee682c61a90c1394672f40b7204f67e35f692b04577cc49498a19c8` | ECS_0905_FULL_COMPARATOR_PASSED |
 | W1B | `weekly_7y_cross_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `fb2baa38fa8b614737f0c2f87bff90626e2d8d268e5375362bf863554096e680` | ECS_0905_FULL_COMPARATOR_PASSED |
 | W1B | `weekly_10y_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `e52e221a0046e8623107359b4fe3c2f7643e422b3ed9068c0cf317e9cdeafeed` | ECS_0905_FULL_COMPARATOR_PASSED |
-| W2 | 两个 `daily_*_v28_bbv2` | 完整五文件；V28 daily/weekly/monthly 因子与真实 T+5 grid | feature 2025-01-02..2026-05-22；各 333 条 | 5Y `11059c610e802bd6a00d0ef6bd506be662fe932eb9d285a15ec3bd84817d94c0`；7Y `1d3c5b3748ba53c55c2a491ed28e83d7624bfae1d8171ad42aa9e6ae0a6ab761` | ECS_BLOCKED_PERFORMANCE_NO_CURRENT_RECEIPT |
+| W2 | 两个 `daily_*_v28_bbv2` | 完整五文件；V28 daily/weekly/monthly 因子与真实 T+5 grid | feature 2025-01-02..2026-05-22；各 333 条 | 5Y `32aa7948d5f90bdd3de72ce46461bdc8f6dafeb24ece450c34cba84eac5480cc`；7Y `5fec87a6be3612c911f17f546ae4687e58a64b1d5a7be75a407e1fbb681861a4` | ECS_BLOCKED_100_REQUEST_PERFORMANCE_NO_CURRENT_RECEIPT |
 | W3A | 两个 5Y cache-family successor | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2026-08-28 | 未生成 | BLOCKED_PERFORMANCE |
 | W3B | 三个 10Y cache-family successor | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2026-08-28 | 未生成 | BLOCKED_PERFORMANCE |
 | W3C-D | 五个 `liwei_0616_*_bbv2` | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2026-08-28 | 未生成 | BLOCKED_PERFORMANCE |
@@ -309,6 +309,27 @@ receipt 现为 `superseded/historical-only`，不得用于当前 preflight/cutov
 随后测试的月份级 8×1、2×2、共享 Dataset、训练索引预计算和 LightGBM 2×2 线程组合，要么没有稳定净收益，
 要么在 ECS 触发 `SIGBUS`；全部实验改动均已撤销，未降低性能门槛。
 
+随后按真实热路径继续优化，确认旧入口即使只收到一条 Request，也会把该月从月初到请求日的所有交易日全部
+加入 `test_idx` 并逐日训练；2026-05-22 的 5Y/7Y 单条调用分别无效训练 13 个测试日。successor 现只对
+Request 明确列出的日期训练 LightGBM 和生成预测，同时保留原月初至 cutoff 的信号选择上下文；同一次 batch
+内只构建一次五文件对齐、457 个特征和 586 个信号矩阵。所有滚动、IC、训练和信号选择仍按各 Request 的历史
+前缀截断。ECS 同一 Request 的 5Y 从 69.38 秒降至 13.56 秒，7Y
+从 53.06 秒降至 11.97 秒，两侧 Output SHA-256 分别逐字节不变。本机当前 generation 的 333 条完整对照也
+逐字节一致：5Y 从 641.35 秒降至 613.51 秒，最大常驻内存约从 3.15 GiB 降至 1.70 GiB；7Y 从 406.63 秒
+降至 398.03 秒，约从 2.74 GiB 降至 1.78 GiB。第一月结果同时在包含后续 16 个月数据的预计算矩阵下保持
+逐字节一致，构成未来行不影响历史前缀的直接证据。
+
+W2 的剩余耗时不是调度或文件缓存：333 条正式区间包含 17 个月，5Y/7Y 在保留 265 个 config 和 3/2 个 seed
+时分别需要训练约 264,735/176,490 个 LightGBM 模型。ECS 是两个物理核心、每核两个超线程；4-worker 已是
+实测最优，2/3/5-worker 均更慢。5Y 的 100 条当前仍需 619.41 秒、峰值 RSS 约 894 MiB，超过 600 秒硬门槛
+19.41 秒，因此 W2 继续 fail-closed；不得生成新 receipt、持久化回测或 cutover。
+
+独立审查曾发现首版优化把信号选择锚点随 `requested_dates` 一起缩到了子集首日，存在稀疏 Request 改变
+月初选信号基准的风险。当前实现已将两者分离：LightGBM 仍只训练 Request 日期，但信号选择继续使用旧路径
+完整月份中的首个有效交易日及历史周期。修复后在 2025-02 与 2026-04 两个自然月分别对 5Y/7Y 执行 39 条
+dense batch、6 条首中末稀疏子集和每月一个独立单点；稀疏与单点按 `request_id` 回查 dense 的五字段均
+完全一致。审查中的 Important 项已修复，且没有发现 Critical 或 Minor 项。
+
 一次 Native 性能对照暴露 `cache=True` 的 Numba 编译会在 immutable release 源目录写入 `.nbc/.nbi`，使
 3162 release 的 source digest 被 preflight 正确拒绝。现场先切到已核验 f947，把受污染目录移动到独立
 quarantine，再从原始、SHA-256 已核验的 3162 archive 重新预安装并激活。恢复后 preflight 已通过 release
@@ -340,6 +361,14 @@ W3C/W3D 已在无其他训练进程的独占窗口重新验证，排除了先前
 2026-08 PIT 区间、四个 baseline、每个 265 个配置和既有 2/2/3/3 seed；120.55 秒时仍未完成首个
 baseline，累计 user 507.72 秒、sys 24.94 秒，峰值 RSS 713,015,296 bytes。两组均未使用持久 cache、
 跨方案状态或子进程，仍触发单条 predict 120 秒硬停止条件；未创建 successor，未修改 Native 或共享路径。
+
+静态热路径复核进一步确认，W3A 的 STD/DIV/ACCWT 在所有影响 Phase-A 的字段上完全相同，包括 tenor、特征、
+265 个 config、两个 seed、窗口和 IC 选择；三者仅在后续 ensemble 与 signal 组合上不同。冻结窗口含前一年同期
+21 条和当前月 20 条，旧冷路径因此训练约 65,190 个模型。下一候选必须在单进程内只训练一份共享 Phase-A，
+并使用两阶段精确执行：历史月仍对 265 个 config 全量训练以确定排名；当前月只训练 standard/accwt top-10 与
+diverse top-5 的实际配置并集，再分别执行三套原组合逻辑。配置并集最坏 15 个，模型训练上界约降至 11,730，
+减少约 82%；该缓存只存在于单次 CLI 进程，不恢复跨运行持久 cache。此方案尚未形成 successor 或完成输出
+等价验证，不能提前把 W3 标记为通过。
 
 ## 5. 阶段与状态机
 
