@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor
@@ -1037,6 +1038,7 @@ else:
 
 # -- Read-only context shared by the bounded worker threads -----------------
 _G: dict = {}
+_LGB_DATASET_CACHE = threading.local()
 
 
 def _init_worker(df_len, feat, labels, close, fallback, test_idx,
@@ -1100,10 +1102,25 @@ def run_config(config: dict) -> dict:
 
             prob_seeds = []
             cal_probs_first = None
-            train_set = lgb.Dataset(
-                feat[fit_idx], label=fit_y, weight=sample_w)
-            valid_set = lgb.Dataset(
-                feat[cal_idx], label=cal_y, reference=train_set)
+            dataset_cache = getattr(_LGB_DATASET_CACHE, "items", None)
+            if dataset_cache is None:
+                dataset_cache = {}
+                _LGB_DATASET_CACHE.items = dataset_cache
+            dataset_key = (
+                int(idx),
+                int(w),
+                float(config["split_pct"]),
+                int(config["min_child_samples"]),
+            )
+            datasets = dataset_cache.get(dataset_key)
+            if datasets is None:
+                train_set = lgb.Dataset(
+                    feat[fit_idx], label=fit_y, weight=sample_w)
+                valid_set = lgb.Dataset(
+                    feat[cal_idx], label=cal_y, reference=train_set)
+                datasets = (train_set, valid_set)
+                dataset_cache[dataset_key] = datasets
+            train_set, valid_set = datasets
             for seed in seeds:
                 n_est = config.get("n_estimators", 140)
                 params = _lgbm_train_params(config, seed)
