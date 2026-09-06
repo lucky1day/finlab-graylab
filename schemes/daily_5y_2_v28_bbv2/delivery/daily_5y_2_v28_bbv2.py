@@ -1100,13 +1100,13 @@ def run_config(config: dict) -> dict:
 
             prob_seeds = []
             cal_probs_first = None
+            train_set = lgb.Dataset(
+                feat[fit_idx], label=fit_y, weight=sample_w)
+            valid_set = lgb.Dataset(
+                feat[cal_idx], label=cal_y, reference=train_set)
             for seed in seeds:
                 n_est = config.get("n_estimators", 140)
                 params = _lgbm_train_params(config, seed)
-                train_set = lgb.Dataset(
-                    feat[fit_idx], label=fit_y, weight=sample_w)
-                valid_set = lgb.Dataset(
-                    feat[cal_idx], label=cal_y, reference=train_set)
                 model = lgb.train(
                     params,
                     train_set,
