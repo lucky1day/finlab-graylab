@@ -34,6 +34,7 @@
     "liwei_0616_7y01_cons_say_k3_div_k10": ["mac3-production", "aliyun-gray"],
     "liwei_0616_7y03_cons_all_k3_div_k8": ["mac3-production", "aliyun-gray"],
     "liwei_0616_cons_sda_k3_div_k10": ["mac3-production", "aliyun-gray"],
+    "liwei_0616_cons_sda_k3_div_k10_bbv2": ["mac3-production", "aliyun-gray"],
     "m0_annual_avg_sf_10y_v1": ["mac3-production", "aliyun-gray"],
     "m0_annual_avg_sf_1y_v1": ["mac3-production", "aliyun-gray"],
     "m0_annual_avg_sf_3y_v1": ["mac3-production", "aliyun-gray"],

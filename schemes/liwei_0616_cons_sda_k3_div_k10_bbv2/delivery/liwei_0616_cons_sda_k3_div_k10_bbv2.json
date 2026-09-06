@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "liwei_0616_cons_sda_k3_div_k10_bbv2",
+  "name": "liwei_0616 5Y_01 SDA共识-DIV回退 · Blackbox V2",
+  "description": "liwei_0616_cons_sda_k3_div_k10 successor；在单次进程内共享相同 Phase-A，历史月保留完整 grid，当前月只训练原 STD/ACCWT top-10 与 DIV top-5 的配置并集。",
+  "algorithm_version": "1.0.0",
+  "target_tenor": "5Y",
+  "task_type": "T+5",
+  "horizon": 5,
+  "target_rule": "target_date_yield_vs_feature_date_yield",
+  "owner": "liwei"
+}

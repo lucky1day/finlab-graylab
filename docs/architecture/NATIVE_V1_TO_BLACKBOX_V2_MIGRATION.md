@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W1_ECS_BACKTEST_READY; W2_ECS_BLOCKED_PERFORMANCE; W3_BLOCKED_PERFORMANCE; W4_MAC3_BINARY_BUNDLE_ACCEPTED`
+**执行状态**：`W1_ECS_BACKTEST_READY; W2_ECS_BLOCKED_PERFORMANCE; W3A_CONS_SDA_CONFORMANCE_PASSED; W3_BLOCKED_PERFORMANCE; W4_MAC3_BINARY_BUNDLE_ACCEPTED`
 
 **基线日期**：2026-09-05 Asia/Shanghai
 
@@ -226,7 +226,8 @@ canonical config 固定。Request 区间和代码 hash 在测试
 | W1B | `weekly_7y_cross_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `fb2baa38fa8b614737f0c2f87bff90626e2d8d268e5375362bf863554096e680` | ECS_0905_FULL_COMPARATOR_PASSED |
 | W1B | `weekly_10y_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `e52e221a0046e8623107359b4fe3c2f7643e422b3ed9068c0cf317e9cdeafeed` | ECS_0905_FULL_COMPARATOR_PASSED |
 | W2 | 两个 `daily_*_v28_bbv2` | 完整五文件；V28 daily/weekly/monthly 因子与真实 T+5 grid | feature 2025-01-02..2026-05-22；各 333 条 | 5Y `32aa7948d5f90bdd3de72ce46461bdc8f6dafeb24ece450c34cba84eac5480cc`；7Y `5fec87a6be3612c911f17f546ae4687e58a64b1d5a7be75a407e1fbb681861a4` | ECS_BLOCKED_100_REQUEST_PERFORMANCE_NO_CURRENT_RECEIPT |
-| W3A | 两个 5Y cache-family successor | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2026-08-28 | 未生成 | BLOCKED_PERFORMANCE |
+| W3A | `liwei_0616_cons_sda_k3_div_k10_bbv2` | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2025-01-02..2026-05-22；333 条 | `9cebc6eab7df69ed48e68163fc0cfc5229ad616fda4989924e2b34d78274c250` | ECS_CONFORMANCE_PASSED_NO_PERSISTED_BACKTEST |
+| W3A | `liwei_0616_5y01_full_oos_k3_div_k10_bbv2` | 五文件中算法所需因子；连续 full-OOS 排名状态 | feature 2026-08-28 | 未生成 | BLOCKED_STATEFUL_FULL_OOS_PERFORMANCE |
 | W3B | 三个 10Y cache-family successor | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2026-08-28 | 未生成 | BLOCKED_PERFORMANCE |
 | W3C-D | 五个 `liwei_0616_*_bbv2` | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2026-08-28 | 未生成 | BLOCKED_PERFORMANCE |
 | W4A-C | 九个编译主体 successor | DataBridge 五文件 + Request；加密 payload 进入 manifest closure | 待 Mac3 冻结 | 待生成 | MAC3_BINARY_BUNDLE_PLANNED |
@@ -343,15 +344,15 @@ quarantine，再从原始、SHA-256 已核验的 3162 archive 重新预安装并
 没有遗留算法进程或部分 Output。后续禁止再从 immutable release 直接运行会触发源码旁 Numba cache 的 Native
 诊断；此类比较必须在私有可写副本中执行。
 
-W3A 在冻结 generation `full-20260901-063115-5636b51dacf6` 上使用
+W3A 的首轮冷路径试验在冻结 generation `full-20260901-063115-5636b51dacf6` 上使用
 `feature_date=2026-08-28` 做了决定性性能试验。输入规模为 daily 3908×774、weekly
 853×577、monthly 199×126，PIT 下界有 41 个有效测试行；三个 baseline 各需 265 个 config × 2 seeds。
 完全关闭 Phase-A 持久 cache，使用最多 8 个进程内 worker、每个 LightGBM `n_jobs=1`、无子进程时，
 `real 121.45s / user 469.44s / sys 31.85s`，峰值 RSS 790,052,864 bytes，仍停留在第一个 `STD`
 baseline 的 `LGBMClassifier.fit`，`DIV` 与 `ACCWT` 尚未开始且没有结果输出。因此已触发单条 predict 120 秒
-硬停止条件；未创建 successor，未修改 Native。另一个 full-OOS 方案有 644 个有效测试行，约为该下界的
-15.7 倍，不再继续无效消耗。W3A 保持 Native，除非算法方能在不恢复跨方案持久状态、不缩减冻结 grid、
-不放宽 cutoff 的前提下提供满足性能门槛的独立实现。
+硬停止条件；该轮未创建 successor，未修改 Native。另一个 full-OOS 方案有 644 个有效测试行，约为该下界的
+15.7 倍，不再继续无效消耗。该轮结论为继续保持 Native，直到能在不恢复跨方案持久状态、不缩减冻结 grid、
+不放宽 cutoff 的前提下形成满足性能门槛的独立实现；后续 `cons_sda` 两阶段候选与剩余 blocker 见下文。
 
 W3B 在同一冻结 generation 上选择计算下界 `liwei_0616_10y01_cons_say_k3_div_k10`
 做可行性预检。Request 为 `feature_date=2026-08-28`，只使用 2025-08 与 2026-08 两个较短 PIT
@@ -373,8 +374,47 @@ baseline，累计 user 507.72 秒、sys 24.94 秒，峰值 RSS 713,015,296 bytes
 21 条和当前月 20 条，旧冷路径因此训练约 65,190 个模型。下一候选必须在单进程内只训练一份共享 Phase-A，
 并使用两阶段精确执行：历史月仍对 265 个 config 全量训练以确定排名；当前月只训练 standard/accwt top-10 与
 diverse top-5 的实际配置并集，再分别执行三套原组合逻辑。配置并集最坏 15 个，模型训练上界约降至 11,730，
-减少约 82%；该缓存只存在于单次 CLI 进程，不恢复跨运行持久 cache。此方案尚未形成 successor 或完成输出
-等价验证，不能提前把 W3 标记为通过。
+减少约 82%；该缓存只存在于单次 CLI 进程，不恢复跨运行持久 cache。
+
+2026-09-07 已按上述设计形成 `liwei_0616_cons_sda_k3_div_k10_bbv2` 严格两文件候选。它在进程内只构建一次
+五文件对齐、457 个特征和 586 个信号，STD/DIV/ACCWT 共用一份 Phase-A；历史月继续运行 265 个完整配置，
+当前月只训练 standard/accwt top-10 与 diverse top-5 的精确配置并集。`multiprocessing`、Numba 磁盘 cache、
+跨方案 import、平台 import、DB、网络、额外 payload 和持久状态均不存在；4 个 Python worker thread 内每个
+LightGBM 固定单线程。脚本/config/metadata SHA-256 分别为
+`9cebc6eab7df69ed48e68163fc0cfc5229ad616fda4989924e2b34d78274c250`、
+`2e4d0b2d5888a02bfa8eba0c2b83d346cd98075552c2e662edb7b50d1ed21bf8`、
+`2ac8d5bae4aa7cd34e193bc880a1674ac46467038b0b01659dc8c5ad77401387`；候选基于 Git
+`ef823ffd2c3aadad2a1602e90753c8a91955800f` 的干净基线构建。
+
+最终验证绑定 snapshot `snapshot-d622a1ba1bfb27c65969aaad`。五文件 SHA-256 依次为 calendar
+`f583ca3411195aa5de4bd50107646d0753edc39cb83708b89b353e5aa8c14c47`、daily
+`2eabbb888f9ba9422bfa14d4d923f6e44aa21c53f7a93e30bf40fe1118fcd7f1`、weekly
+`426ac86f3dff43f7b46438e6a2f76f05abe6f3db2469d498f7afff0baabbdf12`、monthly
+`977ef49b5f106cff4027c2e6486aac604e915b1357b60263544af7823a436dc9`、catalog
+`bb5ee17f097369ed4498744b604d51597e4814c9e31887e90aad62c2b2bd8965`。333 条正式 Request SHA-256 为
+`7e27c60ff08c35622d0f04059d9ab3daba2fa25c7cae32d707ef9f5f89a2f231`，Output SHA-256 为
+`87473d4e7940c216b28d64774e3cda7a2636490124e2a8e827efabd672f2a48e`；旧 Native core + 权威只读
+Phase-A cache 的直接 comparator 为 333/333、方向 mismatch 0。
+
+最终性能为：同一 JSON 单点三次 `60.91/60.41/60.59s`；正式区间首/中/末单点
+`74.00/96.99/60.17s`，且三点分别与 Native 单点 mismatch 0；100 条升序/降序/确定性乱序分别
+`516.18/518.46/516.49s`，规范排序 SHA-256 均为
+`f7f6b29353802722da8c86155786e670a4916edcef87e71dfe508f700eb378f3`；333 条完整区间为
+`1386.59s`、峰值 RSS 1,001,176 KiB。全部满足 120/600/1800 秒和 4 GiB 门槛。
+
+独立审查首轮发现同周早期 Request 的 weekly projection 会受 batch 中更晚日期影响。最终实现改为由完整权威
+calendar 固定公共 weekly 生效日，仅在已训练模型的当日 predict row 注入 Request 自身 weekly cutoff，并在
+公共历史 baseline signs 上只替换目标日后重新执行原 consensus/streak。修复后，同周周初/周中/周末三条
+dense 与逐条 single 完全一致，且三条分别与 Native 单点 mismatch 0；删除同周后续 Request 的 subset 不改变
+早期结果；daily 文件在 cutoff 后追加 9 个未来交易日时 Output SHA-256 不变。Dataset cache 同时加入每次
+Phase-A context 身份并精确校验 current selected config set。独立复审无 Critical、Important 或 Minor 发现；
+最终全量回归为 `654 passed, 5 skipped, 5 warnings, 194 subtests passed`。额外字段、缺少 cutoff、重复 ID、
+缺失五文件四类负向测试均非零退出、stdout 为空且没有 Output。
+
+以上只把 `cons_sda` 推进到离线 `CONFORMANCE_PASSED`，没有生成 canonical receipt、持久化 backtest、Registry
+身份或 cutover。W3A 仍是不可拆分 cache-family wave；`full_oos` 从 2024-01 起对全部历史 OOS 日给 265 个配置
+持续累计排名，单点需要约 34 万次 LightGBM 拟合。若不恢复跨运行持久状态、不缩减历史评分语义，它无法满足
+120 秒门槛。因此 `full_oos` 继续保持 Native，W3A 不得进入持久化回测或切换。
 
 ## 5. 阶段与状态机
 
@@ -579,6 +619,7 @@ Mac3；W4 九个 Mac3-only binary-bundle successor 通过 manifest/ABI/合同/�
 Native run；Native 可执行路径与临时迁移工具已删除；全量、架构、isolated MySQL 和 migration recovery 测试
 通过；025 已删除两个 confidence 列；Dashboard、Actuals、其他 Blackbox 和调度控制面无非计划变化。
 
-当前全局状态仍为 `IN_PROGRESS`。ECS 基线已经重新只读核验；当前硬阻塞是 W3 未满足性能门槛。W4 的
+当前全局状态仍为 `IN_PROGRESS`。ECS 基线已经重新只读核验；W3A 的 `cons_sda` 已通过离线 conformance，
+但同 wave 的 `full_oos` 仍受连续历史排名的性能下界阻塞；W2、W3B-D 也尚未满足各自性能门槛。W4 的
 Mac3-only binary-bundle 架构已经获得确认，但必须等 W1-W3 晋级 Mac3 后实施；不能用旧 adapter、未纳入
 manifest 的二进制、旧水位或文档声明冒充闭环。
