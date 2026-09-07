@@ -1101,6 +1101,42 @@ Mac3 installed plist 与 `launchctl print gui/501/...` 一致为 DataBridge 每�
 - 不停止或修改 DataBridge、Backend、Actuals，不依赖早间窗口补测或清理；06:00 后仅可无侵入只读观察，
   不自动恢复迁移重计算。结束时报告实际通过项、未完成项和早间就绪证据，不以整夜授权承诺全局闭环。
 
+**本夜夜间执行收尾（2026-09-08 04:57–05:01 只读核验）**
+
+本夜实际交付为 ECS full-OOS 冷333条、同 Linux Native 独立333条和首组100条等价/资源证据；
+批量六组矩阵因一次性控制器输出通道故障未完成。未做业务写库、激活、cutover、Mac3 晋级、DDL 或调度变更。
+02:42 后无本次算法重计算；不在早间窗口重启。已有有效证据与原失败目录均保留，不回写失败为成功。
+
+| 收尾检查 | Mac3 | ECS |
+|---|---|---|
+| current / previous | `b736d3b...` / `617113ed...`，与本夜基线相同 | `3162f70...` / `f947426...`，与本夜基线相同 |
+| release 整树摘要 | current/previous 均与安装记录一致 | previous 一致；current 有下述既有 pyc 偏差，严格校验不通过 |
+| installed / loaded 调度 | 对当前生产 release 的7项 launchd 审计全通过，配置及外置环境无未批准漂移 | 11项 unit/timer 文件与当前 release 模板逐字节一致，均 loaded，FragmentPath 一致 |
+| 早间触发 | DataBridge 06:30，daily 工作日07:03，当前均 not running | DataBridge 06:30，daily 07:03；timer active，service inactive/MainPID0 |
+| 正在运行的 scheme run / backtest | `0 / 0` | `0 / 0` |
+| full-OOS successor active Registry target | `0`，未生产切换 | `0`，未激活 |
+| 数据库事务 / advisory lock | 本次只读连接以外 InnoDB事务0、granted user advisory lock0 | 当前服务账号查询权限不足，不能将不可见记为0 |
+| Backend health | `ok / launchd_one_shot` | `ok / systemd_one_shot` |
+| 无登录 Dashboard 请求 | HTTP401，认证边界正常响应；未验证登录后产品内容 | HTTP401，认证边界正常响应；未验证登录后产品内容 |
+
+收尾未发现本次测试进程或相关持有的 ECS 文件锁；此前 private view 清空及旧状态不变已独立验证。
+本次计算器没有数据库连接，收尾数据库检查仅执行只读事务/SELECT并显式结束连接，因此没有本次迁移遗留的
+业务事务或 DB advisory lock；这不等同于对无权限查看的 ECS 全实例事务作全局保证。
+Mac3 `launchctl list` 显示任务退出状态0，但 loaded print 当前显示 `(never exited)`，不能将其当成已观察到今天自然成功。
+两端均无本夜建立的 timer fence，无需恢复/重启服务。
+
+ECS 当前 release 的严格完整性差异仅定位为 **12个 `__pycache__/*.cpython-313.pyc`**，位于旧
+`liwei_0616_cons_sda_k3_div_k10` 和 `shared`；mtime均为 **2026-09-06 22:32:37 +08:00**。
+实际整树摘要为 `7a28fd37e8f4e7e891c55da51d49b1d54fb488f0171bc30e91ef362abed1c4ab`，安装记录要求
+`69d48a34b45c69ea110890437a6e0d436e94e975acf1615386fad36cedea9849`。
+只在诊断中排除这12项后，所有剩余文件内容及可执行标志所得摘要与安装记录完全一致；这不是放宽正式校验器，
+也不标记 current 严格校验通过。文件时间早于本夜窗口，但创建来源未查明。本夜未删除或修改 current 中任何文件。
+**后续发布/切换前须在独立受控维护中处理此项并重做严格校验**，不能在早间临时清理或顺带改旧 Native。
+
+后续先解决一次性控制器日志依赖，再受控补验未完成五组；已通过100条不重跑。之后仍须完成当前政策下的
+持久化回测、wave/单 Writer/gray/cutover验收及Mac3独立验证。当前只是本夜夜间窗口收尾，**整个迁移项目未闭环**。
+夜间自动化 `native-ecs` 已在05:30前通过受控工具置为 `PAUSED` 并读回确认，不在06:00后自动恢复迁移。
+
 ##### A4：ECS 验证、族扩展与晋级
 
 A3 有代码变更后运行相关合同/原子恢复测试和全量回归，并进行独立审查；Critical/Important 必须清零。生产接入
