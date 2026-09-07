@@ -949,6 +949,28 @@ W2 旧离线超时也需要按新预算重新验证，不自动转为通过。�
 代码、输入或校验策略变化仍按绑定规则重验，不承诺永不重新回测。
 当前授权仍不含业务写库、激活、调度服务操作、current/previous 切换、Mac3 晋级或 DDL。
 
+**新预算下的隔离验证（2026-09-07 23:09 CST，运行中）**
+
+- 本地提交 `c8d102eba7cc54327e29987707c3bae99dfbf3c3` 只调整上述预算、测试和文档；
+  canonical exact version 仍为 `3ee3dd2334fd`，算法、Metadata 和 config 字节未改。
+- 先用新增真实 CLI 测试复现旧限制，再验证修正；全量回归为 **700 passed、5 skipped、229 subtests passed**。
+  独立审查 Critical/Important 为 0，独立针对预算的 8 项测试通过；一次性 ECS 探针也经独立审查。
+- 两次 clean-commit 构建 archive 及 manifest 逐字节一致：archive SHA-256 为
+  `5e8065b278c525f8529686b64a8dee8977b90a8d87cedfff938f5c1becc1f02c`，manifest SHA-256 为
+  `185fcf36a46b0482a3d15423e1ac65f8dd61004ca62c4c2e4267472e387608cb`。
+- 安装器读回 `activated=false`；候选目录为
+  `/opt/bond-factor-lab/incoming/a4-offline-c8d102e.LP4qqK`，正式 current/previous 仍为上一证据段的两份 release。
+  启动前 daily/weekly/monthly service 均 inactive、MainPID 0。未查询或修改业务数据库。
+- 本次通过 `run_blackbox_backtest` 从空私有状态执行 333 条正式 Request，使用相同 0905 generation、五文件和
+  Request 摘要；完整状态环境指纹与上一 ECS 验证一致。安全预算 7200 秒、RSS 4 GiB、线程上限 8。
+  23:09 只读确认父进程 752716、算法进程 752732 属于该精确候选；这不是完成或通过证据。
+- 一次性探针及后续输出保存在本机 `outputs/releases/a4-offline-20260907/`，不纳入源码 archive。
+  本次探针 SHA-256 为 `ef27cb9c380d85219aada2b2b728eb631341cf19682f8d3bc8a266e0fbd68d0a`。
+  最终验收要求退出成功、`full333.json` 通过、`cleanup.json` 两项为 true 且无 `failure.json`；
+  单独出现 Result 或单步报告不代表整次成功。Mac 参考比较不替代同 Linux Native 独立等价。
+- 当前任务的后续检查 `native-ecs` 每 10 分钟读取本次验证；运行未变时静默、不并行启动训练。
+  仅继续现有离线授权范围，完成离线验收或到达新的生产授权边界后暂停。
+
 ##### A4：ECS 验证、族扩展与晋级
 
 A3 有代码变更后运行相关合同/原子恢复测试和全量回归，并进行独立审查；Critical/Important 必须清零。生产接入
