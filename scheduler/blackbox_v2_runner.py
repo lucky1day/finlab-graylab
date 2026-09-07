@@ -485,8 +485,7 @@ def run_blackbox_backtest(
     if state is not None:
         profile = replace(profile, cpu_threads=min(profile.cpu_threads, 8),
                           memory_limit_bytes=min(profile.memory_limit_bytes, 4 * 1024**3),
-                          backtest_timeout_sec=min(profile.backtest_timeout_sec,
-                                                   600 if len(batch) <= 100 and not state.rebuild else 1800))
+                          backtest_timeout_sec=min(profile.backtest_timeout_sec, 7200))
     with tempfile.TemporaryDirectory(prefix="blackbox-v2-backtest-") as tmpdir:
         root = Path(tmpdir)
         requests_path = write_requests(batch, root / "requests.csv")

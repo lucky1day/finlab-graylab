@@ -558,7 +558,7 @@ def test_controlled_comparator_rejects_direction_difference(tmp_path: Path) -> N
         )
 
 
-def test_controlled_comparator_keeps_successor_performance_gate_separate(
+def test_controlled_comparator_uses_offline_safety_budget(
     tmp_path: Path,
 ) -> None:
     requests_path = tmp_path / "requests.csv"
@@ -574,7 +574,7 @@ def test_controlled_comparator_keeps_successor_performance_gate_separate(
     def run_native(command: list[str], **kwargs: object) -> SimpleNamespace:
         output = Path(command[command.index("--output") + 1])
         output.write_text(result_fields + result_row, encoding="utf-8")
-        assert kwargs["timeout"] == 3600
+        assert kwargs["timeout"] == 7200
         return SimpleNamespace(returncode=0, stderr="")
 
     def run_successor(**kwargs: object) -> None:
@@ -584,7 +584,7 @@ def test_controlled_comparator_keeps_successor_performance_gate_separate(
             result_fields + result_row,
             encoding="utf-8",
         )
-        assert kwargs["timeout_sec"] == 1800
+        assert kwargs["timeout_sec"] == 7200
 
     target = NativeSuccessorTarget(
         old_base_scheme_id="old",

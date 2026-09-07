@@ -219,6 +219,50 @@ def test_private_backtest_leaves_persistent_state_untouched(delivery: dict, tmp_
     assert _canonical(binding).read_bytes() == before
 
 
+@pytest.mark.parametrize("mode,rebuild,count,budget,expected", [
+    ("backtest", False, 1, 14400, 7200),
+    ("backtest", False, 101, 14400, 7200),
+    ("backtest", True, 1, 14400, 7200),
+    ("backtest", False, 1, 300, 300),
+    ("predict", False, 1, 3600, 120),
+    ("predict", True, 1, 3600, 1800),
+    ("predict", False, 1, 60, 60),
+])
+def test_stateful_execution_budgets(
+    delivery, tmp_path, monkeypatch, mode, rebuild, count, budget, expected,
+):
+    """真实 CLI 使用离线安全预算，且不放宽每日与调用方资源限制。"""
+    from scheduler import blackbox_v2_runner as runner
+
+    binding = _initialize(delivery, tmp_path)
+    if mode == "backtest" and not rebuild:
+        binding = replace(binding, root=None)
+    binding = replace(binding, rebuild=rebuild)
+    profile = replace(delivery["profile"], predict_timeout_sec=budget,
+                      backtest_timeout_sec=budget, cpu_threads=16,
+                      memory_limit_bytes=8 * 1024**3)
+    run_process = runner._run_process
+    observed = []
+
+    def execute(command, **kwargs):
+        observed.append(kwargs["timeout"])
+        assert kwargs["memory_limit_bytes"] == 4 * 1024**3
+        assert kwargs["env"]["OMP_NUM_THREADS"] == "8"
+        return run_process(command, **kwargs)
+
+    monkeypatch.setattr(runner, "_run_process", execute)
+    arguments = {**delivery, "profile": profile, "state": binding}
+    if mode == "predict":
+        # 资源预算不进入状态算法身份；显式重建与常规调用各自受限。
+        runner.run_blackbox_predict(**arguments, request=_request())
+    else:
+        records = runner.run_blackbox_backtest(
+            **arguments, requests=[_request(f"item-{index}") for index in range(count)],
+        )
+        assert len(records) == count
+    assert observed == [expected]
+
+
 @pytest.mark.parametrize("request_id", ["bad-result", "nonzero", "state-missing", "change-request-input"])
 def test_failed_initial_rebuild_does_not_create_canonical_state(
     delivery: dict, tmp_path: Path, request_id: str,

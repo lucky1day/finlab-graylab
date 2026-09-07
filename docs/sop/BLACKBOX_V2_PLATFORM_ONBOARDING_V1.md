@@ -81,8 +81,12 @@ python -m harness gate backtest \
   --predict-date {gray_target_start} \
   --persist \
   --backtest-start-date 2025-01-01 \
-  --timeout-sec 1800
+  --timeout-sec 7200
 ```
+
+7200 秒是本次完整离线回测的安全预算，不修改 CLI 默认 timeout 或每日预测限制。
+同 exact version 的有效完整证据可复用；算法版本、输入或校验策略变化需要按证据绑定规则重新验证，
+“只做一次”不表示未来任何变更都不必重跑。
 
 回测只做一次完整计算：
 

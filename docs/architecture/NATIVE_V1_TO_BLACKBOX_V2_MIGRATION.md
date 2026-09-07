@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`A2C_FULL_OOS_LOCAL_OFFLINE_PASSED; A3_CANONICAL_LOCAL_EXECUTOR_PROBE_PASSED; A4_ECS_DAILY_PASSED_BATCH100_TIMEOUT_STOPPED; W1_ECS_BACKTEST_READY_ON_PRIOR_POLICY; W2_ECS_BLOCKED_PERFORMANCE; W3A_CONS_SDA_CONFORMANCE_PASSED; W3_BLOCKED_ECS_VALIDATION; W4_MAC3_BINARY_BUNDLE_ACCEPTED`
+**执行状态**：`A2C_FULL_OOS_LOCAL_OFFLINE_PASSED; A3_CANONICAL_LOCAL_EXECUTOR_PROBE_PASSED; A4_ECS_DAILY_PASSED_OFFLINE_REVALIDATION_PENDING; W1_ECS_BACKTEST_READY_ON_PRIOR_POLICY; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3A_CONS_SDA_CONFORMANCE_PASSED; W3_BLOCKED_ECS_VALIDATION; W4_MAC3_BINARY_BUNDLE_ACCEPTED`
 
 **现场基线日期**：2026-09-05 Asia/Shanghai（后续核验日期在证据段落分别记录；计划修订不刷新现场水位）
 
@@ -715,7 +715,8 @@ identity/payload 摘要；独立审查发现的误用旧版本状态证据风险
 - 对输入前缀未变的漏跑场景，验证同一增量核心能否在每日时间预算内补齐内部计算，并仅输出本次请求；
   未证明安全或无法满足预算时不启用该路径，明确失败并要求显式重建，不自动补写历史 prediction；
 - warmed 单日每次 ≤120 秒；单进程 RSS ≤4 GiB、数值线程 ≤8，算法不创建子进程；
-- 100 条 ≤600 秒、完整正式区间 ≤1800 秒仍为目标门槛，但报告必须注明起始快照覆盖范围：已覆盖区间回放与
+- 离线 backtest 每次调用以 7200 秒为安全上限，不再采用 100 条／600 秒与完整区间／1800 秒硬门槛；
+  报告必须注明起始快照覆盖范围：已覆盖区间回放与
   新增区间推进分开计时，不能用预先算完被测区间的结果冒充 batch 增量性能；
 - 全量预热、恢复时间与状态体积单独实测，部署前结合调度时间和可接受停机窗口确定恢复预算；
   最初六小时是开发时间窗口，不推导为恢复 SLA。恢复预算不能用于放宽每日 120 秒门槛。
@@ -919,7 +920,7 @@ systemd/launchd、服务或 timer 操作。已执行的只有候选文件、私�
 根据性能停止条件，未启动 100 条倒序/乱序、完整 333 条、同 Linux Native 独立对照、持久化回测或任何切换。
 十日方向的跨环境一致只能作为参考证据，不能替代同 Linux 环境的 Native 完整迁移等价验收。
 
-**失败后的最小优化方向（仅诊断，尚未实施）**
+**失败后的最小优化方向（历史诊断，尚未实施；本轮不实施）**
 
 缓存已复用历史 Phase-A；剩余问题是小段历史尾部变化会触发模型重新训练。独立本机纯数据诊断使用相同五文件，
 未训练模型：在 2024-12-31→2025-01-02、2025-01-02→2025-01-03 两次推进中，旧末点各有 20 个周频特征变化，
@@ -935,6 +936,18 @@ systemd/launchd、服务或 timer 操作。已执行的只有候选文件、私�
 需覆盖训练/校准数据及标签、权重、有序特征、完整参数/seed/轮数/early stopping 的精确身份，限制模型缓存容量；
 身份不匹配按原算法正常训练。形成新的候选代码 hash 后，先对照当前实现验证五字段零差异与失效边界，
 再用新不可变包重跑 ECS 性能；两次纯数据诊断不是该优化已完成的证明。本次旧候选的超时记录永久保留。
+
+**离线预算调整（用户确认后的执行决定）**
+
+用户明确接受一次性完整回测耗时较长，并确认继续按每日 ≤120 秒、离线每次调用 7200 秒安全预算推进。
+这取代旧 100 条／600 秒、完整区间／1800 秒门槛；旧 ECS 600 秒超时记录不改写，也不能追认为完整回测通过。
+本轮不实施上述模型缓存优化，不修改算法、canonical metadata/config 或状态协议；只调整状态化离线执行器
+及临时 Native/successor 对照的超时预算。调用方更短 deadline 继续优先，常规 predict 120 秒与显式
+predict 重建 1800 秒上限保持不变，RSS 4 GiB、数值线程 ≤8、无子进程和五字段零差异要求不变。
+先完成回归及独立审查，再以 clean commit 构建新不可变包，在 ECS 私有目录补齐完整离线计算和同输入对照。
+W2 旧离线超时也需要按新预算重新验证，不自动转为通过。一次性指同 exact version 的有效证据复用；
+代码、输入或校验策略变化仍按绑定规则重验，不承诺永不重新回测。
+当前授权仍不含业务写库、激活、调度服务操作、current/previous 切换、Mac3 晋级或 DDL。
 
 ##### A4：ECS 验证、族扩展与晋级
 
@@ -1090,8 +1103,9 @@ old/new code hash + runtime environment fingerprint`。Request 数量/顺序/ID�
 ### 6.3 性能
 
 - stateless 方案及 stateful ready-state 的单条 predict ≤ 120 秒；
-- stateless 方案及 stateful ready-state 的 100 条 backtest ≤ 600 秒；
-- stateless 方案及 stateful ready-state 的完整正式区间 ≤ 1800 秒；
+- 离线 backtest（100 条及完整正式区间）每次调用安全上限为 7200 秒，实际耗时单列报告；
+  不再以 100 条／600 秒、完整区间／1800 秒作硬性准入，调用方更短 deadline 仍生效；
+  这是迁移验收调用预算，stateless 通用 Profile 默认值不变，须由调用方显式限制；
 - stateful 首次预热与恢复时间单独实测，不计入每日 predict SLA；部署前按实测与调度要求确定恢复预算，
   不将开发时间窗口作为恢复 SLA；
 - 单算法进程峰值 RSS ≤ 4 GiB；
@@ -1158,9 +1172,9 @@ Native run；Native 可执行路径与临时迁移工具已删除；全量、架
 当前全局状态仍为 `IN_PROGRESS`。ECS 基线已经重新只读核验；W3A 的 `cons_sda` 已通过离线 conformance，
 同 wave 的 `full_oos` 已完成 5.2.1 A0/A1 与 A2c 完整本地离线冷/热等价、每日推进及真实 generation 复用验证。
 平台状态扩展已通过本地实现测试、独立审查和 full-OOS executor 探针；ECS 隔离预热、十日、重试已通过对应检查，
-但 100 条批量在 600 秒硬限超时，当前候选已停止晋级，W3A 仍有明确性能阻塞。
+旧 100 条批量在 600 秒硬限超时；用户已调整离线预算，当前等待新预算下的完整结果与等价证据，尚不能晋级。
 full-OOS 两文件已提交并以不可变包安装至 ECS 私有验证目录，保持 paused/draft、部署范围为空；
 尚未完成同 Linux Native 完整等价、ECS 持久化回测或生产切换，不能用单日性能通过宣布整体闭环。
-W2、W3B-D 也尚未满足各自性能门槛，须逐方案分类，不能外推当前试点通过。W4 的
+W2、W3B-D 也尚未完成新预算下各自的离线和每日验收，须逐方案分类，不能外推当前试点通过。W4 的
 Mac3-only binary-bundle 架构已经获得确认，但必须等 W1-W3 晋级 Mac3 后实施；不能用旧 adapter、未纳入
 manifest 的二进制、旧水位、旧 Native cache 或文档声明冒充闭环。
