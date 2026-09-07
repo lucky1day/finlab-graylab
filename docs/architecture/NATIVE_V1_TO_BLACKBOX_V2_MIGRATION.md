@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`A2C_FULL_OOS_LOCAL_OFFLINE_PASSED; A3_CANONICAL_LOCAL_EXECUTOR_PROBE_PASSED; A4_ECS_DAILY_PASSED_OFFLINE_REVALIDATION_PENDING; W1_ECS_BACKTEST_READY_ON_PRIOR_POLICY; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3A_CONS_SDA_CONFORMANCE_PASSED; W3_BLOCKED_ECS_VALIDATION; W4_MAC3_BINARY_BUNDLE_ACCEPTED`
+**执行状态**：`A2C_FULL_OOS_LOCAL_OFFLINE_PASSED; A3_CANONICAL_LOCAL_EXECUTOR_PROBE_PASSED; A4_ECS_COLD333_AND_CROSS_ENVIRONMENT_PASSED_NATIVE_LINUX_PENDING; W1_ECS_BACKTEST_READY_ON_PRIOR_POLICY; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3A_CONS_SDA_CONFORMANCE_PASSED; W3_BLOCKED_ECS_VALIDATION; W4_MAC3_BINARY_BUNDLE_ACCEPTED`
 
 **现场基线日期**：2026-09-05 Asia/Shanghai（后续核验日期在证据段落分别记录；计划修订不刷新现场水位）
 
@@ -972,6 +972,26 @@ W2 旧离线超时也需要按新预算重新验证，不自动转为通过。�
 - 当前任务的后续检查 `native-ecs` 每 10 分钟读取本次验证；运行未变时静默、不并行启动训练。
   后续范围服从下面的最新夜间授权和硬截止。
 
+**完整冷回测结果（2026-09-08 00:07 结束，00:13–00:15 独立复核）**
+
+本次 `c8d102e` ECS 高层私有回测正常退出（原 session 9428 的 exit code 0），从空状态完整计算 333 条，
+耗时 **3609.16 秒**（约 60 分 9 秒，包含约 1076.60 秒的首点历史准备）。五字段与冻结 Mac 参考逐条零差异。
+35554 次资源采样记录峰值 RSS **1,153,753,088 字节（1.075 GiB）**、最高 6 个线程，无观察到的算法子进程；
+5 项数值线程环境均为 8，采样无错误。私有状态 2,382,679 字节，不复用旧 Native cache，未推进旧日常私有状态。
+临时 active/debris 视图均已清空，无 failure.json。该结果通过新离线预算，不改写旧 600 秒超时记录。
+
+证据已下载至 `outputs/releases/a4-offline-20260907/ecs-evidence/evidence/`，本机独立解析完整 CSV 并比较
+333 条记录、报告、身份与清理字段；下载后所有文件摘要与 ECS 读回一致。关键 SHA-256：
+
+- `full333.json`：`6f3b1cea74dea0567a15e83ff24e73a4dfac4ed106230b2d65464640179c49c5`；
+- `full333.result.csv`：`8a3fb06475a36eea4b5488e7fee87d13708f1d015e963c5cf822fe9126f12ef6`；
+- `identity.json`：`70dc68593665f41579400fb6a3ec674c0f6a31e603cef85be4047d940e6bf50e`；
+- `cleanup.json`：`7214a4be8bfe2e736373f1e04c797ce6d7addb15d84c956d4f6b4cb40a3e323f`。
+
+输出 CSV 与 Mac 参考文件的原始摘要不同，但由解析后的五字段逐行证明业务内容相同，未把不同输入当成豁免。
+复核时旧测试进程均已退出，ECS current/previous 不变，三项 prediction service 均 inactive、MainPID 0。
+未访问业务数据库；不宣称业务表数量已读回。**同 Linux Native 独立等价及其他缺项仍待验收**，不标记生产就绪。
+
 **夜间推进授权与早间保护（2026-09-07 23:40 CST）**
 
 用户在确认后续步骤后明确授权整个夜间继续推进，并要求不得影响早上 06:00 的定时任务。
@@ -1221,7 +1241,8 @@ Native run；Native 可执行路径与临时迁移工具已删除；全量、架
 当前全局状态仍为 `IN_PROGRESS`。ECS 基线已经重新只读核验；W3A 的 `cons_sda` 已通过离线 conformance，
 同 wave 的 `full_oos` 已完成 5.2.1 A0/A1 与 A2c 完整本地离线冷/热等价、每日推进及真实 generation 复用验证。
 平台状态扩展已通过本地实现测试、独立审查和 full-OOS executor 探针；ECS 隔离预热、十日、重试已通过对应检查，
-旧 100 条批量在 600 秒硬限超时；用户已调整离线预算，当前等待新预算下的完整结果与等价证据，尚不能晋级。
+旧 100 条批量在 600 秒硬限超时；用户调整离线预算后，ECS 完整冷333条及Mac同输入参考比较已通过，
+仍待同Linux Native独立等价和其余验收，尚不能晋级。
 full-OOS 两文件已提交并以不可变包安装至 ECS 私有验证目录，保持 paused/draft、部署范围为空；
 尚未完成同 Linux Native 完整等价、ECS 持久化回测或生产切换，不能用单日性能通过宣布整体闭环。
 W2、W3B-D 也尚未完成新预算下各自的离线和每日验收，须逐方案分类，不能外推当前试点通过。W4 的
