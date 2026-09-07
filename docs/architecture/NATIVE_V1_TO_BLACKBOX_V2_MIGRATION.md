@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`A2C_FULL_OOS_LOCAL_OFFLINE_PASSED; A3_CANONICAL_LOCAL_EXECUTOR_PROBE_PASSED; A4_ECS_READONLY_PREFLIGHT_DONE_VALIDATION_PENDING; W1_ECS_BACKTEST_READY_ON_PRIOR_POLICY; W2_ECS_BLOCKED_PERFORMANCE; W3A_CONS_SDA_CONFORMANCE_PASSED; W3_BLOCKED_ECS_VALIDATION; W4_MAC3_BINARY_BUNDLE_ACCEPTED`
+**执行状态**：`A2C_FULL_OOS_LOCAL_OFFLINE_PASSED; A3_CANONICAL_LOCAL_EXECUTOR_PROBE_PASSED; A4_ECS_DAILY_PASSED_BATCH100_TIMEOUT_STOPPED; W1_ECS_BACKTEST_READY_ON_PRIOR_POLICY; W2_ECS_BLOCKED_PERFORMANCE; W3A_CONS_SDA_CONFORMANCE_PASSED; W3_BLOCKED_ECS_VALIDATION; W4_MAC3_BINARY_BUNDLE_ACCEPTED`
 
 **现场基线日期**：2026-09-05 Asia/Shanghai（后续核验日期在证据段落分别记录；计划修订不刷新现场水位）
 
@@ -228,7 +228,7 @@ backtest CSV Request。具体算法列集合以交付脚本实际读取与校验
 | W1B | `weekly_10y_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `e52e221a0046e8623107359b4fe3c2f7643e422b3ed9068c0cf317e9cdeafeed` | ECS_0905_FULL_COMPARATOR_PASSED |
 | W2 | 两个 `daily_*_v28_bbv2` | 完整五文件；V28 daily/weekly/monthly 因子与真实 T+5 grid | feature 2025-01-02..2026-05-22；各 333 条 | 5Y `32aa7948d5f90bdd3de72ce46461bdc8f6dafeb24ece450c34cba84eac5480cc`；7Y `5fec87a6be3612c911f17f546ae4687e58a64b1d5a7be75a407e1fbb681861a4` | ECS_BLOCKED_100_REQUEST_PERFORMANCE_NO_CURRENT_RECEIPT |
 | W3A | `liwei_0616_cons_sda_k3_div_k10_bbv2` | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2025-01-02..2026-05-22；333 条 | `9cebc6eab7df69ed48e68163fc0cfc5229ad616fda4989924e2b34d78274c250` | ECS_CONFORMANCE_PASSED_NO_PERSISTED_BACKTEST |
-| W3A | `liwei_0616_5y01_full_oos_k3_div_k10_bbv2` | 五文件 + 方案私有增量 Phase-A 状态；连续 full-OOS 排名 | A2c feature 2025-01-02..2026-05-22；canonical 十日 2025-01-02..2025-01-15 | `ad9bdacf5063a427ecc8b70852e045f4822ba9af1b6d8fcd171cd2d779e95103` | CANONICAL_DRAFT_LOCAL_EXECUTOR_PASSED; ECS_PENDING |
+| W3A | `liwei_0616_5y01_full_oos_k3_div_k10_bbv2` | 五文件 + 方案私有增量 Phase-A 状态；连续 full-OOS 排名 | A2c feature 2025-01-02..2026-05-22；canonical 十日 2025-01-02..2025-01-15 | `ad9bdacf5063a427ecc8b70852e045f4822ba9af1b6d8fcd171cd2d779e95103` | ECS_DAILY_PASSED_BATCH100_TIMEOUT; CUTOVER_BLOCKED |
 | W3B | 三个 10Y successor | 五文件；full-OOS 方案使用独立增量状态，非 full-OOS 优先纯算法优化 | feature 2026-08-28 | 未生成 | PENDING_W3A_STATE_PILOT |
 | W3C-D | 五个 `liwei_0616_*_bbv2` | 五文件；逐方案判定 stateless 或独立增量状态 | feature 2026-08-28 | 未生成 | PENDING_STATE_CLASSIFICATION |
 | W4A-C | 九个编译主体 successor | DataBridge 五文件 + Request；加密 payload 进入 manifest closure | 待 Mac3 冻结 | 待生成 | MAC3_BINARY_BUNDLE_PLANNED |
@@ -861,6 +861,81 @@ DataBridge/input_artifacts 继续提供 ready generation 与 lineage；平台对
   本次没有上传、写目录、导入算法依赖、连接数据库或查人工算法进程；service 空闲不能证明所有 Writer 均不存在。
   因此只解除 SSH/基础解释器/资源可读阻塞，未获得 ECS 算法等价、性能、持久化回测或控制面验收结论。
 
+**A4 首轮 ECS 隔离执行（2026-09-07 22:09–22:46 CST）**
+
+用户已另行授权不可变包上传和候选目录内的隔离技术验证；未授权 current/previous、Registry、业务写库、
+systemd/launchd、服务或 timer 操作。已执行的只有候选文件、私有输入视图、可重建状态及验收证据写入。
+
+- 本地 clean commit：`d0366b9eb076dcf0d86397931cce6c6c97f42885`，两次构建 archive 完全一致；SHA 为
+  `c33e5d261fc7c349353ac13beb0107db4ca3fdb7e910435865d09f26fd8a09ec`。归档 1,098 个 Git blob 与提交精确一致。
+- ECS 私有根：`/opt/bond-factor-lab/incoming/a3-d0366b9.htVJZn`。使用现有 installer、不带 activate，
+  安装到此根下的 `deploy/releases/<commit>`；返回 `activated=false`。未修改解包源码或现有生产 release。
+  候选 version 仍为 `3ee3dd2334fd`，paused/draft，部署矩阵 `[]`。
+- 现场为 x86_64、4 vCPU，服务 Python 3.12.13、Blackbox Python 3.13.12；NumPy 2.3.5、pandas 2.3.3、
+  LightGBM 4.6.0、numba 0.63.1、bottleneck 1.4.2。运行前只读进程检查未见算法训练。
+  算法使用既有 Profile，实际限额收紧为 4 GiB、数值库线程上限 8、冷重建 1800 秒、单点 120 秒、100 条 600 秒。
+- 当前 producer-ready generation `full-20260907-063337-3baeb4277bae`、snapshot
+  `snapshot-4a525546f74e5f3d003ce07f` 已通过现有 ready/producer seal 读取逻辑及私有运行视图的五文件校验。
+  为保证生产文件零修改，只以 O_RDONLY 对已有锁取得共享锁，复用现有只读 helper；不创建锁、不 chmod、不重建 ready。
+  当前输入入口验证不执行算法，不与旧 generation 的方向证据混用；独立复核再次在共享锁内读取身份和 SHA。
+- 算法实测使用原 0905 冻结 snapshot `snapshot-f42540ebc533428ca6c869e2`；上传原五文件、manifest、
+  producer receipt、ready identity 和原 Request，通过 `input_artifacts.open_blackbox_runtime_view` 重新完整校验并复制。
+  不复制跨主机 inode seal、不自拼 DB 输入、不读取 Native 或本机算法缓存。formal Request SHA 仍为
+  `dcd62088ce197adee97d95dc944dd8f4c2ab3cdb8fe2f30a7b2a4f68f9a2f340`。
+
+| ECS 检查 | 实测 | 判定 |
+|---|---|---|
+| 从空状态预热至 2024-12-31 | 1076.14 秒；峰值 RSS 981,884,928 字节 | 显式重建成功；此为恢复成本，不是每日 SLA |
+| 十日逐 Request 推进 | 8.15–11.85 秒/次；峰值 RSS 603,926,528 字节 | 单点性能通过；十条五字段与同代 ARM64 参考一致 |
+| 同末日 Request 重试三次 | 4.235–4.237 秒/次；峰值 RSS 478,887,936 字节 | 结果、payload、envelope 均不变 |
+| 100 条从正式区间起点推进 | 600.18 秒返回超时；算法硬限 600 秒；峰值 RSS 736,440,320 字节 | **失败，候选停止晋级** |
+
+资源为主算法进程 `/proc` VmHWM/VmRSS 与线程采样；训练时最多观察到 6 个线程、重试 2 个线程，
+采样未观察到算法子进程，五个数值库启动线程变量完整且均为 8。采样不是 syscall tracing；runner 另有进程组 RSS 限制。
+单点计时包含平台身份/输入校验、进程启动、Result 校验和状态发布；batch 使用受控 CLI 与标准 Result 校验、
+独立预热 payload，不声称已通过持久化回测入口。batch 超时前的一次诊断采样记录 70 个已完成 cutoff，
+累计重训 125 个尾部/新增点；这不是 70 条已发布 Result，更不是 100 条完成证据。
+
+本轮独立审查发现原始单步状态先记 PASSED 再由外层比对、base Profile 与实际限额混淆等报告问题；
+未改正在运行的探针，追加 fail-closed 独立复核，逐行重验五字段、非空资源采样、实际限额、状态不变和固定 lineage SHA。
+必需证据缺失、损坏或无法解析时也输出 STOPPED；本机缺失证据负例通过，独立复核无未关闭 Critical/Important。
+最终权威报告为 `CANDIDATE_STOPPED_NOT_APPROVED`，不是原始单步 PASSED。
+
+证据已保留在 ECS 私有根的 `evidence/`，本机副本为
+`outputs/releases/a3-full-oos-20260907/ecs-evidence/`（不纳入 Git）：
+
+- `independent-verification.json` SHA：`7e059e4eb6481b9fecabf3a052bb0c423955dbed38a9976e673f8e335b659e1c`；
+- `identity.json` SHA：`e1b182c7f9865c3c9088d7b9bd24ef6d87efbff52688f265d4256f36145a54ea`；
+- `hundred-asc.json` SHA：`17718030041c501431577a8396acc40f615aa9a0482cb19cdc6eaff60ae4c788`；
+- `batch-progress.json` SHA：`2f39534aeb0d9682f4367b3cfbc8248103d7f329231dca2ec1b24686e44ab526`；
+- Linux 平台运行环境摘要：`cff7095b5e6c7669b77a3335e12164d35cd59cf52b6180ee22cf6f659bbe6ce6`。
+
+22:46 收尾读回：验证父进程和算法进程均已退出；batch 仅保留 requests.csv，无 Result/state 输出；
+输入运行视图已清理；独立复核确认 batch 未改变逐日末态，预热 checkpoint 不变。ECS current/previous 仍为
+`3162f70e67f53b7cdb65a3e8792d42c6fab32d15` / `f947426d969d6c3e3879e707f7a0564345788d9a`，
+三项真实 `bond-factor-lab-prediction-{daily,weekly,monthly}.service` 均 loaded/inactive/dead、MainPID 0，timer 保持等待。
+未查询或修改业务数据库；不以“未写库”冒充业务表数量的前后现场校验。
+
+根据性能停止条件，未启动 100 条倒序/乱序、完整 333 条、同 Linux Native 独立对照、持久化回测或任何切换。
+十日方向的跨环境一致只能作为参考证据，不能替代同 Linux 环境的 Native 完整迁移等价验收。
+
+**失败后的最小优化方向（仅诊断，尚未实施）**
+
+缓存已复用历史 Phase-A；剩余问题是小段历史尾部变化会触发模型重新训练。独立本机纯数据诊断使用相同五文件，
+未训练模型：在 2024-12-31→2025-01-02、2025-01-02→2025-01-03 两次推进中，旧末点各有 20 个周频特征变化，
+其中 3 个确实进入 IC 选择的 80 列：`wk_S0114089_chg`、`wk_V0135838_val`、`wk_HWW00001_val`。
+因此只缩小特征 hash 或忽略尾部变化不能消除正确重算，不能作为主要优化。
+
+这两个旧末点的全部 265 个 config，其 fit/cal 索引、有序特征、X/y、权重均相同，seeds `[42,314]`、
+轮数、early stopping 语义也不变；变化只在推断行。可考虑在单次 batch 内有界保留最近尾点的已训练模型，
+训练身份完全匹配时仅重新 predict 当前真实推断行；保留相同 best_iteration 和首 seed 校准概率/阈值。
+此类旧尾点理论上每次可省 530 次重复 train；新日仍正常训练，命中率与模型内存成本必须实测。
+
+后续试点不得改平台状态合同、增加持久化模型或跨方案共享，不得仅凭 cutoff/config 判定模型可复用。
+需覆盖训练/校准数据及标签、权重、有序特征、完整参数/seed/轮数/early stopping 的精确身份，限制模型缓存容量；
+身份不匹配按原算法正常训练。形成新的候选代码 hash 后，先对照当前实现验证五字段零差异与失效边界，
+再用新不可变包重跑 ECS 性能；两次纯数据诊断不是该优化已完成的证明。本次旧候选的超时记录永久保留。
+
 ##### A4：ECS 验证、族扩展与晋级
 
 A3 有代码变更后运行相关合同/原子恢复测试和全量回归，并进行独立审查；Critical/Important 必须清零。生产接入
@@ -1082,9 +1157,10 @@ Native run；Native 可执行路径与临时迁移工具已删除；全量、架
 
 当前全局状态仍为 `IN_PROGRESS`。ECS 基线已经重新只读核验；W3A 的 `cons_sda` 已通过离线 conformance，
 同 wave 的 `full_oos` 已完成 5.2.1 A0/A1 与 A2c 完整本地离线冷/热等价、每日推进及真实 generation 复用验证。
-平台状态扩展已通过本地实现测试、独立审查和 full-OOS executor 预热/十日/重试探针；ECS 正式 executor 验收尚未执行，
-因此 W3A 仍未解除切换阻塞。full-OOS 两文件已通过 Intake 进入仓库 canonical 候选，保持 paused/draft、
-部署范围为空，已获本地提交与确定性打包授权但尚未部署；新身份的本机验证不等于 ECS 持久化回测或切换完成。
+平台状态扩展已通过本地实现测试、独立审查和 full-OOS executor 探针；ECS 隔离预热、十日、重试已通过对应检查，
+但 100 条批量在 600 秒硬限超时，当前候选已停止晋级，W3A 仍有明确性能阻塞。
+full-OOS 两文件已提交并以不可变包安装至 ECS 私有验证目录，保持 paused/draft、部署范围为空；
+尚未完成同 Linux Native 完整等价、ECS 持久化回测或生产切换，不能用单日性能通过宣布整体闭环。
 W2、W3B-D 也尚未满足各自性能门槛，须逐方案分类，不能外推当前试点通过。W4 的
 Mac3-only binary-bundle 架构已经获得确认，但必须等 W1-W3 晋级 Mac3 后实施；不能用旧 adapter、未纳入
 manifest 的二进制、旧水位、旧 Native cache 或文档声明冒充闭环。
