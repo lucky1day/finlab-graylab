@@ -992,6 +992,32 @@ W2 旧离线超时也需要按新预算重新验证，不自动转为通过。�
 复核时旧测试进程均已退出，ECS current/previous 不变，三项 prediction service 均 inactive、MainPID 0。
 未访问业务数据库；不宣称业务表数量已读回。**同 Linux Native 独立等价及其他缺项仍待验收**，不标记生产就绪。
 
+**同 Linux Native 独立对照（2026-09-08 00:29 启动，待结果）**
+
+在同一 ECS 隔离候选的 `native-evidence/` 启动一次受控原算法参考，不再执行 successor 完整回测。
+先在 Linux 上运行 333 个无训练的依赖截获检查，证明每个截止点的 selector、历史特征、可见标签、close、
+fallback、索引和训练参数满足前缀复用；全部通过后才独立冷训练 575 点 × 265 config × 双 seed，随后对每条
+Request 独立重训 Native 当前点，再按该 Request 原始输入重算排名、信号和三个 baseline 控制器。
+不把 Mac 的依赖证明直接当 Linux 证明，也不读取 successor state/模型数组作为 Native 基线。
+
+原 Native `Pool(4)` 只用于独立参考，其每个 LightGBM `n_jobs=1`；不改 Native 源码，不开放 successor 子进程。
+两边使用相同 Linux Python/依赖安装环境，分别记录 launcher 和 Native 内部数值线程设置。运行身份覆盖 Python
+可执行字节与包安装元数据、实际包版本；不把安装元数据指纹表述成逐个包二进制文件的完整内容校验。
+controller 通过平台 `input_artifacts` 构造私有视图，并绑定冻结五文件、Request、Native core/alignment、辅助
+脚本、依赖证明和阶段数组摘要；执行后复验代码/输入/运行环境，严格校验 333 行精确五字段域。
+
+一次性脚本独立审查无未关闭 Critical/Important，语法检查通过，上传前后 SHA-256 相同：
+
+- `ecs_native_probe.py`：`f93cf4a092cabb567e385265dc3edff04b474125dfd4e0287b0299794ead7c29`；
+- `native_reference.py`：`430d371283a020d129a52a0d3febe5f918154855e20b56caa5caf67161dd5341`；
+- `native_dependency_check.py`：`5585d0da378bfd438471925e997b586f64f77a5f8c3512f501a6274213fca3f5`。
+
+已启动父进程 769012、Native 主进程/PGID 769028（仅是此时身份，后续操作必须重新核验完整命令），
+session 22637；由既有 runner 强制单次 7200 秒、进程组 RSS 4 GiB、日志 5 MiB 与工作目录 64 MiB 上限。
+启动时验证两小时预算及 15 分钟清理余量均在 05:00 前；本次最迟约 02:29 超时退出。
+只在退出成功、Native 333 零差异、依赖证明 333/0、源输入闭包不变、私有视图清空和状态未变后记录通过。
+当前仅确认启动，未标记等价验收完成，未访问业务数据库或修改线上 release/调度。
+
 **夜间推进授权与早间保护（2026-09-07 23:40 CST）**
 
 用户在确认后续步骤后明确授权整个夜间继续推进，并要求不得影响早上 06:00 的定时任务。
