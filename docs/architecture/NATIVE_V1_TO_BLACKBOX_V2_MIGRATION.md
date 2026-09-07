@@ -2,9 +2,9 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W1_ECS_BACKTEST_READY; W2_ECS_BLOCKED_PERFORMANCE; W3A_CONS_SDA_CONFORMANCE_PASSED; W3_BLOCKED_PERFORMANCE; W4_MAC3_BINARY_BUNDLE_ACCEPTED`
+**执行状态**：`INCREMENTAL_STATE_PLAN_APPROVED; W1_ECS_BACKTEST_READY; W2_ECS_BLOCKED_PERFORMANCE; W3A_CONS_SDA_CONFORMANCE_PASSED; W3_BLOCKED_PENDING_INCREMENTAL_STATE; W4_MAC3_BINARY_BUNDLE_ACCEPTED`
 
-**基线日期**：2026-09-05 Asia/Shanghai
+**基线日期**：2026-09-07 Asia/Shanghai
 
 **基线 Git 提交**：`20e98934e9d5399e3d509f486a8a650d95ad7639`
 
@@ -24,7 +24,8 @@
 - Blackbox Result 顶层字段精确为 `request_id`、`predict_date`、`feature_date`、`target_date`、
   `predicted_direction`；
 - confidence、vote score、阈值和算法内部统计只用于迁移期诊断，不进入长期合同或数据库；
-- 所有新算法输入只来自五文件 DataBridge generation 与 Request；
+- 所有算法业务输入只来自五文件 DataBridge generation 与 Request；经本计划批准的 stateful successor 可额外读取
+  平台验证过的方案私有派生状态，但该状态不得成为源数据、数据库事实、跨方案接口或算法语义 fallback；
 - 现有 Blackbox 的 `legacy_v1` 输入模式不属于本项目，不随 Native 清理删除；
 - ECS 是独立灰度实验室，Mac3 是独立生产环境；验证结果可复用同一 immutable archive，但数据库事实不可复制。
 
@@ -75,9 +76,10 @@ Native 周/月的历史 horizon `6/30` 不与 Blackbox 的 `1` 直接比较。
 | W4C | `monthly_5y_knn_top20_0629` | 5Y | `monthly_5y_knn_top20_0629_bbv2` | monthly / 1 | not_deployed | active |
 | W4C | `monthly_10y_rf_top5_0629` | 10Y | `monthly_10y_rf_top5_0629_bbv2` | monthly / 1 | not_deployed | active |
 
-W3A 和 W3B 各自作为不可拆分 cache-family wave。W3C、W3D 在各自 wave 内允许逐方案切换，但必须先证明
-其余 active 方案不再依赖被切方案的 publisher。W4A/W4B/W4C 不进入 ECS；它们只在 17 个可读源码 Native
-完成 ECS 验证并以同一 immutable archive 晋级 Mac3 后，作为 Mac3-only binary bundle 单独推进。
+W3A 和 W3B 各自作为不可拆分迁移 wave，但 successor 之间不得保留 cache-family publisher/consumer 依赖。
+W3C、W3D 在各自 wave 内允许逐方案切换；每个 stateful successor 必须拥有独立状态 namespace。W4A/W4B/W4C
+不进入 ECS；它们只在 17 个可读源码 Native 完成 ECS 验证并以同一 immutable archive 晋级 Mac3 后，作为
+Mac3-only binary bundle 单独推进。
 
 ## 3. 冻结基线
 
@@ -227,9 +229,9 @@ canonical config 固定。Request 区间和代码 hash 在测试
 | W1B | `weekly_10y_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `e52e221a0046e8623107359b4fe3c2f7643e422b3ed9068c0cf317e9cdeafeed` | ECS_0905_FULL_COMPARATOR_PASSED |
 | W2 | 两个 `daily_*_v28_bbv2` | 完整五文件；V28 daily/weekly/monthly 因子与真实 T+5 grid | feature 2025-01-02..2026-05-22；各 333 条 | 5Y `32aa7948d5f90bdd3de72ce46461bdc8f6dafeb24ece450c34cba84eac5480cc`；7Y `5fec87a6be3612c911f17f546ae4687e58a64b1d5a7be75a407e1fbb681861a4` | ECS_BLOCKED_100_REQUEST_PERFORMANCE_NO_CURRENT_RECEIPT |
 | W3A | `liwei_0616_cons_sda_k3_div_k10_bbv2` | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2025-01-02..2026-05-22；333 条 | `9cebc6eab7df69ed48e68163fc0cfc5229ad616fda4989924e2b34d78274c250` | ECS_CONFORMANCE_PASSED_NO_PERSISTED_BACKTEST |
-| W3A | `liwei_0616_5y01_full_oos_k3_div_k10_bbv2` | 五文件中算法所需因子；连续 full-OOS 排名状态 | feature 2026-08-28 | 未生成 | BLOCKED_STATEFUL_FULL_OOS_PERFORMANCE |
-| W3B | 三个 10Y cache-family successor | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2026-08-28 | 未生成 | BLOCKED_PERFORMANCE |
-| W3C-D | 五个 `liwei_0616_*_bbv2` | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2026-08-28 | 未生成 | BLOCKED_PERFORMANCE |
+| W3A | `liwei_0616_5y01_full_oos_k3_div_k10_bbv2` | 五文件 + 方案私有增量 Phase-A 状态；连续 full-OOS 排名 | feature 2026-08-28 | 未生成 | INCREMENTAL_STATE_PILOT_PLANNED |
+| W3B | 三个 10Y successor | 五文件；full-OOS 方案使用独立增量状态，非 full-OOS 优先纯算法优化 | feature 2026-08-28 | 未生成 | PENDING_W3A_STATE_PILOT |
+| W3C-D | 五个 `liwei_0616_*_bbv2` | 五文件；逐方案判定 stateless 或独立增量状态 | feature 2026-08-28 | 未生成 | PENDING_STATE_CLASSIFICATION |
 | W4A-C | 九个编译主体 successor | DataBridge 五文件 + Request；加密 payload 进入 manifest closure | 待 Mac3 冻结 | 待生成 | MAC3_BINARY_BUNDLE_PLANNED |
 
 每个 successor 的详细 conformance 输出属于一次性执行证据，不把大体积 Request/Output 或算法诊断内容提交
@@ -412,9 +414,10 @@ Phase-A context 身份并精确校验 current selected config set。独立复审
 缺失五文件四类负向测试均非零退出、stdout 为空且没有 Output。
 
 以上只把 `cons_sda` 推进到离线 `CONFORMANCE_PASSED`，没有生成 canonical receipt、持久化 backtest、Registry
-身份或 cutover。W3A 仍是不可拆分 cache-family wave；`full_oos` 从 2024-01 起对全部历史 OOS 日给 265 个配置
-持续累计排名，单点需要约 34 万次 LightGBM 拟合。若不恢复跨运行持久状态、不缩减历史评分语义，它无法满足
-120 秒门槛。因此 `full_oos` 继续保持 Native，W3A 不得进入持久化回测或切换。
+身份或 cutover。W3A 仍是不可拆分迁移 wave；`full_oos` 从 2024-01 起对全部历史 OOS 日给 265 个配置持续累计
+排名，冷启动单点需要约 34 万次 LightGBM 拟合。2026-09-07 已批准以下“方案私有、内容寻址、可重建”的增量
+状态方案：先受控 prewarm 全部历史 Phase-A，再由每日运行只计算新增 cutoff。试点通过以前 `full_oos` 继续保持
+Native，W3A 不得进入持久化回测或切换。
 
 ## 5. 阶段与状态机
 
@@ -452,10 +455,218 @@ DELIVERY_READY
 ### 5.2 Phase 2：V28 与 Liwei
 
 V28 删除 `multiprocessing.Pool`，predict/backtest 共用按 Request cutoff 的一条算法路径；单进程内数值线程不
-超过 8。Liwei 不迁移持久 Phase-A publisher/consumer/cache wave；successor 必须独立运行，只允许单次 CLI
-进程内按 cutoff 精确键控的临时 cache。三个 5Y ALL-K10 保持当前 `platform_live_pit_variant`。
+超过 8。Liwei 不迁移旧 Phase-A publisher/consumer/cache wave；successor 必须独立运行。能通过共享进程内
+Phase-A、精确配置并集、输入对齐复用等纯算法优化满足性能的方案保持 stateless。只有连续 full-OOS 等经证据
+证明冷路径无法达到门槛的方案，才允许使用 5.2.1 定义的方案私有增量状态。三个 5Y ALL-K10 保持当前
+`platform_live_pit_variant`，不得借状态改回 source-original 或缩减历史评分语义。
 
-若去除持久 cache 后不满足性能标准，保持 Native 并停止该方案迁移，不得恢复跨方案状态或读取未来窗口。
+任何 successor 都不得恢复跨方案状态、publisher/consumer 顺序、未来窗口、模型对象持久化或数据库 cache。
+增量状态只是同一算法冷路径的可重建派生结果；状态命中和从空状态重建必须产生完全相同的五字段 Result。
+
+#### 5.2.1 Phase 2A：Blackbox 方案私有增量状态
+
+##### 目标与边界
+
+该能力只解决“算法定义要求累计历史 OOS 排名，但每日只新增一个 cutoff”的重复计算，不改变任何预测语义。
+平台继续只有 `runtime_type=blackbox_v2`、同一个 executor 和同一套五字段 Result。普通 Blackbox 未声明状态时，
+命令、运行目录和行为必须与当前完全相同；不得为本项目增加 `stateful_blackbox` runtime type、数据库表、常驻服务、
+ledger、epoch 或调度 wave。
+
+允许持久化的内容仅为紧凑 Phase-A 派生数组，例如 config key、cutoff、seed、probability/direction 和累计排名所需
+统计；禁止保存 LightGBM model、Python pickle、可执行代码、DataFrame 全量副本、Request Result 或数据库事实。
+状态丢失时可由同一 exact version、五文件和 Request 从空状态完整重建。状态不得跨 scheme 读取，即使两个方案
+内部 baseline 完全相同也必须分别构建；进程内仍可合并同一方案内完全相同的 Phase-A。
+
+##### 配置与 CLI 合同
+
+状态是平台执行优化，不改变上游 Metadata 1.0 和两文件交付。平台拥有的 `config.yaml` 可增加唯一可选块：
+
+```yaml
+execution_state:
+  mode: incremental_content_addressed_v1
+  schema_version: liwei_phase_a_state_v1
+```
+
+该块缺失时精确等价于 `stateless`。除以上两个 closed-world 字段外任何额外字段均失败；只有
+`runtime_type=blackbox_v2`、`factor_input_mode=algorithm_managed` 可声明。该块进入 config hash 和
+`scheme_version`，但不进入 Result。状态根目录由 `BFL_RUNTIME_ROOT/blackbox-incremental-state-v1` 解析，仓库、
+config、脚本和 unit/plist 不写主机绝对路径。
+
+两文件 Intake 为此只增加显式平台参数，不修改 Metadata 1.0：
+
+```text
+python -m harness intake-blackbox --delivery-dir <dir> \
+  --execution-state-mode incremental_content_addressed_v1 \
+  --algorithm-state-schema-version liwei_phase_a_state_v1
+```
+
+两个参数必须同时出现；普通 Intake 不传参数时生成的 config 字节保持不变。Intake 仍先完成脚本安全和两文件合同
+校验，再把平台参数写入 canonical config；不得在 Intake 后人工编辑 config 增加状态能力。
+
+现有 Blackbox CLI 保持 `predict/backtest + Request + --data-dir + --output`。仅对 stateful config，executor 追加：
+
+```text
+--state-input <validated-read-only-snapshot>
+--state-output <fresh-private-staging-directory>
+```
+
+算法只能读取 `state-input`，只能在 `state-output` 创建候选状态；不得直接获得 canonical state root。平台在进程前后
+分别核验五文件和 state-input 的文件指纹，任何改写都使本次 Output 与候选状态同时失效。stateless 方案不得收到
+以上参数，现有 67 个 Blackbox canonical 字节和 exact version 不修改。
+
+##### 状态身份与存储格式
+
+运行目录固定为：
+
+```text
+blackbox-incremental-state-v1/
+  <base_scheme_id>/
+    <scheme_version>/
+      lock
+      current.json
+      previous.json
+      objects/<payload_sha256>.npz
+      manifests/<manifest_sha256>.json
+      staging/
+      quarantine/
+```
+
+目录必须是 service UID 独占的 `0700` 真实目录，拒绝 symlink、hardlink、非所有者和越界相对路径。payload 使用
+`allow_pickle=false` 可读取的 NumPy NPZ 或 closed-world JSON，不允许 pickle/joblib。单个 snapshot 上限 512 MiB、
+4096 entries；超过即失败，不能通过放宽 Runtime Profile 继续。
+
+manifest 顶层字段固定为：
+
+```text
+schema_version
+base_scheme_id
+scheme_version
+code_hash
+config_hash
+delivery_manifest_hash
+runtime_profile
+environment_fingerprint
+algorithm_state_schema_version
+parent_manifest_sha256
+last_feature_date
+source_generation_id
+request_set_sha256
+cutoff_input_digests
+objects
+```
+
+`objects` 每项只包含相对路径、大小和 SHA-256；manifest 自身使用 canonical JSON 计算 SHA-256。`current.json` 只保存
+state pointer schema、base scheme、exact version 和 manifest SHA-256。对象、manifest 和 pointer 都采用“写临时文件
+→ flush/fsync → 重新读取校验 → 原子 rename → fsync 父目录”；已有同名对象只允许字节完全相同。
+`request_set_sha256` 是截至 `last_feature_date` 的累计、按 cutoff 排序的完整 Request 集摘要，不是本次新增一条的摘要。
+`source_generation_id` 只保留来源审计；跨 append-only generation 是否复用仍由逐 cutoff digest 决定，不能只比较
+generation 名称。
+
+状态复用不能只看完整 generation 文件 SHA，因为日常 append 会改变完整文件。平台必须为每个 Request 计算
+cutoff-scoped input digest：daily 截至 `daily_cutoff_key`、weekly 截至 `weekly_cutoff_key`、monthly 截至
+`monthly_cutoff_key`；calendar 绑定解析该 Request 和稳定周/月投影所需的规范行，catalog 绑定完整 schema/成员摘要。
+序列化、列顺序、空值和数值格式由平台 closed-world 实现，不允许算法自定义。新 generation 仅追加未来行时历史
+digest 不变，可复用旧状态；任一历史修订使受影响 cutoff 及其后继状态失效，必须从最早变化点重建。
+
+##### 单 Writer 与原子推进
+
+平台以 `<base_scheme_id>/<scheme_version>/lock` 取得非阻塞独占锁，并从读取 `current.json` 前一直持有到候选发布或
+失败清理。第二个进程、第二个 harness 或错误 exact version 立即失败。一次正常单日推进固定为：
+
+1. 锁定 namespace，验证目录权限、current pointer、manifest hash closure 和 exact version；
+2. 计算本次 Request 的 cutoff digest，验证 parent 覆盖所有历史且没有 revision/gap；
+3. 将 parent 物化为只读 state-input，并创建空的 state-output；
+4. 启动标准 Blackbox CLI，只计算 parent 之后的新 cutoff；
+5. 验证 stdout 为空、五字段 Output、Request 对应关系和候选状态 closed-world schema；
+6. 重新核验 DataBridge 与 state-input 未改变；
+7. 先发布 content-addressed object，再发布 manifest，最后原子移动 current pointer，并保留 previous pointer；
+8. 返回 `PredictionRecord`，在平台 audit extra 中记录 parent/new manifest SHA，不修改算法 Result；
+9. 新 current 和 previous 均验证成功后，best-effort 清理本 exact version 未被两者引用的派生对象；清理失败只告警，
+   不回滚已经完成的预测执行。
+
+状态发布早于后续业务 repository 事务是允许的：状态不是业务事实。若数据库提交失败，重试同一 Request 必须从已
+覆盖该 cutoff 的状态重算完全相同 Result，不重复追加或报冲突；不得为了跨文件系统和数据库强行建立分布式事务。
+
+自然 `scheduled_live` 只允许推进下一个应有交易 cutoff。缺少 parent、跨过一个或多个应有 cutoff、历史摘要变化、
+pointer 损坏或 cache schema 不匹配时，调度 fail-closed，不在定时任务内全量重建。周末和法定假日不是 gap，按
+权威交易日历判断。gray target 区间可在一个已授权 batch 内顺序推进并只发布最终状态，仍保持单算法进程和一次
+repository insert-only 提交。
+
+##### 运维命令与状态生命周期
+
+增加一个长期的通用 Blackbox 运维入口，不复用 Native cache 命令：
+
+```text
+python -m harness blackbox-state inspect --scheme-id <id>
+python -m harness blackbox-state prewarm --scheme-id <id> \
+  --requests <canonical.csv> --expected-scheme-version <version> \
+  --expected-generation-id <generation>
+python -m harness blackbox-state verify --scheme-id <id> \
+  --expected-manifest-sha256 <sha>
+python -m harness blackbox-state quarantine --scheme-id <id> \
+  --expected-manifest-sha256 <sha> --approved-by <operator>
+```
+
+`inspect/verify` 只读；`prewarm` 只写派生状态，不写数据库、Registry、run、prediction 或 backtest；`quarantine`
+只移动精确匹配的损坏 namespace，不删除，并属于独立现场操作。命令只接受 canonical config 和当前 immutable
+release，expected identity 不匹配即失败。prewarm 从空状态运行完整历史 Request，完成后再次从随机恢复点重放
+并与冷路径摘要一致才发布 ready current；执行中断只留下可清理 staging，不能移动 current。
+
+Stateful successor 的 persisted backtest evidence 必须额外绑定 state mode/schema、起始/结束 manifest SHA 和
+cutoff digest policy SHA。Activation 与迁移 preflight 必须验证 exact version 有 ready current，且
+`last_feature_date` 至少覆盖 cutover/gray 计划要求的前一 cutoff。旧 exact version 的 backtest 或 state evidence
+不能为新版本复用。
+
+##### 实施工作包与代码范围
+
+实现严格按以下顺序，每包单独提交、验证和审查：
+
+1. **P0 合同先行**：在 `shared/scheme_config_schema.py`、`scheduler/discovery.py` 增加可选
+   `execution_state` closed-world 解析；在 `shared/blackbox_v2/intake.py` 与 `harness/cli.py` 增加成对 Intake 参数；
+   新增 `shared/blackbox_v2/incremental_state.py`，只实现身份、digest、manifest、pointer、目录安全和原子文件操作，
+   不引用 Native cache 模块；能力实际落地且测试通过的同一提交再同步更新 `AGENTS.md`、共享方案契约、Blackbox
+   上游/平台 SOP，计划批准本身不能冒充当前运行合同已经改变。
+2. **P1 Executor 接入**：修改 `scheduler/blackbox_v2_runner.py` 和 `scheduler/executor.py`，增加受控 state-input/
+   state-output、per-scheme lock、运行后复验和原子发布；stateless 调用路径必须逐参数、环境和行为不变。
+3. **P2 Harness 运维**：在 `harness/cli.py` 与新的 `harness/blackbox_state.py` 实现 inspect/prewarm/verify/
+   quarantine；不增加数据库表或后台 daemon。
+4. **P3 W3A 试点**：形成 `liwei_0616_5y01_full_oos_k3_div_k10_bbv2` 两文件实现。先保留完整 265 config、两个
+   seed、2024-01 起连续排名，再共享方案内相同 baseline Phase-A；状态只保存紧凑预测数组，不保存模型。
+5. **P4 恢复与性能验收**：比较空状态全量、任意中点恢复、逐日进程重启和乱序 batch 四条路径；完成 crash、并发、
+   append、历史修订、code/config/runtime 变化和 rollback/re-cutover 测试。
+6. **P5 ECS 技术验证**：在 ECS 私有临时 state root 完成 prewarm，随后模拟至少 10 个连续应有交易 cutoff，每次
+   启动一个真实 Blackbox 进程；不 activation、不写业务库、不改 systemd。通过后才允许生成 persisted backtest。
+7. **P6 族扩展**：逐个判定 W2/W3B-D。能用纯算法优化满足门槛的保持 stateless；只有有连续历史依赖证据的方案
+   才声明 incremental state。W3A/W3B 仍须整 wave 通过后切换，但各 successor state namespace 独立。
+8. **P7 ECS/Mac3 晋级**：ECS 按 5.4 切换和真实 one-shot 模拟；Mac3 使用同一 archive，但基于 Mac3 自己的
+   DataBridge 独立 prewarm，默认不复制 ECS state。
+9. **P8 清理**：全部 wave 回滚窗口结束后删除 `shared.liwei_0616_phase_a_cache`、Native cache contract/migration/
+   projection、publisher/consumer wave 和专属测试；W3A 等单方案的一次性性能/等价脚本在验收摘要入文档后删除，
+   只保留通用 Blackbox incremental-state contract、原子性、恢复、隔离和 executor 控制面长期测试。
+
+P0-P2 是平台能力，P3-P5 是首个算法试点；试点未通过不得批量改造其他方案。每包必须运行相关单测和全量回归；
+P1、P3、P6 属跨模块高风险改动，必须独立审查，Critical/Important 清零后才能进入下一包。
+
+##### 试点验收和硬停止条件
+
+W3A full-OOS 试点必须同时满足：
+
+- 冷路径、已预热路径、逐日 1 条路径、一次 batch 路径的 Request/日期/方向逐行零差异；
+- `0+333`、`1+332`、`100+233`、`332+1` 四种断点组合最终 state payload 与 Output 摘要一致；
+- Request 升序、降序、确定性乱序和子集执行按 request_id 一致，内部只按 cutoff 拓扑推进；
+- cutoff 后追加未来数据不改变旧 state/output；修改任一历史输入时从首个受影响 cutoff 精确失效；
+- 脚本、config、metadata、runtime 或 state schema 任一变化时旧 state 拒绝复用；
+- 在 object 写入、manifest 写入、pointer 切换前后分别注入崩溃，current 永远指向完整旧状态或完整新状态；
+- 两个并发 Writer 中只有一个成功；失败方不生成 Output、不移动 pointer；
+- prewarm 完成时间、CPU、RSS、磁盘和对象数量形成证据；恢复 RTO 目标不超过 6 小时；
+- ready state 下单条每日 predict 连续 10 个 cutoff 均不超过 120 秒，峰值 RSS 不超过 4 GiB、线程不超过 8、
+  无子进程；100 条不超过 600 秒，完整正式区间不超过 1800 秒；
+- 每日 state 增量大小有上界且没有模型对象、pickle、源数据副本或跨方案路径；
+- Native comparator 在同 generation/Request/runtime 下全区间方向 mismatch 为 0。
+
+任一结果差异、状态身份无法证明、prewarm 超过 6 小时、warm predict 超过 120 秒、历史修订仍命中、半 pointer、
+第二 Writer、跨 scheme 读取或需要修改算法窗口/grid/seed 时立即停止试点。不得把放宽 SLA、复制旧 Native cache、
+人工编辑 pointer 或跳过冷/热等价作为修复。
 
 ### 5.3 Phase 3：Mac3-only 编译主体方案
 
@@ -501,10 +712,11 @@ artifact 和五文件目录；输出只存在于私有临时目录，逐行比�
 operator 明确撤销旧候选证据并形成新的 clean commit，不能静默替换。
 
 每批顺序固定：在候选树生成受控 receipt 并更新 deployment matrix → 形成 clean commit 和 deterministic archive →
-把该 archive 安装为目标机 current → fence cadence timer 并等待 one-shot 退出 → 从 current release 重做 preflight →
-使用其 plan SHA 单事务切换 → 单 batch gray 区间 → 恢复 timer → 通过真实 systemd one-shot 的人工触发验证
-唯一 writer、journal、Dashboard 与 next trigger。preflight 之前的安装只部署代码，不授予 Registry 或业务
-事实写入权。
+把该 archive 安装为目标机 current → 对 stateful successor 用当前 release 和 generation 完成 prewarm/verify →
+fence cadence timer 并等待 one-shot 退出 → 从 current release 重做 preflight → 使用其 plan SHA 单事务切换 →
+单 batch gray 区间并推进对应私有状态 → 恢复 timer → 通过真实 systemd one-shot 的人工触发验证唯一 writer、
+journal、Dashboard、state parent/new manifest 与 next trigger。preflight 之前的安装和 prewarm 只部署代码、写可重建
+派生状态，不授予 Registry 或业务事实写入权。
 
 cutover 单事务必须：
 
@@ -526,9 +738,10 @@ gray 区间从 `target_date >= 2026-06-01` 到下一个自然目标前，单 suc
 
 ### 5.5 Rollback
 
-rollback 顺序固定：fence timer → 确认无进程和 running run → 单事务 archive/pause successor、恢复 old
-version/Registry → 保留 successor facts → current 切回已核验 previous release → 恢复 timer → 人工触发同一
-installed one-shot，验证 old 恢复运行且 successor 不再新增 run。
+rollback 顺序固定：fence timer → 确认无进程、state lock 和 running run → 单事务 archive/pause successor、恢复
+old version/Registry → 保留 successor facts 和私有派生状态 → current 切回已核验 previous release → 恢复 timer →
+人工触发同一 installed one-shot，验证 old 恢复运行且 successor 不再新增 run。rollback 不回退或删除 successor
+state pointer；re-cutover 前按 exact version 和当前 DataBridge digest 重新 verify/catch-up，不匹配时重新 prewarm。
 
 同 exact version 允许重新切换，但必须复用已经发布的完全相同事实；禁止重复插入、覆盖或更换版本规避冲突。
 
@@ -536,10 +749,12 @@ installed one-shot，验证 old 恢复运行且 successor 不再新增 run。
 
 Mac3 对 W1-W3 只使用 ECS 已验证的同一 immutable archive，独立重做 release、launchd、数据库、DataBridge、
 backtest、cutover 和 rollback preflight，不得复制 ECS 的主键、run、prediction、backtest、Actual 或 Registry
-行。Mac3 使用 installed plist 的精确 ProgramArguments、WorkingDirectory、EnvironmentVariables、运行用户和
-Runtime Profile 人工触发一次 one-shot，不等待自然日历。W4 随后形成新的 Mac3-only binary-bundle archive，
-该 archive 不需要也不得在 ECS 运行。30 个 target 全部完成对应控制面模拟验证后，才允许最终删除 Native
-可执行路径。
+行。stateful successor 默认也不复制 ECS state；Mac3 用本机 generation 独立 prewarm/verify。只有两端 exact
+version、runtime fingerprint、逐 cutoff digest 和 manifest closure 全部相同且另获明确授权时才允许导入精确
+派生对象，导入仍不能复制 pointer 或业务事实。Mac3 使用 installed plist 的精确 ProgramArguments、
+WorkingDirectory、EnvironmentVariables、运行用户和 Runtime Profile 人工触发一次 one-shot，不等待自然日历。
+W4 随后形成新的 Mac3-only binary-bundle archive，该 archive 不需要也不得在 ECS 运行。30 个 target 全部完成
+对应控制面模拟验证后，才允许最终删除 Native 可执行路径。
 
 ## 6. 测试与验收
 
@@ -552,8 +767,9 @@ Runtime Profile 人工触发一次 one-shot，不等待自然日历。W4 随后�
 - cutoff 后追加未来数据，原 Request 不变；
 - 非法字段、重复 ID、缺少 cutoff、数据不足、非法方向均非零退出、stderr 明确、stdout 为空、无 Output；
 - Result 顶层字段精确等于五字段；
-- W1-W3 不 import 平台代码，不访问 DB/网络/额外代码/持久状态，不启动子进程；W4 只允许读取 manifest 内
-  已锁定的 binary payload，其他边界相同。
+- W1-W3 不 import 平台代码，不访问 DB/网络/额外代码，不启动子进程；stateless 方案不得读写持久状态，stateful
+  方案只允许通过 5.2.1 的 state-input/state-output 合同读写自己 exact version 的派生状态；W4 只允许读取
+  manifest 内已锁定的 binary payload，其他边界相同。
 
 ### 6.2 同输入等价
 
@@ -564,12 +780,16 @@ old/new code hash + runtime environment fingerprint`。Request 数量/顺序/ID�
 
 ### 6.3 性能
 
-- 单条 predict ≤ 120 秒；
-- 100 条 backtest ≤ 600 秒；
-- 完整正式区间 ≤ 1800 秒；
+- stateless 方案及 stateful ready-state 的单条 predict ≤ 120 秒；
+- stateless 方案及 stateful ready-state 的 100 条 backtest ≤ 600 秒；
+- stateless 方案及 stateful ready-state 的完整正式区间 ≤ 1800 秒；
+- stateful 首次 prewarm 单独记录并以恢复 RTO ≤ 6 小时验收，不计入每日 predict SLA；
 - 单算法进程峰值 RSS ≤ 4 GiB；
 - `fallback_used=false`；
 - 无子进程，数值库线程不超过 8。
+
+性能报告必须区分 `cold_prewarm`、`warm_predict`、`warm_batch`，并记录 parent/new manifest SHA；不得把已有
+Native cache 预装成 Blackbox state 后声称完成 cold prewarm，也不得只报告 cache hit 的最好一次。
 
 ### 6.4 数据库与控制面
 
@@ -590,8 +810,9 @@ successor 唯一键、`run_id/backtest_run_id` XOR、gray/backtest 区间、Actu
 
 - 无法证明同 generation、同 Request 或同 runtime fingerprint；
 - 任一日期或方向不一致；
-- successor 需要数据库、网络、持久 cache、跨方案 import 或子进程；W1-W3 需要额外代码，或 W4 读取 manifest
-  hash closure 之外的代码；
+- successor 需要数据库、网络、跨方案 import、子进程或不受 5.2.1 合同约束的持久 cache；W1-W3 需要额外代码，
+  或 W4 读取 manifest hash closure 之外的代码；
+- stateful successor 的 parent、cutoff digest、exact version、state schema、pointer 或单 Writer 任一无法证明；
 - exact version、Registry、matrix、release manifest、DataBridge authority 不一致；
 - 存在 running run、第二 writer 或 timer 无法 fence；
 - 需要覆盖、删除或修改旧业务事实；
@@ -602,8 +823,10 @@ successor 唯一键、`run_id/backtest_run_id` XOR、gray/backtest 区间、Actu
 ## 8. 最终清理与 Migration 025
 
 只有 26 个 Native 在对应环境完成切换、真实 one-shot 控制面模拟和回滚窗口后，才删除 Native scheme/core/config、25 个专属
-回测 runner、adapter/source runner/DB 注入/ABI、Liwei cache wave、Native scheduler subprocess/artifact/gray
-分支、Native Gate/onboard/policy、专属测试、`docs/native_v1/` 入口，以及本项目的临时 cutover CLI 和映射。
+回测 runner、adapter/source runner/DB 注入/ABI、Liwei publisher/consumer cache wave、Native scheduler
+subprocess/artifact/gray 分支、Native Gate/onboard/policy、专属测试、`docs/native_v1/` 入口，以及本项目的临时
+cutover CLI 和映射。通用 Blackbox incremental-state contract、executor 接口和状态恢复测试属于目标架构，不能随
+Native cache 清理删除；两者不得互相 import。
 
 随后分两次发布 confidence-agnostic Blackbox release，确保 ECS/Mac3 的 current 与 previous 都不读写
 confidence。得到独立生产授权并验证可恢复快照后，新增并只通过受控 migration CLI 执行
@@ -617,9 +840,12 @@ confidence。得到独立生产授权并验证可恢复快照后，新增并只�
 Mac3；W4 九个 Mac3-only binary-bundle successor 通过 manifest/ABI/合同/等价/性能；Mac3 30 个 target 完成
 切换与真实 launchd one-shot 模拟；old Registry 全 archived 且无新
 Native run；Native 可执行路径与临时迁移工具已删除；全量、架构、isolated MySQL 和 migration recovery 测试
-通过；025 已删除两个 confidence 列；Dashboard、Actuals、其他 Blackbox 和调度控制面无非计划变化。
+通过；所有 stateful successor 在 ECS/Mac3 各自拥有 exact-version ready state，逐日增量、历史修订失效、崩溃
+恢复和单 Writer 验收通过；旧 Liwei publisher/consumer cache wave 已删除且通用 Blackbox state 不引用 Native；
+025 已删除两个 confidence 列；Dashboard、Actuals、其他 Blackbox 和调度控制面无非计划变化。
 
 当前全局状态仍为 `IN_PROGRESS`。ECS 基线已经重新只读核验；W3A 的 `cons_sda` 已通过离线 conformance，
-但同 wave 的 `full_oos` 仍受连续历史排名的性能下界阻塞；W2、W3B-D 也尚未满足各自性能门槛。W4 的
+同 wave 的 `full_oos` 已获准进入 5.2.1 增量状态试点，但平台合同、prewarm、冷/热等价和 warm SLA 尚未实现，
+因此 W3A 仍未解除切换阻塞。W2、W3B-D 也尚未满足各自性能门槛，必须等试点通过后逐方案分类。W4 的
 Mac3-only binary-bundle 架构已经获得确认，但必须等 W1-W3 晋级 Mac3 后实施；不能用旧 adapter、未纳入
-manifest 的二进制、旧水位或文档声明冒充闭环。
+manifest 的二进制、旧水位、旧 Native cache 或文档声明冒充闭环。
