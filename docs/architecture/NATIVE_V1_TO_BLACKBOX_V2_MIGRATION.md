@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`A2C_FULL_OOS_LOCAL_OFFLINE_PASSED; A3_CANONICAL_LOCAL_EXECUTOR_PROBE_PASSED; A4_ECS_COLD333_AND_CROSS_ENVIRONMENT_PASSED_NATIVE_LINUX_PENDING; W1_ECS_BACKTEST_READY_ON_PRIOR_POLICY; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3A_CONS_SDA_CONFORMANCE_PASSED; W3_BLOCKED_ECS_VALIDATION; W4_MAC3_BINARY_BUNDLE_ACCEPTED`
+**执行状态**：`A2C_FULL_OOS_LOCAL_OFFLINE_PASSED; A3_CANONICAL_LOCAL_EXECUTOR_PROBE_PASSED; A4_ECS_COLD333_AND_SAME_LINUX_NATIVE_PASSED_CONFORMANCE_PENDING; W1_ECS_BACKTEST_READY_ON_PRIOR_POLICY; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3A_CONS_SDA_CONFORMANCE_PASSED; W3_BLOCKED_ECS_VALIDATION; W4_MAC3_BINARY_BUNDLE_ACCEPTED`
 
 **现场基线日期**：2026-09-05 Asia/Shanghai（后续核验日期在证据段落分别记录；计划修订不刷新现场水位）
 
@@ -992,7 +992,7 @@ W2 旧离线超时也需要按新预算重新验证，不自动转为通过。�
 复核时旧测试进程均已退出，ECS current/previous 不变，三项 prediction service 均 inactive、MainPID 0。
 未访问业务数据库；不宣称业务表数量已读回。**同 Linux Native 独立等价及其他缺项仍待验收**，不标记生产就绪。
 
-**同 Linux Native 独立对照（2026-09-08 00:29 启动，待结果）**
+**同 Linux Native 独立对照（2026-09-08 00:29 启动，02:24 完成）**
 
 在同一 ECS 隔离候选的 `native-evidence/` 启动一次受控原算法参考，不再执行 successor 完整回测。
 先在 Linux 上运行 333 个无训练的依赖截获检查，证明每个截止点的 selector、历史特征、可见标签、close、
@@ -1016,7 +1016,46 @@ controller 通过平台 `input_artifacts` 构造私有视图，并绑定冻结�
 session 22637；由既有 runner 强制单次 7200 秒、进程组 RSS 4 GiB、日志 5 MiB 与工作目录 64 MiB 上限。
 启动时验证两小时预算及 15 分钟清理余量均在 05:00 前；本次最迟约 02:29 超时退出。
 只在退出成功、Native 333 零差异、依赖证明 333/0、源输入闭包不变、私有视图清空和状态未变后记录通过。
-当前仅确认启动，未标记等价验收完成，未访问业务数据库或修改线上 release/调度。
+启动记录不作为通过证据；以下是退出后的独立复核。
+
+02:24 进程退出 0，最终状态为 `PASSED_SAME_LINUX_NATIVE_INDEPENDENT_REFERENCE`：
+
+- Native 独立结果 **333 条、五字段零差异**，同 Linux 候选输出原始 SHA-256 也完全一致：
+  `8a3fb06475a36eea4b5488e7fee87d13708f1d015e963c5cf822fe9126f12ef6`。
+- Linux 依赖截获 **333 passed / 0 failed / 0 model fits**；随后独立训练与逐 Request 比较，
+  不是把依赖检查当预测等价。总耗时 **6889.16 秒**，其中比较阶段 **3756.46 秒**。
+- 6812 次资源采样、峰值进程组 RSS **2,765,725,696 字节（2.576 GiB）**，无采样错误；未触及两小时/4 GiB 上限。
+- 核验 generation、五文件、Request、source/helper、执行身份、依赖报告和阶段数组证据链；
+  最终摘要 `e45e5f85d7afa3602276e480e5f532995b68c049e8f03d4382c8ac9055893015`，
+  依赖报告 `5313f75b92d4cbfe6ab879cfeac500ad02b2f2f592dcf27f774687b25efb5844`，
+  比较报告 `932d01f2cd15eefcaaad297725c4f37b6b8abc6af79a11e21b5d477b78326920`。
+- 原父/子进程已退出，私有视图 active/debris 为空，旧私有日频状态未变；无业务数据库访问或 release/调度修改。
+  02:25 只读确认 ECS current/previous 不变，三项 prediction service inactive / MainPID 0，daily next trigger 07:03。
+
+完整证据已下载 `outputs/releases/a4-offline-20260907/ecs-native-evidence/` 并独立解析重验五字段域和各报告摘要。
+该结论只关闭 full-OOS 的同 Linux Native 独立等价缺项，**不替代剩余 ECS 合同矩阵、持久化回测、cutover 或生产验收**。
+
+**Linux 批量复现补验（2026-09-08 02:29 启动，待结果）**
+
+在相同 c8d102e 私有候选、0905 冻结五文件和 exact version 上，顺序执行 100 条升序三次、倒序、
+固定乱序以及包含相同末截止点的 8 条非连续子集。每次使用新输出目录、同一只读私有预热 payload
+`674711eed4d0dc0730023ffaadb56bc38dd75bb97237f58784e6ff94b61e3bdf`；不重新训练已经通过的完整333条。
+已在运行前精确比对预热 header 的版本/脚本/Metadata/运行环境/输入身份，并锁定已验证 Native 报告摘要。
+每组以五字段按 Request 顺序逐条一致为准，并比较 NPZ 解包后的所有成员内容摘要，不能忽略 header 或数组差异。
+子集最终状态一致仍是待执行的验收条件，不凭代码检查标记通过。
+
+一次性 `ecs_batch_probe.py` 位于私有目录外层、不修改 immutable release，独立审查 Critical/Important 清零，
+上传前后摘要均为 `696a6c65925c3748f933d47b598d7c187dc4b2684824c92c0878a72a025a8881`。
+语法检查通过；监控器所属进程组核验通过 3 个 mock 信号边界检查，未在本机发送真实信号。
+本次每组另设 **1200 秒操作安全预算**，不是恢复离线性能准入门槛；每组启动前要求余下所有组的最坏算法
+耗时加 600 秒验证/清理余量可在 05:00 前完成。600 秒是控制器开销余量，不宣称文件操作也有硬超时。
+资源上限仍为 4 GiB/8 数值线程；观测到子进程、线程超限或监控错误即核验父进程和组身份后终止本次测试组。
+采样结果只能表述为“未观测到子进程”，并结合单进程算法代码证明边界。
+
+证据目录为 ECS 私有候选的 `batch-evidence/`。session 49589，启动时 controller 806568、首组算法/PGID 806584；
+后续组 PID 会变化，操作前必须读回对应 `*-process.json` 和完整命令。任一失败停止后续组，保留证据，不重启重训。
+只有六组均通过、退出 0、无 failure、视图清空和旧状态不变后才可关闭这一补验项；仍不写业务数据库或生产状态。
+02:28 读回 ECS DataBridge/daily timer 均 loaded/active，下次分别为 06:30/07:03；本次不改挂载、触发时间或 Writer。
 
 **夜间推进授权与早间保护（2026-09-07 23:40 CST）**
 
@@ -1267,10 +1306,10 @@ Native run；Native 可执行路径与临时迁移工具已删除；全量、架
 当前全局状态仍为 `IN_PROGRESS`。ECS 基线已经重新只读核验；W3A 的 `cons_sda` 已通过离线 conformance，
 同 wave 的 `full_oos` 已完成 5.2.1 A0/A1 与 A2c 完整本地离线冷/热等价、每日推进及真实 generation 复用验证。
 平台状态扩展已通过本地实现测试、独立审查和 full-OOS executor 探针；ECS 隔离预热、十日、重试已通过对应检查，
-旧 100 条批量在 600 秒硬限超时；用户调整离线预算后，ECS 完整冷333条及Mac同输入参考比较已通过，
-仍待同Linux Native独立等价和其余验收，尚不能晋级。
+旧 100 条批量在 600 秒硬限超时；用户调整离线预算后，ECS 完整冷333条、Mac同输入参考比较与
+同 Linux Native 独立333条等价均已通过，仍待其余 ECS 合同矩阵及入库验收，尚不能晋级。
 full-OOS 两文件已提交并以不可变包安装至 ECS 私有验证目录，保持 paused/draft、部署范围为空；
-尚未完成同 Linux Native 完整等价、ECS 持久化回测或生产切换，不能用单日性能通过宣布整体闭环。
+尚未完成 ECS 持久化回测或生产切换，不能用单日性能或独立等价通过宣布整体闭环。
 W2、W3B-D 也尚未完成新预算下各自的离线和每日验收，须逐方案分类，不能外推当前试点通过。W4 的
 Mac3-only binary-bundle 架构已经获得确认，但必须等 W1-W3 晋级 Mac3 后实施；不能用旧 adapter、未纳入
 manifest 的二进制、旧水位、旧 Native cache 或文档声明冒充闭环。
