@@ -550,15 +550,21 @@ def run_blackbox_scheme_subprocess(
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
     process_start_guard: ProcessStartGuard | None = None,
+    rebuild_state: bool = False,
 ) -> list[PredictionRecord]:
     """生成平台输入并通过 Blackbox V2 CLI 执行一个实盘 Request。"""
-    from scheduler.blackbox_v2_runner import DEFAULT_RUNTIME_PROFILE, run_blackbox_predict
+    from scheduler.blackbox_v2_runner import (
+        DEFAULT_RUNTIME_PROFILE, run_blackbox_predict, state_binding_for_scheme,
+    )
 
     process_start_guard = require_process_start_guard(
         process_start_guard
     )
     if snapshot_mode not in VALID_BLACKBOX_SNAPSHOT_MODES:
         raise ValueError(f"unsupported Blackbox snapshot mode: {snapshot_mode}")
+    if rebuild_state and (not getattr(cfg, "incremental_state", False)
+                          or snapshot_mode != BLACKBOX_SNAPSHOT_MODE_FRESH):
+        raise ValueError("state rebuild requires an incremental scheme and fresh trusted input")
     if cfg.delivery_script is None or cfg.delivery_metadata is None:
         raise ValueError(f"Blackbox V2 delivery paths missing for {cfg.scheme_id}")
     require_fresh = snapshot_mode == BLACKBOX_SNAPSHOT_MODE_FRESH
@@ -630,6 +636,13 @@ def run_blackbox_scheme_subprocess(
                 trusted_bundle.combined_snapshot_id,
             "profile": profile,
         }
+        state = state_binding_for_scheme(
+            cfg, generation_id=snapshot.generation_id,
+            persistent=snapshot_mode == BLACKBOX_SNAPSHOT_MODE_FRESH,
+            rebuild=rebuild_state,
+        )
+        if state is not None:
+            predict_kwargs["state"] = state
         if timeout_sec is not None:
             predict_kwargs["timeout_sec"] = timeout_sec
         if process_started is not None:
@@ -752,6 +765,10 @@ def run_blackbox_gray_replay_batch(
             "data_snapshot_id": trusted_bundle.combined_snapshot_id,
             "profile": effective_profile,
         }
+        from scheduler.blackbox_v2_runner import state_binding_for_scheme
+        state = state_binding_for_scheme(cfg, generation_id=snapshot.generation_id)
+        if state is not None:
+            backtest_kwargs["state"] = state
         records = run_blackbox_backtest(**backtest_kwargs)
     records_by_request = _index_gray_replay_records(records, batch_requests)
     return [

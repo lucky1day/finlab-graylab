@@ -21,6 +21,10 @@ def canonical_platform_config(raw: Mapping[str, Any]) -> dict[str, Any]:
     }
     if "factor_input_mode" in raw:
         canonical["factor_input_mode"] = str(raw["factor_input_mode"])
+    if "incremental_state" in raw:
+        if raw["incremental_state"] is not True:
+            raise ValueError("incremental_state must be literal true when present")
+        canonical["incremental_state"] = True
     schedule = _required_mapping(raw, "schedule")
     delivery = _required_mapping(raw, "delivery")
     timeout_sec = schedule.get("timeout_sec")

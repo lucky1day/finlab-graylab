@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -10,7 +11,7 @@ import sys
 import tempfile
 import time
 from contextlib import nullcontext
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, ContextManager, Sequence
@@ -36,6 +37,9 @@ from shared.blackbox_v2.snapshot import (
 )
 from shared.data_bridge.validation import LEGACY_FOUR_FILENAMES
 from shared.models import PredictionRecord
+from scheduler.blackbox_state import (
+    MAX_STATE_BYTES, StateBinding, StateSession, read_regular_bytes,
+)
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -247,6 +251,8 @@ def execute_blackbox_cli(
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
     process_start_guard: ProcessStartGuard | None = None,
+    state_input: Path | None = None,
+    state_output: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """执行一次 Blackbox V2 CLI；仅进程成功且 Output 合法存在才返回。"""
     process_start_guard = require_process_start_guard(
@@ -272,6 +278,20 @@ def execute_blackbox_cli(
     if output.exists():
         raise ValueError(f"platform must provide a fresh output path: {output}")
     runtime = _python_runtime(profile)
+    state_before = None
+    request_before = None
+    state_controls = []
+    if state_input is not None:
+        if state_output is None:
+            raise ValueError("state-input requires state-output")
+        state_input = _resolve_controlled_path(state_input, label="state-input")
+        state_before = read_regular_bytes(state_input, MAX_STATE_BYTES)
+        state_controls.append(("state-input", state_input))
+    if state_output is not None:
+        state_output = _resolve_controlled_path(state_output, label="state-output", allow_missing=True)
+        if state_output.parent != output.parent or state_output == output or state_output.exists():
+            raise ValueError("state-output must be a distinct fresh file in the private output directory")
+        request_before = read_regular_bytes(input_file, profile.max_run_dir_bytes)
     data_files = tuple(data / filename for filename in expected_filenames)
     _prepare_output_directory(
         output.parent,
@@ -281,6 +301,7 @@ def execute_blackbox_cli(
             ("data-dir", data),
             *((f"data file {path.name}", path) for path in data_files),
             ("runtime prefix", runtime.prefix),
+            *state_controls,
         ),
     )
     try:
@@ -297,6 +318,10 @@ def execute_blackbox_cli(
             "--output",
             str(output),
         ]
+        if state_output is not None:
+            command.extend(["--state-output", str(state_output)])
+        if state_input is not None:
+            command.extend(["--state-input", str(state_input)])
         command = _bootstrap_command(command, profile.max_run_dir_bytes)
         env = _runtime_environment(
             profile,
@@ -350,6 +375,12 @@ def execute_blackbox_cli(
                 f"Blackbox V2 {mode} must not write business output to stdout: "
                 f"{_bounded(completed.stdout)}"
             )
+        if state_input is not None and read_regular_bytes(state_input, MAX_STATE_BYTES) != state_before:
+            raise BlackboxExecutionError("Blackbox V2 state-input changed during execution")
+        if state_output is not None:
+            if read_regular_bytes(input_file, profile.max_run_dir_bytes) != request_before:
+                raise BlackboxExecutionError("Blackbox V2 Request changed during execution")
+            read_regular_bytes(state_output, MAX_STATE_BYTES)
         if not output.is_file() or output.is_symlink():
             raise BlackboxExecutionError(f"Blackbox V2 {mode} did not create a regular output file")
         if output.stat().st_size > profile.max_output_bytes:
@@ -388,10 +419,15 @@ def run_blackbox_predict(
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
     process_start_guard: ProcessStartGuard | None = None,
+    state: StateBinding | None = None,
 ) -> PredictionRecord:
     process_start_guard = require_process_start_guard(
         process_start_guard
     )
+    if state is not None:
+        profile = replace(profile, cpu_threads=min(profile.cpu_threads, 8),
+                          memory_limit_bytes=min(profile.memory_limit_bytes, 4 * 1024**3),
+                          predict_timeout_sec=min(profile.predict_timeout_sec, 1800 if state.rebuild else 120))
     with tempfile.TemporaryDirectory(prefix="blackbox-v2-predict-") as tmpdir:
         root = Path(tmpdir)
         request_path = write_request(request, root / "request.json")
@@ -414,14 +450,19 @@ def run_blackbox_predict(
             execute_kwargs["process_start_guard"] = (
                 process_start_guard
             )
-        execute_blackbox_cli(**execute_kwargs)
-        result = load_prediction_result(output_path, request)
-    return _to_prediction_record(
-        metadata,
-        result,
-        data_snapshot_id,
-        profile,
-    )
+        with _state_session(state, root, metadata, script_path, data_dir,
+                            data_snapshot_id, profile) as session:
+            if session is not None:
+                execute_kwargs.update(state_input=session.input_path, state_output=session.output_path)
+            execute_blackbox_cli(**execute_kwargs)
+            result = load_prediction_result(output_path, request)
+            record = _to_prediction_record(metadata, result, data_snapshot_id, profile)
+            if session is not None:
+                _verify_state_execution(session, metadata, script_path, data_dir, data_snapshot_id, profile)
+                if process_fence is not None:
+                    process_fence()
+                record = replace(record, extra={**record.extra, **session.publish()})
+    return record
 
 
 def run_blackbox_backtest(
@@ -432,6 +473,7 @@ def run_blackbox_backtest(
     data_dir: str | Path,
     data_snapshot_id: str,
     profile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE,
+    state: StateBinding | None = None,
 ) -> list[PredictionRecord]:
     if not requests:
         raise ValueError("Blackbox V2 backtest requires at least one Request")
@@ -440,28 +482,151 @@ def run_blackbox_backtest(
         raise ValueError("Blackbox V2 backtest Request ids must be unique")
 
     batch = list(requests)
+    if state is not None:
+        profile = replace(profile, cpu_threads=min(profile.cpu_threads, 8),
+                          memory_limit_bytes=min(profile.memory_limit_bytes, 4 * 1024**3),
+                          backtest_timeout_sec=min(profile.backtest_timeout_sec,
+                                                   600 if len(batch) <= 100 and not state.rebuild else 1800))
     with tempfile.TemporaryDirectory(prefix="blackbox-v2-backtest-") as tmpdir:
         root = Path(tmpdir)
         requests_path = write_requests(batch, root / "requests.csv")
         output_path = root / "output" / "backtest.csv"
-        execute_blackbox_cli(
-            script_path=script_path,
-            mode="backtest",
-            input_path=requests_path,
-            data_dir=data_dir,
-            output_path=output_path,
-            profile=profile,
+        # 回测只能使用私有状态；显式 rebuild 是无预测写库的受控维护调用。
+        if state is not None and state.root is not None and not state.rebuild:
+            raise ValueError("backtest cannot advance persistent Blackbox state")
+        with _state_session(state, root, metadata, script_path, data_dir,
+                            data_snapshot_id, profile) as session:
+            state_kwargs = ({"state_input": session.input_path, "state_output": session.output_path}
+                            if session is not None else {})
+            execute_blackbox_cli(
+                script_path=script_path, mode="backtest", input_path=requests_path,
+                data_dir=data_dir, output_path=output_path, profile=profile, **state_kwargs,
+            )
+            results = load_backtest_results(output_path, batch)
+            records = [_to_prediction_record(metadata, item, data_snapshot_id, profile) for item in results]
+            if session is not None:
+                _verify_state_execution(session, metadata, script_path, data_dir, data_snapshot_id, profile)
+                audit = session.publish()
+                records = [replace(record, extra={**record.extra, **audit}) for record in records]
+    return records
+
+
+def _state_identities(metadata, script_path, data_dir, data_snapshot_id, profile):
+    """绑定实际执行字节与输入；不以 generation 变化直接判定算法缓存失效。"""
+    runtime = _python_runtime(profile)
+    digest = hashlib.sha256()
+    digest.update(runtime.executable.read_bytes())
+    packages = runtime.prefix / "conda-meta"
+    if packages.is_dir():
+        for path in sorted(packages.glob("*.json")):
+            digest.update(path.name.encode())
+            digest.update(path.read_bytes())
+    # pip 的安装记录不一定进入 conda-meta；不把包升级误认成同一环境。
+    for distribution in sorted(runtime.prefix.glob("lib/python*/site-packages/*.dist-info")):
+        digest.update(str(distribution.relative_to(runtime.prefix)).encode())
+        for filename in ("METADATA", "RECORD", "direct_url.json"):
+            receipt = distribution / filename
+            if receipt.is_file():
+                digest.update(filename.encode())
+                digest.update(receipt.read_bytes())
+    # 超时/空间预算不改变计算语义；预热与单日使用同一环境身份。
+    runtime_settings = {key: value for key, value in asdict(profile).items()
+                        if key in {"name", "conda_env", "data_schema_version", "contract_version",
+                                   "cpu_threads", "environment_allowlist", "environment_defaults"}}
+    digest.update(json.dumps(runtime_settings, sort_keys=True).encode())
+    actual_environment = _runtime_environment(profile, Path("/__private_run__"),
+                                              python_executable=runtime.executable)
+    digest.update(json.dumps(actual_environment, sort_keys=True).encode())
+    digest.update(str(runtime.executable).encode())
+    identity = {
+        "script_sha256": hashlib.sha256(Path(script_path).read_bytes()).hexdigest(),
+        "metadata_sha256": hashlib.sha256(json.dumps(asdict(metadata), sort_keys=True).encode()).hexdigest(),
+        "runtime_sha256": digest.hexdigest(),
+    }
+    data = _resolve_controlled_path(data_dir, label="state data-dir")
+    before = _validate_data_dir(data)
+    files = {}
+    for name, _ in before:
+        file_hash = hashlib.sha256()
+        with (data / name).open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                file_hash.update(chunk)
+        files[name] = file_hash.hexdigest()
+    if before != _validate_data_dir(data):
+        raise BlackboxExecutionError("state input changed while hashing")
+    return identity, {"schema": profile.data_schema_version,
+                      "snapshot_id": data_snapshot_id, "files": files}
+
+
+def _state_session(state, root, metadata, script_path, data_dir, data_snapshot_id, profile):
+    if state is None:
+        return nullcontext(None)
+    if not isinstance(state, StateBinding) or state.scheme_id != metadata.scheme_id:
+        raise ValueError("Blackbox state binding does not match metadata")
+    _verify_pinned_state_config(state)
+    identity, input_identity = _state_identities(metadata, script_path, data_dir, data_snapshot_id, profile)
+    if state.code_hash is not None and state.code_hash != identity["script_sha256"]:
+        raise ValueError("Blackbox state script differs from pinned exact version")
+    if state.manifest_hash is not None:
+        manifest = _resolve_controlled_path(Path(script_path).with_suffix(".json"), label="metadata")
+        raw = manifest.read_bytes()
+        from shared.blackbox_v2.contracts import load_metadata_bytes
+        if hashlib.sha256(raw).hexdigest() != state.manifest_hash or load_metadata_bytes(raw) != metadata:
+            raise ValueError("Blackbox state metadata differs from pinned exact version")
+        identity["manifest_sha256"] = state.manifest_hash
+    return StateSession(state, work_dir=root, identity=identity, input_identity=input_identity)
+
+
+def _verify_state_execution(session, metadata, script_path, data_dir, data_snapshot_id, profile):
+    _verify_pinned_state_config(session.binding)
+    identity, input_identity = _state_identities(metadata, script_path, data_dir, data_snapshot_id, profile)
+    if session.binding.manifest_hash is not None:
+        manifest = _resolve_controlled_path(Path(script_path).with_suffix(".json"), label="metadata")
+        identity["manifest_sha256"] = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    expected_identity = {**identity, "scheme_id": session.binding.scheme_id,
+                         "scheme_version": session.binding.scheme_version}
+    expected_input = {**input_identity, "generation_id": session.binding.generation_id}
+    if session.identity != expected_identity or session.input_identity != expected_input:
+        raise BlackboxExecutionError("Blackbox state execution identity or input changed")
+
+
+def _verify_pinned_state_config(state: StateBinding) -> None:
+    if state.config_path is not None:
+        from scheduler.discovery import load_scheme_config
+        current = load_scheme_config(state.config_path)
+        if (current.scheme_id != state.scheme_id or not current.incremental_state
+                or current.scheme_version != state.scheme_version):
+            raise BlackboxExecutionError("Blackbox state canonical config changed")
+
+
+def state_binding_for_scheme(cfg, *, generation_id: str | None,
+                             persistent: bool = False, rebuild: bool = False) -> StateBinding | None:
+    """只为已声明能力且 canonical 字节仍匹配的方案生成状态绑定。"""
+    if not getattr(cfg, "incremental_state", False):
+        return None
+    from scheduler.discovery import load_scheme_config
+    from shared.runtime_paths import resolve_runtime_state_path
+
+    current = load_scheme_config(cfg.path / "config.yaml")
+    if (current.runtime_type != "blackbox_v2" or not current.incremental_state
+            or current.scheme_version != cfg.scheme_version):
+        raise ValueError("Blackbox state canonical exact version changed")
+    state_root = None
+    if persistent:
+        configured_root = os.environ.get("BFL_RUNTIME_ROOT", "").strip()
+        raw_state_root = (Path(configured_root) / "blackbox-state" if configured_root
+                          else _PROJECT_ROOT / "outputs" / "runtime" / "blackbox-state")
+        _resolve_controlled_path(raw_state_root, label="runtime state root", allow_missing=True)
+        state_root = resolve_runtime_state_path(
+            relative_path="blackbox-state",
+            development_default=_PROJECT_ROOT / "outputs" / "runtime" / "blackbox-state",
         )
-        results = load_backtest_results(output_path, batch)
-    return [
-        _to_prediction_record(
-            metadata,
-            result,
-            data_snapshot_id,
-            profile,
-        )
-        for result in results
-    ]
+    return StateBinding(
+        scheme_id=cfg.scheme_id, scheme_version=cfg.scheme_version,
+        generation_id=generation_id, root=state_root, rebuild=rebuild,
+        code_hash=current.code_hash, manifest_hash=current.manifest_hash,
+        config_path=current.path / "config.yaml",
+    )
 
 
 def _to_prediction_record(

@@ -64,6 +64,12 @@ def validate_config(raw: dict, dirname: str) -> list[str]:
     if runtime_type not in ALLOWED_RUNTIME_TYPES:
         errors.append("runtime_type must be native_adapter or blackbox_v2")
 
+    if "incremental_state" in raw:
+        if runtime_type != "blackbox_v2":
+            errors.append("incremental_state is only supported for Blackbox V2")
+        if raw["incremental_state"] is not True:
+            errors.append("incremental_state must be literal true when present")
+
     if runtime_type == "blackbox_v2":
         errors.extend(_validate_blackbox_config(raw))
         return errors

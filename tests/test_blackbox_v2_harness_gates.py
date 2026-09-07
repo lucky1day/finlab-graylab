@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pandas as pd
 
@@ -443,6 +445,145 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "description is required"):
                 validate_canonical_blackbox_delivery(cfg)
+
+class BlackboxStateRebuildCliTests(unittest.TestCase):
+    """通过最高层 CLI 验证状态维护的精确授权范围与无业务写入边界。"""
+
+    def _arguments(self, **overrides: str | None) -> list[str]:
+        values = {
+            "scheme-id": "trial_10y", "predict-date": "2026-09-07",
+            "expected-scheme-version": "version-exact", "approved-by": "operator-test",
+            "project-root": str(Path(__file__).resolve().parents[1]),
+            **overrides,
+        }
+        return ["rebuild-blackbox-state", *[
+            part for name, value in values.items() if value is not None
+            for part in (f"--{name}", value)
+        ]]
+
+    def test_required_scope_arguments_are_rejected_before_loading_or_engine(self) -> None:
+        from harness.cli import main
+
+        for missing in ("scheme-id", "predict-date", "expected-scheme-version", "approved-by"):
+            with (
+                self.subTest(missing=missing),
+                patch("harness.blackbox_v2.state.load_scheme_config") as load,
+                patch("harness.blackbox_v2.state.create_input_engine") as create_engine,
+                patch("harness.blackbox_v2.state.run_blackbox_scheme_subprocess") as execute,
+                redirect_stderr(io.StringIO()),
+            ):
+                with self.assertRaises(SystemExit) as error:
+                    main(self._arguments(**{missing: None}))
+                self.assertEqual(error.exception.code, 2)
+                load.assert_not_called()
+                create_engine.assert_not_called()
+                execute.assert_not_called()
+
+    def test_invalid_scope_is_rejected_before_loading_or_engine(self) -> None:
+        from harness.cli import main
+
+        invalid = (
+            ("scheme-id", "../trial_10y"), ("scheme-id", "/trial_10y"),
+            ("scheme-id", ""), ("scheme-id", "trial/10y"),
+            ("predict-date", "2026-02-30"), ("predict-date", "20260907"),
+            ("predict-date", "2026-09-07T00:00:00"),
+            ("approved-by", ""), ("approved-by", " \t"),
+            ("approved-by", "x" * 201),
+        )
+        for argument, value in invalid:
+            with (
+                self.subTest(argument=argument, value=value),
+                patch("harness.blackbox_v2.state.load_scheme_config") as load,
+                patch("harness.blackbox_v2.state.create_input_engine") as create_engine,
+                patch("harness.blackbox_v2.state.run_blackbox_scheme_subprocess") as execute,
+                redirect_stdout(io.StringIO()) as output,
+            ):
+                with self.assertRaises(ValueError):
+                    main(self._arguments(**{argument: value}))
+                load.assert_not_called()
+                create_engine.assert_not_called()
+                execute.assert_not_called()
+                self.assertEqual(output.getvalue(), "")
+
+    def test_only_matching_incremental_blackbox_version_can_create_engine(self) -> None:
+        from harness.cli import main
+
+        invalid_configs = (
+            dict(runtime_type="blackbox_v2", incremental_state=True, scheme_version="other-version"),
+            dict(runtime_type="native_v1", incremental_state=True, scheme_version="version-exact"),
+            dict(runtime_type="blackbox_v2", incremental_state=False, scheme_version="version-exact"),
+        )
+        for values in invalid_configs:
+            with (
+                self.subTest(config=values),
+                patch("harness.blackbox_v2.state.load_scheme_config", return_value=SimpleNamespace(**values)),
+                patch("harness.blackbox_v2.state.create_input_engine") as create_engine,
+                patch("harness.blackbox_v2.state.run_blackbox_scheme_subprocess") as execute,
+                redirect_stdout(io.StringIO()) as output,
+            ):
+                with self.assertRaisesRegex(ValueError, "matching incremental Blackbox exact version"):
+                    main(self._arguments())
+                create_engine.assert_not_called()
+                execute.assert_not_called()
+                self.assertEqual(output.getvalue(), "")
+
+    def test_rebuild_returns_only_state_audit_and_disposes_read_engine(self) -> None:
+        from harness.cli import main
+        from scheduler.executor import DEFAULT_ALGO_ENV
+
+        cfg = SimpleNamespace(runtime_type="blackbox_v2", incremental_state=True,
+                              scheme_version="version-exact")
+        engine = Mock(spec_set=["dispose"])
+        record = SimpleNamespace(
+            feature_date="2026-09-04", target_date="2026-09-07", predicted_direction=-1,
+            extra={"state_scope": "persistent", "state_output_sha256": "a" * 64,
+                   "state_bytes": 17, "data_snapshot_id": "private-snapshot",
+                   "predicted_direction": -1},
+        )
+        with (
+            patch("harness.blackbox_v2.state.load_scheme_config", return_value=cfg) as load,
+            patch("harness.blackbox_v2.state.create_input_engine", return_value=engine),
+            patch("harness.blackbox_v2.state.run_blackbox_scheme_subprocess", return_value=[record]) as execute,
+            patch("harness.cli.create_engine_from_env", side_effect=AssertionError("business engine forbidden")),
+            redirect_stdout(io.StringIO()) as output,
+        ):
+            self.assertEqual(main(self._arguments()), 0)
+        load.assert_called_once_with(
+            Path(__file__).resolve().parents[1] / "schemes" / "trial_10y" / "config.yaml"
+        )
+        execute.assert_called_once_with(
+            cfg, "2026-09-07", engine=engine, algo_env=DEFAULT_ALGO_ENV,
+            timeout_sec=1800, rebuild_state=True,
+        )
+        engine.dispose.assert_called_once_with()
+        self.assertEqual([call[0] for call in engine.mock_calls], ["dispose"])
+        self.assertEqual(json.loads(output.getvalue()), {
+            "operation": "rebuild-blackbox-state", "approved_by": "operator-test",
+            "scheme_id": "trial_10y", "scheme_version": "version-exact",
+            "predict_date": "2026-09-07", "feature_date": "2026-09-04",
+            "prediction_written": False,
+            "state": {"state_scope": "persistent", "state_output_sha256": "a" * 64,
+                      "state_bytes": 17},
+        })
+
+    def test_execution_failure_disposes_engine_and_emits_no_success_audit(self) -> None:
+        from harness.cli import main
+
+        cfg = SimpleNamespace(runtime_type="blackbox_v2", incremental_state=True,
+                              scheme_version="version-exact")
+        engine = Mock(spec_set=["dispose"])
+        with (
+            patch("harness.blackbox_v2.state.load_scheme_config", return_value=cfg),
+            patch("harness.blackbox_v2.state.create_input_engine", return_value=engine),
+            patch("harness.blackbox_v2.state.run_blackbox_scheme_subprocess",
+                  side_effect=RuntimeError("state rebuild failed")),
+            redirect_stdout(io.StringIO()) as output,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "state rebuild failed"):
+                main(self._arguments())
+        engine.dispose.assert_called_once_with()
+        self.assertEqual(output.getvalue(), "")
+
 
 def _delivery(path: Path, *, script: str = "import argparse\nimport json\n") -> Path:
     path.mkdir(parents=True)

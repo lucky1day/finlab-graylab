@@ -71,6 +71,38 @@ class BlackboxV2IntakeTests(unittest.TestCase):
             self.assertIn("timeout_sec: 3600", config)
             self.assertNotIn("platform_inputs:", config)
             self.assertNotIn("display_name:", config)
+            self.assertNotIn("incremental_state:", config)
+
+    def test_cli_incremental_state_preserves_two_file_metadata_contract(self) -> None:
+        from harness.cli import main
+        from scheduler.discovery import load_scheme_config
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            delivery = _write_delivery(root / "incoming")
+            with redirect_stdout(io.StringIO()):
+                exit_code = main(
+                    [
+                        "intake-blackbox",
+                        "--delivery-dir", str(delivery),
+                        "--project-root", str(root),
+                        "--incremental-state",
+                    ]
+                )
+            scheme_dir = root / "schemes" / "trial_10y"
+            config = load_scheme_config(scheme_dir / "config.yaml")
+            self.assertEqual(exit_code, 0)
+            self.assertIs(config.incremental_state, True)
+            self.assertEqual(config.contract_version, "1.0")
+            self.assertEqual(
+                {path.name for path in (scheme_dir / "delivery").iterdir()},
+                {"trial_10y.py", "trial_10y.json"},
+            )
+            for name in ("trial_10y.py", "trial_10y.json"):
+                self.assertEqual(
+                    (scheme_dir / "delivery" / name).read_bytes(),
+                    (delivery / name).read_bytes(),
+                )
 
     def test_intake_requires_business_metadata_without_partial_write(self) -> None:
         from shared.blackbox_v2.intake import intake_delivery

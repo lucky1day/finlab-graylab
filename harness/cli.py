@@ -111,6 +111,15 @@ def _direct_operation(
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    if args.command == "rebuild-blackbox-state":
+        from harness.blackbox_v2.state import rebuild_blackbox_state
+        report = rebuild_blackbox_state(
+            project_root=args.project_root.resolve(), scheme_id=args.scheme_id,
+            predict_date=args.predict_date, expected_scheme_version=args.expected_scheme_version,
+            approved_by=args.approved_by,
+        )
+        print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+        return 0
     if args.command == "gate":
         result = _run_gate(args)
         print(json.dumps(_jsonable(result), ensure_ascii=False, indent=2))
@@ -127,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
         scheme_dir = intake_delivery(
             args.delivery_dir,
             schemes_root=args.project_root.resolve() / "schemes",
+            incremental_state=args.incremental_state,
         )
         print(
             json.dumps(
@@ -160,6 +170,12 @@ def main(argv: list[str] | None = None) -> int:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m harness")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    rebuild = subparsers.add_parser("rebuild-blackbox-state")
+    rebuild.add_argument("--scheme-id", required=True)
+    rebuild.add_argument("--predict-date", required=True)
+    rebuild.add_argument("--expected-scheme-version", required=True)
+    rebuild.add_argument("--approved-by", required=True)
+    rebuild.add_argument("--project-root", type=Path, default=Path.cwd())
 
     gate_parser = subparsers.add_parser("gate")
     gate_subparsers = gate_parser.add_subparsers(dest="gate_name", required=True)
@@ -227,6 +243,11 @@ def _build_parser() -> argparse.ArgumentParser:
     intake_parser = subparsers.add_parser("intake-blackbox")
     intake_parser.add_argument("--delivery-dir", type=Path, required=True)
     intake_parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
+    intake_parser.add_argument(
+        "--incremental-state",
+        action="store_true",
+        help="enable algorithm-owned private incremental state for this delivery",
+    )
 
     fill_parser = subparsers.add_parser("signal-gap-fill")
     fill_scope = fill_parser.add_mutually_exclusive_group(required=True)

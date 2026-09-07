@@ -70,6 +70,27 @@ def _weekly_config(*, predict_start_date: str | None) -> dict:
 
 
 class ConfigSchemaAuxiliaryInputTests(unittest.TestCase):
+    def test_incremental_state_is_a_blackbox_true_only_opt_in(self) -> None:
+        for value in (True, False, None, "true", "false", 0, 1, {}, []):
+            with self.subTest(runtime="blackbox_v2", value=value):
+                config = _base_blackbox_config()
+                config["incremental_state"] = value
+                errors = validate_config(config, "demo_blackbox")
+                if value is True:
+                    self.assertEqual(errors, [])
+                else:
+                    self.assertIn(
+                        "incremental_state must be literal true when present",
+                        errors,
+                    )
+            with self.subTest(runtime="native_adapter", value=value):
+                config = _base_config()
+                config["incremental_state"] = value
+                self.assertIn(
+                    "incremental_state is only supported for Blackbox V2",
+                    validate_config(config, "demo_daily"),
+                )
+
     def test_config_with_weekly_and_monthly_auxiliary_inputs_is_valid(self) -> None:
         config = _base_config()
         config["input_spec"]["auxiliary_inputs"] = [

@@ -643,6 +643,10 @@ def _execute_controlled_comparison(
             execute_blackbox_cli,
         )
 
+        state_kwargs = (
+            {"state_output": successor_output.parent / "state.bin"}
+            if getattr(new_config, "incremental_state", False) else {}
+        )
         execute_blackbox_cli(
             script_path=new_config.delivery_script,
             mode="backtest",
@@ -651,6 +655,7 @@ def _execute_controlled_comparison(
             output_path=successor_output,
             profile=DEFAULT_RUNTIME_PROFILE,
             timeout_sec=_SUCCESSOR_COMPARISON_TIMEOUT_SEC,
+            **state_kwargs,
         )
         return (
             _load_standard_result_rows(native_output, label="Native"),

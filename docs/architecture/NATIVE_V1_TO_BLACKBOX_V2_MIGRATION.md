@@ -2,9 +2,9 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`INCREMENTAL_STATE_PLAN_APPROVED; W1_ECS_BACKTEST_READY; W2_ECS_BLOCKED_PERFORMANCE; W3A_CONS_SDA_CONFORMANCE_PASSED; W3_BLOCKED_PENDING_INCREMENTAL_STATE; W4_MAC3_BINARY_BUNDLE_ACCEPTED`
+**执行状态**：`A2C_FULL_OOS_LOCAL_OFFLINE_PASSED; A3_CANONICAL_LOCAL_EXECUTOR_PROBE_PASSED; A4_ECS_READONLY_PREFLIGHT_DONE_VALIDATION_PENDING; W1_ECS_BACKTEST_READY_ON_PRIOR_POLICY; W2_ECS_BLOCKED_PERFORMANCE; W3A_CONS_SDA_CONFORMANCE_PASSED; W3_BLOCKED_ECS_VALIDATION; W4_MAC3_BINARY_BUNDLE_ACCEPTED`
 
-**基线日期**：2026-09-07 Asia/Shanghai
+**现场基线日期**：2026-09-05 Asia/Shanghai（后续核验日期在证据段落分别记录；计划修订不刷新现场水位）
 
 **基线 Git 提交**：`20e98934e9d5399e3d509f486a8a650d95ad7639`
 
@@ -216,9 +216,8 @@ DataBridge generation 为 `full-20260905-063321-21c5c7188fa5`，business digest 
 
 所有 successor 的输入都是 DataBridge 五文件：`api_wind_date.csv`、`daily_output.csv`、
 `weekly_output.csv`、`monthly_output.csv`、`factor_catalog.csv`，以及 Blackbox predict JSON /
-backtest CSV Request。具体算法列集合由 metadata 的 `required_columns` 与 Intake 后生成的
-canonical config 固定。Request 区间和代码 hash 在测试
-前不得预填。
+backtest CSV Request。具体算法列集合以交付脚本实际读取与校验为准，迁移证据记录其摘要；当前 Metadata 不含
+`required_columns`，不得通过此次优化新增方案级输入合同。Request 区间和代码 hash 在测试前不得预填。
 
 | Wave | Successor 集合 | 输入字段摘要 | Request 区间 | script SHA-256 | 状态 |
 |---|---|---|---|---|---|
@@ -229,7 +228,7 @@ canonical config 固定。Request 区间和代码 hash 在测试
 | W1B | `weekly_10y_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `e52e221a0046e8623107359b4fe3c2f7643e422b3ed9068c0cf317e9cdeafeed` | ECS_0905_FULL_COMPARATOR_PASSED |
 | W2 | 两个 `daily_*_v28_bbv2` | 完整五文件；V28 daily/weekly/monthly 因子与真实 T+5 grid | feature 2025-01-02..2026-05-22；各 333 条 | 5Y `32aa7948d5f90bdd3de72ce46461bdc8f6dafeb24ece450c34cba84eac5480cc`；7Y `5fec87a6be3612c911f17f546ae4687e58a64b1d5a7be75a407e1fbb681861a4` | ECS_BLOCKED_100_REQUEST_PERFORMANCE_NO_CURRENT_RECEIPT |
 | W3A | `liwei_0616_cons_sda_k3_div_k10_bbv2` | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2025-01-02..2026-05-22；333 条 | `9cebc6eab7df69ed48e68163fc0cfc5229ad616fda4989924e2b34d78274c250` | ECS_CONFORMANCE_PASSED_NO_PERSISTED_BACKTEST |
-| W3A | `liwei_0616_5y01_full_oos_k3_div_k10_bbv2` | 五文件 + 方案私有增量 Phase-A 状态；连续 full-OOS 排名 | feature 2026-08-28 | 未生成 | INCREMENTAL_STATE_PILOT_PLANNED |
+| W3A | `liwei_0616_5y01_full_oos_k3_div_k10_bbv2` | 五文件 + 方案私有增量 Phase-A 状态；连续 full-OOS 排名 | A2c feature 2025-01-02..2026-05-22；canonical 十日 2025-01-02..2025-01-15 | `ad9bdacf5063a427ecc8b70852e045f4822ba9af1b6d8fcd171cd2d779e95103` | CANONICAL_DRAFT_LOCAL_EXECUTOR_PASSED; ECS_PENDING |
 | W3B | 三个 10Y successor | 五文件；full-OOS 方案使用独立增量状态，非 full-OOS 优先纯算法优化 | feature 2026-08-28 | 未生成 | PENDING_W3A_STATE_PILOT |
 | W3C-D | 五个 `liwei_0616_*_bbv2` | 五文件；逐方案判定 stateless 或独立增量状态 | feature 2026-08-28 | 未生成 | PENDING_STATE_CLASSIFICATION |
 | W4A-C | 九个编译主体 successor | DataBridge 五文件 + Request；加密 payload 进入 manifest closure | 待 Mac3 冻结 | 待生成 | MAC3_BINARY_BUNDLE_PLANNED |
@@ -415,9 +414,9 @@ Phase-A context 身份并精确校验 current selected config set。独立复审
 
 以上只把 `cons_sda` 推进到离线 `CONFORMANCE_PASSED`，没有生成 canonical receipt、持久化 backtest、Registry
 身份或 cutover。W3A 仍是不可拆分迁移 wave；`full_oos` 从 2024-01 起对全部历史 OOS 日给 265 个配置持续累计
-排名，冷启动单点需要约 34 万次 LightGBM 拟合。2026-09-07 已批准以下“方案私有、内容寻址、可重建”的增量
-状态方案：先受控 prewarm 全部历史 Phase-A，再由每日运行只计算新增 cutoff。试点通过以前 `full_oos` 继续保持
-Native，W3A 不得进入持久化回测或切换。
+排名，原完整冷路径单点约有 34 万次 LightGBM 拟合；这不是所有等价实现的理论下界。2026-09-07 已批准每日
+增量计算及必要的方案私有可重建状态，随后经冗余审查改为 5.2.1 的算法先行试点，先证明新增 cutoff、标签成熟
+和尾部重算的最小依赖。试点通过以前 `full_oos` 继续保持 Native，W3A 不得进入持久化回测或切换。
 
 ## 5. 阶段与状态机
 
@@ -463,210 +462,437 @@ Phase-A、精确配置并集、输入对齐复用等纯算法优化满足性能�
 任何 successor 都不得恢复跨方案状态、publisher/consumer 顺序、未来窗口、模型对象持久化或数据库 cache。
 增量状态只是同一算法冷路径的可重建派生结果；状态命中和从空状态重建必须产生完全相同的五字段 Result。
 
-#### 5.2.1 Phase 2A：Blackbox 方案私有增量状态
+#### 5.2.1 Phase 2A：先做算法试点，再接入最小状态能力
 
-##### 目标与边界
+##### 修订结论与适用范围
 
-该能力只解决“算法定义要求累计历史 OOS 排名，但每日只新增一个 cutoff”的重复计算，不改变任何预测语义。
-平台继续只有 `runtime_type=blackbox_v2`、同一个 executor 和同一套五字段 Result。普通 Blackbox 未声明状态时，
-命令、运行目录和行为必须与当前完全相同；不得为本项目增加 `stateful_blackbox` runtime type、数据库表、常驻服务、
-ledger、epoch 或调度 wave。
+本节替代先前“先建设通用状态框架，再改造算法”的执行顺序。用户已认可每日增量计算和必要的方案私有状态；
+本次收缩实现范围，先证明 full-OOS 的最小依赖和冷/热等价，再决定是否需要扩展平台。此前约 34 万次拟合是
+已有完整冷路径的工作量，不是所有等价算法实现的理论下界，不能据此跳过按需计算优化。
 
-允许持久化的内容仅为紧凑 Phase-A 派生数组，例如 config key、cutoff、seed、probability/direction 和累计排名所需
-统计；禁止保存 LightGBM model、Python pickle、可执行代码、DataFrame 全量副本、Request Result 或数据库事实。
-状态丢失时可由同一 exact version、五文件和 Request 从空状态完整重建。状态不得跨 scheme 读取，即使两个方案
-内部 baseline 完全相同也必须分别构建；进程内仍可合并同一方案内完全相同的 Phase-A。
+目标是每日只处理新增预测及必要的受影响尾部，保持原 grid、seed、训练窗口、排名和控制器语义。业务输入仍为
+五文件与 Request，Result 保持精确五字段。已有 stateless Blackbox 的 canonical 字节、执行方式和 exact version
+不变；允许的持久状态仍只属于单个 successor，不恢复跨方案 publisher/consumer 或 Native cache wave。
 
-##### 配置与 CLI 合同
+##### 已有实现的借鉴与复用
 
-状态是平台执行优化，不改变上游 Metadata 1.0 和两文件交付。平台拥有的 `config.yaml` 可增加唯一可选块：
+| 参考代码 | 已有能力 | 本次使用方式与限制 |
+|---|---|---|
+| [current55 Engine](../../schemes/seven_y_current55_lgbm_001_v2/delivery/seven_y_current55_lgbm_001_v2.py) 及 002 | 按月缓存模型、按年缓存因子选择、按日期缓存原始信号；全部在进程内 | 借鉴按算法实际重算周期划分依赖；不能把 Native 每日重训擅自改成月度重训 |
+| [5Y online](../../schemes/five_y_factor_rule_online_v1/delivery/five_y_factor_rule_online_v1.py) | 单点向前查询到控制器样本充分即停止，batch 按月共享训练和特征 | 借鉴按需回溯与重叠计算复用；full-OOS 的全历史排名不能直接换成它的有限样本控制器 |
+| [10Y maj4](../../schemes/ten_y_t5_maj4_k3_ic_yearly_v1/delivery/ten_y_t5_maj4_k3_ic_yearly_v1.py) | 固定参数按 cutoff 训练，batch 按 cutoff 去重 | 借鉴单日入口和批内去重；不以固定单模型替换原 265 配置算法 |
+| [现有文件锁](../../shared/exclusive_file_lock.py) | inode 校验、非阻塞 flock、稳定锁文件 | 平台直接复用，不新增锁实现 |
+| [运行路径](../../shared/runtime_paths.py) 与现有 Blackbox runner | 外置状态路径、私有运行目录、进程预算、输入复验和 Output 清理 | 平台沿用已有边界，确有状态需求时仅增加受控快照读写 |
 
-```yaml
-execution_state:
-  mode: incremental_content_addressed_v1
-  schema_version: liwei_phase_a_state_v1
-```
+以上算法参考是代码审查证据，不能作为 successor 的等价或性能验收。两文件算法不得 import 其他方案或平台代码；
+借鉴算法组织方式后形成自包含交付。已有 5Y online 的 batch 自检失败后逐点 fallback 不迁入本项目，迁移验收
+仍要求差异直接失败。现有进程内字典不能冒充已经实现了跨日持久状态。
 
-该块缺失时精确等价于 `stateless`。除以上两个 closed-world 字段外任何额外字段均失败；只有
-`runtime_type=blackbox_v2`、`factor_input_mode=algorithm_managed` 可声明。该块进入 config hash 和
-`scheme_version`，但不进入 Result。状态根目录由 `BFL_RUNTIME_ROOT/blackbox-incremental-state-v1` 解析，仓库、
-config、脚本和 unit/plist 不写主机绝对路径。
+##### A0：先列出最小计算依赖
 
-两文件 Intake 为此只增加显式平台参数，不修改 Metadata 1.0：
+首个对象固定为 `liwei_0616_5y01_full_oos_k3_div_k10_bbv2`。先从 Native 代码逐项追踪实际被最终方向消费的值：
 
-```text
-python -m harness intake-blackbox --delivery-dir <dir> \
-  --execution-state-mode incremental_content_addressed_v1 \
-  --algorithm-state-schema-version liwei_phase_a_state_v1
-```
+| 计算项 | 必须证明的边界 | 首选优化 |
+|---|---|---|
+| 因子构造与筛选 | 每个训练 cutoff 的数据前缀、筛选截止和重算周期 | 特征一次构造；完全相同的筛选上下文进程内复用 |
+| Phase-A 模型结果 | config、seed、训练窗口、校准、周/月输入投影 | 同一方案内相同 baseline 共用；仅训练真正缺失的计算键 |
+| 月度配置排名 | 源码使用月初之前且排除 horizon 的 OOS 前缀 | 复用已证明稳定的历史预测；保持评分分母、顺序、并列规则 |
+| 信号筛选与组合 | 滚动准确率窗口、季度重平衡、最终实际使用的输出 | 按实际依赖生成，避免完整报告和未消费的诊断计算 |
+| 连续方向控制器 | 零方向是否重置、同向计数、fallback 触发 | 首选调用内重算完整 OOS 控制序列，不提前保存控制状态 |
+| 输入尾部与标签 | T+1/T+5 标签成熟、周内/月内投影变化 | 单独识别可稳定复用区间和必要重算尾部 |
 
-两个参数必须同时出现；普通 Intake 不传参数时生成的 config 字节保持不变。Intake 仍先完成脚本安全和两文件合同
-校验，再把平台参数写入 canonical config；不得在 Intake 后人工编辑 config 增加状态能力。
+特别注意：
 
-现有 Blackbox CLI 保持 `predict/backtest + Request + --data-dir + --output`。仅对 stateful config，executor 追加：
+- **标签成熟不等于历史数据修订。** T+5 旧预测的评分标签会在后续交易日才可用；必须在原算法允许的 cutoff
+  纳入评分，不提前读取，也不把首次未知标签永久缓存为已完成统计。
+- **昨天预测时的尾部不一定等于今天回看时的历史计算上下文。** 周内投影等变化已在 cons_sda 暴露；试点必须
+  确定哪些历史 Phase-A 输出稳定、哪些需在尾部重新计算，不能默认“每日只新增一条，其余所有数组永远不变”。
+- 对同一历史 Request，追加未来数据后的结果必须不变；对今天的新 Request，其已知标签、排名和尾部计算可以
+  按原语义发生变化。两种验收分别执行。
+- 无法证明的依赖保留原计算；若因此仍不满足性能，报告具体热点，不以改窗口、少 seed、少配置规避。
 
-```text
---state-input <validated-read-only-snapshot>
---state-output <fresh-private-staging-directory>
-```
+A0 交付物是本节内的实际依赖摘要、源代码 hash、计算次数/耗时分布和拟保存字段清单。此时不修改 Intake、
+Activation、Scheduler 或 Runtime Profile。
 
-算法只能读取 `state-input`，只能在 `state-output` 创建候选状态；不得直接获得 canonical state root。平台在进程前后
-分别核验五文件和 state-input 的文件指纹，任何改写都使本次 Output 与候选状态同时失效。stateless 方案不得收到
-以上参数，现有 67 个 Blackbox canonical 字节和 exact version 不修改。
+**A0 实测与依赖结论（2026-09-07）**
 
-##### 状态身份与存储格式
+基于代码提交 `4104174d53066cd13d4669e05c4ae35814b0379d`，使用已有只读冻结 snapshot
+`snapshot-f42540ebc533428ca6c869e2`；五文件均重新计算 SHA-256 并与 snapshot manifest 精确一致。本次数据不同于
+前述 cons_sda 的 snapshot，未拿两代输出做方向比较。五文件摘要依次为：
 
-运行目录固定为：
+- daily：`8e98c84d577304b69c432abfd3bf7438133add3af542b69534d3365949a9f223`；
+- weekly：`d51c65df76ab816b1d777ac7fd7377aac7d62b93b12ce30ebc4c5da26b0685bb`；
+- monthly：`1ee62d0939ec73350db5b01d98343557cc11ef0a48497c93f4d31f4ba655ed27`；
+- calendar：`fc42e4b6a59edcaf81ded827f82ea639a2a17a81d1763f23aa3bb386d153a4b2`；
+- catalog：`bb5ee17f097369ed4498744b604d51597e4814c9e31887e90aad62c2b2bd8965`。
 
-```text
-blackbox-incremental-state-v1/
-  <base_scheme_id>/
-    <scheme_version>/
-      lock
-      current.json
-      previous.json
-      objects/<payload_sha256>.npz
-      manifests/<manifest_sha256>.json
-      staging/
-      quarantine/
-```
+Native `core/v31_common.py` SHA-256 为
+`dd692e4e6bad8db89290ddec3dd73edaab64cb8135561e9108b40df980da3df0`；参考 cons_sda 脚本 SHA-256 仍为
+`9cebc6eab7df69ed48e68163fc0cfc5229ad616fda4989924e2b34d78274c250`。本机环境为 arm64、Python 3.13.12、
+NumPy 2.3.5、pandas 2.3.3、LightGBM 4.6.0；使用 `forecast_env_blackbox_v1`，Numba 缓存外置于私有临时目录。
+这不是 ECS 性能证据，也不是完整 Runtime Profile 指纹验收。
 
-目录必须是 service UID 独占的 `0700` 真实目录，拒绝 symlink、hardlink、非所有者和越界相对路径。payload 使用
-`allow_pickle=false` 可读取的 NumPy NPZ 或 closed-world JSON，不允许 pickle/joblib。单个 snapshot 上限 512 MiB、
-4096 entries；超过即失败，不能通过放宽 Runtime Profile 继续。
+| 检查 | 实际结果与边界 |
+|---|---|
+| 输入准备 | 2026-08-28 截止，3908 行日频、457 个特征、586 个信号；独立 Native 构造的特征及列序、信号、T+1/T+5 标签与参考路径逐元素一致；参考准备耗时约 0.81 秒 |
+| Phase-A 共用 | 源码确认三 baseline 的训练、筛选、grid、seed、horizon/purge gap 相同；差异在后续组合。644 行 × 265 config × 2 seed：单份训练上界 341320 次，原三个独立冷调用上界 1023960 次 |
+| 单日训练内核 | 2026-08-28 的 265 config、两个 seed 聚合后方向与概率逐元素一致，概率最大差值 0；Native 串行约 5.72 秒，参考 4 worker 约 1.34 秒。并发不同，不解释为同并发算法加速，也不计作完整 predict SLA |
+| 不被最终方向消费的路径 | 外层从 `vote_score` 即 `vs_full` 取符号后执行 consensus/streak，不读取内层季节性阈值后的 prediction。合成 Phase-A 隔离干预下 644 行外层明细完全一致；只证明依赖，可从新 successor 删除该内层计算，不证明 644 行真实方向验收 |
+| 周内尾部 | 2026-08-24→25→26→27→28，旧 cutoff 当日特征每次变化；28→31 旧特征未变。必须重算受影响旧预测点，不能只算新增日；新点训练 gap 前未变，不代表旧点预测特征未变 |
+| 标签与控制器 | 月度模型排名按 OOS 行位置 `pi[0]-5` 取前缀；信号准确率使用 T+1 标签。零方向不重置 streak，fallback 替换不反馈计数；每次重算可省去成熟标签和控制器的持久化修补逻辑 |
+| 候选状态体积 | 644×265 的 int8 preds 与 float64 probs 共 1535940 bytes（约 1.46 MiB），不含日期、身份与输入摘要；没有证据需要对象库、分段存储或多份统计状态 |
 
-manifest 顶层字段固定为：
+据此 A1 首选仅保存配置顺序固定的 Phase-A 聚合结果、日期及身份/输入校验摘要；标签、排名、信号和控制器
+仍在每次调用内重算。不保存模型、逐 seed 输出、累计排名或控制器状态。单点 530 次拟合仅是新增点上界；
+若需重算一个旧尾点，则为最多 1060 次的条件上界，漏跑、补行或历史修订不能套用此上界。
 
-```text
-schema_version
-base_scheme_id
-scheme_version
-code_hash
-config_hash
-delivery_manifest_hash
-runtime_profile
-environment_fingerprint
-algorithm_state_schema_version
-parent_manifest_sha256
-last_feature_date
-source_generation_id
-request_set_sha256
-cutoff_input_digests
-objects
-```
+历史源前缀修订直接拒绝状态复用，不开发任意历史修订的局部修补算法：close 修订会影响前移标签，EWM 和
+streak 传播不能假定固定短窗；IC 筛选历史、列序、日历映射及缺失/补行变化也可能令全部模型失效。
+正常截止推进造成的辅助频率投影尾部变化则按实际依赖定位并重算 suffix，必须与冷路径比较。
 
-`objects` 每项只包含相对路径、大小和 SHA-256；manifest 自身使用 canonical JSON 计算 SHA-256。`current.json` 只保存
-state pointer schema、base scheme、exact version 和 manifest SHA-256。对象、manifest 和 pointer 都采用“写临时文件
-→ flush/fsync → 重新读取校验 → 原子 rename → fsync 父目录”；已有同名对象只允许字节完全相同。
-`request_set_sha256` 是截至 `last_feature_date` 的累计、按 cutoff 排序的完整 Request 集摘要，不是本次新增一条的摘要。
-`source_generation_id` 只保留来源审计；跨 append-only generation 是否复用仍由逐 cutoff digest 决定，不能只比较
-generation 名称。
+独立审查确认上述方向，无 Critical；指出并已补测独立 Native 输入准备，且明确保留旧尾点重算、T+1 标签、
+历史修订拒绝及证据适用范围。A0 的局部检查不是完整 Request、冷/热或性能验收；A1 私有试点尚未晋级 A2。
 
-状态复用不能只看完整 generation 文件 SHA，因为日常 append 会改变完整文件。平台必须为每个 Request 计算
-cutoff-scoped input digest：daily 截至 `daily_cutoff_key`、weekly 截至 `weekly_cutoff_key`、monthly 截至
-`monthly_cutoff_key`；calendar 绑定解析该 Request 和稳定周/月投影所需的规范行，catalog 绑定完整 schema/成员摘要。
-序列化、列顺序、空值和数值格式由平台 closed-world 实现，不允许算法自定义。新 generation 仅追加未来行时历史
-digest 不变，可复用旧状态；任一历史修订使受影响 cutoff 及其后继状态失效，必须从最早变化点重建。
+##### A1：单方案最小算法试点
 
-##### 单 Writer 与原子推进
+在开发或 ECS 私有临时目录实现自包含候选。沿用已通过的 cons_sda 优化经验，并按 A0 结论保存最小派生状态。
+先验证两条内部路径：从空状态重建；从已核验状态推进到下一 cutoff。predict/backtest 使用同一计算核心，
+允许调度方选择一次单点或一次批量，不能形成两套算法。
 
-平台以 `<base_scheme_id>/<scheme_version>/lock` 取得非阻塞独占锁，并从读取 `current.json` 前一直持有到候选发布或
-失败清理。第二个进程、第二个 harness 或错误 exact version 立即失败。一次正常单日推进固定为：
+状态仅保存必要的预测数组、评分所需数据和已证明可恢复的控制信息；禁止模型对象、pickle/joblib、可执行代码、
+完整源数据副本、最终 Result 或数据库事实。内部字段由算法负责解释，平台不写 Liwei 参数或排名逻辑。
 
-1. 锁定 namespace，验证目录权限、current pointer、manifest hash closure 和 exact version；
-2. 计算本次 Request 的 cutoff digest，验证 parent 覆盖所有历史且没有 revision/gap；
-3. 将 parent 物化为只读 state-input，并创建空的 state-output；
-4. 启动标准 Blackbox CLI，只计算 parent 之后的新 cutoff；
-5. 验证 stdout 为空、五字段 Output、Request 对应关系和候选状态 closed-world schema；
-6. 重新核验 DataBridge 与 state-input 未改变；
-7. 先发布 content-addressed object，再发布 manifest，最后原子移动 current pointer，并保留 previous pointer；
-8. 返回 `PredictionRecord`，在平台 audit extra 中记录 parent/new manifest SHA，不修改算法 Result；
-9. 新 current 和 previous 均验证成功后，best-effort 清理本 exact version 未被两者引用的派生对象；清理失败只告警，
-   不回滚已经完成的预测执行。
+试点使用一个完整快照文件，文件内封装身份摘要和派生 payload，优先验证整体读写成本。使用无可执行反序列化的
+格式，数组读取禁止 object dtype/pickle；身份和 payload 必须在同一个原子替换单元内。不预先建立
+objects/manifests 对象库、parent 链、current/previous 双指针、分段索引或自动回收。
 
-状态发布早于后续业务 repository 事务是允许的：状态不是业务事实。若数据库提交失败，重试同一 Request 必须从已
-覆盖该 cutoff 的状态重算完全相同 Result，不重复追加或报冲突；不得为了跨文件系统和数据库强行建立分布式事务。
+快照绑定 scheme/code/config/metadata、算法状态格式、环境 fingerprint、已计算区间、标签成熟水位和实际计算所需
+输入摘要。本次 Request 文件 SHA 与完整 generation/五文件 SHA 另作为验收来源证据；随机 request_id 或 batch
+分割方式不应进入决定算法状态复用的计算键。新截止到来时补充的评分或尾部记录写进新快照，原业务事实不变。
 
-自然 `scheduled_live` 只允许推进下一个应有交易 cutoff。缺少 parent、跨过一个或多个应有 cutoff、历史摘要变化、
-pointer 损坏或 cache schema 不匹配时，调度 fail-closed，不在定时任务内全量重建。周末和法定假日不是 gap，按
-权威交易日历判断。gray target 区间可在一个已授权 batch 内顺序推进并只发布最终状态，仍保持单算法进程和一次
-repository insert-only 提交。
+初次构建与断点验证可以耗时较长，必须单列时间、CPU、RSS、读取/写入字节和模型拟合次数。不得使用旧 Native
+cache 给候选初始化后声称验证了冷启动；旧 cache 只可作为经输入身份核验的 comparator 参考。
 
-##### 运维命令与状态生命周期
+**A1 短区间试点证据（2026-09-07；不是 A2 或生产验收）**
 
-增加一个长期的通用 Blackbox 运维入口，不复用 Native cache 命令：
+私有两文件试点位于 `/tmp/bfl-full-oos-a0.w33Sab/delivery/`，脚本 `full_oos_trial.py` 的 SHA-256 为
+`c2c113c77ae0bea4b438a2de0d2b89f0fef5490cf02d0531511b85e6d9fbd236`，配套 Metadata 为 `full_oos_trial.json`。
+它没有进入 canonical、Intake、Registry 或部署矩阵；`--state-input/--state-output` 仅为私有试点参数，不能视为
+当前平台已经支持的接口。全部输入仍来自 A0 同一冻结 snapshot，未读取旧 Native cache。
 
-```text
-python -m harness blackbox-state inspect --scheme-id <id>
-python -m harness blackbox-state prewarm --scheme-id <id> \
-  --requests <canonical.csv> --expected-scheme-version <version> \
-  --expected-generation-id <generation>
-python -m harness blackbox-state verify --scheme-id <id> \
-  --expected-manifest-sha256 <sha>
-python -m harness blackbox-state quarantine --scheme-id <id> \
-  --expected-manifest-sha256 <sha> --approved-by <operator>
-```
+- 使用合法日期构造的 2024-01-19..2024-02-01 共 10 条开发 Request，连续启动 10 个独立算法进程，覆盖周内、
+  跨周和月初。首次从空状态训练 14 个 OOS 日耗时 20.51 秒；后续 9 次包含进程启动、读取、校验、重算和写入的
+  wall time 为 3.38–5.04 秒，每次实际训练 1 或 2 个日期。该 Request 集不是 333 条正式验收区间。
+- 最后截止的完整 23 日冷计算耗时 30.01 秒，与恢复路径的 dates、feature 摘要、全部 265 config 的 preds/probs
+  及规范化 header 逐元素/字段一致；最终五字段 Result 一致。同截止重试 2.14 秒且训练行数为 0。
+- 独立 Native 从输入准备开始、从零训练完整 23 日 × 265 config × 2 seed，再按原三个 baseline 组合，耗时
+  128.96 秒；全部配置日期上的方向、概率与试点数组精确一致，最终方向一致。此 comparator 仅共享经源码确认
+  相同的三个 baseline Phase-A，不读取试点数组或旧生产 cache 来初始化 Native。
+- 最终快照 902671 bytes；验证器记录的算法子进程峰值 RSS 为 815874048 bytes。本机非独占环境，以上耗时
+  不能外推为 ECS、644 日成熟历史或正式 333 条区间的性能通过证据。
+- 10 类负向/故障注入通过：空 feature 证明、概率摘要损坏、倒序日期、环境身份不匹配、Metadata 身份不匹配、
+  Result/状态同路径、Result 覆盖输入状态、状态输出覆盖输入状态、历史源前缀修订、状态生成后 Result 写失败。
+  所测场景均拒绝且没有新增 Result/状态，既有输入状态摘要不变；另已验证未来状态不能服务历史 Request。
+- 独立审查提出的输出互相覆盖、状态结构校验缺失、身份信息遗漏三项 Important 已修复并重跑上述最终版本。
+  语法及 import 边界检查通过，无 project shared/schemes、DB、网络或算法子进程导入；未运行平台全量回归，
+  因为本轮未修改平台或 canonical 算法。
 
-`inspect/verify` 只读；`prewarm` 只写派生状态，不写数据库、Registry、run、prediction 或 backtest；`quarantine`
-只移动精确匹配的损坏 namespace，不删除，并属于独立现场操作。命令只接受 canonical config 和当前 immutable
-release，expected identity 不匹配即失败。prewarm 从空状态运行完整历史 Request，完成后再次从随机恢复点重放
-并与冷路径摘要一致才发布 ready current；执行中断只留下可清理 staging，不能移动 current。
+精确 Request、逐次指标及对照结果见私有 `/tmp/bfl-full-oos-a1-final.rLITH8/trial_report.json`，负向证据为同目录
+`negative_report.json`；开发探针与完整数据不纳入 Git。临时目录仅是开发证据，不承担发布或恢复依赖。
 
-Stateful successor 的 persisted backtest evidence 必须额外绑定 state mode/schema、起始/结束 manifest SHA 和
-cutoff digest policy SHA。Activation 与迁移 preflight 必须验证 exact version 有 ready current，且
-`last_feature_date` 至少覆盖 cutover/gray 计划要求的前一 cutoff。旧 exact version 的 backtest 或 state evidence
-不能为新版本复用。
+A1 留给 A2 的问题为发布后的清理异常语义、可选 numba 身份读取、未来 calendar 追加与读取资源上限；
+处理进度见下方 A2 实测记录。真实 generation 的历史 weekly/monthly 前缀是否稳定尚未验证；任意修订仍显式
+重建。不能凭此次短区间结果接入 A3 平台或开启 cutover。
 
-##### 实施工作包与代码范围
+##### A2：算法等价与性能验收
 
-实现严格按以下顺序，每包单独提交、验证和审查：
+**2026-09-07 本地私有验收记录：原 A2 已完成；以随后重验通过的 A2c 为当前算法候选**
 
-1. **P0 合同先行**：在 `shared/scheme_config_schema.py`、`scheduler/discovery.py` 增加可选
-   `execution_state` closed-world 解析；在 `shared/blackbox_v2/intake.py` 与 `harness/cli.py` 增加成对 Intake 参数；
-   新增 `shared/blackbox_v2/incremental_state.py`，只实现身份、digest、manifest、pointer、目录安全和原子文件操作，
-   不引用 Native cache 模块；能力实际落地且测试通过的同一提交再同步更新 `AGENTS.md`、共享方案契约、Blackbox
-   上游/平台 SOP，计划批准本身不能冒充当前运行合同已经改变。
-2. **P1 Executor 接入**：修改 `scheduler/blackbox_v2_runner.py` 和 `scheduler/executor.py`，增加受控 state-input/
-   state-output、per-scheme lock、运行后复验和原子发布；stateless 调用路径必须逐参数、环境和行为不变。
-3. **P2 Harness 运维**：在 `harness/cli.py` 与新的 `harness/blackbox_state.py` 实现 inspect/prewarm/verify/
-   quarantine；不增加数据库表或后台 daemon。
-4. **P3 W3A 试点**：形成 `liwei_0616_5y01_full_oos_k3_div_k10_bbv2` 两文件实现。先保留完整 265 config、两个
-   seed、2024-01 起连续排名，再共享方案内相同 baseline Phase-A；状态只保存紧凑预测数组，不保存模型。
-5. **P4 恢复与性能验收**：比较空状态全量、任意中点恢复、逐日进程重启和乱序 batch 四条路径；完成 crash、并发、
-   append、历史修订、code/config/runtime 变化和 rollback/re-cutover 测试。
-6. **P5 ECS 技术验证**：在 ECS 私有临时 state root 完成 prewarm，随后模拟至少 10 个连续应有交易 cutoff，每次
-   启动一个真实 Blackbox 进程；不 activation、不写业务库、不改 systemd。通过后才允许生成 persisted backtest。
-7. **P6 族扩展**：逐个判定 W2/W3B-D。能用纯算法优化满足门槛的保持 stateless；只有有连续历史依赖证据的方案
-   才声明 incremental state。W3A/W3B 仍须整 wave 通过后切换，但各 successor state namespace 独立。
-8. **P7 ECS/Mac3 晋级**：ECS 按 5.4 切换和真实 one-shot 模拟；Mac3 使用同一 archive，但基于 Mac3 自己的
-   DataBridge 独立 prewarm，默认不复制 ECS state。
-9. **P8 清理**：全部 wave 回滚窗口结束后删除 `shared.liwei_0616_phase_a_cache`、Native cache contract/migration/
-   projection、publisher/consumer wave 和专属测试；W3A 等单方案的一次性性能/等价脚本在验收摘要入文档后删除，
-   只保留通用 Blackbox incremental-state contract、原子性、恢复、隔离和 executor 控制面长期测试。
+- 候选为 `/tmp/bfl-full-oos-a2.mi984B/delivery/full_oos_trial.py`，SHA-256
+  `01aa9371b82ad33f155f535c66a321c42d00c7edcfc937555c95df629c7ec567`；不改 canonical 或 Native 源码。
+  继续绑定冻结 snapshot `snapshot-f42540ebc533428ca6c869e2` 的五文件；完整身份记录见该目录 `identity.json`。
+- 修复上述 A1 边界；读取快照先验证真实文件大小、未压缩 ZIP 成员、NPY shape/dtype 与 payload 长度，
+  再通过同一个只读文件句柄加载，避免路径替换绕过检查。独立代码审查未留 Critical/Important 问题。
+- 20 项真实文件/CLI/故障注入检查通过，覆盖损坏数组和身份、输出路径冲突、资源声明越界、压缩/对象数组、
+  历史 calendar 修订拒绝、纯未来 calendar 追加复用、Result 失败回收新 state，以及已发布 Result 的清理告警。
+  证据为 `boundaries.report.json`；该集合不是完整 A2 故障矩阵或 A3 平台安全验收。
+- 首条正式 Request 之前，截至 `2024-12-31` 的 242 个 OOS 点从空状态预热，耗时 **375.34 秒**，
+  峰值 RSS **947,978,240 字节**，state **1,489,926 字节**；未使用 Native cache，未预装正式区间结果。
+  证据为 `prewarm.report.json`。该时间是本机预热实测，不是 ECS SLA 或已批准恢复预算。
+- 333 条正式 Request 覆盖 `2025-01-02` 至 `2026-05-22`，沿用已冻结七字段，仅生成 successor request_id；
+  Request SHA-256 为 `dcd62088ce197adee97d95dc944dd8f4c2ab3cdb8fe2f30a7b2a4f68f9a2f340`。
+  333 条推进已完成，耗时 **1185.18 秒**，峰值 RSS **876,691,456 字节**，state **2,382,699 字节**；
+  100 条升序/降序/乱序分别 **339.12 / 360.91 / 362.03 秒**，规范化 Result 与最终状态完全一致。
+- 已有 242 点前置历史后，十个全新进程逐日仅暴露当时可见输入，单次 **4.28–5.70 秒**；五字段结果与正式
+  批次前十条完全相同。一次补齐内部十日计算仅输出末日需 **20.09 秒**；末日从空状态独立冷算需 **449.79 秒**。
+  两者与十次逐日推进的末态全部数组/header、Result 精确一致；三次相同 Request 重试约 **2.66–2.72 秒**，
+  结果与 state 摘要不变。冷算时间单独披露，不冒充 ready-state 每日 SLA。
+- `1+332`、`100+233` 的 Result 和全部规范化状态已与 `0+333` 完全相同；100 条中的非连续乱序子集也通过。
+  独立首/中/末点、`332+1` 与 Native 333 五字段比较也已通过；冷路径完整 333 已完成，耗时 **1562.98 秒**，
+  Result 和全部规范化状态与恢复路径完全一致。
+  实时完成/缺项清单见 `aggregate.report.json`，未执行项不能从相邻测试推导为通过。
+- Native 原算法从原始五文件独立冷训练 **575 点 × 265 配置 × 双 seed**，耗时 **971.53 秒**；
+  完整 dates/config 顺序/preds/probs 已与候选正式区间末态逐项精确相同。另经 Native 原函数独立训练每个
+  Request 当前点，再逐 Request 重算标签、排名、信号与控制器。独立动态前缀检查覆盖 **333/333**：
+  261 个仅当前末行特征变化，72 个前缀完全不变，历史训练可见标签、close、fallback 和 selected 列索引均一致；
+  `reference-dependency-review/report.json` 记录重跑 **231.41 秒**与完整输入/代码/环境闭包。
+  随后实际完成 333 条五字段比较，**零差异**，耗时 **1008.38 秒**，见 `native-comparison.report.json`。
+- 另有 9 项当前字节的 Request/源修订/非法方向失败检查通过，见 `contract-failures.report.json`。
+  并发开发负载下的本机结果不能代替 ECS 运行验收。
 
-P0-P2 是平台能力，P3-P5 是首个算法试点；试点未通过不得批量改造其他方案。每包必须运行相关单测和全量回归；
-P1、P3、P6 属跨模块高风险改动，必须独立审查，Critical/Important 清零后才能进入下一包。
+**真实 generation 复用边界已在 A2c 收紧并重验（不放松历史修订拒绝）**
 
-##### 试点验收和硬停止条件
+2026-09-07 使用既有 ECS 专用 SSH 身份只读取得 current 五文件，下载前后 manifest SHA 一致，下载后五文件
+全部匹配 manifest：generation `full-20260907-063337-3baeb4277bae`；只读核对 current release 为
+`3162f70e67f53b7cdb65a3e8792d42c6fab32d15`，本轮未部署、写库或操作调度。
+与原冻结副本比较，正式区间首/末 cutoff 的 daily/weekly/monthly/calendar 前缀全部相同；截至 `2026-09-04`
+则有 daily 1 格、weekly 5 格、monthly 41 格变化，calendar 不变。证据为 `real-generation-prefix.report.json`。
+原 A2 候选对整张 raw frame 做前缀摘要，会拒绝这种复用，因此即使原离线矩阵通过也不能称为每日运行已闭环。
+独立动态检查已确认 daily/weekly 变化列均不在本算法必需字段中；monthly 仅 `M0317126` 属于必需列，但变化
+发生在尚未消费的 `202609`，当前实际消费至 `202608`。两代 Native/trial 的完整特征、筛选特征、标签、
+close、fallback 与全部信号矩阵精确相同；见 `reference-dependency-review/generation-report.json`。
 
-W3A full-OOS 试点必须同时满足：
+据此只收紧状态证明为 `date + 28 个必需日列`、`week_id + 10 个必需周列`、
+`month_id + 7 个必需月列且不晚于已消费月份`；原始五文件读取、全部算法函数、日期与 Result 不变。
+第一次收紧版本 A2b 被独立审查拒绝：缺失的已消费末月补回时，仅比较旧行数前缀会误认新增月份。
+反例实测四类旧前缀检查均通过，但实际四个历史日特征变化，因此没有晋级该版本。
 
-- 冷路径、已预热路径、逐日 1 条路径、一次 batch 路径的 Request/日期/方向逐行零差异；
-- `0+333`、`1+332`、`100+233`、`332+1` 四种断点组合最终 state payload 与 Output 摘要一致；
-- Request 升序、降序、确定性乱序和子集执行按 request_id 一致，内部只按 cutoff 拓扑推进；
-- cutoff 后追加未来数据不改变旧 state/output；修改任一历史输入时从首个受影响 cutoff 精确失效；
-- 脚本、config、metadata、runtime 或 state schema 任一变化时旧 state 拒绝复用；
-- 在 object 写入、manifest 写入、pointer 切换前后分别注入崩溃，current 永远指向完整旧状态或完整新状态；
-- 两个并发 Writer 中只有一个成功；失败方不生成 Output、不移动 pointer；
-- prewarm 完成时间、CPU、RSS、磁盘和对象数量形成证据；恢复 RTO 目标不超过 6 小时；
-- ready state 下单条每日 predict 连续 10 个 cutoff 均不超过 120 秒，峰值 RSS 不超过 4 GiB、线程不超过 8、
-  无子进程；100 条不超过 600 秒，完整正式区间不超过 1800 秒；
-- 每日 state 增量大小有上界且没有模型对象、pickle、源数据副本或跨方案路径；
-- Native comparator 在同 generation/Request/runtime 下全区间方向 mismatch 为 0。
+修订为 A2c：校验月度状态时，按旧 `header.cutoff` 的完整已消费月份范围同时核对行数和摘要，不新增状态字段。
+新候选在 `/tmp/bfl-full-oos-a2c.3PRPEW/delivery/full_oos_trial.py`，SHA-256
+`9a32cd7e6c157a5d56a3274affd45a4431a3c3f35daa8ac88a400dab2dacb27e`，格式 `full-oos-a2-private-4`；
+两文件 metadata 语义不变，独立 hash 为 `6645035fcdc1e361545f19df0bb98a8f43f70ee48485d2d87e464d157dad159f`。
+独立审查的实际候选边界 10/10 通过；真实 CLI 也验证了未依赖列/未消费月变化复用、缺失末月补回拒绝、
+正常跨月冷/热 Result 与全部状态相同、已消费月份修改拒绝、旧格式拒绝，见新目录 `dependency-boundary.report.json`。
+已有 20 项文件/CLI 边界在新字节下重验通过；新预热与完整区间重验已独立完成，没有继承 A2 候选的通过结论。
+原 Native 真值只有在五文件、完整 Request、Native code/config、环境与原证据摘要全相同后才可复用，并另行
+记录新候选与独立 Native 数组/结果的实际比较，不改写旧 receipt，也不因旧 receipt 附带旧候选 hash 而重复训练 Native。
 
-任一结果差异、状态身份无法证明、prewarm 超过 6 小时、warm predict 超过 120 秒、历史修订仍命中、半 pointer、
-第二 Writer、跨 scheme 读取或需要修改算法窗口/grid/seed 时立即停止试点。不得把放宽 SLA、复制旧 Native cache、
-人工编辑 pointer 或跳过冷/热等价作为修复。
+**A2c 当前字节的完整离线结果**（本机 ARM64、并发开发负载；不是 ECS executor 性能结论）：
+
+| 验收场景 | 实测 | 结果 |
+|---|---|---|
+| 正式区间前从零预热 242 点 | 379.24 秒；state 1,489,926 字节 | 不预装正式区间结果 |
+| 333 条正式区间增量推进 | 1212.10 秒；峰值 RSS 962,265,088 字节 | ≤1800 秒；state 2,382,699 字节 |
+| 从零独立完成正式 333 条（含前置历史） | 1578.71 秒；峰值 RSS 955,285,504 字节 | 五字段及全部最终状态与增量路径一致 |
+| 100 条升序 / 降序 / 乱序 | 354.69 / 369.57 / 357.91 秒 | 均 ≤600 秒；规范化结果及状态一致 |
+| 十个新进程逐日推进 | 每次 4.17–5.74 秒 | 逐步暴露当时输入，五字段与正式批次一致 |
+| 漏跑十日后一次补齐内部计算 | 20.72 秒；仅输出本次 Request | 与十次逐日推进及 461.90 秒独立冷算的末态一致 |
+| 同一 Request 三次重试 | 2.75–2.79 秒 | Result 与状态摘要均不变 |
+| 分批、子集、独立首/中/末 | `0+333`、`1+332`、`100+233`、`332+1` 全通过 | 分批末态一致；子集与单点按 ID 精确一致 |
+| 当前候选对独立 Native 真值 | 333 条五字段零差异 | 完整 575×265 的 dates/config/preds/probs 逐项一致 |
+| 当前候选负向检查 | 20 项文件边界 + 9 项合同失败 + 10 项依赖边界 | 全部通过；失败不发布 Result/新状态 |
+
+独立首/中/末从前置状态复算分别为 **5.83 / 210.16 / 411.85 秒**，包含补算中间历史，不能冒充 warmed 单日
+耗时。上述每日 SLA 由十个连续新进程的实测证明。状态缓存只省去重复历史模型计算，未修改原算法的日期、
+模型窗口、标签成熟或最终控制器；历史修订仍显式拒绝，不自动退回冷训练。
+
+另在私有目录以原 generation 推进到 `2026-09-04` 的 649 点状态，历史构建 **491.80 秒**；改用只读取得的
+新 generation，同一 Request **3.28 秒**完成，Result 与完整状态均不变。该项证明这批无关修订不会触发重建，
+不是跨 generation 的 Native 等价豁免。证据为 `real-generation-cli.report.json`，状态 SHA-256 为
+`740a85ee11f5b4be12452f68342d7db3df3ccd9f08edad7e9ed0d8015f6cc55a`。
+
+汇总为新目录 `aggregate.report.json`：`pending=[]`、`offline_matrix_complete=true`、`production_ready=false`。
+完整 Result SHA-256 为 `d573f407b5486b145feacf2c3c1fa8ae7258805b0f54e9fdf6fc84223bbcb50f`；
+正式末态 SHA-256 为 `eaf75d6037d67539685379efce94e802f0267f257357dc93634d1b6eaeccde49`。
+`native-reuse.report.json` 复核旧 Native 证据闭包，并绑定当前 script、metadata、环境、Request、Result 及状态内部
+identity/payload 摘要；独立审查发现的误用旧版本状态证据风险已修复并重验，当前无未修复 Critical/Important。
+临时交付仍使用试点文件名和未验收 Metadata，不是已通过 Intake 的 canonical 包；不直接复制到生产运行。
+本轮仅更新本 Markdown，未修改平台/canonical/Native 代码，未执行平台全量回归、发布、业务写库或调度操作。
+
+先完成以下验证，才决定是否实施 A3 平台扩展。与第 6 节重合的检查使用同一份验收清单和证据，不按章节重复执行；
+证据复用与变更后重验规则见第 6 节。
+
+- 同一冻结输入与完整正式 Request 集，Native、候选冷路径、候选恢复路径的 ID、三个日期、方向零差异；
+- 333 条正式样本在相同前置历史准备下执行 `0+333`、`1+332`、`100+233`、`332+1`；
+  比较合并后的 Result 和规范化算法状态，执行时间、批次标识等诊断不参与状态等价；
+- 升序、降序、乱序、子集结果按 request_id 一致；内部需要的历史依赖仍需计算，不能把 Request 子集当训练历史；
+- 独立单点复核首/中/末，并覆盖月初、季度初、年度筛选边界、同周周初/周中/周末；
+- 连续模拟至少 10 个交易 cutoff，每次全新进程；逐步只暴露该时点可见的数据，覆盖 T+5 标签由未知变可用；
+- 将成熟标签、周/月尾部变化与源历史修订分别注入，证明稳定区间复用和必要重算的范围与冷路径一致；
+- 修改 code/config/metadata/runtime/状态格式后拒绝旧快照；同 Request 重试结果不变；
+- 验证生产状态不向历史 cutoff 倒退，历史回测从合法前置点在私有状态中向前计算；乱序 Request 可内部排序后
+  恢复原输出顺序，不增加未来快照反向查询能力；
+- 对输入前缀未变的漏跑场景，验证同一增量核心能否在每日时间预算内补齐内部计算，并仅输出本次请求；
+  未证明安全或无法满足预算时不启用该路径，明确失败并要求显式重建，不自动补写历史 prediction；
+- warmed 单日每次 ≤120 秒；单进程 RSS ≤4 GiB、数值线程 ≤8，算法不创建子进程；
+- 100 条 ≤600 秒、完整正式区间 ≤1800 秒仍为目标门槛，但报告必须注明起始快照覆盖范围：已覆盖区间回放与
+  新增区间推进分开计时，不能用预先算完被测区间的结果冒充 batch 增量性能；
+- 全量预热、恢复时间与状态体积单独实测，部署前结合调度时间和可接受停机窗口确定恢复预算；
+  最初六小时是开发时间窗口，不推导为恢复 SLA。恢复预算不能用于放宽每日 120 秒门槛。
+
+本阶段仍无业务写库或控制面切换。若进程内优化已满足全部门槛，保持 stateless，A3 的状态扩展无需实施。
+若有持久状态才能通过，必须先得到完整等价、状态体积和每日推进的实测证据，再冻结最小接口。
+
+##### A3：按试点结果接入最少的平台能力
+
+**当前入口条件**：A2c 本地离线矩阵已通过，A3 本地实现、独立审查与真实 executor 探针已通过；尚未发布。
+只读源码盘点确认既有平台能够验证 generation、
+文件身份、lineage 与输入完整性，但不能独立证明算法实际依赖的列和已消费月份没有变化。
+用户在详细解释后已明确同意：由算法判断历史依赖、修订拒绝及复用语义，平台只负责 exact version、可信输入
+lineage、状态摘要/路径/大小、独占推进和原子发布。这取代原“平台独立验证输入复用证据”的职责，不建立通用
+因子依赖证明合同。算法依赖遗漏仍由冷/热等价与修订注入验收防守；平台内容摘要不冒充算法语义证明。
+标准五字段 Result 验证必须先于 canonical 状态发布。
+
+只有 A2 通过才进入本阶段。保持 Metadata 1.0、两文件交付、五字段 Result 与唯一 Blackbox executor；有状态
+能力显式配置，普通方案不获得状态读写能力。上一版拟定的 mode/schema 字符串与成对 Intake 参数不作为已实现
+合同，A3 按试点实际需求冻结最少字段和受控入口，不建设算法插件注册表。
+
+只锁定受控读取、校验、独占推进、原子保存和显式重建五项必要能力。以下是候选接入点，不是必须逐项修改的
+开发清单；先核对已有实现，缺什么补什么，不预定新增模块或命令数量：
+
+1. `shared/scheme_config_schema.py`、`scheduler/discovery.py`：校验并传递状态能力。
+2. `shared/blackbox_v2/versioning.py`：显式把新增配置纳入 canonical hash；验证新字段变化会改变 successor
+   exact version，缺失字段的现有 Blackbox hash 保持完全一致，不能只加解析字段却漏改版本身份。
+3. `shared/blackbox_v2/intake.py`、`harness/cli.py`：提供所需的受控声明方式；不允许交付后手工改 config
+   绕过版本与验收。
+4. `scheduler/blackbox_v2_runner.py`、必要的 executor 调用点：提供只读旧快照、私有候选输出，复验输入与状态，
+   校验标准 Output 后发布新快照。算法不获得 canonical 状态根目录。
+5. 复用 `shared.runtime_paths`、`shared.exclusive_file_lock.ExclusiveFileLock` 及现有进程/目录边界；
+   新代码只补最小状态封装、摘要验证和发布，不重写已有锁或搬入 Native cache 模块。
+6. 只读检查优先由既有执行前校验和可审计日志满足，预热/重建优先复用既有受控执行入口；仅在无法满足时
+   增加最小运维入口，不另建 verify/quarantine/GC 命令。格式、磁盘与解压上限根据 A2 实测冻结。
+
+平台只验证通用状态身份、可信输入身份、路径、大小、内容摘要和提交完整性，内部数组和历史复用语义由算法验证。
+DataBridge/input_artifacts 继续提供 ready generation 与 lineage；平台对本次私有输入绑定完整文件摘要并在执行后
+复验，不重建或修复 producer generation。generation 变化本身既不证明可复用，也不直接判定失效；算法必须证明
+实际历史依赖仍成立，包括 catalog/calendar 的相关历史语义，不能仅凭 mtime 或 generation 名称决定复用。
+
+每日取得稳定的 base-scheme 文件锁，覆盖不同 exact version 的本机状态操作；状态文件按 exact version 隔离。
+该锁配合现有 Registry/advisory lock 与进程 fence，不能用版本级文件锁代替业务 Writer 授权。成功候选在同文件系统
+内写临时快照 → fsync → 重新验证 → 原子 replace → fsync 目录。一次替换只发布一个完整快照，不要求两个文件
+或双 pointer 同时原子更新；持久化验收摘要写既有 run/backtest 审计，不建立长期状态账本。
+
+失败清理只处理本次 staging；禁止顺带递归清理 canonical 状态。崩溃恢复、磁盘满、只读目录、第二 Writer、
+摘要损坏、数据库提交失败后的重试都纳入测试。文件系统与数据库不做分布式事务：状态可以先成功而业务事务失败，
+重试必须从同一输入恢复相同 Result；数据库预测仍由既有 repository insert-only 提交。
+
+生产状态只向前推进，不支持用未来快照反向服务历史 Request。普通 backtest/comparator 从合法前置点在私有
+状态中向前计算，不能推进生产状态；同 cutoff、同输入的失败重试仍须返回相同 Result，不另建历史查询能力。
+
+漏跑与状态损坏分开处理：只有输入前缀未变、状态完整且 A2 已证明安全和性能的场景，才允许同一增量核心在
+既定每日预算内补齐缺失的内部计算，仅输出本次 Request，不自动补写历史 prediction。不增加恢复算法或后台
+追赶任务。缺状态、状态损坏、历史修订、无法证明可复用或超出预算时明确失败，由显式预热/重建处理；
+重建不写 prediction，也不自动补发历史信号。
+
+**A3 本地实现记录（2026-09-07，未发布）**
+
+- 新增唯一 opt-in 字段 `incremental_state: true` 和 `intake-blackbox --incremental-state`。缺省旧配置 hash 不变，
+  非 true 值与 Native 声明拒绝；Metadata 1.0 和两文件合同不变。
+- 现有 `SCRIPT_VALIDATOR_POLICY_DIGEST` 按整个 Intake 模块字节计算，本次受控入口修改会改变该摘要。旧 release 的
+  回测证据不能直接用于新 release 的 activation/cutover（包括已记录的 W1 backtest-ready）；必须按新策略重新验证，
+  不绕过此门槛。此项不改既有方案 exact version、历史事实或 Registry，不能误报为已在本轮重新回测。
+- `scheduler.blackbox_state` 用一个有界平台封装保存 opaque payload，payload 上限 16 MiB，header 上限 64 KiB；
+  checksum 覆盖 header 与 payload。原子保存只替换一个完整文件，无 sidecar/pointer、ledger 或状态数据库。
+- 唯一 runner 在显式声明时传入 `--state-input/--state-output`，绑定 code/metadata/canonical exact version、
+  Python/conda/dist-info 安装记录和实际子进程环境、五文件或存量四文件的私有输入摘要。安装记录摘要不等于
+  扫描全部依赖代码字节；仍以受控冻结运行环境为前提，不支持现场手改 site-packages 或旁路加载代码。
+- 自然预测使用 base 锁和 exact-version 正式状态；历史 as-of、gray batch、持久化回测使用私有状态；迁移比较只
+  输出私有派生状态。缺失/损坏/无法复用不触发自动冷训练。状态 audit 写既有 PredictionRecord.extra/backtest extra。
+- `rebuild-blackbox-state` 显式绑定 scheme、expected version、日期和 approved-by，复用标准输入与 executor，
+  只重建状态，不创建业务 run/prediction/backtest/Actual。公共 CLI 测试验证在执行前拒绝非法范围、成功/失败释放
+  只读输入 Engine、只输出状态审计；并未在 ECS/Mac3 执行该维护命令。
+- 独立审查发现并修复实际环境变量漏绑、完整状态根 symlink 检查、pip 安装记录漏绑、硬链接锁及持锁期间换锁
+  五项问题；复用了现有锁类并仅补强其安全不变量。当前无未修复 Critical/Important，运维 CLI 测试建议已补齐。
+- 本机全量回归：**691 passed, 5 skipped, 229 subtests passed**；`git diff --check` 通过。5 项 skipped 未冒充通过，
+  其中 isolated MySQL 测试未在本轮提供专用连接；本轮未改数据库事务或 migration 实现。
+- 私有真实算法 executor 验证位于 `/tmp/bfl-a3-executor.9FONJP`：两文件经新 Intake 保存到该临时项目，script SHA
+  仍为 A2c 的 `9a32cd7e6c157a5d56a3274affd45a4431a3c3f35daa8ac88a400dab2dacb27e`，未进入仓库 canonical。
+  初次尝试因旧冻结样本有硬链接被正确拒绝；复制为独立、逐文件 SHA 相同的私有样本后已完成验证：从零预热
+  **378.47 秒**；十次新算法进程逐日推进 **3.94–5.24 秒**；同 Request 三次重试 **2.65 秒**。计时包含正式 runner
+  的私有输入/环境摘要、进程启动、Result 校验、状态锁与原子发布，不包含 DataBridge ready 入口或调度/数据库开销。
+  本轮十日均使用同一完整冻结文件，由算法逐 Request 截止；A2 的逐日可见输入实验另行保留，不混称同一实验。
+  十条五字段 Result 均与 A2c 正式区间对应行相同；最终 payload 与 A2c 独立冷算末日的 NPZ **逐字节相同**，
+  三次重试 payload 和平台 envelope 均不变。末态 **1,516,736 字节**，SHA-256
+  `bda0aaa6d8e4207f2ada233016d1cc838bac0711232a9181996579b2f34c5e3a`。
+  `report.json` 状态为 `LOCAL_EXECUTOR_PROBE_PASSED`，SHA-256
+  `a6b6819a99efc0d88e4b55377dfc2eaa4b46620f8bb2b0d6baa8286c59d985f6`；仍为 `production_ready=false`。
+  验证期间 runner SHA 为 `cc254fbd4681a96a26e6f3e4cb4552d572d4511b110f915d269a98ac4e191f78`，
+  state 模块 SHA 为 `2521ac3ddd2b650b27daaf78798da2e3c0ee26a01116512bcd42da6fa33a3a72`。
+  未连接业务数据库、创建生产状态、执行 one-shot 或操作 ECS/Mac3；当前本地实现不能替代 A4 目标环境验收。
+
+**A3 后续：正式候选接入与输入完整性补强（2026-09-07，未发布）**
+
+- 经 `intake-blackbox --incremental-state` 创建仓库 canonical
+  `schemes/liwei_0616_5y01_full_oos_k3_div_k10_bbv2/`，保持 `paused/draft`，部署矩阵为 `[]`，
+  不进入 ECS/Mac3 方案发现集合；原有部署矩阵的所有分配完全不变。
+- 新 scheme version 为 `3ee3dd2334fd`，script SHA 为
+  `ad9bdacf5063a427ecc8b70852e045f4822ba9af1b6d8fcd171cd2d779e95103`，Metadata SHA 为
+  `96d46ee4b2fb16f3b7da0c5485808f52f8f7ef14607721fbe00d26bc55d74982`，参与版本计算的 canonical config hash 为
+  `5d0a5b3b771a02f25e472c0fa76119ef978810907f2370feb8b0eea22c0d2d61`；`config.yaml` 原始文件 SHA 为
+  `c76edc19f65cb44871cfff2405b6da38a841d621a32625a75b1dc7e75eaecdfd`，两种摘要不混用。
+  相比 A2c，仅整理模块首说明和 Metadata 的 name/description/algorithm_version；去模块首 docstring 的 AST
+  完全一致，未改函数、常量、计算路径或算法私有状态 schema。新身份从零预热，不导入旧试点快照。
+- 补上 stateful runner 的 Request 文件前后完整性检查；实际 CLI 负例先复现“修改 Request 后仍可发布状态”，
+  修复后在 Result 返回、状态发布前拒绝。覆盖已有状态的 predict 与无旧状态的首次 backtest/rebuild，
+  失败不覆盖旧正式状态、不创建新正式状态；stateless 调用路径不变。
+- 新一轮全量回归：**693 passed, 5 skipped, 229 subtests passed**（21.75 秒）；`git diff --check` 通过。
+  独立审查运行 state/runner/deployment/active 合同测试：**47 passed, 65 subtests passed**，
+  两文件布局、Metadata、配置及 AST 比较通过，无 Critical/Important。5 项 skipped 不代表本轮完成 MySQL 现场验证。
+- 新 canonical 经正式本机 runner 从零预热 **461.32 秒**，十次逐日推进 **4.19–6.02 秒**，
+  同末日 Request 三次重试 **2.65–2.90 秒**；未加载旧试点状态。十日五字段 Result 与 A2c 完整正式区间对应行零差异。
+  仍使用 `full-20260905-063321-21c5c7188fa5` / `snapshot-f42540ebc533428ca6c869e2` 的逐文件 SHA 相同私有副本，
+  全量冻结文件由算法逐 Request 截止；计时包含 runner 检查/启动/发布，不含 DataBridge ready、数据库和调度入口。
+  本次不宣称已重新执行新 exact version 的完整持久化回测、100 条批量或全部性能矩阵。
+- 独立比对最终增量状态与 A2c `daily10-cold-last.state.npz`：dates、features、`265×252` preds/probs 数组
+  逐字节一致，算法 header 除预期 code/Metadata hash 变化外完全相同。因身份已改变，不声称整个 NPZ 字节相同。
+  末态 **1,516,736 字节**，payload SHA 为 `94e2fbaa11a097f0566123429daa860baf3c23cb07efa87f1eed2b3fbd906224`；
+  三次重试的 payload 与平台 envelope 均不变。envelope SHA 为
+  `13c8f782d3e2f9e876d02b009b9aa3c32a9b432847d3f43c1fe59e8375006f07`。
+- 一次性证据位于 `/tmp/bfl-full-oos-canonical.vb1rpu`：`report.json` SHA 为
+  `84320aedd0abf9d206969ddcf54a3dcafb75c8e6860bd3cb630313bb138f1710`；`state-comparison.json` SHA 为
+  `28f217e78a88822d4581c71226601a5772555c1aa5d80837e32ecfb2d38ecefc`；本轮 runner SHA 为
+  `9ecf354c5c706d1d2a3b2f535a128510df912de4c205a5467c35c05d1a56c6a3`，state 模块 SHA 与前一 A3 记录相同。
+  两份结果均明确 `production_ready=false`；原 A2/A3 证据保留其原身份，不改写为新候选收据。
+- 用户已明确授权将本次平台改动、相关文档及新候选提交到本地 `codex/develop` 并构建确定性 archive。
+  archive 必须来自 clean commit；提交和两次构建的精确身份、摘要与验证结果由构建产物及随附 Markdown 记录，
+  不将“获得授权”当作“已构建”。此授权不包含推送、合并 master、部署、激活、业务写库或服务切换。
+
+**A4 只读准备记录（2026-09-07 19:28–19:29 CST）**
+
+- ECS SSH 可读；current 为 `3162f70e67f53b7cdb65a3e8792d42c6fab32d15`，previous 为
+  `f947426d969d6c3e3879e707f7a0564345788d9a`。服务 Python 3.12.13、Blackbox Python 3.13.12 可执行。
+  4 CPU，约 12 GiB 可用内存，`/opt` 约 16 GiB 可用空间；这些是采集时资源，不是性能验收。
+- installed daily/weekly/monthly service 均 loaded、inactive/dead、MainPID 0，timer 为 active/waiting；
+  next trigger 分别为 09-08 07:03、09-12 11:30、09-08 18:00 CST。未停止、启动或替换任何 unit。
+- DataBridge publication manifest generation 为 `full-20260907-063337-3baeb4277bae`，manifest SHA 为
+  `d63a4df72dddae2acdc3d04f0c3e478a24837ba93f705518c309ece86a1e417f`，feature date 为 2026-09-04，
+  manifest 含五文件身份与 1474 行 catalog。尚未重新哈希实际五文件或验证当前 ready receipt，不能当作冻结输入验收。
+- `/opt/bond-factor-lab/incoming` 为独立于 current/release 的 root-owned 0700 目录，可供后续授权候选验证使用。
+  本次没有上传、写目录、导入算法依赖、连接数据库或查人工算法进程；service 空闲不能证明所有 Writer 均不存在。
+  因此只解除 SSH/基础解释器/资源可读阻塞，未获得 ECS 算法等价、性能、持久化回测或控制面验收结论。
+
+##### A4：ECS 验证、族扩展与晋级
+
+A3 有代码变更后运行相关合同/原子恢复测试和全量回归，并进行独立审查；Critical/Important 必须清零。生产接入
+文档、AGENTS.md 的长期约束与实际能力在同一实现阶段更新，当前计划不代表接口已可调用。
+
+先核对 A2 证据是否来自同一候选、输入、环境和正式 Blackbox executor；符合第 6 节规则的检查直接复用，不再
+整套重复。执行边界变化时必须重验受影响项目，尤其是在 ECS 私有状态目录完成正式 executor 的逐日模拟，
+测量包含输入读取、快照校验、算法执行和快照发布的完整耗时。通过后完成持久化回测与现有
+activation/cutover preflight；额外绑定初始/结束快照 hash、状态格式与校验策略摘要，复核与 gray 起点或下一个
+live cutoff 的衔接，不增生命周期表。
+
+W3A/W3B 仍整 wave 切换；各 successor 独立状态。W2/W3B-D 逐方案选择进程内优化或最小快照，不能为减少方案差异
+强制全部有状态。Mac3 使用 ECS 验证的同一 archive，基于本机 DataBridge 独立预热并重新做恢复/控制面验证。
+W4 的范围和 Mac3-only binary bundle 决定不变。
+
+回滚保留 successor 业务事实；派生快照按原 exact version 隔离，重新切换前核验输入与状态并按需显式重建。
+全部相应迁移和回滚窗口结束后删除旧 Native publisher/consumer、cache migration/projection 及专属测试。
+迁移期算法诊断/性能脚本按既有原则在摘要留存后清理，长期保留公共状态合同、截止隔离、原子性与恢复测试。
+
+##### 执行门槛与未决实测项
+
+顺序固定为 `A0 依赖分析 → A1 算法试点 → A2 等价/性能 → 按需 A3 平台接入 → A4 ECS/Mac3`。
+当前 A0/A1 与 A2c 正式区间本地离线验收已完成；A3 的复用语义职责已确认，本地实现、审查及真实 executor 探针通过，
+不执行上一版 P0–P2 的框架建设，也不把本机私有 CLI 当作 ECS 正式 executor 验收。
+当前没有新增生产操作授权需求；已有生产切换、Mac3 控制面、
+数据库 DDL 的独立边界继续有效。
+
+试点已提供最小派生字段、标签成熟与尾部重算、整体快照读写、预热/恢复及每日耗时的本机证据；
+平台完整调用链和 ECS 实际环境的对应证据仍须 A3/A4 补齐。
+仅当整体快照复制/写入实测成为主要瓶颈时，再评估分段存储并补充方案；不提前实现对象库或垃圾回收。
+任一方向/日期差异、未来数据污染、错误复用、状态越权、半文件可见、Writer 冲突或运行性能失败，均阻断该
+候选晋级；不能通过缩减算法语义、复制旧 Native cache 或静默 fallback 标记完成。
 
 ### 5.3 Phase 3：Mac3-only 编译主体方案
 
@@ -712,10 +938,10 @@ artifact 和五文件目录；输出只存在于私有临时目录，逐行比�
 operator 明确撤销旧候选证据并形成新的 clean commit，不能静默替换。
 
 每批顺序固定：在候选树生成受控 receipt 并更新 deployment matrix → 形成 clean commit 和 deterministic archive →
-把该 archive 安装为目标机 current → 对 stateful successor 用当前 release 和 generation 完成 prewarm/verify →
+把该 archive 安装为目标机 current → 对 stateful successor 用当前 release 和 generation 完成预热与只读检查 →
 fence cadence timer 并等待 one-shot 退出 → 从 current release 重做 preflight → 使用其 plan SHA 单事务切换 →
 单 batch gray 区间并推进对应私有状态 → 恢复 timer → 通过真实 systemd one-shot 的人工触发验证唯一 writer、
-journal、Dashboard、state parent/new manifest 与 next trigger。preflight 之前的安装和 prewarm 只部署代码、写可重建
+journal、Dashboard、运行前后状态快照摘要与 next trigger。preflight 之前的安装和预热只部署代码、写可重建
 派生状态，不授予 Registry 或业务事实写入权。
 
 cutover 单事务必须：
@@ -741,7 +967,7 @@ gray 区间从 `target_date >= 2026-06-01` 到下一个自然目标前，单 suc
 rollback 顺序固定：fence timer → 确认无进程、state lock 和 running run → 单事务 archive/pause successor、恢复
 old version/Registry → 保留 successor facts 和私有派生状态 → current 切回已核验 previous release → 恢复 timer →
 人工触发同一 installed one-shot，验证 old 恢复运行且 successor 不再新增 run。rollback 不回退或删除 successor
-state pointer；re-cutover 前按 exact version 和当前 DataBridge digest 重新 verify/catch-up，不匹配时重新 prewarm。
+状态快照；re-cutover 前按 exact version 和当前 DataBridge digest 重新检查并显式补齐派生计算，不匹配时重建。
 
 同 exact version 允许重新切换，但必须复用已经发布的完全相同事实；禁止重复插入、覆盖或更换版本规避冲突。
 
@@ -749,14 +975,22 @@ state pointer；re-cutover 前按 exact version 和当前 DataBridge digest 重�
 
 Mac3 对 W1-W3 只使用 ECS 已验证的同一 immutable archive，独立重做 release、launchd、数据库、DataBridge、
 backtest、cutover 和 rollback preflight，不得复制 ECS 的主键、run、prediction、backtest、Actual 或 Registry
-行。stateful successor 默认也不复制 ECS state；Mac3 用本机 generation 独立 prewarm/verify。只有两端 exact
-version、runtime fingerprint、逐 cutoff digest 和 manifest closure 全部相同且另获明确授权时才允许导入精确
-派生对象，导入仍不能复制 pointer 或业务事实。Mac3 使用 installed plist 的精确 ProgramArguments、
+行。stateful successor 用 Mac3 本机 generation 独立预热和检查，本次不建设跨机状态导入功能。
+Mac3 使用 installed plist 的精确 ProgramArguments、
 WorkingDirectory、EnvironmentVariables、运行用户和 Runtime Profile 人工触发一次 one-shot，不等待自然日历。
 W4 随后形成新的 Mac3-only binary-bundle archive，该 archive 不需要也不得在 ECS 运行。30 个 target 全部完成
 对应控制面模拟验证后，才允许最终删除 Native 可执行路径。
 
 ## 6. 测试与验收
+
+A2、A4 与本节共用一份验收清单，在本 Markdown 中记录各检查的证据位置、身份摘要、结果和覆盖范围；
+不新增验收服务、数据库表或证据管理框架。同一次执行可以同时满足等价、确定性、恢复和性能要求，不因多个
+章节引用而重跑。原有重复次数、样本范围、边界覆盖和性能门槛不减少。
+
+复用前必须核对候选代码及 exact version、输入与 Request、起始状态、运行环境、校验策略和执行边界。
+代码、输入、环境或执行边界发生变化后，重新运行受影响检查并说明其余证据仍适用的依据；无法证明则重验，
+不同环境的耗时不得互相替代。独立进程算法试点不能代替正式 executor 验证，本机证据不能代替 ECS/Mac3
+各自的现场 preflight、持久化回测和控制面验收。按需保留一次性算法验收脚本，闭环后只留摘要与公共回归防线。
 
 ### 6.1 单 successor conformance
 
@@ -783,13 +1017,15 @@ old/new code hash + runtime environment fingerprint`。Request 数量/顺序/ID�
 - stateless 方案及 stateful ready-state 的单条 predict ≤ 120 秒；
 - stateless 方案及 stateful ready-state 的 100 条 backtest ≤ 600 秒；
 - stateless 方案及 stateful ready-state 的完整正式区间 ≤ 1800 秒；
-- stateful 首次 prewarm 单独记录并以恢复 RTO ≤ 6 小时验收，不计入每日 predict SLA；
+- stateful 首次预热与恢复时间单独实测，不计入每日 predict SLA；部署前按实测与调度要求确定恢复预算，
+  不将开发时间窗口作为恢复 SLA；
 - 单算法进程峰值 RSS ≤ 4 GiB；
 - `fallback_used=false`；
 - 无子进程，数值库线程不超过 8。
 
-性能报告必须区分 `cold_prewarm`、`warm_predict`、`warm_batch`，并记录 parent/new manifest SHA；不得把已有
-Native cache 预装成 Blackbox state 后声称完成 cold prewarm，也不得只报告 cache hit 的最好一次。
+性能报告必须区分 `cold_prewarm`、`warm_predict`、`warm_batch`，记录运行前后状态快照摘要、起始覆盖区间与新增
+计算区间；不得把已有 Native cache 预装成 Blackbox state 后声称完成冷启动，也不得只报告 cache hit 的最好一次。
+完整覆盖被测日期的快照回放和从区间起点推进必须分别披露；最终按 5.2.1 A2 验收实际新增计算的性能。
 
 ### 6.4 数据库与控制面
 
@@ -812,7 +1048,7 @@ successor 唯一键、`run_id/backtest_run_id` XOR、gray/backtest 区间、Actu
 - 任一日期或方向不一致；
 - successor 需要数据库、网络、跨方案 import、子进程或不受 5.2.1 合同约束的持久 cache；W1-W3 需要额外代码，
   或 W4 读取 manifest hash closure 之外的代码；
-- stateful successor 的 parent、cutoff digest、exact version、state schema、pointer 或单 Writer 任一无法证明；
+- stateful successor 的输入复用证据、exact version、状态格式、快照完整性或单 Writer 任一无法证明；
 - exact version、Registry、matrix、release manifest、DataBridge authority 不一致；
 - 存在 running run、第二 writer 或 timer 无法 fence；
 - 需要覆盖、删除或修改旧业务事实；
@@ -845,7 +1081,10 @@ Native run；Native 可执行路径与临时迁移工具已删除；全量、架
 025 已删除两个 confidence 列；Dashboard、Actuals、其他 Blackbox 和调度控制面无非计划变化。
 
 当前全局状态仍为 `IN_PROGRESS`。ECS 基线已经重新只读核验；W3A 的 `cons_sda` 已通过离线 conformance，
-同 wave 的 `full_oos` 已获准进入 5.2.1 增量状态试点，但平台合同、prewarm、冷/热等价和 warm SLA 尚未实现，
-因此 W3A 仍未解除切换阻塞。W2、W3B-D 也尚未满足各自性能门槛，必须等试点通过后逐方案分类。W4 的
+同 wave 的 `full_oos` 已完成 5.2.1 A0/A1 与 A2c 完整本地离线冷/热等价、每日推进及真实 generation 复用验证。
+平台状态扩展已通过本地实现测试、独立审查和 full-OOS executor 预热/十日/重试探针；ECS 正式 executor 验收尚未执行，
+因此 W3A 仍未解除切换阻塞。full-OOS 两文件已通过 Intake 进入仓库 canonical 候选，保持 paused/draft、
+部署范围为空，已获本地提交与确定性打包授权但尚未部署；新身份的本机验证不等于 ECS 持久化回测或切换完成。
+W2、W3B-D 也尚未满足各自性能门槛，须逐方案分类，不能外推当前试点通过。W4 的
 Mac3-only binary-bundle 架构已经获得确认，但必须等 W1-W3 晋级 Mac3 后实施；不能用旧 adapter、未纳入
 manifest 的二进制、旧水位、旧 Native cache 或文档声明冒充闭环。

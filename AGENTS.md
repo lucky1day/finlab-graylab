@@ -40,6 +40,7 @@
 - Native successor 继续遵守 Blackbox V2 的精确五字段 Result 合同；迁移等价只比较同一冻结输入下的 Request、`predict_date`、`feature_date`、`target_date` 与 `predicted_direction`。Native 的 confidence、vote score、阈值等只可作为迁移期临时诊断，不进入长期合同或数据库。
 - Native 迁移使用新的 Blackbox successor base ID，不原地修改 `runtime_type`，也不把平台 adapter 冒充 Blackbox。17 个有可读源码的 Native base 每批必须形成合法两文件交付；仅 W4 九个已锁定的 Mac3 加密方案允许形成 manifest 锁定的 Mac3-only Blackbox binary bundle，`.so` payload 必须进入完整 hash closure，且不得把该例外扩展到新方案。两种交付都必须证明输入截止、日期、结果字段、回测结果和性能与迁移前基线一致。
 - 迁移期间旧 Native 与新 Blackbox 的身份、Registry 切换、历史数据和回滚边界必须显式设计；不得双写、覆盖历史预测或让两个 Writer 同时拥有同一业务键。
+- Blackbox 只有显式 `incremental_state: true` 的方案可使用平台传入的私有派生状态；算法负责历史依赖变化与复用语义，平台负责 exact version、可信输入身份、状态完整性、路径安全、方案级独占和标准 Result 校验后的原子发布。状态不成为源数据或业务事实，不跨方案共享；回测/历史回放不推进生产状态，缺失、损坏或无法复用时只允许显式重建，不自动 fallback。接口见 Blackbox 上游/平台 SOP。
 - 只有在等价验证、灰度观察、受控切换和回滚窗口闭环后，才能删除对应 Native adapter、source runner、回测 runner、专属 Gate 与测试；不得先删旧路径再验证新路径。
 
 ## 强约束分层边界（不可破坏的四条不变量）

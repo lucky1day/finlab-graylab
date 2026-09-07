@@ -28,6 +28,7 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
             config = load_scheme_config(scheme_dir / "config.yaml")
 
         self.assertEqual(config.runtime_type, "blackbox_v2")
+        self.assertIs(config.incremental_state, False)
         self.assertEqual(config.input_source, "data_bridge_current")
         self.assertEqual(config.version_status, "draft")
         self.assertEqual(config.name, "10Y Trial")
@@ -48,6 +49,26 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
         self.assertEqual(config.delivery_metadata, (scheme_dir / "delivery" / "trial_10y.json").resolve())
         self.assertIsNotNone(config.blackbox_metadata)
         self.assertEqual(config.blackbox_metadata.scheme_id, "trial_10y")
+
+    def test_incremental_state_opt_in_changes_only_config_identity(self) -> None:
+        from scheduler.discovery import load_scheme_config
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
+            config_path = scheme_dir / "config.yaml"
+            original = load_scheme_config(config_path)
+            config_path.write_text(
+                config_path.read_text(encoding="utf-8")
+                + "incremental_state: true\n",
+                encoding="utf-8",
+            )
+            declared = load_scheme_config(config_path)
+
+        self.assertIs(declared.incremental_state, True)
+        self.assertEqual(original.code_hash, declared.code_hash)
+        self.assertEqual(original.manifest_hash, declared.manifest_hash)
+        self.assertNotEqual(original.config_hash, declared.config_hash)
+        self.assertNotEqual(original.scheme_version, declared.scheme_version)
 
     def test_legacy_platform_input_field_only_preserves_version_hash(self) -> None:
         from scheduler.discovery import load_scheme_config

@@ -64,6 +64,7 @@ class SchemeConfig:
     factor_input_mode: str | None = None
     blackbox_metadata: BlackboxMetadata | None = None
     owner: str | None = None
+    incremental_state: bool = False
 
 
 def _require_mapping(value: Any, path: Path) -> dict[str, Any]:
@@ -211,6 +212,7 @@ def _load_blackbox_config(config_path: Path, raw: dict[str, Any], schedule_raw: 
         factor_input_mode=str(raw.get("factor_input_mode", "legacy_v1")),
         blackbox_metadata=metadata,
         owner=metadata.owner,
+        incremental_state=raw.get("incremental_state", False),
     )
 
 

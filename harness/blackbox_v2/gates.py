@@ -5,6 +5,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
+from functools import partial
 
 from backtests.blackbox_v2 import run_blackbox_historical_backtest
 from backtests.repository import persist_backtest_output_atomic
@@ -20,6 +21,7 @@ from scheduler.blackbox_v2_runner import (
     DEFAULT_RUNTIME_PROFILE,
     RuntimeProfile,
     run_blackbox_backtest,
+    state_binding_for_scheme,
 )
 from scheduler.discovery import SchemeConfig, load_scheme_config
 from scheduler.process_control import ProcessGroupTerminationError
@@ -150,6 +152,9 @@ class BlackboxBacktestGate(_BlackboxGate):
                 ),
             )
             environment_fingerprint = _environment_fingerprint(ctx.project_root)
+            state = state_binding_for_scheme(cfg, generation_id=generation_id)
+            run_delivery = (partial(run_blackbox_backtest, state=state)
+                            if state is not None else run_blackbox_backtest)
             with _open_runtime_input(bundle) as runtime_view:
                 output = run_blackbox_historical_backtest(
                     metadata=metadata,
@@ -161,7 +166,7 @@ class BlackboxBacktestGate(_BlackboxGate):
                     scheme_version=cfg.scheme_version,
                     generation_id=generation_id,
                     benchmark_id=benchmark_id,
-                    run_delivery=run_blackbox_backtest,
+                    run_delivery=run_delivery,
                     profile=execution_profile,
                     backtest_start_date=ctx.backtest_start_date,
                     target_date_before=ctx.predict_date,

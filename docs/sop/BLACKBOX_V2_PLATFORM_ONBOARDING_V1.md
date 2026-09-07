@@ -56,6 +56,10 @@ schemes/{scheme_id}/
 
 Intake 不读取 DataBridge、不运行算法、不写数据库业务表，也不激活 Registry。
 
+仅对已完成增量算法验收的交付，可显式增加 `--incremental-state`；Intake 在平台 config 中写入
+`incremental_state: true` 并纳入 exact version，Metadata 和两文件字节不变。缺省字段的既有版本哈希保持不变；
+配置出现 `false/null/字符串/数字` 或 Native 声明均拒绝，不设置全局自动启用。
+
 新交付的 Metadata 必须显式包含合法 owner。Intake 不把 owner 复制进 `config.yaml`；首次注册及后续同步
 从 Metadata 写入 `t_scheme_registry.owner`。历史 canonical Metadata 为保持 exact version 可以缺少 owner，
 但此时只能保留数据库已有的合法 owner；数据库缺失时必须拒绝注册或同步。Dashboard 只读取 Registry，
@@ -93,8 +97,9 @@ python -m harness gate backtest \
 它已经包含真实批量执行，因此平台不再提前额外运行一次 predict 冒烟。失败重试必须产生新的
 immutable run；不得更新、删除或补写旧 run。
 
-回测运行视图只把 producer 封存文件物化为子进程私有只读文件；不重新哈希、解析或扫描 generation CSV。
+回测运行视图只把 producer 封存文件物化为子进程私有只读文件；不解析或重新验证 generation CSV。
 子进程结束后仍校验私有视图未被改写，这是运行隔离，不是 DataBridge 重验。
+显式增量方案另对私有输入绑定执行前后内容摘要；完整回测与 gray replay 使用本次私有状态，不读取或推进生产状态。
 
 ## 4. Step 3：激活
 
@@ -141,6 +146,29 @@ scheme_version + code_hash + config_hash + manifest_hash
 
 Dashboard 只证明当前产品可见性，不证明 exact version。Production Observed 仍必须由真实
 launchd/systemd one-shot 时钟产生成功 `scheduled_live` 证据。
+
+### 5.1 增量方案的显式预热/重建
+
+仅对声明了增量能力的 exact version，完成目标环境验证并取得该次状态维护授权后执行：
+
+```bash
+python -m harness rebuild-blackbox-state \
+  --scheme-id <scheme-id> --predict-date YYYY-MM-DD \
+  --expected-scheme-version <exact-version> --approved-by <operator> \
+  --project-root <immutable-release>
+```
+
+该入口复用 ready DataBridge、标准 Request 与唯一 Blackbox executor，从空算法状态计算，验证五字段 Result 后
+发布状态；不创建 run/prediction/backtest/Actual，不激活，不补发历史信号。生产路径来自 `BFL_RUNTIME_ROOT/blackbox-state`，
+状态按 base/exact version 隔离；同 base 的重建和每日推进共用非阻塞文件锁。操作输出保留操作者、版本、日期与状态摘要。
+调度切换与现有 Writer 的现场核验仍按独立操作边界执行，文件锁不替代业务授权。
+
+自然运行缺状态、状态损坏、版本/环境不符或算法拒绝历史复用时明确失败；不得静默重建。
+状态 payload 上限 16 MiB，平台单文件封装绑定来源 generation/snapshot、私有输入摘要、实际代码/Metadata/环境身份和
+完整性校验。只在 Result、输入和状态复验成功后同目录 fsync/replace/fsync 发布。发布后的目录 fsync 失败可能留下完整
+新状态；必须报告失败，按相同 Request 重试，不尝试覆盖回旧状态。预测事实仍由既有 repository insert-only 提交。
+
+本地接口实现不代表 ECS/Mac3 已验证或已部署；发布前必须完成公共状态合同、崩溃恢复、双 Writer 和完整执行链验收。
 
 ## 6. 灰度区间批量物化
 

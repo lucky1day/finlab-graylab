@@ -45,8 +45,11 @@ def intake_delivery(
     delivery_dir: str | Path,
     *,
     schemes_root: str | Path,
+    incremental_state: bool = False,
 ) -> Path:
-    """Atomically preserve a two-file delivery and generate its platform-owned config."""
+    """原子保留两文件交付并生成平台配置，可显式启用私有增量状态。"""
+    if type(incremental_state) is not bool:
+        raise ValueError("incremental_state intake option must be a boolean")
     metadata, script, metadata_file = validate_delivery(delivery_dir)
 
     destination_root = Path(schemes_root).resolve()
@@ -69,7 +72,7 @@ def intake_delivery(
             staged_delivery / metadata_file.name,
         )
         (staging / "config.yaml").write_text(
-            _config_text(metadata),
+            _config_text(metadata, incremental_state=incremental_state),
             encoding="utf-8",
         )
         for path in staged_delivery.iterdir():
@@ -190,17 +193,21 @@ def _call_name(node: ast.AST) -> str:
 
 def _config_text(
     metadata: BlackboxMetadata,
+    *,
+    incremental_state: bool = False,
 ) -> str:
     cron = (
         PERIOD_AVERAGE_SCHEDULE
         if metadata.task_type in PERIOD_AVERAGE_TASK_TYPES
         else SCHEDULES[metadata.frequency]
     )
+    state_config = "incremental_state: true\n" if incremental_state else ""
     return (
         f"scheme_id: {metadata.scheme_id}\n"
         "runtime_type: blackbox_v2\n"
         "input_source: data_bridge_current\n"
         "factor_input_mode: algorithm_managed\n"
+        f"{state_config}"
         f"runtime_profile: {RUNTIME_PROFILE}\n"
         f"data_schema_version: {DATA_SCHEMA_VERSION}\n"
         "status: paused\n"

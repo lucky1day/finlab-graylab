@@ -124,12 +124,18 @@ class ExclusiveFileLock:
             details = os.fstat(fd)
             if not stat.S_ISREG(details.st_mode):
                 raise ValueError("exclusive lock must be a regular file")
+            if details.st_nlink != 1:
+                raise ValueError("exclusive lock must not be a hardlink")
             if details.st_uid != os.getuid():
                 raise ValueError(
                     "exclusive lock must be owned by the service user"
                 )
             os.fchmod(fd, 0o600)
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            current_lock = os.stat(self._path, follow_symlinks=False)
+            if ((current_lock.st_dev, current_lock.st_ino) != (details.st_dev, details.st_ino)
+                    or current_lock.st_nlink != 1):
+                raise ExclusiveFileLockPathChanged("exclusive lock path changed during acquisition")
         except OSError as exc:
             os.close(fd)
             if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
@@ -156,6 +162,18 @@ class ExclusiveFileLock:
             fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)
+
+    def verify(self) -> None:
+        """发布前确认持有的 inode 仍是稳定锁文件，避免换锁后继续写入。"""
+        if self._fd is None:
+            raise ExclusiveFileLockPathChanged("exclusive lock is not held")
+        parent = os.stat(self._path.parent, follow_symlinks=False)
+        details = os.fstat(self._fd)
+        current = os.stat(self._path, follow_symlinks=False)
+        if ((parent.st_dev, parent.st_ino) != self._parent_identity
+                or (current.st_dev, current.st_ino) != (details.st_dev, details.st_ino)
+                or not stat.S_ISREG(current.st_mode) or current.st_nlink != 1):
+            raise ExclusiveFileLockPathChanged("exclusive lock path changed while held")
 
     def __enter__(self) -> "ExclusiveFileLock":
         return self.acquire()
