@@ -51,8 +51,9 @@
    用户随后要求立即模拟并切换：当天候选predict模拟full-OOS 7.849秒、cons-sda 62.071秒，均通过120秒边界。
    8eb2已成为ECS current，previous3162；真实preflight及W3A原子cutover已成功，两新Registry active、旧archived，
    各333条历史facts已发布，旧完整事实、Actual与其他active集合读回不变。
-   17:08已启动唯一一次串行gray（各74条，保留09-14真实调度target），daily.timer暂fenced；跟进最终结果，
-   通过后恢复timer及验收实际入口，失败回滚。禁止重复初始化、gray或cutover；原19:10等待安排取消。
+   两方案gray已于17:59全部完成、各74条，18:08独立验收通过，daily.timer已恢复、next为09-09 07:03。
+   18:08:54已启动唯一一次真实installed daily.service，InvocationID见迁移计划顶部；跟进最终退出、
+   W3A scheduled_live事实及全范围执行结果，失败回滚。禁止重复start、初始化、gray或cutover。
    午夜/gate与失败恢复安排见迁移计划顶部。W3A收尾尚未完成；Mac3不变，不复制正式回测私有状态。
 4. 随后完成 W2 与 W3B-D 的必要算法改造、完整同输入旧新回测对照及受控 ECS 替换。
 5. 不以本阶段 ECS 完成宣布全局 Native 退役；Mac3 仍依赖的旧路径不得提前删除，confidence DDL 仍须独立授权。

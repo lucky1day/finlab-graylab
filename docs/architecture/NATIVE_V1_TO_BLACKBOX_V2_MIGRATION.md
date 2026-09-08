@@ -2,7 +2,25 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_CUTOVER_COMMITTED; W3A_GRAY_RUNNING_TIMER_FENCED; W3A_INSTALLED_ONESHOT_PENDING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_CUTOVER_COMMITTED; W3A_GRAY_VERIFIED_TIMER_RESTORED; W3A_INSTALLED_ONESHOT_RUNNING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
+
+**灰度完成与真实日频验收启动（2026-09-08 18:09 CST）**：
+
+- 两个gray CLI均PASSED、exit0、无remaining：full-OOS于17:54:12完成，耗时2721.894秒；
+  cons-sda于17:59:54完成，耗时342.375秒。每方案74条预测及74个gray_live success run全部入库，
+  当前各407条产品事实（333 historical＋74 gray），保留09-14目标键，未重新初始化或重跑正式回测。
+- `gray-readback.json`独立只读验收通过：旧完整事实/旧run/Actual摘要不变、86个其他active身份不变，
+  唯一键、run/backtest XOR、日期区间、exact version、run关联及状态校验和通过；算法组已退出、
+  两个私有Request/runtime view已清理、状态锁空闲，current/previous严格源码摘要一致。
+  Dashboard读模型88个active target；真实Backend `/api/health`返回200。真实Dashboard HTTP未带会话返回401，
+  没有绕过认证，不能将读模型验证表述为已取得认证后的HTTP Dashboard payload。
+- 18:00月频service已于18:00:31正常退出。18:08:54恢复daily.timer，next trigger为09-09 07:03；随后
+  仅人工start现有installed daily.service，原unit/参数/环境不变，InvocationID
+  `8e279275e67b400ea097041e34eab3aa`，初始MainPID916573。18:09仍activating，尚无最终退出结论，
+  禁止重复start；灰度监测转为该真实调用的完成验收。
+- 全日频调用前基线：全产品事实24719条、非W3A successor事实23905条，最大scheme run_id为5251，
+  摘要均保存在 `gray-readback.json`。调用后预期W3A各增加1条scheduled_live，不得据“service已启动”宣布成功。
+  若跨19:00，Actuals自然执行导致的变化须独立溯源，不要求其机械匹配18:08快照。
 
 **按用户最新指示立即模拟并切换（2026-09-08 17:09 CST）**：
 
