@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_BOTH_ECS_PERSISTED_BACKTESTS_VERIFIED; CONS_SDA_INDEPENDENT_REFERENCE_VERIFIED; W3A_RECEIPT_REUSE_PENDING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_RECEIPT_AND_ADMISSION_VERIFIED; W3A_STATE_PREWARM_AND_CUTOVER_PENDING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
 
 **最新验收决定（2026-09-08）**：用户明确取消此次算法迁移的重复、倒序、乱序、子集及其他额外专项验证，
 以相同冻结输入下修改前后完整回测的日期和方向逐条一致为算法验收依据，执行规则见第6.1–6.2节。
@@ -18,7 +18,7 @@
 - 跨输入版本不要求三个 cutoff key 或方向摘要相等；相同输入则继续交叉核验完整七字段 Request 与五字段结果。
   首次 cutover 的正式回测仍匹配现场 DataBridge，不能用旧算法验收输入替代现场输入。
 - 临时 receipt 升为 `native-successor-equivalence-v2`，旧 v1 文件只留历史，不能由新工具解释为 v2 或手工改号。
-  本轮不重生成已 active W1 的历史凭据；W3A 尚须补齐受控结果复用入口。部署新工具前，必须确认本批回滚
+  本轮不重生成已 active W1 的历史凭据；W3A 受控结果复用已完成下述 ECS 候选验证。部署新工具前，必须确认本批回滚
   及 re-cutover 均有新规则下可复验的证据，旧 immutable release 自身的历史工具不修改。
 - 证据分离已完成本地实现：正式回测全部七字段 Request 的独立摘要进入 plan SHA；预检后任何 cutoff
   变更都使旧授权失效。定向测试先复现摘要未变化的问题，修复后验证旧摘要拒绝且 Registry/产品事实未改变。
@@ -44,6 +44,30 @@
   随机隔离 schema 实测。该结果不等于 ECS 原件读取、receipt 生成或 cutover 已完成。
 - 14:09 CST ECS 只读核验 current 仍为 `3162f70e67f53b7cdb65a3e8792d42c6fab32d15`，Backend active，
   无遗留参考计算进程，下一 installed timer 为 18:00 月频。本轮没有改动 current、systemd、Mac3 或业务库。
+
+**W3A ECS 原件与正式事实闭环（2026-09-08 14:14–14:17 CST）**：
+
+- clean commit `39b68ee68d40bd9e47860583176fae7c3cf29394` 两次 archive SHA 完全相同：
+  `5b30289aabb040cbb445b4eef4198936f6f65322d790a494555c804d5a24f151`。仅私有安装至
+  `/opt/bond-factor-lab/incoming/w3a-reuse-20260908.0TiPGj/deploy/releases/`，`activated=false`。
+- ECS 实际读取两份已锁定原件并复验实际 Python/依赖、两文件版本、Native 源码和两组五文件输入，生成
+  W3A receipt。每方案 333 条、五类差异均为 0；算法执行数为 0，业务库写入数为 0。
+  原始工具输出 `verified-reuse.json` SHA 为
+  `21f3587ab5a592a651223c4bd9d8cbc108d78fdad790849550fbcf629477c0e3`；canonical
+  `deploy/native_successor_equivalence/W3A.json` 从其 receipt 对象直接提取，没有人工填成功字段。
+- 同一候选对正式 run 278/279 复验当前策略/环境/版本证据，并经只读 repository 重新加载各 333 条事实。
+  与 receipt 的 Request ID/三日期覆盖一致；cons-sda 同输入时额外七字段 Request 和五字段 Result 摘要一致。
+  正式回测仍精确匹配现场 09-08 generation/snapshot。核验输出为同目录 `verified-admission.json`；
+  本机原件副本保存在 ignored `outputs/releases/w3a-reuse-20260908/`。
+- 两个旧 Native 已发布历史各 333 条，与新事实日期 grid 摘要不同，按既定规则记录
+  `data_vintage_drift=true`，不改写旧事实、不把旧持久化日期当作本次同输入算法比较；两份同输入对照仍零差异。
+- 本次候选在 ECS MySQL 的随机隔离 schema 中实测 `2 passed in 1.18s`；测试前后隔离 schema 均为 0，
+  事务测试未访问业务库。候选与 current 严格源码树在原件读取前后保持一致，无 running scheme/backtest run。
+- 此项只关闭证据复用与正式事实关联，不等于 installed 控制面 preflight、生产增量预热或 W3A cutover。
+  下一步先为尚无自然 Writer 的 full-OOS successor 显式预热 exact-version 派生状态；cons-sda 当前为
+  stateless，不新增状态或预热。使用已验证私有候选的
+  标准维护入口，不改 current，不复制正式回测的私有状态。完成后才安装切换候选、fence 与原子切换。
+  这只调整预热到 current 安装之前，以缩短切换窗口；状态代码/版本/输入复验、无业务写入及停止条件不变。
 
 **最新执行核验（2026-09-08 上午）**：
 
@@ -365,15 +389,17 @@ environment fingerprint 必须全部一致，且待发布历史回测的 `target
 `deploy/native_successor_equivalence/<wave>.json`，逐方案 wave 为
 `deploy/native_successor_equivalence/<wave>--<old_base_scheme_id>.json`。receipt 必须由当前 release 的
 `native-successor-controlled-comparator` v2 生成，并绑定 comparator 源码 SHA-256、generation、data snapshot、
-五文件 SHA-256、Native/Blackbox 环境指纹及 old/new code hash。comparator 使用同一七字段 Request CSV 直接
-执行两侧程序，读取两份标准五字段 CSV 结果，逐行核对 Request 顺序、ID、三个日期和方向；任一差异直接拒绝
+五文件 SHA-256、Native/Blackbox 环境指纹及 old/new code hash，各方案输入放在自身 target 的 `input_identity`。
+普通 comparator 使用同一七字段 Request CSV 直接执行两侧程序；已审查 W3A 则只读复用哈希锁定原件。
+两种入口都读取两份标准五字段 CSV 结果，逐行核对 Request 顺序、ID、三个日期和方向；任一差异直接拒绝
 生成 receipt。preflight 会在
 数据库只读快照中锁定 successor 的完整
 持久化 backtest fact 集，并从每行 `source_row` 重新推导完整七字段 Request 摘要、Request 数量、ID/三日期摘要
 和标准五字段结果摘要。receipt 的 Native/Blackbox 结果摘要必须相等，五类 mismatch count 必须全为 0。
 两类输入的 Request 数量、ID/三日期覆盖必须完全一致；输入相同时还要求三个 cutoff key 和方向摘要与正式事实集
 完全一致，输入不同时分别保存摘要，不将数据修订误认为算法改造差异。规范化 receipt
-中的 Native 环境指纹还必须等于现场 `forecast_env` 的 conda explicit package 集指纹。receipt 进入 plan SHA，
+中的 `native` 参考环境指纹还必须等于现场 `forecast_env` 的 conda explicit package 集指纹；仅完整锁定 W3A
+允许记录实际使用的 `blackbox-v2-v1` 参考环境，此时必须匹配 successor 环境，其他 wave/身份拒绝该例外。receipt 进入 plan SHA，
 apply 在事务内重新采集、重新推导并复验。receipt 缺失、抽样数量、手工摘要、旧 comparator 源码
 或任一 identity 不匹配均 fail-closed。receipt 不保存包含自身的 Git commit，避免 tracked receipt 的不可满足
 自引用；其内容由 comparator 源码 SHA、当前 release source-tree/archive、receipt 文件 SHA 和 plan SHA 共同
@@ -1427,7 +1453,7 @@ python -m harness migrate-native-successor rollback --wave <wave> \
   --expected-database-name <name> --expected-server-uuid <uuid>
 ```
 
-`prepare-equivalence` 的 bundle 顶层只允许
+普通 `prepare-equivalence` 的 `native-successor-comparison-input-v1` bundle 顶层只允许
 `schema_version/wave/generation_id/data_snapshot_id/data_dir/comparisons`；`data_dir` 必须包含精确五文件，工具现场
 计算其 SHA-256。每个 comparison 只允许
 `old_base_scheme_id/new_base_scheme_id/target_tenor/requests_path`，Request CSV 必须是该 successor 的完整正式
@@ -1438,8 +1464,13 @@ artifact 和五文件目录；输出只存在于私有临时目录，逐行比�
 `--old-scheme-id <old_base_scheme_id>`。工具独占创建 canonical receipt，已有文件时拒绝覆盖；如需重做，必须先由
 operator 明确撤销旧候选证据并形成新的 clean commit，不能静默替换。
 
+W3A 已完成结果仅使用本文顶部定义的 `native-successor-reviewed-input-v1`，不再执行上述算法启动路径。
+从不可变私有候选验证时调用同一个 receipt builder，把其生成对象直接带回开发树，核对来源后随下一 clean
+archive 发布；禁止为了生成 receipt 现场修改不可变 release，也不以调整序列化格式为由重跑算法。
+
 每批顺序固定：在候选树生成受控 receipt 并更新 deployment matrix → 形成 clean commit 和 deterministic archive →
-把该 archive 安装为目标机 current → 对 stateful successor 用当前 release 和 generation 完成预热与只读检查 →
+对尚无自然 Writer 的 stateful successor 使用同代码/版本的已验证候选及目标机 generation 预热并只读检查 →
+把该 archive 安装为目标机 current 并复核状态身份 →
 fence cadence timer 并等待 one-shot 退出 → 从 current release 重做 preflight → 使用其 plan SHA 单事务切换 →
 单 batch gray 区间并推进对应私有状态 → 恢复 timer → 通过真实 systemd one-shot 的人工触发验证唯一 writer、
 journal、Dashboard、运行前后状态快照摘要与 next trigger。preflight 之前的安装和预热只部署代码、写可重建
@@ -1598,7 +1629,8 @@ Native run；Native 可执行路径与临时迁移工具已删除；全量、架
 旧 100 条批量在 600 秒硬限超时；用户调整离线预算后，ECS 完整冷333条、Mac同输入参考比较与
 同 Linux Native 独立333条等价均已通过，满足用户简化后的算法等价验收；额外矩阵已取消，仍待正式入库与切换验收。
 full-OOS 两文件已提交并以不可变包安装至 ECS 私有验证目录，保持 paused/draft、部署范围为空；
-现已与同批 cons-sda 一起完成 ECS 正式持久化回测并读回；受控等价凭据复用仍待补齐，W3A 尚未切换，不能宣布整体闭环。
+现已与同批 cons-sda 一起完成 ECS 正式持久化回测、受控原件复用及 receipt 与真实正式事实的关联读回；
+生产增量预热与受控切换仍待完成，W3A 尚未切换，不能宣布整体闭环。
 W2、W3B-D 也尚未完成新预算下各自的离线和每日验收，须逐方案分类，不能外推当前试点通过。W4 的
 Mac3-only binary-bundle 架构已经获得确认，但必须等 W1-W3 晋级 Mac3 后实施；不能用旧 adapter、未纳入
 manifest 的二进制、旧水位、旧 Native cache 或文档声明冒充闭环。

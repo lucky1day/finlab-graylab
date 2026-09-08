@@ -39,12 +39,14 @@
 2026-09-08 最新授权覆盖此前推进顺序：本阶段仅 ECS，Mac3 的 current/previous、数据库、launchd、对外
 域名及流量不变；不自动晋级 Mac3，W4 九个 binary bundle 暂停，恢复须另获授权。
 
-1. 复用 W3A 已完成的完整原始等价与正式回测：full-OOS 等价输入为 09-05，cons-sda 等价输入为 09-08，
-   两者正式回测均为 09-08。受控 receipt 按各算法保留输入身份，不能为旧 wave 顶层单输入结构重复计算。
+1. W3A 两组原始等价已受控复用并在 ECS 与真实正式事实关联验证：full-OOS 等价输入为 09-05，cons-sda 为
+   09-08，两者正式回测均为 09-08。将工具生成的 canonical receipt 随切换候选发布，不重复计算。
    原始证据至少保留到 receipt 与切换验收闭环；不重跑已通过算法，不恢复重复/倒序/乱序/子集矩阵。
 2. 算法等价与正式入库各自绑定其输入。保留同代码、环境、完整日期覆盖及各自内部一致性；补齐 W3A 受控
-   凭据接入，不手写成功 receipt。正式回测、单 Writer、原子 cutover/rollback、旧事实不变仍是必要边界。
-3. ECS release 严格完整性、部署矩阵、增量预热和证据均就绪后，推进 W3A 切换与真实 systemd one-shot 模拟。
+   凭据的版本绑定，不手写成功 receipt。正式回测、单 Writer、原子 cutover/rollback、旧事实不变仍是必要边界。
+3. 先使用同代码/版本的已验证候选，为尚无自然 Writer 的 full-OOS successor 显式建立增量状态；cons-sda
+   保持 stateless，不增加预热。不复制正式回测私有状态、不写业务事实。ECS release 严格完整性、部署矩阵、增量预热和证据均就绪后，推进 W3A
+   切换与真实 systemd one-shot 模拟；Mac3 不变。
 4. 随后完成 W2 与 W3B-D 的必要算法改造、完整同输入旧新回测对照及受控 ECS 替换。
 5. 不以本阶段 ECS 完成宣布全局 Native 退役；Mac3 仍依赖的旧路径不得提前删除，confidence DDL 仍须独立授权。
 
