@@ -4,6 +4,36 @@
 
 **执行状态**：`W3A_ECS_RECEIPT_AND_ADMISSION_VERIFIED; W3A_INITIAL_STATE_VERIFIED; W3A_CUTOVER_PENDING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
 
+**ECS 切换准备与晚间执行窗口（2026-09-08 16:58 CST）**：
+
+- 用户在初始化验收后授权继续推进。已将同一经过验证的 `8eb2df2` archive 标准预安装至
+  `/opt/bond-factor-lab/releases/8eb2df2e239dec6c3de529b99764d7be3f7316e2`，返回 `activated=false`。
+  current仍为3162；未切Registry、未写预测、未fence或人工触发timer/service。
+- 只读准备通过：正式run278/279与09-08generation匹配，初始化state hash不变；旧W3A Registry active、
+  新Registry/run/live facts为0。已取得旧prediction/run/backtest、Actual与Dashboard摘要；必须在实际切换前
+  再取即时基线，不能将本次摘要用于跨越19:00 Actuals写入的“不变”断言。
+  临时 `pre-cutover-readiness-1655.json` SHA为
+  `d2e357b7e8df36db9a5b42fd53f0f738e1beaa8068cc01b0609fc100b3cd02b7`，位于本次incoming根及本机ignored证据目录。
+- 权威日历确认每方案74条gray：target半开区间 `[2026-06-01, 2026-09-14)`，最后predict-date为09-07。
+  留出真实09-08调用的feature-date09-07、target-date09-14；不提前占用模拟业务键。
+  gray使用私有冷状态，不读取或推进已预热生产state；日常predict才使用生产state，不重复正式回测。
+- 3162回滚archive已找到并保留到本次incoming，SHA为
+  `0b8bd380940c8986df23c10928ac708af14921a4e09c1c826efa7017a2ad568a`。严格installer初检发现三个空的可写
+  `__pycache__`目录，仅用rmdir移除这三个空目录后复验通过；源码字节/hash不变，没有删除代码或业务文件。
+- ECS为4vCPU/15GiB；18:00 monthly、19:00 Actuals不改变。正式切换最早19:10，在两项真实任务成功退出且
+  全部one-shot与run空闲后继续；两方案gray串行，各最多7200秒，失败不重跑，按5.5回滚。真实installed daily
+  会执行所有active日频算法后再去重，预计产生其他方案skipped审计run；不能误称只运行两个算法或其他run不变。
+  今日同一installed daily耗时32分44秒、exit0，仅作耗时参考，不替代新版本验收。
+- 独立运维审查未发现新Critical代码问题；两项Important执行前提已纳入：真实daily不得在23:30后首次启动，
+  更不得跨到09-09后沿用09-08 ready gate。若剩余日内窗口不足，正常收尾bounded batch并rollback，不能伪造日期。
+  daily失败时先保存journal与进程证据，确认进程/锁释放后精确reset-failed该service并读回inactive；若有确切
+  abandoned running run，必须确认其进程退出、无已发布事实，再经既有repository失败入口处理，禁止直接SQL改状态。
+  rollback必须先在8eb2 current下fresh preflight及DB事务，再切回3162，不能反序。05:00前恢复控制面并清空
+  本次计算/锁，保护早间任务；任何无法安全完成的异常暂停并报告，不扩大权限或自动重试。
+  复审确认：午夜前启动的daily固定入口predict_date，可以跨午夜结束；不是要求整次运行午夜前结束。
+  若午夜后回滚，只恢复旧Writer/current/timer，不启动缺次日ready gate的旧daily，恢复验证保留pending。
+  `fail_scheme_run_atomic`是既有仓储API，不是已具备OS进程核验的事故恢复CLI，不能跳过外层现场确认。
+
 **最新验收决定（2026-09-08）**：用户明确取消此次算法迁移的重复、倒序、乱序、子集及其他额外专项验证，
 以相同冻结输入下修改前后完整回测的日期和方向逐条一致为算法验收依据，执行规则见第6.1–6.2节。
 下文早期矩阵及启动/失败记录只保留历史事实，不再构成当前待办；平台写库、单Writer、回滚和发布安全边界不变。
