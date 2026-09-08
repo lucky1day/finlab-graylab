@@ -29,6 +29,24 @@
   可复用，不因09-09 generation变化重跑278/279。已存在74条gray不得重复跑；只处理full-OOS缺少的09-14键。
   失败不自动重试初始化、改预算或放宽校验；安全保留旧Writer并报告。W3A闭环后继续W2、W3B-D，不扩大Mac3权限。
 
+**W2后续执行准备（2026-09-09，只读库存核验，尚未启动算法）**：
+
+- 当前两文件script hash与台账相符，exact version为5Y `67018ae8f703`、7Y `bc06323c0fc6`；
+  旧Native exact为 `fce0d1126dc5`／`febc16e47919`。旧W2 receipt绑定旧successor字节与comparator v1，
+  不能用于当前代码。未找到可复核的本地W2原始完整Request/Native结果；不把历史“参考完成”视为原件仍在。
+- 最短比较复用现有 `build_native_successor_equivalence_receipt` 普通W2入口：平台生成完整历史七字段Request，
+  冻结五文件与环境，每target各一次Native及successor完整比较，共四次算法调用；不跑额外100条矩阵。
+  W3A专属reviewed-result reuse例外不得扩展到W2。成功后每scheme一次正式Gate，先查已有证据避免重复写入。
+- 当前CLI `prepare-equivalence` 在计算结束后才用 `open("x")` 创建canonical receipt，而旧W2.json已存在；
+  不得盲跑至最后报FileExistsError，更不得删除immutable release内文件。一次性受控driver调用现有builder，
+  将新receipt保存至树外，验证后在开发线明确替换过期receipt并审查，再构建新的immutable archive。
+- 离线调用显式7200秒，正式Gate使用历史target排他上界 `--predict-date 2026-06-01`、
+  `--backtest-start-date 2025-01-01 --algo-env forecast_env_blackbox_v1 --timeout-sec 7200 --persist`；
+  该predict参数不是主机当天日期，输入仍绑定所选ready generation。默认stateless Profile内存是64GiB，
+  不能误称CLI已执行4GiB约束；启动前须在单次调用层收紧现有Profile至4GiB/8线程/7200秒，不改全局Profile。
+  Native参考为带timeout的普通subprocess、可有子进程，另需复用既有进程组回收与资源观测，不能把其证明
+  外推为successor允许子进程。先完成执行边界审查；凌晨不启动会越过05:00的额外ECS训练。
+
 **真实日频失败、整组回滚及只读定位（2026-09-08 18:41 CST，覆盖以下运行中状态）**：
 
 - 唯一 installed daily 调用于18:32:42退出，Result `exit-code`、exit1；同一Invocation的最终摘要为
