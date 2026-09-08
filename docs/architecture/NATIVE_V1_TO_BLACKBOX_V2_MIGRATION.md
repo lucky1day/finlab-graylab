@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_RECEIPT_AND_ADMISSION_VERIFIED; W3A_STATE_PREWARM_AND_CUTOVER_PENDING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_RECEIPT_AND_ADMISSION_VERIFIED; W3A_FULL_OOS_STATE_PREWARM_RUNNING; W3A_CUTOVER_PENDING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
 
 **最新验收决定（2026-09-08）**：用户明确取消此次算法迁移的重复、倒序、乱序、子集及其他额外专项验证，
 以相同冻结输入下修改前后完整回测的日期和方向逐条一致为算法验收依据，执行规则见第6.1–6.2节。
@@ -64,10 +64,26 @@
 - 本次候选在 ECS MySQL 的随机隔离 schema 中实测 `2 passed in 1.18s`；测试前后隔离 schema 均为 0，
   事务测试未访问业务库。候选与 current 严格源码树在原件读取前后保持一致，无 running scheme/backtest run。
 - 此项只关闭证据复用与正式事实关联，不等于 installed 控制面 preflight、生产增量预热或 W3A cutover。
-  下一步先为尚无自然 Writer 的 full-OOS successor 显式预热 exact-version 派生状态；cons-sda 当前为
+  随后先为尚无自然 Writer 的 full-OOS successor 显式预热 exact-version 派生状态；cons-sda 当前为
   stateless，不新增状态或预热。使用已验证私有候选的
   标准维护入口，不改 current，不复制正式回测的私有状态。完成后才安装切换候选、fence 与原子切换。
   这只调整预热到 current 安装之前，以缩短切换窗口；状态代码/版本/输入复验、无业务写入及停止条件不变。
+
+**W3A 预热启动与部署准备（2026-09-08 14:23 CST 核验）**：
+
+- 14:22:46 左右从已验证私有候选调用现有 `harness rebuild-blackbox-state`，绑定 full-OOS exact
+  `3ee3dd2334fd`、`predict-date=2026-09-08`。启动前该 successor 状态不存在、Registry/run/产品事实均为 0，
+  旧两方案 Registry active，全部 scheme/backtest running 数为 0；cons-sda 不声明 incremental_state。
+- 维护入口使用标准五文件输入、4 GiB/8线程/1800秒冷重建限额。仅写
+  `/var/lib/bond-factor-lab/state/blackbox-state/liwei_0616_5y01_full_oos_k3_div_k10_bbv2/`
+  下的锁与派生状态；不创建业务 run 或 prediction。启动 wrapper/CLI/algo 的初始 PID 为
+  `882347/882348/882365`，仅供核对命令，不作为未来身份；14:23 尚在运行，未取得成功退出或完整发布证明。
+  日志和完成记录在上述私有 incoming 根，文件为 `full-oos-prewarm.stdout/.stderr` 与
+  `full-oos-prewarm-completion.json`。已更新原有十分钟跟进，失败不自动重试。
+- 切换候选仅调整 ECS W3A 部署成员：移除两个旧 Native，加入 full-OOS successor，cons-sda successor 已在
+  ECS matrix 中，保持原状。逐项核对全部 106 个成员，Mac3 成员集合与所有无关项不变；独立范围审查通过。
+  同步两个新 Mac-only predecessor 的既有测试期望后，全量回归再次为 `739 passed, 6 skipped, 229 subtests passed`。
+  此矩阵是未激活候选，不是现场 Registry 切换；ECS current/systemd 与 Mac3 不变。
 
 **最新执行核验（2026-09-08 上午）**：
 
@@ -1486,8 +1502,10 @@ cutover 单事务必须：
 5. 激活 successor version/Registry，archive old Registry，retire old exact version；
 6. 同事务权威读回；任一步失败全部 rollback。
 
-gray 区间从 `target_date >= 2026-06-01` 到下一个自然目标前，单 successor 只启动一个 batch，每条 Request
+gray 区间从 `target_date >= 2026-06-01` 到首个真实 one-shot 验收 Request 的 target 前，单 successor 只启动一个 batch，每条 Request
 独立 cutoff；任一业务键已存在则整组拒绝，一次 repository 事务提交。失败立即反向 cutover，不开放 timer。
+用户改为人工触发真实 one-shot 后，上界必须按实际调用日的权威 Request 计算，不能机械沿用下一 timer 日期而
+提前用 gray 占掉模拟运行的业务键；若不人工触发才使用下一自然目标。不得伪造调用日或把 skipped 当作成功新运行。
 
 不等待日频、周频或月频的自然触发次数。每个 cadence 至少人工触发一次真实 installed systemd one-shot；其
 命令、WorkingDirectory、EnvironmentFiles、运行用户和 Runtime Profile 必须与 timer 触发完全相同。service
