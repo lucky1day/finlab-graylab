@@ -28,7 +28,7 @@ def rebuild_blackbox_state(*, project_root: Path, scheme_id: str, predict_date: 
     try:
         records = run_blackbox_scheme_subprocess(
             cfg, predict_date, engine=engine, algo_env=DEFAULT_ALGO_ENV,
-            timeout_sec=1800, rebuild_state=True,
+            timeout_sec=7200, rebuild_state=True,
         )
     finally:
         engine.dispose()

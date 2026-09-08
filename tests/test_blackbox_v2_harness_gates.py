@@ -553,7 +553,7 @@ class BlackboxStateRebuildCliTests(unittest.TestCase):
         )
         execute.assert_called_once_with(
             cfg, "2026-09-07", engine=engine, algo_env=DEFAULT_ALGO_ENV,
-            timeout_sec=1800, rebuild_state=True,
+            timeout_sec=7200, rebuild_state=True,
         )
         engine.dispose.assert_called_once_with()
         self.assertEqual([call[0] for call in engine.mock_calls], ["dispose"])

@@ -165,6 +165,10 @@ python -m harness rebuild-blackbox-state \
 该入口复用 ready DataBridge、标准 Request 与唯一 Blackbox executor，从空算法状态计算，验证五字段 Result 后
 发布状态；不创建 run/prediction/backtest/Actual，不激活，不补发历史信号。生产路径来自 `BFL_RUNTIME_ROOT/blackbox-state`，
 状态按 base/exact version 隔离；同 base 的重建和每日推进共用非阻塞文件锁。操作输出保留操作者、版本、日期与状态摘要。
+
+显式首次预热/故障重建采用离线维护预算，上限为 `min(Runtime Profile.backtest_timeout_sec, 7200)` 秒；
+日常增量 predict 仍为 `min(Runtime Profile.predict_timeout_sec, 120)` 秒，调用方更短的 deadline 继续生效。
+两者均保持最多 4 GiB、8 个数值线程；不修改 stateless 默认 Profile，不自动重试超时或恢复失败。
 调度切换与现有 Writer 的现场核验仍按独立操作边界执行，文件锁不替代业务授权。
 
 自然运行缺状态、状态损坏、版本/环境不符或算法拒绝历史复用时明确失败；不得静默重建。

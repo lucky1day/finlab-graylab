@@ -219,17 +219,20 @@ def test_private_backtest_leaves_persistent_state_untouched(delivery: dict, tmp_
     assert _canonical(binding).read_bytes() == before
 
 
-@pytest.mark.parametrize("mode,rebuild,count,budget,expected", [
-    ("backtest", False, 1, 14400, 7200),
-    ("backtest", False, 101, 14400, 7200),
-    ("backtest", True, 1, 14400, 7200),
-    ("backtest", False, 1, 300, 300),
-    ("predict", False, 1, 3600, 120),
-    ("predict", True, 1, 3600, 1800),
-    ("predict", False, 1, 60, 60),
+@pytest.mark.parametrize("mode,rebuild,count,predict_budget,offline_budget,caller_budget,expected", [
+    ("backtest", False, 1, 3600, 14400, None, 7200),
+    ("backtest", False, 101, 3600, 14400, None, 7200),
+    ("backtest", True, 1, 3600, 14400, None, 7200),
+    ("backtest", False, 1, 3600, 300, None, 300),
+    ("predict", False, 1, 3600, 14400, 7200, 120),
+    ("predict", True, 1, 3600, 14400, None, 7200),
+    ("predict", True, 1, 3600, 300, None, 300),
+    ("predict", True, 1, 3600, 14400, 60, 60),
+    ("predict", False, 1, 60, 14400, None, 60),
 ])
 def test_stateful_execution_budgets(
-    delivery, tmp_path, monkeypatch, mode, rebuild, count, budget, expected,
+    delivery, tmp_path, monkeypatch, mode, rebuild, count,
+    predict_budget, offline_budget, caller_budget, expected,
 ):
     """真实 CLI 使用离线安全预算，且不放宽每日与调用方资源限制。"""
     from scheduler import blackbox_v2_runner as runner
@@ -238,8 +241,8 @@ def test_stateful_execution_budgets(
     if mode == "backtest" and not rebuild:
         binding = replace(binding, root=None)
     binding = replace(binding, rebuild=rebuild)
-    profile = replace(delivery["profile"], predict_timeout_sec=budget,
-                      backtest_timeout_sec=budget, cpu_threads=16,
+    profile = replace(delivery["profile"], predict_timeout_sec=predict_budget,
+                      backtest_timeout_sec=offline_budget, cpu_threads=16,
                       memory_limit_bytes=8 * 1024**3)
     run_process = runner._run_process
     observed = []
@@ -252,6 +255,8 @@ def test_stateful_execution_budgets(
 
     monkeypatch.setattr(runner, "_run_process", execute)
     arguments = {**delivery, "profile": profile, "state": binding}
+    if caller_budget is not None:
+        arguments["timeout_sec"] = caller_budget
     if mode == "predict":
         # 资源预算不进入状态算法身份；显式重建与常规调用各自受限。
         runner.run_blackbox_predict(**arguments, request=_request())

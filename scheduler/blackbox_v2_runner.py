@@ -425,9 +425,12 @@ def run_blackbox_predict(
         process_start_guard
     )
     if state is not None:
+        # 显式冷重建属于离线维护；日常 predict 不借用离线预算。
+        state_timeout = (min(profile.backtest_timeout_sec, 7200) if state.rebuild
+                         else min(profile.predict_timeout_sec, 120))
         profile = replace(profile, cpu_threads=min(profile.cpu_threads, 8),
                           memory_limit_bytes=min(profile.memory_limit_bytes, 4 * 1024**3),
-                          predict_timeout_sec=min(profile.predict_timeout_sec, 1800 if state.rebuild else 120))
+                          predict_timeout_sec=state_timeout)
     with tempfile.TemporaryDirectory(prefix="blackbox-v2-predict-") as tmpdir:
         root = Path(tmpdir)
         request_path = write_request(request, root / "request.json")
