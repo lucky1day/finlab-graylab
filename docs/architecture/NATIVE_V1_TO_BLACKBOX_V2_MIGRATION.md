@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_RECEIPT_AND_ADMISSION_VERIFIED; W3A_AUTHORIZED_7200S_INITIALIZATION_RUNNING; W3A_CUTOVER_PENDING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_RECEIPT_AND_ADMISSION_VERIFIED; W3A_INITIAL_STATE_VERIFIED; W3A_CUTOVER_PENDING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
 
 **最新验收决定（2026-09-08）**：用户明确取消此次算法迁移的重复、倒序、乱序、子集及其他额外专项验证，
 以相同冻结输入下修改前后完整回测的日期和方向逐条一致为算法验收依据，执行规则见第6.1–6.2节。
@@ -34,7 +34,27 @@
   8.4.11 的随机隔离 schema 中实际执行，结果为 `2 passed in 1.91s`。覆盖同输入与独立算法输入两种情况下的
   中途失败整事务回滚、cutover、rollback 和 re-cutover；测试前后隔离 schema 数均为 0，未访问 `bond_db`。
 
-**用户批准后的单次初始化（2026-09-08 15:33 CST 核验）**：
+**初始化完成验收（2026-09-08 16:23 CST）**：
+
+- 用户批准的第二次、7200秒预算初始化于15:32:33启动、16:10:50成功退出，实际2296.752秒
+  （38分17秒），exit0；不是再次运行已接受的完整回测，也不是日常预测耗时。
+- 只读验收通过：状态封装与payload校验和、exact `3ee3dd2334fd`、脚本/metadata/manifest、实际Python
+  环境和09-08 generation五文件身份全部匹配；payload为2,583,754字节。
+  envelope SHA为 `f20cc30c34a5696353c2d2226b9d59afc4b01ab1a6d73286841c2a6a619607e2`，
+  payload SHA为 `0ef5a019ab3a8ec41d7ddf37af30d52c002074040524b4af8c44398d8ed5e9b2`。
+- 状态锁已释放、算法进程组已退出、临时Request及runtime view已清理；原始日志与完整状态保留。
+  CLI返回 `prediction_written=false`；旧W3A Registry仍active，新Registry/run/live facts仍为0，
+  scheme/backtest running均为0。current仍为 `3162f70e67f53b7cdb65a3e8792d42c6fab32d15`，
+  current与私有候选源码完整性复验通过；Backend active，五个installed one-shot loaded/inactive、
+  timer active且模板字节一致。未操作Mac3、Registry切换、gray或systemd人工触发。
+- 完成记录与stdout/stderr已取回 ignored `outputs/releases/w3a-prewarm2-20260908/`，SHA分别为
+  `eeabe2f8e1b8553f59c7a1adfefdef17f3f1423389f1fa631390c20b01cc8d41`、
+  `9114f470cf7427501e2770e85465ffaf7526365d7288603f5bc57b8d383b2d40`、
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`（stderr为空）。
+- 初始化跟进已暂停，不再自动重跑。本次只关闭初始化；W3A原子切换、gray与真实one-shot验证仍待执行，
+  不能据此宣布W3A或17个方案全部闭环。日常增量仍受120秒硬限约束，实际耗时须在后续调用中验收。
+
+**用户批准后的单次初始化启动记录（2026-09-08 15:33 CST，历史）**：
 
 - 预算修订 commit `8eb2df2e239dec6c3de529b99764d7be3f7316e2` 两次 archive SHA 一致：
   `7603115913fb66e0183a71523936f7e75fce778ed983c8495417f6bdafc1ae3f`。仅安装至 ECS 私有根
