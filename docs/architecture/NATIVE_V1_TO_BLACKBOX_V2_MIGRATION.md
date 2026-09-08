@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_RECEIPT_AND_ADMISSION_VERIFIED; W3A_FULL_OOS_STATE_PREWARM_TIMEOUT_STOPPED; W3A_CUTOVER_BLOCKED_ON_INITIAL_STATE; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_RECEIPT_AND_ADMISSION_VERIFIED; W3A_AUTHORIZED_7200S_INITIALIZATION_RUNNING; W3A_CUTOVER_PENDING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
 
 **最新验收决定（2026-09-08）**：用户明确取消此次算法迁移的重复、倒序、乱序、子集及其他额外专项验证，
 以相同冻结输入下修改前后完整回测的日期和方向逐条一致为算法验收依据，执行规则见第6.1–6.2节。
@@ -33,6 +33,27 @@
   本地未配置 isolated MySQL URL，对应两个参数化场景在该次全量回归 skipped；随后已在 ECS 本机 MySQL
   8.4.11 的随机隔离 schema 中实际执行，结果为 `2 passed in 1.91s`。覆盖同输入与独立算法输入两种情况下的
   中途失败整事务回滚、cutover、rollback 和 re-cutover；测试前后隔离 schema 数均为 0，未访问 `bond_db`。
+
+**用户批准后的单次初始化（2026-09-08 15:33 CST 核验）**：
+
+- 预算修订 commit `8eb2df2e239dec6c3de529b99764d7be3f7316e2` 两次 archive SHA 一致：
+  `7603115913fb66e0183a71523936f7e75fce778ed983c8495417f6bdafc1ae3f`。仅安装至 ECS 私有根
+  `/opt/bond-factor-lab/incoming/w3a-prewarm2-20260908.STT2MG/deploy/releases/`，`activated=false`。
+- ECS 在该候选实际执行公共状态/维护测试：`52 passed, 17 subtests passed`；重新只读核验原始等价输入、
+  实际环境、两文件版本与正式 run278/279，各333条的证据仍通过，算法执行0、业务写入0。
+  `verified-identity-and-admission.json` SHA 为
+  `ffe0579c71d80d98d7c8af9b67972d23f3fd5afe476ba9b892598a7dff7a1875`，本机副本在 ignored
+  `outputs/releases/w3a-prewarm2-20260908/`。
+- 15:32 启动前：五个 installed one-shot 均 loaded/inactive，scheme/backtest running为0；旧W3A Registry
+  active，新Registry/run/facts为0；上次算法已退出，状态目录只有空闲 `state.lock`。没有复用失败中间状态。
+- 15:32:33 左右仅启动一次既有 `rebuild-blackbox-state`，full-OOS exact `3ee3dd2334fd`、
+  predict-date `2026-09-08`，operator `user-approved-7200s-rebuild-20260908`。启动前检查完整7200秒预算加
+  900秒保护余量早于18:00；最长运行预计17:33左右结束，不为该初始化停用任何 timer。
+  初始 wrapper/CLI/algo PID为 `891093/891094/891111`，15:33读回仍运行；须按完整命令复核，不能依赖旧PID。
+- 日志和结果文件在新私有根：`full-oos-prewarm.stdout/.stderr`、`full-oos-prewarm-completion.json`。
+  原十分钟跟进已指向本次执行，无变化静默、失败不自动重试；成功后验证完整状态与输入身份，不把文件存在
+  当成验收。此刻尚未取得最终退出或完整状态发布结论。current仍为 `3162f70e67f53b7cdb65a3e8792d42c6fab32d15`，
+  未切换Registry、未写预测、未操作Mac3；上一轮1800秒失败原件保留。
 
 **W3A 受控原件复用（2026-09-08，本地候选）**：
 
