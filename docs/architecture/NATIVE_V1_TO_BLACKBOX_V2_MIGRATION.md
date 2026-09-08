@@ -2,7 +2,29 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_SERVICE_ENV_REBUILD_RUNNING; W3A_OLD_WRITER_RESTORED_MORNING_PROTECTED; W3A_RECUTOVER_PENDING_CURRENT_READY; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_SERVICE_ENV_REBUILD_AND_INCREMENTAL_VERIFIED; W3A_OLD_WRITER_RESTORED_MORNING_PROTECTED; W3A_RECUTOVER_PENDING_CURRENT_READY; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
+
+**环境修复与正常增量验收完成（2026-09-09 02:48 CST）**：
+
+- 初始化CLI于02:32:32退出0，耗时2314.066秒；完整Registry/run/prediction/backtest摘要前后一致。
+  state payload为2,583,754字节，SHA仍为
+  `0ef5a019ab3a8ec41d7ddf37af30d52c002074040524b4af8c44398d8ed5e9b2`，与备份原状态逐字节相同。
+  header唯一identity差异为runtime SHA改为真实日频环境的
+  `6e817a9b694d6c46d4414d8b4449e57cc21cba4bc194ba37c62db3f869cd993b`；新envelope SHA为
+  `903c623070dad66e4a41f281d703187a5c951480dce424de5f8f6156e8db1588`。
+- 独立读回复验代码/Metadata/manifest、五文件/snapshot、完整state、互斥锁、immutable源码和维护私有目录清理。
+  随后通过标准executor执行唯一一次正常增量predict（rebuild=false、120秒），02:47:27验收完成，
+  耗时8.910秒；Request ID、predict09-08、feature09-07、target09-14及direction1与原模拟逐字段一致。
+  此次标准路径确实发布派生state，但前后完整envelope与payload相同；全业务表摘要仍未变。
+- 首个验收driver遗漏必填algo_env，在Python参数绑定时失败，未进入executor、未启动算法；原错误报告保留。
+  修正调用参数后使用新v2脚本和独立输出文件完成上述唯一算法调用，没有重新初始化、失败算法重跑或覆盖证据。
+- 02:48核验无残留维护/算法进程，state锁已释放；current3162、previous8eb2、Backend原PID643451正常，
+  全部timer active。下一DataBridge06:30、daily07:03；本轮资源已在05:00前清理。
+  环境问题已在正常预测路径消除，不等于已完成09-09当前输入或真实installed日频验收；继续按早间顺序推进，
+  不重复初始化/09-08模拟，不伪造当前ready、不暂停整项目。Mac3和所有业务Writer身份未改。
+- 本次incoming及本机ignored证据目录保留 `rebuild-completion.json`（SHA
+  `a419e09eba7b0839c9e8c53b29d9fad3b190ac762941a46473151dd664b1f25b`）与
+  `incremental-v2-verification.json`（SHA `927abc5ac659a7b07d8711f889b76c7f2835fe7f232a7efb181cd68e3b49605c`）。
 
 **继续执行授权与最小环境修复（2026-09-09 01:56 CST）**：
 
