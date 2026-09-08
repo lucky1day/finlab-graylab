@@ -2,11 +2,49 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`A2C_FULL_OOS_LOCAL_OFFLINE_PASSED; A3_CANONICAL_LOCAL_EXECUTOR_PROBE_PASSED; A4_FULL_OOS_ECS_ALGORITHM_EQUIVALENCE_ACCEPTED_PLATFORM_ADMISSION_PENDING; W1_ECS_BACKTEST_READY_ON_PRIOR_POLICY; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3A_CONS_SDA_CONFORMANCE_PASSED; W3_BLOCKED_ECS_VALIDATION; W4_MAC3_BINARY_BUNDLE_ACCEPTED`
+**执行状态**：`A4_FULL_OOS_ECS_ALGORITHM_EQUIVALENCE_ACCEPTED_PERSISTED_BACKTEST_RUNNING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3A_CONS_SDA_CONFORMANCE_PASSED; W3B_D_PENDING; W4_MAC3_BINARY_BUNDLE_ACCEPTED`
 
 **最新验收决定（2026-09-08）**：用户明确取消此次算法迁移的重复、倒序、乱序、子集及其他额外专项验证，
 以相同冻结输入下修改前后完整回测的日期和方向逐条一致为算法验收依据，执行规则见第6.1–6.2节。
 下文早期矩阵及启动/失败记录只保留历史事实，不再构成当前待办；平台写库、单Writer、回滚和发布安全边界不变。
+
+**最新授权与证据规则（2026-09-08，覆盖此前推进范围）**：
+
+- 本阶段只在 ECS 替换 W1-W3 的 17 个 Native base / 21 个 successor target。Mac3 当前/previous、
+  数据库、launchd、对外域名、DNS/Nginx 与流量均不变；Mac3 晋级及 W4 九个加密方案暂停，恢复须另获授权。
+- 算法等价证据与正式入库证据各自绑定自身 generation、snapshot、Request 和结果，不再要求二者输入同代。
+  算法等价仍要求冻结输入内旧、新代码逐条零差异；正式回测仍要求当前 exact version、校验策略、运行环境、
+  完整事实与原子持久化。两类证据必须覆盖相同完整 Request ID/三日期区间和同一代码身份。
+- 跨输入版本不要求三个 cutoff key 或方向摘要相等；相同输入则继续交叉核验完整七字段 Request 与五字段结果。
+  首次 cutover 的正式回测仍匹配现场 DataBridge，不能用旧算法验收输入替代现场输入。
+- 临时 receipt 升为 `native-successor-equivalence-v2`，旧 v1 文件只留历史，不能由新工具解释为 v2 或手工改号。
+  本轮不重生成已 active W1 的历史凭据；W3A 尚须补齐受控结果复用入口。部署新工具前，必须确认本批回滚
+  及 re-cutover 均有新规则下可复验的证据，旧 immutable release 自身的历史工具不修改。
+- 证据分离已完成本地实现：正式回测全部七字段 Request 的独立摘要进入 plan SHA；预检后任何 cutoff
+  变更都使旧授权失效。定向测试先复现摘要未变化的问题，修复后验证旧摘要拒绝且 Registry/产品事实未改变。
+  独立复审 Critical/Important 均为 0；全量回归 `702 passed, 6 skipped, 229 subtests passed`。
+  本轮未配置 isolated MySQL URL，对应两个真实 MySQL 参数化场景 skipped，不视为通过；现场切换前仍须补验。
+
+**最新执行核验（2026-09-08 上午）**：
+
+- ECS Registry 的 W1 九个 successor target 已为 active，不能把下文早期“未切换”记录当作当前状态再切一次。
+  最新候选校验策略下的旧回测复用检查未通过，不等于 installed release 下的九个 active 身份失效；不据此重跑或改写已发布事实。
+- full-OOS successor exact `3ee3dd2334fd` 尚无成功持久化回测和产品预测事实，旧 Native Registry 仍 active；
+  启动前 scheme run/backtest run 的 running 数均为 0。cons-sda successor 也尚无成功持久化回测。
+- 已用严格 source-tree 校验通过的 immutable `c8d102eba7cc54327e29987707c3bae99dfbf3c3` 启动 full-OOS
+  既有 `gate backtest --persist`：历史起点 `2025-01-01`、target 上界 `2026-06-01`、安全预算 7200 秒。
+  该操作只在成功后原子新增回测 run/明细/月指标，不发布产品预测、不激活、不推进生产增量状态。
+- 当前 producer-ready 输入为 `full-20260908-063331-69a69e87e803` / `snapshot-1d335ad33e23ca7e7c8f5b64`。
+  正式 333 条完整七字段 Request 已与先前冻结 Request 逐条相等；generation 与 09-05 算法验收不同，
+  不把新回测与旧 Native 参考直接宣称为同代等价。原有同代333条零差异结论继续有效，按最新授权分别记录两类输入。
+- 日间任务日志位于 ECS 私有候选目录的 `full-oos-persist-20260908.log`，已启用十分钟跟进；
+  尚未取得 Gate 成功结果或数据库提交读回，不将启动视为完成，不自动重试失败任务。
+- 本轮未切换 current、未修改 systemd/launchd、未执行 DDL。ECS current 的 12 个历史 `.pyc` 完整性偏差
+  仍未处理，部署/切换前必须恢复严格校验，不通过忽略文件放宽验证。
+- 独立只读审查确认 W3A 还有临时接入缺口：现有 comparator runner 的批准目标仅含 W1/W2，
+  W3A 会在启动前被拒绝；receipt producer 当前还会重新启动 Native/Blackbox，不提供已完成结果的复用入口。
+  正式 Gate 不受此限制。下一步须最小化补齐 W3A 的受控凭据接入，并保持 receipt、正式回测及切换现场的
+  各自的 generation/snapshot 绑定；不得手写成功凭据、混称 09-05 与 09-08 为同代，或直接运行必失败的旧 comparator。
 
 **现场基线日期**：2026-09-05 Asia/Shanghai（后续核验日期在证据段落分别记录；计划修订不刷新现场水位）
 
@@ -185,24 +223,26 @@ snapshot、installed unit/plist、loaded/进程状态和 Dashboard；人工 JSON
 environment fingerprint 必须全部一致，且待发布历史回测的 `target_date` 必须严格小于 `2026-06-01`。旧 Native
 已发布历史与当前 generation 的日期 grid 分别要求非空且无重复；两侧日期数量与摘要必须进入 plan SHA，并以
 `data_vintage_drift` 显式记录，但不得因交易日历或历史数据修订而要求 successor 复制旧错误日期。迁移等价仍只
-能在当前冻结 generation 的同一完整 Request 集上通过，三个日期与方向必须逐行零差异。
+能在算法验收自身冻结 generation 的同一完整 Request 集上通过，三个日期与方向必须逐行零差异；
+该冻结输入可以早于正式入库输入。
 
 同输入零差异证据使用随 immutable release 发布的临时 receipt：整批 wave 为
 `deploy/native_successor_equivalence/<wave>.json`，逐方案 wave 为
 `deploy/native_successor_equivalence/<wave>--<old_base_scheme_id>.json`。receipt 必须由当前 release 的
-`native-successor-controlled-comparator` v1 生成，并绑定 comparator 源码 SHA-256、generation、data snapshot、
+`native-successor-controlled-comparator` v2 生成，并绑定 comparator 源码 SHA-256、generation、data snapshot、
 五文件 SHA-256、Native/Blackbox 环境指纹及 old/new code hash。comparator 使用同一七字段 Request CSV 直接
 执行两侧程序，读取两份标准五字段 CSV 结果，逐行核对 Request 顺序、ID、三个日期和方向；任一差异直接拒绝
 生成 receipt。preflight 会在
 数据库只读快照中锁定 successor 的完整
 持久化 backtest fact 集，并从每行 `source_row` 重新推导完整七字段 Request 摘要、Request 数量、ID/三日期摘要
-和标准五字段结果摘要；因此任一 cutoff key 变化也会 fail-closed。receipt 的
-Native/Blackbox 结果摘要必须相等并与该完整事实集一致，五类 mismatch count 必须全为 0。规范化 receipt
+和标准五字段结果摘要。receipt 的 Native/Blackbox 结果摘要必须相等，五类 mismatch count 必须全为 0。
+两类输入的 Request 数量、ID/三日期覆盖必须完全一致；输入相同时还要求三个 cutoff key 和方向摘要与正式事实集
+完全一致，输入不同时分别保存摘要，不将数据修订误认为算法改造差异。规范化 receipt
 中的 Native 环境指纹还必须等于现场 `forecast_env` 的 conda explicit package 集指纹。receipt 进入 plan SHA，
 apply 在事务内重新采集、重新推导并复验。receipt 缺失、抽样数量、手工摘要、旧 comparator 源码
 或任一 identity 不匹配均 fail-closed。receipt 不保存包含自身的 Git commit，避免 tracked receipt 的不可满足
 自引用；其内容由 comparator 源码 SHA、当前 release source-tree/archive、receipt 文件 SHA 和 plan SHA 共同
-冻结。当前候选的 W1A/W1B canonical receipt 仍与各自 exact code 一致，但尚未随新的 immutable release
+冻结。以下为 09-05 早期执行记录，不覆盖本文顶部最新现场核验：当时 W1A/W1B canonical receipt 仍与各自 exact code 一致，但尚未随新的 immutable release
 部署至 ECS，也尚未通过现场 preflight、持久化回测与切换事务，因此仍不能执行 ECS cutover。W2 只保留
 2026-09-05 旧 exact code 的历史 receipt；提交 `f947426d969d6c3e3879e707f7a0564345788d9a` 已改变
 successor script hash，该 receipt 已 superseded，只作审计，禁止用于 f947 preflight/cutover。f947 因 ECS
@@ -230,9 +270,9 @@ backtest CSV Request。具体算法列集合以交付脚本实际读取与校验
 | W1B | `weekly_5y_direct_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `59909549fee682c61a90c1394672f40b7204f67e35f692b04577cc49498a19c8` | ECS_0905_FULL_COMPARATOR_PASSED |
 | W1B | `weekly_7y_cross_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `fb2baa38fa8b614737f0c2f87bff90626e2d8d268e5375362bf863554096e680` | ECS_0905_FULL_COMPARATOR_PASSED |
 | W1B | `weekly_10y_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `e52e221a0046e8623107359b4fe3c2f7643e422b3ed9068c0cf317e9cdeafeed` | ECS_0905_FULL_COMPARATOR_PASSED |
-| W2 | 两个 `daily_*_v28_bbv2` | 完整五文件；V28 daily/weekly/monthly 因子与真实 T+5 grid | feature 2025-01-02..2026-05-22；各 333 条 | 5Y `32aa7948d5f90bdd3de72ce46461bdc8f6dafeb24ece450c34cba84eac5480cc`；7Y `5fec87a6be3612c911f17f546ae4687e58a64b1d5a7be75a407e1fbb681861a4` | ECS_BLOCKED_100_REQUEST_PERFORMANCE_NO_CURRENT_RECEIPT |
+| W2 | 两个 `daily_*_v28_bbv2` | 完整五文件；V28 daily/weekly/monthly 因子与真实 T+5 grid | feature 2025-01-02..2026-05-22；各 333 条 | 5Y `32aa7948d5f90bdd3de72ce46461bdc8f6dafeb24ece450c34cba84eac5480cc`；7Y `5fec87a6be3612c911f17f546ae4687e58a64b1d5a7be75a407e1fbb681861a4` | ECS_OFFLINE_REVALIDATION_PENDING; OLD_100_REQUEST_GATE_REMOVED |
 | W3A | `liwei_0616_cons_sda_k3_div_k10_bbv2` | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2025-01-02..2026-05-22；333 条 | `9cebc6eab7df69ed48e68163fc0cfc5229ad616fda4989924e2b34d78274c250` | ECS_CONFORMANCE_PASSED_NO_PERSISTED_BACKTEST |
-| W3A | `liwei_0616_5y01_full_oos_k3_div_k10_bbv2` | 五文件 + 方案私有增量 Phase-A 状态；连续 full-OOS 排名 | A2c feature 2025-01-02..2026-05-22；canonical 十日 2025-01-02..2025-01-15 | `ad9bdacf5063a427ecc8b70852e045f4822ba9af1b6d8fcd171cd2d779e95103` | ECS_DAILY_PASSED_BATCH100_TIMEOUT; CUTOVER_BLOCKED |
+| W3A | `liwei_0616_5y01_full_oos_k3_div_k10_bbv2` | 五文件 + 方案私有增量 Phase-A 状态；连续 full-OOS 排名 | 完整333条 feature 2025-01-02..2026-05-22 | `ad9bdacf5063a427ecc8b70852e045f4822ba9af1b6d8fcd171cd2d779e95103` | ECS_ALGORITHM_EQUIVALENCE_ACCEPTED; PERSISTED_BACKTEST_RUNNING |
 | W3B | 三个 10Y successor | 五文件；full-OOS 方案使用独立增量状态，非 full-OOS 优先纯算法优化 | feature 2026-08-28 | 未生成 | PENDING_W3A_STATE_PILOT |
 | W3C-D | 五个 `liwei_0616_*_bbv2` | 五文件；逐方案判定 stateless 或独立增量状态 | feature 2026-08-28 | 未生成 | PENDING_STATE_CLASSIFICATION |
 | W4A-C | 九个编译主体 successor | DataBridge 五文件 + Request；加密 payload 进入 manifest closure | 待 Mac3 冻结 | 待生成 | MAC3_BINARY_BUNDLE_PLANNED |
@@ -1297,7 +1337,10 @@ old version/Registry → 保留 successor facts 和私有派生状态 → curren
 
 同 exact version 允许重新切换，但必须复用已经发布的完全相同事实；禁止重复插入、覆盖或更换版本规避冲突。
 
-### 5.6 Phase 5：Mac3 晋级
+### 5.6 Phase 5：Mac3 晋级（当前暂停）
+
+2026-09-08 用户将本阶段收紧为 ECS-only。以下只保留未来晋级设计，不是当前待执行步骤；
+不得因 ECS 验证完成自动修改 Mac3 版本、数据库、launchd 或域名。W4 同时暂停，恢复均须另获授权。
 
 Mac3 对 W1-W3 只使用 ECS 已验证的同一 immutable archive，独立重做 release、launchd、数据库、DataBridge、
 backtest、cutover 和 rollback preflight，不得复制 ECS 的主键、run、prediction、backtest、Actual 或 Registry
@@ -1334,8 +1377,12 @@ A2、A4 与本节共用一份验收清单，在本 Markdown 中记录各检查�
 
 比较证据必须同时绑定 `generation_id + 五文件 SHA-256 + data_snapshot_id + 完整七字段 Request SHA-256 +
 old/new code hash + runtime environment fingerprint`。Request 数量/顺序/ID、三个日期与方向必须逐行零差异，
-三个 cutoff key 必须与持久化回测 `source_row` 完全一致。摘要不同只能
-标记 `data_vintage_mismatch` 并同代重跑，不能豁免差异或调参贴历史结果。
+旧、新算法必须使用相同三个 cutoff key。比较双方输入摘要不同只能标记 `data_vintage_mismatch` 并同代重跑，
+不能豁免差异或调参贴历史结果。这一要求只约束算法比较双方，不再要求其 generation 等于正式回测 generation。
+
+正式回测独立保存当前输入及每行 `source_row`，与算法等价证据通过相同 old/new code、运行环境、完整 Request
+ID/三日期区间关联。只有两类证据输入也相同时，三个 cutoff key 与方向摘要才须交叉相等；不同输入则分别进入
+plan SHA，不覆盖原始 generation、snapshot 或结果摘要。
 
 ### 6.3 性能
 
@@ -1370,7 +1417,7 @@ successor 唯一键、`run_id/backtest_run_id` XOR、gray/backtest 区间、Actu
 
 出现任一项立即停止当前 wave：
 
-- 无法证明同 generation、同 Request 或同 runtime fingerprint；
+- 无法证明算法比较双方同 generation/Request，或无法证明各类证据自身输入、代码与运行环境身份；
 - 任一日期或方向不一致；
 - successor 需要数据库、网络、跨方案 import、子进程或不受 5.2.1 合同约束的持久 cache；W1-W3 需要额外代码，
   或 W4 读取 manifest hash closure 之外的代码；
@@ -1397,6 +1444,10 @@ confidence。得到独立生产授权并验证可恢复快照后，新增并只�
 授权 Mac3；DDL 后禁止回滚到 confidence-agnostic 边界以前的 release。
 
 ## 9. 完成定义
+
+当前 ECS-only 阶段完成条件：W1-W3 的 21 个 successor target 在 ECS 完成受控替换、灰度、真实 one-shot
+模拟和回滚验收；Mac3 版本、业务库、调度及域名保持原状。以下为未来全项目完成定义，不是本阶段继续操作 Mac3
+或删除其仍在使用的 Native 路径的授权。
 
 必须同时满足：W1-W3 的 21 个 successor target 全部通过合同/等价/性能并在 ECS 接管；同一 archive 晋级
 Mac3；W4 九个 Mac3-only binary-bundle successor 通过 manifest/ABI/合同/等价/性能；Mac3 30 个 target 完成

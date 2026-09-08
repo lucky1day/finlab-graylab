@@ -12,6 +12,8 @@
 ## 双主机边界
 
 - Mac3 继续承载生产域名、前端、数据库和 Writer；`launchd + installed plist` 是生产调度控制面。
+- 2026-09-08 Native 迁移授权收紧为仅 ECS：本阶段不晋级或改变 Mac3 的版本、数据库、launchd、域名与流量；
+  Mac3 晋级及 W4 改造暂停，恢复须另获授权。算法等价与正式入库证据各自绑定输入，细则见迁移计划。
 - ECS 是独立灰度实验室，使用自己的 MySQL、DataBridge、Registry、run、prediction 和 systemd timer；
   Backend 只监听 loopback，不承载生产公网流量。
 - 两端不建立持续复制、双写、共享数据库或共享 DataBridge。经明确授权的单次缺口修复可以在停止目标 Writer

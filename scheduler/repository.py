@@ -4130,6 +4130,11 @@ def _native_successor_migration_plan_conn(
                 "validator_policy_digest": evidence.validator_policy_digest,
                 "fact_count": len(rows),
                 "fact_sha256": _native_successor_fact_rows_sha256(rows),
+                "request_artifact_sha256": hashlib.sha256(
+                    canonical_native_successor_plan(
+                        {"requests": [row["_source_request"] for row in rows]}
+                    ).encode("utf-8")
+                ).hexdigest(),
             }
         )
     normalized_equivalence = _validate_native_successor_equivalence_evidence(
@@ -4187,7 +4192,7 @@ def _validate_native_successor_equivalence_evidence(
     control_plane_evidence: Mapping[str, object],
     require_current_databridge: bool,
 ) -> dict[str, object]:
-    """校验同输入 Native/successor 五字段零差异的临时迁移凭据。"""
+    """算法等价绑定自身冻结输入；正式回测独立绑定入库输入。"""
     top_fields = {
         "schema_version",
         "wave",
@@ -4202,7 +4207,7 @@ def _validate_native_successor_equivalence_evidence(
         raise RuntimeError("Native successor equivalence evidence fields are invalid")
     if (
         evidence.get("schema_version")
-        != "native-successor-equivalence-v1"
+        != "native-successor-equivalence-v2"
         or evidence.get("wave") != wave
     ):
         raise RuntimeError("Native successor equivalence evidence identity mismatch")
@@ -4217,7 +4222,7 @@ def _validate_native_successor_equivalence_evidence(
         raise RuntimeError("equivalence evidence producer is invalid")
     if not isinstance(release, Mapping) or (
         producer.get("tool") != "native-successor-controlled-comparator"
-        or producer.get("tool_version") != "1"
+        or producer.get("tool_version") != "2"
         or producer.get("comparator_source_sha256")
         != release.get("comparator_source_sha256")
         or not str(producer.get("generated_at") or "").strip()
@@ -4321,6 +4326,11 @@ def _validate_native_successor_equivalence_evidence(
             target.target_tenor,
         )
         item = by_identity[identity]
+        backtest = backtests[target.new_base_scheme_id]
+        same_input = (
+            backtest.generation_id == generation_id
+            and backtest.data_snapshot_id == data_snapshot_id
+        )
         expected_identity = {
             "old_base_scheme_id": target.old_base_scheme_id,
             "new_base_scheme_id": target.new_base_scheme_id,
@@ -4436,14 +4446,16 @@ def _validate_native_successor_equivalence_evidence(
             raise RuntimeError(
                 "equivalence Request digest differs from persisted backtest facts"
             )
-        if request_artifact_sha256 != expected_request_artifact_sha256:
+        # 不同输入可能修订 cutoff 或方向；完整日期覆盖仍必须一致。
+        # 输入相同时保留逐字段交叉核验，不能用分离证据掩盖同输入差异。
+        if same_input and request_artifact_sha256 != expected_request_artifact_sha256:
             raise RuntimeError(
                 "equivalence complete Request digest differs from persisted "
                 "backtest source_row"
             )
         if (
             native_result_sha256 != successor_result_sha256
-            or successor_result_sha256 != expected_result_sha256
+            or (same_input and successor_result_sha256 != expected_result_sha256)
         ):
             raise RuntimeError(
                 "Native/successor standardized result digests differ from "
@@ -4473,18 +4485,20 @@ def _validate_native_successor_equivalence_evidence(
         )
 
     if any(
-        backtest.generation_id != generation_id
-        or backtest.data_snapshot_id != data_snapshot_id
-        or backtest.environment_fingerprint != runtime_fingerprint
+        backtest.environment_fingerprint != runtime_fingerprint
         for backtest in backtests.values()
     ):
-        raise RuntimeError("equivalence evidence differs from persisted backtest identity")
+        raise RuntimeError("equivalence evidence differs from persisted backtest runtime")
     if any(
         config.environment_fingerprint != runtime_fingerprint
         for config in new_configs.values()
     ):
         raise RuntimeError("equivalence evidence differs from successor runtime")
-    if require_current_databridge:
+    if require_current_databridge and any(
+        backtest.generation_id == generation_id
+        and backtest.data_snapshot_id == data_snapshot_id
+        for backtest in backtests.values()
+    ):
         current = control_plane_evidence.get("databridge")
         if not isinstance(current, Mapping) or (
             current.get("generation_id") != generation_id
@@ -4495,7 +4509,7 @@ def _validate_native_successor_equivalence_evidence(
                 "first cutover equivalence evidence differs from current DataBridge"
             )
     return {
-        "schema_version": "native-successor-equivalence-v1",
+        "schema_version": "native-successor-equivalence-v2",
         "wave": wave,
         "producer": dict(producer),
         "generation_id": generation_id,

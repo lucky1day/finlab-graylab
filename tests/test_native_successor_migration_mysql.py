@@ -433,11 +433,11 @@ def _inputs(old, new, target, evidence, control, database_name, server_uuid):
         ).encode("utf-8")
     ).hexdigest()
     equivalence = {
-        "schema_version": "native-successor-equivalence-v1",
+        "schema_version": "native-successor-equivalence-v2",
         "wave": "W-test",
         "producer": {
             "tool": "native-successor-controlled-comparator",
-            "tool_version": "1",
+            "tool_version": "2",
             "comparator_source_sha256": "6" * 64,
             "generated_at": "2026-09-05T00:00:00Z",
         },
@@ -493,7 +493,10 @@ def _apply_inputs(inputs):
     return payload
 
 
-def test_real_mysql_cutover_failure_rollback_and_recutover() -> None:
+@pytest.mark.parametrize("independent_algorithm_input", [False, True])
+def test_real_mysql_cutover_failure_rollback_and_recutover(
+    independent_algorithm_input: bool,
+) -> None:
     admin_url, target_url, schema_name = _isolated_urls()
     admin = _engine(admin_url)
     engine = None
@@ -529,6 +532,15 @@ def test_real_mysql_cutover_failure_rollback_and_recutover() -> None:
             schema_name,
             server_uuid,
         )
+        if independent_algorithm_input:
+            receipt = inputs["equivalence_evidence"]
+            receipt["generation_id"] = "frozen-algorithm-generation"
+            receipt["data_snapshot_id"] = "frozen-algorithm-snapshot"
+            receipt["data_files_sha256"]["daily_output.csv"] = "a" * 64
+            item = receipt["targets"][0]
+            item["request_artifact_sha256"] = "b" * 64
+            item["native_result_sha256"] = "c" * 64
+            item["successor_result_sha256"] = "c" * 64
         plan = read_native_successor_migration_plan(engine, **inputs)
         digest = native_successor_plan_sha256(plan)
 

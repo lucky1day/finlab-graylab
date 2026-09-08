@@ -1008,11 +1008,11 @@ def _inputs(old, new, target, evidence):
         ).encode("utf-8")
     ).hexdigest()
     equivalence_evidence = {
-        "schema_version": "native-successor-equivalence-v1",
+        "schema_version": "native-successor-equivalence-v2",
         "wave": "W-test",
         "producer": {
             "tool": "native-successor-controlled-comparator",
-            "tool_version": "1",
+            "tool_version": "2",
             "comparator_source_sha256": "6" * 64,
             "generated_at": "2026-09-05T00:00:00Z",
         },
@@ -1452,6 +1452,71 @@ def test_preflight_requires_zero_difference_equivalence_receipt() -> None:
         "direction_mismatch_count"
     ] = 1
     with pytest.raises(RuntimeError, match="mismatch count is non-zero"):
+        read_native_successor_migration_plan(engine, **inputs)
+
+
+def test_distinct_equivalence_input_survives_cutover_and_rollback() -> None:
+    engine, old, new, target, evidence = _fixture()
+    inputs = _inputs(old, new, target, evidence)
+    receipt = inputs["equivalence_evidence"]
+    receipt["generation_id"] = "frozen-algorithm-generation"
+    receipt["data_snapshot_id"] = "frozen-algorithm-snapshot"
+    receipt["data_files_sha256"]["daily_output.csv"] = "a" * 64
+    item = receipt["targets"][0]
+    item["request_artifact_sha256"] = "b" * 64
+    item["native_result_sha256"] = item["successor_result_sha256"] = "c" * 64
+
+    plan = read_native_successor_migration_plan(engine, **inputs)
+    assert plan["equivalence"]["generation_id"] == receipt["generation_id"]
+    assert plan["backtests"][0]["generation_id"] == evidence.generation_id
+    approved_digest = native_successor_plan_sha256(plan)
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE t_backtest_predictions SET source_row=:source_row WHERE run_id=42"),
+            {"source_row": json.dumps(_full_request(new.scheme_id) | {
+                "weekly_cutoff_key": "202620", "actual": {},
+            })},
+        )
+    changed_plan = read_native_successor_migration_plan(engine, **inputs)
+    assert native_successor_plan_sha256(changed_plan) != approved_digest
+    with pytest.raises(RuntimeError, match="plan.*(changed|mismatch|differs)"):
+        apply_native_successor_migration(
+            engine, **_apply_inputs(inputs), action="cutover",
+            expected_plan_sha256=approved_digest, approved_by="test-operator",
+            approved_at=datetime.now(timezone.utc),
+        )
+    with engine.connect() as conn:
+        assert conn.execute(text(
+            "SELECT status FROM t_scheme_registry WHERE base_scheme_id='native_multi'"
+        )).scalar_one() == "active"
+        assert conn.execute(text(
+            "SELECT COUNT(*) FROM t_scheme_predictions WHERE scheme_id='native_multi_bbv2'"
+        )).scalar_one() == 0
+    for action in ("cutover", "rollback", "cutover"):
+        plan = read_native_successor_migration_plan(engine, **inputs)
+        assert plan["action"] == action
+        with patch(
+            "scheduler.repository._upsert_scheme_version_conn",
+            side_effect=_sqlite_upsert,
+        ):
+            apply_native_successor_migration(
+                engine,
+                **_apply_inputs(inputs),
+                action=action,
+                expected_plan_sha256=native_successor_plan_sha256(plan),
+                approved_by="test-operator",
+                approved_at=datetime.now(timezone.utc),
+            )
+
+
+def test_distinct_input_does_not_allow_native_successor_result_mismatch() -> None:
+    engine, old, new, target, evidence = _fixture()
+    inputs = _inputs(old, new, target, evidence)
+    receipt = inputs["equivalence_evidence"]
+    receipt["generation_id"] = "frozen-algorithm-generation"
+    receipt["data_snapshot_id"] = "frozen-algorithm-snapshot"
+    receipt["targets"][0]["native_result_sha256"] = "c" * 64
+    with pytest.raises(RuntimeError, match="standardized result digests"):
         read_native_successor_migration_plan(engine, **inputs)
 
 

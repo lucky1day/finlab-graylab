@@ -517,11 +517,11 @@ def build_native_successor_equivalence_receipt(
             }
         )
     return {
-        "schema_version": "native-successor-equivalence-v1",
+        "schema_version": "native-successor-equivalence-v2",
         "wave": wave.wave,
         "producer": {
             "tool": "native-successor-controlled-comparator",
-            "tool_version": "1",
+            "tool_version": "2",
             "comparator_source_sha256": _comparator_source_sha256(),
             "generated_at": datetime.now(timezone.utc).isoformat(),
         },

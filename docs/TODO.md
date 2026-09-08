@@ -34,20 +34,17 @@
 26 个 Native base / 30 个业务 target 已进入按 wave 迁移到全新 Blackbox V2 successor 的执行阶段，权威身份
 映射、批次顺序、验收、回滚、停止条件和清理边界见
 [Native V1 全量迁移至 Blackbox V2](architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md)。首夜本地候选已完成
-原子迁移工具、日频 `T+1` gray target 区间能力及 6 个 T1/T5、3 个 weekly point successor；它们尚未形成
-ECS 当前 generation 的完整持久化 backtest 与受控 comparator receipt，因此不得执行 ECS activation、Registry
-切换、业务写库或 systemd 操作。
+原子迁移工具、日频 `T+1` gray target 区间能力及 6 个 T1/T5、3 个 weekly point successor。
 
-V28 的 W2 与 Liwei 的 W3A-W3D 均已在冻结五文件和真实 Request 下触发性能硬停止条件，现有 Native 保持
-不变。W2 已有两文件候选和方向零差异证据；单条 ECS predict 经只计算请求日期优化后，5Y/7Y 已分别降至
-13.56/11.97 秒；最终候选的 100 条 ECS backtest 中，7Y 为 371.24 秒并通过，5Y 为 618.85 秒，仍超过
-600 秒门槛 18.85 秒。W3A-W3D 的重复计算已
-定位为多个 baseline 重训相同 Phase-A grid，尚未完成进程内去重和当前月两阶段训练，因此仍未通过 120 秒
-单条门槛。daily/monthly 0629 与 weekly average 0529 共 9 个编译主体方案已按
-用户决定进入 manifest-bound Mac3-only binary bundle 例外，不再等待可读源码，也不进入 ECS；它们必须在前
-17 个可读源码 Native 完成 ECS 验证并以同一 immutable archive 晋级 Mac3 后再推进。因此当前先决阻塞是
-W2/W3 的独立算法性能，不是 SSH、W4 源码或接入合同。Mac3 晋级、launchd 操作与 confidence
-DDL 仍是后续独立门槛，最终 Native 清理和 migration 025 不能提前执行。
+2026-09-08 最新授权覆盖此前推进顺序：本阶段仅 ECS，Mac3 的 current/previous、数据库、launchd、对外
+域名及流量不变；不自动晋级 Mac3，W4 九个 binary bundle 暂停，恢复须另获授权。
+
+1. 完成 W3A full-OOS 与 cons-sda 的正式持久化回测及数据库读回，不恢复重复/倒序/乱序/子集算法矩阵。
+2. 算法等价与正式入库各自绑定其输入。保留同代码、环境、完整日期覆盖及各自内部一致性；补齐 W3A 受控
+   凭据接入，不手写成功 receipt。正式回测、单 Writer、原子 cutover/rollback、旧事实不变仍是必要边界。
+3. ECS release 严格完整性、部署矩阵、增量预热和证据均就绪后，推进 W3A 切换与真实 systemd one-shot 模拟。
+4. 随后完成 W2 与 W3B-D 的必要算法改造、完整同输入旧新回测对照及受控 ECS 替换。
+5. 不以本阶段 ECS 完成宣布全局 Native 退役；Mac3 仍依赖的旧路径不得提前删除，confidence DDL 仍须独立授权。
 
 ## 统一停止条件
 
