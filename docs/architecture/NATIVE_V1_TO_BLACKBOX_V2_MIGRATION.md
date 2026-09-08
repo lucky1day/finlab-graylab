@@ -2,9 +2,34 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_RECEIPT_AND_ADMISSION_VERIFIED; W3A_INITIAL_STATE_VERIFIED; W3A_CUTOVER_PENDING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_CUTOVER_COMMITTED; W3A_GRAY_RUNNING_TIMER_FENCED; W3A_INSTALLED_ONESHOT_PENDING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
 
-**ECS 切换准备与晚间执行窗口（2026-09-08 16:58 CST）**：
+**按用户最新指示立即模拟并切换（2026-09-08 17:09 CST）**：
+
+- 用户明确要求“现在直接模拟测试之后，直接真实切换”，覆盖下面原19:10等待安排。原晚间监测已先暂停，
+  确认现场无计算进程、one-shot与run后立即执行；不改变Mac3或对外域名，不重跑等价/正式回测/初始化。
+- 同一8eb2候选通过标准平台Request/输入/runner对09-08执行各一次日常predict模拟，不写业务事实；
+  明确使用120秒/4GiB/8线程边界。full-OOS耗时7.849秒、cons-sda耗时62.071秒，均通过五字段合同，
+  feature-date09-07、target-date09-14、direction均为1。full-OOS生产state输入/输出payload SHA完全相同，
+  没有重新训练或改变状态内容。`today-simulation.json` SHA：
+  `2dcdf9d4435b4eefd1625ddc66c8fa5826142e0c9571534e7ed6dec7be249ec2`。
+- 重新取得即时基线 `immediate-baseline.json`（SHA
+  `f5ec6e045de782eaccd30cca7e93a5dd8d3823382fcc0b1b2738424c314df236`），随后标准installer激活8eb2，
+  previous精确为3162。仅fence daily.timer并确认service idle；current下真实preflight通过，授权plan SHA为
+  `8301ecc29ed2b0d6e3570eda18663c80dcf4d79c3fd731925b325b8baa5ccb8c`。
+- 现有CLI原子cutover已成功提交，operator为 `user-approved-ecs-w3a-immediate-20260908`。
+  17:08:23独立只读读回：两个successor exact version/Registry active，各发布333条历史facts；两个旧Native
+  Registry archived，旧prediction/run/backtest的完整行摘要不变，Actual摘要不变，其他86个active身份不变。
+  Dashboard共88个active target，旧W3A消失、新W3A出现。原件均保留在本次incoming与本机ignored证据目录。
+- 17:08:51左右启动唯一一次串行gray调用：full-OOS后cons-sda，各74条、每条独立cutoff，每方案一个batch、
+  最多7200秒；临时driver为 `run_gray_once.py`，初始PID903027，仅用于定位且必须复核完整命令。
+  以nice10运行离线补齐，让未变更的18:00 monthly/19:00 Actuals保持默认优先级，不改installed控制面。
+  17:09确认full-OOS算法已启动、stderr为空；尚无gray最终结果，不能把进程启动当成入库完成。
+- daily.timer仍fenced，其他timer及Backend active；灰度通过后恢复timer并验收实际入口，失败按5.5回滚。
+  本轮模拟已证明当天预测性能，但不冒充已产生scheduled_live事实；W3A当前是“切换提交成功、收尾进行中”，
+  不是整个17方案迁移闭环。跟进改为本次已运行gray的结果核验，禁止重复启动或再次cutover。
+
+**ECS 切换准备与原晚间执行窗口（2026-09-08 16:58 CST，等待安排已被用户覆盖）**：
 
 - 用户在初始化验收后授权继续推进。已将同一经过验证的 `8eb2df2` archive 标准预安装至
   `/opt/bond-factor-lab/releases/8eb2df2e239dec6c3de529b99764d7be3f7316e2`，返回 `activated=false`。
