@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`A4_FULL_OOS_ECS_ALGORITHM_EQUIVALENCE_ACCEPTED_PERSISTED_BACKTEST_RUNNING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3A_CONS_SDA_CONFORMANCE_PASSED; W3B_D_PENDING; W4_MAC3_BINARY_BUNDLE_ACCEPTED`
+**执行状态**：`A4_FULL_OOS_ECS_PERSISTED_BACKTEST_VERIFIED; W3A_CONS_SDA_PERSISTED_BACKTEST_RUNNING; W3A_RECEIPT_REUSE_PENDING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
 
 **最新验收决定（2026-09-08）**：用户明确取消此次算法迁移的重复、倒序、乱序、子集及其他额外专项验证，
 以相同冻结输入下修改前后完整回测的日期和方向逐条一致为算法验收依据，执行规则见第6.1–6.2节。
@@ -28,6 +28,8 @@
   中途失败整事务回滚、cutover、rollback 和 re-cutover；测试前后隔离 schema 数均为 0，未访问 `bond_db`。
 
 **最新执行核验（2026-09-08 上午）**：
+
+以下启动前记录保留原时间语义；10:23–10:26 的完成读回及下一项启动见后文，不把旧状态当作当前待办。
 
 - ECS Registry 的 W1 九个 successor target 已为 active，不能把下文早期“未切换”记录当作当前状态再切一次。
   最新候选校验策略下的旧回测复用检查未通过，不等于 installed release 下的九个 active 身份失效；不据此重跑或改写已发布事实。
@@ -66,6 +68,27 @@
   一次正式持久化回测；任何失败或证据身份不符都先停止，不自动重复启动。两者成功之前不执行 W3A cutover。
 - 为后续受控复用核对了 ECS `forecast_env` 与 `forecast_env_blackbox_v1`：去掉环境路径注释后的完整
   conda explicit package URL 集完全相同，两侧独有成员数均为 0；这不是已生成 W3A receipt 的声明。
+
+**正式回测推进（2026-09-08 10:23–10:26 核验）**：
+
+- full-OOS Gate 于 10:16:54 CST 返回 `passed`，09:16:30 开始，总计 3624 秒（60 分 24 秒）。
+  成功 run 为 `278`，benchmark 为 `bbv2-liwei_0616_5y01_full_oos_k3_div_k10_bbv2-c9fdfd34d9854343b84e1d260356753f`，
+  exact version `3ee3dd2334fd`，输入为 `full-20260908-063331-69a69e87e803` /
+  `snapshot-1d335ad33e23ca7e7c8f5b64`。标准持久化证据校验通过 code/config/manifest/当前策略与输入身份；
+  数据库实际读回 333 条明细、17 个月度指标，指标样本总数 333，完整七字段 Request 与已核验 Request 集逐条相等。
+- 全部回测行的状态审计均为 `state_scope=private/state_input_sha256=null`，生产 full-OOS 状态目录不存在。
+  successor Registry、scheme run、产品预测事实均为 0，旧 Native Registry 仍 active；本次没有 activation、
+  cutover、gray 或生产增量预热。Harness 及其算法子进程均已退出，无其他运行中 scheme/backtest run。
+- 完整 Gate 日志保存于 ECS 原候选目录，已取回本地 ignored `outputs/releases/a4-offline-20260907/`；
+  日志 SHA 为 `c86643bf70a02d66f1b93ca12b9c094dfd4b20f9693258b7fb54dad09995f793`。09-08 正式结果不冒充
+  09-05 同代算法对照，二者继续各自绑定输入。
+- cons-sda exact `b5db363bbe17` 两文件、候选源码完整性及正式 333 条 Request 已通过启动前检查；数据库无
+  可复用成功正式回测，也无 successor Registry/run/产品事实。真实五个 one-shot service 均 loaded/inactive，
+  无其他训练，下一 timer 为 18:00。按既有授权使用同一 c8 immutable 候选启动一次 `gate backtest --persist`，
+  日期边界及 7200 秒预算不变，日志为候选根目录的 `cons-sda-persist-20260908.log`。
+  初始 Harness/算法 PID 为 `836127/836145`，仅用于定位，后续必须复核命令和父子关系；尚未返回最终结果。
+- ECS current 仍为 `3162f70e67f53b7cdb65a3e8792d42c6fab32d15`；Mac3 未操作。cons-sda 完成后仍须补齐
+  W3A 受控结果复用和整批切换准备，两个正式回测通过不等于 W3A 已接管。
 
 **现场基线日期**：2026-09-05 Asia/Shanghai（后续核验日期在证据段落分别记录；计划修订不刷新现场水位）
 
@@ -292,8 +315,8 @@ backtest CSV Request。具体算法列集合以交付脚本实际读取与校验
 | W1B | `weekly_7y_cross_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `fb2baa38fa8b614737f0c2f87bff90626e2d8d268e5375362bf863554096e680` | ECS_0905_FULL_COMPARATOR_PASSED |
 | W1B | `weekly_10y_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `e52e221a0046e8623107359b4fe3c2f7643e422b3ed9068c0cf317e9cdeafeed` | ECS_0905_FULL_COMPARATOR_PASSED |
 | W2 | 两个 `daily_*_v28_bbv2` | 完整五文件；V28 daily/weekly/monthly 因子与真实 T+5 grid | feature 2025-01-02..2026-05-22；各 333 条 | 5Y `32aa7948d5f90bdd3de72ce46461bdc8f6dafeb24ece450c34cba84eac5480cc`；7Y `5fec87a6be3612c911f17f546ae4687e58a64b1d5a7be75a407e1fbb681861a4` | ECS_OFFLINE_REVALIDATION_PENDING; OLD_100_REQUEST_GATE_REMOVED |
-| W3A | `liwei_0616_cons_sda_k3_div_k10_bbv2` | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2025-01-02..2026-05-22；333 条 | `9cebc6eab7df69ed48e68163fc0cfc5229ad616fda4989924e2b34d78274c250` | ECS_CONFORMANCE_PASSED_NO_PERSISTED_BACKTEST |
-| W3A | `liwei_0616_5y01_full_oos_k3_div_k10_bbv2` | 五文件 + 方案私有增量 Phase-A 状态；连续 full-OOS 排名 | 完整333条 feature 2025-01-02..2026-05-22 | `ad9bdacf5063a427ecc8b70852e045f4822ba9af1b6d8fcd171cd2d779e95103` | ECS_ALGORITHM_EQUIVALENCE_ACCEPTED; PERSISTED_BACKTEST_RUNNING |
+| W3A | `liwei_0616_cons_sda_k3_div_k10_bbv2` | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2025-01-02..2026-05-22；333 条 | `9cebc6eab7df69ed48e68163fc0cfc5229ad616fda4989924e2b34d78274c250` | ECS_CONFORMANCE_PASSED; PERSISTED_BACKTEST_RUNNING |
+| W3A | `liwei_0616_5y01_full_oos_k3_div_k10_bbv2` | 五文件 + 方案私有增量 Phase-A 状态；连续 full-OOS 排名 | 完整333条 feature 2025-01-02..2026-05-22 | `ad9bdacf5063a427ecc8b70852e045f4822ba9af1b6d8fcd171cd2d779e95103` | ECS_ALGORITHM_EQUIVALENCE_ACCEPTED; PERSISTED_BACKTEST_VERIFIED |
 | W3B | 三个 10Y successor | 五文件；full-OOS 方案使用独立增量状态，非 full-OOS 优先纯算法优化 | feature 2026-08-28 | 未生成 | PENDING_W3A_STATE_PILOT |
 | W3C-D | 五个 `liwei_0616_*_bbv2` | 五文件；逐方案判定 stateless 或独立增量状态 | feature 2026-08-28 | 未生成 | PENDING_STATE_CLASSIFICATION |
 | W4A-C | 九个编译主体 successor | DataBridge 五文件 + Request；加密 payload 进入 manifest closure | 待 Mac3 冻结 | 待生成 | MAC3_BINARY_BUNDLE_PLANNED |
@@ -1484,7 +1507,7 @@ Native run；Native 可执行路径与临时迁移工具已删除；全量、架
 旧 100 条批量在 600 秒硬限超时；用户调整离线预算后，ECS 完整冷333条、Mac同输入参考比较与
 同 Linux Native 独立333条等价均已通过，满足用户简化后的算法等价验收；额外矩阵已取消，仍待正式入库与切换验收。
 full-OOS 两文件已提交并以不可变包安装至 ECS 私有验证目录，保持 paused/draft、部署范围为空；
-尚未完成 ECS 持久化回测或生产切换，不能用单日性能或独立等价通过宣布整体闭环。
+现已完成 ECS 正式持久化回测并读回；同批 cons-sda 正式回测仍在运行，W3A 尚未切换，不能宣布整体闭环。
 W2、W3B-D 也尚未完成新预算下各自的离线和每日验收，须逐方案分类，不能外推当前试点通过。W4 的
 Mac3-only binary-bundle 架构已经获得确认，但必须等 W1-W3 晋级 Mac3 后实施；不能用旧 adapter、未纳入
 manifest 的二进制、旧水位、旧 Native cache 或文档声明冒充闭环。

@@ -39,7 +39,8 @@
 2026-09-08 最新授权覆盖此前推进顺序：本阶段仅 ECS，Mac3 的 current/previous、数据库、launchd、对外
 域名及流量不变；不自动晋级 Mac3，W4 九个 binary bundle 暂停，恢复须另获授权。
 
-1. 完成 W3A full-OOS 与 cons-sda 的正式持久化回测及数据库读回，不恢复重复/倒序/乱序/子集算法矩阵。
+1. 完成 W3A cons-sda 的正式持久化回测及数据库读回；full-OOS 已取得成功正式证据，不重复计算。
+   不恢复重复/倒序/乱序/子集算法矩阵。
 2. 算法等价与正式入库各自绑定其输入。保留同代码、环境、完整日期覆盖及各自内部一致性；补齐 W3A 受控
    凭据接入，不手写成功 receipt。正式回测、单 Writer、原子 cutover/rollback、旧事实不变仍是必要边界。
 3. ECS release 严格完整性、部署矩阵、增量预热和证据均就绪后，推进 W3A 切换与真实 systemd one-shot 模拟。
