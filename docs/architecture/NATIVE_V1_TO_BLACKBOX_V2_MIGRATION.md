@@ -2,7 +2,41 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_CUTOVER_COMMITTED; W3A_GRAY_VERIFIED_TIMER_RESTORED; W3A_INSTALLED_ONESHOT_RUNNING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_INSTALLED_ONESHOT_FAILED_STATE_ENV_IDENTITY; W3A_ROLLBACK_VERIFIED_TIMER_RESTORED; W3A_ENV_ALIGNMENT_PENDING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
+
+**真实日频失败、整组回滚及只读定位（2026-09-08 18:41 CST，覆盖以下运行中状态）**：
+
+- 唯一 installed daily 调用于18:32:42退出，Result `exit-code`、exit1；同一Invocation的最终摘要为
+  47个方案：45 skipped、1 success、1 failed，无blocked/denied。full-OOS run5266因
+  `Blackbox state exact identity mismatch; rebuild required` 在计算前失败、写入0；cons-sda run5267
+  scheduled_live成功、写入1，predict09-08、feature09-07、target09-14、direction1。
+  不能把模拟通过、gray成功或cons单方案成功视作W3A整组真实入口验收通过。
+- 已保存完整journal和47条run证据，fence daily.timer，核验进程退出、MainPID0、全库running run0、
+  state锁可独占后，仅reset-failed该daily.service。8eb2仍为current时fresh preflight确定rollback动作，
+  plan SHA `5d9b66dbf193475bae8a77466548f04f8257d7f28e171201828420f699b00c03`，现有CLI原子回滚成功。
+  随后标准installer验证并激活3162，current为3162、previous为8eb2，未直接改symlink或release源码。
+- 18:39独立只读验收通过：两个旧Native Registry及对应exact version恢复active，新Registry archived、
+  新exact version retired；旧prediction/run/backtest完整摘要不变；successor各333历史＋74gray完整保留，
+  cons额外1条scheduled_live也保留，因此full407条、cons408条，未删除或覆盖任何事实。
+  其他86个active身份及所有非successor预测不变，Dashboard读模型恢复原88个active集合；Actual摘要不变。
+  Backend原PID643451、health200；state校验和不变、锁空闲、无残留算法或runner进程。
+  daily.timer已active，next09-09 07:03；DataBridge next06:30及weekly/monthly/19:00 Actuals timer均保持正常。
+  没有再次启动旧daily，旧Writer的回滚后实际调用验证仍pending，不冒充已完成自然恢复验收。
+- 只读身份复算定位到入口locale差异：SSH初始化/模拟继承 `LANG=en_US.UTF-8, LC_ALL=C.UTF-8`；
+  按installed unit、manager环境和两份EnvironmentFile重建的systemd环境只有 `LANG=en_US.UTF-8`，
+  没有LC_ALL。相同script、metadata、五文件与snapshot，SSH复算runtime SHA精确匹配已存状态
+  `cff7095b5e6c7669b77a3335e12164d35cd59cf52b6180ee22cf6f659bbe6ce6`；仅切换这组allowlist环境后变为
+  `6e817a9b694d6c46d4414d8b4449e57cc21cba4bc194ba37c62db3f869cd993b`。
+  这解释了模拟通过而真实入口拒绝；复算未执行算法、未改状态。已退出进程的environ不能直接重读，
+  systemd环境结论来自已核验控制面重建，不能称作保存了该进程的原始环境快照。
+- 下一步只处理初始化与installed日频的locale身份一致性；不删除环境校验、不重写state header、
+  不因错误含rebuild字样就自动再次初始化，不重跑已通过等价和正式回测。任何环境调整须先明确
+  对其他Blackbox的影响及是否改变已绑定runtime身份，再按既定边界批准执行。
+  此轮失败安全收尾已完成，监测 `native-ecs` 已暂停；未自动重试切换，Mac3完全不变。
+- 小体积证据保存在本次incoming与本机ignored `outputs/releases/w3a-prewarm2-20260908/`：
+  `installed-daily-runs.json`、`installed-daily-journal.json`、`rollback-preflight.json`、`rollback-result.json`、
+  `rollback-readback.json`（SHA `7940736bdd8dcf134703ba1c6e4ec83a8c02b807169deec99bb1ac91b5ed6016`）、
+  `state-identity-diagnosis.json`（SHA `780bbc0996d1914b585333d0b269c98f1da645413b3232752c9588ee43448e8d`）。
 
 **灰度完成与真实日频验收启动（2026-09-08 18:09 CST）**：
 

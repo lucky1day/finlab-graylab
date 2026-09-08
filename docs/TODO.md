@@ -52,9 +52,12 @@
    8eb2已成为ECS current，previous3162；真实preflight及W3A原子cutover已成功，两新Registry active、旧archived，
    各333条历史facts已发布，旧完整事实、Actual与其他active集合读回不变。
    两方案gray已于17:59全部完成、各74条，18:08独立验收通过，daily.timer已恢复、next为09-09 07:03。
-   18:08:54已启动唯一一次真实installed daily.service，InvocationID见迁移计划顶部；跟进最终退出、
-   W3A scheduled_live事实及全范围执行结果，失败回滚。禁止重复start、初始化、gray或cutover。
-   午夜/gate与失败恢复安排见迁移计划顶部。W3A收尾尚未完成；Mac3不变，不复制正式回测私有状态。
+   真实installed daily于18:32:42失败：full-OOS在state精确身份校验处拒绝、写0；cons-sda成功写1；其他45 skipped。
+   18:39已完成整W3A原子rollback、标准installer恢复3162及daily.timer，next09-09 07:03。
+   旧完整事实、其他active/预测及Actual不变，新407/408条事实全部保留；旧Writer回滚后实际调用仍pending。
+   只读复算发现SSH初始化/模拟有LC_ALL=C.UTF-8而installed日频没有，只有runtime身份摘要因此不同；
+   先明确统一locale的最小变更及其他Blackbox影响，再受控验证和重新切换。不得跳过身份校验、改state header、
+   自动初始化或重跑正式回测。此轮失败收尾已完成、监测暂停；详细证据见迁移计划顶部。Mac3不变。
 4. 随后完成 W2 与 W3B-D 的必要算法改造、完整同输入旧新回测对照及受控 ECS 替换。
 5. 不以本阶段 ECS 完成宣布全局 Native 退役；Mac3 仍依赖的旧路径不得提前删除，confidence DDL 仍须独立授权。
 
