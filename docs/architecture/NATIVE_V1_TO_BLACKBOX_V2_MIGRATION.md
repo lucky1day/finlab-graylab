@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`A4_FULL_OOS_ECS_PERSISTED_BACKTEST_VERIFIED; W3A_CONS_SDA_PERSISTED_BACKTEST_RUNNING; W3A_RECEIPT_REUSE_PENDING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_BOTH_ECS_PERSISTED_BACKTESTS_VERIFIED; CONS_SDA_INDEPENDENT_REFERENCE_RUNNING; W3A_RECEIPT_REUSE_PENDING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
 
 **最新验收决定（2026-09-08）**：用户明确取消此次算法迁移的重复、倒序、乱序、子集及其他额外专项验证，
 以相同冻结输入下修改前后完整回测的日期和方向逐条一致为算法验收依据，执行规则见第6.1–6.2节。
@@ -91,6 +91,54 @@
   W3A 受控结果复用和整批切换准备，两个正式回测通过不等于 W3A 已接管。
 
 **现场基线日期**：2026-09-05 Asia/Shanghai（后续核验日期在证据段落分别记录；计划修订不刷新现场水位）
+
+**W3A 正式回测收尾（2026-09-08 10:59 后只读核验）**：
+
+- cons-sda 于 10:25:59–10:49:42 CST 完成，耗时 1423 秒（23 分 43 秒），Gate `passed`。
+  成功 run `279`，benchmark `bbv2-liwei_0616_cons_sda_k3_div_k10_bbv2-51934d55c8aa46639d53283dd9b9ae18`，
+  exact version `b5db363bbe17`；正式输入与 full-OOS 同为 `full-20260908-063331-69a69e87e803` /
+  `snapshot-1d335ad33e23ca7e7c8f5b64`。只读复验当前校验策略、代码/配置/Metadata、环境及 snapshot 证据通过，
+  实际读回 333 条明细、17 个月度指标、样本总数 333；完整 Request 与按正式日历重建的 333 条逐条一致。
+- 两个 successor 均无 Registry、scheme run、产品预测事实和生产状态目录；旧 Native Registry 仍 active，
+  running scheme/backtest run 均为 0。c8 私有候选与 installed current 的完整源码 SHA 均通过严格校验；
+  ECS current 未切换，Mac3 未操作。
+- cons-sda 完整 Gate 日志取回本地 ignored `outputs/releases/a4-offline-20260907/cons-sda-persist-20260908.log`，
+  SHA 为 `990ac3e1498521d60dcf6672ad327836c763ef33d71e9c8ab89d0ca31e1fdbac`。
+  本轮十分钟回测监测已暂停，禁止重复启动两个已完成回测。下一步仅补齐 W3A 已有算法证据的受控复用及整批
+  ECS 切换准备；正式回测通过不等于 activation、gray、状态预热或接管已完成。
+
+**cons-sda 等价原始证据补齐（2026-09-08）**：
+
+- 已核对本任务原始执行记录和 ECS 精确路径：09-07 的 `/tmp/bfl-w2-final-verify.hE16Jp` 曾在前轮清理中删除，
+  当前不存在，也未找到本地或 incoming 原始归档。历史日志保留 333/333、mismatch 0 的结论，但不能从摘要
+  还原 Request/Result 原件或生成 canonical receipt。full-OOS 原始证据仍完整，不能代替 cons-sda。
+- 从历史恢复的旧 comparator 直接加载生产 Phase-A pickle，未在 probe 中核验 cache 与输入的身份闭包，
+  且按月末 cutoff 生成整月参考。因此不原样复用该脚本，也不把历史 conformance 声明提升为新受控凭据。
+- 最小补齐方式为只读导出今日成功 run279 的完整 333 条 Request 和五字段 Result，只计算未改 Native core 的
+  独立参考。Blackbox 不再执行，正式回测不再写入；Native 只从同一 09-08 冻结五文件建立私有 Phase-A，
+  每条 Request 的末点单独重训、原 `liwei_0616_pit_window` 排名及 consensus/streak 单独重算。
+  所有前缀复用必须先通过该输入下的 Native 训练依赖检查，不读取旧生产 cache、不调整算法或方向。
+- 只读准备已核验 run279 完整输入与标准结果；导出 Request SHA 为
+  `7e27c60ff08c35622d0f04059d9ab3daba2fa25c7cae32d707ef9f5f89a2f231`，Result SHA 为
+  `83543e00ff040d4e6270537b9f70ee37363a08e9d782fed1eca2183baf9644c6`。
+  后者是 09-08 正式结果，不与 09-07 不同输入的旧 Output hash 直接判等。
+  首次准备曾因误用 full-OOS 的 alignment 字节 hash 被安全拒绝；已分别核对 Git 与 ECS immutable 文件，
+  cons-sda 的正确 hash 为 `217d25154d80aa3e0cfd61c771d13adbabbb377ed7118736e307c17f979f5805`，
+  两个 alignment 源文件仅末尾空行不同。修正的是临时 probe 身份锁定，不是算法源码，也未放宽完整性检查。
+- 独立参考是迁移期一次性补证，不增加长期算法测试或接入框架。结果、身份和逐 Request 日志保留在 ECS
+  私有 incoming 与本地 ignored outputs，至少保留到受控凭据与切换验收闭环；失败不自动重试，不清理成功原件。
+- 11:19 CST 在 `/opt/bond-factor-lab/incoming/cons-native-reference-20260908.a0Jdr4` 启动一次独立参考，
+  11:21 核对 supervisor `843417` 和 Native PID/PGID `843488`，实际日志已输出首条依赖检查通过；
+  尚未完成全部依赖检查或最终等价。启动前五个真实 one-shot service 均 loaded/inactive、MainPID=0、
+  Result=success；没有其他训练，下一 timer 为 18:00。参考预算 7200 秒、进程组 RSS 上限 4 GiB，
+  Native 原有 Pool(4) 只用于独立基线，successor 不执行。十分钟监测已改为跟进本次参考，失败不重试。
+- 三个临时脚本的 AST 检查通过；独立审查已修复 alignment hash 与资源终止时日志丢失两项 Important，
+  fresh read 复审 Critical/Important/Minor 均为 0。逐 Request stdout/stderr 在参考进程内 exclusive 创建并
+  逐行落盘，超时或内存终止后仍保留，已有日志拒绝重启。实际 ECS 字节与审查版本一致：
+  probe SHA `96b4aa7682cf1a08174458b7a3bf00d4fc56bb02f09500f56a3239428953cce8`；
+  Native reference SHA `9d2f69351888289cec6d5548a83618170e94e7a4dfd047088b3bccb3deeeb957`；
+  dependency check SHA `bf36f63feac8786fb3f7bdeb84cf88623f57824dee6ad2e3e270a08e851b23ef`。
+  ECS current 仍为 3162，Mac3 未操作；本次补证不是 activation 或整批切换。
 
 **基线 Git 提交**：`20e98934e9d5399e3d509f486a8a650d95ad7639`
 
@@ -315,7 +363,7 @@ backtest CSV Request。具体算法列集合以交付脚本实际读取与校验
 | W1B | `weekly_7y_cross_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `fb2baa38fa8b614737f0c2f87bff90626e2d8d268e5375362bf863554096e680` | ECS_0905_FULL_COMPARATOR_PASSED |
 | W1B | `weekly_10y_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `e52e221a0046e8623107359b4fe3c2f7643e422b3ed9068c0cf317e9cdeafeed` | ECS_0905_FULL_COMPARATOR_PASSED |
 | W2 | 两个 `daily_*_v28_bbv2` | 完整五文件；V28 daily/weekly/monthly 因子与真实 T+5 grid | feature 2025-01-02..2026-05-22；各 333 条 | 5Y `32aa7948d5f90bdd3de72ce46461bdc8f6dafeb24ece450c34cba84eac5480cc`；7Y `5fec87a6be3612c911f17f546ae4687e58a64b1d5a7be75a407e1fbb681861a4` | ECS_OFFLINE_REVALIDATION_PENDING; OLD_100_REQUEST_GATE_REMOVED |
-| W3A | `liwei_0616_cons_sda_k3_div_k10_bbv2` | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2025-01-02..2026-05-22；333 条 | `9cebc6eab7df69ed48e68163fc0cfc5229ad616fda4989924e2b34d78274c250` | ECS_CONFORMANCE_PASSED; PERSISTED_BACKTEST_RUNNING |
+| W3A | `liwei_0616_cons_sda_k3_div_k10_bbv2` | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2025-01-02..2026-05-22；333 条 | `9cebc6eab7df69ed48e68163fc0cfc5229ad616fda4989924e2b34d78274c250` | PERSISTED_BACKTEST_VERIFIED; INDEPENDENT_REFERENCE_RUNNING |
 | W3A | `liwei_0616_5y01_full_oos_k3_div_k10_bbv2` | 五文件 + 方案私有增量 Phase-A 状态；连续 full-OOS 排名 | 完整333条 feature 2025-01-02..2026-05-22 | `ad9bdacf5063a427ecc8b70852e045f4822ba9af1b6d8fcd171cd2d779e95103` | ECS_ALGORITHM_EQUIVALENCE_ACCEPTED; PERSISTED_BACKTEST_VERIFIED |
 | W3B | 三个 10Y successor | 五文件；full-OOS 方案使用独立增量状态，非 full-OOS 优先纯算法优化 | feature 2026-08-28 | 未生成 | PENDING_W3A_STATE_PILOT |
 | W3C-D | 五个 `liwei_0616_*_bbv2` | 五文件；逐方案判定 stateless 或独立增量状态 | feature 2026-08-28 | 未生成 | PENDING_STATE_CLASSIFICATION |
@@ -1507,7 +1555,7 @@ Native run；Native 可执行路径与临时迁移工具已删除；全量、架
 旧 100 条批量在 600 秒硬限超时；用户调整离线预算后，ECS 完整冷333条、Mac同输入参考比较与
 同 Linux Native 独立333条等价均已通过，满足用户简化后的算法等价验收；额外矩阵已取消，仍待正式入库与切换验收。
 full-OOS 两文件已提交并以不可变包安装至 ECS 私有验证目录，保持 paused/draft、部署范围为空；
-现已完成 ECS 正式持久化回测并读回；同批 cons-sda 正式回测仍在运行，W3A 尚未切换，不能宣布整体闭环。
+现已与同批 cons-sda 一起完成 ECS 正式持久化回测并读回；受控等价凭据复用仍待补齐，W3A 尚未切换，不能宣布整体闭环。
 W2、W3B-D 也尚未完成新预算下各自的离线和每日验收，须逐方案分类，不能外推当前试点通过。W4 的
 Mac3-only binary-bundle 架构已经获得确认，但必须等 W1-W3 晋级 Mac3 后实施；不能用旧 adapter、未纳入
 manifest 的二进制、旧水位、旧 Native cache 或文档声明冒充闭环。
