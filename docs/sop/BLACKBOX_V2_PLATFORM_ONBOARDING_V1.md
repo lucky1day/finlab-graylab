@@ -155,6 +155,13 @@ launchd/systemd one-shot 时钟产生成功 `scheduled_live` 证据。
 
 仅对声明了增量能力的 exact version，完成目标环境验证并取得该次状态维护授权后执行：
 
+初始化与后续日频必须使用相同的实际 Runtime Profile 环境。执行前从 installed unit/plist、加载状态及其
+环境文件核对 Profile allowlist（当前为 `LANG/LC_ALL/TZ`），不要直接继承操作者 SSH/shell 的 locale。
+维护调用仅对自身进程设置这些变量；真实入口没有的变量也必须从维护调用中移除，而不是赋空字符串。
+先只读复算状态运行环境身份，保存有效值与摘要；不为复用某份错误环境的状态而修改全局调度或其它方案。
+运行时身份已经不同的旧状态不能改写 header 或跳过校验：保留原状态证据，经显式维护授权后按真实环境重建，
+再用正常增量路径验收。该路径不写业务事实，但会按合同原子发布派生状态，不得称作文件系统只读验证。
+
 ```bash
 python -m harness rebuild-blackbox-state \
   --scheme-id <scheme-id> --predict-date YYYY-MM-DD \

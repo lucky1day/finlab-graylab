@@ -2,7 +2,32 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_INSTALLED_ONESHOT_FAILED_STATE_ENV_IDENTITY; W3A_ROLLBACK_VERIFIED_TIMER_RESTORED; W3A_ENV_ALIGNMENT_PENDING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_SERVICE_ENV_REBUILD_RUNNING; W3A_OLD_WRITER_RESTORED_MORNING_PROTECTED; W3A_RECUTOVER_PENDING_CURRENT_READY; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
+
+**继续执行授权与最小环境修复（2026-09-09 01:56 CST）**：
+
+- 用户要求继续推进直至闭环，本阶段仍仅ECS，不改变Mac3、域名、DDL或master。当前凌晨，09-09早间任务
+  尚未触发；current3162、previous8eb2、所有业务one-shot idle、daily.timer next07:03、DataBridge next06:30。
+  上次reset-failed后service的Result显示success不代表旧Writer已经复跑，必须用新Invocation及DB核验。
+- 最小修复选择不改算法、平台Runtime Profile或installed systemd环境：维护调用改用已核验真实日频环境
+  `LANG=en_US.UTF-8`，移除SSH继承的LC_ALL，TZ继续采用既有Profile默认Asia/Shanghai。
+  旧state环境身份不同，不能修header或跳过校验；本次授权下保留其完整字节证据，再执行一次现有显式初始化。
+  独立运维审查无Critical/Important阻塞，确认archived successor可维护、CLI不写业务事实。
+- 01:53:50启动唯一driver，初始PID921287；CLI PID921311，算法PID/PGID921327。
+  这些仅为定位提示，跟进须复核完整命令。使用同一immutable8eb2、exact3ee3dd2334fd、明确predict09-08及
+  尚未更新的09-08 ready generation；这是派生状态维护，不是09-09 scheduled_live或伪造当天输入。
+  operator `user-authorized-ecs-locale-recovery-20260909`，现有7200秒/4GiB/8线程限制不变，预算含清理早于05:00。
+  01:56已从实际算法/proc/environ读回LANG与TZ正确、LC_ALL不存在、五项数值线程均8，stderr0字节；尚未完成。
+- 证据根 `/opt/bond-factor-lab/incoming/w3a-locale-20260909.qqTZuf`，本机ignored
+  `outputs/releases/w3a-locale-20260909/`。`before.state.evidence`保存原状态字节；`rebuild-start.json`保存
+  全Registry/run/prediction/backtest行摘要；driver调用现有CLI，结束后保存completion及前后摘要，不重试。
+  current/Registry/timer均未切换。原始算法等价、正式回测278/279和已发布407/408条事实不重算。
+- 完成后先验收状态完整性、真实环境身份、进程/锁清理、业务事实不变，随后正常predict09-08验证日期和方向，
+  并如实记录其状态发布。等待09-09 DataBridge ready且旧07:03自然任务退出，先确认回滚后旧Writer恢复；
+  再对当前输入做120秒增量验证，通过后按fresh preflight/plan SHA执行整W3A re-cutover。
+  新generation不自动要求重建；算法自行判断历史依赖是否可复用。已发布旧正式回测在同exact version重切时
+  可复用，不因09-09 generation变化重跑278/279。已存在74条gray不得重复跑；只处理full-OOS缺少的09-14键。
+  失败不自动重试初始化、改预算或放宽校验；安全保留旧Writer并报告。W3A闭环后继续W2、W3B-D，不扩大Mac3权限。
 
 **真实日频失败、整组回滚及只读定位（2026-09-08 18:41 CST，覆盖以下运行中状态）**：
 
