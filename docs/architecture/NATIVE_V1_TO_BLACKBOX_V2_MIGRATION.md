@@ -1137,6 +1137,37 @@ ECS 当前 release 的严格完整性差异仅定位为 **12个 `__pycache__/*.c
 持久化回测、wave/单 Writer/gray/cutover验收及Mac3独立验证。当前只是本夜夜间窗口收尾，**整个迁移项目未闭环**。
 夜间自动化 `native-ecs` 已在05:30前通过受控工具置为 `PAUSED` 并读回确认，不在06:00后自动恢复迁移。
 
+**用户重新授权后的日间补验（2026-09-08 08:42 起）**
+
+用户在获知夜间收尾、未完成五组和 release 完整性问题后明确要求继续推进。本次是新授权下的日间补验，
+不是自动延长夜间窗口。08:40–08:43 只读核验 ECS DataBridge/daily/Actuals 均已成功退出、MainPID0；
+Mac3 DataBridge/daily 各有一次执行记录且退出码0。只确认调度入口成功，不外推所有方案逐条业务结果。
+
+最小修复仅涉及 ignored outputs 中的一次性验证脚本，不改算法、平台公共接口或当前生产 release：
+
+- `ecs_batch_remaining.py` 不再向交互 stdout 输出进度，只独占新建证据文件；旧实现的 BrokenPipe 条件
+  已由关闭消费者的局部回归重现，新实现通过相同检查。新目录为 `batch-remaining-20260908/`。
+- 先固定摘要复核原 `asc-0` 的100条输出、Request顺序、输入/版本/环境身份和全部 NPZ 成员，再复用其
+  结果及末态基线，只执行 `asc-1 / asc-2 / reverse / shuffle / subset` 五组。原失败目录全部文件最后复验，
+  不改写或删除旧失败，也不重新执行已经通过的第一组。
+- `launch_batch_remaining.py` 创建新 session，stdin为DEVNULL、stdout/stderr共用独占新建的普通日志文件；
+  supervisor 等待 controller 的实际返回码并保存 `batch-remaining-exit.json`，不依赖SSH连接或exec session存续。
+  它仅服务本次有限测试，不挂载 systemd/launchd 或新增长期调度器。
+- 仍为每组1200秒、4GiB、8数值线程、出现异常停止后续组；日间操作截止 **11:30 CST**，每组前检查余下
+  最坏算法时间加600秒验证/清理余量。此预算不改变算法准入标准。
+- 独立审查 Critical/Important 清零，修复了新运行视图清理检查误指旧目录的问题；两个脚本语法通过，
+  日志断开回归与3项launcher mock边界检查通过。资源/状态验收不证明内部没有重训，不能以缓存复用措辞替代实测。
+
+最终脚本摘要：controller `3e44cd611a72cc560269569d1abc1bebe83234c9a664429144edc6ca4ec211c4`；
+launcher `7edf9c05ad38ca4a0fdb4a5229e22b70b12bb2b4b91a3553cda62a2cb5a32eef`，上传前后相同。
+隔离 c8d102e 候选的严格源码树摘要 `21d4086d822c4d3db8074c9cefc113e96001fb1cf422aed69f1a742e8e6e075b`
+与安装记录一致，不使用有 pyc 偏差的线上 current 作为补验算法源。
+
+08:47 已读回独立 supervisor 814901（PPID1、独立SID）、controller 814903、首组算法/PGID814919；
+首次 SSH 启动命令已成功退出，算法仍正常运行。后续PID必须重读对应process报告和完整命令，不使用旧PID操作。
+日志为隔离候选根目录的 `batch-remaining-supervisor.log`。当前只确认启动，尚无剩余五组通过结论；
+最终须返回码0、summary成功、六组证据完整、旧证据不变及新运行视图清空，才关闭该项。无业务DB或生产调度变更。
+
 ##### A4：ECS 验证、族扩展与晋级
 
 A3 有代码变更后运行相关合同/原子恢复测试和全量回归，并进行独立审查；Critical/Important 必须清零。生产接入
