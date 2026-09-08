@@ -23,7 +23,9 @@
 - 证据分离已完成本地实现：正式回测全部七字段 Request 的独立摘要进入 plan SHA；预检后任何 cutoff
   变更都使旧授权失效。定向测试先复现摘要未变化的问题，修复后验证旧摘要拒绝且 Registry/产品事实未改变。
   独立复审 Critical/Important 均为 0；全量回归 `702 passed, 6 skipped, 229 subtests passed`。
-  本轮未配置 isolated MySQL URL，对应两个真实 MySQL 参数化场景 skipped，不视为通过；现场切换前仍须补验。
+  本地未配置 isolated MySQL URL，对应两个参数化场景在该次全量回归 skipped；随后已在 ECS 本机 MySQL
+  8.4.11 的随机隔离 schema 中实际执行，结果为 `2 passed in 1.91s`。覆盖同输入与独立算法输入两种情况下的
+  中途失败整事务回滚、cutover、rollback 和 re-cutover；测试前后隔离 schema 数均为 0，未访问 `bond_db`。
 
 **最新执行核验（2026-09-08 上午）**：
 
@@ -39,12 +41,31 @@
   不把新回测与旧 Native 参考直接宣称为同代等价。原有同代333条零差异结论继续有效，按最新授权分别记录两类输入。
 - 日间任务日志位于 ECS 私有候选目录的 `full-oos-persist-20260908.log`，已启用十分钟跟进；
   尚未取得 Gate 成功结果或数据库提交读回，不将启动视为完成，不自动重试失败任务。
-- 本轮未切换 current、未修改 systemd/launchd、未执行 DDL。ECS current 的 12 个历史 `.pyc` 完整性偏差
-  仍未处理，部署/切换前必须恢复严格校验，不通过忽略文件放宽验证。
+- 本轮未切换 current、未修改 systemd/launchd、未对业务 schema 执行 DDL。ECS current 的 12 个历史 `.pyc`
+  已精确移至可恢复隔离目录；完整源码树严格 SHA 已恢复安装记录中的预期值，没有放宽校验或改写源码。
 - 独立只读审查确认 W3A 还有临时接入缺口：现有 comparator runner 的批准目标仅含 W1/W2，
   W3A 会在启动前被拒绝；receipt producer 当前还会重新启动 Native/Blackbox，不提供已完成结果的复用入口。
   正式 Gate 不受此限制。下一步须最小化补齐 W3A 的受控凭据接入，并保持 receipt、正式回测及切换现场的
   各自的 generation/snapshot 绑定；不得手写成功凭据、混称 09-05 与 09-08 为同代，或直接运行必失败的旧 comparator。
+
+**ECS 平台准备推进（2026-09-08 09:48 核验）**：
+
+- clean commit `cd314dcac631885b2447154a2cca955fa74a66a1` 的 archive SHA 为
+  `791c07a9f115fd91a805fb5cb4a2f7909fc511b5f6e3c20ae22a7b4283c92bbd`，仅安装到
+  `/opt/bond-factor-lab/incoming/evidence-v2-cd314dc.rwlLlJ/deploy/releases/` 做上述隔离 MySQL 验证，`activated=false`；
+  测试后候选源码完整性仍与安装记录一致。不能将此私有候选安装视为 ECS current 升级。
+- current 仍为 `3162f70e67f53b7cdb65a3e8792d42c6fab32d15`。只移动前后精确核对的 12 个 `.cpython-313.pyc`，
+  未移动或改写任何源码/配置/安装记录；严格 source-tree SHA 恢复为
+  `69d48a34b45c69ea110890437a6e0d436e94e975acf1615386fad36cedea9849`。
+  备份目录为 `/opt/bond-factor-lab/incoming/evidence-v2-cd314dc.rwlLlJ/pyc-quarantine-uhjclk5d`，
+  保留原相对路径与逐文件字节，可恢复；若后来重新生成缓存，应重新核验，不能假定持续完整。
+- 真实 installed unit 已按 `list-unit-files` 核对，daily 为 `bond-factor-lab-prediction-daily.service`，
+  `LoadState=loaded/ActiveState=inactive/MainPID=0/Result=success`；Backend 仍 active，PID 未变，health 为 `ok`。
+  不使用不存在的简写 service 名称返回的缺省 `Result=success` 作为任务健康证据。
+- full-OOS 正式回测在 09:48 仍运行，尚无最终 Gate 结果。它结束且完成读回后，串行推进同批 cons-sda 的
+  一次正式持久化回测；任何失败或证据身份不符都先停止，不自动重复启动。两者成功之前不执行 W3A cutover。
+- 为后续受控复用核对了 ECS `forecast_env` 与 `forecast_env_blackbox_v1`：去掉环境路径注释后的完整
+  conda explicit package URL 集完全相同，两侧独有成员数均为 0；这不是已生成 W3A receipt 的声明。
 
 **现场基线日期**：2026-09-05 Asia/Shanghai（后续核验日期在证据段落分别记录；计划修订不刷新现场水位）
 
