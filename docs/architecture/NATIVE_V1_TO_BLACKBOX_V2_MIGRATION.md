@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_BOTH_ECS_PERSISTED_BACKTESTS_VERIFIED; CONS_SDA_INDEPENDENT_REFERENCE_RUNNING; W3A_RECEIPT_REUSE_PENDING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_BOTH_ECS_PERSISTED_BACKTESTS_VERIFIED; CONS_SDA_INDEPENDENT_REFERENCE_VERIFIED; W3A_RECEIPT_REUSE_PENDING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
 
 **最新验收决定（2026-09-08）**：用户明确取消此次算法迁移的重复、倒序、乱序、子集及其他额外专项验证，
 以相同冻结输入下修改前后完整回测的日期和方向逐条一致为算法验收依据，执行规则见第6.1–6.2节。
@@ -139,6 +139,31 @@
   Native reference SHA `9d2f69351888289cec6d5548a83618170e94e7a4dfd047088b3bccb3deeeb957`；
   dependency check SHA `bf36f63feac8786fb3f7bdeb84cf88623f57824dee6ad2e3e270a08e851b23ef`。
   ECS current 仍为 3162，Mac3 未操作；本次补证不是 activation 或整批切换。
+
+**cons-sda 独立参考完成（2026-09-08 13:17 后只读验收）**：
+
+- 一次参考实际返回 `PASSED_CONS_SDA_INDEPENDENT_NATIVE_AGAINST_RUN279`，总计 6763.74 秒
+  （约 1 小时 52 分 44 秒），进程组峰值 RSS 2,423,361,536 字节（约 2.26 GiB），资源采样 6687 次、无采样错误。
+  Native 训练依赖检查 333/333 通过，最终完整 Request ID、三个日期与方向逐行 333/333 一致、mismatch 0。
+  本次 Blackbox 执行次数与业务写库次数均为 0；不是新增一次正式回测。
+- 成功后独立只读复验了三脚本和 Native source closure、实际运行环境、冻结五文件、Request、Native 私有
+  Phase-A 与 dependency/comparison identity、完整标准 CSV，以及数据库 run279 的当前 Gate 证据与全部333行。
+  Native Result 与正式导出 CSV 的 SHA 同为
+  `83543e00ff040d4e6270537b9f70ee37363a08e9d782fed1eca2183baf9644c6`；结果没有依赖不同输入的旧摘要。
+- supervisor、Native 及整个进程组均已退出，私有 runtime view 的 active/debris 均为空；ECS current 仍为
+  `3162f70e67f53b7cdb65a3e8792d42c6fab32d15`，current/c8 候选源码完整性均与安装记录一致。两旧 Native
+  Registry 仍 active，两 successor Registry、scheme run、产品预测事实仍为 0，生产状态目录均不存在；
+  running scheme/backtest run 均为 0。未 activation、gray、预热、切换或修改 systemd/Mac3。
+- 原始 CSV、身份、依赖和比较报告及完整日志已从 ECS 取回
+  `outputs/releases/cons-reference-20260908/evidence/`，保持 ignored；未复制 Numba cache 或大体积运行视图，
+  远端原始证据与私有 Phase-A 均保留，未删除。摘要 SHA
+  `84cc36e8948527509481daa1416bd1cb163ca6bad9d29f191d6e465083c2f7d2`；identity SHA
+  `61af2028b5222be9b1aa4ce60798c003d68334fef4b257c8a0acab3c78986a31`；dependency report SHA
+  `0bb0b992556e6a409554d7f52f6364c0aae0a5d0c6967f788355e9d5fdf0cdd3`；comparison report SHA
+  `f88ded981d8a919ebf3dc8447d94810b4c8c991ad3bbfa6a4cbfea0bfbbb2db6`。
+- 本轮参考监测已暂停。下一步是复用 full-OOS 的 09-05 原始等价与 cons-sda 的 09-08 原始等价，
+  各自保留真实输入身份，补齐受控 receipt 入口，再准备 W3A 原子 ECS 切换；不得为迁就 wave 顶层单一
+  generation 结构重跑已经通过的算法，也不得把两份等价证据伪写为同代。当前仍未接管，不能宣布全局闭环。
 
 **基线 Git 提交**：`20e98934e9d5399e3d509f486a8a650d95ad7639`
 
@@ -363,7 +388,7 @@ backtest CSV Request。具体算法列集合以交付脚本实际读取与校验
 | W1B | `weekly_7y_cross_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `fb2baa38fa8b614737f0c2f87bff90626e2d8d268e5375362bf863554096e680` | ECS_0905_FULL_COMPARATOR_PASSED |
 | W1B | `weekly_10y_d_overlay_0529_bbv2` | week_id + 1Y/5Y/7Y/10Y 周频收益率；其余文件做合同校验 | feature 2025-01-03..2026-05-22；72 条 | `e52e221a0046e8623107359b4fe3c2f7643e422b3ed9068c0cf317e9cdeafeed` | ECS_0905_FULL_COMPARATOR_PASSED |
 | W2 | 两个 `daily_*_v28_bbv2` | 完整五文件；V28 daily/weekly/monthly 因子与真实 T+5 grid | feature 2025-01-02..2026-05-22；各 333 条 | 5Y `32aa7948d5f90bdd3de72ce46461bdc8f6dafeb24ece450c34cba84eac5480cc`；7Y `5fec87a6be3612c911f17f546ae4687e58a64b1d5a7be75a407e1fbb681861a4` | ECS_OFFLINE_REVALIDATION_PENDING; OLD_100_REQUEST_GATE_REMOVED |
-| W3A | `liwei_0616_cons_sda_k3_div_k10_bbv2` | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2025-01-02..2026-05-22；333 条 | `9cebc6eab7df69ed48e68163fc0cfc5229ad616fda4989924e2b34d78274c250` | PERSISTED_BACKTEST_VERIFIED; INDEPENDENT_REFERENCE_RUNNING |
+| W3A | `liwei_0616_cons_sda_k3_div_k10_bbv2` | 五文件中算法所需因子；仅进程内 cutoff-keyed cache | feature 2025-01-02..2026-05-22；333 条 | `9cebc6eab7df69ed48e68163fc0cfc5229ad616fda4989924e2b34d78274c250` | PERSISTED_BACKTEST_VERIFIED; INDEPENDENT_REFERENCE_VERIFIED |
 | W3A | `liwei_0616_5y01_full_oos_k3_div_k10_bbv2` | 五文件 + 方案私有增量 Phase-A 状态；连续 full-OOS 排名 | 完整333条 feature 2025-01-02..2026-05-22 | `ad9bdacf5063a427ecc8b70852e045f4822ba9af1b6d8fcd171cd2d779e95103` | ECS_ALGORITHM_EQUIVALENCE_ACCEPTED; PERSISTED_BACKTEST_VERIFIED |
 | W3B | 三个 10Y successor | 五文件；full-OOS 方案使用独立增量状态，非 full-OOS 优先纯算法优化 | feature 2026-08-28 | 未生成 | PENDING_W3A_STATE_PILOT |
 | W3C-D | 五个 `liwei_0616_*_bbv2` | 五文件；逐方案判定 stateless 或独立增量状态 | feature 2026-08-28 | 未生成 | PENDING_STATE_CLASSIFICATION |
