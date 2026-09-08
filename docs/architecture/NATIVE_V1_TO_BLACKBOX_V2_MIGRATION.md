@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_RECEIPT_AND_ADMISSION_VERIFIED; W3A_FULL_OOS_STATE_PREWARM_RUNNING; W3A_CUTOVER_PENDING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_RECEIPT_AND_ADMISSION_VERIFIED; W3A_FULL_OOS_STATE_PREWARM_TIMEOUT_STOPPED; W3A_CUTOVER_BLOCKED_ON_INITIAL_STATE; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
 
 **最新验收决定（2026-09-08）**：用户明确取消此次算法迁移的重复、倒序、乱序、子集及其他额外专项验证，
 以相同冻结输入下修改前后完整回测的日期和方向逐条一致为算法验收依据，执行规则见第6.1–6.2节。
@@ -84,6 +84,29 @@
   ECS matrix 中，保持原状。逐项核对全部 106 个成员，Mac3 成员集合与所有无关项不变；独立范围审查通过。
   同步两个新 Mac-only predecessor 的既有测试期望后，全量回归再次为 `739 passed, 6 skipped, 229 subtests passed`。
   此矩阵是未激活候选，不是现场 Registry 切换；ECS current/systemd 与 Mac3 不变。
+
+**W3A 首次预热超时停止（2026-09-08 15:03–15:05 CST 只读核验）**：
+
+- 该次预热已于 14:52:53 CST 结束：CLI exit 1，墙钟 1807.786 秒；明确异常为算法进程达到 1800 秒
+  timeout，不是等价差异或业务写库失败。完整状态未发布，stdout 为空；没有自动重试、调大预算或继续 cutover。
+- 只读核验确认算法 PGID 已无成员，Request 临时目录和本次 runtime view 已由原执行器清理。
+  successor 状态目录仅保留 `state.lock`，不存在 `3ee3dd2334fd.state`；保留锁文件，不手工拼接中间状态。
+  两个旧 W3A Registry 仍 active；两个 successor 的 Registry、run 和产品事实均为 0；scheme/backtest
+  running 数均为 0。current 仍为 `3162f70e67f53b7cdb65a3e8792d42c6fab32d15`。
+- current、已预安装但未激活的 `a3d55fef70b0290ec97d18adfaea1773a8fa8b43` 和私有 `39b68ee` 三棵源码树
+  严格 hash 均匹配安装记录。Backend active，18:00/月频、19:00/Actuals、翌日06:30/DataBridge及07:03/daily
+  timer 仍按现场计划等待；没有改动 current、Registry、unit 或 Mac3。
+- 日志显示冷路径仍按月训练 265 个配置，每批记录约 1–2 分钟。源码冷启动从 `2024-01-01` 构造截至当前
+  Request 的所有 OOS 月，而先前 1076 秒的 ECS 冷启动只覆盖到 `2024-12-31`，不能用该实测保证本次更长
+  初始化在 1800 秒内完成。stderr 由既有 runner 有界截断，不能从它宣称准确已完成月份或预计剩余时间。
+  本次尚未进入有状态的每日增量路径，不推翻已完成的 333 条算法等价与正式回测证据。
+- 完成记录 SHA：`341299801aedc12f96519fa74c024772b4aac9392313b496ca99e152ecdbe1b0`；
+  stderr SHA：`b55960f831794a04c3e4a1f09bc81c3535c53777ee8db56b041690f428566364`。
+  原件仍在 ECS incoming 根，逐字节核对的本机副本位于 `outputs/releases/w3a-reuse-20260908/`。
+- 已暂停 `native-ecs` 跟进。待确认的最小下一步是仅把显式首次预热/故障重建作为离线维护采用独立预算
+  （建议最多 7200 秒），每日增量预测仍保持 120 秒、4 GiB/8线程，算法与事实合同不变。
+  该预算尚未修改或获准；不得通过本次超时自动放宽，也不重跑已接受的完整回测。确认后需修改现有维护调用
+  和 runner 的重建限额、验证预算隔离，再安排一次受控重建；没有 ready state 前不切换 W3A。
 
 **最新执行核验（2026-09-08 上午）**：
 
