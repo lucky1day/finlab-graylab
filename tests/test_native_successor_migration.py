@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +14,7 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import IntegrityError
 
 from harness.native_successor_migration import (
     _comparator_source_sha256,
@@ -33,6 +36,7 @@ from scheduler.discovery import load_scheme_config
 from scheduler.repository import (
     NativeSuccessorBacktestEvidence,
     NativeSuccessorTarget,
+    _validate_native_successor_equivalence_evidence,
     _validate_native_successor_target_configs,
     apply_native_successor_migration,
     canonical_native_successor_plan,
@@ -453,6 +457,14 @@ def test_controlled_comparator_builds_zero_difference_receipt(
         "native-successor-controlled-comparator"
     )
     assert len(receipt["producer"]["comparator_source_sha256"]) == 64
+    assert set(receipt) == {
+        "schema_version", "wave", "producer", "runtime_environment_fingerprint",
+        "targets",
+    }
+    assert receipt["targets"][0]["native_runtime_profile"] == "native"
+    assert set(receipt["targets"][0]["input_identity"]) == {
+        "generation_id", "data_snapshot_id", "data_files_sha256",
+    }
     assert receipt["targets"][0]["request_count"] == 1
     assert receipt["targets"][0]["native_result_sha256"] == (
         receipt["targets"][0]["successor_result_sha256"]
@@ -1016,9 +1028,6 @@ def _inputs(old, new, target, evidence):
             "comparator_source_sha256": "6" * 64,
             "generated_at": "2026-09-05T00:00:00Z",
         },
-        "generation_id": evidence.generation_id,
-        "data_snapshot_id": evidence.data_snapshot_id,
-        "data_files_sha256": dict(control_plane_evidence["databridge"]["files"]),
         "runtime_environment_fingerprint": evidence.environment_fingerprint,
         "targets": [
             {
@@ -1030,6 +1039,14 @@ def _inputs(old, new, target, evidence):
                 "new_horizon": target.new_horizon,
                 "old_code_hash": old.code_hash,
                 "new_code_hash": new.code_hash,
+                "input_identity": {
+                    "generation_id": evidence.generation_id,
+                    "data_snapshot_id": evidence.data_snapshot_id,
+                    "data_files_sha256": dict(
+                        control_plane_evidence["databridge"]["files"]
+                    ),
+                },
+                "native_runtime_profile": "native",
                 "native_runtime_environment_fingerprint": "8" * 64,
                 "request_artifact_sha256": hashlib.sha256(
                     canonical_native_successor_plan(
@@ -1066,6 +1083,63 @@ def _apply_inputs(inputs, *, recaptured=None):
         recaptured if recaptured is not None else control_plane
     )
     return payload
+
+
+def _mixed_input_fixture():
+    engine, old, new, target, evidence = _fixture()
+    old.tenors = ["5Y", "10Y"]
+    other = deepcopy(new)
+    other.scheme_id = "native_multi_10y_bbv2"
+    other.tenors = ["10Y"]
+    other_target = replace(
+        target, new_base_scheme_id=other.scheme_id, target_tenor="10Y",
+    )
+    other_evidence = replace(
+        evidence, backtest_run_id=43, benchmark_id="bbv2-migration-10y",
+    )
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO t_scheme_registry SELECT "
+            "'native_multi__h6__10Y', base_scheme_id, name, owner, description, "
+            "horizon, task_type, runtime_type, '[\"10Y\"]', frequency, '10Y', "
+            "schedule_cron, schedule_timezone, status, deployed_at "
+            "FROM t_scheme_registry WHERE target_tenor='5Y'"
+        ))
+        conn.execute(text(
+            "INSERT INTO t_backtest_runs SELECT 43, :benchmark_id, :scheme_id, "
+            "data_source, status, run_mode, code_hash, config_hash, "
+            "input_artifact_hash, summary FROM t_backtest_runs WHERE id=42"
+        ), {"benchmark_id": other_evidence.benchmark_id, "scheme_id": other.scheme_id})
+        conn.execute(text(
+            "INSERT INTO t_backtest_predictions SELECT 2, 43, :scheme_id, '10Y', "
+            "horizon, predict_date, feature_date, target_date, label, "
+            "predicted_direction, confidence, :source_row, extra "
+            "FROM t_backtest_predictions WHERE id=1"
+        ), {
+            "scheme_id": other.scheme_id,
+            "source_row": json.dumps(_full_request(other.scheme_id) | {"actual": {}}),
+        })
+        conn.execute(text(
+            "INSERT INTO t_scheme_predictions SELECT NULL, run_id, backtest_run_id, "
+            "scheme_version, scheme_id, '10Y', horizon, predict_date, feature_date, "
+            "target_date, predicted_direction, backtest_actual_direction, confidence, "
+            "model_version, extra FROM t_scheme_predictions WHERE target_tenor='5Y'"
+        ))
+    inputs = _inputs(old, new, target, evidence)
+    other_inputs = _inputs(old, other, other_target, other_evidence)
+    inputs["targets"] = (target, other_target)
+    inputs["new_configs"].update(other_inputs["new_configs"])
+    inputs["backtests"].update(other_inputs["backtests"])
+    inputs["equivalence_evidence"]["targets"].extend(
+        other_inputs["equivalence_evidence"]["targets"]
+    )
+    frozen = inputs["equivalence_evidence"]["targets"][0]
+    frozen["input_identity"]["generation_id"] = "frozen-algorithm-generation"
+    frozen["input_identity"]["data_snapshot_id"] = "frozen-algorithm-snapshot"
+    frozen["input_identity"]["data_files_sha256"]["daily_output.csv"] = "a" * 64
+    frozen["request_artifact_sha256"] = "b" * 64
+    frozen["native_result_sha256"] = frozen["successor_result_sha256"] = "c" * 64
+    return engine, inputs
 
 
 def _rehash_control_plane(control_plane):
@@ -1455,25 +1529,19 @@ def test_preflight_requires_zero_difference_equivalence_receipt() -> None:
         read_native_successor_migration_plan(engine, **inputs)
 
 
-def test_distinct_equivalence_input_survives_cutover_and_rollback() -> None:
-    engine, old, new, target, evidence = _fixture()
-    inputs = _inputs(old, new, target, evidence)
+def test_mixed_equivalence_inputs_survive_atomic_cutover_rollback_and_recutover() -> None:
+    engine, inputs = _mixed_input_fixture()
     receipt = inputs["equivalence_evidence"]
-    receipt["generation_id"] = "frozen-algorithm-generation"
-    receipt["data_snapshot_id"] = "frozen-algorithm-snapshot"
-    receipt["data_files_sha256"]["daily_output.csv"] = "a" * 64
-    item = receipt["targets"][0]
-    item["request_artifact_sha256"] = "b" * 64
-    item["native_result_sha256"] = item["successor_result_sha256"] = "c" * 64
-
     plan = read_native_successor_migration_plan(engine, **inputs)
-    assert plan["equivalence"]["generation_id"] == receipt["generation_id"]
-    assert plan["backtests"][0]["generation_id"] == evidence.generation_id
+    assert {item["target_tenor"]: item for item in plan["equivalence"]["targets"]} == {
+        item["target_tenor"]: item for item in receipt["targets"]
+    }
+    assert {item["generation_id"] for item in plan["backtests"]} == {"generation-1"}
     approved_digest = native_successor_plan_sha256(plan)
     with engine.begin() as conn:
         conn.execute(
             text("UPDATE t_backtest_predictions SET source_row=:source_row WHERE run_id=42"),
-            {"source_row": json.dumps(_full_request(new.scheme_id) | {
+            {"source_row": json.dumps(_full_request("native_multi_bbv2") | {
                 "weekly_cutoff_key": "202620", "actual": {},
             })},
         )
@@ -1487,11 +1555,37 @@ def test_distinct_equivalence_input_survives_cutover_and_rollback() -> None:
         )
     with engine.connect() as conn:
         assert conn.execute(text(
-            "SELECT status FROM t_scheme_registry WHERE base_scheme_id='native_multi'"
-        )).scalar_one() == "active"
+            "SELECT COUNT(*) FROM t_scheme_registry WHERE status='active'"
+        )).scalar_one() == 2
         assert conn.execute(text(
             "SELECT COUNT(*) FROM t_scheme_predictions WHERE scheme_id='native_multi_bbv2'"
         )).scalar_one() == 0
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "CREATE TRIGGER reject_second_successor BEFORE INSERT ON t_scheme_registry "
+            "WHEN NEW.runtime_type='blackbox_v2' AND NEW.target_tenor='10Y' "
+            "BEGIN SELECT RAISE(ABORT, 'forced second target failure'); END"
+        )
+    with (
+        patch("scheduler.repository._upsert_scheme_version_conn", side_effect=_sqlite_upsert),
+        pytest.raises(IntegrityError, match="forced second target failure"),
+    ):
+        apply_native_successor_migration(
+            engine, **_apply_inputs(inputs), action="cutover",
+            expected_plan_sha256=native_successor_plan_sha256(changed_plan),
+            approved_by="test-operator", approved_at=datetime.now(timezone.utc),
+        )
+    with engine.begin() as conn:
+        assert conn.execute(text(
+            "SELECT COUNT(*) FROM t_scheme_registry WHERE status='active'"
+        )).scalar_one() == 2
+        assert conn.execute(text(
+            "SELECT COUNT(*) FROM t_scheme_versions WHERE runtime_type='blackbox_v2'"
+        )).scalar_one() == 0
+        assert conn.execute(text(
+            "SELECT COUNT(*) FROM t_scheme_predictions WHERE scheme_id<>'native_multi'"
+        )).scalar_one() == 0
+        conn.exec_driver_sql("DROP TRIGGER reject_second_successor")
     for action in ("cutover", "rollback", "cutover"):
         plan = read_native_successor_migration_plan(engine, **inputs)
         assert plan["action"] == action
@@ -1507,15 +1601,182 @@ def test_distinct_equivalence_input_survives_cutover_and_rollback() -> None:
                 approved_by="test-operator",
                 approved_at=datetime.now(timezone.utc),
             )
+        with engine.connect() as conn:
+            assert conn.execute(text(
+                "SELECT runtime_type FROM t_scheme_registry WHERE status='active'"
+            )).scalars().all() == [
+                "native_adapter" if action == "rollback" else "blackbox_v2"
+            ] * 2
+            assert conn.execute(text(
+                "SELECT scheme_id, target_tenor, predicted_direction "
+                "FROM t_scheme_predictions ORDER BY scheme_id, target_tenor"
+            )).all() == [
+                ("native_multi", "10Y", 1),
+                ("native_multi", "5Y", 1),
+                ("native_multi_10y_bbv2", "10Y", -1),
+                ("native_multi_bbv2", "5Y", -1),
+            ]
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ("direction", "standardized result digests"),
+        ("cutoff", "complete Request digest"),
+        ("file", "differs from current DataBridge"),
+        ("input_missing", "target fields"),
+        ("input_field_missing", "input_identity fields"),
+        ("input_file_missing", "all five DataBridge files"),
+        ("profile_missing", "target fields"),
+        ("profile_invalid", "runtime profile is invalid"),
+        ("profile_fingerprint", "Native runtime differs"),
+        ("profile_outside_family", "complete locked W3A family"),
+        ("legacy_top_input", "evidence fields"),
+    ],
+)
+def test_mixed_equivalence_inputs_fail_closed_per_target(
+    change: str, message: str,
+) -> None:
+    engine, inputs = _mixed_input_fixture()
+    receipt = inputs["equivalence_evidence"]
+    same_input = receipt["targets"][1]
+    if change == "direction":
+        same_input["native_result_sha256"] = "a" * 64
+        same_input["successor_result_sha256"] = "a" * 64
+    elif change == "cutoff":
+        same_input["request_artifact_sha256"] = "b" * 64
+    elif change == "file":
+        same_input["input_identity"]["data_files_sha256"]["daily_output.csv"] = "a" * 64
+    elif change == "input_missing":
+        same_input.pop("input_identity")
+    elif change == "input_field_missing":
+        same_input["input_identity"].pop("data_snapshot_id")
+    elif change == "input_file_missing":
+        same_input["input_identity"]["data_files_sha256"].pop("daily_output.csv")
+    elif change == "profile_missing":
+        same_input.pop("native_runtime_profile")
+    elif change == "profile_invalid":
+        same_input["native_runtime_profile"] = "forecast_env"
+    elif change == "profile_fingerprint":
+        receipt["targets"][0]["native_runtime_environment_fingerprint"] = "e" * 64
+    elif change == "profile_outside_family":
+        same_input["native_runtime_profile"] = "blackbox-v2-v1"
+        same_input["native_runtime_environment_fingerprint"] = "e" * 64
+    elif change == "legacy_top_input":
+        receipt.update(same_input["input_identity"])
+    with pytest.raises(RuntimeError, match=message):
+        read_native_successor_migration_plan(engine, **inputs)
+
+
+@pytest.mark.parametrize("target_index", [0, 1])
+@pytest.mark.parametrize(
+    "change", ["generation", "snapshot", "file", "environment"],
+)
+def test_plan_authorization_binds_each_target_input_and_environment(
+    target_index: int, change: str,
+) -> None:
+    engine, inputs = _mixed_input_fixture()
+    approved_plan = read_native_successor_migration_plan(engine, **inputs)
+    approved_digest = native_successor_plan_sha256(approved_plan)
+    item = inputs["equivalence_evidence"]["targets"][target_index]
+    if change == "generation":
+        item["input_identity"]["generation_id"] = "other-generation"
+    elif change == "snapshot":
+        item["input_identity"]["data_snapshot_id"] = "other-snapshot"
+    elif change == "file":
+        item["input_identity"]["data_files_sha256"]["daily_output.csv"] = "f" * 64
+    elif change == "environment":
+        item["native_runtime_environment_fingerprint"] = "9" * 64
+    # 同输入文件或不匹配环境会先拒绝；其余合法变化必须改变授权摘要。
+    if change == "environment" or (change == "file" and target_index == 1):
+        message = "Native runtime differs|differs from current DataBridge"
+    else:
+        changed_plan = read_native_successor_migration_plan(engine, **inputs)
+        assert native_successor_plan_sha256(changed_plan) != approved_digest
+        message = "plan changed"
+    with pytest.raises(RuntimeError, match=message):
+        apply_native_successor_migration(
+            engine, **_apply_inputs(inputs), action="cutover",
+            expected_plan_sha256=approved_digest, approved_by="test-operator",
+            approved_at=datetime.now(timezone.utc),
+        )
+
+
+@pytest.mark.parametrize("scope_change", [None, "wave", "partial", "target", "environment"])
+def test_reviewed_reference_runtime_is_bound_to_locked_family(scope_change: str | None) -> None:
+    targets = load_native_successor_waves(
+        PROJECT_ROOT / "deploy" / "native_to_blackbox_migration_v1.json"
+    )["W3A"].targets
+    engine, old_template, new_template, _, backtest = _fixture()
+    inputs = None
+    fact_rows = {}
+    for target in targets:
+        old = SimpleNamespace(**(vars(old_template) | {
+            "scheme_id": target.old_base_scheme_id,
+        }))
+        new = SimpleNamespace(**(vars(new_template) | {
+            "scheme_id": target.new_base_scheme_id,
+        }))
+        item_inputs = _inputs(old, new, target, backtest)
+        if inputs is None:
+            inputs = item_inputs
+        else:
+            for key in ("old_configs", "new_configs", "backtests"):
+                inputs[key].update(item_inputs[key])
+            inputs["equivalence_evidence"]["targets"].extend(
+                item_inputs["equivalence_evidence"]["targets"]
+            )
+        full_request = _full_request(new.scheme_id)
+        fact_rows[new.scheme_id] = [{
+            **full_request, "_source_request": full_request,
+            "target_tenor": target.target_tenor, "horizon": target.new_horizon,
+            "predicted_direction": -1,
+        }]
+    engine.dispose()
+    assert inputs is not None
+    inputs["targets"] = targets
+    inputs["wave"] = inputs["equivalence_evidence"]["wave"] = "W3A"
+    evidence = inputs.pop("equivalence_evidence")
+    for item in evidence["targets"]:
+        item["native_runtime_profile"] = "blackbox-v2-v1"
+        item["native_runtime_environment_fingerprint"] = "e" * 64
+    inputs.update(successor_fact_rows=fact_rows, require_current_databridge=True)
+    if scope_change == "wave":
+        inputs["wave"] = evidence["wave"] = "W3B"
+    elif scope_change == "partial":
+        inputs["targets"] = targets[:1]
+        evidence["targets"] = evidence["targets"][:1]
+    elif scope_change == "target":
+        inputs["targets"] = (replace(targets[0], new_horizon=1), targets[1])
+        evidence["targets"][0]["new_horizon"] = 1
+    elif scope_change == "environment":
+        evidence["targets"][0]["native_runtime_environment_fingerprint"] = "8" * 64
+    if scope_change is not None:
+        message = (
+            "Native runtime differs" if scope_change == "environment"
+            else "complete locked W3A family"
+        )
+        with pytest.raises(RuntimeError, match=message):
+            _validate_native_successor_equivalence_evidence(evidence, **inputs)
+        return
+    normalized = _validate_native_successor_equivalence_evidence(evidence, **inputs)
+    approved_digest = native_successor_plan_sha256({"equivalence": normalized})
+    for item in evidence["targets"]:
+        item["native_runtime_profile"] = "native"
+        item["native_runtime_environment_fingerprint"] = "8" * 64
+        normalized = _validate_native_successor_equivalence_evidence(evidence, **inputs)
+        changed_digest = native_successor_plan_sha256({"equivalence": normalized})
+        assert changed_digest != approved_digest
+        approved_digest = changed_digest
 
 
 def test_distinct_input_does_not_allow_native_successor_result_mismatch() -> None:
     engine, old, new, target, evidence = _fixture()
     inputs = _inputs(old, new, target, evidence)
-    receipt = inputs["equivalence_evidence"]
-    receipt["generation_id"] = "frozen-algorithm-generation"
-    receipt["data_snapshot_id"] = "frozen-algorithm-snapshot"
-    receipt["targets"][0]["native_result_sha256"] = "c" * 64
+    item = inputs["equivalence_evidence"]["targets"][0]
+    item["input_identity"]["generation_id"] = "frozen-algorithm-generation"
+    item["input_identity"]["data_snapshot_id"] = "frozen-algorithm-snapshot"
+    item["native_result_sha256"] = "c" * 64
     with pytest.raises(RuntimeError, match="standardized result digests"):
         read_native_successor_migration_plan(engine, **inputs)
 
@@ -1583,9 +1844,8 @@ def test_preflight_binds_native_environment_to_current_control_plane() -> None:
 def test_first_cutover_binds_equivalence_to_current_five_files() -> None:
     engine, old, new, target, evidence = _fixture()
     inputs = _inputs(old, new, target, evidence)
-    inputs["equivalence_evidence"]["data_files_sha256"][
-        "daily_output.csv"
-    ] = "a" * 64
+    item = inputs["equivalence_evidence"]["targets"][0]
+    item["input_identity"]["data_files_sha256"]["daily_output.csv"] = "a" * 64
     with pytest.raises(RuntimeError, match="differs from current DataBridge"):
         read_native_successor_migration_plan(engine, **inputs)
 

@@ -4197,9 +4197,6 @@ def _validate_native_successor_equivalence_evidence(
         "schema_version",
         "wave",
         "producer",
-        "generation_id",
-        "data_snapshot_id",
-        "data_files_sha256",
         "runtime_environment_fingerprint",
         "targets",
     }
@@ -4228,34 +4225,16 @@ def _validate_native_successor_equivalence_evidence(
         or not str(producer.get("generated_at") or "").strip()
     ):
         raise RuntimeError("equivalence evidence producer identity mismatch")
-    generation_id = _require_nonempty(
-        str(evidence.get("generation_id") or ""),
-        "equivalence generation_id",
-    )
-    data_snapshot_id = _require_nonempty(
-        str(evidence.get("data_snapshot_id") or ""),
-        "equivalence data_snapshot_id",
-    )
     runtime_fingerprint = _require_sha256(
         str(evidence.get("runtime_environment_fingerprint") or ""),
         "equivalence runtime_environment_fingerprint",
     )
-    file_hashes = evidence.get("data_files_sha256")
     required_files = {
         "daily_output.csv",
         "weekly_output.csv",
         "monthly_output.csv",
         "api_wind_date.csv",
         "factor_catalog.csv",
-    }
-    if not isinstance(file_hashes, Mapping) or set(file_hashes) != required_files:
-        raise RuntimeError("equivalence evidence must bind all five DataBridge files")
-    normalized_files = {
-        filename: _require_sha256(
-            str(file_hashes.get(filename) or ""),
-            f"equivalence {filename}",
-        )
-        for filename in sorted(required_files)
     }
     raw_targets = evidence.get("targets")
     if not isinstance(raw_targets, list):
@@ -4269,6 +4248,8 @@ def _validate_native_successor_equivalence_evidence(
         "new_horizon",
         "old_code_hash",
         "new_code_hash",
+        "input_identity",
+        "native_runtime_profile",
         "native_runtime_environment_fingerprint",
         "request_artifact_sha256",
         "request_sha256",
@@ -4303,6 +4284,29 @@ def _validate_native_successor_equivalence_evidence(
     }
     if set(by_identity) != expected_identities:
         raise RuntimeError("equivalence evidence target coverage mismatch")
+    if any(
+        item.get("native_runtime_profile") == "blackbox-v2-v1"
+        for item in raw_targets
+    ):
+        reviewed_family = {
+            NativeSuccessorTarget(
+                old_base_scheme_id=base_id,
+                new_base_scheme_id=f"{base_id}_bbv2",
+                task_type="T+5",
+                target_tenor="5Y",
+                target_rule=None,
+                old_horizon=5,
+                new_horizon=5,
+            )
+            for base_id in (
+                "liwei_0616_cons_sda_k3_div_k10",
+                "liwei_0616_5y01_full_oos_k3_div_k10",
+            )
+        }
+        if wave != "W3A" or len(targets) != 2 or set(targets) != reviewed_family:
+            raise RuntimeError(
+                "equivalence Blackbox Native reference requires the complete locked W3A family"
+            )
 
     normalized_targets: list[dict[str, object]] = []
     native_runtime = control_plane_evidence.get("native_runtime")
@@ -4326,6 +4330,29 @@ def _validate_native_successor_equivalence_evidence(
             target.target_tenor,
         )
         item = by_identity[identity]
+        input_identity = item.get("input_identity")
+        if not isinstance(input_identity, Mapping) or set(input_identity) != {
+            "generation_id", "data_snapshot_id", "data_files_sha256",
+        }:
+            raise RuntimeError("equivalence target input_identity fields are invalid")
+        generation_id = _require_nonempty(
+            str(input_identity.get("generation_id") or ""),
+            "equivalence generation_id",
+        )
+        data_snapshot_id = _require_nonempty(
+            str(input_identity.get("data_snapshot_id") or ""),
+            "equivalence data_snapshot_id",
+        )
+        file_hashes = input_identity.get("data_files_sha256")
+        if not isinstance(file_hashes, Mapping) or set(file_hashes) != required_files:
+            raise RuntimeError("equivalence evidence must bind all five DataBridge files")
+        normalized_files = {
+            filename: _require_sha256(
+                str(file_hashes.get(filename) or ""),
+                f"equivalence {filename}",
+            )
+            for filename in sorted(required_files)
+        }
         backtest = backtests[target.new_base_scheme_id]
         same_input = (
             backtest.generation_id == generation_id
@@ -4465,13 +4492,42 @@ def _validate_native_successor_equivalence_evidence(
             str(item.get("native_runtime_environment_fingerprint") or ""),
             "equivalence native_runtime_environment_fingerprint",
         )
-        if native_runtime_fingerprint != current_native_runtime_fingerprint:
+        native_runtime_profile = item.get("native_runtime_profile")
+        if native_runtime_profile not in ("native", "blackbox-v2-v1"):
+            raise RuntimeError("equivalence Native runtime profile is invalid")
+        if native_runtime_profile == "native" and (
+            native_runtime_fingerprint != current_native_runtime_fingerprint
+        ):
             raise RuntimeError(
                 "equivalence Native runtime differs from current control plane"
             )
+        if native_runtime_profile == "blackbox-v2-v1" and (
+            native_runtime_fingerprint != runtime_fingerprint
+            or new_configs[target.new_base_scheme_id].runtime_profile
+            != native_runtime_profile
+        ):
+            raise RuntimeError(
+                "equivalence Native runtime differs from successor runtime profile"
+            )
+        if require_current_databridge and same_input:
+            current = control_plane_evidence.get("databridge")
+            if not isinstance(current, Mapping) or (
+                current.get("generation_id") != generation_id
+                or current.get("data_snapshot_id") != data_snapshot_id
+                or current.get("files") != normalized_files
+            ):
+                raise RuntimeError(
+                    "first cutover equivalence evidence differs from current DataBridge"
+                )
         normalized_targets.append(
             {
                 **expected_identity,
+                "input_identity": {
+                    "generation_id": generation_id,
+                    "data_snapshot_id": data_snapshot_id,
+                    "data_files_sha256": normalized_files,
+                },
+                "native_runtime_profile": native_runtime_profile,
                 "native_runtime_environment_fingerprint": (
                     native_runtime_fingerprint
                 ),
@@ -4494,27 +4550,10 @@ def _validate_native_successor_equivalence_evidence(
         for config in new_configs.values()
     ):
         raise RuntimeError("equivalence evidence differs from successor runtime")
-    if require_current_databridge and any(
-        backtest.generation_id == generation_id
-        and backtest.data_snapshot_id == data_snapshot_id
-        for backtest in backtests.values()
-    ):
-        current = control_plane_evidence.get("databridge")
-        if not isinstance(current, Mapping) or (
-            current.get("generation_id") != generation_id
-            or current.get("data_snapshot_id") != data_snapshot_id
-            or current.get("files") != normalized_files
-        ):
-            raise RuntimeError(
-                "first cutover equivalence evidence differs from current DataBridge"
-            )
     return {
         "schema_version": "native-successor-equivalence-v2",
         "wave": wave,
         "producer": dict(producer),
-        "generation_id": generation_id,
-        "data_snapshot_id": data_snapshot_id,
-        "data_files_sha256": normalized_files,
         "runtime_environment_fingerprint": runtime_fingerprint,
         "targets": sorted(
             normalized_targets,

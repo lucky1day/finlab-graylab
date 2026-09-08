@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import io
 import json
 import os
 import socket
@@ -23,7 +24,7 @@ from scheduler.repository import (
     native_successor_plan_sha256,
     read_native_successor_migration_plan,
 )
-from shared.blackbox_v2.contracts import REQUEST_FIELDS, load_requests
+from shared.blackbox_v2.contracts import REQUEST_FIELDS, load_requests, request_from_mapping
 from shared.blackbox_v2.environment_manifest import load_environment_fingerprint
 
 
@@ -98,6 +99,25 @@ _COMPARISON_FIELDS = {
     "new_base_scheme_id",
     "target_tenor",
     "requests_path",
+}
+_REUSE_COMPARISON_FIELDS = {
+    "old_base_scheme_id", "new_base_scheme_id", "target_tenor",
+    "evidence_dir", "data_dir",
+}
+# 仅复用已完成独立审查和现场读回的 W3A 原件；不是可由操作者填成功摘要的接口。
+_REVIEWED_W3A_EVIDENCE = {
+    "liwei_0616_cons_sda_k3_div_k10": {
+        "old_code_hash": "2ffdcfac682fe51ff0f196bfdce52be627652b89f2a061ced09ddda1f404908a",
+        "scheme_version": "b5db363bbe17",
+        "identity_sha256": "61af2028b5222be9b1aa4ce60798c003d68334fef4b257c8a0acab3c78986a31",
+        "summary_sha256": "84cc36e8948527509481daa1416bd1cb163ca6bad9d29f191d6e465083c2f7d2",
+    },
+    "liwei_0616_5y01_full_oos_k3_div_k10": {
+        "old_code_hash": "fe12a8559756be63092764223e0f75ec37c488bea746a41dc4eaf84baaa4ef0c",
+        "scheme_version": "3ee3dd2334fd",
+        "identity_sha256": "208b7c0540137cab5f2e75c546dd1d14e3bc2f80a27680a169c941be6400d45a",
+        "summary_sha256": "e45e5f85d7afa3602276e480e5f532995b68c049e8f03d4382c8ac9055893015",
+    },
 }
 _STANDARD_RESULT_FIELDS = (
     "request_id",
@@ -356,22 +376,33 @@ def build_native_successor_equivalence_receipt(
     """从同输入标准结果生成可复验的 Native/successor 等价凭据。"""
     bundle_path = comparison_bundle_path.resolve(strict=True)
     raw = json.loads(bundle_path.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict) or set(raw) != _COMPARISON_INPUT_FIELDS:
+    reuse = isinstance(raw, dict) and raw.get("schema_version") == (
+        "native-successor-reviewed-input-v1"
+    )
+    fields = {"schema_version", "wave", "comparisons"} if reuse else _COMPARISON_INPUT_FIELDS
+    if not isinstance(raw, dict) or set(raw) != fields:
         raise ValueError("comparison bundle fields are invalid")
     if (
-        raw.get("schema_version") != "native-successor-comparison-input-v1"
+        (not reuse and raw.get("schema_version") != "native-successor-comparison-input-v1")
         or raw.get("wave") != wave.wave
     ):
         raise ValueError("comparison bundle identity mismatch")
-    generation_id = _nonempty(raw.get("generation_id"), "generation_id")
-    data_snapshot_id = _nonempty(raw.get("data_snapshot_id"), "data_snapshot_id")
-    data_dir = _resolve_evidence_path(bundle_path, raw.get("data_dir"), "data_dir")
-    if not data_dir.is_dir():
-        raise ValueError("comparison data_dir must be a directory")
-    data_files_sha256 = {
-        filename: _sha256_file(data_dir / filename)
-        for filename in sorted(_DATABRIDGE_FILES)
-    }
+    if reuse and (wave.wave != "W3A" or {
+        target.old_base_scheme_id for target in wave.targets
+    } != set(_REVIEWED_W3A_EVIDENCE)):
+        raise ValueError("reviewed result reuse requires the complete locked W3A family")
+    if not reuse:
+        data_dir = _resolve_evidence_path(bundle_path, raw.get("data_dir"), "data_dir")
+        if not data_dir.is_dir():
+            raise ValueError("comparison data_dir must be a directory")
+        input_identity = {
+            "generation_id": _nonempty(raw.get("generation_id"), "generation_id"),
+            "data_snapshot_id": _nonempty(raw.get("data_snapshot_id"), "data_snapshot_id"),
+            "data_files_sha256": {
+                filename: _sha256_file(data_dir / filename)
+                for filename in sorted(_DATABRIDGE_FILES)
+            },
+        }
 
     old_configs = {
         target.old_base_scheme_id: load_scheme_config(
@@ -392,16 +423,17 @@ def build_native_successor_equivalence_receipt(
         project_root,
         expected_runtime_profile=str(next(iter(runtime_profiles))),
     )
-    native_runtime_fingerprint = _capture_native_runtime_identity()[
-        "environment_fingerprint"
-    ]
+    native_runtime_fingerprint = (successor_runtime_fingerprint if reuse else
+                                  _capture_native_runtime_identity()["environment_fingerprint"])
 
     comparisons = raw.get("comparisons")
     if not isinstance(comparisons, list):
         raise ValueError("comparison bundle comparisons must be a list")
     by_identity: dict[tuple[str, str, str], Mapping[str, object]] = {}
     for comparison in comparisons:
-        if not isinstance(comparison, Mapping) or set(comparison) != _COMPARISON_FIELDS:
+        if not isinstance(comparison, Mapping) or set(comparison) != (
+            _REUSE_COMPARISON_FIELDS if reuse else _COMPARISON_FIELDS
+        ):
             raise ValueError("comparison entry fields are invalid")
         identity = (
             str(comparison.get("old_base_scheme_id") or ""),
@@ -430,19 +462,22 @@ def build_native_successor_equivalence_receipt(
             target.target_tenor,
         )
         comparison = by_identity[identity]
-        requests_path = _resolve_evidence_path(
-            bundle_path,
-            comparison.get("requests_path"),
-            "requests_path",
-        )
-        request_rows = [asdict(request) for request in load_requests(requests_path)]
-        native_rows, successor_rows = _execute_controlled_comparison(
-            project_root=project_root,
-            target=target,
-            new_config=new_configs[target.new_base_scheme_id],
-            requests_path=requests_path,
-            data_dir=data_dir,
-        )
+        if reuse:
+            request_rows, native_rows, successor_rows, input_identity = _load_reviewed_w3a_comparison(
+                project_root=project_root, target=target,
+                new_config=replace(new_configs[target.new_base_scheme_id],
+                                   environment_fingerprint=successor_runtime_fingerprint),
+                evidence_dir=_resolve_evidence_path(bundle_path, comparison["evidence_dir"], "evidence_dir"),
+                data_dir=_resolve_evidence_path(bundle_path, comparison["data_dir"], "data_dir"),
+            )
+        else:
+            requests_path = _resolve_evidence_path(bundle_path, comparison.get("requests_path"), "requests_path")
+            request_rows = [asdict(request) for request in load_requests(requests_path)]
+            native_rows, successor_rows = _execute_controlled_comparison(
+                project_root=project_root, target=target,
+                new_config=new_configs[target.new_base_scheme_id],
+                requests_path=requests_path, data_dir=data_dir,
+            )
         if len(native_rows) != len(successor_rows) or not native_rows:
             raise ValueError("comparison result row counts differ or are empty")
         if len(request_rows) != len(successor_rows):
@@ -503,6 +538,8 @@ def build_native_successor_equivalence_receipt(
                 "new_horizon": target.new_horizon,
                 "old_code_hash": old_configs[target.old_base_scheme_id].code_hash,
                 "new_code_hash": new_configs[target.new_base_scheme_id].code_hash,
+                "input_identity": input_identity,
+                "native_runtime_profile": "blackbox-v2-v1" if reuse else "native",
                 "native_runtime_environment_fingerprint": (
                     native_runtime_fingerprint
                 ),
@@ -525,9 +562,6 @@ def build_native_successor_equivalence_receipt(
             "comparator_source_sha256": _comparator_source_sha256(),
             "generated_at": datetime.now(timezone.utc).isoformat(),
         },
-        "generation_id": generation_id,
-        "data_snapshot_id": data_snapshot_id,
-        "data_files_sha256": data_files_sha256,
         "runtime_environment_fingerprint": successor_runtime_fingerprint,
         "targets": sorted(
             receipt_targets,
@@ -663,14 +697,131 @@ def _execute_controlled_comparison(
         )
 
 
+def _load_reviewed_w3a_comparison(
+    *,
+    project_root: Path,
+    target: NativeSuccessorTarget,
+    new_config: SchemeConfig,
+    evidence_dir: Path,
+    data_dir: Path,
+) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], dict[str, object]]:
+    """复验已审查的两份 W3A 原件；只读且不运行算法，不接受外部成功声明。"""
+    approved = _REVIEWED_W3A_EVIDENCE.get(target.old_base_scheme_id)
+    if (
+        approved is None
+        or target.new_base_scheme_id != target.old_base_scheme_id + "_bbv2"
+        or target.target_tenor != "5Y"
+        or new_config.scheme_version != approved["scheme_version"]
+        or load_scheme_config(
+            project_root / "schemes" / target.old_base_scheme_id / "config.yaml"
+        ).code_hash != approved["old_code_hash"]
+    ):
+        raise ValueError("reviewed W3A target or exact code identity mismatch")
+
+    def bound(relative: str, expected: str) -> bytes:
+        path = evidence_dir / relative
+        if any(part.is_symlink() for part in (path, *path.parents)):
+            raise ValueError("reviewed evidence must not contain symlinks")
+        if not path.is_file() or path.stat().st_size > 64 * 1024 * 1024:
+            raise ValueError(f"reviewed evidence is not a bounded regular file: {relative}")
+        payload = path.read_bytes()
+        if hashlib.sha256(payload).hexdigest() != expected:
+            raise ValueError(f"reviewed evidence SHA-256 mismatch: {relative}")
+        return payload
+
+    identity = json.loads(bound("identity.json", approved["identity_sha256"]))
+    summary = json.loads(bound("summary.json", approved["summary_sha256"]))
+    report = json.loads(bound("work/native-comparison.report.json", summary["comparison_report_sha256"]))
+    phase = json.loads(bound("work/native-cold-phase.identity.json", report["native_phase_identity_sha256"]))
+    dependency = json.loads(bound("work/dependency-report.json", phase["execution_identity"]["dependency_sha256"]))
+    request_payload = bound("work/formal.csv", report["request_sha256"])
+    native_payload = bound("work/native-compared333.csv", summary["native_result_sha256"])
+    successor_payload = bound("work/full333.result.csv", report["candidate_result_sha256"])
+    if (
+        summary["count"] != 333 or summary["mismatches"] != 0
+        or report["matched"] != 333 or report["mismatches"] != 0
+        or dependency["passed"] != 333 or dependency["failed"] != 0
+        or len(dependency["requests"]) != 333
+        or not all(item["passed"] and all(item["checks"].values()) for item in dependency["requests"])
+        or dependency["request_sha256"] != report["request_sha256"]
+        or not 0 < summary["seconds"] <= 7200
+        or not 0 < summary["resources_sampled"]["peak_group_rss_bytes"] <= 4 * 1024**3
+        or summary["resources_sampled"]["errors"]
+    ):
+        raise ValueError("reviewed reference is not a complete passed bounded comparison")
+    # 哈希已锁定原始闭包；只把其中方案源码相对路径映射到候选 release。
+    prefix = f"/schemes/{target.old_base_scheme_id}/"
+    for original, expected in identity["source_closure"].items():
+        if prefix in original:
+            relative = Path("schemes") / target.old_base_scheme_id / original.split(prefix, 1)[1]
+            if _sha256_file(project_root / relative) != expected:
+                raise ValueError(f"reviewed Native source changed: {relative}")
+
+    frozen = identity["input_identity"]
+    runtime = identity["runtime_identity"]
+    if (
+        set(frozen["files"]) != _DATABRIDGE_FILES
+        or frozen["snapshot_id"] != identity["snapshot_id"]
+        or dependency["files"] != frozen["files"]
+        or phase["execution_identity"]["input"]["files"] != frozen["files"]
+        or phase["execution_identity"]["input"]["runtime_identity"] != runtime
+    ):
+        raise ValueError("reviewed reference input or runtime closure mismatch")
+    from scheduler.blackbox_v2_runner import DEFAULT_RUNTIME_PROFILE, _state_identities
+
+    # 与原参考相同的实际 Python/包/环境指纹，不把环境名称相似当作等价。
+    current_runtime, current_input = _state_identities(
+        new_config.blackbox_metadata, new_config.delivery_script, data_dir,
+        identity["snapshot_id"], DEFAULT_RUNTIME_PROFILE,
+    )
+    if (current_runtime, current_input) != (runtime, frozen):
+        raise ValueError("reviewed reference differs from candidate runtime or frozen five-file input")
+    if "formal_admission_sha256" in identity:
+        admission = json.loads(bound("formal-admission.json", identity["formal_admission_sha256"]))
+        if (
+            admission["scheme_version"] != new_config.scheme_version
+            or admission["code_hash"] != new_config.code_hash
+            or admission["config_hash"] != new_config.config_hash
+            or admission["manifest_hash"] != new_config.manifest_hash
+            or admission["environment_fingerprint"] != new_config.environment_fingerprint
+            or admission["generation_id"] != identity["generation_id"]
+            or admission["data_snapshot_id"] != identity["snapshot_id"]
+            or admission["requests_sha256"] != report["request_sha256"]
+            or admission["result_sha256"] != report["candidate_result_sha256"]
+        ):
+            raise ValueError("reviewed formal Result provenance mismatch")
+    elif identity["requests_sha256"] != report["request_sha256"] or (
+        identity["candidate_result_sha256"] != report["candidate_result_sha256"]
+    ):
+        raise ValueError("reviewed offline Result provenance mismatch")
+
+    reader = csv.DictReader(io.StringIO(request_payload.decode("utf-8-sig"), newline=""))
+    if reader.fieldnames != list(REQUEST_FIELDS):
+        raise ValueError("reviewed Request fields mismatch")
+    request_rows = [asdict(request_from_mapping(dict(row))) for row in reader]
+    if len(request_rows) != 333 or len({row["request_id"] for row in request_rows}) != 333:
+        raise ValueError("reviewed Request count or uniqueness mismatch")
+    return (
+        request_rows,
+        _standard_result_rows(native_payload, label="Native"),
+        _standard_result_rows(successor_payload, label="successor"),
+        {"generation_id": identity["generation_id"], "data_snapshot_id": identity["snapshot_id"],
+         "data_files_sha256": dict(frozen["files"])},
+    )
+
+
 def _load_standard_result_rows(path: Path, *, label: str) -> list[dict[str, object]]:
     if not path.is_file() or path.stat().st_size > 64 * 1024 * 1024:
         raise ValueError(f"{label} result evidence is not a bounded regular file")
-    with path.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(handle)
-        if reader.fieldnames != list(_STANDARD_RESULT_FIELDS):
-            raise ValueError(f"{label} Result fields differ from the five-field contract")
-        raw = list(reader)
+    return _standard_result_rows(path.read_bytes(), label=label)
+
+
+def _standard_result_rows(payload: bytes, *, label: str) -> list[dict[str, object]]:
+    """从已校验的同一份字节解析标准结果，避免哈希后重新打开原件。"""
+    reader = csv.DictReader(io.StringIO(payload.decode("utf-8"), newline=""))
+    if reader.fieldnames != list(_STANDARD_RESULT_FIELDS):
+        raise ValueError(f"{label} Result fields differ from the five-field contract")
+    raw = list(reader)
     if not raw:
         raise ValueError(f"{label} result evidence must be non-empty")
     rows: list[dict[str, object]] = []

@@ -27,6 +27,24 @@
   8.4.11 的随机隔离 schema 中实际执行，结果为 `2 passed in 1.91s`。覆盖同输入与独立算法输入两种情况下的
   中途失败整事务回滚、cutover、rollback 和 re-cutover；测试前后隔离 schema 数均为 0，未访问 `bond_db`。
 
+**W3A 受控原件复用（2026-09-08，本地候选）**：
+
+- receipt v2 的 `input_identity` 移到每个 target 内，包含该方案算法对照的 generation、snapshot 和五文件
+  SHA-256。full-OOS 的 09-05 原件与 cons-sda 的 09-08 原件分别绑定，不因同属 W3A 而合并输入身份。
+  两方案正式入库证据仍分别绑定 09-08 输入；同输入方案继续交叉校验完整七字段 Request 和五字段 Result。
+- 复用输入采用临时 `native-successor-reviewed-input-v1`：顶层只有 `schema_version/wave/comparisons`，
+  每项只有 `old_base_scheme_id/new_base_scheme_id/target_tenor/evidence_dir/data_dir`。
+  不接受操作者提供的 Result、成功摘要或哈希。仅开放已锁定的完整 W3A 两方案，原始 identity/summary 的
+  已核验 SHA 固定在临时工具中，再逐层读取 Request、两方 Result、输入、源码和实际运行环境闭包。
+- 每个 target 显式记录 `native_runtime_profile` 与环境指纹。上述两份 Native 参考实际使用
+  `blackbox-v2-v1` Python/依赖，不能改称另一 Native 环境；原有受控比较仍记录其真实 `native` 环境。
+  路径仅用于寻找原件，不进入业务事实；原件损坏、代码/输入/环境不同都拒绝复用，不启动算法兜底。
+- 独立审查发现仓储层参考运行环境例外范围过宽，已收紧为完整锁定 W3A family；复审无 Critical/Important。
+  修复后本地全量回归为 `739 passed, 6 skipped, 229 subtests passed`，其中 MySQL 场景尚须用此次候选在 ECS
+  随机隔离 schema 实测。该结果不等于 ECS 原件读取、receipt 生成或 cutover 已完成。
+- 14:09 CST ECS 只读核验 current 仍为 `3162f70e67f53b7cdb65a3e8792d42c6fab32d15`，Backend active，
+  无遗留参考计算进程，下一 installed timer 为 18:00 月频。本轮没有改动 current、systemd、Mac3 或业务库。
+
 **最新执行核验（2026-09-08 上午）**：
 
 以下启动前记录保留原时间语义；10:23–10:26 的完成读回及下一项启动见后文，不把旧状态当作当前待办。

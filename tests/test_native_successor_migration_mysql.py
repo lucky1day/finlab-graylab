@@ -441,9 +441,6 @@ def _inputs(old, new, target, evidence, control, database_name, server_uuid):
             "comparator_source_sha256": "6" * 64,
             "generated_at": "2026-09-05T00:00:00Z",
         },
-        "generation_id": evidence.generation_id,
-        "data_snapshot_id": evidence.data_snapshot_id,
-        "data_files_sha256": dict(control["databridge"]["files"]),
         "runtime_environment_fingerprint": evidence.environment_fingerprint,
         "targets": [
             {
@@ -455,6 +452,12 @@ def _inputs(old, new, target, evidence, control, database_name, server_uuid):
                 "new_horizon": target.new_horizon,
                 "old_code_hash": old.code_hash,
                 "new_code_hash": new.code_hash,
+                "input_identity": {
+                    "generation_id": evidence.generation_id,
+                    "data_snapshot_id": evidence.data_snapshot_id,
+                    "data_files_sha256": dict(control["databridge"]["files"]),
+                },
+                "native_runtime_profile": "native",
                 "native_runtime_environment_fingerprint": "8" * 64,
                 "request_artifact_sha256": hashlib.sha256(
                     canonical_native_successor_plan(
@@ -534,10 +537,10 @@ def test_real_mysql_cutover_failure_rollback_and_recutover(
         )
         if independent_algorithm_input:
             receipt = inputs["equivalence_evidence"]
-            receipt["generation_id"] = "frozen-algorithm-generation"
-            receipt["data_snapshot_id"] = "frozen-algorithm-snapshot"
-            receipt["data_files_sha256"]["daily_output.csv"] = "a" * 64
             item = receipt["targets"][0]
+            item["input_identity"]["generation_id"] = "frozen-algorithm-generation"
+            item["input_identity"]["data_snapshot_id"] = "frozen-algorithm-snapshot"
+            item["input_identity"]["data_files_sha256"]["daily_output.csv"] = "a" * 64
             item["request_artifact_sha256"] = "b" * 64
             item["native_result_sha256"] = "c" * 64
             item["successor_result_sha256"] = "c" * 64
