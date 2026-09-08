@@ -2,7 +2,11 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`A2C_FULL_OOS_LOCAL_OFFLINE_PASSED; A3_CANONICAL_LOCAL_EXECUTOR_PROBE_PASSED; A4_ECS_COLD333_AND_SAME_LINUX_NATIVE_PASSED_CONFORMANCE_PENDING; W1_ECS_BACKTEST_READY_ON_PRIOR_POLICY; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3A_CONS_SDA_CONFORMANCE_PASSED; W3_BLOCKED_ECS_VALIDATION; W4_MAC3_BINARY_BUNDLE_ACCEPTED`
+**执行状态**：`A2C_FULL_OOS_LOCAL_OFFLINE_PASSED; A3_CANONICAL_LOCAL_EXECUTOR_PROBE_PASSED; A4_FULL_OOS_ECS_ALGORITHM_EQUIVALENCE_ACCEPTED_PLATFORM_ADMISSION_PENDING; W1_ECS_BACKTEST_READY_ON_PRIOR_POLICY; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3A_CONS_SDA_CONFORMANCE_PASSED; W3_BLOCKED_ECS_VALIDATION; W4_MAC3_BINARY_BUNDLE_ACCEPTED`
+
+**最新验收决定（2026-09-08）**：用户明确取消此次算法迁移的重复、倒序、乱序、子集及其他额外专项验证，
+以相同冻结输入下修改前后完整回测的日期和方向逐条一致为算法验收依据，执行规则见第6.1–6.2节。
+下文早期矩阵及启动/失败记录只保留历史事实，不再构成当前待办；平台写库、单Writer、回滚和发布安全边界不变。
 
 **现场基线日期**：2026-09-05 Asia/Shanghai（后续核验日期在证据段落分别记录；计划修订不刷新现场水位）
 
@@ -699,8 +703,8 @@ identity/payload 摘要；独立审查发现的误用旧版本状态证据风险
 临时交付仍使用试点文件名和未验收 Metadata，不是已通过 Intake 的 canonical 包；不直接复制到生产运行。
 本轮仅更新本 Markdown，未修改平台/canonical/Native 代码，未执行平台全量回归、发布、业务写库或调度操作。
 
-先完成以下验证，才决定是否实施 A3 平台扩展。与第 6 节重合的检查使用同一份验收清单和证据，不按章节重复执行；
-证据复用与变更后重验规则见第 6 节。
+以下为 A2 当时采用的历史验收清单，不作为2026-09-08后继续追加或重复运行的门槛；
+用户最新决定与当前算法验收仅以第6.1–6.2节为准，已有证据保留复用。
 
 - 同一冻结输入与完整正式 Request 集，Native、候选冷路径、候选恢复路径的 ID、三个日期、方向零差异；
 - 333 条正式样本在相同前置历史准备下执行 `0+333`、`1+332`、`100+233`、`332+1`；
@@ -1168,6 +1172,21 @@ launcher `7edf9c05ad38ca4a0fdb4a5229e22b70b12bb2b4b91a3553cda62a2cb5a32eef`，�
 日志为隔离候选根目录的 `batch-remaining-supervisor.log`。当前只确认启动，尚无剩余五组通过结论；
 最终须返回码0、summary成功、六组证据完整、旧证据不变及新运行视图清空，才关闭该项。无业务DB或生产调度变更。
 
+**08:59 用户取消额外矩阵，按新标准关闭算法验收缺项**
+
+用户认为本次调整只需要证明修改前后回测结果一致，明确不再执行上述重复/顺序/子集补验。
+因此停止本次有限补验并暂停 `native-ecs`；这属于验收范围变更，不是方向差异、性能失败或放宽数据同代要求。
+取消时 `asc-1` 已自然完成100条（772.08秒）；`asc-2` 刚开始，对实时读回的算法PGID818430验证完整命令、
+父进程814903及本次私有目录后发送SIGTERM，由原runner完成清理。controller/supervisor均退出，
+退出记录为1、算法终止码-15；原始failure保留，该技术退出在本记录中归类为 **CANCELLED_BY_USER_SCOPE_CHANGE**。
+未开始 reverse/shuffle/subset；不将取消项标记为通过，也不把它们继续列为阻塞。
+09:00读回本次三个进程均不存在，新private view active/debris为空，旧私有日频状态摘要不变。
+
+已有ECS完整333条Blackbox回测与同Linux旧Native独立333条逐字段零差异、同一输入/Request/代码/环境证据，
+满足本次full-OOS算法迁移的当前验收要求，状态改为 **算法等价验收通过，平台入库待办**。
+不继续投入重复算法验证或额外缓存设计；后续工作转向正式持久化入库、受控切换和部署检查，仍保持单Writer、
+历史事实不改写、事务与回滚边界。其他方案仍需各自证明同输入完整回测等价，不能外推full-OOS结论。
+
 ##### A4：ECS 验证、族扩展与晋级
 
 A3 有代码变更后运行相关合同/原子恢复测试和全量回归，并进行独立审查；Critical/Important 必须清零。生产接入
@@ -1292,22 +1311,21 @@ W4 随后形成新的 Mac3-only binary-bundle archive，该 archive 不需要也
 
 A2、A4 与本节共用一份验收清单，在本 Markdown 中记录各检查的证据位置、身份摘要、结果和覆盖范围；
 不新增验收服务、数据库表或证据管理框架。同一次执行可以同时满足等价、确定性、恢复和性能要求，不因多个
-章节引用而重跑。原有重复次数、样本范围、边界覆盖和性能门槛不减少。
+章节引用而重跑。按2026-09-08用户决定，取消方案级重复次数、顺序/子集矩阵和额外算法专项复测；
+以完整回测同输入前后等价为算法准入依据，复用已证明适用的证据。
 
 复用前必须核对候选代码及 exact version、输入与 Request、起始状态、运行环境、校验策略和执行边界。
 代码、输入、环境或执行边界发生变化后，重新运行受影响检查并说明其余证据仍适用的依据；无法证明则重验，
 不同环境的耗时不得互相替代。独立进程算法试点不能代替正式 executor 验证，本机证据不能代替 ECS/Mac3
 各自的现场 preflight、持久化回测和控制面验收。按需保留一次性算法验收脚本，闭环后只留摘要与公共回归防线。
 
-### 6.1 单 successor conformance
+### 6.1 单 successor 算法验收（当前简化标准）
 
-- 单条 predict 连续 3 次逐字段一致；
-- 100 条 backtest 连续 3 次；
-- 同 Request 集升序、降序、乱序、子集按 `request_id` 完全一致；
-- 首、中、末 Request 用独立单点复算；
-- cutoff 后追加未来数据，原 Request 不变；
-- 非法字段、重复 ID、缺少 cutoff、数据不足、非法方向均非零退出、stderr 明确、stdout 为空、无 Output；
-- Result 顶层字段精确等于五字段；
+- 对同一冻结输入和完整正式回测 Request 集，比较修改前后结果；Request ID、三个日期和方向逐条一致，
+  具体身份绑定见第6.2节。已有精确匹配的完整对照直接复用，不因换章节、写文档或进度脚本修订重跑。
+- 不再要求单点/100条重复三次、倒序、乱序、子集、分批末态、独立首中末或专门未来追加/修订注入矩阵。
+  不为每个 successor 另建或执行一套算法负例专项测试；原有平台公共合同/安全测试按平台代码改动范围运行。
+- 标准执行器继续校验精确五字段 Result、Request身份和日期；这些是既有接入合同，不是新增算法实验。
 - W1-W3 不 import 平台代码，不访问 DB/网络/额外代码，不启动子进程；stateless 方案不得读写持久状态，stateful
   方案只允许通过 5.2.1 的 state-input/state-output 合同读写自己 exact version 的派生状态；W4 只允许读取
   manifest 内已锁定的 binary payload，其他边界相同。
@@ -1392,7 +1410,7 @@ Native run；Native 可执行路径与临时迁移工具已删除；全量、架
 同 wave 的 `full_oos` 已完成 5.2.1 A0/A1 与 A2c 完整本地离线冷/热等价、每日推进及真实 generation 复用验证。
 平台状态扩展已通过本地实现测试、独立审查和 full-OOS executor 探针；ECS 隔离预热、十日、重试已通过对应检查，
 旧 100 条批量在 600 秒硬限超时；用户调整离线预算后，ECS 完整冷333条、Mac同输入参考比较与
-同 Linux Native 独立333条等价均已通过，仍待其余 ECS 合同矩阵及入库验收，尚不能晋级。
+同 Linux Native 独立333条等价均已通过，满足用户简化后的算法等价验收；额外矩阵已取消，仍待正式入库与切换验收。
 full-OOS 两文件已提交并以不可变包安装至 ECS 私有验证目录，保持 paused/draft、部署范围为空；
 尚未完成 ECS 持久化回测或生产切换，不能用单日性能或独立等价通过宣布整体闭环。
 W2、W3B-D 也尚未完成新预算下各自的离线和每日验收，须逐方案分类，不能外推当前试点通过。W4 的
