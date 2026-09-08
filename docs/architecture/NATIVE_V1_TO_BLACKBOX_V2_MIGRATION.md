@@ -49,6 +49,11 @@
   再对当前输入做120秒增量验证，通过后按fresh preflight/plan SHA执行整W3A re-cutover。
   新generation不自动要求重建；算法自行判断历史依赖是否可复用。已发布旧正式回测在同exact version重切时
   可复用，不因09-09 generation变化重跑278/279。已存在74条gray不得重复跑；只处理full-OOS缺少的09-14键。
+  单条补缺仍走现有gray batch私有状态，不读取或推进生产state；显式使用
+  `signal-gap-fill --scheme-id liwei_0616_5y01_full_oos_k3_div_k10_bbv2 --target-date-from 2026-09-14 --target-date-before 2026-09-15 --timeout-sec 7200`。
+  该区间只含缺少的一个target，执行前必须按权威日历/事实确认；不含已存在的74条，也不占用09-15当天目标。
+  单条历史回放可能需要冷计算，不能用正常增量8.910秒估算耗时或沿用默认600秒；补缺期间仍保持timer fence，
+  但不得停止08:30 Actuals。其私有state不得晋级或覆盖生产state；只经已有repository提交授权缺口。
   失败不自动重试初始化、改预算或放宽校验；安全保留旧Writer并报告。W3A闭环后继续W2、W3B-D，不扩大Mac3权限。
 
 **W2后续执行准备（2026-09-09，只读库存核验，尚未启动算法）**：
