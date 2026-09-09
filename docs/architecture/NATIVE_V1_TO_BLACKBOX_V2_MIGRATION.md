@@ -2,7 +2,25 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_CURRENT_DAY_INCREMENTAL_VERIFIED; W3A_RECUTOVER_COMMITTED; W3A_ONE_MISSING_GRAY_RUNNING_DAILY_FENCED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_CURRENT_DAY_INCREMENTAL_VERIFIED; W3A_RECUTOVER_AND_GRAY_VERIFIED; W3A_INSTALLED_DAILY_ACCEPTANCE_RUNNING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
+
+**唯一补缺验收完成，真实日频入口运行中（2026-09-09 08:56 CST）**：
+
+- full唯一09-14补缺于08:42:16退出0，耗时2359.070秒，existing gap-fill PASSED且remaining为空。
+  仅新增gray_live run5346及1条预测；full/cons现在均408条。原333历史和74条gray未重算。
+- 08:55独立只读验收确认日期/目标/版本、唯一键、run/backtest XOR；排除唯一新增fact/run后，全部原预测、
+  run和backtest完整行摘要匹配当天模拟基线，旧Native及其他方案事实未改变。生产state完整envelope仍为
+  `f2162a6a689edb1ecc646ccf71afbacf387c12ddc253b46b6498d61ff831bc67`，锁空闲，算法PGID和两个私有目录已清理。
+  immutable源码、88个Dashboard active身份和Backend原PID643451/health200均通过。
+- Actuals保持原调度，08:30:30启动、08:31:07退出0，Invocation
+  `f8e4f63658454dd1ac2768bc2c1ce3a0`；其自然刷新journal已与本次读回保存，Actual新基线单独记录，
+  未把自然变化当作迁移写库或强制回退。`one-gap-readback.json` SHA为
+  `a8c606aff9d325208099b9376a9071f1c05509bac0d14bcd53c1fcbbb9ace8e9`。
+- 08:56:27恢复daily.timer，next为09-10 07:03，随后仅start一次原installed daily.service，Invocation
+  `bc96e8f427fc4885856adc49992832a5`、初始MainPID947709。当前activating，尚无最终退出结果，禁止重复启动。
+  调用前max run_id=5346，全表事实/Registry/Actual基线位于本次`one-gap-readback.json`；预期W3A各1条
+  scheduled_live成功、09-15目标/方向0与当天模拟一致，其他45允许skipped审计但不改变事实。
+  必须等全47最终摘要、DB、进程、state和控制面验证通过后才关闭W3A本阶段；失败仍按整组回滚顺序收尾。
 
 **早间恢复、当天验证与重切完成，唯一补缺进行中（2026-09-09 08:03 CST）**：
 
