@@ -2,7 +2,29 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_FOUR_WORKER_COMPARISON_RUNNING; W3B_10Y01_DRAFT_REVIEW_PASSED; W3B_10Y02_STATE_DRAFT_UNDER_REVIEW; W3C_D_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_5Y_NATIVE_REFERENCE_COMPLETE_SUCCESSOR_RUNNING; W3B_THREE_DRAFTS_REVIEW_PASSED; W3C_AUC_STATIC_CONVERSION_RUNNING; W3D_PENDING; W4_MAC3_PAUSED`
+
+**参考计算完成首段、后续转换与证据准备（2026-09-09 11:12 CST）**：
+
+- W2 首个 5Y Native 完整参考成功退出，耗时 2432.991 秒，333 条结果已保留，CSV SHA
+  `99f1ed8ad3da3ed0d481bad37638c7018f15a81fd616504ffaafc418cb314ffc`。原控制 PID953168 自动进入
+  5Y successor 计算，算法 PGID963365；并未重新启动 driver。7Y 两段及完整 W2 凭据仍待当前流程完成。
+- W3B 10Y02 私有状态草稿独立审查通过，无 Critical/Important。随后按已核实的源差异完成第三个
+  `liwei_0616_10y01_full_oos_k3_div_k10_bbv2`，仅改变身份、model1/streak10、函数名与独立状态 schema，
+  不改连续 2024 年起的 full-OOS 语义。第三稿独立差异复审也通过；Python SHA
+  `a15cb1ee13a20eed06402be3f4491a1a8938245f09b1e68818d7c049f841e0a0`，Metadata SHA
+  `c5440c0eda7a02ce2456539eec80f26750f5bce8963eb89e3db9fc99bca7a69a`。
+  三稿均可进入受控离线验证，但仍未证明真实等价、恢复或性能；未 Intake 或纳入部署。
+- W3C 第一个 AUC static 方案开始独立转换，只写 ignored outputs。已核对 active 的
+  `platform_live_pit_variant`、2024 年前带 horizon gap 的 AUC 筛选、STD/DIV/ACCWT 加独立 CROSS_7Y
+  两族、实际 K=10/5/10/15，以及月度排名 `usable_end=max(0,pi[0]-horizon)`；不得按 ALL_K10 名称
+  把四个 K 统一，也不得改回 source-original。尚未完成交付或任何真实模型验证。
+- 用既有、字节未变的 `verify_candidate.py` 在 ca39 候选上完成 W3A 原件只读重绑定。输出位于本轮
+  W2 incoming 的 `w3a-rebound.json`，SHA
+  `7ca902aa648556f24243557394ce32069cdbf3698a2774358be8451ad1bb0f97`。两组各333条证据和原正式
+  run278/279复验通过；target 证据及环境指纹与原 canonical receipt 完全一致，只更新工具绑定/生成时间。
+  算法执行0、数据库写入0、current不变。原件核验沿用原对照环境，不发布或更改生产状态。
+  该输出先保留树外，等待 W2 成功后统一更新开发线凭据；没有重跑已闭环 W3A。
 
 **并行转换与下一步执行准备（2026-09-09 10:52 CST）**：
 
