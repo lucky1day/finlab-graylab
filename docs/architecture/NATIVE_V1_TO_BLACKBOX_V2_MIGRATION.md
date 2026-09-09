@@ -4,6 +4,26 @@
 
 **执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_REAL_APPEND_PASSED_NATIVE_REFERENCE_STOPPED_AT_MAINTENANCE_DEADLINE; W4_MAC3_PAUSED`
 
+**剩余验证收缩、审查通过与调度读回（2026-09-09 18:18 CST）**：
+
+- 新独立参考草稿`outputs/native-migration-w3b-reference-draft/native_reference_v2.py`已完成，
+  SHA `70c226026303323ca9520eecf00b1410a163d34bfe801a68a96adde68bbfda73`，独立审查通过，未上传或拟合。
+  所有被任何Request用作prior的日期保留完整265配置；current-only及末行修正仅计算原Native排名真正
+  消费的配置，保留整月前缀、原训练/窗口/最终控制器。稀疏消费掩码与真实Native Phase C纯内存对照通过，
+  不能据此宣称真实333条等价或性能通过；候选与原参考字节未变，不使用候选结果作旧版真值。
+- 新`run_remaining_comparison.py`仅复用原冻结输入、333 Request及三段通过证据，执行Native v2和
+  successor无状态完整回测；不重跑初始化/新增日/当日无状态预测。所有新输出将进入独立incoming。
+  审查发现的旧pyc加载身份缺口已改为校验源码bytes后直接compile/exec，纯内存helper加载通过；
+  修复经独立复核通过，已锁定上述批准参考hash；最终wrapper SHA
+  `e79c64d6acced3fa8fcde2b629bb8354c3a78a1bdda4b07936af17ee8ec281ef`。
+  reviewer独立执行真实Native Phase C纯内存28组对照、selected correction、缺失单元拒绝及
+  P/C重叠需求检查，未发现Critical/Important；主agent复核语法、hash锁定及原driver/reference未变。
+  此结论只准入剩余离线计算，不代表真实333条等价、性能通过或可上线。
+- 18:02现场只读确认monthly.service于18:00:30自然启动、18:00:31退出，状态0/MainPID0；
+  monthly下一次为09-10 18:00，Actuals下一次仍09-09 19:00，DataBridge/daily仍09-10 06:30/07:03。
+  current仍a6ffe，无新手工计算、调度操作或生产写入。新计算须等19:00 Actuals正常退出后安排，
+  两脚本保持本地待执行，不提前启动；每进程仍7200秒/4GiB，维护硬截止保护次日原任务。
+
 **17:45维护截止生效，保留已通过阶段（2026-09-09 17:47 CST）**：
 
 - Native参考被原监督器于17:45:00.778终止；本阶段开始时离维护截止仅余6272.503秒，实际6272.695秒。
