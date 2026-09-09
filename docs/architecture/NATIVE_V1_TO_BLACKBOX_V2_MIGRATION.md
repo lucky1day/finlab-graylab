@@ -2,7 +2,31 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_BOTH_333_EXACT_MATCH_5Y_FORMAL_PASSED_7Y_FORMAL_RUNNING; W3B_W3C_W3D_EIGHT_DRAFTS_REVIEW_PASSED; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_BOTH_FORMAL_AND_TODAY_SIMULATION_PASSED_ATOMIC_CUTOVER_DONE_GRAY_RUNNING; W3B_W3C_W3D_EIGHT_DRAFTS_REVIEW_PASSED; W4_MAC3_PAUSED`
+
+**W2 两正式通过、ECS 原子切换完成（2026-09-09 13:10 CST）**：
+
+- 7Y正式Gate于13:03:29返回passed，13:03:36收尾完成：run281、333条预测、17条月度指标，
+  exact version `bc06323c0fc6`；原件 `formal-daily_7y_1_v28_bbv2/complete.json` 确认旧事实摘要不变。
+  两方案正式证据均已由a6ffe候选的当前验证策略复核，不再重复运行算法或Gate。
+- 当天模拟13:06:41通过，5Y/7Y单点分别17.658335/12.419984秒，方向分别0/1；
+  feature09-08、target09-15，绑定09-09五文件generation；只读Engine复核11表全部不变。
+  这才是每天单点耗时，一次性完整历史耗时不作为每日任务耗时报告。
+- 已仅暂停ECS daily.timer，并由原installer把已验证archive激活为current `a6ffe3a6b477e2fee67489c43c79ab767433acbb`，
+  previous为`8eb2df2e239dec6c3de529b99764d7be3f7316e2`。Backend原PID643451、其他timer、Mac3与域名未动。
+- 原迁移CLI fresh preflight SHA `cf755f6874ecabf1737f3cd0f7708155cbfad18038d24bc9468c8271fa72480c`，
+  两业务格子各333日期覆盖完全一致、零running；随后原子cutover成功，旧Registry archived、新exact
+  version/Registry active，各自insert-only发布333历史事实。原件在同W2 incoming的
+  `cutover-preflight.json` 与 `cutover-result.json`；不得重复切换或改写事实。
+- 13:10启动5Y唯一gray batch，维护PID995682；区间`[2026-06-01,2026-09-15)`，各Request独立cutoff，
+  原repository原子写入。已审临时`run_gray.py` SHA
+  `7b786af3f8533cb07528b8fcb16eae9b4bdcffef1490ceac58a262ac84fddd60`，只在本次维护进程通过
+  原profile参数明确7200秒/4GiB/8线程，不改平台默认值。完成后再串行7Y；两项完成才恢复daily.timer，
+  执行一次installed daily.service并验收09-15保留键。此时尚未宣布W2批次闭环。
+- W3B首方案离线driver两个Important已修复并定点复审通过：失败保留原Output及完整日志；每次验证重枚举
+  环境安装记录集合与hash，拒绝运行中新增包。文件`outputs/native-migration-w3b-reference-draft/run_comparison.py`
+  SHA `c83fb450f2a8f087d4080de0d77a4cf50481dab1a762fb37809888a0e651eae1`，参考源码SHA仍为`d3fe92f4…`。
+  只准入首次受控离线验证，尚未上传/拟合/证明等价，不与W2切换窗口争抢资源。
 
 **W2 首份正式证据完成、第二份开始（2026-09-09 12:46 CST）**：
 
