@@ -2,7 +2,40 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_SERVICE_ENV_REBUILD_AND_INCREMENTAL_VERIFIED; W3A_OLD_WRITER_RESTORED_MORNING_PROTECTED; W3A_RECUTOVER_PENDING_CURRENT_READY; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_CURRENT_DAY_INCREMENTAL_VERIFIED; W3A_RECUTOVER_COMMITTED; W3A_ONE_MISSING_GRAY_RUNNING_DAILY_FENCED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
+
+**早间恢复、当天验证与重切完成，唯一补缺进行中（2026-09-09 08:03 CST）**：
+
+- DataBridge installed service于06:30:30启动、06:33:45正常退出，Invocation
+  `e30f27a8872b4424905b3f5ef69556c1`；新generation `full-20260909-063339-4688e3c69f8d`、
+  snapshot `snapshot-c8655eab5d799e1c7004e63c`已通过平台当天ready只读校验。
+- 原3162 installed daily于07:03:23自然启动、07:50:26退出0，Invocation
+  `c9f7c37b866741198e94a6c88c0c36b4`，47个方案全部success、各写1，无failed/blocked/denied/skipped。
+  已逐条读回journal关联的47条DB run及预测，确认scheduled_live和09-09日期；旧full run5300、cons run5310
+  均成功，回滚后旧Writer实际恢复验收通过，不再依赖reset-failed后的Result字段。
+- 同一8eb2候选、真实installed locale（LANG=en_US.UTF-8、无LC_ALL）下，各一次09-09无业务写入模拟通过：
+  full-OOS正常增量11.592秒，cons-sda stateless63.542秒，均在120秒/4GiB/8线程边界内。
+  两者predict09-09、feature09-08、target09-15、direction0，也与当天旧Native实际结果一致。
+  九张Registry/run/prediction/backtest/Actual表完整摘要前后相同。
+  full生产state正常推进，没有初始化；payload SHA变为
+  `37dcd8cb4be86541a706500601b648805512d4526c682b6bdb7106e9202104df`，envelope SHA为
+  `f2162a6a689edb1ecc646ccf71afbacf387c12ddc253b46b6498d61ff831bc67`。
+- 独立执行审查无Critical/Important问题；标准installer核验原archive后激活8eb2，previous3162。
+  仅fence daily.timer，在零running和fresh preflight下执行整W3A原子cutover；plan SHA
+  `4aadb0c3adcc0b9ff5c5ccf12d1b6ccf2eb862a6635ef54e88ae58e1935a7931`。
+  08:02独立只读验收通过：新Registry/exact version active、旧Registry archived，正式278/279各333事实原样复用，
+  full407/cons408事实及所有非Registry业务表完整摘要不变，其他86个active身份与Dashboard读模型88项一致。
+- 权威日历枚举确认只缺full target09-14（predict09-08、feature09-07）一条；cons无缺口，09-15均未被占用。
+  08:03确认唯一 `fill_one_gap.py` driver PID937747、既有CLI PID937750已启动，实际跟进须复核完整命令。
+  使用半开区间 `[2026-09-14, 2026-09-15)`、7200秒，nice10让未改变的08:30 Actuals保持原优先级。
+  日频timer仍fenced；这是私有冷状态历史补缺，不推进生产state、不重跑原74条gray或正式回测。
+  当前无完成结果，不得重复启动。成功后读回唯一事实、私有进程/目录清理、生产state不变，再恢复timer并
+  人工调用一次原installed daily完成真实新Writer验收；失败按既定整组rollback顺序收尾。
+- 本轮证据沿用incoming `w3a-locale-20260909.qqTZuf`与本机ignored目录：
+  `current-day-simulation.json` SHA `feb584c97b5d525b1ba9f1d076cdf34f27a9b75194855927358a2161809d2968`；
+  `recutover-readback.json` SHA `05ce55ecb2d7015a1c250f28f4961a09bd6dae8bd0334a5899f170489323942e`。
+  后续08:30 Actual自然变更须按其真实Invocation单独核验，不能机械套用08:02摘要，也不得停止Actuals。
+  Backend原PID643451及Mac3/域名/DDL保持不变。W3A收尾后继续W2与W3B-D，尚未整个ECS闭环。
 
 **环境修复与正常增量验收完成（2026-09-09 02:48 CST）**：
 
