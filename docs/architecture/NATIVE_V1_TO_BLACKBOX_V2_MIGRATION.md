@@ -4,6 +4,17 @@
 
 **执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_REAL_APPEND_PASSED_REMAINING_OFFLINE_COMPARISON_RUNNING; W4_MAC3_PAUSED`
 
+**Native参考333条完成，新版回测接续（2026-09-09 20:39 CST）**：
+
+- 同一夜间wrapper内Native v2正常退出，监督耗时5735.966928秒，低于7200秒；原监督器4GiB限制未触发。
+  原生算法日志完整输出333条，主agent独立只读校验五字段集合、Request顺序/ID及三个日期全部匹配、方向合法。
+  `native.csv` SHA `8e998c224af3891890f5035ae5e59199897608e4e23a6bd61fe951f69d916acf`，
+  `native-execution.json` SHA `f3e9a9cc6a7b8c315df8b3270139e8899024ab7b69260bac8f599aa957b90156`。
+- 原件仍在Aj6bv8目录；本地只读取回`outputs/releases/w3b-remaining-20260909/native-complete/`。
+  不再重算此Native参考；该阶段成功尚不代表新旧方向一致。
+- wrapper PID1056244已自动串行启动唯一successor333，算法PGID1081519（20:39读回）；
+  保留相同冻结输入和候选字节，无state参数。维护截止仍23:30，尚无完整新旧等价结论。
+
 **剩余两阶段夜间启动（2026-09-09 19:03 CST）**：
 
 - Actuals于19:00:30自然启动、19:01:02状态0退出；五个one-shot全部inactive/MainPID0，
