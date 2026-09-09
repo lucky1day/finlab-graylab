@@ -2,7 +2,50 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_BOTH_FORMAL_AND_TODAY_SIMULATION_PASSED_ATOMIC_CUTOVER_DONE_GRAY_RUNNING; W3B_W3C_W3D_EIGHT_DRAFTS_REVIEW_PASSED; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_STATELESS_DAILY_TIMEOUT; W3B_PRIVATE_STATE_OPTIMIZATION_IN_PROGRESS; W4_MAC3_PAUSED`
+
+**W3B 首个日频性能实测停止、定位重复历史训练（2026-09-09 14:04 CST）**：
+
+- 13:59:59监督器按120秒上限终止首方案，实际120.088秒；算法及driver均已退出。
+  `daily-execution.json`和`failure.json`保留于下述unitfix执行目录，失败后的输入、代码、环境及release
+  完整性复核无异常。没有启动Native参考或完整历史对照，没有Intake、业务写库或发布生产状态。
+- 日志显示10Y历史同期265配置、3 seeds约1.5分钟；当前月11个入选配置很快完成，随后进入7Y历史同期
+  265配置、2 seeds时达到上限。瓶颈是每天重复计算不变历史窗口，而不是调度脚本本身。
+- 不放宽每日120秒门槛、不重复运行未修改候选。仅在ignored两文件草稿内复用已有私有增量状态合同，
+  保存可证明历史依赖完全不变的派生结果，当前窗口仍按每条Request精确计算；历史修订/无法复用明确失败。
+  验证改为一次显式私有冷初始化、同Request热预测及五字段一致，随后一次完整旧/新历史对照。
+  不新增平台状态框架，不触碰已闭环W2、其他Registry、Mac3或调度配置。
+- 原八份草稿的静态审查通过不等于性能或等价通过；首方案状态改动后须重新审查相关差异。
+
+**W2 ECS 闭环、W3B 首个真实算法启动（2026-09-09 13:58 CST）**：
+
+- W2两份gray均通过，分别一次batch写入75条；独立`gray-readback.json` SHA
+  `7b3b54dc8dd2c2f71146b81ca98f621878e26c484eacc860b822615199d63f09`，确认各333历史+75灰度、
+  旧事实/回测/Actuals及非本批active Registry不变、Dashboard一致、零running。
+- daily.timer恢复active，next trigger仍09-10 07:03；13:26:19人工触发一次installed daily.service，
+  invocation `81cb53c90add4a848acd1d194b047c78`，13:49:04正常退出。47个方案中W2各1success
+  （5Y run5552、7Y run5553），其他45个跳过写入；本次不是自然timer触发，不混淆证据。
+- 最终只读验收`installed-daily-final-readback.json` SHA
+  `0a77e346c2e3ce5c1b24feac22fb8f64526b6452f88ba6010bcfd8235eddfabf`，状态`W2_ECS_BATCH_CLOSED`。
+  两新事实feature09-08/target09-15、方向0/1，与当天模拟五字段完全一致；各方案409条独立事实，
+  旧prediction/run/backtest、Actual、Registry、Dashboard的88个active身份及五个timer全部通过。
+  current仍a6ffe、previous8eb2，Backend原PID643451未重启，Mac3及域名未操作。
+- 整套入口约22分45秒，现场已确认先串行六个Native publisher、再并行两个consumer、最后Blackbox；
+  原executor在计算后才做repository去重，所以最终skipped不等于没有计算。W2单点17.658/12.420秒
+  与整套入口耗时必须区分。后续不改变执行边界的ECS批次按5.4节复用控制面证据，不重复触发全部47方案。
+- W3B首个临时driver的namespace及systemctl重复`EnvironmentFiles`行解析问题均在算法启动前暴露，
+  已最小修复并独立复审；原`w3b-first-20260909.9xYk9e`目录及失败日志完整保留，零算法/业务写入。
+  当前唯一执行目录为`/opt/bond-factor-lab/incoming/w3b-first-unitfix-20260909.ltZM8N/`，
+  driver SHA `1c0076da1a3ba66d14661dddac381b98aec7ecd92f82a62a968d89dcdf7331aa`，原独立Native参考SHA不变。
+- 13:57:36启动当前driver，13:58已通过平台、unit、冻结输入与环境身份检查，实际daily算法PGID1003914、
+  维护PID1003883；先120秒stateless当日predict，再独立Native/候选完整333对照，4GiB/最多8线程。
+  `--finish-before 2026-09-09T17:45:00+08:00`仅通过原进程监督器收紧各次剩余执行预算，保留15分钟给
+  18:00月频前的清理/收尾；不放宽等价或性能标准。已有execution标记不可重启，尚无等价/性能通过结论。
+- 另两个W3B full-OOS Native独立参考草稿已完成并复审通过：
+  `outputs/native-migration-w3b-full-reference-draft/native_reference.py` SHA
+  `7c50b2381d78bfb8f437099aee638ea510296eb19e9c556002af9f44f2e18fd3`。两原件逐Request与双源完整依赖
+  证明后只共享同次Native自己的两族Phase A，分别保留streak10/5；不读取successor或生产cache。
+  尚未上传、拟合或证明性能，不把静态审查当作模型验证。
 
 **W2 两正式通过、ECS 原子切换完成（2026-09-09 13:10 CST）**：
 
@@ -2028,8 +2071,9 @@ archive 发布；禁止为了生成 receipt 现场修改不可变 release，也�
 对尚无自然 Writer 的 stateful successor 使用同代码/版本的已验证候选及目标机 generation 预热并只读检查 →
 把该 archive 安装为目标机 current 并复核状态身份 →
 fence cadence timer 并等待 one-shot 退出 → 从 current release 重做 preflight → 使用其 plan SHA 单事务切换 →
-单 batch gray 区间并推进对应私有状态 → 恢复 timer → 通过真实 systemd one-shot 的人工触发验证唯一 writer、
-journal、Dashboard、运行前后状态快照摘要与 next trigger。preflight 之前的安装和预热只部署代码、写可重建
+单 batch gray 区间并推进对应私有状态 → 恢复 timer → 核对唯一 writer、Dashboard、运行前后状态快照与
+next trigger；按下述控制面复用边界决定是否需要再次人工触发真实 systemd one-shot。
+preflight 之前的安装和预热只部署代码、写可重建
 派生状态，不授予 Registry 或业务事实写入权。
 
 cutover 单事务必须：
@@ -2047,10 +2091,18 @@ gray 区间从 `target_date >= 2026-06-01` 到首个真实 one-shot 验收 Reque
 用户改为人工触发真实 one-shot 后，上界必须按实际调用日的权威 Request 计算，不能机械沿用下一 timer 日期而
 提前用 gray 占掉模拟运行的业务键；若不人工触发才使用下一自然目标。不得伪造调用日或把 skipped 当作成功新运行。
 
-不等待日频、周频或月频的自然触发次数。每个 cadence 至少人工触发一次真实 installed systemd one-shot；其
-命令、WorkingDirectory、EnvironmentFiles、运行用户和 Runtime Profile 必须与 timer 触发完全相同。service
-成功退出、唯一 `scheduled_live` run、业务键唯一、old 无新 run、Dashboard 与 journal 相互证明同一次执行，
-才可关闭该 wave 的模拟验证；任一失败立即 rollback。
+不等待日频、周频或月频的自然触发次数。每个 cadence 的真实 installed systemd one-shot 控制面至少验收一次；
+命令、WorkingDirectory、EnvironmentFiles、运行用户和 Runtime Profile 必须与 timer 触发完全相同。该次
+service 成功退出、唯一 `scheduled_live` run、业务键唯一、old 无新 run、Dashboard 与 journal 相互证明。
+
+**ECS 后续纯方案批次复用规则（2026-09-09，沿用用户“模拟验证即可”的授权）**：已验证 cadence 的执行代码、
+日期/输入/状态协议、repository、Runtime Profile 与 installed unit/环境参数均未改变时，复用已经通过的
+控制面证据，不为每个新算法再次启动整套日频方案。每批仍独立完成完整等价、正式回测、真实环境下的当日
+predict 性能/状态验证、fresh preflight、原子切换、全区间 gray 与数据库/Dashboard/唯一 writer 读回。
+不再人工触发时，gray 上界用下一自然目标；不把模拟或 gray 记作该 successor 已发生 `scheduled_live`。
+复用依据及未变执行边界只记入本迁移 Markdown 和现有证据，不增加表、长期框架或第二套调度入口。
+若相关执行边界改变，或此前控制面证据不成立，则重新做受影响 cadence 的真实入口验收；不能套用复用规则。
+W2 已启动的整套入口仍须正常完成并验收，不中途取消。此规则不放宽 Mac3 的独立晋级授权或验收。
 
 ### 5.5 Rollback
 
@@ -2127,8 +2179,8 @@ plan SHA，不覆盖原始 generation、snapshot 或结果摘要。
 ### 6.4 数据库与控制面
 
 切换前后核对 old/new Registry/version/hash、持久化 backtest evidence、旧事实 count/date/direction 摘要、
-successor 唯一键、`run_id/backtest_run_id` XOR、gray/backtest 区间、Actual 水位、其他 active 集合、人工触发的
-真实 one-shot run、Dashboard 和 timer/journal。任何非计划变化都使 wave 失败。
+successor 唯一键、`run_id/backtest_run_id` XOR、gray/backtest 区间、Actual 水位、其他 active 集合、Dashboard
+和 timer；真实 one-shot run/journal 按5.4节完成本次验证或核对可复用证据。任何非计划变化都使 wave 失败。
 
 临时迁移事务已在本机回环 MySQL 8 的随机高熵隔离 schema 中通过：真实覆盖 `GET_LOCK`、
 `FOR UPDATE`、`CAST(... AS JSON)`、`ON DUPLICATE KEY UPDATE`、MySQL affected-row 语义、
@@ -2169,8 +2221,8 @@ confidence。得到独立生产授权并验证可恢复快照后，新增并只�
 
 ## 9. 完成定义
 
-当前 ECS-only 阶段完成条件：W1-W3 的 21 个 successor target 在 ECS 完成受控替换、灰度、真实 one-shot
-模拟和回滚验收；Mac3 版本、业务库、调度及域名保持原状。以下为未来全项目完成定义，不是本阶段继续操作 Mac3
+当前 ECS-only 阶段完成条件：W1-W3 的 21 个 successor target 在 ECS 完成受控替换、灰度、当日预测模拟、
+5.4节定义的控制面验证或证据复用，以及回滚验收；Mac3 版本、业务库、调度及域名保持原状。以下为未来全项目完成定义，不是本阶段继续操作 Mac3
 或删除其仍在使用的 Native 路径的授权。
 
 必须同时满足：W1-W3 的 21 个 successor target 全部通过合同/等价/性能并在 ECS 接管；同一 archive 晋级
