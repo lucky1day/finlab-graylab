@@ -2388,14 +2388,7 @@ Native run；Native 可执行路径与临时迁移工具已删除；全量、架
 恢复和单 Writer 验收通过；旧 Liwei publisher/consumer cache wave 已删除且通用 Blackbox state 不引用 Native；
 025 已删除两个 confidence 列；Dashboard、Actuals、其他 Blackbox 和调度控制面无非计划变化。
 
-当前全局状态仍为 `IN_PROGRESS`。ECS 基线已经重新只读核验；W3A 的 `cons_sda` 已通过离线 conformance，
-同 wave 的 `full_oos` 已完成 5.2.1 A0/A1 与 A2c 完整本地离线冷/热等价、每日推进及真实 generation 复用验证。
-平台状态扩展已通过本地实现测试、独立审查和 full-OOS executor 探针；ECS 隔离预热、十日、重试已通过对应检查，
-旧 100 条批量在 600 秒硬限超时；用户调整离线预算后，ECS 完整冷333条、Mac同输入参考比较与
-同 Linux Native 独立333条等价均已通过，满足用户简化后的算法等价验收；额外矩阵已取消，仍待正式入库与切换验收。
-full-OOS 两文件已提交并以不可变包安装至 ECS 私有验证目录，保持 paused/draft、部署范围为空；
-现已与同批 cons-sda 一起完成 ECS 正式持久化回测、受控原件复用及 receipt 与真实正式事实的关联读回；
-生产增量预热与受控切换仍待完成，W3A 尚未切换，不能宣布整体闭环。
-W2、W3B-D 也尚未完成新预算下各自的离线和每日验收，须逐方案分类，不能外推当前试点通过。W4 的
-Mac3-only binary-bundle 架构已经获得确认，但必须等 W1-W3 晋级 Mac3 后实施；不能用旧 adapter、未纳入
-manifest 的二进制、旧水位、旧 Native cache 或文档声明冒充闭环。
+当前全局状态仍为 `IN_PROGRESS`，各批实际进度及证据以本文顶部按时间记录的执行状态为准。
+ECS 已闭环批次不因后续方案的差异诊断而重复执行；未通过等价与性能的候选不得外推为已完成。
+W4 的 Mac3-only binary-bundle 架构已获确认，但当前 ECS-only 阶段不操作 Mac3；不能用旧 adapter、
+未纳入 manifest 的二进制、旧水位、旧 Native cache 或文档声明冒充闭环。
