@@ -2,7 +2,20 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_NATIVE_REFERENCE_RESOURCE_ADJUSTMENT; W3B_10Y_CONS_DRAFT_READY_NOT_ADMITTED; W3C_D_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_FOUR_WORKER_COMPARISON_RUNNING; W3B_10Y_CONS_DRAFT_UNDER_REVIEW; W3C_D_PENDING; W4_MAC3_PAUSED`
+
+**W2 四 worker 对照进行中（2026-09-09 10:19 CST）**：
+
+- 候选 `ca39a044c6403ab874ea22d49c154b02de95f7e9` 仅预安装，archive SHA
+  `a5e677f7b365707324f2cbda08930118a2a6a9afb3b5731ea78e935a381c2f95`，current8eb2/previous3162 不变。
+  唯一目录 `/opt/bond-factor-lab/incoming/w2-four-worker-20260909.rpZUXS`，控制 PID953168、首 Native
+  PGID953180、nice10；started.json 已生成，5Y Native 正在计算。不是 W2 等价通过或切换完成。
+- 独立复审确认 worker 8→4 仅改变参考并发：ordered pool.map、每模型 n_jobs=1 和固定 seed 保持不变。
+  私有复制/缓存隔离函数 AST 与已经真实 JIT 验证的实现相同，不重复该探针。相关 85 测试再次通过。
+- 先前两个目录的失败记录保留；不得再启动旧 driver。完成/失败按本目录 complete.json/failure.json 和
+  真实进程判断，不凭短暂没有 stdout 或过期“运行中”文案判断。后续正式回测和切换等待当前全量零差异结果。
+- W3B 两文件草稿独立审查已开始，发现“辅助7Y当月全缺行”的潜在保真差异，正在用无模型拟合样本确认并
+  修复；草稿尚未批准入库，不把静态检查通过当作等价通过。
 
 **W2 参考并发修正与 W3B 草稿（2026-09-09 10:13 CST）**：
 
