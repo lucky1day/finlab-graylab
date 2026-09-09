@@ -2,7 +2,31 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_FOUR_WORKER_COMPARISON_RUNNING; W3B_10Y_CONS_DRAFT_UNDER_REVIEW; W3C_D_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_FOUR_WORKER_COMPARISON_RUNNING; W3B_10Y01_DRAFT_REVIEW_PASSED; W3B_10Y02_STATE_DRAFT_UNDER_REVIEW; W3C_D_PENDING; W4_MAC3_PAUSED`
+
+**并行转换与下一步执行准备（2026-09-09 10:52 CST）**：
+
+- W2 唯一四 worker 对照仍在计算首个 5Y Native 参考：控制 PID953168、PGID953180 存活，四个 worker
+  各接近一个 CPU 核，进程组 RSS 约 2.49 GiB。尚无完整 Output、successor execution、失败或成功凭据。
+  这是一次性全历史拟合，不是每日单点耗时；不因 stdout 暂无刷新重启，也不增加重复验证矩阵。
+- 后续正式 Gate 的单方案包装已完成独立审查并上传本轮 incoming，尚未执行。文件 `run_formal.py` SHA
+  `2927cc63306d47dceebc59dfe97aa8f55a7643521f7faf5e7d5834512dea82dd`；仅在独立维护进程内收紧现有
+  Harness Profile 至 4 GiB/最多 8 线程，原 Gate 负责算法、校验、操作审计和 repository 持久化。
+  必须先取得两个方案完整零差异凭据，再逐方案执行一次正式 Gate；正式证据绑定自身实际输入，不强求与
+  算法对照 generation 相同。已有任何目标 backtest 或执行标记先人工核查，不自动重试。
+- W3B 10Y01 月度 PIT 两文件草稿已修复辅助 7Y 缺当前行、prior 短历史两项边界，独立复审通过。
+  Python SHA `8de00b60b3a64d471d4803bb7fc55e2bffbee064aa56138c519e7c8179aeed1c`，Metadata SHA
+  `84b6f16828b0d4ab9d8ea7812f2d40f8d114af820ec79ad743f03b4281bd2361`。只读交付校验及无拟合样本通过，
+  尚未证明真实等价/性能，未 Intake、部署或入库。
+- W3B 10Y02 源码实际为连续 2024 年至 cutoff 的 full-OOS，不能套用前一方案的月度 PIT 优化。
+  已沿用 W3A 私有增量状态协议形成独立两文件草稿，分别维护 10Y/7Y 日期、特征摘要和 Phase-A 结果，
+  各族只重算变化后缀；无新增平台缓存框架、持久模型或跨方案依赖。Python SHA
+  `a1fafbfe8c11866cc32a9b446874810bcc0fa0d0084115fa6a8ea8e9dbbf4992`，Metadata SHA
+  `f9a04607e978c386312bf351c5443144e170fb2b0abb31d288239e1286094b6f`。合成状态读回/推进检查通过，
+  已交独立审查；实际模型拟合为零，不能据此宣布冷/热等价或每日性能通过。
+- 两份草稿仅在 ignored `outputs/native-migration-w3b-10y01-cons-draft/` 与
+  `outputs/native-migration-w3b-10y02-cons-draft/`；第三个 W3B 方案等待状态实现审查结论后复用。
+  ECS current/previous、Backend、所有原 timer 不变；Mac3、W4 和 DDL 没有操作。
 
 **W2 四 worker 对照进行中（2026-09-09 10:19 CST）**：
 
