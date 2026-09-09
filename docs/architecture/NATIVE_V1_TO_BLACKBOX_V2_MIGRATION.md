@@ -2,7 +2,22 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_REAL_APPEND_PERFORMANCE_AND_STATELESS_EQUIVALENCE_PASSED_NATIVE_REFERENCE_RUNNING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_REAL_APPEND_PASSED_NATIVE_REFERENCE_STOPPED_AT_MAINTENANCE_DEADLINE; W4_MAC3_PAUSED`
+
+**17:45维护截止生效，保留已通过阶段（2026-09-09 17:47 CST）**：
+
+- Native参考被原监督器于17:45:00.778终止；本阶段开始时离维护截止仅余6272.503秒，实际6272.695秒。
+  这是维护窗口收紧后的超时，不能写成7200秒算法性能失败，更不能写成日期/方向不一致。
+  controller1005560和算法组1028846均已退出，失败后的绑定完整性复核无异常。
+- `native-execution.json` SHA `403e014173301f1f0c994dceff658f731aee4889f79b75a0de9e43088df8f12a`，
+  `failure.json` SHA `450c3d000dfa783d6ca21bfd89ead471e4c615689653f5844037ede7e1dcb461`。
+  Native只留下333依赖证明日志，未生成完整或部分native.csv；successor333尚未启动，无全历史等价结论。
+  原件保留于原incoming，取回本地`outputs/releases/w3b-state-20260909/native-reference-stopped/`。
+- 已通过的cold_init、warm_append17.159秒及今日stateless五字段真值不重跑，不重新初始化状态。
+  后续只处理未完成Native参考及successor333，先只读检查全grid/末行修正中的冗余计算，
+  在充足且避开原调度的窗口执行；不改失败原件、不加自动重试、不用候选结果充当Native真值。
+- current仍a6ffe、Backend仍PID643451；18:00月频timer保持active，月频service尚未触发。
+  本轮未Intake/激活/业务写库/发布生产state，Mac3与域名未操作；此时不启动新的重计算。
 
 **W3B 首方案实际新增日17.159秒、当天冷/热一致（2026-09-09 16:08 CST）**：
 
