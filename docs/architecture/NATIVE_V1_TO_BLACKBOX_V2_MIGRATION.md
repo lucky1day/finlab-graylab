@@ -4,6 +4,24 @@
 
 **执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FULL333_DIRECTION_MISMATCH_STOPPED; W4_MAC3_PAUSED`
 
+**冻结输入证实周投影错误，最小修复准备（2026-09-09 23:00 CST）**：
+
+- 主agent只读提取原Native/candidate的真实alignment函数，在原五文件上执行零拟合比较：
+  feature2025-01-02共3507个daily行、10个周因子；Native有效单元22789，candidate基础投影有效单元0，
+  其中22779个差异位于历史行。日历包含周日（202451末日12-29、202501末日01-05），而实际daily
+  每周末行通常为周五。candidate要求两者日期相等，错误丢弃了历史周数据；逐Request末行override不能补回历史。
+- 最小修复恢复Native“传入daily的每周最后一行”语义，删除`week_end_by_id`过滤/参数及两处calendar
+  最大日期构造；保留原周ID映射、逐Request末行override和状态特征后缀重算。不增加另一份未来daily
+  周末映射或封周机制，不改变模型参数/训练/最终控制器。改动仅在新的ignored weeklyfix草稿，原件不覆盖。
+- 同一冻结输入的修复替身零拟合验证：Jan2 Request所在batch截止Jan17，恢复源alignment后，
+  batch前3507行20个周特征加该Request单行override，与原Native Jan2完整周特征矩阵逐值一致。
+  这已证明输入构造缺陷及其定点修复，不代表所有22个方向差异已解释或完整算法等价通过。
+- 候选脚本身份与训练输入均会改变，旧6db状态不可复用；旧5473秒初始化/17秒追加/163秒无状态及
+  6538秒完整回测只保留为旧错误字节记录，不能给修复版本验收。必要的新版本初始化/追加验证与重复旧版
+  验证有别；不手改state header。独立Native333原件继续有效，无需重算。
+- 后续顺序：新两文件最小差异独立审查→首差异Request的输入/结果定点验证→修复版一次完整333对照，
+  仍比较已保留Native原件。确认等价后才进行修复版本的状态/性能验收；23:45 Actuals及Mac3不操作。
+
 **完整333条出现22处方向差异，停止本批（2026-09-09 22:36 CST）**：
 
 - 两个算法进程均正常退出：Native5735.966928秒、successor6537.703946秒，均低于7200秒，
