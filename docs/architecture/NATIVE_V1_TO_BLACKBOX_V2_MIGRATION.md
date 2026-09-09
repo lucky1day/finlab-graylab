@@ -2,7 +2,20 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_COMPARISON_RUNNING; W3B_10Y_CONS_DRAFT_IN_PROGRESS; W3C_D_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_NATIVE_REFERENCE_RESOURCE_ADJUSTMENT; W3B_10Y_CONS_DRAFT_READY_NOT_ADMITTED; W3C_D_PENDING; W4_MAC3_PAUSED`
+
+**W2 参考并发修正与 W3B 草稿（2026-09-09 10:13 CST）**：
+
+- 私有源码隔离生效，但 8-worker Native 参考在第三个月训练时被 4 GiB 进程组 RSS 保护终止：
+  10:12:06 采样 `4344676352 > 4294967296` bytes。控制进程和 PGID951373 已退出，failure.json 保留。
+  未产生完整 Native Output、successor 计算、receipt 或业务事实；不把此状态报告为仍在运行。
+- 只把临时 V28 comparator 的参考 worker 从 8 降至 ECS 的 4 vCPU；原 core、265 配置、seed、月份窗口、
+  Request 和 Result 比较不变，保留 7200 秒/4 GiB 上限。原 core 使用有序 pool.map、每模型 n_jobs=1 和
+  显式 seed；经独立审查后才运行新的候选，不盲目重启旧 driver、不放宽资源限制。
+- W3B 10Y01 cons-SAY 两文件草稿已经完成，在 `outputs/native-migration-w3b-10y01-cons-draft/`；
+  Metadata/Intake 只读检查、目标 Python 语法/import、源关键配置及无拟合控制器检查通过。
+  10Y 与 V55_7Y 两个 Phase-A 族、不同 seed、streak 和训练不足分支分别保留；尚未宣称等价/性能通过，
+  未进入 canonical Intake、部署矩阵或数据库。完整说明及 hash 见该目录 MIGRATION_NOTES.md。
 
 **W2 修正后离线对照已启动（2026-09-09 10:07 CST）**：
 

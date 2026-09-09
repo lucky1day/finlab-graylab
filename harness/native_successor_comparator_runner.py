@@ -250,7 +250,8 @@ def _run_v28(
             window_start=f"{month}-01",
             window_end=feature_end,
             require_labels=False,
-            n_workers=8,
+            # ECS 为 4 vCPU；8 个独立 worker 会重复持有矩阵并突破 4 GiB。
+            n_workers=4,
         )
         if not isinstance(details, pd.DataFrame) or details.empty:
             raise RuntimeError(f"V28 Native core returned no rows for {month}")

@@ -728,7 +728,7 @@ def _execute_controlled_comparison(
                 "PYTHONDONTWRITEBYTECODE": "1",
                 "NUMBA_CACHE_DIR": str(native_output.parent / "numba-cache"),
                 "MPLCONFIGDIR": str(native_output.parent / "matplotlib"),
-                # Native V28 已有 8 个 worker，各数值库仅使用一个线程。
+                # Native V28 使用 4 个 worker，各数值库仅使用一个线程。
                 **{key: "1" for key in (
                     "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
                     "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS",

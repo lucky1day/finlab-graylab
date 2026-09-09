@@ -309,7 +309,7 @@ def test_v28_comparator_batches_by_month_cutoff_and_preserves_request_order(
             call["monthly_df"].columns
         )
         assert call["require_labels"] is False
-        assert call["n_workers"] == 8
+        assert call["n_workers"] == 4
     bad_request = {**june, "weekly_cutoff_key": "202621"}
     requests_path = tmp_path / "bad-requests.csv"
     with requests_path.open("w", encoding="utf-8", newline="") as handle:
