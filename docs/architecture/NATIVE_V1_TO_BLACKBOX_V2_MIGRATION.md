@@ -4,6 +4,23 @@
 
 **执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_BOTH_333_EXACT_MATCH_5Y_FORMAL_GATE_RUNNING; W3B_W3C_W3D_EIGHT_DRAFTS_REVIEW_PASSED; W4_MAC3_PAUSED`
 
+**切换包预安装与参考工具复审（2026-09-09 12:25 CST）**：
+
+- W2真实receipt与W3A原件重绑定已独立审查通过，随`7ce0412`提交；没有重跑算法或改写输入身份。
+- `a6ffe3a6b477e2fee67489c43c79ab767433acbb`只进一步移除两个旧V28的ECS部署target，保留全部Mac3
+  成员及其他方案；同步既有部署合同中两个Mac3-only预期，不新增测试。相关23测试、87 subtests通过，
+  矩阵独立审查与原W2原子映射校验通过。方案代码、config、环境与校验策略不变，不因此重做正式Gate。
+- clean commit确定性archive连续构建两次，archive与manifest字节相同；archive SHA
+  `4775c8070b74d18d099e0496e2375a0627819647c77eb34e0370834fc2ce12c5`。
+  已经原installer预安装至ECS，明确`activated=false`。current8eb2/previous3162及Backend原PID643451
+  读回未变，尚未具备切换结论；必须先完成两方案正式Gate、当天模拟及fresh控制面前置条件。
+- 12:25读回5Y正式算法PGID982127运行10分52秒、RSS约893MiB，仍无complete/failure；7Y正式Gate未开始。
+  不重复dispatch、不抢训练资源。原timer保持运行，最近触发仍为18:00 monthly。
+- W3B专用参考草稿唯一审查问题已修复：直接编译并执行hash校验过的同一份源码bytes，私有package不搜索
+  磁盘子模块，避免旧pyc绕过源码身份。定点复审通过，其余计算与证明代码未变；Python SHA
+  `d3fe92f44fe18ec58cccb8a4660aaca3d3a76f106f52f2a1adf18aedc578d54b`。
+  该草稿可以进入受控离线验证，尚未实际Native导入、拟合或等价/性能验证；不纳入当前W2候选。
+
 **W2 完整算法对照通过、正式回测启动（2026-09-09 12:15 CST）**：
 
 - 唯一四段对照于12:12:30正常完成，`complete.json`确认两个333条，五字段全部零差异；不再重跑。
