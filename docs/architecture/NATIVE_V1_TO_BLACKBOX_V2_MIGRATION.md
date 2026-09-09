@@ -4,6 +4,18 @@
 
 **执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FULL333_DIRECTION_MISMATCH_STOPPED; W4_MAC3_PAUSED`
 
+**修复版首差异单点已启动（2026-09-09 23:53 CST）**：
+
+- Actuals自然23:45:24启动、23:45:54状态0退出；23:51五one-shot均inactive/MainPID0，
+  两张run表只读查询running均0，Backend仍PID643451、current仍a6ffe。
+  下次DataBridge06:30、daily07:03、Actuals08:30，未变更任何service/timer。
+- 已审`fZmImh/run_first_difference.py`于23:52:12生成started证据并开始唯一修复candidate
+  Jan2单点验证；controller1109669、算法PGID1109691。绑定原五文件、Request及Native333，
+  无Native重训、状态推进或业务写入。维护硬截止09-10 06:00，单算法仍7200秒/4GiB/8线程。
+- 后续`run_fixed_full_comparison.py`独立审查完成；唯一started证据读取竞态已按同bytes解析/hash
+  修复并复核，SHA `813eaebe2520e5e55e5297cf8e65836a73b7479eaab04efcc08f2b9a24ff29f0`。
+  当前单点报告批准SHA仍为None，故不能启动333；须真实单点通过后再锁定，不自动放行。
+
 **周投影修复审查通过，单点验证包就绪（2026-09-09 23:25 CST）**：
 
 - 新两文件Python SHA `93798b4183fab8e02f974c72a4cf7602df9b410227fbc909608c74fe6ba1e9ce`，
