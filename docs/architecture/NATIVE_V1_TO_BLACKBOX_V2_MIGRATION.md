@@ -4,6 +4,21 @@
 
 **执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FULL333_DIRECTION_MISMATCH_STOPPED; W4_MAC3_PAUSED`
 
+**修复版首差异通过，完整333对照已启动（2026-09-10 00:10 CST）**：
+
+- Jan2单点于09-09 23:56:56通过，进程耗时281.995447秒，方向0及五字段与保留Native首行完全一致。
+  这是离线重算，不是每日warm性能验收；主agent取回原始Output/报告/started/execution并独立对照Native CSV，
+  确认stdout为空、退出0、预算及输入身份正确。单点报告SHA
+  `a80ab80183404cd1a417237bc531a63aaff9767cb9e452da301a32beb20f2618`，Output SHA
+  `f4d171c91fc37bd737a7a0e40ec61d699eb91a62fd99377ba62dd9704e44ab76`，execution SHA
+  `d932c3917e16a8e46b38079589cad8017c1eaef0069342188820656981e68262`。
+- 已审full监督器仅锁定上述单点报告hash，无其他差异；最终SHA
+  `c5ffed5d0c0be57e4fa71f2d3715ab1f0fc477057cdf6c26fd6b127c96da48c2`，上传后远端hash相同。
+  再次只读确认五one-shot inactive/MainPID0、两run表running0、current仍a6ffe、单点进程已退出。
+- `fZmImh/full-comparison-execution/started.json`于00:09:21生成，controller1111437，
+  只执行修复candidate一次333 backtest，复用原Native333，不执行predict/state/Native或业务写入。
+  单次7200秒/4GiB/8线程及06:00维护截止保持。此时尚无全量结果，不能宣称22条差异全部消除。
+
 **修复版首差异单点已启动（2026-09-09 23:53 CST）**：
 
 - Actuals自然23:45:24启动、23:45:54状态0退出；23:51五one-shot均inactive/MainPID0，
