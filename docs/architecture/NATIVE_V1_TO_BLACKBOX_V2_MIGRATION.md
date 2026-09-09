@@ -2,7 +2,30 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_5Y_333_EXACT_MATCH_7Y_NATIVE_RUNNING; W3B_W3C_W3D_EIGHT_DRAFTS_REVIEW_PASSED; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_BOTH_333_EXACT_MATCH_5Y_FORMAL_GATE_RUNNING; W3B_W3C_W3D_EIGHT_DRAFTS_REVIEW_PASSED; W4_MAC3_PAUSED`
+
+**W2 完整算法对照通过、正式回测启动（2026-09-09 12:15 CST）**：
+
+- 唯一四段对照于12:12:30正常完成，`complete.json`确认两个333条，五字段全部零差异；不再重跑。
+  W2原始receipt SHA `337c6d9483e00721cefb1c43cedf647a4def04bc1313584371cbdc143dd7df1e`，
+  绑定ca39候选、当前工具 `652d901d0678deb85e7c70d22cb02ccc3ea071fa383090568b7eb313d366949d`、
+  `full-20260909-063339-4688e3c69f8d` 五文件与各自完整Request。5Y两方2432.991/1743.958秒，
+  7Y两方1573.871/1084.233秒；7Y两份原始CSV SHA均为
+  `47a6f9b8037a271f34ffa5406d37f629d55736196329a9607fe65c56d8dd3b6b`。
+  原始CSV字节hash与receipt规范JSON结果hash不同是编码层次不同，不混为一个摘要。
+- 原始结果与执行日志已取回ignored `outputs/releases/w2-offline-20260909/four-worker-evidence/`。
+  当前canonical W2 receipt取自上述真实输出；W3A只更新已通过原件的工具绑定与生成时间，target事实不变。
+  主agent已用现有标准结果解析器独立复核两方333条按序相同、规范结果hash、当前old/new codehash；
+  不执行算法、不更改任何receipt输入身份。候选凭据变更另做独立审查。
+- 12:14启动已审查且字节未变的 `run_formal.py --scheme-id daily_5y_2_v28_bbv2`，控制Python
+  PID982053、算法PGID982127，nice10。完整前置检查通过，12:15已产生`started.json`并实际训练；
+  使用原Harness持久化Gate，单次7200秒/4GiB/最多8线程。7Y正式Gate尚未开始，必须串行。
+  日志及结果在原W2 incoming的`formal-5y.log`和`formal-daily_5y_2_v28_bbv2/`，已有标记不得自动重试。
+  这一步只建立正式回测证据，不等于Registry激活或产品事实发布；完成后须读回正式证据和旧事实摘要。
+- 当前全部one-shot空闲后才启动维护，最近原timer触发为18:00 monthly，窗口充足；current8eb2、
+  previous3162、Backend及installed timer均不改变。算法对照与正式入库证据分别绑定各自实际输入。
+- W3B首个专用Native参考草稿已在`outputs/native-migration-w3b-reference-draft/`完成，正在独立审查。
+  它不是新Blackbox交付或长期框架；尚未运行真实Native导入、依赖证明或拟合，不能报告等价/性能通过。
 
 **八个 Liwei 转换草稿完成、W2 首方案完整等价通过（2026-09-09 11:51 CST）**：
 

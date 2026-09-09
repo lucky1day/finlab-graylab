@@ -1,7 +1,7 @@
 {
   "producer": {
-    "comparator_source_sha256": "806e0d97f0c24aad8e397d7e8317c434bc1675b344925bfb26ad6543eba16524",
-    "generated_at": "2026-09-08T06:14:35.894831+00:00",
+    "comparator_source_sha256": "652d901d0678deb85e7c70d22cb02ccc3ea071fa383090568b7eb313d366949d",
+    "generated_at": "2026-09-09T03:11:45.065288+00:00",
     "tool": "native-successor-controlled-comparator",
     "tool_version": "2"
   },
