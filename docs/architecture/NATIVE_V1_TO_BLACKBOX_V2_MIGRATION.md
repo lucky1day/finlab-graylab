@@ -4,6 +4,19 @@
 
 **执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
 
+**W2 最短路径执行修正（2026-09-09）**：
+
+- 算法转换已完成，当前缺口是新 exact code 的 ECS 完整同输入对照与正式入库；不再执行旧 100 条重复矩阵。
+  此前全历史 1800 秒中断不能外推为每日预测慢：既有同输入单点实测 5Y 13.56 秒、7Y 11.97 秒。
+- 临时 comparator 增加可选树外、新建且不可覆盖的证据目录，保留成功 Native/successor 的原始 Output、
+  日志、耗时和输入 hash；successor 失败不再删除已完成 Native 原件。不接受外部成功结果注入，不自动重试。
+  Native 参考复用现有进程组/RSS/超时控制，各 worker 数值线程为 1；successor 单次 Profile 收紧至
+  4 GiB、最多 8 数值线程、7200 秒调用上限，不修改全局 Runtime Profile。各算法退出后复验输入未变。
+- 本次只在不可变候选目录离线执行，不激活候选、不改 Registry/current/timer。新 W2 receipt 写在树外，
+  不调用会在计算结束后因已有 W2.json 而失败的 CLI 包装器。正式 Gate 和原子切换仍为后续步骤。
+- comparator 源码 hash 随执行工具修正变化；候选晋级前须用已批准的 W3A 原件只读重生成其工具绑定凭据，
+  不重新运行 W3A 算法、正式回测、初始化或灰度。旧 immutable release 与历史 receipt 不改写。
+
 **W3A ECS 本批闭环（2026-09-09 09:27 CST）**：
 
 - 唯一installed daily验收Invocation `bc96e8f427fc4885856adc49992832a5`于09:20:38退出0。

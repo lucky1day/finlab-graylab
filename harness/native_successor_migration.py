@@ -10,6 +10,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -372,6 +374,7 @@ def build_native_successor_equivalence_receipt(
     project_root: Path,
     wave: NativeSuccessorWave,
     comparison_bundle_path: Path,
+    evidence_dir: Path | None = None,
 ) -> dict[str, object]:
     """从同输入标准结果生成可复验的 Native/successor 等价凭据。"""
     bundle_path = comparison_bundle_path.resolve(strict=True)
@@ -477,6 +480,8 @@ def build_native_successor_equivalence_receipt(
                 project_root=project_root, target=target,
                 new_config=new_configs[target.new_base_scheme_id],
                 requests_path=requests_path, data_dir=data_dir,
+                **({"evidence_dir": evidence_dir / target.new_base_scheme_id}
+                   if evidence_dir is not None else {}),
             )
         if len(native_rows) != len(successor_rows) or not native_rows:
             raise ValueError("comparison result row counts differ or are empty")
@@ -625,6 +630,7 @@ def _execute_controlled_comparison(
     new_config: SchemeConfig,
     requests_path: Path,
     data_dir: Path,
+    evidence_dir: Path | None = None,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     """用固定 old/new 命令执行同一 Request artifact，拒绝外部结果注入。"""
     if not requests_path.is_file() or requests_path.stat().st_size > 64 * 1024 * 1024:
@@ -633,8 +639,39 @@ def _execute_controlled_comparison(
         raise ValueError("successor delivery script is missing")
     native_env = str(os.environ.get("BOND_ALGO_CONDA_ENV") or "forecast_env").strip()
     conda = _conda_executable()
-    with tempfile.TemporaryDirectory(prefix="bfl-native-successor-compare-") as raw_tmp:
+    from scheduler.blackbox_v2_runner import (
+        DEFAULT_RUNTIME_PROFILE, _run_process, execute_blackbox_cli,
+    )
+
+    profile = replace(
+        DEFAULT_RUNTIME_PROFILE,
+        memory_limit_bytes=min(DEFAULT_RUNTIME_PROFILE.memory_limit_bytes, 4 * 1024**3),
+        cpu_threads=min(DEFAULT_RUNTIME_PROFILE.cpu_threads, 8),
+    )
+    if evidence_dir is not None:
+        if any(path.is_symlink() for path in (evidence_dir, *evidence_dir.parents)):
+            raise ValueError("comparison evidence must not contain symlinks")
+        evidence_dir = evidence_dir.resolve()
+        if evidence_dir.is_relative_to(project_root.resolve()):
+            raise ValueError("comparison evidence must be outside the immutable source tree")
+        evidence_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
+    context = (
+        nullcontext(str(evidence_dir)) if evidence_dir is not None
+        else tempfile.TemporaryDirectory(prefix="bfl-native-successor-compare-")
+    )
+    with context as raw_tmp:
         temp_root = Path(raw_tmp)
+        input_hashes = {str(path): _sha256_file(path) for path in (
+            requests_path, *(data_dir / name for name in sorted(_DATABRIDGE_FILES))
+        )}
+        (temp_root / "input-sha256.json").write_text(
+            json.dumps(input_hashes, sort_keys=True, indent=2), encoding="utf-8",
+        )
+
+        def check_inputs() -> None:
+            if any(_sha256_file(Path(path)) != digest for path, digest in input_hashes.items()):
+                raise ValueError("comparison input changed during algorithm execution")
+
         native_output = temp_root / "native" / "result.csv"
         native_output.parent.mkdir(mode=0o700)
         successor_output = temp_root / "successor" / "result.csv"
@@ -660,37 +697,58 @@ def _execute_controlled_comparison(
             "--output",
             str(native_output),
         ]
-        completed = subprocess.run(
+        started = time.monotonic()
+        completed = _run_process(
             native_command,
-            cwd=project_root,
-            env={**os.environ, "PYTHONNOUSERSITE": "1"},
-            check=False,
-            capture_output=True,
-            text=True,
+            cwd=native_output.parent,
+            env={
+                **os.environ, "PYTHONNOUSERSITE": "1", "PYTHONPATH": str(project_root),
+                "PYTHONDONTWRITEBYTECODE": "1",
+                # Native V28 已有 8 个 worker，各数值库仅使用一个线程。
+                **{key: "1" for key in (
+                    "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+                    "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS",
+                )},
+            },
             timeout=_NATIVE_COMPARISON_TIMEOUT_SEC,
+            memory_limit_bytes=profile.memory_limit_bytes,
+            max_capture_bytes=profile.max_log_bytes,
+            max_run_dir_bytes=profile.max_run_dir_bytes,
+            max_run_dir_entries=profile.max_run_dir_entries,
         )
+        (temp_root / "native.stdout.log").write_text(completed.stdout, encoding="utf-8")
+        (temp_root / "native.stderr.log").write_text(completed.stderr, encoding="utf-8")
+        (temp_root / "native-execution.json").write_text(json.dumps({
+            "seconds": time.monotonic() - started, "returncode": completed.returncode,
+            "memory_limit_bytes": profile.memory_limit_bytes,
+        }), encoding="utf-8")
         if completed.returncode != 0:
             stderr = (completed.stderr or "")[-2000:]
             raise RuntimeError(f"controlled Native comparison failed: {stderr}")
-        from scheduler.blackbox_v2_runner import (
-            DEFAULT_RUNTIME_PROFILE,
-            execute_blackbox_cli,
-        )
+        check_inputs()
 
         state_kwargs = (
             {"state_output": successor_output.parent / "state.bin"}
             if getattr(new_config, "incremental_state", False) else {}
         )
-        execute_blackbox_cli(
+        started = time.monotonic()
+        completed = execute_blackbox_cli(
             script_path=new_config.delivery_script,
             mode="backtest",
             input_path=requests_path,
             data_dir=data_dir,
             output_path=successor_output,
-            profile=DEFAULT_RUNTIME_PROFILE,
+            profile=profile,
             timeout_sec=_SUCCESSOR_COMPARISON_TIMEOUT_SEC,
             **state_kwargs,
         )
+        check_inputs()
+        (temp_root / "successor.stdout.log").write_text(completed.stdout, encoding="utf-8")
+        (temp_root / "successor.stderr.log").write_text(completed.stderr, encoding="utf-8")
+        (temp_root / "successor-execution.json").write_text(json.dumps({
+            "seconds": time.monotonic() - started, "returncode": completed.returncode,
+            "memory_limit_bytes": profile.memory_limit_bytes, "cpu_threads": profile.cpu_threads,
+        }), encoding="utf-8")
         return (
             _load_standard_result_rows(native_output, label="Native"),
             _load_standard_result_rows(successor_output, label="successor"),

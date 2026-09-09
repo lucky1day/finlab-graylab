@@ -570,13 +570,19 @@ def test_controlled_comparator_rejects_direction_difference(tmp_path: Path) -> N
         )
 
 
+@pytest.mark.parametrize("outcome", ["success", "successor_failure", "input_change"])
 def test_controlled_comparator_uses_offline_safety_budget(
-    tmp_path: Path,
+    tmp_path: Path, outcome: str,
 ) -> None:
     requests_path = tmp_path / "requests.csv"
     requests_path.write_text("request_id\nrequest-1\n", encoding="utf-8")
     data_dir = tmp_path / "data"
     data_dir.mkdir()
+    for filename in (
+        "daily_output.csv", "weekly_output.csv", "monthly_output.csv",
+        "api_wind_date.csv", "factor_catalog.csv",
+    ):
+        (data_dir / filename).write_text("fixture\n", encoding="utf-8")
     result_fields = (
         "request_id,predict_date,feature_date,target_date,"
         "predicted_direction\n"
@@ -587,9 +593,16 @@ def test_controlled_comparator_uses_offline_safety_budget(
         output = Path(command[command.index("--output") + 1])
         output.write_text(result_fields + result_row, encoding="utf-8")
         assert kwargs["timeout"] == 7200
-        return SimpleNamespace(returncode=0, stderr="")
+        assert kwargs["memory_limit_bytes"] == 4 * 1024**3
+        assert all(kwargs["env"][key] == "1" for key in (
+            "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+            "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS",
+        ))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    def run_successor(**kwargs: object) -> None:
+    def run_successor(**kwargs: object) -> SimpleNamespace:
+        if outcome == "successor_failure":
+            raise RuntimeError("controlled successor failure")
         output = Path(kwargs["output_path"])
         output.parent.mkdir()
         output.write_text(
@@ -597,6 +610,11 @@ def test_controlled_comparator_uses_offline_safety_budget(
             encoding="utf-8",
         )
         assert kwargs["timeout_sec"] == 7200
+        assert kwargs["profile"].memory_limit_bytes == 4 * 1024**3
+        assert kwargs["profile"].cpu_threads <= 8
+        if outcome == "input_change":
+            requests_path.write_text("changed\n", encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     target = NativeSuccessorTarget(
         old_base_scheme_id="old",
@@ -613,7 +631,7 @@ def test_controlled_comparator_uses_offline_safety_budget(
             return_value=Path("/opt/conda/bin/conda"),
         ),
         patch(
-            "harness.native_successor_migration.subprocess.run",
+            "scheduler.blackbox_v2_runner._run_process",
             side_effect=run_native,
         ),
         patch(
@@ -621,15 +639,27 @@ def test_controlled_comparator_uses_offline_safety_budget(
             side_effect=run_successor,
         ),
     ):
-        native_rows, successor_rows = _execute_controlled_comparison(
-            project_root=tmp_path,
+        arguments = dict(
+            project_root=tmp_path / "source",
             target=target,
             new_config=SimpleNamespace(delivery_script=tmp_path / "predict.py"),
             requests_path=requests_path,
             data_dir=data_dir,
+            evidence_dir=tmp_path / "evidence",
         )
-
-    assert native_rows == successor_rows
+        if outcome == "success":
+            native_rows, successor_rows = _execute_controlled_comparison(**arguments)
+            assert native_rows == successor_rows
+        else:
+            with pytest.raises((RuntimeError, ValueError), match=(
+                "controlled successor failure" if outcome == "successor_failure"
+                else "comparison input changed"
+            )):
+                _execute_controlled_comparison(**arguments)
+        assert (tmp_path / "evidence/native/result.csv").read_text() == result_fields + result_row
+        assert (tmp_path / "evidence/native-execution.json").is_file()
+        with pytest.raises(FileExistsError):
+            _execute_controlled_comparison(**arguments)
 
 
 def test_cutover_matrix_requires_old_removed_and_successor_added(
