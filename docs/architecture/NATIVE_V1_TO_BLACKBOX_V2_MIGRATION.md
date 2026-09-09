@@ -2,7 +2,23 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_STATELESS_DAILY_TIMEOUT; W3B_PRIVATE_STATE_OPTIMIZATION_IN_PROGRESS; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_PRIVATE_STATE_FIRST_CONTROLLED_EXECUTION_STARTED; W4_MAC3_PAUSED`
+
+**W3B 增量候选独立审查通过、开始私有实测（2026-09-09 14:26 CST）**：
+
+- 首方案Python SHA `6db81c1d01c86a1bb9de9e46776e1e8979f9162e60ebb16aa86a13bf75dd9833`，
+  Metadata SHA `4d13cdf08ca795fec593bbe93de9187bb00aae4c24b47b7af80977307e9b5373`；Metadata仅说明及draft版本
+  更新，业务身份/五字段合同不变。只读两文件校验通过，原训练、参数、final/streak及stateless路径AST不变。
+- 复用已有双族NPZ状态及原月度窗口，未新建平台模块或月度重建调度。纯内存真实日期函数检查通过日期追加、
+  跨月、原始修订拒绝、特征后缀重算、7Y缺行及有界非可执行状态；独立审查无Critical/Important。
+  本次只准入2026年初始化与实际新增日、历史333无状态对照，不推广到2024年以前状态域。
+- 临时driver SHA `d15ff4e9927a12d55092eb7968ec0dda2f5def4615d822f6bf46e2df26c12bda`，原独立Native参考
+  SHA `d3fe92f44fe18ec58cccb8a4660aaca3d3a76f106f52f2a1adf18aedc578d54b`；三段请求/状态路由独立复审通过。
+  前一交易日冷初始化→今天实际增量120秒→今天原无状态路径五字段真值，再运行一次Native/新333对照。
+  初始化与无状态参考使用离线7200秒预算，不计入增量日频SLA；任何失败停止后续阶段，不自动重试。
+- 新独占执行目录 `/opt/bond-factor-lab/incoming/w3b-state-20260909.HFFFwd/`，维护PID1005560。
+  上传四文件SHA均读回一致，截止仍为09-09 17:45 CST。状态仅写入本次私有execution，不发布到生产state，
+  不Intake/切换/写业务事实；current a6ffe、Backend原PID643451及18:00月频timer不变。尚无真实性能或等价通过结论。
 
 **W3B 首个日频性能实测停止、定位重复历史训练（2026-09-09 14:04 CST）**：
 
@@ -11,9 +27,11 @@
   完整性复核无异常。没有启动Native参考或完整历史对照，没有Intake、业务写库或发布生产状态。
 - 日志显示10Y历史同期265配置、3 seeds约1.5分钟；当前月11个入选配置很快完成，随后进入7Y历史同期
   265配置、2 seeds时达到上限。瓶颈是每天重复计算不变历史窗口，而不是调度脚本本身。
-- 不放宽每日120秒门槛、不重复运行未修改候选。仅在ignored两文件草稿内复用已有私有增量状态合同，
-  保存可证明历史依赖完全不变的派生结果，当前窗口仍按每条Request精确计算；历史修订/无法复用明确失败。
-  验证改为一次显式私有冷初始化、同Request热预测及五字段一致，随后一次完整旧/新历史对照。
+- 不放宽每日120秒门槛、不重复运行未修改候选。仅在ignored两文件草稿内复用已有双族NPZ私有状态，
+  按日期保存/追加可证明历史依赖不变的Phase A派生结果；月度排名按原窗口切片，当期仍按每条Request
+  精确计算。未新增只能同月复用的JSON状态格式，也不新增每月自动重建；历史修订/无法复用明确失败。
+  实测使用前一交易日Request显式私有冷初始化→今天Request实际增量预测（120秒）→今天无状态原路径
+  作为五字段真值，再进行一次完整旧/新历史对照。不把同Request cache hit当新增日期的性能证明。
   不新增平台状态框架，不触碰已闭环W2、其他Registry、Mac3或调度配置。
 - 原八份草稿的静态审查通过不等于性能或等价通过；首方案状态改动后须重新审查相关差异。
 
