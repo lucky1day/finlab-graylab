@@ -574,6 +574,12 @@ def test_controlled_comparator_rejects_direction_difference(tmp_path: Path) -> N
 def test_controlled_comparator_uses_offline_safety_budget(
     tmp_path: Path, outcome: str,
 ) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    for relative in ("harness", "shared", "schemes/old"):
+        (source / relative).mkdir(parents=True)
+    reference = Path("schemes/old/reference.py")
+    (source / reference).write_text("# unchanged source\n", encoding="utf-8")
     requests_path = tmp_path / "requests.csv"
     requests_path.write_text("request_id\nrequest-1\n", encoding="utf-8")
     data_dir = tmp_path / "data"
@@ -590,6 +596,13 @@ def test_controlled_comparator_uses_offline_safety_budget(
     result_row = "request-1,2026-09-04,2026-09-04,2026-09-11,1\n"
 
     def run_native(command: list[str], **kwargs: object) -> SimpleNamespace:
+        private_source = Path(kwargs["env"]["PYTHONPATH"])
+        assert private_source != source
+        assert (private_source / reference).read_bytes() == (source / reference).read_bytes()
+        native_cache = Path(kwargs["env"]["NUMBA_CACHE_DIR"])
+        assert native_cache.is_relative_to(tmp_path / "evidence/native")
+        native_cache.mkdir()
+        (native_cache / "compiled.nbc").write_bytes(b"compiled")
         output = Path(command[command.index("--output") + 1])
         output.write_text(result_fields + result_row, encoding="utf-8")
         assert kwargs["timeout"] == 7200
@@ -658,6 +671,7 @@ def test_controlled_comparator_uses_offline_safety_budget(
                 _execute_controlled_comparison(**arguments)
         assert (tmp_path / "evidence/native/result.csv").read_text() == result_fields + result_row
         assert (tmp_path / "evidence/native-execution.json").is_file()
+        assert [path for path in source.rglob("*") if path.is_file()] == [source / reference]
         with pytest.raises(FileExistsError):
             _execute_controlled_comparison(**arguments)
 

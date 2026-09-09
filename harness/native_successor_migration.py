@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import socket
 import stat
 import subprocess
@@ -674,6 +675,27 @@ def _execute_controlled_comparison(
 
         native_output = temp_root / "native" / "result.csv"
         native_output.parent.mkdir(mode=0o700)
+        # 旧 core 的 Numba cache=True 不受 -B 控制，参考只能在私有源码副本运行。
+        native_source = native_output.parent / "source"
+        for relative in ("harness", "shared", f"schemes/{target.old_base_scheme_id}"):
+            shutil.copytree(
+                project_root / relative, native_source / relative,
+                symlinks=True, copy_function=shutil.copyfile,
+                ignore=shutil.ignore_patterns("__pycache__"),
+            )
+        if any(path.is_symlink() for path in native_source.rglob("*")):
+            raise ValueError("Native reference source must not contain symlinks")
+        for directory in (native_source, *(path for path in native_source.rglob("*") if path.is_dir())):
+            directory.chmod(0o700)
+        source_hashes = {
+            str(path.relative_to(native_source)): _sha256_file(path)
+            for path in native_source.rglob("*") if path.is_file()
+        }
+        if any(_sha256_file(project_root / path) != digest for path, digest in source_hashes.items()):
+            raise ValueError("Native reference source copy differs from original")
+        (temp_root / "native-source-sha256.json").write_text(
+            json.dumps(source_hashes, sort_keys=True, indent=2), encoding="utf-8",
+        )
         successor_output = temp_root / "successor" / "result.csv"
         native_command = [
             str(conda),
@@ -702,8 +724,10 @@ def _execute_controlled_comparison(
             native_command,
             cwd=native_output.parent,
             env={
-                **os.environ, "PYTHONNOUSERSITE": "1", "PYTHONPATH": str(project_root),
+                **os.environ, "PYTHONNOUSERSITE": "1", "PYTHONPATH": str(native_source),
                 "PYTHONDONTWRITEBYTECODE": "1",
+                "NUMBA_CACHE_DIR": str(native_output.parent / "numba-cache"),
+                "MPLCONFIGDIR": str(native_output.parent / "matplotlib"),
                 # Native V28 已有 8 个 worker，各数值库仅使用一个线程。
                 **{key: "1" for key in (
                     "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
@@ -725,6 +749,11 @@ def _execute_controlled_comparison(
         if completed.returncode != 0:
             stderr = (completed.stderr or "")[-2000:]
             raise RuntimeError(f"controlled Native comparison failed: {stderr}")
+        if source_hashes != {
+            str(path.relative_to(native_source)): _sha256_file(path)
+            for path in native_source.rglob("*") if path.is_file()
+        }:
+            raise ValueError("Native reference source changed during execution")
         check_inputs()
 
         state_kwargs = (

@@ -6,6 +6,12 @@
 
 **W2 最短路径执行修正（2026-09-09）**：
 
+- 09:55 首次离线参考启动后发现旧 core 的 `cache=True` 仍向候选 844e1 源码写 Numba cache；09:58 已停止
+  精确 Native 进程组，未启动 successor，无完整结果、receipt 或业务写入。current8eb2/previous3162 未变。
+  问题是执行隔离遗漏，不是算法差异；旧候选保留在本次 incoming 的 quarantine，原失败记录不删除。
+  修正为仅复制 harness/shared/当前 old scheme 到受配额约束的私有源码目录，显式外置 Numba/Matplotlib
+  cache，运行前后验证源码字节一致；必须先用旧 core 的真实微型 JIT 验证缓存位置和 immutable digest，
+  再启动一次修正后的对照，不通过重复完整训练验证该隔离修复。
 - 算法转换已完成，当前缺口是新 exact code 的 ECS 完整同输入对照与正式入库；不再执行旧 100 条重复矩阵。
   此前全历史 1800 秒中断不能外推为每日预测慢：既有同输入单点实测 5Y 13.56 秒、7Y 11.97 秒。
 - 临时 comparator 增加可选树外、新建且不可覆盖的证据目录，保留成功 Native/successor 的原始 Output、
