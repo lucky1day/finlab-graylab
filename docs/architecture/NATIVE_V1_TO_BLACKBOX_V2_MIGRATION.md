@@ -2,7 +2,24 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_REAL_APPEND_PASSED_REMAINING_OFFLINE_COMPARISON_RUNNING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FULL333_DIRECTION_MISMATCH_STOPPED; W4_MAC3_PAUSED`
+
+**完整333条出现22处方向差异，停止本批（2026-09-09 22:36 CST）**：
+
+- 两个算法进程均正常退出：Native5735.966928秒、successor6537.703946秒，均低于7200秒，
+  4GiB监督未触发。wrapper于22:27:36.902在最终五字段比较时失败，完整性复核无异常；
+  这次不是超时或输入代际不匹配，也不能解释为迁移已通过。
+- 主agent独立读取两份原始CSV：各333行，Request ID/顺序及三个日期全部一致，22行仅方向不同。
+  首差异feature2025-01-02：Native0、successor1；其余分布于2025年1/4/5/6/7/11月，
+  不以调参贴结果，不重算已完整留存的Native参考。
+- successor.csv SHA `0ff86b846d7d37f24a706b5ca83088ece6f98fcc2170a903775ff9e625efa8bb`；
+  successor-execution SHA `a348ed6c347e3c6279bc5fe9d9ca6400a8234dd09f5ad3184cb9c04e2292c7ef`；
+  failure SHA `d6dba75439f1c744994f9686b7f57a7a5d93eb4767d1e9767c5d26c8b8701aab`。
+  原件仍在Aj6bv8；本地只读取回`outputs/releases/w3b-remaining-20260909/comparison-failed/`。
+- wrapper及successor已退出，未Intake/切换/发布state或业务写入，current仍a6ffe。
+  后续先做只读源码与无拟合最小差异定位：区分候选批量路径、独立参考、输入构造与最终控制器，
+  不修改运行原件，不自动重跑整套或重开已通过cold/warm/stateless。两个环境的LightGBM、NumPy、
+  pandas、scikit-learn、SciPy、Numba、Bottleneck版本读回一致；尚未确定根因。
 
 **Native参考333条完成，新版回测接续（2026-09-09 20:39 CST）**：
 
