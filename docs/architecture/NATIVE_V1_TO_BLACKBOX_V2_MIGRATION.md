@@ -2,7 +2,25 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_BOTH_333_EXACT_MATCH_5Y_FORMAL_GATE_RUNNING; W3B_W3C_W3D_EIGHT_DRAFTS_REVIEW_PASSED; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_BOTH_333_EXACT_MATCH_5Y_FORMAL_PASSED_7Y_FORMAL_RUNNING; W3B_W3C_W3D_EIGHT_DRAFTS_REVIEW_PASSED; W4_MAC3_PAUSED`
+
+**W2 首份正式证据完成、第二份开始（2026-09-09 12:46 CST）**：
+
+- 5Y正式Gate于12:43:37返回passed，收尾验证于12:43:44完成：run280、333条预测明细、17条月度指标，
+  exact version `67018ae8f703`，绑定09-09 generation/snapshot；仅一次算法子进程，完整Gate约29分12秒。
+  wrapper复核旧事实摘要不变；原件 `formal-daily_5y_2_v28_bbv2/complete.json` SHA
+  `0706adcdb48168d84fd3ef7633c7c8170f54f782cb1348b6f031ae0335074c6c`，已取回本机ignored目录。
+- 主agent从预安装a6ffe候选重新只读加载当前canonical和`verify_passed_blackbox_backtest`通过，数据库
+  读回333条、产品预测仍0、全库running0，7Y三张回测表均无旧证据。这不是激活或产品事实发布。
+- 12:45:03以字节未变的原`run_formal.py`启动7Y一次正式Gate；维护PID989771、算法PGID989846，nice10。
+  12:46实际读回正常训练、已保存started，无complete/failure。输出在同W2 incoming的`formal-7y.log`和
+  `formal-daily_7y_1_v28_bbv2/`；不得重启或覆盖。仍由ca39运行，current8eb2不变。
+- 当天模拟临时入口已完成独立审查并上传，尚未执行；本机
+  `outputs/releases/w2-cutover-20260909/simulate_today.py`，SHA
+  `b0124685efc5011c2ef195b68496320cf887acaff6bb1b8e2554f33f03371be3`。
+  两正式Gate都成功后才可执行一次：a6ffe候选、真实installed locale、各一次stateless predict，
+  120秒/4GiB/8线程、feature09-08/target09-15，由只读Engine核对11张业务表不变；不写状态、事实或切换。
+  后续gray区间为这次已授权installed入口保留09-15业务键，不提前占用当天验收点。
 
 **切换包预安装与参考工具复审（2026-09-09 12:25 CST）**：
 
