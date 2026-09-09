@@ -2,7 +2,23 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_PRIVATE_STATE_FIRST_CONTROLLED_EXECUTION_STARTED; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_REAL_APPEND_PERFORMANCE_AND_STATELESS_EQUIVALENCE_PASSED_NATIVE_REFERENCE_RUNNING; W4_MAC3_PAUSED`
+
+**W3B 首方案实际新增日17.159秒、当天冷/热一致（2026-09-09 16:08 CST）**：
+
+- 同一受控调用中cold_init正常退出：5473.591秒（约91分14秒），两族各650历史行从零计算，低于7200秒。
+  私有状态5,163,110 bytes，SHA `7ed977884c197f4c576c93c2a199df6572abf229994dd729e31cbb1b8745cc2d`。
+  该时间属于一次性初始化，不是每日预测耗时；没有发布生产state或写业务事实。
+- 从feature09-07真实推进到09-08的warm_append正常退出：**17.158577秒**，低于120秒；不是相同Request重试。
+  新状态5,168,472 bytes，SHA `79cc6cc24baf0c2eb93666e1386650de1301787163dcb02024c54b32d1d7d68a`。
+- 同09-09 Request的原stateless路径正常退出：162.788452秒。两者五字段完全相同：feature09-08、
+  target09-15、方向0；两份result JSON SHA均为
+  `61f513cc099618646c18543ea284ed420988ef6d0631b632189cd471b712ada3`。本次新增日约提速9.49倍。
+  各进程均由原监督器约束4GiB/8线程，未触发内存、时间、输出或输入完整性拒绝。
+- 三段原件位于同`w3b-state-20260909.HFFFwd`的execution目录，本地只读取回
+  `outputs/releases/w3b-state-20260909/`。主driver已继续唯一Native参考，算法PGID1028846；
+  333个Request依赖证明通过，需独立计算的末行修正为10Y257、7Y261。尚无完整Native/new等价结论。
+  不重跑已通过的三段，不把单点一致外推为全历史一致；W3B另外两个方案仍需验证，三者整批切换条件未满足。
 
 **W3B 增量候选独立审查通过、开始私有实测（2026-09-09 14:26 CST）**：
 
