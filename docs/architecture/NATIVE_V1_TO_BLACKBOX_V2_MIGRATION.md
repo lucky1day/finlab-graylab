@@ -4,6 +4,22 @@
 
 **执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FULL333_DIRECTION_MISMATCH_STOPPED; W4_MAC3_PAUSED`
 
+**周投影修复审查通过，单点验证包就绪（2026-09-09 23:25 CST）**：
+
+- 新两文件Python SHA `93798b4183fab8e02f974c72a4cf7602df9b410227fbc909608c74fe6ba1e9ce`，
+  Metadata SHA `ceba9f3a222decadafcdc7375aba94f4e160fe84c20ffd4ae9028fa42bf4fe49`。
+  独立审查确认只删除错误周末过滤及传递，保留算法参数、逐Request修正与状态后缀重算；
+  19个实际函数前缀/override样本、8个状态后缀样本通过，无Critical/Important。未执行模型拟合。
+- 一次性`run_first_difference.py`只运行修复版首差异Jan2单点，无Native重训/333/状态调用。
+  审查发现的退出后耗时检查缺失已补回，实际预算边界复核通过；候选hash已锁定，最终脚本SHA
+  `6567323a66b6e8b63a03c7a305a8409e348e24330660ecbf8e71c088d68840be`，独立复核无遗留C/I。
+- 三文件已上传新独占`/opt/bond-factor-lab/incoming/w3b-weeklyfix-20260909.fZmImh/`，
+  远端逐文件SHA与已审原件相同。只是离线验证包，不是release/Intake/激活，尚未启动算法。
+- 23:23现场只读确认current仍a6ffe、前轮三个验证进程均已退出、磁盘可用15GiB；
+  Actuals.service为inactive/MainPID0/上次状态0，timer仍active、下次23:45。
+  等其自然结束后重新preflight再启动，维护硬截止次日06:00，保护06:30 DataBridge及07:03 daily。
+  单点通过后只重算修复candidate完整333并对照已保留Native；新身份状态/性能仍待后续验收。
+
 **冻结输入证实周投影错误，最小修复准备（2026-09-09 23:00 CST）**：
 
 - 主agent只读提取原Native/candidate的真实alignment函数，在原五文件上执行零拟合比较：
