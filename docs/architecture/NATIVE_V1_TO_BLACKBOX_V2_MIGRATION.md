@@ -2,7 +2,24 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_COMPARISON_RUNNING; W3B_10Y_CONS_DRAFT_IN_PROGRESS; W3C_D_PENDING; W4_MAC3_PAUSED`
+
+**W2 修正后离线对照已启动（2026-09-09 10:07 CST）**：
+
+- 候选 `8e173c8f5083c37791028c9f5343f0f5a333b7e2` 仅预安装，archive SHA
+  `bc738b2366d9058bfc4afb67e69a9c856168ae0281bafc09aba2ea687cfec1a1`；current8eb2/previous3162 不变。
+  独立复审通过；相关迁移、结果复用与 runner 测试共 85 passed。未扩大算法验收矩阵。
+- 实际旧 core 微型 JIT 通过：模块从私有 source 加载，`.nbc/.nbi` 只在私有 numba-cache 中产生，候选源码
+  digest 前后均为 `64d9050c8d9a15cf6dcccb058a98386b4c59f037ad5784c3f140725440698886`。
+- 控制进程 PID951361、nice10；10:07:53 开始完整 W2 对照，首个 Native PGID951373。
+  证据根 `/opt/bond-factor-lab/incoming/w2-isolated-20260909.nVpeWy`，使用 09-09 ready generation 的
+  五文件私有冻结副本及两个各333条的平台 Request。查询确认两 successor 尚无持久化 backtest。
+  `started.json` 记录 exact version、文件 hash、Request hash、实际 locale 与 driver hash；成功才写 `W2.json`
+  和 `complete.json`。失败写 `failure.json`，不重启该 driver、不伪造 receipt，不执行切换。
+- 10:09 读回确认 Native 正在计算、缓存位于私有路径、候选源码无 Numba cache，current 未变。
+  当前仍是运行中，不是等价通过或 W2 闭环。正式 Gate、当日模拟及原子切换尚待本次完整结果。
+- 为避免串行等待，另一个无 ECS 操作的独立工作流仅在 ignored outputs 中转换 W3B 的 10Y01 cons-SAY
+  两文件草稿；未 Intake、未激活、不宣称结果或性能通过。W3C/D 与其余 W3B 仍待推进。
 
 **W2 最短路径执行修正（2026-09-09）**：
 
