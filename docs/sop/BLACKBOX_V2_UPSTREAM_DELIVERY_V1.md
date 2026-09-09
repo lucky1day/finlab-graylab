@@ -251,6 +251,10 @@ python {scheme_id}.py backtest \
 
 ### 6.1 批量计算效率
 
+本次 Native W1–W3 迁移的算法验收按[迁移计划第6.1–6.2节](../architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md#61-单-successor-算法验收当前简化标准)
+执行：完整同输入前后对照，不额外要求每次调用首中末独立冷复算或第8节的重复/顺序/子集矩阵。
+这不取消逐 Request 截止隔离、结果等价及标准失败无 Output 的要求，也不改变其他 Blackbox 交付的通用规则。
+
 本身可以一次生成整条 walk-forward 序列的算法，应在一次 `backtest` 调用中完成等价批量计算，不能
 对每条 Request 重复完整训练。批量优化必须满足：
 

@@ -2,7 +2,40 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_5Y_NATIVE_REFERENCE_COMPLETE_SUCCESSOR_RUNNING; W3B_THREE_DRAFTS_REVIEW_PASSED; W3C_AUC_STATIC_CONVERSION_RUNNING; W3D_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_5Y_333_EXACT_MATCH_7Y_NATIVE_RUNNING; W3B_W3C_W3D_EIGHT_DRAFTS_REVIEW_PASSED; W4_MAC3_PAUSED`
+
+**八个 Liwei 转换草稿完成、W2 首方案完整等价通过（2026-09-09 11:51 CST）**：
+
+- W2 5Y Native 与 successor 均正常退出，各333条五字段完全一致；两份 CSV SHA 均为
+  `99f1ed8ad3da3ed0d481bad37638c7018f15a81fd616504ffaafc418cb314ffc`。
+  Native 用时2432.991秒，successor1743.958秒，属于一次性历史批量，不是每日预测耗时。
+  原控制PID953168自动进入7Y Native PGID970906，11:51读回运行23分钟；仍无整体complete/failure，
+  7Y successor及W2正式Gate尚未执行。不重启driver、不重跑已成功5Y。
+- W3B三个、W3C三个、W3D两个合法两文件草稿全部完成，并分别通过独立审查，无未修复Critical/Important。
+  五个full-OOS草稿复用既有私有增量状态协议；三个monthly-PIT草稿只用调用内缓存，不新增平台框架。
+  所有稿件仍在ignored outputs，尚无实际全量等价/性能结论，未Intake、入库、部署或切换。
+  W3C保持active `platform_live_pit_variant`，不改回source-original；W3D分别保留三方/四方投票及
+  streak10不重置、streak8反向回退重置的源差异。路径及Python摘要如下，完整Metadata与源hash见各自
+  `MIGRATION_NOTES.md`（位于两文件交付子目录之外）：
+
+  | 草稿目录（均在 `outputs/`） | Python SHA-256 |
+  |---|---|
+  | `native-migration-w3b-10y01-cons-draft/` | `8de00b60b3a64d471d4803bb7fc55e2bffbee064aa56138c519e7c8179aeed1c` |
+  | `native-migration-w3b-10y02-cons-draft/` | `a1fafbfe8c11866cc32a9b446874810bcc0fa0d0084115fa6a8ea8e9dbbf4992` |
+  | `native-migration-w3b-10y01-full-draft/` | `a15cb1ee13a20eed06402be3f4491a1a8938245f09b1e68818d7c049f841e0a0` |
+  | `native-migration-w3c-auc-static-draft/` | `171224803329b8cb25ebb601ef866fbc6c8ce797b6f841211f66703270e16215` |
+  | `native-migration-w3c-auc-yearly-draft/` | `8ac8392ea5749f73756e4ac8845d958b4024613c8ffa83944d38410fec2b50ef` |
+  | `native-migration-w3c-ic-yearly-draft/` | `6e452c5e1860448b559b30919ea724edf23d4e0b704401361c63ed6bf82fa561` |
+  | `native-migration-w3d-7y01-draft/` | `10985741c4240f3aee4f11deb23b02c7956db9ea0d39d1a4fc266131f90ba98c` |
+  | `native-migration-w3d-7y03-draft/` | `4e3441b45361cf7a684a988519ae3573943b608a7b34b217a1df527717d261d1` |
+
+- 上游SOP第6.1节补充明确引用本迁移第6.1–6.2节的已批准简化标准，避免将通用的首中末冷复算及
+  重复/顺序/子集矩阵再次引入本次迁移。逐Request截止、完整结果等价及失败无Output要求不变。
+- W3后续真实参考入口仍需最小接入，现有受控comparator并不已经支持这八稿。先在树外准备首个W3B
+  的专用Native参考：由原Native证明逐Request训练依赖，再复用其自己计算的Phase A；月度窗口为子序列，
+  10Y/7Y各自保持日期和seed，不能盲套W3A连续前缀或借用successor输出。证明失败即停止复用。
+  暂不修改正在执行的W2候选或工具hash，不与W2争抢ECS训练资源。
+- ECS current8eb2/previous3162未切换；W3A保持已闭环，Mac3、域名、W4与confidence DDL未操作。
 
 **参考计算完成首段、后续转换与证据准备（2026-09-09 11:12 CST）**：
 
