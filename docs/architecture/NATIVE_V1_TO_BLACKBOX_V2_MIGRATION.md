@@ -2,7 +2,19 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_REAL_APPEND_PASSED_NATIVE_REFERENCE_STOPPED_AT_MAINTENANCE_DEADLINE; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_REAL_APPEND_PASSED_REMAINING_OFFLINE_COMPARISON_RUNNING; W4_MAC3_PAUSED`
+
+**剩余两阶段夜间启动（2026-09-09 19:03 CST）**：
+
+- Actuals于19:00:30自然启动、19:01:02状态0退出；五个one-shot全部inactive/MainPID0，
+  只读数据库确认scheme/backtest running均0。current仍a6ffe、Backend PID643451未变。
+  现场Actuals下次为23:45，因此本次维护硬截止收紧为09-09 23:30，未变更任何timer/service。
+- 两份已审脚本上传至新独占`/opt/bond-factor-lab/incoming/w3b-remaining-20260909.Aj6bv8/`，
+  远端SHA与18:18批准值完全相同。19:02:53启动唯一wrapper，PID1056244；19:03读回已完成
+  原输入/Request/三段通过证据及状态身份复核，生成`remaining-execution/started.json`并进入Native阶段。
+  后续只串行Native v2→successor333无状态回测，每进程7200秒/4GiB，原监督器再按维护剩余时间裁剪。
+- 未重跑cold/warm/stateless，未生成新输入或推进生产状态，没有Intake、激活或业务写库。
+  原失败incoming与已通过证据未修改；此时尚无完整333条对照结果，不标记W3B批次闭环。
 
 **剩余验证收缩、审查通过与调度读回（2026-09-09 18:18 CST）**：
 
