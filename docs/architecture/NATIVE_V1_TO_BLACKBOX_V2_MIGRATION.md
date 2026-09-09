@@ -2,7 +2,24 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_CURRENT_DAY_INCREMENTAL_VERIFIED; W3A_RECUTOVER_AND_GRAY_VERIFIED; W3A_INSTALLED_DAILY_ACCEPTANCE_RUNNING; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_OFFLINE_REVALIDATION_PENDING; W3B_D_PENDING; W4_MAC3_PAUSED`
+
+**W3A ECS 本批闭环（2026-09-09 09:27 CST）**：
+
+- 唯一installed daily验收Invocation `bc96e8f427fc4885856adc49992832a5`于09:20:38退出0。
+  全47个日频方案中，W3A full run5361、cons run5362分别success且各写1；其他45个正常skipped，
+  failed/blocked/denied为空。此前08:56仍运行的状态已结束，不得再次触发同日验收。
+- 最终只读验收通过：两条scheduled_live的Request ID、predict09-09、feature09-08、target09-15、direction0
+  与当天模拟逐字段一致，exact version正确，各successor累计409条，业务键唯一且run/backtest XOR成立。
+  排除本次47条新审计run及2条新预测后，原全部run/prediction行摘要匹配调用前基线；旧Native无新run，
+  Registry、Actual、backtest完整摘要不变，Dashboard读模型88个active身份正确。
+- full生产state完整envelope、实际runtime身份及当天generation匹配；状态锁空闲，全库running0。
+  immutable current8eb2/previous3162源码校验通过，标准算法临时目录/runtime views已清空，无残留执行进程。
+  Backend原PID643451和health200正常，所有原timer active，daily next09-10 07:03；Mac3、域名和DDL未动。
+- 证据`installed-daily-final-readback.json`保存在本轮incoming及本机ignored目录，SHA
+  `ce5507db96ca128d11921eb0012a931753676807e175244185d5a5c36603b8b7`。
+  结论仅为W3A两个方案在ECS的已授权模拟、切换与真实入口验收闭环，不冒充多次自然观察或Mac3晋级。
+  不再重跑W3A初始化、等价、正式回测、gray和同日验收；下一批继续W2，随后W3B-D，整个ECS项目尚未闭环。
 
 **唯一补缺验收完成，真实日频入口运行中（2026-09-09 08:56 CST）**：
 

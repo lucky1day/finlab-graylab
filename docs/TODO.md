@@ -64,8 +64,9 @@
    全47success退出并完成DB关联验收，旧Writer恢复已确认。当天full增量11.592秒、cons63.542秒，日期/方向
    与当天旧Native一致，无业务写入。已标准激活8eb2并原子re-cutover，08:02独立读回成功；278/279和74条gray
    全部复用。唯一full缺少的09-14键已于08:42成功补齐并独立验收，旧事实/生产state不变，私有进程/目录清理。
-   08:30 Actuals原调度成功。08:56:27已恢复timer并人工一次installed daily验证新Writer，Invocation
-   `bc96e8f427fc4885856adc49992832a5`仍运行；禁止重复启动，退出后按调用前maxrun5346及事实摘要验收。
+   08:30 Actuals原调度成功。08:56:27恢复timer后的唯一installed daily验收已于09:20:38退出0：W3A两条success，
+   其他45 skipped，无failed/blocked/denied；最终DB/旧事实/Actual/Registry/state/控制面读回通过，W3A ECS本批闭环。
+   不重复W3A算法或同日调用；立即转入后续W2执行准备，Mac3晋级不在当前范围。
    详细证据、清理截止和后续边界见迁移计划顶部。Mac3不变。
 4. 随后完成 W2 与 W3B-D 的必要算法改造、完整同输入旧新回测对照及受控 ECS 替换。
 5. 不以本阶段 ECS 完成宣布全局 Native 退役；Mac3 仍依赖的旧路径不得提前删除，confidence DDL 仍须独立授权。
