@@ -2,7 +2,28 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FIXED_FULL333_AND_INCREMENTAL_STATE_PASSED; W3B_STAGED_MASTER_TEN_RUNNING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FIXED_FULL333_AND_INCREMENTAL_STATE_PASSED; W3B_STAGED_MASTER_TEN_PASSED_MASTER_SEVEN_RUNNING; W4_MAC3_PAUSED`
+
+**最新执行读回（2026-09-11 00:12 CST；覆盖下文旧运行状态）**：
+
+- 同一 `hejFGE` 包的 `master-ten` 已于09-10 23:56:25成功完成，耗时4419.699157秒（约73分40秒），
+  完整265配置、575日、3seed；controller1205258与算法1205293均退出。
+  00:11复验15个artifact摘要全部一致，execution为returncode0、process_group_clean=true，无failure。
+  `master-ten-execution/comparison-report.json` SHA256
+  `c13c4d1464b22f71c8d15674737c856b331e44160098d1bdf3ff3f9438caa61f`；
+  `results/ten_y-master.npz` SHA256
+  `7720aa7b82f8e2629fef963d64a8e3b229d49199952150ca3d14994a5d036d3a`。
+  原始阶段目录已备份到本地 `outputs/releases/w3b-staged-reference-20260911/`，不纳入Git，不重新计算。
+- 00:11 fresh preflight确认current仍a6ffe；daily/weekly/monthly/data-bridge/actuals五个真实unit均
+  loaded/inactive/MainPID0/Resultsuccess，两run表running0，无竞争重算法，可用内存13272MiB、磁盘15GiB。
+  23:45 Actuals已自然成功结束，墙钟34.064秒、CPU4.680秒；没有停止或修改timer/service。
+- 用户要求继续后，00:11:45实际派发同一已审查driver的 `--stage master-seven`，controller1223547、
+  算法PGID1223584；00:11:59日志确认进入seven_y master，265配置、575日、2seed。
+  日志为 `hejFGE/master-seven-controller.log` 与 `master-seven-execution/stderr.log`。
+  该阶段尚未完成，禁止重复派发。既有十分钟自动推进任务已更新为跟进此阶段并启用。
+- 三个Native阶段共同09-11 05:00截止、单调用7200秒/4GiB和单一重计算边界不变。
+  下一步仅在7Y成功、摘要链一致、无残留与现场预检通过后执行 `native(final)`，再串行完成full/k5比较。
+  master成功不等于两个候选五字段等价通过；W3B尚未整批切换。首SAY已通过证据继续复用，Mac3不动。
 
 **用户要求立即推进后的现场执行（2026-09-10 22:42 CST；覆盖下文23:45等待条件）**：
 
