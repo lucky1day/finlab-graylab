@@ -2,7 +2,21 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FIXED_FULL333_AND_INCREMENTAL_STATE_PASSED; W3B_STAGED_REFERENCE_READY_WAITING_SAFE_WINDOW; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FIXED_FULL333_AND_INCREMENTAL_STATE_PASSED; W3B_STAGED_MASTER_TEN_RUNNING; W4_MAC3_PAUSED`
+
+**用户要求立即推进后的现场执行（2026-09-10 22:42 CST；覆盖下文23:45等待条件）**：
+
+- 现场确认今晚无后续算法预测任务；23:45 Actuals timer仍挂载，不能称不存在任务。
+  installed入口为`python -m scheduler.actuals_runner`，只更新Actuals，不训练模型；最近一次30.154秒墙钟、
+  3.070秒CPU、83.5MiB，Nice=0。与本次Nice=10、私有冻结文件、不写业务数据库的离线参考不存在业务写入冲突。
+  内存可用约13GiB，故取消一律等待这个轻量任务的保守条件；不停止、不修改Actuals timer/service。
+- 启动前五one-shot均inactive/MainPID0、两run表只读running0、无其他重算法、磁盘15GiB；current仍a6ffe。
+  22:42:36启动`hejFGE/run_family_comparison.py --stage master-ten`，controller1205258、算法PGID1205293。
+  `master-ten-execution/started.json`时间22:42:43，stderr已进入ten_y master：265配置、575日、3seed。
+  新完整计算确已开始，尚无成功报告；禁止再次启动该阶段。
+- 每次7200秒/4GiB及三个Native阶段统一09-11 05:00截止不变。23:45后核验Actuals自然结果，但不再将其
+  作为当前长计算的开跑门槛；如出现资源或任务异常，停止启动后续阶段并定位，保持早间任务保护。
+  已将既有自动推进任务更新为跟进实际PID/日志与新窗口边界，保持单一计算，成功原件不重跑。
 
 **参考效率优化（2026-09-10 22:17 CST；覆盖下文“仅诊断”的后续动作限制）**：
 
