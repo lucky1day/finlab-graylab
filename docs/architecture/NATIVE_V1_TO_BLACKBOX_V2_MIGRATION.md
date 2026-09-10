@@ -4,6 +4,17 @@
 
 **执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FIXED_FULL333_AND_INCREMENTAL_STATE_PASSED; W4_MAC3_PAUSED`
 
+**另两方案Native双参考已启动（2026-09-10 19:06 CST）**：
+
+- Actuals19:00:30自然启动、19:01:00退出0；19:05五one-shot均inactive/MainPID0，
+  两run表只读查询running0，无其他手工算法进程，磁盘15GiB，current仍a6ffe、Backend仍1141752。
+  下一Actuals23:45、DataBridge次日06:30、daily07:03；未修改timer/service。
+- `w3b-family-20260910.5CqPOn/run_family_comparison.py --stage native`已启动，
+  controller1173565、算法PGID1173600（外层shell1173564不是算法）；原已审六文件保持不变。
+  `native-execution/started.json`及两套Request已生成，实际解释器为forecast_env/python3.13；
+  仅一次Native双参考，不重复首SAY，不启动两个候选。单段7200秒/4GiB，维护截止23:30。
+  这仍是计算中，尚无Native完成或full/k5等价结论；完成后复用原件，不自动重跑。
+
 **首SAY新状态与增量性能通过（2026-09-10 18:44 CST）**：
 
 - `fZmImh/fixed-state-execution/`于18:31:47三阶段完成：cold_init 5784.759095秒、
