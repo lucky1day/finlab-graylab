@@ -4,6 +4,17 @@
 
 **执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FIXED_FULL333_PASSED_STATE_VALIDATION_RUNNING; W4_MAC3_PAUSED`
 
+**另两方案执行包已审并预置（2026-09-10 17:34 CST）**：
+
+- `run_family_comparison.py`独立审查完成，无Critical/Important；服务Python3.12实际纯内存验证三阶段路由、
+  333条Request仅替换base ID、Native原件复用拒绝条件与实际forecast_env身份。脚本SHA
+  `416c6a9b665d3a6512fae18b96f134bdf682072f47a043152a8412c3f6a85db7`，原独立参考7c50及两候选字节不变。
+- 六个已审文件已上传新独占`/opt/bond-factor-lab/incoming/w3b-family-20260910.5CqPOn/`，
+  远端逐文件SHA与本地批准值一致；没有启动Native/full/k5阶段，没有Intake、业务写库或release变更。
+  后续显式串行执行一次Native双参考、一次full、一次k5；每段拒绝重跑既有stage，不重复首SAY对照。
+- 17:32首SAY新状态controller1148410/算法1148432仍在cold_init，运行40分钟、RSS约963MiB，
+  尚无完成或失败报告。继续使用原18:45硬截止，不启动竞争算法；下一轮计算前重新核验Actuals与维护窗口。
+
 **完整等价通过，衔接新状态验证（2026-09-10 16:53 CST）**：
 
 - 修复candidate完整333于02:02:13通过，实际6770.990417秒；此前22条方向差异全部消除。
