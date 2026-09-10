@@ -2,7 +2,27 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FIXED_FULL333_AND_INCREMENTAL_STATE_PASSED; W3B_NATIVE_REFERENCE_PASSED_FULL_CANDIDATE_RUNNING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FIXED_FULL333_AND_INCREMENTAL_STATE_PASSED; W3B_NATIVE_REFERENCE_PASSED_FULL_CANDIDATE_TIMEOUT_K5_NOT_STARTED; W4_MAC3_PAUSED`
+
+**最新失败与只读定位（2026-09-11 04:27 CST；覆盖下文旧运行状态）**：
+
+- `hejFGE/full-execution` 于04:21:07达到7200秒上限，实耗7200.269270秒；不是05:00窗口截短。
+  controller1249732与算法1249774均退出，execution的process_group_clean=true，独立ps读回无组内残留；
+  failure的post_failure_integrity_error=null。无candidate.csv、成功报告或完整/部分Output，不宣称等价通过。
+  停止后续k5和状态初始化，不删除目录、不原样重跑，也不提高超时掩盖问题；已通过的Native与首SAY原件不动。
+- 五件原始证据已备份到 `outputs/releases/w3b-staged-reference-20260911/full-execution/`，全部摘要复验通过。
+  failure SHA256 `19c93bca9b9dd66252fb3de024d0f2b1647de654012b558ca6594300c97371c6`；
+  execution SHA256 `39d7e2fdf7ef95142caab699d16b5657baa7b5990e62a08827aadc8910001594`；
+  stderr SHA256 `438824ac8b98c8e7e973a1083fa5c1a79ab45fc78f12b544f56df6d0be33d869`。
+- 日志完成252/333个cutoff，最后2026-01-15。首次2025-01-02建立两family各243行，2428.741085秒；
+  后续251个cutoff合计4757.576447秒，中位20.333940秒，两family各新算/修订448行。
+  共535次训练调用、1008次缓存读取（四baseline×252）；不能把1543条Phase A日志都算作重新训练。
+  末次每family复用492行、训练2行，证明确实有缓存，但初始化与逐cutoff推进累计仍超过单调用预算。
+- 只读代码确认每cutoff分别准备两family特征、按变化位置重算suffix，再对四baseline计算原完整OOS控制器；
+  10Y三个baseline共用Phase A数组。日志尚无这些内部段的独立计时，不能据此将某一段断言为全部瓶颈。
+  下一步只做有界分段耗时定位，优先排查同cutoff可复用的准备/筛选/统计及末行修订范围；
+  保留原参数、排名、controller和cutoff语义。任何优化另存候选并独立审查，以原Native结果复验，
+  不重跑Native或首SAY，不用失败批次的部分日志冒充正式结果。本凌晨不再启动完整重计算，保护早间任务。
 
 **最新执行读回（2026-09-11 02:21 CST；覆盖下文旧运行状态）**：
 
