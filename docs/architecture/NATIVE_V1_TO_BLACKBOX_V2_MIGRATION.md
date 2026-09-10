@@ -2,7 +2,90 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FIXED_FULL333_AND_INCREMENTAL_STATE_PASSED; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FIXED_FULL333_AND_INCREMENTAL_STATE_PASSED; W3B_STAGED_REFERENCE_READY_WAITING_SAFE_WINDOW; W4_MAC3_PAUSED`
+
+**参考效率优化（2026-09-10 22:17 CST；覆盖下文“仅诊断”的后续动作限制）**：
+
+- 用户已授权继续优化。新临时参考
+  `outputs/native-migration-w3b-full-reference-draft/native_reference_v2.py`
+  SHA256 `e9140f0941b1f2da6c2b58396ac1f6d14289b2258a6a8711d6c9bda6e9539ea2`：
+  保持完整575日、265配置、seed/window和原Native worker，仅将末日correction缩减为实际Phase C消费集合，
+  并增加阶段开始、每25配置、完成和失败日志。排名仍使用各Request cutoff标签，早期不足5行仍全grid。
+  作者56个baseline纯内存场景及独立reviewer128组原Native Phase C对照均通过；完整前缀ensemble、概率、
+  `ml_base`一致，master不变；乱序恢复与失败检查通过，Critical/Important为0。尚无新完整CSV或全量性能结论。
+- 已结束执行器探索，不采用spawn草稿v3。ECS同冻结输入、原Native、265配置及原seed下：
+
+  | 有界诊断 | 原四线程 | spawn四进程 | 比较结果 |
+  |---|---:|---:|---|
+  | 最近1日，两family | 15.803秒 | 20.002秒 | 全部原始pred/prob摘要相同 |
+  | 最近5日，两family | 66.551秒 | 67.856秒 | 全部原始pred/prob摘要相同 |
+
+  五日进程组峰值RSS分别510222336与2021437440字节；均在180秒/4GiB监督内完成且组内无残留。
+  5日原始证据在ECS `incoming/w3b-five-day-profile-20260910.Q13M3e/{thread,spawn}/diagnostic.json`，
+  benchmark SHA256 `a43b75bfee8ab3bc4ed98263fb3ad116d748ade3eac8dd99bcb65e70dd177e9d`。
+  直接fork曾被父进程已有数值库线程的检查拒绝，未绕过。spawn没有测得收益、内存更高，不进入正式参考包。
+- 同一冻结输入零拟合统计显示，重复训练eligible索引仅ten_y14/575日、seven_y9/575日；
+  理论最多减少15900/761875（约2.1%）次seed-fit。尚未实现模型复用，不为该小比例收益修改独立原worker。
+- 优化针对一次性独立迁移参考，不是已通过的首SAY每日增量路径。首SAY完整333条及16.88秒增量证据继续复用，
+  不重跑；另两successor字节未变。没有Intake、Registry/DB写入、release/current/timer或Mac3变化。
+  不能由小样本或correction工作量下降宣称完整7200秒预算已通过；不得原样重启已失败的`5CqPOn`阶段。
+
+**一次性参考的分阶段执行调整（2026-09-10 夜间）**：
+
+- 仅临时参考拆为`master-ten → master-seven → native(final)`，之后两个未完成候选依次`full → k5`。
+  两个master分别调用原Native worker，完整265配置/历史日期不减少；final复用本次原Native自产数组，
+  不复制首SAY或候选计算结果。已成功阶段不能重新执行，不建立长期平台cache、调度或生命周期框架。
+- 每个master只验证完整Request配对/window及最新cutoff的双源shared context；完整333 Request的双族
+  依赖证明只在final做一次，必须全部通过后才载入master、执行selected correction和原Final。
+  两份master本身不代表逐Request等价验收，最终两个333行CSV才进入候选比较。
+- 中间结果是本次私有incoming目录的两个小型NPZ，不是生产状态。固定metadata/configs/dates/preds/probs，
+  `preds=int32`、`probs=float64`保留原字节；绑定完整源码、七个输入文件、自身参考代码及family。
+  wrapper另外锁定精确driver、运行环境、release和前序成功执行报告链；错身份、错轴、额外字段、pickle、
+  软链、损坏或缺少成功执行证据均拒绝，不自动重训或fallback。文件原子insert-only发布。
+- 三个Native阶段共用同一总维护截止，并分别受`min(7200, 距截止剩余秒数)`及进程组4GiB上限监督。
+  这是按现行“离线每次调用7200秒”组织一次性对照，不是提高单次上限；必须另报阶段及累计耗时，
+  不把累计超过两小时标成完整两小时通过。候选完整backtest仍各一次调用、各自7200秒上限，可在后续独立安全窗口消费原件。
+- 本次窗口仅在23:45 Actuals正常结束、现场零竞争计算且只读preflight一致后开启；三个Native阶段统一
+  `finish-before=2026-09-11T05:00:00+08:00`。不抢在Actuals前启动、不改timer，并保护06:30 DataBridge和07:03 daily。
+  每个阶段都须重新核验现场；失败停止后续，不删除原件，不自动重复失败阶段。
+- 本地分阶段参考草稿SHA256 `578d60b8e1c1da8630eb472cd701ad6e5e9da12eb766d9aa4796fa6121b677f8`，
+  driver SHA256 `b56aa2f4de32888d1a885aa136ba43da636441e743e04a662eadf81f0a6f8572`。
+  wrapper独立审查的串行前置和失败记录两个Important已修复；参考NPZ读写/证明顺序亦独立审查通过，
+  Critical/Important为0。原始NPZ roundtrip与错误身份/shape/dtype/链接/压缩拒绝测试通过，
+  wrapper各阶段成功及失败证据保留检查通过；未添加长期平台回归测试。
+- 六文件包已校验并只读封存在ECS
+  `/opt/bond-factor-lab/incoming/w3b-staged-reference-20260910.hejFGE/`；参考文件名为`native_reference.py`，
+  driver为`run_family_comparison.py`，另有两候选各自原两文件。已使用过去截止时间做无拟合preflight：
+  完整release/输入/源码/候选/运行环境只读核验通过，在`budget()`按预期拒绝启动；所有阶段目录仍不存在。
+  该拒绝是维护窗口边界测试，不是算法失败或一次已尝试训练。真正执行仍须在23:45 Actuals后重新preflight。
+- 已恢复既有`native-ecs`十分钟线程推进任务为`ACTIVE`，提示更新为上述新包与串行顺序；
+  旧失败进程提醒及“仅诊断不可优化”的旧限制已移除。任务在安全窗口前不启动长计算，未变化保持静默，
+  只在重要结果/失败/需决策时通知。实际运行与完成情况仍以各阶段原始报告为准。
+
+**另两Native参考超时与只读定位（2026-09-10 夜间）**：
+
+- `5CqPOn/native-execution/`于21:06:28失败，实际7200.174846秒，命中完整7200秒预算，
+  不是23:30维护窗口裁剪。controller1173565/算法1173600已退出，没有完整或部分Result CSV，
+  仅两Request CSV；`post_failure_integrity_error=null`。不重启原阶段、不启动依赖它的full/k5。
+- 原stderr仅98字节一条dependency证明日志：333 Request，ten_y修正257行、seven_y修正261行。
+  stdout创建19:06:27.583931，唯一stderr最后写入19:13:59.143170；据原文件mtime，初始化/依赖证明约451.56秒，
+  其后至超时约6749.18秒。参考在两个master、首Request修正和两个final之后才打印首结果，
+  因此不能从现有日志确定超时发生于哪个master或首Request阶段；不能把后续修正直接认定为本次全部耗时。
+- 主agent以同一冻结五文件、已锁8源文件执行零拟合capture，并按原worker条件逐grid/date统计：
+  两family各575个OOS日（2024-01-02至2026-05-22）、265配置、80特征，全部满足fit条件，无fallback。
+  ten_y三seed需要457125次fit，seven_y两seed需要304750次fit；仅master就761875次模型拟合，
+  不是333次预测或530次训练。265配置包含256常规与9慢速配置。
+- 另做限定诊断：每family取配置0/132/264和首末两个OOS日期，共30次原Native fit，未改参数或生成验收结果。
+  10Y的18次fit耗时0.7391秒（run_config总0.8989秒、predict调用0.0154秒），
+  7Y的12次fit耗时0.2811秒（总0.2942秒、predict调用0.0100秒）。小样本支持训练为主要开销，
+  不据此外推精确全量完成时间，也不作正式性能或等价验收。
+- 原Phase C按当月之前可用历史对265配置排名；当前末行不参与该排名。独立只读审查确认当前日
+  10Y的STD/ACCWT top10加DIV最多5个，7Y top15，故末行修正每family最多15配置。
+  现参考仍对257/261个修正日各重训265配置，若全满足fit条件将额外342645次seed-fit；
+  仅按原排名消费集合修正，上界19395次。没有master结果时不能伪造具体入选集合。
+  历史master仍为各月排名与连续controller提供依赖，不能只保留今天topK或从2025截断历史。
+- 此轮仅定位，未修改参考/候选/平台、未重新运行完整批次、未Intake/切换。后续建议先给必要master
+  做有界分段计时，再复用既有按消费集合修正思路；不原样重跑、不靠延长超时或减少seed/窗口绕过问题。
 
 **另两方案Native双参考已启动（2026-09-10 19:06 CST）**：
 
