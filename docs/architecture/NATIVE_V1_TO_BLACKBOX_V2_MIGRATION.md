@@ -20,7 +20,8 @@
   首SAY通过不等于W3B整批切换。下一重计算在19:00 Actuals自然完成及fresh preflight后启动另两方案Native双参考。
 - 另两scheme的显式state监督器已完成独立审查，发现私有Request解析后取hash的双读窗口；
   已调整为先锁摘要、解析比较、立即复验，修复SHA `b10be92e7e926a6f29efeab0202cc86aefba6d61249d0ad6897f55035a496e62`，
-  正进行定点独立复核。尚无两方案family通过报告，两个批准hash仍None，不上传或启动state阶段。
+  定点独立复核已通过：稳定输入接受、cold/live读取后替换均拒绝，撤销补丁精确恢复旧稿hash，无其余变化；
+  Critical/Important清零。尚无两方案family通过报告，两个批准hash仍None，不上传或启动state阶段。
 
 **另两方案执行包已审并预置（2026-09-10 17:34 CST）**：
 
