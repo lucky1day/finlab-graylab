@@ -2,7 +2,24 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FIXED_FULL333_AND_INCREMENTAL_STATE_PASSED; W3B_BOTH_MASTERS_PASSED_NATIVE_FINAL_RUNNING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FIXED_FULL333_AND_INCREMENTAL_STATE_PASSED; W3B_NATIVE_REFERENCE_PASSED_FULL_CANDIDATE_RUNNING; W4_MAC3_PAUSED`
+
+**最新执行读回（2026-09-11 02:21 CST；覆盖下文旧运行状态）**：
+
+- `native(final)` 于02:06:20成功，2926.256324秒（约48分46秒），两个Native结果各333行、精确五字段；
+  controller1235659与算法1235698已退出，execution为returncode0、process_group_clean=true，无failure。
+  report SHA256 `3a188412a1a30d3bc1c9d3da55c1878cc84ec9205326c23dfad4514905181a27`；
+  full原始CSV SHA256 `8296155397cc542c3a8a2b188f91e679a9080274ecc94dee38b740736c2d46d1`；
+  k5原始CSV SHA256 `09d8f666aef41e59f10c7e101b64b12328856da136ab312150a48a678441b1f9`。
+  三个Native阶段累计10326.568719秒，不作完整两小时通过声明；此后复用原件，不重跑Native。
+- 02:20复验三个阶段15/21/28个artifact摘要全部一致；现场五one-shot正常inactive、两run表running0、
+  无竞争算法，current仍a6ffe，可用13284MiB、磁盘15GiB。早间next仍06:30 DataBridge、07:03 daily。
+- 02:20:57实际派发同一driver `--stage full --finish-before 2026-09-11T05:00:00+08:00`，
+  controller1249732、算法PGID1249774；02:21:15确认候选在Blackbox运行环境中执行一次333条backtest，
+  stderr已进入Phase A。日志为 `hejFGE/full-controller.log` 与 `full-execution/`。
+  尚无full候选成功或五字段等价结论；成功且预算充足才执行k5，不为赶窗口截短预算启动重任务。
+- 三个已完成Native阶段原始目录均备份于本地 `outputs/releases/w3b-staged-reference-20260911/`。
+  单一重计算、每次7200秒/4GiB、失败保留不重试及凌晨05:00保护不变；未修改生产状态或Mac3。
 
 **最新执行读回（2026-09-11 01:18 CST；覆盖下文旧运行状态）**：
 
