@@ -29,6 +29,16 @@
   同cutoff的STD与ACCWT共享10Y输入、ew=504及signal配置，但DIV的ew=378、7Y的ew=252，
   不得把四baseline统计矩阵无条件合并。仍需分段计时确认收益，未修改候选或宣称性能改善。
   04:59现场无迁移计算进程，早间timer继续保持06:30/07:03。
+- 05:32完成一次60秒/4GiB地址空间上限内的无训练诊断，退出0、峰值RSS517884KiB；
+  精确原候选、原冻结五文件和2026-01-15 Request，未运行模型或控制器、未生成Result/state。
+  输入读取0.364秒，两family准备分别1.674/1.671秒；IC筛选首次0.550秒、随后0.00366–0.00383秒。
+  STD/ACCWT的signal accuracy各0.259/0.263秒且数组SHA完全一致；DIV0.198秒、7Y0.135秒。
+  这只是分段诊断，不是warm predict或等价验收；不从单样本宣称全量性能通过。
+  结果不支持为重复IC筛选优先增加缓存；同cutoff共享STD/ACCWT统计亦不足以单独解决超时。
+  后续优先定位两family准备与修订suffix训练成本，不扩大成通用cache框架。
+  临时脚本 `outputs/native-migration-w3b-full-reference-draft/profile_full_preparation.py` SHA256
+  `a6442edec7ef087812d1be3f8158b3422ab8d54fd4b3d3273bb626a722da55b3`，
+  诊断摘要保存在 `outputs/releases/w3b-staged-reference-20260911/preparation-diagnostic.json`；均不纳入Git。
 
 **最新执行读回（2026-09-11 02:21 CST；覆盖下文旧运行状态）**：
 
