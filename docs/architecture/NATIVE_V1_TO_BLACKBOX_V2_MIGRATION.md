@@ -2,7 +2,26 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FULL333_DIRECTION_MISMATCH_STOPPED; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FIXED_FULL333_PASSED_STATE_VALIDATION_RUNNING; W4_MAC3_PAUSED`
+
+**完整等价通过，衔接新状态验证（2026-09-10 16:53 CST）**：
+
+- 修复candidate完整333于02:02:13通过，实际6770.990417秒；此前22条方向差异全部消除。
+  16:50主agent取回全部原始证据，独立确认candidate与Native CSV逐字节相同，均为SHA
+  `8e998c224af3891890f5035ae5e59199897608e4e23a6bd61fe951f69d916acf`；行数333、退出0、stdout空，
+  未超7200秒。报告SHA `a96b3191868c0d2141d15be6a6cb47a8c23bb4e44c9d1d1b675f39899e84cb4e`，
+  execution SHA `ce758a0a2915d7a2150da1b6d265ea7b3160b342659ae06daec3b45e90d571c6`。
+  本地原件`outputs/releases/w3b-weeklyfix-20260910/full-comparison-execution/`，该对照不再重跑。
+- 已审state监督器只锁上述通过报告hash并规范化末尾空行，无其他差异；最终SHA
+  `051c843ea1237122b25eb4048f847bf9cbf4b21e8e24219fd7d1fccc783d90ea`，远端逐字节核验一致。
+  controller1148410已启动`fZmImh/fixed-state-execution/`：只做新身份从零初始化、一次真实新增日、
+  同日stateless五字段验证，不重跑Native/333，不读取旧NPZ，不发布生产state或写业务事实。
+- 启动前五one-shot均inactive/MainPID0、两run表running0。为减少无意义等待，按已部署入口的真实
+  discovery/calendar判定09-10：monthly候选5、day非15故不due，period候选0且无invalid类型；
+  18:00入口没有刷新/算法工作，历史journal也为not_applicable。保留该timer自然触发，维护硬截止设18:45，
+  保护19:00 Actuals，不改变任何控制面。每段仍按剩余窗口裁剪7200/120/7200秒，4GiB/8线程。
+- 两个尚未验收的W3B full-OOS草稿继续并行做本地执行接线与入库证据复用盘点，不并行启动第二算法。
+  三方案整体验收完成前不做半批激活；W3A/W2已闭环事实保持，Mac3/域名不操作。
 
 **修复版首差异通过，完整333对照已启动（2026-09-10 00:10 CST）**：
 
