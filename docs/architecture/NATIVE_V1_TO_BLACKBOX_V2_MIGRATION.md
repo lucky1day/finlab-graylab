@@ -2,7 +2,24 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FIXED_FULL333_AND_INCREMENTAL_STATE_PASSED; W3B_STAGED_MASTER_TEN_PASSED_MASTER_SEVEN_RUNNING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FIXED_FULL333_AND_INCREMENTAL_STATE_PASSED; W3B_BOTH_MASTERS_PASSED_NATIVE_FINAL_RUNNING; W4_MAC3_PAUSED`
+
+**最新执行读回（2026-09-11 01:18 CST；覆盖下文旧运行状态）**：
+
+- `master-seven` 于01:01:35成功，2980.613238秒（约49分41秒），完整265配置、575日、2seed；
+  controller1223547与算法1223584已退出，execution为returncode0、process_group_clean=true，无failure。
+  report SHA256 `31b564634243d46641b76338201e9047614c1392bad4ee119059d98b1f35bb2c`；
+  `seven_y-master.npz` SHA256 `0d7d3000d1e4951934ba43f7d3e8e44ca12dc8f676db0178acad4a7ff9a47873`。
+  原始阶段目录备份到本地 `outputs/releases/w3b-staged-reference-20260911/`，不纳入Git。
+- 01:17两master的15/21个artifact摘要复验通过，累计7400.312395秒；各次7200秒边界通过，
+  不将累计耗时宣称为完整两小时通过。fresh现场五one-shot正常inactive、两run表running0，
+  无竞争重算法，current仍a6ffe，可用内存13286MiB、磁盘15GiB，早间next仍06:30/07:03。
+- 01:17:24已实际派发同包 `--stage native`，controller1235659、算法PGID1235698；01:17:44确认
+  算法正在执行 `--stage final --master-ten ... --master-seven ...`，日志为 `hejFGE/native-controller.log`
+  与 `native-execution/`。先完成333 Request双族依赖证明，再读取自产master计算selected correction和原final。
+  两master不重跑；此阶段尚无两个完整CSV或候选等价结论。成功后才串行进入full/k5候选比较。
+- 既有自动推进交接已更新。凌晨05:00截止、单次7200秒/4GiB、单一重计算、失败停止后续不重试不变；
+  未做Intake、业务写库、Registry切换、release或timer变更，Mac3不动。
 
 **最新执行读回（2026-09-11 00:12 CST；覆盖下文旧运行状态）**：
 
