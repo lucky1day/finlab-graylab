@@ -2,7 +2,25 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FIXED_FULL333_PASSED_STATE_VALIDATION_RUNNING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FIXED_FULL333_AND_INCREMENTAL_STATE_PASSED; W4_MAC3_PAUSED`
+
+**首SAY新状态与增量性能通过（2026-09-10 18:44 CST）**：
+
+- `fZmImh/fixed-state-execution/`于18:31:47三阶段完成：cold_init 5784.759095秒、
+  warm_append 16.875757秒、同日stateless 192.952751秒，全部退出0、stdout为空、在各自预算内。
+  warm真实新增feature_date 09-08：10Y与7Y都复用650行、仅新增训练1行，总行数650→651；
+  warm与stateless五字段Output逐字节一致，方向0，目标09-15。不是同日cache hit。
+- 主agent已取回完整11MiB原件至`outputs/releases/w3b-weeklyfix-20260910/fixed-state-execution/`，
+  独立复核原Result、执行耗时/退出、NPZ原字节hash与header、cutoff、候选身份、cold→warm状态链和新增行诊断。
+  报告SHA `aa0afd1bcedda33340cd5b1adcd4423e46500732ba34ecaa961def716508a80f`；
+  cold execution `35aacad2e7e99ecefe0519b692eb3e98f31d20762ba232fd3e1e1f9e9925b3e1`，
+  warm execution `fc4799c4a785e28207e2747444b151670d6f4dcf76bd20d4e061155209953d2c`，
+  stateless execution `d059d812ecba21ac2b7aca8a6ee8d4d82c87b1d4051d81d89cff3061cd316c09`。
+- 原controller1148410/算法1148432已退出，不重跑首SAY任何已通过阶段。未发布生产state、Intake或写库；
+  首SAY通过不等于W3B整批切换。下一重计算在19:00 Actuals自然完成及fresh preflight后启动另两方案Native双参考。
+- 另两scheme的显式state监督器已完成独立审查，发现私有Request解析后取hash的双读窗口；
+  已调整为先锁摘要、解析比较、立即复验，修复SHA `b10be92e7e926a6f29efeab0202cc86aefba6d61249d0ad6897f55035a496e62`，
+  正进行定点独立复核。尚无两方案family通过报告，两个批准hash仍None，不上传或启动state阶段。
 
 **另两方案执行包已审并预置（2026-09-10 17:34 CST）**：
 
