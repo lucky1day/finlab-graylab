@@ -2,7 +2,41 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FIXED_FULL333_AND_INCREMENTAL_STATE_PASSED; W3B_NATIVE_REFERENCE_PASSED_MODEL_REUSE_FULL_RUNNING_K5_NOT_STARTED; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FIXED_FULL333_AND_INCREMENTAL_STATE_PASSED; W3B_MODEL_REUSE_FULL333_PASSED_K5_ECS_FULL_RUNNING; W4_MAC3_PAUSED`
+
+**K5实际派发（2026-09-11 11:07 CST）**：K5 wrapper d22cbc经独立实际diff审查C/I=0；
+旧Native身份与Full前置成功报告保持独立，Full报告及34 artifacts纳入启动前后摘要复验。
+新包为 `/opt/bond-factor-lab/incoming/w3b-k5-model-reuse-20260911.72TZ9d/`，三文件hash复验并只读封存；
+无训练预检完整通过并在过去deadline处按预期拒绝启动。fresh现场五one-shot inactive/MainPID0、
+两run表running均0、无竞争算法，可用13252MiB/磁盘15GiB，current/previous未变，下一timer为18:00。
+11:06:28实际派发controller1316321；11:07:26读回算法PGID1316365正在执行一次完整K5 backtest，
+日志已进入Phase A。日志为 `k5-controller.log` 与 `k5-execution/`，finish-before=14:00，单调用7200秒/4GiB/Nice10。
+尚无完整K5结果，不重复成功Full、首SAY或Native。同步在本机准备后续状态验证脚本的新证据接线，
+仍须独立review；K5状态入口在真实成功报告hash锁定前保持fail-closed，不提前执行。
+
+**Full完整通过与K5本机推进（2026-09-11上午，覆盖旧运行状态）**：
+
+- ECS Full于10:21:28成功完成，6860.478432秒，333条精确五字段与Native逐行一致；
+  CSV SHA256 `8296155397cc542c3a8a2b188f91e679a9080274ecc94dee38b740736c2d46d1`。
+  独立复验报告34个artifact摘要、完整CSV、退出0及进程组无残留通过，无failure。
+  report SHA256 `6018e0e6240b996a1a201e742fa063b0dc191786d63e4e29f0393a03a50339fe`；
+  原始目录已备份为 `outputs/releases/w3b-staged-reference-20260911/model-reuse-full-execution/`。
+  这是算法等价证据，不是正式持久化Gate或切换；不重跑此成功批次。
+- 用户明确授权当前开发Mac参与K5改造与计算，不授权改变Mac3生产runtime/launchd/数据库。
+  本机arm64、32逻辑核、512GiB；使用现有forecast_env_blackbox_v1，数值库每库1线程、算法4worker、
+  Nice10、平台监督180秒/4GiB，不修改Python环境或其他任务。
+- K5新候选位于 `outputs/native-migration-w3b-k5-model-reuse-draft/liwei_0616_10y02_cons_say_k3_div_k5_bbv2/`，
+  py SHA256 `8e0df532e3c34fd778ef2ee38d66282ae219004edb9abe1b6d8925a7f28754d6`，metadata f9a046保持原样。
+  仅迁入Full已审五个模型复用函数；AST确认所有其余节点及streak_K=5不变，独立审查C/I=0。
+- 从ECS只读复制冻结五文件、binding和K5 Request到 `outputs/w3b-k5-local-20260911.Ip7Jlr/`，
+  逐文件SHA全部一致，不读取本机生产源或数据库。本机新旧K5同环境两cutoff、265全配置/原完整seed实际对照通过，
+  概率与方向数组完全一致，fit次数1590→795、1060→530，峰值RSS1239952KiB。
+  报告 `outputs/releases/w3b-staged-reference-20260911/k5-mac-two-cutoffs.json`；该证据不冒充ECS验证。
+  新路径Phase A耗时4.488/2.912秒；旧路径计时包含额外特征准备，不能据此计算整体加速比。
+- K5完整ECS对照尚未启动。待审wrapper为 `outputs/native-migration-w3b-k5-model-reuse-draft/run_k5_comparison.py`，
+  SHA256 `d22cbc0fb86c888c4fd84cc3b3118c43fd94511b234693cac1ec58ef37d6488b`；它复用原三Native链，
+  额外锁定Full成功报告为派发前提，K5候选身份独立。下一步先审查此实际diff及本机验收，再现场预检和派发。
+  两个方案的状态验证wrapper仍未接线，不得直接执行旧占位脚本；W3B整批尚未切换。
 
 **09:20只读进度核验**：`KOoIYB`同一controller1285305/算法1285346仍运行，无failure、成功报告或完整Output。
 首次历史建模已完成，2498.615秒；日志完成54/333个cutoff，最后2025-03-26，随后53次平均12.387秒、
