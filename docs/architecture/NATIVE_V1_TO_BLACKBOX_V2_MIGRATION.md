@@ -2,6 +2,25 @@
 
 **文档状态**：`CURRENT`
 
+**最新身份决定（2026-09-12，覆盖下文所有“旧ID→新_bbV2身份”待执行步骤）**：
+
+- 用户明确要求同一个ID：Native与Blackbox是同一方案的不同执行版本，当前W3B保留三个原始
+  `scheme_id` / `base_scheme_id`及原 `__h5__10Y` Registry ID，不新建第二个业务身份、不做别名或历史拼接。
+  仅新增Blackbox exact version并原子转移未来执行权；旧版本的prediction/run/backtest及输入来源保持原样。
+- 现场只读核实，三个原ID各有333条历史产品事实和78条gray/live事实，后者target_date为
+  2026-06-01至2026-09-17；原Registry均active。不存在需要因升级补算的这234条灰度业务事实。
+  三个 `_bbv2` 目前仅各有333条backtest证据，没有Registry和产品事实；这些候选证据保留，不激活为新业务方案，
+  不删除、改名其数据库记录，不自动冒充原ID exact version的证据。
+- 既有a1b9a72跨ID切换候选及 `migrate-native-successor` 的W3B cutover路径不再执行；不archive原Registry，
+  不为新ID填gray，不改current。已完成W1/W2/W3A的身份及历史不在本轮自动重组；Mac3/W4/DDL边界不变。
+- 当前代码约束已经定位：跨ID迁移repository拒绝old/new ID重叠；普通Blackbox revision拒绝含Native历史版本的
+  身份。后续实现应复用现有version/Registry/repository锁与事务，补齐受控同ID运行时升级边界，
+  不能直接把现有跨ID命令改参数就用于同ID，也不能全局去掉版本校验。
+- 算法计算逻辑保持已审字节；需要对齐metadata/config中的原ID，并重新计算真实exact version身份。
+  既有等价、回测和ECS状态通过显式、可审计的身份转换校验尽量复用，不伪改历史code/metadata/hash。
+  不因ID包装调整重复完整训练；状态和证据转换未核验前不宣称已可复用，亦不自动fallback重算。
+  已启动K5初始化允许完成并保留产物，不重启。接下来验证同ID切换原子性、历史不变与一次正常调用后接管。
+
 **执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_ALL_THREE_FULL333_PASSED; W3B_FULL_K5_MAC_STATE_PASSED_AND_CANONICAL_INTAKE_DONE; W3B_DUPLICATE_SAY_GATE_CANCELLED_NO_DB_COMMIT; W3B_REVIEWED_RESULT_PERSIST_COMPLETE; W3B_SAY_ECS_ADOPT_AND_CURRENT_PREDICT_PASSED; W3B_FULL_ECS_INITIALIZATION_AND_WARM_PASSED; W3B_K5_ECS_INITIALIZATION_RUNNING; W3B_ECS_CUTOVER_PENDING; W4_MAC3_PAUSED`
 
 **Full完成、K5已启动及后续执行顺序（2026-09-11 23:47 CST）**：
@@ -1587,15 +1606,16 @@ Full与K5不同执行目录；只读绑定旧三报告链，K5另绑定Full成�
 
 ## 1. 目标与非目标
 
-本项目把 26 个 Native V1 base scheme 替换为 30 个新的 Blackbox V2 successor，使 Scheduler、回测、
-生命周期、调度和最终清理只保留 Blackbox V2 一条可执行主路径。迁移不是修改旧身份的 `runtime_type`，而是
-建立新身份、验证同输入结果、原子转移业务格子所有权、通过真实 unit/plist 环境的人工 one-shot 验证控制面，
-最后删除没有调用者的 Native 路径；不再等待跨日、跨周或跨月的自然触发观察次数。
+本项目使 Scheduler、回测、生命周期、调度和最终清理只保留 Blackbox V2 一条可执行主路径。
+当前未切换的同方案运行时升级保留原ID及历史，以新的exact version承载Blackbox执行，原子切换未来Writer，
+通过真实 unit/plist 环境的人工 one-shot 验证控制面。原26→30跨ID映射仅保留为此前设计及已执行批次的记录，
+不得继续作为当前W3B新增业务身份的依据；已完成批次不自动重组。最后删除没有调用者的Native路径，
+不再等待跨日、跨周或跨月的自然触发观察次数。
 
 长期不变量如下：
 
-- 旧 Native prediction、run、backtest 和 Registry 历史永久不修改、不覆盖、不删除；
-- successor 使用独立 base ID 和 composite Registry ID，不建立 predecessor alias、历史拼接、双写或 fallback；
+- 旧 Native prediction、run、backtest 永久不修改、不覆盖、不删除；同ID升级保留原Registry身份；
+- 同一方案保留原base ID和composite Registry ID，仅版本变化，不建立predecessor alias、历史拼接、双写或fallback；
 - Blackbox Result 顶层字段精确为 `request_id`、`predict_date`、`feature_date`、`target_date`、
   `predicted_direction`；
 - confidence、vote score、阈值和算法内部统计只用于迁移期诊断，不进入长期合同或数据库；
