@@ -190,6 +190,15 @@ W3B 产物索引：
   新鲜全量为 882 passed、11 skipped、235 subtests passed，独立复审无 Critical/Important。
   这是控制代码完成，不是生产 prepare 完成：本轮未运行生产算法、未发布状态、未写生产
   Harness、未切 current 或调度；仍等待下述候选目录替换顺序确认。
+- 06:30 ECS DataBridge 自然任务于 06:33:44 成功退出，发布
+  `full-20260912-063338-cefd054bbccf` / `snapshot-b67e835383c8808b26982a32`。
+  新五文件均与其 manifest SHA 相符；相对三份 W3B 源状态绑定的上一代，daily、weekly、
+  calendar 文件摘要变化，monthly/catalog 不变。三份源 envelope SHA 仍与已保全值一致，
+  原 ID 各 411 条事实、最大 target 2026-09-17 未变，无 running run 或迁移进程。
+  已有等价报告和初始化仍绑定原输入，不失效、不重跑；但当前 prepare 的同代输入检查将
+  拒绝把它们直接标成新 generation 的接纳证据。文件变化不等于 cutoff 前历史依赖变化，
+  该依赖兼容性尚未验证。后续需先核验已批准 cutoff 的历史依赖，再确定最小受控状态
+  接纳动作；不改旧凭据、不改 SHA，不因此自动初始化或另跑完整回测。候选目录确认边界不变。
 
 ### 待确认的三方案候选布局顺序调整
 
