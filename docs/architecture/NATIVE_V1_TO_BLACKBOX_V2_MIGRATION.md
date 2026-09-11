@@ -2,7 +2,49 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_ALL_THREE_FULL333_PASSED; W3B_FULL_K5_MAC_STATE_PASSED_AND_CANONICAL_INTAKE_DONE; W3B_DUPLICATE_SAY_GATE_CANCELLED_NO_DB_COMMIT; W3B_REVIEWED_RESULT_PERSIST_COMPLETE; W3B_ECS_STATE_PREPARING; W3B_ECS_CUTOVER_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_ALL_THREE_FULL333_PASSED; W3B_FULL_K5_MAC_STATE_PASSED_AND_CANONICAL_INTAKE_DONE; W3B_DUPLICATE_SAY_GATE_CANCELLED_NO_DB_COMMIT; W3B_REVIEWED_RESULT_PERSIST_COMPLETE; W3B_SAY_ECS_ADOPT_AND_CURRENT_PREDICT_PASSED; W3B_FULL_ECS_INITIALIZATION_RUNNING; W3B_ECS_CUTOVER_PENDING; W4_MAC3_PAUSED`
+
+**当前日模拟通过、Full唯一初始化启动（2026-09-11 16:58 CST）**：
+
+- SAY通过既有executor的唯一一次正常增量调用：`rebuild_state=False`、120秒预算，复用已接纳raw state，
+  在真实新generation `full-20260911-063339-668c17efc6bb` /
+  `snapshot-51c9b03a59422cab0c087e59`下生成
+  `predict_date=2026-09-11, feature_date=2026-09-10, target_date=2026-09-17, predicted_direction=1`。
+  标准五字段与新state封装校验通过，本方案六张事实表前后摘要相同，业务预测写入0。
+  一次性模拟脚本SHA `734d78ed7291f730ad9714e0c14b94f1a1d2abd55d7902b11f8f43e8492cede4`，
+  独立审查无C/I；结果在同incoming的 `simulate-adopted-say-state-20260911/completed.json`，
+  已备份到本地 `outputs/releases/w3b-reused-backtests-20260911.HgiZQP/`。不得重复运行接纳或模拟入口。
+- Full初始化脚本 `initialize_w3b_ecs_state.py` 冻结SHA
+  `c88091a771e8b8bfec8b7f7c53f298eb69946aedc45aa48b091b6fb8ae7e41a7`，独立审查C/I均0。
+  只读preflight通过，plan `85ce0ac29bd56be31eaee3d750318cf78a2210c51118e0f3050bf5376fd2635e`；
+  16:58以同plan启动唯一controller1381596，现场nice=10，已记录started/cold-started，尚无完成结论。
+  固定上述09-11 generation和同一当前Request，冷初始化最多7200秒/4GiB/8线程；冷成功后自动进行同Request
+  120秒普通warm预测，两个结果五字段必须一致。只使用标准runtime view/StateSession，不写业务事实。
+  日志为同incoming的 `state-init-full-controller.log`，attempt为 `state-init-<Full successor>/`。
+- Full完整成功且进程退出后，才对K5 fresh preflight并派发一次初始化；共享锁内拒绝另一family失败或未完成的
+  attempt。任一失败先核查，不自动重试、不跳下一份，也不重跑已通过333条回测。
+  W3B切换候选a1b9a72仅预安装，current仍a6ffe3a6，尚未激活三个successor。Mac3与timer均未改变。
+
+**SAY原始状态接纳、整批切换候选预安装（2026-09-11 16:53 CST）**：
+
+- SAY已用一次性 `adopt_reviewed_say_state.py` 接纳已审ECS warm原件；脚本SHA256
+  `46d8a09c13235a75bbf2df893397a21be6f10bb225d71b8a2b36d276490f3d5b`，独立审查Critical/Important均0。
+  ECS只读preflight和同SHA apply通过，plan为
+  `096df4d32e5036538476207adec7e9718dc06f7f34dfb1d6f4797e390b49b30f`。
+  原payload `d2b93732181c89dfa4cd985635f33fe1d726dfc74f0e36b2ff6587e9d26a4d29`保持原字节；
+  新平台envelope为 `4f44b846161f083e8bc9e511a548269af53cda48e28afce51fc98de6c983d6ff`，
+  仍记录真实09-09旧generation与snapshot，不改标当日输入。新增算法调用0、业务写入0。
+  这是本次受控生成的新封装，不宣称原始raw文件已经是平台状态；下一步由正常算法判断当前输入能否复用。
+- 切换候选commit `a1b9a72736edbc2c5da25b7f21fe541746fcfc78` 只在部署矩阵中移除三个旧W3B的
+  `aliyun-gray`，三successor范围和所有Mac3成员资格未变；同步现有测试的三项名单期望。
+  精确JSON差异/现有W3B矩阵validator通过，相关22项测试与公共状态40项测试通过，独立矩阵审查无C/I。
+  两次deterministic archive/manifest字节一致，archiveSHA256
+  `7e7028b2657bfaa950161ffe5248b149d79ed8b4d902a08cbebb975e00993588`；
+  本地 `outputs/releases/w3b-cutover-candidate-20260911.sb4gtdkg/`，ECS incoming
+  `/opt/bond-factor-lab/incoming/w3b-cutover-candidate-20260911.PTI2dd/`。
+  installer返回 `activated=false`，仅预安装，不提前移除当前运行范围。
+- ECS current仍a6ffe3a6、Backend仍PID1141752/active，未改timer或Mac3。Full/K5初始化尚未启动；
+  下一步仅各一次当前Request的冷状态生成和普通warm调用，不重复333条历史，也不再次做Native/stateless比对。
 
 **三份已验证结果完成持久化（2026-09-11 16:39 CST 读回）**：
 
