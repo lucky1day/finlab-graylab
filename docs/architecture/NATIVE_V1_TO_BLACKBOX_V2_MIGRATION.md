@@ -166,6 +166,34 @@ W3B 产物索引：
   独立复审无未解决 Critical/Important。本步骤没有生产算法调用、状态发布或数据库写入。
   原 ID canonical 交付、可信源回执与真实 Harness prepare 的连接仍待完成，不能据 helper
   测试通过宣称已具备生产切换条件。
+- 三份可信源凭据加载器已完成：固定 exact ID/version/config/算法及原件 SHA，
+  Full/K5 复用原始七字段 Request；SAY 绑定后续正常增量状态，按同 snapshot 的已批准
+  cutoff 重建 Request 并明确标记，不冒充已保存原 Request 原件。失败凭据、状态、路径、
+  身份或输入异常均拒绝；返回来源证明，不授予发布或 Gate 权限。
+  独立审查及 18 项来源边界测试通过；从本机 stdin 提供只读模块，在 ECS 的 `3ac4647…`
+  reference 环境直接读取三份真实原件全部通过，算法执行 0、状态/数据库/服务写入 0。
+  SAY / Full / K5 的来源证明 SHA 分别为：
+  `940a441961ce245cea592a34667b0235f7039db3f24b9789827136d3e6439f35`、
+  `4d540df8f043fbedfca6def41d3396a84faa27e822374e8bd1c2cd167408bbf1`、
+  `e9fffbbf7373674e99a8a043ab2df31c774487479163c25972fcdf714f3ac8e2`。
+  合入来源加载器后的全量回归为 866 passed、10 skipped、235 subtests passed。
+  生产 prepare 仍须从正式候选 immutable release 执行；这次只读来源验收不代替它。
+
+### 待确认的三方案候选布局顺序调整
+
+`validate_canonical_layout` 要求 Blackbox 方案根目录精确为 `config.yaml + delivery/`，
+因此“先改原 ID config、仍在同目录保留 Native 附件，双机接管后再删除”不可执行。
+这不是算法或状态初始化阻塞，而是本计划删除顺序与既有目录合同的冲突。
+
+建议仅对 W3B 三个已完成等价的方案调整：新候选 commit/release 替换三个原 ID canonical
+目录，移除其中的 Native `predict.py`、`inference.py`、`core/`、根 `__init__.py`、
+`benchmarks/` 及恰好三个直接引用它们的 reproduction runner；不改其它 Native 方案。
+旧生产 current、完整 immutable reference、archive、Git 历史及旧状态全部保留，
+回滚通过恢复旧 exact 版本并切回旧 immutable release 完成，而不是在新候选内运行 Native。
+不增加 Native 副本目录，不放宽普通 Blackbox closed-world，不将此步骤称为全局 Native 清理。
+
+此项必要的候选替换先后顺序已单独提请用户确认；确认前不执行上述删除/替换或生产切换。
+可信源凭据加载、状态接纳、prepare 编排及其隔离验证可继续准备。
 
 ## 4. 最小实现
 
