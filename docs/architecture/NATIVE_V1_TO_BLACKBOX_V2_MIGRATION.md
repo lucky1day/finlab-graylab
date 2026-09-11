@@ -2,7 +2,25 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_ALL_THREE_FULL333_PASSED; W3B_FULL_K5_MAC_COLD_WARM_PASSED_STATELESS_RUNNING; W3B_SAY_ECS_FORMAL_GATE_RUNNING; W3B_ECS_CUTOVER_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_ALL_THREE_FULL333_PASSED; W3B_FULL_K5_MAC_STATE_PASSED_AND_CANONICAL_INTAKE_DONE; W3B_SAY_ECS_FORMAL_GATE_RUNNING; W3B_ECS_CUTOVER_PENDING; W4_MAC3_PAUSED`
+
+**Full/K5 本机验收完成、已接入 canonical（2026-09-11 15:24 CST）**：
+
+- 两方案 cold→warm→stateless 三段均 passed，主 agent 逐段复验 identity、artifact/环境文件摘要、
+  前序报告链、退出码与进程组清理；warm/stateless 的五字段完全一致。stateless 只核对一个 Request，
+  Full 2606.172 秒、K5 2602.816 秒，均未超 7200 秒，峰值 RSS 分别为 4215898112/4156424192 bytes，
+  均低于 4 GiB。无新增失败、无重跑已完成的完整算法等价。
+- Full stateless 报告 SHA256 `42c786129e9c639a82f5efd2f117a38d8dc545c2eaa8f6a90122499fe3cbeb70`；
+  K5 stateless 报告 SHA256 `39578e4c7951326e0092387b1706948c364c9ad5e269f546846da9be7cc3d210`。
+- 已使用既有 `harness intake-blackbox --incremental-state` 接入 Full/K5；canonical 仍为 paused/draft，
+  两文件字节保持已审候选原样。部署矩阵仅新增两个 successor 的 aliyun-gray 范围，未移除旧 Native，
+  未增加 Mac3 部署范围，未修改任何平台运行代码或算法内部。
+- Full/K5 exact version 分别为 `66b4fe52fef1` / `d18725b8f920`；首 SAY 仍为 `0bc86751d50e`。
+  Intake/discovery/deployment/config/W3B 原件复用相关测试：64 passed、104 subtests passed。
+  独立集成审查 Critical/Important/Minor 均为 0，四份交付及生成配置逐字复验通过；
+  下一步构建完整 W3B 不可变候选。未将本机验收外推为 ECS 性能或正式入库。
+- 15:21 ECS 首 SAY 正式 Gate 算法 1348940 仍运行；保持该唯一任务继续，未重复启动正式 Gate。
+  本次本地接入不切 current、不激活任何 successor，不改服务/timer/Mac3 生产/DDL。
 
 **增量性能通过并继续接入准备（2026-09-11 14:45 CST，覆盖下文旧阶段）**：
 
