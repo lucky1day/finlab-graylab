@@ -223,12 +223,25 @@ W3A/W3B 不允许多次独立 activate 冒充原子切换。
 普通 Blackbox 修订检查保持严格，不能全局去掉 Native 历史校验来绕过边界。
 
 当前已实现的临时入口只有 `python -m harness migrate-native-successor
-{preflight,cutover,rollback} --wave W3B`，尚不支持其他 wave 或 Mac3。
-必须传 candidate `--project-root`、已安装旧 Native `--reference-project-root`、
-三次 `--harness-run-id 原baseID=真实runID`，以及从只读查询取得的目标 DB 名称/UUID。
-preflight 的 `--action` 指明 cutover 或 rollback；两个写命令另外要求刚生成的
-`--expected-plan-sha256` 和 `--approved-by`。此阶段 preflight 要求 candidate 已在维护围栏内
-作为 current，且调用代码来自该 immutable release；离线候选检查不能冒充现场 preflight。
+{preflight,prepare,cutover,rollback} --wave W3B`，尚不支持其他 wave 或 Mac3。
+所有命令从 candidate immutable release 执行，传 candidate `--project-root`、
+已安装旧 Native `--reference-project-root`，以及只读取得的目标 DB 名称/UUID
+（`--expected-database-name` / `--expected-server-uuid`）；不提供生产凭据示例。
+
+准备与切换的预检不能混用：
+
+| 步骤 | current / 调度前提 | 专属参数与输出 |
+|---|---|---|
+| `preflight --action prepare` | current 仍为已核验 Native；不 fence、不切 release | 不传 Harness ID；输出准备 plan / SHA，不调用算法、不写状态或 Harness |
+| `prepare` | 同上，在锁内重新读取准备计划 | 传准备 SHA、`--approved-by`、全新绝对 `--work-dir`；每方案一次同 cutoff 调用，成功后输出三个真实 Harness ID |
+| `preflight --action cutover` | 三份状态/Gate 已就绪；操作者已 fence 并在维护围栏内切到 candidate current | 传三次 `--harness-run-id 原baseID=真实runID`；输出新的切换 plan / SHA |
+| `cutover` | 维持 candidate current 和 Writer 围栏 | 同一组三个 Harness ID、切换 SHA、`--approved-by`；整组版本事务，不自动切文件或恢复 timer |
+| `preflight --action rollback` / `rollback` | 先 fence；仍从 candidate current 读取反向事务计划 | 三个 Harness ID；rollback 另传反向计划 SHA 和 operator；版本恢复后由操作者切回已核验旧 release，再恢复 timer |
+
+每个写命令的 SHA 都通过 `--expected-plan-sha256` 显式提供，只能使用其对应 action
+刚生成的预检结果；准备 SHA 不能代替切换或回滚 SHA。无 `--action` 的 preflight 默认为
+cutover，不能当成 prepare。准备中断后先核验已保留状态与 admission，不能换目录重跑。
+候选 canonical 替换仍须完成上文的顺序确认；上述命令说明不表示该确认或生产 prepare 已完成。
 尚未准备完状态/Gate 前不要先 fence 或切 current。文件系统切换失败、缺证据或 DB 操作失败时，
 外层操作者仍须保持 Writer 关闭并完成分层补偿，不能把此 CLI 当成自动发布脚本。
 
