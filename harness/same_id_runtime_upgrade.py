@@ -173,14 +173,15 @@ def _assert_no_algorithm_process() -> None:
 def _assert_execution_modules(root: Path) -> None:
     """禁止工作树控制层借用已安装候选的 manifest 执行未发布代码。"""
     from scheduler import repository, blackbox_v2_runner, blackbox_state
-    from harness import runtime_upgrade_evidence, native_successor_migration
+    from harness import runtime_upgrade_evidence, native_successor_migration, runtime_upgrade_state, w3b_state_source
     for module in (repository, blackbox_v2_runner, blackbox_state,
-                   runtime_upgrade_evidence, native_successor_migration):
+                   runtime_upgrade_evidence, native_successor_migration,
+                   runtime_upgrade_state, w3b_state_source):
         if root not in Path(module.__file__).resolve(strict=True).parents:
             raise RuntimeError("migration modules must all originate in the candidate release")
 
 
-def _capture_installed_locale(root: Path) -> dict[str, object]:
+def _capture_installed_locale(root: Path, *, installed_current_root: Path | None = None) -> dict[str, object]:
     """复用已核验 W3B 初始化的封闭 systemd 环境读法，不改调用进程环境。"""
     from scheduler.blackbox_v2_runner import _load_runtime_profile, _python_runtime
     unit = subprocess.check_output([
@@ -194,7 +195,7 @@ def _capture_installed_locale(root: Path) -> dict[str, object]:
     manager = subprocess.check_output(["/usr/bin/systemctl", "show-environment"], text=True, timeout=10)
     contents = [manager, "\n".join(shlex.split(properties.get("Environment", ""))),
                 _SERVICE_ENV_FILE.read_text(),
-                (root / ".bfl-release.env").read_text()]
+                ((installed_current_root or root) / ".bfl-release.env").read_text()]
     selected = {}
     for content in contents:
         for line in content.splitlines():

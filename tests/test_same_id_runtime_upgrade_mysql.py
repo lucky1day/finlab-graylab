@@ -4,7 +4,9 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timezone
 import json
+import hashlib
 import os
+from pathlib import Path
 import uuid
 
 import pytest
@@ -26,6 +28,48 @@ pytestmark = pytest.mark.skipif(
     not MYSQL_URL,
     reason="BFL_TEST_NATIVE_SUCCESSOR_MYSQL_URL is required for isolated MySQL",
 )
+
+
+def test_prepare_receipt_persists_real_gate_and_keeps_lifecycle_lock(mysql_migration, monkeypatch):
+    """真实 Harness 写入后可供事务验收；dispose 不得释放正在持有的生命周期锁。"""
+    from harness.context import GateContext
+    from harness import persistence
+    from harness.result import Evidence, GateResult, GateStatus
+    from harness.w3b_prepare import _gate_proof
+
+    engine, kwargs, control = mysql_migration
+    key = next(iter(kwargs["old_configs"]))
+    old, new = kwargs["old_configs"][key], kwargs["new_configs"][key]
+    with engine.begin() as conn:
+        conn.exec_driver_sql("ALTER TABLE t_harness_runs ADD started_at DATETIME, ADD git_commit VARCHAR(64)")
+        conn.exec_driver_sql("ALTER TABLE t_harness_gate_results ADD started_at DATETIME")
+    monkeypatch.setattr(persistence, "_release_commit", lambda: "a" * 40)
+    run_id = persistence.new_harness_run_id()
+    stamp = datetime.now(timezone.utc).isoformat()
+    plan = {"input": {"generation_id": "generation-1"}, "equivalence": {key: {"verified": True}}}
+    proof = _gate_proof(old, new, plan, key, "d" * 64)
+    gate = GateResult("native-runtime-upgrade", GateStatus.PASSED,
+                      [Evidence("runtime_upgrade", proof)], [], stamp, stamp)
+    ctx = GateContext(key, "2026-09-11", Path(__file__).resolve().parents[1],
+                      config=new, engine_factory=lambda: engine)
+    lock_name = "bfl:bbv2-draft:" + hashlib.sha256(key.encode()).hexdigest()[:32]
+    with repo._blackbox_activation_advisory_lock(engine, scheme_id=key):
+        with engine.connect() as conn:
+            before = repo._same_id_fact_snapshot_conn(conn, [key], for_update=False)
+        assert persistence.persist_harness_run_start(ctx, harness_run_id=run_id,
+                                                     stage="native-runtime-upgrade", started_at=stamp)
+        assert persistence.persist_harness_run_complete(ctx, harness_run_id=run_id, status="passed",
+                                                        finished_at=stamp, results=[gate])
+        with engine.connect() as conn:
+            assert conn.execute(text("SELECT GET_LOCK(:name, 0)"), {"name": lock_name}).scalar_one() == 0
+            accepted = repo._same_id_evidence_conn(conn, old, new, run_id, control, for_update=False)
+            after = repo._same_id_fact_snapshot_conn(conn, [key], for_update=False)
+        assert accepted["harness_run_id"] == run_id
+        for table in before:
+            if table not in {"t_harness_runs", "t_harness_gate_results"}:
+                assert after[table] == before[table]
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT IS_FREE_LOCK(:name)"), {"name": lock_name}).scalar_one() == 1
 
 
 @pytest.fixture

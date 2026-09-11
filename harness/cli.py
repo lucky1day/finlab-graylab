@@ -31,6 +31,7 @@ from harness.same_id_runtime_upgrade import (
     execute_same_id_upgrade,
     parse_w3b_harness_run_ids,
 )
+from harness.w3b_prepare import build_w3b_prepare_preflight, execute_w3b_prepare
 from scheduler.discovery import load_scheme_config
 from scheduler.repository import create_engine_from_env
 from shared.blackbox_v2.intake import intake_delivery
@@ -280,16 +281,19 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="migration_action",
         required=True,
     )
-    for action in ("preflight", "cutover", "rollback"):
+    for action in ("preflight", "prepare", "cutover", "rollback"):
         item = migration_actions.add_parser(action)
         item.add_argument("--wave", choices=["W3B"], required=True)
         item.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
         item.add_argument("--reference-project-root", type=Path, required=True)
-        item.add_argument("--harness-run-id", action="append", required=True, metavar="BASE=RUN")
+        if action != "prepare":
+            item.add_argument("--harness-run-id", action="append", required=action != "preflight", metavar="BASE=RUN")
         item.add_argument("--expected-database-name", required=True)
         item.add_argument("--expected-server-uuid", required=True)
         if action == "preflight":
-            item.add_argument("--action", choices=["cutover", "rollback"], default="cutover")
+            item.add_argument("--action", choices=["prepare", "cutover", "rollback"], default="cutover")
+        if action == "prepare":
+            item.add_argument("--work-dir", type=Path, required=True)
         if action != "preflight":
             item.add_argument("--expected-plan-sha256", required=True)
             item.add_argument("--approved-by", required=True)
@@ -302,9 +306,24 @@ def _run_native_successor_migration_command(
 ) -> dict[str, object]:
     """仅保留同 ID W3B 生命周期路由；旧跨 ID 写入命令已封闭。"""
     project_root = args.project_root.resolve()
-    run_ids = parse_w3b_harness_run_ids(args.harness_run_id)
+    preparing = args.migration_action == "prepare" or (
+        args.migration_action == "preflight" and args.action == "prepare"
+    )
+    if preparing and getattr(args, "harness_run_id", None):
+        raise ValueError("prepare creates its own real Harness runs; do not supply run IDs")
+    run_ids = None if preparing else parse_w3b_harness_run_ids(args.harness_run_id or [])
     engine = create_engine_from_env()
     try:
+        if preparing:
+            kwargs = dict(project_root=project_root,
+                          reference_project_root=args.reference_project_root.resolve(),
+                          expected_database_name=args.expected_database_name,
+                          expected_server_uuid=args.expected_server_uuid)
+            if args.migration_action == "preflight":
+                return build_w3b_prepare_preflight(engine, **kwargs)
+            return execute_w3b_prepare(engine, **kwargs,
+                expected_plan_sha256=args.expected_plan_sha256, approved_by=args.approved_by,
+                work_dir=args.work_dir)
         if args.migration_action == "preflight":
             return build_same_id_preflight(
                 engine,

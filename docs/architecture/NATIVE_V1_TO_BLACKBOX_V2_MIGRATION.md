@@ -112,7 +112,7 @@ W3B 产物索引：
 - 周/月 `fact_horizon` 投影已贯通 discovery、predict、gray batch 与 backtest，
   仅允许精确迁移清单；普通 Blackbox 默认版本摘要保持不变。
 - 已实现只读交付身份转换证明与 W3B 状态 Metadata 封装转换：算法字节、数值数组不变。
-  这些 helper 尚不构成激活证据；ECS 标准本机调用、受控状态发布与准备 Gate 仍待接通。
+  这些 helper 本身不构成激活证据；准备流程的后续接通与验证见本节最新进度。
 - W3B 三原 ID 的 ECS 部署资格已在候选矩阵恢复；现场尚未切换，不能提前排除原 Writer。
 - 新鲜全量回归：805 passed、9 skipped、235 subtests passed；另以本机随机隔离 MySQL
   schema 实测 3 passed，覆盖整批回滚、正常 activation 锁竞争、再切换与身份漂移。
@@ -164,8 +164,7 @@ W3B 产物索引：
   独立审查发现的“更晚 Request 可能触发追加训练”已通过执行前 cutoff 精确限制修复。
   10 项接纳边界测试通过，新鲜全量为 848 passed、10 skipped、235 subtests passed；
   独立复审无未解决 Critical/Important。本步骤没有生产算法调用、状态发布或数据库写入。
-  原 ID canonical 交付、可信源回执与真实 Harness prepare 的连接仍待完成，不能据 helper
-  测试通过宣称已具备生产切换条件。
+  不能据 helper 测试通过宣称已具备生产切换条件；原 ID canonical 交付仍受下述确认边界约束。
 - 三份可信源凭据加载器已完成：固定 exact ID/version/config/算法及原件 SHA，
   Full/K5 复用原始七字段 Request；SAY 绑定后续正常增量状态，按同 snapshot 的已批准
   cutoff 重建 Request 并明确标记，不冒充已保存原 Request 原件。失败凭据、状态、路径、
@@ -178,6 +177,19 @@ W3B 产物索引：
   `e9fffbbf7373674e99a8a043ab2df31c774487479163c25972fcdf714f3ac8e2`。
   合入来源加载器后的全量回归为 866 passed、10 skipped、235 subtests passed。
   生产 prepare 仍须从正式候选 immutable release 执行；这次只读来源验收不代替它。
+- W3B `preflight --action prepare` / `prepare` 编排已接通：复用三份可信来源、既有等价
+  证明及 StateSession 接纳函数，每个方案只进行一次同 cutoff 标准调用。成功后通过既有
+  Harness 持久化真实 `native-runtime-upgrade` Gate，不制造 backtest，不写预测或 Registry。
+  六个生命周期锁内重新核对已批准计划；实际 current 必须仍是与 reference exact 身份及
+  四文件源码摘要匹配的 Native release，不能提前指向 candidate。准备不停止或恢复 timer。
+  输入、current 或数据库发生变化即停止；已发布状态、原始 admission 和失败记录保留，
+  禁止自动重跑、覆盖或初始化。进程终止未确认时，先保留输入，再尝试记录失败。
+  中断后尚无自动恢复入口，必须先核验留存产物并明确最小恢复动作，不可再次调用 prepare。
+  定向验收与独立复审均为 72 passed；真实随机隔离 MySQL 为 5 passed，新增 Harness
+  写入后由切换 repository 接受以及生命周期锁持续持有的验证，隔离 schema 已清理。
+  新鲜全量为 882 passed、11 skipped、235 subtests passed，独立复审无 Critical/Important。
+  这是控制代码完成，不是生产 prepare 完成：本轮未运行生产算法、未发布状态、未写生产
+  Harness、未切 current 或调度；仍等待下述候选目录替换顺序确认。
 
 ### 待确认的三方案候选布局顺序调整
 
