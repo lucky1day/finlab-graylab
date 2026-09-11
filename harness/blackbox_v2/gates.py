@@ -171,6 +171,7 @@ class BlackboxBacktestGate(_BlackboxGate):
                     backtest_start_date=ctx.backtest_start_date,
                     target_date_before=ctx.predict_date,
                     total_deadline_sec=ctx.timeout_sec,
+                    fact_horizon=(cfg.horizon if cfg.horizon != metadata.horizon else None),
                 )
             output.summary.update(
                 {

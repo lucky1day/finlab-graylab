@@ -9,6 +9,59 @@ from unittest.mock import patch
 
 
 class BlackboxV2DiscoveryTests(unittest.TestCase):
+    def test_fact_horizon_preserves_execution_contract_and_changes_version(self) -> None:
+        from scheduler.discovery import load_scheme_config
+        from shared.task_specs import TASK_COMBINATIONS
+
+        for scheme_id, task_type, fact_horizon in (
+            ("weekly_5y_direct_0529", "weekly_point", 6),
+            ("weekly_avg_5y_lgbm_0529", "weekly_average", 6),
+            ("monthly_5y_knn_top20_0629", "monthly", 30),
+        ):
+            with self.subTest(task_type=task_type), tempfile.TemporaryDirectory() as tmpdir:
+                old_dir = _write_blackbox_scheme(Path(tmpdir))
+                scheme_dir = old_dir.with_name(scheme_id)
+                old_dir.rename(scheme_dir)
+                config_path = scheme_dir / "config.yaml"
+                config_path.write_text(config_path.read_text().replace("trial_10y", scheme_id))
+                for suffix in ("py", "json"):
+                    (scheme_dir / "delivery" / f"trial_10y.{suffix}").rename(
+                        scheme_dir / "delivery" / f"{scheme_id}.{suffix}"
+                    )
+                metadata_path = scheme_dir / "delivery" / f"{scheme_id}.json"
+                metadata = json.loads(metadata_path.read_text())
+                metadata.update(scheme_id=scheme_id, task_type=task_type,
+                                target_rule=TASK_COMBINATIONS[task_type][1])
+                metadata_path.write_text(json.dumps(metadata))
+                original = load_scheme_config(config_path)
+                config_path.write_text(config_path.read_text() + f"\nfact_horizon: {fact_horizon}\n")
+                projected = load_scheme_config(config_path)
+                self.assertEqual(projected.horizon, fact_horizon)
+                self.assertEqual(projected.blackbox_metadata.horizon, 1)
+                self.assertEqual(original.manifest_hash, projected.manifest_hash)
+                self.assertNotEqual(original.scheme_version, projected.scheme_version)
+                metadata.update(task_type="T+1",
+                                target_rule=TASK_COMBINATIONS["T+1"][1])
+                metadata_path.write_text(json.dumps(metadata))
+                with self.assertRaisesRegex(ValueError, "fact_horizon"):
+                    load_scheme_config(config_path)
+
+    def test_fact_horizon_rejects_unapproved_identity_and_value(self) -> None:
+        from shared.scheme_config_schema import validate_config
+
+        for scheme_id, horizon in (("trial_10y", 6),
+                                   ("weekly_5y_direct_0529", 30),
+                                   ("weekly_5y_direct_0529", True),
+                                   ("weekly_5y_direct_0529", 6.0)):
+            raw = {**_canonical_raw_config(), "scheme_id": scheme_id,
+                   "fact_horizon": horizon}
+            self.assertTrue(any("fact_horizon" in error
+                                for error in validate_config(raw, scheme_id)))
+        native = {**_canonical_raw_config(), "scheme_id": "weekly_5y_direct_0529",
+                  "runtime_type": "native_adapter", "fact_horizon": 6}
+        self.assertTrue(any("fact_horizon" in error for error in
+                            validate_config(native, native["scheme_id"])))
+
     def test_loads_business_identity_from_delivery_metadata(self) -> None:
         from scheduler.discovery import load_scheme_config
 

@@ -677,7 +677,22 @@ def run_blackbox_scheme_subprocess(
                 }
             )
             record = replace(record, extra=extra)
-    return [record]
+    return [_project_blackbox_fact_horizon(record, cfg=cfg, metadata=metadata)]
+
+
+def _project_blackbox_fact_horizon(
+    record: PredictionRecord, *, cfg: SchemeConfig, metadata: BlackboxMetadata,
+) -> PredictionRecord:
+    """标准结果校验后只投影原事实键，保留 Request 日期和算法输出。"""
+    from shared.scheme_config_schema import resolve_fact_horizon
+
+    fact_horizon = getattr(cfg, "horizon", metadata.horizon)
+    if fact_horizon == metadata.horizon:
+        return record
+    horizon = resolve_fact_horizon(
+        metadata.scheme_id, metadata.task_type, metadata.horizon, fact_horizon,
+    )
+    return replace(record, horizon=horizon)
 
 
 def _blackbox_metadata(cfg: SchemeConfig) -> BlackboxMetadata:
@@ -773,7 +788,9 @@ def run_blackbox_gray_replay_batch(
     records_by_request = _index_gray_replay_records(records, batch_requests)
     return [
         _with_gray_request_identity(
-            records_by_request[request.request_id],
+            _project_blackbox_fact_horizon(
+                records_by_request[request.request_id], cfg=cfg, metadata=metadata,
+            ),
             request=request,
             snapshot=snapshot,
         )

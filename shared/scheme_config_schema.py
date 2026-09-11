@@ -24,6 +24,32 @@ TASK_TYPE_ERROR = "task_type must be one of " + ", ".join(sorted(ALLOWED_TASK_TY
 MAX_OWNER_LENGTH = 64
 FORBIDDEN_OWNER_PLACEHOLDERS = frozenset({"--", "unknown", "待定"})
 
+# 已有 Registry 身份的事实步长；只允许这九个存量方案保留旧业务键。
+PRESERVED_FACT_HORIZONS = {
+    "weekly_10y_d_overlay_0529": ("weekly_point", 6),
+    "weekly_5y_direct_0529": ("weekly_point", 6),
+    "weekly_7y_cross_d_overlay_0529": ("weekly_point", 6),
+    "weekly_avg_10y_lgbm_0529": ("weekly_average", 6),
+    "weekly_avg_1y_lgbm_0529": ("weekly_average", 6),
+    "weekly_avg_5y_lgbm_0529": ("weekly_average", 6),
+    "monthly_10y_rf_top5_0629": ("monthly", 30),
+    "monthly_1y_rf_top30_0629": ("monthly", 30),
+    "monthly_5y_knn_top20_0629": ("monthly", 30),
+}
+
+
+def resolve_fact_horizon(
+    scheme_id: str, task_type: str, execution_horizon: int,
+    fact_horizon: int | None = None,
+) -> int:
+    """将已批准存量方案的执行桶投影至原事实步长，不改变日期语义。"""
+    if fact_horizon is None:
+        return execution_horizon
+    if (type(fact_horizon) is not int or execution_horizon != 1
+            or PRESERVED_FACT_HORIZONS.get(scheme_id) != (task_type, fact_horizon)):
+        raise ValueError("fact_horizon does not match an approved scheme/task mapping")
+    return fact_horizon
+
 
 def normalize_scheme_owner(value: object) -> str:
     """校验并返回 Registry/Metadata 共用的方案来源值。"""
@@ -63,6 +89,13 @@ def validate_config(raw: dict, dirname: str) -> list[str]:
     runtime_type = raw.get("runtime_type", "native_adapter")
     if runtime_type not in ALLOWED_RUNTIME_TYPES:
         errors.append("runtime_type must be native_adapter or blackbox_v2")
+
+    if "fact_horizon" in raw:
+        expected = PRESERVED_FACT_HORIZONS.get(scheme_id) if isinstance(scheme_id, str) else None
+        if (runtime_type != "blackbox_v2" or expected is None
+                or type(raw["fact_horizon"]) is not int
+                or raw["fact_horizon"] != expected[1]):
+            errors.append("fact_horizon requires an approved Blackbox scheme and exact value")
 
     if "incremental_state" in raw:
         if runtime_type != "blackbox_v2":

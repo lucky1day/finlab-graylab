@@ -36,8 +36,14 @@ def run_blackbox_historical_backtest(
     backtest_start_date: str | None = None,
     target_date_before: str | None = None,
     total_deadline_sec: int | None = None,
+    fact_horizon: int | None = None,
 ) -> RunOutput:
     """用原始交付脚本执行真实历史 Request，并转换为平台标准输出。"""
+    from shared.scheme_config_schema import resolve_fact_horizon
+
+    persisted_horizon = resolve_fact_horizon(
+        metadata.scheme_id, metadata.task_type, metadata.horizon, fact_horizon,
+    )
     materialized = validate_historical_cases(cases)
     if not materialized:
         raise ValueError("Blackbox historical backtest requires at least one case")
@@ -120,7 +126,7 @@ def run_blackbox_historical_backtest(
                 "benchmark_id": benchmark_id,
                 "scheme_id": metadata.scheme_id,
                 "target_tenor": metadata.target_tenor,
-                "horizon": metadata.horizon,
+                "horizon": persisted_horizon,
                 "predict_date": request.predict_date,
                 "feature_date": request.feature_date,
                 "target_date": request.target_date,

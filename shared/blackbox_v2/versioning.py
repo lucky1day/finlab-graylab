@@ -21,6 +21,8 @@ def canonical_platform_config(raw: Mapping[str, Any]) -> dict[str, Any]:
     }
     if "factor_input_mode" in raw:
         canonical["factor_input_mode"] = str(raw["factor_input_mode"])
+    if "fact_horizon" in raw:
+        canonical["fact_horizon"] = raw["fact_horizon"]
     if "incremental_state" in raw:
         if raw["incremental_state"] is not True:
             raise ValueError("incremental_state must be literal true when present")

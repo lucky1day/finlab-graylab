@@ -4,6 +4,7 @@ import tempfile
 import textwrap
 import unittest
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,6 +13,84 @@ from shared.blackbox_v2.contracts import BlackboxMetadata, BlackboxRequest
 
 
 class BlackboxV2RunnerTests(unittest.TestCase):
+    def test_preserved_fact_horizon_only_projects_after_standard_execution(self) -> None:
+        from backtests.blackbox_v2 import run_blackbox_historical_backtest
+        from scheduler.blackbox_v2_runner import RuntimeProfile
+        from scheduler.executor import (
+            run_blackbox_gray_replay_batch, run_blackbox_scheme_subprocess,
+        )
+        from scheduler.process_control import ProcessStartGuard
+        from shared.blackbox_v2.history import HistoricalCase
+        from shared.blackbox_v2.snapshot import CutoffKeys
+        from shared.models import PredictionRecord
+        from shared.task_specs import TASK_COMBINATIONS
+
+        for scheme_id, task_type, horizon in (
+            ("weekly_5y_direct_0529", "weekly_point", 6),
+            ("weekly_avg_5y_lgbm_0529", "weekly_average", 6),
+            ("monthly_5y_knn_top20_0629", "monthly", 30),
+        ):
+            with self.subTest(task_type=task_type):
+                metadata = replace(_metadata(), scheme_id=scheme_id, task_type=task_type,
+                                   frequency="monthly" if task_type == "monthly" else "weekly",
+                                   target_rule=TASK_COMBINATIONS[task_type][1])
+                request = _gray_replay_request("preserved-key", "2026-07-31", "202631")
+                raw = PredictionRecord(
+                    scheme_id=scheme_id, target_tenor=metadata.target_tenor, horizon=1,
+                    predict_date=request.predict_date, feature_date=request.feature_date,
+                    target_date=request.target_date, predicted_direction=1,
+                    extra={"request_id": request.request_id},
+                )
+                cfg = SimpleNamespace(
+                    scheme_id=scheme_id, horizon=horizon, runtime_type="blackbox_v2",
+                    input_source="data_bridge_current", frequency=metadata.frequency,
+                    delivery_script=Path("trial.py"), delivery_metadata=Path("trial.json"),
+                    blackbox_metadata=metadata,
+                )
+
+                @contextmanager
+                def runtime_view(bundle):
+                    yield SimpleNamespace(data_dir=Path("/tmp/private-view"), bundle=bundle)
+
+                with (
+                    patch("scheduler.executor.get_ready_blackbox_snapshot", return_value=_gray_replay_snapshot()),
+                    patch("scheduler.executor.get_calendar", return_value="calendar"),
+                    patch("scheduler.executor.build_weekly_live_context", return_value=SimpleNamespace(feature_date=request.feature_date)),
+                    patch("scheduler.executor.build_monthly_live_context", return_value=SimpleNamespace(feature_date=request.feature_date)),
+                    patch("scheduler.executor.resolve_blackbox_input_cutoffs", return_value=CutoffKeys("2026-07-31", "202631", "202607")),
+                    patch("scheduler.executor.build_live_request", return_value=request) as build_request,
+                    patch("scheduler.executor.open_blackbox_runtime_view", side_effect=runtime_view),
+                    patch("scheduler.blackbox_v2_runner.run_blackbox_predict", return_value=raw) as predict,
+                    patch("scheduler.executor.run_blackbox_backtest", return_value=[raw]) as batch,
+                ):
+                    live = run_blackbox_scheme_subprocess(
+                        cfg, request.predict_date, engine="engine", algo_env="forecast_env",
+                        timeout_sec=120, process_start_guard=ProcessStartGuard(),
+                    )
+                    gray = run_blackbox_gray_replay_batch(
+                        cfg, requests=[request], snapshot=_gray_replay_snapshot(),
+                        algo_env="forecast_env", timeout_sec=600, profile=RuntimeProfile.for_tests(),
+                    )
+                self.assertEqual(build_request.call_args.args[0].horizon, 1)
+                self.assertEqual(predict.call_args.kwargs["metadata"].horizon, 1)
+                self.assertEqual(batch.call_args.kwargs["metadata"].horizon, 1)
+                for record in live + gray:
+                    self.assertEqual(record.horizon, horizon)
+                    self.assertEqual((record.predict_date, record.feature_date, record.target_date),
+                                     (raw.predict_date, raw.feature_date, raw.target_date))
+                    self.assertEqual(record.predicted_direction, raw.predicted_direction)
+                output = run_blackbox_historical_backtest(
+                    metadata=metadata, script_path="trial.py",
+                    cases=[HistoricalCase(request, 1, {})], snapshot=_gray_replay_snapshot(),
+                    scheme_version="version", generation_id="generation", benchmark_id="benchmark",
+                    run_delivery=lambda **kwargs: [raw], profile=RuntimeProfile.for_tests(),
+                    fact_horizon=horizon,
+                )
+                self.assertEqual(output.rows[0]["horizon"], horizon)
+                self.assertEqual(output.rows[0]["source_row"]["target_date"], request.target_date)
+                self.assertEqual(output.monthly_metrics[0]["horizon"], horizon)
+                self.assertEqual(raw.horizon, 1)
+
     def test_process_group_rss_queries_only_the_target_group(self) -> None:
         from scheduler import blackbox_v2_runner as runner
 

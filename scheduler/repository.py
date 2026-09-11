@@ -6,7 +6,7 @@ import logging
 import math
 import sys
 from collections import Counter
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -1129,6 +1129,10 @@ def _read_blackbox_revision_activation_preflight_conn(
         str(row.get("scheme_version"))
         for row in version_rows
         if row.get("runtime_type") != "blackbox_v2"
+        and not (
+            row.get("runtime_type") == "native_adapter"
+            and row.get("status") == "retired"
+        )
     ]
     if non_blackbox_versions:
         raise ValueError(
@@ -3604,6 +3608,328 @@ def _insert_run_predictions_conn(
         return 0
     conn.execute(text(statement), rows)
     return len(rows)
+
+
+def _same_id_rows_conn(
+    conn: Connection, table: str, where: str, params: Mapping[str, object],
+    *, order: str, for_update: bool,
+) -> list[dict[str, object]]:
+    """读取迁移内部固定表名和条件下的完整行，避免数量摘要漏掉内容漂移。"""
+    lock = " FOR UPDATE" if for_update and _dialect_name(conn) == "mysql" else ""
+    return [dict(row) for row in conn.execute(
+        text(f"SELECT * FROM {table} WHERE {where} ORDER BY {order}{lock}"),
+        params,
+    ).mappings()]
+
+
+def _same_id_fact_snapshot_conn(
+    conn: Connection, scheme_ids: Sequence[str], *, for_update: bool,
+) -> dict[str, object]:
+    """摘要完整事实、输入与 Harness 行；不改写任何历史内容。"""
+    params = {f"id_{index}": value for index, value in enumerate(scheme_ids)}
+    values = ",".join(f":{key}" for key in params)
+    scope = f"scheme_id IN ({values})"
+    tables = (
+        ("t_scheme_predictions", "id", scope),
+        ("t_scheme_runs", "run_id", scope),
+        ("t_backtest_runs", "id", scope),
+        ("t_backtest_predictions", "id", scope),
+        ("t_backtest_monthly_metrics", "id", scope),
+        ("t_input_artifacts", "artifact_id", scope),
+        ("t_harness_runs", "harness_run_id", scope),
+        ("t_harness_gate_results", "id", "harness_run_id IN "
+         f"(SELECT harness_run_id FROM t_harness_runs WHERE {scope})"),
+        ("t_backtest_reproduction_checks", "id", "benchmark_id IN "
+         f"(SELECT benchmark_id FROM t_backtest_runs WHERE {scope})"),
+    )
+    result = {}
+    for table, order, where in tables:
+        rows = _same_id_rows_conn(
+            conn, table, where, params, order=order, for_update=for_update,
+        )
+        result[table] = {"count": len(rows), "sha256": native_successor_plan_sha256(
+            {"rows": rows}
+        )}
+    return result
+
+
+def _same_id_evidence_conn(
+    conn: Connection, old: SchemeConfig, new: SchemeConfig, run_id: str,
+    control: Mapping[str, object], *, for_update: bool,
+) -> dict[str, object]:
+    """只接受数据库中真实完成且绑定 exact 身份的专用迁移证据。"""
+    runs = _same_id_rows_conn(
+        conn, "t_harness_runs", "harness_run_id = :run", {"run": run_id},
+        order="harness_run_id", for_update=for_update,
+    )
+    expected_run = {
+        "scheme_id": new.scheme_id, "scheme_version": new.scheme_version,
+        "code_hash": new.code_hash, "config_hash": new.config_hash,
+        "stage": "native-runtime-upgrade", "status": "passed",
+    }
+    if len(runs) != 1 or not runs[0].get("finished_at") or any(
+        runs[0].get(key) != value for key, value in expected_run.items()
+    ):
+        raise RuntimeError("same-ID upgrade Harness run identity/status mismatch")
+    gates = _same_id_rows_conn(
+        conn, "t_harness_gate_results",
+        "harness_run_id = :run AND gate_name = 'native-runtime-upgrade'",
+        {"run": run_id}, order="id", for_update=for_update,
+    )
+    if len(gates) != 1 or gates[0].get("status") != "passed" or not gates[0].get("finished_at"):
+        raise RuntimeError("same-ID upgrade requires exactly one passed migration gate")
+    summary = gates[0].get("summary_json")
+    if isinstance(summary, str):
+        summary = json.loads(summary)
+    if (
+        not isinstance(summary, Mapping)
+        or set(summary) != {"passed", "evidence", "errors"}
+        or summary["passed"] is not True or summary["errors"] != []
+        or not isinstance(summary["evidence"], list)
+        or len(summary["evidence"]) != 1
+        or not isinstance(summary["evidence"][0], Mapping)
+        or set(summary["evidence"][0]) != {"key", "value"}
+        or summary["evidence"][0]["key"] != "runtime_upgrade"
+    ):
+        raise RuntimeError("same-ID upgrade requires one unambiguous runtime_upgrade evidence")
+    summary = summary["evidence"][0]["value"]
+    identity_fields = ("scheme_version", "runtime_type", "code_hash", "config_hash", "manifest_hash")
+    databridge = control.get("databridge")
+    if not isinstance(databridge, Mapping):
+        raise ValueError("same-ID upgrade requires current DataBridge identity")
+    expected = {
+        "schema_version": "same-id-runtime-upgrade-evidence-v1",
+        "scheme_id": new.scheme_id,
+        "old_identity": {key: getattr(old, key) for key in identity_fields},
+        "new_identity": {key: getattr(new, key) for key in identity_fields},
+        "environment_fingerprint": new.environment_fingerprint,
+        "data_snapshot_id": new.data_snapshot_id,
+        "generation_id": databridge.get("generation_id"),
+    }
+    if (
+        not isinstance(summary, Mapping)
+        or not new.environment_fingerprint or not new.data_snapshot_id
+        or not expected["generation_id"]
+        or control.get("blackbox_environment_fingerprint") != new.environment_fingerprint
+        or new.data_snapshot_id != databridge.get("data_snapshot_id")
+        or set(summary) != set(expected) | {"equivalence_sha256", "local_execution_sha256"}
+        or any(summary.get(key) != value for key, value in expected.items())
+    ):
+        raise RuntimeError("same-ID upgrade migration evidence identity mismatch")
+    for key in ("equivalence_sha256", "local_execution_sha256"):
+        value = summary[key]
+        if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+            raise RuntimeError(f"invalid same-ID migration evidence digest: {key}")
+    return {"harness_run_id": run_id, "sha256": native_successor_plan_sha256(
+        {"run": runs[0], "gate": gates[0]}
+    )}
+
+
+def _same_id_runtime_upgrade_plan_conn(
+    conn: Connection, *, old_configs: Mapping[str, SchemeConfig],
+    new_configs: Mapping[str, SchemeConfig], harness_run_ids: Mapping[str, str],
+    action: str, control_plane_evidence: Mapping[str, object],
+    expected_database_name: str, expected_server_uuid: str, for_update: bool,
+) -> dict[str, object]:
+    """锁定同 ID 整批升级的事实、唯一 Writer 和证据前提。"""
+    if action not in {"cutover", "rollback"}:
+        raise ValueError("same-ID upgrade action must be cutover or rollback")
+    ids = sorted(old_configs)
+    if not ids or set(ids) != set(new_configs) or set(ids) != set(harness_run_ids):
+        raise ValueError("same-ID upgrade requires identical nonempty config/evidence identities")
+    if not isinstance(control_plane_evidence, Mapping) or not control_plane_evidence:
+        raise ValueError("same-ID upgrade requires verified control-plane evidence")
+    if _dialect_name(conn) == "mysql":
+        _require_nonempty(expected_database_name, "expected_database_name")
+        _require_nonempty(expected_server_uuid, "expected_server_uuid")
+        identity = dict(conn.execute(text(
+            "SELECT DATABASE() AS database_name, @@server_uuid AS server_uuid"
+        )).mappings().one())
+        if identity != {"database_name": expected_database_name, "server_uuid": expected_server_uuid}:
+            raise RuntimeError("same-ID upgrade database identity mismatch")
+    elif _dialect_name(conn) == "sqlite":
+        identity = {"isolated_test": "sqlite"}
+    else:
+        raise RuntimeError("same-ID upgrade supports only MySQL or isolated SQLite tests")
+    migrations = _same_id_rows_conn(
+        conn, "t_schema_migrations", "1=1", {}, order="version", for_update=for_update,
+    )
+    if not migrations or max(int(row["version"]) for row in migrations) != 24 or any(
+        row["state"] != "APPLIED" for row in migrations
+    ):
+        raise RuntimeError("same-ID upgrade requires fully applied schema migration 024")
+    params = {f"id_{i}": value for i, value in enumerate(ids)}
+    values = ",".join(f":{key}" for key in params)
+    versions = _same_id_rows_conn(
+        conn, "t_scheme_versions", f"scheme_id IN ({values})", params,
+        order="scheme_id, scheme_version", for_update=for_update,
+    )
+    registry = _same_id_rows_conn(
+        conn, "t_scheme_registry", f"base_scheme_id IN ({values})", params,
+        order="scheme_id", for_update=for_update,
+    )
+    for table, order in (("t_scheme_runs", "run_id"), ("t_backtest_runs", "id"), ("t_harness_runs", "harness_run_id")):
+        if _same_id_rows_conn(conn, table, f"scheme_id IN ({values}) AND status = 'running'", params,
+                             order=order, for_update=for_update):
+            raise RuntimeError(f"same-ID upgrade requires zero running rows: {table}")
+    evidence = {}
+    for scheme_id in ids:
+        old, new = old_configs[scheme_id], new_configs[scheme_id]
+        _validate_blackbox_revision_candidate(new, require_evidence=True)
+        if old.scheme_id != scheme_id or new.scheme_id != scheme_id or old.runtime_type != "native_adapter" or new.runtime_type != "blackbox_v2" or old.scheme_version == new.scheme_version:
+            raise ValueError("same-ID upgrade config runtime/exact identity mismatch")
+        for field in ("horizon", "task_type", "frequency"):
+            if getattr(old, field) != getattr(new, field):
+                raise ValueError(f"same-ID upgrade changed business field: {field}")
+        old_rule = old.target_rule
+        if old_rule is None and old.task_type in {"T+1", "T+5"}:
+            old_rule = TASK_COMBINATIONS[old.task_type][1]
+        if old_rule != new.target_rule:
+            raise ValueError("same-ID upgrade changed business field: target_rule")
+        if sorted(old.tenors) != sorted(new.tenors) or len(set(old.tenors)) != len(old.tenors) or not old.tenors or any(
+            getattr(old.schedule, key) != getattr(new.schedule, key) for key in ("cron", "timezone")
+        ):
+            raise ValueError("same-ID upgrade changed targets/schedule")
+        scoped = [row for row in versions if row["scheme_id"] == scheme_id]
+        old_row = next((row for row in scoped if row["scheme_version"] == old.scheme_version), None)
+        new_row = next((row for row in scoped if row["scheme_version"] == new.scheme_version), None)
+        if old_row is None:
+            raise RuntimeError("same-ID upgrade Native exact version is absent")
+        _assert_migration_version_identity(old, old_row)
+        if new_row is not None:
+            _assert_migration_version_identity(new, new_row)
+            if any(new_row.get(key) != getattr(new, key) for key in (
+                "environment_fingerprint", "data_snapshot_id", "algorithm_version",
+                "contract_version", "runtime_profile",
+            )):
+                raise RuntimeError("same-ID upgrade candidate environment/input changed")
+        expected_active = old if action == "cutover" else new
+        if action == "cutover":
+            valid = old_row["status"] == "active" and (new_row is None or new_row["status"] == "retired")
+        else:
+            valid = old_row["status"] == "retired" and new_row is not None and new_row["status"] == "active"
+        if not valid:
+            raise RuntimeError("same-ID upgrade mixed/unsupported lifecycle state")
+        for row in scoped:
+            if row["scheme_version"] not in {old.scheme_version, new.scheme_version} and row.get("status") != "retired":
+                raise RuntimeError("same-ID upgrade unexpected pending/active version (second Writer)")
+            if row.get("runtime_type") not in {"native_adapter", "blackbox_v2"}:
+                raise RuntimeError("same-ID upgrade unknown historical runtime")
+        rows = [row for row in registry if row["base_scheme_id"] == scheme_id]
+        expected_ids = {registry_scheme_id(scheme_id, old.horizon, tenor): tenor for tenor in old.tenors}
+        if {row["scheme_id"] for row in rows} != set(expected_ids):
+            raise RuntimeError("same-ID upgrade Registry target coverage mismatch")
+        for row in rows:
+            tenor = expected_ids[row["scheme_id"]]
+            wanted = {"runtime_type": expected_active.runtime_type, "status": "active", "horizon": old.horizon,
+                      "target_tenor": tenor, "task_type": old.task_type, "frequency": old.frequency,
+                      "schedule_cron": old.schedule.cron, "schedule_timezone": old.schedule.timezone}
+            if any(row.get(key) != value for key, value in wanted.items()) or _normalize_registry_tenors(row.get("tenors")) != [tenor]:
+                raise RuntimeError("same-ID upgrade Registry identity/status mismatch")
+        evidence[scheme_id] = _same_id_evidence_conn(conn, old, new, harness_run_ids[scheme_id],
+                                                  control_plane_evidence, for_update=for_update)
+    unaffected = _same_id_rows_conn(conn, "t_scheme_registry", f"base_scheme_id NOT IN ({values})", params,
+                                   order="scheme_id", for_update=for_update)
+    return {
+        "schema_version": "same-id-runtime-upgrade-plan-v1", "action": action,
+        "database_identity_sha256": native_successor_plan_sha256(identity), "schema_migration_version": 24,
+        "scheme_ids": ids, "versions": versions, "registry": registry, "evidence": evidence,
+        "candidate_versions": [
+            {field: getattr(new_configs[scheme_id], field) for field in (
+                "scheme_id", "scheme_version", "runtime_type", "code_hash",
+                "config_hash", "manifest_hash", "algorithm_version",
+                "contract_version", "runtime_profile", "environment_fingerprint",
+                "data_snapshot_id",
+            )}
+            for scheme_id in ids
+        ],
+        "control_plane": dict(control_plane_evidence),
+        "facts": _same_id_fact_snapshot_conn(conn, ids, for_update=for_update),
+        "unaffected_registry_sha256": native_successor_plan_sha256({"rows": unaffected}),
+    }
+
+
+def read_same_id_runtime_upgrade_plan(
+    engine: Engine, *, old_configs: Mapping[str, SchemeConfig], new_configs: Mapping[str, SchemeConfig],
+    harness_run_ids: Mapping[str, str], action: str, control_plane_evidence: Mapping[str, object],
+    expected_database_name: str, expected_server_uuid: str,
+) -> dict[str, object]:
+    """以一致只读快照生成同 ID 升级计划，不写事实或生命周期。"""
+    kwargs = dict(old_configs=old_configs, new_configs=new_configs, harness_run_ids=harness_run_ids,
+                  action=action, control_plane_evidence=control_plane_evidence,
+                  expected_database_name=expected_database_name, expected_server_uuid=expected_server_uuid,
+                  for_update=False)
+    with engine.connect() as conn:
+        if engine.dialect.name == "mysql":
+            conn.exec_driver_sql("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            conn.exec_driver_sql("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
+        try:
+            return _same_id_runtime_upgrade_plan_conn(conn, **kwargs)
+        finally:
+            conn.rollback()
+
+
+def apply_same_id_runtime_upgrade(
+    engine: Engine, *, old_configs: Mapping[str, SchemeConfig], new_configs: Mapping[str, SchemeConfig],
+    harness_run_ids: Mapping[str, str], action: str, expected_plan_sha256: str, approved_by: str,
+    approved_at: datetime, control_plane_evidence_reader: Callable[[], Mapping[str, object]],
+    expected_database_name: str, expected_server_uuid: str,
+) -> dict[str, object]:
+    """复用正常 activation 互斥锁，整批升级/回滚；历史事实始终只读。"""
+    operator = _require_nonempty(approved_by, "approved_by")
+    if not isinstance(approved_at, datetime):
+        raise ValueError("same-ID upgrade requires approved_at datetime")
+    if not isinstance(expected_plan_sha256, str) or len(expected_plan_sha256) != 64 or any(
+        c not in "0123456789abcdef" for c in expected_plan_sha256
+    ):
+        raise ValueError("expected_plan_sha256 must be lowercase SHA-256 hex")
+    with ExitStack() as locks:
+        if engine.dialect.name != "sqlite":
+            for scheme_id in sorted(old_configs):
+                locks.enter_context(_blackbox_activation_advisory_lock(engine, scheme_id=scheme_id))
+        with engine.begin() as conn:
+            control = control_plane_evidence_reader()
+            kwargs = dict(old_configs=old_configs, new_configs=new_configs, harness_run_ids=harness_run_ids,
+                          control_plane_evidence=control, expected_database_name=expected_database_name,
+                          expected_server_uuid=expected_server_uuid, for_update=True)
+            plan = _same_id_runtime_upgrade_plan_conn(conn, action=action, **kwargs)
+            if native_successor_plan_sha256(plan) != expected_plan_sha256:
+                raise RuntimeError("same-ID upgrade plan changed before commit")
+            for scheme_id in sorted(old_configs):
+                old, new = old_configs[scheme_id], new_configs[scheme_id]
+                retiring, activating = (old, new) if action == "cutover" else (new, old)
+                changed = conn.execute(text("UPDATE t_scheme_versions SET status = 'retired' "
+                    "WHERE scheme_id = :id AND scheme_version = :version AND status = 'active'"),
+                    {"id": scheme_id, "version": retiring.scheme_version})
+                if changed.rowcount != 1:
+                    raise RuntimeError("same-ID upgrade did not retire exactly one active version")
+                if action == "cutover":
+                    _upsert_scheme_version_conn(conn, new, trusted_status="active", approved_by=operator,
+                                                approved_at=_mysql_utc_datetime(approved_at))
+                else:
+                    changed = conn.execute(text("UPDATE t_scheme_versions SET status = 'active' "
+                        "WHERE scheme_id = :id AND scheme_version = :version AND status = 'retired'"),
+                        {"id": scheme_id, "version": old.scheme_version})
+                    if changed.rowcount != 1:
+                        raise RuntimeError("same-ID upgrade could not restore Native exact version")
+                changed = conn.execute(text("UPDATE t_scheme_registry SET runtime_type = :runtime "
+                    "WHERE base_scheme_id = :id AND status = 'active' AND runtime_type = :prior"),
+                    {"id": scheme_id, "runtime": activating.runtime_type, "prior": retiring.runtime_type})
+                if changed.rowcount != len(old.tenors):
+                    raise RuntimeError("same-ID upgrade Registry update count mismatch")
+            post = _same_id_runtime_upgrade_plan_conn(conn, action="rollback" if action == "cutover" else "cutover", **kwargs)
+            if post["facts"] != plan["facts"] or post["unaffected_registry_sha256"] != plan["unaffected_registry_sha256"]:
+                raise RuntimeError("same-ID upgrade changed facts/unaffected Registry")
+            # updated_at 是 MySQL 自动更新时间；业务展示字段必须逐字段不变。
+            for before, after in zip(plan["registry"], post["registry"]):
+                if {k: v for k, v in before.items() if k not in {"runtime_type", "updated_at"}} != {
+                    k: v for k, v in after.items() if k not in {"runtime_type", "updated_at"}
+                }:
+                    raise RuntimeError("same-ID upgrade changed Registry business metadata")
+            if native_successor_plan_sha256({"control_plane": control_plane_evidence_reader()}) != native_successor_plan_sha256({"control_plane": control}):
+                raise RuntimeError("same-ID upgrade control plane changed during transaction")
+    return {"schema_version": "same-id-runtime-upgrade-result-v1", "action": action,
+            "scheme_ids": sorted(old_configs), "plan_sha256": expected_plan_sha256, "approved_by": operator}
 
 
 def canonical_native_successor_plan(plan: Mapping[str, object]) -> str:

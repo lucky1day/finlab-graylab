@@ -38,10 +38,10 @@ def persist_harness_run_start(
             """
             INSERT INTO t_harness_runs
                 (harness_run_id, scheme_id, scheme_version, stage, status, started_at,
-                 git_commit)
+                 git_commit, code_hash, config_hash)
             VALUES
                 (:harness_run_id, :scheme_id, :scheme_version, :stage, 'running', :started_at,
-                 :git_commit)
+                 :git_commit, :code_hash, :config_hash)
             """
         )
         with engine.begin() as conn:
@@ -54,6 +54,8 @@ def persist_harness_run_start(
                     "stage": stage,
                     "started_at": _mysql_datetime(started_at),
                     "git_commit": _release_commit(),
+                    "code_hash": getattr(ctx.config, "code_hash", None),
+                    "config_hash": getattr(ctx.config, "config_hash", None),
                 },
             )
 

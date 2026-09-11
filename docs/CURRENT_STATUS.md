@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验日期**：2026-09-05
+**治理边界更新日期**：2026-09-12；现场水位以每次只读核验为准。
 
 本文只记录当前稳定事实。实时方案、run、prediction、DataBridge、API 和调度状态必须从各自权威数据源
 读取；待推进工作见[统一后续推进计划](TODO.md)，生产规则见
@@ -12,8 +12,10 @@
 ## 双主机边界
 
 - Mac3 继续承载生产域名、前端、数据库和 Writer；`launchd + installed plist` 是生产调度控制面。
-- 2026-09-08 Native 迁移授权收紧为仅 ECS：本阶段不晋级或改变 Mac3 的版本、数据库、launchd、域名与流量；
-  Mac3 晋级及 W4 改造暂停，恢复须另获授权。算法等价与正式入库证据各自绑定输入，细则见迁移计划。
+- 2026-09-12 已批准[双机迁移闭环计划](architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md)：
+  ECS 先接管源码方案，再用同一 archive 晋级 Mac3，继续 Mac3-only W4 改造；不改变域名、DNS、Nginx 或隧道。
+  原方案 ID 保留，已跨 ID 批次也按计划回归原身份；此为执行范围更新，不表示部署或数据清理已经完成。
+  两端 confidence DDL 仍各需独立确认，master 不合并；允许推送 develop 和交付 PR。
 - ECS 是独立灰度实验室，使用自己的 MySQL、DataBridge、Registry、run、prediction 和 systemd timer；
   Backend 只监听 loopback，不承载生产公网流量。
 - 两端不建立持续复制、双写、共享数据库或共享 DataBridge。经明确授权的单次缺口修复可以在停止目标 Writer
@@ -31,6 +33,8 @@
 - active 方案数量、DataBridge generation、run、prediction、Actual、Dashboard/health 与跨机差异均为运行态，
   必须现场只读查询，不在工作树维护快照。
 - 人工 gap-fill、Actual 刷新或 gray live 不能冒充首次自然 `scheduled_live` 或 Production Observed。
+- 本轮迁移以等价证据、标准调用、事务与调度控制面验证验收，不等待多天自然触发；
+  算法等价、执行环境和入库证据分别绑定自身真实输入。已有有效计算不因 ID 包装变化重跑。
 
 ## 当前治理边界
 
@@ -46,10 +50,15 @@
   停止，release、方案版本、日期和业务键必须完全匹配，已有键整组拒绝。源端不存在的键才允许受控计算。
 - 新方案只走 Blackbox V2 两文件 Intake；Native V1 只维护政策清单内存量身份。平台不反编译或改写
   Blackbox 算法逻辑，只验证平台接入和标准输出边界。
+- 同算法运行时迁移走受控原 ID 版本升级：原事实不覆盖，临时 `_bbv2` 独有结果仅在核实后补入缺失键，
+  保留真实导入来源；备份及隔离恢复验证、接管和回滚边界就绪后精确删除其专属记录，不建立历史别名。
+  T1/T5 每 base 组合目标两文件、整体版本且原子提交；周/月 Metadata horizon=1，原事实 6/30 显式投影保留。
 - 仅 Native→Blackbox 迁移映射中锁定的 W4 九个 Mac3 加密方案允许使用 manifest-bound Mac3-only binary
   bundle；该例外不进入 ECS、不开放给新方案，全部 `.so` payload 必须纳入 exact version hash closure，且
   仍须遵守五文件输入、五字段输出、无数据库/网络/包外路径/持久状态的边界。
-- Blackbox 入库只保留“Intake → 一次完整持久化回测 → activate”；DataBridge producer 独立发布 generation，方案不构建、修复或重验 generation。Blackbox 不进入 Native `onboard`，不运行 StaticGate、CompareGate、额外 predict 冒烟或 `shadow-register`。
+- 普通 Blackbox 入库只保留“Intake → 一次完整持久化回测 → activate”；本次迁移的证据转换采用专用入口，
+  不伪改旧 backtest 或全局放宽 activate。DataBridge producer 独立发布 generation，方案不构建、修复或重验 generation。
+  Blackbox 不进入 Native `onboard`，不运行 StaticGate、CompareGate、额外 predict 冒烟或 `shadow-register`。
 - Blackbox `weekly_point/h1` 与日频 `T+5/h5` 的 target 半开区间批量已经在 ECS 与 Mac3 验证；日频
   `T+1/h1` 的同类能力已完成本地候选实现与回归，尚未做现场验证。一个方案只启动
   一个 batch，全部业务键由现有 repository 原子提交，下一自然调度 target 必须保留不占用。

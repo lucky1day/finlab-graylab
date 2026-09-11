@@ -9,7 +9,7 @@ from scheduler.deployment_scope import filter_schemes_for_configured_target
 from shared.blackbox_v2.versioning import compute_blackbox_config_hash
 from shared.blackbox_v2.contracts import BlackboxMetadata
 from shared.scheme_config_loader import load_yaml_mapping
-from shared.scheme_config_schema import validate_config
+from shared.scheme_config_schema import resolve_fact_horizon, validate_config
 from shared.versioning import (
     compute_code_hash,
     compute_config_hash,
@@ -182,7 +182,10 @@ def _load_blackbox_config(config_path: Path, raw: dict[str, Any], schedule_raw: 
         scheme_id=metadata.scheme_id,
         name=resolved_name,
         description=metadata.description or "",
-        horizon=metadata.horizon,
+        horizon=resolve_fact_horizon(
+            metadata.scheme_id, metadata.task_type, metadata.horizon,
+            raw.get("fact_horizon"),
+        ),
         task_type=metadata.task_type,
         tenors=[metadata.target_tenor],
         frequency=metadata.frequency,
