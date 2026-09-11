@@ -4,6 +4,18 @@
 
 **执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FIXED_FULL333_AND_INCREMENTAL_STATE_PASSED; W3B_MODEL_REUSE_FULL333_PASSED_K5_ECS_FULL_RUNNING; W4_MAC3_PAUSED`
 
+**状态入口本地接线（2026-09-11，K5计算期间）**：协作实现任务因额度限制退出，未产生文件；
+主agent已inline创建 `outputs/native-migration-w3b-state-model-reuse-draft/run_family_state_validation.py`，
+SHA256 `b053f43112baaf0bea2ede76ec97c8e54a81e5307ee75fd20f47b738710923a0`。
+新稿修正三Native分阶段路径/原始身份、各候选独立driver及报告身份、公共reference-inputs、
+Full与K5不同执行目录；只读绑定旧三报告链，K5另绑定Full成功前提。新执行增加进程组退出证据，
+仍保留cold/warm/stateless边界及7200/120秒预算。算法、NPZ解释和复用/日期断言未改。
+本地语法及实际接线片段检查通过：Full报告批准通过、K5未批准拒绝；四份已保存真实报告身份通过，
+逐份将candidate hash替换后均拒绝。state_evidence/require_cold/require_warm/own_request四函数AST与旧稿相同。
+此检查不验证现场artifact/环境或算法，不等于完整preflight。新稿尚未独立review、未复制到ECS、
+未启动任何状态初始化；不得直接执行。K5报告SHA仍None，只有完整333真正成功并复核后才锁定。
+11:12现场K5同一算法1316365继续首次历史训练、无failure，未新增重计算；额度问题没有中断该进程。
+
 **K5实际派发（2026-09-11 11:07 CST）**：K5 wrapper d22cbc经独立实际diff审查C/I=0；
 旧Native身份与Full前置成功报告保持独立，Full报告及34 artifacts纳入启动前后摘要复验。
 新包为 `/opt/bond-factor-lab/incoming/w3b-k5-model-reuse-20260911.72TZ9d/`，三文件hash复验并只读封存；
