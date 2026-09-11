@@ -2,7 +2,27 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_ALL_THREE_FULL333_PASSED; W3B_FULL_K5_MAC_PRIVATE_STATE_RUNNING; W3B_SAY_ECS_FORMAL_GATE_RUNNING; W3B_ECS_CUTOVER_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_ALL_THREE_FULL333_PASSED; W3B_FULL_K5_MAC_COLD_WARM_PASSED_STATELESS_RUNNING; W3B_SAY_ECS_FORMAL_GATE_RUNNING; W3B_ECS_CUTOVER_PENDING; W4_MAC3_PAUSED`
+
+**增量性能通过并继续接入准备（2026-09-11 14:45 CST，覆盖下文旧阶段）**：
+
+- Full/K5 本机 cold 和 warm 均已成功，报告身份、全部 artifact 摘要、前序报告链和运行环境文件摘要复验通过；
+  退出码均 0、进程组已清理。Full 初始化 2058.078 秒、次日增量 11.615 秒；K5 初始化 2053.229 秒、
+  次日增量 12.351 秒（均为监督入口实测耗时）。两个方案的 ten_y/seven_y 都从 650 行推进到 651 行，
+  各复用 650 行、仅训练新增 1 行。此为开发 Mac 功能/性能证据，不冒充 ECS 运行环境验收。
+- Full warm 报告 SHA256 `cb6e771e2ae96f711f40e3f4342a6a8318b738744cde7fe1168ae2895f0cd403`；
+  K5 warm 报告 SHA256 `82969471a5f84dc7f55c996ebb7931ddf0794464d5627115dc360f459af9b1f3`。
+  原件仍在 `outputs/w3b-mac-state-20260911.cHCTNK/{full,k5}/`，没有重跑已通过阶段。
+- 两条链已自动进入同一日的 stateless 核对，controller 分别为 2945/2893、算法为 3078/2942；
+  14:41 两者均仍在计算。这是一次单点缓存/无缓存结果核对，不是重跑完整 333 条 Native 等价。
+  保持冻结脚本与候选不变，完成后按原链核对五字段，不增加第二套算法验收。
+- Full/K5 两文件已由现有 `validate_delivery` 只读复验通过，字节与批准等价报告完全一致；
+  未创建 canonical、未调用算法、未写数据库。既有 SOP 要求增量验收完成后才执行增量 Intake，
+  因此计算期间只提前完成接入校验，不把尚未完成的单点核对标记通过。
+- ECS 首 SAY 正式 Gate 同一算法 1348940 继续计算，14:41 尚无 complete/failure；不启动重复任务。
+  current 仍为 `a6ffe3a6b477e2fee67489c43c79ab767433acbb`。不等待额外用户授权或自然调度日；
+  下一步为 Full/K5 增量 Intake、候选发布及各自正式 Gate，再完成 ECS 自身状态初始化/模拟调用和三方案原子切换。
+  Mac3 生产、域名、timer、DDL 均不在本轮变更范围。
 
 **首 SAY 正式 Gate 已启动（2026-09-11 14:25 CST，覆盖下文准备状态）**：
 
