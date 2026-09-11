@@ -2,7 +2,33 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_ALL_THREE_FULL333_PASSED; W3B_FULL_K5_MAC_PRIVATE_STATE_RUNNING; W3B_ECS_CUTOVER_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_ALL_THREE_FULL333_PASSED; W3B_FULL_K5_MAC_PRIVATE_STATE_RUNNING; W3B_SAY_ECS_FORMAL_GATE_RUNNING; W3B_ECS_CUTOVER_PENDING; W4_MAC3_PAUSED`
+
+**首 SAY 正式 Gate 已启动（2026-09-11 14:25 CST，覆盖下文准备状态）**：
+
+- 候选提交 `0b04999e30317882a7e38916cd34946e17bf9357` 包含首 SAY canonical paused/draft 增量交付、
+  W3B 原件复验入口及其迁移期测试；Full/K5 尚未 Intake。clean commit 连续两次构建，archive/manifest 字节全同，
+  archive SHA256 `fa4b6c0a5054ffe5bc103df03b5d8768202a1f2b1aa9d75a43869355d2820b83`。
+  已经既有 installer 预安装到 ECS releases，返回 activated=false；current/previous 与 Backend PID1141752 未变。
+- 首 SAY 的新原件复验入口在 ECS 真实 Linux 环境完成只读核验：333 条、输入/源码/包记录/locale 全部匹配，
+  exact version `0bc86751d50e`，算法调用 0、数据库写入 0。前两次独立 shell 尝试因缺少 BFL_RUNTIME_ROOT、
+  conda PATH 在导入/环境检查处停止；补齐调用环境后通过，没有为此改算法或 release 文件。
+- 正式 wrapper `outputs/native-migration-w3b-state-model-reuse-draft/run_say_formal.py`，冻结 SHA256
+  `9b49705131e171fba13254226bf926f298eabbd9964b0acea1016260e5b7ccc3`，独立审查 C/I=0；
+  已修复“Gate 已提交但后验失败后误报复用成功”的恢复分支，10 个隔离检查通过。
+  两次只读数据库身份检查绑定 loopback bond_db/server UUID；UUID 只保留在私有执行原件，不写本文。
+  完整现场 --preflight 通过，所有 one-shot idle、两 run 表零 running、该方案没有已有回测，
+  可用内存13242MiB，无其他 Python3.13 算法。下一 timer 18:00 monthly，7200秒上限在此前结束。
+- 14:23 实际派发至 `/opt/bond-factor-lab/incoming/w3b-say-formal-20260911.mUq1ZP/`：
+  shell1348835、controller1348836；14:24读回算法 PGID1348940 已在一次 backtest CLI 中计算，
+  输出与状态都在平台本次私有回测目录，不发布生产状态。Nice10、7200秒、4GiB、8个数值线程。
+  结果目录 `formal-liwei_0616_10y01_cons_say_k3_div_k10_bbv2/`，控制日志 `formal-controller.log`；
+  此刻仅 started.json 和进行中的 gate.json，尚无成功正式回测证据，禁止重复调用。
+- 完成后必须复验 complete/failure、Gate 与 repository 权威明细、旧事实摘要和进程退出；失败/不完整尝试不自动重跑。
+  正式行数以 Gate 自身 Request 和持久化明细为准，不强制套用另一输入代的 333 条。
+  ECS 本次算法结束前不启动第二个 ECS 重计算。Mac 的 Full49673/K549720 同时继续本机 cold 阶段，
+  各自成功才自动 warm→stateless；13:52开始的链不重启、不更改冻结脚本。
+  所有方案仍保持原子整批切换约束，未激活 successor、未切 current、未动 timer 或 Mac3 生产。
 
 **实际推进（2026-09-11 13:53 CST，覆盖下文旧运行状态）**：
 
