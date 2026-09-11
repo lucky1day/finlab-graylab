@@ -2,7 +2,57 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FIXED_FULL333_AND_INCREMENTAL_STATE_PASSED; W3B_MODEL_REUSE_FULL333_PASSED_K5_ECS_FULL_RUNNING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_ALL_THREE_FULL333_PASSED; W3B_FULL_K5_MAC_PRIVATE_STATE_RUNNING; W3B_ECS_CUTOVER_PENDING; W4_MAC3_PAUSED`
+
+**实际推进（2026-09-11 13:53 CST，覆盖下文旧运行状态）**：
+
+- K5 已于 13:02:43 完成完整 333 条算法等价，6964.737602 秒，五字段逐行全同，退出 0、进程组清理通过。
+  报告 SHA256 `3f63aa9afc091845534aab49815d07130b955ec8e5f047ab197ee2851121a621`，
+  CSV SHA256 `09d8f666aef41e59f10c7e101b64b12328856da136ab312150a48a678441b1f9`；
+  本机已保留 `outputs/releases/w3b-staged-reference-20260911/model-reuse-k5-execution/`。
+  W3B 三个方案完整算法等价均通过，不重跑 Native 或任何已成功的 333 条对比。
+- Full/K5 本机私有状态验证入口已完成独立审查（Critical/Important 均 0），修正仅涉及临时验证脚本，
+  不改候选算法。入口 `outputs/native-migration-w3b-state-model-reuse-draft/run_mac_state_validation.py`，
+  冻结 SHA256 `9c2a4bbb039e71ac6c5e0ec7f7ad7682e0048407533e72e1afddfa5370ed3e07`；
+  锁定算法/Metadata、冻结输入、等价报告、本机解释器/包记录及平台监督校验文件身份。
+- 13:52 已实际并行启动 Full 与 K5，私有目录 `outputs/w3b-mac-state-20260911.cHCTNK/`。
+  Full controller 49586、算法 49673；K5 controller 49628、算法 49720。每方案临时线程池 16 worker，
+  数值库各 1 线程、Nice10、每进程 4 GiB；算法原有日志仍显示其默认 4 workers，实际池由本机 bootstrap 覆盖。
+  每个方案依次 cold→warm→stateless，前阶段成功才进入下一阶段，任一失败停止且保留原件；
+  cold/stateless 各最多 7200 秒，warm 最多 120 秒。不重试、不复用另一个方案状态，不修改已冻结入口。
+  此刻两进程日志已进入首次 Phase A，尚无成功状态验收报告。
+- 本机状态只是开发功能证据，不冒充 ECS 性能、正式 Gate 或生产状态；ECS 后续仍使用自身输入、
+  正式入库证据与受控初始化。ECS 13:52 只读核验 current 为 a6ffe3a6b477e2fee67489c43c79ab767433acbb，
+  previous 为 8eb2df2e239dec6c3de529b99764d7be3f7316e2；下一 timer 为 18:00 monthly、19:00 Actuals。
+  未更改 release、timer 或数据库；Mac3 生产 runtime/launchd/数据库/域名不动。
+- 下一动作：复验两份完整状态报告后，按增量 Intake、不可变 release、一次正式持久化 Gate、
+  ECS 初始化和模拟调度推进 W3B 三方案原子切换；不等待多个自然调度日。当前尚未正式入库或切换。
+
+**计算期间的集成推进（2026-09-11 13:56 CST）**：
+
+- 已复核首 SAY 已通过的状态报告 `aa0afd1bcedda33340cd5b1adcd4423e46500732ba34ecaa961def716508a80f`，
+  经本地 `harness intake-blackbox --incremental-state` 创建 canonical
+  `schemes/liwei_0616_10y01_cons_say_k3_div_k10_bbv2/`。交付两文件 SHA 与已批准原件完全一致，
+  配置保持 paused/draft；部署矩阵只新增该 successor 的 aliyun-gray 范围，尚未移除旧方案范围。
+  此处 Intake 仅生成本地文件，不等于 ECS 正式持久化入库或激活；当前未发布。
+- Intake、discovery、deployment scope 相关测试通过：29 passed、17 subtests passed；diff whitespace 检查通过。
+- 现有 canonical 等价凭据生成器仅允许 W3A 的已审原件复用，普通 W3B bundle 会再次执行算法。
+  正在检查最小的 W3B 原件复验接入路径；不直接调用会重算的入口，不伪造凭据或降低 activation 校验。
+  该接线不要求重跑三份已成功算法证据，也不应扩展成新的长期迁移框架。
+
+**凭据接线与候选集成（2026-09-11 14:10 CST）**：
+
+- 已在现有临时迁移模块增加锁定三份 W3B 原件的读取路径，复核原始请求、结果、五文件、参考源码、
+  候选两文件及 Linux 运行环境；继续使用原有五字段比较和凭据生成，不启动算法，不放宽入库校验。
+  W3B 保留 native 参考环境身份，不套用 W3A 的特殊 Blackbox 参考身份；明确要求 incremental_state=true。
+- 独立代码审查 Critical/Important 为 0；本机原件映射验证覆盖三份真实 333 条记录及摘要拒绝边界。
+  主 agent 相关回归 122 passed、17 subtests passed；全量回归 760 passed、6 skipped、229 subtests passed，
+  10 条 warning 均为既有 SQLite datetime adapter 弃用提示。现场 ECS 原件/环境复验尚未执行。
+- comparator 源码摘要变化仅影响今后凭据绑定；W1/W2/W3A 的本批回滚窗口已关闭，现有历史凭据保留原样，
+  不改写、不为绑定新工具而重算。新 release 对不匹配工具摘要的旧凭据仍拒绝执行。
+- 为与本机 Full/K5 初始化并行推进，先准备已完成全部算法和状态验收的首 SAY 的候选预安装和正式 Gate。
+  仅允许一次该方案的正式回测，仍保持 paused，不切换 current、不做半批激活；W3B 三方案最终原子切换不变。
+  尚未构建/预安装本轮 archive，未启动 ECS 正式 Gate；操作前独立审查一次性入口并重新做现场只读预检。
 
 **Mac并行度实测与状态只读预检（2026-09-11 11:53 CST）**：
 

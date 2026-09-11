@@ -122,6 +122,36 @@ _REVIEWED_W3A_EVIDENCE = {
         "summary_sha256": "e45e5f85d7afa3602276e480e5f532995b68c049e8f03d4382c8ac9055893015",
     },
 }
+# 本次 W3B 已批准 ECS 原件的封闭集合；不接受操作者提供的成功摘要或新结果。
+_W3B_SOURCE = Path("/opt/bond-factor-lab/incoming/w3b-state-20260909.HFFFwd/native-migration-w3b-reference-draft/execution")
+_W3B_STAGED = Path("/opt/bond-factor-lab/incoming/w3b-staged-reference-20260910.hejFGE")
+_W3B_BINDING_SHA256 = "bdc68765192aaa9fb73a4bcc52f4cd9d1bf73b14ece9338c4d0525830333b5ce"
+_REVIEWED_W3B_EVIDENCE = {
+    "liwei_0616_10y01_cons_say_k3_div_k10": {
+        "family": "say",
+        "old_code_hash": "32c64f6a8d17d7920fa5e9b7eb6d152e52c4f5591d2962bf8e93f137ccc889b0",
+        "code_sha256": "93798b4183fab8e02f974c72a4cf7602df9b410227fbc909608c74fe6ba1e9ce",
+        "metadata_sha256": "ceba9f3a222decadafcdc7375aba94f4e160fe84c20ffd4ae9028fa42bf4fe49",
+        "report_sha256": "a96b3191868c0d2141d15be6a6cb47a8c23bb4e44c9d1d1b675f39899e84cb4e",
+        "execution_dir": "/opt/bond-factor-lab/incoming/w3b-weeklyfix-20260909.fZmImh/full-comparison-execution",
+    },
+    "liwei_0616_10y01_full_oos_k3_div_k10": {
+        "family": "full",
+        "old_code_hash": "67099dd38b64a551a8616f8db95d4922bad35f5edb0b722a04581bbde538b168",
+        "code_sha256": "4636722b3502f9a94942843a99b01170c193fa89784944237825e8e67261d0ad",
+        "metadata_sha256": "c5440c0eda7a02ce2456539eec80f26750f5bce8963eb89e3db9fc99bca7a69a",
+        "report_sha256": "6018e0e6240b996a1a201e742fa063b0dc191786d63e4e29f0393a03a50339fe",
+        "execution_dir": "/opt/bond-factor-lab/incoming/w3b-model-reuse-full-20260911.KOoIYB/full-execution",
+    },
+    "liwei_0616_10y02_cons_say_k3_div_k5": {
+        "family": "k5",
+        "old_code_hash": "2b84c06d80a051167da27802cc1cd36d3bbe817ed990318917632591b0dd970a",
+        "code_sha256": "8e0df532e3c34fd778ef2ee38d66282ae219004edb9abe1b6d8925a7f28754d6",
+        "metadata_sha256": "f9a04607e978c386312bf351c5443144e170fb2b0abb31d288239e1286094b6f",
+        "report_sha256": "3f63aa9afc091845534aab49815d07130b955ec8e5f047ab197ee2851121a621",
+        "execution_dir": "/opt/bond-factor-lab/incoming/w3b-k5-model-reuse-20260911.72TZ9d/k5-execution",
+    },
+}
 _STANDARD_RESULT_FIELDS = (
     "request_id",
     "predict_date",
@@ -391,10 +421,12 @@ def build_native_successor_equivalence_receipt(
         or raw.get("wave") != wave.wave
     ):
         raise ValueError("comparison bundle identity mismatch")
-    if reuse and (wave.wave != "W3A" or {
-        target.old_base_scheme_id for target in wave.targets
-    } != set(_REVIEWED_W3A_EVIDENCE)):
-        raise ValueError("reviewed result reuse requires the complete locked W3A family")
+    if reuse:
+        reviewed = {"W3A": _REVIEWED_W3A_EVIDENCE, "W3B": _REVIEWED_W3B_EVIDENCE}.get(wave.wave)
+        if reviewed is None or len(wave.targets) != len(reviewed) or {
+            target.old_base_scheme_id for target in wave.targets
+        } != set(reviewed):
+            raise ValueError("reviewed result reuse requires the complete locked W3A or W3B family")
     if not reuse:
         data_dir = _resolve_evidence_path(bundle_path, raw.get("data_dir"), "data_dir")
         if not data_dir.is_dir():
@@ -427,7 +459,8 @@ def build_native_successor_equivalence_receipt(
         project_root,
         expected_runtime_profile=str(next(iter(runtime_profiles))),
     )
-    native_runtime_fingerprint = (successor_runtime_fingerprint if reuse else
+    w3a_reuse = reuse and wave.wave == "W3A"
+    native_runtime_fingerprint = (successor_runtime_fingerprint if w3a_reuse else
                                   _capture_native_runtime_identity()["environment_fingerprint"])
 
     comparisons = raw.get("comparisons")
@@ -467,7 +500,8 @@ def build_native_successor_equivalence_receipt(
         )
         comparison = by_identity[identity]
         if reuse:
-            request_rows, native_rows, successor_rows, input_identity = _load_reviewed_w3a_comparison(
+            loader = _load_reviewed_w3a_comparison if w3a_reuse else _load_reviewed_w3b_comparison
+            request_rows, native_rows, successor_rows, input_identity = loader(
                 project_root=project_root, target=target,
                 new_config=replace(new_configs[target.new_base_scheme_id],
                                    environment_fingerprint=successor_runtime_fingerprint),
@@ -545,7 +579,7 @@ def build_native_successor_equivalence_receipt(
                 "old_code_hash": old_configs[target.old_base_scheme_id].code_hash,
                 "new_code_hash": new_configs[target.new_base_scheme_id].code_hash,
                 "input_identity": input_identity,
-                "native_runtime_profile": "blackbox-v2-v1" if reuse else "native",
+                "native_runtime_profile": "blackbox-v2-v1" if w3a_reuse else "native",
                 "native_runtime_environment_fingerprint": (
                     native_runtime_fingerprint
                 ),
@@ -782,6 +816,148 @@ def _execute_controlled_comparison(
             _load_standard_result_rows(native_output, label="Native"),
             _load_standard_result_rows(successor_output, label="successor"),
         )
+
+
+def _read_reviewed_w3b_bytes(path: Path, expected: str) -> bytes:
+    """按已批准摘要读取同一份有界原件，拒绝路径穿越与符号链接。"""
+    if not path.is_absolute() or ".." in path.parts or any(
+        part.is_symlink() for part in (path, *path.parents)
+    ):
+        raise ValueError("reviewed W3B evidence path is unsafe")
+    if not path.is_file() or path.stat().st_size > 64 * 1024 * 1024:
+        raise ValueError(f"reviewed W3B evidence is not a bounded regular file: {path}")
+    payload = path.read_bytes()
+    if hashlib.sha256(payload).hexdigest() != expected:
+        raise ValueError(f"reviewed W3B evidence SHA-256 mismatch: {path}")
+    return payload
+
+
+def _verify_reviewed_w3b_runtime(binding: Mapping[str, object], evidence_dir: Path) -> None:
+    """复验原 ECS 的两套解释器、完整包记录及实际 locale，不在 Mac 代签环境。"""
+    from scheduler.blackbox_v2_runner import DEFAULT_RUNTIME_PROFILE, _python_runtime, _runtime_environment
+
+    if sys.platform != "linux" or str(os.environ.get("BOND_ALGO_CONDA_ENV") or "forecast_env").strip() != "forecast_env":
+        raise ValueError("reviewed W3B evidence requires the captured ECS Native runtime")
+    for kind, env_name in (("native", "forecast_env"), ("successor", "forecast_env_blackbox_v1")):
+        profile = replace(DEFAULT_RUNTIME_PROFILE, conda_env=env_name)
+        if kind == "native":
+            profile = replace(profile, environment_defaults=tuple(sorted(binding["installed_locale"].items())))
+        runtime = _python_runtime(profile)
+        expected = binding["environment"][kind]
+        if str(runtime.executable) != expected["executable"] or str(runtime.prefix) != expected["prefix"]:
+            raise ValueError("reviewed W3B runtime path differs from original ECS execution")
+        paths = [runtime.executable, *sorted(runtime.prefix.glob("conda-meta/*.json")),
+                 *sorted(runtime.prefix.glob("lib/python*/site-packages/*.dist-info/METADATA")),
+                 *sorted(runtime.prefix.glob("lib/python*/site-packages/*.dist-info/RECORD"))]
+        if {str(path) for path in paths} != set(expected["files"]):
+            raise ValueError("reviewed W3B runtime package inventory changed")
+        for path in paths:
+            _read_reviewed_w3b_bytes(path, expected["files"][str(path)])
+        environment = _runtime_environment(profile, evidence_dir, python_executable=runtime.executable)
+        if {key: environment[key] for key in ("LANG", "LC_ALL", "TZ") if key in environment} != expected["effective_locale"]:
+            raise ValueError("reviewed W3B effective runtime locale changed")
+
+
+def _load_reviewed_w3b_comparison(
+    *,
+    project_root: Path,
+    target: NativeSuccessorTarget,
+    new_config: SchemeConfig,
+    evidence_dir: Path,
+    data_dir: Path,
+) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], dict[str, object]]:
+    """只读复验三份已批准 ECS 333 条原件，复用完整参考链而不启动算法。"""
+    approved = _REVIEWED_W3B_EVIDENCE.get(target.old_base_scheme_id)
+    if (approved is None or target.new_base_scheme_id != target.old_base_scheme_id + "_bbv2"
+            or target.target_tenor != "10Y" or target.task_type != "T+5"
+            or target.old_horizon != 5 or target.new_horizon != 5 or target.target_rule is not None
+            or new_config.scheme_id != target.new_base_scheme_id
+            or new_config.incremental_state is not True
+            or new_config.code_hash != approved["code_sha256"]
+            or load_scheme_config(project_root / "schemes" / target.old_base_scheme_id / "config.yaml").code_hash != approved["old_code_hash"]):
+        raise ValueError("reviewed W3B target or exact code identity mismatch")
+    bound = _read_reviewed_w3b_bytes
+    bound(new_config.delivery_script, approved["code_sha256"])
+    bound(new_config.delivery_metadata, approved["metadata_sha256"])
+    report = json.loads(bound(evidence_dir / "comparison-report.json", approved["report_sha256"]))
+    binding = json.loads(bound(_W3B_SOURCE / "binding.json", _W3B_BINDING_SHA256))
+    if report["status"] != "passed" or report["all_five_fields_equal_in_request_order"] is not True:
+        raise ValueError("reviewed W3B comparison did not pass all five fields")
+    files = binding["files"]
+    input_files = {name: files[str(_W3B_SOURCE / "data" / name)] for name in sorted(_DATABRIDGE_FILES)}
+    for name, digest in input_files.items():
+        bound(data_dir / name, digest)
+
+    family = approved["family"]
+    if family == "say":
+        request_path = _W3B_SOURCE / "requests.csv"
+        request_payload = bound(request_path, files[str(request_path)])
+        native_dir = Path("/opt/bond-factor-lab/incoming/w3b-remaining-20260909.Aj6bv8/remaining-execution")
+        native_payload = bound(native_dir / "native-run/native.csv", report["native_csv_sha256"])
+        result_digest = report["output_sha256"]
+        started = json.loads(bound(evidence_dir / "started.json", "c85c0dc62727e752dccfd31662c3f1e997f9069202632e77ee40794b7d2ac57b"))
+        execution = json.loads(bound(evidence_dir / "execution.json", "ce758a0a2915d7a2150da1b6d265ea7b3160b342659ae06daec3b45e90d571c6"))
+        native_execution = json.loads(bound(native_dir / "native-execution.json", "f3e9a9cc6a7b8c315df8b3270139e8899024ab7b69260bac8f599aa957b90156"))
+        native_started = json.loads(bound(native_dir / "started.json", "c6d918a3c4c212a7747b69a39bf5693e8f9062479651d4b642721dff0d1598c0"))
+        bound(native_dir.parent / "native_reference_v2.py", native_started["reference_v2_sha256"])
+        bound(native_dir.parent / "run_remaining_comparison.py", native_started["driver_sha256"])
+        bound(Path(approved["execution_dir"]).parent / "run_fixed_full_comparison.py", started["driver_sha256"])
+        if (report["binding_sha256"] != _W3B_BINDING_SHA256 or report["request_count"] != 333
+                or execution["returncode"] != 0 or native_execution["returncode"] != 0):
+            raise ValueError("reviewed W3B SAY execution identity mismatch")
+        source_prefix = _W3B_SOURCE / "native-source/schemes" / target.old_base_scheme_id
+        source_files = files
+    else:
+        original_dir = Path(approved["execution_dir"])
+        request_path = _W3B_STAGED / "reference-inputs" / (family + "-requests.csv")
+        native_path = _W3B_STAGED / "native-execution/results" / (target.old_base_scheme_id + ".csv")
+        artifacts = report["artifacts"]
+        bound(original_dir.parent / ("run_" + family + "_comparison.py"), report["identity"]["driver_sha256"])
+        native_report = json.loads(bound(_W3B_STAGED / "native-execution/comparison-report.json", report["native_report_sha256"]))
+        bound(_W3B_STAGED / "native_reference.py", native_report["identity"]["reference_sha256"])
+        bound(_W3B_STAGED / "run_family_comparison.py", native_report["identity"]["driver_sha256"])
+        payloads = {}
+        for original, digest in artifacts.items():
+            path = Path(original)
+            if ".." in path.parts or not (path.is_relative_to(original_dir) or path.is_relative_to(_W3B_STAGED)):
+                raise ValueError("reviewed W3B report artifact escaped approved roots")
+            local = evidence_dir / path.relative_to(original_dir) if path.is_relative_to(original_dir) else path
+            payload = bound(local, digest)
+            if path in (request_path, native_path):
+                payloads[path] = payload
+        request_payload, native_payload = payloads[request_path], payloads[native_path]
+        result_digest = artifacts[str(original_dir / "candidate.csv")]
+        source_prefix = _W3B_STAGED / "reference-inputs/native-source/schemes" / target.old_base_scheme_id
+        source_files = artifacts
+        if report["identity"]["binding_sha256"] != _W3B_BINDING_SHA256 or report["identity"]["request_count"] != 333:
+            raise ValueError("reviewed W3B family execution identity mismatch")
+
+    # Native code_hash 未覆盖 inference.py；额外锁住参考实际读取的四文件完整集合。
+    source_hashes = {Path(path).relative_to(source_prefix).as_posix(): digest
+                     for path, digest in source_files.items() if Path(path).is_relative_to(source_prefix)}
+    if set(source_hashes) != {"inference.py", "core/__init__.py", "core/data_alignment.py", "core/v31_common.py"}:
+        raise ValueError("reviewed W3B Native source closure is incomplete")
+    for relative, digest in source_hashes.items():
+        bound(source_prefix / relative, digest)
+        bound(project_root / "schemes" / target.old_base_scheme_id / relative, digest)
+    successor_payload = bound(evidence_dir / "candidate.csv", result_digest)
+    reader = csv.DictReader(io.StringIO(request_payload.decode("utf-8-sig"), newline=""))
+    if reader.fieldnames != list(REQUEST_FIELDS):
+        raise ValueError("reviewed W3B Request fields mismatch")
+    requests = [asdict(request_from_mapping(dict(row))) for row in reader]
+    native = _standard_result_rows(native_payload, label="Native")
+    successor = _standard_result_rows(successor_payload, label="successor")
+    if (len(requests) != 333 or len({row["request_id"] for row in requests}) != 333
+            or len(native) != 333 or native != successor
+            or any(row["request_id"] != target.new_base_scheme_id + ":" + ":".join(
+                row[field] for field in ("predict_date", "feature_date", "target_date")) for row in requests)):
+        raise ValueError("reviewed W3B must contain all 333 matching standard results")
+    _verify_reviewed_w3b_runtime(binding, evidence_dir)
+    return requests, native, successor, {
+        "generation_id": binding["snapshot"]["generation_id"],
+        "data_snapshot_id": binding["snapshot"]["snapshot_id"],
+        "data_files_sha256": input_files,
+    }
 
 
 def _load_reviewed_w3a_comparison(

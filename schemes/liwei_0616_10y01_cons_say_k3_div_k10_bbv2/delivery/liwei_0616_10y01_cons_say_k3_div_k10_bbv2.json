@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "liwei_0616_10y01_cons_say_k3_div_k10_bbv2",
+  "name": "SAY共识·DIV回退",
+  "owner": "liwei",
+  "description": "以收益率曲线、跨资产及周月因子构建固定网格LightGBM；10Y的STD与ACCWT及独立7Y基线形成三方共识，延续原连续同向DIV回退规则。可显式恢复本方案双族全日期Phase A私有状态，历史同期切片排名，当前月仍精确重算实际入选配置。周频按当前输入实际日频每周末行对齐；未完周按各Request覆盖，并由私有状态特征后缀校验重算。",
+  "algorithm_version": "native-v61-successor-draft3",
+  "target_tenor": "10Y",
+  "task_type": "T+5",
+  "horizon": 5,
+  "target_rule": "target_date_yield_vs_feature_date_yield"
+}
