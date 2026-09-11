@@ -4,6 +4,24 @@
 
 **执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FIXED_FULL333_AND_INCREMENTAL_STATE_PASSED; W3B_MODEL_REUSE_FULL333_PASSED_K5_ECS_FULL_RUNNING; W4_MAC3_PAUSED`
 
+**Mac并行度实测与状态只读预检（2026-09-11 11:53 CST）**：
+
+- 用户要求Mac承担完整开发验证并利用多核，ECS只承担目标环境及正式入库/切换；不将Mac算法证据冒充ECS Gate。
+  本次不浪费已运行的K5，不另起相同完整批次。11:49 K5已完成首次历史初始化并推进至第3个cutoff，无failure。
+- 本机临时脚本 `outputs/native-migration-w3b-k5-model-reuse-draft/check_local_worker_scaling.py`，
+  SHA256 `b3de150dd6e9811a30445ecb79e6fdc6e480cc11bbea547fecefda06e52c9bc4`，实测单日期两族各265配置，
+  每库1线程，临时覆盖线程池为4/8/16/32，未改候选字节或正式Profile的线程边界。
+  四种并行度概率/方向摘要全同，fit分别恒为795/530；两族合计耗时3.322/2.175/2.024/2.137秒，
+  峰值RSS925376KiB，监督180秒/4GiB内成功。报告 `outputs/releases/w3b-staged-reference-20260911/k5-mac-worker-scaling.json`。
+  仅单样本且顺序固定，首轮可能包含预热，不能承诺全量加速比例或认定16长期最优；本次32没有优于16，
+  后续本机完整开发计算优先试用适当并行度，不以CPU占满替代实际耗时证据。
+- 独立审查恢复；状态wrapper b053获C/I=0的只读预检结论。
+  在 `/opt/bond-factor-lab/incoming/w3b-state-model-reuse-preflight-20260911.D331Y8/` 只读封存同字节脚本，
+  Full以已过期deadline执行，完整release/环境/输入/分阶段报告链检查通过，到最终budget按预期拒绝启动。
+  目录读回仅脚本，无状态目录；K5在None报告批准检查处按预期拒绝。没有模型/状态/业务写入。
+  此结论不是状态验收完成。真正执行前须锁定最终wrapper；填写K5报告hash会改变driver SHA，
+  不得在Full cold后修改同一脚本再运行warm，需保持每套已开始阶段的脚本完全不可变。
+
 **状态入口本地接线（2026-09-11，K5计算期间）**：协作实现任务因额度限制退出，未产生文件；
 主agent已inline创建 `outputs/native-migration-w3b-state-model-reuse-draft/run_family_state_validation.py`，
 SHA256 `b053f43112baaf0bea2ede76ec97c8e54a81e5307ee75fd20f47b738710923a0`。
