@@ -147,18 +147,22 @@ def test_mysql_failure_atomicity_cutover_rollback_and_recutover(mysql_migration)
     assert _plan(engine, rollback_args, control)["facts"] == initial["facts"]
 
 
-def test_mysql_upgrade_contends_with_normal_activation_lock(mysql_migration, monkeypatch):
+@pytest.mark.parametrize("held_scheme_id", ["native_multi", "native_multi_bbv2"])
+def test_mysql_upgrade_contends_with_normal_activation_lock(mysql_migration, monkeypatch, held_scheme_id):
     engine, kwargs, control = mysql_migration
+    extras = tuple(scheme_id + "_bbv2" for scheme_id in kwargs["old_configs"])
+    control = control | {"temporary_writer_check": {"scheme_ids": list(extras)}}
+    apply_kwargs = kwargs | {"additional_lifecycle_lock_scheme_ids": extras}
     plan = _plan(engine, kwargs, control)
     monkeypatch.setattr(repo, "_BLACKBOX_LIFECYCLE_LOCK_TIMEOUT_SEC", 0.25)
-    with repo._blackbox_activation_advisory_lock(engine, scheme_id="native_multi"):
+    with repo._blackbox_activation_advisory_lock(engine, scheme_id=held_scheme_id):
         with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(_apply, engine, kwargs, control, plan)
+            future = executor.submit(_apply, engine, apply_kwargs, control, plan)
             with pytest.raises(repo.BlackboxActivationLockTimeout):
                 future.result(timeout=10)
     assert _plan(engine, kwargs, control) == plan
     # 持锁者退出后，同一真实 MySQL 锁必须可再次获取并完成切换。
-    _apply(engine, kwargs, control, plan)
+    _apply(engine, apply_kwargs, control, plan)
 
 
 def test_mysql_stale_identity_and_fact_drift_are_rejected(mysql_migration):

@@ -26,12 +26,10 @@ from harness.signal_gap_plan import (
     plan_signal_gap_target_range,
     plan_signal_gaps,
 )
-from harness.native_successor_migration import (
-    build_native_successor_preflight,
-    execute_native_successor_migration,
-    load_native_successor_waves,
-    select_native_successor_wave,
-    write_native_successor_equivalence_receipt,
+from harness.same_id_runtime_upgrade import (
+    build_same_id_preflight,
+    execute_same_id_upgrade,
+    parse_w3b_harness_run_ids,
 )
 from scheduler.discovery import load_scheme_config
 from scheduler.repository import create_engine_from_env
@@ -282,26 +280,16 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="migration_action",
         required=True,
     )
-    comparison = migration_actions.add_parser("prepare-equivalence")
-    comparison.add_argument("--wave", required=True)
-    comparison.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
-    comparison.add_argument("--comparison-bundle", type=Path, required=True)
-    comparison.add_argument(
-        "--old-scheme-id",
-        default=None,
-        help="required only by waves declared with switch_mode=per_scheme",
-    )
     for action in ("preflight", "cutover", "rollback"):
         item = migration_actions.add_parser(action)
-        item.add_argument("--wave", required=True)
+        item.add_argument("--wave", choices=["W3B"], required=True)
         item.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
-        item.add_argument(
-            "--old-scheme-id",
-            default=None,
-            help="required only by waves declared with switch_mode=per_scheme",
-        )
+        item.add_argument("--reference-project-root", type=Path, required=True)
+        item.add_argument("--harness-run-id", action="append", required=True, metavar="BASE=RUN")
         item.add_argument("--expected-database-name", required=True)
         item.add_argument("--expected-server-uuid", required=True)
+        if action == "preflight":
+            item.add_argument("--action", choices=["cutover", "rollback"], default="cutover")
         if action != "preflight":
             item.add_argument("--expected-plan-sha256", required=True)
             item.add_argument("--approved-by", required=True)
@@ -312,36 +300,28 @@ def _build_parser() -> argparse.ArgumentParser:
 def _run_native_successor_migration_command(
     args: argparse.Namespace,
 ) -> dict[str, object]:
-    """执行临时跨 base 迁移命令；所有写入都委托给 repository。"""
+    """仅保留同 ID W3B 生命周期路由；旧跨 ID 写入命令已封闭。"""
     project_root = args.project_root.resolve()
-    waves = load_native_successor_waves(
-        project_root / "deploy" / "native_to_blackbox_migration_v1.json"
-    )
-    wave = select_native_successor_wave(
-        waves,
-        args.wave,
-        old_scheme_id=args.old_scheme_id,
-    )
-    if args.migration_action == "prepare-equivalence":
-        return write_native_successor_equivalence_receipt(
-            project_root=project_root,
-            wave=wave,
-            comparison_bundle_path=args.comparison_bundle,
-        )
+    run_ids = parse_w3b_harness_run_ids(args.harness_run_id)
     engine = create_engine_from_env()
     try:
         if args.migration_action == "preflight":
-            return build_native_successor_preflight(
+            return build_same_id_preflight(
                 engine,
                 project_root=project_root,
-                wave=wave,
+                reference_project_root=args.reference_project_root.resolve(),
+                wave=args.wave,
+                harness_run_ids=run_ids,
+                action=args.action,
                 expected_database_name=args.expected_database_name,
                 expected_server_uuid=args.expected_server_uuid,
             )
-        return execute_native_successor_migration(
+        return execute_same_id_upgrade(
             engine,
             project_root=project_root,
-            wave=wave,
+            reference_project_root=args.reference_project_root.resolve(),
+            wave=args.wave,
+            harness_run_ids=run_ids,
             action=args.migration_action,
             expected_plan_sha256=args.expected_plan_sha256,
             approved_by=args.approved_by,

@@ -3874,6 +3874,7 @@ def apply_same_id_runtime_upgrade(
     harness_run_ids: Mapping[str, str], action: str, expected_plan_sha256: str, approved_by: str,
     approved_at: datetime, control_plane_evidence_reader: Callable[[], Mapping[str, object]],
     expected_database_name: str, expected_server_uuid: str,
+    additional_lifecycle_lock_scheme_ids: Sequence[str] = (),
 ) -> dict[str, object]:
     """复用正常 activation 互斥锁，整批升级/回滚；历史事实始终只读。"""
     operator = _require_nonempty(approved_by, "approved_by")
@@ -3883,12 +3884,20 @@ def apply_same_id_runtime_upgrade(
         c not in "0123456789abcdef" for c in expected_plan_sha256
     ):
         raise ValueError("expected_plan_sha256 must be lowercase SHA-256 hex")
+    extra_ids = tuple(additional_lifecycle_lock_scheme_ids)
+    if extra_ids and (
+        len(extra_ids) != len(set(extra_ids))
+        or set(extra_ids) != {scheme_id + "_bbv2" for scheme_id in old_configs}
+    ):
+        raise ValueError("additional lifecycle locks must cover exactly the temporary successor IDs")
     with ExitStack() as locks:
         if engine.dialect.name != "sqlite":
-            for scheme_id in sorted(old_configs):
+            for scheme_id in sorted(set(old_configs) | set(extra_ids)):
                 locks.enter_context(_blackbox_activation_advisory_lock(engine, scheme_id=scheme_id))
         with engine.begin() as conn:
             control = control_plane_evidence_reader()
+            if extra_ids and sorted(control.get("temporary_writer_check", {}).get("scheme_ids", [])) != sorted(extra_ids):
+                raise ValueError("temporary lifecycle lock scope differs from captured control plane")
             kwargs = dict(old_configs=old_configs, new_configs=new_configs, harness_run_ids=harness_run_ids,
                           control_plane_evidence=control, expected_database_name=expected_database_name,
                           expected_server_uuid=expected_server_uuid, for_update=True)

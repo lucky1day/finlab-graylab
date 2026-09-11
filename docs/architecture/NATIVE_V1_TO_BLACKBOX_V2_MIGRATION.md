@@ -112,7 +112,7 @@ W3B 产物索引：
 - 周/月 `fact_horizon` 投影已贯通 discovery、predict、gray batch 与 backtest，
   仅允许精确迁移清单；普通 Blackbox 默认版本摘要保持不变。
 - 已实现只读交付身份转换证明与 W3B 状态 Metadata 封装转换：算法字节、数值数组不变。
-  这些 helper 尚不构成激活证据；标准本机调用、受控状态发布与临时 CLI 仍待接通。
+  这些 helper 尚不构成激活证据；ECS 标准本机调用、受控状态发布与准备 Gate 仍待接通。
 - W3B 三原 ID 的 ECS 部署资格已在候选矩阵恢复；现场尚未切换，不能提前排除原 Writer。
 - 新鲜全量回归：805 passed、9 skipped、235 subtests passed；另以本机随机隔离 MySQL
   schema 实测 3 passed，覆盖整批回滚、正常 activation 锁竞争、再切换与身份漂移。
@@ -122,6 +122,33 @@ W3B 产物索引：
 - 本轮尚未改变 ECS/Mac3 current、生产 Registry、预测或回测事实；未删除迁移数据，未执行 DDL。
 - K5 于北京时间 2026-09-12 00:59 核验仍在同一初始化 attempt，约 73 分钟、RSS 约 1.04 GiB；
   只有 started/cold-started，无完成凭据。不重启，不据此声称日常增量已通过。
+- 基础能力提交 `ce57ec5386a1fea9b4fea60759d4418ef8e0a41b` 已推送，远端引用已读回；
+  [草稿 PR #57](https://github.com/lucky1day/finlab-graylab/pull/57) 指向 master，未合并。
+  clean commit 双构建字节一致，archive SHA-256 为
+  `82ce1eaf8f8170232942d22ab9b9da5d0c4e08acb3854ebc21d6c38f133500ea`，
+  产物在 `outputs/releases/same-id-foundation-ce57ec5/`，尚未作为 current 部署。
+- Full/K5 原 ID 私有短调用已通过：4.7746 秒 / 4.7879 秒。同输入、同日期、同 cutoff，
+  Request ID 前缀按原 ID 转换，标准结果一致；两个族各八个数组逐字节保留。
+  此次是同 cutoff 复用（各 651 reused / 0 trained），不等于新一天推进或 ECS 验收。
+  未创建新 canonical version、未发布平台 StateSession envelope、未写 Harness 或业务事实。
+  独立审查已复核脚本、源 receipt、输入/运行环境、数组与输出，未重新执行算法。
+  证据根目录：`outputs/native-runtime-identity-20260912/mac-identity-7gjrs0nm/`。
+  Full receipt SHA：`19e21076f9a6dc87e7ef0ea975bf0f1a588cedbaab2dfc5b1494b75b7f889457`；
+  K5 receipt SHA：`4728351a904fb88033a32b3a7a1ae1dfaa6d4e3edc9e3349f8fab981403b39bf`。
+  此前 Mac cold→warm→stateless 的真正下一日对照仍保留在第 3 节列出的本机私有证据目录，
+  不与此次同 cutoff 身份验证混用，也不代替 ECS 本机执行身份。
+- 已实现唯一迁移 CLI 的同 ID W3B 控制路由：只接受完整三方案，旧跨 ID 写入和
+  `prepare-equivalence` CLI 已禁用；内部已锁定的证据复验函数保留，不重复算法。
+  每次从 candidate/reference 安装树、实际执行模块、部署矩阵、systemd 围栏/有效环境、
+  五文件输入及 candidate StateSession 封装重新取证；原/临时 ID 共六个激活锁统一排序持有。
+  缺新原 ID canonical、已接纳的 exact 状态或三份真实 Harness Gate 时直接阻断。
+  此控制层不创建 Gate、不运行算法、不自动换 release、不自动停止或恢复 timer。
+- ECS 旧 `3ac4647…` immutable reference 下，三份 333 条证据及四文件 Native 源闭包
+  本轮只读复验通过，仍绑定各自原输入，算法执行次数 0。
+- 控制层最终全量回归：838 passed、10 skipped、235 subtests passed；另行真实隔离
+  MySQL 4 passed，新增原 ID 与临时 ID 两种普通 activation 锁竞争验证。
+  独立复审无未关闭 Critical/Important。全量发现的 harness→scripts 依赖越界已移除，
+  未增加架构 allowlist。CLI help 与部署边界通过，不等于生产 preflight 通过。
 
 ## 4. 最小实现
 
@@ -137,6 +164,16 @@ W3B 产物索引：
 
 W3A/W3B 不允许多次独立 activate 冒充原子切换。
 普通 Blackbox 修订检查保持严格，不能全局去掉 Native 历史校验来绕过边界。
+
+当前已实现的临时入口只有 `python -m harness migrate-native-successor
+{preflight,cutover,rollback} --wave W3B`，尚不支持其他 wave 或 Mac3。
+必须传 candidate `--project-root`、已安装旧 Native `--reference-project-root`、
+三次 `--harness-run-id 原baseID=真实runID`，以及从只读查询取得的目标 DB 名称/UUID。
+preflight 的 `--action` 指明 cutover 或 rollback；两个写命令另外要求刚生成的
+`--expected-plan-sha256` 和 `--approved-by`。此阶段 preflight 要求 candidate 已在维护围栏内
+作为 current，且调用代码来自该 immutable release；离线候选检查不能冒充现场 preflight。
+尚未准备完状态/Gate 前不要先 fence 或切 current。文件系统切换失败、缺证据或 DB 操作失败时，
+外层操作者仍须保持 Writer 关闭并完成分层补偿，不能把此 CLI 当成自动发布脚本。
 
 ### 4.2 多目标交付与历史 horizon
 

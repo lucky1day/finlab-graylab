@@ -1,7 +1,7 @@
 """同 ID 迁移期的原子切换验收；迁移工具退役时一并删除。"""
 
 from copy import deepcopy
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 import json
 from unittest.mock import patch
@@ -117,6 +117,54 @@ def test_second_member_failure_rolls_back_first_member(migration):
     with patch.object(repo, "_upsert_scheme_version_conn", side_effect=fail_second):
         with pytest.raises(RuntimeError, match="injected"):
             _apply(engine, kwargs, control, before)
+    assert _plan(engine, kwargs, control) == before
+
+
+@pytest.mark.parametrize("extra_ids", [
+    ("unrelated",), ("native_multi_bbv2",),
+    ("native_multi_bbv2", "native_multi_bbv2", "second_native_bbv2"),
+])
+def test_additional_lifecycle_locks_reject_unrelated_or_partial_scope(migration, extra_ids):
+    engine, kwargs, control = migration
+    before = _plan(engine, kwargs, control)
+    with pytest.raises(ValueError, match="exactly the temporary successor IDs"):
+        _apply(engine, kwargs | {"additional_lifecycle_lock_scheme_ids": extra_ids}, control, before)
+    assert _plan(engine, kwargs, control) == before
+
+
+def test_original_and_temporary_locks_have_one_stable_order(migration, monkeypatch):
+    engine, kwargs, control = migration
+    extra_ids = tuple(scheme_id + "_bbv2" for scheme_id in kwargs["old_configs"])
+    control = control | {"temporary_writer_check": {"scheme_ids": list(extra_ids)}}
+    before = _plan(engine, kwargs, control)
+    events = []
+
+    @contextmanager
+    def lock(_engine, *, scheme_id):
+        events.append(("acquire", scheme_id))
+        try:
+            yield
+        finally:
+            events.append(("release", scheme_id))
+
+    def stop_before_any_write(*_args, **_kwargs):
+        raise RuntimeError("stop after all locks before any write")
+
+    monkeypatch.setattr(engine.dialect, "name", "mysql")
+    monkeypatch.setattr(repo, "_blackbox_activation_advisory_lock", lock)
+    monkeypatch.setattr(repo, "_same_id_runtime_upgrade_plan_conn", stop_before_any_write)
+    with pytest.raises(RuntimeError, match="stop after all locks"):
+        _apply(engine, kwargs | {"additional_lifecycle_lock_scheme_ids": extra_ids}, control, before)
+    order = sorted(set(kwargs["old_configs"]) | set(extra_ids))
+    assert events == [("acquire", key) for key in order] + [("release", key) for key in reversed(order)]
+
+
+def test_temporary_lock_scope_must_match_captured_control_plane(migration):
+    engine, kwargs, control = migration
+    before = _plan(engine, kwargs, control)
+    extra_ids = tuple(scheme_id + "_bbv2" for scheme_id in kwargs["old_configs"])
+    with pytest.raises(ValueError, match="lock scope differs"):
+        _apply(engine, kwargs | {"additional_lifecycle_lock_scheme_ids": extra_ids}, control, before)
     assert _plan(engine, kwargs, control) == before
 
 
