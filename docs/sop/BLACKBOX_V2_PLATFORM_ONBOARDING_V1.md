@@ -88,6 +88,12 @@ python -m harness gate backtest \
 同 exact version 的有效完整证据可复用；算法版本、输入或校验策略变化需要按证据绑定规则重新验证，
 “只做一次”不表示未来任何变更都不必重跑。
 
+本次 Native 迁移的 W3B 三份已完成完整执行、已验证等价的 ECS 原件，按
+[迁移计划的专项授权](../architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md)允许直接复验并持久化，
+不再次运行算法。该一次性入口锁定原件、真实冻结输入与执行环境，核对正式历史区间的完整 Request，
+沿用平台结果整理、actual 指标和原子 repository；明确记录结果复用及当次零算法调用。
+这不是任意 CSV 导入或放宽激活条件，普通新交付仍走下面的完整回测流程。
+
 回测只做一次完整计算：
 
 1. 复验当前 canonical 目录仍是安全的精确两文件交付；

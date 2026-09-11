@@ -2,7 +2,49 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_ALL_THREE_FULL333_PASSED; W3B_FULL_K5_MAC_STATE_PASSED_AND_CANONICAL_INTAKE_DONE; W3B_SAY_ECS_FORMAL_GATE_RUNNING; W3B_ECS_CUTOVER_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_ALL_THREE_FULL333_PASSED; W3B_FULL_K5_MAC_STATE_PASSED_AND_CANONICAL_INTAKE_DONE; W3B_DUPLICATE_SAY_GATE_CANCELLED_NO_DB_COMMIT; W3B_REVIEWED_RESULT_PERSIST_COMPLETE; W3B_ECS_STATE_PREPARING; W3B_ECS_CUTOVER_PENDING; W4_MAC3_PAUSED`
+
+**三份已验证结果完成持久化（2026-09-11 16:39 CST 读回）**：
+
+- SAY / Full / K5 的成功 backtest run 分别为282 / 283 / 284，exact version分别为
+  `0bc86751d50e` / `66b4fe52fef1` / `d18725b8f920`。每份333条预测、17条月指标，合计999条与51条。
+  三份 summary 均明确 `result_origin=reviewed_w3b_execution`、`algorithm_executions=0`；没有重跑算法。
+- 输入仍真实绑定 `full-20260909-063339-4688e3c69f8d` /
+  `snapshot-c8655eab5d799e1c7004e63c`，不是导入当日新 generation。
+  既有 repository 的成功证据和完整333条发布事实均独立读回通过。
+- 三次 plan SHA依次为 `dd6b064845fa00545d74a959d5da3250c36681c99dc31620416d28a5b562c72e`、
+  `6c28ed430e00aaf917638882eb2ef3d618fe34b51ac4aa62265f956b278c7069`、
+  `8e83189e6860100ea04d8c08baa8c15b49137373e02fef65ba8cef456e0268ba`。
+  各 started/complete 的 plan摘要一致；排除这三份新增回测后，十类原有事实数量与摘要全部未变。
+  两张 run 表零 running。K5在会话中断前已提交完成，恢复后只读确认，没有再次提交。
+- 一次性入口 `outputs/native-migration-w3b-state-model-reuse-draft/reuse_reviewed_w3b_backtest.py`
+  冻结SHA256 `2ffbe919e4e931c62b2b4212d9194c525d1e7a8b89d6085c986e41f17ea5075e`，
+  独立审查 Critical/Important 均0；本地既有公共合同及临时事务失败验收合计33 passed。
+  ECS原件保留在 `w3b-all-candidate-20260911.7A2igD/reuse-reviewed-<scheme>/`；本地备份
+  `outputs/releases/w3b-reused-backtests-20260911.HgiZQP/`。禁止重跑已完成导入或旧正式计算入口。
+- 下一步仅处理ECS日频派生状态及模拟：SAY存在已验证ECS原始state payload，需核对标准状态接纳边界；
+  Full/K5原ECS回测没有输出state，各需一次ECS状态初始化，不能把Mac状态冒充ECS状态。
+  初始化不写run/prediction，不要求无关Actuals/月频在整个维护窗口停止；保持方案独占、资源限制和只读数据库。
+  三个successor尚未激活，W3B原子切换与gray区间仍未完成。Mac3、域名、服务入口和DDL均未改变。
+
+**用户调整：停止重复计算、复用已验证结果（2026-09-11 16:12 CST，覆盖下文正式重算计划）**：
+
+- 用户明确要求 kill 正在运行的重复正式回测，并按已有结果复用流程推进。已先精确核验算法路径、Request 路径
+  和 PGID，再 TERM SAY 算法组1348940；controller1348836及其父shell均自然退出。未杀 Backend/调度服务。
+  原 incoming `w3b-say-formal-20260911.mUq1ZP` 保留 failure.json、失败 gate.json 和日志，不标记成功。
+- 停止后已在原数据库身份上只读验证：SAY 的 run/prediction/monthly-metric 三张回测表均为0，
+  两 run 表均零 running；相对启动快照的十类其他事实数量与摘要全部未变。Backend PID1141752及current不变。
+  `run_say_formal.py` 和 `run_remaining_formal.py` 的重复计算路径不再执行，持续推进任务已同步此决定。
+- 本轮受控复用仅处理 W3B 三份已经在 ECS 完成且 hash 锁定的完整333条 successor结果，不接收任意CSV，
+  不复制Native历史，不伪造当次算法执行成功；通过原件loader复验代码、环境、完整Request和输入，再使用现有
+  `run_blackbox_historical_backtest` 的结果回调与 `persist_backtest_output_atomic` 整理并原子持久化。
+  summary须明确结果来自已验证执行、当次algorithm_executions=0，并记录原件摘要与真实冻结输入身份。
+- 历史输入固定为原始 `full-20260909-063339-4688e3c69f8d` / `snapshot-c8655eab5d799e1c7004e63c`。
+  已在ECS核验binding锁定的旧manifest与五文件完整有效，使用旧snapshot和平台权威actual/calendar重建历史cases，
+  三方案各333条完整七字段Request均与原件逐行全同。没有读取current ready后替换身份，没有模型调用或写库。
+  平台月指标由已有方向与当前平台actual规则生成，保留actual_extra，不冒称复制了旧Native指标。
+- 不为复用增加长期导入框架或修改shared；只准备封闭W3B一次性运维入口，经独立审查和事务失败检查后入库。
+  激活仍校验完整不可变回测证据；ECS自身状态初始化、模拟日频与三方案原子切换继续推进，不改变Mac3/DDL边界。
 
 **完整 W3B 候选已预安装（2026-09-11 15:26 CST）**：
 
