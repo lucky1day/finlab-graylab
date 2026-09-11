@@ -4,6 +4,26 @@
 
 **执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_ALL_THREE_FULL333_PASSED; W3B_FULL_K5_MAC_STATE_PASSED_AND_CANONICAL_INTAKE_DONE; W3B_SAY_ECS_FORMAL_GATE_RUNNING; W3B_ECS_CUTOVER_PENDING; W4_MAC3_PAUSED`
 
+**完整 W3B 候选已预安装（2026-09-11 15:26 CST）**：
+
+- clean commit `3ac464743348354a4de1f4ac5a1b039039f47a2a` 包含三个 paused/draft successor，
+  两次 deterministic 构建的 archive/manifest 均字节一致；archive SHA256
+  `916f4b0abc24e29569a0d0ca89d2efa5af473224fcf874328feda1d2cd55d1ae`。
+  本地包在 `outputs/releases/w3b-all-candidate-20260911.btrvQd/{first,second}/`。
+- 上传到 ECS `/opt/bond-factor-lab/incoming/w3b-all-candidate-20260911.7A2igD/`，
+  由既有 installer 校验并预安装到对应 releases 目录，返回 `activated=false`。
+  current/previous 仍为 a6ffe3a6/8eb2df2e，Backend PID1141752 保持 active，首 SAY 正式任务未中断。
+- 没有修改已冻结的首 SAY 入口、其候选或当前服务；其正式证据不会因 Full/K5 新增或文档提交而重复计算。
+  剩余两方案的临时正式入口按现有 SAY 包装器最小复用准备，未派发第二个 ECS 算法。
+  实际派发前仍须重新检查唯一算法与完整 7200 秒窗口，15:25 下一 timer 为 18:00 monthly / 19:00 Actuals。
+- 剩余正式入口 `outputs/native-migration-w3b-state-model-reuse-draft/run_remaining_formal.py` 已完成独立审查，
+  Critical/Important 为 0；最终 SHA256 `c8a6930c37401f5baa81627d1bcd61f1ab79e31f5837d693b6fce2c74967be3e`。
+  仅允许 full/k5，精确绑定上述 release、各自版本、paused/draft；失败/不完整/lock-only 尝试均拒绝复用。
+  本地隔离检查与 CLI 检查通过，原 SAY 冻结脚本 SHA 不变。入口已复制到同一 incoming 并只读封存。
+- Full/K5 各自在 ECS 完整 `--preflight` 通过：批准算法原件/运行环境、数据库只读身份与现场控制面均匹配，
+  返回 `algorithm_executions=0`；未创建正式尝试目录或锁、未派发算法、未写业务数据。
+  只读预检不授予跨方案并行计算：后续仍先等待已有 SAY 正式算法退出，fresh 复核后按方案顺序执行。
+
 **Full/K5 本机验收完成、已接入 canonical（2026-09-11 15:24 CST）**：
 
 - 两方案 cold→warm→stateless 三段均 passed，主 agent 逐段复验 identity、artifact/环境文件摘要、
