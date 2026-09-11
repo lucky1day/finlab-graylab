@@ -4,6 +4,52 @@
 
 **执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_FIRST_FIXED_FULL333_AND_INCREMENTAL_STATE_PASSED; W3B_NATIVE_REFERENCE_PASSED_FULL_CANDIDATE_TIMEOUT_K5_NOT_STARTED; W4_MAC3_PAUSED`
 
+**模型复用候选实际推进（2026-09-11 08:27 CST；覆盖下文原full失败后的待执行状态）**：
+
+- 新full候选仅在同一次多cutoff CLI内保存每族、每配置最近模型，完整训练/校准依赖相同才复用；
+  参数、窗口、seed顺序和控制器不改，不新增NPZ模型或跨CLI状态。原a15候选与失败证据保留。
+  新脚本SHA256 `4636722b3502f9a94942843a99b01170c193fa89784944237825e8e67261d0ad`，metadata未变。
+- ECS完成实际两cutoff、全265配置及全seed对照：10Y新阶段795次fit/5.168秒，对比空缓存1590次/9.653秒；
+  7Y为530次/3.040秒，对比1060次/5.575秒。建立缓存另耗5.331/2.861秒。
+  两类返回预测/概率数组均与空缓存完全一致，base数组SHA也与原a15诊断相同。
+  同时保有1325个Booster时峰值RSS819212KiB；这些仅是两行Phase A结果，不外推完整批量或每日CLI耗时。
+- 每族首配置的实际失效检查通过：预测行变化仍复用；fit特征、cal标签、seed顺序、训练配置或特征顺序
+  变化均重训，与同输入空缓存的概率、方向、阈值和最佳轮数一致。该有限检查不代表全配置扰动覆盖；
+  两cutoff未传入预测override，不能宣称单独覆盖override输入。无需扩展测试矩阵，下一步验收完整轨迹。
+  两报告位于 `outputs/releases/w3b-staged-reference-20260911/model-reuse-two-cutoffs.json`
+  与 `model-reuse-dependencies.json`，不纳入Git。
+- 独立审查实际候选、有限证据和wrapper均C/I=0，结论仅允许一次完整候选对照，不代表发布通过。
+  新wrapper SHA256 `dfb59c1ed1334cb9317a5a26d447414c530304b3b2275849bbdff495f0c0774b`，
+  只允许stage full；旧三Native报告/身份/全部artifact链只读复用，不与新候选身份混写。
+- 新执行目录 `/opt/bond-factor-lab/incoming/w3b-model-reuse-full-20260911.KOoIYB/`；
+  完整无训练预检已通过release、输入、runtime与三Native证据链，并在过去deadline处按预期拒绝启动。
+  fresh核验两run表running均0、五one-shot inactive、可用13263MiB、磁盘15GiB、current/previous未变。
+  08:26:57实际派发controller1285305；08:27:41确认算法PGID1285346已进入Phase A，
+  日志为 `full-controller.log` 和 `full-execution/`；
+  finish-before=11:00、单次算法最多7200秒/4GiB、Nice10。08:30轻量Actuals保持原timer，未停止或改动。
+  完整333结果尚待返回；失败保留目录并停止后续，不重复旧Native、首SAY或原失败full。
+  K5仍未启动，W3B尚未切换，Mac3不动。已有持续推进任务已更新为跟进本次新执行，禁止重复派发旧阶段。
+
+**早间任务与两行训练定位（2026-09-11 08:10 CST）**：
+
+- DataBridge于06:30:30自然触发、06:33:44成功；daily于07:03:30触发、07:43:45成功，
+  journal报告47个方案各写1条、failed/blocked/denied/skipped均空，systemd退出成功。
+  夜间迁移进程在早间任务前已全部退出，未改current、unit或Mac3。
+- 日常任务退出后，fresh核验五one-shot inactive/MainPID0、无其他算法、可用13260MiB。
+  在60秒/4GiB地址空间上限内对原候选与冻结输入执行一次2026-01-14/15两行suffix诊断，退出0，
+  峰值RSS648612KiB；没有写Result、state或数据库，不作333条等价/性能验收。
+  10Y两行1590次fit，Phase A墙钟9.945秒；7Y两行1060次fit，墙钟5.303秒。
+  累计线程内train耗时分别36.670/20.253秒，Dataset construct仅0.849/0.848秒，
+  predict仅0.339/0.253秒；这些是嵌套、跨线程累计值，不与墙钟直接相加。
+- 数据集复用已经生效，不优先增加跨线程Dataset缓存。下一待审查方向仅为同一次CLI内部复用
+  最近模型：只有fit/cal输入及参数完全相同、变化仅涉及预测行时才重用模型并重新predict；
+  新数据改变训练依赖照常fit。模型不进入NPZ、不跨CLI、不跨方案、不成为平台新状态合同。
+  此处为08:10调查状态；后续候选实现与有限验证已完成，详见顶部08:27更新，不代表全量性能通过。
+- 临时诊断脚本 `outputs/native-migration-w3b-full-reference-draft/profile_full_suffix.py` SHA256
+  `3cc4f6ac10a39a9ca75a6a0b928bd4732e1449847ab0d0183fc2d9c9e01d3957`；
+  原始数组摘要与分段计时见 `outputs/releases/w3b-staged-reference-20260911/suffix-diagnostic.json`。
+  已成功Native/首SAY证据继续复用，失败full不原样重跑，k5仍未启动。
+
 **最新失败与只读定位（2026-09-11 04:27 CST；覆盖下文旧运行状态）**：
 
 - `hejFGE/full-execution` 于04:21:07达到7200秒上限，实耗7200.269270秒；不是05:00窗口截短。
