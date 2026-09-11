@@ -2,7 +2,30 @@
 
 **文档状态**：`CURRENT`
 
-**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_ALL_THREE_FULL333_PASSED; W3B_FULL_K5_MAC_STATE_PASSED_AND_CANONICAL_INTAKE_DONE; W3B_DUPLICATE_SAY_GATE_CANCELLED_NO_DB_COMMIT; W3B_REVIEWED_RESULT_PERSIST_COMPLETE; W3B_SAY_ECS_ADOPT_AND_CURRENT_PREDICT_PASSED; W3B_FULL_ECS_INITIALIZATION_RUNNING; W3B_ECS_CUTOVER_PENDING; W4_MAC3_PAUSED`
+**执行状态**：`W3A_ECS_BATCH_CLOSED; W1_ECS_NINE_TARGETS_ACTIVE_ON_INSTALLED_RELEASE; W2_ECS_BATCH_CLOSED; W3B_ALL_THREE_FULL333_PASSED; W3B_FULL_K5_MAC_STATE_PASSED_AND_CANONICAL_INTAKE_DONE; W3B_DUPLICATE_SAY_GATE_CANCELLED_NO_DB_COMMIT; W3B_REVIEWED_RESULT_PERSIST_COMPLETE; W3B_SAY_ECS_ADOPT_AND_CURRENT_PREDICT_PASSED; W3B_FULL_ECS_INITIALIZATION_AND_WARM_PASSED; W3B_K5_ECS_INITIALIZATION_RUNNING; W3B_ECS_CUTOVER_PENDING; W4_MAC3_PAUSED`
+
+**Full完成、K5已启动及后续执行顺序（2026-09-11 23:47 CST）**：
+
+- Full实际上于18:35:04完成：cold 5797.250秒，same-Request warm 9.932秒；五字段完全一致，
+  标准状态封装摘要读回匹配，本方案六表未变，业务预测写入0。原件已备份到
+  `outputs/releases/w3b-reused-backtests-20260911.HgiZQP/state-init-liwei_0616_10y01_full_oos_k3_div_k10_bbv2/`。
+  18:35以后等待下一步骤的时间不是算法耗时。23:45核对到持续推进任务为PAUSED，配置最后更新时间17:27；
+  记录不能确定暂停的操作者或原因。本次用户明确要求继续，恢复持续推进并更新下一动作。
+- K5于23:46通过同一已审c88091脚本的fresh只读preflight并单次apply；plan为
+  `1eef18f2d67bf366bd6f20d3d09d17dfc43ddd5d1244da50d188456415b62a35`，controller1406102、
+  算法1406129已现场核对运行，nice10。固定09-11输入/Request，初始化可跨午夜自然结束，
+  但不得跨日重新执行绑定09-11的初始化入口。日志 `state-init-k5-controller.log`，
+  attempt `state-init-liwei_0616_10y02_cons_say_k3_div_k5_bbv2/`。不重跑Full/SAY或333条历史。
+- 剩余执行顺序：K5 cold/warm完成且进程退出 → 校验三个成功状态和原有282/283/284证据 →
+  fence仅daily新触发、确认无同cadence Writer → 将已验证a1b9a72候选设为current，执行原迁移CLI
+  的W3B preflight与同plan SHA原子cutover → 每方案一次尚未生成的gray区间batch →
+  同一日频入口的受控模拟/业务读回 → 恢复daily timer并验证唯一Writer、Dashboard与旧事实不变。
+  迁移CLI要求从current运行，不能用尚未切current的候选冒充现场preflight成功；任一步失败按原回滚顺序处理。
+- gray是2026-06-01以后的新缺口，不是重跑333条历史段；截止点由权威日历和预留的模拟/自然目标确定。
+  当前生产缓存不能向过去倒放，gray沿用私有进程内状态，每方案一个batch。此阶段仍可能有重计算，
+  不承诺K5结束即全批闭环；先核对区间与维护窗口，不为赶进度关闭06:30 DataBridge或其他无关timer。
+  不再新增Native等价/完整历史回测/冷与stateless重复比对，不改算法hash，不等待多天自然观察。
+  当前a6ffe3a6仍正常，a1b9a72只预安装，三个successor尚未切换；Mac3/W4/DDL边界不变。
 
 **当前日模拟通过、Full唯一初始化启动（2026-09-11 16:58 CST）**：
 
