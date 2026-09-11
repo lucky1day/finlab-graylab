@@ -86,7 +86,7 @@ W3C、W3D 逐方案切换。W4 按日频 → 周均 → 月频推进，ECS 不�
 | W3B 原历史 | 三原 ID 各 333 历史事实、78 gray/live，gray target 2026-06-01 至 2026-09-17 | 保护原摘要，不因运行时升级补算这 234 条事实 |
 | SAY | ECS 状态接纳及一次正常增量调用通过，业务写入 0 | 保留产物，不重复 |
 | Full | cold 5797.250 秒、同 Request warm 9.932 秒，五字段一致，业务写入 0 | 保留产物；同 Request 命中不是新一天耗时保证 |
-| K5 | 本轮开始仍运行约 53 分钟，controller 1406102 / algorithm 1406129，未获最终成功凭据 | 等既有 attempt 完成，核验 receipt、退出、状态；不重启 |
+| K5 | 2026-09-12 01:23:59 完成；cold 5830.837 秒、同 Request warm 9.990 秒，独立只读核验通过 | 复用源状态完成原 ID 身份接纳，不重跑初始化 |
 | W3C/W3D | 有草稿，静态检查不等于数值验收 | 仅补缺失的等价和性能证据 |
 | W4 | 旧入口仍有 DB 上下文，binary bundle 输入边界未证明 | Mac3 隔离验证文件输入，不冒充完成 |
 
@@ -120,8 +120,17 @@ W3B 产物索引：
 - 独立代码审查及复审通过，无未关闭的 Critical/Important。新增候选身份字段未绑定计划 SHA
   的问题已修复并有负测；状态转换证明也已要求实际 Metadata 字节，不能只信传入摘要。
 - 本轮尚未改变 ECS/Mac3 current、生产 Registry、预测或回测事实；未删除迁移数据，未执行 DDL。
-- K5 于北京时间 2026-09-12 00:59 核验仍在同一初始化 attempt，约 73 分钟、RSS 约 1.04 GiB；
-  只有 started/cold-started，无完成凭据。不重启，不据此声称日常增量已通过。
+- K5 于北京时间 2026-09-12 01:23:59 完成，原 controller/algorithm 均退出，无 failure receipt；
+  冷/温阶段凭据与最终 complete 一致，重算 plan SHA 与开始/完成凭据一致。
+  Request 为 predict 2026-09-11、feature 2026-09-10、target 2026-09-17，方向 1。
+  READ ONLY 复核六类数据库事实摘要与开始前完全一致；没有业务写入。
+  源 envelope SHA：`482e718dac2831723b3f12b842ed683b0fcf7b88b534bf96a215f68b84ca0729`；
+  payload SHA：`cb2d672a1a7eb74eb898991c91a51084bfb466c19084d7e96f6aef791012f779`；
+  complete SHA：`b9e99d9fa882dde4e36a3d8f6d454e0e8b2988423b150569e9d667e04e3c1988`。
+  六份执行原件和 state 已保全到本机 `outputs/ecs-k5-evidence-20260912.HvT2c0/`，
+  复制前/本机副本/复制后源端摘要一致；保全回执 SHA：
+  `1aa4354f498a4ef9c51630dee460f6b47c28e7e7fd00c42b7ec58a52d4ccca93`。
+  这是同 Request 温调用验收，不是新一天追加训练耗时，也不是 Mac 生产状态接纳。
 - 基础能力提交 `ce57ec5386a1fea9b4fea60759d4418ef8e0a41b` 已推送，远端引用已读回；
   [草稿 PR #57](https://github.com/lucky1day/finlab-graylab/pull/57) 指向 master，未合并。
   clean commit 双构建字节一致，archive SHA-256 为
@@ -149,6 +158,14 @@ W3B 产物索引：
   MySQL 4 passed，新增原 ID 与临时 ID 两种普通 activation 锁竞争验证。
   独立复审无未关闭 Critical/Important。全量发现的 harness→scripts 依赖越界已移除，
   未增加架构 allowlist。CLI help 与部署边界通过，不等于生产 preflight 通过。
+- 原 ID 状态接纳函数已实现，复用两把既有 StateSession 锁及原子发布：源 envelope、
+  actual canonical、环境和五文件同代输入必须匹配，只允许已验收 cutoff 的一次标准短调用。
+  标准结果一致后首次创建新 exact envelope；已有 candidate 不覆盖、不初始化，源状态不改。
+  独立审查发现的“更晚 Request 可能触发追加训练”已通过执行前 cutoff 精确限制修复。
+  10 项接纳边界测试通过，新鲜全量为 848 passed、10 skipped、235 subtests passed；
+  独立复审无未解决 Critical/Important。本步骤没有生产算法调用、状态发布或数据库写入。
+  原 ID canonical 交付、可信源回执与真实 Harness prepare 的连接仍待完成，不能据 helper
+  测试通过宣称已具备生产切换条件。
 
 ## 4. 最小实现
 
@@ -221,7 +238,7 @@ Request 按 Blackbox task 语义生成，持久化边界显式投影原业务键
 prediction/backtest 数量/范围/方向、Actuals、Dashboard；冻结 generation、五文件 SHA、
 business digest、catalog、snapshot、Request。UUID 只保存在受控证据，不写公开文档。
 核实 installed/loaded、进程、日志、next trigger；调整既有自动推进任务以禁用旧跨 ID 路径，
-每批一个控制器。K5 既有任务继续，等待时推进不冲突工作。
+每批一个控制器。K5 既有初始化已完成并保全，后续只复用；不得再次启动该初始化。
 
 **出口**：每方案有下一动作、有效产物可追溯，没有第二 Writer/控制器或未知权威状态。
 
