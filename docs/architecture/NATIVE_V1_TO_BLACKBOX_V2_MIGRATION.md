@@ -54,7 +54,7 @@ T1/T5 旧 `model_muti_0529` 批次的输入 CSV、退役 SHAP `.source`、父级
 #### 附件退役与一次性测试清理发布验收（2026-09-12）
 
 `f066b8e` 与 `fb80439` 两笔清理提交合计 247 个文件变更，净删除 91,977 行。
-最终 ECS current 为 `fb804394b1f3daa268a56f324746fb9147ee249f`，两次 archive 构建字节一致，
+附件退役事务所在 ECS release 为 `fb804394b1f3daa268a56f324746fb9147ee249f`，两次 archive 构建字节一致，
 SHA-256 为 `a596dbfe026230431b0007f293cb7ec6aa30c39eed7de6c597f423a6ec6724d1`。
 `f066b8e` 仅预安装，未切为 current。previous 保持清理前的 `5e4bc98e1796006ebd4e2d760d8c49e467b3e607`。
 
@@ -70,7 +70,7 @@ SHA-256 为 `a596dbfe026230431b0007f293cb7ec6aa30c39eed7de6c597f423a6ec6724d1`�
   after 为 `fc882d0961c9f07198259e348ed5d61b5b11cd278f41ee9b1153ec020d7c1c64`；
   原件、state 转换和 cutover/rollback-preflight 回执保存在双端私有 `native-attachment-retirement-20260912`。
 
-**回滚边界**：不能只把 current 链接切回 previous；必须先围栏 Writer/Backend，在当前候选中重新生成
+**退回带附件的旧 exact 边界**：不能只把 current 链接切回 `5e4bc98`；必须先围栏 Writer/Backend，在当前候选中重新生成
 rollback preflight 并执行版本反向事务，再恢复 `5e4bc98` release，验证后恢复服务。两个版本状态分别校验，
 不覆盖已经推进的新状态或旧状态，不删除已经发布的预测。
 
@@ -81,6 +81,16 @@ W4 九方案与其 198 个 source package/manifest 文件保持不变。十六�
 保留于 `fb80439` 提交及其已验证 archive。公共合同和数据安全测试长期保留。
 删除这两份临时测试后的完整回归为 1167 passed、36 skipped、241 subtests；相对用户提出清理时的
 1253 个通过用例净减少 86 个。运行代码、全部方案 config/exact 与状态都不因测试退役改变。
+
+最终清洁 release `1a09ec89b40154359d6225e0d2c061b603c45169` 已在 ECS 发布，previous 为
+`fb804394b1f3daa268a56f324746fb9147ee249f`。确定性 archive 两次构建一致，SHA-256：
+`3180b90470d2ea3d374661440b36ac9e15c56a9cfc432a7c54b0ac4bba1b4934`。
+before/candidate/after 验证全部 active exact、历史事实、Registry、版本表、Actuals、状态和 Dashboard
+业务摘要均不变；Backend 实际 cwd 对应 current，health 正常，五个 timer 正常。
+after 读回 SHA 为 `bda94324db7684ebddbcd033d9b4c2a1ebed4fef09520b8ac6d0dbe3772fa7f0`，
+完整原件外置于双端 `native-test-retirement-20260912`。此次不执行任何数据库事务或算法。
+current 和 previous 均为无旧 Native 附件、同一 active exact 的源码方案 Blackbox release；
+在这两个 release 之间普通回滚只需维护围栏与既有 installer，不需要上述版本反向事务。
 
 #### 首批清理与 ECS 发布验收（2026-09-12）
 
