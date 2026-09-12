@@ -95,6 +95,26 @@ def test_w3a_cannot_bypass_missing_state_and_rollback_evidence(monkeypatch):
     inspect.assert_not_called()
 
 
+def test_process_inspection_catches_manual_harness_without_predict_module(tmp_path, monkeypatch):
+    process = tmp_path / "123"
+    process.mkdir()
+    (process / "cmdline").write_bytes(b"/env/bin/python3.13\0-m\0harness\0gate\0compare\0--scheme-id\0daily_5y_2_v28\0")
+    monkeypatch.setattr(reclaim, "Path", lambda value: tmp_path if value == "/proc" else Path(value))
+    monkeypatch.setattr(reclaim.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(returncode=1))
+    with pytest.raises(RuntimeError, match="matching Python process"):
+        reclaim._assert_no_algorithm_process("W2")
+    (process / "cmdline").write_bytes(b"/env/bin/python3.13\0-m\0harness\0--scheme-id\0unrelated\0")
+    reclaim._assert_no_algorithm_process("W2")
+    monkeypatch.setattr(reclaim.os, "getpid", lambda: 123)
+    (process / "cmdline").write_bytes(b"/env/bin/python3.12\0-m\0harness\0migrate-native-successor\0cutover\0--wave\0W2\0--harness-run-id\0daily_5y_2_v28=run-1\0--harness-run-id\0daily_7y_1_v28=run-2\0")
+    reclaim._assert_no_algorithm_process("W2")
+    other = tmp_path / "124"
+    other.mkdir()
+    (other / "cmdline").write_bytes(b"/env/bin/python3.13\0-m\0harness\0gate\0compare\0--scheme-id\0daily_5y_2_v28_bbv2\0")
+    with pytest.raises(RuntimeError, match="matching Python process"):
+        reclaim._assert_no_algorithm_process("W2")
+
+
 @pytest.fixture
 def capture(tmp_path, monkeypatch):
     root, reference = tmp_path / "candidate", tmp_path / "reference"

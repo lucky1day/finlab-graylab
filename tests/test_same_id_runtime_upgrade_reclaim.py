@@ -200,3 +200,86 @@ def test_reclaim_stale_plan_rejects_alias_fact_drift(reclaim):
         conn.execute(text("UPDATE t_scheme_predictions SET predicted_direction=-1 WHERE scheme_id=:id"), {"id": source})
     with pytest.raises(RuntimeError, match="plan changed"):
         reclaim_apply(engine, kwargs, control, before)
+
+
+_PRESERVED_RUN = "hr_20260614T091820Z_126af53720a9"
+
+
+def preserved_compare_snapshot(engine):
+    with engine.connect() as conn:
+        run = dict(conn.execute(text("SELECT * FROM t_harness_runs WHERE harness_run_id=:run"),
+                                {"run": _PRESERVED_RUN}).mappings().one())
+        gates = repo._same_id_rows_conn(conn, "t_harness_gate_results", "harness_run_id=:run",
+                                        {"run": _PRESERVED_RUN}, order="id", for_update=False)
+    return {"run": run, "gates": gates}
+
+
+def seed_preserved_historical_compare(engine, monkeypatch):
+    """用完整隔离行替换测试摘要；生产固定摘要不来自调用方或 outputs。"""
+    assert repo._PRESERVED_W2_COMPARE_SHA256 == "d40db697478c656cbc1ed714cdee73bbdbe295005a595e5778083ac6745c0285"
+    with engine.begin() as conn:
+        for definition in ("project_root TEXT", "report_uri TEXT", "started_at DATETIME"):
+            conn.exec_driver_sql("ALTER TABLE t_harness_runs ADD " + definition)
+        conn.execute(text("INSERT INTO t_harness_runs "
+            "(harness_run_id,scheme_id,scheme_version,code_hash,config_hash,stage,status,finished_at,project_root,report_uri,started_at) "
+            "VALUES (:run,'daily_5y_2_v28','accdea99c5c9',NULL,NULL,'compare','running',NULL,"
+            "'/Users/macstudio0/old-project','/Users/macstudio0/old-report','2026-06-14 09:18:20')"),
+            {"run": _PRESERVED_RUN})
+        for name in ("static", "input", "unit"):
+            conn.execute(text("INSERT INTO t_harness_gate_results "
+                "(harness_run_id,gate_name,status,finished_at,summary_json) VALUES "
+                "(:run,:name,'passed','2026-06-14 09:19:00',:summary)"),
+                {"run": _PRESERVED_RUN, "name": name, "summary": json.dumps({"passed": True})})
+    snapshot = preserved_compare_snapshot(engine)
+    monkeypatch.setattr(repo, "_PRESERVED_W2_COMPARE_SHA256", repo.native_successor_plan_sha256(snapshot))
+    return snapshot
+
+
+def test_w2_preserved_compare_survives_cutover_and_rollback_without_rewriting(migration, monkeypatch):
+    engine, kwargs, control = reclaim_scope(migration, "W2")
+    original = seed_preserved_historical_compare(engine, monkeypatch)
+    before = reclaim_plan(engine, kwargs, control)
+    assert before["preserved_historical_harness_runs"] == [
+        {"harness_run_id": _PRESERVED_RUN, "sha256": repo._PRESERVED_W2_COMPARE_SHA256}]
+    with patch.object(repo, "_upsert_scheme_version_conn", side_effect=_sqlite_upsert):
+        reclaim_apply(engine, kwargs, control, before)
+        rollback_args = kwargs | {"action": "rollback"}
+        rollback = reclaim_plan(engine, rollback_args, control)
+        assert rollback["facts"] == before["facts"]
+        assert preserved_compare_snapshot(engine) == original
+        reclaim_apply(engine, rollback_args, control, rollback)
+    assert preserved_compare_snapshot(engine) == original
+    assert reclaim_plan(engine, kwargs, control)["facts"] == before["facts"]
+
+
+@pytest.mark.parametrize("change", ["other_running", "code", "version", "identity", "gate_status", "extra_gate", "missing_gate"])
+def test_w2_preserved_compare_requires_exact_full_run_and_gate_bytes(migration, monkeypatch, change):
+    engine, kwargs, control = reclaim_scope(migration, "W2")
+    seed_preserved_historical_compare(engine, monkeypatch)
+    with engine.begin() as conn:
+        if change == "other_running":
+            conn.execute(text("INSERT INTO t_harness_runs (harness_run_id,scheme_id,scheme_version,stage,status) "
+                              "VALUES ('other-running','daily_5y_2_v28','accdea99c5c9','compare','running')"))
+        elif change in {"code", "version", "identity"}:
+            field, value = {"code": ("code_hash", "changed"), "version": ("scheme_version", "different"),
+                            "identity": ("scheme_id", "daily_7y_1_v28")}[change]
+            conn.execute(text(f"UPDATE t_harness_runs SET {field}=:value WHERE harness_run_id=:run"),
+                         {"value": value, "run": _PRESERVED_RUN})
+        elif change == "gate_status":
+            conn.execute(text("UPDATE t_harness_gate_results SET status='failed' WHERE harness_run_id=:run AND gate_name='unit'"), {"run": _PRESERVED_RUN})
+        elif change == "extra_gate":
+            conn.execute(text("INSERT INTO t_harness_gate_results (harness_run_id,gate_name,status) VALUES (:run,'compare','passed')"), {"run": _PRESERVED_RUN})
+        else:
+            conn.execute(text("DELETE FROM t_harness_gate_results WHERE harness_run_id=:run AND gate_name='unit'"), {"run": _PRESERVED_RUN})
+    with pytest.raises(RuntimeError, match="zero running"):
+        reclaim_plan(engine, kwargs, control)
+
+
+def test_w3a_cannot_use_w2_preserved_compare_exception(migration, monkeypatch):
+    engine, kwargs, control = reclaim_scope(migration, "W3A")
+    seed_preserved_historical_compare(engine, monkeypatch)
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE t_harness_runs SET scheme_id=:id WHERE harness_run_id=:run"),
+                     {"id": next(iter(kwargs["old_configs"])), "run": _PRESERVED_RUN})
+    with pytest.raises(RuntimeError, match="zero running"):
+        reclaim_plan(engine, kwargs, control)

@@ -24,7 +24,7 @@ from scheduler.blackbox_state import read_regular_bytes
 from scheduler.process_control import ProcessGroupTerminationError
 from scheduler.repository import (
     _blackbox_activation_advisory_lock, _same_id_fact_snapshot_conn,
-    _same_id_rows_conn, native_successor_plan_sha256,
+    _same_id_rows_conn, _is_preserved_w2_historical_compare, native_successor_plan_sha256,
 )
 from shared.blackbox_v2.contracts import load_prediction_result
 from shared.blackbox_v2.environment_manifest import load_environment_fingerprint
@@ -98,8 +98,13 @@ def _database_snapshot(engine, *, sources, new, expected_database_name: str,
                     raise RuntimeError("W2 prepare requires idle scheme and backtest execution")
             harness = _same_id_rows_conn(conn, "t_harness_runs", f"scheme_id {scope}", params,
                                          order="harness_run_id", for_update=False)
+            gates = _same_id_rows_conn(conn, "t_harness_gate_results", "harness_run_id IN "
+                f"(SELECT harness_run_id FROM t_harness_runs WHERE scheme_id {scope})", params,
+                order="id", for_update=False)
             for row in harness:
                 if row["harness_run_id"] in permitted_runs:
+                    continue
+                if row["status"] == "running" and _is_preserved_w2_historical_compare(conn, row):
                     continue
                 if (row["status"] == "running" or row["scheme_id"] in new
                         and row["scheme_version"] == new[row["scheme_id"]].scheme_version
@@ -124,6 +129,10 @@ def _database_snapshot(engine, *, sources, new, expected_database_name: str,
             facts.pop("t_harness_gate_results")
             return {"database_identity_sha256": _json_sha256(identity),
                     "schema_sha256": native_successor_plan_sha256({"rows": migrations}), "facts": facts,
+                    "historical_harness_sha256": native_successor_plan_sha256({
+                        "runs": [row for row in harness if row["harness_run_id"] not in permitted_runs],
+                        "gates": [row for row in gates if row["harness_run_id"] not in permitted_runs],
+                    }),
                     "registry_sha256": native_successor_plan_sha256({"rows": registry}),
                     "versions_sha256": native_successor_plan_sha256({"rows": versions})}
         finally:

@@ -52,6 +52,7 @@ _SAME_ID_RECLAIM_WAVES = {
     "W2": frozenset({"daily_5y_2_v28", "daily_7y_1_v28"}),
     "W3A": frozenset({"liwei_0616_cons_sda_k3_div_k10", "liwei_0616_5y01_full_oos_k3_div_k10"}),
 }
+_PRESERVED_W2_COMPARE_SHA256 = "d40db697478c656cbc1ed714cdee73bbdbe295005a595e5778083ac6745c0285"
 _NATIVE_SUCCESSOR_REQUEST_IDENTITY_FIELDS = (
     "request_id",
     "predict_date",
@@ -4013,6 +4014,21 @@ def _same_id_reclaim_identity(cfg: SchemeConfig) -> dict[str, object]:
     )}
 
 
+def _is_preserved_w2_historical_compare(
+    conn: Connection, row: Mapping[str, object], *, for_update: bool = False,
+) -> bool:
+    """只识别已核实的一条旧 Mac compare 审计；不修改其 running 状态。"""
+    expected = {
+        "harness_run_id": "hr_20260614T091820Z_126af53720a9", "scheme_id": "daily_5y_2_v28",
+        "scheme_version": "accdea99c5c9", "stage": "compare", "status": "running",
+    }
+    if any(row.get(key) != value for key, value in expected.items()):
+        return False
+    gates = _same_id_rows_conn(conn, "t_harness_gate_results", "harness_run_id=:run",
+                               {"run": expected["harness_run_id"]}, order="id", for_update=for_update)
+    return native_successor_plan_sha256({"run": dict(row), "gates": gates}) == _PRESERVED_W2_COMPARE_SHA256
+
+
 def _same_id_writer_reclaim_plan_conn(
     conn: Connection, *, wave: str, old_configs: Mapping[str, SchemeConfig],
     source_configs: Mapping[str, SchemeConfig], new_configs: Mapping[str, SchemeConfig],
@@ -4056,10 +4072,17 @@ def _same_id_writer_reclaim_plan_conn(
                                   order="scheme_id,scheme_version", for_update=for_update)
     registry = _same_id_rows_conn(conn, "t_scheme_registry", f"base_scheme_id IN ({placeholders})", params,
                                   order="scheme_id", for_update=for_update)
+    preserved_harness = []
     for table, order in (("t_scheme_runs", "run_id"), ("t_backtest_runs", "id"), ("t_harness_runs", "harness_run_id")):
-        if _same_id_rows_conn(conn, table, f"scheme_id IN ({placeholders}) AND status='running'", params,
-                             order=order, for_update=for_update):
-            raise RuntimeError(f"same-ID reclaim requires zero running rows: {table}")
+        running = _same_id_rows_conn(conn, table, f"scheme_id IN ({placeholders}) AND status='running'", params,
+                                    order=order, for_update=for_update)
+        for row in running:
+            if (wave == "W2" and table == "t_harness_runs"
+                    and _is_preserved_w2_historical_compare(conn, row, for_update=for_update)):
+                preserved_harness.append({"harness_run_id": row["harness_run_id"],
+                                          "sha256": _PRESERVED_W2_COMPARE_SHA256})
+            else:
+                raise RuntimeError(f"same-ID reclaim requires zero running rows: {table}")
     historical, retiring, evidence, backtests = [], [], {}, {}
     for key in ids:
         old, source, new = old_configs[key], source_configs[key], new_configs[key]
@@ -4161,6 +4184,7 @@ def _same_id_writer_reclaim_plan_conn(
         "database_identity_sha256": native_successor_plan_sha256(identity), "schema_migration_version": 24,
         "versions": versions, "registry": registry, "evidence": evidence, "source_backtests": backtests,
         "historical_native_versions": historical, "historical_native_versions_to_retire": retiring,
+        "preserved_historical_harness_runs": preserved_harness,
         "candidate_versions": [{**_same_id_reclaim_identity(new_configs[key]), **{
             field: getattr(new_configs[key], field) for field in
             ("algorithm_version", "contract_version", "runtime_profile", "environment_fingerprint", "data_snapshot_id")}}

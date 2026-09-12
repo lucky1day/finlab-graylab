@@ -339,6 +339,10 @@ W3A/W3B 不允许多次独立 activate 冒充原子切换。
 可选 `--predict-date` 仅用于 W2 prepare（包括 prepare 预检），必须是已经到期的工作日交易日，
 默认选择最近已到期日期。传相应 action 的 plan SHA 和全新 work-dir；已有候选准备凭据时
 拒绝重跑，失败保留实际进程、错误及已有结果，并尝试写失败 Gate。
+首次 ECS 准备预检发现一条 2026-06-14 的旧 Native Compare `running` 审计记录；
+它不对应当前进程、canonical 或临时 Blackbox Writer，不能改成成功或覆盖历史。
+迁移期仅按固定记录身份和完整 run/Gate 摘要识别这条已核实的历史记录，并仍核对实际
+Python 进程与 Writer；其他 `running`、任何摘要漂移均拒绝。该历史行及 Gate 在切换前后不变。
 W3A 仓储整组事务已实现，但控制入口显式阻断，必须先完成
 Full 状态修订和回滚执行证据；不能只改部署矩阵就绕过。Mac3 入口尚未实现。
 以下表格仅描述已验证的 W3B 路径，不是其他批次的操作指令。

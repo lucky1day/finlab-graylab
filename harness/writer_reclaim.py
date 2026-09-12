@@ -88,6 +88,18 @@ def _assert_no_algorithm_process(wave: str) -> None:
     result = subprocess.run(["/usr/bin/pgrep", "-f", pattern], check=False, capture_output=True, timeout=10)
     if result.returncode != 1:
         raise RuntimeError("writer reclaim algorithm process exists or inspection failed")
+    # 旧 Harness compare 的 Python 入口不一定带 scheme_runner/predict 模块名。
+    # 读取真实 Linux argv，避免把历史 running 审计行当作进程，也不漏掉手工调用。
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit() or int(entry.name) == os.getpid():
+            continue
+        try:
+            arguments = (entry / "cmdline").read_bytes().split(b"\0")
+        except FileNotFoundError:
+            continue
+        if arguments and b"python" in Path(os.fsdecode(arguments[0])).name.encode():
+            if any(key.encode() in value for key in RECLAIM_WAVES[wave] for value in arguments):
+                raise RuntimeError("writer reclaim matching Python process is still running")
 
 
 def _capture(project_root: Path, reference_project_root: Path, wave: str):

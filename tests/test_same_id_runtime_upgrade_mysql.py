@@ -23,6 +23,7 @@ from test_native_successor_migration_mysql import (
 from test_same_id_runtime_upgrade import _assert_w3b_history_transition, _w3b_history_scope
 from test_same_id_runtime_upgrade_reclaim import (
     assert_reclaim_history, reclaim_scope, reclaim_plan, reclaim_apply,
+    seed_preserved_historical_compare, preserved_compare_snapshot,
 )
 
 
@@ -310,3 +311,34 @@ def test_mysql_reclaim_uses_original_and_alias_activation_locks(mysql_migration,
             with pytest.raises(repo.BlackboxActivationLockTimeout):
                 future.result(timeout=10)
     assert reclaim_plan(engine, kwargs, control) == initial
+
+
+def test_mysql_preserved_compare_is_read_only_across_reclaim_and_rollback(mysql_migration, monkeypatch):
+    engine, kwargs, control = reclaim_scope(mysql_migration, "W2")
+    original = seed_preserved_historical_compare(engine, monkeypatch)
+    initial = reclaim_plan(engine, kwargs, control)
+    reclaim_apply(engine, kwargs, control, initial)
+    rollback_args = kwargs | {"action": "rollback"}
+    rollback = reclaim_plan(engine, rollback_args, control)
+    assert rollback["facts"] == initial["facts"]
+    assert preserved_compare_snapshot(engine) == original
+    reclaim_apply(engine, rollback_args, control, rollback)
+    assert preserved_compare_snapshot(engine) == original
+    assert reclaim_plan(engine, kwargs, control)["facts"] == initial["facts"]
+
+
+@pytest.mark.parametrize("change", ["another_running", "identity", "gate_content"])
+def test_mysql_preserved_compare_rejects_unmatched_running_or_digest_drift(mysql_migration, monkeypatch, change):
+    engine, kwargs, control = reclaim_scope(mysql_migration, "W2")
+    snapshot = seed_preserved_historical_compare(engine, monkeypatch)
+    run_id = snapshot["run"]["harness_run_id"]
+    with engine.begin() as conn:
+        if change == "another_running":
+            conn.execute(text("INSERT INTO t_harness_runs (harness_run_id,scheme_id,stage,status) "
+                              "VALUES ('other','daily_5y_2_v28','compare','running')"))
+        elif change == "identity":
+            conn.execute(text("UPDATE t_harness_runs SET scheme_id='daily_7y_1_v28' WHERE harness_run_id=:run"), {"run": run_id})
+        else:
+            conn.execute(text("UPDATE t_harness_gate_results SET summary_json='{}' WHERE harness_run_id=:run"), {"run": run_id})
+    with pytest.raises(RuntimeError, match="zero running"):
+        reclaim_plan(engine, kwargs, control)

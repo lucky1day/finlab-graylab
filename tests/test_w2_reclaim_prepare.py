@@ -279,12 +279,28 @@ def test_database_checks_identity_schema_writer_and_duplicate_preparation(monkey
     registry = [dict(base_scheme_id=key + suffix, status=status, runtime_type=runtime)
         for key in prepare.W2_IDS for suffix, status, runtime in (("", "archived", "native_adapter"), ("_bbv2", "active", "blackbox_v2"))]
     tables = {"t_schema_migrations": [{"version": 24, "state": "APPLIED"}], "t_harness_runs": [],
+              "t_harness_gate_results": [],
               "t_scheme_registry": registry, "t_scheme_versions": [dict(scheme_id=key + "_bbv2", status="active",
                 **{field: "source" for field in prepare._FIELDS}) for key in prepare.W2_IDS]}
     monkeypatch.setattr(prepare, "_same_id_rows_conn", lambda _c, table, *_a, **_k: tables[table])
     monkeypatch.setattr(prepare, "_same_id_fact_snapshot_conn", lambda *_a, **_k: {"t_harness_runs": {}, "t_harness_gate_results": {}, "facts": "frozen"})
     kwargs = dict(sources=sources, new=new, expected_database_name="test", expected_server_uuid="isolated")
     assert prepare._database_snapshot(engine, **kwargs)["facts"] == {"facts": "frozen"}
+    historical = dict(harness_run_id="hr_20260614T091820Z_126af53720a9", scheme_id=prepare.W2_IDS[0],
+                      scheme_version="accdea99c5c9", stage="compare", status="running")
+    tables["t_harness_runs"] = [historical]
+    tables["t_harness_gate_results"] = [dict(id=1, harness_run_id=historical["harness_run_id"], status="passed")]
+    monkeypatch.setattr(prepare, "_is_preserved_w2_historical_compare", lambda _conn, row: row == historical)
+    frozen = prepare._database_snapshot(engine, **kwargs)
+    tables["t_harness_runs"] = [historical | {"status": "failed"}]
+    assert prepare._database_snapshot(engine, **kwargs) != frozen
+    tables["t_harness_runs"] = []
+    assert prepare._database_snapshot(engine, **kwargs) != frozen
+    tables["t_harness_runs"] = [historical]
+    tables["t_harness_gate_results"][0]["status"] = "failed"
+    assert prepare._database_snapshot(engine, **kwargs) != frozen
+    tables["t_harness_gate_results"] = []
+    monkeypatch.setattr(prepare, "_is_preserved_w2_historical_compare", lambda *_: False)
     for status in ("passed", "failed", "running"):
         tables["t_harness_runs"] = [dict(harness_run_id="existing", scheme_id=prepare.W2_IDS[0],
                                           scheme_version="new", stage=prepare._STAGE, status=status)]
