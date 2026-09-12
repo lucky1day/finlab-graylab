@@ -1,26 +1,70 @@
-# Native → Blackbox V2 全量迁移与双机发布闭环计划
+# Native → Blackbox V2 迁移：ECS 原 ID 接管计划
 
 **文档状态**：`CURRENT — 执行中，未闭环`
 
-**批准日期**：2026-09-12。本文替代此前跨 ID successor 切换、新身份灰度补算、仅 ECS 授权、
-等待多天自然观察等步骤。旧过程和完整证据索引通过
+**最新批准日期**：2026-09-12。用户已缩减本轮范围和验收，以下第 1 节为唯一当前执行主线。
+第 2 节及以后保留已有实施证据和旧设计参考，不能据其恢复历史回测、结果补入、W4 改造或全量 Native 删除。
+旧过程和完整证据索引通过
 `git show 938d1c4:docs/architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md` 追溯；旧命令不是当前操作指令。
 
 ## 1. 第一性原理与授权范围
 
-同一个业务方案、同一份历史记录，换成统一 Blackbox 执行实现，并完成双机、不可变 release、
-代码推送和 PR 交付。保留原 `scheme_id/base_scheme_id`、Registry ID，
-只以新 exact `scheme_version` 区分运行时。不建立历史别名、双写或第二套调度平台。
+同一个业务方案、同一份历史记录，只替换执行包装并完成 ECS 原 ID 接管。
+保留 `scheme_id/base_scheme_id`、Registry ID 和全部历史，以真实新 exact version 区分实现。
+本轮待办只有 W3C 三个和 W3D 两个 ECS 方案；已经接管的十二个方案不重复验证或切换。
 
-- ECS：17 个有可读源码的原方案、21 个 target；Mac3：加 W4 九个，共 26 个原方案、30 个 target。
-- 原 ID 事实优先且不可变；核实后只补入迁移 `_bbv2` 独有的缺失业务键。
-- 备份、隔离恢复验证、原 ID 接管及回滚边界就绪后，精确物理删除迁移 `_bbv2` 专属记录和配置。
+- W4 九个加密方案不改造，继续 Mac3 现状；本轮不操作其 release、launchd 或数据库。
+- 不重新回测历史区间，不重新生成、复制、覆盖或删除历史预测。W1 的 42 条历史结果补入已停止，
+  未完成代码保留在私有补丁而不进入发布；此前已经完成的 W2/W3A 物化保持原状，不回删。
+- 已有 Native 结果就是基线，既可来自现有正式事实，也可来自此前已完成的真实验证；
+  保留其版本、日期、输入及来源，生成只读比较视图不冒充新执行。算法未改不再证明全部历史日期。
+- 不再执行原计划的 333 条区间对照、内部 grid 专项证明或多遍训练；已停止的 W3D 历史进程不重启。
 - 双机数据库、DataBridge、状态和调度独立；不复制数据库主键、run、Actuals、回测或 Harness 历史。
-- Mac3 晋级及 W4 改造已获本计划授权，维护前仍需核对 installed/loaded 控制面。
 - 不改变域名、DNS、Nginx 流量指向或 SSH 隧道。不迁移其他 Blackbox 的 `legacy_v1` 输入。
 - 推送 `codex/develop`、创建到 `master` 的 PR；不合并、移动或推送 `master`。
-- confidence DDL 纳入最终收尾，但 ECS、Mac3 apply 前分别独立确认。
+- confidence DDL 不作为本轮五方案接管前置条件；两端仍须分别独立确认。
 - 不重复有效计算，不覆盖原历史，不降低 cutoff 或改变算法结果，不把文件上传当成发布完成。
+
+剩余五方案只执行以下步骤：
+
+1. 固定最终 Blackbox 包和原 `scheme_id`；校验包内容及真实 exact version。
+2. 每方案选择一份已有 Native 对照结果，记录真实 Request 与输入来源，不新算 Native 历史。
+3. Blackbox 执行一次相同 Request，三个日期与方向完全一致；不扩展为全部历史日期证明。
+4. 完成基本合同与标准入口检查；复用现有 Harness 证据结构和 repository，不新建验收平台。
+5. 在受影响 Writer 的维护围栏内，使用现有事务原子切换原 ID 的 active version；旧事实只读。
+6. 每方案模拟执行一次，确认唯一 Writer、Dashboard、Backend、release 与 timer。
+   已有业务键只读比较，不将模拟写成新的自然预测或覆盖原值。
+7. 恢复调度并读回实际状态。发布仍使用 clean commit 确定性 archive，推送 develop 和更新 PR，master 不变。
+
+算法对照不一致、标准入口失败、无法唯一 Writer 或版本/输入身份漂移时停止对应方案并报告真实原因；
+不能自行扩展为重跑全历史。完成定义是 ECS 十七个原方案接管及本轮发布验收，不包含 W4 改造、
+历史结果搬迁或删除仍被 Mac3 使用的 Native 框架。
+
+### 当前五个最终包的单点结果
+
+五包已固定原 ID，并各完成一次标准 `predict`；三个日期均为 predict 2026-08-25、feature 2026-08-24、
+target 2026-08-31，方向均为 `+1`，与所选已有 Native 结果一致。没有新算 Native 或历史区间。
+
+| 原方案 | 候选 exact version | 单次耗时 | 私有状态行为 |
+|---|---|---:|---|
+| `liwei_0616_5y_auc_static_all_k3_div_k10` | `811b31ffa3c3` | 8.604 秒 | 639 点复用，只计算本 Request 一个点 |
+| `liwei_0616_5y_auc_yearly_all_k3_div_k10` | `daee97949294` | 8.872 秒 | 同上 |
+| `liwei_0616_5y_ic_yearly_all_k3_div_k10` | `d7f10ff5bfe8` | 7.776 秒 | 同上 |
+| `liwei_0616_7y01_cons_say_k3_div_k10` | `79457f27982c` | 82.076 秒 | 无持久状态 |
+| `liwei_0616_7y03_cons_all_k3_div_k8` | `fdef50ae2219` | 80.584 秒 | 无持久状态 |
+
+算法脚本与已有草稿逐字节相同，Metadata 仅改原 ID；66 个 Native 附件原字节保留且纳入摘要。
+W3C 旧内部 639 点前缀不变，三份原 Native 末点证据复用；W3D 基线来自 ECS 已有
+prediction 3752/3753、run 3823/3824，不伪造旧 Request ID 或当年进程凭据。
+W3D 原输入与候选五文件有历史修订差异，已如实记录；全部证据只声明本次单点回归，
+`same_input_equivalence=false`、`historical_equivalence=false`，不泛化为全算法同输入等价。
+
+原件在 `outputs/final-five-single-request-20260912/<原ID>/`，已上传 ECS 同名 incoming 私有目录，
+逐份 SHA 核验一致。包、打包证据与最小同 ID 控制层均已独立审查，无 Critical/Important。
+控制层只接入固定的单 Request 验收原件，不再前置第二次 ECS 算法执行；W3C 私有 seed 未审核时拒绝准备。
+完整回归为 1298 passed、46 skipped、243 subtests passed；新增两项真实隔离 MySQL 切换/回滚测试通过。
+当前尚未执行五方案 ECS 接管，不能把候选代码和模拟回执当作生产完成。
+W3C 的 ECS 状态须从 ECS 本机已有 Native 派生缓存进行受控转换，不以本机冻结输入状态冒充 ECS ready。
 
 ## 2. 精确身份、目标与部署清单
 

@@ -54,6 +54,13 @@ _SAME_ID_RECLAIM_WAVES = {
     "W2": frozenset({"daily_5y_2_v28", "daily_7y_1_v28"}),
     "W3A": frozenset({"liwei_0616_cons_sda_k3_div_k10", "liwei_0616_5y01_full_oos_k3_div_k10"}),
 }
+_SAME_ID_SINGLE_REQUEST_WAVES = {
+    "W3C": frozenset({"liwei_0616_5y_auc_static_all_k3_div_k10",
+                       "liwei_0616_5y_auc_yearly_all_k3_div_k10",
+                       "liwei_0616_5y_ic_yearly_all_k3_div_k10"}),
+    "W3D": frozenset({"liwei_0616_7y01_cons_say_k3_div_k10",
+                       "liwei_0616_7y03_cons_all_k3_div_k8"}),
+}
 _PRESERVED_W2_COMPARE_SHA256 = "d40db697478c656cbc1ed714cdee73bbdbe295005a595e5778083ac6745c0285"
 _NATIVE_SUCCESSOR_REQUEST_IDENTITY_FIELDS = (
     "request_id",
@@ -3739,6 +3746,13 @@ def _same_id_evidence_conn(
                 or summary["equivalence_sha256"] != readiness.get("equivalence_sha256", {}).get(new.scheme_id)
                 or readiness.get("harness_run_ids", {}).get(new.scheme_id) != run_id):
             raise RuntimeError("W3A Gate differs from read-back preparation readiness")
+    if control.get("wave") in _SAME_ID_SINGLE_REQUEST_WAVES:
+        readiness = control.get("single_request_readiness", {})
+        if (readiness.get("schema_version") != "single-request-migration-readiness-v1"
+                or readiness.get("harness_run_ids", {}).get(new.scheme_id) != run_id
+                or summary["equivalence_sha256"] != readiness.get("comparison_sha256", {}).get(new.scheme_id)
+                or summary["local_execution_sha256"] != readiness.get("local_execution_sha256", {}).get(new.scheme_id)):
+            raise RuntimeError("single-Request Gate differs from verified preparation readiness")
     return {"harness_run_id": run_id, "sha256": native_successor_plan_sha256(
         {"run": runs[0], "gate": gates[0]}
     )}
@@ -3751,13 +3765,21 @@ def _same_id_runtime_upgrade_plan_conn(
     expected_database_name: str, expected_server_uuid: str, for_update: bool,
 ) -> dict[str, object]:
     """锁定同 ID 整批升级的事实、唯一 Writer 和证据前提。"""
-    if action not in {"cutover", "rollback"}:
+    single_wave = control_plane_evidence.get("wave") if isinstance(control_plane_evidence, Mapping) else None
+    single_request = single_wave in _SAME_ID_SINGLE_REQUEST_WAVES
+    if action not in ({"prepare", "cutover", "rollback"} if single_request else {"cutover", "rollback"}):
         raise ValueError("same-ID upgrade action must be cutover or rollback")
     ids = sorted(old_configs)
-    if not ids or set(ids) != set(new_configs) or set(ids) != set(harness_run_ids):
+    if (not ids or set(ids) != set(new_configs)
+            or (action == "prepare" and harness_run_ids)
+            or (action != "prepare" and set(ids) != set(harness_run_ids))):
         raise ValueError("same-ID upgrade requires identical nonempty config/evidence identities")
     if not isinstance(control_plane_evidence, Mapping) or not control_plane_evidence:
         raise ValueError("same-ID upgrade requires verified control-plane evidence")
+    if single_request and (not set(ids) <= _SAME_ID_SINGLE_REQUEST_WAVES[single_wave]
+            or control_plane_evidence.get("schema_version") != "single-request-migration-control-v1"
+            or control_plane_evidence.get("scheme_ids") != ids):
+        raise ValueError("single-Request migration is restricted to its exact selected W3C/W3D scope")
     if _dialect_name(conn) == "mysql":
         _require_nonempty(expected_database_name, "expected_database_name")
         _require_nonempty(expected_server_uuid, "expected_server_uuid")
@@ -3770,6 +3792,11 @@ def _same_id_runtime_upgrade_plan_conn(
         identity = {"isolated_test": "sqlite"}
     else:
         raise RuntimeError("same-ID upgrade supports only MySQL or isolated SQLite tests")
+    if single_request and action != "prepare":
+        readiness = control_plane_evidence.get("single_request_readiness", {})
+        if (readiness.get("prepare_database_identity_sha256") != native_successor_plan_sha256(identity)
+                or readiness.get("scheme_ids") != ids):
+            raise RuntimeError("single-Request preparation belongs to another database or scope")
     migrations = _same_id_rows_conn(
         conn, "t_schema_migrations", "1=1", {}, order="version", for_update=for_update,
     )
@@ -3791,15 +3818,20 @@ def _same_id_runtime_upgrade_plan_conn(
         if _same_id_rows_conn(conn, table, f"scheme_id IN ({values}) AND status = 'running'", params,
                              order=order, for_update=for_update):
             raise RuntimeError(f"same-ID upgrade requires zero running rows: {table}")
+    if single_request and action == "prepare":
+        for key, cfg in new_configs.items():
+            if _same_id_rows_conn(conn, "t_harness_runs", "scheme_id=:id AND scheme_version=:version AND stage='native-runtime-upgrade'",
+                    {"id": key, "version": cfg.scheme_version}, order="harness_run_id", for_update=for_update):
+                raise RuntimeError("single-Request preparation already attempted; inspect retained evidence")
     evidence = {}
     # 仅完整 W3B 原 ID 批次可收口旧 Native lifecycle 历史；实际 Writer 来自
     # 只读核实的 canonical exact 与已围栏 one-shot，不能由历史 active 行推断。
     scheduler_control = control_plane_evidence.get("scheduler", {})
     canonical_selection = control_plane_evidence.get("native_canonical_selection")
     historical_native_allowed = (
-        set(ids) == _SAME_ID_W3B_NATIVE_HISTORY_IDS
-        and control_plane_evidence.get("schema_version") == "same-id-w3b-control-plane-v1"
-        and control_plane_evidence.get("wave") == "W3B"
+        ((set(ids) == _SAME_ID_W3B_NATIVE_HISTORY_IDS
+          and control_plane_evidence.get("schema_version") == "same-id-w3b-control-plane-v1"
+          and control_plane_evidence.get("wave") == "W3B") or single_request)
         and control_plane_evidence.get("deployment_target") == "aliyun-gray"
         and isinstance(scheduler_control, Mapping)
         and scheduler_control.get("control_plane") == "systemd_one_shot"
@@ -3813,6 +3845,8 @@ def _same_id_runtime_upgrade_plan_conn(
     )
     historical_native_versions = []
     historical_native_versions_to_retire = []
+    if single_request and not historical_native_allowed:
+        raise RuntimeError("single-Request migration requires actual fenced Native canonical selection")
     for scheme_id in ids:
         old, new = old_configs[scheme_id], new_configs[scheme_id]
         _validate_blackbox_revision_candidate(new, require_evidence=True)
@@ -3843,8 +3877,8 @@ def _same_id_runtime_upgrade_plan_conn(
                 "contract_version", "runtime_profile",
             )):
                 raise RuntimeError("same-ID upgrade candidate environment/input changed")
-        expected_active = old if action == "cutover" else new
-        if action == "cutover":
+        expected_active = old if action in {"prepare", "cutover"} else new
+        if action in {"prepare", "cutover"}:
             valid = old_row["status"] == "active" and (new_row is None or new_row["status"] == "retired")
         else:
             valid = old_row["status"] == "retired" and new_row is not None and new_row["status"] == "active"
@@ -3857,7 +3891,7 @@ def _same_id_runtime_upgrade_plan_conn(
                 continue
             historical_native = historical_native_allowed and row["runtime_type"] == "native_adapter"
             allowed_statuses = {"retired", "paused"} if historical_native else {"retired"}
-            if historical_native and action == "cutover":
+            if historical_native and action in {"prepare", "cutover"}:
                 allowed_statuses.add("active")
             if row.get("status") not in allowed_statuses:
                 raise RuntimeError("same-ID upgrade unexpected pending/active version (second Writer)")
@@ -3877,8 +3911,9 @@ def _same_id_runtime_upgrade_plan_conn(
                       "schedule_cron": old.schedule.cron, "schedule_timezone": old.schedule.timezone}
             if any(row.get(key) != value for key, value in wanted.items()) or _normalize_registry_tenors(row.get("tenors")) != [tenor]:
                 raise RuntimeError("same-ID upgrade Registry identity/status mismatch")
-        evidence[scheme_id] = _same_id_evidence_conn(conn, old, new, harness_run_ids[scheme_id],
-                                                  control_plane_evidence, for_update=for_update)
+        if action != "prepare":
+            evidence[scheme_id] = _same_id_evidence_conn(conn, old, new, harness_run_ids[scheme_id],
+                                                      control_plane_evidence, for_update=for_update)
     unaffected = _same_id_rows_conn(conn, "t_scheme_registry", f"base_scheme_id NOT IN ({values})", params,
                                    order="scheme_id", for_update=for_update)
     return {
@@ -3931,6 +3966,8 @@ def apply_same_id_runtime_upgrade(
 ) -> dict[str, object]:
     """复用正常 activation 互斥锁，整批升级/回滚；历史事实始终只读。"""
     operator = _require_nonempty(approved_by, "approved_by")
+    if action not in {"cutover", "rollback"}:
+        raise ValueError("same-ID apply cannot execute preparation or historical writes")
     if not isinstance(approved_at, datetime):
         raise ValueError("same-ID upgrade requires approved_at datetime")
     if not isinstance(expected_plan_sha256, str) or len(expected_plan_sha256) != 64 or any(

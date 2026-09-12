@@ -12,10 +12,10 @@
 ## 双主机边界
 
 - Mac3 继续承载生产域名、前端、数据库和 Writer；`launchd + installed plist` 是生产调度控制面。
-- 2026-09-12 已批准[双机迁移闭环计划](architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md)：
-  ECS 先接管源码方案，再用同一 archive 晋级 Mac3，继续 Mac3-only W4 改造；不改变域名、DNS、Nginx 或隧道。
-  原方案 ID 保留，已跨 ID 批次也按计划回归原身份；此为执行范围更新，不表示部署或数据清理已经完成。
-  两端 confidence DDL 仍各需独立确认，master 不合并；允许推送 develop 和交付 PR。
+- 2026-09-12 用户缩减[迁移计划](architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md)的当前执行范围：
+  只完成 ECS 剩余五个源码方案的原 ID 接管；W4 九个加密方案继续 Mac3 现状，本轮不部署或操作 Mac3。
+  不重新回测、生成、复制、覆盖或删除历史预测，不改变域名、DNS、Nginx 或隧道。
+  confidence DDL 不属于本轮操作，master 不合并；允许推送 develop 和交付 PR。
 - 用户已批准迁移期新 Blackbox 目录保留 Native 附件至接管验收完成，按精确清单及摘要绑定版本，
   不允许附件 fallback 或第二 Writer；普通两文件合同不变。历史源数据修订不触发已发布预测重算或覆盖，
   只更新当前预测必需的内部派生状态；不再等待目录布局审批。
@@ -49,11 +49,14 @@
   原 h6 事实键保留，Metadata h1 仅用于执行，标准调用、回滚预检、Backend 和 timer 读回通过。
   W1A 的 T1/T5 两个 base、六个 target 也已完成原 ID 整组接管；各 target 标准调用一次，
   全部目标验证后原子切换，历史事实不变，Backend/current、执行准入及日周月 timer 读回通过。
-  ECS 已完成 12/17 个原方案、16/21 个 target；W3C/W3D、Mac3 晋级、
-  迁移数据/Native 清理及 confidence DDL 尚未闭环。
-  W1 的 42 条待保全结果已完成 14,677 行备份的真实隔离恢复，原始摘要完全一致；保全写库尚未执行。
-  W3C 三个原算法末点已保存，不重复训练；候选内核及正式区间等价尚待验证。
-  W3D 两个方案的完整参考对照已启动，不能把在途计算计为验收通过；最新进程与回执须现场读取。
+  ECS 已完成 12/17 个原方案、16/21 个 target；本轮只推进剩余 W3C/W3D 五方案的单 Request 对照和接管。
+  W4 九个加密方案按用户最新决定保持 Mac3 现状，不改造，也不据旧计划删除其 Native 依赖。
+  W1 的 42 条历史补入已停止、未写生产；14,677 行备份和真实恢复证据保留，未完成代码已隔离为私有补丁。
+  W3C 三个已有 Native 末点保留为基线；不再增加内部 grid 或正式区间证明。
+  W3D 两个历史参考计算已受控停止，四个相关进程均已退出，已有检查点/失败回执保留，不重启。
+  不重新回测历史、不重新生成/复制/覆盖历史预测；五个最终包各执行一次对应 Native Request 并受控切换/模拟。
+  五个最终原 ID 包的单次标准调用已全部通过，日期和方向与已有 Native 基线一致；
+  W3C 约 8.6/8.9/7.8 秒，W3D 约 82/81 秒。当前是候选验收，不是 ECS 已切换，现场数量仍为 12/17。
   不重复已完成的 W3B 算法、状态准备或切换；精确 release、回执和恢复边界见迁移计划及现场。
 
 ## 当前治理边界
@@ -70,12 +73,11 @@
   停止，release、方案版本、日期和业务键必须完全匹配，已有键整组拒绝。源端不存在的键才允许受控计算。
 - 新方案只走 Blackbox V2 两文件 Intake；Native V1 只维护政策清单内存量身份。平台不反编译或改写
   Blackbox 算法逻辑，只验证平台接入和标准输出边界。
-- 同算法运行时迁移走受控原 ID 版本升级：原事实不覆盖，临时 `_bbv2` 独有结果仅在核实后补入缺失键，
-  保留真实导入来源；备份及隔离恢复验证、接管和回滚边界就绪后精确删除其专属记录，不建立历史别名。
+- 同算法运行时迁移走受控原 ID 版本升级：全部原事实保留，本轮不再搬迁或删除临时 `_bbv2` 历史结果，
+  此前已完成的导入也不回删；只切未来执行版本，不建立历史别名。
   T1/T5 每 base 组合目标两文件、整体版本且原子提交；周/月 Metadata horizon=1，原事实 6/30 显式投影保留。
-- 仅 Native→Blackbox 迁移映射中锁定的 W4 九个 Mac3 加密方案允许使用 manifest-bound Mac3-only binary
-  bundle；该例外不进入 ECS、不开放给新方案，全部 `.so` payload 必须纳入 exact version hash closure，且
-  仍须遵守五文件输入、五字段输出、无数据库/网络/包外路径/持久状态的边界。
+- W4 九个 Mac3 加密方案继续现有 Native 入口与调度，不实施此前 binary bundle 设计；
+  不因 ECS 迁移而删除其依赖，也不把 W4 部署到 ECS。
 - 普通 Blackbox 入库只保留“Intake → 一次完整持久化回测 → activate”；本次迁移的证据转换采用专用入口，
   不伪改旧 backtest 或全局放宽 activate。DataBridge producer 独立发布 generation，方案不构建、修复或重验 generation。
   Blackbox 不进入 Native `onboard`，不运行 StaticGate、CompareGate、额外 predict 冒烟或 `shadow-register`。

@@ -289,7 +289,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     for action in ("preflight", "prepare", "cutover", "rollback", "preserve-live"):
         item = migration_actions.add_parser(action)
-        item.add_argument("--wave", choices=["W1A", "W1B", "W2", "W3A", "W3B"], required=True)
+        item.add_argument("--wave", choices=["W1A", "W1B", "W2", "W3A", "W3B", "W3C", "W3D"], required=True)
+        item.add_argument("--scheme-id", action="append", help="W3C/W3D only: select original IDs within the fixed wave")
         item.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
         item.add_argument("--reference-project-root", type=Path, required=True)
         item.add_argument("--rollback-project-root", type=Path, help="W1A/W3A: actual pre-cutover release, not Native reference")
@@ -313,6 +314,11 @@ def _run_native_successor_migration_command(
     args: argparse.Namespace,
 ) -> dict[str, object]:
     """同 ID 升级及已跨 ID Writer 回收；不恢复旧跨 ID 激活路由。"""
+    if args.wave in {"W3C", "W3D"}:
+        from harness.single_request_prepare import run_single_request_command
+        return run_single_request_command(args)
+    if getattr(args, "scheme_id", None):
+        raise ValueError("scheme-id selection is restricted to W3C/W3D")
     if args.wave == "W1A":
         return _run_w1a_migration_command(args)
     project_root = args.project_root.resolve()

@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "liwei_0616_7y03_cons_all_k3_div_k8",
+  "name": "ALL共识·DIV回退",
+  "owner": "liwei",
+  "description": "保留7Y的STD、DIV、ACCWT及独立5Y基线四方k=3共识，按原streak=8及反向DIV重置规则形成方向；历史同期全配置排序，当前月在单次调用内复用实际入选配置。",
+  "algorithm_version": "native-v31-successor-draft1",
+  "target_tenor": "7Y",
+  "task_type": "T+5",
+  "horizon": 5,
+  "target_rule": "target_date_yield_vs_feature_date_yield"
+}

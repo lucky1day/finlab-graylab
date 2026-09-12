@@ -141,9 +141,9 @@ def _verified_pair(project_root: Path, reference_project_root: Path):
     }
 
 
-def _assert_no_temporary_writer(engine) -> dict[str, object]:
+def _assert_no_temporary_writer(engine, scheme_ids=None) -> dict[str, object]:
     """只读拒绝已退役设计中的临时 bbv2 Writer 和在途运行。"""
-    params = {f"id_{index}": scheme_id + "_bbv2" for index, scheme_id in enumerate(W3B_IDS)}
+    params = {f"id_{index}": scheme_id + "_bbv2" for index, scheme_id in enumerate(W3B_IDS if scheme_ids is None else scheme_ids)}
     ids = ",".join(f":{key}" for key in params)
     checks = (
         ("t_scheme_registry", "base_scheme_id", "status = 'active'"),
@@ -160,14 +160,25 @@ def _assert_no_temporary_writer(engine) -> dict[str, object]:
     return {"scheme_ids": sorted(params.values()), "temporary_active_or_running_count": 0}
 
 
-def _assert_no_algorithm_process() -> None:
+def _assert_no_algorithm_process(scheme_ids=None) -> None:
     """补充 cadence 围栏，拒绝绕过调度入口直接启动的 W3B CLI。"""
-    names = "|".join(scheme_id + "(_bbv2)?" for scheme_id in W3B_IDS)
+    names = "|".join(scheme_id + "(_bbv2)?" for scheme_id in (W3B_IDS if scheme_ids is None else scheme_ids))
     pattern = (rf"(^|/)({names})\.py([[:space:]]|$)|schemes\.({names})\.predict"
                rf"|scheduler\.scheme_runner.*--scheme-id[ =]+({names})([[:space:]]|$)")
     result = subprocess.run(["/usr/bin/pgrep", "-f", pattern], check=False, capture_output=True, timeout=10)
     if result.returncode != 1:
         raise RuntimeError("W3B algorithm process exists or process inspection failed")
+    if scheme_ids is not None:
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit() or int(entry.name) == os.getpid():
+                continue
+            try:
+                arguments = (entry / "cmdline").read_bytes().split(b"\0")
+            except FileNotFoundError:
+                continue
+            if arguments and b"python" in Path(os.fsdecode(arguments[0])).name.encode():
+                if any(key.encode() in value for key in scheme_ids for value in arguments):
+                    raise RuntimeError("single-Request matching Python process is still running")
 
 
 def _assert_execution_modules(root: Path) -> None:
@@ -320,6 +331,76 @@ def build_same_id_preflight(engine, *, project_root: Path, reference_project_roo
         action=action, control_plane_evidence=control, expected_database_name=expected_database_name,
         expected_server_uuid=expected_server_uuid)
     return {"plan": plan, "plan_sha256": native_successor_plan_sha256(plan)}
+
+
+def capture_single_request(engine, *, project_root: Path, reference_project_root: Path,
+                           wave: str, scheme_ids, preparing: bool, rollback: bool = False):
+    """五个固定原身份的真实 ECS 只读就绪；不把 Mac 回归当作 ECS 执行。"""
+    from scheduler.repository import _SAME_ID_SINGLE_REQUEST_WAVES
+    from scheduler.blackbox_state import read_regular_bytes
+    from harness.single_request_prepare import load_acceptance, load_ecs_seed
+
+    ids = sorted(scheme_ids)
+    if wave not in _SAME_ID_SINGLE_REQUEST_WAVES or not ids or len(ids) != len(set(ids)) or not set(ids) <= _SAME_ID_SINGLE_REQUEST_WAVES[wave]:
+        raise ValueError("single-Request migration requires selected original IDs in its fixed wave")
+    root, reference = project_root.resolve(strict=True), reference_project_root.resolve(strict=True)
+    if root != _EXECUTION_PROJECT_ROOT or os.environ.get("BFL_DEPLOYMENT_TARGET") != "aliyun-gray":
+        raise RuntimeError("single-Request control must execute in its immutable ECS candidate")
+    _assert_execution_modules(root)
+    from harness import single_request_prepare
+    if root not in Path(single_request_prepare.__file__).resolve().parents:
+        raise RuntimeError("single-Request preparation module outside candidate")
+    releases = {"candidate": _verified_install(root), "reference": _verified_install(reference)}
+    if root == reference or os.environ.get("BFL_RELEASE_COMMIT") != releases["candidate"]["commit"]:
+        raise RuntimeError("single-Request candidate/reference process identity differs")
+    current = _CURRENT_LINKS["aliyun-gray"]
+    expected_current = reference if preparing else root
+    if not current.is_symlink() or current.resolve(strict=True) != expected_current:
+        raise RuntimeError("single-Request current differs from preparation/cutover phase")
+    if not preparing and (current.parent / "previous").resolve(strict=True) != reference:
+        raise RuntimeError("single-Request rollback release differs from actual previous")
+    declared = load_native_successor_waves(root / "deploy/native_to_blackbox_migration_v1.json")[wave]
+    if {target.old_base_scheme_id for target in declared.targets} != _SAME_ID_SINGLE_REQUEST_WAVES[wave]:
+        raise RuntimeError("single-Request fixed wave mapping changed")
+    scheduler = _capture_scheduler_state(project_root=expected_current, deployment_target="aliyun-gray", cadence="daily")
+    locale = _capture_installed_locale(root, installed_current_root=expected_current)
+    _assert_no_algorithm_process(ids)
+    temporary = _assert_no_temporary_writer(engine, ids)
+    matrix_path = root / "deploy/scheme_deployment_matrix_v1.json"
+    matrix = json.loads(read_regular_bytes(matrix_path, 1024**2))["schemes"]
+    old, new = {}, {}
+    for key in ids:
+        if "aliyun-gray" not in matrix.get(key, []) or "aliyun-gray" in matrix.get(key + "_bbv2", []):
+            raise RuntimeError("single-Request matrix allows a temporary Writer")
+        old[key] = load_scheme_config(reference / "schemes" / key / "config.yaml")
+        new[key] = load_scheme_config(root / "schemes" / key / "config.yaml")
+        if old[key].runtime_type != "native_adapter" or new[key].runtime_type != "blackbox_v2":
+            raise RuntimeError("single-Request migration must retain original Native business identity")
+    snapshot = get_ready_blackbox_snapshot(snapshot_date=date.today().isoformat(), require_fresh=False, factor_input_mode="algorithm_managed")
+    manifest = json.loads(read_regular_bytes(snapshot.manifest_path, 1024**2))
+    if set(manifest.get("files", {})) != _DATABRIDGE_FILES:
+        raise RuntimeError("single-Request requires ready five-file input")
+    hashes = {name: _sha256_file(snapshot.data_dir / name) for name in sorted(_DATABRIDGE_FILES)}
+    if hashes != {name: item["sha256"] for name, item in manifest["files"].items()}:
+        raise RuntimeError("single-Request ready input bytes changed")
+    fingerprint = load_environment_fingerprint(root, expected_runtime_profile="blackbox-v2-v1")
+    new = {key: replace(cfg, environment_fingerprint=fingerprint, data_snapshot_id=snapshot.snapshot_id) for key, cfg in new.items()}
+    acceptance = {key: load_acceptance(old[key], new[key]) for key in ids}
+    stateful = {key: cfg for key, cfg in new.items() if cfg.incremental_state}
+    seeds = {key: load_ecs_seed(cfg, snapshot, hashes, require_unpublished=not rollback)
+             for key, cfg in stateful.items()}
+    evidence = {"schema_version": "single-request-migration-control-v1", "wave": wave, "scheme_ids": ids,
+        "deployment_target": "aliyun-gray", "release": releases, "scheduler": scheduler,
+        "temporary_writer_check": temporary, "blackbox_environment_fingerprint": fingerprint,
+        "execution_environment": locale, "native_canonical_selection": {
+            key: {field: getattr(cfg, field) for field in ("scheme_version", "runtime_type", "code_hash", "config_hash", "manifest_hash")}
+            for key, cfg in old.items()},
+        "databridge": {"generation_id": snapshot.generation_id, "data_snapshot_id": snapshot.snapshot_id,
+                       "business_digest": snapshot.business_digest, "files": hashes},
+        "candidate_seed_readiness": seeds, "stateless_scheme_ids": sorted(set(ids) - set(stateful)),
+        "acceptance": acceptance, "deployment_matrix_sha256": _sha256_file(matrix_path),
+        "ecs_algorithm_executions": 0, "historical_equivalence": False}
+    return old, new, evidence
 
 
 def execute_same_id_upgrade(engine, *, project_root: Path, reference_project_root: Path,

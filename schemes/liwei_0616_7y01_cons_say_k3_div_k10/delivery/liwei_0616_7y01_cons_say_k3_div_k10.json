@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "liwei_0616_7y01_cons_say_k3_div_k10",
+  "name": "SAY共识·DIV回退",
+  "owner": "liwei",
+  "description": "保留7Y的STD、ACCWT与独立5Y基线三方共识，7Y DIV独立三seed训练并按原连续同向控制回退；历史同期全配置排序，当前月仅复用实际入选配置。",
+  "algorithm_version": "native-v31-successor-draft1",
+  "target_tenor": "7Y",
+  "task_type": "T+5",
+  "horizon": 5,
+  "target_rule": "target_date_yield_vs_feature_date_yield"
+}

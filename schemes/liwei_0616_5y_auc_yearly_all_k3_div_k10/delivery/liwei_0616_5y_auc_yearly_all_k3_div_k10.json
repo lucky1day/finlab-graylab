@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "liwei_0616_5y_auc_yearly_all_k3_div_k10",
+  "name": "liwei_0616 AUC yearly ALL_K10",
+  "owner": "liwei",
+  "description": "保留当前 platform_live_pit_variant：AUC年度重筛，按每年首个可用行前严格horizon截止取最近2000有效行；STD/DIV/ACCWT/CROSS_7Y共识k=3和DIV streak=10；从2024-01-01累计完整OOS，5Y/7Y独立复用已消费历史派生数组。",
+  "algorithm_version": "1.0.0",
+  "target_tenor": "5Y",
+  "task_type": "T+5",
+  "horizon": 5,
+  "target_rule": "target_date_yield_vs_feature_date_yield"
+}

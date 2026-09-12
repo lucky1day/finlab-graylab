@@ -51,6 +51,11 @@ NATIVE_ATTACHMENT_SCHEMES = frozenset({
     "liwei_0616_10y01_cons_say_k3_div_k10",
     "liwei_0616_10y01_full_oos_k3_div_k10",
     "liwei_0616_10y02_cons_say_k3_div_k5",
+    "liwei_0616_5y_auc_static_all_k3_div_k10",
+    "liwei_0616_5y_auc_yearly_all_k3_div_k10",
+    "liwei_0616_5y_ic_yearly_all_k3_div_k10",
+    "liwei_0616_7y01_cons_say_k3_div_k10",
+    "liwei_0616_7y03_cons_all_k3_div_k8",
 })
 
 # 仅已批准的多目标迁移使用独立两文件包，保留原交付 basename。

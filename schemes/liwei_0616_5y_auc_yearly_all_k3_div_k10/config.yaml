@@ -1,27 +1,29 @@
 scheme_id: liwei_0616_5y_auc_yearly_all_k3_div_k10
-runtime_type: native_adapter
-name: "liwei_0616 5Y AUC Yearly ALL_K10 灰度实验"
-description: "liwei_0616 5Y experimental/platform_live_pit_variant；AUC yearly 特征筛选；STD/DIV/ACCWT/CROSS_7Y ALL_K10，k=3 共识与 DIV_K=10 streak-break fallback；2024-01-01 起单段连续 live-safe Full-OOS；日频 T+5。"
-horizon: 5
-task_type: "T+5"
-tenors: ["5Y"]
-frequency: daily
+runtime_type: blackbox_v2
+input_source: data_bridge_current
+factor_input_mode: algorithm_managed
+runtime_profile: blackbox-v2-v1
+data_schema_version: data-bridge-v1
+incremental_state: true
+status: paused
+version_status: draft
 schedule:
-  cron: "3 7 * * 1-5"
-  timezone: "Asia/Shanghai"
-  timeout_sec: 3600
-entry_point: predict.run
-status: active
-input_spec:
-  data_version: shared_data_service_daily.v1
-  required_columns: ["date", "TB1YWI0C", "TB3YWI0C", "TB5YWI0C", "TB7YWI0C", "TB0YWI0C", "SH000300", "IFCFE00C", "S0031525", "AUSHF00C", "CUSHF01C", "RBSHF01C", "USDCNH0C", "SX5EDF0C", "DR007IBC", "M0017153", "G0006352", "G0006353", "M0000005", "M0000271", "M0048486", "G0003956", "B2559386", "G0003892", "DRS00001", "DRS00002", "AGSHF01C", "ZNSHF00C", "HCSHF01C"]
-  auxiliary_inputs: [{"frequency": "weekly", "data_version": "shared_data_service_weekly.v1", "required_columns": ["week_id", "S0114089", "N1355677", "V0135838", "V0184553", "W0192843", "X0100205", "Y0110594", "HWW00001", "HWW00002", "HWW00003"]}, {"frequency": "monthly", "data_version": "shared_data_service_monthly.v1", "required_columns": ["month_id", "M0000545", "M0061518", "M0096870", "M0317126", "M0009970", "M0009973", "M0001227"]}]
-backtest:
-  runner: backtests.liwei_0616_5y_auc_yearly_all_k3_div_k10_reproduction
-  runner_args: ["--batch-mode", "monthly", "--n-workers", "20", "--phase-a-cache"]
-  benchmark_id: liwei_0616_5y_auc_yearly_all_k3_div_k10
-  data_source: framework_db_aligned
-  benchmark_required: True
-  required_internal_fields: ["vote_score", "STD_score", "STD_dir", "DIV_score", "DIV_dir", "ACCWT_score", "ACCWT_dir", "CROSS_7Y_score", "CROSS_7Y_dir"]
-  start_date: "2025-01-01"
-  end_date: "2026-05-22"
+  cron: '3 7 * * 1-5'
+  timezone: Asia/Shanghai
+  timeout_sec: 120
+delivery:
+  script: delivery/liwei_0616_5y_auc_yearly_all_k3_div_k10.py
+  metadata: delivery/liwei_0616_5y_auc_yearly_all_k3_div_k10.json
+native_attachments:
+  __init__.py: 8eb6c8b83793c28bf2ac6b498ce60fb039a1476cdafc3352deeb1534cd4ffe22
+  benchmarks/current_backtest_summary.json: 3cd3ebc8ca3678b40ac7a84c0e3bd7448fe6311d2c565e91258d083449a38825
+  benchmarks/current_predictions_sample.csv: 90a085756b03f276dd0640ad9ec2e9b5f4eeecb5f107c2ac8da2318afaf6673a
+  benchmarks/original_backtest_summary.json: 6999e40470b6275b616948d6578ada85779ca0e949d5d33ffc8e1c3380f8c59d
+  benchmarks/original_predictions_sample.csv: 90a085756b03f276dd0640ad9ec2e9b5f4eeecb5f107c2ac8da2318afaf6673a
+  benchmarks/README.md: 098a83783de87af493911093cf1487626757b63fbb705e815913e1d66e2a87c7
+  core/__init__.py: 915dd5ff349a6dfc1e8c668eb6535139066fa99728967bde23a813ee7332a871
+  core/data_alignment.py: 1afa4375a39674e23b43930bd32daea20232a4ca20dce344d09b6b6c42cf8c16
+  core/screen_metrics.py: f62c0b860278e38e4cd9ed1bc10a217dcec50d77afa6b92d1b45913f7eb8aded
+  core/v31_common.py: 65eacfd860dc7c306e7d282656225cd9f3b9ea73fd6a9d7dd3659c758287a6aa
+  inference.py: 603215d643959546cbab8316bfd36b3a248cf2fe888938da660d19f319bc3d8e
+  predict.py: 5e72a4529082007471457dbd79d21054058fcd5aa5a8d31a4202c7fb4374008e
