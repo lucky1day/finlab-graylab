@@ -120,6 +120,7 @@ python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
 - `scripts/apply_migrations.py` 是唯一受控运维包装器。生产/候选 schema 的 apply 与 recovery 只能经此 CLI，不得用 `mysql` 客户端直跑 migration SQL，也不得复制 runner 行为到 scheduler、harness 或其它脚本。
 - `--apply`、`--recover-applying-017 --apply`、`--recover-applying-018 --apply`、`--recover-applying-019 --apply`、`--recover-applying-021 --apply`、`--recover-applying-022 --apply`、`--recover-applying-023 --apply`、`--recover-applying-024 --apply` 都必须同时显式提供 `--expected-database-name` 和 `--expected-server-uuid`；CLI 在创建 Engine 前校验参数，并在首个写库动作前精确比对 `DATABASE()` 与 `@@server_uuid`。inspect 是只读操作，不需要这两个参数。
 - operator 只能从只读 inspect JSON 或受控只读 identity query 取得 UUID；文档、脚本输出和提交中不得示例生产 UUID、DSN 或凭据。isolated MySQL 测试不等于已应用生产 migration。
+- `--recover-applying-025 --apply` 同样必须显式提供目标库名、server UUID 及先前只读 inspect 的 state digest。025 仅删除两张预测表的统一 confidence 列；删列前须有独立授权、可恢复备份和兼容 current/previous，删列后不得回滚到依赖该列的 release。
 
 ## 编码规范
 

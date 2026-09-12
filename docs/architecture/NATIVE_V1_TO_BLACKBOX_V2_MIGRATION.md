@@ -124,4 +124,7 @@ T1/T5 各保留一个 base/version，目标包在同一次任务中全部验证�
 
 外置证据入口：开发机 `outputs/database-cleanup-20260912/COMPLETION.md`；ECS 永久备份位于 `/opt/bond-factor-lab/backups/database-cleanup-20260912/ecs-eleven`，Mac3 永久备份位于 `/Users/macstudio0/bond-factor-lab-production/backups/database-cleanup-20260912`。恢复时先在隔离库还原验证，再按缺失精确主键受控恢复，不把旧整库快照覆盖生产。
 
-本次仅为数据退役与文档同步，生产 schema 仍为 024、confidence 两列保留，运行代码及 release 未改变；清理临时入口不作为长期平台功能保留。
+该数据库清理窗口仅为数据退役与文档同步，当时生产 schema 为 024、confidence 两列保留，运行代码及 release 未改变；清理临时入口不作为长期平台功能保留。
+
+后续平台 confidence 退役已经作为独立任务获批，不改变上述清理历史事实；其当前部署/schema 状态以
+[当前状态](../CURRENT_STATUS.md)为准。算法内部同名逻辑、W4 二进制、原始 benchmark 与审计仍受保护。
