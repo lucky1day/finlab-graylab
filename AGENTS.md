@@ -9,6 +9,7 @@
 ## 当前工作上下文（必须遵守）
 
 - 根规范只保存长期约束。当前 release、主机状态、方案数量、数据库水位和自然调度观察必须从 [当前状态](docs/CURRENT_STATUS.md) 与现场权威控制面读取，不在本文维护副本。
+- ECS/Mac3 操作先读[双机部署与访问入口](docs/operations/DEPLOYMENT_ACCESS.md)：固定主机、SSH/转发、生产路径与登录入口在该文档维护；先区分独立灰度 ECS 与 Mac3 公网中继，再现场核验，不从旧任务重新猜地址。
 - 当前活动集成分支是 `codex/develop`；不得建立 Mac3/ECS 长期环境分支。`master` 受保护，只有用户明确确认后才能合并、移动或推送。
 - 发布坚持“单一代码线 + 不可变 release + 独立部署环境”：每个版本由精确提交生成确定性 archive，生产包不含 `.git`，身份来自已校验 manifest。环境差异只允许出现在部署配置、环境变量、部署矩阵和依赖清单；ECS 不保留 Git checkout 或现场修改 release。
 - 开发工作区与生产 runtime 必须分离；生产使用 `current -> releases/<release_id>`，状态和日志外置。ECS 先验证、Mac3 后晋级时可暂时指向不同 release，但 Mac3 只能使用同一份已验证 archive。

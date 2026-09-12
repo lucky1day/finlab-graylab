@@ -4,7 +4,7 @@
 
 **整理日期**：2026-09-13；以下运营事项仍需各自现场核验，不因文档整理标记完成。
 
-本文只保留尚未发生的后续事项。当前稳定事实见[当前状态](CURRENT_STATUS.md)，生产规则见
+本文只保留尚未闭环的后续事项。当前稳定事实见[当前状态](CURRENT_STATUS.md)，生产规则见
 [生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。已完成事项通过 Git、Harness、数据库
 与目标机 journal 追溯，不在本文维护副本。
 

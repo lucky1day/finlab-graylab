@@ -302,5 +302,6 @@ Dashboard V5 的公开结果类型只按 `target_date` 分类：
 - 准确率括号展示 `correct/metric_samples`；不得回退成 `correct/samples`，也不得通过月度行的 precision/recall 反推出 true positive。
 - 如果某个需要展示的方案/月度只有 `monthly_metrics` 汇总、没有预测明细行，前端必须 fail-closed，不能从月度汇总反推或回填指标。
 - 每日/周度验证明细中，只要预测方向为“平”（`predicted_direction=0` 或前端归一化后 `predicted="平"`），结果列统一展示 `-`，不展示 `✓` 或 `×`。这条展示规则独立于 `actual_direction` 和 `is_correct`，因为“平”不进入指标计算。
+- Summary 必须为有预测事实的每个 month/source 保留月份行，即使该月全部待验证。纯待验证月份的统计计数为 0、准确率为 `--`，仍可打开 Detail；待验证记录不进入已验证样本数或指标分母，混合月份的统计不因待验证记录改变。
 - 待验证样本仍展示待验证符号；有方向预测才根据验证结果展示 `✓` 或 `×`。
 - 当日频、周频、月中收或周期均值 actual 的源实际值水位尚未覆盖对应 `target_date + target_rule` 时，该样本属于待验证；API 和前端应展示 `actual_direction = null` / 准确率 `--`，不得把它计为错误、缺数据修复项或前端刷新失败。运维排查必须先查对应 actual 水位，再判断是否为后端 join 或前端计算问题；同一目标周期内不同 tenor 的源水位可以不同，已覆盖的 tenor 应立即验证，未覆盖的 tenor 继续待验证。

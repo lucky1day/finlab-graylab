@@ -36,17 +36,19 @@ Summary 请求。
 
 ## 故障定位
 
+主机地址和连接命令见[双机部署与访问入口](DEPLOYMENT_ACCESS.md)。本节的公网中继 ECS 与独立灰度 ECS 是两台主机。
+
 生产请求链为：
 
 ```text
-浏览器 → ECS Nginx → ECS 127.0.0.1:18100
+浏览器 → 公网中继 ECS Nginx → 中继 127.0.0.1:18100
        → SSH 反向转发 → Mac3 127.0.0.1:8100 → Mac3 MySQL
 ```
 
 固定使用三点探针定位故障域：
 
-1. Mac3 `127.0.0.1:8100/api/health` 成功、ECS 18100 失败：检查 SSH 隧道。
-2. ECS 18100 成功、公网域名失败：检查 Nginx、TLS 与公网入口。
+1. Mac3 `127.0.0.1:8100/api/health` 成功、中继 ECS 18100 失败：检查 SSH 隧道。
+2. 中继 ECS 18100 成功、公网域名失败：检查 Nginx、TLS 与公网入口。
 3. health 成功、Dashboard 503：按 `X-Request-ID` 检查认证、数据库和 Dashboard 构建阶段。
 4. Dashboard 200、浏览器显示 stale：检查客户端网络、响应解析和刷新状态机。
 
@@ -54,20 +56,20 @@ Dashboard 结构化请求事件写入生产 Uvicorn error logger；Nginx timing 
 `$time_iso8601 $request_id` 开头，并记录 `$upstream_status`。两端用同一 `X-Request-ID` 关联，避免
 从无时间戳的片段猜测故障顺序。
 
-生产 SSH 固定连接 ECS IPv4，不依赖被 fake-IP 接管的域名解析，也不得进入 Clash/Mihomo 的代理
-故障域。TUN 开启时必须使用 `rule` 模式，在规则层将 ECS IPv4 指向 `DIRECT`，并在 TUN 路由层用 `route-exclude-address`
-排除 ECS `/32`。验收标准是 Clash 日志不出现生产 SSH 的 `dial GLOBAL`，而不是只检查域名是否
+生产 SSH 固定连接公网中继 ECS IPv4，不依赖被 fake-IP 接管的域名解析，也不得进入 Clash/Mihomo 的代理
+故障域。TUN 开启时必须使用 `rule` 模式，在规则层将中继 ECS IPv4 指向 `DIRECT`，并在 TUN 路由层用 `route-exclude-address`
+排除中继 ECS `/32`。验收标准是 Clash 日志不出现生产 SSH 的 `dial GLOBAL`，而不是只检查域名是否
 解析为真实 IP。
 
 ## 维护与回滚
 
-应用 release、ECS Nginx、Mac3 Clash 和 installed launchd 是独立变更单元。
+应用 release、公网中继 ECS Nginx、Mac3 Clash 和 installed launchd 是独立变更单元。
 修改前保存对应生效配置及只读基线，只回滚失败单元，不以重启数据库或 Writer 兜底。
 
 - 发布使用 clean commit 和已验证 immutable archive，不从开发目录覆盖生产。
-- SSH 使用固定 ECS IPv4、strict host key、有限超时与保活；host-key fingerprint 必须通过独立可信渠道核验。
+- SSH 使用固定公网中继 ECS IPv4、strict host key、有限超时与保活；host-key fingerprint 必须通过独立可信渠道核验。
   不以关闭校验或未核验的 ssh-keyscan 输出替代。
-- 修改 tunnel 前检查 ECS 18100 唯一 listener 和当前会话；不得手工启动第二条 ssh -R。
+- 修改 tunnel 前检查中继 ECS 18100 唯一 listener 和当前会话；不得手工启动第二条 ssh -R。
 - Nginx 配置先语法检查再授权 reload。Backend/入口变更后检查认证 Summary、X-Request-ID、
   X-Dashboard-Snapshot-ID、Server-Timing 和两端结构化日志。
 - DNS 或代理故障按实际生效配置定位；修改前保留原值，不能照抄旧发布窗口的 DNS/Clash 配置。
@@ -94,7 +96,7 @@ Dashboard 结构化请求事件写入生产 Uvicorn error logger；Nginx timing 
 - 成功后注入一次 503，方案数、筛选和已打开月历不变，状态转为 stale；
 - 下一次成功响应原子替换视图并恢复 fresh；
 - Dashboard 读压测无 503/504，route p99 小于 1.5 秒、DB p99 小于 750 毫秒；
-- ECS 18100 持续由预期 SSH 会话监听，Clash 不记录生产 SSH `dial GLOBAL`。
+- 中继 ECS 18100 持续由预期 SSH 会话监听，Clash 不记录生产 SSH `dial GLOBAL`。
 
 数据库或构建失败时不得为了恢复页面而写库、覆盖预测、重启 Writer 或复制另一主机数据库。
 应用、入口网络和隧道变更必须使用各自独立的回滚步骤。

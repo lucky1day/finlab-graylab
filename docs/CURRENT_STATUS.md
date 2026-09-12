@@ -4,6 +4,8 @@
 
 **最近运行核验**：2026-09-13。以下是已核验基线，不替代实时现场检查。
 
+固定主机、SSH/本地转发、生产路径和只读命令见[双机部署与访问入口](operations/DEPLOYMENT_ACCESS.md)。
+
 ## 运行与部署
 
 源码方案迁移及平台 confidence 退役已闭环；新算法可直接进入[标准入库流程](onboarding/README.md)。
@@ -20,7 +22,7 @@
 
 - 双机 archive SHA-256：`23673797a1f302e3e2b70ee24ede29fcaf144565c864dfd813557abe745650b4`。
 - 两机 Backend 实际 cwd、健康、五套 exact、完整数据、调度模拟和前端验收均通过。
-  域名仍由 Mac3 服务；DNS、Nginx、认证和既有 SSH 隧道未改变。验收使用用户授权的临时 localhost 转发。
+  域名仍由 Mac3 服务；DNS、Nginx、认证和既有 SSH 隧道未改变。
 - 两端独立使用自己的 MySQL、DataBridge 和派生状态，不复制数据库、不双写、不跨机共享输入。
 - 集成分支为 `codex/develop`。迁移收尾时两条远端分支已同步；其后文档提交不代表新的生产 release。
   实时提交以 Git 引用为准，发布以目标机 manifest、current/previous 和进程 cwd 为准。
@@ -36,16 +38,16 @@
   每机共 192 条历史、44 条灰度；业务键零缺口、历史灰度零重叠，存量 Registry 与预测记录保持不变。
 - 每机五次持久化回测、灰度来源与 exact 均可追溯：ECS generation 为 `full-20260912-063338-cefd054bbccf`，
   Mac3 为 `full-20260912-063159-944bc5a2c67a`，输入 business digest 不同，各自独立计算。
-- 纯待验证月份缺少明细入口的问题已修复，月份保留而统计继续仅使用已验证记录。
+- Dashboard 保留纯待验证月份的入口，统计继续仅使用已验证记录。
   每机五套 DashboardGate、236 条 HTTP 明细及 Actual join、浏览器期限/名称/owner/历史/待验证验收通过。
-  公网明细批量验收按现有限流降低请求频率，未更改限流配置。
 - 双机复用既有周六 11:30 与每日 18:00 close-period 入口，未替换 installed unit/plist；
   ECS `Persistent=false`，Mac3 launchd 行为不变。最终 release 隔离调度模拟通过且无业务写入；
   W4 九套 Native exact/文件与原 release 一致，原运行依赖可用。首次自然运行仍见 [TODO](TODO.md)。
 - 外置证据根：`/Users/macstudio0/bond-factor-lab-runtime/releases/new-five-20260912/`。
   双机数据、lineage、安装与控制面证据在 `ecs/`、`mac3/`；页面、明细和 Actual 证据在 `ecs-ui-final/`、`mac3-ui/`；
   最终 archive 在 `archive-final/`，从 ECS 晋级的同字节副本在 `promoted-archive/`。
-  ECS 原件保留于 `/opt/bond-factor-lab/incoming/new-five-20260912/`。
+  ECS 原件保留于 `/opt/bond-factor-lab/incoming/new-five-20260912/`。证据根的 `README.md` 区分最终验收与历史过程；
+  本批一次性 operator/模拟脚本已归档退役，公共 Dashboard 回归保留。
 
 ## 保留范围与历史保护
 

@@ -17,6 +17,7 @@
 - [方案入库统一入口](docs/onboarding/README.md)：选择 Blackbox V2 或 Native V1 维护流程。
 - [SOP 索引](docs/sop/README.md)：上游交付、平台入库和存量维护操作手册。
 - [当前状态](docs/CURRENT_STATUS.md)：动态运行事实的唯一文档来源。
+- [双机部署与访问入口](docs/operations/DEPLOYMENT_ACCESS.md)：ECS/Mac3 地址、SSH、本地转发、生产路径与只读核验。
 - [代码架构](docs/architecture/CODE_ARCHITECTURE.md)：系统分层、依赖、输入和写库边界。
 - [灰度实验室说明手册](docs/product/GRAY_LAB_USER_MANUAL.md)：外部客户和业务读者入口。
 
@@ -26,12 +27,13 @@
 - Native V1 算法：`forecast_env`
 - Blackbox V2：由 `blackbox-v2-v1` Runtime Profile 唯一指定，不从文档或环境名称猜测解释器版本
 
-常用只读验证：
+在目标主机执行健康检查：
 
 ```bash
 curl -sS http://127.0.0.1:8100/api/health
-curl -sS http://127.0.0.1:8100/api/factor-lab/dashboard
 ```
+
+Dashboard 需要登录；两机页面入口及转发方法见[双机部署与访问入口](docs/operations/DEPLOYMENT_ACCESS.md)。
 
 写库、activation、持久化回测和 live 命令必须按对应 SOP 获取授权，不以 README 示例代替操作门禁。
 

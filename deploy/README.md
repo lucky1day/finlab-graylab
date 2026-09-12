@@ -3,6 +3,8 @@
 本目录保存版本控制的部署**期望配置**。它不描述任何机器的安装、加载或停用状态，也不能
 替代生产变更授权。
 
+主机地址、SSH/本地转发、生产目录与只读读回命令统一维护在[双机部署与访问入口](../docs/operations/DEPLOYMENT_ACCESS.md)；当前 release 与数量见[当前状态](../docs/CURRENT_STATUS.md)。
+
 ## 双平台一次性控制面
 
 Mac Studio 调度与刷新控制面继续使用 `launchd_one_shot`，阿里云 ECS 独立灰度使用
@@ -98,8 +100,8 @@ launcher 通过目录 fd 与 `O_NOFOLLOW` 打开文件，并在同一 fd 上完�
 路径替换竞态。解析只识别唯一 `KEY=VALUE`，不会执行 shell 展开。release
 安装器同时创建外置
 `/Users/macstudio0/bond-factor-lab-runtime/logs` 期望目录；仓库模板的 stdout/stderr 不再写入 Git
-工作区。SSH tunnel 不执行项目代码，只使用用户主目录作为工作目录；夜间闭环仍须独立替换并读回
-该 plist，保留真实 key/user，同时验证日志精确外置。
+工作区。SSH tunnel 不执行项目代码，只使用用户主目录作为工作目录；installed plist 的 key/user、
+工作目录与外置日志须通过只读审计核验。替换或重启隧道仍需独立授权。
 
 上述 `/usr/bin/python3 -I scripts/run_launchd_release.py` 是明确的 stdlib-only launcher 例外：launcher
 当前不 import release 内的项目模块，因此不会依赖 `PYTHONDONTWRITEBYTECODE` 防止项目模块 pyc。
