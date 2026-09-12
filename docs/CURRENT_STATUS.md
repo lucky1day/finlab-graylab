@@ -13,8 +13,9 @@
 
 - Mac3 承载生产域名、前端、数据库和 Writer；launchd + installed plist 是其调度控制面。
   ECS 是独立灰度环境，使用本机 MySQL、DataBridge 和 systemd one-shot/timer。
-- 用户最新授权：深度清理后发布 ECS/Mac3、同步 master 并推送两分支。
-  此授权不包含历史预测重算/复制/覆盖/删除、confidence DDL 或域名/DNS/Nginx/SSH 隧道变更。
+- 用户已授权深度清理后发布 ECS/Mac3、同步 master 并推送两分支；随后独立授权备份、隔离恢复及引用检查后，
+  清理 ECS 精确临时身份和 Mac3 两个旧验证库。原 ID 历史、W4、源数据和 confidence 继续保留，
+  不包含历史重算/复制/覆盖、confidence DDL 或域名/DNS/Nginx/SSH 隧道变更。
 - ECS 与 Mac3 均已完成全部 17 个源码方案、21 个 target 的原 ID Blackbox 接管。
   ECS 为 84 个 active Blackbox base、88 个 Dashboard target；Mac3 为 84 个 active Blackbox base，
   另保留九个 W4 Native base，共 97 个 Dashboard target。W4 不部署 ECS、不改造。
@@ -30,6 +31,11 @@
   以[迁移验收记录](architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md)所定义的发布读回为准。
 - 两端不建立复制、双写、共享数据库或共享 DataBridge；本轮不搬迁临时身份历史。
   已完成的旧历史物化保持原内容和来源，不回删。
+- 独立获批的数据库清理已完成安全子集：ECS 删除 11 个无共享外键依赖的临时身份，Mac3 删除两个旧验证库。
+  ECS 两个 W3A 临时身份继续 archived，因为原 ID 的四条历史预测仍直接引用其回测；未解除外键、改挂或删除这些原记录。
+  因而“13 个临时身份全部物理删除”尚未完成，不能把两个共享来源算作已清理。
+  删除前均完成备份与独立 MySQL 恢复；删除后保留记录、Actuals、confidence 列、Dashboard、Backend 和调度核验通过。
+  本次没有算法执行、生产 schema 迁移、release 切换或服务重启。
 - 单一 codex/develop 集成代码线、不可变 archive；Mac3 使用 ECS 已验证的同一 archive，不能自行构建环境分支版本。
 
 ## 现场状态读取
@@ -56,8 +62,9 @@
   停止，release、方案版本、日期和业务键必须完全匹配，已有键整组拒绝。源端不存在的键才允许受控计算。
 - 新方案只走 Blackbox V2 两文件 Intake；Native V1 只维护政策清单内存量身份。平台不反编译或改写
   Blackbox 算法逻辑，只验证平台接入和标准输出边界。
-- 同算法运行时迁移走受控原 ID 版本升级：全部原事实保留，本轮不再搬迁或删除临时 `_bbv2` 历史结果，
-  此前已完成的导入也不回删；只切未来执行版本，不建立历史别名。
+- 同算法运行时迁移走受控原 ID 版本升级：全部原事实保留，不搬迁临时 `_bbv2` 历史结果，
+  此前已完成的原 ID 导入也不回删；只切未来执行版本，不建立历史别名。临时身份退役按独立精确授权执行，
+  原 ID 仍引用的来源不是可删除冗余；不能解除外键或改挂历史来通过清理。
   T1/T5 每 base 组合目标两文件、整体版本且原子提交；周/月 Metadata horizon=1，原事实 6/30 显式投影保留。
 - W4 九个 Mac3 加密方案继续现有 Native 入口与调度，不实施此前 binary bundle 设计；
   不因 ECS 迁移而删除其依赖，也不把 W4 部署到 ECS。

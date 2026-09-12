@@ -11,8 +11,9 @@
 - ECS 与 Mac3 均由 Blackbox 执行 17 个源码方案、21 个 target。
 - W4 九个加密方案仅在 Mac3 继续原 Native 方式，不改造、不部署 ECS。
 - 不创建第二业务身份、不建立历史别名或第二 Writer。
-- 本轮不重跑历史区间，不生成、复制、搬迁、覆盖或删除旧预测/run/backtest。
-- 临时 _bbv2 历史只读保留；此前已完成物化不回删，停用 canonical 不再具备执行资格。
+- 本轮不重跑历史区间，不生成、复制、搬迁、覆盖或删除原 ID 预测/run/backtest。
+- 临时 _bbv2 历史默认只读保留；用户后续独立授权精确临时身份退役，须完成备份、隔离恢复与引用检查。
+  原 ID 仍引用的来源不删除；此前已完成的原 ID 物化不回删，停用 canonical 不再具备执行资格。
 - 用户已授权双机发布、同步 master 和推送两分支；不 force push，不覆盖并发工作。
 - 未更改域名、DNS、Nginx、认证或 SSH 隧道。confidence DDL 未执行，仍需单独确认，不属于此次调整后的完成范围。
 
@@ -107,3 +108,20 @@ T1/T5 各保留一个 base/version，目标包在同一次任务中全部验证�
 - 历史阶段方案保留在 Git，不再作为执行指令；不删除回滚 archive 或外置状态来追求表面“无 Native 字符串”。
 
 **完成定义按最新范围收口：17 个源码方案在双机 Blackbox 接管，九个 W4 继续正常 Native；清洁 release、远端两分支和上述现场验收一致。不包含已撤销的 W4 改造、历史搬迁或未经单独授权的 confidence DDL。**
+
+## 7. 后续独立授权的数据库清理
+
+用户随后授权在备份、隔离恢复和引用检查通过后删除 ECS 的 13 个迁移临时身份，以及 Mac3 两个旧验证库；原 ID 历史、W4、源数据和 confidence 继续保留。此授权不允许为完成删除而解除外键、改挂来源或覆盖历史。
+
+实际完成：
+
+- ECS 的 11 个独立临时身份已在同一 repository 事务删除：3,549 条预测、679 个 run、22 个 backtest run、5,922 条回测明细、382 条月度指标、679 条日志和各 11 条 Registry/version。
+- 另外两个 W3A 临时身份整组保留 archived：`liwei_0616_5y01_full_oos_k3_div_k10_bbv2`、`liwei_0616_cons_sda_k3_div_k10_bbv2`。原 ID 下四条历史预测直接通过外键引用其两个 backtest；它们仍是历史来源依赖，不是空壳。全部 13 个身份物理删除的目标尚未完成。
+- Mac3 的 `bond_factor_lab_bbv2_cert_20260720` 与 `bond_factor_lab_v2_e2e_20260719_1730` 已删除；生产库未改写。
+- ECS 完成 24 表、87,382 行的真实独立 MySQL 恢复、失败回滚和成功删除演练；Mac3 完成 34 个基础表与 23 个视图恢复验证。独立审查通过后执行，备份永久保留。
+- 提交后全部保留表行摘要与 schema 一致，原 ID 来源外键无孤儿；ECS 84 Blackbox/88 Dashboard、Mac3 84 Blackbox + 九 W4/97 Dashboard、Backend 和 installed 调度均核验通过。
+- 四条 W2 已物化原 ID 记录的来源 extra 保持原样，旧备份与新的永久备份均绑定实际源行摘要；没有复制或重写业务历史。
+
+外置证据入口：开发机 `outputs/database-cleanup-20260912/COMPLETION.md`；ECS 永久备份位于 `/opt/bond-factor-lab/backups/database-cleanup-20260912/ecs-eleven`，Mac3 永久备份位于 `/Users/macstudio0/bond-factor-lab-production/backups/database-cleanup-20260912`。恢复时先在隔离库还原验证，再按缺失精确主键受控恢复，不把旧整库快照覆盖生产。
+
+本次仅为数据退役与文档同步，生产 schema 仍为 024、confidence 两列保留，运行代码及 release 未改变；清理临时入口不作为长期平台功能保留。

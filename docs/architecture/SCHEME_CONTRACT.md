@@ -39,7 +39,7 @@
 
 单标的和多标的均使用 composite Registry ID。预测、运行和回测底表继续保存 base `scheme_id`，并通过 `target_tenor` 区分目标。
 
-同算法的 Native→Blackbox 运行时升级保留原 base/Registry ID，以新 exact version 区分执行版本，不新增 `_bbv2` 业务身份。新算法 trial 与既有身份隔离；任何迁移都不得重跑、复制、覆盖或删除既有历史结果。临时身份的历史只读保留，不建立长期历史别名。
+同算法的 Native→Blackbox 运行时升级保留原 base/Registry ID，以新 exact version 区分执行版本，不新增 `_bbv2` 业务身份。新算法 trial 与既有身份隔离；迁移不得重跑、复制、覆盖或删除原 ID 历史结果。临时身份的历史默认只读保留，不建立长期历史别名；独立授权的精确退役须经过备份、隔离恢复及引用检查，原 ID 仍依赖的来源必须保留。
 
 `t_scheme_registry.owner` 是方案来源的唯一运行和展示权威，必须为合法非空值。新 Blackbox 从两文件
 Metadata 登记 owner；已有 Metadata 缺失 owner 的历史 Blackbox 与 Native 只保留数据库既有值，不改写

@@ -38,9 +38,9 @@
 - 有可读源码的存量方案逐批统一到 Blackbox V2。W4 九个加密方案保持 Mac3 现有 Native 运行方式，不改造、不部署 ECS；不得为了本轮闭环删除其仍在使用的 Native 依赖。
 - 所有新算法、新方案、新目标、新任务和替代版本立即只允许 Blackbox V2；Native V1 在完成迁移前仅作存量维护，不再扩展身份或能力。
 - Native successor 继续遵守 Blackbox V2 的精确五字段 Result 合同；迁移等价只比较同一冻结输入下的 Request、`predict_date`、`feature_date`、`target_date` 与 `predicted_direction`。Native 的 confidence、vote score、阈值等只可作为迁移期临时诊断，不进入长期合同或数据库。
-- 同一方案的 Native→Blackbox 运行时升级保留原 `scheme_id` / `base_scheme_id` 和业务 Registry ID，以新的 exact `scheme_version` 区分执行版本；不得仅为运行时改造新增 `_bbv2` 业务身份。原 ID 已有 prediction/run/backtest 的身份、版本和来源不变，不因升级重算或覆盖；只切换未来唯一 Writer，不把 adapter 冒充 Blackbox，也不以手改 `runtime_type` 代替受控升级。已跨 ID 批次回归原 ID 后，临时身份不得继续拥有 Writer；其历史记录只读保留，本轮不搬迁、不删除，也不建立长期历史别名。
+- 同一方案的 Native→Blackbox 运行时升级保留原 `scheme_id` / `base_scheme_id` 和业务 Registry ID，以新的 exact `scheme_version` 区分执行版本；不得仅为运行时改造新增 `_bbv2` 业务身份。原 ID 已有 prediction/run/backtest 的身份、版本和来源不变，不因升级重算或覆盖；只切换未来唯一 Writer，不把 adapter 冒充 Blackbox，也不以手改 `runtime_type` 代替受控升级。已跨 ID 批次回归原 ID 后，临时身份不得继续拥有 Writer，也不建立长期历史别名。临时身份历史默认只读保留；物理清理须独立授权精确清单、备份恢复及引用检查，不能删除仍被原 ID 历史依赖的共享来源。
 - 源码方案按目标形成独立两文件交付；T1/T5 多目标仍各保留一个 base ID、canonical 目录和 exact version，配置明确 target 与交付关系，整体 hash 覆盖全部包，每 base 一个调度任务且全部目标原子提交。W4 保持现状，不执行此前 binary bundle 改造设计。
-- 同算法包装迁移采用已有 Native 结果作基线：固定最终包与原 ID，一次对应 Request 的 Blackbox 标准调用比较三个日期和方向，再做真实版本、合同、唯一 Writer 与受控切换/模拟验收；算法未改不要求全历史日期证明。当前迁移不重新回测历史区间，不重新生成、复制、覆盖或删除历史预测；此前历史补入和临时身份数据清理设计不再是可执行授权，已经完成的历史物化也不回删。
+- 同算法包装迁移采用已有 Native 结果作基线：固定最终包与原 ID，一次对应 Request 的 Blackbox 标准调用比较三个日期和方向，再做真实版本、合同、唯一 Writer 与受控切换/模拟验收；算法未改不要求全历史日期证明。当前迁移不重新回测历史区间，不重新生成、复制、覆盖或删除原 ID 历史预测；此前历史补入和临时身份清理设计不能自动视为新授权，已经完成的原 ID 历史物化也不回删。独立获批的临时身份退役按上述备份与引用边界执行。
 - 迁移期间旧 Native 与新 Blackbox 的身份、Registry 切换、历史数据和回滚边界必须显式设计；不得双写、覆盖历史预测或让两个 Writer 同时拥有同一业务键。
 - Blackbox 只有显式 `incremental_state: true` 的方案可使用平台传入的私有派生状态；算法负责历史依赖变化与复用语义，平台负责 exact version、可信输入身份、状态完整性、路径安全、方案级独占和标准 Result 校验后的原子发布。状态不成为源数据或业务事实，不跨方案共享；回测/历史回放不推进生产状态，缺失、损坏或无法复用时只允许显式重建，不自动 fallback。接口见 Blackbox 上游/平台 SOP。
 - 只有等价证据、受控模拟、目标环境接管与可恢复回滚边界都验证后，才能删除对应 Native adapter、source runner、回测 runner、专属 Gate 与测试；不得先删旧路径再验证新路径。本次迁移不以等待多天自然触发为门槛，人工模拟也不得冒充真实自然运行。
@@ -82,7 +82,7 @@ Native 首次入库必须保留 source benchmark 与 CompareGate；同一身份�
 
 `feature_date` 是唯一标准数据截止字段；`anchor_date` 只允许作为方案内部算法变量或审计 extra，前端和业务规则不得依赖它。`gray_live` 与 `scheduled_live` 只属于 run 审计；产品事实不保存 phase，公开回测/实盘只按 `target_date=2026-06-01` 分界。日频、周频、月频和周期均值必须按统一日历与任务语义生成三个日期。完整规则见 [docs/architecture/PREDICTION_SEMANTICS.md](docs/architecture/PREDICTION_SEMANTICS.md)。
 
-后续新方案的历史回测与灰度实盘保持两个清晰批次：`target_date < gray_target_start` 由一次持久化历史回测写入新的 immutable canonical backtest；起点及以后、正式调度以前的应有点由一次 target 区间批量执行，按受控 repository insert-only 物化为 `gray_live`。灰度区间不得逐日期重复启动算法、重复解析 generation 或重建输入；平台必须按任务日历生成 live `predict_date`，并保留 `feature_date`、`target_date`、方向、exact scheme version 和必要来源 `extra`，Blackbox Result 不增加 confidence/audit 字段。两个批次严格绑定同一 exact version 和输入 lineage，但不为了少一次进程启动引入跨激活候选表、临时结果文件或新的生命周期状态。任一灰度业务键已存在即拒绝整个授权区间，不得更新、覆盖或先删除再导入；历史 run 保持不可变。若 batch 使用晚于样本 `feature_date` 的固定 `source_end`、未来 test window、全局 selector/calibration，或 exact version、输入 digest、lineage 任一不匹配，则禁止批量物化为 live，必须走逐点 live-safe 计算。同 ID 运行时迁移不重算已有历史，也不因包装升级创造灰度缺口；临时身份历史只读保留，本轮不重算、搬迁或删除。完整操作和验收规则见统一入库导航与预测语义文档。
+后续新方案的历史回测与灰度实盘保持两个清晰批次：`target_date < gray_target_start` 由一次持久化历史回测写入新的 immutable canonical backtest；起点及以后、正式调度以前的应有点由一次 target 区间批量执行，按受控 repository insert-only 物化为 `gray_live`。灰度区间不得逐日期重复启动算法、重复解析 generation 或重建输入；平台必须按任务日历生成 live `predict_date`，并保留 `feature_date`、`target_date`、方向、exact scheme version 和必要来源 `extra`，Blackbox Result 不增加 confidence/audit 字段。两个批次严格绑定同一 exact version 和输入 lineage，但不为了少一次进程启动引入跨激活候选表、临时结果文件或新的生命周期状态。任一灰度业务键已存在即拒绝整个授权区间，不得更新、覆盖或先删除再导入；历史 run 保持不可变。若 batch 使用晚于样本 `feature_date` 的固定 `source_end`、未来 test window、全局 selector/calibration，或 exact version、输入 digest、lineage 任一不匹配，则禁止批量物化为 live，必须走逐点 live-safe 计算。同 ID 运行时迁移不重算已有历史，也不因包装升级创造灰度缺口；临时身份历史默认只读保留，不重算或搬迁；独立获批的精确退役必须保留原 ID 依赖的共享来源。完整操作和验收规则见统一入库导航与预测语义文档。
 
 ## 方案入库流程（强约束 harness）
 
@@ -110,7 +110,7 @@ python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
 ## 数据库边界
 
 - Wind、指标与交易日历源表只读；写入只能经过第二条分层不变量列出的 repository/updater。
-- 所有已发布 live 业务键永久 insert-only：完整重复可记 `skipped`，部分重复整批失败；授权 gap-fill 只要已有任一键就整组拒绝，任何修订都不得覆盖历史预测。本轮运行时迁移不执行历史 gap-fill、临时 `_bbv2` 事实搬迁或删除；旧清理设计不是当前授权。
+- 所有已发布 live 业务键永久 insert-only：完整重复可记 `skipped`，部分重复整批失败；授权 gap-fill 只要已有任一键就整组拒绝，任何修订都不得覆盖历史预测。本轮运行时迁移不执行历史 gap-fill 或临时 `_bbv2` 事实搬迁；精确临时身份退役只能走独立授权的备份、隔离恢复、引用审查和 repository 原子清理，不改变原 ID 历史及共享来源，旧清理设计不是授权。
 - Registry、run、prediction、Actual 与 backtest 的表身份和字段合同以迁移、模型和架构文档为准，根规范不维护枚举副本。
 
 ## 数据库迁移操作边界
