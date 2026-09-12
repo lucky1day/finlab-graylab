@@ -3,6 +3,7 @@
 from contextlib import ExitStack
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
+import json
 import os
 from pathlib import Path
 import time
@@ -73,7 +74,7 @@ def execute_w1a_reclaim_prepare(engine, *, expected_plan_sha256, approved_by, wo
         if any(work.is_relative_to(path) for path in forbidden):
             raise ValueError("W1A work directory must be outside every release and input generation")
         work.mkdir(mode=0o700)
-        _write_receipt(work / "plan.json", plan)
+        _write_receipt(work / "plan.json", json.loads(repository.canonical_native_successor_plan(plan)))
         _write_receipt(work / "operator.json", {"approved_by": approved_by.strip()})
         runs, execution_hashes = {}, {}
         profile = replace(DEFAULT_RUNTIME_PROFILE, predict_timeout_sec=120, cpu_threads=8, memory_limit_bytes=4 * 1024**3)

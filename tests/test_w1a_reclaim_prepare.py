@@ -2,6 +2,8 @@
 
 from contextlib import nullcontext
 from dataclasses import replace
+from datetime import date, datetime
+from decimal import Decimal
 import hashlib
 import json
 from pathlib import Path
@@ -100,6 +102,17 @@ def test_two_base_calls_six_processes_two_gates_no_business_writes(prepared):
     assert readiness["harness_run_ids"] == result["harness_run_ids"]
     assert readiness["local_execution_sha256"] == result["local_execution_sha256"]
     prepared.failed.assert_not_called()
+
+
+def test_prepare_persists_mysql_plan_types_without_changing_approved_digest(prepared):
+    prepared.plan['database_rows'] = [{'created_at': datetime(2026, 9, 12, 5, 0, 1),
+                                     'deployed_at': date(2026, 9, 12), 'score': Decimal('0.50')}]
+    result = _apply(prepared)
+    saved = json.loads((prepared.work / 'plan.json').read_text())
+    assert repo.native_successor_plan_sha256(saved) == result['plan_sha256']
+    assert saved['database_rows'][0] == {'created_at': '2026-09-12 05:00:01',
+                                       'deployed_at': '2026-09-12', 'score': '0.50'}
+    assert control.read_readiness(prepared.work, prepared.new, prepared.plan['control'])['harness_run_ids'] == result['harness_run_ids']
 
 
 @pytest.mark.parametrize("failure", ["bad_result", "missing_target", "timeout", "start", "commit"])
