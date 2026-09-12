@@ -21,6 +21,11 @@
 - **横切（Cross-cutting）**：`harness/` 横切所有层，只读探测 + 编排 + 留证，不被任何层依赖；`python -m harness` 是统一机器入口。
 - **环境隔离（Process isolation）**：Native 原生算法在 `forecast_env`，Blackbox V2 只按 `blackbox-v2-v1` Runtime Profile 选择环境与执行预算，服务在 `bond_factor_lab_service`。运行驱动不同，统一输出均收敛到 `PredictionRecord`。
 
+Native 路径仅为 Mac3 W4 九方案及其必要依赖保留；其余 17 个原 ID canonical 使用 Blackbox V2。
+T1/T5 每 target 独立两文件交付，每 base 一个整体 exact version、一个调度任务、全部目标一次原子提交。
+已退役 Native 算法、Phase-A 缓存、迁移原件 loader 和历史搬迁命令不构成新的平台能力；旧证据只读追溯。
+同 ID 迁移只切未来唯一 Writer，不新建 `_bbv2` 业务身份、不重跑或搬删历史；实际双机部署进度只读当前状态与现场。
+
 ---
 
 ## 2. 分层模型
@@ -189,7 +194,7 @@ Native V1:
 composite、展示身份、任务字段与回测分区可见；空 live 明细合法。dashboard payload 不携带 exact version，因此版本身份仍由
 生命周期和数据库权威回读证明。
 
-上图的 `all` 只是 Native 首次技术入库路径，source benchmark/CompareGate 在其中作为保真硬证据。Blackbox 由上游负责交付可运行性和内部性质，平台的完整持久化回测验证批量调用与标准输出。已入库 Native
+上图的 `all` 仅用于政策清单内 Mac3 W4 九个存量身份的完整准入，不能用于新增 Native；source benchmark/CompareGate 在其中作为保真硬证据。Blackbox 由上游负责交付可运行性和内部性质，平台的完整持久化回测验证批量调用与标准输出。已入库 Native
 修订仅在不同 prior Native version 的 passed `all + compare` 所属 StaticGate 已持久化
 `static.business_identity`，且该快照与当前身份精确匹配时，才可走：
 
@@ -285,18 +290,14 @@ schemes/{id}/                     schemes/{id}/
 | **DB 引擎生命周期** | 各 adapter/backtest 各自 `create_sqlalchemy_engine()` 再 `engine.dispose()` | adapter 经 `calendar_service`/`input_artifacts` 间接使用统一引擎工厂，不得裸取连接 |
 | **配置** | `shared/db_config.py` 读环境变量；`config.yaml` 方案级 | Native 契约与 Blackbox Runtime Profile 分开维护，共享身份由 `SCHEME_CONTRACT.md` 约束 |
 | **执行预算** | Native 使用 `config.yaml.schedule.timeout_sec`；Blackbox predict 取方案申请、Runtime Profile 上限和显式 operation deadline 的最小值，backtest 使用独立 Profile 预算 | operation deadline 只能缩短 Blackbox 方案/Profile 预算；所有预算仅控制子进程等待，不进入 L2 core 语义 |
-| **产物路径** | Native scheduled/gap-fill/DryRun 输入使用作业级临时根并在结束后清理；Phase-A cache 与 DataBridge ready snapshot 保持各自受控持久根；回测使用 `backtest_artifacts/backtests/{benchmark_id}/` | 不再积累 `runtime_inputs` 或灰度二次快照目录；Harness 不创建方案级报告目录 |
+| **产物路径** | W4 Native scheduled/gap-fill/DryRun 输入使用作业级临时根并在结束后清理；Blackbox 显式派生状态与 DataBridge ready snapshot 各自受控；回测使用 `backtest_artifacts/backtests/{benchmark_id}/` | 不再积累 `runtime_inputs` 或灰度二次快照目录；Harness 不创建方案级报告目录 |
 | **进程/依赖隔离** | Native `forecast_env`、Blackbox Runtime Profile、服务 `bond_factor_lab_service`；子进程 + JSON | Runtime Profile 是 Blackbox 环境、资源和权限的唯一配置源 |
 | **错误处理** | executor 捕获子进程失败写 `run_log(status=failed)` | harness Gate 失败安全（异常→`GateResult(FAILED)`），不抛穿 |
 | **命名标识符** | `scheme_id`(方案) / `benchmark_id`(基准批次) / `data_source`(口径) 三者分离 | 维持；StaticGate 校验命名规范子集 |
 | **写库安全** | 所有 live prediction insert-only，四字段唯一键拒绝覆盖；仅普通 Native/Blackbox active completion 的完整重复记 benign `skipped`、部分冲突整批失败 | repository 单事务 + harness 授权边界 |
 
-Phase-A cache 的 `current` pointer publication 成功后，历史 generation prune 仍同步执行且仅为
-best-effort；清理失败绝不回滚 `current`，也不得使 publication 或预测失败。`_prune_generations`
-返回 deferred generation IDs，publisher 将其写入既有 phase_a cache audit 的 `prune_deferred`；
-非空时只输出一条包含 cache family、tenor 与 deferred IDs 的脱敏 warning。单项删除失败记录精确
-ID；generation root fsync 不确定或未预期普通异常时保守标记本次计划清理的全部 IDs。该合同不增加
-daemon、retry、queue、数据库或 scheduler 控制面。
+旧 Native Phase-A generation/prune 实现已退役，不是当前缓存管理接口；保留的 Blackbox 状态由
+exact version、输入身份、完整性和方案独占约束，标准 Result 校验后原子发布，失败不自动 fallback。
 
 Authorized gray-gap 使用更严格的例外语义：任一授权业务键已经存在即整组拒绝并保持 `records_written=0`，未存在的键也不写入，且不得转为 benign `skipped`。
 

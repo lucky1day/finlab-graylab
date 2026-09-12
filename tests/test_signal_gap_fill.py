@@ -498,46 +498,6 @@ def test_blackbox_failure_does_not_block_native_success(
     repository.fail_scheme_run_atomic.assert_called_once()
 
 
-def test_native_publishers_finish_before_consumers(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from harness.signal_gap_fill import run_signal_gap_fill
-    from shared.liwei_0616_cache_contract import (
-        CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
-    )
-
-    publisher_id = "liwei_0616_10y01_full_oos_k3_div_k10"
-    consumer_id = "liwei_0616_10y01_cons_say_k3_div_k10"
-    plan = _plan([_action(consumer_id), _action(publisher_id)])
-    execution_order: list[str] = []
-
-    def execute(cfg: SimpleNamespace, _date: str, **kwargs: object):
-        assert kwargs["native_cache_mutation_policy"] == (
-            CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
-        )
-        execution_order.append(cfg.scheme_id)
-        return [_record(_action(cfg.scheme_id))]
-
-    repository = _repository()
-    engine, _ = _install(
-        monkeypatch,
-        repository=repository,
-        plan=plan,
-        runner=Mock(side_effect=execute),
-    )
-
-    report = run_signal_gap_fill(
-        plan=plan,
-        project_root=tmp_path,
-        engine_factory=lambda: engine,
-        databridge_config=SimpleNamespace(),
-    )
-
-    assert report["status"] == "PASSED", report["errors"]
-    assert execution_order == [publisher_id, consumer_id]
-
-
 def test_native_interruption_closes_all_uncommitted_runs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

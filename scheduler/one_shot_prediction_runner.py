@@ -43,15 +43,11 @@ from shared.prediction_context import build_monthly_live_context
 from shared.period_average_buckets import period_anchor_dates
 from shared.task_specs import PERIOD_AVERAGE_TASK_TYPES, PREDICTION_CADENCES
 from shared.data_bridge.refresh import DataBridgeRefreshConfig
-from shared.liwei_0616_cache_contract import APPROVED_PHASE_A_CACHE_PUBLISHERS
-from shared.liwei_0616_cache_contract import (
-    CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
-    CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE,
-)
+
+
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
 DATA_BRIDGE_READY_MAX_WAIT_SEC = 30 * 60
 DATA_BRIDGE_READY_POLL_INTERVAL_SEC = 30
-PHASE_A_PUBLISHER_DEFAULT_TIMEOUT_SEC = 15 * 60
 
 
 class OneShotPredictionConfigurationError(RuntimeError):
@@ -242,9 +238,6 @@ def _execute_candidate(
     cancellation_event: threading.Event | None = None,
     process_start_guard: ProcessStartGuard | None = None,
     timeout_sec: int | None = None,
-    native_cache_mutation_policy: str = (
-        CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
-    ),
 ) -> None:
     """执行一个候选并将稳定结果归入当前 one-shot 摘要。"""
     try:
@@ -261,9 +254,6 @@ def _execute_candidate(
         if ephemeral_native_runtime_root is not None:
             execute_kwargs["ephemeral_native_runtime_root"] = (
                 ephemeral_native_runtime_root
-            )
-            execute_kwargs["native_cache_mutation_policy"] = (
-                native_cache_mutation_policy
             )
         if cancellation_event is not None:
             execute_kwargs["cancellation_event"] = cancellation_event
@@ -325,9 +315,6 @@ def _execute_native_wave(
     process_start_guard: ProcessStartGuard,
     worker_limit: int = 2,
     timeout_sec: int | None = None,
-    native_cache_mutation_policy: str = (
-        CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
-    ),
 ) -> None:
     """按内部 worker 上限执行一批 Native，并在主线程合并结果。"""
     if not candidates:
@@ -348,7 +335,6 @@ def _execute_native_wave(
             cancellation_event=cancellation_event,
             process_start_guard=process_start_guard,
             timeout_sec=timeout_sec,
-            native_cache_mutation_policy=native_cache_mutation_policy,
         )
         return local
 
@@ -404,8 +390,7 @@ def _finalize(summary: OneShotPredictionSummary) -> None:
 
 @dataclass(frozen=True, slots=True)
 class _CandidatePartitions:
-    native_publishers: tuple[object, ...]
-    native_consumers: tuple[object, ...]
+    native: tuple[object, ...]
     direct: tuple[object, ...]
     data_bridge_dependents: tuple[object, ...]
 
@@ -557,28 +542,13 @@ def _partition_candidates(
         if getattr(cfg, "runtime_type", "native_adapter")
         == "native_adapter"
     )
-    publisher_ids = {
-        publisher_id
-        for _tenor, publisher_id in APPROVED_PHASE_A_CACHE_PUBLISHERS.values()
-    }
-    native_publishers = tuple(
-        cfg
-        for cfg in native
-        if str(getattr(cfg, "scheme_id", "")) in publisher_ids
-    )
-    native_consumers = tuple(
-        cfg
-        for cfg in native
-        if str(getattr(cfg, "scheme_id", "")) not in publisher_ids
-    )
     direct = tuple(
         cfg
         for cfg in candidates
         if id(cfg) not in dependent_ids and cfg not in native
     )
     return _CandidatePartitions(
-        native_publishers=native_publishers,
-        native_consumers=native_consumers,
+        native=native,
         direct=direct,
         data_bridge_dependents=data_bridge_dependents,
     )
@@ -730,7 +700,7 @@ def run_one_shot(
                 candidates,
                 cadence=normalized_cadence,
             )
-            if partitions.native_publishers or partitions.native_consumers:
+            if partitions.native:
                 cancellation_event = threading.Event()
                 process_start_guard = ProcessStartGuard()
                 try:
@@ -741,30 +711,7 @@ def run_one_shot(
                         input_root = Path(temporary).resolve(strict=True)
                         _execute_native_wave(
                             summary,
-                            list(partitions.native_publishers),
-                            predict_date=normalized_date,
-                            algo_env=algo_env,
-                            scheduled_control_plane=scheduled_control_plane,
-                            scheduled_execution_context=(
-                                scheduled_execution_context
-                            ),
-                            engine=engine,
-                            input_root=input_root,
-                            cancellation_event=cancellation_event,
-                            process_start_guard=process_start_guard,
-                            worker_limit=1,
-                            timeout_sec=(
-                                PHASE_A_PUBLISHER_DEFAULT_TIMEOUT_SEC
-                            ),
-                            native_cache_mutation_policy=(
-                                CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE
-                                if normalized_cadence == "daily"
-                                else CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
-                            ),
-                        )
-                        _execute_native_wave(
-                            summary,
-                            list(partitions.native_consumers),
+                            list(partitions.native),
                             predict_date=normalized_date,
                             algo_env=algo_env,
                             scheduled_control_plane=scheduled_control_plane,
@@ -777,9 +724,6 @@ def run_one_shot(
                             process_start_guard=process_start_guard,
                             worker_limit=2,
                             timeout_sec=None,
-                            native_cache_mutation_policy=(
-                                CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
-                            ),
                         )
                 except BaseException:
                     cancellation_event.set()

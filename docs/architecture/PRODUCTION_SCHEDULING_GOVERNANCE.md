@@ -69,10 +69,9 @@ python -m harness signal-gap-fill --scheme-id <base_scheme_id> --target-date-fro
 再在一个事务中提交该方案的所有日期，最后逐日期权威读回。计划异常、Blackbox 权威输入缺失或执行失败
 均直接暴露；不回退旧版本、不覆盖、不自动重试。
 
-自然 daily one-shot 的 Liwei Phase-A publisher 可以在既有校验证明影响范围时，对最多 32 个交易日期做
-bounded suffix reconcile；consumer 只读发布后的 generation。`full`、未知修订、无法映射的周/月修订或
-cache 身份漂移必须在训练前失败。人工 `signal-gap-fill` 仍只允许 cache hit 或追加一个尾部日期。当天自然
-运行部分失败后的受控重试可以向现有 launchd/systemd runner 重复传入 `--scheme-id <base_scheme_id>`，但
+已迁移方案不再运行 Native Liwei Phase-A publisher/consumer；Blackbox 派生状态只走显式状态合同，
+W4 Native 依赖仅供 Mac3 存量执行。当天自然运行部分失败后的受控重试可以向现有
+launchd/systemd runner 重复传入 `--scheme-id <base_scheme_id>`，但
 该参数只缩小 active cadence 候选，不能绕过 deployment、Registry、exact version、日历、输入或 insert-only
 检查，也不能把历史日期重标为 `scheduled_live`。
 
@@ -94,7 +93,7 @@ installed 配置、loaded state、日志和 run/prediction 证据；再取得明
 
 ## 4. 生命周期与停止条件
 
-Blackbox activation 前必须完成 Intake、同 exact version/当前校验策略的一次完整持久化回测、生产准备核验与专项授权；activation 本身不安装或加载 plist/unit。Blackbox 不运行 Native Gate 编排。首次 Native 技术入库使用 current exact version 的完整四段 `all`（`static → dry-run → compare → backtest`，DryRun 含真实输入合同）；同一存量身份维护只有在 prior `all` 已有匹配 `static.business_identity` 时才可使用三段 `native-maintenance`（`static → native-maintenance-admission → dry-run`）。两条 Native profile 互斥，缺失或不一致时直接失败。
+Blackbox activation 前必须完成 Intake、同 exact version/当前校验策略的一次完整持久化回测、生产准备核验与专项授权；activation 本身不安装或加载 plist/unit。Blackbox 不运行 Native Gate 编排。仅 Mac3 W4 九个存量 Native 身份可使用 current exact version 的完整四段 `all`（`static → dry-run → compare → backtest`，DryRun 含真实输入合同）；同一存量身份维护只有在 prior `all` 已有匹配 `static.business_identity` 时才可使用三段 `native-maintenance`（`static → native-maintenance-admission → dry-run`）。两条 Native profile 互斥，缺失或不一致时直接失败。
 
 `static.business_identity` 只包含 scheme/runtime/horizon/task/frequency/tenors/composite IDs，不含代码、config 或 version hash。maintenance 的 current exact version 必须为 native `draft|active`，Registry 必须统一 paused（预激活）或 active（激活后），draft version 配 active Registry 必须失败。缺少标准 prior snapshot 时直接回到完整 `all`，不再读取方案级历史 receipt。
 

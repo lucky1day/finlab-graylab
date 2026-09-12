@@ -3,7 +3,7 @@
 **文档状态**：`LEGACY_MAINTENANCE`
 **适用运行时**：`native_adapter`
 **目标读者**：平台维护人员
-本 SOP 只维护已登记的 Native V1 方案，不接受新增方案。新算法和替代版本使用 [Blackbox V2 平台 SOP](BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)。
+本 SOP 只维护政策清单内 Mac3 W4 九个 Native V1 方案及必要依赖，不接受新增 Native、不部署 ECS。其余 17 个原 ID Blackbox 不走本流程。新算法和替代版本使用 [Blackbox V2 平台 SOP](BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)。
 
 ## 1. 准入、分级与基线
 
@@ -58,7 +58,7 @@
 
 ## 4. 自动 Gate
 
-首次技术入库先执行单项 Gate 定位问题，再执行完整自动段：
+仅对既有 W4 身份需要建立或重验 current exact 完整准入证据时，先执行单项 Gate 定位问题，再执行完整自动段；这不允许新增 Native 身份：
 
 ```bash
 python -m harness onboard {scheme_id} \
@@ -94,7 +94,7 @@ python -m harness onboard {scheme_id} \
 static -> native-maintenance-admission -> dry-run
 ```
 
-`native-maintenance-admission` 只读复核 prior `all + compare`、匹配的 prior `static.business_identity` 与当前 Registry identity；current exact `t_scheme_versions` 必须为 `native_adapter` 的 `draft|active` 行，expected Registry 必须全 paused（预激活）或全 active（激活后），且 draft+active fail-closed。整个阶段持久化 Harness 审计证据但不写业务表；run-start 先 fail-early，全部 Gate 结果与 run 完成状态随后在一个事务中批量持久化，任一步失败都返回 `BLOCKED`，且该 run 不可作为 activation 依据。只有 ActivationGate 才能原子建立 active。prior snapshot 缺失、重复、损坏或不匹配时一律 fail-closed，不再读取方案级历史 receipt。它不执行当前 historical `compare/backtest`，不是全局关闭 CompareGate：新身份、业务身份漂移或任何前提不满足时都必须回到 `all`。任一所选阶段 Gate 失败时，从该阶段的 static 重跑，不跳过失败项。
+`native-maintenance-admission` 只读复核 prior `all + compare`、匹配的 prior `static.business_identity` 与当前 Registry identity；current exact `t_scheme_versions` 必须为 `native_adapter` 的 `draft|active` 行，expected Registry 必须全 paused（预激活）或全 active（激活后），且 draft+active fail-closed。整个阶段持久化 Harness 审计证据但不写业务表；run-start 先 fail-early，全部 Gate 结果与 run 完成状态随后在一个事务中批量持久化，任一步失败都返回 `BLOCKED`，且该 run 不可作为 activation 依据。只有 ActivationGate 才能原子建立 active。prior snapshot 缺失、重复、损坏或不匹配时一律 fail-closed，不再读取方案级历史 receipt。它不执行当前 historical `compare/backtest`，不是全局关闭 CompareGate：新 Native 身份或业务身份扩展一律拒绝；只有同一 W4 存量身份的维护前提不满足时，才回到 current exact 的 `all`。任一所选阶段 Gate 失败时，从该阶段的 static 重跑，不跳过失败项。
 
 ## 5. 数据与结果核验
 
@@ -110,7 +110,7 @@ static -> native-maintenance-admission -> dry-run
 
 ## 6. 直接命令副作用
 
-### 6.1 运行期输入与 Phase-A cache
+### 6.1 W4 运行期输入与作业隔离
 
 scheduled one-shot 与单日 gap-fill 使用作业级临时输入根目录。同一作业内，只有 frequency、运行日、
 起止日期/周、as-of、schema columns、data version 和数据库源类型全部一致的 builder 调用才复用同一只读
@@ -118,15 +118,10 @@ CSV；每个方案通过自己的只读硬链接路径读取。作业成功、�
 `backtest_artifacts/runtime_inputs` 累积日常输入。DryRun 的输入和 builder receipt 同样只在该次 Gate 的
 临时目录中存在，合同验证完成即清理。
 
-单日补缺与自然 one-shot 的 Liwei Phase-A cache 继续使用调度环境的持久化根，不随临时输入切换到
-private cache。单日 `signal-gap-fill` 只允许现有 generation `hit` 或安全追加一个尾部日期；`suffix/full`、
-无 current 或多日缺失必须在训练前失败。自然 daily one-shot 的已批准 publisher 还可以处理 cache 已证明的
-日频或有效辅助输入 suffix 修订，但去重后的重算范围最多为 32 个交易日期；未知原因、无法映射的周/月修订、
-schema/spec/baseline/proof/lineage 漂移和 `full` 一律在训练前失败。DryRun 则显式使用 Gate 临时目录内的
-私有 Phase-A cache 和 `private_build`，不读取或改写生产 cache。每个 cadence 先执行已批准 publisher、
-再执行其余 Native，两阶段各最多两个 worker；consumer 不发布 cache。单方案成功即独立提交，失败不
-回滚已完成方案；重试依赖 insert-only 业务键只规划剩余方案。中断时使用现有 process-control 终止已启动
-进程组并关闭未完成 run，不新增任务表、报告或审计字段。
+已迁移 Liwei 的 Native Phase-A publisher/consumer 不再是 W4 的运行路径；不得为复用旧缓存恢复它们。
+保留 W4 source package 和输入隔离依赖，不能把 Native 缓存冒充 Blackbox 派生状态。单方案成功即独立
+提交，失败不回滚已完成方案；重试依赖 insert-only 业务键只规划剩余方案。中断时使用现有
+process-control 终止已启动进程组并关闭未完成 run，不新增任务表、报告或审计字段。
 
 以上规则只优化平台 I/O 与编排，不允许改变训练窗口、模型、方向、confidence、三个业务日期、scheme
 version 或算法必要 extra。

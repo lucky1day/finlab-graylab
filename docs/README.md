@@ -27,7 +27,7 @@
 | [入库导航](onboarding/README.md) | 判断使用 Blackbox V2 新增还是 Native V1 存量维护 | 是 |
 | [SOP](sop/README.md) | 上游交付、平台入库和 Native 存量维护步骤 | 是 |
 | [代码架构](architecture/CODE_ARCHITECTURE.md) | 分层、依赖、输入与写库边界 | 是 |
-| [Native V1 全量迁移](architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md) | 26→30 successor 映射、wave、验收与回滚 | 候选执行中 |
+| [同 ID 双机迁移](architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md) | 17 原 ID Blackbox、W4 九方案保留及发布/回滚边界 | 以当前状态与获批计划为准 |
 | [登录与账户管理](architecture/AUTHENTICATION_AND_ACCOUNT_MANAGEMENT.md) | 登录、会话、账户和管理员安全合同 | 是 |
 | [产品手册](product/GRAY_LAB_USER_MANUAL.md) | 当前用户手册 | 是 |
 | [公网性能验收](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md) | Dashboard 性能和故障处理边界 | 是 |
@@ -52,5 +52,5 @@
 3. 通用 SOP 不记录具体方案、generation、snapshot 或 Harness run。
 4. 历史记录不反向定义当前规则；已被现行入口完整替代的过期文档从工作树删除，通过 Git 历史追溯。
 5. 文档移动必须同步更新相对链接，并通过文档门禁测试。
-6. `AGENTS.md` 与 `CLAUDE.md` 必须保持字节一致。
+6. `AGENTS.md` 是根规范唯一来源；`CLAUDE.md` 只引导读取，不复制规范正文。
 7. CURRENT 文档不得依赖 `docs/superpowers/`、历史 status/handoff 或 `BLOCKED_DRAFT/HISTORICAL` 文档定义当前规则。

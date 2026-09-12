@@ -210,64 +210,6 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         self.assertEqual(maximum, 1)
         self.assertEqual(len(summary.executed), 2)
 
-    def test_daily_one_shot_reconciles_publishers_only(self) -> None:
-        from scheduler import one_shot_prediction_runner as runner
-
-        publisher = _native_config(
-            "liwei_0616_10y01_full_oos_k3_div_k10"
-        )
-        consumer = _native_config(
-            "liwei_0616_10y01_cons_say_k3_div_k10"
-        )
-        engine = Mock()
-        calendar = _PeriodCalendar("2026-08-01", "2026-08-31")
-        with (
-            patch.dict(
-                os.environ,
-                {"BFL_DEPLOYMENT_TARGET": "mac3-production"},
-                clear=False,
-            ),
-            patch.object(
-                runner.DataBridgeRefreshConfig,
-                "from_env",
-                return_value=object(),
-            ),
-            patch.object(runner, "_runner_lock", return_value=nullcontext()),
-            patch.object(
-                runner,
-                "discover_schemes",
-                return_value=[consumer, publisher],
-            ),
-            patch.object(runner, "create_engine_from_env", return_value=engine),
-            patch.object(
-                runner,
-                "resolve_database_lifecycle",
-                return_value=(consumer, publisher),
-            ),
-            patch.object(runner, "get_calendar", return_value=calendar),
-            patch.object(runner, "_execute_native_wave") as execute_wave,
-        ):
-            _run_one_shot(runner, "daily", predict_date="2026-08-28")
-
-        self.assertEqual(execute_wave.call_count, 2)
-        publisher_call, consumer_call = execute_wave.call_args_list
-        self.assertEqual(
-            publisher_call.kwargs["native_cache_mutation_policy"],
-            "scheduled_bounded_reconcile",
-        )
-        self.assertEqual(
-            consumer_call.kwargs["native_cache_mutation_policy"],
-            "incremental_only",
-        )
-        self.assertEqual(publisher_call.args[1], [publisher])
-        self.assertEqual(consumer_call.args[1], [consumer])
-        self.assertEqual(publisher_call.kwargs["worker_limit"], 1)
-        self.assertEqual(consumer_call.kwargs["worker_limit"], 2)
-        self.assertEqual(
-            publisher_call.kwargs["timeout_sec"],
-            runner.PHASE_A_PUBLISHER_DEFAULT_TIMEOUT_SEC,
-        )
-        self.assertIsNone(consumer_call.kwargs["timeout_sec"])
 
     def test_requested_scheme_filter_runs_only_exact_active_set(self) -> None:
         from scheduler import one_shot_prediction_runner as runner

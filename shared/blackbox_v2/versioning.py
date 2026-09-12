@@ -24,10 +24,7 @@ def canonical_platform_config(raw: Mapping[str, Any]) -> dict[str, Any]:
     if "fact_horizon" in raw:
         canonical["fact_horizon"] = raw["fact_horizon"]
     if "native_attachments" in raw:
-        from shared.scheme_config_schema import validate_native_attachments
-
-        validate_native_attachments(raw.get("scheme_id"), raw["native_attachments"])
-        canonical["native_attachments"] = dict(raw["native_attachments"])
+        raise ValueError("native_attachments is not supported")
     if "incremental_state" in raw:
         if raw["incremental_state"] is not True:
             raise ValueError("incremental_state must be literal true when present")

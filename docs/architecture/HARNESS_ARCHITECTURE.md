@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：Harness 开发、平台入库和安全审计人员
-本文是双运行时的强约束总纲。所有后续新方案只允许 Blackbox V2；Native V1 仅维护政策清单中的存量身份。`harness onboard` 只编排 Native Gate；Blackbox 使用 Intake、持久化回测和 activate 三步链路。
+本文是双运行时的强约束总纲。所有后续新方案只允许 Blackbox V2；Native V1 仅维护政策清单中的 Mac3 W4 九方案及必要依赖。其余 17 个原 ID canonical 使用 Blackbox。`harness onboard` 只编排 W4 Native Gate；普通 Blackbox 入库使用 Intake、持久化回测和 activate 三步链路，已退役的一次性迁移命令不作为公共接口。
 
 ---
 
@@ -72,10 +72,10 @@ CLI 标准入口:
 
 ```bash
 python -m harness gate static \
-  --scheme-id t1_daily
+  --scheme-id {existing_w4_scheme_id}
 
-python -m harness onboard t1_daily \
-  --predict-date 2026-06-06 \
+python -m harness onboard {existing_w4_scheme_id} \
+  --predict-date YYYY-MM-DD \
   --stage all
 
 ```

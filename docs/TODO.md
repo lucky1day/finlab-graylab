@@ -29,25 +29,23 @@
 3. 未来若把生产域名或 Writer 从 Mac3 切到 ECS，必须作为新生产项目设计数据库 authority、单 Writer、
    DNS/Nginx、窗口和回滚，不能从灰度验收外推授权。
 
-## Native V1 全量迁移
+## Native 必要依赖收口与双机发布
 
 按 2026-09-12 批准的[双机迁移计划](architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md)，
-保留 26 个原方案 ID、30 个业务 target，只切执行版本；不再新建 successor 身份或重复回测。
-ECS 已完成 17 个源码方案、21 个 target 的原 ID Blackbox 接管；用户要求先完成 ECS 陈旧代码清理，
-验证后再一并同步 Mac3。W4 九个加密方案保持 Mac3 现有 Native 运行方式，不再改造 binary bundle。
-不改变域名、DNS、Nginx 或隧道。已完成批次及精确证据只读迁移计划和现场，不重做。
+保留 26 个原方案 ID、30 个业务 target：17 个原 ID 使用 Blackbox canonical，W4 九个加密方案保持
+Mac3 Native 及必要依赖，不改造 binary bundle、不部署 ECS。实际双机接管状态和精确 release
+只读[当前状态](CURRENT_STATUS.md)与现场，本文不提前声明发布完成。不改变域名、DNS、Nginx 或隧道。
 
-1. 清理无调用者的已迁移方案专属复现 runner、已撤销的历史搬迁入口及对应一次性测试；
-   不修改算法、当前 exact version、状态封装或历史数据库，不删除 W4 所需公共 Native 路径。
-2. 版本绑定附件和迁移控制仍引用的临时目录分开处理：先证明调用/回滚依赖消失，再受控清理；
-   不通过忽略 config/hash 校验直接删除附件，不把不可执行历史 DB 身份当成待删垃圾。
-3. ECS 清理 release 通过全量回归、独立审查、原版本一致性和实际调度/Backend/Dashboard 核验后，
-   再以同一 immutable archive 准备 Mac3 本机状态、版本与维护窗口；不重复已通过的历史算法计算。
-4. Mac3 晋级保留自己的数据库、DataBridge、launchd 与 W4 原路径；不复制 ECS 业务记录，
-   不改变公网入口。Mac3 尚未接管前，不宣称双机完成。
-5. 两端接管及回滚边界验证后，继续删除失去用途的临时迁移工具与已迁移 Native 附件，
-   但 W4 必需依赖保留。confidence DDL 仍分别请求两端独立确认。
-   推送 `codex/develop`、更新到 `master` 的 PR；不合并或推送 `master`。
+1. 以真实消费者闭包深清已迁移方案的 Native 代码、缓存、一次性迁移/历史搬迁入口和专项测试；
+   保留 W4 必需 source package、运行适配、输入隔离和公共合同测试，不改 17 方案的算法/Metadata。
+2. 删除版本绑定内容前核对真实 old/new exact、原子版本切换及回滚边界；派生状态只做获批的身份转换，
+   不伪装旧输入、不重算算法、不覆盖旧状态。不重跑、复制、搬迁或删除历史事实，临时身份历史只读保留。
+3. 清理候选通过全量回归、独立审查与不可变 archive 核验后，按获批窗口先验证 ECS，再以同一 archive
+   发布 Mac3；每机分别核验版本、环境、输入、状态、唯一 Writer、Backend/Dashboard 和已安装调度控制面。
+4. Mac3 保留自己的数据库、DataBridge、launchd 与 W4 原路径，不复制 ECS 业务记录；
+   任何现场前提不符均停止，保留原件和真实回滚证据。
+5. 双机发布及回滚边界都实际通过后，按本次用户明确授权合并并推送 `master`，核对远端提交，
+   再更新完成状态；不能把代码/测试通过当作双机发布完成。confidence DDL 仍需两端独立确认。
 
 ## 统一停止条件
 

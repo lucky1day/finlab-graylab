@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import stat
 import subprocess
 import tempfile
@@ -65,12 +64,6 @@ from shared.one_shot_control_plane import (
     SCHEDULED_ONE_SHOT_CONTROL_PLANES,
     SYSTEMD_ONE_SHOT_CONTROL_PLANE,
 )
-from shared.liwei_0616_cache_contract import (
-    CACHE_MUTATION_POLICY_ENV,
-    CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
-    CACHE_MUTATION_POLICY_PRIVATE_BUILD,
-    CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE,
-)
 from shared.prediction_context import (
     build_daily_live_context,
     build_monthly_live_context,
@@ -104,37 +97,6 @@ _SCHEDULED_EXECUTION_CONTEXTS = {
 SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT = (
     "data_bridge_ready_timeout"
 )
-_CACHE_POLICY_ERROR_PATTERN = re.compile(
-    r"\b(incremental_only|scheduled_bounded_reconcile)\b"
-    r"[^\r\n]{0,512}?\bbuild_mode="
-    r"(full|append|suffix|qualification|migration_rebind)\b"
-    r",\s*reason=([a-z][a-z0-9_]{0,127})\b"
-)
-_SAFE_CACHE_BUILD_REASONS = frozenset(
-    {
-        "append_only",
-        "baseline_set_changed",
-        "cache_complete",
-        "combined_daily_effective_revision",
-        "current_generation_invalid",
-        "date_to_week_history_changed",
-        "effective_auxiliary_append",
-        "effective_auxiliary_projection_missing_current",
-        "effective_auxiliary_projection_missing_from_parent",
-        "effective_auxiliary_projection_unknown",
-        "effective_auxiliary_proof_changed",
-        "effective_auxiliary_revision",
-        "effective_auxiliary_revision_unknown",
-        "input_revision",
-        "monthly_input_append_unmappable",
-        "monthly_input_revision_unmappable",
-        "no_current_generation",
-        "proven_daily_input_revision",
-        "spec_changed",
-        "weekly_input_append_unmappable",
-        "weekly_input_revision_unmappable",
-    }
-)
 
 _ALGORITHM_ENVIRONMENT_ALLOWLIST = frozenset(
     {
@@ -159,8 +121,6 @@ _ALGORITHM_ENVIRONMENT_ALLOWLIST = frozenset(
         "PYTHONDONTWRITEBYTECODE",
         "BFL_RUNTIME_ROOT",
         DATABASE_ENV_FILE_ENV,
-        "LIWEI_0616_PHASE_A_CACHE_ROOT",
-        CACHE_MUTATION_POLICY_ENV,
         "DAILY_0629_SOURCE_CACHE_DISABLE",
         "DAILY_0629_SOURCE_CACHE_DIR",
         "DAILY_0629_SOURCE_TIMEOUT_SEC",
@@ -243,8 +203,6 @@ def run_scheme_subprocess(
     process_fence: Callable[[], None] | None = None,
     process_start_guard: ProcessStartGuard | None = None,
     ephemeral_native_runtime_root: str | Path | None = None,
-    native_cache_mutation_policy: str | None = None,
-    native_phase_a_cache_root: str | Path | None = None,
     cancellation_event: threading.Event | None = None,
     native_input_audit_root: str | Path | None = None,
 ) -> list[PredictionRecord]:
@@ -258,24 +216,6 @@ def run_scheme_subprocess(
     normalized_audit_root = _normalize_native_input_audit_root(
         native_input_audit_root
     )
-    normalized_cache_policy = _normalize_native_cache_mutation_policy(
-        native_cache_mutation_policy
-    )
-    normalized_phase_a_cache_root = _normalize_native_phase_a_cache_root(
-        native_phase_a_cache_root
-    )
-    if normalized_phase_a_cache_root is not None and (
-        normalized_cache_policy != CACHE_MUTATION_POLICY_PRIVATE_BUILD
-    ):
-        raise ValueError(
-            "native_phase_a_cache_root requires private_build policy"
-        )
-    if normalized_cache_policy == CACHE_MUTATION_POLICY_PRIVATE_BUILD and (
-        normalized_phase_a_cache_root is None
-    ):
-        raise ValueError(
-            "private_build policy requires native_phase_a_cache_root"
-        )
     env = _build_algorithm_environment()
     env.pop(SOURCE_RUNTIME_DATABASE_CONFIG_PATH_ENV, None)
     env.pop(SOURCE_RUNTIME_DATABASE_CONFIG_ROOT_ENV, None)
@@ -288,17 +228,10 @@ def run_scheme_subprocess(
         raise ValueError(
             "source database config is only valid for source schemes"
         )
-    env.pop(CACHE_MUTATION_POLICY_ENV, None)
     env.pop(EPHEMERAL_NATIVE_INPUT_ROOT_ENV, None)
     env.pop(NATIVE_INPUT_AUDIT_ROOT_ENV, None)
     if normalized_ephemeral_root is not None:
         env[EPHEMERAL_NATIVE_INPUT_ROOT_ENV] = str(normalized_ephemeral_root)
-    if normalized_cache_policy is not None:
-        env[CACHE_MUTATION_POLICY_ENV] = normalized_cache_policy
-    if normalized_phase_a_cache_root is not None:
-        env["LIWEI_0616_PHASE_A_CACHE_ROOT"] = str(
-            normalized_phase_a_cache_root
-        )
     if normalized_audit_root is not None:
         env[NATIVE_INPUT_AUDIT_ROOT_ENV] = str(normalized_audit_root)
     cmd = [
@@ -379,30 +312,6 @@ def _normalize_ephemeral_native_runtime_root(
     return path
 
 
-def _normalize_native_cache_mutation_policy(value: str | None) -> str | None:
-    if value is None:
-        return None
-    policy = str(value).strip()
-    if policy not in {
-        CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
-        CACHE_MUTATION_POLICY_PRIVATE_BUILD,
-        CACHE_MUTATION_POLICY_SCHEDULED_BOUNDED_RECONCILE,
-    }:
-        raise ValueError("unsupported Native cache mutation policy")
-    return policy
-
-
-def _normalize_native_phase_a_cache_root(
-    value: str | Path | None,
-) -> Path | None:
-    if value is None:
-        return None
-    path = Path(value)
-    if not path.is_absolute():
-        raise ValueError("native_phase_a_cache_root must be absolute")
-    return path
-
-
 def _normalize_native_input_audit_root(
     value: str | Path | None,
 ) -> Path | None:
@@ -451,7 +360,6 @@ def run_configured_scheme(
     process_fence: Callable[[], None] | None = None,
     process_start_guard: ProcessStartGuard | None = None,
     ephemeral_native_runtime_root: str | Path | None = None,
-    native_cache_mutation_policy: str | None = None,
     cancellation_event: threading.Event | None = None,
 ) -> list[PredictionRecord]:
     """按显式 runtime_type 选择算法执行驱动。"""
@@ -464,12 +372,8 @@ def run_configured_scheme(
     normalized_ephemeral_root = _normalize_ephemeral_native_runtime_root(
         ephemeral_native_runtime_root
     )
-    normalized_cache_policy = _normalize_native_cache_mutation_policy(
-        native_cache_mutation_policy
-    )
     if runtime_type != "native_adapter" and (
         normalized_ephemeral_root is not None
-        or normalized_cache_policy is not None
         or cancellation_event is not None
     ):
         raise ValueError(
@@ -488,10 +392,6 @@ def run_configured_scheme(
         if normalized_ephemeral_root is not None:
             native_kwargs["ephemeral_native_runtime_root"] = (
                 normalized_ephemeral_root
-            )
-        if normalized_cache_policy is not None:
-            native_kwargs["native_cache_mutation_policy"] = (
-                normalized_cache_policy
             )
         if cancellation_event is not None:
             native_kwargs["cancellation_event"] = cancellation_event
@@ -1077,16 +977,6 @@ def _execution_error_message(exc: Exception) -> str:
     """返回可写入现有 run 错误列的有界子进程原因。"""
     if not isinstance(exc, subprocess.CalledProcessError):
         return str(exc)
-    for payload in (exc.stderr, exc.stdout):
-        text_value = _timeout_payload_to_text(payload)
-        match = _CACHE_POLICY_ERROR_PATTERN.search(text_value)
-        if match is not None:
-            policy, build_mode, reason = match.groups()
-            if reason in _SAFE_CACHE_BUILD_REASONS:
-                return (
-                    "cache policy blocked: "
-                    f"policy={policy}, build_mode={build_mode}, reason={reason}"
-                )
     return f"algorithm process exited with status {exc.returncode}"
 
 
@@ -1107,7 +997,6 @@ def execute_scheme(
     engine=None,
     canonical_config_trusted: bool = False,
     ephemeral_native_runtime_root: str | Path | None = None,
-    native_cache_mutation_policy: str | None = None,
     cancellation_event: threading.Event | None = None,
     process_start_guard: ProcessStartGuard | None = None,
 ) -> SchemeRunResult:
@@ -1228,10 +1117,6 @@ def execute_scheme(
             if ephemeral_native_runtime_root is not None:
                 run_kwargs["ephemeral_native_runtime_root"] = (
                     ephemeral_native_runtime_root
-                )
-            if native_cache_mutation_policy is not None:
-                run_kwargs["native_cache_mutation_policy"] = (
-                    native_cache_mutation_policy
                 )
             if cancellation_event is not None:
                 run_kwargs["cancellation_event"] = cancellation_event

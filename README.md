@@ -5,7 +5,8 @@
 ## 当前政策
 
 - 后续新增算法、新方案 ID、新目标、新任务和替代版本只允许 Blackbox V2。
-- Native V1 只维护版本化政策清单中的既有身份。
+- Native V1 仅保留 Mac3 W4 九个存量方案及其必要依赖；其余 17 个原方案 ID 使用 Blackbox V2 canonical。部署进度以当前状态和现场核验为准。
+- 同算法运行时升级保留原 base/Registry ID，不新建 `_bbv2` 业务身份，不重跑、复制、覆盖或删除既有历史事实。
 - Blackbox V2 固定只走“两文件 Intake → 一次完整持久化回测 → activate”；不进入 Native `onboard`，不额外运行 Static/Compare/冒烟/shadow。
 - 技术验证不自动授予生产权限；生产运行必须逐方案完成准备核验和专项授权。
 - 方案数量、Registry 状态和灰度结果按[当前状态](docs/CURRENT_STATUS.md)列出的权威来源现场读取；待验证项查看其中链接的推进计划。

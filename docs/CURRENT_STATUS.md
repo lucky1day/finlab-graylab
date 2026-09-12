@@ -9,78 +9,36 @@
 [生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。已完成迁移、逐次 Gate、运行 ID、
 发布窗口和一次性验收证据不在工作树维护副本，通过 Git、Harness、数据库与目标机 journal 追溯。
 
-## 双主机边界
+## 双主机边界与当前进度
 
-- Mac3 继续承载生产域名、前端、数据库和 Writer；`launchd + installed plist` 是生产调度控制面。
-- 2026-09-12 用户缩减[迁移计划](architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md)的当前执行范围：
-  只完成 ECS 剩余五个源码方案的原 ID 接管；W4 九个加密方案继续 Mac3 现状，本轮不部署或操作 Mac3。
-  不重新回测、生成、复制、覆盖或删除历史预测，不改变域名、DNS、Nginx 或隧道。
-  confidence DDL 不属于本轮操作，master 不合并；允许推送 develop 和交付 PR。
-- ECS 原 ID 接管后，用户要求先清理陈旧代码、验证清理 release，再一并准备 Mac3 同包晋级。
-  清理不包含历史数据库、不可变回滚 release 或 W4 必需依赖。无调用者的 17 个已迁移方案专属
-  Native 回测文件及已撤销的 W2/W3A 历史补入入口从当前代码线退役；现有生产 exact 和算法交付不变。
-  仍被迁移工具引用的临时目录暂留；后续获批的附件清理已删除 204 个文件，并在 ECS 通过受控事务
-  切换真实新 exact。算法、Metadata 与历史结果不变；双机精确 current 仍以现场读回为准。
-- 首批清理 release 已在 ECS 发布并验收：全部 active exact、历史事实、Registry、Actuals、派生状态
-  和 Dashboard 业务摘要不变，Backend 正常，预测 timer 已恢复；未调用算法或修改业务库。
-  全量回归 1253 passed、36 skipped、243 subtests，独立审查通过。Mac3 仍未晋级，剩余有依赖清理项不标记完成。
-- 第二批 Native 附件和一次性测试清理已完成 ECS 发布：17 个原 canonical 仅保留 Blackbox 交付，
-  旧缓存三模块、失去消费者的 comparator、T1/T5 四个旧批次文件和过期专项测试删除。
-  全量回归 1201 passed、38 skipped、241 subtests，真实隔离 MySQL 验证与独立审查通过。
-  17 个真实新 exact 原子激活；7 份状态仅转换版本封装，原文件及 payload/input 不变。
-  全部 active 准入、事实、Registry、Actuals、Dashboard、Backend 和 timer 读回通过；
-  19:00 Actuals 自然执行成功后才进入维护窗口。未运行算法、未改历史、未同步 Mac3。
-- 上述一次性发布验收结束后，两份专用附件转换测试已从最终代码线删除，原件及通过记录保留于
-  已验证提交和 archive；最终公共回归为 1167 passed、36 skipped、241 subtests。
-  这一收尾只改测试/文档，已完成 ECS 发布和 before/candidate/after 全量读回；任何 runtime、config、
-  exact、事实与状态均不变。current/previous 均已移除十七方案 Native 附件，普通回滚无需版本反向事务。
-- 用户已批准迁移期新 Blackbox 目录保留 Native 附件至接管验收完成，按精确清单及摘要绑定版本，
-  不允许附件 fallback 或第二 Writer；普通两文件合同不变。历史源数据修订不触发已发布预测重算或覆盖，
-  只更新当前预测必需的内部派生状态；不再等待目录布局审批。
-- ECS 是独立灰度实验室，使用自己的 MySQL、DataBridge、Registry、run、prediction 和 systemd timer；
-  Backend 只监听 loopback，不承载生产公网流量。
-- 两端不建立持续复制、双写、共享数据库或共享 DataBridge。经明确授权的单次缺口修复可以在停止目标 Writer
-  后，从同一已验证 immutable release 的源端只读导出精确业务键与核心预测结果，再由目标端 repository
-  insert-only 导入；不得复制数据库主键、`run_id`、Actuals、回测或 Harness 历史。
-- 两端共用唯一 `codex/develop` source release 代码线；ECS 先验证、Mac3 后晋级时允许 `current` 不同，
-  不因此建立环境分支。
+- Mac3 承载生产域名、前端、数据库和 Writer；launchd + installed plist 是其调度控制面。
+  ECS 是独立灰度环境，使用本机 MySQL、DataBridge 和 systemd one-shot/timer。
+- 用户最新授权：深度清理后发布 ECS/Mac3、同步 master 并推送两分支。
+  此授权不包含历史预测重算/复制/覆盖/删除、confidence DDL 或域名/DNS/Nginx/SSH 隧道变更。
+- ECS 已完成全部 17 个源码方案、21 个 target 的原 ID Blackbox 接管；此前 Native 附件清理及测试收尾 release 已发布验收。
+- Mac3 本轮只读核查仍有 26 个 Native base /30 个 active target，另外 67 个 Blackbox active target。
+  因此 Mac3 不只是上传 release，还需完成 17 个源码方案的原 ID 版本切换；九个 W4 加密方案保持原 Native 运行。
+- 本轮进一步删除旧 Liwei publisher/cache policy、16 个停用临时 canonical、旧迁移 Harness/仓储入口及一次性测试，
+  恢复严格无 Native 附件的 Blackbox 合同。W4、有效算法交付与 93 个 canonical exact 摘要均未变化。
+  当前完整回归为 668 passed、6 skipped、219 subtests；真实隔离 MySQL 另验证 Mac3 整组事务。
+- Mac3 的七份增量状态正在核验。五份已有本机 Blackbox 私有状态已完成零训练结构/身份准备；
+  W3C 原 cutoff 输入摘要匹配，Full/K5 当前 daily prefix 存在变化；W3A Full/SAY 已零训练认证本机缓存 649 行安全前缀，待标准调用。
+  未通过真实输入与标准调用前不标记生产就绪、不启动全历史重跑。
+- 当前尚未完成双机最终清洁 release 和 master 同步。具体阶段出口、精确范围与恢复步骤见
+  [当前迁移计划](architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md)；不能把本地通过等同于现场部署完成。
+- 两端不建立复制、双写、共享数据库或共享 DataBridge；本轮不搬迁临时身份历史。
+  已完成的旧历史物化保持原内容和来源，不回删。
+- 单一 codex/develop 集成代码线、不可变 archive；Mac3 使用 ECS 已验证的同一 archive，不能自行构建环境分支版本。
 
 ## 现场状态读取
 
-- 精确 release、previous、archive 与 source-tree 摘要只从目标机 `current`、release manifest 和部署记录读取；
-  尚未安装的 Git 工作区修改不视为已部署。
-- Mac3 的 installed plist、`launchctl`、进程、日志和本机数据库是生产现场权威；ECS 的 installed systemd
-  unit/timer、journal、进程和本机数据库是灰度现场权威。
-- active 方案数量、DataBridge generation、run、prediction、Actual、Dashboard/health 与跨机差异均为运行态，
-  必须现场只读查询，不在工作树维护快照。
-- 人工 gap-fill、Actual 刷新或 gray live 不能冒充首次自然 `scheduled_live` 或 Production Observed。
-- 本轮迁移以等价证据、标准调用、事务与调度控制面验证验收，不等待多天自然触发；
-  算法等价、执行环境和入库证据分别绑定自身真实输入。已有有效计算不因 ID 包装变化重跑。
-- W3B 三个源码方案已完成 ECS 原 ID Blackbox 接管及发布验收：历史事实与完整 Dashboard
-  业务内容保留，原 ID 各有唯一 active Blackbox exact，日频 timer 与 Backend 已恢复正常。
-  W2 两个方案亦已完成 ECS 原 ID 接管、标准执行准入及发布验收；四条临时身份独有 live 结果
-  已在真实备份恢复验证后一次 insert-only 补入原 ID，原记录不变，未执行算法或删除临时身份。
-  W3A 两个方案已完成同样的原 ID 整组接管；Full 当前输入状态及回滚源状态已验证，
-  SDA 标准调用通过，历史事实与其他方案不变。W3A 的八条临时身份独有结果亦在真实恢复验证后
-  一次 insert-only 保全：四条 live 新建 manual 来源，四条回测保持原回测引用及 actual，未调用算法。
-  W1B 三个周频方案也已完成原 ID 整批接管，
-  原 h6 事实键保留，Metadata h1 仅用于执行，标准调用、回滚预检、Backend 和 timer 读回通过。
-  W1A 的 T1/T5 两个 base、六个 target 也已完成原 ID 整组接管；各 target 标准调用一次，
-  全部目标验证后原子切换，历史事实不变，Backend/current、执行准入及日周月 timer 读回通过。
-  ECS 已完成 17/17 个原方案、21/21 个 target 的原 ID Blackbox 接管；本轮 W3C/W3D 五方案均已通过。
-  W4 九个加密方案按用户最新决定保持 Mac3 现状，不改造，也不据旧计划删除其 Native 依赖。
-  W1 的 42 条历史补入已停止、未写生产；14,677 行备份和真实恢复证据保留，未完成代码已隔离为私有补丁。
-  W3C 三个已有 Native 末点保留为基线；不再增加内部 grid 或正式区间证明。
-  W3D 两个历史参考计算已受控停止，四个相关进程均已退出，已有检查点/失败回执保留，不重启。
-  不重新回测历史、不重新生成/复制/覆盖历史预测；五个最终包各执行一次对应 Native Request 并受控切换/模拟。
-  五个最终原 ID 包与已有 Native 基线的对应 Request 三日期和方向一致，无历史区间重算。
-  W3C 三份 ECS 标准调用通过（48.240/44.727/44.513 秒），接管时复用原结果及已发布派生状态，没有重跑。
-  W3D 首次 120 秒超时已受控恢复；用户允许单次稍长后，仅将两方案 timeout 改为 300 秒，算法不变。
-  最终 W3D ECS 标准调用分别 256.532/259.269 秒通过，均一个进程、6 线程、峰值约 1.05 GiB。
-  两批原 ID 切换、回滚预检、唯一 Writer、Backend release/health、Dashboard 和五个 timer 读回全部通过。
-  历史预测/run/backtest、Actuals 和 Dashboard 业务内容保持不变；没有历史补入、覆盖或删除。
-  本轮源码发布与 develop 推送已完成，PR 保持未合并；旧自动推进保持暂停，不据旧计划扩展 Mac3/W4 或 DDL。
-  不重复已完成的 W3B 算法、状态准备或切换；精确 release、回执和恢复边界见迁移计划及现场。
+- 精确 current/previous、archive/source-tree 摘要以目标机链接、manifest、安装记录和实际进程 cwd 为准。
+- Mac3 以 installed plist、launchctl、进程和本机数据库为准；ECS 以 installed unit、systemctl、journal 和本机数据库为准。
+- 每个发布窗口重新冻结 Registry/version、历史事实、Actuals、DataBridge、私有状态、Dashboard 与在途任务。
+  私有快照及验收原件外置保存，文档中的已知基线不替代实时核验。
+- 本轮复用已完成算法等价证据，只补本机真正缺失的标准调用和状态验证；不等待多日自然触发。
+  人工模拟不冒充 scheduled_live，不提前写尚未到期业务键。
+- 旧自动迁移任务保持暂停，不能继续执行已撤销的 W4 改造、历史搬迁或 DDL 计划。
 
 ## 当前治理边界
 

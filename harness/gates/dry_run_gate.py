@@ -86,7 +86,6 @@ class DryRunGate(Gate):
                 audit_root = Path(audit_name).resolve(strict=True)
                 os.chmod(audit_root, 0o700)
                 input_root = audit_root / "inputs"
-                phase_a_cache_root = audit_root / "phase-a-cache"
                 try:
                     records = run_scheme_subprocess(
                         ctx.scheme_id,
@@ -95,7 +94,6 @@ class DryRunGate(Gate):
                         timeout_sec=ctx.timeout_sec,
                         input_audit_root=audit_root,
                         input_root=input_root,
-                        phase_a_cache_root=phase_a_cache_root,
                     )
                     audit_receipts = _load_input_audit_receipts(audit_root)
                 except Exception as exc:
@@ -159,13 +157,9 @@ def run_scheme_subprocess(
     timeout_sec: int,
     input_audit_root: Path,
     input_root: Path,
-    phase_a_cache_root: Path,
 ) -> list[PredictionRecord]:
     """懒加载 scheduler.executor.run_scheme_subprocess，保持 DryRunGate 使用既有执行路径。"""
     from scheduler.executor import run_scheme_subprocess as executor_run_scheme_subprocess
-    from shared.liwei_0616_cache_contract import (
-        CACHE_MUTATION_POLICY_PRIVATE_BUILD,
-    )
 
     return executor_run_scheme_subprocess(
         scheme_id,
@@ -174,8 +168,6 @@ def run_scheme_subprocess(
         timeout_sec=timeout_sec,
         native_input_audit_root=input_audit_root,
         ephemeral_native_runtime_root=input_root,
-        native_cache_mutation_policy=CACHE_MUTATION_POLICY_PRIVATE_BUILD,
-        native_phase_a_cache_root=phase_a_cache_root,
     )
 
 

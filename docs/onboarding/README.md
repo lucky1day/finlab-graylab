@@ -11,9 +11,9 @@
 | 场景 | 必须使用的流程 |
 |---|---|
 | 新算法、新方案 ID、新目标期限或新任务类型 | Blackbox V2 |
-| 现有 Native V1 的故障、数据口径或复现性修复 | Native V1 存量维护 |
+| Mac3 W4 九个 Native V1 存量方案的故障、数据口径或复现性修复 | Native V1 存量维护 |
 | Native V1 的算法升级、替代实现或能力扩展 | 创建独立 Blackbox V2 trial |
-| 同算法 Native → Blackbox 运行时升级及迁移临时身份收口 | [同 ID 双机迁移计划](../architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md)，不新建业务身份 |
+| 同算法运行时升级的身份与发布边界 | [同 ID 双机迁移计划](../architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md)，不新建业务身份、不搬删历史 |
 | 查看当前方案状态或未关闭问题 | 当前状态或统一后续推进计划 |
 | 查看历史规则和旧草案 | 使用 Git 历史；不得用于当前验收 |
 
@@ -59,8 +59,8 @@
 
 ## 新方案历史与灰度的最快正确路径
 
-本节适用于尚未有对应事实的新方案。本次原 ID 迁移已有历史不重算；原 ID 已有键优先，
-只对迁移临时 ID 独有且证据完整的缺失结果按专用计划物化，不为了包装升级创造灰度缺口。
+本节适用于尚未有对应事实的新方案。原 ID 运行时升级不重算、复制、覆盖或删除已有历史，
+不搬迁临时 ID 的独有结果，不为了包装升级创造灰度缺口；此前已完成物化也不回删。
 
 先确定方案级 `gray_target_start`。`target_date` 在起点以前的样本由一次持久化历史回测写入 immutable canonical backtest；起点及以后、正式调度以前的应有点由一次 target 区间批量执行写为 `gray_live`。区间入口按任务日历生成 live `predict_date`，一个方案只解析一次 DataBridge authority、核对一次 producer-ready receipt、物化一个私有运行视图并启动一个算法 batch，不再逐日期重复运行或重写输入快照。
 
@@ -76,11 +76,11 @@
 
 同 ID 修订不重复创建方案目录，也不伪造第二次 Intake；修订 canonical `.py/.json` 后重新执行第 2、3 步。任何第三文件、symlink、危险导入或固定 Profile/Schema 漂移都会在回测前直接拒绝；回测后的任何字节漂移都会因 exact-version evidence 不匹配而阻断激活。
 
-本次获批同算法迁移与普通算法修订分开：临时迁移入口复用证据并原子切换未来 Writer，
-不要求只改 ID/包装也重复完整训练。T1/T5 按 target 独立两文件、每 base 一个整体版本；
-W4 仅批准清单内 Mac3 binary bundle，其 payload 全部进入 hash closure。这些迁移边界不改变普通新方案默认两文件合同。
+同算法运行时升级与普通算法修订分开：17 个原 ID 的 canonical 使用 Blackbox，既有迁移证据只读保留，
+已退役的一次性迁移命令不是日常入库入口，不为包装变化重复历史训练。T1/T5 按 target 独立两文件、每 base 一个整体版本。
+W4 九方案保留 Mac3 Native 及必要依赖，不改造 binary bundle、不部署 ECS。这些边界不改变普通新方案默认两文件合同。
 周/月 Request 使用 Metadata horizon=1，原 Registry 和事实 horizon=6/30 在持久化边界显式投影保留。
-临时 `_bbv2` 清理必须经过结果保全、备份/隔离恢复验证与回滚边界，不可用模糊后缀删除。
+临时 `_bbv2` 身份不得拥有 Writer；其历史记录只读保留，不搬迁或删除，不建立长期历史别名。
 
 `gate dashboard` 是激活后的可选只读产品检查，不是入库门禁；`signal-gap-fill` 是独立授权的历史缺口操作，也不属于入库。
 

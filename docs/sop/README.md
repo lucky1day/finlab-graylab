@@ -16,7 +16,7 @@
 | 平台入库、运行和审计人员 | 接收、验收、激活并观察 Blackbox V2 方案 | [Blackbox V2 平台入库 SOP](BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md) |
 | Native V1 维护工程师 | 判断、实施和验证既有 Native 修复 | [Native V1 存量维护 SOP](NATIVE_V1_MAINTENANCE_SOP.md) |
 
-新算法、新方案 ID、新目标、新任务类型和替代版本一律使用 Blackbox V2。Native V1 文档只用于政策清单内既有方案的维护。
+新算法、新方案 ID、新目标、新任务类型和替代版本一律使用 Blackbox V2。Native V1 文档只用于政策清单内 Mac3 W4 九方案及必要依赖的维护；不新增 Native、不将 W4 改造为 binary bundle 或部署 ECS。
 
 ## 2. 完整文档清单
 

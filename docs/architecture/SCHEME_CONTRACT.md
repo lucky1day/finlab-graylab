@@ -5,7 +5,7 @@
 **目标读者**：平台开发、入库和审计人员
 本文只定义两种运行时共享的身份、日期、结果、生命周期和分派边界。运行时专属契约分别由 [Native V1 存量契约](../native_v1/SCHEME_CONTRACT.md)和 [Blackbox V2 Contract 1.0](../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)定义。
 
-> 后续新增算法、新方案 ID、新目标、新任务和替代版本一律使用 `blackbox_v2`。Native V1 仅维护政策清单中的既有方案。
+> 后续新增算法、新方案 ID、新目标、新任务和替代版本一律使用 `blackbox_v2`。Native V1 仅维护政策清单中的 Mac3 W4 九方案及必要依赖；其余 17 个原 ID canonical 使用 Blackbox，不将 W4 部署 ECS。
 
 ## 1. 版本维度
 
@@ -39,7 +39,7 @@
 
 单标的和多标的均使用 composite Registry ID。预测、运行和回测底表继续保存 base `scheme_id`，并通过 `target_tenor` 区分目标。
 
-同一算法的 Native 与 Blackbox 实现必须使用不同 base ID；替代试验不得覆盖既有 Native 身份或历史结果。
+同算法的 Native→Blackbox 运行时升级保留原 base/Registry ID，以新 exact version 区分执行版本，不新增 `_bbv2` 业务身份。新算法 trial 与既有身份隔离；任何迁移都不得重跑、复制、覆盖或删除既有历史结果。临时身份的历史只读保留，不建立长期历史别名。
 
 `t_scheme_registry.owner` 是方案来源的唯一运行和展示权威，必须为合法非空值。新 Blackbox 从两文件
 Metadata 登记 owner；已有 Metadata 缺失 owner 的历史 Blackbox 与 Native 只保留数据库既有值，不改写
@@ -138,7 +138,7 @@ python -m harness activate --scheme-id {scheme_id}
 
 Native `all` 为 `static -> dry-run -> compare -> backtest`；DryRunGate 同时核验真实执行生成的输入 artifact 合同。Blackbox 不进入 `onboard`；Intake 定义静态平台边界，持久化回测在执行前复验脚本安全边界并负责真实批量执行和 Result 合同；activate 只严格加载 canonical 身份并匹配 exact-version 回测证据。
 
-Native ActivationGate 的两条 profile 互斥：当前 exact version 已通过完整 `all` 时，采用 `full_initial_onboarding_v1`，只复核当前四个 Gate（含 Compare）和本次直接 activation 命令，不要求 prior snapshot 或 `native-maintenance`。只有未走该 full-`all` profile 的已有 Native V1 修订，在 prior `all` 的 `static.business_identity` 已持久化且与当前业务身份精确匹配时，才可改走 `native-maintenance`：`static -> native-maintenance-admission -> dry-run`。快照只含 `scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors 和 composite Registry IDs，不含代码/config/version hash。maintenance profile 还要求 current exact `t_scheme_versions` 为 native `draft|active`、expected Registry 全 paused（预激活）或全 active（激活后）、draft+active fail-closed、prior Native version 的 passed `all + compare`、当前精确 version 的三段持久证据和独立 activation 命令；只有 ActivationGate 能原子建立 active。prior snapshot 缺失、重复、损坏或不匹配时一律 fail-closed。maintenance 不运行当前 historical `compare/backtest`，也不写业务表。满足任一标准 profile 的同一身份修订，其历史 source-benchmark 输入 vintage 漂移只归档，不单独阻断 activation、gap repair、`gray_live`、`scheduled_live` 或 Dashboard；新 Native 身份仍只能走 Native `all`，Blackbox V2 走 Intake、完整持久化回测和 activate。
+Native ActivationGate 的两条 profile 互斥：当前 exact version 已通过完整 `all` 时，采用 `full_initial_onboarding_v1`，只复核当前四个 Gate（含 Compare）和本次直接 activation 命令，不要求 prior snapshot 或 `native-maintenance`。只有未走该 full-`all` profile 的已有 Native V1 修订，在 prior `all` 的 `static.business_identity` 已持久化且与当前业务身份精确匹配时，才可改走 `native-maintenance`：`static -> native-maintenance-admission -> dry-run`。快照只含 `scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors 和 composite Registry IDs，不含代码/config/version hash。maintenance profile 还要求 current exact `t_scheme_versions` 为 native `draft|active`、expected Registry 全 paused（预激活）或全 active（激活后）、draft+active fail-closed、prior Native version 的 passed `all + compare`、当前精确 version 的三段持久证据和独立 activation 命令；只有 ActivationGate 能原子建立 active。prior snapshot 缺失、重复、损坏或不匹配时一律 fail-closed。maintenance 不运行当前 historical `compare/backtest`，也不写业务表。满足任一标准 profile 的同一身份修订，其历史 source-benchmark 输入 vintage 漂移只归档，不单独阻断 activation、gap repair、`gray_live`、`scheduled_live` 或 Dashboard；新 Native 身份一律拒绝；既有 W4 身份缺少 maintenance 前提时才回到 current exact 的 Native `all`。新算法使用 Blackbox V2 Intake、完整持久化回测和 activate。
 
 - Native：校验 adapter/core、输入 artifact 和 source fidelity。
 - Blackbox：Intake 和持久化 backtest 执行两文件安全校验；backtest 另校验 CLI、五文件快照和标准结果，并保存脚本校验策略摘要；activate 只匹配 canonical exact version 与当前校验策略的成功回测证据；确定性与截止隔离属上游义务。

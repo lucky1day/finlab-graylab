@@ -136,47 +136,13 @@ def validate_delivery_script(script_path: str | Path) -> None:
 
 def validate_canonical_layout(
     scheme_dir: str | Path,
-    *,
-    native_attachments: dict[str, str] | None = None,
 ) -> tuple[Path, Path, Path]:
-    """校验两文件入口及迁移清单内已声明、不可执行的 Native 附件。"""
+    """校验 canonical 仅包含配置及独立两文件交付目录。"""
     scheme = Path(scheme_dir)
     if not scheme.is_dir() or scheme.is_symlink():
         raise ValueError(f"Blackbox V2 scheme must be a regular directory: {scheme}")
     entries = sorted(scheme.iterdir())
-    attachment_roots: set[str] = set()
-    if native_attachments is not None:
-        from shared.scheme_config_schema import validate_native_attachments
-
-        validate_native_attachments(scheme.name, native_attachments)
-        attachment_roots = {name.split("/")[0] for name in native_attachments}
-        expected_dirs = {
-            str(parent)
-            for name in native_attachments
-            for parent in Path(name).parents if str(parent) != "."
-        }
-        pending = [scheme / name for name in sorted(attachment_roots)]
-        actual_files: set[str] = set()
-        actual_dirs: set[str] = set()
-        while pending:
-            path = pending.pop()
-            name = path.relative_to(scheme).as_posix()
-            if path.is_symlink():
-                raise ValueError("native_attachments must not contain symlinks")
-            if path.is_dir():
-                if name not in expected_dirs:
-                    raise ValueError("undeclared native_attachments directory")
-                actual_dirs.add(name)
-                pending.extend(path.iterdir())
-            elif path.is_file() and name in native_attachments:
-                if hashlib.sha256(path.read_bytes()).hexdigest() != native_attachments[name]:
-                    raise ValueError("native_attachments SHA-256 mismatch")
-                actual_files.add(name)
-            else:
-                raise ValueError("undeclared or non-regular native_attachments file")
-        if actual_files != set(native_attachments) or actual_dirs != expected_dirs:
-            raise ValueError("native_attachments file set mismatch")
-    if {item.name for item in entries} != {"config.yaml", "delivery"} | attachment_roots:
+    if {item.name for item in entries} != {"config.yaml", "delivery"}:
         raise ValueError(
             "Blackbox V2 scheme must contain exactly config.yaml and delivery"
         )

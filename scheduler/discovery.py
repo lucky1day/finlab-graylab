@@ -161,7 +161,7 @@ def _load_blackbox_config(config_path: Path, raw: dict[str, Any], schedule_raw: 
 
     scheme_dir = config_path.parent
     _scheme_path, canonical_config_path, canonical_delivery_dir = (
-        validate_canonical_layout(scheme_dir, native_attachments=raw.get("native_attachments"))
+        validate_canonical_layout(scheme_dir)
     )
     if canonical_config_path != config_path.resolve():
         raise ValueError(f"{config_path}: config path is not canonical")

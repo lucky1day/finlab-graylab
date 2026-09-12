@@ -39,10 +39,6 @@ from shared.exclusive_file_lock import (
 from shared.input_artifacts import (
     get_ready_blackbox_snapshot,
 )
-from shared.liwei_0616_cache_contract import (
-    APPROVED_PHASE_A_CACHE_PUBLISHERS,
-    CACHE_MUTATION_POLICY_INCREMENTAL_ONLY,
-)
 from shared.models import PredictionRecord
 from shared.runtime_paths import resolve_runtime_artifact_root
 from shared.scheme_config_schema import ALLOWED_RUNTIME_TYPES
@@ -825,22 +821,6 @@ def _run_single_date_algorithms(
     ]
     if not native:
         return
-    publisher_ids = {
-        publisher_id
-        for _tenor, publisher_id in (
-            APPROVED_PHASE_A_CACHE_PUBLISHERS.values()
-        )
-    }
-    publishers = [
-        item
-        for item in native
-        if item.group.base_scheme_id in publisher_ids
-    ]
-    consumers = [
-        item
-        for item in native
-        if item.group.base_scheme_id not in publisher_ids
-    ]
     cancellation_event = threading.Event()
     process_start_guard = ProcessStartGuard()
     try:
@@ -850,17 +830,7 @@ def _run_single_date_algorithms(
             os.chmod(temporary, 0o700)
             root = Path(temporary).resolve(strict=True)
             _run_native_wave(
-                publishers,
-                root=root,
-                engine=engine,
-                algo_env=algo_env,
-                timeout_sec=timeout_sec,
-                cancellation_event=cancellation_event,
-                process_start_guard=process_start_guard,
-                settle=settle,
-            )
-            _run_native_wave(
-                consumers,
+                native,
                 root=root,
                 engine=engine,
                 algo_env=algo_env,
@@ -942,9 +912,6 @@ def _run_native_algorithm(
         algo_env=algo_env,
         timeout_sec=timeout_sec,
         ephemeral_native_runtime_root=ephemeral_native_runtime_root,
-        native_cache_mutation_policy=(
-            CACHE_MUTATION_POLICY_INCREMENTAL_ONLY
-        ),
         cancellation_event=cancellation_event,
         process_start_guard=process_start_guard,
     )
@@ -1240,14 +1207,12 @@ _NATIVE_EPHEMERAL_PROVENANCE_FIELDS = frozenset(
         "input_artifact_data_version",
         "input_artifact_watermark",
         "input_cutoff_date",
-        "phase_a_cache",
     }
 )
 _NATIVE_EPHEMERAL_PROVENANCE_PREFIXES = (
     "daily_input_artifact_",
     "weekly_input_artifact_",
     "monthly_input_artifact_",
-    "phase_a_cache_",
 )
 
 

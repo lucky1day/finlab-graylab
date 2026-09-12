@@ -108,7 +108,7 @@ benchmark 逐样本核验必须以 `feature_date + target_date + target_tenor + 
 
 legacy/core 里的参数名不一定等于平台标准字段。遇到 `current_date`、`date`、`predict_date` 等旧参数时，必须先读 core 内部如何使用它，再决定映射到平台的 `predict_date`、`feature_date` 还是 `target_date`；不得只按名字猜。
 
-已确认案例：`t1_daily` 旧 core 曾使用 `current_date` 作为参数名，但内部语义是“目标验证日”，并选择最后一个 `< current_date` 的交易日作为模型站位。因此它现在已重命名为 `target_date`，且不保留旧参数兼容入口。T1 回测最后一条 5 月样本必须是：
+历史案例：`t1_daily` 旧 core 曾使用 `current_date` 作为参数名，但内部语义是“目标验证日”，并选择最后一个 `< current_date` 的交易日作为模型站位。该旧 Native 路径已退役；以下日期仅说明原样本语义，不要求重跑历史，当前 T1 按 Blackbox 标准 Request/Result 合同执行：
 
 ```text
 target_date  = 2026-05-29
@@ -132,8 +132,8 @@ predict_date = 2026-05-28  # 历史回测中 predict_date=feature_date
 6. helper 只能封装原始算法的执行口径；不得把“更短历史”“同月去年+本月”“previous complete week”等平台便利窗口替代 source 中实际使用的固定历史、batch end 或周频对齐规则。
 
 `daily_5y_2_v28` 已统一为原 ID Blackbox，当前唯一执行入口由 canonical config 的 `delivery` 指定，
-`predict/backtest` 共用包内算法路径，并保留上述月度窗口语义。旧 Native inference 暂作为版本绑定附件
-保留，不是当前执行入口；专属复现 runner 仅在旧 immutable release 保留，不得用于当前 Blackbox 补算历史。
+`predict/backtest` 共用包内算法路径，并保留上述月度窗口语义。旧 Native inference 附件和专属复现 runner
+已退役，仅通过 Git/旧 immutable release 追溯，不得用于当前 Blackbox 补算历史。
 
 ## 3. 灰度实盘规则
 
@@ -215,7 +215,7 @@ target_date  = T + horizon
 
 若 source-original batch reproduction 的 benchmark row 跨入 gray/live target 区间，该 row 仍不得扩散为 live 数值真值；它只能证明 historical/source-original 口径。gray_live/scheduled_live adapter 与补齐必须继续按 `feature_date` 硬截止，并使用 live-safe oracle 或同口径 live benchmark 验收。
 
-当前已批准的 batch reproduction 例外只包括三个 2025-05-29 来源批次周度单点源算法：
+以下三个 2025-05-29 来源批次周度单点源算法曾使用 Native batch reproduction 例外；它们的原 ID canonical 现为 Blackbox，旧例外仅解释已存历史，不能授权恢复旧 runner 或重跑迁移历史：
 
 - `weekly_5y_direct_0529`
 - `weekly_7y_cross_d_overlay_0529`
@@ -225,7 +225,7 @@ target_date  = T + horizon
 
 当前周平均 0529 身份为 `weekly_avg_1y_lgbm_0529`、`weekly_avg_5y_lgbm_0529` 和 `weekly_avg_10y_lgbm_0529`。它们不得复用 `weekly_*` 周度单点方案的 label、Score、Model2、D-overlay 或 point runner；actual/label 固定为 `next_week_average_yield_vs_current_week_average_yield`，即“目标周平均收益率 vs 当前周平均收益率”。source 输出出现内容一致的重复 strict key 时，平台只按既有 strict-key 契约折叠，并在 benchmark summary 记录，不能依赖固定行数或历史 run。
 
-上述周度单点例外只允许用于历史回测和 benchmark 复现。周度单点和周平均的灰度实盘、正式实盘 adapter 都必须严格遵守周频 T+1/T 规则：`feature_date=previous_trading_day(predict_date)`，输入 artifact 传 `end_week=feature_week_id`、`as_of_date=feature_date`，不得读取未来周或当前 DB 最新全量数据。
+上述周度单点历史例外不扩展 live 读取权限。当前周度单点 Blackbox 使用标准 Request 的截止日期；保留的 W4 周平均 Native adapter 使用 `feature_date=previous_trading_day(predict_date)`，输入 artifact 传 `end_week=feature_week_id`、`as_of_date=feature_date`，不得读取未来周或当前 DB 最新全量数据。
 
 ### 5.2 历史批次与灰度区间批次
 

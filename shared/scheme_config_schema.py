@@ -37,27 +37,6 @@ PRESERVED_FACT_HORIZONS = {
     "monthly_5y_knn_top20_0629": ("monthly", 30),
 }
 
-# 临时迁移例外：仅已批准原 ID 候选可声明不参与执行的 Native 附件。
-NATIVE_ATTACHMENT_SCHEMES = frozenset({
-    "t1_daily",
-    "t5_daily",
-    "weekly_5y_direct_0529",
-    "weekly_7y_cross_d_overlay_0529",
-    "weekly_10y_d_overlay_0529",
-    "daily_5y_2_v28",
-    "daily_7y_1_v28",
-    "liwei_0616_cons_sda_k3_div_k10",
-    "liwei_0616_5y01_full_oos_k3_div_k10",
-    "liwei_0616_10y01_cons_say_k3_div_k10",
-    "liwei_0616_10y01_full_oos_k3_div_k10",
-    "liwei_0616_10y02_cons_say_k3_div_k5",
-    "liwei_0616_5y_auc_static_all_k3_div_k10",
-    "liwei_0616_5y_auc_yearly_all_k3_div_k10",
-    "liwei_0616_5y_ic_yearly_all_k3_div_k10",
-    "liwei_0616_7y01_cons_say_k3_div_k10",
-    "liwei_0616_7y03_cons_all_k3_div_k8",
-})
-
 # 仅已批准的多目标迁移使用独立两文件包，保留原交付 basename。
 MULTI_TARGET_DELIVERIES = {
     "t1_daily": {tenor: f"t1_daily_{tenor.lower()}_bbv2" for tenor in ("5Y", "10Y")},
@@ -88,26 +67,6 @@ def validate_target_deliveries(raw: dict) -> None:
         if (item["script"] != f"delivery/{basename}.py"
                 or item["metadata"] != f"delivery/{basename}.json"):
             raise ValueError("deliveries paths must match approved original basenames")
-
-
-def validate_native_attachments(scheme_id: str, attachments: object) -> None:
-    """校验迁移期附件的精确文件清单；不授予 Native 执行资格。"""
-    if scheme_id not in NATIVE_ATTACHMENT_SCHEMES:
-        raise ValueError("native_attachments requires an approved migration scheme")
-    if not isinstance(attachments, dict) or not attachments:
-        raise ValueError("native_attachments must be a non-empty SHA-256 mapping")
-    for name, digest in attachments.items():
-        if not isinstance(name, str):
-            raise ValueError("native_attachments path must be a string")
-        parts = name.split("/")
-        if (any(part in {"", ".", "..", "__pycache__"} for part in parts)
-                or "\\" in name
-                or not (name in {"predict.py", "inference.py", "__init__.py"}
-                        or scheme_id == "t5_daily" and name == "latest_prediction.py"
-                        or len(parts) > 1 and parts[0] in {"core", "benchmarks"})):
-            raise ValueError("native_attachments path is outside the retained Native layout")
-        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
-            raise ValueError("native_attachments requires lowercase SHA-256 values")
 
 
 def resolve_fact_horizon(
@@ -182,12 +141,7 @@ def validate_config(raw: dict, dirname: str) -> list[str]:
             errors.append("incremental_state must be literal true when present")
 
     if "native_attachments" in raw:
-        try:
-            if runtime_type != "blackbox_v2":
-                raise ValueError("native_attachments is only supported for Blackbox V2")
-            validate_native_attachments(scheme_id, raw["native_attachments"])
-        except ValueError as exc:
-            errors.append(str(exc))
+        errors.append("native_attachments is not supported")
 
     if runtime_type == "blackbox_v2":
         errors.extend(_validate_blackbox_config(raw))

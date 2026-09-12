@@ -3,7 +3,7 @@
 **文档状态**：`LEGACY_MAINTENANCE`
 **适用运行时**：`native_adapter`
 **目标读者**：维护现有原生方案的平台工程师
-Native V1 只维护 `deploy/onboarding_policy_v1.json` 登记的存量方案。本文档域不再定义任何新增方案流程；登记范围从该机器清单读取，active 数量从现场 Registry 读取。
+Native V1 只维护 `deploy/onboarding_policy_v1.json` 登记的 Mac3 W4 九个存量方案及必要依赖，不部署 ECS、不改造 binary bundle。其余 17 个原 ID 的 canonical 使用 Blackbox V2。本文档域不定义新增 Native 流程；部署和 active 状态从当前状态与现场读取。
 
 ## 1. 允许的工作
 

@@ -178,12 +178,13 @@ def test_live_targets_share_input_and_fail_as_one_batch(tmp_path, failure):
     assert 0 < seen[1]["timeout_sec"] <= seen[0]["timeout_sec"] <= 120
 
 
-def test_retained_native_helper_is_scoped_to_exact_migration_identity():
-    from shared.scheme_config_schema import validate_native_attachments
-
-    validate_native_attachments("t5_daily", {"latest_prediction.py": "a" * 64})
-    with pytest.raises(ValueError, match="outside"):
-        validate_native_attachments("t1_daily", {"latest_prediction.py": "a" * 64})
+@pytest.mark.parametrize("scheme_id", ["t1_daily", "t5_daily"])
+def test_multi_target_rejects_native_attachment_declaration(tmp_path, scheme_id):
+    path, raw = _scheme(tmp_path, scheme_id)
+    raw["native_attachments"] = {"predict.py": "a" * 64}
+    path.write_text(yaml.safe_dump(raw))
+    with pytest.raises(ValueError, match="native_attachments"):
+        load_scheme_config(path)
 
 
 @pytest.mark.parametrize("failure", [None, "invalid_result", "process", "source_drift"])

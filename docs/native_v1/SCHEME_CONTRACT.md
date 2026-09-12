@@ -3,7 +3,7 @@
 **文档状态**：`LEGACY_MAINTENANCE`
 **适用运行时**：`native_adapter`
 **目标读者**：维护既有 Native V1 方案的平台工程师
-> 本契约只适用于 `deploy/onboarding_policy_v1.json` 登记的存量方案，禁止用于新增方案。共享身份、日期和结果语义以[共享方案契约](../architecture/SCHEME_CONTRACT.md)为准。
+> 本契约只适用于 `deploy/onboarding_policy_v1.json` 登记的 Mac3 W4 九个存量方案，禁止新增 Native 或将 W4 部署 ECS。其余原 ID Blackbox 不适用本契约。共享身份、日期和结果语义以[共享方案契约](../architecture/SCHEME_CONTRACT.md)为准。
 
 ## 1. 目录契约
 
