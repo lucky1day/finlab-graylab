@@ -17,6 +17,9 @@
 **后续明确授权**：用户进一步要求删除已替换 Native 实现与闭环一次性测试。十七个原方案的
 204 个附件及对应声明已在候选代码中删除，42 个 Blackbox 交付脚本/Metadata 字节不变；
 旧 Liwei cache 实现和无在用消费者的 Native comparator 同步退役。W4 九方案与历史数据库不动。
+T1/T5 旧 `model_muti_0529` 批次的输入 CSV、退役 SHAP `.source`、父级 manifest 和 README
+共四个无运行消费者文件（19,745,668 字节）同时退出当前代码线；原件保留于 Git 与旧 release。
+同目录 `weekly_average_0529` 以及日/月 0629 的完整 W4 包、manifest、参数与样本均保留。
 因 config hash 真实变化，部署前必须使用固定十七方案的附件退役事务切换新 exact；
 不得忽略 hash、伪改旧 Gate 或重跑历史以规避这个步骤。
 
