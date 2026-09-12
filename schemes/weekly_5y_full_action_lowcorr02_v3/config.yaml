@@ -1,0 +1,15 @@
+scheme_id: weekly_5y_full_action_lowcorr02_v3
+runtime_type: blackbox_v2
+input_source: data_bridge_current
+factor_input_mode: algorithm_managed
+runtime_profile: blackbox-v2-v1
+data_schema_version: data-bridge-v1
+status: active
+version_status: active
+schedule:
+  cron: '30 11 * * 6'
+  timezone: Asia/Shanghai
+  timeout_sec: 3600
+delivery:
+  script: delivery/weekly_5y_full_action_lowcorr02_v3.py
+  metadata: delivery/weekly_5y_full_action_lowcorr02_v3.json

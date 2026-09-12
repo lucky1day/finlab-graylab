@@ -5,6 +5,9 @@
     "aliyun-gray"
   ],
   "schemes": {
+    "weekly_5y_full_action_lowcorr01_v3": ["mac3-production", "aliyun-gray"],
+    "weekly_5y_full_action_lowcorr02_v3": ["mac3-production", "aliyun-gray"],
+    "weekly_5y_full_action_lowcorr03_v3": ["mac3-production", "aliyun-gray"],
     "cgb_a4_fundseason_10y_hl18": ["mac3-production", "aliyun-gray"],
     "cgb_a4_fundseason_3y_hl18": ["mac3-production", "aliyun-gray"],
     "cgb_a4_fundseason_5y_hl18": ["mac3-production", "aliyun-gray"],
