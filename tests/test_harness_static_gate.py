@@ -50,28 +50,6 @@ class HarnessStaticGateTests(unittest.TestCase):
             },
         )
 
-    def test_existing_native_schemes_pass_static_gate(self) -> None:
-        from harness.context import GateContext
-        from harness.gates.static_gate import StaticGate
-
-        project_root = Path(__file__).resolve().parents[1]
-        schemes = (
-            "liwei_0616_5y_auc_static_all_k3_div_k10",
-            "liwei_0616_7y01_cons_say_k3_div_k10",
-        )
-
-        for scheme_id in schemes:
-            with self.subTest(scheme_id=scheme_id):
-                result = StaticGate().run(
-                    GateContext(
-                        scheme_id=scheme_id,
-                        predict_date="2026-06-08",
-                        project_root=project_root,
-                    )
-                )
-
-                self.assertTrue(result.passed, result.errors)
-
     def test_core_sqlalchemy_import_fails_with_file_evidence(self) -> None:
         from harness.context import GateContext
         from harness.gates.static_gate import StaticGate

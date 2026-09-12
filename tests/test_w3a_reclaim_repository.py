@@ -1,6 +1,7 @@
 """固定 W3A 修订例外与准备来源 DB 绑定；SQLite/随机隔离 MySQL 实测。"""
 
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 import json
 from unittest.mock import patch
@@ -23,7 +24,12 @@ FULL = "liwei_0616_5y01_full_oos_k3_div_k10"
 def reviewed_scope(fixture):
     engine, kwargs, control = reclaim_scope(fixture, "W3A")
     source = load_scheme_config(ROOT / "schemes" / (FULL + "_bbv2") / "config.yaml")
-    new = load_scheme_config(ROOT / "schemes" / FULL / "config.yaml")
+    # 固定历史 Gate/版本事实的事务回归；当前附件退役 exact 不属于这次旧修订例外。
+    new = replace(load_scheme_config(ROOT / "schemes" / FULL / "config.yaml"),
+        config_hash="951e1f5e359d3174d1cdeb94bc82d327cd4dedfb6fca043d5a2a0ac0332b3c4b",
+        scheme_version="be34f35f233b")
+    from shared.versioning import compute_scheme_version
+    assert compute_scheme_version(new.code_hash, new.config_hash, new.manifest_hash) == new.scheme_version
     conversion = verify_reviewed_w3a_delivery_change(project_root=ROOT,
         source_script=source.delivery_script.read_bytes(), source_metadata=source.delivery_metadata.read_bytes(),
         candidate_script=new.delivery_script.read_bytes(), candidate_metadata=new.delivery_metadata.read_bytes())

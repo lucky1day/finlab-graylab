@@ -1,1 +1,0 @@
-"""Pure algorithm modules for the weekly 5Y direct rule-vote scheme."""

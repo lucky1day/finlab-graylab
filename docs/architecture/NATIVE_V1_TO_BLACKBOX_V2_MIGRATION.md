@@ -14,19 +14,61 @@
 用户在 ECS 十七个原 ID 接管完成后要求：先完成 ECS 陈旧方案代码清理，验证后再一并同步 Mac3。
 以下清理顺序优先于后文已完成的五方案操作步骤；不重复那些算法验证和版本切换。
 
+**后续明确授权**：用户进一步要求删除已替换 Native 实现与闭环一次性测试。十七个原方案的
+204 个附件及对应声明已在候选代码中删除，42 个 Blackbox 交付脚本/Metadata 字节不变；
+旧 Liwei cache 实现和无在用消费者的 Native comparator 同步退役。W4 九方案与历史数据库不动。
+因 config hash 真实变化，部署前必须使用固定十七方案的附件退役事务切换新 exact；
+不得忽略 hash、伪改旧 Gate 或重跑历史以规避这个步骤。
+
+最小执行顺序：冻结 source/candidate archive → 围栏 ECS Backend 与日/周 Writer →
+只读 preflight → 原状态仅调整 exact 封装（payload 与原 input 不变）→ 围栏内 release 切换 →
+新 preflight → 整组版本事务 → 标准准入、状态与全量事实/Dashboard 读回 → 恢复调度。
+文件与数据库之间没有原子事务；中间失败保持围栏，按新 preflight 恢复旧版本及旧 release。
+旧状态不覆盖，候选状态已有不同内容拒绝；不将状态封装当作新算法运行或新历史预测。
+回滚分别验证旧、新状态的身份与完整性；不要求已经正常推进的新状态仍与旧 payload 相同。
+先在候选 release 与维护围栏内回滚数据库，再恢复旧 release；两份状态均不覆盖。
+
 1. 删除当前配置与迁移入口都不调用的 17 个 Native 专属回测文件（十个 Liwei runner、
    ALL-K10 公共 runner、两个 V28、三个周点和一个 T1/T5 runner）。旧 immutable release 保留原件。
 2. 删除 W2/W3A 已撤销的 `preserve-live` 历史补入入口、专属 repository 实现及一次性测试。
    已完成历史事实与来源校验保持不变；prepare/cutover/rollback 及普通回测公共能力保留。
-3. 不修改当前算法、Metadata、config 或 exact version；全量回归和独立审查后，
-   核验 ECS 全部 active 方案准入、原历史/Actuals/Registry/版本摘要、状态和 Dashboard 不变再发布。
-4. 十六个停用临时 canonical 目录仍被同 ID 迁移校验读取，十七方案的 204 个 Native 附件参与
-   config hash。不能直接删除导致迁移工具断链或 active exact 漂移；后续先解除真实引用、
-   受控处理版本/状态身份，再删除。T1/T5 canonical delivery 中的 `_bbv2` 文件名属于有效交付，不能误删。
+3. 首批清理不修改算法、Metadata、config 或 exact；当前附件清理批次仅 config/exact 改变，
+   算法与 Metadata 不变。全量回归和独立审查后，核验全部 active 方案准入及原事实不变再发布。
+4. 十六个停用临时 canonical 目录仍被同 ID 迁移校验读取，暂不删除。
+   十七方案的 204 个 Native 附件已从候选删除，按上述真实版本及状态流程发布。
+   T1/T5 canonical delivery 中的 `_bbv2` 文件名属于有效交付，不能误删。
 5. 保留 W4 九方案、公共 Native 输入/执行/维护路径和完整 source package；保留当前回滚 release、
    数据库事实与外置证据。Mac3 晋级以本机 preflight 和 ECS 验证过的同一 archive 为前提。
 
 本轮不把这些暂留项宣称为已清理，也不以重新回测或新增兼容框架消除依赖。
+
+当前附件退役候选本地验收：全量 1201 passed、38 skipped、241 subtests；固定十七方案的
+真实隔离 MySQL 切换/回滚及故障注入已单独通过。独立终审无 Critical/Important。
+新增的附件退役事务/状态测试只服务本次受控发布与恢复，工具退出后一起删除，不作为永久算法测试。
+完整 byte/hash 证据外置于 `native-attachment-retirement-20260912`；部署完成需另记现场读回，
+不把本地通过当作 ECS 已升级。
+
+#### 首批清理与 ECS 发布验收（2026-09-12）
+
+清理提交 `03e63e2`、`5e4bc98` 共移除 17 个旧回测文件、历史补入控制模块、专属仓储实现和五份测试，
+并删除无调用者的 source-evidence 路径 helper；净减少 11,791 行。没有删除历史数据、旧 release 或证据原件。
+最终完整回归为 1253 passed、36 skipped、243 subtests passed；独立代码审查无未解决问题。
+
+ECS 已部署 `5e4bc98e1796006ebd4e2d760d8c49e467b3e607`，两次 archive 构建字节一致，
+SHA-256 为 `34088f0a1c24445f8a847a5010a2e96f2b93106269cf8f767b74c57af8b5079d`。
+previous 为已经全部源码方案 Blackbox 接管的 `c74c538ffad49980fa97e51fda41e0c129e736f4`；
+本批未变 scheme exact 或状态，因此不需要数据库逆向切换即可使用该 previous 恢复清理前代码。
+`03e63e2` 只预安装，未切为 current。
+
+- 84 个 active base 的 exact/批准摘要全部不变，其中包含本次已迁移的 17 原 ID；Dashboard 88 个 target 业务内容不变。
+- 25,715 条预测、5,689 条 run、111 条回测 run、24,750 条回测预测，以及 Harness、Registry、版本、
+  Actuals 和派生状态全量摘要均不变。发布验证未调用算法、未写业务库，零 running run。
+- Backend 实际 cwd 与 current 一致，health 正常；三个预测 timer 已恢复，DataBridge/Actuals timer 保持 active。
+  未改 installed unit，未影响当日 19:00 Actuals；Mac3 current 仍为 `b736d3b2…`，未同步或操作 launchd。
+- 私有证据位于双端 `stale-cleanup-20260912` 工作目录；after 读回 SHA 为
+  `3c716445404735b8fce3e092bd481dedfb8e1bf7f512f79f3139c515b1173f0e`。
+
+该首批发布仅完成无在用依赖部分的清理；后续附件退役批次及 Mac3 晋级状态以上方当前主线为准。
 
 ### 已完成的原 ID 接管范围
 

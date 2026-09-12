@@ -148,8 +148,7 @@ def test_artifact_paths_use_unified_root_in_fresh_process(
             sys.executable,
             "-c",
             "from shared.artifact_paths import BACKTEST_ARTIFACT_ROOT; "
-            "from shared.liwei_0616_phase_a_cache import DEFAULT_CACHE_ROOT; "
-            "print(BACKTEST_ARTIFACT_ROOT); print(DEFAULT_CACHE_ROOT)",
+            "print(BACKTEST_ARTIFACT_ROOT)",
         ],
         cwd=project_root,
         env=environment,
@@ -160,5 +159,4 @@ def test_artifact_paths_use_unified_root_in_fresh_process(
 
     assert completed.stdout.splitlines() == [
         str(tmp_path / "artifacts"),
-        str(tmp_path / "cache" / "liwei-0616"),
     ]

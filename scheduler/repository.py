@@ -7,7 +7,7 @@ import math
 import sys
 from collections import Counter
 from copy import deepcopy
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -213,11 +213,12 @@ def _blackbox_activation_advisory_lock(
     engine: Engine,
     *,
     scheme_id: str,
+    connection: Connection | None = None,
 ) -> Iterator[None]:
     """用 scheme-scoped MySQL advisory lock 消除首次 absent-row 竞争。"""
     scheme_digest = hashlib.sha256(scheme_id.encode("utf-8")).hexdigest()[:32]
     lock_name = f"bfl:bbv2-draft:{scheme_digest}"
-    with engine.connect() as lock_conn:
+    with (nullcontext(connection) if connection is not None else engine.connect()) as lock_conn:
         acquired = lock_conn.execute(
             text("SELECT GET_LOCK(:lock_name, :timeout_sec)"),
             {
@@ -4079,6 +4080,184 @@ def apply_same_id_runtime_upgrade(
                 raise RuntimeError("same-ID upgrade control plane changed during transaction")
     return {"schema_version": "same-id-runtime-upgrade-result-v1", "action": action,
             "scheme_ids": sorted(old_configs), "plan_sha256": expected_plan_sha256, "approved_by": operator}
+
+
+_ATTACHMENT_RETIREMENT_IDS = frozenset({
+    "t1_daily", "t5_daily", "weekly_5y_direct_0529", "weekly_7y_cross_d_overlay_0529",
+    "weekly_10y_d_overlay_0529", "daily_5y_2_v28", "daily_7y_1_v28",
+    "liwei_0616_cons_sda_k3_div_k10", "liwei_0616_5y01_full_oos_k3_div_k10",
+    "liwei_0616_10y01_cons_say_k3_div_k10", "liwei_0616_10y01_full_oos_k3_div_k10",
+    "liwei_0616_10y02_cons_say_k3_div_k5", "liwei_0616_5y_auc_static_all_k3_div_k10",
+    "liwei_0616_5y_auc_yearly_all_k3_div_k10", "liwei_0616_5y_ic_yearly_all_k3_div_k10",
+    "liwei_0616_7y01_cons_say_k3_div_k10", "liwei_0616_7y03_cons_all_k3_div_k8",
+})
+
+
+def _attachment_retirement_conversion(old: SchemeConfig, new: SchemeConfig) -> dict[str, object]:
+    """重读两份完整交付，仅允许删除 Native 附件声明；不继承算法修订权限。"""
+    import yaml
+    from scheduler.blackbox_state import read_regular_bytes
+
+    raw = []
+    for cfg in (old, new):
+        path = cfg.path / "config.yaml"
+        raw.append(yaml.safe_load(read_regular_bytes(path, 1024 * 1024)))
+        fresh = load_scheme_config(path)
+        _assert_migration_version_identity(cfg, _same_id_reclaim_identity(fresh))
+        for field in ("horizon", "task_type", "frequency", "tenors", "schedule", "target_rule",
+                      "algorithm_version", "contract_version", "runtime_profile", "incremental_state"):
+            if getattr(cfg, field) != getattr(fresh, field):
+                raise ValueError(f"attachment retirement stale config: {field}")
+    before, after = raw
+    if (not isinstance(before, dict) or not isinstance(after, dict)
+            or not isinstance(before.get("native_attachments"), dict) or not before["native_attachments"]
+            or "native_attachments" in after
+            or {key: value for key, value in before.items() if key != "native_attachments"} != after
+            or old.scheme_id != new.scheme_id or old.runtime_type != "blackbox_v2"
+            or new.runtime_type != "blackbox_v2" or old.scheme_version == new.scheme_version
+            or old.code_hash != new.code_hash or old.manifest_hash != new.manifest_hash):
+        raise ValueError("attachment retirement permits only native_attachments removal")
+    return {"old_identity": _same_id_reclaim_identity(old), "new_identity": _same_id_reclaim_identity(new),
+            "removed_attachments": before["native_attachments"]}
+
+
+def _attachment_retirement_plan_conn(
+    conn, *, old_configs, new_configs, action, control_plane_evidence,
+    expected_database_name, expected_server_uuid, for_update=False,
+):
+    """固定十七方案的附件退役计划；完整历史与 Registry 只读。"""
+    ids = sorted(_ATTACHMENT_RETIREMENT_IDS)
+    control = control_plane_evidence
+    if (action not in {"cutover", "rollback"} or set(old_configs) != set(ids) or set(new_configs) != set(ids)
+            or control.get("schema_version") != "blackbox-attachment-retirement-control-v1"
+            or control.get("scheme_ids") != ids or control.get("writers_fenced") is not True
+            or control.get("algorithm_executions") != 0):
+        raise ValueError("attachment retirement requires the complete fenced seventeen-scheme scope")
+    if _dialect_name(conn) == "mysql":
+        identity = dict(conn.execute(text("SELECT DATABASE() AS database_name, @@server_uuid AS server_uuid")).mappings().one())
+        if identity != {"database_name": _require_nonempty(expected_database_name, "expected_database_name"),
+                        "server_uuid": _require_nonempty(expected_server_uuid, "expected_server_uuid")}:
+            raise RuntimeError("attachment retirement database identity mismatch")
+    elif _dialect_name(conn) == "sqlite":
+        identity = {"isolated_test": "sqlite"}
+    else:
+        raise RuntimeError("attachment retirement requires MySQL or isolated SQLite")
+    migrations = _same_id_rows_conn(conn, "t_schema_migrations", "1=1", {}, order="version", for_update=for_update)
+    if not migrations or max(int(row["version"]) for row in migrations) != 24 or any(row["state"] != "APPLIED" for row in migrations):
+        raise RuntimeError("attachment retirement requires applied schema 024")
+    params = {f"id_{i}": key for i, key in enumerate(ids)}
+    scope = "scheme_id IN (" + ",".join(":" + key for key in params) + ")"
+    versions = _same_id_rows_conn(conn, "t_scheme_versions", scope, params, order="scheme_id,scheme_version", for_update=for_update)
+    registry = _same_id_rows_conn(conn, "t_scheme_registry", "1=1", {}, order="scheme_id", for_update=for_update)
+    for table, order in (("t_scheme_runs", "run_id"), ("t_backtest_runs", "id"), ("t_harness_runs", "harness_run_id")):
+        running = _same_id_rows_conn(conn, table, scope + " AND status='running'", params, order=order, for_update=for_update)
+        if any(table != "t_harness_runs" or not _is_preserved_w2_historical_compare(conn, row, for_update=for_update) for row in running):
+            raise RuntimeError(f"attachment retirement has running work: {table}")
+    conversions, candidates = {}, []
+    for key in ids:
+        old, new = old_configs[key], new_configs[key]
+        if old.scheme_id != key or new.scheme_id != key:
+            raise ValueError("attachment retirement config mapping mismatch")
+        conversions[key] = _attachment_retirement_conversion(old, new)
+        scoped = [row for row in versions if row["scheme_id"] == key]
+        old_row = next((row for row in scoped if row["scheme_version"] == old.scheme_version), None)
+        new_row = next((row for row in scoped if row["scheme_version"] == new.scheme_version), None)
+        if old_row is None:
+            raise RuntimeError("attachment retirement old exact missing")
+        for cfg, row in ((old, old_row), (new, new_row)):
+            if row is not None:
+                _assert_migration_version_identity(cfg, row)
+                if (any(row.get(field) != getattr(cfg, field) for field in (
+                        "environment_fingerprint", "data_snapshot_id", "algorithm_version", "contract_version", "runtime_profile"))
+                        or not isinstance(row.get("approved_at"), datetime)
+                        or not isinstance(row.get("approved_by"), str) or not row["approved_by"].strip()):
+                    raise RuntimeError("attachment retirement existing exact evidence mismatch")
+        if (not old.environment_fingerprint or not old.data_snapshot_id
+                or new.environment_fingerprint != old.environment_fingerprint or new.data_snapshot_id != old.data_snapshot_id):
+            raise RuntimeError("attachment retirement must preserve recorded environment/input provenance")
+        active = old if action == "cutover" else new
+        if ([row["scheme_version"] for row in scoped if row["status"] == "active"] != [active.scheme_version]
+                or (action == "cutover" and new_row is not None and new_row["status"] != "retired")
+                or (action == "rollback" and (new_row is None or old_row["status"] != "retired"))):
+            raise RuntimeError("attachment retirement requires sole active exact and retired candidate")
+        approval = _read_blackbox_execution_approval_conn(conn, active, for_update=for_update)
+        if not approval.executable:
+            raise RuntimeError(f"attachment retirement active Writer is not approved: {approval.reason}")
+        candidates.append(_same_id_reclaim_identity(new) | {field: getattr(new, field) for field in (
+            "environment_fingerprint", "data_snapshot_id", "algorithm_version", "contract_version", "runtime_profile")})
+    return {"schema_version": "blackbox-attachment-retirement-plan-v1", "action": action, "scheme_ids": ids,
+            "database_identity_sha256": native_successor_plan_sha256(identity), "schema_migration_version": 24,
+            "versions": versions, "registry": registry, "conversions": conversions, "candidate_versions": candidates,
+            "facts": _same_id_fact_snapshot_conn(conn, ids, for_update=for_update), "control_plane": dict(control)}
+
+
+def read_blackbox_attachment_retirement_plan(engine: Engine, **kwargs) -> dict[str, object]:
+    """一致只读快照；允许状态准备前计划，但不授予写入权限。"""
+    with engine.connect() as conn:
+        if engine.dialect.name == "mysql":
+            conn.exec_driver_sql("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            conn.exec_driver_sql("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
+        try:
+            return _attachment_retirement_plan_conn(conn, **kwargs, for_update=False)
+        finally:
+            conn.rollback()
+
+
+def apply_blackbox_attachment_retirement(
+    engine: Engine, *, expected_plan_sha256: str, approved_by: str, approved_at: datetime,
+    control_plane_evidence_reader: Callable[[], Mapping[str, object]], **kwargs,
+) -> dict[str, object]:
+    """仅版本表的原子切换/回滚；既有版本只改 status，不覆盖旧准入证据。"""
+    operator = _require_nonempty(approved_by, "approved_by")
+    _require_sha256(expected_plan_sha256, "expected_plan_sha256")
+    if not isinstance(approved_at, datetime):
+        raise ValueError("attachment retirement requires approved_at datetime")
+    if set(kwargs.get("old_configs", {})) != _ATTACHMENT_RETIREMENT_IDS:
+        raise ValueError("attachment retirement requires seventeen lifecycle locks")
+    with ExitStack() as locks:
+        if engine.dialect.name != "sqlite":
+            # 十七把同一命名空间锁共用连接，避免超过默认连接池容量。
+            lock_conn = locks.enter_context(engine.connect())
+            for key in sorted(_ATTACHMENT_RETIREMENT_IDS):
+                locks.enter_context(_blackbox_activation_advisory_lock(engine, scheme_id=key, connection=lock_conn))
+        with engine.begin() as conn:
+            control = deepcopy(control_plane_evidence_reader())
+            if control.get("state_ready") is not True:
+                raise RuntimeError("attachment retirement states are not ready")
+            plan = _attachment_retirement_plan_conn(conn, **kwargs, control_plane_evidence=control, for_update=True)
+            if native_successor_plan_sha256(plan) != expected_plan_sha256:
+                raise RuntimeError("attachment retirement plan changed")
+            changes = {}
+            for key in plan["scheme_ids"]:
+                old, new = kwargs["old_configs"][key], kwargs["new_configs"][key]
+                retiring, activating = (old, new) if kwargs["action"] == "cutover" else (new, old)
+                for cfg, before, after in ((retiring, "active", "retired"), (activating, "retired", "active")):
+                    existing = any(row["scheme_id"] == key and row["scheme_version"] == cfg.scheme_version for row in plan["versions"])
+                    if not existing:
+                        _upsert_scheme_version_conn(conn, cfg, trusted_status="active", approved_by=operator,
+                                                    approved_at=_mysql_utc_datetime(approved_at))
+                    else:
+                        changed = conn.execute(text("UPDATE t_scheme_versions SET status=:after WHERE scheme_id=:id AND scheme_version=:version AND status=:before"),
+                                               {"id": key, "version": cfg.scheme_version, "before": before, "after": after})
+                        if changed.rowcount != 1:
+                            raise RuntimeError("attachment retirement exact lifecycle rowcount mismatch")
+                    changes[(key, cfg.scheme_version)] = after
+            post = _attachment_retirement_plan_conn(conn, **(kwargs | {"action": "rollback" if kwargs["action"] == "cutover" else "cutover"}),
+                                                     control_plane_evidence=control, for_update=True)
+            if post["facts"] != plan["facts"] or post["registry"] != plan["registry"]:
+                raise RuntimeError("attachment retirement changed facts or Registry")
+            post_rows = {(row["scheme_id"], row["scheme_version"]): row for row in post["versions"]}
+            for before in plan["versions"]:
+                key = before["scheme_id"], before["scheme_version"]
+                expected = before | {"status": changes[key]} if key in changes else before
+                ignored = {"updated_at"} if key in changes else set()
+                if {k: v for k, v in post_rows[key].items() if k not in ignored} != {k: v for k, v in expected.items() if k not in ignored}:
+                    raise RuntimeError("attachment retirement changed existing version evidence")
+            if native_successor_plan_sha256(control_plane_evidence_reader()) != native_successor_plan_sha256(control):
+                raise RuntimeError("attachment retirement control plane changed")
+    return {"schema_version": "blackbox-attachment-retirement-result-v1", "action": kwargs["action"],
+            "scheme_ids": sorted(_ATTACHMENT_RETIREMENT_IDS), "plan_sha256": expected_plan_sha256,
+            "approved_by": operator, "prediction_written": False, "historical_facts_changed": False}
 
 
 def _w1a_writer_reclaim_plan_conn(

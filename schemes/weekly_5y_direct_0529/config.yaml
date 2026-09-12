@@ -14,12 +14,3 @@ schedule:
 delivery:
   script: delivery/weekly_5y_direct_0529.py
   metadata: delivery/weekly_5y_direct_0529.json
-native_attachments:
-  __init__.py: e1aad2dec0c66e7e68dce244b21c45014ccf7db55c57dfa1cca1b8b0f71f082e
-  benchmarks/current_backtest_summary.json: 99e5a92d48b3abd60954aa0c90c0119bfb6fd0b61df349f24f75d02ac11808c1
-  benchmarks/current_predictions_sample.csv: 3dd57f05bbaee5b1d54f39a50d7af0238197e4688b563f6ebc545faa16e12f26
-  benchmarks/original_backtest_summary.json: 99e5a92d48b3abd60954aa0c90c0119bfb6fd0b61df349f24f75d02ac11808c1
-  benchmarks/original_predictions_sample.csv: 3dd57f05bbaee5b1d54f39a50d7af0238197e4688b563f6ebc545faa16e12f26
-  core/__init__.py: 38032282e90d220f042ea4a1fb497c80ca79141b1f9306da5d0d99485ffa2b3c
-  core/rule_vote.py: 92f1090da6c8ab9d2123f08a8c0d4b9943dfb4e34d01059c60c91529891ad6f5
-  predict.py: d897c03688590d1f9af19411fec450a7ef20af23aac2c498735c36a251196e72

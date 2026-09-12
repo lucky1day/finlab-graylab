@@ -13,16 +13,3 @@ schedule:
 delivery:
   script: delivery/daily_7y_1_v28.py
   metadata: delivery/daily_7y_1_v28.json
-native_attachments:
-  __init__.py: 027b86aa124c032cac0f7212e6987f674d4159435eeb69a8d45916cd50729441
-  benchmarks/current_backtest_summary.json: 5007c2726bc7cce987ce3d48c940fd2d2231752d17b4029565f0e07b1c9b982f
-  benchmarks/current_predictions_sample.csv: 81c1b7010b5fe8475ba48fb6d3108a0eb07cb4ce70fd2aa7a6cbf37a38ca4211
-  benchmarks/original_backtest_summary.json: 537483518cf3012970fdef4062c704cb0a71522c17acb3d43af25cf531e0434d
-  benchmarks/original_predictions_sample.csv: 81c1b7010b5fe8475ba48fb6d3108a0eb07cb4ce70fd2aa7a6cbf37a38ca4211
-  core/__init__.py: 45dc0e976c58a22a97e32d24c05f47aa3eec207d37180d9a9daf994cf207b571
-  core/data_alignment.py: 1afa4375a39674e23b43930bd32daea20232a4ca20dce344d09b6b6c42cf8c16
-  core/legacy_bond_common_v28.py.txt: 8a8d6c3bff8d0c36c19f64c4162123a31ca81e904f57ed721663835d7468650c
-  core/legacy_predict_7y_1_v28.py.txt: 37e36955ab3e3fb3f5524af5be429b5b26221fc869163a0ad87693be743883dd
-  core/v28_common.py: 9635b3bbc386422a3e25e43a4bca6ad0bbd6b8581b2d3bbf4b54464376b77950
-  inference.py: 365d9ff3c964f1f03b8a3ffdcb407f2777850febc835c10c14ae1b80c6648ee3
-  predict.py: e62009f571608ebc9aa9b01cca9d395eb5a55efd2247a1babbf180e51a9317b6

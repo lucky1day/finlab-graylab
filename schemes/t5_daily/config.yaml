@@ -24,17 +24,3 @@ deliveries:
   - target_tenor: 10Y
     script: delivery/t5_daily_10y_bbv2.py
     metadata: delivery/t5_daily_10y_bbv2.json
-native_attachments:
-  __init__.py: 102d5f48235f3876f7e259c0c5ad496d83493576ed293523382ea11acdd520c5
-  benchmarks/current_backtest_summary.json: 1ec63c8026341c31d4ec66158323076a36d657014147e0b99c404f6a72891d5c
-  benchmarks/current_predictions_sample.csv: 38f81fa466f4cf13a446258cbe39f330b8262ce9becbe20faabe9a8a12c26427
-  benchmarks/original_backtest_summary.json: 1ec63c8026341c31d4ec66158323076a36d657014147e0b99c404f6a72891d5c
-  benchmarks/original_predictions_sample.csv: 38f81fa466f4cf13a446258cbe39f330b8262ce9becbe20faabe9a8a12c26427
-  core/__init__.py: 5ec03b47735d7df53abce4fdb6e3bcc3347df469f38a072cec0202bdac06e2b0
-  core/common_utils.py: a52cb7742398e8f94ab6af78a5c22f068890955550d76087cb242494405d2aa9
-  core/predict_10y.py: bc850747548f9c68eb8c50d965ee68d9ec070e508c2d0716caa99b580077a544
-  core/predict_3y.py: 150781dc4cb1a5f5875cd1abd10a00786ae93a99dce9626b953f049595ca3854
-  core/predict_5y.py: db79ab2e1274c0b3c8c7c3d8c9beb59009149838e5e7e18edea8151826b48ccc
-  core/predict_7y.py: 65c882818b6b3a250c93ef563bfa6e0cb66821333b99d557171ec5344339fa23
-  latest_prediction.py: 1927bb456c361aa5657662c8639a0179beb60f0a0fd1025182473f3e52b79183
-  predict.py: 0e1e7f7e05244b32fb248170e686f12b480c386a16f737997e12471dbbb18f65

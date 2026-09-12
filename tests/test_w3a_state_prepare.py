@@ -43,7 +43,12 @@ def setup(tmp_path, monkeypatch):
     shutil.copytree(_ROOT / "schemes" / revision._BASE, directory)
     code = source.delivery_script.read_bytes().replace(revision._BEFORE, revision._AFTER)
     (directory / "delivery" / (revision._BASE + ".py")).write_bytes(code)
-    candidate = load_scheme_config(directory / "config.yaml")
+    # 本套验证已认证历史 exact 的 StateSession 安全边界，不把当前无附件版本冒充旧版本。
+    candidate = replace(load_scheme_config(directory / "config.yaml"),
+        config_hash="951e1f5e359d3174d1cdeb94bc82d327cd4dedfb6fca043d5a2a0ac0332b3c4b",
+        scheme_version="be34f35f233b")
+    from shared.versioning import compute_scheme_version
+    assert compute_scheme_version(candidate.code_hash, candidate.config_hash, candidate.manifest_hash) == candidate.scheme_version
     assert (source.scheme_version, candidate.scheme_version) == (prepare._SOURCE_VERSION, prepare._CANDIDATE_VERSION)
     state_root = tmp_path / "states"
     state_root.mkdir(mode=0o700)
