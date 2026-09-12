@@ -289,10 +289,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     for action in ("preflight", "prepare", "cutover", "rollback", "preserve-live"):
         item = migration_actions.add_parser(action)
-        item.add_argument("--wave", choices=["W1B", "W2", "W3A", "W3B"], required=True)
+        item.add_argument("--wave", choices=["W1A", "W1B", "W2", "W3A", "W3B"], required=True)
         item.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
         item.add_argument("--reference-project-root", type=Path, required=True)
-        item.add_argument("--rollback-project-root", type=Path, help="W3A only: actual pre-cutover release, not Native reference")
+        item.add_argument("--rollback-project-root", type=Path, help="W1A/W3A: actual pre-cutover release, not Native reference")
         if action not in {"prepare", "preserve-live"}:
             item.add_argument("--harness-run-id", action="append", required=action != "preflight", metavar="BASE=RUN")
         item.add_argument("--expected-database-name", required=True)
@@ -300,7 +300,7 @@ def _build_parser() -> argparse.ArgumentParser:
         if action == "preflight":
             item.add_argument("--action", choices=["prepare", "cutover", "rollback", "preserve-live"], default="cutover")
         if action in {"preflight", "prepare"}:
-            item.add_argument("--predict-date", help="Preparation only; W1B uses an already-due Saturday, W2/W3A a weekday trading date")
+            item.add_argument("--predict-date", help="Preparation only; W1B uses an already-due Saturday, W1A/W2/W3A a weekday trading date")
         item.add_argument("--work-dir", type=Path, required=action == "prepare", help="W3A cutover/rollback: completed preparation directory")
         if action != "preflight":
             item.add_argument("--expected-plan-sha256", required=True)
@@ -313,6 +313,8 @@ def _run_native_successor_migration_command(
     args: argparse.Namespace,
 ) -> dict[str, object]:
     """同 ID 升级及已跨 ID Writer 回收；不恢复旧跨 ID 激活路由。"""
+    if args.wave == "W1A":
+        return _run_w1a_migration_command(args)
     project_root = args.project_root.resolve()
     w3a_options = {}
     if args.wave == "W3A":
@@ -408,6 +410,40 @@ def _run_native_successor_migration_command(
             expected_server_uuid=args.expected_server_uuid,
             **w3a_options,
         )
+    finally:
+        engine.dispose()
+
+
+def _run_w1a_migration_command(args: argparse.Namespace) -> dict[str, object]:
+    """W1A 仅分派两 base 回收，不扩展旧单目标批次。"""
+    from harness.w1a_reclaim_prepare import build_w1a_reclaim_prepare_preflight, execute_w1a_reclaim_prepare
+    from harness.w1a_writer_reclaim import build_w1a_reclaim_preflight, execute_w1a_reclaim, parse_w1a_run_ids
+
+    action = args.action if args.migration_action == "preflight" else args.migration_action
+    if action not in {"prepare", "cutover", "rollback"}:
+        raise ValueError("W1A does not import or delete historical facts")
+    if args.rollback_project_root is None:
+        raise ValueError("W1A requires explicit rollback-project-root distinct from Native reference")
+    if action != "prepare" and (args.work_dir is None or getattr(args, "predict_date", None)):
+        raise ValueError("W1A cutover/rollback requires completed work-dir and no prediction date")
+    if action == "prepare" and getattr(args, "harness_run_id", None):
+        raise ValueError("W1A preparation creates its own real Harness runs")
+    kwargs = dict(project_root=args.project_root.resolve(), reference_project_root=args.reference_project_root.resolve(),
+                  rollback_project_root=args.rollback_project_root.resolve(), expected_database_name=args.expected_database_name,
+                  expected_server_uuid=args.expected_server_uuid)
+    if action == "prepare":
+        kwargs["predict_date"] = args.predict_date
+        operation = build_w1a_reclaim_prepare_preflight if args.migration_action == "preflight" else execute_w1a_reclaim_prepare
+    else:
+        kwargs.update(harness_run_ids=parse_w1a_run_ids(args.harness_run_id or []), action=action, work_dir=args.work_dir)
+        operation = build_w1a_reclaim_preflight if args.migration_action == "preflight" else execute_w1a_reclaim
+    if args.migration_action != "preflight":
+        kwargs.update(expected_plan_sha256=args.expected_plan_sha256, approved_by=args.approved_by)
+        if action == "prepare":
+            kwargs["work_dir"] = args.work_dir
+    engine = create_engine_from_env()
+    try:
+        return operation(engine, **kwargs)
     finally:
         engine.dispose()
 

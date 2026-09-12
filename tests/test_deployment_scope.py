@@ -21,8 +21,6 @@ MAC_ONLY_SCHEME_IDS = frozenset(
         "monthly_10y_rf_top5_0629",
         "monthly_1y_rf_top30_0629",
         "monthly_5y_knn_top20_0629",
-        "t1_daily",
-        "t5_daily",
         "weekly_avg_10y_lgbm_0529",
         "weekly_avg_1y_lgbm_0529",
         "weekly_avg_5y_lgbm_0529",

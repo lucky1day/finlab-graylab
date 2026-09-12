@@ -4016,6 +4016,247 @@ def apply_same_id_runtime_upgrade(
             "scheme_ids": sorted(old_configs), "plan_sha256": expected_plan_sha256, "approved_by": operator}
 
 
+def _w1a_writer_reclaim_plan_conn(
+    conn, *, old_configs, source_configs, new_configs, harness_run_ids, action,
+    control_plane_evidence, expected_database_name, expected_server_uuid,
+    for_update=False, permitted_runs=(),
+):
+    """封闭 W1A 八身份计划；不把六个源 Writer 伪装成两个源版本。"""
+    from shared.scheme_config_schema import MULTI_TARGET_DELIVERIES
+
+    bases = sorted(MULTI_TARGET_DELIVERIES)
+    aliases = sorted(alias for targets in MULTI_TARGET_DELIVERIES.values() for alias in targets.values())
+    if (action not in {"prepare", "cutover", "rollback"} or set(old_configs) != set(bases)
+            or set(new_configs) != set(bases) or set(source_configs) != set(aliases)
+            or (action != "prepare" and (set(harness_run_ids) != set(bases) or len(set(harness_run_ids.values())) != 2))
+            or (action == "prepare" and harness_run_ids)):
+        raise ValueError("W1A requires two complete bases and six exact source aliases")
+    control = control_plane_evidence
+    scheduler = control.get("scheduler", {})
+    if (control.get("schema_version") != "w1a-writer-reclaim-control-v1" or control.get("wave") != "W1A"
+            or control.get("deployment_target") != "aliyun-gray"
+            or any(scheduler.get(key) != value for key, value in {
+                "control_plane": "systemd_one_shot", "timer_fenced": True, "unique_writer": True, "cadence": "daily"}.items())
+            or control.get("native_canonical_selection") != {key: _same_id_reclaim_identity(cfg) for key, cfg in old_configs.items()}
+            or control.get("source_canonical_selection") != {key: _same_id_reclaim_identity(cfg) for key, cfg in source_configs.items()}
+            or control.get("candidate_canonical_selection") != {key: _same_id_reclaim_identity(cfg) for key, cfg in new_configs.items()}):
+        raise RuntimeError("W1A requires fenced canonical control evidence")
+    if _dialect_name(conn) == "mysql":
+        identity = dict(conn.execute(text("SELECT DATABASE() AS database_name, @@server_uuid AS server_uuid")).mappings().one())
+        if identity != {"database_name": _require_nonempty(expected_database_name, "expected_database_name"),
+                        "server_uuid": _require_nonempty(expected_server_uuid, "expected_server_uuid")}:
+            raise RuntimeError("W1A database identity differs")
+    elif _dialect_name(conn) == "sqlite":
+        identity = {"isolated_test": "sqlite"}
+    else:
+        raise RuntimeError("W1A requires MySQL or isolated SQLite")
+    migrations = _same_id_rows_conn(conn, "t_schema_migrations", "1=1", {}, order="version", for_update=for_update)
+    if not migrations or max(int(row["version"]) for row in migrations) != 24 or any(row["state"] != "APPLIED" for row in migrations):
+        raise RuntimeError("W1A requires fully applied schema 024")
+    ids = sorted(bases + aliases)
+    params = {f"id_{i}": key for i, key in enumerate(ids)}
+    scope = "IN (" + ",".join(":" + key for key in params) + ")"
+    versions = _same_id_rows_conn(conn, "t_scheme_versions", f"scheme_id {scope}", params, order="scheme_id,scheme_version", for_update=for_update)
+    registry = _same_id_rows_conn(conn, "t_scheme_registry", f"base_scheme_id {scope}", params, order="scheme_id", for_update=for_update)
+    harness = _same_id_rows_conn(conn, "t_harness_runs", f"scheme_id {scope}", params, order="harness_run_id", for_update=for_update)
+    gates = _same_id_rows_conn(conn, "t_harness_gate_results", f"harness_run_id IN (SELECT harness_run_id FROM t_harness_runs WHERE scheme_id {scope})",
+                               params, order="id", for_update=for_update)
+    for table, order in (("t_scheme_runs", "run_id"), ("t_backtest_runs", "id")):
+        if _same_id_rows_conn(conn, table, f"scheme_id {scope} AND status='running'", params, order=order, for_update=for_update):
+            raise RuntimeError("W1A requires zero running algorithms")
+    for row in harness:
+        if row["harness_run_id"] not in permitted_runs:
+            if row["status"] == "running" or (action == "prepare" and row["scheme_id"] in new_configs
+                    and row["scheme_version"] == new_configs[row["scheme_id"]].scheme_version
+                    and row["stage"] == "native-runtime-upgrade"):
+                raise RuntimeError("W1A preparation exists or is running; inspect retained evidence, never repeat")
+    evidence, backtests, historical = {}, {}, []
+    by_version = {(row["scheme_id"], row["scheme_version"]): row for row in versions}
+    before_cutover = action in {"prepare", "cutover"}
+    known_versions = set()
+    for base in bases:
+        old, new = old_configs[base], new_configs[base]
+        tenors = list(MULTI_TARGET_DELIVERIES[base])
+        horizon, task = (1, "T+1") if base == "t1_daily" else (5, "T+5")
+        if (old.runtime_type != "native_adapter" or new.runtime_type != "blackbox_v2"
+                or old.scheme_id != base or new.scheme_id != base or old.scheme_version == new.scheme_version
+                or old.tenors != tenors or new.tenors != tenors or getattr(new, "incremental_state", False)):
+            raise ValueError("W1A base identity/target set differs")
+        _validate_blackbox_revision_candidate(new, require_evidence=True)
+        for cfg in (old, new):
+            if (cfg.horizon, cfg.task_type, cfg.frequency, cfg.schedule.cron, cfg.schedule.timezone) != (
+                    horizon, task, "daily", "3 7 * * 1-5", "Asia/Shanghai"):
+                raise ValueError("W1A base task or schedule differs")
+        old_row = by_version.get((base, old.scheme_version))
+        new_row = by_version.get((base, new.scheme_version))
+        if old_row is None or old_row["status"] != "retired" or (
+                before_cutover and new_row is not None and new_row["status"] != "retired") or (
+                not before_cutover and (new_row is None or new_row["status"] != "active")):
+            raise RuntimeError("W1A base lifecycle differs")
+        configs = [(old, old_row), (new, new_row)]
+        for tenor, alias in MULTI_TARGET_DELIVERIES[base].items():
+            source = source_configs[alias]
+            row = by_version.get((alias, source.scheme_version))
+            if (source.scheme_id != alias or source.runtime_type != "blackbox_v2" or source.tenors != [tenor]
+                    or getattr(source, "incremental_state", False)
+                    or any(getattr(source, key) != getattr(new, key) for key in ("horizon", "task_type", "frequency", "target_rule", "algorithm_version", "contract_version", "runtime_profile"))
+                    or row is None or row["status"] != ("active" if before_cutover else "retired")):
+                raise RuntimeError("W1A source target/version differs")
+            conversion = control.get("release", {}).get("identity_conversions", {}).get(base, {}).get(alias, {})
+            if (conversion.get("source_scheme_id") != alias or conversion.get("scheme_id") != base
+                    or conversion.get("target_tenor") != tenor or conversion.get("source_code_sha256") != source.code_hash
+                    or conversion.get("candidate_code_sha256") != source.code_hash):
+                raise RuntimeError("W1A requires exact per-target identity conversion")
+            configs.append((source, row))
+            source_runs = _same_id_rows_conn(conn, "t_backtest_runs", "scheme_id=:id AND status='success' AND run_mode='persist'",
+                {"id": alias}, order="id", for_update=for_update)
+            matches = [run for run in source_runs if run.get("data_source") == "blackbox_v2_current_snapshot_as_of"
+                and run.get("code_hash") == source.code_hash and run.get("config_hash") == source.config_hash
+                and all(_json_mapping(run.get("summary")).get(field) == getattr(source, field) for field in ("scheme_version", "manifest_hash", "runtime_profile"))
+                and all(_json_mapping(run.get("summary")).get(field) for field in ("environment_fingerprint", "data_snapshot_id", "generation_id"))]
+            if not matches:
+                raise RuntimeError("W1A source exact backtest is missing")
+            selected = matches[-1]
+            rows = _same_id_rows_conn(conn, "t_backtest_predictions", "run_id=:run", {"run": selected["id"]}, order="id", for_update=for_update)
+            if not rows or any((row["scheme_id"], row["target_tenor"], row["horizon"]) != (alias, tenor, horizon) for row in rows):
+                raise RuntimeError("W1A source backtest target coverage differs")
+            backtests[alias] = {"backtest_run_id": selected["id"], "sha256": native_successor_plan_sha256({"run": selected, "rows": rows})}
+        for cfg, row in configs:
+            known_versions.add((cfg.scheme_id, cfg.scheme_version))
+            if row is not None:
+                _assert_migration_version_identity(cfg, row)
+                if cfg.runtime_type == "blackbox_v2" and any(row.get(field) != getattr(cfg, field) for field in ("algorithm_version", "contract_version", "runtime_profile")):
+                    raise RuntimeError("W1A runtime version identity differs")
+        if new_row is not None and any(new_row.get(field) != getattr(new, field) for field in ("environment_fingerprint", "data_snapshot_id")):
+            raise RuntimeError("W1A candidate environment/input differs")
+        if action != "prepare":
+            evidence[base] = _same_id_evidence_conn(conn, old, new, harness_run_ids[base], control, for_update=for_update)
+            readiness = control.get("readiness", {})
+            summaries = [_json_mapping(row["summary_json"])["evidence"][0]["value"] for row in gates
+                         if row["harness_run_id"] == harness_run_ids[base] and row["gate_name"] == "native-runtime-upgrade"]
+            if (readiness.get("harness_run_ids") != dict(harness_run_ids)
+                    or readiness.get("prepare_database_identity_sha256") != native_successor_plan_sha256(identity)
+                    or any(summaries[0].get(field) != readiness.get(field, {}).get(base) for field in ("equivalence_sha256", "local_execution_sha256"))):
+                raise RuntimeError("W1A Gate differs from completed local preparation")
+    for row in versions:
+        if (row["scheme_id"], row["scheme_version"]) in known_versions:
+            continue
+        native = row["scheme_id"] in bases and row["runtime_type"] == "native_adapter"
+        allowed = {"retired", "paused", "active"} if native and before_cutover else {"retired", "paused"} if native else {"retired"}
+        if row["runtime_type"] not in {"native_adapter", "blackbox_v2"} or row["status"] not in allowed:
+            raise RuntimeError("W1A unexpected historical Writer")
+        if native and row["status"] == "active":
+            historical.append({"scheme_id": row["scheme_id"], "scheme_version": row["scheme_version"]})
+    for cfg in (*old_configs.values(), *source_configs.values()):
+        original = cfg.scheme_id in bases
+        status = ("archived" if original else "active") if before_cutover else ("active" if original else "archived")
+        runtime = "native_adapter" if original and before_cutover else "blackbox_v2"
+        rows = [row for row in registry if row["base_scheme_id"] == cfg.scheme_id]
+        expected = {registry_scheme_id(cfg.scheme_id, cfg.horizon, tenor): tenor for tenor in cfg.tenors}
+        if {row["scheme_id"] for row in rows} != set(expected):
+            raise RuntimeError("W1A Registry target coverage differs")
+        for row in rows:
+            tenor = expected[row["scheme_id"]]
+            wanted = {"runtime_type": runtime, "status": status, "horizon": cfg.horizon, "task_type": cfg.task_type,
+                      "frequency": "daily", "target_tenor": tenor, "schedule_cron": cfg.schedule.cron,
+                      "schedule_timezone": cfg.schedule.timezone}
+            if any(row.get(key) != value for key, value in wanted.items()) or _normalize_registry_tenors(row.get("tenors")) != [tenor]:
+                raise RuntimeError("W1A Registry business identity differs")
+    facts = _same_id_fact_snapshot_conn(conn, ids, for_update=for_update)
+    if action == "prepare":
+        facts.pop("t_harness_runs")
+        facts.pop("t_harness_gate_results")
+        facts["historical_harness"] = native_successor_plan_sha256({
+            "runs": [row for row in harness if row["harness_run_id"] not in permitted_runs],
+            "gates": [row for row in gates if row["harness_run_id"] not in permitted_runs]})
+    unaffected = _same_id_rows_conn(conn, "t_scheme_registry", f"base_scheme_id NOT {scope}", params, order="scheme_id", for_update=for_update)
+    return {"schema_version": "w1a-writer-reclaim-plan-v1", "action": action,
+            "database_identity_sha256": native_successor_plan_sha256(identity), "schema_migration_version": 24,
+            "schema_sha256": native_successor_plan_sha256({"rows": migrations}), "scheme_ids": bases, "source_scheme_ids": aliases,
+            "versions": versions, "registry": registry, "source_backtests": backtests, "evidence": evidence,
+            "historical_native_versions_to_retire": historical, "facts": facts, "control": dict(control),
+            "unaffected_registry_sha256": native_successor_plan_sha256({"rows": unaffected})}
+
+
+def read_w1a_writer_reclaim_plan(engine, **kwargs):
+    """一致只读 W1A 计划，包括准备前零运行审计校验。"""
+    with engine.connect() as conn:
+        if engine.dialect.name == "mysql":
+            conn.exec_driver_sql("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            conn.exec_driver_sql("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
+        try:
+            return _w1a_writer_reclaim_plan_conn(conn, **kwargs)
+        finally:
+            conn.rollback()
+
+
+def apply_w1a_writer_reclaim(engine, *, expected_plan_sha256, approved_by, approved_at,
+                            control_plane_evidence_reader, **kwargs):
+    """八个既有 lifecycle 锁、单事务完成六目标 Writer 切换；零历史事实写入。"""
+    from shared.scheme_config_schema import MULTI_TARGET_DELIVERIES
+
+    operator = _require_nonempty(approved_by, "approved_by")
+    if (kwargs.get("action") not in {"cutover", "rollback"} or not isinstance(approved_at, datetime)
+            or not isinstance(expected_plan_sha256, str) or len(expected_plan_sha256) != 64
+            or any(c not in "0123456789abcdef" for c in expected_plan_sha256)):
+        raise ValueError("W1A apply requires cutover/rollback and approved exact plan")
+    ids = sorted((*MULTI_TARGET_DELIVERIES, *(alias for targets in MULTI_TARGET_DELIVERIES.values() for alias in targets.values())))
+    with ExitStack() as locks:
+        if engine.dialect.name != "sqlite":
+            for key in ids:
+                locks.enter_context(_blackbox_activation_advisory_lock(engine, scheme_id=key))
+        with engine.begin() as conn:
+            control = control_plane_evidence_reader()
+            plan = _w1a_writer_reclaim_plan_conn(conn, **kwargs, control_plane_evidence=control, for_update=True)
+            if native_successor_plan_sha256(plan) != expected_plan_sha256:
+                raise RuntimeError("W1A plan changed before commit")
+            cutover = kwargs["action"] == "cutover"
+            changes = [(cfg.scheme_id, cfg.scheme_version, "active" if cutover else "retired", "retired" if cutover else "active")
+                       for cfg in kwargs["source_configs"].values()]
+            changes += [(row["scheme_id"], row["scheme_version"], "active", "retired") for row in plan["historical_native_versions_to_retire"]]
+            if not cutover:
+                changes += [(cfg.scheme_id, cfg.scheme_version, "active", "retired") for cfg in kwargs["new_configs"].values()]
+            for key, version, prior, status in changes:
+                result = conn.execute(text("UPDATE t_scheme_versions SET status=:status WHERE scheme_id=:id AND scheme_version=:version AND status=:prior"),
+                                      {"id": key, "version": version, "status": status, "prior": prior})
+                if result.rowcount != 1:
+                    raise RuntimeError("W1A exact version update count differs")
+            if cutover:
+                for cfg in kwargs["new_configs"].values():
+                    _upsert_scheme_version_conn(conn, cfg, trusted_status="active", approved_by=operator, approved_at=_mysql_utc_datetime(approved_at))
+            for row in plan["registry"]:
+                original = row["base_scheme_id"] in MULTI_TARGET_DELIVERIES
+                status = "active" if original == cutover else "archived"
+                runtime = "blackbox_v2" if not original or cutover else "native_adapter"
+                changed = conn.execute(text("UPDATE t_scheme_registry SET status=:status,runtime_type=:runtime WHERE scheme_id=:id AND status=:prior AND runtime_type=:prior_runtime"),
+                    {"id": row["scheme_id"], "status": status, "runtime": runtime, "prior": row["status"], "prior_runtime": row["runtime_type"]})
+                if changed.rowcount != 1:
+                    raise RuntimeError("W1A Registry update count differs")
+            post = _w1a_writer_reclaim_plan_conn(conn, **(kwargs | {"action": "rollback" if cutover else "cutover"}),
+                                                control_plane_evidence=control, for_update=True)
+            if post["facts"] != plan["facts"] or post["unaffected_registry_sha256"] != plan["unaffected_registry_sha256"]:
+                raise RuntimeError("W1A changed historical facts or unrelated Registry")
+            for before, after in zip(plan["registry"], post["registry"], strict=True):
+                if {k: v for k, v in before.items() if k not in {"status", "runtime_type", "updated_at"}} != {
+                        k: v for k, v in after.items() if k not in {"status", "runtime_type", "updated_at"}}:
+                    raise RuntimeError("W1A Registry business metadata changed")
+            changed_status = {(key, version): status for key, version, _, status in changes}
+            post_versions = {(row["scheme_id"], row["scheme_version"]): row for row in post["versions"]}
+            for before in plan["versions"]:
+                key = before["scheme_id"], before["scheme_version"]
+                if key[0] in kwargs["new_configs"] and key[1] == kwargs["new_configs"][key[0]].scheme_version:
+                    continue
+                expected = before | {"status": changed_status[key]} if key in changed_status else before
+                ignored = {"updated_at"} if key in changed_status else set()
+                if {k: v for k, v in post_versions[key].items() if k not in ignored} != {k: v for k, v in expected.items() if k not in ignored}:
+                    raise RuntimeError("W1A historical version metadata changed")
+            if native_successor_plan_sha256(control_plane_evidence_reader()) != native_successor_plan_sha256(control):
+                raise RuntimeError("W1A control plane changed during transaction")
+    return {"schema_version": "w1a-writer-reclaim-result-v1", "action": kwargs["action"],
+            "plan_sha256": expected_plan_sha256, "approved_by": operator,
+            "prediction_written": False, "historical_facts_changed": False}
+
+
 def _same_id_reclaim_identity(cfg: SchemeConfig) -> dict[str, object]:
     """绑定三种 canonical 身份，不用历史 active 行推断 Native Writer。"""
     return {key: getattr(cfg, key) for key in (

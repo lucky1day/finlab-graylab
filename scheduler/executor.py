@@ -550,10 +550,11 @@ def run_blackbox_scheme_subprocess(
     process_fence: Callable[[], None] | None = None,
     process_start_guard: ProcessStartGuard | None = None,
     rebuild_state: bool = False,
+    profile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE,
 ) -> list[PredictionRecord]:
     """生成平台输入并通过 Blackbox V2 CLI 执行一个实盘 Request。"""
     from scheduler.blackbox_v2_runner import (
-        DEFAULT_RUNTIME_PROFILE, run_blackbox_predict, state_binding_for_scheme,
+        run_blackbox_predict, state_binding_for_scheme,
     )
 
     process_start_guard = require_process_start_guard(
@@ -618,9 +619,9 @@ def run_blackbox_scheme_subprocess(
         snapshot,
         factor_input_mode=getattr(cfg, "factor_input_mode", None) or "legacy_v1",
     )
-    blackbox_env = DEFAULT_RUNTIME_PROFILE.conda_env if algo_env == DEFAULT_ALGO_ENV else algo_env
+    blackbox_env = profile.conda_env if algo_env == DEFAULT_ALGO_ENV else algo_env
     profile = replace(
-        DEFAULT_RUNTIME_PROFILE,
+        profile,
         conda_env=blackbox_env,
     )
     records = []
