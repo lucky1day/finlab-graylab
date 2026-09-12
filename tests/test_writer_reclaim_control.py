@@ -19,7 +19,7 @@ def _runs(wave):
     return {key: f"reclaim-{index}" for index, key in enumerate(reclaim.RECLAIM_WAVES[wave])}
 
 
-@pytest.mark.parametrize("wave", ["W2", "W3A"])
+@pytest.mark.parametrize("wave", ["W1B", "W2", "W3A"])
 @pytest.mark.parametrize("action", ["preflight", "cutover", "rollback"])
 def test_reclaim_uses_only_same_id_route(monkeypatch, wave, action):
     args = ["migrate-native-successor", action, "--wave", wave,
@@ -57,13 +57,14 @@ def test_incomplete_or_fake_evidence_never_opens_database(monkeypatch):
 
 
 @pytest.mark.parametrize("action", ["preflight", "prepare"])
-def test_w2_prepare_routes_without_caller_supplied_success(monkeypatch, action):
+@pytest.mark.parametrize("wave", ["W1B", "W2"])
+def test_w2_prepare_routes_without_caller_supplied_success(monkeypatch, action, wave):
     called = MagicMock(return_value={"prepare": True})
     engine = MagicMock()
     monkeypatch.setattr(cli, "create_engine_from_env", lambda: engine)
     monkeypatch.setattr(cli, "build_w2_reclaim_prepare_preflight", called)
     monkeypatch.setattr(cli, "execute_w2_reclaim_prepare", called)
-    args = ["migrate-native-successor", action, "--wave", "W2",
+    args = ["migrate-native-successor", action, "--wave", wave,
             "--reference-project-root", "/reference", "--expected-database-name", "test",
             "--expected-server-uuid", "test-only", "--predict-date", "2026-09-11"]
     args += ["--action", "prepare"] if action == "preflight" else [

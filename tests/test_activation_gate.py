@@ -16,9 +16,6 @@ from scheduler.repository import _expected_registry_identity
 from tests.harness_control_plane import create_harness_control_plane_engine
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-
 class NativeActivationValidationTests(unittest.TestCase):
     def test_current_full_all_history_returns_initial_admission_profile(self) -> None:
         from harness.gates.activate_gate import (
@@ -144,7 +141,7 @@ def _write_native_policy(root: Path) -> None:
                 "policy_version": "1.0",
                 "new_scheme_runtime_type": "blackbox_v2",
                 "native_v1_mode": "maintenance_only",
-                "legacy_native_scheme_ids": ["t5_daily"],
+                "legacy_native_scheme_ids": ["native_maintenance_fixture"],
             }
         ),
         encoding="utf-8",
@@ -152,12 +149,27 @@ def _write_native_policy(root: Path) -> None:
 
 
 def _write_native_scheme(root: Path):
-    config_path = root / "schemes" / "t5_daily" / "config.yaml"
+    config_path = root / "schemes" / "native_maintenance_fixture" / "config.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    source = (PROJECT_ROOT / "schemes" / "t5_daily" / "config.yaml").read_text(
-        encoding="utf-8"
+    config_path.write_text(
+        "scheme_id: native_maintenance_fixture\n"
+        "runtime_type: native_adapter\n"
+        "name: Native maintenance fixture\n"
+        "description: Self-contained multi-target Native contract fixture\n"
+        "horizon: 5\n"
+        "task_type: T+5\n"
+        "tenors: [3Y, 5Y, 7Y, 10Y]\n"
+        "frequency: daily\n"
+        "schedule:\n"
+        "  cron: '3 7 * * 1-5'\n"
+        "  timezone: Asia/Shanghai\n"
+        "entry_point: predict.run\n"
+        "status: active\n"
+        "input_spec:\n"
+        "  data_version: fixture.v1\n"
+        "  required_columns: [date, TB0YWI0C]\n",
+        encoding="utf-8",
     )
-    config_path.write_text(source, encoding="utf-8")
     return load_scheme_config(config_path)
 
 
@@ -247,13 +259,13 @@ def _seed_prior_admission(engine, cfg) -> None:
             text(
                 "INSERT INTO t_scheme_versions "
                 "(scheme_id, scheme_version, runtime_type, status) VALUES "
-                "('t5_daily', 'prior-native-version', 'native_adapter', 'active')"
+                "('native_maintenance_fixture', 'prior-native-version', 'native_adapter', 'active')"
             )
         )
         conn.execute(
             text(
                 "INSERT INTO t_harness_runs VALUES "
-                "('hr-prior', 't5_daily', 'prior-native-version', 'all', 'passed', "
+                "('hr-prior', 'native_maintenance_fixture', 'prior-native-version', 'all', 'passed', "
                 "'2026-08-03 12:00:00')"
             )
         )
@@ -311,7 +323,7 @@ def _seed_maintenance_run(
         conn.execute(
             text(
                 "INSERT INTO t_harness_runs VALUES "
-                "('hr-maintenance', 't5_daily', :scheme_version, "
+                "('hr-maintenance', 'native_maintenance_fixture', :scheme_version, "
                 "'native-maintenance', 'passed', '2026-08-04 12:00:00')"
             ),
             {"scheme_version": scheme_version},

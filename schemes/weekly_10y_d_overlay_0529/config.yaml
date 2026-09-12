@@ -1,26 +1,26 @@
 scheme_id: weekly_10y_d_overlay_0529
-runtime_type: native_adapter
-name: "0529周度10Y D-overlay"
-description: "0529 周频10Y方向预测，Score主模型叠加Model2 D-overlay信号，周六预测下一周最后交易日相对本周最后交易日的10Y方向"
-horizon: 6
-task_type: weekly_point
-tenors: ["10Y"]
-frequency: weekly
+runtime_type: blackbox_v2
+input_source: data_bridge_current
+factor_input_mode: algorithm_managed
+runtime_profile: blackbox-v2-v1
+data_schema_version: data-bridge-v1
+fact_horizon: 6
+status: paused
+version_status: draft
 schedule:
-  cron: "30 11 * * 6"
-  timezone: "Asia/Shanghai"
-entry_point: predict.run
-status: active
-input_spec:
-  data_version: shared_data_service_weekly.v1
-  required_columns: ["week_id", "TB0YWI3C", "TB1YWI3C", "TB5YWI3C"]
-  weekly_variant: unified
-target_rule: "next_week_last_trading_day_vs_current_week_last_trading_day"
-backtest:
-  runner: backtests.weekly_10y_d_overlay_0529_reproduction
-  benchmark_id: model_muti_0529
-  data_source: framework_db_aligned
-  benchmark_required: true
-  predict_start_date: "2025-01-01"
-  start_week: 200901
-  end_week: 202622
+  cron: '30 11 * * 6'
+  timezone: Asia/Shanghai
+  timeout_sec: 3600
+delivery:
+  script: delivery/weekly_10y_d_overlay_0529.py
+  metadata: delivery/weekly_10y_d_overlay_0529.json
+native_attachments:
+  __init__.py: b5b1a2822cf16c4954ec2de310b0d3e8e5d34a921e8c35be5f14dfaaad87a200
+  benchmarks/current_backtest_summary.json: 856f541dd0389459aa4109ac3490356892520a7b3f9d032c8fe968c5e18e8bff
+  benchmarks/current_predictions_sample.csv: 32095462e3484cccc3a3292322eeacbdcea328798d356bde91bd08f6937e28c7
+  benchmarks/original_backtest_summary.json: 856f541dd0389459aa4109ac3490356892520a7b3f9d032c8fe968c5e18e8bff
+  benchmarks/original_predictions_sample.csv: 671ca1fcf5db672407d6cae0cc1bbe8dd94d85f2c4c9fbdc5c89396fb9b8ab91
+  core/__init__.py: cfc85a479792c59f1d5aea4dfa55904bc1df4a1c55dcba4b8ce44a034cb91412
+  core/d_overlay.py: d57349b5a556b4e315354ee4551fa2cc53b29fd263cb90e481eb1c91c4288e4a
+  core/legacy_weekly_10y_d_overlay_0529.py.txt: 2aebf6650102c1a0966f6de59d33d4b936421cf8dfc3fde3970f37effee6c865
+  predict.py: bacb13c5dbc69aa7ab07e72c7f65ab3dc91c24c3f58a747c98363d37df8c61dd

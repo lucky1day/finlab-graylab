@@ -1,22 +1,31 @@
 scheme_id: t1_daily
-runtime_type: native_adapter
-name: "0529原始T1-LGBM滚动基准"
-description: "0529 T+1 日频 LightGBM 滚动训练基准方案；adapter 只改输入输出，不改核心算法。"
-horizon: 1
-task_type: "T+1"
-tenors: ["5Y", "10Y"]
-frequency: daily
+runtime_type: blackbox_v2
+input_source: data_bridge_current
+factor_input_mode: algorithm_managed
+runtime_profile: blackbox-v2-v1
+data_schema_version: data-bridge-v1
+display_name: "0529原始T1-LGBM滚动基准"
+status: paused
+version_status: draft
 schedule:
   cron: "3 7 * * 1-5"
   timezone: "Asia/Shanghai"
-entry_point: predict.run
-status: active
-input_spec:
-  data_version: shared_data_service_daily.v1
-  required_columns: ["date", "TB1YWI0C", "TB5YWI0C", "TB0YWI0C"]
-backtest:
-  runner: backtests.daily_0529_reproduction
-  benchmark_id: model_muti_0529
-  data_source: framework_db_aligned
-  benchmark_required: true
-  start_date: "2025-01-01"
+  timeout_sec: 3600
+deliveries:
+  - target_tenor: 5Y
+    script: delivery/t1_daily_5y_bbv2.py
+    metadata: delivery/t1_daily_5y_bbv2.json
+  - target_tenor: 10Y
+    script: delivery/t1_daily_10y_bbv2.py
+    metadata: delivery/t1_daily_10y_bbv2.json
+native_attachments:
+  __init__.py: 06ee214ede998189121bbebc6b6484b5faa04758b8a1920992b73fb41ca95837
+  benchmarks/current_backtest_summary.json: 9e53357396249226fa310f11bdf7011a62da089b3b5eb0ff1cb02c014c9d351f
+  benchmarks/current_predictions_sample.csv: adf53f752ce1a42f35b684bb60f1033baf7705858e453d762c1470a82b8fb11a
+  benchmarks/original_backtest_summary.json: 9e53357396249226fa310f11bdf7011a62da089b3b5eb0ff1cb02c014c9d351f
+  benchmarks/original_predictions_sample.csv: adf53f752ce1a42f35b684bb60f1033baf7705858e453d762c1470a82b8fb11a
+  core/__init__.py: 46c7bc0dc84f3f1b3330138205b0366e288b135fa6918bb61cbae5ee3ecb25a7
+  core/config.py: d93c2c42c97e5b2db6e08253ada6cc58f52507b6585b90181e71c3989e5a3c7b
+  core/feature_engineering.py: 10d0be9e840cf28f8bb623412bcdf92d807193fcf33aeaeced0b17641fc11b0a
+  core/lgbm_predictor.py: 955be5036d3a8def22f87cdaeddd352e718654be5498f59e04f6bdf67229508f
+  predict.py: 3a34afb34326a5923cef81ba6939b84c77e5e0b3617849708a3b37fbe938946f

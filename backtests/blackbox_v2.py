@@ -190,3 +190,38 @@ def _require_unique_persisted_dates(rows: list[dict]) -> None:
     predict_dates = [str(row["predict_date"]) for row in rows]
     if len(predict_dates) != len(set(predict_dates)):
         raise ValueError("Blackbox persisted backtest contains duplicate predict_date")
+
+
+def merge_blackbox_historical_outputs(outputs: Sequence[RunOutput]) -> RunOutput:
+    """聚合所有目标已校验的回测，供调用方一次原子提交。"""
+    if not outputs:
+        raise ValueError("multi-target backtest requires outputs")
+    first = outputs[0]
+    common = ("scheme_version", "generation_id", "data_snapshot_id", "backtest_start_date",
+              "target_date_before", "total_deadline_sec", "replay_semantics")
+    rows = []
+    targets = set()
+    for output in outputs:
+        if (output.scheme_id != first.scheme_id or output.data_source != first.data_source
+                or any(output.summary.get(key) != first.summary.get(key) for key in common)):
+            raise ValueError("multi-target backtest identity or input mismatch")
+        output_targets = {(row["target_tenor"], row["horizon"]) for row in output.rows}
+        if len(output_targets) != 1 or targets & output_targets:
+            raise ValueError("multi-target backtest requires distinct complete target outputs")
+        targets.update(output_targets)
+        rows.extend(output.rows)
+    benchmark_ids = {row["benchmark_id"] for row in rows}
+    if len(benchmark_ids) != 1:
+        raise ValueError("multi-target backtest benchmark mismatch")
+    merged = make_run_output(
+        scheme_id=first.scheme_id, data_source=first.data_source,
+        start_date=min(output.start_date for output in outputs),
+        end_date=max(output.end_date for output in outputs), rows=rows,
+        benchmark_id=next(iter(benchmark_ids)),
+    )
+    merged.summary.update({key: first.summary.get(key) for key in common})
+    merged.summary["request_count"] = sum(output.summary["request_count"] for output in outputs)
+    for field in ("actual_predict_date", "actual_target_date"):
+        merged.summary[f"{field}_min"] = min(output.summary[f"{field}_min"] for output in outputs)
+        merged.summary[f"{field}_max"] = max(output.summary[f"{field}_max"] for output in outputs)
+    return merged

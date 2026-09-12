@@ -37,8 +37,13 @@ PRESERVED_FACT_HORIZONS = {
     "monthly_5y_knn_top20_0629": ("monthly", 30),
 }
 
-# 临时迁移例外：仅已接入原 ID 的 W2/W3A/W3B 候选可声明不参与执行的 Native 附件。
+# 临时迁移例外：仅已批准原 ID 候选可声明不参与执行的 Native 附件。
 NATIVE_ATTACHMENT_SCHEMES = frozenset({
+    "t1_daily",
+    "t5_daily",
+    "weekly_5y_direct_0529",
+    "weekly_7y_cross_d_overlay_0529",
+    "weekly_10y_d_overlay_0529",
     "daily_5y_2_v28",
     "daily_7y_1_v28",
     "liwei_0616_cons_sda_k3_div_k10",
@@ -47,6 +52,37 @@ NATIVE_ATTACHMENT_SCHEMES = frozenset({
     "liwei_0616_10y01_full_oos_k3_div_k10",
     "liwei_0616_10y02_cons_say_k3_div_k5",
 })
+
+# 仅已批准的多目标迁移使用独立两文件包，保留原交付 basename。
+MULTI_TARGET_DELIVERIES = {
+    "t1_daily": {tenor: f"t1_daily_{tenor.lower()}_bbv2" for tenor in ("5Y", "10Y")},
+    "t5_daily": {tenor: f"t5_daily_{tenor.lower()}_bbv2" for tenor in ("3Y", "5Y", "7Y", "10Y")},
+}
+
+
+def validate_target_deliveries(raw: dict) -> None:
+    """限定多目标迁移交付映射，不扩大普通两文件或增量状态合同。"""
+    scheme_id = raw.get("scheme_id")
+    expected = MULTI_TARGET_DELIVERIES.get(scheme_id) if isinstance(scheme_id, str) else None
+    deliveries = raw.get("deliveries")
+    if raw.get("runtime_type") != "blackbox_v2" or expected is None:
+        raise ValueError("deliveries requires an approved multi-target migration scheme")
+    if "delivery" in raw or "incremental_state" in raw:
+        raise ValueError("deliveries cannot coexist with delivery or incremental_state")
+    if not isinstance(deliveries, list) or len(deliveries) != len(expected):
+        raise ValueError("deliveries must contain every approved target exactly once")
+    seen = set()
+    for item in deliveries:
+        if not isinstance(item, dict) or set(item) != {"target_tenor", "script", "metadata"}:
+            raise ValueError("deliveries entries require target_tenor, script and metadata")
+        tenor = item["target_tenor"]
+        if not isinstance(tenor, str) or tenor not in expected or tenor in seen:
+            raise ValueError("deliveries must contain every approved target exactly once")
+        seen.add(tenor)
+        basename = expected[tenor]
+        if (item["script"] != f"delivery/{basename}.py"
+                or item["metadata"] != f"delivery/{basename}.json"):
+            raise ValueError("deliveries paths must match approved original basenames")
 
 
 def validate_native_attachments(scheme_id: str, attachments: object) -> None:
@@ -62,6 +98,7 @@ def validate_native_attachments(scheme_id: str, attachments: object) -> None:
         if (any(part in {"", ".", "..", "__pycache__"} for part in parts)
                 or "\\" in name
                 or not (name in {"predict.py", "inference.py", "__init__.py"}
+                        or scheme_id == "t5_daily" and name == "latest_prediction.py"
                         or len(parts) > 1 and parts[0] in {"core", "benchmarks"})):
             raise ValueError("native_attachments path is outside the retained Native layout")
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
@@ -119,6 +156,12 @@ def validate_config(raw: dict, dirname: str) -> list[str]:
     runtime_type = raw.get("runtime_type", "native_adapter")
     if runtime_type not in ALLOWED_RUNTIME_TYPES:
         errors.append("runtime_type must be native_adapter or blackbox_v2")
+
+    if "deliveries" in raw:
+        try:
+            validate_target_deliveries(raw)
+        except ValueError as exc:
+            errors.append(str(exc))
 
     if "fact_horizon" in raw:
         expected = PRESERVED_FACT_HORIZONS.get(scheme_id) if isinstance(scheme_id, str) else None
@@ -327,6 +370,8 @@ def _validate_blackbox_config(raw: dict) -> list[str]:
                 "Blackbox V2 schedule.timeout_sec must be a positive integer"
             )
 
+    if "deliveries" in raw:
+        return errors
     delivery = raw.get("delivery")
     if not isinstance(delivery, dict):
         errors.append("delivery must be a mapping")

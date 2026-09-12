@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from functools import partial
 
-from backtests.blackbox_v2 import run_blackbox_historical_backtest
+from backtests.blackbox_v2 import merge_blackbox_historical_outputs, run_blackbox_historical_backtest
 from backtests.repository import persist_backtest_output_atomic
 from harness.context import GateContext
 from harness.gates.base import Gate, create_default_engine, guarded_result, utc_now
@@ -23,9 +24,9 @@ from scheduler.blackbox_v2_runner import (
     run_blackbox_backtest,
     state_binding_for_scheme,
 )
-from scheduler.discovery import SchemeConfig, load_scheme_config
+from scheduler.discovery import SchemeConfig, blackbox_deliveries, load_scheme_config
 from scheduler.process_control import ProcessGroupTerminationError
-from shared.blackbox_v2.contracts import BlackboxMetadata, load_metadata
+from shared.blackbox_v2.contracts import BlackboxMetadata
 from shared.blackbox_v2.environment_manifest import load_environment_fingerprint
 from shared.blackbox_v2.history import CURRENT_SNAPSHOT_REPLAY, build_historical_cases
 from shared.blackbox_v2.intake import (
@@ -95,7 +96,8 @@ class BlackboxBacktestGate(_BlackboxGate):
         engine = ctx.engine_factory() if ctx.engine_factory is not None else create_default_engine()
         try:
             cfg = _reload_pinned_blackbox_config(cfg, phase="persisted backtest preflight")
-            metadata = validate_canonical_blackbox_delivery(cfg)
+            validate_canonical_blackbox_delivery(cfg)
+            deliveries = blackbox_deliveries(cfg)
             operation, operation_errors = verify_direct_operation(
                 ctx.operation,
                 scheme_id=ctx.scheme_id,
@@ -129,13 +131,10 @@ class BlackboxBacktestGate(_BlackboxGate):
                         f"current={cfg.runtime_profile}, frozen={DEFAULT_RUNTIME_PROFILE.name}"
                     ],
                 )
-            cases = build_historical_cases(
-                metadata,
-                snapshot,
-                engine,
-                target_date_before=ctx.predict_date,
-                predict_date_from=ctx.backtest_start_date,
-            )
+            target_cases = [build_historical_cases(
+                delivery.metadata, snapshot, engine,
+                target_date_before=ctx.predict_date, predict_date_from=ctx.backtest_start_date,
+            ) for delivery in deliveries]
             profile = _profile(ctx)
             execution_profile = replace(
                 profile,
@@ -156,23 +155,26 @@ class BlackboxBacktestGate(_BlackboxGate):
             run_delivery = (partial(run_blackbox_backtest, state=state)
                             if state is not None else run_blackbox_backtest)
             with _open_runtime_input(bundle) as runtime_view:
-                output = run_blackbox_historical_backtest(
-                    metadata=metadata,
-                    script_path=_script(cfg),
-                    cases=cases,
-                    snapshot=snapshot,
-                    input_bundle=runtime_view.bundle,
-                    runtime_data_dir=runtime_view.data_dir,
-                    scheme_version=cfg.scheme_version,
-                    generation_id=generation_id,
-                    benchmark_id=benchmark_id,
-                    run_delivery=run_delivery,
-                    profile=execution_profile,
-                    backtest_start_date=ctx.backtest_start_date,
-                    target_date_before=ctx.predict_date,
-                    total_deadline_sec=ctx.timeout_sec,
-                    fact_horizon=(cfg.horizon if cfg.horizon != metadata.horizon else None),
-                )
+                outputs = []
+                deadline = time.monotonic() + execution_profile.backtest_timeout_sec
+                for delivery, cases in zip(deliveries, target_cases, strict=True):
+                    target_profile = execution_profile
+                    if len(deliveries) > 1:
+                        remaining = int(deadline - time.monotonic())
+                        if remaining <= 0:
+                            raise TimeoutError("multi-target backtest total deadline exceeded")
+                        target_profile = replace(execution_profile, backtest_timeout_sec=remaining)
+                    outputs.append(run_blackbox_historical_backtest(
+                        metadata=delivery.metadata, script_path=delivery.script_path,
+                        cases=cases, snapshot=snapshot,
+                        input_bundle=runtime_view.bundle, runtime_data_dir=runtime_view.data_dir,
+                        scheme_version=cfg.scheme_version, generation_id=generation_id,
+                        benchmark_id=benchmark_id, run_delivery=run_delivery,
+                        profile=target_profile, backtest_start_date=ctx.backtest_start_date,
+                        target_date_before=ctx.predict_date, total_deadline_sec=ctx.timeout_sec,
+                        fact_horizon=(cfg.horizon if cfg.horizon != delivery.metadata.horizon else None),
+                    ))
+                output = outputs[0] if len(outputs) == 1 else merge_blackbox_historical_outputs(outputs)
             output.summary.update(
                 {
                     "code_hash": cfg.code_hash,
@@ -211,10 +213,10 @@ class BlackboxBacktestGate(_BlackboxGate):
             ),
             Evidence("backtest_start_date", ctx.backtest_start_date),
             Evidence("target_date_before", ctx.predict_date),
-            Evidence("requests", len(cases)),
+            Evidence("requests", sum(len(cases) for cases in target_cases)),
             Evidence("records", len(output.rows)),
             Evidence("monthly_metrics", len(output.monthly_metrics)),
-            Evidence("subprocesses_started", 1),
+            Evidence("subprocesses_started", len(deliveries)),
             Evidence("total_deadline_sec", ctx.timeout_sec),
             Evidence("operator", operation.issued_by),
             Evidence("environment_fingerprint", environment_fingerprint),
@@ -238,12 +240,12 @@ def _config(ctx: GateContext) -> SchemeConfig:
 
 def validate_canonical_blackbox_delivery(cfg: SchemeConfig) -> BlackboxMetadata:
     """复用已加载 canonical 身份，只补充 Intake 脚本安全校验。"""
-    validate_delivery_script(_script(cfg))
-    metadata = getattr(cfg, "blackbox_metadata", None)
-    if not isinstance(metadata, BlackboxMetadata):
-        if cfg.delivery_metadata is None:
-            raise ValueError("Blackbox V2 metadata path missing")
-        metadata = load_metadata(cfg.delivery_metadata)
+    deliveries = blackbox_deliveries(cfg)
+    for delivery in deliveries:
+        validate_delivery_script(delivery.script_path)
+        if delivery.metadata.description is None:
+            raise ValueError("description is required for a Blackbox V2 delivery")
+    metadata = deliveries[0].metadata
     if cfg.runtime_profile != RUNTIME_PROFILE:
         raise ValueError(
             "Blackbox runtime_profile must match the platform contract: "
@@ -256,15 +258,7 @@ def validate_canonical_blackbox_delivery(cfg: SchemeConfig) -> BlackboxMetadata:
         )
     if cfg.input_source != "data_bridge_current":
         raise ValueError("Blackbox input_source must be data_bridge_current")
-    if metadata.description is None:
-        raise ValueError("description is required for a Blackbox V2 delivery")
     return metadata
-
-
-def _script(cfg: SchemeConfig) -> Path:
-    if cfg.delivery_script is None:
-        raise ValueError(f"Blackbox V2 script path missing for {cfg.scheme_id}")
-    return cfg.delivery_script
 
 
 def _profile(ctx: GateContext) -> RuntimeProfile:

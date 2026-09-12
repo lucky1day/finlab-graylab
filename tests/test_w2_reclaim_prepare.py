@@ -77,12 +77,21 @@ def prepared(tmp_path, monkeypatch):
     start, complete = MagicMock(return_value=True), MagicMock(return_value=True)
     monkeypatch.setattr(prepare, "persist_harness_run_start", start)
     monkeypatch.setattr(prepare, "persist_harness_run_complete", complete)
+    engine = MagicMock()
+    def audit_rows(_conn, table, *_args, **_kwargs):
+        if table == "t_harness_gate_results":
+            return []
+        ctx = start.call_args.args[0]
+        return [{"scheme_id": ctx.scheme_id, "scheme_version": ctx.config.scheme_version,
+                 "code_hash": ctx.config.code_hash, "config_hash": ctx.config.config_hash,
+                 "stage": "native-runtime-upgrade", "status": "running"}]
+    monkeypatch.setattr(prepare, "_same_id_rows_conn", audit_rows)
     kwargs = dict(project_root=ROOT, reference_project_root=ROOT, predict_date="2026-09-11",
                   expected_database_name="isolated", expected_server_uuid="test-only",
                   expected_plan_sha256=prepare._json_sha256(plan), approved_by="tester",
                   work_dir=(tmp_path / "receipts").resolve())
     return SimpleNamespace(kwargs=kwargs, capture=capture, algorithm=algorithm, start=start,
-                           complete=complete, locks=locks, view=view, old=old, new=new, plan=plan)
+                           complete=complete, locks=locks, view=view, old=old, new=new, plan=plan, engine=engine)
 
 
 def test_preflight_is_read_only(prepared):
@@ -98,7 +107,7 @@ def test_preflight_is_read_only(prepared):
 
 def test_two_standard_calls_produce_repository_accepted_real_gate_shape(prepared, monkeypatch):
     env = prepared
-    result = prepare.execute_w2_reclaim_prepare(None, **env.kwargs)
+    result = prepare.execute_w2_reclaim_prepare(env.engine, **env.kwargs)
     assert result["algorithm_executions"] == 2
     assert not result["prediction_written"] and not result["state_written"]
     assert env.algorithm.call_count == 2
@@ -179,7 +188,7 @@ def test_failure_preserves_receipts_and_never_runs_second_scheme(prepared, failu
             return completed
         env.algorithm.side_effect = broken
     with pytest.raises((RuntimeError, ValueError, subprocess.TimeoutExpired)):
-        prepare.execute_w2_reclaim_prepare(None, **env.kwargs)
+        prepare.execute_w2_reclaim_prepare(env.engine, **env.kwargs)
     assert env.algorithm.call_count == (0 if failure == "start" else 1)
     assert env.complete.call_args.kwargs["status"] == "failed"
     assert len(list(env.kwargs["work_dir"].glob("*.failed.json"))) == 1
@@ -261,7 +270,7 @@ def test_failure_receipt_disk_error_does_not_hide_error_or_skip_failed_gate(prep
 
     monkeypatch.setattr(prepare, "_write_receipt", failing_receipt)
     with pytest.raises(OSError, match="disk full") as caught:
-        prepare.execute_w2_reclaim_prepare(None, **env.kwargs)
+        prepare.execute_w2_reclaim_prepare(env.engine, **env.kwargs)
     assert env.algorithm.call_count == 1
     assert env.complete.call_args.kwargs["status"] == "failed"
     assert any("Failed file receipt" in note for note in caught.value.__notes__)

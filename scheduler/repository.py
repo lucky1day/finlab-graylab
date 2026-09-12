@@ -50,6 +50,7 @@ _SAME_ID_W3B_NATIVE_HISTORY_IDS = frozenset({
     "liwei_0616_10y02_cons_say_k3_div_k5",
 })
 _SAME_ID_RECLAIM_WAVES = {
+    "W1B": frozenset({"weekly_5y_direct_0529", "weekly_7y_cross_d_overlay_0529", "weekly_10y_d_overlay_0529"}),
     "W2": frozenset({"daily_5y_2_v28", "daily_7y_1_v28"}),
     "W3A": frozenset({"liwei_0616_cons_sda_k3_div_k10", "liwei_0616_5y01_full_oos_k3_div_k10"}),
 }
@@ -4072,12 +4073,12 @@ def _same_id_writer_reclaim_plan_conn(
     harness_run_ids: Mapping[str, str], action: str, control_plane_evidence: Mapping[str, object],
     expected_database_name: str, expected_server_uuid: str, for_update: bool,
 ) -> dict[str, object]:
-    """仅 W2/W3A 整组回收临时身份 Writer；预测及回测事实全部只读。"""
+    """仅批准的完整批次回收临时身份 Writer；预测及回测事实全部只读。"""
     ids = sorted(old_configs)
     if (action not in {"cutover", "rollback"} or wave not in _SAME_ID_RECLAIM_WAVES
             or set(ids) != _SAME_ID_RECLAIM_WAVES[wave]
             or any(set(group) != set(ids) for group in (source_configs, new_configs, harness_run_ids))):
-        raise ValueError("same-ID reclaim requires one complete approved W2/W3A wave")
+        raise ValueError("same-ID reclaim requires one complete approved wave")
     control = control_plane_evidence
     scheduler = control.get("scheduler", {}) if isinstance(control, Mapping) else {}
     if (not isinstance(control, Mapping)
@@ -4135,7 +4136,9 @@ def _same_id_writer_reclaim_plan_conn(
             raise ValueError("same-ID reclaim config/code identity mismatch")
         _validate_blackbox_revision_candidate(new, require_evidence=True)
         for cfg in (source, new):
-            if (any(getattr(cfg, field) != getattr(old, field) for field in ("horizon", "task_type", "frequency"))
+            expected_horizon = 1 if wave == "W1B" and cfg is source else old.horizon
+            if (cfg.horizon != expected_horizon
+                    or any(getattr(cfg, field) != getattr(old, field) for field in ("task_type", "frequency"))
                     or sorted(cfg.tenors) != sorted(old.tenors) or len(set(old.tenors)) != len(old.tenors)
                     or not old.tenors or any(getattr(cfg.schedule, field) != getattr(old.schedule, field)
                                            for field in ("cron", "timezone"))):
@@ -4143,6 +4146,13 @@ def _same_id_writer_reclaim_plan_conn(
             old_rule = old.target_rule or (TASK_COMBINATIONS[old.task_type][1] if old.task_type in {"T+1", "T+5"} else None)
             if cfg.target_rule != old_rule:
                 raise ValueError("same-ID reclaim target_rule differs")
+        if wave == "W1B":
+            from shared.scheme_config_schema import resolve_fact_horizon
+
+            if (old.task_type != "weekly_point" or old.frequency != "weekly" or old.horizon != 6
+                    or new.horizon != resolve_fact_horizon(key, "weekly_point", source.horizon, old.horizon)
+                    or scheduler.get("cadence") != "weekly"):
+                raise ValueError("weekly reclaim requires exact execution/fact horizon and weekly fence")
         by_key = {(row["scheme_id"], row["scheme_version"]): row for row in versions}
         old_row = by_key.get((key, old.scheme_version))
         source_row = by_key.get((source.scheme_id, source.scheme_version))

@@ -21,7 +21,7 @@ from scheduler.blackbox_v2_runner import (
     RuntimeProfile,
     run_blackbox_backtest,
 )
-from scheduler.discovery import SchemeConfig, discover_schemes
+from scheduler.discovery import SchemeConfig, blackbox_deliveries, discover_schemes
 from scheduler.process_control import (
     ProcessGroupTerminationError,
     ProcessRegistrationCleanupError,
@@ -45,7 +45,6 @@ from shared.calendar_service import get_calendar
 from shared.blackbox_v2.contracts import (
     BlackboxMetadata,
     BlackboxRequest,
-    load_metadata,
 )
 from shared.blackbox_v2.requests import build_live_request, resolve_live_context
 from shared.task_specs import PERIOD_AVERAGE_TASK_TYPES
@@ -565,8 +564,7 @@ def run_blackbox_scheme_subprocess(
     if rebuild_state and (not getattr(cfg, "incremental_state", False)
                           or snapshot_mode != BLACKBOX_SNAPSHOT_MODE_FRESH):
         raise ValueError("state rebuild requires an incremental scheme and fresh trusted input")
-    if cfg.delivery_script is None or cfg.delivery_metadata is None:
-        raise ValueError(f"Blackbox V2 delivery paths missing for {cfg.scheme_id}")
+    deliveries = blackbox_deliveries(cfg)
     require_fresh = snapshot_mode == BLACKBOX_SNAPSHOT_MODE_FRESH
     snapshot = get_ready_blackbox_snapshot(
         snapshot_date=predict_date,
@@ -574,7 +572,7 @@ def run_blackbox_scheme_subprocess(
         factor_input_mode=getattr(cfg, "factor_input_mode", None) or "legacy_v1",
     )
 
-    metadata = _blackbox_metadata(cfg)
+    metadata = deliveries[0].metadata
     if snapshot_mode == BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF:
         _validate_historical_snapshot(
             snapshot,
@@ -625,11 +623,13 @@ def run_blackbox_scheme_subprocess(
         DEFAULT_RUNTIME_PROFILE,
         conda_env=blackbox_env,
     )
+    records = []
+    deadline = time.monotonic() + (timeout_sec or profile.predict_timeout_sec)
     with open_blackbox_runtime_view(input_bundle) as runtime_view:
         trusted_bundle = runtime_view.bundle
         predict_kwargs = {
             "metadata": metadata,
-            "script_path": cfg.delivery_script,
+            "script_path": deliveries[0].script_path,
             "request": request,
             "data_dir": runtime_view.data_dir,
             "data_snapshot_id":
@@ -653,31 +653,39 @@ def run_blackbox_scheme_subprocess(
             predict_kwargs["process_start_guard"] = (
                 process_start_guard
             )
-        try:
-            record = run_blackbox_predict(**predict_kwargs)
-        except ProcessGroupTerminationError:
-            runtime_view.mark_termination_uncertain()
-            raise
-        if snapshot_mode == BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF:
-            extra = dict(record.extra or {})
-            extra.update(
-                {
-                    "replay_semantics": (
-                        "current_snapshot_as_of_not_historical_vintage"
-                    ),
-                    "backfill_mode": "post_deployment_live_safe_replay",
-                    "backfilled_at": datetime.now(timezone.utc).isoformat(
-                        timespec="seconds"
-                    ),
-                    "data_generation_id": snapshot.generation_id,
-                    "source_refresh_date": snapshot.refresh_date,
-                    "daily_cutoff_key": cutoffs.daily_cutoff_key,
-                    "weekly_cutoff_key": cutoffs.weekly_cutoff_key,
-                    "monthly_cutoff_key": cutoffs.monthly_cutoff_key,
-                }
+        for delivery in deliveries:
+            metadata = delivery.metadata
+            target_request = request if len(deliveries) == 1 else build_live_request(
+                metadata, predict_date=predict_date, calendar=calendar, cutoffs=cutoffs,
             )
-            record = replace(record, extra=extra)
-    return [_project_blackbox_fact_horizon(record, cfg=cfg, metadata=metadata)]
+            predict_kwargs.update(metadata=metadata, script_path=delivery.script_path, request=target_request)
+            if len(deliveries) > 1:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("multi-target predict total deadline exceeded")
+                predict_kwargs["timeout_sec"] = remaining
+            try:
+                record = run_blackbox_predict(**predict_kwargs)
+            except ProcessGroupTerminationError:
+                runtime_view.mark_termination_uncertain()
+                raise
+            if snapshot_mode == BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF:
+                extra = dict(record.extra or {})
+                extra.update(
+                    {
+                        "replay_semantics": "current_snapshot_as_of_not_historical_vintage",
+                        "backfill_mode": "post_deployment_live_safe_replay",
+                        "backfilled_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        "data_generation_id": snapshot.generation_id,
+                        "source_refresh_date": snapshot.refresh_date,
+                        "daily_cutoff_key": cutoffs.daily_cutoff_key,
+                        "weekly_cutoff_key": cutoffs.weekly_cutoff_key,
+                        "monthly_cutoff_key": cutoffs.monthly_cutoff_key,
+                    }
+                )
+                record = replace(record, extra=extra)
+            records.append(_project_blackbox_fact_horizon(record, cfg=cfg, metadata=metadata))
+    return records
 
 
 def _project_blackbox_fact_horizon(
@@ -696,12 +704,10 @@ def _project_blackbox_fact_horizon(
 
 
 def _blackbox_metadata(cfg: SchemeConfig) -> BlackboxMetadata:
-    metadata = getattr(cfg, "blackbox_metadata", None)
-    if isinstance(metadata, BlackboxMetadata):
-        return metadata
-    if cfg.delivery_metadata is None:
-        raise ValueError(f"Blackbox V2 metadata path missing for {cfg.scheme_id}")
-    return load_metadata(cfg.delivery_metadata)
+    deliveries = blackbox_deliveries(cfg)
+    if len(deliveries) > 1:
+        raise ValueError("multi-target scheme requires the complete delivery list")
+    return deliveries[0].metadata
 
 
 def run_blackbox_gray_replay_batch(
@@ -722,8 +728,9 @@ def run_blackbox_gray_replay_batch(
         raise ValueError(
             "gray replay batch requires input_source=data_bridge_current"
         )
-    if cfg.delivery_script is None or cfg.delivery_metadata is None:
-        raise ValueError(f"Blackbox V2 delivery paths missing for {cfg.scheme_id}")
+    deliveries = blackbox_deliveries(cfg)
+    if len(deliveries) > 1:
+        raise ValueError("multi-target gray replay requires target-specific Requests")
     if (
         isinstance(timeout_sec, bool)
         or not isinstance(timeout_sec, int)

@@ -1,22 +1,40 @@
 scheme_id: t5_daily
-runtime_type: native_adapter
-name: "0529原始T5-LGBM投票基准"
-description: "0529 T+5 日频 LightGBM + tenor 独立投票基准方案；adapter 只改输入输出，不改核心算法。"
-horizon: 5
-task_type: "T+5"
-tenors: ["3Y", "5Y", "7Y", "10Y"]
-frequency: daily
+runtime_type: blackbox_v2
+input_source: data_bridge_current
+factor_input_mode: algorithm_managed
+runtime_profile: blackbox-v2-v1
+data_schema_version: data-bridge-v1
+display_name: "0529原始T5-LGBM投票基准"
+status: paused
+version_status: draft
 schedule:
   cron: "3 7 * * 1-5"
   timezone: "Asia/Shanghai"
-entry_point: predict.run
-status: active
-input_spec:
-  data_version: shared_data_service_daily.v1
-  required_columns: ["date", "TB1YWI0C", "TB3YWI0C", "TB5YWI0C", "TB7YWI0C", "TB0YWI0C"]
-backtest:
-  runner: backtests.daily_0529_reproduction
-  benchmark_id: model_muti_0529
-  data_source: framework_db_aligned
-  benchmark_required: true
-  start_date: "2025-01-01"
+  timeout_sec: 3600
+deliveries:
+  - target_tenor: 3Y
+    script: delivery/t5_daily_3y_bbv2.py
+    metadata: delivery/t5_daily_3y_bbv2.json
+  - target_tenor: 5Y
+    script: delivery/t5_daily_5y_bbv2.py
+    metadata: delivery/t5_daily_5y_bbv2.json
+  - target_tenor: 7Y
+    script: delivery/t5_daily_7y_bbv2.py
+    metadata: delivery/t5_daily_7y_bbv2.json
+  - target_tenor: 10Y
+    script: delivery/t5_daily_10y_bbv2.py
+    metadata: delivery/t5_daily_10y_bbv2.json
+native_attachments:
+  __init__.py: 102d5f48235f3876f7e259c0c5ad496d83493576ed293523382ea11acdd520c5
+  benchmarks/current_backtest_summary.json: 1ec63c8026341c31d4ec66158323076a36d657014147e0b99c404f6a72891d5c
+  benchmarks/current_predictions_sample.csv: 38f81fa466f4cf13a446258cbe39f330b8262ce9becbe20faabe9a8a12c26427
+  benchmarks/original_backtest_summary.json: 1ec63c8026341c31d4ec66158323076a36d657014147e0b99c404f6a72891d5c
+  benchmarks/original_predictions_sample.csv: 38f81fa466f4cf13a446258cbe39f330b8262ce9becbe20faabe9a8a12c26427
+  core/__init__.py: 5ec03b47735d7df53abce4fdb6e3bcc3347df469f38a072cec0202bdac06e2b0
+  core/common_utils.py: a52cb7742398e8f94ab6af78a5c22f068890955550d76087cb242494405d2aa9
+  core/predict_10y.py: bc850747548f9c68eb8c50d965ee68d9ec070e508c2d0716caa99b580077a544
+  core/predict_3y.py: 150781dc4cb1a5f5875cd1abd10a00786ae93a99dce9626b953f049595ca3854
+  core/predict_5y.py: db79ab2e1274c0b3c8c7c3d8c9beb59009149838e5e7e18edea8151826b48ccc
+  core/predict_7y.py: 65c882818b6b3a250c93ef563bfa6e0cb66821333b99d557171ec5344339fa23
+  latest_prediction.py: 1927bb456c361aa5657662c8639a0179beb60f0a0fd1025182473f3e52b79183
+  predict.py: 0e1e7f7e05244b32fb248170e686f12b480c386a16f737997e12471dbbb18f65

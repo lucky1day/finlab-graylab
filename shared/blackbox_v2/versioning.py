@@ -33,17 +33,25 @@ def canonical_platform_config(raw: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("incremental_state must be literal true when present")
         canonical["incremental_state"] = True
     schedule = _required_mapping(raw, "schedule")
-    delivery = _required_mapping(raw, "delivery")
     timeout_sec = schedule.get("timeout_sec")
     canonical["schedule"] = {
         "cron": str(_required_value(schedule, "cron", "schedule.cron")),
         "timezone": str(schedule.get("timezone", DEFAULT_TIMEZONE)),
         "timeout_sec": int(timeout_sec) if timeout_sec is not None else None,
     }
-    canonical["delivery"] = {
-        "script": str(_required_value(delivery, "script", "delivery.script")),
-        "metadata": str(_required_value(delivery, "metadata", "delivery.metadata")),
-    }
+    if "deliveries" in raw:
+        from shared.scheme_config_schema import validate_target_deliveries
+
+        validate_target_deliveries(raw)
+        canonical["deliveries"] = sorted(
+            (dict(item) for item in raw["deliveries"]), key=lambda item: item["target_tenor"],
+        )
+    else:
+        delivery = _required_mapping(raw, "delivery")
+        canonical["delivery"] = {
+            "script": str(_required_value(delivery, "script", "delivery.script")),
+            "metadata": str(_required_value(delivery, "metadata", "delivery.metadata")),
+        }
     if "platform_inputs" in raw:
         # 存量配置仅保留在版本哈希中，避免本次平台减负让已激活 exact
         # scheme_version 漂移；运行时和 Intake 已完全不读取该字段。

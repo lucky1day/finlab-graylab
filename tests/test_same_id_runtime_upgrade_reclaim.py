@@ -44,6 +44,15 @@ def reclaim_scope(migration_fixture, wave):
             new.target_rule = TASK_COMBINATIONS["T+5"][1]
             source = deepcopy(new)
             source.scheme_id, source.scheme_version, source.manifest_hash = scheme_id + "_bbv2", "alias-bb-v1", "2" * 64
+            if wave == "W1B":
+                for cfg in (old, new, source):
+                    cfg.task_type, cfg.frequency = "weekly_point", "weekly"
+                    cfg.target_rule = TASK_COMBINATIONS["weekly_point"][1]
+                    cfg.tenors = [{"weekly_5y_direct_0529": "5Y", "weekly_7y_cross_d_overlay_0529": "7Y",
+                                   "weekly_10y_d_overlay_0529": "10Y"}[scheme_id]]
+                    cfg.schedule.cron = "30 11 * * 6"
+                old.horizon = new.horizon = 6
+                source.horizon = 1
             old_configs[scheme_id], source_configs[scheme_id], new_configs[scheme_id] = old, source, new
             insert(conn, "t_scheme_versions", version | repo._same_id_reclaim_identity(old) | {"status": "retired"})
             insert(conn, "t_scheme_versions", version | {
@@ -59,8 +68,9 @@ def reclaim_scope(migration_fixture, wave):
                 })
             for cfg, status in ((old, "archived"), (source, "active")):
                 insert(conn, "t_scheme_registry", registry | {
-                    "scheme_id": repo.registry_scheme_id(cfg.scheme_id, 5, cfg.tenors[0]),
-                    "base_scheme_id": cfg.scheme_id, "horizon": 5, "task_type": "T+5", "frequency": "daily",
+                    "scheme_id": repo.registry_scheme_id(cfg.scheme_id, cfg.horizon, cfg.tenors[0]),
+                    "base_scheme_id": cfg.scheme_id, "horizon": cfg.horizon, "task_type": cfg.task_type, "frequency": cfg.frequency,
+                    "schedule_cron": cfg.schedule.cron, "schedule_timezone": cfg.schedule.timezone,
                     "tenors": json.dumps(cfg.tenors), "target_tenor": cfg.tenors[0],
                     "runtime_type": cfg.runtime_type, "status": status,
                 })
@@ -79,15 +89,16 @@ def reclaim_scope(migration_fixture, wave):
                 "summary": json.dumps(backtest_summary),
             })
             insert(conn, "t_backtest_predictions", backtest_prediction | {
-                "run_id": run_id, "scheme_id": source.scheme_id, "horizon": 5, "target_tenor": source.tenors[0],
+                "run_id": run_id, "scheme_id": source.scheme_id, "horizon": source.horizon, "target_tenor": source.tenors[0],
             })
             for cfg in (old, source):
-                insert(conn, "t_scheme_predictions", fact | {"scheme_id": cfg.scheme_id, "target_tenor": cfg.tenors[0], "horizon": 5})
+                insert(conn, "t_scheme_predictions", fact | {"scheme_id": cfg.scheme_id, "target_tenor": cfg.tenors[0], "horizon": cfg.horizon})
     kwargs = prior | {"wave": wave, "old_configs": old_configs, "source_configs": source_configs,
                       "new_configs": new_configs, "harness_run_ids": {key: key for key in old_configs}}
     control = control | {
         "schema_version": "same-id-writer-reclaim-control-plane-v1", "wave": wave, "deployment_target": "aliyun-gray",
-        "scheduler": {"control_plane": "systemd_one_shot", "timer_fenced": True, "unique_writer": True},
+        "scheduler": {"control_plane": "systemd_one_shot", "timer_fenced": True, "unique_writer": True,
+                      "cadence": "weekly" if wave == "W1B" else "daily"},
         "native_canonical_selection": {key: repo._same_id_reclaim_identity(cfg) for key, cfg in old_configs.items()},
         "source_canonical_selection": {key: repo._same_id_reclaim_identity(cfg) for key, cfg in source_configs.items()},
     }

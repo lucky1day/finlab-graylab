@@ -213,7 +213,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
 
         with (
             patch(
-                "scheduler.executor.load_metadata",
+                "shared.blackbox_v2.contracts.load_metadata",
                 side_effect=AssertionError("cached metadata must be reused"),
             ),
             patch(
@@ -329,7 +329,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             extra={"data_snapshot_id": "snapshot-current"},
         )
         with (
-            patch("scheduler.executor.load_metadata", return_value=_metadata()),
+            patch("shared.blackbox_v2.contracts.load_metadata", return_value=_metadata()),
             patch(
                 "scheduler.executor.get_ready_blackbox_snapshot",
                 return_value=snapshot,
@@ -475,7 +475,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             )
 
         with (
-            patch("scheduler.executor.load_metadata", return_value=metadata),
+            patch("shared.blackbox_v2.contracts.load_metadata", return_value=metadata),
             patch(
                 "scheduler.executor.open_blackbox_runtime_view",
                 side_effect=open_runtime_view,

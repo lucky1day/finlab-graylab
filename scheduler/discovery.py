@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from scheduler.deployment_scope import filter_schemes_for_configured_target
 from shared.blackbox_v2.versioning import compute_blackbox_config_hash
-from shared.blackbox_v2.contracts import BlackboxMetadata
+from shared.blackbox_v2.contracts import BlackboxDelivery, BlackboxMetadata
 from shared.scheme_config_loader import load_yaml_mapping
 from shared.scheme_config_schema import resolve_fact_horizon, validate_config
 from shared.versioning import (
@@ -65,6 +66,24 @@ class SchemeConfig:
     blackbox_metadata: BlackboxMetadata | None = None
     owner: str | None = None
     incremental_state: bool = False
+    blackbox_deliveries: tuple[BlackboxDelivery, ...] = ()
+
+
+def blackbox_deliveries(cfg: SchemeConfig) -> tuple[BlackboxDelivery, ...]:
+    """将单目标与批准的多目标交付统一为完整目标列表。"""
+    deliveries = getattr(cfg, "blackbox_deliveries", ())
+    if deliveries:
+        if len(deliveries) > 1 and getattr(cfg, "incremental_state", False):
+            raise ValueError("multi-target incremental_state is not supported")
+        return deliveries
+    from shared.blackbox_v2.contracts import load_metadata
+
+    if cfg.delivery_script is None or cfg.delivery_metadata is None:
+        raise ValueError(f"Blackbox V2 delivery paths missing for {cfg.scheme_id}")
+    metadata = getattr(cfg, "blackbox_metadata", None)
+    if not isinstance(metadata, BlackboxMetadata):
+        metadata = load_metadata(cfg.delivery_metadata)
+    return (BlackboxDelivery(cfg.delivery_script, cfg.delivery_metadata, metadata),)
 
 
 def _require_mapping(value: Any, path: Path) -> dict[str, Any]:
@@ -146,34 +165,50 @@ def _load_blackbox_config(config_path: Path, raw: dict[str, Any], schedule_raw: 
     )
     if canonical_config_path != config_path.resolve():
         raise ValueError(f"{config_path}: config path is not canonical")
+    declarations = raw.get("deliveries") or [_require_mapping(raw.get("delivery", {}), config_path)]
+    multi = "deliveries" in raw
     delivery_entries = sorted(canonical_delivery_dir.iterdir())
-    if len(delivery_entries) != 2 or any(
+    if len(delivery_entries) != 2 * len(declarations) or any(
         not item.is_file() or item.is_symlink() for item in delivery_entries
     ):
         raise ValueError(
             f"{config_path}: Blackbox V2 delivery must contain exactly two regular files"
         )
-    delivery_raw = _require_mapping(raw.get("delivery", {}), config_path)
-    script_path = (scheme_dir / str(delivery_raw["script"])).resolve()
-    metadata_path = (scheme_dir / str(delivery_raw["metadata"])).resolve()
-    if script_path.parent != canonical_delivery_dir or metadata_path.parent != canonical_delivery_dir:
-        raise ValueError(f"{config_path}: execution files must be inside canonical delivery directory")
-    if scheme_dir.resolve() not in script_path.parents or scheme_dir.resolve() not in metadata_path.parents:
-        raise ValueError(f"{config_path}: delivery paths must stay inside scheme directory")
-    if not script_path.is_file() or not metadata_path.is_file():
-        raise ValueError(f"{config_path}: Blackbox V2 delivery files are missing")
-    try:
+    deliveries = []
+    code_members, metadata_members = {}, {}
+    for declaration in declarations:
+        script_path = (scheme_dir / str(declaration["script"])).resolve()
+        metadata_path = (scheme_dir / str(declaration["metadata"])).resolve()
+        if script_path.parent != canonical_delivery_dir or metadata_path.parent != canonical_delivery_dir:
+            raise ValueError(f"{config_path}: execution files must be inside canonical delivery directory")
+        if not script_path.is_file() or not metadata_path.is_file():
+            raise ValueError(f"{config_path}: Blackbox V2 delivery files are missing")
         metadata_payload = metadata_path.read_bytes()
-    except OSError as exc:
-        raise ValueError(f"{metadata_path}: cannot read metadata: {exc}") from exc
-    metadata = load_metadata_bytes(metadata_payload, source=str(metadata_path))
-    if metadata.scheme_id != scheme_dir.name:
-        raise ValueError(f"{metadata_path}: scheme_id must match directory name")
-    if script_path.name != f"{metadata.scheme_id}.py" or metadata_path.name != f"{metadata.scheme_id}.json":
-        raise ValueError(f"{config_path}: delivery filenames must match scheme_id")
-    code_hash = _hash_file(script_path)
+        metadata = load_metadata_bytes(metadata_payload, source=str(metadata_path))
+        if metadata.scheme_id != scheme_dir.name:
+            raise ValueError(f"{metadata_path}: scheme_id must match directory name")
+        if multi:
+            if metadata.target_tenor != declaration["target_tenor"]:
+                raise ValueError("delivery Metadata target_tenor does not match configured target")
+            expected_task = {"t1_daily": "T+1", "t5_daily": "T+5"}[metadata.scheme_id]
+            if metadata.task_type != expected_task:
+                raise ValueError("multi-target Metadata task_type does not match approved base")
+        elif script_path.name != f"{metadata.scheme_id}.py" or metadata_path.name != f"{metadata.scheme_id}.json":
+            raise ValueError(f"{config_path}: delivery filenames must match scheme_id")
+        deliveries.append(BlackboxDelivery(script_path, metadata_path, metadata))
+        code_members[script_path.name] = _hash_file(script_path)
+        metadata_members[metadata_path.name] = hashlib.sha256(metadata_payload).hexdigest()
+    if {item.name for item in delivery_entries} != set(code_members) | set(metadata_members):
+        raise ValueError("delivery file set does not match declared target packages")
+    deliveries.sort(key=lambda item: int(item.metadata.target_tenor[:-1]))
+    metadata = deliveries[0].metadata
+    common_fields = ("schema_version", "algorithm_version", "task_type", "horizon", "target_rule", "frequency", "owner")
+    if any(any(getattr(item.metadata, field) != getattr(metadata, field) for field in common_fields)
+           for item in deliveries):
+        raise ValueError("multi-target Metadata must share version, task and owner")
+    code_hash = _hash_members(code_members) if multi else next(iter(code_members.values()))
     config_hash = compute_blackbox_config_hash(raw)
-    manifest_hash = hashlib.sha256(metadata_payload).hexdigest()
+    manifest_hash = _hash_members(metadata_members) if multi else next(iter(metadata_members.values()))
     display_name = raw.get("display_name")
     resolved_name = (
         str(display_name).strip()
@@ -189,7 +224,7 @@ def _load_blackbox_config(config_path: Path, raw: dict[str, Any], schedule_raw: 
             raw.get("fact_horizon"),
         ),
         task_type=metadata.task_type,
-        tenors=[metadata.target_tenor],
+        tenors=[item.metadata.target_tenor for item in deliveries],
         frequency=metadata.frequency,
         schedule=SchemeSchedule(
             cron=str(schedule_raw["cron"]),
@@ -209,20 +244,26 @@ def _load_blackbox_config(config_path: Path, raw: dict[str, Any], schedule_raw: 
         runtime_profile=str(raw["runtime_profile"]),
         data_schema_version=str(raw["data_schema_version"]),
         target_rule=metadata.target_rule,
-        delivery_script=script_path,
-        delivery_metadata=metadata_path,
+        delivery_script=None if multi else deliveries[0].script_path,
+        delivery_metadata=None if multi else deliveries[0].metadata_path,
         environment_fingerprint=None,
         data_snapshot_id=None,
         input_source=str(raw["input_source"]),
         factor_input_mode=str(raw.get("factor_input_mode", "legacy_v1")),
-        blackbox_metadata=metadata,
+        blackbox_metadata=None if multi else metadata,
         owner=metadata.owner,
         incremental_state=raw.get("incremental_state", False),
+        blackbox_deliveries=tuple(deliveries),
     )
 
 
 def _hash_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _hash_members(members: dict[str, str]) -> str:
+    """按路径绑定整个目标集合；不改变单目标既有摘要。"""
+    return hashlib.sha256(json.dumps(members, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def discover_schemes(schemes_root: Path = SCHEMES_ROOT) -> list[SchemeConfig]:

@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "weekly_10y_d_overlay_0529",
+  "name": "0529周度10Y D-overlay Blackbox V2",
+  "description": "将0529周频10Y Score主模型与Model2 D-overlay原样封装为自包含Blackbox V2，逐Request截止且不保留跨进程状态。",
+  "owner": "rl",
+  "algorithm_version": "0529-bbv2.1",
+  "target_tenor": "10Y",
+  "task_type": "weekly_point",
+  "horizon": 1,
+  "target_rule": "target_week_end_yield_vs_feature_week_end_yield"
+}

@@ -32,7 +32,6 @@ from harness.native_successor_comparator_runner import (
     _run_v28,
     main as comparator_main,
 )
-from scheduler.discovery import load_scheme_config
 from scheduler.repository import (
     NativeSuccessorBacktestEvidence,
     NativeSuccessorTarget,
@@ -360,10 +359,7 @@ def test_receipt_source_closure_includes_w2_v28_native_execution_files() -> None
 def test_controlled_comparator_builds_zero_difference_receipt(
     tmp_path: Path,
 ) -> None:
-    waves = load_native_successor_waves(
-        PROJECT_ROOT / "deploy" / "native_to_blackbox_migration_v1.json"
-    )
-    target = waves["W1A"].targets[0]
+    target, configs = _comparison_configs()
     wave = SimpleNamespace(
         wave="W-test-compare",
         switch_mode="wave",
@@ -432,6 +428,8 @@ def test_controlled_comparator_builds_zero_difference_receipt(
     bundle_path = tmp_path / "bundle.json"
     bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
     with (
+        patch("harness.native_successor_migration.load_scheme_config",
+              side_effect=lambda path: configs[path.parent.name]),
         patch(
             "harness.native_successor_migration.load_environment_fingerprint",
             return_value="e" * 64,
@@ -472,10 +470,7 @@ def test_controlled_comparator_builds_zero_difference_receipt(
 
 
 def test_controlled_comparator_rejects_direction_difference(tmp_path: Path) -> None:
-    waves = load_native_successor_waves(
-        PROJECT_ROOT / "deploy" / "native_to_blackbox_migration_v1.json"
-    )
-    target = waves["W1A"].targets[0]
+    target, configs = _comparison_configs()
     wave = SimpleNamespace(
         wave="W-test-compare",
         switch_mode="wave",
@@ -546,6 +541,8 @@ def test_controlled_comparator_rejects_direction_difference(tmp_path: Path) -> N
         encoding="utf-8",
     )
     with (
+        patch("harness.native_successor_migration.load_scheme_config",
+              side_effect=lambda path: configs[path.parent.name]),
         patch(
             "harness.native_successor_migration.load_environment_fingerprint",
             return_value="e" * 64,
@@ -732,34 +729,50 @@ def test_cutover_matrix_requires_old_removed_and_successor_added(
     )
 
 
-@pytest.mark.parametrize("wave_id", ["W1A", "W1B"])
-def test_w1_mapping_normalizes_native_rule_to_blackbox_task_contract(
-    wave_id: str,
+@pytest.mark.parametrize(("task_type", "old_horizon", "old_rule"), [
+    ("T+1", 1, None), ("T+5", 5, None), ("weekly_point", 6, "next_week_last"),
+])
+def test_mapping_normalizes_native_rule_to_blackbox_task_contract(
+    task_type: str, old_horizon: int, old_rule: str | None,
 ) -> None:
-    waves = load_native_successor_waves(
-        PROJECT_ROOT / "deploy" / "native_to_blackbox_migration_v1.json"
-    )
-    wave = waves[wave_id]
-    old_ids = {target.old_base_scheme_id for target in wave.targets}
-    new_ids = {target.new_base_scheme_id for target in wave.targets}
-    old_configs = {
-        scheme_id: load_scheme_config(
-            PROJECT_ROOT / "schemes" / scheme_id / "config.yaml"
-        )
-        for scheme_id in old_ids
-    }
-    new_configs = {
-        scheme_id: load_scheme_config(
-            PROJECT_ROOT / "schemes" / scheme_id / "config.yaml"
-        )
-        for scheme_id in new_ids
-    }
+    from shared.task_specs import TASK_COMBINATIONS
 
+    horizon, rule, frequency = TASK_COMBINATIONS[task_type]
+    old = SimpleNamespace(scheme_id="native_contract_fixture", runtime_type="native_adapter",
+                          task_type=task_type, horizon=old_horizon, target_rule=old_rule,
+                          frequency=frequency, tenors=["5Y", "10Y"])
+    targets = tuple(NativeSuccessorTarget(
+        old_base_scheme_id=old.scheme_id, new_base_scheme_id=f"blackbox_contract_{tenor.lower()}",
+        task_type=task_type, target_tenor=tenor, target_rule=old_rule,
+        old_horizon=old_horizon, new_horizon=horizon,
+    ) for tenor in old.tenors)
+    new_configs = {target.new_base_scheme_id: SimpleNamespace(
+        scheme_id=target.new_base_scheme_id, runtime_type="blackbox_v2", task_type=task_type,
+        horizon=horizon, target_rule=rule, frequency=frequency, tenors=[target.target_tenor],
+    ) for target in targets}
     _validate_native_successor_target_configs(
-        wave.targets,
-        old_configs=old_configs,
+        targets,
+        old_configs={old.scheme_id: old},
         new_configs=new_configs,
     )
+    with pytest.raises(ValueError, match="every Native target"):
+        _validate_native_successor_target_configs(
+            targets[:1], old_configs={old.scheme_id: old}, new_configs=new_configs,
+        )
+
+
+def _comparison_configs():
+    """凭据算法使用合成身份，不把已迁移 canonical 重新解释为 Native。"""
+    target = NativeSuccessorTarget(
+        old_base_scheme_id="native_comparison_fixture", new_base_scheme_id="blackbox_comparison_fixture",
+        task_type="T+1", target_tenor="5Y", target_rule=None, old_horizon=1, new_horizon=1,
+    )
+    configs = {
+        target.old_base_scheme_id: SimpleNamespace(runtime_type="native_adapter", code_hash="a" * 64),
+        target.new_base_scheme_id: SimpleNamespace(runtime_type="blackbox_v2", code_hash="b" * 64,
+                                                  runtime_profile="blackbox-v2-v1"),
+    }
+    return target, configs
 
 
 def _fixture():

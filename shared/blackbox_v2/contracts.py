@@ -64,6 +64,15 @@ class BlackboxMetadata:
 
 
 @dataclass(frozen=True)
+class BlackboxDelivery:
+    """一个目标的独立两文件交付；多个目标仍归属一个 base 版本。"""
+
+    script_path: Path
+    metadata_path: Path
+    metadata: BlackboxMetadata
+
+
+@dataclass(frozen=True)
 class BlackboxRequest:
     request_id: str
     predict_date: str

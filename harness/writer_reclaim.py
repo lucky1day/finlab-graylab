@@ -19,6 +19,7 @@ from shared.input_artifacts import get_ready_blackbox_snapshot
 
 
 RECLAIM_WAVES = {
+    "W1B": ("weekly_5y_direct_0529", "weekly_7y_cross_d_overlay_0529", "weekly_10y_d_overlay_0529"),
     "W2": ("daily_5y_2_v28", "daily_7y_1_v28"),
     "W3A": ("liwei_0616_5y01_full_oos_k3_div_k10", "liwei_0616_cons_sda_k3_div_k10"),
 }
@@ -155,7 +156,8 @@ def _capture(project_root: Path, reference_project_root: Path, wave: str, *,
         raise RuntimeError("writer reclaim requires fenced candidate current")
     if os.environ.get("BFL_RELEASE_COMMIT") != releases["candidate"]["commit"]:
         raise RuntimeError("writer reclaim process commit differs from current")
-    scheduler = control._capture_scheduler_state(project_root=root, deployment_target="aliyun-gray", cadence="daily")
+    scheduler = control._capture_scheduler_state(project_root=root, deployment_target="aliyun-gray",
+                                                  cadence="weekly" if wave == "W1B" else "daily")
     locale = control._capture_installed_locale(root)
     _assert_no_algorithm_process(wave)
     snapshot = get_ready_blackbox_snapshot(snapshot_date=date.today().isoformat(), require_fresh=False,

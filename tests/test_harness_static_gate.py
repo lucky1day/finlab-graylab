@@ -50,14 +50,14 @@ class HarnessStaticGateTests(unittest.TestCase):
             },
         )
 
-    def test_existing_schemes_pass_static_gate(self) -> None:
+    def test_existing_native_schemes_pass_static_gate(self) -> None:
         from harness.context import GateContext
         from harness.gates.static_gate import StaticGate
 
         project_root = Path(__file__).resolve().parents[1]
         schemes = (
-            "t1_daily",
-            "t5_daily",
+            "liwei_0616_5y_auc_static_all_k3_div_k10",
+            "liwei_0616_7y01_cons_say_k3_div_k10",
         )
 
         for scheme_id in schemes:

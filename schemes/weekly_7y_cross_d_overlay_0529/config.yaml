@@ -1,26 +1,26 @@
 scheme_id: weekly_7y_cross_d_overlay_0529
-runtime_type: native_adapter
-name: "0529周度7Y Cross-D叠加"
-description: "0529 周频7Y方向预测，7Y固定规则投票叠加低利率反弹规则，并以5Y独立信号做窄口径Cross-D下行确认覆盖"
-horizon: 6
-task_type: weekly_point
-tenors: ["7Y"]
-frequency: weekly
+runtime_type: blackbox_v2
+input_source: data_bridge_current
+factor_input_mode: algorithm_managed
+runtime_profile: blackbox-v2-v1
+data_schema_version: data-bridge-v1
+fact_horizon: 6
+status: paused
+version_status: draft
 schedule:
-  cron: "30 11 * * 6"
-  timezone: "Asia/Shanghai"
-entry_point: predict.run
-status: active
-input_spec:
-  data_version: shared_data_service_weekly.v1
-  required_columns: ["week_id", "TB1YWI3C", "TB3YWI3C", "TB5YWI3C", "TB7YWI3C", "TB0YWI3C"]
-  weekly_variant: unified
-target_rule: "next_week_last_trading_day_vs_current_week_last_trading_day"
-backtest:
-  runner: backtests.weekly_7y_cross_d_overlay_0529_reproduction
-  benchmark_id: model_muti_0529
-  data_source: framework_db_aligned
-  benchmark_required: true
-  predict_start_date: "2025-01-01"
-  start_week: 200901
-  end_week: 202622
+  cron: '30 11 * * 6'
+  timezone: Asia/Shanghai
+  timeout_sec: 3600
+delivery:
+  script: delivery/weekly_7y_cross_d_overlay_0529.py
+  metadata: delivery/weekly_7y_cross_d_overlay_0529.json
+native_attachments:
+  __init__.py: f71bb77ad7f91c230aa121cb8d34f231b0c51b27846bc782f9b8862145662780
+  benchmarks/current_backtest_summary.json: c6778dbf0517cd0a23e6e13a3cebf6a902fbb12c486fb85c817d8d00947bbecc
+  benchmarks/current_predictions_sample.csv: d6ae6e2937365a8b9b299a27a18191a9a059561c028ba3188413ffafc05aca27
+  benchmarks/original_backtest_summary.json: c6778dbf0517cd0a23e6e13a3cebf6a902fbb12c486fb85c817d8d00947bbecc
+  benchmarks/original_predictions_sample.csv: d6ae6e2937365a8b9b299a27a18191a9a059561c028ba3188413ffafc05aca27
+  core/__init__.py: 7fc1ef3916464ab82708b2836147c7efd8ac6b4576b767ef38df1955898d10c1
+  core/cross_d_overlay.py: 338b25acff37bf2fc4f37c59a4983f3ac38b5e7b93335b9616273addfca0934e
+  core/legacy_weekly_7y_cross_d_overlay_0529.py.txt: 77239383a485fc7619832e4beea4af335764e1cf1b9f5d360f038305aed9b1f1
+  predict.py: ed569d98e063a99b47c958b988e895bb46468981d34ab9339dfbe02a4bb2ba4e

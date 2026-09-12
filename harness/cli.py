@@ -289,7 +289,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     for action in ("preflight", "prepare", "cutover", "rollback", "preserve-live"):
         item = migration_actions.add_parser(action)
-        item.add_argument("--wave", choices=["W2", "W3A", "W3B"], required=True)
+        item.add_argument("--wave", choices=["W1B", "W2", "W3A", "W3B"], required=True)
         item.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
         item.add_argument("--reference-project-root", type=Path, required=True)
         item.add_argument("--rollback-project-root", type=Path, help="W3A only: actual pre-cutover release, not Native reference")
@@ -300,7 +300,7 @@ def _build_parser() -> argparse.ArgumentParser:
         if action == "preflight":
             item.add_argument("--action", choices=["prepare", "cutover", "rollback", "preserve-live"], default="cutover")
         if action in {"preflight", "prepare"}:
-            item.add_argument("--predict-date", help="W2/W3A preparation only; an already-due weekday trading date")
+            item.add_argument("--predict-date", help="Preparation only; W1B uses an already-due Saturday, W2/W3A a weekday trading date")
         item.add_argument("--work-dir", type=Path, required=action == "prepare", help="W3A cutover/rollback: completed preparation directory")
         if action != "preflight":
             item.add_argument("--expected-plan-sha256", required=True)
@@ -342,9 +342,9 @@ def _run_native_successor_migration_command(
     )
     if preparing and getattr(args, "harness_run_id", None):
         raise ValueError("prepare creates its own real Harness runs; do not supply run IDs")
-    reclaiming = args.wave in {"W2", "W3A"}
-    if getattr(args, "predict_date", None) and not (preparing and args.wave in {"W2", "W3A"}):
-        raise ValueError("predict-date is restricted to W2/W3A preparation")
+    reclaiming = args.wave in {"W1B", "W2", "W3A"}
+    if getattr(args, "predict_date", None) and not (preparing and args.wave in {"W1B", "W2", "W3A"}):
+        raise ValueError("predict-date is restricted to W1B/W2/W3A preparation")
     if args.wave == "W3A" and not preparing:
         if args.work_dir is None:
             raise ValueError("W3A cutover/rollback requires completed preparation work-dir")
@@ -360,8 +360,10 @@ def _run_native_successor_migration_command(
                           reference_project_root=args.reference_project_root.resolve(),
                           expected_database_name=args.expected_database_name,
                           expected_server_uuid=args.expected_server_uuid)
-            if args.wave == "W2":
+            if args.wave in {"W1B", "W2"}:
                 kwargs["predict_date"] = args.predict_date
+                if args.wave == "W1B":
+                    kwargs["wave"] = args.wave
                 if args.migration_action == "preflight":
                     return build_w2_reclaim_prepare_preflight(engine, **kwargs)
                 return execute_w2_reclaim_prepare(engine, **kwargs,
