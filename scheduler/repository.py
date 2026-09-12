@@ -3731,6 +3731,13 @@ def _same_id_evidence_conn(
         value = summary[key]
         if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
             raise RuntimeError(f"invalid same-ID migration evidence digest: {key}")
+    if control.get("wave") == "W3A" and control.get("w3a_readiness") is not None:
+        readiness = control["w3a_readiness"]
+        if (not isinstance(readiness, Mapping)
+                or summary["local_execution_sha256"] != readiness.get("local_execution_sha256", {}).get(new.scheme_id)
+                or summary["equivalence_sha256"] != readiness.get("equivalence_sha256", {}).get(new.scheme_id)
+                or readiness.get("harness_run_ids", {}).get(new.scheme_id) != run_id):
+            raise RuntimeError("W3A Gate differs from read-back preparation readiness")
     return {"harness_run_id": run_id, "sha256": native_successor_plan_sha256(
         {"run": runs[0], "gate": gates[0]}
     )}
@@ -4030,6 +4037,35 @@ def _is_preserved_w2_historical_compare(
     return native_successor_plan_sha256({"run": dict(row), "gates": gates}) == _PRESERVED_W2_COMPARE_SHA256
 
 
+def _reviewed_w3a_reclaim_revision(source: SchemeConfig, new: SchemeConfig, control: Mapping[str, object]) -> bool:
+    """仅放行固定 Full 修订，严格绑定已认证转换及本机状态/回滚回执。"""
+    key = "liwei_0616_5y01_full_oos_k3_div_k10"
+    source_code = "ad9bdacf5063a427ecc8b70852e045f4822ba9af1b6d8fcd171cd2d779e95103"
+    candidate_code = "0fa034ca6fcd9ad358895ccd4c6617a43191cffaff1176823f8dd0ad7b8cbc39"
+    source_metadata = "96d46ee4b2fb16f3b7da0c5485808f52f8f7ef14607721fbe00d26bc55d74982"
+    candidate_metadata = "ae7bfee67c9eae88c10b57cb32901c7ad206febfebde5435f5ba3c4346c6da69"
+    expected = {
+        "schema_version": "w3a-weekly-revision-delivery-conversion-v1",
+        "source_scheme_id": key + "_bbv2", "scheme_id": key, "target_tenor": "5Y",
+        "task_type": "T+5", "execution_horizon": 5, "fact_horizon": 5,
+        "source_code_sha256": source_code, "candidate_code_sha256": candidate_code,
+        "source_metadata_sha256": source_metadata, "candidate_metadata_sha256": candidate_metadata,
+        "algorithm_executions": 0,
+        "permitted_algorithm_change": "weekly_raw_prefix_to_feature_suffix_invalidation",
+        "weekly_length_guard_preserved": True, "requires_independent_suffix_evidence": True,
+    }
+    release = control.get("release", {})
+    readiness = control.get("w3a_readiness", {})
+    return (control.get("wave") == "W3A" and new.scheme_id == key and source.scheme_id == key + "_bbv2"
+            and source.scheme_version == "3ee3dd2334fd" and new.scheme_version == "be34f35f233b"
+            and (source.code_hash, new.code_hash, source.manifest_hash, new.manifest_hash)
+                == (source_code, candidate_code, source_metadata, candidate_metadata)
+            and isinstance(release, Mapping) and release.get("identity_conversions", {}).get(key) == expected
+            and isinstance(readiness, Mapping) and readiness.get("status") == "ready"
+            and readiness.get("source_and_candidate_current_input_verified") is True
+            and set(readiness.get("local_execution_sha256", {})) == _SAME_ID_RECLAIM_WAVES["W3A"])
+
+
 def _same_id_writer_reclaim_plan_conn(
     conn: Connection, *, wave: str, old_configs: Mapping[str, SchemeConfig],
     source_configs: Mapping[str, SchemeConfig], new_configs: Mapping[str, SchemeConfig],
@@ -4063,6 +4099,9 @@ def _same_id_writer_reclaim_plan_conn(
         identity = {"isolated_test": "sqlite"}
     else:
         raise RuntimeError("same-ID reclaim supports MySQL or isolated SQLite only")
+    if wave == "W3A" and control.get("w3a_readiness") is not None:
+        if control["w3a_readiness"].get("prepare_database_identity_sha256") != native_successor_plan_sha256(identity):
+            raise RuntimeError("W3A readiness originated from another database")
     migrations = _same_id_rows_conn(conn, "t_schema_migrations", "1=1", {}, order="version", for_update=for_update)
     if not migrations or max(int(row["version"]) for row in migrations) != 24 or any(row["state"] != "APPLIED" for row in migrations):
         raise RuntimeError("same-ID reclaim requires fully applied schema migration 024")
@@ -4089,7 +4128,8 @@ def _same_id_writer_reclaim_plan_conn(
         old, source, new = old_configs[key], source_configs[key], new_configs[key]
         if (old.scheme_id != key or new.scheme_id != key or source.scheme_id != key + "_bbv2"
                 or old.runtime_type != "native_adapter" or source.runtime_type != "blackbox_v2"
-                or old.scheme_version == new.scheme_version or source.code_hash != new.code_hash
+                or old.scheme_version == new.scheme_version
+                or (source.code_hash != new.code_hash and not _reviewed_w3a_reclaim_revision(source, new, control))
                 or any(getattr(source, field) != getattr(new, field) for field in
                        ("algorithm_version", "contract_version", "runtime_profile"))):
             raise ValueError("same-ID reclaim config/code identity mismatch")

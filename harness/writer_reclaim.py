@@ -24,6 +24,8 @@ RECLAIM_WAVES = {
 }
 _ROOT = Path(__file__).resolve().parents[1]
 _IDENTITY_FIELDS = ("scheme_id", "scheme_version", "runtime_type", "code_hash", "config_hash", "manifest_hash")
+W3A_NATIVE_REFERENCE = "3a805922667de41340942edce9941c7f902bb8fb"
+W3A_ROLLBACK_RELEASE = "ee92b2d62a9e04faa59e2dc1f5e16a55ce9bdfa8"
 
 
 def parse_reclaim_run_ids(wave: str, values: Sequence[str]) -> dict[str, str]:
@@ -47,6 +49,8 @@ def _verified_pair(root: Path, reference: Path, wave: str):
     if wave not in RECLAIM_WAVES:
         raise ValueError("writer reclaim supports only complete W2/W3A waves")
     installs = {"candidate": control._verified_install(root), "reference": control._verified_install(reference)}
+    if wave == "W3A" and installs["reference"]["commit"] != W3A_NATIVE_REFERENCE:
+        raise RuntimeError("W3A Native reference must be the reviewed pre-conversion release")
     if root == reference:
         raise RuntimeError("writer reclaim requires distinct candidate/reference releases")
     matrix_path = root / "deploy/scheme_deployment_matrix_v1.json"
@@ -69,7 +73,11 @@ def _verified_pair(root: Path, reference: Path, wave: str):
                 or sources[key].incremental_state != new[key].incremental_state
                 or any(getattr(sources[key], field) != getattr(retained, field) for field in _IDENTITY_FIELDS)):
             raise RuntimeError("writer reclaim reference/source/candidate identity mismatch")
-        conversions[key] = verify_identity_only_delivery_change(
+        verifier = verify_identity_only_delivery_change
+        if wave == "W3A" and key == RECLAIM_WAVES["W3A"][0]:
+            from harness.w3a_revision_evidence import verify_reviewed_w3a_delivery_change
+            verifier = verify_reviewed_w3a_delivery_change
+        conversions[key] = verifier(
             project_root=root, source_script=sources[key].delivery_script.read_bytes(),
             source_metadata=sources[key].delivery_metadata.read_bytes(),
             candidate_script=new[key].delivery_script.read_bytes(),
@@ -102,12 +110,37 @@ def _assert_no_algorithm_process(wave: str) -> None:
                 raise RuntimeError("writer reclaim matching Python process is still running")
 
 
-def _capture(project_root: Path, reference_project_root: Path, wave: str):
+def _verified_w3a_rollback(root: Path, rollback_project_root: Path | None, sources):
+    """回滚绑定实际接管前 release，绝不把 Native 源码参考当作回滚代码。"""
+    if rollback_project_root is None:
+        raise ValueError("W3A requires an explicit rollback-project-root")
+    rollback = rollback_project_root.resolve(strict=True)
+    installed = control._verified_install(rollback)
+    if rollback == root or installed["commit"] != W3A_ROLLBACK_RELEASE:
+        raise RuntimeError("W3A rollback release is not the reviewed pre-cutover current")
+    for cfg in sources.values():
+        retained = load_scheme_config(rollback / "schemes" / cfg.scheme_id / "config.yaml")
+        if any(getattr(cfg, field) != getattr(retained, field) for field in _IDENTITY_FIELDS):
+            raise RuntimeError("W3A rollback source exact differs")
+    candidate_matrix = json.loads((root / "deploy/scheme_deployment_matrix_v1.json").read_bytes())["schemes"]
+    rollback_matrix = json.loads((rollback / "deploy/scheme_deployment_matrix_v1.json").read_bytes())["schemes"]
+    scope = set(RECLAIM_WAVES["W3A"]) | {key + "_bbv2" for key in RECLAIM_WAVES["W3A"]}
+    if ({key: value for key, value in candidate_matrix.items() if key not in scope}
+            != {key: value for key, value in rollback_matrix.items() if key not in scope}):
+        raise RuntimeError("W3A must preserve every unrelated deployment scope")
+    for key in (*RECLAIM_WAVES["W2"], *control.W3B_IDS):
+        before = load_scheme_config(rollback / "schemes" / key / "config.yaml")
+        after = load_scheme_config(root / "schemes" / key / "config.yaml")
+        if any(getattr(before, field) != getattr(after, field) for field in _IDENTITY_FIELDS):
+            raise RuntimeError("W3A must preserve completed W2/W3B exact identities")
+    return {"path": str(rollback), "install": installed}
+
+
+def _capture(project_root: Path, reference_project_root: Path, wave: str, *,
+             rollback_project_root: Path | None = None, work_dir: Path | None = None):
     """每次重新读取权威输入、安装树、围栏与状态，不接受外部成功 JSON。"""
     if wave not in RECLAIM_WAVES:
         raise ValueError("writer reclaim supports only complete W2/W3A waves")
-    if wave == "W3A":
-        raise RuntimeError("W3A state revision and rollback admission are not ready; no Writer change allowed")
     root, reference = project_root.resolve(strict=True), reference_project_root.resolve(strict=True)
     if root != _ROOT or os.environ.get("BFL_DEPLOYMENT_TARGET") != "aliyun-gray":
         raise RuntimeError("writer reclaim must execute from its ECS immutable candidate")
@@ -115,6 +148,8 @@ def _capture(project_root: Path, reference_project_root: Path, wave: str):
     if root not in Path(__file__).resolve(strict=True).parents:
         raise RuntimeError("writer reclaim module differs from candidate release")
     old, sources, new, releases = _verified_pair(root, reference, wave)
+    if wave == "W3A":
+        releases["rollback"] = _verified_w3a_rollback(root, rollback_project_root, sources)
     current = control._CURRENT_LINKS["aliyun-gray"]
     if not current.is_symlink() or current.resolve(strict=True) != root:
         raise RuntimeError("writer reclaim requires fenced candidate current")
@@ -135,6 +170,11 @@ def _capture(project_root: Path, reference_project_root: Path, wave: str):
     new = {key: replace(cfg, environment_fingerprint=fingerprint, data_snapshot_id=snapshot.snapshot_id)
            for key, cfg in new.items()}
     stateful = {key: cfg for key, cfg in new.items() if cfg.incremental_state}
+    readiness = {}
+    if wave == "W3A":
+        from harness.w3a_reclaim_prepare import read_w3a_readiness
+        readiness = read_w3a_readiness(root, sources=sources, new=new, snapshot=snapshot,
+                                       work_dir=work_dir, releases=releases)
     return old, sources, new, {
         "schema_version": "same-id-writer-reclaim-control-plane-v1", "wave": wave,
         "deployment_target": "aliyun-gray", "release": releases, "current_release": str(root),
@@ -147,15 +187,18 @@ def _capture(project_root: Path, reference_project_root: Path, wave: str):
         "databridge": {"generation_id": snapshot.generation_id, "data_snapshot_id": snapshot.snapshot_id,
                        "business_digest": snapshot.business_digest, "files": hashes},
         "candidate_states": control._read_candidate_states(root, stateful, snapshot) if stateful else {},
+        **({"w3a_readiness": readiness} if wave == "W3A" else {}),
     }
 
 
 def build_writer_reclaim_preflight(engine, *, project_root: Path, reference_project_root: Path,
                                    wave: str, harness_run_ids: Mapping[str, str], action: str,
-                                   expected_database_name: str, expected_server_uuid: str) -> dict:
+                                   expected_database_name: str, expected_server_uuid: str,
+                                   rollback_project_root: Path | None = None, work_dir: Path | None = None) -> dict:
     """生成只读回收计划；缺少真实迁移 Gate 时保持失败。"""
     runs = parse_reclaim_run_ids(wave, [f"{key}={value}" for key, value in harness_run_ids.items()])
-    old, sources, new, evidence = _capture(project_root, reference_project_root, wave)
+    extra = {"rollback_project_root": rollback_project_root, "work_dir": work_dir} if wave == "W3A" else {}
+    old, sources, new, evidence = _capture(project_root, reference_project_root, wave, **extra)
     plan = repository.read_same_id_writer_reclaim_plan(
         engine, wave=wave, old_configs=old, source_configs=sources, new_configs=new,
         harness_run_ids=runs, action=action, control_plane_evidence=evidence,
@@ -167,14 +210,16 @@ def build_writer_reclaim_preflight(engine, *, project_root: Path, reference_proj
 def execute_writer_reclaim(engine, *, project_root: Path, reference_project_root: Path,
                            wave: str, harness_run_ids: Mapping[str, str], action: str,
                            expected_plan_sha256: str, approved_by: str,
-                           expected_database_name: str, expected_server_uuid: str) -> dict:
+                           expected_database_name: str, expected_server_uuid: str,
+                           rollback_project_root: Path | None = None, work_dir: Path | None = None) -> dict:
     """仅经仓储原子回收/恢复 Writer；不动文件 current、历史事实或服务。"""
     runs = parse_reclaim_run_ids(wave, [f"{key}={value}" for key, value in harness_run_ids.items()])
-    old, sources, new, _evidence = _capture(project_root, reference_project_root, wave)
+    extra = {"rollback_project_root": rollback_project_root, "work_dir": work_dir} if wave == "W3A" else {}
+    old, sources, new, _evidence = _capture(project_root, reference_project_root, wave, **extra)
     return repository.apply_same_id_writer_reclaim(
         engine, wave=wave, old_configs=old, source_configs=sources, new_configs=new,
         harness_run_ids=runs, action=action, expected_plan_sha256=expected_plan_sha256,
         approved_by=approved_by, approved_at=datetime.now(timezone.utc),
         expected_database_name=expected_database_name, expected_server_uuid=expected_server_uuid,
-        control_plane_evidence_reader=lambda: _capture(project_root, reference_project_root, wave)[3],
+        control_plane_evidence_reader=lambda: _capture(project_root, reference_project_root, wave, **extra)[3],
     )

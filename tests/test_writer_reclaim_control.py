@@ -27,6 +27,8 @@ def test_reclaim_uses_only_same_id_route(monkeypatch, wave, action):
             "--expected-server-uuid", "test-only"]
     for key, run in _runs(wave).items():
         args.extend(["--harness-run-id", f"{key}={run}"])
+    if wave == "W3A":
+        args.extend(["--rollback-project-root", "/actual-rollback", "--work-dir", "/completed-prepare"])
     if action != "preflight":
         args.extend(["--expected-plan-sha256", "a" * 64, "--approved-by", "test"])
     target = "build_writer_reclaim_preflight" if action == "preflight" else "execute_writer_reclaim"
@@ -75,22 +77,22 @@ def test_w2_prepare_routes_without_caller_supplied_success(monkeypatch, action):
             cli._run_native_successor_migration_command(parsed)
 
 
-def test_w3a_prepare_remains_closed_before_database(monkeypatch):
+def test_w3a_prepare_requires_separate_rollback_before_database(monkeypatch):
     create = MagicMock(side_effect=AssertionError("must not connect"))
     monkeypatch.setattr(cli, "create_engine_from_env", create)
     args = cli._build_parser().parse_args([
         "migrate-native-successor", "preflight", "--action", "prepare", "--wave", "W3A",
         "--reference-project-root", "/reference", "--expected-database-name", "test",
         "--expected-server-uuid", "test-only"])
-    with pytest.raises(ValueError, match="W3A state preparation"):
+    with pytest.raises(ValueError, match="rollback-project-root"):
         cli._run_native_successor_migration_command(args)
     create.assert_not_called()
 
 
-def test_w3a_cannot_bypass_missing_state_and_rollback_evidence(monkeypatch):
+def test_w3a_cannot_bypass_immutable_candidate_boundary(monkeypatch):
     inspect = MagicMock(side_effect=AssertionError("must not inspect"))
     monkeypatch.setattr(reclaim, "_verified_pair", inspect)
-    with pytest.raises(RuntimeError, match="state revision and rollback admission"):
+    with pytest.raises(RuntimeError, match="immutable candidate"):
         reclaim._capture(ROOT, ROOT, "W3A")
     inspect.assert_not_called()
 

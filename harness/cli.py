@@ -33,6 +33,7 @@ from harness.same_id_runtime_upgrade import (
 )
 from harness.w3b_prepare import build_w3b_prepare_preflight, execute_w3b_prepare
 from harness.w2_reclaim_prepare import build_w2_reclaim_prepare_preflight, execute_w2_reclaim_prepare
+from harness.w3a_reclaim_prepare import build_w3a_reclaim_prepare_preflight, execute_w3a_reclaim_prepare
 from harness.w2_live_preservation import build_w2_live_preservation_preflight, execute_w2_live_preservation
 from harness.writer_reclaim import (
     build_writer_reclaim_preflight, execute_writer_reclaim, parse_reclaim_run_ids,
@@ -291,6 +292,7 @@ def _build_parser() -> argparse.ArgumentParser:
         item.add_argument("--wave", choices=["W2", "W3A", "W3B"], required=True)
         item.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
         item.add_argument("--reference-project-root", type=Path, required=True)
+        item.add_argument("--rollback-project-root", type=Path, help="W3A only: actual pre-cutover release, not Native reference")
         if action not in {"prepare", "preserve-live"}:
             item.add_argument("--harness-run-id", action="append", required=action != "preflight", metavar="BASE=RUN")
         item.add_argument("--expected-database-name", required=True)
@@ -298,9 +300,8 @@ def _build_parser() -> argparse.ArgumentParser:
         if action == "preflight":
             item.add_argument("--action", choices=["prepare", "cutover", "rollback", "preserve-live"], default="cutover")
         if action in {"preflight", "prepare"}:
-            item.add_argument("--predict-date", help="W2 preparation only; an already-due weekday trading date")
-        if action == "prepare":
-            item.add_argument("--work-dir", type=Path, required=True)
+            item.add_argument("--predict-date", help="W2/W3A preparation only; an already-due weekday trading date")
+        item.add_argument("--work-dir", type=Path, required=action == "prepare", help="W3A cutover/rollback: completed preparation directory")
         if action != "preflight":
             item.add_argument("--expected-plan-sha256", required=True)
             item.add_argument("--approved-by", required=True)
@@ -313,6 +314,13 @@ def _run_native_successor_migration_command(
 ) -> dict[str, object]:
     """同 ID 升级及已跨 ID Writer 回收；不恢复旧跨 ID 激活路由。"""
     project_root = args.project_root.resolve()
+    w3a_options = {}
+    if args.wave == "W3A":
+        if args.rollback_project_root is None:
+            raise ValueError("W3A requires explicit rollback-project-root distinct from Native reference")
+        w3a_options["rollback_project_root"] = args.rollback_project_root.resolve()
+    elif args.rollback_project_root is not None:
+        raise ValueError("rollback-project-root is restricted to W3A")
     preserving = args.migration_action == "preserve-live" or (
         args.migration_action == "preflight" and args.action == "preserve-live"
     )
@@ -335,10 +343,12 @@ def _run_native_successor_migration_command(
     if preparing and getattr(args, "harness_run_id", None):
         raise ValueError("prepare creates its own real Harness runs; do not supply run IDs")
     reclaiming = args.wave in {"W2", "W3A"}
-    if preparing and args.wave == "W3A":
-        raise ValueError("W3A state preparation is not ready; no execution or synthetic Gate allowed")
-    if getattr(args, "predict_date", None) and not (preparing and args.wave == "W2"):
-        raise ValueError("predict-date is restricted to W2 preparation")
+    if getattr(args, "predict_date", None) and not (preparing and args.wave in {"W2", "W3A"}):
+        raise ValueError("predict-date is restricted to W2/W3A preparation")
+    if args.wave == "W3A" and not preparing:
+        if args.work_dir is None:
+            raise ValueError("W3A cutover/rollback requires completed preparation work-dir")
+        w3a_options["work_dir"] = args.work_dir
     run_ids = None if preparing else (
         parse_reclaim_run_ids(args.wave, args.harness_run_id or []) if reclaiming
         else parse_w3b_harness_run_ids(args.harness_run_id or [])
@@ -357,6 +367,13 @@ def _run_native_successor_migration_command(
                 return execute_w2_reclaim_prepare(engine, **kwargs,
                     expected_plan_sha256=args.expected_plan_sha256, approved_by=args.approved_by,
                     work_dir=args.work_dir)
+            if args.wave == "W3A":
+                kwargs.update(w3a_options, predict_date=args.predict_date)
+                if args.migration_action == "preflight":
+                    return build_w3a_reclaim_prepare_preflight(engine, **kwargs)
+                return execute_w3a_reclaim_prepare(engine, **kwargs,
+                    expected_plan_sha256=args.expected_plan_sha256, approved_by=args.approved_by,
+                    work_dir=args.work_dir)
             if args.migration_action == "preflight":
                 return build_w3b_prepare_preflight(engine, **kwargs)
             return execute_w3b_prepare(engine, **kwargs,
@@ -373,6 +390,7 @@ def _run_native_successor_migration_command(
                 action=args.action,
                 expected_database_name=args.expected_database_name,
                 expected_server_uuid=args.expected_server_uuid,
+                **w3a_options,
             )
         execute = execute_writer_reclaim if reclaiming else execute_same_id_upgrade
         return execute(
@@ -386,6 +404,7 @@ def _run_native_successor_migration_command(
             approved_by=args.approved_by,
             expected_database_name=args.expected_database_name,
             expected_server_uuid=args.expected_server_uuid,
+            **w3a_options,
         )
     finally:
         engine.dispose()

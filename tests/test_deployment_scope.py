@@ -18,8 +18,6 @@ MAC_ONLY_SCHEME_IDS = frozenset(
         "daily_10y_lgbm_10y04_0629",
         "daily_1y_xgb_1y13_0629",
         "daily_5y_lgbm_5y10_0629",
-        "liwei_0616_5y01_full_oos_k3_div_k10",
-        "liwei_0616_cons_sda_k3_div_k10",
         "monthly_10y_rf_top5_0629",
         "monthly_1y_rf_top30_0629",
         "monthly_5y_knn_top20_0629",
