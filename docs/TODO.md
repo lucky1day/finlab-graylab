@@ -8,14 +8,16 @@
 [生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。已完成事项通过 Git、Harness、数据库
 与目标机 journal 追溯，不在本文维护副本。
 
-## 五套新方案自然观察
+## 八套新方案自然观察
 
 - 双机交付与模拟验收已完成，精确版本、覆盖范围及证据见[当前状态](CURRENT_STATUS.md)。
-- 分别只读观察三套月频 2026-09-15 18:00、两套周频 2026-09-19 11:30 Asia/Shanghai 的首次自然运行。
+- 分别只读观察三套月频 2026-09-15 18:00、五套周频 2026-09-19 11:30 Asia/Shanghai 的首次自然运行。
+  周频包含上一批 3Y/10Y，以及本批 `weekly_5y_full_action_lowcorr01_v3`、
+  `weekly_5y_full_action_lowcorr02_v3`、`weekly_5y_full_action_lowcorr03_v3`。
   核对 installed/loaded、日志、真实 `scheduled_live` run、prediction、exact、本机输入和 Dashboard；
   当前模拟与灰度补缺不计作自然运行。
-- 当前任务已安排“五套新方案双机自然运行观察”只读 follow-up（automation ID `automation`），每日 19:30 检查，
-  未到窗口或无新变化时保持安静；全部十个主机/方案通过后暂停，最迟 2026-09-21 报告未通过项后暂停。
+- 当前任务已更新“八套新方案双机自然运行观察”只读 follow-up（automation ID `automation`），每日 19:30 检查，
+  未到窗口或无新变化时保持安静；全部十六个主机/方案通过后暂停，最迟 2026-09-21 报告未通过项后暂停。
   不授权自动重跑、补缺、业务写库、服务/调度修改或 Git 修改。
 
 ## M0 周期均值自然观察
