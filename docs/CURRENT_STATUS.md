@@ -30,6 +30,9 @@
   17 个真实新 exact 原子激活；7 份状态仅转换版本封装，原文件及 payload/input 不变。
   全部 active 准入、事实、Registry、Actuals、Dashboard、Backend 和 timer 读回通过；
   19:00 Actuals 自然执行成功后才进入维护窗口。未运行算法、未改历史、未同步 Mac3。
+- 上述一次性发布验收结束后，两份专用附件转换测试已从最终代码线删除，原件及通过记录保留于
+  已验证提交和 archive；最终公共回归为 1167 passed、36 skipped、241 subtests。
+  这一收尾只改测试/文档，不改变任何 runtime、config、exact 或状态。
 - 用户已批准迁移期新 Blackbox 目录保留 Native 附件至接管验收完成，按精确清单及摘要绑定版本，
   不允许附件 fallback 或第二 Writer；普通两文件合同不变。历史源数据修订不触发已发布预测重算或覆盖，
   只更新当前预测必需的内部派生状态；不再等待目录布局审批。
