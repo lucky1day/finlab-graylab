@@ -189,6 +189,10 @@ def _capture_installed_locale(root: Path, *, installed_current_root: Path | None
         "-p", "Environment", "-p", "EnvironmentFiles", "-p", "PassEnvironment", "-p", "UnsetEnvironment",
     ], text=True, timeout=10)
     properties = dict(line.split("=", 1) for line in unit.splitlines() if "=" in line)
+    # systemctl 按文件重复输出 EnvironmentFiles=，不能让 dict 丢掉前面的文件。
+    properties["EnvironmentFiles"] = " ".join(
+        line.partition("=")[2] for line in unit.splitlines() if line.startswith("EnvironmentFiles=")
+    )
     expected_files = "/etc/bond-factor-lab/bond-factor-lab.env (ignore_errors=no) /opt/bond-factor-lab/current/.bfl-release.env (ignore_errors=no)"
     if properties.get("EnvironmentFiles") != expected_files or properties.get("PassEnvironment") != "" or properties.get("UnsetEnvironment") != "":
         raise RuntimeError("unsupported installed daily environment configuration")

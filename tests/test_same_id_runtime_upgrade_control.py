@@ -255,7 +255,8 @@ def test_worktree_modules_cannot_claim_installed_candidate(tmp_path):
         control._assert_execution_modules(tmp_path)
 
 
-def test_installed_locale_and_conda_must_match_shell(tmp_path, monkeypatch):
+@pytest.mark.parametrize("file_separator", [" ", "\nEnvironmentFiles="])
+def test_installed_locale_and_conda_must_match_shell(tmp_path, monkeypatch, file_separator):
     from scheduler import blackbox_v2_runner as runner
     root = tmp_path / "release"
     root.mkdir()
@@ -272,6 +273,7 @@ def test_installed_locale_and_conda_must_match_shell(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "_load_runtime_profile", lambda *_: profile)
     monkeypatch.setattr(runner, "_python_runtime", lambda *_: SimpleNamespace(prefix=prefix, executable=prefix / "python"))
     unit = "Environment=PATH=/installed/bin\nEnvironmentFiles=/etc/bond-factor-lab/bond-factor-lab.env (ignore_errors=no) /opt/bond-factor-lab/current/.bfl-release.env (ignore_errors=no)\nPassEnvironment=\nUnsetEnvironment=\n"
+    unit = unit.replace("(ignore_errors=no) /opt/", "(ignore_errors=no)" + file_separator + "/opt/")
     monkeypatch.setattr(control.subprocess, "check_output", lambda args, **_: "LANG=en_US.UTF-8\n" if "show-environment" in args else unit)
     monkeypatch.setattr(control.shutil, "which", lambda *_, **__: str(conda))
     monkeypatch.setenv("LANG", "en_US.UTF-8")
@@ -286,6 +288,9 @@ def test_installed_locale_and_conda_must_match_shell(tmp_path, monkeypatch):
     monkeypatch.delenv("LC_ALL")
     monkeypatch.setattr(control.shutil, "which", lambda *_, **kwargs: str(conda) if "path" in kwargs else None)
     with pytest.raises(RuntimeError, match="shell conda"):
+        control._capture_installed_locale(root)
+    unit += "EnvironmentFiles=/unexpected.env (ignore_errors=no)\n"
+    with pytest.raises(RuntimeError, match="unsupported installed"):
         control._capture_installed_locale(root)
 
 
