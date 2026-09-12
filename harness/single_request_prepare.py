@@ -30,7 +30,11 @@ _APPROVED_ACCEPTANCE_SHA = {
 }
 _FIELDS = ('scheme_version', 'runtime_type', 'code_hash', 'config_hash', 'manifest_hash')
 _STAGE = 'native-runtime-upgrade'
-_APPROVED_ECS_SEED_SHA = {}
+_APPROVED_ECS_SEED_SHA = {
+    'liwei_0616_5y_auc_static_all_k3_div_k10': 'fd5e3307b346bc2440669005f4ca43746751cfa6d8bb6a561abfb168c1ea51e2',
+    'liwei_0616_5y_auc_yearly_all_k3_div_k10': 'fe15f0e3a0b14b08f1cddc5692f369e3334d99f25b46314297faa4cbf0c61170',
+    'liwei_0616_5y_ic_yearly_all_k3_div_k10': '75117fe5adec616d006c78cb3129da0cef14763096c52e4bb268464374391328',
+}
 
 
 def load_ecs_seed(config, snapshot, input_files, *, require_unpublished):
