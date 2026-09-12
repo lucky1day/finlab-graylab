@@ -208,7 +208,7 @@ def choose_latest_backtest_runs(
     run_rows: Iterable[Mapping[str, Any]],
     registry_rows: Iterable[Mapping[str, Any]],
 ) -> dict[str, Mapping[str, Any]]:
-    """按默认 runtime source 与两层 latest-success 规则选择回测 run。"""
+    """按原业务 ID 与两层 latest-success 选择平台回测来源，不随当前运行时改写历史。"""
     registry = list(registry_rows)
     runtime_by_base: dict[str, str] = {}
     for row in registry:
@@ -251,7 +251,7 @@ def choose_latest_backtest_runs(
         data_source = _required_text(
             row.get("data_source"), field="backtest run data_source"
         )
-        if data_source != BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE[runtime_type]:
+        if data_source not in BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE.values():
             continue
         key = (
             _required_text(

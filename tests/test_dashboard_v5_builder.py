@@ -130,6 +130,25 @@ def test_v5_summary_validator_rejects_monthly_source_outside_policy() -> None:
         validate_dashboard_payload(payload)
 
 
+def test_same_id_runtime_upgrade_preserves_backtest_provenance() -> None:
+    engine = _engine()
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE t_scheme_registry SET runtime_type='native_adapter'"))
+        conn.execute(text("UPDATE t_backtest_runs SET data_source='framework_db_aligned'"))
+    before = build_factor_lab_dashboard(engine)
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE t_scheme_registry SET runtime_type='blackbox_v2'"))
+    after = build_factor_lab_dashboard(engine)
+    validate_dashboard_payload(after)
+    assert after['schemes'] == before['schemes']
+    assert after['schemes'][0]['backtest']['data_source'] == 'framework_db_aligned'
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO t_backtest_runs VALUES "
+                          "(8,'unpublished-source','demo_daily','source_original',"
+                          "'2025-01-01','2026-05-29','success','2026-06-01','2026-06-01')"))
+    assert build_factor_lab_dashboard(engine)['schemes'] == after['schemes']
+
+
 @pytest.mark.parametrize(
     ("target_date", "expected"),
     (("2026-05-31", "backtest"), ("2026-06-01", "live")),

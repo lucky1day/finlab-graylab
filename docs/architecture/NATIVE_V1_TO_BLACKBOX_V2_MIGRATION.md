@@ -238,6 +238,15 @@ config、release 和单一 one-shot 决定，不以历史版本表 `active` 行�
 该收口补丁已通过 928 passed、16 skipped、240 subtests passed；另行真实隔离 MySQL
 10 passed，独立审查无 Critical/Important。未通过生产 cutover 之前仍不计为原 ID 接管。
 
+W3B 整组 ECS cutover 已在 `d2a6fba…` 成功，三个原 ID 当前唯一 active 版本均为上述
+Blackbox exact；旧当前 Native 三行及额外九行已退役，三行 paused 历史不变。反向只读
+preflight 通过；准备产物与 Gate 未重跑。全库 25,682 条产品预测及相关 run/backtest、Actuals
+和其他 Registry/version 摘要与切换前相同。Dashboard 的统计/明细未变，但原三方案的
+回测来源 Metadata 因当前 runtime 过滤而变 null，已围住日频 timer 做最小展示修复：
+历史回测来源按同一业务 ID、已支持的平台 data_source 和既有 latest-success 规则选取，
+不随执行运行时升级消失；不改历史来源、不引入跨 ID 拼接或重新回测。
+展示修复完成后重新比较全部 active Dashboard 业务内容、恢复 timer 并读回 Backend。
+
 ### 已批准的迁移期附件共存与历史修订边界
 
 附件共存候选已实现并完成独立审查（无 Critical/Important）：全量回归 884 passed、
