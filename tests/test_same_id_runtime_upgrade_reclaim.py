@@ -53,6 +53,7 @@ def reclaim_scope(migration_fixture, wave):
                     cfg.schedule.cron = "30 11 * * 6"
                 old.horizon = new.horizon = 6
                 source.horizon = 1
+                old.target_rule = None
             old_configs[scheme_id], source_configs[scheme_id], new_configs[scheme_id] = old, source, new
             insert(conn, "t_scheme_versions", version | repo._same_id_reclaim_identity(old) | {"status": "retired"})
             insert(conn, "t_scheme_versions", version | {

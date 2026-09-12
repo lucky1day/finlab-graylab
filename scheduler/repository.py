@@ -4143,7 +4143,8 @@ def _same_id_writer_reclaim_plan_conn(
                     or not old.tenors or any(getattr(cfg.schedule, field) != getattr(old.schedule, field)
                                            for field in ("cron", "timezone"))):
                 raise ValueError("same-ID reclaim business dimensions differ")
-            old_rule = old.target_rule or (TASK_COMBINATIONS[old.task_type][1] if old.task_type in {"T+1", "T+5"} else None)
+            implicit_rule = old.task_type in {"T+1", "T+5"} or (wave == "W1B" and old.task_type == "weekly_point")
+            old_rule = old.target_rule or (TASK_COMBINATIONS[old.task_type][1] if implicit_rule else None)
             if cfg.target_rule != old_rule:
                 raise ValueError("same-ID reclaim target_rule differs")
         if wave == "W1B":

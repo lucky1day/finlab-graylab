@@ -115,6 +115,14 @@ def test_sqlite_weekly_original_ids_preserve_horizon_and_facts(migration):
         check_roundtrip(migration)
 
 
+@pytest.mark.parametrize("config_group", ["old_configs", "source_configs", "new_configs"])
+def test_weekly_reclaim_rejects_explicit_different_target_rule(migration, config_group):
+    engine, kwargs, control = reclaim_scope(migration, "W1B")
+    next(iter(kwargs[config_group].values())).target_rule = "different-business-rule"
+    with pytest.raises(ValueError, match="target_rule differs"):
+        reclaim_plan(engine, kwargs, control)
+
+
 @pytest.mark.skipif(not MYSQL_URL, reason="requires explicit isolated MySQL URL")
 def test_mysql_weekly_original_ids_preserve_horizon_and_facts(mysql_migration):
     check_roundtrip(mysql_migration)
