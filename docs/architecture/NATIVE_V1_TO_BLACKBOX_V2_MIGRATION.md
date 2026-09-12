@@ -442,6 +442,27 @@ ECS 原 ID 接管现为 12/17 个方案、16/21 个 target。下一步是 W3C/W3
 双机晋级、W4 和最终清理仍未完成。W3C/W3D 优先核实既有 Native 数值产物和真实依赖，不能因缓存的
 `unqualified` 标签直接丢弃可核实结果，也不能不补证明就将其发布为合格 Blackbox 状态。
 
+2026-09-12 后续验证进展（尚不增加接管数量）：
+
+- W1 固定 42 个来源的备份为 14,677 行、14 表 DDL、12 外键；SHA
+  `c41f7d859ebb13b08c76425cb8016631fe2784723d7ed3bbb683a12e26f0018f`。
+  第三次真实隔离恢复通过，全量原始 rows/history/source 摘要完全相同，外键始终启用，自建库已删除。
+  恢复回执 `outputs/w1-fact-preservation-20260912/restore-proof-3.json`，SHA
+  `2c7b6dbf91253b116a04c6c58da1fb54f40fbdfb096a11b6b117d3a5ec9f4ed4`。
+  前两次失败来自 MySQL JSON 文本解析将同一个旧审计 double 舍入一个 ULP；实际涉及十条审计行。
+  私有恢复脚本仅在新建隔离库内通过 `JSON_SET/CAST AS DOUBLE` 精确保留原值，再比较原始完整摘要；
+  无容差、无摘要改写，原备份和两次失败证据保留。独立审查无 Critical/Important；生产尚未写入这 42 条。
+- W3C 三个原方案末点已实际计算并保存。AUC static 首次在后置组装失败，原数值产物完整，
+  仅以零 fit 续接组装；AUC yearly、IC yearly 首次完成。原末点分别约 16.18、30.01、21.13 秒，
+  不重复训练；三份证据均明确候选训练内核未执行、正式 333 Request 等价未完成。
+  详见 `outputs/w3c-reuse-audit-20260912/last-point-results.md`；不得以共享 Phase A 后方向相同冒充独立内核等价。
+- W3D 两个参考进程于 15:45 CST 实际启动，私有目录
+  `outputs/w3d-comparison-prepare-20260912/full-sparse/{7y01,7y03}/native/`。
+  使用原 selector 的真实依赖，339 个历史点全 grid 加 236 个当前点稀疏计算，不改变算法窗口或 cutoff。
+  每个参考仍为 7200 秒上限，并以 17:45 为本窗口硬截止保护 18:00 任务；
+  参考完成后若窗口剩余不足 3600 秒，保留完整产物并延后候选 batch，不重跑已完成参考。
+  进程启动不等于验收通过，须以完整回执、333 个结果和候选逐行对照为准。
+
 ### 已批准的迁移期附件共存与历史修订边界
 
 附件共存候选已实现并完成独立审查（无 Critical/Important）：全量回归 884 passed、
