@@ -11,15 +11,15 @@
 | 项目 | ECS 独立灰度 | Mac3 生产 |
 |---|---|---|
 | 迁移结果 | 17 个原方案、21 个 target 使用 Blackbox | 同左 |
-| 当前 active 执行身份 | 89 个 Blackbox base | 84 个 Blackbox base + 9 个 W4 Native base |
-| Dashboard | 93 个 target；新月频待验证月份入口验收阻塞 | 97 个 target |
+| 当前 active 执行身份 | 89 个 Blackbox base | 89 个 Blackbox base + 9 个 W4 Native base |
+| Dashboard | 93 个 target | 102 个 target |
 | 调度控制面 | systemd one-shot/timer | launchd + installed plist |
-| current release | `699b986c00be100a42f9e173a87f0f446b566cc8` | `5f6c60cfd78457c2b1a6d52338e3a44f72c578ec` |
-| previous release | `5f6c60cfd78457c2b1a6d52338e3a44f72c578ec` | `478850a23a4c9690f81aab41de90eccf21e61abb` |
+| current release | `6ffc8075908a0703dfbef19381be88728b6d1429` | 同一提交、同一 archive |
+| previous release | `699b986c00be100a42f9e173a87f0f446b566cc8` | `5f6c60cfd78457c2b1a6d52338e3a44f72c578ec` |
 | schema | 025 APPLIED | 025 APPLIED |
 
-- ECS archive SHA-256：`b6f0cae7fe18d008bed0468ad5aeff990f1a451c50c55d43f07aec031e0667d4`；Mac3 仍为 `c449e0bf515ccd7024cf36ea498d450b468f1fdf3117bf368236e04c70acc3e8`。
-- ECS 新 release 的 Backend cwd、健康、五套 exact、完整数据及调度模拟已验证；前端验收未闭环，Mac3 尚未晋级。
+- 双机 archive SHA-256：`23673797a1f302e3e2b70ee24ede29fcaf144565c864dfd813557abe745650b4`。
+- 两机 Backend 实际 cwd、健康、五套 exact、完整数据、调度模拟和前端验收均通过。
   域名仍由 Mac3 服务；DNS、Nginx、认证和既有 SSH 隧道未改变。验收使用用户授权的临时 localhost 转发。
 - 两端独立使用自己的 MySQL、DataBridge 和派生状态，不复制数据库、不双写、不跨机共享输入。
 - 集成分支为 `codex/develop`。迁移收尾时两条远端分支已同步；其后文档提交不代表新的生产 release。
@@ -27,19 +27,25 @@
 
 ## 五套新方案交付状态
 
-- ECS 已激活两套周频 `weekly_3y_full_action_rule0001_v2@ac06e7df4582`、
+- 双机均已激活两套周频 `weekly_3y_full_action_rule0001_v2@ac06e7df4582`、
   `weekly_10y_full_action_hgb0061_v2@e87140ab2ce2`，以及三套月频
   `cgb_a4_fundseason_3y_hl18@79c08e273ecd`、`cgb_a4_fundseason_5y_hl18@38c8fa7b0220`、
   `cgb_a4_fundseason_10y_hl18@295c00e305e2`。上游脚本原字节保留，仅两份周频 Metadata owner 修正为 liwei。
-- ECS 每套周频历史 72 条（target 2025-01-10—2026-05-29）、灰度 16 条（2026-06-05—2026-09-18）；
+- 每机每套周频历史 72 条（target 2025-01-10—2026-05-29）、灰度 16 条（2026-06-05—2026-09-18）；
   每套月频历史 16 条（2025-02-14—2026-05-15）、灰度 4 条（2026-06-15—2026-09-15）。
-  合计 192 条历史、44 条灰度；业务键完整，来源、exact、三日期及存量记录保护通过。
-- ECS 五套 DashboardGate 及 236 条 HTTP 明细与数据库核对通过，但月度汇总过滤纯待验证月份，
-  三套月频 2026-09 无页面明细入口。按合同失败停止条件暂停 Mac3 晋级，待确认公共展示修复与新包发布。
-  Mac3 尚未执行本批新身份的回测、激活、补缺或 release 切换。
-- 证据：开发机 runtime 下 `releases/new-five-20260912/`，其中 `ecs/data-validation.json`、
-  `ecs/schedule-simulation.json`、`ecs-ui/dashboard-details.json`、`frontend-blocker.json`；
-  ECS 原件在 `/opt/bond-factor-lab/incoming/new-five-20260912/`。
+  每机共 192 条历史、44 条灰度；业务键零缺口、历史灰度零重叠，存量 Registry 与预测记录保持不变。
+- 每机五次持久化回测、灰度来源与 exact 均可追溯：ECS generation 为 `full-20260912-063338-cefd054bbccf`，
+  Mac3 为 `full-20260912-063159-944bc5a2c67a`，输入 business digest 不同，各自独立计算。
+- 纯待验证月份缺少明细入口的问题已修复，月份保留而统计继续仅使用已验证记录。
+  每机五套 DashboardGate、236 条 HTTP 明细及 Actual join、浏览器期限/名称/owner/历史/待验证验收通过。
+  公网明细批量验收按现有限流降低请求频率，未更改限流配置。
+- 双机复用既有周六 11:30 与每日 18:00 close-period 入口，未替换 installed unit/plist；
+  ECS `Persistent=false`，Mac3 launchd 行为不变。最终 release 隔离调度模拟通过且无业务写入；
+  W4 九套 Native exact/文件与原 release 一致，原运行依赖可用。首次自然运行仍见 [TODO](TODO.md)。
+- 外置证据根：`/Users/macstudio0/bond-factor-lab-runtime/releases/new-five-20260912/`。
+  双机数据、lineage、安装与控制面证据在 `ecs/`、`mac3/`；页面、明细和 Actual 证据在 `ecs-ui-final/`、`mac3-ui/`；
+  最终 archive 在 `archive-final/`，从 ECS 晋级的同字节副本在 `promoted-archive/`。
+  ECS 原件保留于 `/opt/bond-factor-lab/incoming/new-five-20260912/`。
 
 ## 保留范围与历史保护
 

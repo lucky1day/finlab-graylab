@@ -8,12 +8,15 @@
 [生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。已完成事项通过 Git、Harness、数据库
 与目标机 journal 追溯，不在本文维护副本。
 
-## 五套新方案双机交付
+## 五套新方案自然观察
 
-- ECS 数据与发布已完成，前端纯待验证月份缺少明细入口，Mac3 晋级暂停；事实与证据见[当前状态](CURRENT_STATUS.md)。
-  待确认公共展示修复范围后，保持已有 exact 与有效结果，重新生成不可变包，先 ECS 全验收，再同包晋级 Mac3。
-- 双机交付后分别只读观察三套月频 2026-09-15 18:00、两套周频 2026-09-19 11:30 Asia/Shanghai 的首次自然运行。
-  核对 installed/loaded、日志、run、prediction 和 Dashboard；当前模拟与灰度补缺不计作自然运行。
+- 双机交付与模拟验收已完成，精确版本、覆盖范围及证据见[当前状态](CURRENT_STATUS.md)。
+- 分别只读观察三套月频 2026-09-15 18:00、两套周频 2026-09-19 11:30 Asia/Shanghai 的首次自然运行。
+  核对 installed/loaded、日志、真实 `scheduled_live` run、prediction、exact、本机输入和 Dashboard；
+  当前模拟与灰度补缺不计作自然运行。
+- 当前任务已安排“五套新方案双机自然运行观察”只读 follow-up（automation ID `automation`），每日 19:30 检查，
+  未到窗口或无新变化时保持安静；全部十个主机/方案通过后暂停，最迟 2026-09-21 报告未通过项后暂停。
+  不授权自动重跑、补缺、业务写库、服务/调度修改或 Git 修改。
 
 ## M0 周期均值自然观察
 
