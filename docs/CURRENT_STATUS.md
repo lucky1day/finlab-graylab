@@ -14,10 +14,8 @@
 - 平台 confidence 退役现已独立获批：仅删除统一平台字段及两张预测表的对应列；算法内部同名计算、
   原历史其余属性及 W4 运行方式保持不变。代码、完整回归（674 passed、4 skipped、221 subtests）、
   独立审查、九个 W4 适配对照、双机备份与 26 表隔离恢复已通过；schema 024/025 下的实际仓储读写、
-  激活及多目标原子提交均已验证。第一份兼容 release 已先 ECS 后 Mac3 激活，第二份兼容回滚边界正在发布，
-  生产 DDL 尚未执行；
-  实施出口见[后续计划](TODO.md#平台-confidence-退役独立获批)。下述保留 confidence 的记录是前一清理窗口事实，
-  不替代本次新授权。本任务不授权 master 合并或推送。
+  激活及多目标原子提交均已验证。双机兼容 release 发布、migration 025 和运行读回已完成，详见下节。
+  下述保留 confidence 的记录是前一清理窗口事实，不替代本次新授权。本任务未合并或推送 master。
 - Mac3 承载生产域名、前端、数据库和 Writer；launchd + installed plist 是其调度控制面。
   ECS 是独立灰度环境，使用本机 MySQL、DataBridge 和 systemd one-shot/timer。
 - 用户已授权深度清理后发布 ECS/Mac3、同步 master 并推送两分支；随后独立授权备份、隔离恢复及引用检查后，
@@ -44,6 +42,42 @@
   删除前均完成备份与独立 MySQL 恢复；删除后保留记录、Actuals、confidence 列、Dashboard、Backend 和调度核验通过。
   本次没有算法执行、生产 schema 迁移、release 切换或服务重启。
 - 单一 codex/develop 集成代码线、不可变 archive；Mac3 使用 ECS 已验证的同一 archive，不能自行构建环境分支版本。
+
+## 平台 confidence 退役验收
+
+2026-09-12 已按 ECS → Mac3 顺序完成独立授权任务：
+
+| 项目 | ECS | Mac3 |
+|---|---|---|
+| current release | `5f6c60cfd78457c2b1a6d52338e3a44f72c578ec` | 同一提交、同一 archive |
+| previous release | `478850a23a4c9690f81aab41de90eccf21e61abb` | 同一提交、同一 archive |
+| schema | 025 APPLIED | 025 APPLIED |
+| 两张预测表 confidence | 均已删除 | 均已删除 |
+| Dashboard / 可执行身份 | 88 target / 84 Blackbox | 97 target / 84 Blackbox + 9 W4 Native |
+
+- 当前 archive SHA-256 为 `c449e0bf515ccd7024cf36ea498d450b468f1fdf3117bf368236e04c70acc3e8`。
+  current/previous 都在 DDL 前发布为 confidence-agnostic，删列后不得回滚到更早依赖该列的版本。
+- 统一平台模型、Native 反序列化与三类 W4 适配、共享回测结果、预测/回测/激活仓储、CompareGate 必需列及
+  容差报告、前端 null 占位均已移除。Blackbox Result 仍严格为既有五字段，不新增兼容字段或转存到 extra。
+- 542 个受保护算法、二进制、source package 和原始 benchmark 文件摘要、93 个 canonical exact 均不变。
+  九个 W4 使用真实历史源输出、冻结 Request 与 artifact/calendar 边界重放完整新旧适配入口，除顶层
+  confidence 外所有记录属性及输入参数一致；这是平台适配验证，不声称重跑二进制或完整历史回测。
+- 算法内部概率、阈值、置信度、排序、投票与方向计算、仍供其他数值使用的 helper、原始 benchmark、
+  001–024 SQL、旧 release 和已有 source_row/extra 审计均保留。
+- MySQL 隔离验证覆盖 14 个迁移/恢复/漂移场景，以及 schema 024/025 下真实仓储写入、激活发布、多目标原子提交
+  与第二个 target 写入前失败的整组回滚。独立审查发现的 unsigned 类型指纹遗漏已修复并复核。
+- 双机逐表核验 26 表：除两列及新增的 025 migration 记录外，原内容、数量、身份、版本和来源不变；
+  旧 001–024 migration history 逐行不变。没有历史重算、复制、预测补写、Registry 切换或源数据修改。
+- 双机 Backend 健康，实际进程对应 current；Dashboard 摘要、Registry/version、派生状态与 installed 控制面
+  均与发布前一致。预测任务已恢复且零在途 run；Actuals/DataBridge 的 23:45/次日 06:30 任务未暂停或遗漏。
+  W4 仍仅 Mac3 Native，不修改 DNS、Nginx、认证或 SSH 隧道。
+- 永久备份：ECS `/opt/bond-factor-lab/backups/confidence-retirement-20260912/ecs-v1`；Mac3
+  `/Users/macstudio0/bond-factor-lab-production/backups/confidence-retirement-20260912/mac3-v1`。
+  完整恢复集为 SQL gzip **与** `original-audit-json.json.gz`，已在独立 MySQL 恢复并通过全值摘要比较；
+  sidecar 只修复隔离恢复时旧 JSON 科学计数浮点值的解析舍入，不修改生产审计。
+  发布、DDL、行摘要和恢复回执外置保留，工作树不纳入数据库备份或大型结果。
+
+本独立任务已完成；此前两个有共享来源引用的 archived W3A 临时身份仍按原清理结论保留，不属于本次字段删除范围。
 
 ## 现场状态读取
 
