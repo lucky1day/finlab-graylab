@@ -32,6 +32,9 @@ from harness.same_id_runtime_upgrade import (
     parse_w3b_harness_run_ids,
 )
 from harness.w3b_prepare import build_w3b_prepare_preflight, execute_w3b_prepare
+from harness.writer_reclaim import (
+    build_writer_reclaim_preflight, execute_writer_reclaim, parse_reclaim_run_ids,
+)
 from scheduler.discovery import load_scheme_config
 from scheduler.repository import create_engine_from_env
 from shared.blackbox_v2.intake import intake_delivery
@@ -283,7 +286,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     for action in ("preflight", "prepare", "cutover", "rollback"):
         item = migration_actions.add_parser(action)
-        item.add_argument("--wave", choices=["W3B"], required=True)
+        item.add_argument("--wave", choices=["W2", "W3A", "W3B"], required=True)
         item.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
         item.add_argument("--reference-project-root", type=Path, required=True)
         if action != "prepare":
@@ -304,14 +307,20 @@ def _build_parser() -> argparse.ArgumentParser:
 def _run_native_successor_migration_command(
     args: argparse.Namespace,
 ) -> dict[str, object]:
-    """仅保留同 ID W3B 生命周期路由；旧跨 ID 写入命令已封闭。"""
+    """同 ID 升级及已跨 ID Writer 回收；不恢复旧跨 ID 激活路由。"""
     project_root = args.project_root.resolve()
     preparing = args.migration_action == "prepare" or (
         args.migration_action == "preflight" and args.action == "prepare"
     )
     if preparing and getattr(args, "harness_run_id", None):
         raise ValueError("prepare creates its own real Harness runs; do not supply run IDs")
-    run_ids = None if preparing else parse_w3b_harness_run_ids(args.harness_run_id or [])
+    reclaiming = args.wave in {"W2", "W3A"}
+    if preparing and reclaiming:
+        raise ValueError("W2/W3A preparation evidence is not implemented; no execution or synthetic Gate allowed")
+    run_ids = None if preparing else (
+        parse_reclaim_run_ids(args.wave, args.harness_run_id or []) if reclaiming
+        else parse_w3b_harness_run_ids(args.harness_run_id or [])
+    )
     engine = create_engine_from_env()
     try:
         if preparing:
@@ -325,7 +334,8 @@ def _run_native_successor_migration_command(
                 expected_plan_sha256=args.expected_plan_sha256, approved_by=args.approved_by,
                 work_dir=args.work_dir)
         if args.migration_action == "preflight":
-            return build_same_id_preflight(
+            preflight = build_writer_reclaim_preflight if reclaiming else build_same_id_preflight
+            return preflight(
                 engine,
                 project_root=project_root,
                 reference_project_root=args.reference_project_root.resolve(),
@@ -335,7 +345,8 @@ def _run_native_successor_migration_command(
                 expected_database_name=args.expected_database_name,
                 expected_server_uuid=args.expected_server_uuid,
             )
-        return execute_same_id_upgrade(
+        execute = execute_writer_reclaim if reclaiming else execute_same_id_upgrade
+        return execute(
             engine,
             project_root=project_root,
             reference_project_root=args.reference_project_root.resolve(),

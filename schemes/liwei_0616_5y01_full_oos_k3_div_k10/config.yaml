@@ -1,26 +1,30 @@
 scheme_id: liwei_0616_5y01_full_oos_k3_div_k10
-runtime_type: native_adapter
-name: "liwei_0616 5Y_01 原脚本Full-OOS"
-description: "models-liwei-0616 5Y_01_cons_SDA_k_3_DIV_K_10 原脚本；STD/DIV/ACCWT 三基线 k=3 共识，DIV_K=10 streak-break fallback；2024-01-01 起单段连续 Full-OOS；日频 T+5。"
-horizon: 5
-task_type: "T+5"
-tenors: ["5Y"]
-frequency: daily
+runtime_type: blackbox_v2
+input_source: data_bridge_current
+factor_input_mode: algorithm_managed
+incremental_state: true
+runtime_profile: blackbox-v2-v1
+data_schema_version: data-bridge-v1
+status: paused
+version_status: draft
 schedule:
-  cron: "3 7 * * 1-5"
-  timezone: "Asia/Shanghai"
+  cron: '3 7 * * 1-5'
+  timezone: Asia/Shanghai
   timeout_sec: 3600
-entry_point: predict.run
-status: active
-input_spec:
-  data_version: shared_data_service_daily.v1
-  required_columns: ["date", "TB1YWI0C", "TB3YWI0C", "TB5YWI0C", "TB7YWI0C", "TB0YWI0C", "SH000300", "IFCFE00C", "S0031525", "AUSHF00C", "CUSHF01C", "RBSHF01C", "USDCNH0C", "SX5EDF0C", "DR007IBC", "M0017153", "G0006352", "G0006353", "M0000005", "M0000271", "M0048486", "G0003956", "B2559386", "G0003892", "DRS00001", "DRS00002", "AGSHF01C", "ZNSHF00C", "HCSHF01C"]
-  auxiliary_inputs: [{"frequency": "weekly", "data_version": "shared_data_service_weekly.v1", "required_columns": ["week_id", "S0114089", "N1355677", "V0135838", "V0184553", "W0192843", "X0100205", "Y0110594", "HWW00001", "HWW00002", "HWW00003"]}, {"frequency": "monthly", "data_version": "shared_data_service_monthly.v1", "required_columns": ["month_id", "M0000545", "M0061518", "M0096870", "M0317126", "M0009970", "M0009973", "M0001227"]}]
-backtest:
-  runner: backtests.liwei_0616_5y01_full_oos_k3_div_k10_reproduction
-  runner_args: ["--batch-mode", "monthly", "--n-workers", "20", "--phase-a-cache"]
-  benchmark_id: liwei_0616_5y01_full_oos
-  data_source: framework_db_aligned
-  benchmark_required: True
-  start_date: "2025-01-01"
-  end_date: "2026-05-22"
+delivery:
+  script: delivery/liwei_0616_5y01_full_oos_k3_div_k10.py
+  metadata: delivery/liwei_0616_5y01_full_oos_k3_div_k10.json
+native_attachments:
+  __init__.py: a52160b7b983877c451087f0e8b677a4172e152d20478d8ca956149913badb90
+  benchmarks/README.md: 9ee381f290a46ba8773bc026c0e79551a6ab0494c20668d0479281defdbeda26
+  benchmarks/current_backtest_summary.json: 0d0841f92fe71db9dfd716c7250ed0e983b5ca768cfdf460362ca0149bb672ab
+  benchmarks/current_predictions_sample.csv: 97031b8abac13cf181bb62418871af17ed2fb37c0f4bb6b6ccc531654fdf9ad3
+  benchmarks/original_backtest_summary.json: 0d0841f92fe71db9dfd716c7250ed0e983b5ca768cfdf460362ca0149bb672ab
+  benchmarks/original_predictions_sample.csv: 97031b8abac13cf181bb62418871af17ed2fb37c0f4bb6b6ccc531654fdf9ad3
+  core/__init__.py: 9e5c98979d53d17067fd42a4bbead7b3f14e2c4bb832fb7c2b8ecbd503263694
+  core/data_alignment.py: 1afa4375a39674e23b43930bd32daea20232a4ca20dce344d09b6b6c42cf8c16
+  core/legacy_bond_common_v31.py.txt: ee1a8a05f4eb20fbf61f2e98e6386a20385776332f394db19a3cd4ff55e50424
+  core/legacy_predict_5y_v8_wf.py.txt: 84d370bbd8d01a0ae1ff8566b368e997477bab92df63539d2915b4f30d5e040a
+  core/v31_common.py: dd692e4e6bad8db89290ddec3dd73edaab64cb8135561e9108b40df980da3df0
+  inference.py: d097623049a191fd67744c1729a426ecaedd7613d675b2b459807799b5f30218
+  predict.py: 6299b13da6e4249292df385620a05d48a54fab4e35649bafed5725eb3d884fa8

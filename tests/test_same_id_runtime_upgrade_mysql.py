@@ -21,6 +21,9 @@ from test_native_successor_migration_mysql import (
     _seed,
 )
 from test_same_id_runtime_upgrade import _assert_w3b_history_transition, _w3b_history_scope
+from test_same_id_runtime_upgrade_reclaim import (
+    assert_reclaim_history, reclaim_scope, reclaim_plan, reclaim_apply,
+)
 
 
 MYSQL_URL = os.getenv("BFL_TEST_NATIVE_SUCCESSOR_MYSQL_URL")
@@ -266,3 +269,44 @@ def test_mysql_w3b_history_does_not_allow_second_blackbox_writer(mysql_migration
                           "WHERE scheme_version='historical-active'"), {"runtime": runtime, "status": status})
     with pytest.raises(RuntimeError, match="second Writer"):
         _plan(engine, kwargs, control)
+
+
+@pytest.mark.parametrize("wave", ["W2", "W3A"])
+def test_mysql_alias_writer_reclaim_and_rollback_preserve_facts(mysql_migration, wave):
+    engine, kwargs, control = reclaim_scope(mysql_migration, wave)
+    initial = reclaim_plan(engine, kwargs, control)
+    reclaim_apply(engine, kwargs, control, initial)
+    rollback_args = kwargs | {"action": "rollback"}
+    rollback = reclaim_plan(engine, rollback_args, control)
+    assert_reclaim_history(initial, rollback, rolled_back=False)
+    reclaim_apply(engine, rollback_args, control, rollback)
+    assert_reclaim_history(initial, reclaim_plan(engine, kwargs, control), rolled_back=True)
+
+
+@pytest.mark.parametrize("wave", ["W2", "W3A"])
+def test_mysql_reclaim_second_member_failure_restores_alias_and_native_history(mysql_migration, wave):
+    engine, kwargs, control = reclaim_scope(mysql_migration, wave)
+    initial = reclaim_plan(engine, kwargs, control)
+    key = sorted(kwargs["old_configs"])[1]
+    with engine.begin() as conn:
+        assert key in repo._SAME_ID_RECLAIM_WAVES[wave]
+        conn.exec_driver_sql("ALTER TABLE t_scheme_registry ADD CONSTRAINT keep_reclaim_native "
+                            f"CHECK (base_scheme_id <> '{key}' OR runtime_type = 'native_adapter')")
+    with pytest.raises(OperationalError):
+        reclaim_apply(engine, kwargs, control, initial)
+    assert reclaim_plan(engine, kwargs, control) == initial
+
+
+@pytest.mark.parametrize("held_original", [True, False])
+def test_mysql_reclaim_uses_original_and_alias_activation_locks(mysql_migration, monkeypatch, held_original):
+    engine, kwargs, control = reclaim_scope(mysql_migration, "W3A")
+    initial = reclaim_plan(engine, kwargs, control)
+    key = sorted(kwargs["old_configs"])[0]
+    held = key if held_original else key + "_bbv2"
+    monkeypatch.setattr(repo, "_BLACKBOX_LIFECYCLE_LOCK_TIMEOUT_SEC", 0.25)
+    with repo._blackbox_activation_advisory_lock(engine, scheme_id=held):
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(reclaim_apply, engine, kwargs, control, initial)
+            with pytest.raises(repo.BlackboxActivationLockTimeout):
+                future.result(timeout=10)
+    assert reclaim_plan(engine, kwargs, control) == initial

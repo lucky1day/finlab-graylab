@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10",
+  "name": "liwei_0616 5Y01 full-OOS",
+  "owner": "liwei",
+  "description": "5Y T+5 连续 full-OOS；保留 STD/DIV/ACCWT 共识和 DIV-K10 控制逻辑，独立增量复用已验证历史 Phase-A 计算，按请求截止重算标签、排名与信号。",
+  "algorithm_version": "1.0.0",
+  "target_tenor": "5Y",
+  "task_type": "T+5",
+  "horizon": 5,
+  "target_rule": "target_date_yield_vs_feature_date_yield"
+}

@@ -48,6 +48,10 @@ _SAME_ID_W3B_NATIVE_HISTORY_IDS = frozenset({
     "liwei_0616_10y01_cons_say_k3_div_k10",
     "liwei_0616_10y02_cons_say_k3_div_k5",
 })
+_SAME_ID_RECLAIM_WAVES = {
+    "W2": frozenset({"daily_5y_2_v28", "daily_7y_1_v28"}),
+    "W3A": frozenset({"liwei_0616_cons_sda_k3_div_k10", "liwei_0616_5y01_full_oos_k3_div_k10"}),
+}
 _NATIVE_SUCCESSOR_REQUEST_IDENTITY_FIELDS = (
     "request_id",
     "predict_date",
@@ -4000,6 +4004,273 @@ def apply_same_id_runtime_upgrade(
                 raise RuntimeError("same-ID upgrade control plane changed during transaction")
     return {"schema_version": "same-id-runtime-upgrade-result-v1", "action": action,
             "scheme_ids": sorted(old_configs), "plan_sha256": expected_plan_sha256, "approved_by": operator}
+
+
+def _same_id_reclaim_identity(cfg: SchemeConfig) -> dict[str, object]:
+    """绑定三种 canonical 身份，不用历史 active 行推断 Native Writer。"""
+    return {key: getattr(cfg, key) for key in (
+        "scheme_id", "scheme_version", "runtime_type", "code_hash", "config_hash", "manifest_hash",
+    )}
+
+
+def _same_id_writer_reclaim_plan_conn(
+    conn: Connection, *, wave: str, old_configs: Mapping[str, SchemeConfig],
+    source_configs: Mapping[str, SchemeConfig], new_configs: Mapping[str, SchemeConfig],
+    harness_run_ids: Mapping[str, str], action: str, control_plane_evidence: Mapping[str, object],
+    expected_database_name: str, expected_server_uuid: str, for_update: bool,
+) -> dict[str, object]:
+    """仅 W2/W3A 整组回收临时身份 Writer；预测及回测事实全部只读。"""
+    ids = sorted(old_configs)
+    if (action not in {"cutover", "rollback"} or wave not in _SAME_ID_RECLAIM_WAVES
+            or set(ids) != _SAME_ID_RECLAIM_WAVES[wave]
+            or any(set(group) != set(ids) for group in (source_configs, new_configs, harness_run_ids))):
+        raise ValueError("same-ID reclaim requires one complete approved W2/W3A wave")
+    control = control_plane_evidence
+    scheduler = control.get("scheduler", {}) if isinstance(control, Mapping) else {}
+    if (not isinstance(control, Mapping)
+            or control.get("schema_version") != "same-id-writer-reclaim-control-plane-v1"
+            or control.get("wave") != wave or control.get("deployment_target") != "aliyun-gray"
+            or not isinstance(scheduler, Mapping) or scheduler.get("control_plane") != "systemd_one_shot"
+            or scheduler.get("timer_fenced") is not True or scheduler.get("unique_writer") is not True
+            or control.get("native_canonical_selection") != {
+                key: _same_id_reclaim_identity(old_configs[key]) for key in ids}
+            or control.get("source_canonical_selection") != {
+                key: _same_id_reclaim_identity(source_configs[key]) for key in ids}):
+        raise RuntimeError("same-ID reclaim requires fenced canonical control-plane evidence")
+    if _dialect_name(conn) == "mysql":
+        identity = dict(conn.execute(text("SELECT DATABASE() AS database_name, @@server_uuid AS server_uuid")).mappings().one())
+        if identity != {"database_name": _require_nonempty(expected_database_name, "expected_database_name"),
+                        "server_uuid": _require_nonempty(expected_server_uuid, "expected_server_uuid")}:
+            raise RuntimeError("same-ID reclaim database identity mismatch")
+    elif _dialect_name(conn) == "sqlite":
+        identity = {"isolated_test": "sqlite"}
+    else:
+        raise RuntimeError("same-ID reclaim supports MySQL or isolated SQLite only")
+    migrations = _same_id_rows_conn(conn, "t_schema_migrations", "1=1", {}, order="version", for_update=for_update)
+    if not migrations or max(int(row["version"]) for row in migrations) != 24 or any(row["state"] != "APPLIED" for row in migrations):
+        raise RuntimeError("same-ID reclaim requires fully applied schema migration 024")
+    all_ids = sorted(ids + [key + "_bbv2" for key in ids])
+    params = {f"id_{i}": key for i, key in enumerate(all_ids)}
+    placeholders = ",".join(":" + key for key in params)
+    versions = _same_id_rows_conn(conn, "t_scheme_versions", f"scheme_id IN ({placeholders})", params,
+                                  order="scheme_id,scheme_version", for_update=for_update)
+    registry = _same_id_rows_conn(conn, "t_scheme_registry", f"base_scheme_id IN ({placeholders})", params,
+                                  order="scheme_id", for_update=for_update)
+    for table, order in (("t_scheme_runs", "run_id"), ("t_backtest_runs", "id"), ("t_harness_runs", "harness_run_id")):
+        if _same_id_rows_conn(conn, table, f"scheme_id IN ({placeholders}) AND status='running'", params,
+                             order=order, for_update=for_update):
+            raise RuntimeError(f"same-ID reclaim requires zero running rows: {table}")
+    historical, retiring, evidence, backtests = [], [], {}, {}
+    for key in ids:
+        old, source, new = old_configs[key], source_configs[key], new_configs[key]
+        if (old.scheme_id != key or new.scheme_id != key or source.scheme_id != key + "_bbv2"
+                or old.runtime_type != "native_adapter" or source.runtime_type != "blackbox_v2"
+                or old.scheme_version == new.scheme_version or source.code_hash != new.code_hash
+                or any(getattr(source, field) != getattr(new, field) for field in
+                       ("algorithm_version", "contract_version", "runtime_profile"))):
+            raise ValueError("same-ID reclaim config/code identity mismatch")
+        _validate_blackbox_revision_candidate(new, require_evidence=True)
+        for cfg in (source, new):
+            if (any(getattr(cfg, field) != getattr(old, field) for field in ("horizon", "task_type", "frequency"))
+                    or sorted(cfg.tenors) != sorted(old.tenors) or len(set(old.tenors)) != len(old.tenors)
+                    or not old.tenors or any(getattr(cfg.schedule, field) != getattr(old.schedule, field)
+                                           for field in ("cron", "timezone"))):
+                raise ValueError("same-ID reclaim business dimensions differ")
+            old_rule = old.target_rule or (TASK_COMBINATIONS[old.task_type][1] if old.task_type in {"T+1", "T+5"} else None)
+            if cfg.target_rule != old_rule:
+                raise ValueError("same-ID reclaim target_rule differs")
+        by_key = {(row["scheme_id"], row["scheme_version"]): row for row in versions}
+        old_row = by_key.get((key, old.scheme_version))
+        source_row = by_key.get((source.scheme_id, source.scheme_version))
+        new_row = by_key.get((key, new.scheme_version))
+        if old_row is None or source_row is None:
+            raise RuntimeError("same-ID reclaim canonical Native/source exact is absent")
+        for cfg, row in ((old, old_row), (source, source_row), (new, new_row)):
+            if row is not None:
+                _assert_migration_version_identity(cfg, row)
+                if cfg.runtime_type == "blackbox_v2" and any(
+                    row.get(field) != getattr(cfg, field) for field in
+                    ("algorithm_version", "contract_version", "runtime_profile")
+                ):
+                    raise RuntimeError("same-ID reclaim Blackbox runtime identity differs")
+        if new_row is not None and any(new_row.get(field) != getattr(new, field)
+                                       for field in ("environment_fingerprint", "data_snapshot_id")):
+            raise RuntimeError("same-ID reclaim candidate environment/input differs")
+        if (old_row["status"] != "retired"
+                or source_row["status"] != ("active" if action == "cutover" else "retired")
+                or (action == "cutover" and new_row is not None and new_row["status"] != "retired")
+                or (action == "rollback" and (new_row is None or new_row["status"] != "active"))):
+            raise RuntimeError("same-ID reclaim lifecycle state differs")
+        for row in versions:
+            if row["scheme_id"] not in {key, source.scheme_id} or row in (old_row, source_row, new_row):
+                continue
+            native = row["scheme_id"] == key and row["runtime_type"] == "native_adapter"
+            allowed = {"retired", "paused"} if native else {"retired"}
+            if native and action == "cutover":
+                allowed.add("active")
+            if row["runtime_type"] not in {"native_adapter", "blackbox_v2"} or row["status"] not in allowed:
+                raise RuntimeError("same-ID reclaim unexpected historical second Writer")
+            if native:
+                entry = {field: row[field] for field in ("scheme_id", "scheme_version", "status")}
+                historical.append(entry)
+                if row["status"] == "active":
+                    retiring.append(entry | {"expected_rowcount": 1})
+        for cfg, status, runtime in (
+            (old, "archived" if action == "cutover" else "active", "native_adapter" if action == "cutover" else "blackbox_v2"),
+            (source, "active" if action == "cutover" else "archived", "blackbox_v2"),
+        ):
+            rows = [row for row in registry if row["base_scheme_id"] == cfg.scheme_id]
+            expected_ids = {registry_scheme_id(cfg.scheme_id, cfg.horizon, tenor): tenor for tenor in cfg.tenors}
+            if {row["scheme_id"] for row in rows} != set(expected_ids):
+                raise RuntimeError("same-ID reclaim Registry target coverage differs")
+            for row in rows:
+                tenor = expected_ids[row["scheme_id"]]
+                wanted = {"status": status, "runtime_type": runtime, "target_tenor": tenor,
+                          "horizon": cfg.horizon, "task_type": cfg.task_type, "frequency": cfg.frequency,
+                          "schedule_cron": cfg.schedule.cron, "schedule_timezone": cfg.schedule.timezone}
+                if any(row.get(field) != value for field, value in wanted.items()) or _normalize_registry_tenors(row.get("tenors")) != [tenor]:
+                    raise RuntimeError("same-ID reclaim Registry business/status differs")
+        evidence[key] = _same_id_evidence_conn(conn, old, new, harness_run_ids[key], control, for_update=for_update)
+        runs = _same_id_rows_conn(conn, "t_backtest_runs", "scheme_id=:id AND status='success' AND run_mode='persist'",
+                                  {"id": source.scheme_id}, order="id", for_update=for_update)
+        matches = []
+        for run in runs:
+            summary = _json_mapping(run.get("summary"))
+            if (run.get("data_source") == "blackbox_v2_current_snapshot_as_of"
+                    and run.get("code_hash") == source.code_hash and run.get("config_hash") == source.config_hash
+                    and summary.get("scheme_version") == source.scheme_version
+                    and summary.get("manifest_hash") == source.manifest_hash
+                    and summary.get("runtime_profile") == source.runtime_profile
+                    and all(summary.get(field) for field in ("environment_fingerprint", "data_snapshot_id", "generation_id"))):
+                matches.append(run)
+        if not matches:
+            raise RuntimeError("same-ID reclaim requires a successful exact source Blackbox backtest")
+        selected = matches[-1]
+        rows = _same_id_rows_conn(conn, "t_backtest_predictions", "run_id=:run", {"run": selected["id"]},
+                                  order="id", for_update=for_update)
+        if (not rows or {row["target_tenor"] for row in rows} != set(source.tenors)
+                or any(row["scheme_id"] != source.scheme_id or row["horizon"] != source.horizon for row in rows)):
+            raise RuntimeError("same-ID reclaim source backtest has no complete persisted target coverage")
+        backtests[key] = {"backtest_run_id": selected["id"], "benchmark_id": selected["benchmark_id"],
+                         "sha256": native_successor_plan_sha256({"run": selected, "predictions": rows})}
+    unaffected = _same_id_rows_conn(conn, "t_scheme_registry", f"base_scheme_id NOT IN ({placeholders})", params,
+                                    order="scheme_id", for_update=for_update)
+    return {
+        "schema_version": "same-id-writer-reclaim-plan-v1", "wave": wave, "action": action,
+        "scheme_ids": ids, "source_scheme_ids": [key + "_bbv2" for key in ids],
+        "database_identity_sha256": native_successor_plan_sha256(identity), "schema_migration_version": 24,
+        "versions": versions, "registry": registry, "evidence": evidence, "source_backtests": backtests,
+        "historical_native_versions": historical, "historical_native_versions_to_retire": retiring,
+        "candidate_versions": [{**_same_id_reclaim_identity(new_configs[key]), **{
+            field: getattr(new_configs[key], field) for field in
+            ("algorithm_version", "contract_version", "runtime_profile", "environment_fingerprint", "data_snapshot_id")}}
+            for key in ids],
+        "control_plane": dict(control), "facts": _same_id_fact_snapshot_conn(conn, all_ids, for_update=for_update),
+        "unaffected_registry_sha256": native_successor_plan_sha256({"rows": unaffected}),
+        "prediction_preservation": "read-only; missing alias facts require a separate authorized operation",
+    }
+
+
+def read_same_id_writer_reclaim_plan(
+    engine: Engine, *, wave: str, old_configs: Mapping[str, SchemeConfig],
+    source_configs: Mapping[str, SchemeConfig], new_configs: Mapping[str, SchemeConfig],
+    harness_run_ids: Mapping[str, str], action: str, control_plane_evidence: Mapping[str, object],
+    expected_database_name: str, expected_server_uuid: str,
+) -> dict[str, object]:
+    """只读生成 W2/W3A Writer 回收或回滚计划，不补入历史事实。"""
+    with engine.connect() as conn:
+        if engine.dialect.name == "mysql":
+            conn.exec_driver_sql("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            conn.exec_driver_sql("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
+        try:
+            return _same_id_writer_reclaim_plan_conn(conn, wave=wave, old_configs=old_configs,
+                source_configs=source_configs, new_configs=new_configs, harness_run_ids=harness_run_ids,
+                action=action, control_plane_evidence=control_plane_evidence,
+                expected_database_name=expected_database_name, expected_server_uuid=expected_server_uuid, for_update=False)
+        finally:
+            conn.rollback()
+
+
+def apply_same_id_writer_reclaim(
+    engine: Engine, *, wave: str, old_configs: Mapping[str, SchemeConfig],
+    source_configs: Mapping[str, SchemeConfig], new_configs: Mapping[str, SchemeConfig],
+    harness_run_ids: Mapping[str, str], action: str, expected_plan_sha256: str,
+    approved_by: str, approved_at: datetime, control_plane_evidence_reader: Callable[[], Mapping[str, object]],
+    expected_database_name: str, expected_server_uuid: str,
+) -> dict[str, object]:
+    """持有原/临时 ID 正常 lifecycle 锁，整组切换唯一 Writer；所有事实不变。"""
+    operator = _require_nonempty(approved_by, "approved_by")
+    if not isinstance(approved_at, datetime) or not isinstance(expected_plan_sha256, str) or len(expected_plan_sha256) != 64 or any(c not in "0123456789abcdef" for c in expected_plan_sha256):
+        raise ValueError("same-ID reclaim requires approved_at and exact plan SHA-256")
+    kwargs = dict(wave=wave, old_configs=old_configs, source_configs=source_configs, new_configs=new_configs,
+                  harness_run_ids=harness_run_ids, expected_database_name=expected_database_name,
+                  expected_server_uuid=expected_server_uuid, for_update=True)
+    with ExitStack() as locks:
+        if engine.dialect.name != "sqlite":
+            for key in sorted(set(old_configs) | {key + "_bbv2" for key in old_configs}):
+                locks.enter_context(_blackbox_activation_advisory_lock(engine, scheme_id=key))
+        with engine.begin() as conn:
+            control = control_plane_evidence_reader()
+            plan = _same_id_writer_reclaim_plan_conn(conn, action=action, control_plane_evidence=control, **kwargs)
+            if native_successor_plan_sha256(plan) != expected_plan_sha256:
+                raise RuntimeError("same-ID reclaim plan changed before commit")
+            def change_version(scheme_id, version, prior, status):
+                changed = conn.execute(text("UPDATE t_scheme_versions SET status=:status "
+                    "WHERE scheme_id=:id AND scheme_version=:version AND status=:prior"),
+                    {"id": scheme_id, "version": version, "prior": prior, "status": status})
+                if changed.rowcount != 1:
+                    raise RuntimeError("same-ID reclaim exact version update count mismatch")
+            for key in plan["scheme_ids"]:
+                old, source, new = old_configs[key], source_configs[key], new_configs[key]
+                if action == "cutover":
+                    change_version(source.scheme_id, source.scheme_version, "active", "retired")
+                    for row in plan["historical_native_versions_to_retire"]:
+                        if row["scheme_id"] == key:
+                            change_version(key, row["scheme_version"], "active", "retired")
+                    _upsert_scheme_version_conn(conn, new, trusted_status="active", approved_by=operator,
+                                                approved_at=_mysql_utc_datetime(approved_at))
+                else:
+                    change_version(key, new.scheme_version, "active", "retired")
+                    change_version(source.scheme_id, source.scheme_version, "retired", "active")
+                for cfg, prior_status, status, prior_runtime, runtime in (
+                    (old, "archived" if action == "cutover" else "active", "active" if action == "cutover" else "archived",
+                     "native_adapter" if action == "cutover" else "blackbox_v2", "blackbox_v2" if action == "cutover" else "native_adapter"),
+                    (source, "active" if action == "cutover" else "archived", "archived" if action == "cutover" else "active",
+                     "blackbox_v2", "blackbox_v2"),
+                ):
+                    changed = conn.execute(text("UPDATE t_scheme_registry SET status=:status,runtime_type=:runtime "
+                        "WHERE base_scheme_id=:id AND status=:prior_status AND runtime_type=:prior_runtime"),
+                        {"id": cfg.scheme_id, "status": status, "runtime": runtime,
+                         "prior_status": prior_status, "prior_runtime": prior_runtime})
+                    if changed.rowcount != len(cfg.tenors):
+                        raise RuntimeError("same-ID reclaim Registry update count mismatch")
+            post = _same_id_writer_reclaim_plan_conn(conn, action="rollback" if action == "cutover" else "cutover",
+                                                      control_plane_evidence=control, **kwargs)
+            if post["facts"] != plan["facts"] or post["unaffected_registry_sha256"] != plan["unaffected_registry_sha256"]:
+                raise RuntimeError("same-ID reclaim changed facts/unaffected Registry")
+            for before, after in zip(plan["registry"], post["registry"]):
+                if {k: v for k, v in before.items() if k not in {"status", "runtime_type", "updated_at"}} != {
+                    k: v for k, v in after.items() if k not in {"status", "runtime_type", "updated_at"}}:
+                    raise RuntimeError("same-ID reclaim changed Registry business metadata")
+            post_versions = {(row["scheme_id"], row["scheme_version"]): row for row in post["versions"]}
+            changed_status = {(row["scheme_id"], row["scheme_version"]): "retired"
+                              for row in plan["historical_native_versions_to_retire"]}
+            for key, cfg in source_configs.items():
+                changed_status[cfg.scheme_id, cfg.scheme_version] = "retired" if action == "cutover" else "active"
+            for before in plan["versions"]:
+                key = before["scheme_id"], before["scheme_version"]
+                if key[0] in new_configs and key[1] == new_configs[key[0]].scheme_version:
+                    continue
+                expected = before | {"status": changed_status[key]} if key in changed_status else before
+                ignored = {"updated_at"} if key in changed_status else set()
+                if {k: v for k, v in post_versions[key].items() if k not in ignored} != {
+                    k: v for k, v in expected.items() if k not in ignored}:
+                    raise RuntimeError("same-ID reclaim changed historical version metadata/status")
+            if native_successor_plan_sha256({"control_plane": control_plane_evidence_reader()}) != native_successor_plan_sha256({"control_plane": control}):
+                raise RuntimeError("same-ID reclaim control plane changed during transaction")
+    return {"schema_version": "same-id-writer-reclaim-result-v1", "wave": wave, "action": action,
+            "scheme_ids": sorted(old_configs), "plan_sha256": expected_plan_sha256, "approved_by": operator,
+            "prediction_written": False, "historical_facts_changed": False}
 
 
 def canonical_native_successor_plan(plan: Mapping[str, object]) -> str:

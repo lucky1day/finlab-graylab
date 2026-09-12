@@ -37,8 +37,12 @@ PRESERVED_FACT_HORIZONS = {
     "monthly_5y_knn_top20_0629": ("monthly", 30),
 }
 
-# 临时迁移例外：仅已接入原 ID 的 W3B 候选可声明不参与执行的 Native 附件。
+# 临时迁移例外：仅已接入原 ID 的 W2/W3A/W3B 候选可声明不参与执行的 Native 附件。
 NATIVE_ATTACHMENT_SCHEMES = frozenset({
+    "daily_5y_2_v28",
+    "daily_7y_1_v28",
+    "liwei_0616_cons_sda_k3_div_k10",
+    "liwei_0616_5y01_full_oos_k3_div_k10",
     "liwei_0616_10y01_cons_say_k3_div_k10",
     "liwei_0616_10y01_full_oos_k3_div_k10",
     "liwei_0616_10y02_cons_say_k3_div_k5",

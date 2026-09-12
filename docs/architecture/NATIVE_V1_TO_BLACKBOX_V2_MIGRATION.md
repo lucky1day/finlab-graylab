@@ -245,7 +245,46 @@ preflight 通过；准备产物与 Gate 未重跑。全库 25,682 条产品预�
 回测来源 Metadata 因当前 runtime 过滤而变 null，已围住日频 timer 做最小展示修复：
 历史回测来源按同一业务 ID、已支持的平台 data_source 和既有 latest-success 规则选取，
 不随执行运行时升级消失；不改历史来源、不引入跨 ID 拼接或重新回测。
-展示修复完成后重新比较全部 active Dashboard 业务内容、恢复 timer 并读回 Backend。
+展示修复已在 `3a805922667de41340942edce9941c7f902bb8fb` 完成并部署 ECS；其确定性 archive
+SHA-256 为 `d73ec469036f6634d147f1f132caf950e4f8333fa65a350f773f36a9f21319cf`。
+全部 88 个 active Dashboard 业务 payload 与切换前完全一致，回测来源保持原值；全部事实、
+Actuals、其他 Registry/version 不变。三个原 ID 的标准执行授权、严格 discovery 和状态读回均
+通过，算法执行 0 次。Backend 的实际 cwd 与 current 均为该 release，health 正常；日频 timer
+已恢复，next trigger 为 2026-09-14 07:03 CST。周/月、DataBridge、Actuals 控制面和 Mac3 未改。
+最终全量回归 929 passed、16 skipped、240 subtests passed；临时测试随全局迁移工具收尾删除。
+W3B 已完成“ECS 原 ID 接管 + 发布验收”，不再重复 prepare/cutover/初始化；Mac3 晋级、临时
+身份数据清理、附件退役及全局 confidence DDL 尚未完成，不能称整个双机项目闭环。
+切换后核验原件：`cutover-readback-verified.json`、`final-standard-admission.json`；本机副本
+`outputs/w3b-weekly-revision-20260912/ecs-cutover-evidence/`。下一批为 W2/W3A 原 ID 收口。
+
+### W2/W3A 原身份回收：当前实施状态
+
+2026-09-12 只读盘点：四个原 Registry 为 archived/native，临时 `_bbv2` Registry 为
+active/Blackbox；原 canonical exact 已 retired，另有 14 条 Native 历史 active 标记待收口。
+不能沿用 W3B“当前 Native canonical active”的前提，也不能把 retired Native 当作实际 Writer。
+
+| 原 ID | 原事实 / 临时事实 | 临时独有 | 原 ID 候选 exact |
+|---|---:|---:|---|
+| `daily_5y_2_v28` | 409 / 411 | 2 | `a884eceea071` |
+| `daily_7y_1_v28` | 409 / 411 | 2 | `8ebe915daa9e` |
+| `liwei_0616_cons_sda_k3_div_k10` | 409 / 411 | 4 | `f8659dab99b2` |
+| `liwei_0616_5y01_full_oos_k3_div_k10` | 409 / 411 | 4 | `0a65f61a7acd` |
+
+四份候选脚本与现有 Blackbox 原字节相同，Metadata 仅改 ID，Native 附件精确绑定；尚未生产接管。
+W2 两份与 SDA 无状态，Full 有四数组增量状态。W2 部署候选切回原 ID，W3A 仍保持临时 ID 的
+ECS 部署矩阵，待状态与证据完成后才调整。Mac3 的 current、launchd 和数据库未改动。
+
+12 条独有结果为 8 条已到期 live 和 4 条历史 backtest 来源；来源均有本机成功执行原件，
+后续按原业务键只补缺。W3A 原 ID 的两个独有日期亦必须保留。重合方向不同只属于跨输入版本
+漂移信息，不覆盖原 1636 条事实，不重新训练以匹配历史。Writer 回收事务先只改 lifecycle，
+原/临时事实均不变；补缺、可恢复备份和精确删除是后续独立步骤，不把回收等同于数据清理完成。
+
+Full 的旧状态 `full-oos-a2-private-4` 已独立核验：旧输入重现全部 3917 条特征指纹；当前
+weekly 修订只改变 2026-09-10 最后一行，前 652 条 OOS、标签、日/月/日历依赖及固定 IC
+选择全部不变。应复用前缀，只重算最后一点的内部 265 个 grid 结果；不能直接复用变化后的
+末行，也不需要全量初始化。此次只是特征依赖分析，尚未执行末行预测、状态转换或发布。
+证据位于 ECS `incoming/w3a-full-weekly-analysis-20260912.wpLu6e`，`evidence.json` SHA-256
+为 `d63eb3f43674466926034f11780f56f9caebe377c0f9894ec743c918d823d210`。
 
 ### 已批准的迁移期附件共存与历史修订边界
 
@@ -292,8 +331,12 @@ Full/K5 可补最后一个 Phase A 点并重算最终排名/信号；SAY 还保�
 W3A/W3B 不允许多次独立 activate 冒充原子切换。
 普通 Blackbox 修订检查保持严格，不能全局去掉 Native 历史校验来绕过边界。
 
-当前已实现的临时入口只有 `python -m harness migrate-native-successor
-{preflight,prepare,cutover,rollback} --wave W3B`，尚不支持其他 wave 或 Mac3。
+已部署的 W3B 临时入口为 `python -m harness migrate-native-successor
+{preflight,prepare,cutover,rollback} --wave W3B`。当前候选另在同一 CLI 增加 W2 的
+`preflight/cutover/rollback` 原身份回收路由，不能使用旧跨 ID 命令；W2 准备凭据仍在实现，
+未具备真实 Gate 时拒绝切换。W3A 仓储整组事务已实现，但控制入口显式阻断，必须先完成
+Full 状态修订和回滚执行证据；不能只改部署矩阵就绕过。Mac3 入口尚未实现。
+以下表格仅描述已验证的 W3B 路径，不是其他批次的操作指令。
 所有命令从 candidate immutable release 执行，传 candidate `--project-root`、
 已安装旧 Native `--reference-project-root`，以及只读取得的目标 DB 名称/UUID
 （`--expected-database-name` / `--expected-server-uuid`）；不提供生产凭据示例。

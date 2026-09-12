@@ -1,78 +1,28 @@
 scheme_id: daily_5y_2_v28
-runtime_type: native_adapter
-name: "V28日频5Y方案2"
-description: "models-liwei-0606 V28 5Y config 2；月度更新 LGBM ensemble + policy/term-premium/butterfly signals。实盘 predict_date 为信号日 T+1，feature_date 为上一交易日 T。"
-horizon: 5
-task_type: "T+5"
-tenors: ["5Y"]
-frequency: daily
+runtime_type: blackbox_v2
+input_source: data_bridge_current
+factor_input_mode: algorithm_managed
+runtime_profile: blackbox-v2-v1
+data_schema_version: data-bridge-v1
+status: paused
+version_status: draft
 schedule:
-  cron: "3 7 * * 1-5"
-  timezone: "Asia/Shanghai"
-entry_point: predict.run
-status: active
-input_spec:
-  data_version: shared_data_service_daily.v1
-  required_columns:
-    - date
-    - TB1YWI0C
-    - TB3YWI0C
-    - TB5YWI0C
-    - TB7YWI0C
-    - TB0YWI0C
-    - SH000300
-    - IFCFE00C
-    - S0031525
-    - AUSHF00C
-    - CUSHF01C
-    - RBSHF01C
-    - USDCNH0C
-    - SX5EDF0C
-    - DR007IBC
-    - M0017153
-    - G0006352
-    - G0006353
-    - M0000005
-    - M0000271
-    - M0048486
-    - G0003956
-    - B2559386
-    - G0003892
-    - DRS00001
-    - DRS00002
-    - AGSHF01C
-    - ZNSHF00C
-    - HCSHF01C
-  auxiliary_inputs:
-    - frequency: weekly
-      data_version: shared_data_service_weekly.v1
-      required_columns:
-        - week_id
-        - S0114089
-        - N1355677
-        - V0135838
-        - V0184553
-        - W0192843
-        - X0100205
-        - Y0110594
-        - HWW00001
-        - HWW00002
-        - HWW00003
-    - frequency: monthly
-      data_version: shared_data_service_monthly.v1
-      required_columns:
-        - month_id
-        - M0000545
-        - M0061518
-        - M0096870
-        - M0317126
-        - M0009970
-        - M0009973
-        - M0001227
-backtest:
-  runner: backtests.daily_5y_2_v28_reproduction
-  benchmark_id: v28_daily_5y_2
-  data_source: framework_db_aligned
-  benchmark_required: true
-  start_date: "2025-01-01"
-  end_date: "2026-05-29"
+  cron: '3 7 * * 1-5'
+  timezone: Asia/Shanghai
+  timeout_sec: 1800
+delivery:
+  script: delivery/daily_5y_2_v28.py
+  metadata: delivery/daily_5y_2_v28.json
+native_attachments:
+  __init__.py: 218b7b54f70cde058419be96d7f4de91d28efb26effa127dd60d8006d4f68da2
+  benchmarks/current_backtest_summary.json: 607eec0badaaee7a49f04b1fba53390a257c7d4d34350e5c9b24c72428beedb2
+  benchmarks/current_predictions_sample.csv: 4f2d7d01d91ce462c1ce5f9e90dad1308ecd438861711d93bcaefd361aa79e83
+  benchmarks/original_backtest_summary.json: 4ce372e029dbb531c265c6411f8d0e73835f8af1b80a037d38904e9d3fd158b3
+  benchmarks/original_predictions_sample.csv: 4f2d7d01d91ce462c1ce5f9e90dad1308ecd438861711d93bcaefd361aa79e83
+  core/__init__.py: 68f0f89b6792fdc4786b1bd55c69c4ff5a9b508f59dd97838f119d4044a5167d
+  core/data_alignment.py: 217d25154d80aa3e0cfd61c771d13adbabbb377ed7118736e307c17f979f5805
+  core/legacy_bond_common_v28.py.txt: aaac3947516f544ee726b58202055140d5dab28d0bc4e66120fdc79da58476ad
+  core/legacy_predict_5y_2_v28.py.txt: b763a8566f29a26d31ef35be6fe79626189eccca7f370cbf23777ec1abb27f74
+  core/v28_common.py: bce84d0d55e95a123d4247ce4a996bc5633d91d55ca9261ab53a50a34289cd9c
+  inference.py: 858403018bfffffa59e2f8180b90d045f69a6d1a657b1a5407f4da18d2fe6593
+  predict.py: 3bf257c31a6e9d2c450b81c152278495ef71fa7c28cc8a30245f89f48d1f5c22
