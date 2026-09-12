@@ -3833,9 +3833,11 @@ def _same_id_runtime_upgrade_plan_conn(
         for key, cfg in new_configs.items():
             prior = _same_id_rows_conn(conn, "t_harness_runs", "scheme_id=:id AND scheme_version=:version AND stage='native-runtime-upgrade'",
                     {"id": key, "version": cfg.scheme_version}, order="harness_run_id", for_update=for_update)
-            if not prior:
-                continue
             allowed = _SAME_ID_W3C_REENTRY.get(key)
+            if not prior:
+                if allowed is not None and cfg.scheme_version == allowed[0]:
+                    raise RuntimeError("fixed W3C reentry requires its preserved original Harness evidence")
+                continue
             published = control_plane_evidence.get("candidate_seed_readiness", {}).get(key, {}).get("published_state", {})
             gates = _same_id_rows_conn(conn, "t_harness_gate_results", "harness_run_id=:run",
                 {"run": prior[0]["harness_run_id"]}, order="id", for_update=for_update)

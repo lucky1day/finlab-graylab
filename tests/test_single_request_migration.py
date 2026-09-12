@@ -170,11 +170,19 @@ def test_exact_reviewed_retired_candidate_prepares_once_without_changing_old_gat
         _plan(engine,kwargs,evidence)
 
 
-@pytest.mark.parametrize('drift',['gate','run','simulation','verified','exact','active','execution'])
+@pytest.mark.parametrize('drift',['gate','run','simulation','verified','exact','active','execution','missing','stage','version'])
 def test_reentry_rejects_any_unreviewed_harness_or_state(reentry,drift):
     engine,kwargs,evidence=reentry
     key=next(iter(kwargs['new_configs']))
-    if drift=='gate':
+    if drift in {'missing','stage','version'}:
+        with engine.begin() as conn:
+            if drift=='missing':
+                conn.execute(text('DELETE FROM t_harness_gate_results WHERE harness_run_id=:id'),{'id':key})
+                conn.execute(text('DELETE FROM t_harness_runs WHERE harness_run_id=:id'),{'id':key})
+            else:
+                field='stage' if drift=='stage' else 'scheme_version'
+                conn.execute(text(f"UPDATE t_harness_runs SET {field}='tampered' WHERE harness_run_id=:id"),{'id':key})
+    elif drift=='gate':
         with engine.begin() as conn:
             conn.execute(text("UPDATE t_harness_gate_results SET summary_json='{}' WHERE harness_run_id=:id"),{'id':key})
     elif drift=='run':
