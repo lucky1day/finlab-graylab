@@ -15,7 +15,7 @@
 以下清理顺序优先于后文已完成的五方案操作步骤；不重复那些算法验证和版本切换。
 
 **后续明确授权**：用户进一步要求删除已替换 Native 实现与闭环一次性测试。十七个原方案的
-204 个附件及对应声明已在候选代码中删除，42 个 Blackbox 交付脚本/Metadata 字节不变；
+204 个附件及对应声明已删除并完成 ECS 发布，42 个 Blackbox 交付脚本/Metadata 字节不变；
 旧 Liwei cache 实现和无在用消费者的 Native comparator 同步退役。W4 九方案与历史数据库不动。
 T1/T5 旧 `model_muti_0529` 批次的输入 CSV、退役 SHAP `.source`、父级 manifest 和 README
 共四个无运行消费者文件（19,745,668 字节）同时退出当前代码线；原件保留于 Git 与旧 release。
@@ -50,6 +50,34 @@ T1/T5 旧 `model_muti_0529` 批次的输入 CSV、退役 SHAP `.source`、父级
 新增的附件退役事务/状态测试只服务本次受控发布与恢复，工具退出后一起删除，不作为永久算法测试。
 完整 byte/hash 证据外置于 `native-attachment-retirement-20260912`；部署完成需另记现场读回，
 不把本地通过当作 ECS 已升级。
+
+#### 附件退役与一次性测试清理发布验收（2026-09-12）
+
+`f066b8e` 与 `fb80439` 两笔清理提交合计 247 个文件变更，净删除 91,977 行。
+最终 ECS current 为 `fb804394b1f3daa268a56f324746fb9147ee249f`，两次 archive 构建字节一致，
+SHA-256 为 `a596dbfe026230431b0007f293cb7ec6aa30c39eed7de6c597f423a6ec6724d1`。
+`f066b8e` 仅预安装，未切为 current。previous 保持清理前的 `5e4bc98e1796006ebd4e2d760d8c49e467b3e607`。
+
+- 19:00 Actuals 于 19:00:03 自然启动、19:00:38 成功退出；之后才围栏 ECS 日/周 timer 与 Backend。
+- 7 个增量方案仅生成新 exact 状态封装；旧状态文件、payload、原 input 完全保留，算法调用为零。
+- 十七个原 ID 整组版本事务成功，新 exact 全部 active、原 exact retired，Registry 和旧版本其余证据不变。
+- 84 个 active base 全部通过标准执行准入，Dashboard 88 个 target 业务内容不变；25,715 条预测、
+  5,689 条 run、111 条回测 run、24,750 条回测预测及 Harness/其他事实表全量摘要不变。
+- Actuals 原记录、所有原状态文件均不变；仅增加上述 17 个版本和 7 份封装，没有历史重算、复制、覆盖或删除。
+- 回滚只读 preflight 通过；恢复 Backend 后实际进程 cwd 对应 current，健康检查正常，日/周 timer 已恢复。
+  三个预测 timer、DataBridge 与 Actuals 均 active，installed unit 未改变。
+- before 读回 SHA 为 `b6f4870713b46e5ed525c1caac698a9208c5b372bd03df62adf96d44f1943dde`，
+  after 为 `fc882d0961c9f07198259e348ed5d61b5b11cd278f41ee9b1153ec020d7c1c64`；
+  原件、state 转换和 cutover/rollback-preflight 回执保存在双端私有 `native-attachment-retirement-20260912`。
+
+**回滚边界**：不能只把 current 链接切回 previous；必须先围栏 Writer/Backend，在当前候选中重新生成
+rollback preflight 并执行版本反向事务，再恢复 `5e4bc98` release，验证后恢复服务。两个版本状态分别校验，
+不覆盖已经推进的新状态或旧状态，不删除已经发布的预测。
+
+Mac3 current 仍为 `b736d3b21b1c57455cf36d1cdcaa22b00fdda455`，本轮未同步或操作 launchd。
+W4 九方案与其 198 个 source package/manifest 文件保持不变。十六个无 Writer 临时 canonical 和
+仍被版本/回滚控制使用的过渡工具尚未退役，不能据本节宣称整个仓库或双机项目已完全闭环。
+本轮真实 MySQL/状态转换专项测试随对应临时工具退役时一并删除；公共合同和数据安全测试长期保留。
 
 #### 首批清理与 ECS 发布验收（2026-09-12）
 

@@ -19,11 +19,17 @@
 - ECS 原 ID 接管后，用户要求先清理陈旧代码、验证清理 release，再一并准备 Mac3 同包晋级。
   清理不包含历史数据库、不可变回滚 release 或 W4 必需依赖。无调用者的 17 个已迁移方案专属
   Native 回测文件及已撤销的 W2/W3A 历史补入入口从当前代码线退役；现有生产 exact 和算法交付不变。
-  仍被迁移工具引用的临时目录暂留；后续获批的附件清理已在候选删除 204 个文件，并生成真实新 exact，
-  通过受控事务与原状态版本封装完成部署，不改算法或历史结果。代码清理不等于已经发布，双机精确 current 仍以现场读回为准。
+  仍被迁移工具引用的临时目录暂留；后续获批的附件清理已删除 204 个文件，并在 ECS 通过受控事务
+  切换真实新 exact。算法、Metadata 与历史结果不变；双机精确 current 仍以现场读回为准。
 - 首批清理 release 已在 ECS 发布并验收：全部 active exact、历史事实、Registry、Actuals、派生状态
   和 Dashboard 业务摘要不变，Backend 正常，预测 timer 已恢复；未调用算法或修改业务库。
   全量回归 1253 passed、36 skipped、243 subtests，独立审查通过。Mac3 仍未晋级，剩余有依赖清理项不标记完成。
+- 第二批 Native 附件和一次性测试清理已完成 ECS 发布：17 个原 canonical 仅保留 Blackbox 交付，
+  旧缓存三模块、失去消费者的 comparator、T1/T5 四个旧批次文件和过期专项测试删除。
+  全量回归 1201 passed、38 skipped、241 subtests，真实隔离 MySQL 验证与独立审查通过。
+  17 个真实新 exact 原子激活；7 份状态仅转换版本封装，原文件及 payload/input 不变。
+  全部 active 准入、事实、Registry、Actuals、Dashboard、Backend 和 timer 读回通过；
+  19:00 Actuals 自然执行成功后才进入维护窗口。未运行算法、未改历史、未同步 Mac3。
 - 用户已批准迁移期新 Blackbox 目录保留 Native 附件至接管验收完成，按精确清单及摘要绑定版本，
   不允许附件 fallback 或第二 Writer；普通两文件合同不变。历史源数据修订不触发已发布预测重算或覆盖，
   只更新当前预测必需的内部派生状态；不再等待目录布局审批。
@@ -97,7 +103,7 @@
 - Blackbox `weekly_point/h1` 与日频 `T+5/h5` 的 target 半开区间批量已经在 ECS 与 Mac3 验证；日频
   `T+1/h1` 的同类能力已完成本地候选实现与回归，尚未做现场验证。一个方案只启动
   一个 batch，全部业务键由现有 repository 原子提交，下一自然调度 target 必须保留不占用。
-- 当前清理候选已删除十七个已接管方案的 Native 附件和旧 Liwei Phase-A/cache projection/migration
+- 当前代码及 ECS release 已删除十七个已接管方案的 Native 附件和旧 Liwei Phase-A/cache projection/migration
   实现，不再从当前源码重建这些 Native 缓存。旧回滚 release 与外置原状态保留。
   W4 Native 的通用作业级临时输入、子进程隔离与 one-shot 控制仍保留；不把其在用能力一并删除。
 - Blackbox 完整历史回测对一个方案只启动一个算法进程；灰度区间直接核对 producer-ready receipt，并为每个
