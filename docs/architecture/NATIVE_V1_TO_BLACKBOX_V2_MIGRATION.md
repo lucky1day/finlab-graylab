@@ -271,8 +271,8 @@ active/Blackbox；原 canonical exact 已 retired，另有 14 条 Native 历史 
 | `liwei_0616_5y01_full_oos_k3_div_k10` | 409 / 411 | 4 | `0a65f61a7acd` |
 
 四份初始候选脚本与现有 Blackbox 原字节相同，Metadata 仅改 ID，Native 附件精确绑定。
-W2 两份与 SDA 无状态，Full 有四数组增量状态。W2 已完成 ECS 原 ID 接管，W3A 仍保持临时 ID 的
-ECS 部署矩阵，待状态与证据完成后才调整。Mac3 的 current、launchd 和数据库未改动。
+W2 两份与 SDA 无状态，Full 有四数组增量状态。以上表格是初始盘点；W2 和 W3A 已完成 ECS
+原 ID 接管，Full 最终 exact 为 `be34f35f233b`。Mac3 的 current、launchd 和数据库未改动。
 
 W2 本轮实际发布 `9385292514bdd2491c13bf7b24ba0a97e1d02e60`，archive SHA-256
 `a4e52b82b6ff028c6674af5357f087c5f5624b7fe9c7c17701417dae645047bc`；previous 为已验证 W3B
@@ -308,7 +308,7 @@ weekly 修订只改变 2026-09-10 最后一行，前 652 条 OOS、标签、日/
 身份转换，四个源 NPY 成员字节保留；生产 envelope、数据库、current 与 timer 均未修改。
 独立原算法末行数值等价已完成：未改源码直接计算当日 265 组结果，以旧前缀及独立末点构造
 Expected，再与候选的 preds/probs 逐字节及完整五字段比较，全部一致；未重算历史前缀。
-尚未发布候选状态或放行 W3A 接管，下一步只复用上述证据完成状态接纳与回滚边界。
+该私有验证当时未发布状态；后续已复用这些证据完成状态接纳与接管，见下文。
 私有原件为 ECS `incoming/w3a-full-weekly-private-20260912-938529/`，不是正式 Gate 或回测成功记录。
 独立原件为 `incoming/w3a-full-weekly-independent-20260912-938529/`，complete SHA-256
 `6c37299e795612bff2d8b76745fe9d2dc981cb38db6e4041403f7a3c8b58f813`。
@@ -331,7 +331,7 @@ W2 四条 live 独有结果已完成 ECS 受控保全：
 - 四条新 run/预测一次事务；任意已有目标键、来源或输入/备份漂移均拒绝整组。
   全部旧 prediction/run/backtest/Harness、Registry/version 保持不变，尚不删除临时身份。
 
-当前 ECS release 为 `ee92b2d62a9e04faa59e2dc1f5e16a55ce9bdfa8`，previous 为上述 W2 接管
+W2 保全时 ECS release 为 `ee92b2d62a9e04faa59e2dc1f5e16a55ce9bdfa8`，previous 为上述 W2 接管
 `9385292514bdd2491c13bf7b24ba0a97e1d02e60`；同提交两次构建 archive 字节一致，SHA-256
 `f0a2e7fffef1cfed5c9f8facab4b079790e1a79efcc215db4eaec42a445ae89c`。当前提交已推送 develop，master 未修改。
 全量 1077 passed、35 skipped、243 subtests passed；另行真实隔离 MySQL 29 passed，独立审查无 Critical/Important。
@@ -349,10 +349,28 @@ current 对应，日频 timer 已恢复，周/月 next trigger 正常。正式�
 原件位于 ECS `incoming/w2-live-preservation-20260912.TS7r6o/` 及本地
 `outputs/w2-live-preservation-20260912/ecs-evidence/`。临时身份及其记录未删除，旧备份继续保留。
 
-W3A 下一步采用既有 StateSession：先私有验证 alias 原入口复用修订后的 653 点状态、训练 0 点，
-再在日频围栏及四身份锁下准备 source 与 candidate 两份真实当前输入状态，最后执行现有
-原子 Writer 事务。不新增 repository 状态回调；失败不盲目恢复无法接受当前修订输入的旧状态。
-该状态准备及 W3A 切换仍待完成，不能把只读证据加载通过当成接管完成。
+W3A 已完成 ECS 原 ID 接管与发布验收：
+
+- 当前 release `025f153e20865137df22ea1b464a5ef02d123787`，previous 为 `ee92b2d62a9e04faa59e2dc1f5e16a55ce9bdfa8`；
+  同 commit 两次构建一致，archive SHA-256 `abeb512c0ed6eda16973513b1816f1370e53a3aaf53e10707fa357211bcadb78`。
+  Native 参考代码仍单独绑定 `3a8059…`，不把它当作回滚 release，避免撤销 W2 已完成的接管。
+- 两份既有 333 条证据在原 locale 独立只读复验；本次执行保留实际 systemd 环境，不改旧报告输入。
+  Full alias 标准 warm 为 4.617 秒，复用 653 点、训练 0 点、方向 -1；四个 NPY 成员逐字节不变。
+  先发布已验证的 source 当前输入状态，再发布 candidate 状态；SDA 标准调用 63.254 秒、方向 -1。
+  两次调用均未写业务预测，真实准备 Gate 已入库。
+- Full `be34f35f233b`、SDA `f8659dab99b2` 已由一个 repository 事务激活；两个临时 ID archived，
+  原 ID 各唯一 Writer。全库预测 25,707、run 5,685、backtest 108 及全部子表/原审计摘要不变，
+  Actuals 和其他 86 个 Dashboard 方案不变。8 条临时身份独有结果仍保留源记录，待单独保全，未删除。
+- 反向只读 preflight 验证当前 source/candidate 状态及回滚边界；没有为演示再次切换。
+  Backend PID/cwd、health、标准执行准入均通过，日频 timer 恢复；周/月、DataBridge、Actuals 未操作。
+- 本地全量 1139 passed、38 skipped、243 subtests passed；另行隔离数据库组合 39 passed，
+  其中 32 项真实 MySQL、7 项 SQLite。独立审查无 Critical/Important；develop 已推送，master 未修改。
+- 原件：ECS `incoming/w3a-writer-reclaim-20260912.7oD8G9/`，本地 `outputs/w3a-writer-reclaim-20260912/ecs-evidence/`。
+  prepare SHA-256 `cf97378d20db02d4bf5551e2aaec4f99808b32c04b9378f5b3b6aba0cfa9ded7`；
+  cutover SHA-256 `656efb09b749ebb8aa4d39fe378bf9bce2731cb5132711a20414d63fb2cadcef`；
+  标准准入 SHA-256 `4ca4412f04eac79eacb84154deecc53de749bdc67d484f9d268adddc306453d4`。
+
+下一步是 W1A/W1B 同 ID 接管、W3C/W3D 缺失验证；W3A 结果保全、双机晋级与最终清理仍未完成。
 
 ### 已批准的迁移期附件共存与历史修订边界
 
@@ -404,15 +422,16 @@ W3A/W3B 不允许多次独立 activate 冒充原子切换。
 `preflight/prepare/cutover/rollback` 原身份回收路由，不能使用旧跨 ID 命令。W2 准备入口
 复用固定等价报告，在当前仍为旧临时 Writer release 时对每份执行一次无状态标准预测，
 分别绑定旧等价输入和本次执行输入，创建真实 Gate；不写预测、状态、Registry 或操作调度。
-可选 `--predict-date` 仅用于 W2 prepare（包括 prepare 预检），必须是已经到期的工作日交易日，
+可选 `--predict-date` 用于 W2/W3A prepare（包括 prepare 预检），必须是已经到期的工作日交易日，
 默认选择最近已到期日期。传相应 action 的 plan SHA 和全新 work-dir；已有候选准备凭据时
 拒绝重跑，失败保留实际进程、错误及已有结果，并尝试写失败 Gate。
 首次 ECS 准备预检发现一条 2026-06-14 的旧 Native Compare `running` 审计记录；
 它不对应当前进程、canonical 或临时 Blackbox Writer，不能改成成功或覆盖历史。
 迁移期仅按固定记录身份和完整 run/Gate 摘要识别这条已核实的历史记录，并仍核对实际
 Python 进程与 Writer；其他 `running`、任何摘要漂移均拒绝。该历史行及 Gate 在切换前后不变。
-W3A 仓储整组事务已实现，但控制入口显式阻断，必须先完成
-Full 状态修订和回滚执行证据；不能只改部署矩阵就绕过。Mac3 入口尚未实现。
+W3A 准备与整组事务已部署完成，必须显式传 `--rollback-project-root` 绑定实际接管前 release；
+cutover/rollback 的 `--work-dir` 指向真实准备回执并只读复验状态，不在事务中执行算法或发布状态。
+完成的准备只能只读恢复回执，部分失败禁止盲目重跑。Mac3 入口尚未实现。
 以下表格仅描述已验证的 W3B 路径，不是其他批次的操作指令。
 所有命令从 candidate immutable release 执行，传 candidate `--project-root`、
 已安装旧 Native `--reference-project-root`，以及只读取得的目标 DB 名称/UUID

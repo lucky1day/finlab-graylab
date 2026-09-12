@@ -42,7 +42,9 @@
   业务内容保留，原 ID 各有唯一 active Blackbox exact，日频 timer 与 Backend 已恢复正常。
   W2 两个方案亦已完成 ECS 原 ID 接管、标准执行准入及发布验收；四条临时身份独有 live 结果
   已在真实备份恢复验证后一次 insert-only 补入原 ID，原记录不变，未执行算法或删除临时身份。
-  下一批为 W3A 原 ID 收口；Mac3 晋级、迁移数据/Native 清理及 confidence DDL 尚未闭环。
+  W3A 两个方案已完成同样的原 ID 整组接管；Full 当前输入状态及回滚源状态已验证，
+  SDA 标准调用通过，历史事实与其他方案不变。下一批为 W1A/W1B；W3C/W3D、Mac3 晋级、
+  迁移数据/Native 清理及 confidence DDL 尚未闭环。
   不重复已完成的 W3B 算法、状态准备或切换；精确 release、回执和恢复边界见迁移计划及现场。
 
 ## 当前治理边界
