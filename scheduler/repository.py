@@ -6,6 +6,7 @@ import logging
 import math
 import sys
 from collections import Counter
+from copy import deepcopy
 from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timezone
@@ -4295,6 +4296,276 @@ def apply_same_id_writer_reclaim(
     return {"schema_version": "same-id-writer-reclaim-result-v1", "wave": wave, "action": action,
             "scheme_ids": sorted(old_configs), "plan_sha256": expected_plan_sha256, "approved_by": operator,
             "prediction_written": False, "historical_facts_changed": False}
+
+
+def _same_id_live_preservation_plan_conn(
+    conn: Connection, *, source_configs: Mapping[str, SchemeConfig], target_configs: Mapping[str, SchemeConfig],
+    backup_evidence: Mapping[str, object], control_plane_evidence: Mapping[str, object],
+    expected_database_name: str, expected_server_uuid: str, for_update: bool,
+) -> dict[str, object]:
+    """只读核实固定 W2 四条 alias-only live 来源；不接受调用方提供预测值。"""
+    ids = sorted(_SAME_ID_RECLAIM_WAVES["W2"])
+    if set(source_configs) != set(ids) or set(target_configs) != set(ids):
+        raise ValueError("live preservation requires exactly the two W2 original IDs")
+    control = deepcopy(control_plane_evidence)
+    scheduler = control.get("scheduler", {}) if isinstance(control, Mapping) else {}
+    if (not isinstance(control, Mapping) or control.get("schema_version") != "same-id-live-preservation-control-plane-v1"
+            or control.get("wave") != "W2" or control.get("deployment_target") != "aliyun-gray"
+            or not isinstance(scheduler, Mapping) or scheduler.get("control_plane") != "systemd_one_shot"
+            or scheduler.get("timer_fenced") is not True or scheduler.get("unique_writer") is not True
+            or control.get("source_canonical_selection") != {key: _same_id_reclaim_identity(source_configs[key]) for key in ids}
+            or control.get("target_canonical_selection") != {key: _same_id_reclaim_identity(target_configs[key]) for key in ids}):
+        raise RuntimeError("live preservation requires fenced canonical control evidence")
+    if _dialect_name(conn) == "mysql":
+        identity = dict(conn.execute(text("SELECT DATABASE() AS database_name, @@server_uuid AS server_uuid")).mappings().one())
+        if identity != {"database_name": _require_nonempty(expected_database_name, "expected_database_name"),
+                        "server_uuid": _require_nonempty(expected_server_uuid, "expected_server_uuid")}:
+            raise RuntimeError("live preservation database identity mismatch")
+    elif _dialect_name(conn) == "sqlite":
+        identity = {"isolated_test": "sqlite"}
+    else:
+        raise RuntimeError("live preservation requires MySQL or isolated SQLite")
+    migrations = _same_id_rows_conn(conn, "t_schema_migrations", "1=1", {}, order="version", for_update=for_update)
+    if not migrations or max(int(row["version"]) for row in migrations) != 24 or any(row["state"] != "APPLIED" for row in migrations):
+        raise RuntimeError("live preservation requires applied schema 024")
+    all_ids = sorted(ids + [key + "_bbv2" for key in ids])
+    params = {f"id_{i}": key for i, key in enumerate(all_ids)}
+    scope = ",".join(":" + key for key in params)
+    versions = _same_id_rows_conn(conn, "t_scheme_versions", f"scheme_id IN ({scope})", params,
+                                  order="scheme_id,scheme_version", for_update=for_update)
+    registry = _same_id_rows_conn(conn, "t_scheme_registry", f"base_scheme_id IN ({scope})", params,
+                                  order="scheme_id", for_update=for_update)
+    for table, order in (("t_scheme_runs", "run_id"), ("t_backtest_runs", "id"), ("t_harness_runs", "harness_run_id")):
+        running = _same_id_rows_conn(conn, table, f"scheme_id IN ({scope}) AND status='running'", params,
+                                     order=order, for_update=for_update)
+        if any(table != "t_harness_runs" or not _is_preserved_w2_historical_compare(conn, row, for_update=for_update) for row in running):
+            raise RuntimeError("live preservation found a running execution")
+    conversions, inputs = control.get("identity_conversions"), control.get("source_inputs")
+    if not isinstance(conversions, Mapping) or set(conversions) != set(ids) or not isinstance(inputs, Mapping):
+        raise ValueError("live preservation requires conversion and historical snapshot proofs")
+    sources, keys = [], []
+    for key in ids:
+        source, target = source_configs[key], target_configs[key]
+        tenor = "5Y" if key == "daily_5y_2_v28" else "7Y"
+        if source.scheme_id != key + "_bbv2" or target.scheme_id != key or source.code_hash != target.code_hash:
+            raise ValueError("live preservation source/target code or ID mismatch")
+        _validate_blackbox_revision_candidate(target, require_evidence=True)
+        for cfg, status in ((source, "retired"), (target, "active")):
+            if (cfg.runtime_type != "blackbox_v2" or cfg.horizon != 5 or cfg.task_type != "T+5"
+                    or cfg.tenors != [tenor] or cfg.target_rule != TASK_COMBINATIONS["T+5"][1]):
+                raise ValueError("live preservation W2 business dimensions differ")
+            exact = [row for row in versions if row["scheme_id"] == cfg.scheme_id and row["scheme_version"] == cfg.scheme_version]
+            if len(exact) != 1 or exact[0]["status"] != status:
+                raise RuntimeError("live preservation requires completed original-ID takeover")
+            _assert_migration_version_identity(cfg, exact[0])
+            others = [row for row in versions if row["scheme_id"] == cfg.scheme_id and row not in exact]
+            if any(row["status"] not in {"retired", "paused"} or row["runtime_type"] not in {"native_adapter", "blackbox_v2"}
+                   or (row["runtime_type"] == "blackbox_v2" and row["status"] != "retired") for row in others):
+                raise RuntimeError("live preservation has another eligible version")
+            rows = [row for row in registry if row["base_scheme_id"] == cfg.scheme_id]
+            wanted = {"scheme_id": registry_scheme_id(cfg.scheme_id, 5, tenor), "horizon": 5,
+                      "target_tenor": tenor, "task_type": "T+5", "runtime_type": "blackbox_v2",
+                      "status": "active" if status == "active" else "archived"}
+            if len(rows) != 1 or any(rows[0].get(field) != value for field, value in wanted.items()):
+                raise RuntimeError("live preservation Registry identity/status differs")
+        conversion = conversions[key]
+        wanted_conversion = {
+            "schema_version": "native-runtime-identity-conversion-v1", "source_scheme_id": source.scheme_id,
+            "scheme_id": key, "source_code_sha256": source.code_hash, "candidate_code_sha256": target.code_hash,
+            "source_metadata_sha256": source.manifest_hash, "candidate_metadata_sha256": target.manifest_hash,
+            "algorithm_executions": 0,
+        }
+        if not isinstance(conversion, Mapping) or any(conversion.get(field) != value for field, value in wanted_conversion.items()):
+            raise ValueError("live preservation identity-only conversion proof differs")
+        for target_date in ("2026-09-16", "2026-09-17"):
+            keys.append((key, tenor, 5, target_date))
+            predictions = _same_id_rows_conn(conn, "t_scheme_predictions",
+                "scheme_id=:id AND target_tenor=:tenor AND horizon=5 AND target_date=:target",
+                {"id": source.scheme_id, "tenor": tenor, "target": target_date}, order="id", for_update=for_update)
+            if len(predictions) != 1:
+                raise RuntimeError("live preservation requires one unique source per fixed target")
+            prediction = predictions[0]
+            if (prediction.get("run_id") is None or prediction.get("backtest_run_id") is not None
+                    or prediction.get("backtest_actual_direction") is not None or prediction.get("scheme_version") != source.scheme_version
+                    or prediction.get("predicted_direction") not in {-1, 0, 1}):
+                raise RuntimeError("live preservation source is not an exact live fact")
+            runs = _same_id_rows_conn(conn, "t_scheme_runs", "run_id=:run", {"run": prediction["run_id"]},
+                                      order="run_id", for_update=for_update)
+            if len(runs) != 1:
+                raise RuntimeError("live preservation source run is missing")
+            run = runs[0]
+            expected = {"scheme_id": source.scheme_id, "scheme_version": source.scheme_version,
+                        "runtime_type": "blackbox_v2", "run_type": "active", "prediction_phase": "scheduled_live",
+                        "status": "success", "records_expected": 1, "records_returned": 1, "records_written": 1,
+                        "input_artifact_id": None}
+            if (any(run.get(field) != value for field, value in expected.items()) or not run.get("finished_at")
+                    or _stored_iso_date(run, "predict_date") != _stored_iso_date(prediction, "predict_date")):
+                raise RuntimeError("live preservation source run identity/completion differs")
+            extra = _json_mapping(prediction.get("extra"))
+            snapshot = _require_nonempty(run.get("data_snapshot_id"), "source snapshot")
+            request_id = ":".join([source.scheme_id] + [_stored_iso_date(prediction, field)
+                                                    for field in ("predict_date", "feature_date", "target_date")])
+            if extra.get("request_id") != request_id or extra.get("data_snapshot_id") != snapshot or "migration_import" in extra:
+                raise RuntimeError("live preservation source Request/snapshot provenance differs")
+            input_proof = inputs.get(snapshot)
+            input_fields = {"snapshot_id", "generation_id", "manifest_sha256", "files"}
+            filenames = {"daily_output.csv", "weekly_output.csv", "monthly_output.csv", "factor_catalog.csv", "api_wind_date.csv"}
+            if (not isinstance(input_proof, Mapping) or set(input_proof) != input_fields
+                    or input_proof["snapshot_id"] != snapshot or not isinstance(input_proof["files"], Mapping)
+                    or set(input_proof["files"]) != filenames or not input_proof["generation_id"]
+                    or (extra.get("data_generation_id") is not None and extra["data_generation_id"] != input_proof["generation_id"])):
+                raise ValueError("live preservation historical input proof differs")
+            for digest in [input_proof["manifest_sha256"], *input_proof["files"].values()]:
+                _require_sha256(digest, "historical input SHA-256")
+            sources.append({"prediction": prediction, "run": run})
+    existing = (_lock_existing_prediction_business_keys(conn, keys) if for_update else {
+        (str(row["scheme_id"]), str(row["target_tenor"]), int(row["horizon"]), _stored_iso_date(row, "target_date"))
+        for row in _same_id_rows_conn(conn, "t_scheme_predictions", f"scheme_id IN ({scope})", params,
+                                      order="id", for_update=False)
+    }.intersection(keys))
+    if existing:
+        raise RuntimeError("live preservation rejects any existing target key, including complete duplicates")
+    facts = _same_id_fact_snapshot_conn(conn, all_ids, for_update=for_update)
+    source_sha = native_successor_plan_sha256({"sources": sources})
+    history_sha = native_successor_plan_sha256({"facts": facts, "versions": versions, "registry": registry})
+    backup_fields = {"schema_version", "backup_uri", "backup_sha256", "restoration_verified",
+                     "restore_receipt_sha256", "source_rows_sha256", "existing_facts_sha256",
+                     "source_database_identity_sha256"}
+    if (not isinstance(backup_evidence, Mapping) or set(backup_evidence) != backup_fields
+            or backup_evidence["schema_version"] != "same-id-live-preservation-backup-v1"
+            or backup_evidence["restoration_verified"] is not True
+            or not isinstance(backup_evidence["backup_uri"], str) or not Path(backup_evidence["backup_uri"]).is_absolute()
+            or backup_evidence["source_database_identity_sha256"] != native_successor_plan_sha256(identity)
+            or backup_evidence["source_rows_sha256"] != source_sha or backup_evidence["existing_facts_sha256"] != history_sha):
+        raise ValueError("live preservation backup/restore evidence differs from complete source/history")
+    for field in ("backup_sha256", "restore_receipt_sha256", "source_rows_sha256", "existing_facts_sha256", "source_database_identity_sha256"):
+        _require_sha256(backup_evidence[field], field)
+    return {"schema_version": "same-id-live-preservation-plan-v1", "scheme_ids": ids, "all_scheme_ids": all_ids,
+            "target_keys": keys, "sources": sources, "source_rows_sha256": source_sha, "existing_facts_sha256": history_sha,
+            "facts": facts, "versions": versions, "registry": registry, "backup_evidence": dict(backup_evidence),
+            "control_plane": dict(control), "database_identity_sha256": native_successor_plan_sha256(identity),
+            "materialization": {"run_type": "manual", "prediction_phase": None, "algorithm_executions": 0}}
+
+
+def read_same_id_live_preservation_plan(
+    engine: Engine, *, source_configs: Mapping[str, SchemeConfig], target_configs: Mapping[str, SchemeConfig],
+    backup_evidence: Mapping[str, object], control_plane_evidence: Mapping[str, object],
+    expected_database_name: str, expected_server_uuid: str,
+) -> dict[str, object]:
+    """固定四条 W2 历史结果物化的只读批准计划。"""
+    with engine.connect() as conn:
+        if engine.dialect.name == "mysql":
+            conn.exec_driver_sql("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            conn.exec_driver_sql("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
+        try:
+            return _same_id_live_preservation_plan_conn(conn, source_configs=source_configs, target_configs=target_configs,
+                backup_evidence=backup_evidence, control_plane_evidence=control_plane_evidence,
+                expected_database_name=expected_database_name, expected_server_uuid=expected_server_uuid, for_update=False)
+        finally:
+            conn.rollback()
+
+
+def apply_same_id_live_preservation(
+    engine: Engine, *, source_configs: Mapping[str, SchemeConfig], target_configs: Mapping[str, SchemeConfig],
+    backup_evidence: Mapping[str, object], control_plane_evidence_reader: Callable[[], Mapping[str, object]],
+    expected_database_name: str, expected_server_uuid: str, expected_plan_sha256: str,
+    approved_by: str, approved_at: datetime,
+) -> dict[str, object]:
+    """一次事务新建四条 manual 物化 run 和预测；全部旧事实、版本及 Registry 不变。"""
+    operator = _require_nonempty(approved_by, "approved_by")
+    _require_sha256(expected_plan_sha256, "expected_plan_sha256")
+    if not isinstance(approved_at, datetime) or set(source_configs) != _SAME_ID_RECLAIM_WAVES["W2"] or set(target_configs) != set(source_configs):
+        raise ValueError("live preservation requires W2 scope and approved_at datetime")
+    all_ids = sorted(list(source_configs) + [key + "_bbv2" for key in source_configs])
+    kwargs = dict(source_configs=source_configs, target_configs=target_configs, backup_evidence=backup_evidence,
+                  expected_database_name=expected_database_name, expected_server_uuid=expected_server_uuid)
+    mappings, new_runs, new_predictions = [], [], []
+    inserted_run_rows, inserted_prediction_rows = [], []
+    with ExitStack() as locks:
+        if engine.dialect.name != "sqlite":
+            for key in all_ids:
+                locks.enter_context(_blackbox_activation_advisory_lock(engine, scheme_id=key))
+        with engine.begin() as conn:
+            control = deepcopy(control_plane_evidence_reader())
+            plan = _same_id_live_preservation_plan_conn(conn, **kwargs, control_plane_evidence=control, for_update=True)
+            if native_successor_plan_sha256(plan) != expected_plan_sha256:
+                raise RuntimeError("live preservation plan changed before commit")
+            stamp = _mysql_utc_datetime(approved_at)
+            for item in plan["sources"]:
+                source, source_run = item["prediction"], item["run"]
+                key = str(source["scheme_id"]).removesuffix("_bbv2")
+                cfg = target_configs[key]
+                result = conn.execute(text("INSERT INTO t_scheme_runs "
+                    "(scheme_id,scheme_version,runtime_type,run_type,prediction_phase,predict_date,status,"
+                    "data_snapshot_id,input_artifact_id,started_at,finished_at,records_expected,records_returned,records_written) "
+                    "VALUES (:id,:version,'blackbox_v2','manual',NULL,:predict,'success',:snapshot,NULL,:stamp,:stamp,1,1,1)"),
+                    {"id": key, "version": cfg.scheme_version, "predict": source["predict_date"],
+                     "snapshot": source_run["data_snapshot_id"], "stamp": stamp})
+                run_id = int(result.lastrowid)
+                new_runs.append(run_id)
+                manual = _same_id_rows_conn(conn, "t_scheme_runs", "run_id=:run", {"run": run_id},
+                                            order="run_id", for_update=True)
+                expected_run = {"scheme_id": key, "scheme_version": cfg.scheme_version, "runtime_type": "blackbox_v2",
+                                "run_type": "manual", "prediction_phase": None, "status": "success",
+                                "data_snapshot_id": source_run["data_snapshot_id"], "input_artifact_id": None,
+                                "records_expected": 1, "records_returned": 1, "records_written": 1}
+                if len(manual) != 1 or any(manual[0].get(field) != value for field, value in expected_run.items()):
+                    raise RuntimeError("live preservation manual run readback differs")
+                inserted_run_rows.append(manual[0])
+                extra = _json_mapping(source.get("extra"))
+                extra["migration_import"] = {
+                    "schema_version": "same-id-live-materialization-v1", "operation": "history-materialization",
+                    "source_scheme_id": source["scheme_id"], "source_scheme_version": source["scheme_version"],
+                    "source_prediction_id": source["id"], "source_run_id": source["run_id"],
+                    "source_request_id": extra["request_id"], "source_prediction_sha256": native_successor_plan_sha256(source),
+                    "source_run_sha256": native_successor_plan_sha256(source_run),
+                    "source_input": control["source_inputs"][source_run["data_snapshot_id"]],
+                    "backup_evidence": dict(backup_evidence), "identity_conversion": control["identity_conversions"][key],
+                    "plan_sha256": expected_plan_sha256, "approved_by": operator, "materialized_at": approved_at.isoformat(),
+                    "algorithm_executions": 0,
+                }
+                row = {field: source.get(field) for field in ("target_tenor", "horizon", "predict_date", "feature_date",
+                        "target_date", "predicted_direction", "confidence", "model_version")}
+                row.update(scheme_id=key, scheme_version=cfg.scheme_version, run_id=run_id, backtest_run_id=None,
+                           backtest_actual_direction=None, extra=json.dumps(extra, ensure_ascii=False, default=str))
+                if _insert_run_predictions_conn(conn, [row]) != 1:
+                    raise RuntimeError("live preservation prediction insert count mismatch")
+                inserted = _same_id_rows_conn(conn, "t_scheme_predictions", "run_id=:run", {"run": run_id}, order="id", for_update=True)
+                if len(inserted) != 1:
+                    raise RuntimeError("live preservation inserted prediction readback differs")
+                actual = dict(inserted[0])
+                for field, value in row.items():
+                    found = _json_mapping(actual[field]) if field == "extra" else str(actual[field]) if field.endswith("date") else actual[field]
+                    wanted = json.loads(value) if field == "extra" else str(value) if field.endswith("date") else value
+                    if found != wanted:
+                        raise RuntimeError("live preservation inserted prediction fields differ")
+                new_predictions.append(actual["id"])
+                inserted_prediction_rows.append(actual)
+                mappings.append({"source_prediction_id": source["id"], "source_run_id": source["run_id"],
+                                 "prediction_id": actual["id"], "run_id": run_id})
+            params = {f"id_{i}": key for i, key in enumerate(all_ids)}
+            scope = ",".join(":" + key for key in params)
+            post = _same_id_fact_snapshot_conn(conn, all_ids, for_update=True)
+            for table, primary, inserted_ids, expected_rows in (
+                ("t_scheme_runs", "run_id", new_runs, inserted_run_rows),
+                ("t_scheme_predictions", "id", new_predictions, inserted_prediction_rows),
+            ):
+                rows = _same_id_rows_conn(conn, table, f"scheme_id IN ({scope})", params, order=primary, for_update=True)
+                original_rows = [row for row in rows if row[primary] not in inserted_ids]
+                if [row for row in rows if row[primary] in inserted_ids] != expected_rows:
+                    raise RuntimeError("live preservation new materialization rows changed before commit")
+                post[table] = {"count": len(original_rows), "sha256": native_successor_plan_sha256({"rows": original_rows})}
+            versions = _same_id_rows_conn(conn, "t_scheme_versions", f"scheme_id IN ({scope})", params,
+                                          order="scheme_id,scheme_version", for_update=True)
+            registry = _same_id_rows_conn(conn, "t_scheme_registry", f"base_scheme_id IN ({scope})", params,
+                                          order="scheme_id", for_update=True)
+            if native_successor_plan_sha256({"facts": post, "versions": versions, "registry": registry}) != plan["existing_facts_sha256"]:
+                raise RuntimeError("live preservation changed preexisting facts or lifecycle rows")
+            if native_successor_plan_sha256({"control_plane": control_plane_evidence_reader()}) != native_successor_plan_sha256({"control_plane": control}):
+                raise RuntimeError("live preservation control plane changed during transaction")
+    return {"schema_version": "same-id-live-preservation-result-v1", "plan_sha256": expected_plan_sha256,
+            "approved_by": operator, "records_written": 4, "manual_runs_created": 4, "algorithm_executions": 0,
+            "imports": mappings, "source_rows_sha256": plan["source_rows_sha256"], "existing_facts_sha256": plan["existing_facts_sha256"]}
 
 
 def canonical_native_successor_plan(plan: Mapping[str, object]) -> str:

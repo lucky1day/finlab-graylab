@@ -2468,7 +2468,9 @@ def generate_with_private_state(args: argparse.Namespace, requests: list[dict[st
                     previous_frame = previous_frame.loc[previous_frame.month_id <= previous_month]
                     if len(previous_frame) != proof["rows"]:
                         raise ContractError("consumed monthly domain changed; explicit rebuild required")
-                if len(previous_frame) < proof["rows"] or _digest_frame(previous_frame.iloc[:proof["rows"]]) != proof["sha256"]:
+                if (len(previous_frame) < proof["rows"]
+                        or (name != "weekly_df"
+                            and _digest_frame(previous_frame.iloc[:proof["rows"]]) != proof["sha256"])):
                     raise ContractError("source prefix changed; explicit rebuild required")
         prepared = prepare_prediction_inputs(model_config("STD", **raw))
         df = prepared["df"]

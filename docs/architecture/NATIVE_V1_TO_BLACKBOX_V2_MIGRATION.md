@@ -306,10 +306,30 @@ weekly 修订只改变 2026-09-10 最后一行，前 652 条 OOS、标签、日/
 末行，也不需要全量初始化。随后一次私有标准调用已通过，耗时 8.288 秒、方向 -1，
 验证前 652 点 preds/probs 不变、特征前缀不变、恰好重算最后一点。仅副本 header 的代码/Metadata
 身份转换，四个源 NPY 成员字节保留；生产 envelope、数据库、current 与 timer 均未修改。
-独立原算法末行数值等价仍待完成，尚未发布候选状态或放行 W3A 接管。
+独立原算法末行数值等价已完成：未改源码直接计算当日 265 组结果，以旧前缀及独立末点构造
+Expected，再与候选的 preds/probs 逐字节及完整五字段比较，全部一致；未重算历史前缀。
+尚未发布候选状态或放行 W3A 接管，下一步只复用上述证据完成状态接纳与回滚边界。
 私有原件为 ECS `incoming/w3a-full-weekly-private-20260912-938529/`，不是正式 Gate 或回测成功记录。
+独立原件为 `incoming/w3a-full-weekly-independent-20260912-938529/`，complete SHA-256
+`6c37299e795612bff2d8b76745fe9d2dc981cb38db6e4041403f7a3c8b58f813`。
 证据位于 ECS `incoming/w3a-full-weekly-analysis-20260912.wpLu6e`，`evidence.json` SHA-256
 为 `d63eb3f43674466926034f11780f56f9caebe377c0f9894ec743c918d823d210`。
+
+W2 四条 live 独有结果的临时物化候选已实现，仍未部署/写入：
+
+- 同一迁移 CLI 增加 `preflight --action preserve-live --wave W2` 与 `preserve-live --wave W2`；
+  必须绑定原 ID 接管 release、已围栏 Writer、expected DB/UUID 和 fresh plan SHA，不接受预测值或自选键。
+- 仅原两 ID 的 2026-09-16 / 17 四键；保留源 Request、日期、方向与完整原 extra，在
+  `extra.migration_import` 记录源行/run/version、历史 snapshot/五文件、原件摘要、备份和恢复证明。
+  新本地 run 使用 `manual`、`prediction_phase=NULL` 和实际物化时间；新 exact 表示物化归属，
+  真实算法执行版本由 source 字段保留，`algorithm_executions=0`，不声称执行了新自然预测。
+- 真实只读备份 3,485 行、11 张数据表和 14 份 FK closure DDL 已在本机随机隔离 MySQL 恢复，
+  插入时 FK 检查开启，全部行及迁移摘要相同；演练库已删除，完整备份双份保留。
+  备份 SHA-256 `61148898d72c7b6f85de9b2653c70b9406b8ed3ce8302e9776ce1390ffe51b06`，
+  恢复回执 SHA-256 `93eaa9426fd0f34bb3f249fce780896b17f1564bdffed1c6fcc4d33a64f399b8`。
+  仓储另核对备份源数据库身份摘要，不能将同数据克隆库误当本次同库保全。
+- 四条新 run/预测一次事务；任意已有目标键、来源或输入/备份漂移均拒绝整组。
+  全部旧 prediction/run/backtest/Harness、Registry/version 保持不变，尚不删除临时身份。
 
 ### 已批准的迁移期附件共存与历史修订边界
 

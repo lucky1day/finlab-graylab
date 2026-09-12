@@ -33,6 +33,7 @@ from harness.same_id_runtime_upgrade import (
 )
 from harness.w3b_prepare import build_w3b_prepare_preflight, execute_w3b_prepare
 from harness.w2_reclaim_prepare import build_w2_reclaim_prepare_preflight, execute_w2_reclaim_prepare
+from harness.w2_live_preservation import build_w2_live_preservation_preflight, execute_w2_live_preservation
 from harness.writer_reclaim import (
     build_writer_reclaim_preflight, execute_writer_reclaim, parse_reclaim_run_ids,
 )
@@ -285,17 +286,17 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="migration_action",
         required=True,
     )
-    for action in ("preflight", "prepare", "cutover", "rollback"):
+    for action in ("preflight", "prepare", "cutover", "rollback", "preserve-live"):
         item = migration_actions.add_parser(action)
         item.add_argument("--wave", choices=["W2", "W3A", "W3B"], required=True)
         item.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
         item.add_argument("--reference-project-root", type=Path, required=True)
-        if action != "prepare":
+        if action not in {"prepare", "preserve-live"}:
             item.add_argument("--harness-run-id", action="append", required=action != "preflight", metavar="BASE=RUN")
         item.add_argument("--expected-database-name", required=True)
         item.add_argument("--expected-server-uuid", required=True)
         if action == "preflight":
-            item.add_argument("--action", choices=["prepare", "cutover", "rollback"], default="cutover")
+            item.add_argument("--action", choices=["prepare", "cutover", "rollback", "preserve-live"], default="cutover")
         if action in {"preflight", "prepare"}:
             item.add_argument("--predict-date", help="W2 preparation only; an already-due weekday trading date")
         if action == "prepare":
@@ -312,6 +313,22 @@ def _run_native_successor_migration_command(
 ) -> dict[str, object]:
     """同 ID 升级及已跨 ID Writer 回收；不恢复旧跨 ID 激活路由。"""
     project_root = args.project_root.resolve()
+    preserving = args.migration_action == "preserve-live" or (
+        args.migration_action == "preflight" and args.action == "preserve-live"
+    )
+    if preserving:
+        if args.wave != "W2" or getattr(args, "harness_run_id", None) or getattr(args, "predict_date", None):
+            raise ValueError("preserve-live only accepts W2; no synthetic Harness or prediction date")
+        engine = create_engine_from_env()
+        try:
+            kwargs = dict(project_root=project_root, reference_project_root=args.reference_project_root.resolve(),
+                          expected_database_name=args.expected_database_name, expected_server_uuid=args.expected_server_uuid)
+            if args.migration_action == "preflight":
+                return build_w2_live_preservation_preflight(engine, **kwargs)
+            return execute_w2_live_preservation(engine, **kwargs, expected_plan_sha256=args.expected_plan_sha256,
+                                               approved_by=args.approved_by)
+        finally:
+            engine.dispose()
     preparing = args.migration_action == "prepare" or (
         args.migration_action == "preflight" and args.action == "prepare"
     )
