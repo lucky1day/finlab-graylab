@@ -195,6 +195,7 @@ def ecs_seed(tmp_path,monkeypatch):
         'preserved_cutoff':'2026-09-09','state_sha256':hashlib.sha256(payload).hexdigest()}
     monkeypatch.setattr(preparation,'_EVIDENCE',tmp_path)
     monkeypatch.setattr(preparation,'_APPROVED_ECS_SEED_SHA',{key:save(directory/'ecs-seed.json',proof)})
+    monkeypatch.setattr(preparation,'_APPROVED_PUBLISHED_SIMULATIONS',{})
     destination=tmp_path/'runtime'/key/'new.state'
     monkeypatch.setattr(blackbox_v2_runner,'state_binding_for_scheme',lambda *a,**k:SimpleNamespace(root=tmp_path/'runtime'))
     return cfg,snapshot,files,directory,proof,destination
@@ -221,3 +222,99 @@ def test_ecs_seed_never_accepts_mac_or_stale_bytes(ecs_seed,drift):
     elif drift=='runtime': cfg.environment_fingerprint='0'*64
     else: cfg.scheme_version='other'
     with pytest.raises(RuntimeError): preparation.load_ecs_seed(cfg,snapshot,files,require_unpublished=True)
+
+
+@pytest.fixture
+def timeout_upgrade(acceptance,monkeypatch):
+    import yaml
+    from shared.blackbox_v2.versioning import compute_blackbox_config_hash
+    from shared.versioning import compute_scheme_version
+    old,new,proof,directory=acceptance
+    raw={'scheme_id':new.scheme_id,'runtime_type':'blackbox_v2','input_source':'data_bridge_current',
+        'runtime_profile':'blackbox-v2-v1','data_schema_version':'data-bridge-v1',
+        'delivery':{'script':'delivery.py','metadata':'delivery.json'},
+        'schedule':{'cron':'3 7 * * 1-5','timezone':'Asia/Shanghai','timeout_sec':120}}
+    prior=yaml.safe_dump(raw).encode()
+    proof['candidate_identity']['config_hash']=compute_blackbox_config_hash(raw)
+    raw['schedule']['timeout_sec']=300
+    new.path=directory/'candidate';new.path.mkdir()
+    (new.path/'config.yaml').write_text(yaml.safe_dump(raw))
+    new.config_hash=compute_blackbox_config_hash(raw)
+    new.scheme_version=compute_scheme_version(new.code_hash,new.config_hash,new.manifest_hash)
+    monkeypatch.setattr(preparation,'_APPROVED_TIMEOUT_UPGRADES',{new.scheme_id:('new',new.scheme_version,hashlib.sha256(prior).hexdigest())})
+    preparation._APPROVED_ACCEPTANCE_SHA[new.scheme_id]=save(directory/'acceptance.json',proof)
+    return old,new,proof,directory
+
+
+def test_only_fixed_timeout_change_reuses_original_bytes(timeout_upgrade):
+    old,new,proof,directory=timeout_upgrade
+    before=(directory/'acceptance.json').read_bytes()
+    accepted=preparation.load_acceptance(old,new)
+    assert accepted['timeout_only_upgrade']['only_change']=='schedule.timeout_sec:120->300'
+    assert accepted['timeout_only_upgrade']['additional_algorithm_executions']==0
+    assert (directory/'acceptance.json').read_bytes()==before
+
+
+@pytest.mark.parametrize('drift',['timeout','unhashed','code','meta','exact','config'])
+def test_timeout_change_does_not_relax_any_other_candidate_bytes(timeout_upgrade,drift):
+    old,new,proof,directory=timeout_upgrade
+    if drift in {'timeout','unhashed'}:
+        path=new.path/'config.yaml'
+        path.write_text(path.read_text().replace('timeout_sec: 300','timeout_sec: 301') if drift=='timeout' else path.read_text()+'status: active\n')
+    else:
+        setattr(new,{'code':'code_hash','meta':'manifest_hash','exact':'scheme_version','config':'config_hash'}[drift],'f'*64)
+    with pytest.raises(RuntimeError): preparation.load_acceptance(old,new)
+
+
+@pytest.fixture
+def published_seed(ecs_seed,monkeypatch):
+    from scheduler.blackbox_state import _encode
+    cfg,snapshot,files,directory,seed,destination=ecs_seed
+    simulation=directory.parent/('ecs-simulation-'+cfg.scheme_id)
+    (simulation/'output').mkdir(parents=True)
+    request={'request_id':cfg.scheme_id+':2026-09-12:2026-09-11:2026-09-18','predict_date':'2026-09-12',
+        'feature_date':'2026-09-11','target_date':'2026-09-18','daily_cutoff_key':'2026-09-11',
+        'weekly_cutoff_key':'202637','monthly_cutoff_key':'202609'}
+    result={field:request[field] for field in ('request_id','predict_date','feature_date','target_date')}|{'predicted_direction':1}
+    request_sha=save(simulation/'request.json',request)
+    result_sha=save(simulation/'output/result.json',result)
+    payload=b'completed real-state fixture'
+    payload_sha=hashlib.sha256(payload).hexdigest()
+    header={'identity':{'scheme_id':cfg.scheme_id,'scheme_version':cfg.scheme_version},
+        'input':{'files':files,'snapshot_id':snapshot.snapshot_id,'generation_id':snapshot.generation_id},'payload_sha256':payload_sha}
+    state=_encode(header,payload);state_sha=hashlib.sha256(state).hexdigest()
+    destination.parent.mkdir(parents=True);destination.write_bytes(state)
+    receipt={'status':'passed','scheme_id':cfg.scheme_id,'standard_predict_processes':1,'database_written':False,
+        'state_present_after':True,'error':None,'result':result,'result_sha256':result_sha,'state_envelope_sha256':state_sha,
+        'publication':{'state_envelope_sha256':state_sha,'state_output_sha256':payload_sha,'state_scope':'persistent'}}
+    started={'state_seed_sha256':seed['state_sha256'],'closure_sha256':{str(simulation/'request.json'):request_sha},
+        'control':{'blackbox_environment_fingerprint':cfg.environment_fingerprint,
+            'databridge':{'data_snapshot_id':snapshot.snapshot_id,'generation_id':snapshot.generation_id,'files':files}}}
+    pins=(save(simulation/'receipt.json',receipt),save(simulation/'started.json',started))
+    monkeypatch.setattr(preparation,'_APPROVED_PUBLISHED_SIMULATIONS',{cfg.scheme_id:pins})
+    monkeypatch.setattr(preparation.control,'_read_candidate_states',lambda *a:{cfg.scheme_id:{'envelope_sha256':state_sha,'payload_sha256':payload_sha}})
+    return ecs_seed,simulation,receipt
+
+
+def test_reentry_uses_only_reviewed_published_state_without_republish(published_seed):
+    (cfg,snapshot,files,_,_,destination),_,_=published_seed
+    before=destination.read_bytes()
+    check=preparation.load_ecs_seed(cfg,snapshot,files,require_unpublished=True)
+    assert check['published_state']['verified'] and check['production_state_published']
+    assert check['published_state']['additional_algorithm_executions']==0
+    assert preparation.load_ecs_seed(cfg,snapshot,files,require_unpublished=False)==check
+    assert destination.read_bytes()==before
+
+
+@pytest.mark.parametrize('drift',['receipt','state','deleted','request','result','runtime','input','exact'])
+def test_published_reentry_never_falls_back_or_reexecutes(published_seed,drift,monkeypatch):
+    (cfg,snapshot,files,_,_,destination),simulation,receipt=published_seed
+    if drift=='deleted': destination.unlink()
+    elif drift in {'receipt','request','result'}:
+        (simulation/({'receipt':'receipt.json','request':'request.json','result':'output/result.json'}[drift])).write_text('{}')
+    elif drift=='state': destination.write_bytes(b'changed')
+    elif drift=='runtime': monkeypatch.setattr(preparation.control,'_read_candidate_states',lambda *a:{cfg.scheme_id:{'envelope_sha256':'f'*64,'payload_sha256':'f'*64}})
+    elif drift=='input': files={**files,'daily':'b'*64}
+    else: cfg.scheme_version='different'
+    with pytest.raises((RuntimeError,ValueError,FileNotFoundError)):
+        preparation.load_ecs_seed(cfg,snapshot,files,require_unpublished=True)

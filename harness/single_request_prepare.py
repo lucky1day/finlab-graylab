@@ -35,6 +35,106 @@ _APPROVED_ECS_SEED_SHA = {
     'liwei_0616_5y_auc_yearly_all_k3_div_k10': 'fe15f0e3a0b14b08f1cddc5692f369e3334d99f25b46314297faa4cbf0c61170',
     'liwei_0616_5y_ic_yearly_all_k3_div_k10': '75117fe5adec616d006c78cb3129da0cef14763096c52e4bb268464374391328',
 }
+_APPROVED_TIMEOUT_UPGRADES = {
+    'liwei_0616_7y01_cons_say_k3_div_k10': ('79457f27982c', '4693f5417964',
+        'b26b5527e281f97aec0af3b1ebeaaaa9b7dd3deaecdf5a42e7509ea2b9ba98c5'),
+    'liwei_0616_7y03_cons_all_k3_div_k8': ('fdef50ae2219', '3ac41bdd36c6',
+        'be323d1c6d30fe24243b180e33c3a4b57b5b7d0b1390edea043175b609ca2d95'),
+}
+_APPROVED_PUBLISHED_SIMULATIONS = {
+    'liwei_0616_5y_auc_static_all_k3_div_k10': (
+        '55d861318d647b3dc7ded0507f818fef9e07eaea371ebb2c7c6e34a9b3c38c8a',
+        '1ec71b58443af34e2faa8111100ad41e32c29503e382f8cb4e6808a993438c34'),
+    'liwei_0616_5y_auc_yearly_all_k3_div_k10': (
+        '88a2ae29c93affa643e0507d4ab7166c3fd3bececb0d00c4f6e33c853705bca0',
+        '3ab6f68a43fe4e0fbf7fc8413480117147872ec342399ae37ab708c9218d46e4'),
+    'liwei_0616_5y_ic_yearly_all_k3_div_k10': (
+        'e80f8af6dfa006e3e66b69e2bcfee44450706f69f88029a7e7a2edce09f38441',
+        'a5eddbea3251b6b20c997f326603191abb08c7d10bef1d58569c0ba279ed6271'),
+}
+
+
+def _published_simulation(config, snapshot, input_files, destination, seed_sha):
+    """重入只复用这三份成功 ECS 模拟发布的原封装，不运行算法或恢复旧 seed。"""
+    from scheduler.blackbox_state import _decode, _MAX_ENVELOPE_BYTES
+    from shared.blackbox_v2.contracts import load_prediction_result
+
+    key = config.scheme_id
+    pins = _APPROVED_PUBLISHED_SIMULATIONS[key]
+    directory = _EVIDENCE / ('ecs-simulation-' + key)
+    values = []
+    for name, expected in zip(('receipt.json', 'started.json'), pins):
+        raw = read_regular_bytes(directory / name, 4 * 1024**2)
+        if hashlib.sha256(raw).hexdigest() != expected:
+            raise RuntimeError('approved published simulation evidence changed')
+        values.append(json.loads(raw))
+    receipt, started = values
+    context = started['control']
+    if (receipt.get('status') != 'passed' or receipt.get('scheme_id') != key
+            or receipt.get('standard_predict_processes') != 1 or receipt.get('database_written') is not False
+            or receipt.get('state_present_after') is not True or receipt.get('error') is not None
+            or context['blackbox_environment_fingerprint'] != config.environment_fingerprint
+            or context['databridge']['data_snapshot_id'] != snapshot.snapshot_id
+            or context['databridge']['generation_id'] != snapshot.generation_id
+            or context['databridge']['files'] != input_files or started['state_seed_sha256'] != seed_sha):
+        raise RuntimeError('published simulation identity/input/environment differs')
+    request_path = directory / 'request.json'
+    request_raw = read_regular_bytes(request_path, 1024**2)
+    if hashlib.sha256(request_raw).hexdigest() != started['closure_sha256'][str(request_path)]:
+        raise RuntimeError('published simulation Request changed')
+    request = load_request_bytes(request_raw)
+    result_path = directory / 'output/result.json'
+    if (hashlib.sha256(read_regular_bytes(result_path, 1024**2)).hexdigest() != receipt['result_sha256']
+            or asdict(load_prediction_result(result_path, request)) != receipt['result']):
+        raise RuntimeError('published simulation standard Result changed')
+    raw = read_regular_bytes(destination, _MAX_ENVELOPE_BYTES)
+    header, payload = _decode(raw)
+    published = receipt['publication']
+    if (hashlib.sha256(raw).hexdigest() != receipt['state_envelope_sha256']
+            or receipt['state_envelope_sha256'] != published['state_envelope_sha256']
+            or hashlib.sha256(payload).hexdigest() != published['state_output_sha256']
+            or published['state_scope'] != 'persistent'
+            or header['identity']['scheme_id'] != key or header['identity']['scheme_version'] != config.scheme_version
+            or header['input']['files'] != input_files or header['input']['snapshot_id'] != snapshot.snapshot_id
+            or header['input']['generation_id'] != snapshot.generation_id):
+        raise RuntimeError('published simulation state envelope differs')
+    checked = control._read_candidate_states(_ROOT, {key: config}, snapshot)[key]
+    if checked['envelope_sha256'] != receipt['state_envelope_sha256'] or checked['payload_sha256'] != published['state_output_sha256']:
+        raise RuntimeError('published simulation current StateSession identity differs')
+    return {'receipt_sha256': pins[0], 'started_sha256': pins[1], 'verified': True,
+            'scheme_version': config.scheme_version, 'envelope_sha256': receipt['state_envelope_sha256'],
+            'result_sha256': receipt['result_sha256'], 'additional_algorithm_executions': 0}
+
+
+def _acceptance_candidate_identity(proof, new):
+    """W3D 唯一允许固定 exact 的 schedule.timeout_sec 120→300。"""
+    current = {field: getattr(new, field) for field in _FIELDS}
+    original = proof.get('candidate_identity')
+    if original == current:
+        return None
+    allowed = _APPROVED_TIMEOUT_UPGRADES.get(new.scheme_id)
+    if (not isinstance(original, dict) or allowed is None or allowed[:2] != (original.get('scheme_version'), new.scheme_version)
+            or any(original.get(field) != current[field] for field in ('runtime_type', 'code_hash', 'manifest_hash'))):
+        raise RuntimeError('single-Request candidate differs beyond approved timeout-only upgrade')
+    import yaml
+    from shared.blackbox_v2.versioning import compute_blackbox_config_hash
+    from shared.versioning import compute_scheme_version
+    raw_bytes = read_regular_bytes(new.path / 'config.yaml', 1024**2)
+    if (raw_bytes.count(b'timeout_sec: 300') != 1
+            or hashlib.sha256(raw_bytes.replace(b'timeout_sec: 300', b'timeout_sec: 120')).hexdigest() != allowed[2]):
+        raise RuntimeError('timeout upgrade changed bytes beyond the fixed original config')
+    raw = yaml.safe_load(raw_bytes)
+    if type(raw['schedule']['timeout_sec']) is not int or raw['schedule']['timeout_sec'] != 300:
+        raise RuntimeError('approved W3D timeout must be exactly 300 seconds')
+    if (compute_blackbox_config_hash(raw) != new.config_hash
+            or compute_scheme_version(new.code_hash, new.config_hash, new.manifest_hash) != new.scheme_version):
+        raise RuntimeError('timeout upgrade canonical identity changed')
+    raw['schedule']['timeout_sec'] = 120
+    if compute_blackbox_config_hash(raw) != original['config_hash']:
+        raise RuntimeError('candidate config changed beyond timeout 120 to 300')
+    return {'old_identity': original, 'new_identity': current, 'only_change': 'schedule.timeout_sec:120->300',
+            'original_config_sha256': allowed[2], 'current_config_sha256': hashlib.sha256(raw_bytes).hexdigest(),
+            'additional_algorithm_executions': 0}
 
 
 def load_ecs_seed(config, snapshot, input_files, *, require_unpublished):
@@ -67,11 +167,17 @@ def load_ecs_seed(config, snapshot, input_files, *, require_unpublished):
     if binding is None or binding.root is None:
         raise RuntimeError('ECS private seed requires an explicit persistent exact state destination')
     destination = binding.root / key / f'{config.scheme_version}.state'
-    if require_unpublished and os.path.lexists(destination):
+    published = None
+    if key in _APPROVED_PUBLISHED_SIMULATIONS:
+        published = _published_simulation(config, snapshot, input_files, destination, proof['state_sha256'])
+    elif require_unpublished and os.path.lexists(destination):
         raise RuntimeError('candidate state already published before the sole post-cutover simulation')
-    return {'receipt_sha256':expected,'payload_sha256':proof['state_sha256'],
+    result = {'receipt_sha256':expected,'payload_sha256':proof['state_sha256'],
             'preserved_cutoff':proof['preserved_cutoff'],'source_kind':'ecs_native_cache',
             'destination':str(destination),'ecs_algorithm_executions':0,'production_state_published':False}
+    if published is not None:
+        result.update(published_state=published, production_state_published=True)
+    return result
 
 
 def load_acceptance(old, new):
@@ -85,10 +191,10 @@ def load_acceptance(old, new):
     if hashlib.sha256(raw).hexdigest() != expected:
         raise RuntimeError('approved single-Request acceptance changed')
     proof = json.loads(raw)
+    timeout_upgrade = _acceptance_candidate_identity(proof, new)
     if (proof.get('schema_version') != 'single-request-acceptance-v1' or proof.get('scheme_id') != key
             or proof.get('source_kind') not in {'existing_native_fact', 'prior_native_execution'}
             or proof.get('native_identity') != {field:getattr(old,field) for field in _FIELDS}
-            or proof.get('candidate_identity') != {field:getattr(new,field) for field in _FIELDS}
             or proof.get('same_input_equivalence') is not False or proof.get('historical_equivalence') is not False
             or set(proof.get('artifacts', {})) != {'native_evidence','candidate_execution','request','result'}):
         raise RuntimeError('single-Request evidence identity or limited comparison scope differs')
@@ -125,9 +231,12 @@ def load_acceptance(old, new):
             or execution.get('standard_predict_processes',execution.get('algorithm_executions_requested'))!=1
             or execution.get('result_sha256',execution.get('output_sha256'))!=proof['artifacts']['result']['sha256']):
         raise RuntimeError('candidate standard single-Request execution receipt differs')
-    return {'acceptance_sha256':expected, 'source_kind':proof['source_kind'], 'request':asdict(request),
+    result = {'acceptance_sha256':expected, 'source_kind':proof['source_kind'], 'request':asdict(request),
             'result':asdict(result), 'artifacts':proof['artifacts'], 'same_input_equivalence':False,
             'historical_equivalence':False, 'ecs_algorithm_executions':0}
+    if timeout_upgrade is not None:
+        result['timeout_only_upgrade'] = timeout_upgrade
+    return result
 
 
 def _selection(wave, values):

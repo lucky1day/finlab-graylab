@@ -9,7 +9,7 @@ version_status: draft
 schedule:
   cron: '3 7 * * 1-5'
   timezone: Asia/Shanghai
-  timeout_sec: 120
+  timeout_sec: 300
 delivery:
   script: delivery/liwei_0616_7y03_cons_all_k3_div_k8.py
   metadata: delivery/liwei_0616_7y03_cons_all_k3_div_k8.json

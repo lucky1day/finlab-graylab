@@ -135,3 +135,75 @@ def test_mysql_single_request_real_transaction_and_historical_native_retirement(
         _apply(engine,rollback,evidence,after)
         final=_plan(engine,kwargs,evidence)
         assert final['facts']==before['facts'] and not final['historical_native_versions_to_retire']
+
+
+def _approve_one_reentry(engine,kwargs,evidence,monkeypatch):
+    prior=_plan(engine,kwargs,evidence)
+    pins={key:(cfg.scheme_version,kwargs['harness_run_ids'][key],prior['evidence'][key]['sha256'],'c'*64)
+          for key,cfg in kwargs['new_configs'].items()}
+    monkeypatch.setattr(repo,'_SAME_ID_W3C_REENTRY',pins)
+    evidence['candidate_seed_readiness']={key:{'published_state':{
+        'scheme_version':cfg.scheme_version,'receipt_sha256':'c'*64,'verified':True,'additional_algorithm_executions':0}}
+        for key,cfg in kwargs['new_configs'].items()}
+    return _plan(engine,kwargs,evidence)
+
+
+@pytest.fixture
+def reentry(single,monkeypatch):
+    engine,kwargs,evidence=single
+    before=_approve_one_reentry(engine,kwargs,evidence,monkeypatch)
+    with patch.object(repo,'_upsert_scheme_version_conn',side_effect=_sqlite_upsert):
+        _apply(engine,kwargs,evidence,before)
+        rollback=kwargs|{'action':'rollback'}
+        _apply(engine,rollback,evidence,_plan(engine,rollback,evidence))
+    return engine,kwargs|{'action':'prepare','harness_run_ids':{}},evidence
+
+
+def test_exact_reviewed_retired_candidate_prepares_once_without_changing_old_gates(reentry):
+    engine,kwargs,evidence=reentry
+    before=_plan(engine,kwargs,evidence)
+    assert before==_plan(engine,kwargs,evidence)
+    key=next(iter(kwargs['new_configs']))
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO t_harness_runs SELECT 'second-attempt',scheme_id,scheme_version,code_hash,config_hash,stage,status,finished_at FROM t_harness_runs WHERE harness_run_id=:id"),{'id':key})
+    with pytest.raises(RuntimeError,match='already attempted'):
+        _plan(engine,kwargs,evidence)
+
+
+@pytest.mark.parametrize('drift',['gate','run','simulation','verified','exact','active','execution'])
+def test_reentry_rejects_any_unreviewed_harness_or_state(reentry,drift):
+    engine,kwargs,evidence=reentry
+    key=next(iter(kwargs['new_configs']))
+    if drift=='gate':
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE t_harness_gate_results SET summary_json='{}' WHERE harness_run_id=:id"),{'id':key})
+    elif drift=='run':
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE t_harness_runs SET status='failed' WHERE harness_run_id=:id"),{'id':key})
+    elif drift=='active':
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE t_scheme_versions SET status='active' WHERE scheme_id=:id AND scheme_version=:v"),{'id':key,'v':kwargs['new_configs'][key].scheme_version})
+    else:
+        field={'simulation':'receipt_sha256','verified':'verified','exact':'scheme_version','execution':'additional_algorithm_executions'}[drift]
+        evidence['candidate_seed_readiness'][key]['published_state'][field]={'verified':False,'execution':1}.get(drift,'different')
+    with pytest.raises(RuntimeError): _plan(engine,kwargs,evidence)
+
+
+@pytest.mark.skipif(not os.getenv('BFL_TEST_NATIVE_SUCCESSOR_MYSQL_URL'),reason='isolated MySQL required')
+def test_mysql_reentry_keeps_native_timestamp_gate_hash(mysql_migration,monkeypatch):
+    monkeypatch.setattr(repo,'_SAME_ID_W3B_NATIVE_HISTORY_IDS',repo._SAME_ID_SINGLE_REQUEST_WAVES['W3C'])
+    engine,kwargs,evidence=_w3b_history_scope(mysql_migration)
+    ids=sorted(kwargs['old_configs'])
+    with engine.connect() as conn:
+        identity=dict(conn.execute(text('SELECT DATABASE() AS database_name, @@server_uuid AS server_uuid')).mappings().one())
+    evidence.update(schema_version='single-request-migration-control-v1',wave='W3C',scheme_ids=ids,
+        single_request_readiness={'schema_version':'single-request-migration-readiness-v1','scheme_ids':ids,
+            'prepare_database_identity_sha256':repo.native_successor_plan_sha256(identity),
+            'harness_run_ids':kwargs['harness_run_ids'],'comparison_sha256':{key:'a'*64 for key in ids},
+            'local_execution_sha256':{key:'b'*64 for key in ids}})
+    before=_approve_one_reentry(engine,kwargs,evidence,monkeypatch)
+    _apply(engine,kwargs,evidence,before)
+    rollback=kwargs|{'action':'rollback'}
+    _apply(engine,rollback,evidence,_plan(engine,rollback,evidence))
+    prepared=_plan(engine,kwargs|{'action':'prepare','harness_run_ids':{}},evidence)
+    assert prepared['facts']==before['facts']

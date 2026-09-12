@@ -54,6 +54,17 @@ _SAME_ID_RECLAIM_WAVES = {
     "W2": frozenset({"daily_5y_2_v28", "daily_7y_1_v28"}),
     "W3A": frozenset({"liwei_0616_cons_sda_k3_div_k10", "liwei_0616_5y01_full_oos_k3_div_k10"}),
 }
+_SAME_ID_W3C_REENTRY = {
+    "liwei_0616_5y_auc_static_all_k3_div_k10": ("811b31ffa3c3", "hr_20260912T085343Z_b0901ce911b8",
+        "989cf56a2d8f4cca0ad615bad5a2537970ac91e79de14dc33b7be80f5b68821e",
+        "55d861318d647b3dc7ded0507f818fef9e07eaea371ebb2c7c6e34a9b3c38c8a"),
+    "liwei_0616_5y_auc_yearly_all_k3_div_k10": ("daee97949294", "hr_20260912T085344Z_95c37b57c9bb",
+        "ec2a0db90aa7032b5c90725cab1c49cb170c0b7fd1c2e879c237e3ad16e48df6",
+        "88a2ae29c93affa643e0507d4ab7166c3fd3bececb0d00c4f6e33c853705bca0"),
+    "liwei_0616_5y_ic_yearly_all_k3_div_k10": ("d7f10ff5bfe8", "hr_20260912T085345Z_bf9819ddd050",
+        "911a9df61ba3ef0040ec7070b43f958f49ffea3f84ed8aaac72049763bcb05e2",
+        "e80f8af6dfa006e3e66b69e2bcfee44450706f69f88029a7e7a2edce09f38441"),
+}
 _SAME_ID_SINGLE_REQUEST_WAVES = {
     "W3C": frozenset({"liwei_0616_5y_auc_static_all_k3_div_k10",
                        "liwei_0616_5y_auc_yearly_all_k3_div_k10",
@@ -3820,8 +3831,23 @@ def _same_id_runtime_upgrade_plan_conn(
             raise RuntimeError(f"same-ID upgrade requires zero running rows: {table}")
     if single_request and action == "prepare":
         for key, cfg in new_configs.items():
-            if _same_id_rows_conn(conn, "t_harness_runs", "scheme_id=:id AND scheme_version=:version AND stage='native-runtime-upgrade'",
-                    {"id": key, "version": cfg.scheme_version}, order="harness_run_id", for_update=for_update):
+            prior = _same_id_rows_conn(conn, "t_harness_runs", "scheme_id=:id AND scheme_version=:version AND stage='native-runtime-upgrade'",
+                    {"id": key, "version": cfg.scheme_version}, order="harness_run_id", for_update=for_update)
+            if not prior:
+                continue
+            allowed = _SAME_ID_W3C_REENTRY.get(key)
+            published = control_plane_evidence.get("candidate_seed_readiness", {}).get(key, {}).get("published_state", {})
+            gates = _same_id_rows_conn(conn, "t_harness_gate_results", "harness_run_id=:run",
+                {"run": prior[0]["harness_run_id"]}, order="id", for_update=for_update)
+            if (single_wave != "W3C" or allowed is None or len(prior) != 1 or len(gates) != 1
+                    or (cfg.scheme_version, prior[0]["harness_run_id"]) != allowed[:2]
+                    or prior[0]["status"] != "passed" or gates[0]["status"] != "passed"
+                    or native_successor_plan_sha256({"run": prior[0], "gate": gates[0]}) != allowed[2]
+                    or published.get("receipt_sha256") != allowed[3] or published.get("verified") is not True
+                    or published.get("scheme_version") != cfg.scheme_version
+                    or published.get("additional_algorithm_executions") != 0
+                    or not any(row["scheme_id"] == key and row["scheme_version"] == cfg.scheme_version
+                               and row["status"] == "retired" for row in versions)):
                 raise RuntimeError("single-Request preparation already attempted; inspect retained evidence")
     evidence = {}
     # 仅完整 W3B 原 ID 批次可收口旧 Native lifecycle 历史；实际 Writer 来自
