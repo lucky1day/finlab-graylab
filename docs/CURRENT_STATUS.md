@@ -45,7 +45,9 @@
   W3A 两个方案已完成同样的原 ID 整组接管；Full 当前输入状态及回滚源状态已验证，
   SDA 标准调用通过，历史事实与其他方案不变。W1B 三个周频方案也已完成原 ID 整批接管，
   原 h6 事实键保留，Metadata h1 仅用于执行，标准调用、回滚预检、Backend 和 timer 读回通过。
-  下一批为 W1A；W3C/W3D、Mac3 晋级、
+  W1A 的 T1/T5 两个 base、六个 target 也已完成原 ID 整组接管；各 target 标准调用一次，
+  全部目标验证后原子切换，历史事实不变，Backend/current、执行准入及日周月 timer 读回通过。
+  ECS 已完成 12/17 个原方案、16/21 个 target；W3C/W3D、Mac3 晋级、
   迁移数据/Native 清理及 confidence DDL 尚未闭环。
   不重复已完成的 W3B 算法、状态准备或切换；精确 release、回执和恢复边界见迁移计划及现场。
 
@@ -100,8 +102,8 @@
   `run_id/backtest_run_id` lineage，删除事实行的 phase 与 `updated_at`。回测发布行保留 immutable
   `backtest_actual_direction`，用于周末等没有 Actual 日期的历史目标；live 行该字段必须为空并继续关联 Actual。
   两端仍使用各自独立数据库，精确主机合同以现场 `current` release、migration history 和 API payload 为准。
-- `api_wind_indicators_all.factor_version` 已在两端源表完成存量 `V1.0` 初始化。ECS 当前已发布五文件
-  generation `full-20260905-063321-21c5c7188fa5`，其中 factor catalog 为 1474 行；精确文件摘要、ready
+- `api_wind_indicators_all.factor_version` 已在两端源表完成存量 `V1.0` 初始化。ECS 本次接管验证使用五文件
+  generation `full-20260912-063338-cefd054bbccf`；精确文件摘要、catalog、ready
   receipt 与 current/previous 兼容性仍必须从 ECS 现场权威读回。Mac3 的 current generation 不从 ECS 状态
   推断，生产操作前独立核验。
 - Mac3 production 与 ECS gray 的 installed plist/unit、服务状态、数据库写入、激活、补数和 DDL 都是

@@ -396,7 +396,30 @@ W1B 三个周频方案已完成 ECS 原 ID 接管与发布验收：
   cutover SHA-256 `480ad62682e4fc85c937850e43b00397913b8efbad7c4a7eb2dcfb5a392e8a4e`；
   标准准入 SHA-256 `72202602b3267438448fa0f3e3349ddcddd7a39cdc94e2edd171d1d8d207857b`。
 
-下一步是 W1A 同 ID 接管、W3C/W3D 缺失验证；结果保全、双机晋级与最终清理仍未完成。
+W1A 两个 base、六个 target 已完成 ECS 原 ID 接管与发布验收：
+
+- 本批完成时 current 为 `812e8dd53aed2d81bfe5154946325c2c9dd3d164`，previous 为 W1B `0ba331f…`。
+  两次 clean commit 构建字节一致，archive SHA-256 `f908e48f7e85aa81081657c78d0c0af8b6a766d529ec529b8cb3a77c628f2e3d`。
+- T1 两个 target 标准调用共 7.032 秒，T5 四个 target 共 10.878 秒，每个 target 只执行一次。
+  旧 T1 各 337 条、T5 各 333 条同输入等价证据复用；新调用绑定当日五文件 generation，未重跑回测或写预测。
+  初次准备在写 plan 回执前遇到 datetime JSON 序列化失败，未创建 Gate、启动算法或改 DB；
+  修复为已有 canonical plan 序列化后才重新准备，失败原件保留。
+- 原 `t1_daily` exact `989db4dd0bfa`、`t5_daily` exact `cc81e9338231` 在一个事务中接管六个原 Registry target；
+  六个临时身份 archived 并从 ECS 部署矩阵排除。整个 base 摘要覆盖所有目标交付，仍每 base 一个调度任务。
+- 25,707 条预测、5,685 条 run、108 条 backtest 及全部原子表/审计摘要不变，Actuals 不变；
+  其他 82 个 Dashboard 方案内容完全不变。临时身份独有事实尚未补入或删除。
+- 反向只读 preflight、原 ID 标准执行准入、临时身份拒绝、Backend cwd/health 均通过；
+  日频 timer 恢复，日/周/月下次触发分别 09-14 07:03、09-19 11:30、09-12 18:00。Mac3 未操作。
+- 全量回归 1231 passed、42 skipped、243 subtests passed；另行 W1A/W1B 控制及真实隔离 MySQL 组合
+  65 passed（不把整组都标为 MySQL）。独立审查无 Critical/Important；develop 已推送核对，master 未修改。
+- 原件：ECS `incoming/w1a-canonical-plan-20260912.pKFGPN/`，本地 `outputs/w1a-writer-reclaim-20260912/ecs-evidence/`。
+  prepare SHA-256 `3817cc1112dc38cbf8c37984068cee9965d86702f5a644221542139baef3b229`；
+  cutover SHA-256 `f7c709d2acd661a9f08a382ba97b12e4e13c16b7ab7914c9167f40bd045138dc`；
+  标准准入 SHA-256 `d39ccfdbcbe5615dfd83e575b267f47067eb73b62242fc4b3d6ae5eb928b3ebe`。
+
+ECS 原 ID 接管现为 12/17 个方案、16/21 个 target。下一步是 W3C/W3D 缺失验证及 W3A 等临时身份独有结果保全；
+双机晋级、W4 和最终清理仍未完成。W3C/W3D 优先核实既有 Native 数值产物和真实依赖，不能因缓存的
+`unqualified` 标签直接丢弃可核实结果，也不能不补证明就将其发布为合格 Blackbox 状态。
 
 ### 已批准的迁移期附件共存与历史修订边界
 
