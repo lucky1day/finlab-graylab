@@ -31,7 +31,8 @@ def prepared_inputs(tmp_path, monkeypatch):
                               "2026-09-10", "202635", "202609")
     result = BlackboxResult(request.request_id, request.predict_date, request.feature_date, request.target_date, 1)
     sources = {key: (source_cfg[key], {"request": request, "result": result,
-                "source_envelope_sha256": "a" * 64, "expected_algorithm_identity": {"kind": "verified"}})
+                "source_envelope_sha256": "a" * 64, "expected_algorithm_identity": {"kind": "verified"},
+                "revision": {"request": request, "proof": {"verified": True}}})
                for key in ids}
     snapshot = SimpleNamespace(generation_id="generation", snapshot_id="snapshot")
     current = tmp_path / "current"
@@ -64,10 +65,10 @@ def prepared_inputs(tmp_path, monkeypatch):
     monkeypatch.setattr(prepare, "compose_blackbox_input_bundle", lambda *_a, **_k: object())
     monkeypatch.setattr(prepare, "open_blackbox_runtime_view", runtime_view)
     admission = MagicMock(side_effect=lambda **kw: {"scheme_id": kw["candidate_config"].scheme_id,
-                          "source_envelope_sha256": kw["expected_source_envelope_sha256"], "algorithm_executions": 1})
+                          "algorithm_executions": 0})
     start = MagicMock(return_value=True)
     complete = MagicMock(return_value=True)
-    monkeypatch.setattr(prepare, "admit_reviewed_w3b_state", admission)
+    monkeypatch.setattr(prepare, "admit_reviewed_w3b_revision", admission)
     monkeypatch.setattr(prepare, "persist_harness_run_start", start)
     monkeypatch.setattr(prepare, "persist_harness_run_complete", complete)
     kwargs = dict(project_root=ROOT, reference_project_root=ROOT, expected_database_name="test",
@@ -77,13 +78,14 @@ def prepared_inputs(tmp_path, monkeypatch):
                            start=start, complete=complete, locks=locks, view=view, current=current)
 
 
-def test_prepare_one_call_each_retains_true_receipts_and_gate_hashes(prepared_inputs):
+def test_prepare_reuses_calls_retains_true_receipts_and_gate_hashes(prepared_inputs):
     env = prepared_inputs
     result = prepare.execute_w3b_prepare(None, **env.kwargs)
     ids = prepare.control.W3B_IDS
     assert set(result["harness_run_ids"]) == set(ids)
     assert len(set(result["harness_run_ids"].values())) == 3
-    assert result["algorithm_executions"] == env.admission.call_count == 3
+    assert result["algorithm_executions"] == 0
+    assert env.admission.call_count == 3
     assert not result["prediction_written"] and not result["registry_changed"]
     ordered = sorted((*ids, *(key + "_bbv2" for key in ids)))
     assert env.locks == [("acquire", key) for key in ordered] + [("release", key) for key in reversed(ordered)]
@@ -100,9 +102,12 @@ def test_prepare_one_call_each_retains_true_receipts_and_gate_hashes(prepared_in
         assert proof["new_identity"]["runtime_type"] == "blackbox_v2"
         assert proof["generation_id"] == "generation"
     for call in env.admission.call_args_list:
-        request = call.kwargs["request"]
-        assert request.feature_date == request.daily_cutoff_key == "2026-09-10"
-        assert request.request_id == call.kwargs["expected_result"].request_id
+        assert call.kwargs["expected_revision_proof"] == {"verified": True}
+    for call in env.start.call_args_list:
+        assert call.args[0].predict_date == "2026-09-11"
+    for key in ids:
+        started = json.loads((env.kwargs["work_dir"] / f"{key}.started.json").read_text())
+        assert started["request"]["request_id"] == "source-id"
     assert json.loads((env.kwargs["work_dir"] / "complete.json").read_text()) == result
 
 

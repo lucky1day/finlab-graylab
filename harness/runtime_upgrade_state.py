@@ -13,7 +13,9 @@ from harness.blackbox_v2.gates import validate_canonical_blackbox_delivery
 from harness.runtime_upgrade_evidence import (
     rebind_reviewed_w3b_state_metadata,
     verify_identity_only_delivery_change,
+    verify_reviewed_w3b_delivery_change,
 )
+from harness.w3b_revision_evidence import load_reviewed_w3b_revision
 from scheduler.blackbox_state import (
     MAX_STATE_BYTES, _MAX_ENVELOPE_BYTES, _decode, read_regular_bytes,
 )
@@ -26,6 +28,95 @@ from shared.blackbox_v2.contracts import (
     BlackboxRequest, BlackboxResult, load_prediction_result,
 )
 from shared.blackbox_v2.requests import write_request
+
+
+def admit_reviewed_w3b_revision(
+    *, project_root: Path, source_config: SchemeConfig, candidate_config: SchemeConfig,
+    data_dir: Path, data_snapshot_id: str, generation_id: str,
+    expected_revision_proof: Mapping[str, object], work_dir: Path, approved_by: str,
+) -> dict[str, object]:
+    """原样发布已独立核验的本机修订状态，不重跑算法或改写历史结果。"""
+    if not isinstance(approved_by, str) or not approved_by.strip():
+        raise ValueError("state admission requires an explicit operator")
+    reviewed = load_reviewed_w3b_revision(candidate_config)
+    if reviewed["proof"] != expected_revision_proof:
+        raise ValueError("reviewed revision changed after preflight")
+    profile = replace(DEFAULT_RUNTIME_PROFILE, cpu_threads=8,
+                      memory_limit_bytes=4 * 1024**3, predict_timeout_sec=120)
+    source_metadata = validate_canonical_blackbox_delivery(source_config)
+    candidate_metadata = validate_canonical_blackbox_delivery(candidate_config)
+    conversion = verify_reviewed_w3b_delivery_change(
+        project_root=project_root,
+        source_script=source_config.delivery_script.read_bytes(),
+        source_metadata=source_config.delivery_metadata.read_bytes(),
+        candidate_script=candidate_config.delivery_script.read_bytes(),
+        candidate_metadata=candidate_config.delivery_metadata.read_bytes(),
+    )
+    source_binding = state_binding_for_scheme(source_config, generation_id=generation_id, persistent=True)
+    candidate_binding = state_binding_for_scheme(candidate_config, generation_id=generation_id,
+                                                 persistent=True, rebuild=True)
+    if (source_binding is None or candidate_binding is None
+            or source_binding.root != candidate_binding.root
+            or candidate_binding.scheme_id + "_bbv2" != source_binding.scheme_id
+            or source_config.factor_input_mode != "algorithm_managed"
+            or candidate_config.factor_input_mode != "algorithm_managed"):
+        raise ValueError("revision admission requires local original-ID five-file bindings")
+    work_dir = Path(work_dir)
+    if not work_dir.is_absolute() or work_dir != work_dir.resolve(strict=False):
+        raise ValueError("state admission work directory must be absolute and symlink-free")
+    work_dir.mkdir(mode=0o700)
+    source_work, candidate_work = work_dir / "source", work_dir / "candidate"
+    source_work.mkdir(mode=0o700)
+    candidate_work.mkdir(mode=0o700)
+    source_path = source_binding.root / source_binding.scheme_id / f"{source_binding.scheme_version}.state"
+    candidate_path = candidate_binding.root / candidate_binding.scheme_id / f"{candidate_binding.scheme_version}.state"
+    with (
+        _state_session(candidate_binding, candidate_work, candidate_metadata,
+                       candidate_config.delivery_script, data_dir, data_snapshot_id, profile) as candidate,
+        _state_session(source_binding, source_work, source_metadata,
+                       source_config.delivery_script, data_dir, data_snapshot_id, profile) as source,
+    ):
+        if os.path.lexists(candidate_path):
+            raise ValueError("candidate state already exists; inspect it instead of rebuilding")
+        original = read_regular_bytes(source_path, _MAX_ENVELOPE_BYTES)
+        header, _ = _decode(original)
+        if (hashlib.sha256(original).hexdigest() != reviewed["source_envelope_sha256"]
+                or header["identity"] != source.identity
+                or header["input"] != reviewed["source_input"]):
+            raise ValueError("reviewed revision source envelope or local runtime differs")
+        if (source.identity["runtime_sha256"] != candidate.identity["runtime_sha256"]
+                or source.input_identity != candidate.input_identity
+                or candidate.input_identity["files"] != reviewed["execution_files"]):
+            raise ValueError("reviewed revision requires the same local runtime and execution files")
+        candidate.output_path.parent.mkdir(mode=0o700)
+        with candidate.output_path.open("xb") as output:
+            output.write(reviewed["state_payload"])
+        for session, metadata, config in (
+            (source, source_metadata, source_config), (candidate, candidate_metadata, candidate_config),
+        ):
+            _verify_state_execution(session, metadata, config.delivery_script,
+                                    data_dir, data_snapshot_id, profile)
+        if read_regular_bytes(source_path, _MAX_ENVELOPE_BYTES) != original:
+            raise ValueError("source state changed during revision admission")
+        audit = candidate.publish()
+        published = read_regular_bytes(candidate_path, _MAX_ENVELOPE_BYTES)
+        published_header, published_payload = _decode(published)
+        if (hashlib.sha256(published).hexdigest() != audit["state_envelope_sha256"]
+                or published_header["identity"] != candidate.identity
+                or published_header["input"] != candidate.input_identity
+                or published_payload != reviewed["state_payload"]):
+            raise ValueError("published revision state read-back mismatch")
+        return {
+            "schema_version": "w3b-original-id-revision-admission-v1",
+            "approved_by": approved_by.strip(), "scheme_id": candidate_binding.scheme_id,
+            "scheme_version": candidate_binding.scheme_version,
+            "source_scheme_version": source_binding.scheme_version,
+            "source_envelope_sha256": reviewed["source_envelope_sha256"],
+            "identity_conversion": conversion, "reused_standard_execution": reviewed["proof"],
+            "request": asdict(reviewed["request"]), "result": asdict(reviewed["result"]),
+            "identity": candidate.identity, "input": candidate.input_identity, "state": audit,
+            "algorithm_executions": 0, "prediction_written": False, "registry_changed": False,
+        }
 
 
 def admit_reviewed_w3b_state(

@@ -27,7 +27,7 @@ from harness.native_successor_migration import (
     _source_tree_sha256,
     load_native_successor_waves,
 )
-from harness.runtime_upgrade_evidence import verify_identity_only_delivery_change
+from harness.runtime_upgrade_evidence import verify_reviewed_w3b_delivery_change
 from scheduler.discovery import load_scheme_config
 from scheduler.repository import (
     apply_same_id_runtime_upgrade,
@@ -100,7 +100,7 @@ def _verified_install(root: Path) -> dict[str, object]:
 
 
 def _verified_pair(project_root: Path, reference_project_root: Path):
-    """同时校验旧 Native、批准交付与原 ID Blackbox 候选，只允许 Metadata ID 变化。"""
+    """同时校验原 Native、交付身份及 W3B 精确周频修订补丁。"""
     root, reference = project_root.resolve(strict=True), reference_project_root.resolve(strict=True)
     candidate_install, reference_install = _verified_install(root), _verified_install(reference)
     if root == reference:
@@ -128,7 +128,7 @@ def _verified_pair(project_root: Path, reference_project_root: Path):
             raise RuntimeError("W3B requires genuine incremental Blackbox deliveries")
         if source.code_hash != approved["code_sha256"] or source.manifest_hash != approved["metadata_sha256"]:
             raise RuntimeError("reference Blackbox differs from reviewed W3B delivery")
-        conversions[scheme_id] = verify_identity_only_delivery_change(
+        conversions[scheme_id] = verify_reviewed_w3b_delivery_change(
             project_root=root, source_script=source.delivery_script.read_bytes(),
             source_metadata=source.delivery_metadata.read_bytes(),
             candidate_script=new.delivery_script.read_bytes(),
@@ -173,10 +173,10 @@ def _assert_no_algorithm_process() -> None:
 def _assert_execution_modules(root: Path) -> None:
     """禁止工作树控制层借用已安装候选的 manifest 执行未发布代码。"""
     from scheduler import repository, blackbox_v2_runner, blackbox_state
-    from harness import runtime_upgrade_evidence, native_successor_migration, runtime_upgrade_state, w3b_state_source
+    from harness import runtime_upgrade_evidence, native_successor_migration, runtime_upgrade_state, w3b_state_source, w3b_revision_evidence
     for module in (repository, blackbox_v2_runner, blackbox_state,
                    runtime_upgrade_evidence, native_successor_migration,
-                   runtime_upgrade_state, w3b_state_source):
+                   runtime_upgrade_state, w3b_state_source, w3b_revision_evidence):
         if root not in Path(module.__file__).resolve(strict=True).parents:
             raise RuntimeError("migration modules must all originate in the candidate release")
 

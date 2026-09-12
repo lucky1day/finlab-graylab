@@ -168,3 +168,107 @@ def test_admission_failure_never_publishes_or_modifies_source(prepared, monkeypa
     assert not prepared["destination"].exists()
     assert prepared["source"].read_bytes() == prepared["original"]
     assert len(prepared["calls"]) <= 1
+
+
+@pytest.fixture
+def revision_prepared(prepared, monkeypatch):
+    """复用真实状态会话，仅替换本测试范围以外的固定证据读取与交付证明。"""
+    original_args = prepared["args"]
+    source_header, payload = _decode(prepared["original"])
+    reviewed = {
+        "state_payload": payload,
+        "request": original_args["request"], "result": original_args["expected_result"],
+        "source_envelope_sha256": original_args["expected_source_envelope_sha256"],
+        "source_input": json.loads(json.dumps(source_header["input"])),
+        "execution_files": dict(source_header["input"]["files"]),
+        "proof": {"schema_version": "isolated-reviewed-revision", "receipt_sha256": "a" * 64},
+    }
+    monkeypatch.setattr(admission, "load_reviewed_w3b_revision", lambda _cfg: reviewed)
+    monkeypatch.setattr(admission, "verify_reviewed_w3b_delivery_change",
+                        lambda **_kwargs: {"schema_version": "isolated-reviewed-delivery"})
+    args = {key: original_args[key] for key in (
+        "project_root", "source_config", "candidate_config", "data_dir",
+        "data_snapshot_id", "generation_id", "work_dir", "approved_by",
+    )}
+    args["expected_revision_proof"] = dict(reviewed["proof"])
+    return prepared | {"args": args, "reviewed": reviewed}
+
+
+def test_revision_admission_publishes_exact_reviewed_payload_without_algorithm(revision_prepared):
+    prepared = revision_prepared
+    receipt = admission.admit_reviewed_w3b_revision(**prepared["args"])
+    envelope = prepared["destination"].read_bytes()
+    header, payload = _decode(envelope)
+    assert payload == prepared["reviewed"]["state_payload"]
+    assert header["identity"] == receipt["identity"]
+    assert header["identity"]["scheme_id"] == BASE
+    assert header["input"] == receipt["input"]
+    assert header["payload_sha256"] == receipt["state"]["state_output_sha256"]
+    assert hashlib.sha256(envelope).hexdigest() == receipt["state"]["state_envelope_sha256"]
+    assert receipt["request"] == asdict(prepared["reviewed"]["request"])
+    assert receipt["result"] == asdict(prepared["reviewed"]["result"])
+    assert receipt["reused_standard_execution"] == prepared["args"]["expected_revision_proof"]
+    assert receipt["algorithm_executions"] == 0
+    assert receipt["prediction_written"] is receipt["registry_changed"] is False
+    assert prepared["calls"] == []
+    assert prepared["source"].read_bytes() == prepared["original"]
+    assert not list(prepared["destination"].parent.glob(".state-*"))
+
+
+@pytest.mark.parametrize("failure", [
+    "execution_files", "actual_input_file", "source_input", "source_envelope", "runtime", "plan_proof",
+])
+def test_revision_admission_drift_never_publishes(revision_prepared, monkeypatch, failure):
+    prepared = revision_prepared
+    reviewed, args = prepared["reviewed"], prepared["args"]
+    if failure == "execution_files":
+        reviewed["execution_files"]["daily_output.csv"] = "0" * 64
+    elif failure == "actual_input_file":
+        (args["data_dir"] / "daily_output.csv").write_text("key,value\n1,2\n")
+    elif failure == "source_input":
+        reviewed["source_input"]["snapshot_id"] = "different-source-snapshot"
+    elif failure == "source_envelope":
+        reviewed["source_envelope_sha256"] = "0" * 64
+    elif failure == "runtime":
+        profile = admission.DEFAULT_RUNTIME_PROFILE
+        monkeypatch.setattr(admission, "DEFAULT_RUNTIME_PROFILE",
+                            replace(profile, name=profile.name + "-runtime-drift"))
+    else:
+        args["expected_revision_proof"]["receipt_sha256"] = "0" * 64
+    with pytest.raises(ValueError):
+        admission.admit_reviewed_w3b_revision(**args)
+    assert not prepared["destination"].exists()
+    assert prepared["source"].read_bytes() == prepared["original"]
+    assert prepared["calls"] == []
+
+
+def test_revision_admission_refuses_existing_candidate(revision_prepared):
+    prepared = revision_prepared
+    admission.admit_reviewed_w3b_revision(**prepared["args"])
+    published = prepared["destination"].read_bytes()
+    prepared["args"]["work_dir"] = prepared["args"]["work_dir"].with_name("second-revision")
+    with pytest.raises(ValueError, match="already exists"):
+        admission.admit_reviewed_w3b_revision(**prepared["args"])
+    assert prepared["destination"].read_bytes() == published
+    assert prepared["source"].read_bytes() == prepared["original"]
+    assert prepared["calls"] == []
+
+
+def test_revision_admission_atomic_replace_failure_leaves_no_candidate(revision_prepared, monkeypatch):
+    from scheduler import blackbox_state
+
+    prepared = revision_prepared
+    original_replace = blackbox_state.os.replace
+
+    def fail_candidate_replace(source, destination, **kwargs):
+        if destination == prepared["destination"].name:
+            raise OSError("isolated atomic publication failure")
+        return original_replace(source, destination, **kwargs)
+
+    monkeypatch.setattr(blackbox_state.os, "replace", fail_candidate_replace)
+    with pytest.raises(OSError, match="atomic publication failure"):
+        admission.admit_reviewed_w3b_revision(**prepared["args"])
+    assert not prepared["destination"].exists()
+    assert not list(prepared["destination"].parent.glob(".state-*"))
+    assert prepared["source"].read_bytes() == prepared["original"]
+    assert prepared["calls"] == []

@@ -23,7 +23,8 @@ from harness.persistence import (
     new_harness_run_id, persist_harness_run_start, persist_harness_run_complete,
 )
 from harness.result import Evidence, GateResult, GateStatus
-from harness.runtime_upgrade_state import admit_reviewed_w3b_state
+from harness.runtime_upgrade_state import admit_reviewed_w3b_revision
+from harness.w3b_revision_evidence import load_reviewed_w3b_revision
 from harness.w3b_state_source import load_reviewed_w3b_state_source
 from scheduler.discovery import load_scheme_config
 from scheduler.process_control import ProcessGroupTerminationError
@@ -145,10 +146,12 @@ def _capture_inputs(engine, *, project_root: Path, reference_project_root: Path,
         key = target.old_base_scheme_id
         cfg = load_scheme_config(reference / "schemes" / target.new_base_scheme_id / "config.yaml")
         source = load_reviewed_w3b_state_source(cfg)
-        if (source["input"]["generation_id"] != inputs["generation_id"]
-                or source["input"]["snapshot_id"] != inputs["data_snapshot_id"]
-                or source["input"]["files"] != inputs["files"]):
-            raise RuntimeError("W3B prepare source and ready input differ; do not relabel evidence or reinitialize")
+        revision = load_reviewed_w3b_revision(new[key])
+        if (source["input"] != revision["source_input"]
+                or source["source_envelope_sha256"] != revision["source_envelope_sha256"]
+                or revision["execution_files"] != inputs["files"]):
+            raise RuntimeError("W3B reviewed revision source or current execution input differs")
+        source = source | {"revision": revision}
         approved = _REVIEWED_W3B_EVIDENCE[key]
         requests, _native, results, lineage = _load_reviewed_w3b_comparison(
             project_root=reference, target=target, new_config=cfg,
@@ -171,7 +174,9 @@ def _capture_inputs(engine, *, project_root: Path, reference_project_root: Path,
             "locale": locale, "database": database, "input": inputs,
             "environment_fingerprint": fingerprint, "equivalence": equivalence,
             "source_states": source_states,
-            "sources": {key: source["source_evidence"] for key, (_, source) in sources.items()},
+            "sources": {key: {"initialization": source["source_evidence"],
+                              "revision": source["revision"]["proof"]}
+                        for key, (_, source) in sources.items()},
             "candidate_versions": {key: cfg.scheme_version for key, cfg in new.items()}}
     return old, new, snapshot, sources, plan
 
@@ -204,7 +209,7 @@ def _gate_proof(old, new, plan: dict, key: str, local_execution_sha256: str) -> 
 def execute_w3b_prepare(engine, *, project_root: Path, reference_project_root: Path,
                         expected_database_name: str, expected_server_uuid: str,
                         expected_plan_sha256: str, approved_by: str, work_dir: Path) -> dict:
-    """锁内重验计划，逐方案一次短调用并记录真实 Gate；不激活或写业务事实。
+    """锁内重验计划，复用已核验短调用并记录真实 Gate；不激活或写业务事实。
 
     若任一步失败，保留已生成的状态与回执并停止；不删除产物或自动重跑。
     状态发布后 Harness 写入失败时必须先核验留下的 admission 原件，再处理
@@ -233,10 +238,7 @@ def execute_w3b_prepare(engine, *, project_root: Path, reference_project_root: P
             try:
                 for key in control.W3B_IDS:
                     cfg, source = sources[key]
-                    original_request = source["request"]
-                    request_id = key + ":" + ":".join((original_request.predict_date, original_request.feature_date, original_request.target_date))
-                    request = replace(original_request, request_id=request_id)
-                    expected_result = replace(source["result"], request_id=request_id)
+                    request = source["revision"]["request"]
                     run_id = new_harness_run_id()
                     started = datetime.now(timezone.utc).isoformat()
                     ctx = GateContext(key, request.predict_date, project_root, config=new[key], engine_factory=lambda: engine)
@@ -245,12 +247,11 @@ def execute_w3b_prepare(engine, *, project_root: Path, reference_project_root: P
                     if not persist_harness_run_start(ctx, harness_run_id=run_id, stage=_STAGE, started_at=started):
                         raise RuntimeError("W3B prepare Harness start failed; no algorithm was started for this scheme")
                     try:
-                        admission = admit_reviewed_w3b_state(
+                        admission = admit_reviewed_w3b_revision(
                             project_root=project_root, source_config=cfg, candidate_config=new[key],
                             data_dir=view.data_dir, data_snapshot_id=view.bundle.combined_snapshot_id,
-                            generation_id=snapshot.generation_id, request=request, expected_result=expected_result,
-                            expected_source_envelope_sha256=source["source_envelope_sha256"],
-                            expected_algorithm_identity=source["expected_algorithm_identity"],
+                            generation_id=snapshot.generation_id,
+                            expected_revision_proof=source["revision"]["proof"],
                             work_dir=work_dir / key, approved_by=approved_by,
                         )
                         local_sha = _write_receipt(work_dir / f"{key}.admission.json", admission)
@@ -283,6 +284,6 @@ def execute_w3b_prepare(engine, *, project_root: Path, reference_project_root: P
                 view.mark_termination_uncertain()
                 raise
         result = {"harness_run_ids": runs, "plan_sha256": expected_plan_sha256,
-                  "algorithm_executions": len(runs), "prediction_written": False, "registry_changed": False}
+                  "algorithm_executions": 0, "prediction_written": False, "registry_changed": False}
         _write_receipt(work_dir / "complete.json", result)
         return result

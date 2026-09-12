@@ -2836,6 +2836,9 @@ def generate_with_private_state(
         }
         if header is not None:
             for name, proof in header["input_prefixes"].items():
+                # 周频修订只影响完整特征；保留标签/日历保护并由下方特征指纹失效后缀。
+                if name == "weekly_df":
+                    continue
                 previous_frame = proof_frames[name]
                 if name == "monthly_df":
                     previous_month = (pd.Timestamp(header["cutoff"]).to_period("M") - 1).strftime("%Y%m")

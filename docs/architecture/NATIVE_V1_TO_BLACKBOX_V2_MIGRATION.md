@@ -178,7 +178,8 @@ W3B 产物索引：
   合入来源加载器后的全量回归为 866 passed、10 skipped、235 subtests passed。
   生产 prepare 仍须从正式候选 immutable release 执行；这次只读来源验收不代替它。
 - W3B `preflight --action prepare` / `prepare` 编排已接通：复用三份可信来源、既有等价
-  证明及 StateSession 接纳函数，每个方案只进行一次同 cutoff 标准调用。成功后通过既有
+  证明及 StateSession 接纳函数。下述周频修订标准调用已完成，当前准备步骤直接复用这些
+  经独立验证的原始状态与五字段结果，不再次调用算法。成功后通过既有
   Harness 持久化真实 `native-runtime-upgrade` Gate，不制造 backtest，不写预测或 Registry。
   六个生命周期锁内重新核对已批准计划；实际 current 必须仍是与 reference exact 身份及
   四文件源码摘要匹配的 Native release，不能提前指向 candidate。准备不停止或恢复 timer。
@@ -195,18 +196,30 @@ W3B 产物索引：
   新五文件均与其 manifest SHA 相符；相对三份 W3B 源状态绑定的上一代，daily、weekly、
   calendar 文件摘要变化，monthly/catalog 不变。三份源 envelope SHA 仍与已保全值一致，
   原 ID 各 411 条事实、最大 target 2026-09-17 未变，无 running run 或迁移进程。
-  已有等价报告和初始化仍绑定原输入，不失效、不重跑；但当前 prepare 的同代输入检查将
-  拒绝把它们直接标成新 generation 的接纳证据。不改旧凭据、不改 SHA，不因此自动初始化
-  或另跑完整回测。候选目录确认边界不变。
+  已有等价报告和初始化仍绑定原输入，不失效、不重跑；旧版 prepare 的同代检查因此拒绝。
+  当前修订接纳分别记录旧等价/初始化输入与新标准调用输入，不改旧凭据、不改 SHA，
+  不因此自动初始化或另跑完整回测。候选目录附件共存已获批准。
 - 对新 generation 的只读依赖定位已完成：在源状态相同的 Python/NumPy/Pandas 及完整
   算法环境身份下，复用已批准脚本的读取、前缀摘要和特征生成逻辑；不调用模型训练、Result
   或状态发布。三个方案的 daily/monthly/calendar 已消费前缀及 catalog 均一致；weekly
   855 行中仅 `202635` 的 `HWW00001/HWW00002/HWW00003/S0114089/Y0110594` 五格由空变有值。
   对三个方案各自 ten_y/seven_y 的 3917 行特征逐行比对，均仅 `2026-09-10` 一行变化；
   每组缓存有 653 条 OOS，特征不变的前段为 652 条，候选受影响后段为最后 1 条。
-  现有算法在特征差异处理之前仍会因 weekly 源前缀变化而拒绝，不能只改平台 generation
-  封装绕过。后续优先验证算法自身的局部修订路径，复用前段、重算受影响后段及最终信号；
-  特征摘要只证明影响定位，尚未证明模型窗口和最终结果等价，不据此宣称已可接纳。
+  原算法在特征差异处理之前因 weekly 源前缀变化而拒绝。现已只移除该 weekly 原始前缀
+  拒绝，保留 daily/monthly/calendar 保护；仍由完整特征指纹决定从最早变化点更新后缀，
+  不通过平台改 generation 绕过算法，不宣称支持任意 daily 历史修订。
+- 三份当前 generation 标准 CLI 验证及原算法独立后缀对照全部通过：Full 19.22 秒、
+  K5 19.23 秒、SAY 20.63 秒；各族前 652 点字节不变，末 1 点的 265 组预测/概率与原算法
+  独立重算逐值一致，最终 Request 和五字段 Result 一致。源生产 envelope、历史事实均未改。
+  证据原件位于 ECS `incoming/w3b-weekly-revision-trial-20260912.sXv2QO`，本机保全副本为
+  `outputs/w3b-weekly-revision-20260912/ecs-evidence/`；成功 execution/verification 及驱动摘要
+  由临时 `harness/w3b_revision_evidence.py` 精确锁定，失败的包装尝试不作为成功凭据。
+  原 ID 候选脚本采用同一已验证补丁；准备阶段校验当前五文件、本机数值环境及源状态未变，
+  原样发布已验证 NPZ 到新 exact version，不再训练、改 Request ID 或制造自然预测记录。
+  此处是算法/状态候选验证完成，不代表 ECS Registry 已切换；接管仍需正式准备、版本事务和读回。
+  集成验收：914 passed、11 skipped、240 subtests passed；真实隔离 MySQL 事务与 Harness
+  接线 5 passed；独立审查无 Critical/Important。当前候选 exact version 为 SAY
+  `f8031c16ec8c`、Full `772b225fd59e`、K5 `74614164d8c1`，取代下节未含周频补丁的早期候选。
 
 ### 已批准的迁移期附件共存与历史修订边界
 
@@ -264,7 +277,7 @@ W3A/W3B 不允许多次独立 activate 冒充原子切换。
 | 步骤 | current / 调度前提 | 专属参数与输出 |
 |---|---|---|
 | `preflight --action prepare` | current 仍为已核验 Native；不 fence、不切 release | 不传 Harness ID；输出准备 plan / SHA，不调用算法、不写状态或 Harness |
-| `prepare` | 同上，在锁内重新读取准备计划 | 传准备 SHA、`--approved-by`、全新绝对 `--work-dir`；每方案一次同 cutoff 调用，成功后输出三个真实 Harness ID |
+| `prepare` | 同上，在锁内重新读取准备计划 | 传准备 SHA、`--approved-by`、全新绝对 `--work-dir`；复用固定成功调用的原始状态/结果，算法执行 0 次，成功后输出三个真实 Harness ID |
 | `preflight --action cutover` | 三份状态/Gate 已就绪；操作者已 fence 并在维护围栏内切到 candidate current | 传三次 `--harness-run-id 原baseID=真实runID`；输出新的切换 plan / SHA |
 | `cutover` | 维持 candidate current 和 Writer 围栏 | 同一组三个 Harness ID、切换 SHA、`--approved-by`；整组版本事务，不自动切文件或恢复 timer |
 | `preflight --action rollback` / `rollback` | 先 fence；仍从 candidate current 读取反向事务计划 | 三个 Harness ID；rollback 另传反向计划 SHA 和 operator；版本恢复后由操作者切回已核验旧 release，再恢复 timer |

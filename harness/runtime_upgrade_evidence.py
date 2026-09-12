@@ -18,6 +18,34 @@ from shared.blackbox_v2.contracts import load_metadata_bytes
 from shared.blackbox_v2.intake import _script_violations
 
 
+def verify_reviewed_w3b_delivery_change(**payloads) -> dict[str, object]:
+    """核实 W3B 仅改身份或已验证的周频修订后缀补丁；不充当数值验收。"""
+    source = payloads["source_script"]
+    candidate = payloads["candidate_script"]
+    if source == candidate:
+        return verify_identity_only_delivery_change(**payloads)
+    metadata = load_metadata_bytes(payloads["candidate_metadata"])
+    approved = _REVIEWED_W3B_EVIDENCE.get(metadata.scheme_id)
+    if approved is None or hashlib.sha256(source).hexdigest() != approved["code_sha256"]:
+        raise ValueError("weekly revision requires the exact reviewed W3B source")
+    before = b'            for name, proof in header["input_prefixes"].items():\n'
+    after = before + (
+        '                # 周频修订只影响完整特征；保留标签/日历保护并由下方特征指纹失效后缀。\n'
+        '                if name == "weekly_df":\n'
+        '                    continue\n'
+    ).encode()
+    if source.count(before) != 1 or candidate != source.replace(before, after):
+        raise ValueError("W3B weekly revision contains unreviewed algorithm changes")
+    # 复用身份/Metadata 白名单校验，再明确记录真正候选脚本摘要及算法改动类型。
+    proof = verify_identity_only_delivery_change(**(payloads | {"candidate_script": source}))
+    return proof | {
+        "schema_version": "w3b-weekly-revision-delivery-conversion-v1",
+        "candidate_code_sha256": hashlib.sha256(candidate).hexdigest(),
+        "permitted_algorithm_change": "weekly_raw_prefix_to_feature_suffix_invalidation",
+        "requires_independent_suffix_evidence": True,
+    }
+
+
 def verify_identity_only_delivery_change(
     *,
     project_root: Path,
