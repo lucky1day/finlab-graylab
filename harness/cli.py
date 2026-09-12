@@ -316,23 +316,27 @@ def _run_native_successor_migration_command(
     if args.wave == "W1A":
         return _run_w1a_migration_command(args)
     project_root = args.project_root.resolve()
+    preserving = args.migration_action == "preserve-live" or (
+        args.migration_action == "preflight" and args.action == "preserve-live"
+    )
     w3a_options = {}
-    if args.wave == "W3A":
+    if args.wave == "W3A" and not preserving:
         if args.rollback_project_root is None:
             raise ValueError("W3A requires explicit rollback-project-root distinct from Native reference")
         w3a_options["rollback_project_root"] = args.rollback_project_root.resolve()
     elif args.rollback_project_root is not None:
         raise ValueError("rollback-project-root is restricted to W3A")
-    preserving = args.migration_action == "preserve-live" or (
-        args.migration_action == "preflight" and args.action == "preserve-live"
-    )
     if preserving:
-        if args.wave != "W2" or getattr(args, "harness_run_id", None) or getattr(args, "predict_date", None):
-            raise ValueError("preserve-live only accepts W2; no synthetic Harness or prediction date")
+        if (args.wave not in {"W2", "W3A"} or getattr(args, "harness_run_id", None)
+                or getattr(args, "predict_date", None) or args.rollback_project_root is not None
+                or (args.wave == "W3A" and args.work_dir is not None)):
+            raise ValueError("preserve-live only accepts fixed W2/W3A; no Harness, prediction date or rollback options")
         engine = create_engine_from_env()
         try:
             kwargs = dict(project_root=project_root, reference_project_root=args.reference_project_root.resolve(),
                           expected_database_name=args.expected_database_name, expected_server_uuid=args.expected_server_uuid)
+            if args.wave == "W3A":
+                kwargs["wave"] = args.wave
             if args.migration_action == "preflight":
                 return build_w2_live_preservation_preflight(engine, **kwargs)
             return execute_w2_live_preservation(engine, **kwargs, expected_plan_sha256=args.expected_plan_sha256,

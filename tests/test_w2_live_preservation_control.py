@@ -132,7 +132,7 @@ def test_cli_uses_only_materialization_route(monkeypatch, action):
     engine.dispose.assert_called_once()
 
 
-@pytest.mark.parametrize('arguments', [_args('preserve-live', 'W3A'), _args('preflight', 'W3B'),
+@pytest.mark.parametrize('arguments', [_args('preserve-live', 'W3A') + ['--rollback-project-root', '/irrelevant'], _args('preflight', 'W3B'),
     _args('preflight') + ['--harness-run-id', 'fake=run'], _args('preflight') + ['--predict-date', '2026-09-11']])
 def test_unsupported_preservation_fails_before_database(monkeypatch, arguments):
     engine = MagicMock(side_effect=AssertionError('must not connect'))

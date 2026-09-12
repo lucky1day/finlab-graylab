@@ -4591,19 +4591,59 @@ def apply_same_id_writer_reclaim(
             "prediction_written": False, "historical_facts_changed": False}
 
 
+_W3A_PRESERVATION = {
+    "liwei_0616_5y01_full_oos_k3_div_k10": {
+        "source_version": "3ee3dd2334fd", "target_version": "be34f35f233b", "backtest_id": 278,
+        "prediction_ids": (39936, 39990, 41613, 41660), "detail_ids": (91144, 91198), "run_ids": (5605, 5652),
+    },
+    "liwei_0616_cons_sda_k3_div_k10": {
+        "source_version": "b5db363bbe17", "target_version": "f8659dab99b2", "backtest_id": 279,
+        "prediction_ids": (40269, 40323, 41614, 41661), "detail_ids": (91477, 91531), "run_ids": (5606, 5653),
+    },
+}
+
+
+def _w3a_preservation_backtest_source(conn, prediction, source, spec, position, *, for_update):
+    """锁内读取固定回测父行与明细；只保留真实共享引用，不复制或改写它们。"""
+    if (prediction.get("run_id") is not None or prediction.get("backtest_run_id") != spec["backtest_id"]
+            or prediction.get("backtest_actual_direction") != (1 if position == 0 else -1)):
+        raise RuntimeError("W3A preservation backtest XOR or Actual differs")
+    parents = _same_id_rows_conn(conn, "t_backtest_runs", "id=:id", {"id": spec["backtest_id"]}, order="id", for_update=for_update)
+    details = _same_id_rows_conn(conn, "t_backtest_predictions", "run_id=:run AND target_tenor='5Y' AND horizon=5 AND target_date=:target",
+        {"run": spec["backtest_id"], "target": prediction["target_date"]}, order="id", for_update=for_update)
+    if len(parents) != 1 or len(details) != 1:
+        raise RuntimeError("W3A preservation source backtest/detail missing or ambiguous")
+    parent, detail = parents[0], details[0]
+    summary = _json_mapping(parent.get("summary"))
+    if (parent.get("scheme_id") != source.scheme_id or parent.get("status") != "success"
+            or parent.get("run_mode") != "persist" or parent.get("code_hash") != source.code_hash
+            or parent.get("config_hash") != source.config_hash
+            or parent.get("data_source") != "blackbox_v2_current_snapshot_as_of"
+            or any(summary.get(field) != getattr(source, field) for field in ("scheme_version", "manifest_hash", "runtime_profile"))
+            or summary.get("row_count") != 333 or not summary.get("generation_id") or not summary.get("data_snapshot_id")
+            or detail.get("id") != spec["detail_ids"][position] or detail.get("scheme_id") != source.scheme_id
+            or detail.get("label") != prediction["backtest_actual_direction"]
+            or any(str(detail.get(field)) != str(prediction.get(field)) for field in
+                   ("predict_date", "feature_date", "target_date", "predicted_direction"))):
+        raise RuntimeError("W3A preservation exact backtest/detail provenance differs")
+    return {"prediction": prediction, "backtest_run": parent, "backtest_prediction": detail}, summary["data_snapshot_id"], summary["generation_id"]
+
+
 def _same_id_live_preservation_plan_conn(
     conn: Connection, *, source_configs: Mapping[str, SchemeConfig], target_configs: Mapping[str, SchemeConfig],
     backup_evidence: Mapping[str, object], control_plane_evidence: Mapping[str, object],
-    expected_database_name: str, expected_server_uuid: str, for_update: bool,
+    expected_database_name: str, expected_server_uuid: str, for_update: bool, wave: str = "W2",
 ) -> dict[str, object]:
     """只读核实固定 W2 四条 alias-only live 来源；不接受调用方提供预测值。"""
-    ids = sorted(_SAME_ID_RECLAIM_WAVES["W2"])
+    if wave not in {"W2", "W3A"}:
+        raise ValueError("preservation supports only fixed W2/W3A scopes")
+    ids = sorted(_SAME_ID_RECLAIM_WAVES[wave])
     if set(source_configs) != set(ids) or set(target_configs) != set(ids):
         raise ValueError("live preservation requires exactly the two W2 original IDs")
     control = deepcopy(control_plane_evidence)
     scheduler = control.get("scheduler", {}) if isinstance(control, Mapping) else {}
     if (not isinstance(control, Mapping) or control.get("schema_version") != "same-id-live-preservation-control-plane-v1"
-            or control.get("wave") != "W2" or control.get("deployment_target") != "aliyun-gray"
+            or control.get("wave") != wave or control.get("deployment_target") != "aliyun-gray"
             or not isinstance(scheduler, Mapping) or scheduler.get("control_plane") != "systemd_one_shot"
             or scheduler.get("timer_fenced") is not True or scheduler.get("unique_writer") is not True
             or control.get("source_canonical_selection") != {key: _same_id_reclaim_identity(source_configs[key]) for key in ids}
@@ -4631,7 +4671,7 @@ def _same_id_live_preservation_plan_conn(
     for table, order in (("t_scheme_runs", "run_id"), ("t_backtest_runs", "id"), ("t_harness_runs", "harness_run_id")):
         running = _same_id_rows_conn(conn, table, f"scheme_id IN ({scope}) AND status='running'", params,
                                      order=order, for_update=for_update)
-        if any(table != "t_harness_runs" or not _is_preserved_w2_historical_compare(conn, row, for_update=for_update) for row in running):
+        if any(wave != "W2" or table != "t_harness_runs" or not _is_preserved_w2_historical_compare(conn, row, for_update=for_update) for row in running):
             raise RuntimeError("live preservation found a running execution")
     conversions, inputs = control.get("identity_conversions"), control.get("source_inputs")
     if not isinstance(conversions, Mapping) or set(conversions) != set(ids) or not isinstance(inputs, Mapping):
@@ -4639,9 +4679,13 @@ def _same_id_live_preservation_plan_conn(
     sources, keys = [], []
     for key in ids:
         source, target = source_configs[key], target_configs[key]
-        tenor = "5Y" if key == "daily_5y_2_v28" else "7Y"
-        if source.scheme_id != key + "_bbv2" or target.scheme_id != key or source.code_hash != target.code_hash:
+        tenor = "5Y" if wave == "W3A" or key == "daily_5y_2_v28" else "7Y"
+        full_revision = wave == "W3A" and key == "liwei_0616_5y01_full_oos_k3_div_k10"
+        if source.scheme_id != key + "_bbv2" or target.scheme_id != key or (not full_revision and source.code_hash != target.code_hash):
             raise ValueError("live preservation source/target code or ID mismatch")
+        if wave == "W3A" and (source.scheme_version != _W3A_PRESERVATION[key]["source_version"]
+                              or target.scheme_version != _W3A_PRESERVATION[key]["target_version"]):
+            raise ValueError("W3A preservation accepted exact versions differ")
         _validate_blackbox_revision_candidate(target, require_evidence=True)
         for cfg, status in ((source, "retired"), (target, "active")):
             if (cfg.runtime_type != "blackbox_v2" or cfg.horizon != 5 or cfg.task_type != "T+5"
@@ -4668,9 +4712,27 @@ def _same_id_live_preservation_plan_conn(
             "source_metadata_sha256": source.manifest_hash, "candidate_metadata_sha256": target.manifest_hash,
             "algorithm_executions": 0,
         }
+        if full_revision:
+            wanted_conversion.update(schema_version="w3a-weekly-revision-delivery-conversion-v1",
+                permitted_algorithm_change="weekly_raw_prefix_to_feature_suffix_invalidation",
+                weekly_length_guard_preserved=True, requires_independent_suffix_evidence=True)
+            revision = control.get("reviewed_revision", {})
+            if ((source.code_hash, target.code_hash, source.manifest_hash, target.manifest_hash) != (
+                    "ad9bdacf5063a427ecc8b70852e045f4822ba9af1b6d8fcd171cd2d779e95103",
+                    "0fa034ca6fcd9ad358895ccd4c6617a43191cffaff1176823f8dd0ad7b8cbc39",
+                    "96d46ee4b2fb16f3b7da0c5485808f52f8f7ef14607721fbe00d26bc55d74982",
+                    "ae7bfee67c9eae88c10b57cb32901c7ad206febfebde5435f5ba3c4346c6da69")
+                    or revision.get("schema_version") != "reviewed-w3a-weekly-revision-source-v1"
+                    or revision.get("scheme_id") != key or revision.get("scheme_version") != target.scheme_version
+                    or revision.get("algorithm_executions") != 0 or revision.get("publication_authorized") is not False
+                    or revision.get("artifacts_sha256", {}).get(
+                        "/opt/bond-factor-lab/incoming/w3a-full-weekly-independent-20260912-938529/complete.json")
+                        != "6c37299e795612bff2d8b76745fe9d2dc981cb38db6e4041403f7a3c8b58f813"):
+                raise ValueError("W3A preservation requires the exact independently reviewed Full revision")
         if not isinstance(conversion, Mapping) or any(conversion.get(field) != value for field, value in wanted_conversion.items()):
             raise ValueError("live preservation identity-only conversion proof differs")
-        for target_date in ("2026-09-16", "2026-09-17"):
+        dates = ("2025-02-14", "2025-05-07", "2026-09-16", "2026-09-17") if wave == "W3A" else ("2026-09-16", "2026-09-17")
+        for position, target_date in enumerate(dates):
             keys.append((key, tenor, 5, target_date))
             predictions = _same_id_rows_conn(conn, "t_scheme_predictions",
                 "scheme_id=:id AND target_tenor=:tenor AND horizon=5 AND target_date=:target",
@@ -4678,6 +4740,30 @@ def _same_id_live_preservation_plan_conn(
             if len(predictions) != 1:
                 raise RuntimeError("live preservation requires one unique source per fixed target")
             prediction = predictions[0]
+            if wave == "W3A" and (prediction.get("id") != _W3A_PRESERVATION[key]["prediction_ids"][position]
+                    or prediction.get("scheme_version") != source.scheme_version
+                    or prediction.get("predicted_direction") != (1 if position < 2 else -1)):
+                raise RuntimeError("W3A preservation fixed source prediction differs")
+            if wave == "W3A" and position < 2:
+                item, snapshot, generation = _w3a_preservation_backtest_source(
+                    conn, prediction, source, _W3A_PRESERVATION[key], position, for_update=for_update)
+                extra = _json_mapping(prediction.get("extra"))
+                request_id = ":".join([source.scheme_id] + [_stored_iso_date(prediction, field)
+                                                          for field in ("predict_date", "feature_date", "target_date")])
+                proof = inputs.get(snapshot, {})
+                filenames = {"daily_output.csv", "weekly_output.csv", "monthly_output.csv", "factor_catalog.csv", "api_wind_date.csv"}
+                if (extra.get("request_id") != request_id or extra.get("data_snapshot_id") != snapshot
+                        or extra.get("generation_id") != generation or "migration_import" in extra
+                        or set(proof) != {"snapshot_id", "generation_id", "manifest_sha256", "files"}
+                        or proof["snapshot_id"] != snapshot or proof["generation_id"] != generation
+                        or set(proof["files"]) != filenames):
+                    raise ValueError("W3A preservation backtest Request/input differs")
+                for digest in [proof["manifest_sha256"], *proof["files"].values()]:
+                    _require_sha256(digest, "historical input SHA-256")
+                sources.append(item)
+                continue
+            if wave == "W3A" and prediction.get("run_id") != _W3A_PRESERVATION[key]["run_ids"][position - 2]:
+                raise RuntimeError("W3A preservation fixed live parent differs")
             if (prediction.get("run_id") is None or prediction.get("backtest_run_id") is not None
                     or prediction.get("backtest_actual_direction") is not None or prediction.get("scheme_version") != source.scheme_version
                     or prediction.get("predicted_direction") not in {-1, 0, 1}):
@@ -4743,7 +4829,7 @@ def _same_id_live_preservation_plan_conn(
 def read_same_id_live_preservation_plan(
     engine: Engine, *, source_configs: Mapping[str, SchemeConfig], target_configs: Mapping[str, SchemeConfig],
     backup_evidence: Mapping[str, object], control_plane_evidence: Mapping[str, object],
-    expected_database_name: str, expected_server_uuid: str,
+    expected_database_name: str, expected_server_uuid: str, wave: str = "W2",
 ) -> dict[str, object]:
     """固定四条 W2 历史结果物化的只读批准计划。"""
     with engine.connect() as conn:
@@ -4753,7 +4839,7 @@ def read_same_id_live_preservation_plan(
         try:
             return _same_id_live_preservation_plan_conn(conn, source_configs=source_configs, target_configs=target_configs,
                 backup_evidence=backup_evidence, control_plane_evidence=control_plane_evidence,
-                expected_database_name=expected_database_name, expected_server_uuid=expected_server_uuid, for_update=False)
+                expected_database_name=expected_database_name, expected_server_uuid=expected_server_uuid, for_update=False, wave=wave)
         finally:
             conn.rollback()
 
@@ -4762,16 +4848,17 @@ def apply_same_id_live_preservation(
     engine: Engine, *, source_configs: Mapping[str, SchemeConfig], target_configs: Mapping[str, SchemeConfig],
     backup_evidence: Mapping[str, object], control_plane_evidence_reader: Callable[[], Mapping[str, object]],
     expected_database_name: str, expected_server_uuid: str, expected_plan_sha256: str,
-    approved_by: str, approved_at: datetime,
+    approved_by: str, approved_at: datetime, wave: str = "W2",
 ) -> dict[str, object]:
     """一次事务新建四条 manual 物化 run 和预测；全部旧事实、版本及 Registry 不变。"""
     operator = _require_nonempty(approved_by, "approved_by")
     _require_sha256(expected_plan_sha256, "expected_plan_sha256")
-    if not isinstance(approved_at, datetime) or set(source_configs) != _SAME_ID_RECLAIM_WAVES["W2"] or set(target_configs) != set(source_configs):
+    if (wave not in {"W2", "W3A"} or not isinstance(approved_at, datetime)
+            or set(source_configs) != _SAME_ID_RECLAIM_WAVES[wave] or set(target_configs) != set(source_configs)):
         raise ValueError("live preservation requires W2 scope and approved_at datetime")
     all_ids = sorted(list(source_configs) + [key + "_bbv2" for key in source_configs])
     kwargs = dict(source_configs=source_configs, target_configs=target_configs, backup_evidence=backup_evidence,
-                  expected_database_name=expected_database_name, expected_server_uuid=expected_server_uuid)
+                  expected_database_name=expected_database_name, expected_server_uuid=expected_server_uuid, wave=wave)
     mappings, new_runs, new_predictions = [], [], []
     inserted_run_rows, inserted_prediction_rows = [], []
     with ExitStack() as locks:
@@ -4785,6 +4872,44 @@ def apply_same_id_live_preservation(
                 raise RuntimeError("live preservation plan changed before commit")
             stamp = _mysql_utc_datetime(approved_at)
             for item in plan["sources"]:
+                if "backtest_run" in item:
+                    source, parent, detail = item["prediction"], item["backtest_run"], item["backtest_prediction"]
+                    key = str(source["scheme_id"]).removesuffix("_bbv2")
+                    snapshot = _json_mapping(parent["summary"])["data_snapshot_id"]
+                    extra = _json_mapping(source.get("extra"))
+                    extra["migration_import"] = {
+                        "schema_version": "same-id-backtest-materialization-v1", "operation": "history-materialization",
+                        "source_scheme_id": source["scheme_id"], "source_scheme_version": source["scheme_version"],
+                        "source_prediction_id": source["id"], "source_run_id": None, "source_backtest_run_id": parent["id"],
+                        "source_backtest_prediction_id": detail["id"], "source_request_id": extra["request_id"],
+                        "source_prediction_sha256": native_successor_plan_sha256(source),
+                        "source_backtest_run_sha256": native_successor_plan_sha256(parent),
+                        "source_backtest_prediction_sha256": native_successor_plan_sha256(detail),
+                        "source_input": control["source_inputs"][snapshot], "shared_source_evidence_retained": True,
+                        "backup_evidence": dict(backup_evidence), "identity_conversion": control["identity_conversions"][key],
+                        "plan_sha256": expected_plan_sha256, "approved_by": operator, "materialized_at": approved_at.isoformat(),
+                        "algorithm_executions": 0,
+                    }
+                    row = {field: source.get(field) for field in ("target_tenor", "horizon", "predict_date", "feature_date",
+                        "target_date", "predicted_direction", "confidence", "model_version", "backtest_run_id", "backtest_actual_direction")}
+                    row.update(scheme_id=key, scheme_version=target_configs[key].scheme_version, run_id=None,
+                               extra=json.dumps(extra, ensure_ascii=False, default=str))
+                    if _insert_run_predictions_conn(conn, [row]) != 1:
+                        raise RuntimeError("W3A preservation backtest product insert failed")
+                    inserted = _same_id_rows_conn(conn, "t_scheme_predictions",
+                        "scheme_id=:id AND target_tenor='5Y' AND horizon=5 AND target_date=:target",
+                        {"id": key, "target": source["target_date"]}, order="id", for_update=True)
+                    if len(inserted) != 1 or any(
+                            (_json_mapping(inserted[0][field]) != json.loads(value) if field == "extra"
+                             else str(inserted[0][field]) != str(value)) for field, value in row.items()):
+                        raise RuntimeError("W3A preservation backtest product readback differs")
+                    actual = inserted[0]
+                    new_predictions.append(actual["id"])
+                    inserted_prediction_rows.append(actual)
+                    mappings.append({"source_prediction_id": source["id"], "source_run_id": None,
+                        "source_backtest_run_id": parent["id"], "source_backtest_prediction_id": detail["id"],
+                        "prediction_id": actual["id"], "run_id": None, "backtest_run_id": parent["id"]})
+                    continue
                 source, source_run = item["prediction"], item["run"]
                 key = str(source["scheme_id"]).removesuffix("_bbv2")
                 cfg = target_configs[key]
@@ -4857,7 +4982,7 @@ def apply_same_id_live_preservation(
             if native_successor_plan_sha256({"control_plane": control_plane_evidence_reader()}) != native_successor_plan_sha256({"control_plane": control}):
                 raise RuntimeError("live preservation control plane changed during transaction")
     return {"schema_version": "same-id-live-preservation-result-v1", "plan_sha256": expected_plan_sha256,
-            "approved_by": operator, "records_written": 4, "manual_runs_created": 4, "algorithm_executions": 0,
+            "approved_by": operator, "records_written": len(new_predictions), "manual_runs_created": len(new_runs), "algorithm_executions": 0,
             "imports": mappings, "source_rows_sha256": plan["source_rows_sha256"], "existing_facts_sha256": plan["existing_facts_sha256"]}
 
 
