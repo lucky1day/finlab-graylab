@@ -370,7 +370,33 @@ W3A 已完成 ECS 原 ID 接管与发布验收：
   cutover SHA-256 `656efb09b749ebb8aa4d39fe378bf9bce2731cb5132711a20414d63fb2cadcef`；
   标准准入 SHA-256 `4ca4412f04eac79eacb84154deecc53de749bdc67d484f9d268adddc306453d4`。
 
-下一步是 W1A/W1B 同 ID 接管、W3C/W3D 缺失验证；W3A 结果保全、双机晋级与最终清理仍未完成。
+W1B 三个周频方案已完成 ECS 原 ID 接管与发布验收：
+
+- 2026-09-12 本批完成时 current 为 `0ba331f76374f27a7434f2d2732a743f7b3c66b1`，previous 为上述 W3A `025f153e…`。
+  clean commit 两次构建字节一致，archive SHA-256 `064bd1a09d08e3eb0eebe01516cb1bcbdcb57123ecf8cf14d133a6172e75a857`。
+- 5Y / 7Y / 10Y 各一次标准调用，分别 0.773 / 0.774 / 40.259 秒；8 线程、4 GiB、120 秒预算。
+  predict/feature/target 为 2026-09-12 / 09-11 / 09-18，方向分别 +1 / -1 / -1。
+  已有各 72 条等价证据按原输入复用；本次调用绑定 generation `full-20260912-063338-cefd054bbccf`，不重跑旧回测。
+- 现场预检发现 Native 旧 weekly target_rule 名称与 Blackbox 标准名称不同；仅对固定 W1B 清单
+  将 `next_week_last_trading_day_vs_current_week_last_trading_day` 映射为
+  `target_week_end_yield_vs_feature_week_end_yield`，任意其他名称和空值仍拒绝。
+  两次失败只读预检与 release 恢复记录保留；最终修复复用原三个成功 Gate，未重复算法或改写历史。
+- 5Y `d910a7819747`、7Y `d5aafe9f839e`、10Y `1598b055715a` 在一个事务内成为原 ID 唯一 active exact；
+  三个临时 ID archived 且被部署矩阵排除。原 Registry h6 身份不变，执行 Metadata 仍为 h1。
+  25,707 条预测、5,685 条 run、108 条 backtest 及全部子表/原审计完整摘要不变，Actuals 不变，
+  其他 85 个 Dashboard 方案内容完全不变。临时身份独有结果尚未补入或删除。
+- 反向只读 preflight 通过；Backend cwd/health 和原/临时身份执行准入验证通过，周频 timer 已恢复，
+  next trigger 为 09-19 11:30；日频 09-14 07:03、月频 09-12 18:00 保持原计划，Mac3 未操作。
+- 最终 clean worktree 回归 1151 passed、76 skipped、243 subtests passed；跳过项不计为通过。
+  另行 loopback 隔离 MySQL 及控制组合 40 passed，含真实整组切换/回滚与失败恢复。
+  独立代码审查无未解决 Critical/Important；develop 远端已核对，master 未修改。
+- 原准备：ECS `incoming/w1b-writer-reclaim-20260912.tM5hte/`；最终操作：
+  `incoming/w1b-exact-rule-20260912.gb4kdt/`；本地 `outputs/w1b-writer-reclaim-20260912/ecs-evidence/`。
+  prepare SHA-256 `79f7858f923b62b05abe24dfd6551bebf6d35e6c0e267a34ac4058de617be12a`；
+  cutover SHA-256 `480ad62682e4fc85c937850e43b00397913b8efbad7c4a7eb2dcfb5a392e8a4e`；
+  标准准入 SHA-256 `72202602b3267438448fa0f3e3349ddcddd7a39cdc94e2edd171d1d8d207857b`。
+
+下一步是 W1A 同 ID 接管、W3C/W3D 缺失验证；结果保全、双机晋级与最终清理仍未完成。
 
 ### 已批准的迁移期附件共存与历史修订边界
 
