@@ -62,7 +62,7 @@ _EXTRA_TABLES = (
     't_scheme_actuals (id INTEGER PRIMARY KEY, actual_direction INTEGER)',
     't_schema_migrations (version INTEGER, state TEXT)',
     't_scheme_runs (run_id INTEGER PRIMARY KEY, scheme_id TEXT, status TEXT)',
-    't_harness_runs (harness_run_id TEXT PRIMARY KEY, scheme_id TEXT, status TEXT)',
+    't_harness_runs (harness_run_id TEXT PRIMARY KEY, scheme_id TEXT, scheme_version TEXT, status TEXT)',
     't_harness_gate_results (id INTEGER PRIMARY KEY, harness_run_id TEXT)',
     't_input_artifacts (artifact_id TEXT PRIMARY KEY, scheme_id TEXT)',
     't_backtest_monthly_metrics (id INTEGER PRIMARY KEY, scheme_id TEXT)',
@@ -131,13 +131,45 @@ def test_rejects_unapproved_scope_or_evidence(promotion, drift):
         _plan(promotion)
 
 
-@pytest.mark.parametrize('table,id_field', [('t_scheme_runs', 'run_id'), ('t_backtest_runs', 'id'), ('t_harness_runs', 'harness_run_id')])
+@pytest.mark.parametrize('table,id_field', [('t_scheme_runs', 'run_id'), ('t_backtest_runs', 'id')])
 def test_running_work_is_not_blanket_exempt(promotion, table, id_field):
     engine, kwargs, _ = promotion
     with engine.begin() as conn:
         conn.execute(text(f"INSERT INTO {table} ({id_field},scheme_id,status) VALUES (1,:id,'running')"), {'id': next(iter(kwargs['old_configs']))})
     with pytest.raises(RuntimeError, match='running work'):
         _plan(promotion)
+
+
+@pytest.mark.parametrize('identity', ['source', 'candidate'])
+@pytest.mark.parametrize('action', ['cutover', 'rollback'])
+def test_running_harness_for_executable_exact_blocks_transition(promotion, identity, action):
+    engine, kwargs, _ = promotion
+    if action == 'rollback':
+        _apply(promotion)
+        kwargs['action'] = action
+    cfg = next(iter(kwargs['old_configs' if identity == 'source' else 'new_configs'].values()))
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO t_harness_runs VALUES ('current-work',:id,:version,'running')"),
+                     {'id': cfg.scheme_id, 'version': cfg.scheme_version})
+    with pytest.raises(RuntimeError, match='running work.*t_harness_runs'):
+        _plan(promotion)
+
+
+def test_historical_harness_running_is_preserved_across_cutover_and_rollback(promotion):
+    engine, kwargs, _ = promotion
+    key = next(iter(kwargs['old_configs']))
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO t_harness_runs VALUES ('old-audit',:id,'historical-active','running')"), {'id': key})
+    before = _plan(promotion)
+    _apply(promotion)
+    kwargs['action'] = 'rollback'
+    assert _plan(promotion)['facts'] == before['facts']
+    _apply(promotion)
+    kwargs['action'] = 'cutover'
+    assert _plan(promotion)['facts'] == before['facts']
+    with engine.connect() as conn:
+        assert tuple(conn.execute(text('SELECT * FROM t_harness_runs')).one()) == (
+            'old-audit', key, 'historical-active', 'running')
 
 
 @pytest.mark.parametrize('failure', ['last_insert', 'late_control', 'stale_plan', 'actuals'])
@@ -219,12 +251,25 @@ def _isolated_mysql(source):
 @pytest.mark.parametrize('failure', [False, True])
 def test_mysql_full_scope_locks_roundtrip_and_late_failure(promotion, monkeypatch, failure):
     source, kwargs, control = promotion
+    # 真实 MySQL 回环同时证明历史 running 审计不阻塞且在事务前后完整保留。
+    historical_key = next(iter(kwargs['old_configs']))
+    with source.begin() as conn:
+        conn.execute(text("INSERT INTO t_harness_runs VALUES ('old-audit',:id,'historical-active','running')"),
+                     {'id': historical_key})
     monkeypatch.undo()  # MySQL 使用真实仓储 INSERT，不使用 SQLite 方言替身。
     with _isolated_mysql(source) as engine:
         with engine.connect() as conn:
             identity = dict(conn.execute(text('SELECT DATABASE() AS database_name, @@server_uuid AS server_uuid')).mappings().one())
         kwargs = kwargs | {'expected_database_name': identity['database_name'], 'expected_server_uuid': identity['server_uuid']}
         fixture = engine, kwargs, control
+        for cfg in (kwargs['old_configs'][historical_key], kwargs['new_configs'][historical_key]):
+            with engine.begin() as conn:
+                conn.execute(text("INSERT INTO t_harness_runs VALUES ('current-work',:id,:version,'running')"),
+                             {'id': cfg.scheme_id, 'version': cfg.scheme_version})
+            with pytest.raises(RuntimeError, match='running work.*t_harness_runs'):
+                _plan(fixture)
+            with engine.begin() as conn:
+                conn.exec_driver_sql("DELETE FROM t_harness_runs WHERE harness_run_id='current-work'")
         before = _plan(fixture)
         names = ['bfl:bbv2-draft:' + hashlib.sha256(key.encode()).hexdigest()[:32] for key in kwargs['old_configs']]
         def reader():

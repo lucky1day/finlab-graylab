@@ -21,9 +21,10 @@
 - 本轮进一步删除旧 Liwei publisher/cache policy、16 个停用临时 canonical、旧迁移 Harness/仓储入口及一次性测试，
   恢复严格无 Native 附件的 Blackbox 合同。W4、有效算法交付与 93 个 canonical exact 摘要均未变化。
   当前完整回归为 668 passed、6 skipped、219 subtests；真实隔离 MySQL 另验证 Mac3 整组事务。
-- Mac3 的七份增量状态正在核验。五份已有本机 Blackbox 私有状态已完成零训练结构/身份准备；
-  W3C 原 cutoff 输入摘要匹配，Full/K5 当前 daily prefix 存在变化；W3A Full/SAY 已零训练认证本机缓存 649 行安全前缀，待标准调用。
-  未通过真实输入与标准调用前不标记生产就绪、不启动全历史重跑。
+- Mac3 的 17 个源码方案、21 个目标已完成一次本机标准调用；七份增量状态已通过当前输入验证并受控发布，
+  尚未获得新版本 Writer。当前 Native Writer 已恢复，历史预测与回测没有改写。
+  切换前发现一条旧版本 Compare 遗留 running 审计；当前版本与候选版本的运行检查仍严格阻断，
+  不可执行旧版本的审计原样保全。修正仅针对本次迁移检查，不重跑已经通过的算法。
 - 当前尚未完成双机最终清洁 release 和 master 同步。具体阶段出口、精确范围与恢复步骤见
   [当前迁移计划](architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md)；不能把本地通过等同于现场部署完成。
 - 两端不建立复制、双写、共享数据库或共享 DataBridge；本轮不搬迁临时身份历史。

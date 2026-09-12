@@ -3678,9 +3678,20 @@ def _mac3_native_promotion_plan_conn(
     registry = _same_id_rows_conn(conn, "t_scheme_registry", "1=1", {}, order="scheme_id", for_update=for_update)
     params = {f"id_{i}": key for i, key in enumerate(ids)}
     scope = "scheme_id IN (" + ",".join(":" + key for key in params) + ")"
-    for table, order in (("t_scheme_runs", "run_id"), ("t_backtest_runs", "id"), ("t_harness_runs", "harness_run_id")):
+    for table, order in (("t_scheme_runs", "run_id"), ("t_backtest_runs", "id")):
         if _same_id_rows_conn(conn, table, scope + " AND status='running'", params, order=order, for_update=for_update):
             raise RuntimeError(f"Mac3 promotion running work blocks transition: {table}")
+    executable_exacts = {
+        (key, cfg.scheme_version)
+        for configs in (old_configs, new_configs) for key, cfg in configs.items()
+    }
+    running_harness = _same_id_rows_conn(
+        conn, "t_harness_runs", scope + " AND status='running'", params,
+        order="harness_run_id", for_update=for_update,
+    )
+    # 历史不可执行 exact 的审计仍由全表 facts 摘要保全，不把它当作当前 Writer。
+    if any((row["scheme_id"], row["scheme_version"]) in executable_exacts for row in running_harness):
+        raise RuntimeError("Mac3 promotion running work blocks transition: t_harness_runs")
     baseline_versions = {(row["scheme_id"], row["scheme_version"]): row for row in baseline_rows["versions"]}
     baseline_registry = {row["scheme_id"]: row for row in baseline_rows["registry"]}
     if (len(baseline_versions) != len(baseline_rows["versions"]) or len(baseline_registry) != len(baseline_rows["registry"])
