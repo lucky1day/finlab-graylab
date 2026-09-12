@@ -6,7 +6,7 @@ import logging
 import math
 import sys
 from collections import Counter
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
