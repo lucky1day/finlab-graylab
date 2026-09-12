@@ -10,6 +10,7 @@ from sqlalchemy import text
 
 from scheduler import repository as repo
 from shared.task_specs import TASK_COMBINATIONS
+from shared.prediction_context import WEEKLY_TARGET_RULE
 from test_same_id_runtime_upgrade import migration, _sqlite_upsert
 
 
@@ -53,7 +54,7 @@ def reclaim_scope(migration_fixture, wave):
                     cfg.schedule.cron = "30 11 * * 6"
                 old.horizon = new.horizon = 6
                 source.horizon = 1
-                old.target_rule = None
+                old.target_rule = WEEKLY_TARGET_RULE
             old_configs[scheme_id], source_configs[scheme_id], new_configs[scheme_id] = old, source, new
             insert(conn, "t_scheme_versions", version | repo._same_id_reclaim_identity(old) | {"status": "retired"})
             insert(conn, "t_scheme_versions", version | {

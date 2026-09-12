@@ -27,7 +27,7 @@ from shared.models import (
     WeeklyActualRecord,
 )
 from shared.one_shot_control_plane import SCHEDULED_ONE_SHOT_CONTROL_PLANES
-from shared.prediction_context import LIVE_PREDICTION_PHASES
+from shared.prediction_context import LIVE_PREDICTION_PHASES, WEEKLY_TARGET_RULE
 from shared.scheme_config_schema import (
     ALLOWED_RUNTIME_TYPES,
     ALLOWED_VERSION_STATUS,
@@ -4143,8 +4143,9 @@ def _same_id_writer_reclaim_plan_conn(
                     or not old.tenors or any(getattr(cfg.schedule, field) != getattr(old.schedule, field)
                                            for field in ("cron", "timezone"))):
                 raise ValueError("same-ID reclaim business dimensions differ")
-            implicit_rule = old.task_type in {"T+1", "T+5"} or (wave == "W1B" and old.task_type == "weekly_point")
-            old_rule = old.target_rule or (TASK_COMBINATIONS[old.task_type][1] if implicit_rule else None)
+            old_rule = old.target_rule or (TASK_COMBINATIONS[old.task_type][1] if old.task_type in {"T+1", "T+5"} else None)
+            if wave == "W1B" and old.task_type == "weekly_point" and old_rule == WEEKLY_TARGET_RULE:
+                old_rule = TASK_COMBINATIONS["weekly_point"][1]
             if cfg.target_rule != old_rule:
                 raise ValueError("same-ID reclaim target_rule differs")
         if wave == "W1B":
