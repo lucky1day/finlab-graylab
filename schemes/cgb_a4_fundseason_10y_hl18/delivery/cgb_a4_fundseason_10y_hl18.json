@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "cgb_a4_fundseason_10y_hl18",
+  "name": "A4_FUNDSEASON_HL18",
+  "owner": "fengrl",
+  "description": "输入日频国债收益率与DR007-OMO资金利差、周频与月频合计391个宏观指标码；按15日业务月桶的观察日as-of取值，做扩展窗口因果z-score后按冻结方向先验与IC权重汇总为8维通道扩散指数、3期动量与季末资金季节项；五期限池化后用趋势状态核乘18个月时间衰减加权拟合Logistic，取10Y行概率≥0.5判上行、否则下行，二分类不出0。",
+  "algorithm_version": "1.1.0",
+  "target_tenor": "10Y",
+  "task_type": "monthly",
+  "horizon": 1,
+  "target_rule": "target_month_observation_yield_vs_feature_month_observation_yield"
+}

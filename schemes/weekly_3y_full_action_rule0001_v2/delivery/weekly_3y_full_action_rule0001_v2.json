@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "weekly_3y_full_action_rule0001_v2",
+  "name": "FULL_ACTION_RULE0001",
+  "owner": "liwei",
+  "description": "输入日频1Y/3Y/5Y/7Y/10Y国债收益率与周频3Y周收盘，按平台周历取每个已收周的最后交易日构建端点序列，并生成期限利差、动量、波动与z分数特征；单成员规则模型在208周滚动窗口内对5Y-3Y利差做中位数-标准差标准化，按训练段相关性定向后经sigmoid映射为概率，概率≥0.5判上行、否则下行，二分类不出0。",
+  "algorithm_version": "2.0.0",
+  "target_tenor": "3Y",
+  "task_type": "weekly_point",
+  "horizon": 1,
+  "target_rule": "target_week_end_yield_vs_feature_week_end_yield"
+}

@@ -5,6 +5,11 @@
     "aliyun-gray"
   ],
   "schemes": {
+    "cgb_a4_fundseason_10y_hl18": ["mac3-production", "aliyun-gray"],
+    "cgb_a4_fundseason_3y_hl18": ["mac3-production", "aliyun-gray"],
+    "cgb_a4_fundseason_5y_hl18": ["mac3-production", "aliyun-gray"],
+    "weekly_10y_full_action_hgb0061_v2": ["mac3-production", "aliyun-gray"],
+    "weekly_3y_full_action_rule0001_v2": ["mac3-production", "aliyun-gray"],
     "cgb_a4_fundseason_10y": ["mac3-production", "aliyun-gray"],
     "cgb_a4_fundseason_1y": ["mac3-production", "aliyun-gray"],
     "cgb_a4_fundseason_3y": ["mac3-production", "aliyun-gray"],
