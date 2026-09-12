@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验日期**：2026-09-06
+**最后核验日期**：2026-09-12（Native 迁移队列；其他队列仍需各自现场核验）
 
 本文只保留尚未发生的后续事项。当前稳定事实见[当前状态](CURRENT_STATUS.md)，生产规则见
 [生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。已完成事项通过 Git、Harness、数据库
@@ -31,45 +31,20 @@
 
 ## Native V1 全量迁移
 
-26 个 Native base / 30 个业务 target 已进入按 wave 迁移到全新 Blackbox V2 successor 的执行阶段，权威身份
-映射、批次顺序、验收、回滚、停止条件和清理边界见
-[Native V1 全量迁移至 Blackbox V2](architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md)。首夜本地候选已完成
-原子迁移工具、日频 `T+1` gray target 区间能力及 6 个 T1/T5、3 个 weekly point successor。
+按 2026-09-12 批准的[双机迁移计划](architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md)，
+保留 26 个原方案 ID、30 个业务 target，只切执行版本；不再新建 successor 身份或重复回测。
+ECS 先完成 17 个源码方案，随后同一 immutable archive 晋级 Mac3，并继续 Mac-only W4 九个 binary bundle。
+不改变域名、DNS、Nginx 或隧道。已完成批次及精确证据只读迁移计划和现场，不重做。
 
-2026-09-08 最新授权覆盖此前推进顺序：本阶段仅 ECS，Mac3 的 current/previous、数据库、launchd、对外
-域名及流量不变；不自动晋级 Mac3，W4 九个 binary bundle 暂停，恢复须另获授权。
-
-1. W3A 两组原始等价已受控复用并在 ECS 与真实正式事实关联验证：full-OOS 等价输入为 09-05，cons-sda 为
-   09-08，两者正式回测均为 09-08。将工具生成的 canonical receipt 随切换候选发布，不重复计算。
-   原始证据至少保留到 receipt 与切换验收闭环；不重跑已通过算法，不恢复重复/倒序/乱序/子集矩阵。
-2. 算法等价与正式入库各自绑定其输入。保留同代码、环境、完整日期覆盖及各自内部一致性；补齐 W3A 受控
-   凭据的版本绑定，不手写成功 receipt。正式回测、单 Writer、原子 cutover/rollback、旧事实不变仍是必要边界。
-3. full-OOS 首次1800秒预热失败记录保留；用户批准的7200秒预算初始化已于2026-09-08 16:10成功完成，
-   耗时38分17秒，16:23只读验收确认状态完整性、版本/环境/五文件输入身份、锁释放与进程清理通过。
-   current及旧Writer不变，新Registry/run/live facts为0，未写预测，Backend/timer正常；跟进已暂停。
-   已有算法/正式回测不重跑，cons-sda保持stateless。日志/hash与精确archive身份见迁移计划顶部。
-   用户随后要求立即模拟并切换：当天候选predict模拟full-OOS 7.849秒、cons-sda 62.071秒，均通过120秒边界。
-   8eb2已成为ECS current，previous3162；真实preflight及W3A原子cutover已成功，两新Registry active、旧archived，
-   各333条历史facts已发布，旧完整事实、Actual与其他active集合读回不变。
-   两方案gray已于17:59全部完成、各74条，18:08独立验收通过，daily.timer已恢复、next为09-09 07:03。
-   真实installed daily于18:32:42失败：full-OOS在state精确身份校验处拒绝、写0；cons-sda成功写1；其他45 skipped。
-   18:39已完成整W3A原子rollback、标准installer恢复3162及daily.timer，next09-09 07:03。
-   旧完整事实、其他active/预测及Actual不变，新407/408条事实全部保留；旧Writer回滚后实际调用仍pending。
-   只读复算发现SSH初始化/模拟有LC_ALL=C.UTF-8而installed日频没有，只有runtime身份摘要因此不同；
-   先明确统一locale的最小变更及其他Blackbox影响，再受控验证和重新切换。不得跳过身份校验、改state header、
-   自动初始化或重跑正式回测。09-09用户继续授权后，01:53启动一次受控环境对齐初始化：仅维护进程移除
-   SSH的LC_ALL，使用真实installed日频环境，保留旧状态证据，原current/Registry/timer不动。
-   本次CLI已于02:32成功完成，02:47同环境正常增量8.910秒通过、日期方向与原模拟一致，状态payload及
-   全业务表摘要不变；进程/锁已清理。不重复初始化或09-08模拟。09-09 ready已发布，旧07:03任务于07:50
-   全47success退出并完成DB关联验收，旧Writer恢复已确认。当天full增量11.592秒、cons63.542秒，日期/方向
-   与当天旧Native一致，无业务写入。已标准激活8eb2并原子re-cutover，08:02独立读回成功；278/279和74条gray
-   全部复用。唯一full缺少的09-14键已于08:42成功补齐并独立验收，旧事实/生产state不变，私有进程/目录清理。
-   08:30 Actuals原调度成功。08:56:27恢复timer后的唯一installed daily验收已于09:20:38退出0：W3A两条success，
-   其他45 skipped，无failed/blocked/denied；最终DB/旧事实/Actual/Registry/state/控制面读回通过，W3A ECS本批闭环。
-   不重复W3A算法或同日调用；立即转入后续W2执行准备，Mac3晋级不在当前范围。
-   详细证据、清理截止和后续边界见迁移计划顶部。Mac3不变。
-4. 随后完成 W2 与 W3B-D 的必要算法改造、完整同输入旧新回测对照及受控 ECS 替换。
-5. 不以本阶段 ECS 完成宣布全局 Native 退役；Mac3 仍依赖的旧路径不得提前删除，confidence DDL 仍须独立授权。
+1. W3A 先完成 Full 周频历史修订的单点内部状态重算、独立末行等价与可恢复状态接纳，再整组原 ID 接管。
+   原 652 点前缀可复用；不重做初始化，不因源数据修订覆盖已发布预测。SDA 复用已有等价证据。
+2. W2 已原 ID 接管，四条临时身份独有结果按核实的原业务键 insert-only 补入；W3A 独有结果同理。
+   先备份、恢复验证和保全来源，后精确清理临时身份，不删除共享对象或修改原历史。
+3. W1A/W1B 完成多 target 组合与周频事实 horizon 投影后回到原 ID；W3C/W3D 只补尚缺的数值和性能证据。
+4. ECS 全部源码方案验证后晋级 Mac3。W4 先证明加密 payload 的五文件输入边界，再模拟验证和接管，
+   不把旧 adapter 包装成 Blackbox，不恢复源数据库输入。
+5. 双机接管后清理 Native 执行路径和临时工具，发布数据库兼容回滚边界，再分别请求两端 confidence DDL 确认。
+   推送 `codex/develop`、更新到 `master` 的 PR；不合并或推送 `master`。
 
 ## 统一停止条件
 

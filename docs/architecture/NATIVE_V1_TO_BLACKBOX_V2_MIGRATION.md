@@ -270,9 +270,30 @@ active/Blackbox；原 canonical exact 已 retired，另有 14 条 Native 历史 
 | `liwei_0616_cons_sda_k3_div_k10` | 409 / 411 | 4 | `f8659dab99b2` |
 | `liwei_0616_5y01_full_oos_k3_div_k10` | 409 / 411 | 4 | `0a65f61a7acd` |
 
-四份候选脚本与现有 Blackbox 原字节相同，Metadata 仅改 ID，Native 附件精确绑定；尚未生产接管。
-W2 两份与 SDA 无状态，Full 有四数组增量状态。W2 部署候选切回原 ID，W3A 仍保持临时 ID 的
+四份初始候选脚本与现有 Blackbox 原字节相同，Metadata 仅改 ID，Native 附件精确绑定。
+W2 两份与 SDA 无状态，Full 有四数组增量状态。W2 已完成 ECS 原 ID 接管，W3A 仍保持临时 ID 的
 ECS 部署矩阵，待状态与证据完成后才调整。Mac3 的 current、launchd 和数据库未改动。
+
+W2 本轮实际发布 `9385292514bdd2491c13bf7b24ba0a97e1d02e60`，archive SHA-256
+`a4e52b82b6ff028c6674af5357f087c5f5624b7fe9c7c17701417dae645047bc`；previous 为已验证 W3B
+release `3a805922667de41340942edce9941c7f902bb8fb`。两份既有 333 条零差异报告保留自己的
+09-09 输入身份；新准备仅各执行一次已到期 09-11 Request，绑定当前 09-12 五文件 generation，
+耗时分别 13.418 / 11.596 秒，未写预测或状态。新的真实 Harness 凭据通过原子仓储切换，
+两个原 ID 各唯一 active Blackbox exact；临时 ID archived 且移出 ECS 发现范围。
+八条旧 Native 历史 active 版本标记已退役，原 paused 不动；六月遗留 compare 的 running
+审计原件按精确全行摘要只读识别，真实 PID 为零，未将其改成成功或修写历史。
+
+切换后全库 25,682 条预测、5,660 条 run、108 个 backtest 及其子表、全部原 Harness 记录、
+Actuals 完整摘要不变，其他 86 个 Dashboard 方案内容不变。标准发现和只读准入确认原 ID 可执行、
+临时 ID 不可执行，新版本 code/config/manifest/environment 与批准计划逐字段一致。
+Backend 实际 cwd 指向新 release，health 正常；日频 timer 已恢复，周/月 timer 未更改。
+反向 preflight 通过，恢复目标为原先两个临时 Blackbox Writer，不复活 Native 历史 active 标记。
+全量回归 1002 passed、26 skipped、243 subtests passed；真实隔离 MySQL 20 passed，独立审查无阻断问题。
+原件保存在 ECS `incoming/w2-writer-reclaim-ready-20260912.Rzepm0` 及本地
+`outputs/w2-writer-reclaim-20260912/ecs-evidence/`；切换回执 SHA-256
+`6d88e771c5bfd2ee11ae3c562866e4a50a51f130ede27399035393106ea8089c`，标准准入回执 SHA-256
+`74be899dba6cc1dc1cc521a0d0fcfdbcd9b4127dc36beea4372b2845d63a876f`。
+这是 W2 执行接管完成，不是数据清理或双机全局闭环；临时 ID 的四条独有事实仍待补入原 ID。
 
 12 条独有结果为 8 条已到期 live 和 4 条历史 backtest 来源；来源均有本机成功执行原件，
 后续按原业务键只补缺。W3A 原 ID 的两个独有日期亦必须保留。重合方向不同只属于跨输入版本
@@ -282,7 +303,11 @@ ECS 部署矩阵，待状态与证据完成后才调整。Mac3 的 current、lau
 Full 的旧状态 `full-oos-a2-private-4` 已独立核验：旧输入重现全部 3917 条特征指纹；当前
 weekly 修订只改变 2026-09-10 最后一行，前 652 条 OOS、标签、日/月/日历依赖及固定 IC
 选择全部不变。应复用前缀，只重算最后一点的内部 265 个 grid 结果；不能直接复用变化后的
-末行，也不需要全量初始化。此次只是特征依赖分析，尚未执行末行预测、状态转换或发布。
+末行，也不需要全量初始化。随后一次私有标准调用已通过，耗时 8.288 秒、方向 -1，
+验证前 652 点 preds/probs 不变、特征前缀不变、恰好重算最后一点。仅副本 header 的代码/Metadata
+身份转换，四个源 NPY 成员字节保留；生产 envelope、数据库、current 与 timer 均未修改。
+独立原算法末行数值等价仍待完成，尚未发布候选状态或放行 W3A 接管。
+私有原件为 ECS `incoming/w3a-full-weekly-private-20260912-938529/`，不是正式 Gate 或回测成功记录。
 证据位于 ECS `incoming/w3a-full-weekly-analysis-20260912.wpLu6e`，`evidence.json` SHA-256
 为 `d63eb3f43674466926034f11780f56f9caebe377c0f9894ec743c918d823d210`。
 

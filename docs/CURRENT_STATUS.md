@@ -40,7 +40,8 @@
   算法等价、执行环境和入库证据分别绑定自身真实输入。已有有效计算不因 ID 包装变化重跑。
 - W3B 三个源码方案已完成 ECS 原 ID Blackbox 接管及发布验收：历史事实与完整 Dashboard
   业务内容保留，原 ID 各有唯一 active Blackbox exact，日频 timer 与 Backend 已恢复正常。
-  下一批为 W2/W3A 原 ID 收口；Mac3 晋级、迁移数据/Native 清理及 confidence DDL 尚未闭环。
+  W2 两个方案亦已完成 ECS 原 ID 接管、标准执行准入及发布验收；其临时身份独有结果仍保留，待受控补入。
+  下一批为 W3A 原 ID 收口；Mac3 晋级、迁移数据/Native 清理及 confidence DDL 尚未闭环。
   不重复已完成的 W3B 算法、状态准备或切换；精确 release、回执和恢复边界见迁移计划及现场。
 
 ## 当前治理边界
