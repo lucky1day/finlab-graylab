@@ -22,7 +22,8 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture
 def prepared_inputs(tmp_path, monkeypatch):
     ids = prepare.control.W3B_IDS
-    old = {key: load_scheme_config(ROOT / "schemes" / key / "config.yaml") for key in ids}
+    old = {key: replace(load_scheme_config(ROOT / "schemes" / key / "config.yaml"),
+                        runtime_type="native_adapter", scheme_version="old-native") for key in ids}
     source_cfg = {key: load_scheme_config(ROOT / "schemes" / (key + "_bbv2") / "config.yaml") for key in ids}
     new = {key: replace(cfg, scheme_id=key, environment_fingerprint="e" * 64,
                         data_snapshot_id="snapshot") for key, cfg in source_cfg.items()}
@@ -194,7 +195,8 @@ def test_uncertain_process_keeps_inputs_even_if_failure_persistence_interrupts(p
 def test_current_must_match_reference_native_identity_and_closure(tmp_path, monkeypatch):
     key = prepare.control.W3B_IDS[0]
     monkeypatch.setattr(prepare.control, "W3B_IDS", (key,))
-    cfg = load_scheme_config(ROOT / "schemes" / key / "config.yaml")
+    cfg = replace(load_scheme_config(ROOT / "schemes" / key / "config.yaml"),
+                  runtime_type="native_adapter", scheme_version="old-native")
     old = {key: cfg}
     monkeypatch.setattr(prepare, "load_scheme_config", lambda *_: cfg)
     current, candidate, reference = (tmp_path / name for name in ("current", "candidate", "reference"))

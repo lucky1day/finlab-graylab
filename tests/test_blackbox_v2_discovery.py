@@ -9,6 +9,87 @@ from unittest.mock import patch
 
 
 class BlackboxV2DiscoveryTests(unittest.TestCase):
+    def test_migration_attachments_are_hash_bound_without_changing_execution(self) -> None:
+        import yaml
+        from scheduler.discovery import load_scheme_config
+
+        scheme_id = "liwei_0616_10y02_cons_say_k3_div_k5"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original = _write_blackbox_scheme(Path(tmpdir))
+            scheme = original.with_name(scheme_id)
+            original.rename(scheme)
+            config_path = scheme / "config.yaml"
+            config_path.write_text(config_path.read_text().replace("trial_10y", scheme_id))
+            for suffix in ("py", "json"):
+                source = scheme / "delivery" / f"trial_10y.{suffix}"
+                destination = source.with_name(f"{scheme_id}.{suffix}")
+                source.rename(destination)
+                if suffix == "json":
+                    destination.write_text(destination.read_text().replace("trial_10y", scheme_id))
+            before = load_scheme_config(config_path)
+            native = scheme / "predict.py"
+            native.write_text("raise AssertionError('Native must never execute')\n")
+            raw = yaml.safe_load(config_path.read_text())
+            raw["native_attachments"] = {"predict.py": hashlib.sha256(native.read_bytes()).hexdigest()}
+            config_path.write_text(yaml.safe_dump(raw))
+            after = load_scheme_config(config_path)
+            self.assertEqual(after.runtime_type, "blackbox_v2")
+            self.assertEqual(before.delivery_script, after.delivery_script)
+            self.assertEqual(before.code_hash, after.code_hash)
+            self.assertNotEqual(before.scheme_version, after.scheme_version)
+            native.write_text("changed\n")
+            with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
+                load_scheme_config(config_path)
+            raw["native_attachments"]["predict.py"] = hashlib.sha256(native.read_bytes()).hexdigest()
+            config_path.write_text(yaml.safe_dump(raw))
+            self.assertNotEqual(after.scheme_version, load_scheme_config(config_path).scheme_version)
+            (scheme / "core").mkdir()
+            attachment_script = scheme / "core" / f"{scheme_id}.py"
+            attachment_script.write_bytes(after.delivery_script.read_bytes())
+            raw["native_attachments"][f"core/{scheme_id}.py"] = hashlib.sha256(
+                attachment_script.read_bytes()).hexdigest()
+            raw["delivery"]["script"] = f"core/{scheme_id}.py"
+            config_path.write_text(yaml.safe_dump(raw))
+            with self.assertRaisesRegex(ValueError, "execution files must be inside"):
+                load_scheme_config(config_path)
+
+    def test_migration_attachments_reject_extra_missing_and_unsafe_paths(self) -> None:
+        from shared.blackbox_v2.intake import validate_canonical_layout
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scheme = Path(tmpdir) / "liwei_0616_10y02_cons_say_k3_div_k5"
+            scheme.mkdir()
+            (scheme / "config.yaml").write_text("")
+            (scheme / "delivery").mkdir()
+            (scheme / "core").mkdir()
+            source = scheme / "core" / "model.py"
+            source.write_text("pass\n")
+            manifest = {"core/model.py": hashlib.sha256(source.read_bytes()).hexdigest()}
+            validate_canonical_layout(scheme, native_attachments=manifest)
+            for name in ("core/extra.py", "core/empty"):
+                with self.subTest(name=name):
+                    extra = scheme / name
+                    extra.mkdir() if name.endswith("empty") else extra.write_text("")
+                    with self.assertRaisesRegex(ValueError, "undeclared"):
+                        validate_canonical_layout(scheme, native_attachments=manifest)
+                    extra.rmdir() if extra.is_dir() else extra.unlink()
+            source.unlink()
+            with self.assertRaisesRegex(ValueError, "file set mismatch"):
+                validate_canonical_layout(scheme, native_attachments=manifest)
+            source.symlink_to(scheme / "config.yaml")
+            with self.assertRaisesRegex(ValueError, "symlinks"):
+                validate_canonical_layout(scheme, native_attachments=manifest)
+            for name in ("../model.py", "/core/model.py", "core/../model.py",
+                         "core//model.py", "delivery/extra.py", "core/__pycache__/model.pyc"):
+                with self.subTest(name=name), self.assertRaisesRegex(ValueError, "path"):
+                    validate_canonical_layout(scheme, native_attachments={name: "0" * 64})
+            other = scheme.with_name("trial_10y")
+            scheme.rename(other)
+            with self.assertRaisesRegex(ValueError, "approved migration"):
+                validate_canonical_layout(other, native_attachments=manifest)
+            with self.assertRaisesRegex(ValueError, "exactly config.yaml"):
+                validate_canonical_layout(other)
+
     def test_fact_horizon_preserves_execution_contract_and_changes_version(self) -> None:
         from scheduler.discovery import load_scheme_config
         from shared.task_specs import TASK_COMBINATIONS

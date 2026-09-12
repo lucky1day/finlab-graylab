@@ -142,7 +142,7 @@ def _load_blackbox_config(config_path: Path, raw: dict[str, Any], schedule_raw: 
 
     scheme_dir = config_path.parent
     _scheme_path, canonical_config_path, canonical_delivery_dir = (
-        validate_canonical_layout(scheme_dir)
+        validate_canonical_layout(scheme_dir, native_attachments=raw.get("native_attachments"))
     )
     if canonical_config_path != config_path.resolve():
         raise ValueError(f"{config_path}: config path is not canonical")
@@ -156,6 +156,8 @@ def _load_blackbox_config(config_path: Path, raw: dict[str, Any], schedule_raw: 
     delivery_raw = _require_mapping(raw.get("delivery", {}), config_path)
     script_path = (scheme_dir / str(delivery_raw["script"])).resolve()
     metadata_path = (scheme_dir / str(delivery_raw["metadata"])).resolve()
+    if script_path.parent != canonical_delivery_dir or metadata_path.parent != canonical_delivery_dir:
+        raise ValueError(f"{config_path}: execution files must be inside canonical delivery directory")
     if scheme_dir.resolve() not in script_path.parents or scheme_dir.resolve() not in metadata_path.parents:
         raise ValueError(f"{config_path}: delivery paths must stay inside scheme directory")
     if not script_path.is_file() or not metadata_path.is_file():

@@ -37,6 +37,32 @@ PRESERVED_FACT_HORIZONS = {
     "monthly_5y_knn_top20_0629": ("monthly", 30),
 }
 
+# 临时迁移例外：仅已接入原 ID 的 W3B 候选可声明不参与执行的 Native 附件。
+NATIVE_ATTACHMENT_SCHEMES = frozenset({
+    "liwei_0616_10y01_cons_say_k3_div_k10",
+    "liwei_0616_10y01_full_oos_k3_div_k10",
+    "liwei_0616_10y02_cons_say_k3_div_k5",
+})
+
+
+def validate_native_attachments(scheme_id: str, attachments: object) -> None:
+    """校验迁移期附件的精确文件清单；不授予 Native 执行资格。"""
+    if scheme_id not in NATIVE_ATTACHMENT_SCHEMES:
+        raise ValueError("native_attachments requires an approved migration scheme")
+    if not isinstance(attachments, dict) or not attachments:
+        raise ValueError("native_attachments must be a non-empty SHA-256 mapping")
+    for name, digest in attachments.items():
+        if not isinstance(name, str):
+            raise ValueError("native_attachments path must be a string")
+        parts = name.split("/")
+        if (any(part in {"", ".", "..", "__pycache__"} for part in parts)
+                or "\\" in name
+                or not (name in {"predict.py", "inference.py", "__init__.py"}
+                        or len(parts) > 1 and parts[0] in {"core", "benchmarks"})):
+            raise ValueError("native_attachments path is outside the retained Native layout")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError("native_attachments requires lowercase SHA-256 values")
+
 
 def resolve_fact_horizon(
     scheme_id: str, task_type: str, execution_horizon: int,
@@ -102,6 +128,14 @@ def validate_config(raw: dict, dirname: str) -> list[str]:
             errors.append("incremental_state is only supported for Blackbox V2")
         if raw["incremental_state"] is not True:
             errors.append("incremental_state must be literal true when present")
+
+    if "native_attachments" in raw:
+        try:
+            if runtime_type != "blackbox_v2":
+                raise ValueError("native_attachments is only supported for Blackbox V2")
+            validate_native_attachments(scheme_id, raw["native_attachments"])
+        except ValueError as exc:
+            errors.append(str(exc))
 
     if runtime_type == "blackbox_v2":
         errors.extend(_validate_blackbox_config(raw))

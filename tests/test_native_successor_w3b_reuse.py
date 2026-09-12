@@ -94,7 +94,17 @@ def captured(tmp_path, monkeypatch):
 
     monkeypatch.setattr(migration, "_read_reviewed_w3b_bytes", mapped_read)
     load_config = migration.load_scheme_config
-    monkeypatch.setattr(migration, "load_scheme_config", lambda path: configs.get(path.parent.name) or load_config(path))
+    def captured_config(path):
+        from shared.versioning import compute_code_hash
+
+        if path.parent.name in configs:
+            return configs[path.parent.name]
+        if path.parent.name in migration._REVIEWED_W3B_EVIDENCE:
+            # 开发 canonical 已升级；原 Native 代码仍保留，实际计算旧闭包而非伪造批准 hash。
+            return SimpleNamespace(code_hash=compute_code_hash(path.parent))
+        return load_config(path)
+
+    monkeypatch.setattr(migration, "load_scheme_config", captured_config)
     fingerprint = json.loads((ROOT / "deploy/blackbox_v2/environment_manifest.json").read_text())["environment_fingerprint"]
     monkeypatch.setattr(migration, "load_environment_fingerprint", lambda *a, **k: fingerprint)
     monkeypatch.setattr(migration, "_capture_native_runtime_identity", lambda: {"environment_fingerprint": "a" * 64})

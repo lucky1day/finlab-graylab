@@ -188,8 +188,8 @@ W3B 产物索引：
   定向验收与独立复审均为 72 passed；真实随机隔离 MySQL 为 5 passed，新增 Harness
   写入后由切换 repository 接受以及生命周期锁持续持有的验证，隔离 schema 已清理。
   新鲜全量为 882 passed、11 skipped、235 subtests passed，独立复审无 Critical/Important。
-  这是控制代码完成，不是生产 prepare 完成：本轮未运行生产算法、未发布状态、未写生产
-  Harness、未切 current 或调度；仍等待下述候选目录替换顺序确认。
+  这是控制代码完成，不是生产 prepare 完成：该阶段未运行生产算法、未发布状态、未写生产
+  Harness、未切 current 或调度；当时的目录顺序待决事项现已由下述用户授权解除。
 - 06:30 ECS DataBridge 自然任务于 06:33:44 成功退出，发布
   `full-20260912-063338-cefd054bbccf` / `snapshot-b67e835383c8808b26982a32`。
   新五文件均与其 manifest SHA 相符；相对三份 W3B 源状态绑定的上一代，daily、weekly、
@@ -208,21 +208,35 @@ W3B 产物索引：
   封装绕过。后续优先验证算法自身的局部修订路径，复用前段、重算受影响后段及最终信号；
   特征摘要只证明影响定位，尚未证明模型窗口和最终结果等价，不据此宣称已可接纳。
 
-### 待确认的三方案候选布局顺序调整
+### 已批准的迁移期附件共存与历史修订边界
 
-`validate_canonical_layout` 要求 Blackbox 方案根目录精确为 `config.yaml + delivery/`，
-因此“先改原 ID config、仍在同目录保留 Native 附件，双机接管后再删除”不可执行。
-这不是算法或状态初始化阻塞，而是本计划删除顺序与既有目录合同的冲突。
+附件共存候选已实现并完成独立审查（无 Critical/Important）：全量回归 884 passed、
+11 skipped、240 subtests passed；复用校验确认三脚本字节与已验收交付相同、Metadata 仅改 ID，
+算法执行次数 0。候选 exact version 为 SAY `82df84447d51`、Full `f8ad289bc9c3`、
+K5 `def88c9afd72`；三者保持 paused/draft，只有受控版本事务才可取得 Writer。
+Native onboarding 清单已移除这三个候选身份，原文件及 reproduction runner 保留。
+本机原编译缓存已移动至 `outputs/w3b-retained-native-bytecode.tFcHvK/` 可恢复保留，
+不纳入交付摘要；生产文件、状态、Registry 与 current 尚未改变。
 
-建议仅对 W3B 三个已完成等价的方案调整：新候选 commit/release 替换三个原 ID canonical
-目录，移除其中的 Native `predict.py`、`inference.py`、`core/`、根 `__init__.py`、
-`benchmarks/` 及恰好三个直接引用它们的 reproduction runner；不改其它 Native 方案。
-旧生产 current、完整 immutable reference、archive、Git 历史及旧状态全部保留，
-回滚通过恢复旧 exact 版本并切回旧 immutable release 完成，而不是在新候选内运行 Native。
-不增加 Native 副本目录，不放宽普通 Blackbox closed-world，不将此步骤称为全局 Native 清理。
+用户已明确授权：新 Blackbox 目录内暂时保留 Native 附件，验证接管完成后再删除；
+这取代此前待确认的“提前删除三个目录附件及 reproduction runner”建议，不再等待该确认。
+当前先在 W3B 三个原 ID 上实施：原配置切为 Blackbox，两文件交付放入 `delivery/`，
+原 `predict.py/inference.py/core/benchmarks/__init__.py` 和 reproduction runner 保留。
+配置显式记录 `native_attachments` 精确路径及 SHA-256，参与 config/exact version 摘要；
+文件集合、摘要或路径不符拒绝加载。附件不加入算法导入路径，不授予 Native fallback 或第二 Writer。
+普通 Blackbox 仍保持严格两文件及根目录合同；迁移清理结束后一并删除临时例外。
+旧生产 current、immutable reference、archive、Git 历史及旧状态不因开发候选改动而改变。
 
-此项必要的候选替换先后顺序已单独提请用户确认；确认前不执行上述删除/替换或生产切换。
-可信源凭据加载、状态接纳、prepare 编排及其隔离验证可继续准备。
+用户同时明确：历史数据修订正常，已发布历史预测原内容、版本和来源永久保留，不因修订重算、
+覆盖或强行对齐；既有等价证据继续绑定自身冻结输入。仅下一次预测必要的内部模型/缓存计算可以
+更新，不将内部后缀重算写成历史预测修订。当前不再有待用户确认的普通迁移步骤；两端 confidence
+DDL 仍各自保留独立确认。
+
+针对本次 weekly 补值的代码依赖复核：daily 标签和有效样本集合未变，IC 的 2024 年前固定窗口
+未变，Phase A 每个 OOS 点只依赖该点及之前的特征，故之前 652 个点可保留。
+Full/K5 可补最后一个 Phase A 点并重算最终排名/信号；SAY 还保留原月内 selected-grid 训练路径，
+必须如实计时，不宣称三个方案都只训练一行。不为该修订再完整重跑已验收历史。
+现有 raw-prefix guard 与 exact code identity 仍需受控处理；不直接改 envelope/hash 冒充新输入验收。
 
 ## 4. 最小实现
 
@@ -258,7 +272,7 @@ W3A/W3B 不允许多次独立 activate 冒充原子切换。
 每个写命令的 SHA 都通过 `--expected-plan-sha256` 显式提供，只能使用其对应 action
 刚生成的预检结果；准备 SHA 不能代替切换或回滚 SHA。无 `--action` 的 preflight 默认为
 cutover，不能当成 prepare。准备中断后先核验已保留状态与 admission，不能换目录重跑。
-候选 canonical 替换仍须完成上文的顺序确认；上述命令说明不表示该确认或生产 prepare 已完成。
+候选 canonical 按上文已批准的附件共存方式准备；上述命令说明不表示生产 prepare 已完成。
 尚未准备完状态/Gate 前不要先 fence 或切 current。文件系统切换失败、缺证据或 DB 操作失败时，
 外层操作者仍须保持 Writer 关闭并完成分层补偿，不能把此 CLI 当成自动发布脚本。
 
