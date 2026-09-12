@@ -20,6 +20,7 @@ from test_native_successor_migration_mysql import (
     _create_schema,
     _seed,
 )
+from test_same_id_runtime_upgrade import _assert_w3b_history_transition, _w3b_history_scope
 
 
 MYSQL_URL = os.getenv("BFL_TEST_NATIVE_SUCCESSOR_MYSQL_URL")
@@ -224,3 +225,44 @@ def test_mysql_stale_identity_and_fact_drift_are_rejected(mysql_migration):
     with pytest.raises(RuntimeError, match="plan changed"):
         _apply(engine, kwargs, control, initial)
     assert _plan(engine, kwargs, control) == drifted
+
+
+def test_mysql_w3b_history_retirement_and_canonical_only_rollback(mysql_migration):
+    engine, kwargs, control = _w3b_history_scope(mysql_migration)
+    initial = _plan(engine, kwargs, control)
+    assert len(initial["historical_native_versions_to_retire"]) == 3
+    assert {row["expected_rowcount"] for row in initial["historical_native_versions_to_retire"]} == {1}
+    _apply(engine, kwargs, control, initial)
+    rollback_kwargs = kwargs | {"action": "rollback"}
+    rollback = _plan(engine, rollback_kwargs, control)
+    _assert_w3b_history_transition(initial, rollback, rolled_back=False)
+    _apply(engine, rollback_kwargs, control, rollback)
+    restored = _plan(engine, kwargs, control)
+    _assert_w3b_history_transition(initial, restored, rolled_back=True)
+    assert restored["historical_native_versions_to_retire"] == []
+
+
+def test_mysql_w3b_history_retirement_is_rolled_back_on_candidate_failure(mysql_migration):
+    engine, kwargs, control = _w3b_history_scope(mysql_migration)
+    initial = _plan(engine, kwargs, control)
+    key = sorted(kwargs["old_configs"])[1]
+    with engine.begin() as conn:
+        # 第二成员的数据库约束失败必须回滚第一成员及本成员的额外 Native retire。
+        assert key in repo._SAME_ID_W3B_NATIVE_HISTORY_IDS
+        conn.exec_driver_sql("ALTER TABLE t_scheme_registry ADD CONSTRAINT keep_w3b_native "
+                             f"CHECK (base_scheme_id <> '{key}' OR runtime_type = 'native_adapter')")
+    with pytest.raises(OperationalError):
+        _apply(engine, kwargs, control, initial)
+    assert _plan(engine, kwargs, control) == initial
+
+
+@pytest.mark.parametrize("runtime,status", [
+    ("blackbox_v2", "active"), ("blackbox_v2", "paused"), ("native_adapter", "draft"),
+])
+def test_mysql_w3b_history_does_not_allow_second_blackbox_writer(mysql_migration, runtime, status):
+    engine, kwargs, control = _w3b_history_scope(mysql_migration)
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE t_scheme_versions SET runtime_type=:runtime,status=:status "
+                          "WHERE scheme_version='historical-active'"), {"runtime": runtime, "status": status})
+    with pytest.raises(RuntimeError, match="second Writer"):
+        _plan(engine, kwargs, control)

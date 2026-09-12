@@ -85,6 +85,161 @@ def _apply(engine, kwargs, control, plan=None, reader=None):
     )
 
 
+def _w3b_history_scope(migration):
+    """复制隔离 fixture 为真实三 ID 范围，供 SQLite/MySQL 共用事务验收。"""
+    engine, prior, control = migration
+    template_id = next(iter(prior["old_configs"]))
+    old_configs, new_configs = {}, {}
+
+    def insert(conn, table, row):
+        row = {key: value for key, value in row.items() if key != "id"}
+        conn.execute(text(f"INSERT INTO {table} ({','.join(row)}) VALUES "
+                          f"({','.join(':' + key for key in row)})"), row)
+
+    with engine.begin() as conn:
+        version = dict(conn.execute(text("SELECT * FROM t_scheme_versions WHERE scheme_id=:id"),
+                                    {"id": template_id}).mappings().one())
+        registry = dict(conn.execute(text("SELECT * FROM t_scheme_registry WHERE base_scheme_id=:id"),
+                                     {"id": template_id}).mappings().one())
+        run = dict(conn.execute(text("SELECT * FROM t_harness_runs WHERE scheme_id=:id"),
+                                {"id": template_id}).mappings().one())
+        gate = dict(conn.execute(text("SELECT * FROM t_harness_gate_results WHERE harness_run_id=:id"),
+                                 {"id": prior["harness_run_ids"][template_id]}).mappings().one())
+        predictions = [dict(row) for row in conn.execute(
+            text("SELECT * FROM t_scheme_predictions WHERE scheme_id=:id"),
+            {"id": template_id}).mappings()]
+        for scheme_id in sorted(repo._SAME_ID_W3B_NATIVE_HISTORY_IDS):
+            old, new = deepcopy(prior["old_configs"][template_id]), deepcopy(prior["new_configs"][template_id])
+            old.scheme_id = new.scheme_id = scheme_id
+            old_configs[scheme_id], new_configs[scheme_id] = old, new
+            insert(conn, "t_scheme_versions", version | {"scheme_id": scheme_id})
+            insert(conn, "t_scheme_registry", registry | {
+                "base_scheme_id": scheme_id,
+                "scheme_id": f"{scheme_id}__h{old.horizon}__{old.tenors[0]}",
+            })
+            insert(conn, "t_harness_runs", run | {"scheme_id": scheme_id, "harness_run_id": scheme_id})
+            summary = json.loads(gate["summary_json"])
+            summary["evidence"][0]["value"]["scheme_id"] = scheme_id
+            insert(conn, "t_harness_gate_results", gate | {
+                "harness_run_id": scheme_id, "summary_json": json.dumps(summary),
+            })
+            for row in predictions:
+                insert(conn, "t_scheme_predictions", row | {"scheme_id": scheme_id})
+            for status in ("active", "paused", "retired"):
+                insert(conn, "t_scheme_versions", version | {
+                    "scheme_id": scheme_id, "scheme_version": f"historical-{status}", "status": status,
+                })
+    kwargs = prior | {"old_configs": old_configs, "new_configs": new_configs,
+                      "harness_run_ids": {key: key for key in old_configs}}
+    control = control | {
+        "schema_version": "same-id-w3b-control-plane-v1", "wave": "W3B", "deployment_target": "aliyun-gray",
+        "scheduler": {"control_plane": "systemd_one_shot", "timer_fenced": True, "unique_writer": True},
+        "native_canonical_selection": {key: {field: getattr(cfg, field) for field in (
+            "scheme_version", "runtime_type", "code_hash", "config_hash", "manifest_hash",
+        )} for key, cfg in old_configs.items()},
+    }
+    return engine, kwargs, control
+
+
+@pytest.fixture
+def w3b_history(migration):
+    return _w3b_history_scope(migration)
+
+
+def _assert_w3b_history_transition(before, after, *, rolled_back):
+    assert after["facts"] == before["facts"]
+    assert before["facts"]["t_scheme_predictions"]["count"] > 0
+    old_rows = {(row["scheme_id"], row["scheme_version"]): row for row in before["versions"]}
+    for row in after["versions"]:
+        key = row["scheme_id"], row["scheme_version"]
+        if key[1].startswith("historical-"):
+            wanted = old_rows[key]
+            if key[1] == "historical-active":
+                wanted = wanted | {"status": "retired"}
+            assert row == wanted
+    for scheme_id in before["scheme_ids"]:
+        active = [row for row in after["versions"] if row["scheme_id"] == scheme_id and row["status"] == "active"]
+        assert len(active) == 1
+        assert active[0]["runtime_type"] == ("native_adapter" if rolled_back else "blackbox_v2")
+        if rolled_back:
+            assert active[0]["scheme_version"] == before["control_plane"]["native_canonical_selection"][scheme_id]["scheme_version"]
+
+
+def test_w3b_native_history_is_explicitly_retired_and_rollback_restores_only_canonical(w3b_history):
+    engine, kwargs, control = w3b_history
+    initial = _plan(engine, kwargs, control)
+    assert len(initial["historical_native_versions"]) == 9
+    assert len(initial["historical_native_versions_to_retire"]) == 3
+    assert {row["expected_rowcount"] for row in initial["historical_native_versions_to_retire"]} == {1}
+    with patch.object(repo, "_upsert_scheme_version_conn", side_effect=_sqlite_upsert):
+        _apply(engine, kwargs, control, initial)
+        rollback_kwargs = kwargs | {"action": "rollback"}
+        rollback = _plan(engine, rollback_kwargs, control)
+        _assert_w3b_history_transition(initial, rollback, rolled_back=False)
+        assert rollback["historical_native_versions_to_retire"] == []
+        _apply(engine, rollback_kwargs, control, rollback)
+        restored = _plan(engine, kwargs, control)
+        _assert_w3b_history_transition(initial, restored, rolled_back=True)
+        assert restored["historical_native_versions_to_retire"] == []
+
+
+@pytest.mark.parametrize("failure", ["upsert", "rowcount", "history_metadata"])
+def test_w3b_historical_retirement_rolls_back_atomically(w3b_history, failure):
+    engine, kwargs, control = w3b_history
+    initial = _plan(engine, kwargs, control)
+    calls = 0
+
+    def fail_after_retirement(conn, cfg, **values):
+        nonlocal calls
+        calls += 1
+        if failure == "upsert":
+            raise RuntimeError("injected candidate failure")
+        result = _sqlite_upsert(conn, cfg, **values)
+        if failure == "rowcount" and calls == 1:
+            second_id = sorted(kwargs["old_configs"])[1]
+            conn.execute(text("UPDATE t_scheme_versions SET status='retired' "
+                              "WHERE scheme_id=:id AND scheme_version='historical-active'"), {"id": second_id})
+        elif failure == "history_metadata":
+            conn.execute(text("UPDATE t_scheme_versions SET code_hash='changed' "
+                              "WHERE scheme_id=:id AND scheme_version='historical-paused'"), {"id": cfg.scheme_id})
+        return result
+
+    with patch.object(repo, "_upsert_scheme_version_conn", side_effect=fail_after_retirement):
+        with pytest.raises(RuntimeError, match="injected|retirement count|historical version"):
+            _apply(engine, kwargs, control, initial)
+    assert _plan(engine, kwargs, control) == initial
+
+
+@pytest.mark.parametrize("runtime,status", [
+    ("blackbox_v2", "active"), ("blackbox_v2", "paused"),
+    ("native_adapter", "draft"), ("native_adapter", "pending"),
+])
+def test_w3b_exception_rejects_other_writers_and_unreviewed_lifecycle(w3b_history, runtime, status):
+    engine, kwargs, control = w3b_history
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE t_scheme_versions SET runtime_type=:runtime,status=:status "
+                          "WHERE scheme_version='historical-active'"), {"runtime": runtime, "status": status})
+    with pytest.raises(RuntimeError, match="second Writer"):
+        _plan(engine, kwargs, control)
+
+
+@pytest.mark.parametrize("failure", ["partial_scope", "missing_canonical", "wrong_exact", "unfenced", "nonunique"])
+def test_w3b_history_requires_complete_scope_and_canonical_control_proof(w3b_history, failure):
+    engine, kwargs, control = w3b_history
+    control = deepcopy(control)
+    if failure == "partial_scope":
+        key = next(iter(kwargs["old_configs"]))
+        kwargs = kwargs | {field: {key: kwargs[field][key]} for field in ("old_configs", "new_configs", "harness_run_ids")}
+    elif failure == "missing_canonical":
+        control.pop("native_canonical_selection")
+    elif failure == "wrong_exact":
+        next(iter(control["native_canonical_selection"].values()))["scheme_version"] = "historical-active"
+    else:
+        control["scheduler"]["timer_fenced" if failure == "unfenced" else "unique_writer"] = False
+    with pytest.raises(RuntimeError, match="second Writer"):
+        _plan(engine, kwargs, control)
+
+
 def test_atomic_cutover_rollback_recutover_preserves_history(migration):
     engine, kwargs, control = migration
     initial = _plan(engine, kwargs, control)

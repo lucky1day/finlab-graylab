@@ -43,6 +43,11 @@ _BLACKBOX_LIFECYCLE_LOCK_TIMEOUT_SEC = 5.0
 _NATIVE_SUCCESSOR_REQUIRED_SCHEMA_VERSION = 24
 _NATIVE_SUCCESSOR_BACKTEST_START_DATE = "2025-01-01"
 _NATIVE_SUCCESSOR_LIVE_TARGET_START_DATE = "2026-06-01"
+_SAME_ID_W3B_NATIVE_HISTORY_IDS = frozenset({
+    "liwei_0616_10y01_full_oos_k3_div_k10",
+    "liwei_0616_10y01_cons_say_k3_div_k10",
+    "liwei_0616_10y02_cons_say_k3_div_k5",
+})
 _NATIVE_SUCCESSOR_REQUEST_IDENTITY_FIELDS = (
     "request_id",
     "predict_date",
@@ -3773,6 +3778,27 @@ def _same_id_runtime_upgrade_plan_conn(
                              order=order, for_update=for_update):
             raise RuntimeError(f"same-ID upgrade requires zero running rows: {table}")
     evidence = {}
+    # 仅完整 W3B 原 ID 批次可收口旧 Native lifecycle 历史；实际 Writer 来自
+    # 只读核实的 canonical exact 与已围栏 one-shot，不能由历史 active 行推断。
+    scheduler_control = control_plane_evidence.get("scheduler", {})
+    canonical_selection = control_plane_evidence.get("native_canonical_selection")
+    historical_native_allowed = (
+        set(ids) == _SAME_ID_W3B_NATIVE_HISTORY_IDS
+        and control_plane_evidence.get("schema_version") == "same-id-w3b-control-plane-v1"
+        and control_plane_evidence.get("wave") == "W3B"
+        and control_plane_evidence.get("deployment_target") == "aliyun-gray"
+        and isinstance(scheduler_control, Mapping)
+        and scheduler_control.get("control_plane") == "systemd_one_shot"
+        and scheduler_control.get("timer_fenced") is True
+        and scheduler_control.get("unique_writer") is True
+        and canonical_selection == {
+            key: {field: getattr(old_configs[key], field) for field in (
+                "scheme_version", "runtime_type", "code_hash", "config_hash", "manifest_hash",
+            )} for key in ids
+        }
+    )
+    historical_native_versions = []
+    historical_native_versions_to_retire = []
     for scheme_id in ids:
         old, new = old_configs[scheme_id], new_configs[scheme_id]
         _validate_blackbox_revision_candidate(new, require_evidence=True)
@@ -3811,10 +3837,21 @@ def _same_id_runtime_upgrade_plan_conn(
         if not valid:
             raise RuntimeError("same-ID upgrade mixed/unsupported lifecycle state")
         for row in scoped:
-            if row["scheme_version"] not in {old.scheme_version, new.scheme_version} and row.get("status") != "retired":
-                raise RuntimeError("same-ID upgrade unexpected pending/active version (second Writer)")
             if row.get("runtime_type") not in {"native_adapter", "blackbox_v2"}:
                 raise RuntimeError("same-ID upgrade unknown historical runtime")
+            if row["scheme_version"] in {old.scheme_version, new.scheme_version}:
+                continue
+            historical_native = historical_native_allowed and row["runtime_type"] == "native_adapter"
+            allowed_statuses = {"retired", "paused"} if historical_native else {"retired"}
+            if historical_native and action == "cutover":
+                allowed_statuses.add("active")
+            if row.get("status") not in allowed_statuses:
+                raise RuntimeError("same-ID upgrade unexpected pending/active version (second Writer)")
+            if historical_native:
+                recorded = {key: row[key] for key in ("scheme_id", "scheme_version", "status")}
+                historical_native_versions.append(recorded)
+                if row["status"] == "active":
+                    historical_native_versions_to_retire.append(recorded | {"expected_rowcount": 1})
         rows = [row for row in registry if row["base_scheme_id"] == scheme_id]
         expected_ids = {registry_scheme_id(scheme_id, old.horizon, tenor): tenor for tenor in old.tenors}
         if {row["scheme_id"] for row in rows} != set(expected_ids):
@@ -3834,6 +3871,8 @@ def _same_id_runtime_upgrade_plan_conn(
         "schema_version": "same-id-runtime-upgrade-plan-v1", "action": action,
         "database_identity_sha256": native_successor_plan_sha256(identity), "schema_migration_version": 24,
         "scheme_ids": ids, "versions": versions, "registry": registry, "evidence": evidence,
+        "historical_native_versions": historical_native_versions,
+        "historical_native_versions_to_retire": historical_native_versions_to_retire,
         "candidate_versions": [
             {field: getattr(new_configs[scheme_id], field) for field in (
                 "scheme_id", "scheme_version", "runtime_type", "code_hash",
@@ -3913,6 +3952,15 @@ def apply_same_id_runtime_upgrade(
                 if changed.rowcount != 1:
                     raise RuntimeError("same-ID upgrade did not retire exactly one active version")
                 if action == "cutover":
+                    for historical in plan["historical_native_versions_to_retire"]:
+                        if historical["scheme_id"] != scheme_id:
+                            continue
+                        changed = conn.execute(text("UPDATE t_scheme_versions SET status = 'retired' "
+                            "WHERE scheme_id = :id AND scheme_version = :version "
+                            "AND runtime_type = 'native_adapter' AND status = 'active'"),
+                            {"id": scheme_id, "version": historical["scheme_version"]})
+                        if changed.rowcount != historical["expected_rowcount"]:
+                            raise RuntimeError("same-ID upgrade historical Native retirement count mismatch")
                     _upsert_scheme_version_conn(conn, new, trusted_status="active", approved_by=operator,
                                                 approved_at=_mysql_utc_datetime(approved_at))
                 else:
@@ -3929,6 +3977,19 @@ def apply_same_id_runtime_upgrade(
             post = _same_id_runtime_upgrade_plan_conn(conn, action="rollback" if action == "cutover" else "cutover", **kwargs)
             if post["facts"] != plan["facts"] or post["unaffected_registry_sha256"] != plan["unaffected_registry_sha256"]:
                 raise RuntimeError("same-ID upgrade changed facts/unaffected Registry")
+            post_versions = {(row["scheme_id"], row["scheme_version"]): row for row in post["versions"]}
+            retired_history = {(row["scheme_id"], row["scheme_version"])
+                               for row in plan["historical_native_versions_to_retire"]}
+            for before in plan["versions"]:
+                key = before["scheme_id"], before["scheme_version"]
+                if key[1] in {old_configs[key[0]].scheme_version, new_configs[key[0]].scheme_version}:
+                    continue
+                expected = before | {"status": "retired"} if key in retired_history else before
+                ignored = {"updated_at"} if key in retired_history else set()
+                if {k: v for k, v in post_versions[key].items() if k not in ignored} != {
+                    k: v for k, v in expected.items() if k not in ignored
+                }:
+                    raise RuntimeError("same-ID upgrade changed historical version identity or paused status")
             # updated_at 是 MySQL 自动更新时间；业务展示字段必须逐字段不变。
             for before, after in zip(plan["registry"], post["registry"]):
                 if {k: v for k, v in before.items() if k not in {"runtime_type", "updated_at"}} != {

@@ -220,6 +220,23 @@ W3B 产物索引：
   集成验收：914 passed、11 skipped、240 subtests passed；真实隔离 MySQL 事务与 Harness
   接线 5 passed；独立审查无 Critical/Important。当前候选 exact version 为 SAY
   `f8031c16ec8c`、Full `772b225fd59e`、K5 `74614164d8c1`，取代下节未含周频补丁的早期候选。
+- ECS 已从 `13941fbc…` 完成正式 prepare：三份原 ID StateSession 状态及真实 Harness Gate
+  均已发布，算法执行 0 次，历史 prediction/run/backtest/Registry 未改。原始准备回执保存在
+  `/opt/bond-factor-lab/incoming/w3b-final-prepare-20260912.TPh9uv/`。
+  首次短维护窗口的 cutover 只读预检发现旧版本表有多条 Native active/paused 历史版本，
+  尚未执行版本事务；current 已补偿恢复 `a6ffe3a6…`，日频 timer 已恢复等待。
+  新状态和 Gate 不重建；后续仅平台事务补丁不改变三份 exact scheme version。
+  源参考目录独立验证产生的三个 `__pycache__` 已外置保全，源码及已验收数值产物未变；
+  systemd 重复 EnvironmentFiles 属性解析已修复，不改变 installed unit。
+
+迁移历史版本状态收口限定为完整 W3B 三原 ID：旧 Native 真正执行身份由已验证 canonical
+config、release 和单一 one-shot 决定，不以历史版本表 `active` 行枚举算法。只在无在途 Writer、
+日频围栏及旧 canonical exact 证据匹配时，允许把显式预检清单中的额外 Native active 行
+与旧当前版本一起原子退役；Native paused 历史保持原样。其他 Blackbox active/pending 或
+无法证明来源的执行资格仍拒绝。逆向恢复只激活先前 canonical Native exact，不恢复额外
+历史 active 标记；任何版本的代码、输入来源和已发布历史事实均不改写。
+该收口补丁已通过 928 passed、16 skipped、240 subtests passed；另行真实隔离 MySQL
+10 passed，独立审查无 Critical/Important。未通过生产 cutover 之前仍不计为原 ID 接管。
 
 ### 已批准的迁移期附件共存与历史修订边界
 

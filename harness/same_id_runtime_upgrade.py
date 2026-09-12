@@ -297,6 +297,11 @@ def _capture(engine, project_root: Path, reference_project_root: Path):
         "release": releases, "current_release": str(root), "scheduler": scheduler,
         "temporary_writer_check": temporary, "blackbox_environment_fingerprint": fingerprint,
         "execution_environment": locale,
+        "native_canonical_selection": {
+            key: {field: getattr(cfg, field) for field in (
+                "scheme_version", "runtime_type", "code_hash", "config_hash", "manifest_hash",
+            )} for key, cfg in old.items()
+        },
         "databridge": {"generation_id": snapshot.generation_id, "data_snapshot_id": snapshot.snapshot_id,
                        "business_digest": snapshot.business_digest, "files": hashes},
         "candidate_states": _read_candidate_states(root, new, snapshot),
