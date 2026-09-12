@@ -266,7 +266,7 @@ def test_cli_rejects_missing_scope_before_engine(tmp_path, monkeypatch, invalid)
         args += ["--work-dir", str(tmp_path / "work"), "--harness-run-id", "t1_daily=one"]
     engine = Mock()
     monkeypatch.setattr(cli, "create_engine_from_env", engine)
-    with pytest.raises(ValueError):
+    with pytest.raises(SystemExit if invalid == "history_import" else ValueError):
         cli._run_native_successor_migration_command(cli._build_parser().parse_args(args))
     engine.assert_not_called()
 

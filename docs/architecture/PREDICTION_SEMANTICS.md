@@ -131,7 +131,9 @@ predict_date = 2026-05-28  # 历史回测中 predict_date=feature_date
 5. 逐方案 original benchmark 的 `date/T` 只对齐平台 `feature_date`；如 `target_date` 进入灰度/实盘区间，只有同执行口径时才与 `t_scheme_predictions.feature_date` 对齐核验，否则必须生成 live-safe oracle。这里的 original benchmark 位于 `schemes/{scheme_id}/benchmarks/`，不是 `source_evidence/benchmark_batches/{benchmark_id}/` 的外部批次证据。
 6. helper 只能封装原始算法的执行口径；不得把“更短历史”“同月去年+本月”“previous complete week”等平台便利窗口替代 source 中实际使用的固定历史、batch end 或周频对齐规则。
 
-`daily_5y_2_v28` 的唯一入口是 `schemes.daily_5y_2_v28.inference`：`v28_feature_month_window(feature_date)` 返回当月月初到 `feature_date`，`predict.py` 与 `backtests.daily_5y_2_v28_reproduction` 都必须通过该模块调用 core。
+`daily_5y_2_v28` 已统一为原 ID Blackbox，当前唯一执行入口由 canonical config 的 `delivery` 指定，
+`predict/backtest` 共用包内算法路径，并保留上述月度窗口语义。旧 Native inference 暂作为版本绑定附件
+保留，不是当前执行入口；专属复现 runner 仅在旧 immutable release 保留，不得用于当前 Blackbox 补算历史。
 
 ## 3. 灰度实盘规则
 

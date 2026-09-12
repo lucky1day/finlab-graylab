@@ -1,6 +1,6 @@
 # Native → Blackbox V2 迁移：ECS 原 ID 接管计划
 
-**文档状态**：`CURRENT — 本轮 ECS 原 ID 接管完成；Mac3/W4 保持现状`
+**文档状态**：`CURRENT — ECS 原 ID 接管完成；先清理再准备 Mac3 同包晋级；W4 保持现状`
 
 **最新批准日期**：2026-09-12。用户已缩减本轮范围和验收，以下第 1 节为唯一当前执行主线。
 第 2 节及以后保留已有实施证据和旧设计参考，不能据其恢复历史回测、结果补入、W4 改造或全量 Native 删除。
@@ -8,6 +8,27 @@
 `git show 938d1c4:docs/architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md` 追溯；旧命令不是当前操作指令。
 
 ## 1. 第一性原理与授权范围
+
+### 接管后的当前清理顺序
+
+用户在 ECS 十七个原 ID 接管完成后要求：先完成 ECS 陈旧方案代码清理，验证后再一并同步 Mac3。
+以下清理顺序优先于后文已完成的五方案操作步骤；不重复那些算法验证和版本切换。
+
+1. 删除当前配置与迁移入口都不调用的 17 个 Native 专属回测文件（十个 Liwei runner、
+   ALL-K10 公共 runner、两个 V28、三个周点和一个 T1/T5 runner）。旧 immutable release 保留原件。
+2. 删除 W2/W3A 已撤销的 `preserve-live` 历史补入入口、专属 repository 实现及一次性测试。
+   已完成历史事实与来源校验保持不变；prepare/cutover/rollback 及普通回测公共能力保留。
+3. 不修改当前算法、Metadata、config 或 exact version；全量回归和独立审查后，
+   核验 ECS 全部 active 方案准入、原历史/Actuals/Registry/版本摘要、状态和 Dashboard 不变再发布。
+4. 十六个停用临时 canonical 目录仍被同 ID 迁移校验读取，十七方案的 204 个 Native 附件参与
+   config hash。不能直接删除导致迁移工具断链或 active exact 漂移；后续先解除真实引用、
+   受控处理版本/状态身份，再删除。T1/T5 canonical delivery 中的 `_bbv2` 文件名属于有效交付，不能误删。
+5. 保留 W4 九方案、公共 Native 输入/执行/维护路径和完整 source package；保留当前回滚 release、
+   数据库事实与外置证据。Mac3 晋级以本机 preflight 和 ECS 验证过的同一 archive 为前提。
+
+本轮不把这些暂留项宣称为已清理，也不以重新回测或新增兼容框架消除依赖。
+
+### 已完成的原 ID 接管范围
 
 同一个业务方案、同一份历史记录，只替换执行包装并完成 ECS 原 ID 接管。
 保留 `scheme_id/base_scheme_id`、Registry ID 和全部历史，以真实新 exact version 区分实现。

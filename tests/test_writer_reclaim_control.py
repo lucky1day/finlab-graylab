@@ -19,6 +19,23 @@ def _runs(wave):
     return {key: f"reclaim-{index}" for index, key in enumerate(reclaim.RECLAIM_WAVES[wave])}
 
 
+@pytest.mark.parametrize("wave", ["W2", "W3A"])
+@pytest.mark.parametrize("preflight", [False, True])
+def test_history_materialization_is_not_an_executable_migration_action(monkeypatch, capsys, wave, preflight):
+    create = MagicMock(side_effect=AssertionError("must not connect"))
+    monkeypatch.setattr(cli, "create_engine_from_env", create)
+    args = ["migrate-native-successor", "preflight" if preflight else "preserve-live", "--wave", wave,
+            "--reference-project-root", "/reference", "--expected-database-name", "test",
+            "--expected-server-uuid", "test-only"]
+    if preflight:
+        args += ["--action", "preserve-live"]
+    with pytest.raises(SystemExit) as error:
+        cli._build_parser().parse_args(args)
+    assert error.value.code == 2
+    assert "invalid choice: 'preserve-live'" in capsys.readouterr().err
+    create.assert_not_called()
+
+
 @pytest.mark.parametrize("wave", ["W1B", "W2", "W3A"])
 @pytest.mark.parametrize("action", ["preflight", "cutover", "rollback"])
 def test_reclaim_uses_only_same_id_route(monkeypatch, wave, action):
