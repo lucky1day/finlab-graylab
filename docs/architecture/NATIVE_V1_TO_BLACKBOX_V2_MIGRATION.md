@@ -1,6 +1,6 @@
 # Native → Blackbox V2 迁移：ECS 原 ID 接管计划
 
-**文档状态**：`CURRENT — 执行中，未闭环`
+**文档状态**：`CURRENT — 本轮 ECS 原 ID 接管完成；Mac3/W4 保持现状`
 
 **最新批准日期**：2026-09-12。用户已缩减本轮范围和验收，以下第 1 节为唯一当前执行主线。
 第 2 节及以后保留已有实施证据和旧设计参考，不能据其恢复历史回测、结果补入、W4 改造或全量 Native 删除。
@@ -11,7 +11,7 @@
 
 同一个业务方案、同一份历史记录，只替换执行包装并完成 ECS 原 ID 接管。
 保留 `scheme_id/base_scheme_id`、Registry ID 和全部历史，以真实新 exact version 区分实现。
-本轮待办只有 W3C 三个和 W3D 两个 ECS 方案；已经接管的十二个方案不重复验证或切换。
+本轮完成 W3C 三个和 W3D 两个 ECS 方案；此前已经接管的十二个方案不重复计算或切换。
 
 - W4 九个加密方案不改造，继续 Mac3 现状；本轮不操作其 release、launchd 或数据库。
 - 不重新回测历史区间，不重新生成、复制、覆盖或删除历史预测。W1 的 42 条历史结果补入已停止，
@@ -63,7 +63,7 @@ W3D 原输入与候选五文件有历史修订差异，已如实记录；全部�
 逐份 SHA 核验一致。包、打包证据与最小同 ID 控制层均已独立审查，无 Critical/Important。
 控制层只接入固定的单 Request 验收原件，不再前置第二次 ECS 算法执行；W3C 私有 seed 未审核时拒绝准备。
 完整回归为 1298 passed、46 skipped、243 subtests passed；新增两项真实隔离 MySQL 切换/回滚测试通过。
-五方案随后已执行围栏切换，但最终因 W3D 标准入口超时受控恢复；当前没有新增接管完成的方案。
+五方案首次围栏切换因 W3D 标准入口超时受控恢复，该次尝试没有新增接管完成的方案；后续完成情况见下文。
 W3C 的 ECS 状态须从 ECS 本机已有 Native 派生缓存进行受控转换，不以本机冻结输入状态冒充 ECS ready。
 
 三份 ECS 私有 seed 已完成受限转换及独立审核：复用本机原缓存的 649 个内部点至 2026-09-04，
@@ -101,12 +101,12 @@ W3D 7Y01 在一个当前 Request 内计算多个模型族，第一组 265 config
 恢复核验：25,715 条预测、5,689 条 run、111 条回测 run、24,750 条回测预测摘要不变，
 Actuals、Dashboard 及原 Harness 行不变，零 running run；五原 ID 各唯一 Native active version。
 Backend 与日频 timer 已恢复，月频 18:00、Actuals 19:00 等原触发未更改；Mac3 未操作。
-installer 的 previous 当前指向失败候选 a335241，不是已通过准入的普通回滚目标；禁止盲目切 previous。
+该次恢复后 installer 的 previous 指向失败候选 a335241，当时不是已通过准入的普通回滚目标；禁止盲目切 previous。
 W3C 状态及通过证据保留，不重复执行；W3D 需要先确定标准调用预算或最小提速措施，再重新安排维护窗口。
-该次失败后的自动推进已暂停，不得据旧尝试自动重试算法或扩大为历史回测。当前接管仍为 12/17 方案、16/21 target。
+该次失败后的自动推进已暂停，不得据旧尝试自动重试算法或扩大为历史回测。当时接管为 12/17 方案、16/21 target。
 
 完整实际原件在本机及 ECS `final-five-single-request-20260912` 私有证据目录，
-包含切换、失败模拟、刷新摘要、成功回滚、恢复后数据库与控制面读回；PR #57 保持执行中，不宣称闭环。
+包含切换、失败模拟、刷新摘要、成功回滚、恢复后数据库与控制面读回；该次失败没有被记为闭环。
 
 ### 已授权的单次预算调整
 
@@ -119,6 +119,34 @@ W3C 的三份真实成功标准调用与生产派生状态须校验原摘要、�
 接管仍沿用维护围栏、逐批新 preflight、原子 repository 和失败恢复；全部准入就绪前不停止服务。
 本轮修改后完整回归 1325 passed、47 skipped、243 subtests；三项真实隔离 MySQL 检查另行通过，
 包含已退役 exact 受控重入及数据库原生时间类型下的旧 Gate 摘要核对。旧业务事实不参与任何改写。
+
+### 最终 ECS 接管验收
+
+包含独立审查修复的提交 `c74c538ffad49980fa97e51fda41e0c129e736f4` 已推送并部署 ECS，
+两次构建 archive 字节一致，SHA-256 为 `15c92c38b62dab1bc07fa3885168ada59e1dd1517f02ea4eeb04fdc2baf1775c`。
+运行中的 Backend cwd、current 与该提交相同，previous 为 `6c818d91bccf706ccc66e515b4ba30cee414ea61`。
+此前预安装的 4641ca2 未包含最后一项审查修复，从未切为 current，不作为本轮成功发布。
+
+- W3D 两个新 exact 原子接管后，各执行一次当前 Request：7Y01 256.532 秒、7Y03 259.269 秒，
+  均通过 300 秒预算，实际 6 线程、峰值约 1.05 GiB；Result 为 predict 2026-09-12、feature 2026-09-11、
+  target 2026-09-18、方向 +1。无数据库写入、无状态发布，不伪称自然预测。
+- W3C 三个原 exact 原子接管，复用已通过的标准调用与原生产派生状态；本轮追加算法执行数为零。
+- 两批最终回滚只读预检通过。Backend 与日频 timer 已恢复；日频下次 9/14 07:03、周频 9/19 11:30，
+  月频当日 18:00、Actuals 当日 19:00、DataBridge 次日 06:30，未改 installed unit 或其他 cadence。
+- 全量读回确认 17 个原 ID、21 个 active Registry target 全部为 Blackbox，各原 ID 只有一个 active exact。
+  迁移临时身份没有获得 Writer；其他方案的 Registry/version 未变，Dashboard 88 个方案的业务内容不变。
+- 本轮前后 25,715 条预测、5,689 条 run、111 条回测 run、24,750 条回测预测及其余事实表摘要不变，
+  Actuals 不变；原 385 条 Harness/1,928 条 Gate 逐行不变，仅增加本轮五条 Harness/五条 Gate。
+- `budget-verified.json` 已通过，after 读回 SHA 为
+  `5be18f86851097254de35075d029e8746cfbca73eae5edbdad43f819b09ec116`，验收时零 running run。
+- 最终独立实物复核无 Critical/Important；核验报告 SHA 为
+  `d2d70dd498fc70b8558cb8135f9937a9fc22127139f08a78ab596e5b41199ef1`。
+
+**本轮 ECS 17/17、21/21 接管完成。** 后续文档提交只记录验收，不伪称已替换运行 archive。
+develop 已推送，PR #57 交付但不合并 master；Mac3 release、W4 九方案、域名、隧道和 DDL 均未操作。
+旧自动推进保持暂停，不继续旧历史补入、临时身份删除、W4 改造或 Native 框架清理步骤。
+完整输入、请求、Result、切换与恢复原件保存在本机/ECS 私有 `final-five-single-request-20260912` 目录，
+本轮新证据使用 budget 前缀，旧失败和成功原件均保留。
 
 ## 2. 精确身份、目标与部署清单
 
