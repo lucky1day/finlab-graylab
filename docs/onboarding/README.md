@@ -82,6 +82,10 @@ W4 九方案保留 Mac3 Native 及必要依赖，不改造 binary bundle、不�
 周/月 Request 使用 Metadata horizon=1，原 Registry 和事实 horizon=6/30 在持久化边界显式投影保留。
 临时 `_bbv2` 身份不得拥有 Writer，不建立长期历史别名；历史默认只读保留。另行明确授权的精确临时身份清理必须先通过备份、隔离恢复及引用检查，不删除原 ID 历史及其共享来源，不作为普通入库能力。
 
+已完成迁移中的共享历史来源保留例外不影响新方案 Intake，也不放宽新算法的回测与激活要求。
+平台不接收统一 confidence 输出；Blackbox Result 精确仅含 request_id、predict_date、feature_date、target_date、
+predicted_direction。算法内部同名概率或决策变量保持其原语义，不因平台字段退役修改算法。
+
 `gate dashboard` 是激活后的可选只读产品检查，不是入库门禁；`signal-gap-fill` 是独立授权的历史缺口操作，也不属于入库。
 
 Native V1 存量仍使用 `onboard --stage all` 的

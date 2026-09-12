@@ -34,8 +34,11 @@
 17 个源码方案的原 ID 双机接管已验收，迁移过程与清洁发布核验见
 [迁移验收记录](architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md)，不再安排重复算法验证或历史重算。
 W4 九个加密方案保持 Mac3 Native 及必要依赖，没有待执行的 binary bundle 改造计划。
+两个 archived W3A 临时身份已获批作为只读历史来源保留，执行版本 retired、不具备 Writer；
+不再安排物理删除，不为消除名称而修改原 ID 的四条历史预测及其来源外键。
 历史搬迁/删除及域名切换不是本轮剩余步骤。独立授权的平台 confidence 退役已完成双机部署、DDL 和验收，
 见[当前状态](CURRENT_STATUS.md#平台-confidence-退役验收)，不再保留可重复执行的生产清理队列。
+上面的 M0/其他方案自然观察属于独立运营队列，不是本次迁移或新 Blackbox 方案开始 Intake 的阻塞条件。
 
 
 ## 统一停止条件

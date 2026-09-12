@@ -1,6 +1,6 @@
 # Native → Blackbox V2：迁移与双机发布验收
 
-**状态：17 个源码方案双机接管已完成；W4 九方案按批准边界保留 Native。更新：2026-09-12。**
+**状态：运行迁移、双机发布及 schema 025 已验收；W4 九方案与两份共享历史来源按批准边界保留。更新：2026-09-12。**
 
 本文记录本轮有效范围、完成证据和恢复边界，不再提供一次性迁移 CLI。精确部署版本以 current/previous、安装 manifest、运行进程和远端 Git 引用为准；原始验收记录外置保存。
 
@@ -12,10 +12,12 @@
 - W4 九个加密方案仅在 Mac3 继续原 Native 方式，不改造、不部署 ECS。
 - 不创建第二业务身份、不建立历史别名或第二 Writer。
 - 本轮不重跑历史区间，不生成、复制、搬迁、覆盖或删除原 ID 预测/run/backtest。
-- 临时 _bbv2 历史默认只读保留；用户后续独立授权精确临时身份退役，须完成备份、隔离恢复与引用检查。
-  原 ID 仍引用的来源不删除；此前已完成的原 ID 物化不回删，停用 canonical 不再具备执行资格。
+- 临时身份按精确清单退役：11 个独立身份已删除；两个 W3A 身份作为获批的只读历史来源保留，
+  Registry 为 archived、执行版本为 retired，没有 canonical、Writer 或 Dashboard 展示。
+  原 ID 仍引用的来源不删除；此前已完成的原 ID 物化不回删，不建立历史别名或第二执行路径。
 - 用户已授权双机发布、同步 master 和推送两分支；不 force push，不覆盖并发工作。
-- 未更改域名、DNS、Nginx、认证或 SSH 隧道。confidence DDL 未执行，仍需单独确认，不属于此次调整后的完成范围。
+- 未更改域名、DNS、Nginx、认证或 SSH 隧道。后续独立授权的 confidence 退役已完成双机部署及 migration 025；
+  仅删除两张预测表的统一平台属性，算法内部计算、W4 二进制和原始审计保留。
 
 ## 2. 精确执行范围
 
@@ -93,7 +95,8 @@ T1/T5 各保留一个 base/version，目标包在同一次任务中全部验证�
 3. ECS 先安装/切换/读回，Mac3 使用同一 archive 晋级；不是重新构建一个 Mac 分支版本。
 4. 每机 release 切换前后比较事实、Registry/version、Actuals、状态、Dashboard 和调度；不再执行版本迁移或算法。
 5. current 与 previous 均进入“原 ID Blackbox + W4 Native”兼容边界；前一份已验证接管 release 保留。
-6. 已授权的 master 同步使用正常快进/合并并核对远端，不 force push；PR 同步真实状态。
+6. 用户已重新授权将 confidence 退役及最终文档纳入 master；同步使用正常快进并核对两条远端引用，
+   不 force push、不夹带其他工作树改动。仅文档收尾不重复发布已验证的运行代码或重启服务。
 
 精确 commit/archive SHA 与最后发布读回由目标机 manifest、current/previous、进程 cwd、Git 远端引用和外置回执共同证明。不在文档伪造未来 commit，也不把文件上传当作发布完成。
 
@@ -102,21 +105,22 @@ T1/T5 各保留一个 base/version，目标包在同一次任务中全部验证�
 - 原 ID 接管前的 Native release 不能仅靠 current 链接回滚：必须先关闭对应 Writer，按已验证版本事务恢复身份与状态，再恢复调度。
 - 清洁版回滚优先使用已接管的前一份 Blackbox release，不恢复已删临时 CLI或创建第二控制面。
 - 新写入事实不删除；相同业务键仍严格跳过或拒绝，不能覆盖。
-- confidence DDL 未执行，现有 schema 024 与 W4 使用字段继续保留。
+- 双机 schema 025 已完成；current/previous 均不依赖平台 confidence，删列后禁止回滚到仍读写该列的旧 release。
+  完整恢复集包含 SQL dump 和原始审计 JSON sidecar；具体位置与验收见[当前状态](../CURRENT_STATUS.md#平台-confidence-退役验收)。
 - 完整私有回执目录：开发机 outputs/dual-host-finalization-20260912；ECS 对应 incoming 发布证据目录。
 - 关键原件包括算法标准结果、状态来源/封装、切换与 rollback-preflight、双机前后快照、发布验收、文件清单和 archive SHA。
 - 历史阶段方案保留在 Git，不再作为执行指令；不删除回滚 archive 或外置状态来追求表面“无 Native 字符串”。
 
-**完成定义按最新范围收口：17 个源码方案在双机 Blackbox 接管，九个 W4 继续正常 Native；清洁 release、远端两分支和上述现场验收一致。不包含已撤销的 W4 改造、历史搬迁或未经单独授权的 confidence DDL。**
+**最终完成定义：17 个源码方案双机 Blackbox 接管，九个 W4 按原 Native 运行；11 个独立临时身份删除，两个共享来源获批只读保留；双机 schema 025、兼容回滚 release 与运行验收通过；远端 codex/develop、master 同步最终交付。W4 改造、历史搬迁和其他方案自然观察不属于本迁移剩余任务。**
 
 ## 7. 后续独立授权的数据库清理
 
-用户随后授权在备份、隔离恢复和引用检查通过后删除 ECS 的 13 个迁移临时身份，以及 Mac3 两个旧验证库；原 ID 历史、W4、源数据和 confidence 继续保留。此授权不允许为完成删除而解除外键、改挂来源或覆盖历史。
+最初的独立清理授权覆盖 ECS 13 个迁移临时身份和 Mac3 两个旧验证库，要求保留原 ID 历史、W4、源数据及当时的 confidence。后续引用检查发现两个共享来源不能安全删除，用户现已接受将它们作为只读历史来源保留，最终退役范围为「11 个物理删除 + 2 个只读保留」。不解除外键、改挂来源或覆盖历史；confidence 的后续独立 DDL 不改变这条来源保护边界。
 
 实际完成：
 
 - ECS 的 11 个独立临时身份已在同一 repository 事务删除：3,549 条预测、679 个 run、22 个 backtest run、5,922 条回测明细、382 条月度指标、679 条日志和各 11 条 Registry/version。
-- 另外两个 W3A 临时身份整组保留 archived：`liwei_0616_5y01_full_oos_k3_div_k10_bbv2`、`liwei_0616_cons_sda_k3_div_k10_bbv2`。原 ID 下四条历史预测直接通过外键引用其两个 backtest；它们仍是历史来源依赖，不是空壳。全部 13 个身份物理删除的目标尚未完成。
+- 两个 W3A 历史来源获批保留 archived：`liwei_0616_5y01_full_oos_k3_div_k10_bbv2`、`liwei_0616_cons_sda_k3_div_k10_bbv2`，对应版本均 retired。原 ID 下四条历史预测仍通过原外键引用两个 backtest；当前 canonical 已删除，不允许执行、触发或出现在 Dashboard。保留不是「已物理删除」，而是用户确认的完成边界，不再列为待删项。
 - Mac3 的 `bond_factor_lab_bbv2_cert_20260720` 与 `bond_factor_lab_v2_e2e_20260719_1730` 已删除；生产库未改写。
 - ECS 完成 24 表、87,382 行的真实独立 MySQL 恢复、失败回滚和成功删除演练；Mac3 完成 34 个基础表与 23 个视图恢复验证。独立审查通过后执行，备份永久保留。
 - 提交后全部保留表行摘要与 schema 一致，原 ID 来源外键无孤儿；ECS 84 Blackbox/88 Dashboard、Mac3 84 Blackbox + 九 W4/97 Dashboard、Backend 和 installed 调度均核验通过。
@@ -126,5 +130,5 @@ T1/T5 各保留一个 base/version，目标包在同一次任务中全部验证�
 
 该数据库清理窗口仅为数据退役与文档同步，当时生产 schema 为 024、confidence 两列保留，运行代码及 release 未改变；清理临时入口不作为长期平台功能保留。
 
-后续平台 confidence 退役已经作为独立任务获批，不改变上述清理历史事实；其当前部署/schema 状态以
+后续平台 confidence 退役已经完成，不改变上述清理历史事实；其当前部署/schema 状态以
 [当前状态](../CURRENT_STATUS.md)为准。算法内部同名逻辑、W4 二进制、原始 benchmark 与审计仍受保护。

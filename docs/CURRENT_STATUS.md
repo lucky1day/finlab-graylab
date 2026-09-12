@@ -15,12 +15,13 @@
   原历史其余属性及 W4 运行方式保持不变。代码、完整回归（674 passed、4 skipped、221 subtests）、
   独立审查、九个 W4 适配对照、双机备份与 26 表隔离恢复已通过；schema 024/025 下的实际仓储读写、
   激活及多目标原子提交均已验证。双机兼容 release 发布、migration 025 和运行读回已完成，详见下节。
-  下述保留 confidence 的记录是前一清理窗口事实，不替代本次新授权。本任务未合并或推送 master。
+  下述保留 confidence 的记录是前一清理窗口事实，不替代后续退役结果。confidence 独立实施窗口未操作 master；
+  用户现已重新授权最终收尾同步 master，与 codex/develop 的精确交付以远端引用核验为准。
 - Mac3 承载生产域名、前端、数据库和 Writer；launchd + installed plist 是其调度控制面。
   ECS 是独立灰度环境，使用本机 MySQL、DataBridge 和 systemd one-shot/timer。
-- 用户已授权深度清理后发布 ECS/Mac3、同步 master 并推送两分支；随后独立授权备份、隔离恢复及引用检查后，
-  清理 ECS 精确临时身份和 Mac3 两个旧验证库。原 ID 历史、W4、源数据和 confidence 继续保留，
-  不包含历史重算/复制/覆盖、confidence DDL 或域名/DNS/Nginx/SSH 隧道变更。
+- 用户此前独立授权备份、隔离恢复及引用检查后清理 ECS 精确临时身份和 Mac3 两个旧验证库。
+  该清理窗口保留原 ID 历史、W4、源数据和 confidence；随后另行授权并完成了 confidence DDL。
+  最终收尾确认两个共享历史来源只读保留并授权同步两分支，不重算、复制或覆盖原 ID 历史，不改公网入口。
 - ECS 与 Mac3 均已完成全部 17 个源码方案、21 个 target 的原 ID Blackbox 接管。
   ECS 为 84 个 active Blackbox base、88 个 Dashboard target；Mac3 为 84 个 active Blackbox base，
   另保留九个 W4 Native base，共 97 个 Dashboard target。W4 不部署 ECS、不改造。
@@ -36,11 +37,12 @@
   以[迁移验收记录](architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md)所定义的发布读回为准。
 - 两端不建立复制、双写、共享数据库或共享 DataBridge；本轮不搬迁临时身份历史。
   已完成的旧历史物化保持原内容和来源，不回删。
-- 独立获批的数据库清理已完成安全子集：ECS 删除 11 个无共享外键依赖的临时身份，Mac3 删除两个旧验证库。
+- 数据库清理按最终获批范围完成：ECS 删除 11 个无共享外键依赖的临时身份，Mac3 删除两个旧验证库。
   ECS 两个 W3A 临时身份继续 archived，因为原 ID 的四条历史预测仍直接引用其回测；未解除外键、改挂或删除这些原记录。
-  因而“13 个临时身份全部物理删除”尚未完成，不能把两个共享来源算作已清理。
-  删除前均完成备份与独立 MySQL 恢复；删除后保留记录、Actuals、confidence 列、Dashboard、Backend 和调度核验通过。
-  本次没有算法执行、生产 schema 迁移、release 切换或服务重启。
+  用户已确认这两个来源作为只读历史保留例外：Registry archived、版本 retired、无 canonical/Writer，
+  不再属于待删队列，也不将其描述为已物理删除。原来源外键保持不变，不建立历史别名。
+  删除前均完成备份与独立 MySQL 恢复；该窗口未改 schema 或 release，保留记录与运行验收通过；
+  confidence 两列随后在独立的 025 窗口删除。
 - 单一 codex/develop 集成代码线、不可变 archive；Mac3 使用 ECS 已验证的同一 archive，不能自行构建环境分支版本。
 
 ## 平台 confidence 退役验收
@@ -77,7 +79,9 @@
   sidecar 只修复隔离恢复时旧 JSON 科学计数浮点值的解析舍入，不修改生产审计。
   发布、DDL、行摘要和恢复回执外置保留，工作树不纳入数据库备份或大型结果。
 
-本独立任务已完成；此前两个有共享来源引用的 archived W3A 临时身份仍按原清理结论保留，不属于本次字段删除范围。
+本独立任务已完成；两个 archived W3A 身份现已按用户确认作为只读历史来源保留，不阻塞迁移完成。
+迁移收尾仅同步 Markdown 与 Git，不改变已验证的双机运行代码、archive 或数据库。新的算法方案走
+[统一入库入口](onboarding/README.md)，无需等待迁移历史重算、额外自然观察或进一步删除这些来源。
 
 ## 现场状态读取
 
