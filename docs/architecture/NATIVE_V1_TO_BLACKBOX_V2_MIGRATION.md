@@ -63,7 +63,7 @@ W3D 原输入与候选五文件有历史修订差异，已如实记录；全部�
 逐份 SHA 核验一致。包、打包证据与最小同 ID 控制层均已独立审查，无 Critical/Important。
 控制层只接入固定的单 Request 验收原件，不再前置第二次 ECS 算法执行；W3C 私有 seed 未审核时拒绝准备。
 完整回归为 1298 passed、46 skipped、243 subtests passed；新增两项真实隔离 MySQL 切换/回滚测试通过。
-当前尚未执行五方案 ECS 接管，不能把候选代码和模拟回执当作生产完成。
+五方案随后已执行围栏切换，但最终因 W3D 标准入口超时受控恢复；当前没有新增接管完成的方案。
 W3C 的 ECS 状态须从 ECS 本机已有 Native 派生缓存进行受控转换，不以本机冻结输入状态冒充 ECS ready。
 
 三份 ECS 私有 seed 已完成受限转换及独立审核：复用本机原缓存的 649 个内部点至 2026-09-04，
@@ -71,6 +71,42 @@ W3C 的 ECS 状态须从 ECS 本机已有 Native 派生缓存进行受控转换�
 原缓存的 unqualified/NON_PRODUCTION 来源如实保留，三份 spec 与十二份 baseline 参数及数值环境指纹
 已只读复核，不将派生状态封装当作新增历史等价。原件及补充来源证明在
 `outputs/w3c-ecs-state-readiness-20260912/`，接管入口只接受固定 SHA 的 ECS 原件。
+
+### 本轮 ECS 实际执行与恢复结果
+
+候选提交 `a3352417fa69ee7ab900e1668f32268e3e7d1df3` 已推送 develop，archive 两次构建字节一致，
+SHA-256 为 `50eb5d0fe18c378c52279b05a8cf3df547b9441877b5565f3ad9b03d98129d05`。
+W3C/W3D 分别完成原 ID 原子切换；prepare 未启动算法，仅新增各五条 Harness/Gate 审计。
+
+| ECS 标准模拟 | 结果 | 实际耗时 | 后续处理 |
+|---|---|---:|---|
+| 5Y AUC static | 通过 | 48.240 秒 | 私有派生状态发布并保留 |
+| 5Y AUC yearly | 通过 | 44.727 秒 | 同上 |
+| 5Y IC yearly | 通过 | 44.513 秒 | 同上 |
+| 7Y01 SAY | 120 秒超时，无 Result | 包含结束处理 122.375 秒 | 未写预测/run，无自动重试 |
+| 7Y03 ALL | 未执行 | — | 本批停止后没有继续启动 |
+
+W3C 当前 Request 为 predict 2026-09-12、feature 2026-09-11、target 2026-09-18，方向 +1；
+每份状态复用 649 个内部点，仅推进五个必要后缀，实际 6 线程、峰值 RSS 约 0.71 GiB。
+独立审核核实了前缀数组字节不变，不仅依赖算法日志。没有生成或修改已发布历史预测。
+W3D 7Y01 在一个当前 Request 内计算多个模型族，第一组 265 configs / 2 seeds 已约需 1.1 分钟，
+到后续 3 seeds 组时触发标准 120 秒上限；峰值 RSS 约 0.98 GiB、6 线程，不是完整历史回测。
+
+停止后恢复五个原 Native canonical exact，并由受控 installer 恢复
+`6c818d91bccf706ccc66e515b4ba30cee414ea61`。W3D 恢复使此前 W3C 批准摘要过期，
+首次 W3C rollback 被拒绝、无部分提交；维护围栏始终保留。期间一次提前切回旧 release 后，
+重新通过 installer 切回候选、刷新 W3C preflight、成功恢复版本，最后再恢复旧 release。
+不绕过摘要校验，不修改 immutable release。所有失败尝试与安装审计保留。
+
+恢复核验：25,715 条预测、5,689 条 run、111 条回测 run、24,750 条回测预测摘要不变，
+Actuals、Dashboard 及原 Harness 行不变，零 running run；五原 ID 各唯一 Native active version。
+Backend 与日频 timer 已恢复，月频 18:00、Actuals 19:00 等原触发未更改；Mac3 未操作。
+installer 的 previous 当前指向失败候选 a335241，不是已通过准入的普通回滚目标；禁止盲目切 previous。
+W3C 状态及通过证据保留，不重复执行；W3D 需要先确定标准调用预算或最小提速措施，再重新安排维护窗口。
+自动推进已暂停，不得自动重试算法或扩大为历史回测。当前接管仍为 12/17 方案、16/21 target。
+
+完整实际原件在本机及 ECS `final-five-single-request-20260912` 私有证据目录，
+包含切换、失败模拟、刷新摘要、成功回滚、恢复后数据库与控制面读回；PR #57 保持执行中，不宣称闭环。
 
 ## 2. 精确身份、目标与部署清单
 
