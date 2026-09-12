@@ -293,7 +293,7 @@ Backend 实际 cwd 指向新 release，health 正常；日频 timer 已恢复，
 `outputs/w2-writer-reclaim-20260912/ecs-evidence/`；切换回执 SHA-256
 `6d88e771c5bfd2ee11ae3c562866e4a50a51f130ede27399035393106ea8089c`，标准准入回执 SHA-256
 `74be899dba6cc1dc1cc521a0d0fcfdbcd9b4127dc36beea4372b2845d63a876f`。
-这是 W2 执行接管完成，不是数据清理或双机全局闭环；临时 ID 的四条独有事实仍待补入原 ID。
+这是 W2 执行接管完成，不是数据清理或双机全局闭环；四条独有事实的后续保全已完成，见下文。
 
 12 条独有结果为 8 条已到期 live 和 4 条历史 backtest 来源；来源均有本机成功执行原件，
 后续按原业务键只补缺。W3A 原 ID 的两个独有日期亦必须保留。重合方向不同只属于跨输入版本
@@ -315,7 +315,7 @@ Expected，再与候选的 preds/probs 逐字节及完整五字段比较，全�
 证据位于 ECS `incoming/w3a-full-weekly-analysis-20260912.wpLu6e`，`evidence.json` SHA-256
 为 `d63eb3f43674466926034f11780f56f9caebe377c0f9894ec743c918d823d210`。
 
-W2 四条 live 独有结果的临时物化候选已实现，仍未部署/写入：
+W2 四条 live 独有结果已完成 ECS 受控保全：
 
 - 同一迁移 CLI 增加 `preflight --action preserve-live --wave W2` 与 `preserve-live --wave W2`；
   必须绑定原 ID 接管 release、已围栏 Writer、expected DB/UUID 和 fresh plan SHA，不接受预测值或自选键。
@@ -330,6 +330,29 @@ W2 四条 live 独有结果的临时物化候选已实现，仍未部署/写入�
   仓储另核对备份源数据库身份摘要，不能将同数据克隆库误当本次同库保全。
 - 四条新 run/预测一次事务；任意已有目标键、来源或输入/备份漂移均拒绝整组。
   全部旧 prediction/run/backtest/Harness、Registry/version 保持不变，尚不删除临时身份。
+
+当前 ECS release 为 `ee92b2d62a9e04faa59e2dc1f5e16a55ce9bdfa8`，previous 为上述 W2 接管
+`9385292514bdd2491c13bf7b24ba0a97e1d02e60`；同提交两次构建 archive 字节一致，SHA-256
+`f0a2e7fffef1cfed5c9f8facab4b079790e1a79efcc215db4eaec42a445ae89c`。当前提交已推送 develop，master 未修改。
+全量 1077 passed、35 skipped、243 subtests passed；另行真实隔离 MySQL 29 passed，独立审查无 Critical/Important。
+本次在周频 one-shot 自然成功退出后，仅围栏日频 timer，未杀算法；初次只读 preflight 因操作进程
+缺少显式部署 target 拒绝，保留失败原件后补齐 `aliyun-gray` 环境，再重新生成真实批准计划。
+没有因此修改 production config、放宽校验或重算数据。
+
+批准计划 SHA-256 `40f27c1f6fdc486b1dc6e10a75c6079cf2b83d48613184a2e13715bfa4d769de`；
+保全回执 SHA-256 `9ff46af2b33e8c5acc706c15b21c720b47223f620c50c8da7946c4b6ebb6d744`。
+前后全库预测 25,703→25,707、run 5,681→5,685；新增恰为四条 manual 物化及其预测，
+算法执行 0 次。剔除这八条新记录后，全部原事实 SHA 完全不变；Registry/version、Actuals、
+其他 86 个 Dashboard 方案内容不变，原两个 ID 现在各有 411 条预测。Backend cwd/health 与
+current 对应，日频 timer 已恢复，周/月 next trigger 正常。正式准入回执 SHA-256
+`3327a1ecbcaadaa119614beb236a8492775fb47c20e79548f77314b3ab80239d`。
+原件位于 ECS `incoming/w2-live-preservation-20260912.TS7r6o/` 及本地
+`outputs/w2-live-preservation-20260912/ecs-evidence/`。临时身份及其记录未删除，旧备份继续保留。
+
+W3A 下一步采用既有 StateSession：先私有验证 alias 原入口复用修订后的 653 点状态、训练 0 点，
+再在日频围栏及四身份锁下准备 source 与 candidate 两份真实当前输入状态，最后执行现有
+原子 Writer 事务。不新增 repository 状态回调；失败不盲目恢复无法接受当前修订输入的旧状态。
+该状态准备及 W3A 切换仍待完成，不能把只读证据加载通过当成接管完成。
 
 ### 已批准的迁移期附件共存与历史修订边界
 
