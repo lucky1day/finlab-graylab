@@ -333,8 +333,13 @@ W3A/W3B 不允许多次独立 activate 冒充原子切换。
 
 已部署的 W3B 临时入口为 `python -m harness migrate-native-successor
 {preflight,prepare,cutover,rollback} --wave W3B`。当前候选另在同一 CLI 增加 W2 的
-`preflight/cutover/rollback` 原身份回收路由，不能使用旧跨 ID 命令；W2 准备凭据仍在实现，
-未具备真实 Gate 时拒绝切换。W3A 仓储整组事务已实现，但控制入口显式阻断，必须先完成
+`preflight/prepare/cutover/rollback` 原身份回收路由，不能使用旧跨 ID 命令。W2 准备入口
+复用固定等价报告，在当前仍为旧临时 Writer release 时对每份执行一次无状态标准预测，
+分别绑定旧等价输入和本次执行输入，创建真实 Gate；不写预测、状态、Registry 或操作调度。
+可选 `--predict-date` 仅用于 W2 prepare（包括 prepare 预检），必须是已经到期的工作日交易日，
+默认选择最近已到期日期。传相应 action 的 plan SHA 和全新 work-dir；已有候选准备凭据时
+拒绝重跑，失败保留实际进程、错误及已有结果，并尝试写失败 Gate。
+W3A 仓储整组事务已实现，但控制入口显式阻断，必须先完成
 Full 状态修订和回滚执行证据；不能只改部署矩阵就绕过。Mac3 入口尚未实现。
 以下表格仅描述已验证的 W3B 路径，不是其他批次的操作指令。
 所有命令从 candidate immutable release 执行，传 candidate `--project-root`、

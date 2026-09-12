@@ -45,13 +45,45 @@ def test_incomplete_or_fake_evidence_never_opens_database(monkeypatch):
     monkeypatch.setattr(cli, "create_engine_from_env", create)
     common = ["--wave", "W2", "--reference-project-root", "/reference",
               "--expected-database-name", "test", "--expected-server-uuid", "test-only"]
-    for action, extra in [("preflight", []), ("preflight", ["--action", "prepare"])]:
-        args = cli._build_parser().parse_args(["migrate-native-successor", action, *common, *extra])
-        with pytest.raises(ValueError):
-            cli._run_native_successor_migration_command(args)
+    args = cli._build_parser().parse_args(["migrate-native-successor", "preflight", *common])
+    with pytest.raises(ValueError):
+        cli._run_native_successor_migration_command(args)
     for values in [[], ["daily_5y_2_v28=x"], [f"{key}=same" for key in reclaim.RECLAIM_WAVES["W2"]]]:
         with pytest.raises(ValueError):
             reclaim.parse_reclaim_run_ids("W2", values)
+    create.assert_not_called()
+
+
+@pytest.mark.parametrize("action", ["preflight", "prepare"])
+def test_w2_prepare_routes_without_caller_supplied_success(monkeypatch, action):
+    called = MagicMock(return_value={"prepare": True})
+    engine = MagicMock()
+    monkeypatch.setattr(cli, "create_engine_from_env", lambda: engine)
+    monkeypatch.setattr(cli, "build_w2_reclaim_prepare_preflight", called)
+    monkeypatch.setattr(cli, "execute_w2_reclaim_prepare", called)
+    args = ["migrate-native-successor", action, "--wave", "W2",
+            "--reference-project-root", "/reference", "--expected-database-name", "test",
+            "--expected-server-uuid", "test-only", "--predict-date", "2026-09-11"]
+    args += ["--action", "prepare"] if action == "preflight" else [
+        "--work-dir", "/fresh", "--expected-plan-sha256", "a" * 64, "--approved-by", "tester"]
+    assert cli._run_native_successor_migration_command(cli._build_parser().parse_args(args)) == {"prepare": True}
+    assert called.call_args.kwargs["predict_date"] == "2026-09-11"
+    assert "harness_run_ids" not in called.call_args.kwargs
+    if action == "preflight":
+        parsed = cli._build_parser().parse_args(args + ["--harness-run-id", "daily_5y_2_v28=fake"])
+        with pytest.raises(ValueError, match="creates its own real"):
+            cli._run_native_successor_migration_command(parsed)
+
+
+def test_w3a_prepare_remains_closed_before_database(monkeypatch):
+    create = MagicMock(side_effect=AssertionError("must not connect"))
+    monkeypatch.setattr(cli, "create_engine_from_env", create)
+    args = cli._build_parser().parse_args([
+        "migrate-native-successor", "preflight", "--action", "prepare", "--wave", "W3A",
+        "--reference-project-root", "/reference", "--expected-database-name", "test",
+        "--expected-server-uuid", "test-only"])
+    with pytest.raises(ValueError, match="W3A state preparation"):
+        cli._run_native_successor_migration_command(args)
     create.assert_not_called()
 
 

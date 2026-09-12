@@ -32,6 +32,7 @@ from harness.same_id_runtime_upgrade import (
     parse_w3b_harness_run_ids,
 )
 from harness.w3b_prepare import build_w3b_prepare_preflight, execute_w3b_prepare
+from harness.w2_reclaim_prepare import build_w2_reclaim_prepare_preflight, execute_w2_reclaim_prepare
 from harness.writer_reclaim import (
     build_writer_reclaim_preflight, execute_writer_reclaim, parse_reclaim_run_ids,
 )
@@ -295,6 +296,8 @@ def _build_parser() -> argparse.ArgumentParser:
         item.add_argument("--expected-server-uuid", required=True)
         if action == "preflight":
             item.add_argument("--action", choices=["prepare", "cutover", "rollback"], default="cutover")
+        if action in {"preflight", "prepare"}:
+            item.add_argument("--predict-date", help="W2 preparation only; an already-due weekday trading date")
         if action == "prepare":
             item.add_argument("--work-dir", type=Path, required=True)
         if action != "preflight":
@@ -315,8 +318,10 @@ def _run_native_successor_migration_command(
     if preparing and getattr(args, "harness_run_id", None):
         raise ValueError("prepare creates its own real Harness runs; do not supply run IDs")
     reclaiming = args.wave in {"W2", "W3A"}
-    if preparing and reclaiming:
-        raise ValueError("W2/W3A preparation evidence is not implemented; no execution or synthetic Gate allowed")
+    if preparing and args.wave == "W3A":
+        raise ValueError("W3A state preparation is not ready; no execution or synthetic Gate allowed")
+    if getattr(args, "predict_date", None) and not (preparing and args.wave == "W2"):
+        raise ValueError("predict-date is restricted to W2 preparation")
     run_ids = None if preparing else (
         parse_reclaim_run_ids(args.wave, args.harness_run_id or []) if reclaiming
         else parse_w3b_harness_run_ids(args.harness_run_id or [])
@@ -328,6 +333,13 @@ def _run_native_successor_migration_command(
                           reference_project_root=args.reference_project_root.resolve(),
                           expected_database_name=args.expected_database_name,
                           expected_server_uuid=args.expected_server_uuid)
+            if args.wave == "W2":
+                kwargs["predict_date"] = args.predict_date
+                if args.migration_action == "preflight":
+                    return build_w2_reclaim_prepare_preflight(engine, **kwargs)
+                return execute_w2_reclaim_prepare(engine, **kwargs,
+                    expected_plan_sha256=args.expected_plan_sha256, approved_by=args.approved_by,
+                    work_dir=args.work_dir)
             if args.migration_action == "preflight":
                 return build_w3b_prepare_preflight(engine, **kwargs)
             return execute_w3b_prepare(engine, **kwargs,
