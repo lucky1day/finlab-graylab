@@ -16,6 +16,9 @@
   ECS 先接管源码方案，再用同一 archive 晋级 Mac3，继续 Mac3-only W4 改造；不改变域名、DNS、Nginx 或隧道。
   原方案 ID 保留，已跨 ID 批次也按计划回归原身份；此为执行范围更新，不表示部署或数据清理已经完成。
   两端 confidence DDL 仍各需独立确认，master 不合并；允许推送 develop 和交付 PR。
+- 用户已批准迁移期新 Blackbox 目录保留 Native 附件至接管验收完成，按精确清单及摘要绑定版本，
+  不允许附件 fallback 或第二 Writer；普通两文件合同不变。历史源数据修订不触发已发布预测重算或覆盖，
+  只更新当前预测必需的内部派生状态；不再等待目录布局审批。
 - ECS 是独立灰度实验室，使用自己的 MySQL、DataBridge、Registry、run、prediction 和 systemd timer；
   Backend 只监听 loopback，不承载生产公网流量。
 - 两端不建立持续复制、双写、共享数据库或共享 DataBridge。经明确授权的单次缺口修复可以在停止目标 Writer
