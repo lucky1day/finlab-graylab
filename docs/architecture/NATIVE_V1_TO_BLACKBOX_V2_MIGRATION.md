@@ -417,7 +417,28 @@ W1A 两个 base、六个 target 已完成 ECS 原 ID 接管与发布验收：
   cutover SHA-256 `f7c709d2acd661a9f08a382ba97b12e4e13c16b7ab7914c9167f40bd045138dc`；
   标准准入 SHA-256 `d39ccfdbcbe5615dfd83e575b267f47067eb73b62242fc4b3d6ae5eb928b3ebe`。
 
-ECS 原 ID 接管现为 12/17 个方案、16/21 个 target。下一步是 W3C/W3D 缺失验证及 W3A 等临时身份独有结果保全；
+W3A 八条临时身份独有结果已完成 ECS insert-only 保全：
+
+- 本批 current `6c818d91bccf706ccc66e515b4ba30cee414ea61`、previous `812e8dd…`；同 clean commit 双构建一致，
+  archive SHA-256 `1514eb8c1fa3cecb6b0d2705f462bb9af78cae1035525c94ec78bef683c5ba7d`，算法 exact 与部署矩阵未改。
+- 固定备份 3465 行、14 表 DDL、12 外键已在隔离 MySQL 保持外键启用的情况下恢复验证；
+  原件 SHA `b22b235613b9e8b1094bf5dbb26b1e37505480ea06d2f5ec5410e56a9870ca0e`，
+  恢复回执 SHA `7bc4e18ac867884fbaf8a0338dc96e66da7f49811cfa60592b45378d36346075`。
+- Fresh preflight 绑定历史各自五文件输入、真实源 exact、Full 已审修订证据和当前围栏；一次事务新增八条预测、
+  四条 manual / NULL phase run。四条回测产品保持 `backtest_run_id=278/279`、原 actual 且 run 为 NULL。
+  共享父回测及明细不复制、不改写，后续清理不得删除这些共享来源，也不将历史物化称为新算法或自然执行。
+- 预测 25,707→25,715，run 5,685→5,689；原两个方案各 413 条。剔除新行后全库原事实摘要完全一致，
+  Registry/version、Actuals 及其他 86 个 Dashboard 方案不变，算法调用 0。临时身份数据未删除。
+  Backend/current/执行准入及日周月 timer 读回通过；未操作 Mac3。
+- 全量 1262 passed、44 skipped、243 subtests；另行隔离 MySQL 与 SQLite 组合 27 passed，
+  包含八条成功提交、第八条故障回滚及旧 W2 防线。独立审查无 Critical/Important，develop 已推送，master 未改。
+- 原件 ECS `incoming/w3a-result-preservation-20260912.IVDO74/`、本机 `outputs/w3a-fact-preservation-20260912/ecs-evidence/`。
+  plan SHA `72a5711cae62dea4009a45b7382da7c00ea439562538c21be74ac9f0e2e5b07a`；
+  apply SHA `b07e92e87d6b46ef94fab04900ab1c1a9fc1cdaab29900a8721c1f9894615c6b`；
+  准入 SHA `e01b38c3704542b7a3b76d0e8dab7937c020c25c32835461a68fcf259382223a`。
+
+ECS 原 ID 接管现为 12/17 个方案、16/21 个 target。下一步是 W3C/W3D 缺失验证及 W1A/W1B 结果保全；
+只读盘点 W1A 六个 target 各五条、W1B 三个 target 各四条，共 42 条待保全，不能把盘点当作批准入库。
 双机晋级、W4 和最终清理仍未完成。W3C/W3D 优先核实既有 Native 数值产物和真实依赖，不能因缓存的
 `unqualified` 标签直接丢弃可核实结果，也不能不补证明就将其发布为合格 Blackbox 状态。
 
