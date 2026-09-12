@@ -506,9 +506,11 @@ def _monthly_rows(
         ("live", live_details),
     ):
         for row in rows:
+            # 保留纯待验证月份的明细入口，统计仍只使用已验证记录。
+            bucket = grouped[(_display_month(row, task_type), source)]
             if row.get("actual_direction") is None:
                 continue
-            grouped[(_display_month(row, task_type), source)].append(row)
+            bucket.append(row)
 
     result: list[list[Any]] = []
     source_rank = {"backtest": 0, "live": 1}

@@ -130,6 +130,44 @@ def test_v5_summary_validator_rejects_monthly_source_outside_policy() -> None:
         validate_dashboard_payload(payload)
 
 
+@pytest.mark.parametrize(
+    "target_date,month,source",
+    [
+        ("2026-05-29", "2026-05", "backtest"),
+        ("2026-07-03", "2026-07", "live"),
+        ("2026-06-05", "2026-06", "live"),
+    ],
+)
+def test_pending_predictions_keep_month_accessible_without_changing_metrics(
+    target_date: str, month: str, source: str,
+) -> None:
+    engine = _engine()
+    baseline = build_factor_lab_dashboard(engine)["schemes"][0]["monthly_rows"]
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """INSERT INTO t_scheme_predictions VALUES
+                (4,'demo_daily','5Y',1,'2026-05-28','2026-05-27',
+                 :target_date,-1,NULL,'{}')"""
+            ),
+            {"target_date": target_date},
+        )
+    summary = build_factor_lab_dashboard(engine)
+    validate_dashboard_payload(summary)
+    rows = summary["schemes"][0]["monthly_rows"]
+    assert all(row in rows for row in baseline)
+    if month != "2026-06":
+        assert [month, source, *([0] * 11)] in rows
+    else:
+        assert rows == baseline
+    detail = build_factor_lab_dashboard_detail(
+        engine, scheme_id="demo_daily__h1__5Y", month=month, source=source,
+    )
+    assert detail is not None
+    validate_dashboard_payload(detail)
+    assert [source, "2026-05-28", "2026-05-27", target_date, -1, None] in detail["rows"]
+
+
 def test_same_id_runtime_upgrade_preserves_backtest_provenance() -> None:
     engine = _engine()
     with engine.begin() as conn:
