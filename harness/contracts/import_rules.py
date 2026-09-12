@@ -47,7 +47,6 @@ WRITE_CALL_NAMES = {
     "write_run_log",
     "execute_scheme",
     "replace_backtest_predictions",
-    "insert_reproduction_check",
 }
 PREDICT_DANGEROUS_IMPORTS = {
     "scheduler.repository",

@@ -16,7 +16,7 @@
 | Mac3 W4 九个 Native V1 存量方案的故障、数据口径或复现性修复 | Native V1 存量维护 |
 | Native V1 的算法升级、替代实现或能力扩展 | 创建独立 Blackbox V2 trial |
 | 已完成运行时升级的身份与保留边界 | [当前状态](../CURRENT_STATUS.md#保留范围与历史保护)与[共享契约](../architecture/SCHEME_CONTRACT.md)，不恢复临时迁移入口 |
-| 查看当前方案状态或未关闭问题 | 当前状态或统一后续推进计划 |
+| 查看当前方案状态或未关闭问题 | [当前状态](../CURRENT_STATUS.md)或[统一后续推进计划](../TODO.md) |
 | 查看历史规则和旧草案 | 使用 Git 历史；不得用于当前验收 |
 
 不得通过复用旧 ID、复制 `predict.py + core/` 或修改 Native 白名单，把新算法伪装成存量维护。
@@ -24,18 +24,7 @@
 已完成的运行时迁移不属于日常入库流程；临时迁移入口已删除。不得把旧 backtest 改名成新版本重新执行，
 也不因历史迁移例外放宽普通 activate。
 
-## 两种运行时
-
-| 维度 | Native V1 | Blackbox V2 |
-|---|---|---|
-| 机器标识 | `runtime_type: native_adapter` | `runtime_type: blackbox_v2` |
-| 管理定位 | 既有身份的存量维护 | 后续新增方案唯一入口 |
-| 上游形态 | 仓库内 `config + predict + core` | 一个 `.py` 和一个 `.json` |
-| 输入 | `shared.input_artifacts` 从当前权威 `bond_db` 按 `feature_date` 截止构建；source-backed 身份连接同一实例和数据库，只使用现有 SELECT-only 身份 | `data_bridge_current` 五文件 Snapshot；自然运行使用当前 DataBridge generation，历史补缺严格绑定冻结 authority |
-| 执行 | import adapter 子进程 | 受控 CLI 子进程 |
-| 生产权限 | 保持既有方案的独立状态 | 每个方案必须单独完成生产准备和专项授权 |
-
-两种运行时共用 Registry、版本、日期语义、`PredictionRecord`、业务表、API 和前端。运行时决定交付检查、Harness 入口、输入准备和算法执行驱动。
+运行时目录、版本、输入和共享业务身份由[共享方案契约](../architecture/SCHEME_CONTRACT.md)定义；本页不维护第二份合同。
 
 ## 操作入口
 
@@ -48,7 +37,7 @@
 
 ### Native V1
 
-- 文档入口：[Native V1 存量维护](../native_v1/README.md)
+- 运行接口：[Native V1 存量契约](../native_v1/SCHEME_CONTRACT.md)
 - 准入、改动分级、实施和验证：[存量维护 SOP](../sop/NATIVE_V1_MAINTENANCE_SOP.md)
 
 ### 共享规则
@@ -58,56 +47,21 @@
 - [源算法保真](../architecture/SOURCE_ALGORITHM_FIDELITY.md)
 - [Harness 架构](../architecture/HARNESS_ARCHITECTURE.md)
 
-## 新方案历史与灰度的最快正确路径
+## 执行顺序
 
-本节适用于尚未有对应事实的新方案。原 ID 运行时升级不重算、复制、覆盖或删除已有历史，
-不搬迁临时 ID 的独有结果，不为了包装升级创造灰度缺口；此前已完成物化也不回删。
+新 Blackbox ID 依次执行 `intake-blackbox`、完整 `gate backtest --persist` 和 `activate`。
+同 ID 修订直接按[平台入库 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)复验 canonical 并重新回测、激活，不重复 Intake。
+Native 存量使用 `onboard`，其完整 `all` 与后续 `native-maintenance` 的互斥准入条件只按
+[Native 维护 SOP](../sop/NATIVE_V1_MAINTENANCE_SOP.md#4-自动-gate)判断。
 
-先确定方案级 `gray_target_start`。`target_date` 在起点以前的样本由一次持久化历史回测写入 immutable canonical backtest；起点及以后、正式调度以前的应有点由一次 target 区间批量执行写为 `gray_live`。区间入口按任务日历生成 live `predict_date`，一个方案只解析一次 DataBridge authority、核对一次 producer-ready receipt、物化一个私有运行视图并启动一个算法 batch，不再逐日期重复运行或重写输入快照。
+开始新方案回测前必须确定历史与灰度的 target 分界；已有事实不可重算或覆盖。
+历史批次、live-safe 要求和区间拒绝规则见[预测日期语义 5.2](../architecture/PREDICTION_SEMANTICS.md#52-历史批次与灰度区间批次)。
+`signal-gap-fill` 是独立授权的补缺操作：按[平台 SOP 第 6 节](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#6-灰度区间批量物化)
+判断是否支持区间批量；不满足批量条件时使用既有单日入口，不从导航自行扩大支持范围。
 
-两个批次绑定同一 exact version 和输入 lineage，但不跨激活保存临时候选结果，也不增加候选表、报告文件或新的 lifecycle 状态。固定未来 `source_end`、跨样本全局选择、版本或输入 lineage 不一致时必须停止批量物化，改走逐点 live-safe 计算。两侧 target 必须零重叠；灰度区间已有任一 live 键时整组拒绝，不能覆盖或删除后重写。完整规则见[预测日期语义 5.2](../architecture/PREDICTION_SEMANTICS.md#52-历史批次与灰度区间批次)和[平台入库 SOP 6](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#6-灰度区间批量物化)。
-
-## 当前工作流
-
-普通 Blackbox V2 入库不再进入 `harness onboard`。上游负责证明交付脚本可运行，平台只保留三个会产生新事实的步骤：
-
-1. `intake-blackbox`：新 ID 原子接收两文件，完成 Metadata、固定 Runtime Profile/Data Schema、脚本语法与平台安全边界检查，生成 `paused/draft` canonical config；
-2. `gate backtest --persist`：先对当前 canonical 脚本复验安全边界，再选择已有 producer-ready DataBridge generation，执行完整历史 Request 批次并原子写入 immutable backtest。它同时证明平台批量调用、Result 回显、数量、日期和持久化合同，不再提前做一次重复 predict；
-3. `activate`：严格加载 canonical 当前字节哈希，只接受同 exact version、同当前脚本校验策略的成功持久化回测；首次激活在一个数据库事务内 insert-only 发布回测产品事实、建立 active version 与 active Registry。revision activation 只切换未来 Writer，不重写历史事实。没有独立 `shadow-register` 或 draft promotion。
-
-同 ID 修订不重复创建方案目录，也不伪造第二次 Intake；修订 canonical `.py/.json` 后重新执行第 2、3 步。任何第三文件、symlink、危险导入或固定 Profile/Schema 漂移都会在回测前直接拒绝；回测后的任何字节漂移都会因 exact-version evidence 不匹配而阻断激活。
-
-同算法运行时升级与普通算法修订分开：17 个原 ID 的 canonical 使用 Blackbox，既有迁移证据只读保留，
-已退役的一次性迁移命令不是日常入库入口，不为包装变化重复历史训练。T1/T5 按 target 独立两文件、每 base 一个整体版本。
-W4 九方案保留 Mac3 Native 及必要依赖，不改造 binary bundle、不部署 ECS。这些边界不改变普通新方案默认两文件合同。
-周/月 Request 使用 Metadata horizon=1，原 Registry 和事实 horizon=6/30 在持久化边界显式投影保留。
-临时 `_bbv2` 身份不得拥有 Writer，不建立长期历史别名；历史默认只读保留。另行明确授权的精确临时身份清理必须先通过备份、隔离恢复及引用检查，不删除原 ID 历史及其共享来源，不作为普通入库能力。
-
-已完成迁移中的共享历史来源保留例外不影响新方案 Intake，也不放宽新算法的回测与激活要求。
-平台不接收统一 confidence 输出；Blackbox Result 精确仅含 request_id、predict_date、feature_date、target_date、
-predicted_direction。算法内部同名概率或决策变量保持其原语义，不因平台字段退役修改算法。
-
-`gate dashboard` 是激活后的可选只读产品检查，不是入库门禁；`signal-gap-fill` 是独立授权的历史缺口操作，也不属于入库。
-
-Native V1 存量仍使用 `onboard --stage all` 的
-`static → dry-run → compare → backtest`，其中 Compare 是 source benchmark 保真证据，不能与已经删除的 Blackbox 伪 Compare 混为一谈。同一 Native 身份维护仍使用
-`static → native-maintenance-admission → dry-run`。
-
-所有人工副作用命令绑定 canonical exact version、operator 与 operation scope。Blackbox 激活从
-`t_backtest_runs` 读取相同 version/code/config/manifest 与当前脚本校验策略摘要的成功回测，并复核 Runtime Profile、环境指纹、generation 与 snapshot；它不再读取 Harness `all`。首次激活和 revision 都只在本机数据库事务中切换 exact version 与 Registry，不维护 config overlay 或 lifecycle journal。
-
-## 单维护者最快稳定路径
-
-新 Blackbox 方案的长期最短链路是：
-
-1. `intake-blackbox`；
-2. 明确历史/live 分界后，执行一次完整 `gate backtest --persist`；
-3. `activate`；
-4. 仅在确有历史缺口时，单日执行 `signal-gap-fill --predict-date`，或对受支持的 Blackbox `weekly_point/h1`、日频 `T+5/h5` 方案执行一次 `--target-date-from/--target-date-before` 区间批量；
-5. 如需产品验收，再运行可选的 `gate dashboard`。
-
-这里保留的三个边界分别拥有不同的事实：不可变交付、不可变回测、生产状态切换。删除的
-Static/Compare/shadow 没有提供第四种独立事实。
+`gate dashboard` 是激活后的可选只读检查，不是入库门禁；它不证明 exact version 或自然调度成功。
+实际生产准备与观察分别按[生产准备清单](../blackbox_v2/PRODUCTION_READINESS.md)和
+[生产调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)验收。
 
 ## 可复用测试矩阵
 
@@ -133,13 +87,3 @@ export PYTHONDONTWRITEBYTECODE=1
 按实际改动选择对应行，不为单个方案入库重复执行无关的全仓测试。`tests/` 只保留跨方案复用的长期合同，
 不保存单次事故、迁移实施或生产 rollout 的永久回归。Native 的 `harness onboard ... --stage all`
 验收精确方案版本和真实输入证据；Blackbox 由持久化回测验收当前 exact version。pytest 只保护本次修改触及的平台代码边界，不与单次方案验收重复承担同一职责。
-
-## 版本与政策
-
-- `Blackbox V2`：运行时代际。
-- `schema_version=1.0`：上游接口合同。
-- `data-bridge-v1`：数据 Schema。
-- `blackbox-v2-v1`：运行 Profile。
-- `deploy/onboarding_policy_v1.json`：Native V1 存量身份的机器白名单。
-
-机器白名单只决定身份能否进入 Native 维护 Gate，不能把算法升级变成存量修复。

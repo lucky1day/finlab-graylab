@@ -364,31 +364,6 @@ def replace_backtest_predictions(engine: Engine, run_id: int, rows: Iterable[dic
     return len(materialized)
 
 
-def insert_reproduction_check(engine: Engine, row: dict[str, Any]) -> int:
-    """写入一次数据复现检查结果。"""
-    sql = text(
-        """
-        INSERT INTO t_backtest_reproduction_checks
-            (benchmark_id, check_name, status, source_path, row_count_csv, row_count_db,
-             col_count_csv, col_count_db, date_min_csv, date_max_csv, date_min_db, date_max_db,
-             csv_only_columns, db_only_columns, target_max_abs_diff, overall_max_abs_diff,
-             missing_diff_count, first_diff, report)
-        VALUES
-            (:benchmark_id, :check_name, :status, :source_path, :row_count_csv, :row_count_db,
-             :col_count_csv, :col_count_db, :date_min_csv, :date_max_csv, :date_min_db, :date_max_db,
-             CAST(:csv_only_columns AS JSON), CAST(:db_only_columns AS JSON),
-             CAST(:target_max_abs_diff AS JSON), :overall_max_abs_diff,
-             :missing_diff_count, CAST(:first_diff AS JSON), CAST(:report AS JSON))
-        """
-    )
-    params = dict(row)
-    for key in ("csv_only_columns", "db_only_columns", "target_max_abs_diff", "first_diff", "report"):
-        params[key] = json_dumps(params.get(key))
-    with engine.begin() as conn:
-        result = conn.execute(sql, params)
-        return int(result.lastrowid or 0)
-
-
 def _prediction_params(run_id: int, row: dict[str, Any]) -> dict[str, Any]:
     params = {key: row.get(key) for key in (
         "benchmark_id", "scheme_id", "target_tenor", "horizon", "predict_date",

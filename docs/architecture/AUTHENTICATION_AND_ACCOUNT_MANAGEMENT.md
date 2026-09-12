@@ -6,41 +6,18 @@
 前端系统的身份能力。ECS 与 Mac3 分别使用自己的 `bond_db`，不复制、同步或共享账户数据。
 运行版本以[当前状态](../CURRENT_STATUS.md)及现场 manifest 为准；本文不保留首次实施排期。
 
-## 1. 已确认需求
+## 1. 系统边界
 
-1. Bond Factor Lab 是完全独立的前后端系统，认证能力由本项目自身提供。
-2. 账户数据存储在各环境现有的 MySQL 8.0 `bond_db` 中，不新建第二个 database。
-3. 角色只分为 `admin`（管理员）和 `user`（普通用户）。
-4. 用户删除采用停用/软删除；账户、审计和历史关系不做物理删除。
-5. 页面右上角展示用户名。点击后只显示：
-   - 个人资料
-   - 修改密码
-   - 退出登录
-6. 管理员拥有独立的“用户管理”板块，可以创建用户、维护可选的用户姓名和机构名称、调整角色、重置密码、停用用户和恢复用户。
-7. 管理员是网站账户管理员，不因此获得算法激活、生产预测写入、数据库迁移、补数、调度或服务控制权限。
-8. 用户可以同时在多个浏览器登录；每次登录创建一条独立会话，所有会话均固定有效 12 小时。
-9. 用户改密、管理员重置密码、改用户名、改角色或停用用户时，必须撤销该用户全部浏览器会话。
-10. 恢复用户只恢复登录资格，不恢复任何已撤销或已过期的会话。
+账户使用各环境现有 MySQL `bond_db`，角色只有 `admin` 和 `user`。管理员仅管理网站账户，
+不因此获得算法激活、生产预测写入、数据库迁移、补数、调度或服务控制权限。
+账户和审计不做物理删除；具体生命周期、权限和会话规则见下文。
 
 ## 2. 功能范围
 
-### 2.1 包含
+系统提供用户名密码登录、可撤销会话、本人资料与改密、管理员账户维护及受控初始化/重置。
+页面行为、API 和运维入口分别由第 3、8、10 节定义。
 
-- 用户名和密码登录；
-- 服务端可撤销会话；
-- 登录、退出和当前用户查询；
-- 用户修改自己的密码；
-- 用户修改自己的可选姓名和机构名称；
-- 管理员用户列表；
-- 创建用户；
-- 调整管理员/普通用户角色；
-- 管理员重置用户密码；
-- 停用和恢复用户；
-- 管理员账户变更以及受保护管理员初始化/重置审计；
-- Dashboard 与管理员 API 的后端权限保护；
-- 初始管理员的一次性安全初始化和受控密码重置命令。
-
-### 2.2 不包含
+### 不包含
 
 - 用户自行注册；
 - 邮箱、手机号和短信验证码；
@@ -246,42 +223,44 @@ must_change_password = false
 ## 6. 数据库设计
 
 认证表位于各环境现有的 `bond_db`。Migration 022/023 只通过既有 `migrations.runner` 和
-`scripts/apply_migrations.py` 管理 schema；当前阶段只授权按本文门槛在 ECS 独立数据库执行，Mac3 必须等待
-用户明确确认 ECS 验收通过。
+`scripts/apply_migrations.py` 管理 schema；两端独立核对数据库身份并取得对应操作授权。
+已部署状态以[当前状态](../CURRENT_STATUS.md)和现场只读核验为准。
+
+物理列类型、索引和外键以 [Migration 022](../../migrations/022_authentication.sql)及
+[Migration 023](../../migrations/023_auth_user_profiles.sql)为准；下表只解释业务字段，不复制 schema。
 
 ### 6.1 `t_auth_users`
 
-| 字段 | 建议类型 | 约束/语义 |
-|---|---|---|
-| `id` | `BIGINT` | 自增主键 |
-| `username` | `VARCHAR(32)` | 唯一、标准化小写用户名 |
-| `full_name` | `VARCHAR(100)` | 可选用户姓名，空值为 `NULL` |
-| `organization_name` | `VARCHAR(200)` | 可选机构名称，空值为 `NULL` |
-| `password_hash` | `VARCHAR(255)` | Argon2id 编码结果 |
-| `role` | `ENUM('admin','user')` | 两级角色 |
-| `status` | `ENUM('active','disabled')` | 软删除状态 |
-| `is_protected_admin` | `BOOLEAN` | 仅初始管理员为真；禁止页面/API 改名、改角色或停用 |
-| `must_change_password` | `BOOLEAN` | 兼容保留，Migration 023 后固定为假 |
-| `password_changed_at` | `DATETIME(6)` | 最近密码变更时间 |
-| `created_by` | `BIGINT` | 创建者；初始管理员为空 |
-| `disabled_by` | `BIGINT` | 停用操作者，可空 |
-| `disabled_at` | `DATETIME(6)` | 停用时间，可空 |
-| `created_at` | `DATETIME(6)` | 创建时间 |
-| `updated_at` | `DATETIME(6)` | 最后更新时间 |
+| 字段 | 语义 |
+|---|---|
+| `id` | 自增主键 |
+| `username` | 唯一、标准化小写用户名 |
+| `full_name` | 可选用户姓名，空值为 `NULL` |
+| `organization_name` | 可选机构名称，空值为 `NULL` |
+| `password_hash` | Argon2id 编码结果 |
+| `role` | 两级角色 |
+| `status` | 软删除状态 |
+| `is_protected_admin` | 仅初始管理员为真；禁止页面/API 改名、改角色或停用 |
+| `must_change_password` | 兼容保留，Migration 023 后固定为假 |
+| `password_changed_at` | 最近密码变更时间 |
+| `created_by` | 创建者；初始管理员为空 |
+| `disabled_by` | 停用操作者，可空 |
+| `disabled_at` | 停用时间，可空 |
+| `created_at` | 创建时间 |
+| `updated_at` | 最后更新时间 |
 
 所有认证时间按 UTC 写入，展示时转换为 `Asia/Shanghai`。
 
 ### 6.2 `t_auth_sessions`
 
-| 字段 | 建议类型 | 约束/语义 |
-|---|---|---|
-| `id` | `BIGINT` | 自增主键 |
-| `user_id` | `BIGINT` | 关联 `t_auth_users.id` |
-| `token_hash` | `BINARY(32)` | 随机会话令牌的 SHA-256 摘要，唯一 |
-| `expires_at` | `DATETIME(6)` | 固定绝对过期时间 |
-| `revoked_at` | `DATETIME(6)` | 撤销时间，可空 |
-| `revoke_reason` | `VARCHAR(32)` | logout/password/username/status/role 等受控值 |
-| `created_at` | `DATETIME(6)` | 会话创建时间 |
+| 字段 | 语义 |
+|---|---|
+| `id` | 自增主键 |
+| `user_id` | 关联 `t_auth_users.id` |
+| `token_hash` | 随机会话令牌的 SHA-256 摘要，唯一 |
+| `expires_at` | 固定绝对过期时间 |
+| `revoked_at` | 撤销时间，可空 |
+| `created_at` | 会话创建时间 |
 
 浏览器只持有原始随机会话令牌，数据库只保存摘要。每次成功登录都创建一条独立会话，因此同一用户可以在多个
 浏览器同时登录。所有会话都从创建时起固定有效 12 小时，不在访问过程中自动续期。`revoked_at` 非空或
@@ -289,22 +268,22 @@ must_change_password = false
 
 ### 6.3 `t_auth_audit_logs`
 
-| 字段 | 建议类型 | 约束/语义 |
-|---|---|---|
-| `id` | `BIGINT` | 自增主键 |
-| `actor_user_id` | `BIGINT` | 操作者；系统初始化可空 |
-| `target_user_id` | `BIGINT` | 被操作账户，可空 |
-| `event_type` | `VARCHAR(32)` | 创建、改用户名、改角色、重置密码、停用、恢复等受控值 |
-| `request_id` | `VARCHAR(128)` | 与后端结构化日志关联 |
-| `detail` | `JSON` | 不含密码、哈希、令牌和原始请求体的受控详情 |
-| `created_at` | `DATETIME(6)` | 事件时间 |
+| 字段 | 语义 |
+|---|---|
+| `id` | 自增主键 |
+| `actor_user_id` | 操作者；系统初始化可空 |
+| `target_user_id` | 被操作账户，可空 |
+| `event_type` | 创建、改用户名、改角色、重置密码、停用、恢复等受控值 |
+| `request_id` | 与后端结构化日志关联 |
+| `detail` | 不含密码、哈希、令牌和原始请求体的受控详情 |
+| `created_at` | 事件时间 |
 
 审计表只记录已经提交成功的管理员账户变更和受保护管理员初始化/重置，且只允许 insert，不提供页面修改或删除
 能力。登录、查询当前用户、读取用户列表和普通退出不重复写数据库审计表；必要的请求结果进入现有结构化服务日志。
 
 ### 6.4 写库边界
 
-实施前必须同步更新根规范中的写库单点不变量：新增认证 repository 只能写 `t_auth_users`、
+依照根规范的写库单点不变量，`backend.auth.repository` 只能写 `t_auth_users`、
 `t_auth_sessions` 和 `t_auth_audit_logs`，不得写 Registry、prediction、run、Actual、backtest 或源数据表；
 现有 scheduler/backtest/updater 也不得写认证表。
 
@@ -352,9 +331,10 @@ __Host-bfl-session=<opaque-token>; Secure; HttpOnly; SameSite=Strict; Path=/
 
 ## 8. API 合同
 
-后端内部路径使用下表中的 `/api/...`；经 Nginx 暴露时，公网/灰度浏览器路径统一加
-`/bond-factor-lab` 前缀。为继续使用 Nginx 精确路径白名单，管理员操作使用固定 API 路径，不开放宽泛
-`/api/` 前缀，也不依赖动态 URL 中的用户 ID。
+后端内部路径使用下表中的 `/api/...`。Mac3 公网入口经 Nginx 使用 `/bond-factor-lab` 前缀；
+独立灰度 ECS 的 localhost 转发直接访问后端根路径，不加该前缀。地址与连接方式统一见
+[双机部署与访问入口](../operations/DEPLOYMENT_ACCESS.md)。管理员操作使用固定 API 路径，
+公网 Nginx 保持精确路径白名单，不开放宽泛 `/api/` 前缀，也不依赖动态 URL 中的用户 ID。
 
 ### 8.1 认证 API
 
@@ -458,8 +438,8 @@ Migration 只创建 schema，不写入默认用户名或密码。提供一次性
 14. 每个环境在自己的认证数据中验收，不修改或同步另一主机账户数据。
 15. ECS 灰度 Backend 只监听 loopback，并由 FastAPI 路由拒绝未列出的 API 方法，验收只经 SSH
     localhost 转发访问；不因认证测试开放端口或修改公网 Nginx。
-16. 本地单元、API、前端、migration、Nginx 合同和完整回归测试全部通过后，才可请求 ECS 现场 migration、
-    release 激活和服务操作授权。
+16. 与变更相关的本地安全、API、前端及迁移合同检查通过；目标环境的 migration、release 和服务操作
+    分别核对影响范围、恢复边界与授权。
 17. 同一用户可以在多个浏览器同时登录，且每条会话都在创建 12 小时后绝对过期。
 18. 恢复用户不会改变旧会话的过期或撤销状态，任何旧会话都不能因此恢复有效。
 19. 管理员重置命令拒绝不符合统一密码规则的初始密码，不从参数、输出、日志或版本控制中暴露密码，并在重置后

@@ -19,7 +19,6 @@ from shared.scheme_config_loader import load_yaml_mapping
 BACKTEST_WRITE_ALLOWED_TABLES = (
     "t_backtest_runs",
     "t_backtest_predictions",
-    "t_backtest_reproduction_checks",
 )
 
 

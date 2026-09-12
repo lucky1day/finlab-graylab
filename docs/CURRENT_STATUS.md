@@ -24,8 +24,10 @@
 - 两机 Backend 实际 cwd、健康、五套 exact、完整数据、调度模拟和前端验收均通过。
   域名仍由 Mac3 服务；DNS、Nginx、认证和既有 SSH 隧道未改变。
 - 两端独立使用自己的 MySQL、DataBridge 和派生状态，不复制数据库、不双写、不跨机共享输入。
-- 集成分支为 `codex/develop`。迁移收尾时两条远端分支已同步；其后文档提交不代表新的生产 release。
+- 集成分支为 `codex/develop`。开发分支的代码或文档提交不代表新的生产 release。
   实时提交以 Git 引用为准，发布以目标机 manifest、current/previous 和进程 cwd 为准。
+- 开发分支已清理无调用的旧回测框架与重复文档，尚未作为新 release 发布。清理验收证据：
+  `/Users/macstudio0/bond-factor-lab-runtime/releases/framework-cleanup-20260913/verification.json`。
 
 ## 五套新方案交付状态
 

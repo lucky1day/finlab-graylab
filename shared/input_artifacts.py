@@ -12,7 +12,7 @@ import tempfile
 from bisect import bisect_right
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Iterable, Mapping
@@ -2468,27 +2468,6 @@ def _schema_hash(df: pd.DataFrame) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _artifact_id(scheme_id: str, predict_date: str, content_hash: str) -> str:
-    payload = json.dumps(
-        {
-            "scheme_id": scheme_id,
-            "predict_date": predict_date,
-            "content_hash": content_hash,
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _source_watermark(profile: dict[str, Any]) -> str | None:
-    end = profile["date_coverage"].get("end")
-    if end is None:
-        return None
-    return str(end)
-
-
 def _read_daily_output_csv(path: str | Path) -> pd.DataFrame:
     df = pd.read_csv(path)
     df.columns = [str(col).strip().lstrip("\ufeff") for col in df.columns]
@@ -2568,7 +2547,3 @@ def _load_blackbox_schema(path: str | Path) -> tuple[str, dict[str, list[str]]]:
     ]:
         raise ValueError("factor_catalog.csv schema columns are invalid")
     return schema_version, columns
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()

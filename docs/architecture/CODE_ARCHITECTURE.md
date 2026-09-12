@@ -21,7 +21,7 @@
 - **横切（Cross-cutting）**：`harness/` 横切所有层，只读探测 + 编排 + 留证，不被任何层依赖；`python -m harness` 是统一机器入口。
 - **环境隔离（Process isolation）**：Native 原生算法在 `forecast_env`，Blackbox V2 只按 `blackbox-v2-v1` Runtime Profile 选择环境与执行预算，服务在 `bond_factor_lab_service`。运行驱动不同，统一输出均收敛到 `PredictionRecord`。
 
-Native 路径仅为 Mac3 W4 九方案及其必要依赖保留；其余 17 个原 ID canonical 使用 Blackbox V2。
+Native 路径仅为 Mac3 W4 九方案及其必要依赖保留；其余 canonical 使用 Blackbox V2；部署范围见[当前状态](../CURRENT_STATUS.md)。
 T1/T5 每 target 独立两文件交付，每 base 一个整体 exact version、一个调度任务、全部目标一次原子提交。
 已退役 Native 算法、Phase-A 缓存、迁移原件 loader 和历史搬迁命令不构成新的平台能力；旧证据只读追溯。
 同 ID 迁移只切未来唯一 Writer，不新建 `_bbv2` 业务身份、不重跑或搬删历史；实际双机部署进度只读当前状态与现场。
@@ -86,7 +86,7 @@ shared/        → （无；仅依赖第三方库 pandas/sqlalchemy 与 shared �
 schemes/*/predict.py → shared.{input_artifacts, calendar_service, models}        [+ data_service 仅限引擎，过渡期]
 schemes/*/core/      → （无本仓库依赖；仅 pandas/numpy/sklearn/lgbm）
 scheduler/     → shared.{models, db_config, data_service}  + scheduler 内部
-backend/       → scheduler.{repository, discovery, executor, main} + shared + backend 内部
+backend/       → scheduler.{repository, discovery, executor} + shared + backend 内部
 backtests/     → shared.{input_artifacts, data_service, calendar_service}
                  + schemes/*/{core,inference}（调用方案算法，不依赖 predict adapter）
                  + backtests 内部
@@ -114,7 +114,7 @@ tests/         → 任意（验证需要）
 ### 3.3 四条不可破坏的不变量
 
 1. **依赖只向下**：上层可依赖下层，下层永不依赖上层（`shared` 不知道 `schemes` 存在；`schemes` 不知道 `scheduler` 存在）。
-2. **写库单点**：只有 `scheduler.repository` / `backtests.repository` / `*_actuals_updater` 能写库；其余层零写库。
+2. **写库单点**：只有 `scheduler.repository` / `backtests.repository` / `*_actuals_updater` / `backend.auth.repository` 能写库；认证 repository 仅写认证三张表，其余层零写库。
 3. **输入单点**：算法输入只能经 `shared.input_artifacts` 产出；adapter / backtest runner 不得自拼 DB 输入。
 4. **源算法保真**：source-backed 方案的 L2 core 必须复现原始算法的时间起点、窗口、特征、对齐、模型参数、投票/fallback 和内部 score 映射。平台适配只能发生在算法外层；若 source-original 输出与平台 current 不一致，先查输入 artifact 与 source 口径，不得调算法贴结果。若 source-original batch 的 `source_end` 或 test window 晚于样本 `feature_date`，该 batch 只能验收 source-original backtest；gray/live/scheduled live 必须保持 `feature_date` 硬截止并用 live-safe oracle 验收。所有改动必须先分级为 L0/L1/L2；L2 算法内部改动默认禁止。
 
@@ -194,38 +194,24 @@ Native V1:
 composite、展示身份、任务字段与回测分区可见；空 live 明细合法。dashboard payload 不携带 exact version，因此版本身份仍由
 生命周期和数据库权威回读证明。
 
-上图的 `all` 仅用于政策清单内 Mac3 W4 九个存量身份的完整准入，不能用于新增 Native；source benchmark/CompareGate 在其中作为保真硬证据。Blackbox 由上游负责交付可运行性和内部性质，平台的完整持久化回测验证批量调用与标准输出。已入库 Native
-修订仅在不同 prior Native version 的 passed `all + compare` 所属 StaticGate 已持久化
-`static.business_identity`，且该快照与当前身份精确匹配时，才可走：
+Native 完整准入与同身份维护的互斥条件只在[Native 维护 SOP](../sop/NATIVE_V1_MAINTENANCE_SOP.md)维护；
+Blackbox 的 exact-version 回测与激活条件见[平台入库 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)。
+Gate 职责与证据边界见[Harness 架构](HARNESS_ARCHITECTURE.md)。
+
+### 5.3 历史回测路径
 
 ```text
-static -> native-maintenance-admission -> dry-run
+Blackbox: Harness → backtests.blackbox_v2 → 原始两文件 CLI + 标准 Result
+W4 Native: BacktestGate → backtests.{scheme_id}_reproduction → 保留的 source runner
+  ├─ shared.input_artifacts → 本机可信输入
+  ├─ backtests._base_runner → RunOutput 与运行内指标（使用该公共模型的 runner）
+  └─ backtests.repository → t_backtest_* 不可变回测证据
 ```
 
-快照只保存 `scheme_id`、`runtime_type`、`horizon`、`task_type`、`frequency`、target tenors
-与 composite Registry IDs，不保存代码、config 或 version hash。maintenance 的 current exact
-`t_scheme_versions` 行必须为 `runtime_type='native_adapter'` 且 status 为 `draft|active`；expected
-Registry identity 可在预激活时统一为 `paused`，或在激活后统一为 `active`，但 draft version 配 active
-Registry 必须 fail-closed。只有 ActivationGate 可在严格 discovery、精确版本与标准 Gate 核验后原子
-建立 active 状态。缺少、重复、损坏或不匹配的 prior snapshot 一律 fail-closed，不再保留方案级历史
-receipt。该三段路径不运行当前 historical `compare/backtest`、不写业务表，且不适用于 Blackbox；其后
-activation 仍要核验当前精确 version 与两个 Gate。反之，current exact version 的
-完整 `all` 通过时，ActivationGate 走互斥的 `full_initial_onboarding_v1`，不要求此 prior snapshot
-或三段路径。
-
-详见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)。
-
-### 5.3 历史复现路径
-
-```
-python -m backtests.{scheme_id}_reproduction [--no-persist]
-  ├─ shared.input_artifacts.build_*_input_artifact(...)         ← L1 唯一输入（V4 待统一）
-  ├─ schemes.{id}.core.predictors.*  (逐历史点跑算法)
-  ├─ 按 target_date 归月生成运行内月度指标（只用于输出/summary）
-  └─ backtests.repository → t_backtest_runs / _predictions / _reproduction_checks   ← 回测写库单点
-```
-
-前端历史回测指标只能由 `t_backtest_predictions` 明细动态聚合。
+Blackbox 首次 activation 通过 `scheduler.repository` 将获准的历史回测 insert-only 物化为
+`t_scheme_predictions` 产品事实；回测 Gate 不承担该发布操作。回测表保留不可变证据与元数据，
+Dashboard 只从产品事实表聚合逐点结果。
+W4 周均回测仍使用 `weekly_base_runner` 的均值标签与 CompareGate 行格式化函数。
 
 ### 5.4 查询路径
 
@@ -234,8 +220,8 @@ python -m backtests.{scheme_id}_reproduction [--no-persist]
   └─ backend.factor_lab_dashboard.build_factor_lab_dashboard(engine)
        ├─ 每个请求直接以 dashboard 专用只读 Engine 建立当前视图
        ├─ 同一 connection / repeatable-read readonly transaction
-       ├─ active registry + live predictions + scoped actuals + latest backtest 批量 SELECT
-       └─ canonical 选择 → compact V3 response → gzip/identity 表示
+       ├─ active Registry + 产品预测事实 + scoped Actuals + canonical backtest 元数据批量 SELECT
+       └─ canonical 选择 → V5 summary/detail response → gzip/identity 表示
 
 数据库或构建失败时 route 直接返回 `503 dashboard_data_unavailable`；后端不保留进程内
 last-known-good 数据，也不返回 stale 快照。浏览器若已经提交过成功快照，则在刷新失败时保留该
@@ -290,7 +276,7 @@ schemes/{id}/                     schemes/{id}/
 | **DB 引擎生命周期** | 各 adapter/backtest 各自 `create_sqlalchemy_engine()` 再 `engine.dispose()` | adapter 经 `calendar_service`/`input_artifacts` 间接使用统一引擎工厂，不得裸取连接 |
 | **配置** | `shared/db_config.py` 读环境变量；`config.yaml` 方案级 | Native 契约与 Blackbox Runtime Profile 分开维护，共享身份由 `SCHEME_CONTRACT.md` 约束 |
 | **执行预算** | Native 使用 `config.yaml.schedule.timeout_sec`；Blackbox predict 取方案申请、Runtime Profile 上限和显式 operation deadline 的最小值，backtest 使用独立 Profile 预算 | operation deadline 只能缩短 Blackbox 方案/Profile 预算；所有预算仅控制子进程等待，不进入 L2 core 语义 |
-| **产物路径** | W4 Native scheduled/gap-fill/DryRun 输入使用作业级临时根并在结束后清理；Blackbox 显式派生状态与 DataBridge ready snapshot 各自受控；回测使用 `backtest_artifacts/backtests/{benchmark_id}/` | 不再积累 `runtime_inputs` 或灰度二次快照目录；Harness 不创建方案级报告目录 |
+| **产物路径** | W4 Native scheduled/gap-fill/DryRun 输入使用作业级临时根并在结束后清理；Blackbox 显式派生状态与 DataBridge ready snapshot 各自受控；回测证据由 repository 与外置 artifact 路径保存 | 不再积累 `runtime_inputs` 或灰度二次快照目录；Harness 不创建方案级报告目录 |
 | **进程/依赖隔离** | Native `forecast_env`、Blackbox Runtime Profile、服务 `bond_factor_lab_service`；子进程 + JSON | Runtime Profile 是 Blackbox 环境、资源和权限的唯一配置源 |
 | **错误处理** | executor 捕获子进程失败写 `run_log(status=failed)` | harness Gate 失败安全（异常→`GateResult(FAILED)`），不抛穿 |
 | **命名标识符** | `scheme_id`(方案) / `benchmark_id`(基准批次) / `data_source`(口径) 三者分离 | 维持；StaticGate 校验命名规范子集 |
@@ -301,7 +287,7 @@ exact version、输入身份、完整性和方案独占约束，标准 Result �
 
 Authorized gray-gap 使用更严格的例外语义：任一授权业务键已经存在即整组拒绝并保持 `records_written=0`，未存在的键也不写入，且不得转为 benign `skipped`。
 
-上述 insert-only 约束仅适用于 `t_scheme_predictions` 的 `gray_live` / `scheduled_live` 发布；actual 与 input artifact 等既有 UPSERT 路径仍按各自契约保持合法，不得将本规则扩张为全库禁用 UPSERT。
+上述 insert-only 约束仅适用于 `t_scheme_predictions` 的产品事实发布（含回测物化）；Actual 等既有 UPSERT 路径仍按各自契约保持合法，不得将本规则扩张为全库禁用 UPSERT。
 
 ### 7.1 数据库迁移的库层与 operator 边界
 
@@ -343,7 +329,7 @@ Migration 025 只删除两张预测表的统一平台 confidence 列，不修改
 | `shared/models.py` | L1 | 公共数据模型 | `PredictionRecord`、`ActualRecord`、`WeeklyActualRecord` |
 | `shared/{db_config,artifact_paths}.py` | L1 | 配置/路径 | `RUNTIME_INPUT_ROOT` 等 |
 | `schemes/{id}/predict.py` | L2 | adapter | `SCHEME_ID`、`run` |
-| `schemes/{id}/core/` | L2 | 纯算法 + legacy 归档 | 方案私有 |
+| `schemes/{id}/core/` | L2 | W4 保留的算法依赖 | 方案私有 |
 | `schemes/{id}/delivery/` | L2 | Blackbox 原始两文件 | `predict/backtest` CLI、Metadata |
 | `shared/blackbox_v2/` | L1/L3 边界 | Blackbox 合同、快照、执行和结果转换 | Contract 1.0 校验器 |
 | `scheduler/discovery.py` | L3 | 约定发现 + 契约加载 | `discover_schemes`、`load_scheme_config`、`SchemeConfig` |
