@@ -1027,7 +1027,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
                 feature_date="2026-07-17",
                 prediction_phase="scheduled_live",
                 predicted_direction=1,
-                confidence=0.8,
                 extra={"feature_date": "2026-07-17"},
             )
         ]
@@ -1226,7 +1225,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             "target_date": "2026-07-21",
             "prediction_phase": "scheduled_live",
             "predicted_direction": -1,
-            "confidence": 0.15,
             "model_version": "old-blackbox-model",
             "extra": '{"source":"original"}',
             "created_at": datetime(2026, 7, 19, 9, 0),
@@ -1242,7 +1240,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             feature_date="2026-07-17",
             prediction_phase="scheduled_live",
             predicted_direction=1,
-            confidence=0.98,
             model_version="new-blackbox-model",
             extra={"source": "rerun"},
         )
@@ -1315,7 +1312,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             "target_date": "2026-07-21",
             "prediction_phase": "scheduled_live",
             "predicted_direction": -1,
-            "confidence": 0.15,
             "model_version": "old-blackbox-model",
             "extra": '{"source":"original"}',
             "updated_at": datetime(2026, 7, 19, 9, 0),

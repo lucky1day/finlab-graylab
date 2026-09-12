@@ -27,7 +27,6 @@ class SignalOutcome:
     """平台信号政策的不可变结果。"""
 
     predicted_direction: int
-    confidence: float
     extra: Mapping[str, Any]
 
 
@@ -49,7 +48,6 @@ def no_signal_as_flat(
     )
     return SignalOutcome(
         predicted_direction=0,
-        confidence=0.0,
         extra=_freeze_json_container(merged_extra),
     )
 

@@ -50,7 +50,6 @@ class WeeklyPredictionPoint:
 
     source_row: Mapping[str, Any]
     predicted_direction: int | None
-    confidence: float | None
     extra: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -262,7 +261,6 @@ def build_weekly_backtest_rows(
             point = WeeklyPredictionPoint(
                 source_row={},
                 predicted_direction=policy_outcome.predicted_direction,
-                confidence=policy_outcome.confidence,
                 extra=policy_outcome.extra,
             )
         source_row = clean_json({**feature_row.to_dict(), **dict(point.source_row)})
@@ -292,7 +290,6 @@ def build_weekly_backtest_rows(
                 "label": label,
                 "predicted_direction": point.predicted_direction,
                 "model_pred": point.predicted_direction,
-                "confidence": point.confidence,
                 "source_row": source_row,
                 "extra": extra,
             }
@@ -338,7 +335,6 @@ def compact_weekly_benchmark_rows(rows: list[dict[str, Any]]) -> list[dict[str, 
                 "target_tenor": str(row["target_tenor"]),
                 "horizon": _int_or_none(row.get("horizon")),
                 "direction": direction,
-                "confidence": _float_or_none(row.get("confidence")),
                 "label": label,
                 "is_correct": direction == label if direction is not None and label is not None else None,
                 "feature_week_id": _int_or_none(extra.get("feature_week_id")),

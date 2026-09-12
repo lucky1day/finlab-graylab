@@ -366,7 +366,7 @@ features = daily.loc[:, columns]
 - 不发生 V2 引起的 Native 训练；
 - 一个 algorithm-managed 合同样例可自行选择 V1、V2 或 V1+V2。
 
-需要比较的结果包括方向、日期、tenor、horizon、confidence 和算法必要输出字段。
+需要比较的结果包括方向、日期、tenor、horizon 和算法必要输出字段；不要求统一平台 confidence。
 
 ### 9.3 性能测试
 
@@ -527,7 +527,7 @@ DataBridge producer 自己在一个一致性事务内只读取一次 Metadata，
   对存量脚本零影响；
 - 全部存量 Blackbox base scheme 各执行一个由现有任务日历生成的固定 Request；
 - 全部存量 Native base scheme 各执行一次固定日期 DryRun；
-- 对比方向、confidence、predict/feature/target date、tenor、horizon、scheme version 和算法必要 extra；
+- 对比方向、predict/feature/target date、tenor、horizon、scheme version 和算法必要 extra；不要求统一平台 confidence；
 - 验证全部 Liwei Phase-A family 继续 hit，训练调用为 0；
 - synthetic V2 只用于隔离测试：完整 snapshot 可见 V2，legacy snapshot 不可见，algorithm-managed 样例可选择
   V1、V2 或组合版本；

@@ -38,6 +38,7 @@
 - 有可读源码的存量方案逐批统一到 Blackbox V2。W4 九个加密方案保持 Mac3 现有 Native 运行方式，不改造、不部署 ECS；不得为了本轮闭环删除其仍在使用的 Native 依赖。
 - 所有新算法、新方案、新目标、新任务和替代版本立即只允许 Blackbox V2；Native V1 在完成迁移前仅作存量维护，不再扩展身份或能力。
 - Native successor 继续遵守 Blackbox V2 的精确五字段 Result 合同；迁移等价只比较同一冻结输入下的 Request、`predict_date`、`feature_date`、`target_date` 与 `predicted_direction`。Native 的 confidence、vote score、阈值等只可作为迁移期临时诊断，不进入长期合同或数据库。
+- 平台不要求、提取、传递、存储或展示统一 `confidence` 属性；算法内部用于概率、阈值、排序、投票、模型选择及方向决策的同名计算必须保留，不得按关键词清理。原始 benchmark、旧 migration/release 和已有 source_row/extra 审计保持原样；仍服务其他数值字段的通用转换 helper 不得删除。
 - 同一方案的 Native→Blackbox 运行时升级保留原 `scheme_id` / `base_scheme_id` 和业务 Registry ID，以新的 exact `scheme_version` 区分执行版本；不得仅为运行时改造新增 `_bbv2` 业务身份。原 ID 已有 prediction/run/backtest 的身份、版本和来源不变，不因升级重算或覆盖；只切换未来唯一 Writer，不把 adapter 冒充 Blackbox，也不以手改 `runtime_type` 代替受控升级。已跨 ID 批次回归原 ID 后，临时身份不得继续拥有 Writer，也不建立长期历史别名。临时身份历史默认只读保留；物理清理须独立授权精确清单、备份恢复及引用检查，不能删除仍被原 ID 历史依赖的共享来源。
 - 源码方案按目标形成独立两文件交付；T1/T5 多目标仍各保留一个 base ID、canonical 目录和 exact version，配置明确 target 与交付关系，整体 hash 覆盖全部包，每 base 一个调度任务且全部目标原子提交。W4 保持现状，不执行此前 binary bundle 改造设计。
 - 同算法包装迁移采用已有 Native 结果作基线：固定最终包与原 ID，一次对应 Request 的 Blackbox 标准调用比较三个日期和方向，再做真实版本、合同、唯一 Writer 与受控切换/模拟验收；算法未改不要求全历史日期证明。当前迁移不重新回测历史区间，不重新生成、复制、覆盖或删除原 ID 历史预测；此前历史补入和临时身份清理设计不能自动视为新授权，已经完成的原 ID 历史物化也不回删。独立获批的临时身份退役按上述备份与引用边界执行。

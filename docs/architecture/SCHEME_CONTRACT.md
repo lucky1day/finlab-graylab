@@ -77,6 +77,10 @@ Blackbox 还由平台提供与三频快照真实存在的 `daily_cutoff`、`week
 
 完整规则以[预测日期与实盘语义](PREDICTION_SEMANTICS.md)为准。
 
+平台统一预测记录不包含 confidence，也不从 Native 源输出提取、转存或补默认值。
+Blackbox Result 精确仅含 request_id、predict_date、feature_date、target_date、predicted_direction。
+算法内部概率、阈值、投票、排序及方向决策不属于该字段退役范围；旧 benchmark 和既有原始审计不改写。
+
 ### 5.1 Blackbox 输入
 
 Blackbox 的输入契约是：

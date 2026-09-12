@@ -46,6 +46,8 @@ def test_cli_mode_table_is_complete_and_unique() -> None:
         "--recover-applying-023",
         "--inspect-applying-024",
         "--recover-applying-024",
+        "--inspect-applying-025",
+        "--recover-applying-025",
     ]
     assert len({mode.option for mode in modes}) == len(modes)
     assert len({mode.dest for mode in modes}) == len(modes)
@@ -222,7 +224,7 @@ def test_partial_recovery_requires_complete_readback_before_marking(spec) -> Non
     mark_applied.assert_not_called()
 
 
-@pytest.mark.parametrize("version", (17, 18, 19, 21, 22))
+@pytest.mark.parametrize("version", (17, 18, 19, 21, 22, 23, 24, 25))
 def test_cli_inspection_modes_remain_read_only(version: int) -> None:
     args = apply_migrations._parse_args(
         [f"--inspect-applying-{version:03d}"]
@@ -233,7 +235,7 @@ def test_cli_inspection_modes_remain_read_only(version: int) -> None:
     assert args.state_digest is None
 
 
-@pytest.mark.parametrize("version", (17, 18, 19, 21, 22))
+@pytest.mark.parametrize("version", (17, 18, 19, 21, 22, 23, 24, 25))
 def test_cli_recovery_modes_keep_digest_and_identity_fences(version: int) -> None:
     digest = "d" * 64
     args = apply_migrations._parse_args(
@@ -255,7 +257,7 @@ def test_cli_recovery_modes_keep_digest_and_identity_fences(version: int) -> Non
     assert args.expected_server_uuid == EXPECTED_SERVER_UUID
 
 
-@pytest.mark.parametrize("version", (17, 18, 19, 21, 22))
+@pytest.mark.parametrize("version", (17, 18, 19, 21, 22, 23, 24, 25))
 def test_cli_recovery_rejects_missing_expected_identity(version: int) -> None:
     with pytest.raises(SystemExit, match="2"):
         apply_migrations._parse_args(

@@ -123,8 +123,10 @@ CSV；每个方案通过自己的只读硬链接路径读取。作业成功、�
 提交，失败不回滚已完成方案；重试依赖 insert-only 业务键只规划剩余方案。中断时使用现有
 process-control 终止已启动进程组并关闭未完成 run，不新增任务表、报告或审计字段。
 
-以上规则只优化平台 I/O 与编排，不允许改变训练窗口、模型、方向、confidence、三个业务日期、scheme
+以上规则只优化平台 I/O 与编排，不允许改变训练窗口、模型、方向、算法内部概率/置信度计算、三个业务日期、scheme
 version 或算法必要 extra。
+
+平台不提取或传递统一 confidence 字段；旧 benchmark 的同名列不是 CompareGate 必需项，不改写原始证据。
 
 自动段通过后，任何 persist、单日 `signal-gap-fill` 或状态切换仍须使用精确的独立副作用命令；正式 `scheduled_live` 只由目标主机已安装的 one-shot 调度触发。命令本身是单维护者对本次操作的明确授权；不生成密钥、不签发 token、不复制 `--authorize`。操作前后独立查询：
 

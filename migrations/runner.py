@@ -20,6 +20,11 @@ from migrations.recovery_versions import (
     SPEC_022,
     SPEC_023,
     SPEC_024,
+    SPEC_025,
+)
+from migrations.platform_confidence_025 import (
+    classify_prediction_schema,
+    read_prediction_schema,
 )
 from migrations.auth_022 import classify_auth_schema, read_auth_schema
 from migrations.auth_profile_023 import (
@@ -7092,6 +7097,96 @@ def recover_applying_migration_024(
     )
 
 
+def build_applying_025_inspection(
+    *,
+    manifest: Iterable[PreparedMigration],
+    history: Iterable[Mapping[str, object]],
+    database_identity: Mapping[str, object],
+    prediction_schema: Mapping[str, object],
+) -> dict[str, object]:
+    """绑定 025 精确历史、目标库与两表结构，不绑定会正常增长的业务数据。"""
+    migrations = [m for m in manifest if m.version <= SPEC_025.version]
+    rows = sorted((dict(row) for row in history), key=lambda row: int(row["version"]))
+    canonical = {
+        "database_identity": dict(database_identity),
+        "manifest": [(m.version, m.path.name, m.sha256) for m in migrations],
+        "history": rows,
+        "prediction_schema": dict(prediction_schema),
+    }
+    classification, reason, identity = "UNSAFE", None, None
+    try:
+        if not all(database_identity.get(key) for key in ("database_name", "server_uuid")):
+            raise MigrationHistoryError("database name and server UUID are required")
+        if [m.version for m in migrations] != list(range(1, 26)):
+            raise MigrationHistoryError("recovery requires migration files 001..025")
+        if [int(row["version"]) for row in rows] != list(range(1, 26)):
+            raise MigrationHistoryError("recovery history must be the exact 001..025 prefix")
+        target = _recovery_target(migrations, SPEC_025)
+        select_pending_migrations(migrations[:24], rows[:24])
+        last = rows[-1]
+        if (last.get("state"), last.get("filename"), last.get("sha256")) != (
+            "APPLYING", target.path.name, target.sha256
+        ):
+            raise MigrationHistoryError("migration 025 APPLYING identity/checksum drift")
+        if tuple(int(row.get("baseline_bootstrap") or 0) for row in rows) not in {
+            (0,) * 25, (1,) * 16 + (0,) * 9
+        }:
+            raise MigrationHistoryError("migration 025 bootstrap pattern drift")
+        identity = {"version": 25, "filename": target.path.name, "sha256": target.sha256}
+        classification = classify_prediction_schema(prediction_schema)
+        if classification == "UNSAFE":
+            reason = "prediction schema drift outside the two authorized confidence columns"
+    except (KeyError, MigrationHistoryError, TypeError, ValueError) as exc:
+        reason = str(exc)
+    return {
+        "classification": classification,
+        "state_digest": _applying_017_state_digest(canonical),
+        "database_identity": dict(database_identity),
+        "migration": identity,
+        "reason": reason,
+    }
+
+
+def _read_applying_025_inspection(
+    connection: object, manifest: list[PreparedMigration]
+) -> dict[str, object]:
+    """在既有迁移 owner lock 内读取 025 状态。"""
+    identity = _read_database_identity(connection)
+    try:
+        _validate_migration_history_schema(_read_migration_history_schema(connection))
+        return build_applying_025_inspection(
+            manifest=manifest,
+            history=_read_migration_history(connection),
+            database_identity=identity,
+            prediction_schema=read_prediction_schema(connection),
+        )
+    except (KeyError, MigrationPreflightError, TypeError, ValueError) as exc:
+        return {
+            "classification": "UNSAFE",
+            "state_digest": _applying_017_state_digest(
+                {"database_identity": identity, "error": str(exc)}
+            ),
+            "database_identity": identity,
+            "migration": None,
+            "reason": str(exc),
+        }
+
+
+def inspect_applying_migration_025(engine: object, paths: Iterable[Path]) -> dict[str, object]:
+    """只读检查 025 中断恢复；不执行 DDL 或 DML。"""
+    return _inspect_applying_migration(engine, paths, read_inspection=_read_applying_025_inspection)
+
+
+def recover_applying_migration_025(
+    engine: object, paths: Iterable[Path], *, expected_state_digest: str
+) -> dict[str, object]:
+    """只删除仍存在的授权列，完整读回后才标记 APPLIED。"""
+    return _recover_applying_migration(
+        engine, paths, expected_state_digest=expected_state_digest,
+        spec=SPEC_025, read_inspection=_read_applying_025_inspection,
+    )
+
+
 def _legacy_domain_table_count(connection: object) -> int:
     required = sorted(expected_legacy_016_baseline()["tables"])
     table_sql = ",".join(f"'{name}'" for name in required)
@@ -7349,6 +7444,7 @@ def _execute_prepared_migration_files(
         scheme_prediction_fact_migration = (
             _is_scheme_prediction_fact_migration(path)
         )
+        confidence_retirement = path.name == SPEC_025.filename
         mysql_session = False
         execution_started = False
         ddl_attempted = False
@@ -7426,6 +7522,11 @@ def _execute_prepared_migration_files(
                     # 024 的 ALTER TABLE 由 PREPARE/EXECUTE 动态执行。预检之后
                     # 任一语句失败都可能发生在 MySQL 已隐式提交 DDL 之后，因此
                     # 必须按 partial-apply 报告并进入受控 inspect/recovery。
+                    ddl_attempted = True
+                if confidence_retirement and mysql_session:
+                    if classify_prediction_schema(read_prediction_schema(connection)) == "UNSAFE":
+                        raise MigrationPreflightError("migration 025 found prediction schema drift")
+                    # 动态 EXECUTE 包含 DDL；失败后必须经 inspect/recovery，而非普通重试。
                     ddl_attempted = True
                 for statement in statements:
                     if owner_connection is not None:
@@ -7583,6 +7684,15 @@ def _execute_prepared_migration_files(
             except BaseException as exc:
                 postcondition_error = exc
 
+        if confidence_retirement and mysql_session and execution_started:
+            try:
+                with _migration_execution_connection(engine, owner_connection) as connection:
+                    preflight_migration_session(connection)
+                    if classify_prediction_schema(read_prediction_schema(connection)) != "COMPLETE":
+                        raise MigrationPreflightError("migration 025 did not reach complete schema")
+            except BaseException as exc:
+                postcondition_error = exc
+
         if execution_error is not None:
             if ddl_attempted:
                 raise _partial_apply_error(
@@ -7624,6 +7734,9 @@ def apply_pending_migration_files(
             manifest,
         )
         pending = select_pending_migrations(manifest, history)
+        if history and int(history[-1]["version"]) == SPEC_025.version:
+            if classify_prediction_schema(read_prediction_schema(owner_connection)) != "COMPLETE":
+                raise MigrationPreflightError("applied migration 025 prediction schema drift")
         for migration in pending:
             if _is_registry_owner_migration(migration.path):
                 rollback = getattr(owner_connection, "rollback", None)

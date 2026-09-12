@@ -63,7 +63,6 @@ def run_monthly_prediction(scheme_id: str, predict_date: str) -> list[Prediction
 
     _assert_source_context_matches(source, context.feature_month_id, context.target_month_id, scheme_id)
     direction = _direction_from_y_pred(source.get("y_pred"))
-    confidence = _confidence_for_direction(source, direction)
     return [
         PredictionRecord(
             scheme_id=scheme_id,
@@ -73,7 +72,6 @@ def run_monthly_prediction(scheme_id: str, predict_date: str) -> list[Prediction
             feature_date=context.feature_date,
             target_date=context.target_date,
             predicted_direction=direction,
-            confidence=confidence,
             model_version=evidence.model_id,
             extra=_extra_from_source(
                 evidence,
@@ -158,17 +156,6 @@ def _clean_internal_field(field: str, value: Any) -> Any:
     if field in {"pred_proba_up", "pred_proba_down", "validation_overall_accuracy"}:
         return _float_or_none(value)
     return _clean_value(value)
-
-
-def _confidence_for_direction(source: dict[str, Any], direction: int) -> float | None:
-    if direction > 0:
-        return _float_or_none(source.get("pred_proba_up"))
-    if direction < 0:
-        return _float_or_none(source.get("pred_proba_down"))
-    up = _float_or_none(source.get("pred_proba_up"))
-    down = _float_or_none(source.get("pred_proba_down"))
-    values = [value for value in (up, down) if value is not None]
-    return max(values) if values else None
 
 
 def _int_or_none(value: Any) -> int | None:

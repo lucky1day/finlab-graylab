@@ -135,7 +135,6 @@ def _row_from_record(
         "predicted_direction": record.predicted_direction,
         "model_pred": extra.get("y_pred"),
         "direction": record.predicted_direction,
-        "confidence": record.confidence,
         "is_correct": is_correct,
         "source_row": extra,
         "extra": extra,

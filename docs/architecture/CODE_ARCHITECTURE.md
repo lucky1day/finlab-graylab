@@ -311,7 +311,7 @@ manifest 校验、schema inspect、pending apply 与 `APPLYING` recovery 都在�
 `scripts/apply_migrations.py` 是唯一受控运维包装器：它负责受限 CLI 参数、环境连接
 与写目标身份围栏；scheduler、harness 和其他 scripts 不得复制 apply/recovery 行为。
 
-所有 CLI 写路径（普通 `--apply`、017/018/019/021 recovery）都必须在建 Engine 前提供
+所有 CLI 写路径（普通 `--apply`、017/018/019/021/022/023/024/025 recovery）都必须在建 Engine 前提供
 `--expected-database-name` 与 `--expected-server-uuid`，再以首次数据库语句
 `SELECT DATABASE(), @@server_uuid` 精确验证实际连接。`--inspect-applying-017` 与
 `--inspect-applying-018`、`--inspect-applying-019`、`--inspect-applying-021` 是只读模式，不要求这两个参数。UUID 只能来自 inspect JSON
@@ -323,6 +323,13 @@ Migration 021 把 `t_scheme_registry.owner` 收敛为 `VARCHAR(64) NOT NULL`。�
 写入都必须提供或保留合法 owner。若进程在隐式提交 DDL 期间中断，必须先用只读
 `--inspect-applying-021` 取得状态摘要，再以数据库 identity 与该摘要围栏执行 `--recover-applying-021 --apply`；
 缺列、精确 nullable partial 和完整终态以外的状态一律拒绝。
+
+Migration 025 只删除两张预测表的统一平台 confidence 列，不修改历史行的其他属性或 JSON 审计。
+其两表闭世界校验包含列类型、空值/默认值、主键、索引、外键与 check；除两列分别存在或缺失外的漂移拒绝。
+`--inspect-applying-025` 只读，恢复用 `--recover-applying-025 --apply --state-digest <digest>`
+并显式绑定目标库名与 server UUID；只处理尚存列，完整校验后才标记 APPLIED。
+删列前须独立授权、备份及隔离恢复验证，且 current/previous 均已发布不读写该列的代码；
+删列后不能回滚到仍依赖平台 confidence 的 release。
 
 ---
 

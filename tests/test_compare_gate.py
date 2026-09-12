@@ -37,7 +37,6 @@ def _write_strict_predictions(path: Path, rows: list[dict[str, str]]) -> None:
         "horizon",
         "benchmark_role",
         "direction",
-        "confidence",
         "label",
         "is_correct",
     ]
@@ -59,7 +58,6 @@ def _strict_row(**updates: str) -> dict[str, str]:
         "target_tenor": "5Y",
         "horizon": "5",
         "direction": "1",
-        "confidence": "0.6",
         "label": "1",
         "is_correct": "true",
     }
@@ -161,6 +159,20 @@ class CompareGateTest(unittest.TestCase):
         result = CompareGate().run(ctx)
         self.assertEqual(result.status, GateStatus.FAILED)
         self.assertTrue(any("direction_match_rate" in e for e in result.errors), result.errors)
+
+    def test_legacy_confidence_is_optional_and_not_compared(self) -> None:
+        """旧 benchmark 可保留该列，当前输出和验收不再依赖平台置信度。"""
+        _write_benchmark_required_config(self.root)
+        bench = self.root / "schemes" / "demo" / "benchmarks"
+        _write_strict_predictions(
+            bench / "original_predictions_sample.csv", [_strict_row(confidence="0.6")]
+        )
+        for current in (_strict_row(), _strict_row(confidence="different legacy value")):
+            with self.subTest(current=current):
+                _write_strict_predictions(bench / "current_predictions_sample.csv", [current])
+                result = CompareGate().run(_make_ctx(self.root))
+                self.assertEqual(result.status, GateStatus.PASSED, result.errors)
+                self.assertNotIn("confidence", json.dumps({item.key: item.value for item in result.evidence}))
 
     def test_benchmark_required_new_format_missing_target_date_failed(self) -> None:
         ctx = _make_ctx(self.root)

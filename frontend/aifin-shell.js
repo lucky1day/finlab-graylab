@@ -980,7 +980,6 @@
       runId: null,
       schemeVersion: "",
       inputArtifactHash: "",
-      confidence: null,
       predicted: directionText(row.predictedDirection),
       actual: directionText(actualDirection),
       predictedDirection: row.predictedDirection,

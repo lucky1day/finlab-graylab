@@ -11,6 +11,10 @@
 
 ## 双主机边界与当前进度
 
+- 平台 confidence 退役现已独立获批：仅删除统一平台字段及两张预测表的对应列；算法内部同名计算、
+  原历史其余属性及 W4 运行方式保持不变。代码与隔离验证进行中，生产 DDL 尚未执行；
+  实施出口见[后续计划](TODO.md#平台-confidence-退役独立获批)。下述保留 confidence 的记录是前一清理窗口事实，
+  不替代本次新授权。本任务不授权 master 合并或推送。
 - Mac3 承载生产域名、前端、数据库和 Writer；launchd + installed plist 是其调度控制面。
   ECS 是独立灰度环境，使用本机 MySQL、DataBridge 和 systemd one-shot/timer。
 - 用户已授权深度清理后发布 ECS/Mac3、同步 master 并推送两分支；随后独立授权备份、隔离恢复及引用检查后，

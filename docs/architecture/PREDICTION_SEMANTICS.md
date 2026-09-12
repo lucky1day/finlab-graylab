@@ -208,7 +208,7 @@ target_date  = T + horizon
 默认历史回测优先使用原始算法声明的 source 执行口径；如果该口径本身是 point-in-time，则按 PIT 复现。如果原始方案本身是全历史 batch reproduction，并且算法内部存在固定未来分段、全局校准或一次性 selector 这类无法逐点切片复现的结构时，可以批准为方案级例外。例外必须同时满足：
 
 1. 只适用于历史回测写入 `t_backtest_*`，不得扩散到 gray/live/scheduled live adapter。
-2. 对已有 original benchmark 覆盖区间逐行一致；方向、`target_date`、`label/is_correct` 必须零差异，`confidence` 只允许浮点舍入误差。
+2. 对已有 original benchmark 覆盖区间逐行一致；方向、`target_date`、`label/is_correct` 必须零差异。统一平台 `confidence` 不属于必需输出或比较项；算法内部必要数值仍按源算法保真规则验证。
 3. 回测输出仍必须使用平台统一日期字段：`predict_date=feature_date`，`target_date` 由平台日历确定。
 4. 回测仍必须排除该方案 `target_date >= gray_target_start` 的灰度/实盘区间。
 5. 方案 benchmark 证据必须写明为什么不能使用逐点 PIT；被替代的旧运行只保留在 run/数据库审计，不复制到当前架构文档。

@@ -183,7 +183,6 @@ def _record_from_payload(item: dict) -> PredictionRecord:
         predicted_direction=int(item["predicted_direction"]),
         feature_date=str(item["feature_date"]) if item.get("feature_date") is not None else None,
         prediction_phase=str(item["prediction_phase"]) if item.get("prediction_phase") is not None else None,
-        confidence=float(item["confidence"]) if item.get("confidence") is not None else None,
         model_version=str(item["model_version"]) if item.get("model_version") is not None else None,
         extra=item.get("extra") or None,
         run_id=int(item["run_id"]) if item.get("run_id") is not None else None,

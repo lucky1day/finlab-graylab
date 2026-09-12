@@ -154,7 +154,6 @@ def _row_from_source(
     data_source: str,
 ) -> dict[str, Any]:
     direction = _direction_from_source(source)
-    confidence = _float_or_none(source.get("prob_up"))
     extra = {
         "data_source": data_source,
         "source_original_data_source": SOURCE_ORIGINAL_DATA_SOURCE,
@@ -185,7 +184,6 @@ def _row_from_source(
         "predicted_direction": direction,
         "model_pred": extra.get("model_pred") if extra.get("model_pred") is not None else direction,
         "direction": direction,
-        "confidence": confidence,
         "is_correct": None,
         "source_row": extra,
         "extra": extra,
@@ -267,16 +265,6 @@ def _summary(
             "cross_frequency_reuse": False,
         },
     }
-
-
-def _float_or_none(value: Any) -> float | None:
-    if value in (None, ""):
-        return None
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return None
-    return None if parsed != parsed else parsed
 
 
 def _int_or_none(value: Any) -> int | None:

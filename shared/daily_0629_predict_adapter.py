@@ -80,7 +80,6 @@ def run_daily_0629_prediction(scheme_id: str, predict_date: str) -> list[Predict
     )
     _assert_source_context_matches(source, context.feature_date, context.target_date, scheme_id)
     direction = _direction_from_source(source)
-    confidence = _float_or_none(source.get("prob_up"))
     return [
         PredictionRecord(
             scheme_id=scheme_id,
@@ -90,7 +89,6 @@ def run_daily_0629_prediction(scheme_id: str, predict_date: str) -> list[Predict
             feature_date=context.feature_date,
             target_date=context.target_date,
             predicted_direction=direction,
-            confidence=confidence,
             model_version=_model_version_from_evidence(evidence),
             extra=_extra_from_source(
                 evidence,

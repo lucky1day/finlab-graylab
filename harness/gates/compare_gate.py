@@ -20,7 +20,6 @@ from shared.weekly_average_source_evidence import (
 
 # 容差（PINNED）
 DIRECTION_MATCH_RATE_REQUIRED = 1.0
-MAX_CONFIDENCE_ABS_DIFF = 1e-8
 MAX_INTERNAL_ABS_DIFF = 1e-8
 METRIC_ACCURACY_ABS_DIFF = 0.001
 STRICT_PREDICTION_FIELDS = (
@@ -30,7 +29,6 @@ STRICT_PREDICTION_FIELDS = (
     "horizon",
     "benchmark_role",
     "direction",
-    "confidence",
     "label",
     "is_correct",
 )
@@ -43,7 +41,6 @@ WEEKLY_STRICT_PREDICTION_FIELDS = (
     "horizon",
     "benchmark_role",
     "direction",
-    "confidence",
     "label",
     "is_correct",
 )
@@ -58,7 +55,6 @@ MONTHLY_STRICT_PREDICTION_FIELDS = (
     "benchmark_role",
     "target_rule",
     "direction",
-    "confidence",
     "label",
     "is_correct",
 )
@@ -169,8 +165,6 @@ class CompareGate(Gate):
             evidence.append(Evidence("direction_match_rate", pred_diff["direction_match_rate"]))
             evidence.append(Evidence("missing_keys", pred_diff["missing_keys"]))
             evidence.append(Evidence("extra_keys", pred_diff["extra_keys"]))
-            evidence.append(Evidence("max_confidence_abs_diff", pred_diff["max_confidence_abs_diff"]))
-            evidence.append(Evidence("mean_confidence_abs_diff", pred_diff["mean_confidence_abs_diff"]))
             evidence.append(Evidence("internal_fields", pred_diff["internal_fields"]))
             evidence.append(Evidence("required_internal_fields", required_internal_fields))
             evidence.append(Evidence("internal_mismatch_count", pred_diff["internal_mismatch_count"]))
@@ -218,11 +212,6 @@ class CompareGate(Gate):
             if pred_diff["comparable_count"] > 0 and pred_diff["direction_match_rate"] < DIRECTION_MATCH_RATE_REQUIRED:
                 errors.append(
                     f"direction_match_rate {pred_diff['direction_match_rate']:.6f} < required 1.0"
-                )
-            if pred_diff["max_confidence_abs_diff"] > MAX_CONFIDENCE_ABS_DIFF:
-                errors.append(
-                    f"max_confidence_abs_diff {pred_diff['max_confidence_abs_diff']:.3e} > "
-                    f"{MAX_CONFIDENCE_ABS_DIFF:.0e}"
                 )
             if pred_diff["internal_mismatch_count"] > 0:
                 errors.append(
@@ -403,16 +392,6 @@ def _row_direction(row: dict[str, Any]) -> str:
     return str(row.get("direction") or row.get("pred_direction") or "").strip()
 
 
-def _row_confidence(row: dict[str, Any]) -> float | None:
-    raw = row.get("confidence")
-    if raw is None or raw == "":
-        return None
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return None
-
-
 def _compare_predictions(
     original: list[dict[str, Any]],
     current: list[dict[str, Any]],
@@ -460,8 +439,6 @@ def _compare_predictions(
 
     comparable = sorted(original_keys & current_keys)
     direction_matches = 0
-    max_conf_diff = 0.0
-    conf_diffs: list[float] = []
     internal_fields = _internal_fields(original, current, required_internal_fields)
     max_internal_diff = 0.0
     internal_mismatches: list[dict[str, Any]] = []
@@ -472,13 +449,6 @@ def _compare_predictions(
         dir_match = o_dir == c_dir
         if dir_match:
             direction_matches += 1
-        o_conf = _row_confidence(original_map[key])
-        c_conf = _row_confidence(current_map[key])
-        conf_diff = None
-        if o_conf is not None and c_conf is not None:
-            conf_diff = abs(o_conf - c_conf)
-            conf_diffs.append(conf_diff)
-            max_conf_diff = max(max_conf_diff, conf_diff)
         key_internal_mismatches: list[dict[str, Any]] = []
         key_strict_value_mismatches: list[dict[str, Any]] = []
         if strict:
@@ -504,14 +474,12 @@ def _compare_predictions(
                 "original_direction": o_dir,
                 "current_direction": c_dir,
                 "direction_match": dir_match,
-                "confidence_abs_diff": conf_diff,
                 "strict_value_mismatches": key_strict_value_mismatches,
                 "internal_mismatches": key_internal_mismatches,
             }
         )
 
     rate = (direction_matches / len(comparable)) if comparable else 1.0
-    mean_conf_diff = (sum(conf_diffs) / len(conf_diffs)) if conf_diffs else 0.0
 
     return {
         "total_original": len(original),
@@ -523,8 +491,6 @@ def _compare_predictions(
         "extra_count": len(extra),
         "direction_matches": direction_matches,
         "direction_match_rate": rate,
-        "max_confidence_abs_diff": max_conf_diff,
-        "mean_confidence_abs_diff": mean_conf_diff,
         "internal_fields": internal_fields,
         "internal_mismatch_count": len(internal_mismatches),
         "internal_mismatches": internal_mismatches,

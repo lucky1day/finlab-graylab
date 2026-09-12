@@ -19,7 +19,6 @@ class PredictionRecord:
     predicted_direction: int
     feature_date: str | None = None
     prediction_phase: str | None = None
-    confidence: float | None = None
     model_version: str | None = None
     extra: dict[str, Any] | None = None
     run_id: int | None = None

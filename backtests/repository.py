@@ -240,11 +240,11 @@ def _insert_backtest_predictions_connection(
             INSERT INTO t_backtest_predictions
                 (run_id, benchmark_id, scheme_id, target_tenor, horizon, predict_date,
                  feature_date, target_date, label, predicted_direction, model_pred,
-                 confidence, source_row, extra)
+                 source_row, extra)
             VALUES
                 (:run_id, :benchmark_id, :scheme_id, :target_tenor, :horizon, :predict_date,
                  :feature_date, :target_date, :label, :predicted_direction, :model_pred,
-                 :confidence, {source_expr}, {extra_expr})
+                 {source_expr}, {extra_expr})
             """
         ),
         [_prediction_params(run_id, row) for row in rows],
@@ -350,11 +350,11 @@ def replace_backtest_predictions(engine: Engine, run_id: int, rows: Iterable[dic
         INSERT INTO t_backtest_predictions
             (run_id, benchmark_id, scheme_id, target_tenor, horizon, predict_date,
              feature_date, target_date, label, predicted_direction, model_pred,
-             confidence, source_row, extra)
+             source_row, extra)
         VALUES
             (:run_id, :benchmark_id, :scheme_id, :target_tenor, :horizon, :predict_date,
              :feature_date, :target_date, :label, :predicted_direction, :model_pred,
-             :confidence, CAST(:source_row AS JSON), CAST(:extra AS JSON))
+             CAST(:source_row AS JSON), CAST(:extra AS JSON))
         """
     )
     with engine.begin() as conn:
@@ -390,14 +390,17 @@ def insert_reproduction_check(engine: Engine, row: dict[str, Any]) -> int:
 
 
 def _prediction_params(run_id: int, row: dict[str, Any]) -> dict[str, Any]:
-    params = dict(row)
+    params = {key: row.get(key) for key in (
+        "benchmark_id", "scheme_id", "target_tenor", "horizon", "predict_date",
+        "feature_date", "target_date", "label", "predicted_direction", "model_pred",
+        "source_row", "extra",
+    )}
     params["run_id"] = run_id
     params["source_row"] = json_dumps(params.get("source_row") or {})
     params["extra"] = json_dumps(params.get("extra") or {})
     params["label"] = _int_or_none(params.get("label"))
     params["predicted_direction"] = _int_or_none(params.get("predicted_direction"))
     params["model_pred"] = _int_or_none(params.get("model_pred"))
-    params["confidence"] = _float_or_none(params.get("confidence"))
     return params
 
 

@@ -89,7 +89,7 @@ Native source-backed 存量方案修复或复核时，所有改动必须先分�
 1. `predicted_direction` 逐样本零差异。
 2. `label/actual/is_correct` 逐样本零差异。
 3. `target_date/target_tenor/horizon` 逐样本零差异。
-4. 原始算法暴露的内部模型分数、baseline score、baseline direction、probability 或 confidence 必须进入逐方案 original/current benchmark 和 CompareGate 比对。能做到 bitwise/导出精度一致时必须一致；仍有残差时，必须证明残差来自输入 artifact 或导出精度，而不是算法逻辑变更。
+4. 按方案声明的内部模型分数、baseline score、baseline direction 和 probability 等必要数值继续进入 original/current benchmark 与内部字段比对。统一平台 `confidence` 不是必需列、容差或失败条件；旧 benchmark 可以保留该列但无需重写。算法内部同名变量及其概率、阈值、排序、投票和方向计算仍须原样保留，不因平台字段退役改名、删除或改变计算。对保留的必要内部数值，能做到 bitwise/导出精度一致时必须一致；残差须证明来自输入 artifact 或导出精度，而不是算法逻辑变更。
 5. 若只做到方向一致但内部模型分数不一致，不得宣称“算法逻辑完全一致”；只能宣称“最终方向一致，内部数值仍有残差待归因”。
 
 

@@ -133,7 +133,6 @@ def run_blackbox_historical_backtest(
                 "label": case.label,
                 "predicted_direction": direction,
                 "model_pred": direction,
-                "confidence": record.confidence,
                 "source_row": {
                     **asdict(request),
                     "actual": dict(case.actual_extra),

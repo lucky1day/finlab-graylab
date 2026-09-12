@@ -151,7 +151,6 @@ def _platform_rows_from_source(
         if label is None:
             continue
         direction = _int_or_none(source.get("pred_label"))
-        confidence = _float_or_none(source.get("prob_up"))
         extra = _extra_from_source(evidence, source, label)
         row = {
             "benchmark_id": BENCHMARK_ID,
@@ -164,7 +163,6 @@ def _platform_rows_from_source(
             "label": label.label,
             "predicted_direction": direction,
             "model_pred": direction,
-            "confidence": confidence,
             "source_row": clean_json(source),
             "extra": extra,
         }
@@ -263,7 +261,6 @@ def _dedupe_signature(row: dict[str, Any]) -> dict[str, Any]:
             "label": row.get("label"),
             "predicted_direction": row.get("predicted_direction"),
             "model_pred": row.get("model_pred"),
-            "confidence": row.get("confidence"),
             "extra": {key: value for key, value in extra.items() if key not in ignored_extra},
         }
     )
@@ -317,17 +314,6 @@ def _int_or_none(value: Any) -> int | None:
         return int(float(value))
     except (TypeError, ValueError):
         return None
-
-
-def _float_or_none(value: Any) -> float | None:
-    value = _clean_source_value(value)
-    if value in (None, ""):
-        return None
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return None
-    return None if math.isnan(parsed) or math.isinf(parsed) else parsed
 
 
 def _str_or_none(value: Any) -> str | None:

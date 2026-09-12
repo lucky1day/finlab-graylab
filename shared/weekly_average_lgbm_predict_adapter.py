@@ -69,7 +69,6 @@ def run_weekly_average_lgbm_prediction(scheme_id: str, predict_date: str) -> lis
         engine.dispose()
 
     direction = _required_int(source.get("pred_label"), "pred_label")
-    confidence = _float_or_none(source.get("prob_up"))
     return [
         PredictionRecord(
             scheme_id=scheme_id,
@@ -79,7 +78,6 @@ def run_weekly_average_lgbm_prediction(scheme_id: str, predict_date: str) -> lis
             target_date=target_date,
             predicted_direction=direction,
             feature_date=feature_date,
-            confidence=confidence,
             model_version=evidence.model_id,
             extra=_extra_from_source(
                 evidence,
@@ -149,17 +147,6 @@ def _int_or_none(value: Any) -> int | None:
         return int(float(value))
     except (TypeError, ValueError):
         return None
-
-
-def _float_or_none(value: Any) -> float | None:
-    value = _clean_value(value)
-    if value in (None, ""):
-        return None
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return None
-    return None if math.isnan(parsed) or math.isinf(parsed) else parsed
 
 
 def _str_or_none(value: Any) -> str | None:

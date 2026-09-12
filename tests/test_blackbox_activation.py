@@ -116,7 +116,7 @@ def _revision_fixture():
             "id INTEGER PRIMARY KEY, run_id INTEGER, scheme_id TEXT, "
             "target_tenor TEXT, "
             "horizon INTEGER, predict_date DATE, feature_date DATE, "
-            "target_date DATE, label INTEGER, predicted_direction INTEGER, confidence REAL, "
+            "target_date DATE, label INTEGER, predicted_direction INTEGER, "
             "extra TEXT)"
         )
         conn.exec_driver_sql(
@@ -125,7 +125,7 @@ def _revision_fixture():
             "backtest_run_id INTEGER, scheme_version TEXT, scheme_id TEXT, "
             "target_tenor TEXT, horizon INTEGER, predict_date DATE, "
             "feature_date DATE, target_date DATE, predicted_direction INTEGER, "
-            "backtest_actual_direction INTEGER, confidence REAL, "
+            "backtest_actual_direction INTEGER, "
             "model_version TEXT, extra TEXT)"
         )
         conn.execute(
@@ -259,7 +259,7 @@ def _initial_fixture():
             text(
                 "INSERT INTO t_backtest_predictions VALUES "
                 "(1, 42, :scheme_id, '10Y', 1, '2026-08-24', '2026-08-21', "
-                "'2026-08-25', 1, 1, 0.8, '{}')"
+                "'2026-08-25', 1, 1, '{}')"
             ),
             {"scheme_id": cfg.scheme_id},
         )

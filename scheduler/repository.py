@@ -3420,7 +3420,7 @@ def _prepare_blackbox_backtest_fact_rows_conn(
     source_rows = conn.execute(
         text(
             "SELECT scheme_id, target_tenor, horizon, predict_date, feature_date, "
-            "target_date, label, predicted_direction, confidence, extra"
+            "target_date, label, predicted_direction, extra"
             + source_request_column
             + " "
             "FROM t_backtest_predictions "
@@ -3505,7 +3505,6 @@ def _prepare_blackbox_backtest_fact_rows_conn(
             "target_date": str(target_date),
             "predicted_direction": int(direction),
             "backtest_actual_direction": int(actual_direction),
-            "confidence": source.get("confidence"),
             "model_version": cfg.scheme_version,
             "extra": json.dumps(extra, ensure_ascii=False),
         }
@@ -3558,10 +3557,10 @@ def _insert_run_predictions_conn(
     statement = """
         INSERT INTO t_scheme_predictions
             (run_id, backtest_run_id, scheme_version, scheme_id, target_tenor, horizon, predict_date, feature_date, target_date,
-             predicted_direction, backtest_actual_direction, confidence, model_version, extra)
+             predicted_direction, backtest_actual_direction, model_version, extra)
         VALUES
             (:run_id, :backtest_run_id, :scheme_version, :scheme_id, :target_tenor, :horizon, :predict_date, :feature_date, :target_date,
-             :predicted_direction, :backtest_actual_direction, :confidence, :model_version, {extra_expression})
+             :predicted_direction, :backtest_actual_direction, :model_version, {extra_expression})
         """.format(extra_expression=extra_expression)
     rows = [
         {key: value for key, value in row.items() if key != "_source_request"}
