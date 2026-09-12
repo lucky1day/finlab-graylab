@@ -15,18 +15,19 @@
   ECS 是独立灰度环境，使用本机 MySQL、DataBridge 和 systemd one-shot/timer。
 - 用户最新授权：深度清理后发布 ECS/Mac3、同步 master 并推送两分支。
   此授权不包含历史预测重算/复制/覆盖/删除、confidence DDL 或域名/DNS/Nginx/SSH 隧道变更。
-- ECS 已完成全部 17 个源码方案、21 个 target 的原 ID Blackbox 接管；此前 Native 附件清理及测试收尾 release 已发布验收。
-- Mac3 本轮只读核查仍有 26 个 Native base /30 个 active target，另外 67 个 Blackbox active target。
-  因此 Mac3 不只是上传 release，还需完成 17 个源码方案的原 ID 版本切换；九个 W4 加密方案保持原 Native 运行。
+- ECS 与 Mac3 均已完成全部 17 个源码方案、21 个 target 的原 ID Blackbox 接管。
+  ECS 为 84 个 active Blackbox base、88 个 Dashboard target；Mac3 为 84 个 active Blackbox base，
+  另保留九个 W4 Native base，共 97 个 Dashboard target。W4 不部署 ECS、不改造。
 - 本轮进一步删除旧 Liwei publisher/cache policy、16 个停用临时 canonical、旧迁移 Harness/仓储入口及一次性测试，
   恢复严格无 Native 附件的 Blackbox 合同。W4、有效算法交付与 93 个 canonical exact 摘要均未变化。
-  当前完整回归为 668 passed、6 skipped、219 subtests；真实隔离 MySQL 另验证 Mac3 整组事务。
-- Mac3 的 17 个源码方案、21 个目标已完成一次本机标准调用；七份增量状态已通过当前输入验证并受控发布，
-  尚未获得新版本 Writer。当前 Native Writer 已恢复，历史预测与回测没有改写。
-  切换前发现一条旧版本 Compare 遗留 running 审计；当前版本与候选版本的运行检查仍严格阻断，
-  不可执行旧版本的审计原样保全。修正仅针对本次迁移检查，不重跑已经通过的算法。
-- 当前尚未完成双机最终清洁 release 和 master 同步。具体阶段出口、精确范围与恢复步骤见
-  [当前迁移计划](architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md)；不能把本地通过等同于现场部署完成。
+  本次 Mac 整组事务已经真实隔离 MySQL 和现场受控切换验证；接管后移除临时事务入口及其一次性测试。
+  清洁版完整回归为 646 passed、4 skipped、219 subtests passed，保留跨版本公共防线。
+- Mac3 的 21 个目标已完成本机标准调用，七份增量状态通过当前输入验证并受控发布。
+  92 条旧 Native active version 已退休，原 paused 版本和全部历史记录保持不变；17 个新 exact 各为唯一 Writer。
+  一条旧 exact 的 Compare running 审计原样保留，不冒充当前运行进程，也没有为了切换改写审计。
+- 双机接管 release 已按同一个不可变 archive 验收，Backend 与预测调度已恢复，installed plist/unit 未修改。
+  最终清洁版本沿用同一 exact 与状态，不再次执行算法或版本迁移；精确 current/previous、archive 与远端提交
+  以[迁移验收记录](architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md)所定义的发布读回为准。
 - 两端不建立复制、双写、共享数据库或共享 DataBridge；本轮不搬迁临时身份历史。
   已完成的旧历史物化保持原内容和来源，不回删。
 - 单一 codex/develop 集成代码线、不可变 archive；Mac3 使用 ECS 已验证的同一 archive，不能自行构建环境分支版本。
@@ -60,8 +61,8 @@
   T1/T5 每 base 组合目标两文件、整体版本且原子提交；周/月 Metadata horizon=1，原事实 6/30 显式投影保留。
 - W4 九个 Mac3 加密方案继续现有 Native 入口与调度，不实施此前 binary bundle 设计；
   不因 ECS 迁移而删除其依赖，也不把 W4 部署到 ECS。
-- 普通 Blackbox 入库只保留“Intake → 一次完整持久化回测 → activate”；本次迁移的证据转换采用专用入口，
-  不伪改旧 backtest 或全局放宽 activate。DataBridge producer 独立发布 generation，方案不构建、修复或重验 generation。
+- 普通 Blackbox 入库只保留“Intake → 一次完整持久化回测 → activate”；已完成迁移的受控原件只读保留，
+  临时迁移入口不作为长期能力，不伪改旧 backtest 或全局放宽 activate。DataBridge producer 独立发布 generation，方案不构建、修复或重验 generation。
   Blackbox 不进入 Native `onboard`，不运行 StaticGate、CompareGate、额外 predict 冒烟或 `shadow-register`。
 - Blackbox `weekly_point/h1` 与日频 `T+5/h5` 的 target 半开区间批量已经在 ECS 与 Mac3 验证；日频
   `T+1/h1` 的同类能力已完成本地候选实现与回归，尚未做现场验证。一个方案只启动

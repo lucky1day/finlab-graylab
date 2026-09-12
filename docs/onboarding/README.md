@@ -20,8 +20,8 @@
 不得通过复用旧 ID、复制 `predict.py + core/` 或修改 Native 白名单，把新算法伪装成存量维护。
 
 上述“新算法”不包括已获批且有等价证据的运行时包装迁移。该迁移保留原 base/Registry ID，
-生成真实新 exact version，复用已核实计算并在现有 Harness 结构记录身份转换；不得把旧 backtest
-改名成新版本重新执行，不通过普通 activate 的宽松 fallback 绕过校验。
+生成真实新 exact version，复用已核实计算，以真实标准调用原件、受控版本事务和发布读回保留转换证据；
+临时迁移入口在接管后删除。不得把旧 backtest 改名成新版本重新执行，也不放宽普通 activate。
 
 ## 两种运行时
 

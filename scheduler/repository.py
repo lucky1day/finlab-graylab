@@ -6,12 +6,11 @@ import logging
 import math
 import sys
 from collections import Counter
-from copy import deepcopy
-from contextlib import ExitStack, contextmanager, nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterable, Iterator, Mapping, Sequence, cast
+from typing import Iterable, Iterator, Mapping, Sequence, cast
 
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Connection, Engine, URL
@@ -27,13 +26,12 @@ from shared.models import (
     WeeklyActualRecord,
 )
 from shared.one_shot_control_plane import SCHEDULED_ONE_SHOT_CONTROL_PLANES
-from shared.prediction_context import LIVE_PREDICTION_PHASES, WEEKLY_TARGET_RULE
+from shared.prediction_context import LIVE_PREDICTION_PHASES
 from shared.scheme_config_schema import (
     ALLOWED_RUNTIME_TYPES,
     ALLOWED_VERSION_STATUS,
     normalize_scheme_owner,
 )
-from shared.task_specs import TASK_COMBINATIONS
 
 
 PREDICTION_KEYS_ALREADY_EXIST = "prediction_keys_already_exist"
@@ -148,12 +146,11 @@ def _blackbox_activation_advisory_lock(
     engine: Engine,
     *,
     scheme_id: str,
-    connection: Connection | None = None,
 ) -> Iterator[None]:
     """用 scheme-scoped MySQL advisory lock 消除首次 absent-row 竞争。"""
     scheme_digest = hashlib.sha256(scheme_id.encode("utf-8")).hexdigest()[:32]
     lock_name = f"bfl:bbv2-draft:{scheme_digest}"
-    with (nullcontext(connection) if connection is not None else engine.connect()) as lock_conn:
+    with engine.connect() as lock_conn:
         acquired = lock_conn.execute(
             text("SELECT GET_LOCK(:lock_name, :timeout_sec)"),
             {
@@ -3574,313 +3571,6 @@ def _insert_run_predictions_conn(
         return 0
     conn.execute(text(statement), rows)
     return len(rows)
-
-
-def _same_id_rows_conn(
-    conn: Connection, table: str, where: str, params: Mapping[str, object],
-    *, order: str, for_update: bool,
-) -> list[dict[str, object]]:
-    """读取迁移内部固定表名和条件下的完整行，避免数量摘要漏掉内容漂移。"""
-    lock = " FOR UPDATE" if for_update and _dialect_name(conn) == "mysql" else ""
-    return [dict(row) for row in conn.execute(
-        text(f"SELECT * FROM {table} WHERE {where} ORDER BY {order}{lock}"),
-        params,
-    ).mappings()]
-
-
-_ATTACHMENT_RETIREMENT_IDS = frozenset({
-    "t1_daily", "t5_daily", "weekly_5y_direct_0529", "weekly_7y_cross_d_overlay_0529",
-    "weekly_10y_d_overlay_0529", "daily_5y_2_v28", "daily_7y_1_v28",
-    "liwei_0616_cons_sda_k3_div_k10", "liwei_0616_5y01_full_oos_k3_div_k10",
-    "liwei_0616_10y01_cons_say_k3_div_k10", "liwei_0616_10y01_full_oos_k3_div_k10",
-    "liwei_0616_10y02_cons_say_k3_div_k5", "liwei_0616_5y_auc_static_all_k3_div_k10",
-    "liwei_0616_5y_auc_yearly_all_k3_div_k10", "liwei_0616_5y_ic_yearly_all_k3_div_k10",
-    "liwei_0616_7y01_cons_say_k3_div_k10", "liwei_0616_7y03_cons_all_k3_div_k8",
-})
-
-
-def _mac3_promotion_snapshot(conn, *, for_update):
-    """覆盖全库业务与审计事实；固定表只读，不限于待切换方案。"""
-    tables = (("t_scheme_predictions", "id"), ("t_scheme_runs", "run_id"), ("t_backtest_runs", "id"),
-              ("t_backtest_predictions", "id"), ("t_backtest_monthly_metrics", "id"),
-              ("t_input_artifacts", "artifact_id"), ("t_harness_runs", "harness_run_id"),
-              ("t_harness_gate_results", "id"), ("t_backtest_reproduction_checks", "id"))
-    snapshot = {table: native_successor_plan_sha256({"rows": _same_id_rows_conn(
-        conn, table, "1=1", {}, order=order, for_update=for_update)}) for table, order in tables}
-    existing = set(inspect(conn).get_table_names())
-    for table in ("t_actual", "t_scheme_actuals", "t_scheme_weekly_actuals", "t_scheme_monthly_actuals", "t_scheme_period_average_actuals"):
-        if table in existing:
-            rows = _same_id_rows_conn(conn, table, "1=1", {}, order="1", for_update=for_update)
-            snapshot[table] = native_successor_plan_sha256({"rows": sorted(rows, key=canonical_native_successor_plan)})
-    return snapshot
-
-
-def _mac3_promotion_proofs(new_configs, control):
-    """核对本机标准输出与状态摘要；文件/环境真实性由锁内控制 reader 重验。"""
-    from shared.blackbox_v2.contracts import result_from_mapping
-
-    states = control.get("states", {})
-    results = control.get("standard_results", {})
-    if control.get("state_ready") is True:
-        if set(states) != {key for key, cfg in new_configs.items() if cfg.incremental_state}:
-            raise ValueError("Mac3 promotion state scope mismatch")
-        for value in states.values():
-            for field in ("envelope_sha256", "payload_sha256"):
-                _require_sha256(value.get(field), field)
-    if control.get("standard_results_ready") is not True:
-        return
-    if set(results) != set(new_configs):
-        raise ValueError("Mac3 promotion standard Result base coverage mismatch")
-    for key, cfg in new_configs.items():
-        proof = results[key]
-        for field in ("scheme_version", "environment_fingerprint", "data_snapshot_id"):
-            if proof.get(field) != getattr(cfg, field):
-                raise ValueError("Mac3 promotion standard Result identity mismatch")
-        _require_sha256(proof.get("receipt_sha256"), "receipt_sha256")
-        targets = proof.get("results", [])
-        if len(targets) != len(cfg.tenors) or {row.get("target_tenor") for row in targets} != set(cfg.tenors):
-            raise ValueError("Mac3 promotion standard Result target coverage mismatch")
-        for row in targets:
-            request = request_from_mapping(row["request"])
-            result = result_from_mapping(row["result"])
-            if any(getattr(result, field) != getattr(request, field) for field in (
-                    "request_id", "predict_date", "feature_date", "target_date")):
-                raise ValueError("Mac3 promotion standard Result does not echo Request")
-
-
-def _mac3_native_promotion_plan_conn(
-    conn, *, old_configs, new_configs, baseline_rows, action, control_plane_evidence,
-    expected_database_name, expected_server_uuid, for_update=False,
-):
-    """固定十七原 ID 晋级；原始 preimage 只用于精确状态回滚，不接受历史事实写入。"""
-    ids = sorted(_ATTACHMENT_RETIREMENT_IDS)
-    control = control_plane_evidence
-    if (action not in {"cutover", "rollback"} or set(old_configs) != set(ids) or set(new_configs) != set(ids)
-            or control.get("schema_version") != "mac3-native-promotion-control-v1"
-            or control.get("deployment_target") != "mac3-production" or control.get("scheme_ids") != ids
-            or control.get("writers_fenced") is not True):
-        raise ValueError("Mac3 promotion requires fixed seventeen-scheme fenced scope")
-    if set(baseline_rows) != {"versions", "registry"} or control.get("baseline_rows_sha256") != native_successor_plan_sha256(baseline_rows):
-        raise ValueError("Mac3 promotion baseline SHA mismatch")
-    if _dialect_name(conn) == "mysql":
-        identity = dict(conn.execute(text("SELECT DATABASE() AS database_name, @@server_uuid AS server_uuid")).mappings().one())
-        if identity != {"database_name": _require_nonempty(expected_database_name, "expected_database_name"),
-                        "server_uuid": _require_nonempty(expected_server_uuid, "expected_server_uuid")}:
-            raise RuntimeError("Mac3 promotion database identity mismatch")
-    elif _dialect_name(conn) == "sqlite":
-        identity = {"isolated_test": "sqlite"}
-    else:
-        raise RuntimeError("Mac3 promotion supports MySQL or isolated SQLite only")
-    migrations = _same_id_rows_conn(conn, "t_schema_migrations", "1=1", {}, order="version", for_update=for_update)
-    if not migrations or max(int(row["version"]) for row in migrations) != 24 or any(row["state"] != "APPLIED" for row in migrations):
-        raise RuntimeError("Mac3 promotion requires fully applied schema 024")
-    versions = _same_id_rows_conn(conn, "t_scheme_versions", "1=1", {}, order="scheme_id,scheme_version", for_update=for_update)
-    registry = _same_id_rows_conn(conn, "t_scheme_registry", "1=1", {}, order="scheme_id", for_update=for_update)
-    params = {f"id_{i}": key for i, key in enumerate(ids)}
-    scope = "scheme_id IN (" + ",".join(":" + key for key in params) + ")"
-    for table, order in (("t_scheme_runs", "run_id"), ("t_backtest_runs", "id")):
-        if _same_id_rows_conn(conn, table, scope + " AND status='running'", params, order=order, for_update=for_update):
-            raise RuntimeError(f"Mac3 promotion running work blocks transition: {table}")
-    executable_exacts = {
-        (key, cfg.scheme_version)
-        for configs in (old_configs, new_configs) for key, cfg in configs.items()
-    }
-    running_harness = _same_id_rows_conn(
-        conn, "t_harness_runs", scope + " AND status='running'", params,
-        order="harness_run_id", for_update=for_update,
-    )
-    # 历史不可执行 exact 的审计仍由全表 facts 摘要保全，不把它当作当前 Writer。
-    if any((row["scheme_id"], row["scheme_version"]) in executable_exacts for row in running_harness):
-        raise RuntimeError("Mac3 promotion running work blocks transition: t_harness_runs")
-    baseline_versions = {(row["scheme_id"], row["scheme_version"]): row for row in baseline_rows["versions"]}
-    baseline_registry = {row["scheme_id"]: row for row in baseline_rows["registry"]}
-    if (len(baseline_versions) != len(baseline_rows["versions"]) or len(baseline_registry) != len(baseline_rows["registry"])
-            or {row["scheme_id"] for row in baseline_versions.values()} != set(ids)
-            or {row["base_scheme_id"] for row in baseline_registry.values()} != set(ids)
-            or any(row["runtime_type"] != "native_adapter" or row["status"] not in {"active", "paused", "retired"} for row in baseline_versions.values())):
-        raise ValueError("Mac3 promotion baseline scope/lifecycle mismatch")
-    current_versions = {(row["scheme_id"], row["scheme_version"]): row for row in versions if row["scheme_id"] in ids}
-    allowed_keys = set(baseline_versions) | {(key, cfg.scheme_version) for key, cfg in new_configs.items()}
-    if not set(baseline_versions) <= set(current_versions) or not set(current_versions) <= allowed_keys:
-        raise RuntimeError("Mac3 promotion version set drift")
-    for key, before in baseline_versions.items():
-        expected = before | {"status": "retired"} if action == "rollback" and before["status"] == "active" else before
-        if native_successor_plan_sha256(current_versions[key]) != native_successor_plan_sha256(expected):
-            raise RuntimeError("Mac3 promotion source version preimage drift")
-    current_registry = {row["scheme_id"]: row for row in registry if row["base_scheme_id"] in ids}
-    if set(current_registry) != set(baseline_registry):
-        raise RuntimeError("Mac3 promotion Registry preimage coverage drift")
-    for key, before in baseline_registry.items():
-        expected = before | {"runtime_type": "blackbox_v2"} if action == "rollback" else before
-        ignored = {"updated_at"}
-        if native_successor_plan_sha256({k: v for k, v in current_registry[key].items() if k not in ignored}) != native_successor_plan_sha256({k: v for k, v in expected.items() if k not in ignored}):
-            raise RuntimeError("Mac3 promotion Registry preimage drift")
-    for key in ids:
-        old, new = old_configs[key], new_configs[key]
-        _validate_blackbox_revision_candidate(new, require_evidence=True)
-        if old.scheme_id != key or new.scheme_id != key or old.runtime_type != "native_adapter" or old.scheme_version == new.scheme_version:
-            raise ValueError("Mac3 promotion source/candidate runtime identity mismatch")
-        if any(getattr(old, field) != getattr(new, field) for field in ("horizon", "task_type", "frequency")) or sorted(old.tenors) != sorted(new.tenors):
-            raise ValueError("Mac3 promotion changes business coverage")
-        old_rule = old.target_rule
-        if old_rule is None and old.task_type in {"T+1", "T+5"}:
-            old_rule = TASK_COMBINATIONS[old.task_type][1]
-        if old.task_type == "weekly_point" and old_rule == WEEKLY_TARGET_RULE:
-            old_rule = TASK_COMBINATIONS["weekly_point"][1]
-        if old_rule != new.target_rule:
-            raise ValueError("Mac3 promotion changes target rule")
-        if any(getattr(old.schedule, field) != getattr(new.schedule, field) for field in ("cron", "timezone")):
-            raise ValueError("Mac3 promotion changes scheduling semantics")
-        source = baseline_versions.get((key, old.scheme_version))
-        if source is None or source["status"] != "active":
-            raise RuntimeError("Mac3 promotion canonical Native source is not baseline active")
-        _assert_migration_version_identity(old, source)
-        expected_tenors, expected_ids = _expected_registry_identity(old)
-        error = _registry_identity_error(old, expected_tenors, expected_ids,
-            [row for row in baseline_registry.values() if row["base_scheme_id"] == key],
-            expected_status="active", expected_runtime_type="native_adapter")
-        if error:
-            raise RuntimeError(error)
-        candidate = current_versions.get((key, new.scheme_version))
-        if action == "rollback" and candidate is None:
-            raise RuntimeError("Mac3 promotion candidate missing for rollback")
-        if candidate is not None:
-            _assert_migration_version_identity(new, candidate)
-            if (candidate["status"] != ("retired" if action == "cutover" else "active")
-                    or any(candidate.get(field) != getattr(new, field) for field in (
-                        "environment_fingerprint", "data_snapshot_id", "algorithm_version", "contract_version", "runtime_profile"))
-                    or not isinstance(candidate.get("approved_at"), datetime)
-                    or not isinstance(candidate.get("approved_by"), str) or not candidate["approved_by"].strip()):
-                raise RuntimeError("Mac3 promotion candidate existing evidence mismatch")
-        if action == "rollback" and not _read_blackbox_execution_approval_conn(conn, new, for_update=for_update).executable:
-            raise RuntimeError("Mac3 promotion candidate is not standard approved Writer")
-    if control.get("candidate_identities") != {key: _same_id_reclaim_identity(cfg) for key, cfg in new_configs.items()}:
-        raise ValueError("Mac3 promotion candidate mapping mismatch")
-    _mac3_promotion_proofs(new_configs, control)
-    return {"schema_version": "mac3-native-promotion-plan-v1", "action": action, "scheme_ids": ids,
-            "database_identity_sha256": native_successor_plan_sha256(identity), "baseline_rows": baseline_rows,
-            "versions": versions, "registry": registry, "facts": _mac3_promotion_snapshot(conn, for_update=for_update),
-            "candidate_versions": [_same_id_reclaim_identity(cfg) | {field: getattr(cfg, field) for field in (
-                "environment_fingerprint", "data_snapshot_id", "algorithm_version", "contract_version", "runtime_profile")}
-                for _, cfg in sorted(new_configs.items())], "control_plane": dict(control)}
-
-
-def read_mac3_native_promotion_plan(engine: Engine, **kwargs):
-    """只读一致快照计划；不执行算法、修改历史或创建 Gate。"""
-    with engine.connect() as conn:
-        if engine.dialect.name == "mysql":
-            conn.exec_driver_sql("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-            conn.exec_driver_sql("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
-        try:
-            return _mac3_native_promotion_plan_conn(conn, **kwargs, for_update=False)
-        finally:
-            conn.rollback()
-
-
-def apply_mac3_native_promotion(engine: Engine, *, expected_plan_sha256, approved_by, approved_at,
-                                control_plane_evidence_reader, **kwargs):
-    """十七方案一次事务；回滚只恢复 preimage 状态，新 BB 行永久保留。"""
-    operator = _require_nonempty(approved_by, "approved_by")
-    _require_sha256(expected_plan_sha256, "expected_plan_sha256")
-    if not isinstance(approved_at, datetime) or set(kwargs.get("old_configs", {})) != _ATTACHMENT_RETIREMENT_IDS:
-        raise ValueError("Mac3 promotion requires timestamp and complete scope")
-    with ExitStack() as locks:
-        if engine.dialect.name != "sqlite":
-            connection = locks.enter_context(engine.connect())
-            for key in sorted(_ATTACHMENT_RETIREMENT_IDS):
-                locks.enter_context(_blackbox_activation_advisory_lock(engine, scheme_id=key, connection=connection))
-        with engine.begin() as conn:
-            control = deepcopy(control_plane_evidence_reader())
-            if control.get("state_ready") is not True or control.get("standard_results_ready") is not True:
-                raise RuntimeError("Mac3 promotion requires completed local Results and ready states")
-            plan = _mac3_native_promotion_plan_conn(conn, **kwargs, control_plane_evidence=control, for_update=True)
-            if native_successor_plan_sha256(plan) != expected_plan_sha256:
-                raise RuntimeError("Mac3 promotion plan changed")
-            cutover = kwargs["action"] == "cutover"
-            for before in kwargs["baseline_rows"]["versions"]:
-                if before["status"] != "active":
-                    continue
-                changed = conn.execute(text("UPDATE t_scheme_versions SET status=:after WHERE scheme_id=:id AND scheme_version=:version AND runtime_type='native_adapter' AND status=:before"),
-                    {"id": before["scheme_id"], "version": before["scheme_version"],
-                     "before": "active" if cutover else "retired", "after": "retired" if cutover else "active"})
-                if changed.rowcount != 1:
-                    raise RuntimeError("Mac3 promotion Native status rowcount mismatch")
-            for key, cfg in sorted(kwargs["new_configs"].items()):
-                existing = any(row["scheme_id"] == key and row["scheme_version"] == cfg.scheme_version for row in plan["versions"])
-                if not existing:
-                    _upsert_scheme_version_conn(conn, cfg, trusted_status="active", approved_by=operator, approved_at=_mysql_utc_datetime(approved_at))
-                else:
-                    changed = conn.execute(text("UPDATE t_scheme_versions SET status=:after WHERE scheme_id=:id AND scheme_version=:version AND status=:before"),
-                        {"id": key, "version": cfg.scheme_version, "before": "retired" if cutover else "active", "after": "active" if cutover else "retired"})
-                    if changed.rowcount != 1:
-                        raise RuntimeError("Mac3 promotion BB status rowcount mismatch")
-                changed = conn.execute(text("UPDATE t_scheme_registry SET runtime_type=:after WHERE base_scheme_id=:id AND runtime_type=:before AND status='active'"),
-                    {"id": key, "before": "native_adapter" if cutover else "blackbox_v2", "after": "blackbox_v2" if cutover else "native_adapter"})
-                if changed.rowcount != len(cfg.tenors):
-                    raise RuntimeError("Mac3 promotion Registry rowcount mismatch")
-            post = _mac3_native_promotion_plan_conn(conn, **(kwargs | {"action": "rollback" if cutover else "cutover"}), control_plane_evidence=control, for_update=True)
-            if post["facts"] != plan["facts"]:
-                raise RuntimeError("Mac3 promotion changed historical facts")
-            for table, field in (("versions", "scheme_id"), ("registry", "base_scheme_id")):
-                if [row for row in post[table] if row[field] not in _ATTACHMENT_RETIREMENT_IDS] != [row for row in plan[table] if row[field] not in _ATTACHMENT_RETIREMENT_IDS]:
-                    raise RuntimeError("Mac3 promotion changed unrelated lifecycle")
-            if native_successor_plan_sha256(control_plane_evidence_reader()) != native_successor_plan_sha256(control):
-                raise RuntimeError("Mac3 promotion control changed during transaction")
-    return {"schema_version": "mac3-native-promotion-result-v1", "action": kwargs["action"], "scheme_ids": sorted(_ATTACHMENT_RETIREMENT_IDS),
-            "plan_sha256": expected_plan_sha256, "approved_by": operator, "prediction_written": False, "historical_facts_changed": False}
-
-
-def _same_id_reclaim_identity(cfg: SchemeConfig) -> dict[str, object]:
-    """绑定三种 canonical 身份，不用历史 active 行推断 Native Writer。"""
-    return {key: getattr(cfg, key) for key in (
-        "scheme_id", "scheme_version", "runtime_type", "code_hash", "config_hash", "manifest_hash",
-    )}
-
-
-def canonical_native_successor_plan(plan: Mapping[str, object]) -> str:
-    """把迁移计划编码为稳定 JSON，供人工授权绑定。"""
-    normalized = json.loads(json.dumps(plan, ensure_ascii=True, default=str))
-    control_plane = normalized.get("control_plane")
-    if isinstance(control_plane, dict):
-        control_plane.pop("captured_at", None)
-        control_plane.pop("_capture_sha256", None)
-    return json.dumps(
-        normalized,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-
-
-def native_successor_plan_sha256(plan: Mapping[str, object]) -> str:
-    """计算规范迁移计划摘要。"""
-    return hashlib.sha256(
-        canonical_native_successor_plan(plan).encode("utf-8")
-    ).hexdigest()
-
-
-def _assert_migration_version_identity(
-    cfg: SchemeConfig,
-    row: Mapping[str, object],
-) -> None:
-    expected = {
-        "scheme_id": cfg.scheme_id,
-        "scheme_version": cfg.scheme_version,
-        "runtime_type": cfg.runtime_type,
-        "code_hash": cfg.code_hash,
-        "config_hash": cfg.config_hash,
-        "manifest_hash": cfg.manifest_hash,
-    }
-    mismatches = [
-        f"{field}: expected={value!r}, actual={row.get(field)!r}"
-        for field, value in expected.items()
-        if row.get(field) != value
-    ]
-    if mismatches:
-        raise RuntimeError(
-            "migration exact version identity mismatch for "
-            f"{cfg.scheme_id}: " + "; ".join(mismatches)
-        )
 
 
 def upsert_actuals(engine: Engine, records: Iterable[ActualRecord]) -> int:

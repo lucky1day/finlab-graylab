@@ -4,13 +4,15 @@
 
 本文保留因子版本输入设计的历史推导，不是当前部署、缓存或算法验收操作入口。
 其中旧 Native Phase-A、候选阶段与两机水位描述只代表当时记录；当前 Native 仅保留 Mac3 W4 九方案，
-其余原 ID 使用 Blackbox，当前输入合同和发布状态分别以共享 SOP 与 `CURRENT_STATUS.md` 为准。
+其余原 ID 的 canonical 使用 Blackbox；当前输入合同和两机实际接管、发布状态分别以共享 SOP 与
+[当前状态](../CURRENT_STATUS.md)为准。本文不授予 DDL、producer、服务或发布操作权限。
 
-**最后更新日期**：2026-08-29
+**历史阶段记录日期**：2026-08-29
 
-**当前阶段**：本地候选代码、永久测试、全量测试、独立审查和 V4 上游交付包候选均已完成。Mac3 与 ECS
+**当时阶段（非当前水位）**：本地候选代码、永久测试、全量测试、独立审查和 V4 上游交付包候选均已完成。Mac3 与 ECS
 源表已增加 nullable 字段并将全部存量成员回填为 `V1.0`，旧 release dry-run 已证明原四文件零漂移。源表写入
-属于独立项目，本项目不接管其 CRUD；ECS 与 Mac3 均已完成第一份兼容 release 验证，五文件 producer 尚未执行。
+属于独立项目，本项目不接管其 CRUD；当时 ECS 与 Mac3 均已完成第一份兼容 release 验证，五文件 producer 尚未执行。
+该阶段水位已经过时，不得据此判断当前五文件是否发布或阻断本轮获批的 Mac3 晋级。
 
 ## 1. 目标与原则
 
@@ -401,9 +403,9 @@ blackbox-v2-upstream-delivery-kit-v4-<date>-<commit>.zip
 上游包只描述五文件、catalog、算法内版本选择和缺列 fail-closed，不暴露 legacy V1 视图、数据库 DDL、ECS、
 Mac3、Registry、release 或 Harness 内部机制。
 
-### 10.2 发布范围
+### 10.2 原设计的发布阶段（历史记录）
 
-当前方案若后续获批，固定分为四个阶段：
+原设计将发布分为以下四个阶段；本节保留当时顺序，不是当前待执行清单：
 
 1. 源表阶段：只增加并回填 `factor_version`，使用旧 release 验证四文件和结果零漂移；
 2. 代码阶段：第一阶段通过后，才实现五文件、共享 V1 视图、测试、文档和 V4 上游包；
@@ -411,9 +413,9 @@ Mac3、Registry、release 或 Harness 内部机制。
 4. ECS 开放阶段：下一次有真实内容的正常 release 晋级、使 current 和 previous 都具备兼容能力后，才单独授权
    producer 发布首个五文件 generation 并验证运行结果。
 
-任一阶段失败即停止，不把后续阶段作为修复手段。本轮计划不修改 Mac3。
+原设计要求任一阶段失败即停止，不把后续阶段作为修复手段；该阶段当时不修改 Mac3。
 
-未来 ECS 执行仍需对以下操作分别取得明确授权：
+当时列出的独立授权事项如下；历史记录不构成这些操作的当前授权：
 
 - 源表 DDL 和 V1.0 回填；
 - DataBridge one-shot producer；
@@ -548,9 +550,10 @@ DataBridge producer 自己在一个一致性事务内只读取一次 Metadata，
 9. prediction、run、backtest、Actual 和 Registry 表零修改；
 10. ECS 全部门槛通过后，Mac3 仍作为独立授权的同 archive 晋级任务。
 
-## 14. 下一步授权边界
+## 14. 原阶段授权与进度记录（不可直接执行）
 
-本文已经没有未决业务或工程设计选择，用户已明确批准开始本地实现。后续仍按以下授权边界逐段执行：
+以下记录的是当时已批准本地实现后的进度与后续安排，“已完成”及四文件水位均仅指该历史阶段。
+当前实际状态与获批范围以[当前状态](../CURRENT_STATUS.md)为准，不从本节恢复旧任务：
 
 1. 源表增加 nullable `factor_version` 并完成存量回填（已完成）；
 2. 第一阶段旧 release 四文件零漂移验收（已完成）；
@@ -561,4 +564,4 @@ DataBridge producer 自己在一个一致性事务内只读取一次 Metadata，
 7. 满足双 release 回滚前提后，另行授权首个五文件 producer；
 8. ECS 新版本因子验收完成后，再单独决定 Mac3 晋级。
 
-五文件 producer、release 切换、服务操作和 Mac3 晋级仍按项目边界逐项确认。
+五文件 producer、release 切换、服务操作、DDL 和 Mac3 晋级仍需当前明确授权；本历史清单不授予执行权限。

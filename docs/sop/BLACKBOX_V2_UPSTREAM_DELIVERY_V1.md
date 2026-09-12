@@ -281,7 +281,7 @@ selector/calibration，或依赖 Request 顺序的隐藏状态。
 - 平台仅验证 opaque 文件完整性和执行身份，不加载算法内部数组，也不对算法的依赖充分性作独立证明。
 - 状态不压缩进业务 Result；平台在五字段校验成功后才原子发布。相同 Request 重试必须返回相同结果，涵盖状态已发布但业务写库失败的情况。
 
-相关合同和故障注入证据参见[迁移计划 5.2.1](../architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md)。
+平台状态发布与显式重建边界参见[平台入库 SOP 5.1](BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#51-增量方案的显式预热重建)。
 平台尚未完成目标环境验收的实现不得直接用于生产；私有试点通过不等于已完成 Intake 或激活。
 
 ## 7. Result 与失败语义

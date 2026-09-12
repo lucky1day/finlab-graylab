@@ -18,11 +18,11 @@ Python 模块只是被宿主控制面调用的一次性执行器。
 预检进程或手工进程同时拥有自然写入权。
 
 生产调度控制面与生产源码 authority 也必须分开。ECS service 只从 `/opt/bond-factor-lab/current`
-immutable release 启动；Mac3 仓库候选只从 `/Users/macstudio0/bond-factor-lab-production/current`
+immutable release 启动；Mac3 生产入口只从 `/Users/macstudio0/bond-factor-lab-production/current`
 启动，并由 `scripts/run_launchd_release.py` 核验 `.bfl-release.env` 后 `exec` 既有入口。launcher 不增加
 调度权，只保证 commit、runtime root 和第三方 cache 与当前精确 release 一致。仓库模板不能证明
-installed 状态；在 Mac3 installed plist 完成独立切换前，现场仍可能运行旧 Git 工作区，必须以
-plist、`launchctl` 和进程 cwd 读回判定，不能提前切换或清理开发工作区。
+installed 状态；必须以 plist、`launchctl` 和进程 cwd 读回判定，不得仅凭候选模板切换或清理
+开发工作区。两机实际发布阶段见[当前状态](../CURRENT_STATUS.md)。
 
 两个宿主控制面使用相同业务日历：DataBridge 06:30、daily 工作日 07:03、weekly 周六 11:30、
 close-period 每日 18:00、Actuals 每日 08:30/19:00/23:45。close-period 复用原 monthly 控制面：

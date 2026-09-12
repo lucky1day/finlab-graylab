@@ -82,13 +82,13 @@ Native 首次入库必须保留 source benchmark 与 CompareGate；同一身份�
 
 `feature_date` 是唯一标准数据截止字段；`anchor_date` 只允许作为方案内部算法变量或审计 extra，前端和业务规则不得依赖它。`gray_live` 与 `scheduled_live` 只属于 run 审计；产品事实不保存 phase，公开回测/实盘只按 `target_date=2026-06-01` 分界。日频、周频、月频和周期均值必须按统一日历与任务语义生成三个日期。完整规则见 [docs/architecture/PREDICTION_SEMANTICS.md](docs/architecture/PREDICTION_SEMANTICS.md)。
 
-后续新方案的历史回测与灰度实盘保持两个清晰批次：`target_date < gray_target_start` 由一次持久化历史回测写入新的 immutable canonical backtest；起点及以后、正式调度以前的应有点由一次 target 区间批量执行，按受控 repository insert-only 物化为 `gray_live`。灰度区间不得逐日期重复启动算法、重复解析 generation 或重建输入；平台必须按任务日历生成 live `predict_date`，并保留 `feature_date`、`target_date`、方向、exact scheme version 和必要来源 `extra`，Blackbox Result 不增加 confidence/audit 字段。两个批次严格绑定同一 exact version 和输入 lineage，但不为了少一次进程启动引入跨激活候选表、临时结果文件或新的生命周期状态。任一灰度业务键已存在即拒绝整个授权区间，不得更新、覆盖或先删除再导入；历史 run 保持不可变。若 batch 使用晚于样本 `feature_date` 的固定 `source_end`、未来 test window、全局 selector/calibration，或 exact version、输入 digest、lineage 任一不匹配，则禁止批量物化为 live，必须走逐点 live-safe 计算。同 ID 运行时迁移不重算已有历史，也不因包装升级创造灰度缺口；临时身份独有结果按获批迁移计划保全。完整操作和验收规则见统一入库导航与预测语义文档。
+后续新方案的历史回测与灰度实盘保持两个清晰批次：`target_date < gray_target_start` 由一次持久化历史回测写入新的 immutable canonical backtest；起点及以后、正式调度以前的应有点由一次 target 区间批量执行，按受控 repository insert-only 物化为 `gray_live`。灰度区间不得逐日期重复启动算法、重复解析 generation 或重建输入；平台必须按任务日历生成 live `predict_date`，并保留 `feature_date`、`target_date`、方向、exact scheme version 和必要来源 `extra`，Blackbox Result 不增加 confidence/audit 字段。两个批次严格绑定同一 exact version 和输入 lineage，但不为了少一次进程启动引入跨激活候选表、临时结果文件或新的生命周期状态。任一灰度业务键已存在即拒绝整个授权区间，不得更新、覆盖或先删除再导入；历史 run 保持不可变。若 batch 使用晚于样本 `feature_date` 的固定 `source_end`、未来 test window、全局 selector/calibration，或 exact version、输入 digest、lineage 任一不匹配，则禁止批量物化为 live，必须走逐点 live-safe 计算。同 ID 运行时迁移不重算已有历史，也不因包装升级创造灰度缺口；临时身份历史只读保留，本轮不重算、搬迁或删除。完整操作和验收规则见统一入库导航与预测语义文档。
 
 ## 方案入库流程（强约束 harness）
 
 所有场景必须先读[统一入库导航](docs/onboarding/README.md)：
 
-- 新算法、新方案 ID、新目标、新任务：只走 Blackbox V2 两文件 Intake。仅已批准的同算法运行时迁移走迁移专用入口，复用已核实等价/执行产物，在既有 Harness 证据结构记录真实输入、版本与包装转换；不伪改旧回测，不要求因 ID 包装变化重复训练，也不放宽普通算法修订入库。
+- 新算法、新方案 ID、新目标、新任务：只走 Blackbox V2 两文件 Intake。已批准的同算法运行时迁移按获批计划复用已核实的标准执行原件，以受控版本事务记录真实输入、版本与包装转换；不伪改旧回测，不要求因 ID 包装变化重复训练，也不放宽普通算法修订入库。迁移临时控制仅服务获批接管，接管后删除，不是长期入库入口；过程通过 Git 与不可变 archive、外置原件追溯。
 - 现有 Native V1 故障、数据口径或保真修复：只操作 `deploy/onboarding_policy_v1.json` 中的存量 ID。
 - 已入库 Native 修订只在 prior `all` 留有匹配 `static.business_identity` 快照时走 `native-maintenance`；缺少、重复、损坏或不匹配时只能让 current exact version 重新走完整 `all`（含 Compare），不再读取方案级历史 receipt。
 - Native StaticGate 与 ActivationGate 都必须拒绝清单外的新 Native 身份。
