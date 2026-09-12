@@ -2,14 +2,9 @@
 
 **文档状态**：`CURRENT`
 
-**最后更新日期**：2026-09-03
-
-**实施状态**：需求与实施顺序已确认；第一阶段以阿里云 ECS `aliyun-gray` 的 localhost 前端为实现与集成验收
-目标，ECS 验收通过前不得晋级 Mac3
-
-本文定义 Bond Factor Lab 独立登录、会话、账户与管理员用户管理的目标设计。系统不依赖、嵌入或复用其它
-前端系统的身份能力；第一阶段只在 ECS 的独立 `bond_db` 验证。Mac3 暂不实施，未来晋级时仍使用自己的
-`bond_db`，不复制、同步或共享账户数据。
+本文定义 Bond Factor Lab 独立登录、会话、账户与管理员用户管理的当前合同。系统不依赖、嵌入或复用其它
+前端系统的身份能力。ECS 与 Mac3 分别使用自己的 `bond_db`，不复制、同步或共享账户数据。
+运行版本以[当前状态](../CURRENT_STATUS.md)及现场 manifest 为准；本文不保留首次实施排期。
 
 ## 1. 已确认需求
 
@@ -27,7 +22,7 @@
 9. 用户改密、管理员重置密码、改用户名、改角色或停用用户时，必须撤销该用户全部浏览器会话。
 10. 恢复用户只恢复登录资格，不恢复任何已撤销或已过期的会话。
 
-## 2. 第一阶段范围
+## 2. 功能范围
 
 ### 2.1 包含
 
@@ -101,7 +96,7 @@ Dashboard 数据。
 管理器：用户名输入框使用 `autocomplete="username"`，密码输入框使用 `autocomplete="current-password"`。应用不得把
 密码写入 Cookie、`localStorage`、`sessionStorage`、IndexedDB 或服务端会话，也不通过自定义脚本读取并保存密码。
 
-因此第一阶段不提供自定义“记住我”复选框。是否保存和自动填充密码由浏览器设置及其原生提示决定。
+不提供自定义“记住我”复选框。是否保存和自动填充密码由浏览器设置及其原生提示决定。
 
 ### 3.3 右上角账户入口
 
@@ -406,8 +401,7 @@ __Host-bfl-session=<opaque-token>; Secure; HttpOnly; SameSite=Strict; Path=/
 - `/api/admin/*` 只允许管理员；
 - 未登录时前端不得发起 Dashboard 请求；
 - 收到任一受保护 API 的 `401` 时清空前端业务状态并回到登录页；
-- ECS 灰度入口验收合同从“匿名 Dashboard 返回 200”改为“匿名返回 401，登录后返回 200”。Mac3 公网合同只有
-  在未来取得独立晋级授权后才改变。
+- ECS 与 Mac3 的 Dashboard 均要求“匿名返回 401，登录后返回 200”，不得回退为匿名读取。
 
 ## 10. 初始管理员与重置命令
 
@@ -420,7 +414,7 @@ Migration 只创建 schema，不写入默认用户名或密码。提供一次性
    或日志；
 5. 创建首个 `admin`，设置 `is_protected_admin = true`，首次登录不强制修改密码；
 6. 用户表非空时 fail-closed；
-7. 第一阶段只在 ECS 执行；Mac3 初始化属于未来独立晋级操作，不复制账户或密码。
+7. 每个目标环境分别授权初始化，不复制另一主机的账户或密码。
 
 唯一初始管理员忘记密码时不提供网页找回流程，只提供受控的管理员重置命令。该命令：
 
@@ -435,7 +429,7 @@ Migration 只创建 schema，不写入默认用户名或密码。提供一次性
 受保护管理员的用户名、角色和状态不得通过用户管理页面或管理员 API 修改；不能将其停用、改名或降级。上述重置
 命令是该账户唯一的离线恢复入口。私有 secret 的实际值属于部署凭据，不进入本文或版本控制。
 
-## 11. 建议代码边界
+## 11. 代码边界
 
 - `backend.auth.routes`：只处理 HTTP 输入、输出和 Cookie；
 - `backend.auth.service`：认证、角色、最后管理员保护和账户生命周期；
@@ -461,9 +455,9 @@ Migration 只创建 schema，不写入默认用户名或密码。提供一次性
 11. 数据库、API 响应、日志和审计记录中不存在明文密码或原始会话令牌。
 12. 管理员变更均有不可修改的审计记录。
 13. Dashboard 数据合同、排序、统计和日期语义不因认证接入发生变化。
-14. 第一阶段只在 ECS 独立认证数据中验收，不修改或同步 Mac3 账户数据。
-15. ECS 不安装或开放 Nginx；Backend 只监听 loopback，并由 FastAPI 路由拒绝未列出的 API 方法，验收只经 SSH
-    localhost 转发访问。
+14. 每个环境在自己的认证数据中验收，不修改或同步另一主机账户数据。
+15. ECS 灰度 Backend 只监听 loopback，并由 FastAPI 路由拒绝未列出的 API 方法，验收只经 SSH
+    localhost 转发访问；不因认证测试开放端口或修改公网 Nginx。
 16. 本地单元、API、前端、migration、Nginx 合同和完整回归测试全部通过后，才可请求 ECS 现场 migration、
     release 激活和服务操作授权。
 17. 同一用户可以在多个浏览器同时登录，且每条会话都在创建 12 小时后绝对过期。
@@ -471,27 +465,13 @@ Migration 只创建 schema，不写入默认用户名或密码。提供一次性
 19. 管理员重置命令拒绝不符合统一密码规则的初始密码，不从参数、输出、日志或版本控制中暴露密码，并在重置后
     撤销管理员全部会话。
 
-## 13. ECS 第一阶段实施与验收边界
+## 13. 部署与安全恢复
 
-第一阶段按“当前工作区实现和自动化验证 → 构建不可变 release → ECS 独立灰度集成验收”推进：
-
-1. 在当前 `codex/develop` 代码线上实现，先完成认证单元/API/前端测试、Migration 022 隔离 MySQL 测试、Nginx
-   精确白名单测试和现有完整回归；
-2. `requirements-service.txt` 增加固定版本的 Argon2id 实现依赖，并在 ECS 的
-   `bond_factor_lab_service` 环境中按受控依赖变更流程安装；
-3. 只从 clean commit 构建 deterministic archive，ECS 仍从 `/opt/bond-factor-lab/current` 的不可变 release 运行，
-   不在 ECS `current` 或 release 目录现场改代码；
-4. Migration 022 只在 ECS `bond_db` 上经 `scripts/apply_migrations.py` 执行，并显式核对 ECS 的 database name 与
-   server UUID；不连接或修改 Mac3 数据库；
-5. 初始管理员密码只在 ECS 部署机私有 secret 中配置，初始化与重置命令不得从命令参数接收密码；
-6. ECS Backend 继续只监听 `127.0.0.1:8100`，不得为测试直接开放该端口或扩大安全组；浏览器通过 SSH 本地
-   转发访问 `http://localhost:18110`，验证 localhost Secure Cookie、CSRF 来源校验和完整前端交互；
-7. ECS release 通过外置配置声明唯一受信任 Origin `http://localhost:18110`；该 HTTP 例外只允许
-   `aliyun-gray` 的精确 localhost 灰度入口，Cookie 仍必须保留 `Secure`；
-8. 登录功能不修改或重启 DataBridge、prediction、Actuals timer，也不改变 ECS 的单 Writer 控制面；
-9. ECS 验收通过不自动授权 Mac3 晋级。未来 Mac3 必须复用同一份已验证 archive，并分别取得 migration、secret、
-   Nginx、release 激活和服务操作授权。
-
-ECS 验收完成后必须停止并等待用户确认；Mac3 只能使用同一份已验证 archive，并独立执行 migration、secret、
-生产 Nginx、release 激活和 backend 重启。Mac3 登录切换后的失败回滚采用安全优先策略：入口临时返回 503，
-不得恢复旧版匿名 Dashboard。
+- 使用受控依赖环境和 immutable release；schema 操作仅通过 migrations.runner 与受控 CLI，显式核对目标数据库身份。
+- secret 仅保存在目标机权限受限位置，不进入命令参数、文档或 Git。
+- ECS 只接受 `aliyun-gray` 的精确 `http://localhost:18110` Origin，通过 SSH localhost 转发访问；
+  该 HTTP 例外不得推广到其它入口，Cookie 仍保留 Secure。Mac3 使用自身受信任公网 Origin。
+  配置规则见[部署手册](../../deploy/README.md)。
+- release、migration、secret、Nginx 和 Backend 操作分别取得目标环境授权；不得顺带重启 DataBridge、预测或 Actuals。
+- 认证失败回滚采用安全优先策略：必要时入口返回 503，不得恢复旧版匿名 Dashboard。
+  回滚 release 仍须满足当前 schema 与状态兼容边界。

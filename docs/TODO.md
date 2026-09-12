@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最后核验日期**：2026-09-12（Native 迁移队列；其他队列仍需各自现场核验）
+**整理日期**：2026-09-12；以下运营事项仍需各自现场核验，不因文档整理标记完成。
 
 本文只保留尚未发生的后续事项。当前稳定事实见[当前状态](CURRENT_STATUS.md)，生产规则见
 [生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。已完成事项通过 Git、Harness、数据库
@@ -25,21 +25,19 @@
 1. 只读核验 `five_y_factor_rule_online_v1` 与 `ten_y_factor_level_ensemble_v1` 在 2026-08-24 07:03
    Asia/Shanghai 的首次真实 daily 自然触发结果；在 journal、run、`scheduled_live`、输入 generation 和
    Dashboard 证据完整前，不得标记 Production Observed，也不得 kickstart、覆盖日期或倒签信号。
-2. M0 周平均五方案及同期 ECS 周频方案等待 2026-08-29 11:30 的首次自然触发。
+2. 只读核验 M0 周平均五方案及同期 ECS 周频方案在 2026-08-29 11:30 的首次自然触发证据；
+   该时间已过去，不能继续描述为等待未来触发，也不能未经核验标记完成。
 3. 未来若把生产域名或 Writer 从 Mac3 切到 ECS，必须作为新生产项目设计数据库 authority、单 Writer、
    DNS/Nginx、窗口和回滚，不能从灰度验收外推授权。
+4. 公网刷新可靠性的 Actuals/预测窗口观察需核对既有日志与验收原件；旧执行记录未确认该观察完成。
+   不因删除历史发布流水而标记通过，不重复注入生产故障。
 
-## Native 后续维护边界
+## 尚缺现场验证的能力
 
-17 个源码方案的原 ID 双机接管已验收，迁移过程与清洁发布核验见
-[迁移验收记录](architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md)，不再安排重复算法验证或历史重算。
-W4 九个加密方案保持 Mac3 Native 及必要依赖，没有待执行的 binary bundle 改造计划。
-两个 archived W3A 临时身份已获批作为只读历史来源保留，执行版本 retired、不具备 Writer；
-不再安排物理删除，不为消除名称而修改原 ID 的四条历史预测及其来源外键。
-历史搬迁/删除及域名切换不是本轮剩余步骤。独立授权的平台 confidence 退役已完成双机部署、DDL 和验收，
-见[当前状态](CURRENT_STATUS.md#平台-confidence-退役验收)，不再保留可重复执行的生产清理队列。
-上面的 M0/其他方案自然观察属于独立运营队列，不是本次迁移或新 Blackbox 方案开始 Intake 的阻塞条件。
-
+- Blackbox `T+1/h1` target 半开区间批量已有本地候选与回归，尚缺现场验证；
+  不据此宣称该路径已生产验收，也不为了验证向生产写入虚构或重复预测。
+- 已完成迁移、W4 存量范围及只读历史来源见[当前状态](CURRENT_STATUS.md)。
+  本文运营队列不是新 Blackbox 方案开始 Intake 的阻塞条件。
 
 ## 统一停止条件
 

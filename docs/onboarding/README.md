@@ -13,15 +13,14 @@
 | 新算法、新方案 ID、新目标期限或新任务类型 | Blackbox V2 |
 | Mac3 W4 九个 Native V1 存量方案的故障、数据口径或复现性修复 | Native V1 存量维护 |
 | Native V1 的算法升级、替代实现或能力扩展 | 创建独立 Blackbox V2 trial |
-| 同算法运行时升级的身份与发布边界 | [同 ID 双机迁移计划](../architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md)，不新建业务身份、不搬删历史 |
+| 已完成运行时升级的身份与保留边界 | [当前状态](../CURRENT_STATUS.md#保留范围与历史保护)与[共享契约](../architecture/SCHEME_CONTRACT.md)，不恢复临时迁移入口 |
 | 查看当前方案状态或未关闭问题 | 当前状态或统一后续推进计划 |
 | 查看历史规则和旧草案 | 使用 Git 历史；不得用于当前验收 |
 
 不得通过复用旧 ID、复制 `predict.py + core/` 或修改 Native 白名单，把新算法伪装成存量维护。
 
-上述“新算法”不包括已获批且有等价证据的运行时包装迁移。该迁移保留原 base/Registry ID，
-生成真实新 exact version，复用已核实计算，以真实标准调用原件、受控版本事务和发布读回保留转换证据；
-临时迁移入口在接管后删除。不得把旧 backtest 改名成新版本重新执行，也不放宽普通 activate。
+已完成的运行时迁移不属于日常入库流程；临时迁移入口已删除。不得把旧 backtest 改名成新版本重新执行，
+也不因历史迁移例外放宽普通 activate。
 
 ## 两种运行时
 

@@ -251,10 +251,6 @@ python {scheme_id}.py backtest \
 
 ### 6.1 批量计算效率
 
-同算法包装迁移按[迁移计划](../architecture/NATIVE_V1_TO_BLACKBOX_V2_MIGRATION.md)使用已有 Native 结果作基线，
-以最终原 ID 包的一次对应 Request 标准调用比较三日期和方向；真实输入各自绑定，输入 vintage 不同不得宣称同输入全算法等价。
-该迁移不要求重新回测历史、首中末冷复算或第 8 节矩阵，不改变普通新交付的逐 Request 截止隔离、结果等价与标准失败无 Output 要求。
-
 本身可以一次生成整条 walk-forward 序列的算法，应在一次 `backtest` 调用中完成等价批量计算，不能
 对每条 Request 重复完整训练。批量优化必须满足：
 
