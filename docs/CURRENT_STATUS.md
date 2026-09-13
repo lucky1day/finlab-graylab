@@ -8,7 +8,7 @@
 
 ## 运行与部署
 
-源码方案执行迁移、平台 confidence 退役及展示验收衔接修复均已完成，最近验证见下方[生产标记发布](#dashboard-生产标记发布)。新算法仍按[标准入库流程](onboarding/README.md)处理。
+源码方案执行迁移、平台 confidence 退役及展示验收衔接修复均已完成。最近同步为下方文档 release；功能验收见[生产标记发布](#dashboard-生产标记发布)。新算法仍按[标准入库流程](onboarding/README.md)处理。
 
 | 项目 | ECS 独立灰度 | Mac3 生产 |
 |---|---|---|
@@ -16,15 +16,16 @@
 | 当前 active 执行身份 | 92 个 Blackbox base | 92 个 Blackbox base + 9 个 W4 Native base |
 | Dashboard | 96 个 target | 105 个 target |
 | 调度控制面 | systemd one-shot/timer | launchd + installed plist |
-| current release | `accde117545ceca7f579692d4123df421f8b9d8c` | 同左 |
-| previous release | `892f2b3e1af5ff247eae1f0455f32a065772c8e6` | `6fff43e2b16855a7a97fb501c2b2425e8b9784f7` |
+| current release | `b43fc1911b0f7bf3ada05edca7ad8b483ac38e02` | 同左 |
+| previous release | `accde117545ceca7f579692d4123df421f8b9d8c` | 同左 |
 | schema | 025 APPLIED | 025 APPLIED |
 
-- 双机同一 archive SHA-256：`e5653cb854569e7c53b5fbd2dde2f3a0c43bbb80444ebd27fcf4fdb0e704f3e8`。
+- 双机同一 archive SHA-256：`f0c77cfeb296b8f930b98b528758c574c038eb2c968ee76374e31f3c3b97df91`。
 - 两机 Backend cwd、健康及 immutable 源码树已核验；ECS 验收后晋级同一 archive 至 Mac3，本轮发布已闭环。
   域名仍由 Mac3 服务；DNS、Nginx、认证和既有 SSH 隧道未改变。
 - 集成分支为 `codex/develop`。开发分支的代码或文档提交不代表新的生产 release。
   实时提交以 Git 引用为准，发布以目标机 manifest、current/previous 和进程 cwd 为准。
+- 2026-09-13 文档规整版本已按 ECS → Mac3 同包晋级，仅刷新两机 Backend。Registry、exact、业务条数、ready 输入、Dashboard 读模型与生产名单均未改变；两机健康与首页正常，Mac3 公网首页与 release 字节一致，控制面保持原状。未运行算法、写业务事实或跨越正式触发窗口；自然观察仍待 TODO。证据见[同步回执](/Users/macstudio0/bond-factor-lab-runtime/releases/docs-guidance-20260913/delivery-report.json)与[索引](/Users/macstudio0/bond-factor-lab-runtime/releases/docs-guidance-20260913/README.md)。
 - 当前 release 包含下述平台清理与收盘候选修复；[发布验收](/Users/macstudio0/bond-factor-lab-runtime/releases/platform-cleanup-20260913/delivery-report.json)及[证据索引](/Users/macstudio0/bond-factor-lab-runtime/releases/platform-cleanup-20260913/README.md)保存双机安装、数据、输入、HTTP 和控制面读回。此前框架清理证据仍在[原核验记录](/Users/macstudio0/bond-factor-lab-runtime/releases/framework-cleanup-20260913/verification.json)。
 
 ## 八套新方案交付状态
