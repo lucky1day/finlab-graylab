@@ -8,7 +8,7 @@
 
 ## 运行与部署
 
-源码方案迁移及平台 confidence 退役已闭环；新算法可直接进入[标准入库流程](onboarding/README.md)。
+源码方案的执行迁移及平台 confidence 退役已有完成证据；迁移展示保留规则与 Dashboard Gate 的衔接缺口见下方[生产标记发布](#dashboard-生产标记发布)。新算法仍按[标准入库流程](onboarding/README.md)处理。
 
 | 项目 | ECS 独立灰度 | Mac3 生产 |
 |---|---|---|
@@ -113,10 +113,17 @@ ECS 已切换上表新包并刷新 Backend，本机初始名单 `{}`，96 target
 真实 HTTP Summary 全量与 DB 一致，4 个历史/最新 Detail 对照通过，浏览器 fresh、候选排行及待验证明细正常；
 发布前后 Registry/exact、业务条数、输入 ready 和调度配置保持一致。算法、W4 执行依赖与部署配置未改。
 
-扩大 Gate 检查时，75 个 base 通过，17 个已迁移原方案（21 target）因 name/description/owner 与 canonical 不同失败；
-这些字段发布前后完全相同，八套新方案 Gate 均通过。未修改存量身份或放宽 Gate，不能宣称全量 Gate 通过。
-按根规范暂停 Mac3 晋级，等待用户确认是否保持既有展示差异、另列待办后继续同包发布。
-Mac3 尚未创建初始名单或切换本轮 release。
+扩大 Gate 检查时，75 个 base 通过，17 个已迁移原方案（21 target）失败；八套新方案均通过。
+两机 2026-09-13 13:25 的独立快照中差异相同：名称 15 处、描述 21 处、owner 12 处（2 个 rl、10 个 lw，对应 canonical liwei）。
+ECS 本次发布前后上述字段完全不变；Mac3 的数量为保存快照的离线核对，未宣称已完成本轮新版 HTTP 验收。
+
+追溯旧迁移方案和事务发现：当时明确保留原 Registry 展示信息，并以逐字段不变作为验收条件；
+Gate 却把所有带 description 的 Blackbox 都按新入库展示信息检查，没有区分原 ID 迁移。
+Gate 自迁移收尾提交 `87e9c4c7` 后未改动；运行接管已完成，但这项合同衔接遗漏，不能称整体完全闭环。
+原实现、迁移验收范围及双机逐字段清单见外置 `migration-display-analysis.json` 和 `migration-display-findings.md`。
+
+Mac3 晋级继续暂停，先梳理并确认验收职责的修复方案，不将用户对问题梳理的同意视作豁免失败或发布授权。
+本次未修改 Registry、Metadata、Gate 或算法；Mac3 尚未创建初始名单或切换本轮 release。
 
 证据：[本轮外置目录](/Users/macstudio0/bond-factor-lab-runtime/releases/dashboard-production-marker-20260913/)，
 其中 `ecs-before/candidate/after.json`、`ecs-http.json`、`existing-gate-differences.json` 分别定位本机数据、HTTP 和存量差异；

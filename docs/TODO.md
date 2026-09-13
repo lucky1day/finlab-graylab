@@ -47,8 +47,10 @@
 
 ## Dashboard 生产标记晋级与存量展示差异
 
-- ECS 新功能已验收；Mac3 尚未晋级。扩展全量 Gate 发现 17 个已迁移原方案（21 target）的 name/description/owner 与 canonical 存在发布前已有差异，按根规范暂停晋级，等待用户确认保持当前展示并独立处理该差异后，继续同包发布。范围与证据见[当前状态](CURRENT_STATUS.md#dashboard-生产标记发布)。
-- 这些差异需要核定同 ID 迁移后的展示身份语义与 Gate 适用范围；不自动改 Registry、Metadata 或算法，也不把既有差异当作已获批永久例外。完成标准是明确权威取值及验收范围，并按另行确认的方案消除不一致。
+- ECS 生产标记功能已验收，Mac3 同包晋级暂停。差异源于迁移时保留 Registry 展示信息，而通用 Gate 对所有 Blackbox 要求与 canonical 相同；已核实范围及原件见[当前状态](CURRENT_STATUS.md#dashboard-生产标记发布)。先明确修复方案，不直接覆盖旧展示或将既有差异视作永久豁免。
+- 修复需分清：新 ID 首次登记的 Metadata → Registry 一致性、存量 API → 本机 Registry 一致性、same-ID 修订的执行版本与业务展示边界。沿用现有入口，不新增迁移框架或按这 17 个 ID 写跳过名单；不能直接删除一致性检查而失去新入库校验。
+- 完成标准：既有迁移展示仍正确，真正的新入库元数据错误及 API/Registry 不一致仍会失败；通用合同、入库与验收文档一致，相关检查和双机真实 HTTP 对照通过。修复含运行代码时需构建新包并重新 ECS → Mac3 同包验收，不能现场修改现有 release。
+- owner 中 `rl/lw/liwei` 是否需要业务更正是独立决定，不能为消除 Gate 失败自动归一。当前仅授权问题梳理，未据此实施数据或验收规则变更。
 
 ## Dashboard 认证探针入口
 
