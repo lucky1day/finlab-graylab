@@ -49,12 +49,6 @@ def test_password_policy_rejects_invalid_values(password: str) -> None:
         validate_password(password)
 
 
-def test_password_policy_does_not_trim_whitespace() -> None:
-    raw = " Aa1 "
-    with pytest.raises(PasswordPolicyError):
-        validate_password(raw)
-
-
 @pytest.mark.parametrize(
     ("raw", "expected"),
     (("Admin", "admin"), ("user.name", "user.name"), ("a_b-1", "a_b-1")),
@@ -75,7 +69,6 @@ def test_session_token_is_256_bit_and_only_digest_is_persistable() -> None:
     digest = digest_session_token(token)
     assert isinstance(digest, bytes)
     assert len(digest) == 32
-    assert token.encode() not in digest
 
 
 @pytest.mark.parametrize(

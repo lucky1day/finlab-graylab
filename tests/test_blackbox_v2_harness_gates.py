@@ -12,6 +12,10 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pandas as pd
+import pytest
+
+from harness.context import GateContext
+from harness.registry import gate_for_name
 
 
 class BlackboxV2HarnessGateTests(unittest.TestCase):
@@ -220,7 +224,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
         self.assertEqual(prepared.snapshot_id, ready.snapshot_id)
         self.assertEqual(ready.generation_id, "generation-shared")
 
-    def test_runtime_view_does_not_rehash_or_parse_generation_csv(self) -> None:
+    def test_runtime_view_rejects_source_changed_after_producer_seal(self) -> None:
         from shared import input_artifacts
         from shared.blackbox_v2.snapshot import (
             SNAPSHOT_FILENAMES,
@@ -251,56 +255,28 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 snapshot,
                 factor_input_mode="algorithm_managed",
             )
-            stable_reads: list[str] = []
-            stable_read = input_artifacts._read_stable_regular_file
+            with open_blackbox_runtime_view(
+                bundle,
+                runtime_root=root / "runtime-views",
+            ) as runtime_view:
+                self.assertEqual(
+                    sorted(path.name for path in runtime_view.data_dir.iterdir()),
+                    sorted(SNAPSHOT_FILENAMES),
+                )
 
-            def record_stable_read(path, label):
-                stable_reads.append(Path(path).name)
-                return stable_read(path, label)
-
-            path_read_bytes = Path.read_bytes
-
-            def reject_runtime_target_read(path):
-                if root / "runtime-views" in Path(path).parents:
-                    raise AssertionError("runtime target was read after write")
-                return path_read_bytes(path)
-
-            with (
-                patch(
-                    "shared.input_artifacts._read_stable_regular_file",
-                    side_effect=record_stable_read,
-                ),
-                patch.object(
-                    Path,
-                    "read_bytes",
-                    autospec=True,
-                    side_effect=reject_runtime_target_read,
-                ),
+            damaged = snapshot.data_dir / "daily_output.csv"
+            damaged.chmod(0o644)
+            damaged.write_bytes(damaged.read_bytes() + b"\n")
+            damaged.chmod(0o444)
+            with self.assertRaisesRegex(
+                ValueError,
+                "source no longer matches producer seal",
             ):
                 with open_blackbox_runtime_view(
                     bundle,
                     runtime_root=root / "runtime-views",
-                ) as runtime_view:
-                    self.assertEqual(
-                        sorted(path.name for path in runtime_view.data_dir.iterdir()),
-                        sorted(SNAPSHOT_FILENAMES),
-                    )
-
-                damaged = snapshot.data_dir / "daily_output.csv"
-                damaged.chmod(0o644)
-                damaged.write_bytes(damaged.read_bytes() + b"\n")
-                damaged.chmod(0o444)
-                with self.assertRaisesRegex(
-                    ValueError,
-                    "source no longer matches producer seal",
                 ):
-                    with open_blackbox_runtime_view(
-                        bundle,
-                        runtime_root=root / "runtime-views",
-                    ):
-                        pass
-
-        self.assertEqual(stable_reads, [])
+                    pass
 
     def test_runtime_view_accepts_databridge_timestamp_daily_keys(self) -> None:
         from shared.blackbox_v2.snapshot import (
@@ -637,3 +613,97 @@ def _snapshot_frames() -> dict[str, pd.DataFrame]:
             }
         ),
     }
+
+
+@pytest.mark.parametrize("runtime", ["native_adapter", "unknown"])
+def test_backtest_gate_rejects_non_blackbox(tmp_path, runtime) -> None:
+    ctx = GateContext(
+        scheme_id="trial", predict_date="2026-09-13", project_root=tmp_path,
+        config=SimpleNamespace(runtime_type=runtime),
+    )
+    with pytest.raises(ValueError, match="Native validation gates are retired"):
+        gate_for_name("backtest", ctx=ctx)
+
+
+def test_blackbox_persist_cli_builds_exact_operation_scope(tmp_path) -> None:
+    from harness.cli import _build_parser, _run_gate
+    from harness.result import GateResult, GateStatus
+
+    captured = {}
+
+    class CaptureGate:
+        def run(self, ctx):
+            captured["ctx"] = ctx
+            return GateResult(
+                gate_name="backtest",
+                status=GateStatus.PASSED,
+                evidence=[],
+                errors=[],
+                started_at="2026-08-25T00:00:00+00:00",
+                finished_at="2026-08-25T00:00:01+00:00",
+            )
+
+    args = _build_parser().parse_args(
+        [
+            "gate",
+            "backtest",
+            "--scheme-id",
+            "trial",
+            "--predict-date",
+            "2026-08-25",
+            "--persist",
+            "--backtest-start-date",
+            "2025-01-01",
+            "--project-root",
+            str(tmp_path),
+        ]
+    )
+    config = SimpleNamespace(
+        runtime_type="blackbox_v2",
+        scheme_version="version-test",
+    )
+    with (
+        patch("harness.cli._load_config_for_dispatch", return_value=config),
+        patch("harness.cli.gate_for_name", return_value=CaptureGate()),
+    ):
+        result = _run_gate(args)
+
+    assert result.passed
+    ctx = captured["ctx"]
+    assert ctx.persist_backtest is True
+    assert ctx.operation.action == "backtest_persist"
+    assert ctx.operation.predict_date == "2026-08-25"
+    assert ctx.operation.backtest_start_date == "2025-01-01"
+
+
+def test_cli_json_keeps_derived_passed_field() -> None:
+    from datetime import date
+
+    from harness.cli import _jsonable
+    from harness.result import GateResult, GateStatus
+
+    result = GateResult(
+        gate_name="input",
+        status=GateStatus.SKIPPED,
+        evidence=[],
+        errors=[],
+        started_at="2026-08-25T00:00:00+00:00",
+        finished_at="2026-08-25T00:00:01+00:00",
+    )
+    assert _jsonable(result)["passed"] is True
+    assert _jsonable({"deployed_at": date(2026, 9, 6)}) == {
+        "deployed_at": "2026-09-06"
+    }
+
+
+def test_direct_operation_requires_canonical_dates() -> None:
+    from harness.operation import build_direct_operation
+
+    with pytest.raises(ValueError, match="canonical YYYY-MM-DD"):
+        build_direct_operation(
+            "trial_10y",
+            "backtest_persist",
+            "2026-8-25",
+            scheme_version="version-1",
+            issued_by="operator",
+        )

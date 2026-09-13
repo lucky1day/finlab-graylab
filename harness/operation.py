@@ -9,7 +9,6 @@ from datetime import date
 DEFAULT_BACKTEST_START_DATE = "2025-01-01"
 SIDE_EFFECT_ACTIONS = frozenset(
     {
-        "activate",
         "backtest_persist",
         "blackbox_activate",
     }

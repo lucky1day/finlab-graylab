@@ -26,7 +26,7 @@ from scheduler.one_shot_prediction_runner import (
     candidate_matches_cadence,
     period_due_task_types,
 )
-from scheduler.repository import create_engine_from_env
+from scheduler.repository import create_engine_from_env, resolve_database_lifecycle
 from scheduler.v2_daily_gate import V2DailyGateBlocked, require_v2_daily_ready
 from shared.calendar_service import get_calendar
 from shared.data_bridge.refresh import DataBridgeRefreshConfig
@@ -147,24 +147,30 @@ def run_close_job(
         raise ValueError("deployment target does not match control plane") from exc
 
     discovered = discover_schemes()
-    monthly_candidates = [
+    close_candidates = [
         cfg
         for cfg in discovered
-        if getattr(cfg, "status", None) == "active"
-        and candidate_matches_cadence(cfg, "monthly")
+        if candidate_matches_cadence(cfg, "monthly")
+        or candidate_matches_cadence(cfg, "period_average")
     ]
-    period_candidates = [
-        cfg
-        for cfg in discovered
-        if getattr(cfg, "status", None) == "active"
-        and candidate_matches_cadence(cfg, "period_average")
-    ]
-    monthly_due = date.fromisoformat(normalized_date).day == 15 and bool(
-        monthly_candidates
-    )
 
     engine = create_engine_from_env()
     try:
+        effective = resolve_database_lifecycle(engine, close_candidates)
+        monthly_candidates = [
+            cfg
+            for cfg in effective
+            if cfg.status == "active" and candidate_matches_cadence(cfg, "monthly")
+        ]
+        period_candidates = [
+            cfg
+            for cfg in effective
+            if cfg.status == "active"
+            and candidate_matches_cadence(cfg, "period_average")
+        ]
+        monthly_due = date.fromisoformat(normalized_date).day == 15 and bool(
+            monthly_candidates
+        )
         calendar = get_calendar(engine)
         if not calendar.covers(normalized_date):
             raise ValueError("trade calendar does not cover predict_date")

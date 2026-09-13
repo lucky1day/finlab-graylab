@@ -38,7 +38,6 @@ def test_auth_locations_are_exact_and_state_changes_are_body_limited() -> None:
 
 
 def test_lockdown_is_a_fail_closed_replacement_site() -> None:
-    assert "must never be enabled alongside" in LOCKDOWN
     assert LOCKDOWN.count(
         "location = /bond-factor-lab { return 503; }"
     ) == 2

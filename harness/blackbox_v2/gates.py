@@ -20,7 +20,6 @@ from harness.operation import (
 from harness.result import Evidence, GateResult, GateStatus
 from scheduler.blackbox_v2_runner import (
     DEFAULT_RUNTIME_PROFILE,
-    RuntimeProfile,
     run_blackbox_backtest,
     state_binding_for_scheme,
 )
@@ -59,16 +58,12 @@ class PassedBacktestRun:
     script_validator_policy_digest: str
 
 
-class _BlackboxGate(Gate):
-    def run(self, ctx: GateContext) -> GateResult:
-        return guarded_result(self.name, lambda started_at: self._run(ctx, started_at))
-
-    def _run(self, ctx: GateContext, started_at: str) -> GateResult:
-        raise NotImplementedError
-
-
-class BlackboxBacktestGate(_BlackboxGate):
+class BlackboxBacktestGate(Gate):
     name = "backtest"
+
+    def run(self, ctx: GateContext) -> GateResult:
+        """执行持久化回测，并将异常转换为统一 Gate 结果。"""
+        return guarded_result(self.name, lambda started_at: self._run(ctx, started_at))
 
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
         if not ctx.persist_backtest:
@@ -77,9 +72,6 @@ class BlackboxBacktestGate(_BlackboxGate):
                 started_at,
                 ["Blackbox backtest requires --persist"],
             )
-        return self._run_persist(ctx, started_at)
-
-    def _run_persist(self, ctx: GateContext, started_at: str) -> GateResult:
         cfg = _config(ctx)
         if (
             cfg.frequency == "weekly"
@@ -135,7 +127,7 @@ class BlackboxBacktestGate(_BlackboxGate):
                 delivery.metadata, snapshot, engine,
                 target_date_before=ctx.predict_date, predict_date_from=ctx.backtest_start_date,
             ) for delivery in deliveries]
-            profile = _profile(ctx)
+            profile = DEFAULT_RUNTIME_PROFILE
             execution_profile = replace(
                 profile,
                 backtest_timeout_sec=min(
@@ -223,12 +215,14 @@ class BlackboxBacktestGate(_BlackboxGate):
             Evidence("operation_scope_sha256", operation_scope_sha256(operation)),
             Evidence("replay_semantics", CURRENT_SNAPSHOT_REPLAY),
         ]
-        return _finish(self.name, started_at, evidence, [])
-
-
-BLACKBOX_GATES: dict[str, type[Gate]] = {
-    "backtest": BlackboxBacktestGate,
-}
+        return GateResult(
+            gate_name=self.name,
+            status=GateStatus.PASSED,
+            evidence=evidence,
+            errors=[],
+            started_at=started_at,
+            finished_at=utc_now(),
+        )
 
 
 def _config(ctx: GateContext) -> SchemeConfig:
@@ -259,16 +253,6 @@ def validate_canonical_blackbox_delivery(cfg: SchemeConfig) -> BlackboxMetadata:
     if cfg.input_source != "data_bridge_current":
         raise ValueError("Blackbox input_source must be data_bridge_current")
     return metadata
-
-
-def _profile(ctx: GateContext) -> RuntimeProfile:
-    allowed_cli_values = {"forecast_env", DEFAULT_RUNTIME_PROFILE.conda_env}
-    if ctx.algo_env and ctx.algo_env not in allowed_cli_values:
-        raise ValueError(
-            "Blackbox V2 runtime environment is fixed by runtime_profile; "
-            f"CLI override is forbidden: {ctx.algo_env}"
-        )
-    return DEFAULT_RUNTIME_PROFILE
 
 
 @contextmanager
@@ -404,23 +388,6 @@ def _environment_fingerprint(project_root: Path) -> str:
     return load_environment_fingerprint(
         project_root,
         expected_runtime_profile=DEFAULT_RUNTIME_PROFILE.name,
-    )
-
-
-def _finish(
-    gate_name: str,
-    started_at: str,
-    evidence: list[Evidence],
-    errors: list[str],
-) -> GateResult:
-    status = GateStatus.PASSED if not errors else GateStatus.FAILED
-    return GateResult(
-        gate_name=gate_name,
-        status=status,
-        evidence=evidence,
-        errors=errors,
-        started_at=started_at,
-        finished_at=utc_now(),
     )
 
 

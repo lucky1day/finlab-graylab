@@ -45,30 +45,6 @@ def _base_blackbox_config() -> dict:
     }
 
 
-def _weekly_config(*, predict_start_date: str | None) -> dict:
-    config = _base_config()
-    config.update(
-        scheme_id="demo_weekly",
-        frequency="weekly",
-        horizon=6,
-        task_type="weekly_point",
-        target_rule="next_week_last_trading_day_vs_current_week_last_trading_day",
-        input_spec={
-            "data_version": "shared_data_service_weekly.v1",
-            "required_columns": ["week_id", "TB5YWI3C"],
-            "weekly_variant": "unified",
-        },
-        backtest={
-            "runner": "backtests.demo_weekly",
-            "start_week": 200901,
-            "end_week": 202622,
-        },
-    )
-    if predict_start_date is not None:
-        config["backtest"]["predict_start_date"] = predict_start_date
-    return config
-
-
 class ConfigSchemaAuxiliaryInputTests(unittest.TestCase):
     def test_incremental_state_is_a_blackbox_true_only_opt_in(self) -> None:
         for value in (True, False, None, "true", "false", 0, 1, {}, []):
@@ -207,81 +183,8 @@ class ConfigSchemaScheduleTests(unittest.TestCase):
                 )
 
 
-class ConfigSchemaBacktestStartTests(unittest.TestCase):
-    def test_daily_backtest_requires_start_date_2025_01_01(self) -> None:
-        config = _base_config()
-        config["backtest"] = {"runner": "backtests.demo"}
+class ConfigSchemaTaskTests(unittest.TestCase):
 
-        errors = validate_config(config, dirname="demo_daily")
-
-        self.assertIn("backtest.start_date must be 2025-01-01 for daily/monthly backtests", errors)
-
-    def test_daily_backtest_start_date_2025_01_01_is_valid(self) -> None:
-        config = _base_config()
-        config["backtest"] = {
-            "runner": "backtests.demo",
-            "start_date": "2025-01-01",
-            "benchmark_id": "demo_benchmark",
-            "data_source": "framework_db_aligned",
-            "benchmark_required": True,
-        }
-
-        errors = validate_config(config, dirname="demo_daily")
-
-        self.assertEqual(errors, [])
-
-    def test_benchmark_required_requires_identity_fields(self) -> None:
-        config = _base_config()
-        config["backtest"] = {
-            "runner": "backtests.demo",
-            "start_date": "2025-01-01",
-            "benchmark_required": True,
-        }
-
-        errors = validate_config(config, dirname="demo_daily")
-
-        self.assertIn("backtest.benchmark_id is required when benchmark_required=true", errors)
-        self.assertIn("backtest.data_source is required when benchmark_required=true", errors)
-
-    def test_daily_backtest_runner_args_are_validated(self) -> None:
-        config = _base_config()
-        config["backtest"] = {
-            "runner": "backtests.demo",
-            "runner_args": ["--batch-mode", "monthly"],
-            "start_date": "2025-01-01",
-        }
-
-        errors = validate_config(config, dirname="demo_daily")
-
-        self.assertEqual(errors, [])
-
-    def test_daily_backtest_runner_args_cannot_override_persist_semantics(self) -> None:
-        config = _base_config()
-        config["backtest"] = {
-            "runner": "backtests.demo",
-            "runner_args": ["--no-persist"],
-            "start_date": "2025-01-01",
-        }
-
-        errors = validate_config(config, dirname="demo_daily")
-
-        self.assertIn("backtest.runner_args must not include --no-persist", errors)
-
-    def test_weekly_backtest_predict_start_date_contract(self) -> None:
-        for predict_start_date, valid in ((None, False), ("2025-01-01", True)):
-            with self.subTest(predict_start_date=predict_start_date):
-                errors = validate_config(
-                    _weekly_config(predict_start_date=predict_start_date),
-                    dirname="demo_weekly",
-                )
-
-                if valid:
-                    self.assertEqual(errors, [])
-                else:
-                    self.assertIn(
-                        "backtest.predict_start_date must be 2025-01-01 for weekly backtests",
-                        errors,
-                    )
 
     def test_monthly_scheme_requires_target_rule(self) -> None:
         config = _base_config()

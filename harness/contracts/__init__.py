@@ -1,1 +1,1 @@
-"""Static contract validators used by harness gates."""
+"""仓库分层检查与 W4 存量清单合同。"""

@@ -118,12 +118,6 @@ class ProcessStartGuard:
             self._lock.release()
         return False
 
-    @property
-    def poisoned(self) -> bool:
-        """返回 poison 状态；只读检查也与启动窗口串行。"""
-        with self._lock:
-            return self._poison_error is not None
-
 
 def require_process_start_guard(
     guard: object | None,

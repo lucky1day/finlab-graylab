@@ -239,9 +239,9 @@ def _environment_fingerprint(project_root: Path) -> str:
     return fingerprint(project_root)
 
 
-def _blocked(started_at: str, errors: list[str], *, gate_name: str = "activate") -> GateResult:
+def _blocked(started_at: str, errors: list[str]) -> GateResult:
     return GateResult(
-        gate_name=gate_name,
+        gate_name="activate",
         status=GateStatus.BLOCKED,
         evidence=[Evidence("operation_required", True)],
         errors=errors,
@@ -253,14 +253,11 @@ def _blocked(started_at: str, errors: list[str], *, gate_name: str = "activate")
 def _failed(
     started_at: str,
     errors: list[str],
-    *,
-    evidence: list[Evidence] | None = None,
-    gate_name: str = "activate",
 ) -> GateResult:
     return GateResult(
-        gate_name=gate_name,
+        gate_name="activate",
         status=GateStatus.FAILED,
-        evidence=evidence or [],
+        evidence=[],
         errors=errors,
         started_at=started_at,
         finished_at=utc_now(),

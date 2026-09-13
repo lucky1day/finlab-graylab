@@ -21,109 +21,91 @@
 | schema | 025 APPLIED | 025 APPLIED |
 
 - 双机 archive SHA-256：`db08d982882f7216a8d7ecac689c9f1b62074deb2bd3fac9307b80f5cee23c08`。
-- 两机 Backend 实际 cwd、健康、三套新增 exact、完整数据、调度模拟和前端验收均通过；
-  运行后 immutable 源码树复验一致。ECS 验收后才将同一 archive 晋级 Mac3。
+- 两机 Backend cwd、健康及 immutable 源码树复验通过；ECS 验收后才将同一 archive 晋级 Mac3。方案与数据验收见下节。
   域名仍由 Mac3 服务；DNS、Nginx、认证和既有 SSH 隧道未改变。
-- 两端独立使用自己的 MySQL、DataBridge 和派生状态，不复制数据库、不双写、不跨机共享输入。
 - 集成分支为 `codex/develop`。开发分支的代码或文档提交不代表新的生产 release。
   实时提交以 Git 引用为准，发布以目标机 manifest、current/previous 和进程 cwd 为准。
 - 当前 release 已包含无调用旧回测框架与重复文档清理。清理验收证据：
-  `/Users/macstudio0/bond-factor-lab-runtime/releases/framework-cleanup-20260913/verification.json`。
+  [/Users/macstudio0/bond-factor-lab-runtime/releases/framework-cleanup-20260913/verification.json](/Users/macstudio0/bond-factor-lab-runtime/releases/framework-cleanup-20260913/verification.json)。
 
-## 三套 5Y 周频交付状态
+## 八套新方案交付状态
 
-| 新方案 ID | exact version | owner |
+两批均已完成双机交付与模拟验收，首次自然运行仍待[TODO 中的独立观察](TODO.md#八套新方案自然观察)。以下是交付时证据，不是当前生产输入水位。
+
+| base ID | exact version | 任务 / 期限 | 批次 |
+|---|---|---|---|
+| `weekly_3y_full_action_rule0001_v2` | `ac06e7df4582` | weekly_point / 3Y | 五套新方案 |
+| `weekly_10y_full_action_hgb0061_v2` | `e87140ab2ce2` | weekly_point / 10Y | 五套新方案 |
+| `cgb_a4_fundseason_3y_hl18` | `79c08e273ecd` | monthly / 3Y | 五套新方案 |
+| `cgb_a4_fundseason_5y_hl18` | `38c8fa7b0220` | monthly / 5Y | 五套新方案 |
+| `cgb_a4_fundseason_10y_hl18` | `295c00e305e2` | monthly / 10Y | 五套新方案 |
+| `weekly_5y_full_action_lowcorr01_v3` | `9ebe38835599` | weekly_point / 5Y | 三套 5Y 周频 |
+| `weekly_5y_full_action_lowcorr02_v3` | `abd2dc14c172` | weekly_point / 5Y | 三套 5Y 周频 |
+| `weekly_5y_full_action_lowcorr03_v3` | `2dccf75844e9` | weekly_point / 5Y | 三套 5Y 周频 |
+
+任务均为 h1。八份算法脚本保持原字节；仅五份周频 Metadata 的 owner 修正为 liwei（三套 5Y 原值为 lw），月频原件未改。
+
+| 每机覆盖 | 每套历史 target / 条数 | 每套灰度 target / 条数 | 该批每机合计 |
+|---|---|---|---|
+| 五套新方案中的两套周频 | 2025-01-10—2026-05-29 / 72 | 2026-06-05—2026-09-18 / 16 | 与三套月频共 192 历史、44 灰度 |
+| 五套新方案中的三套月频 | 2025-02-14—2026-05-15 / 16 | 2026-06-15—2026-09-15 / 4 | 同上 |
+| 三套 5Y 周频 | 2025-01-10—2026-05-29 / 72 | 2026-06-05—2026-09-18 / 16 | 216 历史、48 灰度 |
+
+三套 5Y 的灰度 predict 覆盖 2026-05-30—2026-09-12，ECS 回测 ID 为 290—292、Mac3 为 260—262。
+两批各机历史与灰度均绑定本机同一输入：ECS `full-20260912-063338-cefd054bbccf`，Mac3
+`full-20260912-063159-944bc5a2c67a`；business digest 不同，独立计算，未复制业务记录。
+
+验收已证明 exact、三日期、完整业务键和本机来源一致，历史/灰度零重叠、应有点零缺口。两批每机分别核对
+236、264 条 HTTP 明细及 Actual join，并完成 DashboardGate 和浏览器期限、名称、owner、历史月份与待验证展示。
+三套 5Y 每套的 2026-09-18 目标在交付时仍待验证；纯待验证月份可以打开明细，不进入已验证统计。
+
+两批复用既有周频和 close-period 控制面，installed unit/plist 未变，ECS `Persistent=false`；到期/非到期、错误控制面和重复键隔离模拟通过，无生产模拟写入。原 Registry/预测与 W4 九套 Native exact、文件、依赖和展示保持完整。
+
+### 交付证据索引
+
+| 批次 | 本机可读索引 | 目标机原件位置 |
 |---|---|---|
-| `weekly_5y_full_action_lowcorr01_v3` | `9ebe38835599` | liwei |
-| `weekly_5y_full_action_lowcorr02_v3` | `abd2dc14c172` | liwei |
-| `weekly_5y_full_action_lowcorr03_v3` | `2dccf75844e9` | liwei |
+| 五套新方案 | [证据 README](/Users/macstudio0/bond-factor-lab-runtime/releases/new-five-20260912/README.md)、[最终验收](/Users/macstudio0/bond-factor-lab-runtime/releases/new-five-20260912/delivery-final.json) | ECS：`/opt/bond-factor-lab/incoming/new-five-20260912/` |
+| 三套 5Y 周频 | [证据 README](/Users/macstudio0/bond-factor-lab-runtime/releases/weekly-5y-lowcorr-20260913/README.md)、[交付报告](/Users/macstudio0/bond-factor-lab-runtime/releases/weekly-5y-lowcorr-20260913/delivery-report.json) | ECS：`/opt/bond-factor-lab/incoming/weekly-5y-lowcorr-20260913/` |
 
-- 三份脚本保持 ZIP 原字节，仅 Metadata owner 从 lw 修正为 liwei；任务均为 weekly_point / 5Y / h1。
-- 每机每套历史 72 条（target 2025-01-10—2026-05-29）、灰度 16 条（2026-06-05—2026-09-18）；
-  灰度 predict 覆盖 2026-05-30—2026-09-12。每机合计 216 条历史、48 条灰度，零缺口、零重叠。
-  ECS 持久化回测 ID 为 290—292，Mac3 为 260—262；exact、完整业务键、三日期与本机来源验证通过。
-- ECS generation 为 `full-20260912-063338-cefd054bbccf`，Mac3 为 `full-20260912-063159-944bc5a2c67a`；
-  各机历史与灰度绑定同一本机输入，双机 business digest 不同，独立计算且未复制业务记录。
-- 每机三套 DashboardGate、264 条 HTTP 明细与 Actual join、浏览器验收通过；每套有一条
-  2026-09-18 目标待验证，不计入已验证统计。全部 active Registry ID 与 Dashboard 一致，存量记录未改变。
-- 复用周六 11:30 Asia/Shanghai 的既有 systemd/launchd；installed unit/plist 未变，ECS `Persistent=false`。
-  最终 release 的到期/非到期、错误控制面和重复键隔离模拟通过，零生产模拟写入。
-  W4 九套 Native exact、文件、依赖与 Dashboard 身份保留。首次自然运行见 [TODO](TODO.md)。
-- 本地公共合同与发布验证：677 passed、4 skipped、229 subtests passed；跳过项为未配置隔离认证 MySQL 的测试。
-  外置证据根：`/Users/macstudio0/bond-factor-lab-runtime/releases/weekly-5y-lowcorr-20260913/`。
-  `ecs/`、`mac3/` 保存数据、来源、控制面、页面和模拟证据；`archive/` 是原包，`promoted-archive/` 是从 ECS 晋级的副本。
-  ECS 原件：`/opt/bond-factor-lab/incoming/weekly-5y-lowcorr-20260913/`。一次性脚本归档退役，索引见证据根 README。
+索引区分最终验收、历史过程、原 archive 与晋级副本；CLI 回执、输入 lineage、数据/页面/控制面、公共测试及模拟证据按主机保存。一次性 operator 脚本已归档退役，仅供追溯，不作为新操作入口。
 
-## 上一批五套新方案
+## 保留身份与恢复证据
 
-- 双机均已激活两套周频 `weekly_3y_full_action_rule0001_v2@ac06e7df4582`、
-  `weekly_10y_full_action_hgb0061_v2@e87140ab2ce2`，以及三套月频
-  `cgb_a4_fundseason_3y_hl18@79c08e273ecd`、`cgb_a4_fundseason_5y_hl18@38c8fa7b0220`、
-  `cgb_a4_fundseason_10y_hl18@295c00e305e2`。上游脚本原字节保留，仅两份周频 Metadata owner 修正为 liwei。
-- 每机每套周频历史 72 条（target 2025-01-10—2026-05-29）、灰度 16 条（2026-06-05—2026-09-18）；
-  每套月频历史 16 条（2025-02-14—2026-05-15）、灰度 4 条（2026-06-15—2026-09-15）。
-  每机共 192 条历史、44 条灰度；业务键零缺口、历史灰度零重叠，存量 Registry 与预测记录保持不变。
-- 每机五次持久化回测、灰度来源与 exact 均可追溯：ECS generation 为 `full-20260912-063338-cefd054bbccf`，
-  Mac3 为 `full-20260912-063159-944bc5a2c67a`，输入 business digest 不同，各自独立计算。
-- Dashboard 保留纯待验证月份的入口，统计继续仅使用已验证记录。
-  每机五套 DashboardGate、236 条 HTTP 明细及 Actual join、浏览器期限/名称/owner/历史/待验证验收通过。
-- 双机复用既有周六 11:30 与每日 18:00 close-period 入口，未替换 installed unit/plist；
-  ECS `Persistent=false`，Mac3 launchd 行为不变。最终 release 隔离调度模拟通过且无业务写入；
-  W4 九套 Native exact/文件与原 release 一致，原运行依赖可用。首次自然运行仍见 [TODO](TODO.md)。
-- 外置证据根：`/Users/macstudio0/bond-factor-lab-runtime/releases/new-five-20260912/`。
-  双机数据、lineage、安装与控制面证据在 `ecs/`、`mac3/`；页面、明细和 Actual 证据在 `ecs-ui-final/`、`mac3-ui/`；
-  最终 archive 在 `archive-final/`，从 ECS 晋级的同字节副本在 `promoted-archive/`。
-  ECS 原件保留于 `/opt/bond-factor-lab/incoming/new-five-20260912/`。证据根的 `README.md` 区分最终验收与历史过程；
-  本批一次性 operator/模拟脚本已归档退役，公共 Dashboard 回归保留。
+W4 Native 与 Blackbox 的实际范围以[部署矩阵](../deploy/scheme_deployment_matrix_v1.json)及本机 Registry/version 为准；保护原则见[根规范](../AGENTS.md)，迁移边界见[算法保真](architecture/SOURCE_ALGORITHM_FIDELITY.md)。
 
-## 保留范围与历史保护
-
-- W4 九个加密方案仅在 Mac3 按原 Native 方式运行，保留其算法、二进制、adapter、runner、输入隔离和维护 Gate；不部署 ECS。
-- 其他 canonical 只保留 Blackbox 交付，不保留 Native 附件、Liwei Phase-A 调度或临时迁移入口。
-  精确部署身份以 [部署矩阵](../deploy/scheme_deployment_matrix_v1.json)和本机 Registry/version 为准。
-- T1/T5 保留原 base ID、整体 exact version 与多目标原子提交。周/月执行 horizon 与原事实 horizon 的映射见[共享契约](architecture/SCHEME_CONTRACT.md)。
-- 原 ID 的预测、run、回测及来源保持不变；源数据修订不触发已发布预测重算或覆盖。
 - ECS 的 11 个独立临时身份及 Mac3 的两个旧验证库已清理。以下两个 ECS 身份获批永久保留为只读历史来源：
   - `liwei_0616_5y01_full_oos_k3_div_k10_bbv2`
   - `liwei_0616_cons_sda_k3_div_k10_bbv2`
 - 两个来源的 Registry 为 archived、版本为 retired，无 canonical、Writer 或 Dashboard 展示。
   原 ID 四条预测仍引用其回测；不得删除来源、解除外键或改挂历史。它们不是待删项，也不构成新算法入库阻塞。
 
-## 平台字段与恢复边界
+### Schema 025 与恢复材料
 
 - `t_scheme_predictions.confidence` 与 `t_backtest_predictions.confidence` 已通过 migration 025 删除。
-  平台不再要求、传递、存储或展示该统一字段；Blackbox Result 仍精确为五字段。
-- 算法内部概率、阈值、排序、投票、模型选择和方向计算不变。原始 benchmark、旧 SQL/release、
-  已有 source_row/extra 审计内容保留，不按关键词清理。
 - current/previous 均兼容 schema 025。禁止回滚到仍读写 confidence、依赖已删临时身份或要求旧 Native 接管状态的 release。
-- 回滚须先隔离受影响 Writer，核验数据库、exact version、输入和状态兼容，再恢复调度。
-  不能只切 current 链接，也不能用旧整库快照覆盖仍在增长的生产数据。
+- 恢复操作按[部署手册](../deploy/README.md)核验权限、输入/状态和 Writer；以下材料是恢复依据，不是回滚授权。
 - 永久备份与恢复原件：
   - ECS confidence：`/opt/bond-factor-lab/backups/confidence-retirement-20260912/ecs-v1`
-  - Mac3 confidence：`/Users/macstudio0/bond-factor-lab-production/backups/confidence-retirement-20260912/mac3-v1`
+  - Mac3 confidence：[/Users/macstudio0/bond-factor-lab-production/backups/confidence-retirement-20260912/mac3-v1](/Users/macstudio0/bond-factor-lab-production/backups/confidence-retirement-20260912/mac3-v1)
   - ECS 临时身份清理：`/opt/bond-factor-lab/backups/database-cleanup-20260912/ecs-eleven`
-  - Mac3 旧验证库清理：`/Users/macstudio0/bond-factor-lab-production/backups/database-cleanup-20260912`
+  - Mac3 旧验证库清理：[/Users/macstudio0/bond-factor-lab-production/backups/database-cleanup-20260912](/Users/macstudio0/bond-factor-lab-production/backups/database-cleanup-20260912)
 - confidence 完整恢复集必须同时包含 SQL gzip 与 `original-audit-json.json.gz`；不能只恢复 SQL 而丢失原始 JSON 精度。
   先在隔离库验证恢复，再按明确授权处理精确对象；备份、原始验收回执和 immutable archive 不随文档清理删除。
 
-## 输入、产品与入库
+## 开发工作区清理与收盘候选修复
 
-- 双机使用五文件 DataBridge；`factor_version` 存量已初始化为 `V1.0`。
-  各机 generation、catalog、ready receipt 与输入摘要必须独立读取，不能从另一主机推断。
-  存量 `legacy_v1` 保护和新方案 `algorithm_managed` 规则见[输入契约](blackbox_v2/data_bridge_v1/README.md)。
-- 新方案只走两文件 Intake → 一次完整持久化回测 → 独立授权 activate；迁移例外不放宽新算法验收。
-  原历史不因包装升级重算，人工模拟不冒充自然 `scheduled_live`。
-- 平台只读 `/api/factor-lab/dashboard`，合同为 `factor-lab-dashboard-v5`。
-  `t_scheme_predictions` 是唯一产品逐点事实源，回测表仅作不可变证据及元数据；
-  `run_id/backtest_run_id` 保持互斥来源。
-- `backtest/live` 由 `target_date=2026-06-01` 分界；`gray_live/scheduled_live` 只属于 run 审计。
-  owner 以 Registry 为展示权威，缺失或非法值 fail-closed。
-- 生产写入保持 insert-only 与唯一 Writer；灰度补缺、激活、发布、DDL 和调度变更均需各自授权。
-  未闭环运营事项只记录于 [TODO](TODO.md)，不与迁移完成状态混写。
+2026-09-13，开发工作区移除 Native onboard、专属 Gate、maintenance、新版本激活及两表验证记录写入，并退役 Native 独立历史回测、旧分步写入和未接入补平实现。新回测仅保留月度与期限汇总及必要身份、输入信息，不再生成旧固定分期或空排除摘要。W4 按[固定版本运行边界](../AGENTS.md#算法与数据不变量)保留；Blackbox 入库与公共运行校验继续维护。历史 `t_harness_runs`、`t_harness_gate_results` 及迁移定义保留，当前运行不依赖它们。
+
+收盘入口已改为在预规划前解析本机生效生命周期，与 one-shot 使用同一规则，防止 canonical 初始状态掩盖已激活方案。本地全仓回归与独立审查通过；认证 MySQL 集成因未配置隔离库跳过。方案与上游原件、迁移和部署配置字节未变，W4 九套 exact 保持原值。此次未发布，不代表生产 release 已切换或重新核验九套自然调度。
+
+## 当前输入与产品版本
+
+双机使用五文件 DataBridge，存量 `factor_version` 已初始化为 `V1.0`；legacy 保护与新方案输入模式见[DataBridge](blackbox_v2/data_bridge_v1/README.md)。产品接口为 `factor-lab-dashboard-v5`，完整读模型与表示见[Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)。
 
 ## 现场核验入口
 
 - 发布与恢复：[部署运行手册](../deploy/README.md)。
 - 调度：installed plist/unit、loaded state、journal/日志、实际进程和本机 run/prediction 联合核验，见[调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。
-- 公网故障：[刷新与链路可靠性](operations/PUBLIC_FACTOR_LAB_REFRESH_RELIABILITY.md)。
+- 公网故障：[Dashboard 故障定位](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md#故障定位与恢复)。
 - 日历、DataBridge、Actuals、状态和在途任务在每次操作前重新核验；本文中的数量和摘要不能充当操作时的现场证据。

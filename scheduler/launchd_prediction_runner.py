@@ -16,7 +16,6 @@ from scheduler.executor import (
     _launchd_scheduled_execution_context,
 )
 from scheduler.one_shot_prediction_runner import (
-    OneShotPredictionConfigurationError,
     OneShotPredictionSummary,
     configuration_summary,
     run_one_shot,
@@ -27,10 +26,6 @@ from shared.task_specs import PREDICTION_CADENCES
 
 
 _LAUNCHD_EVENT = "launchd_prediction_run"
-
-# 保留既有导入名称，调用方无需感知内部平台中立化。
-LaunchdPredictionConfigurationError = OneShotPredictionConfigurationError
-LaunchdPredictionSummary = OneShotPredictionSummary
 
 
 def run(
@@ -70,12 +65,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             predict_date=args.predict_date,
             algo_env=args.algo_env,
             scheme_ids=args.scheme_ids,
-        )
-    except OneShotPredictionConfigurationError:
-        summary = configuration_summary(
-            args.cadence,
-            args.predict_date,
-            event=_LAUNCHD_EVENT,
         )
     except Exception:  # noqa: BLE001 - 不序列化底层异常
         summary = configuration_summary(

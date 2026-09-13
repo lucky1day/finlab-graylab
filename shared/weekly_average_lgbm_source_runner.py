@@ -33,27 +33,6 @@ from shared.weekly_average_source_evidence import (
 DETAIL_RELATIVE_PATH = Path("prediction") / "weekly_prediction_detail.csv"
 
 
-def run_source_weekly_backtest(
-    evidence: WeeklyAverageSourceEvidence,
-    *,
-    start_date: str,
-    end_date: str,
-    database_config: SourceRuntimeDatabaseConfig | None = None,
-) -> list[dict[str, Any]]:
-    """重跑原始周平均 LGBM 回测包并返回 prediction detail 行。"""
-    config = database_config or load_source_runtime_database_config()
-    return list(
-        _run_source_weekly_backtest_cached(
-            str(evidence.source_package_path),
-            evidence.source_package_hash,
-            evidence.runner_module,
-            start_date,
-            end_date,
-            config,
-        )
-    )
-
-
 def run_source_weekly_live(
     evidence: WeeklyAverageSourceEvidence,
     *,
@@ -83,38 +62,6 @@ def run_source_weekly_live(
         )
         rows = _read_detail_rows(weekly_root / "output")
     assert_source_runtime_payload_safe(rows, config)
-    return rows
-
-
-def _run_source_weekly_backtest_cached(
-    source_package_path: str,
-    source_package_hash: str,
-    runner_module: str,
-    start_date: str,
-    end_date: str,
-    database_config: SourceRuntimeDatabaseConfig,
-) -> tuple[dict[str, Any], ...]:
-    assert_source_package_identity(
-        Path(source_package_path),
-        source_package_hash,
-        tree_sha256=source_package_tree_sha256,
-        label="weekly average",
-    )
-    with _source_runtime(
-        Path(source_package_path),
-        source_package_hash,
-        database_config=database_config,
-    ) as source_root:
-        weekly_root = source_root / "weekly_project"
-        _run_python_module(
-            runner_module,
-            [start_date, end_date, "--project-root", str(weekly_root), "--dry-run"],
-            source_root=source_root,
-            weekly_root=weekly_root,
-            database_config=database_config,
-        )
-        rows = tuple(_read_detail_rows(weekly_root / "output"))
-    assert_source_runtime_payload_safe(rows, database_config)
     return rows
 
 

@@ -64,7 +64,6 @@ _FREQUENCY_FILE_PREFIXES = {
     "monthly": "monthly_output",
 }
 EPHEMERAL_NATIVE_INPUT_ROOT_ENV = "BOND_NATIVE_EPHEMERAL_INPUT_ROOT"
-NATIVE_INPUT_AUDIT_ROOT_ENV = "BFL_NATIVE_INPUT_AUDIT_ROOT"
 _BLACKBOX_RUNTIME_VIEW_PREFIX = "blackbox-runtime-"
 _BLACKBOX_DEBRIS_MARKER_SCHEMA = "blackbox-runtime-debris-v1"
 
@@ -2068,12 +2067,6 @@ def build_daily_input_artifact(
         source="shared_data_service_daily",
         data_version=DAILY_DATA_VERSION,
     )
-    _write_native_input_audit_receipt(
-        artifact,
-        metadata=metadata,
-        coverage_field="date",
-        required_columns=("date",),
-    )
     return artifact
 
 
@@ -2133,12 +2126,6 @@ def build_weekly_input_artifact(
         source="shared_data_service_weekly",
         data_version=WEEKLY_DATA_VERSION,
     )
-    _write_native_input_audit_receipt(
-        artifact,
-        metadata=metadata,
-        coverage_field="week_id",
-        required_columns=("week_id",),
-    )
     return artifact
 
 
@@ -2188,12 +2175,6 @@ def build_monthly_input_artifact(
         dataframe=read_back,
         source="shared_data_service_monthly",
         data_version=MONTHLY_DATA_VERSION,
-    )
-    _write_native_input_audit_receipt(
-        artifact,
-        metadata=metadata,
-        coverage_field="month_id",
-        required_columns=("month_id",),
     )
     return artifact
 
@@ -2283,85 +2264,6 @@ def _link_native_input_view(object_path: Path, view_path: Path) -> None:
     os.link(object_path, view_path)
 
 
-def _write_native_input_audit_receipt(
-    artifact: InputArtifact,
-    *,
-    metadata: Mapping[str, Any],
-    coverage_field: str,
-    required_columns: tuple[str, ...],
-) -> None:
-    """仅在 Harness dry-run 请求时记录本次真实 builder 的输入身份。"""
-    configured = str(os.environ.get(NATIVE_INPUT_AUDIT_ROOT_ENV) or "").strip()
-    if not configured:
-        return
-    profile = _dataframe_profile(
-        artifact.dataframe,
-        coverage_field=coverage_field,
-        required_columns=required_columns,
-    )
-    content_hash = _file_sha256(artifact.path)
-    root = Path(configured)
-    if not root.is_absolute():
-        raise ValueError(f"{NATIVE_INPUT_AUDIT_ROOT_ENV} must be absolute")
-    resolved_root = root.resolve(strict=True)
-    root_details = root.lstat()
-    if (
-        root.is_symlink()
-        or Path(os.path.abspath(root)) != resolved_root
-        or stat.S_ISLNK(root_details.st_mode)
-        or not stat.S_ISDIR(root_details.st_mode)
-        or root_details.st_uid != os.getuid()
-    ):
-        raise OSError("native input audit root is unsafe")
-
-    artifact_details = artifact.path.lstat()
-    if (
-        stat.S_ISLNK(artifact_details.st_mode)
-        or not stat.S_ISREG(artifact_details.st_mode)
-    ):
-        raise OSError("native input artifact is not a regular file")
-    payload = {
-        "scheme_id": artifact.scheme_id,
-        "frequency": artifact.frequency,
-        "path": str(artifact.path),
-        "source": artifact.source,
-        "data_version": artifact.data_version,
-        "content_hash": content_hash,
-        "schema_hash": _schema_hash(artifact.dataframe),
-        "row_count": profile["row_count"],
-        "column_count": profile["column_count"],
-        "columns": list(profile["columns"]),
-        "date_coverage": dict(profile["date_coverage"]),
-        "quality_flags": dict(profile["quality_flags"]),
-        "metadata": dict(metadata),
-        "file_size": artifact_details.st_size,
-        "modified_ns": artifact_details.st_mtime_ns,
-    }
-    receipt_path = resolved_root / f"{artifact.frequency}.json"
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{artifact.frequency}.",
-        suffix=".tmp",
-        dir=resolved_root,
-    )
-    temporary = Path(temporary_name)
-    try:
-        os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            descriptor = -1
-            json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, receipt_path)
-        _fsync_directory(resolved_root)
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
-
-
 def _atomic_save_output(save_output, frame: pd.DataFrame, path: Path) -> None:
     """同目录写临时文件，fsync 后原子替换，失败时保留旧完整文件。"""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -2399,73 +2301,6 @@ def _fsync_directory(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
-
-
-def _dataframe_profile(
-    df: pd.DataFrame,
-    *,
-    coverage_field: str,
-    required_columns: tuple[str, ...],
-) -> dict[str, Any]:
-    columns = [str(col) for col in df.columns]
-    missing_required = [col for col in required_columns if col not in columns]
-    date_coverage: dict[str, Any] = {"field": coverage_field, "start": None, "end": None}
-    null_coverage_rows = 0
-    duplicate_coverage_values = 0
-
-    if coverage_field in df.columns:
-        values = df[coverage_field]
-        null_coverage_rows = int(values.isna().sum())
-        non_null = values.dropna()
-        duplicate_coverage_values = int(non_null.duplicated().sum())
-        start, end = _coverage_bounds(non_null, coverage_field)
-        date_coverage["start"] = start
-        date_coverage["end"] = end
-
-    return {
-        "row_count": int(len(df)),
-        "column_count": int(len(columns)),
-        "columns": columns,
-        "date_coverage": date_coverage,
-        "quality_flags": {
-            "missing_required_columns": missing_required,
-            "empty_frame": bool(df.empty),
-            "null_coverage_rows": null_coverage_rows,
-            "duplicate_coverage_values": duplicate_coverage_values,
-        },
-    }
-
-
-def _coverage_bounds(values: pd.Series, coverage_field: str) -> tuple[Any, Any]:
-    if values.empty:
-        return None, None
-    if coverage_field == "date":
-        parsed = pd.to_datetime(values, errors="coerce").dropna()
-        if parsed.empty:
-            return None, None
-        return parsed.min().strftime("%Y-%m-%d"), parsed.max().strftime("%Y-%m-%d")
-    if coverage_field == "week_id":
-        numeric = pd.to_numeric(values, errors="coerce").dropna()
-        if numeric.empty:
-            return None, None
-        return int(numeric.min()), int(numeric.max())
-    if coverage_field == "month_id":
-        cleaned = values.dropna().astype(str).str.strip()
-        cleaned = cleaned[cleaned.str.fullmatch(r"\d{6}", na=False)]
-        if cleaned.empty:
-            return None, None
-        return str(cleaned.min()), str(cleaned.max())
-    return values.min(), values.max()
-
-
-def _file_sha256(path: str | Path) -> str:
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-
-
-def _schema_hash(df: pd.DataFrame) -> str:
-    schema = sorted((str(column), str(df[column].dtype)) for column in df.columns)
-    payload = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _read_daily_output_csv(path: str | Path) -> pd.DataFrame:

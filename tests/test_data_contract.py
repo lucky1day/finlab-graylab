@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import unittest
-from unittest import mock
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -19,7 +18,7 @@ FACTOR_TABLES = (
 )
 
 
-class DataContractAuditTests(unittest.TestCase):
+class SourceCommitContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.engine = create_engine(
             "sqlite+pysqlite:///:memory:",
@@ -92,6 +91,11 @@ class DataContractAuditTests(unittest.TestCase):
                 connection,
                 feature_date="2026-07-23",
             )
+        self._insert_factor(
+            "api_wind_daily", rdate="2026-07-24",
+            create_time="2026-07-24 05:15:00", code="FUTURE",
+        )
+        with self.engine.connect() as connection:
             repeated = capture_source_commit_evidence_from_connection(
                 connection,
                 feature_date="2026-07-23",
@@ -116,51 +120,6 @@ class DataContractAuditTests(unittest.TestCase):
         self.assertEqual(len(first.source_commit_token), 64)
         self.assertEqual(first.feature_date, "2026-07-23")
 
-
-    def test_commit_evidence_pushes_factor_cutoff_into_sql(self) -> None:
-        from shared.data_contract import (
-            FACTOR_SOURCE_TABLES,
-            capture_source_commit_evidence_from_connection,
-        )
-
-        factor_results = []
-        for _ in FACTOR_SOURCE_TABLES:
-            result = mock.MagicMock()
-            result.mappings.return_value.all.return_value = []
-            factor_results.append(result)
-        metadata_result = mock.MagicMock()
-        metadata_result.mappings.return_value.one.return_value = {
-            "row_count": 0,
-            "latest_create_time": None,
-            "latest_update_time": None,
-        }
-        calendar_results = []
-        for _ in range(2):
-            result = mock.MagicMock()
-            result.mappings.return_value.one.return_value = {
-                "row_count": 0,
-                "latest_business_key": None,
-            }
-            calendar_results.append(result)
-        connection = mock.MagicMock()
-        connection.execute.side_effect = [
-            *factor_results,
-            metadata_result,
-            *calendar_results,
-        ]
-
-        capture_source_commit_evidence_from_connection(
-            connection,
-            feature_date="2026-07-23",
-        )
-
-        factor_calls = connection.execute.call_args_list[
-            :len(FACTOR_SOURCE_TABLES)
-        ]
-        self.assertEqual(len(factor_calls), len(FACTOR_SOURCE_TABLES))
-        for call in factor_calls:
-            self.assertIn("WHERE rdate <= :feature_date", str(call.args[0]))
-            self.assertEqual(call.args[1], {"feature_date": "2026-07-23"})
 
     def test_commit_evidence_rejects_rows_after_contract_cutoff(
         self,

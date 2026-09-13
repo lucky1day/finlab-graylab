@@ -12,8 +12,6 @@ from shared.source_runtime_database import (
 
 
 WEEKLY_AVERAGE_SOURCE_ROLE = "source_original_weekly_average_algorithm"
-PLATFORM_CURRENT_SOURCE_ROLE = "platform_current_weekly_average_adapter"
-POINT_BACKED_BOOTSTRAP_SOURCE = "source_backed_point_runner_plus_weekly_average_oracle"
 WEEKLY_AVERAGE_SOURCE_BATCH = "weekly_average_0529"
 
 WEEKLY_AVERAGE_POINT_SCHEMES: dict[str, str] = {
@@ -108,26 +106,6 @@ def require_weekly_average_source_evidence(
         target_column=target_column,
         model_id=model_id,
     )
-
-
-def is_point_backed_weekly_average_provenance(
-    provenance: dict[str, Any],
-    *,
-    scheme_id: str | None = None,
-) -> bool:
-    bootstrap = str(provenance.get("bootstrap_source") or "").strip()
-    source_role = str(provenance.get("source_role") or "").strip()
-    generator = str(provenance.get("generator") or "").strip()
-    source_path = str(provenance.get("source_path") or "").strip()
-    if bootstrap == POINT_BACKED_BOOTSTRAP_SOURCE:
-        return True
-    if source_role == "source_original_predictions_with_weekly_average_actual_oracle":
-        return True
-    values = (generator, source_path)
-    if scheme_id in WEEKLY_AVERAGE_POINT_SCHEMES:
-        point_scheme = WEEKLY_AVERAGE_POINT_SCHEMES[str(scheme_id)]
-        return any(point_scheme in value for value in values)
-    return any("source-backed point" in value or "point_runner" in value for value in values)
 
 
 def _required_relative_dir(entry: dict[str, Any], key: str, batch_dir: Path, scheme_id: str) -> Path:

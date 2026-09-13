@@ -1,86 +1,110 @@
-# Bond Factor Lab 公网 Dashboard 读路径
+# Dashboard 合同与运行验收
 
 **文档状态**：`CURRENT`
-**适用版本**：dashboard schema `factor-lab-dashboard-v5`
 
-## 当前合同
+**适用版本**：`factor-lab-dashboard-v5`
 
-`GET /api/factor-lab/dashboard` 每次请求直接从数据库构建当前 dashboard；服务端不保存
-TTL、single-flight 或 last-known-good（LKG）快照。
+本文维护 Dashboard HTTP 表示、浏览器刷新、故障定位及验收。账户和会话规则见
+[认证合同](../architecture/AUTHENTICATION_AND_ACCOUNT_MANAGEMENT.md)，主机、Origin 和访问链路见
+[部署访问入口](DEPLOYMENT_ACCESS.md)，产品日期与统计口径见[预测语义](../architecture/PREDICTION_SEMANTICS.md)。
 
-```text
-浏览器 → Nginx 只读入口 → FastAPI dashboard route
-       → dashboard 专用只读 SQLAlchemy Engine
-       → active Registry / prediction / Actual / backtest 批量查询
-       → V5 月度 summary；月历按需查询单方案 detail
-```
+## 唯一读路径与 HTTP 合同
 
-- 数据库和 dashboard 构建成功：返回 `200` 当前数据。
-- 数据库连接、查询或构建失败：返回 `503`，正文仅为
+`GET /api/factor-lab/dashboard` 的 Summary 和 Detail 均要求有效登录，每次通过专用只读 SQLAlchemy Engine
+从当前数据库构建；不保存服务端 TTL、single-flight、LKG、Redis 或 Nginx microcache。
+
+- 成功返回 `200` 当前数据；连接、查询或构建失败返回 `503`，正文仅为
   `{"error_code":"dashboard_data_unavailable"}`。
-- 前端首次读取失败时显示“数据不可用”。已有成功快照后的刷新失败保留完整已提交视图，明确
-  显示最近成功 `generated_at` 并标为 `stale`；不得把 stale 描述成当前最新数据。
+- active Registry 即使没有预测也出现在 Summary；只聚合已发布事实，不生成占位行或推导应运行状态。
+  owner 只取 Registry，缺失/非法则整个请求失败，不回退 Metadata 或仓库映射。
+- 读路径不查 run、DataBridge 或日历，不计算 `missing/not_due/no_run`；调度缺口由
+  [调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)处理，不混入产品读模型。
+- Engine 连接/读/写超时分别为 0.5/2/0.5 秒，单条 MySQL 查询上限 1000ms，开启 pool_pre_ping，300 秒回收连接。
 
-Dashboard 使用独立只读 Engine，连接超时为 `0.5s`、读超时为 `2s`、写超时为 `0.5s`，
-单条 MySQL 查询上限为 `1000ms`；连接池开启 `pool_pre_ping`，并在 `300s` 回收连接，避免
-复用断开的长连接。
+无参数请求返回 `representation=summary`，包含方案身份、owner、回测展示元数据和 `month + source` 计数，
+不携带逐点明细；前端直接计算准确率、precision/recall 和方向分布，首屏不请求 Detail。
+`source` 是按预测语义确定的产品分区，不是物理表来源；公开响应不返回 run phase。
 
-Dashboard 是数据库业务结果视图：active Registry 即使尚无 live prediction 也会出现在 summary；有什么
-prediction 就聚合什么 prediction，不生成占位行，也不推导方案是否应当运行。方案来源只读取
-`t_scheme_registry.owner`，缺失或非法时整个请求失败，不读取 Metadata 或仓库映射。
-读路径不读取 run、DataBridge 日期或交易日历，不计算 `missing`、`not_due`、`no_run` 等调度
-状态。调度缺口与运行失败由 scheduler、数据库 run、systemd/launchd 日志和受控 gap-fill 链路
-处理，不混入产品读模型。
-
-## V5 两种严格表示
-
-无查询参数的 `GET /api/factor-lab/dashboard` 返回 `representation=summary`。每个方案只包含身份、owner、
-回测展示元数据和按 `month + source` 的计数，不携带逐日 live 或 backtest 明细。`source` 是仅由固定
-`target_date=2026-06-01` 分界产生的业务结果类型，不是物理表来源；公开合同不返回 prediction phase。前端直接用
-这些计数计算准确率、precision/recall 和方向分布，首屏不发 Detail 请求。
-
-点击月历后，同一路径携带且只携带以下三个参数：
+月历 Detail 在同一路径携带且只携带以下三个参数：
 
 ```text
 scheme-id=<composite_registry_id>&month=YYYY-MM&source=all|backtest|live
 ```
 
-服务端返回 `representation=detail`，并把方案、底层 target 月份和 source 条件下推到数据库查询。未知、重复、
-缺少或额外参数返回 400；未知或非 active Registry 返回 404；合法空月返回 `rows=[]`。Summary 和 Detail
-都不使用服务端 TTL、LKG、Redis 或 Nginx microcache。
+返回 `representation=detail`；方案、按[预测语义](../architecture/PREDICTION_SEMANTICS.md)反解的 target 月份和 source 条件下推数据库。未知、重复、缺少或额外参数
+返回 400；未知/非 active Registry 返回 404；合法空月为 `rows=[]`。纯待验证月份仍可打开明细，统计只计已验证样本。
 
-## 响应与探针
+成功响应包含 `Cache-Control: no-store`、`Vary: Accept-Encoding`、`X-Request-ID`、
+`X-Dashboard-Snapshot-ID`（等于 body snapshot_id）。canonical payload 只做一次 JSON 和 gzip 编码，按
+Accept-Encoding 返回对应字节；HEAD/GET 表示与 Content-Length 语义一致，middleware 不得再次压缩。
+Server-Timing 仅诊断当前请求 DB、canonical、serialization 和 route 耗时，不代表缓存或可用性真相。
 
-成功响应必须包含：
+## 浏览器刷新与失败展示
 
-- `Cache-Control: no-store`
-- `Vary: Accept-Encoding`
-- `X-Request-ID`
-- `X-Dashboard-Snapshot-ID`（与 body `snapshot_id` 一致）
+Dashboard 展示离散发布的数据库事实。首次认证后立即读取；可见页面每五分钟刷新，隐藏时停止计时器；
+恢复可见时仅在成功快照满五分钟或先前刷新失败时立即读取。任一时刻最多一个 Summary 请求。
 
-route 对 canonical payload 只做一次 JSON 编码和一次 gzip 编码；根据 `Accept-Encoding` 直接返回对应字节，
-HEAD 与 GET 使用同一表示和 `Content-Length` 语义，不允许 middleware 再次压缩。
+- 无成功快照时失败：显示“数据不可用”，不猜测数据。
+- 已有成功快照后失败：保留完整已提交视图、筛选和已开月历，显示“刷新失败，显示 `<generated_at>` 数据”，
+  DOM 标记 `stale`，不得称为最新；这只是当前浏览器会话暂存，服务端仍按上述失败合同返回。
+- 后续成功响应原子替换整个 Summary 并恢复 fresh，不混合新旧方案、月份或 Detail 缓存。
+- 注销、认证失效或身份切换按认证合同清空前端业务状态。
 
-`Server-Timing` 仅用于当前请求的 DB、canonical、serialization 和 route 诊断，不能作为缓存或
-可用性真相。
+重试间隔依次 10 秒、30 秒、60 秒、5 分钟，连续失败后维持五分钟；成功恢复正常周期。
 
-只读合同探针统一使用现有 Dashboard Gate：
+## 认证响应与合同验收
 
-```bash
-python -m harness gate dashboard \
-  --scheme-id <base_scheme_id> \
-  --api-base-url http://127.0.0.1:8100
-```
+先通过对应环境的正常授权会话取得真实 HTTP Summary/Detail，记录状态、响应头、payload 及证据时间，
+不保存密码、Cookie 或 token。对照本机 Registry、预测和 Actual，逐方案检查身份、owner、月份、明细和待验证状态；
+exact 另由数据库与 release 核验，Dashboard 不提供该字段。
 
-Gate 使用生产端唯一响应预算，验证 V5 summary、active composite identity、展示身份（含 owner）、任务字段和 backtest 分区；
-没有 live 月度计数是合法结果。它不接受非 200、超限或非法结果。gzip、`no-store` 与响应头由后端 API 合同测试保护。历史信号检查与补齐不属于
-Dashboard 读路径，统一遵循[生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。
+现有 [`DashboardGate`](../../harness/gates/dashboard_gate.py) 支持 `fetcher` 注入；用授权会话取得的真实
+HTTP 响应交给 `DashboardGate(fetcher=...)`。fetcher 接收 URL、`timeout_sec` 和 `max_response_bytes`，
+须按这些限制读取响应、校验 UTF-8/JSON 并返回 `(payload, http_status)`；自定义 fetcher 不能绕过读取预算，
+不得构造成功状态或伪造 payload。Gate 校验 V5 Summary、active composite、任务/展示身份和回测分区；
+没有 live 月度计数合法，非 200、超限或非法结构均失败。gzip/no-store/响应头由 API 合同测试保护。
 
-## 故障处理边界
+裸 `python -B -m harness gate dashboard --api-base-url ...` 的默认 fetcher **不携带登录会话**，
+不能直接完成启用认证环境的验收；不能为运行该命令关闭认证。通用认证 CLI 的现有限制见[TODO](../TODO.md)，
+不把已归档批次脚本恢复为长期框架。
 
-收到 `503 dashboard_data_unavailable` 时，先检查数据库可用性和当前 route 的安全日志；
-不要用旧 dashboard 数据掩盖故障，也不要为诊断擅自重启服务、修改 installed plist、执行
-`launchctl` 或写生产数据库。这些操作均需要独立授权。
+普通发布在[部署流程](../../deploy/README.md#构建预安装和晋级)的健康、数据与调度读回之外，完成上述认证 HTTP
+对照，并刷新浏览器核验 fresh、方案数与明细，不使用旧视图作证。批量请求遇 429 时降低频率并按 Retry-After
+退避，不调整 Nginx 或认证来完成验收。
 
-浏览器 stale 状态只保留当前会话已成功取得的完整快照并醒目标注时间，不改变上述服务端边界。
-刷新周期、重试和公网三点探针见[公网刷新与链路可靠性](PUBLIC_FACTOR_LAB_REFRESH_RELIABILITY.md)。
+仅在读路径、浏览器刷新或入口网络发生相关变更时，按影响范围开展专项验收：
+
+- 可见页面正常轮询不超过每小时 12 次、隐藏无轮询，已发布事实最迟五分钟可见；
+- 经授权的读路径故障注入：一次 503 保留完整视图并标 stale，后续成功原子恢复 fresh；
+- 经授权的读压测无 503/504，route p99 < 1.5 秒、DB p99 < 750ms；
+- 涉及隧道/代理时核对唯一 listener 与 Clash 不出现生产 SSH `dial GLOBAL`。
+
+故障注入和生产压测须有专项授权，不因普通算法包发布或文档整理自动执行；不得停止 Writer、写业务库或制造预测缺口。
+
+## 故障定位与恢复
+
+固定地址和链路图仅维护于访问入口。对 Mac3 公网链路使用三点探针：
+
+1. Mac3 本地 health 成功、中继转发端口失败：检查 SSH 隧道。
+2. 中继转发成功、公网失败：检查 Nginx、TLS 和公网入口。
+3. health 成功、Dashboard 503：按 X-Request-ID 检查数据库和构建阶段；401 则检查入口和会话。
+4. Dashboard 200、浏览器 stale：检查客户端网络、解析和刷新状态机。
+
+Dashboard 结构化事件写 Uvicorn error logger；Nginx timing log 以 `$time_iso8601 $request_id` 开头并记录
+`$upstream_status`，用同一 X-Request-ID 关联时间。入口预算耗尽时据此定位，不继续放宽 timeout 掩盖故障。
+
+生产 SSH 固定连接中继 IPv4，host-key 核验按访问入口执行。有限超时、保活和转发失败退出的期望值见
+[tunnel plist](../../deploy/launchd/com.bond-factor-lab.ssh-tunnel.plist)。
+Clash/Mihomo TUN 开启时使用 rule 模式，将中继 IPv4 指向 DIRECT，并用 route-exclude-address 排除其 /32；
+验收看生产 SSH 不出现 dial GLOBAL，不能只检查 DNS 是否返回真实 IP。
+
+应用 release、Nginx、Clash 和 installed tunnel 分别保存生效配置与只读基线，只处理故障所属的已授权单元：
+
+- 应用异常按[部署手册](../../deploy/README.md#回滚与认证部署)核验 previous 与 schema/状态兼容后恢复。
+- Nginx 恢复上一已验证 site，语法检查通过并获授权后 reload。
+- tunnel/代理恢复上一 installed plist 和 Clash 配置，确认旧会话退出及唯一 owner 后恢复；
+  修改前检查转发端口的唯一 listener，不手工启动第二条 ssh -R。
+- DNS/代理以现场生效配置定位，保留原值，不照抄历史发布窗口配置。
+- 恢复后重复三点 health、认证 Summary、响应标识和两端日志检查，保留失败 request ID 与时间窗口。
+
+读路径诊断不授予上述配置变更或启停权限，也不能通过业务写库、覆盖预测、重启 Writer 或复制另一机数据库恢复页面。

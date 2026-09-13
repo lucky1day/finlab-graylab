@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from copy import deepcopy
 from dataclasses import replace
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -545,51 +545,6 @@ class RegistryLifecycleTests(unittest.TestCase):
                 [_native_config()],
                 effective_statuses={"native_daily__h1__5Y": "active"},
             )
-
-    def test_trusted_native_activation_writes_exact_approval_and_target_registry_atomically(self) -> None:
-        from scheduler.repository import apply_native_activation_state
-
-        engine = _CaptureEngine(registry_rows=[_native_registry_row()])
-        approved_at = datetime(
-            2026,
-            7,
-            20,
-            16,
-            30,
-            45,
-            tzinfo=timezone(timedelta(hours=8)),
-        )
-
-        activated_version = apply_native_activation_state(
-            engine,
-            _native_config(),
-            approved_by="native-release-owner",
-            approved_at=approved_at,
-        )
-
-        self.assertEqual(activated_version, "native-version-1")
-        self.assertEqual(engine.store["begin_count"], 1)
-        self.assertEqual(engine.store["version_row"]["status"], "active")
-        self.assertEqual(
-            engine.store["version_row"]["approved_by"],
-            "native-release-owner",
-        )
-        self.assertEqual(
-            engine.store["version_row"]["approved_at"],
-            datetime(2026, 7, 20, 8, 30, 45),
-        )
-        self.assertEqual(
-            {row["scheme_id"] for row in engine.store["registry_rows"]},
-            {"native_daily__h1__5Y"},
-        )
-        self.assertEqual(
-            {row["status"] for row in engine.store["registry_rows"]},
-            {"active"},
-        )
-        self.assertEqual(
-            {row["owner"] for row in engine.store["registry_rows"]},
-            {"legacy-native-owner"},
-        )
 
 
 class BlackboxExecutionApprovalRepositoryTests(unittest.TestCase):

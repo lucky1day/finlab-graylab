@@ -16,7 +16,6 @@ class GateContext:
     predict_date: str
     project_root: Path
     config: "SchemeConfig | None" = None
-    algo_env: str = "forecast_env"
     engine_factory: Callable[[], Any] | None = None
     operation: Any | None = None
     persist_backtest: bool = False

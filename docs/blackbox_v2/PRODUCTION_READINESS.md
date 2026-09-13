@@ -2,41 +2,26 @@
 
 **文档状态**：`CURRENT`
 
-**目标读者**：单人平台维护者和运维操作者
+本文定义已入库 exact version 的生产接管验收，不是回测前置门禁。各副作用的授权和操作前提按
+[平台入库 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)执行；发布步骤按[部署运行手册](../../deploy/README.md)执行。
 
-本文只定义单个 Blackbox exact version 进入生产前必须满足的条件，不记录具体方案、历史 rollout、运行数量或一次性证据。操作步骤见[平台入库 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)，自然调度见[生产信号与调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。
+## 接管条件
 
-## 必须满足
+| 检查 | 所需证据与权威规则 |
+|---|---|
+| 交付与版本 | [SOP 第 2—4 节](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#2-step-1intake新-id)的两文件校验、最终 canonical、完整不可变回测和激活证据；exact、脚本校验策略、环境与输入绑定一致 |
+| 本机输入 | [DataBridge 契约](data_bridge_v1/README.md)定义的 ready generation 与匹配输入视图；方案流程不代建 producer 输入 |
+| 运行边界 | 当前 Runtime Profile、输入篡改检查和标准 Result 校验通过；上游负责的确定性、分批等价和未来数据隔离不能冒称为平台已独立验证 |
+| 生命周期 | 本机数据库 exact version 与 composite Registry 为权威；最终 config、exact 与全部 target active，且 cadence 与部署目标匹配 |
+| 历史与灰度 | 按 [SOP 第 6 节](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#6-灰度区间批量物化)选择批量或单日入口；按[预测语义](../architecture/PREDICTION_SEMANTICS.md#52-历史批次与灰度区间批次)核验完整键集合、边界、来源与 insert-only |
+| 产品读回 | 按[Dashboard 合同](../operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md#认证响应与合同验收)使用有效会话验证 HTTP 与业务可见性；API 不携带 exact，版本另由数据库和 release 核验 |
+| 目标环境 | release、Schema、实际解释器/依赖、installed/loaded 控制面和可恢复边界满足部署手册；周期均值任务还须满足下述 Schema 条件 |
+| 自然观察计划 | 接管时明确首次自然窗口与观察责任，接管后按[调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)核对真实时钟、run、prediction 和 Dashboard；未到窗口可保持待观察，不能将模拟或补缺标为自然运行通过 |
 
-1. 新 ID 的两文件 Intake 已通过；同 ID 修订的 canonical 两文件已在持久化回测前通过 Metadata、目录身份、Contract、Runtime Profile 和脚本安全边界校验。activation 严格加载 canonical 当前字节，并只接受同 exact version、同当前脚本校验策略的成功持久化回测证据。
-2. 当前 exact version 已完成一次完整持久化回测，回测 durable summary 中的
-   version/code/config/manifest、脚本校验策略摘要、Runtime Profile、环境指纹、generation 和 snapshot 精确一致。校验策略变化后，旧回测不再能直接用于激活。
-3. DataBridge producer 独立完成五文件 generation 的 schema、freshness、cutoff、完整性校验和 ready Snapshot 构建；方案只读取已有 receipt 并使用对应只读版本，不触发构建、修复、哈希或 CSV 复核。私有运行视图只做 producer seal 核对、稳定复制和进程前后篡改检查。升级前四文件 receipt 只允许 `legacy_v1` 存量方案读取，`algorithm_managed` 必须等待五文件 ready generation；producer 原子发布五文件失败时保留原四文件 current。
-4. canonical 两文件安全静态边界、回测运行后输入目录指纹复验、超时、环境 allowlist 和严格 `-1/0/1` Result 均通过。
-   确定性、顺序/分批一致性与未来数据隔离**不在平台验收范围内**——它们是交付代码自身的性质，
-   由上游按 [上游交付契约](../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md) 保证；生产准备核验
-   不得据此宣称平台已验证过这些性质。
-5. activation 和持久化回测绑定 scheme、exact version、日期/起点与 operator；activation 只读取匹配的成功回测，不绑定 Harness run。单日 `signal-gap-fill` 仍由 planner 绑定 active identity、业务键和输入 authority。
-6. activation 后 config、exact version 与全部 Registry target 均为 active；paused、draft、retired 或 cadence 不匹配的身份不得进入对应 one-shot runner。
-7. 激活后的 HTTP 验收只使用 `DashboardGate` 检查 `/api/factor-lab/dashboard` 当前业务可见性；Dashboard 响应不携带 exact version，不能替代 exact version、Gate 或生命周期证据。
-8. 自然生产观察必须由 installed plist、loaded state、日志、run、prediction、API/Dashboard 相互一致证明；仓库模板和测试不替代现场证据。
-9. `monthly_average`、`quarterly_average`、`annual_average` 方案进入目标环境前，必须先确认 migration 020
-   已由受控迁移入口应用且 closed-world schema 校验通过，再部署会读取周期 actual 表的 Backend。其自然运行
-   只允许复用 installed close-period 控制面；不得为三种任务分别增加 timer，或把仓库每日 18:00 模板当成
-   installed/loaded 证明。
-10. 历史回测与灰度实盘分别执行一次 batch。灰度 target 区间必须在计算前冻结 exact version、输入身份、
-    lineage 和完整 Request 集；通过逐 Request cutoff 与 producer-ready receipt 身份核验后，一个方案只物化
-    一次私有运行视图并启动一个算法 batch，再通过 repository 原子 insert-only 物化。已有键整组拒绝；不能证明 live-safe
-    等价时不得使用区间批量。
+`monthly_average`、`quarterly_average`、`annual_average` 在部署读取周期 Actual 的 Backend 前，须确认 migration 020 已经受控应用且 closed-world schema 校验通过。它们复用既有 close-period 控制面，不增加任务专属 timer。
 
-## 生命周期异常
+## 异常与权限
 
-- Blackbox 当前生命周期只以本机数据库 exact version 与 composite Registry 为权威。
-- 首次激活和 revision 在单个数据库事务中提交；失败整体回滚，修复原因后重新执行 `activate`。
+输入、版本、算法或生命周期不匹配时停止并保留证据，按[SOP 失败处理](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#7-失败处理)恢复；不得使用另一方案、旧版本或前端显示替代当前 exact 的证据，也不得覆盖既有事实。
 
-## 禁止替代
-
-- 不得用另一方案的 Gate、历史 admission、旧版本、旧 snapshot 或前端显示替代当前 exact version 的证据。
-- 不得恢复 Backend trigger、direct scheduling、Admission capability、ledger、occurrence、epoch、常驻 scheduler 或 per-scheme cron。
-- 输入、算法或生命周期异常必须直接失败并保留证据，不自动 fallback、重试、切换旧版本或覆盖业务键。
-- 本清单通过不授权修改 installed plist、执行 launchctl、重启服务、写业务表或应用 DDL；这些操作仍需单独授权。
+清单通过不授予数据库写入、DDL、installed plist/unit 变更、服务重启或 Writer 切换权限。现场操作授权与禁止恢复的调度控制面以[根规范](../../AGENTS.md)为准。

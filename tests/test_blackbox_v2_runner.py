@@ -91,6 +91,55 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                 self.assertEqual(output.monthly_metrics[0]["horizon"], horizon)
                 self.assertEqual(raw.horizon, 1)
 
+    def test_historical_metrics_keep_all_rows_and_group_by_target_month(self) -> None:
+        """新回测保留逐点、月度和期限汇总，不携带旧批次分期。"""
+        from backtests.blackbox_v2 import run_blackbox_historical_backtest
+        from scheduler.blackbox_v2_runner import RuntimeProfile
+        from shared.blackbox_v2.history import HistoricalCase
+        from shared.models import PredictionRecord
+
+        metadata = _metadata()
+        cases, records = [], []
+        for index, (predict_date, target_date, direction, label) in enumerate([
+            ("2026-04-30", "2026-05-01", 1, 1),
+            ("2026-05-05", "2026-05-06", 0, -1),
+            ("2026-06-01", "2026-06-02", -1, 1),
+        ]):
+            request = replace(
+                _request(str(index)), predict_date=predict_date,
+                feature_date=predict_date, target_date=target_date,
+                daily_cutoff_key=predict_date,
+            )
+            cases.append(HistoricalCase(request, label, {}))
+            records.append(PredictionRecord(
+                scheme_id=metadata.scheme_id, target_tenor=metadata.target_tenor,
+                horizon=metadata.horizon, predict_date=predict_date,
+                feature_date=request.feature_date, target_date=target_date,
+                predicted_direction=direction, extra={"request_id": request.request_id},
+            ))
+        output = run_blackbox_historical_backtest(
+            metadata=metadata, script_path="trial.py", cases=cases,
+            snapshot=_gray_replay_snapshot(), scheme_version="version",
+            generation_id="generation", benchmark_id="benchmark",
+            run_delivery=lambda **kwargs: records, profile=RuntimeProfile.for_tests(),
+        )
+        self.assertEqual([row["predicted_direction"] for row in output.rows], [1, 0, -1])
+        self.assertEqual(
+            [(row["month"], row["sample_count"], row["metric_sample_count"])
+             for row in output.monthly_metrics],
+            [("2026-05", 2, 1), ("2026-06", 1, 1)],
+        )
+        total = output.summary["by_tenor"][metadata.target_tenor]
+        self.assertEqual((total["samples"], total["metric_samples"], total["correct"]), (3, 2, 1))
+        self.assertEqual(total["accuracy"], 0.5)
+        self.assertEqual(output.summary["row_count"], 3)
+        self.assertEqual(output.summary["monthly_count"], 2)
+        self.assertEqual(output.summary["scheme_version"], "version")
+        self.assertEqual(output.summary["generation_id"], "generation")
+        self.assertFalse({
+            "periods_by_tenor", "evaluation_filter", "raw_row_count", "excluded_row_count",
+        } & output.summary.keys())
+
     def test_process_group_rss_queries_only_the_target_group(self) -> None:
         from scheduler import blackbox_v2_runner as runner
 

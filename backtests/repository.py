@@ -3,12 +3,10 @@ from __future__ import annotations
 import json
 import math
 from datetime import date, datetime
-from typing import TYPE_CHECKING, Any, Iterable, Sequence
+from typing import TYPE_CHECKING, Any, Sequence
 
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Connection, Engine, URL
-
-from shared.db_config import DatabaseConfig
+from sqlalchemy import text
+from sqlalchemy.engine import Connection, Engine
 
 if TYPE_CHECKING:
     from backtests._base_runner import RunOutput
@@ -40,78 +38,6 @@ def json_dumps(value: Any) -> str | None:
     if value is None:
         return None
     return json.dumps(clean_json(value), ensure_ascii=False)
-
-
-def create_engine_from_env() -> Engine:
-    """创建回测写库/读库 Engine。"""
-    cfg = DatabaseConfig.from_env()
-    url = URL.create(
-        drivername="mysql+pymysql",
-        username=cfg.user,
-        password=cfg.password,
-        host=cfg.host,
-        port=cfg.port,
-        database=cfg.database,
-        query={"charset": cfg.charset},
-    )
-    return create_engine(url, future=True)
-
-
-def create_backtest_run(
-    engine: Engine,
-    *,
-    benchmark_id: str,
-    scheme_id: str,
-    data_source: str,
-    start_date: str,
-    end_date: str,
-    summary: dict[str, Any] | None = None,
-    report_path: str | None = None,
-    code_hash: str | None = None,
-    config_hash: str | None = None,
-    input_artifact_hash: str | None = None,
-) -> int:
-    """追加一次不可变历史复现 run，并返回 backtest_run_id。"""
-    insert_sql = text(
-        """
-        INSERT INTO t_backtest_runs
-            (benchmark_id, scheme_id, data_source, start_date, end_date, status,
-             summary, report_path, code_hash, config_hash, input_artifact_hash, run_mode)
-        VALUES
-            (:benchmark_id, :scheme_id, :data_source, :start_date, :end_date, :status,
-             CAST(:summary AS JSON), :report_path, :code_hash, :config_hash,
-             :input_artifact_hash, :run_mode)
-        """
-    )
-    update_sql = text(
-        """
-        UPDATE t_backtest_runs
-        SET backtest_run_id = :run_id
-        WHERE id = :run_id
-          AND backtest_run_id IS NULL
-        """
-    )
-    params = {
-        "benchmark_id": benchmark_id,
-        "scheme_id": scheme_id,
-        "data_source": data_source,
-        "start_date": start_date,
-        "end_date": end_date,
-        "status": "running",
-        "summary": json_dumps(summary or {}),
-        "report_path": report_path,
-        "code_hash": code_hash,
-        "config_hash": config_hash,
-        "input_artifact_hash": input_artifact_hash,
-        "run_mode": "persist",
-    }
-    with engine.begin() as conn:
-        result = conn.execute(insert_sql, params)
-        run_id = getattr(result, "lastrowid", None)
-        if run_id is None:
-            run_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar_one()
-        conn.execute(update_sql, {"run_id": int(run_id)})
-    return int(run_id)
 
 
 def persist_backtest_output_atomic(
@@ -309,59 +235,6 @@ def _update_backtest_run_summary_connection(
 
 def _json_expression(connection: Connection, parameter: str) -> str:
     return f"CAST(:{parameter} AS JSON)" if connection.dialect.name == "mysql" else f":{parameter}"
-
-
-def update_backtest_run_summary(
-    engine: Engine,
-    *,
-    run_id: int,
-    summary: dict[str, Any] | None = None,
-    report_path: str | None = None,
-) -> None:
-    """更新当前不可变 run 的状态和 summary。"""
-    sql = text(
-        """
-        UPDATE t_backtest_runs
-        SET status = :status,
-            summary = CAST(:summary AS JSON),
-            report_path = :report_path,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = :run_id
-        """
-    )
-    with engine.begin() as conn:
-        conn.execute(
-            sql,
-            {
-                "run_id": run_id,
-                "status": "success",
-                "summary": json_dumps(summary or {}),
-                "report_path": report_path,
-            },
-        )
-
-
-def replace_backtest_predictions(engine: Engine, run_id: int, rows: Iterable[dict[str, Any]]) -> int:
-    """替换某个 run 的逐日预测明细。"""
-    materialized = list(rows)
-    delete_sql = text("DELETE FROM t_backtest_predictions WHERE run_id = :run_id")
-    insert_sql = text(
-        """
-        INSERT INTO t_backtest_predictions
-            (run_id, benchmark_id, scheme_id, target_tenor, horizon, predict_date,
-             feature_date, target_date, label, predicted_direction, model_pred,
-             source_row, extra)
-        VALUES
-            (:run_id, :benchmark_id, :scheme_id, :target_tenor, :horizon, :predict_date,
-             :feature_date, :target_date, :label, :predicted_direction, :model_pred,
-             CAST(:source_row AS JSON), CAST(:extra AS JSON))
-        """
-    )
-    with engine.begin() as conn:
-        conn.execute(delete_sql, {"run_id": run_id})
-        if materialized:
-            conn.execute(insert_sql, [_prediction_params(run_id, row) for row in materialized])
-    return len(materialized)
 
 
 def _prediction_params(run_id: int, row: dict[str, Any]) -> dict[str, Any]:

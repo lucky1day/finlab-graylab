@@ -58,7 +58,6 @@ _GENERATED_RELEASE_FILES = frozenset(
 )
 _REQUIRED_SOURCE_PATHS = (
     "AGENTS.md",
-    "shared/service_instance.py",
     "backend/main.py",
     "scheduler/executor.py",
     "scripts/run_launchd_release.py",

@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from shared.scheme_config_schema import ALLOWED_RUNTIME_TYPES, SCHEME_ID_PATTERN
+from shared.scheme_config_schema import SCHEME_ID_PATTERN
 
 
 POLICY_RELATIVE_PATH = Path("deploy/onboarding_policy_v1.json")
@@ -25,7 +25,7 @@ class OnboardingPolicy:
 
 
 def load_onboarding_policy(project_root: Path) -> OnboardingPolicy:
-    """严格读取双版本入库政策。"""
+    """读取保留的 W4 身份清单及 Blackbox 新身份约束。"""
     path = project_root / POLICY_RELATIVE_PATH
     try:
         raw = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys)
@@ -56,28 +56,6 @@ def load_onboarding_policy(project_root: Path) -> OnboardingPolicy:
         native_v1_mode="maintenance_only",
         legacy_native_scheme_ids=tuple(scheme_ids),
     )
-
-
-def validate_onboarding_policy(
-    project_root: Path,
-    scheme_id: str,
-    runtime_type: str,
-) -> list[str]:
-    """校验方案身份是否允许进入对应运行时的入库流程。"""
-    try:
-        policy = load_onboarding_policy(project_root)
-    except ValueError as exc:
-        return [str(exc)]
-    if runtime_type not in ALLOWED_RUNTIME_TYPES:
-        return [f"unsupported runtime_type in onboarding policy: {runtime_type}"]
-    if runtime_type == policy.new_scheme_runtime_type:
-        return []
-    if scheme_id in policy.legacy_native_scheme_ids:
-        return []
-    return [
-        "native_adapter onboarding is maintenance-only; "
-        f"scheme_id is not in legacy_native_scheme_ids: {scheme_id}"
-    ]
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:

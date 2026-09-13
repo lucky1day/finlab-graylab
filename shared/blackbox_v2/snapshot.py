@@ -156,41 +156,6 @@ def create_snapshot_from_frames(
     )
 
 
-def resolve_cutoffs(
-    snapshot: BlackboxSnapshot,
-    feature_date: str,
-    *,
-    weekly_as_of: pd.DataFrame,
-    monthly_as_of: pd.DataFrame,
-) -> CutoffKeys:
-    """解析三频截止键；周/月键必须由平台权威 as-of 结果提供。"""
-    feature = _parse_iso_date(feature_date)
-    daily = pd.read_csv(snapshot.data_dir / "daily_output.csv", dtype={"date": "string"})
-    if "date" not in daily.columns:
-        raise ValueError("daily_output.csv is missing date cutoff column")
-    daily_dates = pd.to_datetime(daily["date"], errors="coerce").dt.date
-    eligible_daily = daily_dates[daily_dates <= feature].dropna()
-    if eligible_daily.empty:
-        raise ValueError(f"daily snapshot has no row on or before {feature_date}")
-    daily_key = max(eligible_daily).isoformat()
-
-    weekly_key = _authoritative_cutoff(
-        weekly_as_of,
-        "week_id",
-        snapshot.data_dir / "weekly_output.csv",
-    )
-    monthly_key = _authoritative_cutoff(
-        monthly_as_of,
-        "month_id",
-        snapshot.data_dir / "monthly_output.csv",
-    )
-    return CutoffKeys(
-        daily_cutoff_key=daily_key,
-        weekly_cutoff_key=weekly_key,
-        monthly_cutoff_key=monthly_key,
-    )
-
-
 def _validate_frame_set(
     frames: Mapping[str, pd.DataFrame],
     expected_columns: Mapping[str, list[str]],
@@ -360,30 +325,6 @@ def _make_snapshot_read_only(destination: Path) -> None:
     destination.chmod(0o555)
 
 
-def _authoritative_cutoff(
-    as_of: pd.DataFrame,
-    key_column: str,
-    snapshot_path: Path,
-) -> str:
-    if key_column not in as_of.columns or as_of.empty:
-        raise ValueError(f"platform as-of data has no {key_column}")
-    values = [normalize_period_key(value, key_column) for value in as_of[key_column].tolist()]
-    cutoff = values[-1]
-
-    snapshot_frame = pd.read_csv(snapshot_path, dtype={key_column: "string"})
-    if key_column not in snapshot_frame.columns:
-        raise ValueError(f"{snapshot_path.name} is missing {key_column} cutoff column")
-    available = {
-        normalize_period_key(value, key_column)
-        for value in snapshot_frame[key_column].tolist()
-    }
-    if cutoff not in available:
-        raise ValueError(
-            f"platform {key_column} cutoff {cutoff} does not exist in {snapshot_path.name}"
-        )
-    return cutoff
-
-
 def normalize_period_key(value: object, field: str) -> str:
     if pd.isna(value):
         raise ValueError(f"{field} must not be empty")
@@ -393,10 +334,3 @@ def normalize_period_key(value: object, field: str) -> str:
     if len(text) != 6 or not text.isdigit():
         raise ValueError(f"{field} must be a six-digit platform key")
     return text
-
-
-def _parse_iso_date(value: str) -> date:
-    try:
-        return date.fromisoformat(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("feature_date must use YYYY-MM-DD") from exc

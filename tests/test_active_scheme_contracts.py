@@ -15,14 +15,14 @@ SCHEMES_ROOT = PROJECT_ROOT / "schemes"
 
 class ActiveSchemeContractTests(unittest.TestCase):
     def test_invalid_config_fails_closed_instead_of_being_skipped(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            schemes_root = Path(tmpdir)
-            config = schemes_root / "broken" / "config.yaml"
-            config.parent.mkdir()
-            config.write_text("scheme_id: broken\n", encoding="utf-8")
-
-            with self.assertRaises(ValueError):
-                discover_schemes(schemes_root)
+        for content in ("scheme_id: broken\n", "- not-a-mapping\n"):
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as tmpdir:
+                schemes_root = Path(tmpdir)
+                config = schemes_root / "broken" / "config.yaml"
+                config.parent.mkdir()
+                config.write_text(content, encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    discover_schemes(schemes_root)
 
     def test_all_active_scheme_configs_have_runnable_platform_contracts(self) -> None:
         configs = [
@@ -38,7 +38,6 @@ class ActiveSchemeContractTests(unittest.TestCase):
         }
 
         self.assertEqual({config.scheme_id for config in configs}, active_dirs)
-        self.assertEqual(len(configs), len(active_dirs))
 
         for config in configs:
             with self.subTest(scheme_id=config.scheme_id):
@@ -52,3 +51,15 @@ class ActiveSchemeContractTests(unittest.TestCase):
                     self.assertTrue(config.delivery_script.is_file())
                     self.assertTrue(config.delivery_metadata.is_file())
                     self.assertEqual(config.contract_version, "1.0")
+
+
+def test_native_inventory_matches_fixed_w4_policy() -> None:
+    from harness.contracts.onboarding_policy import load_onboarding_policy
+    from shared.scheme_config_loader import load_yaml_mapping
+
+    native_ids = {
+        path.parent.name
+        for path in SCHEMES_ROOT.glob("*/config.yaml")
+        if load_yaml_mapping(path).get("runtime_type", "native_adapter") == "native_adapter"
+    }
+    assert set(load_onboarding_policy(PROJECT_ROOT).legacy_native_scheme_ids) == native_ids

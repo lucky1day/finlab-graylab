@@ -12,9 +12,8 @@
 ## 1. 边界
 
 - 上游负责证明交付脚本可运行、算法确定性、逐 Request 截止隔离以及 predict/backtest 等价。
-- 平台不再运行 Blackbox `StaticGate`、冒烟 `CompareGate` 或独立 `shadow-register`。
 - 平台只验证自己拥有的边界：Intake、DataBridge 输入接入、批量 Result 合同、回测持久化和生产状态切换。
-- DataBridge generation 由 producer 独立发布并一次生成 ready snapshot。任何新 publish 开始前 producer 先撤销旧 ready 指针，完成后才原子发布新指针；方案流程只读取现成 generation，不构建、修复或重新验证 DataBridge。
+- 方案流程只消费已有 producer-ready 输入，不构建或修复 DataBridge；发布与兼容边界见[DataBridge 契约](../blackbox_v2/data_bridge_v1/README.md)。
 - 回测、激活、gray gap-fill 和调度变更仍是不同副作用；执行一个命令不授权其它动作。
 
 ## 2. Step 1：Intake（新 ID）
@@ -29,7 +28,7 @@
 执行：
 
 ```bash
-python -m harness intake-blackbox \
+python -B -m harness intake-blackbox \
   --delivery-dir <delivery-dir> \
   --project-root .
 ```
@@ -60,23 +59,24 @@ Intake 不读取 DataBridge、不运行算法、不写数据库业务表，也�
 `incremental_state: true` 并纳入 exact version，Metadata 和两文件字节不变。缺省字段的既有版本哈希保持不变；
 配置出现 `false/null/字符串/数字` 或 Native 声明均拒绝，不设置全局自动启用。
 
-新交付的 Metadata 必须显式包含合法 owner。Intake 不把 owner 复制进 `config.yaml`；首次注册及后续同步
-从 Metadata 写入 `t_scheme_registry.owner`。历史 canonical Metadata 为保持 exact version 可以缺少 owner，
-但此时只能保留数据库已有的合法 owner；数据库缺失时必须拒绝注册或同步。Dashboard 只读取 Registry，
-不在请求期回读 Metadata 或仓库映射。
+新交付 Metadata 必须显式包含合法 owner；Intake 不将其复制进 config。注册与历史兼容按
+[共享身份契约](../architecture/SCHEME_CONTRACT.md#3-方案身份)处理。
 
-同 ID 修订不创建第二个方案目录，也不重复执行会拒绝已有 ID 的 Intake。只修订 canonical
-`.py/.json` 与确有必要的平台 config，然后重新执行 Step 2、3；任何字节变化都会形成新的 exact
-version。回测入口会复验脚本安全边界并保存校验策略摘要；激活不重复解析 AST/Metadata，只严格加载 canonical 当前字节，并匹配同 exact version、同当前校验策略的成功持久化回测，因此 evidence 后的任何交付漂移仍会被拒绝。
+同 ID 修订直接修改获准的 canonical 两文件及必要 config，然后执行第 3、4 节，不重复 Intake。任何交付字节变化都会改变 exact；回测后的漂移必须重新验证，不能复用旧激活证据。
 
 ## 3. Step 2：完整持久化回测
 
-先由业务确定历史/live 分界 `gray_target_start`。平台不从 Metadata、部署日或操作日推导它。
+执行前完成以下准备：
+
+1. 由业务确定历史/live 分界 `gray_target_start`，不得从 Metadata、部署日或操作日推导。
+2. 在开发工作区将本次拟激活的 canonical 定稿为 `status: active`、`version_status: active`，并准备部署矩阵；通过标准 discovery 固定最终 exact version。Intake 的 paused/draft 只是初始文件状态。配置定稿不建立数据库身份、不授予激活权。
+3. 按[部署运行手册](../../deploy/README.md)冻结候选 release；目标环境从该不可变 release 执行回测、激活和补缺。回测后不得再改配置或两文件来取得调度资格，`activate` 不修改 canonical。
+4. 按[手工 Harness 环境绑定](../../deploy/README.md#手工-harness-的目标环境绑定)核对本次进程，再检查输入 ready receipt、完整 Request 清单及回测授权；以下命令不自动加载目标服务环境。训练历史不按展示起点裁剪。
 
 执行：
 
 ```bash
-python -m harness gate backtest \
+python -B -m harness gate backtest \
   --scheme-id {scheme_id} \
   --predict-date {gray_target_start} \
   --persist \
@@ -84,13 +84,11 @@ python -m harness gate backtest \
   --timeout-sec 7200
 ```
 
-7200 秒是本次完整离线回测的安全预算，不修改 CLI 默认 timeout 或每日预测限制。
+7200 秒是示例显式指定的完整离线回测预算，不修改 CLI 默认 timeout 或每日预测限制。
 同 exact version 的有效完整证据可复用；算法版本、输入或校验策略变化需要按证据绑定规则重新验证，
 “只做一次”不表示未来任何变更都不必重跑。
 
-已完成运行时升级的既有证据按[历史保护边界](../CURRENT_STATUS.md#保留范围与历史保护)只读保留，
-不属于本节的新交付流程；已退役的一次性原件复用入口不得作为历史导入或日常激活接口。
-包装升级不授权重新计算、复制、覆盖或删除历史事实。普通新交付仍走下面的完整回测流程。
+已完成运行时升级的证据按[运行时迁移边界](../architecture/SOURCE_ALGORITHM_FIDELITY.md#7-同算法-native--blackbox-迁移)只读保留，不走本节重新计算，也不得恢复已退役的原件复用入口。
 
 回测只做一次完整计算：
 
@@ -105,16 +103,14 @@ python -m harness gate backtest \
 它已经包含真实批量执行，因此平台不再提前额外运行一次 predict 冒烟。失败重试必须产生新的
 immutable run；不得更新、删除或补写旧 run。
 
-回测运行视图只把 producer 封存文件物化为子进程私有只读文件；不解析或重新验证 generation CSV。
-子进程结束后仍校验私有视图未被改写，这是运行隔离，不是 DataBridge 重验。
-显式增量方案另对私有输入绑定执行前后内容摘要；完整回测与 gray replay 使用本次私有状态，不读取或推进生产状态。
+私有视图按[DataBridge 契约](../blackbox_v2/data_bridge_v1/README.md#generation-与运行视图)执行输入隔离，不重验 generation。显式增量方案另核验私有输入前后内容摘要；完整回测与 gray replay 使用本次私有状态，不读取或推进生产状态。
 
 ## 4. Step 3：激活
 
 取得该方案明确的激活授权后执行：
 
 ```bash
-python -m harness activate --scheme-id {scheme_id}
+python -B -m harness activate --scheme-id {scheme_id}
 ```
 
 激活严格加载 canonical 当前两文件身份，不重复运行脚本安全扫描，只接受与当前 exact version 精确匹配的成功持久化回测：
@@ -125,78 +121,81 @@ scheme_version + code_hash + config_hash + manifest_hash
 + generation_id + data_snapshot_id
 ```
 
-首次激活在同一个命令内：
+首次激活在一个事务内：
 
-- 锁定并复核唯一成功的 exact-version 持久化回测；
-- insert-only 发布缺失的 `t_scheme_predictions` 产品事实，`backtest_run_id` 指向证据 run；
-- 原子激活 exact version 与所有 composite Registry；
-- 锁内读回事实与 lifecycle 后一次提交，任一步失败整体回滚。
+1. 锁定并复核唯一成功的 exact-version 持久化回测，拒绝 base/composite 身份冲突；
+2. insert-only 发布缺失的 `t_scheme_predictions` 产品事实，以 `backtest_run_id` 指向证据 run；
+3. 建立 active exact version 与全部 active composite Registry，写入审批人与时间；
+4. 锁内读回事实和 lifecycle 后提交，任一步失败整体回滚，不留下 draft 身份。
 
-1. 校验当前 canonical exact version 的完整持久化回测；
-2. 拒绝 base/composite 身份冲突；
-3. 在一个数据库事务中建立 active exact version 与全部 active Registry；
-4. 写入审批人与时间并在同一事务中读回。
-
-因此不再要求操作者先执行一次没有算法运行、没有灰度流量的 `shadow-register`。事务任一步失败即整体回滚，
-不产生 draft 残留、配置覆盖层或补偿 journal。
+同 ID revision 激活不重写历史产品事实。无需 `shadow-register`，也不生成配置覆盖层或补偿 journal。
 
 ## 5. 可选后续动作
 
 这些动作都不属于三步入库门禁：
 
 - 单日历史 live 缺口：取得独立授权后执行
-  `python -m harness signal-gap-fill --predict-date YYYY-MM-DD --scheme-id {scheme_id}`；
-- Blackbox 连续缺口：对 exact active `weekly_point/h1` 或日频 `T+5/h5` 身份，用 target 半开区间一次批量执行
-  `python -m harness signal-gap-fill --scheme-id {scheme_id} --target-date-from YYYY-MM-DD --target-date-before YYYY-MM-DD`。日频日期只从权威交易日历枚举；一个区间只解析一次 DataBridge authority，读取一次 producer-ready snapshot receipt、为该方案物化一次私有运行视图并启动一个算法 batch；
-- 产品读模型检查：按需执行
-  `python -m harness gate dashboard --scheme-id {scheme_id}`；
+  `python -B -m harness signal-gap-fill --predict-date YYYY-MM-DD --scheme-id {scheme_id}`；
+- Blackbox 连续缺口：先按[第 6 节](#6-灰度区间批量物化)确认区间支持范围与 live-safe 条件；
+- 产品读模型检查：按[Dashboard 认证验收](../operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md#认证响应与合同验收)取得真实授权响应并验证；默认裸 CLI 不携带会话；
 - 调度安装、timer/plist 变更、服务重启、Writer 切换：必须另行授权。
+
+单日入口省略 `--scheme-id` 时扫描当日全部应运行 active 方案，只有授权覆盖完整范围时才可使用；指定 ID 缩小范围。`SKIP_NOT_DUE`、`SKIP_PRESENT` 是无写入的正常结果，仅 `GRAY_LIVE_GAP` 执行。每个 base 独立提交、多 target 组内原子；一个方案失败不回滚其他方案的成功事实。
+
+Native 单日按权威日期推导 feature_date 并构造本机截止输入；Blackbox 使用计划绑定的冻结 DataBridge authority。单日/区间命令都内部规划，不接收外部 plan、operator、HMAC token 或 plan SHA；任一 blocker 在执行前停止，不自动重试、fallback 或切旧版本。失败先读回已发生副作用，再按实际缺口处理。
 
 Dashboard 只证明当前产品可见性，不证明 exact version。Production Observed 仍必须由真实
 launchd/systemd one-shot 时钟产生成功 `scheduled_live` 证据。
 
 ### 5.1 增量方案的显式预热/重建
 
-仅对声明了增量能力的 exact version，完成目标环境验证并取得该次状态维护授权后执行：
+仅适用于显式启用增量能力、已完成目标环境验证并取得本次状态维护授权的 exact version。
 
-初始化与后续日频必须使用相同的实际 Runtime Profile 环境。执行前从 installed unit/plist、加载状态及其
-环境文件核对 Profile allowlist（当前为 `LANG/LC_ALL/TZ`），不要直接继承操作者 SSH/shell 的 locale。
-维护调用仅对自身进程设置这些变量；真实入口没有的变量也必须从维护调用中移除，而不是赋空字符串。
-先只读复算状态运行环境身份，保存有效值与摘要；不为复用某份错误环境的状态而修改全局调度或其它方案。
-运行时身份已经不同的旧状态不能改写 header 或跳过校验：保留原状态证据，经显式维护授权后按真实环境重建，
-再用正常增量路径验收。该路径不写业务事实，但会按合同原子发布派生状态，不得称作文件系统只读验证。
+执行前按[手工 Harness 环境绑定](../../deploy/README.md#手工-harness-的目标环境绑定)核验本次进程，并从 installed/loaded 控制面及环境文件读取真实 Runtime Profile allowlist（当前 `LANG/LC_ALL/TZ`）。保存有效值和环境摘要：真实入口缺少的变量须从维护进程移除，不能设为空值，也不能继承 SSH locale。已有状态与真实环境不匹配时，保留原证据后受控重建，不改 header、全局调度或其他方案来迁就旧状态。
 
 ```bash
-python -m harness rebuild-blackbox-state \
+python -B -m harness rebuild-blackbox-state \
   --scheme-id <scheme-id> --predict-date YYYY-MM-DD \
   --expected-scheme-version <exact-version> --approved-by <operator> \
   --project-root <immutable-release>
 ```
 
-该入口复用 ready DataBridge、标准 Request 与唯一 Blackbox executor，从空算法状态计算，验证五字段 Result 后
-发布状态；不创建 run/prediction/backtest/Actual，不激活，不补发历史信号。生产路径来自 `BFL_RUNTIME_ROOT/blackbox-state`，
-状态按 base/exact version 隔离；同 base 的重建和每日推进共用非阻塞文件锁。操作输出保留操作者、版本、日期与状态摘要。
+该入口复用 ready 输入、标准 Request 和唯一 executor，从空状态计算并发布新派生状态；不创建 run/prediction/backtest/Actual，不激活或补发历史信号。它会写状态文件，不能称作只读验证。
 
-显式首次预热/故障重建采用离线维护预算，上限为 `min(Runtime Profile.backtest_timeout_sec, 7200)` 秒；
-日常增量 predict 仍为 `min(Runtime Profile.predict_timeout_sec, 120)` 秒，调用方更短的 deadline 继续生效。
-两者均保持最多 4 GiB、8 个数值线程；不修改 stateless 默认 Profile，不自动重试超时或恢复失败。
-调度切换与现有 Writer 的现场核验仍按独立操作边界执行，文件锁不替代业务授权。
+| 核验项 | 通过条件 |
+|---|---|
+| 位置与独占 | `BFL_RUNTIME_ROOT/blackbox-state` 按 base/exact 隔离；可信根内无穿越或 symlink；同 base 重建与日常推进共用非阻塞锁，拒绝第二 Writer |
+| 执行预算 | 重建不超过 `min(Profile.backtest_timeout_sec, 7200)` 秒，日常增量 predict 不超过 `min(Profile.predict_timeout_sec, 120)` 秒；更短 caller deadline 仍生效；最多 4 GiB、8 数值线程，不改 stateless 默认 Profile |
+| 状态身份 | payload 不超过 16 MiB；封装绑定 exact、generation/snapshot、私有输入摘要、实际代码/Metadata/环境及完整性校验 |
+| 发布与证据 | Result、输入和状态全部复验成功后，同目录 fsync/replace/fsync 原子发布；记录 operator、版本、日期和状态摘要；用正常增量路径验收重建结果 |
 
-自然运行缺状态、状态损坏、版本/环境不符或算法拒绝历史复用时明确失败；不得静默重建。
-状态 payload 上限 16 MiB，平台单文件封装绑定来源 generation/snapshot、私有输入摘要、实际代码/Metadata/环境身份和
-完整性校验。只在 Result、输入和状态复验成功后同目录 fsync/replace/fsync 发布。发布后的目录 fsync 失败可能留下完整
-新状态；必须报告失败，按相同 Request 重试，不尝试覆盖回旧状态。预测事实仍由既有 repository insert-only 提交。
+缺状态、损坏、版本/环境不符或算法拒绝复用均明确失败，不自动 fallback、重建或重试。发布后的目录 fsync 失败可能已留下完整新状态：报告失败，按相同 Request 受控重试，不覆盖回旧状态；业务事实仍经 repository insert-only 提交。文件锁不替代 Writer 操作授权。
 
-本地接口实现不代表 ECS/Mac3 已验证或已部署；发布前必须完成公共状态合同、崩溃恢复、双 Writer 和完整执行链验收。
+发布前必须通过[公共状态合同与执行链验证](../onboarding/README.md#可复用测试矩阵)，覆盖崩溃恢复和双 Writer；本地实现或私有试点通过不能代替目标环境验收。
 
 ## 6. 灰度区间批量物化
 
-历史回测与灰度实盘是两个独立批次和持久化边界：历史回测只处理
-`target_date < gray_target_start`；激活后，连续灰度缺口由 target 半开区间一次批量物化。这样每条灰度 Request 仍使用 live `predict_date` 与自己的 `feature_date` 截止，同时消除逐日期进程启动、generation 解析和运行视图准备。
+本节是 target 区间入口支持范围与操作步骤的权威来源。仅支持 exact active Blackbox：
 
-区间执行前冻结 exact version、DataBridge authority、输入 lineage 和完整 Request 集；任一业务键已存在即整组拒绝。全部算法结果成功后，repository 在一个事务中复核 active version、Registry、run、输入 provenance 和所有业务键，再写入全部 prediction 并完成各调度日 run。不得复制数据库主键、源 run、Actuals、指标或 Harness 历史，也不得建立跨激活候选表或临时结果目录。
+| task_type | horizon |
+|---|---:|
+| `weekly_point` | 1 |
+| `T+1` | 1 |
+| `T+5` | 5 |
 
-固定未来 `source_end`、未来 test window、跨样本 selector/calibration 或版本/输入 lineage 不一致时，禁止批量物化为 live，必须重算逐点 live-safe 结果。完整规则以[预测日期语义 5.2](../architecture/PREDICTION_SEMANTICS.md#52-历史批次与灰度区间批次)为准。
+代码支持不等于目标环境已验收，尚未闭环的现场验证见[后续计划](../TODO.md)。其它任务使用第 5 节的既有单日入口，不扩展区间支持。
+
+1. 按[预测语义 5.2](../architecture/PREDICTION_SEMANTICS.md#52-历史批次与灰度区间批次)确认逐 Request 截止与 predict/backtest 等价；无法证明 live-safe 时改用逐点计算，不复用未来 `source_end`、test window 或跨样本校准结果。
+2. 固定本机 exact version、DataBridge authority、输入 lineage、完整 Request 集和授权 target 半开区间；与历史回测的绑定一致。日频日期由权威交易日历枚举。
+3. 执行：
+
+   ```bash
+   python -B -m harness signal-gap-fill --scheme-id {scheme_id} \
+     --target-date-from YYYY-MM-DD --target-date-before YYYY-MM-DD
+   ```
+
+4. 一个授权区间只解析一次输入 authority、读取一次 ready receipt、物化一次私有视图并启动一个算法 batch；任一业务键已有即整组拒绝。
+5. 核验 repository 原子提交的全部日期 run 与 prediction，确认历史/灰度零重叠、应有点零缺口，以及 exact、来源和 Actual join。事务及失败不变量由预测语义定义，不通过删旧结果重试。
 
 ## 7. 失败处理
 
@@ -214,11 +213,6 @@ python -m harness rebuild-blackbox-state \
 
 ## 8. 完成条件
 
-- [ ] 新 ID 已由 Intake 原子保存两文件并生成 `paused/draft` config；同 ID 修订已通过相同 canonical 两文件校验；
-- [ ] 当前 exact version 有完整、成功、不可变的持久化回测；
-- [ ] 回测的 version/code/config/manifest、环境和 generation/snapshot 证据完整；
-- [ ] 首次 activate 后回测产品事实、exact version 与所有 composite Registry 同事务提交并完成锁内 readback；revision activation 未重写历史事实；
-- [ ] 如执行 gap-fill，日期重建、insert-only 和 backtest/live 零重叠通过；
-- [ ] 如需要 Dashboard 或自然调度验收，分别按其独立边界完成。
+入库完成以第 3 节成功持久化回测和第 4 节激活读回为证据：二者对应同一最终 canonical exact，首次激活的产品事实齐全，修订未改写历史。若任务包含补缺，按第 5 或第 6 节所选入口完成完整键集核验；生产接管按[准备清单](../blackbox_v2/PRODUCTION_READINESS.md)验收，自然运行单独观察。
 
-运行事实保留在现场控制面；稳定摘要进入 `CURRENT_STATUS.md`，未闭环事项进入 `TODO.md`，不再建立单次重复交接文档。
+运行证据保留在本机控制面和外置目录，包括 exact、输入、回测、激活与授权摘要；直接操作仅保存 operation hash，不把原始内部 operation id、凭据或完整输入提交到仓库。文档仅按[文档中心](../README.md)保留当前摘要、未闭环事项和证据索引。

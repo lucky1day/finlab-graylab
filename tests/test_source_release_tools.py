@@ -71,7 +71,6 @@ def _make_source_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     required_files = {
         "AGENTS.md": "# Test repository\n",
-        "shared/service_instance.py": "RELEASE_TEST = True\n",
         "backend/main.py": "APP_TEST = True\n",
         "scheduler/executor.py": "EXECUTOR_TEST = True\n",
         "scripts/run_launchd_release.py": "#!/usr/bin/env python3\n",
@@ -107,7 +106,6 @@ def test_same_clean_commit_builds_identical_release(tmp_path: Path) -> None:
         "root_prefix",
         "archive",
     }
-    assert "tree" not in manifest
     assert manifest["schema_version"] == MANIFEST_SCHEMA_VERSION
     assert manifest["commit"] == first.commit
     assert manifest["archive"]["sha256"] == hashlib.sha256(

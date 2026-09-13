@@ -1,196 +1,166 @@
-# 部署期望配置
+# 部署、发布与恢复
 
-本目录保存版本控制的部署**期望配置**。它不描述任何机器的安装、加载或停用状态，也不能
-替代生产变更授权。
+**文档状态**：`CURRENT`
 
-主机地址、SSH/本地转发、生产目录与只读读回命令统一维护在[双机部署与访问入口](../docs/operations/DEPLOYMENT_ACCESS.md)；当前 release 与数量见[当前状态](../docs/CURRENT_STATUS.md)。
+本文维护部署期望配置、不可变 release、环境加载、数据库迁移及恢复流程。固定地址、SSH/转发、
+生产路径和只读现场命令只在[双机部署与访问入口](../docs/operations/DEPLOYMENT_ACCESS.md)维护；
+已核验版本及备份位置见[当前状态](../docs/CURRENT_STATUS.md)。
 
-## 双平台一次性控制面
+生产权限遵守[根规范](../AGENTS.md#开发与操作权限)；仓库模板不证明 installed/loaded。
+自然 Writer、手工补缺和现场证据标准见[调度治理](../docs/architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。
 
-Mac Studio 调度与刷新控制面继续使用 `launchd_one_shot`，阿里云 ECS 独立灰度使用
-`systemd_one_shot`。两者只承载一次性 Python 调度/刷新入口，共用同一套严格发现、
-DataBridge Gate、repository 写库和进程清理语义；不得同时恢复常驻 scheduler、
-APScheduler、ledger 或其它 Python 调度控制面。Backend 是独立常驻只读服务，不拥有
-自然写入调度权。
+## 部署目标与一次性模板
 
-`deploy/systemd/*.service` 与 `deploy/systemd/*.timer` 是 Linux 的仓库期望模板。
-文件存在或被复制到 `/etc/systemd/system` 不代表 timer 已启用；现场状态必须用 `systemctl` 读回。
-以后替换模板、改变触发、停用、重启或重新启用仍是独立操作，不从仓库文件推断授权。
+| 部署目标 | 唯一自然控制面 | 期望模板 |
+|---|---|---|
+| `mac3-production` | `launchd_one_shot` | [`launchd/`](launchd/) |
+| `aliyun-gray` | `systemd_one_shot` | [`systemd/`](systemd/) |
 
-Linux timer 全部声明 `Persistent=false`，停机或禁用期间不补跑。Backend 模板只监听
-`127.0.0.1:8100`，本目录不授权 Nginx、DNS、安全组或公网切流。
-
-ECS 自然 DataBridge、daily、weekly、monthly 四个 service 不得加载共享
-`/run/bond-factor-lab/manual-run.env`。这些 unit 的 `EnvironmentFile` 只允许先读取
-`/etc/bond-factor-lab/bond-factor-lab.env`，再读取当前 release 的 `.bfl-release.env`，仓库测试精确
-守护该合同。历史日期的手工补缺只允许走 `harness signal-gap-fill`：使用
-`--predict-date YYYY-MM-DD` 单日执行，或对受支持的 Blackbox `weekly_point/h1`、日频 `T+5/h5`
-使用 `--scheme-id/--target-date-from/--target-date-before` target 半开区间执行；systemd/launchd runner 的显式
-`--predict-date` 只是一次性入口参数，不建立第二套补缺授权。当天 natural one-shot 部分失败后的受控
-`scheduled_live` 重试可以重复传入 `--scheme-id` 精确缩小候选集合；无该参数的 installed timer 行为不变，
-该过滤也不绕过 deployment、active cadence、Registry、exact version、日历、输入或 insert-only 控制。
-
-## 部署目标与方案矩阵
-
-Mac3 的应用 launchd 模板固定声明
-`BFL_DEPLOYMENT_TARGET=mac3-production`，ECS 的应用 systemd service 固定声明
-`BFL_DEPLOYMENT_TARGET=aliyun-gray`。生产 one-shot 的目标与控制面必须分别为
-`launchd_one_shot/mac3-production` 和 `systemd_one_shot/aliyun-gray`；缺失或交叉配对会在
+生产 one-shot 必须使用对应的 `BFL_DEPLOYMENT_TARGET` 与控制面组合；缺失或交叉配对在
 DataBridge 配置、数据库连接和算法子进程之前失败。
+[`scheme_deployment_matrix_v1.json`](scheme_deployment_matrix_v1.json) 是主机资格唯一清单：
+未设目标的开发/Harness 发现全量，生产 discovery 校验矩阵完整覆盖 config 后过滤。
+矩阵增删不自动建立、暂停或删除 Registry，仍须受控生命周期事务与读回。
 
-`deploy/scheme_deployment_matrix_v1.json` 是唯一主机资格清单。未设置目标的开发和 Harness
-发现保持全量；生产服务设置目标后，discovery 严格校验矩阵与全部 config 一一覆盖再过滤。
-矩阵不自动删除或暂停 Registry 行；目标移除与加入仍须分别完成受控 Registry 生命周期和读回。
-模板变更不表示 installed launchd/systemd 已更新，现场安装、重载、启停和 timer 状态改变均需独立授权。
+两平台期望日历均使用 Asia/Shanghai：
 
-## 源码 release 与外置状态
+| 职责 | Mac3 label 后缀 / ECS unit 后缀 | 期望日历 | 一次性入口 |
+|---|---|---|---|
+| DataBridge | `data-bridge-refresh` / `data-bridge` | 每日 06:30 | `scripts/refresh_data_bridge_current.py --publish` |
+| 日频预测 | `daily-predictions` / `prediction-daily` | 工作日 07:03 | 对应宿主 prediction runner，`--cadence daily` |
+| 周频预测 | `weekly-predictions` / `prediction-weekly` | 周六 11:30 | 对应宿主 prediction runner，`--cadence weekly` |
+| 月频/周期均值 | `monthly-predictions` / `prediction-monthly` | 每日 18:00 到期判断 | `scripts/run_close_predictions.py --control-plane <launchd或systemd> --refresh-start 18:00 --refresh-deadline 18:55` |
+| Actuals | `actuals` / `actuals` | 每日 08:30、19:00、23:45 | `scheduler.actuals_runner` |
 
-`scripts/build_source_release.py` 只接受 clean Git worktree 的当前 `HEAD`，生成 deterministic
-`source.tar.gz`、manifest v2 和 archive SHA256。manifest v2 精确仅包含
-`schema_version`、`commit`、`root_prefix` 与 `archive.filename/sha256`。
-`scripts/install_source_release.py` 要求 operator 另行提供批准的
-`--expected-archive-sha256`；安装器校验实际 archive SHA-256 同时等于该独立批准值和 manifest
-记录值、archive pax commit 标记等于 manifest commit，以及 archive、解包目录与已安装目录的
-source digest 一致。默认只做校验、隔离解包和只读预安装。`--activate` 只接受已经预安装且
-重新通过上述校验的 release，并在
-显式 `--expected-current` 匹配时更新 `previous/current`；它不包含 SSH、systemctl、launchctl、
-数据库、Registry、Nginx 或 DNS 操作。
+Mac3 label 前缀为 `com.bond-factor-lab.`，ECS 为 `bond-factor-lab-` 的 service/timer。
+所有 one-shot 使用 `bond_factor_lab_service`、绝对 cwd 和独立外置日志，不保存凭证。
+Linux timer 的 `Persistent=false` 表示停机或禁用期间不补跑；错过的点按调度治理处理。
+Backend 是独立常驻服务，只监听 loopback，不拥有自然预测写入权。
 
-目标主机必须使用**候选 archive 同版本**的安装器完成预安装与激活，不能从旧 `current` 调用旧版
-安装器生成候选 release 环境。任何可能 import 候选/current immutable release 中项目模块的运维或
-审查命令，解释器都必须显式携带 `-B`；若同时使用隔离模式，必须写成 `python -I -B`。
-`PYTHONDONTWRITEBYTECODE=1` 只能作为非隔离模式下的附加防护，不能替代 `-B`，因为 `-I` 会忽略
-`PYTHON*` 环境变量。可以从已激活的 `current` 执行健康检查，也可以直接运行 release 内脚本；禁止
-的是在未禁用 bytecode 写入时 import 项目模块。只导入标准库、不 import 项目模块的 release launcher
-不受此条限制。当前 launcher 实现只使用标准库；未来若引入项目模块，必须同步改为
-`python -I -B`、补充相应回归并重新完成 immutable release 核验。任何环境合同不完整或 source
-digest 不一致的未激活目录都应整体隔离，不得现场补写后继续激活。
+ECS 自然 DataBridge、daily、weekly、monthly service 的 `EnvironmentFile` 只允许依次读取
+本机私有服务配置和 current 的 `.bfl-release.env`，不得加载共享 `manual-run.env`。
+正式模板和 installed 环境不得声明 `BOND_DAILY_COORDINATOR_MODE`。
+DataBridge 的 producer 标记及其权限边界见[调度治理](../docs/architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md#唯一控制面与现场证明)。
 
-激活拒绝同 SHA 重试，避免覆盖可用的 `previous`。revision intent 和 `previous` 都在切换前完成，
-`current` 的原子替换是最后一个强制文件动作；命令返回后以 `current` 现场读回作为是否激活的最终
-authority。既有 deploy/runtime root 必须是当前 operator 所有的真实目录，且不能 group/world
-writable；工具不会静默修正不安全目录。
+## 不可变 release 与环境
 
-安装器在 release 内生成 `.bfl-release.env`，包含精确的
-`BFL_RELEASE_COMMIT`、`BFL_RUNTIME_ROOT`，以及
-`NUMBA_CACHE_DIR=<runtime-root>/cache/native/<exact-release-commit>/numba` 和
-`MPLCONFIGDIR=<runtime-root>/cache/native/<exact-release-commit>/matplotlib`。ECS 的六个仓库
-systemd 候选模板读取该文件，使无 `.git` release 仍有稳定代码身份，并让状态路径位于源码 release
-外。安装器生成这些路径；operator 不得在 ECS `/etc` 或 Mac3 launchd 配置中重复声明或覆盖它们。
-同一 host、同一 `BFL_RUNTIME_ROOT` 且同一精确 commit 复用同一 Numba/Matplotlib cache；不同 commit
-路径保持隔离。`runtime_root` 必须是
-非根目录、仅含字母、数字、`/._-` 的绝对 ASCII-safe 路径；不安全形式会在安装器进行任何文件系统
-变更前 fail-closed。这些第三方 cache 位于 immutable source 外；路径存在不代表其内容已获准跨版本复用。
-已迁移 Liwei 的 Native Phase-A 缓存和专属覆盖变量不是当前 Blackbox 状态接口，不得依此初始化或绕过状态身份核验。
-Blackbox 只使用显式增量状态合同；W4 保留自身必要 Native 运行依赖，DataBridge、artifact 与状态按各自可信根和身份规则隔离。
-设置了生产部署目标却缺少所需 release 环境时，代码 fail-closed。
+### 构建、预安装和晋级
 
-Blackbox 完整持久化回测、activation、revision activation 和环境验证 CLI 通过同一个 selector 选择 frozen
-manifest：Linux x86_64 使用 `linux-64`，Mac arm64 使用 `osx-arm64`，其它平台 fail-closed。
+1. [`build_source_release.py`](../scripts/build_source_release.py) 只从 clean Git worktree 的当前 HEAD
+   生成 deterministic archive、SHA-256 和 manifest v2。manifest 仅包含 `schema_version`、`commit`、
+   `root_prefix`、`archive.filename/sha256`，生产包不含 `.git`。
+2. 目标机使用**候选 archive 同版本**的 [`install_source_release.py`](../scripts/install_source_release.py)，
+   不能用旧 current 的安装器生成候选环境。显式提供 `--manifest`、`--archive`、
+   `--expected-archive-sha256`、`--deploy-root`、`--runtime-root`；摘要须是另行核准值。
+   安装器检查实际摘要同时匹配核准值与 manifest、archive pax commit 匹配 manifest，及 archive、
+   解包目录和已安装目录的 source digest 一致。默认校验、隔离解包和预安装，不切换 current。
+3. 从候选 release 完成各机自己的输入、schema、环境、方案及数据验收；ECS 通过后，Mac3 只能晋级
+   同一份已验证 archive，不能从环境分支重建。两机 current 可在晋级期间暂时不同。
+4. 切换前保存 current/previous、archive、安装记录、控制面和数据库/运行期基线，核对在途 Writer、
+   下一触发窗口和恢复兼容性。在已获授权范围内以同版本安装器重新校验已预安装目录，再传
+   `--activate --expected-current <精确旧提交>`。安装器不操作数据库、Registry、服务或入口网络。
+5. 激活拒绝同 SHA 重试，避免覆盖 previous；revision intent 和 previous 先写，current 原子替换最后执行。
+   返回后以 current 读回判定切换结果。需要服务刷新时单独执行已授权动作，核对进程实际 cwd、
+   release 身份和健康，再完成数据、Dashboard/页面及调度验收；不能只看链接或刷新成功。
 
-这些是仓库候选能力，不表示任一 installed unit/plist 已替换。Mac3 仓库 launchd 模板使用
-`/Users/macstudio0/bond-factor-lab-production/current` 作为工作目录，并先由
-隔离模式 `/usr/bin/python3 -I` 执行 `scripts/run_launchd_release.py`，从当前已经解析的精确 release
-读取 `.bfl-release.env`，再从其可信 `BFL_RUNTIME_ROOT` 唯一派生并加载
-`config/service.env`，最后 `exec`
-既有 conda 入口。启动器拒绝 Git 工作区、非 `releases/<commit>` 目录、可写/软链接环境文件、commit、
-runtime root、Numba/Matplotlib cache 漂移、外层同名环境覆盖以及所有 `PYTHON*` 外置变量。外置配置
-目录必须是运行用户拥有的真实 `0700` 目录，文件必须是同一用户拥有的真实 `0400/0600` 普通文件；
-launcher 通过目录 fd 与 `O_NOFOLLOW` 打开文件，并在同一 fd 上完成属性检查和限长读取，避免轮换时的
-路径替换竞态。解析只识别唯一 `KEY=VALUE`，不会执行 shell 展开。release
-安装器同时创建外置
-`/Users/macstudio0/bond-factor-lab-runtime/logs` 期望目录；仓库模板的 stdout/stderr 不再写入 Git
-工作区。SSH tunnel 不执行项目代码，只使用用户主目录作为工作目录；installed plist 的 key/user、
-工作目录与外置日志须通过只读审计核验。替换或重启隧道仍需独立授权。
+任何导入 immutable release 项目模块的运维或审查命令必须显式 `python -B`；隔离模式为
+`python -I -B`，因为 `-I` 忽略 `PYTHON*`，环境变量不能替代 `-B`。
+仅导入标准库的 `scripts/run_launchd_release.py` 当前可用 `/usr/bin/python3 -I`；若以后引入项目模块，
+须同步改为 `-I -B` 并重验。环境合同不完整或 source digest 不符的未激活目录整体隔离，不现场补写。
 
-上述 `/usr/bin/python3 -I scripts/run_launchd_release.py` 是明确的 stdlib-only launcher 例外：launcher
-当前不 import release 内的项目模块，因此不会依赖 `PYTHONDONTWRITEBYTECODE` 防止项目模块 pyc。
-若未来 launcher 引入项目模块，模板必须同步改为 `python -I -B`、补充相应回归并重新完成 immutable
-release 验收。
+### 外置状态与启动环境
 
-分阶段晋级允许两端 `current` 暂时不同，但每个准备晋级另一主机的版本仍必须使用已验证的同一份
-精确 archive，不得从环境分支重建“近似版本”。以后预安装、激活、替换 installed plist、
-bootstrap/bootout/kickstart 和服务重启仍分别属于生产操作，不能从某次授权外推。
+deploy/runtime root 必须是 operator 拥有的真实目录，不能 group/world writable；工具不自动修正权限。
+`runtime_root` 必须是非根、仅含字母、数字及 `/._-` 的绝对 ASCII-safe 路径，非法形式在文件修改前拒绝。
 
-回滚必须同时评估 source release、installed 控制面、数据库和外置 runtime 状态；只切
-`current/previous` 不能撤销 writer 已写入的业务数据。保留可用 `previous`、安装记录和回滚审计，任何
-prediction writer 已运行后的回滚都必须先重新核对数据库状态、单 Writer 边界和可执行范围。
+安装器生成 release 内 `.bfl-release.env`，唯一维护：
 
-## Mac Studio launchd 单 writer 目标
+- `BFL_RELEASE_COMMIT`、`BFL_RUNTIME_ROOT`；
+- `NUMBA_CACHE_DIR=<runtime-root>/cache/native/<commit>/numba`；
+- `MPLCONFIGDIR=<runtime-root>/cache/native/<commit>/matplotlib`。
 
-Mac Studio 当前生产调度的唯一控制面是 `launchd + installed plist`。仓库中的
-`deploy/launchd/*.plist` 只定义候选期望状态；Python runner 仅是对应 plist 启动的
-一次性子进程。
+不得在私有配置或 plist 重复覆盖这些变量。同一主机、runtime root、commit 的第三方 cache 可复用，
+不同 commit 路径隔离；路径存在不证明内容可跨版本复用。DataBridge、输入 artifact 和 Blackbox
+派生状态须按[输入合同](../docs/blackbox_v2/data_bridge_v1/README.md)及[状态操作](../docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#51-增量方案的显式预热重建)核验，不能以第三方 cache 代替。
+Blackbox frozen manifest 的 selector 对 Linux x86_64 使用 linux-64、Mac arm64 使用 osx-arm64，其他平台拒绝。
 
-| 业务职责 | 仓库模板 | 目标日历 | 一次性入口 |
-| --- | --- | --- | --- |
-| DataBridge refresh | `com.bond-factor-lab.data-bridge-refresh` | 每日 06:30 | `scripts/refresh_data_bridge_current.py --publish` |
-| 日频预测 | `com.bond-factor-lab.daily-predictions` | 工作日 07:03 | `scheduler.launchd_prediction_runner --cadence daily` |
-| 周频预测 | `com.bond-factor-lab.weekly-predictions` | 周六 11:30 | `scheduler.launchd_prediction_runner --cadence weekly` |
-| 月频/周期均值预测 | `com.bond-factor-lab.monthly-predictions` | 每日 18:00 到期判断 | `scripts/run_close_predictions.py --control-plane launchd --refresh-start 18:00 --refresh-deadline 18:55` |
-| Actuals | `com.bond-factor-lab.actuals` | 每日 08:30、19:00、23:45 | `scheduler.actuals_runner` |
+Mac3 launcher 从已经解析的精确 release 读取 `.bfl-release.env`，再唯一派生 runtime 下
+`config/service.env`，最后 exec 服务环境入口。它拒绝 Git 工作区、非 `releases/<commit>` 目录、
+commit/runtime/cache 漂移、外层同名覆盖及外置 `PYTHON*` 变量；配置目录须为用户拥有的真实 `0700`
+目录，文件为同用户真实 `0400/0600` 普通文件。通过目录 fd、`O_NOFOLLOW`、同一 fd 属性校验和限长读取
+防止替换竞态；只解析唯一 `KEY=VALUE`，不执行 shell 展开。生产目标缺少所需 release 环境时 fail-closed。
 
-所有一次性模板使用 `bond_factor_lab_service`、绝对工作目录和独立 stdout/stderr 日志。
-DataBridge 模板还声明 `BFL_DATABRIDGE_PRODUCER=launchd-one-shot`。模板中不保存 DSN、
-凭证。
+安装器创建 runtime 下 logs，模板日志不写开发目录。SSH tunnel 不执行项目代码，以用户主目录为 cwd；
+其 key/user、cwd 和日志由本页漂移审计核对，不参与应用代码切换。
 
-所有 one-shot 仓库期望模板均不得声明 `BOND_DAILY_COORDINATOR_MODE`；该变量不授予调度权。
-修改任一 installed 或仓库 plist 都仍是独立生产操作，不由本次代码清理推断授权。
+### 手工 Harness 的目标环境绑定
 
-`BFL_DATABRIDGE_PRODUCER` 仅是防止普通 shell 误 publish 的操作准入标记，不是 launchd
-身份认证；它和仓库模板都不能单独证明某个进程由 launchd 启动。
+SOP 中的 `python -B -m harness ...` 只展示操作参数，**不会自动加载目标机服务配置**。进入候选目录或激活 conda 也不等于已经绑定目标环境。执行手工回测、激活、补缺或项目数据库查询前，按操作所需能力准备并核验本次子进程；只读 identity 查询无需启动算法或准备算法输入。该环境核验也适用于手工 migration 和认证 CLI：
 
-Actuals 只由 `scheduler.actuals_runner` 驱动；Backend 不提供手动预测或 HTTP 写入路由，
-也不得恢复常驻调度器或第二 Writer。已安装 legacy plist 的物理清理仍是独立生产操作，
-不由仓库期望配置推断或执行。
+| 项目 | 来源与核验 |
+|---|---|
+| 源码与解释器 | cwd 为本次选定并核验的 `releases/<commit>` 实际目录（候选或 current 的真实指向），使用访问入口列出的本机服务 Python，显式 `-B`；不能从开发工作区导入项目 |
+| release/runtime/cache | 使用该候选 `.bfl-release.env` 中的四个键，逐项核对提交、runtime root 和 cache 路径；不得混入旧 current 或另一机值 |
+| 部署目标 | 显式使用访问入口中的本机 `BFL_DEPLOYMENT_TARGET`，否则开发/Harness discovery 可能发现全量方案 |
+| 数据库 | `BFL_DATABASE_ENV_FILE` 显式指向访问入口列出的本机私有服务配置；清除操作者环境中既有 `BOND_DB_*` 覆盖值，再通过本机只读 identity 核对实际数据库；只记录核验结论，不输出密码/DSN |
+| 算法环境与输入 | 涉及算法执行或生命周期证据校验时，按选定 release 的 Runtime Profile/frozen manifest 核验解释器、依赖、输入 ready 身份；增量方案还核对[SOP 的 locale/环境身份](../docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#51-增量方案的显式预热重建) |
 
-## Backend 认证外置配置
+数据库读取行为以 [`shared.db_config`](../shared/db_config.py)为准：`BFL_DATABASE_ENV_FILE` 只加载数据库键，不能代替完整 release 或算法环境；ambient `BOND_DB_*` 优先于文件值，未提供配置时存在默认连接值。上述核验未通过时，不执行持久化命令。
 
-认证启用后，Backend 外置配置必须提供与部署目标精确匹配的
-`BFL_AUTH_TRUSTED_ORIGIN`：ECS `aliyun-gray` 只能使用
-`http://localhost:18110`，Mac3 `mac3-production` 只能使用
-`https://bond.finailab.cn`。缺失、交叉或其它 Origin 均使所有状态变更请求 fail-closed。
-该变量不得写入 release 内 `.bfl-release.env`，也不得改变任何 one-shot unit/plist。
+自然调度的 EnvironmentFile 和 Mac3 launcher 按上文加载环境，但不因此自动覆盖手工 Harness；手工调用也不能靠设置自然控制面标记冒充真实触发。不使用 shell `source` 执行私有配置，不打印整个环境。当前没有供本 SOP 直接调用的通用跨平台手工启动入口；具体调用的环境映射须在操作前可审查，缺少这一环时先停止并补齐，能力缺口见[TODO](../docs/TODO.md#候选-release-手工启动入口)。
 
-受保护初始管理员只通过 `scripts/manage_auth_admin.py` 初始化或离线重置；密码只从部署目标固定的
-owner-only secret 文件读取，命令行、环境变量、日志和安装记录均不得承载密码。ECS 与 Mac3
-独立初始化，不复制用户、会话、哈希或审计数据。详细合同见
-[登录与账户管理](../docs/architecture/AUTHENTICATION_AND_ACCOUNT_MANAGEMENT.md)。
+## 数据库迁移
 
-Mac3 认证回滚使用
-`deploy/nginx/bond-factor-lab-lockdown.conf` 作为完整 replacement site；它不得与正常
-site 同时启用，并对 `/bond-factor-lab` 及其全部子路径统一返回 503，未知路径仍返回
-403。该文件只用于预安装和 `nginx -t`，是否切换仍需独立生产故障处置授权。
+[`migrations.runner`](../migrations/runner.py) 是唯一迁移实现，只接收 caller-supplied Engine，负责
+manifest、inspect、apply 和 APPLYING recovery；不承担环境变量、CLI 或授权解析。
+[`scripts/apply_migrations.py`](../scripts/apply_migrations.py) 是生产/候选 schema 的唯一运维包装器，
+不得直跑 migration SQL 或在其他层复制 runner 行为。
 
-## 生产操作边界
+- `--inspect-applying-NNN` 只读分类中断状态，可使用 named advisory lock；不执行 DDL/DML，
+  不需要写入身份参数，也不接受 `--apply` 或 `--state-digest`。
+- `--apply` 必须同时显式提供 `--expected-database-name` 和 `--expected-server-uuid`。
+- `--recover-applying-NNN` 支持 **017、018、019、021、022、023、024、025**；每次须同时提供
+  `--apply`、上述两个身份参数，以及先前同机只读 inspect 返回的 `--state-digest`（64 位小写 hex）。
+- CLI 在创建 Engine 前校验参数，并在首个写动作前精确比较 `DATABASE()` 与 `@@server_uuid`。
+  UUID 只能取自只读 inspect/identity 查询；文档、提交和示例不保存生产 UUID、DSN 或凭据。
 
-替换 installed plist/unit/timer、修改 loaded state、启动、停止或重载服务均为独立操作。操作
-授权之前只能进行只读核对：比较仓库模板、目标机器上的 installed 配置、loaded state、
-相关日志和 run/prediction 证据；任一项不一致时 fail-closed 并重新取得授权。
+执行前取得目标环境的明确授权，核对 manifest、当前 schema、在途任务、可恢复备份和 current/previous
+兼容性；隔离 MySQL 测试通过不等于生产已迁移。失败或状态漂移时保留原始证据，先 inspect 再选择对应
+recovery，不手工改迁移历史。
 
-本文件不提供 bootstrap、bootout 或 kickstart 的可执行指令，也不声称任何机器已经安装、
-加载或停用上述模板。实际生产治理、证据标准与停止条件见
-[生产信号与调度治理](../docs/architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。
+Migration [021](../migrations/021_registry_owner.sql) 的历史 owner authority 只服务一次性回填：DDL 前须证明
+Registry 与该 authority 双向闭集，已有非空 owner 冲突即拒绝；只接受缺列、精确 nullable partial 或完整终态，
+其他状态不恢复。完成后 owner 为 VARCHAR(64) NOT NULL，运行时不保留第二份映射，新写入须提供/保留合法 owner。
+
+Migration [025](../migrations/025_drop_platform_confidence.sql) 删除两张预测表的统一 confidence 列，不改其他属性或
+JSON 审计。两表闭世界校验覆盖列类型、空值/默认值、主键、索引、外键和 check；除 confidence 两列分别存在/缺失外，
+任何 schema 漂移都拒绝，校验与恢复实现见 [runner](../migrations/runner.py)。删列前须有独立授权及兼容 current/previous 的可恢复备份；
+删后不得回滚到仍依赖该列的 release。已执行批次的备份位置、原始 JSON 精度保护与实际恢复限制只在
+[当前状态](../docs/CURRENT_STATUS.md)维护，恢复前必须读取；备份与 immutable 原件不随文档清理删除。
+
+## 回滚与认证部署
+
+回滚同时评估 source、installed 控制面、数据库和外置 runtime；先隔离受影响 Writer，核对其已写事实、
+exact、输入和可执行范围，再恢复兼容版本和调度。保留 previous、安装记录与回滚审计。
+切 current/previous 不撤销业务写入，不能用整库恢复覆盖持续增长的事实；先在隔离库验证精确恢复集。
+
+Backend 私有服务配置必须提供 `BFL_AUTH_TRUSTED_ORIGIN`，取值须精确匹配
+[访问入口](../docs/operations/DEPLOYMENT_ACCESS.md#ecs-ssh-与临时本地转发)中的本部署目标 Origin，
+不得写入 `.bfl-release.env` 或 one-shot 配置。管理员初始化/离线重置只走
+[认证合同](../docs/architecture/AUTHENTICATION_AND_ACCOUNT_MANAGEMENT.md#初始管理员与离线恢复)。
+
+认证恢复须保持[认证访问边界](../docs/architecture/AUTHENTICATION_AND_ACCOUNT_MANAGEMENT.md#api-与访问边界)。Mac3 的
+[`bond-factor-lab-lockdown.conf`](nginx/bond-factor-lab-lockdown.conf) 是完整 replacement site，
+与正常 site 互斥；对应用入口及子路径统一 503，未知路径 403。预安装与 `nginx -t` 不授权切换。
+Nginx、tunnel、Clash 的独立故障处置与验收见[Dashboard 运行验收](../docs/operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md#故障定位与恢复)。
 
 ## 只读配置漂移审计
 
-在生产变更前或 installed plist 调整后，可运行以下只读检查：
+运行方式及目标机路径见[访问入口的只读读回](../docs/operations/DEPLOYMENT_ACCESS.md#每次操作前的只读读回)。
+[`audit_launchd_config_drift.py`](../scripts/audit_launchd_config_drift.py) 只比较仓库模板、installed plist 和
+`launchctl print`，无启停或修改功能。报告仅含变量名、存在性、语义差异、启动/触发 hash，不输出凭据值。
 
-```bash
-PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
-  conda run --no-capture-output -n bond_factor_lab_service \
-  python -B scripts/audit_launchd_config_drift.py
-```
-
-脚本只读取 `deploy/launchd/*.plist`、`~/Library/LaunchAgents/*.plist` 与
-`launchctl print`；它没有修改、reload、bootout、bootstrap 或 kickstart 功能。JSON 只报告
-变量名、存在性、语义差异路径及启动参数/触发器 hash，不输出 token、DSN、SSH 用户、密钥路径或
-环境变量值。
-
-审计固定禁止所有正式模板和 installed 环境出现
-`BOND_DAILY_COORDINATOR_MODE`，并要求 DataBridge 保留
-`BFL_DATABRIDGE_PRODUCER=launchd-one-shot`。SSH 隧道模板明确标注且已验证的本机 key/user 是唯一批准的 plist 本机差异。
-`service.env` 在顶层只校验一次，报告只含变量名与错误类别；Backend/tunnel 必须处于 running，七个
-任务的日志路径必须与外置 runtime 模板精确一致。其余启动参数、工作目录、调度触发器和环境变量差异
-仍使脚本退出 `1`。脚本退出 `0` 只表示当前只读配置审计通过，不代表生产任务已自然运行成功，也不
-授予任何生产操作权限。
+除已核验的 SSH key/user 本机差异外，其余 argv、cwd、触发器、环境和日志漂移均失败；
+环境审计同时检查本页的禁用变量及调度治理定义的 producer 标记。
+私有 service.env 顶层校验一次；Backend/tunnel 须 running，七个任务日志均与外置 runtime 模板一致。
+退出 0 仅证明配置审计通过，不证明自然运行成功或授予生产操作权。

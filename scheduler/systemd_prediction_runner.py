@@ -11,7 +11,6 @@ from scheduler.executor import (
     _systemd_scheduled_execution_context,
 )
 from scheduler.one_shot_prediction_runner import (
-    OneShotPredictionConfigurationError,
     OneShotPredictionSummary,
     configuration_summary,
     run_one_shot,
@@ -66,12 +65,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             predict_date=args.predict_date,
             algo_env=args.algo_env,
             scheme_ids=args.scheme_ids,
-        )
-    except OneShotPredictionConfigurationError:
-        summary = configuration_summary(
-            args.cadence,
-            args.predict_date,
-            event=_SYSTEMD_EVENT,
         )
     except Exception:  # noqa: BLE001 - 不向 systemd 日志序列化底层异常
         summary = configuration_summary(

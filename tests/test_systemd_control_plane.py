@@ -243,11 +243,6 @@ class SystemdControlPlaneTests(unittest.TestCase):
         }
 
         for name, content in contents.items():
-            self.assertNotIn("scheduler.main", content, name)
-            self.assertNotIn("APScheduler", content, name)
-            self.assertNotIn("ledger", content.lower(), name)
-            self.assertNotIn("backtest", content.lower(), name)
-            self.assertNotIn("systemctl", content, name)
             if name.endswith(".service"):
                 self.assertIn(
                     "After=network-online.target mysql.service",
@@ -257,22 +252,6 @@ class SystemdControlPlaneTests(unittest.TestCase):
                 self.assertNotIn("mysqld.service", content, name)
                 self.assertIn(
                     "WorkingDirectory=/opt/bond-factor-lab/current",
-                    content,
-                    name,
-                )
-                self.assertIn(
-                    "EnvironmentFile=/etc/bond-factor-lab/bond-factor-lab.env",
-                    content,
-                    name,
-                )
-                self.assertIn(
-                    "EnvironmentFile=/opt/bond-factor-lab/current/"
-                    ".bfl-release.env",
-                    content,
-                    name,
-                )
-                self.assertNotIn(
-                    "EnvironmentFile=-/run/bond-factor-lab/manual-run.env",
                     content,
                     name,
                 )

@@ -1,6 +1,7 @@
 # 双机部署与访问入口
 
-**文档状态**：`CURRENT`  
+**文档状态**：`CURRENT`
+
 **连接信息核验日期**：2026-09-13
 
 本文是主机地址、连接方法与部署路径的唯一运维入口。执行 ECS/Mac3 操作前先读本文，
@@ -39,24 +40,26 @@
 | `BFL_RUNTIME_ROOT` | `/var/lib/bond-factor-lab/state` | `/Users/macstudio0/bond-factor-lab-runtime` |
 | 服务 Python | `/opt/miniconda3/envs/bond_factor_lab_service/bin/python` | `/Users/macstudio0/miniconda3/envs/bond_factor_lab_service/bin/python` |
 | 私有服务配置 | `/etc/bond-factor-lab/bond-factor-lab.env` | `/Users/macstudio0/bond-factor-lab-runtime/config/service.env` |
+| 认证离线 secret | `/etc/bond-factor-lab/secrets/auth-bootstrap-password` | runtime 下 `config/auth-bootstrap-password` |
 | release 环境 | 精确 release 内 `.bfl-release.env`，由同版本安装器生成 | 同左 |
 | 安装控制面 | `/etc/systemd/system/bond-factor-lab-*` | `/Users/macstudio0/Library/LaunchAgents/com.bond-factor-lab.*.plist`，domain `gui/501` |
 | 日志 | `journalctl -u <unit>`；外置文件见 runtime 下 `logs/` | runtime 下 `logs/com.bond-factor-lab.*.log` / `.err` |
 | 收包与审计 | `/opt/bond-factor-lab/incoming/<delivery>` | runtime 下 `releases/<delivery>` |
 
-开发工作区为 `/Users/macstudio0/bond-factor-lab`，活动分支 `codex/develop`，不能作为生产 cwd。
+开发工作区为 `/Users/macstudio0/bond-factor-lab`，不能作为生产 cwd；分支规则见[根规范](../../AGENTS.md#开发与操作权限)。
 两机业务库名均为 `bond_db`，但实际实例、身份和连接必须从各自私有服务配置与只读查询核对；
 不在文档保存 DSN、server UUID、密码、会话或 token。
 
-Blackbox 使用 `deploy/blackbox_v2/runtime_profile_v1.json` 及对应平台 frozen manifest；
-ECS 为 `environment_manifest.json`（linux-64），Mac3 为 `environment_manifest.osx-arm64.json`。
+Blackbox 解释器由 [Runtime Profile](../../deploy/blackbox_v2/runtime_profile_v1.json) 指定；依赖分别核对
+[ECS frozen manifest](../../deploy/blackbox_v2/environment_manifest.json)和[Mac3 frozen manifest](../../deploy/blackbox_v2/environment_manifest.osx-arm64.json)。
 Mac3 W4 仍使用 `/Users/macstudio0/miniconda3/envs/forecast_env/bin/python`，保留原 Native 依赖。
-任何 import release 内项目模块的命令都必须显式使用 `python -B`；隔离模式使用 `python -I -B`。
+执行 release 内 Python 的不可变性规则见[部署手册](../../deploy/README.md#构建预安装和晋级)。
 
 ## ECS SSH 与临时本地转发
 
 在当前 Mac 上，已核验的 SSH 身份文件位置是 `/Users/macstudio0/.ssh/finlab-key.pem`。
-只记录路径，不复制密钥内容。连接保留严格 host-key 校验；失败时核对已知主机记录与可信指纹，不能关闭校验。
+只记录路径，不复制密钥内容。SSH 均保留 strict host-key 校验；指纹通过独立可信渠道核验，
+不能关闭校验或信任未经核验的 ssh-keyscan。失败时先查 known_hosts 与可信指纹。
 
 ```bash
 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes \
@@ -132,11 +135,7 @@ Registry/exact 与下一触发时间还须按[入库导航](../onboarding/README
 ## 前端验收常见问题
 
 - `localhost:18110` 连接失败：先查本机转发，再查灰度 ECS 8100；不是 Mac3 公网入口故障。
-- Mac3 公网失败：按[三点链路探针](PUBLIC_FACTOR_LAB_REFRESH_RELIABILITY.md#故障定位)核对 Mac3 8100、中继 18100、公网。
-- Dashboard 需要认证；唯一读路径为 `/api/factor-lab/dashboard`。明细查询键为
-  `scheme-id`、`month`、`source`，`scheme-id` 使用 composite Registry ID，不能写成 `scheme_id`。
-- 收到 429：降低批量验收频率并退避，遵守服务端 Retry-After；不调整 Nginx 或认证来完成验收。
-- Backend 切换后先刷新浏览器，核对 fresh 状态、实际 scheme 数和明细，不把旧视图当作新 release 结果。
-- 纯待验证月份仍有明细入口，统计只计已验证样本；Actual 未到期不是缺口，也不应补写 Actual。
+- Mac3 公网失败：按[三点链路探针](PUBLIC_FACTOR_LAB_PERFORMANCE.md#故障定位与恢复)核对 Mac3 8100、中继 18100、公网。
+- Dashboard 的认证响应、明细参数及验收限制见[Dashboard 合同](PUBLIC_FACTOR_LAB_PERFORMANCE.md#认证响应与合同验收)。
 
-只读连接信息不是生产变更授权。DNS、Nginx、认证、既有反向隧道、Writer 和服务启停仍遵守各自操作边界。
+以上连接说明不授予生产变更权限；操作边界见根规范与所选流程。

@@ -57,24 +57,6 @@ def run_source_daily_live(
     )
 
 
-def run_source_daily_backtest_panel(
-    evidence: Daily0629SourceEvidence,
-    *,
-    source_run_date: str,
-    database_config: SourceRuntimeDatabaseConfig | None = None,
-) -> list[dict[str, Any]]:
-    """重跑原始日度 dry-run backtest runner，并返回当前 scheme 的历史预测面板。"""
-    config = database_config or load_source_runtime_database_config()
-    rows = _run_source_daily_backtest_cached(
-        str(evidence.source_package_path),
-        evidence.source_package_hash,
-        evidence.runner_module,
-        source_run_date,
-        config,
-    )
-    return [dict(row) for row in rows if str(row.get("final_select_id")) == evidence.final_select_id]
-
-
 def _run_source_daily_live_cached(
     source_package_path: str,
     source_package_hash: str,
@@ -131,69 +113,6 @@ def _run_source_daily_live_cached(
             source_package_hash,
             live_runner_module,
             predict_date,
-            database_config.cache_identity,
-            input_token,
-            rows,
-        )
-    return rows
-
-
-def _run_source_daily_backtest_cached(
-    source_package_path: str,
-    source_package_hash: str,
-    runner_module: str,
-    source_run_date: str,
-    database_config: SourceRuntimeDatabaseConfig,
-) -> tuple[dict[str, Any], ...]:
-    assert_source_package_identity(
-        Path(source_package_path),
-        source_package_hash,
-        tree_sha256=source_package_tree_sha256,
-        label="daily 0629",
-    )
-    input_token = source_immutable_input_token()
-    cache_path = _source_cache_path(
-        "backtest",
-        source_package_hash,
-        runner_module,
-        source_run_date,
-        database_config.cache_identity,
-        input_token=input_token,
-    )
-    if cache_path is not None:
-        cached = _read_source_cache(
-            cache_path,
-            source_package_hash,
-            runner_module,
-            source_run_date,
-            database_config.cache_identity,
-            input_token,
-        )
-        if cached is not None:
-            assert_source_runtime_payload_safe(
-                cached,
-                database_config,
-            )
-            return cached
-
-    with _source_runtime(
-        Path(source_package_path),
-        source_package_hash,
-        database_config=database_config,
-    ) as source_root:
-        _run_daily_backtest(
-            source_root,
-            source_run_date,
-            database_config=database_config,
-        )
-        rows = tuple(_read_backtest_rows(source_root / "daily_project" / "output", source_run_date))
-    assert_source_runtime_payload_safe(rows, database_config)
-    if cache_path is not None:
-        _write_source_cache(
-            cache_path,
-            source_package_hash,
-            runner_module,
-            source_run_date,
             database_config.cache_identity,
             input_token,
             rows,
@@ -356,20 +275,6 @@ def _run_daily_live(
     )
 
 
-def _run_daily_backtest(
-    source_root: Path,
-    source_run_date: str,
-    *,
-    database_config: SourceRuntimeDatabaseConfig,
-) -> None:
-    command = ["bash", "run_backtest_test.sh", str(source_run_date)[:10], str(source_run_date)[:10], "daily"]
-    _run_source_command(
-        command,
-        source_root,
-        database_config=database_config,
-    )
-
-
 def _run_source_command(
     command: list[str],
     source_root: Path,
@@ -391,7 +296,6 @@ def _run_source_command(
     env["PYTHON_BIN"] = python
     env["DRY_RUN"] = "1"
     env["DAILY_N_JOBS"] = env.get("DAILY_N_JOBS", "1")
-    env["DAILY_BACKTEST_WORKERS"] = env.get("DAILY_BACKTEST_WORKERS", "1")
     env["PYTHONPATH"] = os.pathsep.join(
         [
             str(source_root),
@@ -465,51 +369,3 @@ def _read_detail_rows(path: Path) -> dict[str, dict[str, Any]]:
     except json.JSONDecodeError:
         return {}
     return {str(key): value for key, value in data.items() if isinstance(value, dict)}
-
-
-def _read_backtest_rows(output_root: Path, source_run_date: str) -> list[dict[str, Any]]:
-    output_date = str(source_run_date)[:10]
-    backtest_root = output_root / output_date / "backtest"
-    if not backtest_root.exists():
-        raise RuntimeError(f"daily 0629 source backtest runner produced no backtest dir: {backtest_root}")
-    rows: list[dict[str, Any]] = []
-    for model_dir in sorted(path for path in backtest_root.iterdir() if path.is_dir()):
-        predictions_path = model_dir / "predictions.csv"
-        summary_path = model_dir / "summary.json"
-        if not predictions_path.exists():
-            continue
-        summary = _read_json(summary_path)
-        final_select_id = str(summary.get("final_select_id") or model_dir.name.upper())
-        with predictions_path.open("r", encoding="utf-8-sig", newline="") as handle:
-            for row in csv.DictReader(handle):
-                payload = dict(row)
-                payload["source_output_date"] = output_date
-                payload["source_model_dir"] = model_dir.name
-                payload["final_select_id"] = final_select_id
-                for key in (
-                    "candidate_id",
-                    "display_name",
-                    "tenor",
-                    "prediction_mode",
-                    "target_col",
-                    "selected_feature_count",
-                    "feature_count",
-                    "screen_rule",
-                    "train_rule",
-                ):
-                    if key in summary:
-                        payload[key] = summary.get(key)
-                rows.append(payload)
-    if not rows:
-        raise RuntimeError(f"daily 0629 source backtest runner produced no prediction rows under {backtest_root}")
-    return rows
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-    return data if isinstance(data, dict) else {}

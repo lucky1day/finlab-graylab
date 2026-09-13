@@ -1967,12 +1967,6 @@ class DataBridgeStore:
                 _fsync_directory(self.data_root)
         return tuple(removed)
 
-    def load_state(self) -> dict[str, object]:
-        with self.lock(exclusive=False):
-            if not self.state_path.is_file():
-                raise DataBridgeRefreshError("DataBridge refresh state does not exist")
-            return json.loads(self.state_path.read_text(encoding="utf-8"))
-
     def recover(self, *, schema_path: str | Path) -> None:
         """按 state/current 完整发布身份恢复原子切换中断现场。"""
         with self.lock(exclusive=True):

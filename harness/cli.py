@@ -17,9 +17,8 @@ from harness.operation import (
 )
 from harness.context import GateContext
 from harness.gates.activate_gate import ActivationGate
-from harness.orchestrator import onboard as run_onboard
 from harness.registry import gate_for_name
-from harness.result import GateResult, GateStatus, OnboardReport
+from harness.result import GateResult, GateStatus
 from harness.signal_gap_fill import run_signal_gap_fill
 from harness.signal_gap_plan import (
     SignalGapPlanError,
@@ -117,10 +116,6 @@ def main(argv: list[str] | None = None) -> int:
         result = _run_gate(args)
         print(json.dumps(_jsonable(result), ensure_ascii=False, indent=2))
         return _exit_code_for_result(result)
-    if args.command == "onboard":
-        report = _run_onboard_command(args)
-        print(json.dumps(_jsonable(report), ensure_ascii=False, indent=2))
-        return _exit_code_for_report(report)
     if args.command == "activate":
         result = _run_activate(args)
         print(json.dumps(_jsonable(result), ensure_ascii=False, indent=2))
@@ -161,25 +156,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
     gate_parser = subparsers.add_parser("gate")
     gate_subparsers = gate_parser.add_subparsers(dest="gate_name", required=True)
-    for gate_name in (
-        "static", "dry-run", "compare", "backtest",
-        "dashboard",
-    ):
+    for gate_name in ("backtest", "dashboard"):
         item = gate_subparsers.add_parser(gate_name)
         item.add_argument("--scheme-id", required=True)
         item.add_argument(
             "--predict-date",
             required=gate_name == "backtest",
-            default=(
-                "dashboard"
-                if gate_name == "dashboard"
-                else "static"
-                if gate_name in {"static", "compare"}
-                else None
-            ),
+            default="dashboard" if gate_name == "dashboard" else None,
         )
         item.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
-        item.add_argument("--algo-env", default="forecast_env")
         item.add_argument("--timeout-sec", type=int, default=600)
         if gate_name == "backtest":
             item.add_argument(
@@ -201,18 +186,6 @@ def _build_parser() -> argparse.ArgumentParser:
                 "--backtest-start-date",
                 default=DEFAULT_BACKTEST_START_DATE,
             )
-    onboard_parser = subparsers.add_parser("onboard")
-    onboard_parser.add_argument("scheme_id")
-    onboard_parser.add_argument("--predict-date", required=True)
-    onboard_parser.add_argument(
-        "--stage",
-        choices=("all", "native-maintenance"),
-        default="all",
-    )
-    onboard_parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
-    onboard_parser.add_argument("--algo-env", default="forecast_env")
-    onboard_parser.add_argument("--timeout-sec", type=int, default=600)
-
     activate_parser = subparsers.add_parser("activate")
     activate_parser.add_argument("--scheme-id", required=True)
     activate_parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
@@ -263,10 +236,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _run_gate(args: argparse.Namespace) -> GateResult:
-    if args.gate_name in {
-        "dry-run",
-    } and not args.predict_date:
-        raise SystemExit(f"gate {args.gate_name} requires --predict-date")
     project_root = args.project_root.resolve()
     config = _load_config_for_dispatch(project_root / "schemes" / args.scheme_id / "config.yaml")
     action = _gate_action(args)
@@ -280,7 +249,6 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
         predict_date=args.predict_date,
         project_root=project_root,
         config=config,
-        algo_env=args.algo_env,
         engine_factory=create_engine_from_env,
         timeout_sec=args.timeout_sec,
         operation=_direct_operation(
@@ -303,46 +271,26 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
     return gate.run(ctx)
 
 
-def _run_onboard_command(args: argparse.Namespace) -> OnboardReport:
-    project_root = args.project_root.resolve()
-    config = _load_config_for_dispatch(project_root / "schemes" / args.scheme_id / "config.yaml")
-    ctx = GateContext(
-        scheme_id=args.scheme_id,
-        predict_date=args.predict_date,
-        project_root=project_root,
-        config=config,
-        algo_env=args.algo_env,
-        timeout_sec=args.timeout_sec,
-        engine_factory=create_engine_from_env,
-    )
-    return run_onboard(ctx, stage=args.stage)
-
-
 def _load_config_for_dispatch(config_path: Path):
-    """配置可用时提前加载；缺失或非法时交由对应 StaticGate 报告。"""
-    if not config_path.is_file():
-        return None
+    """严格加载 canonical，非法配置不得回退到旧 Native 验证。"""
     try:
         return load_scheme_config(config_path)
-    except (OSError, UnicodeError, ValueError):
-        return None
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise SystemExit(f"canonical config failed strict discovery: {exc}") from exc
 
 
 def _run_activate(args: argparse.Namespace) -> GateResult:
     project_root = args.project_root.resolve()
     config = _load_config_for_dispatch(project_root / "schemes" / args.scheme_id / "config.yaml")
-    action = (
-        "blackbox_activate"
-        if getattr(config, "runtime_type", None) == "blackbox_v2"
-        else "activate"
-    )
+    if config.runtime_type != "blackbox_v2":
+        raise SystemExit("Native activation is retired; W4 remains on its fixed version")
     ctx = GateContext(
         scheme_id=args.scheme_id,
         predict_date="activate",
         project_root=project_root,
         config=config,
         operation=_direct_operation(
-            action=action,
+            action="blackbox_activate",
             scheme_id=args.scheme_id,
             config=config,
             predict_date=None,
@@ -561,12 +509,6 @@ def _base_scheme_id(value: str) -> str:
     return value
 
 
-def _exit_code_for_report(report: OnboardReport) -> int:
-    if any(result.status == GateStatus.BLOCKED for result in report.results):
-        return 2
-    return 0 if report.overall_passed else 1
-
-
 def _jsonable(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
@@ -581,9 +523,6 @@ def _jsonable(value: Any) -> Any:
         }
         if isinstance(value, GateResult):
             payload["passed"] = value.passed
-        elif isinstance(value, OnboardReport):
-            payload["overall_passed"] = value.overall_passed
-            payload["control_plane_persisted"] = value.control_plane_persisted
         return payload
     if isinstance(value, dict):
         return {key: _jsonable(item) for key, item in value.items()}

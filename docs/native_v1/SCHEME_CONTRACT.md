@@ -1,9 +1,9 @@
-# Native V1 存量方案契约
+# W4 Native 固定版本运行契约
 
-**文档状态**：`LEGACY_MAINTENANCE`
+**文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`
-**目标读者**：维护既有 Native V1 方案的平台工程师
-> 本契约只适用于 `deploy/onboarding_policy_v1.json` 登记的 Mac3 W4 九个存量方案，禁止新增 Native 或将 W4 部署 ECS。其余原 ID Blackbox 不适用本契约。共享身份、日期和结果语义以[共享方案契约](../architecture/SCHEME_CONTRACT.md)为准。
+**目标读者**：维护 W4 运行环境的平台工程师
+> 本契约说明 Mac3 W4 九套现有 Native 版本的运行依赖，不是 Native 新版本入库规范。后续版本全部使用 Blackbox；W4 不自动迁移、不部署 ECS。固定版本运行维护见[W4 SOP](../sop/NATIVE_V1_MAINTENANCE_SOP.md)，共享身份、日期和结果语义见[共享方案契约](../architecture/SCHEME_CONTRACT.md)。
 
 ## 1. 目录契约
 
@@ -17,28 +17,19 @@ schemes/{scheme_id}/
 ```
 
 - `scheme_id` 必须等于目录名、`config.scheme_id`、`predict.py::SCHEME_ID` 和运行结果中的 base `scheme_id`。
-- `runtime_type` 必须为 `native_adapter`；历史配置缺省时发现器可按兼容规则解释，但维护时不得改成 Blackbox 身份。
+- `runtime_type` 必须为 `native_adapter`；历史配置缺省时发现器可按兼容规则解释，不能据此修改运行时或身份。
 - 原有 Registry composite ID、数据库记录、scheduler 任务和历史结果保持不变。
 
 ## 2. config.yaml
 
-维护时必须保留机器契约要求的字段：
+完整字段类型与枚举由[配置 Schema](../../shared/scheme_config_schema.py)校验；运行发现与身份测试见[验证矩阵](../onboarding/README.md#可复用测试矩阵)。运行核验须保留以下兼容语义，不能因字段值合法就改变现有身份：
 
-| 字段 | 约束 |
-|---|---|
-| `scheme_id` | `^[a-z][a-z0-9_]*$`，且在 Native 存量白名单中 |
-| `runtime_type` | `native_adapter` |
-| `name`、`description` | 非空 |
-| `task_type` | `T+1`、`T+5`、`weekly_point`、`weekly_average`、`monthly` |
-| `horizon` | 保留既有方案口径；历史周/月方案可继续使用 `6/30` |
-| `tenors` | 非空且只包含平台已登记目标 |
-| `frequency` | `daily`、`weekly` 或 `monthly` |
-| `input_source` | 既有方案缺省按 `legacy_db` 处理 |
-| `schedule` | 保留既有 cron、时区和超时语义 |
-| `status` | `active` 或 `paused`；维护不得擅自改变业务状态 |
-| `input_spec` | 与 `shared.input_artifacts` 产出的 source、版本和必需列一致 |
+- `runtime_type=native_adapter`；历史 `input_source` 缺省解释为 `legacy_db`。
+- task、horizon、tenors 和 frequency 保持既有口径；历史周/月 `6/30` 只供存量兼容，不作为新方案模板。
+- schedule 保留既有 cron、时区和超时；status 的变化须另有业务授权。
+- `input_spec` 与 `shared.input_artifacts` 实際产出的 source、版本和必需列一致。
 
-具体字段由 `shared/scheme_config_schema.py` 判定，文档不得替代机器校验。
+`backtest.runner` 等历史声明只保留 canonical 字节与 exact 兼容；平台不再加载这些声明或提供 Native 历史重跑入口。
 
 ## 3. predict.py
 
@@ -64,20 +55,13 @@ Adapter 只负责平台输入、日期上下文、算法调用和结果映射：
 
 - DataFrame 或明确数据对象输入，算法结果对象输出。
 - 零数据库、零写库、零网络、零跨方案 import。
-- source-backed 算法保持时间起点、窗口、特征顺序、模型参数、投票/fallback 和内部 score 映射。
+- 算法保持[源算法保真](../architecture/SOURCE_ALGORITHM_FIDELITY.md)要求的输入、计算及内部数值口径。
 - `legacy_*.py` 只可作为证据归档，活跃模块不得依赖。
 
-改动分级遵循[源算法保真规范](../architecture/SOURCE_ALGORITHM_FIDELITY.md)：L0 可维护；L1 必须逐项举证；L2 默认禁止并应改走独立 Blackbox V2 trial。
+本节用于辨别运行依赖和故障边界，不授权修改 adapter/core 形成 Native 新版本。恢复环境或依赖按 W4 SOP 执行。
 
 ## 5. 结果与副作用
 
 `PredictionRecord`、三日期、`prediction_phase` 和 composite Registry 身份遵循[共享方案契约](../architecture/SCHEME_CONTRACT.md)与[预测语义](../architecture/PREDICTION_SEMANTICS.md)。
 
-只有 `scheduler.repository`、`backtests.repository` 和 actual updater 可以写库。自动 Gate 不得写预测、回测等业务表；persist、单日 `signal-gap-fill` 或状态变化均需独立授权，正式 `scheduled_live` 只由目标主机 one-shot 调度触发。
-
-## 6. 机器门禁
-
-- `StaticGate` 和 `ActivationGate` 均读取 `deploy/onboarding_policy_v1.json`。
-- 未登记的 `native_adapter` ID 必须 fail-closed。
-- 修改白名单不是普通入库步骤，不得用于绕过 Blackbox V2。
-- 已登记方案仍需通过[Native V1 存量维护 SOP](../sop/NATIVE_V1_MAINTENANCE_SOP.md)规定的 Gate 和证据核验。
+写库单点以[根规范](../../AGENTS.md)为准。已有调度保持原版本与有效 Registry target；受控补缺、服务恢复和状态操作按[W4 SOP](../sop/NATIVE_V1_MAINTENANCE_SOP.md#4-故障定位与恢复)执行，接口合法不授予操作权限。

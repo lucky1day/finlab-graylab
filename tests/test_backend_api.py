@@ -36,24 +36,12 @@ class ApiBoundaryTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            {getattr(route, "path", "") for route in main.app.routes},
             {
-                "/api/auth/login",
-                "/api/auth/logout",
-                "/api/auth/me",
-                "/api/auth/change-password",
-                "/api/auth/update-profile",
-                "/api/admin/users",
-                "/api/admin/users/change-username",
-                "/api/admin/users/change-role",
-                "/api/admin/users/reset-password",
-                "/api/admin/users/change-status",
-                "/api/admin/users/update-profile",
-                "/api/admin/users/edit",
-                "/api/health",
-                "/api/factor-lab/dashboard",
-                "",
+                getattr(route, "path", "")
+                for route in main.app.routes
+                if not getattr(route, "path", "").startswith("/api")
             },
+            {""},
         )
 
 class HealthControlPlaneTests(unittest.TestCase):

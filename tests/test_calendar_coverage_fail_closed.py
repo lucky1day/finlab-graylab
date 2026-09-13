@@ -116,14 +116,14 @@ class LaunchdRunnerCoverageTests(unittest.TestCase):
             )
 
     def test_uncovered_date_fails_closed_for_daily_and_weekly(self) -> None:
-        from scheduler.launchd_prediction_runner import (
-            LaunchdPredictionConfigurationError,
+        from scheduler.one_shot_prediction_runner import (
+            OneShotPredictionConfigurationError,
         )
 
         calendar = _StubCalendar(covered={COVERED_TRADING}, trading={COVERED_TRADING})
         for cadence in ("daily", "weekly"):
             with self.subTest(cadence=cadence):
-                with self.assertRaises(LaunchdPredictionConfigurationError):
+                with self.assertRaises(OneShotPredictionConfigurationError):
                     self._run(cadence, UNCOVERED, calendar)
 
     def test_covered_holiday_still_reports_not_applicable(self) -> None:

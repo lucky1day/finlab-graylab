@@ -2,21 +2,10 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping
+from typing import Any
 
-from sqlalchemy.engine import Engine
-
-from backtests.repository import (
-    create_backtest_run,
-    replace_backtest_predictions,
-    update_backtest_run_summary,
-)
 from shared.metrics import direction_metric_block
-
-
-RangeMapping = Mapping[str, Any]
 
 
 @dataclass
@@ -31,45 +20,6 @@ class RunOutput:
     report_path: str | None = None
 
 
-def apply_evaluation_exclusions(
-    rows: list[dict[str, Any]],
-    *,
-    excluded_target_ranges: Iterable[RangeMapping],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """排除暂不纳入历史验证的目标日期样本。"""
-    included: list[dict[str, Any]] = []
-    excluded: list[dict[str, Any]] = []
-    for row in rows:
-        target_date = _required_target_date(row)
-        if target_date and _date_in_excluded_ranges(str(target_date), excluded_target_ranges):
-            excluded.append(row)
-        else:
-            included.append(row)
-    return included, excluded
-
-
-def evaluation_exclusion_summary(
-    raw_count: int,
-    included_count: int,
-    *,
-    excluded_target_ranges: Iterable[RangeMapping],
-) -> dict[str, Any]:
-    return {
-        "date_field": "target_date",
-        "ranges": [dict(item) for item in excluded_target_ranges],
-        "raw_row_count": int(raw_count),
-        "included_row_count": int(included_count),
-        "excluded_row_count": int(raw_count - included_count),
-    }
-
-
-def _date_in_excluded_ranges(value: str, excluded_target_ranges: Iterable[RangeMapping]) -> bool:
-    for item in excluded_target_ranges:
-        if item["start"] <= value <= item["end"]:
-            return True
-    return False
-
-
 def make_run_output(
     scheme_id: str,
     data_source: str,
@@ -78,27 +28,18 @@ def make_run_output(
     rows: list[dict[str, Any]],
     *,
     benchmark_id: str,
-    excluded_target_ranges: Iterable[RangeMapping] = (),
     report_path: str | None = None,
 ) -> RunOutput:
-    filtered_rows, excluded_rows = apply_evaluation_exclusions(rows, excluded_target_ranges=excluded_target_ranges)
-    monthly = build_monthly_metrics(filtered_rows, benchmark_id=benchmark_id)
-    summary = build_summary(filtered_rows)
-    summary["row_count"] = len(filtered_rows)
-    summary["raw_row_count"] = len(rows)
-    summary["excluded_row_count"] = len(excluded_rows)
-    summary["evaluation_filter"] = evaluation_exclusion_summary(
-        len(rows),
-        len(filtered_rows),
-        excluded_target_ranges=excluded_target_ranges,
-    )
+    monthly = build_monthly_metrics(rows, benchmark_id=benchmark_id)
+    summary = build_summary(rows)
+    summary["row_count"] = len(rows)
     summary["monthly_count"] = len(monthly)
     return RunOutput(
         scheme_id=scheme_id,
         data_source=data_source,
         start_date=start_date,
         end_date=end_date,
-        rows=filtered_rows,
+        rows=rows,
         monthly_metrics=monthly,
         summary=summary,
         report_path=report_path,
@@ -161,15 +102,11 @@ def build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     by_tenor: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         by_tenor.setdefault(row["target_tenor"], []).append(row)
-    aggregate_by_tenor: dict[str, dict[str, Any]] = {}
-    periods_by_tenor: dict[str, dict[str, Any]] = {}
-    for tenor, items in sorted(by_tenor.items()):
-        periods = period_summaries(items)
-        aggregate_by_tenor[tenor] = deepcopy(periods["all"])
-        periods_by_tenor[tenor] = periods
     return {
-        "by_tenor": aggregate_by_tenor,
-        "periods_by_tenor": periods_by_tenor,
+        "by_tenor": {
+            tenor: aggregate_rows(items)
+            for tenor, items in sorted(by_tenor.items())
+        },
     }
 
 
@@ -189,37 +126,3 @@ def aggregate_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "date_min": min((row["predict_date"] for row in valid), default=None),
         "date_max": max((row["predict_date"] for row in valid), default=None),
     }
-
-
-def period_summaries(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
-        "sim": aggregate_rows([row for row in rows if "2025-01-01" <= row["predict_date"] <= "2025-06-30"]),
-        "real": aggregate_rows([row for row in rows if "2025-07-01" <= row["predict_date"] <= "2026-04-30"]),
-        "may": aggregate_rows([row for row in rows if row["predict_date"] >= "2026-05-01"]),
-        "all": aggregate_rows(rows),
-    }
-
-
-def persist_run_output(engine: Engine, output: RunOutput, *, benchmark_id: str) -> int:
-    run_id = create_backtest_run(
-        engine,
-        benchmark_id=benchmark_id,
-        scheme_id=output.scheme_id,
-        data_source=output.data_source,
-        start_date=output.start_date,
-        end_date=output.end_date,
-        summary=output.summary,
-        report_path=output.report_path,
-        code_hash=output.summary.get("code_hash"),
-        config_hash=output.summary.get("config_hash"),
-        input_artifact_hash=output.summary.get("input_artifact_hash"),
-    )
-    replace_backtest_predictions(engine, run_id, output.rows)
-    output.summary["run_id"] = run_id
-    update_backtest_run_summary(
-        engine,
-        run_id=run_id,
-        summary=output.summary,
-        report_path=output.report_path,
-    )
-    return run_id

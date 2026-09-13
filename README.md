@@ -1,43 +1,10 @@
 # Bond Factor Lab 实盘测试系统
 
-独立的国债因子实验室实盘测试平台。Mac3 承载生产，ECS 作为独立灰度实验室；前端由本项目的 FastAPI 直接提供。
+独立的国债因子回测与实盘观察平台，前端由本项目的 FastAPI 提供。Mac3 承载生产，ECS 为独立灰度实验室。
 
-## 当前政策
-
-- 后续新增算法、新方案 ID、新目标、新任务和替代版本只允许 Blackbox V2。
-- Native V1 仅保留 Mac3 W4 九个存量方案及其必要依赖；其余 17 个原方案 ID 使用 Blackbox V2 canonical。部署进度以当前状态和现场核验为准。
-- 同算法运行时升级保留原 base/Registry ID，不新建 `_bbv2` 业务身份，不重跑、复制、覆盖或删除既有历史事实。
-- Blackbox V2 固定只走“两文件 Intake → 一次完整持久化回测 → activate”；不进入 Native `onboard`，不额外运行 Static/Compare/冒烟/shadow。
-- 技术验证不自动授予生产权限；生产运行必须逐方案完成准备核验和专项授权。
-- 方案数量、Registry 状态和灰度结果按[当前状态](docs/CURRENT_STATUS.md)列出的权威来源现场读取；待验证项查看其中链接的推进计划。
-
-## 文档入口
-
-- [文档中心](docs/README.md)：按角色和文档域导航。
-- [方案入库统一入口](docs/onboarding/README.md)：选择 Blackbox V2 或 Native V1 维护流程。
-- [SOP 索引](docs/sop/README.md)：上游交付、平台入库和存量维护操作手册。
-- [当前状态](docs/CURRENT_STATUS.md)：动态运行事实的唯一文档来源。
-- [双机部署与访问入口](docs/operations/DEPLOYMENT_ACCESS.md)：ECS/Mac3 地址、SSH、本地转发、生产路径与只读核验。
-- [代码架构](docs/architecture/CODE_ARCHITECTURE.md)：系统分层、依赖、输入和写库边界。
-- [灰度实验室说明手册](docs/product/GRAY_LAB_USER_MANUAL.md)：外部客户和业务读者入口。
-
-## 运行环境
-
-- 后端与调度：`bond_factor_lab_service`
-- Native V1 算法：`forecast_env`
-- Blackbox V2：由 `blackbox-v2-v1` Runtime Profile 唯一指定，不从文档或环境名称猜测解释器版本
-
-在目标主机执行健康检查：
-
-```bash
-curl -sS http://127.0.0.1:8100/api/health
-```
-
-Dashboard 需要登录；两机页面入口及转发方法见[双机部署与访问入口](docs/operations/DEPLOYMENT_ACCESS.md)。
-
-写库、activation、持久化回测和 live 命令必须按对应 SOP 获取授权，不以 README 示例代替操作门禁。
-
-## 部署与运行产物
-
-immutable release、launchd/systemd、Nginx、迁移和现场核验统一按[部署运行手册](deploy/README.md)
-执行。运行期输入、快照、日志和报告进入 Git 忽略目录，不作为算法交付或生产配置提交。
+- [项目规范](AGENTS.md)：开发、数据与生产操作的长期约束。
+- [文档中心](docs/README.md)：按任务查找完整合同、步骤及验收要求。
+- [当前状态](docs/CURRENT_STATUS.md)与[待办](docs/TODO.md)：已核验部署基线、证据和未完成事项。
+- [方案入库](docs/onboarding/README.md)：Blackbox 入库与修订，以及 W4 存量运行入口。
+- [部署与访问](docs/operations/DEPLOYMENT_ACCESS.md)：双机地址、SSH/转发及运行路径。
+- [产品手册](docs/product/GRAY_LAB_USER_MANUAL.md)：页面、指标与使用方法。

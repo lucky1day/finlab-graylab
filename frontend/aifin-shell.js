@@ -209,14 +209,12 @@
     controller: null,
     committedViewModel: null,
     consecutiveFailures: 0,
-    nextRefreshAt: 0,
     refreshTimer: null,
     visibilityBound: false,
     aggregateCache: new Map(),
     detailCache: new Map(),
     detailSeq: 0,
     detailController: null,
-    lastAttemptAt: 0,
     lastSuccessfulAt: 0,
     lastSuccessfulGeneratedAt: ""
   };
@@ -1075,16 +1073,13 @@
       window.clearTimeout(factorLabRuntimeState.refreshTimer);
     }
     factorLabRuntimeState.refreshTimer = null;
-    factorLabRuntimeState.nextRefreshAt = 0;
   }
 
   function scheduleFactorLabRefresh(delayMs) {
     clearFactorLabRefreshTimer();
     if (!factorLabRuntimeState.authenticated || !window.setTimeout || document.visibilityState === "hidden") return;
-    factorLabRuntimeState.nextRefreshAt = factorLabNow() + delayMs;
     factorLabRuntimeState.refreshTimer = window.setTimeout(function () {
       factorLabRuntimeState.refreshTimer = null;
-      factorLabRuntimeState.nextRefreshAt = 0;
       if (document.visibilityState === "hidden" || getActiveView() !== "factor-lab") return;
       loadFactorLabData({ force: true });
     }, delayMs);
@@ -1306,7 +1301,6 @@
     }
     var controller = window.AbortController ? new window.AbortController() : null;
     factorLabRuntimeState.controller = controller;
-    factorLabRuntimeState.lastAttemptAt = factorLabNow();
     factorLabRemoteLoading = true;
     factorLabDataMode = factorLabRuntimeState.committedViewModel
       ? "refreshing"
@@ -1385,7 +1379,6 @@
     factorLabRuntimeState.committedViewModel = null;
     factorLabRuntimeState.aggregateCache = new Map();
     factorLabRuntimeState.detailCache = new Map();
-    factorLabRuntimeState.lastAttemptAt = 0;
     factorLabRuntimeState.lastSuccessfulAt = 0;
     factorLabRuntimeState.lastSuccessfulGeneratedAt = "";
     factorTaskSchemes = initEmptyTaskSchemes();

@@ -97,7 +97,6 @@ def test_edit_user_saves_all_account_fields_in_one_transaction() -> None:
         now=NOW,
     )
     revoke_sessions.assert_called_once_with(connection, 2, NOW)
-    assert insert_audit.call_count == 4
     assert [item.kwargs["event_type"] for item in insert_audit.call_args_list] == [
         "user_username_changed",
         "user_profile_changed",

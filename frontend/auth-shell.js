@@ -3,7 +3,6 @@
 
   var state = {
     user: null,
-    expiresAt: "",
     accountMenuOpen: false,
     userMoreMenuId: null,
     userMoreMenuButton: null,
@@ -113,7 +112,6 @@
 
   function showLogin(message) {
     state.user = null;
-    state.expiresAt = "";
     state.users = [];
     showGate(loginView);
     var form = document.getElementById("authLoginForm");
@@ -125,9 +123,8 @@
     }, 0);
   }
 
-  function showAuthenticated(user, expiresAt) {
+  function showAuthenticated(user) {
     state.user = user;
-    state.expiresAt = expiresAt || "";
     authGate.hidden = true;
     shell.hidden = false;
     shell.setAttribute("aria-hidden", "false");
@@ -480,7 +477,7 @@
       }
     }).then(function (payload) {
       form.reset();
-      showAuthenticated(payload.user, payload.expires_at);
+      showAuthenticated(payload.user);
     }).catch(function (error) {
       emitError(document.getElementById("authLoginError"), errorMessage(error.errorCode));
     }).finally(function () {
@@ -728,7 +725,7 @@
 
   showGate(loadingView);
   apiRequest("/api/auth/me").then(function (payload) {
-    showAuthenticated(payload.user, payload.expires_at);
+    showAuthenticated(payload.user);
   }).catch(function (error) {
     if (error.status !== 401) showLogin("暂时无法验证登录状态，请稍后重试");
   });

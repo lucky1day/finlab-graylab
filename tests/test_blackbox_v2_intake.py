@@ -9,6 +9,36 @@ from pathlib import Path
 
 
 class BlackboxV2IntakeTests(unittest.TestCase):
+    def test_cli_intake_preserves_bytes_and_creates_paused_config(self) -> None:
+        from harness.cli import main
+        from scheduler.discovery import load_scheme_config
+        from shared.scheme_config_loader import load_yaml_mapping
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            delivery = _write_delivery(root / "incoming")
+            with redirect_stdout(io.StringIO()) as output:
+                code = main(["intake-blackbox", "--delivery-dir", str(delivery),
+                             "--project-root", str(root)])
+            scheme_dir = root / "schemes" / "trial_10y"
+            config = load_scheme_config(scheme_dir / "config.yaml")
+            raw = load_yaml_mapping(scheme_dir / "config.yaml")
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(output.getvalue()), {
+                "scheme_id": "trial_10y", "runtime_type": "blackbox_v2",
+                "scheme_dir": str(scheme_dir.resolve()),
+            })
+            for path in delivery.iterdir():
+                self.assertEqual((scheme_dir / "delivery" / path.name).read_bytes(), path.read_bytes())
+            self.assertEqual((config.runtime_type, config.input_source, config.factor_input_mode),
+                             ("blackbox_v2", "data_bridge_current", "algorithm_managed"))
+            self.assertEqual((config.status, config.version_status), ("paused", "draft"))
+            self.assertFalse(config.incremental_state)
+            self.assertFalse({"platform_inputs", "display_name", "incremental_state"} & raw.keys())
+            self.assertEqual(raw["schedule"], {
+                "cron": "3 7 * * 1-5", "timezone": "Asia/Shanghai", "timeout_sec": 3600,
+            })
+
     def test_period_average_intake_uses_one_daily_post_close_poll(self) -> None:
         from shared.blackbox_v2.intake import intake_delivery
 
@@ -43,35 +73,11 @@ class BlackboxV2IntakeTests(unittest.TestCase):
                     schemes_root=root / "schemes",
                 )
 
-                config = (scheme_dir / "config.yaml").read_text(encoding="utf-8")
-                self.assertIn("cron: '0 18 * * 1-5'", config)
+                from shared.scheme_config_loader import load_yaml_mapping
 
+                config = load_yaml_mapping(scheme_dir / "config.yaml")
+                self.assertEqual(config["schedule"]["cron"], "0 18 * * 1-5")
 
-    def test_intake_preserves_delivery_bytes_and_generates_paused_config(self) -> None:
-        from shared.blackbox_v2.intake import intake_delivery
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            delivery = _write_delivery(root / "incoming")
-            schemes_root = root / "schemes"
-
-            scheme_dir = intake_delivery(delivery, schemes_root=schemes_root)
-
-            script = scheme_dir / "delivery" / "trial_10y.py"
-            metadata = scheme_dir / "delivery" / "trial_10y.json"
-            config = (scheme_dir / "config.yaml").read_text(encoding="utf-8")
-            self.assertEqual(script.read_bytes(), (delivery / "trial_10y.py").read_bytes())
-            self.assertEqual(metadata.read_bytes(), (delivery / "trial_10y.json").read_bytes())
-            self.assertIn("runtime_type: blackbox_v2", config)
-            self.assertIn("input_source: data_bridge_current", config)
-            self.assertIn("factor_input_mode: algorithm_managed", config)
-            self.assertIn("status: paused", config)
-            self.assertIn("version_status: draft", config)
-            self.assertIn("cron: '3 7 * * 1-5'", config)
-            self.assertIn("timeout_sec: 3600", config)
-            self.assertNotIn("platform_inputs:", config)
-            self.assertNotIn("display_name:", config)
-            self.assertNotIn("incremental_state:", config)
 
     def test_cli_incremental_state_preserves_two_file_metadata_contract(self) -> None:
         from harness.cli import main
@@ -121,38 +127,6 @@ class BlackboxV2IntakeTests(unittest.TestCase):
 
                 self.assertFalse((root / "schemes" / "trial_10y").exists())
 
-
-    def test_cli_intake_uses_fixed_databridge_inputs(self) -> None:
-        from harness.cli import main
-        from scheduler.discovery import load_scheme_config
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            delivery = _write_delivery(root / "incoming")
-
-            output = io.StringIO()
-            with redirect_stdout(output):
-                exit_code = main(
-                    [
-                        "intake-blackbox",
-                        "--delivery-dir",
-                        str(delivery),
-                        "--project-root",
-                        str(root),
-                    ]
-                )
-            config_path = root / "schemes" / "trial_10y" / "config.yaml"
-            config_text = config_path.read_text(encoding="utf-8")
-            config = load_scheme_config(config_path)
-            payload = json.loads(output.getvalue())
-
-        self.assertEqual(exit_code, 0)
-        self.assertNotIn("platform_inputs:", config_text)
-        self.assertFalse(hasattr(config, "platform_inputs"))
-        self.assertEqual(
-            set(payload),
-            {"scheme_id", "runtime_type", "scheme_dir"},
-        )
 
     def test_intake_rejects_additional_delivery_file(self) -> None:
         from shared.blackbox_v2.intake import intake_delivery
