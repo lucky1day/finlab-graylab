@@ -45,9 +45,10 @@
 
 以上观察和验证队列不阻塞新 Blackbox 方案开始 Intake；入库仍按自身前置条件执行。
 
-## Dashboard 生产方案标记
+## Dashboard 生产标记晋级与存量展示差异
 
-功能已实现并完成隔离验证；双机发布与初始空名单验收尚待完成。长期语义见[Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md#生产方案标记)，发布与名单步骤见[部署手册](../deploy/README.md#生产方案名单维护)。本次计划及证据外置于 `/Users/macstudio0/bond-factor-lab-runtime/releases/dashboard-production-marker-20260913/`。
+- ECS 新功能已验收；Mac3 尚未晋级。扩展全量 Gate 发现 17 个已迁移原方案（21 target）的 name/description/owner 与 canonical 存在发布前已有差异，按根规范暂停晋级，等待用户确认保持当前展示并独立处理该差异后，继续同包发布。范围与证据见[当前状态](CURRENT_STATUS.md#dashboard-生产标记发布)。
+- 这些差异需要核定同 ID 迁移后的展示身份语义与 Gate 适用范围；不自动改 Registry、Metadata 或算法，也不把既有差异当作已获批永久例外。完成标准是明确权威取值及验收范围，并按另行确认的方案消除不一致。
 
 ## Dashboard 认证探针入口
 

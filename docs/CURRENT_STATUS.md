@@ -16,12 +16,13 @@
 | 当前 active 执行身份 | 92 个 Blackbox base | 92 个 Blackbox base + 9 个 W4 Native base |
 | Dashboard | 96 个 target | 105 个 target |
 | 调度控制面 | systemd one-shot/timer | launchd + installed plist |
-| current release | `6fff43e2b16855a7a97fb501c2b2425e8b9784f7` | 同一提交、同一 archive |
-| previous release | `b3479c62e06f2dcf25abcb8b1645bc3a31692ccd` | 同左 |
+| current release | `892f2b3e1af5ff247eae1f0455f32a065772c8e6` | `6fff43e2b16855a7a97fb501c2b2425e8b9784f7` |
+| previous release | `6fff43e2b16855a7a97fb501c2b2425e8b9784f7` | `b3479c62e06f2dcf25abcb8b1645bc3a31692ccd` |
 | schema | 025 APPLIED | 025 APPLIED |
 
-- 双机 archive SHA-256：`3a102a16e0b756ab93a22ee2915e5e3a4f41da3b0cc71a11a5c205c7a12724cc`。
-- 两机 Backend cwd、健康及 immutable 源码树复验通过；ECS 验收后才将同一 archive 晋级 Mac3。方案与数据验收见下节。
+- ECS archive SHA-256：`3a1fb71a4d9849a48795fc6817cb0ed5dde8fe3fe7c2a934169f63f2b1654a7f`。
+- Mac3 archive SHA-256：`3a102a16e0b756ab93a22ee2915e5e3a4f41da3b0cc71a11a5c205c7a12724cc`。
+- 两机 Backend cwd、健康及 immutable 源码树已核验；本轮新功能已发布 ECS，Mac3 晋级暂停，原因见下方生产标记状态。
   域名仍由 Mac3 服务；DNS、Nginx、认证和既有 SSH 隧道未改变。
 - 集成分支为 `codex/develop`。开发分支的代码或文档提交不代表新的生产 release。
   实时提交以 Git 引用为准，发布以目标机 manifest、current/previous 和进程 cwd 为准。
@@ -102,9 +103,28 @@ W4 Native 与 Blackbox 的实际范围以[部署矩阵](../deploy/scheme_deploym
 
 Mac3 公网首轮验收出现一次 HTTP 504，同期 Backend 有 5.37 秒慢请求；随后降频复核的 17 个请求与浏览器刷新、明细均通过。原始异常保留在上述证据目录，原因尚未定位，继续纳入[公网可靠性观察](TODO.md#其他未闭环队列)，不据此宣称长期性能问题已解决。
 
+## Dashboard 生产标记发布
+
+2026-09-13，功能与前序测试清理已提交并推送 `codex/develop`；生产标记规则和名单维护分别见
+[Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md#生产方案标记)与[部署手册](../deploy/README.md#生产方案名单维护)。
+本地验证 578 passed、171 subtests passed；隔离浏览器覆盖非空名单、替换、清空、错误恢复和长名称，独立审查无阻塞缺陷。
+
+ECS 已切换上表新包并刷新 Backend，本机初始名单 `{}`，96 target 全部 `is_production=false`。
+真实 HTTP Summary 全量与 DB 一致，4 个历史/最新 Detail 对照通过，浏览器 fresh、候选排行及待验证明细正常；
+发布前后 Registry/exact、业务条数、输入 ready 和调度配置保持一致。算法、W4 执行依赖与部署配置未改。
+
+扩大 Gate 检查时，75 个 base 通过，17 个已迁移原方案（21 target）因 name/description/owner 与 canonical 不同失败；
+这些字段发布前后完全相同，八套新方案 Gate 均通过。未修改存量身份或放宽 Gate，不能宣称全量 Gate 通过。
+按根规范暂停 Mac3 晋级，等待用户确认是否保持既有展示差异、另列待办后继续同包发布。
+Mac3 尚未创建初始名单或切换本轮 release。
+
+证据：[本轮外置目录](/Users/macstudio0/bond-factor-lab-runtime/releases/dashboard-production-marker-20260913/)，
+其中 `ecs-before/candidate/after.json`、`ecs-http.json`、`existing-gate-differences.json` 分别定位本机数据、HTTP 和存量差异；
+安装回执、控制面、日志、原计划与隔离验证同目录保存。
+
 ## 当前输入与产品版本
 
-双机使用五文件 DataBridge，存量 `factor_version` 已初始化为 `V1.0`；legacy 保护与新方案输入模式见[DataBridge](blackbox_v2/data_bridge_v1/README.md)。产品接口为 `factor-lab-dashboard-v5`，完整读模型与表示见[Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)。
+双机使用五文件 DataBridge，存量 `factor_version` 已初始化为 `V1.0`；legacy 保护与新方案输入模式见[DataBridge](blackbox_v2/data_bridge_v1/README.md)。ECS 产品接口为 `factor-lab-dashboard-v6`，Mac3 暂为 V5；完整读模型与表示见[Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)。
 
 ## 现场核验入口
 
