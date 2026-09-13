@@ -99,7 +99,7 @@ Mac3 公网首轮验收出现一次 HTTP 504，同期 Backend 有 5.37 秒慢请
 
 2026-09-13 双机已发布生产标记与 Registry 展示验收修复。名单规则和维护分别见
 [Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md#生产方案标记)与[部署手册](../deploy/README.md#生产方案名单维护)。
-2026-09-13 按用户确认，将“五套新方案”批次的完整 Registry ID 加入两机外置 `production_schemes.json`。当前 ECS / Mac3 各标记 5 个 target；文件摘要一致，真实 API 与五个任务格子的生产菱形逐项核验通过，其他展示和统计未变。本次只更新名单，无需发布或重启；[结果与原名单备份](/Users/macstudio0/bond-factor-lab-runtime/releases/production-five-marker-20260913/result.json)记录此次范围。名单标记不替代 TODO 的自然运行观察。
+2026-09-13 按用户确认的完整九套生产方案名单，更新两机外置 `production_schemes.json`。当前 ECS / Mac3 各标记 9 个 target；文件摘要一致，真实 API 与 3Y、5Y、10Y 的 T+5、周收盘、月中收九个格子逐项核验通过，其他展示和统计未变。本次只更新名单，无需发布或重启；[结果与原名单备份](/Users/macstudio0/bond-factor-lab-runtime/releases/production-nine-marker-20260913/result.json)记录当前范围。名单标记不替代 TODO 的自然运行观察。
 
 Registry 展示验收的 17 个迁移方案误报已解决；首次登记与后续展示的权威边界见[共享契约](architecture/SCHEME_CONTRACT.md#3-方案身份)。本次未更改 Registry 名称、描述、owner、算法或历史。
 
