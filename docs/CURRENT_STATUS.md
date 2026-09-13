@@ -8,7 +8,7 @@
 
 ## 运行与部署
 
-源码方案的执行迁移及平台 confidence 退役已有完成证据；迁移展示保留规则与 Dashboard Gate 的衔接缺口见下方[生产标记发布](#dashboard-生产标记发布)。新算法仍按[标准入库流程](onboarding/README.md)处理。
+源码方案执行迁移、平台 confidence 退役及展示验收衔接修复均已完成，最近验证见下方[生产标记发布](#dashboard-生产标记发布)。新算法仍按[标准入库流程](onboarding/README.md)处理。
 
 | 项目 | ECS 独立灰度 | Mac3 生产 |
 |---|---|---|
@@ -16,13 +16,12 @@
 | 当前 active 执行身份 | 92 个 Blackbox base | 92 个 Blackbox base + 9 个 W4 Native base |
 | Dashboard | 96 个 target | 105 个 target |
 | 调度控制面 | systemd one-shot/timer | launchd + installed plist |
-| current release | `892f2b3e1af5ff247eae1f0455f32a065772c8e6` | `6fff43e2b16855a7a97fb501c2b2425e8b9784f7` |
-| previous release | `6fff43e2b16855a7a97fb501c2b2425e8b9784f7` | `b3479c62e06f2dcf25abcb8b1645bc3a31692ccd` |
+| current release | `accde117545ceca7f579692d4123df421f8b9d8c` | 同左 |
+| previous release | `892f2b3e1af5ff247eae1f0455f32a065772c8e6` | `6fff43e2b16855a7a97fb501c2b2425e8b9784f7` |
 | schema | 025 APPLIED | 025 APPLIED |
 
-- ECS archive SHA-256：`3a1fb71a4d9849a48795fc6817cb0ed5dde8fe3fe7c2a934169f63f2b1654a7f`。
-- Mac3 archive SHA-256：`3a102a16e0b756ab93a22ee2915e5e3a4f41da3b0cc71a11a5c205c7a12724cc`。
-- 两机 Backend cwd、健康及 immutable 源码树已核验；本轮新功能已发布 ECS，Mac3 晋级暂停，原因见下方生产标记状态。
+- 双机同一 archive SHA-256：`e5653cb854569e7c53b5fbd2dde2f3a0c43bbb80444ebd27fcf4fdb0e704f3e8`。
+- 两机 Backend cwd、健康及 immutable 源码树已核验；ECS 验收后晋级同一 archive 至 Mac3，本轮发布已闭环。
   域名仍由 Mac3 服务；DNS、Nginx、认证和既有 SSH 隧道未改变。
 - 集成分支为 `codex/develop`。开发分支的代码或文档提交不代表新的生产 release。
   实时提交以 Git 引用为准，发布以目标机 manifest、current/previous 和进程 cwd 为准。
@@ -105,33 +104,32 @@ Mac3 公网首轮验收出现一次 HTTP 504，同期 Backend 有 5.37 秒慢请
 
 ## Dashboard 生产标记发布
 
-2026-09-13，功能与前序测试清理已提交并推送 `codex/develop`；生产标记规则和名单维护分别见
+2026-09-13 双机已发布生产标记与 Registry 展示验收修复。名单规则和维护分别见
 [Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md#生产方案标记)与[部署手册](../deploy/README.md#生产方案名单维护)。
-本地验证 578 passed、171 subtests passed；隔离浏览器覆盖非空名单、替换、清空、错误恢复和长名称，独立审查无阻塞缺陷。
+两机初始名单均为 `{}`，96 / 105 个 target 全部 `is_production=false`，页面不显示生产菱形；后续名单单独确认。
 
-ECS 已切换上表新包并刷新 Backend，本机初始名单 `{}`，96 target 全部 `is_production=false`。
-真实 HTTP Summary 全量与 DB 一致，4 个历史/最新 Detail 对照通过，浏览器 fresh、候选排行及待验证明细正常；
-发布前后 Registry/exact、业务条数、输入 ready 和调度配置保持一致。算法、W4 执行依赖与部署配置未改。
+首次激活事务直接读回 Metadata → Registry 三字段，错误或 `display_name` 覆盖不一致会整组回滚；
+通用 DashboardGate 改为 API → 本机 Registry，保留 same-ID 迁移的既有展示。此前 17 个迁移方案的
+误报已解决，未更改 Registry 名称、描述、owner、算法或历史。权威边界见[共享契约](architecture/SCHEME_CONTRACT.md#3-方案身份)。
 
-扩大 Gate 检查时，75 个 base 通过，17 个已迁移原方案（21 target）失败；八套新方案均通过。
-两机 2026-09-13 13:25 的独立快照中差异相同：名称 15 处、描述 21 处、owner 12 处（2 个 rl、10 个 lw，对应 canonical liwei）。
-ECS 本次发布前后上述字段完全不变；Mac3 的数量为保存快照的离线核对，未宣称已完成本轮新版 HTTP 验收。
+最终本地回归 589 passed、171 subtests passed，独立复审无剩余阻塞。生产标记的非空、替换、清空、
+错误恢复和长名称视觉已在隔离环境验证；本轮双机真实 HTTP 静态资源摘要与该版本一致。
+ECS 92 / Mac3 101 个 base 的 Gate 全部通过；认证 Summary 全量与本机 DB 一致，分别 4 / 6 个历史及
+最新 Detail 对照通过，浏览器 fresh、排行、月份和 2026-09-18 待验证明细正常。
 
-追溯旧迁移方案和事务发现：当时明确保留原 Registry 展示信息，并以逐字段不变作为验收条件；
-Gate 却把所有带 description 的 Blackbox 都按新入库展示信息检查，没有区分原 ID 迁移。
-Gate 自迁移收尾提交 `87e9c4c7` 后未改动；运行接管已完成，但这项合同衔接遗漏，不能称整体完全闭环。
-原实现、迁移验收范围及双机逐字段清单见外置 `migration-display-analysis.json` 和 `migration-display-findings.md`。
+发布前后两机 Registry、exact、历史、预测、Actual 条数及 ready 输入保持一致；两机输入摘要不同，独立核验。
+ECS 5 个 timer 维持 enabled/active、Persistent=false；Mac3 7 个 installed/loaded 任务配置不变，
+W4 九套入口与依赖可用。仅切换 current 并刷新 Backend，未运行算法、写业务事实或跨越正式触发窗口。
+自然运行仍按 TODO 独立观察，不以本轮发布验收代替。
 
-验收职责修复已获确认：首次登记在激活事务核对 Metadata → Registry；通用 Gate 对照 API → 本机 Registry。
-保留既有业务展示，修复通过验证后重新构建 release，按 ECS → Mac3 顺序验收；Mac3 尚未创建初始名单或切换本轮 release。
-
-证据：[本轮外置目录](/Users/macstudio0/bond-factor-lab-runtime/releases/dashboard-production-marker-20260913/)，
-其中 `ecs-before/candidate/after.json`、`ecs-http.json`、`existing-gate-differences.json` 分别定位本机数据、HTTP 和存量差异；
-安装回执、控制面、日志、原计划与隔离验证同目录保存。
+证据：[最终报告](/Users/macstudio0/bond-factor-lab-runtime/releases/dashboard-registry-contract-20260913/delivery-report.json)、
+[索引](/Users/macstudio0/bond-factor-lab-runtime/releases/dashboard-registry-contract-20260913/README.md)；
+[原功能与隔离验收](/Users/macstudio0/bond-factor-lab-runtime/releases/dashboard-production-marker-20260913/)保留原计划、
+视觉验证及 `migration-display-analysis.json` / `migration-display-findings.md` 的问题来源，不作为未完成发布状态。
 
 ## 当前输入与产品版本
 
-双机使用五文件 DataBridge，存量 `factor_version` 已初始化为 `V1.0`；legacy 保护与新方案输入模式见[DataBridge](blackbox_v2/data_bridge_v1/README.md)。ECS 产品接口为 `factor-lab-dashboard-v6`，Mac3 暂为 V5；完整读模型与表示见[Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)。
+双机使用五文件 DataBridge，存量 `factor_version` 已初始化为 `V1.0`；legacy 保护与新方案输入模式见[DataBridge](blackbox_v2/data_bridge_v1/README.md)。双机产品接口均为 `factor-lab-dashboard-v6`；完整读模型与表示见[Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)。
 
 ## 现场核验入口
 

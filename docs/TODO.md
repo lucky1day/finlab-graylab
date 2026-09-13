@@ -45,13 +45,6 @@
 
 以上观察和验证队列不阻塞新 Blackbox 方案开始 Intake；入库仍按自身前置条件执行。
 
-## Dashboard 生产标记晋级与存量展示差异
-
-- ECS 生产标记功能已验收，Mac3 同包晋级暂停。差异源于迁移时保留 Registry 展示信息，而通用 Gate 对所有 Blackbox 要求与 canonical 相同；已核实范围及原件见[当前状态](CURRENT_STATUS.md#dashboard-生产标记发布)。已确认修复验收职责，不直接覆盖旧展示或将既有差异视作永久豁免。
-- 修复需分清：新 ID 首次登记的 Metadata → Registry 一致性、存量 API → 本机 Registry 一致性、same-ID 修订的执行版本与业务展示边界。沿用现有入口，不新增迁移框架或按这 17 个 ID 写跳过名单；不能直接删除一致性检查而失去新入库校验。
-- 完成标准：既有迁移展示仍正确，真正的新入库元数据错误及 API/Registry 不一致仍会失败；通用合同、入库与验收文档一致，相关检查和双机真实 HTTP 对照通过。修复含运行代码时需构建新包并重新 ECS → Mac3 同包验收，不能现场修改现有 release。
-- owner 中 `rl/lw/liwei` 是否需要业务更正是独立决定，不能为消除 Gate 失败自动归一。本轮已确认修复验收职责并继续双机发布，不包含业务展示更正。
-
 ## Dashboard 认证探针入口
 
 现有 Dashboard Gate 默认 HTTP fetcher 不携带登录会话，CLI 未提供认证参数，不能直接作为已启用认证环境的验收命令。当前可用方法见[Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md#认证响应与合同验收)。通用 CLI 的完成标准是安全传递会话、保护凭据并验证真实 HTTP 合同，需单独安排实现与验收。
