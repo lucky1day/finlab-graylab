@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**适用版本**：`factor-lab-dashboard-v5`
+**适用版本**：`factor-lab-dashboard-v6`
 
 本文维护 Dashboard HTTP 表示、浏览器刷新、故障定位及验收。账户和会话规则见
 [认证合同](../architecture/AUTHENTICATION_AND_ACCOUNT_MANAGEMENT.md)，主机、Origin 和访问链路见
@@ -39,6 +39,32 @@ scheme-id=<composite_registry_id>&month=YYYY-MM&source=all|backtest|live
 Accept-Encoding 返回对应字节；HEAD/GET 表示与 Content-Length 语义一致，middleware 不得再次压缩。
 Server-Timing 仅诊断当前请求 DB、canonical、serialization 和 route 耗时，不代表缓存或可用性真相。
 
+## 生产方案标记
+
+Summary 每条 `schemes[]` 必须包含布尔值 `is_production`。唯一依据是本机外置
+`<BFL_RUNTIME_ROOT>/config/production_schemes.json`；前端只透传该布尔值，在候选排行的方案名称右侧
+显示 12px 深绿色实心菱形，间距 8px，保留名称截断与标记完整性；不增加可见文字、列、筛选或交互。
+名单由运维确认，不从 active、部署矩阵、主机角色或自然运行证据推断。名单不改变可见方案、排序、统计或执行资格。
+
+文件为 UTF-8 对象，仅接受 `{}` 或 `{"scheme_ids": [...]}`；数组元素必须为无首尾空白的非空字符串，
+不得重复或含未知字段。空数组也表示空名单。按完整 composite Registry ID 精确匹配，不限制期限/horizon，
+不扩展同 base 的其他 target；同 ID 升级 exact 保留标记，新 ID 不继承。
+
+每次 Summary 在事务外读取并校验一次文件，不缓存旧名单。`BFL_RUNTIME_ROOT` 必须显式指定存在的绝对目录，
+无开发或仓库路径回退。非空合法名单在本次只读一致性事务中执行一次参数化批量 Registry 存在性查询，
+不按 status 过滤；不存在项逐项忽略并记 `production_scheme_not_found`，其余有效项继续匹配。
+paused/archived 身份仍通过存在性校验，但按原有 active 可见性规则隐藏，恢复可见时仍可匹配。
+
+路径、读取、编码、JSON 或结构错误只在名单读取边界降级：记 `production_schemes_invalid` 原因，
+本次全部返回 `false`，不记录完整文件；合法空名单不记错，也不增加存在性 SQL。
+数据库查询或原有 Dashboard 合同失败仍返回 503。Detail 不读取名单、不增加字段，仅共用 V6 schema。
+
+完整文件替换后下一次成功 Summary 撤下旧标记并应用新名单，沿用五分钟刷新与下述 stale 行为；
+HTTP 失败仍保留已提交旧快照。两机各读本地文件，程序不自动同步。
+初始化、结构预检、原子替换、双机一致性及纠错步骤见[部署手册](../../deploy/README.md#生产方案名单维护)。
+公共检查复用现有 Dashboard builder/Gate 测试；非空、替换、故障恢复及长名称视觉在隔离环境验收，
+真实环境按已获授权的完整名单核对 API 与页面，不能注入示例名单或以文件存在代替展示验收。
+
 ## 浏览器刷新与失败展示
 
 Dashboard 展示离散发布的数据库事实。首次认证后立即读取；可见页面每五分钟刷新，隐藏时停止计时器；
@@ -61,7 +87,7 @@ exact 另由数据库与 release 核验，Dashboard 不提供该字段。
 现有 [`DashboardGate`](../../harness/gates/dashboard_gate.py) 支持 `fetcher` 注入；用授权会话取得的真实
 HTTP 响应交给 `DashboardGate(fetcher=...)`。fetcher 接收 URL、`timeout_sec` 和 `max_response_bytes`，
 须按这些限制读取响应、校验 UTF-8/JSON 并返回 `(payload, http_status)`；自定义 fetcher 不能绕过读取预算，
-不得构造成功状态或伪造 payload。Gate 校验 V5 Summary、active composite、任务/展示身份和回测分区；
+不得构造成功状态或伪造 payload。Gate 校验 V6 Summary、active composite、任务/展示身份和回测分区；
 没有 live 月度计数合法，非 200、超限或非法结构均失败。gzip/no-store/响应头由 API 合同测试保护。
 
 裸 `python -B -m harness gate dashboard --api-base-url ...` 的默认 fetcher **不携带登录会话**，

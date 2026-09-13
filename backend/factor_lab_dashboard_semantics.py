@@ -25,7 +25,7 @@ from shared.task_specs import (
 )
 
 
-DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v5"
+DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v6"
 FACTOR_LAB_HISTORY_START_DATE = "2025-01-01"
 FACTOR_LAB_LIVE_TARGET_START_DATE = date(2026, 6, 1)
 DETAIL_ROW_FIELDS = (
@@ -133,6 +133,7 @@ DETAIL_TOP_LEVEL_FIELDS = {
     "rows",
 }
 SCHEME_FIELDS = {
+    "is_production",
     "scheme_id",
     "base_scheme_id",
     "name",
@@ -481,7 +482,7 @@ def _safe_actual_locator_date(value: str) -> str:
 
 
 def compact_detail_row(row: Mapping[str, Any], *, source: str) -> list[Any]:
-    """把按需展示明细编码为 V5 固定六列数组。"""
+    """把按需展示明细编码为 V6 固定六列数组。"""
     if source not in {"live", "backtest"}:
         raise DashboardDataError(f"unknown dashboard detail source: {source}")
 
@@ -500,7 +501,7 @@ def compact_detail_row(row: Mapping[str, Any], *, source: str) -> list[Any]:
 
 
 def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
-    """校验 Dashboard V5 summary 或 detail 的精确公开合同。"""
+    """校验 Dashboard V6 summary 或 detail 的精确公开合同。"""
     if not isinstance(payload, Mapping):
         raise DashboardDataError("dashboard payload must be an object")
     if payload.get("schema_version") != DASHBOARD_SCHEMA_VERSION:
@@ -551,6 +552,8 @@ def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
             expected=SCHEME_FIELDS,
             context=f"dashboard scheme[{scheme_index}]",
         )
+        if type(scheme.get("is_production")) is not bool:
+            raise DashboardDataError("scheme is_production must be a boolean")
         task_type = scheme.get("task_type")
         if task_type not in VALID_TASK_TYPES:
             raise DashboardDataError(

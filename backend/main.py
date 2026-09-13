@@ -557,7 +557,7 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
 
 
 def _dashboard_detail_query(request: Request) -> dict[str, str] | None:
-    """严格解析同一路径的 V5 detail 三参数模式。"""
+    """严格解析同一路径的 V6 detail 三参数模式。"""
     raw_query = request.scope.get("query_string", b"")
     if not raw_query:
         return None

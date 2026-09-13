@@ -28,7 +28,7 @@ def _authenticated_dashboard_request():
 
 def _payload(snapshot_id: str) -> dict[str, Any]:
     return {
-        "schema_version": "factor-lab-dashboard-v5",
+        "schema_version": "factor-lab-dashboard-v6",
         "representation": "summary",
         "snapshot_id": snapshot_id,
         "generated_at": "2026-08-07T16:41:00+08:00",
@@ -144,7 +144,7 @@ def test_dashboard_accepts_only_exact_detail_query(monkeypatch) -> None:
 
     calls: list[dict[str, str]] = []
     detail = {
-        "schema_version": "factor-lab-dashboard-v5",
+        "schema_version": "factor-lab-dashboard-v6",
         "representation": "detail",
         "snapshot_id": "detail-1",
         "generated_at": "2026-08-07T16:41:00+08:00",

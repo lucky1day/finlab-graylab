@@ -93,6 +93,32 @@ commit/runtime/cache 漂移、外层同名覆盖及外置 `PYTHON*` 变量；配
 安装器创建 runtime 下 logs，模板日志不写开发目录。SSH tunnel 不执行项目代码，以用户主目录为 cwd；
 其 key/user、cwd 和日志由本页漂移审计核对，不参与应用代码切换。
 
+### 生产方案名单维护
+
+文件格式、匹配与失败语义以[Dashboard 合同](../docs/operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md#生产方案标记)为准。
+名单位于本机 runtime 的 `config/production_schemes.json`，不进入 release；首次启用为 `{}`。
+后续非空名单由运维从当前 Dashboard 的 `schemes[].scheme_id` 确认，不由发布工具选择。
+
+1. 准备完整候选 JSON；在已核验 current cwd、使用本机服务 Python，以纯结构校验预检候选文件：
+
+   ```bash
+   python -B - /absolute/path/to/candidate.json <<'PY_CHECK'
+   import json
+   import sys
+   from pathlib import Path
+   from backend.factor_lab_dashboard import validate_production_scheme_ids
+   ids = validate_production_scheme_ids(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")))
+   print(f"结构通过：{len(ids)} 个 ID；仍需本机 Registry 与页面验收")
+   PY_CHECK
+   ```
+
+2. 结构失败保留当前文件。通过后将同一候选分发两机，各在本机配置目录准备临时普通文件；目录由服务用户拥有且为 `0700`，
+   文件同用户拥有、`0600`，确认服务可读后同目录原子替换。先保留当前文件及摘要，以便恢复误选。
+3. 读回两机完整文件 SHA-256 一致，使用正常登录刷新，核对 Summary 布尔值与候选名称旁的新增、移除、保留标记，
+   并检查名单错误日志。本机未知 ID 会被忽略，不能只以结构预检通过认定名单生效。
+4. 名单更新无需发布或重启；误选时完整替换正确名单，清空用 `{}` 或 `{"scheme_ids": []}`，不涉及数据库恢复。
+   两端替换期间可能短暂不同，完成标准是两端文件一致且页面与名单相符。
+
 ### 手工 Harness 的目标环境绑定
 
 SOP 中的 `python -B -m harness ...` 只展示操作参数，**不会自动加载目标机服务配置**。进入候选目录或激活 conda 也不等于已经绑定目标环境。执行手工回测、激活、补缺或项目数据库查询前，按操作所需能力准备并核验本次子进程；只读 identity 查询无需启动算法或准备算法输入。该环境核验也适用于手工 migration 和认证 CLI：

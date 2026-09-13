@@ -484,7 +484,7 @@
     })[0] || null;
   }
 
-  var DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v5";
+  var DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v6";
   var DASHBOARD_DETAIL_ROW_FIELDS = [
     "source",
     "predict_date",
@@ -537,6 +537,7 @@
     "base_scheme_id",
     "name",
     "owner",
+    "is_production",
     "description",
     "horizon",
     "task_type",
@@ -576,7 +577,7 @@
     if (actual.length !== required.length || actual.some(function (field, index) {
       return field !== required[index];
     })) {
-      throw dashboardDataError(context + " fields must match v5 exactly");
+      throw dashboardDataError(context + " fields must match v6 exactly");
     }
   }
 
@@ -823,7 +824,7 @@
         payload.monthly_row_fields.some(function (field, index) {
           return field !== DASHBOARD_MONTHLY_ROW_FIELDS[index];
         }) || new Set(payload.monthly_row_fields).size !== payload.monthly_row_fields.length) {
-      throw dashboardDataError("monthly_row_fields must match v5 exactly");
+      throw dashboardDataError("monthly_row_fields must match v6 exactly");
     }
     var snapshotId = requireDashboardString(payload.snapshot_id, "snapshot_id", false);
     if (!DASHBOARD_SNAPSHOT_ID_PATTERN.test(snapshotId)) {
@@ -883,10 +884,14 @@
       if (typeof scheme.description !== "string") {
         throw dashboardDataError(context + ".description must be a string");
       }
+      if (typeof scheme.is_production !== "boolean") {
+        throw dashboardDataError(context + ".is_production must be a boolean");
+      }
       var decodedScheme = {
         schemeId: schemeId,
         name: requireDashboardString(scheme.name, context + ".name", false),
         owner: requireDashboardOwner(scheme.owner, context + ".owner"),
+        isProduction: scheme.is_production,
         description: scheme.description,
         taskType: taskType,
         status: scheme.status,
@@ -936,14 +941,14 @@
   function decodeDashboardDetailPayload(payload, expected) {
     requireExactDashboardFields(payload, DASHBOARD_DETAIL_TOP_FIELDS, "detail payload");
     if (payload.schema_version !== DASHBOARD_SCHEMA_VERSION || payload.representation !== "detail") {
-      throw dashboardDataError("detail payload must be dashboard v5 detail");
+      throw dashboardDataError("detail payload must be dashboard v6 detail");
     }
     if (!Array.isArray(payload.row_fields) ||
         payload.row_fields.length !== DASHBOARD_DETAIL_ROW_FIELDS.length ||
         payload.row_fields.some(function (field, index) {
           return field !== DASHBOARD_DETAIL_ROW_FIELDS[index];
         }) || new Set(payload.row_fields).size !== payload.row_fields.length) {
-      throw dashboardDataError("detail row_fields must match v5 exactly");
+      throw dashboardDataError("detail row_fields must match v6 exactly");
     }
     var snapshotId = requireDashboardString(payload.snapshot_id, "detail snapshot_id", false);
     if (!DASHBOARD_SNAPSHOT_ID_PATTERN.test(snapshotId)) {
@@ -1004,6 +1009,7 @@
         column: column.id,
         name: scheme.name,
         owner: scheme.owner,
+        isProduction: scheme.isProduction,
         description: scheme.description,
         status: scheme.status,
         deploymentDate: formatDeploymentDate(scheme.deployedAt),
@@ -1618,13 +1624,16 @@
     var metricSamples = requireMetricSamples(metric, "ranking metric");
     var deploymentDate = requireSchemeDeploymentDate(scheme, "ranking scheme");
     var schemeName = escapeHtml(scheme.name);
+    var productionMarker = scheme.isProduction
+      ? '<span class="factor-production-marker" role="img" aria-label="生产方案"></span>'
+      : '';
     var remark = getSchemeRemark(scheme);
     var remarkControl = remark
       ? '<button type="button" class="factor-remark-detail" data-factor-remark-open="' + escapeHtml(scheme.id) + '" aria-controls="factorRemarkPopover" aria-expanded="false"><span aria-hidden="true">ⓘ</span><span>详情</span></button>'
       : '<span class="factor-remark-empty">--</span>';
     return '<tr' + selectedClass + ' data-factor-scheme-id="' + escapeHtml(scheme.id) + '">' +
       '<td>' + (index + 1) + '</td>' +
-      '<td><strong class="factor-scheme-name" title="' + schemeName + '">' + schemeName + '</strong></td>' +
+      '<td><div class="factor-scheme-heading"><strong class="factor-scheme-name" title="' + schemeName + '">' + schemeName + '</strong>' + productionMarker + '</div></td>' +
       '<td class="' + getMetricClass(metric.overall) + '"><div class="factor-score-cell"><span>' + formatPercent(metric.overall) + '（' + metric.correct + '/' + metricSamples + '）</span><span class="factor-score-bar" aria-hidden="true"><span style="width:' + barWidth.toFixed(1) + '%"></span></span></div></td>' +
       '<td><span class="factor-sample-count">' + metric.samples + '</span></td>' +
       '<td class="' + getMetricClass(metric.upPrecision) + '">' + formatPercent(metric.upPrecision) + '</td>' +

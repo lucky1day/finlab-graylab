@@ -107,7 +107,7 @@ def test_v5_summary_aggregates_rows_and_reads_owner() -> None:
     engine = _engine()
     payload = build_factor_lab_dashboard(engine)
 
-    assert payload["schema_version"] == "factor-lab-dashboard-v5"
+    assert payload["schema_version"] == "factor-lab-dashboard-v6"
     assert payload["representation"] == "summary"
     assert payload["live_target_start_date"] == "2026-06-01"
     scheme = payload["schemes"][0]
@@ -394,3 +394,95 @@ def test_related_actual_history_still_fails_closed_at_source_budget() -> None:
         match="dataset=live_actuals limit=80000",
     ):
         build_factor_lab_dashboard(engine)
+
+
+@pytest.fixture(autouse=True)
+def production_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("BFL_RUNTIME_ROOT", str(tmp_path))
+    path = tmp_path / "config" / "production_schemes.json"
+    path.parent.mkdir()
+    path.write_text("{}", encoding="utf-8")
+    return path
+
+
+def test_production_membership_replaces_without_changing_facts(production_file, caplog):
+    import json
+
+    engine = _engine()
+    with engine.begin() as conn:
+        conn.execute(text("""INSERT INTO t_scheme_registry
+            SELECT 'demo_daily__h1__10Y', base_scheme_id, runtime_type, name,
+            owner, description, horizon, task_type, frequency, '10Y', 'paused', deployed_at
+            FROM t_scheme_registry"""))
+    baseline = build_factor_lab_dashboard(engine)["schemes"]
+    active = "demo_daily__h1__5Y"
+    paused = "demo_daily__h1__10Y"
+    production_file.write_text(json.dumps({"scheme_ids": [active, paused, "absent"]}))
+    selected = build_factor_lab_dashboard(engine)["schemes"]
+    assert selected == [{**baseline[0], "is_production": True}]
+    assert "absent" in caplog.text and paused not in caplog.text
+    production_file.write_text(json.dumps({"scheme_ids": [paused]}))
+    assert build_factor_lab_dashboard(engine)["schemes"] == baseline
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE t_scheme_registry SET status='active' WHERE scheme_id=:id"), {"id": paused})
+        conn.execute(text("INSERT INTO t_target_registry VALUES ('10Y','10年','bond','yield',2,'active','{}')"))
+    restored = build_factor_lab_dashboard(engine)["schemes"]
+    assert {row["scheme_id"] for row in restored if row["is_production"]} == {paused}
+    for content in ("{}", '{"scheme_ids": []}', 'broken', '{"scheme_ids": ["demo_daily__h1__5Y"]}'):
+        production_file.write_text(content)
+        result = build_factor_lab_dashboard(engine)["schemes"]
+        assert {row["scheme_id"] for row in result if row["is_production"]} == (
+            {active} if content.startswith('{"scheme_ids": ["') else set()
+        )
+    production_file.unlink()
+    assert not any(row["is_production"] for row in build_factor_lab_dashboard(engine)["schemes"])
+    engine.dispose()
+
+
+@pytest.mark.parametrize("payload", [[], {"other": []}, {"scheme_ids": None},
+    {"scheme_ids": [1]}, {"scheme_ids": [""]}, {"scheme_ids": [" A"]},
+    {"scheme_ids": ["A", "A"]}])
+def test_production_structure_errors_hide_markers(production_file, payload):
+    import json
+
+    production_file.write_text(json.dumps(payload))
+    engine = _engine()
+    assert build_factor_lab_dashboard(engine)["schemes"][0]["is_production"] is False
+    engine.dispose()
+
+
+@pytest.mark.parametrize("root", [None, "relative", "/nonexistent-marker-runtime"])
+def test_production_runtime_has_no_fallback(monkeypatch, root):
+    from backend import factor_lab_dashboard as dashboard
+
+    if root is None:
+        monkeypatch.delenv("BFL_RUNTIME_ROOT")
+    else:
+        monkeypatch.setenv("BFL_RUNTIME_ROOT", root)
+    monkeypatch.setattr(dashboard, "resolve_runtime_state_path", lambda **_: pytest.fail("fallback"))
+    engine = _engine()
+    assert build_factor_lab_dashboard(engine)["schemes"][0]["is_production"] is False
+    engine.dispose()
+
+
+def test_marker_lookup_is_batched_and_database_failure_is_not_hidden(production_file):
+    from sqlalchemy import event
+
+    engine = _engine()
+    lookups = []
+    def observe(conn, cursor, statement, parameters, context, executemany):
+        if "WHERE scheme_id IN" in statement:
+            lookups.append(statement)
+            if len(lookups) > 1:
+                raise RuntimeError("marker database failure")
+    event.listen(engine, "before_cursor_execute", observe)
+    build_factor_lab_dashboard(engine)
+    assert lookups == []
+    production_file.write_text('{"scheme_ids": ["demo_daily__h1__5Y", "absent"]}')
+    build_factor_lab_dashboard(engine)
+    assert len(lookups) == 1
+    build_factor_lab_dashboard_detail(engine, scheme_id="demo_daily__h1__5Y", month="2026-06", source="all")
+    assert len(lookups) == 1
+    with pytest.raises(RuntimeError, match="marker database failure"):
+        build_factor_lab_dashboard(engine)
+    engine.dispose()

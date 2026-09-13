@@ -279,7 +279,7 @@ DASHBOARD_TOP_FIELDS = {
     "target_labels", "schemes",
 }
 DASHBOARD_SCHEME_FIELDS = {
-    "scheme_id", "base_scheme_id", "name", "owner", "description", "horizon",
+    "scheme_id", "base_scheme_id", "name", "owner", "is_production", "description", "horizon",
     "task_type", "frequency", "target_tenor", "target_label", "status",
     "deployed_at", "monthly_rows", "backtest",
 }
@@ -325,7 +325,7 @@ if kind in {"dashboard", "dashboard-detail"}:
         raise SystemExit(1) from exc
     if not isinstance(payload, dict):
         raise SystemExit(1)
-    if payload.get("schema_version") != "factor-lab-dashboard-v5":
+    if payload.get("schema_version") != "factor-lab-dashboard-v6":
         raise SystemExit(1)
     if kind == "dashboard-detail":
         if payload.get("representation") != "detail":
@@ -361,6 +361,7 @@ if kind in {"dashboard", "dashboard-detail"}:
         or set(scheme) != DASHBOARD_SCHEME_FIELDS
         or not isinstance(scheme.get("scheme_id"), str)
         or not scheme["scheme_id"]
+        or not isinstance(scheme.get("is_production"), bool)
         or (
             scheme.get("backtest") is not None
             and (
@@ -428,7 +429,7 @@ run_request versioned-js GET \
 assert_last_content_encoding versioned-js-gzip gzip
 assert_last_vary_token versioned-js-vary Accept-Encoding
 assert_body_valid \
-  versioned-js-body text gzip "$LAST_BODY" 'factor-lab-dashboard-v5'
+  versioned-js-body text gzip "$LAST_BODY" 'factor-lab-dashboard-v6'
 run_request asset-icon GET "$APP_URL/assets/aifin-lab-icon.svg" 200
 run_request asset-logo GET "$APP_URL/assets/aifin-lab-logo.svg" 200
 

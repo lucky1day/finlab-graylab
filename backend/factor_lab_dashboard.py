@@ -3,12 +3,14 @@ from __future__ import annotations
 import gzip
 import json
 import logging
+import os
 import time
 from collections import OrderedDict, defaultdict
 from copy import deepcopy
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
+from pathlib import Path
 from threading import Lock
 from typing import Any, Iterator, Mapping
 from uuid import uuid4
@@ -17,6 +19,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Connection, Engine
 
+from shared.runtime_paths import RUNTIME_ROOT_ENV, resolve_runtime_state_path
 from shared.scheme_config_schema import normalize_scheme_owner
 
 from backend.factor_lab_dashboard_semantics import (
@@ -181,10 +184,55 @@ def dashboard_read_connection(engine: Engine) -> Iterator[Connection]:
             connection.close()
 
 
+def validate_production_scheme_ids(payload: object) -> set[str]:
+    """校验运维完整名单；不推断或扩展 Registry 身份。"""
+    if not isinstance(payload, dict) or set(payload) - {"scheme_ids"}:
+        raise ValueError("expected an object containing only scheme_ids")
+    members = payload.get("scheme_ids", [])
+    if not isinstance(members, list) or any(
+        not isinstance(value, str) or not value or value != value.strip()
+        for value in members
+    ):
+        raise ValueError("scheme_ids must be nonempty trimmed strings in an array")
+    if len(set(members)) != len(members):
+        raise ValueError("scheme_ids contains duplicates")
+    return set(members)
+
+
+def _read_production_scheme_ids() -> set[str]:
+    """每次 Summary 独立读取外置名单；文件错误只撤下标记。"""
+    try:
+        raw_root = os.environ.get(RUNTIME_ROOT_ENV, "")
+        root = Path(raw_root)
+        if not raw_root or not root.is_absolute() or not root.is_dir():
+            raise ValueError("BFL_RUNTIME_ROOT must name an existing absolute directory")
+        path = resolve_runtime_state_path(
+            relative_path="config/production_schemes.json",
+            development_default=root / "config/production_schemes.json",
+        )
+        return validate_production_scheme_ids(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.error("production_schemes_invalid: %s", exc)
+        return set()
+
+
+def _existing_production_scheme_ids(connection: Connection, candidates: set[str]) -> set[str]:
+    """在本次只读事务内批量核验存在性；数据库错误向上抛出。"""
+    if not candidates:
+        return set()
+    query = text(
+        "SELECT scheme_id FROM t_scheme_registry WHERE scheme_id IN :scheme_ids"
+    ).bindparams(bindparam("scheme_ids", expanding=True))
+    existing = set(connection.execute(query, {"scheme_ids": sorted(candidates)}).scalars())
+    for scheme_id in sorted(candidates - existing):
+        logger.error("production_scheme_not_found: %r", scheme_id)
+    return existing
+
+
 def build_factor_lab_dashboard(
     engine: Engine,
 ) -> dict[str, Any]:
-    """在一个一致性事务内构建不含逐日明细的 V5 首屏。"""
+    """在一个一致性事务内构建不含逐日明细的 V6 首屏。"""
     return _build_dashboard_representation(engine)
 
 
@@ -195,7 +243,7 @@ def build_factor_lab_dashboard_detail(
     month: str,
     source: str,
 ) -> dict[str, Any] | None:
-    """按 active composite scheme、月份和来源构建 V5 明细。"""
+    """按 active composite scheme、月份和来源构建 V6 明细。"""
     if source not in {"all", "backtest", "live"}:
         raise ValueError("dashboard detail source is invalid")
     if not isinstance(month, str) or len(month) != 7:
@@ -219,8 +267,10 @@ def _build_dashboard_representation(
     captured = datetime.now(SHANGHAI_TIMEZONE)
     display_until = captured.date().isoformat()
 
+    production_candidates = _read_production_scheme_ids() if registry_scheme_id is None else set()
     db_read_started_at = time.perf_counter()
     with dashboard_read_connection(engine) as connection:
+        production_ids = _existing_production_scheme_ids(connection, production_candidates)
         registry_rows = _read_active_registry(
             connection,
             registry_scheme_id=registry_scheme_id,
@@ -427,6 +477,7 @@ def _build_dashboard_representation(
         schemes.append(
             {
                 **scheme,
+                "is_production": scheme["scheme_id"] in production_ids,
                 "target_label": target_labels[scheme["target_tenor"]],
                 "monthly_rows": _monthly_rows(
                     backtest_details=backtest_details,

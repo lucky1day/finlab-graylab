@@ -101,6 +101,7 @@ def _scheme(target_tenor: str, *, with_live: bool) -> dict[str, Any]:
     return {
         "scheme_id": f"{BASE_SCHEME_ID}__h1__{target_tenor}",
         "base_scheme_id": BASE_SCHEME_ID,
+        "is_production": False,
         "name": "Demo Daily",
         "owner": "ALGO-A",
         "description": "Dashboard gate fixture",
@@ -136,7 +137,7 @@ def _payload(
     ]
     schemes.sort(key=lambda row: row["scheme_id"])
     return {
-        "schema_version": "factor-lab-dashboard-v5",
+        "schema_version": "factor-lab-dashboard-v6",
         "representation": "summary",
         "snapshot_id": "dashboard-snapshot-1",
         "generated_at": "2026-08-10T12:00:00+08:00",
@@ -211,6 +212,19 @@ def test_dashboard_gate_accepts_existing_and_empty_live_months(
                 200,
             ),
         ),
+        *[
+            (
+                f"invalid_production_flag_{value!r}",
+                lambda payload, value=value: lambda _url, **_kwargs: (
+                    {**payload, "schemes": [
+                        {**scheme, "is_production": value}
+                        for scheme in payload["schemes"]
+                    ]},
+                    200,
+                ),
+            )
+            for value in (1, "true", None)
+        ],
     ],
 )
 def test_dashboard_gate_fails_closed_on_probe_or_shared_validation_errors(

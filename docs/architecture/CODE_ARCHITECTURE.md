@@ -121,7 +121,7 @@ Dashboard 只从产品事实表聚合逐点结果。
        ├─ 每个请求直接以 dashboard 专用只读 Engine 建立当前视图
        ├─ 同一 connection / repeatable-read readonly transaction
        ├─ active Registry + 产品预测事实 + scoped Actuals + canonical backtest 元数据批量 SELECT
-       └─ canonical 选择 → V5 summary/detail response → gzip/identity 表示
+       └─ canonical 选择 → V6 summary/detail response → gzip/identity 表示
 
 ```
 

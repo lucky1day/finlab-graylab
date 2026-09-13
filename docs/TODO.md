@@ -45,6 +45,10 @@
 
 以上观察和验证队列不阻塞新 Blackbox 方案开始 Intake；入库仍按自身前置条件执行。
 
+## Dashboard 生产方案标记
+
+功能已实现并完成隔离验证；双机发布与初始空名单验收尚待完成。长期语义见[Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md#生产方案标记)，发布与名单步骤见[部署手册](../deploy/README.md#生产方案名单维护)。本次计划及证据外置于 `/Users/macstudio0/bond-factor-lab-runtime/releases/dashboard-production-marker-20260913/`。
+
 ## Dashboard 认证探针入口
 
 现有 Dashboard Gate 默认 HTTP fetcher 不携带登录会话，CLI 未提供认证参数，不能直接作为已启用认证环境的验收命令。当前可用方法见[Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md#认证响应与合同验收)。通用 CLI 的完成标准是安全传递会话、保护凭据并验证真实 HTTP 合同，需单独安排实现与验收。

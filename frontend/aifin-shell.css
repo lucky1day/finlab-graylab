@@ -1510,8 +1510,17 @@ button {
   color: var(--text);
 }
 
+.factor-scheme-heading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .factor-scheme-name {
   display: -webkit-box;
+  min-width: 0;
   max-width: 100%;
   overflow: hidden;
   line-height: 1.35;
@@ -1521,6 +1530,14 @@ button {
 
 .factor-scheme-name {
   overflow-wrap: anywhere;
+}
+
+.factor-production-marker {
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  background: var(--accent);
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
 }
 
 .factor-ranking-table th:nth-child(n + 4),

@@ -254,7 +254,7 @@ target_date  = T + horizon
 
 产品指标只聚合 §4 定义的产品事实，不读取回测证据明细参与逐点选择。
 
-V5 的唯一聚合表示是服务端 Summary：后端从产品事实按 `target_date` 确定月份与 source，计算统计计数。
+V6 的唯一聚合表示是服务端 Summary：后端从产品事实按 `target_date` 确定月份与 source，计算统计计数。
 浏览器可对 Summary 计数做筛选区间求和，并计算准确率、precision 和 recall 来展示月度表、排行、趋势及汇总卡；
 不得重新扫描或聚合预测明细。
 Detail 仅在用户打开某方案月份时按需请求；不能用 Detail 缓存或旧 `monthly_metrics` 重建第二套 Summary。
@@ -265,7 +265,7 @@ Detail 仅在用户打开某方案月份时按需请求；不能用 Detail 缓�
 不根据 `frequency/horizon` 猜列、桶或目标日期。actual join 使用 `target_tenor + target_date + target_rule`，
 桶的日期指针遵守 §4.1。
 
-Dashboard V5 的公开结果类型只按 `target_date` 分类：
+Dashboard V6 的公开结果类型只按 `target_date` 分类：
 
 - `target_date < 2026-06-01`：`backtest` / 回测。
 - `target_date >= 2026-06-01`：`live` / 实盘。
@@ -279,7 +279,7 @@ Dashboard V5 的公开结果类型只按 `target_date` 分类：
 Summary 与 Detail 必须使用同一映射，Detail 按展示月份反向定位底层 target 区间；
 此标签转换不修改业务日期、Actual 键或公开历史/实盘分区。映射由
 [Dashboard 实现](../../backend/factor_lab_dashboard.py)的 `_display_month` 与 `_detail_target_date_range` 统一执行，
-公共合同见[Dashboard V5 测试](../../tests/test_dashboard_v5_builder.py)。
+公共合同见[Dashboard V6 测试](../../tests/test_dashboard_v5_builder.py)。
 
 前端展示的部署时间只能来自 active `t_scheme_registry.deployed_at`。`deployed_at` 的业务语义是该注册业务方案激活并进入业务可见状态的日期，不是定时任务已生产挂载的证据；缺失时说明 registry 数据不完整，后端 API 和前端都必须 fail-closed。生产调度挂载必须另由对应 installed plist、`launchctl` loaded state 和任务日志共同证明。禁止 hardcode 默认部署日、scheme_id override 或在前端用灰度起点/正式实盘起点替代部署时间。
 
