@@ -16,17 +16,16 @@
 | 当前 active 执行身份 | 92 个 Blackbox base | 92 个 Blackbox base + 9 个 W4 Native base |
 | Dashboard | 96 个 target | 105 个 target |
 | 调度控制面 | systemd one-shot/timer | launchd + installed plist |
-| current release | `b3479c62e06f2dcf25abcb8b1645bc3a31692ccd` | 同一提交、同一 archive |
-| previous release | `6ffc8075908a0703dfbef19381be88728b6d1429` | 同左 |
+| current release | `6fff43e2b16855a7a97fb501c2b2425e8b9784f7` | 同一提交、同一 archive |
+| previous release | `b3479c62e06f2dcf25abcb8b1645bc3a31692ccd` | 同左 |
 | schema | 025 APPLIED | 025 APPLIED |
 
-- 双机 archive SHA-256：`db08d982882f7216a8d7ecac689c9f1b62074deb2bd3fac9307b80f5cee23c08`。
+- 双机 archive SHA-256：`3a102a16e0b756ab93a22ee2915e5e3a4f41da3b0cc71a11a5c205c7a12724cc`。
 - 两机 Backend cwd、健康及 immutable 源码树复验通过；ECS 验收后才将同一 archive 晋级 Mac3。方案与数据验收见下节。
   域名仍由 Mac3 服务；DNS、Nginx、认证和既有 SSH 隧道未改变。
 - 集成分支为 `codex/develop`。开发分支的代码或文档提交不代表新的生产 release。
   实时提交以 Git 引用为准，发布以目标机 manifest、current/previous 和进程 cwd 为准。
-- 当前 release 已包含无调用旧回测框架与重复文档清理。清理验收证据：
-  [/Users/macstudio0/bond-factor-lab-runtime/releases/framework-cleanup-20260913/verification.json](/Users/macstudio0/bond-factor-lab-runtime/releases/framework-cleanup-20260913/verification.json)。
+- 当前 release 包含下述平台清理与收盘候选修复；[发布验收](/Users/macstudio0/bond-factor-lab-runtime/releases/platform-cleanup-20260913/delivery-report.json)及[证据索引](/Users/macstudio0/bond-factor-lab-runtime/releases/platform-cleanup-20260913/README.md)保存双机安装、数据、输入、HTTP 和控制面读回。此前框架清理证据仍在[原核验记录](/Users/macstudio0/bond-factor-lab-runtime/releases/framework-cleanup-20260913/verification.json)。
 
 ## 八套新方案交付状态
 
@@ -93,11 +92,15 @@ W4 Native 与 Blackbox 的实际范围以[部署矩阵](../deploy/scheme_deploym
 - confidence 完整恢复集必须同时包含 SQL gzip 与 `original-audit-json.json.gz`；不能只恢复 SQL 而丢失原始 JSON 精度。
   先在隔离库验证恢复，再按明确授权处理精确对象；备份、原始验收回执和 immutable archive 不随文档清理删除。
 
-## 开发工作区清理与收盘候选修复
+## 已发布的平台清理与收盘候选修复
 
 2026-09-13，开发工作区移除 Native onboard、专属 Gate、maintenance、新版本激活及两表验证记录写入，并退役 Native 独立历史回测、旧分步写入和未接入补平实现。新回测仅保留月度与期限汇总及必要身份、输入信息，不再生成旧固定分期或空排除摘要。W4 按[固定版本运行边界](../AGENTS.md#算法与数据不变量)保留；Blackbox 入库与公共运行校验继续维护。历史 `t_harness_runs`、`t_harness_gate_results` 及迁移定义保留，当前运行不依赖它们。
 
-收盘入口已改为在预规划前解析本机生效生命周期，与 one-shot 使用同一规则，防止 canonical 初始状态掩盖已激活方案。本地全仓回归与独立审查通过；认证 MySQL 集成因未配置隔离库跳过。方案与上游原件、迁移和部署配置字节未变，W4 九套 exact 保持原值。此次未发布，不代表生产 release 已切换或重新核验九套自然调度。
+收盘入口在预规划前解析本机生效生命周期，与 one-shot 使用同一规则，防止 canonical 初始状态掩盖已激活方案。清理后的全仓回归为 638 passed、4 skipped；跳过项为未配置隔离库的认证 MySQL 集成。方案与上游原件、迁移和部署配置字节未变。
+
+双机已发布同包，仅刷新 Backend。发布前后本机 Registry、exact、历史与预测条数、输入身份及 Dashboard 内容一致；认证 HTTP Summary 全量对照、八套新方案 Gate 与九月 Detail 对照通过。ECS 的 5 个 timer 保持 enabled/active、Persistent=false；Mac3 的 7 个 launchd 任务配置检查通过，W4 九套 adapter、来源包、动态入口、解释器 ABI 与依赖可用。本次未运行算法或写业务事实，未跨越正式触发窗口；自然运行仍按 TODO 独立观察。
+
+Mac3 公网首轮验收出现一次 HTTP 504，同期 Backend 有 5.37 秒慢请求；随后降频复核的 17 个请求与浏览器刷新、明细均通过。原始异常保留在上述证据目录，原因尚未定位，继续纳入[公网可靠性观察](TODO.md#其他未闭环队列)，不据此宣称长期性能问题已解决。
 
 ## 当前输入与产品版本
 
