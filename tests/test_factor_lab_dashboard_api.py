@@ -139,25 +139,6 @@ def test_dashboard_get_and_head_build_independently_without_cache_headers(
         assert "x-dashboard-warning" not in headers
 
 
-def test_dashboard_rejects_query_before_reading_database(monkeypatch) -> None:
-    from backend import main
-
-    calls = 0
-
-    def build(_engine: object) -> dict[str, Any]:
-        nonlocal calls
-        calls += 1
-        return _payload("must-not-build")
-
-    monkeypatch.setattr(main, "build_factor_lab_dashboard", build)
-    status, headers, body, _ = _request(main.app, query_string=b"ignored=")
-
-    assert status == 400
-    assert json.loads(body) == {"error_code": "dashboard_query_not_allowed"}
-    assert calls == 0
-    assert headers["cache-control"] == "no-store"
-
-
 def test_dashboard_accepts_only_exact_detail_query(monkeypatch) -> None:
     from backend import main
 
@@ -201,6 +182,7 @@ def test_dashboard_accepts_only_exact_detail_query(monkeypatch) -> None:
     ]
 
     for invalid in (
+        b"ignored=",
         b"scheme-id=demo__h1__5Y&month=2026-08",
         b"scheme-id=demo__h1__5Y&month=2026-08&source=all&extra=1",
         b"scheme-id=demo__h1__5Y&scheme-id=demo__h1__5Y&month=2026-08&source=all",

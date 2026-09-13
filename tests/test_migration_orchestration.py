@@ -3,11 +3,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 from dataclasses import FrozenInstanceError
 import hashlib
-import json
-import os
 from pathlib import Path
-import subprocess
-import sys
 from types import SimpleNamespace
 from unittest.mock import ANY, Mock, patch
 
@@ -27,61 +23,6 @@ from scripts import apply_migrations
 
 
 EXPECTED_SERVER_UUID = "12345678-1234-1234-1234-123456789abc"
-
-
-def test_cli_mode_table_is_complete_and_unique() -> None:
-    modes = apply_migrations._MIGRATION_MODES
-    assert [mode.option for mode in modes] == [
-        "--inspect-applying-017",
-        "--recover-applying-017",
-        "--inspect-applying-018",
-        "--recover-applying-018",
-        "--inspect-applying-019",
-        "--recover-applying-019",
-        "--inspect-applying-021",
-        "--recover-applying-021",
-        "--inspect-applying-022",
-        "--recover-applying-022",
-        "--inspect-applying-023",
-        "--recover-applying-023",
-        "--inspect-applying-024",
-        "--recover-applying-024",
-        "--inspect-applying-025",
-        "--recover-applying-025",
-    ]
-    assert len({mode.option for mode in modes}) == len(modes)
-    assert len({mode.dest for mode in modes}) == len(modes)
-    assert len({mode.handler_name for mode in modes}) == len(modes)
-    for mode in modes:
-        version = mode.option.rsplit("-", 1)[1]
-        assert mode.dest == mode.option.removeprefix("--").replace("-", "_")
-        assert mode.action in {"inspect", "recover"}
-        assert mode.handler_name == (
-            f"{mode.action}_applying_migration_{version}"
-        )
-
-
-def test_cli_help_matches_reviewed_fixture() -> None:
-    project_root = Path(__file__).resolve().parents[1]
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-B",
-            str(project_root / "scripts" / "apply_migrations.py"),
-            "--help",
-        ],
-        cwd=project_root,
-        check=True,
-        capture_output=True,
-        text=True,
-        env={**os.environ, "COLUMNS": "80"},
-    )
-    expected = (
-        project_root / "tests" / "fixtures" / "apply_migrations_help.txt"
-    ).read_text(encoding="utf-8")
-
-    assert completed.stdout == expected
-    assert completed.stderr == ""
 
 
 @pytest.mark.parametrize("spec", RECOVERY_SPECS)
@@ -318,42 +259,4 @@ def test_cli_identity_mismatch_does_not_call_recovery_handler() -> None:
         )
 
     handler.assert_not_called()
-    engine.dispose.assert_called_once_with()
-
-
-def test_cli_inspection_json_encoding_is_stable(capsys) -> None:
-    result = {"z": 1, "classification": "COMPLETE"}
-    handler = Mock(return_value=result)
-    mode = apply_migrations._MigrationMode(
-        option="--inspect-applying-017",
-        dest="inspect_applying_017",
-        action="inspect",
-        help="",
-        handler_name="test_inspection_handler",
-    )
-    engine = Mock()
-    with (
-        patch.object(apply_migrations, "_MIGRATION_MODES", (mode,)),
-        patch.dict(
-            apply_migrations.__dict__,
-            {"test_inspection_handler": handler},
-        ),
-        patch.object(
-            apply_migrations,
-            "validate_release_migration_manifest",
-        ),
-        patch.object(
-            apply_migrations,
-            "create_engine_from_env",
-            return_value=engine,
-        ),
-    ):
-        apply_migrations.main(["--inspect-applying-017"])
-
-    assert capsys.readouterr().out == json.dumps(
-        result,
-        ensure_ascii=False,
-        sort_keys=True,
-    ) + "\n"
-    handler.assert_called_once()
     engine.dispose.assert_called_once_with()

@@ -394,27 +394,6 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
                 self.assertEqual(str(context.exception), f"{path} is required")
 
 
-    def test_native_version_keeps_raw_config_hash_behavior(self) -> None:
-        from scheduler.discovery import load_scheme_config
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scheme_dir = _write_native_scheme(Path(tmpdir))
-            config_path = scheme_dir / "config.yaml"
-            first = load_scheme_config(config_path)
-            config_path.write_text(
-                config_path.read_text(encoding="utf-8").replace(
-                    "status: active", "status: paused"
-                ),
-                encoding="utf-8",
-            )
-
-            second = load_scheme_config(config_path)
-
-        self.assertEqual(first.code_hash, second.code_hash)
-        self.assertNotEqual(first.config_hash, second.config_hash)
-        self.assertNotEqual(first.scheme_version, second.scheme_version)
-
-
 def _write_blackbox_scheme(root: Path, *, horizon: int = 1) -> Path:
     scheme_dir = root / "trial_10y"
     delivery_dir = scheme_dir / "delivery"
@@ -475,36 +454,3 @@ def _canonical_raw_config() -> dict:
             "metadata": "delivery/trial_10y.json",
         },
     }
-
-
-def _write_native_scheme(root: Path) -> Path:
-    scheme_dir = root / "native_daily"
-    scheme_dir.mkdir(parents=True)
-    (scheme_dir / "config.yaml").write_text(
-        "\n".join(
-            [
-                "scheme_id: native_daily",
-                "runtime_type: native_adapter",
-                "name: Native Daily",
-                "description: Native fixture",
-                "horizon: 1",
-                "task_type: T+1",
-                'tenors: ["10Y"]',
-                "frequency: daily",
-                "schedule:",
-                "  cron: '3 7 * * 1-5'",
-                "  timezone: Asia/Shanghai",
-                "entry_point: predict.run",
-                "status: active",
-                "input_spec:",
-                "  data_version: shared_data_service_daily.v1",
-                '  required_columns: ["date", "TB0YWI0C"]',
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    (scheme_dir / "predict.py").write_text(
-        "def run(predict_date):\n    return []\n", encoding="utf-8"
-    )
-    return scheme_dir

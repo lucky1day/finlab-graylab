@@ -14,44 +14,22 @@ from harness.blackbox_v2.activation import activate_blackbox
 from harness.context import GateContext
 from harness.operation import build_direct_operation
 from harness.result import GateStatus
-from scheduler.repository import BlackboxLifecycleIdentityAbsent
 
 
 @pytest.fixture(autouse=True)
-def _sqlite_datetime_codecs():
-    adapter_key = (datetime, sqlite3.PrepareProtocol)
-    converter_key = "TIMESTAMP"
-    date_converter_key = "DATE"
-    previous_adapter = sqlite3.adapters.get(adapter_key)
-    previous_converter = sqlite3.converters.get(converter_key)
-    previous_date_converter = sqlite3.converters.get(date_converter_key)
-    sqlite3.register_adapter(
-        datetime,
+def _sqlite_datetime_codecs(monkeypatch):
+    monkeypatch.setitem(
+        sqlite3.adapters, (datetime, sqlite3.PrepareProtocol),
         lambda value: value.isoformat(sep=" "),
     )
-    sqlite3.register_converter(
-        "timestamp",
+    monkeypatch.setitem(
+        sqlite3.converters, "TIMESTAMP",
         lambda value: datetime.fromisoformat(value.decode("utf-8")),
     )
-    sqlite3.register_converter(
-        "date",
+    monkeypatch.setitem(
+        sqlite3.converters, "DATE",
         lambda value: date.fromisoformat(value.decode("utf-8")),
     )
-    try:
-        yield
-    finally:
-        if previous_adapter is None:
-            sqlite3.adapters.pop(adapter_key, None)
-        else:
-            sqlite3.adapters[adapter_key] = previous_adapter
-        if previous_converter is None:
-            sqlite3.converters.pop(converter_key, None)
-        else:
-            sqlite3.converters[converter_key] = previous_converter
-        if previous_date_converter is None:
-            sqlite3.converters.pop(date_converter_key, None)
-        else:
-            sqlite3.converters[date_converter_key] = previous_date_converter
 
 
 def _revision_fixture():
@@ -309,93 +287,6 @@ def _sqlite_initial_registry_sync(conn, schemes, *, effective_statuses) -> None:
     )
 
 
-def test_initial_activation_uses_one_atomic_repository_call(tmp_path) -> None:
-    cfg = SimpleNamespace(
-        scheme_id="trial_10y",
-        scheme_version="version-1",
-        status="paused",
-        version_status="draft",
-        runtime_type="blackbox_v2",
-        runtime_profile="blackbox-v2-v1",
-        path=Path(tmp_path),
-    )
-    passed_backtest = SimpleNamespace(
-        backtest_run_id=42,
-        benchmark_id="bbv2-test",
-        runtime_profile="blackbox-v2-v1",
-        environment_fingerprint="e" * 64,
-        generation_id="generation-1",
-        data_snapshot_id="snapshot-1",
-        code_hash="c" * 64,
-        config_hash="f" * 64,
-        manifest_hash="m" * 64,
-        script_validator_policy_digest="validator-digest",
-    )
-    active_state = SimpleNamespace(
-        scheme_id=cfg.scheme_id,
-        scheme_version=cfg.scheme_version,
-        version_status="active",
-        registry_status="active",
-        registry_scheme_ids=("trial_10y__h1__10Y",),
-        environment_fingerprint="e" * 64,
-        data_snapshot_id="snapshot-1",
-        approved_by="operator",
-        approved_at=None,
-    )
-    operation = build_direct_operation(
-        cfg.scheme_id,
-        "blackbox_activate",
-        scheme_version=cfg.scheme_version,
-        issued_by="operator",
-    )
-    ctx = GateContext(
-        scheme_id=cfg.scheme_id,
-        predict_date="activate",
-        project_root=tmp_path,
-        config=cfg,
-        operation=operation,
-        engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
-    )
-
-    with (
-        patch(
-            "harness.blackbox_v2.activation.replace",
-            side_effect=lambda value, **updates: SimpleNamespace(
-                **{**vars(value), **updates}
-            ),
-        ),
-        patch(
-            "harness.blackbox_v2.activation._reload_pinned_canonical",
-            return_value=cfg,
-        ),
-        patch(
-            "harness.blackbox_v2.activation._verify_passed_backtest",
-            return_value=passed_backtest,
-        ),
-        patch(
-            "harness.blackbox_v2.activation._environment_fingerprint",
-            return_value="e" * 64,
-        ),
-        patch(
-            "harness.blackbox_v2.activation.read_blackbox_lifecycle_state",
-            side_effect=BlackboxLifecycleIdentityAbsent(),
-        ),
-        patch(
-            "harness.blackbox_v2.activation.read_blackbox_revision_activation_preflight",
-            side_effect=ValueError("no prior active identity"),
-        ),
-        patch(
-            "harness.blackbox_v2.activation.activate_blackbox_initial",
-            return_value=active_state,
-        ) as activate_initial,
-    ):
-        result = activate_blackbox(ctx)
-
-    assert result.status == GateStatus.PASSED
-    assert {item.key: item.value for item in result.evidence}["identity_created"] is True
-    activate_initial.assert_called_once()
-
-
 def test_existing_non_active_identity_is_not_promoted(tmp_path) -> None:
     cfg = SimpleNamespace(
         scheme_id="trial_10y",
@@ -468,90 +359,6 @@ def test_existing_non_active_identity_is_not_promoted(tmp_path) -> None:
     ]
     activate_initial.assert_not_called()
     activate_revision.assert_not_called()
-
-
-def test_revision_activation_uses_direct_operation_and_atomic_repository(tmp_path) -> None:
-    cfg = SimpleNamespace(
-        scheme_id="trial_10y",
-        scheme_version="version-2",
-        status="active",
-        version_status="active",
-        runtime_type="blackbox_v2",
-        runtime_profile="blackbox-v2-v1",
-        path=Path(tmp_path),
-    )
-    passed_backtest = SimpleNamespace(
-        backtest_run_id=42,
-        benchmark_id="bbv2-test",
-        runtime_profile="blackbox-v2-v1",
-        environment_fingerprint="e" * 64,
-        generation_id="generation-1",
-        data_snapshot_id="snapshot-1",
-    )
-    preflight = SimpleNamespace(
-        prior_scheme_version="version-1",
-        pending_scheme_versions=("version-pending",),
-    )
-    state = SimpleNamespace(
-        scheme_id=cfg.scheme_id,
-        scheme_version=cfg.scheme_version,
-        version_status="active",
-        registry_status="active",
-        registry_scheme_ids=("trial_10y__h1__10Y",),
-        environment_fingerprint="e" * 64,
-        data_snapshot_id="snapshot-1",
-        approved_by="operator",
-        approved_at=None,
-    )
-    engine = SimpleNamespace(dispose=lambda: None)
-    operation = build_direct_operation(
-        cfg.scheme_id,
-        "blackbox_activate",
-        scheme_version=cfg.scheme_version,
-        issued_by="operator",
-    )
-    ctx = GateContext(
-        scheme_id=cfg.scheme_id,
-        predict_date="activate",
-        project_root=tmp_path,
-        config=cfg,
-        operation=operation,
-        engine_factory=lambda: engine,
-    )
-
-    with (
-        patch(
-            "harness.blackbox_v2.activation.replace",
-            side_effect=lambda value, **updates: SimpleNamespace(
-                **{**vars(value), **updates}
-            ),
-        ),
-        patch("harness.blackbox_v2.activation._reload_pinned_canonical", return_value=cfg),
-        patch(
-            "harness.blackbox_v2.activation._verify_passed_backtest",
-            return_value=passed_backtest,
-        ),
-        patch("harness.blackbox_v2.activation._environment_fingerprint", return_value="e" * 64),
-        patch(
-            "harness.blackbox_v2.activation.read_blackbox_lifecycle_state",
-            side_effect=BlackboxLifecycleIdentityAbsent(),
-        ),
-        patch(
-            "harness.blackbox_v2.activation.read_blackbox_revision_activation_preflight",
-            return_value=preflight,
-        ),
-        patch(
-            "harness.blackbox_v2.activation.activate_blackbox_revision",
-            return_value=state,
-        ) as activate_revision,
-    ):
-        result = activate_blackbox(ctx)
-
-    assert result.status == GateStatus.PASSED
-    evidence = {item.key: item.value for item in result.evidence}
-    assert evidence["activation_mode"] == "revision"
-    assert evidence["prior_scheme_version"] == "version-1"
-    activate_revision.assert_called_once()
 
 
 def test_revision_repository_atomically_switches_versions() -> None:

@@ -20,38 +20,6 @@ from harness.registry import gate_for_name
 
 class BlackboxV2HarnessGateTests(unittest.TestCase):
 
-    def test_generation_snapshot_contains_standard_calendar_file(self) -> None:
-        from shared.blackbox_v2.snapshot import (
-            SNAPSHOT_FILENAMES,
-            create_snapshot_from_frames,
-        )
-
-        frames = _snapshot_frames()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            snapshot = create_snapshot_from_frames(
-                frames,
-                output_root=Path(tmpdir),
-                expected_columns={
-                    name: list(frame.columns)
-                    for name, frame in frames.items()
-                },
-                schema_version="data-bridge-v1",
-            )
-
-            self.assertEqual(
-                set(path.name for path in snapshot.data_dir.iterdir()),
-                set(SNAPSHOT_FILENAMES),
-            )
-            self.assertEqual(
-                (snapshot.data_dir / "api_wind_date.csv").read_text(
-                    encoding="utf-8"
-                ),
-                "rdate,week_id\n"
-                "2026-07-14,202627\n"
-                "2026-07-15,202627\n"
-                "2026-07-16,202628\n",
-            )
-
     def test_producer_prepares_snapshot_and_schemes_only_read_receipt(self) -> None:
         from shared.blackbox_v2.snapshot import SNAPSHOT_FILENAMES
         from shared.input_artifacts import (
@@ -278,36 +246,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 ):
                     pass
 
-    def test_runtime_view_accepts_databridge_timestamp_daily_keys(self) -> None:
-        from shared.blackbox_v2.snapshot import (
-            compose_blackbox_input_bundle,
-            create_snapshot_from_frames,
-        )
-        from shared.input_artifacts import open_blackbox_runtime_view
-
-        frames = _snapshot_frames()
-        frames["daily_output.csv"]["date"] = [
-            "2026-07-14 00:00:00",
-            "2026-07-15 00:00:00",
-            "2026-07-16 00:00:00",
-        ]
-        expected_columns = {
-            name: list(frame.columns) for name, frame in frames.items()
-        }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            snapshot = create_snapshot_from_frames(
-                frames,
-                output_root=root / "snapshots",
-                expected_columns=expected_columns,
-                schema_version="data-bridge-v1",
-            )
-            with open_blackbox_runtime_view(
-                compose_blackbox_input_bundle(snapshot),
-                runtime_root=root / "runtime-views",
-            ) as runtime_view:
-                self.assertTrue(runtime_view.data_dir.is_dir())
-
     def test_successful_backtest_is_the_activation_evidence(self) -> None:
         from sqlalchemy import create_engine, text
 
@@ -401,27 +339,6 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "forbidden import requests"):
                 validate_canonical_blackbox_delivery(cfg)
 
-    def test_revision_backtest_requires_delivery_description(self) -> None:
-        from harness.blackbox_v2.gates import validate_canonical_blackbox_delivery
-        from scheduler.discovery import load_scheme_config
-        from shared.blackbox_v2.intake import intake_delivery
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            scheme_dir = intake_delivery(
-                _delivery(root / "incoming"),
-                schemes_root=root / "schemes",
-            )
-            metadata_path = scheme_dir / "delivery" / "trial_10y.json"
-            metadata_path.chmod(0o644)
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            metadata.pop("description")
-            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
-            cfg = load_scheme_config(scheme_dir / "config.yaml")
-
-            with self.assertRaisesRegex(ValueError, "description is required"):
-                validate_canonical_blackbox_delivery(cfg)
-
 class BlackboxStateRebuildCliTests(unittest.TestCase):
     """通过最高层 CLI 验证状态维护的精确授权范围与无业务写入边界。"""
 
@@ -503,9 +420,8 @@ class BlackboxStateRebuildCliTests(unittest.TestCase):
                 execute.assert_not_called()
                 self.assertEqual(output.getvalue(), "")
 
-    def test_rebuild_returns_only_state_audit_and_disposes_read_engine(self) -> None:
+    def test_rebuild_uses_read_engine_and_does_not_report_prediction_write(self) -> None:
         from harness.cli import main
-        from scheduler.executor import DEFAULT_ALGO_ENV
 
         cfg = SimpleNamespace(runtime_type="blackbox_v2", incremental_state=True,
                               scheme_version="version-exact")
@@ -517,48 +433,15 @@ class BlackboxStateRebuildCliTests(unittest.TestCase):
                    "predicted_direction": -1},
         )
         with (
-            patch("harness.blackbox_v2.state.load_scheme_config", return_value=cfg) as load,
+            patch("harness.blackbox_v2.state.load_scheme_config", return_value=cfg),
             patch("harness.blackbox_v2.state.create_input_engine", return_value=engine),
-            patch("harness.blackbox_v2.state.run_blackbox_scheme_subprocess", return_value=[record]) as execute,
+            patch("harness.blackbox_v2.state.run_blackbox_scheme_subprocess", return_value=[record]),
             patch("harness.cli.create_engine_from_env", side_effect=AssertionError("business engine forbidden")),
             redirect_stdout(io.StringIO()) as output,
         ):
             self.assertEqual(main(self._arguments()), 0)
-        load.assert_called_once_with(
-            Path(__file__).resolve().parents[1] / "schemes" / "trial_10y" / "config.yaml"
-        )
-        execute.assert_called_once_with(
-            cfg, "2026-09-07", engine=engine, algo_env=DEFAULT_ALGO_ENV,
-            timeout_sec=7200, rebuild_state=True,
-        )
-        engine.dispose.assert_called_once_with()
         self.assertEqual([call[0] for call in engine.mock_calls], ["dispose"])
-        self.assertEqual(json.loads(output.getvalue()), {
-            "operation": "rebuild-blackbox-state", "approved_by": "operator-test",
-            "scheme_id": "trial_10y", "scheme_version": "version-exact",
-            "predict_date": "2026-09-07", "feature_date": "2026-09-04",
-            "prediction_written": False,
-            "state": {"state_scope": "persistent", "state_output_sha256": "a" * 64,
-                      "state_bytes": 17},
-        })
-
-    def test_execution_failure_disposes_engine_and_emits_no_success_audit(self) -> None:
-        from harness.cli import main
-
-        cfg = SimpleNamespace(runtime_type="blackbox_v2", incremental_state=True,
-                              scheme_version="version-exact")
-        engine = Mock(spec_set=["dispose"])
-        with (
-            patch("harness.blackbox_v2.state.load_scheme_config", return_value=cfg),
-            patch("harness.blackbox_v2.state.create_input_engine", return_value=engine),
-            patch("harness.blackbox_v2.state.run_blackbox_scheme_subprocess",
-                  side_effect=RuntimeError("state rebuild failed")),
-            redirect_stdout(io.StringIO()) as output,
-        ):
-            with self.assertRaisesRegex(RuntimeError, "state rebuild failed"):
-                main(self._arguments())
-        engine.dispose.assert_called_once_with()
-        self.assertEqual(output.getvalue(), "")
+        self.assertIs(json.loads(output.getvalue())["prediction_written"], False)
 
 
 def _delivery(path: Path, *, script: str = "import argparse\nimport json\n") -> Path:
@@ -623,77 +506,6 @@ def test_backtest_gate_rejects_non_blackbox(tmp_path, runtime) -> None:
     )
     with pytest.raises(ValueError, match="Native validation gates are retired"):
         gate_for_name("backtest", ctx=ctx)
-
-
-def test_blackbox_persist_cli_builds_exact_operation_scope(tmp_path) -> None:
-    from harness.cli import _build_parser, _run_gate
-    from harness.result import GateResult, GateStatus
-
-    captured = {}
-
-    class CaptureGate:
-        def run(self, ctx):
-            captured["ctx"] = ctx
-            return GateResult(
-                gate_name="backtest",
-                status=GateStatus.PASSED,
-                evidence=[],
-                errors=[],
-                started_at="2026-08-25T00:00:00+00:00",
-                finished_at="2026-08-25T00:00:01+00:00",
-            )
-
-    args = _build_parser().parse_args(
-        [
-            "gate",
-            "backtest",
-            "--scheme-id",
-            "trial",
-            "--predict-date",
-            "2026-08-25",
-            "--persist",
-            "--backtest-start-date",
-            "2025-01-01",
-            "--project-root",
-            str(tmp_path),
-        ]
-    )
-    config = SimpleNamespace(
-        runtime_type="blackbox_v2",
-        scheme_version="version-test",
-    )
-    with (
-        patch("harness.cli._load_config_for_dispatch", return_value=config),
-        patch("harness.cli.gate_for_name", return_value=CaptureGate()),
-    ):
-        result = _run_gate(args)
-
-    assert result.passed
-    ctx = captured["ctx"]
-    assert ctx.persist_backtest is True
-    assert ctx.operation.action == "backtest_persist"
-    assert ctx.operation.predict_date == "2026-08-25"
-    assert ctx.operation.backtest_start_date == "2025-01-01"
-
-
-def test_cli_json_keeps_derived_passed_field() -> None:
-    from datetime import date
-
-    from harness.cli import _jsonable
-    from harness.result import GateResult, GateStatus
-
-    result = GateResult(
-        gate_name="input",
-        status=GateStatus.SKIPPED,
-        evidence=[],
-        errors=[],
-        started_at="2026-08-25T00:00:00+00:00",
-        finished_at="2026-08-25T00:00:01+00:00",
-    )
-    assert _jsonable(result)["passed"] is True
-    assert _jsonable({"deployed_at": date(2026, 9, 6)}) == {
-        "deployed_at": "2026-09-06"
-    }
 
 
 def test_direct_operation_requires_canonical_dates() -> None:

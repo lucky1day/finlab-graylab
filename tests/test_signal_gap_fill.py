@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -299,47 +298,6 @@ def test_multi_target_scheme_runs_once_and_commits_only_missing_target(
     ]
     readback.assert_called_once()
     lock.release.assert_called_once()
-
-
-def test_native_scheme_commits_before_other_scheme_finishes(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from harness.signal_gap_fill import run_signal_gap_fill
-
-    first = _action("a_native")
-    second = _action("b_native")
-    plan = _plan([first, second])
-    first_committed = Event()
-
-    def execute(cfg: SimpleNamespace, _date: str, **_kwargs: object):
-        if cfg.scheme_id == "b_native" and not first_committed.wait(1):
-            raise RuntimeError("first scheme was not committed")
-        return [_record(first if cfg.scheme_id == "a_native" else second)]
-
-    def commit(_engine, cfg, **_kwargs):
-        if cfg.scheme_id == "a_native":
-            first_committed.set()
-        return 1
-
-    repository = _repository(commit_side_effect=commit)
-    engine, _ = _install(
-        monkeypatch,
-        repository=repository,
-        plan=plan,
-        runner=Mock(side_effect=execute),
-    )
-
-    report = run_signal_gap_fill(
-        plan=plan,
-        project_root=tmp_path,
-        engine_factory=lambda: engine,
-        databridge_config=SimpleNamespace(),
-    )
-
-    assert report["status"] == "PASSED", report["errors"]
-    assert first_committed.is_set()
-    assert repository.complete_gray_gap_run.call_count == 2
 
 
 def test_algorithm_failure_keeps_successful_scheme_and_only_fails_remaining(

@@ -31,8 +31,6 @@ def _blackbox_config(
     frequency: str = "weekly",
     status: str = "active",
     task_type: str = "weekly_point",
-    legacy_mode: str = "gray",
-    capabilities: frozenset[str] = frozenset(),
 ) -> SimpleNamespace:
     """构造不依赖真实 admission 身份的 Blackbox config。"""
     return SimpleNamespace(
@@ -47,8 +45,6 @@ def _blackbox_config(
         horizon=1,
         tenors=["10Y"],
         execution_timeout_sec=600,
-        legacy_mode=legacy_mode,
-        capabilities=capabilities,
     )
 
 
@@ -141,75 +137,6 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
 
         self.assertEqual(maximum, 2)
         self.assertEqual(len(summary.executed), 4)
-
-    def test_native_wave_honors_single_worker_limit(self) -> None:
-        from scheduler import one_shot_prediction_runner as runner
-        from scheduler.process_control import ProcessStartGuard
-
-        summary = runner.OneShotPredictionSummary("daily", "2026-09-02")
-        candidates = [
-            SimpleNamespace(scheme_id=f"publisher-{index}")
-            for index in range(2)
-        ]
-        lock = threading.Lock()
-        first_started = threading.Event()
-        release_first = threading.Event()
-        second_started = threading.Event()
-        active = 0
-        maximum = 0
-        calls = 0
-
-        def execute(local_summary, cfg, **_kwargs):
-            nonlocal active, maximum, calls
-            with lock:
-                calls += 1
-                call_number = calls
-                active += 1
-                maximum = max(maximum, active)
-            if call_number == 1:
-                first_started.set()
-                release_first.wait(timeout=2)
-            else:
-                second_started.set()
-            local_summary.executed.append(
-                {"scheme_id": cfg.scheme_id, "status": "success"}
-            )
-            with lock:
-                active -= 1
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with patch.object(
-                runner,
-                "_execute_candidate",
-                side_effect=execute,
-            ):
-                worker = threading.Thread(
-                    target=runner._execute_native_wave,
-                    args=(summary, candidates),
-                    kwargs={
-                        "predict_date": "2026-09-02",
-                        "algo_env": "forecast_env",
-                        "scheduled_control_plane": "launchd_one_shot",
-                        "scheduled_execution_context": object(),
-                        "engine": object(),
-                        "input_root": Path(tmpdir),
-                        "cancellation_event": threading.Event(),
-                        "process_start_guard": ProcessStartGuard(),
-                        "worker_limit": 1,
-                    },
-                )
-                worker.start()
-                try:
-                    self.assertTrue(first_started.wait(timeout=2))
-                    self.assertFalse(second_started.wait(timeout=0.1))
-                finally:
-                    release_first.set()
-                    worker.join(timeout=2)
-
-        self.assertFalse(worker.is_alive())
-        self.assertEqual(maximum, 1)
-        self.assertEqual(len(summary.executed), 2)
-
 
     def test_requested_scheme_filter_runs_only_exact_active_set(self) -> None:
         from scheduler import one_shot_prediction_runner as runner

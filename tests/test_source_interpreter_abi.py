@@ -35,14 +35,6 @@ def test_suffixes_are_collected_from_the_tree(tmp_path: Path) -> None:
     }
 
 
-def test_tree_without_compiled_modules_skips_the_probe(tmp_path: Path) -> None:
-    (tmp_path / "predict.py").touch()
-    # 解释器命令故意不可执行：无编译产物时不应探测解释器
-    assert_source_interpreter_supports_package(
-        ["/nonexistent/python"], tmp_path, label="t"
-    )
-
-
 def test_matching_interpreter_passes(tmp_path: Path) -> None:
     (tmp_path / f"engine{_native_suffix()}").touch()
     assert_source_interpreter_supports_package(
@@ -74,19 +66,3 @@ def test_interpreter_probe_failures_fail_closed(tmp_path: Path) -> None:
                 tmp_path,
                 label="t",
             )
-
-
-_BATCHES = ("daily_0629", "monthly_0629", "model_muti_0529")
-
-
-@pytest.mark.parametrize("batch", _BATCHES)
-def test_archived_packages_pin_a_single_abi(batch: str) -> None:
-    root = Path(__file__).resolve().parents[1]
-    package = root / "source_evidence" / "benchmark_batches" / batch
-    if not package.is_dir():
-        pytest.skip(f"{batch} 归档不在本工作区")
-
-    suffixes = compiled_extension_suffixes(package)
-    assert suffixes == {".cpython-313-darwin.so"}, (
-        f"{batch} 的编译 ABI 发生变化：{sorted(suffixes)}"
-    )

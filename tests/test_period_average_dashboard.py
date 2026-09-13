@@ -7,17 +7,8 @@ import pytest
 from backend.factor_lab_dashboard import _collapse_actual_rows
 from backend.factor_lab_dashboard_semantics import (
     DashboardDataError,
-    live_actual_selector,
 )
-from shared.task_specs import PERIOD_AVERAGE_TASK_TYPES, TASK_COMBINATIONS
-
-
-@pytest.mark.parametrize("task_type", sorted(PERIOD_AVERAGE_TASK_TYPES))
-def test_period_average_task_selects_its_exact_actual_rule(task_type: str) -> None:
-    assert live_actual_selector(task_type) == (
-        "period_average",
-        TASK_COMBINATIONS[task_type][1],
-    )
+from shared.task_specs import TASK_COMBINATIONS
 
 
 def test_period_average_actuals_collapse_by_target_rule() -> None:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import plistlib
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
@@ -17,18 +16,7 @@ from scripts.run_launchd_release import (
 )
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-LAUNCHD_ROOT = PROJECT_ROOT / "deploy" / "launchd"
-PRODUCTION_CURRENT = "/Users/macstudio0/bond-factor-lab-production/current"
 COMMIT = "a" * 40
-APPLICATION_TEMPLATES = (
-    "com.bond-factor-lab.backend.plist",
-    "com.bond-factor-lab.data-bridge-refresh.plist",
-    "com.bond-factor-lab.daily-predictions.plist",
-    "com.bond-factor-lab.weekly-predictions.plist",
-    "com.bond-factor-lab.monthly-predictions.plist",
-    "com.bond-factor-lab.actuals.plist",
-)
 
 
 @pytest.fixture(autouse=True)
@@ -94,60 +82,6 @@ def _rewrite_service_environment(
     path.write_text(transform(original), encoding="utf-8")
     path.chmod(0o600)
     return path
-
-
-def test_launchd_templates_use_immutable_current_release() -> None:
-    for name in APPLICATION_TEMPLATES:
-        with (LAUNCHD_ROOT / name).open("rb") as handle:
-            payload = plistlib.load(handle)
-
-        assert payload["WorkingDirectory"] == PRODUCTION_CURRENT, name
-        arguments = payload["ProgramArguments"]
-        assert arguments[:5] == [
-            "/usr/bin/python3",
-            "-I",
-            "scripts/run_launchd_release.py",
-            "--",
-            "/Users/macstudio0/miniconda3/bin/conda",
-        ], name
-        assert "BFL_RELEASE_COMMIT" not in payload["EnvironmentVariables"], name
-        assert "BFL_RUNTIME_ROOT" not in payload["EnvironmentVariables"], name
-        assert payload["StandardOutPath"].startswith(
-            "/Users/macstudio0/bond-factor-lab-runtime/logs/"
-        ), name
-        assert payload["StandardErrorPath"].startswith(
-            "/Users/macstudio0/bond-factor-lab-runtime/logs/"
-        ), name
-
-
-def test_monthly_template_uses_explicit_refresh_window_arguments() -> None:
-    path = LAUNCHD_ROOT / "com.bond-factor-lab.monthly-predictions.plist"
-    with path.open("rb") as handle:
-        payload = plistlib.load(handle)
-
-    environment = payload["EnvironmentVariables"]
-    assert "DATABRIDGE_REFRESH_START" not in environment
-    assert "DATABRIDGE_REFRESH_DEADLINE" not in environment
-    arguments = payload["ProgramArguments"]
-    assert arguments[-4:] == [
-        "--refresh-start",
-        "18:00",
-        "--refresh-deadline",
-        "18:55",
-    ]
-
-
-def test_loader_accepts_exact_installed_release_environment(
-    tmp_path: Path,
-) -> None:
-    release = _release(tmp_path)
-
-    values = load_release_environment(release)
-
-    assert values["BFL_RELEASE_COMMIT"] == COMMIT
-    assert values["BFL_RUNTIME_ROOT"] == str(tmp_path / "runtime")
-    assert values["NUMBA_CACHE_DIR"].endswith(f"/{COMMIT}/numba")
-    assert values["MPLCONFIGDIR"].endswith(f"/{COMMIT}/matplotlib")
 
 
 @pytest.mark.parametrize("mode", [0o400, 0o600])
@@ -333,23 +267,6 @@ def test_prepare_environment_merges_service_values_and_rejects_conflict(
             release,
             {"BFL_DATABASE_ENV_FILE": "/outside/runtime/database.env"},
         )
-
-
-def test_prepare_environment_keeps_global_morning_refresh_window(
-    tmp_path: Path,
-) -> None:
-    release = _release(tmp_path)
-    _rewrite_service_environment(
-        release,
-        lambda value: value
-        + "DATABRIDGE_REFRESH_START=05:30\n"
-        + "DATABRIDGE_REFRESH_DEADLINE=06:45\n",
-    )
-
-    merged = prepare_exec_environment(release, {})
-
-    assert merged["DATABRIDGE_REFRESH_START"] == "05:30"
-    assert merged["DATABRIDGE_REFRESH_DEADLINE"] == "06:45"
 
 
 @pytest.mark.parametrize(

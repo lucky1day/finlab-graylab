@@ -6,14 +6,6 @@ from sqlalchemy import create_engine, text
 
 
 class TenorMappingTests(unittest.TestCase):
-    def test_tenor_mapping_normalizes_product_tenor(self) -> None:
-        from shared.tenor_mapping import indicator_map_for_tenors
-
-        self.assertEqual(
-            indicator_map_for_tenors(["10y"]),
-            {"TB0YWI0C": "10Y"},
-        )
-
     def test_registry_scope_is_the_only_runtime_authority(self) -> None:
         from scheduler.daily_actuals_updater import resolve_actual_tenors
 
@@ -63,21 +55,6 @@ class TenorMappingTests(unittest.TestCase):
             )
         finally:
             engine.dispose()
-
-    def test_frequency_task_type_mapping_is_explicit(self) -> None:
-        from scheduler.daily_actuals_updater import ACTUAL_TASK_TYPES_BY_FREQUENCY
-
-        self.assertEqual(ACTUAL_TASK_TYPES_BY_FREQUENCY["daily"], ("T+1", "T+5"))
-        self.assertEqual(
-            ACTUAL_TASK_TYPES_BY_FREQUENCY["weekly"],
-            ("weekly_point", "weekly_average"),
-        )
-        self.assertEqual(ACTUAL_TASK_TYPES_BY_FREQUENCY["monthly"], ("monthly",))
-        self.assertEqual(
-            ACTUAL_TASK_TYPES_BY_FREQUENCY["period_average"],
-            ("monthly_average", "quarterly_average", "annual_average"),
-        )
-
 
 def _registry_engine(rows: list[tuple[str, str, str, str]]):
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)

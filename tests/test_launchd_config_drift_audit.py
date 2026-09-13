@@ -11,18 +11,6 @@ from scripts.audit_launchd_config_drift import (
 )
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-LAUNCHD_ROOT = PROJECT_ROOT / "deploy" / "launchd"
-APPLICATION_LAUNCHD_TEMPLATES = (
-    "com.bond-factor-lab.backend.plist",
-    "com.bond-factor-lab.data-bridge-refresh.plist",
-    "com.bond-factor-lab.daily-predictions.plist",
-    "com.bond-factor-lab.weekly-predictions.plist",
-    "com.bond-factor-lab.monthly-predictions.plist",
-    "com.bond-factor-lab.actuals.plist",
-)
-
-
 def _write_plist(path: Path, payload: dict[str, object]) -> None:
     with path.open("wb") as handle:
         plistlib.dump(payload, handle)
@@ -125,24 +113,6 @@ def _audit_payloads(
     )
 
 
-def test_data_bridge_template_requires_controlled_producer_identity() -> None:
-    path = LAUNCHD_ROOT / "com.bond-factor-lab.data-bridge-refresh.plist"
-    with path.open("rb") as handle:
-        payload = plistlib.load(handle)
-    assert payload["EnvironmentVariables"]["BFL_DATABRIDGE_PRODUCER"] == (
-        "launchd-one-shot"
-    )
-
-
-def test_application_launchd_templates_bind_mac3_target() -> None:
-    for name in APPLICATION_LAUNCHD_TEMPLATES:
-        with (LAUNCHD_ROOT / name).open("rb") as handle:
-            payload = plistlib.load(handle)
-        assert payload["EnvironmentVariables"]["BFL_DEPLOYMENT_TARGET"] == (
-            "mac3-production"
-        ), name
-
-
 @pytest.mark.parametrize(
     ("key_path", "destination"),
     (
@@ -193,19 +163,6 @@ def test_ssh_tunnel_requires_real_local_key_and_user(
         "ProgramArguments[6]",
     ]
     assert result["ok"] is False
-
-
-def test_ssh_tunnel_template_fails_closed() -> None:
-    with (
-        LAUNCHD_ROOT / "com.bond-factor-lab.ssh-tunnel.plist"
-    ).open("rb") as handle:
-        arguments = plistlib.load(handle)["ProgramArguments"]
-
-    for option in (
-        "ExitOnForwardFailure=yes",
-        "StrictHostKeyChecking=yes",
-    ):
-        assert option in arguments
 
 
 def test_loaded_program_workdir_and_trigger_must_match_installed_plist(

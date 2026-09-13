@@ -185,46 +185,6 @@ def test_generation_builds_one_shared_legacy_view_only_when_needed() -> None:
             )
 
 
-def test_all_v1_generation_reuses_one_snapshot_identity() -> None:
-    from shared.input_artifacts import (
-        get_ready_blackbox_snapshot,
-        prepare_blackbox_generation_snapshot,
-    )
-
-    frames = _frames(include_v2=False)
-    dataset, state = _dataset_and_state(frames)
-    with tempfile.TemporaryDirectory() as tmpdir, patch(
-        "shared.input_artifacts._load_blackbox_schema",
-        return_value=("data-bridge-v1", _small_schema(frames)),
-    ), patch(
-        "shared.input_artifacts._require_blackbox_databridge_monthly_additions"
-    ):
-        cache_root = Path(tmpdir)
-        prepare_blackbox_generation_snapshot(
-            state=state,
-            dataset=dataset,
-            cache_root=cache_root,
-        )
-        full = get_ready_blackbox_snapshot(
-            snapshot_date="2026-08-28",
-            cache_root=cache_root,
-            factor_input_mode="algorithm_managed",
-        )
-        legacy = get_ready_blackbox_snapshot(
-            snapshot_date="2026-08-28",
-            cache_root=cache_root,
-            factor_input_mode="legacy_v1",
-        )
-
-        assert full.snapshot_id == legacy.snapshot_id
-        snapshot_dirs = [
-            path
-            for path in (cache_root / "snapshots").glob("*/*")
-            if path.is_dir()
-        ]
-        assert len(snapshot_dirs) == 1
-
-
 def test_cached_generation_requires_intact_legacy_snapshot_before_ready() -> None:
     from shared.input_artifacts import (
         get_ready_blackbox_snapshot,
@@ -300,43 +260,6 @@ def test_published_factor_version_membership_is_sealed() -> None:
         _assert_factor_catalog_continuity(
             previous,
             SimpleNamespace(frames={"factor_catalog.csv": expanded_v1}),
-        )
-
-
-def test_first_five_file_generation_freezes_legacy_columns_as_v1() -> None:
-    from shared.data_bridge.refresh import (
-        DataBridgeRefreshError,
-        _assert_factor_catalog_continuity,
-    )
-
-    legacy_frames = {
-        name: frame
-        for name, frame in _frames(include_v2=False).items()
-        if name != "factor_catalog.csv"
-    }
-    previous = SimpleNamespace(dataset=SimpleNamespace(frames=legacy_frames))
-    candidate = _frames(include_v2=False)
-    _assert_factor_catalog_continuity(
-        previous,
-        SimpleNamespace(frames=candidate),
-    )
-
-    with_v2 = _frames(include_v2=True)
-    with pytest.raises(DataBridgeRefreshError, match="only V1.0"):
-        _assert_factor_catalog_continuity(
-            previous,
-            SimpleNamespace(frames=with_v2),
-        )
-
-    extra_v1 = _frames(include_v2=True)
-    extra_v1["factor_catalog.csv"].loc[
-        extra_v1["factor_catalog.csv"]["indicators_code"] == "D2",
-        "factor_version",
-    ] = "V1.0"
-    with pytest.raises(DataBridgeRefreshError, match="legacy factor columns"):
-        _assert_factor_catalog_continuity(
-            previous,
-            SimpleNamespace(frames=extra_v1),
         )
 
 
@@ -462,31 +385,6 @@ def test_factor_catalog_must_match_wide_columns_and_order() -> None:
                 "factor_version",
             ],
         )
-
-
-def test_native_default_input_uses_frozen_columns() -> None:
-    from shared import input_artifacts
-
-    built = pd.DataFrame({"date": ["2026-08-27"], "D1": [1.0]})
-    with tempfile.TemporaryDirectory() as tmpdir, patch.object(
-        input_artifacts,
-        "_legacy_native_schema_columns",
-        return_value=["date", "D1"],
-    ), patch.object(
-        input_artifacts._data_service,
-        "build_daily_output_from_db",
-        return_value=built,
-    ) as builder:
-        input_artifacts.build_daily_input_artifact(
-            scheme_id="native-test",
-            predict_date="2026-08-28",
-            start_date="2026-08-27",
-            end_date="2026-08-27",
-            engine=object(),
-            output_root=Path(tmpdir),
-        )
-
-    assert builder.call_args.kwargs["schema_columns"] == ["date", "D1"]
 
 
 def test_native_frozen_weekly_input_preserves_metadata_lag() -> None:

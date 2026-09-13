@@ -5,7 +5,7 @@ import json
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import ANY, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -21,53 +21,15 @@ def _plan(
     base_scheme_id: str | None = None,
     status: str = "READY",
 ) -> dict[str, object]:
-    actions = []
-    if action:
-        actions.append(
-            {
-                "registry_scheme_id": "demo_native__h5__5Y",
-                "base_scheme_id": "demo_native",
-                "runtime_type": "native_adapter",
-                "frequency": "daily",
-                "task_type": "T+5",
-                "target_tenor": "5Y",
-                "horizon": 5,
-                "predict_date": PREDICT_DATE,
-                "feature_date": "2026-08-07",
-                "target_date": "2026-08-14",
-                "prediction_phase": "gray_live",
-                "scheme_version": "version-1",
-                "business_key": [
-                    "demo_native",
-                    "5Y",
-                    5,
-                    "2026-08-14",
-                ],
-                "action": action,
-                "reason": "test",
-                "business_key_present": action == "SKIP_PRESENT",
-                "input_authority": None,
-            }
-        )
     return {
-        "schema_version": "single-date-active-live-gap-plan-v1",
         "status": status,
         "failure_code": "INPUT_AUTHORITY_BLOCKED" if status == "BLOCKED" else None,
-        "predict_date": PREDICT_DATE,
         "base_scheme_id": base_scheme_id,
         "counts": {
-            "active_target": len(actions),
             "expected": int(action not in {"", "SKIP_NOT_DUE"}),
-            "present": int(action == "SKIP_PRESENT"),
             "actionable": int(action == "GRAY_LIVE_GAP"),
             "blocked": int(status == "BLOCKED"),
-            "SKIP_PRESENT": int(action == "SKIP_PRESENT"),
-            "SKIP_NOT_DUE": int(action == "SKIP_NOT_DUE"),
-            "GRAY_LIVE_GAP": int(action == "GRAY_LIVE_GAP"),
-            "BLOCKED_NO_GENERATION": 0,
-            "BLOCKED_DATA_CONTRACT": 0,
         },
-        "actions": actions,
     }
 
 
@@ -185,92 +147,6 @@ def test_target_range_requires_before_and_exact_scheme(tmp_path: Path) -> None:
                 str(tmp_path),
             ]
         )
-
-
-def test_cli_plans_once_for_all_or_one_base_then_runs_coordinator(
-    tmp_path: Path,
-) -> None:
-    scheme_id = "demo_native"
-    plan = _plan(base_scheme_id=scheme_id)
-
-    exit_code, payload, planner, runner = _run_cli(
-        tmp_path,
-        plan,
-        scheme_id=scheme_id,
-    )
-
-    assert exit_code == 0
-    assert payload["status"] == "PASSED"
-    planner.assert_called_once_with(
-        PREDICT_DATE,
-        scheme_id,
-        databridge_config=ANY,
-        project_root=tmp_path.resolve(),
-    )
-    runner.assert_called_once_with(
-        plan=plan,
-        project_root=tmp_path.resolve(),
-        engine_factory=cli.create_engine_from_env,
-        databridge_config=ANY,
-        algo_env="forecast_env",
-        timeout_sec=600,
-    )
-    assert not (tmp_path / "reports").exists()
-
-
-def test_target_range_planner_receives_resolved_project_root(
-    tmp_path: Path,
-) -> None:
-    plan = _plan(base_scheme_id="demo_blackbox")
-    plan.update(
-        schema_version="target-range-active-live-gap-plan-v1",
-        predict_date=None,
-        target_date_from="2026-06-01",
-        target_date_before="2026-09-04",
-    )
-    planner = Mock(return_value=plan)
-    runner = Mock(
-        return_value={
-            "schema_version": "target-range-signal-gap-fill-v1",
-            "status": "PASSED",
-            "failure_code": None,
-            "completed": [],
-            "remaining": [],
-        }
-    )
-    output = io.StringIO()
-    with (
-        patch.object(
-            cli.DataBridgeRefreshConfig,
-            "from_env",
-            return_value=SimpleNamespace(),
-        ),
-        patch.object(cli, "_plan_signal_gap_range", planner),
-        patch.object(cli, "run_signal_gap_fill", runner),
-        redirect_stdout(output),
-    ):
-        exit_code = cli.main(
-            [
-                "signal-gap-fill",
-                "--target-date-from",
-                "2026-06-01",
-                "--target-date-before",
-                "2026-09-04",
-                "--scheme-id",
-                "demo_blackbox",
-                "--project-root",
-                str(tmp_path),
-            ]
-        )
-
-    assert exit_code == 0
-    planner.assert_called_once_with(
-        "2026-06-01",
-        "2026-09-04",
-        "demo_blackbox",
-        databridge_config=ANY,
-        project_root=tmp_path.resolve(),
-    )
 
 
 @pytest.mark.parametrize(

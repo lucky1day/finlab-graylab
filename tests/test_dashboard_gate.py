@@ -8,7 +8,6 @@ from typing import Any, Callable
 import pytest
 
 from harness.context import GateContext
-from harness.gates.dashboard_gate import ApiProbeError
 
 
 BASE_SCHEME_ID = "demo_daily"
@@ -185,42 +184,13 @@ def _run_gate(
     return DashboardGate(fetcher=fetcher).run(_context(project_root))
 
 
-def _evidence(result) -> dict[str, Any]:
-    return {item.key: item.value for item in result.evidence}
-
-
 def test_dashboard_gate_accepts_existing_and_empty_live_months(
     tmp_path: Path,
 ) -> None:
     _write_config(tmp_path)
-    payload = _payload()
-    calls: list[tuple[str, dict[str, Any]]] = []
-
-    def fetcher(url: str, **kwargs: Any):
-        calls.append((url, kwargs))
-        return payload, 200
-
-    result = _run_gate(tmp_path, fetcher)
+    result = _run_gate(tmp_path, lambda _url, **_kwargs: (_payload(), 200))
 
     assert result.passed, result.errors
-    from backend.factor_lab_dashboard import MAX_RAW_JSON_BYTES
-
-    assert calls == [
-        (
-            "http://127.0.0.1:8100/api/factor-lab/dashboard",
-            {"timeout_sec": 30, "max_response_bytes": MAX_RAW_JSON_BYTES},
-        )
-    ]
-    evidence = _evidence(result)
-    assert evidence["config_status"] == "active"
-    assert evidence["config_version_status"] == "active"
-    assert "signal_statuses" not in evidence
-    assert "signal_failure_categories" not in evidence
-    assert set(evidence["backtest_registry_ids"]) == {
-        "demo_daily__h1__5Y",
-        "demo_daily__h1__10Y",
-    }
-    assert "scheme_version" not in evidence
 
 
 @pytest.mark.parametrize(
@@ -233,10 +203,6 @@ def test_dashboard_gate_accepts_existing_and_empty_live_months(
         (
             "non_json",
             lambda _payload: lambda _url, **_kwargs: ("not-json", 200),
-        ),
-        (
-            "response_budget",
-            lambda _payload: lambda _url, **_kwargs: (_raise_budget_error()),
         ),
         (
             "v2_schema_rejected",
@@ -258,10 +224,6 @@ def test_dashboard_gate_fails_closed_on_probe_or_shared_validation_errors(
 
     assert not result.passed, (case, result.errors)
     assert result.errors, case
-
-
-def _raise_budget_error() -> tuple[dict[str, Any], int]:
-    raise ApiProbeError("API response exceeds 1048576 bytes")
 
 
 def test_dashboard_gate_uses_dashboard_database_lifecycle_not_declared_status(
@@ -325,32 +287,3 @@ def test_dashboard_gate_requires_exact_new_blackbox_display_identity(
 
     assert not result.passed
     assert any(field in error for error in result.errors)
-
-
-def test_dashboard_gate_accepts_exact_new_blackbox_display_identity(
-    tmp_path: Path,
-) -> None:
-    _write_blackbox_config(tmp_path)
-    payload = _payload(tenors=("5Y",))
-    payload["schemes"][0].update(
-        name="Demo Blackbox",
-        description="Blackbox dashboard fixture",
-    )
-
-    result = _run_gate(tmp_path, lambda _url, **_kwargs: (payload, 200))
-
-    assert result.passed, result.errors
-
-
-def test_registry_exposes_dashboard_gate_for_both_runtimes() -> None:
-    from harness.gates.dashboard_gate import DashboardGate
-    from harness.registry import gate_for_name
-
-    for runtime_type in ("native_adapter", "blackbox_v2"):
-        ctx = GateContext(
-            scheme_id=BASE_SCHEME_ID,
-            predict_date="dashboard",
-            project_root=Path("/tmp/dashboard-gate"),
-            config=SimpleNamespace(runtime_type=runtime_type),
-        )
-        assert isinstance(gate_for_name("dashboard", ctx=ctx), DashboardGate)

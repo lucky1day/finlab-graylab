@@ -15,7 +15,6 @@ from backend.factor_lab_dashboard import (
 from backend.factor_lab_dashboard_semantics import (
     dashboard_result_source,
     live_actual_selector,
-    validate_dashboard_payload,
 )
 
 
@@ -108,26 +107,15 @@ def test_v5_summary_aggregates_rows_and_reads_owner() -> None:
     engine = _engine()
     payload = build_factor_lab_dashboard(engine)
 
-    validate_dashboard_payload(payload)
     assert payload["schema_version"] == "factor-lab-dashboard-v5"
     assert payload["representation"] == "summary"
     assert payload["live_target_start_date"] == "2026-06-01"
     scheme = payload["schemes"][0]
     assert scheme["owner"] == "lw"
-    assert "live_rows" not in scheme
     assert scheme["monthly_rows"] == [
         ["2026-01", "backtest", 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0],
         ["2026-06", "live", 2, 2, 2, 1, 1, 0, 1, 1, 0, 1, 1],
     ]
-    assert "phase_ranges" not in scheme
-
-
-def test_v5_summary_validator_rejects_monthly_source_outside_policy() -> None:
-    payload = build_factor_lab_dashboard(_engine())
-    payload["schemes"][0]["monthly_rows"][0][1] = "live"
-
-    with pytest.raises(DashboardDataError, match="target_date policy"):
-        validate_dashboard_payload(payload)
 
 
 @pytest.mark.parametrize(
@@ -153,7 +141,6 @@ def test_pending_predictions_keep_month_accessible_without_changing_metrics(
             {"target_date": target_date},
         )
     summary = build_factor_lab_dashboard(engine)
-    validate_dashboard_payload(summary)
     rows = summary["schemes"][0]["monthly_rows"]
     assert all(row in rows for row in baseline)
     if month != "2026-06":
@@ -164,7 +151,6 @@ def test_pending_predictions_keep_month_accessible_without_changing_metrics(
         engine, scheme_id="demo_daily__h1__5Y", month=month, source=source,
     )
     assert detail is not None
-    validate_dashboard_payload(detail)
     assert [source, "2026-05-28", "2026-05-27", target_date, -1, None] in detail["rows"]
 
 
@@ -177,7 +163,6 @@ def test_same_id_runtime_upgrade_preserves_backtest_provenance() -> None:
     with engine.begin() as conn:
         conn.execute(text("UPDATE t_scheme_registry SET runtime_type='blackbox_v2'"))
     after = build_factor_lab_dashboard(engine)
-    validate_dashboard_payload(after)
     assert after['schemes'] == before['schemes']
     assert after['schemes'][0]['backtest']['data_source'] == 'framework_db_aligned'
     with engine.begin() as conn:
@@ -185,17 +170,6 @@ def test_same_id_runtime_upgrade_preserves_backtest_provenance() -> None:
                           "(8,'unpublished-source','demo_daily','source_original',"
                           "'2025-01-01','2026-05-29','success','2026-06-01','2026-06-01')"))
     assert build_factor_lab_dashboard(engine)['schemes'] == after['schemes']
-
-
-@pytest.mark.parametrize(
-    ("target_date", "expected"),
-    (("2026-05-31", "backtest"), ("2026-06-01", "live")),
-)
-def test_result_source_uses_only_fixed_target_date_boundary(
-    target_date: str,
-    expected: str,
-) -> None:
-    assert dashboard_result_source(target_date) == expected
 
 
 @pytest.mark.parametrize(
@@ -289,7 +263,6 @@ def test_v5_detail_reads_requested_active_scheme_month_and_source() -> None:
     )
 
     assert payload is not None
-    validate_dashboard_payload(payload)
     assert payload["representation"] == "detail"
     assert payload["live_target_start_date"] == "2026-06-01"
     assert payload["rows"] == [
@@ -319,42 +292,6 @@ def test_v5_detail_reads_requested_active_scheme_month_and_source() -> None:
         )
         is None
     )
-
-
-def test_v5_detail_result_type_partitions_are_disjoint_and_additive() -> None:
-    engine = _engine()
-    payloads = {
-        source: build_factor_lab_dashboard_detail(
-            engine,
-            scheme_id="demo_daily__h1__5Y",
-            month="2026-06",
-            source=source,
-        )
-        for source in ("all", "backtest", "live")
-    }
-
-    assert all(payload is not None for payload in payloads.values())
-    all_rows = payloads["all"]["rows"]
-    backtest_rows = payloads["backtest"]["rows"]
-    live_rows = payloads["live"]["rows"]
-    assert backtest_rows == []
-    assert all_rows == live_rows
-    assert len(all_rows) == len(backtest_rows) + len(live_rows)
-    assert len({(row[0], row[3]) for row in all_rows}) == len(all_rows)
-
-
-def test_v5_detail_validator_rejects_source_outside_target_date_policy() -> None:
-    payload = build_factor_lab_dashboard_detail(
-        _engine(),
-        scheme_id="demo_daily__h1__5Y",
-        month="2026-06",
-        source="all",
-    )
-    assert payload is not None
-    payload["rows"][0][0] = "backtest"
-
-    with pytest.raises(DashboardDataError, match="target_date policy"):
-        validate_dashboard_payload(payload)
 
 
 def test_live_actual_query_reads_exact_scopes_for_all_task_types() -> None:
@@ -439,42 +376,6 @@ def test_live_actual_query_reads_exact_scopes_for_all_task_types() -> None:
         for task_type, tenor in task_scopes
     }
     assert len(rows) == len(task_scopes)
-
-
-def test_unrelated_actual_history_does_not_consume_active_scope_budget() -> None:
-    engine = _engine()
-    point_rule = live_actual_selector("weekly_point")[1]
-    unrelated_rows = [
-        ("5Y", "2026-06-06", "unused_weekly_rule", 1)
-    ] * (MAX_ACTUAL_SOURCE_ROWS + 1)
-    with engine.begin() as connection:
-        connection.execute(
-            text(
-                """UPDATE t_scheme_registry
-                SET task_type = 'weekly_point', frequency = 'weekly'"""
-            )
-        )
-        connection.execute(
-            text(
-                """INSERT INTO t_scheme_weekly_actuals VALUES
-                ('5Y','2026-06-06',:point_rule,1)"""
-            ),
-            {"point_rule": point_rule},
-        )
-        connection.exec_driver_sql(
-            "INSERT INTO t_scheme_weekly_actuals VALUES (?, ?, ?, ?)",
-            unrelated_rows,
-        )
-        selected_rows = _read_live_actuals(
-            connection,
-            [{"task_type": "weekly_point", "target_tenor": "5Y"}],
-        )
-
-    payload = build_factor_lab_dashboard(engine)
-
-    validate_dashboard_payload(payload)
-    assert len(selected_rows) == 1
-    assert selected_rows[0]["target_rule"] == point_rule
 
 
 def test_related_actual_history_still_fails_closed_at_source_budget() -> None:

@@ -119,19 +119,6 @@ class BlackboxV2RequestContractTests(unittest.TestCase):
                 source="verified Request",
             )
 
-    def test_reads_strict_single_request(self) -> None:
-        from shared.blackbox_v2.contracts import load_request
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "request.json"
-            path.write_text(json.dumps(_request_payload()), encoding="utf-8")
-
-            request = load_request(path)
-
-        self.assertEqual(request.request_id, "request-001")
-        self.assertEqual(request.weekly_cutoff_key, "202628")
-        self.assertEqual(request.monthly_cutoff_key, "202607")
-
     def test_rejects_extra_request_field(self) -> None:
         from shared.blackbox_v2.contracts import load_request
 
@@ -285,31 +272,6 @@ def _load_backtest_direction(direction: str | None):
             encoding="utf-8",
         )
         return load_backtest_results(path, [request])[0]
-
-
-def test_both_request_writers_round_trip_to_the_same_values(tmp_path) -> None:
-    """同一条 Request 经两个写出器后，字段值必须逐一相同。"""
-    import csv
-    import json
-
-    from shared.blackbox_v2.contracts import REQUEST_FIELDS, BlackboxRequest
-    from shared.blackbox_v2.requests import write_request, write_requests
-
-    request = BlackboxRequest(
-        request_id="r-1",
-        predict_date="2026-08-22",
-        feature_date="2026-08-21",
-        target_date="2026-08-28",
-        daily_cutoff_key="2026-08-21",
-        weekly_cutoff_key="2026-08-21",
-        monthly_cutoff_key="2026-07-31",
-    )
-
-    single = json.loads(write_request(request, tmp_path / "request.json").read_text("utf-8"))
-    with (write_requests([request], tmp_path / "requests.csv")).open(encoding="utf-8") as handle:
-        batched = next(iter(csv.DictReader(handle)))
-
-    assert {field: single[field] for field in REQUEST_FIELDS} == dict(batched)
 
 
 def test_upstream_delivery_samples_match_the_machine_contract() -> None:

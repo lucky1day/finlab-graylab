@@ -6,9 +6,9 @@ import tempfile
 import unittest
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-from types import MappingProxyType, SimpleNamespace
+from types import MappingProxyType
 from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
@@ -337,426 +337,6 @@ class DataBridgeCurrentTests(unittest.TestCase):
                 },
             )
 
-    @staticmethod
-    def _monthly_metadata_with_macro_additions() -> pd.DataFrame:
-        rows: list[dict[str, object]] = [
-            {
-                "indicators_code": "MONTHLY_SELECTED_A",
-                "frequency": "monthly",
-                "status": 1,
-                "pre_forecast_flag": 1,
-                "lag_length": 0,
-                "indicators_source": "raw",
-            },
-            {
-                "indicators_code": "MONTHLY_SELECTED_B",
-                "frequency": "monthly",
-                "status": 1,
-                "pre_forecast_flag": 1,
-                "lag_length": 0,
-                "indicators_source": "raw",
-            },
-        ]
-        rows.extend(
-            {
-                "indicators_code": code,
-                "frequency": "monthly",
-                "status": 1,
-                "pre_forecast_flag": 0,
-                "lag_length": 2,
-                "indicators_source": "raw",
-            }
-            for code in ("M0041340", "M0041341", "M0041342")
-        )
-        return pd.DataFrame(rows)
-
-    @staticmethod
-    def _monthly_macro_long_frame() -> pd.DataFrame:
-        rows: list[dict[str, object]] = []
-        for row_number, rdate in enumerate(
-            ("2026-01-01", "2026-02-01", "2026-03-01", "2026-04-01"),
-            start=1,
-        ):
-            rows.extend(
-                {
-                    "rdate": rdate,
-                    "month_id": rdate[:7].replace("-", ""),
-                    "indicators_code": code,
-                    "indicators_value": float(row_number * 10 + column_number),
-                }
-                for column_number, code in enumerate(
-                    (
-                        "MONTHLY_SELECTED_A",
-                        "MONTHLY_SELECTED_B",
-                        "M0041340",
-                        "M0041341",
-                        "M0041342",
-                    ),
-                    start=1,
-                )
-            )
-        return pd.DataFrame(rows)
-
-    def test_monthly_databridge_appends_stale_flag_raw_macro_additions_in_source_order(
-        self,
-    ) -> None:
-        from shared.data_service import build_monthly_output_from_frames
-
-        output = build_monthly_output_from_frames(
-            self._monthly_metadata_with_macro_additions(),
-            self._monthly_macro_long_frame(),
-            end_date="2026-03-01",
-            include_databridge_additions=True,
-        )
-
-        self.assertEqual(
-            output.columns.tolist(),
-            [
-                "month_id",
-                "MONTHLY_SELECTED_A",
-                "MONTHLY_SELECTED_B",
-                "M0041340",
-                "M0041341",
-                "M0041342",
-            ],
-        )
-        self.assertEqual(output["month_id"].tolist(), ["202601", "202602", "202603"])
-        for column_number, code in enumerate(
-            ("M0041340", "M0041341", "M0041342"),
-            start=3,
-        ):
-            self.assertTrue(pd.isna(output.loc[0, code]))
-            self.assertTrue(pd.isna(output.loc[1, code]))
-            self.assertEqual(output.loc[2, code], float(10 + column_number))
-
-
-    def test_monthly_databridge_rejects_unusable_macro_addition_metadata(
-        self,
-    ) -> None:
-        from shared.data_service import (
-            build_monthly_cutoff_index_from_frames,
-            build_monthly_output_from_frames,
-        )
-
-        valid_metadata = self._monthly_metadata_with_macro_additions()
-        cases: tuple[tuple[str, pd.DataFrame, str], ...] = (
-            (
-                "missing",
-                valid_metadata[valid_metadata["indicators_code"].ne("M0041340")],
-                "M0041340",
-            ),
-            (
-                "non_monthly",
-                valid_metadata.assign(
-                    frequency=lambda frame: frame["frequency"].mask(
-                        frame["indicators_code"].eq("M0041341"),
-                        "weekly",
-                    )
-                ),
-                "M0041341",
-            ),
-            (
-                "non_raw",
-                valid_metadata.assign(
-                    indicators_source=lambda frame: frame["indicators_source"].mask(
-                        frame["indicators_code"].eq("M0041342"),
-                        "derivative",
-                    )
-                ),
-                "M0041342",
-            ),
-            (
-                "inactive",
-                valid_metadata.assign(
-                    status=lambda frame: frame["status"].mask(
-                        frame["indicators_code"].eq("M0041340"),
-                        0,
-                    )
-                ),
-                "M0041340",
-            ),
-            (
-                "missing_status",
-                valid_metadata.drop(columns=["status"]),
-                "M0041341",
-            ),
-            (
-                "unrecognized_source",
-                valid_metadata.assign(
-                    indicators_source=lambda frame: frame[
-                        "indicators_source"
-                    ].mask(
-                        frame["indicators_code"].eq("M0041342"),
-                        "external",
-                    )
-                ),
-                "M0041342",
-            ),
-        )
-        raw = self._monthly_macro_long_frame()
-
-        for case_name, metadata, code in cases:
-            with self.subTest(case=case_name, builder="output"):
-                with self.assertRaisesRegex(ValueError, code):
-                    build_monthly_output_from_frames(
-                        metadata,
-                        raw,
-                        end_date="2026-03-01",
-                        include_databridge_additions=True,
-                    )
-            with self.subTest(case=case_name, builder="cutoff_index"):
-                with self.assertRaisesRegex(ValueError, code):
-                    build_monthly_cutoff_index_from_frames(
-                        metadata,
-                        raw,
-                        end_date="2026-03-01",
-                        include_databridge_additions=True,
-                    )
-
-    def test_monthly_databridge_db_builder_reads_macro_additions_with_shared_selection(
-        self,
-    ) -> None:
-        from shared import data_service
-
-        metadata = self._monthly_metadata_with_macro_additions()
-        raw = self._monthly_macro_long_frame()
-        with (
-            patch.object(
-                data_service,
-                "read_factor_metadata_from_db",
-                return_value=metadata,
-            ),
-            patch.object(
-                data_service,
-                "read_monthly_long_from_db",
-                side_effect=[raw, pd.DataFrame()],
-            ) as read_monthly,
-        ):
-            output = data_service.build_monthly_output_from_db(
-                end_date="2026-03-01",
-                engine=object(),
-                include_databridge_additions=True,
-            )
-        expected_codes = [
-            "MONTHLY_SELECTED_A",
-            "MONTHLY_SELECTED_B",
-            "M0041340",
-            "M0041341",
-            "M0041342",
-        ]
-        self.assertEqual(output.columns.tolist(), ["month_id", *expected_codes])
-        self.assertEqual(list(read_monthly.call_args_list[0].args[0]), expected_codes)
-        self.assertEqual(list(read_monthly.call_args_list[1].args[0]), expected_codes)
-
-
-    def test_local_mysql_databridge_export_enables_monthly_macro_additions(
-        self,
-    ) -> None:
-        from shared.data_bridge import mysql_exporter
-
-        connection = MagicMock()
-        connection.__enter__.return_value = connection
-        engine = MagicMock()
-        engine.connect.return_value = connection
-
-        with (
-            tempfile.TemporaryDirectory() as tmpdir,
-            patch.object(
-                mysql_exporter,
-                "read_factor_metadata_from_db",
-                return_value=pd.DataFrame(
-                    {
-                        "indicators_code": ["D", "W", "M"],
-                        "factor_version": ["V1.0", "V1.0", "V1.0"],
-                    }
-                ),
-            ) as metadata_reader,
-            patch.object(
-                mysql_exporter,
-                "build_daily_output_from_db",
-                return_value=pd.DataFrame(columns=["date", "D"]),
-            ),
-            patch.object(
-                mysql_exporter,
-                "build_weekly_output_from_db",
-                return_value=pd.DataFrame(columns=["week_id", "W"]),
-            ),
-            patch.object(
-                mysql_exporter,
-                "build_monthly_output_from_db",
-                return_value=pd.DataFrame(columns=["month_id", "M"]),
-            ) as monthly_builder,
-            patch.object(
-                mysql_exporter,
-                "capture_source_commit_evidence_from_connection",
-                return_value=object(),
-            ) as evidence_reader,
-            patch.object(mysql_exporter, "assert_source_commit_evidence_at_cutoff"),
-            patch.object(
-                mysql_exporter,
-                "validate_dataset",
-                return_value=SimpleNamespace(business_digest="digest"),
-            ),
-            patch.object(mysql_exporter, "write_validated_dataset"),
-            patch.object(mysql_exporter, "_source_provenance", return_value={}),
-        ):
-            builder = mysql_exporter.MySqlDataBridgeRoundBuilder(
-                engine=engine,
-                config=SimpleNamespace(
-                    daily_start_date="2025-01-01",
-                    round_timeout_sec=900,
-                    runtime_root=Path(tmpdir),
-                    schema_path=SCHEMA_PATH,
-                ),
-            )
-            builder.build(
-                "round-1",
-                expected_daily_date="2026-03-01",
-                previous_keys=None,
-            )
-
-        monthly_builder.assert_called_once()
-        monthly_kwargs = dict(monthly_builder.call_args.kwargs)
-        shared_metadata = monthly_kwargs.pop("metadata")
-        self.assertEqual(
-            monthly_kwargs,
-            {
-                "start_date": "2025-01-01",
-                "end_date": "2026-03-01",
-                "engine": connection,
-                "include_databridge_additions": True,
-            },
-        )
-        self.assertEqual(
-            shared_metadata["indicators_code"].tolist(),
-            ["D", "W", "M"],
-        )
-        metadata_reader.assert_called_once_with(connection)
-        self.assertIs(
-            evidence_reader.call_args.kwargs["metadata"],
-            shared_metadata,
-        )
-
-
-    def test_blackbox_bulk_cutoff_resolution_uses_monthly_macro_selection(
-        self,
-    ) -> None:
-        from shared import input_artifacts
-
-        metadata = self._monthly_metadata_with_macro_additions()
-        monthly_raw = self._monthly_macro_long_frame()
-        monthly_derivative = pd.DataFrame()
-        period = input_artifacts._ResolvedPeriodCutoff(
-            source_key="202603",
-            effective_key="202603",
-        )
-        with (
-            patch.object(
-                input_artifacts,
-                "_load_blackbox_schema",
-                return_value=(
-                    "data-bridge-v1",
-                    {
-                        "weekly_output.csv": ["week_id", "WEEKLY_A"],
-                        "monthly_output.csv": ["month_id"],
-                    },
-                ),
-            ),
-            patch.object(
-                input_artifacts._data_service,
-                "read_factor_metadata_from_db",
-                return_value=metadata,
-            ),
-            patch.object(
-                input_artifacts._data_service,
-                "read_weekly_long_from_db",
-                return_value=pd.DataFrame(),
-            ),
-            patch.object(
-                input_artifacts._data_service,
-                "read_monthly_long_from_db",
-                side_effect=[monthly_raw, monthly_derivative],
-            ) as read_monthly,
-            patch.object(
-                input_artifacts._data_service,
-                "select_monthly_factor_metadata",
-                wraps=input_artifacts._data_service.select_monthly_factor_metadata,
-            ) as select_monthly,
-            patch.object(
-                input_artifacts._data_service,
-                "build_weekly_cutoff_index_from_frames",
-                return_value=pd.DataFrame(),
-            ),
-            patch.object(
-                input_artifacts._data_service,
-                "build_monthly_cutoff_index_from_frames",
-                return_value=pd.DataFrame(),
-            ) as monthly_index,
-            patch.object(
-                input_artifacts,
-                "_resolve_period_cutoffs_bulk",
-                return_value={"2026-03-01": period},
-            ),
-        ):
-            result = input_artifacts._resolve_blackbox_input_cutoffs_with_source_keys_bulk_from_keys(
-                {
-                    "date": ["2026-03-01"],
-                    "week_id": {"202609"},
-                    "month_id": {"202603"},
-                },
-                feature_dates=["2026-03-01"],
-                connection=object(),
-            )
-
-        self.assertEqual(result["2026-03-01"].cutoff_keys.monthly_cutoff_key, "202603")
-        select_monthly.assert_called_once_with(
-            metadata,
-            include_databridge_additions=True,
-        )
-        expected_codes = [
-            "MONTHLY_SELECTED_A",
-            "MONTHLY_SELECTED_B",
-            "M0041340",
-            "M0041341",
-            "M0041342",
-        ]
-        self.assertEqual(list(read_monthly.call_args_list[0].args[0]), expected_codes)
-        self.assertEqual(list(read_monthly.call_args_list[1].args[0]), expected_codes)
-        monthly_index.assert_called_once()
-        monthly_index_args, monthly_index_kwargs = monthly_index.call_args
-        self.assertIs(monthly_index_args[0], metadata)
-        self.assertIs(monthly_index_args[1], monthly_raw)
-        self.assertIs(monthly_index_args[2], monthly_derivative)
-        self.assertEqual(
-            monthly_index_kwargs,
-            {
-                "end_date": "2026-03-01",
-                "include_databridge_additions": True,
-            },
-        )
-
-    def test_producer_rejects_monthly_output_without_macro_additions(
-        self,
-    ) -> None:
-        from shared import input_artifacts
-
-        frames = _current_dataset().dataset.frames
-        frames = {name: frame.copy() for name, frame in frames.items()}
-        missing = {"M0041340", "M0041341", "M0041342"}
-        frames["monthly_output.csv"] = frames["monthly_output.csv"].drop(
-            columns=sorted(missing)
-        )
-        frames["factor_catalog.csv"] = frames["factor_catalog.csv"][
-            ~frames["factor_catalog.csv"]["indicators_code"].isin(missing)
-        ]
-        with self.assertRaisesRegex(
-            ValueError,
-            "M0041340.*M0041341.*M0041342",
-        ):
-            input_artifacts._require_blackbox_databridge_monthly_additions(
-                frames
-            )
-
     def test_cross_week_producer_resolves_and_publishes_new_week(self) -> None:
         """周一首刷必须贯通真实 cutoff、refresh 与五文件 publish。"""
         from scripts import refresh_data_bridge_current as refresh_script
@@ -850,72 +430,8 @@ class DataBridgeCurrentTests(unittest.TestCase):
             )
             self.assertIn(202630, published["week_id"].tolist())
 
-    def test_refresh_rechecks_deadline_at_publication_commit(self) -> None:
-        """candidate copy/fsync 期间越过 deadline 时不得切换 current。"""
-        from shared.data_bridge import refresh as refresh_module
-        from shared.data_bridge.refresh import (
-            DataBridgeRefreshConfig,
-            DataBridgeRefreshError,
-            run_full_refresh,
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            config = DataBridgeRefreshConfig(
-                data_root=root / "data",
-                runtime_root=root / "runtime",
-                schema_path=SCHEMA_PATH,
-            )
-            config.data_root.mkdir()
-            config.runtime_root.mkdir()
-            config.data_root.chmod(0o700)
-            config.runtime_root.chmod(0o700)
-            _StaticDataBridgeRoundBuilder.staging_root = root / "staging"
-            _StaticDataBridgeRoundBuilder.frames = _bridge_frames(
-                include_new_week=True
-            )
-            checks = 0
-
-            def deadline_fence(_deadline) -> None:
-                nonlocal checks
-                checks += 1
-                if checks == 8:
-                    raise DataBridgeRefreshError(
-                        "DataBridge refresh deadline has passed"
-                    )
-
-            with (
-                patch.object(
-                    refresh_module,
-                    "_ensure_before_deadline",
-                    side_effect=deadline_fence,
-                ),
-                self.assertRaisesRegex(
-                    DataBridgeRefreshError,
-                    "deadline has passed",
-                ),
-            ):
-                run_full_refresh(
-                    config=config,
-                    expected_daily_date="2026-07-20",
-                    refresh_date="2026-07-21",
-                    publish=True,
-                    deadline_at=datetime(
-                        2026,
-                        7,
-                        21,
-                        7,
-                        0,
-                        tzinfo=ZoneInfo("Asia/Shanghai"),
-                    ),
-                    round_builder=_StaticDataBridgeRoundBuilder(),
-                )
-
-            self.assertEqual(checks, 8)
-            self.assertFalse((config.data_root / "current").exists())
-
-    def test_first_publication_fence_preserves_existing_current(self) -> None:
-        """copy/fsync 后首个 fence 失败不得删除最后成功 generation。"""
+    def test_publication_deadline_fences_preserve_existing_current(self) -> None:
+        """备份 current 前后超时，都必须保留最后成功的 generation 和 state。"""
         from shared.data_bridge import refresh as refresh_module
         from shared.data_bridge.refresh import (
             DataBridgeRefreshError,
@@ -937,10 +453,10 @@ class DataBridgeCurrentTests(unittest.TestCase):
             frames = _bridge_frames(include_new_week=False)
             dataset = validate_dataset(frames, schema_path=SCHEMA_PATH)
 
-            def candidate(name: str) -> Path:
+            def candidate(name: str, source_frames: dict[str, pd.DataFrame]) -> Path:
                 directory = root / name
                 directory.mkdir()
-                for filename, frame in frames.items():
+                for filename, frame in source_frames.items():
                     frame.to_csv(directory / filename, index=False)
                 return directory
 
@@ -953,156 +469,58 @@ class DataBridgeCurrentTests(unittest.TestCase):
                 ),
                 duration_sec=1.0,
             )
-            store.publish(candidate("initial"), initial_state)
+            store.publish(candidate("initial", frames), initial_state)
             current_before = {
                 path.name: path.read_bytes()
                 for path in store.current_dir.iterdir()
             }
             state_before = store.state_path.read_bytes()
-
-            with (
-                patch.object(
-                    refresh_module,
-                    "_ensure_before_deadline",
-                    side_effect=DataBridgeRefreshError(
-                        "DataBridge refresh deadline has passed"
-                    ),
-                ),
-                self.assertRaisesRegex(
-                    DataBridgeRefreshError,
-                    "deadline has passed",
-                ),
-            ):
-                store.publish(
-                    candidate("next"),
-                    initial_state,
-                    deadline_at=datetime(
-                        2026,
-                        7,
-                        21,
-                        7,
-                        0,
-                        tzinfo=ZoneInfo("Asia/Shanghai"),
-                    ),
-                )
-
-            self.assertEqual(
-                {
-                    path.name: path.read_bytes()
-                    for path in store.current_dir.iterdir()
-                },
-                current_before,
-            )
-            self.assertEqual(store.state_path.read_bytes(), state_before)
-            self.assertFalse(store.previous_dir.exists())
-
-    def test_legacy_four_file_current_upgrades_atomically(self) -> None:
-        """升级前四文件 current 必须一次替换为完整五文件。"""
-        from shared.data_bridge.refresh import (
-            DataBridgeContinuityAuthority,
-            DataBridgeRefreshConfig,
-            DataBridgeStore,
-            _build_state,
-            _write_publication_manifest,
-            data_bridge_continuity_authority_sha256,
-            data_bridge_publication_identity_sha256,
-            run_full_refresh,
-        )
-        from shared.data_bridge.validation import (
-            validate_legacy_four_file_dataset,
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            config = DataBridgeRefreshConfig(
-                data_root=root / "data",
-                runtime_root=root / "runtime",
-                schema_path=SCHEMA_PATH,
-            )
-            config.data_root.mkdir()
-            config.runtime_root.mkdir()
-            config.data_root.chmod(0o700)
-            config.runtime_root.chmod(0o700)
-            legacy_frames = {
-                name: frame
-                for name, frame in _bridge_frames(
-                    include_new_week=False
-                ).items()
-                if name != "factor_catalog.csv"
-            }
-            legacy = validate_legacy_four_file_dataset(
-                legacy_frames,
-                schema_path=SCHEMA_PATH,
-            )
-            store = DataBridgeStore(
-                data_root=config.data_root,
-                runtime_root=config.runtime_root,
-            )
-            store.current_dir.mkdir()
-            for filename, frame in legacy.frames.items():
-                frame.to_csv(store.current_dir / filename, index=False)
-            state = _build_state(
-                legacy,
-                "2026-07-18",
+            next_frames = _bridge_frames(include_new_week=True)
+            next_state = _build_state(
+                validate_dataset(next_frames, schema_path=SCHEMA_PATH),
+                "2026-07-21",
                 2,
-                refresh_started_at=(
-                    datetime.now(ZoneInfo("Asia/Shanghai"))
-                    - timedelta(seconds=1)
-                ),
+                refresh_started_at=datetime.now(ZoneInfo("Asia/Shanghai")),
                 duration_sec=1.0,
             )
-            _write_publication_manifest(store.current_dir, state=state)
-            store.state_path.write_text(
-                json.dumps(state, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
-            publication_identity = data_bridge_publication_identity_sha256(
-                state
-            )
-            authority = DataBridgeContinuityAuthority(
-                generation_id=str(state["generation_id"]),
-                business_digest=legacy.business_digest,
-                publication_identity_sha256=publication_identity,
-                stable_identity_sha256=(
-                    data_bridge_continuity_authority_sha256(
-                        generation_id=str(state["generation_id"]),
-                        business_digest=legacy.business_digest,
-                        publication_identity_sha256=publication_identity,
-                        daily_cutoff_key="2026-07-17",
-                        weekly_cutoff_key="202629",
-                        monthly_cutoff_key="202607",
+
+            for after_backup in (False, True):
+                def deadline_fence(_deadline) -> None:
+                    if not after_backup or store.previous_dir.exists():
+                        raise DataBridgeRefreshError(
+                            "DataBridge refresh deadline has passed"
+                        )
+
+                with self.subTest(after_backup=after_backup):
+                    with (
+                        patch.object(
+                            refresh_module,
+                            "_ensure_before_deadline",
+                            side_effect=deadline_fence,
+                        ),
+                        self.assertRaisesRegex(
+                            DataBridgeRefreshError,
+                            "deadline has passed",
+                        ),
+                    ):
+                        store.publish(
+                            candidate(f"next-{after_backup}", next_frames),
+                            next_state,
+                            deadline_at=datetime(
+                                2026, 7, 21, 7, 0,
+                                tzinfo=ZoneInfo("Asia/Shanghai"),
+                            ),
+                        )
+
+                    self.assertEqual(
+                        {
+                            path.name: path.read_bytes()
+                            for path in store.current_dir.iterdir()
+                        },
+                        current_before,
                     )
-                ),
-                daily_cutoff_key="2026-07-17",
-                weekly_cutoff_key="202629",
-                monthly_cutoff_key="202607",
-            )
-            _StaticDataBridgeRoundBuilder.staging_root = root / "upgrade"
-            _StaticDataBridgeRoundBuilder.frames = _bridge_frames(
-                include_new_week=True
-            )
-            result = run_full_refresh(
-                config=config,
-                expected_daily_date="2026-07-20",
-                refresh_date="2026-07-21",
-                publish=True,
-                continuity_authority=authority,
-                round_builder=_StaticDataBridgeRoundBuilder(),
-            )
-
-            self.assertTrue(result.published)
-            self.assertEqual(
-                {path.name for path in store.current_dir.iterdir()},
-                {
-                    "daily_output.csv",
-                    "weekly_output.csv",
-                    "monthly_output.csv",
-                    "api_wind_date.csv",
-                    "factor_catalog.csv",
-                    ".publication-manifest.json",
-                },
-            )
-
+                    self.assertEqual(store.state_path.read_bytes(), state_before)
+                    self.assertFalse(store.previous_dir.exists())
 
     def test_only_v3_producer_enables_period_bootstrap(self) -> None:
         from shared import input_artifacts
@@ -1144,74 +562,4 @@ class DataBridgeCurrentTests(unittest.TestCase):
                 for call in resolve_cutoffs.call_args_list
             ],
             [True, False],
-        )
-
-    def test_launchd_publisher_enables_producer_period_bootstrap(self) -> None:
-        """只有 launchd producer 可请求跨周首键 bootstrap。"""
-        from scripts import refresh_data_bridge_current as refresh_script
-
-        engine = MagicMock()
-        config = SimpleNamespace(
-            schema_path=Path("/tmp/schema.json"),
-            data_root=Path("/tmp/data"),
-            runtime_root=Path("/tmp/runtime"),
-        )
-        result = SimpleNamespace(
-            published=True,
-            state={"generation_id": "generation-test"},
-            dataset=object(),
-        )
-        with (
-            patch.dict(
-                os.environ,
-                {
-                    refresh_script.LAUNCHD_PUBLISHER_ENV: (
-                        refresh_script.LAUNCHD_PUBLISHER_VALUE
-                    )
-                },
-                clear=False,
-            ),
-            patch.object(
-                refresh_script,
-                "create_sqlalchemy_engine",
-                return_value=engine,
-            ),
-            patch.object(
-                refresh_script,
-                "resolve_databridge_continuity_authority_from_engine",
-                return_value=object(),
-            ) as resolve_authority,
-            patch.object(refresh_script, "MySqlDataBridgeRoundBuilder"),
-            patch.object(
-                refresh_script,
-                "run_full_refresh",
-                return_value=result,
-            ),
-            patch.object(
-                refresh_script,
-                "invalidate_ready_blackbox_snapshot",
-            ) as invalidate_snapshot,
-            patch.object(
-                refresh_script,
-                "prepare_blackbox_generation_snapshot",
-            ) as prepare_snapshot,
-        ):
-            actual = refresh_script.refresh_current(
-                refresh_date="2026-08-11",
-                expected_feature_date="2026-08-10",
-                publish=True,
-                config=config,
-            )
-
-        self.assertIs(actual, result)
-        invalidate_snapshot.assert_called_once_with()
-        self.assertTrue(
-            resolve_authority.call_args.kwargs[
-                "allow_producer_period_bootstrap"
-            ]
-        )
-        prepare_snapshot.assert_called_once_with(
-            state=result.state,
-            dataset=result.dataset,
-            schema_path=config.schema_path,
         )

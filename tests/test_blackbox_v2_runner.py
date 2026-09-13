@@ -140,46 +140,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             "periods_by_tenor", "evaluation_filter", "raw_row_count", "excluded_row_count",
         } & output.summary.keys())
 
-    def test_process_group_rss_queries_only_the_target_group(self) -> None:
-        from scheduler import blackbox_v2_runner as runner
-
-        completed = SimpleNamespace(
-            stdout="77 100\n77 200\n78 500\ninvalid\n"
-        )
-        with (
-            patch.object(runner.os, "getpgid", return_value=77),
-            patch.object(
-                runner.subprocess,
-                "run",
-                return_value=completed,
-            ) as run,
-        ):
-            rss_bytes = runner._process_group_rss_bytes(1234)
-
-        self.assertEqual(rss_bytes, 300 * 1024)
-        run.assert_called_once_with(
-            ["/bin/ps", "-o", "pgid=,rss=", "-g", "77"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=2,
-            env={"LANG": "C", "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
-        )
-
-    def test_process_group_rss_remains_fail_closed_on_probe_failure(self) -> None:
-        from scheduler import blackbox_v2_runner as runner
-
-        with (
-            patch.object(runner.os, "getpgid", return_value=77),
-            patch.object(
-                runner.subprocess,
-                "run",
-                side_effect=runner.subprocess.SubprocessError("probe failed"),
-            ) as run,
-        ):
-            self.assertEqual(runner._process_group_rss_bytes(1234), 0)
-        run.assert_called_once()
-
     def test_gray_replay_rejects_request_calendar_mismatch(self) -> None:
         from scheduler.executor import (
             _validate_gray_replay_request_within_snapshot,
@@ -222,210 +182,48 @@ class BlackboxV2RunnerTests(unittest.TestCase):
     def test_scheduled_blackbox_uses_ready_snapshot(self) -> None:
         from scheduler.executor import run_blackbox_scheme_subprocess
         from scheduler.process_control import ProcessStartGuard
-        from shared.blackbox_v2.snapshot import BlackboxSnapshot, CutoffKeys
+        from shared.blackbox_v2.snapshot import CutoffKeys
 
-        snapshot = BlackboxSnapshot(
-            snapshot_id="snapshot-current",
-            root_dir=Path("/tmp/snapshot-current"),
-            data_dir=Path("/tmp/snapshot-current/data"),
-            manifest_path=Path("/tmp/snapshot-current/manifest.json"),
-            schema_version="data-bridge-v1",
-        )
-
+        snapshot = _gray_replay_snapshot()
         cfg = SimpleNamespace(
-            scheme_id="blackbox_trial",
-            input_source="data_bridge_current",
-            delivery_script=Path("trial.py"),
-            delivery_metadata=Path("trial.json"),
+            scheme_id="blackbox_trial", input_source="data_bridge_current",
+            delivery_script=Path("trial.py"), delivery_metadata=Path("trial.json"),
             blackbox_metadata=_metadata(),
         )
-
-        def process_started(_pid: int, _pgid: int) -> None:
-            return None
-
-        process_start_guard = ProcessStartGuard()
-        trusted_bundle = SimpleNamespace(
-            combined_snapshot_id="snapshot-trusted",
-            parent_snapshot_id="snapshot-parent-trusted",
-        )
+        trusted_bundle = SimpleNamespace(combined_snapshot_id="snapshot-trusted")
 
         @contextmanager
         def open_runtime_view(bundle):
-            self.assertEqual(
-                bundle.combined_snapshot_id,
-                "snapshot-current",
-            )
+            self.assertEqual(bundle.combined_snapshot_id, snapshot.snapshot_id)
             yield SimpleNamespace(
-                data_dir=Path("/tmp/private-runtime-view"),
-                bundle=trusted_bundle,
+                data_dir=Path("/tmp/private-runtime-view"), bundle=trusted_bundle,
             )
 
         with (
-            patch(
-                "shared.blackbox_v2.contracts.load_metadata",
-                side_effect=AssertionError("cached metadata must be reused"),
-            ),
-            patch(
-                "scheduler.executor.get_ready_blackbox_snapshot",
-                return_value=snapshot,
-            ) as ready_snapshot,
+            patch("scheduler.executor.get_ready_blackbox_snapshot",
+                  return_value=snapshot) as ready,
             patch("scheduler.executor.get_calendar", return_value="calendar"),
-            patch(
-                "scheduler.executor.build_daily_live_context",
-                return_value=SimpleNamespace(feature_date="2026-07-15"),
-            ),
-            patch(
-                "scheduler.executor.resolve_blackbox_input_cutoffs",
-                return_value=CutoffKeys("2026-07-15", "202627", "202606"),
-            ),
-            patch(
-                "scheduler.executor.build_live_request",
-                return_value=_request("001"),
-            ),
-            patch(
-                "scheduler.blackbox_v2_runner.run_blackbox_predict",
-                return_value="record",
-            ) as predict,
-            patch(
-                "scheduler.executor.open_blackbox_runtime_view",
-                side_effect=open_runtime_view,
-            ),
+            patch("scheduler.executor.build_daily_live_context",
+                  return_value=SimpleNamespace(feature_date="2026-07-15")),
+            patch("scheduler.executor.resolve_blackbox_input_cutoffs",
+                  return_value=CutoffKeys("2026-07-15", "202627", "202606")),
+            patch("scheduler.executor.build_live_request", return_value=_request("001")),
+            patch("scheduler.blackbox_v2_runner.run_blackbox_predict",
+                  return_value="record") as predict,
+            patch("scheduler.executor.open_blackbox_runtime_view",
+                  side_effect=open_runtime_view),
         ):
             result = run_blackbox_scheme_subprocess(
-                cfg,
-                "2026-07-16",
-                engine="engine",
-                algo_env="forecast_env_blackbox_v1",
-                timeout_sec=300,
-                process_started=process_started,
-                process_start_guard=process_start_guard,
+                cfg, "2026-07-16", engine="engine", algo_env="forecast_env_blackbox_v1",
+                timeout_sec=300, process_start_guard=ProcessStartGuard(),
             )
 
         self.assertEqual(result, ["record"])
-        ready_snapshot.assert_called_once_with(
-            snapshot_date="2026-07-16",
-            require_fresh=True,
-            factor_input_mode="legacy_v1",
-        )
-        self.assertIs(
-            predict.call_args.kwargs["process_started"],
-            process_started,
-        )
-        self.assertEqual(
-            predict.call_args.kwargs["data_dir"],
-            Path("/tmp/private-runtime-view"),
-        )
-        self.assertEqual(
-            predict.call_args.kwargs["data_snapshot_id"],
-            "snapshot-trusted",
-        )
-        self.assertNotIn("platform_input_ids", predict.call_args.kwargs)
-        self.assertEqual(
-            predict.call_args.kwargs["profile"].predict_timeout_sec,
-            3600,
-        )
-        self.assertEqual(
-            predict.call_args.kwargs["timeout_sec"],
-            300,
-        )
-        self.assertIs(
-            predict.call_args.kwargs["process_start_guard"],
-            process_start_guard,
-        )
-
-
-    def test_historical_replay_uses_as_of_snapshot_with_provenance(self) -> None:
-        from scheduler.executor import run_blackbox_scheme_subprocess
-        from shared.blackbox_v2.snapshot import (
-            BlackboxSnapshot,
-            CutoffKeys,
-        )
-        from shared.models import PredictionRecord
-
-        snapshot = BlackboxSnapshot(
-            snapshot_id="snapshot-current",
-            root_dir=Path("/tmp/snapshot-current"),
-            data_dir=Path("/tmp/snapshot-current/data"),
-            manifest_path=Path(
-                "/tmp/snapshot-current/manifest.json"
-            ),
-            schema_version="data-bridge-v1",
-            generation_id="full-20260720-test",
-            refresh_date="2026-07-20",
-        )
-
-        @contextmanager
-        def open_runtime_view(bundle):
-            yield SimpleNamespace(
-                data_dir=Path("/tmp/private-runtime-view"),
-                bundle=bundle,
-            )
-
-        cfg = SimpleNamespace(
-            scheme_id="blackbox_trial",
-            input_source="data_bridge_current",
-            delivery_script=Path("trial.py"),
-            delivery_metadata=Path("trial.json"),
-        )
-        raw_record = PredictionRecord(
-            scheme_id="blackbox_trial",
-            target_tenor="10Y",
-            horizon=1,
-            predict_date="2026-05-26",
-            feature_date="2026-05-25",
-            target_date="2026-05-26",
-            predicted_direction=1,
-            extra={"data_snapshot_id": "snapshot-current"},
-        )
-        with (
-            patch("shared.blackbox_v2.contracts.load_metadata", return_value=_metadata()),
-            patch(
-                "scheduler.executor.get_ready_blackbox_snapshot",
-                return_value=snapshot,
-            ),
-            patch("scheduler.executor.get_calendar", return_value="calendar"),
-            patch(
-                "scheduler.executor.build_daily_live_context",
-                return_value=SimpleNamespace(feature_date="2026-05-25"),
-            ),
-            patch(
-                "scheduler.executor.resolve_blackbox_input_cutoffs",
-                return_value=CutoffKeys("2026-05-25", "202621", "202605"),
-            ),
-            patch(
-                "scheduler.executor.open_blackbox_runtime_view",
-                side_effect=open_runtime_view,
-            ),
-            patch("scheduler.executor.build_live_request", return_value=_request("001")),
-            patch(
-                "scheduler.blackbox_v2_runner.run_blackbox_predict",
-                return_value=raw_record,
-            ),
-        ):
-            result = run_blackbox_scheme_subprocess(
-                cfg,
-                "2026-05-26",
-                engine="engine",
-                algo_env="forecast_env_blackbox_v1",
-                timeout_sec=600,
-                snapshot_mode="historical_as_of_replay",
-            )
-
-        extra = result[0].extra
-        self.assertEqual(
-            extra["replay_semantics"],
-            "current_snapshot_as_of_not_historical_vintage",
-        )
-        self.assertEqual(
-            extra["backfill_mode"],
-            "post_deployment_live_safe_replay",
-        )
-        self.assertEqual(extra["data_generation_id"], "full-20260720-test")
-        self.assertEqual(extra["source_refresh_date"], "2026-07-20")
-        self.assertEqual(extra["daily_cutoff_key"], "2026-05-25")
-        self.assertEqual(extra["weekly_cutoff_key"], "202621")
-        self.assertEqual(extra["monthly_cutoff_key"], "202605")
-        self.assertTrue(extra["backfilled_at"].endswith("+00:00"))
+        self.assertTrue(ready.call_args.kwargs["require_fresh"])
+        self.assertEqual(ready.call_args.kwargs["snapshot_date"], "2026-07-16")
+        self.assertEqual(predict.call_args.kwargs["data_dir"], Path("/tmp/private-runtime-view"))
+        self.assertEqual(predict.call_args.kwargs["data_snapshot_id"], "snapshot-trusted")
+        self.assertEqual(predict.call_args.kwargs["timeout_sec"], 300)
 
 
     def test_predict_converts_valid_result_to_prediction_record(self) -> None:

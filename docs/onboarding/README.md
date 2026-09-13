@@ -70,8 +70,8 @@ export PYTHONDONTWRITEBYTECODE=1
 | 修改公共输入、执行器或清理旧依赖时保护 W4 | 当前数据库输入、执行器和 source isolation | `python -m pytest -q tests/test_native_input_artifacts.py tests/test_native_executor.py tests/test_source_runner_database_isolation.py` | 全部通过；保留 W4 固定版本的 adapter、source、输入与 runner 依赖，不据此开放 Native 改版 |
 | 修改灰度规划或事务后 | 全部业务键预检、重复拒绝与提交边界 | `python -B -m pytest -q tests/test_signal_gap_plan.py tests/test_signal_gap_fill.py tests/test_repository_gray_gap_atomic.py` | 既有公共用例通过，失败不产生部分预测；不以隔离测试代替本机数据验收 |
 | 修改 release 工具或启动器后 | 确定性包、摘要、路径隔离、current 切换与环境加载 | `python -B -m pytest -q tests/test_source_release_tools.py tests/test_launchd_release_launcher.py` | 临时测试环境的构建/安装/拒绝/恢复用例通过；不操作生产 current |
-| 修改宿主调度入口或模板后 | 部署目标、cadence、一次性入口与期望配置 | `python -B -m pytest -q tests/test_systemd_control_plane.py tests/test_launchd_prediction_runner.py tests/test_launchd_config_drift_audit.py` | 合同通过；installed/loaded、自然日志和事实另按调度治理读回 |
+| 修改宿主调度入口或漂移检查后 | 部署目标、到期选择、生命周期、互斥与漂移识别 | `python -B -m pytest -q tests/test_systemd_control_plane.py tests/test_launchd_prediction_runner.py tests/test_close_prediction_runner.py tests/test_launchd_config_drift_audit.py` | 合同通过；installed/loaded、自然日志和事实另按调度治理读回 |
 
-pytest 保护公共代码合同，不替代目标环境的精确版本、输入、持久化与接管验收。
+pytest 保护公共代码合同，不替代目标环境的精确版本、输入、持久化与接管验收。unit/plist/Nginx 模板不维护正文快照测试；模板变更按[部署手册](../../deploy/README.md)核验配置，并按[调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)读回现场。
 
 纯文档修改只做[文档维护与验收](../README.md#维护与验收)规定的路径、作用域和任务检查；若解释某项现行行为存在疑点，可选用对应公共合同测试，不因整理文档运行全套算法或生产命令。

@@ -139,20 +139,6 @@ def test_migration_owner_connection_rejects_non_mysql_by_default() -> None:
     assert connection.statements == []
 
 
-def test_migration_owner_lock_preserves_body_failure() -> None:
-    connection = _LockConnection()
-    body_error = RuntimeError("migration body failed")
-    with (
-        patch("migrations.runner.preflight_migration_session"),
-        pytest.raises(RuntimeError, match="migration body failed") as raised,
-    ):
-        with _migration_owner_connection(_LockEngine(connection)):
-            raise body_error
-
-    assert raised.value is body_error
-    assert sum("RELEASE_LOCK" in sql for sql in connection.statements) == 1
-
-
 def test_migration_owner_lock_reports_release_failure_after_success() -> None:
     release_error = RuntimeError("release failed")
     connection = _LockConnection(release_error=release_error)

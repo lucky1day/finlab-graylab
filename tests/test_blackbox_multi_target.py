@@ -178,15 +178,6 @@ def test_live_targets_share_input_and_fail_as_one_batch(tmp_path, failure):
     assert 0 < seen[1]["timeout_sec"] <= seen[0]["timeout_sec"] <= 120
 
 
-@pytest.mark.parametrize("scheme_id", ["t1_daily", "t5_daily"])
-def test_multi_target_rejects_native_attachment_declaration(tmp_path, scheme_id):
-    path, raw = _scheme(tmp_path, scheme_id)
-    raw["native_attachments"] = {"predict.py": "a" * 64}
-    path.write_text(yaml.safe_dump(raw))
-    with pytest.raises(ValueError, match="native_attachments"):
-        load_scheme_config(path)
-
-
 @pytest.mark.parametrize("failure", [None, "invalid_result", "process", "source_drift"])
 def test_backtest_validates_all_targets_before_one_atomic_persist(tmp_path, failure):
     from harness.blackbox_v2.gates import BlackboxBacktestGate

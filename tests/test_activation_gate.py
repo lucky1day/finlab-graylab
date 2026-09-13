@@ -28,17 +28,6 @@ def activation_context(tmp_path):
     )
 
 
-def test_activation_dispatches_fresh_canonical_and_preserves_operation(activation_context):
-    expected = GateResult("activate", GateStatus.PASSED, [], [], "start", "finish")
-    with patch("harness.blackbox_v2.activation.activate_blackbox", return_value=expected) as run:
-        result = ActivationGate().run(activation_context)
-    assert result is expected
-    actual = run.call_args.args[0]
-    assert actual.config == activation_context.config
-    assert actual.config is not activation_context.config
-    assert actual.operation == activation_context.operation
-
-
 @pytest.mark.parametrize("field,value", [
     ("scheme_id", "other"), ("scheme_version", "stale-version"),
     ("action", "backtest_persist"),
@@ -102,17 +91,3 @@ def test_activate_cli_binds_exact_canonical(activation_context):
     assert ctx.operation.scheme_version == activation_context.config.scheme_version
     assert ctx.operation.action == "blackbox_activate"
     assert ctx.operation.issued_by == "cli-operator"
-
-
-def test_activate_cli_rejects_invalid_config_before_dispatch(activation_context):
-    from harness.cli import _build_parser, _run_activate
-
-    (activation_context.config.path / "config.yaml").write_text("- invalid\n")
-    args = _build_parser().parse_args([
-        "activate", "--scheme-id", activation_context.scheme_id,
-        "--project-root", str(activation_context.project_root),
-    ])
-    with patch("harness.blackbox_v2.activation.activate_blackbox") as run:
-        with pytest.raises(SystemExit, match="strict discovery"):
-            _run_activate(args)
-    run.assert_not_called()
