@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
 import pytest
+from sqlalchemy import create_engine, text
 
 from harness.context import GateContext
 
@@ -63,7 +65,7 @@ def _write_blackbox_config(project_root: Path) -> None:
                 "schema_version": "1.0",
                 "scheme_id": BASE_SCHEME_ID,
                 "name": "Demo Blackbox",
-                "owner": "ALGO-A",
+                "owner": "NEW-OWNER",
                 "description": "Blackbox dashboard fixture",
                 "algorithm_version": "1.0.0",
                 "target_tenor": "5Y",
@@ -164,6 +166,16 @@ def _payload(
 
 
 def _context(project_root: Path) -> GateContext:
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE t_scheme_registry (scheme_id TEXT PRIMARY KEY, "
+            "name TEXT, description TEXT, owner TEXT, status TEXT)"
+        ))
+        conn.execute(text(
+            "INSERT INTO t_scheme_registry VALUES "
+            "(:scheme_id, :name, :description, :owner, :status)"
+        ), [_scheme(tenor, with_live=False) for tenor in ("5Y", "10Y")])
     return GateContext(
         scheme_id=BASE_SCHEME_ID,
         predict_date="dashboard",
@@ -173,6 +185,7 @@ def _context(project_root: Path) -> GateContext:
             status="stale-context-must-not-be-trusted",
         ),
         api_base_url="http://127.0.0.1:8100/",
+        engine_factory=lambda: engine,
     )
 
 
@@ -282,22 +295,52 @@ def test_dashboard_gate_requires_backtest_partition(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     ("field", "invalid_value"),
-    (("name", ""), ("description", "different")),
+    (("name", "different"), ("description", "different"), ("owner", "OTHER")),
 )
-def test_dashboard_gate_requires_exact_new_blackbox_display_identity(
+def test_dashboard_gate_requires_display_to_match_registry(
     tmp_path: Path,
     field: str,
     invalid_value: str,
 ) -> None:
     _write_blackbox_config(tmp_path)
     payload = _payload(tenors=("5Y",))
-    payload["schemes"][0].update(
-        name="Demo Blackbox",
-        description="Blackbox dashboard fixture",
-    )
     payload["schemes"][0][field] = invalid_value
 
     result = _run_gate(tmp_path, lambda _url, **_kwargs: (payload, 200))
 
     assert not result.passed
     assert any(field in error for error in result.errors)
+
+
+def test_dashboard_gate_preserves_registered_display_after_runtime_migration(
+    tmp_path: Path,
+) -> None:
+    _write_blackbox_config(tmp_path)
+    result = _run_gate(
+        tmp_path, lambda _url, **_kwargs: (_payload(tenors=("5Y",)), 200)
+    )
+    assert result.passed, result.errors
+
+
+@pytest.mark.parametrize("case", ("no_engine", "missing", "paused", "query_error"))
+def test_dashboard_gate_requires_readable_active_registry(
+    tmp_path: Path, case: str,
+) -> None:
+    from harness.gates.dashboard_gate import DashboardGate
+
+    _write_config(tmp_path)
+    ctx = _context(tmp_path)
+    if case == "no_engine":
+        ctx.engine_factory().dispose()
+        ctx = replace(ctx, engine_factory=None)
+    else:
+        with ctx.engine_factory().begin() as conn:
+            conn.execute(text({
+                "missing": "DELETE FROM t_scheme_registry",
+                "paused": "UPDATE t_scheme_registry SET status = 'paused'",
+                "query_error": "DROP TABLE t_scheme_registry",
+            }[case]))
+    result = DashboardGate(
+        fetcher=lambda _url, **_kwargs: (_payload(), 200)
+    ).run(ctx)
+    assert not result.passed

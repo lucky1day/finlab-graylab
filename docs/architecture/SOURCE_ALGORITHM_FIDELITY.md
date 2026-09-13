@@ -124,6 +124,7 @@ live 仍须按自己的 `feature_date` 截止，并与同口径 live-safe oracle
 本节解释已经明确批准的同算法运行时迁移及其历史保护边界，不授权启动 W4 迁移，不放宽后续 Blackbox 算法修订的入库合同。
 
 1. 保留原 `scheme_id`、`base_scheme_id` 和业务 Registry ID，以真实新 exact `scheme_version` 区分运行时。
+   原 Registry 名称、描述和 owner 也保留；展示归属按[共享契约](SCHEME_CONTRACT.md#3-方案身份)核验。
    不为包装变化新建 `_bbv2` 业务身份，不以手改 `runtime_type` 冒充迁移。
 2. 固定最终包和原身份，以既有 Native 结果为基线；同一冻结输入下一次对应 Request 的 Blackbox 标准调用，
    对比 `predict_date`、`feature_date`、`target_date` 和 `predicted_direction`。同算法包装迁移无需重跑全历史，

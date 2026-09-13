@@ -6,7 +6,9 @@ from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from backend.factor_lab_dashboard import MAX_RAW_JSON_BYTES
+from sqlalchemy import bindparam, text
+
+from backend.factor_lab_dashboard import MAX_RAW_JSON_BYTES, dashboard_read_connection
 from backend.factor_lab_dashboard_semantics import validate_dashboard_payload
 from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
@@ -124,20 +126,6 @@ class DashboardGate(Gate):
             for tenor in config.tenors
         ]
         matched_rows: list[Mapping[str, Any]] = []
-        new_blackbox_identity: dict[str, str] | None = None
-        if config.runtime_type == "blackbox_v2" and config.description:
-            new_blackbox_identity = {
-                "name": config.name,
-                "description": config.description,
-            }
-            config_owner = getattr(config, "owner", None)
-            if config_owner is not None:
-                new_blackbox_identity["owner"] = config_owner
-            for field, value in new_blackbox_identity.items():
-                if not value.strip():
-                    errors.append(
-                        f"new Blackbox V2 config {field} must be non-empty"
-                    )
         if errors:
             return _result(
                 started_at,
@@ -149,6 +137,22 @@ class DashboardGate(Gate):
                 matched_rows=matched_rows,
                 errors=errors,
             )
+
+        if ctx.engine_factory is None:
+            raise ValueError("dashboard gate requires same-host Registry engine_factory")
+        engine = ctx.engine_factory()
+        try:
+            with dashboard_read_connection(engine) as conn:
+                registry_rows = conn.execute(
+                    text(
+                        "SELECT scheme_id, name, description, owner, status "
+                        "FROM t_scheme_registry WHERE scheme_id IN :registry_ids"
+                    ).bindparams(bindparam("registry_ids", expanding=True)),
+                    {"registry_ids": expected_registry_ids},
+                ).mappings().all()
+        finally:
+            engine.dispose()
+        registry_by_id = {row["scheme_id"]: row for row in registry_rows}
 
         schemes = payload["schemes"]
         for registry_id, target_tenor in zip(
@@ -165,6 +169,10 @@ class DashboardGate(Gate):
                 continue
             row = matches[0]
             matched_rows.append(row)
+            registry = registry_by_id.get(registry_id)
+            if registry is None or registry["status"] != "active":
+                errors.append(f"active Registry missing: scheme_id={registry_id}")
+                continue
             expected_fields = {
                 "base_scheme_id": config.scheme_id,
                 "horizon": config.horizon,
@@ -172,9 +180,10 @@ class DashboardGate(Gate):
                 "frequency": config.frequency,
                 "target_tenor": target_tenor,
                 "status": "active",
+                "name": str(registry["name"] or "").strip(),
+                "description": str(registry["description"] or ""),
+                "owner": registry["owner"],
             }
-            if new_blackbox_identity is not None:
-                expected_fields.update(new_blackbox_identity)
             for field, expected in expected_fields.items():
                 if row[field] != expected:
                     errors.append(

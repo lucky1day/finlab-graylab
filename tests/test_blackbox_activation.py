@@ -14,6 +14,7 @@ from harness.blackbox_v2.activation import activate_blackbox
 from harness.context import GateContext
 from harness.operation import build_direct_operation
 from harness.result import GateStatus
+from shared.blackbox_v2.contracts import BlackboxDelivery, BlackboxMetadata
 
 
 @pytest.fixture(autouse=True)
@@ -44,6 +45,7 @@ def _revision_fixture():
         scheme_id="trial_10y",
         name="Trial 10Y",
         description="trial",
+        owner="Test Owner",
         scheme_version="version-2",
         runtime_type="blackbox_v2",
         status="active",
@@ -79,7 +81,7 @@ def _revision_fixture():
         conn.exec_driver_sql(
             "CREATE TABLE t_scheme_registry ("
             "scheme_id TEXT PRIMARY KEY, base_scheme_id TEXT, name TEXT, "
-            "description TEXT, horizon INTEGER, task_type TEXT, runtime_type TEXT, "
+            "description TEXT, owner TEXT, horizon INTEGER, task_type TEXT, runtime_type TEXT, "
             "tenors TEXT, frequency TEXT, target_tenor TEXT, schedule_cron TEXT, "
             "schedule_timezone TEXT, status TEXT, deployed_at timestamp)"
         )
@@ -124,7 +126,7 @@ def _revision_fixture():
         conn.execute(
             text(
                 "INSERT INTO t_scheme_registry VALUES "
-                "('trial_10y__h1__10Y', :scheme_id, :name, :description, 1, "
+                "('trial_10y__h1__10Y', :scheme_id, :name, :description, :owner, 1, "
                 "'T+1', 'blackbox_v2', '[\"10Y\"]', 'daily', '10Y', "
                 "'3 7 * * 1-5', 'Asia/Shanghai', 'active', :deployed_at)"
             ),
@@ -132,6 +134,7 @@ def _revision_fixture():
                 "scheme_id": cfg.scheme_id,
                 "name": cfg.name,
                 "description": cfg.description,
+                "owner": cfg.owner,
                 "deployed_at": datetime(2026, 8, 24, 1, 0),
             },
         )
@@ -204,6 +207,25 @@ def _activate_revision_repository(engine, cfg):
 
 def _initial_fixture():
     engine, cfg = _revision_fixture()
+    cfg.blackbox_deliveries = (
+        BlackboxDelivery(
+            script_path=Path("delivery/trial_10y.py"),
+            metadata_path=Path("delivery/trial_10y.json"),
+            metadata=BlackboxMetadata(
+                schema_version="1.0",
+                scheme_id=cfg.scheme_id,
+                name=cfg.name,
+                algorithm_version=cfg.algorithm_version,
+                target_tenor="10Y",
+                task_type=cfg.task_type,
+                horizon=cfg.horizon,
+                target_rule="target_date_yield_vs_feature_date_yield",
+                frequency=cfg.frequency,
+                description=cfg.description,
+                owner=cfg.owner,
+            ),
+        ),
+    )
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM t_scheme_registry"))
         conn.execute(text("DELETE FROM t_scheme_versions"))
@@ -265,7 +287,7 @@ def _sqlite_initial_registry_sync(conn, schemes, *, effective_statuses) -> None:
     conn.execute(
         text(
             "INSERT INTO t_scheme_registry VALUES "
-            "(:registry_id, :scheme_id, :name, :description, :horizon, "
+            "(:registry_id, :scheme_id, :name, :description, :owner, :horizon, "
             ":task_type, 'blackbox_v2', :tenors, :frequency, :target_tenor, "
             ":cron, :timezone, :status, :deployed_at)"
         ),
@@ -274,6 +296,7 @@ def _sqlite_initial_registry_sync(conn, schemes, *, effective_statuses) -> None:
             "scheme_id": cfg.scheme_id,
             "name": cfg.name,
             "description": cfg.description,
+            "owner": cfg.owner,
             "horizon": cfg.horizon,
             "task_type": cfg.task_type,
             "tenors": '["10Y"]',
@@ -426,6 +449,68 @@ def test_initial_repository_atomically_creates_active_identity() -> None:
             assert conn.execute(
                 text("SELECT COUNT(*) FROM t_scheme_predictions")
             ).scalar_one() == 1
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "tamper_sql",
+    [
+        "UPDATE t_scheme_registry SET name = name || ' '",
+        "UPDATE t_scheme_registry SET description = UPPER(description)",
+        "UPDATE t_scheme_registry SET owner = 'Other Owner'",
+        "DELETE FROM t_scheme_registry",
+        pytest.param(None, id="canonical_display_name_override"),
+    ],
+)
+def test_initial_repository_rolls_back_if_registry_display_readback_fails(
+    tamper_sql: str | None,
+) -> None:
+    from scheduler.repository import activate_blackbox_initial
+
+    engine, cfg = _initial_fixture()
+    if tamper_sql is None:
+        cfg.name = "Canonical Display Name"
+
+    def sync_then_tamper(conn, schemes, *, effective_statuses):
+        _sqlite_initial_registry_sync(
+            conn, schemes, effective_statuses=effective_statuses
+        )
+        if tamper_sql is not None:
+            conn.exec_driver_sql(tamper_sql)
+
+    try:
+        with (
+            patch(
+                "scheduler.repository._blackbox_activation_advisory_lock",
+                return_value=nullcontext(),
+            ),
+            patch(
+                "scheduler.repository._upsert_scheme_version_conn",
+                side_effect=_sqlite_revision_upsert,
+            ),
+            patch(
+                "scheduler.repository._sync_scheme_registry_conn",
+                side_effect=sync_then_tamper,
+            ),
+            pytest.raises(RuntimeError, match="Registry display readback"),
+        ):
+            activate_blackbox_initial(
+                engine,
+                cfg,
+                **_initial_backtest_evidence(cfg),
+                approved_by="operator",
+                approved_at=datetime(2026, 8, 25, 2, 0, tzinfo=timezone.utc),
+            )
+
+        assert _revision_states(engine) == []
+        with engine.begin() as conn:
+            assert conn.execute(
+                text("SELECT COUNT(*) FROM t_scheme_registry")
+            ).scalar_one() == 0
+            assert conn.execute(
+                text("SELECT COUNT(*) FROM t_scheme_predictions")
+            ).scalar_one() == 0
     finally:
         engine.dispose()
 

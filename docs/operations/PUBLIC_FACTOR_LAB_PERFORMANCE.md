@@ -87,7 +87,11 @@ exact 另由数据库与 release 核验，Dashboard 不提供该字段。
 现有 [`DashboardGate`](../../harness/gates/dashboard_gate.py) 支持 `fetcher` 注入；用授权会话取得的真实
 HTTP 响应交给 `DashboardGate(fetcher=...)`。fetcher 接收 URL、`timeout_sec` 和 `max_response_bytes`，
 须按这些限制读取响应、校验 UTF-8/JSON 并返回 `(payload, http_status)`；自定义 fetcher 不能绕过读取预算，
-不得构造成功状态或伪造 payload。Gate 校验 V6 Summary、active composite、任务/展示身份和回测分区；
+不得构造成功状态或伪造 payload。`GateContext.engine_factory` 必须显式绑定该 HTTP 服务的本机数据库，
+执行前按[手工环境绑定](../../deploy/README.md#手工-harness-的目标环境绑定)核实；未提供或查询失败则 Gate 失败，不回退默认库。
+Gate 在只读事务中批量读取所需 Registry，按[展示权威](../architecture/SCHEME_CONTRACT.md#3-方案身份)比较
+名称、描述和 owner；名称去首尾空白、空描述转空字符串，与 API 表示一致，不从 canonical 推断新身份。
+同时校验 V6 Summary、active composite、任务字段和回测分区；
 没有 live 月度计数合法，非 200、超限或非法结构均失败。gzip/no-store/响应头由 API 合同测试保护。
 
 裸 `python -B -m harness gate dashboard --api-base-url ...` 的默认 fetcher **不携带登录会话**，

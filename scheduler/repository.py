@@ -15,7 +15,7 @@ from typing import Iterable, Iterator, Mapping, Sequence, cast
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Connection, Engine, URL
 
-from scheduler.discovery import SchemeConfig, load_scheme_config
+from scheduler.discovery import SchemeConfig, blackbox_deliveries, load_scheme_config
 from shared.blackbox_v2.contracts import REQUEST_FIELDS, request_from_mapping
 from shared.db_config import DatabaseConfig
 from shared.models import (
@@ -639,6 +639,41 @@ def activate_blackbox_initial(
                     registry_id: "active" for registry_id in expected_registry_ids
                 },
             )
+            registry_params = {
+                f"registry_id_{index}": registry_id
+                for index, registry_id in enumerate(expected_registry_ids)
+            }
+            registry_placeholders = ", ".join(
+                f":{key}" for key in registry_params
+            )
+            registry_rows = conn.execute(
+                text(
+                    "SELECT scheme_id, name, description, owner "
+                    "FROM t_scheme_registry "
+                    f"WHERE scheme_id IN ({registry_placeholders}){lock_clause}"
+                ),
+                registry_params,
+            ).mappings().all()
+            registry_by_id = {row["scheme_id"]: row for row in registry_rows}
+            metadata_by_id = {
+                registry_scheme_id(
+                    cfg.scheme_id, cfg.horizon, delivery.metadata.target_tenor
+                ): delivery.metadata
+                for delivery in blackbox_deliveries(cfg)
+            }
+            for registry_id in expected_registry_ids:
+                row = registry_by_id.get(registry_id)
+                if row is None:
+                    raise RuntimeError(
+                        "Blackbox initial activation Registry display readback "
+                        f"missing: {registry_id}"
+                    )
+                for field in ("name", "description", "owner"):
+                    if row[field] != getattr(metadata_by_id[registry_id], field):
+                        raise RuntimeError(
+                            "Blackbox initial activation Registry display readback "
+                            f"mismatch: {registry_id}.{field}"
+                        )
             approval = _read_blackbox_execution_approval_conn(
                 conn,
                 cfg,

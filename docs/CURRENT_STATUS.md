@@ -122,8 +122,8 @@ Gate 却把所有带 description 的 Blackbox 都按新入库展示信息检查�
 Gate 自迁移收尾提交 `87e9c4c7` 后未改动；运行接管已完成，但这项合同衔接遗漏，不能称整体完全闭环。
 原实现、迁移验收范围及双机逐字段清单见外置 `migration-display-analysis.json` 和 `migration-display-findings.md`。
 
-Mac3 晋级继续暂停，先梳理并确认验收职责的修复方案，不将用户对问题梳理的同意视作豁免失败或发布授权。
-本次未修改 Registry、Metadata、Gate 或算法；Mac3 尚未创建初始名单或切换本轮 release。
+验收职责修复已获确认：首次登记在激活事务核对 Metadata → Registry；通用 Gate 对照 API → 本机 Registry。
+保留既有业务展示，修复通过验证后重新构建 release，按 ECS → Mac3 顺序验收；Mac3 尚未创建初始名单或切换本轮 release。
 
 证据：[本轮外置目录](/Users/macstudio0/bond-factor-lab-runtime/releases/dashboard-production-marker-20260913/)，
 其中 `ecs-before/candidate/after.json`、`ecs-http.json`、`existing-gate-differences.json` 分别定位本机数据、HTTP 和存量差异；

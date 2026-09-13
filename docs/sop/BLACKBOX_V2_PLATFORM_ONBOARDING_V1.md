@@ -126,9 +126,9 @@ scheme_version + code_hash + config_hash + manifest_hash
 1. 锁定并复核唯一成功的 exact-version 持久化回测，拒绝 base/composite 身份冲突；
 2. insert-only 发布缺失的 `t_scheme_predictions` 产品事实，以 `backtest_run_id` 指向证据 run；
 3. 建立 active exact version 与全部 active composite Registry，写入审批人与时间；
-4. 锁内读回事实和 lifecycle 后提交，任一步失败整体回滚，不留下 draft 身份。
+4. 锁内读回全部 Registry 的 `name/description/owner` 与 Metadata 严格相等，再核对事实和 lifecycle 后提交；缺行或任一步失败整体回滚，不留下 draft 身份。
 
-同 ID revision 激活不重写历史产品事实。无需 `shadow-register`，也不生成配置覆盖层或补偿 journal。
+同 ID revision 激活不重写历史产品事实，保留既有 Registry 展示信息，边界见[共享契约](../architecture/SCHEME_CONTRACT.md#3-方案身份)。无需 `shadow-register`，也不生成配置覆盖层或补偿 journal。
 
 ## 5. 可选后续动作
 

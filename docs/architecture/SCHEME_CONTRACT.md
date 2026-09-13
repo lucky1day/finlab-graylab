@@ -41,10 +41,12 @@
 
 运行时包装升级保持原 base/Registry ID，以新 exact 区分执行版本；迁移与临时身份历史保护见[源算法保真](SOURCE_ALGORITHM_FIDELITY.md)。
 
-`t_scheme_registry.owner` 是方案来源的唯一运行和展示权威，必须为合法非空值。新 Blackbox 从两文件
-Metadata 登记 owner；已有 Metadata 缺失 owner 的历史 Blackbox 与 Native 只保留数据库既有值，不改写
-canonical 文件或算法版本。Dashboard 不读取仓库映射、配置兜底或占位值；Registry owner 缺失或非法时
-整个产品读模型 fail-closed。
+`t_scheme_registry` 是业务展示 `name/description/owner` 的唯一权威。新 Blackbox ID 首次激活从
+Metadata 登记三字段，并在同一事务读回严格核对；缺行或不一致整体回滚。同 ID 的运行时迁移和 exact
+修订保留既有展示信息，不因新 Metadata 自动改名或更换 owner；业务更正须独立确认，不通过修改算法版本消除展示差异。
+
+Dashboard 只读本机 Registry，不使用仓库映射、配置兜底或占位值；owner 必须合法非空，否则整个产品
+读模型 fail-closed。展示验收比较 API 与本机 Registry；首次登记与 Metadata 的一致性由激活事务保障。
 
 ## 4. 任务类型与期限
 

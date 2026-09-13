@@ -16,7 +16,7 @@
 | `shared.blackbox_v2.intake` | 两文件交付入库 | 只准备 canonical，不等于数据库激活 |
 | `harness.blackbox_v2.gates` | 回测前复验交付安全边界；执行批量 Request、校验 Result 并保存 exact、输入和环境证据 | 必须 persist，只经 `backtests.repository` 写 `t_backtest_*`；不额外运行 predict 冒烟 |
 | `harness.gates.activate_gate` 的严格身份入口与 `harness.blackbox_v2.activation` | 核对成功回测与当前 canonical，调用生命周期事务 | 不用技术验证替代操作授权 |
-| `harness.gates.dashboard_gate` | 对唯一 Dashboard API 做受限 GET，验证 V6 Summary、active composite、owner、任务字段和结果分区 | 只读；不证明 exact、调度缺口或自然运行 |
+| `harness.gates.dashboard_gate` | 对唯一 Dashboard API 做受限 GET，对照本机 Registry 展示字段，验证 V6 Summary、active composite、任务字段和结果分区 | HTTP 与数据库均只读；不证明 exact、调度缺口或自然运行 |
 
 ## 2. 验证与执行边界
 
