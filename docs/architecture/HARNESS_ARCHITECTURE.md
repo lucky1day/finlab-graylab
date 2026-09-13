@@ -50,4 +50,4 @@ Blackbox 回测经 `backtests.repository` 原子写入不可变 `t_backtest_*`�
 | 三日期、业务键、Actual、指标与公开分区 | [预测语义](PREDICTION_SEMANTICS.md) |
 | installed/loaded、唯一 Writer 与自然运行 | [调度治理](PRODUCTION_SCHEDULING_GOVERNANCE.md) |
 
-具体 run、输入摘要和操作产物保留在控制面及外置证据目录；文档只记录当前结论和证据位置。
+具体 run、输入摘要和操作产物保留在控制面及外置证据目录；[当前状态](../CURRENT_STATUS.md)记录核验结论与证据位置。

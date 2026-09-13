@@ -87,8 +87,9 @@ Blackbox frozen manifest 的 selector 对 Linux x86_64 使用 linux-64、Mac arm
 Mac3 launcher 从已经解析的精确 release 读取 `.bfl-release.env`，再唯一派生 runtime 下
 `config/service.env`，最后 exec 服务环境入口。它拒绝 Git 工作区、非 `releases/<commit>` 目录、
 commit/runtime/cache 漂移、外层同名覆盖及外置 `PYTHON*` 变量；配置目录须为用户拥有的真实 `0700`
-目录，文件为同用户真实 `0400/0600` 普通文件。通过目录 fd、`O_NOFOLLOW`、同一 fd 属性校验和限长读取
-防止替换竞态；只解析唯一 `KEY=VALUE`，不执行 shell 展开。生产目标缺少所需 release 环境时 fail-closed。
+目录，文件为同用户真实 `0400/0600` 普通文件。读取拒绝链接、替换竞态和超长配置；只接受唯一
+`KEY=VALUE`，不执行 shell 展开，具体检查见 [Mac3 launcher](../scripts/run_launchd_release.py)。
+生产目标缺少所需 release 环境时 fail-closed。
 
 安装器创建 runtime 下 logs，模板日志不写开发目录。SSH tunnel 不执行项目代码，以用户主目录为 cwd；
 其 key/user、cwd 和日志由本页漂移审计核对，不参与应用代码切换。

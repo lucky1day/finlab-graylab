@@ -20,7 +20,7 @@ snapshot 身份；不一致时先归类为输入 vintage 差异，不能据此�
 
 ## 1. 总原则
 
-历史 Native 适配将取数、日期映射、调用、落库、缓存和对比置于平台边界，算法计算路径须与原始脚本一致。下列界限用于保护现存 W4 及解释旧版本，不授权继续修订 Native 算法或适配层。
+历史 Native 适配将取数、日期映射、调用、落库、缓存和对比置于平台边界，算法计算路径须与原始脚本一致。Native 部分整体适用 §0 的固定版本与历史解释范围。
 
 以下事项均属于算法逻辑，默认不得修改：
 
@@ -37,7 +37,7 @@ snapshot 身份；不一致时先归类为输入 vintage 差异，不能据此�
 
 ## 2. 允许的适配
 
-历史 Native 适配中的下列变换属于平台边界，判断其保真仍须保持输出等价；这不恢复新 Native 版本维护入口：
+历史 Native 适配中的下列变换属于平台边界，判断其保真仍须保持输出等价：
 
 - 把原始文件读取改为接收 `pd.DataFrame` 或平台 input artifact。
 - 把原始输出转换为 `PredictionRecord`、backtest row 或 benchmark CSV。
@@ -56,9 +56,9 @@ snapshot 身份；不一致时先归类为输入 vintage 差异，不能据此�
 
 | 等级 | 定义 | 处理规则 |
 |------|------|----------|
-| L0 平台适配 | 只改变文件路径、输入 artifact、日期字段映射、输出 schema、extra、缓存、日志、授权、写库或 API 展示 | 历史适配须有输出等价依据 |
+| L0 平台适配 | 仅改变 §2 的输入接入、日期映射及输出等平台边界 | 历史适配须有输出等价依据 |
 | L1 source runner 上下文 | 把原始 runner 明确 patch 的 `source_end/current_start/current_end/test_ranges` 等外层上下文参数显式传给 core | 复核 runner 明确 patch 的字段和不可移动的固定锚点 |
-| L2 算法内部改动 | 改变原始算法的历史起点、筛因子起点、test sequence、分组键、特征构造、周/月频对齐、模型参数、selector、streak、fallback、VT、投票或内部 score 映射 | 不属于平台适配；停止 Native 修改，按 Blackbox 修订另行交付 |
+| L2 算法内部改动 | 改变 §1 所列算法计算路径或内部数值口径 | 不属于平台适配；停止 Native 修改，按 Blackbox 修订另行交付 |
 
 方向一致但必要内部数值不同，仍须区分 L0 输入/导出差异、L1 上下文误传与 L2 算法变化；
 未归因前不得把差异结果用于持久化或补缺。历史输入 vintage 漂移应归为输入差异，不能改写成当前 benchmark 通过；无需为保持 W4 日常调度补做旧 Harness 准入。历史数值对账标准见 §4。
@@ -106,6 +106,14 @@ PIT 变体只能按 §3 的批准口径表达。
 ## 6. 必留证据
 
 已有 Native 原件、执行口径、输入截止和对账结果仍用于解释历史来源，不因停止 Native Harness 维护而改写或删除；无需为 W4 日常调度继续生成完整 Gate/benchmark 报告。需要定位既有材料时，从[当前状态](../CURRENT_STATUS.md)、Git 或对应 immutable release 查找。Blackbox 普通入库按平台 SOP 保留交付字节、标准调用及 Result，不复制内部算法测试。
+
+仓库保留的来源说明如下，仅供追溯；旧取数、路径与运行指令不适用于平台操作，原件不按现行规范改写。
+
+| 来源批次 | 原始说明 |
+|---|---|
+| daily_0629 | [包说明](../../source_evidence/benchmark_batches/daily_0629/source_package/forecast_project/README.md)、[日频说明](../../source_evidence/benchmark_batches/daily_0629/source_package/forecast_project/daily_project/README.md)、[回测说明](../../source_evidence/benchmark_batches/daily_0629/source_package/forecast_project/回测使用说明.md) |
+| weekly_average_0529 | [包说明](../../source_evidence/benchmark_batches/model_muti_0529/weekly_average_0529/source_package/forecast_project/README.md)、[回测说明](../../source_evidence/benchmark_batches/model_muti_0529/weekly_average_0529/source_package/forecast_project/回测使用说明.md) |
+| monthly_0629 | [包说明](../../source_evidence/benchmark_batches/monthly_0629/source_package/forecast_project/README.md)、[回测说明](../../source_evidence/benchmark_batches/monthly_0629/source_package/forecast_project/回测使用说明.md) |
 
 ### 6.1 历史 batch 例外的保留范围
 

@@ -8,44 +8,21 @@
 
 涉及 ECS/Mac3 时，先读[双机部署与访问入口](../operations/DEPLOYMENT_ACCESS.md)，直接使用已核验的连接与生产目录，再按本导航执行标准 CLI。已归档的批次 operator 脚本不是日常入口。
 
-## 选择流程
+## 按场景进入
 
-| 场景 | 必须使用的流程 |
+Blackbox 上游算法人员按[交付 SOP](../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)准备两文件与自测材料；平台人员按下表选择操作和验收入口。
+
+| 场景 | 操作与验收去向 |
 |---|---|
-| 新算法、新方案 ID、新目标期限或新任务类型 | Blackbox V2 |
-| Mac3 W4 九个 Native 固定版本的运行检查、故障定位或漏跑恢复 | [W4 运行维护](../sop/NATIVE_V1_MAINTENANCE_SOP.md)，不做版本修订或重新准入 |
-| W4 的算法升级、替代实现或能力扩展 | 另行确认独立 Blackbox V2 方案，不修改既有 W4 版本 |
-| 已完成运行时升级的身份与保留边界 | [当前状态](../CURRENT_STATUS.md#保留身份与恢复证据)与[共享契约](../architecture/SCHEME_CONTRACT.md)，不恢复临时迁移入口 |
-| 查看当前方案状态或未关闭问题 | [当前状态](../CURRENT_STATUS.md)或[统一后续推进计划](../TODO.md) |
-| 查看历史规则和旧草案 | 使用 Git 历史；不得用于当前验收 |
+| 新算法、新 ID、新目标期限或新任务 | [平台 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)：Intake → 定稿 canonical 与候选 release → 完整持久化回测 → 授权 activate |
+| 同 ID Blackbox 修订 | 同一 SOP 的修订路径，不重复 Intake；已有事实不得重算或覆盖 |
+| W4 九套固定 Native 版本运行、故障或漏跑 | [W4 运行维护](../sop/NATIVE_V1_MAINTENANCE_SOP.md)，接口见[存量契约](../native_v1/SCHEME_CONTRACT.md)；不做 Native 改版或重新准入 |
+| W4 算法升级、替代实现或能力扩展 | 另行确认独立 Blackbox V2 方案，不修改既有 W4 版本 |
+| 历史与灰度补齐 | 按[预测语义](../architecture/PREDICTION_SEMANTICS.md#52-历史批次与灰度区间批次)确定分界及 live-safe 条件，再按[平台 SOP 第 5—6 节](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#5-可选后续动作)选择已支持的区间或单日入口；在对应授权范围内执行 |
+| 接管与观察 | [生产准备](../blackbox_v2/PRODUCTION_READINESS.md)核验接管证据；[调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)核验现场与真实时钟；Dashboard 可见性不证明 exact 或自然运行 |
+| 查迁移来源、保留身份或旧例外 | [当前状态](../CURRENT_STATUS.md#保留身份与恢复证据) → [保真与迁移边界](../architecture/SOURCE_ALGORITHM_FIDELITY.md#7-同算法-native--blackbox-迁移)及对应 Git/release；不恢复临时入口 |
 
 不得通过复用旧 ID、复制 `predict.py + core/` 或修改 Native 白名单，把新算法伪装成存量维护。
-
-历史运行时迁移只按[源算法保真](../architecture/SOURCE_ALGORITHM_FIDELITY.md#7-同算法-native--blackbox-迁移)追溯，不恢复临时入口或套用旧例外。
-
-## 操作入口
-
-### Blackbox V2
-
-- 上游算法：[交付 SOP](../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)
-- 平台人员：[平台入库 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)
-- 生产准备：[生产准备清单](../blackbox_v2/PRODUCTION_READINESS.md)
-- 架构边界：[代码架构](../architecture/CODE_ARCHITECTURE.md)
-
-### W4 固定版本运行
-
-- 运行接口：[Native V1 存量契约](../native_v1/SCHEME_CONTRACT.md)
-- 运行检查、故障与恢复边界：[W4 运行维护 SOP](../sop/NATIVE_V1_MAINTENANCE_SOP.md)
-
-## 执行顺序
-
-| 任务 | 操作与验收去向 |
-|---|---|
-| 新 Blackbox ID | [平台 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)：Intake → 定稿 canonical 与候选 release → 完整持久化回测 → 授权 activate |
-| 同 ID Blackbox 修订 | 同一 SOP 的修订路径，不重复 Intake；已有事实不得重算或覆盖 |
-| W4 固定版本运行 | [运行维护 SOP](../sop/NATIVE_V1_MAINTENANCE_SOP.md)核对现有版本、输入与日/周/月调度，不执行 Native 入库、回测准入或再激活 |
-| 历史与灰度补齐 | 先按[预测语义](../architecture/PREDICTION_SEMANTICS.md#52-历史批次与灰度区间批次)确定分界及 live-safe 条件，再按[平台 SOP 第 5—6 节](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#5-可选后续动作)选择已支持的区间或单日入口并取得对应授权 |
-| 接管与观察 | [生产准备](../blackbox_v2/PRODUCTION_READINESS.md)核验接管证据；[调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)核验现场与真实时钟；Dashboard 可见性不证明 exact 或自然运行 |
 
 ## 可复用测试矩阵
 

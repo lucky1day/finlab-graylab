@@ -4,7 +4,7 @@
 
 **目标读者**：上游算法和平台数据接入人员
 
-本目录提供 `data-bridge-v1` 的文档入口、算法合同样例和五份脱敏结构样例。样例中的日期、周期键和业务值全部为合成值，不来自生产数据。
+本目录提供 `data-bridge-v1` 的文档入口、算法合同样例及五份结构样例。
 
 算法合同样例：
 
@@ -62,8 +62,8 @@ producer 独立校验五文件的 schema、freshness、cutoff 和完整性，达
 
 ## 样例用途与限制
 
-样例仅用于文件名、键类型、基线兼容、字段选择和 cutoff 截断的接口自测；不用于训练、效果回测或生产 freshness 验收，也不能推断真实起止日期、行列数、分布或空值比例。算法不得硬编码样例路径，或从合成 week_id/month_id 推导平台 Request。
+样例中的日期、周期键和业务值全部为合成值，不来自生产数据，仅用于文件名、键类型、基线兼容、字段选择和 cutoff 截断的接口自测；不用于训练、效果回测或生产 freshness 验收，也不能推断真实起止日期、行列数、分布或空值比例。算法不得硬编码样例路径，或从合成 week_id/month_id 推导平台 Request。
 
-运行期文件位置与 Git 边界见[data/data_bridge/README.md](../../../data/data_bridge/README.md)。完整读取与按版本选列示例见[上游交付 SOP](../../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md#4-databridge-五文件输入)，此处不维护第二份读取合同。
+运行期文件位置与 Git 边界见[data/data_bridge/README.md](../../../data/data_bridge/README.md)。
 
 平台输入实现变更后，按[公共验证矩阵](../../onboarding/README.md#可复用测试矩阵)检查 DataBridge 合同；真实发布仍须有目标机 producer-ready 证据，样例测试通过不能替代。

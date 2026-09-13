@@ -28,14 +28,14 @@
 | L4 | `backend/`、`backtests/`、`tests/` | 产品与认证接口、Blackbox 回测和验证 |
 | L5 | `harness/` | Blackbox 验证、激活及公共展示验收与受控补缺 |
 
-具体实现入口集中在 §7；表中的层级描述依赖位置，不表示所有上层都能调用任一下层，允许边以 §3 为准。
+具体实现入口集中在 §6；表中的层级描述依赖位置，不表示所有上层都能调用任一下层，允许边以 §3 为准。
 
 ---
 
 ## 3. 包依赖方向规则（强约束核心）
 
 以下矩阵定义生产包之间允许的依赖；未列出的跨层边不得自行增加。
-现行仓库静态依赖检查的扫描范围与局限见 §8。
+现行仓库静态依赖检查的扫描范围与局限见 §7。
 
 ### 3.1 依赖规则矩阵（行=源，列=能否依赖目标）
 
@@ -51,7 +51,7 @@
 
 - ✗ⁱ：`schemes.core` **禁止** import `shared`（含 `data_service`/`input_artifacts`）——core 必须是纯算法，输入由 adapter 注入。这是"core 零 DB"的根。
 - importlibᵈ：`scheduler.scheme_runner` 在 **conda 子进程运行时**用 `importlib.import_module(f"schemes.{id}.predict")` 动态加载，不是静态 import 边——保持 scheduler 对具体方案零静态耦合（插件模型的关键）。
-- `backtests → schemes/{id}/inference` 与 `backtests → schemes/{id}/core` 是按同一方案复现算法的允许边；`backtests → schemes/{id}/predict` 禁止，避免历史复现调用 live adapter。
+- 静态规则仍保留 `backtests → 同方案 core/inference` 的兼容边；当前平台仅提供 Blackbox 回测入口，不据此恢复 Native 历史重跑。`backtests → schemes/{id}/predict` 禁止，避免历史复现调用 live adapter。
 - 跨方案：`schemes/A` **禁止** import `schemes/B`（任何子模块）。
 
 ### 3.2 输入、写入与算法边界
@@ -65,15 +65,17 @@
 | 回测 | `backtests.repository` 保存不可变 `t_backtest_*`；首次产品历史发布另经 scheduler repository |
 | Actual | `scheduler/*_actuals_updater.py` 按任务事实合同更新，既有 UPSERT 不受预测 insert-only 规则外推限制 |
 | 认证 | `backend.auth.repository` 仅写认证三表，账户/会话合同见[认证文档](AUTHENTICATION_AND_ACCOUNT_MANAGEMENT.md) |
-| DDL | `migrations.runner` 接收 caller-supplied Engine；CLI 负责环境与授权围栏，见 §6 |
+| DDL | `migrations.runner` 接收 caller-supplied Engine；CLI 负责环境与授权围栏，见 §5 |
 
-Native core 的输入由 adapter 注入，算法适配层级和历史/live-safe 口径以[保真规则](SOURCE_ALGORITHM_FIDELITY.md)为准。依赖合规以当前机器扫描证明，不保存历史违规豁免（§8）。
+Native core 的输入由 adapter 注入，算法适配层级和历史/live-safe 口径以[保真规则](SOURCE_ALGORITHM_FIDELITY.md)为准。依赖合规以当前机器扫描证明，不保存历史违规豁免（§7）。
 
 ## 4. 运行时调用图
 
 ### 4.1 预测路径（自然调度 / 单日补缺）
 
 宿主 launchd/systemd 调用一次性 runner；Python 不拥有独立时钟或额外 Writer。
+[discovery](../../scheduler/discovery.py) 加载配置时核对目录名与 `scheme_id`，按 base 发现；
+多 target 不另建运行发现，身份与组内原子提交遵守[共享契约](SCHEME_CONTRACT.md)。
 控制面权属、installed/loaded 证明和恢复边界见[生产调度治理](PRODUCTION_SCHEDULING_GOVERNANCE.md)。
 
 ```text
@@ -97,7 +99,7 @@ Native core 的输入由 adapter 注入，算法适配层级和历史/live-safe 
 
 ### 4.2 Blackbox 入库路径
 
-当前入库和版本修订仅使用 Blackbox，步骤从[入库导航](../onboarding/README.md)进入；Gate 职责和事务边界见[Harness 架构](HARNESS_ARCHITECTURE.md)。W4 保持固定版本运行，不进入 Native 准入、改版或再激活。DashboardGate 检查产品表示，不证明 exact version，后者仍由数据库生命周期读回。
+入库与版本修订从[入库导航](../onboarding/README.md)进入；Gate 职责和事务边界见[Harness 架构](HARNESS_ARCHITECTURE.md)。
 
 ### 4.3 历史回测路径
 
@@ -127,17 +129,7 @@ Dashboard 只从产品事实表聚合逐点结果。
 
 该读模型不提供算法输入、不写业务库，不读取 run、DataBridge 日期或交易日历，也不推导调度是否到期或缺失。HTTP、Summary/Detail、刷新与故障行为以[Dashboard 合同](../operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)为准；统计定义见[预测语义](PREDICTION_SEMANTICS.md)。
 
-## 5. 发现与运行时分派
-
-[discovery](../../scheduler/discovery.py) 扫描 `schemes/*/config.yaml`，加载时核对目录名和 `scheme_id`，
-生成 `SchemeConfig`；canonical 目录与字段合同见[共享契约](SCHEME_CONTRACT.md)。
-[executor](../../scheduler/executor.py) 的 `run_configured_scheme` 根据显式 `runtime_type` 选择
-Native 子进程 import 或 Blackbox delivery CLI，不根据目录内容猜测。
-
-两条路径都交回 `PredictionRecord`，后续身份、日期与 repository 校验不因算法加载方式绕过。
-方案按 base 发现，多 target 的业务身份与组内原子提交见共享契约；不为 target 另建一套运行发现。
-
-## 6. 环境、执行与迁移
+## 5. 环境、执行与迁移
 
 | 关注点 | 当前实现边界 |
 |---|---|
@@ -149,7 +141,7 @@ Native 子进程 import 或 Blackbox delivery CLI，不根据目录内容猜测�
 
 `migrations.runner` 只接收 caller-supplied `Engine`，实现 manifest、inspect、apply 与 APPLYING recovery，不读环境变量或解析 CLI，也不判定生产授权。`scripts/apply_migrations.py` 负责受限参数、目标环境与数据库身份围栏；其他模块不得复制迁移行为。命令、恢复摘要、备份及版本兼容要求集中在[部署手册](../../deploy/README.md)。
 
-## 7. 代码导航
+## 6. 代码导航
 
 | 职责 | 实现入口 |
 |---|---|
@@ -161,7 +153,7 @@ Native 子进程 import 或 Blackbox delivery CLI，不根据目录内容猜测�
 | 平台验证 | [harness](../../harness/)；模块边界见[Harness 架构](HARNESS_ARCHITECTURE.md) |
 | 数据模型与迁移 | [公共模型](../../shared/models.py)、[迁移库](../../migrations/runner.py)、[迁移 CLI](../../scripts/apply_migrations.py) |
 
-## 8. 仓库静态依赖检查
+## 7. 仓库静态依赖检查
 
 `harness.contracts.import_rules.repository_layer_import_violations` 扫描 `shared/`、`schemes/`、
 `scheduler/`、`backend/`、`backtests/`、`harness/` 中的生产 Python 文件，检查 §3 的静态依赖方向。

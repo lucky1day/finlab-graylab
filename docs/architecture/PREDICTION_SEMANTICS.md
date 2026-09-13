@@ -82,12 +82,11 @@ Source-backed 方案还必须遵守 [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORI
 日频灰度/正式实盘 predict_date = 按调度规则发出日, feature_date = T
 ```
 
-benchmark 逐样本核验必须以 `feature_date + target_date + target_tenor + horizon + benchmark_role` 为主键；周频方案还必须包含或可唯一映射 `feature_week_id`，月频方案还必须包含或可唯一映射 `feature_month_id + target_month_id`。`benchmark_role` 表示该行所属的可比较执行口径（如 source-original 历史段或 source-compatible extension），不是 original/current 文件来源；文件来源应由 `original_backtest_summary.json` / `current_backtest_summary.json` 的 provenance 表达。`predict_date` 只用于校验信号发出时点：历史回测要求 `predict_date == feature_date`，灰度/正式实盘要求 `predict_date` 是站在 `feature_date` 后按调度规则应发出的日期。
+解读既有 Native source benchmark 时，逐样本核验以 `feature_date + target_date + target_tenor + horizon + benchmark_role` 为主键；周频方案还必须包含或可唯一映射 `feature_week_id`，月频方案还必须包含或可唯一映射 `feature_month_id + target_month_id`。`benchmark_role` 表示该行所属的可比较执行口径（如 source-original 历史段或 source-compatible extension），不是 original/current 文件来源；文件来源应由 `original_backtest_summary.json` / `current_backtest_summary.json` 的 provenance 表达。`predict_date` 只用于校验信号发出时点：历史回测要求 `predict_date == feature_date`，灰度/正式实盘要求 `predict_date` 是站在 `feature_date` 后按调度规则应发出的日期。
 
 回测证据保留完整 Request 批次；产品事实引用与不可变性见 §4，公开分区见 §7。结果分类不反向改变执行口径或 run phase。
 
-既有周平均 source 输出中内容一致的重复 strict key，只按既有 strict-key 合同折叠并在 benchmark summary
-留证，不能依赖固定行数或某次历史 run。
+既有周平均 source 输出中内容一致的重复 strict key，按历史合同折叠并在 benchmark summary 留证，不能依赖固定行数或某次历史 run。上述对账键与 summary provenance 仅解释历史 Native 证据，适用边界见[源算法保真](SOURCE_ALGORITHM_FIDELITY.md#4-验收标准)，不要求为 Blackbox 新交付生成旧摘要。
 
 已确认采用 source T 的旧 benchmark，即使列名叫 `predict_date`，也按该约定解释。新增 benchmark
 明确写 `feature_date` 或 `source_t`，避免混淆；Blackbox 标准 Result 的三日期必须直接回显 Request。
@@ -234,11 +233,6 @@ target_date  = T + horizon
 排除条件；只要 actual 已到达且预测方向为 `-1` 或 `1`，该样本仍进入
 指标分母，并按方向是否相等计为正确或错误。
 
-这里必须始终区分两层数量：
-
-- 样本总数：该月已经可评价的预测交易日 / 预测周数量，包含预测为“涨”“跌”“平”的全部样本。
-- 指标分母：只包含预测为“涨”或“跌”的有方向样本；预测为“平”的交易日只参与样本总数和方向分布，不参与任何准确率、召回率或 precision 类指标。
-
 平台统一字段含义如下：
 
 | 字段 | 含义 |
@@ -254,10 +248,7 @@ target_date  = T + horizon
 
 产品指标只聚合 §4 定义的产品事实，不读取回测证据明细参与逐点选择。
 
-V6 的唯一聚合表示是服务端 Summary：后端从产品事实按 `target_date` 确定月份与 source，计算统计计数。
-浏览器可对 Summary 计数做筛选区间求和，并计算准确率、precision 和 recall 来展示月度表、排行、趋势及汇总卡；
-不得重新扫描或聚合预测明细。
-Detail 仅在用户打开某方案月份时按需请求；不能用 Detail 缓存或旧 `monthly_metrics` 重建第二套 Summary。
+月度、筛选区间和排行共用上述计数与分母；Summary/Detail 的聚合边界和请求行为由[Dashboard 合同](../operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md#唯一读路径与-http-合同)维护。
 
 ## 7. 前端展示规则
 
@@ -287,7 +278,6 @@ Summary 与 Detail 必须使用同一映射，Detail 按展示月份反向定位
 
 - 月度表、排行、趋势和汇总卡使用 Summary 计数，样本与各指标分母遵守 §6。
 - 准确率括号展示 `correct/metric_samples`；不得回退成 `correct/samples`，也不得通过月度行的 precision/recall 反推出 true positive。
-- Summary 不携带全部预测明细是合法合同，不得据此 fail-closed。浏览器只校验 Summary 自身完整性；服务端不得用旧 `monthly_metrics` 替代缺失产品事实或反推明细。
 - 每日/周度验证明细中，只要预测方向为“平”（`predicted_direction=0` 或前端归一化后 `predicted="平"`），结果列统一展示 `-`，不展示 `✓` 或 `×`。这条展示规则独立于 `actual_direction` 和 `is_correct`，因为“平”不进入指标计算。
 - Summary 必须为有预测事实的每个 month/source 保留月份行，即使该月全部待验证。纯待验证月份的统计计数为 0、准确率为 `--`，仍可打开 Detail；待验证记录不进入已验证样本数或指标分母，混合月份的统计不因待验证记录改变。
 - 待验证样本仍展示待验证符号；有方向预测才根据验证结果展示 `✓` 或 `×`。

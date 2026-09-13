@@ -22,7 +22,10 @@
 - Engine 连接/读/写超时分别为 0.5/2/0.5 秒，单条 MySQL 查询上限 1000ms，开启 pool_pre_ping，300 秒回收连接。
 
 无参数请求返回 `representation=summary`，包含方案身份、owner、回测展示元数据和 `month + source` 计数，
-不携带逐点明细；前端直接计算准确率、precision/recall 和方向分布，首屏不请求 Detail。
+不携带逐点明细，这是合法表示，浏览器只校验 Summary 自身完整性。前端可对 Summary 计数按筛选区间求和，
+按[统计定义](../architecture/PREDICTION_SEMANTICS.md#6-指标统计口径)计算准确率、precision/recall 和方向分布。
+Detail 仅在用户打开某方案月份时按需请求，首屏不请求；浏览器不得扫描明细、使用 Detail 缓存或旧 `monthly_metrics` 重建第二套 Summary，
+服务端也不得用旧 `monthly_metrics` 替代缺失产品事实或反推明细。
 `source` 是按预测语义确定的产品分区，不是物理表来源；公开响应不返回 run phase。
 
 月历 Detail 在同一路径携带且只携带以下三个参数：

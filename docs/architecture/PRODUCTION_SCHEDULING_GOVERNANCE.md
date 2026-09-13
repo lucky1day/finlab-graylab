@@ -24,7 +24,7 @@ plist，ECS 独立灰度使用 systemd + installed unit/timer。Python runner �
 DataBridge 的 `BFL_DATABRIDGE_PRODUCER` 在 Mac3 为 `launchd-one-shot`、ECS 为 `systemd-one-shot`；
 它只是防误 publish 的准入标记，不是宿主身份认证。同 UID 调用者属于受信任边界，仍须上述现场证据。
 
-自然候选先按部署矩阵与 cadence 过滤，再解析本机生效生命周期，见[共享生命周期契约](SCHEME_CONTRACT.md#7-生命周期与分派)。Blackbox 以本机 exact version 与 composite Registry 为准，canonical 的初始 paused/draft 不能提前排除已激活方案；W4 Native 仍使用固定配置状态。收盘预规划与 one-shot 执行复用同一解析规则，执行前与事务内分别复核；数据库不可读或身份不一致时停止，不回退文件状态。不维护第二份 Admission、release queue、mode 或 capability 权限矩阵。
+canonical、数据库生命周期与部署的状态区分见[共享生命周期契约](SCHEME_CONTRACT.md#7-生命周期与分派)。自然候选先按部署矩阵与 cadence 过滤，再解析本机生效生命周期。Blackbox 以本机 exact version 与 composite Registry 为准，canonical 的初始 paused/draft 不能提前排除已激活方案；W4 Native 仍使用固定配置状态。收盘预规划与 one-shot 执行复用同一解析规则，执行前与事务内分别复核；数据库不可读或身份不一致时停止，不回退文件状态。不维护第二份 Admission、release queue、mode 或 capability 权限矩阵。
 
 close-period 复用原 monthly 控制面，按[预测语义](PREDICTION_SEMANTICS.md)选择到期月中收或周期均值任务，
 普通日期 no-op；期望时钟见部署手册，不能因存在 active 方案推断当天必须执行。

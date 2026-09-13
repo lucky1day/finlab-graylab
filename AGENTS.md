@@ -1,29 +1,19 @@
 # Bond Factor Lab — 项目规范
 
-本文件是项目长期约束的唯一来源；[CLAUDE.md](CLAUDE.md) 仅引导读取。用户说根目录 `agent.md` 时，按本文件理解。
+本文件维护全局约束、操作权限与任务导航；专题合同的权威归属见[文档中心](docs/README.md#权威来源与职责)。[CLAUDE.md](CLAUDE.md) 仅引导读取。用户说根目录 `agent.md` 时，按本文件理解。
 项目是独立的国债因子实盘测试平台，前端由本项目 FastAPI 提供。
 
 ## 开始任务前
 
-本规范适用于整个仓库。先读[文档中心](docs/README.md)，再实际打开任务对应的权威正文；链接是导航，不代表内容已经加载。不能从旧会话、历史计划或文件名推断当前操作规则。
+本规范适用于整个仓库。从[文档中心的任务表](docs/README.md#按任务查找)选择当前任务，实际打开对应权威正文；不要求依次读取全部专题。普通 Markdown 链接是导航，不代表内容已经加载。不能从旧会话、历史计划或文件名推断当前操作规则。
 
-| 任务 | 必读入口 |
-|---|---|
-| 判断当前部署、数据和未完成工作 | [当前状态](docs/CURRENT_STATUS.md)、[待办](docs/TODO.md)，操作前再核验现场 |
-| ECS / Mac3 访问 | [双机部署与访问入口](docs/operations/DEPLOYMENT_ACCESS.md)，区分独立灰度 ECS 与 Mac3 公网中继 |
-| 新方案、版本修订或 W4 存量运行 | [统一入库导航](docs/onboarding/README.md) |
-| 平台开发、接口修改 | [代码架构](docs/architecture/CODE_ARCHITECTURE.md)、[共享契约](docs/architecture/SCHEME_CONTRACT.md) |
-| 算法适配、运行时迁移或旧依赖清理 | [源算法保真](docs/architecture/SOURCE_ALGORITHM_FIDELITY.md) |
-| 日期、历史补齐、Actual 或统计 | [预测语义](docs/architecture/PREDICTION_SEMANTICS.md) |
-| release、环境或数据库迁移 | [部署手册](deploy/README.md) |
-| 调度变更、漏跑恢复或自然观察 | [调度治理](docs/architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md) |
-| Dashboard 或账户管理 | [Dashboard 合同](docs/operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)、[认证合同](docs/architecture/AUTHENTICATION_AND_ACCOUNT_MANAGEMENT.md) |
+涉及现场操作时，另读[当前状态](docs/CURRENT_STATUS.md)、[待办](docs/TODO.md)和[部署访问](docs/operations/DEPLOYMENT_ACCESS.md)，重新核验目标机；文档基线不代替现场。
 
 ## 开发与操作权限
 
 - 集成分支为 `codex/develop`，不得建立 ECS/Mac3 长期环境分支。`master` 受保护，只有用户明确确认后才能合并、移动或推送。
 - 分支操作、暂存或提交前核对工作区与相关分支；`outputs/`、未跟踪新方案和草稿未经明确要求不得纳入提交。
-- 技术验证不授予业务写库、激活、DDL、服务重启或调度修改权限。生产操作先核实影响范围、在途任务、触发窗口和可恢复边界，在用户授权范围内执行。
+- 技术验证不授予业务写库、激活、DDL、服务重启或调度修改权限。生产操作先核实影响范围、在途任务、触发窗口和可恢复边界，在用户授权范围内执行。已明确授权的步骤连续完成，不重复索取同一授权；未决业务选择和新增操作范围仍须确认。
 - DNS、Nginx、认证、SSH 隧道或跨机 Writer 切换不得从算法交付授权外推。历史文档、代码示例和已完成计划不构成新授权。
 - 发现身份冲突、合同失败、输入证据不匹配、需要改变算法或扩大操作范围时，停止对应操作，保留证据并向用户确认，不猜测继续。
 - 默认主 agent 直接执行。只有可安全拆成独立并行工作、且能显著节省时间时才使用 subagent；明确文件范围、验收条件和禁止事项，避免共享写入。主 agent 负责整合与最终验证；委派不扩大任何操作权限。
@@ -45,7 +35,7 @@
 1. **输入单点**：算法输入只能经 `shared.input_artifacts` 产出；adapter/backtest runner 不得自拼 DB 输入，Wind、指标与日历源表只读。
 2. **写库单点**：业务写入仅经 `scheduler.repository`、`backtests.repository`、`*_actuals_updater`；认证写入仅经 `backend.auth.repository` 的三张认证表。DDL 仅经受控迁移入口，不是上述业务写权限的扩展。
 3. **Native core 纯净**：非 legacy 的 `schemes/*/core/` 零 DB、零写库、零跨方案 import；Blackbox 不向平台暴露 core。
-4. **源算法保真**：W4 保持现有 Native 算法、适配和执行版本；后续算法或版本修订统一走 Blackbox。L0/L1/L2 仅解释存量适配与历史改动，不再授予 Native 新版本维护入口。source-original 与 live-safe 真值分开，禁止调参贴结果。Blackbox 内部保真由上游负责，平台验证接入与标准输出边界。
+4. **源算法保真**：source-original 与 live-safe 真值分开，禁止调参贴结果。L0/L1/L2 仅解释存量适配与历史改动，不授予 Native 新版本维护入口。Blackbox 内部保真由上游负责，平台验证接入与标准输出边界。
 
 - 所有新算法、新 ID、新目标、新任务、修订与替代版本只允许 Blackbox V2。[存量清单](deploy/onboarding_policy_v1.json)中的 W4 九套固定现有 Native 版本，仅保障 Mac3 既有日频、周频和月频调度及运行依赖，不改造、不部署 ECS。不再提供 Native 入库、maintenance、新版本激活或独立历史回测，也不为已迁移方案维护或扩展 Native Harness。运行故障按现有部署与调度边界处理，不借此重开 Native 版本修订。
 - 同算法运行时升级保留原 base/Registry ID，以真实新 exact 区分版本，只切未来唯一 Writer，不重算、覆盖或搬删既有历史。包装迁移、临时身份退役和旧附件清理必须遵守[保真与迁移边界](docs/architecture/SOURCE_ALGORITHM_FIDELITY.md)，不能借清理跳过验收或删除被历史引用的来源。

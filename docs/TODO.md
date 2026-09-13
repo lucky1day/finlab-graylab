@@ -10,9 +10,8 @@
 
 ## 八套新方案自然观察
 
-- 双机交付与模拟验收已完成，精确版本、覆盖范围及证据见[当前状态](CURRENT_STATUS.md)。
 - 分别只读观察三套月频 2026-09-15 18:00、五套周频 2026-09-19 11:30 Asia/Shanghai 的首次自然运行。
-  逐 ID 范围由当前状态的八套身份表确定；按[自然运行证据链](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)核对 installed/loaded、日志、真实 `scheduled_live` run、prediction、exact、本机输入和 Dashboard。模拟与灰度补缺不计作自然运行。
+  逐 ID 范围由[当前状态的八套身份表](CURRENT_STATUS.md#八套新方案交付状态)确定；按[自然运行证据链](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)核对 installed/loaded、日志、真实 `scheduled_live` run、prediction、exact、本机输入和 Dashboard。模拟与灰度补缺不计作自然运行。
 - 2026-09-13 记录的“八套新方案双机自然运行观察”只读 follow-up（automation ID `automation`）每日 19:30 检查；实际启停状态以自动化配置读回为准。
   未到窗口或无新变化时保持安静；全部十六个主机/方案通过后暂停，最迟 2026-09-21 报告未通过项后暂停。
   不授权自动重跑、补缺、业务写库、服务/调度修改或 Git 修改。
@@ -35,8 +34,7 @@
    Dashboard 证据完整前，不得标记 Production Observed，也不得 kickstart、覆盖日期或倒签信号。
 2. 只读核验 M0 周平均五方案及同期 ECS 周频方案在 2026-08-29 11:30 的首次自然触发证据；
    该时间已过去，不能继续描述为等待未来触发，也不能未经核验标记完成。
-3. 公网刷新可靠性的 Actuals/预测窗口观察需核对既有日志与验收原件；旧执行记录未确认该观察完成。
-   2026-09-13 平台清理发布时又观察到一次公网 504，后续降频复核通过；事实与证据见[当前状态](CURRENT_STATUS.md#已发布的平台清理与收盘候选修复)。需定位慢请求原因并完成窗口观察，不以单轮复核或删除历史流水标记可靠性问题解决，不重复注入生产故障。
+3. 公网刷新可靠性的 Actuals/预测窗口观察仍未闭环。需定位[当前状态所记公网 504](CURRENT_STATUS.md#已发布的平台清理与收盘候选修复)的慢请求原因并完成窗口观察；单轮降频复核不代表可靠性问题解决，不重复注入生产故障。
 
 ## 尚缺现场验证的能力
 
@@ -51,6 +49,6 @@
 
 ## 候选 release 手工启动入口
 
-手工 Harness 的目标环境前提见[部署手册](../deploy/README.md#手工-harness-的目标环境绑定)。目前自然调度的环境加载不能直接等同于手工入口，执行前仍须审查候选 cwd、release/runtime、deployment target、数据库覆盖优先级及 Profile。后续若统一入口，应复用现有可信配置读取能力，在隔离环境验证两机路径、错误身份/覆盖值拒绝和零意外写入；不通过恢复批次脚本或修改生产调度解决。
+手工 Harness 的前置条件和现有能力限制见[部署手册](../deploy/README.md#手工-harness-的目标环境绑定)。后续若统一入口，应复用现有可信配置读取能力，在隔离环境验证两机路径、错误身份/覆盖值拒绝和零意外写入；不通过恢复批次脚本或修改生产调度解决。
 
 所有后续工作遵守[根规范](../AGENTS.md)与[调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)的授权、停止与恢复边界；发现现场与计划不一致时保留证据，先确认再操作。
