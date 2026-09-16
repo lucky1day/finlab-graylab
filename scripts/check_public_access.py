@@ -127,7 +127,9 @@ def discover_same_origin_assets(
             raise PublicAccessError("ambiguous same-origin asset reference")
         expected_mime = _expected_mime(parsed.path)
         if expected_mime is None:
-            continue
+            raise PublicAccessError(
+                f"unsupported same-origin static asset: {parsed.path}"
+            )
         if absolute in seen:
             continue
         seen.add(absolute)

@@ -55,6 +55,14 @@ def test_rejects_ambiguous_or_non_digest_asset_versions(reference: str) -> None:
         )
 
 
+def test_rejects_unknown_same_origin_static_asset_type() -> None:
+    with pytest.raises(PublicAccessError, match="unsupported"):
+        discover_same_origin_assets(
+            '<link rel="manifest" href="app.webmanifest">',
+            page_url="https://bond.finailab.cn/bond-factor-lab/",
+        )
+
+
 def test_dashboard_gate_command_never_contains_session_token(tmp_path: Path) -> None:
     session_file = tmp_path / "session"
     args = Namespace(

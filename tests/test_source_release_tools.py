@@ -349,6 +349,37 @@ def test_release_rejects_link_inside_approved_archive(tmp_path: Path) -> None:
         build_source_release(repo, tmp_path / "out")
 
 
+def test_release_scans_disguised_nested_archive(tmp_path: Path) -> None:
+    repo = _make_source_repo(tmp_path)
+    nested = io.BytesIO()
+    with zipfile.ZipFile(nested, "w") as archive:
+        archive.writestr(
+            "credential.txt",
+            "-----BEGIN " + "PRIVATE KEY-----\nnot-real\n"
+            "-----END " + "PRIVATE KEY-----\n",
+        )
+    archive_path = repo / "source_evidence" / "approved" / "original.zip"
+    archive_path.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("opaque.bin", nested.getvalue())
+    _write_evidence_allowlist(
+        repo,
+        [
+            {
+                "path": "source_evidence/approved/original.zip",
+                "type": "archive",
+                "sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+                "reason": "Frozen test source archive",
+            }
+        ],
+    )
+    _run_git(repo, "add", ".")
+    _run_git(repo, "commit", "-q", "-m", "add nested source archive")
+
+    with pytest.raises(ReleaseBuildError, match="private key"):
+        build_source_release(repo, tmp_path / "out")
+
+
 def test_install_rejects_archive_checksum_mismatch(tmp_path: Path) -> None:
     repo = _make_source_repo(tmp_path)
     built = build_source_release(repo, tmp_path / "out")

@@ -305,6 +305,14 @@ def _validate_release_path(
     if filename.endswith("~") or suffix in _FORBIDDEN_RELEASE_SUFFIXES:
         raise ReleaseBuildError(f"release contains forbidden file type: {path_text}")
     if (
+        evidence_approval is not None
+        and evidence_approval["type"] == "tree"
+        and suffix in {".7z", ".gz", ".rar", ".tar", ".tgz", ".zip"}
+    ):
+        raise ReleaseBuildError(
+            f"source evidence archive requires exact approval: {path_text}"
+        )
+    if (
         suffix == ".sql"
         and path.parts[:1] != ("migrations",)
         and not approved_evidence
@@ -481,6 +489,9 @@ def _scan_archive_payload(
     try:
         archive = tarfile.open(fileobj=stream, mode="r:*")
     except tarfile.TarError as exc:
+        if path.suffix.lower() == ".gz":
+            _scan_gzip_payload(path, payload, depth=depth, state=state)
+            return
         raise ReleaseBuildError(
             f"approved source archive format is unsupported: {path}"
         ) from exc
@@ -505,6 +516,26 @@ def _scan_archive_payload(
                     f"approved source archive member size mismatch: {path / inner}"
                 )
             _scan_archive_child(path / inner, child, depth=depth, state=state)
+
+
+def _scan_gzip_payload(
+    path: PurePosixPath,
+    payload: bytes,
+    *,
+    depth: int,
+    state: dict[str, int],
+) -> None:
+    remaining = _MAX_APPROVED_ARCHIVE_EXPANDED_BYTES - state["expanded"]
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(payload), mode="rb") as source:
+            child = source.read(remaining + 1)
+    except (EOFError, OSError) as exc:
+        raise ReleaseBuildError(
+            f"approved source gzip is invalid: {path}"
+        ) from exc
+    inner = PurePosixPath(path.stem or "payload")
+    _reserve_archive_member(state, len(child), path / inner)
+    _scan_archive_child(path / inner, child, depth=depth, state=state)
 
 
 def _safe_archive_member_path(name: str, archive_path: PurePosixPath) -> PurePosixPath:
@@ -545,13 +576,27 @@ def _scan_archive_child(
     state: dict[str, int],
 ) -> None:
     _scan_release_member(path, payload)
-    if path.suffix.lower() not in _ARCHIVE_SUFFIXES:
+    if not _looks_like_supported_archive(path, payload):
         return
     if depth >= _MAX_APPROVED_ARCHIVE_NESTING:
         raise ReleaseBuildError(
             f"approved source archive exceeds nesting limit: {path}"
         )
     _scan_archive_payload(path, payload, depth=depth + 1, state=state)
+
+
+def _looks_like_supported_archive(path: PurePosixPath, payload: bytes) -> bool:
+    if path.suffix.lower() in _ARCHIVE_SUFFIXES:
+        return True
+    stream = io.BytesIO(payload)
+    if zipfile.is_zipfile(stream):
+        return True
+    stream.seek(0)
+    try:
+        with tarfile.open(fileobj=stream, mode="r:*"):
+            return True
+    except tarfile.TarError:
+        return False
 
 
 def _scan_release_member(path: PurePosixPath, payload: bytes) -> None:
