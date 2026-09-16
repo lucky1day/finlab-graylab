@@ -2,11 +2,22 @@
 
 **文档状态**：`CURRENT`
 
-**整理日期**：2026-09-13；以下运营事项仍需各自现场核验，不因文档整理标记完成。
+**整理日期**：2026-09-16；以下运营事项仍需各自现场核验，不因文档整理标记完成。
 
 本文只保留尚未闭环的后续事项。当前稳定事实见[当前状态](CURRENT_STATUS.md)，生产规则见
 [生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。已完成事项通过 Git、外置材料、数据库
 与目标机 journal 追溯，不在本文维护副本。
+
+## 1Y T+1 跨期限日内方案自然观察
+
+- 2026-09-17 07:03 Asia/Shanghai 后，只读核验 `one_y_t1_cross_tenor_intraday_v1` 在 ECS 和 Mac3
+  分别产生 exact `4f0b95e57fdf` 的真实 `scheduled_live` run 与 2026-09-17 target 预测；同时核对两机
+  installed/loaded 控制面、日志、本机 DataBridge generation 和 Dashboard。2026-09-16 完成的 77 条
+  `gray_live` 补齐不计作自然运行。
+- 观察不授权手工运行算法、补缺、业务写库、服务重启或调度修改。双机全部通过后，将证据更新到
+  [当前状态](CURRENT_STATUS.md#1y-t1-跨期限日内方案交付状态)和本机
+  [外置证据索引](/Users/macstudio0/bond-factor-lab-runtime/releases/one-y-t1-cross-tenor-20260916/README.md)，
+  再从本文移除该待办。
 
 ## 八套新方案自然观察
 

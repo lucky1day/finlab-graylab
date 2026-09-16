@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最近运行核验**：2026-09-13。以下是已核验基线，不替代实时现场检查。
+**最近运行核验**：2026-09-16。以下是已核验基线，不替代实时现场检查。
 
 固定主机、SSH/本地转发、生产路径和只读命令见[双机部署与访问入口](operations/DEPLOYMENT_ACCESS.md)。
 
@@ -13,20 +13,47 @@
 | 项目 | ECS 独立灰度 | Mac3 生产 |
 |---|---|---|
 | 迁移结果 | 17 个原方案、21 个 target 使用 Blackbox | 同左 |
-| 当前 active 执行身份 | 92 个 Blackbox base | 92 个 Blackbox base + 9 个 W4 Native base |
-| Dashboard | 96 个 target | 105 个 target |
+| 当前 active 执行身份 | 93 个 Blackbox base | 93 个 Blackbox base + 9 个 W4 Native base |
+| Dashboard | 97 个 target | 106 个 target |
 | 调度控制面 | systemd one-shot/timer | launchd + installed plist |
-| current release | `b43fc1911b0f7bf3ada05edca7ad8b483ac38e02` | 同左 |
-| previous release | `accde117545ceca7f579692d4123df421f8b9d8c` | 同左 |
+| current release | `507081397e75fa60c56614fd0bfbb750b9415753` | 同左 |
+| previous release | `b43fc1911b0f7bf3ada05edca7ad8b483ac38e02` | 同左 |
 | schema | 025 APPLIED | 025 APPLIED |
 
-- 双机同一 archive SHA-256：`f0c77cfeb296b8f930b98b528758c574c038eb2c968ee76374e31f3c3b97df91`。
-- 两机 Backend cwd、健康及 immutable 源码树已核验；ECS 验收后晋级同一 archive 至 Mac3，本轮发布已闭环。
+- 双机同一 archive SHA-256：`5010195a78feaaec6afeaccc2ff5c75613c9f10c887ee267cb098718894f7021`。
+- 2026-09-16 新方案发布未修改 Backend 或前端代码，因此未重启服务；两机 Backend 进程 cwd 仍为 previous
+  `b43fc1911b0f7bf3ada05edca7ad8b483ac38e02`，健康且已从本机数据库读到新 Registry。下一次 one-shot
+  从 current `507081397e75fa60c56614fd0bfbb750b9415753` 启动；自然运行证据仍须按下节观察。
+- 两机 immutable 源码树与健康已核验；ECS 验收后晋级同一 archive 至 Mac3，发布实施已闭环，首次自然运行观察仍待完成。
   域名仍由 Mac3 服务；DNS、Nginx、认证和既有 SSH 隧道未改变。
 - 集成分支为 `codex/develop`。开发分支的代码或文档提交不代表新的生产 release。
   实时提交以 Git 引用为准，发布以目标机 manifest、current/previous 和进程 cwd 为准。
 - 2026-09-13 文档规整版本已按 ECS → Mac3 同包晋级，仅刷新两机 Backend。Registry、exact、业务条数、ready 输入、Dashboard 读模型与生产名单均未改变；两机健康与首页正常，Mac3 公网首页与 release 字节一致，控制面保持原状。未运行算法、写业务事实或跨越正式触发窗口；自然观察仍待 TODO。证据见[同步回执](/Users/macstudio0/bond-factor-lab-runtime/releases/docs-guidance-20260913/delivery-report.json)与[索引](/Users/macstudio0/bond-factor-lab-runtime/releases/docs-guidance-20260913/README.md)。
 - 当前 release 包含下述平台清理与收盘候选修复；[发布验收](/Users/macstudio0/bond-factor-lab-runtime/releases/platform-cleanup-20260913/delivery-report.json)及[证据索引](/Users/macstudio0/bond-factor-lab-runtime/releases/platform-cleanup-20260913/README.md)保存双机安装、数据、输入、HTTP 和控制面读回。此前框架清理证据仍在[原核验记录](/Users/macstudio0/bond-factor-lab-runtime/releases/framework-cleanup-20260913/verification.json)。
+
+## 1Y T+1 跨期限日内方案交付状态
+
+`one_y_t1_cross_tenor_intraday_v1` 已于 2026-09-16 按 ECS → Mac3 顺序使用同一不可变 release 完成首次
+Blackbox V2 入库、持久化回测、激活和灰度区间补齐。平台只删除上游脚本的 100 条批量上限并同步帮助文案，
+方向算法与 Metadata 未改；修正后 code hash 为 `c7cbc002a6c2f6e5494267808938d78947b22f29ed1281e33d70159878d5ab3c`，
+Metadata hash 为 `f4f8e44ba028fa0372d64d4c7ab538b135a01f487f60288a1879b91e6e06e2b5`，exact 为
+`4f0b95e57fdf`。
+
+| 每机覆盖 | target 范围 | 条数 |
+|---|---|---:|
+| 历史回测 | 2025-01-03—2026-05-29 | 337 |
+| `gray_live` | 2026-06-01—2026-09-16 | 77 |
+| 产品事实合计 | 2025-01-03—2026-09-16 | 414 |
+
+ECS backtest run 为 `293`，输入为 `full-20260916-063338-77f411b810dd` /
+`snapshot-a3fa9393445761ecc4e4e355`；Mac3 backtest run 为 `263`，输入为
+`full-20260916-063121-0ec9887c47b9` / `snapshot-4f96b57ebab7734843e87312`。两机分别计算，历史与灰度
+target 零重叠，414 个业务键全部唯一；Registry 展示为 `BI_CROSS_TENOR_INTRADAY`、owner `fengrl`、
+1Y / T+1 / h1。Dashboard 读模型已验证 active 且 `is_production=false`，未修改生产方案名单。
+
+首次真实宿主时钟运行窗口为 2026-09-17 07:03 Asia/Shanghai；当前仅完成灰度补齐，不能把它冒充
+`scheduled_live` 自然运行。双机数据库与 release 读回见[证据索引](/Users/macstudio0/bond-factor-lab-runtime/releases/one-y-t1-cross-tenor-20260916/README.md)
+和[交付报告](/Users/macstudio0/bond-factor-lab-runtime/releases/one-y-t1-cross-tenor-20260916/delivery-report.json)。
 
 ## 八套新方案交付状态
 
