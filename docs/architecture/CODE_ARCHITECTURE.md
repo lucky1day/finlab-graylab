@@ -131,6 +131,8 @@ Dashboard 只从产品事实表聚合逐点结果。
 该读模型不提供算法输入、不写业务库，不读取 run、DataBridge 日期或交易日历，也不推导调度是否到期或缺失。HTTP、Summary/Detail、刷新与故障行为以[Dashboard 合同](../operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)为准；统计定义见[预测语义](PREDICTION_SEMANTICS.md)。
 前端仍为无构建步骤的原生脚本；`factor-lab-http.js` 只负责请求、取消、超时和限流元数据，
 `aifin-shell.js` 保留 payload 校验、刷新状态机和页面渲染。
+公网中继继续使用静态路径精确白名单，因此新增或重命名前端脚本时必须同步更新 Nginx 精确 location，
+并在 Mac3 晋级前验证该资源通过公网入口返回 200；本机静态服务成功不能替代这项检查。
 
 ## 5. 环境、执行与迁移
 
