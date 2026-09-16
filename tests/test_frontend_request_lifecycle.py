@@ -12,9 +12,12 @@ def test_frontend_request_lifecycle() -> None:
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is required for frontend lifecycle tests")
-    test_file = Path(__file__).with_name("frontend_aifin_shell.test.js")
+    test_files = [
+        Path(__file__).with_name("frontend_factor_lab_http.test.js"),
+        Path(__file__).with_name("frontend_aifin_shell.test.js"),
+    ]
     result = subprocess.run(
-        [node, "--test", str(test_file)],
+        [node, "--test", *(str(path) for path in test_files)],
         check=False,
         capture_output=True,
         text=True,

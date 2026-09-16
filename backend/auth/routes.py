@@ -25,7 +25,6 @@ from backend.db import (
 
 COOKIE_NAME = "__Host-bfl-session"
 SESSION_MAX_AGE_SECONDS = 43_200
-MAX_JSON_BODY_BYTES = 8 * 1024
 _REQUEST_ID_PATTERN = re.compile(r"[!-~]{1,128}\Z", re.ASCII)
 _TRUSTED_ORIGINS = {
     "aliyun-gray": "http://localhost:18110",
@@ -119,7 +118,7 @@ def _token(
 
 
 async def require_safe_json_request(request: Request) -> None:
-    """拒绝跨站、非 JSON、过大或缺少浏览器同源元数据的写请求。"""
+    """拒绝跨站、非 JSON 或缺少浏览器同源元数据的写请求。"""
     if request.headers.get("content-type") != "application/json":
         raise AuthError("invalid_content_type", 415)
     deployment_target = os.getenv("BFL_DEPLOYMENT_TARGET", "")
@@ -133,15 +132,6 @@ async def require_safe_json_request(request: Request) -> None:
         raise AuthError("invalid_origin", 403)
     if request.headers.get("sec-fetch-site") != "same-origin":
         raise AuthError("invalid_request_site", 403)
-    content_length = request.headers.get("content-length")
-    if content_length:
-        try:
-            if int(content_length) > MAX_JSON_BODY_BYTES:
-                raise AuthError("request_body_too_large", 413)
-        except ValueError:
-            raise AuthError("invalid_content_length", 400) from None
-    if len(await request.body()) > MAX_JSON_BODY_BYTES:
-        raise AuthError("request_body_too_large", 413)
 
 
 def _set_session_cookie(response: Response, token: str) -> None:

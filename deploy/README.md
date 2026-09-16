@@ -47,8 +47,10 @@ DataBridge 的 producer 标记及其权限边界见[调度治理](../docs/archit
 ### 构建、预安装和晋级
 
 1. [`build_source_release.py`](../scripts/build_source_release.py) 只从 clean Git worktree 的当前 HEAD
-   生成 deterministic archive、SHA-256 和 manifest v2。manifest 仅包含 `schema_version`、`commit`、
-   `root_prefix`、`archive.filename/sha256`，生产包不含 `.git`。
+   生成 deterministic archive、SHA-256 和 manifest v2。压缩前直接检查 Git archive 的实际成员，拒绝
+   `.env`、私钥、高置信 token、数据库/日志/缓存/outputs/dist、安装期本机配置，以及未经批准的大文件、
+   二进制或原始数据包；根目录 `.env.example` 与已保留的 `source_evidence/` 是显式例外，但仍执行凭据扫描。
+   manifest 仅包含 `schema_version`、`commit`、`root_prefix`、`archive.filename/sha256`，生产包不含 `.git`。
 2. 目标机使用**候选 archive 同版本**的 [`install_source_release.py`](../scripts/install_source_release.py)，
    不能用旧 current 的安装器生成候选环境。显式提供 `--manifest`、`--archive`、
    `--expected-archive-sha256`、`--deploy-root`、`--runtime-root`；摘要须是另行核准值。

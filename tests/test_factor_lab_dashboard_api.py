@@ -190,9 +190,53 @@ def test_dashboard_accepts_only_exact_detail_query(monkeypatch) -> None:
         b"scheme-id=demo__h1__5Y&month=2026-08",
         b"scheme-id=demo__h1__5Y&month=2026-08&source=all&extra=1",
         b"scheme-id=demo__h1__5Y&scheme-id=demo__h1__5Y&month=2026-08&source=all",
+        b"scheme-id=demo__h1__5Y&month=0000-01&source=all",
+        b"scheme-id=demo__h1__5Y&month=9999-12&source=all",
+        b"scheme-id=demo__h1__5Y&month=2026-13&source=all",
     ):
         invalid_status, _, _, _ = _request(main.app, query_string=invalid)
         assert invalid_status == 400
+
+
+def test_dashboard_detail_internal_value_error_remains_503(monkeypatch) -> None:
+    from backend import main
+
+    monkeypatch.setattr(main, "get_dashboard_engine", object)
+
+    def fail(_engine: object, **_kwargs: str):
+        raise ValueError("corrupt business fact")
+
+    monkeypatch.setattr(main, "build_factor_lab_dashboard_detail", fail)
+    status, _, body, _ = _request(
+        main.app,
+        query_string=(
+            b"scheme-id=demo__h1__5Y&month=2026-08&source=all"
+        ),
+    )
+
+    assert status == 503
+    assert json.loads(body) == {"error_code": "dashboard_data_unavailable"}
+
+
+def test_dashboard_detail_unknown_active_scheme_returns_404(monkeypatch) -> None:
+    from backend import main
+
+    monkeypatch.setattr(main, "get_dashboard_engine", object)
+    monkeypatch.setattr(
+        main,
+        "build_factor_lab_dashboard_detail",
+        lambda _engine, **_kwargs: None,
+    )
+
+    status, _, body, _ = _request(
+        main.app,
+        query_string=(
+            b"scheme-id=missing__h1__5Y&month=2026-08&source=all"
+        ),
+    )
+
+    assert status == 404
+    assert json.loads(body) == {"error_code": "dashboard_scheme_not_found"}
 
 
 def test_dashboard_gzip_and_identity_are_one_representation(monkeypatch) -> None:

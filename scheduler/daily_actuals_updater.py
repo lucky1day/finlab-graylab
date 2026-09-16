@@ -7,7 +7,12 @@ from typing import Iterable
 from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Engine
 
-from scheduler.repository import _upsert_actuals_conn, create_engine_from_env
+from scheduler.actuals_errors import require_actual_source_tenors
+from scheduler.repository import (
+    ActualWriteStats,
+    _upsert_actuals_detailed_conn,
+    create_engine_from_env,
+)
 from shared.actual_facts import (
     build_daily_actual_records_from_rows,
     read_actual_source_snapshot,
@@ -115,7 +120,23 @@ def update_actuals(
     *,
     engine: Engine | None = None,
 ) -> int:
-    """从行情表刷新 t_scheme_actuals；注入 Engine 时由调用方管理生命周期。"""
+    """兼容入口：刷新日频 Actual，并返回本批处理条数。"""
+    return update_actuals_detailed(
+        start_date=start_date,
+        end_date=end_date,
+        tenors=tenors,
+        engine=engine,
+    ).attempted
+
+
+def update_actuals_detailed(
+    start_date: str | date | datetime | None = None,
+    end_date: str | date | datetime | None = None,
+    tenors: Iterable[str] | None = None,
+    *,
+    engine: Engine | None = None,
+) -> ActualWriteStats:
+    """从同一源快照刷新日频 Actual，并返回真实写入统计。"""
     owns_engine = engine is None
     target_engine = engine if engine is not None else create_engine_from_env()
     try:
@@ -125,26 +146,35 @@ def update_actuals(
             tenors=tenors,
         )
         if not selected_tenors:
-            return 0
+            return ActualWriteStats()
         with target_engine.begin() as connection:
             snapshot = read_actual_source_snapshot(
                 connection,
                 tenors=selected_tenors,
                 end_date=end_date,
             )
-            records = build_daily_actual_records_from_rows(
+            source_rows = require_actual_source_tenors(
                 snapshot.rows,
+                expected_tenors=selected_tenors,
+                stage="daily",
+            )
+            records = build_daily_actual_records_from_rows(
+                source_rows,
                 start_date=start_date,
             )
-            written = _upsert_actuals_conn(connection, records)
+            stats = _upsert_actuals_detailed_conn(connection, records)
         logger.info(
             "Daily actuals refreshed from source snapshot: "
-            "source_digest=%s watermarks=%s records=%s",
+            "source_digest=%s watermarks=%s attempted=%s inserted=%s "
+            "changed=%s unchanged=%s",
             snapshot.source_digest,
             snapshot.watermarks,
-            written,
+            stats.attempted,
+            stats.inserted,
+            stats.changed,
+            stats.unchanged,
         )
-        return written
+        return stats
     finally:
         if owns_engine:
             target_engine.dispose()

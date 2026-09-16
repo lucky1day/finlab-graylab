@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import errno
 import fcntl
+import json
 import math
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -19,7 +21,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Callable, Iterator, Sequence
 from zoneinfo import ZoneInfo
 
 from scheduler.deployment_scope import (
@@ -50,6 +52,13 @@ from shared.data_bridge.refresh import DataBridgeRefreshConfig
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
 DATA_BRIDGE_READY_MAX_WAIT_SEC = 30 * 60
 DATA_BRIDGE_READY_POLL_INTERVAL_SEC = 30
+DATA_BRIDGE_READY_PROGRESS_INTERVAL_SEC = 5 * 60
+DATA_BRIDGE_READY_WARNING_AFTER_SEC = 5 * 60
+DATA_BRIDGE_TRANSITION_RETRY_LIMIT = 3
+DATA_BRIDGE_TRANSITION_RETRY_INTERVAL_SEC = 0.1
+DATA_BRIDGE_TRANSITION_CODES = frozenset(
+    {"gate_generation_mismatch", "gate_current_missing"}
+)
 RUNNER_LOCK_TIMEOUT_SEC = 60.0
 RUNNER_LOCK_POLL_INTERVAL_SEC = 0.05
 
@@ -370,20 +379,86 @@ def _wait_for_v2_daily_ready(
     *,
     run_date: str,
     expected_daily_date: str,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    emit_progress: Callable[[dict[str, object]], None] | None = None,
+    max_wait_sec: float = DATA_BRIDGE_READY_MAX_WAIT_SEC,
+    poll_interval_sec: float = DATA_BRIDGE_READY_POLL_INTERVAL_SEC,
+    progress_interval_sec: float = DATA_BRIDGE_READY_PROGRESS_INTERVAL_SEC,
+    warning_after_sec: float = DATA_BRIDGE_READY_WARNING_AFTER_SEC,
+    transition_retry_limit: int = DATA_BRIDGE_TRANSITION_RETRY_LIMIT,
+    transition_retry_interval_sec: float = (
+        DATA_BRIDGE_TRANSITION_RETRY_INTERVAL_SEC
+    ),
 ) -> str | None:
-    """只读轮询一批日频 Blackbox 共同使用的就绪凭证。"""
-    deadline = time.monotonic() + DATA_BRIDGE_READY_MAX_WAIT_SEC
+    """只轮询未开始的发布；切换竞态仅允许少量连续重读。"""
+    report = emit_progress or _emit_v2_daily_gate_wait_progress
+    started = monotonic()
+    deadline = started + max_wait_sec
+    last_reported_at: float | None = None
+    last_reported_code: str | None = None
+    transition_attempts = 0
     while True:
         try:
             require_v2_daily_ready(config, run_date, expected_daily_date)
             return None
-        except V2DailyGateBlocked:
-            remaining = deadline - time.monotonic()
+        except V2DailyGateBlocked as exc:
+            if not exc.retryable:
+                return exc.code
+            now = monotonic()
+            elapsed = max(0.0, now - started)
+            remaining = max(0.0, deadline - now)
+            if (
+                last_reported_at is None
+                or exc.code != last_reported_code
+                or now - last_reported_at >= progress_interval_sec
+                or remaining <= 0
+            ):
+                report(
+                    {
+                        "event": "v2_daily_gate_wait",
+                        "level": (
+                            "warning"
+                            if elapsed >= warning_after_sec
+                            else "info"
+                        ),
+                        "elapsed_sec": round(elapsed, 3),
+                        "remaining_sec": round(remaining, 3),
+                        "code": exc.code,
+                    }
+                )
+                last_reported_at = now
+                last_reported_code = exc.code
+
+            if exc.code in DATA_BRIDGE_TRANSITION_CODES:
+                transition_attempts += 1
+                if transition_attempts >= transition_retry_limit:
+                    return exc.code
+                if remaining <= 0:
+                    return exc.code
+                sleep(min(transition_retry_interval_sec, remaining))
+                continue
+
+            transition_attempts = 0
             if remaining <= 0:
                 return SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT
-            time.sleep(min(DATA_BRIDGE_READY_POLL_INTERVAL_SEC, remaining))
+            sleep(min(poll_interval_sec, remaining))
         except Exception:  # noqa: BLE001 - never reveal low-level gate details
             return "v2_gate_unavailable"
+
+
+def _emit_v2_daily_gate_wait_progress(payload: dict[str, object]) -> None:
+    """向调度日志写入不含底层错误文本的低频等待进度。"""
+    print(
+        json.dumps(
+            payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def _execute_candidate(

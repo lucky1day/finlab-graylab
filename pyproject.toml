@@ -1,2 +1,5 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "mysql_integration: requires an explicitly configured disposable MySQL database",
+]

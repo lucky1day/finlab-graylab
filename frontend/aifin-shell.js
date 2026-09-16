@@ -205,7 +205,6 @@
   var FACTOR_LAB_REQUEST_TIMEOUT_MS = 6000;
   var FACTOR_LAB_MAX_RETRY_DELAY_MS = 2147483647;
   var FACTOR_LAB_RETRY_DELAYS_MS = [10000, 30000, 60000, 300000];
-  var HTTP_DATE_PATTERN = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/;
   var factorLabRuntimeState = {
     authenticated: false,
     loadSeq: 0,
@@ -1036,117 +1035,24 @@
     };
   }
 
-  function fetchJson(url, options) {
-    options = options || {};
-    var requestUrl = apiUrl(url);
-    var requestOptions = {
-      cache: "no-store",
-      headers: { Accept: "application/json" }
-    };
-    var externalSignal = options.signal || null;
-    var controller = window.AbortController ? new window.AbortController() : null;
-    var signal = controller ? controller.signal : externalSignal;
-    if (signal) requestOptions.signal = signal;
-    var timeoutMs = Number(options.timeoutMs);
-    if (!(timeoutMs > 0)) timeoutMs = FACTOR_LAB_REQUEST_TIMEOUT_MS;
-    var timeoutId = null;
-    var removeExternalAbortListener = null;
-    var timeoutError = new Error("Request timed out after " + timeoutMs + "ms");
-    timeoutError.name = "FactorLabTimeoutError";
-    timeoutError.code = "request_timeout";
-    timeoutError.timeoutMs = timeoutMs;
-
-    var cancellationPromise = new Promise(function (_resolve, reject) {
-      if (externalSignal) {
-        var abortFromExternalSignal = function () {
-          var reason = externalSignal.reason || "external-abort";
-          if (controller && !controller.signal.aborted) controller.abort(reason);
-          var abortError = new Error("Request was cancelled");
-          abortError.name = "AbortError";
-          abortError.code = "request_aborted";
-          abortError.reason = reason;
-          reject(abortError);
-        };
-        if (externalSignal.aborted) {
-          abortFromExternalSignal();
-          return;
-        }
-        if (typeof externalSignal.addEventListener === "function") {
-          externalSignal.addEventListener("abort", abortFromExternalSignal, { once: true });
-          removeExternalAbortListener = function () {
-            externalSignal.removeEventListener("abort", abortFromExternalSignal);
-          };
-        }
-      }
-      if (window.setTimeout) {
-        timeoutId = window.setTimeout(function () {
-          reject(timeoutError);
-          if (controller && !controller.signal.aborted) controller.abort("request-timeout");
-        }, timeoutMs);
-      }
-    });
-
-    var responsePromise = Promise.resolve().then(function () {
-      return fetch(requestUrl, requestOptions);
-    }).then(function (response) {
-      if (response.ok) return response.json();
-      var bodyPromise = typeof response.json === "function"
-        ? response.json().catch(function () { return null; })
-        : Promise.resolve(null);
-      return bodyPromise.then(function (body) {
-        var error = new Error("HTTP " + response.status + " " + requestUrl);
-        error.name = "FactorLabHttpError";
-        error.status = response.status;
-        error.body = body;
-        error.requestUrl = requestUrl;
-        var retryAfter = response.headers && typeof response.headers.get === "function"
-          ? response.headers.get("Retry-After")
-          : null;
-        if (retryAfter !== null && retryAfter !== undefined) {
-          var retryAfterValue = String(retryAfter).trim();
-          var retryAfterAt = null;
-          error.retryAfter = retryAfterValue;
-          if (/^\d+$/.test(retryAfterValue)) {
-            var retryAfterSeconds = Number(retryAfterValue);
-            if (Number.isSafeInteger(retryAfterSeconds) &&
-                retryAfterSeconds <= Math.floor(FACTOR_LAB_MAX_RETRY_DELAY_MS / 1000)) {
-              retryAfterAt = Date.now() + retryAfterSeconds * 1000;
-            } else {
-              retryAfterAt = Infinity;
-            }
-          } else if (HTTP_DATE_PATTERN.test(retryAfterValue)) {
-            var parsedRetryAfter = Date.parse(retryAfterValue);
-            if (Number.isFinite(parsedRetryAfter) &&
-                new Date(parsedRetryAfter).toUTCString() === retryAfterValue) {
-              retryAfterAt = parsedRetryAfter - Date.now() <= FACTOR_LAB_MAX_RETRY_DELAY_MS
-                ? parsedRetryAfter
-                : Infinity;
-            }
-          }
-          if (retryAfterAt === Infinity) {
-            error.retryAfterAt = Infinity;
-          } else if (Number.isFinite(retryAfterAt)) {
-            error.retryAfterAt = Math.max(Date.now(), retryAfterAt);
-          }
-        }
-        throw error;
-      });
-    });
-
-    return Promise.race([responsePromise, cancellationPromise]).then(function (payload) {
-      if (timeoutId !== null && window.clearTimeout) window.clearTimeout(timeoutId);
-      if (removeExternalAbortListener) removeExternalAbortListener();
-      return payload;
-    }, function (error) {
-      if (timeoutId !== null && window.clearTimeout) window.clearTimeout(timeoutId);
-      if (removeExternalAbortListener) removeExternalAbortListener();
-      if (error && error.status === 401 &&
-          !(signal && signal.aborted) && window.CustomEvent) {
+  if (!window.BondFactorLabHttp ||
+      typeof window.BondFactorLabHttp.createJsonClient !== "function") {
+    throw new Error("factor-lab-http.js must load before aifin-shell.js");
+  }
+  var fetchJson = window.BondFactorLabHttp.createJsonClient({
+    fetch: function (url, options) { return window.fetch(url, options); },
+    resolveUrl: apiUrl,
+    AbortController: window.AbortController,
+    setTimeout: function (callback, delay) { return window.setTimeout(callback, delay); },
+    clearTimeout: function (timer) { return window.clearTimeout(timer); },
+    defaultTimeoutMs: function () { return FACTOR_LAB_REQUEST_TIMEOUT_MS; },
+    maxRetryDelayMs: FACTOR_LAB_MAX_RETRY_DELAY_MS,
+    onUnauthorized: function () {
+      if (window.CustomEvent) {
         window.dispatchEvent(new CustomEvent("bfl:auth-required"));
       }
-      throw error;
-    });
-  }
+    }
+  });
 
   function validateFactorLabTasksForCommit(tasks) {
     Object.keys(tasks || {}).forEach(function (taskKey) {

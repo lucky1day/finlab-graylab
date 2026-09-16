@@ -11,15 +11,99 @@ import json
 import os
 import re
 import subprocess
+import tarfile
 import tempfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Sequence
 
 
 MANIFEST_SCHEMA_VERSION = "bfl-source-release-v2"
 SOURCE_ROOT_PREFIX = "source/"
 _GIT_OBJECT = re.compile(r"^[0-9a-f]{40,64}$")
+_FORBIDDEN_RELEASE_COMPONENTS = frozenset(
+    {
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "__pycache__",
+        "backtest_artifacts",
+        "cache",
+        "dist",
+        "logs",
+        "outputs",
+        "reports",
+    }
+)
+_FORBIDDEN_RELEASE_SUFFIXES = frozenset(
+    {
+        ".bak",
+        ".db",
+        ".dump",
+        ".key",
+        ".p12",
+        ".pem",
+        ".pfx",
+        ".sqlite",
+        ".sqlite3",
+    }
+)
+_FORBIDDEN_PACKAGED_DATA_SUFFIXES = frozenset(
+    {
+        ".7z",
+        ".feather",
+        ".gz",
+        ".joblib",
+        ".npy",
+        ".npz",
+        ".parquet",
+        ".pickle",
+        ".pkl",
+        ".rar",
+        ".so",
+        ".tar",
+        ".tgz",
+        ".zip",
+    }
+)
+_INSTALL_TIME_FILENAMES = frozenset(
+    {
+        ".bfl-release.env",
+        "manual-run.env",
+        "production_schemes.json",
+        "service.env",
+    }
+)
+_APPROVED_EVIDENCE_PREFIX = PurePosixPath("source_evidence")
+_FORBIDDEN_RUNTIME_PREFIXES = (
+    PurePosixPath("data/data_bridge/current"),
+)
+_MAX_UNAPPROVED_FILE_BYTES = 2 * 1024 * 1024
+_PRIVATE_KEY_PATTERN = re.compile(
+    rb"-----BEGIN (?:EC |OPENSSH |PGP |RSA )?PRIVATE KEY-----"
+)
+_HIGH_CONFIDENCE_TOKEN_PATTERNS = (
+    (
+        "aws_access_key",
+        re.compile(rb"(?<![A-Z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])"),
+    ),
+    (
+        "github_token",
+        re.compile(rb"(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9]{30,}"),
+    ),
+    (
+        "slack_token",
+        re.compile(rb"(?<![A-Za-z0-9-])xox[baprs]-[A-Za-z0-9-]{20,}"),
+    ),
+    (
+        "high_entropy_password",
+        re.compile(
+            rb"(?im)^\s*(?:BOND_DB_PASSWORD|DATABASE_PASSWORD|DB_PASSWORD)\s*=\s*"
+            rb"['\"]?([A-Za-z0-9+/=_-]{24,})"
+        ),
+    ),
+)
 
 
 class ReleaseBuildError(RuntimeError):
@@ -57,6 +141,7 @@ def build_source_release(
         f"--prefix={SOURCE_ROOT_PREFIX}",
         commit,
     )
+    validate_release_contents(tar_bytes)
     compressed_buffer = io.BytesIO()
     with gzip.GzipFile(
         filename="",
@@ -101,6 +186,109 @@ def build_source_release(
         manifest_path=manifest_path,
         archive_sha256=archive_sha256,
     )
+
+
+def validate_release_contents(tar_bytes: bytes) -> None:
+    """校验即将压缩的 Git archive 成员、大小与高置信凭据特征。"""
+    try:
+        archive = tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:")
+    except tarfile.TarError as exc:
+        raise ReleaseBuildError("Git archive is not a readable tar stream") from exc
+    with archive:
+        for member in archive.getmembers():
+            relative = _release_member_path(member.name)
+            if relative is None:
+                if not member.isdir():
+                    raise ReleaseBuildError(
+                        "release source root must be a directory"
+                    )
+                continue
+            if member.isdir():
+                continue
+            if not member.isfile():
+                raise ReleaseBuildError(
+                    f"release contains unsupported member type: {relative.as_posix()}"
+                )
+            _validate_release_path(relative, size=member.size)
+            extracted = archive.extractfile(member)
+            if extracted is None:
+                raise ReleaseBuildError(
+                    f"release member cannot be read: {relative.as_posix()}"
+                )
+            payload = extracted.read()
+            if len(payload) != member.size:
+                raise ReleaseBuildError(
+                    f"release member size mismatch: {relative.as_posix()}"
+                )
+            _scan_release_member(relative, payload)
+
+
+def _release_member_path(name: str) -> PurePosixPath | None:
+    prefix = SOURCE_ROOT_PREFIX.rstrip("/")
+    path = PurePosixPath(name)
+    if path == PurePosixPath(prefix):
+        return None
+    if not path.parts or path.parts[0] != prefix:
+        raise ReleaseBuildError("release archive member is outside the source root")
+    relative = PurePosixPath(*path.parts[1:])
+    if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise ReleaseBuildError("release archive member path is invalid")
+    return relative
+
+
+def _validate_release_path(path: PurePosixPath, *, size: int) -> None:
+    path_text = path.as_posix()
+    lowered_parts = tuple(part.lower() for part in path.parts)
+    filename = path.name.lower()
+    suffix = path.suffix.lower()
+    in_source_evidence = path == _APPROVED_EVIDENCE_PREFIX or (
+        path.parts[:1] == _APPROVED_EVIDENCE_PREFIX.parts
+    )
+    if any(
+        path == prefix or path.is_relative_to(prefix)
+        for prefix in _FORBIDDEN_RUNTIME_PREFIXES
+    ):
+        raise ReleaseBuildError(f"release contains runtime state: {path_text}")
+    if any(part in _FORBIDDEN_RELEASE_COMPONENTS for part in lowered_parts):
+        raise ReleaseBuildError(f"release contains forbidden path: {path_text}")
+    if filename == ".env.example":
+        if path != PurePosixPath(".env.example"):
+            raise ReleaseBuildError(f"release contains forbidden env file: {path_text}")
+    elif filename == ".env" or filename.startswith(".env."):
+        raise ReleaseBuildError(f"release contains forbidden env file: {path_text}")
+    if filename in _INSTALL_TIME_FILENAMES:
+        raise ReleaseBuildError(
+            f"release contains install-time configuration: {path_text}"
+        )
+    if suffix in _FORBIDDEN_RELEASE_SUFFIXES:
+        raise ReleaseBuildError(f"release contains forbidden file type: {path_text}")
+    if (
+        suffix == ".sql"
+        and path.parts[:1] != ("migrations",)
+        and not in_source_evidence
+    ):
+        raise ReleaseBuildError(
+            f"release contains unapproved SQL or database export: {path_text}"
+        )
+    if suffix in _FORBIDDEN_PACKAGED_DATA_SUFFIXES and not in_source_evidence:
+        raise ReleaseBuildError(
+            f"release contains unapproved binary or data package: {path_text}"
+        )
+    if size > _MAX_UNAPPROVED_FILE_BYTES and not in_source_evidence:
+        raise ReleaseBuildError(f"release contains unapproved large file: {path_text}")
+
+
+def _scan_release_member(path: PurePosixPath, payload: bytes) -> None:
+    path_text = path.as_posix()
+    if _PRIVATE_KEY_PATTERN.search(payload):
+        raise ReleaseBuildError(
+            f"release credential scan rejected private key material: {path_text}"
+        )
+    for category, pattern in _HIGH_CONFIDENCE_TOKEN_PATTERNS:
+        if pattern.search(payload):
+            raise ReleaseBuildError(
+                f"release credential scan rejected {category}: {path_text}"
+            )
 
 
 def _git(root: Path, *arguments: str) -> str:

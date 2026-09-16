@@ -6,7 +6,7 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 from zoneinfo import ZoneInfo
 
 from shared.models import DIRECTION_VALUES
@@ -169,6 +169,68 @@ class DashboardDataError(RuntimeError):
     ) -> None:
         super().__init__(message)
         self.diagnostics = dict(diagnostics or {})
+
+
+@dataclass(slots=True)
+class MonthlySummaryAccumulator:
+    """单个月份/来源的紧凑计数器；创建实例即保留 pending 月份入口。"""
+
+    samples: int = 0
+    metric_samples: int = 0
+    correct: int = 0
+    predicted_up: int = 0
+    predicted_down: int = 0
+    predicted_flat: int = 0
+    actual_up: int = 0
+    actual_down: int = 0
+    actual_flat: int = 0
+    up_true_positive: int = 0
+    down_true_positive: int = 0
+
+    def observe(self, *, predicted_direction: Any, actual_direction: Any) -> None:
+        """计入一条已验证事实；pending 不调用本方法。"""
+        predicted = _direction(predicted_direction, allow_none=False)
+        actual = _direction(actual_direction, allow_none=False)
+        self.samples += 1
+        if predicted == 1:
+            self.predicted_up += 1
+        elif predicted == -1:
+            self.predicted_down += 1
+        else:
+            self.predicted_flat += 1
+        if actual == 1:
+            self.actual_up += 1
+        elif actual == -1:
+            self.actual_down += 1
+        else:
+            self.actual_flat += 1
+        if predicted not in {-1, 1}:
+            return
+        self.metric_samples += 1
+        if predicted == actual:
+            self.correct += 1
+        if predicted == actual == 1:
+            self.up_true_positive += 1
+        elif predicted == actual == -1:
+            self.down_true_positive += 1
+
+    def compact(self, *, month: str, source: str) -> list[Any]:
+        """按 Dashboard V6 固定列顺序输出。"""
+        return [
+            month,
+            source,
+            self.samples,
+            self.metric_samples,
+            self.correct,
+            self.predicted_up,
+            self.predicted_down,
+            self.predicted_flat,
+            self.actual_up,
+            self.actual_down,
+            self.actual_flat,
+            self.up_true_positive,
+            self.down_true_positive,
+        ]
 
 
 def is_factor_lab_history_visible(predict_date: str) -> bool:
@@ -383,6 +445,62 @@ def choose_live_prediction_rows(
             and predict_date > last_display_date
         )
     ]
+
+
+def iter_grouped_live_prediction_rows(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    display_until: Any,
+    task_type_by_scheme: Mapping[tuple[str, str, int], str],
+) -> Iterator[Mapping[str, Any]]:
+    """从按业务点分组排序的流中逐点选择 canonical 产品事实。
+
+    该入口与 :func:`choose_live_prediction_rows` 使用相同选择规则，但只保留
+    当前业务点，供 Summary 在不物化全历史明细的情况下完成聚合。调用方
+    必须按 ``scheme_id, target_tenor, horizon, target_date`` 升序提供行。
+    """
+    last_key: tuple[str, str, int, str] | None = None
+    selected: Mapping[str, Any] | None = None
+    last_display_date = _optional_iso_date(display_until)
+
+    for row in rows:
+        scheme_key = _prediction_scheme_key(row)
+        if scheme_key is None:
+            raise DashboardDataError("prediction scheme key is invalid")
+        key = (
+            *scheme_key,
+            _required_iso_date(row.get("target_date"), field="target_date"),
+        )
+        if last_key is not None and key < last_key:
+            raise DashboardDataError(
+                "summary prediction stream is not grouped by business key"
+            )
+        if last_key is not None and key != last_key:
+            assert selected is not None
+            predict_date = _optional_iso_date(selected.get("predict_date"))
+            if not (
+                predict_date
+                and last_display_date
+                and predict_date > last_display_date
+            ):
+                yield selected
+            selected = None
+        if selected is None or _is_better_prediction_for_point(
+            row,
+            selected,
+            is_weekly=(task_type_by_scheme.get(scheme_key) in WEEKLY_TASK_TYPES),
+        ):
+            selected = row
+        last_key = key
+
+    if selected is not None:
+        predict_date = _optional_iso_date(selected.get("predict_date"))
+        if not (
+            predict_date
+            and last_display_date
+            and predict_date > last_display_date
+        ):
+            yield selected
 
 
 def collapse_actual_facts_with_diagnostics(

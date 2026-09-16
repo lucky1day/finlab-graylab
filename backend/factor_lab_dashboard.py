@@ -20,16 +20,26 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Connection, Engine
 
 from backend.db import current_http_request_context
+from backend.factor_lab_dashboard_queries import (
+    SummaryPredictionReadStats,
+    iter_summary_product_predictions,
+    read_active_registry,
+    read_active_targets,
+    read_bounded_source_rows,
+    read_live_actuals,
+    read_product_predictions,
+    read_selected_backtest_runs,
+)
 from shared.runtime_paths import RUNTIME_ROOT_ENV, resolve_runtime_state_path
 from shared.scheme_config_schema import normalize_scheme_owner
 
 from backend.factor_lab_dashboard_semantics import (
-    BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE,
     DASHBOARD_SCHEMA_VERSION,
     DETAIL_ROW_FIELDS,
     FACTOR_LAB_HISTORY_START_DATE,
     FACTOR_LAB_LIVE_TARGET_START_DATE,
     MONTHLY_ROW_FIELDS,
+    MonthlySummaryAccumulator,
     DashboardDataError,
     backtest_benchmark_label,
     backtest_data_source_label,
@@ -40,6 +50,7 @@ from backend.factor_lab_dashboard_semantics import (
     compact_detail_row,
     dashboard_result_source,
     is_factor_lab_history_visible,
+    iter_grouped_live_prediction_rows,
     live_actual_selector,
     validate_dashboard_payload,
 )
@@ -55,95 +66,7 @@ MAX_REGISTRY_SOURCE_ROWS = 1_000
 MAX_TARGET_SOURCE_ROWS = 1_000
 MAX_PRODUCT_PREDICTION_SOURCE_ROWS = 100_000
 MAX_ACTUAL_SOURCE_ROWS = 80_000
-MAX_BACKTEST_RUN_SOURCE_ROWS = 100_000
-_ACTUAL_SOURCE_KIND_ORDER = (
-    "daily_1d",
-    "daily_5d",
-    "weekly",
-    "monthly",
-    "period_average",
-)
-_ACTUAL_SOURCE_FRAGMENTS = {
-    "daily_1d": """
-        SELECT 'daily_1d' AS actual_kind,
-               tenor AS target_tenor,
-               trade_date AS target_date,
-               'target_date_yield_vs_feature_date_yield' AS target_rule,
-               direction_1d AS actual_direction
-        FROM t_scheme_actuals
-        WHERE tenor IN :daily_1d_tenors
-          AND trade_date >= :history_start_date
-    """,
-    "daily_5d": """
-        SELECT 'daily_5d' AS actual_kind,
-               tenor AS target_tenor,
-               trade_date AS target_date,
-               'target_date_yield_vs_feature_date_yield' AS target_rule,
-               direction_5d AS actual_direction
-        FROM t_scheme_actuals
-        WHERE tenor IN :daily_5d_tenors
-          AND trade_date >= :history_start_date
-    """,
-    "weekly": """
-        SELECT 'weekly' AS actual_kind,
-               tenor AS target_tenor,
-               target_date,
-               target_rule,
-               direction_weekly AS actual_direction
-        FROM t_scheme_weekly_actuals
-        WHERE (tenor, target_rule) IN :weekly_scopes
-          AND target_date >= :history_start_date
-    """,
-    "monthly": """
-        SELECT 'monthly' AS actual_kind,
-               tenor AS target_tenor,
-               target_date,
-               target_rule,
-               direction_monthly AS actual_direction
-        FROM t_scheme_monthly_actuals
-        WHERE (tenor, target_rule) IN :monthly_scopes
-          AND target_date >= :history_start_date
-    """,
-    "period_average": """
-        SELECT 'period_average' AS actual_kind,
-               tenor AS target_tenor,
-               target_date,
-               target_rule,
-               actual_direction
-        FROM t_scheme_period_average_actuals
-        WHERE (tenor, target_rule) IN :period_average_scopes
-          AND target_date >= :history_start_date
-    """,
-}
-_ACTUAL_SOURCE_SCOPE_PARAMS = {
-    "daily_1d": "daily_1d_tenors",
-    "daily_5d": "daily_5d_tenors",
-    "weekly": "weekly_scopes",
-    "monthly": "monthly_scopes",
-    "period_average": "period_average_scopes",
-}
-_ACTUAL_SOURCE_DATE_FILTERS = {
-    "daily_1d": (
-        " AND trade_date >= :target_date_from"
-        " AND trade_date < :target_date_before"
-    ),
-    "daily_5d": (
-        " AND trade_date >= :target_date_from"
-        " AND trade_date < :target_date_before"
-    ),
-    "weekly": (
-        " AND target_date >= :target_date_from"
-        " AND target_date < :target_date_before"
-    ),
-    "monthly": (
-        " AND target_date >= :target_date_from"
-        " AND target_date < :target_date_before"
-    ),
-    "period_average": (
-        " AND target_date >= :target_date_from"
-        " AND target_date < :target_date_before"
-    ),
-}
+SUMMARY_PREDICTION_FETCH_ROWS = 2_000
 logger = logging.getLogger(__name__)
 _DIAGNOSTICS_LIMIT = 8
 _diagnostics_lock = Lock()
@@ -158,6 +81,36 @@ class SnapshotEncoding:
     gzip_body: bytes
     raw_size: int
     gzip_size: int
+
+
+class DashboardQueryError(ValueError):
+    """表示可归因于 Dashboard 请求参数的稳定输入错误。"""
+
+
+def parse_dashboard_month(value: object) -> str:
+    """解析可安全计算相邻月边界的规范 ``YYYY-MM``。"""
+    if (
+        not isinstance(value, str)
+        or len(value) != 7
+        or value[4] != "-"
+        or not value[:4].isascii()
+        or not value[:4].isdigit()
+        or not value[5:].isascii()
+        or not value[5:].isdigit()
+    ):
+        raise DashboardQueryError("dashboard detail month is invalid")
+    try:
+        display_start = date.fromisoformat(f"{value}-01")
+        _shift_month(display_start, -1)
+        _shift_month(display_start, 1)
+    except ValueError as exc:
+        raise DashboardQueryError(
+            "dashboard detail month boundary is invalid"
+        ) from exc
+    canonical = f"{display_start.year:04d}-{display_start.month:02d}"
+    if canonical != value:
+        raise DashboardQueryError("dashboard detail month is invalid")
+    return value
 
 
 @contextmanager
@@ -280,7 +233,7 @@ def build_factor_lab_dashboard(
     engine: Engine,
 ) -> dict[str, Any]:
     """在一个一致性事务内构建不含逐日明细的 V6 首屏。"""
-    return _build_dashboard_representation(engine)
+    return _build_summary(engine)
 
 
 def build_factor_lab_dashboard_detail(
@@ -292,60 +245,39 @@ def build_factor_lab_dashboard_detail(
 ) -> dict[str, Any] | None:
     """按 active composite scheme、月份和来源构建 V6 明细。"""
     if source not in {"all", "backtest", "live"}:
-        raise ValueError("dashboard detail source is invalid")
-    if not isinstance(month, str) or len(month) != 7:
-        raise ValueError("dashboard detail month is invalid")
-    return _build_dashboard_representation(
+        raise DashboardQueryError("dashboard detail source is invalid")
+    parsed_month = parse_dashboard_month(month)
+    return _build_detail(
         engine,
         registry_scheme_id=scheme_id,
-        detail_month=month,
+        detail_month=parsed_month,
         detail_source=source,
     )
 
 
-def _build_dashboard_representation(
-    engine: Engine,
-    *,
-    registry_scheme_id: str | None = None,
-    detail_month: str | None = None,
-    detail_source: str | None = None,
-) -> dict[str, Any] | None:
+def _build_summary(engine: Engine) -> dict[str, Any]:
+    """流式读取全量产品事实，构建不随历史明细等比例占内存的 Summary。"""
     build_started_at = time.perf_counter()
     captured = datetime.now(SHANGHAI_TIMEZONE)
     display_until = captured.date().isoformat()
 
-    production_candidates = _read_production_scheme_ids() if registry_scheme_id is None else set()
+    production_candidates = _read_production_scheme_ids()
     db_read_started_at = time.perf_counter()
+    prediction_read_stats = SummaryPredictionReadStats()
     with dashboard_read_connection(engine) as connection:
-        production_ids = _existing_production_scheme_ids(connection, production_candidates)
+        production_ids = _existing_production_scheme_ids(
+            connection,
+            production_candidates,
+        )
         registry_rows = _read_active_registry(
             connection,
-            registry_scheme_id=registry_scheme_id,
+            registry_scheme_id=None,
         )
-        if registry_scheme_id is not None and not registry_rows:
-            return None
-        detail_date_range = (
-            _detail_target_date_range(
-                detail_month,
-                task_type=str(registry_rows[0]["task_type"]),
-            )
-            if registry_scheme_id is not None
-            else None
-        )
-        target_rows = (
-            _read_active_targets(connection)
-            if registry_scheme_id is None
-            else []
-        )
-        prediction_rows = _read_product_predictions(
-            connection,
-            registry_rows,
-            target_date_range=detail_date_range,
-        )
+        target_rows = _read_active_targets(connection)
         actual_rows = _read_live_actuals(
             connection,
             registry_rows,
-            target_date_range=detail_date_range,
+            target_date_range=None,
         )
         backtest_run_rows = _read_backtest_runs(
             connection,
@@ -355,19 +287,17 @@ def _build_dashboard_representation(
             backtest_run_rows,
             registry_rows,
         )
-    db_read_seconds = time.perf_counter() - db_read_started_at
-    request_context = current_http_request_context()
-    if request_context is not None:
-        request_context.failure_stage = "dashboard_canonical"
-        request_context.require_remaining("dashboard_canonical")
+        request_context = current_http_request_context()
+        if request_context is not None:
+            request_context.failure_stage = "dashboard_canonical"
+            request_context.require_remaining("dashboard_canonical")
 
-    canonical_started_at = time.perf_counter()
-    registry = [_registry_dto(row) for row in registry_rows]
-    targets = [_target_dto(row) for row in target_rows]
-    target_labels = {
-        target["target_code"]: target["display_name"] for target in targets
-    }
-    if registry_scheme_id is None:
+        canonical_started_at = time.perf_counter()
+        registry = [_registry_dto(row) for row in registry_rows]
+        targets = [_target_dto(row) for row in target_rows]
+        target_labels = {
+            target["target_code"]: target["display_name"] for target in targets
+        }
         for scheme in registry:
             if scheme["target_tenor"] not in target_labels:
                 raise DashboardDataError(
@@ -376,80 +306,114 @@ def _build_dashboard_representation(
                     f"target_tenor={scheme['target_tenor']}"
                 )
 
-    active_actual_scopes = {
-        (scheme["target_tenor"], *live_actual_selector(scheme["task_type"]))
-        for scheme in registry
-    }
-    actual_facts, actual_diagnostics = _collapse_actual_rows(
-        actual_rows,
-        active_actual_scopes=active_actual_scopes,
-    )
-    canonical_predictions = choose_live_prediction_rows(
-        prediction_rows,
-        display_until=display_until,
-        task_type_by_scheme=registry_task_type_index(registry_rows),
-    )
-    history_prediction_rows_excluded = 0
-    predictions_by_scheme: dict[tuple[str, str, int], list[Mapping[str, Any]]] = (
-        defaultdict(list)
-    )
-    for row in canonical_predictions:
-        predict_date = _iso_date(
-            row.get("predict_date"),
-            field="prediction predict_date",
+        active_actual_scopes = {
+            (scheme["target_tenor"], *live_actual_selector(scheme["task_type"]))
+            for scheme in registry
+        }
+        actual_facts, actual_diagnostics = _collapse_actual_rows(
+            actual_rows,
+            active_actual_scopes=active_actual_scopes,
         )
-        if not is_factor_lab_history_visible(predict_date):
-            history_prediction_rows_excluded += 1
-            continue
-        predictions_by_scheme[
-            (
-                _required_text(row.get("scheme_id"), field="prediction scheme_id"),
-                _required_text(
-                    row.get("target_tenor"), field="prediction target_tenor"
-                ),
-                _required_int(row.get("horizon"), field="prediction horizon"),
+        schemes_by_prediction_key: dict[
+            tuple[str, str, int], list[dict[str, Any]]
+        ] = defaultdict(list)
+        monthly_by_scheme: dict[
+            str,
+            dict[tuple[str, str], MonthlySummaryAccumulator],
+        ] = {}
+        source_counts_by_scheme: dict[str, dict[str, int]] = {}
+        for scheme in registry:
+            schemes_by_prediction_key[
+                (
+                    scheme["base_scheme_id"],
+                    scheme["target_tenor"],
+                    scheme["horizon"],
+                )
+            ].append(scheme)
+            monthly_by_scheme[scheme["scheme_id"]] = {}
+            source_counts_by_scheme[scheme["scheme_id"]] = {
+                "backtest": 0,
+                "live": 0,
+            }
+
+        history_prediction_rows_excluded = 0
+        prediction_rows = _iter_summary_product_predictions(
+            connection,
+            registry_rows,
+            stats=prediction_read_stats,
+        )
+        canonical_predictions = iter_grouped_live_prediction_rows(
+            prediction_rows,
+            display_until=display_until,
+            task_type_by_scheme=registry_task_type_index(registry_rows),
+        )
+        for prediction in canonical_predictions:
+            predict_date = _iso_date(
+                prediction.get("predict_date"),
+                field="prediction predict_date",
             )
-        ].append(row)
+            if not is_factor_lab_history_visible(predict_date):
+                history_prediction_rows_excluded += 1
+                continue
+            prediction_key = (
+                _required_text(
+                    prediction.get("scheme_id"), field="prediction scheme_id"
+                ),
+                _required_text(
+                    prediction.get("target_tenor"),
+                    field="prediction target_tenor",
+                ),
+                _required_int(
+                    prediction.get("horizon"), field="prediction horizon"
+                ),
+            )
+            target_date = _iso_date(
+                prediction.get("target_date"),
+                field="prediction target_date",
+            )
+            source = dashboard_result_source(target_date)
+            for scheme in schemes_by_prediction_key.get(prediction_key, []):
+                selector = live_actual_selector(scheme["task_type"])
+                published_actual = prediction.get("backtest_actual_direction")
+                actual_direction = (
+                    _direction_value(
+                        published_actual,
+                        field="backtest_actual_direction",
+                    )
+                    if published_actual is not None
+                    else actual_facts.get(selector, {}).get(
+                        (scheme["target_tenor"], target_date, selector[1])
+                    )
+                )
+                month = _display_month(prediction, scheme["task_type"])
+                accumulator = monthly_by_scheme[scheme["scheme_id"]].setdefault(
+                    (month, source),
+                    MonthlySummaryAccumulator(),
+                )
+                source_counts_by_scheme[scheme["scheme_id"]][source] += 1
+                if actual_direction is not None:
+                    accumulator.observe(
+                        predicted_direction=prediction.get("predicted_direction"),
+                        actual_direction=actual_direction,
+                    )
+        if request_context is not None:
+            request_context.failure_stage = "dashboard_canonical"
+            request_context.require_remaining("dashboard_canonical")
+        canonical_elapsed = time.perf_counter() - canonical_started_at
+
+    db_read_seconds = (
+        time.perf_counter() - db_read_started_at - canonical_elapsed
+        + prediction_read_stats.fetch_seconds
+    )
+    canonical_build_seconds = max(
+        0.0,
+        canonical_elapsed - prediction_read_stats.fetch_seconds,
+    )
 
     schemes: list[dict[str, Any]] = []
     live_row_count = 0
     backtest_row_count = 0
     for scheme in registry:
-        selector = live_actual_selector(scheme["task_type"])
-        details_by_source: dict[str, list[dict[str, Any]]] = {
-            "backtest": [],
-            "live": [],
-        }
-        prediction_key = (
-            scheme["base_scheme_id"],
-            scheme["target_tenor"],
-            scheme["horizon"],
-        )
-        for prediction in predictions_by_scheme.get(prediction_key, []):
-            joined_actual_direction = actual_facts.get(selector, {}).get(
-                (
-                    scheme["target_tenor"],
-                    _iso_date(
-                        prediction.get("target_date"),
-                        field="prediction target_date",
-                    ),
-                    selector[1],
-                )
-            )
-            detail = dict(prediction)
-            published_actual = prediction.get("backtest_actual_direction")
-            detail["actual_direction"] = (
-                _direction_value(
-                    published_actual,
-                    field="backtest_actual_direction",
-                )
-                if published_actual is not None
-                else joined_actual_direction
-            )
-            details_by_source[
-                dashboard_result_source(detail.get("target_date"))
-            ].append(detail)
-
         selected_run = selected_backtest_runs.get(scheme["scheme_id"])
         backtest = None
         if selected_run is not None:
@@ -472,68 +436,18 @@ def _build_dashboard_representation(
                 ),
             }
 
-        backtest_details = details_by_source["backtest"]
-        live_details = details_by_source["live"]
-        backtest_row_count += len(backtest_details)
-        live_row_count += len(live_details)
-
-        if registry_scheme_id is not None:
-            rows: list[list[Any]] = []
-            if detail_source in {"all", "backtest"}:
-                rows.extend(
-                    compact_detail_row(row, source="backtest")
-                    for row in backtest_details
-                    if _display_month(row, scheme["task_type"]) == detail_month
-                )
-            if detail_source in {"all", "live"}:
-                rows.extend(
-                    compact_detail_row(row, source="live")
-                    for row in live_details
-                    if _display_month(row, scheme["task_type"]) == detail_month
-                )
-            rows.sort(key=_compact_row_sort_key)
-            payload = {
-                "schema_version": DASHBOARD_SCHEMA_VERSION,
-                "representation": "detail",
-                "snapshot_id": uuid4().hex,
-                "generated_at": captured.isoformat(timespec="seconds"),
-                "display_until": display_until,
-                "live_target_start_date": (
-                    FACTOR_LAB_LIVE_TARGET_START_DATE.isoformat()
-                ),
-                "scheme_id": scheme["scheme_id"],
-                "month": detail_month,
-                "source": detail_source,
-                "row_fields": list(DETAIL_ROW_FIELDS),
-                "rows": rows,
-            }
-            validate_dashboard_payload(payload)
-            _record_build_diagnostics(
-                payload["snapshot_id"],
-                {
-                    "snapshot_id": payload["snapshot_id"],
-                    "representation": "detail",
-                    "db_read_seconds": db_read_seconds,
-                    "canonical_build_seconds": (
-                        time.perf_counter() - canonical_started_at
-                    ),
-                    "build_seconds": time.perf_counter() - build_started_at,
-                    "scheme_count": 1,
-                    "detail_row_count": len(rows),
-                    **actual_diagnostics,
-                },
-            )
-            return payload
+        backtest_row_count += source_counts_by_scheme[scheme["scheme_id"]][
+            "backtest"
+        ]
+        live_row_count += source_counts_by_scheme[scheme["scheme_id"]]["live"]
 
         schemes.append(
             {
                 **scheme,
                 "is_production": scheme["scheme_id"] in production_ids,
                 "target_label": target_labels[scheme["target_tenor"]],
-                "monthly_rows": _monthly_rows(
-                    backtest_details=backtest_details,
-                    live_details=live_details,
-                    task_type=scheme["task_type"],
+                "monthly_rows": _compact_monthly_accumulators(
+                    monthly_by_scheme[scheme["scheme_id"]],
                 ),
                 "backtest": backtest,
             }
@@ -554,7 +468,6 @@ def _build_dashboard_representation(
         "schemes": schemes,
     }
     validate_dashboard_payload(payload)
-    canonical_build_seconds = time.perf_counter() - canonical_started_at
     _record_build_diagnostics(
         payload["snapshot_id"],
         {
@@ -567,9 +480,154 @@ def _build_dashboard_representation(
             "live_row_count": live_row_count,
             "backtest_row_count": backtest_row_count,
             "detail_row_count": live_row_count + backtest_row_count,
+            "prediction_source_row_count": prediction_read_stats.source_rows,
             "history_prediction_rows_excluded_before_policy_start": (
                 history_prediction_rows_excluded
             ),
+            **actual_diagnostics,
+        },
+    )
+    return payload
+
+
+def _build_detail(
+    engine: Engine,
+    *,
+    registry_scheme_id: str,
+    detail_month: str,
+    detail_source: str,
+) -> dict[str, Any] | None:
+    """只读取一个 active 方案、展示月和产品来源分区的明细事实。"""
+    build_started_at = time.perf_counter()
+    captured = datetime.now(SHANGHAI_TIMEZONE)
+    display_until = captured.date().isoformat()
+    db_read_started_at = time.perf_counter()
+    with dashboard_read_connection(engine) as connection:
+        registry_rows = _read_active_registry(
+            connection,
+            registry_scheme_id=registry_scheme_id,
+        )
+        if not registry_rows:
+            return None
+        scheme = _registry_dto(registry_rows[0])
+        display_date_range = _detail_target_date_range(
+            detail_month,
+            task_type=scheme["task_type"],
+        )
+        target_date_range = _detail_source_target_date_range(
+            display_date_range,
+            source=detail_source,
+        )
+        prediction_rows = (
+            _read_product_predictions(
+                connection,
+                registry_rows,
+                target_date_range=target_date_range,
+            )
+            if target_date_range is not None
+            else []
+        )
+        canonical_predictions = choose_live_prediction_rows(
+            prediction_rows,
+            display_until=display_until,
+            task_type_by_scheme=registry_task_type_index(registry_rows),
+        )
+        visible_predictions = [
+            row
+            for row in canonical_predictions
+            if is_factor_lab_history_visible(
+                _iso_date(
+                    row.get("predict_date"),
+                    field="prediction predict_date",
+                )
+            )
+        ]
+        missing_actual_target_dates = {
+            _iso_date(row.get("target_date"), field="prediction target_date")
+            for row in visible_predictions
+            if row.get("backtest_actual_direction") is None
+        }
+        actual_rows = (
+            _read_live_actuals(
+                connection,
+                registry_rows,
+                target_date_range=target_date_range,
+                target_dates=missing_actual_target_dates,
+            )
+            if missing_actual_target_dates and target_date_range is not None
+            else []
+        )
+    db_read_seconds = time.perf_counter() - db_read_started_at
+    request_context = current_http_request_context()
+    if request_context is not None:
+        request_context.failure_stage = "dashboard_canonical"
+        request_context.require_remaining("dashboard_canonical")
+
+    canonical_started_at = time.perf_counter()
+    selector = live_actual_selector(scheme["task_type"])
+    actual_facts, actual_diagnostics = _collapse_actual_rows(
+        actual_rows,
+        active_actual_scopes={
+            (scheme["target_tenor"], *selector),
+        },
+    )
+    rows: list[list[Any]] = []
+    for prediction in visible_predictions:
+        target_date = _iso_date(
+            prediction.get("target_date"),
+            field="prediction target_date",
+        )
+        source = dashboard_result_source(target_date)
+        if detail_source != "all" and source != detail_source:
+            raise DashboardDataError(
+                "detail prediction escaped requested source partition"
+            )
+        published_actual = prediction.get("backtest_actual_direction")
+        actual_direction = (
+            _direction_value(
+                published_actual,
+                field="backtest_actual_direction",
+            )
+            if published_actual is not None
+            else actual_facts.get(selector, {}).get(
+                (
+                    scheme["target_tenor"],
+                    target_date,
+                    selector[1],
+                )
+            )
+        )
+        detail = dict(prediction)
+        detail["actual_direction"] = actual_direction
+        rows.append(compact_detail_row(detail, source=source))
+
+    rows.sort(key=_compact_row_sort_key)
+    payload = {
+        "schema_version": DASHBOARD_SCHEMA_VERSION,
+        "representation": "detail",
+        "snapshot_id": uuid4().hex,
+        "generated_at": captured.isoformat(timespec="seconds"),
+        "display_until": display_until,
+        "live_target_start_date": FACTOR_LAB_LIVE_TARGET_START_DATE.isoformat(),
+        "scheme_id": scheme["scheme_id"],
+        "month": detail_month,
+        "source": detail_source,
+        "row_fields": list(DETAIL_ROW_FIELDS),
+        "rows": rows,
+    }
+    validate_dashboard_payload(payload)
+    _record_build_diagnostics(
+        payload["snapshot_id"],
+        {
+            "snapshot_id": payload["snapshot_id"],
+            "representation": "detail",
+            "db_read_seconds": db_read_seconds,
+            "canonical_build_seconds": (
+                time.perf_counter() - canonical_started_at
+            ),
+            "build_seconds": time.perf_counter() - build_started_at,
+            "scheme_count": 1,
+            "detail_row_count": len(rows),
             **actual_diagnostics,
         },
     )
@@ -602,52 +660,43 @@ def _monthly_rows(
     live_details: list[Mapping[str, Any]],
     task_type: str,
 ) -> list[list[Any]]:
-    grouped: dict[tuple[str, str], list[Mapping[str, Any]]] = defaultdict(list)
+    grouped: dict[
+        tuple[str, str], MonthlySummaryAccumulator
+    ] = {}
     for source, rows in (
         ("backtest", backtest_details),
         ("live", live_details),
     ):
         for row in rows:
             # 保留纯待验证月份的明细入口，统计仍只使用已验证记录。
-            bucket = grouped[(_display_month(row, task_type), source)]
+            bucket = grouped.setdefault(
+                (_display_month(row, task_type), source),
+                MonthlySummaryAccumulator(),
+            )
             if row.get("actual_direction") is None:
                 continue
-            bucket.append(row)
+            bucket.observe(
+                predicted_direction=row.get("predicted_direction"),
+                actual_direction=row.get("actual_direction"),
+            )
+
+    return _compact_monthly_accumulators(grouped)
+
+
+def _compact_monthly_accumulators(
+    grouped: Mapping[
+        tuple[str, str], MonthlySummaryAccumulator
+    ],
+) -> list[list[Any]]:
+    """稳定排序并输出 Summary 月份计数。"""
 
     result: list[list[Any]] = []
     source_rank = {"backtest": 0, "live": 1}
-    for (month, source), rows in sorted(
+    for (month, source), accumulator in sorted(
         grouped.items(),
         key=lambda item: (item[0][0], source_rank[item[0][1]]),
     ):
-        predicted = [
-            _direction_value(row.get("predicted_direction"), field="predicted_direction")
-            for row in rows
-        ]
-        actual = [
-            _direction_value(row.get("actual_direction"), field="actual_direction")
-            for row in rows
-        ]
-        metric_indexes = [
-            index for index, direction in enumerate(predicted) if direction in {-1, 1}
-        ]
-        result.append(
-            [
-                month,
-                source,
-                len(rows),
-                len(metric_indexes),
-                sum(predicted[index] == actual[index] for index in metric_indexes),
-                predicted.count(1),
-                predicted.count(-1),
-                predicted.count(0),
-                actual.count(1),
-                actual.count(-1),
-                actual.count(0),
-                sum(predicted[index] == actual[index] == 1 for index in metric_indexes),
-                sum(predicted[index] == actual[index] == -1 for index in metric_indexes),
-            ]
-        )
+        result.append(accumulator.compact(month=month, source=source))
     return result
 
 
@@ -669,13 +718,10 @@ def _detail_target_date_range(
 ) -> tuple[str, str]:
     """把展示月份收敛为底层 target_date 半开区间。"""
     if display_month is None:
-        raise ValueError("dashboard detail month is required")
-    try:
-        display_start = date.fromisoformat(f"{display_month}-01")
-    except ValueError as exc:
-        raise ValueError("dashboard detail month is invalid") from exc
-    if display_start.strftime("%Y-%m") != display_month:
-        raise ValueError("dashboard detail month is invalid")
+        raise DashboardQueryError("dashboard detail month is required")
+    display_start = date.fromisoformat(
+        f"{parse_dashboard_month(display_month)}-01"
+    )
 
     target_start = (
         _shift_month(display_start, -1)
@@ -683,6 +729,27 @@ def _detail_target_date_range(
         else display_start
     )
     return target_start.isoformat(), _shift_month(target_start, 1).isoformat()
+
+
+def _detail_source_target_date_range(
+    display_range: tuple[str, str],
+    *,
+    source: str,
+) -> tuple[str, str] | None:
+    """将产品 source 分区与展示月 target_date 区间求交。"""
+    if source == "all":
+        return display_range
+    start = date.fromisoformat(display_range[0])
+    before = date.fromisoformat(display_range[1])
+    if source == "backtest":
+        before = min(before, FACTOR_LAB_LIVE_TARGET_START_DATE)
+    elif source == "live":
+        start = max(start, FACTOR_LAB_LIVE_TARGET_START_DATE)
+    else:
+        raise DashboardQueryError("dashboard detail source is invalid")
+    if start >= before:
+        return None
+    return start.isoformat(), before.isoformat()
 
 
 def _shift_month(value: date, offset: int) -> date:
@@ -721,29 +788,10 @@ def _read_active_registry(
     *,
     registry_scheme_id: str | None = None,
 ) -> list[Mapping[str, Any]]:
-    scheme_filter = (
-        " AND scheme_id = :registry_scheme_id"
-        if registry_scheme_id is not None
-        else ""
-    )
-    statement = text(
-        f"""
-        SELECT scheme_id, base_scheme_id, runtime_type, name, owner, description,
-               horizon, task_type, frequency, target_tenor, status, deployed_at
-        FROM t_scheme_registry
-        WHERE status = :active_status{scheme_filter}
-        ORDER BY target_tenor, task_type, scheme_id
-        LIMIT :dashboard_source_limit
-        """
-    )
-    params = {"active_status": "active"}
-    if registry_scheme_id is not None:
-        params["registry_scheme_id"] = registry_scheme_id
-    return _read_bounded_source_rows(
+    """兼容 facade：读取 active Registry。"""
+    return read_active_registry(
         connection,
-        statement,
-        params,
-        dataset="active_registry",
+        registry_scheme_id=registry_scheme_id,
         cap=MAX_REGISTRY_SOURCE_ROWS,
     )
 
@@ -752,55 +800,18 @@ def _read_backtest_runs(
     connection: Connection,
     registry_rows: list[Mapping[str, Any]],
 ) -> list[Mapping[str, Any]]:
-    base_scheme_ids = sorted(
-        {str(row["base_scheme_id"]) for row in registry_rows}
-    )
-    if not base_scheme_ids:
-        return []
-    data_sources = sorted(set(BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE.values()))
-    statement = text(
-        """
-        SELECT id, benchmark_id, scheme_id, data_source, start_date, end_date,
-               status, created_at, updated_at
-        FROM t_backtest_runs
-        WHERE status = :success_status
-          AND scheme_id IN :base_scheme_ids
-          AND data_source IN :data_sources
-        LIMIT :dashboard_source_limit
-        """
-    ).bindparams(
-        bindparam("base_scheme_ids", expanding=True),
-        bindparam("data_sources", expanding=True),
-    )
-    return _read_bounded_source_rows(
+    """兼容 facade：读取数据库侧已选择的回测。"""
+    return read_selected_backtest_runs(
         connection,
-        statement,
-        {
-            "success_status": "success",
-            "base_scheme_ids": base_scheme_ids,
-            "data_sources": data_sources,
-        },
-        dataset="backtest_run_candidates",
-        cap=MAX_BACKTEST_RUN_SOURCE_ROWS,
+        registry_rows,
+        cap=MAX_REGISTRY_SOURCE_ROWS,
     )
 
 
 def _read_active_targets(connection: Connection) -> list[Mapping[str, Any]]:
-    statement = text(
-        """
-        SELECT target_code, display_name, asset_class, target_type,
-               sort_order, status, extra
-        FROM t_target_registry
-        WHERE status = :active_status
-        ORDER BY sort_order, target_code
-        LIMIT :dashboard_source_limit
-        """
-    )
-    return _read_bounded_source_rows(
+    """兼容 facade：读取 active 展示目标。"""
+    return read_active_targets(
         connection,
-        statement,
-        {"active_status": "active"},
-        dataset="active_targets",
         cap=MAX_TARGET_SOURCE_ROWS,
     )
 
@@ -811,59 +822,27 @@ def _read_product_predictions(
     *,
     target_date_range: tuple[str, str] | None = None,
 ) -> list[Mapping[str, Any]]:
-    scopes = sorted(
-        {
-            (
-                str(row["base_scheme_id"]),
-                str(row["target_tenor"]),
-                int(row["horizon"]),
-            )
-            for row in registry_rows
-        }
-    )
-    params: dict[str, Any] = {}
-    scope_placeholders: list[str] = []
-    for index, (base_scheme_id, target_tenor, horizon) in enumerate(scopes):
-        scope_placeholders.append(
-            f"(:base_scheme_id_{index}, :target_tenor_{index}, :horizon_{index})"
-        )
-        params[f"base_scheme_id_{index}"] = base_scheme_id
-        params[f"target_tenor_{index}"] = target_tenor
-        params[f"horizon_{index}"] = horizon
-    where_clause = (
-        "(scheme_id, target_tenor, horizon) IN ("
-        + ", ".join(scope_placeholders)
-        + ")"
-        if scope_placeholders
-        else "1 = 0"
-    )
-    date_filter = (
-        " AND target_date >= :target_date_from"
-        " AND target_date < :target_date_before"
-        if target_date_range is not None
-        else ""
-    )
-    if target_date_range is not None:
-        params["target_date_from"], params["target_date_before"] = (
-            target_date_range
-        )
-    statement = text(
-        f"""
-        SELECT id, scheme_id, target_tenor, horizon, predict_date,
-               feature_date, target_date, predicted_direction,
-               backtest_actual_direction
-        FROM t_scheme_predictions
-        WHERE {where_clause}{date_filter}
-        ORDER BY target_date, predict_date, id
-        LIMIT :dashboard_source_limit
-        """
-    )
-    return _read_bounded_source_rows(
+    """兼容 facade：读取 Detail 的有界产品事实。"""
+    return read_product_predictions(
         connection,
-        statement,
-        params,
-        dataset="product_predictions",
+        registry_rows,
+        target_date_range=target_date_range,
         cap=MAX_PRODUCT_PREDICTION_SOURCE_ROWS,
+    )
+
+
+def _iter_summary_product_predictions(
+    connection: Connection,
+    registry_rows: list[Mapping[str, Any]],
+    *,
+    stats: SummaryPredictionReadStats,
+) -> Iterator[Mapping[str, Any]]:
+    """兼容 facade：流式读取 Summary 的完整预测历史。"""
+    yield from iter_summary_product_predictions(
+        connection,
+        registry_rows,
+        stats=stats,
+        fetch_rows=SUMMARY_PREDICTION_FETCH_ROWS,
     )
 
 
@@ -872,56 +851,14 @@ def _read_live_actuals(
     registry_rows: list[Mapping[str, Any]],
     *,
     target_date_range: tuple[str, str] | None = None,
+    target_dates: set[str] | None = None,
 ) -> list[Mapping[str, Any]]:
-    active_scopes = sorted(
-        {
-            (
-                str(row["target_tenor"]),
-                *live_actual_selector(row.get("task_type")),
-            )
-            for row in registry_rows
-        }
-    )
-    if not active_scopes:
-        return []
-    scopes_by_kind: dict[str, list[tuple[str, str]]] = defaultdict(list)
-    for target_tenor, actual_kind, target_rule in active_scopes:
-        scopes_by_kind[actual_kind].append((target_tenor, target_rule))
-
-    fragments: list[str] = []
-    expanding_params = []
-    params: dict[str, Any] = {
-        "history_start_date": FACTOR_LAB_HISTORY_START_DATE,
-    }
-    for actual_kind in _ACTUAL_SOURCE_KIND_ORDER:
-        scopes = scopes_by_kind.get(actual_kind)
-        if not scopes:
-            continue
-        fragment = _ACTUAL_SOURCE_FRAGMENTS[actual_kind]
-        if target_date_range is not None:
-            fragment += _ACTUAL_SOURCE_DATE_FILTERS[actual_kind]
-        fragments.append(fragment)
-        param_name = _ACTUAL_SOURCE_SCOPE_PARAMS[actual_kind]
-        expanding_params.append(bindparam(param_name, expanding=True))
-        params[param_name] = (
-            sorted({target_tenor for target_tenor, _rule in scopes})
-            if actual_kind in {"daily_1d", "daily_5d"}
-            else scopes
-        )
-
-    statement = text(
-        "\nUNION ALL\n".join(fragments)
-        + "\nLIMIT :dashboard_source_limit"
-    ).bindparams(*expanding_params)
-    if target_date_range is not None:
-        params["target_date_from"], params["target_date_before"] = (
-            target_date_range
-        )
-    return _read_bounded_source_rows(
+    """兼容 facade：按 active selector 读取 Actual。"""
+    return read_live_actuals(
         connection,
-        statement,
-        params,
-        dataset="live_actuals",
+        registry_rows,
+        target_date_range=target_date_range,
+        target_dates=target_dates,
         cap=MAX_ACTUAL_SOURCE_ROWS,
     )
 
@@ -934,31 +871,14 @@ def _read_bounded_source_rows(
     dataset: str,
     cap: int,
 ) -> list[Mapping[str, Any]]:
-    execution_params = dict(params)
-    execution_params["dashboard_source_limit"] = cap + 1
-    request_context = current_http_request_context()
-    if request_context is not None:
-        request_context.failure_stage = "dashboard_query"
-        request_context.require_remaining("dashboard_query")
-        db_started_at = request_context.clock()
-    else:
-        db_started_at = None
-    try:
-        rows = list(
-            connection.execute(statement, execution_params).mappings().all()
-        )
-    finally:
-        if request_context is not None and db_started_at is not None:
-            request_context.db_seconds += max(
-                0.0,
-                request_context.clock() - db_started_at,
-            )
-    if len(rows) > cap:
-        raise DashboardDataError(
-            "dashboard source row limit exceeded: "
-            f"dataset={dataset} limit={cap}"
-        )
-    return rows
+    """兼容 facade：有界读取并保持超限 fail-closed。"""
+    return read_bounded_source_rows(
+        connection,
+        statement,
+        params,
+        dataset=dataset,
+        cap=cap,
+    )
 
 
 def _collapse_actual_rows(

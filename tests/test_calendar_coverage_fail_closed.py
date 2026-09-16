@@ -226,6 +226,7 @@ class ActualsRunnerCoverageTests(unittest.TestCase):
 
     def _patches(self):
         from unittest.mock import patch as _patch
+        from scheduler.repository import ActualWriteStats
 
         actuals_engine = Mock()
         return (
@@ -237,16 +238,21 @@ class ActualsRunnerCoverageTests(unittest.TestCase):
                 "scheduler.actuals_runner.get_calendar",
                 return_value=self.calendar,
             ),
-            _patch("scheduler.actuals_runner.update_actuals", return_value=0),
             _patch(
-                "scheduler.actuals_runner.update_weekly_actuals", return_value=0
+                "scheduler.actuals_runner.update_actuals_detailed",
+                return_value=ActualWriteStats(),
             ),
             _patch(
-                "scheduler.actuals_runner.update_monthly_actuals", return_value=0
+                "scheduler.actuals_runner.update_weekly_actuals_detailed",
+                return_value=ActualWriteStats(),
             ),
             _patch(
-                "scheduler.actuals_runner.update_period_average_actuals",
-                return_value=0,
+                "scheduler.actuals_runner.update_monthly_actuals_detailed",
+                return_value=ActualWriteStats(),
+            ),
+            _patch(
+                "scheduler.actuals_runner.update_period_average_actuals_detailed",
+                return_value=ActualWriteStats(),
             ),
         )
 

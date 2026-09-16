@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import stat
 from datetime import date
 from dataclasses import fields, is_dataclass
 from getpass import getuser
@@ -156,13 +157,25 @@ def _build_parser() -> argparse.ArgumentParser:
 
     gate_parser = subparsers.add_parser("gate")
     gate_subparsers = gate_parser.add_subparsers(dest="gate_name", required=True)
-    for gate_name in ("backtest", "dashboard"):
+    for gate_name in ("backtest", "dashboard", "data-consistency"):
         item = gate_subparsers.add_parser(gate_name)
-        item.add_argument("--scheme-id", required=True)
+        if gate_name in {"dashboard", "data-consistency"}:
+            item.add_argument(
+                "--scheme-id",
+                required=True,
+                action="append",
+                help="base scheme id; repeat for one shared HTTP reconciliation",
+            )
+        else:
+            item.add_argument("--scheme-id", required=True)
         item.add_argument(
             "--predict-date",
             required=gate_name == "backtest",
-            default="dashboard" if gate_name == "dashboard" else None,
+            default=(
+                gate_name
+                if gate_name in {"dashboard", "data-consistency"}
+                else None
+            ),
         )
         item.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
         item.add_argument("--timeout-sec", type=int, default=600)
@@ -175,10 +188,21 @@ def _build_parser() -> argparse.ArgumentParser:
                     "BFL_OPERATOR_ID or OS user"
                 ),
             )
-        if gate_name == "dashboard":
+        if gate_name in {"dashboard", "data-consistency"}:
             item.add_argument(
                 "--api-base-url",
                 default="http://127.0.0.1:8100",
+            )
+            session_input = item.add_mutually_exclusive_group(required=True)
+            session_input.add_argument(
+                "--session-file",
+                type=Path,
+                help="private file containing only the opaque session token",
+            )
+            session_input.add_argument(
+                "--session-fd",
+                type=int,
+                help="open file descriptor containing only the opaque session token",
             )
         if gate_name == "backtest":
             item.add_argument("--persist", action="store_true")
@@ -237,7 +261,22 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _run_gate(args: argparse.Namespace) -> GateResult:
     project_root = args.project_root.resolve()
-    config = _load_config_for_dispatch(project_root / "schemes" / args.scheme_id / "config.yaml")
+    if args.gate_name in {"dashboard", "data-consistency"}:
+        scheme_ids = tuple(args.scheme_id)
+        if len(set(scheme_ids)) != len(scheme_ids):
+            raise SystemExit("HTTP reconciliation scheme ids must not be repeated")
+        scheme_id = scheme_ids[0]
+        session_token = _read_dashboard_session(
+            session_file=args.session_file,
+            session_fd=args.session_fd,
+        )
+    else:
+        scheme_ids = ()
+        scheme_id = args.scheme_id
+        session_token = None
+    config = _load_config_for_dispatch(
+        project_root / "schemes" / scheme_id / "config.yaml"
+    )
     action = _gate_action(args)
     backtest_start_date = getattr(
         args,
@@ -245,7 +284,7 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
         DEFAULT_BACKTEST_START_DATE,
     )
     ctx = GateContext(
-        scheme_id=args.scheme_id,
+        scheme_id=scheme_id,
         predict_date=args.predict_date,
         project_root=project_root,
         config=config,
@@ -253,7 +292,7 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
         timeout_sec=args.timeout_sec,
         operation=_direct_operation(
             action=action,
-            scheme_id=args.scheme_id,
+            scheme_id=scheme_id,
             config=config,
             predict_date=args.predict_date,
             operator=getattr(args, "operator", None),
@@ -266,9 +305,98 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
             "api_base_url",
             "http://127.0.0.1:8100",
         ),
+        dashboard_scheme_ids=scheme_ids,
+        dashboard_session_token=session_token,
     )
     gate = gate_for_name(args.gate_name, ctx=ctx)
     return gate.run(ctx)
+
+
+def _read_dashboard_session(
+    *,
+    session_file: Path | None,
+    session_fd: int | None,
+) -> str:
+    """从私有文件或调用方传入的文件描述符读取 Dashboard 会话。"""
+    if (session_file is None) == (session_fd is None):
+        raise SystemExit(
+            "dashboard gate requires exactly one of --session-file or --session-fd"
+        )
+    if session_file is not None:
+        if not session_file.is_absolute():
+            raise SystemExit("dashboard session file must be an absolute path")
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
+        nofollow = getattr(os, "O_NOFOLLOW", None)
+        if nofollow is None:
+            raise SystemExit("dashboard session file requires O_NOFOLLOW support")
+        try:
+            descriptor = os.open(session_file, flags | nofollow)
+        except OSError as exc:
+            raise SystemExit("dashboard session file is unavailable") from exc
+    else:
+        if session_fd is None or session_fd < 0:
+            raise SystemExit("dashboard session fd must be non-negative")
+        try:
+            descriptor = os.dup(session_fd)
+        except OSError as exc:
+            raise SystemExit("dashboard session fd is unavailable") from exc
+        try:
+            os.set_blocking(descriptor, False)
+        except OSError as exc:
+            os.close(descriptor)
+            raise SystemExit("dashboard session fd is unavailable") from exc
+    try:
+        details = os.fstat(descriptor)
+        if session_file is not None:
+            allowed_type = stat.S_ISREG(details.st_mode)
+            type_error = "dashboard session file must be an owned regular file"
+        else:
+            allowed_type = stat.S_ISREG(details.st_mode) or stat.S_ISFIFO(
+                details.st_mode
+            )
+            type_error = (
+                "dashboard session fd must reference an owned regular file or pipe"
+            )
+        if not allowed_type or details.st_uid != os.geteuid():
+            raise SystemExit(
+                type_error
+            )
+        if stat.S_ISREG(details.st_mode) and stat.S_IMODE(details.st_mode) & 0o077:
+            raise SystemExit("dashboard session file must not be group/world accessible")
+        chunks: list[bytes] = []
+        remaining = 1025
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, 1025))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+    except BlockingIOError as exc:
+        raise SystemExit(
+            "dashboard session fd is not ready or is incomplete"
+        ) from exc
+    except OSError as exc:
+        raise SystemExit("dashboard session input is unreadable") from exc
+    finally:
+        os.close(descriptor)
+    if len(raw) > 1024:
+        raise SystemExit("dashboard session input is too large")
+    try:
+        value = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SystemExit("dashboard session input must be valid UTF-8") from exc
+    if value.endswith("\n"):
+        value = value[:-1]
+    if not value or "\n" in value or "\r" in value:
+        raise SystemExit("dashboard session input must contain exactly one token")
+    if len(value) > 512 or re.fullmatch(r"[A-Za-z0-9_-]+", value) is None:
+        raise SystemExit("dashboard session token has an invalid format")
+    return value
 
 
 def _load_config_for_dispatch(config_path: Path):

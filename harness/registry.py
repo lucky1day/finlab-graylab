@@ -7,9 +7,13 @@ from scheduler.discovery import load_scheme_config
 
 
 def gate_for_name(name: str, *, ctx: GateContext | None = None) -> Gate:
-    """只分派 Blackbox 回测与公共只读 Dashboard 验收。"""
+    """分派 Blackbox 回测与公共只读 Dashboard 验收。"""
     if name == "dashboard":
         return DashboardGate()
+    if name == "data-consistency":
+        from harness.gates.data_consistency_gate import DataConsistencyGate
+
+        return DataConsistencyGate()
     if ctx is None:
         raise ValueError("Blackbox gate requires a scheme context")
     config = ctx.config or load_scheme_config(

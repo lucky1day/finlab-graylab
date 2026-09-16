@@ -121,6 +121,75 @@ def test_build_rejects_dirty_repository(tmp_path: Path) -> None:
         build_source_release(repo, tmp_path / "out")
 
 
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        ".env",
+        ".bfl-release.env",
+        "logs/runtime.log",
+        "outputs/result.json",
+        "state/cache.sqlite",
+        "cache/runtime.json",
+        "data/data_bridge/current/ready.json",
+        "exports/database.sql",
+    ),
+)
+def test_clean_repository_with_forbidden_release_file_is_rejected(
+    tmp_path: Path,
+    relative_path: str,
+) -> None:
+    repo = _make_source_repo(tmp_path)
+    path = repo / relative_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("committed but forbidden\n", encoding="utf-8")
+    _run_git(repo, "add", "-f", relative_path)
+    _run_git(repo, "commit", "-q", "-m", "add forbidden release file")
+
+    assert not _run_git(repo, "status", "--porcelain=v1", "--untracked-files=all")
+    with pytest.raises(
+        ReleaseBuildError,
+        match="forbidden|install-time|runtime state|database export",
+    ):
+        build_source_release(repo, tmp_path / "out")
+
+
+def test_clean_repository_with_private_key_material_is_rejected(
+    tmp_path: Path,
+) -> None:
+    repo = _make_source_repo(tmp_path)
+    key = repo / "config" / "operator.txt"
+    key.parent.mkdir(parents=True)
+    key.write_text(
+        "-----BEGIN " + "PRIVATE KEY-----\nnot-a-real-key\n"
+        "-----END " + "PRIVATE KEY-----\n",
+        encoding="utf-8",
+    )
+    _run_git(repo, "add", ".")
+    _run_git(repo, "commit", "-q", "-m", "add leaked credential")
+
+    with pytest.raises(ReleaseBuildError, match="private key"):
+        build_source_release(repo, tmp_path / "out")
+
+
+def test_release_allows_documented_env_example_and_source_evidence(
+    tmp_path: Path,
+) -> None:
+    repo = _make_source_repo(tmp_path)
+    (repo / ".env.example").write_text(
+        "BOND_DB_PASSWORD=replace_me\n",
+        encoding="utf-8",
+    )
+    evidence = repo / "source_evidence" / "historical" / "large.csv"
+    evidence.parent.mkdir(parents=True)
+    evidence.write_bytes(b"header\n" + b"0" * (2 * 1024 * 1024 + 1))
+    _run_git(repo, "add", ".")
+    _run_git(repo, "commit", "-q", "-m", "add approved release evidence")
+
+    built = build_source_release(repo, tmp_path / "out")
+
+    assert built.archive_path.is_file()
+
+
 def test_install_rejects_archive_checksum_mismatch(tmp_path: Path) -> None:
     repo = _make_source_repo(tmp_path)
     built = build_source_release(repo, tmp_path / "out")

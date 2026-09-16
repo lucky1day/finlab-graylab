@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
+import os
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
+from urllib.error import HTTPError
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -18,16 +21,17 @@ BASE_SCHEME_ID = "demo_daily"
 def _write_config(
     project_root: Path,
     *,
+    scheme_id: str = BASE_SCHEME_ID,
     status: str = "active",
     version_status: str = "active",
     tenors: tuple[str, ...] = ("5Y", "10Y"),
 ) -> None:
-    config_path = project_root / "schemes" / BASE_SCHEME_ID / "config.yaml"
+    config_path = project_root / "schemes" / scheme_id / "config.yaml"
     config_path.parent.mkdir(parents=True)
     config_path.write_text(
         "\n".join(
             [
-                f"scheme_id: {BASE_SCHEME_ID}",
+                f"scheme_id: {scheme_id}",
                 "runtime_type: native_adapter",
                 'name: "Demo Daily"',
                 'description: "Dashboard gate fixture"',
@@ -126,6 +130,15 @@ def _scheme(target_tenor: str, *, with_live: bool) -> dict[str, Any]:
             "data_source_label": "Current DB aligned",
             "latest_run_date": "2026-07-31",
         },
+    }
+
+
+def _other_scheme(target_tenor: str = "5Y") -> dict[str, Any]:
+    return {
+        **_scheme(target_tenor, with_live=False),
+        "scheme_id": f"other_daily__h1__{target_tenor}",
+        "base_scheme_id": "other_daily",
+        "name": "Other Daily",
     }
 
 
@@ -344,3 +357,463 @@ def test_dashboard_gate_requires_readable_active_registry(
         fetcher=lambda _url, **_kwargs: (_payload(), 200)
     ).run(ctx)
     assert not result.passed
+
+
+def test_fetch_json_requires_session_and_does_not_expose_it(monkeypatch) -> None:
+    from harness.gates import dashboard_gate
+
+    captured: dict[str, Any] = {}
+
+    class Response:
+        status = 200
+        headers = {"X-Request-ID": "request-1"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _limit: int) -> bytes:
+            return json.dumps(_payload()).encode("utf-8")
+
+    class Opener:
+        def open(self, request, *, timeout):
+            captured["request"] = request
+            captured["timeout"] = timeout
+            return Response()
+
+    monkeypatch.setattr(dashboard_gate, "build_opener", lambda *_args: Opener())
+
+    with pytest.raises(ValueError, match="session token"):
+        dashboard_gate.fetch_json("https://example.test/api")
+
+    payload, status, metadata = dashboard_gate.fetch_json(
+        "https://example.test/api",
+        session_token="opaque_session_token",
+    )
+
+    assert payload["snapshot_id"] == "dashboard-snapshot-1"
+    assert status == 200
+    assert metadata["request_id"] == "request-1"
+    assert metadata["fetched_at"]
+    assert captured["request"].get_header("Cookie") == (
+        "__Host-bfl-session=opaque_session_token"
+    )
+    assert "opaque_session_token" not in repr(metadata)
+
+
+def test_fetch_json_reports_expired_session_without_leaking_cookie(
+    monkeypatch,
+) -> None:
+    from harness.gates import dashboard_gate
+
+    class Opener:
+        def open(self, request, *, timeout):
+            raise HTTPError(
+                request.full_url,
+                401,
+                "Unauthorized",
+                {"X-Request-ID": "expired-request"},
+                BytesIO(b'{"echo":"expired_session_token"}'),
+            )
+
+    monkeypatch.setattr(dashboard_gate, "build_opener", lambda *_args: Opener())
+
+    with pytest.raises(dashboard_gate.ApiProbeError) as raised:
+        dashboard_gate.fetch_json(
+            "https://example.test/api",
+            session_token="expired_session_token",
+        )
+
+    assert raised.value.status_code == 401
+    assert raised.value.request_id == "expired-request"
+    assert "expired_session_token" not in str(raised.value)
+    assert raised.value.error_summary == "http_status_401"
+
+
+def test_dashboard_gate_reports_expired_session_per_scheme(
+    tmp_path: Path,
+) -> None:
+    from harness.gates.dashboard_gate import ApiProbeError, DashboardGate
+
+    _write_config(tmp_path, tenors=("5Y",))
+
+    def expired_fetcher(_url: str, **_kwargs):
+        raise ApiProbeError(
+            "HTTP 401",
+            status_code=401,
+            error_summary="authentication_required",
+            request_id="expired-request",
+            fetched_at="2026-09-16T01:02:03+00:00",
+        )
+
+    result = DashboardGate(fetcher=expired_fetcher).run(_context(tmp_path))
+    evidence = {item.key: item.value for item in result.evidence}
+
+    assert not result.passed
+    assert evidence["http_status"] == 401
+    assert evidence["request_id"] == "expired-request"
+    assert evidence["scheme_results"][0]["status"] == "failed"
+    assert "authentication_required" in evidence["scheme_results"][0]["errors"][0]
+
+
+def test_authenticated_redirect_rejects_cross_origin() -> None:
+    from harness.gates.dashboard_gate import _SameOriginRedirectHandler
+
+    handler = _SameOriginRedirectHandler("https://example.test")
+    request = SimpleNamespace(full_url="https://example.test/dashboard")
+
+    with pytest.raises(Exception, match="cross-origin redirect"):
+        handler.redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {},
+            "https://other.test/dashboard",
+        )
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (b"x" * 33, "exceeds"),
+        (b"not-json", "not valid UTF-8 JSON"),
+    ],
+)
+def test_fetch_json_rejects_oversized_or_invalid_json(
+    monkeypatch,
+    raw: bytes,
+    expected: str,
+) -> None:
+    from harness.gates import dashboard_gate
+
+    class Response:
+        status = 200
+        headers: dict[str, str] = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, limit: int) -> bytes:
+            return raw[:limit]
+
+    class Opener:
+        def open(self, _request, *, timeout):
+            return Response()
+
+    monkeypatch.setattr(dashboard_gate, "build_opener", lambda *_args: Opener())
+
+    with pytest.raises(dashboard_gate.ApiProbeError, match=expected):
+        dashboard_gate.fetch_json(
+            "https://example.test/api",
+            session_token="opaque_session_token",
+            max_response_bytes=32,
+        )
+
+
+def test_dashboard_gate_batch_fetches_once_and_reports_each_scheme(
+    tmp_path: Path,
+) -> None:
+    from harness.gates.dashboard_gate import DashboardGate
+
+    _write_config(tmp_path, tenors=("5Y",))
+    _write_config(
+        tmp_path,
+        scheme_id="other_daily",
+        tenors=("5Y",),
+    )
+    payload = _payload(tenors=("5Y",))
+    payload["schemes"].append(_other_scheme())
+    calls: list[str] = []
+
+    def fetcher(url: str, **_kwargs):
+        calls.append(url)
+        return payload, 200, {
+            "request_id": "shared-request",
+            "fetched_at": "2026-09-16T01:02:03+00:00",
+        }
+
+    ctx = replace(
+        _context(tmp_path),
+        dashboard_scheme_ids=(BASE_SCHEME_ID, "other_daily"),
+    )
+    with ctx.engine_factory().begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO t_scheme_registry VALUES "
+                "(:scheme_id, :name, :description, :owner, :status)"
+            ),
+            {
+                "scheme_id": "other_daily__h1__5Y",
+                "name": "Other Daily",
+                "description": "Dashboard gate fixture",
+                "owner": "ALGO-A",
+                "status": "active",
+            },
+        )
+
+    result = DashboardGate(fetcher=fetcher).run(ctx)
+
+    assert len(calls) == 1
+    evidence = {item.key: item.value for item in result.evidence}
+    assert [item["base_scheme_id"] for item in evidence["scheme_results"]] == [
+        BASE_SCHEME_ID,
+        "other_daily",
+    ]
+    assert {item["snapshot_id"] for item in evidence["scheme_results"]} == {
+        "dashboard-snapshot-1"
+    }
+    assert {item["fetched_at"] for item in evidence["scheme_results"]} == {
+        "2026-09-16T01:02:03+00:00"
+    }
+    assert {item["request_id"] for item in evidence["scheme_results"]} == {
+        "shared-request"
+    }
+    assert result.passed
+
+
+def test_dashboard_gate_batch_preserves_one_scheme_failure(
+    tmp_path: Path,
+) -> None:
+    from harness.gates.dashboard_gate import DashboardGate
+
+    _write_config(tmp_path, tenors=("5Y",))
+    _write_config(
+        tmp_path,
+        scheme_id="other_daily",
+        tenors=("5Y",),
+    )
+    payload = _payload(tenors=("5Y",))
+    payload["schemes"].append({**_other_scheme(), "owner": "WRONG"})
+    ctx = replace(
+        _context(tmp_path),
+        dashboard_scheme_ids=(BASE_SCHEME_ID, "other_daily"),
+    )
+    with ctx.engine_factory().begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO t_scheme_registry VALUES "
+                "(:scheme_id, :name, :description, :owner, :status)"
+            ),
+            {
+                "scheme_id": "other_daily__h1__5Y",
+                "name": "Other Daily",
+                "description": "Dashboard gate fixture",
+                "owner": "ALGO-A",
+                "status": "active",
+            },
+        )
+
+    result = DashboardGate(
+        fetcher=lambda _url, **_kwargs: (
+            payload,
+            200,
+            {"request_id": "request-1", "fetched_at": "fetched-once"},
+        )
+    ).run(ctx)
+
+    evidence = {item.key: item.value for item in result.evidence}
+    by_scheme = {
+        item["base_scheme_id"]: item for item in evidence["scheme_results"]
+    }
+    assert by_scheme[BASE_SCHEME_ID]["status"] == "passed"
+    assert by_scheme["other_daily"]["status"] == "failed"
+    assert any("owner mismatch" in error for error in by_scheme["other_daily"]["errors"])
+    assert not result.passed
+
+
+def test_dashboard_gate_redacts_session_echoes_from_result(
+    tmp_path: Path,
+) -> None:
+    from harness.gates.dashboard_gate import DashboardGate
+
+    _write_config(tmp_path, tenors=("5Y",))
+    token = "never_write_this_session_token"
+    payload = _payload(tenors=("5Y",))
+    payload["snapshot_id"] = token
+    payload["schemes"][0]["owner"] = f"reflected-{token}"
+    ctx = replace(
+        _context(tmp_path),
+        dashboard_session_token=token,
+    )
+    result = DashboardGate(
+        fetcher=lambda _url, **_kwargs: (
+            payload,
+            200,
+            {
+                "request_id": token,
+                "fetched_at": "2026-09-16T01:02:03+00:00",
+            },
+        )
+    ).run(ctx)
+
+    serialized = repr(result)
+    assert token not in serialized
+    assert "[redacted-session]" in serialized
+
+
+def test_dashboard_gate_redacts_session_echo_from_probe_error(
+    tmp_path: Path,
+) -> None:
+    from harness.gates.dashboard_gate import ApiProbeError, DashboardGate
+
+    _write_config(tmp_path, tenors=("5Y",))
+    token = "never_write_this_session_token"
+    ctx = replace(
+        _context(tmp_path),
+        dashboard_session_token=token,
+    )
+
+    def fail(_url: str, **_kwargs):
+        raise ApiProbeError(
+            "unsafe server response",
+            status_code=500,
+            error_summary=f"reflected-{token}",
+            request_id=token,
+        )
+
+    result = DashboardGate(fetcher=fail).run(ctx)
+
+    serialized = repr(result)
+    assert token not in serialized
+    assert "[redacted-session]" in serialized
+
+
+def test_dashboard_gate_redacts_session_from_unexpected_fetcher_error(
+    tmp_path: Path,
+) -> None:
+    from harness.gates.dashboard_gate import DashboardGate
+
+    _write_config(tmp_path, tenors=("5Y",))
+    token = "never_write_this_session_token"
+    ctx = replace(
+        _context(tmp_path),
+        dashboard_session_token=token,
+    )
+
+    def fail(_url: str, **_kwargs):
+        raise RuntimeError(f"unexpected reflected value: {token}")
+
+    result = DashboardGate(fetcher=fail).run(ctx)
+
+    serialized = repr(result)
+    assert token not in serialized
+    assert "[redacted-session]" in serialized
+
+
+def test_dashboard_cli_requires_secret_input_and_accepts_repeated_schemes() -> None:
+    from harness.cli import _build_parser
+
+    parser = _build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["gate", "dashboard", "--scheme-id", BASE_SCHEME_ID]
+        )
+
+    parsed = parser.parse_args(
+        [
+            "gate",
+            "dashboard",
+            "--scheme-id",
+            BASE_SCHEME_ID,
+            "--scheme-id",
+            "other_daily",
+            "--session-fd",
+            "7",
+        ]
+    )
+    assert parsed.scheme_id == [BASE_SCHEME_ID, "other_daily"]
+    assert parsed.session_fd == 7
+
+
+def test_dashboard_session_can_be_read_from_private_file_or_fd(
+    tmp_path: Path,
+) -> None:
+    from harness.cli import _read_dashboard_session
+
+    session_path = tmp_path / "dashboard-session"
+    session_path.write_text("opaque_session_token\n", encoding="utf-8")
+    session_path.chmod(0o600)
+    assert _read_dashboard_session(
+        session_file=session_path.resolve(),
+        session_fd=None,
+    ) == "opaque_session_token"
+
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, b"fd_session_token\n")
+        os.close(write_fd)
+        write_fd = -1
+        assert _read_dashboard_session(
+            session_file=None,
+            session_fd=read_fd,
+        ) == "fd_session_token"
+    finally:
+        os.close(read_fd)
+        if write_fd >= 0:
+            os.close(write_fd)
+
+
+def test_dashboard_session_fd_does_not_block_while_writer_remains_open() -> None:
+    from harness.cli import _read_dashboard_session
+
+    read_fd, write_fd = os.pipe()
+    try:
+        with pytest.raises(
+            SystemExit,
+            match="dashboard session fd is not ready or is incomplete",
+        ):
+            _read_dashboard_session(
+                session_file=None,
+                session_fd=read_fd,
+            )
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def test_dashboard_session_file_rejects_public_permissions(
+    tmp_path: Path,
+) -> None:
+    from harness.cli import _read_dashboard_session
+
+    session_path = tmp_path / "dashboard-session"
+    session_path.write_text("opaque_session_token\n", encoding="utf-8")
+    session_path.chmod(0o644)
+
+    with pytest.raises(SystemExit, match="group/world"):
+        _read_dashboard_session(
+            session_file=session_path.resolve(),
+            session_fd=None,
+        )
+
+
+def test_dashboard_session_file_rejects_non_regular_path(
+    tmp_path: Path,
+) -> None:
+    from harness.cli import _read_dashboard_session
+
+    session_path = tmp_path / "dashboard-session-pipe"
+    os.mkfifo(session_path, mode=0o600)
+
+    with pytest.raises(SystemExit, match="owned regular file"):
+        _read_dashboard_session(
+            session_file=session_path.resolve(),
+            session_fd=None,
+        )
+
+
+def test_dashboard_session_token_is_hidden_from_context_repr(
+    tmp_path: Path,
+) -> None:
+    ctx = replace(
+        _context(tmp_path),
+        dashboard_session_token="never_write_this_token",
+    )
+
+    assert "never_write_this_token" not in repr(ctx)

@@ -17,6 +17,7 @@
 | `harness.blackbox_v2.gates` | 回测前复验交付安全边界；执行批量 Request、校验 Result 并保存 exact、输入和环境证据 | 必须 persist，只经 `backtests.repository` 写 `t_backtest_*`；不额外运行 predict 冒烟 |
 | `harness.gates.activate_gate` 的严格身份入口与 `harness.blackbox_v2.activation` | 核对成功回测与当前 canonical，调用生命周期事务 | 不用技术验证替代操作授权 |
 | `harness.gates.dashboard_gate` | 对唯一 Dashboard API 做受限 GET，对照本机 Registry 展示字段，验证 V6 Summary、active composite、任务字段和结果分区 | HTTP 与数据库均只读；不证明 exact、调度缺口或自然运行 |
+| `harness.gates.data_consistency_gate` | 在独立数据库快照中校验预测业务键、三日期、run 引用与 Actual 关联，并独立聚合后对账真实 Summary/Detail | 不调用 Dashboard builder 或其聚合 helper；不写运行台账、不推导日历缺口 |
 
 ## 2. 验证与执行边界
 
@@ -29,6 +30,23 @@ Blackbox 回测验证平台调用、输入与标准输出边界；交付算法�
 证据保留实际耗时和采用的预算，不能以预算调整放宽输出、输入或保真要求。
 
 DashboardGate 接受 active 方案尚无 live 记录的合法 Summary；它不读取 run 或日历重算调度状态。
+一次 Dashboard 验收可重复指定多个 base scheme，Gate 只获取一次真实 V6 Summary、一次批量读取这些方案的
+Registry，再按方案分别输出通过或失败。各方案结果引用同一个 `snapshot_id`、HTTP 获取时间和
+`X-Request-ID`，不为每个方案重复请求 Summary，也不向运行服务增加缓存。
+
+DataConsistencyGate 与 DashboardGate 分工不同：前者把
+`scheme_id + target_tenor + horizon + target_date` 作为预测业务键，exact version 不参与去重；校验三日期、
+方向和 `run_id/backtest_run_id` 的互斥及同方案引用后，按 Registry `task_type` 对应的 target rule、tenor、
+target date 关联 Actual。回测发布事实只用 immutable `backtest_actual_direction`，live 事实只关联 Actual 表，
+未成熟目标保留 pending。Gate 再独立形成 month/source 的已验证样本、指标样本、方向分布、正确数和 true
+positive，并逐分区请求真实 Detail 对账；不得调用 Dashboard builder 或聚合 helper 生成标准答案。
+
+一次一致性验收先读取一个 repeatable-read 只读数据库快照，再获取一次真实 Summary 和所需 Detail；HTTP
+对账后重读同一选定范围的摘要围栏。若末次重读失败、首尾摘要不同，或上海展示日跨界，本次返回
+`blocked`，要求在稳定输入窗口重试，不能把可观测到的自然增长误报为事实或展示错误；该围栏不是 CDC，
+不承诺识别首尾内容完全恢复的瞬态变化。CLI 可重复 `--scheme-id` 批量选择 base
+scheme，并复用 Dashboard Gate 的私有 session 文件或文件描述符入口；数据库必须通过显式
+`engine_factory` 绑定 HTTP 服务所在环境，不回退默认库。
 补缺复用既有 planner、executor 和 repository，支持范围只见
 [平台 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#6-灰度区间批量物化)，不属于入库 Gate。
 

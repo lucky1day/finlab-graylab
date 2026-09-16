@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 
 from backend.factor_lab_dashboard import (
     MAX_ACTUAL_SOURCE_ROWS,
     DashboardDataError,
+    DashboardQueryError,
     _monthly_rows,
+    _read_backtest_runs,
     _read_bounded_source_rows,
     _read_live_actuals,
     _read_product_predictions,
     build_factor_lab_dashboard,
     build_factor_lab_dashboard_detail,
+    parse_dashboard_month,
 )
 from backend.db import (
     RequestBudgetExceeded,
@@ -19,7 +22,10 @@ from backend.db import (
     create_http_request_context,
 )
 from backend.factor_lab_dashboard_semantics import (
+    choose_latest_backtest_runs,
+    choose_live_prediction_rows,
     dashboard_result_source,
+    iter_grouped_live_prediction_rows,
     live_actual_selector,
 )
 
@@ -107,6 +113,21 @@ def _engine():
         connection.execute(text("INSERT INTO t_scheme_actuals VALUES ('5Y','2026-01-05',1,1)"))
         connection.execute(text("INSERT INTO t_scheme_actuals VALUES ('5Y','2026-06-04',-1,-1)"))
     return engine
+
+
+@pytest.mark.parametrize("month", ("0001-02", "2026-12", "9999-11"))
+def test_dashboard_month_accepts_representable_adjacent_boundaries(
+    month: str,
+) -> None:
+    assert parse_dashboard_month(month) == month
+
+
+@pytest.mark.parametrize("month", ("0000-01", "0001-01", "9999-12"))
+def test_dashboard_month_rejects_unrepresentable_adjacent_boundaries(
+    month: str,
+) -> None:
+    with pytest.raises(DashboardQueryError):
+        parse_dashboard_month(month)
 
 
 def test_cumulative_request_budget_stops_before_the_next_query() -> None:
@@ -225,6 +246,154 @@ def test_same_id_runtime_upgrade_preserves_backtest_provenance() -> None:
                           "(8,'unpublished-source','demo_daily','source_original',"
                           "'2025-01-01','2026-05-29','success','2026-06-01','2026-06-01')"))
     assert build_factor_lab_dashboard(engine)['schemes'] == after['schemes']
+
+
+def test_backtest_query_returns_only_deterministic_latest_candidate() -> None:
+    engine = _engine()
+    registry_rows = [
+        {
+            "scheme_id": "demo_daily__h1__5Y",
+            "base_scheme_id": "demo_daily",
+            "runtime_type": "blackbox_v2",
+            "status": "active",
+        }
+    ]
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """INSERT INTO t_backtest_runs VALUES
+                (8,'older-other-source','demo_daily','framework_db_aligned',
+                 '2025-01-01','2026-05-30','success',
+                 '2026-06-01 10:00:00','2026-06-01 10:00:00'),
+                (9,'latest-by-id','demo_daily','framework_db_aligned',
+                 '2025-01-01','2026-05-31','success',
+                 '2026-06-02 10:00:00','2026-06-02 10:00:00'),
+                (10,'same-time-lower-id','demo_daily',
+                 'blackbox_v2_current_snapshot_as_of',
+                 '2025-01-01','2026-05-31','success',
+                 '2026-06-02 10:00:00','2026-06-02 10:00:00')"""
+            )
+        )
+        rows = _read_backtest_runs(connection, registry_rows)
+
+    assert len(rows) == 1
+    assert int(rows[0]["id"]) == 10
+    selected = choose_latest_backtest_runs(rows, registry_rows)
+    assert int(selected["demo_daily__h1__5Y"]["id"]) == 10
+
+
+def test_summary_streams_across_fetch_boundaries_without_changing_counts(
+    monkeypatch,
+) -> None:
+    from backend import factor_lab_dashboard as dashboard
+
+    engine = _engine()
+    monkeypatch.setattr(dashboard, "SUMMARY_PREDICTION_FETCH_ROWS", 2)
+    monkeypatch.setattr(dashboard, "MAX_PRODUCT_PREDICTION_SOURCE_ROWS", 1)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """INSERT INTO t_scheme_predictions VALUES
+                (10,'demo_daily','5Y',1,'2026-02-01','2026-01-30',
+                 '2026-02-02',1,1,'{}'),
+                (11,'demo_daily','5Y',1,'2026-02-02','2026-01-31',
+                 '2026-02-02',-1,-1,'{}'),
+                (12,'demo_daily','5Y',1,'2026-03-01','2026-02-27',
+                 '2026-03-02',0,NULL,'{}')"""
+            )
+        )
+
+    rows = build_factor_lab_dashboard(engine)["schemes"][0]["monthly_rows"]
+
+    assert ["2026-02", "backtest", 1, 1, 1, 0, 1, 0, 0, 1, 0, 0, 1] in rows
+    assert ["2026-03", "backtest", *([0] * 11)] in rows
+
+
+def test_streaming_canonical_selection_matches_previous_fixed_oracle() -> None:
+    rows = [
+        {
+            "id": 1,
+            "scheme_id": "daily",
+            "target_tenor": "5Y",
+            "horizon": 1,
+            "predict_date": "2026-01-02",
+            "feature_date": "2026-01-01",
+            "target_date": "2026-01-05",
+        },
+        {
+            "id": 2,
+            "scheme_id": "daily",
+            "target_tenor": "5Y",
+            "horizon": 1,
+            "predict_date": "2026-01-03",
+            "feature_date": "2026-01-02",
+            "target_date": "2026-01-05",
+        },
+        {
+            "id": 3,
+            "scheme_id": "weekly",
+            "target_tenor": "10Y",
+            "horizon": 1,
+            "predict_date": "2026-01-10",
+            "feature_date": "2026-01-08",
+            "target_date": "2026-01-16",
+        },
+        {
+            "id": 4,
+            "scheme_id": "weekly",
+            "target_tenor": "10Y",
+            "horizon": 1,
+            "predict_date": "2026-01-09",
+            "feature_date": "2026-01-08",
+            "target_date": "2026-01-16",
+        },
+    ]
+    task_types = {
+        ("daily", "5Y", 1): "T+1",
+        ("weekly", "10Y", 1): "weekly_point",
+    }
+    grouped_rows = sorted(
+        rows,
+        key=lambda row: (
+            row["scheme_id"],
+            row["target_tenor"],
+            row["horizon"],
+            row["target_date"],
+            row["predict_date"],
+            row["id"],
+        ),
+    )
+
+    previous = choose_live_prediction_rows(
+        rows,
+        display_until="2026-12-31",
+        task_type_by_scheme=task_types,
+    )
+    streaming = list(
+        iter_grouped_live_prediction_rows(
+            grouped_rows,
+            display_until="2026-12-31",
+            task_type_by_scheme=task_types,
+        )
+    )
+
+    assert {int(row["id"]) for row in streaming} == {
+        int(row["id"]) for row in previous
+    } == {2, 4}
+
+
+def test_summary_still_fails_closed_on_conflicting_actual_facts() -> None:
+    engine = _engine()
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO t_scheme_actuals VALUES "
+                "('5Y','2026-06-03',-1,-1)"
+            )
+        )
+
+    with pytest.raises(DashboardDataError, match="conflicting directions"):
+        build_factor_lab_dashboard(engine)
 
 
 @pytest.mark.parametrize(
@@ -347,6 +516,144 @@ def test_v5_detail_reads_requested_active_scheme_month_and_source() -> None:
         )
         is None
     )
+
+
+def test_detail_does_not_read_unrelated_backtest_run_metadata() -> None:
+    engine = _engine()
+
+    def reject_backtest_runs(
+        _conn, _cursor, statement, _parameters, _context, _executemany,
+    ) -> None:
+        if "FROM t_backtest_runs" in statement:
+            raise AssertionError("detail must not read backtest run metadata")
+
+    event.listen(engine, "before_cursor_execute", reject_backtest_runs)
+    payload = build_factor_lab_dashboard_detail(
+        engine,
+        scheme_id="demo_daily__h1__5Y",
+        month="2026-06",
+        source="all",
+    )
+
+    assert payload is not None
+    assert len(payload["rows"]) == 2
+
+
+def test_detail_source_partition_is_pushed_into_target_date_range() -> None:
+    engine = _engine()
+    prediction_queries: list[str] = []
+
+    def observe_predictions(
+        _conn, _cursor, statement, _parameters, _context, _executemany,
+    ) -> None:
+        if "FROM t_scheme_predictions" in statement:
+            prediction_queries.append(statement)
+
+    event.listen(engine, "before_cursor_execute", observe_predictions)
+
+    backtest = build_factor_lab_dashboard_detail(
+        engine,
+        scheme_id="demo_daily__h1__5Y",
+        month="2026-06",
+        source="backtest",
+    )
+    live = build_factor_lab_dashboard_detail(
+        engine,
+        scheme_id="demo_daily__h1__5Y",
+        month="2026-01",
+        source="live",
+    )
+
+    assert backtest is not None and backtest["rows"] == []
+    assert live is not None and live["rows"] == []
+    assert prediction_queries == []
+
+
+def test_detail_reads_actual_only_when_selected_fact_needs_join() -> None:
+    engine = _engine()
+    actual_queries: list[str] = []
+
+    def observe_actuals(
+        _conn, _cursor, statement, _parameters, _context, _executemany,
+    ) -> None:
+        if "FROM t_scheme_actuals" in statement:
+            actual_queries.append(statement)
+
+    event.listen(engine, "before_cursor_execute", observe_actuals)
+    backtest = build_factor_lab_dashboard_detail(
+        engine,
+        scheme_id="demo_daily__h1__5Y",
+        month="2026-01",
+        source="backtest",
+    )
+    assert backtest is not None and len(backtest["rows"]) == 1
+    assert actual_queries == []
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO t_scheme_actuals VALUES "
+                "('5Y','2026-06-04',1,1)"
+            )
+        )
+    live = build_factor_lab_dashboard_detail(
+        engine,
+        scheme_id="demo_daily__h1__5Y",
+        month="2026-06",
+        source="live",
+    )
+    assert live is not None and len(live["rows"]) == 2
+    assert live["rows"][1][-1] == -1
+    assert len(actual_queries) == 1
+
+
+def test_monthly_average_detail_reverses_display_month_before_source_filter() -> None:
+    engine = _engine()
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE t_scheme_registry SET task_type='monthly_average', "
+                "frequency='monthly'"
+            )
+        )
+        connection.execute(
+            text(
+                """INSERT INTO t_scheme_predictions VALUES
+                (8,'demo_daily','5Y',1,'2026-05-29','2026-05-29',
+                 '2026-05-31',1,1,'{}')"""
+            )
+        )
+
+    backtest = build_factor_lab_dashboard_detail(
+        engine,
+        scheme_id="demo_daily__h1__5Y",
+        month="2026-06",
+        source="backtest",
+    )
+    live = build_factor_lab_dashboard_detail(
+        engine,
+        scheme_id="demo_daily__h1__5Y",
+        month="2026-06",
+        source="live",
+    )
+
+    assert backtest is not None
+    assert [row[3] for row in backtest["rows"]] == ["2026-05-31"]
+    assert live is not None and live["rows"] == []
+
+
+def test_detail_known_scheme_legal_empty_month_returns_rows_empty() -> None:
+    engine = _engine()
+
+    payload = build_factor_lab_dashboard_detail(
+        engine,
+        scheme_id="demo_daily__h1__5Y",
+        month="2030-02",
+        source="all",
+    )
+
+    assert payload is not None
+    assert payload["rows"] == []
 
 
 def test_live_actual_query_reads_exact_scopes_for_all_task_types() -> None:

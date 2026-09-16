@@ -59,6 +59,14 @@ insert-only 检查。runner 的 `--predict-date` 不是第二套历史补缺授�
 算法执行前必须通过本机输入 ready 与截止校验；失败不得降级旧 artifact 或制造成功信号。源表、schema、
 连续性、稳定轮次和发布身份的完整检查见[DataBridge](../blackbox_v2/data_bridge_v1/README.md)。
 
+日级 ready gate 只把“当次凭证尚未出现”或显式 `checking` 视为可在既定期限内等待的状态。`blocked`、
+凭证 JSON 损坏、schema/run date/feature date 不匹配、current 合同损坏及稳定的 digest/日期不一致均以稳定
+错误码立即失败，不从异常文本推断类别。ready 与 current generation 暂时不一致，或 ready 校验瞬间 current
+暂缺，只允许三次短间隔连续重读；仍不一致即失败，不进入最长 30 分钟的普通等待。普通等待每五分钟输出仅含
+事件、级别、`elapsed_sec`、`remaining_sec` 和 `code` 的结构化进度，不含底层异常文本，并从五分钟起标记
+warning，供控制面提前告警。producer 从 publish 开始到 retryable 重试结束前始终写 `checking`，成功才写
+`ready`；非 retryable 终止或达到 refresh deadline 后才写 `blocked`。
+
 close-period 预测前核对 current ready 是否精确覆盖所需锚点：覆盖则月中收与周期均值顺序复用同一已发布快照；
 未覆盖只做一次收盘刷新再核验，失败或截止不符则该批预测零执行。它是原 monthly 入口前置动作，不新增
 timer 或第二 DataBridge Writer。

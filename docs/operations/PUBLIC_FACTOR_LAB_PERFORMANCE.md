@@ -38,7 +38,16 @@ scheme-id=<composite_registry_id>&month=YYYY-MM&source=all|backtest|live
 ```
 
 返回 `representation=detail`；方案、按[预测语义](../architecture/PREDICTION_SEMANTICS.md)反解的 target 月份和 source 条件下推数据库。未知、重复、缺少或额外参数
-返回 400；未知/非 active Registry 返回 404；合法空月为 `rows=[]`。纯待验证月份仍可打开明细，统计只计已验证样本。
+返回 400；月份必须是可表示前后相邻月边界的规范 `YYYY-MM`，当前允许 `0001-02` 至 `9999-11`，
+因此 `0000-01`、`9999-12` 和非法月份在请求解析层返回 400，不进入 builder。未知/非 active Registry
+返回 404；合法空月为 `rows=[]`；合法请求遇到损坏业务事实仍按服务端失败返回 503，不能把 builder 的普通
+`ValueError` 统称为参数错误。纯待验证月份仍可打开明细，统计只计已验证样本。
+
+Summary 与 Detail 使用独立内部查询编排。Detail 先验证 active composite Registry，再把展示月反解出的
+`target_date` 半开区间与 `source` 的产品日期分区求交后下推预测 SQL；空交集不读取预测或 Actual。
+Detail 不读取或选择 `t_backtest_runs` 展示元数据，也不以 run ID、物理回测表或数据库来源替代产品
+`source`。先在所选预测事实中完成 canonical 选择；只有仍缺 `backtest_actual_direction` 的选中行才读取并
+关联对应范围的 live Actual，不能仅因为请求 `source=backtest` 就跳过 Actual。
 
 成功响应包含 `Cache-Control: no-store`、`Vary: Accept-Encoding`、`X-Request-ID`、
 `X-Dashboard-Snapshot-ID`（等于 body snapshot_id）。canonical payload 只做一次 JSON 和 gzip 编码，按
@@ -60,6 +69,40 @@ Accept-Encoding 返回对应字节；HEAD/GET 表示与 Content-Length 语义一
 HTTP 失败携带合法 `Retry-After` 时，同时支持 delta-seconds 和标准 IMF-fixdate；自动重试取既有退避与该时刻的
 较晚者。超过浏览器定时器可表示范围的等待不创建可能提前触发的 timer，保持 fail-closed，等待用户重新进入
 或其他显式刷新契机；非法值不替代既有退避。
+
+### Summary 历史增长基线
+
+Summary 的回测展示元数据由数据库按 `updated_at DESC, id DESC` 为每个 base scheme 只选择一个确定性候选，
+不再把全部成功 run 传给 Python。预测事实仍逐行执行原有 canonical 选择、日期、方向和 Actual 冲突校验，
+但按业务键排序流式读取并直接累计紧凑月份计数；不物化全历史明细列表，不截断超过 100,000 条的合法历史。
+纯 pending 月份、`target_date` 产品 source 分区和 Actual 重复/冲突的 fail-closed 语义保持不变。Detail 继续使用
+单方案、单月、单来源的有界查询，不复用 Summary 流。
+
+可复现的本机合成测试入口为：
+
+```bash
+python -B scripts/benchmark_dashboard_summary.py --rows 10000 50000 100001
+```
+
+2026-09-16 在本机 Python 3.13 与 SQLite 内存库记录如下。DB、canonical、总构建和编码时间来自未开启
+`tracemalloc` 的第一次构建；峰值分配来自相同数据集的第二次独立构建。该结果只用于同机实现对比，不代替
+ECS MySQL 的认证 HTTP 压测或容量结论。
+
+| 预测事实 | DB 读取 | canonical 构建 | 总构建 | 编码 | 构建期峰值分配 |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 10,000 | 0.0161s | 0.0549s | 0.0728s | 0.0005s | 2.14 MiB |
+| 50,000 | 0.0840s | 0.2730s | 0.3633s | 0.0017s | 2.84 MiB |
+| 100,001 | 0.1682s | 0.5468s | 0.7278s | 0.0034s | 3.71 MiB |
+
+为与修改前基线保持相同测量开销，再比较开启 `tracemalloc` 的完整构建：10,000 条由
+0.7122 秒 / 6.26 MiB 降至 0.5973 秒 / 2.14 MiB；50,000 条由 3.8774 秒 / 32.20 MiB 降至
+2.9695 秒 / 2.84 MiB；旧路径在 100,001 条读取到 cap 后失败且峰值 52.10 MiB，新路径完成构建为
+5.9504 秒 / 3.71 MiB。这里的 traced wall time 包含逐分配追踪开销，不是 HTTP 延迟目标。
+
+同一环境下，单方案回测候选从 10,000 / 50,000 / 100,001 条增长时，旧路径分别物化全部候选并使用
+6.56 / 32.84 / 65.42 MiB（100,001 条失败）；数据库选择后 Python 均只接收 1 条，峰值约 0.02 MiB，
+对应读取与选择总耗时约 0.0124 / 0.0865 / 0.1726 秒。ECS 验证必须另记录真实 MySQL 查询计划、
+`backend_total`、DB timing、响应大小和并发错误率；上述合成结果不用于放宽 4 秒请求预算。
 
 ## 生产方案标记
 
@@ -106,19 +149,53 @@ Dashboard 展示离散发布的数据库事实。首次认证后立即读取；�
 不保存密码、Cookie 或 token。对照本机 Registry、预测和 Actual，逐方案检查身份、owner、月份、明细和待验证状态；
 exact 另由数据库与 release 核验，Dashboard 不提供该字段。
 
-现有 [`DashboardGate`](../../harness/gates/dashboard_gate.py) 支持 `fetcher` 注入；用授权会话取得的真实
-HTTP 响应交给 `DashboardGate(fetcher=...)`。fetcher 接收 URL、`timeout_sec` 和 `max_response_bytes`，
-须按这些限制读取响应、校验 UTF-8/JSON 并返回 `(payload, http_status)`；自定义 fetcher 不能绕过读取预算，
-不得构造成功状态或伪造 payload。`GateContext.engine_factory` 必须显式绑定该 HTTP 服务的本机数据库，
-执行前按[手工环境绑定](../../deploy/README.md#手工-harness-的目标环境绑定)核实；未提供或查询失败则 Gate 失败，不回退默认库。
-Gate 在只读事务中批量读取所需 Registry，按[展示权威](../architecture/SCHEME_CONTRACT.md#3-方案身份)比较
-名称、描述和 owner；名称去首尾空白、空描述转空字符串，与 API 表示一致，不从 canonical 推断新身份。
-同时校验 V6 Summary、active composite、任务字段和回测分区；
-没有 live 月度计数合法，非 200、超限或非法结构均失败。gzip/no-store/响应头由 API 合同测试保护。
+现有 [`DashboardGate`](../../harness/gates/dashboard_gate.py) 支持真实认证入口和 `fetcher` 注入。默认 fetcher
+接收 URL、`timeout_sec`、`max_response_bytes` 和仅在内存中使用的会话 token，按限制读取响应并校验
+UTF-8/JSON；返回 payload、HTTP status 以及安全的获取时间和 `X-Request-ID` 元数据。自定义 fetcher 不能
+绕过读取预算、构造成功状态或伪造 payload。会话只允许从 owner-only 的绝对路径普通文件，或调用方已经打开的
+文件描述符传入；输入内容只是一行 opaque token。CLI 不接受明文 Cookie/token 参数，结果与 Evidence 不保存
+token、Cookie 或会话文件内容。HTTP 错误只保留稳定状态码，不把响应正文写入结果；响应派生的错误与
+Evidence 在返回前还会递归清除本次 session token，防止目标服务误回显凭据。
 
-裸 `python -B -m harness gate dashboard --api-base-url ...` 的默认 fetcher **不携带登录会话**，
-不能直接完成启用认证环境的验收；不能为运行该命令关闭认证。通用认证 CLI 的现有限制见[TODO](../TODO.md)，
-不把已归档批次脚本恢复为长期框架。
+携带会话的探针把首次请求 URL 的 scheme、host 和有效端口固定为目标 Origin；同 Origin 跳转可继续，任何
+跨 Origin 跳转在发送凭据前失败。TLS 使用 Python 默认校验，不提供关闭证书校验的选项。会话缺失、过期或
+无效均使 Gate 失败，不能为运行验收关闭认证。单方案调用仍受支持；同一次验收可重复 `--scheme-id` 选择多个
+base scheme，例如：
+
+```bash
+python -B -m harness gate dashboard \
+  --api-base-url https://factor.example.invalid \
+  --scheme-id first_scheme \
+  --scheme-id second_scheme \
+  --session-file /absolute/private/path/dashboard-session-token
+```
+
+也可通过 `--session-fd <fd>` 从 pipe 或已打开的私有文件读取；调用方必须在启动命令前写入完整 token，未就绪的
+pipe 会立即失败而不会在 Gate 总预算开始前无限等待。会话文件权限不得向 group/world 开放，两个会话入口互斥
+且必须提供其一。命令只获取一次真实 Summary、校验 HTTP 与 V6 schema，并在一个只读事务中批量读取
+本次全部 Registry，然后逐方案比较名称、描述、owner、active composite、任务字段和回测分区；名称去首尾
+空白、空描述转空字符串，与 API 表示一致，不从 canonical 推断新身份。每个方案分别输出通过/失败，并引用相同
+的 response `snapshot_id`、获取时间和 request ID。一个方案失败不会抹掉其他方案的结果，但整次 Gate 失败。
+没有 live 月度计数合法，非 200、响应超限或非法结构均失败。`GateContext.engine_factory` 必须显式绑定该 HTTP
+服务的本机数据库，执行前按[手工环境绑定](../../deploy/README.md#手工-harness-的目标环境绑定)核实；未提供
+或查询失败则 Gate 失败，不回退默认库。gzip/no-store/响应头由 API 合同测试保护。
+
+预测值、Actual 与统计数的完整对账使用独立 `DataConsistencyGate`，不能以 Dashboard schema 校验替代。
+该 Gate 从显式绑定的只读数据库快照独立检查业务键、三日期、方向、run 引用与 Actual 事实，并自行形成
+月份/source 计数后对照真实 Summary 及逐分区 Detail；标准答案不得调用 Dashboard builder 或其聚合 helper。
+`timeout_sec` 是整次对账共享的总预算；Summary、各 Detail 和首尾数据库快照都从同一单调时钟 deadline 扣减，
+不会按方案或月份重新获得完整预算。
+末次重读失败、选定数据库范围首尾摘要不同或上海展示日跨界时结果为 `blocked`，不把可观测到的自然增长
+报告为数据错误；该首尾围栏不是 CDC，不承诺识别内容完全恢复的瞬态变化。
+批量入口与 Dashboard Gate 共用安全会话输入：
+
+```bash
+python -B -m harness gate data-consistency \
+  --api-base-url https://factor.example.invalid \
+  --scheme-id first_scheme \
+  --scheme-id second_scheme \
+  --session-file /absolute/private/path/dashboard-session-token
+```
 
 普通发布在[部署流程](../../deploy/README.md#构建预安装和晋级)的健康、数据与调度读回之外，完成上述认证 HTTP
 对照，并刷新浏览器核验 fresh、方案数与明细，不使用旧视图作证。批量请求遇 429 时降低频率并按 Retry-After

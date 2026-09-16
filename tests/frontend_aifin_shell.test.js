@@ -6,6 +6,8 @@ const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 
+const HTTP_SCRIPT_PATH = path.resolve(__dirname, "../frontend/factor-lab-http.js");
+const HTTP_SCRIPT_SOURCE = fs.readFileSync(HTTP_SCRIPT_PATH, "utf8");
 const SCRIPT_PATH = path.resolve(__dirname, "../frontend/aifin-shell.js");
 const SCRIPT_SOURCE = fs.readFileSync(SCRIPT_PATH, "utf8");
 
@@ -86,6 +88,7 @@ function createHarness(fetchImpl) {
     return true;
   };
   context.requestAnimationFrame = (callback) => context.setTimeout(callback, 0);
+  vm.runInNewContext(HTTP_SCRIPT_SOURCE, context, { filename: HTTP_SCRIPT_PATH });
   vm.runInNewContext(SCRIPT_SOURCE, context, { filename: SCRIPT_PATH });
   return {
     context,

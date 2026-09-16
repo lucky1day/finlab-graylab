@@ -63,7 +63,7 @@
 | 源输入 | `shared.input_artifacts` 经数据服务/日历构造输入；adapter 与 backtest runner 不自行查询源表 |
 | 预测与生命周期 | `scheduler.repository` 按 runtime/operation 在事务中复核身份并完成 prediction、run 与日志 |
 | 回测 | `backtests.repository` 保存不可变 `t_backtest_*`；首次产品历史发布另经 scheduler repository |
-| Actual | `scheduler/*_actuals_updater.py` 按任务事实合同更新，既有 UPSERT 不受预测 insert-only 规则外推限制；日频自然刷新从单一源快照写入且不删除历史，尾部删除只允许走独立的精确键修复计划 |
+| Actual | `scheduler/*_actuals_updater.py` 按任务事实合同更新，既有 UPSERT 不受预测 insert-only 规则外推限制；日频自然刷新从单一源快照写入且不删除历史，尾部删除只允许走独立的精确键修复计划；连接与 Actual SQL 位于 `scheduler.persistence` 内部实现，但调用方仍只经 `scheduler.repository` 统一入口 |
 | 认证 | `backend.auth.repository` 仅写认证三表，账户/会话合同见[认证文档](AUTHENTICATION_AND_ACCOUNT_MANAGEMENT.md) |
 | DDL | `migrations.runner` 接收 caller-supplied Engine；CLI 负责环境与授权围栏，见 §5 |
 
@@ -122,12 +122,15 @@ Dashboard 只从产品事实表聚合逐点结果。
   └─ backend.factor_lab_dashboard.build_factor_lab_dashboard(engine)
        ├─ 每个请求直接以 dashboard 专用只读 Engine 建立当前视图
        ├─ 同一 connection / repeatable-read readonly transaction
-       ├─ active Registry + 产品预测事实 + scoped Actuals + canonical backtest 元数据批量 SELECT
-       └─ canonical 选择 → V6 summary/detail response → gzip/identity 表示
+       ├─ factor_lab_dashboard_queries：Registry、产品事实、Actual 与回测元数据查询
+       ├─ factor_lab_dashboard_semantics：canonical 选择、Actual 冲突校验与月度计数
+       └─ factor_lab_dashboard：Summary/Detail 编排及 V6 gzip/identity 表示
 
 ```
 
 该读模型不提供算法输入、不写业务库，不读取 run、DataBridge 日期或交易日历，也不推导调度是否到期或缺失。HTTP、Summary/Detail、刷新与故障行为以[Dashboard 合同](../operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)为准；统计定义见[预测语义](PREDICTION_SEMANTICS.md)。
+前端仍为无构建步骤的原生脚本；`factor-lab-http.js` 只负责请求、取消、超时和限流元数据，
+`aifin-shell.js` 保留 payload 校验、刷新状态机和页面渲染。
 
 ## 5. 环境、执行与迁移
 
@@ -148,8 +151,8 @@ Dashboard 只从产品事实表聚合逐点结果。
 | 输入与日历 | [input_artifacts](../../shared/input_artifacts.py)、[data_service](../../shared/data_service.py)、[calendar_service](../../shared/calendar_service.py)、[Blackbox 公共模块](../../shared/blackbox_v2/) |
 | 身份与执行 | [discovery](../../scheduler/discovery.py)、[scheme_runner](../../scheduler/scheme_runner.py)、[executor](../../scheduler/executor.py) |
 | 自然任务与 Actuals | [launchd runner](../../scheduler/launchd_prediction_runner.py)、[systemd runner](../../scheduler/systemd_prediction_runner.py)、[actuals_runner](../../scheduler/actuals_runner.py) |
-| 业务写入 | [scheduler repository](../../scheduler/repository.py)、[backtest repository](../../backtests/repository.py) |
-| 产品与认证 | [HTTP 入口](../../backend/main.py)、[Dashboard](../../backend/factor_lab_dashboard.py)、[认证](../../backend/auth/) |
+| 业务写入 | [scheduler repository](../../scheduler/repository.py) 是公共统一入口，其[内部持久化实现](../../scheduler/persistence/)不对业务调用方开放；回测写入经 [backtest repository](../../backtests/repository.py) |
+| 产品与认证 | [HTTP 入口](../../backend/main.py)、[Dashboard 编排](../../backend/factor_lab_dashboard.py)、[查询](../../backend/factor_lab_dashboard_queries.py)、[统计语义](../../backend/factor_lab_dashboard_semantics.py)、[认证](../../backend/auth/) |
 | 平台验证 | [harness](../../harness/)；模块边界见[Harness 架构](HARNESS_ARCHITECTURE.md) |
 | 数据模型与迁移 | [公共模型](../../shared/models.py)、[迁移库](../../migrations/runner.py)、[迁移 CLI](../../scripts/apply_migrations.py) |
 

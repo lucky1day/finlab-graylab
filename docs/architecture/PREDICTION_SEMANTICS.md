@@ -284,3 +284,15 @@ Summary 与 Detail 必须使用同一映射，Detail 按展示月份反向定位
 - 当日频、周频、月中收或周期均值 actual 的源实际值水位尚未覆盖对应 `target_date + target_rule` 时，该样本属于待验证；API 和前端应展示 `actual_direction = null` / 准确率 `--`，不得把它计为错误、缺数据修复项或前端刷新失败。运维排查必须先查对应 actual 水位，再判断是否为后端 join 或前端计算问题；同一目标周期内不同 tenor 的源水位可以不同，已覆盖的 tenor 应立即验证，未覆盖的 tenor 继续待验证。
 
 Actual 自然刷新是非破坏性 UPSERT。日频 updater 在一个事务中物化同一份源行情快照、构造记录并写入；源表尾部随后回退时，不得由自然刷新再次查询水位并自动删除已经存在的 Actual。确需修复错误尾部时，先以源快照摘要和水位生成精确的 `tenor + trade_date` 待删清单，再经独立授权执行；执行前必须复核快照身份与清单仍匹配，修复写入和删除共用一个事务，失败整体回滚。当前自然 `actuals_runner` 不提供该删除入口。
+
+Actual Repository 在写事务内按实际业务唯一键和全部业务字段区分
+`inserted / changed / unchanged`；不能把输入条数或数据库驱动 `rowcount` 当成新增数。
+MySQL 对观测时尚不存在的业务键须通过唯一键原子认领并在冲突后重新读取分类；两个并发
+刷新都先看到缺键时，也只能有一个报告 `inserted`，不能依赖服务器默认隔离级别碰巧串行化。
+业务字段完全一致的重复刷新不得执行 UPDATE，也不得改变 `updated_at`。全历史或完整周期窗口
+仍用于覆盖迟到数据和源修订，不能为了减少写入直接改成只读现有最大日期之后的数据。
+`actuals_runner` 按 daily、weekly、monthly、period-average 顺序独立提交并记录每个阶段的
+`success / failed / not_run` 终态与上述统计；阶段失败后不再执行后续阶段，批次保留此前已完成阶段的证据并标记
+`partial`（首阶段即失败则为 `failed`），不以跨四阶段长事务回滚已经完成的 Actual。任一 active tenor 在本阶段
+源收益率读取中完全缺失时，updater 以 typed `source_incomplete` 失败；Runner 只把受控稳定码写入终态摘要，任意
+底层异常文本只进入带 traceback 的服务日志，不进入结构化回执。

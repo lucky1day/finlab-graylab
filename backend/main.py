@@ -41,13 +41,16 @@ from backend.auth.routes import (
 from backend.auth.security import PasswordPolicyError, UsernamePolicyError
 from backend.auth.service import AuthError
 from backend.factor_lab_dashboard import (
+    DashboardQueryError,
     build_factor_lab_dashboard,
     build_factor_lab_dashboard_detail,
     dashboard_build_diagnostics,
     encode_canonical_snapshot,
+    parse_dashboard_month,
     record_dashboard_encoding,
 )
 from backend.http_compression import QAwareGZipMiddleware, accepts_gzip
+from backend.request_limits import AuthJSONBodyLimitMiddleware
 from shared.one_shot_control_plane import (
     LAUNCHD_ONE_SHOT_CONTROL_PLANE,
     require_scheduled_one_shot_control_plane,
@@ -71,7 +74,6 @@ _DASHBOARD_SCHEME_NOT_FOUND = "dashboard_scheme_not_found"
 _DASHBOARD_SCHEME_ID_PATTERN = re.compile(
     r"^[a-z][a-z0-9_]*__h[1-9][0-9]*__(?:1Y|3Y|5Y|7Y|10Y)$"
 )
-_DASHBOARD_MONTH_PATTERN = re.compile(r"^\d{4}-(?:0[1-9]|1[0-2])$")
 
 
 class _FrontendAssetReferenceParser(HTMLParser):
@@ -206,6 +208,7 @@ app = FastAPI(
     openapi_url=None,
 )
 app.add_middleware(QAwareGZipMiddleware)
+app.add_middleware(AuthJSONBodyLimitMiddleware)
 app.add_exception_handler(AuthError, auth_error_response)
 app.add_exception_handler(PasswordPolicyError, policy_error_response)
 app.add_exception_handler(UsernamePolicyError, policy_error_response)
@@ -518,7 +521,7 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
         if request_context is not None:
             request_context.failure_stage = "dashboard_query"
         detail_query = _dashboard_detail_query(request)
-    except ValueError:
+    except DashboardQueryError:
         return _dashboard_error_response(
             request_id=request_id,
             error_code=_DASHBOARD_QUERY_ERROR,
@@ -674,24 +677,27 @@ def _dashboard_detail_query(request: Request) -> dict[str, str] | None:
             strict_parsing=True,
         )
     except (UnicodeError, ValueError) as exc:
-        raise ValueError("invalid dashboard detail query") from exc
+        raise DashboardQueryError("invalid dashboard detail query") from exc
     if len(pairs) != 3 or {key for key, _ in pairs} != {
         "scheme-id",
         "month",
         "source",
     }:
-        raise ValueError("invalid dashboard detail query")
+        raise DashboardQueryError("invalid dashboard detail query")
     values = dict(pairs)
     scheme_id = values["scheme-id"]
     month = values["month"]
     source = values["source"]
     if (
         _DASHBOARD_SCHEME_ID_PATTERN.fullmatch(scheme_id) is None
-        or _DASHBOARD_MONTH_PATTERN.fullmatch(month) is None
         or source not in {"all", "backtest", "live"}
     ):
-        raise ValueError("invalid dashboard detail query")
-    return {"scheme_id": scheme_id, "month": month, "source": source}
+        raise DashboardQueryError("invalid dashboard detail query")
+    return {
+        "scheme_id": scheme_id,
+        "month": parse_dashboard_month(month),
+        "source": source,
+    }
 
 
 @app.get("/api/factor-lab/dashboard")

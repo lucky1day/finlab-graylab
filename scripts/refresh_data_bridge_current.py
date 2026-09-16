@@ -197,6 +197,27 @@ def _write_blocked_gate(
     )
 
 
+def _write_checking_gate(
+    config: DataBridgeRefreshConfig,
+    *,
+    refresh_date: str,
+    expected_feature_date: str,
+    check_name: str = "refresh_pending",
+) -> None:
+    """标记 producer 已开始本次发布，供 consumer 有界等待。"""
+    write_gate_record(
+        config,
+        run_date=refresh_date,
+        status="checking",
+        checked_at=_checked_at(),
+        generation_id=None,
+        refresh_date=None,
+        expected_daily_date=expected_feature_date,
+        business_digest=None,
+        checks=[{"name": check_name, "status": "checking"}],
+    )
+
+
 def _write_ready_gate(
     config: DataBridgeRefreshConfig,
     *,
@@ -273,6 +294,26 @@ def _try_write_blocked_gate(
     """尽力将 gate 置 blocked，绝不让二次 I/O 覆盖主失败。"""
     try:
         _write_blocked_gate(
+            config,
+            refresh_date=refresh_date,
+            expected_feature_date=expected_feature_date,
+            check_name=check_name,
+        )
+    except Exception:
+        return False
+    return True
+
+
+def _try_write_checking_gate(
+    config: DataBridgeRefreshConfig,
+    *,
+    refresh_date: str,
+    expected_feature_date: str,
+    check_name: str = "refresh_pending",
+) -> bool:
+    """尽力标记发布进行中，写入失败时禁止继续刷新。"""
+    try:
+        _write_checking_gate(
             config,
             refresh_date=refresh_date,
             expected_feature_date=expected_feature_date,
@@ -366,11 +407,10 @@ def _run_refresh_with_config(
 ) -> tuple[int, dict[str, object]]:
     """在 publish caller 已持有 publisher lock 时执行刷新与 gate 事务。"""
     try:
-        if mode == "publish" and not _try_write_blocked_gate(
+        if mode == "publish" and not _try_write_checking_gate(
             config,
             refresh_date=refresh_date,
             expected_feature_date=expected_feature_date,
-            check_name="refresh_pending",
         ):
             return 1, {
                 "status": "failed",
@@ -410,19 +450,28 @@ def _run_refresh_with_config(
         }
     except (DataBridgeRefreshError, DataBridgeValidationError) as exc:
         category = _failure_category(exc)
+        retryable = _is_retryable_refresh_error(exc)
         if mode == "publish":
-            _try_write_blocked_gate(
-                config,
-                refresh_date=refresh_date,
-                expected_feature_date=expected_feature_date,
-                check_name=category,
-            )
+            if retryable:
+                _try_write_checking_gate(
+                    config,
+                    refresh_date=refresh_date,
+                    expected_feature_date=expected_feature_date,
+                    check_name=category,
+                )
+            else:
+                _try_write_blocked_gate(
+                    config,
+                    refresh_date=refresh_date,
+                    expected_feature_date=expected_feature_date,
+                    check_name=category,
+                )
         return 1, {
             "status": "failed",
             "mode": mode,
             "failure_category": category,
             "error": "local MySQL DataBridge refresh or validation failed",
-            "retryable": _is_retryable_refresh_error(exc),
+            "retryable": retryable,
         }
     except (OSError, ValueError, SQLAlchemyError) as exc:
         category = _failure_category(exc)
@@ -468,6 +517,12 @@ def _run_publish_with_retries(
                 if result is not None
                 else _refresh_failure("publish")
             )
+            _write_terminal_retry_gate(
+                config,
+                refresh_date=refresh_date,
+                expected_feature_date=expected_feature_date,
+                result=terminal,
+            )
             return _with_retry_metadata(
                 terminal,
                 attempt_count=attempt_count,
@@ -497,6 +552,12 @@ def _run_publish_with_retries(
 
         remaining_sec = (deadline_at - _now()).total_seconds()
         if remaining_sec <= 0:
+            _write_terminal_retry_gate(
+                config,
+                refresh_date=refresh_date,
+                expected_feature_date=expected_feature_date,
+                result=result,
+            )
             return _with_retry_metadata(
                 result,
                 attempt_count=attempt_count,
@@ -508,6 +569,24 @@ def _run_publish_with_retries(
             retry_delay_sec * 2,
             PUBLISH_REFRESH_MAX_RETRY_DELAY_SEC,
         )
+
+
+def _write_terminal_retry_gate(
+    config: DataBridgeRefreshConfig,
+    *,
+    refresh_date: str,
+    expected_feature_date: str,
+    result: tuple[int, dict[str, object]],
+) -> None:
+    """将已到截止期限的 retryable publish 明确收尾为 blocked。"""
+    category = result[1].get("failure_category")
+    check_name = category if isinstance(category, str) else "refresh_failed"
+    _try_write_blocked_gate(
+        config,
+        refresh_date=refresh_date,
+        expected_feature_date=expected_feature_date,
+        check_name=check_name,
+    )
 
 
 def _with_retry_metadata(

@@ -74,6 +74,10 @@ __Host-bfl-session=<opaque-token>; Secure; HttpOnly; SameSite=Strict; Path=/
 状态变更仅接受 JSON POST，禁止 GET 写入。严格核验部署目标对应的可信 Origin 和 Sec-Fetch-Site，
 拒绝缺失或不匹配请求；SameSite=Strict 仅为纵深防御。固定 Origin 值只维护于访问入口，
 `BFL_AUTH_TRUSTED_ORIGIN` 的私有配置方式见部署手册。ECS 的 localhost HTTP 例外不推广到其他入口，Cookie 仍为 Secure。
+认证与管理 POST 请求在 ASGI 输入边界有界预读：声明的 `Content-Length` 先验证，随后按 receive
+分块累计实际字节，有无 `Content-Length` 均不得超过 8192 字节。错误或重复长度、超限及客户端在
+body 完成前中断，必须在 JSON 解析和认证 Service 之前拒绝；完整且未超限的 body 向下游原样重放。
+该边界是 Nginx `client_max_body_size 8k` 之外的应用层防线，不替代 Origin、同源、内容类型或字段校验。
 参考 [OWASP CSRF](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html)。
 
 ## 页面与交互
@@ -114,7 +118,8 @@ __Host-bfl-session=<opaque-token>; Secure; HttpOnly; SameSite=Strict; Path=/
 | POST | `/api/admin/users/update-profile` | admin，目标资料 |
 | POST | `/api/admin/users/edit` | admin，原子编辑资料/权限/状态，不接收密码 |
 
-状态码：200 成功、201 创建成功、401 无有效会话、403 权限不足、409 用户名/管理员保护等冲突、422 输入非法。
+状态码：200 成功、201 创建成功、400 请求长度或策略输入非法、401 无有效会话、403 权限不足、408 请求体未完成、
+409 用户名/管理员保护等冲突、413 请求体超过 8192 字节、415 非 JSON，422 字段输入非法。
 普通用户不渲染管理入口，但隐藏界面不能替代后端 API 的 admin 检查。
 
 ## 存储与模块边界

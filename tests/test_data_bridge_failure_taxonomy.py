@@ -41,14 +41,29 @@ CASES = [
 def _run(exc: BaseException):
     from scripts import refresh_data_bridge_current as script
 
-    gate_writes: list[str] = []
+    gate_writes: list[tuple[str, str]] = []
 
-    def capture_gate(_config, **kwargs):
-        gate_writes.append(str(kwargs.get("check_name")))
+    def capture_checking(_config, **kwargs):
+        gate_writes.append(
+            ("checking", str(kwargs.get("check_name", "refresh_pending")))
+        )
+        return True
+
+    def capture_blocked(_config, **kwargs):
+        gate_writes.append(("blocked", str(kwargs.get("check_name"))))
         return True
 
     with (
-        patch.object(script, "_try_write_blocked_gate", side_effect=capture_gate),
+        patch.object(
+            script,
+            "_try_write_checking_gate",
+            side_effect=capture_checking,
+        ),
+        patch.object(
+            script,
+            "_try_write_blocked_gate",
+            side_effect=capture_blocked,
+        ),
         patch.object(script, "refresh_current", side_effect=exc),
     ):
         exit_code, payload = script._run_refresh_with_config(
@@ -65,10 +80,43 @@ def test_each_failure_keeps_category_gate_evidence_and_redaction() -> None:
         exit_code, payload, gate_writes = _run(exc)
         assert payload["failure_category"] == expected_category
         assert exit_code == expected_exit
-        assert gate_writes[-1] == expected_category
+        assert gate_writes[0] == ("checking", "refresh_pending")
+        terminal_status = (
+            "checking"
+            if expected_category in {"refresh_failed", "validation_failed"}
+            else "blocked"
+        )
+        assert gate_writes[-1] == (terminal_status, expected_category)
         blob = repr(payload) + repr(gate_writes)
         assert "secret-dsn" not in blob
         assert "user:pw" not in blob
+
+
+def test_publish_pending_gate_is_checking_not_blocked() -> None:
+    from scripts import refresh_data_bridge_current as script
+
+    with patch.object(script, "write_gate_record") as write:
+        script._write_checking_gate(
+            SimpleNamespace(),
+            refresh_date="2026-08-11",
+            expected_feature_date="2026-08-10",
+        )
+
+    assert write.call_args.kwargs["status"] == "checking"
+    assert write.call_args.kwargs["checks"] == [
+        {"name": "refresh_pending", "status": "checking"}
+    ]
+
+    with patch.object(script, "write_gate_record") as write:
+        script._write_checking_gate(
+            SimpleNamespace(),
+            refresh_date="2026-08-11",
+            expected_feature_date="2026-08-10",
+            check_name="validation_failed",
+        )
+    assert write.call_args.kwargs["checks"] == [
+        {"name": "validation_failed", "status": "checking"}
+    ]
 
 
 class _Clock:
@@ -105,6 +153,7 @@ def test_publish_retry_stops_at_deadline() -> None:
         {
             "status": "failed",
             "mode": "publish",
+            "failure_category": "refresh_failed",
             "error": "local MySQL DataBridge refresh or validation failed",
             "retryable": True,
         },
@@ -117,6 +166,11 @@ def test_publish_retry_stops_at_deadline() -> None:
             "_run_refresh_with_config",
             return_value=failure,
         ) as refresh,
+        patch.object(
+            script,
+            "_try_write_blocked_gate",
+            return_value=True,
+        ) as blocked,
     ):
         code, payload = script._run_publish_with_retries(
             refresh_date="2026-08-11",
@@ -129,6 +183,66 @@ def test_publish_retry_stops_at_deadline() -> None:
     assert payload["deadline_reached"] is True
     assert clock.sleeps == [30]
     assert refresh.call_count == 1
+    blocked.assert_called_once_with(
+        config,
+        refresh_date="2026-08-11",
+        expected_feature_date="2026-08-10",
+        check_name="refresh_failed",
+    )
+
+
+def test_retryable_publish_stays_checking_until_later_success() -> None:
+    from scripts import refresh_data_bridge_current as script
+
+    now = datetime(2026, 8, 11, 6, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+    config = SimpleNamespace(
+        deadline_at=lambda _refresh_date: datetime(
+            2026,
+            8,
+            11,
+            7,
+            0,
+            tzinfo=ZoneInfo("Asia/Shanghai"),
+        )
+    )
+    success = SimpleNamespace(
+        state={"generation_id": "generation-1"},
+        published=True,
+        rounds_completed=2,
+        duration_sec=1.0,
+    )
+    with (
+        patch.object(script, "_now", return_value=now),
+        patch.object(script.time, "sleep"),
+        patch.object(
+            script,
+            "refresh_current",
+            side_effect=[DataBridgeRefreshError("transient"), success],
+        ),
+        patch.object(
+            script,
+            "_try_write_checking_gate",
+            return_value=True,
+        ) as checking,
+        patch.object(
+            script,
+            "_try_write_blocked_gate",
+            return_value=True,
+        ) as blocked,
+        patch.object(script, "_write_ready_gate") as ready,
+    ):
+        code, payload = script._run_publish_with_retries(
+            refresh_date="2026-08-11",
+            config=config,
+            expected_feature_date="2026-08-10",
+        )
+
+    assert code == 0
+    assert payload["attempt_count"] == 2
+    assert checking.call_count == 3
+    assert checking.call_args_list[1].kwargs["check_name"] == "refresh_failed"
+    blocked.assert_not_called()
+    ready.assert_called_once()
 
 
 @pytest.mark.parametrize(
@@ -177,6 +291,7 @@ def test_publish_does_not_retry_identity_or_configuration_failures(
                 tzinfo=ZoneInfo("Asia/Shanghai"),
             ),
         ),
+        patch.object(script, "_try_write_checking_gate", return_value=True),
         patch.object(script, "_try_write_blocked_gate", return_value=True),
         patch.object(script, "refresh_current", side_effect=exc) as refresh,
     ):
