@@ -9,6 +9,7 @@ from shared.prediction_history_replacement import (
     PredictionHistoryReplacementError,
     live_fact_digest,
     resolve_prediction_history_projection,
+    validate_prediction_history_source_runs,
 )
 
 
@@ -150,3 +151,79 @@ def test_absent_source_keeps_native_history_and_partial_source_fails():
         assert "live replacement facts changed" in str(exc)
     else:
         raise AssertionError("source drift must fail closed")
+
+
+def test_conflicting_product_business_key_fails_closed():
+    migration, corrected, source, _live = _fixture()
+    conflicting = {
+        **source[0],
+        "id": 99,
+        "scheme_id": migration.prediction_scheme_id,
+        "scheme_version": "newer0000001",
+        "backtest_run_id": 77,
+        "predicted_direction": -1,
+    }
+
+    try:
+        resolve_prediction_history_projection(
+            [conflicting], source, entry=migration, corrected=corrected
+        )
+    except PredictionHistoryReplacementError as exc:
+        assert "conflicts" in str(exc)
+    else:
+        raise AssertionError("conflicting product business key must fail closed")
+
+
+def test_source_run_lineage_is_required_and_drift_fails_closed():
+    migration, corrected, source, _live = _fixture()
+    projection = resolve_prediction_history_projection(
+        [], source, entry=migration, corrected=corrected
+    )
+    assert projection is not None
+    live_run = {
+        "run_id": 9,
+        "scheme_id": "legacy_bbv2",
+        "scheme_version": "0123456789ab",
+        "runtime_type": "blackbox_v2",
+        "status": "success",
+        "prediction_phase": "scheduled_live",
+        "predict_date": "2026-06-01",
+        "data_snapshot_id": "snapshot-" + "8" * 24,
+        "records_written": 1,
+    }
+    backtest_run = {
+        "id": 8,
+        "scheme_id": "legacy_bbv2",
+        "status": "success",
+        "code_hash": "a" * 64,
+        "config_hash": "b" * 64,
+        "input_artifact_hash": "snapshot-" + "9" * 24,
+        "summary": {
+            "scheme_version": "0123456789ab",
+            "manifest_hash": "c" * 64,
+            "input_artifact_hash": "snapshot-" + "9" * 24,
+            "persisted_prediction_count": 1,
+            "row_count": 1,
+        },
+    }
+
+    validate_prediction_history_source_runs(
+        projection,
+        [live_run],
+        [backtest_run],
+        entry=migration,
+        corrected=corrected,
+    )
+    live_run["status"] = "failed"
+    try:
+        validate_prediction_history_source_runs(
+            projection,
+            [live_run],
+            [backtest_run],
+            entry=migration,
+            corrected=corrected,
+        )
+    except PredictionHistoryReplacementError as exc:
+        assert "live replacement run lineage changed" in str(exc)
+    else:
+        raise AssertionError("source run drift must fail closed")

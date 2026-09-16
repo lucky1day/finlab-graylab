@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
@@ -24,6 +26,8 @@ class PredictionHistoryProjection:
     deletable_product_ids: frozenset[int]
     deletable_live_run_ids: frozenset[int]
     deletable_backtest_run_ids: frozenset[int]
+    source_live_run_ids: frozenset[int]
+    source_backtest_run_ids: frozenset[int]
 
 
 def resolve_prediction_history_projection(
@@ -104,16 +108,37 @@ def resolve_prediction_history_projection(
             "legacy live product facts are partial or changed"
         )
 
-    source_by_fact = {_comparison_fact(row) for row in sources}
-    display_duplicates = {
-        _required_id(row)
-        for row in products
-        if _comparison_fact(row) in source_by_fact
-    }
+    source_by_key: dict[tuple[Any, ...], tuple[Any, ...]] = {}
+    for row in sources:
+        key = _business_key(row)
+        fact = _comparison_fact(row)
+        previous = source_by_key.setdefault(key, fact)
+        if previous != fact:
+            raise PredictionHistoryReplacementError(
+                "designated replacement contains conflicting business keys"
+            )
     deletable_ids = {
         *(_required_id(row) for row in legacy_backtest),
         *(_required_id(row) for row in legacy_live),
     }
+    display_duplicates = {
+        _required_id(row)
+        for row in products
+        if _required_id(row) not in deletable_ids
+        and _business_key(row) in source_by_key
+        and _comparison_fact(row) == source_by_key[_business_key(row)]
+    }
+    conflicting_product_rows = [
+        row
+        for row in products
+        if _required_id(row) not in deletable_ids
+        and _business_key(row) in source_by_key
+        and _comparison_fact(row) != source_by_key[_business_key(row)]
+    ]
+    if conflicting_product_rows:
+        raise PredictionHistoryReplacementError(
+            "product fact conflicts with designated replacement business key"
+        )
     projected = tuple(
         {
             **row,
@@ -133,7 +158,95 @@ def resolve_prediction_history_projection(
         deletable_backtest_run_ids=frozenset(
             int(row["backtest_run_id"]) for row in legacy_backtest
         ),
+        source_live_run_ids=frozenset(
+            int(row["run_id"]) for row in source_live
+        ),
+        source_backtest_run_ids=frozenset(
+            int(row["backtest_run_id"]) for row in source_backtest
+        ),
     )
+
+
+def validate_prediction_history_source_runs(
+    projection: PredictionHistoryProjection,
+    source_live_runs: Iterable[Mapping[str, Any]],
+    source_backtest_runs: Iterable[Mapping[str, Any]],
+    *,
+    entry: LegacyPredictionMigration,
+    corrected: LegacyCorrectedExactEvidence,
+) -> None:
+    """验证替代事实引用的成功 run 与冻结血缘完全一致。"""
+    live_runs = [dict(row) for row in source_live_runs]
+    backtest_runs = [dict(row) for row in source_backtest_runs]
+    if {int(row["run_id"]) for row in live_runs} != set(
+        projection.source_live_run_ids
+    ):
+        raise PredictionHistoryReplacementError(
+            "designated live replacement runs are incomplete"
+        )
+    if {int(row["id"]) for row in backtest_runs} != set(
+        projection.source_backtest_run_ids
+    ):
+        raise PredictionHistoryReplacementError(
+            "designated backtest replacement runs are incomplete"
+        )
+
+    live_facts = [
+        row for row in projection.source_rows if row.get("run_id") is not None
+    ]
+    live_fact_counts = Counter(int(row["run_id"]) for row in live_facts)
+    live_predict_dates = {
+        int(row["run_id"]): str(row["predict_date"]) for row in live_facts
+    }
+    snapshot_pattern = re.compile(r"snapshot-[0-9a-f]{24}")
+    for row in live_runs:
+        run_id = int(row["run_id"])
+        if (
+            str(row.get("scheme_id")) != entry.designated_source_scheme_id
+            or str(row.get("scheme_version")) != entry.designated_exact
+            or str(row.get("runtime_type")) != "blackbox_v2"
+            or str(row.get("status")) != "success"
+            or str(row.get("prediction_phase"))
+            not in {"gray_live", "scheduled_live"}
+            or str(row.get("predict_date")) != live_predict_dates[run_id]
+            or not snapshot_pattern.fullmatch(
+                str(row.get("data_snapshot_id") or "")
+            )
+            or _strict_int(row.get("records_written"))
+            != live_fact_counts[run_id]
+        ):
+            raise PredictionHistoryReplacementError(
+                "designated live replacement run lineage changed"
+            )
+
+    if len(backtest_runs) != 1:
+        raise PredictionHistoryReplacementError(
+            "designated backtest replacement run is ambiguous"
+        )
+    backtest = backtest_runs[0]
+    summary = _json_object(backtest.get("summary"))
+    if (
+        corrected.backtest_status != "success"
+        or corrected.persisted_prediction_count != entry.expected_fact_count
+        or str(backtest.get("scheme_id"))
+        != entry.designated_source_scheme_id
+        or str(backtest.get("status")) != corrected.backtest_status
+        or str(backtest.get("code_hash")) != entry.designated_code_hash
+        or str(backtest.get("config_hash")) != entry.designated_config_hash
+        or str(backtest.get("input_artifact_hash"))
+        != entry.designated_input_artifact_id
+        or str(summary.get("scheme_version")) != entry.designated_exact
+        or str(summary.get("manifest_hash"))
+        != entry.designated_manifest_hash
+        or str(summary.get("input_artifact_hash"))
+        != entry.designated_input_artifact_id
+        or _strict_int(summary.get("persisted_prediction_count"))
+        != entry.expected_fact_count
+        or _strict_int(summary.get("row_count")) != entry.expected_fact_count
+    ):
+        raise PredictionHistoryReplacementError(
+            "designated backtest replacement run lineage changed"
+        )
 
 
 def live_fact_digest(rows: Iterable[Mapping[str, Any]]) -> str:
@@ -162,6 +275,10 @@ def _validate_source_identity(
         or corrected.code_hash != entry.designated_code_hash
         or corrected.config_hash != entry.designated_config_hash
         or corrected.manifest_hash != entry.designated_manifest_hash
+        or corrected.input_artifact_id
+        != entry.designated_input_artifact_id
+        or corrected.backtest_status != "success"
+        or corrected.persisted_prediction_count != entry.expected_fact_count
         or corrected.corrected_facts_sha256
         != entry.designated_corrected_facts_sha256
     ):
@@ -273,6 +390,36 @@ def _live_fact(
 def _comparison_fact(row: Mapping[str, Any]) -> tuple[Any, ...]:
     fact = _live_fact(row)
     return tuple(fact.values())
+
+
+def _business_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
+    return (
+        str(row["target_tenor"]),
+        int(row["horizon"]),
+        str(row["target_date"]),
+    )
+
+
+def _strict_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _json_object(value: Any) -> Mapping[str, Any]:
+    if isinstance(value, Mapping):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return {}
+        if isinstance(parsed, Mapping):
+            return parsed
+    return {}
 
 
 def _required_id(row: Mapping[str, Any]) -> int:

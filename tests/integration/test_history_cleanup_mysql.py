@@ -170,14 +170,34 @@ def _seed(engine) -> None:
             text(
                 "INSERT INTO t_backtest_runs "
                 "(benchmark_id, scheme_id, data_source, start_date, end_date, "
-                "status, run_mode) VALUES "
+                "status, code_hash, config_hash, input_artifact_hash, run_mode, "
+                "summary) VALUES "
                 "('cleanup-old', :base_id, 'blackbox_v2_current_snapshot_as_of', "
-                "'2026-05-20', '2026-05-20', 'success', 'persist'), "
+                "'2026-05-20', '2026-05-20', 'success', :old_code_hash, "
+                ":old_config_hash, :input_artifact, 'persist', :summary), "
                 "('cleanup-source', :source_id, "
                 "'blackbox_v2_current_snapshot_as_of', '2026-05-20', "
-                "'2026-05-20', 'success', 'persist')"
+                "'2026-05-20', 'success', :code_hash, :config_hash, "
+                ":input_artifact, 'persist', :summary)"
             ),
-            {"base_id": BASE_ID, "source_id": SOURCE_ID},
+            {
+                "base_id": BASE_ID,
+                "source_id": SOURCE_ID,
+                "old_code_hash": "1" * 64,
+                "old_config_hash": "2" * 64,
+                "code_hash": "a" * 64,
+                "config_hash": "b" * 64,
+                "input_artifact": "snapshot-" + "9" * 24,
+                "summary": json.dumps(
+                    {
+                        "scheme_version": SOURCE_EXACT,
+                        "manifest_hash": "c" * 64,
+                        "input_artifact_hash": "snapshot-" + "9" * 24,
+                        "persisted_prediction_count": 1,
+                        "row_count": 1,
+                    }
+                ),
+            },
         )
         backtests = {
             row["scheme_id"]: int(row["id"])
@@ -192,17 +212,19 @@ def _seed(engine) -> None:
             text(
                 "INSERT INTO t_scheme_runs "
                 "(scheme_id, scheme_version, runtime_type, run_type, "
-                "prediction_phase, predict_date, status) VALUES "
+                "prediction_phase, predict_date, status, data_snapshot_id, "
+                "records_written) VALUES "
                 "(:base_id, :old_exact, 'blackbox_v2', 'active', "
-                "'gray_live', '2026-06-01', 'success'), "
+                "'gray_live', '2026-06-01', 'success', :snapshot_id, 1), "
                 "(:source_id, :source_exact, 'blackbox_v2', 'active', "
-                "'gray_live', '2026-06-01', 'success')"
+                "'gray_live', '2026-06-01', 'success', :snapshot_id, 1)"
             ),
             {
                 "base_id": BASE_ID,
                 "old_exact": OLD_EXACT,
                 "source_id": SOURCE_ID,
                 "source_exact": SOURCE_EXACT,
+                "snapshot_id": "snapshot-" + "9" * 24,
             },
         )
         live_runs = {
@@ -223,6 +245,16 @@ def _seed(engine) -> None:
                 "predicted_direction) VALUES "
                 "(:old_backtest, 'cleanup-old', :base_id, '5Y', 5, "
                 "'2026-05-20', '2026-05-20', '2026-05-27', -1, 1)"
+            ),
+            {"old_backtest": backtests[BASE_ID], "base_id": BASE_ID},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO t_backtest_monthly_metrics "
+                "(run_id, benchmark_id, scheme_id, target_tenor, horizon, "
+                "month, sample_count, correct_count) VALUES "
+                "(:old_backtest, 'cleanup-old', :base_id, '5Y', 5, "
+                "'2026-05', 1, 1)"
             ),
             {"old_backtest": backtests[BASE_ID], "base_id": BASE_ID},
         )
@@ -319,6 +351,27 @@ def test_history_cleanup_is_exact_and_rolls_back_injected_failure(
             prediction_scheme_id=BASE_ID,
         )
         assert len(plan["scope"]["product_ids"]) == 2
+        assert len(plan["scope"]["source_live_run_ids"]) == 1
+        assert len(plan["scope"]["source_backtest_run_ids"]) == 1
+        assert len(plan["backup"]["backtest_monthly_metrics"]) == 1
+        assert len(plan["backup"]["source_live_runs"]) == 1
+        assert len(plan["backup"]["source_backtest_runs"]) == 1
+        source_live_run_id = plan["scope"]["source_live_run_ids"][0]
+        with mysql_test_engine.begin() as connection:
+            connection.execute(
+                text("UPDATE t_scheme_runs SET status='failed' WHERE run_id=:run_id"),
+                {"run_id": source_live_run_id},
+            )
+        with pytest.raises(ValueError, match="run lineage changed"):
+            history_cleanup.apply_replaced_prediction_history_cleanup(
+                mysql_test_engine,
+                plan,
+            )
+        with mysql_test_engine.begin() as connection:
+            connection.execute(
+                text("UPDATE t_scheme_runs SET status='success' WHERE run_id=:run_id"),
+                {"run_id": source_live_run_id},
+            )
         original_delete_ids = history_cleanup._delete_ids
         with monkeypatch.context() as failure_patch:
             def fail_after_product_delete(*args, **kwargs):
@@ -345,6 +398,13 @@ def test_history_cleanup_is_exact_and_rolls_back_injected_failure(
                 ),
                 {"scheme_id": BASE_ID},
             ).scalar_one() == 2
+            assert connection.execute(
+                text(
+                    "SELECT COUNT(*) FROM t_backtest_monthly_metrics "
+                    "WHERE scheme_id=:scheme_id"
+                ),
+                {"scheme_id": BASE_ID},
+            ).scalar_one() == 1
 
         stats = history_cleanup.apply_replaced_prediction_history_cleanup(
             mysql_test_engine,
@@ -369,5 +429,12 @@ def test_history_cleanup_is_exact_and_rolls_back_injected_failure(
                 ),
                 {"scheme_id": SOURCE_ID},
             ).scalar_one() == 2
+            assert connection.execute(
+                text(
+                    "SELECT COUNT(*) FROM t_backtest_monthly_metrics "
+                    "WHERE scheme_id=:scheme_id"
+                ),
+                {"scheme_id": BASE_ID},
+            ).scalar_one() == 0
     finally:
         _cleanup(mysql_test_engine)

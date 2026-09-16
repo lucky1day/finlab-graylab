@@ -44,8 +44,10 @@ from shared.legacy_backtest_lineage import (
     load_legacy_backtest_lineages,
 )
 from shared.prediction_history_replacement import (
+    PredictionHistoryProjection,
     PredictionHistoryReplacementError,
     resolve_prediction_history_projection,
+    validate_prediction_history_source_runs,
 )
 from shared.calendar_service import is_trading_day_row
 from shared.period_average_buckets import build_period_buckets
@@ -2828,6 +2830,26 @@ def _project_snapshot_history_replacements(
             ) from exc
         if projection is None:
             continue
+        source_live_runs, source_backtest_runs = (
+            _read_history_replacement_source_runs(
+                connection,
+                projection,
+                deadline=deadline,
+                monotonic=monotonic,
+            )
+        )
+        try:
+            validate_prediction_history_source_runs(
+                projection,
+                source_live_runs,
+                source_backtest_runs,
+                entry=entry,
+                corrected=corrected,
+            )
+        except PredictionHistoryReplacementError as exc:
+            raise DataConsistencyError(
+                f"historical replacement run lineage drift: {exc}"
+            ) from exc
         excluded = projection.excluded_product_ids
         replaced_live_run_ids.update(projection.deletable_live_run_ids)
         projected_rows = [
@@ -2846,6 +2868,49 @@ def _project_snapshot_history_replacements(
         )
     )
     return tuple(projected_rows), frozenset(replaced_live_run_ids)
+
+
+def _read_history_replacement_source_runs(
+    connection: Connection,
+    projection: PredictionHistoryProjection,
+    *,
+    deadline: float | None,
+    monotonic: Callable[[], float],
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    """在同一快照与总预算内读取替代事实引用的 run。"""
+    live_runs: list[Mapping[str, Any]] = []
+    if projection.source_live_run_ids:
+        statement = text(
+            "SELECT run_id, scheme_id, scheme_version, runtime_type, status, "
+            "prediction_phase, predict_date, data_snapshot_id, records_written "
+            "FROM t_scheme_runs WHERE run_id IN :run_ids ORDER BY run_id"
+        ).bindparams(bindparam("run_ids", expanding=True))
+        live_runs = list(
+            _execute_budgeted(
+                connection,
+                statement,
+                {"run_ids": sorted(projection.source_live_run_ids)},
+                deadline=deadline,
+                monotonic=monotonic,
+            ).mappings()
+        )
+    backtest_runs: list[Mapping[str, Any]] = []
+    if projection.source_backtest_run_ids:
+        statement = text(
+            "SELECT id, scheme_id, status, code_hash, config_hash, "
+            "input_artifact_hash, summary FROM t_backtest_runs "
+            "WHERE id IN :run_ids ORDER BY id"
+        ).bindparams(bindparam("run_ids", expanding=True))
+        backtest_runs = list(
+            _execute_budgeted(
+                connection,
+                statement,
+                {"run_ids": sorted(projection.source_backtest_run_ids)},
+                deadline=deadline,
+                monotonic=monotonic,
+            ).mappings()
+        )
+    return live_runs, backtest_runs
 
 
 def _read_actuals(

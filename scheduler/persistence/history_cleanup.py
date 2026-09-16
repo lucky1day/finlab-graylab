@@ -20,11 +20,12 @@ from shared.legacy_prediction_migration import (
 from shared.prediction_history_replacement import (
     PredictionHistoryProjection,
     resolve_prediction_history_projection,
+    validate_prediction_history_source_runs,
 )
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_PLAN_SCHEMA = "replaced-prediction-history-cleanup-v1"
+_PLAN_SCHEMA = "replaced-prediction-history-cleanup-v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +74,10 @@ def plan_replaced_prediction_history_cleanup(
         "product_ids": sorted(projection.deletable_product_ids),
         "live_run_ids": sorted(projection.deletable_live_run_ids),
         "backtest_run_ids": sorted(projection.deletable_backtest_run_ids),
+        "source_live_run_ids": sorted(projection.source_live_run_ids),
+        "source_backtest_run_ids": sorted(
+            projection.source_backtest_run_ids
+        ),
         "source_row_ids": sorted(int(row["id"]) for row in source_rows),
     }
     plan = {
@@ -131,6 +136,10 @@ def apply_replaced_prediction_history_cleanup(
             "product_ids": sorted(projection.deletable_product_ids),
             "live_run_ids": sorted(projection.deletable_live_run_ids),
             "backtest_run_ids": sorted(projection.deletable_backtest_run_ids),
+            "source_live_run_ids": sorted(projection.source_live_run_ids),
+            "source_backtest_run_ids": sorted(
+                projection.source_backtest_run_ids
+            ),
             "source_row_ids": sorted(int(row["id"]) for row in source_rows),
         }
         current_backup = _backup_rows(
@@ -268,6 +277,19 @@ def _resolve_scope(
         entry=entry,
         corrected=corrected,
     )
+    if projection is not None:
+        source_live_runs, source_backtest_runs = _source_run_rows(
+            connection,
+            projection=projection,
+            lock=lock,
+        )
+        validate_prediction_history_source_runs(
+            projection,
+            source_live_runs,
+            source_backtest_runs,
+            entry=entry,
+            corrected=corrected,
+        )
     return projection, product_rows, source_rows
 
 
@@ -342,6 +364,18 @@ def _backup_rows(
         ids=projection.deletable_backtest_run_ids,
         lock=lock,
     )
+    backtest_monthly_metrics = _select_ids(
+        connection,
+        table="t_backtest_monthly_metrics",
+        column="run_id",
+        ids=projection.deletable_backtest_run_ids,
+        lock=lock,
+    )
+    source_live_runs, source_backtest_runs = _source_run_rows(
+        connection,
+        projection=projection,
+        lock=lock,
+    )
     version_identities = sorted(
         {
             (str(row["scheme_id"]), str(row.get("scheme_version") or ""))
@@ -365,9 +399,36 @@ def _backup_rows(
             "live_runs": live_runs,
             "backtest_runs": backtest_runs,
             "backtest_predictions": backtest_predictions,
+            "backtest_monthly_metrics": backtest_monthly_metrics,
+            "source_live_runs": source_live_runs,
+            "source_backtest_runs": source_backtest_runs,
             "versions": versions,
         }
     )
+
+
+def _source_run_rows(
+    connection: Connection,
+    *,
+    projection: PredictionHistoryProjection,
+    lock: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """读取并按需锁定替代事实引用的完整 run 行。"""
+    source_live_runs = _select_ids(
+        connection,
+        table="t_scheme_runs",
+        column="run_id",
+        ids=projection.source_live_run_ids,
+        lock=lock,
+    )
+    source_backtest_runs = _select_ids(
+        connection,
+        table="t_backtest_runs",
+        column="id",
+        ids=projection.source_backtest_run_ids,
+        lock=lock,
+    )
+    return source_live_runs, source_backtest_runs
 
 
 def _select_ids(
@@ -502,6 +563,8 @@ def _validate_plan_shape(plan: Mapping[str, Any]) -> None:
             "product_ids",
             "live_run_ids",
             "backtest_run_ids",
+            "source_live_run_ids",
+            "source_backtest_run_ids",
             "source_row_ids",
         }
         or not isinstance(backup, Mapping)
@@ -511,6 +574,9 @@ def _validate_plan_shape(plan: Mapping[str, Any]) -> None:
             "live_runs",
             "backtest_runs",
             "backtest_predictions",
+            "backtest_monthly_metrics",
+            "source_live_runs",
+            "source_backtest_runs",
             "versions",
         }
         or not all(isinstance(value, list) for value in backup.values())
@@ -542,6 +608,8 @@ def _validate_plan_shape(plan: Mapping[str, Any]) -> None:
                 "product_ids",
                 "live_run_ids",
                 "backtest_run_ids",
+                "source_live_run_ids",
+                "source_backtest_run_ids",
                 "source_row_ids",
             )
         )
