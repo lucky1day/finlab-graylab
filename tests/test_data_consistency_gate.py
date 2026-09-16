@@ -1251,6 +1251,23 @@ def test_daily_backtest_rejects_ordered_dates_when_feature_is_not_trading_day() 
         validate_and_join_facts(snapshot, display_until="2026-06-30")
 
 
+def test_monthly_backtest_keeps_natural_fifteenth_on_non_trading_day() -> None:
+    snapshot = _date_contract_snapshot(
+        "monthly",
+        "2026-02-15",
+        "2026-02-13",
+        "2026-03-13",
+        is_live=False,
+    )
+
+    facts = validate_and_join_facts(snapshot, display_until="2026-06-30")
+
+    assert len(facts) == 1
+    assert facts[0].predict_date == "2026-02-15"
+    assert facts[0].feature_date == "2026-02-13"
+    assert facts[0].target_date == "2026-03-13"
+
+
 def test_weekly_live_rejects_ordered_dates_when_predict_date_is_not_saturday() -> None:
     snapshot = _date_contract_snapshot(
         "weekly_point",

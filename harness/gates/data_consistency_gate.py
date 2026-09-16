@@ -1085,7 +1085,10 @@ def validate_and_join_facts(
                 raise DataConsistencyError(
                     f"backtest prediction is missing immutable Actual: {business_key!r}"
                 )
-            if predict_date != feature_date:
+            if (
+                str(registry["task_type"]) != "monthly"
+                and predict_date != feature_date
+            ):
                 raise DataConsistencyError(
                     f"backtest prediction must have predict_date=feature_date: {business_key!r}"
                 )
@@ -1308,10 +1311,11 @@ def _validate_task_date_contract(
             return
 
         if task_type == "monthly":
-            trigger = date.fromisoformat(predict_date if is_live else feature_date)
-            if is_live and trigger.day != 15:
+            trigger = date.fromisoformat(predict_date)
+            if trigger.day != 15:
                 raise DataConsistencyError(
-                    f"monthly live predict_date must be natural month 15, got {predict_date}"
+                    "monthly predict_date must be natural month 15, "
+                    f"got {predict_date}"
                 )
             feature_anchor = date(trigger.year, trigger.month, 15)
             target_anchor = _next_month_anchor(feature_anchor)
