@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -7,7 +8,7 @@ from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 
 from harness.context import GateContext
 from harness.gates.data_consistency_gate import (
@@ -15,6 +16,7 @@ from harness.gates.data_consistency_gate import (
     DataConsistencyError,
     DatabaseSnapshot,
     DataConsistencyGate,
+    _read_actuals,
     aggregate_display_facts,
     validate_and_join_facts,
 )
@@ -125,7 +127,8 @@ def _engine(tmp_path: Path):
                 "CREATE TABLE t_scheme_runs "
                 "(run_id INTEGER PRIMARY KEY, scheme_id TEXT NOT NULL, "
                 "scheme_version TEXT, runtime_type TEXT, status TEXT, "
-                "prediction_phase TEXT, input_artifact_id TEXT)"
+                "prediction_phase TEXT, input_artifact_id TEXT, "
+                "predict_date TEXT, records_written INTEGER)"
             )
         )
         connection.execute(
@@ -138,7 +141,27 @@ def _engine(tmp_path: Path):
         connection.execute(
             text(
                 "CREATE TABLE t_scheme_versions "
-                "(scheme_id TEXT NOT NULL, scheme_version TEXT NOT NULL, status TEXT NOT NULL)"
+                "(scheme_id TEXT NOT NULL, scheme_version TEXT NOT NULL, "
+                "code_hash TEXT, config_hash TEXT, manifest_hash TEXT, "
+                "status TEXT NOT NULL)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE TABLE t_input_artifacts "
+                "(artifact_id TEXT PRIMARY KEY, scheme_id TEXT NOT NULL, "
+                "scheme_version TEXT, predict_date TEXT, content_hash TEXT, "
+                "schema_hash TEXT)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE TABLE t_backtest_predictions "
+                "(id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL, "
+                "scheme_id TEXT NOT NULL, target_tenor TEXT NOT NULL, "
+                "horizon INTEGER NOT NULL, predict_date TEXT NOT NULL, "
+                "feature_date TEXT, target_date TEXT, label INTEGER, "
+                "predicted_direction INTEGER)"
             )
         )
         connection.execute(
@@ -177,22 +200,64 @@ def _engine(tmp_path: Path):
             text(
                 "INSERT INTO t_scheme_runs VALUES "
                 "(11, :scheme_id, 'exact-a', 'native_adapter', 'success', "
-                "'scheduled_live', 'artifact-a')"
+                "'scheduled_live', 'artifact-a', '2026-06-10', 1), "
+                "(12, :scheme_id, 'exact-a', 'native_adapter', 'success', "
+                "'scheduled_live', 'artifact-b', '2026-06-11', 1)"
             ),
             {"scheme_id": BASE_SCHEME_ID},
         )
         connection.execute(
             text(
                 "INSERT INTO t_backtest_runs VALUES "
-                "(7, :scheme_id, 'success', 'code-a', 'config-a', "
-                "'input-a', '{}')"
+                "(7, :scheme_id, 'success', :code_hash, :config_hash, "
+                ":input_hash, :summary)"
             ),
-            {"scheme_id": BASE_SCHEME_ID},
+            {
+                "scheme_id": BASE_SCHEME_ID,
+                "code_hash": "a" * 64,
+                "config_hash": "b" * 64,
+                "input_hash": "d" * 64,
+                "summary": json.dumps(
+                    {
+                        "persisted_prediction_count": 1,
+                        "scheme_version": "exact-a",
+                        "manifest_hash": "c" * 64,
+                    }
+                ),
+            },
         )
         connection.execute(
             text(
                 "INSERT INTO t_scheme_versions VALUES "
-                "(:scheme_id, 'exact-a', 'active')"
+                "(:scheme_id, 'exact-a', :code_hash, :config_hash, "
+                ":manifest_hash, 'active')"
+            ),
+            {
+                "scheme_id": BASE_SCHEME_ID,
+                "code_hash": "a" * 64,
+                "config_hash": "b" * 64,
+                "manifest_hash": "c" * 64,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO t_input_artifacts VALUES "
+                "('artifact-a', :scheme_id, 'exact-a', '2026-06-10', "
+                ":content_hash, :schema_hash), "
+                "('artifact-b', :scheme_id, 'exact-a', '2026-06-11', "
+                ":content_hash, :schema_hash)"
+            ),
+            {
+                "scheme_id": BASE_SCHEME_ID,
+                "content_hash": "d" * 64,
+                "schema_hash": "e" * 64,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO t_backtest_predictions VALUES "
+                "(1, 7, :scheme_id, '5Y', 1, '2026-05-19', "
+                "'2026-05-19', '2026-05-20', 1, 1)"
             ),
             {"scheme_id": BASE_SCHEME_ID},
         )
@@ -208,7 +273,7 @@ def _engine(tmp_path: Path):
                      '2026-05-19', '2026-05-19', '2026-05-20', 1, 1),
                     (2, 11, NULL, 'exact-a', :scheme_id, '5Y', 1,
                      '2026-06-10', '2026-06-09', '2026-06-10', 0, NULL),
-                    (3, 11, NULL, 'exact-a', :scheme_id, '5Y', 1,
+                    (3, 12, NULL, 'exact-a', :scheme_id, '5Y', 1,
                      '2026-06-11', '2026-06-10', '2026-06-11', -1, NULL)
                 """
             ),
@@ -449,6 +514,126 @@ def test_data_consistency_gate_reconciles_fact_actual_summary_and_detail(
     assert calls[0] == "https://factor.example.test/api/factor-lab/dashboard"
     assert "month=2026-05" in calls[1]
     assert "month=2026-06" in calls[2]
+    evidence = {item.key: item.value for item in result.evidence}
+    assert evidence["completeness"]["status"] == "PASSED"
+    assert evidence["lineage"]["status"] == "PASSED"
+    assert evidence["representation"]["status"] == "PASSED"
+    assert evidence["completeness"]["pending_actual_count"] == 1
+
+
+def test_data_consistency_gate_detects_missing_expected_live_prediction(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path)
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM t_scheme_predictions WHERE id = 3"))
+    fetcher, _calls = _fetcher()
+
+    result = _gate(fetcher).run(_context(tmp_path, engine))
+
+    assert result.status is GateStatus.FAILED
+    assert any("missing live product predictions" in error for error in result.errors)
+
+
+def test_data_consistency_gate_detects_prediction_exact_drift(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path)
+    with engine.begin() as connection:
+        connection.execute(
+            text("UPDATE t_scheme_predictions SET scheme_version = 'exact-b' WHERE id = 2")
+        )
+    fetcher, _calls = _fetcher()
+
+    result = _gate(fetcher).run(_context(tmp_path, engine))
+
+    assert result.status is GateStatus.FAILED
+    assert any("exact" in error and "drift" in error for error in result.errors)
+
+
+def test_data_consistency_gate_fails_mature_actual_gap_but_keeps_future_pending(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path)
+    with engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM t_scheme_actuals WHERE trade_date = '2026-06-10'")
+        )
+        connection.execute(
+            text(
+                "INSERT INTO t_scheme_actuals VALUES "
+                "('5Y', '2026-06-11', 1, NULL)"
+            )
+        )
+    fetcher, _calls = _fetcher()
+
+    result = _gate(fetcher).run(_context(tmp_path, engine))
+
+    assert result.status is GateStatus.FAILED
+    assert any("mature Actual is missing" in error for error in result.errors)
+
+
+def test_data_consistency_gate_blocks_without_backtest_authority(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path)
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM t_backtest_predictions"))
+    fetcher, _calls = _fetcher()
+
+    result = _gate(fetcher).run(_context(tmp_path, engine))
+
+    assert result.status is GateStatus.BLOCKED
+    assert any("no immutable source predictions" in error for error in result.errors)
+
+
+def test_actual_snapshot_query_is_shared_by_equivalent_scheme_scope(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path)
+    statements: list[str] = []
+
+    def capture(
+        _connection,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ):
+        statements.append(" ".join(statement.split()).lower())
+
+    registry = {
+        "base_scheme_id": "one",
+        "target_tenor": "5Y",
+        "horizon": 1,
+        "task_type": "T+1",
+    }
+    predictions = [
+        {
+            "scheme_id": base,
+            "target_tenor": "5Y",
+            "horizon": 1,
+            "target_date": "2026-06-10",
+            "backtest_actual_direction": None,
+        }
+        for base in ("one", "two")
+    ]
+    event.listen(engine, "after_cursor_execute", capture)
+    try:
+        with engine.connect() as connection:
+            rows = _read_actuals(
+                connection,
+                [registry, {**registry, "base_scheme_id": "two"}],
+                predictions,
+                deadline=None,
+                monotonic=lambda: 0.0,
+            )
+    finally:
+        event.remove(engine, "after_cursor_execute", capture)
+
+    assert len(rows) == 1
+    assert sum("from t_scheme_actuals" in item for item in statements) == 1
 
 
 def test_data_consistency_gate_applies_one_total_http_budget(tmp_path: Path) -> None:

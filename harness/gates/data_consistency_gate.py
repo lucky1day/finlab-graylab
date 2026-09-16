@@ -21,6 +21,11 @@ from harness.gates.base import Gate, guarded_result, utc_now
 from harness.gates.dashboard_gate import ApiProbeError, fetch_json
 from harness.http_target import validate_api_target
 from harness.result import Evidence, GateResult, GateStatus
+from harness.signal_gap_plan import (
+    RegistryTarget,
+    SignalGapPlanError,
+    expected_signal_case_from_calendar_rows,
+)
 from scheduler.discovery import load_scheme_config
 from scheduler.repository import registry_scheme_id
 from shared.historical_reference_compatibility import (
@@ -29,6 +34,7 @@ from shared.historical_reference_compatibility import (
 )
 from shared.calendar_service import is_trading_day_row
 from shared.period_average_buckets import build_period_buckets
+from shared.prediction_context import LIVE_PREDICTION_PHASES
 from shared.task_specs import (
     TASK_COMBINATIONS,
     load_legacy_native_scheme_ids,
@@ -89,8 +95,10 @@ class DatabaseSnapshot:
     backtest_runs: tuple[dict[str, Any], ...]
     calendar_rows: tuple[dict[str, Any], ...]
     digest: str
-
-
+    backtest_prediction_rows: tuple[dict[str, Any], ...] = ()
+    version_rows: tuple[dict[str, Any], ...] = ()
+    input_artifact_rows: tuple[dict[str, Any], ...] = ()
+    actual_watermarks: tuple[dict[str, Any], ...] = ()
 @dataclass(frozen=True, slots=True)
 class _FrozenCalendar:
     rows: tuple[dict[str, Any], ...]
@@ -221,6 +229,31 @@ class DataConsistencyTimeout(DataConsistencyError):
     """表示独立对账已经耗尽本次调用的总时间预算。"""
 
 
+class DataConsistencyAuthorityUnavailable(DataConsistencyError):
+    """表示无法从冻结事实建立权威预期，Gate 必须 BLOCKED。"""
+
+
+def _subresult(
+    status: str,
+    errors: Sequence[str],
+    **details: Any,
+) -> dict[str, Any]:
+    if status not in {"PASSED", "FAILED", "BLOCKED"}:
+        raise ValueError("invalid data consistency subresult status")
+    return {"status": status, "errors": list(errors), **details}
+
+
+def _merge_subresult_error(
+    result: Mapping[str, Any],
+    error: str,
+    status: str,
+) -> dict[str, Any]:
+    merged = dict(result)
+    merged["status"] = status
+    merged["errors"] = [*result.get("errors", []), error]
+    return merged
+
+
 class DataConsistencyGate(Gate):
     """独立对账预测、Actual 与 Dashboard Summary/Detail。"""
 
@@ -262,12 +295,69 @@ class DataConsistencyGate(Gate):
         summary: Mapping[str, Any] | None = None
         summary_metadata: Mapping[str, Any] = {}
         facts: list[ConsistencyFact] = []
-        errors: list[str] = []
         detail_metadata: list[dict[str, Any]] = []
+        completeness = _subresult("BLOCKED", ["completeness not evaluated"])
+        lineage = _subresult("BLOCKED", ["lineage not evaluated"])
+        representation = _subresult(
+            "BLOCKED", ["representation not evaluated"]
+        )
         try:
             _remaining_budget(deadline, self._monotonic)
-            snapshot = _capture_snapshot(engine, registry_ids)
+            snapshot = _capture_snapshot(
+                engine,
+                registry_ids,
+                deadline=deadline,
+                monotonic=self._monotonic,
+            )
             _remaining_budget(deadline, self._monotonic)
+            try:
+                completeness_errors, completeness_details = (
+                    validate_snapshot_completeness(
+                        snapshot,
+                        display_until=display_until,
+                    )
+                )
+                completeness = _subresult(
+                    "PASSED" if not completeness_errors else "FAILED",
+                    completeness_errors,
+                    **completeness_details,
+                )
+            except DataConsistencyAuthorityUnavailable as exc:
+                completeness = _subresult("BLOCKED", [str(exc)])
+            except DataConsistencyError as exc:
+                completeness = _subresult("FAILED", [str(exc)])
+
+            try:
+                lineage_errors, lineage_details = validate_snapshot_lineage(
+                    snapshot,
+                    historical_references=load_historical_backtest_references(
+                        PROJECT_ROOT
+                    ),
+                )
+                lineage = _subresult(
+                    "PASSED" if not lineage_errors else "FAILED",
+                    lineage_errors,
+                    **lineage_details,
+                )
+            except DataConsistencyAuthorityUnavailable as exc:
+                lineage = _subresult("BLOCKED", [str(exc)])
+            except DataConsistencyError as exc:
+                lineage = _subresult("FAILED", [str(exc)])
+
+            try:
+                facts = validate_and_join_facts(
+                    snapshot,
+                    display_until=display_until,
+                    legacy_native_scheme_ids=load_legacy_native_scheme_ids(
+                        PROJECT_ROOT
+                    ),
+                    historical_references=load_historical_backtest_references(
+                        PROJECT_ROOT
+                    ),
+                )
+            except DataConsistencyError as exc:
+                lineage = _merge_subresult_error(lineage, str(exc), "FAILED")
+
             try:
                 summary, summary_metadata = _fetch_json_object(
                     self._fetcher,
@@ -280,25 +370,15 @@ class DataConsistencyGate(Gate):
                     summary.get("display_until"),
                     field="summary display_until",
                 )
-                facts = validate_and_join_facts(
-                    snapshot,
-                    display_until=display_until,
-                    legacy_native_scheme_ids=load_legacy_native_scheme_ids(
-                        PROJECT_ROOT
-                    ),
-                    historical_references=load_historical_backtest_references(
-                        PROJECT_ROOT
-                    ),
-                )
                 expected_monthly = aggregate_display_facts(facts)
                 _remaining_budget(deadline, self._monotonic)
-                errors = _compare_summary(
+                representation_errors = _compare_summary(
                     summary,
                     registry_ids=registry_ids,
                     expected=expected_monthly,
                 )
                 if summary_display_until != display_until:
-                    errors.append(
+                    representation_errors.append(
                         "Dashboard Summary display_until does not match the "
                         "independent Shanghai business date"
                     )
@@ -321,7 +401,7 @@ class DataConsistencyGate(Gate):
                         deadline=deadline,
                         monotonic=self._monotonic,
                     )
-                    errors.extend(
+                    representation_errors.extend(
                         _compare_detail(
                             detail,
                             scheme_id=scheme_id,
@@ -341,12 +421,25 @@ class DataConsistencyGate(Gate):
                             "fetched_at": metadata.get("fetched_at"),
                         }
                     )
+                representation = _subresult(
+                    "PASSED" if not representation_errors else "FAILED",
+                    representation_errors,
+                    summary_snapshot_id=summary.get("snapshot_id"),
+                    detail_request_count=len(detail_metadata),
+                )
+            except DataConsistencyTimeout:
+                raise
             except Exception as exc:
-                operation_error = exc
+                representation = _subresult("FAILED", [str(exc)])
             finally:
                 try:
                     _remaining_budget(deadline, self._monotonic)
-                    final_snapshot = _capture_snapshot(engine, registry_ids)
+                    final_snapshot = _capture_snapshot(
+                        engine,
+                        registry_ids,
+                        deadline=deadline,
+                        monotonic=self._monotonic,
+                    )
                     _remaining_budget(deadline, self._monotonic)
                 except DataConsistencyTimeout as exc:
                     operation_error = exc
@@ -369,6 +462,9 @@ class DataConsistencyGate(Gate):
             Evidence("summary_request_id", summary_metadata.get("request_id")),
             Evidence("summary_fetched_at", summary_metadata.get("fetched_at")),
             Evidence("detail_requests", detail_metadata),
+            Evidence("completeness", completeness),
+            Evidence("lineage", lineage),
+            Evidence("representation", representation),
         ]
         if isinstance(operation_error, DataConsistencyTimeout):
             raise operation_error
@@ -391,14 +487,391 @@ class DataConsistencyGate(Gate):
             )
         if operation_error is not None:
             raise operation_error
+        subresults = (completeness, lineage, representation)
+        errors = [
+            str(error)
+            for subresult in subresults
+            for error in subresult["errors"]
+        ]
+        if any(item["status"] == "FAILED" for item in subresults):
+            status = GateStatus.FAILED
+        elif any(item["status"] == "BLOCKED" for item in subresults):
+            status = GateStatus.BLOCKED
+        else:
+            status = GateStatus.PASSED
         return GateResult(
             gate_name=self.name,
-            status=GateStatus.PASSED if not errors else GateStatus.FAILED,
+            status=status,
             evidence=evidence,
             errors=errors,
             started_at=started_at,
             finished_at=utc_now(),
         )
+
+
+def validate_snapshot_completeness(
+    snapshot: DatabaseSnapshot,
+    *,
+    display_until: str,
+) -> tuple[list[str], dict[str, Any]]:
+    """用成功 run 与不可变回测事实建立预期键并核对产品事实。"""
+    errors: list[str] = []
+    product_rows = list(snapshot.prediction_rows)
+    product_by_live_run: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
+    product_by_backtest_run: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in product_rows:
+        if row.get("run_id") is not None:
+            product_by_live_run[int(row["run_id"])].append(row)
+        if row.get("backtest_run_id") is not None:
+            product_by_backtest_run[int(row["backtest_run_id"])].append(row)
+
+    source_by_backtest_run: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in snapshot.backtest_prediction_rows:
+        source_by_backtest_run[int(row["run_id"])].append(row)
+    backtest_expected = 0
+    for run in snapshot.backtest_runs:
+        run_id = int(run["reference_id"])
+        source_rows = source_by_backtest_run.get(run_id, [])
+        if not source_rows:
+            raise DataConsistencyAuthorityUnavailable(
+                f"backtest run {run_id} has no immutable source predictions"
+            )
+        summary = _json_mapping(run.get("summary"), field="backtest summary")
+        declared_count = summary.get("persisted_prediction_count")
+        if not isinstance(declared_count, int) or declared_count < 0:
+            raise DataConsistencyAuthorityUnavailable(
+                f"backtest run {run_id} lacks persisted_prediction_count authority"
+            )
+        if declared_count != len(source_rows):
+            errors.append(
+                f"backtest source count mismatch: run_id={run_id} "
+                f"summary={declared_count} source={len(source_rows)}"
+            )
+        source_index = {
+            _backtest_source_key(row): row for row in source_rows
+        }
+        if len(source_index) != len(source_rows):
+            errors.append(f"duplicate immutable backtest key: run_id={run_id}")
+        product_for_run = product_by_backtest_run.get(run_id, [])
+        product_index = {
+            _product_reference_key(row): row for row in product_for_run
+        }
+        if len(product_index) != len(product_for_run):
+            errors.append(f"duplicate product backtest key: run_id={run_id}")
+        missing = sorted(set(source_index) - set(product_index))
+        extra = sorted(set(product_index) - set(source_index))
+        if missing:
+            errors.append(
+                f"missing product predictions from backtest run {run_id}: {missing!r}"
+            )
+        if extra:
+            errors.append(
+                f"extra product predictions for backtest run {run_id}: {extra!r}"
+            )
+        for key in sorted(set(source_index) & set(product_index)):
+            source = source_index[key]
+            product = product_index[key]
+            expected_values = (
+                _iso_date(source.get("predict_date"), field="source predict_date"),
+                _iso_date(source.get("feature_date"), field="source feature_date"),
+                _direction(source.get("predicted_direction"), field="source direction"),
+                _direction(source.get("label"), field="source label"),
+            )
+            product_values = (
+                _iso_date(product.get("predict_date"), field="predict_date"),
+                _iso_date(product.get("feature_date"), field="feature_date"),
+                _direction(product.get("predicted_direction"), field="direction"),
+                _direction(
+                    product.get("backtest_actual_direction"),
+                    field="backtest_actual_direction",
+                ),
+            )
+            if product_values != expected_values:
+                errors.append(
+                    f"backtest product fact drift: run_id={run_id} key={key!r}"
+                )
+        backtest_expected += len(source_rows)
+
+    registry_by_base: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in snapshot.registry_rows:
+        registry_by_base[str(row["base_scheme_id"])].append(row)
+    live_expected = 0
+    for run in snapshot.live_runs:
+        if run.get("status") != "success":
+            continue
+        predict_date = _iso_date(run.get("predict_date"), field="run predict_date")
+        if predict_date > display_until:
+            continue
+        base_scheme_id = _required_text(run.get("scheme_id"), field="run scheme_id")
+        targets = registry_by_base.get(base_scheme_id, [])
+        if not targets:
+            raise DataConsistencyAuthorityUnavailable(
+                f"live run {run['reference_id']} has no selected Registry targets"
+            )
+        expected_by_key: dict[tuple[str, str, int, str], Any] = {}
+        for registry in targets:
+            target = RegistryTarget(
+                registry_scheme_id=str(registry["scheme_id"]),
+                base_scheme_id=base_scheme_id,
+                runtime_type=str(registry["runtime_type"]),
+                frequency=str(registry["frequency"]),
+                task_type=str(registry["task_type"]),
+                target_tenor=str(registry["target_tenor"]),
+                horizon=int(registry["horizon"]),
+                scheme_version=str(run.get("scheme_version") or ""),
+            )
+            try:
+                expected = expected_signal_case_from_calendar_rows(
+                    target,
+                    predict_date=predict_date,
+                    calendar_rows=snapshot.calendar_rows,
+                )
+            except (SignalGapPlanError, ValueError) as exc:
+                raise DataConsistencyAuthorityUnavailable(
+                    f"live run {run['reference_id']} date authority unavailable: {exc}"
+                ) from exc
+            expected_by_key[expected.business_key] = expected
+        observed = {
+            _product_business_key(row): row
+            for row in product_by_live_run.get(int(run["reference_id"]), [])
+        }
+        missing = sorted(set(expected_by_key) - set(observed))
+        extra = sorted(set(observed) - set(expected_by_key))
+        if missing:
+            errors.append(
+                f"missing live product predictions: run_id={run['reference_id']} "
+                f"keys={missing!r}"
+            )
+        if extra:
+            errors.append(
+                f"extra live product predictions: run_id={run['reference_id']} "
+                f"keys={extra!r}"
+            )
+        live_expected += len(expected_by_key)
+
+    actual_keys = {
+        (
+            str(row["actual_kind"]),
+            str(row["target_tenor"]),
+            _iso_date(row.get("target_date"), field="actual target_date"),
+            str(row["target_rule"]),
+        )
+        for row in snapshot.actual_rows
+        if row.get("actual_direction") is not None
+    }
+    actual_watermarks: dict[tuple[str, str, str], str] = {}
+    for row in snapshot.actual_watermarks:
+        if row.get("max_target_date") is None:
+            continue
+        scope = (
+            str(row["actual_kind"]),
+            str(row["target_tenor"]),
+            str(row["target_rule"]),
+        )
+        actual_watermarks[scope] = _iso_date(
+            row["max_target_date"],
+            field="Actual watermark",
+        )
+    if not snapshot.actual_watermarks:
+        for kind, tenor, target_date, rule in actual_keys:
+            scope = (kind, tenor, rule)
+            actual_watermarks[scope] = max(
+                target_date,
+                actual_watermarks.get(scope, target_date),
+            )
+    mature_actual_missing = 0
+    pending_actual = 0
+    registry_by_scope = {
+        (
+            str(row["base_scheme_id"]),
+            str(row["target_tenor"]),
+            int(row["horizon"]),
+        ): row
+        for row in snapshot.registry_rows
+    }
+    for row in product_rows:
+        if row.get("backtest_actual_direction") is not None:
+            continue
+        registry = registry_by_scope.get(
+            (str(row["scheme_id"]), str(row["target_tenor"]), int(row["horizon"]))
+        )
+        if registry is None:
+            continue
+        actual_kind, target_rule = _actual_selector(str(registry["task_type"]))
+        target_date = _iso_date(row.get("target_date"), field="target_date")
+        actual_key = (
+            actual_kind,
+            str(row["target_tenor"]),
+            target_date,
+            target_rule,
+        )
+        watermark = actual_watermarks.get(actual_key[:2] + actual_key[3:])
+        if actual_key in actual_keys:
+            continue
+        if watermark is not None and target_date <= watermark:
+            mature_actual_missing += 1
+            errors.append(f"mature Actual is missing: {actual_key!r}")
+        else:
+            pending_actual += 1
+
+    return errors, {
+        "expected_live_fact_count": live_expected,
+        "expected_backtest_fact_count": backtest_expected,
+        "observed_product_fact_count": len(product_rows),
+        "mature_actual_missing_count": mature_actual_missing,
+        "pending_actual_count": pending_actual,
+    }
+
+
+def validate_snapshot_lineage(
+    snapshot: DatabaseSnapshot,
+    *,
+    historical_references: frozenset[HistoricalBacktestReference],
+) -> tuple[list[str], dict[str, Any]]:
+    """核对产品事实引用的 exact、run、版本与输入工件血缘。"""
+    errors: list[str] = []
+    versions = {
+        (str(row["scheme_id"]), str(row["scheme_version"])): row
+        for row in snapshot.version_rows
+    }
+    artifacts = {
+        str(row["artifact_id"]): row for row in snapshot.input_artifact_rows
+    }
+    live_runs = {int(row["reference_id"]): row for row in snapshot.live_runs}
+    backtest_runs = {
+        int(row["reference_id"]): row for row in snapshot.backtest_runs
+    }
+    registry = {
+        (str(row["base_scheme_id"]), str(row["target_tenor"]), int(row["horizon"])): row
+        for row in snapshot.registry_rows
+    }
+    compatibility = {
+        (item.prediction_scheme_id, item.backtest_source_scheme_id)
+        for item in historical_references
+    }
+    checked_artifacts: set[str] = set()
+    for row in snapshot.prediction_rows:
+        scope = (str(row["scheme_id"]), str(row["target_tenor"]), int(row["horizon"]))
+        registry_row = registry.get(scope)
+        if registry_row is None:
+            continue
+        exact = _required_text(row.get("scheme_version"), field="prediction exact")
+        version = versions.get((scope[0], exact))
+        if version is None:
+            errors.append(f"prediction exact has no version row: scope={scope!r} exact={exact}")
+        else:
+            for field in ("code_hash", "config_hash", "manifest_hash"):
+                if not _is_sha256(version.get(field)):
+                    errors.append(
+                        f"version lineage hash invalid: scheme_id={scope[0]} "
+                        f"exact={exact} field={field}"
+                    )
+        if row.get("run_id") is not None:
+            run = live_runs.get(int(row["run_id"]))
+            if run is None:
+                continue
+            if run.get("scheme_version") != exact:
+                errors.append(f"live run exact drift: run_id={row['run_id']}")
+            if run.get("runtime_type") != registry_row.get("runtime_type"):
+                errors.append(f"live run runtime drift: run_id={row['run_id']}")
+            if run.get("status") != "success":
+                errors.append(f"live run is not successful: run_id={row['run_id']}")
+            if run.get("prediction_phase") not in LIVE_PREDICTION_PHASES:
+                errors.append(f"live run phase is invalid: run_id={row['run_id']}")
+            artifact_id = str(run.get("input_artifact_id") or "")
+            artifact = artifacts.get(artifact_id)
+            if not artifact_id or artifact is None:
+                errors.append(f"live run input artifact is missing: run_id={row['run_id']}")
+            elif artifact_id not in checked_artifacts:
+                checked_artifacts.add(artifact_id)
+                if (
+                    artifact.get("scheme_id") != scope[0]
+                    or artifact.get("scheme_version") != exact
+                    or not _is_sha256(artifact.get("content_hash"))
+                    or not _is_sha256(artifact.get("schema_hash"))
+                ):
+                    errors.append(f"live input artifact lineage drift: artifact_id={artifact_id}")
+        elif row.get("backtest_run_id") is not None:
+            run = backtest_runs.get(int(row["backtest_run_id"]))
+            if run is None:
+                continue
+            source_scheme_id = str(run.get("scheme_id") or "")
+            summary = _json_mapping(run.get("summary"), field="backtest summary")
+            if source_scheme_id == scope[0]:
+                if summary.get("scheme_version") != exact:
+                    errors.append(
+                        f"backtest exact drift: run_id={row['backtest_run_id']}"
+                    )
+                if version is not None and summary.get("manifest_hash") != version.get("manifest_hash"):
+                    errors.append(
+                        f"backtest manifest drift: run_id={row['backtest_run_id']}"
+                    )
+            elif (scope[0], source_scheme_id) not in compatibility:
+                errors.append(
+                    f"unapproved backtest lineage source: prediction={scope[0]} "
+                    f"source={source_scheme_id}"
+                )
+            for field in ("code_hash", "config_hash", "input_artifact_hash"):
+                if not _is_sha256(run.get(field)):
+                    errors.append(
+                        f"backtest lineage hash invalid: run_id={row['backtest_run_id']} "
+                        f"field={field}"
+                    )
+            if not _is_sha256(summary.get("manifest_hash")):
+                errors.append(
+                    f"backtest lineage hash invalid: run_id={row['backtest_run_id']} "
+                    "field=manifest_hash"
+                )
+    return errors, {
+        "version_count": len(versions),
+        "live_run_count": len(live_runs),
+        "backtest_run_count": len(backtest_runs),
+        "input_artifact_count": len(artifacts),
+    }
+
+
+def _product_business_key(row: Mapping[str, Any]) -> tuple[str, str, int, str]:
+    return (
+        str(row["scheme_id"]),
+        str(row["target_tenor"]),
+        int(row["horizon"]),
+        _iso_date(row.get("target_date"), field="target_date"),
+    )
+
+
+def _product_reference_key(row: Mapping[str, Any]) -> tuple[str, int, str]:
+    return (
+        str(row["target_tenor"]),
+        int(row["horizon"]),
+        _iso_date(row.get("target_date"), field="target_date"),
+    )
+
+
+def _backtest_source_key(row: Mapping[str, Any]) -> tuple[str, int, str]:
+    return (
+        str(row["target_tenor"]),
+        int(row["horizon"]),
+        _iso_date(row.get("target_date"), field="source target_date"),
+    )
+
+
+def _json_mapping(value: Any, *, field: str) -> Mapping[str, Any]:
+    if isinstance(value, Mapping):
+        return value
+    if isinstance(value, str):
+        try:
+            loaded = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise DataConsistencyError(f"{field} is invalid JSON") from exc
+        if isinstance(loaded, Mapping):
+            return loaded
+    raise DataConsistencyError(f"{field} must be an object")
+
+
+def _is_sha256(value: Any) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(
+        character in "0123456789abcdef" for character in value
+    )
 
 
 def validate_and_join_facts(
@@ -917,11 +1390,49 @@ def _selected_registry_ids(ctx: GateContext) -> tuple[tuple[str, ...], tuple[str
     return tuple(selected), tuple(registry_ids)
 
 
-def _capture_snapshot(engine: Engine, registry_ids: Sequence[str]) -> DatabaseSnapshot:
-    with _read_connection(engine) as connection:
+def _execute_budgeted(
+    connection: Connection,
+    statement: Any,
+    params: Mapping[str, Any] | None = None,
+    *,
+    deadline: float | None,
+    monotonic: Callable[[], float],
+):
+    """每条 SQL 共用 Gate 截止时刻，并同步收紧 MySQL 单语句上限。"""
+    if deadline is not None:
+        remaining = _remaining_budget(deadline, monotonic)
+        if connection.dialect.name == "mysql":
+            max_execution_ms = max(1, min(30_000, int(remaining * 1000)))
+            connection.exec_driver_sql(
+                f"SET SESSION MAX_EXECUTION_TIME={max_execution_ms}"
+            )
+    result = connection.execute(statement, dict(params or {}))
+    if deadline is not None:
+        _remaining_budget(deadline, monotonic)
+    return result
+
+
+def _chunks(values: Sequence[Any], size: int = 500) -> Iterator[Sequence[Any]]:
+    for offset in range(0, len(values), size):
+        yield values[offset : offset + size]
+
+
+def _capture_snapshot(
+    engine: Engine,
+    registry_ids: Sequence[str],
+    *,
+    deadline: float | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> DatabaseSnapshot:
+    with _read_connection(
+        engine,
+        deadline=deadline,
+        monotonic=monotonic,
+    ) as connection:
         registry_rows = tuple(
             dict(row)
-            for row in connection.execute(
+            for row in _execute_budgeted(
+                connection,
                 text(
                     "SELECT scheme_id, base_scheme_id, horizon, task_type, "
                     "runtime_type, frequency, target_tenor, status "
@@ -929,6 +1440,8 @@ def _capture_snapshot(engine: Engine, registry_ids: Sequence[str]) -> DatabaseSn
                     "WHERE scheme_id IN :registry_ids"
                 ).bindparams(bindparam("registry_ids", expanding=True)),
                 {"registry_ids": list(registry_ids)},
+                deadline=deadline,
+                monotonic=monotonic,
             ).mappings()
         )
         by_id = {str(row["scheme_id"]): row for row in registry_rows}
@@ -947,11 +1460,32 @@ def _capture_snapshot(engine: Engine, registry_ids: Sequence[str]) -> DatabaseSn
             for row in registry_rows
         ]
         prediction_rows = tuple(
-            dict(row) for row in _read_predictions(connection, scopes)
+            dict(row)
+            for row in _read_predictions(
+                connection,
+                scopes,
+                deadline=deadline,
+                monotonic=monotonic,
+            )
         )
         actual_rows = tuple(
             dict(row)
-            for row in _read_actuals(connection, registry_rows, prediction_rows)
+            for row in _read_actuals(
+                connection,
+                registry_rows,
+                prediction_rows,
+                deadline=deadline,
+                monotonic=monotonic,
+            )
+        )
+        actual_watermarks = tuple(
+            dict(row)
+            for row in _read_actual_watermarks(
+                connection,
+                registry_rows,
+                deadline=deadline,
+                monotonic=monotonic,
+            )
         )
         requested_live_ids = sorted(
             {
@@ -959,6 +1493,15 @@ def _capture_snapshot(engine: Engine, registry_ids: Sequence[str]) -> DatabaseSn
                 for row in prediction_rows
                 if row.get("run_id") is not None
             }
+        )
+        authoritative_live_ids = _read_authoritative_live_run_ids(
+            connection,
+            sorted({str(row["base_scheme_id"]) for row in registry_rows}),
+            deadline=deadline,
+            monotonic=monotonic,
+        )
+        requested_live_ids = sorted(
+            set(requested_live_ids) | set(authoritative_live_ids)
         )
         requested_backtest_ids = sorted(
             {
@@ -972,22 +1515,69 @@ def _capture_snapshot(engine: Engine, registry_ids: Sequence[str]) -> DatabaseSn
             table="t_scheme_runs",
             column="run_id",
             values=requested_live_ids,
+            deadline=deadline,
+            monotonic=monotonic,
         )
         backtest_runs = _read_references(
             connection,
             table="t_backtest_runs",
             column="id",
             values=requested_backtest_ids,
+            deadline=deadline,
+            monotonic=monotonic,
+        )
+        backtest_prediction_rows = tuple(
+            dict(row)
+            for row in _read_backtest_predictions(
+                connection,
+                requested_backtest_ids,
+                deadline=deadline,
+                monotonic=monotonic,
+            )
+        )
+        scheme_versions = sorted(
+            {
+                (str(row["scheme_id"]), str(row.get("scheme_version") or ""))
+                for row in prediction_rows
+            }
+        )
+        version_rows = tuple(
+            dict(row)
+            for row in _read_versions(
+                connection,
+                scheme_versions,
+                deadline=deadline,
+                monotonic=monotonic,
+            )
+        )
+        artifact_ids = sorted(
+            {
+                str(row.get("input_artifact_id") or "")
+                for row in live_runs.values()
+                if row.get("input_artifact_id")
+            }
+        )
+        input_artifact_rows = tuple(
+            dict(row)
+            for row in _read_input_artifacts(
+                connection,
+                artifact_ids,
+                deadline=deadline,
+                monotonic=monotonic,
+            )
         )
         calendar_rows = tuple(
             dict(row)
-            for row in connection.execute(
+            for row in _execute_budgeted(
+                connection,
                 text(
                     "SELECT tc.rdate, tc.trade_flag, wd.week_id "
                     "FROM t_trade_calendar tc "
                     "LEFT JOIN api_wind_date wd ON wd.rdate = tc.rdate "
                     "ORDER BY tc.rdate"
-                )
+                ),
+                deadline=deadline,
+                monotonic=monotonic,
             ).mappings()
         )
     digest = _snapshot_digest(
@@ -997,6 +1587,10 @@ def _capture_snapshot(engine: Engine, registry_ids: Sequence[str]) -> DatabaseSn
         tuple(live_runs.values()),
         tuple(backtest_runs.values()),
         calendar_rows,
+        backtest_prediction_rows,
+        version_rows,
+        input_artifact_rows,
+        actual_watermarks,
     )
     return DatabaseSnapshot(
         registry_rows=registry_rows,
@@ -1010,22 +1604,37 @@ def _capture_snapshot(engine: Engine, registry_ids: Sequence[str]) -> DatabaseSn
         ),
         calendar_rows=calendar_rows,
         digest=digest,
+        backtest_prediction_rows=backtest_prediction_rows,
+        version_rows=version_rows,
+        input_artifact_rows=input_artifact_rows,
+        actual_watermarks=actual_watermarks,
     )
 
 
 @contextmanager
-def _read_connection(engine: Engine) -> Iterator[Connection]:
+def _read_connection(
+    engine: Engine,
+    *,
+    deadline: float | None,
+    monotonic: Callable[[], float],
+) -> Iterator[Connection]:
+    if deadline is not None:
+        _remaining_budget(deadline, monotonic)
     connection = engine.connect()
     transaction = None
     is_mysql = engine.dialect.name == "mysql"
     try:
         if is_mysql:
+            if deadline is not None:
+                _remaining_budget(deadline, monotonic)
             connection = connection.execution_options(
                 isolation_level="REPEATABLE READ"
             )
             connection.exec_driver_sql(
                 "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY"
             )
+            if deadline is not None:
+                _remaining_budget(deadline, monotonic)
         else:
             transaction = connection.begin()
         yield connection
@@ -1040,45 +1649,56 @@ def _read_connection(engine: Engine) -> Iterator[Connection]:
 def _read_predictions(
     connection: Connection,
     scopes: Sequence[tuple[str, str, int]],
-):
-    clauses: list[str] = []
-    params: dict[str, Any] = {}
-    for index, (scheme_id, tenor, horizon) in enumerate(scopes):
-        clauses.append(
-            f"(scheme_id = :scheme_{index} AND target_tenor = :tenor_{index} "
-            f"AND horizon = :horizon_{index})"
+    *,
+    deadline: float | None,
+    monotonic: Callable[[], float],
+) -> list[Mapping[str, Any]]:
+    rows: list[Mapping[str, Any]] = []
+    for scope_chunk in _chunks(scopes):
+        clauses: list[str] = []
+        params: dict[str, Any] = {}
+        for index, (scheme_id, tenor, horizon) in enumerate(scope_chunk):
+            clauses.append(
+                f"(scheme_id = :scheme_{index} AND target_tenor = :tenor_{index} "
+                f"AND horizon = :horizon_{index})"
+            )
+            params.update(
+                {
+                    f"scheme_{index}": scheme_id,
+                    f"tenor_{index}": tenor,
+                    f"horizon_{index}": horizon,
+                }
+            )
+        where = " OR ".join(clauses) or "1 = 0"
+        rows.extend(
+            _execute_budgeted(
+                connection,
+                text(
+                    "SELECT id, run_id, backtest_run_id, scheme_version, scheme_id, "
+                    "target_tenor, horizon, predict_date, feature_date, target_date, "
+                    "predicted_direction, backtest_actual_direction "
+                    f"FROM t_scheme_predictions WHERE {where} "
+                    "ORDER BY scheme_id, target_tenor, horizon, target_date, id"
+                ),
+                params,
+                deadline=deadline,
+                monotonic=monotonic,
+            ).mappings()
         )
-        params.update(
-            {
-                f"scheme_{index}": scheme_id,
-                f"tenor_{index}": tenor,
-                f"horizon_{index}": horizon,
-            }
-        )
-    where = " OR ".join(clauses) or "1 = 0"
-    return connection.execute(
-        text(
-            "SELECT id, run_id, backtest_run_id, scheme_version, scheme_id, "
-            "target_tenor, horizon, predict_date, feature_date, target_date, "
-            "predicted_direction, backtest_actual_direction "
-            f"FROM t_scheme_predictions WHERE {where} "
-            "ORDER BY scheme_id, target_tenor, horizon, target_date, id"
-        ),
-        params,
-    ).mappings()
+    return rows
 
 
 def _read_actuals(
     connection: Connection,
     registry_rows: Sequence[Mapping[str, Any]],
     prediction_rows: Sequence[Mapping[str, Any]],
+    *,
+    deadline: float | None,
+    monotonic: Callable[[], float],
 ) -> list[Mapping[str, Any]]:
-    target_dates = sorted(
-        {_iso_date(row.get("target_date"), field="target_date") for row in prediction_rows}
-    )
-    if not target_dates:
-        return []
-    rows: list[Mapping[str, Any]] = []
+    grouped_dates: dict[
+        tuple[str, str, str, str, str, str, str], set[str]
+    ] = defaultdict(set)
     for registry in registry_rows:
         task_type = str(registry["task_type"])
         actual_kind, target_rule = _actual_selector(task_type)
@@ -1118,22 +1738,140 @@ def _read_actuals(
                 "actual_direction",
             )
             rule_filter = " AND target_rule = :target_rule"
-        statement = text(
-            f"SELECT :actual_kind AS actual_kind, tenor AS target_tenor, "
-            f"{date_column} AS target_date, "
-            f":selected_rule AS target_rule, {direction_column} AS actual_direction "
-            f"FROM {table} WHERE tenor = :tenor "
-            f"AND {date_column} IN :target_dates{rule_filter}"
-        ).bindparams(bindparam("target_dates", expanding=True))
-        params = {
-            "tenor": tenor,
-            "target_dates": target_dates,
-            "selected_rule": target_rule,
-            "target_rule": target_rule,
-            "actual_kind": actual_kind,
+        scope = (
+            str(registry["base_scheme_id"]),
+            tenor,
+            int(registry["horizon"]),
+        )
+        dates = {
+            _iso_date(row.get("target_date"), field="target_date")
+            for row in prediction_rows
+            if row.get("backtest_actual_direction") is None
+            and (
+                str(row["scheme_id"]),
+                str(row["target_tenor"]),
+                int(row["horizon"]),
+            )
+            == scope
         }
-        rows.extend(connection.execute(statement, params).mappings())
+        grouped_dates[
+            (
+                actual_kind,
+                tenor,
+                target_rule,
+                table,
+                date_column,
+                direction_column,
+                rule_filter,
+            )
+        ].update(dates)
+
+    rows: list[Mapping[str, Any]] = []
+    for (
+        actual_kind,
+        tenor,
+        target_rule,
+        table,
+        date_column,
+        direction_column,
+        rule_filter,
+    ), target_date_set in sorted(grouped_dates.items()):
+        target_dates = sorted(target_date_set)
+        for date_chunk in _chunks(target_dates):
+            statement = text(
+                f"SELECT :actual_kind AS actual_kind, tenor AS target_tenor, "
+                f"{date_column} AS target_date, "
+                f":selected_rule AS target_rule, "
+                f"{direction_column} AS actual_direction "
+                f"FROM {table} WHERE tenor = :tenor "
+                f"AND {date_column} IN :target_dates{rule_filter}"
+            ).bindparams(bindparam("target_dates", expanding=True))
+            params = {
+                "tenor": tenor,
+                "target_dates": list(date_chunk),
+                "selected_rule": target_rule,
+                "target_rule": target_rule,
+                "actual_kind": actual_kind,
+            }
+            rows.extend(
+                _execute_budgeted(
+                    connection,
+                    statement,
+                    params,
+                    deadline=deadline,
+                    monotonic=monotonic,
+                ).mappings()
+            )
     return rows
+
+
+def _read_actual_watermarks(
+    connection: Connection,
+    registry_rows: Sequence[Mapping[str, Any]],
+    *,
+    deadline: float | None,
+    monotonic: Callable[[], float],
+) -> list[Mapping[str, Any]]:
+    scopes: set[tuple[str, str, str, str, str, str]] = set()
+    for registry in registry_rows:
+        task_type = str(registry["task_type"])
+        actual_kind, target_rule = _actual_selector(task_type)
+        if task_type in {"T+1", "T+5"}:
+            table = "t_scheme_actuals"
+            date_column = "trade_date"
+            rule_filter = ""
+        elif task_type in {"weekly_point", "weekly_average"}:
+            table = "t_scheme_weekly_actuals"
+            date_column = "target_date"
+            rule_filter = " AND target_rule = :target_rule"
+        elif task_type == "monthly":
+            table = "t_scheme_monthly_actuals"
+            date_column = "target_date"
+            rule_filter = " AND target_rule = :target_rule"
+        else:
+            table = "t_scheme_period_average_actuals"
+            date_column = "target_date"
+            rule_filter = " AND target_rule = :target_rule"
+        scopes.add(
+            (
+                actual_kind,
+                str(registry["target_tenor"]),
+                target_rule,
+                table,
+                date_column,
+                rule_filter,
+            )
+        )
+    watermarks: list[Mapping[str, Any]] = []
+    for (
+        actual_kind,
+        tenor,
+        target_rule,
+        table,
+        date_column,
+        rule_filter,
+    ) in sorted(scopes):
+        result = _execute_budgeted(
+            connection,
+            text(
+                f"SELECT MAX({date_column}) AS max_target_date "
+                f"FROM {table} WHERE tenor = :tenor{rule_filter}"
+            ),
+            {"tenor": tenor, "target_rule": target_rule},
+            deadline=deadline,
+            monotonic=monotonic,
+        ).scalar_one_or_none()
+        watermarks.append(
+            {
+                "actual_kind": actual_kind,
+                "target_tenor": tenor,
+                "target_rule": target_rule,
+                "max_target_date": (
+                    str(result)[:10] if result is not None else None
+                ),
+            }
+        )
+    return watermarks
 
 
 def _read_references(
@@ -1142,13 +1880,15 @@ def _read_references(
     table: str,
     column: str,
     values: Sequence[int],
+    deadline: float | None,
+    monotonic: Callable[[], float],
 ) -> dict[int, dict[str, Any]]:
     if not values:
         return {}
     if table == "t_scheme_runs":
         selected = (
             f"{column}, scheme_id, scheme_version, runtime_type, status, "
-            "prediction_phase, input_artifact_id"
+            "prediction_phase, input_artifact_id, predict_date, records_written"
         )
     elif table == "t_backtest_runs":
         selected = (
@@ -1160,42 +1900,182 @@ def _read_references(
     statement = text(
         f"SELECT {selected} FROM {table} WHERE {column} IN :reference_ids"
     ).bindparams(bindparam("reference_ids", expanding=True))
-    result = {
-        int(row[column]): {
-            **dict(row),
-            "reference_id": int(row[column]),
-        }
-        for row in connection.execute(
-            statement, {"reference_ids": list(values)}
-        ).mappings()
-    }
+    result: dict[int, dict[str, Any]] = {}
+    for value_chunk in _chunks(values):
+        for row in _execute_budgeted(
+            connection,
+            statement,
+            {"reference_ids": list(value_chunk)},
+            deadline=deadline,
+            monotonic=monotonic,
+        ).mappings():
+            result[int(row[column])] = {
+                **dict(row),
+                "reference_id": int(row[column]),
+            }
     if table != "t_backtest_runs" or not result:
         return result
     source_ids = sorted({str(row["scheme_id"]) for row in result.values()})
-    registry_status = {
-        str(row["scheme_id"]): str(row["status"])
-        for row in connection.execute(
-            text(
-                "SELECT scheme_id, status FROM t_scheme_registry "
-                "WHERE scheme_id IN :scheme_ids"
-            ).bindparams(bindparam("scheme_ids", expanding=True)),
-            {"scheme_ids": source_ids},
-        ).mappings()
-    }
-    retired_sources = set(
-        connection.execute(
-            text(
-                "SELECT DISTINCT scheme_id FROM t_scheme_versions "
-                "WHERE scheme_id IN :scheme_ids AND status = 'retired'"
-            ).bindparams(bindparam("scheme_ids", expanding=True)),
-            {"scheme_ids": source_ids},
-        ).scalars()
-    )
+    registry_status: dict[str, str] = {}
+    retired_sources: set[str] = set()
+    for source_chunk in _chunks(source_ids):
+        registry_status.update(
+            {
+                str(row["scheme_id"]): str(row["status"])
+                for row in _execute_budgeted(
+                    connection,
+                    text(
+                        "SELECT scheme_id, status FROM t_scheme_registry "
+                        "WHERE scheme_id IN :scheme_ids"
+                    ).bindparams(bindparam("scheme_ids", expanding=True)),
+                    {"scheme_ids": list(source_chunk)},
+                    deadline=deadline,
+                    monotonic=monotonic,
+                ).mappings()
+            }
+        )
+        retired_sources.update(
+            str(item)
+            for item in _execute_budgeted(
+                connection,
+                text(
+                    "SELECT DISTINCT scheme_id FROM t_scheme_versions "
+                    "WHERE scheme_id IN :scheme_ids AND status = 'retired'"
+                ).bindparams(bindparam("scheme_ids", expanding=True)),
+                {"scheme_ids": list(source_chunk)},
+                deadline=deadline,
+                monotonic=monotonic,
+            ).scalars()
+        )
     for row in result.values():
         scheme_id = str(row["scheme_id"])
         row["source_registry_status"] = registry_status.get(scheme_id)
         row["source_has_retired_version"] = scheme_id in retired_sources
     return result
+
+
+def _read_authoritative_live_run_ids(
+    connection: Connection,
+    scheme_ids: Sequence[str],
+    *,
+    deadline: float | None,
+    monotonic: Callable[[], float],
+) -> list[int]:
+    run_ids: set[int] = set()
+    statement = text(
+        "SELECT run_id FROM t_scheme_runs "
+        "WHERE scheme_id IN :scheme_ids AND status = 'success' "
+        "AND prediction_phase IN :live_phases "
+        "AND predict_date >= :live_start"
+    ).bindparams(
+        bindparam("scheme_ids", expanding=True),
+        bindparam("live_phases", expanding=True),
+    )
+    for scheme_chunk in _chunks(scheme_ids):
+        run_ids.update(
+            int(value)
+            for value in _execute_budgeted(
+                connection,
+                statement,
+                {
+                    "scheme_ids": list(scheme_chunk),
+                    "live_phases": sorted(LIVE_PREDICTION_PHASES),
+                    "live_start": LIVE_TARGET_START_DATE.isoformat(),
+                },
+                deadline=deadline,
+                monotonic=monotonic,
+            ).scalars()
+        )
+    return sorted(run_ids)
+
+
+def _read_backtest_predictions(
+    connection: Connection,
+    run_ids: Sequence[int],
+    *,
+    deadline: float | None,
+    monotonic: Callable[[], float],
+) -> list[Mapping[str, Any]]:
+    rows: list[Mapping[str, Any]] = []
+    statement = text(
+        "SELECT run_id, scheme_id, target_tenor, horizon, predict_date, "
+        "feature_date, target_date, label, predicted_direction "
+        "FROM t_backtest_predictions WHERE run_id IN :run_ids "
+        "ORDER BY run_id, target_tenor, horizon, target_date, predict_date, id"
+    ).bindparams(bindparam("run_ids", expanding=True))
+    for run_chunk in _chunks(run_ids):
+        rows.extend(
+            _execute_budgeted(
+                connection,
+                statement,
+                {"run_ids": list(run_chunk)},
+                deadline=deadline,
+                monotonic=monotonic,
+            ).mappings()
+        )
+    return rows
+
+
+def _read_versions(
+    connection: Connection,
+    identities: Sequence[tuple[str, str]],
+    *,
+    deadline: float | None,
+    monotonic: Callable[[], float],
+) -> list[Mapping[str, Any]]:
+    rows: list[Mapping[str, Any]] = []
+    for identity_chunk in _chunks(identities):
+        clauses: list[str] = []
+        params: dict[str, Any] = {}
+        for index, (scheme_id, exact) in enumerate(identity_chunk):
+            clauses.append(
+                f"(scheme_id = :version_scheme_{index} "
+                f"AND scheme_version = :version_exact_{index})"
+            )
+            params[f"version_scheme_{index}"] = scheme_id
+            params[f"version_exact_{index}"] = exact
+        if not clauses:
+            continue
+        rows.extend(
+            _execute_budgeted(
+                connection,
+                text(
+                    "SELECT scheme_id, scheme_version, code_hash, config_hash, "
+                    "manifest_hash, status FROM t_scheme_versions WHERE "
+                    + " OR ".join(clauses)
+                ),
+                params,
+                deadline=deadline,
+                monotonic=monotonic,
+            ).mappings()
+        )
+    return rows
+
+
+def _read_input_artifacts(
+    connection: Connection,
+    artifact_ids: Sequence[str],
+    *,
+    deadline: float | None,
+    monotonic: Callable[[], float],
+) -> list[Mapping[str, Any]]:
+    rows: list[Mapping[str, Any]] = []
+    statement = text(
+        "SELECT artifact_id, scheme_id, scheme_version, predict_date, "
+        "content_hash, schema_hash FROM t_input_artifacts "
+        "WHERE artifact_id IN :artifact_ids"
+    ).bindparams(bindparam("artifact_ids", expanding=True))
+    for artifact_chunk in _chunks(artifact_ids):
+        rows.extend(
+            _execute_budgeted(
+                connection,
+                statement,
+                {"artifact_ids": list(artifact_chunk)},
+                deadline=deadline,
+                monotonic=monotonic,
+            ).mappings()
+        )
+    return rows
 
 
 def _snapshot_digest(*parts: Any) -> str:

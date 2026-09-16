@@ -158,6 +158,39 @@ class SignalGapSnapshot:
     databridge_authority_error: Literal["MISSING", "INVALID"] | None = None
 
 
+def expected_signal_case_from_calendar_rows(
+    target: RegistryTarget,
+    *,
+    predict_date: str,
+    calendar_rows: Sequence[Mapping[str, Any]],
+) -> ExpectedSignalCase:
+    """复用缺口规划日期合同，从冻结日历构造一个预期业务键。"""
+    trade_rows = [
+        {
+            "rdate": str(row["rdate"])[:10],
+            "trade_flag": row.get("trade_flag"),
+        }
+        for row in calendar_rows
+    ]
+    week_rows = [
+        {
+            "rdate": str(row["rdate"])[:10],
+            "trade_flag": row.get("trade_flag"),
+            "week_id": row.get("week_id"),
+        }
+        for row in calendar_rows
+    ]
+    calendar = _SingleDateCalendar(
+        trade_calendar_rows=trade_rows,
+        week_calendar_rows=week_rows,
+    )
+    return _expected_case(
+        target,
+        predict_date=_canonical_date(predict_date, "predict_date"),
+        calendar=calendar,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _BlackboxGapAuthorityIndex:
     cutoffs_by_feature_date: Mapping[
