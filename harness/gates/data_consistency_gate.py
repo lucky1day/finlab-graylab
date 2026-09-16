@@ -34,7 +34,12 @@ from shared.historical_reference_compatibility import (
 )
 from shared.calendar_service import is_trading_day_row
 from shared.period_average_buckets import build_period_buckets
-from shared.prediction_context import LIVE_PREDICTION_PHASES
+from shared.prediction_context import (
+    LIVE_PREDICTION_PHASES,
+    MONTHLY_TARGET_RULE,
+    WEEKLY_AVERAGE_TARGET_RULE,
+    WEEKLY_TARGET_RULE,
+)
 from shared.task_specs import (
     TASK_COMBINATIONS,
     load_legacy_native_scheme_ids,
@@ -2314,10 +2319,12 @@ def _actual_selector(task_type: str) -> tuple[str, str]:
         return "daily_1d", target_rule
     if task_type == "T+5":
         return "daily_5d", target_rule
-    if task_type in {"weekly_point", "weekly_average"}:
-        return "weekly", target_rule
+    if task_type == "weekly_point":
+        return "weekly", WEEKLY_TARGET_RULE
+    if task_type == "weekly_average":
+        return "weekly", WEEKLY_AVERAGE_TARGET_RULE
     if task_type == "monthly":
-        return "monthly", target_rule
+        return "monthly", MONTHLY_TARGET_RULE
     return "period_average", target_rule
 
 
