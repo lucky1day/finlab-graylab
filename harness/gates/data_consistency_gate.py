@@ -464,7 +464,10 @@ class DataConsistencyGate(Gate):
             Evidence("database_snapshot_digest", snapshot.digest),
             Evidence("prediction_fact_count", len(snapshot.prediction_rows)),
             Evidence("joined_fact_count", len(representation_facts)),
-            Evidence("lineage_validated_fact_count", len(validated_facts)),
+            Evidence(
+                "business_contract_validated_fact_count",
+                len(validated_facts),
+            ),
             Evidence(
                 "summary_snapshot_id",
                 summary.get("snapshot_id") if summary is not None else None,

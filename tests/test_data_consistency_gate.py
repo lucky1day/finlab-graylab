@@ -558,7 +558,7 @@ def test_representation_remains_independent_when_lineage_dates_fail(
     assert evidence["lineage"]["status"] == "FAILED"
     assert evidence["representation"]["status"] == "PASSED"
     assert evidence["joined_fact_count"] == 3
-    assert evidence["lineage_validated_fact_count"] == 0
+    assert evidence["business_contract_validated_fact_count"] == 0
     assert any("feature <= predict <= target" in error for error in result.errors)
 
 
@@ -589,6 +589,11 @@ def test_data_consistency_gate_detects_prediction_exact_drift(
     result = _gate(fetcher).run(_context(tmp_path, engine))
 
     assert result.status is GateStatus.FAILED
+    evidence = {item.key: item.value for item in result.evidence}
+    assert evidence["completeness"]["status"] == "PASSED"
+    assert evidence["lineage"]["status"] == "FAILED"
+    assert evidence["representation"]["status"] == "PASSED"
+    assert evidence["business_contract_validated_fact_count"] == 3
     assert any("exact" in error and "drift" in error for error in result.errors)
 
 
