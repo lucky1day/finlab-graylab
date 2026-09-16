@@ -149,6 +149,7 @@ class DashboardHistoryReplacementPlan:
     """当前数据库中已完整验证、可用于 Dashboard 的历史替代投影。"""
 
     projections: tuple[PredictionHistoryProjection, ...] = ()
+    backtest_runs_by_registry: tuple[tuple[str, dict[str, Any]], ...] = ()
 
     @property
     def excluded_product_ids(self) -> frozenset[int]:
@@ -172,20 +173,27 @@ def resolve_dashboard_history_replacements(
     registry_rows: list[Mapping[str, Any]],
 ) -> DashboardHistoryReplacementPlan:
     """仅在 archived/retired 来源和完整事实摘要均命中时启用替代。"""
-    active_scopes = {
-        (
+    registry_id_by_scope: dict[tuple[str, str, int], str] = {}
+    for row in registry_rows:
+        scope = (
             str(row["base_scheme_id"]),
             str(row["target_tenor"]),
             int(row["horizon"]),
         )
-        for row in registry_rows
-    }
+        if scope in registry_id_by_scope:
+            raise DashboardDataError(
+                "active registry scope is ambiguous: "
+                f"base_scheme_id={scope[0]} target_tenor={scope[1]} "
+                f"horizon={scope[2]}"
+            )
+        registry_id_by_scope[scope] = str(row["scheme_id"])
     entries = load_legacy_prediction_migrations(PROJECT_ROOT)
     corrected_by_identity = {
         (item.source_scheme_id, item.designated_exact): item
         for item in load_legacy_corrected_exact_evidence(PROJECT_ROOT)
     }
     projections: list[PredictionHistoryProjection] = []
+    replacement_backtests_by_registry: list[tuple[str, dict[str, Any]]] = []
     for entry in sorted(
         entries,
         key=lambda item: (
@@ -194,11 +202,12 @@ def resolve_dashboard_history_replacements(
             item.horizon,
         ),
     ):
-        if (
+        scope = (
             entry.prediction_scheme_id,
             entry.target_tenor,
             entry.horizon,
-        ) not in active_scopes:
+        )
+        if scope not in registry_id_by_scope:
             continue
         corrected = corrected_by_identity.get(
             (entry.designated_source_scheme_id, entry.designated_exact)
@@ -301,7 +310,23 @@ def resolve_dashboard_history_replacements(
                     f"historical replacement run lineage drift: {exc}"
                 ) from exc
             projections.append(projection)
-    return DashboardHistoryReplacementPlan(tuple(projections))
+            registry_id = registry_id_by_scope[scope]
+            replacement_backtests_by_registry.extend(
+                (
+                    registry_id,
+                    {
+                        **dict(row),
+                        "scheme_id": entry.prediction_scheme_id,
+                        "lineage_scheme_id": entry.designated_source_scheme_id,
+                        "history_replacement": True,
+                    },
+                )
+                for row in source_backtest_runs
+            )
+    return DashboardHistoryReplacementPlan(
+        tuple(projections),
+        tuple(replacement_backtests_by_registry),
+    )
 
 
 def _read_replacement_scope_rows(
@@ -367,7 +392,8 @@ def _read_replacement_source_runs(
     if projection.source_backtest_run_ids:
         statement = text(
             "SELECT id, benchmark_id, scheme_id, data_source, status, "
-            "code_hash, config_hash, input_artifact_hash, run_mode, summary "
+            "start_date, end_date, created_at, updated_at, code_hash, "
+            "config_hash, input_artifact_hash, run_mode, summary "
             "FROM t_backtest_runs "
             "WHERE id IN :run_ids ORDER BY id"
         ).bindparams(bindparam("run_ids", expanding=True))

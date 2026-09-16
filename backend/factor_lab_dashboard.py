@@ -284,6 +284,9 @@ def _build_summary(engine: Engine) -> dict[str, Any]:
             backtest_run_rows,
             registry_rows,
         )
+        selected_backtest_runs.update(
+            replacement_plan.backtest_runs_by_registry
+        )
         request_context = current_http_request_context()
         if request_context is not None:
             request_context.failure_stage = "dashboard_canonical"

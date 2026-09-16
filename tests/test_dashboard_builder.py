@@ -24,6 +24,7 @@ from backend.factor_lab_dashboard_semantics import (
     live_actual_selector,
 )
 from backend.factor_lab_dashboard_queries import (
+    DashboardHistoryReplacementPlan,
     MAX_ACTUAL_SOURCE_ROWS,
     read_bounded_source_rows,
     read_live_actuals,
@@ -194,6 +195,62 @@ def test_v5_summary_aggregates_rows_and_reads_owner() -> None:
         ["2026-01", "backtest", 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0],
         ["2026-06", "live", 2, 2, 2, 1, 1, 0, 1, 1, 0, 1, 1],
     ]
+
+
+def test_replacement_backtest_metadata_survives_old_run_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend import factor_lab_dashboard as dashboard
+
+    engine = _engine()
+    replacement_run = {
+        "id": 70,
+        "benchmark_id": "replacement-source",
+        "scheme_id": "demo_daily",
+        "data_source": "blackbox_v2_current_snapshot_as_of",
+        "start_date": "2025-01-01",
+        "end_date": "2026-05-29",
+        "status": "success",
+        "created_at": "2026-06-01 10:00:00",
+        "updated_at": "2026-06-01 10:00:00",
+    }
+    monkeypatch.setattr(
+        dashboard,
+        "resolve_dashboard_history_replacements",
+        lambda _connection, _registry_rows: DashboardHistoryReplacementPlan(
+            backtest_runs_by_registry=(
+                ("demo_daily__h1__5Y", replacement_run),
+            )
+        ),
+    )
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM t_backtest_runs"))
+        connection.execute(
+            text(
+                """INSERT INTO t_scheme_registry VALUES
+                ('demo_daily__h2__10Y','demo_daily','blackbox_v2',
+                 'Demo sibling','lw','unrelated scope',2,'T+1','daily',
+                 '10Y','active','2026-06-01')"""
+            )
+        )
+        connection.execute(
+            text(
+                """INSERT INTO t_target_registry VALUES
+                ('10Y','10年','bond','yield',2,'active','{}')"""
+            )
+        )
+
+    schemes = {
+        row["scheme_id"]: row
+        for row in build_factor_lab_dashboard(engine)["schemes"]
+    }
+
+    assert schemes["demo_daily__h1__5Y"]["backtest"] is not None
+    assert (
+        schemes["demo_daily__h1__5Y"]["backtest"]["benchmark_id"]
+        == "replacement-source"
+    )
+    assert schemes["demo_daily__h2__10Y"]["backtest"] is None
 
 
 @pytest.mark.parametrize(
