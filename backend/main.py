@@ -23,7 +23,13 @@ from fastapi.exceptions import RequestValidationError
 from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from backend.db import get_dashboard_engine, get_engine
+from backend.db import (
+    bind_http_request_context,
+    create_http_request_context,
+    current_http_request_context,
+    get_dashboard_engine,
+    get_engine,
+)
 from backend.auth.routes import (
     auth_error_response,
     policy_error_response,
@@ -211,7 +217,12 @@ app.include_router(auth_router)
 @app.middleware("http")
 async def security_response_headers(request: Request, call_next):
     """为 HTML、认证和 Dashboard 统一补充浏览器安全响应头。"""
-    response = await call_next(request)
+    request_context = create_http_request_context(
+        request.headers.get("x-request-id")
+    )
+    request.state.http_request_context = request_context
+    with bind_http_request_context(request_context):
+        response = await call_next(request)
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; script-src 'self'; style-src 'self' "
         "'unsafe-inline'; img-src 'self'; connect-src 'self'; "
@@ -230,6 +241,7 @@ async def security_response_headers(request: Request, call_next):
         or response.headers.get("content-type", "").startswith("text/html")
     ):
         response.headers["Cache-Control"] = "no-store"
+        response.headers.setdefault("X-Request-ID", request_context.request_id)
     return response
 
 
@@ -254,6 +266,13 @@ def health() -> dict:
 
 def _request_id(request: Request) -> str:
     """复用合法 edge request ID；缺失或不安全时生成本地 UUID。"""
+    request_context = getattr(
+        getattr(request, "state", None),
+        "http_request_context",
+        None,
+    )
+    if request_context is not None:
+        return str(request_context.request_id)
     candidate = request.headers.get("x-request-id")
     if candidate is not None and _REQUEST_ID_PATTERN.fullmatch(candidate):
         return candidate
@@ -319,7 +338,24 @@ def _server_timing(
     response_encoding_seconds: float,
     route_seconds: float,
 ) -> str:
+    request_context = current_http_request_context()
     timings: list[tuple[str, float | None]] = [
+        (
+            "request_auth",
+            (
+                round(request_context.auth_seconds * 1_000, 3)
+                if request_context is not None
+                else None
+            ),
+        ),
+        (
+            "request_pool_acquire",
+            (
+                round(request_context.pool_acquire_seconds * 1_000, 3)
+                if request_context is not None
+                else None
+            ),
+        ),
         (
             "dashboard_db",
             _duration_ms(build_diagnostics.get("db_read_seconds")),
@@ -341,6 +377,14 @@ def _server_timing(
             round(response_encoding_seconds * 1_000, 3),
         ),
         ("request_route", round(route_seconds * 1_000, 3)),
+        (
+            "backend_total",
+            (
+                round(request_context.elapsed_seconds() * 1_000, 3)
+                if request_context is not None
+                else None
+            ),
+        ),
     ]
     return ", ".join(
         f"{name};dur={duration:.3f}"
@@ -377,6 +421,30 @@ def _log_dashboard_request(event: dict[str, Any]) -> None:
     )
 
 
+def _request_context_metrics(context: Any) -> dict[str, Any]:
+    """输出仅覆盖后端认证、数据库、构建和编码的请求指标。"""
+    if context is None:
+        return {
+            "auth_ms": None,
+            "pool_acquire_ms": None,
+            "db_ms": None,
+            "build_ms": None,
+            "encode_ms": None,
+            "backend_total_ms": None,
+        }
+    return {
+        "auth_ms": round(context.auth_seconds * 1_000, 3),
+        "pool_acquire_ms": round(
+            context.pool_acquire_seconds * 1_000,
+            3,
+        ),
+        "db_ms": round(context.db_seconds * 1_000, 3),
+        "build_ms": round(context.build_seconds * 1_000, 3),
+        "encode_ms": round(context.encode_seconds * 1_000, 3),
+        "backend_total_ms": round(context.elapsed_seconds() * 1_000, 3),
+    }
+
+
 def _dashboard_error_response(
     *,
     request_id: str,
@@ -386,12 +454,17 @@ def _dashboard_error_response(
     failure_stage: str | None = None,
     exception_class: str | None = None,
 ) -> Response:
+    request_context = current_http_request_context()
+    if request_context is not None and failure_stage is not None:
+        request_context.failure_stage = failure_stage
     encoding_started_at = time.perf_counter()
     raw_body = json.dumps(
         {"error_code": error_code},
         separators=(",", ":"),
     ).encode("utf-8")
     response_encoding_seconds = time.perf_counter() - encoding_started_at
+    if request_context is not None:
+        request_context.encode_seconds += response_encoding_seconds
     route_seconds = time.perf_counter() - route_started_at
     headers = _dashboard_response_headers(
         request_id=request_id,
@@ -414,6 +487,7 @@ def _dashboard_error_response(
             3,
         ),
         "request_route_ms": round(route_seconds * 1_000, 3),
+        **_request_context_metrics(request_context),
         "scheme_count": None,
         "live_row_count": None,
         "backtest_row_count": None,
@@ -439,7 +513,10 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
     """构造 GET/HEAD 共用的精确 dashboard 表示。"""
     route_started_at = time.perf_counter()
     request_id = _request_id(request)
+    request_context = current_http_request_context()
     try:
+        if request_context is not None:
+            request_context.failure_stage = "dashboard_query"
         detail_query = _dashboard_detail_query(request)
     except ValueError:
         return _dashboard_error_response(
@@ -447,38 +524,64 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
             error_code=_DASHBOARD_QUERY_ERROR,
             status_code=400,
             route_started_at=route_started_at,
+            failure_stage="dashboard_query",
         )
 
     failure_stage = "dashboard_engine"
     try:
+        if request_context is not None:
+            request_context.failure_stage = failure_stage
+            request_context.require_remaining(failure_stage)
         engine = get_dashboard_engine()
         failure_stage = "dashboard_build"
-        response_payload = (
-            build_factor_lab_dashboard(engine)
-            if detail_query is None
-            else build_factor_lab_dashboard_detail(engine, **detail_query)
-        )
+        if request_context is not None:
+            request_context.failure_stage = failure_stage
+            request_context.require_remaining(failure_stage)
+        build_started_at = time.perf_counter()
+        try:
+            response_payload = (
+                build_factor_lab_dashboard(engine)
+                if detail_query is None
+                else build_factor_lab_dashboard_detail(engine, **detail_query)
+            )
+        finally:
+            if request_context is not None:
+                request_context.build_seconds += (
+                    time.perf_counter() - build_started_at
+                )
         if response_payload is None:
             return _dashboard_error_response(
                 request_id=request_id,
                 error_code=_DASHBOARD_SCHEME_NOT_FOUND,
                 status_code=404,
                 route_started_at=route_started_at,
+                failure_stage="dashboard_lookup",
             )
         failure_stage = "dashboard_encoding"
+        if request_context is not None:
+            request_context.failure_stage = failure_stage
+            request_context.require_remaining(failure_stage)
         serialization_started_at = time.perf_counter()
         encoding = encode_canonical_snapshot(response_payload)
         record_dashboard_encoding(str(response_payload["snapshot_id"]), encoding)
         response_serialization_seconds = (
             time.perf_counter() - serialization_started_at
         )
+        if request_context is not None:
+            request_context.encode_seconds += response_serialization_seconds
     except Exception as exc:  # noqa: BLE001 - 公开接口只能返回稳定可恢复状态
+        reported_failure_stage = (
+            request_context.failure_stage
+            if request_context is not None
+            and request_context.failure_stage is not None
+            else failure_stage
+        )
         return _dashboard_error_response(
             request_id=request_id,
             error_code=_DASHBOARD_ERROR_UNAVAILABLE,
             status_code=503,
             route_started_at=route_started_at,
-            failure_stage=failure_stage,
+            failure_stage=reported_failure_stage,
             exception_class=_safe_exception_class(exc),
         )
 
@@ -496,6 +599,8 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
         snapshot_id=snapshot_id,
         server_timing=server_timing,
     )
+    if request_context is not None:
+        request_context.failure_stage = None
     _log_dashboard_request(
         {
             "request_id": request_id,
@@ -514,6 +619,7 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
                 3,
             ),
             "request_route_ms": round(route_seconds * 1_000, 3),
+            **_request_context_metrics(request_context),
             "scheme_count": _integer_metric(
                 build_diagnostics.get("scheme_count")
             ),

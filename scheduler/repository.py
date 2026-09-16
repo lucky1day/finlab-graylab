@@ -16,6 +16,12 @@ from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Connection, Engine, URL
 
 from scheduler.discovery import SchemeConfig, blackbox_deliveries, load_scheme_config
+from shared.actual_facts import (
+    ActualSourceSnapshot,
+    build_daily_actual_records_from_rows,
+    normalize_date,
+    read_actual_source_snapshot,
+)
 from shared.blackbox_v2.contracts import REQUEST_FIELDS, request_from_mapping
 from shared.db_config import DatabaseConfig
 from shared.models import (
@@ -32,6 +38,7 @@ from shared.scheme_config_schema import (
     ALLOWED_VERSION_STATUS,
     normalize_scheme_owner,
 )
+from shared.tenor_mapping import normalize_tenor
 
 
 PREDICTION_KEYS_ALREADY_EXIST = "prediction_keys_already_exist"
@@ -100,9 +107,11 @@ def registry_scheme_id(base_scheme_id: str, horizon: int, target_tenor: str) -> 
     return f"{base_scheme_id}__h{int(horizon)}__{target_tenor}"
 
 
-def create_engine_from_env() -> Engine:
-    """创建 SQLAlchemy Engine。"""
-    cfg = DatabaseConfig.from_env()
+def create_engine_from_env(
+    config: DatabaseConfig | None = None,
+) -> Engine:
+    """从显式配置或当前环境创建调度 SQLAlchemy Engine。"""
+    cfg = config if config is not None else DatabaseConfig.from_env()
     url = URL.create(
         drivername="mysql+pymysql",
         username=cfg.user,
@@ -3515,12 +3524,34 @@ def _insert_run_predictions_conn(
 
 def upsert_actuals(engine: Engine, records: Iterable[ActualRecord]) -> int:
     """UPSERT 实际方向记录。"""
-    sql = text(
+    rows = [asdict(record) for record in records]
+    if not rows:
+        return 0
+    with engine.begin() as conn:
+        return _upsert_actuals_conn(conn, rows)
+
+
+def _upsert_actuals_conn(
+    conn: Connection,
+    records: Iterable[ActualRecord | Mapping[str, object]],
+) -> int:
+    """在调用方事务中 UPSERT 日频 Actual。"""
+    rows = [
+        asdict(record) if isinstance(record, ActualRecord) else dict(record)
+        for record in records
+    ]
+    if not rows:
+        return 0
+    duplicate = (
         """
-        INSERT INTO t_scheme_actuals
-            (tenor, trade_date, close_yield, direction_1d, direction_5d)
-        VALUES
-            (:tenor, :trade_date, :close_yield, :direction_1d, :direction_5d)
+        ON CONFLICT (tenor, trade_date) DO UPDATE SET
+            close_yield = excluded.close_yield,
+            direction_1d = excluded.direction_1d,
+            direction_5d = excluded.direction_5d,
+            updated_at = CURRENT_TIMESTAMP
+        """
+        if _dialect_name(conn) == "sqlite"
+        else """
         ON DUPLICATE KEY UPDATE
             close_yield = VALUES(close_yield),
             direction_1d = VALUES(direction_1d),
@@ -3528,45 +3559,186 @@ def upsert_actuals(engine: Engine, records: Iterable[ActualRecord]) -> int:
             updated_at = CURRENT_TIMESTAMP
         """
     )
-    rows = [asdict(record) for record in records]
-    if not rows:
-        return 0
-    with engine.begin() as conn:
-        conn.execute(sql, rows)
+    sql = text(
+        f"""
+        INSERT INTO t_scheme_actuals
+            (tenor, trade_date, close_yield, direction_1d, direction_5d)
+        VALUES
+            (:tenor, :trade_date, :close_yield, :direction_1d, :direction_5d)
+        {duplicate}
+        """
+    )
+    conn.execute(sql, rows)
     return len(rows)
 
 
-def delete_actuals_after_source_watermark(
-    engine: Engine,
+@dataclass(frozen=True)
+class ActualTailRepairPlan:
+    """经只读预览生成的日频 Actual 尾部修复计划。"""
+
+    tenors: tuple[str, ...]
+    source_digest: str
+    source_watermarks: tuple[tuple[str, str], ...]
+    start_date: str | None
+    end_date: str | None
+    business_keys: tuple[tuple[str, str], ...]
+
+
+def _actual_keys_after_source_watermark_conn(
+    conn: Connection,
     source_watermarks: Mapping[str, str],
     end_date: str | None = None,
-) -> int:
-    """删除晚于当前源表水位的日频 actual 尾部脏数据。
-
-    只清理每个 tenor 的 tail，不处理源表中间缺口，避免上游短暂缺行时误删历史验证。
-    """
+) -> tuple[tuple[str, str], ...]:
     rows = [
-        {"tenor": str(tenor), "source_max_date": str(source_max_date), "end_date": end_date}
+        {
+            "tenor": str(tenor),
+            "source_max_date": str(source_max_date),
+            "end_date": end_date,
+        }
         for tenor, source_max_date in source_watermarks.items()
         if source_max_date
     ]
     if not rows:
-        return 0
+        return ()
     end_filter = "AND trade_date <= :end_date" if end_date else ""
     sql = text(
         f"""
-        DELETE FROM t_scheme_actuals
+        SELECT tenor, trade_date
+        FROM t_scheme_actuals
         WHERE tenor = :tenor
           AND trade_date > :source_max_date
           {end_filter}
+        ORDER BY tenor, trade_date
         """
     )
-    deleted = 0
+    keys: list[tuple[str, str]] = []
+    for row in rows:
+        keys.extend(
+            (str(item["tenor"]), str(item["trade_date"])[:10])
+            for item in conn.execute(sql, row).mappings().all()
+        )
+    return tuple(sorted(keys))
+
+
+def plan_actuals_tail_repair(
+    engine: Engine,
+    *,
+    tenors: Iterable[str],
+    start_date: str | date | datetime | None = None,
+    end_date: str | date | datetime | None = None,
+) -> ActualTailRepairPlan:
+    """只读生成绑定源快照身份与精确业务键的尾部修复计划。"""
+    normalized_tenors = tuple(sorted({normalize_tenor(tenor) for tenor in tenors}))
+    if not normalized_tenors:
+        raise ValueError("daily actual tail repair tenor scope cannot be empty")
+    normalized_start = normalize_date(start_date)
+    normalized_end = normalize_date(end_date)
+    with engine.connect() as conn:
+        snapshot = read_actual_source_snapshot(
+            conn,
+            tenors=normalized_tenors,
+            end_date=normalized_end,
+        )
+        normalized_watermarks = tuple(sorted(snapshot.watermarks.items()))
+        business_keys = _actual_keys_after_source_watermark_conn(
+            conn,
+            dict(normalized_watermarks),
+            normalized_end,
+        )
+    return ActualTailRepairPlan(
+        tenors=normalized_tenors,
+        source_digest=snapshot.source_digest,
+        source_watermarks=normalized_watermarks,
+        start_date=normalized_start,
+        end_date=normalized_end,
+        business_keys=business_keys,
+    )
+
+
+def _delete_actual_keys_conn(
+    conn: Connection,
+    business_keys: Iterable[tuple[str, str]],
+) -> int:
+    rows = [
+        {"tenor": str(tenor), "trade_date": str(trade_date)}
+        for tenor, trade_date in business_keys
+    ]
+    if not rows:
+        return 0
+    result = conn.execute(
+        text(
+            """
+            DELETE FROM t_scheme_actuals
+            WHERE tenor = :tenor AND trade_date = :trade_date
+            """
+        ),
+        rows,
+    )
+    return int(result.rowcount or 0)
+
+
+def _require_current_actual_tail_plan(
+    conn: Connection,
+    plan: ActualTailRepairPlan,
+) -> ActualSourceSnapshot:
+    snapshot = read_actual_source_snapshot(
+        conn,
+        tenors=plan.tenors,
+        end_date=plan.end_date,
+    )
+    if snapshot.source_digest != plan.source_digest:
+        raise RuntimeError("daily actual tail repair source snapshot changed")
+    current_watermarks = tuple(sorted(snapshot.watermarks.items()))
+    if current_watermarks != plan.source_watermarks:
+        raise RuntimeError("daily actual tail repair source watermarks changed")
+    current_keys = _actual_keys_after_source_watermark_conn(
+        conn,
+        dict(plan.source_watermarks),
+        plan.end_date,
+    )
+    if current_keys != plan.business_keys:
+        raise RuntimeError(
+            "daily actual tail repair plan is stale: "
+            f"expected={plan.business_keys!r}, current={current_keys!r}"
+        )
+    return snapshot
+
+
+def delete_actuals_after_source_watermark(
+    engine: Engine,
+    plan: ActualTailRepairPlan,
+) -> int:
+    """按已预览且仍匹配的精确业务键执行独立尾部删除。"""
     with engine.begin() as conn:
-        for row in rows:
-            result = conn.execute(sql, row)
-            deleted += int(result.rowcount or 0)
-    return deleted
+        _require_current_actual_tail_plan(conn, plan)
+        deleted = _delete_actual_keys_conn(conn, plan.business_keys)
+        if deleted != len(plan.business_keys):
+            raise RuntimeError(
+                "daily actual tail repair delete count changed: "
+                f"expected={len(plan.business_keys)}, actual={deleted}"
+            )
+        return deleted
+
+
+def repair_actuals_after_source_watermark(
+    engine: Engine,
+    plan: ActualTailRepairPlan,
+) -> tuple[int, int]:
+    """在同一受控事务中执行日频 Actual 修复写入与精确尾部删除。"""
+    with engine.begin() as conn:
+        snapshot = _require_current_actual_tail_plan(conn, plan)
+        records = build_daily_actual_records_from_rows(
+            snapshot.rows,
+            start_date=plan.start_date,
+        )
+        written = _upsert_actuals_conn(conn, records)
+        deleted = _delete_actual_keys_conn(conn, plan.business_keys)
+        if deleted != len(plan.business_keys):
+            raise RuntimeError(
+                "daily actual tail repair delete count changed: "
+                f"expected={len(plan.business_keys)}, actual={deleted}"
+            )
+    return written, deleted
 
 
 def upsert_weekly_actuals(engine: Engine, records: Iterable[WeeklyActualRecord]) -> int:
@@ -3625,6 +3797,18 @@ def upsert_monthly_actuals(engine: Engine, records: Iterable[MonthlyActualRecord
             VALUES
                 (:tenor, :feature_month_id, :target_month_id, :predict_date, :feature_date, :target_date,
                  :feature_yield, :target_yield, :direction_monthly, :price_signal, :target_rule, :extra)
+            ON CONFLICT (tenor, predict_date, target_rule) DO UPDATE SET
+                feature_month_id = excluded.feature_month_id,
+                target_month_id = excluded.target_month_id,
+                feature_date = excluded.feature_date,
+                target_date = excluded.target_date,
+                feature_yield = excluded.feature_yield,
+                target_yield = excluded.target_yield,
+                direction_monthly = excluded.direction_monthly,
+                price_signal = excluded.price_signal,
+                target_rule = excluded.target_rule,
+                extra = excluded.extra,
+                updated_at = CURRENT_TIMESTAMP
             """
         )
     else:
@@ -3669,7 +3853,17 @@ def upsert_period_average_actuals(
         return 0
 
     json_value = ":extra" if engine.dialect.name == "sqlite" else "CAST(:extra AS JSON)"
-    duplicate = "" if engine.dialect.name == "sqlite" else """
+    duplicate = """
+        ON CONFLICT (tenor, predict_date, target_rule) DO UPDATE SET
+            feature_date = excluded.feature_date,
+            target_date = excluded.target_date,
+            feature_yield = excluded.feature_yield,
+            target_yield = excluded.target_yield,
+            actual_direction = excluded.actual_direction,
+            price_signal = excluded.price_signal,
+            extra = excluded.extra,
+            updated_at = CURRENT_TIMESTAMP
+    """ if engine.dialect.name == "sqlite" else """
         ON DUPLICATE KEY UPDATE
             feature_date = VALUES(feature_date),
             target_date = VALUES(target_date),

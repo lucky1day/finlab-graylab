@@ -19,7 +19,10 @@
   owner 只取 Registry，缺失/非法则整个请求失败，不回退 Metadata 或仓库映射。
 - 读路径不查 run、DataBridge 或日历，不计算 `missing/not_due/no_run`；调度缺口由
   [调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)处理，不混入产品读模型。
-- Engine 连接/读/写超时分别为 0.5/2/0.5 秒，单条 MySQL 查询上限 1000ms，开启 pool_pre_ping，300 秒回收连接。
+- 认证与 Dashboard 使用彼此独立的 Backend HTTP Engine；每进程各自 `pool_size=5`、
+  `max_overflow=0`、`pool_timeout=0.25s`，合计最多 10 个池连接。连接/读/写超时分别为
+  0.5/2/0.5 秒，单条 MySQL 查询上限 1000ms，开启 pool_pre_ping，300 秒回收连接。这些是压测起点，
+  不是最终容量结论；总连接数须乘以实际应用进程数核算。
 
 无参数请求返回 `representation=summary`，包含方案身份、owner、回测展示元数据和 `month + source` 计数，
 不携带逐点明细，这是合法表示，浏览器只校验 Summary 自身完整性。前端可对 Summary 计数按筛选区间求和，
@@ -40,7 +43,23 @@ scheme-id=<composite_registry_id>&month=YYYY-MM&source=all|backtest|live
 成功响应包含 `Cache-Control: no-store`、`Vary: Accept-Encoding`、`X-Request-ID`、
 `X-Dashboard-Snapshot-ID`（等于 body snapshot_id）。canonical payload 只做一次 JSON 和 gzip 编码，按
 Accept-Encoding 返回对应字节；HEAD/GET 表示与 Content-Length 语义一致，middleware 不得再次压缩。
-Server-Timing 仅诊断当前请求 DB、canonical、serialization 和 route 耗时，不代表缓存或可用性真相。
+请求进入 Backend middleware 时只生成一次 request ID 和单调时钟起点，认证依赖、连接获取、数据库访问、
+构建与编码共用 4 秒累计后端预算；每次进入后续 SQL 前检查剩余预算，耗尽后不再开始下一条查询。
+`Server-Timing` 诊断 `request_auth`、`request_pool_acquire`、Dashboard DB/canonical/serialization、
+`request_route` 与 `backend_total`；其中 pool acquire 包含池等待以及 checkout 时发生的 pre-ping/新建连接，
+不是纯队列时间。结构化日志另记录 `auth_ms`、`pool_acquire_ms`、`db_ms`、`build_ms`、`encode_ms`、
+`backend_total_ms` 和失败时的 `failure_stage`，由同一 `X-Request-ID` 关联。
+
+4 秒是小于当前入口 5 秒读取上限的后端正常失败边界，不代表 P95 已达到目标。同步 PyMySQL 已经开始的调用
+不会因累计预算检查被异步取消，仍由驱动超时和 MySQL 单条执行上限收敛；因此不能把应用预算描述为数据库
+取消机制，也不能仅靠放宽预算处理容量问题。浏览器对 Summary 和 Detail 均由 `fetchJson()` 自建的
+`AbortController` 在 6 秒触发超时，并合并注销、身份切换或视图替换产生的外部取消；计时持续到 JSON
+响应体读取完成，而不是收到响应头就结束。该保护略晚于正常入口失败边界，超时进入既有 stale/error 与
+退避重试状态机；只有当前 `loadSeq` 可以提交结果或清理 loading，旧身份的晚到响应不能恢复数据或安排重试。
+
+HTTP 失败携带合法 `Retry-After` 时，同时支持 delta-seconds 和标准 IMF-fixdate；自动重试取既有退避与该时刻的
+较晚者。超过浏览器定时器可表示范围的等待不创建可能提前触发的 timer，保持 fail-closed，等待用户重新进入
+或其他显式刷新契机；非法值不替代既有退避。
 
 ## 生产方案标记
 
@@ -109,7 +128,7 @@ Gate 在只读事务中批量读取所需 Registry，按[展示权威](../archit
 
 - 可见页面正常轮询不超过每小时 12 次、隐藏无轮询，已发布事实最迟五分钟可见；
 - 经授权的读路径故障注入：一次 503 保留完整视图并标 stale，后续成功原子恢复 fresh；
-- 经授权的读压测无 503/504，route p99 < 1.5 秒、DB p99 < 750ms；
+- 经授权的读压测无 503/504，完整 `backend_total` p99 < 1.5 秒、DB p99 < 750ms；
 - 涉及隧道/代理时核对唯一 listener 与 Clash 不出现生产 SSH `dial GLOBAL`。
 
 故障注入和生产压测须有专项授权，不因普通算法包发布或文档整理自动执行；不得停止 Writer、写业务库或制造预测缺口。
@@ -123,8 +142,10 @@ Gate 在只读事务中批量读取所需 Registry，按[展示权威](../archit
 3. health 成功、Dashboard 503：按 X-Request-ID 检查数据库和构建阶段；401 则检查入口和会话。
 4. Dashboard 200、浏览器 stale：检查客户端网络、解析和刷新状态机。
 
-Dashboard 结构化事件写 Uvicorn error logger；Nginx timing log 以 `$time_iso8601 $request_id` 开头并记录
-`$upstream_status`，用同一 X-Request-ID 关联时间。入口预算耗尽时据此定位，不继续放宽 timeout 掩盖故障。
+Dashboard 结构化事件写 Uvicorn error logger；认证在进入 Dashboard 路由前失败时也用同一 request ID 记录
+安全的耗时与 `failure_stage=auth`，不记录异常正文、token 或 DSN。Nginx timing log 以
+`$time_iso8601 $request_id` 开头并记录 `$upstream_status`，用同一 X-Request-ID 关联时间。入口预算耗尽时
+据此定位，不继续放宽 timeout 掩盖故障。
 
 生产 SSH 固定连接中继 IPv4，host-key 核验按访问入口执行。有限超时、保活和转发失败退出的期望值见
 [tunnel plist](../../deploy/launchd/com.bond-factor-lab.ssh-tunnel.plist)。

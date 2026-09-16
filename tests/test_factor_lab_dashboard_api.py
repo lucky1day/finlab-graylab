@@ -6,9 +6,13 @@ import gzip
 import json
 import random
 import re
+import time
+from datetime import datetime
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from sqlalchemy import create_engine, event
 
 
 DASHBOARD_PATH = "/api/factor-lab/dashboard"
@@ -238,6 +242,57 @@ def test_dashboard_replaces_untrusted_request_id_before_logging(monkeypatch, cap
     assert "forged-log-line" not in caplog.text
 
 
+def test_dashboard_total_timing_includes_slow_authentication(
+    monkeypatch,
+    caplog,
+) -> None:
+    from backend import main
+    from backend.auth import repository, routes
+    from backend.auth.service import AuthService
+
+    main.app.dependency_overrides.pop(main.require_dashboard_user, None)
+    auth_engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+
+    @event.listens_for(auth_engine, "checkout")
+    def slow_checkout(*_args) -> None:
+        time.sleep(0.02)
+
+    service = AuthService(auth_engine)
+    monkeypatch.setattr(routes, "_service", lambda: service)
+    monkeypatch.setattr(
+        repository,
+        "get_session_user",
+        lambda *_args: (SimpleNamespace(role="user"), datetime(2099, 1, 1)),
+    )
+    monkeypatch.setattr(main, "get_dashboard_engine", object)
+    monkeypatch.setattr(
+        main,
+        "build_factor_lab_dashboard",
+        lambda _engine: _payload("slow-auth"),
+    )
+
+    with caplog.at_level("INFO", logger="uvicorn.error"):
+        status, headers, _, _ = _request(
+            main.app,
+            headers=[
+                (b"cookie", b"__Host-bfl-session=test-session"),
+                (b"x-request-id", b"slow-auth-request"),
+            ],
+        )
+
+    event_payload = caplog.records[-1].dashboard_event
+    assert status == 200
+    assert headers["x-request-id"] == event_payload["request_id"]
+    assert event_payload["auth_ms"] >= 15.0
+    assert event_payload["pool_acquire_ms"] >= 15.0
+    assert event_payload["backend_total_ms"] >= event_payload["auth_ms"]
+    assert event_payload["backend_total_ms"] > event_payload["request_route_ms"]
+    assert "request_auth;dur=" in headers["server-timing"]
+    assert "request_pool_acquire;dur=" in headers["server-timing"]
+    assert "backend_total;dur=" in headers["server-timing"]
+    auth_engine.dispose()
+
+
 @pytest.mark.parametrize("budget", ("raw", "gzip"))
 def test_dashboard_route_enforces_real_encoding_budgets(
     monkeypatch,
@@ -299,3 +354,54 @@ def test_dashboard_503_logs_only_safe_failure_diagnostics(
     assert event["exception_class"] == "DatabaseSecretError"
     assert secret not in caplog.text
     assert "private_column" not in caplog.text
+
+
+def test_dashboard_preserves_granular_builder_failure_stage(
+    monkeypatch,
+    caplog,
+) -> None:
+    from backend import main
+    from backend.db import current_http_request_context
+
+    def fail(_engine: object) -> dict[str, Any]:
+        context = current_http_request_context()
+        assert context is not None
+        context.failure_stage = "dashboard_query"
+        raise RuntimeError("query failed")
+
+    monkeypatch.setattr(main, "get_dashboard_engine", object)
+    monkeypatch.setattr(main, "build_factor_lab_dashboard", fail)
+
+    with caplog.at_level("INFO", logger="uvicorn.error"):
+        status, _, _, _ = _request(main.app)
+
+    assert status == 503
+    assert caplog.records[-1].dashboard_event["failure_stage"] == (
+        "dashboard_query"
+    )
+
+
+def test_dashboard_budget_exhaustion_before_route_work_returns_stable_503(
+    monkeypatch,
+    caplog,
+) -> None:
+    from backend import main
+    from backend.db import create_http_request_context
+
+    monkeypatch.setattr(
+        main,
+        "create_http_request_context",
+        lambda request_id: create_http_request_context(
+            request_id,
+            budget_seconds=-1.0,
+        ),
+    )
+
+    with caplog.at_level("INFO", logger="uvicorn.error"):
+        status, _, body, _ = _request(main.app)
+
+    assert status == 503
+    assert json.loads(body) == {"error_code": "dashboard_data_unavailable"}
+    event = caplog.records[-1].dashboard_event
+    assert event["failure_stage"] == "dashboard_engine"
+    assert event["exception_class"] == "RequestBudgetExceeded"

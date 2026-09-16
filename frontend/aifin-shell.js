@@ -202,7 +202,10 @@
   var factorLabDataMode = "loading";
   var factorLabDrawerSelection = null;
   var FACTOR_LAB_HEALTHY_REFRESH_MS = 300000;
+  var FACTOR_LAB_REQUEST_TIMEOUT_MS = 6000;
+  var FACTOR_LAB_MAX_RETRY_DELAY_MS = 2147483647;
   var FACTOR_LAB_RETRY_DELAYS_MS = [10000, 30000, 60000, 300000];
+  var HTTP_DATE_PATTERN = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/;
   var factorLabRuntimeState = {
     authenticated: false,
     loadSeq: 0,
@@ -1034,17 +1037,59 @@
   }
 
   function fetchJson(url, options) {
+    options = options || {};
     var requestUrl = apiUrl(url);
     var requestOptions = {
       cache: "no-store",
       headers: { Accept: "application/json" }
     };
-    if (options && options.signal) requestOptions.signal = options.signal;
-    return fetch(requestUrl, requestOptions).then(function (response) {
-      if (response.ok) return response.json();
-      if (response.status === 401 && window.CustomEvent) {
-        window.dispatchEvent(new CustomEvent("bfl:auth-required"));
+    var externalSignal = options.signal || null;
+    var controller = window.AbortController ? new window.AbortController() : null;
+    var signal = controller ? controller.signal : externalSignal;
+    if (signal) requestOptions.signal = signal;
+    var timeoutMs = Number(options.timeoutMs);
+    if (!(timeoutMs > 0)) timeoutMs = FACTOR_LAB_REQUEST_TIMEOUT_MS;
+    var timeoutId = null;
+    var removeExternalAbortListener = null;
+    var timeoutError = new Error("Request timed out after " + timeoutMs + "ms");
+    timeoutError.name = "FactorLabTimeoutError";
+    timeoutError.code = "request_timeout";
+    timeoutError.timeoutMs = timeoutMs;
+
+    var cancellationPromise = new Promise(function (_resolve, reject) {
+      if (externalSignal) {
+        var abortFromExternalSignal = function () {
+          var reason = externalSignal.reason || "external-abort";
+          if (controller && !controller.signal.aborted) controller.abort(reason);
+          var abortError = new Error("Request was cancelled");
+          abortError.name = "AbortError";
+          abortError.code = "request_aborted";
+          abortError.reason = reason;
+          reject(abortError);
+        };
+        if (externalSignal.aborted) {
+          abortFromExternalSignal();
+          return;
+        }
+        if (typeof externalSignal.addEventListener === "function") {
+          externalSignal.addEventListener("abort", abortFromExternalSignal, { once: true });
+          removeExternalAbortListener = function () {
+            externalSignal.removeEventListener("abort", abortFromExternalSignal);
+          };
+        }
       }
+      if (window.setTimeout) {
+        timeoutId = window.setTimeout(function () {
+          reject(timeoutError);
+          if (controller && !controller.signal.aborted) controller.abort("request-timeout");
+        }, timeoutMs);
+      }
+    });
+
+    var responsePromise = Promise.resolve().then(function () {
+      return fetch(requestUrl, requestOptions);
+    }).then(function (response) {
+      if (response.ok) return response.json();
       var bodyPromise = typeof response.json === "function"
         ? response.json().catch(function () { return null; })
         : Promise.resolve(null);
@@ -1054,8 +1099,52 @@
         error.status = response.status;
         error.body = body;
         error.requestUrl = requestUrl;
+        var retryAfter = response.headers && typeof response.headers.get === "function"
+          ? response.headers.get("Retry-After")
+          : null;
+        if (retryAfter !== null && retryAfter !== undefined) {
+          var retryAfterValue = String(retryAfter).trim();
+          var retryAfterAt = null;
+          error.retryAfter = retryAfterValue;
+          if (/^\d+$/.test(retryAfterValue)) {
+            var retryAfterSeconds = Number(retryAfterValue);
+            if (Number.isSafeInteger(retryAfterSeconds) &&
+                retryAfterSeconds <= Math.floor(FACTOR_LAB_MAX_RETRY_DELAY_MS / 1000)) {
+              retryAfterAt = Date.now() + retryAfterSeconds * 1000;
+            } else {
+              retryAfterAt = Infinity;
+            }
+          } else if (HTTP_DATE_PATTERN.test(retryAfterValue)) {
+            var parsedRetryAfter = Date.parse(retryAfterValue);
+            if (Number.isFinite(parsedRetryAfter) &&
+                new Date(parsedRetryAfter).toUTCString() === retryAfterValue) {
+              retryAfterAt = parsedRetryAfter - Date.now() <= FACTOR_LAB_MAX_RETRY_DELAY_MS
+                ? parsedRetryAfter
+                : Infinity;
+            }
+          }
+          if (retryAfterAt === Infinity) {
+            error.retryAfterAt = Infinity;
+          } else if (Number.isFinite(retryAfterAt)) {
+            error.retryAfterAt = Math.max(Date.now(), retryAfterAt);
+          }
+        }
         throw error;
       });
+    });
+
+    return Promise.race([responsePromise, cancellationPromise]).then(function (payload) {
+      if (timeoutId !== null && window.clearTimeout) window.clearTimeout(timeoutId);
+      if (removeExternalAbortListener) removeExternalAbortListener();
+      return payload;
+    }, function (error) {
+      if (timeoutId !== null && window.clearTimeout) window.clearTimeout(timeoutId);
+      if (removeExternalAbortListener) removeExternalAbortListener();
+      if (error && error.status === 401 &&
+          !(signal && signal.aborted) && window.CustomEvent) {
+        window.dispatchEvent(new CustomEvent("bfl:auth-required"));
+      }
+      throw error;
     });
   }
 
@@ -1277,7 +1366,12 @@
       factorLabRuntimeState.consecutiveFailures - 1,
       FACTOR_LAB_RETRY_DELAYS_MS.length - 1
     );
-    scheduleFactorLabRefresh(FACTOR_LAB_RETRY_DELAYS_MS[delayIndex]);
+    var retryDelayMs = FACTOR_LAB_RETRY_DELAYS_MS[delayIndex];
+    if (error && error.retryAfterAt === Infinity) return false;
+    if (error && Number.isFinite(error.retryAfterAt)) {
+      retryDelayMs = Math.max(retryDelayMs, error.retryAfterAt - Date.now());
+    }
+    scheduleFactorLabRefresh(retryDelayMs);
     return false;
   }
 
@@ -1316,7 +1410,10 @@
 
     var candidatePromise = fetchJson(
       "/api/factor-lab/dashboard",
-      { signal: signal }
+      {
+        signal: signal,
+        timeoutMs: FACTOR_LAB_REQUEST_TIMEOUT_MS
+      }
     ).then(function (payload) {
       if (seq !== factorLabRuntimeState.loadSeq) return null;
       return dashboardFactorLabCandidate(payload);
@@ -1360,11 +1457,11 @@
   }
 
   function startAuthenticatedFactorLab() {
-    if (factorLabRuntimeState.authenticated) return;
+    if (factorLabRuntimeState.authenticated) return Promise.resolve(false);
     factorLabRuntimeState.authenticated = true;
     setActiveRoute("/factor-lab", false);
     startFactorLabAutoRefresh();
-    loadFactorLabData({ force: true });
+    return loadFactorLabData({ force: true });
   }
 
   function clearAuthenticatedFactorLab() {
@@ -1413,6 +1510,35 @@
     start: startAuthenticatedFactorLab,
     stop: clearAuthenticatedFactorLab
   });
+  if (window.__BFL_ENABLE_TEST_HOOKS__ === true) {
+    window.__BFL_TEST_HOOKS__ = Object.freeze({
+      fetchJson: fetchJson,
+      load: loadFactorLabData,
+      start: startAuthenticatedFactorLab,
+      stop: clearAuthenticatedFactorLab,
+      setRequestTimeoutMs: function (timeoutMs) {
+        FACTOR_LAB_REQUEST_TIMEOUT_MS = timeoutMs;
+      },
+      setRetryDelaysMs: function (delays) {
+        FACTOR_LAB_RETRY_DELAYS_MS = delays.slice();
+      },
+      state: function () {
+        return {
+          authenticated: factorLabRuntimeState.authenticated,
+          loadSeq: factorLabRuntimeState.loadSeq,
+          remoteLoaded: factorLabRemoteLoaded,
+          remoteLoading: factorLabRemoteLoading,
+          dataMode: factorLabDataMode,
+          apiError: factorLabApiError,
+          snapshotId: factorLabRuntimeState.committedViewModel
+            ? factorLabRuntimeState.committedViewModel.snapshotId
+            : null,
+          consecutiveFailures: factorLabRuntimeState.consecutiveFailures,
+          hasRefreshTimer: factorLabRuntimeState.refreshTimer !== null
+        };
+      }
+    });
+  }
 
   function getSchemesForTask(taskKey) {
     var schemes = factorTaskSchemes[taskKey] || [];
@@ -2188,7 +2314,10 @@
     factorLabRuntimeState.detailController = controller;
     var promise = fetchJson(
       "/api/factor-lab/dashboard" + query,
-      { signal: controller ? controller.signal : null }
+      {
+        signal: controller ? controller.signal : null,
+        timeoutMs: FACTOR_LAB_REQUEST_TIMEOUT_MS
+      }
     ).then(function (payload) {
       return decodeDashboardDetailPayload(payload, {
         schemeId: scheme.schemeId,

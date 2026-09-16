@@ -11,6 +11,8 @@ from scheduler.executor import (
     _systemd_scheduled_execution_context,
 )
 from scheduler.one_shot_prediction_runner import (
+    RUNNER_LOCK_TIMEOUT_SEC,
+    OneShotPredictionRunError,
     OneShotPredictionSummary,
     configuration_summary,
     run_one_shot,
@@ -29,6 +31,7 @@ def run(
     predict_date: str,
     algo_env: str = DEFAULT_ALGO_ENV,
     scheme_ids: Sequence[str] | None = None,
+    lock_timeout_sec: float = RUNNER_LOCK_TIMEOUT_SEC,
 ) -> OneShotPredictionSummary:
     """执行一次由 systemd capability 约束的 scheduled_live 批次。"""
     return run_one_shot(
@@ -41,6 +44,7 @@ def run(
         ),
         event=_SYSTEMD_EVENT,
         scheme_ids=scheme_ids,
+        lock_timeout_sec=lock_timeout_sec,
     )
 
 
@@ -58,6 +62,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--algo-env", default=DEFAULT_ALGO_ENV)
     parser.add_argument("--scheme-id", action="append", dest="scheme_ids")
+    parser.add_argument(
+        "--lock-timeout-sec",
+        type=float,
+        default=RUNNER_LOCK_TIMEOUT_SEC,
+    )
     args = parser.parse_args(argv)
     try:
         summary = run(
@@ -65,12 +74,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             predict_date=args.predict_date,
             algo_env=args.algo_env,
             scheme_ids=args.scheme_ids,
+            lock_timeout_sec=args.lock_timeout_sec,
         )
-    except Exception:  # noqa: BLE001 - 不向 systemd 日志序列化底层异常
-        summary = configuration_summary(
-            args.cadence,
-            args.predict_date,
-            event=_SYSTEMD_EVENT,
+    except Exception as exc:  # noqa: BLE001 - 不向 systemd 日志序列化底层异常
+        summary = (
+            exc.summary
+            if isinstance(exc, OneShotPredictionRunError)
+            and exc.summary is not None
+            else configuration_summary(
+                args.cadence,
+                args.predict_date,
+                event=_SYSTEMD_EVENT,
+            )
         )
     print(
         json.dumps(

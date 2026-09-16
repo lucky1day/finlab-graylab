@@ -7,10 +7,16 @@ from backend.factor_lab_dashboard import (
     MAX_ACTUAL_SOURCE_ROWS,
     DashboardDataError,
     _monthly_rows,
+    _read_bounded_source_rows,
     _read_live_actuals,
     _read_product_predictions,
     build_factor_lab_dashboard,
     build_factor_lab_dashboard_detail,
+)
+from backend.db import (
+    RequestBudgetExceeded,
+    bind_http_request_context,
+    create_http_request_context,
 )
 from backend.factor_lab_dashboard_semantics import (
     dashboard_result_source,
@@ -101,6 +107,55 @@ def _engine():
         connection.execute(text("INSERT INTO t_scheme_actuals VALUES ('5Y','2026-01-05',1,1)"))
         connection.execute(text("INSERT INTO t_scheme_actuals VALUES ('5Y','2026-06-04',-1,-1)"))
     return engine
+
+
+def test_cumulative_request_budget_stops_before_the_next_query() -> None:
+    class Clock:
+        value = 10.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    class Result:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return []
+
+    class Connection:
+        calls = 0
+
+        def execute(self, _statement, _params):
+            self.calls += 1
+            clock.value += 0.06
+            return Result()
+
+    clock = Clock()
+    connection = Connection()
+    context = create_http_request_context(
+        "budget-test",
+        clock=clock,
+        budget_seconds=0.05,
+    )
+    with bind_http_request_context(context):
+        assert _read_bounded_source_rows(
+            connection,
+            text("SELECT 1"),
+            {},
+            dataset="first",
+            cap=1,
+        ) == []
+        with pytest.raises(RequestBudgetExceeded):
+            _read_bounded_source_rows(
+                connection,
+                text("SELECT 1"),
+                {},
+                dataset="second",
+                cap=1,
+            )
+
+    assert connection.calls == 1
 
 
 def test_v5_summary_aggregates_rows_and_reads_owner() -> None:

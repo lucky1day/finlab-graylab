@@ -129,10 +129,14 @@ SOP 中的 `python -B -m harness ...` 只展示操作参数，**不会自动加�
 | 源码与解释器 | cwd 为本次选定并核验的 `releases/<commit>` 实际目录（候选或 current 的真实指向），使用访问入口列出的本机服务 Python，显式 `-B`；不能从开发工作区导入项目 |
 | release/runtime/cache | 使用该候选 `.bfl-release.env` 中的四个键，逐项核对提交、runtime root 和 cache 路径；不得混入旧 current 或另一机值 |
 | 部署目标 | 显式使用访问入口中的本机 `BFL_DEPLOYMENT_TARGET`，否则开发/Harness discovery 可能发现全量方案 |
-| 数据库 | `BFL_DATABASE_ENV_FILE` 显式指向访问入口列出的本机私有服务配置；清除操作者环境中既有 `BOND_DB_*` 覆盖值，再通过本机只读 identity 核对实际数据库；只记录核验结论，不输出密码/DSN |
+| 数据库 | `BFL_DATABASE_ENV_FILE` 显式指向访问入口列出的本机私有服务配置；若同时存在 `BOND_DB_*`，只能与文件同名值完全一致，否则配置构造直接失败；再通过本机只读 identity 核对实际数据库，只记录核验结论，不输出密码/DSN |
 | 算法环境与输入 | 涉及算法执行或生命周期证据校验时，按选定 release 的 Runtime Profile/frozen manifest 核验解释器、依赖、输入 ready 身份；增量方案还核对[SOP 的 locale/环境身份](../docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#51-增量方案的显式预热重建) |
 
-数据库读取行为以 [`shared.db_config`](../shared/db_config.py)为准：`BFL_DATABASE_ENV_FILE` 只加载数据库键，不能代替完整 release 或算法环境；ambient `BOND_DB_*` 优先于文件值，未提供配置时存在默认连接值。上述核验未通过时，不执行持久化命令。
+数据库读取行为以 [`shared.db_config`](../shared/db_config.py)为准：导入模块不读取仓库 `.env`、不修改
+`os.environ`；`BFL_DATABASE_ENV_FILE` 只加载数据库键，且在本次调用中是权威来源，不能代替完整 release
+或算法环境。文件与 ambient `BOND_DB_*` 的不同值默认拒绝；显式配置文件缺少的必填键也不从 ambient
+补齐。未指定文件时才读取当前环境；用户、密码、主机和数据库名缺失或为空直接失败，空密码只允许调用方
+显式选择。开发入口若使用 `.env`，必须在调用配置模块前显式加载。上述核验未通过时，不执行持久化命令。
 
 自然调度的 EnvironmentFile 和 Mac3 launcher 按上文加载环境，但不因此自动覆盖手工 Harness；手工调用也不能靠设置自然控制面标记冒充真实触发。不使用 shell `source` 执行私有配置，不打印整个环境。当前没有供本 SOP 直接调用的通用跨平台手工启动入口；具体调用的环境映射须在操作前可审查，缺少这一环时先停止并补齐，能力缺口见[TODO](../docs/TODO.md#候选-release-手工启动入口)。
 

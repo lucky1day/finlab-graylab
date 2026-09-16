@@ -7,12 +7,12 @@ from typing import Iterable
 from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Engine
 
-from scheduler.repository import create_engine_from_env, delete_actuals_after_source_watermark, upsert_actuals
+from scheduler.repository import _upsert_actuals_conn, create_engine_from_env
 from shared.actual_facts import (
     build_daily_actual_records_from_rows,
-    read_yield_rows,
+    read_actual_source_snapshot,
 )
-from shared.tenor_mapping import TENOR_TO_INDICATOR, indicator_map_for_tenors, normalize_tenor
+from shared.tenor_mapping import TENOR_TO_INDICATOR, normalize_tenor
 
 
 logger = logging.getLogger(__name__)
@@ -108,52 +108,6 @@ def resolve_actual_tenors(
     return registry_tenors
 
 
-def _normalize_date(value: str | date | datetime | None) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.date().isoformat()
-    if isinstance(value, date):
-        return value.isoformat()
-    return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
-
-
-def read_source_watermarks(
-    engine: Engine,
-    tenors: Iterable[str] | None = None,
-    end_date: str | date | datetime | None = None,
-) -> dict[str, str]:
-    """读取每个期限在源表中的最新可用日期。"""
-    selected_tenors = [normalize_tenor(tenor) for tenor in (tenors or TENOR_TO_INDICATOR.keys())]
-    code_to_tenor = indicator_map_for_tenors(selected_tenors)
-    if not code_to_tenor:
-        return {}
-
-    params = {
-        "codes": list(code_to_tenor.keys()),
-        "end_date": _normalize_date(end_date),
-    }
-    end_filter = "AND rdate <= :end_date" if params["end_date"] else ""
-    sql = text(
-        f"""
-        SELECT indicators_code, MAX(rdate) AS max_date
-        FROM api_wind_daily
-        WHERE indicators_code IN :codes
-          AND indicators_value IS NOT NULL
-          {end_filter}
-        GROUP BY indicators_code
-        """
-    ).bindparams(bindparam("codes", expanding=True))
-
-    with engine.connect() as conn:
-        rows = conn.execute(sql, params).mappings().all()
-    return {
-        code_to_tenor[str(row["indicators_code"])]: str(row["max_date"])
-        for row in rows
-        if row["max_date"] is not None
-    }
-
-
 def update_actuals(
     start_date: str | date | datetime | None = None,
     end_date: str | date | datetime | None = None,
@@ -172,28 +126,24 @@ def update_actuals(
         )
         if not selected_tenors:
             return 0
-        rows = read_yield_rows(
-            target_engine,
-            tenors=selected_tenors,
-            end_date=end_date,
+        with target_engine.begin() as connection:
+            snapshot = read_actual_source_snapshot(
+                connection,
+                tenors=selected_tenors,
+                end_date=end_date,
+            )
+            records = build_daily_actual_records_from_rows(
+                snapshot.rows,
+                start_date=start_date,
+            )
+            written = _upsert_actuals_conn(connection, records)
+        logger.info(
+            "Daily actuals refreshed from source snapshot: "
+            "source_digest=%s watermarks=%s records=%s",
+            snapshot.source_digest,
+            snapshot.watermarks,
+            written,
         )
-        records = build_daily_actual_records_from_rows(
-            rows,
-            start_date=start_date,
-        )
-        written = upsert_actuals(target_engine, records)
-        source_watermarks = read_source_watermarks(
-            target_engine,
-            tenors=selected_tenors,
-            end_date=end_date,
-        )
-        pruned = delete_actuals_after_source_watermark(
-            target_engine,
-            source_watermarks,
-            end_date=_normalize_date(end_date),
-        )
-        if pruned:
-            logger.warning("Pruned stale daily actuals beyond source watermark: records=%s", pruned)
         return written
     finally:
         if owns_engine:

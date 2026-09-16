@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
-import logging
 from typing import Annotated, Literal
 from uuid import uuid4
 
@@ -10,11 +11,16 @@ from fastapi import APIRouter, Cookie, Depends, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.exc import SQLAlchemyError
 
 from backend.auth.repository import AuthUser
 from backend.auth.security import PasswordPolicyError, UsernamePolicyError
 from backend.auth.service import AuthError, AuthService, SessionResult
-from backend.db import get_engine
+from backend.db import (
+    RequestBudgetExceeded,
+    current_http_request_context,
+    get_engine,
+)
 
 
 COOKIE_NAME = "__Host-bfl-session"
@@ -93,6 +99,9 @@ class EditUserRequest(UpdateProfileRequest):
 
 
 def _request_id(request: Request) -> str:
+    context = current_http_request_context()
+    if context is not None:
+        return context.request_id
     candidate = request.headers.get("x-request-id")
     if candidate is not None and _REQUEST_ID_PATTERN.fullmatch(candidate):
         return candidate
@@ -159,6 +168,46 @@ def _clear_session_cookie(response: Response) -> None:
 
 def auth_error_response(_request: Request, exc: AuthError) -> JSONResponse:
     """认证失败只返回固定 error_code，并在 401 时清理 Cookie。"""
+    context = current_http_request_context()
+    if exc.status_code >= 500:
+        logger.error(
+            "auth_request_failed %s",
+            json.dumps(
+                {
+                    "request_id": (
+                        context.request_id if context is not None else None
+                    ),
+                    "auth_ms": (
+                        round(context.auth_seconds * 1_000, 3)
+                        if context is not None
+                        else None
+                    ),
+                    "pool_acquire_ms": (
+                        round(context.pool_acquire_seconds * 1_000, 3)
+                        if context is not None
+                        else None
+                    ),
+                    "db_ms": (
+                        round(context.db_seconds * 1_000, 3)
+                        if context is not None
+                        else None
+                    ),
+                    "backend_total_ms": (
+                        round(context.elapsed_seconds() * 1_000, 3)
+                        if context is not None
+                        else None
+                    ),
+                    "failure_stage": (
+                        context.failure_stage if context is not None else "auth"
+                    ),
+                    "status": exc.status_code,
+                    "error_code": exc.error_code,
+                },
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+        )
     response = JSONResponse(
         status_code=exc.status_code,
         content={"error_code": exc.error_code},
@@ -219,9 +268,23 @@ def unhandled_error_response(
 
 
 def require_authenticated_user(
+    _request: Request,
     token: Annotated[str | None, Depends(_token)],
 ) -> AuthUser:
-    return _service().authenticate(token)
+    context = current_http_request_context()
+    started_at = context.clock() if context is not None else None
+    try:
+        if context is not None:
+            context.failure_stage = "auth"
+            context.require_remaining("auth")
+        return _service().authenticate(token)
+    except (RequestBudgetExceeded, SQLAlchemyError) as exc:
+        if context is not None:
+            context.failure_stage = "auth"
+        raise AuthError("auth_unavailable", 503) from exc
+    finally:
+        if context is not None and started_at is not None:
+            context.auth_seconds += max(0.0, context.clock() - started_at)
 
 
 def require_dashboard_user(

@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Connection, Engine
 
+from backend.db import current_http_request_context
 from shared.runtime_paths import RUNTIME_ROOT_ENV, resolve_runtime_state_path
 from shared.scheme_config_schema import normalize_scheme_owner
 
@@ -162,7 +163,21 @@ class SnapshotEncoding:
 @contextmanager
 def dashboard_read_connection(engine: Engine) -> Iterator[Connection]:
     """返回一次 dashboard 构建独占的同一只读一致性连接。"""
-    connection = engine.connect()
+    request_context = current_http_request_context()
+    if request_context is not None:
+        request_context.failure_stage = "dashboard_pool_acquire"
+        request_context.require_remaining("dashboard_pool_acquire")
+        acquire_started_at = request_context.clock()
+    else:
+        acquire_started_at = None
+    try:
+        connection = engine.connect()
+    finally:
+        if request_context is not None and acquire_started_at is not None:
+            request_context.pool_acquire_seconds += max(
+                0.0,
+                request_context.clock() - acquire_started_at,
+            )
     transaction = None
     is_mysql = engine.dialect.name == "mysql"
     try:
@@ -170,7 +185,20 @@ def dashboard_read_connection(engine: Engine) -> Iterator[Connection]:
             connection = connection.execution_options(
                 isolation_level="REPEATABLE READ"
             )
-            connection.exec_driver_sql(MYSQL_SNAPSHOT_SQL)
+            if request_context is not None:
+                request_context.failure_stage = "dashboard_snapshot"
+                request_context.require_remaining("dashboard_snapshot")
+                db_started_at = request_context.clock()
+            else:
+                db_started_at = None
+            try:
+                connection.exec_driver_sql(MYSQL_SNAPSHOT_SQL)
+            finally:
+                if request_context is not None and db_started_at is not None:
+                    request_context.db_seconds += max(
+                        0.0,
+                        request_context.clock() - db_started_at,
+                    )
         else:
             transaction = connection.begin()
         yield connection
@@ -223,7 +251,26 @@ def _existing_production_scheme_ids(connection: Connection, candidates: set[str]
     query = text(
         "SELECT scheme_id FROM t_scheme_registry WHERE scheme_id IN :scheme_ids"
     ).bindparams(bindparam("scheme_ids", expanding=True))
-    existing = set(connection.execute(query, {"scheme_ids": sorted(candidates)}).scalars())
+    request_context = current_http_request_context()
+    if request_context is not None:
+        request_context.failure_stage = "dashboard_query"
+        request_context.require_remaining("dashboard_query")
+        db_started_at = request_context.clock()
+    else:
+        db_started_at = None
+    try:
+        existing = set(
+            connection.execute(
+                query,
+                {"scheme_ids": sorted(candidates)},
+            ).scalars()
+        )
+    finally:
+        if request_context is not None and db_started_at is not None:
+            request_context.db_seconds += max(
+                0.0,
+                request_context.clock() - db_started_at,
+            )
     for scheme_id in sorted(candidates - existing):
         logger.error("production_scheme_not_found: %r", scheme_id)
     return existing
@@ -309,6 +356,10 @@ def _build_dashboard_representation(
             registry_rows,
         )
     db_read_seconds = time.perf_counter() - db_read_started_at
+    request_context = current_http_request_context()
+    if request_context is not None:
+        request_context.failure_stage = "dashboard_canonical"
+        request_context.require_remaining("dashboard_canonical")
 
     canonical_started_at = time.perf_counter()
     registry = [_registry_dto(row) for row in registry_rows]
@@ -885,9 +936,23 @@ def _read_bounded_source_rows(
 ) -> list[Mapping[str, Any]]:
     execution_params = dict(params)
     execution_params["dashboard_source_limit"] = cap + 1
-    rows = list(
-        connection.execute(statement, execution_params).mappings().all()
-    )
+    request_context = current_http_request_context()
+    if request_context is not None:
+        request_context.failure_stage = "dashboard_query"
+        request_context.require_remaining("dashboard_query")
+        db_started_at = request_context.clock()
+    else:
+        db_started_at = None
+    try:
+        rows = list(
+            connection.execute(statement, execution_params).mappings().all()
+        )
+    finally:
+        if request_context is not None and db_started_at is not None:
+            request_context.db_seconds += max(
+                0.0,
+                request_context.clock() - db_started_at,
+            )
     if len(rows) > cap:
         raise DashboardDataError(
             "dashboard source row limit exceeded: "

@@ -92,11 +92,14 @@ def lock_user_by_id(connection: Any, user_id: int) -> AuthUser | None:
     return None if row is None else _user(row)
 
 
-def lock_session_user(
+def _session_user(
     connection: Any,
     token_hash: bytes,
     now: datetime,
+    *,
+    for_update: bool,
 ) -> tuple[AuthUser, datetime] | None:
+    lock_clause = "FOR UPDATE" if for_update else ""
     row = connection.execute(
         text(
             f"""
@@ -111,7 +114,7 @@ def lock_session_user(
               AND s.revoked_at IS NULL
               AND s.expires_at > :now
               AND u.status = 'active'
-            FOR UPDATE
+            {lock_clause}
             """
         ),
         {"token_hash": token_hash, "now": now},
@@ -120,6 +123,34 @@ def lock_session_user(
         None
         if row is None
         else (_user(row), row["session_expires_at"])
+    )
+
+
+def get_session_user(
+    connection: Any,
+    token_hash: bytes,
+    now: datetime,
+) -> tuple[AuthUser, datetime] | None:
+    """读取当前有效会话与用户，不获取账户写锁。"""
+    return _session_user(
+        connection,
+        token_hash,
+        now,
+        for_update=False,
+    )
+
+
+def lock_session_user(
+    connection: Any,
+    token_hash: bytes,
+    now: datetime,
+) -> tuple[AuthUser, datetime] | None:
+    """在修改事务内锁定并重新核验当前有效会话与用户。"""
+    return _session_user(
+        connection,
+        token_hash,
+        now,
+        for_update=True,
     )
 
 

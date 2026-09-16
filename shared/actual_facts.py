@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -8,7 +10,7 @@ from decimal import Decimal
 from typing import Iterable
 
 from sqlalchemy import bindparam, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 
 from shared.calendar_service import is_trading_day_row
 from shared.models import (
@@ -44,16 +46,25 @@ def normalize_date(value: str | date | datetime | None) -> str | None:
     return datetime.strptime(str(value)[:10], "%Y-%m-%d").date().isoformat()
 
 
-def read_yield_rows(
-    engine: Engine,
+@dataclass(frozen=True)
+class ActualSourceSnapshot:
+    """一次日频 Actual 源读取的完整身份。"""
+
+    rows: tuple[dict, ...]
+    watermarks: dict[str, str]
+    source_digest: str
+
+
+def _read_yield_rows_conn(
+    connection: Connection,
     tenors: Iterable[str] | None = None,
     end_date: str | date | datetime | None = None,
-) -> list[dict]:
-    """读取平台 actual 构造器共用的日频收益率事实。"""
+) -> tuple[list[dict], list[str]]:
+    """在调用方连接中读取收益率事实，并返回规范化期限范围。"""
     selected = [normalize_tenor(item) for item in (tenors or TENOR_TO_INDICATOR.keys())]
     code_to_tenor = indicator_map_for_tenors(selected)
     if not code_to_tenor:
-        return []
+        return [], selected
     params = {"codes": list(code_to_tenor), "end_date": normalize_date(end_date)}
     end_filter = "AND rdate <= :end_date" if params["end_date"] else ""
     statement = text(
@@ -66,8 +77,7 @@ def read_yield_rows(
         ORDER BY indicators_code, rdate
         """
     ).bindparams(bindparam("codes", expanding=True))
-    with engine.connect() as connection:
-        rows = connection.execute(statement, params).mappings().all()
+    rows = connection.execute(statement, params).mappings().all()
     return [
         {
             "trade_date": str(row["rdate"])[:10],
@@ -75,7 +85,50 @@ def read_yield_rows(
             "close_yield": _to_float(row["indicators_value"]),
         }
         for row in rows
-    ]
+    ], selected
+
+
+def read_actual_source_snapshot(
+    connection: Connection,
+    tenors: Iterable[str] | None = None,
+    end_date: str | date | datetime | None = None,
+) -> ActualSourceSnapshot:
+    """从调用方的一致性读事务生成日频 Actual 源快照。"""
+    rows, selected = _read_yield_rows_conn(connection, tenors, end_date)
+    watermarks: dict[str, str] = {}
+    for row in rows:
+        tenor = str(row["tenor"])
+        trade_date = str(row["trade_date"])
+        watermarks[tenor] = max(trade_date, watermarks.get(tenor, trade_date))
+    payload = {
+        "end_date": normalize_date(end_date),
+        "tenors": sorted(selected),
+        "rows": rows,
+    }
+    source_digest = hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return ActualSourceSnapshot(
+        rows=tuple(rows),
+        watermarks=watermarks,
+        source_digest=source_digest,
+    )
+
+
+def read_yield_rows(
+    engine: Engine,
+    tenors: Iterable[str] | None = None,
+    end_date: str | date | datetime | None = None,
+) -> list[dict]:
+    """读取平台 actual 构造器共用的日频收益率事实。"""
+    with engine.connect() as connection:
+        rows, _ = _read_yield_rows_conn(connection, tenors, end_date)
+    return rows
 
 
 def read_trade_calendar_rows(engine: Engine) -> list[dict]:

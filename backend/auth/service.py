@@ -18,6 +18,7 @@ from backend.auth.security import (
     verify_dummy_password,
     verify_password,
 )
+from backend.db import current_http_request_context
 
 
 SESSION_LIFETIME = timedelta(hours=12)
@@ -147,21 +148,55 @@ class AuthService:
 
     def current_session(self, token: str | None) -> SessionResult:
         token_hash = _session_token_hash(token)
-        with self._engine.begin() as connection:
-            session = repository.lock_session_user(
-                connection, token_hash, self._now()
-            )
+        request_context = current_http_request_context()
+        if request_context is None:
+            with self._engine.begin() as connection:
+                session = repository.get_session_user(
+                    connection, token_hash, self._now()
+                )
+        else:
+            request_context.require_remaining("auth_pool_acquire")
+            acquire_started_at = request_context.clock()
+            try:
+                connection = self._engine.connect()
+            finally:
+                request_context.pool_acquire_seconds += max(
+                    0.0,
+                    request_context.clock() - acquire_started_at,
+                )
+            try:
+                request_context.require_remaining("auth_db")
+                db_started_at = request_context.clock()
+                try:
+                    with connection.begin():
+                        session = repository.get_session_user(
+                            connection,
+                            token_hash,
+                            self._now(),
+                        )
+                finally:
+                    request_context.db_seconds += max(
+                        0.0,
+                        request_context.clock() - db_started_at,
+                    )
+            finally:
+                connection.close()
         if session is None:
             raise AuthError("not_authenticated", 401)
         user, expires_at = session
         return SessionResult(user=user, expires_at=expires_at)
 
     def logout(self, token: str | None) -> None:
-        user = self.authenticate(token)
-        assert token is not None
+        token_hash = _session_token_hash(token)
+        now = self._now()
         with self._engine.begin() as connection:
+            session = repository.lock_session_user(connection, token_hash, now)
+            if session is None:
+                raise AuthError("not_authenticated", 401)
             repository.revoke_session(
-                connection, digest_session_token(token), self._now()
+                connection,
+                token_hash,
+                now,
             )
 
     def change_password(
@@ -204,11 +239,14 @@ class AuthService:
     def list_users(self, token: str | None) -> list[AuthUser]:
         token_hash = _session_token_hash(token)
         with self._engine.begin() as connection:
-            self._lock_admin(
-                connection,
-                token_hash,
-                self._now(),
+            session = repository.get_session_user(
+                connection, token_hash, self._now()
             )
+            if session is None:
+                raise AuthError("not_authenticated", 401)
+            actor, _expires_at = session
+            if actor.role != "admin":
+                raise AuthError("forbidden", 403)
             return repository.list_users(connection)
 
     def _require_admin(self, token: str | None) -> AuthUser:

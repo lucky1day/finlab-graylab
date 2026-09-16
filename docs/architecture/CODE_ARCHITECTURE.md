@@ -63,7 +63,7 @@
 | 源输入 | `shared.input_artifacts` 经数据服务/日历构造输入；adapter 与 backtest runner 不自行查询源表 |
 | 预测与生命周期 | `scheduler.repository` 按 runtime/operation 在事务中复核身份并完成 prediction、run 与日志 |
 | 回测 | `backtests.repository` 保存不可变 `t_backtest_*`；首次产品历史发布另经 scheduler repository |
-| Actual | `scheduler/*_actuals_updater.py` 按任务事实合同更新，既有 UPSERT 不受预测 insert-only 规则外推限制 |
+| Actual | `scheduler/*_actuals_updater.py` 按任务事实合同更新，既有 UPSERT 不受预测 insert-only 规则外推限制；日频自然刷新从单一源快照写入且不删除历史，尾部删除只允许走独立的精确键修复计划 |
 | 认证 | `backend.auth.repository` 仅写认证三表，账户/会话合同见[认证文档](AUTHENTICATION_AND_ACCOUNT_MANAGEMENT.md) |
 | DDL | `migrations.runner` 接收 caller-supplied Engine；CLI 负责环境与授权围栏，见 §5 |
 
@@ -95,7 +95,7 @@ Native core 的输入由 adapter 注入，算法适配层级和历史/live-safe 
 
 区间/单日入口、支持任务与恢复步骤见[平台 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)。区间 planner 解析本机输入 authority，执行器完成算法与 Result 校验，repository 单事务复核全部键并提交；不能绕过其中任一边界。
 
-`shared.prediction_context` 与任务日历生成三日期；executor 在写入前复核，预测与 Actuals 共用 `shared.week_calendar_normalizer`。语义与允许的归一化范围见[预测语义](PREDICTION_SEMANTICS.md)。Actuals 由 `scheduler.actuals_runner` 一次性入口编排，各 cadence 的期望时钟只在[部署手册](../../deploy/README.md)维护。
+`shared.prediction_context` 与任务日历生成三日期；executor 在写入前复核，预测与 Actuals 共用 `shared.week_calendar_normalizer`。语义与允许的归一化范围见[预测语义](PREDICTION_SEMANTICS.md)。Actuals 由 `scheduler.actuals_runner` 一次性入口编排；日频读取、构造和普通 UPSERT 共用一个事务，不在自然链路执行尾部删除。各 cadence 的期望时钟只在[部署手册](../../deploy/README.md)维护。
 
 ### 4.2 Blackbox 入库路径
 
@@ -133,8 +133,8 @@ Dashboard 只从产品事实表聚合逐点结果。
 
 | 关注点 | 当前实现边界 |
 |---|---|
-| 引擎 | 通过公共数据/日历入口使用统一引擎工厂；Dashboard 使用独立只读 Engine |
-| 配置 | `shared/db_config.py` 加载环境连接；canonical 定义方案；Runtime Profile 定义 Blackbox 执行环境和资源上限 |
+| 引擎 | 调度 Engine 接收显式 `DatabaseConfig` 或调用环境适配器；Backend 的认证与 Dashboard 各用独立、有界的 HTTP Engine，不复用调度连接池 |
+| 配置 | `DatabaseConfig.from_mapping()` 只解析调用方数据；`from_env()` 才选择显式私有文件或当前环境，导入模块不加载 `.env`、不修改环境、必填连接信息无默认回退；canonical 定义方案；Runtime Profile 定义 Blackbox 执行环境和资源上限 |
 | 执行预算 | executor/Blackbox runner 采用方案和 Runtime Profile 预算；具体合成与留证要求见[Harness 架构](HARNESS_ARCHITECTURE.md#2-验证与执行边界) |
 | 输入与产物 | W4 运行使用作业临时输入根并清理；Blackbox ready snapshot 与私有状态分别受控；历史证据由 repository 与外置 artifact 保存 |
 | 错误 | executor 记录失败 run/log；Harness 返回 Gate 结果，涉及持久化时核实相应 repository 的事务结果 |

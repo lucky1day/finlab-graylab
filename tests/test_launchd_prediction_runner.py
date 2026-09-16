@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import errno
+import json
 import os
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -557,50 +561,290 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
             ("partial", 1),
         )
 
-
-    def test_global_runner_lock_waits_until_current_cadence_releases(self) -> None:
+    def test_failed_candidate_keeps_run_and_write_evidence(self) -> None:
         from scheduler import one_shot_prediction_runner as runner
 
-        contender_attempting = threading.Event()
-        contender_entered = threading.Event()
-        failures: list[BaseException] = []
+        summary = runner.OneShotPredictionSummary("daily", "2026-08-20")
+        cfg = _blackbox_config("failed")
+        result = SimpleNamespace(
+            scheme_id=cfg.scheme_id,
+            status="failed",
+            records_written=3,
+            error_msg="secret detail",
+            run_id=103,
+        )
+        with patch.object(runner, "execute_scheme", return_value=result):
+            runner._execute_candidate(
+                summary,
+                cfg,
+                predict_date="2026-08-20",
+                algo_env="forecast_env",
+                scheduled_control_plane="launchd_one_shot",
+                scheduled_execution_context=object(),
+            )
+
+        self.assertEqual(
+            summary.failed,
+            [
+                {
+                    "scheme_id": "failed",
+                    "run_id": 103,
+                    "stage": "execute_scheme",
+                    "code": "execution_failed",
+                    "records_written": 3,
+                }
+            ],
+        )
+        self.assertNotIn("secret detail", repr(summary.failed))
+
+
+    def test_global_runner_lock_times_out_then_recovers_after_release(self) -> None:
+        from scheduler import one_shot_prediction_runner as runner
 
         with tempfile.TemporaryDirectory() as runtime_root:
             config = SimpleNamespace(runtime_root=Path(runtime_root))
-            real_flock = runner.fcntl.flock
-            contender: threading.Thread
+            with runner._runner_lock(config, lock_timeout_sec=1):
+                contender = subprocess.run(
+                    [
+                        sys.executable,
+                        "-B",
+                        "-c",
+                        "\n".join(
+                            (
+                                "from pathlib import Path",
+                                "from types import SimpleNamespace",
+                                "import sys",
+                                "from scheduler import "
+                                "one_shot_prediction_runner as runner",
+                                "config = SimpleNamespace("
+                                "runtime_root=Path(sys.argv[1]))",
+                                "try:",
+                                "    with runner._runner_lock("
+                                "config, lock_timeout_sec=0.05):",
+                                "        print('unexpected_acquisition')",
+                                "except runner.OneShotPredictionLockTimeout as exc:",
+                                "    print(exc.code)",
+                            )
+                        ),
+                        runtime_root,
+                    ],
+                    cwd=Path(__file__).resolve().parents[1],
+                    capture_output=True,
+                    check=True,
+                    text=True,
+                    timeout=3,
+                )
 
-            def observed_flock(file_descriptor: int, operation: int) -> None:
-                if (
-                    threading.current_thread() is contender
-                    and operation & runner.fcntl.LOCK_EX
-                ):
-                    contender_attempting.set()
-                real_flock(file_descriptor, operation)
+            with runner._runner_lock(config, lock_timeout_sec=0.2):
+                recovered = True
 
-            def wait_for_lock() -> None:
-                try:
-                    with runner._runner_lock(config):
-                        contender_entered.set()
-                except BaseException as exc:  # pragma: no cover - thread bridge
-                    failures.append(exc)
-                    contender_entered.set()
+        self.assertEqual(contender.stdout.strip(), "lock_wait_timeout")
+        self.assertEqual(contender.stderr, "")
+        self.assertTrue(recovered)
 
-            contender = threading.Thread(target=wait_for_lock)
-            with runner._runner_lock(config):
-                with patch.object(runner.fcntl, "flock", new=observed_flock):
-                    contender.start()
-                    self.assertTrue(contender_attempting.wait(timeout=3))
-                    entered_before_release = contender_entered.wait(timeout=0.05)
+    def test_lock_timeout_summary_has_dedicated_failure_code(self) -> None:
+        from scheduler import one_shot_prediction_runner as runner
 
-            self.assertTrue(contender_entered.wait(timeout=3))
-            contender.join(timeout=3)
+        timeout = runner.OneShotPredictionLockTimeout("busy")
+        with (
+            patch.dict(
+                os.environ,
+                {"BFL_DEPLOYMENT_TARGET": "mac3-production"},
+                clear=False,
+            ),
+            patch.object(
+                runner.DataBridgeRefreshConfig,
+                "from_env",
+                return_value=object(),
+            ),
+            patch.object(runner, "_runner_lock", side_effect=timeout),
+        ):
+            with self.assertRaises(runner.OneShotPredictionLockTimeout) as caught:
+                _run_one_shot(
+                    runner,
+                    "daily",
+                    predict_date="2026-08-28",
+                    lock_timeout_sec=0.01,
+                )
 
-        self.assertFalse(contender.is_alive())
-        if failures:
-            raise failures[0]
-        self.assertFalse(entered_before_release)
-        self.assertTrue(contender_entered.is_set())
+        self.assertIs(caught.exception.summary, timeout.summary)
+        self.assertEqual(
+            caught.exception.summary.failed,
+            [
+                {
+                    "scheme_id": "",
+                    "run_id": None,
+                    "stage": "runner_lock",
+                    "code": "lock_wait_timeout",
+                    "records_written": 0,
+                }
+            ],
+        )
+        self.assertEqual(caught.exception.summary.exit_code, 1)
+
+    def test_lock_rechecks_deadline_after_late_acquisition(self) -> None:
+        from scheduler import one_shot_prediction_runner as runner
+
+        with tempfile.TemporaryDirectory() as runtime_root:
+            config = SimpleNamespace(runtime_root=Path(runtime_root))
+            with (
+                patch.object(
+                    runner.time,
+                    "monotonic",
+                    side_effect=[10.0, 10.01, 10.06],
+                ),
+                patch.object(runner.time, "sleep"),
+                patch.object(
+                    runner.fcntl,
+                    "flock",
+                    side_effect=[
+                        BlockingIOError(errno.EAGAIN, "busy"),
+                        None,
+                        None,
+                    ],
+                ),
+            ):
+                with self.assertRaises(
+                    runner.OneShotPredictionLockTimeout
+                ) as caught:
+                    with runner._runner_lock(
+                        config,
+                        lock_timeout_sec=0.05,
+                    ):
+                        self.fail("expired acquisition must not execute")
+
+        self.assertEqual(caught.exception.code, "lock_wait_timeout")
+        self.assertEqual(caught.exception.stage, "runner_lock")
+
+    def test_partial_batch_and_cleanup_errors_preserve_completed_summary(self) -> None:
+        from scheduler import launchd_prediction_runner as entry
+        from scheduler import one_shot_prediction_runner as runner
+
+        direct = _blackbox_config("completed")
+        direct.input_source = "database"
+        engine = Mock()
+        engine.dispose.side_effect = RuntimeError("dispose failed")
+        calendar = _PeriodCalendar("2026-08-01", "2026-08-31")
+        with (
+            patch.dict(
+                os.environ,
+                {"BFL_DEPLOYMENT_TARGET": "mac3-production"},
+                clear=False,
+            ),
+            patch.object(
+                runner.DataBridgeRefreshConfig,
+                "from_env",
+                return_value=object(),
+            ),
+            patch.object(runner, "_runner_lock", return_value=nullcontext()),
+            patch.object(runner, "discover_schemes", return_value=[direct]),
+            patch.object(runner, "create_engine_from_env", return_value=engine),
+            patch.object(
+                runner,
+                "resolve_database_lifecycle",
+                return_value=(direct,),
+            ),
+            patch.object(runner, "get_calendar", return_value=calendar),
+            patch.object(runner, "is_weekly_signal_date", return_value=True),
+            patch.object(
+                runner,
+                "execute_scheme",
+                return_value=SimpleNamespace(
+                    scheme_id="completed",
+                    status="success",
+                    records_written=2,
+                    run_id=314,
+                ),
+            ) as execute,
+            patch.object(
+                runner,
+                "_execute_data_bridge_wave",
+                side_effect=RuntimeError("dependency failed"),
+            ),
+        ):
+            with self.assertRaises(runner.OneShotPredictionRunError) as caught:
+                entry.run(
+                    "weekly",
+                    predict_date="2026-08-15",
+                    algo_env="forecast_env",
+                )
+
+        summary = caught.exception.summary
+        self.assertEqual(
+            summary.executed,
+            [
+                {
+                    "scheme_id": "completed",
+                    "status": "success",
+                    "records_written": 2,
+                    "run_id": 314,
+                }
+            ],
+        )
+        self.assertEqual(
+            {item["stage"] for item in summary.failed},
+            {"batch_dependency", "engine_dispose"},
+        )
+        self.assertTrue(
+            all(
+                item["code"] == "dependency_unavailable"
+                for item in summary.failed
+            )
+        )
+        self.assertEqual((summary.outcome, summary.exit_code), ("partial", 1))
+        execute.assert_called_once()
+
+    def test_host_mains_serialize_carried_partial_summary(self) -> None:
+        from scheduler import launchd_prediction_runner
+        from scheduler import one_shot_prediction_runner as runner
+        from scheduler import systemd_prediction_runner
+
+        summary = runner.OneShotPredictionSummary(
+            "daily",
+            "2026-08-28",
+            executed=[
+                {
+                    "scheme_id": "completed",
+                    "status": "success",
+                    "records_written": 1,
+                    "run_id": 22,
+                }
+            ],
+            failed=[
+                {
+                    "scheme_id": "",
+                    "run_id": None,
+                    "stage": "batch_dependency",
+                    "code": "dependency_unavailable",
+                    "records_written": 0,
+                }
+            ],
+            outcome="partial",
+            exit_code=1,
+        )
+        error = runner.OneShotPredictionRunError(
+            "failed",
+            summary=summary,
+            code="dependency_unavailable",
+            stage="batch_dependency",
+        )
+        for entry in (launchd_prediction_runner, systemd_prediction_runner):
+            with (
+                self.subTest(entry=entry.__name__),
+                patch.object(entry, "run", side_effect=error),
+                patch("builtins.print") as output,
+            ):
+                exit_code = entry.main(
+                    ["--cadence", "daily", "--predict-date", "2026-08-28"]
+                )
+
+                payload = json.loads(output.call_args.args[0])
+                self.assertEqual(exit_code, 1)
+                self.assertEqual(payload["executed"][0]["run_id"], 22)
+                self.assertEqual(
+                    payload["failed"][0]["code"],
+                    "dependency_unavailable",
+                )
 
 
     def test_one_shot_requires_matching_target_before_runtime_access(

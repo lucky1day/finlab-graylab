@@ -64,6 +64,11 @@ __Host-bfl-session=<opaque-token>; Secure; HttpOnly; SameSite=Strict; Path=/
 已撤销或过期会话是终态，账户恢复不得清除 revoked_at、延长 expires_at 或恢复旧浏览器登录。
 参考 [OWASP 会话管理](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)。
 
+普通会话读取使用不带 `FOR UPDATE` 的 `get_session_user()`，每次请求仍直接查询会话与账户状态，不设置跨请求
+认证缓存。修改密码、角色、状态、资料或撤销会话等写操作，必须在本次写事务内通过
+`lock_session_user()` 重新核验并锁定必要记录后再修改。状态或角色变更提交后，新请求立即按数据库新状态处理；
+已经完成认证检查的在途只读请求按其既有事务继续，不承诺追溯取消或撤回已经生成的响应。
+
 ### 请求来源
 
 状态变更仅接受 JSON POST，禁止 GET 写入。严格核验部署目标对应的可信 Origin 和 Sec-Fetch-Site，
@@ -129,6 +134,11 @@ __Host-bfl-session=<opaque-token>; Secure; HttpOnly; SameSite=Strict; Path=/
 权限和生命周期；security 负责哈希、令牌及恒定时间比较；repository 是上述三表唯一写入口。
 算法 scheduler/backtest/updater 不写认证表；认证模块不读写算法、Registry、prediction、Actual、backtest、
 DataBridge 或调度状态，repository 不写业务/源数据表。
+
+认证 HTTP 请求使用 Backend 专用 Engine，不复用 scheduler Engine；每个应用进程的认证池有界为
+`pool_size=5`、`max_overflow=0`、`pool_timeout=0.25s`，并设置驱动连接/读/写超时及单条 MySQL 执行上限。
+Dashboard 使用另一只同样有界的池，因此单进程两池总容量为 10；这是上线测试起点，不是容量结论，调整前
+须按目标进程数与数据库连接上限核算。连接池或数据库暂时不可用时，受保护入口 fail-closed，不能绕过认证。
 
 ## 初始管理员与离线恢复
 

@@ -43,6 +43,17 @@ insert-only 检查。runner 的 `--predict-date` 不是第二套历史补缺授�
 
 普通 active completion 的 benign `skipped` 是算法已经执行、返回 records 并通过写前复核后产生的发布结果，不是调度 preflight skip，计算成本已经发生。one-shot batch 的退出码 `0` 仅表示没有 actionable failure，同一摘要可以同时包含首次发布 `success` 与完整重复 `skipped`，不能据此声称没有执行方案。区间补缺拒绝已有键的语义仍按平台 SOP，不转换为此类 skipped。
 
+跨 cadence 的 one-shot Writer 继续使用 runtime 下同一路径的 `flock`，但只以
+`LOCK_EX | LOCK_NB` 有界轮询；launchd/systemd runner 的 `--lock-timeout-sec` 默认 60 秒。期限内未取得锁时
+返回 `stage=runner_lock`、`code=lock_wait_timeout`，不得归为数据库不可用，不删除锁文件，也不自动终止持锁
+进程。抢到锁后再次检查本次等待期限，并在锁内重新执行原有日历覆盖、交易日和周期到期判断；始终保留调用方
+传入的 `predict_date`，错过自然窗口时不改成新日期或自动补跑历史。
+
+批次从创建后始终沿用同一个 `OneShotPredictionSummary`。方案成功后发生依赖、锁后配置或资源收尾异常时，
+外层回执必须保留已经完成的 `executed`、`run_id` 与 `records_written`，并追加带 `scheme_id`、可用
+`run_id`、`stage`、`code`、`records_written` 的失败项；不得用新的空 configuration summary 覆盖，也不自动
+重跑摘要中已完成的方案。批次级失败没有对应方案时 `scheme_id` 为空字符串。
+
 ## 输入新鲜度
 
 算法执行前必须通过本机输入 ready 与截止校验；失败不得降级旧 artifact 或制造成功信号。源表、schema、

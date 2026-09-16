@@ -2,12 +2,14 @@
 
 本模块不保存 cron、ledger、occurrence 或 startup catch-up 状态。每次进程启动时
 只做一次严格发现、按 active cadence 筛选、DataBridge Gate 校验和逐方案执行；跨 cadence 的
-互斥由 runtime 目录中的单一阻塞锁保证。
+互斥由 runtime 目录中的单一有界等待锁保证。
 """
 
 from __future__ import annotations
 
+import errno
 import fcntl
+import math
 import os
 import tempfile
 import threading
@@ -48,10 +50,61 @@ from shared.data_bridge.refresh import DataBridgeRefreshConfig
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
 DATA_BRIDGE_READY_MAX_WAIT_SEC = 30 * 60
 DATA_BRIDGE_READY_POLL_INTERVAL_SEC = 30
+RUNNER_LOCK_TIMEOUT_SEC = 60.0
+RUNNER_LOCK_POLL_INTERVAL_SEC = 0.05
 
 
-class OneShotPredictionConfigurationError(RuntimeError):
+class OneShotPredictionRunError(RuntimeError):
+    """携带当前批次摘要的 one-shot 安全失败。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        summary: "OneShotPredictionSummary | None" = None,
+        code: str = "one_shot_failed",
+        stage: str = "runner",
+    ) -> None:
+        super().__init__(message)
+        self.summary = summary
+        self.code = code
+        self.stage = stage
+
+
+class OneShotPredictionConfigurationError(OneShotPredictionRunError):
     """scheduled one-shot prediction runner 的配置或输入不成立。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        summary: "OneShotPredictionSummary | None" = None,
+        code: str = "configuration_error",
+        stage: str = "configuration",
+    ) -> None:
+        super().__init__(
+            message,
+            summary=summary,
+            code=code,
+            stage=stage,
+        )
+
+
+class OneShotPredictionLockTimeout(OneShotPredictionRunError):
+    """one-shot writer 锁未能在显式期限内取得。"""
+
+    def __init__(
+        self,
+        message: str = "prediction runner lock wait timed out",
+        *,
+        summary: "OneShotPredictionSummary | None" = None,
+    ) -> None:
+        super().__init__(
+            message,
+            summary=summary,
+            code="lock_wait_timeout",
+            stage="runner_lock",
+        )
 
 
 @dataclass
@@ -93,6 +146,19 @@ def _sorted_items(items: list[dict[str, object]]) -> list[dict[str, object]]:
     return sorted(items, key=lambda item: str(item.get("scheme_id", "")))
 
 
+def _has_batch_evidence(summary: OneShotPredictionSummary) -> bool:
+    return any(
+        (
+            summary.executed,
+            summary.excluded,
+            summary.denied,
+            summary.blocked,
+            summary.skipped,
+            summary.failed,
+        )
+    )
+
+
 def today() -> str:
     return datetime.now(ASIA_SHANGHAI).date().isoformat()
 
@@ -122,26 +188,123 @@ def _normalize_requested_scheme_ids(
     return normalized
 
 
+def _normalize_lock_timeout(value: float) -> float:
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError) as exc:
+        raise OneShotPredictionConfigurationError(
+            "invalid lock_timeout_sec"
+        ) from exc
+    if not math.isfinite(timeout) or timeout < 0:
+        raise OneShotPredictionConfigurationError(
+            "invalid lock_timeout_sec"
+        )
+    return timeout
+
+
 @contextmanager
-def _runner_lock(config: DataBridgeRefreshConfig) -> Iterator[None]:
-    """以跨 cadence 的全局阻塞锁串行化 generic writer。"""
-    lock_path = config.runtime_root / "launchd_prediction_runner" / "predictions.lock"
+def _runner_lock(
+    config: DataBridgeRefreshConfig,
+    *,
+    lock_timeout_sec: float,
+) -> Iterator[None]:
+    """在显式期限内取得跨 cadence 的全局 writer 锁。"""
+    lock_path = (
+        config.runtime_root
+        / "launchd_prediction_runner"
+        / "predictions.lock"
+    )
+    deadline = time.monotonic() + lock_timeout_sec
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a+b") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            contended = False
+            while True:
+                try:
+                    fcntl.flock(
+                        handle.fileno(),
+                        fcntl.LOCK_EX | fcntl.LOCK_NB,
+                    )
+                except OSError as exc:
+                    if exc.errno not in {errno.EACCES, errno.EAGAIN}:
+                        raise
+                    contended = True
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise OneShotPredictionLockTimeout() from exc
+                    time.sleep(
+                        min(RUNNER_LOCK_POLL_INTERVAL_SEC, remaining)
+                    )
+                    continue
+                if contended and time.monotonic() >= deadline:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                    raise OneShotPredictionLockTimeout()
+                break
             try:
                 yield
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OneShotPredictionRunError:
+        raise
     except OSError as exc:
         raise OneShotPredictionConfigurationError(
-            "launchd prediction runner lock is unavailable"
+            "prediction runner lock is unavailable"
         ) from exc
+
+
+@contextmanager
+def _runner_lock_for_summary(
+    config: DataBridgeRefreshConfig,
+    summary: OneShotPredictionSummary,
+    *,
+    lock_timeout_sec: float,
+) -> Iterator[None]:
+    """锁等待失败时把稳定分类附到本次批次摘要。"""
+    try:
+        with _runner_lock(
+            config,
+            lock_timeout_sec=lock_timeout_sec,
+        ):
+            yield
+    except OneShotPredictionLockTimeout as exc:
+        summary.failed.append(
+            _failure_item(None, exc.code, stage=exc.stage)
+        )
+        _finalize(summary)
+        exc.summary = summary
+        raise
+    except OneShotPredictionRunError as exc:
+        if exc.summary is None and _has_batch_evidence(summary):
+            summary.failed.append(
+                _failure_item(None, exc.code, stage=exc.stage)
+            )
+            _finalize(summary)
+            exc.summary = summary
+        raise
 
 
 def _candidate_item(cfg: object, code: str) -> dict[str, object]:
     return {"scheme_id": str(getattr(cfg, "scheme_id", "")), "code": code}
+
+
+def _failure_item(
+    cfg: object | None,
+    code: str,
+    *,
+    stage: str,
+    result: object | None = None,
+) -> dict[str, object]:
+    """构造不丢失已知执行证据的稳定失败项。"""
+    source = result if result is not None else cfg
+    return {
+        "scheme_id": str(getattr(source, "scheme_id", "")),
+        "run_id": getattr(result, "run_id", None),
+        "stage": stage,
+        "code": code,
+        "records_written": int(
+            getattr(result, "records_written", 0) or 0
+        ),
+    }
 
 
 def _is_persisted_preflight_failure(result: object, expected_error: str) -> bool:
@@ -267,14 +430,27 @@ def _execute_candidate(
             )
         result = execute_scheme(cfg, predict_date, **execute_kwargs)
     except Exception:  # noqa: BLE001 - isolate one candidate
-        summary.failed.append(_candidate_item(cfg, "execution_exception"))
+        summary.failed.append(
+            _failure_item(
+                cfg,
+                "execution_exception",
+                stage="execute_scheme",
+            )
+        )
         return
 
     if (
         scheduled_preflight_failure is not None
         and _is_persisted_preflight_failure(result, scheduled_preflight_failure)
     ):
-        summary.failed.append(_candidate_item(cfg, scheduled_preflight_failure))
+        summary.failed.append(
+            _failure_item(
+                cfg,
+                scheduled_preflight_failure,
+                stage="scheduled_preflight",
+                result=result,
+            )
+        )
         return
 
     status = str(getattr(result, "status", "failed"))
@@ -298,7 +474,14 @@ def _execute_candidate(
         )
         summary.skipped.append(_candidate_item(cfg, code))
     else:
-        summary.failed.append(_candidate_item(cfg, f"execution_{status}"))
+        summary.failed.append(
+            _failure_item(
+                cfg,
+                f"execution_{status}",
+                stage="execute_scheme",
+                result=result,
+            )
+        )
 
 
 def _execute_native_wave(
@@ -635,11 +818,13 @@ def run_one_shot(
     scheduled_execution_context: object,
     event: str,
     scheme_ids: Sequence[str] | None = None,
+    lock_timeout_sec: float = RUNNER_LOCK_TIMEOUT_SEC,
 ) -> OneShotPredictionSummary:
     """执行一次指定 cadence 的受控 scheduled_live 批次。"""
     normalized_cadence = _normalize_cadence(cadence)
     normalized_date = _normalize_predict_date(predict_date)
     requested_scheme_ids = _normalize_requested_scheme_ids(scheme_ids)
+    normalized_lock_timeout = _normalize_lock_timeout(lock_timeout_sec)
     if normalized_cadence == "monthly" and date.fromisoformat(normalized_date).day != 15:
         raise OneShotPredictionConfigurationError(
             "monthly one-shot must run on natural month day 15"
@@ -664,7 +849,13 @@ def run_one_shot(
         predict_date=normalized_date,
         event=event,
     )
-    with _runner_lock(data_bridge_config):
+    with _runner_lock_for_summary(
+        data_bridge_config,
+        summary,
+        lock_timeout_sec=normalized_lock_timeout,
+    ):
+        # 日历覆盖、交易日与周期到期判断全部在取得锁后执行；等待期间不
+        # 改写 predict_date，也不会把错过的日期自动转换为补跑。
         cadence_configs = _discover_cadence_configs(
             normalized_cadence,
             requested_scheme_ids,
@@ -756,15 +947,48 @@ def run_one_shot(
 
             _finalize(summary)
             return summary
-        except OneShotPredictionConfigurationError:
+        except OneShotPredictionRunError as exc:
+            if exc.summary is None and _has_batch_evidence(summary):
+                summary.failed.append(
+                    _failure_item(None, exc.code, stage=exc.stage)
+                )
+                _finalize(summary)
+                exc.summary = summary
             raise
-        except Exception as exc:  # noqa: BLE001 - outer dependencies are config failures
-            raise OneShotPredictionConfigurationError(
-                "launchd prediction dependencies are unavailable"
+        except Exception as exc:  # noqa: BLE001 - retain partial batch evidence
+            summary.failed.append(
+                _failure_item(
+                    None,
+                    "dependency_unavailable",
+                    stage="batch_dependency",
+                )
+            )
+            _finalize(summary)
+            raise OneShotPredictionRunError(
+                "prediction runner dependency is unavailable",
+                summary=summary,
+                code="dependency_unavailable",
+                stage="batch_dependency",
             ) from exc
         finally:
             if engine is not None:
-                engine.dispose()
+                try:
+                    engine.dispose()
+                except Exception as exc:  # noqa: BLE001 - keep batch evidence
+                    summary.failed.append(
+                        _failure_item(
+                            None,
+                            "dependency_unavailable",
+                            stage="engine_dispose",
+                        )
+                    )
+                    _finalize(summary)
+                    raise OneShotPredictionRunError(
+                        "prediction engine disposal failed",
+                        summary=summary,
+                        code="dependency_unavailable",
+                        stage="engine_dispose",
+                    ) from exc
 
 
 def configuration_summary(
