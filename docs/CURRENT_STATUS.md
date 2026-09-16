@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最近运行核验**：2026-09-16。以下是已核验基线，不替代实时现场检查。
+**最近运行核验**：2026-09-17。以下是已核验基线，不替代实时现场检查。
 
 固定主机、SSH/本地转发、生产路径和只读命令见[双机部署与访问入口](operations/DEPLOYMENT_ACCESS.md)。
 
@@ -16,11 +16,21 @@
 | 当前 active 执行身份 | 93 个 Blackbox base | 93 个 Blackbox base + 9 个 W4 Native base |
 | Dashboard | 97 个 target | 106 个 target |
 | 调度控制面 | systemd one-shot/timer | launchd + installed plist |
-| current release | `3a665c36425a168fa1d24559c9dc987ed2901633` | 同左 |
-| previous release | `877e6ab1d1f02d6b174db98fbfa4c7fd847a00d9` | `507081397e75fa60c56614fd0bfbb750b9415753` |
+| current release | `69c1a7046432564fe1c50a0a9d9f7beed3197671` | `3a665c36425a168fa1d24559c9dc987ed2901633` |
+| previous release | `881be97425da80da1411ccb9b7eefea40b2d92eb` | `507081397e75fa60c56614fd0bfbb750b9415753` |
 | schema | 025 APPLIED | 025 APPLIED |
 
-- 双机同一 archive SHA-256：`1eba1e9fbf7a8b0b944bf8de2385ce920ef647021b4ae586481cae14aae25366`。
+- 2026-09-17 二次审计候选 `69c1a7046432564fe1c50a0a9d9f7beed3197671` 已完成四层 CI、独立复审、
+  ECS 候选与正式九方案 Dashboard/DataConsistency 验收并晋级；archive SHA-256 为
+  `8588983881a76351d61203f89671464b05332de35a01547f130ef986ed02a8f3`。ECS 晋级前后
+  Registry、Version、Prediction、Run、Backtest 与四类 Actual 计数均未变化。
+- Mac3 尚未晋级该候选。候选 Dashboard 与公网入口/认证 Gate 通过，但 DataConsistency lineage
+  对 `liwei_0616_5y01_full_oos_k3_div_k10` 返回 `BLOCKED`：78 个既有 Native live run 缺输入
+  artifact，3 个 retired exact 缺 `manifest_hash`；Mac3 同时不存在获批的 `_bbv2` 替代 Registry、
+  version 或产品事实，不能复用 ECS 的删除结论。候选服务和临时会话已撤销，未修改 Mac3 业务数据、
+  current、launchd 或调度。该阻断解除前不得把本轮写成双机发布闭环。
+- 上一份双机共同 release 为 `3a665c36425a168fa1d24559c9dc987ed2901633`，archive SHA-256 为
+  `1eba1e9fbf7a8b0b944bf8de2385ce920ef647021b4ae586481cae14aae25366`。
 - 2026-09-16 上线前稳定性加固 release 已按 ECS → Mac3 顺序使用同一 archive 晋级。两机 Backend
   进程实际 cwd 均为 `3a665c36425a168fa1d24559c9dc987ed2901633`，健康且 schema 025；晋级前后
   Registry、Prediction、四类 Actual、Run 和 Backtest 数量不变。Mac3 真实 MySQL Summary 为 106 个方案，
@@ -104,7 +114,12 @@ W4 Native 与 Blackbox 的实际范围以[部署矩阵](../deploy/scheme_deploym
   - `liwei_0616_5y01_full_oos_k3_div_k10_bbv2`
   - `liwei_0616_cons_sda_k3_div_k10_bbv2`
 - 两个来源的 Registry 为 archived、版本为 retired，无 canonical、Writer 或 Dashboard 展示。
-  原 ID 四条预测仍引用其回测；不得删除来源、解除外键或改挂历史。它们不是待删项，也不构成新算法入库阻塞。
+  ECS 已在完整备份、事实摘要、run lineage、raw backtest 与业务键冲突检查后，删除
+  `liwei_0616_5y01_full_oos_k3_div_k10` 被 411 条 `_bbv2` 纠正事实唯一替代的 411 条旧产品事实、
+  78 个旧 live run、1 个旧 backtest run 及 1 个旧 retired version；替代来源的 411 条产品事实、333 条
+  raw backtest 与成功 source run 保留，Dashboard 只读投影继续使用其精确 metadata。另一个来源未在本次清理
+  范围内。Mac3 不存在该 `_bbv2` 来源，因此未执行相同删除。两项来源均不是普通待删项，也不构成新算法
+  入库阻塞。
 
 ### Schema 025 与恢复材料
 
