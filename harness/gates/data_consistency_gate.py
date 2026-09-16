@@ -8,8 +8,9 @@ from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import bindparam, text
@@ -18,12 +19,21 @@ from sqlalchemy.engine import Connection, Engine
 from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
 from harness.gates.dashboard_gate import ApiProbeError, fetch_json
+from harness.http_target import validate_api_target
 from harness.result import Evidence, GateResult, GateStatus
 from scheduler.discovery import load_scheme_config
 from scheduler.repository import registry_scheme_id
+from shared.historical_reference_compatibility import (
+    HistoricalBacktestReference,
+    load_historical_backtest_references,
+)
 from shared.calendar_service import is_trading_day_row
 from shared.period_average_buckets import build_period_buckets
-from shared.task_specs import TASK_COMBINATIONS
+from shared.task_specs import (
+    TASK_COMBINATIONS,
+    load_legacy_native_scheme_ids,
+    runtime_task_contract,
+)
 from shared.week_calendar_normalizer import normalize_week_calendar_rows
 
 
@@ -31,6 +41,7 @@ HISTORY_START_DATE = "2025-01-01"
 LIVE_TARGET_START_DATE = date(2026, 6, 1)
 MAX_RESPONSE_BYTES = 1_500_000
 SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MONTHLY_ROW_FIELDS = (
     "month",
     "source",
@@ -74,8 +85,8 @@ class DatabaseSnapshot:
     registry_rows: tuple[dict[str, Any], ...]
     prediction_rows: tuple[dict[str, Any], ...]
     actual_rows: tuple[dict[str, Any], ...]
-    live_runs: tuple[tuple[int, str], ...]
-    backtest_runs: tuple[tuple[int, str], ...]
+    live_runs: tuple[dict[str, Any], ...]
+    backtest_runs: tuple[dict[str, Any], ...]
     calendar_rows: tuple[dict[str, Any], ...]
     digest: str
 
@@ -241,8 +252,8 @@ class DataConsistencyGate(Gate):
             raise ValueError(
                 "data consistency gate requires same-host engine_factory"
             )
-        base_url = _validated_origin(ctx.api_base_url)
-        summary_url = f"{base_url}/api/factor-lab/dashboard"
+        target = validate_api_target(ctx.api_base_url, ctx.api_prefix)
+        summary_url = target.url("/api/factor-lab/dashboard")
         display_until = _clock_display_date(self._clock)
         engine = ctx.engine_factory()
         final_snapshot: DatabaseSnapshot | None = None
@@ -272,6 +283,12 @@ class DataConsistencyGate(Gate):
                 facts = validate_and_join_facts(
                     snapshot,
                     display_until=display_until,
+                    legacy_native_scheme_ids=load_legacy_native_scheme_ids(
+                        PROJECT_ROOT
+                    ),
+                    historical_references=load_historical_backtest_references(
+                        PROJECT_ROOT
+                    ),
                 )
                 expected_monthly = aggregate_display_facts(facts)
                 _remaining_budget(deadline, self._monotonic)
@@ -388,6 +405,10 @@ def validate_and_join_facts(
     snapshot: DatabaseSnapshot,
     *,
     display_until: str,
+    legacy_native_scheme_ids: frozenset[str] = frozenset(),
+    historical_references: frozenset[
+        HistoricalBacktestReference
+    ] = frozenset(),
 ) -> list[ConsistencyFact]:
     """独立校验产品事实并按任务规则关联已发布或 live Actual。"""
     calendar = _FrozenCalendar.from_rows(snapshot.calendar_rows)
@@ -401,8 +422,24 @@ def validate_and_join_facts(
         if scope in registry_by_scope:
             raise DataConsistencyError(f"duplicate active Registry scope: {scope!r}")
         task_type = _required_text(row.get("task_type"), field="task_type")
-        expected = TASK_COMBINATIONS.get(task_type)
-        if expected is None or expected[0] != scope[2]:
+        runtime_type = _required_text(
+            row.get("runtime_type"), field="runtime_type"
+        )
+        try:
+            expected = runtime_task_contract(
+                runtime_type=runtime_type,
+                task_type=task_type,
+                base_scheme_id=scope[0],
+                legacy_native_scheme_ids=legacy_native_scheme_ids,
+            )
+        except ValueError as exc:
+            raise DataConsistencyError(
+                f"Registry task contract mismatch: scheme_id={row.get('scheme_id')!r}"
+            ) from exc
+        if expected.horizon != scope[2] or (
+            row.get("frequency") is not None
+            and str(row["frequency"]) != expected.frequency
+        ):
             raise DataConsistencyError(
                 f"Registry task contract mismatch: scheme_id={row.get('scheme_id')!r}"
             )
@@ -425,8 +462,16 @@ def validate_and_join_facts(
             raise DataConsistencyError(f"conflicting Actual facts: {key!r}")
         actuals[key] = direction
 
-    live_runs = dict(snapshot.live_runs)
-    backtest_runs = dict(snapshot.backtest_runs)
+    live_runs = {
+        int(row["reference_id"]): row for row in snapshot.live_runs
+    }
+    backtest_runs = {
+        int(row["reference_id"]): row for row in snapshot.backtest_runs
+    }
+    compatible_pairs = {
+        (item.prediction_scheme_id, item.backtest_source_scheme_id)
+        for item in historical_references
+    }
     business_keys: set[tuple[str, str, int, str]] = set()
     facts: list[ConsistencyFact] = []
     for row in snapshot.prediction_rows:
@@ -477,9 +522,14 @@ def validate_and_join_facts(
                 raise DataConsistencyError(
                     f"prediction references missing live run: {business_key!r}"
                 )
-            if live_runs[live_run_id] != scheme_id:
+            live_run = live_runs[live_run_id]
+            if live_run.get("scheme_id") != scheme_id:
                 raise DataConsistencyError(
                     f"prediction references another scheme's live run: {business_key!r}"
+                )
+            if live_run.get("status") not in {None, "success"}:
+                raise DataConsistencyError(
+                    f"prediction references non-success live run: {business_key!r}"
                 )
             if published_actual is not None:
                 raise DataConsistencyError(
@@ -490,10 +540,29 @@ def validate_and_join_facts(
                 raise DataConsistencyError(
                     f"prediction references missing backtest run: {business_key!r}"
                 )
-            if backtest_runs[backtest_run_id] != scheme_id:
+            backtest_run = backtest_runs[backtest_run_id]
+            source_scheme_id = str(backtest_run.get("scheme_id") or "")
+            if source_scheme_id != scheme_id:
+                if (scheme_id, source_scheme_id) not in compatible_pairs:
+                    raise DataConsistencyError(
+                        "prediction references another scheme's backtest run: "
+                        f"{business_key!r}"
+                    )
+                if (
+                    backtest_run.get("source_registry_status") != "archived"
+                    or not backtest_run.get("source_has_retired_version")
+                    or backtest_run.get("status") != "success"
+                    or not backtest_run.get("code_hash")
+                    or not backtest_run.get("config_hash")
+                    or not backtest_run.get("input_artifact_hash")
+                ):
+                    raise DataConsistencyError(
+                        "historical cross-scheme reference lacks retired source evidence: "
+                        f"{business_key!r}"
+                    )
+            elif backtest_run.get("status") not in {None, "success"}:
                 raise DataConsistencyError(
-                    "prediction references another scheme's backtest run: "
-                    f"{business_key!r}"
+                    f"prediction references non-success backtest run: {business_key!r}"
                 )
             if published_actual is None:
                 raise DataConsistencyError(
@@ -855,7 +924,8 @@ def _capture_snapshot(engine: Engine, registry_ids: Sequence[str]) -> DatabaseSn
             for row in connection.execute(
                 text(
                     "SELECT scheme_id, base_scheme_id, horizon, task_type, "
-                    "target_tenor, status FROM t_scheme_registry "
+                    "runtime_type, frequency, target_tenor, status "
+                    "FROM t_scheme_registry "
                     "WHERE scheme_id IN :registry_ids"
                 ).bindparams(bindparam("registry_ids", expanding=True)),
                 {"registry_ids": list(registry_ids)},
@@ -924,16 +994,20 @@ def _capture_snapshot(engine: Engine, registry_ids: Sequence[str]) -> DatabaseSn
         registry_rows,
         prediction_rows,
         actual_rows,
-        live_runs,
-        backtest_runs,
+        tuple(live_runs.values()),
+        tuple(backtest_runs.values()),
         calendar_rows,
     )
     return DatabaseSnapshot(
         registry_rows=registry_rows,
         prediction_rows=prediction_rows,
         actual_rows=actual_rows,
-        live_runs=tuple(sorted(live_runs.items())),
-        backtest_runs=tuple(sorted(backtest_runs.items())),
+        live_runs=tuple(
+            dict(row) for _, row in sorted(live_runs.items())
+        ),
+        backtest_runs=tuple(
+            dict(row) for _, row in sorted(backtest_runs.items())
+        ),
         calendar_rows=calendar_rows,
         digest=digest,
     )
@@ -1068,19 +1142,60 @@ def _read_references(
     table: str,
     column: str,
     values: Sequence[int],
-) -> dict[int, str]:
+) -> dict[int, dict[str, Any]]:
     if not values:
         return {}
+    if table == "t_scheme_runs":
+        selected = (
+            f"{column}, scheme_id, scheme_version, runtime_type, status, "
+            "prediction_phase, input_artifact_id"
+        )
+    elif table == "t_backtest_runs":
+        selected = (
+            f"{column}, scheme_id, status, code_hash, config_hash, "
+            "input_artifact_hash, summary"
+        )
+    else:
+        raise ValueError("unsupported consistency reference table")
     statement = text(
-        f"SELECT {column}, scheme_id FROM {table} "
-        f"WHERE {column} IN :reference_ids"
+        f"SELECT {selected} FROM {table} WHERE {column} IN :reference_ids"
     ).bindparams(bindparam("reference_ids", expanding=True))
-    return {
-        int(row[column]): str(row["scheme_id"])
+    result = {
+        int(row[column]): {
+            **dict(row),
+            "reference_id": int(row[column]),
+        }
         for row in connection.execute(
             statement, {"reference_ids": list(values)}
         ).mappings()
     }
+    if table != "t_backtest_runs" or not result:
+        return result
+    source_ids = sorted({str(row["scheme_id"]) for row in result.values()})
+    registry_status = {
+        str(row["scheme_id"]): str(row["status"])
+        for row in connection.execute(
+            text(
+                "SELECT scheme_id, status FROM t_scheme_registry "
+                "WHERE scheme_id IN :scheme_ids"
+            ).bindparams(bindparam("scheme_ids", expanding=True)),
+            {"scheme_ids": source_ids},
+        ).mappings()
+    }
+    retired_sources = set(
+        connection.execute(
+            text(
+                "SELECT DISTINCT scheme_id FROM t_scheme_versions "
+                "WHERE scheme_id IN :scheme_ids AND status = 'retired'"
+            ).bindparams(bindparam("scheme_ids", expanding=True)),
+            {"scheme_ids": source_ids},
+        ).scalars()
+    )
+    for row in result.values():
+        scheme_id = str(row["scheme_id"])
+        row["source_registry_status"] = registry_status.get(scheme_id)
+        row["source_has_retired_version"] = scheme_id in retired_sources
+    return result
 
 
 def _snapshot_digest(*parts: Any) -> str:
@@ -1148,22 +1263,6 @@ def _fetch_json_object(
     if not isinstance(metadata, Mapping):
         raise DataConsistencyError("Dashboard probe metadata must be an object")
     return payload, dict(metadata)
-
-
-def _validated_origin(value: str) -> str:
-    base_url = str(value).strip().rstrip("/")
-    parsed = urlsplit(base_url)
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.path
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ValueError("data consistency api_base_url must be an HTTP(S) origin")
-    return base_url
 
 
 def _display_month(fact: ConsistencyFact) -> str:

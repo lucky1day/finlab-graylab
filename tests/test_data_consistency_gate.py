@@ -19,10 +19,12 @@ from harness.gates.data_consistency_gate import (
     validate_and_join_facts,
 )
 from harness.result import GateStatus
+from shared.historical_reference_compatibility import HistoricalBacktestReference
+from shared.task_specs import load_legacy_native_scheme_ids
 from shared.task_specs import TASK_COMBINATIONS
 
 
-BASE_SCHEME_ID = "consistency_daily"
+BASE_SCHEME_ID = "daily_5y_lgbm_5y10_0629"
 REGISTRY_ID = f"{BASE_SCHEME_ID}__h1__5Y"
 MONTHLY_FIELDS = [
     "month",
@@ -90,6 +92,8 @@ def _engine(tmp_path: Path):
                     base_scheme_id TEXT NOT NULL,
                     horizon INTEGER NOT NULL,
                     task_type TEXT NOT NULL,
+                    runtime_type TEXT NOT NULL,
+                    frequency TEXT NOT NULL,
                     target_tenor TEXT NOT NULL,
                     status TEXT NOT NULL
                 );
@@ -119,13 +123,22 @@ def _engine(tmp_path: Path):
         connection.execute(
             text(
                 "CREATE TABLE t_scheme_runs "
-                "(run_id INTEGER PRIMARY KEY, scheme_id TEXT NOT NULL)"
+                "(run_id INTEGER PRIMARY KEY, scheme_id TEXT NOT NULL, "
+                "scheme_version TEXT, runtime_type TEXT, status TEXT, "
+                "prediction_phase TEXT, input_artifact_id TEXT)"
             )
         )
         connection.execute(
             text(
                 "CREATE TABLE t_backtest_runs "
-                "(id INTEGER PRIMARY KEY, scheme_id TEXT NOT NULL)"
+                "(id INTEGER PRIMARY KEY, scheme_id TEXT NOT NULL, status TEXT, "
+                "code_hash TEXT, config_hash TEXT, input_artifact_hash TEXT, summary TEXT)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE TABLE t_scheme_versions "
+                "(scheme_id TEXT NOT NULL, scheme_version TEXT NOT NULL, status TEXT NOT NULL)"
             )
         )
         connection.execute(
@@ -155,16 +168,32 @@ def _engine(tmp_path: Path):
         connection.execute(
             text(
                 "INSERT INTO t_scheme_registry VALUES "
-                "(:registry_id, :base_id, 1, 'T+1', '5Y', 'active')"
+                "(:registry_id, :base_id, 1, 'T+1', 'native_adapter', "
+                "'daily', '5Y', 'active')"
             ),
             {"registry_id": REGISTRY_ID, "base_id": BASE_SCHEME_ID},
         )
         connection.execute(
-            text("INSERT INTO t_scheme_runs VALUES (11, :scheme_id)"),
+            text(
+                "INSERT INTO t_scheme_runs VALUES "
+                "(11, :scheme_id, 'exact-a', 'native_adapter', 'success', "
+                "'scheduled_live', 'artifact-a')"
+            ),
             {"scheme_id": BASE_SCHEME_ID},
         )
         connection.execute(
-            text("INSERT INTO t_backtest_runs VALUES (7, :scheme_id)"),
+            text(
+                "INSERT INTO t_backtest_runs VALUES "
+                "(7, :scheme_id, 'success', 'code-a', 'config-a', "
+                "'input-a', '{}')"
+            ),
+            {"scheme_id": BASE_SCHEME_ID},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO t_scheme_versions VALUES "
+                "(:scheme_id, 'exact-a', 'active')"
+            ),
             {"scheme_id": BASE_SCHEME_ID},
         )
         connection.execute(
@@ -255,6 +284,8 @@ def _date_contract_snapshot(
                 "base_scheme_id": scheme_id,
                 "horizon": horizon,
                 "task_type": task_type,
+                "runtime_type": "blackbox_v2",
+                "frequency": TASK_COMBINATIONS[task_type][2],
                 "target_tenor": "5Y",
                 "status": "active",
             },
@@ -276,8 +307,20 @@ def _date_contract_snapshot(
             },
         ),
         actual_rows=(),
-        live_runs=((1, scheme_id),) if is_live else (),
-        backtest_runs=() if is_live else ((1, scheme_id),),
+        live_runs=(
+            {
+                "reference_id": 1,
+                "scheme_id": scheme_id,
+                "status": "success",
+            },
+        ) if is_live else (),
+        backtest_runs=() if is_live else (
+            {
+                "reference_id": 1,
+                "scheme_id": scheme_id,
+                "status": "success",
+            },
+        ),
         calendar_rows=_calendar_rows(
             date(2025, 12, 1),
             date(2027, 3, 31),
@@ -613,16 +656,20 @@ def test_actual_selector_keeps_t1_and_t5_directions_independent() -> None:
             {
                 "scheme_id": "daily_1__h1__5Y",
                 "base_scheme_id": "daily_1",
-                "horizon": 1,
-                "task_type": "T+1",
+                    "horizon": 1,
+                    "task_type": "T+1",
+                    "runtime_type": "blackbox_v2",
+                    "frequency": "daily",
                 "target_tenor": "5Y",
                 "status": "active",
             },
             {
                 "scheme_id": "daily_5__h5__5Y",
                 "base_scheme_id": "daily_5",
-                "horizon": 5,
-                "task_type": "T+5",
+                    "horizon": 5,
+                    "task_type": "T+5",
+                    "runtime_type": "blackbox_v2",
+                    "frequency": "daily",
                 "target_tenor": "5Y",
                 "status": "active",
             },
@@ -673,7 +720,10 @@ def test_actual_selector_keeps_t1_and_t5_directions_independent() -> None:
                 "actual_direction": -1,
             },
         ),
-        live_runs=((1, "daily_1"), (2, "daily_5")),
+        live_runs=(
+            {"reference_id": 1, "scheme_id": "daily_1", "status": "success"},
+            {"reference_id": 2, "scheme_id": "daily_5", "status": "success"},
+        ),
         backtest_runs=(),
         calendar_rows=_calendar_rows(date(2026, 6, 1), date(2026, 6, 30)),
         digest="fixture",
@@ -702,6 +752,132 @@ def test_independent_aggregation_maps_monthly_average_to_following_display_month
             ["2026-06", "backtest", 1, 1, 1, 0, 1, 0, 0, 1, 0, 0, 1]
         ]
     }
+
+
+@pytest.mark.parametrize(
+    ("base_scheme_id", "task_type", "horizon", "frequency"),
+    [
+        ("weekly_avg_5y_lgbm_0529", "weekly_average", 6, "weekly"),
+        ("monthly_5y_knn_top20_0629", "monthly", 30, "monthly"),
+    ],
+)
+def test_registered_w4_native_runtime_contract_is_accepted(
+    base_scheme_id: str,
+    task_type: str,
+    horizon: int,
+    frequency: str,
+) -> None:
+    snapshot = DatabaseSnapshot(
+        registry_rows=(
+            {
+                "scheme_id": f"{base_scheme_id}__h{horizon}__5Y",
+                "base_scheme_id": base_scheme_id,
+                "horizon": horizon,
+                "task_type": task_type,
+                "runtime_type": "native_adapter",
+                "frequency": frequency,
+                "target_tenor": "5Y",
+                "status": "active",
+            },
+        ),
+        prediction_rows=(),
+        actual_rows=(),
+        live_runs=(),
+        backtest_runs=(),
+        calendar_rows=_calendar_rows(date(2026, 1, 1), date(2026, 2, 1)),
+        digest="native-contract",
+    )
+
+    assert validate_and_join_facts(
+        snapshot,
+        display_until="2026-02-01",
+        legacy_native_scheme_ids=load_legacy_native_scheme_ids(
+            Path(__file__).resolve().parents[1]
+        ),
+    ) == []
+
+
+def test_unregistered_native_and_blackbox_h6_are_rejected() -> None:
+    base = {
+        "scheme_id": "unknown__h6__5Y",
+        "base_scheme_id": "unknown",
+        "horizon": 6,
+        "task_type": "weekly_point",
+        "target_tenor": "5Y",
+        "status": "active",
+        "frequency": "weekly",
+    }
+    for runtime_type in ("native_adapter", "blackbox_v2"):
+        snapshot = DatabaseSnapshot(
+            registry_rows=({**base, "runtime_type": runtime_type},),
+            prediction_rows=(),
+            actual_rows=(),
+            live_runs=(),
+            backtest_runs=(),
+            calendar_rows=_calendar_rows(date(2026, 1, 1), date(2026, 2, 1)),
+            digest="invalid-runtime-contract",
+        )
+        with pytest.raises(DataConsistencyError, match="task contract mismatch"):
+            validate_and_join_facts(
+                snapshot,
+                display_until="2026-02-01",
+                legacy_native_scheme_ids=load_legacy_native_scheme_ids(
+                    Path(__file__).resolve().parents[1]
+                ),
+            )
+
+
+def test_approved_retired_historical_reference_is_accepted() -> None:
+    prediction_id = "liwei_0616_5y01_full_oos_k3_div_k10"
+    source_id = f"{prediction_id}_bbv2"
+    snapshot = _date_contract_snapshot(
+        "T+5",
+        "2026-05-19",
+        "2026-05-19",
+        "2026-05-26",
+        is_live=False,
+    )
+    snapshot = replace(
+        snapshot,
+        registry_rows=(
+            {
+                **snapshot.registry_rows[0],
+                "scheme_id": f"{prediction_id}__h5__5Y",
+                "base_scheme_id": prediction_id,
+            },
+        ),
+        prediction_rows=(
+            {
+                **snapshot.prediction_rows[0],
+                "scheme_id": prediction_id,
+            },
+        ),
+        backtest_runs=(
+            {
+                "reference_id": 1,
+                "scheme_id": source_id,
+                "status": "success",
+                "source_registry_status": "archived",
+                "source_has_retired_version": True,
+                "code_hash": "a" * 64,
+                "config_hash": "b" * 64,
+                "input_artifact_hash": "c" * 64,
+            },
+        ),
+    )
+    relationship = HistoricalBacktestReference(
+        prediction_id,
+        source_id,
+        "fixture",
+    )
+
+    facts = validate_and_join_facts(
+        snapshot,
+        display_until="2026-06-30",
+        historical_references=frozenset({relationship}),
+    )
+
+    assert len(facts) == 1
 
 
 @pytest.mark.parametrize(

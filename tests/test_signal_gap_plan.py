@@ -39,9 +39,9 @@ class _Engine:
 
 
 def _config(
-    scheme_id: str = "demo_native",
+    scheme_id: str = "demo_blackbox",
     *,
-    runtime_type: str = "native_adapter",
+    runtime_type: str = "blackbox_v2",
     status: str = "active",
     frequency: str = "daily",
     version_status: str = "active",
@@ -50,7 +50,7 @@ def _config(
     tenors: tuple[str, ...] = ("5Y",),
 ) -> SimpleNamespace:
     resolved_horizon = horizon or (
-        6 if frequency == "weekly" else (30 if frequency == "monthly" else 5)
+        1 if frequency in {"weekly", "monthly"} else 5
     )
     resolved_task_type = task_type or (
         "weekly_point"
@@ -71,12 +71,12 @@ def _config(
 
 
 def _target(
-    scheme_id: str = "demo_native",
+    scheme_id: str = "demo_blackbox",
     *,
-    runtime_type: str = "native_adapter",
+    runtime_type: str = "blackbox_v2",
     frequency: str = "daily",
 ) -> signal_gap_plan.RegistryTarget:
-    horizon = 6 if frequency == "weekly" else (30 if frequency == "monthly" else 5)
+    horizon = 1 if frequency in {"weekly", "monthly"} else 5
     task_type = (
         "weekly_point"
         if frequency == "weekly"
@@ -95,9 +95,9 @@ def _target(
 
 
 def _case(
-    scheme_id: str = "demo_native",
+    scheme_id: str = "demo_blackbox",
     *,
-    runtime_type: str = "native_adapter",
+    runtime_type: str = "blackbox_v2",
     frequency: str = "daily",
 ) -> signal_gap_plan.ExpectedSignalCase:
     return signal_gap_plan.ExpectedSignalCase(
@@ -115,7 +115,7 @@ def _case(
 
 
 def _observed(
-    scheme_id: str = "demo_native",
+    scheme_id: str = "demo_blackbox",
     *,
     phase: str = "gray_live",
     scheme_version: str = "version-1",

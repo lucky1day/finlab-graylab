@@ -4,7 +4,6 @@ import json
 from collections.abc import Callable, Mapping
 from typing import Any
 from urllib.error import HTTPError
-from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from sqlalchemy import bindparam, text
@@ -13,6 +12,7 @@ from backend.factor_lab_dashboard import MAX_RAW_JSON_BYTES, dashboard_read_conn
 from backend.factor_lab_dashboard_semantics import validate_dashboard_payload
 from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
+from harness.http_target import url_origin, validate_api_target
 from harness.result import Evidence, GateResult, GateStatus
 from scheduler.discovery import SchemeConfig, load_scheme_config
 from scheduler.repository import registry_scheme_id
@@ -40,29 +40,12 @@ class ApiProbeError(RuntimeError):
         self.fetched_at = fetched_at or utc_now()
 
 
-def _url_origin(url: str) -> tuple[str, str, int]:
-    parsed = urlsplit(url)
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-    ):
-        raise ValueError("dashboard URL must use an HTTP(S) origin without credentials")
-    default_port = 443 if parsed.scheme == "https" else 80
-    try:
-        port = parsed.port or default_port
-    except ValueError as exc:
-        raise ValueError("dashboard URL contains an invalid port") from exc
-    return parsed.scheme, parsed.hostname.lower(), port
-
-
 class _SameOriginRedirectHandler(HTTPRedirectHandler):
     """认证探针只允许在初始 HTTP Origin 内跟随跳转。"""
 
     def __init__(self, initial_url: str) -> None:
         super().__init__()
-        self._origin = _url_origin(initial_url)
+        self._origin = url_origin(initial_url)
 
     def redirect_request(
         self,
@@ -73,7 +56,7 @@ class _SameOriginRedirectHandler(HTTPRedirectHandler):
         headers,
         newurl,
     ):
-        if _url_origin(newurl) != self._origin:
+        if url_origin(newurl) != self._origin:
             raise ApiProbeError(
                 "authenticated dashboard probe rejected cross-origin redirect",
                 status_code=int(code),
@@ -205,14 +188,8 @@ class DashboardGate(Gate):
         ):
             raise ValueError("dashboard scheme directory and canonical id mismatch")
 
-        base_url = str(ctx.api_base_url).strip().rstrip("/")
-        if not base_url:
-            raise ValueError("dashboard gate requires non-empty api_base_url")
-        parsed_base = urlsplit(base_url)
-        _url_origin(base_url)
-        if parsed_base.path or parsed_base.query or parsed_base.fragment:
-            raise ValueError("dashboard api_base_url must be an HTTP(S) origin")
-        endpoint = f"{base_url}/api/factor-lab/dashboard"
+        target = validate_api_target(ctx.api_base_url, ctx.api_prefix)
+        endpoint = target.url("/api/factor-lab/dashboard")
         probe_error: str | None = None
         try:
             payload, http_status, response_metadata = _fetch_response(

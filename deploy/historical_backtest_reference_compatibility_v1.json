@@ -1,0 +1,15 @@
+{
+  "schema_version": "historical-backtest-reference-compatibility-v1",
+  "relationships": [
+    {
+      "prediction_scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10",
+      "backtest_source_scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+      "reason": "Retained read-only Blackbox migration source referenced by published historical predictions."
+    },
+    {
+      "prediction_scheme_id": "liwei_0616_cons_sda_k3_div_k10",
+      "backtest_source_scheme_id": "liwei_0616_cons_sda_k3_div_k10_bbv2",
+      "reason": "Retained read-only Blackbox migration source referenced by published historical predictions."
+    }
+  ]
+}

@@ -220,6 +220,53 @@ def test_dashboard_gate_accepts_existing_and_empty_live_months(
     assert result.passed, result.errors
 
 
+def test_dashboard_gate_builds_prefixed_endpoint(tmp_path: Path) -> None:
+    _write_config(tmp_path)
+    seen: list[str] = []
+
+    def fetcher(url, **_kwargs):
+        seen.append(url)
+        return _payload(), 200
+
+    context = replace(
+        _context(tmp_path),
+        api_base_url="https://factor.example.test",
+        api_prefix="/bond-factor-lab",
+    )
+    from harness.gates.dashboard_gate import DashboardGate
+
+    result = DashboardGate(fetcher=fetcher).run(context)
+
+    assert result.passed, result.errors
+    assert seen == [
+        "https://factor.example.test/bond-factor-lab/api/factor-lab/dashboard"
+    ]
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ["bond-factor-lab", "/bond-factor-lab/", "/a//b", "/../b", "/%62"],
+)
+def test_dashboard_gate_rejects_ambiguous_api_prefix(
+    tmp_path: Path,
+    prefix: str,
+) -> None:
+    _write_config(tmp_path)
+    context = replace(
+        _context(tmp_path),
+        api_base_url="https://factor.example.test",
+        api_prefix=prefix,
+    )
+    from harness.gates.dashboard_gate import DashboardGate
+
+    result = DashboardGate(fetcher=lambda *_args, **_kwargs: (_payload(), 200)).run(
+        context
+    )
+
+    assert not result.passed
+    assert any("api_prefix" in error for error in result.errors)
+
+
 @pytest.mark.parametrize(
     ("case", "fetcher_factory"),
     [

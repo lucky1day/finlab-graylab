@@ -193,6 +193,11 @@ def _build_parser() -> argparse.ArgumentParser:
                 "--api-base-url",
                 default="http://127.0.0.1:8100",
             )
+            item.add_argument(
+                "--api-prefix",
+                default="",
+                help="application path prefix such as /bond-factor-lab",
+            )
             session_input = item.add_mutually_exclusive_group(required=True)
             session_input.add_argument(
                 "--session-file",
@@ -305,6 +310,7 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
             "api_base_url",
             "http://127.0.0.1:8100",
         ),
+        api_prefix=getattr(args, "api_prefix", ""),
         dashboard_scheme_ids=scheme_ids,
         dashboard_session_token=session_token,
     )

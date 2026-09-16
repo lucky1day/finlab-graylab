@@ -39,19 +39,15 @@ from shared.task_specs import (
     ALLOWED_FREQUENCIES,
     PERIOD_AVERAGE_TASK_TYPES,
     TASK_COMBINATIONS,
+    load_legacy_native_scheme_ids,
+    runtime_task_contract,
 )
 
 
 PLAN_SCHEMA_VERSION = "single-date-active-live-gap-plan-v1"
 RANGE_PLAN_SCHEMA_VERSION = "target-range-active-live-gap-plan-v1"
 PLATFORM_LIVE_TARGET_START_DATE = "2026-06-01"
-NATIVE_TASK_COMBINATIONS = {
-    "T+1": (1, "daily"),
-    "T+5": (5, "daily"),
-    "weekly_point": (6, "weekly"),
-    "weekly_average": (6, "weekly"),
-    "monthly": (30, "monthly"),
-}
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 VALID_ACTIONS = (
     "SKIP_PRESENT",
     "SKIP_NOT_DUE",
@@ -1752,14 +1748,19 @@ def _validate_snapshot(
 
 
 def _validate_registry_target(target: RegistryTarget) -> None:
-    if target.runtime_type == "native_adapter":
-        contract = NATIVE_TASK_COMBINATIONS.get(target.task_type)
-    elif target.runtime_type == "blackbox_v2":
-        raw = TASK_COMBINATIONS.get(target.task_type)
-        contract = (raw[0], raw[2]) if raw is not None else None
-    else:
+    try:
+        contract = runtime_task_contract(
+            runtime_type=target.runtime_type,
+            task_type=target.task_type,
+            base_scheme_id=target.base_scheme_id,
+            legacy_native_scheme_ids=load_legacy_native_scheme_ids(PROJECT_ROOT),
+        )
+    except (OSError, ValueError):
         contract = None
-    if contract != (target.horizon, target.frequency):
+    if contract is None or (
+        contract.horizon,
+        contract.frequency,
+    ) != (target.horizon, target.frequency):
         raise SignalGapPlanError(
             "INVALID_REGISTRY_TARGET",
             target.registry_scheme_id,
