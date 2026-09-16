@@ -13,13 +13,13 @@ from sqlalchemy import create_engine, event, text
 from harness.context import GateContext
 from harness.gates.data_consistency_gate import (
     ConsistencyFact,
-    DataConsistencyAuthorityUnavailable,
     DataConsistencyError,
     DatabaseSnapshot,
     DataConsistencyGate,
     _FrozenCalendar,
     _actual_selector,
     _read_actuals,
+    _read_references,
     _validate_task_date_contract,
     aggregate_display_facts,
     validate_snapshot_completeness,
@@ -144,6 +144,7 @@ def _engine(tmp_path: Path):
                 "(run_id INTEGER PRIMARY KEY, scheme_id TEXT NOT NULL, "
                 "scheme_version TEXT, runtime_type TEXT, status TEXT, "
                 "prediction_phase TEXT, input_artifact_id TEXT, "
+                "data_snapshot_id TEXT, "
                 "predict_date TEXT, records_written INTEGER)"
             )
         )
@@ -158,6 +159,7 @@ def _engine(tmp_path: Path):
             text(
                 "CREATE TABLE t_scheme_versions "
                 "(scheme_id TEXT NOT NULL, scheme_version TEXT NOT NULL, "
+                "runtime_type TEXT NOT NULL, data_snapshot_id TEXT, "
                 "code_hash TEXT, config_hash TEXT, manifest_hash TEXT, "
                 "status TEXT NOT NULL)"
             )
@@ -216,9 +218,9 @@ def _engine(tmp_path: Path):
             text(
                 "INSERT INTO t_scheme_runs VALUES "
                 "(11, :scheme_id, 'exact-a', 'native_adapter', 'success', "
-                "'scheduled_live', 'artifact-a', '2026-06-10', 1), "
+                "'scheduled_live', 'artifact-a', NULL, '2026-06-10', 1), "
                 "(12, :scheme_id, 'exact-a', 'native_adapter', 'success', "
-                "'scheduled_live', 'artifact-b', '2026-06-11', 1)"
+                "'scheduled_live', 'artifact-b', NULL, '2026-06-11', 1)"
             ),
             {"scheme_id": BASE_SCHEME_ID},
         )
@@ -245,7 +247,8 @@ def _engine(tmp_path: Path):
         connection.execute(
             text(
                 "INSERT INTO t_scheme_versions VALUES "
-                "(:scheme_id, 'exact-a', :code_hash, :config_hash, "
+                "(:scheme_id, 'exact-a', 'native_adapter', NULL, "
+                ":code_hash, :config_hash, "
                 ":manifest_hash, 'active')"
             ),
             {
@@ -537,6 +540,79 @@ def test_data_consistency_gate_reconciles_fact_actual_summary_and_detail(
     assert evidence["completeness"]["pending_actual_count"] == 1
 
 
+def test_duplicate_successful_live_run_does_not_create_a_second_fact_gap(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO t_scheme_runs VALUES "
+                "(13, :scheme_id, 'exact-a', 'native_adapter', 'success', "
+                "'scheduled_live', 'artifact-a', NULL, '2026-06-10', 0)"
+            ),
+            {"scheme_id": BASE_SCHEME_ID},
+        )
+    fetcher, _calls = _fetcher()
+
+    result = _gate(fetcher).run(_context(tmp_path, engine))
+
+    assert result.status is GateStatus.PASSED
+    evidence = {item.key: item.value for item in result.evidence}
+    assert evidence["completeness"]["expected_live_fact_count"] == 2
+
+
+def test_blackbox_live_snapshot_can_advance_after_version_activation(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE t_scheme_registry SET runtime_type = 'blackbox_v2'"
+            )
+        )
+        connection.execute(
+            text(
+                "UPDATE t_scheme_versions SET runtime_type = 'blackbox_v2', "
+                "data_snapshot_id = 'snapshot-000000000000000000000001'"
+            )
+        )
+        connection.execute(
+            text(
+                "UPDATE t_scheme_runs SET runtime_type = 'blackbox_v2', "
+                "input_artifact_id = NULL, data_snapshot_id = CASE run_id "
+                "WHEN 11 THEN 'snapshot-000000000000000000000002' "
+                "ELSE 'snapshot-000000000000000000000003' END"
+            )
+        )
+    fetcher, _calls = _fetcher()
+
+    result = _gate(fetcher).run(_context(tmp_path, engine))
+
+    assert result.status is GateStatus.PASSED
+
+
+def test_live_fact_must_reference_a_run_that_produced_its_business_key(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE t_scheme_predictions SET run_id = CASE id "
+                "WHEN 2 THEN 12 WHEN 3 THEN 11 ELSE run_id END "
+                "WHERE id IN (2, 3)"
+            )
+        )
+    fetcher, _calls = _fetcher()
+
+    result = _gate(fetcher).run(_context(tmp_path, engine))
+
+    assert result.status is GateStatus.FAILED
+    assert any("live product run binding drift" in error for error in result.errors)
+
+
 def test_representation_remains_independent_when_lineage_dates_fail(
     tmp_path: Path,
 ) -> None:
@@ -669,14 +745,218 @@ def test_completeness_blocks_when_an_active_scope_has_no_product_reference() -> 
         digest="missing-history-authority",
     )
 
-    with pytest.raises(
-        DataConsistencyAuthorityUnavailable,
-        match="no durable backtest product reference",
-    ):
-        validate_snapshot_completeness(
-            snapshot,
-            display_until="2026-02-01",
-        )
+    errors, details = validate_snapshot_completeness(
+        snapshot,
+        display_until="2026-02-01",
+    )
+
+    assert errors == []
+    assert details["authority_gaps"] == [
+        "selected Registry scopes have no durable backtest product reference: "
+        "[('missing_history', '5Y', 1)]"
+    ]
+
+
+def test_completeness_keeps_drift_when_other_authority_is_missing() -> None:
+    snapshot = DatabaseSnapshot(
+        registry_rows=(
+            {
+                "scheme_id": "mixed__h1__5Y",
+                "base_scheme_id": "mixed",
+                "horizon": 1,
+                "task_type": "T+1",
+                "runtime_type": "blackbox_v2",
+                "frequency": "daily",
+                "target_tenor": "5Y",
+                "status": "active",
+            },
+        ),
+        prediction_rows=(
+            {
+                "id": 1,
+                "run_id": None,
+                "backtest_run_id": 7,
+                "scheme_version": "exact-a",
+                "scheme_id": "mixed",
+                "target_tenor": "5Y",
+                "horizon": 1,
+                "predict_date": "2026-05-19",
+                "feature_date": "2026-05-19",
+                "target_date": "2026-05-20",
+                "predicted_direction": 1,
+                "backtest_actual_direction": 1,
+            },
+            {
+                "id": 2,
+                "run_id": 11,
+                "backtest_run_id": None,
+                "scheme_version": "exact-a",
+                "scheme_id": "mixed",
+                "target_tenor": "5Y",
+                "horizon": 1,
+                "predict_date": "2026-06-10",
+                "feature_date": "2026-06-09",
+                "target_date": "2026-06-11",
+                "predicted_direction": -1,
+                "backtest_actual_direction": None,
+            },
+        ),
+        actual_rows=(),
+        live_runs=(
+            {
+                "reference_id": 11,
+                "scheme_id": "mixed",
+                "scheme_version": "exact-a",
+                "status": "success",
+                "predict_date": "2026-06-10",
+            },
+        ),
+        backtest_runs=(
+            {
+                "reference_id": 7,
+                "scheme_id": "mixed",
+                "status": "success",
+                "summary": {"persisted_prediction_count": 1},
+            },
+        ),
+        calendar_rows=_calendar_rows(date(2026, 5, 1), date(2026, 7, 31)),
+        digest="mixed-gap-and-drift",
+        backtest_prediction_rows=(),
+    )
+
+    errors, details = validate_snapshot_completeness(
+        snapshot,
+        display_until="2026-06-30",
+    )
+
+    assert any("missing live product predictions" in error for error in errors)
+    assert any("extra live product predictions" in error for error in errors)
+    assert details["authority_gaps"] == [
+        "backtest run 7 has no immutable source predictions"
+    ]
+
+
+def test_unresolved_live_run_is_not_mislabeled_as_extra_fact() -> None:
+    registry = {
+        "scheme_id": "calendar_gap__h1__5Y",
+        "base_scheme_id": "calendar_gap",
+        "horizon": 1,
+        "task_type": "T+1",
+        "runtime_type": "blackbox_v2",
+        "frequency": "daily",
+        "target_tenor": "5Y",
+        "status": "active",
+    }
+    backtest_product = {
+        "id": 1,
+        "run_id": None,
+        "backtest_run_id": 7,
+        "scheme_version": "exact-a",
+        "scheme_id": "calendar_gap",
+        "target_tenor": "5Y",
+        "horizon": 1,
+        "predict_date": "2026-05-19",
+        "feature_date": "2026-05-19",
+        "target_date": "2026-05-20",
+        "predicted_direction": 1,
+        "backtest_actual_direction": 1,
+    }
+    unresolved_product = {
+        "id": 2,
+        "run_id": 11,
+        "backtest_run_id": None,
+        "scheme_version": "exact-a",
+        "scheme_id": "calendar_gap",
+        "target_tenor": "5Y",
+        "horizon": 1,
+        "predict_date": "2026-07-02",
+        "feature_date": "2026-07-01",
+        "target_date": "2026-07-03",
+        "predicted_direction": -1,
+        "backtest_actual_direction": None,
+    }
+    source = {
+        "run_id": 7,
+        "scheme_id": "calendar_gap",
+        "target_tenor": "5Y",
+        "horizon": 1,
+        "predict_date": "2026-05-19",
+        "feature_date": "2026-05-19",
+        "target_date": "2026-05-20",
+        "label": 1,
+        "predicted_direction": 1,
+    }
+    snapshot = DatabaseSnapshot(
+        registry_rows=(registry,),
+        prediction_rows=(backtest_product, unresolved_product),
+        actual_rows=(),
+        live_runs=(
+            {
+                "reference_id": 11,
+                "scheme_id": "calendar_gap",
+                "scheme_version": "exact-a",
+                "status": "success",
+                "predict_date": "2026-07-02",
+            },
+        ),
+        backtest_runs=(
+            {
+                "reference_id": 7,
+                "scheme_id": "calendar_gap",
+                "status": "success",
+                "summary": {"persisted_prediction_count": 1},
+            },
+        ),
+        calendar_rows=_calendar_rows(date(2026, 5, 1), date(2026, 6, 30)),
+        digest="unresolved-live-run",
+        backtest_prediction_rows=(source,),
+    )
+
+    errors, details = validate_snapshot_completeness(
+        snapshot,
+        display_until="2026-07-31",
+    )
+
+    assert errors == []
+    assert any(
+        "live run 11 date authority unavailable" in gap
+        for gap in details["authority_gaps"]
+    )
+
+    resolved_drift_product = {
+        **unresolved_product,
+        "id": 3,
+        "run_id": 12,
+        "predict_date": "2026-06-10",
+        "feature_date": "2026-06-09",
+        "target_date": "2026-06-11",
+    }
+    mixed_snapshot = replace(
+        snapshot,
+        prediction_rows=(
+            *snapshot.prediction_rows,
+            resolved_drift_product,
+        ),
+        live_runs=(
+            *snapshot.live_runs,
+            {
+                "reference_id": 12,
+                "scheme_id": "calendar_gap",
+                "scheme_version": "exact-a",
+                "status": "success",
+                "predict_date": "2026-06-10",
+            },
+        ),
+    )
+
+    mixed_errors, mixed_details = validate_snapshot_completeness(
+        mixed_snapshot,
+        display_until="2026-07-31",
+    )
+
+    assert any("missing live product predictions" in error for error in mixed_errors)
+    assert any("extra live product predictions" in error for error in mixed_errors)
+    assert mixed_details["authority_gaps"]
 
 
 def test_actual_snapshot_query_is_shared_by_equivalent_scheme_scope(
@@ -726,6 +1006,69 @@ def test_actual_snapshot_query_is_shared_by_equivalent_scheme_scope(
 
     assert len(rows) == 1
     assert sum("from t_scheme_actuals" in item for item in statements) == 1
+
+
+def test_backtest_source_registry_is_hydrated_by_exact_base_scope(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path)
+    source_id = "archived_source"
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO t_scheme_registry VALUES "
+                "(:registry_id, :base_id, 5, 'T+5', 'blackbox_v2', "
+                "'daily', '5Y', 'archived')"
+            ),
+            {
+                "registry_id": f"{source_id}__h5__5Y",
+                "base_id": source_id,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO t_scheme_versions VALUES "
+                "(:scheme_id, 'source-exact', 'blackbox_v2', "
+                "'snapshot-0123456789abcdef01234567', :code_hash, "
+                ":config_hash, :manifest_hash, 'retired')"
+            ),
+            {
+                "scheme_id": source_id,
+                "code_hash": "a" * 64,
+                "config_hash": "b" * 64,
+                "manifest_hash": "c" * 64,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO t_backtest_runs VALUES "
+                "(17, :scheme_id, 'success', :code_hash, :config_hash, "
+                "'snapshot-0123456789abcdef01234567', :summary)"
+            ),
+            {
+                "scheme_id": source_id,
+                "code_hash": "a" * 64,
+                "config_hash": "b" * 64,
+                "summary": json.dumps(
+                    {
+                        "scheme_version": "source-exact",
+                        "manifest_hash": "c" * 64,
+                    }
+                ),
+            },
+        )
+        rows = _read_references(
+            connection,
+            table="t_backtest_runs",
+            column="id",
+            values=[17],
+            deadline=None,
+            monotonic=lambda: 0.0,
+        )
+
+    assert rows[17]["source_registry_scopes"] == [
+        {"target_tenor": "5Y", "horizon": 5, "status": "archived"}
+    ]
 
 
 def test_data_consistency_gate_applies_one_total_http_budget(tmp_path: Path) -> None:
@@ -1149,11 +1492,24 @@ def test_approved_retired_historical_reference_is_accepted() -> None:
                 "reference_id": 1,
                 "scheme_id": source_id,
                 "status": "success",
-                "source_registry_status": "archived",
-                "source_has_retired_version": True,
+                "source_registry_scopes": [
+                    {
+                        "target_tenor": "5Y",
+                        "horizon": 5,
+                        "status": "archived",
+                    }
+                ],
                 "code_hash": "a" * 64,
                 "config_hash": "b" * 64,
                 "input_artifact_hash": "c" * 64,
+                "summary": {"scheme_version": "source-exact"},
+            },
+        ),
+        version_rows=(
+            {
+                "scheme_id": source_id,
+                "scheme_version": "source-exact",
+                "status": "retired",
             },
         ),
     )
@@ -1170,6 +1526,161 @@ def test_approved_retired_historical_reference_is_accepted() -> None:
     )
 
     assert len(facts) == 1
+
+
+def test_approved_cross_source_run_uses_referenced_subset_and_snapshot_identity() -> None:
+    prediction_id = "liwei_0616_5y01_full_oos_k3_div_k10"
+    source_id = f"{prediction_id}_bbv2"
+    snapshot_id = "snapshot-0123456789abcdef01234567"
+    manifest_hash = "c" * 64
+    product_version = {
+        "scheme_id": prediction_id,
+        "scheme_version": "product-exact",
+        "runtime_type": "blackbox_v2",
+        "data_snapshot_id": snapshot_id,
+        "code_hash": "a" * 64,
+        "config_hash": "b" * 64,
+        "manifest_hash": manifest_hash,
+        "status": "retired",
+    }
+    source_version = {
+        **product_version,
+        "scheme_id": source_id,
+        "scheme_version": "source-exact",
+    }
+    summary = {
+        "persisted_prediction_count": 2,
+        "scheme_version": "source-exact",
+        "manifest_hash": manifest_hash,
+        "data_snapshot_id": snapshot_id,
+    }
+    snapshot = DatabaseSnapshot(
+        registry_rows=(
+            {
+                "scheme_id": f"{prediction_id}__h5__5Y",
+                "base_scheme_id": prediction_id,
+                "horizon": 5,
+                "task_type": "T+5",
+                "runtime_type": "blackbox_v2",
+                "frequency": "daily",
+                "target_tenor": "5Y",
+                "status": "active",
+            },
+        ),
+        prediction_rows=(
+            {
+                "id": 1,
+                "run_id": None,
+                "backtest_run_id": 7,
+                "scheme_version": "product-exact",
+                "scheme_id": prediction_id,
+                "target_tenor": "5Y",
+                "horizon": 5,
+                "predict_date": "2026-05-19",
+                "feature_date": "2026-05-19",
+                "target_date": "2026-05-26",
+                "predicted_direction": 1,
+                "backtest_actual_direction": -1,
+            },
+        ),
+        actual_rows=(),
+        live_runs=(),
+        backtest_runs=(
+            {
+                "reference_id": 7,
+                "scheme_id": source_id,
+                "status": "success",
+                "code_hash": "a" * 64,
+                "config_hash": "b" * 64,
+                "input_artifact_hash": snapshot_id,
+                "summary": summary,
+                "source_registry_scopes": [
+                    {
+                        "target_tenor": "5Y",
+                        "horizon": 5,
+                        "status": "archived",
+                    }
+                ],
+            },
+        ),
+        calendar_rows=_calendar_rows(date(2026, 5, 1), date(2026, 6, 30)),
+        digest="approved-cross-source",
+        backtest_prediction_rows=(
+            {
+                "run_id": 7,
+                "scheme_id": source_id,
+                "target_tenor": "5Y",
+                "horizon": 5,
+                "predict_date": "2026-05-19",
+                "feature_date": "2026-05-19",
+                "target_date": "2026-05-26",
+                "label": -1,
+                "predicted_direction": 1,
+            },
+            {
+                "run_id": 7,
+                "scheme_id": source_id,
+                "target_tenor": "5Y",
+                "horizon": 5,
+                "predict_date": "2026-05-20",
+                "feature_date": "2026-05-20",
+                "target_date": "2026-05-27",
+                "label": 1,
+                "predicted_direction": -1,
+            },
+        ),
+        version_rows=(product_version, source_version),
+    )
+    relationship = HistoricalBacktestReference(
+        prediction_id,
+        source_id,
+        "fixture",
+    )
+
+    completeness_errors, _details = validate_snapshot_completeness(
+        snapshot,
+        display_until="2026-06-30",
+        historical_references=frozenset({relationship}),
+    )
+    lineage_errors, lineage = validate_snapshot_lineage(
+        snapshot,
+        historical_references=frozenset({relationship}),
+    )
+
+    assert completeness_errors == []
+    assert lineage_errors == []
+    assert lineage["authority_gaps"] == []
+
+    active_source = {**source_version, "status": "active"}
+    unrelated_retired = {
+        **source_version,
+        "scheme_version": "other-retired-exact",
+    }
+    wrong_status_snapshot = replace(
+        snapshot,
+        version_rows=(
+            product_version,
+            active_source,
+            unrelated_retired,
+        ),
+    )
+    with pytest.raises(
+        DataConsistencyError,
+        match="lacks retired source evidence",
+    ):
+        validate_and_join_facts(
+            wrong_status_snapshot,
+            display_until="2026-06-30",
+            historical_references=frozenset({relationship}),
+        )
+    wrong_lineage_errors, _wrong_lineage = validate_snapshot_lineage(
+        wrong_status_snapshot,
+        historical_references=frozenset({relationship}),
+    )
+    assert any(
+        "historical backtest source exact is not retired" in error
+        for error in wrong_lineage_errors
+    )
 
 
 def _sha256_json(value: object) -> str:

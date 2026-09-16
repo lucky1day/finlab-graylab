@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
@@ -337,18 +338,34 @@ class DataConsistencyGate(Gate):
             corrected_exact_evidence = (
                 load_legacy_corrected_exact_evidence(PROJECT_ROOT)
             )
+            historical_references = load_historical_backtest_references(
+                PROJECT_ROOT
+            )
             try:
                 completeness_errors, completeness_details = (
                     validate_snapshot_completeness(
                         snapshot,
                         display_until=display_until,
+                        historical_references=historical_references,
                         legacy_migrations=legacy_migrations,
                         corrected_exact_evidence=corrected_exact_evidence,
                     )
                 )
+                completeness_authority_gaps = completeness_details.get(
+                    "authority_gaps", []
+                )
                 completeness = _subresult(
-                    "PASSED" if not completeness_errors else "FAILED",
-                    completeness_errors,
+                    (
+                        "FAILED"
+                        if completeness_errors
+                        else "BLOCKED"
+                        if completeness_authority_gaps
+                        else "PASSED"
+                    ),
+                    [
+                        *completeness_errors,
+                        *completeness_authority_gaps,
+                    ],
                     **completeness_details,
                 )
             except DataConsistencyAuthorityUnavailable as exc:
@@ -359,15 +376,22 @@ class DataConsistencyGate(Gate):
             try:
                 lineage_errors, lineage_details = validate_snapshot_lineage(
                     snapshot,
-                    historical_references=load_historical_backtest_references(
-                        PROJECT_ROOT
-                    ),
+                    historical_references=historical_references,
                     legacy_migrations=legacy_migrations,
                     corrected_exact_evidence=corrected_exact_evidence,
                 )
+                lineage_authority_gaps = lineage_details.get(
+                    "authority_gaps", []
+                )
                 lineage = _subresult(
-                    "PASSED" if not lineage_errors else "FAILED",
-                    lineage_errors,
+                    (
+                        "FAILED"
+                        if lineage_errors
+                        else "BLOCKED"
+                        if lineage_authority_gaps
+                        else "PASSED"
+                    ),
+                    [*lineage_errors, *lineage_authority_gaps],
                     **lineage_details,
                 )
             except DataConsistencyAuthorityUnavailable as exc:
@@ -382,9 +406,7 @@ class DataConsistencyGate(Gate):
                     legacy_native_scheme_ids=load_legacy_native_scheme_ids(
                         PROJECT_ROOT
                     ),
-                    historical_references=load_historical_backtest_references(
-                        PROJECT_ROOT
-                    ),
+                    historical_references=historical_references,
                     legacy_migrations=legacy_migrations,
                     corrected_exact_evidence=corrected_exact_evidence,
                 )
@@ -558,6 +580,9 @@ def validate_snapshot_completeness(
     snapshot: DatabaseSnapshot,
     *,
     display_until: str,
+    historical_references: frozenset[
+        HistoricalBacktestReference
+    ] = frozenset(),
     legacy_migrations: frozenset[
         LegacyPredictionMigration
     ] = frozenset(),
@@ -567,17 +592,19 @@ def validate_snapshot_completeness(
 ) -> tuple[list[str], dict[str, Any]]:
     """用成功 run 与不可变回测事实建立预期键并核对产品事实。"""
     errors: list[str] = []
+    authority_gaps: set[str] = set()
     legacy_matches = _resolve_legacy_migration_matches(
         snapshot,
         legacy_migrations,
         corrected_exact_evidence,
     )
     product_rows = list(snapshot.prediction_rows)
-    product_by_live_run: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
+    compatible_pairs = {
+        (item.prediction_scheme_id, item.backtest_source_scheme_id)
+        for item in historical_references
+    }
     product_by_backtest_run: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
     for row in product_rows:
-        if row.get("run_id") is not None:
-            product_by_live_run[int(row["run_id"])].append(row)
         if row.get("backtest_run_id") is not None:
             product_by_backtest_run[int(row["backtest_run_id"])].append(row)
 
@@ -602,7 +629,7 @@ def validate_snapshot_completeness(
         registry_scopes - referenced_backtest_scopes
     )
     if missing_backtest_authority:
-        raise DataConsistencyAuthorityUnavailable(
+        authority_gaps.add(
             "selected Registry scopes have no durable backtest product "
             f"reference: {missing_backtest_authority!r}"
         )
@@ -615,19 +642,22 @@ def validate_snapshot_completeness(
         run_id = int(run["reference_id"])
         source_rows = source_by_backtest_run.get(run_id, [])
         if not source_rows:
-            raise DataConsistencyAuthorityUnavailable(
+            authority_gaps.add(
                 f"backtest run {run_id} has no immutable source predictions"
             )
+            continue
         summary = _json_mapping(run.get("summary"), field="backtest summary")
         declared_count = summary.get("persisted_prediction_count")
         if not isinstance(declared_count, int) or declared_count < 0:
             legacy_match = legacy_matches.get(run_id)
             if legacy_match is None:
-                raise DataConsistencyAuthorityUnavailable(
+                authority_gaps.add(
                     f"backtest run {run_id} lacks persisted_prediction_count authority"
                 )
-            declared_count = legacy_match.entry.expected_fact_count
-        if declared_count != len(source_rows):
+                declared_count = None
+            else:
+                declared_count = legacy_match.entry.expected_fact_count
+        if declared_count is not None and declared_count != len(source_rows):
             errors.append(
                 f"backtest source count mismatch: run_id={run_id} "
                 f"summary={declared_count} source={len(source_rows)}"
@@ -643,7 +673,18 @@ def validate_snapshot_completeness(
         }
         if len(product_index) != len(product_for_run):
             errors.append(f"duplicate product backtest key: run_id={run_id}")
-        missing = sorted(set(source_index) - set(product_index))
+        product_scheme_ids = {
+            str(row["scheme_id"]) for row in product_for_run
+        }
+        is_approved_cross_source = bool(product_scheme_ids) and all(
+            (product_scheme_id, str(run["scheme_id"])) in compatible_pairs
+            for product_scheme_id in product_scheme_ids
+        )
+        missing = (
+            []
+            if is_approved_cross_source
+            else sorted(set(source_index) - set(product_index))
+        )
         extra = sorted(set(product_index) - set(source_index))
         if missing:
             errors.append(
@@ -680,7 +721,10 @@ def validate_snapshot_completeness(
     registry_by_base: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for row in snapshot.registry_rows:
         registry_by_base[str(row["base_scheme_id"])].append(row)
-    live_expected = 0
+    expected_live_by_key: dict[
+        tuple[str, str, int, str], set[int]
+    ] = defaultdict(set)
+    unresolved_live_run_ids: set[int] = set()
     for run in snapshot.live_runs:
         if run.get("status") != "success":
             continue
@@ -689,11 +733,14 @@ def validate_snapshot_completeness(
             continue
         base_scheme_id = _required_text(run.get("scheme_id"), field="run scheme_id")
         targets = registry_by_base.get(base_scheme_id, [])
+        run_id = int(run["reference_id"])
         if not targets:
-            raise DataConsistencyAuthorityUnavailable(
-                f"live run {run['reference_id']} has no selected Registry targets"
+            authority_gaps.add(
+                f"live run {run_id} has no selected Registry targets"
             )
-        expected_by_key: dict[tuple[str, str, int, str], Any] = {}
+            unresolved_live_run_ids.add(run_id)
+            continue
+        run_expected_keys: list[tuple[str, str, int, str]] = []
         for registry in targets:
             target = RegistryTarget(
                 registry_scheme_id=str(registry["scheme_id"]),
@@ -712,27 +759,43 @@ def validate_snapshot_completeness(
                     calendar_rows=snapshot.calendar_rows,
                 )
             except (SignalGapPlanError, ValueError) as exc:
-                raise DataConsistencyAuthorityUnavailable(
-                    f"live run {run['reference_id']} date authority unavailable: {exc}"
-                ) from exc
-            expected_by_key[expected.business_key] = expected
-        observed = {
-            _product_business_key(row): row
-            for row in product_by_live_run.get(int(run["reference_id"]), [])
-        }
-        missing = sorted(set(expected_by_key) - set(observed))
-        extra = sorted(set(observed) - set(expected_by_key))
-        if missing:
+                authority_gaps.add(
+                    f"live run {run_id} date authority unavailable: {exc}"
+                )
+                unresolved_live_run_ids.add(run_id)
+                continue
+            run_expected_keys.append(expected.business_key)
+        if run_id not in unresolved_live_run_ids:
+            for business_key in run_expected_keys:
+                expected_live_by_key[business_key].add(run_id)
+    observed_live_by_key = {
+        _product_business_key(row): row
+        for row in product_rows
+        if row.get("run_id") is not None
+        and int(row["run_id"]) not in unresolved_live_run_ids
+    }
+    missing_live = sorted(
+        set(expected_live_by_key) - set(observed_live_by_key)
+    )
+    extra_live = sorted(
+        set(observed_live_by_key) - set(expected_live_by_key)
+    )
+    if missing_live:
+        errors.append(f"missing live product predictions: keys={missing_live!r}")
+    if extra_live:
+        errors.append(f"extra live product predictions: keys={extra_live!r}")
+    for business_key, product in observed_live_by_key.items():
+        expected_run_ids = expected_live_by_key.get(business_key)
+        if expected_run_ids is None:
+            continue
+        run_id = int(product["run_id"])
+        if run_id not in expected_run_ids:
             errors.append(
-                f"missing live product predictions: run_id={run['reference_id']} "
-                f"keys={missing!r}"
+                "live product run binding drift: "
+                f"key={business_key!r} run_id={run_id} "
+                f"expected_run_ids={sorted(expected_run_ids)!r}"
             )
-        if extra:
-            errors.append(
-                f"extra live product predictions: run_id={run['reference_id']} "
-                f"keys={extra!r}"
-            )
-        live_expected += len(expected_by_key)
+    live_expected = len(expected_live_by_key)
 
     actual_keys = {
         (
@@ -803,6 +866,7 @@ def validate_snapshot_completeness(
         "expected_live_fact_count": live_expected,
         "expected_backtest_fact_count": backtest_expected,
         "observed_product_fact_count": len(product_rows),
+        "authority_gaps": sorted(authority_gaps),
         "mature_actual_missing_count": mature_actual_missing,
         "pending_actual_count": pending_actual,
         "legacy_migration_fact_count": sum(
@@ -825,6 +889,7 @@ def validate_snapshot_lineage(
 ) -> tuple[list[str], dict[str, Any]]:
     """核对产品事实引用的 exact、run、版本与输入工件血缘。"""
     errors: list[str] = []
+    authority_gaps: set[str] = set()
     legacy_matches = _resolve_legacy_migration_matches(
         snapshot,
         legacy_migrations,
@@ -850,7 +915,53 @@ def validate_snapshot_lineage(
         for item in historical_references
     }
     checked_artifacts: set[str] = set()
+    checked_versions: set[tuple[str, str]] = set()
     legacy_fact_count = 0
+
+    def validate_version(
+        identity: tuple[str, str],
+        version: Mapping[str, Any] | None,
+    ) -> None:
+        if version is None:
+            errors.append(
+                "prediction exact has no version row: "
+                f"scheme_id={identity[0]} exact={identity[1]}"
+            )
+            return
+        if identity in checked_versions:
+            return
+        checked_versions.add(identity)
+        runtime_type = str(version.get("runtime_type") or "")
+        if runtime_type not in {"native_adapter", "blackbox_v2"}:
+            errors.append(
+                f"version runtime is invalid: scheme_id={identity[0]} "
+                f"exact={identity[1]}"
+            )
+        for field in ("code_hash", "config_hash", "manifest_hash"):
+            value = version.get(field)
+            if value in {None, ""}:
+                authority_gaps.add(
+                    f"version lineage is missing: scheme_id={identity[0]} "
+                    f"exact={identity[1]} field={field}"
+                )
+            elif not _is_sha256(value):
+                errors.append(
+                    f"version lineage hash invalid: scheme_id={identity[0]} "
+                    f"exact={identity[1]} field={field}"
+                )
+        if runtime_type == "blackbox_v2":
+            snapshot_id = version.get("data_snapshot_id")
+            if snapshot_id in {None, ""}:
+                authority_gaps.add(
+                    f"version data snapshot is missing: scheme_id={identity[0]} "
+                    f"exact={identity[1]}"
+                )
+            elif not _is_snapshot_id(snapshot_id):
+                errors.append(
+                    f"version data snapshot is invalid: scheme_id={identity[0]} "
+                    f"exact={identity[1]}"
+                )
+
     for row in snapshot.prediction_rows:
         scope = (str(row["scheme_id"]), str(row["target_tenor"]), int(row["horizon"]))
         registry_row = registry.get(scope)
@@ -875,77 +986,145 @@ def validate_snapshot_lineage(
             legacy_fact_count += 1
             continue
         exact = _required_text(row.get("scheme_version"), field="prediction exact")
-        version = versions.get((scope[0], exact))
-        if version is None:
-            errors.append(f"prediction exact has no version row: scope={scope!r} exact={exact}")
-        else:
-            for field in ("code_hash", "config_hash", "manifest_hash"):
-                if not _is_sha256(version.get(field)):
-                    errors.append(
-                        f"version lineage hash invalid: scheme_id={scope[0]} "
-                        f"exact={exact} field={field}"
-                    )
+        version_identity = (scope[0], exact)
+        version = versions.get(version_identity)
+        validate_version(version_identity, version)
         if row.get("run_id") is not None:
             run = live_runs.get(int(row["run_id"]))
             if run is None:
                 continue
             if run.get("scheme_version") != exact:
                 errors.append(f"live run exact drift: run_id={row['run_id']}")
-            if run.get("runtime_type") != registry_row.get("runtime_type"):
+            version_runtime = version.get("runtime_type") if version else None
+            if run.get("runtime_type") != version_runtime:
                 errors.append(f"live run runtime drift: run_id={row['run_id']}")
             if run.get("status") != "success":
                 errors.append(f"live run is not successful: run_id={row['run_id']}")
             if run.get("prediction_phase") not in LIVE_PREDICTION_PHASES:
                 errors.append(f"live run phase is invalid: run_id={row['run_id']}")
-            artifact_id = str(run.get("input_artifact_id") or "")
-            artifact = artifacts.get(artifact_id)
-            if not artifact_id or artifact is None:
-                errors.append(f"live run input artifact is missing: run_id={row['run_id']}")
-            elif artifact_id not in checked_artifacts:
-                checked_artifacts.add(artifact_id)
-                if (
-                    artifact.get("scheme_id") != scope[0]
-                    or artifact.get("scheme_version") != exact
-                    or not _is_sha256(artifact.get("content_hash"))
-                    or not _is_sha256(artifact.get("schema_hash"))
-                ):
-                    errors.append(f"live input artifact lineage drift: artifact_id={artifact_id}")
+            if version_runtime == "blackbox_v2":
+                snapshot_id = run.get("data_snapshot_id")
+                if snapshot_id in {None, ""}:
+                    authority_gaps.add(
+                        f"live run data snapshot is missing: run_id={row['run_id']}"
+                    )
+                elif not _is_snapshot_id(snapshot_id):
+                    errors.append(
+                        f"live run data snapshot drift: run_id={row['run_id']}"
+                    )
+            else:
+                artifact_id = str(run.get("input_artifact_id") or "")
+                artifact = artifacts.get(artifact_id)
+                if not artifact_id or artifact is None:
+                    authority_gaps.add(
+                        f"live run input artifact is missing: run_id={row['run_id']}"
+                    )
+                elif artifact_id not in checked_artifacts:
+                    checked_artifacts.add(artifact_id)
+                    if (
+                        artifact.get("scheme_id") != scope[0]
+                        or artifact.get("scheme_version") != exact
+                        or not _is_sha256(artifact.get("content_hash"))
+                        or not _is_sha256(artifact.get("schema_hash"))
+                    ):
+                        errors.append(
+                            "live input artifact lineage drift: "
+                            f"artifact_id={artifact_id}"
+                        )
         elif row.get("backtest_run_id") is not None:
             run = backtest_runs.get(int(row["backtest_run_id"]))
             if run is None:
                 continue
             source_scheme_id = str(run.get("scheme_id") or "")
             summary = _json_mapping(run.get("summary"), field="backtest summary")
+            source_exact = str(summary.get("scheme_version") or "")
             if source_scheme_id == scope[0]:
-                if summary.get("scheme_version") != exact:
+                if source_exact != exact:
                     errors.append(
                         f"backtest exact drift: run_id={row['backtest_run_id']}"
-                    )
-                if version is not None and summary.get("manifest_hash") != version.get("manifest_hash"):
-                    errors.append(
-                        f"backtest manifest drift: run_id={row['backtest_run_id']}"
                     )
             elif (scope[0], source_scheme_id) not in compatibility:
                 errors.append(
                     f"unapproved backtest lineage source: prediction={scope[0]} "
                     f"source={source_scheme_id}"
                 )
-            for field in ("code_hash", "config_hash", "input_artifact_hash"):
-                if not _is_sha256(run.get(field)):
+            source_identity = (source_scheme_id, source_exact)
+            source_version = versions.get(source_identity)
+            validate_version(source_identity, source_version)
+            if (
+                source_scheme_id != scope[0]
+                and source_version is not None
+                and source_version.get("status") != "retired"
+            ):
+                errors.append(
+                    "historical backtest source exact is not retired: "
+                    f"scheme_id={source_scheme_id} exact={source_exact}"
+                )
+            for field in ("code_hash", "config_hash"):
+                value = run.get(field)
+                if value in {None, ""}:
+                    authority_gaps.add(
+                        f"backtest lineage is missing: run_id={row['backtest_run_id']} "
+                        f"field={field}"
+                    )
+                elif not _is_sha256(value):
                     errors.append(
                         f"backtest lineage hash invalid: run_id={row['backtest_run_id']} "
                         f"field={field}"
                     )
-            if not _is_sha256(summary.get("manifest_hash")):
+                elif source_version is not None and value != source_version.get(field):
+                    errors.append(
+                        f"backtest lineage drift: run_id={row['backtest_run_id']} "
+                        f"field={field}"
+                    )
+            manifest_hash = summary.get("manifest_hash")
+            if manifest_hash in {None, ""}:
+                authority_gaps.add(
+                    f"backtest lineage is missing: run_id={row['backtest_run_id']} "
+                    "field=manifest_hash"
+                )
+            elif not _is_sha256(manifest_hash):
                 errors.append(
                     f"backtest lineage hash invalid: run_id={row['backtest_run_id']} "
                     "field=manifest_hash"
+                )
+            elif (
+                source_version is not None
+                and manifest_hash != source_version.get("manifest_hash")
+            ):
+                errors.append(
+                    f"backtest manifest drift: run_id={row['backtest_run_id']}"
+                )
+            input_identity = run.get("input_artifact_hash")
+            if input_identity in {None, ""}:
+                authority_gaps.add(
+                    f"backtest input identity is missing: "
+                    f"run_id={row['backtest_run_id']}"
+                )
+            elif _is_snapshot_id(input_identity):
+                if (
+                    summary.get("data_snapshot_id") != input_identity
+                    or (
+                        source_version is not None
+                        and source_version.get("runtime_type") == "blackbox_v2"
+                        and source_version.get("data_snapshot_id") != input_identity
+                    )
+                ):
+                    errors.append(
+                        f"backtest input snapshot drift: "
+                        f"run_id={row['backtest_run_id']}"
+                    )
+            elif not _is_sha256(input_identity):
+                errors.append(
+                    f"backtest input identity is invalid: "
+                    f"run_id={row['backtest_run_id']}"
                 )
     return errors, {
         "version_count": len(versions),
         "live_run_count": len(live_runs),
         "backtest_run_count": len(backtest_runs),
         "input_artifact_count": len(artifacts),
+        "authority_gaps": sorted(authority_gaps),
         "legacy_migration_fact_count": legacy_fact_count,
         "legacy_migrations": _legacy_migration_evidence(legacy_matches),
     }
@@ -958,6 +1137,27 @@ def _product_business_key(row: Mapping[str, Any]) -> tuple[str, str, int, str]:
         int(row["horizon"]),
         _iso_date(row.get("target_date"), field="target_date"),
     )
+
+
+def _source_registry_scope_status(
+    run: Mapping[str, Any],
+    *,
+    target_tenor: str,
+    horizon: int,
+) -> str | None:
+    """返回历史来源精确 tenor/horizon Registry 状态。"""
+    scopes = run.get("source_registry_scopes")
+    if isinstance(scopes, (list, tuple)):
+        matches = {
+            str(item.get("status"))
+            for item in scopes
+            if isinstance(item, Mapping)
+            and str(item.get("target_tenor")) == target_tenor
+            and int(item.get("horizon") or 0) == horizon
+        }
+        if len(matches) == 1:
+            return next(iter(matches))
+    return None
 
 
 def _product_reference_key(row: Mapping[str, Any]) -> tuple[str, int, str]:
@@ -993,6 +1193,12 @@ def _is_sha256(value: Any) -> bool:
     return isinstance(value, str) and len(value) == 64 and all(
         character in "0123456789abcdef" for character in value
     )
+
+
+def _is_snapshot_id(value: Any) -> bool:
+    return isinstance(value, str) and re.fullmatch(
+        r"snapshot-[0-9a-f]{24}", value
+    ) is not None
 
 
 def _canonical_json_sha256(value: Any) -> str:
@@ -1371,6 +1577,10 @@ def validate_and_join_facts(
     backtest_runs = {
         int(row["reference_id"]): row for row in snapshot.backtest_runs
     }
+    versions = {
+        (str(row["scheme_id"]), str(row["scheme_version"])): row
+        for row in snapshot.version_rows
+    }
     compatible_pairs = {
         (item.prediction_scheme_id, item.backtest_source_scheme_id)
         for item in historical_references
@@ -1451,9 +1661,24 @@ def validate_and_join_facts(
                         "prediction references another scheme's backtest run: "
                         f"{business_key!r}"
                     )
+                source_scope_status = _source_registry_scope_status(
+                    backtest_run,
+                    target_tenor=target_tenor,
+                    horizon=horizon,
+                )
+                source_summary = _json_mapping(
+                    backtest_run.get("summary"), field="backtest summary"
+                )
+                source_exact = str(
+                    source_summary.get("scheme_version") or ""
+                )
+                source_version = versions.get(
+                    (source_scheme_id, source_exact)
+                )
                 if (
-                    backtest_run.get("source_registry_status") != "archived"
-                    or not backtest_run.get("source_has_retired_version")
+                    source_scope_status != "archived"
+                    or source_version is None
+                    or source_version.get("status") != "retired"
                     or backtest_run.get("status") != "success"
                     or not backtest_run.get("code_hash")
                     or not backtest_run.get("config_hash")
@@ -2093,17 +2318,22 @@ def _capture_snapshot(
                 monotonic=monotonic,
             )
         )
-        scheme_versions = sorted(
-            {
+        scheme_versions = {
                 (str(row["scheme_id"]), str(row.get("scheme_version") or ""))
                 for row in prediction_rows
             }
-        )
+        for run in backtest_runs.values():
+            summary = _json_mapping(
+                run.get("summary"), field="backtest summary"
+            )
+            source_exact = str(summary.get("scheme_version") or "")
+            if source_exact:
+                scheme_versions.add((str(run["scheme_id"]), source_exact))
         version_rows = tuple(
             dict(row)
             for row in _read_versions(
                 connection,
-                scheme_versions,
+                sorted(scheme_versions),
                 deadline=deadline,
                 monotonic=monotonic,
             )
@@ -2446,7 +2676,8 @@ def _read_references(
     if table == "t_scheme_runs":
         selected = (
             f"{column}, scheme_id, scheme_version, runtime_type, status, "
-            "prediction_phase, input_artifact_id, predict_date, records_written"
+            "prediction_phase, input_artifact_id, data_snapshot_id, "
+            "predict_date, records_written"
         )
     elif table == "t_backtest_runs":
         selected = (
@@ -2474,41 +2705,32 @@ def _read_references(
     if table != "t_backtest_runs" or not result:
         return result
     source_ids = sorted({str(row["scheme_id"]) for row in result.values()})
-    registry_status: dict[str, str] = {}
-    retired_sources: set[str] = set()
+    registry_scopes: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for source_chunk in _chunks(source_ids):
-        registry_status.update(
-            {
-                str(row["scheme_id"]): str(row["status"])
-                for row in _execute_budgeted(
-                    connection,
-                    text(
-                        "SELECT scheme_id, status FROM t_scheme_registry "
-                        "WHERE scheme_id IN :scheme_ids"
-                    ).bindparams(bindparam("scheme_ids", expanding=True)),
-                    {"scheme_ids": list(source_chunk)},
-                    deadline=deadline,
-                    monotonic=monotonic,
-                ).mappings()
-            }
-        )
-        retired_sources.update(
-            str(item)
-            for item in _execute_budgeted(
-                connection,
-                text(
-                    "SELECT DISTINCT scheme_id FROM t_scheme_versions "
-                    "WHERE scheme_id IN :scheme_ids AND status = 'retired'"
-                ).bindparams(bindparam("scheme_ids", expanding=True)),
-                {"scheme_ids": list(source_chunk)},
-                deadline=deadline,
-                monotonic=monotonic,
-            ).scalars()
-        )
+        for registry_row in _execute_budgeted(
+            connection,
+            text(
+                "SELECT base_scheme_id, target_tenor, horizon, status "
+                "FROM t_scheme_registry "
+                "WHERE base_scheme_id IN :scheme_ids"
+            ).bindparams(bindparam("scheme_ids", expanding=True)),
+            {"scheme_ids": list(source_chunk)},
+            deadline=deadline,
+            monotonic=monotonic,
+        ).mappings():
+            registry_scopes[str(registry_row["base_scheme_id"])].append(
+                {
+                    "target_tenor": str(registry_row["target_tenor"]),
+                    "horizon": int(registry_row["horizon"]),
+                    "status": str(registry_row["status"]),
+                }
+            )
     for row in result.values():
         scheme_id = str(row["scheme_id"])
-        row["source_registry_status"] = registry_status.get(scheme_id)
-        row["source_has_retired_version"] = scheme_id in retired_sources
+        row["source_registry_scopes"] = sorted(
+            registry_scopes.get(scheme_id, []),
+            key=lambda item: (item["target_tenor"], item["horizon"]),
+        )
     return result
 
 
@@ -2598,7 +2820,8 @@ def _read_versions(
             _execute_budgeted(
                 connection,
                 text(
-                    "SELECT scheme_id, scheme_version, code_hash, config_hash, "
+                    "SELECT scheme_id, scheme_version, runtime_type, "
+                    "data_snapshot_id, code_hash, config_hash, "
                     "manifest_hash, status FROM t_scheme_versions WHERE "
                     + " OR ".join(clauses)
                 ),
