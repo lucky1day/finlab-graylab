@@ -523,6 +523,45 @@ def test_data_consistency_gate_reconciles_fact_actual_summary_and_detail(
     assert evidence["completeness"]["pending_actual_count"] == 1
 
 
+def test_representation_remains_independent_when_lineage_dates_fail(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE t_scheme_predictions SET predict_date = '2026-05-18' "
+                "WHERE id = 1"
+            )
+        )
+        connection.execute(
+            text(
+                "UPDATE t_backtest_predictions SET predict_date = '2026-05-18' "
+                "WHERE id = 1"
+            )
+        )
+    base_fetcher, _calls = _fetcher()
+
+    def fetcher(url, **kwargs):
+        payload, status, metadata = base_fetcher(url, **kwargs)
+        query = parse_qs(urlsplit(url).query)
+        if query.get("month") == ["2026-05"]:
+            payload = {**payload, "rows": [list(row) for row in payload["rows"]]}
+            payload["rows"][0][1] = "2026-05-18"
+        return payload, status, metadata
+
+    result = _gate(fetcher).run(_context(tmp_path, engine))
+
+    evidence = {item.key: item.value for item in result.evidence}
+    assert result.status is GateStatus.FAILED
+    assert evidence["completeness"]["status"] == "PASSED"
+    assert evidence["lineage"]["status"] == "FAILED"
+    assert evidence["representation"]["status"] == "PASSED"
+    assert evidence["joined_fact_count"] == 3
+    assert evidence["lineage_validated_fact_count"] == 0
+    assert any("feature <= predict <= target" in error for error in result.errors)
+
+
 def test_data_consistency_gate_detects_missing_expected_live_prediction(
     tmp_path: Path,
 ) -> None:

@@ -294,7 +294,8 @@ class DataConsistencyGate(Gate):
         operation_error: Exception | None = None
         summary: Mapping[str, Any] | None = None
         summary_metadata: Mapping[str, Any] = {}
-        facts: list[ConsistencyFact] = []
+        validated_facts: list[ConsistencyFact] = []
+        representation_facts: list[ConsistencyFact] = []
         detail_metadata: list[dict[str, Any]] = []
         completeness = _subresult("BLOCKED", ["completeness not evaluated"])
         lineage = _subresult("BLOCKED", ["lineage not evaluated"])
@@ -345,7 +346,7 @@ class DataConsistencyGate(Gate):
                 lineage = _subresult("FAILED", [str(exc)])
 
             try:
-                facts = validate_and_join_facts(
+                validated_facts = validate_and_join_facts(
                     snapshot,
                     display_until=display_until,
                     legacy_native_scheme_ids=load_legacy_native_scheme_ids(
@@ -359,6 +360,10 @@ class DataConsistencyGate(Gate):
                 lineage = _merge_subresult_error(lineage, str(exc), "FAILED")
 
             try:
+                representation_facts = build_representation_facts(
+                    snapshot,
+                    display_until=display_until,
+                )
                 summary, summary_metadata = _fetch_json_object(
                     self._fetcher,
                     summary_url,
@@ -370,7 +375,9 @@ class DataConsistencyGate(Gate):
                     summary.get("display_until"),
                     field="summary display_until",
                 )
-                expected_monthly = aggregate_display_facts(facts)
+                expected_monthly = aggregate_display_facts(
+                    representation_facts
+                )
                 _remaining_budget(deadline, self._monotonic)
                 representation_errors = _compare_summary(
                     summary,
@@ -383,7 +390,9 @@ class DataConsistencyGate(Gate):
                         "independent Shanghai business date"
                     )
 
-                expected_details = _detail_rows_by_partition(facts)
+                expected_details = _detail_rows_by_partition(
+                    representation_facts
+                )
                 for (scheme_id, month, source), rows in sorted(
                     expected_details.items()
                 ):
@@ -454,7 +463,8 @@ class DataConsistencyGate(Gate):
             Evidence("registry_ids", list(registry_ids)),
             Evidence("database_snapshot_digest", snapshot.digest),
             Evidence("prediction_fact_count", len(snapshot.prediction_rows)),
-            Evidence("joined_fact_count", len(facts)),
+            Evidence("joined_fact_count", len(representation_facts)),
+            Evidence("lineage_validated_fact_count", len(validated_facts)),
             Evidence(
                 "summary_snapshot_id",
                 summary.get("snapshot_id") if summary is not None else None,
@@ -1083,6 +1093,118 @@ def validate_and_join_facts(
             business_key=business_key,
         )
 
+        if predict_date < HISTORY_START_DATE or predict_date > display_until:
+            continue
+        task_type = str(registry["task_type"])
+        actual_kind, target_rule = _actual_selector(task_type)
+        actual_direction = (
+            published_actual
+            if published_actual is not None
+            else actuals.get(
+                (actual_kind, target_tenor, target_date, target_rule)
+            )
+        )
+        facts.append(
+            ConsistencyFact(
+                scheme_id=str(registry["scheme_id"]),
+                target_tenor=target_tenor,
+                horizon=horizon,
+                task_type=task_type,
+                predict_date=predict_date,
+                feature_date=feature_date,
+                target_date=target_date,
+                predicted_direction=predicted_direction,
+                actual_direction=actual_direction,
+            )
+        )
+    return sorted(
+        facts,
+        key=lambda item: (
+            item.scheme_id,
+            item.target_date,
+            item.predict_date,
+        ),
+    )
+
+
+def build_representation_facts(
+    snapshot: DatabaseSnapshot,
+    *,
+    display_until: str,
+) -> list[ConsistencyFact]:
+    """只按持久化产品事实与 Actual 独立重建公开表示。"""
+    registry_by_scope: dict[
+        tuple[str, str, int], Mapping[str, Any]
+    ] = {}
+    for row in snapshot.registry_rows:
+        scope = (
+            _required_text(row.get("base_scheme_id"), field="base_scheme_id"),
+            _required_text(row.get("target_tenor"), field="target_tenor"),
+            _positive_int(row.get("horizon"), field="horizon"),
+        )
+        if scope in registry_by_scope:
+            raise DataConsistencyError(
+                f"duplicate active Registry scope: {scope!r}"
+            )
+        _required_text(row.get("scheme_id"), field="registry scheme_id")
+        _required_text(row.get("task_type"), field="task_type")
+        registry_by_scope[scope] = row
+
+    actuals: dict[tuple[str, str, str, str], int | None] = {}
+    for row in snapshot.actual_rows:
+        key = (
+            _required_text(row.get("actual_kind"), field="actual kind"),
+            _required_text(
+                row.get("target_tenor"), field="actual target_tenor"
+            ),
+            _iso_date(row.get("target_date"), field="actual target_date"),
+            _required_text(
+                row.get("target_rule"), field="actual target_rule"
+            ),
+        )
+        direction = _direction(
+            row.get("actual_direction"),
+            field="actual_direction",
+            allow_none=True,
+        )
+        if key in actuals and actuals[key] != direction:
+            raise DataConsistencyError(f"conflicting Actual facts: {key!r}")
+        actuals[key] = direction
+
+    business_keys: set[tuple[str, str, int, str]] = set()
+    facts: list[ConsistencyFact] = []
+    for row in snapshot.prediction_rows:
+        scheme_id = _required_text(row.get("scheme_id"), field="scheme_id")
+        target_tenor = _required_text(
+            row.get("target_tenor"), field="target_tenor"
+        )
+        horizon = _positive_int(row.get("horizon"), field="horizon")
+        target_date = _iso_date(row.get("target_date"), field="target_date")
+        business_key = (scheme_id, target_tenor, horizon, target_date)
+        if business_key in business_keys:
+            raise DataConsistencyError(
+                "duplicate prediction business key (exact version is not part "
+                f"of the key): {business_key!r}"
+            )
+        business_keys.add(business_key)
+
+        registry = registry_by_scope.get((scheme_id, target_tenor, horizon))
+        if registry is None:
+            raise DataConsistencyError(
+                "prediction has no selected active Registry scope: "
+                f"{business_key!r}"
+            )
+        predict_date = _iso_date(row.get("predict_date"), field="predict_date")
+        feature_date = _iso_date(row.get("feature_date"), field="feature_date")
+        predicted_direction = _direction(
+            row.get("predicted_direction"),
+            field="predicted_direction",
+        )
+        published_actual = _direction(
+            row.get("backtest_actual_direction"),
+            field="backtest_actual_direction",
+            allow_none=True,
+        )
         if predict_date < HISTORY_START_DATE or predict_date > display_until:
             continue
         task_type = str(registry["task_type"])
