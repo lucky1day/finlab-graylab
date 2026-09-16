@@ -16,16 +16,21 @@
 | 当前 active 执行身份 | 93 个 Blackbox base | 93 个 Blackbox base + 9 个 W4 Native base |
 | Dashboard | 97 个 target | 106 个 target |
 | 调度控制面 | systemd one-shot/timer | launchd + installed plist |
-| current release | `507081397e75fa60c56614fd0bfbb750b9415753` | 同左 |
-| previous release | `b43fc1911b0f7bf3ada05edca7ad8b483ac38e02` | 同左 |
+| current release | `3a665c36425a168fa1d24559c9dc987ed2901633` | 同左 |
+| previous release | `877e6ab1d1f02d6b174db98fbfa4c7fd847a00d9` | `507081397e75fa60c56614fd0bfbb750b9415753` |
 | schema | 025 APPLIED | 025 APPLIED |
 
-- 双机同一 archive SHA-256：`5010195a78feaaec6afeaccc2ff5c75613c9f10c887ee267cb098718894f7021`。
-- 2026-09-16 新方案发布未修改 Backend 或前端代码，因此未重启服务；两机 Backend 进程 cwd 仍为 previous
-  `b43fc1911b0f7bf3ada05edca7ad8b483ac38e02`，健康且已从本机数据库读到新 Registry。下一次 one-shot
-  从 current `507081397e75fa60c56614fd0bfbb750b9415753` 启动；自然运行证据仍须按下节观察。
-- 两机 immutable 源码树与健康已核验；ECS 验收后晋级同一 archive 至 Mac3，发布实施已闭环，首次自然运行观察仍待完成。
-  域名仍由 Mac3 服务；DNS、Nginx、认证和既有 SSH 隧道未改变。
+- 双机同一 archive SHA-256：`1eba1e9fbf7a8b0b944bf8de2385ce920ef647021b4ae586481cae14aae25366`。
+- 2026-09-16 上线前稳定性加固 release 已按 ECS → Mac3 顺序使用同一 archive 晋级。两机 Backend
+  进程实际 cwd 均为 `3a665c36425a168fa1d24559c9dc987ed2901633`，健康且 schema 025；晋级前后
+  Registry、Prediction、四类 Actual、Run 和 Backtest 数量不变。Mac3 真实 MySQL Summary 为 106 个方案，
+  构建约 0.35 秒；ECS 为 97 个方案，构建约 0.63 秒。
+- 公网中继仅新增 `/bond-factor-lab/factor-lab-http.js` 精确静态白名单，通过 `nginx -t` 后 reload；
+  公网首页和全部静态资源为 200，新脚本字节摘要与 Mac3 release 一致，未认证 Dashboard 保持 401。
+  中继变更前配置备份位于
+  `/etc/nginx/bfl-backups/pre-release-hardening-20260916T1827/bond-factor-lab.before`。
+- ECS systemd 与 Mac3 launchd 控制面未修改；发布时所有 Writer 均不在运行，Mac3 drift audit 通过。
+  本次代码与部署闭环不代替下方各方案首次自然运行观察。
 - 集成分支为 `codex/develop`。开发分支的代码或文档提交不代表新的生产 release。
   实时提交以 Git 引用为准，发布以目标机 manifest、current/previous 和进程 cwd 为准。
 - 2026-09-13 文档规整版本已按 ECS → Mac3 同包晋级，仅刷新两机 Backend。Registry、exact、业务条数、ready 输入、Dashboard 读模型与生产名单均未改变；两机健康与首页正常，Mac3 公网首页与 release 字节一致，控制面保持原状。未运行算法、写业务事实或跨越正式触发窗口；自然观察仍待 TODO。证据见[同步回执](/Users/macstudio0/bond-factor-lab-runtime/releases/docs-guidance-20260913/delivery-report.json)与[索引](/Users/macstudio0/bond-factor-lab-runtime/releases/docs-guidance-20260913/README.md)。

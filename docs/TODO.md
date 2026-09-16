@@ -54,10 +54,6 @@
 
 以上观察和验证队列不阻塞新 Blackbox 方案开始 Intake；入库仍按自身前置条件执行。
 
-## Dashboard 认证探针入口
-
-现有 Dashboard Gate 默认 HTTP fetcher 不携带登录会话，CLI 未提供认证参数，不能直接作为已启用认证环境的验收命令。当前可用方法见[Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md#认证响应与合同验收)。通用 CLI 的完成标准是安全传递会话、保护凭据并验证真实 HTTP 合同，需单独安排实现与验收。
-
 ## 候选 release 手工启动入口
 
 手工 Harness 的前置条件和现有能力限制见[部署手册](../deploy/README.md#手工-harness-的目标环境绑定)。后续若统一入口，应复用现有可信配置读取能力，在隔离环境验证两机路径、错误身份/覆盖值拒绝和零意外写入；不通过恢复批次脚本或修改生产调度解决。
