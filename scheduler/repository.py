@@ -44,6 +44,11 @@ from scheduler.persistence.connections import (
     create_engine_from_env,
     dialect_name as _dialect_name,
 )
+from scheduler.persistence.history_cleanup import (
+    ReplacedHistoryCleanupStats,
+    apply_replaced_prediction_history_cleanup,
+    plan_replaced_prediction_history_cleanup,
+)
 from shared.blackbox_v2.contracts import REQUEST_FIELDS, request_from_mapping
 from shared.models import PredictionRecord
 from shared.one_shot_control_plane import SCHEDULED_ONE_SHOT_CONTROL_PLANES

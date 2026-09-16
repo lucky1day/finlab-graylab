@@ -4,6 +4,7 @@ import logging
 import time
 from collections import defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 from sqlalchemy import bindparam, text
@@ -16,6 +17,15 @@ from backend.factor_lab_dashboard_semantics import (
     DashboardDataError,
     live_actual_selector,
 )
+from shared.legacy_prediction_migration import (
+    load_legacy_corrected_exact_evidence,
+    load_legacy_prediction_migrations,
+)
+from shared.prediction_history_replacement import (
+    PredictionHistoryProjection,
+    PredictionHistoryReplacementError,
+    resolve_prediction_history_projection,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -24,6 +34,7 @@ MAX_TARGET_SOURCE_ROWS = 1_000
 MAX_PRODUCT_PREDICTION_SOURCE_ROWS = 100_000
 MAX_ACTUAL_SOURCE_ROWS = 80_000
 SUMMARY_PREDICTION_FETCH_ROWS = 2_000
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 _ACTUAL_SOURCE_KIND_ORDER = (
     "daily_1d",
@@ -130,6 +141,185 @@ class SummaryPredictionReadStats:
     fetch_seconds: float = 0.0
     cleanup_seconds: float = 0.0
     exit_reason: str = "not_started"
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardHistoryReplacementPlan:
+    """当前数据库中已完整验证、可用于 Dashboard 的历史替代投影。"""
+
+    projections: tuple[PredictionHistoryProjection, ...] = ()
+
+    @property
+    def excluded_product_ids(self) -> frozenset[int]:
+        return frozenset(
+            row_id
+            for projection in self.projections
+            for row_id in projection.excluded_product_ids
+        )
+
+    @property
+    def source_rows(self) -> tuple[dict[str, Any], ...]:
+        return tuple(
+            row
+            for projection in self.projections
+            for row in projection.source_rows
+        )
+
+
+def resolve_dashboard_history_replacements(
+    connection: Connection,
+    registry_rows: list[Mapping[str, Any]],
+) -> DashboardHistoryReplacementPlan:
+    """仅在 archived/retired 来源和完整事实摘要均命中时启用替代。"""
+    active_scopes = {
+        (
+            str(row["base_scheme_id"]),
+            str(row["target_tenor"]),
+            int(row["horizon"]),
+        )
+        for row in registry_rows
+    }
+    entries = load_legacy_prediction_migrations(PROJECT_ROOT)
+    corrected_by_identity = {
+        (item.source_scheme_id, item.designated_exact): item
+        for item in load_legacy_corrected_exact_evidence(PROJECT_ROOT)
+    }
+    projections: list[PredictionHistoryProjection] = []
+    for entry in sorted(
+        entries,
+        key=lambda item: (
+            item.prediction_scheme_id,
+            item.target_tenor,
+            item.horizon,
+        ),
+    ):
+        if (
+            entry.prediction_scheme_id,
+            entry.target_tenor,
+            entry.horizon,
+        ) not in active_scopes:
+            continue
+        corrected = corrected_by_identity.get(
+            (entry.designated_source_scheme_id, entry.designated_exact)
+        )
+        if corrected is None:
+            raise DashboardDataError(
+                "historical replacement corrected evidence is missing"
+            )
+        source_identity = connection.execute(
+            text(
+                "SELECT r.base_scheme_id, r.status AS registry_status, "
+                "v.runtime_type, v.status AS version_status, v.code_hash, "
+                "v.config_hash, v.manifest_hash "
+                "FROM t_scheme_registry r "
+                "JOIN t_scheme_versions v "
+                "ON v.scheme_id = r.base_scheme_id "
+                "AND v.scheme_version = :source_exact "
+                "WHERE r.scheme_id = :source_registry_scheme_id"
+            ),
+            {
+                "source_registry_scheme_id": corrected.source_registry_scheme_id,
+                "source_exact": entry.designated_exact,
+            },
+        ).mappings().one_or_none()
+        if source_identity is None:
+            orphan_count = connection.execute(
+                text(
+                    "SELECT "
+                    "(SELECT COUNT(*) FROM t_scheme_versions "
+                    " WHERE scheme_id = :source_scheme_id "
+                    " AND scheme_version = :source_exact) + "
+                    "(SELECT COUNT(*) FROM t_scheme_predictions "
+                    " WHERE scheme_id = :source_scheme_id "
+                    " AND scheme_version = :source_exact)"
+                ),
+                {
+                    "source_scheme_id": entry.designated_source_scheme_id,
+                    "source_exact": entry.designated_exact,
+                },
+            ).scalar_one()
+            if int(orphan_count or 0):
+                raise DashboardDataError(
+                    "historical replacement source identity is incomplete"
+                )
+            continue
+        if dict(source_identity) != {
+            "base_scheme_id": entry.designated_source_scheme_id,
+            "registry_status": "archived",
+            "runtime_type": "blackbox_v2",
+            "version_status": "retired",
+            "code_hash": entry.designated_code_hash,
+            "config_hash": entry.designated_config_hash,
+            "manifest_hash": entry.designated_manifest_hash,
+        }:
+            raise DashboardDataError(
+                "historical replacement source identity changed"
+            )
+        product_rows = _read_replacement_scope_rows(
+            connection,
+            scheme_id=entry.prediction_scheme_id,
+            target_tenor=entry.target_tenor,
+            horizon=entry.horizon,
+            scheme_version=None,
+        )
+        source_rows = _read_replacement_scope_rows(
+            connection,
+            scheme_id=entry.designated_source_scheme_id,
+            target_tenor=entry.target_tenor,
+            horizon=entry.horizon,
+            scheme_version=entry.designated_exact,
+        )
+        try:
+            projection = resolve_prediction_history_projection(
+                product_rows,
+                source_rows,
+                entry=entry,
+                corrected=corrected,
+            )
+        except PredictionHistoryReplacementError as exc:
+            raise DashboardDataError(
+                f"historical replacement evidence drift: {exc}"
+            ) from exc
+        if projection is not None:
+            projections.append(projection)
+    return DashboardHistoryReplacementPlan(tuple(projections))
+
+
+def _read_replacement_scope_rows(
+    connection: Connection,
+    *,
+    scheme_id: str,
+    target_tenor: str,
+    horizon: int,
+    scheme_version: str | None,
+) -> list[Mapping[str, Any]]:
+    version_filter = (
+        " AND scheme_version = :scheme_version"
+        if scheme_version is not None
+        else ""
+    )
+    params: dict[str, Any] = {
+        "scheme_id": scheme_id,
+        "target_tenor": target_tenor,
+        "horizon": horizon,
+    }
+    if scheme_version is not None:
+        params["scheme_version"] = scheme_version
+    return list(
+        connection.execute(
+            text(
+                "SELECT id, run_id, backtest_run_id, scheme_version, scheme_id, "
+                "target_tenor, horizon, predict_date, feature_date, target_date, "
+                "predicted_direction, backtest_actual_direction "
+                "FROM t_scheme_predictions "
+                "WHERE scheme_id = :scheme_id "
+                "AND target_tenor = :target_tenor AND horizon = :horizon"
+                + version_filter
+                + " ORDER BY target_date, predict_date, id"
+            ),
+            params,
+        ).mappings()
+    )
 
 
 def read_bounded_source_rows(
@@ -282,6 +472,7 @@ def read_product_predictions(
     registry_rows: list[Mapping[str, Any]],
     *,
     target_date_range: tuple[str, str] | None = None,
+    replacement_plan: DashboardHistoryReplacementPlan | None = None,
     cap: int = MAX_PRODUCT_PREDICTION_SOURCE_ROWS,
 ) -> list[Mapping[str, Any]]:
     """读取 Detail 所需的有界产品事实。"""
@@ -304,24 +495,56 @@ def read_product_predictions(
         params["target_date_from"], params["target_date_before"] = (
             target_date_range
         )
+    excluded_ids = (
+        replacement_plan.excluded_product_ids
+        if replacement_plan is not None
+        else frozenset()
+    )
+    excluded_filter = ""
+    expanding_params = []
+    if excluded_ids:
+        excluded_filter = " AND id NOT IN :excluded_product_ids"
+        params["excluded_product_ids"] = sorted(excluded_ids)
+        expanding_params.append(bindparam("excluded_product_ids", expanding=True))
     statement = text(
         f"""
         SELECT id, scheme_id, target_tenor, horizon, predict_date,
                feature_date, target_date, predicted_direction,
                backtest_actual_direction
         FROM t_scheme_predictions
-        WHERE {where_clause}{date_filter}
+        WHERE {where_clause}{date_filter}{excluded_filter}
         ORDER BY target_date, predict_date, id
         LIMIT :dashboard_source_limit
         """
     )
-    return read_bounded_source_rows(
+    if expanding_params:
+        statement = statement.bindparams(*expanding_params)
+    rows = read_bounded_source_rows(
         connection,
         statement,
         params,
         dataset="product_predictions",
         cap=cap,
     )
+    projected_rows = _replacement_rows_in_range(
+        replacement_plan,
+        registry_rows=registry_rows,
+        target_date_range=target_date_range,
+    )
+    if len(rows) + len(projected_rows) > cap:
+        raise DashboardDataError(
+            "dashboard source row limit exceeded: "
+            f"dataset=product_predictions limit={cap}"
+        )
+    rows.extend(projected_rows)
+    rows.sort(
+        key=lambda row: (
+            str(row["target_date"]),
+            str(row["predict_date"]),
+            int(row["id"]),
+        )
+    )
+    return rows
 
 
 def iter_summary_product_predictions(
@@ -329,6 +552,7 @@ def iter_summary_product_predictions(
     registry_rows: list[Mapping[str, Any]],
     *,
     stats: SummaryPredictionReadStats,
+    replacement_plan: DashboardHistoryReplacementPlan | None = None,
     fetch_rows: int = SUMMARY_PREDICTION_FETCH_ROWS,
 ) -> Iterator[Mapping[str, Any]]:
     """按业务键分组顺序流式读取 Summary 的完整预测历史。"""
@@ -336,6 +560,15 @@ def iter_summary_product_predictions(
     if not scopes:
         return
     params, scope_placeholders = _prediction_scope_params(scopes)
+    excluded_ids = (
+        replacement_plan.excluded_product_ids
+        if replacement_plan is not None
+        else frozenset()
+    )
+    excluded_filter = ""
+    if excluded_ids:
+        excluded_filter = " AND id NOT IN :excluded_product_ids"
+        params["excluded_product_ids"] = sorted(excluded_ids)
     binary_order = (
         "BINARY scheme_id, BINARY target_tenor"
         if connection.dialect.name == "mysql"
@@ -349,11 +582,15 @@ def iter_summary_product_predictions(
         FROM t_scheme_predictions
         WHERE (scheme_id, target_tenor, horizon) IN (
             {", ".join(scope_placeholders)}
-        )
+        ){excluded_filter}
         ORDER BY {binary_order}, horizon, target_date,
                  predict_date, id
         """
     )
+    if excluded_ids:
+        statement = statement.bindparams(
+            bindparam("excluded_product_ids", expanding=True)
+        )
     request_context = current_http_request_context()
     if request_context is not None:
         request_context.failure_stage = "dashboard_query"
@@ -378,6 +615,17 @@ def iter_summary_product_predictions(
 
     exhausted = False
     primary_error: BaseException | None = None
+    projected_rows = iter(
+        sorted(
+            _replacement_rows_in_range(
+                replacement_plan,
+                registry_rows=registry_rows,
+                target_date_range=None,
+            ),
+            key=_summary_prediction_sort_key,
+        )
+    )
+    projected = next(projected_rows, None)
     try:
         partitions = result.mappings().partitions(fetch_rows)
         while True:
@@ -403,7 +651,20 @@ def iter_summary_product_predictions(
                         request_context.clock() - context_started_at,
                     )
             stats.source_rows += len(partition)
-            yield from partition
+            for row in partition:
+                while (
+                    projected is not None
+                    and _summary_prediction_sort_key(projected)
+                    <= _summary_prediction_sort_key(row)
+                ):
+                    stats.source_rows += 1
+                    yield projected
+                    projected = next(projected_rows, None)
+                yield row
+        while projected is not None:
+            stats.source_rows += 1
+            yield projected
+            projected = next(projected_rows, None)
     except GeneratorExit as exc:
         primary_error = exc
         stats.exit_reason = "generator_closed"
@@ -438,6 +699,44 @@ def iter_summary_product_predictions(
                 0.0,
                 time.perf_counter() - cleanup_started_at,
             )
+
+
+def _replacement_rows_in_range(
+    replacement_plan: DashboardHistoryReplacementPlan | None,
+    *,
+    registry_rows: list[Mapping[str, Any]],
+    target_date_range: tuple[str, str] | None,
+) -> list[dict[str, Any]]:
+    if replacement_plan is None:
+        return []
+    scopes = _prediction_scopes(registry_rows)
+    result: list[dict[str, Any]] = []
+    for row in replacement_plan.source_rows:
+        scope = (
+            str(row["scheme_id"]),
+            str(row["target_tenor"]),
+            int(row["horizon"]),
+        )
+        target_date = str(row["target_date"])
+        if scope not in scopes:
+            continue
+        if target_date_range is not None and not (
+            target_date_range[0] <= target_date < target_date_range[1]
+        ):
+            continue
+        result.append(dict(row))
+    return result
+
+
+def _summary_prediction_sort_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
+    return (
+        str(row["scheme_id"]),
+        str(row["target_tenor"]),
+        int(row["horizon"]),
+        str(row["target_date"]),
+        str(row["predict_date"]),
+        int(row["id"]),
+    )
 
 
 def _detach_pymysql_unbuffered_result(

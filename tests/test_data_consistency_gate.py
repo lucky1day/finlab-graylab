@@ -33,6 +33,7 @@ from shared.legacy_prediction_migration import (
     LegacyCorrectedFact,
     LegacyPredictionMigration,
 )
+from shared.legacy_backtest_lineage import LegacyBacktestLineage
 from shared.prediction_context import (
     MONTHLY_TARGET_RULE,
     WEEKLY_AVERAGE_TARGET_RULE,
@@ -151,7 +152,8 @@ def _engine(tmp_path: Path):
         connection.execute(
             text(
                 "CREATE TABLE t_backtest_runs "
-                "(id INTEGER PRIMARY KEY, scheme_id TEXT NOT NULL, status TEXT, "
+                "(id INTEGER PRIMARY KEY, benchmark_id TEXT, "
+                "scheme_id TEXT NOT NULL, status TEXT, "
                 "code_hash TEXT, config_hash TEXT, input_artifact_hash TEXT, summary TEXT)"
             )
         )
@@ -227,7 +229,8 @@ def _engine(tmp_path: Path):
         connection.execute(
             text(
                 "INSERT INTO t_backtest_runs VALUES "
-                "(7, :scheme_id, 'success', :code_hash, :config_hash, "
+                "(7, 'fixture-backtest', :scheme_id, 'success', "
+                ":code_hash, :config_hash, "
                 ":input_hash, :summary)"
             ),
             {
@@ -1042,7 +1045,8 @@ def test_backtest_source_registry_is_hydrated_by_exact_base_scope(
         connection.execute(
             text(
                 "INSERT INTO t_backtest_runs VALUES "
-                "(17, :scheme_id, 'success', :code_hash, :config_hash, "
+                "(17, 'fixture-cross-backtest', :scheme_id, 'success', "
+                ":code_hash, :config_hash, "
                 "'snapshot-0123456789abcdef01234567', :summary)"
             ),
             {
@@ -1805,6 +1809,11 @@ def _legacy_migration_snapshot() -> tuple[
         product_facts_sha256=_sha256_json([fact]),
         target_contract_mismatch_count=1,
         target_contract_mismatch_sha256=_sha256_json([mismatch]),
+        live_target_date_from="2026-06-01",
+        live_target_date_through="2026-06-30",
+        expected_live_fact_count=1,
+        designated_live_facts_sha256="3" * 64,
+        product_live_facts_sha256="3" * 64,
         reason="fixture",
     )
     corrected = LegacyCorrectedExactEvidence(
@@ -1881,6 +1890,165 @@ def test_legacy_migration_fails_closed_when_a_fact_drifts() -> None:
             historical_references=frozenset(),
             legacy_migrations=frozenset({compatibility}),
             corrected_exact_evidence=frozenset({corrected}),
+        )
+
+
+def _legacy_backtest_lineage_snapshot() -> tuple[
+    DatabaseSnapshot,
+    LegacyBacktestLineage,
+]:
+    scheme_id = "legacy_blackbox"
+    exact = "0123456789ab"
+    snapshot_id = "snapshot-" + "1" * 24
+    fact = {
+        "scheme_id": scheme_id,
+        "target_tenor": "3Y",
+        "horizon": 5,
+        "predict_date": "2026-05-19",
+        "feature_date": "2026-05-19",
+        "target_date": "2026-05-26",
+        "predicted_direction": 1,
+        "actual_direction": -1,
+    }
+    product_fact = {**fact, "scheme_version": exact}
+    summary = {
+        "scheme_version": exact,
+        "data_snapshot_id": snapshot_id,
+        "raw_row_count": 1,
+        "row_count": 1,
+        "persisted_prediction_count": 1,
+        "evaluation_filter": {"included_row_count": 1},
+    }
+    snapshot = DatabaseSnapshot(
+        registry_rows=(
+            {
+                "scheme_id": f"{scheme_id}__h5__3Y",
+                "base_scheme_id": scheme_id,
+                "horizon": 5,
+                "task_type": "T+5",
+                "runtime_type": "blackbox_v2",
+                "frequency": "daily",
+                "target_tenor": "3Y",
+                "status": "active",
+            },
+        ),
+        prediction_rows=(
+            {
+                "id": 1,
+                "run_id": None,
+                "backtest_run_id": 9,
+                "scheme_version": exact,
+                "scheme_id": scheme_id,
+                "target_tenor": "3Y",
+                "horizon": 5,
+                "predict_date": "2026-05-19",
+                "feature_date": "2026-05-19",
+                "target_date": "2026-05-26",
+                "predicted_direction": 1,
+                "backtest_actual_direction": -1,
+            },
+        ),
+        actual_rows=(),
+        live_runs=(),
+        backtest_runs=(
+            {
+                "reference_id": 9,
+                "benchmark_id": "legacy-benchmark",
+                "scheme_id": scheme_id,
+                "status": "success",
+                "code_hash": None,
+                "config_hash": None,
+                "input_artifact_hash": None,
+                "summary": summary,
+            },
+        ),
+        calendar_rows=_calendar_rows(date(2026, 5, 1), date(2026, 6, 30)),
+        digest="legacy-backtest-lineage",
+        backtest_prediction_rows=(
+            {
+                "run_id": 9,
+                "scheme_id": scheme_id,
+                "target_tenor": "3Y",
+                "horizon": 5,
+                "predict_date": "2026-05-19",
+                "feature_date": "2026-05-19",
+                "target_date": "2026-05-26",
+                "label": -1,
+                "predicted_direction": 1,
+            },
+        ),
+        version_rows=(
+            {
+                "scheme_id": scheme_id,
+                "scheme_version": exact,
+                "runtime_type": "blackbox_v2",
+                "data_snapshot_id": snapshot_id,
+                "code_hash": "a" * 64,
+                "config_hash": "b" * 64,
+                "manifest_hash": "c" * 64,
+                "status": "active",
+            },
+        ),
+    )
+    evidence = LegacyBacktestLineage(
+        scheme_id=scheme_id,
+        scheme_version=exact,
+        target_tenor="3Y",
+        horizon=5,
+        benchmark_id="legacy-benchmark",
+        input_snapshot_id=snapshot_id,
+        code_hash="a" * 64,
+        config_hash="b" * 64,
+        manifest_hash="c" * 64,
+        expected_fact_count=1,
+        backtest_summary_sha256=_sha256_json(summary),
+        backtest_facts_sha256=_sha256_json([fact]),
+        product_facts_sha256=_sha256_json([product_fact]),
+        reason="fixture",
+    )
+    return snapshot, evidence
+
+
+def test_precise_legacy_backtest_lineage_recovers_missing_run_fields() -> None:
+    snapshot, evidence = _legacy_backtest_lineage_snapshot()
+
+    errors, details = validate_snapshot_lineage(
+        snapshot,
+        historical_references=frozenset(),
+        legacy_backtest_lineages=frozenset({evidence}),
+    )
+
+    assert errors == []
+    assert details["authority_gaps"] == []
+    assert details["legacy_backtest_lineages"] == [
+        {
+            "scheme_id": "legacy_blackbox",
+            "scheme_version": "0123456789ab",
+            "backtest_run_id": 9,
+            "benchmark_id": "legacy-benchmark",
+            "input_snapshot_id": "snapshot-" + "1" * 24,
+            "fact_count": 1,
+        }
+    ]
+
+
+def test_precise_legacy_backtest_lineage_fails_closed_on_fact_drift() -> None:
+    snapshot, evidence = _legacy_backtest_lineage_snapshot()
+    snapshot = replace(
+        snapshot,
+        prediction_rows=(
+            {**snapshot.prediction_rows[0], "predicted_direction": -1},
+        ),
+    )
+
+    with pytest.raises(
+        DataConsistencyError,
+        match="legacy backtest lineage evidence drift",
+    ):
+        validate_snapshot_lineage(
+            snapshot,
+            historical_references=frozenset(),
+            legacy_backtest_lineages=frozenset({evidence}),
         )
 
 

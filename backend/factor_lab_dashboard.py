@@ -28,6 +28,7 @@ from backend.factor_lab_dashboard_queries import (
     read_live_actuals,
     read_product_predictions,
     read_selected_backtest_runs,
+    resolve_dashboard_history_replacements,
 )
 from shared.runtime_paths import RUNTIME_ROOT_ENV, resolve_runtime_state_path
 from shared.scheme_config_schema import normalize_scheme_owner
@@ -265,6 +266,10 @@ def _build_summary(engine: Engine) -> dict[str, Any]:
             connection,
             registry_scheme_id=None,
         )
+        replacement_plan = resolve_dashboard_history_replacements(
+            connection,
+            registry_rows,
+        )
         target_rows = read_active_targets(connection)
         actual_rows = read_live_actuals(
             connection,
@@ -333,6 +338,7 @@ def _build_summary(engine: Engine) -> dict[str, Any]:
             connection,
             registry_rows,
             stats=prediction_read_stats,
+            replacement_plan=replacement_plan,
         )
         canonical_predictions = iter_grouped_live_prediction_rows(
             prediction_rows,
@@ -504,6 +510,10 @@ def _build_detail(
         if not registry_rows:
             return None
         scheme = _registry_dto(registry_rows[0])
+        replacement_plan = resolve_dashboard_history_replacements(
+            connection,
+            registry_rows,
+        )
         display_date_range = _detail_target_date_range(
             detail_month,
             task_type=scheme["task_type"],
@@ -517,6 +527,7 @@ def _build_detail(
                 connection,
                 registry_rows,
                 target_date_range=target_date_range,
+                replacement_plan=replacement_plan,
             )
             if target_date_range is not None
             else []

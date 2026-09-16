@@ -1,0 +1,21 @@
+{
+  "schema_version": "legacy-backtest-lineage-compatibility-v1",
+  "entries": [
+    {
+      "scheme_id": "three_y_t5_xgb_fxlead_b8_v2",
+      "scheme_version": "dc4e944f5aec",
+      "target_tenor": "3Y",
+      "horizon": 5,
+      "benchmark_id": "bbv2-three_y_t5_xgb_fxlead_b8_v2-hr_20260809T033024Z_a367f2dfc2ff",
+      "input_snapshot_id": "snapshot-70b5db7f108c02f1870cc212",
+      "code_hash": "d2bda2d93c877b5706f1fb10c69a420fa9de16ebb26df56be0c08cdc33d029fc",
+      "config_hash": "54ae53fe85743c4ec40c98be545e6d48f27db7ce24797da58224b4dff2d64124",
+      "manifest_hash": "6d1ff7a43c148b66b79d7a01d88cf910534ee6e55b828aec26d59c6b7b8d7fd9",
+      "expected_fact_count": 333,
+      "backtest_summary_sha256": "4979dc407cbdd348aa22054e8072f8bba20d0229d337f7efbe0ac1bda4b42655",
+      "backtest_facts_sha256": "8ddbcba77e4380a3f0555a2ae16cd46ecb75643cf65929e0c408574d237457cb",
+      "product_facts_sha256": "cff9a01db6067fe8bda7c0e70519b7f867d8bfbd4bd9411c0a85fede51886887",
+      "reason": "The pre-lineage-field Blackbox V2 run is uniquely bound by its immutable benchmark, exact version hashes, input snapshot, canonical summary, and matching raw/product fact digests on both deployment databases."
+    }
+  ]
+}

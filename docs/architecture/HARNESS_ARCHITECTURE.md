@@ -50,6 +50,12 @@ positive，并逐分区请求真实 Detail 对账；不得调用 Dashboard build
 `legacy_migration`；不回填数据库，
 不宣称旧事实由纠正版 exact 原生生成，也不允许该例外用于未来写入。任一事实或摘要漂移仍失败。
 
+早期 Blackbox 回测若只缺少后来新增到 `t_backtest_runs` 的冗余血缘列，也不能按名称推断来源。
+[`legacy_backtest_lineage_compatibility_v1.json`](../../deploy/legacy_backtest_lineage_compatibility_v1.json)
+只登记已由 canonical 交付字节、版本 code/config/manifest hash、输入 snapshot、不可变 benchmark、完整
+summary 摘要以及 raw/product 逐事实摘要共同唯一证明的历史 run。Gate 仅在整批证据同时命中时从版本行恢复
+该 run 的只读解释；不更新数据库、不接受部分事实，也不对未登记 run 放宽血缘要求。
+
 一次一致性验收先读取一个 repeatable-read 只读数据库快照，再获取一次真实 Summary 和所需 Detail；HTTP
 对账后重读同一选定范围的摘要围栏。若末次重读失败、首尾摘要不同，或上海展示日跨界，本次返回
 `blocked`，要求在稳定输入窗口重试，不能把可观测到的自然增长误报为事实或展示错误；该围栏不是 CDC，

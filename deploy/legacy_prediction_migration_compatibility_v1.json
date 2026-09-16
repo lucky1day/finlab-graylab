@@ -20,7 +20,12 @@
       "product_facts_sha256": "cea36fb4f367802a9de713d3b10b27f3434afa69e201e7119a247c182884d72b",
       "target_contract_mismatch_count": 14,
       "target_contract_mismatch_sha256": "a3a4e00828528c686bc5818cb7baeff3a6c4e1238e0cd3bacb9a9e44241405e0",
-      "reason": "The operator designated the corrected archived Blackbox V2 exact as the successor authority for this immutable pre-versioned fact set; the legacy rows remain unchanged and are accepted only when every recorded digest matches."
+      "live_target_date_from": "2026-06-01",
+      "live_target_date_through": "2026-09-17",
+      "expected_live_fact_count": 78,
+      "designated_live_facts_sha256": "30167ef35082c0e7d6f11db8a14a8dd36eb718ecc0df901f6c02854672c6494c",
+      "product_live_facts_sha256": "30167ef35082c0e7d6f11db8a14a8dd36eb718ecc0df901f6c02854672c6494c",
+      "reason": "The operator designated the corrected archived Blackbox V2 exact as the successor authority for the immutable pre-versioned backtest facts and the exactly matched legacy live range; every recorded digest must match before projection or cleanup."
     }
   ]
 }

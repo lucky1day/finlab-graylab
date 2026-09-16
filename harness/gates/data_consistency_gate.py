@@ -39,6 +39,14 @@ from shared.legacy_prediction_migration import (
     load_legacy_corrected_exact_evidence,
     load_legacy_prediction_migrations,
 )
+from shared.legacy_backtest_lineage import (
+    LegacyBacktestLineage,
+    load_legacy_backtest_lineages,
+)
+from shared.prediction_history_replacement import (
+    PredictionHistoryReplacementError,
+    resolve_prediction_history_projection,
+)
 from shared.calendar_service import is_trading_day_row
 from shared.period_average_buckets import build_period_buckets
 from shared.prediction_context import (
@@ -118,6 +126,12 @@ class _LegacyMigrationMatch:
     entry: LegacyPredictionMigration
     backtest_run_id: int
     mismatch_business_keys: frozenset[tuple[str, str, int, str]]
+
+
+@dataclass(frozen=True, slots=True)
+class _LegacyBacktestLineageMatch:
+    entry: LegacyBacktestLineage
+    backtest_run_id: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -338,6 +352,9 @@ class DataConsistencyGate(Gate):
             corrected_exact_evidence = (
                 load_legacy_corrected_exact_evidence(PROJECT_ROOT)
             )
+            legacy_backtest_lineages = load_legacy_backtest_lineages(
+                PROJECT_ROOT
+            )
             historical_references = load_historical_backtest_references(
                 PROJECT_ROOT
             )
@@ -379,6 +396,7 @@ class DataConsistencyGate(Gate):
                     historical_references=historical_references,
                     legacy_migrations=legacy_migrations,
                     corrected_exact_evidence=corrected_exact_evidence,
+                    legacy_backtest_lineages=legacy_backtest_lineages,
                 )
                 lineage_authority_gaps = lineage_details.get(
                     "authority_gaps", []
@@ -721,6 +739,12 @@ def validate_snapshot_completeness(
     registry_by_base: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for row in snapshot.registry_rows:
         registry_by_base[str(row["base_scheme_id"])].append(row)
+    replacement_base_by_live_run = {
+        int(row["run_id"]): str(row["scheme_id"])
+        for row in snapshot.prediction_rows
+        if row.get("run_id") is not None
+        and row.get("lineage_scheme_id") is not None
+    }
     expected_live_by_key: dict[
         tuple[str, str, int, str], set[int]
     ] = defaultdict(set)
@@ -731,7 +755,10 @@ def validate_snapshot_completeness(
         predict_date = _iso_date(run.get("predict_date"), field="run predict_date")
         if predict_date > display_until:
             continue
-        base_scheme_id = _required_text(run.get("scheme_id"), field="run scheme_id")
+        base_scheme_id = replacement_base_by_live_run.get(
+            int(run["reference_id"]),
+            _required_text(run.get("scheme_id"), field="run scheme_id"),
+        )
         targets = registry_by_base.get(base_scheme_id, [])
         run_id = int(run["reference_id"])
         if not targets:
@@ -886,6 +913,9 @@ def validate_snapshot_lineage(
     corrected_exact_evidence: frozenset[
         LegacyCorrectedExactEvidence
     ] = frozenset(),
+    legacy_backtest_lineages: frozenset[
+        LegacyBacktestLineage
+    ] = frozenset(),
 ) -> tuple[list[str], dict[str, Any]]:
     """核对产品事实引用的 exact、run、版本与输入工件血缘。"""
     errors: list[str] = []
@@ -894,6 +924,10 @@ def validate_snapshot_lineage(
         snapshot,
         legacy_migrations,
         corrected_exact_evidence,
+    )
+    legacy_lineage_matches = _resolve_legacy_backtest_lineage_matches(
+        snapshot,
+        legacy_backtest_lineages,
     )
     versions = {
         (str(row["scheme_id"]), str(row["scheme_version"])): row
@@ -986,13 +1020,18 @@ def validate_snapshot_lineage(
             legacy_fact_count += 1
             continue
         exact = _required_text(row.get("scheme_version"), field="prediction exact")
-        version_identity = (scope[0], exact)
+        lineage_scheme_id = str(
+            row.get("lineage_scheme_id") or scope[0]
+        )
+        version_identity = (lineage_scheme_id, exact)
         version = versions.get(version_identity)
         validate_version(version_identity, version)
         if row.get("run_id") is not None:
             run = live_runs.get(int(row["run_id"]))
             if run is None:
                 continue
+            if str(run.get("scheme_id") or "") != lineage_scheme_id:
+                errors.append(f"live run scheme drift: run_id={row['run_id']}")
             if run.get("scheme_version") != exact:
                 errors.append(f"live run exact drift: run_id={row['run_id']}")
             version_runtime = version.get("runtime_type") if version else None
@@ -1035,6 +1074,9 @@ def validate_snapshot_lineage(
             run = backtest_runs.get(int(row["backtest_run_id"]))
             if run is None:
                 continue
+            legacy_lineage = legacy_lineage_matches.get(
+                int(row["backtest_run_id"])
+            )
             source_scheme_id = str(run.get("scheme_id") or "")
             summary = _json_mapping(run.get("summary"), field="backtest summary")
             source_exact = str(summary.get("scheme_version") or "")
@@ -1063,10 +1105,11 @@ def validate_snapshot_lineage(
             for field in ("code_hash", "config_hash"):
                 value = run.get(field)
                 if value in {None, ""}:
-                    authority_gaps.add(
-                        f"backtest lineage is missing: run_id={row['backtest_run_id']} "
-                        f"field={field}"
-                    )
+                    if legacy_lineage is None:
+                        authority_gaps.add(
+                            "backtest lineage is missing: "
+                            f"run_id={row['backtest_run_id']} field={field}"
+                        )
                 elif not _is_sha256(value):
                     errors.append(
                         f"backtest lineage hash invalid: run_id={row['backtest_run_id']} "
@@ -1079,10 +1122,11 @@ def validate_snapshot_lineage(
                     )
             manifest_hash = summary.get("manifest_hash")
             if manifest_hash in {None, ""}:
-                authority_gaps.add(
-                    f"backtest lineage is missing: run_id={row['backtest_run_id']} "
-                    "field=manifest_hash"
-                )
+                if legacy_lineage is None:
+                    authority_gaps.add(
+                        "backtest lineage is missing: "
+                        f"run_id={row['backtest_run_id']} field=manifest_hash"
+                    )
             elif not _is_sha256(manifest_hash):
                 errors.append(
                     f"backtest lineage hash invalid: run_id={row['backtest_run_id']} "
@@ -1097,10 +1141,11 @@ def validate_snapshot_lineage(
                 )
             input_identity = run.get("input_artifact_hash")
             if input_identity in {None, ""}:
-                authority_gaps.add(
-                    f"backtest input identity is missing: "
-                    f"run_id={row['backtest_run_id']}"
-                )
+                if legacy_lineage is None:
+                    authority_gaps.add(
+                        f"backtest input identity is missing: "
+                        f"run_id={row['backtest_run_id']}"
+                    )
             elif _is_snapshot_id(input_identity):
                 if (
                     summary.get("data_snapshot_id") != input_identity
@@ -1127,6 +1172,9 @@ def validate_snapshot_lineage(
         "authority_gaps": sorted(authority_gaps),
         "legacy_migration_fact_count": legacy_fact_count,
         "legacy_migrations": _legacy_migration_evidence(legacy_matches),
+        "legacy_backtest_lineages": _legacy_backtest_lineage_evidence(
+            legacy_lineage_matches
+        ),
     }
 
 
@@ -1460,6 +1508,140 @@ def _resolve_legacy_migration_matches(
     return matches
 
 
+def _resolve_legacy_backtest_lineage_matches(
+    snapshot: DatabaseSnapshot,
+    entries: frozenset[LegacyBacktestLineage],
+) -> dict[int, _LegacyBacktestLineageMatch]:
+    """仅在版本、run、summary 与两侧逐事实摘要全部命中时恢复旧血缘。"""
+    if not entries:
+        return {}
+    runs = {int(row["reference_id"]): row for row in snapshot.backtest_runs}
+    versions = {
+        (str(row["scheme_id"]), str(row["scheme_version"])): row
+        for row in snapshot.version_rows
+    }
+    sources_by_run: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in snapshot.backtest_prediction_rows:
+        sources_by_run[int(row["run_id"])].append(row)
+
+    matches: dict[int, _LegacyBacktestLineageMatch] = {}
+    for entry in entries:
+        products = [
+            row
+            for row in snapshot.prediction_rows
+            if str(row.get("scheme_id") or "") == entry.scheme_id
+            and str(row.get("scheme_version") or "")
+            == entry.scheme_version
+            and str(row.get("target_tenor") or "") == entry.target_tenor
+            and int(row.get("horizon") or 0) == entry.horizon
+            and row.get("backtest_run_id") is not None
+        ]
+        if not products:
+            continue
+        try:
+            run_ids = {int(row["backtest_run_id"]) for row in products}
+            if len(run_ids) != 1:
+                raise ValueError("expected one immutable backtest run")
+            run_id = next(iter(run_ids))
+            if run_id in matches:
+                raise ValueError("duplicate immutable backtest run")
+            run = runs.get(run_id)
+            version = versions.get((entry.scheme_id, entry.scheme_version))
+            sources = sources_by_run.get(run_id, [])
+            if run is None or version is None:
+                raise ValueError("run or version evidence is missing")
+            if (
+                str(run.get("scheme_id") or "") != entry.scheme_id
+                or run.get("status") != "success"
+                or run.get("benchmark_id") != entry.benchmark_id
+                or run.get("code_hash") is not None
+                or run.get("config_hash") is not None
+                or run.get("input_artifact_hash") is not None
+            ):
+                raise ValueError("legacy run identity changed")
+            if (
+                version.get("runtime_type") != "blackbox_v2"
+                or version.get("data_snapshot_id") != entry.input_snapshot_id
+                or version.get("code_hash") != entry.code_hash
+                or version.get("config_hash") != entry.config_hash
+                or version.get("manifest_hash") != entry.manifest_hash
+            ):
+                raise ValueError("legacy exact version evidence changed")
+            summary = _json_mapping(run.get("summary"), field="backtest summary")
+            if (
+                summary.get("scheme_version") != entry.scheme_version
+                or summary.get("data_snapshot_id")
+                != entry.input_snapshot_id
+                or summary.get("manifest_hash") is not None
+                or _canonical_json_sha256(summary)
+                != entry.backtest_summary_sha256
+            ):
+                raise ValueError("legacy backtest summary changed")
+            summary_counts = (
+                summary.get("raw_row_count"),
+                summary.get("row_count"),
+                summary.get("persisted_prediction_count"),
+                (
+                    summary.get("evaluation_filter", {}).get(
+                        "included_row_count"
+                    )
+                    if isinstance(summary.get("evaluation_filter"), Mapping)
+                    else None
+                ),
+            )
+            if summary_counts != (entry.expected_fact_count,) * 4:
+                raise ValueError("legacy backtest summary count changed")
+            if (
+                len(products) != entry.expected_fact_count
+                or len(sources) != entry.expected_fact_count
+            ):
+                raise ValueError("legacy backtest fact count changed")
+            source_facts = sorted(
+                (_legacy_fact(row, product=False) for row in sources),
+                key=_legacy_fact_sort_key,
+            )
+            product_facts = sorted(
+                (
+                    {
+                        **_legacy_fact(row, product=True),
+                        "scheme_version": _required_text(
+                            row.get("scheme_version"),
+                            field="prediction exact",
+                        ),
+                    }
+                    for row in products
+                ),
+                key=_legacy_fact_sort_key,
+            )
+            comparable_products = [
+                {
+                    key: value
+                    for key, value in fact.items()
+                    if key != "scheme_version"
+                }
+                for fact in product_facts
+            ]
+            if (
+                _canonical_json_sha256(source_facts)
+                != entry.backtest_facts_sha256
+                or _canonical_json_sha256(product_facts)
+                != entry.product_facts_sha256
+                or source_facts != comparable_products
+            ):
+                raise ValueError("legacy backtest facts changed")
+        except (DataConsistencyError, TypeError, ValueError) as exc:
+            raise DataConsistencyError(
+                "legacy backtest lineage evidence drift: "
+                f"scheme_id={entry.scheme_id} exact={entry.scheme_version}: "
+                f"{exc}"
+            ) from exc
+        matches[run_id] = _LegacyBacktestLineageMatch(
+            entry=entry,
+            backtest_run_id=run_id,
+        )
+    return matches
+
+
 def _legacy_fact_sort_key(fact: Mapping[str, Any]) -> tuple[Any, ...]:
     return (
         fact["target_tenor"],
@@ -1496,6 +1678,24 @@ def _legacy_migration_evidence(
             ),
         }
         for _, match in sorted(matches.items())
+    ]
+
+
+def _legacy_backtest_lineage_evidence(
+    matches: Mapping[int, _LegacyBacktestLineageMatch],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "scheme_id": match.entry.scheme_id,
+            "scheme_version": match.entry.scheme_version,
+            "backtest_run_id": match.backtest_run_id,
+            "benchmark_id": match.entry.benchmark_id,
+            "input_snapshot_id": match.entry.input_snapshot_id,
+            "fact_count": match.entry.expected_fact_count,
+        }
+        for match in sorted(
+            matches.values(), key=lambda item: item.backtest_run_id
+        )
     ]
 
 
@@ -1636,7 +1836,10 @@ def validate_and_join_facts(
                     f"prediction references missing live run: {business_key!r}"
                 )
             live_run = live_runs[live_run_id]
-            if live_run.get("scheme_id") != scheme_id:
+            lineage_scheme_id = str(
+                row.get("lineage_scheme_id") or scheme_id
+            )
+            if live_run.get("scheme_id") != lineage_scheme_id:
                 raise DataConsistencyError(
                     f"prediction references another scheme's live run: {business_key!r}"
                 )
@@ -2251,6 +2454,15 @@ def _capture_snapshot(
                 monotonic=monotonic,
             )
         )
+        prediction_rows, replaced_live_run_ids = (
+            _project_snapshot_history_replacements(
+                connection,
+                registry_rows,
+                prediction_rows,
+                deadline=deadline,
+                monotonic=monotonic,
+            )
+        )
         actual_rows = tuple(
             dict(row)
             for row in _read_actuals(
@@ -2282,6 +2494,9 @@ def _capture_snapshot(
             sorted({str(row["base_scheme_id"]) for row in registry_rows}),
             deadline=deadline,
             monotonic=monotonic,
+        )
+        authoritative_live_ids = sorted(
+            set(authoritative_live_ids) - replaced_live_run_ids
         )
         requested_live_ids = sorted(
             set(requested_live_ids) | set(authoritative_live_ids)
@@ -2319,7 +2534,10 @@ def _capture_snapshot(
             )
         )
         scheme_versions = {
-                (str(row["scheme_id"]), str(row.get("scheme_version") or ""))
+                (
+                    str(row.get("lineage_scheme_id") or row["scheme_id"]),
+                    str(row.get("scheme_version") or ""),
+                )
                 for row in prediction_rows
             }
         for run in backtest_runs.values():
@@ -2474,6 +2692,160 @@ def _read_predictions(
             ).mappings()
         )
     return rows
+
+
+def _project_snapshot_history_replacements(
+    connection: Connection,
+    registry_rows: Sequence[Mapping[str, Any]],
+    prediction_rows: Sequence[Mapping[str, Any]],
+    *,
+    deadline: float | None,
+    monotonic: Callable[[], float],
+) -> tuple[tuple[dict[str, Any], ...], frozenset[int]]:
+    """按同一精确合同投影已验证替代事实；目标机无来源时保持原样。"""
+    active_scopes = {
+        (
+            str(row["base_scheme_id"]),
+            str(row["target_tenor"]),
+            int(row["horizon"]),
+        )
+        for row in registry_rows
+    }
+    entries = load_legacy_prediction_migrations(PROJECT_ROOT)
+    corrected_by_identity = {
+        (item.source_scheme_id, item.designated_exact): item
+        for item in load_legacy_corrected_exact_evidence(PROJECT_ROOT)
+    }
+    projected_rows = [dict(row) for row in prediction_rows]
+    replaced_live_run_ids: set[int] = set()
+    for entry in entries:
+        scope = (
+            entry.prediction_scheme_id,
+            entry.target_tenor,
+            entry.horizon,
+        )
+        if scope not in active_scopes:
+            continue
+        corrected = corrected_by_identity.get(
+            (entry.designated_source_scheme_id, entry.designated_exact)
+        )
+        if corrected is None:
+            raise DataConsistencyError(
+                "historical replacement corrected evidence is missing"
+            )
+        source_identity = _execute_budgeted(
+            connection,
+            text(
+                "SELECT r.base_scheme_id, r.status AS registry_status, "
+                "v.runtime_type, v.status AS version_status, v.code_hash, "
+                "v.config_hash, v.manifest_hash "
+                "FROM t_scheme_registry r "
+                "JOIN t_scheme_versions v "
+                "ON v.scheme_id = r.base_scheme_id "
+                "AND v.scheme_version = :source_exact "
+                "WHERE r.scheme_id = :source_registry_scheme_id"
+            ),
+            {
+                "source_registry_scheme_id": corrected.source_registry_scheme_id,
+                "source_exact": entry.designated_exact,
+            },
+            deadline=deadline,
+            monotonic=monotonic,
+        ).mappings().one_or_none()
+        if source_identity is None:
+            orphan_count = _execute_budgeted(
+                connection,
+                text(
+                    "SELECT "
+                    "(SELECT COUNT(*) FROM t_scheme_versions "
+                    " WHERE scheme_id = :source_scheme_id "
+                    " AND scheme_version = :source_exact) + "
+                    "(SELECT COUNT(*) FROM t_scheme_predictions "
+                    " WHERE scheme_id = :source_scheme_id "
+                    " AND scheme_version = :source_exact)"
+                ),
+                {
+                    "source_scheme_id": entry.designated_source_scheme_id,
+                    "source_exact": entry.designated_exact,
+                },
+                deadline=deadline,
+                monotonic=monotonic,
+            ).scalar_one()
+            if int(orphan_count or 0):
+                raise DataConsistencyError(
+                    "historical replacement source identity is incomplete"
+                )
+            continue
+        if dict(source_identity) != {
+            "base_scheme_id": entry.designated_source_scheme_id,
+            "registry_status": "archived",
+            "runtime_type": "blackbox_v2",
+            "version_status": "retired",
+            "code_hash": entry.designated_code_hash,
+            "config_hash": entry.designated_config_hash,
+            "manifest_hash": entry.designated_manifest_hash,
+        }:
+            raise DataConsistencyError(
+                "historical replacement source identity changed"
+            )
+        source_rows = _read_predictions(
+            connection,
+            [
+                (
+                    entry.designated_source_scheme_id,
+                    entry.target_tenor,
+                    entry.horizon,
+                )
+            ],
+            deadline=deadline,
+            monotonic=monotonic,
+        )
+        source_rows = [
+            row
+            for row in source_rows
+            if str(row.get("scheme_version") or "") == entry.designated_exact
+        ]
+        products = [
+            row
+            for row in projected_rows
+            if (
+                str(row["scheme_id"]),
+                str(row["target_tenor"]),
+                int(row["horizon"]),
+            )
+            == scope
+        ]
+        try:
+            projection = resolve_prediction_history_projection(
+                products,
+                source_rows,
+                entry=entry,
+                corrected=corrected,
+            )
+        except PredictionHistoryReplacementError as exc:
+            raise DataConsistencyError(
+                f"historical replacement evidence drift: {exc}"
+            ) from exc
+        if projection is None:
+            continue
+        excluded = projection.excluded_product_ids
+        replaced_live_run_ids.update(projection.deletable_live_run_ids)
+        projected_rows = [
+            row
+            for row in projected_rows
+            if int(row["id"]) not in excluded
+        ]
+        projected_rows.extend(projection.source_rows)
+    projected_rows.sort(
+        key=lambda row: (
+            str(row["scheme_id"]),
+            str(row["target_tenor"]),
+            int(row["horizon"]),
+            str(row["target_date"]),
+            int(row["id"]),
+        )
+    )
+    return tuple(projected_rows), frozenset(replaced_live_run_ids)
 
 
 def _read_actuals(
@@ -2681,7 +3053,7 @@ def _read_references(
         )
     elif table == "t_backtest_runs":
         selected = (
-            f"{column}, scheme_id, status, code_hash, config_hash, "
+            f"{column}, benchmark_id, scheme_id, status, code_hash, config_hash, "
             "input_artifact_hash, summary"
         )
     else:

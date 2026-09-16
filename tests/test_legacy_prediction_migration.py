@@ -31,6 +31,11 @@ def _entry() -> dict[str, object]:
         "product_facts_sha256": "1" * 64,
         "target_contract_mismatch_count": 14,
         "target_contract_mismatch_sha256": "2" * 64,
+        "live_target_date_from": "2026-06-01",
+        "live_target_date_through": "2026-09-17",
+        "expected_live_fact_count": 78,
+        "designated_live_facts_sha256": "3" * 64,
+        "product_live_facts_sha256": "3" * 64,
         "reason": "Approved immutable migration evidence.",
     }
 
@@ -61,6 +66,7 @@ def test_loads_precise_legacy_prediction_migration(tmp_path: Path) -> None:
     assert entry.designated_exact == "0123456789ab"
     assert entry.expected_fact_count == 333
     assert entry.target_contract_mismatch_count == 14
+    assert entry.expected_live_fact_count == 78
 
 
 def test_rejects_duplicate_or_non_exact_migration_entries(tmp_path: Path) -> None:

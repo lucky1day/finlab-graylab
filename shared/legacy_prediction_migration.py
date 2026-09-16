@@ -30,6 +30,11 @@ _ENTRY_FIELDS = {
     "product_facts_sha256",
     "target_contract_mismatch_count",
     "target_contract_mismatch_sha256",
+    "live_target_date_from",
+    "live_target_date_through",
+    "expected_live_fact_count",
+    "designated_live_facts_sha256",
+    "product_live_facts_sha256",
     "reason",
 }
 
@@ -56,6 +61,11 @@ class LegacyPredictionMigration:
     product_facts_sha256: str
     target_contract_mismatch_count: int
     target_contract_mismatch_sha256: str
+    live_target_date_from: str
+    live_target_date_through: str
+    expected_live_fact_count: int
+    designated_live_facts_sha256: str
+    product_live_facts_sha256: str
     reason: str
 
 
@@ -177,6 +187,8 @@ def _valid_entry(entry: LegacyPredictionMigration) -> bool:
         entry.source_facts_sha256,
         entry.product_facts_sha256,
         entry.target_contract_mismatch_sha256,
+        entry.designated_live_facts_sha256,
+        entry.product_live_facts_sha256,
     )
     return (
         all(
@@ -208,6 +220,18 @@ def _valid_entry(entry: LegacyPredictionMigration) -> bool:
         and isinstance(entry.target_contract_mismatch_count, int)
         and not isinstance(entry.target_contract_mismatch_count, bool)
         and 0 <= entry.target_contract_mismatch_count <= entry.expected_fact_count
+        and isinstance(entry.expected_live_fact_count, int)
+        and not isinstance(entry.expected_live_fact_count, bool)
+        and entry.expected_live_fact_count > 0
+        and all(
+            isinstance(value, str)
+            and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value)
+            for value in (
+                entry.live_target_date_from,
+                entry.live_target_date_through,
+            )
+        )
+        and entry.live_target_date_from <= entry.live_target_date_through
         and isinstance(entry.reason, str)
         and bool(entry.reason.strip())
         and entry.reason == entry.reason.strip()

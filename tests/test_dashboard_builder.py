@@ -296,11 +296,12 @@ def test_summary_streams_across_fetch_boundaries_without_changing_counts(
     monkeypatch.setattr(
         dashboard,
         "iter_summary_product_predictions",
-        lambda connection, registry_rows, *, stats: (
+        lambda connection, registry_rows, *, stats, replacement_plan=None: (
             iter_summary_product_predictions(
                 connection,
                 registry_rows,
                 stats=stats,
+                replacement_plan=replacement_plan,
                 fetch_rows=2,
             )
         ),
