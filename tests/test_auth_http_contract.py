@@ -15,7 +15,10 @@ from backend.auth import repository, routes
 from backend.auth.repository import AuthUser
 from backend.auth.service import AuthError, AuthService, LoginResult
 from backend.main import app
-from backend.request_limits import AUTH_JSON_WRITE_PATHS
+from backend.request_limits import (
+    AUTH_JSON_WRITE_PATHS,
+    AuthJSONBodyLimitMiddleware,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -41,6 +44,27 @@ def _chunked_asgi_request(
     messages: list[dict],
 ) -> tuple[int, dict[str, str], bytes]:
     """直接驱动 ASGI receive，覆盖 HTTP 客户端真实分块语义。"""
+    sent = _drive_chunked_asgi(path, headers=headers, messages=messages)
+    start = next(item for item in sent if item["type"] == "http.response.start")
+    response_headers = {
+        key.decode("latin-1"): value.decode("latin-1")
+        for key, value in start.get("headers", [])
+    }
+    body = b"".join(
+        item.get("body", b"")
+        for item in sent
+        if item["type"] == "http.response.body"
+    )
+    return start["status"], response_headers, body
+
+
+def _drive_chunked_asgi(
+    path: str,
+    *,
+    headers: list[tuple[bytes, bytes]],
+    messages: list[dict],
+) -> list[dict]:
+    """返回直接驱动 ASGI 后发送的原始消息。"""
     sent: list[dict] = []
     pending = list(messages)
 
@@ -73,17 +97,7 @@ def _chunked_asgi_request(
         )
 
     asyncio.run(invoke())
-    start = next(item for item in sent if item["type"] == "http.response.start")
-    response_headers = {
-        key.decode("latin-1"): value.decode("latin-1")
-        for key, value in start.get("headers", [])
-    }
-    body = b"".join(
-        item.get("body", b"")
-        for item in sent
-        if item["type"] == "http.response.body"
-    )
-    return start["status"], response_headers, body
+    return sent
 
 
 def _safe_json_headers(
@@ -372,6 +386,41 @@ def test_auth_body_limit_replays_chunked_body_before_login_service(monkeypatch):
     service.login.assert_called_once_with("admin", "Secret123")
 
 
+def test_auth_body_limit_ignores_empty_chunks_and_replays_once():
+    received: list[dict] = []
+
+    async def downstream(_scope, receive, _send):
+        received.append(await receive())
+
+    middleware = AuthJSONBodyLimitMiddleware(downstream)
+    pending = [
+        {"type": "http.request", "body": b"", "more_body": True},
+        {"type": "http.request", "body": b"{", "more_body": True},
+        {"type": "http.request", "body": b"", "more_body": True},
+        {"type": "http.request", "body": b"}", "more_body": False},
+    ]
+
+    async def receive():
+        return pending.pop(0)
+
+    async def invoke():
+        await middleware(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/api/auth/login",
+                "headers": [],
+            },
+            receive,
+            lambda _message: None,
+        )
+
+    asyncio.run(invoke())
+    assert received == [
+        {"type": "http.request", "body": b"{}", "more_body": False}
+    ]
+
+
 @pytest.mark.parametrize(
     "content_length_headers",
     [[], [(b"content-length", b"8192")]],
@@ -494,24 +543,82 @@ def test_auth_body_limit_rejects_content_length_mismatch(
     service.assert_not_called()
 
 
-def test_auth_body_limit_reports_incomplete_client_body_without_service(
-    monkeypatch,
-):
-    service = Mock(side_effect=AssertionError("incomplete body reached service"))
-    monkeypatch.setattr(routes, "_service", service)
+def test_auth_body_limit_stops_on_client_disconnect_without_service():
+    downstream_called = False
+    sent: list[dict] = []
+    pending = [
+        {"type": "http.request", "body": b'{"username":', "more_body": True},
+        {"type": "http.disconnect"},
+    ]
 
-    status, _headers, response_body = _chunked_asgi_request(
-        "/api/auth/login",
-        headers=_safe_json_headers(),
-        messages=[
-            {"type": "http.request", "body": b'{"username":', "more_body": True},
-            {"type": "http.disconnect"},
-        ],
+    async def downstream(_scope, _receive, _send):
+        nonlocal downstream_called
+        downstream_called = True
+
+    async def receive():
+        return pending.pop(0)
+
+    async def send(message):
+        sent.append(message)
+
+    async def invoke():
+        await AuthJSONBodyLimitMiddleware(downstream)(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/api/auth/login",
+                "headers": [],
+            },
+            receive,
+            send,
+        )
+
+    asyncio.run(invoke())
+    assert sent == []
+    assert downstream_called is False
+
+
+def test_auth_body_limit_times_out_slow_body_without_service():
+    downstream_called = False
+    sent: list[dict] = []
+
+    async def downstream(_scope, _receive, _send):
+        nonlocal downstream_called
+        downstream_called = True
+
+    async def receive():
+        await asyncio.sleep(1)
+        return {"type": "http.request", "body": b"{}", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    async def invoke():
+        middleware = AuthJSONBodyLimitMiddleware(
+            downstream,
+            body_read_timeout_seconds=0.01,
+        )
+        await middleware(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/api/auth/login",
+                "headers": [],
+            },
+            receive,
+            send,
+        )
+
+    asyncio.run(invoke())
+    start = next(item for item in sent if item["type"] == "http.response.start")
+    body = b"".join(
+        item.get("body", b"")
+        for item in sent
+        if item["type"] == "http.response.body"
     )
-
-    assert status == 408
-    assert json.loads(response_body) == {"error_code": "request_body_incomplete"}
-    service.assert_not_called()
+    assert start["status"] == 408
+    assert json.loads(body) == {"error_code": "request_body_timeout"}
+    assert downstream_called is False
 
 
 def test_body_limit_does_not_apply_to_non_auth_post(monkeypatch):

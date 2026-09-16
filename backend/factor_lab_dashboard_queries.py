@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -16,6 +17,8 @@ from backend.factor_lab_dashboard_semantics import (
     live_actual_selector,
 )
 
+
+logger = logging.getLogger(__name__)
 
 _ACTUAL_SOURCE_KIND_ORDER = (
     "daily_1d",
@@ -120,6 +123,8 @@ class SummaryPredictionReadStats:
 
     source_rows: int = 0
     fetch_seconds: float = 0.0
+    cleanup_seconds: float = 0.0
+    exit_reason: str = "not_started"
 
 
 def read_bounded_source_rows(
@@ -366,6 +371,8 @@ def iter_summary_product_predictions(
                 request_context.clock() - context_started_at,
             )
 
+    exhausted = False
+    primary_error: BaseException | None = None
     try:
         partitions = result.mappings().partitions(fetch_rows)
         while True:
@@ -379,6 +386,8 @@ def iter_summary_product_predictions(
             try:
                 partition = next(partitions)
             except StopIteration:
+                exhausted = True
+                stats.exit_reason = "exhausted"
                 break
             finally:
                 elapsed = time.perf_counter() - fetch_started_at
@@ -390,8 +399,39 @@ def iter_summary_product_predictions(
                     )
             stats.source_rows += len(partition)
             yield from partition
+    except GeneratorExit as exc:
+        primary_error = exc
+        stats.exit_reason = "generator_closed"
+        raise
+    except BaseException as exc:
+        primary_error = exc
+        stats.exit_reason = f"error:{type(exc).__name__}"
+        raise
     finally:
-        result.close()
+        cleanup_started_at = time.perf_counter()
+        if not exhausted and connection.dialect.name == "mysql":
+            try:
+                connection.invalidate()
+            except Exception as cleanup_error:
+                logger.warning(
+                    "dashboard_stream_invalidate_failed error=%s",
+                    type(cleanup_error).__name__,
+                )
+        try:
+            result.close()
+        except Exception as cleanup_error:
+            logger.warning(
+                "dashboard_stream_result_close_failed exit_reason=%s error=%s",
+                stats.exit_reason,
+                type(cleanup_error).__name__,
+            )
+            if primary_error is None and exhausted:
+                raise
+        finally:
+            stats.cleanup_seconds += max(
+                0.0,
+                time.perf_counter() - cleanup_started_at,
+            )
 
 
 def read_live_actuals(

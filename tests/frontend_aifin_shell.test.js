@@ -246,47 +246,6 @@ test("an old request timeout cannot clear or overwrite a new identity request", 
   harness.hooks.stop();
 });
 
-test("Retry-After delta seconds and HTTP-date are exposed as retry metadata", async () => {
-  const retryDate = new Date(Date.now() + 3000).toUTCString();
-  const values = ["2", retryDate];
-  const harness = createHarness(() => Promise.resolve({
-    ok: false,
-    status: 429,
-    headers: { get: () => values.shift() },
-    json: () => Promise.resolve({ error_code: "rate_limited" })
-  }));
-
-  const beforeDelta = Date.now();
-  await assert.rejects(
-    harness.hooks.fetchJson("/api/factor-lab/dashboard", { timeoutMs: 100 }),
-    (error) => error.retryAfter === "2" && error.retryAfterAt >= beforeDelta + 1900
-  );
-  await assert.rejects(
-    harness.hooks.fetchJson("/api/factor-lab/dashboard", { timeoutMs: 100 }),
-    (error) => error.retryAfter === retryDate && error.retryAfterAt >= Date.parse(retryDate)
-  );
-});
-
-test("invalid HTTP-date is ignored and unsafe delta seconds fail closed", async () => {
-  const values = ["2026-09-16", "99999999999999999999"];
-  const harness = createHarness(() => Promise.resolve({
-    ok: false,
-    status: 429,
-    headers: { get: () => values.shift() },
-    json: () => Promise.resolve({ error_code: "rate_limited" })
-  }));
-
-  await assert.rejects(
-    harness.hooks.fetchJson("/api/factor-lab/dashboard", { timeoutMs: 100 }),
-    (error) => error.retryAfter === "2026-09-16" &&
-      error.retryAfterAt === undefined
-  );
-  await assert.rejects(
-    harness.hooks.fetchJson("/api/factor-lab/dashboard", { timeoutMs: 100 }),
-    (error) => error.retryAfterAt === Infinity
-  );
-});
-
 test("automatic retry is not scheduled before Retry-After", async () => {
   const harness = createHarness(() => Promise.resolve({
     ok: false,

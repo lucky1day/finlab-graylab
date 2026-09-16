@@ -17,6 +17,7 @@ from backend.factor_lab_dashboard_queries import (
     SummaryPredictionReadStats,
     iter_summary_product_predictions,
 )
+from backend.factor_lab_dashboard import dashboard_read_connection
 from scheduler.repository import ActualWriteStats, upsert_actuals_detailed
 from shared.models import ActualRecord
 
@@ -87,6 +88,75 @@ def test_summary_prediction_stream_uses_python_compatible_binary_order(
     assert [row["scheme_id"] for row in rows] == sorted(
         row["base_scheme_id"] for row in registry_rows
     )
+
+
+def test_summary_prediction_stream_invalidates_early_exit_and_pool_recovers(
+    mysql_test_engine: Engine,
+) -> None:
+    """未排空服务端游标不得回池，物理丢弃后下一连接仍可用。"""
+    scheme_id = f"stream_cleanup_{uuid.uuid4().hex[:12]}"
+    with mysql_test_engine.begin() as connection:
+        run_id = connection.execute(
+            text(
+                """
+                INSERT INTO t_scheme_runs (scheme_id, predict_date, status)
+                VALUES (:scheme_id, '2095-02-01', 'success')
+                """
+            ),
+            {"scheme_id": scheme_id},
+        ).lastrowid
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_scheme_predictions
+                    (run_id, scheme_id, target_tenor, horizon, predict_date,
+                     feature_date, target_date, predicted_direction)
+                VALUES
+                    (:run_id, :scheme_id, '5Y', 1, '2095-02-01',
+                     '2095-01-31', '2095-02-02', 1),
+                    (:run_id, :scheme_id, '5Y', 1, '2095-02-02',
+                     '2095-02-01', '2095-02-03', -1)
+                """
+            ),
+            {"run_id": run_id, "scheme_id": scheme_id},
+        )
+
+    engine = create_engine(
+        mysql_test_engine.url,
+        future=True,
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout=0.2,
+    )
+    stats = SummaryPredictionReadStats()
+    started = time.monotonic()
+    try:
+        with dashboard_read_connection(engine) as connection:
+            rows = iter_summary_product_predictions(
+                connection,
+                [{"base_scheme_id": scheme_id, "target_tenor": "5Y", "horizon": 1}],
+                stats=stats,
+                fetch_rows=1,
+            )
+            assert next(rows)["scheme_id"] == scheme_id
+            rows.close()
+            assert connection.invalidated is True
+        assert time.monotonic() - started < 1.0
+        assert stats.exit_reason == "generator_closed"
+        assert stats.cleanup_seconds < 1.0
+        with engine.connect() as recovered:
+            assert recovered.execute(text("SELECT 1")).scalar_one() == 1
+    finally:
+        engine.dispose()
+        with mysql_test_engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM t_scheme_predictions WHERE run_id = :run_id"),
+                {"run_id": run_id},
+            )
+            connection.execute(
+                text("DELETE FROM t_scheme_runs WHERE id = :run_id"),
+                {"run_id": run_id},
+            )
 
 
 def test_http_sized_pool_times_out_and_recovers(mysql_test_engine: Engine) -> None:
@@ -182,9 +252,31 @@ def test_session_read_does_not_wait_for_user_write_lock(
 def test_actual_repeat_write_is_a_mysql_noop(mysql_test_engine: Engine) -> None:
     trade_date = f"2098-{uuid.uuid4().int % 12 + 1:02d}-15"
     record = ActualRecord("10Y", trade_date, 1.91, -1, 1)
-    assert upsert_actuals_detailed(mysql_test_engine, [record]) == ActualWriteStats(
-        attempted=1,
-        inserted=1,
+    statements: list[str] = []
+
+    def capture_statement(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        statements.append(" ".join(statement.split()).upper())
+
+    event.listen(mysql_test_engine, "after_cursor_execute", capture_statement)
+    try:
+        assert upsert_actuals_detailed(
+            mysql_test_engine, [record]
+        ) == ActualWriteStats(
+            attempted=1,
+            inserted=1,
+        )
+    finally:
+        event.remove(mysql_test_engine, "after_cursor_execute", capture_statement)
+    assert not any(
+        statement.startswith("SELECT LAST_INSERT_ID()")
+        for statement in statements
     )
     with mysql_test_engine.begin() as connection:
         connection.execute(

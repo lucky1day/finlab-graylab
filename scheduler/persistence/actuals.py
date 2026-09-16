@@ -54,7 +54,7 @@ def actual_comparison_value(column: str, value: object) -> object:
     return value
 
 
-def classify_actual_rows_conn(
+def claim_and_classify_actual_rows_conn(
     conn: Connection,
     *,
     table: str,
@@ -152,10 +152,8 @@ def classify_actual_rows_conn(
         )
         duplicate_query_keys: list[tuple[object, ...]] = []
         for key, raw in missing_rows:
-            conn.execute(claim_statement, dict(raw))
-            claimed_id = int(
-                conn.execute(text("SELECT LAST_INSERT_ID()")).scalar_one()
-            )
+            claim_result = conn.execute(claim_statement, dict(raw))
+            claimed_id = int(claim_result.lastrowid or 0)
             if claimed_id > 0:
                 inserted_keys.add(key)
             else:
@@ -247,7 +245,7 @@ def _upsert_actuals_detailed_conn(
     ]
     if not rows:
         return ActualWriteStats()
-    stats, write_rows = classify_actual_rows_conn(
+    stats, write_rows = claim_and_classify_actual_rows_conn(
         conn,
         table="t_scheme_actuals",
         rows=rows,
@@ -521,7 +519,7 @@ def upsert_weekly_actuals_detailed(
     )
     with engine.begin() as conn:
         _assert_weekly_actuals_target_rule_unique_key(conn)
-        stats, write_rows = classify_actual_rows_conn(
+        stats, write_rows = claim_and_classify_actual_rows_conn(
             conn,
             table="t_scheme_weekly_actuals",
             rows=rows,
@@ -601,7 +599,7 @@ def upsert_monthly_actuals_detailed(
             """
         )
     with engine.begin() as conn:
-        stats, write_rows = classify_actual_rows_conn(
+        stats, write_rows = claim_and_classify_actual_rows_conn(
             conn,
             table="t_scheme_monthly_actuals",
             rows=rows,
@@ -673,7 +671,7 @@ def upsert_period_average_actuals_detailed(
         """
     )
     with engine.begin() as conn:
-        stats, write_rows = classify_actual_rows_conn(
+        stats, write_rows = claim_and_classify_actual_rows_conn(
             conn,
             table="t_scheme_period_average_actuals",
             rows=rows,

@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+import time
+from typing import Callable
+
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from backend.db import current_http_request_context
+
 
 MAX_AUTH_JSON_BODY_BYTES = 8 * 1024
+AUTH_BODY_READ_TIMEOUT_SECONDS = 2.0
 AUTH_JSON_WRITE_PATHS = frozenset(
     {
         "/api/auth/login",
@@ -66,9 +73,13 @@ class AuthJSONBodyLimitMiddleware:
         app: ASGIApp,
         *,
         max_body_bytes: int = MAX_AUTH_JSON_BODY_BYTES,
+        body_read_timeout_seconds: float = AUTH_BODY_READ_TIMEOUT_SECONDS,
+        clock: Callable[[], float] = time.perf_counter,
     ) -> None:
         self.app = app
         self.max_body_bytes = max_body_bytes
+        self.body_read_timeout_seconds = body_read_timeout_seconds
+        self.clock = clock
 
     async def __call__(
         self,
@@ -104,10 +115,41 @@ class AuthJSONBodyLimitMiddleware:
             )
             return
 
-        messages: list[Message] = []
-        actual_length = 0
+        request_context = current_http_request_context()
+        started_at = (
+            request_context.started_at
+            if request_context is not None
+            else self.clock()
+        )
+        deadline = started_at + self.body_read_timeout_seconds
+        if request_context is not None:
+            deadline = min(deadline, request_context.deadline_at)
+
+        body_buffer = bytearray()
         while True:
-            message = await receive()
+            remaining = deadline - self.clock()
+            if remaining <= 0:
+                await _send_error(
+                    scope,
+                    receive,
+                    send,
+                    status_code=408,
+                    error_code="request_body_timeout",
+                )
+                return
+            try:
+                message = await asyncio.wait_for(receive(), timeout=remaining)
+            except asyncio.TimeoutError:
+                await _send_error(
+                    scope,
+                    receive,
+                    send,
+                    status_code=408,
+                    error_code="request_body_timeout",
+                )
+                return
+            if message.get("type") == "http.disconnect":
+                return
             if message.get("type") != "http.request":
                 await _send_error(
                     scope,
@@ -118,8 +160,9 @@ class AuthJSONBodyLimitMiddleware:
                 )
                 return
             body = message.get("body", b"")
-            actual_length += len(body)
-            if actual_length > self.max_body_bytes:
+            if body:
+                body_buffer.extend(body)
+            if len(body_buffer) > self.max_body_bytes:
                 await _send_error(
                     scope,
                     receive,
@@ -128,10 +171,10 @@ class AuthJSONBodyLimitMiddleware:
                     error_code="request_body_too_large",
                 )
                 return
-            messages.append(message)
             if not message.get("more_body", False):
                 break
 
+        actual_length = len(body_buffer)
         if declared_length is not None and actual_length != declared_length:
             await _send_error(
                 scope,
@@ -146,9 +189,17 @@ class AuthJSONBodyLimitMiddleware:
             )
             return
 
+        replayed = False
+
         async def replay_receive() -> Message:
-            if messages:
-                return messages.pop(0)
-            return await receive()
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {
+                    "type": "http.request",
+                    "body": bytes(body_buffer),
+                    "more_body": False,
+                }
+            return {"type": "http.disconnect"}
 
         await self.app(scope, replay_receive, send)

@@ -157,7 +157,7 @@ def dashboard_read_connection(engine: Engine) -> Iterator[Connection]:
         yield connection
     finally:
         try:
-            if is_mysql:
+            if is_mysql and not connection.invalidated:
                 connection.rollback()
             elif transaction is not None and transaction.is_active:
                 transaction.rollback()
@@ -481,6 +481,8 @@ def _build_summary(engine: Engine) -> dict[str, Any]:
             "backtest_row_count": backtest_row_count,
             "detail_row_count": live_row_count + backtest_row_count,
             "prediction_source_row_count": prediction_read_stats.source_rows,
+            "prediction_cleanup_seconds": prediction_read_stats.cleanup_seconds,
+            "prediction_exit_reason": prediction_read_stats.exit_reason,
             "history_prediction_rows_excluded_before_policy_start": (
                 history_prediction_rows_excluded
             ),

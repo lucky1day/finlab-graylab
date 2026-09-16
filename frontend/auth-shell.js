@@ -6,7 +6,9 @@
     accountMenuOpen: false,
     userMoreMenuId: null,
     userMoreMenuButton: null,
-    users: []
+    users: [],
+    identitySeq: 0,
+    activeRequests: new Set()
   };
 
   var authGate = document.getElementById("authGate");
@@ -41,6 +43,9 @@
       forbidden: "没有权限执行此操作",
       user_not_found: "用户不存在"
     };
+    if (errorCode === "request_outcome_unknown") {
+      return "请求结果待确认，请刷新或重新登录后核验";
+    }
     return messages[errorCode] || "操作失败，请稍后重试";
   }
 
@@ -50,29 +55,93 @@
     host.hidden = !message;
   }
 
+  if (!window.BondFactorLabHttp) {
+    throw new Error("factor-lab-http.js must load before auth-shell.js");
+  }
+
+  var authHttpClient = window.BondFactorLabHttp.createJsonClient({
+    fetch: function (url, options) { return window.fetch(url, options); },
+    resolveUrl: apiUrl,
+    AbortController: window.AbortController,
+    setTimeout: function (callback, delay) { return window.setTimeout(callback, delay); },
+    clearTimeout: function (token) { window.clearTimeout(token); },
+    defaultTimeoutMs: 6000,
+    onUnauthorized: function () { showLogin(); }
+  });
+
+  function abortIdentityRequests(reason) {
+    state.activeRequests.forEach(function (controller) {
+      if (!controller.signal.aborted) controller.abort(reason);
+    });
+    state.activeRequests.clear();
+  }
+
+  function advanceIdentity(reason) {
+    state.identitySeq += 1;
+    abortIdentityRequests(reason);
+  }
+
+  function validUser(value) {
+    return value && typeof value === "object" &&
+      Number.isInteger(value.id) && value.id > 0 &&
+      typeof value.username === "string" && value.username.length > 0 &&
+      (value.role === "admin" || value.role === "user") &&
+      (value.status === "active" || value.status === "disabled") &&
+      typeof value.is_protected_admin === "boolean" &&
+      typeof value.must_change_password === "boolean" &&
+      typeof value.created_at === "string";
+  }
+
+  function validateAuthPayload(path, method, payload) {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      throw new Error("invalid_auth_payload");
+    }
+    if (path === "/api/admin/users" && method === "GET") {
+      if (!Array.isArray(payload.users) || !payload.users.every(validUser)) {
+        throw new Error("invalid_auth_payload");
+      }
+      return payload;
+    }
+    if (path === "/api/auth/logout" || path === "/api/auth/change-password") {
+      return payload;
+    }
+    if (!validUser(payload.user)) throw new Error("invalid_auth_payload");
+    return payload;
+  }
+
   function apiRequest(path, options) {
     var requestOptions = options || {};
-    var fetchOptions = {
+    var identitySeq = state.identitySeq;
+    var controller = new window.AbortController();
+    state.activeRequests.add(controller);
+    var clientOptions = {
       method: requestOptions.method || "GET",
-      cache: "no-store",
-      credentials: "same-origin",
-      headers: { Accept: "application/json" }
+      signal: controller.signal,
+      handleUnauthorized: path !== "/api/auth/login"
     };
     if (Object.prototype.hasOwnProperty.call(requestOptions, "body")) {
-      fetchOptions.headers["Content-Type"] = "application/json";
-      fetchOptions.body = JSON.stringify(requestOptions.body);
+      clientOptions.body = requestOptions.body;
     }
-    return fetch(apiUrl(path), fetchOptions).then(function (response) {
-      return response.json().catch(function () { return {}; }).then(function (body) {
-        if (response.ok) return body;
-        var error = new Error(body.error_code || "request_failed");
-        error.errorCode = body.error_code || "request_failed";
-        error.status = response.status;
-        if (response.status === 401 && path !== "/api/auth/login") {
-          showLogin();
-        }
-        throw error;
-      });
+    return authHttpClient(path, clientOptions).then(function (payload) {
+      if (identitySeq !== state.identitySeq) {
+        var stale = new Error("stale identity response");
+        stale.name = "AbortError";
+        stale.code = "request_aborted";
+        throw stale;
+      }
+      return validateAuthPayload(path, clientOptions.method, payload);
+    }).catch(function (error) {
+      if (error && error.code === "request_timeout" &&
+          (requestOptions.method || "GET") !== "GET") {
+        error.errorCode = "request_outcome_unknown";
+      } else if (error && error.body && error.body.error_code) {
+        error.errorCode = error.body.error_code;
+      } else if (error && !error.errorCode) {
+        error.errorCode = "request_failed";
+      }
+      throw error;
+    }).finally(function () {
+      state.activeRequests.delete(controller);
     });
   }
 
@@ -111,8 +180,13 @@
   }
 
   function showLogin(message) {
+    advanceIdentity("identity-changed");
     state.user = null;
     state.users = [];
+    var usersBody = document.getElementById("authUsersBody");
+    if (usersBody) usersBody.textContent = "";
+    var usersCount = document.getElementById("authUsersCount");
+    if (usersCount) usersCount.textContent = "0 个账户";
     showGate(loginView);
     var form = document.getElementById("authLoginForm");
     if (form) form.reset();
@@ -124,6 +198,8 @@
   }
 
   function showAuthenticated(user) {
+    if (!validUser(user)) throw new Error("invalid_auth_payload");
+    advanceIdentity("identity-changed");
     state.user = user;
     authGate.hidden = true;
     shell.hidden = false;
@@ -325,9 +401,10 @@
   function loadUsers() {
     emitError(document.getElementById("authUsersError"), "");
     return apiRequest("/api/admin/users").then(function (payload) {
-      state.users = payload.users || [];
+      state.users = payload.users;
       renderUsers();
     }).catch(function (error) {
+      if (error.code === "request_aborted" || error.status === 401) return;
       emitError(document.getElementById("authUsersError"), errorMessage(error.errorCode));
     });
   }
@@ -521,8 +598,9 @@
 
   document.getElementById("authLogoutButton").addEventListener("click", function () {
     closeAccountMenu(false);
+    showLogin();
     apiRequest("/api/auth/logout", { method: "POST", body: {} })
-      .then(function () { showLogin(); })
+      .then(function () {})
       .catch(function (error) {
         if (error.status !== 401) emitError(document.getElementById("authLoginError"), errorMessage(error.errorCode));
       });
@@ -722,6 +800,22 @@
   window.addEventListener("bfl:auth-required", function () {
     showLogin();
   });
+
+  if (window.__BFL_ENABLE_AUTH_TEST_HOOKS__ === true) {
+    window.__BFL_AUTH_TEST_HOOKS__ = Object.freeze({
+      apiRequest: apiRequest,
+      showLogin: showLogin,
+      showAuthenticated: showAuthenticated,
+      state: function () {
+        return {
+          user: state.user,
+          users: state.users.slice(),
+          identitySeq: state.identitySeq,
+          activeRequests: state.activeRequests.size
+        };
+      }
+    });
+  }
 
   showGate(loadingView);
   apiRequest("/api/auth/me").then(function (payload) {

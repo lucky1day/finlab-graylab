@@ -26,7 +26,6 @@ from scheduler.persistence.actuals import (
     _upsert_actuals_conn,
     _upsert_actuals_detailed_conn,
     actual_comparison_value as _actual_comparison_value,
-    classify_actual_rows_conn as _classify_actual_rows_conn,
     delete_actuals_after_source_watermark,
     plan_actuals_tail_repair,
     repair_actuals_after_source_watermark,
