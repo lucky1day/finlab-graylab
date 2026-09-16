@@ -253,3 +253,32 @@ test("showing the login gate clears identity-owned dashboard state", async () =>
   assert.equal(harness.getElement("authUsersBody").textContent, "");
   assert.ok(harness.dashboardCounts().stops >= 1);
 });
+
+test("logout keeps login unavailable until its Set-Cookie response completes", async () => {
+  let resolveLogout;
+  const harness = createHarness((url) => {
+    if (url.endsWith("/api/auth/me")) {
+      return Promise.resolve(jsonResponse(200, { user: validUser() }));
+    }
+    if (url.endsWith("/api/auth/logout")) {
+      return new Promise((resolve) => { resolveLogout = resolve; });
+    }
+    throw new Error("unexpected request");
+  });
+  await flush();
+  await flush();
+
+  harness.getElement("authLogoutButton")._listeners.get("click")();
+  await flush();
+
+  assert.equal(harness.getElement("authLoading").hidden, false);
+  assert.equal(harness.getElement("authLogin").hidden, true);
+  assert.equal(harness.hooks.state().user, null);
+
+  resolveLogout(jsonResponse(200, { status: "ok" }));
+  await flush();
+  await flush();
+
+  assert.equal(harness.getElement("authLoading").hidden, true);
+  assert.equal(harness.getElement("authLogin").hidden, false);
+});

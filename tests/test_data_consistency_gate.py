@@ -13,11 +13,13 @@ from sqlalchemy import create_engine, event, text
 from harness.context import GateContext
 from harness.gates.data_consistency_gate import (
     ConsistencyFact,
+    DataConsistencyAuthorityUnavailable,
     DataConsistencyError,
     DatabaseSnapshot,
     DataConsistencyGate,
     _read_actuals,
     aggregate_display_facts,
+    validate_snapshot_completeness,
     validate_and_join_facts,
 )
 from harness.result import GateStatus
@@ -585,6 +587,38 @@ def test_data_consistency_gate_blocks_without_backtest_authority(
 
     assert result.status is GateStatus.BLOCKED
     assert any("no immutable source predictions" in error for error in result.errors)
+
+
+def test_completeness_blocks_when_an_active_scope_has_no_product_reference() -> None:
+    snapshot = DatabaseSnapshot(
+        registry_rows=(
+            {
+                "scheme_id": "missing_history__h1__5Y",
+                "base_scheme_id": "missing_history",
+                "horizon": 1,
+                "task_type": "T+1",
+                "runtime_type": "blackbox_v2",
+                "frequency": "daily",
+                "target_tenor": "5Y",
+                "status": "active",
+            },
+        ),
+        prediction_rows=(),
+        actual_rows=(),
+        live_runs=(),
+        backtest_runs=(),
+        calendar_rows=_calendar_rows(date(2026, 1, 1), date(2026, 2, 1)),
+        digest="missing-history-authority",
+    )
+
+    with pytest.raises(
+        DataConsistencyAuthorityUnavailable,
+        match="no durable backtest product reference",
+    ):
+        validate_snapshot_completeness(
+            snapshot,
+            display_until="2026-02-01",
+        )
 
 
 def test_actual_snapshot_query_is_shared_by_equivalent_scheme_scope(

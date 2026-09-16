@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import bz2
 import gzip
 import hashlib
 import io
 import json
+import lzma
 import os
 import re
 import subprocess
@@ -66,6 +68,7 @@ _FORBIDDEN_RELEASE_SUFFIXES = frozenset(
 _FORBIDDEN_PACKAGED_DATA_SUFFIXES = frozenset(
     {
         ".7z",
+        ".bz2",
         ".feather",
         ".gz",
         ".joblib",
@@ -79,9 +82,12 @@ _FORBIDDEN_PACKAGED_DATA_SUFFIXES = frozenset(
         ".tar",
         ".tgz",
         ".zip",
+        ".xz",
     }
 )
-_ARCHIVE_SUFFIXES = frozenset({".gz", ".tar", ".tgz", ".zip"})
+_ARCHIVE_SUFFIXES = frozenset(
+    {".bz2", ".gz", ".tar", ".tgz", ".xz", ".zip"}
+)
 _INSTALL_TIME_FILENAMES = frozenset(
     {
         ".bfl-release.env",
@@ -258,6 +264,15 @@ def validate_release_contents(tar_bytes: bytes) -> None:
                 evidence_approval=approval,
             )
             _scan_release_member(relative, payload)
+            if (
+                approval is not None
+                and approval["type"] == "tree"
+                and _looks_like_supported_archive(relative, payload)
+            ):
+                raise ReleaseBuildError(
+                    "source evidence archive requires exact approval: "
+                    f"{relative.as_posix()}"
+                )
             if approval is not None and approval["type"] == "archive":
                 _scan_approved_archive(relative, payload)
 
@@ -307,7 +322,8 @@ def _validate_release_path(
     if (
         evidence_approval is not None
         and evidence_approval["type"] == "tree"
-        and suffix in {".7z", ".gz", ".rar", ".tar", ".tgz", ".zip"}
+        and suffix
+        in {".7z", ".bz2", ".gz", ".rar", ".tar", ".tgz", ".xz", ".zip"}
     ):
         raise ReleaseBuildError(
             f"source evidence archive requires exact approval: {path_text}"
@@ -489,8 +505,15 @@ def _scan_archive_payload(
     try:
         archive = tarfile.open(fileobj=stream, mode="r:*")
     except tarfile.TarError as exc:
-        if path.suffix.lower() == ".gz":
-            _scan_gzip_payload(path, payload, depth=depth, state=state)
+        compression = _standalone_compression(path, payload)
+        if compression is not None:
+            _scan_compressed_payload(
+                path,
+                payload,
+                compression=compression,
+                depth=depth,
+                state=state,
+            )
             return
         raise ReleaseBuildError(
             f"approved source archive format is unsupported: {path}"
@@ -518,20 +541,34 @@ def _scan_archive_payload(
             _scan_archive_child(path / inner, child, depth=depth, state=state)
 
 
-def _scan_gzip_payload(
+def _scan_compressed_payload(
     path: PurePosixPath,
     payload: bytes,
     *,
+    compression: str,
     depth: int,
     state: dict[str, int],
 ) -> None:
     remaining = _MAX_APPROVED_ARCHIVE_EXPANDED_BYTES - state["expanded"]
     try:
-        with gzip.GzipFile(fileobj=io.BytesIO(payload), mode="rb") as source:
-            child = source.read(remaining + 1)
-    except (EOFError, OSError) as exc:
+        if compression == "gzip":
+            with gzip.GzipFile(fileobj=io.BytesIO(payload), mode="rb") as source:
+                child = source.read(remaining + 1)
+        elif compression == "bzip2":
+            decompressor = bz2.BZ2Decompressor()
+            child = decompressor.decompress(payload, max_length=remaining + 1)
+            if not decompressor.eof or decompressor.unused_data:
+                raise ValueError("invalid bzip2 stream")
+        elif compression == "xz":
+            decompressor = lzma.LZMADecompressor(format=lzma.FORMAT_XZ)
+            child = decompressor.decompress(payload, max_length=remaining + 1)
+            if not decompressor.eof or decompressor.unused_data:
+                raise ValueError("invalid xz stream")
+        else:
+            raise ValueError("unsupported compression")
+    except (EOFError, OSError, ValueError, lzma.LZMAError) as exc:
         raise ReleaseBuildError(
-            f"approved source gzip is invalid: {path}"
+            f"approved source compressed stream is invalid: {path}"
         ) from exc
     inner = PurePosixPath(path.stem or "payload")
     _reserve_archive_member(state, len(child), path / inner)
@@ -588,6 +625,8 @@ def _scan_archive_child(
 def _looks_like_supported_archive(path: PurePosixPath, payload: bytes) -> bool:
     if path.suffix.lower() in _ARCHIVE_SUFFIXES:
         return True
+    if _standalone_compression(path, payload) is not None:
+        return True
     stream = io.BytesIO(payload)
     if zipfile.is_zipfile(stream):
         return True
@@ -597,6 +636,20 @@ def _looks_like_supported_archive(path: PurePosixPath, payload: bytes) -> bool:
             return True
     except tarfile.TarError:
         return False
+
+
+def _standalone_compression(
+    path: PurePosixPath,
+    payload: bytes,
+) -> str | None:
+    suffix = path.suffix.lower()
+    if payload.startswith(b"\x1f\x8b") or suffix == ".gz":
+        return "gzip"
+    if payload.startswith(b"BZh") or suffix == ".bz2":
+        return "bzip2"
+    if payload.startswith(b"\xfd7zXZ\x00") or suffix == ".xz":
+        return "xz"
+    return None
 
 
 def _scan_release_member(path: PurePosixPath, payload: bytes) -> None:

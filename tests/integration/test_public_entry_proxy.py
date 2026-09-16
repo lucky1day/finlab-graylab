@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import socket
@@ -14,8 +15,10 @@ from urllib.parse import urlsplit, urlunsplit
 
 import pytest
 from sqlalchemy.engine import Engine
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
+from backend.auth import repository as auth_repository
+from backend.auth.security import hash_password
 from scripts.check_public_access import discover_same_origin_assets
 
 
@@ -83,15 +86,15 @@ def _mysql_environment(
         "BOND_DB_PORT": str(url.port or 3306),
         "BOND_DB_NAME": str(url.database or ""),
         "BOND_DB_CHARSET": "utf8mb4",
-        "BFL_DEPLOYMENT_TARGET": "aliyun-gray",
-        "BFL_AUTH_TRUSTED_ORIGIN": "http://localhost:18110",
+        "BFL_DEPLOYMENT_TARGET": "mac3-production",
+        "BFL_AUTH_TRUSTED_ORIGIN": f"https://{PUBLIC_HOST}",
         "BOND_FACTOR_LAB_CONTROL_PLANE": "systemd_one_shot",
     }
 
 
 @contextmanager
 def _smoke_database_credentials(engine: Engine) -> Iterator[tuple[str, str]]:
-    """创建只读、非空密码的短生命周期候选 Backend 账户。"""
+    """创建非空密码、最小 DML 权限的短生命周期候选 Backend 账户。"""
     username = f"bfl_smoke_{uuid.uuid4().hex[:12]}"
     password = f"Smoke-{uuid.uuid4().hex}"
     database = str(engine.url.database)
@@ -102,12 +105,129 @@ def _smoke_database_credentials(engine: Engine) -> Iterator[tuple[str, str]]:
             text(f"CREATE USER {account} IDENTIFIED BY :password"),
             {"password": password},
         )
-        connection.execute(text(f"GRANT SELECT ON `{database}`.* TO {account}"))
+        connection.execute(
+            text(
+                f"GRANT SELECT, INSERT, UPDATE, DELETE "
+                f"ON `{database}`.* TO {account}"
+            )
+        )
     try:
         yield username, password
     finally:
         with engine.begin() as connection:
             connection.execute(text(f"DROP USER IF EXISTS {account}"))
+
+
+@contextmanager
+def _smoke_auth_user(engine: Engine) -> Iterator[tuple[str, str]]:
+    """通过认证 Repository 创建只供真实代理冒烟的临时账户。"""
+    suffix = uuid.uuid4().hex[:12]
+    username = "admin"
+    password = f"Proxy-{suffix}-A1"
+    with engine.begin() as connection:
+        auth_repository.initialize_protected_admin(
+            connection,
+            password_hash=hash_password(password),
+        )
+    yield username, password
+
+
+@contextmanager
+def _empty_dashboard_scope(engine: Engine) -> Iterator[None]:
+    """让代理认证冒烟使用合法空 Summary，避免依赖方案测试数据。"""
+    with engine.begin() as connection:
+        active_scheme_ids = list(
+            connection.execute(
+                text(
+                    "SELECT scheme_id FROM t_scheme_registry "
+                    "WHERE status = 'active'"
+                )
+            ).scalars()
+        )
+        if active_scheme_ids:
+            connection.execute(
+                text(
+                    "UPDATE t_scheme_registry SET status = 'paused' "
+                    "WHERE status = 'active'"
+                )
+            )
+    try:
+        yield
+    finally:
+        if active_scheme_ids:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "UPDATE t_scheme_registry SET status = 'active' "
+                        "WHERE scheme_id IN :scheme_ids"
+                    ).bindparams(
+                        bindparam("scheme_ids", expanding=True)
+                    ),
+                    {"scheme_ids": active_scheme_ids},
+                )
+
+
+def _assert_authenticated_proxy_flow(
+    port: int,
+    temp_dir: Path,
+    *,
+    username: str,
+    password: str,
+) -> None:
+    """经 TLS Nginx 完成真实登录、Cookie 回传和受保护读取。"""
+    payload_path = temp_dir / "login-request.json"
+    cookie_path = temp_dir / "cookies.txt"
+    login_path = temp_dir / "login-response.json"
+    me_path = temp_dir / "me-response.json"
+    dashboard_path = temp_dir / "dashboard-response.json"
+    payload_path.write_text(
+        json.dumps({"username": username, "password": password}),
+        encoding="utf-8",
+    )
+    payload_path.chmod(0o600)
+
+    login = _curl(
+        port,
+        "/bond-factor-lab/api/auth/login",
+        "--request", "POST",
+        "--header", "Content-Type: application/json",
+        "--header", f"Origin: https://{PUBLIC_HOST}",
+        "--header", "Sec-Fetch-Site: same-origin",
+        "--data-binary", f"@{payload_path}",
+        "--cookie-jar", str(cookie_path),
+        "--output", str(login_path),
+        "--write-out", "%{http_code}",
+    )
+    assert login.returncode == 0, login.stderr
+    assert login.stdout == "200"
+    login_payload = json.loads(login_path.read_text(encoding="utf-8"))
+    assert login_payload["user"]["username"] == username
+    cookie_contents = cookie_path.read_text(encoding="utf-8")
+    assert "__Host-bfl-session" in cookie_contents
+
+    me = _curl(
+        port,
+        "/bond-factor-lab/api/auth/me",
+        "--cookie", str(cookie_path),
+        "--output", str(me_path),
+        "--write-out", "%{http_code}",
+    )
+    assert me.returncode == 0, me.stderr
+    assert me.stdout == "200"
+    me_payload = json.loads(me_path.read_text(encoding="utf-8"))
+    assert me_payload["user"]["username"] == username
+
+    dashboard = _curl(
+        port,
+        "/bond-factor-lab/api/factor-lab/dashboard",
+        "--cookie", str(cookie_path),
+        "--output", str(dashboard_path),
+        "--write-out", "%{http_code}",
+    )
+    assert dashboard.returncode == 0, dashboard.stderr
+    assert dashboard.stdout == "200"
+    dashboard_payload = json.loads(dashboard_path.read_text(encoding="utf-8"))
+    assert dashboard_payload["schema_version"] == "factor-lab-dashboard-v6"
 
 
 def _nginx_mime_types() -> Path:
@@ -230,7 +350,11 @@ def test_real_nginx_proxy_serves_every_page_asset_and_bootstraps_dashboard(
         text=True,
     )
 
-    with _smoke_database_credentials(mysql_test_engine) as credentials:
+    with (
+        _empty_dashboard_scope(mysql_test_engine),
+        _smoke_auth_user(mysql_test_engine) as auth_user,
+        _smoke_database_credentials(mysql_test_engine) as credentials,
+    ):
         environment = os.environ.copy()
         environment.update(
             _mysql_environment(
@@ -304,6 +428,12 @@ def test_real_nginx_proxy_serves_every_page_asset_and_bootstraps_dashboard(
                     "--output", "/dev/null", "--write-out", "%{http_code}",
                 )
                 assert health.stdout == "200"
+                _assert_authenticated_proxy_flow(
+                    https_port,
+                    tmp_path,
+                    username=auth_user[0],
+                    password=auth_user[1],
+                )
                 subprocess.run(
                     [
                         node,

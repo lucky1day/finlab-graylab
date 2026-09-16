@@ -15,22 +15,22 @@
 
 | 编号 | 优先级 | 当前状态 | 待完成事项 |
 |---:|:---:|---|---|
-| 01 | P0 | 已实现待补验收 | `factor-lab-http.js` 精确白名单已由 `3a665c36` 发布；补页面资源自动发现、临时 Nginx 冒烟及新版公网入口检查。 |
-| 02 | P0 | 待修复 | DataConsistency 按 runtime 校验 Blackbox/W4 Native 合同，并只按精确证据允许历史跨 ID 回测引用。 |
-| 03 | P0 | 待修复 | Dashboard/DataConsistency Gate 分离安全 Origin 与应用 `api_prefix`，支持真实 `/bond-factor-lab` 公网路径。 |
-| 04 | P1 | 待修复 | HTTP 客户端在响应头阶段处理 401、request ID 与 Retry-After，不依赖错误正文完成。 |
-| 05 | P1 | 待修复 | 认证前端复用有界 HTTP 客户端，并隔离注销或身份切换后的旧请求。 |
-| 06 | P1 | 待修复 | 认证 JSON body 使用单一有界缓冲及总读取期限，正确处理断开。 |
-| 07 | P1 | 待现场验证 | Dashboard 流式读取提前退出时失效专用连接，并用真实 MySQL 验证清理时间和池恢复。 |
-| 08 | P1 | 待修复 | DataConsistency 分离完整性、血缘和展示结果，缺少权威范围时明确 BLOCKED。 |
-| 09 | P1 | 待修复 | 建立 Python、Node、MySQL 和 release 四个可见 CI 任务，候选验收不接受必选层 skip。 |
-| 10 | P1 | 待修复 | release 补齐日志/字节码规则，将 `source_evidence` 宽泛豁免收敛为摘要清单。 |
-| 11 | P1 | 待修复 | 公网脚本删除匿名 Dashboard 200 与重复 schema，认证正向检查委托公共 Gate。 |
-| 12 | P1 | 待修复 | Actual 认领使用 INSERT `lastrowid`，删除逐行 `SELECT LAST_INSERT_ID()` 并显式命名写副作用。 |
-| 13 | P1 | 待修复 | DataConsistency 按 Actual 作用域去重、分块读取并把总 deadline 下传到每条 SQL。 |
-| 14 | P2 | 待修复 | 合并重复前端测试、引入可控计时器、删除 Python Node 转发并修正 Dashboard 测试文件名。 |
-| 15 | P2 | 待修复 | 删除 Dashboard 查询薄转发；保留公开 builder 与 `scheduler.repository` 统一写入口。 |
-| 16 | P2 | 待修复 | 同步 TODO、Dashboard 合同、验证矩阵和当前 CLI 命令，保留独立自然运行观察。 |
+| 01 | P0 | 已实现待现场验收 | `factor-lab-http.js` 精确白名单已由 `3a665c36` 发布；页面资源自动发现、临时 Nginx 冒烟及新版公网入口检查已实现，待候选与公网读回。 |
+| 02 | P0 | 已实现待验收 | DataConsistency 按 runtime 校验 Blackbox/W4 Native 合同，并只按精确证据允许历史跨 ID 回测引用。 |
+| 03 | P0 | 已实现待现场验收 | Dashboard/DataConsistency Gate 分离安全 Origin 与应用 `api_prefix`，支持真实 `/bond-factor-lab` 公网路径。 |
+| 04 | P1 | 已实现待验收 | HTTP 客户端在响应头阶段处理 401、request ID 与 Retry-After，不依赖错误正文完成。 |
+| 05 | P1 | 已实现待验收 | 认证前端复用有界 HTTP 客户端，并隔离注销或身份切换后的旧请求。 |
+| 06 | P1 | 已实现待验收 | 认证 JSON body 使用单一有界缓冲及总读取期限，正确处理断开。 |
+| 07 | P1 | 已实现待现场验收 | Dashboard 流式读取提前退出时失效专用连接；隔离 MySQL 已验证清理时间和池恢复，待候选现场读回。 |
+| 08 | P1 | 已实现待验收 | DataConsistency 分离完整性、血缘和展示结果，缺少权威范围时明确 BLOCKED。 |
+| 09 | P1 | 已实现待 CI 验收 | 已建立 Python、Node、MySQL 和 release 四个独立任务，待远端候选确认必选层均执行且通过。 |
+| 10 | P1 | 已实现待验收 | release 补齐日志/字节码规则，将 `source_evidence` 宽泛豁免收敛为摘要清单。 |
+| 11 | P1 | 已实现待现场验收 | 公网脚本已删除匿名 Dashboard 200 与重复 schema，认证正向检查委托公共 Gate。 |
+| 12 | P1 | 已实现待验收 | Actual 认领使用 INSERT `lastrowid`，删除逐行 `SELECT LAST_INSERT_ID()` 并显式命名写副作用。 |
+| 13 | P1 | 已实现待验收 | DataConsistency 按 Actual 作用域去重、分块读取并把总 deadline 下传到每条 SQL。 |
+| 14 | P2 | 已实现待验收 | 合并重复前端测试、引入可控计时器、删除 Python Node 转发并修正 Dashboard 测试文件名。 |
+| 15 | P2 | 已实现待验收 | 删除 Dashboard 查询薄转发；保留公开 builder 与 `scheduler.repository` 统一写入口。 |
+| 16 | P2 | 已实现待最终同步 | TODO、Dashboard 合同、验证矩阵和当前 CLI 命令已同步；发布通过后移除本轮临时清单，保留独立自然运行观察。 |
 
 ## 1Y T+1 跨期限日内方案自然观察
 

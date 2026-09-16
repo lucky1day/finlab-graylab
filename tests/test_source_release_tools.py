@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import gzip
+import bz2
 import hashlib
 import io
 import json
+import lzma
 import os
 import stat
 import subprocess
@@ -375,6 +377,70 @@ def test_release_scans_disguised_nested_archive(tmp_path: Path) -> None:
     )
     _run_git(repo, "add", ".")
     _run_git(repo, "commit", "-q", "-m", "add nested source archive")
+
+    with pytest.raises(ReleaseBuildError, match="private key"):
+        build_source_release(repo, tmp_path / "out")
+
+
+@pytest.mark.parametrize("archive_name", ("hidden.tar.xz", "opaque.bin"))
+def test_tree_approval_cannot_hide_an_archive(
+    tmp_path: Path,
+    archive_name: str,
+) -> None:
+    repo = _make_source_repo(tmp_path)
+    tree = repo / "source_evidence" / "approved-tree"
+    tree.mkdir(parents=True)
+    archive_path = tree / archive_name
+    with tarfile.open(archive_path, "w:xz") as archive:
+        payload = b"frozen source"
+        member = tarfile.TarInfo("source.txt")
+        member.size = len(payload)
+        archive.addfile(member, io.BytesIO(payload))
+    _write_evidence_allowlist(
+        repo,
+        [
+            {
+                "path": "source_evidence/approved-tree",
+                "type": "tree",
+                "sha256": _tree_digest(tree),
+                "reason": "Frozen test source tree",
+            }
+        ],
+    )
+    _run_git(repo, "add", ".")
+    _run_git(repo, "commit", "-q", "-m", "add hidden tree archive")
+
+    with pytest.raises(ReleaseBuildError, match="requires exact approval"):
+        build_source_release(repo, tmp_path / "out")
+
+
+@pytest.mark.parametrize("compress", (bz2.compress, lzma.compress))
+def test_release_scans_disguised_nested_compressed_stream(
+    tmp_path: Path,
+    compress,
+) -> None:
+    repo = _make_source_repo(tmp_path)
+    secret = (
+        "-----BEGIN " + "PRIVATE KEY-----\nnot-real\n"
+        "-----END " + "PRIVATE KEY-----\n"
+    ).encode()
+    archive_path = repo / "source_evidence" / "approved" / "original.zip"
+    archive_path.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("opaque.bin", compress(secret))
+    _write_evidence_allowlist(
+        repo,
+        [
+            {
+                "path": "source_evidence/approved/original.zip",
+                "type": "archive",
+                "sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+                "reason": "Frozen test source archive",
+            }
+        ],
+    )
+    _run_git(repo, "add", ".")
+    _run_git(repo, "commit", "-q", "-m", "add compressed nested source")
 
     with pytest.raises(ReleaseBuildError, match="private key"):
         build_source_release(repo, tmp_path / "out")

@@ -197,6 +197,17 @@
     }, 0);
   }
 
+  function showLogoutPending() {
+    advanceIdentity("logout-started");
+    state.user = null;
+    state.users = [];
+    var usersBody = document.getElementById("authUsersBody");
+    if (usersBody) usersBody.textContent = "";
+    var usersCount = document.getElementById("authUsersCount");
+    if (usersCount) usersCount.textContent = "0 个账户";
+    showGate(loadingView);
+  }
+
   function showAuthenticated(user) {
     if (!validUser(user)) throw new Error("invalid_auth_payload");
     advanceIdentity("identity-changed");
@@ -598,11 +609,11 @@
 
   document.getElementById("authLogoutButton").addEventListener("click", function () {
     closeAccountMenu(false);
-    showLogin();
+    showLogoutPending();
     apiRequest("/api/auth/logout", { method: "POST", body: {} })
-      .then(function () {})
+      .then(function () { showLogin(); })
       .catch(function (error) {
-        if (error.status !== 401) emitError(document.getElementById("authLoginError"), errorMessage(error.errorCode));
+        if (error.status !== 401) showLogin(errorMessage(error.errorCode));
       });
   });
 

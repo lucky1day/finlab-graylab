@@ -525,6 +525,32 @@ def validate_snapshot_completeness(
         if row.get("backtest_run_id") is not None:
             product_by_backtest_run[int(row["backtest_run_id"])].append(row)
 
+    registry_scopes = {
+        (
+            str(row["base_scheme_id"]),
+            str(row["target_tenor"]),
+            int(row["horizon"]),
+        )
+        for row in snapshot.registry_rows
+    }
+    referenced_backtest_scopes = {
+        (
+            str(row["scheme_id"]),
+            str(row["target_tenor"]),
+            int(row["horizon"]),
+        )
+        for row in product_rows
+        if row.get("backtest_run_id") is not None
+    }
+    missing_backtest_authority = sorted(
+        registry_scopes - referenced_backtest_scopes
+    )
+    if missing_backtest_authority:
+        raise DataConsistencyAuthorityUnavailable(
+            "selected Registry scopes have no durable backtest product "
+            f"reference: {missing_backtest_authority!r}"
+        )
+
     source_by_backtest_run: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
     for row in snapshot.backtest_prediction_rows:
         source_by_backtest_run[int(row["run_id"])].append(row)
