@@ -16,7 +16,7 @@
 | 编号 | 优先级 | 当前状态 | 待完成事项 |
 |---:|:---:|---|---|
 | 01 | P0 | 已实现待现场验收 | `factor-lab-http.js` 精确白名单已由 `3a665c36` 发布；页面资源自动发现、临时 Nginx 冒烟及新版公网入口检查已实现，待候选与公网读回。 |
-| 02 | P0 | 已实现待验收 | DataConsistency 按 runtime 校验 Blackbox/W4 Native 合同，并只按精确证据允许历史跨 ID 回测引用。 |
+| 02 | P0 | 已实现待现场验收 | DataConsistency 按 runtime 校验 Blackbox/W4 Native 合同；缺少原生 exact 的 333 条旧事实已按业务确认绑定 `_bbv2` 纠正版，并以输入、summary、旧/纠正全事实及 14 条 target-date 差异摘要收敛为唯一只读迁移例外，其余日期合同不放宽，待候选现场读回。 |
 | 03 | P0 | 已实现待现场验收 | Dashboard/DataConsistency Gate 分离安全 Origin 与应用 `api_prefix`，支持真实 `/bond-factor-lab` 公网路径。 |
 | 04 | P1 | 已实现待验收 | HTTP 客户端在响应头阶段处理 401、request ID 与 Retry-After，不依赖错误正文完成。 |
 | 05 | P1 | 已实现待验收 | 认证前端复用有界 HTTP 客户端，并隔离注销或身份切换后的旧请求。 |

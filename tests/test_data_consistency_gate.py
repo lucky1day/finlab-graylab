@@ -17,14 +17,22 @@ from harness.gates.data_consistency_gate import (
     DataConsistencyError,
     DatabaseSnapshot,
     DataConsistencyGate,
+    _FrozenCalendar,
     _actual_selector,
     _read_actuals,
+    _validate_task_date_contract,
     aggregate_display_facts,
     validate_snapshot_completeness,
+    validate_snapshot_lineage,
     validate_and_join_facts,
 )
 from harness.result import GateStatus
 from shared.historical_reference_compatibility import HistoricalBacktestReference
+from shared.legacy_prediction_migration import (
+    LegacyCorrectedExactEvidence,
+    LegacyCorrectedFact,
+    LegacyPredictionMigration,
+)
 from shared.prediction_context import (
     MONTHLY_TARGET_RULE,
     WEEKLY_AVERAGE_TARGET_RULE,
@@ -1162,6 +1170,255 @@ def test_approved_retired_historical_reference_is_accepted() -> None:
     )
 
     assert len(facts) == 1
+
+
+def _sha256_json(value: object) -> str:
+    import hashlib
+
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _legacy_migration_snapshot() -> tuple[
+    DatabaseSnapshot,
+    LegacyPredictionMigration,
+    LegacyCorrectedExactEvidence,
+]:
+    scheme_id = "legacy_scheme"
+    fact = {
+        "scheme_id": scheme_id,
+        "target_tenor": "5Y",
+        "horizon": 5,
+        "predict_date": "2026-05-19",
+        "feature_date": "2026-05-19",
+        "target_date": "2026-05-25",
+        "predicted_direction": 1,
+        "actual_direction": -1,
+    }
+    summary = {
+        "raw_row_count": 1,
+        "row_count": 1,
+        "evaluation_filter": {"included_row_count": 1},
+    }
+    mismatch = {
+        "predict_date": "2026-05-19",
+        "feature_date": "2026-05-19",
+        "target_date": "2026-05-25",
+        "expected_target_date": "2026-05-26",
+    }
+    corrected_fact = {
+        **fact,
+        "scheme_id": f"{scheme_id}_bbv2",
+        "target_date": "2026-05-26",
+    }
+    snapshot = DatabaseSnapshot(
+        registry_rows=(
+            {
+                "scheme_id": f"{scheme_id}__h5__5Y",
+                "base_scheme_id": scheme_id,
+                "horizon": 5,
+                "task_type": "T+5",
+                "runtime_type": "blackbox_v2",
+                "frequency": "daily",
+                "target_tenor": "5Y",
+                "status": "active",
+            },
+        ),
+        prediction_rows=(
+            {
+                "id": 1,
+                "run_id": None,
+                "backtest_run_id": 7,
+                "scheme_version": None,
+                "scheme_id": scheme_id,
+                "target_tenor": "5Y",
+                "horizon": 5,
+                "predict_date": "2026-05-19",
+                "feature_date": "2026-05-19",
+                "target_date": "2026-05-25",
+                "predicted_direction": 1,
+                "backtest_actual_direction": -1,
+            },
+        ),
+        actual_rows=(),
+        live_runs=(),
+        backtest_runs=(
+            {
+                "reference_id": 7,
+                "scheme_id": scheme_id,
+                "status": "success",
+                "code_hash": None,
+                "config_hash": None,
+                "input_artifact_hash": "e" * 64,
+                "summary": summary,
+            },
+        ),
+        calendar_rows=_calendar_rows(date(2026, 5, 1), date(2026, 6, 30)),
+        digest="legacy-migration-fixture",
+        backtest_prediction_rows=(
+            {
+                "run_id": 7,
+                "scheme_id": scheme_id,
+                "target_tenor": "5Y",
+                "horizon": 5,
+                "predict_date": "2026-05-19",
+                "feature_date": "2026-05-19",
+                "target_date": "2026-05-25",
+                "label": -1,
+                "predicted_direction": 1,
+            },
+        ),
+    )
+    compatibility = LegacyPredictionMigration(
+        prediction_scheme_id=scheme_id,
+        historical_source_scheme_id=scheme_id,
+        designated_source_scheme_id=f"{scheme_id}_bbv2",
+        designated_exact="0123456789ab",
+        designated_code_hash="a" * 64,
+        designated_config_hash="b" * 64,
+        designated_manifest_hash="c" * 64,
+        designated_input_artifact_id="snapshot-" + "9" * 24,
+        designated_corrected_facts_sha256=_sha256_json([corrected_fact]),
+        target_tenor="5Y",
+        horizon=5,
+        expected_fact_count=1,
+        input_artifact_hash="e" * 64,
+        backtest_summary_sha256=_sha256_json(summary),
+        source_facts_sha256=_sha256_json([fact]),
+        product_facts_sha256=_sha256_json([fact]),
+        target_contract_mismatch_count=1,
+        target_contract_mismatch_sha256=_sha256_json([mismatch]),
+        reason="fixture",
+    )
+    corrected = LegacyCorrectedExactEvidence(
+        source_registry_scheme_id=f"{scheme_id}_bbv2__h5__5Y",
+        source_scheme_id=f"{scheme_id}_bbv2",
+        registry_status="archived",
+        designated_exact="0123456789ab",
+        runtime_type="blackbox_v2",
+        version_status="retired",
+        code_hash="a" * 64,
+        config_hash="b" * 64,
+        manifest_hash="c" * 64,
+        input_artifact_id="snapshot-" + "9" * 24,
+        backtest_status="success",
+        persisted_prediction_count=1,
+        corrected_facts=(LegacyCorrectedFact(**corrected_fact),),
+        corrected_facts_sha256=_sha256_json([corrected_fact]),
+    )
+    return snapshot, compatibility, corrected
+
+
+def test_precise_legacy_migration_accepts_designated_corrected_exact() -> None:
+    snapshot, compatibility, corrected = _legacy_migration_snapshot()
+    migrations = frozenset({compatibility})
+    corrected_evidence = frozenset({corrected})
+
+    completeness_errors, completeness = validate_snapshot_completeness(
+        snapshot,
+        display_until="2026-06-30",
+        legacy_migrations=migrations,
+        corrected_exact_evidence=corrected_evidence,
+    )
+    lineage_errors, lineage = validate_snapshot_lineage(
+        snapshot,
+        historical_references=frozenset(),
+        legacy_migrations=migrations,
+        corrected_exact_evidence=corrected_evidence,
+    )
+    facts = validate_and_join_facts(
+        snapshot,
+        display_until="2026-06-30",
+        legacy_migrations=migrations,
+        corrected_exact_evidence=corrected_evidence,
+    )
+
+    assert completeness_errors == []
+    assert lineage_errors == []
+    assert completeness["legacy_migration_fact_count"] == 1
+    assert lineage["legacy_migration_fact_count"] == 1
+    assert lineage["legacy_migrations"] == [
+        {
+            "prediction_scheme_id": "legacy_scheme",
+            "designated_source_scheme_id": "legacy_scheme_bbv2",
+            "designated_exact": "0123456789ab",
+            "fact_count": 1,
+            "target_contract_mismatch_count": 1,
+        }
+    ]
+    assert len(facts) == 1
+
+
+def test_legacy_migration_fails_closed_when_a_fact_drifts() -> None:
+    snapshot, compatibility, corrected = _legacy_migration_snapshot()
+    snapshot = replace(
+        snapshot,
+        prediction_rows=(
+            {**snapshot.prediction_rows[0], "predicted_direction": -1},
+        ),
+    )
+
+    with pytest.raises(DataConsistencyError, match="evidence drift"):
+        validate_snapshot_lineage(
+            snapshot,
+            historical_references=frozenset(),
+            legacy_migrations=frozenset({compatibility}),
+            corrected_exact_evidence=frozenset({corrected}),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("source_scheme_id", "different_bbv2"),
+        ("designated_exact", "fedcba987654"),
+        ("registry_status", "active"),
+        ("version_status", "active"),
+        ("code_hash", "9" * 64),
+        ("config_hash", "8" * 64),
+        ("manifest_hash", "7" * 64),
+        ("corrected_facts_sha256", "6" * 64),
+    ],
+)
+def test_legacy_migration_rejects_designated_exact_evidence_drift(
+    field: str,
+    value: object,
+) -> None:
+    snapshot, compatibility, corrected = _legacy_migration_snapshot()
+    corrected = replace(corrected, **{field: value})
+
+    with pytest.raises(DataConsistencyError, match="evidence drift"):
+        validate_snapshot_lineage(
+            snapshot,
+            historical_references=frozenset(),
+            legacy_migrations=frozenset({compatibility}),
+            corrected_exact_evidence=frozenset({corrected}),
+        )
+
+
+def test_legacy_target_exception_keeps_feature_trading_day_contract() -> None:
+    calendar = _FrozenCalendar.from_rows(
+        _calendar_rows(date(2026, 5, 1), date(2026, 6, 30))
+    )
+
+    with pytest.raises(DataConsistencyError, match="feature_date must be a trading day"):
+        _validate_task_date_contract(
+            task_type="T+5",
+            horizon=5,
+            predict_date="2026-05-17",
+            feature_date="2026-05-17",
+            target_date="2026-05-25",
+            is_live=False,
+            calendar=calendar,
+            business_key=("legacy_scheme", "5Y", 5, "2026-05-25"),
+            allow_legacy_target_date=True,
+        )
 
 
 @pytest.mark.parametrize(

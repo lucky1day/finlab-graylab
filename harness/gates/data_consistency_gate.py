@@ -32,6 +32,12 @@ from shared.historical_reference_compatibility import (
     HistoricalBacktestReference,
     load_historical_backtest_references,
 )
+from shared.legacy_prediction_migration import (
+    LegacyCorrectedExactEvidence,
+    LegacyPredictionMigration,
+    load_legacy_corrected_exact_evidence,
+    load_legacy_prediction_migrations,
+)
 from shared.calendar_service import is_trading_day_row
 from shared.period_average_buckets import build_period_buckets
 from shared.prediction_context import (
@@ -104,6 +110,15 @@ class DatabaseSnapshot:
     version_rows: tuple[dict[str, Any], ...] = ()
     input_artifact_rows: tuple[dict[str, Any], ...] = ()
     actual_watermarks: tuple[dict[str, Any], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _LegacyMigrationMatch:
+    entry: LegacyPredictionMigration
+    backtest_run_id: int
+    mismatch_business_keys: frozenset[tuple[str, str, int, str]]
+
+
 @dataclass(frozen=True, slots=True)
 class _FrozenCalendar:
     rows: tuple[dict[str, Any], ...]
@@ -316,11 +331,19 @@ class DataConsistencyGate(Gate):
                 monotonic=self._monotonic,
             )
             _remaining_budget(deadline, self._monotonic)
+            legacy_migrations = load_legacy_prediction_migrations(
+                PROJECT_ROOT
+            )
+            corrected_exact_evidence = (
+                load_legacy_corrected_exact_evidence(PROJECT_ROOT)
+            )
             try:
                 completeness_errors, completeness_details = (
                     validate_snapshot_completeness(
                         snapshot,
                         display_until=display_until,
+                        legacy_migrations=legacy_migrations,
+                        corrected_exact_evidence=corrected_exact_evidence,
                     )
                 )
                 completeness = _subresult(
@@ -339,6 +362,8 @@ class DataConsistencyGate(Gate):
                     historical_references=load_historical_backtest_references(
                         PROJECT_ROOT
                     ),
+                    legacy_migrations=legacy_migrations,
+                    corrected_exact_evidence=corrected_exact_evidence,
                 )
                 lineage = _subresult(
                     "PASSED" if not lineage_errors else "FAILED",
@@ -360,6 +385,8 @@ class DataConsistencyGate(Gate):
                     historical_references=load_historical_backtest_references(
                         PROJECT_ROOT
                     ),
+                    legacy_migrations=legacy_migrations,
+                    corrected_exact_evidence=corrected_exact_evidence,
                 )
             except DataConsistencyError as exc:
                 lineage = _merge_subresult_error(lineage, str(exc), "FAILED")
@@ -531,9 +558,20 @@ def validate_snapshot_completeness(
     snapshot: DatabaseSnapshot,
     *,
     display_until: str,
+    legacy_migrations: frozenset[
+        LegacyPredictionMigration
+    ] = frozenset(),
+    corrected_exact_evidence: frozenset[
+        LegacyCorrectedExactEvidence
+    ] = frozenset(),
 ) -> tuple[list[str], dict[str, Any]]:
     """用成功 run 与不可变回测事实建立预期键并核对产品事实。"""
     errors: list[str] = []
+    legacy_matches = _resolve_legacy_migration_matches(
+        snapshot,
+        legacy_migrations,
+        corrected_exact_evidence,
+    )
     product_rows = list(snapshot.prediction_rows)
     product_by_live_run: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
     product_by_backtest_run: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
@@ -583,9 +621,12 @@ def validate_snapshot_completeness(
         summary = _json_mapping(run.get("summary"), field="backtest summary")
         declared_count = summary.get("persisted_prediction_count")
         if not isinstance(declared_count, int) or declared_count < 0:
-            raise DataConsistencyAuthorityUnavailable(
-                f"backtest run {run_id} lacks persisted_prediction_count authority"
-            )
+            legacy_match = legacy_matches.get(run_id)
+            if legacy_match is None:
+                raise DataConsistencyAuthorityUnavailable(
+                    f"backtest run {run_id} lacks persisted_prediction_count authority"
+                )
+            declared_count = legacy_match.entry.expected_fact_count
         if declared_count != len(source_rows):
             errors.append(
                 f"backtest source count mismatch: run_id={run_id} "
@@ -764,6 +805,10 @@ def validate_snapshot_completeness(
         "observed_product_fact_count": len(product_rows),
         "mature_actual_missing_count": mature_actual_missing,
         "pending_actual_count": pending_actual,
+        "legacy_migration_fact_count": sum(
+            match.entry.expected_fact_count
+            for match in legacy_matches.values()
+        ),
     }
 
 
@@ -771,9 +816,20 @@ def validate_snapshot_lineage(
     snapshot: DatabaseSnapshot,
     *,
     historical_references: frozenset[HistoricalBacktestReference],
+    legacy_migrations: frozenset[
+        LegacyPredictionMigration
+    ] = frozenset(),
+    corrected_exact_evidence: frozenset[
+        LegacyCorrectedExactEvidence
+    ] = frozenset(),
 ) -> tuple[list[str], dict[str, Any]]:
     """核对产品事实引用的 exact、run、版本与输入工件血缘。"""
     errors: list[str] = []
+    legacy_matches = _resolve_legacy_migration_matches(
+        snapshot,
+        legacy_migrations,
+        corrected_exact_evidence,
+    )
     versions = {
         (str(row["scheme_id"]), str(row["scheme_version"])): row
         for row in snapshot.version_rows
@@ -794,10 +850,29 @@ def validate_snapshot_lineage(
         for item in historical_references
     }
     checked_artifacts: set[str] = set()
+    legacy_fact_count = 0
     for row in snapshot.prediction_rows:
         scope = (str(row["scheme_id"]), str(row["target_tenor"]), int(row["horizon"]))
         registry_row = registry.get(scope)
         if registry_row is None:
+            continue
+        backtest_run_id = row.get("backtest_run_id")
+        legacy_match = (
+            legacy_matches.get(int(backtest_run_id))
+            if backtest_run_id is not None
+            else None
+        )
+        if (
+            legacy_match is not None
+            and not row.get("scheme_version")
+            and scope
+            == (
+                legacy_match.entry.prediction_scheme_id,
+                legacy_match.entry.target_tenor,
+                legacy_match.entry.horizon,
+            )
+        ):
+            legacy_fact_count += 1
             continue
         exact = _required_text(row.get("scheme_version"), field="prediction exact")
         version = versions.get((scope[0], exact))
@@ -871,6 +946,8 @@ def validate_snapshot_lineage(
         "live_run_count": len(live_runs),
         "backtest_run_count": len(backtest_runs),
         "input_artifact_count": len(artifacts),
+        "legacy_migration_fact_count": legacy_fact_count,
+        "legacy_migrations": _legacy_migration_evidence(legacy_matches),
     }
 
 
@@ -918,6 +995,304 @@ def _is_sha256(value: Any) -> bool:
     )
 
 
+def _canonical_json_sha256(value: Any) -> str:
+    raw = json.dumps(
+        value,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _legacy_fact(
+    row: Mapping[str, Any],
+    *,
+    product: bool,
+) -> dict[str, Any]:
+    return {
+        "scheme_id": _required_text(row.get("scheme_id"), field="scheme_id"),
+        "target_tenor": _required_text(
+            row.get("target_tenor"), field="target_tenor"
+        ),
+        "horizon": _positive_int(row.get("horizon"), field="horizon"),
+        "predict_date": _iso_date(row.get("predict_date"), field="predict_date"),
+        "feature_date": _iso_date(row.get("feature_date"), field="feature_date"),
+        "target_date": _iso_date(row.get("target_date"), field="target_date"),
+        "predicted_direction": _direction(
+            row.get("predicted_direction"), field="predicted_direction"
+        ),
+        "actual_direction": _direction(
+            row.get("backtest_actual_direction" if product else "label"),
+            field="backtest actual direction",
+        ),
+    }
+
+
+def _resolve_legacy_migration_matches(
+    snapshot: DatabaseSnapshot,
+    entries: frozenset[LegacyPredictionMigration],
+    corrected_exact_evidence: frozenset[LegacyCorrectedExactEvidence],
+) -> dict[int, _LegacyMigrationMatch]:
+    """只在整批不可变证据逐字段命中时接受已批准迁移例外。"""
+    if not entries:
+        return {}
+    calendar = _FrozenCalendar.from_rows(snapshot.calendar_rows)
+    runs = {int(row["reference_id"]): row for row in snapshot.backtest_runs}
+    sources_by_run: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in snapshot.backtest_prediction_rows:
+        sources_by_run[int(row["run_id"])].append(row)
+    evidence_by_identity = {
+        (item.source_scheme_id, item.designated_exact): item
+        for item in corrected_exact_evidence
+    }
+
+    matches: dict[int, _LegacyMigrationMatch] = {}
+    for entry in entries:
+        products = [
+            row
+            for row in snapshot.prediction_rows
+            if str(row.get("scheme_id") or "") == entry.prediction_scheme_id
+            and str(row.get("target_tenor") or "") == entry.target_tenor
+            and int(row.get("horizon") or 0) == entry.horizon
+            and row.get("backtest_run_id") is not None
+            and not row.get("scheme_version")
+        ]
+        if not products:
+            continue
+        run_ids = {int(row["backtest_run_id"]) for row in products}
+        if len(run_ids) != 1:
+            raise DataConsistencyError(
+                "legacy migration evidence drift: expected one immutable "
+                f"backtest run for {entry.prediction_scheme_id}"
+            )
+        run_id = next(iter(run_ids))
+        if run_id in matches:
+            raise DataConsistencyError(
+                f"legacy migration evidence drift: duplicate run {run_id}"
+            )
+        run = runs.get(run_id)
+        sources = sources_by_run.get(run_id, [])
+        try:
+            corrected = evidence_by_identity.get(
+                (
+                    entry.designated_source_scheme_id,
+                    entry.designated_exact,
+                )
+            )
+            if corrected is None:
+                raise ValueError("designated corrected exact evidence is missing")
+            if (
+                corrected.source_registry_scheme_id
+                != registry_scheme_id(
+                    entry.designated_source_scheme_id,
+                    entry.horizon,
+                    entry.target_tenor,
+                )
+                or corrected.registry_status != "archived"
+                or corrected.runtime_type != "blackbox_v2"
+                or corrected.version_status != "retired"
+                or corrected.code_hash != entry.designated_code_hash
+                or corrected.config_hash != entry.designated_config_hash
+                or corrected.manifest_hash != entry.designated_manifest_hash
+                or corrected.input_artifact_id
+                != entry.designated_input_artifact_id
+                or corrected.backtest_status != "success"
+                or corrected.persisted_prediction_count
+                != entry.expected_fact_count
+                or corrected.corrected_facts_sha256
+                != entry.designated_corrected_facts_sha256
+            ):
+                raise ValueError("designated corrected exact identity changed")
+            if run is None:
+                raise ValueError("backtest run is missing")
+            if (
+                str(run.get("scheme_id") or "")
+                != entry.historical_source_scheme_id
+                or run.get("status") != "success"
+                or run.get("code_hash") is not None
+                or run.get("config_hash") is not None
+                or run.get("input_artifact_hash") != entry.input_artifact_hash
+            ):
+                raise ValueError("historical run identity changed")
+            summary = _json_mapping(run.get("summary"), field="backtest summary")
+            if (
+                summary.get("scheme_version") is not None
+                or summary.get("manifest_hash") is not None
+                or _canonical_json_sha256(summary)
+                != entry.backtest_summary_sha256
+            ):
+                raise ValueError("historical summary changed")
+            summary_counts = (
+                summary.get("raw_row_count"),
+                summary.get("row_count"),
+                (
+                    summary.get("evaluation_filter", {}).get(
+                        "included_row_count"
+                    )
+                    if isinstance(summary.get("evaluation_filter"), Mapping)
+                    else None
+                ),
+            )
+            if summary_counts != (entry.expected_fact_count,) * 3:
+                raise ValueError("historical summary count authority changed")
+            if (
+                len(products) != entry.expected_fact_count
+                or len(sources) != entry.expected_fact_count
+            ):
+                raise ValueError("historical fact count changed")
+            product_facts = sorted(
+                (_legacy_fact(row, product=True) for row in products),
+                key=_legacy_fact_sort_key,
+            )
+            source_facts = sorted(
+                (_legacy_fact(row, product=False) for row in sources),
+                key=_legacy_fact_sort_key,
+            )
+            if (
+                _canonical_json_sha256(product_facts)
+                != entry.product_facts_sha256
+                or _canonical_json_sha256(source_facts)
+                != entry.source_facts_sha256
+                or product_facts != source_facts
+            ):
+                raise ValueError("historical facts changed")
+            mismatches: list[dict[str, str]] = []
+            mismatch_keys: set[tuple[str, str, int, str]] = set()
+            for fact in product_facts:
+                expected_target = calendar.nth_trading_day_after(
+                    fact["feature_date"],
+                    int(fact["horizon"]),
+                )
+                if fact["target_date"] == expected_target:
+                    continue
+                mismatches.append(
+                    {
+                        "predict_date": fact["predict_date"],
+                        "feature_date": fact["feature_date"],
+                        "target_date": fact["target_date"],
+                        "expected_target_date": expected_target,
+                    }
+                )
+                mismatch_keys.add(
+                    (
+                        fact["scheme_id"],
+                        fact["target_tenor"],
+                        int(fact["horizon"]),
+                        fact["target_date"],
+                    )
+                )
+            if (
+                len(mismatches) != entry.target_contract_mismatch_count
+                or _canonical_json_sha256(mismatches)
+                != entry.target_contract_mismatch_sha256
+            ):
+                raise ValueError("historical target-date exception changed")
+            corrected_facts = sorted(
+                (
+                    {
+                        "scheme_id": fact.scheme_id,
+                        "target_tenor": fact.target_tenor,
+                        "horizon": fact.horizon,
+                        "predict_date": fact.predict_date,
+                        "feature_date": fact.feature_date,
+                        "target_date": fact.target_date,
+                        "predicted_direction": fact.predicted_direction,
+                        "actual_direction": fact.actual_direction,
+                    }
+                    for fact in corrected.corrected_facts
+                ),
+                key=_legacy_fact_sort_key,
+            )
+            if len(corrected_facts) != entry.expected_fact_count:
+                raise ValueError("designated corrected fact count changed")
+            for fact in corrected_facts:
+                if (
+                    fact["scheme_id"] != entry.designated_source_scheme_id
+                    or fact["target_tenor"] != entry.target_tenor
+                    or int(fact["horizon"]) != entry.horizon
+                ):
+                    raise ValueError("designated corrected fact scope changed")
+                _validate_task_date_contract(
+                    task_type="T+5",
+                    horizon=entry.horizon,
+                    predict_date=fact["predict_date"],
+                    feature_date=fact["feature_date"],
+                    target_date=fact["target_date"],
+                    is_live=False,
+                    calendar=calendar,
+                    business_key=(
+                        fact["scheme_id"],
+                        fact["target_tenor"],
+                        int(fact["horizon"]),
+                        fact["target_date"],
+                    ),
+                )
+            old_identity = sorted(
+                _legacy_comparison_identity(fact)
+                for fact in product_facts
+            )
+            corrected_identity = sorted(
+                _legacy_comparison_identity(fact)
+                for fact in corrected_facts
+            )
+            if old_identity != corrected_identity:
+                raise ValueError(
+                    "designated corrected facts do not match legacy signals"
+                )
+        except (DataConsistencyError, ValueError, TypeError) as exc:
+            raise DataConsistencyError(
+                "legacy migration evidence drift: "
+                f"scheme_id={entry.prediction_scheme_id}: {exc}"
+            ) from exc
+        matches[run_id] = _LegacyMigrationMatch(
+            entry=entry,
+            backtest_run_id=run_id,
+            mismatch_business_keys=frozenset(mismatch_keys),
+        )
+    return matches
+
+
+def _legacy_fact_sort_key(fact: Mapping[str, Any]) -> tuple[Any, ...]:
+    return (
+        fact["target_tenor"],
+        fact["horizon"],
+        fact["target_date"],
+        fact["predict_date"],
+    )
+
+
+def _legacy_comparison_identity(fact: Mapping[str, Any]) -> tuple[Any, ...]:
+    return (
+        fact["target_tenor"],
+        fact["horizon"],
+        fact["predict_date"],
+        fact["feature_date"],
+        fact["predicted_direction"],
+        fact["actual_direction"],
+    )
+
+
+def _legacy_migration_evidence(
+    matches: Mapping[int, _LegacyMigrationMatch],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "prediction_scheme_id": match.entry.prediction_scheme_id,
+            "designated_source_scheme_id": (
+                match.entry.designated_source_scheme_id
+            ),
+            "designated_exact": match.entry.designated_exact,
+            "fact_count": match.entry.expected_fact_count,
+            "target_contract_mismatch_count": (
+                match.entry.target_contract_mismatch_count
+            ),
+        }
+        for _, match in sorted(matches.items())
+    ]
+
+
 def validate_and_join_facts(
     snapshot: DatabaseSnapshot,
     *,
@@ -926,9 +1301,20 @@ def validate_and_join_facts(
     historical_references: frozenset[
         HistoricalBacktestReference
     ] = frozenset(),
+    legacy_migrations: frozenset[
+        LegacyPredictionMigration
+    ] = frozenset(),
+    corrected_exact_evidence: frozenset[
+        LegacyCorrectedExactEvidence
+    ] = frozenset(),
 ) -> list[ConsistencyFact]:
     """独立校验产品事实并按任务规则关联已发布或 live Actual。"""
     calendar = _FrozenCalendar.from_rows(snapshot.calendar_rows)
+    legacy_matches = _resolve_legacy_migration_matches(
+        snapshot,
+        legacy_migrations,
+        corrected_exact_evidence,
+    )
     registry_by_scope: dict[tuple[str, str, int], Mapping[str, Any]] = {}
     for row in snapshot.registry_rows:
         scope = (
@@ -1093,6 +1479,11 @@ def validate_and_join_facts(
                     f"backtest prediction must have predict_date=feature_date: {business_key!r}"
                 )
 
+        legacy_match = (
+            legacy_matches.get(backtest_run_id)
+            if backtest_run_id is not None
+            else None
+        )
         _validate_task_date_contract(
             task_type=str(registry["task_type"]),
             horizon=horizon,
@@ -1102,6 +1493,10 @@ def validate_and_join_facts(
             is_live=live_run_id is not None,
             calendar=calendar,
             business_key=business_key,
+            allow_legacy_target_date=(
+                legacy_match is not None
+                and business_key in legacy_match.mismatch_business_keys
+            ),
         )
 
         if predict_date < HISTORY_START_DATE or predict_date > display_until:
@@ -1260,6 +1655,7 @@ def _validate_task_date_contract(
     is_live: bool,
     calendar: _FrozenCalendar,
     business_key: tuple[str, str, int, str],
+    allow_legacy_target_date: bool = False,
 ) -> None:
     """按冻结日历独立核对每个任务族的三日期业务语义。"""
     try:
@@ -1283,7 +1679,9 @@ def _validate_task_date_contract(
                 feature_date,
                 horizon,
             )
-            if target_date != expected_target:
+            if target_date != expected_target and not (
+                task_type == "T+5" and allow_legacy_target_date
+            ):
                 raise DataConsistencyError(
                     f"daily target_date must be trading-day horizon "
                     f"{expected_target}, got {target_date}"

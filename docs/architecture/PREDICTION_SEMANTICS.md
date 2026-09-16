@@ -184,6 +184,10 @@ target_date  = T + horizon
 
 回测执行只写 immutable `t_backtest_*` 证据，不读取产品事实拼历史结果。首次 Blackbox `activate` 才在同一激活事务中把已批准 exact-version 回测的缺失业务键发布到 `t_scheme_predictions`；revision 回测和 activation 不重写历史产品事实。参与前端历史排行的样本统一要求 `predict_date >= 2025-01-01`；这是输出样本起点，不是训练起点。
 
+已发布但早于 exact-version 强制记录的旧事实不得补写或冒充后续 exact。若业务明确指定后续纠正版作为迁移
+权威，只能通过 Harness 的精确兼容清单绑定完整旧事实摘要、日期差异摘要和纠正版身份，在只读验收中显式标为
+`legacy_migration`；这不改变旧行的原始来源、三日期或 insert-only 边界，也不为新事实提供例外。
+
 当方案已有灰度实盘观察区时，历史回测 runner 必须按 `target_date < gray_target_start` 截断，避免同一 target 同时由 backtest 和 live 区间解释。日频、周频和月频都使用同一条 target 边界；月频仍按自然月 15 号的触发语义计算三日期，不能用 `predict_date` 替代 `target_date` 判断分区。
 
 `target_date` 是回测明细的必填事实字段。runner 和 Dashboard 服务端只用 `target_date` 及 §7 的任务映射确定月份；如果 `t_backtest_predictions` 明细缺 `target_date`，必须 fail-closed。禁止用 `predict_date`、`feature_date`、月份字段或旧 `monthly_metrics` 表推断、替代或回填 `target_date`。

@@ -41,6 +41,15 @@ target date 关联 Actual。回测发布事实只用 immutable `backtest_actual_
 未成熟目标保留 pending。Gate 再独立形成 month/source 的已验证样本、指标样本、方向分布、正确数和 true
 positive，并逐分区请求真实 Detail 对账；不得调用 Dashboard builder 或聚合 helper 生成标准答案。
 
+缺少原生 exact 的已发布旧事实默认阻断。唯一例外是
+[`legacy_prediction_migration_compatibility_v1.json`](../../deploy/legacy_prediction_migration_compatibility_v1.json)
+精确登记的只读迁移批次：清单同时绑定旧输入、summary、source/product 全事实、日期差异集合及经业务确认的
+纠正版 Blackbox exact 身份；纠正版 archived Registry、retired version、成功回测和逐事实原件由
+[`legacy_prediction_migration_evidence_v1.json`](../../deploy/legacy_prediction_migration_evidence_v1.json)
+冻结，Gate 会重算其摘要并验证现行三日期合同。Gate 只在整批证据全部命中时把它报告为
+`legacy_migration`；不回填数据库，
+不宣称旧事实由纠正版 exact 原生生成，也不允许该例外用于未来写入。任一事实或摘要漂移仍失败。
+
 一次一致性验收先读取一个 repeatable-read 只读数据库快照，再获取一次真实 Summary 和所需 Detail；HTTP
 对账后重读同一选定范围的摘要围栏。若末次重读失败、首尾摘要不同，或上海展示日跨界，本次返回
 `blocked`，要求在稳定输入窗口重试，不能把可观测到的自然增长误报为事实或展示错误；该围栏不是 CDC，

@@ -1,0 +1,26 @@
+{
+  "schema_version": "legacy-prediction-migration-compatibility-v1",
+  "entries": [
+    {
+      "prediction_scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10",
+      "historical_source_scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10",
+      "designated_source_scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+      "designated_exact": "3ee3dd2334fd",
+      "designated_code_hash": "ad9bdacf5063a427ecc8b70852e045f4822ba9af1b6d8fcd171cd2d779e95103",
+      "designated_config_hash": "5d0a5b3b771a02f25e472c0fa76119ef978810907f2370feb8b0eea22c0d2d61",
+      "designated_manifest_hash": "96d46ee4b2fb16f3b7da0c5485808f52f8f7ef14607721fbe00d26bc55d74982",
+      "designated_input_artifact_id": "snapshot-1d335ad33e23ca7e7c8f5b64",
+      "designated_corrected_facts_sha256": "0caaa51c08a1a65b9e5998c73a3cd6d181f9c14e81ddea2978c9080c45fac749",
+      "target_tenor": "5Y",
+      "horizon": 5,
+      "expected_fact_count": 333,
+      "input_artifact_hash": "36362553a5dcc1d401426c3065adedc06efe177cceafe17d4b3448a20ef27b2e",
+      "backtest_summary_sha256": "7c90fc53c237727302fc84792a35306d0b47b450616f2acca487341b40f09c05",
+      "source_facts_sha256": "cea36fb4f367802a9de713d3b10b27f3434afa69e201e7119a247c182884d72b",
+      "product_facts_sha256": "cea36fb4f367802a9de713d3b10b27f3434afa69e201e7119a247c182884d72b",
+      "target_contract_mismatch_count": 14,
+      "target_contract_mismatch_sha256": "a3a4e00828528c686bc5818cb7baeff3a6c4e1238e0cd3bacb9a9e44241405e0",
+      "reason": "The operator designated the corrected archived Blackbox V2 exact as the successor authority for this immutable pre-versioned fact set; the legacy rows remain unchanged and are accepted only when every recorded digest matches."
+    }
+  ]
+}

@@ -1,0 +1,3362 @@
+{
+  "schema_version": "legacy-corrected-exact-evidence-v1",
+  "entries": [
+    {
+      "corrected_facts": [
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-01-02",
+          "horizon": 5,
+          "predict_date": "2025-01-02",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-01-09",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-01-03",
+          "horizon": 5,
+          "predict_date": "2025-01-03",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-01-10",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-01-06",
+          "horizon": 5,
+          "predict_date": "2025-01-06",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-01-13",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-01-07",
+          "horizon": 5,
+          "predict_date": "2025-01-07",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-01-14",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-01-08",
+          "horizon": 5,
+          "predict_date": "2025-01-08",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-01-15",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-01-09",
+          "horizon": 5,
+          "predict_date": "2025-01-09",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-01-16",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-01-10",
+          "horizon": 5,
+          "predict_date": "2025-01-10",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-01-17",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-01-13",
+          "horizon": 5,
+          "predict_date": "2025-01-13",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-01-20",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 0,
+          "feature_date": "2025-01-14",
+          "horizon": 5,
+          "predict_date": "2025-01-14",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-01-21",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-01-15",
+          "horizon": 5,
+          "predict_date": "2025-01-15",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-01-22",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-01-16",
+          "horizon": 5,
+          "predict_date": "2025-01-16",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-01-23",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-01-17",
+          "horizon": 5,
+          "predict_date": "2025-01-17",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-01-24",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-01-20",
+          "horizon": 5,
+          "predict_date": "2025-01-20",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-01-27",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-01-21",
+          "horizon": 5,
+          "predict_date": "2025-01-21",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-02-05",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-01-22",
+          "horizon": 5,
+          "predict_date": "2025-01-22",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-02-06",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-01-23",
+          "horizon": 5,
+          "predict_date": "2025-01-23",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-02-07",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 0,
+          "feature_date": "2025-01-24",
+          "horizon": 5,
+          "predict_date": "2025-01-24",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-02-10",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-01-27",
+          "horizon": 5,
+          "predict_date": "2025-01-27",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-02-11",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-02-05",
+          "horizon": 5,
+          "predict_date": "2025-02-05",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-02-12",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-02-06",
+          "horizon": 5,
+          "predict_date": "2025-02-06",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-02-13",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-02-07",
+          "horizon": 5,
+          "predict_date": "2025-02-07",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-02-14",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-02-10",
+          "horizon": 5,
+          "predict_date": "2025-02-10",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-02-17",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-02-11",
+          "horizon": 5,
+          "predict_date": "2025-02-11",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-02-18",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-02-12",
+          "horizon": 5,
+          "predict_date": "2025-02-12",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-02-19",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-02-13",
+          "horizon": 5,
+          "predict_date": "2025-02-13",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-02-20",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-02-14",
+          "horizon": 5,
+          "predict_date": "2025-02-14",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-02-21",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-02-17",
+          "horizon": 5,
+          "predict_date": "2025-02-17",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-02-24",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-02-18",
+          "horizon": 5,
+          "predict_date": "2025-02-18",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-02-25",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-02-19",
+          "horizon": 5,
+          "predict_date": "2025-02-19",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-02-26",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-02-20",
+          "horizon": 5,
+          "predict_date": "2025-02-20",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-02-27",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-02-21",
+          "horizon": 5,
+          "predict_date": "2025-02-21",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-02-28",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-02-24",
+          "horizon": 5,
+          "predict_date": "2025-02-24",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-03-03",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-02-25",
+          "horizon": 5,
+          "predict_date": "2025-02-25",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-03-04",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-02-26",
+          "horizon": 5,
+          "predict_date": "2025-02-26",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-03-05",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-02-27",
+          "horizon": 5,
+          "predict_date": "2025-02-27",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-03-06",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-02-28",
+          "horizon": 5,
+          "predict_date": "2025-02-28",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-03-07",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-03-03",
+          "horizon": 5,
+          "predict_date": "2025-03-03",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-03-10",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-03-04",
+          "horizon": 5,
+          "predict_date": "2025-03-04",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-03-11",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-03-05",
+          "horizon": 5,
+          "predict_date": "2025-03-05",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-03-12",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-03-06",
+          "horizon": 5,
+          "predict_date": "2025-03-06",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-03-13",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-03-07",
+          "horizon": 5,
+          "predict_date": "2025-03-07",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-03-14",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-03-10",
+          "horizon": 5,
+          "predict_date": "2025-03-10",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-03-17",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-03-11",
+          "horizon": 5,
+          "predict_date": "2025-03-11",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-03-18",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-03-12",
+          "horizon": 5,
+          "predict_date": "2025-03-12",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-03-19",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-03-13",
+          "horizon": 5,
+          "predict_date": "2025-03-13",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-03-20",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-03-14",
+          "horizon": 5,
+          "predict_date": "2025-03-14",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-03-21",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-03-17",
+          "horizon": 5,
+          "predict_date": "2025-03-17",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-03-24",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-03-18",
+          "horizon": 5,
+          "predict_date": "2025-03-18",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-03-25",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-03-19",
+          "horizon": 5,
+          "predict_date": "2025-03-19",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-03-26",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-03-20",
+          "horizon": 5,
+          "predict_date": "2025-03-20",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-03-27",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-03-21",
+          "horizon": 5,
+          "predict_date": "2025-03-21",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-03-28",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-03-24",
+          "horizon": 5,
+          "predict_date": "2025-03-24",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-03-31",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-03-25",
+          "horizon": 5,
+          "predict_date": "2025-03-25",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-04-01",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-03-26",
+          "horizon": 5,
+          "predict_date": "2025-03-26",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-04-02",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-03-27",
+          "horizon": 5,
+          "predict_date": "2025-03-27",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-04-03",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-03-28",
+          "horizon": 5,
+          "predict_date": "2025-03-28",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-04-07",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-03-31",
+          "horizon": 5,
+          "predict_date": "2025-03-31",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-04-08",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-04-01",
+          "horizon": 5,
+          "predict_date": "2025-04-01",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-04-09",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-04-02",
+          "horizon": 5,
+          "predict_date": "2025-04-02",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-04-10",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-04-03",
+          "horizon": 5,
+          "predict_date": "2025-04-03",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-04-11",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-04-07",
+          "horizon": 5,
+          "predict_date": "2025-04-07",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-04-14",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-04-08",
+          "horizon": 5,
+          "predict_date": "2025-04-08",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-04-15",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-04-09",
+          "horizon": 5,
+          "predict_date": "2025-04-09",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-04-16",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-04-10",
+          "horizon": 5,
+          "predict_date": "2025-04-10",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-04-17",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-04-11",
+          "horizon": 5,
+          "predict_date": "2025-04-11",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-04-18",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-04-14",
+          "horizon": 5,
+          "predict_date": "2025-04-14",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-04-21",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-04-15",
+          "horizon": 5,
+          "predict_date": "2025-04-15",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-04-22",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-04-16",
+          "horizon": 5,
+          "predict_date": "2025-04-16",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-04-23",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-04-17",
+          "horizon": 5,
+          "predict_date": "2025-04-17",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-04-24",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-04-18",
+          "horizon": 5,
+          "predict_date": "2025-04-18",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-04-25",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-04-21",
+          "horizon": 5,
+          "predict_date": "2025-04-21",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-04-28",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-04-22",
+          "horizon": 5,
+          "predict_date": "2025-04-22",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-04-29",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-04-23",
+          "horizon": 5,
+          "predict_date": "2025-04-23",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-04-30",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-04-24",
+          "horizon": 5,
+          "predict_date": "2025-04-24",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-05-06",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-04-25",
+          "horizon": 5,
+          "predict_date": "2025-04-25",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-05-07",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-04-28",
+          "horizon": 5,
+          "predict_date": "2025-04-28",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-05-08",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-04-29",
+          "horizon": 5,
+          "predict_date": "2025-04-29",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-05-09",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-04-30",
+          "horizon": 5,
+          "predict_date": "2025-04-30",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-05-12",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 0,
+          "feature_date": "2025-05-06",
+          "horizon": 5,
+          "predict_date": "2025-05-06",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-05-13",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-05-07",
+          "horizon": 5,
+          "predict_date": "2025-05-07",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-05-14",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-05-08",
+          "horizon": 5,
+          "predict_date": "2025-05-08",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-05-15",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-05-09",
+          "horizon": 5,
+          "predict_date": "2025-05-09",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-05-16",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-05-12",
+          "horizon": 5,
+          "predict_date": "2025-05-12",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-05-19",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-05-13",
+          "horizon": 5,
+          "predict_date": "2025-05-13",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-05-20",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-05-14",
+          "horizon": 5,
+          "predict_date": "2025-05-14",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-05-21",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-05-15",
+          "horizon": 5,
+          "predict_date": "2025-05-15",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-05-22",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-05-16",
+          "horizon": 5,
+          "predict_date": "2025-05-16",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-05-23",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-05-19",
+          "horizon": 5,
+          "predict_date": "2025-05-19",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-05-26",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-05-20",
+          "horizon": 5,
+          "predict_date": "2025-05-20",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-05-27",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-05-21",
+          "horizon": 5,
+          "predict_date": "2025-05-21",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-05-28",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-05-22",
+          "horizon": 5,
+          "predict_date": "2025-05-22",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-05-29",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-05-23",
+          "horizon": 5,
+          "predict_date": "2025-05-23",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-05-30",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-05-26",
+          "horizon": 5,
+          "predict_date": "2025-05-26",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-06-03",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-05-27",
+          "horizon": 5,
+          "predict_date": "2025-05-27",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-06-04",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-05-28",
+          "horizon": 5,
+          "predict_date": "2025-05-28",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-06-05",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-05-29",
+          "horizon": 5,
+          "predict_date": "2025-05-29",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-06-06",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-05-30",
+          "horizon": 5,
+          "predict_date": "2025-05-30",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-06-09",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-06-03",
+          "horizon": 5,
+          "predict_date": "2025-06-03",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-06-10",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-06-04",
+          "horizon": 5,
+          "predict_date": "2025-06-04",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-06-11",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-06-05",
+          "horizon": 5,
+          "predict_date": "2025-06-05",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-06-12",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-06-06",
+          "horizon": 5,
+          "predict_date": "2025-06-06",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-06-13",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-06-09",
+          "horizon": 5,
+          "predict_date": "2025-06-09",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-06-16",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-06-10",
+          "horizon": 5,
+          "predict_date": "2025-06-10",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-06-17",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-06-11",
+          "horizon": 5,
+          "predict_date": "2025-06-11",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-06-18",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-06-12",
+          "horizon": 5,
+          "predict_date": "2025-06-12",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-06-19",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-06-13",
+          "horizon": 5,
+          "predict_date": "2025-06-13",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-06-20",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-06-16",
+          "horizon": 5,
+          "predict_date": "2025-06-16",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-06-23",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-06-17",
+          "horizon": 5,
+          "predict_date": "2025-06-17",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-06-24",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-06-18",
+          "horizon": 5,
+          "predict_date": "2025-06-18",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-06-25",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-06-19",
+          "horizon": 5,
+          "predict_date": "2025-06-19",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-06-26",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-06-20",
+          "horizon": 5,
+          "predict_date": "2025-06-20",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-06-27",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-06-23",
+          "horizon": 5,
+          "predict_date": "2025-06-23",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-06-30",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-06-24",
+          "horizon": 5,
+          "predict_date": "2025-06-24",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-07-01",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-06-25",
+          "horizon": 5,
+          "predict_date": "2025-06-25",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-07-02",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-06-26",
+          "horizon": 5,
+          "predict_date": "2025-06-26",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-07-03",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-06-27",
+          "horizon": 5,
+          "predict_date": "2025-06-27",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-07-04",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-06-30",
+          "horizon": 5,
+          "predict_date": "2025-06-30",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-07-07",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-07-01",
+          "horizon": 5,
+          "predict_date": "2025-07-01",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-07-08",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-07-02",
+          "horizon": 5,
+          "predict_date": "2025-07-02",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-07-09",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-07-03",
+          "horizon": 5,
+          "predict_date": "2025-07-03",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-07-10",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-07-04",
+          "horizon": 5,
+          "predict_date": "2025-07-04",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-07-11",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-07-07",
+          "horizon": 5,
+          "predict_date": "2025-07-07",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-07-14",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-07-08",
+          "horizon": 5,
+          "predict_date": "2025-07-08",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-07-15",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-07-09",
+          "horizon": 5,
+          "predict_date": "2025-07-09",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-07-16",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-07-10",
+          "horizon": 5,
+          "predict_date": "2025-07-10",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-07-17",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-07-11",
+          "horizon": 5,
+          "predict_date": "2025-07-11",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-07-18",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-07-14",
+          "horizon": 5,
+          "predict_date": "2025-07-14",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-07-21",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-07-15",
+          "horizon": 5,
+          "predict_date": "2025-07-15",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-07-22",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-07-16",
+          "horizon": 5,
+          "predict_date": "2025-07-16",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-07-23",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-07-17",
+          "horizon": 5,
+          "predict_date": "2025-07-17",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-07-24",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-07-18",
+          "horizon": 5,
+          "predict_date": "2025-07-18",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-07-25",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-07-21",
+          "horizon": 5,
+          "predict_date": "2025-07-21",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-07-28",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-07-22",
+          "horizon": 5,
+          "predict_date": "2025-07-22",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-07-29",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-07-23",
+          "horizon": 5,
+          "predict_date": "2025-07-23",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-07-30",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-07-24",
+          "horizon": 5,
+          "predict_date": "2025-07-24",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-07-31",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-07-25",
+          "horizon": 5,
+          "predict_date": "2025-07-25",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-08-01",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-07-28",
+          "horizon": 5,
+          "predict_date": "2025-07-28",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-08-04",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-07-29",
+          "horizon": 5,
+          "predict_date": "2025-07-29",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-08-05",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-07-30",
+          "horizon": 5,
+          "predict_date": "2025-07-30",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-08-06",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-07-31",
+          "horizon": 5,
+          "predict_date": "2025-07-31",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-08-07",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-08-01",
+          "horizon": 5,
+          "predict_date": "2025-08-01",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-08-08",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-08-04",
+          "horizon": 5,
+          "predict_date": "2025-08-04",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-08-11",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-08-05",
+          "horizon": 5,
+          "predict_date": "2025-08-05",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-08-12",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-08-06",
+          "horizon": 5,
+          "predict_date": "2025-08-06",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-08-13",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-08-07",
+          "horizon": 5,
+          "predict_date": "2025-08-07",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-08-14",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-08-08",
+          "horizon": 5,
+          "predict_date": "2025-08-08",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-08-15",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-08-11",
+          "horizon": 5,
+          "predict_date": "2025-08-11",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-08-18",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-08-12",
+          "horizon": 5,
+          "predict_date": "2025-08-12",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-08-19",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-08-13",
+          "horizon": 5,
+          "predict_date": "2025-08-13",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-08-20",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-08-14",
+          "horizon": 5,
+          "predict_date": "2025-08-14",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-08-21",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-08-15",
+          "horizon": 5,
+          "predict_date": "2025-08-15",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-08-22",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-08-18",
+          "horizon": 5,
+          "predict_date": "2025-08-18",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-08-25",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-08-19",
+          "horizon": 5,
+          "predict_date": "2025-08-19",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-08-26",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-08-20",
+          "horizon": 5,
+          "predict_date": "2025-08-20",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-08-27",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-08-21",
+          "horizon": 5,
+          "predict_date": "2025-08-21",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-08-28",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-08-22",
+          "horizon": 5,
+          "predict_date": "2025-08-22",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-08-29",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-08-25",
+          "horizon": 5,
+          "predict_date": "2025-08-25",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-09-01",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-08-26",
+          "horizon": 5,
+          "predict_date": "2025-08-26",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-09-02",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-08-27",
+          "horizon": 5,
+          "predict_date": "2025-08-27",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-09-03",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-08-28",
+          "horizon": 5,
+          "predict_date": "2025-08-28",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-09-04",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-08-29",
+          "horizon": 5,
+          "predict_date": "2025-08-29",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-09-05",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-09-01",
+          "horizon": 5,
+          "predict_date": "2025-09-01",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-09-08",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-09-02",
+          "horizon": 5,
+          "predict_date": "2025-09-02",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-09-09",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-09-03",
+          "horizon": 5,
+          "predict_date": "2025-09-03",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-09-10",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-09-04",
+          "horizon": 5,
+          "predict_date": "2025-09-04",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-09-11",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-09-05",
+          "horizon": 5,
+          "predict_date": "2025-09-05",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-09-12",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-09-08",
+          "horizon": 5,
+          "predict_date": "2025-09-08",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-09-15",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-09-09",
+          "horizon": 5,
+          "predict_date": "2025-09-09",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-09-16",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-09-10",
+          "horizon": 5,
+          "predict_date": "2025-09-10",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-09-17",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-09-11",
+          "horizon": 5,
+          "predict_date": "2025-09-11",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-09-18",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-09-12",
+          "horizon": 5,
+          "predict_date": "2025-09-12",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-09-19",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-09-15",
+          "horizon": 5,
+          "predict_date": "2025-09-15",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-09-22",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-09-16",
+          "horizon": 5,
+          "predict_date": "2025-09-16",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-09-23",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-09-17",
+          "horizon": 5,
+          "predict_date": "2025-09-17",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-09-24",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-09-18",
+          "horizon": 5,
+          "predict_date": "2025-09-18",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-09-25",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-09-19",
+          "horizon": 5,
+          "predict_date": "2025-09-19",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-09-26",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-09-22",
+          "horizon": 5,
+          "predict_date": "2025-09-22",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-09-29",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-09-23",
+          "horizon": 5,
+          "predict_date": "2025-09-23",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-09-30",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-09-24",
+          "horizon": 5,
+          "predict_date": "2025-09-24",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-10-09",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-09-25",
+          "horizon": 5,
+          "predict_date": "2025-09-25",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-10-10",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-09-26",
+          "horizon": 5,
+          "predict_date": "2025-09-26",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-10-13",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-09-29",
+          "horizon": 5,
+          "predict_date": "2025-09-29",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-10-14",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-09-30",
+          "horizon": 5,
+          "predict_date": "2025-09-30",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-10-15",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-10-09",
+          "horizon": 5,
+          "predict_date": "2025-10-09",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-10-16",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-10-10",
+          "horizon": 5,
+          "predict_date": "2025-10-10",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-10-17",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-10-13",
+          "horizon": 5,
+          "predict_date": "2025-10-13",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-10-20",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-10-14",
+          "horizon": 5,
+          "predict_date": "2025-10-14",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-10-21",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-10-15",
+          "horizon": 5,
+          "predict_date": "2025-10-15",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-10-22",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-10-16",
+          "horizon": 5,
+          "predict_date": "2025-10-16",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-10-23",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-10-17",
+          "horizon": 5,
+          "predict_date": "2025-10-17",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-10-24",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-10-20",
+          "horizon": 5,
+          "predict_date": "2025-10-20",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-10-27",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-10-21",
+          "horizon": 5,
+          "predict_date": "2025-10-21",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-10-28",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-10-22",
+          "horizon": 5,
+          "predict_date": "2025-10-22",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-10-29",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-10-23",
+          "horizon": 5,
+          "predict_date": "2025-10-23",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-10-30",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-10-24",
+          "horizon": 5,
+          "predict_date": "2025-10-24",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-10-31",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-10-27",
+          "horizon": 5,
+          "predict_date": "2025-10-27",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-11-03",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-10-28",
+          "horizon": 5,
+          "predict_date": "2025-10-28",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-11-04",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-10-29",
+          "horizon": 5,
+          "predict_date": "2025-10-29",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-11-05",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-10-30",
+          "horizon": 5,
+          "predict_date": "2025-10-30",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-11-06",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-10-31",
+          "horizon": 5,
+          "predict_date": "2025-10-31",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-11-07",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-11-03",
+          "horizon": 5,
+          "predict_date": "2025-11-03",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-11-10",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-11-04",
+          "horizon": 5,
+          "predict_date": "2025-11-04",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-11-11",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-11-05",
+          "horizon": 5,
+          "predict_date": "2025-11-05",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-11-12",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-11-06",
+          "horizon": 5,
+          "predict_date": "2025-11-06",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-11-13",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-11-07",
+          "horizon": 5,
+          "predict_date": "2025-11-07",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-11-14",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 0,
+          "feature_date": "2025-11-10",
+          "horizon": 5,
+          "predict_date": "2025-11-10",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-11-17",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-11-11",
+          "horizon": 5,
+          "predict_date": "2025-11-11",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-11-18",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-11-12",
+          "horizon": 5,
+          "predict_date": "2025-11-12",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-11-19",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-11-13",
+          "horizon": 5,
+          "predict_date": "2025-11-13",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-11-20",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-11-14",
+          "horizon": 5,
+          "predict_date": "2025-11-14",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-11-21",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-11-17",
+          "horizon": 5,
+          "predict_date": "2025-11-17",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-11-24",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-11-18",
+          "horizon": 5,
+          "predict_date": "2025-11-18",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-11-25",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-11-19",
+          "horizon": 5,
+          "predict_date": "2025-11-19",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-11-26",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-11-20",
+          "horizon": 5,
+          "predict_date": "2025-11-20",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-11-27",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-11-21",
+          "horizon": 5,
+          "predict_date": "2025-11-21",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-11-28",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-11-24",
+          "horizon": 5,
+          "predict_date": "2025-11-24",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-12-01",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-11-25",
+          "horizon": 5,
+          "predict_date": "2025-11-25",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-12-02",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-11-26",
+          "horizon": 5,
+          "predict_date": "2025-11-26",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-12-03",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-11-27",
+          "horizon": 5,
+          "predict_date": "2025-11-27",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-12-04",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-11-28",
+          "horizon": 5,
+          "predict_date": "2025-11-28",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-12-05",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-12-01",
+          "horizon": 5,
+          "predict_date": "2025-12-01",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-12-08",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-12-02",
+          "horizon": 5,
+          "predict_date": "2025-12-02",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-12-09",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 0,
+          "feature_date": "2025-12-03",
+          "horizon": 5,
+          "predict_date": "2025-12-03",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-12-10",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-12-04",
+          "horizon": 5,
+          "predict_date": "2025-12-04",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-12-11",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-12-05",
+          "horizon": 5,
+          "predict_date": "2025-12-05",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-12-12",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-12-08",
+          "horizon": 5,
+          "predict_date": "2025-12-08",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-12-15",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-12-09",
+          "horizon": 5,
+          "predict_date": "2025-12-09",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-12-16",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-12-10",
+          "horizon": 5,
+          "predict_date": "2025-12-10",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-12-17",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-12-11",
+          "horizon": 5,
+          "predict_date": "2025-12-11",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-12-18",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-12-12",
+          "horizon": 5,
+          "predict_date": "2025-12-12",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-12-19",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-12-15",
+          "horizon": 5,
+          "predict_date": "2025-12-15",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-12-22",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-12-16",
+          "horizon": 5,
+          "predict_date": "2025-12-16",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-12-23",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-12-17",
+          "horizon": 5,
+          "predict_date": "2025-12-17",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-12-24",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-12-18",
+          "horizon": 5,
+          "predict_date": "2025-12-18",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-12-25",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2025-12-19",
+          "horizon": 5,
+          "predict_date": "2025-12-19",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-12-26",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-12-22",
+          "horizon": 5,
+          "predict_date": "2025-12-22",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-12-29",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-12-23",
+          "horizon": 5,
+          "predict_date": "2025-12-23",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-12-30",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-12-24",
+          "horizon": 5,
+          "predict_date": "2025-12-24",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2025-12-31",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-12-25",
+          "horizon": 5,
+          "predict_date": "2025-12-25",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-01-05",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-12-26",
+          "horizon": 5,
+          "predict_date": "2025-12-26",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-01-06",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-12-29",
+          "horizon": 5,
+          "predict_date": "2025-12-29",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-01-07",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-12-30",
+          "horizon": 5,
+          "predict_date": "2025-12-30",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-01-08",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2025-12-31",
+          "horizon": 5,
+          "predict_date": "2025-12-31",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-01-09",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2026-01-05",
+          "horizon": 5,
+          "predict_date": "2026-01-05",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-01-12",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-01-06",
+          "horizon": 5,
+          "predict_date": "2026-01-06",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-01-13",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-01-07",
+          "horizon": 5,
+          "predict_date": "2026-01-07",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-01-14",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-01-08",
+          "horizon": 5,
+          "predict_date": "2026-01-08",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-01-15",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-01-09",
+          "horizon": 5,
+          "predict_date": "2026-01-09",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-01-16",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-01-12",
+          "horizon": 5,
+          "predict_date": "2026-01-12",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-01-19",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-01-13",
+          "horizon": 5,
+          "predict_date": "2026-01-13",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-01-20",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-01-14",
+          "horizon": 5,
+          "predict_date": "2026-01-14",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-01-21",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-01-15",
+          "horizon": 5,
+          "predict_date": "2026-01-15",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-01-22",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-01-16",
+          "horizon": 5,
+          "predict_date": "2026-01-16",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-01-23",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-01-19",
+          "horizon": 5,
+          "predict_date": "2026-01-19",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-01-26",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-01-20",
+          "horizon": 5,
+          "predict_date": "2026-01-20",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-01-27",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-01-21",
+          "horizon": 5,
+          "predict_date": "2026-01-21",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-01-28",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-01-22",
+          "horizon": 5,
+          "predict_date": "2026-01-22",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-01-29",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-01-23",
+          "horizon": 5,
+          "predict_date": "2026-01-23",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-01-30",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-01-26",
+          "horizon": 5,
+          "predict_date": "2026-01-26",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-02-02",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-01-27",
+          "horizon": 5,
+          "predict_date": "2026-01-27",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-02-03",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-01-28",
+          "horizon": 5,
+          "predict_date": "2026-01-28",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-02-04",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-01-29",
+          "horizon": 5,
+          "predict_date": "2026-01-29",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-02-05",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-01-30",
+          "horizon": 5,
+          "predict_date": "2026-01-30",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-02-06",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-02-02",
+          "horizon": 5,
+          "predict_date": "2026-02-02",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-02-09",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-02-03",
+          "horizon": 5,
+          "predict_date": "2026-02-03",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-02-10",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-02-04",
+          "horizon": 5,
+          "predict_date": "2026-02-04",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-02-11",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-02-05",
+          "horizon": 5,
+          "predict_date": "2026-02-05",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-02-12",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-02-06",
+          "horizon": 5,
+          "predict_date": "2026-02-06",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-02-13",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-02-09",
+          "horizon": 5,
+          "predict_date": "2026-02-09",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-02-24",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-02-10",
+          "horizon": 5,
+          "predict_date": "2026-02-10",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-02-25",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2026-02-11",
+          "horizon": 5,
+          "predict_date": "2026-02-11",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-02-26",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2026-02-12",
+          "horizon": 5,
+          "predict_date": "2026-02-12",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-02-27",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 0,
+          "feature_date": "2026-02-13",
+          "horizon": 5,
+          "predict_date": "2026-02-13",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-03-02",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2026-02-24",
+          "horizon": 5,
+          "predict_date": "2026-02-24",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-03-03",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-02-25",
+          "horizon": 5,
+          "predict_date": "2026-02-25",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-03-04",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-02-26",
+          "horizon": 5,
+          "predict_date": "2026-02-26",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-03-05",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-02-27",
+          "horizon": 5,
+          "predict_date": "2026-02-27",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-03-06",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2026-03-02",
+          "horizon": 5,
+          "predict_date": "2026-03-02",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-03-09",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2026-03-03",
+          "horizon": 5,
+          "predict_date": "2026-03-03",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-03-10",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2026-03-04",
+          "horizon": 5,
+          "predict_date": "2026-03-04",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-03-11",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2026-03-05",
+          "horizon": 5,
+          "predict_date": "2026-03-05",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-03-12",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2026-03-06",
+          "horizon": 5,
+          "predict_date": "2026-03-06",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-03-13",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2026-03-09",
+          "horizon": 5,
+          "predict_date": "2026-03-09",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-03-16",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2026-03-10",
+          "horizon": 5,
+          "predict_date": "2026-03-10",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-03-17",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-03-11",
+          "horizon": 5,
+          "predict_date": "2026-03-11",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-03-18",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2026-03-12",
+          "horizon": 5,
+          "predict_date": "2026-03-12",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-03-19",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-03-13",
+          "horizon": 5,
+          "predict_date": "2026-03-13",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-03-20",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-03-16",
+          "horizon": 5,
+          "predict_date": "2026-03-16",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-03-23",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-03-17",
+          "horizon": 5,
+          "predict_date": "2026-03-17",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-03-24",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2026-03-18",
+          "horizon": 5,
+          "predict_date": "2026-03-18",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-03-25",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-03-19",
+          "horizon": 5,
+          "predict_date": "2026-03-19",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-03-26",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-03-20",
+          "horizon": 5,
+          "predict_date": "2026-03-20",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-03-27",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-03-23",
+          "horizon": 5,
+          "predict_date": "2026-03-23",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-03-30",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-03-24",
+          "horizon": 5,
+          "predict_date": "2026-03-24",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-03-31",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-03-25",
+          "horizon": 5,
+          "predict_date": "2026-03-25",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-04-01",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-03-26",
+          "horizon": 5,
+          "predict_date": "2026-03-26",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-04-02",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-03-27",
+          "horizon": 5,
+          "predict_date": "2026-03-27",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-04-03",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2026-03-30",
+          "horizon": 5,
+          "predict_date": "2026-03-30",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-04-07",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2026-03-31",
+          "horizon": 5,
+          "predict_date": "2026-03-31",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-04-08",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2026-04-01",
+          "horizon": 5,
+          "predict_date": "2026-04-01",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-04-09",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2026-04-02",
+          "horizon": 5,
+          "predict_date": "2026-04-02",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-04-10",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2026-04-03",
+          "horizon": 5,
+          "predict_date": "2026-04-03",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-04-13",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 0,
+          "feature_date": "2026-04-07",
+          "horizon": 5,
+          "predict_date": "2026-04-07",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-04-14",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-04-08",
+          "horizon": 5,
+          "predict_date": "2026-04-08",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-04-15",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-04-09",
+          "horizon": 5,
+          "predict_date": "2026-04-09",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-04-16",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-04-10",
+          "horizon": 5,
+          "predict_date": "2026-04-10",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-04-17",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-04-13",
+          "horizon": 5,
+          "predict_date": "2026-04-13",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-04-20",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-04-14",
+          "horizon": 5,
+          "predict_date": "2026-04-14",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-04-21",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-04-15",
+          "horizon": 5,
+          "predict_date": "2026-04-15",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-04-22",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-04-16",
+          "horizon": 5,
+          "predict_date": "2026-04-16",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-04-23",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-04-17",
+          "horizon": 5,
+          "predict_date": "2026-04-17",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-04-24",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-04-20",
+          "horizon": 5,
+          "predict_date": "2026-04-20",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-04-27",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-04-21",
+          "horizon": 5,
+          "predict_date": "2026-04-21",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-04-28",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-04-22",
+          "horizon": 5,
+          "predict_date": "2026-04-22",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-04-29",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 0,
+          "feature_date": "2026-04-23",
+          "horizon": 5,
+          "predict_date": "2026-04-23",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-04-30",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2026-04-24",
+          "horizon": 5,
+          "predict_date": "2026-04-24",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-05-06",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-04-27",
+          "horizon": 5,
+          "predict_date": "2026-04-27",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-05-07",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-04-28",
+          "horizon": 5,
+          "predict_date": "2026-04-28",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-05-08",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2026-04-29",
+          "horizon": 5,
+          "predict_date": "2026-04-29",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-05-11",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-04-30",
+          "horizon": 5,
+          "predict_date": "2026-04-30",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-05-12",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-05-06",
+          "horizon": 5,
+          "predict_date": "2026-05-06",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-05-13",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-05-07",
+          "horizon": 5,
+          "predict_date": "2026-05-07",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-05-14",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-05-08",
+          "horizon": 5,
+          "predict_date": "2026-05-08",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-05-15",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-05-11",
+          "horizon": 5,
+          "predict_date": "2026-05-11",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-05-18",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-05-12",
+          "horizon": 5,
+          "predict_date": "2026-05-12",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-05-19",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-05-13",
+          "horizon": 5,
+          "predict_date": "2026-05-13",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-05-20",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-05-14",
+          "horizon": 5,
+          "predict_date": "2026-05-14",
+          "predicted_direction": -1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-05-21",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-05-15",
+          "horizon": 5,
+          "predict_date": "2026-05-15",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-05-22",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-05-18",
+          "horizon": 5,
+          "predict_date": "2026-05-18",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-05-25",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": 1,
+          "feature_date": "2026-05-19",
+          "horizon": 5,
+          "predict_date": "2026-05-19",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-05-26",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-05-20",
+          "horizon": 5,
+          "predict_date": "2026-05-20",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-05-27",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-05-21",
+          "horizon": 5,
+          "predict_date": "2026-05-21",
+          "predicted_direction": 1,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-05-28",
+          "target_tenor": "5Y"
+        },
+        {
+          "actual_direction": -1,
+          "feature_date": "2026-05-22",
+          "horizon": 5,
+          "predict_date": "2026-05-22",
+          "predicted_direction": 0,
+          "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+          "target_date": "2026-05-29",
+          "target_tenor": "5Y"
+        }
+      ],
+      "corrected_facts_sha256": "0caaa51c08a1a65b9e5998c73a3cd6d181f9c14e81ddea2978c9080c45fac749",
+      "source_backtest": {
+        "code_hash": "ad9bdacf5063a427ecc8b70852e045f4822ba9af1b6d8fcd171cd2d779e95103",
+        "config_hash": "5d0a5b3b771a02f25e472c0fa76119ef978810907f2370feb8b0eea22c0d2d61",
+        "input_artifact_hash": "snapshot-1d335ad33e23ca7e7c8f5b64",
+        "manifest_hash": "96d46ee4b2fb16f3b7da0c5485808f52f8f7ef14607721fbe00d26bc55d74982",
+        "persisted_prediction_count": 333,
+        "status": "success"
+      },
+      "source_registry": {
+        "base_scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+        "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2__h5__5Y",
+        "status": "archived"
+      },
+      "source_version": {
+        "code_hash": "ad9bdacf5063a427ecc8b70852e045f4822ba9af1b6d8fcd171cd2d779e95103",
+        "config_hash": "5d0a5b3b771a02f25e472c0fa76119ef978810907f2370feb8b0eea22c0d2d61",
+        "manifest_hash": "96d46ee4b2fb16f3b7da0c5485808f52f8f7ef14607721fbe00d26bc55d74982",
+        "runtime_type": "blackbox_v2",
+        "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10_bbv2",
+        "scheme_version": "3ee3dd2334fd",
+        "status": "retired"
+      }
+    }
+  ]
+}
