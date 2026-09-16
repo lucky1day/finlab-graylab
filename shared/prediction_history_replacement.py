@@ -171,6 +171,7 @@ def validate_prediction_history_source_runs(
     projection: PredictionHistoryProjection,
     source_live_runs: Iterable[Mapping[str, Any]],
     source_backtest_runs: Iterable[Mapping[str, Any]],
+    source_backtest_predictions: Iterable[Mapping[str, Any]],
     *,
     entry: LegacyPredictionMigration,
     corrected: LegacyCorrectedExactEvidence,
@@ -178,6 +179,7 @@ def validate_prediction_history_source_runs(
     """验证替代事实引用的成功 run 与冻结血缘完全一致。"""
     live_runs = [dict(row) for row in source_live_runs]
     backtest_runs = [dict(row) for row in source_backtest_runs]
+    backtest_predictions = [dict(row) for row in source_backtest_predictions]
     if {int(row["run_id"]) for row in live_runs} != set(
         projection.source_live_run_ids
     ):
@@ -231,6 +233,11 @@ def validate_prediction_history_source_runs(
         or str(backtest.get("scheme_id"))
         != entry.designated_source_scheme_id
         or str(backtest.get("status")) != corrected.backtest_status
+        or str(backtest.get("benchmark_id"))
+        != corrected.backtest_benchmark_id
+        or str(backtest.get("data_source"))
+        != corrected.backtest_data_source
+        or str(backtest.get("run_mode")) != corrected.backtest_run_mode
         or str(backtest.get("code_hash")) != entry.designated_code_hash
         or str(backtest.get("config_hash")) != entry.designated_config_hash
         or str(backtest.get("input_artifact_hash"))
@@ -243,9 +250,19 @@ def validate_prediction_history_source_runs(
         or _strict_int(summary.get("persisted_prediction_count"))
         != entry.expected_fact_count
         or _strict_int(summary.get("row_count")) != entry.expected_fact_count
+        or _digest(summary) != corrected.backtest_summary_sha256
     ):
         raise PredictionHistoryReplacementError(
             "designated backtest replacement run lineage changed"
+        )
+    if (
+        {int(row["run_id"]) for row in backtest_predictions}
+        != set(projection.source_backtest_run_ids)
+        or _corrected_source_rows(backtest_predictions)
+        != _corrected_evidence_rows(corrected)
+    ):
+        raise PredictionHistoryReplacementError(
+            "designated backtest replacement source facts changed"
         )
 
 
@@ -301,6 +318,32 @@ def _corrected_rows(
                 "target_date": str(row["target_date"]),
                 "predicted_direction": int(row["predicted_direction"]),
                 "actual_direction": int(row["backtest_actual_direction"]),
+            }
+            for row in rows
+        ),
+        key=lambda row: (
+            row["target_tenor"],
+            row["horizon"],
+            row["target_date"],
+            row["predict_date"],
+        ),
+    )
+
+
+def _corrected_source_rows(
+    rows: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    return sorted(
+        (
+            {
+                "scheme_id": str(row["scheme_id"]),
+                "target_tenor": str(row["target_tenor"]),
+                "horizon": int(row["horizon"]),
+                "predict_date": str(row["predict_date"]),
+                "feature_date": str(row["feature_date"]),
+                "target_date": str(row["target_date"]),
+                "predicted_direction": int(row["predicted_direction"]),
+                "actual_direction": int(row["label"]),
             }
             for row in rows
         ),

@@ -98,6 +98,10 @@ class LegacyCorrectedExactEvidence:
     manifest_hash: str
     input_artifact_id: str
     backtest_status: str
+    backtest_benchmark_id: str
+    backtest_data_source: str
+    backtest_run_mode: str
+    backtest_summary_sha256: str
     persisted_prediction_count: int
     corrected_facts: tuple[LegacyCorrectedFact, ...]
     corrected_facts_sha256: str
@@ -271,10 +275,14 @@ def _parse_corrected_exact_evidence(
         or set(backtest)
         != {
             "status",
+            "benchmark_id",
+            "data_source",
+            "run_mode",
             "code_hash",
             "config_hash",
             "input_artifact_hash",
             "manifest_hash",
+            "summary_sha256",
             "persisted_prediction_count",
         }
         or not isinstance(facts, list)
@@ -294,6 +302,10 @@ def _parse_corrected_exact_evidence(
         manifest_hash=version["manifest_hash"],
         input_artifact_id=backtest["input_artifact_hash"],
         backtest_status=backtest["status"],
+        backtest_benchmark_id=backtest["benchmark_id"],
+        backtest_data_source=backtest["data_source"],
+        backtest_run_mode=backtest["run_mode"],
+        backtest_summary_sha256=backtest["summary_sha256"],
         persisted_prediction_count=backtest["persisted_prediction_count"],
         corrected_facts=parsed_facts,
         corrected_facts_sha256=digest,
@@ -307,6 +319,11 @@ def _parse_corrected_exact_evidence(
         or evidence.runtime_type != "blackbox_v2"
         or evidence.version_status != "retired"
         or evidence.backtest_status != "success"
+        or not isinstance(evidence.backtest_benchmark_id, str)
+        or not evidence.backtest_benchmark_id.strip()
+        or evidence.backtest_data_source
+        != "blackbox_v2_current_snapshot_as_of"
+        or evidence.backtest_run_mode != "persist"
         or _EXACT_PATTERN.fullmatch(evidence.designated_exact) is None
         or not all(
             _SHA256_PATTERN.fullmatch(item)
@@ -314,6 +331,7 @@ def _parse_corrected_exact_evidence(
                 evidence.code_hash,
                 evidence.config_hash,
                 evidence.manifest_hash,
+                evidence.backtest_summary_sha256,
                 evidence.corrected_facts_sha256,
             )
         )

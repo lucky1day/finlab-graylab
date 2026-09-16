@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+
 from shared.legacy_prediction_migration import (
     LegacyCorrectedExactEvidence,
     LegacyCorrectedFact,
@@ -72,6 +75,10 @@ def _fixture():
         manifest_hash="c" * 64,
         input_artifact_id="snapshot-" + "9" * 24,
         backtest_status="success",
+        backtest_benchmark_id="bbv2-fixture",
+        backtest_data_source="blackbox_v2_current_snapshot_as_of",
+        backtest_run_mode="persist",
+        backtest_summary_sha256=_summary_sha256(),
         persisted_prediction_count=1,
         corrected_facts=(corrected_fact,),
         corrected_facts_sha256="d" * 64,
@@ -101,6 +108,26 @@ def _fixture():
         },
     ]
     return migration, corrected, source, live
+
+
+def _summary():
+    return {
+        "scheme_version": "0123456789ab",
+        "manifest_hash": "c" * 64,
+        "input_artifact_hash": "snapshot-" + "9" * 24,
+        "persisted_prediction_count": 1,
+        "row_count": 1,
+    }
+
+
+def _summary_sha256() -> str:
+    raw = json.dumps(
+        _summary(),
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
 
 
 def test_projects_complete_replacement_and_marks_only_approved_rows_deletable():
@@ -195,22 +222,32 @@ def test_source_run_lineage_is_required_and_drift_fails_closed():
         "id": 8,
         "scheme_id": "legacy_bbv2",
         "status": "success",
+        "benchmark_id": "bbv2-fixture",
+        "data_source": "blackbox_v2_current_snapshot_as_of",
+        "run_mode": "persist",
         "code_hash": "a" * 64,
         "config_hash": "b" * 64,
         "input_artifact_hash": "snapshot-" + "9" * 24,
-        "summary": {
-            "scheme_version": "0123456789ab",
-            "manifest_hash": "c" * 64,
-            "input_artifact_hash": "snapshot-" + "9" * 24,
-            "persisted_prediction_count": 1,
-            "row_count": 1,
-        },
+        "summary": _summary(),
     }
 
     validate_prediction_history_source_runs(
         projection,
         [live_run],
         [backtest_run],
+        [
+            {
+                "run_id": 8,
+                "scheme_id": "legacy_bbv2",
+                "target_tenor": "5Y",
+                "horizon": 5,
+                "predict_date": "2026-05-20",
+                "feature_date": "2026-05-20",
+                "target_date": "2026-05-27",
+                "predicted_direction": 1,
+                "label": -1,
+            }
+        ],
         entry=migration,
         corrected=corrected,
     )
@@ -220,6 +257,7 @@ def test_source_run_lineage_is_required_and_drift_fails_closed():
             projection,
             [live_run],
             [backtest_run],
+            [],
             entry=migration,
             corrected=corrected,
         )

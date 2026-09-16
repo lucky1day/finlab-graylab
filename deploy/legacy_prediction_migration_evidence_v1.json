@@ -3336,11 +3336,15 @@
       ],
       "corrected_facts_sha256": "0caaa51c08a1a65b9e5998c73a3cd6d181f9c14e81ddea2978c9080c45fac749",
       "source_backtest": {
+        "benchmark_id": "bbv2-liwei_0616_5y01_full_oos_k3_div_k10_bbv2-c9fdfd34d9854343b84e1d260356753f",
         "code_hash": "ad9bdacf5063a427ecc8b70852e045f4822ba9af1b6d8fcd171cd2d779e95103",
         "config_hash": "5d0a5b3b771a02f25e472c0fa76119ef978810907f2370feb8b0eea22c0d2d61",
+        "data_source": "blackbox_v2_current_snapshot_as_of",
         "input_artifact_hash": "snapshot-1d335ad33e23ca7e7c8f5b64",
         "manifest_hash": "96d46ee4b2fb16f3b7da0c5485808f52f8f7ef14607721fbe00d26bc55d74982",
         "persisted_prediction_count": 333,
+        "run_mode": "persist",
+        "summary_sha256": "df8ee0f5c6f17232ffaca21c4c8ed9f1fb244659c215d96f2cb66c0e0efea4e8",
         "status": "success"
       },
       "source_registry": {

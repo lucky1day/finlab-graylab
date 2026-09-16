@@ -282,14 +282,17 @@ def resolve_dashboard_history_replacements(
                 f"historical replacement evidence drift: {exc}"
             ) from exc
         if projection is not None:
-            source_live_runs, source_backtest_runs = (
-                _read_replacement_source_runs(connection, projection)
-            )
+            (
+                source_live_runs,
+                source_backtest_runs,
+                source_backtest_predictions,
+            ) = _read_replacement_source_runs(connection, projection)
             try:
                 validate_prediction_history_source_runs(
                     projection,
                     source_live_runs,
                     source_backtest_runs,
+                    source_backtest_predictions,
                     entry=entry,
                     corrected=corrected,
                 )
@@ -341,7 +344,11 @@ def _read_replacement_scope_rows(
 def _read_replacement_source_runs(
     connection: Connection,
     projection: PredictionHistoryProjection,
-) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+) -> tuple[
+    list[Mapping[str, Any]],
+    list[Mapping[str, Any]],
+    list[Mapping[str, Any]],
+]:
     """读取替代事实精确引用的 live/backtest run。"""
     live_runs: list[Mapping[str, Any]] = []
     if projection.source_live_run_ids:
@@ -359,8 +366,9 @@ def _read_replacement_source_runs(
     backtest_runs: list[Mapping[str, Any]] = []
     if projection.source_backtest_run_ids:
         statement = text(
-            "SELECT id, scheme_id, status, code_hash, config_hash, "
-            "input_artifact_hash, summary FROM t_backtest_runs "
+            "SELECT id, benchmark_id, scheme_id, data_source, status, "
+            "code_hash, config_hash, input_artifact_hash, run_mode, summary "
+            "FROM t_backtest_runs "
             "WHERE id IN :run_ids ORDER BY id"
         ).bindparams(bindparam("run_ids", expanding=True))
         backtest_runs = list(
@@ -369,7 +377,21 @@ def _read_replacement_source_runs(
                 {"run_ids": sorted(projection.source_backtest_run_ids)},
             ).mappings()
         )
-    return live_runs, backtest_runs
+    backtest_predictions: list[Mapping[str, Any]] = []
+    if projection.source_backtest_run_ids:
+        statement = text(
+            "SELECT run_id, scheme_id, target_tenor, horizon, predict_date, "
+            "feature_date, target_date, predicted_direction, label "
+            "FROM t_backtest_predictions WHERE run_id IN :run_ids "
+            "ORDER BY target_tenor, horizon, target_date, predict_date, id"
+        ).bindparams(bindparam("run_ids", expanding=True))
+        backtest_predictions = list(
+            connection.execute(
+                statement,
+                {"run_ids": sorted(projection.source_backtest_run_ids)},
+            ).mappings()
+        )
+    return live_runs, backtest_runs, backtest_predictions
 
 
 def read_bounded_source_rows(

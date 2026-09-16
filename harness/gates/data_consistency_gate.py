@@ -2830,19 +2830,22 @@ def _project_snapshot_history_replacements(
             ) from exc
         if projection is None:
             continue
-        source_live_runs, source_backtest_runs = (
-            _read_history_replacement_source_runs(
-                connection,
-                projection,
-                deadline=deadline,
-                monotonic=monotonic,
-            )
+        (
+            source_live_runs,
+            source_backtest_runs,
+            source_backtest_predictions,
+        ) = _read_history_replacement_source_runs(
+            connection,
+            projection,
+            deadline=deadline,
+            monotonic=monotonic,
         )
         try:
             validate_prediction_history_source_runs(
                 projection,
                 source_live_runs,
                 source_backtest_runs,
+                source_backtest_predictions,
                 entry=entry,
                 corrected=corrected,
             )
@@ -2876,7 +2879,11 @@ def _read_history_replacement_source_runs(
     *,
     deadline: float | None,
     monotonic: Callable[[], float],
-) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+) -> tuple[
+    list[Mapping[str, Any]],
+    list[Mapping[str, Any]],
+    list[Mapping[str, Any]],
+]:
     """在同一快照与总预算内读取替代事实引用的 run。"""
     live_runs: list[Mapping[str, Any]] = []
     if projection.source_live_run_ids:
@@ -2897,8 +2904,9 @@ def _read_history_replacement_source_runs(
     backtest_runs: list[Mapping[str, Any]] = []
     if projection.source_backtest_run_ids:
         statement = text(
-            "SELECT id, scheme_id, status, code_hash, config_hash, "
-            "input_artifact_hash, summary FROM t_backtest_runs "
+            "SELECT id, benchmark_id, scheme_id, data_source, status, "
+            "code_hash, config_hash, input_artifact_hash, run_mode, summary "
+            "FROM t_backtest_runs "
             "WHERE id IN :run_ids ORDER BY id"
         ).bindparams(bindparam("run_ids", expanding=True))
         backtest_runs = list(
@@ -2910,7 +2918,24 @@ def _read_history_replacement_source_runs(
                 monotonic=monotonic,
             ).mappings()
         )
-    return live_runs, backtest_runs
+    backtest_predictions: list[Mapping[str, Any]] = []
+    if projection.source_backtest_run_ids:
+        statement = text(
+            "SELECT run_id, scheme_id, target_tenor, horizon, predict_date, "
+            "feature_date, target_date, predicted_direction, label "
+            "FROM t_backtest_predictions WHERE run_id IN :run_ids "
+            "ORDER BY target_tenor, horizon, target_date, predict_date, id"
+        ).bindparams(bindparam("run_ids", expanding=True))
+        backtest_predictions = list(
+            _execute_budgeted(
+                connection,
+                statement,
+                {"run_ids": sorted(projection.source_backtest_run_ids)},
+                deadline=deadline,
+                monotonic=monotonic,
+            ).mappings()
+        )
+    return live_runs, backtest_runs, backtest_predictions
 
 
 def _read_actuals(

@@ -36,6 +36,16 @@ def _sha256(value: object) -> str:
     ).hexdigest()
 
 
+def _source_summary() -> dict[str, object]:
+    return {
+        "scheme_version": SOURCE_EXACT,
+        "manifest_hash": "c" * 64,
+        "input_artifact_hash": "snapshot-" + "9" * 24,
+        "persisted_prediction_count": 1,
+        "row_count": 1,
+    }
+
+
 def _evidence() -> tuple[
     LegacyPredictionMigration,
     LegacyCorrectedExactEvidence,
@@ -122,6 +132,10 @@ def _evidence() -> tuple[
         manifest_hash="c" * 64,
         input_artifact_id="snapshot-" + "9" * 24,
         backtest_status="success",
+        backtest_benchmark_id="cleanup-source",
+        backtest_data_source="blackbox_v2_current_snapshot_as_of",
+        backtest_run_mode="persist",
+        backtest_summary_sha256=_sha256(_source_summary()),
         persisted_prediction_count=1,
         corrected_facts=(corrected_fact,),
         corrected_facts_sha256=corrected_digest,
@@ -188,15 +202,7 @@ def _seed(engine) -> None:
                 "code_hash": "a" * 64,
                 "config_hash": "b" * 64,
                 "input_artifact": "snapshot-" + "9" * 24,
-                "summary": json.dumps(
-                    {
-                        "scheme_version": SOURCE_EXACT,
-                        "manifest_hash": "c" * 64,
-                        "input_artifact_hash": "snapshot-" + "9" * 24,
-                        "persisted_prediction_count": 1,
-                        "row_count": 1,
-                    }
-                ),
+                "summary": json.dumps(_source_summary()),
             },
         )
         backtests = {
@@ -244,9 +250,16 @@ def _seed(engine) -> None:
                 "predict_date, feature_date, target_date, label, "
                 "predicted_direction) VALUES "
                 "(:old_backtest, 'cleanup-old', :base_id, '5Y', 5, "
+                "'2026-05-20', '2026-05-20', '2026-05-27', -1, 1), "
+                "(:source_backtest, 'cleanup-source', :source_id, '5Y', 5, "
                 "'2026-05-20', '2026-05-20', '2026-05-27', -1, 1)"
             ),
-            {"old_backtest": backtests[BASE_ID], "base_id": BASE_ID},
+            {
+                "old_backtest": backtests[BASE_ID],
+                "base_id": BASE_ID,
+                "source_backtest": backtests[SOURCE_ID],
+                "source_id": SOURCE_ID,
+            },
         )
         connection.execute(
             text(
@@ -353,9 +366,11 @@ def test_history_cleanup_is_exact_and_rolls_back_injected_failure(
         assert len(plan["scope"]["product_ids"]) == 2
         assert len(plan["scope"]["source_live_run_ids"]) == 1
         assert len(plan["scope"]["source_backtest_run_ids"]) == 1
+        assert len(plan["scope"]["source_backtest_prediction_ids"]) == 1
         assert len(plan["backup"]["backtest_monthly_metrics"]) == 1
         assert len(plan["backup"]["source_live_runs"]) == 1
         assert len(plan["backup"]["source_backtest_runs"]) == 1
+        assert len(plan["backup"]["source_backtest_predictions"]) == 1
         source_live_run_id = plan["scope"]["source_live_run_ids"][0]
         with mysql_test_engine.begin() as connection:
             connection.execute(
@@ -374,18 +389,18 @@ def test_history_cleanup_is_exact_and_rolls_back_injected_failure(
             )
         original_delete_ids = history_cleanup._delete_ids
         with monkeypatch.context() as failure_patch:
-            def fail_after_product_delete(*args, **kwargs):
+            def fail_after_backtest_delete(*args, **kwargs):
                 deleted = original_delete_ids(*args, **kwargs)
-                if kwargs.get("table") == "t_scheme_predictions":
-                    raise RuntimeError("injected after product delete")
+                if kwargs.get("table") == "t_backtest_runs":
+                    raise RuntimeError("injected after backtest cascade")
                 return deleted
 
             failure_patch.setattr(
                 history_cleanup,
                 "_delete_ids",
-                fail_after_product_delete,
+                fail_after_backtest_delete,
             )
-            with pytest.raises(RuntimeError, match="injected"):
+            with pytest.raises(RuntimeError, match="backtest cascade"):
                 history_cleanup.apply_replaced_prediction_history_cleanup(
                     mysql_test_engine,
                     plan,
@@ -401,6 +416,20 @@ def test_history_cleanup_is_exact_and_rolls_back_injected_failure(
             assert connection.execute(
                 text(
                     "SELECT COUNT(*) FROM t_backtest_monthly_metrics "
+                    "WHERE scheme_id=:scheme_id"
+                ),
+                {"scheme_id": BASE_ID},
+            ).scalar_one() == 1
+            assert connection.execute(
+                text(
+                    "SELECT COUNT(*) FROM t_backtest_runs "
+                    "WHERE scheme_id=:scheme_id"
+                ),
+                {"scheme_id": BASE_ID},
+            ).scalar_one() == 1
+            assert connection.execute(
+                text(
+                    "SELECT COUNT(*) FROM t_backtest_predictions "
                     "WHERE scheme_id=:scheme_id"
                 ),
                 {"scheme_id": BASE_ID},
