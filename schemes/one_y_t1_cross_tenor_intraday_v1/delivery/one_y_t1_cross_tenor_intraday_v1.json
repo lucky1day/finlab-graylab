@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "one_y_t1_cross_tenor_intraday_v1",
+  "name": "BI_CROSS_TENOR_INTRADAY",
+  "owner": "fengrl",
+  "description": "仅输入日频 1Y 国债活跃券开盘价与收盘价、以及 3Y/5Y/7Y/10Y 收盘价；方向源取 1Y 收盘价的一日变动符号，要求 3Y/5Y/7Y/10Y 中至少一个期限当日同向（跨期限确认）、且 1Y 当日收盘相对开盘同向（日内确认）；两个确认与方向源同时成立才按该方向出手，否则输出 0 表示中性不出手。零拟合、无阈值搜索、无随机过程。",
+  "algorithm_version": "1.0.0",
+  "target_tenor": "1Y",
+  "task_type": "T+1",
+  "horizon": 1,
+  "target_rule": "target_date_yield_vs_feature_date_yield"
+}

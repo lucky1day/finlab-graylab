@@ -63,6 +63,7 @@
     "monthly_10y_rf_top5_0629": ["mac3-production"],
     "monthly_1y_rf_top30_0629": ["mac3-production"],
     "monthly_5y_knn_top20_0629": ["mac3-production"],
+    "one_y_t1_cross_tenor_intraday_v1": ["mac3-production", "aliyun-gray"],
     "one_y_t1_quote_state_hv_v1": ["mac3-production", "aliyun-gray"],
     "one_y_t5_liq_excess_a_v1": ["mac3-production", "aliyun-gray"],
     "one_y_t5_liq_excess_a_w252_l7_v1": ["mac3-production", "aliyun-gray"],
