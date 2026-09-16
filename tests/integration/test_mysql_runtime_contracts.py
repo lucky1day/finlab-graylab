@@ -13,11 +13,80 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError, TimeoutError as PoolTimeoutError
 
 from backend.auth.repository import get_session_user, lock_session_user
+from backend.factor_lab_dashboard_queries import (
+    SummaryPredictionReadStats,
+    iter_summary_product_predictions,
+)
 from scheduler.repository import ActualWriteStats, upsert_actuals_detailed
 from shared.models import ActualRecord
 
 
 pytestmark = pytest.mark.mysql_integration
+
+
+def test_summary_prediction_stream_uses_python_compatible_binary_order(
+    mysql_test_engine: Engine,
+) -> None:
+    """MySQL 默认 collation 不得打乱 Python 业务键分组顺序。"""
+    registry_rows = [
+        {
+            "base_scheme_id": "liwei_0616_5y_ic_yearly_all_k3_div_k10",
+            "target_tenor": "5Y",
+            "horizon": 5,
+        },
+        {
+            "base_scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10",
+            "target_tenor": "5Y",
+            "horizon": 5,
+        },
+    ]
+    with mysql_test_engine.begin() as connection:
+        run_ids = {}
+        for row in registry_rows:
+            run_ids[row["base_scheme_id"]] = connection.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_runs
+                        (scheme_id, predict_date, status)
+                    VALUES (:scheme_id, '2095-01-02', 'success')
+                    """
+                ),
+                {"scheme_id": row["base_scheme_id"]},
+            ).lastrowid
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_scheme_predictions
+                    (run_id, scheme_id, target_tenor, horizon, predict_date,
+                     feature_date, target_date, predicted_direction)
+                VALUES
+                    (:first_run, :first, '5Y', 5, '2095-01-02', '2095-01-01',
+                     '2095-01-03', 1),
+                    (:second_run, :second, '5Y', 5, '2095-01-02', '2095-01-01',
+                     '2095-01-03', -1)
+                """
+            ),
+            {
+                "first": registry_rows[0]["base_scheme_id"],
+                "second": registry_rows[1]["base_scheme_id"],
+                "first_run": run_ids[registry_rows[0]["base_scheme_id"]],
+                "second_run": run_ids[registry_rows[1]["base_scheme_id"]],
+            },
+        )
+
+    with mysql_test_engine.connect() as connection:
+        rows = list(
+            iter_summary_product_predictions(
+                connection,
+                registry_rows,
+                stats=SummaryPredictionReadStats(),
+                fetch_rows=1,
+            )
+        )
+
+    assert [row["scheme_id"] for row in rows] == sorted(
+        row["base_scheme_id"] for row in registry_rows
+    )
 
 
 def test_http_sized_pool_times_out_and_recovers(mysql_test_engine: Engine) -> None:

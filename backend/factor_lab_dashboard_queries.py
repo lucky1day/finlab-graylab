@@ -326,6 +326,11 @@ def iter_summary_product_predictions(
     if not scopes:
         return
     params, scope_placeholders = _prediction_scope_params(scopes)
+    binary_order = (
+        "BINARY scheme_id, BINARY target_tenor"
+        if connection.dialect.name == "mysql"
+        else "scheme_id COLLATE BINARY, target_tenor COLLATE BINARY"
+    )
     statement = text(
         f"""
         SELECT id, scheme_id, target_tenor, horizon, predict_date,
@@ -335,7 +340,7 @@ def iter_summary_product_predictions(
         WHERE (scheme_id, target_tenor, horizon) IN (
             {", ".join(scope_placeholders)}
         )
-        ORDER BY scheme_id, target_tenor, horizon, target_date,
+        ORDER BY {binary_order}, horizon, target_date,
                  predict_date, id
         """
     )

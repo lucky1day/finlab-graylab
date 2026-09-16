@@ -24,7 +24,7 @@ def _prepare_runtime_contract_schema(engine: Engine) -> None:
     """经迁移执行器建立集成测试所需 schema，并满足 021 权威围栏。"""
     prepared = prepare_migration_files(sorted(MIGRATIONS_DIR.glob("*.sql")))
     before_owner = prepared[:20]
-    owner_and_auth = prepared[20:23]
+    owner_and_runtime = prepared[20:]
     _execute_prepared_migration_files(
         engine,
         [(item.path, item.statements) for item in before_owner],
@@ -64,7 +64,7 @@ def _prepare_runtime_contract_schema(engine: Engine) -> None:
         )
     _execute_prepared_migration_files(
         engine,
-        [(item.path, item.statements) for item in owner_and_auth],
+        [(item.path, item.statements) for item in owner_and_runtime],
     )
 
 
