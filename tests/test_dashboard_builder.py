@@ -4,14 +4,9 @@ import pytest
 from sqlalchemy import create_engine, event, text
 
 from backend.factor_lab_dashboard import (
-    MAX_ACTUAL_SOURCE_ROWS,
     DashboardDataError,
     DashboardQueryError,
     _monthly_rows,
-    _read_backtest_runs,
-    _read_bounded_source_rows,
-    _read_live_actuals,
-    _read_product_predictions,
     build_factor_lab_dashboard,
     build_factor_lab_dashboard_detail,
     parse_dashboard_month,
@@ -27,6 +22,13 @@ from backend.factor_lab_dashboard_semantics import (
     dashboard_result_source,
     iter_grouped_live_prediction_rows,
     live_actual_selector,
+)
+from backend.factor_lab_dashboard_queries import (
+    MAX_ACTUAL_SOURCE_ROWS,
+    read_bounded_source_rows,
+    read_live_actuals,
+    read_product_predictions,
+    read_selected_backtest_runs,
 )
 
 
@@ -160,7 +162,7 @@ def test_cumulative_request_budget_stops_before_the_next_query() -> None:
         budget_seconds=0.05,
     )
     with bind_http_request_context(context):
-        assert _read_bounded_source_rows(
+        assert read_bounded_source_rows(
             connection,
             text("SELECT 1"),
             {},
@@ -168,7 +170,7 @@ def test_cumulative_request_budget_stops_before_the_next_query() -> None:
             cap=1,
         ) == []
         with pytest.raises(RequestBudgetExceeded):
-            _read_bounded_source_rows(
+            read_bounded_source_rows(
                 connection,
                 text("SELECT 1"),
                 {},
@@ -274,7 +276,7 @@ def test_backtest_query_returns_only_deterministic_latest_candidate() -> None:
                  '2026-06-02 10:00:00','2026-06-02 10:00:00')"""
             )
         )
-        rows = _read_backtest_runs(connection, registry_rows)
+        rows = read_selected_backtest_runs(connection, registry_rows)
 
     assert len(rows) == 1
     assert int(rows[0]["id"]) == 10
@@ -286,10 +288,23 @@ def test_summary_streams_across_fetch_boundaries_without_changing_counts(
     monkeypatch,
 ) -> None:
     from backend import factor_lab_dashboard as dashboard
+    from backend.factor_lab_dashboard_queries import (
+        iter_summary_product_predictions,
+    )
 
     engine = _engine()
-    monkeypatch.setattr(dashboard, "SUMMARY_PREDICTION_FETCH_ROWS", 2)
-    monkeypatch.setattr(dashboard, "MAX_PRODUCT_PREDICTION_SOURCE_ROWS", 1)
+    monkeypatch.setattr(
+        dashboard,
+        "iter_summary_product_predictions",
+        lambda connection, registry_rows, *, stats: (
+            iter_summary_product_predictions(
+                connection,
+                registry_rows,
+                stats=stats,
+                fetch_rows=2,
+            )
+        ),
+    )
     with engine.begin() as connection:
         connection.execute(
             text(
@@ -453,7 +468,7 @@ def test_live_prediction_query_matches_full_registry_scope() -> None:
                  '2026-06-09',-1,NULL,'{}')"""
             )
         )
-        rows = _read_product_predictions(
+        rows = read_product_predictions(
             connection,
             [
                 {
@@ -724,7 +739,7 @@ def test_live_actual_query_reads_exact_scopes_for_all_task_types() -> None:
             },
         )
 
-        rows = _read_live_actuals(connection, registry_rows)
+        rows = read_live_actuals(connection, registry_rows)
 
     assert {
         (

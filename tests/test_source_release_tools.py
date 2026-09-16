@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import zipfile
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
@@ -75,6 +76,14 @@ def _make_source_repo(tmp_path: Path) -> Path:
         "scheduler/executor.py": "EXECUTOR_TEST = True\n",
         "scripts/run_launchd_release.py": "#!/usr/bin/env python3\n",
         "scripts/tool.py": "#!/usr/bin/env python3\n",
+        "deploy/source_evidence_release_allowlist_v1.json": json.dumps(
+            {
+                "schema_version": "bfl-source-evidence-release-allowlist-v1",
+                "entries": [],
+            },
+            indent=2,
+        )
+        + "\n",
     }
     for relative, content in required_files.items():
         path = repo / relative
@@ -88,6 +97,32 @@ def _make_source_repo(tmp_path: Path) -> Path:
     _run_git(repo, "add", ".")
     _run_git(repo, "commit", "-q", "-m", "test source")
     return repo
+
+
+def _write_evidence_allowlist(repo: Path, entries: list[dict[str, str]]) -> None:
+    path = repo / "deploy" / "source_evidence_release_allowlist_v1.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "bfl-source-evidence-release-allowlist-v1",
+                "entries": entries,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _tree_digest(root: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def test_same_clean_commit_builds_identical_release(tmp_path: Path) -> None:
@@ -127,11 +162,15 @@ def test_build_rejects_dirty_repository(tmp_path: Path) -> None:
         ".env",
         ".bfl-release.env",
         "logs/runtime.log",
+        "runtime.log",
+        "module.pyc",
+        "scratch.swp",
         "outputs/result.json",
         "state/cache.sqlite",
         "cache/runtime.json",
         "data/data_bridge/current/ready.json",
         "exports/database.sql",
+        "source_evidence/unapproved.zip",
     ),
 )
 def test_clean_repository_with_forbidden_release_file_is_rejected(
@@ -148,7 +187,10 @@ def test_clean_repository_with_forbidden_release_file_is_rejected(
     assert not _run_git(repo, "status", "--porcelain=v1", "--untracked-files=all")
     with pytest.raises(
         ReleaseBuildError,
-        match="forbidden|install-time|runtime state|database export",
+        match=(
+            "forbidden|install-time|runtime state|database export|"
+            "unapproved binary"
+        ),
     ):
         build_source_release(repo, tmp_path / "out")
 
@@ -182,12 +224,128 @@ def test_release_allows_documented_env_example_and_source_evidence(
     evidence = repo / "source_evidence" / "historical" / "large.csv"
     evidence.parent.mkdir(parents=True)
     evidence.write_bytes(b"header\n" + b"0" * (2 * 1024 * 1024 + 1))
+    _write_evidence_allowlist(
+        repo,
+        [
+            {
+                "path": "source_evidence/historical",
+                "type": "tree",
+                "sha256": _tree_digest(evidence.parent),
+                "reason": "Frozen test source tree",
+            }
+        ],
+    )
     _run_git(repo, "add", ".")
     _run_git(repo, "commit", "-q", "-m", "add approved release evidence")
 
     built = build_source_release(repo, tmp_path / "out")
 
     assert built.archive_path.is_file()
+
+
+def test_release_rejects_changed_approved_source_tree(tmp_path: Path) -> None:
+    repo = _make_source_repo(tmp_path)
+    evidence = repo / "source_evidence" / "historical" / "source.bin"
+    evidence.parent.mkdir(parents=True)
+    evidence.write_bytes(b"approved bytes")
+    _write_evidence_allowlist(
+        repo,
+        [
+            {
+                "path": "source_evidence/historical",
+                "type": "tree",
+                "sha256": "0" * 64,
+                "reason": "Frozen test source tree",
+            }
+        ],
+    )
+    _run_git(repo, "add", ".")
+    _run_git(repo, "commit", "-q", "-m", "add mismatched source tree")
+
+    with pytest.raises(ReleaseBuildError, match="digest differs"):
+        build_source_release(repo, tmp_path / "out")
+
+
+def test_release_scans_credentials_inside_approved_archive(tmp_path: Path) -> None:
+    repo = _make_source_repo(tmp_path)
+    archive_path = repo / "source_evidence" / "approved" / "original.zip"
+    archive_path.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr(
+            "credentials.txt",
+            "-----BEGIN PRIVATE KEY-----\nnot-real\n-----END PRIVATE KEY-----\n",
+        )
+    _write_evidence_allowlist(
+        repo,
+        [
+            {
+                "path": "source_evidence/approved/original.zip",
+                "type": "archive",
+                "sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+                "reason": "Frozen test source archive",
+            }
+        ],
+    )
+    _run_git(repo, "add", ".")
+    _run_git(repo, "commit", "-q", "-m", "add credential archive")
+
+    with pytest.raises(ReleaseBuildError, match="private key"):
+        build_source_release(repo, tmp_path / "out")
+
+
+@pytest.mark.parametrize("member_name", ("../escape.txt", "/absolute.txt"))
+def test_release_rejects_unsafe_paths_inside_approved_archive(
+    tmp_path: Path,
+    member_name: str,
+) -> None:
+    repo = _make_source_repo(tmp_path)
+    archive_path = repo / "source_evidence" / "approved" / "original.zip"
+    archive_path.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr(member_name, "unsafe")
+    _write_evidence_allowlist(
+        repo,
+        [
+            {
+                "path": "source_evidence/approved/original.zip",
+                "type": "archive",
+                "sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+                "reason": "Frozen test source archive",
+            }
+        ],
+    )
+    _run_git(repo, "add", ".")
+    _run_git(repo, "commit", "-q", "-m", "add unsafe source archive")
+
+    with pytest.raises(ReleaseBuildError, match="unsafe path"):
+        build_source_release(repo, tmp_path / "out")
+
+
+def test_release_rejects_link_inside_approved_archive(tmp_path: Path) -> None:
+    repo = _make_source_repo(tmp_path)
+    archive_path = repo / "source_evidence" / "approved" / "original.zip"
+    archive_path.parent.mkdir(parents=True)
+    link = zipfile.ZipInfo("link")
+    link.create_system = 3
+    link.external_attr = (stat.S_IFLNK | 0o777) << 16
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr(link, "target")
+    _write_evidence_allowlist(
+        repo,
+        [
+            {
+                "path": "source_evidence/approved/original.zip",
+                "type": "archive",
+                "sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+                "reason": "Frozen test source archive",
+            }
+        ],
+    )
+    _run_git(repo, "add", ".")
+    _run_git(repo, "commit", "-q", "-m", "add linked source archive")
+
+    with pytest.raises(ReleaseBuildError, match="contains link"):
+        build_source_release(repo, tmp_path / "out")
 
 
 def test_install_rejects_archive_checksum_mismatch(tmp_path: Path) -> None:

@@ -117,6 +117,10 @@ function waitFor(predicate, timeoutMs = 250) {
   });
 }
 
+function flushPromises() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 test("a pending fetch times out, enters error state, and schedules retry", async () => {
   const harness = createHarness(() => new Promise(() => {}));
   harness.hooks.setRequestTimeoutMs(12);
@@ -180,7 +184,7 @@ test("logout prevents a late in-flight response from restoring old data or retry
   await waitFor(() => typeof resolveFetch === "function");
   harness.hooks.stop();
   resolveFetch(okResponse(dashboardPayload("old-identity")));
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await flushPromises();
 
   const state = harness.hooks.state();
   assert.equal(state.authenticated, false);
@@ -209,7 +213,7 @@ test("a cancelled old request cannot dispatch auth-required from a late 401", as
     headers: { get: () => null },
     json: () => Promise.resolve({ error_code: "not_authenticated" })
   });
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await flushPromises();
 
   assert.deepEqual(harness.dispatchedEvents, []);
 });
@@ -237,7 +241,7 @@ test("an old request timeout cannot clear or overwrite a new identity request", 
 
   harness.hooks.start();
   await waitFor(() => harness.hooks.state().snapshotId === "new-identity");
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await flushPromises();
 
   const state = harness.hooks.state();
   assert.equal(state.dataMode, "fresh");

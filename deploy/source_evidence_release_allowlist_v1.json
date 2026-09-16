@@ -1,0 +1,23 @@
+{
+  "schema_version": "bfl-source-evidence-release-allowlist-v1",
+  "entries": [
+    {
+      "path": "source_evidence/benchmark_batches/daily_0629/source_package/forecast_project",
+      "type": "tree",
+      "sha256": "de63375f51810962ad10162444f93f7b2fbde6236b7f4b9921734ae6b8fad1e3",
+      "reason": "Frozen source-original daily 0629 binary runner evidence"
+    },
+    {
+      "path": "source_evidence/benchmark_batches/model_muti_0529/weekly_average_0529/source_package/forecast_project",
+      "type": "tree",
+      "sha256": "b00e77cadcb29ad9aaeef6713a3982ea218bdf91cde181ad4c39e01d38c100ce",
+      "reason": "Frozen source-original weekly-average 0529 binary runner evidence"
+    },
+    {
+      "path": "source_evidence/benchmark_batches/monthly_0629/source_package/forecast_project",
+      "type": "tree",
+      "sha256": "2ab82437de8fe96a556b0cf492d36739442497f861e87d2a58be8cc320088e47",
+      "reason": "Frozen source-original monthly 0629 binary runner evidence"
+    }
+  ]
+}

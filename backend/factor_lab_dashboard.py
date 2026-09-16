@@ -25,7 +25,6 @@ from backend.factor_lab_dashboard_queries import (
     iter_summary_product_predictions,
     read_active_registry,
     read_active_targets,
-    read_bounded_source_rows,
     read_live_actuals,
     read_product_predictions,
     read_selected_backtest_runs,
@@ -60,13 +59,6 @@ SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 MYSQL_SNAPSHOT_SQL = "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY"
 MAX_RAW_JSON_BYTES = 1_500_000
 MAX_GZIP_JSON_BYTES = 100_000
-# These source-row caps are corruption/resource guards, not business pagination.
-# Every query reads at most cap + 1 rows and fails instead of truncating.
-MAX_REGISTRY_SOURCE_ROWS = 1_000
-MAX_TARGET_SOURCE_ROWS = 1_000
-MAX_PRODUCT_PREDICTION_SOURCE_ROWS = 100_000
-MAX_ACTUAL_SOURCE_ROWS = 80_000
-SUMMARY_PREDICTION_FETCH_ROWS = 2_000
 logger = logging.getLogger(__name__)
 _DIAGNOSTICS_LIMIT = 8
 _diagnostics_lock = Lock()
@@ -269,17 +261,17 @@ def _build_summary(engine: Engine) -> dict[str, Any]:
             connection,
             production_candidates,
         )
-        registry_rows = _read_active_registry(
+        registry_rows = read_active_registry(
             connection,
             registry_scheme_id=None,
         )
-        target_rows = _read_active_targets(connection)
-        actual_rows = _read_live_actuals(
+        target_rows = read_active_targets(connection)
+        actual_rows = read_live_actuals(
             connection,
             registry_rows,
             target_date_range=None,
         )
-        backtest_run_rows = _read_backtest_runs(
+        backtest_run_rows = read_selected_backtest_runs(
             connection,
             registry_rows,
         )
@@ -337,7 +329,7 @@ def _build_summary(engine: Engine) -> dict[str, Any]:
             }
 
         history_prediction_rows_excluded = 0
-        prediction_rows = _iter_summary_product_predictions(
+        prediction_rows = iter_summary_product_predictions(
             connection,
             registry_rows,
             stats=prediction_read_stats,
@@ -505,7 +497,7 @@ def _build_detail(
     display_until = captured.date().isoformat()
     db_read_started_at = time.perf_counter()
     with dashboard_read_connection(engine) as connection:
-        registry_rows = _read_active_registry(
+        registry_rows = read_active_registry(
             connection,
             registry_scheme_id=registry_scheme_id,
         )
@@ -521,7 +513,7 @@ def _build_detail(
             source=detail_source,
         )
         prediction_rows = (
-            _read_product_predictions(
+            read_product_predictions(
                 connection,
                 registry_rows,
                 target_date_range=target_date_range,
@@ -550,7 +542,7 @@ def _build_detail(
             if row.get("backtest_actual_direction") is None
         }
         actual_rows = (
-            _read_live_actuals(
+            read_live_actuals(
                 connection,
                 registry_rows,
                 target_date_range=target_date_range,
@@ -783,104 +775,6 @@ def _record_build_diagnostics(
         _diagnostics_by_snapshot_id.move_to_end(snapshot_id)
         while len(_diagnostics_by_snapshot_id) > _DIAGNOSTICS_LIMIT:
             _diagnostics_by_snapshot_id.popitem(last=False)
-
-
-def _read_active_registry(
-    connection: Connection,
-    *,
-    registry_scheme_id: str | None = None,
-) -> list[Mapping[str, Any]]:
-    """兼容 facade：读取 active Registry。"""
-    return read_active_registry(
-        connection,
-        registry_scheme_id=registry_scheme_id,
-        cap=MAX_REGISTRY_SOURCE_ROWS,
-    )
-
-
-def _read_backtest_runs(
-    connection: Connection,
-    registry_rows: list[Mapping[str, Any]],
-) -> list[Mapping[str, Any]]:
-    """兼容 facade：读取数据库侧已选择的回测。"""
-    return read_selected_backtest_runs(
-        connection,
-        registry_rows,
-        cap=MAX_REGISTRY_SOURCE_ROWS,
-    )
-
-
-def _read_active_targets(connection: Connection) -> list[Mapping[str, Any]]:
-    """兼容 facade：读取 active 展示目标。"""
-    return read_active_targets(
-        connection,
-        cap=MAX_TARGET_SOURCE_ROWS,
-    )
-
-
-def _read_product_predictions(
-    connection: Connection,
-    registry_rows: list[Mapping[str, Any]],
-    *,
-    target_date_range: tuple[str, str] | None = None,
-) -> list[Mapping[str, Any]]:
-    """兼容 facade：读取 Detail 的有界产品事实。"""
-    return read_product_predictions(
-        connection,
-        registry_rows,
-        target_date_range=target_date_range,
-        cap=MAX_PRODUCT_PREDICTION_SOURCE_ROWS,
-    )
-
-
-def _iter_summary_product_predictions(
-    connection: Connection,
-    registry_rows: list[Mapping[str, Any]],
-    *,
-    stats: SummaryPredictionReadStats,
-) -> Iterator[Mapping[str, Any]]:
-    """兼容 facade：流式读取 Summary 的完整预测历史。"""
-    yield from iter_summary_product_predictions(
-        connection,
-        registry_rows,
-        stats=stats,
-        fetch_rows=SUMMARY_PREDICTION_FETCH_ROWS,
-    )
-
-
-def _read_live_actuals(
-    connection: Connection,
-    registry_rows: list[Mapping[str, Any]],
-    *,
-    target_date_range: tuple[str, str] | None = None,
-    target_dates: set[str] | None = None,
-) -> list[Mapping[str, Any]]:
-    """兼容 facade：按 active selector 读取 Actual。"""
-    return read_live_actuals(
-        connection,
-        registry_rows,
-        target_date_range=target_date_range,
-        target_dates=target_dates,
-        cap=MAX_ACTUAL_SOURCE_ROWS,
-    )
-
-
-def _read_bounded_source_rows(
-    connection: Connection,
-    statement: Any,
-    params: Mapping[str, Any],
-    *,
-    dataset: str,
-    cap: int,
-) -> list[Mapping[str, Any]]:
-    """兼容 facade：有界读取并保持超限 fail-closed。"""
-    return read_bounded_source_rows(
-        connection,
-        statement,
-        params,
-        dataset=dataset,
-        cap=cap,
-    )
 
 
 def _collapse_actual_rows(

@@ -270,7 +270,7 @@ Dashboard V6 的公开结果类型只按 `target_date` 分类：
 Summary 与 Detail 必须使用同一映射，Detail 按展示月份反向定位底层 target 区间；
 此标签转换不修改业务日期、Actual 键或公开历史/实盘分区。映射由
 [Dashboard 实现](../../backend/factor_lab_dashboard.py)的 `_display_month` 与 `_detail_target_date_range` 统一执行，
-公共合同见[Dashboard V6 测试](../../tests/test_dashboard_v5_builder.py)。
+公共合同见[Dashboard V6 测试](../../tests/test_dashboard_builder.py)。
 
 前端展示的部署时间只能来自 active `t_scheme_registry.deployed_at`。`deployed_at` 的业务语义是该注册业务方案激活并进入业务可见状态的日期，不是定时任务已生产挂载的证据；缺失时说明 registry 数据不完整，后端 API 和前端都必须 fail-closed。生产调度挂载必须另由对应 installed plist、`launchctl` loaded state 和任务日志共同证明。禁止 hardcode 默认部署日、scheme_id override 或在前端用灰度起点/正式实盘起点替代部署时间。
 

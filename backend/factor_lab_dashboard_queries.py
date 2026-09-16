@@ -19,6 +19,11 @@ from backend.factor_lab_dashboard_semantics import (
 
 
 logger = logging.getLogger(__name__)
+MAX_REGISTRY_SOURCE_ROWS = 1_000
+MAX_TARGET_SOURCE_ROWS = 1_000
+MAX_PRODUCT_PREDICTION_SOURCE_ROWS = 100_000
+MAX_ACTUAL_SOURCE_ROWS = 80_000
+SUMMARY_PREDICTION_FETCH_ROWS = 2_000
 
 _ACTUAL_SOURCE_KIND_ORDER = (
     "daily_1d",
@@ -166,8 +171,8 @@ def read_bounded_source_rows(
 def read_active_registry(
     connection: Connection,
     *,
-    registry_scheme_id: str | None,
-    cap: int,
+    registry_scheme_id: str | None = None,
+    cap: int = MAX_REGISTRY_SOURCE_ROWS,
 ) -> list[Mapping[str, Any]]:
     """读取 active Registry 目标；可收敛到一个 composite scheme。"""
     scheme_filter = (
@@ -201,7 +206,7 @@ def read_selected_backtest_runs(
     connection: Connection,
     registry_rows: list[Mapping[str, Any]],
     *,
-    cap: int,
+    cap: int = MAX_REGISTRY_SOURCE_ROWS,
 ) -> list[Mapping[str, Any]]:
     """在数据库侧为每个 base scheme 选择唯一最新成功回测。"""
     base_scheme_ids = sorted(
@@ -250,7 +255,7 @@ def read_selected_backtest_runs(
 def read_active_targets(
     connection: Connection,
     *,
-    cap: int,
+    cap: int = MAX_TARGET_SOURCE_ROWS,
 ) -> list[Mapping[str, Any]]:
     """读取 active 展示目标。"""
     statement = text(
@@ -276,8 +281,8 @@ def read_product_predictions(
     connection: Connection,
     registry_rows: list[Mapping[str, Any]],
     *,
-    target_date_range: tuple[str, str] | None,
-    cap: int,
+    target_date_range: tuple[str, str] | None = None,
+    cap: int = MAX_PRODUCT_PREDICTION_SOURCE_ROWS,
 ) -> list[Mapping[str, Any]]:
     """读取 Detail 所需的有界产品事实。"""
     scopes = _prediction_scopes(registry_rows)
@@ -324,7 +329,7 @@ def iter_summary_product_predictions(
     registry_rows: list[Mapping[str, Any]],
     *,
     stats: SummaryPredictionReadStats,
-    fetch_rows: int,
+    fetch_rows: int = SUMMARY_PREDICTION_FETCH_ROWS,
 ) -> Iterator[Mapping[str, Any]]:
     """按业务键分组顺序流式读取 Summary 的完整预测历史。"""
     scopes = _prediction_scopes(registry_rows)
@@ -411,6 +416,7 @@ def iter_summary_product_predictions(
         cleanup_started_at = time.perf_counter()
         if not exhausted and connection.dialect.name == "mysql":
             try:
+                _detach_pymysql_unbuffered_result(connection, result)
                 connection.invalidate()
             except Exception as cleanup_error:
                 logger.warning(
@@ -434,13 +440,42 @@ def iter_summary_product_predictions(
             )
 
 
+def _detach_pymysql_unbuffered_result(
+    connection: Connection,
+    result: Any,
+) -> None:
+    """在物理断开前解除 PyMySQL SSCursor 的排空回调。
+
+    提前退出时不能调用 SSCursor.close()，因为它会同步读完剩余结果；先解除
+    driver 对未缓冲结果的引用，再由 ``invalidate()`` 物理关闭 socket。该逻辑
+    只作用于项目固定使用的 mysql+pymysql 驱动。
+    """
+    if connection.dialect.driver != "pymysql":
+        return
+    cursor = getattr(result, "cursor", None)
+    cursor_result = getattr(cursor, "_result", None)
+    dbapi_connection = getattr(
+        getattr(connection, "connection", None),
+        "driver_connection",
+        None,
+    )
+    if cursor is not None:
+        cursor._result = None
+        cursor.connection = None
+    if (
+        dbapi_connection is not None
+        and getattr(dbapi_connection, "_result", None) is cursor_result
+    ):
+        dbapi_connection._result = None
+
+
 def read_live_actuals(
     connection: Connection,
     registry_rows: list[Mapping[str, Any]],
     *,
-    target_date_range: tuple[str, str] | None,
-    target_dates: set[str] | None,
-    cap: int,
+    target_date_range: tuple[str, str] | None = None,
+    target_dates: set[str] | None = None,
+    cap: int = MAX_ACTUAL_SOURCE_ROWS,
 ) -> list[Mapping[str, Any]]:
     """按 active Actual selector 读取关联事实。"""
     if target_dates is not None and not target_dates:

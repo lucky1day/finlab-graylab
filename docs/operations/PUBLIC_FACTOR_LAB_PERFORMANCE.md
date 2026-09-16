@@ -165,6 +165,7 @@ base scheme，例如：
 ```bash
 python -B -m harness gate dashboard \
   --api-base-url https://factor.example.invalid \
+  --api-prefix /bond-factor-lab \
   --scheme-id first_scheme \
   --scheme-id second_scheme \
   --session-file /absolute/private/path/dashboard-session-token
@@ -192,6 +193,7 @@ pipe 会立即失败而不会在 Gate 总预算开始前无限等待。会话文
 ```bash
 python -B -m harness gate data-consistency \
   --api-base-url https://factor.example.invalid \
+  --api-prefix /bond-factor-lab \
   --scheme-id first_scheme \
   --scheme-id second_scheme \
   --session-file /absolute/private/path/dashboard-session-token

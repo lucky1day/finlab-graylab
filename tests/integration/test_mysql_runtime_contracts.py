@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError, TimeoutError as PoolTimeoutError
 
@@ -23,6 +23,72 @@ from shared.models import ActualRecord
 
 
 pytestmark = pytest.mark.mysql_integration
+
+
+def test_current_migrations_have_required_fact_schema(mysql_test_engine: Engine) -> None:
+    """完整迁移后的关键列、唯一键、索引和外键必须保持当前合同。"""
+    inspector = inspect(mysql_test_engine)
+    prediction_columns = {
+        column["name"]
+        for column in inspector.get_columns("t_scheme_predictions")
+    }
+    assert {
+        "run_id",
+        "backtest_run_id",
+        "scheme_version",
+        "scheme_id",
+        "target_tenor",
+        "horizon",
+        "predict_date",
+        "feature_date",
+        "target_date",
+        "predicted_direction",
+        "backtest_actual_direction",
+    } <= prediction_columns
+    assert "confidence" not in prediction_columns
+    assert "confidence" not in {
+        column["name"]
+        for column in inspector.get_columns("t_backtest_predictions")
+    }
+
+    prediction_uniques = {
+        item["name"]: tuple(item["column_names"])
+        for item in inspector.get_unique_constraints("t_scheme_predictions")
+    }
+    assert prediction_uniques["uk_scheme_tenor_target"] == (
+        "scheme_id",
+        "target_tenor",
+        "horizon",
+        "target_date",
+    )
+    prediction_indexes = {
+        item["name"]: tuple(item["column_names"])
+        for item in inspector.get_indexes("t_scheme_predictions")
+    }
+    assert prediction_indexes["idx_scheme_predictions_backtest_run"] == (
+        "backtest_run_id",
+    )
+    prediction_foreign_keys = {
+        item["name"]: (
+            tuple(item["constrained_columns"]),
+            item["referred_table"],
+        )
+        for item in inspector.get_foreign_keys("t_scheme_predictions")
+    }
+    assert prediction_foreign_keys["fk_scheme_predictions_run"] == (
+        ("run_id",),
+        "t_scheme_runs",
+    )
+    assert prediction_foreign_keys["fk_scheme_predictions_backtest_run"] == (
+        ("backtest_run_id",),
+        "t_backtest_runs",
+    )
+
+    actual_uniques = {
+        item["name"]: tuple(item["column_names"])
+        for item in inspector.get_unique_constraints("t_scheme_actuals")
+    }
+    assert actual_uniques["uk_tenor_date"] == ("tenor", "trade_date")
 
 
 def test_summary_prediction_stream_uses_python_compatible_binary_order(
@@ -154,7 +220,7 @@ def test_summary_prediction_stream_invalidates_early_exit_and_pool_recovers(
                 {"run_id": run_id},
             )
             connection.execute(
-                text("DELETE FROM t_scheme_runs WHERE id = :run_id"),
+                text("DELETE FROM t_scheme_runs WHERE run_id = :run_id"),
                 {"run_id": run_id},
             )
 

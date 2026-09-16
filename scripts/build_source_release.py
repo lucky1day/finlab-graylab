@@ -13,9 +13,10 @@ import re
 import subprocess
 import tarfile
 import tempfile
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Sequence
+from typing import Mapping, Sequence
 
 
 MANIFEST_SCHEMA_VERSION = "bfl-source-release-v2"
@@ -27,13 +28,18 @@ _FORBIDDEN_RELEASE_COMPONENTS = frozenset(
         ".mypy_cache",
         ".pytest_cache",
         ".ruff_cache",
+        ".venv",
         "__pycache__",
         "backtest_artifacts",
+        "build",
         "cache",
         "dist",
         "logs",
+        "node_modules",
         "outputs",
         "reports",
+        "site-packages",
+        "venv",
     }
 )
 _FORBIDDEN_RELEASE_SUFFIXES = frozenset(
@@ -42,11 +48,19 @@ _FORBIDDEN_RELEASE_SUFFIXES = frozenset(
         ".db",
         ".dump",
         ".key",
+        ".log",
+        ".orig",
         ".p12",
         ".pem",
         ".pfx",
+        ".pyc",
+        ".pyo",
         ".sqlite",
         ".sqlite3",
+        ".swp",
+        ".swo",
+        ".temp",
+        ".tmp",
     }
 )
 _FORBIDDEN_PACKAGED_DATA_SUFFIXES = frozenset(
@@ -67,6 +81,7 @@ _FORBIDDEN_PACKAGED_DATA_SUFFIXES = frozenset(
         ".zip",
     }
 )
+_ARCHIVE_SUFFIXES = frozenset({".gz", ".tar", ".tgz", ".zip"})
 _INSTALL_TIME_FILENAMES = frozenset(
     {
         ".bfl-release.env",
@@ -75,11 +90,18 @@ _INSTALL_TIME_FILENAMES = frozenset(
         "service.env",
     }
 )
-_APPROVED_EVIDENCE_PREFIX = PurePosixPath("source_evidence")
+_EVIDENCE_ALLOWLIST_PATH = PurePosixPath(
+    "deploy/source_evidence_release_allowlist_v1.json"
+)
+_EVIDENCE_ALLOWLIST_SCHEMA = "bfl-source-evidence-release-allowlist-v1"
 _FORBIDDEN_RUNTIME_PREFIXES = (
     PurePosixPath("data/data_bridge/current"),
 )
 _MAX_UNAPPROVED_FILE_BYTES = 2 * 1024 * 1024
+_MAX_APPROVED_ARCHIVE_BYTES = 32 * 1024 * 1024
+_MAX_APPROVED_ARCHIVE_EXPANDED_BYTES = 64 * 1024 * 1024
+_MAX_APPROVED_ARCHIVE_MEMBERS = 4096
+_MAX_APPROVED_ARCHIVE_NESTING = 2
 _PRIVATE_KEY_PATTERN = re.compile(
     rb"-----BEGIN (?:EC |OPENSSH |PGP |RSA )?PRIVATE KEY-----"
 )
@@ -195,6 +217,7 @@ def validate_release_contents(tar_bytes: bytes) -> None:
     except tarfile.TarError as exc:
         raise ReleaseBuildError("Git archive is not a readable tar stream") from exc
     with archive:
+        members: dict[PurePosixPath, bytes] = {}
         for member in archive.getmembers():
             relative = _release_member_path(member.name)
             if relative is None:
@@ -209,7 +232,6 @@ def validate_release_contents(tar_bytes: bytes) -> None:
                 raise ReleaseBuildError(
                     f"release contains unsupported member type: {relative.as_posix()}"
                 )
-            _validate_release_path(relative, size=member.size)
             extracted = archive.extractfile(member)
             if extracted is None:
                 raise ReleaseBuildError(
@@ -220,7 +242,24 @@ def validate_release_contents(tar_bytes: bytes) -> None:
                 raise ReleaseBuildError(
                     f"release member size mismatch: {relative.as_posix()}"
                 )
+            if relative in members:
+                raise ReleaseBuildError(
+                    f"release contains duplicate member: {relative.as_posix()}"
+                )
+            members[relative] = payload
+
+        approvals = _load_evidence_allowlist(members)
+        _validate_evidence_approvals(members, approvals)
+        for relative, payload in members.items():
+            approval = _matching_evidence_approval(relative, approvals)
+            _validate_release_path(
+                relative,
+                size=len(payload),
+                evidence_approval=approval,
+            )
             _scan_release_member(relative, payload)
+            if approval is not None and approval["type"] == "archive":
+                _scan_approved_archive(relative, payload)
 
 
 def _release_member_path(name: str) -> PurePosixPath | None:
@@ -236,14 +275,17 @@ def _release_member_path(name: str) -> PurePosixPath | None:
     return relative
 
 
-def _validate_release_path(path: PurePosixPath, *, size: int) -> None:
+def _validate_release_path(
+    path: PurePosixPath,
+    *,
+    size: int,
+    evidence_approval: Mapping[str, str] | None,
+) -> None:
     path_text = path.as_posix()
     lowered_parts = tuple(part.lower() for part in path.parts)
     filename = path.name.lower()
     suffix = path.suffix.lower()
-    in_source_evidence = path == _APPROVED_EVIDENCE_PREFIX or (
-        path.parts[:1] == _APPROVED_EVIDENCE_PREFIX.parts
-    )
+    approved_evidence = evidence_approval is not None
     if any(
         path == prefix or path.is_relative_to(prefix)
         for prefix in _FORBIDDEN_RUNTIME_PREFIXES
@@ -260,22 +302,256 @@ def _validate_release_path(path: PurePosixPath, *, size: int) -> None:
         raise ReleaseBuildError(
             f"release contains install-time configuration: {path_text}"
         )
-    if suffix in _FORBIDDEN_RELEASE_SUFFIXES:
+    if filename.endswith("~") or suffix in _FORBIDDEN_RELEASE_SUFFIXES:
         raise ReleaseBuildError(f"release contains forbidden file type: {path_text}")
     if (
         suffix == ".sql"
         and path.parts[:1] != ("migrations",)
-        and not in_source_evidence
+        and not approved_evidence
     ):
         raise ReleaseBuildError(
             f"release contains unapproved SQL or database export: {path_text}"
         )
-    if suffix in _FORBIDDEN_PACKAGED_DATA_SUFFIXES and not in_source_evidence:
+    if suffix in _FORBIDDEN_PACKAGED_DATA_SUFFIXES and not approved_evidence:
         raise ReleaseBuildError(
             f"release contains unapproved binary or data package: {path_text}"
         )
-    if size > _MAX_UNAPPROVED_FILE_BYTES and not in_source_evidence:
+    if size > _MAX_UNAPPROVED_FILE_BYTES and not approved_evidence:
         raise ReleaseBuildError(f"release contains unapproved large file: {path_text}")
+
+
+def _load_evidence_allowlist(
+    members: Mapping[PurePosixPath, bytes],
+) -> tuple[dict[str, str], ...]:
+    payload = members.get(_EVIDENCE_ALLOWLIST_PATH)
+    if payload is None:
+        raise ReleaseBuildError("release source evidence allowlist is missing")
+    try:
+        document = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ReleaseBuildError("release source evidence allowlist is invalid") from exc
+    if not isinstance(document, dict) or set(document) != {
+        "schema_version",
+        "entries",
+    }:
+        raise ReleaseBuildError("release source evidence allowlist schema is invalid")
+    if document.get("schema_version") != _EVIDENCE_ALLOWLIST_SCHEMA:
+        raise ReleaseBuildError("release source evidence allowlist version is invalid")
+    entries = document.get("entries")
+    if not isinstance(entries, list):
+        raise ReleaseBuildError("release source evidence allowlist entries are invalid")
+    normalized: list[dict[str, str]] = []
+    seen: set[PurePosixPath] = set()
+    for raw in entries:
+        if not isinstance(raw, dict) or set(raw) != {
+            "path",
+            "type",
+            "sha256",
+            "reason",
+        }:
+            raise ReleaseBuildError("release source evidence entry schema is invalid")
+        path_text = raw.get("path")
+        entry_type = raw.get("type")
+        digest = raw.get("sha256")
+        reason = raw.get("reason")
+        if not isinstance(path_text, str):
+            raise ReleaseBuildError("release source evidence path is invalid")
+        path = PurePosixPath(path_text)
+        if (
+            not path.parts
+            or path.is_absolute()
+            or path.as_posix() != path_text
+            or path.parts[0] != "source_evidence"
+            or any(part in {"", ".", ".."} for part in path.parts)
+        ):
+            raise ReleaseBuildError("release source evidence path is invalid")
+        if path in seen:
+            raise ReleaseBuildError("release source evidence path is duplicated")
+        if entry_type not in {"tree", "archive"}:
+            raise ReleaseBuildError("release source evidence type is invalid")
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise ReleaseBuildError("release source evidence SHA-256 is invalid")
+        if not isinstance(reason, str) or not reason.strip() or reason != reason.strip():
+            raise ReleaseBuildError("release source evidence reason is invalid")
+        seen.add(path)
+        normalized.append(
+            {
+                "path": path.as_posix(),
+                "type": entry_type,
+                "sha256": digest,
+                "reason": reason,
+            }
+        )
+    for first_index, first in enumerate(normalized):
+        first_path = PurePosixPath(first["path"])
+        for second in normalized[first_index + 1 :]:
+            second_path = PurePosixPath(second["path"])
+            if first_path.is_relative_to(second_path) or second_path.is_relative_to(first_path):
+                raise ReleaseBuildError("release source evidence paths overlap")
+    return tuple(normalized)
+
+
+def _matching_evidence_approval(
+    path: PurePosixPath,
+    approvals: Sequence[Mapping[str, str]],
+) -> Mapping[str, str] | None:
+    for approval in approvals:
+        approved_path = PurePosixPath(approval["path"])
+        if approval["type"] == "tree" and path.is_relative_to(approved_path):
+            return approval
+        if approval["type"] == "archive" and path == approved_path:
+            return approval
+    return None
+
+
+def _validate_evidence_approvals(
+    members: Mapping[PurePosixPath, bytes],
+    approvals: Sequence[Mapping[str, str]],
+) -> None:
+    for approval in approvals:
+        root = PurePosixPath(approval["path"])
+        if approval["type"] == "archive":
+            payload = members.get(root)
+            if payload is None:
+                raise ReleaseBuildError(
+                    f"approved source evidence archive is missing: {root}"
+                )
+            actual = hashlib.sha256(payload).hexdigest()
+        else:
+            descendants = sorted(
+                path for path in members if path.is_relative_to(root)
+            )
+            if not descendants:
+                raise ReleaseBuildError(
+                    f"approved source evidence tree is missing: {root}"
+                )
+            digest = hashlib.sha256()
+            for path in descendants:
+                relative = path.relative_to(root).as_posix()
+                digest.update(relative.encode("utf-8"))
+                digest.update(b"\0")
+                digest.update(members[path])
+                digest.update(b"\0")
+            actual = digest.hexdigest()
+        if actual != approval["sha256"]:
+            raise ReleaseBuildError(
+                f"approved source evidence digest differs: {root.as_posix()}"
+            )
+
+
+def _scan_approved_archive(path: PurePosixPath, payload: bytes) -> None:
+    if len(payload) > _MAX_APPROVED_ARCHIVE_BYTES:
+        raise ReleaseBuildError(
+            f"approved source archive exceeds compressed limit: {path}"
+        )
+    state = {"members": 0, "expanded": 0}
+    _scan_archive_payload(path, payload, depth=0, state=state)
+
+
+def _scan_archive_payload(
+    path: PurePosixPath,
+    payload: bytes,
+    *,
+    depth: int,
+    state: dict[str, int],
+) -> None:
+    stream = io.BytesIO(payload)
+    if zipfile.is_zipfile(stream):
+        stream.seek(0)
+        with zipfile.ZipFile(stream) as archive:
+            for member in archive.infolist():
+                if member.is_dir():
+                    continue
+                mode = (member.external_attr >> 16) & 0o170000
+                if member.flag_bits & 0x1:
+                    raise ReleaseBuildError(f"approved source archive is encrypted: {path}")
+                if mode == 0o120000:
+                    raise ReleaseBuildError(f"approved source archive contains link: {path}")
+                inner = _safe_archive_member_path(member.filename, path)
+                _reserve_archive_member(state, member.file_size, path / inner)
+                with archive.open(member) as source:
+                    child = source.read(member.file_size + 1)
+                if len(child) != member.file_size:
+                    raise ReleaseBuildError(
+                        f"approved source archive member size mismatch: {path / inner}"
+                    )
+                _scan_archive_child(path / inner, child, depth=depth, state=state)
+        return
+    stream.seek(0)
+    try:
+        archive = tarfile.open(fileobj=stream, mode="r:*")
+    except tarfile.TarError as exc:
+        raise ReleaseBuildError(
+            f"approved source archive format is unsupported: {path}"
+        ) from exc
+    with archive:
+        for member in archive.getmembers():
+            if member.isdir():
+                continue
+            if not member.isfile():
+                raise ReleaseBuildError(
+                    f"approved source archive contains unsupported member: {path}"
+                )
+            inner = _safe_archive_member_path(member.name, path)
+            _reserve_archive_member(state, member.size, path / inner)
+            source = archive.extractfile(member)
+            if source is None:
+                raise ReleaseBuildError(
+                    f"approved source archive member cannot be read: {path / inner}"
+                )
+            child = source.read(member.size + 1)
+            if len(child) != member.size:
+                raise ReleaseBuildError(
+                    f"approved source archive member size mismatch: {path / inner}"
+                )
+            _scan_archive_child(path / inner, child, depth=depth, state=state)
+
+
+def _safe_archive_member_path(name: str, archive_path: PurePosixPath) -> PurePosixPath:
+    path = PurePosixPath(name)
+    if (
+        not path.parts
+        or path.is_absolute()
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
+        raise ReleaseBuildError(
+            f"approved source archive contains unsafe path: {archive_path}"
+        )
+    return path
+
+
+def _reserve_archive_member(
+    state: dict[str, int],
+    size: int,
+    path: PurePosixPath,
+) -> None:
+    state["members"] += 1
+    state["expanded"] += size
+    if state["members"] > _MAX_APPROVED_ARCHIVE_MEMBERS:
+        raise ReleaseBuildError(
+            f"approved source archive exceeds member limit: {path}"
+        )
+    if state["expanded"] > _MAX_APPROVED_ARCHIVE_EXPANDED_BYTES:
+        raise ReleaseBuildError(
+            f"approved source archive exceeds expanded limit: {path}"
+        )
+
+
+def _scan_archive_child(
+    path: PurePosixPath,
+    payload: bytes,
+    *,
+    depth: int,
+    state: dict[str, int],
+) -> None:
+    _scan_release_member(path, payload)
+    if path.suffix.lower() not in _ARCHIVE_SUFFIXES:
+        return
+    if depth >= _MAX_APPROVED_ARCHIVE_NESTING:
+        raise ReleaseBuildError(
+            f"approved source archive exceeds nesting limit: {path}"
+        )
+    _scan_archive_payload(path, payload, depth=depth + 1, state=state)
 
 
 def _scan_release_member(path: PurePosixPath, payload: bytes) -> None:

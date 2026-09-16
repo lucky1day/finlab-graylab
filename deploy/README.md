@@ -49,7 +49,11 @@ DataBridge 的 producer 标记及其权限边界见[调度治理](../docs/archit
 1. [`build_source_release.py`](../scripts/build_source_release.py) 只从 clean Git worktree 的当前 HEAD
    生成 deterministic archive、SHA-256 和 manifest v2。压缩前直接检查 Git archive 的实际成员，拒绝
    `.env`、私钥、高置信 token、数据库/日志/缓存/outputs/dist、安装期本机配置，以及未经批准的大文件、
-   二进制或原始数据包；根目录 `.env.example` 与已保留的 `source_evidence/` 是显式例外，但仍执行凭据扫描。
+   二进制或原始数据包。根目录 `.env.example` 是固定例外；`source_evidence/` 不再整体豁免，只允许
+   [`source_evidence_release_allowlist_v1.json`](source_evidence_release_allowlist_v1.json) 中精确登记、
+   摘要一致的三棵既有 source package 证据树，且仍执行凭据扫描。未来压缩原件须逐文件登记摘要与
+   保留原因，并受 32 MiB 压缩体、64 MiB 展开量、4096 成员和两层嵌套限制；路径穿越、链接、加密包
+   或内部凭据一律拒绝。
    manifest 仅包含 `schema_version`、`commit`、`root_prefix`、`archive.filename/sha256`，生产包不含 `.git`。
 2. 目标机使用**候选 archive 同版本**的 [`install_source_release.py`](../scripts/install_source_release.py)，
    不能用旧 current 的安装器生成候选环境。显式提供 `--manifest`、`--archive`、
@@ -64,6 +68,13 @@ DataBridge 的 producer 标记及其权限边界见[调度治理](../docs/archit
 5. 激活拒绝同 SHA 重试，避免覆盖 previous；revision intent 和 previous 先写，current 原子替换最后执行。
    返回后以 current 读回判定切换结果。需要服务刷新时单独执行已授权动作，核对进程实际 cwd、
    release 身份和健康，再完成数据、Dashboard/页面及调度验收；不能只看链接或刷新成功。
+
+候选提交须先通过仓库四个独立必选任务：排除 MySQL marker 的 Python 公共合同、直接 Node 状态机、
+MySQL 8.4 disposable 集成合同，以及 release 内容/clean commit 确定性构建。任务缺依赖、被 skip 或没有
+实际执行均不构成绿色候选。公网正向验收使用 [`check_public_access.sh`](../scripts/check_public_access.sh)，
+重复传入 `--scheme-id`，并只通过 owner-only `--session-file` 或继承的 `--session-fd` 提供会话；脚本会自动
+发现首页全部同源静态引用，匿名 Dashboard 必须为 401，认证 Summary/Detail 委托公共 Dashboard Gate，
+Cookie/token 不进入命令行值、日志或 Evidence。
 
 任何导入 immutable release 项目模块的运维或审查命令必须显式 `python -B`；隔离模式为
 `python -I -B`，因为 `-I` 忽略 `PYTHON*`，环境变量不能替代 `-B`。
