@@ -273,7 +273,8 @@ def test_release_scans_credentials_inside_approved_archive(tmp_path: Path) -> No
     with zipfile.ZipFile(archive_path, "w") as archive:
         archive.writestr(
             "credentials.txt",
-            "-----BEGIN PRIVATE KEY-----\nnot-real\n-----END PRIVATE KEY-----\n",
+            "-----BEGIN " + "PRIVATE KEY-----\nnot-real\n"
+            "-----END " + "PRIVATE KEY-----\n",
         )
     _write_evidence_allowlist(
         repo,
