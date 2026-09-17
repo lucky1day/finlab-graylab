@@ -13,32 +13,32 @@
 以下问题以 `399df5bf` 为修复基线，按 P0 → P1 → P2 顺序处理；代码、隔离测试和真实环境验收是三个独立状态，
 未完成现场读回前不得标记发布闭环。
 
-ECS 的二次审计候选已晋级；Mac3 的最新预测状态重建、四条精确补缺及 333 条旧回测审计事实清理
-已按用户确认的收缩范围完成。现有 78 条 live 和新增四条均保留；旧回测不再展示。具体结果、
-恢复备份与 release 身份见[当前状态](CURRENT_STATUS.md#运行与部署)。
-Mac3 尚未晋级二次审计 release：DataConsistency 对既有 Native run/retired version 的 lineage
-仍返回 `BLOCKED`。用户不要求用旧血缘作为历史清理前提，但没有把该 Gate 的失败改写为通过。
-后续若继续双机发布，需先明确该 Gate 在已删除旧历史、仍保留 78 条 Native live 的业务合同，
-再对候选 release 做真实 Mac3 验收；不要恢复旧历史、伪造 lineage 或扩大清理范围。
+二次审计 `47df08fb` 已在 2026-09-17 按 ECS → Mac3 同包晋级；Mac3 最新预测状态重建、四条精确补缺
+及 333 条旧回测事实清理也已完成，保留 78 条旧 live 与四条新 live。两机晋级前后业务表计数不变，
+具体验收与恢复备份见[当前状态](CURRENT_STATUS.md#运行与部署)。发布完成不等于以下旧 Gate 合同已闭环：
+Mac3 的 live-only 方案不再有 backtest 分区，旧 Dashboard Gate 与 DataConsistency completeness 会阻断；
+既有 Native 输入/版本证据缺失使 lineage 阻断。用户已明确不以这些旧审计证据阻止保留正确结果的发布，
+但工具仍应如实报告失败，不能伪造来源或把 `BLOCKED` 改写为通过。后续修正须精确约束已授权删除的范围、
+保留的 78 条 live 与后续 Blackbox 新事实，防止误放行整批 run＋事实同时丢失。
 
 | 编号 | 优先级 | 当前状态 | 待完成事项 |
 |---:|:---:|---|---|
-| 01 | P0 | 已实现待现场验收 | `factor-lab-http.js` 精确白名单已由 `3a665c36` 发布；页面资源自动发现、临时 Nginx 冒烟及新版公网入口检查已实现，待候选与公网读回。 |
-| 02 | P0 | 清理已完成、发布待决 | Mac3 只清理了 333 条旧回测审计事实，保留 82 条 live；DataConsistency 对旧 Native lineage 的 `BLOCKED` 仍需在发布前按明确业务合同处理。 |
-| 03 | P0 | 已实现待现场验收 | Dashboard/DataConsistency Gate 分离安全 Origin 与应用 `api_prefix`，支持真实 `/bond-factor-lab` 公网路径。 |
+| 01 | P0 | 公网已验收 | 精确白名单保持不变；真实公网脚本对首页全部资源、GET/HEAD、MIME、摘要、缓存和拒绝路径通过。 |
+| 02 | P0 | 发布完成、Gate 合同待修 | 333 条旧回测已删除、82 条 live 保留；完整九方案 Gate 的旧历史/Native 证据阻断仍需精确收口，不影响已核对的最新 HTTP 结果。 |
+| 03 | P0 | 公网已验收 | 安全 Origin 与 `/bond-factor-lab` prefix 在公网入口及认证八方案 Gate 通过；live-only 方案另经真实 Summary/Detail 验证。 |
 | 04 | P1 | 已实现待验收 | HTTP 客户端在响应头阶段处理 401、request ID 与 Retry-After，不依赖错误正文完成。 |
 | 05 | P1 | 已实现待验收 | 认证前端复用有界 HTTP 客户端，并隔离注销或身份切换后的旧请求。 |
 | 06 | P1 | 已实现待验收 | 认证 JSON body 使用单一有界缓冲及总读取期限，正确处理断开。 |
-| 07 | P1 | 已实现待现场验收 | Dashboard 流式读取提前退出时失效专用连接；隔离 MySQL 已验证清理时间和池恢复，待候选现场读回。 |
+| 07 | P1 | 已实现、现场读回通过 | Dashboard 流式读取提前退出时失效专用连接；隔离 MySQL 已验证清理时间和池恢复，双机 Backend 健康且实际 cwd 正确。 |
 | 08 | P1 | 已实现待验收 | DataConsistency 分离完整性、血缘和展示结果，缺少权威范围时明确 BLOCKED。 |
-| 09 | P1 | 已通过 | Python、Node、MySQL 8.4 和 release 四个独立任务已在候选 `69c1a704` 全部实际执行并通过。 |
+| 09 | P1 | 已通过 | Python、Node、MySQL 8.4 和 release 四个独立任务已在最终 `47df08fb` 全部实际执行并通过。 |
 | 10 | P1 | 已实现待验收 | release 补齐日志/字节码规则，将 `source_evidence` 宽泛豁免收敛为摘要清单。 |
-| 11 | P1 | 已实现待现场验收 | 公网脚本已删除匿名 Dashboard 200 与重复 schema，认证正向检查委托公共 Gate。 |
+| 11 | P1 | 公网已验收，live-only 例外待修 | 匿名 Dashboard 401、资源和八方案认证 Gate 通过；九方案批量 Gate 仍错误要求已清理方案有 backtest 分区。 |
 | 12 | P1 | 已实现待验收 | Actual 认领使用 INSERT `lastrowid`，删除逐行 `SELECT LAST_INSERT_ID()` 并显式命名写副作用。 |
 | 13 | P1 | 已实现待验收 | DataConsistency 按 Actual 作用域去重、分块读取并把总 deadline 下传到每条 SQL。 |
 | 14 | P2 | 已实现待验收 | 合并重复前端测试、引入可控计时器、删除 Python Node 转发并修正 Dashboard 测试文件名。 |
 | 15 | P2 | 已实现待验收 | 删除 Dashboard 查询薄转发；保留公开 builder 与 `scheduler.repository` 统一写入口。 |
-| 16 | P2 | 已实现待最终同步 | TODO、Dashboard 合同、验证矩阵和当前 CLI 命令已同步；发布通过后移除本轮临时清单，保留独立自然运行观察。 |
+| 16 | P2 | 发布状态已同步、清单待收口 | 当前状态已写入双机发布和旧 Gate 限制；修复并验收 live-only 合同后移除本轮临时清单，保留独立自然运行观察。 |
 
 ## 1Y T+1 跨期限日内方案自然观察
 

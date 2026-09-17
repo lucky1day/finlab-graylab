@@ -16,18 +16,28 @@
 | 当前 active 执行身份 | 93 个 Blackbox base | 93 个 Blackbox base + 9 个 W4 Native base |
 | Dashboard | 97 个 target | 106 个 target |
 | 调度控制面 | systemd one-shot/timer | launchd + installed plist |
-| current release | `69c1a7046432564fe1c50a0a9d9f7beed3197671` | `3a665c36425a168fa1d24559c9dc987ed2901633` |
-| previous release | `881be97425da80da1411ccb9b7eefea40b2d92eb` | `507081397e75fa60c56614fd0bfbb750b9415753` |
+| current release | `47df08fbc8461378d5bc97944240b2eaeadbe082` | `47df08fbc8461378d5bc97944240b2eaeadbe082` |
+| previous release | `69c1a7046432564fe1c50a0a9d9f7beed3197671` | `3a665c36425a168fa1d24559c9dc987ed2901633` |
 | schema | 025 APPLIED | 025 APPLIED |
 
 - 2026-09-17 二次审计候选 `69c1a7046432564fe1c50a0a9d9f7beed3197671` 已完成四层 CI、独立复审、
   ECS 候选与正式九方案 Dashboard/DataConsistency 验收并晋级；archive SHA-256 为
   `8588983881a76351d61203f89671464b05332de35a01547f130ef986ed02a8f3`。ECS 晋级前后
   Registry、Version、Prediction、Run、Backtest 与四类 Actual 计数均未变化。
-- Mac3 尚未晋级二次审计 release：既有 78 个 Native live run 的输入 artifact 和三个 retired exact
-  的 `manifest_hash` 不完整，DataConsistency lineage 仍为 `BLOCKED`。用户已明确这不作为清理旧回测
-  审计记录的前提；这项选择不等于放行二次审计 release。ECS current 与 Mac3 current 仍如上表，
-  `47df08fbc8461378d5bc97944240b2eaeadbe082` 只在两机预安装，未切换 current 或刷新服务。
+- 2026-09-17 19:00 Actuals 自然结束后，两机使用同一 SHA-256
+  `e5e2e2c7a04a2e2eb4ed29605b0f84cd342e46342209aa4140dd1c9e81262140` 的 `47df08fb` archive
+  按 ECS → Mac3 顺序晋级，仅原子切换 current 并刷新 Backend。两机 Backend 实际 cwd、health、schema 025
+  与 launchd/systemd 控制面读回正常；晋级前后 Registry、Version、Prediction、Run、Backtest 和四类 Actual
+  表计数均不变。该提交的 Python、Node、MySQL 8.4、release 四项 CI 均成功，ECS 晋级后九方案
+  DataConsistency 的 completeness/lineage/representation 全部通过。
+- Mac3 已按用户明确的“保留最新正确结果、不以旧审计血缘阻断”范围完成发布，但原 Gate 合同不能记为通过：
+  九方案 DataConsistency 的 representation 通过，completeness 仅因已删除的 333 条历史回测不再有
+  backtest 产品引用而 `BLOCKED`，lineage 仅因保留的 78 个旧 Native live run 缺输入 artifact 和三个
+  retired exact 缺 `manifest_hash` 而 `BLOCKED`；expected live 键无差异。九方案 Dashboard Gate 也因
+  该 live-only 方案没有 backtest 分区而失败。其余八方案的公网精确入口、静态资源、拒绝路径及认证
+  Dashboard Gate 全部通过；live-only 方案单独经公网认证 Summary/Detail 200 验证，9 月 live 明细
+  17 行，最新四个 target 方向 `1/0/1/1`、Actual pending。旧 Gate 合同需要针对已授权清空的历史
+  范围收口，不能把这些 `BLOCKED`/失败结果改写为成功；自然运行与公网长期 504 观察仍另见 TODO。
 - 2026-09-17 Mac3 已备份并受控重建 `liwei_0616_5y01_full_oos_k3_div_k10` 的 Blackbox exact
   `603f1574704b` 私有状态；旧状态备份在生产 backups 下 `blackbox-state-rebuild-20260917-Jc3iyc`。
   随后经正式 `gray_live` 入口精确补齐预测日 9 月 14—17 日四个缺口，run `5126`—`5129`，目标日
