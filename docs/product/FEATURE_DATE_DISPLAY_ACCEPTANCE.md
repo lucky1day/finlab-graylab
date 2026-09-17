@@ -1,6 +1,6 @@
 # 特征基准日统一展示：需求与本地验收方案
 
-**状态：2026-09-17 用户验收、合并和双机发布已完成；正式 release 为 `056534b2`。**
+**状态：2026-09-17 用户验收、合并和双机发布已完成；最新正式 release 为 `759048c4`，包含区间应用修复及日历界面。**
 
 本文记录本次展示调整的业务目标、范围和验收条件。运行日期与统计定义由
 [预测语义](../architecture/PREDICTION_SEMANTICS.md)维护，接口实现见
@@ -146,3 +146,12 @@
 
 具体提交、发布包摘要、现场验证与恢复边界见[当前状态](../CURRENT_STATUS.md#运行与部署)；
 原始检查结果保存于[本机发布回执](/Users/macstudio0/bond-factor-lab-runtime/releases/feature-date-display-20260917/delivery-report.json)。
+
+## 11. 区间应用与日历修订闭环
+
+2026-09-17 用户验收后，区间选择保留、手动/自动重试修复和新版日历已随 `759048c4` 发布至两端。
+四项 CI、独立复审、九方案候选验收、正式区间与整月明细、公网静态资源及认证检查全部通过。
+正式浏览器已验证新日历选日及连续点击应用，日期不回退；原统计口径保持。
+十张业务表发布前后内容及 schema 一致。发布版本、恢复边界和验证证据统一见
+[当前状态](../CURRENT_STATUS.md#运行与部署)及
+[本次发布回执](/Users/macstudio0/bond-factor-lab-runtime/releases/range-calendar-ui-20260917/delivery-report.json)。

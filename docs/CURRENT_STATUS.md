@@ -8,7 +8,7 @@
 
 ## 运行与部署
 
-源码方案执行迁移、平台 confidence 退役及展示验收衔接修复均已完成。最新特征基准日展示已发布；功能验收见[需求与验收记录](product/FEATURE_DATE_DISPLAY_ACCEPTANCE.md)。新算法仍按[标准入库流程](onboarding/README.md)处理。
+源码方案执行迁移、平台 confidence 退役及展示验收衔接修复均已完成。最新特征基准日展示、区间应用修复与日历界面已发布；功能验收见[需求与验收记录](product/FEATURE_DATE_DISPLAY_ACCEPTANCE.md)。新算法仍按[标准入库流程](onboarding/README.md)处理。
 
 | 项目 | ECS 独立灰度 | Mac3 生产 |
 |---|---|---|
@@ -16,10 +16,22 @@
 | 当前 active 执行身份 | 93 个 Blackbox base | 93 个 Blackbox base + 9 个 W4 Native base |
 | Dashboard | 97 个 target | 106 个 target |
 | 调度控制面 | systemd one-shot/timer | launchd + installed plist |
-| current release | `056534b2d846d0091e74495f0408cc108bc3f60c` | `056534b2d846d0091e74495f0408cc108bc3f60c` |
-| previous release | `e0ce91b4be0237909002abf4629b0dfa4a6b2f6d` | `e0ce91b4be0237909002abf4629b0dfa4a6b2f6d` |
+| current release | `759048c4eaf90cfac04067d613b4e219013472a7` | `759048c4eaf90cfac04067d613b4e219013472a7` |
+| previous release | `056534b2d846d0091e74495f0408cc108bc3f60c` | `056534b2d846d0091e74495f0408cc108bc3f60c` |
 | schema | 025 APPLIED | 025 APPLIED |
 
+- 2026-09-17 区间应用修复与日历界面 release `759048c4` 已经用户本地验收，通过独立复审及四项 CI，
+  按 ECS → Mac3 晋级同一 archive，SHA-256 为
+  `d4abf074696613ffb92062bb94b9562d1546c7359ae8178f95c5846cd368663e`。应用时保留用户输入，
+  同区间重复点击合并；手动及自动重试保留最后提交区间，默认全部历史不被固定日期替代。
+  两端实际 Backend cwd、health、九方案候选 Dashboard/DataConsistency、正式区间与整月明细检查通过；
+  Mac3 公网资源摘要、GET/HEAD、MIME、缓存、认证及拒绝路径检查通过。正式 Edge 普通刷新加载新日历，
+  选取 2025-07-01 后连续点击应用，输入、统计范围及整月详情保持一致。
+  发布前后十张业务表逐行摘要及 schema 完全一致，ECS 97 / Mac3 106 个 target、九个生产标记保持。
+  未修改调度或运行算法；临时会话已撤销，候选 Backend 已关闭。首轮 CI 的代理启动测试因模拟 DOM
+  缺少新控件方法失败，测试夹具补齐后最终精确提交四项 CI 全部成功。
+  证据见[发布回执](/Users/macstudio0/bond-factor-lab-runtime/releases/range-calendar-ui-20260917/delivery-report.json)
+  与[证据索引](/Users/macstudio0/bond-factor-lab-runtime/releases/range-calendar-ui-20260917/README.md)。
 - 2026-09-17 特征基准日统一展示 release `056534b2` 已按用户授权合并到 `codex/develop`，
   通过四项 CI 后按 ECS → Mac3 晋级同一 archive，SHA-256 为
   `e6388852c1b805c0a203256c95e2590aba2e37beff06f067cadd8a919f97d3d0`。双机实际 Backend cwd、

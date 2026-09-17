@@ -19,7 +19,7 @@
 | 排查 Dashboard | [Dashboard 合同与运行验收](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md) → 部署访问中的探针位置；指标疑问查预测语义 |
 | 账户初始化或恢复 | [认证合同](architecture/AUTHENTICATION_AND_ACCOUNT_MANAGEMENT.md) → 部署访问中的目标环境 → 合同链接的受控 CLI |
 | 使用页面或解释结果 | [产品手册](product/GRAY_LAB_USER_MANUAL.md) |
-| 验收特征基准日展示调整 | [需求与本地验收方案](product/FEATURE_DATE_DISPLAY_ACCEPTANCE.md)（候选，用户验收后发布） |
+| 验收特征基准日展示调整 | [需求与本地验收方案](product/FEATURE_DATE_DISPLAY_ACCEPTANCE.md)（已发布，含验收记录） |
 
 ## 权威来源与职责
 
