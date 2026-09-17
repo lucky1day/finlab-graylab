@@ -50,6 +50,12 @@ positive，并逐分区请求真实 Detail 对账；不得调用 Dashboard build
 `legacy_migration`；不回填数据库，
 不宣称旧事实由纠正版 exact 原生生成，也不允许该例外用于未来写入。任一事实或摘要漂移仍失败。
 
+该清单登记的 `liwei_0616_5y01_full_oos_k3_div_k10` 5Y/h5 已单独授权清除旧回测产品事实。
+若该范围没有回测分区，DataConsistency 只在保留的 78 条 live 事实与清单所冻结的日期范围、条数及
+业务值 SHA-256 完全一致时接受 live-only；缺行或方向漂移为失败。仅这些事实引用的 retired Native
+版本可容忍原本缺失的 `manifest_hash` 和空 `input_artifact_id`；已有非空但失效的字段、范围外事实及
+后续 Blackbox 仍按完整合同检查。此例外不恢复、推断或声称已删除的回测执行血缘存在。
+
 早期 Blackbox 回测若只缺少后来新增到 `t_backtest_runs` 的冗余血缘列，也不能按名称推断来源。
 [`legacy_backtest_lineage_compatibility_v1.json`](../../deploy/legacy_backtest_lineage_compatibility_v1.json)
 只登记已由 canonical 交付字节、版本 code/config/manifest hash、输入 snapshot、不可变 benchmark、完整

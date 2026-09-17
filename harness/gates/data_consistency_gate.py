@@ -48,6 +48,7 @@ from shared.prediction_history_replacement import (
     PredictionHistoryReplacementError,
     resolve_prediction_history_projection,
     validate_prediction_history_source_runs,
+    live_fact_digest,
 )
 from shared.calendar_service import is_trading_day_row
 from shared.period_average_buckets import build_period_buckets
@@ -596,6 +597,54 @@ class DataConsistencyGate(Gate):
         )
 
 
+def _validated_live_only_baselines(
+    snapshot: DatabaseSnapshot,
+    entries: frozenset[LegacyPredictionMigration],
+    scopes_without_backtest: set[tuple[str, str, int]],
+) -> tuple[dict[tuple[str, str, int], frozenset[tuple[str, str, int, str]]], list[str]]:
+    """仅在已批准的保留 live 范围逐值吻合时接受无回测分区。"""
+    matched: dict[
+        tuple[str, str, int], frozenset[tuple[str, str, int, str]]
+    ] = {}
+    errors: list[str] = []
+    for entry in entries:
+        scope = (
+            entry.prediction_scheme_id,
+            entry.target_tenor,
+            entry.horizon,
+        )
+        if scope not in scopes_without_backtest:
+            continue
+        rows = [
+            row
+            for row in snapshot.prediction_rows
+            if (
+                str(row["scheme_id"]),
+                str(row["target_tenor"]),
+                int(row["horizon"]),
+            ) == scope
+            and entry.live_target_date_from
+            <= _iso_date(row.get("target_date"), field="target_date")
+            <= entry.live_target_date_through
+        ]
+        if (
+            len(rows) != entry.expected_live_fact_count
+            or any(
+                row.get("run_id") is None
+                or row.get("backtest_run_id") is not None
+                for row in rows
+            )
+            or live_fact_digest(rows) != entry.product_live_facts_sha256
+        ):
+            errors.append(
+                "retained live-only product baseline differs: "
+                f"scheme_id={scope[0]} tenor={scope[1]} horizon={scope[2]}"
+            )
+            continue
+        matched[scope] = frozenset(_product_business_key(row) for row in rows)
+    return matched, errors
+
+
 def validate_snapshot_completeness(
     snapshot: DatabaseSnapshot,
     *,
@@ -645,8 +694,12 @@ def validate_snapshot_completeness(
         for row in product_rows
         if row.get("backtest_run_id") is not None
     }
+    live_only_keys, live_only_errors = _validated_live_only_baselines(
+        snapshot, legacy_migrations, registry_scopes - referenced_backtest_scopes
+    )
+    errors.extend(live_only_errors)
     missing_backtest_authority = sorted(
-        registry_scopes - referenced_backtest_scopes
+        registry_scopes - referenced_backtest_scopes - set(live_only_keys)
     )
     if missing_backtest_authority:
         authority_gaps.add(
@@ -902,6 +955,7 @@ def validate_snapshot_completeness(
             match.entry.expected_fact_count
             for match in legacy_matches.values()
         ),
+        "retained_live_only_scopes": sorted(live_only_keys),
     }
 
 
@@ -930,6 +984,18 @@ def validate_snapshot_lineage(
     legacy_lineage_matches = _resolve_legacy_backtest_lineage_matches(
         snapshot,
         legacy_backtest_lineages,
+    )
+    registry_scopes = {
+        (str(row["base_scheme_id"]), str(row["target_tenor"]), int(row["horizon"]))
+        for row in snapshot.registry_rows
+    }
+    referenced_backtest_scopes = {
+        (str(row["scheme_id"]), str(row["target_tenor"]), int(row["horizon"]))
+        for row in snapshot.prediction_rows
+        if row.get("backtest_run_id") is not None
+    }
+    live_only_keys, _ = _validated_live_only_baselines(
+        snapshot, legacy_migrations, registry_scopes - referenced_backtest_scopes
     )
     versions = {
         (str(row["scheme_id"]), str(row["scheme_version"])): row
@@ -976,10 +1042,16 @@ def validate_snapshot_lineage(
         for field in ("code_hash", "config_hash", "manifest_hash"):
             value = version.get(field)
             if value in {None, ""}:
-                authority_gaps.add(
-                    f"version lineage is missing: scheme_id={identity[0]} "
-                    f"exact={identity[1]} field={field}"
-                )
+                if not (
+                    field == "manifest_hash"
+                    and identity in legacy_live_only_versions
+                    and runtime_type == "native_adapter"
+                    and version.get("status") == "retired"
+                ):
+                    authority_gaps.add(
+                        f"version lineage is missing: scheme_id={identity[0]} "
+                        f"exact={identity[1]} field={field}"
+                    )
             elif not _is_sha256(value):
                 errors.append(
                     f"version lineage hash invalid: scheme_id={identity[0]} "
@@ -998,6 +1070,27 @@ def validate_snapshot_lineage(
                     f"exact={identity[1]}"
                 )
 
+    candidate_live_only_versions = {
+        (str(row.get("lineage_scheme_id") or row["scheme_id"]), str(row["scheme_version"]))
+        for row in snapshot.prediction_rows
+        if _product_business_key(row) in live_only_keys.get(
+            (str(row["scheme_id"]), str(row["target_tenor"]), int(row["horizon"])),
+            frozenset(),
+        )
+    }
+    legacy_live_only_versions = {
+        identity
+        for identity in candidate_live_only_versions
+        if all(
+            _product_business_key(row) in live_only_keys.get(
+                (str(row["scheme_id"]), str(row["target_tenor"]), int(row["horizon"])),
+                frozenset(),
+            )
+            for row in snapshot.prediction_rows
+            if (str(row.get("lineage_scheme_id") or row["scheme_id"]),
+                str(row["scheme_version"])) == identity
+        )
+    }
     for row in snapshot.prediction_rows:
         scope = (str(row["scheme_id"]), str(row["target_tenor"]), int(row["horizon"]))
         registry_row = registry.get(scope)
@@ -1057,9 +1150,18 @@ def validate_snapshot_lineage(
                 artifact_id = str(run.get("input_artifact_id") or "")
                 artifact = artifacts.get(artifact_id)
                 if not artifact_id or artifact is None:
-                    authority_gaps.add(
-                        f"live run input artifact is missing: run_id={row['run_id']}"
-                    )
+                    if not (
+                        not artifact_id
+                        and version_runtime == "native_adapter"
+                        and version is not None
+                        and version.get("status") == "retired"
+                        and _product_business_key(row) in live_only_keys.get(
+                            scope, frozenset()
+                        )
+                    ):
+                        authority_gaps.add(
+                            f"live run input artifact is missing: run_id={row['run_id']}"
+                        )
                 elif artifact_id not in checked_artifacts:
                     checked_artifacts.add(artifact_id)
                     if (

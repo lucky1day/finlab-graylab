@@ -16,6 +16,7 @@ from harness.http_target import url_origin, validate_api_target
 from harness.result import Evidence, GateResult, GateStatus
 from scheduler.discovery import SchemeConfig, load_scheme_config
 from scheduler.repository import registry_scheme_id
+from shared.legacy_prediction_migration import load_legacy_prediction_migrations
 
 
 DashboardFetcher = Callable[..., tuple[Any, ...]]
@@ -261,6 +262,19 @@ class DashboardGate(Gate):
 
         all_errors: list[str] = []
         scheme_results: list[dict[str, Any]] = []
+        compatibility_path = (
+            ctx.project_root
+            / "deploy"
+            / "legacy_prediction_migration_compatibility_v1.json"
+        )
+        live_only_scopes = (
+            {
+                (item.prediction_scheme_id, item.target_tenor, item.horizon)
+                for item in load_legacy_prediction_migrations(ctx.project_root)
+            }
+            if compatibility_path.is_file()
+            else set()
+        )
         for config in configs:
             result = _validate_config_summary(
                 config,
@@ -268,6 +282,7 @@ class DashboardGate(Gate):
                 expected_by_config[config.scheme_id],
                 registry_by_id,
                 common_errors,
+                live_only_scopes,
             )
             result.update(
                 {
@@ -356,6 +371,7 @@ def _validate_config_summary(
     expected_registry_ids: list[str],
     registry_by_id: Mapping[str, Mapping[str, Any]],
     common_errors: list[str],
+    live_only_scopes: set[tuple[str, str, int]],
 ) -> dict[str, Any]:
     errors = list(common_errors)
     matched_rows: list[Mapping[str, Any]] = []
@@ -396,7 +412,14 @@ def _validate_config_summary(
                         f"dashboard {registry_id} {field} mismatch: "
                         f"expected {expected!r}, got {row[field]!r}"
                     )
-            if row["backtest"] is None:
+            if row["backtest"] is None and not (
+                (config.scheme_id, target_tenor, config.horizon)
+                in live_only_scopes
+                and any(
+                    monthly[1] == "live" and monthly[2] > 0
+                    for monthly in row["monthly_rows"]
+                )
+            ):
                 errors.append(
                     f"dashboard backtest partition missing: scheme_id={registry_id}"
                 )
