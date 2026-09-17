@@ -8,7 +8,7 @@
 
 ## 运行与部署
 
-源码方案执行迁移、平台 confidence 退役及展示验收衔接修复均已完成。最近同步为下方文档 release；功能验收见[生产标记发布](#dashboard-生产标记发布)。新算法仍按[标准入库流程](onboarding/README.md)处理。
+源码方案执行迁移、平台 confidence 退役及展示验收衔接修复均已完成。最新特征基准日展示已发布；功能验收见[需求与验收记录](product/FEATURE_DATE_DISPLAY_ACCEPTANCE.md)。新算法仍按[标准入库流程](onboarding/README.md)处理。
 
 | 项目 | ECS 独立灰度 | Mac3 生产 |
 |---|---|---|
@@ -16,10 +16,24 @@
 | 当前 active 执行身份 | 93 个 Blackbox base | 93 个 Blackbox base + 9 个 W4 Native base |
 | Dashboard | 97 个 target | 106 个 target |
 | 调度控制面 | systemd one-shot/timer | launchd + installed plist |
-| current release | `22f5e73422a11ee6762d1aaa21effeadfdb6bdd1` | `22f5e73422a11ee6762d1aaa21effeadfdb6bdd1` |
-| previous release | `47df08fbc8461378d5bc97944240b2eaeadbe082` | `47df08fbc8461378d5bc97944240b2eaeadbe082` |
+| current release | `056534b2d846d0091e74495f0408cc108bc3f60c` | `056534b2d846d0091e74495f0408cc108bc3f60c` |
+| previous release | `e0ce91b4be0237909002abf4629b0dfa4a6b2f6d` | `e0ce91b4be0237909002abf4629b0dfa4a6b2f6d` |
 | schema | 025 APPLIED | 025 APPLIED |
 
+- 2026-09-17 特征基准日统一展示 release `056534b2` 已按用户授权合并到 `codex/develop`，
+  通过四项 CI 后按 ECS → Mac3 晋级同一 archive，SHA-256 为
+  `e6388852c1b805c0a203256c95e2590aba2e37beff06f067cadd8a919f97d3d0`。双机实际 Backend cwd、
+  health、Dashboard V7 和原控制面读回正常；ECS 97 / Mac3 106 个 target、九个生产标记保持。
+  两机九方案 Dashboard/DataConsistency 全部通过；从 2025-07 开始的区间汇总、跨 5—6 月的日级
+  区间与整月明细、展示分类、样本计数及非法区间拒绝均通过。Mac3 公网首页、全部同源静态资源
+  GET/HEAD、MIME、内容版本摘要、缓存、匿名 401、精确拒绝路径和九方案认证 Dashboard 全部通过。
+  正式浏览器普通刷新后数据就绪，日级筛选、整月详情、同年日期简写和每日验证表固定表头已实测。
+  发布前后十张业务表的逐行内容摘要、数量及 schema 完全一致，未重算预测或改变调度。
+  首轮 `e0ce91b4` 的页面资源版本 token 未更新，在公网验收时发现并由 `056534b2` 修正；
+  previous 指向该中间版本，不应直接作为通过验收的回退目标。发布前稳定 release `22f5e734`
+  仍保留，恢复须按部署手册重新核验兼容与授权。验收会话已撤销、临时候选 Backend 已关闭。
+  完整证据见[发布回执](/Users/macstudio0/bond-factor-lab-runtime/releases/feature-date-display-20260917/delivery-report.json)
+  与[证据索引](/Users/macstudio0/bond-factor-lab-runtime/releases/feature-date-display-20260917/README.md)。
 - 2026-09-17 最终 Gate 合同 release `22f5e734` 由 clean commit 构建为同一 archive，SHA-256
   `5f906fbd8304c991b60810292bd2686a5ee3d8691289abf970f8c0b7c578b2e5`；Python、Node、MySQL 8.4、
   release 四个 CI 任务均成功，独立复审无 Critical/Important。ECS 候选认证 Dashboard/DataConsistency
@@ -195,7 +209,7 @@ Registry 展示验收的 17 个迁移方案误报已解决；首次登记与后�
 
 ## 当前输入与产品版本
 
-双机使用五文件 DataBridge，存量 `factor_version` 已初始化为 `V1.0`；legacy 保护与新方案输入模式见[DataBridge](blackbox_v2/data_bridge_v1/README.md)。双机产品接口均为 `factor-lab-dashboard-v6`；完整读模型与表示见[Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)。
+双机使用五文件 DataBridge，存量 `factor_version` 已初始化为 `V1.0`；legacy 保护与新方案输入模式见[DataBridge](blackbox_v2/data_bridge_v1/README.md)。双机产品接口均为 `factor-lab-dashboard-v7`；完整读模型与表示见[Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)。
 
 ## 现场核验入口
 
