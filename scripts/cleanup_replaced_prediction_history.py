@@ -15,8 +15,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from scheduler.repository import (
+    apply_legacy_backtest_only_cleanup,
     apply_replaced_prediction_history_cleanup,
     create_engine_from_env,
+    plan_legacy_backtest_only_cleanup,
     plan_replaced_prediction_history_cleanup,
 )
 
@@ -33,16 +35,31 @@ def main() -> int:
     action.add_argument("--plan-out", type=Path)
     action.add_argument("--apply-plan", type=Path)
     parser.add_argument("--expected-plan-sha256")
+    parser.add_argument("--legacy-backtest-only", action="store_true")
+    parser.add_argument("--expected-backtest-run-id", type=int)
     args = parser.parse_args()
+    if args.legacy_backtest_only != (args.expected_backtest_run_id is not None):
+        parser.error(
+            "--legacy-backtest-only requires --expected-backtest-run-id; "
+            "the run ID is only valid in that mode"
+        )
+    if args.expected_backtest_run_id is not None and args.expected_backtest_run_id <= 0:
+        parser.error("--expected-backtest-run-id must be positive")
     engine = create_engine_from_env()
     try:
         if args.plan_out is not None:
             if args.expected_plan_sha256 is not None:
                 parser.error("--expected-plan-sha256 is only valid with --apply-plan")
-            plan = plan_replaced_prediction_history_cleanup(
-                engine,
-                prediction_scheme_id=args.scheme_id,
+            planner = (
+                plan_legacy_backtest_only_cleanup
+                if args.legacy_backtest_only
+                else plan_replaced_prediction_history_cleanup
             )
+            plan = planner(engine, prediction_scheme_id=args.scheme_id)
+            if args.legacy_backtest_only and (
+                plan["scope"]["backtest_run_id"] != args.expected_backtest_run_id
+            ):
+                raise ValueError("legacy backtest run ID does not match")
             raw = _canonical_json(plan)
             _write_exclusive(args.plan_out, raw)
             print(
@@ -68,7 +85,17 @@ def main() -> int:
         plan: dict[str, Any] = json.loads(raw)
         if plan.get("scope", {}).get("prediction_scheme_id") != args.scheme_id:
             raise ValueError("cleanup plan scheme does not match")
-        stats = apply_replaced_prediction_history_cleanup(engine, plan)
+        if args.legacy_backtest_only and (
+            plan.get("scope", {}).get("backtest_run_id")
+            != args.expected_backtest_run_id
+        ):
+            raise ValueError("legacy backtest run ID does not match")
+        apply = (
+            apply_legacy_backtest_only_cleanup
+            if args.legacy_backtest_only
+            else apply_replaced_prediction_history_cleanup
+        )
+        stats = apply(engine, plan)
         print(
             json.dumps(
                 {

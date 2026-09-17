@@ -46,7 +46,9 @@ from scheduler.persistence.connections import (
 )
 from scheduler.persistence.history_cleanup import (
     ReplacedHistoryCleanupStats,
+    apply_legacy_backtest_only_cleanup,
     apply_replaced_prediction_history_cleanup,
+    plan_legacy_backtest_only_cleanup,
     plan_replaced_prediction_history_cleanup,
 )
 from shared.blackbox_v2.contracts import REQUEST_FIELDS, request_from_mapping

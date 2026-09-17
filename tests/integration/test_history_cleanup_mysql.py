@@ -109,7 +109,7 @@ def _evidence() -> tuple[
         expected_fact_count=1,
         input_artifact_hash="d" * 64,
         backtest_summary_sha256="e" * 64,
-        source_facts_sha256="f" * 64,
+        source_facts_sha256=_sha256([legacy_fact]),
         product_facts_sha256=_sha256([legacy_fact]),
         target_contract_mismatch_count=0,
         target_contract_mismatch_sha256=_sha256([]),
@@ -345,6 +345,102 @@ def _cleanup(engine) -> None:
                 ),
                 {"scheme_ids": [BASE_ID, SOURCE_ID]},
             )
+
+
+def test_legacy_backtest_only_cleanup_preserves_live_and_rolls_back(
+    mysql_test_engine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    migration, corrected = _evidence()
+    _seed(mysql_test_engine)
+    monkeypatch.setattr(
+        history_cleanup,
+        "_load_entry",
+        lambda _scheme_id: (migration, corrected),
+    )
+    try:
+        plan = history_cleanup.plan_legacy_backtest_only_cleanup(
+            mysql_test_engine,
+            prediction_scheme_id=BASE_ID,
+        )
+        assert len(plan["scope"]["product_ids"]) == 1
+        assert len(plan["scope"]["preserved_live_ids"]) == 1
+        assert len(plan["backup"]["backtest_predictions"]) == 1
+        assert len(plan["backup"]["backtest_monthly_metrics"]) == 1
+        with mysql_test_engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE t_scheme_predictions SET predicted_direction=0 "
+                    "WHERE id=:id"
+                ),
+                {"id": plan["scope"]["preserved_live_ids"][0]},
+            )
+        with pytest.raises(ValueError, match="preserved live facts changed"):
+            history_cleanup.apply_legacy_backtest_only_cleanup(
+                mysql_test_engine, plan
+            )
+        with mysql_test_engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE t_scheme_predictions SET predicted_direction=-1 "
+                    "WHERE id=:id"
+                ),
+                {"id": plan["scope"]["preserved_live_ids"][0]},
+            )
+        original_delete_ids = history_cleanup._delete_ids
+        with monkeypatch.context() as failure_patch:
+            def fail_after_run_delete(*args, **kwargs):
+                deleted = original_delete_ids(*args, **kwargs)
+                if kwargs.get("table") == "t_backtest_runs":
+                    raise RuntimeError("injected after run delete")
+                return deleted
+
+            failure_patch.setattr(
+                history_cleanup, "_delete_ids", fail_after_run_delete
+            )
+            with pytest.raises(RuntimeError, match="after run delete"):
+                history_cleanup.apply_legacy_backtest_only_cleanup(
+                    mysql_test_engine, plan
+                )
+        with mysql_test_engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT COUNT(*) FROM t_backtest_runs WHERE id=:run_id"),
+                {"run_id": plan["scope"]["backtest_run_id"]},
+            ).scalar_one() == 1
+            assert connection.execute(
+                text(
+                    "SELECT COUNT(*) FROM t_scheme_predictions "
+                    "WHERE scheme_id=:scheme_id"
+                ),
+                {"scheme_id": BASE_ID},
+            ).scalar_one() == 2
+        stats = history_cleanup.apply_legacy_backtest_only_cleanup(
+            mysql_test_engine, plan
+        )
+        assert stats.predictions_deleted == 1
+        assert stats.backtest_runs_deleted == 1
+        assert stats.live_runs_deleted == 0
+        with mysql_test_engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT run_id, backtest_run_id, predicted_direction "
+                    "FROM t_scheme_predictions WHERE scheme_id=:scheme_id"
+                ),
+                {"scheme_id": BASE_ID},
+            ).mappings().all()
+            assert len(rows) == 1
+            assert rows[0]["run_id"] is not None
+            assert rows[0]["backtest_run_id"] is None
+            assert rows[0]["predicted_direction"] == -1
+            assert connection.execute(
+                text(
+                    "SELECT COUNT(*) FROM t_scheme_predictions "
+                    "WHERE scheme_id=:scheme_id"
+                ),
+                {"scheme_id": SOURCE_ID},
+            ).scalar_one() == 2
+    finally:
+        _cleanup(mysql_test_engine)
 
 
 def test_history_cleanup_is_exact_and_rolls_back_injected_failure(

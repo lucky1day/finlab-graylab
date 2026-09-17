@@ -19,6 +19,8 @@ from shared.legacy_prediction_migration import (
 )
 from shared.prediction_history_replacement import (
     PredictionHistoryProjection,
+    _legacy_product_digest,
+    live_fact_digest,
     resolve_prediction_history_projection,
     validate_prediction_history_source_runs,
 )
@@ -26,6 +28,7 @@ from shared.prediction_history_replacement import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _PLAN_SCHEMA = "replaced-prediction-history-cleanup-v3"
+_LEGACY_BACKTEST_ONLY_SCHEMA = "legacy-backtest-only-cleanup-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +39,200 @@ class ReplacedHistoryCleanupStats:
     live_runs_deleted: int
     backtest_runs_deleted: int
     versions_deleted: int
+
+
+def plan_legacy_backtest_only_cleanup(
+    engine: Engine,
+    *,
+    prediction_scheme_id: str,
+) -> dict[str, Any]:
+    """为获批旧回测生成逐行可恢复、保留 live 的精确计划。"""
+    _require_mysql(engine)
+    entry, _ = _load_entry(prediction_scheme_id)
+    with engine.connect() as connection:
+        connection.exec_driver_sql("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        connection.exec_driver_sql(
+            "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY"
+        )
+        try:
+            scope, backup = _legacy_backtest_only_scope(connection, entry, lock="")
+            identity = connection.execute(
+                text("SELECT DATABASE() AS database_name, @@server_uuid AS server_uuid")
+            ).mappings().one()
+        finally:
+            connection.rollback()
+    plan = {
+        "schema_version": _LEGACY_BACKTEST_ONLY_SCHEMA,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "database_identity_sha256": _digest(dict(identity)),
+        "scope": scope,
+        "backup": backup,
+    }
+    plan["scope_digest"] = _digest({"scope": scope, "backup": backup})
+    return plan
+
+
+def apply_legacy_backtest_only_cleanup(
+    engine: Engine,
+    plan: Mapping[str, Any],
+) -> ReplacedHistoryCleanupStats:
+    """锁内重验旧回测与保留 live，原子删除精确历史行。"""
+    _require_mysql(engine)
+    if (
+        set(plan)
+        != {"schema_version", "created_at", "database_identity_sha256",
+            "scope", "backup", "scope_digest"}
+        or plan.get("schema_version") != _LEGACY_BACKTEST_ONLY_SCHEMA
+        or not isinstance(plan.get("scope"), dict)
+        or not isinstance(plan.get("backup"), dict)
+        or not _is_sha256(plan.get("database_identity_sha256"))
+        or not _is_sha256(plan.get("scope_digest"))
+        or _digest({"scope": plan["scope"], "backup": plan["backup"]})
+        != plan["scope_digest"]
+    ):
+        raise ValueError("legacy backtest cleanup plan is invalid")
+    entry, _ = _load_entry(str(plan["scope"].get("prediction_scheme_id")))
+    with engine.begin() as connection:
+        identity = connection.execute(
+            text("SELECT DATABASE() AS database_name, @@server_uuid AS server_uuid")
+        ).mappings().one()
+        if _digest(dict(identity)) != plan["database_identity_sha256"]:
+            raise ValueError("legacy backtest cleanup database identity changed")
+        scope, backup = _legacy_backtest_only_scope(
+            connection, entry, lock=" FOR UPDATE"
+        )
+        if (
+            scope != plan["scope"]
+            or backup != plan["backup"]
+            or _digest({"scope": scope, "backup": backup}) != plan["scope_digest"]
+        ):
+            raise ValueError("legacy backtest cleanup locked facts changed")
+        ids = frozenset(scope["product_ids"])
+        deleted_products = _delete_ids(
+            connection, table="t_scheme_predictions", column="id", ids=ids
+        )
+        deleted_runs = _delete_ids(
+            connection,
+            table="t_backtest_runs",
+            column="id",
+            ids=frozenset({scope["backtest_run_id"]}),
+        )
+        if deleted_products != entry.expected_fact_count or deleted_runs != 1:
+            raise ValueError("legacy backtest cleanup delete count changed")
+        return ReplacedHistoryCleanupStats(
+            predictions_deleted=deleted_products,
+            live_runs_deleted=0,
+            backtest_runs_deleted=deleted_runs,
+            versions_deleted=0,
+        )
+
+
+def _legacy_backtest_only_scope(
+    connection: Connection,
+    entry: LegacyPredictionMigration,
+    *,
+    lock: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    rows = _scope_rows(
+        connection,
+        scheme_id=entry.prediction_scheme_id,
+        target_tenor=entry.target_tenor,
+        horizon=entry.horizon,
+        scheme_version=None,
+        lock=lock,
+    )
+    old = [
+        row for row in rows
+        if row["scheme_version"] is None and row["backtest_run_id"] is not None
+    ]
+    live = [
+        row for row in rows
+        if row["run_id"] is not None
+        and entry.live_target_date_from <= str(row["target_date"])
+        <= entry.live_target_date_through
+    ]
+    if (
+        len(old) != entry.expected_fact_count
+        or _legacy_product_digest(old) != entry.product_facts_sha256
+        or len(live) != entry.expected_live_fact_count
+        or live_fact_digest(live) != entry.product_live_facts_sha256
+        or any(
+            str(row["target_date"]) >= entry.live_target_date_from
+            or row["run_id"] is not None
+            for row in old
+        )
+    ):
+        raise ValueError("legacy backtest or preserved live facts changed")
+    run_ids = {int(row["backtest_run_id"]) for row in old}
+    if len(run_ids) != 1:
+        raise ValueError("legacy backtest has ambiguous source runs")
+    run_id = run_ids.pop()
+    product_ids = sorted(int(row["id"]) for row in old)
+    references = connection.execute(
+        text(
+            "SELECT COUNT(*) FROM t_scheme_predictions "
+            "WHERE backtest_run_id=:run_id AND id NOT IN :product_ids"
+        ).bindparams(bindparam("product_ids", expanding=True)),
+        {"run_id": run_id, "product_ids": product_ids},
+    ).scalar_one()
+    schedule_references = connection.execute(
+        text(
+            "SELECT COUNT(*) FROM t_schedule_item_targets "
+            "WHERE accepted_prediction_id IN :product_ids"
+        ).bindparams(bindparam("product_ids", expanding=True)),
+        {"product_ids": product_ids},
+    ).scalar_one()
+    if int(references) or int(schedule_references):
+        raise ValueError("legacy backtest has references outside cleanup scope")
+    backtest_runs = _select_ids(
+        connection, table="t_backtest_runs", column="id",
+        ids=frozenset({run_id}), lock=lock,
+    )
+    raw_predictions = _select_ids(
+        connection, table="t_backtest_predictions", column="run_id",
+        ids=frozenset({run_id}), lock=lock,
+    )
+    raw_predictions.sort(key=lambda row: int(row["id"]))
+    metrics = _select_ids(
+        connection, table="t_backtest_monthly_metrics", column="run_id",
+        ids=frozenset({run_id}), lock=lock,
+    )
+    metrics.sort(key=lambda row: int(row["id"]))
+    if (
+        len(backtest_runs) != 1
+        or backtest_runs[0]["scheme_id"] != entry.historical_source_scheme_id
+        or backtest_runs[0]["status"] != "success"
+        or len(raw_predictions) != entry.expected_fact_count
+        or _legacy_product_digest(
+            [
+                {**row, "backtest_actual_direction": row["label"]}
+                for row in raw_predictions
+            ]
+        ) != entry.source_facts_sha256
+        or any(
+            row["scheme_id"] != entry.historical_source_scheme_id
+            for row in raw_predictions
+        )
+    ):
+        raise ValueError("legacy backtest evidence is incomplete")
+    scope = {
+        "prediction_scheme_id": entry.prediction_scheme_id,
+        "target_tenor": entry.target_tenor,
+        "horizon": entry.horizon,
+        "product_ids": product_ids,
+        "backtest_run_id": run_id,
+        "preserved_live_ids": sorted(int(row["id"]) for row in live),
+    }
+    backup = _json_safe({
+        "product_predictions": _select_ids(
+            connection, table="t_scheme_predictions", column="id",
+            ids=frozenset(product_ids), lock=lock,
+        ),
+        "backtest_runs": backtest_runs,
+        "backtest_predictions": raw_predictions,
+        "backtest_monthly_metrics": metrics,
+    })
+    return scope, backup
 
 
 def plan_replaced_prediction_history_cleanup(
