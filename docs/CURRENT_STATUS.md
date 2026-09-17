@@ -20,6 +20,12 @@
 | previous release | `056534b2d846d0091e74495f0408cc108bc3f60c` | `056534b2d846d0091e74495f0408cc108bc3f60c` |
 | schema | 025 APPLIED | 025 APPLIED |
 
+- 2026-09-17 按用户授权，Mac3 经正式单日 `signal-gap-fill` 补齐三套 `cgb_a4_fundseason_*_hl18`
+  月频信号：特征日/预测日 9 月 15 日、目标日 10 月 15 日，3Y/5Y/10Y 均为收益率跌，run
+  `5130`—`5132`。当前 exact 不变，来源保留 `gray_live`；三条均待验证且与 labchat 对应预测一致。
+  精确新增三条预测和三条 run，三套方案既有预测逐字段不变，公网认证明细验证通过。未恢复已清理的
+  D5Y 历史、修改其他预测或调度；9 月 15 日输入校验失败与后续自然运行观察仍独立保留，人工补缺不算
+  自然成功。见[补齐回执](/Users/macstudio0/bond-factor-lab-runtime/reports/monthly-gap-fill-20260917/README.md)。
 - 2026-09-17 区间应用修复与日历界面 release `759048c4` 已经用户本地验收，通过独立复审及四项 CI，
   按 ECS → Mac3 晋级同一 archive，SHA-256 为
   `d4abf074696613ffb92062bb94b9562d1546c7359ae8178f95c5846cd368663e`。应用时保留用户输入，
