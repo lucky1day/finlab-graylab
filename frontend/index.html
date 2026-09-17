@@ -10,7 +10,7 @@
       html, body { margin: 0; min-height: 100%; background: #F8F7F2; color: #171A20; }
       .aifin-shell { min-height: 100vh; background: #F8F7F2; }
     </style>
-    <link rel="stylesheet" href="aifin-shell.css?v=988fe73e7272f617a97b1262a2f35c830c596a2be59dd131cd40e29f3f84d179">
+    <link rel="stylesheet" href="aifin-shell.css?v=1d2ba1325c1eef7e000926eba5178ec4bd6fbd9eeb9b27b973d528c972cc4b28">
   </head>
   <body>
     <div id="authGate" class="auth-gate" aria-live="polite">
@@ -70,14 +70,20 @@
                     <option value="live">仅实盘</option>
                   </select>
                 </label>
-                <label class="factor-date-input">
-                  <span>特征基准日起始日期</span>
-                  <input id="factorStartDate" type="date" required aria-label="起始特征基准日">
-                </label>
-                <label class="factor-date-input">
-                  <span>结束日期</span>
-                  <input id="factorEndDate" type="date" required aria-label="结束特征基准日">
-                </label>
+                <div class="factor-date-input">
+                  <label for="factorStartDate">特征基准日起始日期</label>
+                  <div class="factor-date-control">
+                    <input id="factorStartDate" type="date" required aria-label="起始特征基准日">
+                    <button type="button" class="factor-date-trigger" data-date-input="factorStartDate" aria-label="选择起始特征基准日" aria-haspopup="dialog" aria-expanded="false" aria-controls="factorDatePicker"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M16 3v4M8 3v4M3 11h18"/></svg></button>
+                  </div>
+                </div>
+                <div class="factor-date-input">
+                  <label for="factorEndDate">结束日期</label>
+                  <div class="factor-date-control">
+                    <input id="factorEndDate" type="date" required aria-label="结束特征基准日">
+                    <button type="button" class="factor-date-trigger" data-date-input="factorEndDate" aria-label="选择结束特征基准日" aria-haspopup="dialog" aria-expanded="false" aria-controls="factorDatePicker"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M16 3v4M8 3v4M3 11h18"/></svg></button>
+                  </div>
+                </div>
                 <button id="factorApplyRange" class="factor-range-apply" type="button">应用区间</button>
                 <strong>排行</strong>
                 <div class="factor-filter-group" aria-label="排序口径">
@@ -309,8 +315,22 @@
       </div>
       <div class="factor-remark-popover-body" id="factorRemarkBody"></div>
     </aside>
+    <div id="factorDatePicker" class="factor-date-picker" popover="auto" role="dialog" aria-labelledby="factorDatePickerTitle">
+      <div class="factor-date-picker-heading">
+        <span id="factorDatePickerTitle">选择日期</span>
+        <button type="button" data-date-close aria-label="关闭日期选择">×</button>
+      </div>
+      <div class="factor-date-picker-nav">
+        <button type="button" data-date-step="-1" aria-label="上个月">‹</button>
+        <div><select data-date-year aria-label="年份"></select><select data-date-month aria-label="月份"></select></div>
+        <button type="button" data-date-step="1" aria-label="下个月">›</button>
+      </div>
+      <div class="factor-date-weekdays" aria-hidden="true"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div>
+      <div class="factor-date-days" role="group" aria-label="选择日期"></div>
+      <div class="factor-date-picker-foot">选好日期后，点击「应用区间」</div>
+    </div>
     <script src="factor-lab-http.js?v=b270dcd515b74303a1a74c5da6826c07d2b9d3e36d634b20d90e80a066f0ee0a"></script>
-    <script src="aifin-shell.js?v=048f97ddf75715274b5d1abc9bfe0d02e166d7f8538d061bdd3ebb85bde48f8f"></script>
+    <script src="aifin-shell.js?v=1698717223455e440957b225dfa4419b2f18b1c1291a4e8851585c79da9dc563"></script>
     <script src="auth-shell.js?v=2a897e7c9d549eb188e1cc6baac7aa8416e3f13b27408e1be8d22917add90785"></script>
   </body>
 </html>

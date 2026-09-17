@@ -1095,7 +1095,8 @@ button {
   font: inherit;
 }
 
-.factor-filter-bar label {
+.factor-filter-bar label,
+.factor-date-input {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
@@ -1116,8 +1117,126 @@ button {
 }
 
 .factor-date-input input {
-  width: 150px;
+  width: 116px;
+  height: 36px;
+  padding: 0 0 0 12px;
+  border: 0;
+  background: transparent;
+  font-variant-numeric: tabular-nums;
+  outline: none;
 }
+
+.factor-date-input > label {
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.factor-date-control {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: #fff;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.factor-date-control:hover { border-color: rgba(21, 92, 62, 0.35); }
+.factor-date-control:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(21, 92, 62, 0.08);
+}
+.factor-date-input input::-webkit-calendar-picker-indicator { display: none; }
+.factor-date-trigger {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin-right: 3px;
+  padding: 7px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--accent);
+  background: transparent;
+  cursor: pointer;
+}
+.factor-date-trigger:hover, .factor-date-trigger[aria-expanded="true"] { background: #edf4ef; }
+.factor-date-trigger svg { width: 18px; height: 18px; }
+.factor-date-control:has(input:disabled) { opacity: 0.5; pointer-events: none; }
+
+.factor-date-picker {
+  position: fixed;
+  inset: auto;
+  width: min(320px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
+  margin: 0;
+  padding: 16px;
+  border: 1px solid rgba(21, 92, 62, 0.12);
+  border-radius: 16px;
+  color: var(--text);
+  background: #fff;
+  box-shadow: 0 16px 48px rgba(25, 50, 36, 0.14), 0 2px 6px rgba(25, 50, 36, 0.04);
+  font-family: var(--font-body);
+}
+.factor-date-picker-heading, .factor-date-picker-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.factor-date-picker-heading {
+  margin-bottom: 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+.factor-date-picker button {
+  border: 0;
+  border-radius: 8px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.factor-date-picker-heading button { width: 24px; height: 24px; font-size: 20px; line-height: 1; }
+.factor-date-picker-nav { margin-bottom: 14px; }
+.factor-date-picker-nav > button { width: 32px; height: 32px; font-size: 25px; line-height: 1; }
+.factor-date-picker-nav > div { display: flex; gap: 4px; }
+.factor-date-picker select {
+  padding: 6px 4px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text);
+  background: transparent;
+  font: 600 14px var(--font-body);
+  cursor: pointer;
+}
+.factor-date-picker button:hover:not(:disabled), .factor-date-picker select:hover { background: #edf4ef; }
+.factor-date-picker button:focus-visible, .factor-date-picker select:focus-visible, .factor-date-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.factor-date-weekdays, .factor-date-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.factor-date-weekdays { margin-bottom: 6px; color: var(--text-tertiary); font-size: 11px; text-align: center; }
+.factor-date-days { row-gap: 4px; }
+.factor-date-days button {
+  position: relative;
+  height: 36px;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.factor-date-days .is-in-range { border-radius: 0; color: var(--accent); background: #f0f6f2; }
+.factor-date-days .is-endpoint { border-radius: 8px; box-shadow: inset 0 0 0 1px #b4cebe; }
+.factor-date-days .is-selected, .factor-date-days .is-selected:hover:not(:disabled) {
+  border-radius: 8px;
+  color: #fff;
+  background: var(--accent);
+  box-shadow: none;
+}
+.factor-date-days .is-today::after { content: ""; position: absolute; bottom: 4px; left: calc(50% - 2px); width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
+.factor-date-picker button:disabled { color: #c4c9c6; cursor: default; }
+.factor-date-picker-foot { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--text-tertiary); font-size: 11px; text-align: center; }
 
 .factor-filter-group {
   display: inline-flex;
@@ -2219,6 +2338,7 @@ button {
   .factor-filter-bar,
   .factor-filter-row,
   .factor-filter-bar label,
+  .factor-date-input,
   .factor-filter-group {
     align-items: stretch;
     width: 100%;
@@ -2232,6 +2352,10 @@ button {
   .factor-date-input input {
     width: 100%;
   }
+
+  .factor-date-control { flex: 1; min-width: 0; }
+  .factor-date-input > label { width: auto; }
+  .factor-date-trigger { flex: 0 0 32px; }
 
   .factor-filter-group {
     flex-wrap: wrap;

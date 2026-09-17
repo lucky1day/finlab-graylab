@@ -210,6 +210,8 @@
     loadSeq: 0,
     controller: null,
     committedViewModel: null,
+    pendingSelection: null,
+    draftSelection: null,
     consecutiveFailures: 0,
     refreshTimer: null,
     visibilityBound: false,
@@ -1167,6 +1169,8 @@
       apiError: factorLabApiError,
       dataMode: factorLabDataMode,
       committed: factorLabRuntimeState.committedViewModel,
+      pendingSelection: factorLabRuntimeState.pendingSelection,
+      draftSelection: factorLabRuntimeState.draftSelection,
       aggregateCache: factorLabRuntimeState.aggregateCache,
       detailCache: factorLabRuntimeState.detailCache,
       lastSuccessfulAt: factorLabRuntimeState.lastSuccessfulAt,
@@ -1202,6 +1206,10 @@
       factorLabState.startDate = displayRange ? displayRange.start_date : "";
       factorLabState.endDate = displayRange ? displayRange.end_date : "";
       if (selection.changed) factorLabState.page = 1;
+      factorLabRuntimeState.pendingSelection = null;
+      if (factorLabRuntimeState.draftSelection === selection) {
+        factorLabRuntimeState.draftSelection = null;
+      }
       renderFactorLab();
       if (hasDrawerSelection(previous.drawer)) {
         factorLabState.selectedTaskKey = previous.drawer.taskKey;
@@ -1218,6 +1226,8 @@
       factorLabApiError = previous.apiError;
       factorLabDataMode = previous.dataMode;
       factorLabRuntimeState.committedViewModel = previous.committed;
+      factorLabRuntimeState.pendingSelection = previous.pendingSelection;
+      factorLabRuntimeState.draftSelection = previous.draftSelection;
       factorLabRuntimeState.aggregateCache = previous.aggregateCache;
       factorLabRuntimeState.detailCache = previous.detailCache;
       factorLabRuntimeState.lastSuccessfulAt = previous.lastSuccessfulAt;
@@ -1304,12 +1314,13 @@
       return Promise.resolve(false);
     }
 
-    var selection = options && options.selection || {
+    var selection = options && options.selection || factorLabRuntimeState.pendingSelection || {
       source: factorLabState.dataSource,
       range: factorLabState.dateRangePinned
         ? { start_date: factorLabState.startDate, end_date: factorLabState.endDate }
         : null
     };
+    if (selection.changed) factorLabRuntimeState.pendingSelection = selection;
     var requestUrl = "/api/factor-lab/dashboard";
     if (selection.range) {
       requestUrl += "?start-date=" + selection.range.start_date + "&end-date=" + selection.range.end_date;
@@ -1393,6 +1404,8 @@
   }
 
   function clearAuthenticatedFactorLab() {
+    var datePicker = document.getElementById("factorDatePicker");
+    if (datePicker && datePicker.matches(":popover-open")) datePicker.hidePopover();
     factorLabRuntimeState.authenticated = false;
     clearFactorLabRefreshTimer();
     factorLabRuntimeState.loadSeq += 1;
@@ -1408,6 +1421,8 @@
     factorLabRuntimeState.controller = null;
     factorLabRuntimeState.detailController = null;
     factorLabRuntimeState.committedViewModel = null;
+    factorLabRuntimeState.pendingSelection = null;
+    factorLabRuntimeState.draftSelection = null;
     factorLabState.dateRangePinned = false;
     factorLabState.startDate = "";
     factorLabState.endDate = "";
@@ -1422,6 +1437,7 @@
     factorLabApiError = "";
     factorLabDataMode = "loading";
     factorLabDrawerSelection = null;
+    updateFactorFilterUi();
     window.__factorLabReady = null;
     closeFactorRemark(false);
     closeFactorCalendar();
@@ -1586,6 +1602,7 @@
   }
 
   function renderFactorLabDataStatus() {
+    renderFactorApplyButton();
     renderFactorLabSchemeTotal();
     var status = document.getElementById("factorDataStatus");
     var text = document.getElementById("factorDataStatusText");
@@ -1830,27 +1847,73 @@
     return getVisibleRowsForScheme(getSelectedScheme());
   }
 
+  function factorFilterSelection() {
+    return factorLabRuntimeState.draftSelection || factorLabRuntimeState.pendingSelection || {
+      source: factorLabState.dataSource,
+      range: { start_date: factorLabState.startDate, end_date: factorLabState.endDate }
+    };
+  }
+
+  function sameFactorSelection(left, right) {
+    return Boolean(left && right && left.source === right.source &&
+      (left.range === right.range || (left.range && right.range &&
+        left.range.start_date === right.range.start_date &&
+        left.range.end_date === right.range.end_date)));
+  }
+
+  function renderFactorApplyButton() {
+    var apply = document.getElementById("factorApplyRange");
+    if (!apply) return;
+    var selection = factorFilterSelection();
+    var committed = factorLabRuntimeState.committedViewModel;
+    var bounds = committed && committed.featureDateBounds[selection.source];
+    var pending = sameFactorSelection(selection, factorLabRuntimeState.pendingSelection);
+    var applying = pending && factorLabRemoteLoading;
+    apply.disabled = !bounds || applying;
+    apply.textContent = applying ? "应用中…" : pending && factorLabApiError ? "重试区间" : "应用区间";
+    apply.setAttribute("aria-busy", applying ? "true" : "false");
+  }
+
   function renderFactorDateInputs() {
     var start = document.getElementById("factorStartDate");
     var end = document.getElementById("factorEndDate");
     if (!start || !end) return;
+    var selection = factorFilterSelection();
     var committed = factorLabRuntimeState.committedViewModel;
-    var bounds = committed && committed.featureDateBounds[factorLabState.dataSource];
-    start.value = factorLabState.startDate;
-    end.value = factorLabState.endDate;
+    var bounds = committed && committed.featureDateBounds[selection.source];
+    var range = selection.range || bounds;
+    start.value = range ? range.start_date : "";
+    end.value = range ? range.end_date : "";
     [start, end].forEach(function (input) {
       input.min = bounds ? bounds.start_date : "";
       input.max = bounds ? bounds.end_date : "";
       input.disabled = !bounds;
       input.setCustomValidity("");
     });
-    var apply = document.getElementById("factorApplyRange");
-    if (apply) apply.disabled = !bounds;
+    renderFactorApplyButton();
   }
 
   function requestFactorSelection(source, range) {
+    if (!factorLabRuntimeState.authenticated) return Promise.resolve(false);
     var selection = { source: source, range: range, changed: true };
-    // Keep the last committed controls and statistics together until the response is ready.
+    if (factorLabRemoteLoading && sameFactorSelection(selection, factorLabRuntimeState.pendingSelection)) {
+      return Promise.resolve(false);
+    }
+    factorLabRuntimeState.draftSelection = selection;
+    var committedSelection = {
+      source: factorLabState.dataSource,
+      range: factorLabState.dateRangePinned
+        ? { start_date: factorLabState.startDate, end_date: factorLabState.endDate }
+        : null
+    };
+    if (!factorLabRemoteLoading && !factorLabRuntimeState.pendingSelection &&
+        factorLabDataMode === "fresh" &&
+        factorLabNow() - factorLabRuntimeState.lastSuccessfulAt < FACTOR_LAB_HEALTHY_REFRESH_MS &&
+        sameFactorSelection(selection, committedSelection)) {
+      factorLabRuntimeState.draftSelection = null;
+      updateFactorFilterUi();
+      return Promise.resolve(true);
+    }
     updateFactorFilterUi();
     return loadFactorLabData({ force: true, selection: selection });
   }
@@ -1866,7 +1929,7 @@
       button.setAttribute("aria-sort", active ? ariaDirection : "none");
     });
     var srcSelect = document.getElementById("factorDataSource");
-    if (srcSelect) srcSelect.value = factorLabState.dataSource;
+    if (srcSelect) srcSelect.value = factorFilterSelection().source;
     renderFactorDateInputs();
   }
 
@@ -2441,8 +2504,25 @@
     var startInput = document.getElementById("factorStartDate");
     var endInput = document.getElementById("factorEndDate");
     var apply = document.getElementById("factorApplyRange");
+    var dataSourceSelect = document.getElementById("factorDataSource");
+    [startInput, endInput].forEach(function (input) {
+      if (!input) return;
+      input.addEventListener("input", function () {
+        factorLabRuntimeState.draftSelection = {
+          source: dataSourceSelect ? dataSourceSelect.value : factorLabState.dataSource,
+          range: { start_date: startInput.value, end_date: endInput.value }
+        };
+        input.setCustomValidity("");
+        renderFactorApplyButton();
+      });
+    });
     if (apply) apply.addEventListener("click", function () {
       if (!startInput || !endInput) return;
+      var pending = factorLabRuntimeState.pendingSelection;
+      if (sameFactorSelection(factorFilterSelection(), pending)) {
+        requestFactorSelection(pending.source, pending.range);
+        return;
+      }
       startInput.setCustomValidity("");
       endInput.setCustomValidity("");
       if (!startInput.value || !endInput.value) {
@@ -2453,11 +2533,10 @@
         endInput.setCustomValidity("结束日期不能早于起始日期");
       }
       if (!startInput.reportValidity() || !endInput.reportValidity()) return;
-      requestFactorSelection(factorLabState.dataSource, {
+      requestFactorSelection(dataSourceSelect ? dataSourceSelect.value : factorLabState.dataSource, {
         start_date: startInput.value, end_date: endInput.value
       });
     });
-    var dataSourceSelect = document.getElementById("factorDataSource");
     if (dataSourceSelect) dataSourceSelect.addEventListener("change", function () {
       requestFactorSelection(dataSourceSelect.value || "all", null);
     });
@@ -2470,6 +2549,165 @@
     }
   });
 
+  function initializeFactorDatePicker() {
+    var picker = document.getElementById("factorDatePicker");
+    if (!picker) return;
+    var yearSelect = picker.querySelector("[data-date-year]");
+    var monthSelect = picker.querySelector("[data-date-month]");
+    var days = picker.querySelector(".factor-date-days");
+    var activeInput = null;
+    var activeTrigger = null;
+    var viewMonth = "";
+
+    function dateKey(date) {
+      return date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0") + "-" + String(date.getDate()).padStart(2, "0");
+    }
+
+    function dateValue(key) {
+      var parts = key.split("-").map(Number);
+      return new Date(parts[0], parts[1] - 1, parts[2] || 1);
+    }
+
+    function closePicker() {
+      if (picker.matches(":popover-open")) picker.hidePopover();
+    }
+
+    function renderPicker() {
+      var minMonth = activeInput.min.slice(0, 7);
+      var maxMonth = activeInput.max.slice(0, 7);
+      viewMonth = viewMonth < minMonth ? minMonth : viewMonth > maxMonth ? maxMonth : viewMonth;
+      var year = Number(viewMonth.slice(0, 4));
+      var month = Number(viewMonth.slice(5, 7));
+      yearSelect.innerHTML = "";
+      for (var y = Number(minMonth.slice(0, 4)); y <= Number(maxMonth.slice(0, 4)); y += 1) {
+        yearSelect.add(new Option(y + " 年", String(y), false, y === year));
+      }
+      monthSelect.innerHTML = "";
+      for (var m = 1; m <= 12; m += 1) {
+        var key = year + "-" + String(m).padStart(2, "0");
+        var option = new Option(m + " 月", String(m), false, m === month);
+        option.disabled = key < minMonth || key > maxMonth;
+        monthSelect.add(option);
+      }
+      picker.querySelector('[data-date-step="-1"]').disabled = viewMonth <= minMonth;
+      picker.querySelector('[data-date-step="1"]').disabled = viewMonth >= maxMonth;
+      var start = document.getElementById("factorStartDate").value;
+      var end = document.getElementById("factorEndDate").value;
+      var first = new Date(year, month - 1, 1);
+      var offset = (first.getDay() + 6) % 7;
+      var today = dateKey(new Date());
+      var focusValue = activeInput.value.slice(0, 7) === viewMonth ? activeInput.value : (viewMonth === minMonth ? activeInput.min : viewMonth + "-01");
+      var html = "";
+      for (var i = 0; i < 42; i += 1) {
+        var date = new Date(year, month - 1, i - offset + 1);
+        var value = dateKey(date);
+        var disabled = date.getMonth() !== month - 1 || value < activeInput.min || value > activeInput.max;
+        var selected = value === activeInput.value;
+        var classes = [];
+        if (!disabled && value >= start && value <= end) classes.push("is-in-range");
+        if (!disabled && (value === start || value === end)) classes.push("is-endpoint");
+        if (selected) classes.push("is-selected");
+        if (value === today) classes.push("is-today");
+        html += '<button type="button" data-date-value="' + value + '" class="' + classes.join(" ") + '" aria-label="' + value.replace(/-/g, "/") + '" aria-pressed="' + selected + '" tabindex="' + (value === focusValue && !disabled ? "0" : "-1") + '"' + (disabled ? " disabled" : "") + '>' + date.getDate() + '</button>';
+      }
+      days.innerHTML = html;
+    }
+
+    function focusDay(value) {
+      var target = days.querySelector('[data-date-value="' + value + '"]:not(:disabled)') || days.querySelector("button:not(:disabled)");
+      if (target) {
+        Array.prototype.slice.call(days.querySelectorAll("button")).forEach(function (button) { button.tabIndex = -1; });
+        target.tabIndex = 0;
+        target.focus();
+      }
+    }
+
+    Array.prototype.slice.call(document.querySelectorAll("[data-date-input]")).forEach(function (trigger) {
+      var input = document.getElementById(trigger.getAttribute("data-date-input"));
+      var wasOpenOnPointerDown = false;
+      function openPicker() {
+        if (input.disabled) return;
+        if (activeTrigger) activeTrigger.setAttribute("aria-expanded", "false");
+        activeInput = input;
+        activeTrigger = trigger;
+        viewMonth = (input.value || input.min).slice(0, 7);
+        document.getElementById("factorDatePickerTitle").textContent = input.id === "factorStartDate" ? "选择起始日期" : "选择结束日期";
+        renderPicker();
+        picker.showPopover();
+        trigger.setAttribute("aria-expanded", "true");
+        var rect = trigger.parentElement.getBoundingClientRect();
+        picker.style.left = Math.max(12, Math.min(rect.left, window.innerWidth - picker.offsetWidth - 12)) + "px";
+        picker.style.top = Math.max(12, Math.min(rect.bottom + 8, window.innerHeight - picker.offsetHeight - 12)) + "px";
+        focusDay(input.value);
+      }
+      trigger.addEventListener("pointerdown", function () {
+        wasOpenOnPointerDown = activeTrigger === trigger && picker.matches(":popover-open");
+      });
+      trigger.addEventListener("click", function (event) {
+        if ((event.detail > 0 && wasOpenOnPointerDown) || (activeTrigger === trigger && picker.matches(":popover-open"))) closePicker();
+        else openPicker();
+        wasOpenOnPointerDown = false;
+      });
+      input.addEventListener("keydown", function (event) {
+        if (event.altKey && event.key === "ArrowDown") {
+          event.preventDefault();
+          openPicker();
+        }
+      });
+    });
+
+    picker.addEventListener("click", function (event) {
+      var day = event.target.closest("[data-date-value]");
+      if (day && !day.disabled && !activeInput.disabled) {
+        activeInput.value = day.getAttribute("data-date-value");
+        activeInput.dispatchEvent(new Event("input", { bubbles: true }));
+        activeInput.dispatchEvent(new Event("change", { bubbles: true }));
+        closePicker();
+        activeInput.focus();
+      }
+      var step = event.target.closest("[data-date-step]");
+      if (step && !step.disabled) {
+        var date = dateValue(viewMonth);
+        date.setMonth(date.getMonth() + Number(step.getAttribute("data-date-step")));
+        viewMonth = dateKey(date).slice(0, 7);
+        renderPicker();
+      }
+      if (event.target.closest("[data-date-close]")) {
+        closePicker();
+        activeTrigger.focus();
+      }
+    });
+    [yearSelect, monthSelect].forEach(function (select) {
+      select.addEventListener("change", function () {
+        viewMonth = yearSelect.value + "-" + String(monthSelect.value).padStart(2, "0");
+        renderPicker();
+      });
+    });
+    days.addEventListener("keydown", function (event) {
+      var delta = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 }[event.key];
+      if (!delta || !event.target.hasAttribute("data-date-value")) return;
+      event.preventDefault();
+      var date = dateValue(event.target.getAttribute("data-date-value"));
+      date.setDate(date.getDate() + delta);
+      var value = dateKey(date);
+      if (value < activeInput.min || value > activeInput.max) return;
+      viewMonth = value.slice(0, 7);
+      renderPicker();
+      focusDay(value);
+    });
+    picker.addEventListener("beforetoggle", function (event) {
+      if (event.newState === "closed" && activeTrigger) {
+        activeTrigger.setAttribute("aria-expanded", "false");
+        if (picker.contains(document.activeElement)) activeTrigger.focus();
+      }
+    });
+    window.addEventListener("resize", closePicker);
+    document.addEventListener("scroll", function (event) {
+      if (!picker.contains(event.target)) closePicker();
+    }, true);
+  }
+
   /* ─── Init ─── */
+  initializeFactorDatePicker();
   clearAuthenticatedFactorLab();
 })();

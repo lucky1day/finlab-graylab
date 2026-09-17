@@ -450,6 +450,213 @@ function twoMonthPayload(snapshotId, range = null) {
   return payload;
 }
 
+function rangeControls() {
+  function control(value = "") {
+    const listeners = new Map();
+    return {
+      value, textContent: "", innerHTML: "", disabled: false,
+      addEventListener(type, listener) { listeners.set(type, listener); },
+      setCustomValidity(message) { this.validationMessage = message; },
+      reportValidity() { return !this.validationMessage; },
+      setAttribute() {},
+      removeAttribute() {},
+      emit(type) { listeners.get(type)?.({ target: this }); },
+      click() { if (!this.disabled) this.emit("click"); }
+    };
+  }
+  const elements = {
+    factorStartDate: control(), factorEndDate: control(),
+    factorApplyRange: control(), factorDataSource: control("all"),
+    factorTaskMatrixBody: control(), factorOverviewRange: control()
+  };
+  return {
+    elements,
+    button: elements.factorApplyRange,
+    edit(range) {
+      elements.factorStartDate.value = range.start_date;
+      elements.factorStartDate.emit("input");
+      elements.factorStartDate.emit("change");
+      elements.factorEndDate.value = range.end_date;
+      elements.factorEndDate.emit("input");
+      elements.factorEndDate.emit("change");
+    },
+    range() {
+      return {
+        start_date: elements.factorStartDate.value,
+        end_date: elements.factorEndDate.value
+      };
+    }
+  };
+}
+
+const SELECTED_RANGE = { start_date: "2026-05-20", end_date: "2026-06-10" };
+const LATEST_RANGE = { start_date: "2026-05-25", end_date: "2026-06-15" };
+const SELECTED_RANGE_URL = "/api/factor-lab/dashboard?start-date=2026-05-20&end-date=2026-06-10";
+
+test("apply keeps the selected dates visible and coalesces repeated clicks", async (t) => {
+  const controls = rangeControls();
+  const requests = [];
+  const harness = createHarness((url, options) => {
+    requests.push({ url, signal: options.signal });
+    return Promise.resolve(okResponse(twoMonthPayload("whole")));
+  }, controls.elements);
+  t.after(() => harness.hooks.stop());
+  harness.hooks.start();
+  await waitFor(() => harness.hooks.state().snapshotId === "whole");
+  let resolveRange;
+  harness.setFetch((url, options) => {
+    requests.push({ url, signal: options.signal });
+    return new Promise((resolve) => { resolveRange = resolve; });
+  });
+  controls.edit(SELECTED_RANGE);
+  controls.button.click();
+  await flushPromises();
+  assert.deepEqual(controls.range(), SELECTED_RANGE);
+  assert.equal(controls.button.textContent, "应用中…");
+  assert.equal(controls.button.disabled, true);
+  assert.match(controls.elements.factorOverviewRange.textContent, /2026\/05\/01 至 2026\/06\/30/);
+  controls.button.emit("click");
+  await flushPromises();
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].url, SELECTED_RANGE_URL);
+  assert.equal(requests[1].signal.aborted, false);
+  resolveRange(okResponse(twoMonthPayload("selected", SELECTED_RANGE)));
+  await waitFor(() => harness.hooks.state().snapshotId === "selected");
+  assert.deepEqual(controls.range(), SELECTED_RANGE);
+  assert.equal(controls.button.textContent, "应用区间");
+  assert.equal(controls.button.disabled, false);
+  assert.match(controls.elements.factorOverviewRange.textContent, /2026\/05\/20 至 2026\/06\/10/);
+  controls.button.click();
+  await flushPromises();
+  assert.equal(requests.length, 2);
+});
+
+for (const retry of ["automatic", "manual"]) {
+  for (const selection of [
+    { name: "explicit dates", source: "all", range: SELECTED_RANGE, url: SELECTED_RANGE_URL,
+      displayed: SELECTED_RANGE, label: /2026\/05\/20 至 2026\/06\/10/ },
+    { name: "all source history", source: "live", range: null, url: "/api/factor-lab/dashboard",
+      displayed: { start_date: "2026-06-01", end_date: "2026-06-30" },
+      label: /2026\/06\/01 至 2026\/06\/30/ }
+  ]) {
+    test(`${retry} retry preserves ${selection.name} without resetting inputs`, async (t) => {
+      const controls = rangeControls();
+      const harness = createHarness(() => Promise.resolve(okResponse(twoMonthPayload("whole"))), controls.elements);
+      t.after(() => harness.hooks.stop());
+      harness.hooks.setRetryDelaysMs([retry === "automatic" ? 30 : 10000]);
+      harness.hooks.start();
+      await waitFor(() => harness.hooks.state().snapshotId === "whole");
+      const urls = [];
+      harness.setFetch((url) => {
+        urls.push(url);
+        return urls.length === 1
+          ? Promise.reject(new Error("offline"))
+          : Promise.resolve(okResponse(twoMonthPayload("recovered-range", selection.range)));
+      });
+      if (selection.range) {
+        controls.edit(selection.range);
+        controls.button.click();
+      } else {
+        controls.elements.factorDataSource.value = selection.source;
+        controls.elements.factorDataSource.emit("change");
+      }
+      await waitFor(() => harness.hooks.state().dataMode === "stale");
+      const failedView = {
+        range: controls.range(), label: controls.button.textContent,
+        disabled: controls.button.disabled,
+        committedRange: controls.elements.factorOverviewRange.textContent
+      };
+      if (retry === "manual") controls.button.click();
+      await waitFor(() => urls.length === 2);
+      assert.deepEqual(urls, [selection.url, selection.url]);
+      assert.deepEqual(failedView.range, selection.displayed);
+      assert.match(failedView.label, /重试/);
+      assert.equal(failedView.disabled, false);
+      assert.match(failedView.committedRange, /2026\/05\/01 至 2026\/06\/30/);
+      await waitFor(() => harness.hooks.state().snapshotId === "recovered-range");
+      assert.equal(controls.elements.factorDataSource.value, selection.source);
+      assert.match(controls.elements.factorOverviewRange.textContent, selection.label);
+    });
+  }
+}
+
+test("applying another range during a request commits only the latest choice", async (t) => {
+  const controls = rangeControls();
+  const harness = createHarness(() => Promise.resolve(okResponse(twoMonthPayload("whole"))), controls.elements);
+  t.after(() => harness.hooks.stop());
+  harness.hooks.start();
+  await waitFor(() => harness.hooks.state().snapshotId === "whole");
+  const requests = [];
+  harness.setFetch((url, options) => new Promise((resolve) => {
+    requests.push({ url, signal: options.signal, resolve });
+  }));
+  controls.edit(SELECTED_RANGE);
+  controls.button.click();
+  await flushPromises();
+  controls.edit(LATEST_RANGE);
+  assert.equal(controls.button.disabled, false);
+  controls.button.click();
+  await flushPromises();
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].signal.aborted, true);
+  assert.equal(requests[1].url, "/api/factor-lab/dashboard?start-date=2026-05-25&end-date=2026-06-15");
+  requests[1].resolve(okResponse(twoMonthPayload("latest-range", LATEST_RANGE)));
+  await waitFor(() => harness.hooks.state().snapshotId === "latest-range");
+  requests[0].resolve(okResponse(twoMonthPayload("late-old-range", SELECTED_RANGE)));
+  await flushPromises();
+  assert.equal(harness.hooks.state().snapshotId, "latest-range");
+  assert.deepEqual(controls.range(), LATEST_RANGE);
+  assert.match(controls.elements.factorOverviewRange.textContent, /2026\/05\/25 至 2026\/06\/15/);
+});
+
+test("a completed request preserves a newer unsubmitted date draft", async (t) => {
+  const controls = rangeControls();
+  const harness = createHarness(() => Promise.resolve(okResponse(twoMonthPayload("whole"))), controls.elements);
+  t.after(() => harness.hooks.stop());
+  harness.hooks.start();
+  await waitFor(() => harness.hooks.state().snapshotId === "whole");
+  let resolveRange;
+  harness.setFetch(() => new Promise((resolve) => { resolveRange = resolve; }));
+  controls.edit(SELECTED_RANGE);
+  controls.button.click();
+  await flushPromises();
+  controls.edit(LATEST_RANGE);
+  resolveRange(okResponse(twoMonthPayload("selected", SELECTED_RANGE)));
+  await waitFor(() => harness.hooks.state().snapshotId === "selected");
+  assert.deepEqual(controls.range(), LATEST_RANGE);
+  assert.equal(controls.button.disabled, false);
+  assert.match(controls.elements.factorOverviewRange.textContent, /2026\/05\/20 至 2026\/06\/10/);
+});
+
+test("logout clears pending and draft ranges before the next login", async (t) => {
+  const controls = rangeControls();
+  const harness = createHarness(() => Promise.resolve(okResponse(twoMonthPayload("whole"))), controls.elements);
+  t.after(() => harness.hooks.stop());
+  harness.hooks.start();
+  await waitFor(() => harness.hooks.state().snapshotId === "whole");
+  let resolveRange;
+  harness.setFetch(() => new Promise((resolve) => { resolveRange = resolve; }));
+  controls.edit(SELECTED_RANGE);
+  controls.button.click();
+  await flushPromises();
+  controls.edit(LATEST_RANGE);
+  harness.hooks.stop();
+  assert.deepEqual(controls.range(), { start_date: "", end_date: "" });
+  assert.equal(controls.button.disabled, true);
+  const urls = [];
+  harness.setFetch((url) => {
+    urls.push(url);
+    return Promise.resolve(okResponse(twoMonthPayload("new-login")));
+  });
+  harness.hooks.start();
+  await waitFor(() => harness.hooks.state().snapshotId === "new-login");
+  resolveRange(okResponse(twoMonthPayload("old-login-range", SELECTED_RANGE)));
+  await flushPromises();
+  assert.deepEqual(urls, ["/api/factor-lab/dashboard"]);
+  assert.equal(harness.hooks.state().snapshotId, "new-login");
+  assert.deepEqual(controls.range(), { start_date: "2026-05-01", end_date: "2026-06-30" });
+});
+
 test("day range statistics use interval counts while details retain full touched months", async () => {
   const urls = [];
   const range = { start_date: "2026-05-20", end_date: "2026-06-10" };
