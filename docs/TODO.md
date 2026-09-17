@@ -13,16 +13,18 @@
 以下问题以 `399df5bf` 为修复基线，按 P0 → P1 → P2 顺序处理；代码、隔离测试和真实环境验收是三个独立状态，
 未完成现场读回前不得标记发布闭环。
 
-2026-09-17，候选 `69c1a7046432564fe1c50a0a9d9f7beed3197671` 的公共 Python、Node、MySQL 8.4、
-release 四层 CI 与独立复审通过，ECS 已完成候选验收和正式晋级。Mac3 候选的 Dashboard、公网入口与认证
-Gate 通过，但 DataConsistency lineage 因 78 个旧 Native live run 缺输入 artifact、3 个 retired exact 缺
-`manifest_hash` 而 `BLOCKED`；Mac3 又不存在 ECS 上获批的 `_bbv2` 替代事实。未获得精确替代或恢复证据前
-继续阻断 Mac3 晋级，不删除 Mac3 事实、不增加宽泛兼容，因此以下临时清单暂不移除。
+ECS 的二次审计候选已晋级；Mac3 的最新预测状态重建、四条精确补缺及 333 条旧回测审计事实清理
+已按用户确认的收缩范围完成。现有 78 条 live 和新增四条均保留；旧回测不再展示。具体结果、
+恢复备份与 release 身份见[当前状态](CURRENT_STATUS.md#运行与部署)。
+Mac3 尚未晋级二次审计 release：DataConsistency 对既有 Native run/retired version 的 lineage
+仍返回 `BLOCKED`。用户不要求用旧血缘作为历史清理前提，但没有把该 Gate 的失败改写为通过。
+后续若继续双机发布，需先明确该 Gate 在已删除旧历史、仍保留 78 条 Native live 的业务合同，
+再对候选 release 做真实 Mac3 验收；不要恢复旧历史、伪造 lineage 或扩大清理范围。
 
 | 编号 | 优先级 | 当前状态 | 待完成事项 |
 |---:|:---:|---|---|
 | 01 | P0 | 已实现待现场验收 | `factor-lab-http.js` 精确白名单已由 `3a665c36` 发布；页面资源自动发现、临时 Nginx 冒烟及新版公网入口检查已实现，待候选与公网读回。 |
-| 02 | P0 | ECS 已闭环、Mac3 阻断 | DataConsistency 按 runtime 校验 Blackbox/W4 Native 合同；ECS 的 333 条旧事实已按业务确认绑定 `_bbv2` 纠正版并完成精确清理。Mac3 没有该替代来源，且旧 Native lineage 不完整，继续 fail-closed。 |
+| 02 | P0 | 清理已完成、发布待决 | Mac3 只清理了 333 条旧回测审计事实，保留 82 条 live；DataConsistency 对旧 Native lineage 的 `BLOCKED` 仍需在发布前按明确业务合同处理。 |
 | 03 | P0 | 已实现待现场验收 | Dashboard/DataConsistency Gate 分离安全 Origin 与应用 `api_prefix`，支持真实 `/bond-factor-lab` 公网路径。 |
 | 04 | P1 | 已实现待验收 | HTTP 客户端在响应头阶段处理 401、request ID 与 Retry-After，不依赖错误正文完成。 |
 | 05 | P1 | 已实现待验收 | 认证前端复用有界 HTTP 客户端，并隔离注销或身份切换后的旧请求。 |

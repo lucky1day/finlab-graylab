@@ -24,11 +24,22 @@
   ECS 候选与正式九方案 Dashboard/DataConsistency 验收并晋级；archive SHA-256 为
   `8588983881a76351d61203f89671464b05332de35a01547f130ef986ed02a8f3`。ECS 晋级前后
   Registry、Version、Prediction、Run、Backtest 与四类 Actual 计数均未变化。
-- Mac3 尚未晋级该候选。候选 Dashboard 与公网入口/认证 Gate 通过，但 DataConsistency lineage
-  对 `liwei_0616_5y01_full_oos_k3_div_k10` 返回 `BLOCKED`：78 个既有 Native live run 缺输入
-  artifact，3 个 retired exact 缺 `manifest_hash`；Mac3 同时不存在获批的 `_bbv2` 替代 Registry、
-  version 或产品事实，不能复用 ECS 的删除结论。候选服务和临时会话已撤销，未修改 Mac3 业务数据、
-  current、launchd 或调度。该阻断解除前不得把本轮写成双机发布闭环。
+- Mac3 尚未晋级二次审计 release：既有 78 个 Native live run 的输入 artifact 和三个 retired exact
+  的 `manifest_hash` 不完整，DataConsistency lineage 仍为 `BLOCKED`。用户已明确这不作为清理旧回测
+  审计记录的前提；这项选择不等于放行二次审计 release。ECS current 与 Mac3 current 仍如上表，
+  `47df08fbc8461378d5bc97944240b2eaeadbe082` 只在两机预安装，未切换 current 或刷新服务。
+- 2026-09-17 Mac3 已备份并受控重建 `liwei_0616_5y01_full_oos_k3_div_k10` 的 Blackbox exact
+  `603f1574704b` 私有状态；旧状态备份在生产 backups 下 `blackbox-state-rebuild-20260917-Jc3iyc`。
+  随后经正式 `gray_live` 入口精确补齐预测日 9 月 14—17 日四个缺口，run `5126`—`5129`，目标日
+  9 月 18、21、22、23 日方向依次为 `1、0、1、1`。这些是授权补缺，不能冒充自然调度成功。
+- 按用户确认的“保留最新正确结果、不保留旧审计历史”范围，Mac3 已经从产品事实中删除旧回测的
+  333 个精确 ID（`9433`—`9765`），并删除其独占回测 run `159` 及级联的 333 条原始回测明细；
+  旧历史区间现在不再展示。78 条原 live 与四条新 live 共 82 条仍在，9 月 Dashboard Detail 的
+  最新四行方向未变，5 月 backtest Detail 为 0 行。没有复制跨机事实、删除 live、修改调度或切换服务。
+  生产逐行备份和恢复清单为 `backups/legacy-backtest-only-20260917-47df08fb/plan.json`，文件 SHA-256
+  `f81bbd40d55687a64a0e365ccc94a91cba788bac311526a0ef9f5b3e5e7f4653`；专用清理代码的四层 CI、
+  隔离 MySQL 测试和独立复审均通过，同一 archive SHA-256 为
+  `e5e2e2c7a04a2e2eb4ed29605b0f84cd342e46342209aa4140dd1c9e81262140`。
 - 上一份双机共同 release 为 `3a665c36425a168fa1d24559c9dc987ed2901633`，archive SHA-256 为
   `1eba1e9fbf7a8b0b944bf8de2385ce920ef647021b4ae586481cae14aae25366`。
 - 2026-09-16 上线前稳定性加固 release 已按 ECS → Mac3 顺序使用同一 archive 晋级。两机 Backend
