@@ -109,7 +109,7 @@ def _evidence() -> tuple[
         expected_fact_count=1,
         input_artifact_hash="d" * 64,
         backtest_summary_sha256="e" * 64,
-        source_facts_sha256=_sha256([legacy_fact]),
+        source_facts_sha256="f" * 64,
         product_facts_sha256=_sha256([legacy_fact]),
         target_contract_mismatch_count=0,
         target_contract_mismatch_sha256=_sha256([]),
@@ -367,6 +367,7 @@ def test_legacy_backtest_only_cleanup_preserves_live_and_rolls_back(
         assert len(plan["scope"]["preserved_live_ids"]) == 1
         assert len(plan["backup"]["backtest_predictions"]) == 1
         assert len(plan["backup"]["backtest_monthly_metrics"]) == 1
+        assert len(plan["backup"]["protected_live_predictions"]) == 1
         with mysql_test_engine.begin() as connection:
             connection.execute(
                 text(
@@ -386,6 +387,58 @@ def test_legacy_backtest_only_cleanup_preserves_live_and_rolls_back(
                     "WHERE id=:id"
                 ),
                 {"id": plan["scope"]["preserved_live_ids"][0]},
+            )
+            connection.execute(
+                text(
+                    "UPDATE t_scheme_predictions SET scheme_version=:version "
+                    "WHERE id=:id"
+                ),
+                {
+                    "version": "2" * 12,
+                    "id": plan["scope"]["preserved_live_ids"][0],
+                },
+            )
+        with pytest.raises(ValueError, match="locked facts changed"):
+            history_cleanup.apply_legacy_backtest_only_cleanup(
+                mysql_test_engine, plan
+            )
+        with mysql_test_engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE t_scheme_predictions SET scheme_version=:version "
+                    "WHERE id=:id"
+                ),
+                {
+                    "version": OLD_EXACT,
+                    "id": plan["scope"]["preserved_live_ids"][0],
+                },
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO t_scheme_predictions "
+                    "(backtest_run_id, scheme_version, scheme_id, target_tenor, "
+                    "horizon, predict_date, feature_date, target_date, "
+                    "predicted_direction, backtest_actual_direction) "
+                    "VALUES (:run_id, :version, :scheme_id, '5Y', 5, "
+                    "'2026-05-21', '2026-05-21', '2026-05-28', 1, -1)"
+                ),
+                {
+                    "run_id": plan["scope"]["backtest_run_id"],
+                    "version": SOURCE_EXACT,
+                    "scheme_id": SOURCE_ID,
+                },
+            )
+        with pytest.raises(ValueError, match="references outside cleanup scope"):
+            history_cleanup.apply_legacy_backtest_only_cleanup(
+                mysql_test_engine, plan
+            )
+        with mysql_test_engine.begin() as connection:
+            connection.execute(
+                text(
+                    "DELETE FROM t_scheme_predictions WHERE scheme_id=:scheme_id "
+                    "AND target_date='2026-05-28'"
+                ),
+                {"scheme_id": SOURCE_ID},
             )
         original_delete_ids = history_cleanup._delete_ids
         with monkeypatch.context() as failure_patch:

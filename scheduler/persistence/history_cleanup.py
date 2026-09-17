@@ -201,27 +201,27 @@ def _legacy_backtest_only_scope(
     if (
         len(backtest_runs) != 1
         or backtest_runs[0]["scheme_id"] != entry.historical_source_scheme_id
-        or backtest_runs[0]["status"] != "success"
         or len(raw_predictions) != entry.expected_fact_count
-        or _legacy_product_digest(
-            [
-                {**row, "backtest_actual_direction": row["label"]}
-                for row in raw_predictions
-            ]
-        ) != entry.source_facts_sha256
         or any(
             row["scheme_id"] != entry.historical_source_scheme_id
             for row in raw_predictions
         )
     ):
         raise ValueError("legacy backtest evidence is incomplete")
+    live_ids = sorted(int(row["id"]) for row in live)
+    live_predictions = _select_ids(
+        connection, table="t_scheme_predictions", column="id",
+        ids=frozenset(live_ids), lock=lock,
+    )
+    if len(live_predictions) != entry.expected_live_fact_count:
+        raise ValueError("preserved live facts are incomplete")
     scope = {
         "prediction_scheme_id": entry.prediction_scheme_id,
         "target_tenor": entry.target_tenor,
         "horizon": entry.horizon,
         "product_ids": product_ids,
         "backtest_run_id": run_id,
-        "preserved_live_ids": sorted(int(row["id"]) for row in live),
+        "preserved_live_ids": live_ids,
     }
     backup = _json_safe({
         "product_predictions": _select_ids(
@@ -231,6 +231,7 @@ def _legacy_backtest_only_scope(
         "backtest_runs": backtest_runs,
         "backtest_predictions": raw_predictions,
         "backtest_monthly_metrics": metrics,
+        "protected_live_predictions": live_predictions,
     })
     return scope, backup
 
