@@ -30,6 +30,10 @@ from harness.gates.data_consistency_gate import (
     validate_and_join_facts,
 )
 from harness.result import GateStatus
+from harness.signal_gap_plan import (
+    RegistryTarget,
+    expected_signal_case_from_calendar_rows,
+)
 from shared.historical_reference_compatibility import HistoricalBacktestReference
 from shared.legacy_prediction_migration import (
     LegacyCorrectedExactEvidence,
@@ -44,6 +48,7 @@ from shared.prediction_context import (
 )
 from shared.task_specs import load_legacy_native_scheme_ids
 from shared.task_specs import TASK_COMBINATIONS
+from shared.prediction_history_replacement import live_fact_digest
 
 
 BASE_SCHEME_ID = "daily_5y_lgbm_5y10_0629"
@@ -767,6 +772,197 @@ def test_completeness_blocks_when_an_active_scope_has_no_product_reference() -> 
         "selected Registry scopes have no durable backtest product reference: "
         "[('missing_history', '5Y', 1)]"
     ]
+
+
+def _retained_live_only_snapshot():
+    _original, entry, _corrected = _legacy_migration_snapshot()
+    calendar = _calendar_rows(date(2026, 6, 1), date(2026, 6, 30))
+    target = RegistryTarget(
+        registry_scheme_id="legacy_scheme__h5__5Y",
+        base_scheme_id="legacy_scheme",
+        runtime_type="blackbox_v2",
+        frequency="daily",
+        task_type="T+5",
+        target_tenor="5Y",
+        horizon=5,
+        scheme_version="legacy-exact",
+    )
+    key = expected_signal_case_from_calendar_rows(
+        target, predict_date="2026-06-10", calendar_rows=calendar
+    ).business_key
+    product = {
+        "id": 1,
+        "scheme_id": "legacy_scheme",
+        "target_tenor": "5Y",
+        "horizon": 5,
+        "predict_date": "2026-06-10",
+        "feature_date": "2026-06-09",
+        "target_date": key[3],
+        "predicted_direction": 1,
+        "backtest_actual_direction": None,
+        "run_id": 11,
+        "backtest_run_id": None,
+        "scheme_version": "legacy-exact",
+    }
+    entry = replace(
+        entry,
+        expected_live_fact_count=1,
+        product_live_facts_sha256=live_fact_digest([product]),
+    )
+    snapshot = DatabaseSnapshot(
+        registry_rows=({
+            "scheme_id": "legacy_scheme__h5__5Y",
+            "base_scheme_id": "legacy_scheme",
+            "target_tenor": "5Y",
+            "horizon": 5,
+            "task_type": "T+5",
+            "frequency": "daily",
+            "runtime_type": "blackbox_v2",
+            "status": "active",
+        },),
+        prediction_rows=(product,),
+        actual_rows=(),
+        live_runs=({
+            "reference_id": 11,
+            "scheme_id": "legacy_scheme",
+            "scheme_version": "legacy-exact",
+            "runtime_type": "native_adapter",
+            "status": "success",
+            "prediction_phase": "scheduled_live",
+            "predict_date": "2026-06-10",
+            "input_artifact_id": None,
+        },),
+        backtest_runs=(),
+        calendar_rows=calendar,
+        digest="retained-live-only",
+        version_rows=({
+            "scheme_id": "legacy_scheme",
+            "scheme_version": "legacy-exact",
+            "runtime_type": "native_adapter",
+            "status": "retired",
+            "code_hash": "a" * 64,
+            "config_hash": "b" * 64,
+            "manifest_hash": None,
+        },),
+    )
+    return snapshot, entry
+
+
+def test_retained_live_only_scope_requires_exact_business_baseline() -> None:
+    snapshot, entry = _retained_live_only_snapshot()
+    errors, details = validate_snapshot_completeness(
+        snapshot,
+        display_until="2026-06-30",
+        legacy_migrations=frozenset({entry}),
+    )
+    lineage_errors, lineage = validate_snapshot_lineage(
+        snapshot,
+        historical_references=frozenset(),
+        legacy_migrations=frozenset({entry}),
+    )
+    assert errors == []
+    assert details["authority_gaps"] == []
+    assert lineage_errors == []
+    assert lineage["authority_gaps"] == []
+
+    for broken in (
+        replace(snapshot, prediction_rows=()),
+        replace(snapshot, prediction_rows=({
+            **snapshot.prediction_rows[0], "predicted_direction": -1
+        },)),
+    ):
+        broken_errors, _ = validate_snapshot_completeness(
+            broken,
+            display_until="2026-06-30",
+            legacy_migrations=frozenset({entry}),
+        )
+        assert any("retained live-only product baseline differs" in error
+                   for error in broken_errors)
+
+
+def test_retained_live_only_exception_does_not_cover_later_native_fact() -> None:
+    snapshot, entry = _retained_live_only_snapshot()
+    later = {
+        **snapshot.prediction_rows[0],
+        "id": 2,
+        "run_id": 12,
+        "predict_date": "2026-07-01",
+        "feature_date": "2026-06-30",
+        "target_date": "2026-07-08",
+    }
+    snapshot = replace(
+        snapshot,
+        prediction_rows=(*snapshot.prediction_rows, later),
+        live_runs=(*snapshot.live_runs, {
+            **snapshot.live_runs[0],
+            "reference_id": 12,
+            "predict_date": "2026-07-01",
+        }),
+    )
+    _errors, lineage = validate_snapshot_lineage(
+        snapshot,
+        historical_references=frozenset(),
+        legacy_migrations=frozenset({entry}),
+    )
+    assert any("input artifact is missing: run_id=12" in gap
+               for gap in lineage["authority_gaps"])
+    assert any("field=manifest_hash" in gap
+               for gap in lineage["authority_gaps"])
+
+
+def test_retained_live_only_exception_rejects_unretired_version() -> None:
+    snapshot, entry = _retained_live_only_snapshot()
+    snapshot = replace(snapshot, version_rows=({
+        **snapshot.version_rows[0], "status": "active"
+    },))
+    _errors, lineage = validate_snapshot_lineage(
+        snapshot,
+        historical_references=frozenset(),
+        legacy_migrations=frozenset({entry}),
+    )
+    assert any("input artifact is missing" in gap
+               for gap in lineage["authority_gaps"])
+    assert any("field=manifest_hash" in gap
+               for gap in lineage["authority_gaps"])
+
+
+def test_retained_live_only_exception_does_not_cover_later_blackbox() -> None:
+    snapshot, entry = _retained_live_only_snapshot()
+    future = {
+        **snapshot.prediction_rows[0],
+        "id": 2,
+        "run_id": 12,
+        "scheme_version": "blackbox-exact",
+        "predict_date": "2026-07-01",
+        "feature_date": "2026-06-30",
+        "target_date": "2026-07-08",
+    }
+    snapshot = replace(
+        snapshot,
+        prediction_rows=(*snapshot.prediction_rows, future),
+        live_runs=(*snapshot.live_runs, {
+            **snapshot.live_runs[0],
+            "reference_id": 12,
+            "scheme_version": "blackbox-exact",
+            "runtime_type": "blackbox_v2",
+            "predict_date": "2026-07-01",
+        }),
+        version_rows=(*snapshot.version_rows, {
+            **snapshot.version_rows[0],
+            "scheme_version": "blackbox-exact",
+            "runtime_type": "blackbox_v2",
+            "status": "active",
+        }),
+    )
+    _errors, lineage = validate_snapshot_lineage(
+        snapshot,
+        historical_references=frozenset(),
+        legacy_migrations=frozenset({entry}),
+    )
+    assert any("exact=blackbox-exact field=manifest_hash" in gap
+               for gap in lineage["authority_gaps"])
+    assert any("data snapshot is missing" in gap
+               for gap in lineage["authority_gaps"])
 
 
 def test_completeness_keeps_drift_when_other_authority_is_missing() -> None:

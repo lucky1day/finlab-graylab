@@ -16,19 +16,53 @@
 | 当前 active 执行身份 | 93 个 Blackbox base | 93 个 Blackbox base + 9 个 W4 Native base |
 | Dashboard | 97 个 target | 106 个 target |
 | 调度控制面 | systemd one-shot/timer | launchd + installed plist |
-| current release | `69c1a7046432564fe1c50a0a9d9f7beed3197671` | `3a665c36425a168fa1d24559c9dc987ed2901633` |
-| previous release | `881be97425da80da1411ccb9b7eefea40b2d92eb` | `507081397e75fa60c56614fd0bfbb750b9415753` |
+| current release | `22f5e73422a11ee6762d1aaa21effeadfdb6bdd1` | `22f5e73422a11ee6762d1aaa21effeadfdb6bdd1` |
+| previous release | `47df08fbc8461378d5bc97944240b2eaeadbe082` | `47df08fbc8461378d5bc97944240b2eaeadbe082` |
 | schema | 025 APPLIED | 025 APPLIED |
 
+- 2026-09-17 最终 Gate 合同 release `22f5e734` 由 clean commit 构建为同一 archive，SHA-256
+  `5f906fbd8304c991b60810292bd2686a5ee3d8691289abf970f8c0b7c578b2e5`；Python、Node、MySQL 8.4、
+  release 四个 CI 任务均成功，独立复审无 Critical/Important。ECS 候选认证 Dashboard/DataConsistency
+  对目标方案通过后，按 ECS → Mac3 原子晋级并刷新 Backend；两端实际 cwd、health、schema 025、
+  当日 DataBridge ready 和控制面读回正常，前后十张业务表计数完全一致。Mac3 目标方案的公网认证
+  Dashboard/DataConsistency 均通过；公网入口脚本对首页同源静态资源、GET/HEAD、MIME、版本摘要、缓存、
+  匿名 401 和精确拒绝路径全部通过。已删除的旧回测不被重建；仅在既有清单冻结的 78 条 live 业务值
+  完全匹配时，Gate 才接受此方案的无回测分区和旧 retired Native 缺失字段，后续 Blackbox 仍严格校验。
+  另行扩选的九个 Liwei 方案并非本轮原验收清单，其中八个旧回测 run 缺样本数权威，DataConsistency
+  会如实阻断；用上一版 `47df` 在同一 ECS 数据上复核也有相同八项缺口，故不将扩选失败归因于新代码，
+  也不声称该扩选范围通过。自然运行和公网长期性能观察仍在 TODO。
 - 2026-09-17 二次审计候选 `69c1a7046432564fe1c50a0a9d9f7beed3197671` 已完成四层 CI、独立复审、
   ECS 候选与正式九方案 Dashboard/DataConsistency 验收并晋级；archive SHA-256 为
   `8588983881a76351d61203f89671464b05332de35a01547f130ef986ed02a8f3`。ECS 晋级前后
   Registry、Version、Prediction、Run、Backtest 与四类 Actual 计数均未变化。
-- Mac3 尚未晋级该候选。候选 Dashboard 与公网入口/认证 Gate 通过，但 DataConsistency lineage
-  对 `liwei_0616_5y01_full_oos_k3_div_k10` 返回 `BLOCKED`：78 个既有 Native live run 缺输入
-  artifact，3 个 retired exact 缺 `manifest_hash`；Mac3 同时不存在获批的 `_bbv2` 替代 Registry、
-  version 或产品事实，不能复用 ECS 的删除结论。候选服务和临时会话已撤销，未修改 Mac3 业务数据、
-  current、launchd 或调度。该阻断解除前不得把本轮写成双机发布闭环。
+- 2026-09-17 19:00 Actuals 自然结束后，两机使用同一 SHA-256
+  `e5e2e2c7a04a2e2eb4ed29605b0f84cd342e46342209aa4140dd1c9e81262140` 的 `47df08fb` archive
+  按 ECS → Mac3 顺序晋级，仅原子切换 current 并刷新 Backend。两机 Backend 实际 cwd、health、schema 025
+  与 launchd/systemd 控制面读回正常；晋级前后 Registry、Version、Prediction、Run、Backtest 和四类 Actual
+  表计数均不变。该提交的 Python、Node、MySQL 8.4、release 四项 CI 均成功，ECS 晋级后九方案
+  DataConsistency 的 completeness/lineage/representation 全部通过。
+- 上一版 `47df08fb` 发布时，Mac3 已按用户明确的“保留最新正确结果、不以旧审计血缘阻断”范围完成发布，
+  当时的 Gate 合同尚不能记为通过：
+  九方案 DataConsistency 的 representation 通过，completeness 仅因已删除的 333 条历史回测不再有
+  backtest 产品引用而 `BLOCKED`，lineage 仅因保留的 78 个旧 Native live run 缺输入 artifact 和三个
+  retired exact 缺 `manifest_hash` 而 `BLOCKED`；expected live 键无差异。九方案 Dashboard Gate 也因
+  该 live-only 方案没有 backtest 分区而失败。其余八方案的公网精确入口、静态资源、拒绝路径及认证
+  Dashboard Gate 全部通过；live-only 方案单独经公网认证 Summary/Detail 200 验证，9 月 live 明细
+  17 行，最新四个 target 方向 `1/0/1/1`、Actual pending。该旧 Gate 合同随后由 `22f5e734`
+  按保留 live 的精确业务值范围收口；当时的 `BLOCKED`/失败未被追溯改写，自然运行与公网长期
+  504 观察仍另见 TODO。
+- 2026-09-17 Mac3 已备份并受控重建 `liwei_0616_5y01_full_oos_k3_div_k10` 的 Blackbox exact
+  `603f1574704b` 私有状态；旧状态备份在生产 backups 下 `blackbox-state-rebuild-20260917-Jc3iyc`。
+  随后经正式 `gray_live` 入口精确补齐预测日 9 月 14—17 日四个缺口，run `5126`—`5129`，目标日
+  9 月 18、21、22、23 日方向依次为 `1、0、1、1`。这些是授权补缺，不能冒充自然调度成功。
+- 按用户确认的“保留最新正确结果、不保留旧审计历史”范围，Mac3 已经从产品事实中删除旧回测的
+  333 个精确 ID（`9433`—`9765`），并删除其独占回测 run `159` 及级联的 333 条原始回测明细；
+  旧历史区间现在不再展示。78 条原 live 与四条新 live 共 82 条仍在，9 月 Dashboard Detail 的
+  最新四行方向未变，5 月 backtest Detail 为 0 行。没有复制跨机事实、删除 live、修改调度或切换服务。
+  生产逐行备份和恢复清单为 `backups/legacy-backtest-only-20260917-47df08fb/plan.json`，文件 SHA-256
+  `f81bbd40d55687a64a0e365ccc94a91cba788bac311526a0ef9f5b3e5e7f4653`；专用清理代码的四层 CI、
+  隔离 MySQL 测试和独立复审均通过，同一 archive SHA-256 为
+  `e5e2e2c7a04a2e2eb4ed29605b0f84cd342e46342209aa4140dd1c9e81262140`。
 - 上一份双机共同 release 为 `3a665c36425a168fa1d24559c9dc987ed2901633`，archive SHA-256 为
   `1eba1e9fbf7a8b0b944bf8de2385ce920ef647021b4ae586481cae14aae25366`。
 - 2026-09-16 上线前稳定性加固 release 已按 ECS → Mac3 顺序使用同一 archive 晋级。两机 Backend

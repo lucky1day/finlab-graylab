@@ -367,6 +367,41 @@ def test_dashboard_gate_requires_backtest_partition(tmp_path: Path) -> None:
     assert any("backtest" in error for error in result.errors)
 
 
+def test_dashboard_gate_accepts_only_registered_live_only_partition(
+    tmp_path: Path,
+) -> None:
+    _write_config(tmp_path, tenors=("5Y",))
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "deploy"
+        / "legacy_prediction_migration_compatibility_v1.json"
+    )
+    manifest = json.loads(source.read_text(encoding="utf-8"))
+    manifest["entries"][0]["prediction_scheme_id"] = BASE_SCHEME_ID
+    manifest["entries"][0]["designated_source_scheme_id"] = "demo_daily_bbv2"
+    manifest["entries"][0]["historical_source_scheme_id"] = BASE_SCHEME_ID
+    manifest["entries"][0]["horizon"] = 1
+    target = tmp_path / "deploy" / source.name
+    target.parent.mkdir(parents=True)
+    target.write_text(json.dumps(manifest), encoding="utf-8")
+
+    payload = _payload(tenors=("5Y",))
+    payload["schemes"][0]["backtest"] = None
+    assert _run_gate(tmp_path, lambda _url, **_kwargs: (payload, 200)).passed
+
+    payload["schemes"][0]["monthly_rows"] = []
+    result = _run_gate(tmp_path, lambda _url, **_kwargs: (payload, 200))
+    assert not result.passed
+    assert any("backtest" in error for error in result.errors)
+
+    payload["schemes"][0]["monthly_rows"] = [
+        ["2026-08", "live", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    ]
+    result = _run_gate(tmp_path, lambda _url, **_kwargs: (payload, 200))
+    assert not result.passed
+    assert any("backtest" in error for error in result.errors)
+
+
 @pytest.mark.parametrize(
     ("field", "invalid_value"),
     (("name", "different"), ("description", "different"), ("owner", "OTHER")),
