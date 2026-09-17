@@ -390,12 +390,16 @@ def test_dashboard_gate_accepts_only_registered_live_only_partition(
     assert _run_gate(tmp_path, lambda _url, **_kwargs: (payload, 200)).passed
 
     payload["schemes"][0]["monthly_rows"] = []
+    payload["schemes"][0]["range_rows"] = []
     result = _run_gate(tmp_path, lambda _url, **_kwargs: (payload, 200))
     assert not result.passed
     assert any("backtest" in error for error in result.errors)
 
     payload["schemes"][0]["monthly_rows"] = [
         ["2026-08", "live", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    ]
+    payload["schemes"][0]["range_rows"] = [
+        payload["schemes"][0]["monthly_rows"][0][1:]
     ]
     result = _run_gate(tmp_path, lambda _url, **_kwargs: (payload, 200))
     assert not result.passed
