@@ -259,7 +259,7 @@
 
   function formatFactorLabGeneratedAt(value) {
     var text = String(value || "");
-    return text.length >= 16 ? text.slice(0, 16).replace("T", " ") : "最近成功时间未知";
+    return text.length >= 16 ? text.slice(0, 16).replace("T", " ").replace(/-/g, "/") : "最近成功时间未知";
   }
 
   function normalizeIsoDate(value) {
@@ -432,9 +432,16 @@
     return fallback || "--";
   }
 
-  function dateCellHtml(value, fallback) {
+  function monthLabel(value) {
+    return String(value).replace(/-/g, "/");
+  }
+
+  function dateCellHtml(value, fallback, featureMonth) {
     var label = dateLabel(value, fallback);
-    var title = normalizeIsoDate(value) || label;
+    var title = label;
+    if (featureMonth && title.slice(0, 4) === featureMonth.slice(0, 4)) {
+      label = label.slice(5);
+    }
     return '<td class="mono" title="' + escapeHtml(title) + '">' + escapeHtml(label) + '</td>';
   }
 
@@ -1651,7 +1658,7 @@
     var metricBadge = document.getElementById("factorOverviewMetric");
     if (!body) return;
     renderFactorLabSchemeTotal();
-    if (range) range.textContent = "区间统计：" + (factorLabState.startDate ? factorLabState.startDate + " 至 " + factorLabState.endDate : "暂无可展示历史");
+    if (range) range.textContent = "区间统计：" + (factorLabState.startDate ? dateLabel(factorLabState.startDate) + " 至 " + dateLabel(factorLabState.endDate) : "暂无可展示历史");
     if (metricBadge) metricBadge.textContent = "指标：" + getMetricLabel(factorLabState.rankMetric);
     var schemeCountsAvailable = factorLabSchemeCountsAvailable(currentFactorLabDataState());
 
@@ -1960,7 +1967,7 @@
         svg += '<line class="factor-trend-tick" x1="' + x(index).toFixed(1) + '" y1="' + (height - bottom) + '" x2="' + x(index).toFixed(1) + '" y2="' + (height - bottom + 6) + '" stroke="rgba(93,101,111,0.3)"></line>';
         return;
       }
-      svg += '<text class="factor-trend-axis" x="' + x(index).toFixed(1) + '" y="' + (height - 14) + '" text-anchor="' + trendMonthLabelAnchor(index, rows.length) + '">' + escapeHtml(row.month) + '</text>';
+      svg += '<text class="factor-trend-axis" x="' + x(index).toFixed(1) + '" y="' + (height - 14) + '" text-anchor="' + trendMonthLabelAnchor(index, rows.length) + '">' + escapeHtml(monthLabel(row.month)) + '</text>';
     });
     // 实盘分隔虚线（仅"全部"口径，找到第一个 live 月份）
     if (factorLabState.dataSource === "all") {
@@ -1977,7 +1984,7 @@
       var points = rows.map(function (row, index) {
         var value = row[metric.id];
         if (value === null || value === undefined) return null;
-        return [x(index), y(value), value, row.month];
+        return [x(index), y(value), value, monthLabel(row.month)];
       });
       var path = points.map(function (point, index) {
         if (!point) return "";
@@ -1996,9 +2003,10 @@
   }
 
   function factorDetailPresentation(task, month) {
+    var displayMonth = monthLabel(month);
     if (isMonthlyAverageTask(task)) {
       return {
-        title: month + " 特征月 · 月度平均预测明细",
+        title: displayMonth + " 特征月 · 月度平均预测明细",
         dateHeader: "目标月",
         note: "按特征基准日归入本月；目标周期用于解释预测对象及验证结果。",
         emptyText: "当前特征月份暂无预测明细",
@@ -2007,7 +2015,7 @@
     }
     if (isQuarterlyAverageTask(task)) {
       return {
-        title: month + " 特征月 · 季度平均预测明细",
+        title: displayMonth + " 特征月 · 季度平均预测明细",
         dateHeader: "目标季度",
         note: "按特征基准日归入本月；目标周期用于解释预测对象及验证结果。",
         emptyText: "当前特征月份暂无预测明细",
@@ -2016,7 +2024,7 @@
     }
     if (isAnnualAverageTask(task)) {
       return {
-        title: month + " 特征月 · 年度平均预测明细",
+        title: displayMonth + " 特征月 · 年度平均预测明细",
         dateHeader: "目标年度",
         note: "按特征基准日归入本月；目标周期用于解释预测对象及验证结果。",
         emptyText: "当前特征月份暂无预测明细",
@@ -2026,7 +2034,7 @@
     var weekly = isWeeklyTask(task);
     var weeklyAverage = isWeeklyAverageTask(task);
     return {
-      title: month + " 特征月 ·" + (weekly ? " 周度验证表" : " 每日验证表"),
+      title: displayMonth + " 特征月 ·" + (weekly ? " 周度验证表" : " 每日验证表"),
       dateHeader: weeklyAverage ? "目标周" : "目标日",
       note: weekly
         ? (
@@ -2036,7 +2044,7 @@
           )
         : "按特征基准日归入本月；预测日为信号发出日，目标日用于验证预测结果。",
       emptyText: "当前特征月份暂无预测明细",
-      buttonLabel: "查看" + month + "特征月份预测明细"
+      buttonLabel: "查看" + displayMonth + "特征月份预测明细"
     };
   }
 
@@ -2050,7 +2058,7 @@
     if (title) title.textContent = scheme ? "选中方案详情：" + scheme.name : "选中方案详情";
     var range = document.getElementById("factorDetailRange");
     if (range) range.textContent = factorLabState.startDate
-      ? "整月详情：" + factorLabState.startDate.slice(0, 7) + " 至 " + factorLabState.endDate.slice(0, 7) +
+      ? "整月详情：" + monthLabel(factorLabState.startDate.slice(0, 7)) + " 至 " + monthLabel(factorLabState.endDate.slice(0, 7)) +
         " · 展示所涉月份的完整记录，保持当前回测/实盘口径"
       : "整月详情：暂无可展示历史";
 
@@ -2062,7 +2070,7 @@
     var html = "";
     pageRows.forEach(function (row) {
       html += '<tr>';
-      html += '<td>' + escapeHtml(row.month) + '</td>';
+      html += '<td>' + escapeHtml(monthLabel(row.month)) + '</td>';
       html += '<td><strong>' + row.samples + '</strong></td>';
       html += '<td>' + escapeHtml(row.actualDist) + '</td>';
       html += '<td>' + escapeHtml(row.predictedDist) + '</td>';
@@ -2144,8 +2152,8 @@
       var actualClass = getDirectionClass(row.actual);
       var result = renderDailyResult(row);
       html += '<tr>';
-      html += dateCellHtml(row.featureDate, "--");
-      html += dateCellHtml(row.predictDate, "--");
+      html += dateCellHtml(row.featureDate, "--", month);
+      html += dateCellHtml(row.predictDate, "--", month);
       if (isMonthlyAverage) {
         html += '<td class="mono">' + escapeHtml(formatMonthlyAverageTargetMonth(row.targetMonth)) + '</td>';
       } else if (isQuarterlyAverage) {
@@ -2153,7 +2161,7 @@
       } else if (isAnnualAverage) {
         html += '<td class="mono">' + escapeHtml(formatAnnualAverageTargetYear(row.targetMonth)) + '</td>';
       } else {
-        html += dateCellHtml(row.targetDate, "--");
+        html += dateCellHtml(row.targetDate, "--", month);
       }
       html += '<td class="' + predictedClass + '">' + escapeHtml(row.predicted) + '</td>';
       html += '<td class="' + actualClass + '">' + escapeHtml(row.actual) + '</td>';

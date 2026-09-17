@@ -414,11 +414,11 @@ test("verification tables show feature, prediction and actual target dates acros
       const cells = [...elements.factorDailyTableBody.innerHTML.matchAll(/<td[^>]*>(.*?)<\/td>/g)]
         .map((match) => match[1]);
       assert.equal(cells.length, 6);
-      assert.deepEqual(cells.slice(0, 3), ["2025/12/15", "2025/12/16", targetLabel]);
+      assert.deepEqual(cells.slice(0, 3), ["12/15", "12/16", targetLabel]);
       assert.equal(elements.factorDailyDateHeader.textContent, header);
-      assert.match(elements.factorCalendarTitle.textContent, /^2025-12 特征月/);
-      assert.match(elements.factorMonthlyTableBody.innerHTML, /<td>2025-12<\/td>/);
-      assert.match(elements.factorTrendChart.innerHTML, />2025-12<\/text>/);
+      assert.match(elements.factorCalendarTitle.textContent, /^2025\/12 特征月/);
+      assert.match(elements.factorMonthlyTableBody.innerHTML, /<td>2025\/12<\/td>/);
+      assert.match(elements.factorTrendChart.innerHTML, />2025\/12<\/text>/);
       assert.match(cells[5], /is-neutral/);
       for (const state of [{ status: "loading" }, { status: "error" }, { status: "ready", rows: [] }]) {
         harness.hooks.renderDailyRows("2025-12", state);
@@ -473,11 +473,11 @@ test("day range statistics use interval counts while details retain full touched
   assert.equal(harness.hooks.selectedMetric().overall, 50);
   assert.deepEqual(Array.from(harness.hooks.visibleMonths()), ["2026-05", "2026-06"]);
   assert.equal(harness.hooks.state().startDate, "2026-05-20");
-  assert.match(elements.factorMonthlyTableBody.innerHTML, /<td>2026-05<\/td><td><strong>3<\/strong>/);
-  assert.match(elements.factorMonthlyTableBody.innerHTML, /<td>2026-06<\/td><td><strong>4<\/strong>/);
+  assert.match(elements.factorMonthlyTableBody.innerHTML, /<td>2026\/05<\/td><td><strong>3<\/strong>/);
+  assert.match(elements.factorMonthlyTableBody.innerHTML, /<td>2026\/06<\/td><td><strong>4<\/strong>/);
   assert.doesNotMatch(elements.factorMonthlyTableBody.innerHTML, /实盘口径/);
-  assert.match(elements.factorTrendChart.innerHTML, /2026-05 · 整体准确率 66.7%/);
-  assert.match(elements.factorDetailRange.textContent, /^整月详情：2026-05 至 2026-06/);
+  assert.match(elements.factorTrendChart.innerHTML, /2026\/05 · 整体准确率 66.7%/);
+  assert.match(elements.factorDetailRange.textContent, /^整月详情：2026\/05 至 2026\/06/);
   await harness.hooks.selectRange("live", null);
   assert.equal(urls.at(-1), "/api/factor-lab/dashboard");
   assert.equal(harness.hooks.state().startDate, "2026-06-01");
@@ -556,9 +556,9 @@ test("trend leaves missing metrics blank, breaks lines across gaps, and preserve
   });
   harness.hooks.start();
   await waitFor(() => harness.hooks.state().snapshotId === "pending-month");
-  assert.match(chart.innerHTML, />2026-06<\/text>/);
-  assert.doesNotMatch(chart.innerHTML, /<title>2026-06 ·/);
-  assert.match(chart.innerHTML, /<title>2026-07 · 整体准确率 0.0%<\/title>/);
+  assert.match(chart.innerHTML, />2026\/06<\/text>/);
+  assert.doesNotMatch(chart.innerHTML, /<title>2026\/06 ·/);
+  assert.match(chart.innerHTML, /<title>2026\/07 · 整体准确率 0.0%<\/title>/);
   const overallPath = chart.innerHTML.match(/<path class="factor-trend-line" d="([^"]+)" stroke="#15623f"/)[1];
   assert.equal((overallPath.match(/M/g) || []).length, 2);
   assert.doesNotMatch(overallPath, /L/);

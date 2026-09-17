@@ -70,9 +70,8 @@
                     <option value="live">仅实盘</option>
                   </select>
                 </label>
-                <strong>特征基准日</strong>
                 <label class="factor-date-input">
-                  <span>起始日期</span>
+                  <span>特征基准日起始日期</span>
                   <input id="factorStartDate" type="date" required aria-label="起始特征基准日">
                 </label>
                 <label class="factor-date-input">
@@ -134,7 +133,7 @@
                       <th>排名</th>
                       <th>方案</th>
                       <th><button type="button" class="factor-ranking-sort" data-factor-rank-sort="overall" aria-sort="descending">区间准确率</button></th>
-                      <th><button type="button" class="factor-ranking-sort" data-factor-rank-sort="samples" aria-sort="none">样本数</button></th>
+                      <th><button type="button" class="factor-ranking-sort" data-factor-rank-sort="samples" aria-sort="none">已验证样本数</button></th>
                       <th><button type="button" class="factor-ranking-sort" data-factor-rank-sort="upPrecision" aria-sort="none">上涨准确率</button></th>
                       <th><button type="button" class="factor-ranking-sort" data-factor-rank-sort="downPrecision" aria-sort="none">下跌准确率</button></th>
                       <th>部署时间</th>
@@ -160,7 +159,7 @@
                   <thead>
                     <tr>
                       <th>特征基准月份</th>
-                      <th>样本数</th>
+                      <th>已验证样本数</th>
                       <th>真实涨/跌/平</th>
                       <th>预测涨/跌/平</th>
                       <th>整体准确率</th>

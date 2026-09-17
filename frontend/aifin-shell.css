@@ -1068,8 +1068,7 @@ button {
 .factor-filter-group > span {
   display: block;
   color: var(--text-tertiary);
-  font-size: 12px;
-  font-weight: 600;
+  font: inherit;
 }
 
 .factor-filter-bar {
@@ -1077,6 +1076,9 @@ button {
   gap: 8px;
   align-items: stretch;
   padding: 10px 20px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
 }
 
 .factor-filter-row {
@@ -1090,8 +1092,7 @@ button {
 .factor-filter-row > strong {
   flex: 0 0 auto;
   color: var(--text);
-  font-size: 15px;
-  font-weight: 760;
+  font: inherit;
 }
 
 .factor-filter-bar label {
@@ -1112,8 +1113,6 @@ button {
   color: var(--text);
   background: rgba(255, 255, 255, 0.86);
   font: inherit;
-  font-size: 13px;
-  font-weight: 650;
 }
 
 .factor-date-input input {
@@ -1151,6 +1150,7 @@ button {
   min-width: 0;
   height: 38px;
   padding: 0 10px;
+  font: inherit;
 }
 
 .factor-filter-group button:hover,
@@ -1285,6 +1285,12 @@ button {
   white-space: nowrap;
 }
 
+.factor-month-table th:nth-child(2),
+.factor-month-table td:nth-child(2) {
+  width: 140px;
+  white-space: nowrap;
+}
+
 .factor-month-table tbody tr:nth-child(even) {
   background: rgba(248, 248, 244, 0.62);
 }
@@ -1352,7 +1358,7 @@ button {
 }
 
 .factor-ranking-table {
-  min-width: 1110px;
+  min-width: 1150px;
 }
 
 .factor-task-table th,
@@ -1476,7 +1482,7 @@ button {
 }
 
 .factor-ranking-table th:nth-child(4) {
-  width: 82px;
+  width: 120px;
 }
 
 .factor-ranking-table th:nth-child(5) {
@@ -1699,6 +1705,35 @@ button {
   background: rgba(21, 92, 62, 0.06);
 }
 
+.factor-task-table th:first-child,
+.factor-task-table td:first-child:not([colspan]),
+.factor-ranking-table th:nth-child(2),
+.factor-ranking-table td:nth-child(2),
+.factor-month-table th:first-child,
+.factor-month-table td:first-child:not([colspan]) {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: #fff;
+  box-shadow: inset -1px 0 var(--border-strong);
+}
+
+.factor-task-table th:first-child,
+.factor-ranking-table th:nth-child(2),
+.factor-month-table th:first-child {
+  z-index: 2;
+  background: var(--bg-subtle);
+}
+
+.factor-month-table tbody tr:nth-child(even) td:first-child:not([colspan]) {
+  background: #fbfbf8;
+}
+
+.factor-ranking-table tbody tr:hover td:nth-child(2),
+.factor-ranking-table tbody tr.is-selected td:nth-child(2) {
+  background: #f1f5f3;
+}
+
 .factor-trend-panel {
   margin-top: 12px;
   padding: 14px;
@@ -1918,8 +1953,12 @@ button {
 }
 
 .factor-daily-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   color: var(--text-tertiary);
   background: var(--bg-subtle);
+  box-shadow: inset 0 -1px var(--border-strong);
   font-size: 12px;
   font-weight: 760;
 }
@@ -2223,6 +2262,7 @@ button {
 }
 
 .factor-range-apply {
+  height: 38px;
   padding: 6px 12px;
   border: 1px solid var(--accent);
   border-radius: 8px;
