@@ -1103,7 +1103,7 @@ button {
 }
 
 .factor-filter-bar select,
-.factor-month-input select {
+.factor-date-input input {
   width: 214px;
   height: 38px;
   padding: 0 10px;
@@ -1116,8 +1116,8 @@ button {
   font-weight: 650;
 }
 
-.factor-month-input select {
-  width: 118px;
+.factor-date-input input {
+  width: 150px;
 }
 
 .factor-filter-group {
@@ -1652,17 +1652,6 @@ button {
   cursor: pointer;
 }
 
-/* ─── 月度表实盘分隔行 ─── */
-.factor-live-divider td {
-  padding: 6px 0;
-  border-top: 2px dashed var(--accent);
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 700;
-  text-align: center;
-  background: rgba(21, 92, 62, 0.05);
-}
-
 /* ─── 趋势图实盘分隔线 ─── */
 .factor-trend-divider {
   pointer-events: none;
@@ -1868,7 +1857,7 @@ button {
   position: absolute;
   top: calc(var(--topbar-h) + 96px);
   right: clamp(24px, 4vw, 72px);
-  width: min(560px, calc(100vw - 48px));
+  width: min(720px, calc(100vw - 48px));
   max-height: calc(100vh - var(--topbar-h) - 136px);
   padding: 24px;
   border: 1px solid var(--border-strong);
@@ -1913,6 +1902,7 @@ button {
 
 .factor-daily-table {
   width: 100%;
+  min-width: 620px;
   border-collapse: collapse;
   table-layout: fixed;
 }
@@ -1937,13 +1927,15 @@ button {
 .factor-daily-table th:nth-child(1),
 .factor-daily-table td:nth-child(1),
 .factor-daily-table th:nth-child(2),
-.factor-daily-table td:nth-child(2) {
-  width: 78px;
+.factor-daily-table td:nth-child(2),
+.factor-daily-table th:nth-child(3),
+.factor-daily-table td:nth-child(3) {
+  width: 116px;
   white-space: nowrap;
 }
 
-.factor-daily-table th:nth-child(5),
-.factor-daily-table td:nth-child(5) {
+.factor-daily-table th:nth-child(6),
+.factor-daily-table td:nth-child(6) {
   width: 58px;
   text-align: center;
 }
@@ -2198,7 +2190,7 @@ button {
   }
 
   .factor-filter-bar select,
-  .factor-month-input select {
+  .factor-date-input input {
     width: 100%;
   }
 
@@ -2229,3 +2221,14 @@ button {
   }
 
 }
+
+.factor-range-apply {
+  padding: 6px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+.factor-range-apply:disabled { opacity: 0.5; cursor: default; }

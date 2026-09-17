@@ -61,7 +61,7 @@
         <section class="module-view view factor-lab-view is-active" data-view="factor-lab">
           <div class="factor-lab-page">
             <div class="factor-filter-bar" aria-label="因子实验室筛选">
-              <div class="factor-filter-row" aria-label="月份区间和方案排行筛选">
+              <div class="factor-filter-row" aria-label="特征基准日期区间和方案排行筛选">
                 <strong>口径</strong>
                 <label class="factor-source-select">
                   <select id="factorDataSource">
@@ -70,27 +70,16 @@
                     <option value="live">仅实盘</option>
                   </select>
                 </label>
-                <strong>区间</strong>
-                <label class="factor-month-input">
-                  <span>起始月份</span>
-                  <select id="factorStartMonth">
-                    <option value="2025-01">2025-01</option>
-                    <option value="2025-02">2025-02</option>
-                    <option value="2025-03">2025-03</option>
-                    <option value="2025-04">2025-04</option>
-                    <option value="2025-05">2025-05</option>
-                  </select>
+                <strong>特征基准日</strong>
+                <label class="factor-date-input">
+                  <span>起始日期</span>
+                  <input id="factorStartDate" type="date" required aria-label="起始特征基准日">
                 </label>
-                <label class="factor-month-input">
-                  <span>结束月份</span>
-                  <select id="factorEndMonth">
-                    <option value="2025-01">2025-01</option>
-                    <option value="2025-02">2025-02</option>
-                    <option value="2025-03">2025-03</option>
-                    <option value="2025-04">2025-04</option>
-                    <option value="2025-05" selected>2025-05</option>
-                  </select>
+                <label class="factor-date-input">
+                  <span>结束日期</span>
+                  <input id="factorEndDate" type="date" required aria-label="结束特征基准日">
                 </label>
+                <button id="factorApplyRange" class="factor-range-apply" type="button">应用区间</button>
                 <strong>排行</strong>
                 <div class="factor-filter-group" aria-label="排序口径">
                   <span>排序指标</span>
@@ -108,7 +97,7 @@
                 </div>
                 <div class="factor-accuracy-meta" aria-label="区间汇总条件">
                   <span class="factor-range-badge" id="factorOverviewSchemeCount">方案总数：--</span>
-                  <span class="factor-range-badge" id="factorOverviewRange">2025-01 至 2025-05</span>
+                  <span class="factor-range-badge" id="factorOverviewRange">区间统计：加载中</span>
                   <span class="factor-range-badge" id="factorOverviewMetric">指标：整体准确率</span>
                 </div>
               </div>
@@ -162,6 +151,7 @@
               <div class="factor-panel-head">
                 <div>
                   <h3 id="factorDetailTitle">选中方案详情</h3>
+                  <p id="factorDetailRange">整月详情：加载中</p>
                 </div>
                 <div class="factor-pagination" id="factorPaginationTop"></div>
               </div>
@@ -169,7 +159,7 @@
                 <table class="factor-month-table">
                   <thead>
                     <tr>
-                      <th>月份</th>
+                      <th>特征基准月份</th>
                       <th>样本数</th>
                       <th>真实涨/跌/平</th>
                       <th>预测涨/跌/平</th>
@@ -184,9 +174,9 @@
                   <tbody id="factorMonthlyTableBody"></tbody>
                 </table>
               </div>
-              <div class="factor-trend-panel" aria-label="月度指标趋势">
+              <div class="factor-trend-panel" aria-label="特征基准月份指标趋势">
                 <div class="factor-trend-head">
-                  <h4>月度指标趋势</h4>
+                  <h4>整月指标趋势</h4>
                   <div class="factor-trend-toggles" aria-label="趋势指标开关">
                     <button type="button" class="is-active" data-factor-chart-metric="overall"><span style="--metric-color:#15623f"></span>整体准确率</button>
                     <button type="button" class="is-active" data-factor-chart-metric="upPrecision"><span style="--metric-color:#2f7ba1"></span>上涨准确率</button>
@@ -214,6 +204,7 @@
                 <table class="factor-daily-table">
                   <thead>
                     <tr>
+                      <th>特征基准日</th>
                       <th>预测日</th>
                       <th id="factorDailyDateHeader">目标日</th>
                       <th>预测方向</th>
@@ -224,7 +215,7 @@
                   <tbody id="factorDailyTableBody"></tbody>
                 </table>
               </div>
-              <p class="factor-calendar-note" id="factorCalendarNote">表内可继续滚动查看该月全部交易日的预测。</p>
+              <p class="factor-calendar-note" id="factorCalendarNote">按特征基准日归入本月；预测日为信号发出日，目标日用于验证预测结果。</p>
             </aside>
           </div>
         </section>

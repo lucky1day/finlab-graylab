@@ -227,7 +227,7 @@ def _assert_authenticated_proxy_flow(
     assert dashboard.returncode == 0, dashboard.stderr
     assert dashboard.stdout == "200"
     dashboard_payload = json.loads(dashboard_path.read_text(encoding="utf-8"))
-    assert dashboard_payload["schema_version"] == "factor-lab-dashboard-v6"
+    assert dashboard_payload["schema_version"] == "factor-lab-dashboard-v7"
 
 
 def _nginx_mime_types() -> Path:

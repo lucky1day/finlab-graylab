@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**适用版本**：`factor-lab-dashboard-v6`
+**适用版本**：`factor-lab-dashboard-v7`
 
 本文维护 Dashboard HTTP 表示、浏览器刷新、故障定位及验收。账户和会话规则见
 [认证合同](../architecture/AUTHENTICATION_AND_ACCOUNT_MANAGEMENT.md)，主机、Origin 和访问链路见
@@ -24,12 +24,13 @@
   0.5/2/0.5 秒，单条 MySQL 查询上限 1000ms，开启 pool_pre_ping，300 秒回收连接。这些是压测起点，
   不是最终容量结论；总连接数须乘以实际应用进程数核算。
 
-无参数请求返回 `representation=summary`，包含方案身份、owner、回测展示元数据和 `month + source` 计数，
-不携带逐点明细，这是合法表示，浏览器只校验 Summary 自身完整性。前端可对 Summary 计数按筛选区间求和，
-按[统计定义](../architecture/PREDICTION_SEMANTICS.md#6-指标统计口径)计算准确率、precision/recall 和方向分布。
+无参数请求返回 `representation=summary`，包含方案身份、owner、回测展示元数据、完整 `month + source` 月度计数和全历史区间计数，不携带逐点明细。Summary 也接受且只接受成对的 `start-date=YYYY-MM-DD&end-date=YYYY-MM-DD`，按特征基准日闭区间统计；非法日期、逆序、缺失、重复、额外或混用 Detail 参数均返回 400。
+
+`monthly_rows/monthly_row_fields` 始终保留完整月份计数，供所选日区间触及月份的整月详情和趋势使用。`range_rows/range_row_fields` 每方案按 `backtest/live` 返回最多两行同口径计数，供任务矩阵、方案排行和区间指标使用；纯待验证来源保留全零行，无预测来源不造行。`selected_feature_range` 回显所请求闭区间，无参数时为 null；`feature_date_bounds` 分别给出 `all/backtest/live` 全历史可见事实（含待验证）的首尾特征日期，无数据时为 null，不随所选区间缩窄。前端只对相应 Summary 计数按 source 求和，按[统计定义](../architecture/PREDICTION_SEMANTICS.md#6-指标统计口径)计算准确率、precision/recall 和方向分布，不从整月计数近似日级区间。
+
 Detail 仅在用户打开某方案月份时按需请求，首屏不请求；浏览器不得扫描明细、使用 Detail 缓存或旧 `monthly_metrics` 重建第二套 Summary，
 服务端也不得用旧 `monthly_metrics` 替代缺失产品事实或反推明细。
-`source` 是按预测语义确定的产品分区，不是物理表来源；公开响应不返回 run phase。
+`source` 是按特征基准日确定的产品展示分区，不是物理表或真实执行来源；公开响应不返回 run phase。V7 以 `live_feature_start_date` 返回分界日，取代 V6 的 `live_target_start_date`；Summary 和 Detail 均使用 V7，不能混用旧月份或旧分区表示。
 
 月历 Detail 在同一路径携带且只携带以下三个参数：
 
@@ -37,14 +38,14 @@ Detail 仅在用户打开某方案月份时按需请求，首屏不请求；浏�
 scheme-id=<composite_registry_id>&month=YYYY-MM&source=all|backtest|live
 ```
 
-返回 `representation=detail`；方案、按[预测语义](../architecture/PREDICTION_SEMANTICS.md)反解的 target 月份和 source 条件下推数据库。未知、重复、缺少或额外参数
+返回 `representation=detail`；方案、按[预测语义](../architecture/PREDICTION_SEMANTICS.md)确定的 feature 自然月份和 source 条件下推数据库。未知、重复、缺少或额外参数
 返回 400；月份必须是可表示前后相邻月边界的规范 `YYYY-MM`，当前允许 `0001-02` 至 `9999-11`，
 因此 `0000-01`、`9999-12` 和非法月份在请求解析层返回 400，不进入 builder。未知/非 active Registry
 返回 404；合法空月为 `rows=[]`；合法请求遇到损坏业务事实仍按服务端失败返回 503，不能把 builder 的普通
 `ValueError` 统称为参数错误。纯待验证月份仍可打开明细，统计只计已验证样本。
 
-Summary 与 Detail 使用独立内部查询编排。Detail 先验证 active composite Registry，再把展示月反解出的
-`target_date` 半开区间与 `source` 的产品日期分区求交后下推预测 SQL；空交集不读取预测或 Actual。
+Summary 与 Detail 使用独立内部查询编排。Detail 先验证 active composite Registry，再把展示月对应的
+`feature_date` 半开区间与 `source` 的特征日期分区求交后下推预测 SQL；空交集不读取预测或 Actual。
 Detail 不读取或选择 `t_backtest_runs` 展示元数据，也不以 run ID、物理回测表或数据库来源替代产品
 `source`。先在所选预测事实中完成 canonical 选择；只有仍缺 `backtest_actual_direction` 的选中行才读取并
 关联对应范围的 live Actual，不能仅因为请求 `source=backtest` 就跳过 Actual。
@@ -75,7 +76,7 @@ HTTP 失败携带合法 `Retry-After` 时，同时支持 delta-seconds 和标准
 Summary 的回测展示元数据由数据库按 `updated_at DESC, id DESC` 为每个 base scheme 只选择一个确定性候选，
 不再把全部成功 run 传给 Python。预测事实仍逐行执行原有 canonical 选择、日期、方向和 Actual 冲突校验，
 但按业务键排序流式读取并直接累计紧凑月份计数；不物化全历史明细列表，不截断超过 100,000 条的合法历史。
-纯 pending 月份、`target_date` 产品 source 分区和 Actual 重复/冲突的 fail-closed 语义保持不变。Detail 继续使用
+纯 pending 月份仍保留，Actual 重复/冲突校验保持不变；V7 的月份及产品 source 分区统一使用 `feature_date`。Detail 继续使用
 单方案、单月、单来源的有界查询，不复用 Summary 流。
 
 可复现的本机合成测试入口为：
@@ -122,7 +123,7 @@ paused/archived 身份仍通过存在性校验，但按原有 active 可见性�
 
 路径、读取、编码、JSON 或结构错误只在名单读取边界降级：记 `production_schemes_invalid` 原因，
 本次全部返回 `false`，不记录完整文件；合法空名单不记错，也不增加存在性 SQL。
-数据库查询或原有 Dashboard 合同失败仍返回 503。Detail 不读取名单、不增加字段，仅共用 V6 schema。
+数据库查询或原有 Dashboard 合同失败仍返回 503。Detail 不读取名单、不增加字段，仅共用 V7 schema。
 
 完整文件替换后下一次成功 Summary 撤下旧标记并应用新名单，沿用五分钟刷新与下述 stale 行为；
 HTTP 失败仍保留已提交旧快照。两机各读本地文件，程序不自动同步。
@@ -138,7 +139,7 @@ Dashboard 展示离散发布的数据库事实。首次认证后立即读取；�
 - 无成功快照时失败：显示“数据不可用”，不猜测数据。
 - 已有成功快照后失败：保留完整已提交视图、筛选和已开月历，显示“刷新失败，显示 `<generated_at>` 数据”，
   DOM 标记 `stale`，不得称为最新；这只是当前浏览器会话暂存，服务端仍按上述失败合同返回。
-- 后续成功响应原子替换整个 Summary 并恢复 fresh，不混合新旧方案、月份或 Detail 缓存。
+- 后续成功响应原子替换整个 Summary、已提交日期范围并恢复 fresh，不混合新旧方案、月份或 Detail 缓存。筛选请求未完成或失败时，不得用新日期标题标注旧区间指标。
 - 注销、认证失效或身份切换按认证合同清空前端业务状态。
 
 重试间隔依次 10 秒、30 秒、60 秒、5 分钟，连续失败后维持五分钟；成功恢复正常周期。
@@ -173,7 +174,7 @@ python -B -m harness gate dashboard \
 
 也可通过 `--session-fd <fd>` 从 pipe 或已打开的私有文件读取；调用方必须在启动命令前写入完整 token，未就绪的
 pipe 会立即失败而不会在 Gate 总预算开始前无限等待。会话文件权限不得向 group/world 开放，两个会话入口互斥
-且必须提供其一。命令只获取一次真实 Summary、校验 HTTP 与 V6 schema，并在一个只读事务中批量读取
+且必须提供其一。命令只获取一次真实 Summary、校验 HTTP 与 V7 schema，并在一个只读事务中批量读取
 本次全部 Registry，然后逐方案比较名称、描述、owner、active composite、任务字段和回测分区；名称去首尾
 空白、空描述转空字符串，与 API 表示一致，不从 canonical 推断新身份。每个方案分别输出通过/失败，并引用相同
 的 response `snapshot_id`、获取时间和 request ID。一个方案失败不会抹掉其他方案的结果，但整次 Gate 失败。
@@ -182,7 +183,7 @@ pipe 会立即失败而不会在 Gate 总预算开始前无限等待。会话文
 或查询失败则 Gate 失败，不回退默认库。gzip/no-store/响应头由 API 合同测试保护。
 
 预测值、Actual 与统计数的完整对账使用独立 `DataConsistencyGate`，不能以 Dashboard schema 校验替代。
-该 Gate 从显式绑定的只读数据库快照独立检查业务键、三日期、方向、run 引用与 Actual 事实，并自行形成
+该 Gate 从显式绑定的只读数据库快照独立检查业务键、三日期、方向、run 引用与 Actual 事实，并按特征基准日独立形成
 月份/source 计数后对照真实 Summary 及逐分区 Detail；标准答案不得调用 Dashboard builder 或其聚合 helper。
 `timeout_sec` 是整次对账共享的总预算；Summary、各 Detail 和首尾数据库快照都从同一单调时钟 deadline 扣减，
 不会按方案或月份重新获得完整预算。

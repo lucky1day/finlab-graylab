@@ -32,12 +32,12 @@ def _authenticated_dashboard_request():
 
 def _payload(snapshot_id: str) -> dict[str, Any]:
     return {
-        "schema_version": "factor-lab-dashboard-v6",
+        "schema_version": "factor-lab-dashboard-v7",
         "representation": "summary",
         "snapshot_id": snapshot_id,
         "generated_at": "2026-08-07T16:41:00+08:00",
         "display_until": "2026-08-07",
-        "live_target_start_date": "2026-06-01",
+        "live_feature_start_date": "2026-06-01",
         "monthly_row_fields": [],
         "target_labels": {},
         "schemes": [],
@@ -148,12 +148,12 @@ def test_dashboard_accepts_only_exact_detail_query(monkeypatch) -> None:
 
     calls: list[dict[str, str]] = []
     detail = {
-        "schema_version": "factor-lab-dashboard-v6",
+        "schema_version": "factor-lab-dashboard-v7",
         "representation": "detail",
         "snapshot_id": "detail-1",
         "generated_at": "2026-08-07T16:41:00+08:00",
         "display_until": "2026-08-07",
-        "live_target_start_date": "2026-06-01",
+        "live_feature_start_date": "2026-06-01",
         "scheme_id": "demo__h1__5Y",
         "month": "2026-08",
         "source": "all",
@@ -449,3 +449,37 @@ def test_dashboard_budget_exhaustion_before_route_work_returns_stable_503(
     event = caplog.records[-1].dashboard_event
     assert event["failure_stage"] == "dashboard_engine"
     assert event["exception_class"] == "RequestBudgetExceeded"
+
+
+def test_dashboard_accepts_only_paired_canonical_summary_dates(monkeypatch):
+    from backend import main
+
+    engine = object()
+    calls = []
+
+    def build(received, **kwargs):
+        assert received is engine
+        calls.append(kwargs)
+        return {**_payload("range-summary"), "selected_feature_range": kwargs}
+
+    monkeypatch.setattr(main, "get_dashboard_engine", lambda: engine)
+    monkeypatch.setattr(main, "build_factor_lab_dashboard", build)
+    status, _, body, _ = _request(
+        main.app, query_string=b"start-date=2026-05-20&end-date=2026-06-10",
+    )
+    assert status == 200
+    assert json.loads(body)["selected_feature_range"] == {
+        "start_date": "2026-05-20", "end_date": "2026-06-10",
+    }
+    for invalid in (
+        b"start-date=2026-05-20", b"end-date=2026-06-10",
+        b"start-date=2026-05-20&start-date=2026-06-10",
+        b"start-date=&end-date=2026-06-10",
+        b"start-date=2026-06-11&end-date=2026-06-10",
+        b"start-date=2026-02-30&end-date=2026-06-10",
+        b"start-date=20260520&end-date=2026-06-10",
+        b"start-date=2026-05-20&end-date=2026-06-10&source=live",
+        b"start-date=2026-05-20&end-date=2026-06-10&scheme-id=demo&month=2026-06&source=all",
+    ):
+        assert _request(main.app, query_string=invalid)[0] == 400
+    assert len(calls) == 1

@@ -6,7 +6,6 @@ from sqlalchemy import create_engine, event, text
 from backend.factor_lab_dashboard import (
     DashboardDataError,
     DashboardQueryError,
-    _monthly_rows,
     build_factor_lab_dashboard,
     build_factor_lab_dashboard_detail,
     parse_dashboard_month,
@@ -19,7 +18,6 @@ from backend.db import (
 from backend.factor_lab_dashboard_semantics import (
     choose_latest_backtest_runs,
     choose_live_prediction_rows,
-    dashboard_result_source,
     iter_grouped_live_prediction_rows,
     live_actual_selector,
 )
@@ -182,19 +180,56 @@ def test_cumulative_request_budget_stops_before_the_next_query() -> None:
     assert connection.calls == 1
 
 
-def test_v5_summary_aggregates_rows_and_reads_owner() -> None:
+def test_summary_aggregates_feature_months_and_reads_owner() -> None:
     engine = _engine()
     payload = build_factor_lab_dashboard(engine)
 
-    assert payload["schema_version"] == "factor-lab-dashboard-v6"
+    assert payload["schema_version"] == "factor-lab-dashboard-v7"
     assert payload["representation"] == "summary"
-    assert payload["live_target_start_date"] == "2026-06-01"
+    assert payload["live_feature_start_date"] == "2026-06-01"
     scheme = payload["schemes"][0]
     assert scheme["owner"] == "lw"
     assert scheme["monthly_rows"] == [
-        ["2026-01", "backtest", 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0],
+        ["2025-12", "backtest", 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0],
         ["2026-06", "live", 2, 2, 2, 1, 1, 0, 1, 1, 0, 1, 1],
     ]
+
+
+def test_feature_partition_keeps_cross_month_target_actual_and_pending() -> None:
+    engine = _engine()
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM t_scheme_predictions"))
+        connection.execute(text("DELETE FROM t_scheme_actuals"))
+        connection.execute(text("""INSERT INTO t_scheme_predictions VALUES
+            (1,'demo_daily','5Y',1,'2026-06-01','2026-05-29',
+             '2026-06-05',1,NULL,'{}'),
+            (2,'demo_daily','5Y',1,'2026-07-01','2026-06-30',
+             '2026-07-07',-1,NULL,'{}'),
+            (3,'demo_daily','5Y',1,'2025-01-02','2024-12-31',
+             '2025-01-03',1,1,'{}')"""))
+        connection.execute(text(
+            "INSERT INTO t_scheme_actuals VALUES ('5Y','2026-06-05',1,1)"
+        ))
+    summary = build_factor_lab_dashboard(engine)
+    assert summary["schemes"][0]["monthly_rows"] == [
+        ["2026-05", "backtest", 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0],
+        ["2026-06", "live", *([0] * 11)],
+    ]
+    for month, source, expected in [
+        ("2026-05", "backtest", [
+            ["backtest", "2026-06-01", "2026-05-29", "2026-06-05", 1, 1],
+        ]),
+        ("2026-06", "live", [
+            ["live", "2026-07-01", "2026-06-30", "2026-07-07", -1, None],
+        ]),
+        ("2025-01", "all", []),
+        ("2026-05", "live", []),
+        ("2026-06", "backtest", []),
+    ]:
+        detail = build_factor_lab_dashboard_detail(
+            engine, scheme_id="demo_daily__h1__5Y", month=month, source=source,
+        )
+        assert detail is not None and detail["rows"] == expected
 
 
 def test_replacement_backtest_metadata_survives_old_run_cleanup(
@@ -257,8 +292,8 @@ def test_replacement_backtest_metadata_survives_old_run_cleanup(
     "target_date,month,source",
     [
         ("2026-05-29", "2026-05", "backtest"),
-        ("2026-07-03", "2026-07", "live"),
-        ("2026-06-05", "2026-06", "live"),
+        ("2026-07-03", "2026-05", "backtest"),
+        ("2026-06-05", "2026-05", "backtest"),
     ],
 )
 def test_pending_predictions_keep_month_accessible_without_changing_metrics(
@@ -278,10 +313,7 @@ def test_pending_predictions_keep_month_accessible_without_changing_metrics(
     summary = build_factor_lab_dashboard(engine)
     rows = summary["schemes"][0]["monthly_rows"]
     assert all(row in rows for row in baseline)
-    if month != "2026-06":
-        assert [month, source, *([0] * 11)] in rows
-    else:
-        assert rows == baseline
+    assert [month, source, *([0] * 11)] in rows
     detail = build_factor_lab_dashboard_detail(
         engine, scheme_id="demo_daily__h1__5Y", month=month, source=source,
     )
@@ -378,8 +410,8 @@ def test_summary_streams_across_fetch_boundaries_without_changing_counts(
 
     rows = build_factor_lab_dashboard(engine)["schemes"][0]["monthly_rows"]
 
-    assert ["2026-02", "backtest", 1, 1, 1, 0, 1, 0, 0, 1, 0, 0, 1] in rows
-    assert ["2026-03", "backtest", *([0] * 11)] in rows
+    assert ["2026-01", "backtest", 1, 1, 1, 0, 1, 0, 0, 1, 0, 0, 1] in rows
+    assert ["2026-02", "backtest", *([0] * 11)] in rows
 
 
 def test_streaming_canonical_selection_matches_previous_fixed_oracle() -> None:
@@ -470,47 +502,43 @@ def test_summary_still_fails_closed_on_conflicting_actual_facts() -> None:
 
 
 @pytest.mark.parametrize(
-    ("task_type", "expected_months"),
-    (
-        ("T+1", ["2026-05", "2026-06"]),
-        ("monthly_average", ["2026-06", "2026-07"]),
-    ),
+    "task_type,horizon,frequency",
+    [
+        ("T+1", 1, "daily"),
+        ("T+5", 5, "daily"),
+        ("weekly_point", 1, "weekly"),
+        ("weekly_average", 1, "weekly"),
+        ("monthly", 1, "monthly"),
+        ("monthly_average", 1, "period_average"),
+        ("quarterly_average", 1, "period_average"),
+        ("annual_average", 1, "period_average"),
+    ],
 )
-def test_monthly_rows_use_target_month_except_monthly_average(
-    task_type: str,
-    expected_months: list[str],
+def test_all_tasks_share_feature_month_and_source(
+    task_type: str, horizon: int, frequency: str,
 ) -> None:
-    details = [
-            {
-                "target_date": "2026-05-31",
-                "predict_date": "2026-06-02",
-                "predicted_direction": 1,
-                "actual_direction": 1,
-            },
-            {
-                "target_date": "2026-06-01",
-                "predict_date": "2026-05-29",
-                "predicted_direction": -1,
-                "actual_direction": -1,
-            },
-        ]
-    backtest_details = [
-        row for row in details
-        if dashboard_result_source(row["target_date"]) == "backtest"
+    engine = _engine()
+    scheme_id = f"demo_daily__h{horizon}__5Y"
+    with engine.begin() as connection:
+        connection.execute(text(
+            "UPDATE t_scheme_registry SET scheme_id=:scheme_id, "
+            "task_type=:task_type, horizon=:horizon, frequency=:frequency"
+        ), {"scheme_id": scheme_id, "task_type": task_type,
+            "horizon": horizon, "frequency": frequency})
+        connection.execute(text("DELETE FROM t_scheme_predictions"))
+        connection.execute(text("""INSERT INTO t_scheme_predictions VALUES
+            (1,'demo_daily','5Y',:horizon,'2026-05-29','2026-05-29',
+             '2026-06-01',1,1,'{}')"""), {"horizon": horizon})
+    summary = build_factor_lab_dashboard(engine)
+    assert summary["schemes"][0]["monthly_rows"] == [
+        ["2026-05", "backtest", 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0],
     ]
-    live_details = [
-        row for row in details
-        if dashboard_result_source(row["target_date"]) == "live"
-    ]
-
-    rows = _monthly_rows(
-        backtest_details=backtest_details,
-        live_details=live_details,
-        task_type=task_type,
+    detail = build_factor_lab_dashboard_detail(
+        engine, scheme_id=scheme_id, month="2026-05", source="backtest",
     )
-
-    assert [row[0] for row in rows] == expected_months
-    assert [row[1] for row in rows] == ["backtest", "live"]
+    assert detail is not None and detail["rows"] == [
+        ["backtest", "2026-05-29", "2026-05-29", "2026-06-01", 1, 1],
+    ]
 
 
 def test_live_prediction_query_matches_full_registry_scope() -> None:
@@ -550,7 +578,7 @@ def test_live_prediction_query_matches_full_registry_scope() -> None:
     } == {("demo_daily", "5Y"), ("another_daily", "10Y")}
 
 
-def test_v5_detail_reads_requested_active_scheme_month_and_source() -> None:
+def test_detail_reads_requested_active_scheme_month_and_source() -> None:
     engine = _engine()
     payload = build_factor_lab_dashboard_detail(
         engine,
@@ -561,7 +589,7 @@ def test_v5_detail_reads_requested_active_scheme_month_and_source() -> None:
 
     assert payload is not None
     assert payload["representation"] == "detail"
-    assert payload["live_target_start_date"] == "2026-06-01"
+    assert payload["live_feature_start_date"] == "2026-06-01"
     assert payload["rows"] == [
         [
             "live",
@@ -612,7 +640,7 @@ def test_detail_does_not_read_unrelated_backtest_run_metadata() -> None:
     assert len(payload["rows"]) == 2
 
 
-def test_detail_source_partition_is_pushed_into_target_date_range() -> None:
+def test_detail_source_partition_is_pushed_into_feature_date_range() -> None:
     engine = _engine()
     prediction_queries: list[str] = []
 
@@ -656,7 +684,7 @@ def test_detail_reads_actual_only_when_selected_fact_needs_join() -> None:
     backtest = build_factor_lab_dashboard_detail(
         engine,
         scheme_id="demo_daily__h1__5Y",
-        month="2026-01",
+        month="2025-12",
         source="backtest",
     )
     assert backtest is not None and len(backtest["rows"]) == 1
@@ -678,41 +706,6 @@ def test_detail_reads_actual_only_when_selected_fact_needs_join() -> None:
     assert live is not None and len(live["rows"]) == 2
     assert live["rows"][1][-1] == -1
     assert len(actual_queries) == 1
-
-
-def test_monthly_average_detail_reverses_display_month_before_source_filter() -> None:
-    engine = _engine()
-    with engine.begin() as connection:
-        connection.execute(
-            text(
-                "UPDATE t_scheme_registry SET task_type='monthly_average', "
-                "frequency='monthly'"
-            )
-        )
-        connection.execute(
-            text(
-                """INSERT INTO t_scheme_predictions VALUES
-                (8,'demo_daily','5Y',1,'2026-05-29','2026-05-29',
-                 '2026-05-31',1,1,'{}')"""
-            )
-        )
-
-    backtest = build_factor_lab_dashboard_detail(
-        engine,
-        scheme_id="demo_daily__h1__5Y",
-        month="2026-06",
-        source="backtest",
-    )
-    live = build_factor_lab_dashboard_detail(
-        engine,
-        scheme_id="demo_daily__h1__5Y",
-        month="2026-06",
-        source="live",
-    )
-
-    assert backtest is not None
-    assert [row[3] for row in backtest["rows"]] == ["2026-05-31"]
-    assert live is not None and live["rows"] == []
 
 
 def test_detail_known_scheme_legal_empty_month_returns_rows_empty() -> None:
@@ -921,3 +914,67 @@ def test_marker_lookup_is_batched_and_database_failure_is_not_hidden(production_
     with pytest.raises(RuntimeError, match="marker database failure"):
         build_factor_lab_dashboard(engine)
     engine.dispose()
+
+
+def test_summary_day_range_preserves_full_months_and_pending_history_bounds():
+    """区间首尾包含、月详情完整、未来目标不改变特征日归属。"""
+    engine = _engine()
+    with engine.begin() as connection:
+        connection.execute(text("""INSERT INTO t_scheme_predictions VALUES
+            (4,'demo_daily','5Y',1,'2026-06-15','2026-06-12',
+             '2026-06-16',1,1,'{}'),
+            (5,'demo_daily','5Y',1,'2026-06-30','2026-06-29',
+             '2026-10-01',1,NULL,'{}')"""))
+    full = build_factor_lab_dashboard(engine)
+    selected = build_factor_lab_dashboard(
+        engine, start_date="2026-06-01", end_date="2026-06-01",
+    )
+    assert selected["selected_feature_range"] == {
+        "start_date": "2026-06-01", "end_date": "2026-06-01",
+    }
+    assert selected["feature_date_bounds"] == {
+        "all": {"start_date": "2025-12-31", "end_date": "2026-06-29"},
+        "backtest": {"start_date": "2025-12-31", "end_date": "2025-12-31"},
+        "live": {"start_date": "2026-06-01", "end_date": "2026-06-29"},
+    }
+    assert selected["schemes"][0]["monthly_rows"] == full["schemes"][0]["monthly_rows"]
+    assert selected["schemes"][0]["range_rows"] == [
+        ["live", 2, 2, 2, 1, 1, 0, 1, 1, 0, 1, 1],
+    ]
+    assert full["schemes"][0]["range_rows"] == [
+        ["backtest", 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0],
+        ["live", 3, 3, 3, 2, 1, 0, 2, 1, 0, 2, 1],
+    ]
+    pending = build_factor_lab_dashboard(
+        engine, start_date="2026-06-29", end_date="2026-06-29",
+    )
+    assert pending["schemes"][0]["range_rows"] == [["live", *([0] * 11)]]
+    empty = build_factor_lab_dashboard(
+        engine, start_date="2026-06-02", end_date="2026-06-02",
+    )
+    assert empty["schemes"][0]["range_rows"] == []
+    assert empty["schemes"][0]["monthly_rows"] == full["schemes"][0]["monthly_rows"]
+    detail = build_factor_lab_dashboard_detail(
+        engine, scheme_id="demo_daily__h1__5Y", month="2026-06", source="live",
+    )
+    assert len(detail["rows"]) == 4
+    assert detail["rows"][-1][2:4] == ["2026-06-29", "2026-10-01"]
+
+
+@pytest.mark.parametrize("damage", ("unfiltered_counts", "range_exceeds_history", "bounds_union"))
+def test_summary_rejects_inconsistent_range_contract(damage):
+    from backend.factor_lab_dashboard_semantics import validate_dashboard_payload
+
+    payload = build_factor_lab_dashboard(_engine())
+    if damage == "unfiltered_counts":
+        payload["schemes"][0]["range_rows"] = []
+    elif damage == "range_exceeds_history":
+        payload["selected_feature_range"] = {
+            "start_date": "2026-06-01", "end_date": "2026-06-01",
+        }
+        row = payload["schemes"][0]["range_rows"][-1]
+        row[1:] = [count * 2 for count in row[1:]]
+    else:
+        payload["feature_date_bounds"]["all"]["start_date"] = "2026-01-01"
+    with pytest.raises(DashboardDataError):
+        validate_dashboard_payload(payload)

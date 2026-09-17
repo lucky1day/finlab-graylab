@@ -4,6 +4,7 @@ import json
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Callable
 from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 
@@ -18,10 +19,12 @@ from harness.gates.data_consistency_gate import (
     DataConsistencyGate,
     _FrozenCalendar,
     _actual_selector,
+    _detail_rows_by_partition,
     _read_actuals,
     _read_references,
     _validate_task_date_contract,
     aggregate_display_facts,
+    build_representation_facts,
     validate_snapshot_completeness,
     validate_snapshot_lineage,
     validate_and_join_facts,
@@ -425,9 +428,15 @@ def _summary(*, wrong: bool = False) -> dict:
         "snapshot_id": "summary-1",
         "display_until": "2026-06-30",
         "monthly_row_fields": MONTHLY_FIELDS,
+        "range_row_fields": ["source", *MONTHLY_FIELDS[2:]],
+        "selected_feature_range": None,
         "schemes": [
             {
                 "scheme_id": REGISTRY_ID,
+                "range_rows": [
+                    ["backtest", 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0],
+                    live_row[1:],
+                ],
                 "monthly_rows": [
                     ["2026-05", "backtest", 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0],
                     live_row,
@@ -1373,24 +1382,90 @@ def test_actual_selector_uses_persisted_actual_rules(
     assert _actual_selector(task_type) == expected
 
 
-def test_independent_aggregation_maps_monthly_average_to_following_display_month() -> None:
+@pytest.mark.parametrize("task_type", list(TASK_COMBINATIONS))
+@pytest.mark.parametrize(
+    ("feature_date", "predict_date", "target_date", "month", "source"),
+    [
+        ("2026-05-29", "2026-06-01", "2026-06-05", "2026-05", "backtest"),
+        ("2026-06-01", "2026-06-02", "2026-07-01", "2026-06", "live"),
+        ("2025-12-31", "2026-01-01", "2026-01-02", "2025-12", "backtest"),
+    ],
+)
+def test_independent_representation_uses_feature_month_and_source(
+    task_type: str,
+    feature_date: str,
+    predict_date: str,
+    target_date: str,
+    month: str,
+    source: str,
+) -> None:
     fact = ConsistencyFact(
-        scheme_id="monthly-average__h1__5Y",
+        scheme_id="feature-axis__h1__5Y",
         target_tenor="5Y",
         horizon=1,
-        task_type="monthly_average",
-        predict_date="2026-05-15",
-        feature_date="2026-05-15",
-        target_date="2026-05-16",
+        task_type=task_type,
+        predict_date=predict_date,
+        feature_date=feature_date,
+        target_date=target_date,
         predicted_direction=-1,
         actual_direction=-1,
     )
 
     assert aggregate_display_facts([fact]) == {
-        "monthly-average__h1__5Y": [
-            ["2026-06", "backtest", 1, 1, 1, 0, 1, 0, 0, 1, 0, 0, 1]
+        fact.scheme_id: [
+            [month, source, 1, 1, 1, 0, 1, 0, 0, 1, 0, 0, 1]
         ]
     }
+    assert _detail_rows_by_partition([fact]) == {
+        (fact.scheme_id, month, source): [
+            [source, predict_date, feature_date, target_date, -1, -1]
+        ]
+    }
+
+    earlier_feature = replace(fact, feature_date=f"{month}-01")
+    later_feature = replace(
+        fact,
+        feature_date=f"{month}-02",
+        target_date=(date.fromisoformat(target_date) - timedelta(days=1)).isoformat(),
+    )
+    rows = _detail_rows_by_partition([later_feature, earlier_feature])[
+        (fact.scheme_id, month, source)
+    ]
+    assert [row[2:4] for row in rows] == [
+        [earlier_feature.feature_date, earlier_feature.target_date],
+        [later_feature.feature_date, later_feature.target_date],
+    ]
+
+
+@pytest.mark.parametrize(
+    "builder", [build_representation_facts, validate_and_join_facts]
+)
+@pytest.mark.parametrize(
+    ("feature_date", "predict_date", "display_until", "included"),
+    [
+        ("2024-12-31", "2025-01-01", "2025-01-02", False),
+        ("2025-01-01", "2025-01-02", "2025-01-02", True),
+        ("2025-01-01", "2025-01-02", "2025-01-01", False),
+    ],
+)
+def test_representation_history_uses_feature_start_and_signal_visibility(
+    builder: Callable[..., list[ConsistencyFact]],
+    feature_date: str,
+    predict_date: str,
+    display_until: str,
+    included: bool,
+) -> None:
+    snapshot = _date_contract_snapshot(
+        "T+1", predict_date, feature_date, predict_date
+    )
+    snapshot = replace(
+        snapshot,
+        calendar_rows=_calendar_rows(date(2024, 12, 1), date(2025, 2, 1)),
+    )
+
+    facts = builder(snapshot, display_until=display_until)
+
+    assert bool(facts) is included
 
 
 @pytest.mark.parametrize(

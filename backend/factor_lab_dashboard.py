@@ -37,8 +37,9 @@ from backend.factor_lab_dashboard_semantics import (
     DASHBOARD_SCHEMA_VERSION,
     DETAIL_ROW_FIELDS,
     FACTOR_LAB_HISTORY_START_DATE,
-    FACTOR_LAB_LIVE_TARGET_START_DATE,
+    FACTOR_LAB_LIVE_FEATURE_START_DATE,
     MONTHLY_ROW_FIELDS,
+    RANGE_ROW_FIELDS,
     MonthlySummaryAccumulator,
     DashboardDataError,
     backtest_benchmark_label,
@@ -104,6 +105,24 @@ def parse_dashboard_month(value: object) -> str:
     if canonical != value:
         raise DashboardQueryError("dashboard detail month is invalid")
     return value
+
+
+def parse_dashboard_date_range(start_date: object, end_date: object) -> dict[str, str] | None:
+    """解析包含首尾日的特征日期区间；不顺延自然日。"""
+    if start_date is None and end_date is None:
+        return None
+    for value in (start_date, end_date):
+        if not isinstance(value, str) or len(value) != 10:
+            raise DashboardQueryError("dashboard date range is invalid")
+        try:
+            parsed = date.fromisoformat(value)
+        except ValueError as exc:
+            raise DashboardQueryError("dashboard date range is invalid") from exc
+        if parsed.isoformat() != value:
+            raise DashboardQueryError("dashboard date range is invalid")
+    if start_date > end_date:
+        raise DashboardQueryError("dashboard date range is reversed")
+    return {"start_date": start_date, "end_date": end_date}
 
 
 @contextmanager
@@ -224,9 +243,13 @@ def _existing_production_scheme_ids(connection: Connection, candidates: set[str]
 
 def build_factor_lab_dashboard(
     engine: Engine,
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> dict[str, Any]:
-    """在一个一致性事务内构建不含逐日明细的 V6 首屏。"""
-    return _build_summary(engine)
+    """在一致性事务中构建日级区间计数和完整月份计数。"""
+    selected_range = parse_dashboard_date_range(start_date, end_date)
+    return _build_summary(engine, selected_range=selected_range)
 
 
 def build_factor_lab_dashboard_detail(
@@ -236,7 +259,7 @@ def build_factor_lab_dashboard_detail(
     month: str,
     source: str,
 ) -> dict[str, Any] | None:
-    """按 active composite scheme、月份和来源构建 V6 明细。"""
+    """按 active composite scheme、月份和来源构建 V7 明细。"""
     if source not in {"all", "backtest", "live"}:
         raise DashboardQueryError("dashboard detail source is invalid")
     parsed_month = parse_dashboard_month(month)
@@ -248,7 +271,9 @@ def build_factor_lab_dashboard_detail(
     )
 
 
-def _build_summary(engine: Engine) -> dict[str, Any]:
+def _build_summary(
+    engine: Engine, *, selected_range: dict[str, str] | None,
+) -> dict[str, Any]:
     """流式读取全量产品事实，构建不随历史明细等比例占内存的 Summary。"""
     build_started_at = time.perf_counter()
     captured = datetime.now(SHANGHAI_TIMEZONE)
@@ -321,6 +346,10 @@ def _build_summary(engine: Engine) -> dict[str, Any]:
             str,
             dict[tuple[str, str], MonthlySummaryAccumulator],
         ] = {}
+        range_by_scheme: dict[str, dict[str, MonthlySummaryAccumulator]] = {}
+        feature_date_bounds: dict[str, dict[str, str] | None] = {
+            "all": None, "backtest": None, "live": None,
+        }
         source_counts_by_scheme: dict[str, dict[str, int]] = {}
         for scheme in registry:
             schemes_by_prediction_key[
@@ -331,6 +360,7 @@ def _build_summary(engine: Engine) -> dict[str, Any]:
                 )
             ].append(scheme)
             monthly_by_scheme[scheme["scheme_id"]] = {}
+            range_by_scheme[scheme["scheme_id"]] = {}
             source_counts_by_scheme[scheme["scheme_id"]] = {
                 "backtest": 0,
                 "live": 0,
@@ -349,11 +379,11 @@ def _build_summary(engine: Engine) -> dict[str, Any]:
             task_type_by_scheme=registry_task_type_index(registry_rows),
         )
         for prediction in canonical_predictions:
-            predict_date = _iso_date(
-                prediction.get("predict_date"),
-                field="prediction predict_date",
+            feature_date = _iso_date(
+                prediction.get("feature_date"),
+                field="prediction feature_date",
             )
-            if not is_factor_lab_history_visible(predict_date):
+            if not is_factor_lab_history_visible(feature_date):
                 history_prediction_rows_excluded += 1
                 continue
             prediction_key = (
@@ -372,8 +402,24 @@ def _build_summary(engine: Engine) -> dict[str, Any]:
                 prediction.get("target_date"),
                 field="prediction target_date",
             )
-            source = dashboard_result_source(target_date)
+            source = dashboard_result_source(prediction.get("feature_date"))
             for scheme in schemes_by_prediction_key.get(prediction_key, []):
+                for bounds_source in ("all", source):
+                    bounds = feature_date_bounds[bounds_source]
+                    if bounds is None:
+                        feature_date_bounds[bounds_source] = {
+                            "start_date": feature_date, "end_date": feature_date,
+                        }
+                    else:
+                        bounds["start_date"] = min(bounds["start_date"], feature_date)
+                        bounds["end_date"] = max(bounds["end_date"], feature_date)
+                range_accumulator = None
+                if selected_range is None or (
+                    selected_range["start_date"] <= feature_date <= selected_range["end_date"]
+                ):
+                    range_accumulator = range_by_scheme[scheme["scheme_id"]].setdefault(
+                        source, MonthlySummaryAccumulator(),
+                    )
                 selector = live_actual_selector(scheme["task_type"])
                 published_actual = prediction.get("backtest_actual_direction")
                 actual_direction = (
@@ -386,13 +432,18 @@ def _build_summary(engine: Engine) -> dict[str, Any]:
                         (scheme["target_tenor"], target_date, selector[1])
                     )
                 )
-                month = _display_month(prediction, scheme["task_type"])
+                month = _display_month(prediction)
                 accumulator = monthly_by_scheme[scheme["scheme_id"]].setdefault(
                     (month, source),
                     MonthlySummaryAccumulator(),
                 )
                 source_counts_by_scheme[scheme["scheme_id"]][source] += 1
                 if actual_direction is not None:
+                    if range_accumulator is not None:
+                        range_accumulator.observe(
+                            predicted_direction=prediction.get("predicted_direction"),
+                            actual_direction=actual_direction,
+                        )
                     accumulator.observe(
                         predicted_direction=prediction.get("predicted_direction"),
                         actual_direction=actual_direction,
@@ -450,6 +501,12 @@ def _build_summary(engine: Engine) -> dict[str, Any]:
                 "monthly_rows": _compact_monthly_accumulators(
                     monthly_by_scheme[scheme["scheme_id"]],
                 ),
+                "range_rows": [
+                    accumulator.compact(month="", source=source)[1:]
+                    for source, accumulator in sorted(
+                        range_by_scheme[scheme["scheme_id"]].items()
+                    )
+                ],
                 "backtest": backtest,
             }
         )
@@ -461,10 +518,13 @@ def _build_summary(engine: Engine) -> dict[str, Any]:
         "snapshot_id": uuid4().hex,
         "generated_at": captured.isoformat(timespec="seconds"),
         "display_until": display_until,
-        "live_target_start_date": (
-            FACTOR_LAB_LIVE_TARGET_START_DATE.isoformat()
+        "live_feature_start_date": (
+            FACTOR_LAB_LIVE_FEATURE_START_DATE.isoformat()
         ),
         "monthly_row_fields": list(MONTHLY_ROW_FIELDS),
+        "range_row_fields": list(RANGE_ROW_FIELDS),
+        "feature_date_bounds": feature_date_bounds,
+        "selected_feature_range": selected_range,
         "target_labels": target_labels,
         "schemes": schemes,
     }
@@ -517,11 +577,10 @@ def _build_detail(
             connection,
             registry_rows,
         )
-        display_date_range = _detail_target_date_range(
+        display_date_range = _detail_feature_date_range(
             detail_month,
-            task_type=scheme["task_type"],
         )
-        target_date_range = _detail_source_target_date_range(
+        feature_date_range = _detail_source_feature_date_range(
             display_date_range,
             source=detail_source,
         )
@@ -529,10 +588,10 @@ def _build_detail(
             read_product_predictions(
                 connection,
                 registry_rows,
-                target_date_range=target_date_range,
+                feature_date_range=feature_date_range,
                 replacement_plan=replacement_plan,
             )
-            if target_date_range is not None
+            if feature_date_range is not None
             else []
         )
         canonical_predictions = choose_live_prediction_rows(
@@ -545,8 +604,8 @@ def _build_detail(
             for row in canonical_predictions
             if is_factor_lab_history_visible(
                 _iso_date(
-                    row.get("predict_date"),
-                    field="prediction predict_date",
+                    row.get("feature_date"),
+                    field="prediction feature_date",
                 )
             )
         ]
@@ -559,10 +618,10 @@ def _build_detail(
             read_live_actuals(
                 connection,
                 registry_rows,
-                target_date_range=target_date_range,
+                target_date_range=None,
                 target_dates=missing_actual_target_dates,
             )
-            if missing_actual_target_dates and target_date_range is not None
+            if missing_actual_target_dates and feature_date_range is not None
             else []
         )
     db_read_seconds = time.perf_counter() - db_read_started_at
@@ -585,7 +644,7 @@ def _build_detail(
             prediction.get("target_date"),
             field="prediction target_date",
         )
-        source = dashboard_result_source(target_date)
+        source = dashboard_result_source(prediction.get("feature_date"))
         if detail_source != "all" and source != detail_source:
             raise DashboardDataError(
                 "detail prediction escaped requested source partition"
@@ -616,7 +675,7 @@ def _build_detail(
         "snapshot_id": uuid4().hex,
         "generated_at": captured.isoformat(timespec="seconds"),
         "display_until": display_until,
-        "live_target_start_date": FACTOR_LAB_LIVE_TARGET_START_DATE.isoformat(),
+        "live_feature_start_date": FACTOR_LAB_LIVE_FEATURE_START_DATE.isoformat(),
         "scheme_id": scheme["scheme_id"],
         "month": detail_month,
         "source": detail_source,
@@ -662,35 +721,6 @@ def record_dashboard_encoding(
         diagnostics["gzip_bytes"] = encoding.gzip_size
 
 
-def _monthly_rows(
-    *,
-    backtest_details: list[Mapping[str, Any]],
-    live_details: list[Mapping[str, Any]],
-    task_type: str,
-) -> list[list[Any]]:
-    grouped: dict[
-        tuple[str, str], MonthlySummaryAccumulator
-    ] = {}
-    for source, rows in (
-        ("backtest", backtest_details),
-        ("live", live_details),
-    ):
-        for row in rows:
-            # 保留纯待验证月份的明细入口，统计仍只使用已验证记录。
-            bucket = grouped.setdefault(
-                (_display_month(row, task_type), source),
-                MonthlySummaryAccumulator(),
-            )
-            if row.get("actual_direction") is None:
-                continue
-            bucket.observe(
-                predicted_direction=row.get("predicted_direction"),
-                actual_direction=row.get("actual_direction"),
-            )
-
-    return _compact_monthly_accumulators(grouped)
-
-
 def _compact_monthly_accumulators(
     grouped: Mapping[
         tuple[str, str], MonthlySummaryAccumulator
@@ -708,51 +738,35 @@ def _compact_monthly_accumulators(
     return result
 
 
-def _display_month(row: Mapping[str, Any], task_type: str) -> str:
-    target_date = date.fromisoformat(
-        _iso_date(row.get("target_date"), field="target_date")
-    )
-    if task_type != "monthly_average":
-        return target_date.strftime("%Y-%m")
-    year = target_date.year + (1 if target_date.month == 12 else 0)
-    month = 1 if target_date.month == 12 else target_date.month + 1
-    return f"{year:04d}-{month:02d}"
+def _display_month(row: Mapping[str, Any]) -> str:
+    """所有任务统一归入特征基准日所在自然月。"""
+    return _iso_date(row.get("feature_date"), field="feature_date")[:7]
 
 
-def _detail_target_date_range(
-    display_month: str | None,
-    *,
-    task_type: str,
-) -> tuple[str, str]:
-    """把展示月份收敛为底层 target_date 半开区间。"""
+def _detail_feature_date_range(display_month: str | None) -> tuple[str, str]:
+    """把展示月份转换为特征基准日半开区间。"""
     if display_month is None:
         raise DashboardQueryError("dashboard detail month is required")
     display_start = date.fromisoformat(
         f"{parse_dashboard_month(display_month)}-01"
     )
-
-    target_start = (
-        _shift_month(display_start, -1)
-        if task_type == "monthly_average"
-        else display_start
-    )
-    return target_start.isoformat(), _shift_month(target_start, 1).isoformat()
+    return display_start.isoformat(), _shift_month(display_start, 1).isoformat()
 
 
-def _detail_source_target_date_range(
+def _detail_source_feature_date_range(
     display_range: tuple[str, str],
     *,
     source: str,
 ) -> tuple[str, str] | None:
-    """将产品 source 分区与展示月 target_date 区间求交。"""
+    """将展示 source 分区与特征基准月区间求交。"""
     if source == "all":
         return display_range
     start = date.fromisoformat(display_range[0])
     before = date.fromisoformat(display_range[1])
     if source == "backtest":
-        before = min(before, FACTOR_LAB_LIVE_TARGET_START_DATE)
+        before = min(before, FACTOR_LAB_LIVE_FEATURE_START_DATE)
     elif source == "live":
-        start = max(start, FACTOR_LAB_LIVE_TARGET_START_DATE)
+        start = max(start, FACTOR_LAB_LIVE_FEATURE_START_DATE)
     else:
         raise DashboardQueryError("dashboard detail source is invalid")
     if start >= before:
@@ -958,9 +972,10 @@ def _target_dto(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _compact_row_sort_key(row: list[Any]) -> tuple[int, str, str]:
+def _compact_row_sort_key(row: list[Any]) -> tuple[int, str, str, str]:
     return (
         {"backtest": 0, "live": 1}[str(row[0])],
+        str(row[2]),
         str(row[3]),
         str(row[1]),
     )

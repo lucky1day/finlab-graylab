@@ -154,9 +154,9 @@
     selectedSchemeId: "",
     rankMetric: "overall",
     rankDirection: "desc",
-    startMonth: "2025-01",
-    endMonth: "2025-05",
-    endMonthPinned: false,
+    startDate: "",
+    endDate: "",
+    dateRangePinned: false,
     dataSource: "all",
     chartMetrics: {
       overall: true,
@@ -292,14 +292,6 @@
     return targetMonth;
   }
 
-  function formatMonthlyAveragePredictDate(predictDate) {
-    var value = requireDashboardIsoDate(
-      predictDate,
-      "monthly_average predict_date"
-    );
-    return value.slice(5, 7) + "/" + value.slice(8, 10);
-  }
-
   function formatMonthlyAverageTargetMonth(targetMonth) {
     var value = String(targetMonth || "").trim();
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(value)) {
@@ -308,14 +300,6 @@
       );
     }
     return value.slice(0, 4) + "/" + value.slice(5, 7);
-  }
-
-  function formatQuarterlyAveragePredictDate(predictDate) {
-    var value = requireDashboardIsoDate(
-      predictDate,
-      "quarterly_average predict_date"
-    );
-    return value.slice(5, 7) + "/" + value.slice(8, 10);
   }
 
   function formatQuarterlyAverageTargetQuarter(targetMonth) {
@@ -327,14 +311,6 @@
       );
     }
     return match[1] + "/Q" + String((Number(match[2]) - 1) / 3 + 1);
-  }
-
-  function formatAnnualAveragePredictDate(predictDate) {
-    var value = requireDashboardIsoDate(
-      predictDate,
-      "annual_average predict_date"
-    );
-    return value.slice(5, 7) + "/" + value.slice(8, 10);
   }
 
   function formatAnnualAverageTargetYear(targetMonth) {
@@ -370,24 +346,6 @@
 
   function isAnnualAverageTask(task) {
     return task && task.taskType === "annual_average";
-  }
-
-  function formatFactorPeriodLabel(task, month) {
-    if (isQuarterlyAverageTask(task)) {
-      return formatQuarterlyAverageTargetQuarter(month);
-    }
-    if (isAnnualAverageTask(task)) {
-      return formatAnnualAverageTargetYear(month);
-    }
-    return month;
-  }
-
-  function liveDividerText() {
-    var committed = factorLabRuntimeState.committedViewModel;
-    var targetStart = committed && committed.liveTargetStartDate || "";
-    return targetStart
-      ? "实盘口径：target_date ≥ " + targetStart
-      : "实盘预测目标区间：待产生";
   }
 
   function getSchemeDeploymentDate(scheme) {
@@ -468,14 +426,14 @@
     throw new Error(context + " requires metricSamples");
   }
 
-  function shortDateLabel(value, fallback) {
+  function dateLabel(value, fallback) {
     var normalized = normalizeIsoDate(value);
-    if (normalized) return normalized.slice(5).replace("-", "/");
+    if (normalized) return normalized.replace(/-/g, "/");
     return fallback || "--";
   }
 
   function dateCellHtml(value, fallback) {
-    var label = shortDateLabel(value, fallback);
+    var label = dateLabel(value, fallback);
     var title = normalizeIsoDate(value) || label;
     return '<td class="mono" title="' + escapeHtml(title) + '">' + escapeHtml(label) + '</td>';
   }
@@ -486,7 +444,7 @@
     })[0] || null;
   }
 
-  var DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v6";
+  var DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v7";
   var DASHBOARD_DETAIL_ROW_FIELDS = [
     "source",
     "predict_date",
@@ -501,8 +459,11 @@
     "snapshot_id",
     "generated_at",
     "display_until",
-    "live_target_start_date",
+    "live_feature_start_date",
     "monthly_row_fields",
+    "range_row_fields",
+    "feature_date_bounds",
+    "selected_feature_range",
     "target_labels",
     "schemes"
   ];
@@ -512,7 +473,7 @@
     "snapshot_id",
     "generated_at",
     "display_until",
-    "live_target_start_date",
+    "live_feature_start_date",
     "scheme_id",
     "month",
     "source",
@@ -549,6 +510,7 @@
     "status",
     "deployed_at",
     "monthly_rows",
+    "range_rows",
     "backtest"
   ];
   var DASHBOARD_BACKTEST_FIELDS = [
@@ -579,7 +541,7 @@
     if (actual.length !== required.length || actual.some(function (field, index) {
       return field !== required[index];
     })) {
-      throw dashboardDataError(context + " fields must match v6 exactly");
+      throw dashboardDataError(context + " fields must match v7 exactly");
     }
   }
 
@@ -672,7 +634,7 @@
     return value;
   }
 
-  function decodeDashboardDetailRows(rows, requestedSource, liveTargetStartDate, context) {
+  function decodeDashboardDetailRows(rows, requestedSource, requestedMonth, liveFeatureStartDate, context) {
     if (!Array.isArray(rows)) throw dashboardDataError(context + " must be an array");
     var seenPoints = Object.create(null);
     var lastSortKey = "";
@@ -689,9 +651,12 @@
       var predictDate = requireDashboardIsoDate(row[1], rowContext + ".predict_date");
       var featureDate = requireDashboardIsoDate(row[2], rowContext + ".feature_date");
       var targetDate = requireDashboardIsoDate(row[3], rowContext + ".target_date");
-      var expectedSource = targetDate >= liveTargetStartDate ? "live" : "backtest";
+      if (featureDate.slice(0, 7) !== requestedMonth) {
+        throw dashboardDataError(rowContext + ".feature_date does not match requested month");
+      }
+      var expectedSource = featureDate >= liveFeatureStartDate ? "live" : "backtest";
       if (source !== expectedSource) {
-        throw dashboardDataError(rowContext + ".source does not match target_date policy");
+        throw dashboardDataError(rowContext + ".source does not match feature_date policy");
       }
       var predictedDirection = requireDashboardDirection(
         row[4], rowContext + ".predicted_direction", false
@@ -705,7 +670,7 @@
       }
       seenPoints[pointKey] = true;
       var sourceRank = source === "backtest" ? "0" : "1";
-      var sortKey = sourceRank + "\u0000" + targetDate + "\u0000" + predictDate;
+      var sortKey = sourceRank + "\u0000" + featureDate + "\u0000" + targetDate + "\u0000" + predictDate;
       if (lastSortKey && sortKey < lastSortKey) {
         throw dashboardDataError(context + " is not canonically sorted");
       }
@@ -734,19 +699,34 @@
     };
   }
 
-  function dashboardLiveDisplayStartMonth(liveTargetStartDate, taskType) {
-    var startMonth = liveTargetStartDate.slice(0, 7);
-    if (taskType !== "monthly_average") return startMonth;
-    var year = Number(startMonth.slice(0, 4));
-    var month = Number(startMonth.slice(5, 7)) + 1;
-    if (month === 13) {
-      year += 1;
-      month = 1;
+  function decodeDashboardCounts(values, rowContext) {
+    values = values.map(function (value, valueIndex) {
+      return requireDashboardInteger(
+        value, rowContext + "." + DASHBOARD_MONTHLY_ROW_FIELDS[valueIndex + 2], 0
+      );
+    });
+    var counts = {
+      samples: values[0],
+      metricSamples: values[1],
+      correct: values[2],
+      predictedUp: values[3],
+      predictedDown: values[4],
+      predictedFlat: values[5],
+      actualUp: values[6],
+      actualDown: values[7],
+      actualFlat: values[8],
+      upTruePositive: values[9],
+      downTruePositive: values[10]
+    };
+    if (counts.metricSamples > counts.samples || counts.correct > counts.metricSamples ||
+        counts.predictedUp + counts.predictedDown + counts.predictedFlat !== counts.samples ||
+        counts.actualUp + counts.actualDown + counts.actualFlat !== counts.samples) {
+      throw dashboardDataError(rowContext + " counts are inconsistent");
     }
-    return String(year).padStart(4, "0") + "-" + String(month).padStart(2, "0");
+    return counts;
   }
 
-  function decodeDashboardMonthlyRows(rows, taskType, liveTargetStartDate, context) {
+  function decodeDashboardMonthlyRows(rows, liveFeatureStartDate, context) {
     if (!Array.isArray(rows)) throw dashboardDataError(context + " must be an array");
     var seen = Object.create(null);
     var lastSortKey = "";
@@ -760,11 +740,9 @@
       if (["backtest", "live"].indexOf(source) === -1) {
         throw dashboardDataError(rowContext + " has invalid source");
       }
-      var expectedSource = month >= dashboardLiveDisplayStartMonth(
-        liveTargetStartDate, taskType
-      ) ? "live" : "backtest";
+      var expectedSource = month >= liveFeatureStartDate.slice(0, 7) ? "live" : "backtest";
       if (source !== expectedSource) {
-        throw dashboardDataError(rowContext + ".source does not match target_date policy");
+        throw dashboardDataError(rowContext + ".source does not match feature_date policy");
       }
       var key = month + "\u0000" + source;
       if (seen[key]) throw dashboardDataError(context + " has duplicate month/source " + key);
@@ -774,29 +752,7 @@
         throw dashboardDataError(context + " is not canonically sorted");
       }
       lastSortKey = sortKey;
-      var values = row.slice(2).map(function (value, valueIndex) {
-        return requireDashboardInteger(
-          value, rowContext + "." + DASHBOARD_MONTHLY_ROW_FIELDS[valueIndex + 2], 0
-        );
-      });
-      var counts = {
-        samples: values[0],
-        metricSamples: values[1],
-        correct: values[2],
-        predictedUp: values[3],
-        predictedDown: values[4],
-        predictedFlat: values[5],
-        actualUp: values[6],
-        actualDown: values[7],
-        actualFlat: values[8],
-        upTruePositive: values[9],
-        downTruePositive: values[10]
-      };
-      if (counts.metricSamples > counts.samples || counts.correct > counts.metricSamples ||
-          counts.predictedUp + counts.predictedDown + counts.predictedFlat !== counts.samples ||
-          counts.actualUp + counts.actualDown + counts.actualFlat !== counts.samples) {
-        throw dashboardDataError(rowContext + " counts are inconsistent");
-      }
+      var counts = decodeDashboardCounts(row.slice(2), rowContext);
       return Object.assign({
         month: month,
         _source: source,
@@ -804,6 +760,29 @@
         predictedDist: counts.predictedUp + "/" + counts.predictedDown + "/" + counts.predictedFlat
       }, counts, metricFromDashboardCounts(counts));
     });
+  }
+
+  function decodeDashboardRangeRows(rows, context) {
+    if (!Array.isArray(rows)) throw dashboardDataError(context + " must be an array");
+    var previous = "";
+    return rows.map(function (row, index) {
+      var rowContext = context + "[" + index + "]";
+      if (!Array.isArray(row) || row.length !== DASHBOARD_MONTHLY_ROW_FIELDS.length - 1 ||
+          ["backtest", "live"].indexOf(row[0]) === -1 || row[0] <= previous) {
+        throw dashboardDataError(rowContext + " has invalid source, order or width");
+      }
+      previous = row[0];
+      return Object.assign({ _source: row[0] }, decodeDashboardCounts(row.slice(1), rowContext));
+    });
+  }
+
+  function decodeFeatureRange(value, context) {
+    if (value === null) return null;
+    requireExactDashboardFields(value, ["start_date", "end_date"], context);
+    var start = requireDashboardIsoDate(value.start_date, context + ".start_date");
+    var end = requireDashboardIsoDate(value.end_date, context + ".end_date");
+    if (end < start) throw dashboardDataError(context + " is reversed");
+    return { start_date: start, end_date: end };
   }
 
   function requireDashboardMonth(value, context) {
@@ -826,8 +805,20 @@
         payload.monthly_row_fields.some(function (field, index) {
           return field !== DASHBOARD_MONTHLY_ROW_FIELDS[index];
         }) || new Set(payload.monthly_row_fields).size !== payload.monthly_row_fields.length) {
-      throw dashboardDataError("monthly_row_fields must match v6 exactly");
+      throw dashboardDataError("monthly_row_fields must match v7 exactly");
     }
+    var rangeFields = DASHBOARD_MONTHLY_ROW_FIELDS.slice(1);
+    if (!Array.isArray(payload.range_row_fields) ||
+        payload.range_row_fields.length !== rangeFields.length ||
+        payload.range_row_fields.some(function (field, index) { return field !== rangeFields[index]; })) {
+      throw dashboardDataError("range_row_fields must match v7 exactly");
+    }
+    requireExactDashboardFields(payload.feature_date_bounds, ["all", "backtest", "live"], "feature_date_bounds");
+    var featureBounds = {};
+    ["all", "backtest", "live"].forEach(function (source) {
+      featureBounds[source] = decodeFeatureRange(payload.feature_date_bounds[source], "feature_date_bounds." + source);
+    });
+    var selectedRange = decodeFeatureRange(payload.selected_feature_range, "selected_feature_range");
     var snapshotId = requireDashboardString(payload.snapshot_id, "snapshot_id", false);
     if (!DASHBOARD_SNAPSHOT_ID_PATTERN.test(snapshotId)) {
       throw dashboardDataError("snapshot_id must be canonical");
@@ -836,8 +827,8 @@
       payload.generated_at, "generated_at"
     );
     var displayUntil = requireDashboardIsoDate(payload.display_until, "display_until");
-    var liveTargetStartDate = requireDashboardIsoDate(
-      payload.live_target_start_date, "live_target_start_date"
+    var liveFeatureStartDate = requireDashboardIsoDate(
+      payload.live_feature_start_date, "live_feature_start_date"
     );
 
     if (!isDashboardObject(payload.target_labels)) {
@@ -901,10 +892,10 @@
         deployedAt: requireDashboardIsoDate(scheme.deployed_at, context + ".deployed_at"),
         monthlyRows: decodeDashboardMonthlyRows(
           scheme.monthly_rows,
-          taskType,
-          liveTargetStartDate,
+          liveFeatureStartDate,
           context + ".monthly_rows"
         ),
+        rangeRows: decodeDashboardRangeRows(scheme.range_rows, context + ".range_rows"),
         backtest: null
       };
       if (scheme.backtest !== null) {
@@ -934,7 +925,9 @@
       snapshotId: snapshotId,
       generatedAt: generatedAt,
       displayUntil: displayUntil,
-      liveTargetStartDate: liveTargetStartDate,
+      liveFeatureStartDate: liveFeatureStartDate,
+      featureDateBounds: featureBounds,
+      selectedFeatureRange: selectedRange,
       targetLabels: targetLabels,
       schemes: schemes
     };
@@ -943,14 +936,14 @@
   function decodeDashboardDetailPayload(payload, expected) {
     requireExactDashboardFields(payload, DASHBOARD_DETAIL_TOP_FIELDS, "detail payload");
     if (payload.schema_version !== DASHBOARD_SCHEMA_VERSION || payload.representation !== "detail") {
-      throw dashboardDataError("detail payload must be dashboard v6 detail");
+      throw dashboardDataError("detail payload must be dashboard v7 detail");
     }
     if (!Array.isArray(payload.row_fields) ||
         payload.row_fields.length !== DASHBOARD_DETAIL_ROW_FIELDS.length ||
         payload.row_fields.some(function (field, index) {
           return field !== DASHBOARD_DETAIL_ROW_FIELDS[index];
         }) || new Set(payload.row_fields).size !== payload.row_fields.length) {
-      throw dashboardDataError("detail row_fields must match v6 exactly");
+      throw dashboardDataError("detail row_fields must match v7 exactly");
     }
     var snapshotId = requireDashboardString(payload.snapshot_id, "detail snapshot_id", false);
     if (!DASHBOARD_SNAPSHOT_ID_PATTERN.test(snapshotId)) {
@@ -958,18 +951,19 @@
     }
     requireDashboardAwareDateTime(payload.generated_at, "detail generated_at");
     requireDashboardIsoDate(payload.display_until, "detail display_until");
-    var liveTargetStartDate = requireDashboardIsoDate(
-      payload.live_target_start_date, "detail live_target_start_date"
+    var liveFeatureStartDate = requireDashboardIsoDate(
+      payload.live_feature_start_date, "detail live_feature_start_date"
     );
     if (payload.scheme_id !== expected.schemeId || payload.month !== expected.month ||
         payload.source !== expected.source ||
-        liveTargetStartDate !== expected.liveTargetStartDate) {
+        liveFeatureStartDate !== expected.liveFeatureStartDate) {
       throw dashboardDataError("detail response identity does not match request");
     }
     return decodeDashboardDetailRows(
       payload.rows,
       expected.source,
-      liveTargetStartDate,
+      expected.month,
+      liveFeatureStartDate,
       "detail rows"
     );
   }
@@ -977,7 +971,6 @@
   function dashboardDetailRow(row, taskType) {
     var actualDirection = row.actualDirection;
     return {
-      day: String(row.targetDate).slice(5).replace("-", "/"),
       predictDate: row.predictDate,
       featureDate: row.featureDate,
       targetDate: row.targetDate,
@@ -1017,6 +1010,7 @@
         deploymentDate: formatDeploymentDate(scheme.deployedAt),
         remark: scheme.description,
         monthlyRows: scheme.monthlyRows,
+        rangeRows: scheme.rangeRows,
         benchmarkLabel: scheme.backtest ? scheme.backtest.benchmarkLabel : "",
         dataSourceLabel: scheme.backtest ? scheme.backtest.dataSourceLabel : ""
       });
@@ -1029,7 +1023,9 @@
     return {
       snapshotId: decoded.snapshotId,
       displayUntil: decoded.displayUntil,
-      liveTargetStartDate: decoded.liveTargetStartDate,
+      liveFeatureStartDate: decoded.liveFeatureStartDate,
+      featureDateBounds: decoded.featureDateBounds,
+      selectedFeatureRange: decoded.selectedFeatureRange,
       targetLabels: decoded.targetLabels,
       tasks: tasks
     };
@@ -1095,7 +1091,9 @@
       snapshotId: viewModel.snapshotId,
       generatedAt: decoded.generatedAt,
       displayUntil: viewModel.displayUntil,
-      liveTargetStartDate: viewModel.liveTargetStartDate,
+      liveFeatureStartDate: viewModel.liveFeatureStartDate,
+      featureDateBounds: viewModel.featureDateBounds,
+      selectedFeatureRange: viewModel.selectedFeatureRange,
       source: "dashboard"
     };
   }
@@ -1119,7 +1117,7 @@
     if (!selection) return false;
     var schemes = factorTaskSchemes[selection.taskKey] || [];
     return schemes.some(function (scheme) {
-      return scheme.id === selection.schemeId && scheme.monthlyRows.some(function (row) {
+      return scheme.id === selection.schemeId && getVisibleRowsForScheme(scheme).some(function (row) {
         return row.month === selection.month &&
           (factorLabState.dataSource === "all" || row._source === factorLabState.dataSource);
       });
@@ -1190,11 +1188,13 @@
             !factorTaskSchemes[factorLabState.selectedTaskKey].length)) {
         factorLabState.selectedTaskKey = availableTasks[0];
       }
-      syncFactorMonthRange();
-      var months = getFactorAvailableMonths();
-      if (months.length && !factorLabState.endMonthPinned) {
-        factorLabState.endMonth = months[months.length - 1];
-      }
+      var selection = candidate.selection;
+      factorLabState.dataSource = selection.source;
+      factorLabState.dateRangePinned = selection.range !== null;
+      var displayRange = selection.range || candidate.featureDateBounds[selection.source];
+      factorLabState.startDate = displayRange ? displayRange.start_date : "";
+      factorLabState.endDate = displayRange ? displayRange.end_date : "";
+      if (selection.changed) factorLabState.page = 1;
       renderFactorLab();
       if (hasDrawerSelection(previous.drawer)) {
         factorLabState.selectedTaskKey = previous.drawer.taskKey;
@@ -1284,7 +1284,7 @@
   function loadFactorLabData(options) {
     var force = options && options.force === true;
     if (!factorLabRuntimeState.authenticated || !window.fetch) return Promise.resolve(false);
-    if (factorLabRemoteLoading) return Promise.resolve(false);
+    if (factorLabRemoteLoading && !(options && options.selection)) return Promise.resolve(false);
     if (!force && factorLabRemoteLoaded) {
       if (factorLabRuntimeState.refreshTimer === null &&
           factorLabRuntimeState.committedViewModel &&
@@ -1297,6 +1297,16 @@
       return Promise.resolve(false);
     }
 
+    var selection = options && options.selection || {
+      source: factorLabState.dataSource,
+      range: factorLabState.dateRangePinned
+        ? { start_date: factorLabState.startDate, end_date: factorLabState.endDate }
+        : null
+    };
+    var requestUrl = "/api/factor-lab/dashboard";
+    if (selection.range) {
+      requestUrl += "?start-date=" + selection.range.start_date + "&end-date=" + selection.range.end_date;
+    }
     clearFactorLabRefreshTimer();
     var seq = factorLabRuntimeState.loadSeq + 1;
     factorLabRuntimeState.loadSeq = seq;
@@ -1315,14 +1325,19 @@
     var signal = controller ? controller.signal : null;
 
     var candidatePromise = fetchJson(
-      "/api/factor-lab/dashboard",
+      requestUrl,
       {
         signal: signal,
         timeoutMs: FACTOR_LAB_REQUEST_TIMEOUT_MS
       }
     ).then(function (payload) {
       if (seq !== factorLabRuntimeState.loadSeq) return null;
-      return dashboardFactorLabCandidate(payload);
+      var candidate = dashboardFactorLabCandidate(payload);
+      if (JSON.stringify(candidate.selectedFeatureRange) !== JSON.stringify(selection.range)) {
+        throw dashboardDataError("selected_feature_range does not match request");
+      }
+      candidate.selection = selection;
+      return candidate;
     });
 
     return candidatePromise.then(function (candidate) {
@@ -1386,6 +1401,9 @@
     factorLabRuntimeState.controller = null;
     factorLabRuntimeState.detailController = null;
     factorLabRuntimeState.committedViewModel = null;
+    factorLabState.dateRangePinned = false;
+    factorLabState.startDate = "";
+    factorLabState.endDate = "";
     factorLabRuntimeState.aggregateCache = new Map();
     factorLabRuntimeState.detailCache = new Map();
     factorLabRuntimeState.lastSuccessfulAt = 0;
@@ -1418,6 +1436,13 @@
   });
   if (window.__BFL_ENABLE_TEST_HOOKS__ === true) {
     window.__BFL_TEST_HOOKS__ = Object.freeze({
+      decodeSummary: decodeDashboardPayload,
+      decodeDetail: decodeDashboardDetailPayload,
+      detailRow: dashboardDetailRow,
+      renderDailyRows: renderFactorDailyRows,
+      selectRange: requestFactorSelection,
+      selectedMetric: function () { return aggregateScheme(getSelectedScheme()); },
+      visibleMonths: function () { return getVisibleFactorMonthRows().map(function (row) { return row.month; }); },
       fetchJson: fetchJson,
       load: loadFactorLabData,
       start: startAuthenticatedFactorLab,
@@ -1430,6 +1455,9 @@
       },
       state: function () {
         return {
+          startDate: factorLabState.startDate,
+          endDate: factorLabState.endDate,
+          dataSource: factorLabState.dataSource,
           authenticated: factorLabRuntimeState.authenticated,
           loadSeq: factorLabRuntimeState.loadSeq,
           remoteLoaded: factorLabRemoteLoaded,
@@ -1466,7 +1494,7 @@
     if (!scheme) return [];
     var src = factorLabState.dataSource;
     return scheme.monthlyRows.filter(function (row) {
-      if (row.month < factorLabState.startMonth || row.month > factorLabState.endMonth) return false;
+      if (row.month < factorLabState.startDate.slice(0, 7) || row.month > factorLabState.endDate.slice(0, 7)) return false;
       if (src === "all") return true;
       return row._source === src;
     });
@@ -1477,7 +1505,7 @@
     var cacheKey = [
       committed ? committed.snapshotId : "uncommitted",
       (scheme && (scheme.schemeId || scheme.id)) || "",
-      factorLabState.startMonth + ":" + factorLabState.endMonth,
+      factorLabState.startDate + ":" + factorLabState.endDate,
       factorLabState.dataSource
     ].join("\u0000");
     if (factorLabRuntimeState.aggregateCache.has(cacheKey)) {
@@ -1496,7 +1524,9 @@
       upTruePositive: 0,
       downTruePositive: 0
     };
-    getVisibleRowsForScheme(scheme).forEach(function (row) {
+    (scheme.rangeRows || []).filter(function (row) {
+      return factorLabState.dataSource === "all" || row._source === factorLabState.dataSource;
+    }).forEach(function (row) {
       Object.keys(counts).forEach(function (key) { counts[key] += row[key]; });
     });
     var metric = metricFromDashboardCounts(counts);
@@ -1621,7 +1651,7 @@
     var metricBadge = document.getElementById("factorOverviewMetric");
     if (!body) return;
     renderFactorLabSchemeTotal();
-    if (range) range.textContent = factorLabState.startMonth + " 至 " + factorLabState.endMonth;
+    if (range) range.textContent = "区间统计：" + (factorLabState.startDate ? factorLabState.startDate + " 至 " + factorLabState.endDate : "暂无可展示历史");
     if (metricBadge) metricBadge.textContent = "指标：" + getMetricLabel(factorLabState.rankMetric);
     var schemeCountsAvailable = factorLabSchemeCountsAvailable(currentFactorLabDataState());
 
@@ -1793,84 +1823,29 @@
     return getVisibleRowsForScheme(getSelectedScheme());
   }
 
-  function getFactorAvailableMonths() {
-    var src = factorLabState.dataSource;
-    if (src === "live") {
-      var committed = factorLabRuntimeState.committedViewModel;
-      var task = getTaskByKey(factorLabState.selectedTaskKey);
-      return factorMonthRange(
-        committed && committed.liveTargetStartDate
-          ? dashboardLiveDisplayStartMonth(
-            committed.liveTargetStartDate,
-            task.taskType
-          )
-          : "",
-        committed && committed.displayUntil ? committed.displayUntil.slice(0, 7) : ""
-      );
-    }
-    var months = [];
-    Object.keys(factorTaskSchemes).forEach(function (key) {
-      factorTaskSchemes[key].forEach(function (scheme) {
-        scheme.monthlyRows.forEach(function (row) {
-          if (src !== "all" && row._source && row._source !== src) return;
-          if (months.indexOf(row.month) === -1) months.push(row.month);
-        });
-      });
+  function renderFactorDateInputs() {
+    var start = document.getElementById("factorStartDate");
+    var end = document.getElementById("factorEndDate");
+    if (!start || !end) return;
+    var committed = factorLabRuntimeState.committedViewModel;
+    var bounds = committed && committed.featureDateBounds[factorLabState.dataSource];
+    start.value = factorLabState.startDate;
+    end.value = factorLabState.endDate;
+    [start, end].forEach(function (input) {
+      input.min = bounds ? bounds.start_date : "";
+      input.max = bounds ? bounds.end_date : "";
+      input.disabled = !bounds;
+      input.setCustomValidity("");
     });
-    return months.sort();
+    var apply = document.getElementById("factorApplyRange");
+    if (apply) apply.disabled = !bounds;
   }
 
-  function factorMonthRange(startMonth, endMonth) {
-    if (!/^\d{4}-\d{2}$/.test(startMonth) || !/^\d{4}-\d{2}$/.test(endMonth) ||
-        endMonth < startMonth) return [];
-    var months = [];
-    var year = Number(startMonth.slice(0, 4));
-    var month = Number(startMonth.slice(5, 7));
-    var endYear = Number(endMonth.slice(0, 4));
-    var endMonthNumber = Number(endMonth.slice(5, 7));
-    while (year < endYear || (year === endYear && month <= endMonthNumber)) {
-      months.push(String(year).padStart(4, "0") + "-" + String(month).padStart(2, "0"));
-      month += 1;
-      if (month === 13) {
-        year += 1;
-        month = 1;
-      }
-    }
-    return months;
-  }
-
-  function syncFactorMonthRange() {
-    var months = getFactorAvailableMonths();
-    if (!months.length) return;
-    if (months.indexOf(factorLabState.startMonth) === -1) factorLabState.startMonth = months[0];
-    if (months.indexOf(factorLabState.endMonth) === -1) factorLabState.endMonth = months[months.length - 1];
-    if (factorLabState.endMonth < factorLabState.startMonth) factorLabState.endMonth = factorLabState.startMonth;
-  }
-
-  function _resetMonthRangeForSource() {
-    var months = getFactorAvailableMonths();
-    if (!months.length) return;
-    factorLabState.startMonth = months[0];
-    factorLabState.endMonth = months[months.length - 1];
-    factorLabState.endMonthPinned = false;
-  }
-
-  function renderFactorMonthSelects() {
-    var startMonthSelect = document.getElementById("factorStartMonth");
-    var endMonthSelect = document.getElementById("factorEndMonth");
-    if (!startMonthSelect || !endMonthSelect) return;
-
-    syncFactorMonthRange();
-    var months = getFactorAvailableMonths();
-    startMonthSelect.innerHTML = months.map(function (month) {
-      return '<option value="' + escapeHtml(month) + '"' + (month === factorLabState.startMonth ? " selected" : "") + '>' + escapeHtml(month) + '</option>';
-    }).join("");
-    endMonthSelect.innerHTML = months.map(function (month) {
-      var disabled = month < factorLabState.startMonth ? " disabled" : "";
-      return '<option value="' + escapeHtml(month) + '"' + (month === factorLabState.endMonth ? " selected" : "") + disabled + '>' + escapeHtml(month) + '</option>';
-    }).join("");
-    startMonthSelect.value = factorLabState.startMonth;
-    endMonthSelect.value = factorLabState.endMonth;
+  function requestFactorSelection(source, range) {
+    var selection = { source: source, range: range, changed: true };
+    // Keep the last committed controls and statistics together until the response is ready.
+    updateFactorFilterUi();
+    return loadFactorLabData({ force: true, selection: selection });
   }
 
   function updateFactorFilterUi() {
@@ -1885,7 +1860,7 @@
     });
     var srcSelect = document.getElementById("factorDataSource");
     if (srcSelect) srcSelect.value = factorLabState.dataSource;
-    renderFactorMonthSelects();
+    renderFactorDateInputs();
   }
 
   function updateFactorTrendToggles() {
@@ -1946,7 +1921,6 @@
     if (!host) return;
 
     updateFactorTrendToggles();
-    var task = getTaskByKey(factorLabState.selectedTaskKey);
     var rows = getVisibleFactorMonthRows();
     var metrics = factorTrendMetrics.filter(function (metric) {
       return factorLabState.chartMetrics[metric.id] !== false;
@@ -1970,10 +1944,10 @@
       return rows.length === 1 ? left + plotWidth / 2 : left + plotWidth * index / (rows.length - 1);
     };
     var y = function (value) {
-      return top + (100 - Number(value || 0)) / 100 * plotHeight;
+      return top + (100 - value) / 100 * plotHeight;
     };
 
-    var svg = '<svg width="' + width + '" height="' + height + '" viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="月度指标趋势折线图">';
+    var svg = '<svg width="' + width + '" height="' + height + '" viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="特征基准月份指标趋势折线图">';
     [0, 25, 50, 75, 100].forEach(function (tick) {
       var tickY = y(tick);
       svg += '<line class="factor-trend-grid" x1="' + left + '" y1="' + tickY.toFixed(1) + '" x2="' + (width - right) + '" y2="' + tickY.toFixed(1) + '"></line>';
@@ -1986,7 +1960,7 @@
         svg += '<line class="factor-trend-tick" x1="' + x(index).toFixed(1) + '" y1="' + (height - bottom) + '" x2="' + x(index).toFixed(1) + '" y2="' + (height - bottom + 6) + '" stroke="rgba(93,101,111,0.3)"></line>';
         return;
       }
-      svg += '<text class="factor-trend-axis" x="' + x(index).toFixed(1) + '" y="' + (height - 14) + '" text-anchor="' + trendMonthLabelAnchor(index, rows.length) + '">' + escapeHtml(formatFactorPeriodLabel(task, row.month)) + '</text>';
+      svg += '<text class="factor-trend-axis" x="' + x(index).toFixed(1) + '" y="' + (height - 14) + '" text-anchor="' + trendMonthLabelAnchor(index, rows.length) + '">' + escapeHtml(row.month) + '</text>';
     });
     // 实盘分隔虚线（仅"全部"口径，找到第一个 live 月份）
     if (factorLabState.dataSource === "all") {
@@ -2001,68 +1975,68 @@
     }
     metrics.forEach(function (metric) {
       var points = rows.map(function (row, index) {
-        return [
-          x(index),
-          y(row[metric.id]),
-          row[metric.id],
-          formatFactorPeriodLabel(task, row.month)
-        ];
+        var value = row[metric.id];
+        if (value === null || value === undefined) return null;
+        return [x(index), y(value), value, row.month];
       });
       var path = points.map(function (point, index) {
-        return (index === 0 ? "M" : "L") + point[0].toFixed(1) + " " + point[1].toFixed(1);
-      }).join(" ");
-      svg += '<path class="factor-trend-line" d="' + path + '" stroke="' + metric.color + '"></path>';
+        if (!point) return "";
+        return (index === 0 || !points[index - 1] ? "M" : "L") +
+          point[0].toFixed(1) + " " + point[1].toFixed(1);
+      }).filter(Boolean).join(" ");
+      if (path) svg += '<path class="factor-trend-line" d="' + path + '" stroke="' + metric.color + '"></path>';
       points.forEach(function (point) {
+        if (!point) return;
         svg += '<g><title>' + escapeHtml(point[3] + " · " + metric.label + " " + formatPercent(point[2])) + '</title>';
         svg += '<circle class="factor-trend-point" cx="' + point[0].toFixed(1) + '" cy="' + point[1].toFixed(1) + '" r="4.5" fill="' + metric.color + '"></circle></g>';
       });
     });
     svg += '</svg>';
-    host.innerHTML = '<div class="factor-trend-scroll" role="region" aria-label="月度指标趋势横向滚动区域">' + svg + '</div>';
+    host.innerHTML = '<div class="factor-trend-scroll" role="region" aria-label="特征基准月份指标趋势横向滚动区域">' + svg + '</div>';
   }
 
   function factorDetailPresentation(task, month) {
     if (isMonthlyAverageTask(task)) {
       return {
-        title: month + " 月度平均预测明细",
+        title: month + " 特征月 · 月度平均预测明细",
         dateHeader: "目标月",
-        note: "",
-        emptyText: "当前月份暂无预测明细",
+        note: "按特征基准日归入本月；目标周期用于解释预测对象及验证结果。",
+        emptyText: "当前特征月份暂无预测明细",
         buttonLabel: "打开月度平均预测明细"
       };
     }
     if (isQuarterlyAverageTask(task)) {
       return {
-        title: formatQuarterlyAverageTargetQuarter(month) + " 季度平均预测明细",
+        title: month + " 特征月 · 季度平均预测明细",
         dateHeader: "目标季度",
-        note: "",
-        emptyText: "当前季度暂无预测明细",
+        note: "按特征基准日归入本月；目标周期用于解释预测对象及验证结果。",
+        emptyText: "当前特征月份暂无预测明细",
         buttonLabel: "打开季度平均预测明细"
       };
     }
     if (isAnnualAverageTask(task)) {
       return {
-        title: formatAnnualAverageTargetYear(month) + " 年度平均预测明细",
+        title: month + " 特征月 · 年度平均预测明细",
         dateHeader: "目标年度",
-        note: "",
-        emptyText: "当前年度暂无预测明细",
+        note: "按特征基准日归入本月；目标周期用于解释预测对象及验证结果。",
+        emptyText: "当前特征月份暂无预测明细",
         buttonLabel: "打开年度平均预测明细"
       };
     }
     var weekly = isWeeklyTask(task);
     var weeklyAverage = isWeeklyAverageTask(task);
     return {
-      title: month + (weekly ? " 周度验证表" : " 每日验证表"),
+      title: month + " 特征月 ·" + (weekly ? " 周度验证表" : " 每日验证表"),
       dateHeader: weeklyAverage ? "目标周" : "目标日",
       note: weekly
         ? (
             weeklyAverage
-              ? "表内可继续滚动查看该月全部周度预测；目标周按该周最后可验证交易日标记。"
-              : "表内可继续滚动查看该月全部周度预测；目标日为下周最后一个交易日。"
+              ? "按特征基准日归入本月；目标周按该周最后可验证交易日标记。"
+              : "按特征基准日归入本月；目标日为下周最后一个交易日。"
           )
-        : "表内可继续滚动查看该月全部交易日的预测。",
-      emptyText: "当前月份暂无每日明细",
-      buttonLabel: "查看" + month + "每日明细"
+        : "按特征基准日归入本月；预测日为信号发出日，目标日用于验证预测结果。",
+      emptyText: "当前特征月份暂无预测明细",
+      buttonLabel: "查看" + month + "特征月份预测明细"
     };
   }
 
@@ -2074,6 +2048,11 @@
     var task = getTaskByKey(factorLabState.selectedTaskKey);
     var scheme = getSelectedScheme();
     if (title) title.textContent = scheme ? "选中方案详情：" + scheme.name : "选中方案详情";
+    var range = document.getElementById("factorDetailRange");
+    if (range) range.textContent = factorLabState.startDate
+      ? "整月详情：" + factorLabState.startDate.slice(0, 7) + " 至 " + factorLabState.endDate.slice(0, 7) +
+        " · 展示所涉月份的完整记录，保持当前回测/实盘口径"
+      : "整月详情：暂无可展示历史";
 
     var start = (factorLabState.page - 1) * factorLabState.pageSize;
     var visibleRows = getVisibleFactorMonthRows();
@@ -2081,19 +2060,9 @@
     var calendarIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"></rect><path d="M16 2v4M8 2v4M3 10h18"></path></svg>';
 
     var html = "";
-    // 跨页检测回测->实盘分界：找到本页之前的最后一个 _source
-    var prevSource = "";
-    for (var ri = 0; ri < start && ri < visibleRows.length; ri++) {
-      if (visibleRows[ri]._source) prevSource = visibleRows[ri]._source;
-    }
     pageRows.forEach(function (row) {
-      // 在"全部"口径下，回测到实盘的分界处插入分隔行
-      if (factorLabState.dataSource === "all" && prevSource === "backtest" && row._source === "live") {
-        html += '<tr class="factor-live-divider"><td colspan="10">&#9660; ' + escapeHtml(liveDividerText()) + '</td></tr>';
-      }
-      prevSource = row._source || prevSource;
       html += '<tr>';
-      html += '<td>' + escapeHtml(formatFactorPeriodLabel(task, row.month)) + '</td>';
+      html += '<td>' + escapeHtml(row.month) + '</td>';
       html += '<td><strong>' + row.samples + '</strong></td>';
       html += '<td>' + escapeHtml(row.actualDist) + '</td>';
       html += '<td>' + escapeHtml(row.predictedDist) + '</td>';
@@ -2154,43 +2123,37 @@
     }
 
     var html = "";
-    var monthLabel = month.slice(5, 7);
     if (!detailState || detailState.status === "loading") {
-      body.innerHTML = '<tr><td colspan="5" class="factor-empty-cell">正在加载预测明细…</td></tr>';
+      body.innerHTML = '<tr><td colspan="6" class="factor-empty-cell">正在加载预测明细…</td></tr>';
       return;
     }
     if (detailState.status === "error") {
-      body.innerHTML = '<tr><td colspan="5" class="factor-empty-cell">明细加载失败，' +
+      body.innerHTML = '<tr><td colspan="6" class="factor-empty-cell">明细加载失败，' +
         '<button type="button" class="factor-calendar-retry" data-factor-calendar-retry>重新加载</button></td></tr>';
       return;
     }
     var rows = detailState.rows || [];
     if (!rows.length) {
-      var emptyText = isMonthlyAverage || isQuarterlyAverage || isAnnualAverage
-        ? presentation.emptyText
-        : "当前月份暂无每日明细";
-      body.innerHTML = '<tr><td colspan="5" class="factor-empty-cell">' +
+      var emptyText = presentation.emptyText;
+      body.innerHTML = '<tr><td colspan="6" class="factor-empty-cell">' +
         escapeHtml(emptyText) + '</td></tr>';
       return;
     }
     rows.forEach(function (row) {
       var predictedClass = getDirectionClass(row.predicted);
       var actualClass = getDirectionClass(row.actual);
-      var displayDay = row.day.replace(/^\d{2}/, monthLabel);
       var result = renderDailyResult(row);
       html += '<tr>';
+      html += dateCellHtml(row.featureDate, "--");
+      html += dateCellHtml(row.predictDate, "--");
       if (isMonthlyAverage) {
-        html += '<td class="mono">' + escapeHtml(formatMonthlyAveragePredictDate(row.predictDate)) + '</td>';
-        html += '<td class="mono">' + escapeHtml(formatMonthlyAverageTargetMonth(row.targetMonth || month)) + '</td>';
+        html += '<td class="mono">' + escapeHtml(formatMonthlyAverageTargetMonth(row.targetMonth)) + '</td>';
       } else if (isQuarterlyAverage) {
-        html += '<td class="mono">' + escapeHtml(formatQuarterlyAveragePredictDate(row.predictDate)) + '</td>';
-        html += '<td class="mono">' + escapeHtml(formatQuarterlyAverageTargetQuarter(row.targetMonth || month)) + '</td>';
+        html += '<td class="mono">' + escapeHtml(formatQuarterlyAverageTargetQuarter(row.targetMonth)) + '</td>';
       } else if (isAnnualAverage) {
-        html += '<td class="mono">' + escapeHtml(formatAnnualAveragePredictDate(row.predictDate)) + '</td>';
-        html += '<td class="mono">' + escapeHtml(formatAnnualAverageTargetYear(row.targetMonth || month)) + '</td>';
+        html += '<td class="mono">' + escapeHtml(formatAnnualAverageTargetYear(row.targetMonth)) + '</td>';
       } else {
-        html += dateCellHtml(row.predictDate, "--");
-        html += dateCellHtml(row.targetDate, displayDay);
+        html += dateCellHtml(row.targetDate, "--");
       }
       html += '<td class="' + predictedClass + '">' + escapeHtml(row.predicted) + '</td>';
       html += '<td class="' + actualClass + '">' + escapeHtml(row.actual) + '</td>';
@@ -2229,7 +2192,7 @@
         schemeId: scheme.schemeId,
         month: month,
         source: source,
-        liveTargetStartDate: committed.liveTargetStartDate
+        liveFeatureStartDate: committed.liveFeatureStartDate
       }).map(function (row) {
         return dashboardDetailRow(row, scheme.taskType);
       });
@@ -2301,7 +2264,9 @@
       var panelWidth = panelRect.width;
       var panelHeight = panelRect.height;
       var left = Math.max(margin, (viewportWidth - panelWidth) / 2);
-      var top = margin;
+      var topbar = document.querySelector(".aifin-topbar");
+      var minimumTop = topbar ? Math.max(margin, topbar.getBoundingClientRect().bottom + margin) : margin;
+      var top = minimumTop;
 
       if (trigger && viewportWidth >= 760) {
         var triggerRect = trigger.getBoundingClientRect();
@@ -2312,7 +2277,7 @@
         left = Math.min(Math.max(left, margin), Math.max(margin, viewportWidth - panelWidth - margin));
 
         top = triggerRect.top + triggerRect.height / 2 - panelHeight / 2;
-        top = Math.min(Math.max(top, margin), Math.max(margin, viewportHeight - panelHeight - margin));
+        top = Math.min(Math.max(top, minimumTop), Math.max(minimumTop, viewportHeight - panelHeight - margin));
       }
 
       panel.style.right = "auto";
@@ -2465,51 +2430,29 @@
       closeFactorRemark(true);
     });
 
-    var startMonthInput = document.getElementById("factorStartMonth");
-    var endMonthInput = document.getElementById("factorEndMonth");
-    if (startMonthInput && !startMonthInput.dataset.factorBound) {
-      startMonthInput.dataset.factorBound = "true";
-      startMonthInput.addEventListener("change", function () {
-        factorLabState.startMonth = startMonthInput.value || factorLabState.startMonth;
-        if (factorLabState.startMonth > factorLabState.endMonth) {
-          factorLabState.endMonth = factorLabState.startMonth;
-          if (endMonthInput) endMonthInput.value = factorLabState.endMonth;
-        }
-        factorLabState.selectedSchemeId = "";
-        factorLabState.page = 1;
-        closeFactorCalendar();
-        renderFactorLab();
+    var startInput = document.getElementById("factorStartDate");
+    var endInput = document.getElementById("factorEndDate");
+    var apply = document.getElementById("factorApplyRange");
+    if (apply) apply.addEventListener("click", function () {
+      if (!startInput || !endInput) return;
+      startInput.setCustomValidity("");
+      endInput.setCustomValidity("");
+      if (!startInput.value || !endInput.value) {
+        (!startInput.value ? startInput : endInput).reportValidity();
+        return;
+      }
+      if (endInput.value < startInput.value) {
+        endInput.setCustomValidity("结束日期不能早于起始日期");
+      }
+      if (!startInput.reportValidity() || !endInput.reportValidity()) return;
+      requestFactorSelection(factorLabState.dataSource, {
+        start_date: startInput.value, end_date: endInput.value
       });
-    }
-
-    if (endMonthInput && !endMonthInput.dataset.factorBound) {
-      endMonthInput.dataset.factorBound = "true";
-      endMonthInput.addEventListener("change", function () {
-        factorLabState.endMonth = endMonthInput.value || factorLabState.endMonth;
-        factorLabState.endMonthPinned = true;
-        if (factorLabState.endMonth < factorLabState.startMonth) {
-          factorLabState.endMonth = factorLabState.startMonth;
-          endMonthInput.value = factorLabState.endMonth;
-        }
-        factorLabState.selectedSchemeId = "";
-        factorLabState.page = 1;
-        closeFactorCalendar();
-        renderFactorLab();
-      });
-    }
-
+    });
     var dataSourceSelect = document.getElementById("factorDataSource");
-    if (dataSourceSelect && !dataSourceSelect.dataset.factorBound) {
-      dataSourceSelect.dataset.factorBound = "true";
-      dataSourceSelect.addEventListener("change", function () {
-        factorLabState.dataSource = dataSourceSelect.value || "all";
-        factorLabState.selectedSchemeId = "";
-        factorLabState.page = 1;
-        _resetMonthRangeForSource();
-        closeFactorCalendar();
-        renderFactorLab();
-      });
-    }
+    if (dataSourceSelect) dataSourceSelect.addEventListener("change", function () {
+      requestFactorSelection(dataSourceSelect.value || "all", null);
+    });
   }
 
   window.addEventListener("keydown", function (event) {

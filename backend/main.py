@@ -47,6 +47,7 @@ from backend.factor_lab_dashboard import (
     dashboard_build_diagnostics,
     encode_canonical_snapshot,
     parse_dashboard_month,
+    parse_dashboard_date_range,
     record_dashboard_encoding,
 )
 from backend.http_compression import QAwareGZipMiddleware, accepts_gzip
@@ -545,7 +546,11 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
             response_payload = (
                 build_factor_lab_dashboard(engine)
                 if detail_query is None
-                else build_factor_lab_dashboard_detail(engine, **detail_query)
+                else (
+                    build_factor_lab_dashboard(engine, **detail_query)
+                    if "start_date" in detail_query
+                    else build_factor_lab_dashboard_detail(engine, **detail_query)
+                )
             )
         finally:
             if request_context is not None:
@@ -666,7 +671,7 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
 
 
 def _dashboard_detail_query(request: Request) -> dict[str, str] | None:
-    """严格解析同一路径的 V6 detail 三参数模式。"""
+    """严格解析 Summary 日期区间或 Detail 三参数模式。"""
     raw_query = request.scope.get("query_string", b"")
     if not raw_query:
         return None
@@ -678,6 +683,9 @@ def _dashboard_detail_query(request: Request) -> dict[str, str] | None:
         )
     except (UnicodeError, ValueError) as exc:
         raise DashboardQueryError("invalid dashboard detail query") from exc
+    if len(pairs) == 2 and {key for key, _ in pairs} == {"start-date", "end-date"}:
+        values = dict(pairs)
+        return parse_dashboard_date_range(values["start-date"], values["end-date"])
     if len(pairs) != 3 or {key for key, _ in pairs} != {
         "scheme-id",
         "month",

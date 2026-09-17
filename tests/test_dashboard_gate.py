@@ -123,6 +123,9 @@ def _scheme(target_tenor: str, *, with_live: bool) -> dict[str, Any]:
             if with_live
             else []
         ),
+        "range_rows": (
+            [["live", 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0]] if with_live else []
+        ),
         "backtest": {
             "benchmark_id": "benchmark-1",
             "benchmark_label": "Benchmark 1",
@@ -152,12 +155,12 @@ def _payload(
     ]
     schemes.sort(key=lambda row: row["scheme_id"])
     return {
-        "schema_version": "factor-lab-dashboard-v6",
+        "schema_version": "factor-lab-dashboard-v7",
         "representation": "summary",
         "snapshot_id": "dashboard-snapshot-1",
         "generated_at": "2026-08-10T12:00:00+08:00",
         "display_until": "2026-08-10",
-        "live_target_start_date": "2026-06-01",
+        "live_feature_start_date": "2026-06-01",
         "monthly_row_fields": [
             "month",
             "source",
@@ -173,6 +176,17 @@ def _payload(
             "up_true_positive",
             "down_true_positive",
         ],
+        "range_row_fields": [
+            "source", "samples", "metric_samples", "correct", "predicted_up",
+            "predicted_down", "predicted_flat", "actual_up", "actual_down",
+            "actual_flat", "up_true_positive", "down_true_positive",
+        ],
+        "selected_feature_range": None,
+        "feature_date_bounds": {
+            "all": {"start_date": "2026-08-03", "end_date": "2026-08-03"},
+            "live": {"start_date": "2026-08-03", "end_date": "2026-08-03"},
+            "backtest": None,
+        },
         "target_labels": {tenor: f"{tenor} target" for tenor in tenors},
         "schemes": schemes,
     }

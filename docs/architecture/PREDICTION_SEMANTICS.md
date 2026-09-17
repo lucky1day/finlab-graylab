@@ -22,8 +22,8 @@ Source-backed 方案还必须遵守 [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORI
 | 字段 | 平台含义 | 是否给前端/业务使用 |
 |------|----------|:------------------:|
 | `predict_date` | 信号发出日 / 调度运行日 | 是 |
-| `feature_date` | 数据截止日 / 预测站位日，模型只能使用该日及以前允许可见的数据 | 是 |
-| `target_date` | 验证目标日，用于展示、去重、actual join 和月度统计归属 | 是 |
+| `feature_date` | 特征基准日 / 数据截止日 / 预测站位日；统一展示时间轴，模型只能使用该日及以前允许可见的数据 | 是 |
+| `target_date` | 验证目标日，用于解释预测对象、业务去重和 actual join | 是 |
 
 `feature_date` 是平台、业务和前端唯一标准数据截止字段。`anchor_date` 只允许作为方案内部算法变量或历史审计 extra 保留；任何对外语义、前端展示、灰度规则、回测规则都不得依赖 `anchor_date`。如果 `extra` 同时保留 `anchor_date`，它必须等于 `feature_date`。
 
@@ -155,7 +155,7 @@ feature_date = 2025-02-14
 target_date  = 2025-03-14
 ```
 
-月度 actual join 和前端月度统计仍以 `target_date + target_rule + target_tenor` 为事实键；不得依赖 actual 表中历史遗留的顺延 `predict_date` 来判断是否有真实方向。
+月度 actual join 仍以 `target_date + target_rule + target_tenor` 为事实键，展示月份按 §7 的特征基准日归属；不得依赖 actual 表中历史遗留的顺延 `predict_date` 来判断是否有真实方向。
 
 ### 4.1 周期均值的桶与日期
 
@@ -182,15 +182,15 @@ feature_date = T
 target_date  = T + horizon
 ```
 
-回测执行只写 immutable `t_backtest_*` 证据，不读取产品事实拼历史结果。首次 Blackbox `activate` 才在同一激活事务中把已批准 exact-version 回测的缺失业务键发布到 `t_scheme_predictions`；revision 回测和 activation 不重写历史产品事实。参与前端历史排行的样本统一要求 `predict_date >= 2025-01-01`；这是输出样本起点，不是训练起点。
+回测执行只写 immutable `t_backtest_*` 证据，不读取产品事实拼历史结果。首次 Blackbox `activate` 才在同一激活事务中把已批准 exact-version 回测的缺失业务键发布到 `t_scheme_predictions`；revision 回测和 activation 不重写历史产品事实。参与前端历史排行的样本统一要求 `feature_date >= 2025-01-01`；这是展示样本起点，不改变训练或回测执行区间。
 
 已发布但早于 exact-version 强制记录的旧事实不得补写或冒充后续 exact。若业务明确指定后续纠正版作为迁移
 权威，只能通过 Harness 的精确兼容清单绑定完整旧事实摘要、日期差异摘要和纠正版身份，在只读验收中显式标为
 `legacy_migration`；这不改变旧行的原始来源、三日期或 insert-only 边界，也不为新事实提供例外。
 
-当方案已有灰度实盘观察区时，历史回测 runner 必须按 `target_date < gray_target_start` 截断，避免同一 target 同时由 backtest 和 live 区间解释。日频、周频和月频都使用同一条 target 边界；月频仍按自然月 15 号的触发语义计算三日期，不能用 `predict_date` 替代 `target_date` 判断分区。
+当方案已有灰度实盘观察区时，历史回测 runner 必须按 `target_date < gray_target_start` 截断，避免同一 target 同时由 backtest 和 live 区间解释。日频、周频和月频都使用同一条 target 边界；月频仍按自然月 15 号的触发语义计算三日期，不能用 `predict_date` 或 `feature_date` 替代 `target_date` 判断物化分区。该边界与 §7 的页面展示分区独立，展示调整不重算、搬移或改写既有事实。
 
-`target_date` 是回测明细的必填事实字段。runner 和 Dashboard 服务端只用 `target_date` 及 §7 的任务映射确定月份；如果 `t_backtest_predictions` 明细缺 `target_date`，必须 fail-closed。禁止用 `predict_date`、`feature_date`、月份字段或旧 `monthly_metrics` 表推断、替代或回填 `target_date`。
+`target_date` 是回测明细的必填事实字段。runner 的回测证据指标按 `target_date` 确定月份，Dashboard 则按 §7 的 `feature_date` 展示月份；如果 `t_backtest_predictions` 明细缺 `target_date`，必须 fail-closed。禁止用 `predict_date`、`feature_date`、月份字段或旧 `monthly_metrics` 表推断、替代或回填 `target_date`。
 
 正常无信号的补平前提与运行时实现边界由
 [源算法保真 §2.2](SOURCE_ALGORITHM_FIDELITY.md#22-正常完成后的无信号补平)维护；是否为平台平不改变三日期或 target 分区。
@@ -260,21 +260,20 @@ target_date  = T + horizon
 不根据 `frequency/horizon` 猜列、桶或目标日期。actual join 使用 `target_tenor + target_date + target_rule`，
 桶的日期指针遵守 §4.1。
 
-Dashboard V6 的公开结果类型只按 `target_date` 分类：
+Dashboard V7 以 `feature_date`（特征基准日）统一确定筛选、区间统计、方案排行、月份归属、趋势和明细范围；公开结果类型也按该日期分类：
 
-- `target_date < 2026-06-01`：`backtest` / 回测。
-- `target_date >= 2026-06-01`：`live` / 实盘。
+- `feature_date < 2026-06-01`：`backtest` / 回测。
+- `feature_date >= 2026-06-01`：`live` / 实盘。
 
-公开 API 和前端不使用物理来源、`predict_date` 或 run `prediction_phase` 判断结果类型，也不返回灰度/正式
-实盘阶段。`gray_live` 与 `scheduled_live` 只保留在 scheduler/gap-fill run 审计中。Dashboard 逐点只读取
-`t_scheme_predictions`，不存在跨表 preferred/fallback 或第二套去重逻辑。
+这是产品展示分区，不代表真实执行来源；原始 `run_id`、`backtest_run_id`、run `prediction_phase` 及其审计证据保持不变。公开 API 和前端不使用物理来源、`predict_date` 或 run phase 判断结果类型，也不返回灰度/正式实盘阶段。`gray_live` 与 `scheduled_live` 只保留在 scheduler/gap-fill run 审计中。Dashboard 逐点只读取 `t_scheme_predictions`，不存在跨表 preferred/fallback 或第二套去重逻辑。
 
-前端与业务不读取 `anchor_date`。需要展示预测站位或数据截止时，统一显示 `feature_date`。actual join、结果分类和去重均使用底层 `target_date`。
-展示月份通常为 `target_date` 的自然月；`monthly_average` 使用其后一自然月作为 MID 展示标签。
-Summary 与 Detail 必须使用同一映射，Detail 按展示月份反向定位底层 target 区间；
-此标签转换不修改业务日期、Actual 键或公开历史/实盘分区。映射由
-[Dashboard 实现](../../backend/factor_lab_dashboard.py)的 `_display_month` 与 `_detail_target_date_range` 统一执行，
-公共合同见[Dashboard V6 测试](../../tests/test_dashboard_builder.py)。
+前端与业务不读取 `anchor_date`。所有任务的展示月份均为 `feature_date` 的自然月，包括月中收、月均、季均、年均；月均不再使用目标月份加一个月的展示映射。Summary 与 Detail 必须使用同一月份及 source 规则；Detail 将特征月份半开区间与展示分区求交后筛选。展示样本要求 `feature_date >= 2025-01-01`，且 `predict_date` 不得晚于上海当前日；已发出但目标尚未验证的预测保留在其特征月份。
+
+顶部时间筛选使用 `YYYY-MM-DD`，首尾日均包含，不顺延到交易日；默认覆盖当前结果口径下全部可展示历史，范围边界包括待验证记录。任务矩阵、方案排行及区间指标只统计所选日级范围。选中方案详情的月度表、趋势和月历则展示该范围触及的完整自然月，并继续应用同一 source 条件。例如选择 5 月 20 日至 6 月 10 日，区间排行只计算这些日期，五月和六月详情分别展示整月记录；不得把整月详情计数反馈为区间排行。页面明确区分“区间统计”和“整月详情”，方案详情不展示技术分界提示条。无数据的 active 方案仍保留原有可见性。
+
+每日/周度验证表同时显示“特征基准日”“预测日”“目标日/目标周期”：特征基准日解释归属和统计范围，预测日解释信号发出时点，目标日/周期解释预测对象及验证结果。actual join、业务去重及 §5 的 `gray_target_start` 物化边界仍使用底层 `target_date`，不会随展示轴变化。例如特征基准日为 5 月 29 日、预测日为 6 月 1 日、目标日为 6 月 5 日的记录，展示在五月回测段，仍按 6 月 5 日关联实际结果；页面分类不能证明它由历史回测或自然调度产生。
+
+实现见[Dashboard 编排](../../backend/factor_lab_dashboard.py)，公共合同见[Dashboard 测试](../../tests/test_dashboard_builder.py)与[独立数据一致性对账](../../tests/test_data_consistency_gate.py)。
 
 前端展示的部署时间只能来自 active `t_scheme_registry.deployed_at`。`deployed_at` 的业务语义是该注册业务方案激活并进入业务可见状态的日期，不是定时任务已生产挂载的证据；缺失时说明 registry 数据不完整，后端 API 和前端都必须 fail-closed。生产调度挂载必须另由对应 installed plist、`launchctl` loaded state 和任务日志共同证明。禁止 hardcode 默认部署日、scheme_id override 或在前端用灰度起点/正式实盘起点替代部署时间。
 

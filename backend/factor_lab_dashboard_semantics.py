@@ -25,9 +25,9 @@ from shared.task_specs import (
 )
 
 
-DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v6"
+DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v7"
 FACTOR_LAB_HISTORY_START_DATE = "2025-01-01"
-FACTOR_LAB_LIVE_TARGET_START_DATE = date(2026, 6, 1)
+FACTOR_LAB_LIVE_FEATURE_START_DATE = date(2026, 6, 1)
 DETAIL_ROW_FIELDS = (
     "source",
     "predict_date",
@@ -51,6 +51,7 @@ MONTHLY_ROW_FIELDS = (
     "up_true_positive",
     "down_true_positive",
 )
+RANGE_ROW_FIELDS = ("source", *MONTHLY_ROW_FIELDS[2:])
 VALID_TASK_TYPES = set(ALLOWED_TASK_TYPES)
 DAILY_TARGET_RULE = "target_date_yield_vs_feature_date_yield"
 LIVE_ACTUAL_SELECTORS = {
@@ -114,8 +115,11 @@ TOP_LEVEL_FIELDS = {
     "snapshot_id",
     "generated_at",
     "display_until",
-    "live_target_start_date",
+    "live_feature_start_date",
     "monthly_row_fields",
+    "range_row_fields",
+    "feature_date_bounds",
+    "selected_feature_range",
     "target_labels",
     "schemes",
 }
@@ -125,7 +129,7 @@ DETAIL_TOP_LEVEL_FIELDS = {
     "snapshot_id",
     "generated_at",
     "display_until",
-    "live_target_start_date",
+    "live_feature_start_date",
     "scheme_id",
     "month",
     "source",
@@ -147,6 +151,7 @@ SCHEME_FIELDS = {
     "status",
     "deployed_at",
     "monthly_rows",
+    "range_rows",
     "backtest",
 }
 BACKTEST_FIELDS = {
@@ -215,7 +220,7 @@ class MonthlySummaryAccumulator:
             self.down_true_positive += 1
 
     def compact(self, *, month: str, source: str) -> list[Any]:
-        """按 Dashboard V6 固定列顺序输出。"""
+        """按 Dashboard V7 固定列顺序输出。"""
         return [
             month,
             source,
@@ -233,17 +238,17 @@ class MonthlySummaryAccumulator:
         ]
 
 
-def is_factor_lab_history_visible(predict_date: str) -> bool:
+def is_factor_lab_history_visible(feature_date: str) -> bool:
     """判断信号是否位于当前因子实验室展示窗口。"""
-    return predict_date >= FACTOR_LAB_HISTORY_START_DATE
+    return feature_date >= FACTOR_LAB_HISTORY_START_DATE
 
 
-def dashboard_result_source(target_date: Any) -> str:
-    """只按目标日期返回公开的回测/实盘业务口径。"""
-    value = _required_iso_date(target_date, field="target_date")
+def dashboard_result_source(feature_date: Any) -> str:
+    """只按特征基准日返回公开的回测/实盘展示口径。"""
+    value = _required_iso_date(feature_date, field="feature_date")
     return (
         "live"
-        if date.fromisoformat(value) >= FACTOR_LAB_LIVE_TARGET_START_DATE
+        if date.fromisoformat(value) >= FACTOR_LAB_LIVE_FEATURE_START_DATE
         else "backtest"
     )
 
@@ -600,7 +605,7 @@ def _safe_actual_locator_date(value: str) -> str:
 
 
 def compact_detail_row(row: Mapping[str, Any], *, source: str) -> list[Any]:
-    """把按需展示明细编码为 V6 固定六列数组。"""
+    """把按需展示明细编码为 V7 固定六列数组。"""
     if source not in {"live", "backtest"}:
         raise DashboardDataError(f"unknown dashboard detail source: {source}")
 
@@ -619,7 +624,7 @@ def compact_detail_row(row: Mapping[str, Any], *, source: str) -> list[Any]:
 
 
 def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
-    """校验 Dashboard V6 summary 或 detail 的精确公开合同。"""
+    """校验 Dashboard V7 summary 或 detail 的精确公开合同。"""
     if not isinstance(payload, Mapping):
         raise DashboardDataError("dashboard payload must be an object")
     if payload.get("schema_version") != DASHBOARD_SCHEMA_VERSION:
@@ -641,7 +646,25 @@ def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
         raise DashboardDataError(
             "dashboard monthly_row_fields do not match MONTHLY_ROW_FIELDS"
         )
-    _validate_live_target_start_date(payload)
+    if payload.get("range_row_fields") != list(RANGE_ROW_FIELDS):
+        raise DashboardDataError("dashboard range_row_fields are invalid")
+    bounds = payload.get("feature_date_bounds")
+    if not isinstance(bounds, Mapping) or set(bounds) != {"all", "backtest", "live"}:
+        raise DashboardDataError("dashboard feature_date_bounds are invalid")
+    for source, value in bounds.items():
+        _validate_date_range(value, context=f"feature_date_bounds.{source}")
+        if value is not None and source != "all":
+            if any(dashboard_result_source(day) != source for day in value.values()):
+                raise DashboardDataError("dashboard feature_date_bounds source is invalid")
+    available = [value for source, value in bounds.items() if source != "all" and value]
+    expected_all = None if not available else {
+        "start_date": min(value["start_date"] for value in available),
+        "end_date": max(value["end_date"] for value in available),
+    }
+    if bounds["all"] != expected_all:
+        raise DashboardDataError("dashboard feature_date_bounds union is invalid")
+    _validate_date_range(payload.get("selected_feature_range"), context="selected_feature_range")
+    _validate_live_feature_start_date(payload)
 
     _required_snapshot_id(payload.get("snapshot_id"))
     _required_aware_iso_datetime(payload.get("generated_at"))
@@ -744,9 +767,29 @@ def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
             )
         _validate_monthly_rows(
             scheme.get("monthly_rows"),
-            task_type=str(task_type),
             context=f"dashboard scheme[{scheme_index}].monthly_rows",
         )
+
+        _validate_range_rows(
+            scheme.get("range_rows"),
+            context=f"dashboard scheme[{scheme_index}].range_rows",
+        )
+
+        full_counts: dict[str, list[int]] = {}
+        for monthly_row in scheme["monthly_rows"]:
+            totals = full_counts.setdefault(monthly_row[1], [0] * len(RANGE_ROW_FIELDS[1:]))
+            for index, count in enumerate(monthly_row[2:]):
+                totals[index] += count
+        for range_row in scheme["range_rows"]:
+            totals = full_counts.get(range_row[0])
+            if totals is None or any(
+                count > total for count, total in zip(range_row[1:], totals, strict=True)
+            ):
+                raise DashboardDataError("dashboard range rows exceed full history")
+        if payload["selected_feature_range"] is None and scheme["range_rows"] != [
+            [source, *counts] for source, counts in sorted(full_counts.items())
+        ]:
+            raise DashboardDataError("dashboard unfiltered range rows differ from full history")
 
         backtest = scheme["backtest"]
         if backtest is None:
@@ -791,7 +834,7 @@ def _validate_detail_payload(payload: Mapping[str, Any]) -> None:
     _required_snapshot_id(payload.get("snapshot_id"))
     _required_aware_iso_datetime(payload.get("generated_at"))
     _required_payload_iso_date(payload.get("display_until"), field="display_until")
-    _validate_live_target_start_date(payload)
+    _validate_live_feature_start_date(payload)
     _required_string(payload.get("scheme_id"), field="detail scheme_id")
     _required_month(payload.get("month"), field="detail month")
     source = payload.get("source")
@@ -801,22 +844,22 @@ def _validate_detail_payload(payload: Mapping[str, Any]) -> None:
         payload.get("rows"),
         source=None if source == "all" else str(source),
         context="dashboard detail rows",
+        month=str(payload["month"]),
     )
 
 
-def _validate_live_target_start_date(payload: Mapping[str, Any]) -> None:
+def _validate_live_feature_start_date(payload: Mapping[str, Any]) -> None:
     value = _required_payload_iso_date(
-        payload.get("live_target_start_date"),
-        field="live_target_start_date",
+        payload.get("live_feature_start_date"),
+        field="live_feature_start_date",
     )
-    if value != FACTOR_LAB_LIVE_TARGET_START_DATE.isoformat():
-        raise DashboardDataError("dashboard live_target_start_date is invalid")
+    if value != FACTOR_LAB_LIVE_FEATURE_START_DATE.isoformat():
+        raise DashboardDataError("dashboard live_feature_start_date is invalid")
 
 
 def _validate_monthly_rows(
     value: Any,
     *,
-    task_type: str,
     context: str,
 ) -> None:
     if not isinstance(value, list):
@@ -824,14 +867,7 @@ def _validate_monthly_rows(
     previous: tuple[str, int] | None = None
     seen: set[tuple[str, str]] = set()
     source_rank = {"backtest": 0, "live": 1}
-    live_start = FACTOR_LAB_LIVE_TARGET_START_DATE
-    if task_type == "monthly_average":
-        live_start = date(
-            live_start.year + (1 if live_start.month == 12 else 0),
-            1 if live_start.month == 12 else live_start.month + 1,
-            1,
-        )
-    live_start_month = live_start.strftime("%Y-%m")
+    live_start_month = FACTOR_LAB_LIVE_FEATURE_START_DATE.strftime("%Y-%m")
     for index, row in enumerate(value):
         if not isinstance(row, list) or len(row) != len(MONTHLY_ROW_FIELDS):
             raise DashboardDataError(f"{context}[{index}] has invalid row width")
@@ -843,7 +879,7 @@ def _validate_monthly_rows(
         expected_source = "live" if month >= live_start_month else "backtest"
         if source != expected_source:
             raise DashboardDataError(
-                f"{context}[{index}].source does not match target_date policy"
+                f"{context}[{index}].source does not match feature_date policy"
             )
         key = (month, str(source))
         if key in seen:
@@ -853,27 +889,60 @@ def _validate_monthly_rows(
         if previous is not None and sort_key < previous:
             raise DashboardDataError(f"{context} is not canonically sorted")
         previous = sort_key
-        counts = {
-            field: _required_nonnegative_integer(
-                detail[field], field=f"{context}[{index}].{field}"
-            )
-            for field in MONTHLY_ROW_FIELDS[2:]
-        }
-        if counts["metric_samples"] > counts["samples"]:
-            raise DashboardDataError(f"{context}[{index}] counts are inconsistent")
-        if counts["correct"] > counts["metric_samples"]:
-            raise DashboardDataError(f"{context}[{index}] counts are inconsistent")
-        if (
-            counts["predicted_up"]
-            + counts["predicted_down"]
-            + counts["predicted_flat"]
-            != counts["samples"]
-            or counts["actual_up"]
-            + counts["actual_down"]
-            + counts["actual_flat"]
-            != counts["samples"]
-        ):
-            raise DashboardDataError(f"{context}[{index}] distributions are inconsistent")
+        _validate_counts(detail, context=f"{context}[{index}]")
+
+
+def _validate_date_range(value: Any, *, context: str) -> None:
+    """校验规范日期闭区间或无数据状态。"""
+    if value is None:
+        return
+    if not isinstance(value, Mapping) or set(value) != {"start_date", "end_date"}:
+        raise DashboardDataError(f"dashboard {context} is invalid")
+    for field in ("start_date", "end_date"):
+        _required_payload_iso_date(value[field], field=f"{context}.{field}")
+    if value["start_date"] > value["end_date"]:
+        raise DashboardDataError(f"dashboard {context} is reversed")
+
+
+def _validate_range_rows(value: Any, *, context: str) -> None:
+    """校验区间计数，允许纯待验证来源保留零计数行。"""
+    if not isinstance(value, list):
+        raise DashboardDataError(f"{context} must be a list")
+    previous = ""
+    for index, row in enumerate(value):
+        if not isinstance(row, list) or len(row) != len(RANGE_ROW_FIELDS):
+            raise DashboardDataError(f"{context}[{index}] has invalid row width")
+        detail = dict(zip(RANGE_ROW_FIELDS, row, strict=True))
+        source = detail["source"]
+        if source not in {"backtest", "live"} or source <= previous:
+            raise DashboardDataError(f"{context}[{index}].source is invalid or duplicated")
+        previous = source
+        _validate_counts(detail, context=f"{context}[{index}]")
+
+
+def _validate_counts(detail: Mapping[str, Any], *, context: str) -> None:
+    """月份与区间共用已验证计数不变量。"""
+    counts = {
+        field: _required_nonnegative_integer(
+            detail[field], field=f"{context}.{field}"
+        )
+        for field in MONTHLY_ROW_FIELDS[2:]
+    }
+    if counts["metric_samples"] > counts["samples"]:
+        raise DashboardDataError(f"{context} counts are inconsistent")
+    if counts["correct"] > counts["metric_samples"]:
+        raise DashboardDataError(f"{context} counts are inconsistent")
+    if (
+        counts["predicted_up"]
+        + counts["predicted_down"]
+        + counts["predicted_flat"]
+        != counts["samples"]
+        or counts["actual_up"]
+        + counts["actual_down"]
+        + counts["actual_flat"]
+        != counts["samples"]
+    ):
+        raise DashboardDataError(f"{context} distributions are inconsistent")
 
 
 def _validate_compact_rows(
@@ -881,11 +950,12 @@ def _validate_compact_rows(
     *,
     source: str | None,
     context: str,
+    month: str,
 ) -> None:
     if not isinstance(rows, list):
         raise DashboardDataError(f"{context} must be a list")
     seen_points: set[tuple[str, str]] = set()
-    previous_sort_key: tuple[int, str, str] | None = None
+    previous_sort_key: tuple[int, str, str, str] | None = None
     source_rank = {"backtest": 0, "live": 1}
     for row_index, row in enumerate(rows):
         if not isinstance(row, list) or len(row) != len(DETAIL_ROW_FIELDS):
@@ -903,11 +973,13 @@ def _validate_compact_rows(
                     f"{context}[{row_index}].{field} must be an ISO date string"
                 )
         detail = dict(zip(DETAIL_ROW_FIELDS, row, strict=True))
-        if row_source != dashboard_result_source(detail["target_date"]):
+        if row_source != dashboard_result_source(detail["feature_date"]):
             raise DashboardDataError(
-                f"{context}[{row_index}].source does not match target_date policy"
+                f"{context}[{row_index}].source does not match feature_date policy"
             )
         compact_detail_row(detail, source=str(row_source))
+        if str(detail["feature_date"])[:7] != month:
+            raise DashboardDataError(f"{context}[{row_index}] escaped feature month")
         target_date = str(detail["target_date"])
         point = (str(row_source), target_date)
         if point in seen_points:
@@ -917,6 +989,7 @@ def _validate_compact_rows(
         seen_points.add(point)
         sort_key = (
             source_rank[str(row_source)],
+            str(detail["feature_date"]),
             target_date,
             str(detail["predict_date"]),
         )

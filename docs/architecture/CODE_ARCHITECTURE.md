@@ -123,8 +123,8 @@ Dashboard 只从产品事实表聚合逐点结果。
        ├─ 每个请求直接以 dashboard 专用只读 Engine 建立当前视图
        ├─ 同一 connection / repeatable-read readonly transaction
        ├─ factor_lab_dashboard_queries：Registry、产品事实、Actual 与回测元数据查询
-       ├─ factor_lab_dashboard_semantics：canonical 选择、Actual 冲突校验与月度计数
-       └─ factor_lab_dashboard：Summary/Detail 编排及 V6 gzip/identity 表示
+       ├─ factor_lab_dashboard_semantics：canonical 选择、Actual 冲突校验与月度/日级区间计数
+       └─ factor_lab_dashboard：Summary/Detail 编排及 V7 gzip/identity 表示
 
 ```
 

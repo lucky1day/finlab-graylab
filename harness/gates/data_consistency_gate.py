@@ -66,7 +66,9 @@ from shared.week_calendar_normalizer import normalize_week_calendar_rows
 
 
 HISTORY_START_DATE = "2025-01-01"
-LIVE_TARGET_START_DATE = date(2026, 6, 1)
+# 运行证据的取数边界独立于 Dashboard 展示分区。
+LIVE_RUN_EVIDENCE_START_DATE = date(2026, 6, 1)
+LIVE_FEATURE_START_DATE = date(2026, 6, 1)
 MAX_RESPONSE_BYTES = 1_500_000
 SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -1929,7 +1931,7 @@ def validate_and_join_facts(
             ),
         )
 
-        if predict_date < HISTORY_START_DATE or predict_date > display_until:
+        if feature_date < HISTORY_START_DATE or predict_date > display_until:
             continue
         task_type = str(registry["task_type"])
         actual_kind, target_rule = _actual_selector(task_type)
@@ -2041,7 +2043,7 @@ def build_representation_facts(
             field="backtest_actual_direction",
             allow_none=True,
         )
-        if predict_date < HISTORY_START_DATE or predict_date > display_until:
+        if feature_date < HISTORY_START_DATE or predict_date > display_until:
             continue
         task_type = str(registry["task_type"])
         actual_kind, target_rule = _actual_selector(task_type)
@@ -2222,7 +2224,7 @@ def aggregate_display_facts(
     """不调用 Dashboard builder，独立形成公开月份计数。"""
     groups: dict[tuple[str, str, str], list[ConsistencyFact]] = defaultdict(list)
     for fact in facts:
-        groups[(fact.scheme_id, _display_month(fact), _source(fact.target_date))].append(
+        groups[(fact.scheme_id, _display_month(fact), _source(fact.feature_date))].append(
             fact
         )
 
@@ -2268,7 +2270,7 @@ def _detail_rows_by_partition(
 ) -> dict[tuple[str, str, str], list[list[Any]]]:
     result: dict[tuple[str, str, str], list[list[Any]]] = defaultdict(list)
     for fact in facts:
-        source = _source(fact.target_date)
+        source = _source(fact.feature_date)
         result[(fact.scheme_id, _display_month(fact), source)].append(
             [
                 source,
@@ -2280,7 +2282,7 @@ def _detail_rows_by_partition(
             ]
         )
     for rows in result.values():
-        rows.sort(key=lambda row: (str(row[3]), str(row[1])))
+        rows.sort(key=lambda row: (str(row[2]), str(row[3]), str(row[1])))
     return dict(result)
 
 
@@ -2293,6 +2295,10 @@ def _compare_summary(
     errors: list[str] = []
     if payload.get("representation") != "summary":
         return ["Dashboard Summary representation is invalid"]
+    if payload.get("selected_feature_range") is not None:
+        errors.append("Dashboard unfiltered Summary unexpectedly has a selected range")
+    if payload.get("range_row_fields") != ["source", *MONTHLY_ROW_FIELDS[2:]]:
+        errors.append("Dashboard Summary range_row_fields mismatch")
     if payload.get("monthly_row_fields") != list(MONTHLY_ROW_FIELDS):
         errors.append("Dashboard Summary monthly_row_fields mismatch")
     schemes = payload.get("schemes")
@@ -2310,6 +2316,16 @@ def _compare_summary(
                 f"count={len(matches)}"
             )
             continue
+        expected_sources: dict[str, list[int]] = {}
+        for monthly in expected.get(scheme_id, []):
+            counts = expected_sources.setdefault(monthly[1], [0] * (len(MONTHLY_ROW_FIELDS) - 2))
+            for index, count in enumerate(monthly[2:]):
+                counts[index] += count
+        expected_range = [[source, *counts] for source, counts in sorted(expected_sources.items())]
+        if matches[0].get("range_rows") != expected_range:
+            errors.append(
+                f"Dashboard Summary range rows mismatch: scheme_id={scheme_id}"
+            )
         actual_rows = matches[0].get("monthly_rows")
         if actual_rows != expected.get(scheme_id, []):
             errors.append(
@@ -3222,7 +3238,7 @@ def _read_authoritative_live_run_ids(
                 {
                     "scheme_ids": list(scheme_chunk),
                     "live_phases": sorted(LIVE_PREDICTION_PHASES),
-                    "live_start": LIVE_TARGET_START_DATE.isoformat(),
+                    "live_start": LIVE_RUN_EVIDENCE_START_DATE.isoformat(),
                 },
                 deadline=deadline,
                 monotonic=monotonic,
@@ -3389,12 +3405,7 @@ def _fetch_json_object(
 
 
 def _display_month(fact: ConsistencyFact) -> str:
-    target = date.fromisoformat(fact.target_date)
-    if fact.task_type != "monthly_average":
-        return f"{target.year:04d}-{target.month:02d}"
-    if target.month == 12:
-        return f"{target.year + 1:04d}-01"
-    return f"{target.year:04d}-{target.month + 1:02d}"
+    return fact.feature_date[:7]
 
 
 def _actual_selector(task_type: str) -> tuple[str, str]:
@@ -3425,7 +3436,7 @@ def _clock_display_date(clock: Callable[[], datetime]) -> str:
 
 
 def _source(value: str) -> str:
-    return "live" if date.fromisoformat(value) >= LIVE_TARGET_START_DATE else "backtest"
+    return "live" if date.fromisoformat(value) >= LIVE_FEATURE_START_DATE else "backtest"
 
 
 def _required_text(value: Any, *, field: str) -> str:

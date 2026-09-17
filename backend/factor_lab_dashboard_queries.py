@@ -569,7 +569,7 @@ def read_product_predictions(
     connection: Connection,
     registry_rows: list[Mapping[str, Any]],
     *,
-    target_date_range: tuple[str, str] | None = None,
+    feature_date_range: tuple[str, str] | None = None,
     replacement_plan: DashboardHistoryReplacementPlan | None = None,
     cap: int = MAX_PRODUCT_PREDICTION_SOURCE_ROWS,
 ) -> list[Mapping[str, Any]]:
@@ -584,14 +584,14 @@ def read_product_predictions(
         else "1 = 0"
     )
     date_filter = (
-        " AND target_date >= :target_date_from"
-        " AND target_date < :target_date_before"
-        if target_date_range is not None
+        " AND feature_date >= :feature_date_from"
+        " AND feature_date < :feature_date_before"
+        if feature_date_range is not None
         else ""
     )
-    if target_date_range is not None:
-        params["target_date_from"], params["target_date_before"] = (
-            target_date_range
+    if feature_date_range is not None:
+        params["feature_date_from"], params["feature_date_before"] = (
+            feature_date_range
         )
     excluded_ids = (
         replacement_plan.excluded_product_ids
@@ -627,7 +627,7 @@ def read_product_predictions(
     projected_rows = _replacement_rows_in_range(
         replacement_plan,
         registry_rows=registry_rows,
-        target_date_range=target_date_range,
+        feature_date_range=feature_date_range,
     )
     if len(rows) + len(projected_rows) > cap:
         raise DashboardDataError(
@@ -718,7 +718,7 @@ def iter_summary_product_predictions(
             _replacement_rows_in_range(
                 replacement_plan,
                 registry_rows=registry_rows,
-                target_date_range=None,
+                feature_date_range=None,
             ),
             key=_summary_prediction_sort_key,
         )
@@ -803,7 +803,7 @@ def _replacement_rows_in_range(
     replacement_plan: DashboardHistoryReplacementPlan | None,
     *,
     registry_rows: list[Mapping[str, Any]],
-    target_date_range: tuple[str, str] | None,
+    feature_date_range: tuple[str, str] | None,
 ) -> list[dict[str, Any]]:
     if replacement_plan is None:
         return []
@@ -815,11 +815,11 @@ def _replacement_rows_in_range(
             str(row["target_tenor"]),
             int(row["horizon"]),
         )
-        target_date = str(row["target_date"])
+        feature_date = str(row["feature_date"])
         if scope not in scopes:
             continue
-        if target_date_range is not None and not (
-            target_date_range[0] <= target_date < target_date_range[1]
+        if feature_date_range is not None and not (
+            feature_date_range[0] <= feature_date < feature_date_range[1]
         ):
             continue
         result.append(dict(row))
