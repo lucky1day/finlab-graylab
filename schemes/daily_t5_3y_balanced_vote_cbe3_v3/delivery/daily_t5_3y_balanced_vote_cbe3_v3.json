@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "daily_t5_3y_balanced_vote_cbe3_v3",
+  "name": "ADAPTIVE_VOTE_CBE3",
+  "owner": "liwei",
+  "description": "使用五条冻结收益率曲线反转信号，按各信号最近已成熟T+5标签的固定窗口表现自适应定向，以五成员quorum=1投票输出第5个后续真实交易日方向。",
+  "algorithm_version": "3.0.0",
+  "target_tenor": "3Y",
+  "task_type": "T+5",
+  "horizon": 5,
+  "target_rule": "target_date_yield_vs_feature_date_yield"
+}

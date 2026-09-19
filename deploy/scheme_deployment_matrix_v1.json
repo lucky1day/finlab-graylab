@@ -5,6 +5,10 @@
     "aliyun-gray"
   ],
   "schemes": {
+    "daily_t5_10y_balanced_vote_143b_v3": ["mac3-production", "aliyun-gray"],
+    "daily_t5_3y_balanced_vote_cbe3_v3": ["mac3-production", "aliyun-gray"],
+    "weekly_10y_full_action_vote_873e_v3": ["mac3-production", "aliyun-gray"],
+    "weekly_3y_full_action_vote_a7b5_v3": ["mac3-production", "aliyun-gray"],
     "weekly_5y_full_action_lowcorr01_v3": ["mac3-production", "aliyun-gray"],
     "weekly_5y_full_action_lowcorr02_v3": ["mac3-production", "aliyun-gray"],
     "weekly_5y_full_action_lowcorr03_v3": ["mac3-production", "aliyun-gray"],

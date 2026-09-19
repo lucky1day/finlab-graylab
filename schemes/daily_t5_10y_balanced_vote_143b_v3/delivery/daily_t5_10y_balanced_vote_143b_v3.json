@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "daily_t5_10y_balanced_vote_143b_v3",
+  "name": "ADAPTIVE_VOTE_143B",
+  "owner": "liwei",
+  "description": "使用期限结构、3年收益率趋势及DR007五条冻结信号，按最近已成熟T+5标签的固定窗口表现自适应定向，以五成员quorum=1投票输出第5个后续真实交易日方向。",
+  "algorithm_version": "3.0.0",
+  "target_tenor": "10Y",
+  "task_type": "T+5",
+  "horizon": 5,
+  "target_rule": "target_date_yield_vs_feature_date_yield"
+}

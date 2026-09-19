@@ -13,7 +13,6 @@
 - [requests.sample.csv](samples/requests.sample.csv)
 - [prediction.sample.json](samples/prediction.sample.json)
 - [backtest.sample.csv](samples/backtest.sample.csv)
-- [performance.sample.json](samples/performance.sample.json)
 
 ## 权威来源
 

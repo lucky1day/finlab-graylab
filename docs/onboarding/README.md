@@ -10,7 +10,7 @@
 
 ## 按场景进入
 
-Blackbox 上游算法人员按[交付 SOP](../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)准备两文件与自测材料；平台人员按下表选择操作和验收入口。
+Blackbox 上游算法人员按[交付 SOP](../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)完成自测并交付两文件；平台人员按下表选择操作和验收入口。
 
 | 场景 | 操作与验收去向 |
 |---|---|
