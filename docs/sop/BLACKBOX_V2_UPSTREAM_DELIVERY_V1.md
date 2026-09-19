@@ -19,7 +19,6 @@ samples/
   requests.sample.csv
   prediction.sample.json
   backtest.sample.csv
-  performance.sample.json
   daily_output.sample.csv
   weekly_output.sample.csv
   monthly_output.sample.csv
@@ -47,7 +46,6 @@ samples/
 - 一个方案只对应一个 `target_tenor + task_type + horizon` 组合。
 - 不得额外交付依赖文件、模型文件、辅助模块、数据、凭据或项目目录。
 - 训练逻辑、模型结构和固定参数必须全部包含在唯一 `.py` 文件中。
-- 自测凭证 `{scheme_id}.performance.json` 与两文件目录并列交接，不能放进两文件目录。
 
 两文件只描述和实现算法，不得包含非算法控制字段。
 
@@ -100,7 +98,7 @@ target_rule
 
 ## 3. 运行环境与代码边界
 
-下表是 Runtime Profile 的执行上限；交付性能验收还须满足第 8 节更严格的预算，两者不能混用。
+下表是 Runtime Profile 的执行上限；上游性能自测还须满足第 8 节更严格的预算，两者不能混用。
 
 | 项目 | 版本或上限 |
 |---|---|
@@ -315,7 +313,8 @@ predicted_direction
 
 ## 8. 交付前自测
 
-使用冻结运行环境和同一份真实 DataBridge 五文件数据，至少完成：
+算法正确性、确定性、cutoff 隔离与性能由上游负责；平台不要求或接收自测报告、性能回执作为入库材料。
+上游使用冻结运行环境和同一份真实 DataBridge 五文件数据，至少完成：
 
 1. 单条 `predict` 连续运行三次。
 2. 时间升序的 100 条 `backtest` 连续运行三次；正式区间不足 100 条时使用全部 Request。
@@ -325,7 +324,7 @@ predicted_direction
 6. 在每类非法输入下验证非零退出、stderr 有错误、stdout 为空且没有 Output。
 7. 在消费文件截止键之后追加合法未来行，当前 Request 结果保持不变。
 
-性能准入：
+上游性能自测预算：
 
 | 项目 | 上限 |
 |---|---:|
@@ -336,13 +335,8 @@ predicted_direction
 
 7200 秒是显式传入的离线安全预算，不是每日预测 SLA；更短 caller deadline 仍生效。它不修改第 3 节 stateless Profile 默认值，stateful backtest 另有不超过 7200 秒的保护上限。优化耗时不得增加旁路模型缓存、改变算法语义或放宽截止/资源/安全要求。
 
-在两文件目录外提供 `{scheme_id}.performance.json`，可复制
-`samples/performance.sample.json` 后替换为真实值。必须记录方案身份、测试环境、五文件 SHA-256、
-Request 数与日期边界、三次实际耗时、峰值 RSS、首中末自证样本和 `fallback_used=false`。不得使用
-脱敏 sample 代替真实输入做性能证明。
-
 ## 9. 最终检查
 
 交付前确认第 1—7 节合同及第 8 节真实输入自测均通过；有失败项时保留错误与输入身份，修正后重新自测，不以样例运行或部分成功替代。
 
-正式方案目录只包含同名 `{scheme_id}.py + {scheme_id}.json`；真实性能凭证在目录外并列交接。最后检查没有把自测数据、凭据、模型或临时文件带入交付目录。
+正式方案目录只包含同名 `{scheme_id}.py + {scheme_id}.json`。最后检查没有把自测数据、凭据、模型或临时文件带入交付目录。

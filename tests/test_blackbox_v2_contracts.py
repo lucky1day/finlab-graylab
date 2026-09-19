@@ -305,9 +305,6 @@ def test_upstream_delivery_samples_match_the_machine_contract() -> None:
         samples / "backtest.sample.csv",
         requests,
     )
-    performance = json.loads(
-        (samples / "performance.sample.json").read_text(encoding="utf-8")
-    )
     data_files = (
         "daily_output.csv",
         "weekly_output.csv",
@@ -338,6 +335,4 @@ def test_upstream_delivery_samples_match_the_machine_contract() -> None:
     assert [result.request_id for result in results] == [
         item.request_id for item in requests
     ]
-    assert performance["scheme_id"] == metadata.scheme_id
-    assert performance["batch_self_check"]["fallback_used"] is False
     assert dataset.files["daily_output.csv"].rows == 4
