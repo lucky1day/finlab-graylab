@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最近运行核验**：2026-09-17。以下是已核验基线，不替代实时现场检查。
+**最近运行核验**：2026-09-20。以下是已核验基线，不替代实时现场检查。
 
 固定主机、SSH/本地转发、生产路径和只读命令见[双机部署与访问入口](operations/DEPLOYMENT_ACCESS.md)。
 
@@ -13,11 +13,11 @@
 | 项目 | ECS 独立灰度 | Mac3 生产 |
 |---|---|---|
 | 迁移结果 | 17 个原方案、21 个 target 使用 Blackbox | 同左 |
-| 当前 active 执行身份 | 93 个 Blackbox base | 93 个 Blackbox base + 9 个 W4 Native base |
-| Dashboard | 97 个 target | 106 个 target |
+| 当前 active 执行身份 | 97 个 Blackbox base | 97 个 Blackbox base + 9 个 W4 Native base |
+| Dashboard | 101 个 target | 110 个 target |
 | 调度控制面 | systemd one-shot/timer | launchd + installed plist |
-| current release | `759048c4eaf90cfac04067d613b4e219013472a7` | `759048c4eaf90cfac04067d613b4e219013472a7` |
-| previous release | `056534b2d846d0091e74495f0408cc108bc3f60c` | `056534b2d846d0091e74495f0408cc108bc3f60c` |
+| current release | `1073d68aa589d4278320ff0d43661403f2a1c8bb` | `1073d68aa589d4278320ff0d43661403f2a1c8bb` |
+| previous release | `759048c4eaf90cfac04067d613b4e219013472a7` | `759048c4eaf90cfac04067d613b4e219013472a7` |
 | schema | 025 APPLIED | 025 APPLIED |
 
 - 2026-09-17 按用户授权，Mac3 经正式单日 `signal-gap-fill` 补齐三套 `cgb_a4_fundseason_*_hl18`
@@ -111,6 +111,49 @@
   实时提交以 Git 引用为准，发布以目标机 manifest、current/previous 和进程 cwd 为准。
 - 2026-09-13 文档规整版本已按 ECS → Mac3 同包晋级，仅刷新两机 Backend。Registry、exact、业务条数、ready 输入、Dashboard 读模型与生产名单均未改变；两机健康与首页正常，Mac3 公网首页与 release 字节一致，控制面保持原状。未运行算法、写业务事实或跨越正式触发窗口；自然观察仍待 TODO。证据见[同步回执](/Users/macstudio0/bond-factor-lab-runtime/releases/docs-guidance-20260913/delivery-report.json)与[索引](/Users/macstudio0/bond-factor-lab-runtime/releases/docs-guidance-20260913/README.md)。
 - 当前 release 包含下述平台清理与收盘候选修复；[发布验收](/Users/macstudio0/bond-factor-lab-runtime/releases/platform-cleanup-20260913/delivery-report.json)及[证据索引](/Users/macstudio0/bond-factor-lab-runtime/releases/platform-cleanup-20260913/README.md)保存双机安装、数据、输入、HTTP 和控制面读回。此前框架清理证据仍在[原核验记录](/Users/macstudio0/bond-factor-lab-runtime/releases/framework-cleanup-20260913/verification.json)。
+
+## 四套 V3 新方案交付状态
+
+2026-09-20，四套独立 Blackbox V2 新方案已按 ECS → Mac3 顺序使用同一不可变 archive 完成
+完整持久化回测、正式激活、灰度区间补齐及 release 晋级。发布提交为上表 `1073d68a`，archive
+SHA-256 为 `85f1dfd5459c1d9fa1321a9bddc541566d4dcdad91c69f1227226b76aa66ee8e`；
+[入库 PR #58](https://github.com/lucky1day/finlab-graylab/pull/58) 已集成 codex/develop，精确提交的
+[四项 CI](https://github.com/lucky1day/finlab-graylab/actions/runs/35457127763) 与独立复审通过。
+四份脚本原字节保留，Metadata 仅 owner 从 `lw` 改为 `liwei`，均未启用增量状态。
+
+| base ID | exact | ECS / Mac3 回测 run | 每机历史 / 灰度 |
+|---|---|---|---|
+| `daily_t5_3y_balanced_vote_cbe3_v3` | `20b906802d4e` | 294 / 265 | 333 / 83 |
+| `daily_t5_10y_balanced_vote_143b_v3` | `8c4223f5bc9e` | 295 / 264 | 333 / 83 |
+| `weekly_3y_full_action_vote_a7b5_v3` | `bb29fd3e64a8` | 296 / 267 | 72 / 17 |
+| `weekly_10y_full_action_vote_873e_v3` | `7255ee2dea19` | 297 / 266 | 72 / 17 |
+
+回测 predict 起点为 2025-01-01，训练输入未按展示起点裁剪；每套有 17 条月度指标。历史 target
+均早于 2026-06-01；灰度授权半开区间为 `[2026-06-01, 2026-09-25)`，按已到应发时点的完整
+Request 集补齐至 target 9 月 24 日。每机新增 810 条历史、200 条 `gray_live`，共 1,010 条
+产品事实；三日期、完整业务键、run 引用、历史/灰度零重叠和应有点零缺口均核验通过。
+
+ECS 使用本机 `full-20260919-063336-5a4ef586fcda` / `snapshot-eaeb49d4dd7477f34aa1d542`；Mac3 使用
+`full-20260919-063120-01160051963d` / `snapshot-919d2f6fdd306129e212fe49`。两机分别计算，原有
+11 张业务表旧事实逐行摘要、四类 Actual 和九个生产标记均不变，W4 仍仅保留 Mac3 既有范围。
+两端实际 Backend cwd、health、schema 025、四套调度资格通过；ECS 五个 timer 保持
+loaded/active/enabled，Mac3 七项 installed/loaded 配置无漂移。仅刷新 Backend，未修改调度。
+
+两机本机 Dashboard/DataConsistency 均通过，各覆盖 84 次详情对账、1,010 条事实，10 条 Actual
+pending 且无成熟 Actual 缺失。Mac3 公网入口专项检查通过：首页和全部同源静态资源的 GET/HEAD、
+MIME、版本摘要、缓存、认证 Dashboard、匿名 401 与精确拒绝路径均正常，临时会话已退出。
+另行通过公网执行的两轮全量 DataConsistency 展示
+对账均因 TLS `UNEXPECTED_EOF_WHILE_READING` 失败；一次复核在登录握手阶段同样失败。原失败
+回执保留，未修改网络/代理/认证配置；该额外全量公网对账及连接可靠性仍待复核。浏览器视觉刷新也未完成：
+Computer Use 工具因当前 URL 限制终止会话，已停止交互；HTTP 检查不代替视觉验收。首次自然窗口为日频 9 月 21 日
+07:03、周频 9 月 26 日 11:30 Asia/Shanghai，八个主机/方案组合仍待真实 `scheduled_live`
+证据，见 [TODO](TODO.md#四套-v3-新方案自然观察与页面验收)。
+
+原件、最终摘要、输入绑定、回测/激活/补齐、产品及控制面读回、初次检查入口使用错误与恢复边界
+见本机可读的[证据索引](/Users/macstudio0/bond-factor-lab-runtime/releases/four-v3-20260920/README.md)和
+[交付报告](/Users/macstudio0/bond-factor-lab-runtime/releases/four-v3-20260920/delivery-report.json)。
+ECS 原件在 `/opt/bond-factor-lab/incoming/four-v3-20260920/`，已核验回执副本位于上述本机证据的 `ecs/`。
+previous 仅提供源码恢复依据；回退链接不撤销本次数据库事实，不可用旧整库快照覆盖持续增长的数据。
 
 ## 1Y T+1 跨期限日内方案交付状态
 
