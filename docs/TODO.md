@@ -2,18 +2,37 @@
 
 **文档状态**：`CURRENT`
 
-**整理日期**：2026-09-20；以下运营事项仍需各自现场核验，不因文档整理标记完成。
+**整理日期**：2026-09-21；以下运营事项仍需各自现场核验，不因文档整理标记完成。
 
 本文只保留尚未闭环的后续事项。当前稳定事实见[当前状态](CURRENT_STATUS.md)，生产规则见
 [生产信号与调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。已完成事项通过 Git、外置材料、数据库
 与目标机 journal 追溯，不在本文维护副本。
 
+## 旧增量方案缓存恢复与信号补齐
+
+2026-09-21 九个组合缓存恢复和 39 条补缺已完成，完成证据见
+[当前状态](CURRENT_STATUS.md#旧增量方案缓存恢复与信号补齐)。本节仅保留后续未闭环项：
+
+- 修复后的 Mac3 六套、ECS 三套须在真实后续日频窗口逐主机、逐方案核验 `scheduled_live`、宿主
+  触发、本机输入、exact、prediction 与 Dashboard。当前 installed/loaded 的下一日频窗口为
+  2026-09-22 07:03 Asia/Shanghai；人工缓存验收与 39 条 `gray_live` 不算自然成功。
+- 本次范围的全历史 DataConsistency 仍未通过：旧回测缺持久化样本数依据、旧产品记录 exact 为空，
+  以及 2025-01-26 旧目标日期与现行 T+5 日历合同不符。逐机旧 run、数量和例子见
+  [维护报告](/Users/macstudio0/bond-factor-lab-runtime/releases/four-v3-20260920/state-repair-20260921/README.md)。
+  需先核对原始证据与迁移合同，单独形成处理方案；本轮未授权历史重写或删除，不伪填字段或放宽 Gate。
+- 三套 5Y AUC/IC 的周数据成熟会改变已保存周前缀；本次重建未修改算法规则，不证明长期不再复发。
+  算法修订由上游按冷/热等价合同交付后另行正式入库，不把一次重建当作此问题关闭。
+
 ## 四套 V3 新方案自然观察与页面验收
 
-- 四套身份、exact 与部署验收见[当前状态](CURRENT_STATUS.md#四套-v3-新方案交付状态)。日频首次自然
-  窗口为 2026-09-21 07:03 Asia/Shanghai，feature 2026-09-18、target 2026-09-28；周频为
-  2026-09-26 11:30，feature 2026-09-24、target 2026-09-30。按各机时钟、权威日历和真实
-  installed/loaded 再核验，不把 200 条 `gray_live` 补齐算作自然运行。
+- 四套身份、exact 与部署验收见[当前状态](CURRENT_STATUS.md#四套-v3-新方案交付状态)。截至
+  2026-09-24 凌晨，严格自然验收仍为 2/8（ECS 日频两套）；9 月 21—23 日两机日频累计
+  十二条成功 `scheduled_live`、预测、exact、本机输入及 Dashboard 均通过，无本批日频缺口。
+  Mac3 两项仍待宿主触发事件：9 月 22、23 日的统一日志查询无匹配，现存轮转日志不覆盖
+  对应 07:03 时段；须在后续自然触发后日志尚保留时取回宿主事件，不能仅凭执行器输出关闭。
+  证据见[本次观察](/Users/macstudio0/bond-factor-lab-runtime/releases/four-v3-20260920/observations/20260924/README.md)。
+- 周频四项首次窗口为 2026-09-26 11:30 Asia/Shanghai，feature 2026-09-24、target 2026-09-30，
+  尚未到期。按各机时钟、权威日历和真实 installed/loaded 再核验，不把 `gray_live` 补齐算作自然运行。
 - 逐主机、逐方案只读核对触发日志、成功 `scheduled_live` run、prediction、exact、实际 release、
   本机输入与 Dashboard。八个组合全部取得证据后才关闭自然观察项；不授权重跑、补缺、业务写库、
   DDL、服务重启或调度/网络/认证配置变更。

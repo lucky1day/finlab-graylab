@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最近运行核验**：2026-09-20。以下是已核验基线，不替代实时现场检查。
+**最近运行核验**：2026-09-21（本轮范围为下述旧增量方案维护）。以下是已核验基线，不替代实时现场检查。
 
 固定主机、SSH/本地转发、生产路径和只读命令见[双机部署与访问入口](operations/DEPLOYMENT_ACCESS.md)。
 
@@ -112,6 +112,34 @@
 - 2026-09-13 文档规整版本已按 ECS → Mac3 同包晋级，仅刷新两机 Backend。Registry、exact、业务条数、ready 输入、Dashboard 读模型与生产名单均未改变；两机健康与首页正常，Mac3 公网首页与 release 字节一致，控制面保持原状。未运行算法、写业务事实或跨越正式触发窗口；自然观察仍待 TODO。证据见[同步回执](/Users/macstudio0/bond-factor-lab-runtime/releases/docs-guidance-20260913/delivery-report.json)与[索引](/Users/macstudio0/bond-factor-lab-runtime/releases/docs-guidance-20260913/README.md)。
 - 当前 release 包含下述平台清理与收盘候选修复；[发布验收](/Users/macstudio0/bond-factor-lab-runtime/releases/platform-cleanup-20260913/delivery-report.json)及[证据索引](/Users/macstudio0/bond-factor-lab-runtime/releases/platform-cleanup-20260913/README.md)保存双机安装、数据、输入、HTTP 和控制面读回。此前框架清理证据仍在[原核验记录](/Users/macstudio0/bond-factor-lab-runtime/releases/framework-cleanup-20260913/verification.json)。
 
+## 旧增量方案缓存恢复与信号补齐
+
+2026-09-21 已按用户授权完成先恢复缓存、再补齐信号：Mac3 六套、ECS 三套共九个组合均经正式
+重建并通过正常增量路径验收，用时 7.11—15.62 秒。Mac3 原故障为运行环境摘要与 launchd 不符，
+差异可由 `LC_ALL=C.UTF-8` 复现；ECS 三套 5Y AUC/IC 因旧周前缀的五个字段从空值补齐为数值而
+拒绝复用。逐套身份及原因见[诊断报告](/Users/macstudio0/bond-factor-lab-runtime/releases/four-v3-20260920/observations/20260921-old-state-analysis.md)。
+
+Mac3 已补齐六套各六条，预测日为 9 月 14、15、16、17、18、21 日，run `5458`—`5493`；ECS 已补齐
+三套各一条（预测日 9 月 21 日），run `6372`—`6374`。共 39 条均为 `gray_live`，完整业务键零缺口，
+三日期、exact、成功 run、本机输入与 private state 读回通过。缓存阶段两机业务新增均为零；补缺后
+各自 11 张业务表的旧事实逐行摘要、生产缓存及生产标记保持不变。19:00 Actuals 自然任务两机均
+成功且新增/变更为零。两机 current 仍为 `1073d68a`，源码摘要、实际 Backend cwd、健康与原控制面
+检查通过，未修改算法、release、调度或服务。
+
+两机 Dashboard Gate 和 Summary/Detail 展示对账通过（Mac3 126 次 / 2,502 条事实，ECS 63 次 /
+1,251 条事实）。本次范围的**全历史 DataConsistency Gate 未通过**：Mac3 六个、ECS 三个旧回测 run
+缺 `persisted_prediction_count` 依据；分别有 1,998 / 999 条旧回测产品记录 exact 为空，并定位到
+六条 / 三条 feature 2025-01-20、target 2025-01-26 的旧日期例子，现行 T+5 合同要求 target 1 月 27 日。
+这些旧事实与维护前一致；未伪填证据、改写历史或放宽校验，存量问题另列 TODO。
+
+ECS SSH 回传曾中断；读回确认前两条已成功、无在途 Writer、最后一条未启动后，仅续执行剩余一条，
+没有重复计算成功部分。原状态备份、完整回执、连接恢复与验收限制见
+[本机维护证据索引](/Users/macstudio0/bond-factor-lab-runtime/releases/four-v3-20260920/state-repair-20260921/README.md)
+和[结构化报告](/Users/macstudio0/bond-factor-lab-runtime/releases/four-v3-20260920/state-repair-20260921/completion-report.json)；
+ECS 原件在同批 incoming 目录的 `state-repair-20260921/`。九个组合修复后的自然调度仍待真实窗口核验；
+三套 AUC/IC 的周数据成熟处理未在本次修改，复发风险仍须跟踪。补缺不计作自然成功，恢复不能用旧整库
+快照覆盖持续增长事实，也不能盲目覆盖已原子发布的新状态。
+
 ## 四套 V3 新方案交付状态
 
 2026-09-20，四套独立 Blackbox V2 新方案已按 ECS → Mac3 顺序使用同一不可变 archive 完成
@@ -145,9 +173,21 @@ MIME、版本摘要、缓存、认证 Dashboard、匿名 401 与精确拒绝路�
 另行通过公网执行的两轮全量 DataConsistency 展示
 对账均因 TLS `UNEXPECTED_EOF_WHILE_READING` 失败；一次复核在登录握手阶段同样失败。原失败
 回执保留，未修改网络/代理/认证配置；该额外全量公网对账及连接可靠性仍待复核。浏览器视觉刷新也未完成：
-Computer Use 工具因当前 URL 限制终止会话，已停止交互；HTTP 检查不代替视觉验收。首次自然窗口为日频 9 月 21 日
-07:03、周频 9 月 26 日 11:30 Asia/Shanghai，八个主机/方案组合仍待真实 `scheduled_live`
-证据，见 [TODO](TODO.md#四套-v3-新方案自然观察与页面验收)。
+Computer Use 工具因当前 URL 限制终止会话，已停止交互；HTTP 检查不代替视觉验收。
+
+2026-09-24 凌晨只读复核：两机日频在 9 月 21—23 日三个窗口累计 12 条 `scheduled_live`
+run/预测均成功，较上次新增确认八条。9 月 22 日 ECS 10Y/3Y run 为 6377/6378、Mac3 为
+5499/5500；9 月 23 日分别为 6423/6424、5548/5549。三日期由各机权威日历核对，exact
+与交付一致，未发现本批日频缺口。两机本机 Dashboard/DataConsistency 再次通过，各对账
+1,016 条事实；release、实际 Backend cwd、四套 active 资格和各机三个五文件输入快照均通过。
+严格自然验收仍为 **2/8**：ECS 三个窗口均有 systemd 宿主触发、同次日志及业务记录联合证据。
+Mac3 installed/loaded、执行器日志与成功业务记录一致，但对应 launchd 宿主事件仍未取回：
+9 月 22、23 日窗口的统一日志查询均无匹配，现存轮转日志最早为 9 月 23 日 17:06，晚于
+07:03 窗口。两项保留为“待宿主触发证据”，不当作算法失败或预测缺失；须在自然触发后日志
+仍保留时取得事件证据。本轮未修改任何调度。周频四项首次窗口仍为 9 月 26 日 11:30
+Asia/Shanghai，feature 9 月 24 日、target 9 月 30 日，尚未到期。三个日频窗口不能证明长期稳定。
+详见[自然观察证据](/Users/macstudio0/bond-factor-lab-runtime/releases/four-v3-20260920/observations/20260924/README.md)
+和 [TODO](TODO.md#四套-v3-新方案自然观察与页面验收)。
 
 原件、最终摘要、输入绑定、回测/激活/补齐、产品及控制面读回、初次检查入口使用错误与恢复边界
 见本机可读的[证据索引](/Users/macstudio0/bond-factor-lab-runtime/releases/four-v3-20260920/README.md)和
