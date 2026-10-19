@@ -294,6 +294,30 @@ def test_stateful_memory_limit_env_override(
     assert runner._stateful_memory_limit_bytes(profile) == 4 * 1024**3
 
 
+def test_private_state_seed_reads_without_advancing(
+    delivery: dict,
+    tmp_path: Path,
+) -> None:
+    """只读 seed 只提供 state-input，不写回生产 state。"""
+    binding = _initialize(delivery, tmp_path)
+    canonical = _canonical(binding)
+    seed = tmp_path / "seed.state"
+    seed.write_bytes(canonical.read_bytes())
+    before = seed.read_bytes()
+
+    seeded = replace(binding, root=None, seed_state=seed)
+    records = run_blackbox_backtest(
+        **delivery,
+        requests=[_request("seeded")],
+        state=seeded,
+    )
+
+    assert records[0].extra["state_scope"] == "private"
+    assert records[0].extra["state_input_sha256"] is not None
+    assert seed.read_bytes() == before
+    assert canonical.read_bytes() == before
+
+
 @pytest.mark.parametrize("request_id", ["bad-result", "nonzero", "state-missing", "change-request-input"])
 def test_failed_initial_rebuild_does_not_create_canonical_state(
     delivery: dict, tmp_path: Path, request_id: str,

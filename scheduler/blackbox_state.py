@@ -33,6 +33,7 @@ class StateBinding:
     code_hash: str | None = None
     manifest_hash: str | None = None
     config_path: Path | None = None
+    seed_state: Path | None = None
 
     def __post_init__(self) -> None:
         for label, value in (("scheme_id", self.scheme_id),
@@ -45,6 +46,11 @@ class StateBinding:
         for value in (self.code_hash, self.manifest_hash):
             if value is not None and not re.fullmatch(r"[0-9a-f]{64}", value):
                 raise ValueError("invalid Blackbox state code/manifest hash")
+        if self.seed_state is not None:
+            if self.root is not None:
+                raise ValueError("state seed is only valid for private state")
+            if not isinstance(self.seed_state, Path) or not self.seed_state.is_absolute():
+                raise ValueError("state seed must be an absolute Path")
 
 
 def read_regular_bytes(path: Path, limit: int) -> bytes:
@@ -101,6 +107,22 @@ def _decode(content: bytes) -> tuple[dict[str, Any], bytes]:
     return header, payload
 
 
+def read_state_cutoff(path: str | Path) -> str:
+    """读取平台 state 信封内层 delivery 的 cutoff，用于只读 seed vintage 判断。"""
+    import io
+
+    import numpy as np
+
+    content = read_regular_bytes(Path(path), _MAX_ENVELOPE_BYTES)
+    _, payload = _decode(content)
+    with np.load(io.BytesIO(payload), allow_pickle=False) as archive:
+        header = json.loads(str(archive["header"].item()))
+    cutoff = str(header.get("cutoff") or "")
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", cutoff):
+        raise ValueError("Blackbox state cutoff is invalid")
+    return cutoff
+
+
 def _private_directory(path: Path) -> tuple[int, int]:
     if not path.is_absolute() or path != path.resolve(strict=False):
         raise ValueError("Blackbox state directory must be absolute and symlink-free")
@@ -154,6 +176,26 @@ class StateSession:
                     with self.input_path.open("xb") as target:
                         target.write(self._input)
                     self.input_path.chmod(0o400)
+            elif self.binding.seed_state is not None:
+                self._old = read_regular_bytes(
+                    self.binding.seed_state,
+                    _MAX_ENVELOPE_BYTES,
+                )
+                header, self._input = _decode(self._old)
+                if header["identity"] != self.identity:
+                    raise ValueError(
+                        "Blackbox seed state exact identity mismatch"
+                    )
+                if (
+                    not isinstance(header["input"], dict)
+                    or header["input"].get("schema")
+                    != self.input_identity.get("schema")
+                ):
+                    raise ValueError("Blackbox seed state input schema mismatch")
+                self.input_path = self._work_dir / "state-input.bin"
+                with self.input_path.open("xb") as target:
+                    target.write(self._input)
+                self.input_path.chmod(0o400)
             return self
         except BaseException:
             self.__exit__(None, None, None)

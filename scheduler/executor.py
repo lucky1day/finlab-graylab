@@ -20,6 +20,7 @@ from scheduler.blackbox_v2_runner import (
     RuntimeProfile,
     run_blackbox_backtest,
 )
+from scheduler.blackbox_state import read_state_cutoff
 from scheduler.discovery import SchemeConfig, blackbox_deliveries, discover_schemes
 from scheduler.process_control import (
     ProcessGroupTerminationError,
@@ -68,6 +69,7 @@ from shared.prediction_context import (
     build_monthly_live_context,
     build_weekly_live_context,
 )
+from shared.runtime_paths import resolve_runtime_state_path
 from shared.source_runtime_database import (
     SOURCE_RUNTIME_DATABASE_CONFIG_PATH_ENV,
     SOURCE_RUNTIME_DATABASE_CONFIG_ROOT_ENV,
@@ -580,6 +582,41 @@ def _blackbox_metadata(cfg: SchemeConfig) -> BlackboxMetadata:
     return deliveries[0].metadata
 
 
+def _read_only_state_seed(
+    cfg: SchemeConfig,
+    requests: Sequence[BlackboxRequest],
+) -> Path | None:
+    """选择只读 state seed；仅当全部请求 feature_date >= 内层 cutoff 时使用。"""
+    if not getattr(cfg, "incremental_state", False):
+        return None
+    try:
+        state_root = resolve_runtime_state_path(
+            relative_path="blackbox-state",
+            development_default=(
+                PROJECT_ROOT / "outputs" / "runtime" / "blackbox-state"
+            ),
+        )
+    except Exception:
+        return None
+    path = (
+        state_root
+        / str(cfg.scheme_id)
+        / f"{cfg.scheme_version}.state"
+    )
+    if not path.is_file():
+        return None
+    try:
+        cutoff = read_state_cutoff(path)
+    except Exception:
+        return None
+    if any(
+        str(getattr(request, "feature_date", "")) < cutoff
+        for request in requests
+    ):
+        return None
+    return path
+
+
 def run_blackbox_gray_replay_batch(
     cfg: SchemeConfig,
     *,
@@ -658,10 +695,24 @@ def run_blackbox_gray_replay_batch(
             "profile": effective_profile,
         }
         from scheduler.blackbox_v2_runner import state_binding_for_scheme
+        seed_state = None
         state = state_binding_for_scheme(cfg, generation_id=snapshot.generation_id)
         if state is not None:
+            seed_state = _read_only_state_seed(cfg, batch_requests)
+            if seed_state is not None:
+                state = replace(state, seed_state=seed_state)
             backtest_kwargs["state"] = state
-        records = run_blackbox_backtest(**backtest_kwargs)
+        try:
+            records = run_blackbox_backtest(**backtest_kwargs)
+        except Exception as exc:
+            if seed_state is None or "source prefix changed" not in str(exc):
+                raise
+            logger.warning(
+                "read-only state seed rejected for %s; retraining without seed",
+                cfg.scheme_id,
+            )
+            backtest_kwargs["state"] = replace(state, seed_state=None)
+            records = run_blackbox_backtest(**backtest_kwargs)
     records_by_request = _index_gray_replay_records(records, batch_requests)
     return [
         _with_gray_request_identity(
