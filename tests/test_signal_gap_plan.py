@@ -776,10 +776,95 @@ def test_preserved_legacy_native_live_row_is_valid_evidence() -> None:
 
     assert len(observed) == 1
     assert observed[0].legacy_native is True
+    assert observed[0].backtest_baseline is False
     assert observed[0].contract_error is None
-    assert "NOT (p.run_id IS NULL AND p.backtest_run_id IS NOT NULL)" in (
+    assert "LEFT JOIN t_backtest_runs br ON br.id = p.backtest_run_id" in (
         connection.statement
     )
+
+
+def _baseline_row(**overrides: Any) -> dict[str, Any]:
+    row = _live_row(
+        scheme_id="weekly_10y_full_action_vote0546_v3",
+        horizon=1,
+        scheme_version="b8542ca9df2f",
+        predict_date=date(2026, 8, 14),
+        run_id=None,
+        run_status=None,
+        run_scheme_id=None,
+        run_scheme_version=None,
+        run_runtime_type=None,
+        run_prediction_phase=None,
+        run_predict_date=None,
+        backtest_run_id=254,
+        backtest_status="success",
+        backtest_run_mode="persist",
+        backtest_scheme_id="weekly_10y_full_action_vote0546_v3",
+    )
+    row.update(overrides)
+    return row
+
+
+def _vote0546_target() -> signal_gap_plan.RegistryTarget:
+    return signal_gap_plan.RegistryTarget(
+        registry_scheme_id="weekly_10y_full_action_vote0546_v3__h1__10Y",
+        base_scheme_id="weekly_10y_full_action_vote0546_v3",
+        runtime_type="blackbox_v2",
+        frequency="weekly",
+        task_type="weekly_point",
+        target_tenor="10Y",
+        horizon=1,
+        scheme_version="b8542ca9df2f",
+    )
+
+
+def test_persisted_backtest_baseline_covers_business_key() -> None:
+    """激活持久化回测事实占据业务键时，计划不再视为 live 缺口。"""
+    target = _vote0546_target()
+    connection = _ReadConnection([_baseline_row()])
+    key = ("weekly_10y_full_action_vote0546_v3", "10Y", 1, "2026-08-21")
+
+    observed = signal_gap_plan._read_live_signals_for_scope(
+        connection,
+        (target,),
+        predict_dates=("2026-08-15",),
+        expected_business_keys={key},
+    )
+    item = signal_gap_plan.ExpectedSignalCase(
+        registry_scheme_id=target.registry_scheme_id,
+        base_scheme_id=target.base_scheme_id,
+        runtime_type=target.runtime_type,
+        frequency=target.frequency,
+        task_type=target.task_type,
+        target_tenor=target.target_tenor,
+        horizon=target.horizon,
+        predict_date="2026-08-15",
+        feature_date="2026-08-14",
+        target_date="2026-08-21",
+    )
+
+    assert observed[0].backtest_baseline is True
+    assert observed[0].contract_error is None
+    assert (
+        signal_gap_plan._observation_contract_error(item, target, observed[0])
+        is None
+    )
+
+
+def test_backtest_baseline_requires_active_version() -> None:
+    """回测事实版本不是当前 active 版本时仍按漂移阻断。"""
+    connection = _ReadConnection([_baseline_row(scheme_version="old-version")])
+    key = ("weekly_10y_full_action_vote0546_v3", "10Y", 1, "2026-08-21")
+
+    observed = signal_gap_plan._read_live_signals_for_scope(
+        connection,
+        (_vote0546_target(),),
+        predict_dates=("2026-08-15",),
+        expected_business_keys={key},
+    )
+
+    assert observed[0].backtest_baseline is False
+    assert "LIVE_SCHEME_VERSION_DRIFT" in str(observed[0].contract_error)
 
 
 def test_unpreserved_scheme_legacy_version_is_still_drift() -> None:
