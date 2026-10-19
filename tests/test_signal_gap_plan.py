@@ -703,3 +703,165 @@ def test_unapproved_fact_horizon_is_rejected() -> None:
 
     with pytest.raises(signal_gap_plan.SignalGapPlanError):
         signal_gap_plan._validate_registry_target(target)
+
+
+class _RowResult:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+
+    def mappings(self) -> _RowResult:
+        return self
+
+    def all(self) -> list[dict[str, Any]]:
+        return self._rows
+
+
+class _ReadConnection:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self.rows = rows
+        self.statement = ""
+
+    def execute(self, statement: Any, _parameters: Any) -> _RowResult:
+        self.statement = str(statement)
+        return _RowResult(self.rows)
+
+
+def _preserved_0529_target() -> signal_gap_plan.RegistryTarget:
+    return signal_gap_plan.RegistryTarget(
+        registry_scheme_id="weekly_10y_d_overlay_0529__h6__10Y",
+        base_scheme_id="weekly_10y_d_overlay_0529",
+        runtime_type="blackbox_v2",
+        frequency="weekly",
+        task_type="weekly_point",
+        target_tenor="10Y",
+        horizon=6,
+        scheme_version="4fd0808870b9",
+    )
+
+
+def _live_row(**overrides: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "id": 3186,
+        "scheme_id": "weekly_10y_d_overlay_0529",
+        "target_tenor": "10Y",
+        "horizon": 6,
+        "predict_date": date(2026, 8, 15),
+        "feature_date": date(2026, 8, 14),
+        "target_date": date(2026, 8, 21),
+        "prediction_phase": "gray_live",
+        "scheme_version": "e50ad79a6c2f",
+        "run_id": 3211,
+        "run_status": "success",
+        "run_scheme_id": "weekly_10y_d_overlay_0529",
+        "run_scheme_version": "e50ad79a6c2f",
+        "run_runtime_type": "native_adapter",
+        "run_prediction_phase": "gray_live",
+        "run_predict_date": date(2026, 8, 15),
+    }
+    row.update(overrides)
+    return row
+
+
+def test_preserved_legacy_native_live_row_is_valid_evidence() -> None:
+    """存量方案迁移前的 native live 行不再触发版本/运行时漂移。"""
+    connection = _ReadConnection([_live_row()])
+    key = ("weekly_10y_d_overlay_0529", "10Y", 6, "2026-08-21")
+
+    observed = signal_gap_plan._read_live_signals_for_scope(
+        connection,
+        (_preserved_0529_target(),),
+        predict_dates=("2026-08-15",),
+        expected_business_keys={key},
+    )
+
+    assert len(observed) == 1
+    assert observed[0].legacy_native is True
+    assert observed[0].contract_error is None
+    assert "NOT (p.run_id IS NULL AND p.backtest_run_id IS NOT NULL)" in (
+        connection.statement
+    )
+
+
+def test_unpreserved_scheme_legacy_version_is_still_drift() -> None:
+    """未登记事实步长的方案不享受存量 native 例外。"""
+    target = signal_gap_plan.RegistryTarget(
+        registry_scheme_id="weekly_10y_full_action_vote0546_v3__h1__10Y",
+        base_scheme_id="weekly_10y_full_action_vote0546_v3",
+        runtime_type="blackbox_v2",
+        frequency="weekly",
+        task_type="weekly_point",
+        target_tenor="10Y",
+        horizon=1,
+        scheme_version="b8542ca9df2f",
+    )
+    connection = _ReadConnection(
+        [
+            _live_row(
+                scheme_id="weekly_10y_full_action_vote0546_v3",
+                horizon=1,
+                scheme_version="b8542ca9df2f",
+                run_scheme_id="weekly_10y_full_action_vote0546_v3",
+                run_scheme_version="b8542ca9df2f",
+                run_runtime_type="native_adapter",
+            )
+        ]
+    )
+    key = ("weekly_10y_full_action_vote0546_v3", "10Y", 1, "2026-08-21")
+
+    observed = signal_gap_plan._read_live_signals_for_scope(
+        connection,
+        (target,),
+        predict_dates=("2026-08-15",),
+        expected_business_keys={key},
+    )
+
+    assert observed[0].legacy_native is False
+    assert observed[0].contract_error == "RUN_RUNTIME_TYPE_DRIFT"
+
+
+def test_live_row_without_any_run_link_still_blocks() -> None:
+    """既无 live run 也无 backtest run 的行仍按缺失 run 链阻断。"""
+    error = signal_gap_plan._live_row_contract_error(
+        _live_row(run_id=None, run_status=None),
+        _preserved_0529_target(),
+    )
+
+    assert error is not None
+    assert "RUN_LINK_MISSING" in error
+
+
+def test_observation_contract_accepts_legacy_native_version() -> None:
+    """已判定为存量 native 的行不再与当前 active 版本比较。"""
+    target = _preserved_0529_target()
+    item = signal_gap_plan.ExpectedSignalCase(
+        registry_scheme_id=target.registry_scheme_id,
+        base_scheme_id=target.base_scheme_id,
+        runtime_type=target.runtime_type,
+        frequency=target.frequency,
+        task_type=target.task_type,
+        target_tenor=target.target_tenor,
+        horizon=target.horizon,
+        predict_date="2026-08-15",
+        feature_date="2026-08-14",
+        target_date="2026-08-21",
+    )
+    observed = signal_gap_plan.ObservedSignal(
+        base_scheme_id=target.base_scheme_id,
+        target_tenor=target.target_tenor,
+        horizon=target.horizon,
+        target_date=item.target_date,
+        predict_date=item.predict_date,
+        feature_date=item.feature_date,
+        phase="gray_live",
+        scheme_version="e50ad79a6c2f",
+        run_status="success",
+        legacy_native=True,
+    )
+
+    assert (
+        signal_gap_plan._observation_contract_error(item, target, observed)
+        is None
+    )
+    assert signal_gap_plan._observation_contract_error(
+        item, target, replace(observed, legacy_native=False)
+    ) == ("OBSERVED_SIGNAL_CONTRACT_DRIFT")

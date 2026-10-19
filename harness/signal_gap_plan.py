@@ -141,6 +141,7 @@ class ObservedSignal:
     scheme_version: str
     run_status: str
     contract_error: str | None = None
+    legacy_native: bool = False
 
     @property
     def business_key(self) -> tuple[str, str, int, str]:
@@ -1461,6 +1462,7 @@ def _read_live_signals_for_scope(
         FROM t_scheme_predictions p
         LEFT JOIN t_scheme_runs r ON r.run_id = p.run_id
         WHERE p.scheme_id IN :base_scheme_ids
+          AND NOT (p.run_id IS NULL AND p.backtest_run_id IS NOT NULL)
           AND (
               p.predict_date IN :predict_dates
               {target_date_clause}
@@ -1508,6 +1510,20 @@ def _read_live_signals_for_scope(
         ):
             continue
         target = target_by_identity.get(business_key[:3])
+        # 迁移前由 native_adapter 写入的存量方案 live 行仍是历史事实，
+        # 仅在 run 身份与预测行完全一致且成功时跳过版本/运行时漂移。
+        legacy_native = (
+            str(row.get("run_runtime_type") or "") == "native_adapter"
+            and business_key[0] in PRESERVED_FACT_HORIZONS
+            and row.get("run_id") is not None
+            and str(row.get("run_scheme_id") or "")
+            == str(row.get("scheme_id") or "")
+            and str(row.get("run_scheme_version") or "")
+            == str(row.get("scheme_version") or "")
+            and str(row.get("run_prediction_phase") or "")
+            == str(row.get("prediction_phase") or "")
+            and str(row.get("run_status") or "") == "success"
+        )
         selected.append(
             ObservedSignal(
                 base_scheme_id=business_key[0],
@@ -1519,7 +1535,8 @@ def _read_live_signals_for_scope(
                 phase=str(row["prediction_phase"] or ""),
                 scheme_version=str(row["scheme_version"] or ""),
                 run_status=str(row["run_status"] or ""),
-                contract_error=_live_row_contract_error(row, target),
+                contract_error=_live_row_contract_error(row, target, legacy_native),
+                legacy_native=legacy_native,
             )
         )
     return tuple(sorted(selected, key=_observed_sort_key))
@@ -1834,7 +1851,7 @@ def _observation_contract_error(
         or row.feature_date != item.feature_date
         or row.phase not in LIVE_PREDICTION_PHASES
         or row.run_status != "success"
-        or row.scheme_version != target.scheme_version
+        or (row.scheme_version != target.scheme_version and not row.legacy_native)
     ):
         return "OBSERVED_SIGNAL_CONTRACT_DRIFT"
     return None
@@ -1843,6 +1860,7 @@ def _observation_contract_error(
 def _live_row_contract_error(
     row: Mapping[str, Any],
     target: RegistryTarget | None,
+    legacy_native: bool = False,
 ) -> str | None:
     errors: list[str] = []
     phase = str(row.get("prediction_phase") or "")
@@ -1850,7 +1868,7 @@ def _live_row_contract_error(
         errors.append("LIVE_PHASE_INVALID")
     if target is None:
         errors.append("LIVE_TARGET_NOT_ACTIVE")
-    else:
+    elif not legacy_native:
         if str(row.get("scheme_version") or "") != target.scheme_version:
             errors.append("LIVE_SCHEME_VERSION_DRIFT")
         if str(row.get("run_runtime_type") or "") != target.runtime_type:
