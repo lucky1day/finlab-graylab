@@ -236,11 +236,11 @@ DEFAULT_RUNTIME_PROFILE = _load_runtime_profile(_RUNTIME_PROFILE_PATH)
 
 STATEFUL_MEMORY_LIMIT_ENV = "BFL_BLACKBOX_STATEFUL_MEMORY_LIMIT_BYTES"
 _STATEFUL_MEMORY_LIMIT_DEFAULT_BYTES = 4 * 1024**3
-_STATEFUL_MEMORY_LIMIT_MAX_BYTES = 8 * 1024**3
+_STATEFUL_MEMORY_LIMIT_MAX_BYTES = 16 * 1024**3
 
 
 def _stateful_memory_limit_bytes(profile: RuntimeProfile) -> int:
-    """解析 stateful Blackbox 的显式内存上限；默认 4 GiB，最大 8 GiB。"""
+    """解析 stateful Blackbox 的显式内存上限；默认 4 GiB，最大 16 GiB。"""
     raw = os.environ.get(STATEFUL_MEMORY_LIMIT_ENV, "").strip()
     limit = _STATEFUL_MEMORY_LIMIT_DEFAULT_BYTES
     if raw:

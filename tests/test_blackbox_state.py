@@ -272,14 +272,17 @@ def test_stateful_memory_limit_env_override(
     delivery: dict,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """stateful Blackbox 内存上限可显式提高，但受 8 GiB 硬上限约束。"""
+    """stateful Blackbox 内存上限可显式提高，但受 16 GiB 硬上限约束。"""
     from scheduler import blackbox_v2_runner as runner
 
-    profile = replace(delivery["profile"], memory_limit_bytes=8 * 1024**3)
+    profile = replace(delivery["profile"], memory_limit_bytes=32 * 1024**3)
     monkeypatch.setenv(runner.STATEFUL_MEMORY_LIMIT_ENV, str(6 * 1024**3))
     assert runner._stateful_memory_limit_bytes(profile) == 6 * 1024**3
 
     monkeypatch.setenv(runner.STATEFUL_MEMORY_LIMIT_ENV, str(16 * 1024**3))
+    assert runner._stateful_memory_limit_bytes(profile) == 16 * 1024**3
+
+    monkeypatch.setenv(runner.STATEFUL_MEMORY_LIMIT_ENV, str(32 * 1024**3))
     with pytest.raises(ValueError, match="between 1 and"):
         runner._stateful_memory_limit_bytes(profile)
 

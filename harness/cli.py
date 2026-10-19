@@ -556,6 +556,12 @@ def _run_signal_gap_fill_command(args: argparse.Namespace) -> int:
         databridge_config=databridge_config,
         algo_env="forecast_env",
         timeout_sec=args.timeout_sec,
+        lock_scope=(
+            f"{scope['base_scheme_id']}_{scope['target_date_from']}_"
+            f"{scope['target_date_before']}"
+            if range_mode
+            else str(scope["predict_date"])
+        ),
     )
     _print_signal_gap_fill_result(result)
     if result.get("status") == "BLOCKED":

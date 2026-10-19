@@ -108,9 +108,12 @@ commit/runtime/cache 漂移、外层同名覆盖及外置 `PYTHON*` 变量；配
 其 key/user、cwd 和日志由本页漂移审计核对，不参与应用代码切换。
 
 Stateful Blackbox 的默认内存上限保持 4 GiB。确需更高资源的单次授权补缺，可在执行进程显式设置
-`BFL_BLACKBOX_STATEFUL_MEMORY_LIMIT_BYTES`（允许 1..8 GiB）；实际生效值写入 prediction extra 的
+`BFL_BLACKBOX_STATEFUL_MEMORY_LIMIT_BYTES`（允许 1..16 GiB）；实际生效值写入 prediction extra 的
 `memory_limit_bytes`。该变量只在父执行进程读取，不进入 Blackbox 子进程环境，不改变算法输入、状态或
 业务键；未设置时行为与 4 GiB 上限一致。
+
+Signal gap fill 按计划范围分锁（`signal-gap-fill-<scope>.lock`）：不同 predict_date 可以并行执行，
+同一日期仍串行。并行前须确认各批 business key 与目标日期互不重叠。
 
 ### 生产方案名单维护
 

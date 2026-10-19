@@ -219,3 +219,12 @@ def test_coordinator_status_maps_directly_without_retry(
     assert payload["failure_code"] == "TEST_FAILURE"
     planner.assert_called_once()
     runner.assert_called_once()
+
+
+def test_cli_uses_predict_date_as_lock_scope(tmp_path: Path) -> None:
+    exit_code, _, planner, runner = _run_cli(tmp_path, _plan())
+
+    assert exit_code == 0
+    planner.assert_called_once()
+    runner.assert_called_once()
+    assert runner.call_args.kwargs["lock_scope"] == PREDICT_DATE
