@@ -234,6 +234,28 @@ def _validate_runtime_profile(profile: RuntimeProfile, *, source: str) -> None:
 
 DEFAULT_RUNTIME_PROFILE = _load_runtime_profile(_RUNTIME_PROFILE_PATH)
 
+STATEFUL_MEMORY_LIMIT_ENV = "BFL_BLACKBOX_STATEFUL_MEMORY_LIMIT_BYTES"
+_STATEFUL_MEMORY_LIMIT_DEFAULT_BYTES = 4 * 1024**3
+_STATEFUL_MEMORY_LIMIT_MAX_BYTES = 8 * 1024**3
+
+
+def _stateful_memory_limit_bytes(profile: RuntimeProfile) -> int:
+    """解析 stateful Blackbox 的显式内存上限；默认 4 GiB，最大 8 GiB。"""
+    raw = os.environ.get(STATEFUL_MEMORY_LIMIT_ENV, "").strip()
+    limit = _STATEFUL_MEMORY_LIMIT_DEFAULT_BYTES
+    if raw:
+        if not re.fullmatch(r"[0-9]+", raw):
+            raise ValueError(
+                f"{STATEFUL_MEMORY_LIMIT_ENV} must be an integer byte count"
+            )
+        limit = int(raw)
+        if limit <= 0 or limit > _STATEFUL_MEMORY_LIMIT_MAX_BYTES:
+            raise ValueError(
+                f"{STATEFUL_MEMORY_LIMIT_ENV} must be between 1 and "
+                f"{_STATEFUL_MEMORY_LIMIT_MAX_BYTES} bytes"
+            )
+    return min(profile.memory_limit_bytes, limit)
+
 
 class BlackboxExecutionError(RuntimeError):
     pass
@@ -429,7 +451,7 @@ def run_blackbox_predict(
         state_timeout = (min(profile.backtest_timeout_sec, 7200) if state.rebuild
                          else min(profile.predict_timeout_sec, 120))
         profile = replace(profile, cpu_threads=min(profile.cpu_threads, 8),
-                          memory_limit_bytes=min(profile.memory_limit_bytes, 4 * 1024**3),
+                          memory_limit_bytes=_stateful_memory_limit_bytes(profile),
                           predict_timeout_sec=state_timeout)
     with tempfile.TemporaryDirectory(prefix="blackbox-v2-predict-") as tmpdir:
         root = Path(tmpdir)
@@ -487,7 +509,7 @@ def run_blackbox_backtest(
     batch = list(requests)
     if state is not None:
         profile = replace(profile, cpu_threads=min(profile.cpu_threads, 8),
-                          memory_limit_bytes=min(profile.memory_limit_bytes, 4 * 1024**3),
+                          memory_limit_bytes=_stateful_memory_limit_bytes(profile),
                           backtest_timeout_sec=min(profile.backtest_timeout_sec, 7200))
     with tempfile.TemporaryDirectory(prefix="blackbox-v2-backtest-") as tmpdir:
         root = Path(tmpdir)
@@ -644,6 +666,7 @@ def _to_prediction_record(
         "target_rule": metadata.target_rule,
         "contract_version": metadata.schema_version,
         "runtime_profile": profile.name,
+        "memory_limit_bytes": profile.memory_limit_bytes,
         "data_snapshot_id": data_snapshot_id,
     }
     return PredictionRecord(

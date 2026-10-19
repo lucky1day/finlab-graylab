@@ -268,6 +268,29 @@ def test_stateful_execution_budgets(
     assert observed == [expected]
 
 
+def test_stateful_memory_limit_env_override(
+    delivery: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """stateful Blackbox 内存上限可显式提高，但受 8 GiB 硬上限约束。"""
+    from scheduler import blackbox_v2_runner as runner
+
+    profile = replace(delivery["profile"], memory_limit_bytes=8 * 1024**3)
+    monkeypatch.setenv(runner.STATEFUL_MEMORY_LIMIT_ENV, str(6 * 1024**3))
+    assert runner._stateful_memory_limit_bytes(profile) == 6 * 1024**3
+
+    monkeypatch.setenv(runner.STATEFUL_MEMORY_LIMIT_ENV, str(16 * 1024**3))
+    with pytest.raises(ValueError, match="between 1 and"):
+        runner._stateful_memory_limit_bytes(profile)
+
+    monkeypatch.setenv(runner.STATEFUL_MEMORY_LIMIT_ENV, "not-a-number")
+    with pytest.raises(ValueError, match="integer byte count"):
+        runner._stateful_memory_limit_bytes(profile)
+
+    monkeypatch.delenv(runner.STATEFUL_MEMORY_LIMIT_ENV)
+    assert runner._stateful_memory_limit_bytes(profile) == 4 * 1024**3
+
+
 @pytest.mark.parametrize("request_id", ["bad-result", "nonzero", "state-missing", "change-request-input"])
 def test_failed_initial_rebuild_does_not_create_canonical_state(
     delivery: dict, tmp_path: Path, request_id: str,

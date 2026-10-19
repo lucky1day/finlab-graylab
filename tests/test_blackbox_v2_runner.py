@@ -248,6 +248,10 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         self.assertEqual(record.extra["runtime_type"], "blackbox_v2")
         self.assertEqual(record.extra["request_id"], "001")
         self.assertEqual(
+            record.extra["memory_limit_bytes"],
+            RuntimeProfile.for_tests().memory_limit_bytes,
+        )
+        self.assertEqual(
             record.extra["data_snapshot_id"],
             "snapshot-test",
         )
