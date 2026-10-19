@@ -516,7 +516,12 @@ def run_blackbox_backtest(
         requests_path = write_requests(batch, root / "requests.csv")
         output_path = root / "output" / "backtest.csv"
         # 回测只能使用私有状态；显式 rebuild 是无预测写库的受控维护调用。
-        if state is not None and state.root is not None and not state.rebuild:
+        if (
+            state is not None
+            and state.root is not None
+            and not state.rebuild
+            and not state.allow_backtest_publish
+        ):
             raise ValueError("backtest cannot advance persistent Blackbox state")
         with _state_session(state, root, metadata, script_path, data_dir,
                             data_snapshot_id, profile) as session:

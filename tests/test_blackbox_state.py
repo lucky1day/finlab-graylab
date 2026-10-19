@@ -318,6 +318,44 @@ def test_private_state_seed_reads_without_advancing(
     assert canonical.read_bytes() == before
 
 
+def test_backfill_state_publishes_to_separate_root(
+    delivery: dict,
+    tmp_path: Path,
+) -> None:
+    """backfill state 链使用独立根，首次重建、后续只算增量。"""
+    binding = _initialize(delivery, tmp_path)
+    backfill_root = tmp_path / "backfill-state"
+    backfill_root.mkdir(mode=0o700)
+    first = replace(
+        binding,
+        root=backfill_root,
+        rebuild=True,
+        allow_backtest_publish=True,
+        backfill=True,
+    )
+    records = run_blackbox_backtest(
+        **delivery,
+        requests=[_request("bf-first")],
+        state=first,
+    )
+    assert records[0].extra["state_scope"] == "backfill"
+    destination = (
+        backfill_root
+        / binding.scheme_id
+        / f"{binding.scheme_version}.state"
+    )
+    assert destination.is_file()
+
+    second = replace(first, rebuild=False)
+    records = run_blackbox_backtest(
+        **delivery,
+        requests=[_request("bf-second")],
+        state=second,
+    )
+    assert records[0].extra["state_scope"] == "backfill"
+    assert records[0].extra["state_input_sha256"] is not None
+
+
 @pytest.mark.parametrize("request_id", ["bad-result", "nonzero", "state-missing", "change-request-input"])
 def test_failed_initial_rebuild_does_not_create_canonical_state(
     delivery: dict, tmp_path: Path, request_id: str,

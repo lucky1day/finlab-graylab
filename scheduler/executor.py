@@ -698,9 +698,33 @@ def run_blackbox_gray_replay_batch(
         seed_state = None
         state = state_binding_for_scheme(cfg, generation_id=snapshot.generation_id)
         if state is not None:
-            seed_state = _read_only_state_seed(cfg, batch_requests)
-            if seed_state is not None:
-                state = replace(state, seed_state=seed_state)
+            backfill_root_raw = os.environ.get(
+                "BFL_BACKFILL_STATE_ROOT",
+                "",
+            ).strip()
+            if backfill_root_raw:
+                backfill_root = Path(backfill_root_raw)
+                if not backfill_root.is_absolute():
+                    raise ValueError(
+                        "BFL_BACKFILL_STATE_ROOT must be absolute"
+                    )
+                destination = (
+                    backfill_root
+                    / str(cfg.scheme_id)
+                    / f"{cfg.scheme_version}.state"
+                )
+                state = replace(
+                    state,
+                    root=backfill_root,
+                    rebuild=not destination.exists(),
+                    allow_backtest_publish=True,
+                    backfill=True,
+                    seed_state=None,
+                )
+            else:
+                seed_state = _read_only_state_seed(cfg, batch_requests)
+                if seed_state is not None:
+                    state = replace(state, seed_state=seed_state)
             backtest_kwargs["state"] = state
         try:
             records = run_blackbox_backtest(**backtest_kwargs)

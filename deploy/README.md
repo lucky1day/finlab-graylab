@@ -115,6 +115,10 @@ Stateful Blackbox 的默认内存上限保持 4 GiB。确需更高资源的单�
 Signal gap fill 按计划范围分锁（`signal-gap-fill-<scope>.lock`）：不同 predict_date 可以并行执行，
 同一日期仍串行。并行前须确认各批 business key 与目标日期互不重叠。
 
+补缺需要复用同一方案的增量 state 时，可把 `BFL_BACKFILL_STATE_ROOT` 指向独立 runtime 目录：
+首个日期冷重建并把新 state 发布到该根，后续日期读取上一日 state、只计算增量并推进该根。
+该根必须与生产 `blackbox-state` 分离；生产 state 仍只由正式调度推进。
+
 ### 生产方案名单维护
 
 文件格式、匹配与失败语义以[Dashboard 合同](../docs/operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md#生产方案标记)为准。

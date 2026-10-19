@@ -34,6 +34,8 @@ class StateBinding:
     manifest_hash: str | None = None
     config_path: Path | None = None
     seed_state: Path | None = None
+    allow_backtest_publish: bool = False
+    backfill: bool = False
 
     def __post_init__(self) -> None:
         for label, value in (("scheme_id", self.scheme_id),
@@ -51,6 +53,10 @@ class StateBinding:
                 raise ValueError("state seed is only valid for private state")
             if not isinstance(self.seed_state, Path) or not self.seed_state.is_absolute():
                 raise ValueError("state seed must be an absolute Path")
+        if self.allow_backtest_publish and self.root is None:
+            raise ValueError("backtest publish requires an explicit state root")
+        if self.backfill and self.root is None:
+            raise ValueError("backfill state requires an explicit state root")
 
 
 def read_regular_bytes(path: Path, limit: int) -> bytes:
@@ -213,13 +219,19 @@ class StateSession:
         _decode(content)
         if self._destination is not None:
             self._publish_file(content)
+        if self.binding.backfill:
+            state_scope = "backfill"
+        elif self._destination is not None:
+            state_scope = "persistent"
+        else:
+            state_scope = "private"
         self.audit = {
             "state_schema": "blackbox-state-1",
             "state_input_sha256": hashlib.sha256(self._input).hexdigest() if self._input is not None else None,
             "state_output_sha256": header["payload_sha256"],
             "state_envelope_sha256": hashlib.sha256(content).hexdigest(),
             "state_bytes": len(payload),
-            "state_scope": "persistent" if self._destination is not None else "private",
+            "state_scope": state_scope,
         }
         return dict(self.audit)
 
