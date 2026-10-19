@@ -33,7 +33,11 @@ from shared.prediction_context import (
     build_weekly_live_context,
     is_weekly_signal_date,
 )
-from shared.scheme_config_schema import ALLOWED_RUNTIME_TYPES, SCHEME_ID_PATTERN
+from shared.scheme_config_schema import (
+    ALLOWED_RUNTIME_TYPES,
+    PRESERVED_FACT_HORIZONS,
+    SCHEME_ID_PATTERN,
+)
 from shared.period_average_buckets import period_anchor_dates
 from shared.task_specs import (
     ALLOWED_FREQUENCIES,
@@ -1790,10 +1794,20 @@ def _validate_registry_target(target: RegistryTarget) -> None:
         )
     except (OSError, ValueError):
         contract = None
-    if contract is None or (
-        contract.horizon,
-        contract.frequency,
-    ) != (target.horizon, target.frequency):
+    if contract is None:
+        raise SignalGapPlanError(
+            "INVALID_REGISTRY_TARGET",
+            target.registry_scheme_id,
+        )
+    expected_horizons = {contract.horizon}
+    preserved = PRESERVED_FACT_HORIZONS.get(target.base_scheme_id)
+    if preserved is not None and preserved[0] == target.task_type:
+        # 已批准存量方案允许 Registry 保留原事实步长（如 6 天/30 天）。
+        expected_horizons.add(preserved[1])
+    if (
+        target.horizon not in expected_horizons
+        or target.frequency != contract.frequency
+    ):
         raise SignalGapPlanError(
             "INVALID_REGISTRY_TARGET",
             target.registry_scheme_id,

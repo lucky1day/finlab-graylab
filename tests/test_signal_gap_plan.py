@@ -670,3 +670,36 @@ def test_blackbox_gap_fails_closed_without_valid_current(
 
     assert plan["actions"][0]["action"] == expected_action
     assert plan["status"] == "BLOCKED"
+
+
+def test_preserved_fact_horizon_is_valid_registry_target() -> None:
+    """已批准存量方案允许 Registry 使用原事实步长（6 天）。"""
+    target = signal_gap_plan.RegistryTarget(
+        registry_scheme_id="weekly_10y_d_overlay_0529__h6__10Y",
+        base_scheme_id="weekly_10y_d_overlay_0529",
+        runtime_type="blackbox_v2",
+        frequency="weekly",
+        task_type="weekly_point",
+        target_tenor="10Y",
+        horizon=6,
+        scheme_version="3ffd4823e7e0",
+    )
+
+    signal_gap_plan._validate_registry_target(target)
+
+
+def test_unapproved_fact_horizon_is_rejected() -> None:
+    """未登记事实步长的方案仍只接受执行 horizon。"""
+    target = signal_gap_plan.RegistryTarget(
+        registry_scheme_id="weekly_10y_full_action_vote0546_v3__h6__10Y",
+        base_scheme_id="weekly_10y_full_action_vote0546_v3",
+        runtime_type="blackbox_v2",
+        frequency="weekly",
+        task_type="weekly_point",
+        target_tenor="10Y",
+        horizon=6,
+        scheme_version="3ffd4823e7e0",
+    )
+
+    with pytest.raises(signal_gap_plan.SignalGapPlanError):
+        signal_gap_plan._validate_registry_target(target)
