@@ -258,7 +258,7 @@ def bond_feature_set(daily: pd.DataFrame) -> pd.DataFrame:
     return frame.astype("float32")
 
 
-def make_regressor(family: str):
+def make_regressor(family: str, n_features: int):
     if family == "lgb":
         return LGBMRegressor(
             objective="regression_l1", n_estimators=180, learning_rate=0.025,
@@ -271,6 +271,7 @@ def make_regressor(family: str):
         max_depth=2, min_child_weight=12, reg_alpha=1.0, reg_lambda=8.0,
         subsample=0.85, colsample_bytree=0.80, random_state=SEED, n_jobs=1,
         tree_method="hist",
+        feature_weights=np.ones(n_features, dtype=np.float32),
     )
 
 
@@ -295,7 +296,7 @@ def factor_forecast(
         test_positions = positions[test_local]
         family_forecasts: list[np.ndarray] = []
         for family in ("lgb", "xgb"):
-            model = make_regressor(family)
+            model = make_regressor(family, len(columns))
             model.fit(features.iloc[train_positions][list(columns)], target[train_positions])
             family_forecasts.append(
                 np.asarray(model.predict(features.iloc[test_positions][list(columns)]), dtype=np.float64)
