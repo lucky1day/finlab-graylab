@@ -278,6 +278,8 @@ def factor_forecast(
         family_forecasts: list[np.ndarray] = []
         for family in ("lgb", "xgb"):
             model = make_regressor(family)
+            if family == "xgb":
+                model.set_params(feature_weights=np.ones(len(columns), dtype=np.float32))
             model.fit(features.iloc[train_positions][list(columns)], target[train_positions])
             family_forecasts.append(
                 np.asarray(model.predict(features.iloc[test_positions][list(columns)]), dtype=np.float64)
