@@ -2,6 +2,7 @@
   "schema_version": "1.0",
   "scheme_id": "ten_y_t5_maj4_k3_ic_static_v1",
   "name": "10Y T+5 majority-4 K3 IC static representative",
+  "description": "10年期国债收益率T+5日方向预测（majority-4 K3 IC static 代表方案）",
   "algorithm_version": "1.0.0",
   "target_tenor": "10Y",
   "task_type": "T+5",
